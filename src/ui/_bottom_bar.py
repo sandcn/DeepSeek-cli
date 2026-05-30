@@ -354,6 +354,8 @@ class _BottomBar:
         self._completion_start_pos: int = 0         # 从光标前多少字符开始替换
         self._completion_orig_prefix: str = ""      # 原始前缀（用于重建替换）
         self._completion_idx = 0
+        # ★ 补全弹窗所占行数（弹窗可见时 > 0，用于扩展输入区）
+        self._completion_popup_height: int = 0
 
     # ── 动态行数计算 ──────────────────────────────────────
 
@@ -363,14 +365,16 @@ class _BottomBar:
         return 2 + self._compute_input_rows()
 
     def _compute_input_rows(self) -> int:
-        """根据当前输入文本计算所需的输入行数（最少 3 行）。"""
+        """根据当前输入文本计算所需的输入行数（最少 3 行 + 补全弹窗高度）。"""
         text = self._last_text or ""
         if not text:
-            return 3
-        max_input = max(1, self._term_width() - 4)
-        expanded = _expand_tabs(text)
-        wrapped = _wrap_by_width(expanded, max_input)
-        return max(3, len(wrapped))
+            base = 3
+        else:
+            max_input = max(1, self._term_width() - 4)
+            expanded = _expand_tabs(text)
+            wrapped = _wrap_by_width(expanded, max_input)
+            base = max(3, len(wrapped))
+        return base + self._completion_popup_height
 
     # ── 终端尺寸查询 ──────────────────────────────────────
 
@@ -892,11 +896,66 @@ class _BottomBar:
         # ★ 更新展开/拆行缓存，供轻量路径复用（text_changed=False 时有效）
         self._cached_wrapped_for = text
         self._cached_wrapped_lines = wrapped
-        self._cached_input_rows = max(3, len(wrapped))
+        base_rows = max(3, len(wrapped))
+        self._cached_input_rows = base_rows + self._completion_popup_height
         # ★ 同步"上次渲染文本"标记，供 force_redraw 快速路径使用
         self._last_rendered_text = text
+
+        popup_height = self._completion_popup_height
+
+        # ── 补全弹窗（在输入区顶部绘制，弹出时自动扩大输入行数） ──
+        if popup_height > 0 and self._completion_items:
+            popup_r_start = r_start
+            tw = self._term_width()
+            popup_w = min(tw - 2, 50)
+            cell_w = popup_w - 4
+            n = len(self._completion_items)
+
+            # 顶边框
+            total_items = len(self._completion_texts)
+            header = f" 补全 ({total_items}项) "
+            header_vw = _visual_len(header)
+            pad_w = max(1, popup_w - header_vw - 2)
+            top_border = (_COLOR_COMP_BORDER + "\u250c"
+                          + header
+                          + "\u2500" * pad_w
+                          + "\u2510" + _COLOR_RESET)
+            out.write(f"\033[{popup_r_start};1H\033[K{top_border}")
+
+            # 选项行
+            for i, item in enumerate(self._completion_items):
+                r = popup_r_start + 1 + i
+                display = _truncate_by_width(item, cell_w - 2)
+                pad = " " * max(0, cell_w - 2 - _visual_len(display))
+                if i == self._completion_idx:
+                    out.write(f"\033[{r};1H\033[K"
+                              f"{_COLOR_COMP_BORDER}\u2502{_COLOR_RESET} "
+                              f"{_COLOR_COMP_SELECTED_BG}{_COLOR_PROMPT}\u25b8{_COLOR_RESET}"
+                              f"{_COLOR_COMP_SELECTED_BG} {display}{pad}{_COLOR_RESET}"
+                              f"{_COLOR_COMP_BORDER}\u2502{_COLOR_RESET}")
+                else:
+                    out.write(f"\033[{r};1H\033[K"
+                              f"{_COLOR_COMP_BORDER}\u2502{_COLOR_RESET}  "
+                              f" {display}{pad}"
+                              f"{_COLOR_COMP_BORDER}\u2502{_COLOR_RESET}")
+
+            # 底边框
+            footer_r = popup_r_start + 1 + n
+            truncated = total_items > n
+            if truncated:
+                hint = f" {self._completion_idx + 1}/{n} (\u524d{n}/{total_items})  Tab/\u2191\u2193/Esc "
+            else:
+                hint = " Tab/\u2191\u2193/Esc "
+            hint_vw = _visual_len(hint)
+            pad_w = max(1, popup_w - hint_vw - 2)
+            bottom_border = (_COLOR_COMP_BORDER + "\u2514" + hint
+                             + "\u2500" * pad_w + "\u2518" + _COLOR_RESET)
+            out.write(f"\033[{footer_r};1H\033[K{bottom_border}")
+
+        # ── 输入文本行（在弹窗下方） ──
+        text_start = r_start + popup_height
         for i, segment in enumerate(wrapped):
-            r = r_start + i
+            r = text_start + i
             if i == 0:
                 if text:
                     out.write(f"\033[{r};1H\033[K{_COLOR_PROMPT}◆{_COLOR_RESET} {segment}")
@@ -905,7 +964,7 @@ class _BottomBar:
             else:
                 out.write(f"\033[{r};1H\033[K{_COLOR_PROMPT}│{_COLOR_RESET} {segment}")
         # ★ 填充剩余空白行，确保输入区至少 3 行
-        for r in range(r_start + len(wrapped), r_start + 3):
+        for r in range(text_start + len(wrapped), text_start + 3):
             out.write(f"\033[{r};1H\033[K{_COLOR_PROMPT}│{_COLOR_RESET} ")
 
     def _draw_all_locked(self, out, height: int) -> None:
@@ -1077,16 +1136,15 @@ class _BottomBar:
     def show_completions(self, items: list[str], selected_idx: int,
                          texts: list[str] | None = None,
                          start_pos: int = 0, orig_prefix: str = "") -> None:
-        """在底部栏上方绘制带边框的补全弹窗。
+        """在输入区内部绘制带边框的补全弹窗，自动扩大输入区域。
 
         弹窗视觉：
           ┌ 补全 (N项) ──────────┐
           │ ▸ 选中项              │  ← 反显高亮 + ▸ 指示器
           │   普通项              │
-          │ ··· 3/10 ···         │  ← 底部信息行
           └ Tab/↑↓/Esc ──────────┘  ← 快捷键提示
 
-        覆盖在终端底部栏上方（分隔线之上），不修改滚动区域。
+        弹窗作为输入区的一部分绘制，弹出时输入区域自动扩大。
         """
         if not items or not self._active:
             return
@@ -1095,10 +1153,11 @@ class _BottomBar:
         h_items = min(total_items, self._COMPLETION_MAX_ITEMS)
         # 弹窗 = 顶边框 + N 项 + 底边框 = N+2 行
         popup_height = h_items + 2
-        max_avail = self._term_height() - self._bottom_lines - 1
+        # ★ 空间不够时缩减项数（基于终端总高度，输入区会扩展）
+        # 至少留 5 行：分隔线(1) + 状态行(1) + 最少 3 行输入区
+        max_avail = self._term_height() - 5
         if max_avail <= 0:
             return
-        # 空间不够时缩减项数
         if popup_height > max_avail:
             h_items = max(1, max_avail - 2)
             popup_height = h_items + 2
@@ -1109,64 +1168,9 @@ class _BottomBar:
         with _try_acquire_output_lock(name="bottom_bar.comp_show", timeout=1.0) as locked:
             if not locked:
                 return
-            out = sys.__stdout__
-            out.write("\0337")
-            height = self._term_height()
-            popup_start = height - self._bottom_lines - popup_height + 1
-            tw = self._term_width()
-            popup_w = min(tw - 2, 50)
 
-            # ── 顶边框 ──
-            header = f" 补全 ({total_items}项) "
-            header_vw = _visual_len(header)
-            # 边框字符各占 1 列：┌ + ┐ = 2，中间全填 ─
-            pad_w = max(1, popup_w - header_vw - 2)
-            top_border = (_COLOR_COMP_BORDER + "\u250c"
-                          + header
-                          + "\u2500" * pad_w
-                          + "\u2510" + _COLOR_RESET)
-            out.write(f"\033[{popup_start};1H\033[K{top_border}\033[K")
-
-            # ── 选项行 ──
-            for i, item in enumerate(visible_items):
-                r = popup_start + 1 + i
-                cell_w = popup_w - 4  # │ + 空格 + 内容 + 空格 + │
-                display = _truncate_by_width(item, cell_w - 2)  # -2 for "▸ "
-                pad = " " * max(0, cell_w - 2 - _visual_len(display))
-                if i == selected_idx:
-                    out.write(f"\033[{r};1H\033[K"
-                              f"{_COLOR_COMP_BORDER}\u2502{_COLOR_RESET} "
-                              f"{_COLOR_COMP_SELECTED_BG}{_COLOR_PROMPT}\u25b8{_COLOR_RESET}"
-                              f"{_COLOR_COMP_SELECTED_BG} {display}{pad}{_COLOR_RESET}"
-                              f"{_COLOR_COMP_BORDER}\u2502{_COLOR_RESET}")
-                else:
-                    out.write(f"\033[{r};1H\033[K"
-                              f"{_COLOR_COMP_BORDER}\u2502{_COLOR_RESET}  "
-                              f" {display}{pad}"
-                              f"{_COLOR_COMP_BORDER}\u2502{_COLOR_RESET}")
-
-            # ── 底边框 ──
-            footer_start = popup_start + 1 + h_items
-            truncated = total_items > h_items
-            if truncated:
-                hint = f" {selected_idx + 1}/{h_items} (\u524d{h_items}/{total_items})  Tab/\u2191\u2193/Esc "
-            else:
-                hint = " Tab/\u2191\u2193/Esc "
-            hint_vw = _visual_len(hint)
-            pad_w = max(1, popup_w - hint_vw - 2)
-            bottom_border = (_COLOR_COMP_BORDER + "\u2514" + hint
-                             + "\u2500" * pad_w + "\u2518" + _COLOR_RESET)
-            out.write(f"\033[{footer_start};1H\033[K{bottom_border}\033[K")
-
-            out.write("\0338")
-            # ★ 重新保存 SCOSC，供 ParallelDisplay.render_frame 下一帧使用
-            scroll_end = height - self._bottom_lines
-            out.write(f"\033[{scroll_end};1H\033[s")
-            # ★ 修复：恢复光标到 DECSC 位置（输入行），防止后续 _echo 锁超时导致光标跳到上屏
-            out.write("\0338")
-            out.flush()
-
-            # ★ 状态写入移入锁内
+            # ★ 先设置弹窗高度，使 _bottom_lines / _compute_input_rows 返回扩展后的值
+            self._completion_popup_height = popup_height
             self._completion_visible = True
             self._completion_items = list(visible_items)
             self._completion_texts = list(texts) if texts is not None else list(visible_items)
@@ -1174,42 +1178,110 @@ class _BottomBar:
             self._completion_start_pos = start_pos
             self._completion_orig_prefix = orig_prefix
 
+            out = sys.__stdout__
+            out.write("\0337")
+            height = self._term_height()
+            total = self._bottom_lines  # 已包含 popup 高度
+            scroll_end = height - total
+            old_bottom_lines = self._last_bottom_lines
+            self._last_bottom_lines = total
+
+            # 临时退出滚动区域
+            out.write("\033[r")
+
+            # 清除旧的底部行
+            old_end = height - old_bottom_lines
+            for r in range(old_end + 1, height + 1):
+                out.write(f"\033[{r};1H\033[K")
+
+            # 全量重绘底部栏（含输入区内的补全弹窗）
+            r1 = height - total + 1
+            r2 = r1 + 1
+            sep = "─" * min(self._term_width(), 80)
+            out.write(f"\033[{r1};1H{_COLOR_DIVIDER}{sep}{_COLOR_RESET}")
+            out.write(f"\033[{r2};1H\033[K")
+            text = self._last_text or ""
+            self._draw_input_lines_locked(out, text, r2 + 1)
+            status = self._format_status()
+            if status:
+                out.write(f"\033[{r2};1H\033[K{status}")
+            self._last_status = status
+
+            out.write(f"\033[1;{scroll_end}r")
+            out.write("\0338")
+            # ★ 重新保存 SCOSC
+            out.write(f"\033[{scroll_end};1H\033[s")
+            # ★ 显式定位光标到输入行
+            vis_row, vis_col = _compute_cursor_visual_pos(
+                text, -1, max(1, self._term_width() - 4),
+            )
+            r_cursor = r2 + 1 + vis_row
+            cursor_col = min(3 + vis_col, self._term_width())
+            out.write(f"\033[{r_cursor};{cursor_col}H")
+            out.flush()
+
     def hide_completions(self) -> None:
-        """清除补全弹窗（含边框），恢复底部栏上方的终端行。
+        """清除补全弹窗，缩小输入区域恢复原状。
 
         幂等：弹窗未显示时无效果。
         """
         if not self._completion_visible or not self._active:
             return
 
-        m_height = len(self._completion_items) + 2  # +2 for borders
-        m_height = min(m_height, self._COMPLETION_MAX_ITEMS + 2)
-
         with _try_acquire_output_lock(name="bottom_bar.comp_hide", timeout=1.0) as locked:
             if not locked:
                 return
-            out = sys.__stdout__
-            out.write("\0337")
-            height = self._term_height()
-            popup_start = height - self._bottom_lines - m_height + 1
-            for i in range(m_height):
-                r = popup_start + i
-                out.write(f"\033[{r};1H\033[K")
-            out.write("\0338")
-            # ★ 重新保存 SCOSC，供 ParallelDisplay.render_frame 下一帧使用
-            scroll_end = height - self._bottom_lines
-            out.write(f"\033[{scroll_end};1H\033[s")
-            # ★ 修复：恢复光标到 DECSC 位置（输入行），与 show_completions/cycle_completion 一致
-            out.write("\0338")
-            out.flush()
 
-            # ★ 状态归零移入锁内
+            # ★ 先置零弹窗高度，使 _bottom_lines 恢复为不含弹窗的值
+            self._completion_popup_height = 0
             self._completion_visible = False
             self._completion_items = []
             self._completion_texts = []
             self._completion_idx = 0
             self._completion_start_pos = 0
             self._completion_orig_prefix = ""
+
+            out = sys.__stdout__
+            out.write("\0337")
+            height = self._term_height()
+            total = self._bottom_lines  # 已不含 popup 高度
+            scroll_end = height - total
+            old_bottom_lines = self._last_bottom_lines  # 旧的含弹窗的底部行数
+            self._last_bottom_lines = total
+
+            # 临时退出滚动区域
+            out.write("\033[r")
+
+            # 清除旧的底部行（用 old_bottom_lines 确保清干净所有旧行）
+            old_end = height - old_bottom_lines
+            for r in range(old_end + 1, height + 1):
+                out.write(f"\033[{r};1H\033[K")
+
+            # 全量重绘底部栏（缩小后的区域）
+            r1 = height - total + 1
+            r2 = r1 + 1
+            sep = "─" * min(self._term_width(), 80)
+            out.write(f"\033[{r1};1H{_COLOR_DIVIDER}{sep}{_COLOR_RESET}")
+            out.write(f"\033[{r2};1H\033[K")
+            text = self._last_text or ""
+            self._draw_input_lines_locked(out, text, r2 + 1)
+            status = self._format_status()
+            if status:
+                out.write(f"\033[{r2};1H\033[K{status}")
+            self._last_status = status
+
+            out.write(f"\033[1;{scroll_end}r")
+            out.write("\0338")
+            # ★ 重新保存 SCOSC
+            out.write(f"\033[{scroll_end};1H\033[s")
+            # ★ 显式定位光标到输入行
+            vis_row, vis_col = _compute_cursor_visual_pos(
+                text, -1, max(1, self._term_width() - 4),
+            )
+            r_cursor = r2 + 1 + vis_row
+            cursor_col = min(3 + vis_col, self._term_width())
+            out.write(f"\033[{r_cursor};{cursor_col}H")
+            out.flush()
 
     def cycle_completion(self, delta: int = 1) -> int:
         """循环切换补全选中项，更新弹窗高亮和 footer 位置信息。
@@ -1235,7 +1307,9 @@ class _BottomBar:
             out = sys.__stdout__
             out.write("\0337")
             height = self._term_height()
-            popup_start = height - self._bottom_lines - popup_height + 1
+            total = self._bottom_lines  # 已含 popup 高度
+            # 弹窗在输入区顶部：分隔线+状态行之后的第一行
+            popup_start = height - total + 3
             tw = self._term_width()
             popup_w = min(tw - 2, 50)
             cell_w = popup_w - 4
