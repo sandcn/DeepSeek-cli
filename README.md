@@ -8,7 +8,19 @@
 
 ### 1. 安装依赖
 
-项目使用 **Python ≥ 3.9**，通过 `pyproject.toml` 管理依赖。使用 `pip` 安装：
+项目使用 **Python ≥ 3.9**。
+
+#### 方式一：一键安装（推荐）
+
+```bash
+# 安装全部核心依赖
+pip install aiohttp httpx rich prompt-toolkit Pygments Jinja2 beautifulsoup4 chardet aiofiles
+
+# 安装开发依赖（测试/代码检查等）
+pip install pytest pytest-asyncio pytest-xdist pytest-cov ruff mypy
+```
+
+#### 方式二：通过项目安装（自动读取 pyproject.toml）
 
 ```bash
 # 安装核心依赖
@@ -18,19 +30,19 @@ pip install .
 pip install ".[dev]"
 ```
 
-**核心依赖列表**（自动安装）：
+**依赖库说明**：
 
-| 包 | 用途 |
-|---|---|
-| `aiohttp>=3.9` | 异步 HTTP 服务器/客户端 |
-| `httpx>=0.27` | HTTP 请求库 |
-| `rich>=10` | 终端富文本输出 |
-| `prompt-toolkit>=3.0` | 终端交互式输入 |
-| `Pygments>=2.16` | 代码语法高亮 |
-| `Jinja2>=3.1` | 模板渲染 |
-| `beautifulsoup4>=4.12` | HTML 解析 |
-| `chardet>=3.0` | 字符编码检测 |
-| `aiofiles>=23` | 异步文件操作 |
+| 包 | 用途 | 安装命令 |
+|---|---|---|
+| `aiohttp` | 异步 HTTP 服务器/客户端 | `pip install aiohttp` |
+| `httpx` | HTTP 请求库 | `pip install httpx` |
+| `rich` | 终端富文本输出 | `pip install rich` |
+| `prompt-toolkit` | 终端交互式输入 | `pip install prompt-toolkit` |
+| `Pygments` | 代码语法高亮 | `pip install Pygments` |
+| `Jinja2` | 模板渲染 | `pip install Jinja2` |
+| `beautifulsoup4` | HTML 解析 | `pip install beautifulsoup4` |
+| `chardet` | 字符编码检测 | `pip install chardet` |
+| `aiofiles` | 异步文件操作 | `pip install aiofiles` |
 
 ---
 
