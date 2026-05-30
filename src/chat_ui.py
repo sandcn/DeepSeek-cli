@@ -1009,14 +1009,12 @@ class ChatUIConsumer:
             self._position_cursor()
 
     def _position_cursor(self) -> None:
-        """光标移回输入行，根据超长文本自动拆行定位。"""
+        """光标移回输入行，根据超长文本自动拆行定位（含最少3行输入区）。"""
         text, cursor_pos, h, w = self._bottom_bar.get_cursor_info()
         max_input = max(1, w - 4)
 
-        # 先计算文本末尾的视觉行号（总行数），再计算光标的视觉位置
-        total_visual_lines = _compute_cursor_visual_pos(text, len(text), max_input)[0] + 1
         vis_row, vis_col = _compute_cursor_visual_pos(text, cursor_pos, max_input)
-        total_bottom = 2 + total_visual_lines
+        total_bottom = self._bottom_bar._bottom_lines
         r_cursor = max(1, h - total_bottom + 3 + vis_row)
         cursor_col = min(3 + vis_col, w)
         sys.__stdout__.write(f"\033[{r_cursor};{cursor_col}H")

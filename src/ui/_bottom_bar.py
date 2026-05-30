@@ -341,7 +341,7 @@ class _BottomBar:
         # ★ 展开/拆行缓存：轻量路径复用，避免每次光标移动都重算 _expand_tabs + _wrap_by_width
         self._cached_wrapped_for: str = ""   # 缓存对应的原始文本（缓存键，在 _draw_input_lines_locked 中更新）
         self._cached_wrapped_lines: list[str] | None = None  # 缓存拆行结果
-        self._cached_input_rows: int = 1      # 缓存输入区视觉行数（不含分隔线/状态行）
+        self._cached_input_rows: int = 3      # 缓存输入区视觉行数（不含分隔线/状态行，最少 3 行）
         # ★ 上次渲染到终端的输入文本（显式标记，仅在 _draw_input_lines_locked 中更新，
         #    供 force_redraw 快速路径使用，避免 _cached_wrapped_for 承担双重语义）
         self._last_rendered_text: str = ""
@@ -363,14 +363,14 @@ class _BottomBar:
         return 2 + self._compute_input_rows()
 
     def _compute_input_rows(self) -> int:
-        """根据当前输入文本计算所需的输入行数（最少 1 行）。"""
+        """根据当前输入文本计算所需的输入行数（最少 3 行）。"""
         text = self._last_text or ""
         if not text:
-            return 1
+            return 3
         max_input = max(1, self._term_width() - 4)
         expanded = _expand_tabs(text)
         wrapped = _wrap_by_width(expanded, max_input)
-        return max(1, len(wrapped))
+        return max(3, len(wrapped))
 
     # ── 终端尺寸查询 ──────────────────────────────────────
 
@@ -560,27 +560,26 @@ class _BottomBar:
         sys.__stdout__.write(f"\033[{scroll_end};1H")
 
     def ensure_cursor_in_lower(self) -> None:
-        """渲染完成后将光标移回下屏输入行末尾。
+        """渲染完成后将光标移回下屏输入行末尾（含动态拆行，最少3行输入区）。
 
         只做光标跳转，不重绘输入行（避免覆盖用户通过
         左右键移动光标后的位置）。光标停在输入文本末尾。
         超长文本会自动拆行，光标位于最后一行末尾。
+        空输入时光标位于输入区第一行（◆ 提示符行）。
         制表符按 _TAB_WIDTH 展开为空格。
         """
         if not self._active:
             return
         height = self._term_height()
         term_w = self._term_width()
-        input_row = height  # 输入最后一行 = 终端最后一行
         text = self._last_text or ""
-        safe_text = text.replace('\r', '')
-        expanded = _expand_tabs(safe_text)
+        cursor_pos = self._input_cursor_pos
         max_input = max(1, term_w - 4)
-        wrapped = _wrap_by_width(expanded, max_input)
-        last_seg = wrapped[-1] if wrapped else ""
-        col = 3 + wcswidth(last_seg)
-        col = min(col, term_w)
-        sys.__stdout__.write(f"\033[{input_row};{col}H")
+        vis_row, vis_col = _compute_cursor_visual_pos(text, cursor_pos, max_input)
+        total = self._bottom_lines
+        r_cursor = height - total + 3 + vis_row
+        col = min(3 + vis_col, term_w)
+        sys.__stdout__.write(f"\033[{r_cursor};{col}H")
 
     def setup(self) -> None:
         """启用底部栏：设置滚动区域 + 绘制初始底部栏。
@@ -739,7 +738,7 @@ class _BottomBar:
             # ── 动态拆行输入区 ──
             self._draw_input_lines_locked(out, text, r2 + 1)
             # ★ 清除多余行（复用缓存，避免重算 _wrap_by_width）
-            input_rows = self._cached_input_rows if text else 1
+            input_rows = self._cached_input_rows
             for r in range(r2 + 1 + input_rows, height + 1):
                 out.write(f"\033[{r};1H\033[K")
 
@@ -855,7 +854,7 @@ class _BottomBar:
             max_input = max(1, self._term_width() - 4)
             self._draw_input_lines_locked(out, text, r2 + 1)
             # ★ 清除多余行（复用缓存，避免重算 _wrap_by_width）
-            input_rows = self._cached_input_rows if text else 1
+            input_rows = self._cached_input_rows
             for r in range(r2 + 1 + input_rows, height + 1):
                 out.write(f"\033[{r};1H\033[K")
 
@@ -893,7 +892,7 @@ class _BottomBar:
         # ★ 更新展开/拆行缓存，供轻量路径复用（text_changed=False 时有效）
         self._cached_wrapped_for = text
         self._cached_wrapped_lines = wrapped
-        self._cached_input_rows = max(1, len(wrapped))
+        self._cached_input_rows = max(3, len(wrapped))
         # ★ 同步"上次渲染文本"标记，供 force_redraw 快速路径使用
         self._last_rendered_text = text
         for i, segment in enumerate(wrapped):
@@ -905,6 +904,9 @@ class _BottomBar:
                     out.write(f"\033[{r};1H\033[K{_COLOR_PROMPT}◆{_COLOR_RESET} {_COLOR_PLACEHOLDER}{_PLACEHOLDER_TEXT}{_COLOR_RESET}")
             else:
                 out.write(f"\033[{r};1H\033[K{_COLOR_PROMPT}│{_COLOR_RESET} {segment}")
+        # ★ 填充剩余空白行，确保输入区至少 3 行
+        for r in range(r_start + len(wrapped), r_start + 3):
+            out.write(f"\033[{r};1H\033[K{_COLOR_PROMPT}│{_COLOR_RESET} ")
 
     def _draw_all_locked(self, out, height: int) -> None:
         """绘制全部底部行（需持有 output_lock），超长文本自动拆行。
