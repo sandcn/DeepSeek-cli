@@ -219,8 +219,8 @@ class ParallelDisplay(BaseDisplay):
         self._started = True
         self._stopped = False
         # 注册到 ChatUI 的全局引用，由 _drain_queue 驱动刷新
-        import src.chat_ui._state as _chat_state_mod  # noqa: PLC0415
-        _chat_state_mod._active_parallel_display = self
+        import src.chat_ui as _chat_ui_mod  # noqa: PLC0415
+        _chat_ui_mod._active_parallel_display = self
         # 初始渲染（立即执行）
         self._render_frame_unlocked()
 
@@ -251,9 +251,9 @@ class ParallelDisplay(BaseDisplay):
         self._stopped = True
 
         # 从 ChatUI 注销全局引用
-        import src.chat_ui._state as _chat_state_mod  # noqa: PLC0415
-        if _chat_state_mod._active_parallel_display is self:
-            _chat_state_mod._active_parallel_display = None
+        import src.chat_ui as _chat_ui_mod  # noqa: PLC0415
+        if _chat_ui_mod._active_parallel_display is self:
+            _chat_ui_mod._active_parallel_display = None
 
         # 清理全局 diff_active 状态
         self._cleanup_diff_active()
