@@ -152,7 +152,7 @@ dispatch_agent(type="map", description="调用链分析: <符号/模块>", promp
 
 **与 `dispatch_agent 独占调用` 的关系**：独占调用禁止 `dispatch_agent` 与普通工具同轮混用，但同轮多次 `dispatch_agent`（不混用其他工具）合法，由调度器自动并行执行。
 
-> 过多并发（如 ≥8 个）可能引发文件系统吞吐瓶颈或内存压力，建议控制在 8 个以内。超过 8 个时建议分批，减少并发压力。
+> 过多并发（如 ≥8 个）可能引发文件系统吞吐瓶颈或内存压力，必须控制在 8 个以内。超过 8 个时必须分批，减少并发压力。
 
 > **问责闭环**：违反本规则（应并发却串行）视为计划缺陷，计划审查时将标记。
 
@@ -359,7 +359,7 @@ dispatch_agent(type="review", description="CR: <文件名>", prompt="审查以�
 
 dispatch_agent(type="review", description="CR: <文件名2>", prompt="...")
 ```
-> 资源上限遵循 map SubAgent 并发调度规则（≥8 建议分批或控制并发上限）。
+> 资源上限遵循 map SubAgent 并发调度规则（≥8 必须分批或控制并发上限）。
 
 ### prompt 内容要求
 
