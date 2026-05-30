@@ -50,9 +50,7 @@ from ..ui.events.event_types import (
     ToolSummaryEvent,
 )
 
-# ── 模块级全局变量（向后兼容：外部通过 import src.chat_ui 访问） ──
-# 注意：这是导入时快照（frozen copy），不随 _state 模块更新。
-# 读写请通过 src.chat_ui._state._active_parallel_display。
+# ── 模块级全局变量（供 import src.chat_ui as mod; mod._active_parallel_display = x） ──
 from ._state import _active_consumer, _active_parallel_display
 
 __all__ = [

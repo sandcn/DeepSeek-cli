@@ -24,9 +24,9 @@ from ._dispatcher import EventDispatcher
 from ._engine import RenderEngine
 from ._render_state import _RenderState
 from ._renderers import ContentRenderer
-from . import _state as _chat_state
 from ._state import (
     _active_consumer,
+    _active_parallel_display,
     get_active_chat_ui,
 )
 
@@ -66,7 +66,7 @@ class ChatUIConsumer:
         self._renderer = ContentRenderer(self._rs, self._bottom_bar)  # 渲染命令执行
         self._engine = RenderEngine(                            # Reader 线程 + 队列
             self._cmd_queue, self._renderer, self._bottom_bar,
-            get_active_pd=lambda: _chat_state._active_parallel_display,
+            get_active_pd=lambda: _active_parallel_display,
         )
         self._dispatcher = EventDispatcher(self._bus, self._push_cmd)  # 事件订阅/过滤
         self._cmpl = _CmplHandler(                               # Tab 补全
@@ -167,7 +167,7 @@ class ChatUIConsumer:
         from ..ui._lock import _try_acquire_output_lock, output_lock
 
         # 1. ParallelDisplay 面板刷新（无锁）
-        pd = _chat_state._active_parallel_display
+        pd = _active_parallel_display
         if pd is not None:
             try:
                 pd.refresh()
