@@ -111,11 +111,144 @@ pip install ".[dev]"
 
 ### 3. 启动
 
+#### 交互式对话（默认）
+
 ```bash
 python chat.py
 ```
 
-默认启动终端交互界面（CLI）。启动后自动加载配置，连接指定 API 服务。
+启动终端交互界面，进入多轮对话。
+
+#### Web UI 模式
+
+```bash
+python chat.py --webui
+# 或等价的子命令
+python chat.py webui
+```
+
+启动浏览器界面（默认 http://0.0.0.0:8080），支持自定义监听地址和端口：
+
+```bash
+python chat.py webui --host 127.0.0.1 --port 3000
+```
+
+#### 单次问答模式
+
+```bash
+python chat.py -p "你好，请介绍一下自己"
+```
+
+输入一句话，大模型回答完成后立即退出，适合脚本调用。
+
+#### 从保存的会话恢复
+
+```bash
+python chat.py --load <会话ID>
+python chat.py webui --load <会话ID>   # Web UI 模式恢复
+```
+
+#### 指定模型
+
+```bash
+python chat.py -m deepseek-v4-pro
+python chat.py --model deepseek-v4-pro
+```
+
+通过 `-m` / `--model` 临时覆盖配置文件中的模型，不影响配置文件。
+
+#### 会话管理
+
+```bash
+python chat.py session list                   # 列出所有保存的会话
+python chat.py session delete <会话ID>        # 删除指定会话
+python chat.py session export <会话ID>        # 导出会话（打印到 stdout）
+python chat.py session export <会话ID> -o chat.json  # 导出到文件
+```
+
+#### 查看版本
+
+```bash
+python chat.py --version
+python chat.py version
+```
+
+#### 完整命令一览
+
+| 命令 | 说明 |
+|---|---|
+| `python chat.py` | 交互式对话（默认） |
+| `python chat.py -p "你好"` | 单次问答模式 |
+| `python chat.py --load abc123` | 从会话恢复 |
+| `python chat.py -m deepseek-v4-pro` | 指定模型 |
+| `python chat.py --webui` | Web UI 模式（默认 0.0.0.0:8080） |
+| `python chat.py webui --host 127.0.0.1 --port 3000` | 自定义 Web UI 地址端口 |
+| `python chat.py session list` | 列出所有会话 |
+| `python chat.py session delete abc123` | 删除会话 |
+| `python chat.py session export abc123` | 导出会话 |
+| `python chat.py --version` | 显示版本信息 |
+
+---
+
+## Agent 工作流程
+
+本项目的核心是 **Main-Sub Agent 架构**，通过 `dispatch_agent` 委派任务给不同类型的子 Agent。
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                         Main Agent                          │
+│                   主控 Agent，负责任务调度                     │
+│                                                             │
+│  ① 列计划 ─→ ② 探底分析 ─→ ③ 修改执行 ─→ ④ 审查 ─→ ⑤ 验证  │
+└───────┬────────────┬────────────┬────────────┬──────────────┘
+        │            │            │            │
+        │ dispatch   │ dispatch   │ dispatch   │
+        ▼            ▼            ▼            ▼
+┌────────────┐ ┌────────────┐ ┌────────────┐ ┌──────────────┐
+│ map        │ │ ordinary   │ │ review     │ │ ordinary     │
+│ SubAgent   │ │ SubAgent   │ │ SubAgent   │ │ SubAgent     │
+│            │ │            │ │            │ │              │
+│ 只读分析型  │ │ 通用型     │ │ 代码审查型  │ │ 测试与运行   │
+│ │           │ │            │ │            │ │              │
+│ • 项目探底  │ │ • 读文件   │ │ • P0-P3    │ │ • 执行测试   │
+│ • 模块地图  │ │ • 写文件   │ │   分级审查  │ │ • 运行验证   │
+│ • 调用链    │ │ • 修改代码 │ │ • 循环审查  │ │              │
+│ • 引用关系  │ │ • 创建文件 │ │ • 阻断策略  │ │              │
+│            │ │ • 其他任务  │ │            │ │              │
+└────────────┘ └────────────┘ └────────────┘ └──────────────┘
+```
+
+### 工作流说明
+
+```
+1. 列计划 ──→  做事前强制列计划，评估影响范围和风险
+     │
+2. 探底 ──→  委派 map SubAgent 获取模块地图 + 调用链分析
+     │         （只读分析，不修改代码）
+     │
+3. 修改 ──→  基于探底结果执行代码修改
+     │         多个独立目标可并发派发 ordinary SubAgent
+     │
+4. 审查 ──→  委派 review SubAgent 逐文件审查
+     │         P0/P1/P2 阻断修复，P3 纳入记录
+     │         最多三轮循环审查
+     │
+5. 验证 ──→  语法检查 → 新增测试 → 运行测试 → 运行验证
+     │
+6. 完成 ──→  输出变更总结，更新跨对话记忆
+```
+
+### SubAgent 类型
+
+| 类型 | 能力 | 用途 |
+|---|---|---|
+| **map** | 只读（read_file/search/find/ls） | 项目探底、模块地图、调用链追踪、引用关系分析 |
+| **review** | 只读 + web_search | Code Review、P0-P3 分级审查、跨文件一致性验证 |
+| **ordinary** | 全工具（不含 user_select/dispatch_agent） | 读/写/改代码、执行测试、通用任务 |
+
+### 并发调度策略
+
+多个独立分析/审查任务同时触发时，同轮并发派发多个 SubAgent（如同时分析多个模块、同时审查多个文件），互不阻塞，缩短总执行时间。
 
 ---
 
