@@ -11,7 +11,7 @@
 
 from __future__ import annotations
 
-from src.ui.picker import scroll_window as _scroll_window
+from src.ui.tui._message_display import _scroll_window
 from src.ui.tui._message_display import (
     _role_icon, _truncate, _format_sandbox_text,
     _msg_line, _make_message_lines, MessageDisplayContext,

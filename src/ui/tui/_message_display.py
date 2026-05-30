@@ -21,7 +21,31 @@ from ...core.sandbox_manager import get_sandbox_manager as _get_sandbox_manager
 from ._terminal import (get_terminal_width, NARROW_THRESHOLD,
                         is_narrow, narrow_truncate, narrow_indent)
 from ..output_target import IOutputTarget, TerminalTarget
-from ..picker import scroll_window as _scroll_window
+
+
+# ── 窗口滚动工具（原 picker.scroll_window，已内联） ──
+
+def _scroll_window(cursor: int, state: dict, total: int) -> tuple[int, int]:
+    """计算可见窗口 [start, end)。
+
+    Args:
+        cursor: 当前光标位置
+        state: 状态字典（必须包含 "scroll" 和 "max" 键）
+        total: 总项数
+
+    Returns:
+        (start, end) 可见窗口的起始和结束索引
+    """
+    max_visible = state.get("max", 15)
+    if total <= max_visible:
+        return 0, total
+    offset = state.get("scroll", 0)
+    if cursor < offset:
+        offset = cursor
+    elif cursor >= offset + max_visible:
+        offset = cursor - max_visible + 1
+    state["scroll"] = offset
+    return offset, min(offset + max_visible, total)
 
 
 # ── 输出目标管理器（封装模块级可变状态） ──
