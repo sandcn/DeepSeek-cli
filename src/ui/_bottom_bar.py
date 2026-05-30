@@ -349,6 +349,7 @@ class _BottomBar:
         self._model_name = ""
         # ── 补全弹窗状态 ──
         self._completion_visible = False
+        self._completion_title = "补全"              # 弹窗标题前缀
         self._completion_items: list[str] = []     # 显示文本
         self._completion_texts: list[str] = []      # 替换文本（可能与显示不同）
         self._completion_start_pos: int = 0         # 从光标前多少字符开始替换
@@ -973,9 +974,9 @@ class _BottomBar:
             cell_w = popup_w - 4
             n = len(self._completion_items)
 
-            # 顶边框
+            # 顶边框（使用动态标题）
             total_items = len(self._completion_texts)
-            header = f" 补全 ({total_items}项) "
+            header = f" {self._completion_title} ({total_items}项) "
             header_vw = _visual_len(header)
             pad_w = max(1, popup_w - header_vw - 2)
             top_border = (_COLOR_COMP_BORDER + "\u250c"
@@ -1001,13 +1002,18 @@ class _BottomBar:
                               f" {display}{pad}"
                               f"{_COLOR_COMP_BORDER}\u2502{_COLOR_RESET}")
 
-            # 底边框
+            # 底边框（补全弹窗用 Tab/↑↓/Esc，选择弹窗用 ↑↓/Enter/Esc）
             footer_r = popup_r_start + 1 + n
             truncated = total_items > n
-            if truncated:
-                hint = f" {self._completion_idx + 1}/{n} (\u524d{n}/{total_items})  Tab/\u2191\u2193/Esc "
+            is_selection = (self._completion_title != "补全")
+            if is_selection:
+                hint_prefix = "\u2191\u2193/Enter/Esc"
             else:
-                hint = " Tab/\u2191\u2193/Esc "
+                hint_prefix = "Tab/\u2191\u2193/Esc"
+            if truncated:
+                hint = f" {self._completion_idx + 1}/{n} (\u524d{n}/{total_items})  {hint_prefix} "
+            else:
+                hint = f" {hint_prefix} "
             hint_vw = _visual_len(hint)
             pad_w = max(1, popup_w - hint_vw - 2)
             bottom_border = (_COLOR_COMP_BORDER + "\u2514" + hint
@@ -1197,16 +1203,25 @@ class _BottomBar:
 
     def show_completions(self, items: list[str], selected_idx: int,
                          texts: list[str] | None = None,
-                         start_pos: int = 0, orig_prefix: str = "") -> None:
+                         start_pos: int = 0, orig_prefix: str = "",
+                         title: str = "补全") -> None:
         """在输入区内部绘制带边框的补全弹窗，自动扩大输入区域。
 
         弹窗视觉：
-          ┌ 补全 (N项) ──────────┐
+          ┌ {title} (N项) ────────┐
           │ ▸ 选中项              │  ← 反显高亮 + ▸ 指示器
           │   普通项              │
-          └ Tab/↑↓/Esc ──────────┘  ← 快捷键提示
+          └ ↑↓/Enter/Esc ────────┘  ← 快捷键提示
 
         弹窗作为输入区的一部分绘制，弹出时输入区域自动扩大。
+
+        Args:
+            items: 显示文本列表。
+            selected_idx: 初始选中索引。
+            texts: 替换文本列表（与 items 一一对应），默认同 items。
+            start_pos: 替换起始位置（相对光标）。
+            orig_prefix: 原始前缀。
+            title: 弹窗标题前缀（如"补全"、"选择"），显示在顶边框。
         """
         if not items or not self._active:
             return
@@ -1234,6 +1249,7 @@ class _BottomBar:
             # ★ 先设置弹窗高度，使 _bottom_lines / _compute_input_rows 返回扩展后的值
             self._completion_popup_height = popup_height
             self._completion_visible = True
+            self._completion_title = title
             self._completion_items = list(visible_items)
             self._completion_texts = list(texts) if texts is not None else list(visible_items)
             self._completion_idx = selected_idx
@@ -1306,6 +1322,7 @@ class _BottomBar:
             # ★ 先置零弹窗高度，使 _bottom_lines 恢复为不含弹窗的值
             self._completion_popup_height = 0
             self._completion_visible = False
+            self._completion_title = "补全"
             self._completion_items = []
             self._completion_texts = []
             self._completion_idx = 0
@@ -1409,10 +1426,12 @@ class _BottomBar:
             total_items = len(self._completion_texts) if self._completion_texts else n
             footer_start = popup_start + 1 + n
             truncated = total_items > n
+            is_selection = (self._completion_title != "补全")
+            hint_prefix = "\u2191\u2193/Enter/Esc" if is_selection else "Tab/\u2191\u2193/Esc"
             if truncated:
-                hint = f" {self._completion_idx + 1}/{n} (\u524d{n}/{total_items})  Tab/\u2191\u2193/Esc "
+                hint = f" {self._completion_idx + 1}/{n} (\u524d{n}/{total_items})  {hint_prefix} "
             else:
-                hint = " Tab/\u2191\u2193/Esc "
+                hint = f" {hint_prefix} "
             hint_vw = _visual_len(hint)
             pad_w = max(1, popup_w - hint_vw - 2)
             bottom_border = (_COLOR_COMP_BORDER + "\u2514" + hint

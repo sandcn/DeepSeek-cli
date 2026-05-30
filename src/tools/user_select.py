@@ -1,16 +1,19 @@
 from __future__ import annotations
 
 import asyncio
-import contextlib
 import json
 import logging
+import os
 import select
 import sys
+import termios
+import time
+import tty
 
 from .base import Func, tool_metadata
 from ..core.constants import GREEN, YELLOW, RED, DIM, RESET
 from ..ui._lock import locked_print
-from ..ui.select_picker import run_picker_async
+from ..chat_ui import get_active_chat_ui
 from ..api.escape_monitor import get_active_monitor
 from ..api.events import publish_event
 
@@ -91,38 +94,8 @@ class UserSelectFunc(Func):
         if not self.options:
             return json.dumps({"selected": [], "action": "empty"}, ensure_ascii=False)
 
-        # 终端模式：使用 run_picker_async 在当前事件循环中运行
+        # 终端模式：在底部栏补全区显示选项，raw I/O 交互
         return await self._execute_terminal_async()
-
-    async def _ensure_tty(self):
-        """尝试恢复 TTY 终端，返回 (using_tty, tty_stdout, tty_stdin)"""
-        import io as _io
-        import os as _os
-
-        _tty_stdout = None
-        _tty_stdin = None
-        _using_tty = False
-
-        if not sys.stdout.isatty() or not sys.stdin.isatty():
-            try:
-                _tty_fd = _os.open("/dev/tty", _os.O_RDWR)
-                if _os.isatty(_tty_fd):
-                    _tty_stdout = _io.TextIOWrapper(
-                        _os.fdopen(_tty_fd, "wb", buffering=0),
-                        encoding="utf-8", write_through=True,
-                    )
-                    _tty_stdin_fd = _os.open("/dev/tty", _os.O_RDONLY)
-                    _tty_stdin = _io.TextIOWrapper(
-                        _os.fdopen(_tty_stdin_fd, "rb", buffering=0),
-                        encoding="utf-8",
-                    )
-                    _using_tty = True
-                else:
-                    _os.close(_tty_fd)
-            except (OSError, IOError, AttributeError):
-                pass
-
-        return _using_tty, _tty_stdout, _tty_stdin
 
     async def _flush_stdin(self):
         """清空 stdin 残留字节（如 ESC 中断后遗留的 \\x1b）"""
@@ -158,11 +131,9 @@ class UserSelectFunc(Func):
     def _save_termios(self) -> dict | None:
         """保存当前终端设置，用于后续强制恢复。"""
         try:
-            import termios as _tio
-            import os as _os
             fd = sys.stdin.fileno()
-            if _os.isatty(fd):
-                return {"fd": fd, "old": _tio.tcgetattr(fd)}
+            if os.isatty(fd):
+                return {"fd": fd, "old": termios.tcgetattr(fd)}
         except Exception as e:
             _logger.debug("user_select: save_termios failed: %s", e)
         return None
@@ -172,8 +143,7 @@ class UserSelectFunc(Func):
         if guard is None:
             return
         try:
-            import termios as _tio
-            _tio.tcsetattr(guard["fd"], _tio.TCSADRAIN, guard["old"])
+            termios.tcsetattr(guard["fd"], termios.TCSADRAIN, guard["old"])
             _logger.debug("user_select: termios restored (fd=%d)", guard["fd"])
         except Exception as e:
             _logger.warning("user_select: termios restore failed: %s", e)
@@ -183,98 +153,212 @@ class UserSelectFunc(Func):
                 _logger.debug("打印恢复警告失败")
 
     async def _execute_terminal_async(self) -> str:
-        """终端模式：使用 run_picker_async 在当前事件循环中交互选择。"""
-        monitor = get_active_monitor()
+        """终端模式：在底部栏补全区显示选项，用 raw I/O 处理 ↑↓/Enter/Esc。
 
-        # 完全停止 EscapeMonitor，避免任何竞态
+        完全基于标准库实现（termios/tty/os/select），无需 prompt_toolkit。
+        """
+        monitor = get_active_monitor()
         self._stop_monitor(monitor)
 
-        # 保存当前终端设置，作为兜底恢复点
-        _termios_guard = self._save_termios()
+        # 非交互环境检测
+        if not os.isatty(sys.stdin.fileno()):
+            _logger.warning(
+                "user_select 非交互回退: fd.isatty()=%s, title=%s",
+                os.isatty(sys.stdin.fileno()), self.title,
+            )
+            self._start_monitor(monitor)
+            return json.dumps({
+                "selected": list(self.default_options or []),
+                "action": "non_interactive"
+            }, ensure_ascii=False)
 
-        _tty_stdout = None
-        _tty_stdin = None
+        # 获取 ChatUIConsumer 用于操作底部栏
+        chat_ui = get_active_chat_ui()
+        bb = chat_ui._bottom_bar if chat_ui else None
 
-        try:
-            # TTY 检测与恢复
-            _, _tty_stdout, _tty_stdin = await self._ensure_tty()
+        if bb is None:
+            self._start_monitor(monitor)
+            return json.dumps({
+                "selected": list(self.default_options or []),
+                "action": "error: ChatUI 未激活",
+            }, ensure_ascii=False)
 
-            # 非交互环境检测
-            import os as _os2
-            if not _os2.isatty(sys.stdin.fileno()):
-                _logger.warning(
-                    "user_select 非交互回退: fd.isatty()=%s, title=%s",
-                    _os2.isatty(sys.stdin.fileno()), self.title,
-                )
+        # 确保底部栏已激活（否则 show_completions 静默跳过）
+        if not bb._active:
+            try:
+                bb.setup()
+            except Exception:
+                self._start_monitor(monitor)
                 return json.dumps({
                     "selected": list(self.default_options or []),
-                    "action": "non_interactive"
+                    "action": "error: 底部栏未激活",
                 }, ensure_ascii=False)
 
+        # 构建显示文本（带编号）
+        display_items = [f"{i + 1}. {opt}" for i, opt in enumerate(self.options)]
+
+        # 多选：初始显示空复选框，Enter 提交全部选中项，空格切换
+        if self.multi_select:
+            multi_display = [f"  {i + 1}. {opt}" for i, opt in enumerate(self.options)]
+            multi_texts = list(self.options)
+        else:
+            multi_display = display_items
+            multi_texts = self.options
+
+        # 保存当前选中索引的默认值
+        initial_idx = 0
+        if self.default_options:
+            for i, opt in enumerate(self.options):
+                if opt in self.default_options:
+                    initial_idx = i
+                    break
+
+        # cbreak 模式 + 终端设置
+        fd = sys.stdin.fileno()
+        old_settings = termios.tcgetattr(fd)
+        _termios_guard = self._save_termios()
+
+        try:
             # 清空 stdin 残留
             await self._flush_stdin()
 
-            # 运行 Picker
-            try:
-                if _tty_stdout is not None and _tty_stdin is not None:
-                    with contextlib.redirect_stdout(_tty_stdout), contextlib.redirect_stdin(_tty_stdin):
-                        result = await run_picker_async(
-                            title=self.title,
-                            options=self.options,
-                            multi_select=self.multi_select,
-                            default_options=self.default_options,
-                            timeout=self.timeout,
-                        )
-                else:
-                    result = await run_picker_async(
-                        title=self.title,
-                        options=self.options,
-                        multi_select=self.multi_select,
-                        default_options=self.default_options,
-                        timeout=self.timeout,
+            # ★ 先设 cbreak 关闭回显，再画弹窗，避免 echoed 字符污染画面
+            tty.setcbreak(fd)
+            termios.tcflush(fd, termios.TCIFLUSH)
+
+            # 在底部栏补全区显示选项
+            bb.show_completions(
+                multi_display, initial_idx,
+                texts=multi_texts,
+                title="选择",
+            )
+
+            # 多选状态跟踪
+            selected_indices: set[int] = set()
+            deadline = None if self.timeout <= 0 else time.monotonic() + self.timeout
+
+            while True:
+                remaining = None
+                if deadline is not None:
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        break  # 超时退出循环
+
+                try:
+                    ready, _, _ = select.select([fd], [], [], remaining)
+                except (ValueError, OSError):
+                    continue
+
+                if not ready:
+                    break  # 超时
+
+                try:
+                    raw = os.read(fd, 1)
+                    if not raw:
+                        continue
+                except (ValueError, OSError):
+                    continue
+
+                b = raw[0]
+
+                # ── ESC / ANSI 序列 ──
+                if b == 0x1b:
+                    try:
+                        has_more, _, _ = select.select([fd], [], [], 0.3)
+                        if has_more:
+                            nxt = os.read(fd, 1)
+                            if nxt == b'[':
+                                # CSI 序列：读取终结符
+                                has_term, _, _ = select.select([fd], [], [], 0.05)
+                                if has_term:
+                                    term = os.read(fd, 1)
+                                    if term == b'A':      # ↑
+                                        bb.cycle_completion(-1)
+                                    elif term == b'B':    # ↓
+                                        bb.cycle_completion(1)
+                                continue
+                    except (ValueError, OSError):
+                        pass
+                    # 单 ESC → 取消
+                    bb.hide_completions()
+                    return json.dumps({
+                        "selected": list(self.default_options or []),
+                        "action": "cancel",
+                    }, ensure_ascii=False)
+
+                # ── 空格 → 切换选中（多选） ──
+                elif b == 0x20 and self.multi_select:
+                    idx = bb._completion_idx
+                    if not (0 <= idx < len(self.options)):
+                        continue
+                    if idx in selected_indices:
+                        selected_indices.discard(idx)
+                    else:
+                        selected_indices.add(idx)
+                    # 更新弹窗显示（✓ 标记）
+                    new_disp = []
+                    for i, opt in enumerate(self.options):
+                        prefix = "✓ " if i in selected_indices else "  "
+                        new_disp.append(f"{prefix}{opt}")
+                    show_idx = min(bb._completion_idx, len(new_disp) - 1)
+                    bb.show_completions(
+                        new_disp, show_idx,
+                        texts=self.options,
+                        title="选择",
                     )
-            finally:
-                # 关闭 TTY 流（如果被打开过）
-                if _tty_stdout is not None:
-                    try:
-                        _tty_stdout.detach().close()
-                    except Exception:
-                        _logger.debug("关闭 TTY stdout 失败")
-                    _tty_stdout = None
-                if _tty_stdin is not None:
-                    try:
-                        _tty_stdin.detach().close()
-                    except Exception:
-                        _logger.debug("关闭 TTY stdin 失败")
-                    _tty_stdin = None
+                    continue
 
-                # 强制恢复终端设置，确保干净退出
-                self._restore_termios(_termios_guard)
+                # ── Enter → 确认（单选=当前项，多选=全部选中项） ──
+                elif b in (0x0d, 0x0a):
+                    if self.multi_select:
+                        selected = [self.options[i] for i in sorted(selected_indices)]
+                        if not selected:
+                            selected = list(self.default_options or [])
+                        bb.hide_completions()
+                        return json.dumps({
+                            "selected": selected,
+                            "action": "confirmed",
+                        }, ensure_ascii=False)
+                    else:
+                        idx = bb._completion_idx
+                        if not (0 <= idx < len(self.options)):
+                            continue
+                        chosen = self.options[idx]
+                        bb.hide_completions()
+                        return json.dumps({
+                            "selected": [chosen],
+                            "action": "confirmed",
+                        }, ensure_ascii=False)
 
-            return json.dumps(result, ensure_ascii=False)
+            # 超时
+            bb.hide_completions()
+            return json.dumps({
+                "selected": list(self.default_options or []),
+                "action": "timeout",
+            }, ensure_ascii=False)
 
         except Exception as e:
-            # 兜底恢复
-            self._restore_termios(_termios_guard)
             error_msg = str(e)[:100]
+            _logger.debug("user_select 异常", exc_info=True)
             return json.dumps({
-                "selected": self.default_options,
-                "action": f"error: {error_msg}"
+                "selected": list(self.default_options or []),
+                "action": f"error: {error_msg}",
             }, ensure_ascii=False)
         finally:
-            # 兜底关闭 TTY 流
-            if _tty_stdout is not None:
-                try:
-                    _tty_stdout.detach().close()
-                except Exception:
-                    _logger.debug("兜底关闭 TTY stdout 失败")
-            if _tty_stdin is not None:
-                try:
-                    _tty_stdin.detach().close()
-                except Exception:
-                    _logger.debug("兜底关闭 TTY stdin 失败")
+            # 恢复终端设置（直接恢复 + 兜底恢复）
+            try:
+                termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
+            except Exception:
+                pass
+            self._restore_termios(_termios_guard)
 
-            # 清空 stdin 残留，再重启 EscapeMonitor
+            # 确保弹窗被隐藏
+            try:
+                bb.hide_completions()
+            except Exception:
+                pass
+
+            # 清空 stdin 残留
             await self._flush_stdin()
 
             # 重启 EscapeMonitor
