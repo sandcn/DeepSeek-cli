@@ -64,35 +64,6 @@ _mock_cmd_core.register_command = MagicMock()
 _mock_cmd_core.CommandContext = MagicMock()
 _mock_cmd_core.show_cost = MagicMock()
 
-# -- ui.picker --
-class _MockPickerResult:
-    """模拟 PickerResult"""
-    def __init__(self, action="confirmed", selected_indices=None, selected_items=None):
-        self.action = action
-        self.selected_indices = selected_indices or []
-        self.selected_items = selected_items or []
-
-class _MockPicker:
-    """模拟 Picker 类——可配置 run() 返回值"""
-    _result = _MockPickerResult()  # 类级别默认
-
-    def __init__(self, **kwargs):
-        self.title = kwargs.get("title", "")
-        self.items = kwargs.get("items", [])
-        self.make_lines = kwargs.get("make_lines")
-        self.initial_cursor = kwargs.get("initial_cursor", 0)
-
-    def run(self):
-        return self._result
-
-    @classmethod
-    def set_result(cls, action="confirmed", selected_indices=None, selected_items=None):
-        cls._result = _MockPickerResult(action, selected_indices, selected_items)
-
-_mock_picker_module = MagicMock()
-_mock_picker_module.Picker = _MockPicker
-_mock_picker_module.scroll_window = MagicMock(return_value=(0, 5))
-
 # -- 构建 mock 模块注册表 --
 _MOCK_MODULES = {
     'src': MagicMock(),
@@ -104,9 +75,13 @@ _MOCK_MODULES = {
     'src.ui': MagicMock(),
     'src.ui.colors': _mock_colors,
     'src.ui.theme': _mock_theme,
-    'src.ui.picker': _mock_picker_module,
+    'src.ui._lock': MagicMock(),
+    'src.ui._bottom_bar': MagicMock(),
+    'src.ui._completion': MagicMock(),
     'src.api': MagicMock(),
     'src.api.stats': _mock_stats,
+    'src.api.escape_monitor': MagicMock(get_active_monitor=MagicMock(return_value=None)),
+    'src.chat_ui': MagicMock(get_active_chat_ui=MagicMock(return_value=None)),
 }
 
 # 保存原始模块，无条件注入 mock（即使模块已被其他测试加载）
@@ -180,9 +155,22 @@ def reset_mocks():
 class TestCmdModel:
     """模型选择命令。"""
 
-    def test_select_valid_model(self):
-        """Picker 确认有效模型时更新 state['model']。"""
-        _MockPicker.set_result(action="confirmed", selected_indices=[1])
+    def _mock_bottom_bar(self, monkeypatch, action="confirmed", index=1):
+        """Mock run_bottom_bar_selection 返回指定结果。
+
+        通过 monkeypatch.setattr 直接修改模块对象的属性，
+        sys.modules 清理后仍有效（_cmd_model.__globals__ 持有模块 dict 引用）。
+        注：commands_config 中 run_bottom_bar_selection 是从 _bottom_bar 导入的，
+        monkeypatch 修改 _mod 的属性即可拦截 _cmd_model 中的调用。
+        """
+        from unittest.mock import MagicMock
+        mock_select = MagicMock(return_value={"action": action, "index": index})
+        monkeypatch.setattr(_mod, 'run_bottom_bar_selection', mock_select)
+        return mock_select
+
+    def test_select_valid_model(self, monkeypatch):
+        """底部栏选择 #1 (gpt-4o-mini) 时更新 state['model']。"""
+        self._mock_bottom_bar(monkeypatch, action="confirmed", index=1)
         state = {"model": "gpt-4o"}
         ctx = _make_ctx(state=state)
 
@@ -195,9 +183,9 @@ class TestCmdModel:
             level="raw", source="cmd",
         )
 
-    def test_select_last_model(self):
-        """Picker 选择最后一个模型。"""
-        _MockPicker.set_result(action="confirmed", selected_indices=[2])
+    def test_select_last_model(self, monkeypatch):
+        """选择最后一个模型 (index=2 → claude-3.5-sonnet)。"""
+        self._mock_bottom_bar(monkeypatch, action="confirmed", index=2)
         state = {"model": "gpt-4o"}
         ctx = _make_ctx(state=state)
 
@@ -206,9 +194,9 @@ class TestCmdModel:
         assert result is True
         assert ctx.state["model"] == "claude-3.5-sonnet"
 
-    def test_select_first_model(self):
-        """Picker 选择第一个模型。"""
-        _MockPicker.set_result(action="confirmed", selected_indices=[0])
+    def test_select_first_model(self, monkeypatch):
+        """选择第一个模型 (index=0 → gpt-4o)。"""
+        self._mock_bottom_bar(monkeypatch, action="confirmed", index=0)
         state = {"model": "claude-3.5-sonnet"}
         ctx = _make_ctx(state=state)
 
@@ -217,9 +205,9 @@ class TestCmdModel:
         assert result is True
         assert ctx.state["model"] == "gpt-4o"
 
-    def test_select_same_model(self):
-        """Picker 选择当前模型时提示不变。"""
-        _MockPicker.set_result(action="confirmed", selected_indices=[0])
+    def test_select_same_model(self, monkeypatch):
+        """选择当前模型时提示不变。"""
+        self._mock_bottom_bar(monkeypatch, action="confirmed", index=0)
         state = {"model": "gpt-4o"}
         ctx = _make_ctx(state=state)
 
@@ -232,9 +220,9 @@ class TestCmdModel:
             level="raw", source="cmd",
         )
 
-    def test_select_cancel(self):
-        """Picker 取消时不切换。"""
-        _MockPicker.set_result(action="cancel")
+    def test_select_cancel(self, monkeypatch):
+        """取消时不切换。"""
+        self._mock_bottom_bar(monkeypatch, action="cancel", index=None)
         state = {"model": "gpt-4o"}
         ctx = _make_ctx(state=state)
 
@@ -247,26 +235,24 @@ class TestCmdModel:
             level="raw", source="cmd",
         )
 
-    def test_current_model_marker_in_lines(self):
-        """Picker 列表中当前模型带 ← 标记（通过 make_lines 闭包验证）。"""
-        # make_lines 是 _cmd_model 内部的闭包，通过 Picker 构造参数间接验证
-        # 使用取消操作，确保 make_lines 被调用但不修改 state
+    def test_select_error_fallback(self, monkeypatch):
+        """底部栏不可用时回退到文本提示。"""
+        self._mock_bottom_bar(monkeypatch, action="error", index=None)
         state = {"model": "gpt-4o"}
         ctx = _make_ctx(state=state)
-        _MockPicker.set_result(action="cancel")
 
         result = _cmd_model(ctx)
 
         assert result is True
-        assert ctx.state["model"] == "gpt-4o"  # 取消后不变
+        assert ctx.state["model"] == "gpt-4o"  # 不变
         mock_out.write.assert_any_call(
-            '\x1b[33m  ! 已取消\x1b[0m',
+            '\x1b[33m  ! 底部栏不可用，请直接指定模型名称\x1b[0m',
             level="raw", source="cmd",
         )
 
-    def test_no_state_model_fallback_default(self):
+    def test_no_state_model_fallback_default(self, monkeypatch):
         """state 中没有 model 键时使用 config.MODEL 作为当前模型。"""
-        _MockPicker.set_result(action="confirmed", selected_indices=[1])
+        self._mock_bottom_bar(monkeypatch, action="confirmed", index=1)
         state = {}
         ctx = _make_ctx(state=state)
 

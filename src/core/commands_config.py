@@ -4,12 +4,14 @@ from .constants import GREEN, YELLOW, DIM, RESET, CYAN
 from ..config import MODELS, MODEL
 from ..core.ports.output import get_default_output_port
 from ..ui.theme import set_theme, get_active_theme, get_theme_names_with_desc
-from ..ui.picker import Picker, scroll_window
 from ..config import update_config
+from ..ui._bottom_bar import run_bottom_bar_selection
 from ._command_core import register_command, CommandContext, show_cost
 
 _out = get_default_output_port()
 
+
+# ── /model 命令 ─────────────────────────────────────────
 
 def _cmd_model(ctx):
     current = ctx.state.get("model", MODEL)
@@ -42,33 +44,10 @@ def _cmd_model(ctx):
             _out.write(f"  {DIM}  可用模型: {', '.join(MODELS)}{RESET}", level="raw", source="cmd")
             return True
 
-    # ── 无参数：Picker 交互式选择 ─────────────────────
+    # ── 无参数：底部栏补全弹窗交互式选择 ──────────────
     if not MODELS:
         _out.write(f"{YELLOW}  ! 没有可用的模型，请在配置文件中添加{RESET}", level="raw", source="cmd")
         return True
-
-    def make_lines(items, cursor, state):
-        lines = []
-        lines.append(("class:title", f"\n  模型选择\n"))
-        lines.append(("class:sep", "  " + "-" * 25 + "\n"))
-        lines.append(("class:hint", "  ↑↓ 选择  Enter 确认  Esc 取消\n"))
-        lines.append(("class:sep", "  " + "-" * 25 + "\n"))
-
-        s, e = scroll_window(cursor, state, len(items))
-        if s > 0:
-            lines.append(("class:dim", "    ↑ 更多...\n"))
-        for i in range(s, e):
-            m = items[i]
-            suffix = "  ← 当前" if m == current else ""
-            if i == cursor:
-                lines.append(("class:selected", f" > {m}{suffix}\n"))
-            else:
-                style = "class:highlight" if m == current else "class:normal"
-                lines.append((style, f"   {m}{suffix}\n"))
-        if e < len(items):
-            lines.append(("class:dim", "    ↓ 更多...\n"))
-        lines.append(("class:sep", "  " + "-" * 25 + "\n"))
-        return lines
 
     # 光标定位到当前模型
     current_idx = 0
@@ -77,22 +56,26 @@ def _cmd_model(ctx):
             current_idx = i
             break
 
-    picker = Picker(
-        title="模型选择",
-        items=MODELS,
-        make_lines=make_lines,
-        initial_cursor=current_idx,
-    )
-    result = picker.run()
-    if result.action == "confirmed" and result.selected_indices:
-        selected = MODELS[result.selected_indices[0]]
+    # 构建显示项（纯文本，不含 ANSI 码 → 避免弹窗截断问题）
+    display_items = []
+    for m in MODELS:
+        marker = "  <-当前" if m == current else ""
+        display_items.append(f"{m}{marker}")
+
+    result = run_bottom_bar_selection(MODELS, display_items, current_idx, title="模型选择")
+
+    if result["action"] == "confirmed" and result["index"] is not None:
+        selected = MODELS[result["index"]]
         if selected != current:
             ctx.state["model"] = selected
             _out.write(f"{GREEN}  + 已切换到 {selected}{RESET}", level="raw", source="cmd")
         else:
             _out.write(f"{DIM}  当前已是 {selected}{RESET}", level="raw", source="cmd")
-    elif result.action == "cancel":
+    elif result["action"] == "cancel":
         _out.write(f"{YELLOW}  ! 已取消{RESET}", level="raw", source="cmd")
+    elif result["action"] == "error":
+        _out.write(f"{YELLOW}  ! 底部栏不可用，请直接指定模型名称{RESET}", level="raw", source="cmd")
+        _out.write(f"  {DIM}  可用模型: {', '.join(MODELS)}{RESET}", level="raw", source="cmd")
     return True
 
 

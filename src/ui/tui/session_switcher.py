@@ -6,7 +6,7 @@ from __future__ import annotations
 import logging
 
 from ...chat_msgs import list_sessions, load_session
-from ..picker import Picker
+from .._bottom_bar import run_bottom_bar_selection
 from ._ttl_cache import TTLCache
 
 _logger = logging.getLogger(__name__)
@@ -36,7 +36,7 @@ class SessionSwitcher:
         self._cache.refresh()
 
     def show(self) -> dict[str, object] | None:
-        """返回选中的会话信息 {'id': str, 'title': str, ...}，取消时返回 None。"""
+        """在底部栏补全弹窗中选择会话，返回选中会话数据，取消时返回 None。"""
         sessions = self._get_cached_sessions()
         if not sessions:
             return None
@@ -46,14 +46,12 @@ class SessionSwitcher:
             title = s.get("title", "")
             title_info = f"「{title}」 " if title else ""
             sid_short = s['id'][:min(8, len(s['id']))]
-            label = f"{sid_short}  {title_info}{s['model']}  {s['message_count']}msg  {s['saved_at']}"
+            label = f"{sid_short}  {title_info}{s['model']}  {s['message_count']}msg"
             items.append(label)
 
-        picker = Picker(title="Sessions", items=items, timeout=0)
-        result = picker.run()
-
-        if result.action == "confirmed" and result.selected_indices:
-            idx = result.selected_indices[0]
+        result = run_bottom_bar_selection(items, items, title="Sessions")
+        if result["action"] == "confirmed" and result["index"] is not None:
+            idx = result["index"]
             if idx < len(sessions):
                 sid = sessions[idx].get("id", "")
                 if not sid:

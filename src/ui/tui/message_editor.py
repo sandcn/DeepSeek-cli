@@ -1,10 +1,10 @@
 """
-交互式会话消息编辑器 — 上下键选择、编辑、恢复当前会话消息。
+交互式会话消息编辑器 — 在底部栏补全弹窗中操作。
 
 用法：在聊天中输入 /editmsg 或 Ctrl+O 进入消息编辑。
 
-编辑职责（显示职责委托给 _message_display 模块）：
-- 消息选择交互（MessageEditor._interactive_message_select）
+编辑职责：
+- 消息选择交互（底部栏补全弹窗 + raw I/O）
 - 编辑/删除/恢复动作处理
 - 会话管理入口（MessageEditor.edit_current_messages）
 
@@ -21,6 +21,7 @@ from ..colors import DIM, GREEN, RESET, YELLOW
 from ...core.sandbox_manager import get_sandbox_manager as _get_sandbox_manager
 from ...api.interrupt_async import flush_stdin, reset_interrupt_async
 from .._lock import locked_print
+from .._bottom_bar import run_bottom_bar_selection
 from . import _message_display as _disp
 
 _logger = logging.getLogger(__name__)
@@ -42,45 +43,63 @@ def _restore_sandbox_to(agent: Any, target_idx: int) -> str:
     return ""
 
 
+def _truncate_text(text: str, max_len: int = 40) -> str:
+    """截断文本到指定长度（不包括 ANSI 码计算）。"""
+    if len(text) <= max_len:
+        return text
+    return text[:max_len - 3] + "..."
+
+
+def _msg_short_summary(msg: dict) -> str:
+    """生成消息的简短摘要（单行，适合弹窗显示）。
+
+    格式: [U] 用户消息前20字...
+          [A] 助手回复前20字...
+          [T] 工具调用: func_name
+    """
+    role = msg.get("role", "?")
+    content = msg.get("content", "") or ""
+    if role == "user":
+        text = content.replace("\n", " ").strip()
+        return f"[U] {_truncate_text(text, 35)}"
+    elif role == "assistant":
+        if content:
+            text = content.replace("\n", " ").strip()
+            return f"[A] {_truncate_text(text, 35)}"
+        # tool_calls
+        tcs = msg.get("tool_calls", [])
+        if tcs:
+            names = ", ".join(tc.get("function", {}).get("name", "?") for tc in tcs[:2])
+            return f"[A] \u2699 {_truncate_text(names, 30)}"
+        return "[A] (\u7a7a)"
+    elif role == "tool":
+        text = content.replace("\n", " ").strip()
+        name = msg.get("name", "")
+        prefix = f"{name}: " if name else ""
+        return f"[T] {prefix}{_truncate_text(text, 30)}"
+    else:
+        text = content.replace("\n", " ").strip()
+        return f"[{role[0].upper()}] {_truncate_text(text, 35)}"
+
+
+def _build_message_items(data: list[dict]) -> list[str]:
+    """构建消息列表的显示文本，每条一行摘要。"""
+    items = []
+    for i, m in enumerate(data):
+        summary = _msg_short_summary(m)
+        items.append(f"{i}. {summary}")
+    return items
+
+
 # ═══════════════════════════════════════════════════════════
 # MessageEditor 类
 # ═══════════════════════════════════════════════════════════
 
 class MessageEditor:
-    """交互式消息编辑器 — 封装消息编辑/删除/恢复的完整工作流。
+    """交互式消息编辑器 — 在底部栏补全弹窗中选择消息，回车编辑，Esc 取消。
 
-    通过构造函数注入 Picker 工厂（可选），消除模块级可变状态。
-    edit_current_messages() 作为公开入口点，内部循环选择+动作处理。
-
-    用法：
-        editor = MessageEditor()
-        editor.edit_current_messages(agent, state)
-
-        # 或通过依赖注入：
-        editor = MessageEditor(picker_factory=custom_factory)
-        editor.edit_current_messages(agent, state)
+    edit_current_messages() 作为公开入口点。
     """
-
-    _MAX_ITERATIONS = 50
-
-    def __init__(self, picker_factory: Callable | None = None) -> None:
-        """初始化 MessageEditor。
-
-        Args:
-            picker_factory: Picker 工厂函数，签名 (title, items, **kwargs) -> Picker。
-                            省略时从 ui.picker 惰性导入默认实现。
-        """
-        self._picker_factory = picker_factory
-
-    def _make_picker(self, title: str, items: list, **kwargs) -> object:
-        """创建 Picker 实例。
-
-        优先级：实例级工厂 > 默认 Picker 惰性导入。
-        """
-        if self._picker_factory is not None:
-            return self._picker_factory(title=title, items=items, **kwargs)
-        from ..picker import Picker as _P
-        return _P(title=title, items=items, **kwargs)
 
     # ── 消息选择交互 ────────────────────────────────────
 
@@ -90,79 +109,48 @@ class MessageEditor:
         title: str,
         is_current: bool = False,
     ) -> tuple[str, int]:
-        """对会话内的消息做上下键选择（仅 user 消息可选）。
+        """在底部栏补全弹窗中选择消息，回车编辑，Esc 取消。
 
         Args:
-            ctx: 消息显示上下文（封装 data / agent / idx_map）。
+            ctx: 消息显示上下文。
             title: 显示标题。
             is_current: 是否为当前会话。
 
         Returns:
-            (action, cursor_idx): action = "edit" | "delete" | "resume" | "resume_all" | "quit"
+            (action, real_idx): action = "edit"|"quit"
         """
         data = ctx.data
         if not data:
             return ("quit", 0)
 
-        tag = " (当前)" if is_current else ""
+        tag = " (\u5f53\u524d)" if is_current else ""  # (当前)
+
+        # 只有 user 消息可选
         selectable = [i for i, m in enumerate(data) if m.get("role") == "user"]
         if not selectable:
-            _disp.write_line(f"  {YELLOW}没有可编辑的用户消息{RESET}")
+            _disp.write_line(f"  {YELLOW}\u6ca1\u6709\u53ef\u7f16\u8f91\u7684\u7528\u6237\u6d88\u606f{RESET}")
             return ("quit", 0)
 
         sel_count = len(selectable)
 
-        def make_lines(items, cursor, st):
-            return _disp._make_message_lines(
-                items, cursor, st, ctx, title, tag, is_current,
-            )
+        # 构建显示项：为每个可选消息生成摘要
+        display_items = _build_message_items(data)
+        user_display = [display_items[i] for i in selectable]
 
-        def keys(kb, st):
-            @kb.add("enter")
-            def _edit(e):
-                st["action"] = "edit"
-                e.app.exit()
-
-            @kb.add("r")
-            def _resume(e):
-                st["action"] = "resume"
-                e.app.exit()
-
-            @kb.add("R")
-            def _resume_all(e):
-                st["action"] = "resume_all"
-                e.app.exit()
-
-            @kb.add("d")
-            def _del(e):
-                st["action"] = "delete"
-                e.app.exit()
-
-        picker = self._make_picker(
-            title=f"{title}{tag}  {sel_count} 条消息",
-            items=selectable,
-            make_lines=make_lines,
-            key_setup=keys,
-            initial_cursor=sel_count - 1,
+        result = run_bottom_bar_selection(
+            selectable, user_display,
+            initial_idx=sel_count - 1,
+            title=f"{title}{tag}  {sel_count} \u6761\u6d88\u606f",  # N 条消息
         )
-        flush_stdin()
-        reset_interrupt_async()
-        try:
-            result = picker.run()
-        except Exception as e:
-            _logger.error("Picker 运行异常: %s", e)
-            _disp.write_line(
-                f"  {YELLOW}消息编辑器异常退出: {e}{RESET}"
-            )
-            # 异常退出时清理 stdin 残留
-            flush_stdin()
-            reset_interrupt_async()
+
+        if result["action"] == "cancel" or result["action"] == "error":
             return ("quit", 0)
-        action = result.action or "quit"
-        if action == "cancel":
-            action = "quit"
-        real_idx = selectable[result.selected_indices[0]] if result.selected_indices else 0
-        return (action, real_idx)
+
+        if result["index"] is None or result["index"] >= len(selectable):
+            return ("quit", 0)
+
+        real_idx = selectable[result["index"]]
+        return ("edit", real_idx)
 
     # ── 动作处理 ────────────────────────────────────────
 
@@ -176,15 +164,15 @@ class MessageEditor:
         restore_text = _restore_sandbox_to(agent, target_index)
         if restore_text:
             _disp.write_line(
-                f"  {GREEN}{restore_text}到消息 #{target_index} 的状态{RESET}"
+                f"  {GREEN}{restore_text}\u5230\u6d88\u606f #{target_index} \u7684\u72b6\u6001{RESET}"
             )
         del agent.messages[real_idx:]
         ctx = _disp.MessageDisplayContext.from_agent(agent)
         _disp.write_line(
-            f"  {GREEN}已截断到消息 #{cursor} 之前（保留 {len(ctx.data)} 条）{RESET}"
+            f"  {GREEN}\u5df2\u622a\u65ad\u5230\u6d88\u606f #{cursor} \u4e4b\u524d\uff08\u4fdd\u7559 {len(ctx.data)} \u6761\uff09{RESET}"
         )
         if cursor > len(ctx.data):
-            _logger.warning("cursor=%d 超出 data 范围(%d)，回退", cursor, len(ctx.data))
+            _logger.warning("cursor=%d \u8d85\u51fa data \u8303\u56f4(%d)\uff0c\u56de\u9000", cursor, len(ctx.data))
             return False
         _disp.display_messages(ctx.data, ctx.agent, ctx.idx_map, speed=0)
         state["prefill"] = old_content
@@ -202,7 +190,7 @@ class MessageEditor:
                 30,
             )
             locked_print(
-                f"  {YELLOW}确认删除「{msg_preview}」及之后所有消息？(y/N): {RESET}"
+                f"  {YELLOW}\u786e\u8ba4\u5220\u9664\u300c{msg_preview}\u300d\u53ca\u4e4b\u540e\u6240\u6709\u6d88\u606f\uff1f(y/N): {RESET}"
             )
             confirm = input().strip()
         except (OSError, ValueError, Exception):
@@ -213,31 +201,31 @@ class MessageEditor:
         restore_text = _restore_sandbox_to(agent, target_index)
         if restore_text:
             _disp.write_line(
-                f"  {GREEN}{restore_text}到消息 #{target_index} 的状态{RESET}"
+                f"  {GREEN}{restore_text}\u5230\u6d88\u606f #{target_index} \u7684\u72b6\u6001{RESET}"
             )
         removed = len(agent.messages) - real_idx
         del agent.messages[real_idx:]
         _disp.write_line(
-            f"  {GREEN}已删除 {removed} 条消息{RESET}"
+            f"  {GREEN}\u5df2\u5220\u9664 {removed} \u6761\u6d88\u606f{RESET}"
         )
         _disp.write_line(
-            f"  {DIM}继续输入开始对话{RESET}"
+            f"  {DIM}\u7ee7\u7eed\u8f93\u5165\u5f00\u59cb\u5bf9\u8bdd{RESET}"
         )
         return True
 
     def _check_last_message_role(self, agent: Any, state: dict) -> None:
         """检查最后一条消息角色，设置重试提示。"""
         if not agent.messages:
-            _disp.write_line(f"  {DIM}继续输入开始对话{RESET}")
+            _disp.write_line(f"  {DIM}\u7ee7\u7eed\u8f93\u5165\u5f00\u59cb\u5bf9\u8bdd{RESET}")
             return
         last_role = agent.messages[-1].get("role", "?")
         if last_role == "user":
             _disp.write_line(
-                f"  {DIM}最后一条是用户消息，将自动继续生成回复…{RESET}"
+                f"  {DIM}\u6700\u540e\u4e00\u6761\u662f\u7528\u6237\u6d88\u606f\uff0c\u5c06\u81ea\u52a8\u7ee7\u7eed\u751f\u6210\u56de\u590d\u2026{RESET}"
             )
             state["retry"] = True
         else:
-            _disp.write_line(f"  {DIM}继续输入开始对话{RESET}")
+            _disp.write_line(f"  {DIM}\u7ee7\u7eed\u8f93\u5165\u5f00\u59cb\u5bf9\u8bdd{RESET}")
 
     def _handle_resume_action(
         self, agent: Any, state: dict, cursor: int, idx_map: list[int],
@@ -247,15 +235,13 @@ class MessageEditor:
         restore_text = _restore_sandbox_to(agent, real_idx)
         if restore_text:
             _disp.write_line(
-                f"  {GREEN}{restore_text}到消息 #{real_idx} 的状态{RESET}"
+                f"  {GREEN}{restore_text}\u5230\u6d88\u606f #{real_idx} \u7684\u72b6\u6001{RESET}"
             )
-        # 边界情况：real_idx 是最后一条消息时切片 [real_idx+1:] 为空，
-        # del 空列表无效果——此时仅恢复沙盒，不截断消息
         del agent.messages[real_idx + 1:]
         ctx = _disp.MessageDisplayContext.from_agent(agent)
         remaining = len(ctx.data)
         _disp.write_line(
-            f"  {GREEN}已截断到消息 #{cursor}（保留 {remaining} 条）{RESET}"
+            f"  {GREEN}\u5df2\u622a\u65ad\u5230\u6d88\u606f #{cursor}\uff08\u4fdd\u7559 {remaining} \u6761\uff09{RESET}"
         )
         _disp.display_messages(ctx.data, ctx.agent, ctx.idx_map, speed=0)
         self._check_last_message_role(agent, state)
@@ -265,7 +251,7 @@ class MessageEditor:
         """处理 resume_all action：恢复全部消息，不做截断。"""
         ctx = _disp.MessageDisplayContext.from_agent(agent)
         _disp.write_line(
-            f"  {GREEN}已恢复全部消息（共 {len(ctx.data)} 条）{RESET}"
+            f"  {GREEN}\u5df2\u6062\u590d\u5168\u90e8\u6d88\u606f\uff08\u5171 {len(ctx.data)} \u6761\uff09{RESET}"
         )
         _disp.display_messages(ctx.data, ctx.agent, ctx.idx_map, speed=0)
         self._check_last_message_role(agent, state)
@@ -274,44 +260,25 @@ class MessageEditor:
     # ── 会话管理 ────────────────────────────────────────
 
     def _current_session_detail(self, agent: Any, state: dict) -> bool:
-        """交互式编辑当前会话消息。"""
-        for _ in range(self._MAX_ITERATIONS):
-            ctx = _disp.MessageDisplayContext.from_agent(agent)
-            if not ctx.data:
-                _disp.write_line(
-                    f"  {YELLOW}当前会话为空{RESET}"
-                )
-                return False
-
-            action, cursor = self._interactive_message_select(
-                ctx, "当前会话", is_current=True,
+        """选择消息并编辑。"""
+        ctx = _disp.MessageDisplayContext.from_agent(agent)
+        if not ctx.data:
+            _disp.write_line(
+                f"  {YELLOW}\u5f53\u524d\u4f1a\u8bdd\u4e3a\u7a7a{RESET}"
             )
+            return False
 
-            if action == "quit":
-                return False
-            if action == "edit":
-                return self._handle_edit_action(agent, state, cursor, ctx.idx_map)
-            if action == "delete":
-                return self._handle_delete_action(agent, cursor, ctx.idx_map)
-            if action == "resume":
-                return self._handle_resume_action(agent, state, cursor, ctx.idx_map)
-            if action == "resume_all":
-                return self._handle_resume_all_action(agent, state)
-
-        _logger.warning(
-            "_current_session_detail 循环超过 %d 次，强制退出", _MAX_ITERATIONS
+        action, cursor = self._interactive_message_select(
+            ctx, "\u5f53\u524d\u4f1a\u8bdd", is_current=True,
         )
-        _disp.write_line(
-            f"  {YELLOW}编辑循环次数超限，已退出{RESET}"
-        )
+        if action == "edit":
+            return self._handle_edit_action(agent, state, cursor, ctx.idx_map)
         return False
 
     # ── 公开入口 ────────────────────────────────────────
 
     def edit_current_messages(self, agent: Any, state: dict) -> bool:
         """进入当前会话消息编辑（Ctrl+O / /editmsg）。
-
-        检查数据有效性后委托给 _current_session_detail 循环。
 
         Args:
             agent: ChatAgent 实例（包含 messages 列表）。
@@ -323,7 +290,7 @@ class MessageEditor:
         ctx = _disp.MessageDisplayContext.from_messages(agent.messages)
         if not ctx.data:
             _disp.write_line(
-                f"  {YELLOW}当前会话为空，无消息可编辑{RESET}"
+                f"  {YELLOW}\u5f53\u524d\u4f1a\u8bdd\u4e3a\u7a7a\uff0c\u65e0\u6d88\u606f\u53ef\u7f16\u8f91{RESET}"
             )
             return False
         return self._current_session_detail(agent, state)
@@ -336,9 +303,6 @@ class MessageEditor:
 
 def edit_current_messages(agent: Any, state: dict) -> bool:
     """直接进入当前会话消息编辑（模块级入口，向后兼容）。
-
-    每次调用创建新的 MessageEditor 实例（构造函数开销小，无重型初始化）。
-    需要自定义 Picker 工厂时，使用 MessageEditor(picker_factory=...) 直接构造。
 
     Args:
         agent: ChatAgent 实例。

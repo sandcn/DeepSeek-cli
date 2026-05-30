@@ -191,17 +191,14 @@ async def _handle_retry_sentinel(session: "ChatSession") -> None:
 async def _handle_editmsg_cmd(session: "ChatSession", state: SessionState) -> None:
     """处理 /editmsg 命令
 
-    执行前暂停 ChatUIConsumer（停止 reader 线程、拆除底部栏）+ 停止
-    EscapeMonitor，执行后恢复，确保 message_editor 的交互式 UI
-    （Picker/编辑界面）独占终端和 stdin，不被后台渲染、底部栏和
-    EscapeMonitor 的终端监听干扰。
+    停止 EscapeMonitor（join 线程、恢复 cooked 终端），执行后恢复。
+    不暂停 ChatUIConsumer——底部栏保持活跃，用于消息选择弹窗。
+    确保消息编辑器的底部栏交互不被 EscapeMonitor 的终端监听干扰。
     """
     from .chat_ui import get_active_chat_ui
     from .api.escape_monitor import get_active_monitor
     chat_ui = get_active_chat_ui()
     monitor = get_active_monitor()
-    if chat_ui is not None:
-        chat_ui.suspend()
     if monitor is not None:
         monitor.stop()
     _needs_rerender = False
@@ -220,8 +217,6 @@ async def _handle_editmsg_cmd(session: "ChatSession", state: SessionState) -> No
     finally:
         if monitor is not None:
             monitor.start()
-        if chat_ui is not None:
-            chat_ui.resume()
 
     # ★ 编辑后重新渲染剩余消息到上屏（scroll 区域内）
     # 通过 ChatUI 的 command queue 统一渲染，避免直接 stdout 写入
@@ -237,10 +232,11 @@ async def _handle_model_cmd(
     session: "ChatSession",
     state: SessionState,
 ) -> None:
-    """处理 /model 命令（无参数时使用 Picker 交互选择）
+    """处理 /model 命令（无参数时使用底部栏补全弹窗交互选择）
 
-    执行前暂停 ChatUIConsumer + 停止 EscapeMonitor，执行后恢复，
-    确保 Picker 独占终端和 stdin。
+    暂停 ChatUIConsumer + 停止 EscapeMonitor（join 线程、恢复 cooked 终端），
+    让底部栏补全弹窗 + raw I/O 处理 ↑↓/Enter/Esc 交互，选择完成后恢复两者。
+    使用 stop/start 而非 pause/resume，确保终端状态确定后再接管 stdin。
     """
     from .chat_ui import get_active_chat_ui
     chat_ui = get_active_chat_ui()
@@ -252,7 +248,7 @@ async def _handle_model_cmd(
     try:
         state_dict = {"model": state.model, "retry": False, "prefill": ""}
 
-        # ★ 流式输入闭包：Picker 路径不会调用 get_user_input，仅做安全兜底
+        # ★ 流式输入闭包：此路径不会调用 get_user_input，仅做安全兜底
         def _stream_input(default: str = "", show_prompt: bool = True) -> str:
             return default
 

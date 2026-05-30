@@ -268,13 +268,23 @@ class UserSelectFunc(Func):
                         if has_more:
                             nxt = os.read(fd, 1)
                             if nxt == b'[':
-                                # CSI 序列：读取终结符
-                                has_term, _, _ = select.select([fd], [], [], 0.05)
+                                # CSI 序列：\x1b[A ↑, \x1b[B ↓
+                                has_term, _, _ = select.select([fd], [], [], 0.1)
                                 if has_term:
                                     term = os.read(fd, 1)
                                     if term == b'A':      # ↑
                                         bb.cycle_completion(-1)
                                     elif term == b'B':    # ↓
+                                        bb.cycle_completion(1)
+                                continue
+                            elif nxt == b'O':
+                                # SS3 序列：\x1bOA ↑, \x1bOB ↓
+                                has_term, _, _ = select.select([fd], [], [], 0.1)
+                                if has_term:
+                                    term = os.read(fd, 1)
+                                    if term == b'A':
+                                        bb.cycle_completion(-1)
+                                    elif term == b'B':
                                         bb.cycle_completion(1)
                                 continue
                     except (ValueError, OSError):

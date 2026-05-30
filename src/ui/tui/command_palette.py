@@ -1,12 +1,12 @@
 """命令面板 — 搜索和执行可用命令。
 
-Ctrl+P 触发，输入关键词实时过滤命令列表，回车执行选中命令。
+Ctrl+P 触发，在底部栏补全弹窗中显示命令列表。
 """
 
 from __future__ import annotations
 
 from ...core.commands import get_registered_command_names
-from ..picker import Picker
+from .._bottom_bar import run_bottom_bar_selection
 from ._ttl_cache import TTLCache
 
 
@@ -26,7 +26,7 @@ class CommandPalette:
         self._cache.refresh()
 
     def show(self) -> str | None:
-        """打开命令面板，返回选中命令的完整字符串（如 '/help'）。
+        """在底部栏补全弹窗中打开命令面板。
 
         Returns:
             用户选择的命令字符串，带 "/" 前缀（如 "/help"）；取消时返回 None。
@@ -35,11 +35,9 @@ class CommandPalette:
         if not commands:
             return None
 
-        picker = Picker(title="Command Palette", items=commands, timeout=0)
-        result = picker.run()
-
-        if result.action == "confirmed" and result.selected_items:
-            return result.selected_items[0]
+        result = run_bottom_bar_selection(commands, commands, title="Command Palette")
+        if result["action"] == "confirmed" and result["index"] is not None:
+            return commands[result["index"]]
         return None
 
 
