@@ -480,6 +480,50 @@ class _BottomBar:
         except Exception:
             return 0.0
 
+    # ── 滚动上屏内容（防止底部栏扩大时覆盖内容） ────────────
+
+    @staticmethod
+    def _scroll_up_upper(delta: int, out, height: int) -> None:
+        """输入区扩大时，将上屏内容向上滚动 delta 行，防止被新底部栏覆盖。
+
+        须在 ``\\033[r``（全屏滚动区）之后、清除旧底部行之前调用。
+        仅在 delta > 0 时执行，delta ≤ 0 时静默跳过。
+
+        ANSI 机制：
+        - ``\\033[{height};1H`` 定位光标到终端最后一行
+        - ``\\n``（LF）在最后一行触发向上滚动，内容整体上移 1 行
+        - 重复 delta 次，顶端 delta 行滚动消失，底部 delta 行变为空行
+        - 原在"死区"（新滚动区与旧滚动区之间）的内容被移入新滚动区内
+
+        Args:
+            delta: 底部栏扩大行数（= new_bottom_lines - old_bottom_lines）。
+            out: stdout 文件对象。
+            height: 终端总行数。
+        """
+        if delta > 0:
+            out.write(f"\033[{height};1H")
+            out.write("\n" * delta)
+
+    @staticmethod
+    def _scroll_down_for_shrink(delta: int, out) -> None:
+        """缩小底部栏后，将上屏内容向下滚动以消除空隙。
+
+        须在 \\033[r（全屏滚动区）之后、清除旧的底部行之后、
+        绘制新的底部栏之前调用。仅在 delta < 0 时执行。
+
+        ANSI 机制：
+        - ``\\033[{|delta|}T``（SD — Scroll Down）将滚动区内全部内容
+          向下滚动 |delta| 行，滚动区顶部出现 |delta| 行空白，
+          底部 |delta| 行滚出（清除掉的旧底部行区域），
+          内容区底部与新的较小底部栏顶部接合，消除空隙。
+
+        Args:
+            delta: 底部栏变化行数（负=缩小）。
+            out: stdout 文件对象。
+        """
+        if delta < 0:
+            out.write(f"\033[{-delta}T")
+
     def increment_tool(self) -> None:
         """递增工具调用计数。"""
         self._tool_count += 1
@@ -727,10 +771,19 @@ class _BottomBar:
             out.write("\0337")                       # 保存光标
             out.write("\033[r")                      # 临时退出滚动区域
 
+            # ★ 输入区扩大时，上屏底部内容会被新底部栏覆盖。
+            #   先将上屏内容向上滚动 delta 行，保护"死区"内容移入新滚动区。
+            delta = total - old_bottom_lines
+            self._scroll_up_upper(delta, out, height)
+
             # 清除之前所有底部行（用 old_bottom_lines 确保清干净）
             old_end = height - old_bottom_lines
             for r in range(old_end + 1, height + 1):
                 out.write(f"\033[{r};1H\033[K")
+
+            # ★ 底部栏缩小时，内容区底部与新的较小底部栏之间出现空隙。
+            #   将内容向下滚动以消除间隙。
+            self._scroll_down_for_shrink(delta, out)
 
             r1 = height - total + 1                  # 分隔线
             r2 = r1 + 1                              # 状态行
@@ -840,10 +893,19 @@ class _BottomBar:
             # 临时退出滚动区域，以便写入底部行
             out.write("\033[r")
 
+            # ★ 输入区扩大时，上屏底部内容会被新底部栏覆盖。
+            #   先将上屏内容向上滚动 delta 行，保护"死区"内容移入新滚动区。
+            delta = total - old_bottom_lines
+            self._scroll_up_upper(delta, out, height)
+
             # 清除旧的底部行
             old_end = height - old_bottom_lines
             for r in range(old_end + 1, height + 1):
                 out.write(f"\033[{r};1H\033[K")
+
+            # ★ 底部栏缩小时，内容区底部与新的较小底部栏之间出现空隙。
+            #   将内容向下滚动以消除间隙。
+            self._scroll_down_for_shrink(delta, out)
 
             # ── 分隔线 ──
             r1 = height - total + 1
@@ -1189,10 +1251,19 @@ class _BottomBar:
             # 临时退出滚动区域
             out.write("\033[r")
 
+            # ★ 输入区扩大时，上屏底部内容会被新底部栏覆盖。
+            #   先将上屏内容向上滚动 delta 行，保护"死区"内容移入新滚动区。
+            delta = total - old_bottom_lines
+            self._scroll_up_upper(delta, out, height)
+
             # 清除旧的底部行
             old_end = height - old_bottom_lines
             for r in range(old_end + 1, height + 1):
                 out.write(f"\033[{r};1H\033[K")
+
+            # ★ 底部栏缩小时，内容区底部与新的较小底部栏之间出现空隙。
+            #   将内容向下滚动以消除间隙。
+            self._scroll_down_for_shrink(delta, out)
 
             # 全量重绘底部栏（含输入区内的补全弹窗）
             r1 = height - total + 1
@@ -1256,6 +1327,10 @@ class _BottomBar:
             old_end = height - old_bottom_lines
             for r in range(old_end + 1, height + 1):
                 out.write(f"\033[{r};1H\033[K")
+
+            # ★ 底部栏缩小后，内容区底部与新的较小底部栏之间出现空隙。
+            #   将内容向下滚动以消除间隙。
+            self._scroll_down_for_shrink(total - old_bottom_lines, out)
 
             # 全量重绘底部栏（缩小后的区域）
             r1 = height - total + 1
