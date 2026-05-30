@@ -247,7 +247,7 @@ _COLOR_MUTED = "\033[38;5;240m"       # 暗灰边框（补全弹窗边框）
 _COLOR_RESET = "\033[0m"              # 重置
 _COLOR_SELECT_BG = "\033[48;5;236m"   # 选中项高亮背景（补全弹窗）
 _COLOR_ERR = "\033[38;5;1m"           # 红色错误
-_PLACEHOLDER_TEXT = "输入消息...  /help 查看命令"
+_PLACEHOLDER_TEXT = "输入 /help"
 
 
 def _visual_len(s: str) -> int:
@@ -901,7 +901,7 @@ class _BottomBar:
 
             # ── 分隔线 ──
             r1 = height - total + 1
-            sep = "─" * 40
+            sep = "─" * 30
             out.write(f"\033[{r1};1H{_COLOR_DIM}{sep}{_COLOR_RESET}")
 
             # ── 状态行 ──
@@ -984,7 +984,7 @@ class _BottomBar:
                 if i == self._completion_idx:
                     out.write(f"\033[{r};1H\033[K"
                               f"{_COLOR_MUTED}\u2502{_COLOR_RESET} "
-                              f"{_COLOR_SELECT_BG}{_COLOR_ACCENT}\u25b8{_COLOR_RESET}"
+                              f"{_COLOR_SELECT_BG}{_COLOR_ACCENT}>{_COLOR_RESET}"
                               f"{_COLOR_SELECT_BG} {display}{pad}{_COLOR_RESET}"
                               f"{_COLOR_MUTED}\u2502{_COLOR_RESET}")
                 else:
@@ -993,14 +993,14 @@ class _BottomBar:
                               f" {display}{pad}"
                               f"{_COLOR_MUTED}\u2502{_COLOR_RESET}")
 
-            # 底边框（补全弹窗用 Tab/↑↓/Esc，选择弹窗用 ↑↓/Enter/Esc）
+            # 底边框（补全弹窗用 Tab ↑↓ Esc，选择弹窗用 ↑↓ Enter Esc）
             footer_r = popup_r_start + 1 + n
             truncated = total_items > n
             is_selection = (self._completion_title != "补全")
             if is_selection:
-                hint_prefix = "\u2191\u2193/Enter/Esc"
+                hint_prefix = "\u2191\u2193 Enter Esc"
             else:
-                hint_prefix = "Tab/\u2191\u2193/Esc"
+                hint_prefix = "Tab \u2191\u2193 Esc"
             if truncated:
                 hint = f" {self._completion_idx + 1}/{n} (\u524d{n}/{total_items})  {hint_prefix} "
             else:
@@ -1052,10 +1052,10 @@ class _BottomBar:
         self._last_status = status  # 同步缓存，避免下次 refresh() 冗余重绘
 
     def _format_status(self) -> str:
-        """构建状态行文本（简约风）：模型名 · 耗时 · 令牌数。
+        """构建状态行文本（简约风）：模型名 · 耗时 · 令牌数 · 实时速率。
 
-        始终显示模型名字（无论是否流式），流式期间追加统计信息。
-        仅用青/灰两色，去除进度条/速率/脉冲动画等视觉噪音。
+        始终显示模型名字和可用的统计信息（耗时、令牌数、实时速率）。
+        仅用青/灰两色，简约风（无进度条/脉冲动画）。
         """
         # ── 模型名字（始终显示） ──
         model_part = f"{_COLOR_ACCENT}{self._model_name}{_COLOR_RESET}" if self._model_name else ""
@@ -1071,8 +1071,9 @@ class _BottomBar:
 
         total = snap.get("total_tokens", 0)           # 历史累计总tok
         elapsed = snap.get("elapsed_seconds", 0.0)    # 当轮耗时
+        per_second_speed = snap.get("per_second_speed", 0.0)  # 实时 tok/s
 
-        if total <= 0 and elapsed <= 0:
+        if total <= 0 and elapsed <= 0 and per_second_speed <= 0:
             return model_part
 
         parts = []
@@ -1097,6 +1098,14 @@ class _BottomBar:
 
         parts.append(f"{_COLOR_DIM}{dur}{_COLOR_RESET}")
         parts.append(f"{_COLOR_DIM}{tok_str}t{_COLOR_RESET}")
+
+        # 实时 token 速度（tok/s），仅在流式输出期间有数值时显示
+        if per_second_speed > 0:
+            if per_second_speed >= 1:
+                speed_str = f"{per_second_speed:.1f}"
+            else:
+                speed_str = f"{per_second_speed:.2f}"
+            parts.append(f"{_COLOR_DIM}{speed_str}t/s{_COLOR_RESET}")
 
         status = "  ".join(parts) if parts else ""
         if model_part and status:
@@ -1154,7 +1163,7 @@ class _BottomBar:
 
         弹窗视觉：
           ┌ {title} (N项) ────────┐
-          │ ▸ 选中项              │  ← 反显高亮 + ▸ 指示器
+          │ > 选中项              │  ← 反显高亮 + > 指示器
           │   普通项              │
           └ ↑↓/Enter/Esc ────────┘  ← 快捷键提示
 
@@ -1229,7 +1238,7 @@ class _BottomBar:
             # 全量重绘底部栏（含输入区内的补全弹窗）
             r1 = height - total + 1
             r2 = r1 + 1
-            sep = "─" * 40
+            sep = "─" * 30
             out.write(f"\033[{r1};1H{_COLOR_DIM}{sep}{_COLOR_RESET}")
             out.write(f"\033[{r2};1H\033[K")
             text = self._last_text or ""
@@ -1297,7 +1306,7 @@ class _BottomBar:
             # 全量重绘底部栏（缩小后的区域）
             r1 = height - total + 1
             r2 = r1 + 1
-            sep = "─" * 40
+            sep = "─" * 30
             out.write(f"\033[{r1};1H{_COLOR_DIM}{sep}{_COLOR_RESET}")
             out.write(f"\033[{r2};1H\033[K")
             text = self._last_text or ""
@@ -1358,7 +1367,7 @@ class _BottomBar:
                 if i == self._completion_idx:
                     out.write(f"\033[{r};1H\033[K"
                               f"{_COLOR_MUTED}\u2502{_COLOR_RESET} "
-                              f"{_COLOR_SELECT_BG}{_COLOR_ACCENT}\u25b8{_COLOR_RESET}"
+                              f"{_COLOR_SELECT_BG}{_COLOR_ACCENT}>{_COLOR_RESET}"
                               f"{_COLOR_SELECT_BG} {display}{pad}{_COLOR_RESET}"
                               f"{_COLOR_MUTED}\u2502{_COLOR_RESET}")
                 else:
@@ -1372,7 +1381,7 @@ class _BottomBar:
             footer_start = popup_start + 1 + n
             truncated = total_items > n
             is_selection = (self._completion_title != "补全")
-            hint_prefix = "\u2191\u2193/Enter/Esc" if is_selection else "Tab/\u2191\u2193/Esc"
+            hint_prefix = "\u2191\u2193 Enter Esc" if is_selection else "Tab \u2191\u2193 Esc"
             if truncated:
                 hint = f" {self._completion_idx + 1}/{n} (\u524d{n}/{total_items})  {hint_prefix} "
             else:
