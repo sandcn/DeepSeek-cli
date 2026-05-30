@@ -14,13 +14,10 @@ from wcwidth import wcswidth
 from ._const import (
     _CLEAR_PARSE_LINE,
     _ReasoningState,
-    _STYLE_BOLD,
     _STYLE_DIM,
-    _STYLE_DIM_GREY,
     _STYLE_ERROR,
     _STYLE_FAIL,
     _STYLE_SUCCESS,
-    _STYLE_USER,
     _STYLE_WARN,
     _cmd_name,
 )
@@ -123,7 +120,7 @@ class ContentRenderer:
         self._bb.increment_tool_fail()
 
     def _do_tool_output(self, text: str) -> None:
-        """渲染工具执行输出（dim 样式 + 左侧竖线指示）。"""
+        """渲染工具执行输出（dim 样式 + 缩进）。"""
         ta = self._tool_adapter
         if '\r' in text:
             ta.write_raw(text)
@@ -139,7 +136,7 @@ class ContentRenderer:
             if self._rs.last_was_carriage:
                 ta.write_raw("\n")
                 self._rs.last_was_carriage = False
-            ta.write(Text.assemble(("  │ ", _STYLE_DIM_GREY), (text, _STYLE_DIM)))
+            ta.write(Text.assemble(("   ", _STYLE_DIM), (text, _STYLE_DIM)))
 
     def _do_tool_summary(self, successful: tuple, failed: tuple) -> None:
         """渲染工具执行汇总（着色图标 + 彩色计数）。"""
@@ -154,7 +151,7 @@ class ContentRenderer:
         elif successful:
             ta.write(Text.assemble(
                 ("  ● ", _STYLE_SUCCESS),
-                (f"{len(successful)}个工具完成", _STYLE_SUCCESS),
+                (f"{len(successful)}工具完成", _STYLE_SUCCESS),
             ))
 
     @staticmethod
@@ -184,12 +181,12 @@ class ContentRenderer:
         failed_names = ", ".join(n for n, _ in failed)
         if len(failed) == total:
             ta.write(Text.assemble(
-                ("  ◆ ", _STYLE_FAIL),
+                ("  ! ", _STYLE_FAIL),
                 (f"全部失败: {failed_names}", _STYLE_FAIL),
             ))
         else:
             ta.write(Text.assemble(
-                ("  ◆ ", _STYLE_WARN),
+                ("  ! ", _STYLE_WARN),
                 (f"{len(failed)}/{total} 失败: {failed_names}", _STYLE_WARN),
             ))
 
@@ -200,12 +197,12 @@ class ContentRenderer:
                 if short:
                     short = cls._truncate_by_visual_width(short, 80)
             ta.write(Text.assemble(
-                (f"    {name}", _STYLE_DIM_GREY),
-                (f": {short}", _STYLE_DIM) if short else ("", _STYLE_DIM),
+                (f"    {name}", _STYLE_DIM),
+                (f"  {short}", _STYLE_DIM) if short else ("", _STYLE_DIM),
             ))
         if len(failed) > 3:
             ta.write(Text.assemble(
-                (f"    ... 及其他 {len(failed) - 3} 个", _STYLE_DIM_GREY),
+                (f"    ... 及其他 {len(failed) - 3} 个", _STYLE_DIM),
             ))
 
     def _do_parse_info(self, tool_names: str, tokens: int, elapsed: float) -> None:
@@ -217,7 +214,7 @@ class ContentRenderer:
             self._tool_adapter.write_raw("\n")
             return
         self._tool_adapter.write_raw(
-            f"\r\033[K  \u25c7 {tool_names} {tokens}t {elapsed:.2f}s",
+            f"\r\033[K  ~ {tool_names} {tokens}t {elapsed:.2f}s",
         )
 
     def _do_cmd_output(self, text: str) -> None:
@@ -225,21 +222,21 @@ class ContentRenderer:
         self._write_text_or_ansi(text)
 
     def _do_user_message(self, text: str) -> None:
-        """渲染用户消息（青色 ▸ 前缀 + 粗体）。"""
+        """渲染用户消息（简约：`>` 前缀 + dim 样式）。"""
         self._tool_adapter.write(Text.assemble(
-            ("\n  ▸ ", _STYLE_USER),
-            (text, _STYLE_BOLD),
+            ("\n  > ", _STYLE_DIM),
+            (text, _STYLE_DIM),
         ))
 
     def _do_notification(self, text: str) -> None:
-        """渲染系统通知（绿色 ● 前缀）。"""
+        """渲染系统通知（● 前缀）。"""
         self._tool_adapter.write(Text.assemble(
             ("\n  ● ", _STYLE_SUCCESS),
             (text, _STYLE_SUCCESS),
         ))
 
     def _do_error(self, message: str) -> None:
-        """渲染系统错误信息（红色 ◆ 样式）。
+        """渲染系统错误信息（红色 ! 样式）。
 
         由 RenderCommand.ERROR 命令触发（Reader 线程串行执行），
         通过 _tool_adapter.write() 输出到终端内容区。
@@ -249,7 +246,7 @@ class ContentRenderer:
         会跳过自引用循环。
         """
         self._tool_adapter.write(Text.assemble(
-            ("\n  ◆ ", _STYLE_ERROR),
+            ("\n  ! ", _STYLE_ERROR),
             (message, _STYLE_ERROR),
         ))
 

@@ -15,17 +15,13 @@ _MAIN_SOURCE = "agent"
 
 # ── Rich Style 常量（供 OutputAdapter + Rich 渲染管线使用） ──
 _STYLE_DIM = Style(dim=True)
-_STYLE_DIM_GREY = Style(dim=True, color="grey58")
 _STYLE_FAIL = Style(color="red")
 _STYLE_WARN = Style(color="orange1")
 _STYLE_SUCCESS = Style(color="green")
-_STYLE_PARSE = Style(color="gold1")
-_STYLE_PARSE_DIM = Style(color="grey74")
-_STYLE_USER = Style(color="deep_sky_blue1")
-_STYLE_BOLD = Style(bold=True)
 _STYLE_ERROR = Style(color="red", bold=True)
+_STYLE_BOLD = Style(bold=True)
 
-_THINKING_HEADER = "\n  ── ◆ 思考 ◆ ──\n"
+_THINKING_HEADER = "\n  ── 思考 ──\n"
 
 # ── 解析进度清除哨兵 ───────────────────────────────────
 _CLEAR_PARSE_LINE = -1
@@ -62,7 +58,7 @@ class RenderCommand(IntEnum):
     DISPLAY_MSGS  = 13  # (13, messages: list, speed: int)
     TOOL_COUNT_INC = 14  # (14,) — 工具计数+1
     TOOL_FAIL_INC  = 15  # (15,) — 工具失败计数+1
-    ERROR          = 16  # (16, message: str) — 系统错误（红色 ◆ 样式）
+    ERROR          = 16  # (16, message: str) — 系统错误（红色 ! 样式）
 
 
 # ═══════════════════════════════════════════════════════════
