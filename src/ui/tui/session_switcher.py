@@ -6,59 +6,56 @@ from __future__ import annotations
 import logging
 
 from ...chat_msgs import list_sessions, load_session
-from .._bottom_bar import run_bottom_bar_selection
-from ._ttl_cache import TTLCache
+from ._selector_base import BaseBottomBarSelector
 
 _logger = logging.getLogger(__name__)
 
 
-class SessionSwitcher:
+class SessionSwitcher(BaseBottomBarSelector[dict, dict[str, object] | None]):
     """会话切换器 — 列出已保存会话，选择后加载。
+
+    继承 BaseBottomBarSelector，复用 TTLCache + run_bottom_bar_selection 通用流程。
 
     用法：
         switcher = SessionSwitcher()
         data = switcher.show()
+
+    向后兼容保留：
+        refresh_cache() → 委托 self.refresh()
     """
 
-    def __init__(self) -> None:
-        # 会话列表缓存（60s TTL），避免每次 show() 都扫描文件系统
-        self._cache = TTLCache(fetcher=list_sessions, ttl=60.0)
+    def _fetch_items(self) -> list[dict]:
+        """扫描文件系统获取已保存会话列表（TTLCache 60s 缓存）。"""
+        return list_sessions()
 
-    def _get_cached_sessions(self) -> list[dict]:
-        """获取缓存的会话列表（60s TTL）。
-
-        避免每次 show() 都调用 list_sessions() 扫描文件系统。
-        """
-        return self._cache.get()
-
-    def refresh_cache(self) -> None:
-        """强制刷新会话缓存。"""
-        self._cache.refresh()
-
-    def show(self) -> dict[str, object] | None:
-        """在底部栏补全弹窗中选择会话，返回选中会话数据，取消时返回 None。"""
-        sessions = self._get_cached_sessions()
-        if not sessions:
-            return None
-
-        items = []
-        for s in sessions:
+    def _format_display(self, items: list[dict]) -> list[str]:
+        """格式化会话字典列表为显示标签。"""
+        labels: list[str] = []
+        for s in items:
             title = s.get("title", "")
             title_info = f"「{title}」 " if title else ""
-            sid_short = s['id'][:min(8, len(s['id']))]
-            label = f"{sid_short}  {title_info}{s['model']}  {s['message_count']}msg"
-            items.append(label)
+            sid = s.get("id", "")
+            sid_short = sid[:min(8, len(sid))] if sid else "?"
+            label = f"{sid_short}  {title_info}{s.get('model', '?')}  {s.get('message_count', 0)}msg"
+            labels.append(label)
+        return labels
 
-        result = run_bottom_bar_selection(items, items, title="Sessions")
-        if result["action"] == "confirmed" and result["index"] is not None:
-            idx = result["index"]
-            if idx < len(sessions):
-                sid = sessions[idx].get("id", "")
-                if not sid:
-                    _logger.warning("SessionSwitcher.show: 选中会话缺少 id 字段，返回 None")
-                    return None
-                return load_session(sid)
-        return None
+    def _on_selected(self, item: dict) -> dict[str, object] | None:
+        """用户确认选择后调用 load_session 加载会话。"""
+        sid = item.get("id", "")
+        if not sid:
+            _logger.warning("SessionSwitcher._on_selected: 会话缺少 id 字段")
+            return None
+        return load_session(sid)
+
+    def _get_title(self) -> str:
+        return "Sessions"
+
+    # ── 向后兼容（保留旧方法名） ────────────────────────
+
+    def refresh_cache(self) -> None:
+        """强制刷新会话缓存（委托 refresh）。"""
+        self.refresh()
 
 
 __all__ = ["SessionSwitcher"]

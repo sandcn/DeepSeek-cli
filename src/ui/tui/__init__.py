@@ -4,8 +4,14 @@
 消息编辑、选择器、状态栏、命令面板、会话切换等功能。
 
 架构层级：
-  Layer 0 — 基础工具:      _terminal.py, _state.py
+  Layer 0 — 基础工具:      _terminal.py, _state.py,
+                             _ttl_cache.py, _time_format.py,
+                             _text_utils.py
+                             (_ttl_cache.py / _time_format.py 仅供同包内部使用，不对外导出)
+  Layer 1 — 端口:          ports.py
+  Layer 2 — 显示层:        _message_display.py
   Layer 3 — 输入层:        input_handler.py, key_bindings.py, completer.py
+  Layer 3.5 — 选择器基础设施: _selector_base.py
   Layer 4 — 功能层:        message_editor.py, status_bar.py,
                              command_palette.py, session_switcher.py
 
@@ -14,6 +20,7 @@
   2. 依赖注入：所有子组件通过构造函数注入
   3. 直接调用：组件间通过方法直接调用
   4. 零模块级可变状态：所有可变状态归入 TUIStateTree 或实例级
+  5. 抽象优先：共享模式提取为基类 (BaseBottomBarSelector)，文本工具统一提取
 
 重构历史（2026-05-24 v3）：
   25 模块 → 16 模块（合并 9 个碎片化模块）
@@ -60,6 +67,16 @@
 重构历史（2026-05-26 v12 — 死代码清理）：
   移除 app.py / _context.py / ports.py 中 ITUIInteraction / TUIInteractionNull
   （TUIApplication + ports + _context 约 470 行死代码从未接入 app_loop.py）
+
+重构历史（2026-05-31 v13 — 抽象与类优化）：
+  新增 _text_utils.py — 统一 truncate() 文本截断工具（消除 _message_display._truncate
+    与 message_editor._truncate_text 重复定义）
+  新增 _selector_base.py — BaseBottomBarSelector[T,R] 抽象基类（消除 CommandPalette /
+    SessionSwitcher 中 TTLCache + run_bottom_bar_selection 重复模式）
+  CommandPalette → 继承 BaseBottomBarSelector[str, str|None]（减少 ~15 行样板代码）
+  SessionSwitcher → 继承 BaseBottomBarSelector[dict, dict|None]（减少 ~20 行样板代码）
+  架构层级更新：L0 新增 _text_utils.py/_ttl_cache.py/_time_format.py，
+    L3.5 新增选择器基础设施层
 """
 
 # ── 模块导入（公开模块） ─────────────────────────────────
@@ -70,6 +87,8 @@ from . import message_editor
 from . import status_bar
 from . import command_palette
 from . import session_switcher
+from . import _text_utils
+from . import _selector_base
 
 # ── 便捷导出 ──────────────────────────────────────────────
 from ._terminal import (
@@ -89,6 +108,8 @@ from ._state import (
 )
 
 from .ports import ILockedTerminal
+from ._selector_base import BaseBottomBarSelector
+from ._text_utils import truncate
 
 __all__ = [
     # 子模块（公开）
@@ -105,7 +126,7 @@ __all__ = [
     # ── input ──
     "InputHandler",
     # ── message_editor ──
-    "edit_current_messages", "display_messages",
+    "MessageEditor", "edit_current_messages", "display_messages",
     # ── status_bar ──
     "StatusBar",
     # ── command_palette ──
@@ -116,4 +137,8 @@ __all__ = [
     "TUIStateTree", "UISessionState", "InputState",
     # ── ports ──
     "ILockedTerminal",
+    # ── selector_base ──
+    "BaseBottomBarSelector",
+    # ── text_utils ──
+    "truncate",
 ]

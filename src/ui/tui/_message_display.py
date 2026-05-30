@@ -20,6 +20,7 @@ from ..colors import CYAN, DIM, RESET, GREEN
 from ...core.sandbox_manager import get_sandbox_manager as _get_sandbox_manager
 from ._terminal import (get_terminal_width, NARROW_THRESHOLD,
                         is_narrow, narrow_truncate, narrow_indent)
+from ._text_utils import truncate
 from ..output_target import IOutputTarget, TerminalTarget
 from ..picker import scroll_window as _scroll_window
 
@@ -120,7 +121,6 @@ class _OutputFileAdapter:
 
 _TOOL_CALL_PREVIEW_LEN = 100
 _TOOL_CONTENT_PREVIEW_LEN = 200
-_MSG_TRUNCATE_WIDTH = 60
 _ASSISTANT_MD_THRESHOLD = 100
 _LINE_TRUNCATE_WIDTH = 55
 _SEP_LINE_WIDTH = 25
@@ -153,9 +153,13 @@ def _role_icon(role: str) -> str:
     return {"user": "*", "assistant": ">", "tool": "-"}.get(role, " ")
 
 
-def _truncate(text: str | None, width: int = _MSG_TRUNCATE_WIDTH) -> str:
-    text = (text or "").replace("\n", " ").strip()
-    return text[:width] + "…" if len(text) > width else text
+# _truncate 已迁移到 _text_utils.truncate（向后兼容：width → max_len）
+def _truncate(text: str | None, width: int, *, suffix: str = "\u2026") -> str:
+    """截断文本（向后兼容包装器，委托 _text_utils.truncate）。
+
+    width 参数映射到 truncate() 的 max_len 参数。
+    """
+    return truncate(text, max_len=width, suffix=suffix, normalize=True)
 
 
 def _format_sandbox_text(sandbox_info: dict | None) -> str:

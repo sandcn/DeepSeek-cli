@@ -6,39 +6,29 @@ Ctrl+P 触发，在底部栏补全弹窗中显示命令列表。
 from __future__ import annotations
 
 from ...core.commands import get_registered_command_names
-from .._bottom_bar import run_bottom_bar_selection
-from ._ttl_cache import TTLCache
+from ._selector_base import BaseBottomBarSelector
 
 
-class CommandPalette:
+class CommandPalette(BaseBottomBarSelector[str, str | None]):
     """命令面板 — 搜索并快速执行命令。
+
+    继承 BaseBottomBarSelector，复用 TTLCache + run_bottom_bar_selection 通用流程。
 
     用法：
         palette = CommandPalette()
         result = palette.show()
     """
 
-    def __init__(self) -> None:
-        self._cache = TTLCache(fetcher=get_registered_command_names, ttl=60.0)
+    def _fetch_items(self) -> list[str]:
+        """获取所有注册的命令名列表（TTLCache 从 get_registered_command_names 获取）。"""
+        return get_registered_command_names()
 
-    def refresh(self) -> None:
-        """刷新命令缓存（线程安全）。"""
-        self._cache.refresh()
+    def _on_selected(self, item: str) -> str | None:
+        """用户选中命令后原样返回（带 "/" 前缀）。"""
+        return item
 
-    def show(self) -> str | None:
-        """在底部栏补全弹窗中打开命令面板。
-
-        Returns:
-            用户选择的命令字符串，带 "/" 前缀（如 "/help"）；取消时返回 None。
-        """
-        commands = self._cache.get()
-        if not commands:
-            return None
-
-        result = run_bottom_bar_selection(commands, commands, title="Command Palette")
-        if result["action"] == "confirmed" and result["index"] is not None:
-            return commands[result["index"]]
-        return None
+    def _get_title(self) -> str:
+        return "Command Palette"
 
 
 __all__ = ["CommandPalette"]

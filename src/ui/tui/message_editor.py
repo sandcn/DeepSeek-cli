@@ -23,6 +23,7 @@ from ...api.interrupt_async import flush_stdin, reset_interrupt_async
 from .._lock import locked_print
 from .._bottom_bar import run_bottom_bar_selection
 from . import _message_display as _disp
+from ._text_utils import truncate
 
 _logger = logging.getLogger(__name__)
 
@@ -43,13 +44,6 @@ def _restore_sandbox_to(agent: Any, target_idx: int) -> str:
     return ""
 
 
-def _truncate_text(text: str, max_len: int = 40) -> str:
-    """截断文本到指定长度（不包括 ANSI 码计算）。"""
-    if len(text) <= max_len:
-        return text
-    return text[:max_len - 3] + "..."
-
-
 def _msg_short_summary(msg: dict) -> str:
     """生成消息的简短摘要（单行，适合弹窗显示）。
 
@@ -61,25 +55,25 @@ def _msg_short_summary(msg: dict) -> str:
     content = msg.get("content", "") or ""
     if role == "user":
         text = content.replace("\n", " ").strip()
-        return f"[U] {_truncate_text(text, 35)}"
+        return f"[U] {truncate(text, 35)}"
     elif role == "assistant":
         if content:
             text = content.replace("\n", " ").strip()
-            return f"[A] {_truncate_text(text, 35)}"
+            return f"[A] {truncate(text, 35)}"
         # tool_calls
         tcs = msg.get("tool_calls", [])
         if tcs:
             names = ", ".join(tc.get("function", {}).get("name", "?") for tc in tcs[:2])
-            return f"[A] \u2699 {_truncate_text(names, 30)}"
+            return f"[A] \u2699 {truncate(names, 30)}"
         return "[A] (\u7a7a)"
     elif role == "tool":
         text = content.replace("\n", " ").strip()
         name = msg.get("name", "")
         prefix = f"{name}: " if name else ""
-        return f"[T] {prefix}{_truncate_text(text, 30)}"
+        return f"[T] {prefix}{truncate(text, 30)}"
     else:
         text = content.replace("\n", " ").strip()
-        return f"[{role[0].upper()}] {_truncate_text(text, 35)}"
+        return f"[{role[0].upper()}] {truncate(text, 35)}"
 
 
 def _build_message_items(data: list[dict]) -> list[str]:
@@ -184,8 +178,8 @@ class MessageEditor:
         """处理 delete action：确认后删除光标消息及之后所有消息。"""
         real_idx = idx_map[cursor]
         try:
-            msg_preview = _disp._truncate(
-                agent.messages[real_idx].get("content", "")
+            msg_preview = truncate(
+                agent.messages[real_idx].get("content", "").strip()
                 or agent.messages[real_idx].get("role", ""),
                 30,
             )
