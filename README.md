@@ -157,6 +157,13 @@ python chat.py --model deepseek-v4-pro
 
 通过 `-m` / `--model` 临时覆盖配置文件中的模型，不影响配置文件。
 
+#### 详细日志模式
+
+```bash
+python chat.py -v           # INFO 级别日志
+python chat.py -vv          # DEBUG 级别日志
+```
+
 #### 会话管理
 
 ```bash
@@ -181,12 +188,102 @@ python chat.py version
 | `python chat.py -p "你好"` | 单次问答模式 |
 | `python chat.py --load abc123` | 从会话恢复 |
 | `python chat.py -m deepseek-v4-pro` | 指定模型 |
+| `python chat.py -v` | INFO 级别日志 |
+| `python chat.py -vv` | DEBUG 级别日志 |
 | `python chat.py --webui` | Web UI 模式（默认 0.0.0.0:8080） |
 | `python chat.py webui --host 127.0.0.1 --port 3000` | 自定义 Web UI 地址端口 |
 | `python chat.py session list` | 列出所有会话 |
 | `python chat.py session delete abc123` | 删除会话 |
 | `python chat.py session export abc123` | 导出会话 |
 | `python chat.py --version` | 显示版本信息 |
+
+---
+
+### 4. 快捷操作（终端交互模式下）
+
+> 以下快捷键仅在终端交互式对话（`python chat.py`）中生效。
+
+| 快捷键 | 功能 |
+|--------|------|
+| `Enter` | 发送消息 |
+| `Esc`（双击） | 清空当前输入框内容 |
+| `Ctrl+G` | 使用 vim 编辑器编辑当前输入内容（支持 $EDITOR 环境变量） |
+| `Ctrl+O` | 编辑当前会话中的已有消息（触发 `/editmsg` 命令） |
+| `Ctrl+N` | 循环切换对话模型 |
+| `Ctrl+C`（首次） | 中断当前 AI 回复 |
+| `Ctrl+C`（再次） | 强制退出程序 |
+| `↑` / `↓` | 浏览输入历史 |
+| `Tab` | 自动补全（命令名、会话 ID 等） |
+
+---
+
+### 5. 斜杠命令（终端交互模式下）
+
+在对话输入框中以 `/` 开头输入命令：
+
+| 命令 | 别名 | 功能 |
+|------|------|------|
+| `/help` | — | 显示所有可用命令 |
+| `/clear` | — | 清空对话（保留系统提词） |
+| `/loop <N> <提词>` | — | 循环执行 N 次指定提词（每轮前自动清空对话） |
+| `/compress` | — | 手动压缩上下文（减少 token 消耗） |
+| `/pin` | — | 标记重要消息（压缩时保留） |
+| `/editmsg` | — | 编辑当前会话消息（同 Ctrl+O） |
+| `/undo` | — | 撤销上一轮对话 |
+| `/retry` | `/r` | 重新生成上一条回答 |
+| `/edit` | — | 编辑并重新发送上一条输入 |
+| `/model` | — | 切换模型（无参数时交互选择，支持序号/名称） |
+| `/system` | — | 查看或追加系统提示词 |
+| `/cost` | — | 查看 token 用量和费用 |
+| `/init` | — | 生成项目摘要文件 init.md |
+| `/load <ID>` | — | 加载保存的对话 |
+| `/sessions` | — | 列出所有保存的对话 |
+| `/theme <名称>` | — | 切换配色主题（dark / light / high-contrast） |
+| `/changes` | — | 显示文件沙盒中被修改文件的差异（可加文件名过滤） |
+| `exit` | — | 退出程序 |
+
+---
+
+## 工具系统（Tool System）
+
+AI 代理在对话中可调用以下工具完成各类操作。共 **14 个内置工具**，涵盖文件操作、代码搜索、网络请求、用户交互等能力。
+
+### 工具列表
+
+| 工具名 | 缩写 | 分类 | 并行安全 | 功能说明 |
+|--------|------|------|---------|---------|
+| `read_file` | rf | IO | ✅ | 读取文件内容，支持指定行号范围、自动编码检测 |
+| `write_file` | wf | IO | ✅ | 覆盖写入文件，自动创建父目录，原子写入 |
+| `update_file` | uf | IO | ❌ | 精确替换文件中的文本（old_string → new_string） |
+| `search` | sr | 搜索 | ✅ | 在项目源码中搜索正则表达式，自动排除非源码目录 |
+| `find` | fn | 搜索 | ✅ | 按通配符模式查找文件和目录，支持深度控制 |
+| `ls` | ls | IO | ✅ | 列出目录内容，支持详细格式和隐藏文件显示 |
+| `bash` | bs | 执行 | ❌ | 执行 shell 命令（安全沙盒保护，禁止替代专用工具） |
+| `cp` | cp | IO | ✅ | 复制文件或目录，保留元数据，支持沙盒撤回 |
+| `mv` | mv | IO | ✅ | 移动文件或目录，支持跨文件系统 |
+| `rm` | rm | IO | ❌ | 删除文件或目录（删除前自动备份到沙盒） |
+| `mk` | mk | IO | ✅ | 创建目录，支持递归创建父目录 |
+| `web_search` | ws | 网络 | ❌ | 搜索引擎搜索 + 网页全文抓取（百度/必应） |
+| `user_select` | us | 交互 | ❌ | 向用户显示交互式选择界面（单选/多选） |
+| `dispatch_agent` | da | Agent | ❌ | 并行派发子 Agent 执行独立任务 |
+
+### 工具分类
+
+| 分类 | 工具 | 说明 |
+|------|------|------|
+| **文件 IO** | read_file, write_file, update_file, ls, cp, mv, rm, mk | 读写文件、目录操作、文件管理 |
+| **代码搜索** | search, find | 正则搜索源码、通配符查找文件 |
+| **命令执行** | bash | 安全沙盒中执行 shell 命令 |
+| **网络访问** | web_search | 搜索引擎查询和网页内容获取 |
+| **用户交互** | user_select | 交互式选择弹窗（单选/多选/超时回退） |
+| **Agent 调度** | dispatch_agent | 并发派发原子 Agent 执行独立任务 |
+
+### 工具设计原则
+
+- **纯异步** — 所有工具均基于 `asyncio`，不阻塞事件循环
+- **沙盒安全** — 文件操作自动备份，支持撤回（undo）
+- **元数据系统** — 每工具声明并行安全、网络依赖、超时估计等元数据，供调度层优化
+- **双端适配** — 同时支持终端（`display()`）和 Web UI（`web_display()`）两种渲染路径
 
 ---
 
