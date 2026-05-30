@@ -53,7 +53,7 @@ class TestChatUIErrorHandlerEmit:
         )
 
         mock_ui = MagicMock()
-        with patch.object(chat_ui, 'get_active_chat_ui', return_value=mock_ui):
+        with patch.object(chat_ui._state, 'get_active_chat_ui', return_value=mock_ui):
             handler.emit(record)
 
         mock_ui.on_error.assert_called_once()
@@ -72,7 +72,7 @@ class TestChatUIErrorHandlerEmit:
         )
 
         mock_ui = MagicMock()
-        with patch.object(chat_ui, 'get_active_chat_ui', return_value=mock_ui):
+        with patch.object(chat_ui._state, 'get_active_chat_ui', return_value=mock_ui):
             handler.emit(record)
 
         mock_ui.on_error.assert_called_once()
@@ -88,7 +88,7 @@ class TestChatUIErrorHandlerEmit:
         )
 
         mock_ui = MagicMock()
-        with patch.object(chat_ui, 'get_active_chat_ui', return_value=mock_ui):
+        with patch.object(chat_ui._state, 'get_active_chat_ui', return_value=mock_ui):
             handler.emit(record)
 
         mock_ui.on_error.assert_not_called()
@@ -104,7 +104,7 @@ class TestChatUIErrorHandlerEmit:
         )
 
         mock_ui = MagicMock()
-        with patch.object(chat_ui, 'get_active_chat_ui', return_value=mock_ui):
+        with patch.object(chat_ui._state, 'get_active_chat_ui', return_value=mock_ui):
             handler.emit(record)
 
         called_msg = mock_ui.on_error.call_args[0][0]
@@ -127,7 +127,7 @@ class TestChatUIErrorHandlerInactive:
         )
 
         mock_ui = MagicMock()
-        with patch.object(chat_ui, 'get_active_chat_ui', return_value=None):
+        with patch.object(chat_ui._state, 'get_active_chat_ui', return_value=None):
             # 不应抛出任何异常
             handler.emit(record)
 
@@ -155,7 +155,7 @@ class TestChatUIErrorHandlerLevelFilter:
         )
 
         mock_ui = MagicMock()
-        with patch.object(chat_ui, 'get_active_chat_ui', return_value=mock_ui):
+        with patch.object(chat_ui._state, 'get_active_chat_ui', return_value=mock_ui):
             handler.emit(record)
 
         if should_emit:
@@ -181,7 +181,7 @@ class TestChatUIErrorHandlerSelfRef:
         record._chatui_reported = True
 
         mock_ui = MagicMock()
-        with patch.object(chat_ui, 'get_active_chat_ui', return_value=mock_ui):
+        with patch.object(chat_ui._state, 'get_active_chat_ui', return_value=mock_ui):
             handler.emit(record)
 
         mock_ui.on_error.assert_not_called()
@@ -196,7 +196,7 @@ class TestChatUIErrorHandlerSelfRef:
         )
 
         mock_ui = MagicMock()
-        with patch.object(chat_ui, 'get_active_chat_ui', return_value=mock_ui):
+        with patch.object(chat_ui._state, 'get_active_chat_ui', return_value=mock_ui):
             handler.emit(record)
 
         # emit 后 record 必须被标记
@@ -233,7 +233,7 @@ class TestChatUIErrorHandlerSelfRef:
         mock_ui = MagicMock()
         mock_ui.on_error.side_effect = _on_error_side_effect
 
-        with patch.object(chat_ui, 'get_active_chat_ui', return_value=mock_ui):
+        with patch.object(chat_ui._state, 'get_active_chat_ui', return_value=mock_ui):
             handler.emit(
                 logging.LogRecord(
                     name="test", level=logging.ERROR,
