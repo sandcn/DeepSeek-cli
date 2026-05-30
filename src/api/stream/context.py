@@ -1,0 +1,112 @@
+"""StreamContext — 流式处理的共享状态容器"""
+from __future__ import annotations
+import time
+
+from ..stream_parse import ToolParseTracker
+
+
+class StreamContext:
+    """流式处理的共享状态
+
+    各 handler 通过此对象共享和更新状态。
+    """
+
+    def __init__(self, model: str, display, label: str, silent: bool):
+        self.model = model
+        self.display = display
+        self.label = label
+        self.silent = silent
+
+        # 模型阶段
+        self.is_reasoning = True
+        self.phase_thinking_sent = False
+        self.phase_answering_sent = False
+
+        # 内容累积
+        self.content_full: str = ""
+        self.reasoning_full: str = ""
+
+        # 使用量
+        self.usage = {"input": 0, "output": 0}
+        self.usage_accumulated = False
+
+        # 工具调用
+        self.tool_calls_map: dict = {}
+        self.tracker = ToolParseTracker(self.tool_calls_map, display, label, silent=silent)
+
+        # 中断
+        self.esc_interrupted = False
+        # ★ Bug B 修复：流迭代器因 Task 被取消而非正常结束
+        self.task_cancelled = False
+
+        # 计时
+        self.stream_start_time = time.perf_counter()
+        self._now: float = 0.0
+
+        # 速度追踪
+        self.speed_chunk_count = 0
+        self.speed_last_update = self.stream_start_time
+        self.speed_update_interval = 0.5
+        self.last_live_est = 0
+        self.token_estimate: int = 0
+        self._live_total_dirty = False
+
+        # 终端渲染器已移至 ChatUIConsumer（chat_ui.py），由事件系统驱动。
+        # 此处保留字段占位，供向后兼容（旧代码可能检查 hasattr 或直接赋值）。
+        self._reasoning_renderer = None
+        self._content_renderer = None
+
+        # 状态标记（显式初始化，消除 getattr 防御式访问）
+        self.final_usage_received = False
+        self._cleaned_up = False
+
+    @property
+    def now(self) -> float:
+        """当前时间戳缓存（被 SpeedHandler 等高频调用时避免系统调用开销）。"""
+        now = self._now
+        return now if now > 0 else time.perf_counter()
+
+    def update_time_cache(self):
+        self._now = time.perf_counter()
+
+    # ═══════════════════════════════════════════════════════════
+    # 渲染器属性（已迁移到 ChatUIConsumer，此处保留向后兼容占位）
+    # ═══════════════════════════════════════════════════════════
+
+    @property
+    def reasoning_renderer(self):
+        """推理渲染器（已废弃，ChatUIConsumer 管理终端渲染）。
+
+        返回 None，不再创建渲染器实例。
+        """
+        return None
+
+    @reasoning_renderer.setter
+    def reasoning_renderer(self, value):
+        pass  # 接受赋值但不存储（向后兼容）
+
+    @property
+    def content_renderer(self):
+        """内容渲染器（已废弃，ChatUIConsumer 管理终端渲染）。
+
+        返回 None，不再创建渲染器实例。
+        """
+        return None
+
+    @content_renderer.setter
+    def content_renderer(self, value):
+        pass  # 接受赋值但不存储（向后兼容）
+
+    @property
+    def has_reasoning_renderer(self):
+        """是否已创建推理渲染器（始终返回 False）。"""
+        return False
+
+    @property
+    def has_content_renderer(self):
+        """是否已创建内容渲染器（始终返回 False）。"""
+        return False
+
+    def close_reasoning_renderer(self) -> None:
+        """关闭推理渲染器（空操作，ChatUIConsumer 通过事件处理）。"""
+        pass

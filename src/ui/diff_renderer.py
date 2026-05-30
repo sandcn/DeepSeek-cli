@@ -1,0 +1,340 @@
+"""
+差异渲染模块 — 从 tools/utils.py 中抽离的 diff 渲染逻辑
+
+职责：文件差异的终端渲染，包括行内高亮、语法高亮、上下文折叠。
+"""
+
+from __future__ import annotations
+
+import logging
+import os
+import re
+import difflib
+from functools import lru_cache
+from typing import Optional, TYPE_CHECKING
+
+from ._lock import diff_active, _try_acquire_output_lock, locked_print
+from .colors import DIM, RED, GREEN, RESET
+
+_logger = logging.getLogger(__name__)
+
+if TYPE_CHECKING:
+    from .output_target import IOutputTarget
+
+# 行内差异背景色
+_BG_RED = '\033[41m'
+_BG_GREEN = '\033[42m'
+_BG_OFF = '\033[49m'
+
+
+@lru_cache(maxsize=None)
+def _resolve_lexer_name(ext: str) -> str:
+    """将文件扩展名转为安全的 Pygments lexer 名称，未知扩展默认用 text。"""
+    if not ext:
+        return "text"
+    # 已知 Pygments 不支持的别名 → 直接映射到 text
+    _UNSUPPORTED = {"txt", "text"}
+    if ext.lower() in _UNSUPPORTED:
+        return "text"
+    return ext
+
+
+def _get_highlighter(lexer_name):
+    """获取或缓存 pygments lexer + formatter，未知 lexer 自动降级到 text。"""
+    try:
+        from pygments.lexers import get_lexer_by_name
+        from pygments.formatters import TerminalFormatter
+    except ImportError:
+        return None
+
+    candidates = [_resolve_lexer_name(lexer_name), "text"]
+    seen = set()
+    for name in candidates:
+        if name in seen:
+            continue
+        seen.add(name)
+        try:
+            lexer = get_lexer_by_name(name, stripnl=False, ensurenl=False)
+            formatter = TerminalFormatter()
+            return lexer, formatter
+        except Exception:
+            _logger.debug("lexer %s 加载失败", name, exc_info=True)
+            continue
+    return None
+
+
+def _syntax_hl(text, lexer_name):
+    """对单行文本做语法高亮"""
+    if not lexer_name or not text.strip():
+        return text
+    pair = _get_highlighter(lexer_name)
+    if not pair:
+        return text
+    try:
+        from pygments import highlight as pyg_hl
+        return pyg_hl(text, pair[0], pair[1]).rstrip('\n')
+    except ImportError:
+        return text
+
+
+def _inline_highlight(old_text, new_text):
+    """对比两段文本，返回带背景色高亮差异部分的 (old_hl, new_hl)
+
+    注意：对输入文本做 ANSI 转义序列消毒，防止终端注入。
+    """
+    # 消毒：移除输入文本中的 ANSI 转义序列（含 OSC 8 超链接、DCS、APC 等）
+    old_text = re.sub(r'\x1B(?:[@-Z\\]|\[[0-?]*[ -/]*[@-~]|[\]PX^_].*?(?:\x1B\\|\x07))', '', old_text)
+    new_text = re.sub(r'\x1B(?:[@-Z\\]|\[[0-?]*[ -/]*[@-~]|[\]PX^_].*?(?:\x1B\\|\x07))', '', new_text)
+
+    sm = difflib.SequenceMatcher(None, old_text, new_text)
+    if sm.ratio() < 0.25:
+        return old_text, new_text
+    old_parts, new_parts = [], []
+    for op, i1, i2, j1, j2 in sm.get_opcodes():
+        if op == 'equal':
+            old_parts.append(old_text[i1:i2])
+            new_parts.append(new_text[j1:j2])
+        elif op == 'replace':
+            old_parts.append(f"{_BG_RED}{old_text[i1:i2]}{_BG_OFF}")
+            new_parts.append(f"{_BG_GREEN}{new_text[j1:j2]}{_BG_OFF}")
+        elif op == 'delete':
+            old_parts.append(f"{_BG_RED}{old_text[i1:i2]}{_BG_OFF}")
+        elif op == 'insert':
+            new_parts.append(f"{_BG_GREEN}{new_text[j1:j2]}{_BG_OFF}")
+    return ''.join(old_parts), ''.join(new_parts)
+
+
+def _parse_diff_hunks(diff_list, line_offset=0):
+    """解析 unified diff 行列表，返回结构化记录列表。
+
+    每条记录为 (type, line, old_num, new_num) 元组，
+    type 取值: 'hunk' | 'del' | 'add' | 'ctx'
+    """
+    hunk_re = re.compile(r'^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@')
+    old_num = new_num = 0
+    parsed = []
+    for line in diff_list:
+        if line.startswith('---') or line.startswith('+++'):
+            continue
+        m = hunk_re.match(line)
+        if m:
+            old_num = line_offset + int(m.group(1))
+            new_num = line_offset + int(m.group(2))
+            parsed.append(('hunk', '', old_num, new_num))
+            continue
+        if line.startswith('-'):
+            parsed.append(('del', line, old_num, 0))
+            old_num += 1
+        elif line.startswith('+'):
+            parsed.append(('add', line, 0, new_num))
+            new_num += 1
+        else:
+            parsed.append(('ctx', line, old_num, new_num))
+            old_num += 1
+            new_num += 1
+    return parsed
+
+
+def _fold_context(parsed, fold_threshold=4):
+    """折叠连续上下文行（保留首尾各1行）。
+
+    Args:
+        parsed: _parse_diff_hunks 的输出
+        fold_threshold: 连续上下文行折叠阈值
+
+    Returns:
+        折叠后的记录列表
+    """
+    folded = []
+    ctx_run = []
+
+    def _flush_ctx():
+        if len(ctx_run) > fold_threshold:
+            folded.append(ctx_run[0])
+            hidden = len(ctx_run) - 2
+            folded.append(('fold', hidden, 0, 0))
+            folded.append(ctx_run[-1])
+        else:
+            folded.extend(ctx_run)
+
+    for item in parsed:
+        if item[0] == 'ctx':
+            ctx_run.append(item)
+        else:
+            _flush_ctx()
+            ctx_run = []
+            folded.append(item)
+    _flush_ctx()
+    return folded
+
+
+def _write_diff_line(text: str, output_target=None):
+    """写入一行 diff 输出，优先使用 output_target，否则使用 locked_print。"""
+    if output_target is not None:
+        output_target.write_line(text)
+    else:
+        locked_print(text)
+
+
+def _render_chunk(item, w, lexer_name, output_target):
+    """渲染一个非增删类型的 diff 块（hunk/fold/ctx）。
+
+    Args:
+        item: folded 列表中的条目 (typ, line, old_num, new_num)
+        w: 行号宽度
+        lexer_name: 语法高亮名称
+        output_target: 可选的输出目标
+    """
+    typ = item[0]
+    if typ == 'hunk':
+        return
+    if typ == 'fold':
+        _write_diff_line(f"  {DIM}{'':>{w}} | ...{RESET}", output_target)
+    else:
+        ctx_text = item[1][1:] if item[1].startswith(' ') else item[1]
+        hl_text = _syntax_hl(ctx_text, lexer_name) if lexer_name else ctx_text
+        _write_diff_line(f"  {DIM}{item[2]:>{w}} |{RESET} {hl_text}{RESET}", output_target)
+
+
+def render_diff(diff_list, w, line_offset=0, lexer_name='', output_target: Optional["IOutputTarget"] = None):
+    """
+    Claude Code 风格的差异渲染：
+    - 行号右对齐 + │ 分隔
+    - 语法高亮（上下文行 + 纯增删行）
+    - 删除行红色 - 前缀，新增行绿色 + 前缀
+    - 成对修改行内高亮差异部分（背景色）
+    - 上下文行灰色暗淡
+    - 连续未变更行折叠为 ...
+    """
+    def _hl(text):
+        return _syntax_hl(text, lexer_name) if lexer_name else text
+
+    # 解析 diff
+    parsed = _parse_diff_hunks(diff_list, line_offset)
+    # 折叠上下文
+    folded = _fold_context(parsed)
+
+    def _flush_pairs(del_buf, add_buf):
+        for i in range(max(len(del_buf), len(add_buf))):
+            if i < len(del_buf) and i < len(add_buf):
+                _, d_line, d_oln, _ = del_buf[i]
+                _, a_line, _, a_nln = add_buf[i]
+                h_old, h_new = _inline_highlight(d_line[1:], a_line[1:])
+                _write_diff_line(f"  {RED}{d_oln:>{w}} | -{h_old}{RESET}", output_target)
+                _write_diff_line(f"  {GREEN}{a_nln:>{w}} | +{h_new}{RESET}", output_target)
+            elif i < len(del_buf):
+                _, d_line, d_oln, _ = del_buf[i]
+                _write_diff_line(f"  {RED}{d_oln:>{w}} | -{RESET}{_hl(d_line[1:])}{RESET}", output_target)
+            else:
+                _, a_line, _, a_nln = add_buf[i]
+                _write_diff_line(f"  {GREEN}{a_nln:>{w}} | +{RESET}{_hl(a_line[1:])}{RESET}", output_target)
+
+    del_buf, add_buf = [], []
+    for item in folded:
+        typ = item[0]
+        if typ == 'del':
+            if add_buf:
+                _flush_pairs(del_buf, add_buf)
+                del_buf, add_buf = [], []
+            del_buf.append(item)
+        elif typ == 'add':
+            add_buf.append(item)
+        else:
+            if del_buf or add_buf:
+                _flush_pairs(del_buf, add_buf)
+                del_buf, add_buf = [], []
+            _render_chunk(item, w, lexer_name, output_target)
+    if del_buf or add_buf:
+        _flush_pairs(del_buf, add_buf)
+
+
+def render_diff_to_ansi(path: str, old_content: str, new_content: str) -> str:
+    """将文件差异渲染为带 ANSI 颜色的纯文本字符串。
+
+    纯函数，无锁，不涉及 I/O。返回的字符串可直接在支持 ANSI 的终端显示，
+    或由前端做 ANSI→HTML 转换后在 WebUI 渲染。
+
+    与 show_file_diff 的区别：
+      - show_file_diff: 通过 output_target 输出（可能有锁），有副作用
+      - render_diff_to_ansi: 返回字符串，无锁，无副作用，纯函数
+    """
+    old_norm = old_content.replace('\r\n', '\n') if old_content else ""
+    new_norm = new_content.replace('\r\n', '\n')
+    old_lines = old_norm.splitlines(keepends=False)
+    new_lines = new_norm.splitlines(keepends=False)
+
+    diff_list = list(difflib.unified_diff(
+        old_lines, new_lines,
+        fromfile='旧文件', tofile='新文件',
+        lineterm='', n=3
+    ))
+    if not diff_list:
+        return ""
+
+    w = len(str(max(len(old_lines), len(new_lines), 1)))
+    ext = os.path.splitext(path)[1].lstrip('.').lower()
+    lexer_name = _resolve_lexer_name(ext)
+
+    # 使用简单列表收集器（纯内存操作，无锁）
+    collected: list[str] = []
+
+    class _Collector:
+        """收集 write_line 调用的简单输出目标（替代 type() 动态类创建）。"""
+        _target = collected
+        @classmethod
+        def write_line(cls, text: str) -> None:
+            cls._target.append(text)
+
+    render_diff(diff_list, w, lexer_name=lexer_name, output_target=_Collector)
+    # 移除最后的空行（如有）
+    while collected and collected[-1] == '':
+        collected.pop()
+    return '\n'.join(collected)
+
+
+def show_file_diff(path, old_content, new_content, output_target: Optional["IOutputTarget"] = None):
+    """显示文件差异对比
+
+    ★ diff_active 互斥机制：
+      本函数直接管理 diff_active（设置/清除），而非通过 _DiffGuard/
+      _diff_lock 路径。设计前提：
+      - 调用时通常已处于 _DiffGuard 上下文内（由 _show_diff_preview
+        或 capture_and_print_async 调用），此时 diff_active 已置位，
+        本函数的设置/清除为无操作（检测 was_active 跳过）。
+      - 当被直接调用（不在 _DiffGuard 内）时，通过设置 diff_active
+        阻止 _refresh_loop 在此期间渲染帧，避免 diff 输出与面板刷新交叠。
+      - 超时兜底：_render_frame_unlocked 在 diff_active 超过 30s 且
+        _diff_count==0 时强制清除（认为异常/取消导致残留）。
+    """
+    old_norm = old_content.replace('\r\n', '\n')
+    new_norm = new_content.replace('\r\n', '\n')
+
+    old_lines = old_norm.splitlines(keepends=False)
+    new_lines = new_norm.splitlines(keepends=False)
+
+    diff_list = list(difflib.unified_diff(
+        old_lines, new_lines,
+        fromfile='旧文件', tofile='新文件',
+        lineterm='', n=3
+    ))
+    if not diff_list:
+        msg = f"  {DIM}(内容相同，无变化){RESET}"
+        if output_target is not None:
+            output_target.write_line(msg)
+        else:
+            locked_print(msg)
+        return
+    w = len(str(max(len(old_lines), len(new_lines), 1)))
+    ext = os.path.splitext(path)[1].lstrip('.').lower()
+    lexer_name = _resolve_lexer_name(ext)
+    # 锁外预热 Pygments lexer，避免在锁内首次加载阻塞其他线程
+    _get_highlighter(lexer_name)
+    diff_was_active = diff_active.is_set()
+    if not diff_was_active:
+        diff_active.set()
+    try:
+        with _try_acquire_output_lock(name=f"show_file_diff:{os.path.basename(path)}"):
+            render_diff(diff_list, w, lexer_name=lexer_name, output_target=output_target)
+    finally:
+        if not diff_was_active:
+            diff_active.clear()

@@ -1,0 +1,38 @@
+"""
+终端颜色配置模块
+
+始终启用终端颜色，不依赖 TTY 检测。
+"""
+from __future__ import annotations
+
+import os
+from typing import Dict, Any
+
+
+def should_use_color() -> bool:
+    """始终启用终端颜色，不依赖 TTY 检测。"""
+    return True
+
+
+def get_safe_console_config() -> Dict[str, Any]:
+    """
+    获取安全的控制台配置
+
+    根据当前终端环境返回适合的Console配置参数。
+
+    Returns:
+        包含Console配置参数的字典
+    """
+    config: Dict[str, Any] = {
+        "force_terminal": True,
+        "soft_wrap": True,
+        "markup": True,
+        "emoji": True,
+        "highlight": True,
+    }
+
+    # 检测是否在Windows系统（仅旧版cmd需要windows颜色系统）
+    if os.name == 'nt' and os.getenv("WT_SESSION") is None:
+        config["color_system"] = "windows"
+
+    return config
