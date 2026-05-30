@@ -218,11 +218,41 @@ class ParallelDisplay(BaseDisplay):
             return
         self._started = True
         self._stopped = False
-        # 注册到 ChatUI 的全局引用，由 _drain_queue 驱动刷新
+
+        # ★ 先不注册 _active_parallel_display（推迟到首帧渲染完成后），
+        #   防止 Reader 线程 _drain_queue Phase 2 在首次渲染前检测到
+        #   活跃 display 并触发 pd.refresh() → _render_frame_unlocked()
+        #   （此时光标在输入区、last_lines=0 无 \033[u 恢复），渲染
+        #   错误位置的首帧。
+
         import src.chat_ui as _chat_ui_mod  # noqa: PLC0415
+        _chat_ui = _chat_ui_mod.get_active_chat_ui()
+        if _chat_ui is not None:
+            # ★ 首次渲染前确保光标在上屏区域（内容区），防止面板首次渲
+            #   染时光标位于下屏（输入区），导致面板内容先渲染到输入区
+            #   再被后续 _drain_queue 的 refresh 修正到上屏的闪烁问题。
+            #   原因：render_frame 首次调用（last_lines=0）不从已保存的
+            #   SCOSC 恢复光标位置，而是从当前位置开始写入。
+            with _try_acquire_output_lock(
+                name="parallel_display.start", timeout=0.5,
+            ) as _locked:
+                if _locked:
+                    # ★ 锁内完成光标定位 + 首次渲染，消除 Reader 线程
+                    #   _position_cursor()（_drain_queue Phase 3 不持锁
+                    #   路径）在两者之间插入移回输入区的竞态窗口。
+                    #   output_lock 为 RLock，render_frame 内部
+                    #   _try_acquire_output_lock 可重入获取，不会死锁。
+                    _chat_ui.ensure_cursor_upper()
+                    self._render_frame_unlocked()
+                else:
+                    # 锁超时降级：不持锁直接渲染（与修改前行为一致）
+                    self._render_frame_unlocked()
+        else:
+            # ChatUI 未激活，无底部栏分屏，无需关心光标位置
+            self._render_frame_unlocked()
+
+        # ★ 首帧渲染完成后再注册，Reader 线程 Phase 2 从此开始接管
         _chat_ui_mod._active_parallel_display = self
-        # 初始渲染（立即执行）
-        self._render_frame_unlocked()
 
     def refresh(self):
         """公开刷新入口 — 由 ChatUIConsumer._drain_queue 在每次渲染循环中调用。
