@@ -177,21 +177,21 @@ class RenderEngine:
 
         # ★ 阶段 3：底部栏重绘 + 光标定位
         # 分流策略：
-        #   - 有命令/尺寸变化 → 全量重绘（force_redraw）+ 光标定位（锁内原子）
+        #   - 有命令/尺寸变化 → 全量重绘（force_redraw，跳过内部 _check_resize
+        #     因 Stage 0b 已完成检测，消除 Bug 8 的双调用窗口）
         #   - 仅流式活跃（无命令/无尺寸变化）→ 增量状态行刷新 + 光标定位
         #   流式期间 10Hz drain 中约 70%+ 的周期无新命令到达，免去全量
         #   底部栏（分隔线+输入区）重绘，将 I/O 从 ~5 行降至 0-1 行。
-        #   _position_cursor() 在所有底部栏活跃路径中均执行，确保：
-        #   - 流式期间 refresh_status_only 的 \0338 恢复后光标仍正确回位到输入区
-        #   - 流式结束后首轮 drain 光标不会停滞在上屏内容区
         if commands or resized:
             with _try_acquire_output_lock(name="drain_queue.bottom", timeout=1.0) as locked:
                 if locked:
-                    self._bb.force_redraw()
+                    self._bb.force_redraw(skip_resize_check=True)  # Bug 8: 跳过内部 _check_resize
                     self._position_cursor()
         elif self._bb.is_status_active:
-            self._bb.refresh_status_only()
-            self._position_cursor()
+            with _try_acquire_output_lock(name="drain_queue.status_cursor", timeout=1.0) as locked:
+                if locked:
+                    self._bb.refresh_status_only()
+                    self._position_cursor()  # Bug 9: 锁内执行，与 refresh_status_only 原子化
 
     def _position_cursor(self) -> None:
         """光标移回输入行，根据超长文本自动拆行定位（含最少3行输入区）。

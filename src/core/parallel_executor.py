@@ -56,7 +56,7 @@ def _get_terminal_width() -> int:
         try:
             data = fcntl.ioctl(fd, termios.TIOCGWINSZ,
                                struct.pack("HHHH", 0, 0, 0, 0))
-            cols, _ = struct.unpack("HHHH", data)[:2]
+            rows, cols, _, _ = struct.unpack("HHHH", data)
             return cols if cols > 0 else 80
         finally:
             os.close(fd)

@@ -28,6 +28,7 @@ from ._bottom_cursor import (
     _wrap_by_width,
 )
 from ._lock import _try_acquire_output_lock
+from .terminal_adapter import query_terminal_size
 
 _logger = logging.getLogger(__name__)
 
@@ -139,6 +140,13 @@ class _BottomBar:
         # ── 终端尺寸缓存（减少 shutil.get_terminal_size syscall） ──
         self._cached_height: int = 0
         self._cached_width: int = 0
+        self._setup_height: int = 0   # 上次 setup 时的终端高度
+        self._setup_width: int = 0    # 上次 setup 时的终端宽度（Bug 3: 宽度变化检测）
+        # ── SIGWINCH 信号驱动 resize ──
+        self._resize_dirty: bool = False  # 信号处理器设置，_check_resize() 消费（Bug 1）
+        self._sigwinch_registered: bool = False  # 防止重复注册
+        # ── 终端缩到极小后恢复时保存的输入文本 ──
+        self._saved_text_before_shrink: str | None = None  # Bug 6: teardown 时保存，rebuild 时恢复
 
     # ── 动态行数计算 ──────────────────────────────────────
 
@@ -166,24 +174,32 @@ class _BottomBar:
 
         缓存由 _check_resize() 在检测到尺寸变化时刷新，
         或由 _invalidate_terminal_cache() 在 setup/teardown 时失效。
+        回退使用 query_terminal_size()（ioctl）而非 shutil，
+        避免 Android/Termux 上陈旧环境变量值。
         """
         if self._cached_height > 0:
             return self._cached_height
         try:
-            h = shutil.get_terminal_size().lines
-            self._cached_height = h
-            return h
+            _w, _h = query_terminal_size()
+            self._cached_height = _h
+            self._cached_width = _w
+            return _h
         except Exception:
             return 24
 
     def _term_width(self) -> int:
-        """获取终端宽度，优先返回缓存值。"""
+        """获取终端宽度，优先返回缓存值。
+
+        回退使用 query_terminal_size()（ioctl）而非 shutil，
+        避免 Android/Termux 上陈旧环境变量值。
+        """
         if self._cached_width > 0:
             return self._cached_width
         try:
-            w = shutil.get_terminal_size().columns
-            self._cached_width = w
-            return w
+            _w, _h = query_terminal_size()
+            self._cached_height = _h
+            self._cached_width = _w
+            return _w
         except Exception:
             return 80
 
@@ -350,6 +366,13 @@ class _BottomBar:
         """
         self._model_name = name
 
+    def _on_sigwinch(self, cols: int, rows: int) -> None:
+        """SIGWINCH 回调：仅设置 dirty 标记（信号安全，纯 bool 赋值）。
+
+        在 _check_resize() 开头消费该标记，触发完整 resize 检测流程。
+        """
+        self._resize_dirty = True
+
     def check_resize(self) -> bool:
         """检测终端尺寸变化并自动重设滚动区域（公开方法）。
 
@@ -364,6 +387,10 @@ class _BottomBar:
         在 refresh/redraw 及 reader 线程 drain 循环中调用。
         终端高度不足 _MIN_HEIGHT 时执行 teardown 恢复到全屏滚动。
         未激活但高度已恢复到 _MIN_HEIGHT 以上时自动重建底部栏。
+
+        双路径 resize 检测：
+          1. 信号驱动：SIGWINCH → _on_sigwinch() → _resize_dirty=True
+          2. 轮询驱动：每次调用均通过 ioctl 查询真实尺寸并比较缓存
 
         setup() 内部将 _last_text 重置为 "" 并在终端上绘制占位符，
         因此调用方必须在 resize 发生后重新绘制底部栏（force_redraw
@@ -382,14 +409,25 @@ class _BottomBar:
             应随后重绘底部栏以恢复正确的输入文本显示。
             False 表示无变化或未激活。
         """
-        # ★ _check_resize 始终从 shutil 获取真实尺寸（更新缓存），
-        #   确保尺寸变化能被及时检测到。后续所有读尺寸路径走缓存。
+        # ★ Bug 1：SIGWINCH 快速路径 — 信号处理器设置了 dirty 标记
+        if self._resize_dirty:
+            self._resize_dirty = False
+            # 强制刷新尺寸缓存（绕过下面的比较逻辑直接走 setup）
+            try:
+                self._cached_width, self._cached_height = query_terminal_size()
+            except Exception:
+                _logger.warning("_check_resize: query_terminal_size() 失败", exc_info=True)
+
+        # ★ _check_resize 始终通过 ioctl 获取真实尺寸（更新缓存），
+        #   确保尺寸变化能被及时检测到。Android/Termux 上 shutil 回退
+        #   到 $LINES/$COLUMNS 环境变量会返回陈旧值，故使用
+        #   terminal_adapter.query_terminal_size() 的 ioctl 策略。
         try:
-            ts = shutil.get_terminal_size()
-            self._cached_height, self._cached_width = ts.lines, ts.columns
+            self._cached_width, self._cached_height = query_terminal_size()
         except Exception:
-            _logger.warning("_check_resize: shutil.get_terminal_size() 失败", exc_info=True)
+            _logger.warning("_check_resize: query_terminal_size() 失败", exc_info=True)
         height = self._cached_height or 24
+        width = self._cached_width or 80
 
         # ★ 未激活但高度已恢复到 _MIN_HEIGHT 以上 → 自动重建底部栏
         if not self._active:
@@ -397,6 +435,10 @@ class _BottomBar:
                 with _try_acquire_output_lock(name="bottom_bar.check_resize.rebuild", timeout=1.0) as locked:
                     if locked:
                         self.setup()
+                        # ★ Bug 6 修复：恢复终端缩小前保存的输入文本
+                        if self._saved_text_before_shrink is not None:
+                            self._last_text = self._saved_text_before_shrink
+                            self._saved_text_before_shrink = None
                 return True
             return False
 
@@ -404,6 +446,8 @@ class _BottomBar:
         if height < self._MIN_HEIGHT:
             with _try_acquire_output_lock(name="bottom_bar.check_resize.teardown", timeout=1.0) as locked:
                 if locked:
+                    # ★ Bug 6 修复：保存输入文本，供终端恢复时重建
+                    self._saved_text_before_shrink = self._last_text
                     out = sys.__stdout__
                     out.write("\033[r")                     # 全屏滚动
                     out.write("\0337")
@@ -416,20 +460,41 @@ class _BottomBar:
                     out.write("\0338")
                     out.write("\033[s")
                     out.flush()
-                self._last_bottom_lines = _BOTTOM_LINES
+                    # ★ Bug 5 修复：移入 locked 块内，锁超时时不错误重置
+                    self._last_bottom_lines = _BOTTOM_LINES
             return True
 
-        if height != self._setup_height and height >= self._MIN_HEIGHT:
+        # ★ Bug 3 修复：同时检测高度和宽度变化（原仅检测高度）
+        if (height != self._setup_height or width != self._setup_width) and height >= self._MIN_HEIGHT:
             # 单锁作用域：output_lock 是 RLock，setup() 内部的可重入获取安全
             with _try_acquire_output_lock(name="bottom_bar.check_resize", timeout=1.0) as locked:
                 if not locked:
-                    return True  # 锁超时仍标记 resize 以触发调用方重绘
+                    # ★ Bug 7 修复：锁超时时更新 _setup_height/_setup_width，
+                    #   避免下次 _check_resize() 因同一尺寸再次触发（无限循环）
+                    self._setup_height = height
+                    self._setup_width = width
+                    return True
                 saved_text = self._last_text
-                saved_bottom = self._last_bottom_lines  # ★ 保存 resize 前的底部行数
                 self._active = False
                 self.setup()  # RLock 允许可重入嵌套
+                # ★ setup() 基于 _last_text="" 计算的 _bottom_lines=5（最小），
+                #   滚动区域设为 [1, height-5]。现在恢复 _last_text 后，
+                #   实际文本可能需要更多行（如 7），导致滚动区域过大。
+                #   Stage 1 渲染会在此期间将内容写入行 height-5 ~ height-7，
+                #   后续 force_redraw 的底部栏重绘会覆盖这些越界行。
+                #   修复：恢复 _last_text 后立即重算 _bottom_lines 并修正
+                #   滚动区域，确保锁释放前滚动区域已与实际文本一致。
                 self._last_text = saved_text
-                self._last_bottom_lines = saved_bottom  # ★ 恢复旧值，供 force_redraw 正确计算 old_end/delta
+                actual_total = self._bottom_lines  # 基于实际文本
+                if actual_total != self._last_bottom_lines:
+                    scroll_end = height - actual_total
+                    if scroll_end >= 1:
+                        out = sys.__stdout__
+                        out.write(f"\033[1;{scroll_end}r")
+                        out.write(f"\033[{scroll_end};1H\033[s")
+                        out.write(f"\033[{height};1H")
+                        out.flush()
+                    self._last_bottom_lines = actual_total
             return True
         return False
 
@@ -490,8 +555,25 @@ class _BottomBar:
             return
         self._active = True
         self._last_text = ""
-        self._setup_height = height
+        # ★ Bug 2/3 修复：使用 query_terminal_size() 获取真实尺寸设置 _setup，
+        #   避免 Android/Termux 上 _term_height()/_term_width() 回退到 shutil 陈旧值
+        #   导致 _check_resize() 下一次比较时陷入无限 resize 循环。
+        try:
+            _sw, _sh = query_terminal_size()
+        except Exception:
+            _sw, _sh = self._cached_width or 80, self._cached_height or 24
+        self._setup_height = _sh
+        self._setup_width = _sw
         self._last_bottom_lines = self._bottom_lines  # 缓存当前底部行数
+
+        # ★ Bug 1: 注册 SIGWINCH 回调（信号驱动 resize 检测）
+        if not self._sigwinch_registered:
+            from .terminal_adapter import register_sigwinch_callback
+            try:
+                register_sigwinch_callback(self._on_sigwinch)
+                self._sigwinch_registered = True
+            except Exception:
+                pass  # Windows 无 SIGWINCH，静默忽略
 
         scroll_end = height - self._bottom_lines  # 动态滚动区域
         with _try_acquire_output_lock(name="bottom_bar.setup", timeout=1.0) as locked:
@@ -519,7 +601,19 @@ class _BottomBar:
         """
         if not self._active:
             return
+        # ★ Bug 6 扩展修复：teardown() 直接调用时也保存 _last_text，
+        #   确保 suspend/resume 等场景下用户输入不丢失。
+        self._saved_text_before_shrink = self._last_text
         self._active = False
+
+        # ★ Bug 1: 注销 SIGWINCH 回调
+        if self._sigwinch_registered:
+            from .terminal_adapter import unregister_sigwinch_callback
+            try:
+                unregister_sigwinch_callback(self._on_sigwinch)
+                self._sigwinch_registered = False
+            except Exception:
+                pass
 
         self._invalidate_terminal_cache()
         with _try_acquire_output_lock(name="bottom_bar.teardown", timeout=1.0) as locked:
@@ -589,7 +683,7 @@ class _BottomBar:
             out.write(f"\033[{scroll_end};1H\033[s")
             out.flush()
 
-    def force_redraw(self) -> None:
+    def force_redraw(self, skip_resize_check: bool = False) -> None:
         """无条件重绘全部底部栏（绕过节流和变更检测），超长文本自动拆行。
 
         所有共享可变状态在 output_lock 保护下更新，与 refresh()
@@ -601,8 +695,14 @@ class _BottomBar:
 
         ★ 性能优化：先检查文本和布局是否变化，确认需要重绘后再
         调用 _format_status()（含 shutil 系统调用），避免不必要开销。
+
+        Args:
+            skip_resize_check: 为 True 时跳过内部 _check_resize() 调用。
+                用于 _drain_queue() 等已在调用方完成 resize 检测的场景，
+                消除同一 drain 周期内的双 _check_resize() 窗口（Bug 8）。
         """
-        self._check_resize()
+        if not skip_resize_check:
+            self._check_resize()
         if not self._active:
             return
 

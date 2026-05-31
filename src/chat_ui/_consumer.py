@@ -251,10 +251,11 @@ class ChatUIConsumer:
             resized = locked and self._bottom_bar.check_resize()
 
         # ★ 3. 底部栏重绘 + 光标定位（有活跃状态或尺寸变化时执行）
+        #    skip_resize_check=True：resize 已在步骤 2 检测过，避免双 _check_resize() 窗口。
         if resized or self._bottom_bar.is_status_active:
             with _try_acquire_output_lock(name="refresh.bottom", timeout=1.0) as locked:
                 if locked:
-                    self._bottom_bar.force_redraw()
+                    self._bottom_bar.force_redraw(skip_resize_check=True)
                     self._engine._position_cursor()
 
     def write_line(self, text: str) -> None:

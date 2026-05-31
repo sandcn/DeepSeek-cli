@@ -27,6 +27,64 @@ _logger = logging.getLogger(__name__)
 _resize_instances = weakref.WeakSet()  # 所有注册了回调的 TerminalAdapter 实例
 
 
+# ── 模块级终端尺寸查询（ioctl 优先，避免 shutil env var 回退） ──
+
+def query_terminal_size() -> tuple[int, int]:
+    """通过 ioctl 直接获取终端尺寸，不使用 shutil（避免 env var 回退）。
+
+    shutil.get_terminal_size() 在 sys.stdout 非 tty 时回退到
+    $LINES/$COLUMNS 环境变量。Android/Termux 上这些变量不随 resize
+    更新，返回 stale 值。
+
+    策略：
+    1. 首选 /dev/tty — 直接查询控制终端
+    2. 回退：逐个尝试 stdout/stderr/stdin 的 fileno
+    3. 最终回退：shutil（仅在所有 fd 都不可用时）
+
+    Returns:
+        (columns, rows) 元组，与 shutil.get_terminal_size() 返回值顺序一致。
+    """
+    import os as _os, fcntl, termios, struct
+
+    def _try_ioctl(_fd: int) -> tuple[int, int] | None:
+        try:
+            _data = fcntl.ioctl(_fd, termios.TIOCGWINSZ,
+                                struct.pack("HHHH", 0, 0, 0, 0))
+            _rows, _cols, _, _ = struct.unpack("HHHH", _data)
+            return _cols, _rows
+        except Exception:
+            return None
+
+    # /dev/tty
+    try:
+        _fd = _os.open("/dev/tty", _os.O_RDONLY)
+    except Exception:
+        _logger.debug("打开 /dev/tty 失败（非关键）")
+    else:
+        try:
+            _result = _try_ioctl(_fd)
+            if _result is not None:
+                return _result
+        finally:
+            _os.close(_fd)
+
+    # 标准流 fd
+    for _stream in (sys.stdout, sys.stderr, sys.stdin):
+        try:
+            _result = _try_ioctl(_stream.fileno())
+            if _result is not None:
+                return _result
+        except Exception:
+            _logger.debug("ioctl 获取终端大小失败（std流 %s）", type(_stream).__name__)
+
+    # 所有 ioctl 失败，回退到 shutil
+    try:
+        _sz = shutil.get_terminal_size()
+        return _sz.columns, _sz.lines
+    except Exception:
+        return 80, 24
+
+
 class TerminalAdapter:
     """终端 I/O 抽象层。
 
@@ -53,56 +111,8 @@ class TerminalAdapter:
 
     @staticmethod
     def _query_terminal_size() -> tuple[int, int]:
-        """通过 ioctl 直接获取终端尺寸，不使用 shutil（避免 env var 回退）。
-
-        shutil.get_terminal_size() 在 sys.stdout 非 tty 时回退到
-        $LINES/$COLUMNS 环境变量。Android/Termux 上这些变量不随 resize
-        更新，返回 stale 值。
-
-        策略：
-        1. 首选 /dev/tty — 直接查询控制终端
-        2. 回退：逐个尝试 stdout/stderr/stdin 的 fileno
-        3. 最终回退：shutil（仅在所有 fd 都不可用时）
-        """
-        import os as _os, fcntl, termios, struct
-
-        def _try_ioctl(_fd: int) -> tuple[int, int] | None:
-            try:
-                _data = fcntl.ioctl(_fd, termios.TIOCGWINSZ,
-                                    struct.pack("HHHH", 0, 0, 0, 0))
-                _rows, _cols, _, _ = struct.unpack("HHHH", _data)
-                return _cols, _rows
-            except Exception:
-                return None
-
-        # /dev/tty
-        try:
-            _fd = _os.open("/dev/tty", _os.O_RDONLY)
-        except Exception:
-            _logger.debug("打开 /dev/tty 失败（非关键）")
-        else:
-            try:
-                _result = _try_ioctl(_fd)
-                if _result is not None:
-                    return _result
-            finally:
-                _os.close(_fd)
-
-        # 标准流 fd
-        for _stream in (sys.stdout, sys.stderr, sys.stdin):
-            try:
-                _result = _try_ioctl(_stream.fileno())
-                if _result is not None:
-                    return _result
-            except Exception:
-                _logger.debug("ioctl 获取终端大小失败（std流 %s）", type(_stream).__name__)
-
-        # 所有 ioctl 失败，回退到 shutil
-        try:
-            _sz = shutil.get_terminal_size()
-            return _sz.columns, _sz.lines
-        except Exception:
-            return 80, 24
+        """委托给模块级 query_terminal_size()，保持向后兼容。"""
+        return query_terminal_size()
 
     @property
     def terminal_width(self) -> int:
@@ -276,11 +286,37 @@ class TerminalAdapter:
 
 # ── SIGWINCH 信号处理 ──────────────────────────────────
 
+# 模块级回调列表：供非 TerminalAdapter 消费者（如 _BottomBar）注册
+# 信号安全的轻量回调。回调签名: (cols: int, rows: int) -> None
+_sigwinch_callbacks: list = []
+
+
+def register_sigwinch_callback(cb) -> None:
+    """注册 SIGWINCH 回调（模块级，信号安全）。
+
+    cb 签名: (cols: int, rows: int) -> None。
+    回调中仅做轻量操作（如设置 bool 标记），避免死锁。
+    """
+    if cb not in _sigwinch_callbacks:
+        _sigwinch_callbacks.append(cb)
+
+
+def unregister_sigwinch_callback(cb) -> None:
+    """注销 SIGWINCH 回调。"""
+    try:
+        _sigwinch_callbacks.remove(cb)
+    except ValueError:
+        pass
+
 
 def _handle_sigwinch(signum, frame):
-    """SIGWINCH 处理：通知所有已注册的 TerminalAdapter 实例"""
+    """SIGWINCH 处理：通知所有已注册的 TerminalAdapter 实例 + 模块级回调。
+
+    注意：此为信号处理器，禁止使用 logging（非信号安全），
+    禁止获取锁（可能导致死锁）。异常静默丢弃。
+    """
     try:
-        cols, rows = TerminalAdapter._query_terminal_size()
+        cols, rows = query_terminal_size()
     except Exception:
         cols, rows = 80, 24
     for inst in _resize_instances:
@@ -288,7 +324,12 @@ def _handle_sigwinch(signum, frame):
             try:
                 inst._on_resize(cols, rows)
             except Exception:
-                _logger.debug("resize 回调异常")
+                pass  # 信号安全：不使用 logging
+    for cb in _sigwinch_callbacks:
+        try:
+            cb(cols, rows)
+        except Exception:
+            pass  # 信号安全：不使用 logging
 
 
 try:
