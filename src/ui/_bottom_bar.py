@@ -10,6 +10,8 @@
 
 from __future__ import annotations
 
+import logging
+import shutil
 import sys
 import time
 from typing import Optional
@@ -27,7 +29,7 @@ from ._bottom_cursor import (
 )
 from ._lock import _try_acquire_output_lock
 
-import shutil
+_logger = logging.getLogger(__name__)
 
 
 # ── 模块级 get_token_speed_snapshot 缓存（避免内部方法每次 import） ──
@@ -50,6 +52,7 @@ def _get_snapshot():
 _BOTTOM_LINES = 3           # 底部固定行数
 _BOTTOM_MIN_HEIGHT = 10     # 终端太小时跳过底部栏
 _BOTTOM_REFRESH_MS = 0.05   # 底部栏刷新节流（50ms）
+_MIN_INPUT_ROWS = 3         # 输入区最小行数（空输入时至少显示 3 行）
 
 # ── ANSI 颜色常量（优雅视觉风） ─────────────────────
 _COLOR_ACCENT = "\033[38;5;39m"       # 青色强调（提示符/模型名/状态）
@@ -116,7 +119,7 @@ class _BottomBar:
         # ★ 展开/拆行缓存：轻量路径复用，避免每次光标移动都重算 _expand_tabs + _wrap_by_width
         self._cached_wrapped_for: str = ""   # 缓存对应的原始文本（缓存键，在 _draw_input_lines_locked 中更新）
         self._cached_wrapped_lines: list[str] | None = None  # 缓存拆行结果
-        self._cached_input_rows: int = 3      # 缓存输入区视觉行数（不含分隔线/状态行，最少 3 行）
+        self._cached_input_rows: int = _MIN_INPUT_ROWS      # 缓存输入区视觉行数（不含分隔线/状态行）
         # ★ 上次渲染到终端的输入文本（显式标记，仅在 _draw_input_lines_locked 中更新，
         #    供 force_redraw 快速路径使用，避免 _cached_wrapped_for 承担双重语义）
         self._last_rendered_text: str = ""
@@ -148,12 +151,12 @@ class _BottomBar:
         """根据当前输入文本计算所需的输入行数（最少 3 行 + 补全弹窗高度）。"""
         text = self._last_text or ""
         if not text:
-            base = 3
+            base = _MIN_INPUT_ROWS
         else:
             max_input = max(1, self._term_width() - 4)
             expanded = _expand_tabs(text)
             wrapped = _wrap_by_width(expanded, max_input)
-            base = max(3, len(wrapped))
+            base = max(_MIN_INPUT_ROWS, len(wrapped))
         return base + self._completion_popup_height
 
     # ── 终端尺寸查询（实例级缓存，减少 syscall） ──────────
@@ -239,7 +242,7 @@ class _BottomBar:
             expanded = _expand_tabs(text)
             self._cached_wrapped_lines = _wrap_by_width(expanded, max_width)
             self._cached_wrapped_for = text
-            self._cached_input_rows = max(3, len(self._cached_wrapped_lines)) + self._completion_popup_height
+            self._cached_input_rows = max(_MIN_INPUT_ROWS, len(self._cached_wrapped_lines)) + self._completion_popup_height
             # ★ 同步 _last_rendered_text，使 force_redraw 快速路径正确识别重新渲染
             self._last_rendered_text = text
 
@@ -385,8 +388,6 @@ class _BottomBar:
             ts = shutil.get_terminal_size()
             self._cached_height, self._cached_width = ts.lines, ts.columns
         except Exception:
-            import logging
-            _logger = logging.getLogger(__name__)
             _logger.warning("_check_resize: shutil.get_terminal_size() 失败", exc_info=True)
         height = self._cached_height or 24
 
@@ -766,8 +767,19 @@ class _BottomBar:
             self._last_bottom_lines = total              # 锁内写入，避免竞态
             if status_changed:
                 self._last_status = new_status           # 锁内写入，避免竞态
-            elif cursor_pos >= 0:
-                # 光标移动（全量重绘路径中同步更新光标位置）
+            # ★ 独立 if：_input_cursor_pos 的更新不应依赖 status_changed 的真假。
+            #   流式输出期间 status_changed 始终为 True，若用 elif 会导致纯光标移动
+            #   （左右键/Ctrl+←→/Home/End）时 _input_cursor_pos 不被更新，
+            #   下一帧 _position_cursor() 用旧值将光标拉回末尾。
+            if cursor_pos >= 0:
+                # ★ 防御：赋值前检查 _input_cursor_pos 是否被意外跳过更新
+                if self._input_cursor_pos != cursor_pos:
+                    _logger.debug(
+                        "_input_cursor_pos 更新: %d→%d, "
+                        "text_changed=%s, status_changed=%s",
+                        self._input_cursor_pos, cursor_pos,
+                        text_changed, status_changed,
+                    )
                 self._input_cursor_pos = cursor_pos
             self._last_cursor_pos = self._input_cursor_pos
             out = sys.__stdout__
@@ -857,7 +869,7 @@ class _BottomBar:
         # ★ 更新展开/拆行缓存，供轻量路径复用（text_changed=False 时有效）
         self._cached_wrapped_for = text
         self._cached_wrapped_lines = wrapped
-        base_rows = max(3, len(wrapped))
+        base_rows = max(_MIN_INPUT_ROWS, len(wrapped))
         self._cached_input_rows = base_rows + self._completion_popup_height
         # ★ 同步"上次渲染文本"标记，供 force_redraw 快速路径使用
         self._last_rendered_text = text
