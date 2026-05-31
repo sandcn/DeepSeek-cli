@@ -327,3 +327,138 @@ class TestCmplHandlerOnAuto:
 
         engine.complete.assert_called_once_with("/m")
         bb.show_completions.assert_called_once()
+
+
+class TestCmplHandlerTab:
+    """_CmplHandler.on_tab / _cycle_tab / _first_tab 测试
+
+    验证：
+      - 弹窗可见时 Tab = 确认当前选中项（不循环到下一项）
+      - 弹窗不可见时 Tab = 首次显示并应用第一项
+    """
+
+    def test_tab_when_visible_confirms_current_item(self):
+        """弹窗可见时按 Tab → 确认当前选中项（不循环到下一项）。"""
+        from unittest.mock import MagicMock
+        from src.chat_ui._completion import _CmplHandler
+
+        bb = MagicMock()
+        bb.is_completion_visible = True
+        # 当前选中的是第二项（index=1）
+        bb.get_selected_completion.return_value = ("/model-pro", -2, "/m")
+        engine = MagicMock()
+        handler = _CmplHandler(bb, engine)
+
+        result = handler.on_tab("/m")
+
+        # 应获取当前选中项，且不应调用 cycle_completion
+        bb.get_selected_completion.assert_called_once()
+        bb.cycle_completion.assert_not_called()
+        assert result == "/model-pro"
+
+    def test_tab_when_visible_no_selection_returns_none(self):
+        """弹窗可见但无选中项 → 返回 None（回退为插入制表符）。"""
+        from unittest.mock import MagicMock
+        from src.chat_ui._completion import _CmplHandler
+
+        bb = MagicMock()
+        bb.is_completion_visible = True
+        bb.get_selected_completion.return_value = ("", 0, "")
+        engine = MagicMock()
+        handler = _CmplHandler(bb, engine)
+
+        result = handler.on_tab("text")
+
+        bb.get_selected_completion.assert_called_once()
+        assert result is None
+
+    def test_tab_when_not_visible_shows_and_applies_first(self):
+        """弹窗不可见时按 Tab → 计算候选项，显示弹窗，返回首个匹配。"""
+        from unittest.mock import MagicMock
+        from src.ui._completion import CompletionItem
+        from src.chat_ui._completion import _CmplHandler
+
+        bb = MagicMock()
+        bb.is_completion_visible = False
+        engine = MagicMock()
+        engine.complete.return_value = [
+            CompletionItem("/help", "/help 显示帮助", -1),
+            CompletionItem("/model", "/model 切换模型", -2),
+        ]
+        handler = _CmplHandler(bb, engine)
+
+        result = handler.on_tab("/")
+
+        engine.complete.assert_called_once_with("/")
+        bb.show_completions.assert_called_once()
+        assert result == "/help"  # 返回第一项
+
+    def test_tab_when_not_visible_no_results_returns_none(self):
+        """弹窗不可见且无候选项 → 返回 None（回退为插入制表符）。"""
+        from unittest.mock import MagicMock
+        from src.chat_ui._completion import _CmplHandler
+
+        bb = MagicMock()
+        bb.is_completion_visible = False
+        engine = MagicMock()
+        engine.complete.return_value = []
+        handler = _CmplHandler(bb, engine)
+
+        result = handler.on_tab("/xyz")
+
+        engine.complete.assert_called_once_with("/xyz")
+        bb.hide_completions.assert_called_once()
+        assert result is None
+
+
+class TestCmplHandlerNavigate:
+    """_CmplHandler.on_navigate 测试
+
+    验证：箭头键只移动高亮（导航），不应用补全到输入缓冲区。
+    """
+
+    def test_navigate_when_visible_returns_original_text(self):
+        """弹窗可见时按 ↑/↓ → 只移动高亮，返回原始文本。"""
+        from unittest.mock import MagicMock
+        from src.chat_ui._completion import _CmplHandler
+
+        bb = MagicMock()
+        bb.is_completion_visible = True
+        engine = MagicMock()
+        handler = _CmplHandler(bb, engine)
+
+        result = handler.on_navigate(-1, "/model")
+
+        bb.cycle_completion.assert_called_once_with(-1)
+        bb.get_selected_completion.assert_not_called()  # 不应获取选中项
+        assert result == "/model"  # 返回原始文本，不应用补全
+
+    def test_navigate_down_when_visible_returns_original_text(self):
+        """弹窗可见时按 ↓ → 只移动高亮，返回原始文本。"""
+        from unittest.mock import MagicMock
+        from src.chat_ui._completion import _CmplHandler
+
+        bb = MagicMock()
+        bb.is_completion_visible = True
+        engine = MagicMock()
+        handler = _CmplHandler(bb, engine)
+
+        result = handler.on_navigate(1, "/model")
+
+        bb.cycle_completion.assert_called_once_with(1)
+        assert result == "/model"
+
+    def test_navigate_when_not_visible_returns_none(self):
+        """弹窗不可见时按 ↑/↓ → 返回 None（回退历史浏览）。"""
+        from unittest.mock import MagicMock
+        from src.chat_ui._completion import _CmplHandler
+
+        bb = MagicMock()
+        bb.is_completion_visible = False
+        engine = MagicMock()
+        handler = _CmplHandler(bb, engine)
+
+        result = handler.on_navigate(-1, "text")
+
+        bb.cycle_completion.assert_not_called()
+        assert result is None

@@ -1320,7 +1320,12 @@ class EscapeMonitor:
                 _logger.debug("关闭补全回调异常", exc_info=True)
 
     def _handle_arrow_up(self) -> None:
-        """处理上箭头：补全弹窗可见时导航，否则历史浏览。"""
+        """处理上箭头：补全弹窗可见时仅移动高亮，否则历史浏览。
+
+        补全弹窗可见时 → on_navigate 返回原始 text（导航不应用补全），
+        此时 result == text，不替换缓冲区，直接 return 避免回退到历史浏览。
+        弹窗不可见时 → on_navigate 返回 None，回退到 _input_handler._up()。
+        """
         cb = self._completion_navigate_callback
         if cb is not None:
             try:
@@ -1330,14 +1335,21 @@ class EscapeMonitor:
                 _logger.debug("补全导航回调异常", exc_info=True)
                 result = None
             if result is not None:
-                self._input_handler.set_buffer(result)
-                self._input_handler._echo(result)
-                self._trigger_auto_completion()
+                if result != text:
+                    # 仅当 result 与原始文本不同时才替换缓冲区（如 Tab 确认）
+                    self._input_handler.set_buffer(result)
+                    self._input_handler._echo(result)
+                    self._trigger_auto_completion()
                 return
         self._input_handler._up()
 
     def _handle_arrow_down(self) -> None:
-        """处理下箭头：补全弹窗可见时导航，否则历史浏览。"""
+        """处理下箭头：补全弹窗可见时仅移动高亮，否则历史浏览。
+
+        补全弹窗可见时 → on_navigate 返回原始 text（导航不应用补全），
+        此时 result == text，不替换缓冲区，直接 return 避免回退到历史浏览。
+        弹窗不可见时 → on_navigate 返回 None，回退到 _input_handler._down()。
+        """
         cb = self._completion_navigate_callback
         if cb is not None:
             try:
@@ -1347,9 +1359,11 @@ class EscapeMonitor:
                 _logger.debug("补全导航回调异常", exc_info=True)
                 result = None
             if result is not None:
-                self._input_handler.set_buffer(result)
-                self._input_handler._echo(result)
-                self._trigger_auto_completion()
+                if result != text:
+                    # 仅当 result 与原始文本不同时才替换缓冲区（如 Tab 确认）
+                    self._input_handler.set_buffer(result)
+                    self._input_handler._echo(result)
+                    self._trigger_auto_completion()
                 return
         self._input_handler._down()
 
