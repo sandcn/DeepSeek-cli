@@ -246,13 +246,11 @@ _COLOR_BRIGHT_ACCENT = "\033[1;96m"   # 亮青加粗（输入提示符）
 _COLOR_CYAN = "\033[38;5;44m"         # 青（输入提示符中间色）
 _COLOR_DEEP_CYAN = "\033[38;5;30m"    # 深青（输入提示符最暗色）
 _COLOR_DIM = "\033[38;5;245m"         # 灰色次要（分隔线/占位/统计）
-_COLOR_MUTED = "\033[38;5;240m"       # 暗灰边框（补全弹窗边框）
 _COLOR_RESET = "\033[0m"              # 重置
 _COLOR_SELECT_BG = "\033[48;5;238m"   # 选中项高亮背景（深灰背景，#238 比 #236 略亮，改善 light 主题可见性）
 _COLOR_SELECT_FG = "\033[38;5;15m"    # 选中项前景色（亮白，确保反显高对比度）
 _COLOR_ERR = "\033[38;5;1m"           # 红色错误
 _COLOR_SEP = "\033[38;5;237m"         # 分隔线深灰
-_COLOR_COMPLETE_BORDER = "\033[38;5;66m"    # 补全弹窗边框色（青灰，更柔和）
 _COLOR_COMPLETE_TITLE = "\033[1;38;5;45m"   # 补全弹窗标题色（亮青加粗）
 _COLOR_BRIGHT_GREEN = "\033[38;5;40m" # 亮绿（状态用/工具成功）
 _COLOR_TOOL_OK = "\033[38;5;40m"      # 工具成功计数
@@ -320,7 +318,7 @@ class _BottomBar:
                 使用亮青/蓝灰/灰色三层颜色，信息密度高但易读
       - 输入区：亮青 `❯` 提示符，空输入时显示灰色占位提示
                 多行续行以灰色 `·` 前缀连接，视觉连贯
-      - 补全弹窗：暗灰圆角边框（╭╮╰╯）+ 选中项反显高亮
+      - 补全弹窗：无边框扁平样式（标题行 + ▶ 指示器高亮 + 快捷键提示）
 
     线程安全（分两级）：
       - 内容变更全量重绘（文本/状态/尺寸变化）→ output_lock 串行化
@@ -990,42 +988,28 @@ class _BottomBar:
             popup_r_start = r_start
             tw = self._term_width()
             popup_w = min(tw - 2, 50)
-            cell_w = popup_w - 4
             n = len(self._completion_items)
 
-            # ★ 顶边框（使用渐变装饰：标题亮青 + 左侧亮青 → 右侧深灰渐变）
+            # ★ 无边框扁平样式：标题行 + 选项列表 + 快捷键提示
             total_items = len(self._completion_texts)
-            header = f" {_COLOR_COMPLETE_TITLE}{self._completion_title}{_COLOR_RESET} {_COLOR_DIM}({total_items}项){_COLOR_RESET} "
-            header_vw = _visual_len(header)
-            pad_w = max(1, popup_w - header_vw - 2)
-            # ★ 渐变边框：左侧亮青 → 右侧深灰，增加视觉层次
-            pad_left = pad_w // 2
-            pad_right = pad_w - pad_left
-            top_border = (_COLOR_ACCENT + "\u256d" + _COLOR_RESET
-                          + header
-                          + _COLOR_ACCENT + "\u2500" * pad_left + _COLOR_RESET
-                          + _COLOR_SEP + "\u2500" * pad_right + _COLOR_RESET
-                          + _COLOR_SEP + "\u256e" + _COLOR_RESET)
-            out.write(f"\033[{popup_r_start};1H\033[K{top_border}")
+            header = f" {_COLOR_COMPLETE_TITLE}{self._completion_title}{_COLOR_RESET} {_COLOR_DIM}({total_items}项){_COLOR_RESET}"
+            out.write(f"\033[{popup_r_start};1H\033[K{header}")
 
             # 选项行
+            cell_w = popup_w - 3  # 无边框，减去左侧 ▶/空格 占用
             for i, item in enumerate(self._completion_items):
                 r = popup_r_start + 1 + i
-                display = _truncate_by_width(item, cell_w - 2)
-                pad = " " * max(0, cell_w - 2 - _visual_len(display))
+                display = _truncate_by_width(item, cell_w)
+                pad = " " * max(0, cell_w - _visual_len(display))
                 if i == self._completion_idx:
                     out.write(f"\033[{r};1H\033[K"
-                              f"{_COLOR_COMPLETE_BORDER}\u2502{_COLOR_RESET} "
-                              f"{_COLOR_SELECT_BG}{_COLOR_SELECT_FG}\u25b6{_COLOR_RESET}"
-                              f"{_COLOR_SELECT_BG}{_COLOR_SELECT_FG} {display}{pad}{_COLOR_RESET}"
-                              f"{_COLOR_COMPLETE_BORDER}\u2502{_COLOR_RESET}")
+                              f" {_COLOR_SELECT_BG}{_COLOR_SELECT_FG}\u25b6{_COLOR_RESET}"
+                              f"{_COLOR_SELECT_BG}{_COLOR_SELECT_FG} {display}{pad}{_COLOR_RESET}")
                 else:
                     out.write(f"\033[{r};1H\033[K"
-                              f"{_COLOR_COMPLETE_BORDER}\u2502{_COLOR_RESET}  "
-                              f" {display}{pad}"
-                              f"{_COLOR_COMPLETE_BORDER}\u2502{_COLOR_RESET}")
+                              f"  {display}{pad}")
 
-            # ★ 底边框（渐变装饰：左侧深灰 → 右侧亮青，与顶边框反向呼应）
+            # ★ 快捷键提示行
             footer_r = popup_r_start + 1 + n
             truncated = total_items > n
             is_selection = (self._completion_title != "补全")
@@ -1037,16 +1021,7 @@ class _BottomBar:
                 hint = f" {_COLOR_TIME}{self._completion_idx + 1}/{n}{_COLOR_RESET} {_COLOR_DIM}(\u524d{n}/{total_items}){_COLOR_RESET}  {hint_prefix} "
             else:
                 hint = f" {hint_prefix} "
-            hint_vw = _visual_len(hint)
-            pad_w = max(1, popup_w - hint_vw - 2)
-            pad_left = pad_w // 2
-            pad_right = pad_w - pad_left
-            bottom_border = (_COLOR_SEP + "\u2570" + _COLOR_RESET
-                             + hint
-                             + _COLOR_SEP + "\u2500" * pad_left + _COLOR_RESET
-                             + _COLOR_ACCENT + "\u2500" * pad_right + _COLOR_RESET
-                             + _COLOR_ACCENT + "\u256f" + _COLOR_RESET)
-            out.write(f"\033[{footer_r};1H\033[K{bottom_border}")
+            out.write(f"\033[{footer_r};1H\033[K{_COLOR_DIM}{hint}{_COLOR_RESET}")
 
         # ── 输入文本行（在弹窗下方） ──
         text_start = r_start + popup_height
@@ -1224,13 +1199,13 @@ class _BottomBar:
                          texts: list[str] | None = None,
                          start_pos: int = 0, orig_prefix: str = "",
                          title: str = "补全") -> None:
-        """在输入区内部绘制带边框的补全弹窗，自动扩大输入区域。
+        """在输入区内部绘制无边框扁平补全弹窗，自动扩大输入区域。
 
-        弹窗视觉：
-          ┌ {title} (N项) ────────┐
-          │ > 选中项              │  ← 反显高亮 + > 指示器
-          │   普通项              │
-          └ ↑↓/Enter/Esc ────────┘  ← 快捷键提示
+        弹窗视觉（无边框扁平样式）：
+          {title} (N项)            ← 标题行
+            ▶ 选中项              ← ▶ 指示器 + 高亮背景
+              普通项              ← 缩进对齐
+          ↑↓/Enter/Esc            ← 快捷键提示
 
         弹窗作为输入区的一部分绘制，弹出时输入区域自动扩大。
 
@@ -1240,7 +1215,7 @@ class _BottomBar:
             texts: 替换文本列表（与 items 一一对应），默认同 items。
             start_pos: 替换起始位置（相对光标）。
             orig_prefix: 原始前缀。
-            title: 弹窗标题前缀（如"补全"、"选择"），显示在顶边框。
+            title: 弹窗标题前缀（如"补全"、"选择"），显示在标题行。
         """
         if not items or not self._active:
             return
@@ -1414,8 +1389,7 @@ class _BottomBar:
         old_idx = self._completion_idx
         self._completion_idx = (old_idx + delta) % n
 
-        # 仅重绘选项行 + footer（不重绘边框）
-        popup_height = n + 2
+        # 仅重绘选项行 + footer（无边框扁平样式，无需绘制边框字符）
         with _try_acquire_output_lock(name="bottom_bar.comp_cycle", timeout=1.0) as locked:
             if not locked:
                 return self._completion_idx
@@ -1427,25 +1401,21 @@ class _BottomBar:
             popup_start = height - total + 3
             tw = self._term_width()
             popup_w = min(tw - 2, 50)
-            cell_w = popup_w - 4
+            cell_w = popup_w - 3
 
             for i, item in enumerate(self._completion_items):
                 r = popup_start + 1 + i
-                display = _truncate_by_width(item, cell_w - 2)
-                pad = " " * max(0, cell_w - 2 - _visual_len(display))
+                display = _truncate_by_width(item, cell_w)
+                pad = " " * max(0, cell_w - _visual_len(display))
                 if i == self._completion_idx:
                     out.write(f"\033[{r};1H\033[K"
-                              f"{_COLOR_COMPLETE_BORDER}\u2502{_COLOR_RESET} "
-                              f"{_COLOR_SELECT_BG}{_COLOR_SELECT_FG}\u25b6{_COLOR_RESET}"
-                              f"{_COLOR_SELECT_BG}{_COLOR_SELECT_FG} {display}{pad}{_COLOR_RESET}"
-                              f"{_COLOR_COMPLETE_BORDER}\u2502{_COLOR_RESET}")
+                              f" {_COLOR_SELECT_BG}{_COLOR_SELECT_FG}\u25b6{_COLOR_RESET}"
+                              f"{_COLOR_SELECT_BG}{_COLOR_SELECT_FG} {display}{pad}{_COLOR_RESET}")
                 else:
                     out.write(f"\033[{r};1H\033[K"
-                              f"{_COLOR_COMPLETE_BORDER}\u2502{_COLOR_RESET}  "
-                              f" {display}{pad}"
-                              f"{_COLOR_COMPLETE_BORDER}\u2502{_COLOR_RESET}")
+                              f"  {display}{pad}")
 
-            # ★ 更新 footer 位置信息（仅显示可见范围）
+            # ★ 快捷键提示行
             total_items = len(self._completion_texts) if self._completion_texts else n
             footer_start = popup_start + 1 + n
             truncated = total_items > n
@@ -1456,16 +1426,7 @@ class _BottomBar:
                         f" {_COLOR_DIM}(\u524d{n}/{total_items}){_COLOR_RESET}  {hint_prefix} ")
             else:
                 hint = f" {hint_prefix} "
-            hint_vw = _visual_len(hint)
-            pad_w = max(1, popup_w - hint_vw - 2)
-            pad_left = pad_w // 2
-            pad_right = pad_w - pad_left
-            bottom_border = (_COLOR_SEP + "\u2570" + _COLOR_RESET
-                             + hint
-                             + _COLOR_SEP + "\u2500" * pad_left + _COLOR_RESET
-                             + _COLOR_ACCENT + "\u2500" * pad_right + _COLOR_RESET
-                             + _COLOR_ACCENT + "\u256f" + _COLOR_RESET)
-            out.write(f"\033[{footer_start};1H\033[K{bottom_border}")
+            out.write(f"\033[{footer_start};1H\033[K{_COLOR_DIM}{hint}{_COLOR_RESET}")
 
             out.write("\0338")
             # ★ 重新保存 SCOSC，供 ParallelDisplay.render_frame 下一帧使用
