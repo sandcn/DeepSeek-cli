@@ -594,9 +594,11 @@ class _BottomBar:
                 if not locked:
                     return True  # 锁超时仍标记 resize 以触发调用方重绘
                 saved_text = self._last_text
+                saved_bottom = self._last_bottom_lines  # ★ 保存 resize 前的底部行数
                 self._active = False
                 self.setup()  # RLock 允许可重入嵌套
                 self._last_text = saved_text
+                self._last_bottom_lines = saved_bottom  # ★ 恢复旧值，供 force_redraw 正确计算 old_end/delta
             return True
         return False
 
