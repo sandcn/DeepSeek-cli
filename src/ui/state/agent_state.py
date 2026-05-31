@@ -69,6 +69,7 @@ class AgentStateStore:
         self._slots: Dict[str, AgentSlot] = {}
         self._order: List[str] = []
         self._lock = threading.Lock()
+        self._version: int = 0  # 状态版本号，每次变化递增
 
     # ── 注册 ──
 
@@ -79,12 +80,14 @@ class AgentStateStore:
                              status=status, agent_type=agent_type)
             self._slots[label] = slot
             self._order.append(label)
+            self._version += 1
 
     def remove_agent(self, label: str) -> None:
         with self._lock:
             self._slots.pop(label, None)
             if label in self._order:
                 self._order.remove(label)
+            self._version += 1
 
     # ── 状态更新 ──
 
@@ -100,6 +103,7 @@ class AgentStateStore:
                     if rec.phase in ("running", "parsing"):
                         rec.phase = "done" if status == "done" else "fail"
                         rec.end_time = time.time()
+            self._version += 1
 
     def update_model_phase(self, label: str, phase: str, info: str = "") -> None:
         with self._lock:
@@ -109,6 +113,7 @@ class AgentStateStore:
                     slot.model_phase_start = time.time()
                 slot.model_phase = phase
                 slot.model_info = info
+                self._version += 1
 
     def tool_parsing(self, label: str, tool_name: str, arguments: str = "") -> None:
         with self._lock:
@@ -121,6 +126,7 @@ class AgentStateStore:
                 last = slot.tool_history[-1]
                 if last.tool_name == tool_name and last.phase == "parsing":
                     last.detail = arguments
+                    self._version += 1
                     return
             rec = ToolRecord(
                 tool_name=tool_name,
@@ -130,6 +136,7 @@ class AgentStateStore:
             )
             slot.tool_history.append(rec)
             slot.total_calls += 1
+            self._version += 1
 
     def tool_batch_start(self, label: str, tool_names: list) -> None:
         with self._lock:
@@ -140,6 +147,7 @@ class AgentStateStore:
             slot.model_phase = "batch"
             slot.model_phase_start = time.time()
             slot.model_info = f"{len(tool_names)}x parallel: {names_str}"
+            self._version += 1
 
     def tool_start(self, label: str, tool_name: str, detail: str = "") -> None:
         with self._lock:
@@ -150,6 +158,7 @@ class AgentStateStore:
                 if rec.phase == "parsing" and rec.tool_name == tool_name:
                     rec.detail = detail
                     rec.phase = "running"
+                    self._version += 1
                     return
             rec = ToolRecord(
                 tool_name=tool_name,
@@ -158,6 +167,7 @@ class AgentStateStore:
                 phase="running",
             )
             slot.tool_history.append(rec)
+            self._version += 1
 
     def tool_done(self, label: str, tool_name: str = "", success: bool = True) -> None:
         with self._lock:
@@ -176,11 +186,13 @@ class AgentStateStore:
                         if rec.tool_name == tool_name:
                             rec.phase = "done" if success else "fail"
                             rec.end_time = time.time()
+                            self._version += 1
                             break
                     else:
                         # 无 tool_name 时自动匹配最后一个活跃记录
                         rec.phase = "done" if success else "fail"
                         rec.end_time = time.time()
+                        self._version += 1
                         break
 
     def update_usage(self, label: str, usage: dict, replace: bool = False) -> None:
@@ -201,6 +213,7 @@ class AgentStateStore:
             speed = usage.get("speed", 0.0)
             if speed and speed > 0:
                 slot.last_speed = speed
+            self._version += 1
 
     def update_tokens(self, label: str, tokens: int) -> None:
         self.update_usage(label, {"output": tokens})
@@ -210,18 +223,21 @@ class AgentStateStore:
             slot = self._slots.get(label)
             if slot:
                 slot.live_output_tokens += tokens
+                self._version += 1
 
     def update_live_input(self, label: str, tokens: int) -> None:
         with self._lock:
             slot = self._slots.get(label)
             if slot and slot.input_tokens == 0:
                 slot.live_input_tokens = tokens
+                self._version += 1
 
     def update_speed(self, label: str, speed: float) -> None:
         with self._lock:
             slot = self._slots.get(label)
             if slot and speed > 0:
                 slot.last_speed = speed
+                self._version += 1
 
     def update_parse_info(self, label: str, tool_names: str, tokens: int, elapsed: float) -> None:
         with self._lock:
@@ -229,6 +245,7 @@ class AgentStateStore:
             if slot:
                 slot.model_phase = "parsing"
                 slot.model_info = f"{tool_names} {tokens}t {elapsed:.1f}s"
+                self._version += 1
 
     def set_result(self, label: str, result_text: str = "", error: str = "") -> None:
         """存储 SubAgent 的执行结果"""
@@ -237,6 +254,7 @@ class AgentStateStore:
             if slot:
                 slot.result_text = result_text
                 slot.result_error = error
+                self._version += 1
 
     # ── 快照与查询 ──
 
@@ -264,3 +282,9 @@ class AgentStateStore:
     def agent_count(self) -> int:
         with self._lock:
             return len(self._order)
+
+    @property
+    def version(self) -> int:
+        """获取当前状态版本号（每次状态变化递增）。"""
+        with self._lock:
+            return self._version

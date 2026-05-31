@@ -21,6 +21,10 @@ from rich.text import Text
 if TYPE_CHECKING:
     from ..api.renderer.output import OutputAdapter
 
+# ── 上屏历史最大记录数 ─────────────────────────────
+_MAX_HISTORY = 10000
+"""上屏历史记录最多保留 10000 条，防止极长会话内存无限增长。"""
+
 
 class ScreenHistoryManager:
     """上屏历史记录管理器。
@@ -71,6 +75,13 @@ class ScreenHistoryManager:
 
     # ── 累积与刷新 ──────────────────────────────────
 
+    # ── 内部辅助 ───────────────────────────────────
+
+    def _trim_history(self) -> None:
+        """裁剪历史记录，防止极长会话内存无限增长。"""
+        if len(self._history) > _MAX_HISTORY:
+            self._history = self._history[-_MAX_HISTORY:]
+
     # ── 累积与刷新 ──────────────────────────────────
 
     def append_reasoning(self, text: str) -> None:
@@ -86,6 +97,7 @@ class ScreenHistoryManager:
         if self._reasoning_accum:
             full = ''.join(self._reasoning_accum)
             self._history.append(('reasoning_block', full))
+            self._trim_history()
             self._reasoning_accum.clear()
 
     def flush_content(self) -> None:
@@ -93,6 +105,7 @@ class ScreenHistoryManager:
         if self._content_accum:
             full = ''.join(self._content_accum)
             self._history.append(('content_block', full))
+            self._trim_history()
             self._content_accum.clear()
 
     def flush_all(self) -> None:
@@ -110,6 +123,7 @@ class ScreenHistoryManager:
         """
         self.flush_all()
         self._history.append((kind, *args))
+        self._trim_history()
 
     # ── 清空 ────────────────────────────────────────
 

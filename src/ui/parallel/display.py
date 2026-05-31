@@ -103,6 +103,7 @@ class ParallelDisplay(BaseDisplay):
         self._diff_count = 0
         self._diff_active_since = 0.0
         self._last_eventbus_time: float = 0.0  # EventBus 上次发布时间戳
+        self._last_rendered_version: int = 0   # 上次渲染时的 store 版本号
 
         # 根据终端宽度确定显示深度
         display_config = DisplayConfig(self._terminal.terminal_width)
@@ -412,6 +413,12 @@ class ParallelDisplay(BaseDisplay):
         # stopped 且非最终帧 → 跳过渲染
         if self._stopped and not final:
             return
+
+        # ★ 版本跳过：state 未变化时跳过帧渲染（ioctl+render 开销较大）
+        current_version = self._store.version
+        if not final and current_version == self._last_rendered_version:
+            return
+        self._last_rendered_version = current_version
 
         # 帧计数：通过所有跳过检查后递增，避免空增
         self._frame += 1

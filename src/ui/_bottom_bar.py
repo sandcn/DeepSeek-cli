@@ -18,6 +18,8 @@ from wcwidth import wcswidth
 
 from ._lock import _try_acquire_output_lock
 
+import shutil
+
 
 def _truncate_by_width(s: str, max_width: int) -> str:
     """按终端列宽截断字符串（中文占 2 列）。"""
@@ -364,6 +366,10 @@ class _BottomBar:
         # ★ 补全弹窗所占行数（弹窗可见时 > 0，用于扩展输入区）
         self._completion_popup_height: int = 0
 
+        # ── 终端尺寸缓存（减少 shutil.get_terminal_size syscall） ──
+        self._cached_height: int = 0
+        self._cached_width: int = 0
+
     # ── 动态行数计算 ──────────────────────────────────────
 
     @property
@@ -383,23 +389,38 @@ class _BottomBar:
             base = max(3, len(wrapped))
         return base + self._completion_popup_height
 
-    # ── 终端尺寸查询 ──────────────────────────────────────
+    # ── 终端尺寸查询（实例级缓存，减少 syscall） ──────────
 
-    @staticmethod
-    def _term_height() -> int:
+    def _term_height(self) -> int:
+        """获取终端高度，优先返回缓存值。
+
+        缓存由 _check_resize() 在检测到尺寸变化时刷新，
+        或由 _invalidate_terminal_cache() 在 setup/teardown 时失效。
+        """
+        if self._cached_height > 0:
+            return self._cached_height
         try:
-            import shutil
-            return shutil.get_terminal_size().lines
+            h = shutil.get_terminal_size().lines
+            self._cached_height = h
+            return h
         except Exception:
             return 24
 
-    @staticmethod
-    def _term_width() -> int:
+    def _term_width(self) -> int:
+        """获取终端宽度，优先返回缓存值。"""
+        if self._cached_width > 0:
+            return self._cached_width
         try:
-            import shutil
-            return shutil.get_terminal_size().columns
+            w = shutil.get_terminal_size().columns
+            self._cached_width = w
+            return w
         except Exception:
             return 80
+
+    def _invalidate_terminal_cache(self) -> None:
+        """失效终端尺寸缓存，下次 _term_height/_term_width 时刷新。"""
+        self._cached_height = 0
+        self._cached_width = 0
 
     # ── 生命周期 ──────────────────────────────────────────
 
@@ -586,7 +607,16 @@ class _BottomBar:
             应随后重绘底部栏以恢复正确的输入文本显示。
             False 表示无变化或未激活。
         """
-        height = self._term_height()
+        # ★ _check_resize 始终从 shutil 获取真实尺寸（更新缓存），
+        #   确保尺寸变化能被及时检测到。后续所有读尺寸路径走缓存。
+        try:
+            ts = shutil.get_terminal_size()
+            self._cached_height, self._cached_width = ts.lines, ts.columns
+        except Exception:
+            import logging
+            _logger = logging.getLogger(__name__)
+            _logger.warning("_check_resize: shutil.get_terminal_size() 失败", exc_info=True)
+        height = self._cached_height or 24
 
         # ★ 未激活但高度已恢复到 _MIN_HEIGHT 以上 → 自动重建底部栏
         if not self._active:
@@ -681,6 +711,7 @@ class _BottomBar:
         """
         if self._active:
             return
+        self._invalidate_terminal_cache()
         height = self._term_height()
         if height < self._MIN_HEIGHT:
             return
@@ -717,6 +748,7 @@ class _BottomBar:
             return
         self._active = False
 
+        self._invalidate_terminal_cache()
         with _try_acquire_output_lock(name="bottom_bar.teardown", timeout=1.0) as locked:
             if locked:
                 out = sys.__stdout__
