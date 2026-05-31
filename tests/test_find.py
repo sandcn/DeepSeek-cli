@@ -4,8 +4,6 @@
 --------
 - 每个测试类关注一个概念，每个测试方法覆盖单一行为
 - 文件操作使用 tmp_path 做目录隔离
-- 注意：当前 find 工具的实现中，搜索根目录自身（current_depth=0）的
-  文件和子目录条目会被跳过，因此测试文件放于子目录中
 - 使用纯 Python 实现的 find（无外部依赖），不须 mock
 """
 
@@ -138,8 +136,8 @@ class TestFromArgs:
 # ═══════════════════════════════════════════════════════════════════════════
 # 4. _sync_find_files 目录遍历逻辑
 #
-# 注意：当前实现中搜索根目录（current_depth=0）的文件条目被跳过。
-# 因此测试使用子目录 src/ 来验证匹配逻辑。
+# 根目录层级（current_depth=0）的文件也会被匹配。
+# 测试同时覆盖根目录层级和子目录层级的匹配逻辑。
 # ═══════════════════════════════════════════════════════════════════════════
 
 class TestSyncFindFiles:
@@ -328,10 +326,10 @@ class TestSyncFindFiles:
         assert "a.py" in names
         assert "z.py" in names
 
-    # ── 已知行为：根目录文件不被匹配 ──
+    # ── 根目录文件匹配 ──
 
-    def test_root_level_files_not_found(self, tmp_path):
-        """已知行为：搜索根目录自身的文件（current_depth=0）不被匹配。"""
+    def test_root_level_files_are_matched(self, tmp_path):
+        """根目录层级（current_depth=0）的文件应被匹配。"""
         (tmp_path / "rootfile.py").write_text("")
         src = tmp_path / "src"
         src.mkdir()
@@ -340,8 +338,38 @@ class TestSyncFindFiles:
         f = FindFunc(pattern="*.py", path=str(tmp_path))
         results = f._sync_find_files(tmp_path)
         names = {p.name for p in results}
-        assert "rootfile.py" not in names  # root 深度 skip
-        assert "subfile.py" in names       # 子目录正常匹配
+        assert "rootfile.py" in names   # 根目录文件被匹配
+        assert "subfile.py" in names    # 子目录文件正常匹配
+
+    def test_root_level_star_matches_all_files(self, tmp_path):
+        """* 通配符在根目录层级应匹配所有文件。"""
+        (tmp_path / "foo.py").write_text("")
+        (tmp_path / "bar.txt").write_text("")
+        (tmp_path / "baz.json").write_text("")
+
+        f = FindFunc(pattern="*", path=str(tmp_path), type="file")
+        results = f._sync_find_files(tmp_path)
+        names = {p.name for p in results}
+        assert "foo.py" in names
+        assert "bar.txt" in names
+        assert "baz.json" in names
+
+    def test_root_level_glob_matches_subdir_files(self, tmp_path):
+        """在子目录中测试 glob 模式（确认子目录匹配不受影响）。"""
+        src = tmp_path / "src"
+        src.mkdir()
+        tests = tmp_path / "tests"
+        tests.mkdir()
+        (src / "main.py").write_text("")
+        (tests / "test_main.py").write_text("")
+        (tmp_path / "Readme.md").write_text("")
+
+        f = FindFunc(pattern="*.py", path=str(tmp_path))
+        results = f._sync_find_files(tmp_path)
+        names = {p.name for p in results}
+        assert "main.py" in names
+        assert "test_main.py" in names
+        assert "Readme.md" not in names
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -557,8 +585,7 @@ class TestIntegration:
         result = await f.execute()
         assert "main.py" in result
         assert "utils.py" in result
-        # README.md 在 root 层级（depth=0），不会被匹配
-        # 但这里它也不是 .py 文件，所以无所谓
+        # README.md 不是 .py 文件，不应被匹配
 
     async def test_find_dirs_only(self, tmp_path):
         src = tmp_path / "src"
@@ -618,3 +645,37 @@ class TestIntegration:
         f = FindFunc(pattern="*.py", path=str(sub))
         result = await f.execute()
         assert "target.py" in result
+
+    async def test_root_level_files_matched_integration(self, tmp_path):
+        """集成测试：根目录层级的文件应被 find 匹配。"""
+        (tmp_path / "root_alpha.py").write_text("")
+        (tmp_path / "root_beta.py").write_text("")
+        (tmp_path / "root_note.txt").write_text("")
+
+        f = FindFunc(pattern="*.py", path=str(tmp_path))
+        result = await f.execute()
+        assert "root_alpha.py" in result
+        assert "root_beta.py" in result
+        assert "root_note.txt" not in result
+
+    async def test_root_level_star_all_files_integration(self, tmp_path):
+        """集成测试：* 通配符在根目录层级匹配所有文件。"""
+        (tmp_path / "data.csv").write_text("")
+        (tmp_path / "index.html").write_text("")
+
+        f = FindFunc(pattern="*", path=str(tmp_path), type="file")
+        result = await f.execute()
+        assert "data.csv" in result
+        assert "index.html" in result
+
+    async def test_root_and_subdir_files_together(self, tmp_path):
+        """根目录文件和子目录文件应同时被匹配。"""
+        (tmp_path / "config.py").write_text("")
+        src = tmp_path / "src"
+        src.mkdir()
+        (src / "main.py").write_text("")
+
+        f = FindFunc(pattern="*.py", path=str(tmp_path))
+        result = await f.execute()
+        assert "config.py" in result
+        assert "main.py" in result

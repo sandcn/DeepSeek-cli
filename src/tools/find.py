@@ -260,9 +260,21 @@ class FindFunc(Func):
                 # ── 排除非源码目录 ──
                 dirs[:] = [d for d in dirs if not _should_exclude_dir(d)]
 
-                # ── 跳过根目录条目（已在前面处理过） ──
+                # ── 根目录层级处理 ──
+                # 根目录自身的目录名匹配已在 walk 之前提前处理
+                # 因此这里跳过目录名匹配，但根目录层级的文件仍需匹配
                 if current_depth == 0:
-                    # 根目录下的文件和子目录由子轮次处理
+                    # 匹配根目录层级的文件名
+                    if self.filter_type in (None, "file"):
+                        for fname in files:
+                            for p in patterns:
+                                if fnmatch.fnmatch(fname, p):
+                                    results.append(current_path / fname)
+                                    break
+                    # 截断检查
+                    if len(results) >= self.max_results:
+                        dirs.clear()
+                        break
                     continue
 
                 # ── 匹配目录名 ──
