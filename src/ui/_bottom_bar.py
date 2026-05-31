@@ -940,7 +940,7 @@ class _BottomBar:
                                   f"{_COLOR_DEEP_CYAN}>{_COLOR_RESET}"
                                   f" {_COLOR_DIM}{ph}{_COLOR_RESET}")
             else:
-                out.write(f"\033[{r};1H\033[K{_COLOR_DIM}\u00b7 {segment}{_COLOR_RESET}")
+                out.write(f"\033[{r};1H\033[K{_COLOR_DIM}\u00b7{_COLOR_RESET} {segment}")
         # ★ 填充剩余空白行，确保输入区至少 3 行
         for r in range(text_start + len(wrapped), text_start + 3):
             out.write(f"\033[{r};1H\033[K  ")
