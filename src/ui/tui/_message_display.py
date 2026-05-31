@@ -22,7 +22,20 @@ from ._terminal import (get_terminal_width, NARROW_THRESHOLD,
                         narrow_sep_width)
 from ._text_utils import truncate
 from ..output_target import IOutputTarget, TerminalTarget
-from ..picker import scroll_window as _scroll_window
+
+
+def _scroll_window(cursor: int, state: dict, total: int) -> tuple[int, int]:
+    """计算可见窗口 [start, end)。"""
+    max_visible = state.get("max", 15)
+    if total <= max_visible:
+        return 0, total
+    offset = state.get("scroll", 0)
+    if cursor < offset:
+        offset = cursor
+    elif cursor >= offset + max_visible:
+        offset = cursor - max_visible + 1
+    state["scroll"] = offset
+    return offset, min(offset + max_visible, total)
 
 
 # ── 输出目标管理器（封装模块级可变状态） ──

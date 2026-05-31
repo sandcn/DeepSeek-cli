@@ -19,6 +19,7 @@
 import sys
 import pytest
 import importlib.util
+from pathlib import Path
 from unittest.mock import MagicMock, call, ANY
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -78,6 +79,7 @@ _MOCK_MODULES = {
     'src.ui._lock': MagicMock(),
     'src.ui._bottom_bar': MagicMock(),
     'src.ui._completion': MagicMock(),
+    'src.ui.picker': MagicMock(),  # 已删除的 picker.py，防御性 mock
     'src.api': MagicMock(),
     'src.api.stats': _mock_stats,
     'src.api.escape_monitor': MagicMock(get_active_monitor=MagicMock(return_value=None)),
@@ -94,7 +96,7 @@ for mod_name, mod in _MOCK_MODULES.items():
 # 使用 importlib 直接加载 commands_config.py
 # ═══════════════════════════════════════════════════════════════════════════
 
-_SCRIPT_DIR = '/home/simple/chat/src/core'
+_SCRIPT_DIR = str(Path(__file__).resolve().parent.parent / 'src' / 'core')
 _spec = importlib.util.spec_from_file_location(
     'src.core.commands_config', f'{_SCRIPT_DIR}/commands_config.py',
 )

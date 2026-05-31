@@ -1,7 +1,6 @@
 """TUI（终端用户界面）模块 — 分层模块化架构 + 端口抽象
 
-提供基于 prompt_toolkit 的终端交互界面，包括输入、补全、按键绑定、
-消息编辑、选择器、状态栏、命令面板、会话切换等功能。
+提供终端交互界面，包括消息编辑、选择器、状态栏、命令面板、会话切换等功能。
 
 架构层级：
   Layer 0 — 基础工具:      _terminal.py, _state.py,
@@ -10,8 +9,7 @@
                              (_ttl_cache.py / _time_format.py 仅供同包内部使用，不对外导出)
   Layer 1 — 端口:          ports.py
   Layer 2 — 显示层:        _message_display.py
-  Layer 3 — 输入层:        input_handler.py, key_bindings.py, completer.py
-  Layer 3.5 — 选择器基础设施: _selector_base.py
+  Layer 3 — 选择器基础设施: _selector_base.py
   Layer 4 — 功能层:        message_editor.py, status_bar.py,
                              command_palette.py, session_switcher.py
 
@@ -36,7 +34,6 @@
   简化 TUIApplicationBuilder：内联建造逻辑，保留 build() 向后兼容
   合并 _NullStatusBar 到 TUIInteractionNull：消除重复 Null Object
   修复 _PickerInjector.get_scroll_window() 自定义工厂时仍使用默认 scroll_window 的 bug
-  缓存 InputHandler.FileHistory 避免每次输入都创建实例
 
 重构历史（2026-05-25 v7 — 消除残余架构债务）：
   移除 src/ui/tui/narrow.py 纯重导出层（__init__.py 直接从 _terminal.py 导入）
@@ -77,12 +74,14 @@
   SessionSwitcher → 继承 BaseBottomBarSelector[dict, dict|None]（减少 ~20 行样板代码）
   架构层级更新：L0 新增 _text_utils.py/_ttl_cache.py/_time_format.py，
     L3.5 新增选择器基础设施层
+重构历史（2026-05-31 v14 — 移除 prompt-toolkit 死代码）：
+  移除 src/ui/picker.py / src/ui/tui/completer.py / src/ui/tui/key_bindings.py / src/ui/tui/input_handler.py
+  清理 __init__.py 对应导入导出和 __all__ 条目
+  内联 scroll_window 到 _message_display.py，清理测试导入路径
+  移除 tests/test_completer.py，pyproject.toml 移除 prompt-toolkit 依赖
 """
 
 # ── 模块导入（公开模块） ─────────────────────────────────
-from . import completer
-from . import key_bindings
-from . import input_handler
 from . import message_editor
 from . import status_bar
 from . import command_palette
@@ -95,9 +94,6 @@ from ._terminal import (
     is_narrow, get_terminal_width,
     narrow_truncate, narrow_indent, narrow_sep_width,
 )
-from .completer import ChatCompleter, create_chat_completer
-from .key_bindings import create_key_bindings, KeyBindingsFactory
-from .input_handler import InputHandler
 from .message_editor import MessageEditor, edit_current_messages, display_messages
 from .status_bar import StatusBar
 from .command_palette import CommandPalette
@@ -113,18 +109,11 @@ from ._text_utils import truncate
 
 __all__ = [
     # 子模块（公开）
-    "completer", "key_bindings", "input_handler",
     "message_editor", "status_bar", "command_palette",
     "session_switcher",
     # ── narrow ──
     "is_narrow", "get_terminal_width",
     "narrow_truncate", "narrow_indent", "narrow_sep_width",
-    # ── completer ──
-    "ChatCompleter", "create_chat_completer",
-    # ── key_bindings ──
-    "create_key_bindings", "KeyBindingsFactory",
-    # ── input ──
-    "InputHandler",
     # ── message_editor ──
     "MessageEditor", "edit_current_messages", "display_messages",
     # ── status_bar ──

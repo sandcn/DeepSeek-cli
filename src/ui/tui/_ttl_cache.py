@@ -1,6 +1,6 @@
 """通用 TTL 缓存工具 — 线程安全的泛型缓存
 
-消除 command_palette / session_switcher / completer 中重复的缓存实现。
+消除 command_palette / session_switcher 中重复的缓存实现。
 支持泛型类型、自定义获取函数、线程安全、TTL 控制。
 
 用法：
