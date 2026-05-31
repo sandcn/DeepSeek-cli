@@ -566,7 +566,8 @@ class _BottomBar:
         """检测终端尺寸变化，自动重设滚动区域。
 
         在 refresh/redraw 及 reader 线程 drain 循环中调用。
-        终端高度不足 _MIN_HEIGHT 时不做任何操作。
+        终端高度不足 _MIN_HEIGHT 时执行 teardown 恢复到全屏滚动。
+        未激活但高度已恢复到 _MIN_HEIGHT 以上时自动重建底部栏。
 
         setup() 内部将 _last_text 重置为 "" 并在终端上绘制占位符，
         因此调用方必须在 resize 发生后重新绘制底部栏（force_redraw
@@ -585,9 +586,36 @@ class _BottomBar:
             应随后重绘底部栏以恢复正确的输入文本显示。
             False 表示无变化或未激活。
         """
-        if not self._active:
-            return False
         height = self._term_height()
+
+        # ★ 未激活但高度已恢复到 _MIN_HEIGHT 以上 → 自动重建底部栏
+        if not self._active:
+            if height >= self._MIN_HEIGHT:
+                with _try_acquire_output_lock(name="bottom_bar.check_resize.rebuild", timeout=1.0) as locked:
+                    if locked:
+                        self.setup()
+                return True
+            return False
+
+        # ★ 高度不足 _MIN_HEIGHT → 执行 teardown，恢复到全屏模式
+        if height < self._MIN_HEIGHT:
+            with _try_acquire_output_lock(name="bottom_bar.check_resize.teardown", timeout=1.0) as locked:
+                if locked:
+                    out = sys.__stdout__
+                    out.write("\033[r")                     # 全屏滚动
+                    out.write("\0337")
+                    saved_bottom = self._last_bottom_lines
+                    self._active = False
+                    # 清除底部残留行（clamp 起始行避免行号 ≤ 0）
+                    start_row = max(1, height - saved_bottom + 1)
+                    for r in range(start_row, height + 1):
+                        out.write(f"\033[{r};1H\033[K")
+                    out.write("\0338")
+                    out.write("\033[s")
+                    out.flush()
+                self._last_bottom_lines = _BOTTOM_LINES
+            return True
+
         if height != self._setup_height and height >= self._MIN_HEIGHT:
             # 单锁作用域：output_lock 是 RLock，setup() 内部的可重入获取安全
             with _try_acquire_output_lock(name="bottom_bar.check_resize", timeout=1.0) as locked:
@@ -609,11 +637,15 @@ class _BottomBar:
 
         渲染内容前调用：确保 renderer 写入内容时光标在正确区域，
         避免内容误写入底部固定栏（下屏）。
+        终端高度过小时将光标放在最后一行。
         """
         if not self._active:
             return
         height = self._term_height()
         scroll_end = height - self._bottom_lines  # 滚动区域最后一行（动态）
+        # ★ clamp 到 [1, height]，防止 total > height 时行号 ≤ 0
+        if scroll_end < 1:
+            scroll_end = height
         sys.__stdout__.write(f"\033[{scroll_end};1H")
 
     def ensure_cursor_in_lower(self) -> None:
@@ -624,6 +656,7 @@ class _BottomBar:
         超长文本会自动拆行，光标位于最后一行末尾。
         空输入时光标位于输入区第一行（> 提示符行）。
         制表符按 _TAB_WIDTH 展开为空格。
+        终端高度过小时将光标放在最后一行。
         """
         if not self._active:
             return
@@ -635,6 +668,8 @@ class _BottomBar:
         vis_row, vis_col = _compute_cursor_visual_pos(text, cursor_pos, max_input)
         total = self._bottom_lines
         r_cursor = height - total + 3 + self._completion_popup_height + vis_row
+        # ★ clamp 到 [1, height]，防止 total > height 时行号 ≤ 0 或越界
+        r_cursor = max(1, min(r_cursor, height))
         col = min(3 + vis_col, term_w)
         sys.__stdout__.write(f"\033[{r_cursor};{col}H")
 
@@ -689,7 +724,9 @@ class _BottomBar:
                 out.write("\0337")                      # 保存光标
                 height = self._term_height()
                 # 用 _last_bottom_lines 确保清除所有旧底部行（含动态多行）
-                for r in range(height - self._last_bottom_lines + 1, height + 1):
+                # ★ clamp 起始行，防止 height - bottom_lines + 1 ≤ 0
+                start_row = max(1, height - self._last_bottom_lines + 1)
+                for r in range(start_row, height + 1):
                     out.write(f"\033[{r};1H\033[K")    # 清除底部残留行
                 out.write("\0338")                      # 恢复光标
                 # ★ 重新保存 SCOSC（\0337 覆盖了保存槽），供 render_frame 使用
@@ -722,6 +759,15 @@ class _BottomBar:
             out = sys.__stdout__
             out.write("\0337")
             out.write("\033[r")                    # 临时退出滚动区域
+
+            # ★ 终端高度不足以容纳底部栏 → 清理旧行后跳过绘制
+            if scroll_end < 1:
+                for r in range(1, height + 1):
+                    out.write(f"\033[{r};1H\033[K")
+                out.write("\0338")
+                out.write(f"\033[{height};1H\033[s")
+                out.flush()
+                return
 
             # 清除所有底部行
             for r in range(scroll_end + 1, height + 1):
@@ -785,6 +831,19 @@ class _BottomBar:
             out = sys.__stdout__
             out.write("\0337")                       # 保存光标
             out.write("\033[r")                      # 临时退出滚动区域
+
+            # ★ 终端高度不足以容纳底部栏 → 清理旧行后跳过绘制
+            if scroll_end < 1:
+                # 清除所有旧底部行
+                old_end = height - old_bottom_lines
+                for r in range(max(1, old_end + 1), height + 1):
+                    out.write(f"\033[{r};1H\033[K")
+                out.write("\0338")
+                # ★ 重新保存 SCOSC
+                out.write(f"\033[{height};1H\033[s")
+                out.flush()
+                self._last_cursor_pos = self._input_cursor_pos
+                return
 
             # ★ 输入区扩大时，上屏底部内容会被新底部栏覆盖。
             #   先将上屏内容向上滚动 delta 行，保护"死区"内容移入新滚动区。
@@ -878,6 +937,8 @@ class _BottomBar:
                      if self._cached_wrapped_for == text
                      else self._bottom_lines)
             r_cursor = term_h - total + 3 + self._completion_popup_height + vis_row
+            # ★ clamp 到 [1, term_h]，防止 total > term_h 时行号 ≤ 0
+            r_cursor = max(1, min(r_cursor, term_h))
             cursor_col = min(3 + vis_col, term_w)
             sys.__stdout__.write(f"\033[{r_cursor};{cursor_col}H")
             sys.__stdout__.flush()
@@ -910,6 +971,18 @@ class _BottomBar:
 
             # 临时退出滚动区域，以便写入底部行
             out.write("\033[r")
+
+            # ★ 终端高度不足以容纳底部栏 → 清理旧行后跳过绘制
+            if scroll_end < 1:
+                old_end = height - old_bottom_lines
+                for r in range(max(1, old_end + 1), height + 1):
+                    out.write(f"\033[{r};1H\033[K")
+                # ★ 恢复滚动区域 + 光标
+                out.write("\0338")
+                out.write(f"\033[{height};1H\033[s")
+                out.write(f"\033[{height};1H")
+                out.flush()
+                return
 
             # ★ 输入区扩大时，上屏底部内容会被新底部栏覆盖。
             #   先将上屏内容向上滚动 delta 行，保护"死区"内容移入新滚动区。
@@ -949,6 +1022,8 @@ class _BottomBar:
                 text, cursor_pos, max_input,
             )
             r_cursor = r2 + 1 + self._completion_popup_height + vis_row
+            # ★ clamp 到 [1, height]，防御性保护
+            r_cursor = max(1, min(r_cursor, height))
             cursor_col = 3 + vis_col
             cursor_col = min(cursor_col, self._term_width())
 
@@ -1063,8 +1138,13 @@ class _BottomBar:
           第 3 行起：青 ❯ <text>   （输入提示符 + 实时键入文本，超长拆行）
                      灰 · <text>    （续行，· 前缀）
                      （空输入时显示灰色占位提示）
+
+        终端高度不足以容纳底部栏时跳过绘制。
         """
         total = self._bottom_lines
+        # ★ total > height 时无法绘制，跳过
+        if height - total < 1:
+            return
         r1 = height - total + 1                  # 分隔线
         r2 = r1 + 1                              # 状态行
         # ★ 灰色分隔线
@@ -1168,6 +1248,7 @@ class _BottomBar:
         """仅刷新状态行（reader 线程 drain 后调用，10Hz）。
 
         始终刷新（包含模型名），不再以 _status_active 为门控。
+        终端高度不足以容纳底部栏时跳过。
         """
         if not self._active:
             return
@@ -1179,6 +1260,9 @@ class _BottomBar:
             # ★ scroll_end 在锁内计算，避免与 refresh/force_redraw 的 _last_text 更新竞争
             scroll_end = height - self._bottom_lines
             out = sys.__stdout__
+            # ★ 终端高度不足以容纳底部栏 → 跳过
+            if scroll_end < 1:
+                return
             out.write("\0337")
             out.write("\033[r")
             self._draw_status_locked(out, height)
@@ -1263,6 +1347,16 @@ class _BottomBar:
             # 临时退出滚动区域
             out.write("\033[r")
 
+            # ★ 终端高度不足以容纳底部栏 → 清理旧行后恢复
+            if scroll_end < 1:
+                old_end = height - old_bottom_lines
+                for r in range(max(1, old_end + 1), height + 1):
+                    out.write(f"\033[{r};1H\033[K")
+                out.write("\0338")
+                out.write(f"\033[{height};1H\033[s")
+                out.flush()
+                return
+
             # ★ 输入区扩大时，上屏底部内容会被新底部栏覆盖。
             #   先将上屏内容向上滚动 delta 行，保护"死区"内容移入新滚动区。
             delta = total - old_bottom_lines
@@ -1337,6 +1431,16 @@ class _BottomBar:
 
             # 临时退出滚动区域
             out.write("\033[r")
+
+            # ★ 终端高度不足以容纳底部栏 → 清理旧行后恢复
+            if scroll_end < 1:
+                old_end = height - old_bottom_lines
+                for r in range(max(1, old_end + 1), height + 1):
+                    out.write(f"\033[{r};1H\033[K")
+                out.write("\0338")
+                out.write(f"\033[{height};1H\033[s")
+                out.flush()
+                return
 
             # 清除旧的底部行（用 old_bottom_lines 确保清干净所有旧行）
             old_end = height - old_bottom_lines
@@ -1436,15 +1540,19 @@ class _BottomBar:
             #   因此先保存 SCOSC 再 \0338 会导致 \0338 恢复到 SCOSC 保存的位置。
             #   正确做法：\0338 恢复输入行光标后，用显式 ANSI 定位到输入行。
             scroll_end = height - self._bottom_lines
-            out.write(f"\033[{scroll_end};1H\033[s")
-            # ★ 显式定位光标到输入行（不能用 \0338，保存槽已被 \033[s 覆盖）
-            vis_row, vis_col = _compute_cursor_visual_pos(
-                self._last_text if self._last_text else "", -1,
-                max(1, self._term_width() - 4),
-            )
-            r_cursor = height - total + 3 + self._completion_popup_height + vis_row
-            cursor_col = min(3 + vis_col, self._term_width())
-            out.write(f"\033[{r_cursor};{cursor_col}H")
+            # ★ terminal 太小无法容纳底部栏 → 跳过光标定位（已在 \0338 恢复）
+            if scroll_end >= 1:
+                out.write(f"\033[{scroll_end};1H\033[s")
+                # ★ 显式定位光标到输入行（不能用 \0338，保存槽已被 \033[s 覆盖）
+                vis_row, vis_col = _compute_cursor_visual_pos(
+                    self._last_text if self._last_text else "", -1,
+                    max(1, self._term_width() - 4),
+                )
+                r_cursor = height - total + 3 + self._completion_popup_height + vis_row
+                # ★ clamp 行号到 [1, height]
+                r_cursor = max(1, min(r_cursor, height))
+                cursor_col = min(3 + vis_col, self._term_width())
+                out.write(f"\033[{r_cursor};{cursor_col}H")
             out.flush()
 
         return self._completion_idx
