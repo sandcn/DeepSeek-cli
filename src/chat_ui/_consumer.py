@@ -18,6 +18,7 @@ from ._dispatcher import EventDispatcher
 from ._engine import RenderEngine
 from ._render_state import _RenderState
 from ._renderers import ContentRenderer
+from ..ui.tui._message_display import _display_messages
 
 if TYPE_CHECKING:
     from ..api.escape_monitor import EscapeMonitor
@@ -71,7 +72,11 @@ class ChatUIConsumer:
         self._bottom_bar = _BottomBar()       # 终端底部固定输入栏
 
         # ★ 渲染引擎（内部管理 queue + reader 线程）
-        self._renderer = ContentRenderer(self._rs, self._bottom_bar)
+        # on_display_messages 回调注入：消除 ContentRenderer 对 tui._message_display 的直接 import
+        self._renderer = ContentRenderer(
+            self._rs, self._bottom_bar,
+            on_display_messages=_display_messages,
+        )
         self._engine = RenderEngine(self._renderer, self._bottom_bar)
 
         # ★ 事件分发器（通过 engine.push_cmd 回调入队，解耦队列实现）
