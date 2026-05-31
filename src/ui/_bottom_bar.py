@@ -1213,7 +1213,7 @@ class _BottomBar:
             out.write(f"\033[{scroll_end};1H\033[s")
             # ★ 显式定位光标到输入行（跳过弹窗区域）
             vis_row, vis_col = _compute_cursor_visual_pos(
-                text, -1, max(1, self._term_width() - 4),
+                text, self._input_cursor_pos, max(1, self._term_width() - 4),
             )
             r_cursor = r2 + 1 + self._completion_popup_height + vis_row
             cursor_col = min(3 + vis_col, self._term_width())
@@ -1293,7 +1293,7 @@ class _BottomBar:
             out.write(f"\033[{scroll_end};1H\033[s")
             # ★ 显式定位光标到输入行
             vis_row, vis_col = _compute_cursor_visual_pos(
-                text, -1, max(1, self._term_width() - 4),
+                text, self._input_cursor_pos, max(1, self._term_width() - 4),
             )
             r_cursor = r2 + 1 + vis_row
             cursor_col = min(3 + vis_col, self._term_width())
@@ -1366,7 +1366,7 @@ class _BottomBar:
                 out.write(f"\033[{scroll_end};1H\033[s")
                 # ★ 显式定位光标到输入行（不能用 \0338，保存槽已被 \033[s 覆盖）
                 vis_row, vis_col = _compute_cursor_visual_pos(
-                    self._last_text if self._last_text else "", -1,
+                    self._last_text if self._last_text else "", self._input_cursor_pos,
                     max(1, self._term_width() - 4),
                 )
                 r_cursor = height - total + 3 + self._completion_popup_height + vis_row
