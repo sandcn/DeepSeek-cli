@@ -196,7 +196,8 @@ class RenderEngine:
 
         vis_row, vis_col = _compute_cursor_visual_pos(text, cursor_pos, max_input)
         total_bottom = self._bb._bottom_lines
-        r_cursor = max(1, h - total_bottom + 3 + vis_row)
+        popup_offset = self._bb._completion_popup_height
+        r_cursor = max(1, h - total_bottom + 3 + popup_offset + vis_row)
         cursor_col = min(3 + vis_col, w)
         sys.__stdout__.write(f"\033[{r_cursor};{cursor_col}H")
         sys.__stdout__.flush()

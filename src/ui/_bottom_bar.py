@@ -634,7 +634,7 @@ class _BottomBar:
         max_input = max(1, term_w - 4)
         vis_row, vis_col = _compute_cursor_visual_pos(text, cursor_pos, max_input)
         total = self._bottom_lines
-        r_cursor = height - total + 3 + vis_row
+        r_cursor = height - total + 3 + self._completion_popup_height + vis_row
         col = min(3 + vis_col, term_w)
         sys.__stdout__.write(f"\033[{r_cursor};{col}H")
 
@@ -877,7 +877,7 @@ class _BottomBar:
             total = (2 + self._cached_input_rows
                      if self._cached_wrapped_for == text
                      else self._bottom_lines)
-            r_cursor = term_h - total + 3 + vis_row
+            r_cursor = term_h - total + 3 + self._completion_popup_height + vis_row
             cursor_col = min(3 + vis_col, term_w)
             sys.__stdout__.write(f"\033[{r_cursor};{cursor_col}H")
             sys.__stdout__.flush()
@@ -948,7 +948,7 @@ class _BottomBar:
             vis_row, vis_col = _compute_cursor_visual_pos(
                 text, cursor_pos, max_input,
             )
-            r_cursor = r2 + 1 + vis_row
+            r_cursor = r2 + 1 + self._completion_popup_height + vis_row
             cursor_col = 3 + vis_col
             cursor_col = min(cursor_col, self._term_width())
 
@@ -1432,10 +1432,19 @@ class _BottomBar:
 
             out.write("\0338")
             # ★ 重新保存 SCOSC，供 ParallelDisplay.render_frame 下一帧使用
+            #   \0337 (DECSC) 与 \033[s (SCOSC) 在绝大多数终端中共享同一保存槽，
+            #   因此先保存 SCOSC 再 \0338 会导致 \0338 恢复到 SCOSC 保存的位置。
+            #   正确做法：\0338 恢复输入行光标后，用显式 ANSI 定位到输入行。
             scroll_end = height - self._bottom_lines
             out.write(f"\033[{scroll_end};1H\033[s")
-            # ★ 修复：恢复光标到 DECSC 位置（输入行），防止后续 _echo 锁超时导致光标跳到上屏
-            out.write("\0338")
+            # ★ 显式定位光标到输入行（不能用 \0338，保存槽已被 \033[s 覆盖）
+            vis_row, vis_col = _compute_cursor_visual_pos(
+                self._last_text if self._last_text else "", -1,
+                max(1, self._term_width() - 4),
+            )
+            r_cursor = height - total + 3 + self._completion_popup_height + vis_row
+            cursor_col = min(3 + vis_col, self._term_width())
+            out.write(f"\033[{r_cursor};{cursor_col}H")
             out.flush()
 
         return self._completion_idx
