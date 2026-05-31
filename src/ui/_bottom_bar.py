@@ -1296,11 +1296,11 @@ class _BottomBar:
             out.write("\0338")
             # ★ 重新保存 SCOSC
             out.write(f"\033[{scroll_end};1H\033[s")
-            # ★ 显式定位光标到输入行
+            # ★ 显式定位光标到输入行（跳过弹窗区域）
             vis_row, vis_col = _compute_cursor_visual_pos(
                 text, -1, max(1, self._term_width() - 4),
             )
-            r_cursor = r2 + 1 + vis_row
+            r_cursor = r2 + 1 + self._completion_popup_height + vis_row
             cursor_col = min(3 + vis_col, self._term_width())
             out.write(f"\033[{r_cursor};{cursor_col}H")
             out.flush()
