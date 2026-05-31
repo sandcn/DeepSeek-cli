@@ -16,10 +16,10 @@ from typing import Any
 import os
 
 from ...api.renderer import IncrementalRenderer
-from ..colors import CYAN, DIM, RESET, GREEN
 from ...core.sandbox_manager import get_sandbox_manager as _get_sandbox_manager
 from ._terminal import (get_terminal_width, NARROW_THRESHOLD,
-                        is_narrow, narrow_truncate, narrow_indent)
+                        is_narrow, narrow_truncate, narrow_indent,
+                        narrow_sep_width)
 from ._text_utils import truncate
 from ..output_target import IOutputTarget, TerminalTarget
 from ..picker import scroll_window as _scroll_window
@@ -117,6 +117,12 @@ class _OutputFileAdapter:
         return hasattr(self._target, 'isatty') and self._target.isatty()
 
 
+# ── 颜色快捷引用 ──────────────────────────────────────────
+
+from ..colors import CYAN as _C, DIM as _D, RESET as _R, GREEN as _G, \
+    YELLOW as _Y, BLUE as _B, BRIGHT_CYAN as _BC, BRIGHT_WHITE as _BW, \
+    BOLD as _BD, DARK_GRAY as _DG, BRIGHT_GREEN as _BG
+
 # ── 常量 ─────────────────────────────────────────────────
 
 _TOOL_CALL_PREVIEW_LEN = 100
@@ -126,12 +132,26 @@ _LINE_TRUNCATE_WIDTH = 55
 _SEP_LINE_WIDTH = 25
 _NARROW_SEP_REDUCTION = 10
 
+# ── 美观分隔线（增强版） ────────────────────────────────────
+
+_MSG_SEP = f"  {_DG}\u2500{_R}{_DG}\u2500{_R}{_DG}\u2500{_R}"  # ───
+_THINK_SEP = (f"  {_BC}\u2501\u2501{_R}"          # ━━
+              f"  {_BC}\u26a1{_R}"                #  ⚡
+              f"{_DG}\u601d\u8003{_R}"            # 思考
+              f"  {_D}\u2501\u2501{_R}")          #  ━━
+_THINK_END = f"  {_D}\u2501\u2501{_R}"            # ━━
+
+# ── 美观角色标签（带颜色背景感） ──────────────────────────
+_USER_TAG = f"{_BC}\u25cf {_R}{_BC}USER{_R}"        # ● USER
+_ASST_TAG = f"{_BG}\u25c6 {_R}{_BG}ASSISTANT{_R}"   # ◆ ASSISTANT
+_TOOL_TAG = f"{_Y}\u2699 {_R}{_Y}TOOL{_R}"          # ⚙ TOOL
+
 # ── 消息选择器提示文本 — 按窄屏/宽屏分两组 ────────────────
-_HINT_NARROW = " ↑↓选 Enter重写 r恢复 d截断"
-_HINT_NARROW_ALL = " R全恢复"
-_HINT_WIDE = "  ↑↓ 选择  Enter 从此重写  r 从此恢复  d 从此截断"
-_HINT_WIDE_ALL = "  R 恢复全部"
-_HINT_ESC = "  Esc返回\n"
+_HINT_NARROW = "  \u2191\u2193\u9009  Enter\u91cd\u5199  r\u6062\u590d  d\u622a\u65ad"     # ↑↓选 Enter重写 r恢复 d截断
+_HINT_NARROW_ALL = "  R\u5168\u6062\u590d"                                                 # R全恢复
+_HINT_WIDE = "  \u2191\u2193 \u9009\u62e9  Enter \u4ece\u6b64\u91cd\u5199  r \u4ece\u6b64\u6062\u590d  d \u4ece\u6b64\u622a\u65ad"  # ↑↓ 选择  Enter 从此重写  r 从此恢复  d 从此截断
+_HINT_WIDE_ALL = "  R \u6062\u590d\u5168\u90e8"                                            # R 恢复全部
+_HINT_ESC = "  Esc\u8fd4\u56de\n"                                                           # Esc返回\n
 
 
 def _build_hint_text(is_current: bool, narrow: bool) -> str:
@@ -150,7 +170,22 @@ def _build_hint_text(is_current: bool, narrow: bool) -> str:
 # ── 工具函数 ──────────────────────────────────────────────
 
 def _role_icon(role: str) -> str:
-    return {"user": "*", "assistant": ">", "tool": "-"}.get(role, " ")
+    """角色图标映射：用户·助手·工具 · 系统空置。
+
+    使用语义化的简约符号 + 视觉层级区分：
+      - user（用户）      → ●  （实心圆，表示用户输入）
+      - assistant（助手） → ◆  （实心菱形，表示 AI 回复）
+      - tool（工具）      → ⚙  （齿轮，表示工具调用）
+      - 其他             → ·   （中性占位符）
+
+    所有符号均为标准 Unicode，无需 Nerd Font 即可正常显示。
+    """
+    return {"user": "\u25cf", "assistant": "\u25c6", "tool": "\u2699"}.get(role, "\u00b7")
+
+
+def _role_tag(role: str) -> str:
+    """角色标签：将 role 映射为美观的彩色标签。"""
+    return {"user": _USER_TAG, "assistant": _ASST_TAG, "tool": _TOOL_TAG}.get(role, _D + "·" + _R)
 
 
 # _truncate 已迁移到 _text_utils.truncate（向后兼容：width → max_len）
@@ -271,7 +306,7 @@ class MessageDisplayContext:
 # ── 单条消息显示 ────────────────────────────────────────
 
 def _display_tool_calls(i: int, icon: str, m: dict, sandbox_text: str) -> None:
-    """显示 tool_calls 消息摘要。"""
+    """显示 tool_calls 消息摘要 — 使用主题 muted 色。"""
     names = ", ".join(
         tc.get("function", {}).get("name", "?") for tc in m.get("tool_calls", [])
     )
@@ -279,28 +314,34 @@ def _display_tool_calls(i: int, icon: str, m: dict, sandbox_text: str) -> None:
     text = content[:_TOOL_CALL_PREVIEW_LEN].replace("\n", " ") if content else ""
     if len(content) > _TOOL_CALL_PREVIEW_LEN:
         text += "…"
-    _manager.write_line(f"\n  {DIM}#{i} {icon} {names}{sandbox_text}{RESET}")
+    sep = narrow_sep_width(20)
+    _manager.write_line(f"\n  {_DG}\u2500{_R}" * min(sep, 10))
+    _manager.write_line(f"  {_TOOL_TAG}  {_D}{icon}{_R} {_Y}{names}{_R}{_D}{sandbox_text}{_R}")
     if text:
-        _manager.write_line(f"  {DIM}  {text}{RESET}")
+        _manager.write_line(f"  {_D}  \u2514 {text}{_R}")
 
 
 def _display_user(i: int, icon: str, content: str, sandbox_text: str) -> None:
-    """显示用户消息。"""
-    _manager.write_line(f"\n  {CYAN}#{i} {icon} user{sandbox_text}{RESET}")
+    """显示用户消息 — 每行以 > 开头（白色加粗）。"""
+    sep = narrow_sep_width(20)
+    _manager.write_line(f"\n  {_DG}\u2500{_R}" * min(sep, 10))
+    _manager.write_line(f"  {_BW}{_BD}>{_R} {_USER_TAG}  {_D}#{i}{_R}{_D}{sandbox_text}{_R}")
     for line in content.split("\n"):
-        _manager.write_line(f"  {line}")
+        _manager.write_line(f"  {_BW}{_BD}>{_R} {line}")
 
 
 def _display_assistant(
     i: int, icon: str, m: dict, sandbox_text: str, speed: int = 0,
 ) -> None:
-    """显示助手消息（含 reasoning + content Markdown 渲染）。"""
-    _manager.write_line(f"\n  {GREEN}#{i} {icon} assistant{sandbox_text}{RESET}")
+    """显示助手消息（含 reasoning + content Markdown 渲染）— 使用主题色彩。"""
+    sep = narrow_sep_width(20)
+    _manager.write_line(f"\n  {_DG}\u2500{_R}" * min(sep, 10))
+    _manager.write_line(f"  {_ASST_TAG}  {_D}#{i}{_R}{_D}{sandbox_text}{_R}")
     content = m.get("content") or ""
     reasoning = m.get("reasoning_content") or ""
     _output_file = _OutputFileAdapter(_manager.target)
     if reasoning:
-        _manager.write_line(f"  {DIM}── 思考 ──{RESET}")
+        _manager.write_line(f"\n  {_THINK_SEP}")
         _manager.write_line("")
         reason_renderer = IncrementalRenderer(
             typing_speed=speed, show_indicator=False, style="dim",
@@ -308,7 +349,7 @@ def _display_assistant(
         )
         reason_renderer.write(reasoning)
         reason_renderer.close()
-        _manager.write_line(f"\n  {DIM}──{RESET}")
+        _manager.write_line(f"\n  {_THINK_END}")
     if content and len(content) > _ASSISTANT_MD_THRESHOLD:
         renderer = IncrementalRenderer(
             typing_speed=speed, show_indicator=False,
@@ -318,7 +359,7 @@ def _display_assistant(
         renderer.close()
     elif content:
         for line in content.split("\n"):
-            _manager.write_line(f"  {line}")
+            _manager.write_line(f"  {_BG}\u2502{_R} {line}")
 
 
 # ── 消息列表全量显示 ────────────────────────────────────
@@ -329,8 +370,12 @@ def _display_messages(
     idx_map: list[int] | None = None,
     speed: int = 0,
 ) -> None:
-    """恢复会话后展示所有消息内容。"""
-    _manager.write_line(f"\n  {DIM}── 消息列表 ──{RESET}")
+    """恢复会话后展示所有消息内容 — 使用主题色彩美化。"""
+    sep_width = narrow_sep_width(50)
+    sep = "\u2501" * sep_width
+    # ★ 美化：亮青色花括号 + 信封图标
+    header = f"  {_BC}\u2501{_R}  {_BC}\u2770\u2709\u6d88\u606f\u5217\u8868\u2771{_R}  {_BC}\u2501{_R}"  # ━  ❰✉消息列表❱  ━
+    _manager.write_line(f"\n{header}")
     for i, m in enumerate(data):
         role = m.get("role", "?")
         icon = _role_icon(role)
@@ -349,7 +394,8 @@ def _display_messages(
             text = content[:_TOOL_CONTENT_PREVIEW_LEN].replace("\n", " ")
             if len(content) > _TOOL_CONTENT_PREVIEW_LEN:
                 text += "…"
-            _manager.write_line(f"\n  {DIM}#{i} {icon} {text}{RESET}")
+            _manager.write_line(f"\n  {_D}\u2500{_R}" * min(narrow_sep_width(20), 10))
+            _manager.write_line(f"  {_TOOL_TAG}  {_D}\u2514 {text}{_R}")
             continue
 
         if role == "user":
@@ -357,7 +403,7 @@ def _display_messages(
         else:
             _display_assistant(i, icon, m, sandbox_text, speed)
 
-    _manager.write_line("")
+    _manager.write_line(f"  {_D}{sep}{_R}")
 
 
 display_messages = _display_messages  # 公开别名
@@ -402,6 +448,22 @@ def _msg_line(
     return icon, role, text
 
 
+def _msg_label(m: dict, i: int, ctx: MessageDisplayContext) -> str:
+    """生成消息的彩色标签行（用于消息选择器显示）。"""
+    role = m.get("role", "?")
+    icon = _role_icon(role)
+    tag = _role_tag(role)
+    content = m.get("content") or ""
+    if m.get("tool_calls"):
+        names = ", ".join(
+            tc.get("function", {}).get("name", "?") for tc in m["tool_calls"]
+        )
+        return f"{tag}  {_D}#{i}{_R}  {_Y}{_truncate(names, 35)}{_R}"
+    text = content.replace("\n", " ").strip()
+    truncated = _truncate(text, 40)
+    return f"{tag}  {_D}#{i}{_R}  {truncated}"
+
+
 # ── 消息选择器行渲染 ────────────────────────────────────
 
 def _make_message_lines(
@@ -425,20 +487,22 @@ def _make_message_lines(
     """
     tw = get_terminal_width()
     narrow = tw < NARROW_THRESHOLD
-    sep_width = min(_SEP_LINE_WIDTH, tw - 4) if not narrow else max(10, min(_SEP_LINE_WIDTH - _NARROW_SEP_REDUCTION, tw - 4))
+    sep_width = narrow_sep_width(_SEP_LINE_WIDTH)
     indent = narrow_indent(normal=2)
     ind = " " * indent
     if narrow:
         title_text = f"{ind}{title}{tag}"
     else:
         title_text = f"{ind}{title}{tag}  {len(items)} 条消息"
+    # ★ 装饰分隔线
+    sep_line = ind + "\u2501" * sep_width
     lines = [
         ("class:title", title_text + "\n"),
-        ("class:sep", ind + "-" * sep_width + "\n"),
+        ("class:sep", sep_line + "\n"),
     ]
     s, e = _scroll_window(cursor, state, len(items))
     if s > 0:
-        lines.append(("class:dim", f"  {ind}↑ 更多...\n"))
+        lines.append(("class:dim", f"  {ind}\u2191 更多...\n"))
     for j in range(s, e):
         i = items[j]
         icon, role, text = _msg_line(ctx.data[i], i, ctx)
@@ -447,12 +511,12 @@ def _make_message_lines(
         else:
             label = f" {j:3d} {icon} {text}"
         if j == cursor:
-            lines.append(("class:selected", f"{ind}>{label}\n"))
+            lines.append(("class:selected", f"{ind}\u25b6 {label}\n"))
         else:
-            lines.append(("class:role.user", f"{ind} {label}\n"))
+            lines.append(("class:role.user", f"{ind}  {label}\n"))
     if e < len(items):
-        lines.append(("class:dim", f"  {ind}↓ 更多...\n"))
-    lines.append(("class:sep", ind + "-" * sep_width + "\n"))
+        lines.append(("class:dim", f"  {ind}\u2193 更多...\n"))
+    lines.append(("class:sep", sep_line + "\n"))
     lines.append(("class:hint", _build_hint_text(is_current, narrow)))
     return lines
 

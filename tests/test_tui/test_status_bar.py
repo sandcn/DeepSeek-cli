@@ -47,7 +47,7 @@ class TestRenderNormal:
         """消息数 > 0 时显示计数。"""
         state = UISessionState(model="gpt-4", message_count=3)
         parts = build_normal_parts(state)
-        count_found = any("3 msg" in p for p in parts)
+        count_found = any("3m" in p for p in parts)
         assert count_found
 
 
@@ -167,7 +167,7 @@ class TestStatusBarInstance:
         sb = StatusBar(tree)
         result = sb.render()
         assert "test-model" in result
-        assert "tok" in result
+        assert "t/" in result
 
     def test_status_bar_start_stop_streaming(self):
         """测试 start_streaming/stop_streaming 的状态转换。"""

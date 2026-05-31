@@ -17,7 +17,9 @@ from __future__ import annotations
 import logging
 from typing import Any, Callable
 
-from ..colors import DIM, GREEN, RESET, YELLOW
+from ..colors import CYAN, DIM, GREEN, RESET, YELLOW, BRIGHT_CYAN, \
+    BRIGHT_GREEN, DARK_GRAY, BOLD, BLUE
+from ..theme import THEME
 from ...core.sandbox_manager import get_sandbox_manager as _get_sandbox_manager
 from ...api.interrupt_async import flush_stdin, reset_interrupt_async
 from .._lock import locked_print
@@ -47,33 +49,40 @@ def _restore_sandbox_to(agent: Any, target_idx: int) -> str:
 def _msg_short_summary(msg: dict) -> str:
     """生成消息的简短摘要（单行，适合弹窗显示）。
 
-    格式: [U] 用户消息前20字...
-          [A] 助手回复前20字...
-          [T] 工具调用: func_name
+    格式: ● │ 用户消息前35字...  (亮青色)
+          ◆ │ 助手回复前35字...  (亮绿色)
+          ◆ ⚙ func_name          (助手带 tool_calls)
+          ⚙ name: 内容前30字      (工具消息, 深灰)
+          · 其他角色消息前35字... (蓝色圆点)
+
+    角色图标使用语义化符号，与消息显示对齐。
     """
     role = msg.get("role", "?")
     content = msg.get("content", "") or ""
+    icon_map = {"user": "\u25cf", "assistant": "\u25c6", "tool": "\u2699"}
+    icon = icon_map.get(role, "\u00b7")
     if role == "user":
         text = content.replace("\n", " ").strip()
-        return f"[U] {truncate(text, 35)}"
+        # ★ 美化：用户消息用亮青色 + 竖线装饰
+        return f"{BRIGHT_CYAN}{icon}{RESET} {BRIGHT_CYAN}\u2502{RESET} {truncate(text, 35)}"
     elif role == "assistant":
         if content:
             text = content.replace("\n", " ").strip()
-            return f"[A] {truncate(text, 35)}"
+            return f"{BRIGHT_GREEN}{icon}{RESET} {BRIGHT_GREEN}\u2502{RESET} {truncate(text, 35)}"
         # tool_calls
         tcs = msg.get("tool_calls", [])
         if tcs:
             names = ", ".join(tc.get("function", {}).get("name", "?") for tc in tcs[:2])
-            return f"[A] \u2699 {truncate(names, 30)}"
-        return "[A] (\u7a7a)"
+            return f"{BRIGHT_GREEN}{icon}{RESET} {YELLOW}\u2699{RESET} {truncate(names, 30)}"
+        return f"{DIM}{icon}{RESET} {DIM}(\u7a7a){RESET}"
     elif role == "tool":
         text = content.replace("\n", " ").strip()
         name = msg.get("name", "")
-        prefix = f"{name}: " if name else ""
-        return f"[T] {prefix}{truncate(text, 30)}"
+        prefix = f"{DARK_GRAY}{name}:{RESET} " if name else ""
+        return f"{DIM}{icon}{RESET} {prefix}{DIM}{truncate(text, 30)}{RESET}"
     else:
         text = content.replace("\n", " ").strip()
-        return f"[{role[0].upper()}] {truncate(text, 35)}"
+        return f"{BLUE}\u00b7{RESET} {truncate(text, 35)}"
 
 
 def _build_message_items(data: list[dict]) -> list[str]:
@@ -122,7 +131,7 @@ class MessageEditor:
         # 只有 user 消息可选
         selectable = [i for i, m in enumerate(data) if m.get("role") == "user"]
         if not selectable:
-            _disp.write_line(f"  {YELLOW}\u6ca1\u6709\u53ef\u7f16\u8f91\u7684\u7528\u6237\u6d88\u606f{RESET}")
+            _disp.write_line(f"  {THEME['warning']}\u6ca1\u6709\u53ef\u7f16\u8f91\u7684\u7528\u6237\u6d88\u606f{RESET}")
             return ("quit", 0)
 
         sel_count = len(selectable)
@@ -131,13 +140,19 @@ class MessageEditor:
         display_items = _build_message_items(data)
         user_display = [display_items[i] for i in selectable]
 
+        # ★ 消息选择弹窗：显示用户可选消息总数
+        title_display = f"{BRIGHT_CYAN}{title}{RESET}{DIM}{tag}{RESET}  {DIM}\u2502{RESET}  {CYAN}{sel_count}{RESET} \u6761\u53ef\u7f16\u8f91"  # 当前会话(当前) │ N 条可编辑
+
         result = run_bottom_bar_selection(
             selectable, user_display,
             initial_idx=sel_count - 1,
-            title=f"{title}{tag}  {sel_count} \u6761\u6d88\u606f",  # N 条消息
+            title=title_display,
         )
 
-        if result["action"] == "cancel" or result["action"] == "error":
+        if result["action"] == "cancel":
+            _disp.write_line(f"  {DIM}\u5df2\u53d6\u6d88\u7f16\u8f91{RESET}")  # 已取消编辑
+            return ("quit", 0)
+        if result["action"] == "error":
             return ("quit", 0)
 
         if result["index"] is None or result["index"] >= len(selectable):
@@ -158,12 +173,12 @@ class MessageEditor:
         restore_text = _restore_sandbox_to(agent, target_index)
         if restore_text:
             _disp.write_line(
-                f"  {GREEN}{restore_text}\u5230\u6d88\u606f #{target_index} \u7684\u72b6\u6001{RESET}"
+                f"  {BRIGHT_GREEN}\u2714{RESET} {restore_text}"
             )
         del agent.messages[real_idx:]
         ctx = _disp.MessageDisplayContext.from_agent(agent)
         _disp.write_line(
-            f"  {GREEN}\u5df2\u622a\u65ad\u5230\u6d88\u606f #{cursor} \u4e4b\u524d\uff08\u4fdd\u7559 {len(ctx.data)} \u6761\uff09{RESET}"
+            f"  {BRIGHT_GREEN}\u2714{RESET} \u5df2\u622a\u65ad\u5230\u6d88\u606f #{cursor} \uff08\u4fdd\u7559 {BRIGHT_CYAN}{len(ctx.data)}{RESET} \u6761\uff09"
         )
         if cursor > len(ctx.data):
             _logger.warning("cursor=%d \u8d85\u51fa data \u8303\u56f4(%d)\uff0c\u56de\u9000", cursor, len(ctx.data))
@@ -184,7 +199,7 @@ class MessageEditor:
                 30,
             )
             locked_print(
-                f"  {YELLOW}\u786e\u8ba4\u5220\u9664\u300c{msg_preview}\u300d\u53ca\u4e4b\u540e\u6240\u6709\u6d88\u606f\uff1f(y/N): {RESET}"
+                f"  {THEME['warning']}\u786e\u8ba4\u5220\u9664\u300c{msg_preview}\u300d\u53ca\u4e4b\u540e\u6240\u6709\u6d88\u606f\uff1f(y/N): {RESET}"
             )
             confirm = input().strip()
         except (OSError, ValueError, Exception):
@@ -195,31 +210,31 @@ class MessageEditor:
         restore_text = _restore_sandbox_to(agent, target_index)
         if restore_text:
             _disp.write_line(
-                f"  {GREEN}{restore_text}\u5230\u6d88\u606f #{target_index} \u7684\u72b6\u6001{RESET}"
+                f"  {BRIGHT_GREEN}\u2714{RESET} {restore_text}"
             )
         removed = len(agent.messages) - real_idx
         del agent.messages[real_idx:]
         _disp.write_line(
-            f"  {GREEN}\u5df2\u5220\u9664 {removed} \u6761\u6d88\u606f{RESET}"
+            f"  {YELLOW}\u2716{RESET} \u5df2\u5220\u9664 {BRIGHT_CYAN}{removed}{RESET} \u6761\u6d88\u606f"
         )
         _disp.write_line(
-            f"  {DIM}\u7ee7\u7eed\u8f93\u5165\u5f00\u59cb\u5bf9\u8bdd{RESET}"
+            f"  {DIM}\u2514 \u7ee7\u7eed\u8f93\u5165\u5f00\u59cb\u5bf9\u8bdd{RESET}"
         )
         return True
 
     def _check_last_message_role(self, agent: Any, state: dict) -> None:
         """检查最后一条消息角色，设置重试提示。"""
         if not agent.messages:
-            _disp.write_line(f"  {DIM}\u7ee7\u7eed\u8f93\u5165\u5f00\u59cb\u5bf9\u8bdd{RESET}")
+            _disp.write_line(f"  {DIM}\u2514 \u7ee7\u7eed\u8f93\u5165\u5f00\u59cb\u5bf9\u8bdd{RESET}")
             return
         last_role = agent.messages[-1].get("role", "?")
         if last_role == "user":
             _disp.write_line(
-                f"  {DIM}\u6700\u540e\u4e00\u6761\u662f\u7528\u6237\u6d88\u606f\uff0c\u5c06\u81ea\u52a8\u7ee7\u7eed\u751f\u6210\u56de\u590d\u2026{RESET}"
+                f"  {BRIGHT_CYAN}\u25b6{RESET} \u6700\u540e\u4e00\u6761\u662f\u7528\u6237\u6d88\u606f\uff0c\u5c06\u81ea\u52a8\u7ee7\u7eed\u751f\u6210\u56de\u590d\u2026"
             )
             state["retry"] = True
         else:
-            _disp.write_line(f"  {DIM}\u7ee7\u7eed\u8f93\u5165\u5f00\u59cb\u5bf9\u8bdd{RESET}")
+            _disp.write_line(f"  {DIM}\u2514 \u7ee7\u7eed\u8f93\u5165\u5f00\u59cb\u5bf9\u8bdd{RESET}")
 
     def _handle_resume_action(
         self, agent: Any, state: dict, cursor: int, idx_map: list[int],
@@ -229,13 +244,13 @@ class MessageEditor:
         restore_text = _restore_sandbox_to(agent, real_idx)
         if restore_text:
             _disp.write_line(
-                f"  {GREEN}{restore_text}\u5230\u6d88\u606f #{real_idx} \u7684\u72b6\u6001{RESET}"
+                f"  {BRIGHT_GREEN}\u2714{RESET} {restore_text}"
             )
         del agent.messages[real_idx + 1:]
         ctx = _disp.MessageDisplayContext.from_agent(agent)
         remaining = len(ctx.data)
         _disp.write_line(
-            f"  {GREEN}\u5df2\u622a\u65ad\u5230\u6d88\u606f #{cursor}\uff08\u4fdd\u7559 {remaining} \u6761\uff09{RESET}"
+            f"  {BRIGHT_GREEN}\u2714{RESET} \u5df2\u622a\u65ad\u5230\u6d88\u606f #{cursor} \uff08\u4fdd\u7559 {BRIGHT_CYAN}{remaining}{RESET} \u6761\uff09"
         )
         _disp.display_messages(ctx.data, ctx.agent, ctx.idx_map, speed=0)
         self._check_last_message_role(agent, state)
@@ -245,29 +260,13 @@ class MessageEditor:
         """处理 resume_all action：恢复全部消息，不做截断。"""
         ctx = _disp.MessageDisplayContext.from_agent(agent)
         _disp.write_line(
-            f"  {GREEN}\u5df2\u6062\u590d\u5168\u90e8\u6d88\u606f\uff08\u5171 {len(ctx.data)} \u6761\uff09{RESET}"
+            f"  {BRIGHT_GREEN}\u2714{RESET} \u5df2\u6062\u590d\u5168\u90e8\u6d88\u606f\uff08\u5171 {BRIGHT_CYAN}{len(ctx.data)}{RESET} \u6761\uff09"
         )
         _disp.display_messages(ctx.data, ctx.agent, ctx.idx_map, speed=0)
         self._check_last_message_role(agent, state)
         return True
 
     # ── 会话管理 ────────────────────────────────────────
-
-    def _current_session_detail(self, agent: Any, state: dict) -> bool:
-        """选择消息并编辑。"""
-        ctx = _disp.MessageDisplayContext.from_agent(agent)
-        if not ctx.data:
-            _disp.write_line(
-                f"  {YELLOW}\u5f53\u524d\u4f1a\u8bdd\u4e3a\u7a7a{RESET}"
-            )
-            return False
-
-        action, cursor = self._interactive_message_select(
-            ctx, "\u5f53\u524d\u4f1a\u8bdd", is_current=True,
-        )
-        if action == "edit":
-            return self._handle_edit_action(agent, state, cursor, ctx.idx_map)
-        return False
 
     # ── 公开入口 ────────────────────────────────────────
 
@@ -284,10 +283,26 @@ class MessageEditor:
         ctx = _disp.MessageDisplayContext.from_messages(agent.messages)
         if not ctx.data:
             _disp.write_line(
-                f"  {YELLOW}\u5f53\u524d\u4f1a\u8bdd\u4e3a\u7a7a\uff0c\u65e0\u6d88\u606f\u53ef\u7f16\u8f91{RESET}"
+                f"  {YELLOW}\u26a0{RESET} \u5f53\u524d\u4f1a\u8bdd\u4e3a\u7a7a\uff0c\u65e0\u6d88\u606f\u53ef\u7f16\u8f91"
             )
             return False
         return self._current_session_detail(agent, state)
+
+    def _current_session_detail(self, agent: Any, state: dict) -> bool:
+        """选择消息并编辑。"""
+        ctx = _disp.MessageDisplayContext.from_agent(agent)
+        if not ctx.data:
+            _disp.write_line(
+                f"  {YELLOW}\u26a0{RESET} \u5f53\u524d\u4f1a\u8bdd\u4e3a\u7a7a"
+            )
+            return False
+
+        action, cursor = self._interactive_message_select(
+            ctx, "\u5f53\u524d\u4f1a\u8bdd", is_current=True,
+        )
+        if action == "edit":
+            return self._handle_edit_action(agent, state, cursor, ctx.idx_map)
+        return False
 
 
 # ═══════════════════════════════════════════════════════════

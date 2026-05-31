@@ -31,22 +31,22 @@ class TestRoleIcon:
     """_role_icon 角色图标映射测试。"""
 
     def test_user_icon(self):
-        assert _role_icon("user") == "*"
+        assert _role_icon("user") == "\u25cf"       # ●
 
     def test_assistant_icon(self):
-        assert _role_icon("assistant") == ">"
+        assert _role_icon("assistant") == "\u25c6"  # ◆
 
     def test_tool_icon(self):
-        assert _role_icon("tool") == "-"
+        assert _role_icon("tool") == "\u2699"       # ⚙
 
     def test_system_icon(self):
-        assert _role_icon("system") == " "
+        assert _role_icon("system") == "\u00b7"     # ·
 
     def test_unknown_role(self):
-        assert _role_icon("unknown") == " "
+        assert _role_icon("unknown") == "\u00b7"    # ·
 
     def test_empty_role(self):
-        assert _role_icon("") == " "
+        assert _role_icon("") == "\u00b7"           # ·
 
 
 class TestTruncate:
@@ -171,7 +171,7 @@ class TestMsgLine:
         msg = _make_msg("user", "hello world")
         ctx = self._make_ctx([msg])
         icon, role, text = _msg_line(msg, 0, ctx)
-        assert icon == "*"
+        assert icon == "\u25cf"        # ●
         assert role == "user"
         assert "hello world" in text
 
@@ -179,7 +179,7 @@ class TestMsgLine:
         msg = _make_msg("assistant", "some response")
         ctx = self._make_ctx([msg])
         icon, role, text = _msg_line(msg, 0, ctx)
-        assert icon == ">"
+        assert icon == "\u25c6"        # ◆
         assert role == "assistant"
         assert "some response" in text
 
@@ -190,7 +190,7 @@ class TestMsgLine:
         ])
         ctx = self._make_ctx([msg])
         icon, role, text = _msg_line(msg, 0, ctx)
-        assert icon == ">"
+        assert icon == "\u25c6"        # ◆ (assistant 角色)
         assert "read_file" in text
         assert "bash" in text
 

@@ -21,11 +21,11 @@ _STYLE_SUCCESS = Style(color="green")
 _STYLE_ERROR = Style(color="red", bold=True)
 _STYLE_BOLD = Style(bold=True)
 
-_THINKING_HEADER = "\n  ── 思考 ──\n"
+_THINKING_HEADER = "\n  ─ 思考 ─\n"
 
 # ── 解析进度清除哨兵 ───────────────────────────────────
 _CLEAR_PARSE_LINE = -1
-_THINKING_SEPARATOR = "\n  " + "\u2500" * 40 + "\n"
+_THINKING_SEPARATOR = "\n  " + "\u2500" * 25 + "\n"
 
 # ── Reader 线程刷新间隔 ─────────────────────────────────
 _READER_INTERVAL = 0.1  # 100ms = 10Hz

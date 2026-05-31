@@ -20,11 +20,16 @@ from __future__ import annotations
 import time
 
 from ..ansi import strip_ansi, truncate_ansi_sgr
-from ..colors import DIM, RESET, CYAN, GREEN
+from ..colors import DIM, RESET, CYAN, BOLD, DARK_GRAY, \
+    BRIGHT_CYAN, GREEN, YELLOW
+from ..theme import THEME
 from ..parallel._text_formatter import TextFormatter
 from ._terminal import is_narrow, get_terminal_width
 from ._time_format import format_elapsed, format_speed
 from ._state import TUIStateTree, UISessionState, StreamingState
+
+# ── 流式状态行空格常量（图标与数值间视觉间距） ──
+_SP = " "  # 单一空格，视觉平衡
 
 # 状态栏极窄屏阈值：窄于此宽度仅显示模型名+消息数
 _STATUS_BAR_COMPACT_THRESHOLD = 60
@@ -118,7 +123,7 @@ def _narrow_split_line(line: str, max_w: int, half: int) -> str:
         return line
     left = truncate_ansi_sgr(line, half)
     right = truncate_ansi_sgr(line, half, from_end=True)
-    return f"{left}{DIM}..{RESET}{right}"
+    return f"{left}{DIM}\u00b7\u00b7\u00b7{RESET}{right}"
 
 
 def render_normal(state: UISessionState) -> str:
@@ -132,7 +137,10 @@ def render_normal(state: UISessionState) -> str:
     """
     narrow = is_narrow()
     parts = build_normal_parts(state, narrow=narrow)
-    sep = f" {DIM}|{RESET} " if not narrow else " "
+    if not narrow:
+        sep = f" {DARK_GRAY}\u00b7{RESET} "
+    else:
+        sep = " "
     line = sep.join(parts)
     # 窄屏判定分工：
     # - build_normal_parts(): 极窄屏(≤60)提前返回精简部件
@@ -146,10 +154,10 @@ def render_normal(state: UISessionState) -> str:
 
 
 def _model_label(state: UISessionState) -> str:
-    """模型名标签。"""
+    """模型名标签 — 使用主题高亮色，带 ◉ 图标前缀。"""
     if state.model:
-        return f"{CYAN}{state.model}{RESET}"
-    return f"{DIM}no model{RESET}"
+        return f"{BRIGHT_CYAN}\u25c9{RESET} {BOLD}{THEME['title']}{state.model}{RESET}"
+    return f"{DIM}\u25c9 no model{RESET}"
 
 
 def _build_detail_parts(state: UISessionState, narrow: bool) -> list[str]:
@@ -164,35 +172,35 @@ def _build_detail_parts(state: UISessionState, narrow: bool) -> list[str]:
     """
     parts: list[str] = []
 
-    # 消息数
+    # 消息数（带 ◆ 图标 — 亮色）
     if state.message_count > 0:
-        count_str = f"{state.message_count} msg" + ("s" if state.message_count != 1 else "")
-        parts.append(f"{DIM}{count_str}{RESET}")
+        count_str = f"{state.message_count}m"
+        parts.append(f"{GREEN}\u25c6{RESET} {count_str}")
 
     # 会话标题
     if state.session_title and not narrow:
         title_trunc = state.session_title[:20]
-        parts.append(f"{DIM}「{title_trunc}」{RESET}")
+        parts.append(f"{DARK_GRAY}\u300c{title_trunc}\u300d{RESET}")
 
-    # Token 用量
+    # Token 用量（带 ⬡ 图标 — 双色）
     if state.show_tokens and (state.input_tokens > 0 or state.output_tokens > 0):
         in_str = TextFormatter.format_token_count(state.input_tokens)
         out_str = TextFormatter.format_token_count(state.output_tokens)
-        parts.append(f"{DIM}{in_str}↑/{out_str}↓{RESET}")
+        parts.append(f"{CYAN}\u2b21{RESET}{in_str}\u2191{out_str}\u2193")
 
     # 状态文本
     if state.status_text:
-        parts.append(f"{GREEN}{state.status_text}{RESET}")
+        parts.append(f"{THEME['success']}{state.status_text}{RESET}")
 
-    # 会话持续时间
+    # 会话持续时间（带 ⏱ 图标）
     if state.show_duration and state.session_duration > 0:
         dur_str = format_elapsed(state.session_duration)
-        parts.append(f"{DIM}{dur_str}{RESET}")
+        parts.append(f"{DARK_GRAY}\u23f1{dur_str}{RESET}")
 
     # 当前时间
     if state.show_time and not narrow:
         t = time.strftime("%H:%M")
-        parts.append(f"{DIM}{t}{RESET}")
+        parts.append(f"{DARK_GRAY}{t}{RESET}")
 
     return parts
 
@@ -227,7 +235,7 @@ def build_normal_parts(state: UISessionState, narrow: bool | None = None) -> lis
 def render_streaming_line(state: UISessionState, streaming: StreamingState) -> str:
     """渲染流式输出状态行。
 
-    格式：gpt-4 | 3.2s | 450 tok↓ | 120 tok/s
+    格式：◉ gpt-4 · ⏱ 3.2s · ⬡ 450t · ⚡ 120t/s
 
     Args:
         state: 会话级状态快照（主要用于获取模型名）。
@@ -242,12 +250,15 @@ def render_streaming_line(state: UISessionState, streaming: StreamingState) -> s
 
     parts: list[str] = []
     if state.model:
-        parts.append(f"{CYAN}{state.model}{RESET}")
-    parts.append(f"{GREEN}{format_elapsed(elapsed)}{RESET}")
+        parts.append(f"{BRIGHT_CYAN}\u25c9{RESET} {BOLD}{THEME['title']}{state.model}{RESET}")
+    parts.append(f"{GREEN}\u23f1{_SP}{format_elapsed(elapsed)}{RESET}")
     tok_str = TextFormatter.format_token_count(tokens)
-    parts.append(f"{DIM}{tok_str} tok↓{RESET}")
-    parts.append(f"{DIM}{format_speed(speed)} tok/s{RESET}")
-    line = f" {DIM}|{RESET} ".join(parts)
+    parts.append(f"{CYAN}\u2b21{_SP}{tok_str}t{RESET}")
+    if speed > 0:
+        parts.append(f"{YELLOW}\u26a1{_SP}{format_speed(speed)}t/s{RESET}")
+    else:
+        parts.append(f"{DARK_GRAY}\u26a1{_SP}{format_speed(speed)}t/s{RESET}")
+    line = f" {DARK_GRAY}\u00b7{RESET} ".join(parts)
     # 窄屏截断（复用 _narrow_split_line 消除重复）
     if is_narrow():
         tw = get_terminal_width()

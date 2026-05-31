@@ -14,6 +14,7 @@ from wcwidth import wcswidth
 from ._const import (
     _CLEAR_PARSE_LINE,
     _ReasoningState,
+    _STYLE_BOLD,
     _STYLE_DIM,
     _STYLE_ERROR,
     _STYLE_FAIL,
@@ -150,7 +151,7 @@ class ContentRenderer:
             self._render_failure_summary(ta, failed, total)
         elif successful:
             ta.write(Text.assemble(
-                ("  ● ", _STYLE_SUCCESS),
+                ("  · ", _STYLE_SUCCESS),
                 (f"{len(successful)}工具完成", _STYLE_SUCCESS),
             ))
 
@@ -222,16 +223,16 @@ class ContentRenderer:
         self._write_text_or_ansi(text)
 
     def _do_user_message(self, text: str) -> None:
-        """渲染用户消息（简约：`>` 前缀 + dim 样式）。"""
+        """渲染用户消息（> 前缀 + 加粗）。"""
         self._tool_adapter.write(Text.assemble(
-            ("\n  > ", _STYLE_DIM),
-            (text, _STYLE_DIM),
+            ("\n  > ", _STYLE_BOLD),
+            (text, _STYLE_BOLD),
         ))
 
     def _do_notification(self, text: str) -> None:
-        """渲染系统通知（● 前缀）。"""
+        """渲染系统通知（· 前缀）。"""
         self._tool_adapter.write(Text.assemble(
-            ("\n  ● ", _STYLE_SUCCESS),
+            ("\n  · ", _STYLE_SUCCESS),
             (text, _STYLE_SUCCESS),
         ))
 

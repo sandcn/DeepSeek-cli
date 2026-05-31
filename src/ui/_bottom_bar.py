@@ -240,14 +240,29 @@ _BOTTOM_LINES = 3           # 底部固定行数
 _BOTTOM_MIN_HEIGHT = 10     # 终端太小时跳过底部栏
 _BOTTOM_REFRESH_MS = 0.05   # 底部栏刷新节流（50ms）
 
-# ── ANSI 颜色常量（简约风：≤6 色） ───────────────────
-_COLOR_ACCENT = "\033[38;5;39m"       # 青色强调（提示符/模型名）
+# ── ANSI 颜色常量（优雅视觉风） ─────────────────────
+_COLOR_ACCENT = "\033[38;5;39m"       # 青色强调（提示符/模型名/状态）
+_COLOR_BRIGHT_ACCENT = "\033[1;96m"   # 亮青加粗（输入提示符）
+_COLOR_CYAN = "\033[38;5;44m"         # 青（输入提示符中间色）
+_COLOR_DEEP_CYAN = "\033[38;5;30m"    # 深青（输入提示符最暗色）
 _COLOR_DIM = "\033[38;5;245m"         # 灰色次要（分隔线/占位/统计）
 _COLOR_MUTED = "\033[38;5;240m"       # 暗灰边框（补全弹窗边框）
 _COLOR_RESET = "\033[0m"              # 重置
-_COLOR_SELECT_BG = "\033[48;5;236m"   # 选中项高亮背景（补全弹窗）
+_COLOR_SELECT_BG = "\033[48;5;238m"   # 选中项高亮背景（深灰背景，#238 比 #236 略亮，改善 light 主题可见性）
+_COLOR_SELECT_FG = "\033[38;5;15m"    # 选中项前景色（亮白，确保反显高对比度）
 _COLOR_ERR = "\033[38;5;1m"           # 红色错误
-_PLACEHOLDER_TEXT = "输入 /help"
+_COLOR_SEP = "\033[38;5;237m"         # 分隔线深灰
+_COLOR_COMPLETE_BORDER = "\033[38;5;66m"    # 补全弹窗边框色（青灰，更柔和）
+_COLOR_COMPLETE_TITLE = "\033[1;38;5;45m"   # 补全弹窗标题色（亮青加粗）
+_COLOR_BRIGHT_GREEN = "\033[38;5;40m" # 亮绿（状态用/工具成功）
+_COLOR_TOOL_OK = "\033[38;5;40m"      # 工具成功计数
+_COLOR_TOOL_FAIL = "\033[38;5;9m"     # 工具失败计数
+_COLOR_TIME = "\033[38;5;110m"        # 蓝灰（耗时/时间戳）
+_COLOR_TOKEN = "\033[38;5;68m"        # 靛蓝（Token 计数）
+_COLOR_SPEED = "\033[38;5;214m"       # 琥珀色（速率）
+_PLACEHOLDER_TEXT = "输入消息 · /help 查看命令 · Ctrl+N 切换模型 · Tab 补全"
+_PLACEHOLDER_COMPACT = "/help · Ctrl+N · Tab"  # 补全弹窗可见时使用
+_PLACEHOLDER_STREAMING = "AI 生成中..."   # 流式输出期间使用
 
 
 def _visual_len(s: str) -> int:
@@ -299,11 +314,13 @@ class _BottomBar:
     底部行（分隔线 + 状态行 + 动态输入区）位于滚动区域之外，
     通过手动定位绘制保持固定。
 
-    视觉风格（简约风）：
-      - 分隔线：灰色 `─` 做内容区与输入区边界
-      - 状态行：单色（模型名 + 耗时 + 令牌数），仅青/灰两色
-      - 输入区：青色 `>` 提示符，空输入时显示灰色占位提示
-                多行续行以空格缩进，保持简洁
+    视觉风格（优雅信息风）：
+      - 分隔线：蓝灰 `━` 实线做内容区与输入区边界
+      - 状态行：多色分层（◉ 模型名·耗时·令牌数·工具计数）
+                使用亮青/蓝灰/灰色三层颜色，信息密度高但易读
+      - 输入区：亮青 `❯` 提示符，空输入时显示灰色占位提示
+                多行续行以灰色 `·` 前缀连接，视觉连贯
+      - 补全弹窗：暗灰圆角边框（╭╮╰╯）+ 选中项反显高亮
 
     线程安全（分两级）：
       - 内容变更全量重绘（文本/状态/尺寸变化）→ output_lock 串行化
@@ -652,7 +669,7 @@ class _BottomBar:
                 out.flush()
             else:
                 # 降级：无法获取锁时写入简单分隔线
-                sys.__stdout__.write("\n" + "─" * 40 + "\n")
+                sys.__stdout__.write("\n" + "\u2501" * 40 + "\n")
                 sys.__stdout__.flush()
 
     def teardown(self) -> None:
@@ -730,6 +747,9 @@ class _BottomBar:
         内置快速路径：状态行文本、输入文本、底部行数三者均未变化时
         跳过全量重绘，仅更新 _last_refresh 时间戳。避免流式输出期间
         高频 CONTENT chunk 触发的冗余终端 I/O（~5 行写入→0 行）。
+
+        ★ 性能优化：先检查文本和布局是否变化，确认需要重绘后再
+        调用 _format_status()（含 shutil 系统调用），避免不必要开销。
         """
         self._check_resize()
         if not self._active:
@@ -743,15 +763,18 @@ class _BottomBar:
             # ★ total/scroll_end 在锁内计算，与 _last_text 原子一致
             text = self._last_text
             total = self._bottom_lines
-            new_status = self._format_status()
 
-            # ★ 快速路径：状态、输入文本、布局均未变化 → 跳过
-            if (new_status == self._last_status
-                    and text == self._last_rendered_text
-                    and total == self._last_bottom_lines):
-                self._last_refresh = time.monotonic()
-                self._last_cursor_pos = self._input_cursor_pos
-                return
+            # ★ 快速路径：先检查输入文本和布局（轻量比较），
+            #   确认需要重绘后再调用 _format_status()（含 shutil 系统调用）
+            layout_unchanged = text == self._last_rendered_text and total == self._last_bottom_lines
+            if layout_unchanged:
+                new_status = self._format_status()
+                if new_status == self._last_status:
+                    self._last_refresh = time.monotonic()
+                    self._last_cursor_pos = self._input_cursor_pos
+                    return
+            else:
+                new_status = self._format_status()
 
             scroll_end = height - total
             self._last_refresh = time.monotonic()
@@ -780,8 +803,11 @@ class _BottomBar:
             r1 = height - total + 1                  # 分隔线
             r2 = r1 + 1                              # 状态行
 
-            sep = "─" * 40
-            out.write(f"\033[{r1};1H{_COLOR_DIM}{sep}{_COLOR_RESET}")
+            # ★ 灰色分隔线
+            tw = self._term_width()
+            sep_len = min(tw - 2, 40)
+            sep = f"{_COLOR_SEP}\u2501{_COLOR_RESET}" * sep_len
+            out.write(f"\033[{r1};1H  {sep}")
             out.write(f"\033[{r2};1H\033[K{self._last_status}")
 
             # ── 动态拆行输入区 ──
@@ -899,10 +925,12 @@ class _BottomBar:
             #   将内容向下滚动以消除间隙。
             self._scroll_down_for_shrink(delta, out)
 
-            # ── 分隔线 ──
+            # ── 分隔线（灰色） ──
             r1 = height - total + 1
-            sep = "─" * 30
-            out.write(f"\033[{r1};1H{_COLOR_DIM}{sep}{_COLOR_RESET}")
+            tw = self._term_width()
+            sep_len = min(tw - 2, 40)
+            sep = f"{_COLOR_SEP}\u2501{_COLOR_RESET}" * sep_len
+            out.write(f"\033[{r1};1H  {sep}")
 
             # ── 状态行 ──
             r2 = r1 + 1
@@ -965,15 +993,19 @@ class _BottomBar:
             cell_w = popup_w - 4
             n = len(self._completion_items)
 
-            # 顶边框（使用动态标题）
+            # ★ 顶边框（使用渐变装饰：标题亮青 + 左侧亮青 → 右侧深灰渐变）
             total_items = len(self._completion_texts)
-            header = f" {self._completion_title} ({total_items}项) "
+            header = f" {_COLOR_COMPLETE_TITLE}{self._completion_title}{_COLOR_RESET} {_COLOR_DIM}({total_items}项){_COLOR_RESET} "
             header_vw = _visual_len(header)
             pad_w = max(1, popup_w - header_vw - 2)
-            top_border = (_COLOR_MUTED + "\u250c"
+            # ★ 渐变边框：左侧亮青 → 右侧深灰，增加视觉层次
+            pad_left = pad_w // 2
+            pad_right = pad_w - pad_left
+            top_border = (_COLOR_ACCENT + "\u256d" + _COLOR_RESET
                           + header
-                          + "\u2500" * pad_w
-                          + "\u2510" + _COLOR_RESET)
+                          + _COLOR_ACCENT + "\u2500" * pad_left + _COLOR_RESET
+                          + _COLOR_SEP + "\u2500" * pad_right + _COLOR_RESET
+                          + _COLOR_SEP + "\u256e" + _COLOR_RESET)
             out.write(f"\033[{popup_r_start};1H\033[K{top_border}")
 
             # 选项行
@@ -983,17 +1015,17 @@ class _BottomBar:
                 pad = " " * max(0, cell_w - 2 - _visual_len(display))
                 if i == self._completion_idx:
                     out.write(f"\033[{r};1H\033[K"
-                              f"{_COLOR_MUTED}\u2502{_COLOR_RESET} "
-                              f"{_COLOR_SELECT_BG}{_COLOR_ACCENT}>{_COLOR_RESET}"
-                              f"{_COLOR_SELECT_BG} {display}{pad}{_COLOR_RESET}"
-                              f"{_COLOR_MUTED}\u2502{_COLOR_RESET}")
+                              f"{_COLOR_COMPLETE_BORDER}\u2502{_COLOR_RESET} "
+                              f"{_COLOR_SELECT_BG}{_COLOR_SELECT_FG}\u25b6{_COLOR_RESET}"
+                              f"{_COLOR_SELECT_BG}{_COLOR_SELECT_FG} {display}{pad}{_COLOR_RESET}"
+                              f"{_COLOR_COMPLETE_BORDER}\u2502{_COLOR_RESET}")
                 else:
                     out.write(f"\033[{r};1H\033[K"
-                              f"{_COLOR_MUTED}\u2502{_COLOR_RESET}  "
+                              f"{_COLOR_COMPLETE_BORDER}\u2502{_COLOR_RESET}  "
                               f" {display}{pad}"
-                              f"{_COLOR_MUTED}\u2502{_COLOR_RESET}")
+                              f"{_COLOR_COMPLETE_BORDER}\u2502{_COLOR_RESET}")
 
-            # 底边框（补全弹窗用 Tab ↑↓ Esc，选择弹窗用 ↑↓ Enter Esc）
+            # ★ 底边框（渐变装饰：左侧深灰 → 右侧亮青，与顶边框反向呼应）
             footer_r = popup_r_start + 1 + n
             truncated = total_items > n
             is_selection = (self._completion_title != "补全")
@@ -1002,13 +1034,18 @@ class _BottomBar:
             else:
                 hint_prefix = "Tab \u2191\u2193 Esc"
             if truncated:
-                hint = f" {self._completion_idx + 1}/{n} (\u524d{n}/{total_items})  {hint_prefix} "
+                hint = f" {_COLOR_TIME}{self._completion_idx + 1}/{n}{_COLOR_RESET} {_COLOR_DIM}(\u524d{n}/{total_items}){_COLOR_RESET}  {hint_prefix} "
             else:
                 hint = f" {hint_prefix} "
             hint_vw = _visual_len(hint)
             pad_w = max(1, popup_w - hint_vw - 2)
-            bottom_border = (_COLOR_MUTED + "\u2514" + hint
-                             + "\u2500" * pad_w + "\u2518" + _COLOR_RESET)
+            pad_left = pad_w // 2
+            pad_right = pad_w - pad_left
+            bottom_border = (_COLOR_SEP + "\u2570" + _COLOR_RESET
+                             + hint
+                             + _COLOR_SEP + "\u2500" * pad_left + _COLOR_RESET
+                             + _COLOR_ACCENT + "\u2500" * pad_right + _COLOR_RESET
+                             + _COLOR_ACCENT + "\u256f" + _COLOR_RESET)
             out.write(f"\033[{footer_r};1H\033[K{bottom_border}")
 
         # ── 输入文本行（在弹窗下方） ──
@@ -1017,11 +1054,25 @@ class _BottomBar:
             r = text_start + i
             if i == 0:
                 if text:
-                    out.write(f"\033[{r};1H\033[K{_COLOR_ACCENT}> {segment}{_COLOR_RESET}")
+                    # ★ 输入提示符
+                    out.write(f"\033[{r};1H\033[K"
+                              f"{_COLOR_DEEP_CYAN}>{_COLOR_RESET}"
+                              f" {segment}")
                 else:
-                    out.write(f"\033[{r};1H\033[K{_COLOR_ACCENT}> {_COLOR_DIM}{_PLACEHOLDER_TEXT}{_COLOR_RESET}")
+                    # ★ 流式输出期间显示状态提示，让用户明确知道 AI 正在生成回复
+                    if self._status_active:
+                        ph = _PLACEHOLDER_STREAMING
+                        out.write(f"\033[{r};1H\033[K"
+                                  f"{_COLOR_DEEP_CYAN}>{_COLOR_RESET}"
+                                  f" {_COLOR_DIM}{ph}{_COLOR_RESET}")
+                    else:
+                        # ★ 补全弹窗可见时使用紧凑占位符，避免占位符与弹窗视觉重叠
+                        ph = _PLACEHOLDER_COMPACT if self._completion_visible else _PLACEHOLDER_TEXT
+                        out.write(f"\033[{r};1H\033[K"
+                                  f"{_COLOR_DEEP_CYAN}>{_COLOR_RESET}"
+                                  f" {_COLOR_DIM}{ph}{_COLOR_RESET}")
             else:
-                out.write(f"\033[{r};1H\033[K  {segment}")
+                out.write(f"\033[{r};1H\033[K{_COLOR_DIM}\u00b7 {segment}{_COLOR_RESET}")
         # ★ 填充剩余空白行，确保输入区至少 3 行
         for r in range(text_start + len(wrapped), text_start + 3):
             out.write(f"\033[{r};1H\033[K  ")
@@ -1030,17 +1081,20 @@ class _BottomBar:
         """绘制全部底部行（需持有 output_lock），超长文本自动拆行。
 
         布局（简约风）：
-          第 1 行：灰色分隔线（内容区与输入区的视觉边界）
-          第 2 行：状态行（模型名 · 耗时 · 令牌数，青/灰两色）
-          第 3 行起：青 > <text>   （输入提示符 + 实时键入文本，超长拆行）
-                     空格缩进        （续行，无提示符）
+          第 1 行：左青右灰渐变分隔线（内容区与输入区的视觉边界）
+          第 2 行：状态行（模型名·耗时·令牌数，青/灰两色）
+          第 3 行起：青 ❯ <text>   （输入提示符 + 实时键入文本，超长拆行）
+                     灰 · <text>    （续行，· 前缀）
                      （空输入时显示灰色占位提示）
         """
         total = self._bottom_lines
         r1 = height - total + 1                  # 分隔线
         r2 = r1 + 1                              # 状态行
-        sep = "─" * 40
-        out.write(f"\033[{r1};1H{_COLOR_DIM}{sep}{_COLOR_RESET}")
+        # ★ 灰色分隔线
+        tw = self._term_width()
+        sep_len = min(tw - 2, 40)
+        sep = f"{_COLOR_SEP}\u2501{_COLOR_RESET}" * sep_len
+        out.write(f"\033[{r1};1H  {sep}")
         out.write(f"\033[{r2};1H\033[K")
         # 输入区
         text = self._last_text or ""
@@ -1052,13 +1106,17 @@ class _BottomBar:
         self._last_status = status  # 同步缓存，避免下次 refresh() 冗余重绘
 
     def _format_status(self) -> str:
-        """构建状态行文本（简约风）：模型名 · 耗时 · 令牌数 · 实时速率。
+        """构建状态行文本（优雅信息风）：模型名 · 耗时 · 令牌数 · 实时速率。
 
         始终显示模型名字和可用的统计信息（耗时、令牌数、实时速率）。
-        仅用青/灰两色，简约风（无进度条/脉冲动画）。
+        使用多色分层：模型名高亮（带 ◉）、耗时蓝灰色、令牌数灰色。
+        工具计数值得高亮区分成功/失败（成功绿/失败红）。
         """
-        # ── 模型名字（始终显示） ──
-        model_part = f"{_COLOR_ACCENT}{self._model_name}{_COLOR_RESET}" if self._model_name else ""
+        # ── 模型名字（始终显示，带 ◉ 图标） ──
+        model_part = (
+            f"{_COLOR_ACCENT}\u25c9{_COLOR_RESET} {_COLOR_ACCENT}{self._model_name}{_COLOR_RESET}"
+            if self._model_name else ""
+        )
 
         snap_func = _get_snapshot()
         if snap_func is None:
@@ -1073,41 +1131,48 @@ class _BottomBar:
         elapsed = snap.get("elapsed_seconds", 0.0)    # 当轮耗时
         per_second_speed = snap.get("per_second_speed", 0.0)  # 实时 tok/s
 
-        if total <= 0 and elapsed <= 0 and per_second_speed <= 0:
+        if total <= 0 and elapsed <= 0 and per_second_speed <= 0 and self._tool_count <= 0:
             return model_part
 
         parts = []
 
-        # 工具调用计数（简约：仅数字，无进度条）
+        # 工具调用计数（带 ⚙ 图标，成功/失败分色）
         if self._tool_count > 0:
             done = max(0, self._tool_count - self._tool_fail_count)
             if self._tool_fail_count > 0:
-                parts.append(f"{_COLOR_DIM}T{done}/{self._tool_count}{_COLOR_RESET}")
+                parts.append(
+                    f"{_COLOR_TOOL_OK}{done}{_COLOR_RESET}"
+                    f"{_COLOR_DIM}/{_COLOR_RESET}"
+                    f"{_COLOR_TOOL_FAIL}{self._tool_count}{_COLOR_RESET}"
+                )
             else:
-                parts.append(f"{_COLOR_DIM}T{self._tool_count}{_COLOR_RESET}")
+                parts.append(f"{_COLOR_TOOL_OK}{self._tool_count}{_COLOR_RESET}")
 
-        # 耗时
-        if elapsed >= 60:
-            mins = int(elapsed // 60)
-            secs = int(elapsed % 60)
-            dur = f"{mins}:{secs:02d}" if mins < 60 else f"{mins // 60}:{mins % 60:02d}:{secs:02d}"
-        else:
-            dur = f"{elapsed:.1f}s"
+        # 耗时（蓝灰高亮）
+        if elapsed > 0:
+            if elapsed >= 60:
+                mins = int(elapsed // 60)
+                secs = int(elapsed % 60)
+                dur = f"{mins}:{secs:02d}" if mins < 60 else f"{mins // 60}:{mins % 60:02d}:{secs:02d}"
+            else:
+                dur = f"{elapsed:.1f}s"
+            parts.append(f"{_COLOR_TIME}{dur}{_COLOR_RESET}")
 
-        tok_str = f"{total / 1000:.1f}k" if total >= 1000 else str(total)
+        # 令牌数（靛蓝色，更醒目）
+        if total > 0:
+            tok_str = f"{total / 1000:.1f}k" if total >= 1000 else str(total)
+            parts.append(f"{_COLOR_TOKEN}{tok_str}t{_COLOR_RESET}")
 
-        parts.append(f"{_COLOR_DIM}{dur}{_COLOR_RESET}")
-        parts.append(f"{_COLOR_DIM}{tok_str}t{_COLOR_RESET}")
-
-        # 实时 token 速度（tok/s），仅在流式输出期间有数值时显示
+        # 实时 token 速度（tok/s，琥珀色高亮）
         if per_second_speed > 0:
             if per_second_speed >= 1:
                 speed_str = f"{per_second_speed:.1f}"
             else:
                 speed_str = f"{per_second_speed:.2f}"
-            parts.append(f"{_COLOR_DIM}{speed_str}t/s{_COLOR_RESET}")
+            parts.append(f"{_COLOR_SPEED}{speed_str}t/s{_COLOR_RESET}")
 
-        status = "  ".join(parts) if parts else ""
+        sep = f" {_COLOR_DIM}\u00b7{_COLOR_RESET} "
+        status = sep.join(parts) if parts else ""
         if model_part and status:
             return f"{model_part}  {status}"
         return model_part or status
@@ -1238,8 +1303,10 @@ class _BottomBar:
             # 全量重绘底部栏（含输入区内的补全弹窗）
             r1 = height - total + 1
             r2 = r1 + 1
-            sep = "─" * 30
-            out.write(f"\033[{r1};1H{_COLOR_DIM}{sep}{_COLOR_RESET}")
+            tw_s = self._term_width()
+            sep_len_s = min(tw_s - 2, 40)
+            sep_s = f"{_COLOR_SEP}\u2501{_COLOR_RESET}" * sep_len_s
+            out.write(f"\033[{r1};1H  {sep_s}")
             out.write(f"\033[{r2};1H\033[K")
             text = self._last_text or ""
             self._draw_input_lines_locked(out, text, r2 + 1)
@@ -1306,8 +1373,10 @@ class _BottomBar:
             # 全量重绘底部栏（缩小后的区域）
             r1 = height - total + 1
             r2 = r1 + 1
-            sep = "─" * 30
-            out.write(f"\033[{r1};1H{_COLOR_DIM}{sep}{_COLOR_RESET}")
+            tw_h = self._term_width()
+            sep_len_h = min(tw_h - 2, 40)
+            sep_h = f"{_COLOR_SEP}\u2501{_COLOR_RESET}" * sep_len_h
+            out.write(f"\033[{r1};1H  {sep_h}")
             out.write(f"\033[{r2};1H\033[K")
             text = self._last_text or ""
             self._draw_input_lines_locked(out, text, r2 + 1)
@@ -1366,15 +1435,15 @@ class _BottomBar:
                 pad = " " * max(0, cell_w - 2 - _visual_len(display))
                 if i == self._completion_idx:
                     out.write(f"\033[{r};1H\033[K"
-                              f"{_COLOR_MUTED}\u2502{_COLOR_RESET} "
-                              f"{_COLOR_SELECT_BG}{_COLOR_ACCENT}>{_COLOR_RESET}"
-                              f"{_COLOR_SELECT_BG} {display}{pad}{_COLOR_RESET}"
-                              f"{_COLOR_MUTED}\u2502{_COLOR_RESET}")
+                              f"{_COLOR_COMPLETE_BORDER}\u2502{_COLOR_RESET} "
+                              f"{_COLOR_SELECT_BG}{_COLOR_SELECT_FG}\u25b6{_COLOR_RESET}"
+                              f"{_COLOR_SELECT_BG}{_COLOR_SELECT_FG} {display}{pad}{_COLOR_RESET}"
+                              f"{_COLOR_COMPLETE_BORDER}\u2502{_COLOR_RESET}")
                 else:
                     out.write(f"\033[{r};1H\033[K"
-                              f"{_COLOR_MUTED}\u2502{_COLOR_RESET}  "
+                              f"{_COLOR_COMPLETE_BORDER}\u2502{_COLOR_RESET}  "
                               f" {display}{pad}"
-                              f"{_COLOR_MUTED}\u2502{_COLOR_RESET}")
+                              f"{_COLOR_COMPLETE_BORDER}\u2502{_COLOR_RESET}")
 
             # ★ 更新 footer 位置信息（仅显示可见范围）
             total_items = len(self._completion_texts) if self._completion_texts else n
@@ -1383,14 +1452,20 @@ class _BottomBar:
             is_selection = (self._completion_title != "补全")
             hint_prefix = "\u2191\u2193 Enter Esc" if is_selection else "Tab \u2191\u2193 Esc"
             if truncated:
-                hint = f" {self._completion_idx + 1}/{n} (\u524d{n}/{total_items})  {hint_prefix} "
+                hint = (f" {_COLOR_TIME}{self._completion_idx + 1}/{n}{_COLOR_RESET}"
+                        f" {_COLOR_DIM}(\u524d{n}/{total_items}){_COLOR_RESET}  {hint_prefix} ")
             else:
                 hint = f" {hint_prefix} "
             hint_vw = _visual_len(hint)
             pad_w = max(1, popup_w - hint_vw - 2)
-            bottom_border = (_COLOR_MUTED + "\u2514" + hint
-                             + "\u2500" * pad_w + "\u2518" + _COLOR_RESET)
-            out.write(f"\033[{footer_start};1H\033[K{bottom_border}\033[K")
+            pad_left = pad_w // 2
+            pad_right = pad_w - pad_left
+            bottom_border = (_COLOR_SEP + "\u2570" + _COLOR_RESET
+                             + hint
+                             + _COLOR_SEP + "\u2500" * pad_left + _COLOR_RESET
+                             + _COLOR_ACCENT + "\u2500" * pad_right + _COLOR_RESET
+                             + _COLOR_ACCENT + "\u256f" + _COLOR_RESET)
+            out.write(f"\033[{footer_start};1H\033[K{bottom_border}")
 
             out.write("\0338")
             # ★ 重新保存 SCOSC，供 ParallelDisplay.render_frame 下一帧使用

@@ -230,7 +230,7 @@ def _handle_session_command(args: argparse.Namespace) -> None:
         if not sessions:
             locked_print(f"\n{DIM}  没有保存的会话{RESET}", flush=True)
             return
-        locked_print(f"\n{CYAN}  ◆ 已保存的会话:{RESET}", flush=True)
+        locked_print(f"\n{CYAN}  > 已保存的会话:{RESET}", flush=True)
         for s in sessions:
             title = s.get("title", "")
             title_info = f"「{title}」 " if title else ""
@@ -335,7 +335,7 @@ async def main():
             loaded_data = data
             title = data.get("title", "")
             title_info = f"「{title}」 " if title else ""
-            locked_print(f"\n{CYAN}  ◆ 已恢复会话 {title_info}{args.load}{RESET}", flush=True)
+            locked_print(f"\n{CYAN}  > 已恢复会话 {title_info}{args.load}{RESET}", flush=True)
             locked_print(f"{DIM}   模型: {data.get('model', '?')}  |  消息: {len(data.get('messages', []))} 条{RESET}", flush=True)
 
         if args.prompt:

@@ -49,7 +49,7 @@ def get_user_input(default: str = "", show_prompt: bool = True,
 
     Args:
         default: 默认输入文本。
-        show_prompt: 是否显示 ◆ 提示符。
+        show_prompt: 是否显示 > 提示符。
                      输入提示，传入 False 让 prompt_toolkit 不重复渲染。
         key_bindings: 可选的 KeyBindings 实例。省略时使用实例级默认绑定。
 

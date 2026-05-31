@@ -539,7 +539,7 @@ class InteractiveLoop:
 
         _term_width = self._get_term_width()
         _sep_width = narrow_sep_width(40)
-        self._chat_ui.write_line(f"\n{CYAN}  ◆ {MODEL} Chat{RESET}")
+        self._chat_ui.write_line(f"\n{CYAN}  > {MODEL} Chat{RESET}")
         self._chat_ui.write_line(f"{DIM}  {'─' * _sep_width}{RESET}")
         if is_narrow():
             self._chat_ui.write_line(f"{DIM}  /help  Esc中断  /r重试  /edit重写{RESET}\n")
@@ -791,8 +791,10 @@ async def run_single_mode_async(prompt_text):
     """单次对话模式（异步版）：输入一句话，回答后退出"""
     chat_ui = ChatUIConsumer()
     chat_ui.start()
-    chat_ui.write_line(f"\n{CYAN}  {MODEL} Chat{RESET} {DIM}· 单次模式{RESET}")
-    chat_ui.write_line(f"{DIM}  {'─' * 30}{RESET}\n")
+    from .ui.tui._terminal import narrow_sep_width
+    _sep_w = narrow_sep_width(30)
+    chat_ui.write_line(f"{CYAN}  > {MODEL} Chat{RESET} {DIM}· 单次模式{RESET}")
+    chat_ui.write_line(f"{DIM}  {'─' * _sep_w}{RESET}")
 
     session = ChatSession(agent=_make_event_agent())
     session.initialize()

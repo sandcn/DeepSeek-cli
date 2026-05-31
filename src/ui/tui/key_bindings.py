@@ -30,8 +30,13 @@ from .._lock import locked_print
 
 _logger = logging.getLogger(__name__)
 
-_GREEN = "\033[32m"
+_ACCENT = "\033[1;96m"
+_ACCENT2 = "\033[38;5;39m"
+_DIM = "\033[2m"
 _RESET = "\033[0m"
+_GREEN = "\033[32m"
+_BRIGHT = "\033[1m"
+_DGRAY = "\033[90m"
 
 
 # ═══════════════════════════════════════════════════════════
@@ -89,7 +94,7 @@ class KeyBindingsFactory:
     def _handle_esc(self, event: KeyPressEvent) -> None:
         """Esc 键处理：双击清空输入内容。"""
         try:
-            if self._input_state.record_esc_press():
+            if self._tree.input.record_esc_press():
                 event.current_buffer.text = ''
         except Exception:
             _logger.exception("Esc 处理异常")
@@ -109,7 +114,7 @@ class KeyBindingsFactory:
             event.current_buffer.text = edited
         else:
             async with in_terminal():
-                locked_print("\n⚠ vim 未找到，请安装 vim 或设置 EDITOR 环境变量")
+                locked_print(f"\n  {_DGRAY}\u2514{_RESET} {_ACCENT2}\u26a0{_RESET} {_DIM}\u7f16\u8f91\u5668\u672a\u627e\u5230\uff0c\u8bf7\u5b89\u88c5 vim \u6216\u8bbe\u7f6e EDITOR \u73af\u5883\u53d8\u91cf{_RESET}")
 
     def _handle_editmsg(self, event: KeyPressEvent) -> None:
         """Ctrl+O：编辑当前会话消息。"""
@@ -136,9 +141,13 @@ class KeyBindingsFactory:
         if self._on_switch_model is not None:
             self._on_switch_model(next_model)
 
-        # 在终端底部显示切换通知（await coroutine 确保执行）
+        # ★ 美化：在终端底部显示切换通知（模型名高亮 + 方向箭头指示）
         await run_in_terminal(lambda: locked_print(
-            f"\n  {_GREEN}+ 已切换到 {next_model}{_RESET}"
+            f"\n  {_ACCENT}\u25c9{_RESET} {_BRIGHT}{_ACCENT}{next_model}{_RESET}"
+            f"  {_DGRAY}\u2502{_RESET}"
+            f"  {_DIM}\u2318N{_RESET}  {_GREEN}\u27a1{_RESET}"
+            f"  {_ACCENT2}\u2714{_RESET}"
+            f"  {_DGRAY}\u7a97\u53e3\u5df2\u5207\u6362{_RESET}"
         ))
 
     # ── 工具方法 ───────────────────────────────────────

@@ -47,6 +47,28 @@ class ChatCompleter(Completer):
     # ── 参数选项常量 ──
     _REVIEW_OPTIONS: frozenset[str] = frozenset({'git', 'diff', 'commit'})
 
+    # ── 补全 display_meta 描述映射 ──
+    _META_MAP: dict[str, str] = {
+        '/model': '切换模型',
+        '/theme': '切换主题',
+        '/load': '加载会话',
+        '/editmsg': '编辑消息',
+        '/help': '查看帮助',
+        '/clear': '清空对话',
+        '/system': '修改系统提示词',
+        '/cost': '查看当前会话费用',
+        '/init': '生成项目摘要文件',
+        '/sessions': '管理已保存会话',
+        '/loop': '循环执行提词',
+        '/compress': '压缩会话上下文',
+        '/pin': '标记重要消息',
+        '/undo': '撤销上一轮',
+        '/retry': '重试上一轮',
+        '/edit': '编辑上条输入并重发',
+        '/changes': '查看文件变更',
+        '/r': '重新生成回复',
+    }
+
     def __init__(
         self,
         commands_source: Callable[[], list[str]] | None = None,
@@ -94,7 +116,9 @@ class ChatCompleter(Completer):
             # ── 1. 补全指令名称 — 自动弹出 ──
             for cmd in self._get_commands():
                 if cmd.startswith(last_word):
-                    yield Completion(cmd, start_position=-len(last_word))
+                    # 使用类常量 _META_MAP 获取命令描述
+                    meta = self._META_MAP.get(cmd, '命令')
+                    yield Completion(cmd, start_position=-len(last_word), display_meta=meta)
 
             # ── 2. 参数补全：命令已完整输入且有后面的参数部分 ──
             parts = text.split(maxsplit=1)
@@ -110,25 +134,32 @@ class ChatCompleter(Completer):
                 if cmd_name == '/model':
                     for m in self._models_cache.get():
                         if m.startswith(param_last):
-                            yield Completion(m, start_position=start)
+                            yield Completion(m, start_position=start, display_meta='模型')
 
                 elif cmd_name == '/theme':
-                    for name, _desc in self._theme_names_cache.get():
+                    for name, desc in self._theme_names_cache.get():
                         if name.startswith(param_last):
-                            yield Completion(name, start_position=start)
+                            meta = desc if desc else '主题'
+                            yield Completion(name, start_position=start, display_meta=meta)
 
                 elif cmd_name == '/load':
                     for s in self._get_cached_sessions():
                         sid: str = s.get("id", "")
                         title = s.get("title", "")
                         if sid.startswith(param_last) or title.startswith(param_last):
-                            display = sid[:8] + " - " + title
-                            yield Completion(sid, start_position=start, display=display)
+                            sid_short = sid[:8]
+                            model = s.get("model", "?")
+                            count = s.get("message_count", 0)
+                            # 截断标题避免 display 过长（最长20字符）
+                            title_trunc = title[:20] + ".." if len(title) > 20 else title
+                            display = f"{sid_short}  \u00ab{title_trunc}\u00bb  {model}  {count}m" if title else f"{sid_short}  {model}  {count}m"
+                            yield Completion(sid, start_position=start, display=display, display_meta='会话')
 
                 elif cmd_name == '/review':
+                    meta_map = {'git': '审查 Git 变更', 'diff': '审查差异', 'commit': '生成提交信息'}
                     for opt in self._REVIEW_OPTIONS:
                         if opt.startswith(param_last):
-                            yield Completion(opt, start_position=start)
+                            yield Completion(opt, start_position=start, display_meta=meta_map.get(opt, ''))
         else:
             # 补全文件路径 — 仅按 Tab 时弹出
             if complete_event.completion_requested:

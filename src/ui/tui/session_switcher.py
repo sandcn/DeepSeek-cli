@@ -4,6 +4,8 @@
 from __future__ import annotations
 
 import logging
+import time
+from datetime import datetime
 
 from ...chat_msgs import list_sessions, load_session
 from ._selector_base import BaseBottomBarSelector
@@ -29,14 +31,38 @@ class SessionSwitcher(BaseBottomBarSelector[dict, dict[str, object] | None]):
         return list_sessions()
 
     def _format_display(self, items: list[dict]) -> list[str]:
-        """格式化会话字典列表为显示标签。"""
+        """格式化会话字典列表为显示标签 — 美化展示。"""
+        from ..colors import CYAN, RESET, DARK_GRAY, GREEN, BRIGHT_CYAN, DIM
         labels: list[str] = []
+        now = time.time()
         for s in items:
             title = s.get("title", "")
-            title_info = f"「{title}」 " if title else ""
+            title_info = f"\u300c{title}\u300d" if title else f"{DIM}(\u65e0\u6807\u9898){RESET}"  # (无标题)
             sid = s.get("id", "")
             sid_short = sid[:min(8, len(sid))] if sid else "?"
-            label = f"{sid_short}  {title_info}{s.get('model', '?')}  {s.get('message_count', 0)}msg"
+            model = s.get("model", "?")
+            count = s.get("message_count", 0)
+
+            # ★ 美化：添加时间戳 — 从 saved_at ISO 字符串解析
+            saved_at_str = s.get("saved_at", "")
+            time_info = ""
+            if saved_at_str and saved_at_str != "?":
+                try:
+                    created_ts = datetime.fromisoformat(saved_at_str).timestamp()
+                    age = max(0, now - created_ts)
+                    if age < 60:
+                        time_info = f"{DIM}\u521a\u521a{RESET}"               # 刚刚
+                    elif age < 3600:
+                        time_info = f"{DIM}{int(age // 60)}\u5206\u949f\u524d{RESET}"  # N分钟前
+                    elif age < 86400:
+                        time_info = f"{DIM}{int(age // 3600)}\u5c0f\u65f6\u524d{RESET}"  # N小时前
+                    else:
+                        time_info = f"{DIM}{time.strftime('%m-%d', time.localtime(created_ts))}{RESET}"  # 月-日
+                except (ValueError, TypeError, OSError):
+                    pass
+
+            # ★ 美化：增加视觉层次，图标对齐
+            label = f"{DARK_GRAY}{sid_short}{RESET} {time_info}  {BRIGHT_CYAN}{title_info}{RESET}  {CYAN}\u25c9 {model}{RESET}  {GREEN}\u25c6 {count}m{RESET}"
             labels.append(label)
         return labels
 
