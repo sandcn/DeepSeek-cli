@@ -213,7 +213,7 @@ class TestSyncFindFiles:
         assert "deep.py" in names
 
     def test_depth_1_reaches_subdir_files(self, tmp_path):
-        """depth=1：根深度被跳过，但子目录（depth 1）中的文件被匹配。"""
+        """depth=1：子目录 depth=1 的文件被匹配，depth>1 的条目被跳过。"""
         sub = tmp_path / "sub"
         sub.mkdir()
         (sub / "deep.py").write_text("")
@@ -354,8 +354,8 @@ class TestSyncFindFiles:
         assert "bar.txt" in names
         assert "baz.json" in names
 
-    def test_root_level_glob_matches_subdir_files(self, tmp_path):
-        """在子目录中测试 glob 模式（确认子目录匹配不受影响）。"""
+    def test_glob_still_matches_subdir_files_after_root_fix(self, tmp_path):
+        """修复后，glob 模式在子目录层级仍应正常工作。"""
         src = tmp_path / "src"
         src.mkdir()
         tests = tmp_path / "tests"
@@ -678,4 +678,4 @@ class TestIntegration:
         f = FindFunc(pattern="*.py", path=str(tmp_path))
         result = await f.execute()
         assert "config.py" in result
-        assert "main.py" in result
+        assert "main.py" in result  # 格式化输出中为 src/main.py
