@@ -194,13 +194,15 @@ class RenderEngine:
             self._position_cursor()
 
     def _position_cursor(self) -> None:
-        """光标移回输入行，根据超长文本自动拆行定位（含最少3行输入区）。"""
-        from ..ui._bottom_bar import _compute_cursor_visual_pos
+        """光标移回输入行，根据超长文本自动拆行定位（含最少3行输入区）。
 
+        使用 _BottomBar._cursor_visual_pos_from_cache 复用拆行缓存，
+        避免每次 drain 周期都做 O(n·wcswidth) 的 _compute_cursor_visual_pos 重算。
+        """
         text, cursor_pos, h, w = self._bb.get_cursor_info()
         max_input = max(1, w - 4)
 
-        vis_row, vis_col = _compute_cursor_visual_pos(text, cursor_pos, max_input)
+        vis_row, vis_col = self._bb._cursor_visual_pos_from_cache(text, cursor_pos, max_input)
         total_bottom = self._bb._bottom_lines
         popup_offset = self._bb._completion_popup_height
         r_cursor = max(1, h - total_bottom + 3 + popup_offset + vis_row)
