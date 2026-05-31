@@ -25,6 +25,7 @@ from ._config import DisplayConfig
 from ..base_display import BaseDisplay
 from ..common.state_store import AgentStateStore
 from .._lock import diff_active, _try_acquire_output_lock
+from ..terminal_adapter import register_sigwinch_callback, unregister_sigwinch_callback
 
 # ── 常量 ────────────────────────────────────────────────
 
@@ -123,11 +124,12 @@ class ParallelDisplay(BaseDisplay):
     # ── 终端缩放回调 ────────────────────────────────────
 
     def _on_resize(self, width: int, height: int) -> None:
-        """终端缩放回调：重建 DisplayConfig + 更新 renderer（下一次 refresh 自然处理重渲染）"""
+        """终端缩放回调：重建 DisplayConfig + 更新 renderer + 主动刷新面板。"""
         if width <= 0:
             return
         new_config = DisplayConfig(width)
         self.max_history = new_config.max_tool_history_items
+        self.refresh()  # ★ B6 fix: resize 后主动刷新面板，无需等待下次 state 变化
 
     # ── diff_active 上下文 ──────────────────────────────
 
@@ -254,6 +256,8 @@ class ParallelDisplay(BaseDisplay):
 
         # ★ 首帧渲染完成后再注册，Reader 线程 Phase 2 从此开始接管
         _chat_ui_mod._active_parallel_display = self
+        # ★ B6 fix: 注册终端 resize 回调，resize 后主动刷新面板
+        register_sigwinch_callback(self._on_resize)
 
     def refresh(self):
         """公开刷新入口 — 由 ChatUIConsumer._drain_queue 在每次渲染循环中调用。
@@ -285,6 +289,9 @@ class ParallelDisplay(BaseDisplay):
         import src.chat_ui as _chat_ui_mod  # noqa: PLC0415
         if _chat_ui_mod._active_parallel_display is self:
             _chat_ui_mod._active_parallel_display = None
+
+        # 注销终端 resize 回调
+        unregister_sigwinch_callback(self._on_resize)
 
         # 清理全局 diff_active 状态
         self._cleanup_diff_active()

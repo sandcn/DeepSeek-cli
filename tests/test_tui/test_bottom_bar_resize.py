@@ -235,7 +235,7 @@ class TestBug7LockTimeoutSetupUpdate(unittest.TestCase):
         sys.__stdout__ = self._stdout
 
     def test_lock_timeout_updates_setup_dimensions(self):
-        """锁超时时 _setup_height/_setup_width 应更新为新值。"""
+        """锁超时时 _setup_height/_setup_width 应更新为新值（返回 False 下次重试）。"""
         # 尺寸变化到 (100, 40)，但锁获取超时
         with patch("src.ui._bottom_bar.query_terminal_size",
                    return_value=(100, 40)), \
@@ -244,7 +244,7 @@ class TestBug7LockTimeoutSetupUpdate(unittest.TestCase):
                                          __exit__=MagicMock(return_value=False))):
             result = self.bb._check_resize()
 
-        self.assertTrue(result, "尺寸变化应返回 True")
+        self.assertFalse(result, "锁超时应返回 False，下次 drain 周期重试")
         self.assertEqual(self.bb._setup_height, 40,
                          "锁超时后 _setup_height 应更新")
         self.assertEqual(self.bb._setup_width, 100,
@@ -257,7 +257,7 @@ class TestBug7LockTimeoutSetupUpdate(unittest.TestCase):
              patch("src.ui._bottom_bar._try_acquire_output_lock",
                    return_value=MagicMock(__enter__=MagicMock(return_value=False),
                                          __exit__=MagicMock(return_value=False))):
-            self.bb._check_resize()  # 第一次：返回 True + 更新
+            self.bb._check_resize()  # 第一次：返回 False + 更新
 
         # 第二次调用：尺寸与 _setup 一致，不应再触发
         with patch("src.ui._bottom_bar.query_terminal_size",

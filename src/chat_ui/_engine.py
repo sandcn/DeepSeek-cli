@@ -8,8 +8,10 @@ from __future__ import annotations
 
 import logging
 import queue
+import shutil
 import sys
 import threading
+import time
 from typing import TYPE_CHECKING
 
 from ._const import _READER_INTERVAL, _cmd_name, RenderCommand
@@ -131,6 +133,8 @@ class RenderEngine:
         # ★ 尺寸检测：持锁调用以与 refresh()/force_redraw() 串行化
         with _try_acquire_output_lock(name="drain_queue.resize", timeout=1.0) as locked:
             resized = locked and self._bb.check_resize()
+        if resized:
+            self._sync_renderer_width()
 
         # ★ 阶段 1：锁内批量出队 + 上屏渲染（出队与渲染原子化，消除命令丢失窗口）
         commands: list[tuple] = []
@@ -175,10 +179,17 @@ class RenderEngine:
                     "drain_queue: ParallelDisplay 刷新失败，请查看日志获取详情",
                 ))
 
+        # ★ 阶段 2.5（B4 fix）：Stage 1/2 渲染期间可能再次 resize，
+        #   在 Stage 3 force_redraw 前快速重检测，消除上下屏宽度不一致窗口
+        with _try_acquire_output_lock(name="drain_queue.resize_pre3", timeout=0.5) as locked:
+            if locked and self._bb.check_resize():
+                resized = True
+                self._sync_renderer_width()  # ★ B4/B7 fix: 同步更新 Console 宽度
+
         # ★ 阶段 3：底部栏重绘 + 光标定位
         # 分流策略：
         #   - 有命令/尺寸变化 → 全量重绘（force_redraw，跳过内部 _check_resize
-        #     因 Stage 0b 已完成检测，消除 Bug 8 的双调用窗口）
+        #     因 Stage 0b/2.5 已完成检测，消除双调用窗口）
         #   - 仅流式活跃（无命令/无尺寸变化）→ 增量状态行刷新 + 光标定位
         #   流式期间 10Hz drain 中约 70%+ 的周期无新命令到达，免去全量
         #   底部栏（分隔线+输入区）重绘，将 I/O 从 ~5 行降至 0-1 行。
@@ -209,3 +220,40 @@ class RenderEngine:
         cursor_col = min(3 + vis_col, w)
         sys.__stdout__.write(f"\033[{r_cursor};{cursor_col}H")
         sys.__stdout__.flush()
+
+    def _sync_renderer_width(self) -> None:
+        """resize 后同步更新所有活跃 Rich Console 的宽度，消除 5s TTL 缓存滞后（B7 fix）。
+
+        遍历 _RenderState 中所有活跃渲染器（推理/内容/工具输出），
+        强制设置其 console.width = 新终端宽度，使后续渲染立即使用新宽度换行。
+        """
+        try:
+            new_width = shutil.get_terminal_size().columns
+        except Exception:
+            return
+        if new_width <= 0:
+            return
+
+        rs = self._renderer._rs
+
+        now = time.monotonic()
+
+        # 推理渲染器的 OutputAdapter
+        rr = rs.reasoning
+        if rr is not None and hasattr(rr, '_output') and hasattr(rr._output, '_console'):
+            rr._output._console.width = new_width
+            rr._output._width = new_width
+            rr._output._last_width_refresh = now
+
+        # 内容渲染器的 OutputAdapter
+        cr = rs.content
+        if cr is not None and hasattr(cr, '_output') and hasattr(cr._output, '_console'):
+            cr._output._console.width = new_width
+            cr._output._width = new_width
+            cr._output._last_width_refresh = now
+
+        # 工具输出适配器的 OutputAdapter（可能尚未惰性创建）
+        if rs._tool_adapter is not None and hasattr(rs._tool_adapter, '_console'):
+            rs._tool_adapter._console.width = new_width
+            rs._tool_adapter._width = new_width
+            rs._tool_adapter._last_width_refresh = now

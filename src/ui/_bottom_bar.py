@@ -119,6 +119,7 @@ class _BottomBar:
         self._last_cursor_pos: int = -1   # 上次光标位置，用于检测光标移动
         # ★ 展开/拆行缓存：轻量路径复用，避免每次光标移动都重算 _expand_tabs + _wrap_by_width
         self._cached_wrapped_for: str = ""   # 缓存对应的原始文本（缓存键，在 _draw_input_lines_locked 中更新）
+        self._cached_wrapped_width: int = 0  # 缓存对应的终端宽度（B2 fix: 宽度变化时缓存失效）
         self._cached_wrapped_lines: list[str] | None = None  # 缓存拆行结果
         self._cached_input_rows: int = _MIN_INPUT_ROWS      # 缓存输入区视觉行数（不含分隔线/状态行）
         # ★ 上次渲染到终端的输入文本（显式标记，仅在 _draw_input_lines_locked 中更新，
@@ -254,10 +255,14 @@ class _BottomBar:
             (visual_line_idx, visual_col) —— 均为 0-based。
         """
         # 缓存失效时自动计算并更新缓存
-        if self._cached_wrapped_for != text or self._cached_wrapped_lines is None:
+        # ★ B2 fix: 缓存键包含 (text, max_width)，宽度变化时缓存也失效
+        if (self._cached_wrapped_for != text
+                or self._cached_wrapped_width != max_width
+                or self._cached_wrapped_lines is None):
             expanded = _expand_tabs(text)
             self._cached_wrapped_lines = _wrap_by_width(expanded, max_width)
             self._cached_wrapped_for = text
+            self._cached_wrapped_width = max_width
             self._cached_input_rows = max(_MIN_INPUT_ROWS, len(self._cached_wrapped_lines)) + self._completion_popup_height
             # ★ 同步 _last_rendered_text，使 force_redraw 快速路径正确识别重新渲染
             self._last_rendered_text = text
@@ -469,11 +474,24 @@ class _BottomBar:
             # 单锁作用域：output_lock 是 RLock，setup() 内部的可重入获取安全
             with _try_acquire_output_lock(name="bottom_bar.check_resize", timeout=1.0) as locked:
                 if not locked:
-                    # ★ Bug 7 修复：锁超时时更新 _setup_height/_setup_width，
-                    #   避免下次 _check_resize() 因同一尺寸再次触发（无限循环）
+                    # ★ Bug 5/7 修复：锁超时时返回 False 避免调用方执行
+                    #   force_redraw（也会超时），同时更新 _setup 避免无限循环。
                     self._setup_height = height
                     self._setup_width = width
-                    return True
+                    return False
+                # ★ B3 fix: 保存并临时清除补全弹窗状态，避免 setup()
+                #   用空文本 + 旧宽度画出错误的弹窗视觉
+                saved_comp_visible = self._completion_visible
+                saved_comp_height = self._completion_popup_height
+                saved_comp_items = self._completion_items
+                saved_comp_texts = self._completion_texts
+                saved_comp_idx = self._completion_idx
+                saved_comp_start_pos = self._completion_start_pos
+                saved_comp_orig_prefix = self._completion_orig_prefix
+                saved_comp_title = self._completion_title
+                self._completion_popup_height = 0
+                self._completion_items = []
+
                 saved_text = self._last_text
                 self._active = False
                 self.setup()  # RLock 允许可重入嵌套
@@ -482,10 +500,19 @@ class _BottomBar:
                 #   实际文本可能需要更多行（如 7），导致滚动区域过大。
                 #   Stage 1 渲染会在此期间将内容写入行 height-5 ~ height-7，
                 #   后续 force_redraw 的底部栏重绘会覆盖这些越界行。
-                #   修复：恢复 _last_text 后立即重算 _bottom_lines 并修正
-                #   滚动区域，确保锁释放前滚动区域已与实际文本一致。
+                #   修复：恢复 _last_text + 弹窗状态后，再重算 _bottom_lines
+                #   并修正滚动区域，确保 _last_bottom_lines 包含弹窗高度。
                 self._last_text = saved_text
-                actual_total = self._bottom_lines  # 基于实际文本
+                # ★ B3 fix: 先恢复弹窗状态，使 actual_total 计算包含弹窗高度
+                self._completion_visible = saved_comp_visible
+                self._completion_popup_height = saved_comp_height
+                self._completion_items = saved_comp_items
+                self._completion_texts = saved_comp_texts
+                self._completion_idx = saved_comp_idx
+                self._completion_start_pos = saved_comp_start_pos
+                self._completion_orig_prefix = saved_comp_orig_prefix
+                self._completion_title = saved_comp_title
+                actual_total = self._bottom_lines  # 基于实际文本+弹窗
                 if actual_total != self._last_bottom_lines:
                     scroll_end = height - actual_total
                     if scroll_end >= 1:
@@ -837,9 +864,10 @@ class _BottomBar:
             max_input = max(1, term_w - 4)
             # ★ 复用缓存的拆行结果，避免重算 _wrap_by_width（O(n·wcswidth)）
             vis_row, vis_col = self._cursor_visual_pos_from_cache(text, cursor_pos, max_input)
-            # ★ 复用缓存输入行数（resized=False 时宽度未变，缓存有效）
+            # ★ 复用缓存输入行数（resized=False + 宽度未变时缓存有效）
             total = (2 + self._cached_input_rows
-                     if self._cached_wrapped_for == text
+                     if (self._cached_wrapped_for == text
+                         and self._cached_wrapped_width == max_input)
                      else self._bottom_lines)
             r_cursor = term_h - total + 3 + self._completion_popup_height + vis_row
             # ★ clamp 到 [1, term_h]，防止 total > term_h 时行号 ≤ 0
@@ -968,6 +996,7 @@ class _BottomBar:
         wrapped = _wrap_by_width(expanded, max_input)
         # ★ 更新展开/拆行缓存，供轻量路径复用（text_changed=False 时有效）
         self._cached_wrapped_for = text
+        self._cached_wrapped_width = max_input
         self._cached_wrapped_lines = wrapped
         base_rows = max(_MIN_INPUT_ROWS, len(wrapped))
         self._cached_input_rows = base_rows + self._completion_popup_height
