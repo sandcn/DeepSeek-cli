@@ -6,6 +6,7 @@ Layer 2 — 依赖 _const（Style常量 + RenderCommand + _ReasoningState + _MAI
 
 from __future__ import annotations
 
+import sys
 from typing import TYPE_CHECKING
 
 from rich.text import Text
@@ -37,11 +38,22 @@ class ContentRenderer:
     依赖：
       - _rs (_RenderState)：渲染器生命周期（推理/内容/工具适配器）
       - _bottom_bar：底部栏状态更新（工具计数/模型名）
+
+    上屏历史重放（Screen History Replay）：
+      _screen_history 记录所有上屏渲染命令的历史，供终端 resize 后
+      重新绘制上屏内容。推理/内容文本通过 _reasoning_accum / _content_accum
+      累积至阶段边界后写入单条记录（_'block'），避免逐块记录导致的
+      重放碎片化。
     """
 
     def __init__(self, rs: "_RenderState", bottom_bar):
         self._rs = rs
         self._bb = bottom_bar
+
+        # ── 上屏历史（终端 resize 后重放用） ──
+        self._screen_history: list[tuple] = []   # 上屏渲染历史记录
+        self._reasoning_accum: list[str] = []    # 推理文本累积缓冲区
+        self._content_accum: list[str] = []      # 内容文本累积缓冲区
 
     @property
     def _tool_adapter(self) -> "OutputAdapter":
@@ -76,6 +88,106 @@ class ContentRenderer:
         args = tuple(cmd[i] for i in arg_indices)
         method(*args)
 
+    # ── 上屏历史管理 ─────────────────────────────────
+
+    def _flush_reasoning(self) -> None:
+        """将累积的推理文本保存为单条历史记录并清空缓冲区。"""
+        if self._reasoning_accum:
+            full = ''.join(self._reasoning_accum)
+            self._screen_history.append(('reasoning_block', full))
+            self._reasoning_accum.clear()
+
+    def _flush_content(self) -> None:
+        """将累积的内容文本保存为单条历史记录并清空缓冲区。"""
+        if self._content_accum:
+            full = ''.join(self._content_accum)
+            self._screen_history.append(('content_block', full))
+            self._content_accum.clear()
+
+    def clear_screen_history(self) -> None:
+        """清空上屏历史记录（新会话开始前调用）。"""
+        self._screen_history.clear()
+        self._reasoning_accum.clear()
+        self._content_accum.clear()
+
+    def replay_upper_screen(self) -> None:
+        """终端尺寸变化后重放上屏历史内容。
+
+        在 output_lock 保护下调用。清空上屏区域后按保存顺序
+        重新渲染所有历史内容。推理/内容使用 IncrementalRenderer
+        重新经过 Markdown 渲染管线，适配当前终端宽度。
+        """
+        if not self._screen_history:
+            return
+
+        out = sys.__stdout__
+        ta = self._tool_adapter
+
+        # ── 清空上屏区域（行 1 → scroll_end） ──
+        height = self._bb._term_height()
+        total = self._bb._bottom_lines
+        scroll_end = max(1, height - total)
+        for r in range(1, scroll_end + 1):
+            out.write(f"\033[{r};1H\033[K")
+        out.write("\033[1;1H")
+
+        from ..api.renderer import IncrementalRenderer
+        from ._const import _THINKING_HEADER, _THINKING_SEPARATOR
+
+        for record in self._screen_history:
+            kind = record[0]
+
+            if kind == 'reasoning_block':
+                rr = IncrementalRenderer(
+                    style="dim", _file=sys.__stdout__,
+                    typing_speed=0, show_indicator=False,
+                )
+                rr.write(_THINKING_HEADER)
+                rr.write(record[1])
+                rr.write(_THINKING_SEPARATOR)
+                rr.close()
+            elif kind == 'content_block':
+                cr = IncrementalRenderer(
+                    _file=sys.__stdout__,
+                    typing_speed=0, show_indicator=False,
+                )
+                cr.write(record[1])
+                cr.close()
+            elif kind == 'tool_output':
+                ta.write(Text.assemble(("   ", _STYLE_DIM), (record[1], _STYLE_DIM)))
+            elif kind == 'tool_summary':
+                successful, failed = record[1], record[2]
+                if failed:
+                    self._render_failure_summary(ta, failed, len(successful) + len(failed))
+                elif successful:
+                    ta.write(Text.assemble(
+                        ("  · ", _STYLE_SUCCESS),
+                        (f"{len(successful)}工具完成", _STYLE_SUCCESS),
+                    ))
+            elif kind == 'user_msg':
+                ta.write(Text.assemble(("\n  > ", _STYLE_BOLD), (record[1], _STYLE_BOLD)))
+            elif kind == 'notification':
+                ta.write(Text.assemble(("\n  · ", _STYLE_SUCCESS), (record[1], _STYLE_SUCCESS)))
+            elif kind == 'error':
+                ta.write(Text.assemble(("\n  ! ", _STYLE_ERROR), (record[1], _STYLE_ERROR)))
+            elif kind == 'cmd_output':
+                text = record[1]
+                if '\033[' in text:
+                    ta.write(Text.from_ansi(text))
+                else:
+                    ta.write_raw(text + "\n")
+            elif kind == 'write_line':
+                text = record[1]
+                if '\033[' in text:
+                    ta.write(Text.from_ansi(text))
+                else:
+                    ta.write_raw(text + "\n")
+            elif kind == 'display_msgs':
+                from ..ui.tui._message_display import _display_messages
+                _display_messages(record[1], speed=record[2])
+
+        out.flush()
+
     # ── 内容渲染 ──────────────────────────────────────
 
     def _do_reasoning(self, text: str) -> None:
@@ -98,17 +210,27 @@ class ContentRenderer:
                 from ._const import _THINKING_HEADER
                 rr.write(_THINKING_HEADER)
             rr.write(text)
+        # ── 上屏历史：累积推理文本 ──
+        self._reasoning_accum.append(text)
 
     def _do_content(self, text: str) -> None:
         if self._rs.reasoning_state not in (_ReasoningState.CLOSED, _ReasoningState.INACTIVE):
             self._rs.close_reasoning()
+            # ── 上屏历史：关闭推理时刷新累积缓冲区 ──
+            self._flush_reasoning()
         self._rs.get_content().write(text)
+        # ── 上屏历史：累积内容文本 ──
+        self._content_accum.append(text)
 
     def _do_phase_done(self, phase: str) -> None:
         if phase == "reasoning":
             self._rs.close_reasoning()
+            # ── 上屏历史：刷新推理累积缓冲区 ──
+            self._flush_reasoning()
         elif phase == "content":
             self._rs.close_content()
+            # ── 上屏历史：刷新内容累积缓冲区 ──
+            self._flush_content()
 
     # ── 工具渲染 ──────────────────────────────────────
 
@@ -122,6 +244,9 @@ class ContentRenderer:
 
     def _do_tool_output(self, text: str) -> None:
         """渲染工具执行输出（dim 样式 + 缩进）。"""
+        # ── 上屏历史：刷新前面的推理/内容累积 ──
+        self._flush_reasoning()
+        self._flush_content()
         ta = self._tool_adapter
         if '\r' in text:
             ta.write_raw(text)
@@ -138,9 +263,14 @@ class ContentRenderer:
                 ta.write_raw("\n")
                 self._rs.last_was_carriage = False
             ta.write(Text.assemble(("   ", _STYLE_DIM), (text, _STYLE_DIM)))
+            # ── 上屏历史：保存工具输出（不含 \r 行内覆盖类） ──
+            self._screen_history.append(('tool_output', text))
 
     def _do_tool_summary(self, successful: tuple, failed: tuple) -> None:
         """渲染工具执行汇总（着色图标 + 彩色计数）。"""
+        # ── 上屏历史：刷新前面的推理/内容累积 ──
+        self._flush_reasoning()
+        self._flush_content()
         ta = self._tool_adapter
         if self._rs.last_was_carriage:
             ta.write_raw("\n")
@@ -154,6 +284,8 @@ class ContentRenderer:
                 ("  · ", _STYLE_SUCCESS),
                 (f"{len(successful)}工具完成", _STYLE_SUCCESS),
             ))
+        # ── 上屏历史：保存工具汇总 ──
+        self._screen_history.append(('tool_summary', successful, failed))
 
     @staticmethod
     def _truncate_by_visual_width(s: str, max_width: int) -> str:
@@ -220,21 +352,33 @@ class ContentRenderer:
 
     def _do_cmd_output(self, text: str) -> None:
         """渲染 / 命令执行输出，委托 _write_text_or_ansi。"""
+        # ── 上屏历史：刷新前面的推理/内容累积 ──
+        self._flush_reasoning()
+        self._flush_content()
         self._write_text_or_ansi(text)
+        self._screen_history.append(('cmd_output', text))
 
     def _do_user_message(self, text: str) -> None:
         """渲染用户消息（> 前缀 + 加粗）。"""
+        # ── 上屏历史：刷新前面的推理/内容累积 ──
+        self._flush_reasoning()
+        self._flush_content()
         self._tool_adapter.write(Text.assemble(
             ("\n  > ", _STYLE_BOLD),
             (text, _STYLE_BOLD),
         ))
+        self._screen_history.append(('user_msg', text))
 
     def _do_notification(self, text: str) -> None:
         """渲染系统通知（· 前缀）。"""
+        # ── 上屏历史：刷新前面的推理/内容累积 ──
+        self._flush_reasoning()
+        self._flush_content()
         self._tool_adapter.write(Text.assemble(
             ("\n  · ", _STYLE_SUCCESS),
             (text, _STYLE_SUCCESS),
         ))
+        self._screen_history.append(('notification', text))
 
     def _do_error(self, message: str) -> None:
         """渲染系统错误信息（红色 ! 样式）。
@@ -246,14 +390,22 @@ class ContentRenderer:
         ChatUIErrorHandler.emit() 中的 _chatui_reported 标记
         会跳过自引用循环。
         """
+        # ── 上屏历史：刷新前面的推理/内容累积 ──
+        self._flush_reasoning()
+        self._flush_content()
         self._tool_adapter.write(Text.assemble(
             ("\n  ! ", _STYLE_ERROR),
             (message, _STYLE_ERROR),
         ))
+        self._screen_history.append(('error', message))
 
     def _do_write_line(self, text: str) -> None:
         """渲染通用文本行，委托 _write_text_or_ansi。"""
+        # ── 上屏历史：刷新前面的推理/内容累积 ──
+        self._flush_reasoning()
+        self._flush_content()
         self._write_text_or_ansi(text)
+        self._screen_history.append(('write_line', text))
 
     def _write_text_or_ansi(self, text: str) -> None:
         """按需渲染文本：含 ANSI 转义序列时解析着色，纯文本时直写。
@@ -269,5 +421,10 @@ class ContentRenderer:
 
     def _do_display_messages(self, messages: list[dict], speed: int) -> None:
         """渲染消息列表到上屏（截断/恢复后的重渲染）。"""
+        # ── 上屏历史：刷新前面的推理/内容累积 ──
+        self._flush_reasoning()
+        self._flush_content()
         from ..ui.tui._message_display import _display_messages
         _display_messages(messages, speed=speed)
+        # ── 上屏历史（注意：messages 是引用，重放时可能已过期） ──
+        self._screen_history.append(('display_msgs', list(messages), speed))
