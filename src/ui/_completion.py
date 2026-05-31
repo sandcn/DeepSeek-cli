@@ -118,6 +118,11 @@ class CompletionEngine:
             # ── 命令补全 ──
             items = self._complete_command(last_word)
             if items:
+                # 精确匹配已完成命令 → 跳过命令补全，尝试参数补全
+                if len(items) == 1 and items[0].text == last_word:
+                    param_items = self._complete_param(text)
+                    if param_items:
+                        return param_items
                 return items
             # 命令补全无结果时也尝试参数补全
             return self._complete_param(text)
@@ -142,17 +147,27 @@ class CompletionEngine:
     # ── 参数补全 ───────────────────────────────────────
 
     def _complete_param(self, text: str) -> list[CompletionItem]:
-        """补全命令参数。"""
+        """补全命令参数。
+
+        只有命令名无参数时（如 "/model"），返回全部参数作为候选项，
+        确保选中命令后自动弹出参数补全弹窗，无需先输入空格。
+        """
         parts = text.split(maxsplit=1)
         if len(parts) < 2:
-            return []
-        cmd_name = parts[0]
-        if cmd_name not in self._PARAM_COMMANDS:
-            return []
-        param_part = parts[1]
-        param_words = param_part.split()
-        param_last = param_words[-1] if param_words else ""
-        start = -len(param_last)
+            cmd_name = text.strip()
+            if cmd_name not in self._PARAM_COMMANDS:
+                return []
+            # 无参数部分 → 返回所有参数（空前缀匹配全部）
+            param_last = ""
+            start = 0
+        else:
+            cmd_name = parts[0]
+            if cmd_name not in self._PARAM_COMMANDS:
+                return []
+            param_part = parts[1]
+            param_words = param_part.split()
+            param_last = param_words[-1] if param_words else ""
+            start = -len(param_last)
 
         if cmd_name == "/model":
             models = self._models_cache.get()
