@@ -201,3 +201,129 @@ class TestCursorVisualPosFromCache:
         bb._cached_wrapped_for = text
         bb._cached_wrapped_lines = ["abcdef"]
         assert bb._cursor_visual_pos_from_cache(text, 2, 80) == (0, 2)
+
+
+class TestCmplHandlerOnAuto:
+    """_CmplHandler.on_auto 自动弹出补全测试"""
+
+    def test_empty_text_hides_completions(self):
+        """空文本 → 隐藏弹窗。"""
+        from unittest.mock import MagicMock
+        from src.chat_ui._completion import _CmplHandler
+
+        bb = MagicMock()
+        engine = MagicMock()
+        handler = _CmplHandler(bb, engine)
+        handler.on_auto("")
+
+        bb.hide_completions.assert_called_once()
+        engine.complete.assert_not_called()
+
+    def test_short_non_command_skips_completion(self):
+        """普通文本 < 2 字符 → 隐藏弹窗。"""
+        from unittest.mock import MagicMock
+        from src.chat_ui._completion import _CmplHandler
+
+        bb = MagicMock()
+        engine = MagicMock()
+        handler = _CmplHandler(bb, engine)
+        handler.on_auto("h")
+
+        bb.hide_completions.assert_called_once()
+        engine.complete.assert_not_called()
+
+    def test_single_forward_slash_triggers_completion(self):
+        """/ 单字符 → 应触发补全（命令前缀）。"""
+        from unittest.mock import MagicMock
+        from src.ui._completion import CompletionItem
+        from src.chat_ui._completion import _CmplHandler
+
+        bb = MagicMock()
+        bb.is_completion_visible = False
+        engine = MagicMock()
+        engine.complete.return_value = [
+            CompletionItem("/help", "/help 显示帮助", -1),
+            CompletionItem("/model", "/model 切换模型", -2),
+        ]
+        handler = _CmplHandler(bb, engine)
+        handler.on_auto("/")
+
+        engine.complete.assert_called_once_with("/")
+        bb.show_completions.assert_called_once()
+        args, kwargs = bb.show_completions.call_args
+        assert kwargs["start_pos"] == -1
+        assert kwargs["orig_prefix"] == "/"
+        assert len(kwargs["texts"]) == 2
+
+    def test_no_completions_hides(self):
+        """无候选项 → 隐藏弹窗。"""
+        from unittest.mock import MagicMock
+        from src.chat_ui._completion import _CmplHandler
+
+        bb = MagicMock()
+        engine = MagicMock()
+        engine.complete.return_value = []
+        handler = _CmplHandler(bb, engine)
+        handler.on_auto("/xyz")
+
+        engine.complete.assert_called_once_with("/xyz")
+        bb.hide_completions.assert_called_once()
+
+    def test_two_char_non_command_triggers_completion(self):
+        """普通文本 ≥ 2 字符 → 触发补全。"""
+        from unittest.mock import MagicMock
+        from src.ui._completion import CompletionItem
+        from src.chat_ui._completion import _CmplHandler
+
+        bb = MagicMock()
+        bb.is_completion_visible = False
+        engine = MagicMock()
+        engine.complete.return_value = [
+            CompletionItem("hello", "hello", -5),
+        ]
+        handler = _CmplHandler(bb, engine)
+        handler.on_auto("he")
+
+        engine.complete.assert_called_once_with("he")
+        bb.show_completions.assert_called_once()
+        args, kwargs = bb.show_completions.call_args
+        assert kwargs["orig_prefix"] == "he"
+        assert len(kwargs["texts"]) == 1
+
+    def test_command_with_param_uses_last_word(self):
+        """命令+参数 → orig_prefix 取最后一个词。"""
+        from unittest.mock import MagicMock
+        from src.ui._completion import CompletionItem
+        from src.chat_ui._completion import _CmplHandler
+
+        bb = MagicMock()
+        bb.is_completion_visible = False
+        engine = MagicMock()
+        engine.complete.return_value = [
+            CompletionItem("deepseek-v4-pro", "deepseek-v4-pro", -5),
+        ]
+        handler = _CmplHandler(bb, engine)
+        handler.on_auto("/model deep")
+
+        engine.complete.assert_called_once_with("/model deep")
+        bb.show_completions.assert_called_once()
+        args, kwargs = bb.show_completions.call_args
+        assert kwargs["orig_prefix"] == "deep"
+
+    def test_updates_existing_completion(self):
+        """已有弹窗可见 → 重新计算并更新。"""
+        from unittest.mock import MagicMock
+        from src.ui._completion import CompletionItem
+        from src.chat_ui._completion import _CmplHandler
+
+        bb = MagicMock()
+        bb.is_completion_visible = True
+        engine = MagicMock()
+        engine.complete.return_value = [
+            CompletionItem("/model-pro", "/model-pro", -2),
+        ]
+        handler = _CmplHandler(bb, engine)
+        handler.on_auto("/m")
+
+        engine.complete.assert_called_once_with("/m")
+        bb.show_completions.assert_called_once()

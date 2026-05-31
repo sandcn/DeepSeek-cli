@@ -283,10 +283,11 @@ class ChatUIConsumer:
     # ── Tab 补全 ───────────────────────────────────────
 
     def setup_completion(self, monitor: "EscapeMonitor") -> None:
-        """注册补全回调到 EscapeMonitor。"""
+        """注册补全回调到 EscapeMonitor（含 Tab 补全 + 自动弹出补全）。"""
         monitor.set_completion_callback(self._cmpl.on_tab)
         monitor.set_dismiss_completion_callback(self._cmpl.on_dismiss)
         monitor.set_completion_navigate_callback(self._cmpl.on_navigate)
+        monitor.set_auto_completion_callback(self._cmpl.on_auto)
 
     # ── 底部栏 ────────────────────────────────────────
 

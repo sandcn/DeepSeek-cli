@@ -59,6 +59,39 @@ class _CmplHandler:
             text, repl_text, start_pos, orig_prefix,
         )
 
+    def on_auto(self, text: str) -> None:
+        """自动补全入口 — 用户输入可打印字符时自动触发。
+
+        规则：
+          - 文本为空 → 隐藏弹窗
+          - 不以 / 开头且长度 < 2 → 隐藏弹窗（避免过早弹出）
+          - 有候选项 → 显示/更新弹窗，选中索引重置为 0
+          - 无候选项 → 隐藏弹窗
+        """
+        if not text:
+            self._bb.hide_completions()
+            return
+
+        # 最小触发长度：命令（/开头）1字符即可，普通文本至少2字符
+        if not text.startswith('/') and len(text) < 2:
+            self._bb.hide_completions()
+            return
+
+        items = self._engine.complete(text)
+        if not items:
+            self._bb.hide_completions()
+            return
+
+        words = text.split()
+        last_word = words[-1] if words else ""
+
+        self._bb.show_completions(
+            [item.display for item in items], 0,
+            texts=[item.text for item in items],
+            start_pos=items[0].start_pos,
+            orig_prefix=last_word,
+        )
+
     # ── 内部方法 ──────────────────────────────────────
 
     def _cycle_tab(self, text: str) -> str | None:

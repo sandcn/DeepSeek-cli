@@ -721,6 +721,8 @@ class EscapeMonitor:
         self._completion_callback = None       # (text: str) -> str | None
         self._dismiss_completion_callback = None  # () -> None
         self._completion_navigate_callback = None   # (delta: int, text: str) -> str | None
+        # ── 自动补全回调（用户输入可打印字符时自动触发） ──
+        self._auto_completion_callback = None  # (text: str) -> None
 
     # ── 公开接口 ──────────────────────────────────────────
 
@@ -885,6 +887,16 @@ class EscapeMonitor:
           返回替换后的文本，None 表示弹窗不可见（回退为正常上下键行为）。
         """
         self._completion_navigate_callback = callback
+
+    def set_auto_completion_callback(self, callback) -> None:
+        """设置自动补全回调。
+
+        callback 签名: (text: str) -> None
+          text: 当前输入缓冲区文本。
+        在用户输入可打印字符时调用，用于自动弹出补全弹窗。
+        回调在 monitor 线程中调用，应保证线程安全。
+        """
+        self._auto_completion_callback = callback
 
     def set_prefill(self, text: str) -> None:
         """设置预填文本到流式输入缓冲区。线程安全。"""
@@ -1185,16 +1197,15 @@ class EscapeMonitor:
 
                 # ── ASCII 可打印字符（单字节，直接处理 + 粘贴检测） ──
                 if first_byte < 0x80:
-                    self._dismiss_completion()
                     paste_text = self._try_read_paste(fd, chr(first_byte))
                     if len(paste_text) > 1:
                         self._input_handler.handle_chars(paste_text)
                     else:
                         self._input_handler.handle_char(paste_text)
+                    self._trigger_auto_completion()
                     continue
 
                 # ── 多字节 UTF-8 序列（如中文、日文、韩文等 CJK 字符 + 粘贴检测） ──
-                self._dismiss_completion()
                 ch = self._read_utf8_char(fd, first_byte)
                 if ch is not None:
                     paste_text = self._try_read_paste(fd, ch)
@@ -1202,6 +1213,7 @@ class EscapeMonitor:
                         self._input_handler.handle_chars(paste_text)
                     else:
                         self._input_handler.handle_char(paste_text)
+                    self._trigger_auto_completion()
         finally:
             self._restore_terminal_settings(_lock_held=False)
 
@@ -1237,6 +1249,7 @@ class EscapeMonitor:
         elif ch in ('\x7f', '\b'):
             self._dismiss_completion()
             self._input_handler._backspace()
+            self._trigger_auto_completion()
         elif ch == '\x01':          # Ctrl+A → 行首
             self._dismiss_completion()
             self._input_handler._home()
@@ -1246,17 +1259,35 @@ class EscapeMonitor:
         elif ch == '\x17':          # Ctrl+W → 删除前一个词
             self._dismiss_completion()
             self._input_handler._delete_word_left()
+            self._trigger_auto_completion()
         elif ch == '\x15':          # Ctrl+U → 删除到行首
             self._dismiss_completion()
             self._input_handler._kill_to_bol()
+            self._trigger_auto_completion()
         elif ch == '\x0b':          # Ctrl+K → 删除到行尾
             self._dismiss_completion()
             self._input_handler._kill_to_eol()
+            self._trigger_auto_completion()
         else:
             self._dismiss_completion()
             # 其他控制字符 → 旧行为：捕获到 _captured_input
             with self._captured_lock:
                 self._captured_input.append(first_byte)
+
+    def _trigger_auto_completion(self) -> None:
+        """获取当前文本并调用自动补全回调。
+
+        在用户输入可打印字符后调用，自动弹出补全弹窗。
+        线程安全：回调内部使用 try/except 包围。
+        """
+        cb = self._auto_completion_callback
+        if cb is None:
+            return
+        text = self._input_handler.get_current_text()
+        try:
+            cb(text)
+        except Exception:
+            _logger.debug("自动补全回调异常", exc_info=True)
 
     def _handle_tab(self) -> None:
         """处理 Tab 键：调用补全回调，失败则插入制表符。"""
@@ -1277,6 +1308,7 @@ class EscapeMonitor:
             # 用补全结果替换整个缓冲区
             self._input_handler.set_buffer(result)
             self._input_handler._echo(result)
+            self._trigger_auto_completion()
 
     def _dismiss_completion(self) -> None:
         """如果补全弹窗可见，关闭它。"""
@@ -1300,6 +1332,7 @@ class EscapeMonitor:
             if result is not None:
                 self._input_handler.set_buffer(result)
                 self._input_handler._echo(result)
+                self._trigger_auto_completion()
                 return
         self._input_handler._up()
 
@@ -1316,6 +1349,7 @@ class EscapeMonitor:
             if result is not None:
                 self._input_handler.set_buffer(result)
                 self._input_handler._echo(result)
+                self._trigger_auto_completion()
                 return
         self._input_handler._down()
 
@@ -1454,6 +1488,7 @@ class EscapeMonitor:
                     # Delete 键：删除光标后字符
                     self._dismiss_completion()
                     self._input_handler._delete()
+                    self._trigger_auto_completion()
                 elif p in (4, 8):
                     self._input_handler._end()
             elif terminator == 'H':
@@ -1495,6 +1530,7 @@ class EscapeMonitor:
             except (ValueError, OSError, TypeError):
                 pass
             self._input_handler._delete_word_left()
+            self._trigger_auto_completion()
         elif next_ch == '\x1b':
             # 双 Esc（Alt+Esc）→ 视为中断
             self._do_interrupt()
@@ -1550,15 +1586,16 @@ class EscapeMonitor:
                 elif ch in (b'\x08', b'\x7f'):  # Backspace
                     self._dismiss_completion()
                     self._input_handler._backspace()
+                    self._trigger_auto_completion()
                 else:
                     # 流式输入字符
-                    self._dismiss_completion()
                     try:
                         char = ch.decode("utf-8", errors="replace")
                         self._input_handler.handle_char(char)
                     except Exception:
                         with self._captured_lock:
                             self._captured_input.extend(ch)
+                    self._trigger_auto_completion()
         finally:
             self._restore_terminal_settings()
 
