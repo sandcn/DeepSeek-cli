@@ -124,12 +124,6 @@ class RenderEngine:
         with _try_acquire_output_lock(name="drain_queue.resize", timeout=1.0) as locked:
             resized = locked and self._bb.check_resize()
 
-        # ★ 阶段 0.5：尺寸变化时，清空上屏并重放历史（锁内执行，在渲染新命令前完成）
-        if resized:
-            with _try_acquire_output_lock(name="drain_queue.replay", timeout=1.0) as locked:
-                if locked:
-                    self._renderer.replay_upper_screen()
-
         # ★ 阶段 1：锁内批量出队 + 上屏渲染（出队与渲染原子化，消除命令丢失窗口）
         commands: list[tuple] = []
         with _try_acquire_output_lock(name="drain_queue.render", timeout=1.0) as locked:
