@@ -32,6 +32,15 @@ _TOOL_EXCLUSION_MAP = {
         "bash", "write_file", "update_file", "rm", "mv", "cp", "mk",
         "dispatch_agent", "user_select",
     },
+    "plan": {
+        "bash",
+        "rm",
+        "mv",
+        "cp",
+        "mk",
+        "dispatch_agent",
+        "user_select",
+    },
 }
 
 
@@ -76,6 +85,8 @@ class SubAgent(BaseAgent):
             system_parts = prompt_port.build_map_agent_prompt()
         elif agent_type == "review":
             system_parts = prompt_port.build_review_agent_prompt()
+        elif agent_type == "plan":
+            system_parts = prompt_port.build_plan_agent_prompt()
         else:
             system_parts = prompt_port.build_subagent_prompt()
         self.messages: List[Dict[str, Any]] = [

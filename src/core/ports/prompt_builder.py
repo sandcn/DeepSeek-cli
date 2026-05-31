@@ -22,6 +22,10 @@ class PromptBuilderPort(ABC):
     def build_review_agent_prompt(self, cwd: Optional[str] = None) -> list[str]:
         ...
 
+    @abstractmethod
+    def build_plan_agent_prompt(self, cwd: Optional[str] = None) -> list[str]:
+        ...
+
 
 
 class DefaultPromptBuilderAdapter(PromptBuilderPort):
@@ -31,14 +35,18 @@ class DefaultPromptBuilderAdapter(PromptBuilderPort):
 
     def build_subagent_prompt(self, cwd: Optional[str] = None) -> list[str]:
         from ...prompt_builder import build_subagent_system_prompt
-        return build_subagent_system_prompt(cwd)
+        return build_subagent_system_prompt(cwd=cwd)
 
     def build_map_agent_prompt(self, cwd: Optional[str] = None) -> list[str]:
         from ...prompt_builder import build_map_agent_system_prompt
-        return build_map_agent_system_prompt(cwd)
+        return build_map_agent_system_prompt(cwd=cwd)
 
     def build_review_agent_prompt(self, cwd: Optional[str] = None) -> list[str]:
         from ...prompt_builder import build_review_agent_system_prompt
-        return build_review_agent_system_prompt(cwd)
+        return build_review_agent_system_prompt(cwd=cwd)
+
+    def build_plan_agent_prompt(self, cwd: Optional[str] = None) -> list[str]:
+        from ...prompt_builder import build_plan_agent_system_prompt
+        return build_plan_agent_system_prompt(cwd=cwd)
 
 

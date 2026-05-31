@@ -25,6 +25,7 @@ AGENT_TYPE_ABBREV = {
     "ordinary": "od",
     "map": "mp",
     "review": "rv",
+    "plan": "pl",
 }
 
 # ── SubAgent 类型 → 256色 ANSI 前景色 ──────────────────
@@ -33,6 +34,7 @@ AGENT_TYPE_COLORS = {
     "ordinary": "\033[38;5;40m",   # 亮绿
     "map": "\033[38;5;33m",        # 深蓝
     "review": "\033[38;5;129m",    # 紫
+    "plan": "\033[38;5;214m",      # 琥珀
 }
 
 # ── 工具类别 → 256色 ANSI 前景色 ──────────────────────

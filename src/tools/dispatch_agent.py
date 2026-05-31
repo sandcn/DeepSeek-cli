@@ -72,8 +72,8 @@ class DispatchAgents(Func):
                         },
                         "type": {
                             "type": "string",
-                            "enum": ["ordinary", "map", "review"],
-                            "description": "子Agent类型。ordinary（默认）：排除 user_select 和 dispatch_agent，其他工具全开。map：只读分析型，仅保留 read_file/search/find/ls 等读取工具，专用于项目代码分析和地图生成。review：代码审查型，只读工具集（含 read_file/search/find/ls/web_search），专用于文件列表的 Code Review（P0-P3 分级输出）。",
+                            "enum": ["ordinary", "map", "review", "plan"],
+                            "description": "子Agent类型。ordinary（默认）：排除 user_select 和 dispatch_agent，其他工具全开。map：只读分析型，仅保留 read_file/search/find/ls 等读取工具，专用于项目代码分析和地图生成。review：代码审查型，只读工具集（含 read_file/search/find/ls/web_search），专用于文件列表的 Code Review（P0-P3 分级输出）。plan：计划型，只读分析工具 + write_file/update_file，根据指令生成计划并写入 .chat/plan/ 目录。",
                         },
                     },
                     "required": ["description", "prompt"],

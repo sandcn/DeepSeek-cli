@@ -194,6 +194,19 @@ def build_review_agent_system_prompt(
     return _build_prompt("prompts_export_review", _FALLBACK_SUB_PROMPT, include_version_control, cwd, include_memory_guide=False)
 
 
+def build_plan_agent_system_prompt(
+    include_version_control: bool = True,
+    cwd: str | None = None,
+) -> list[str]:
+    """构建 plan 类型子代理系统提示词。
+
+    从 prompts_export_plan.md 加载静态规则，追加运行时动态信息。
+    Plan 类型专用于制定可执行计划并写入 .chat/plan/ 目录，
+    只读分析工具 + write_file/update_file，无需加载跨对话记忆使用指南。
+    """
+    return _build_prompt("prompts_export_plan", _FALLBACK_SUB_PROMPT, include_version_control, cwd, include_memory_guide=False)
+
+
 # =================== 主代理提示词 ===================
 
 
@@ -213,5 +226,6 @@ __all__ = [
     "build_subagent_system_prompt",
     "build_map_agent_system_prompt",
     "build_review_agent_system_prompt",
+    "build_plan_agent_system_prompt",
     "reset_prompts_cache",
 ]
