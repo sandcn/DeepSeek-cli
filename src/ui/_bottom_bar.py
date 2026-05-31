@@ -217,8 +217,15 @@ class _BottomBar:
         self._last_status = ""  # 强制下次刷新
 
     def disable_status(self) -> None:
-        """冻结状态行（流式结束后调用），定格最终数值。"""
+        """冻结状态行（流式结束后调用），仅显示模型名。
+
+        将 _status_active 置为 False 后立即触发底部栏重绘，
+        使状态行从全量统计（耗时/令牌/速率）切换为仅显示模型名。
+        """
         self._status_active = False
+        with _try_acquire_output_lock(name="bottom_bar.disable_status", timeout=1.0) as locked:
+            if locked:
+                self.force_redraw(skip_resize_check=True)
 
     @property
     def is_status_active(self) -> bool:
@@ -1108,9 +1115,10 @@ class _BottomBar:
         self._last_status = status  # 同步缓存，避免下次 refresh() 冗余重绘
 
     def _format_status(self) -> str:
-        """构建状态行文本（优雅信息风）：模型名 · 耗时 · 令牌数 · 实时速率。
+        """构建状态行文本（优雅信息风）。
 
-        始终显示模型名字和可用的统计信息（耗时、令牌数、实时速率）。
+        流式输出期间显示全量统计：模型名 · 耗时 · 令牌数 · 实时速率 · 工具计数。
+        非流式空闲时仅显示模型名字（带 ◉ 图标），不显示任何统计信息。
         使用多色分层：模型名高亮（带 ◉）、耗时蓝灰色、令牌数灰色。
         工具计数值得高亮区分成功/失败（成功绿/失败红）。
         """
@@ -1120,9 +1128,11 @@ class _BottomBar:
             if self._model_name else ""
         )
 
-        # ★ 惰性化：非流式活跃且无工具计数时跳过 _get_snapshot()
-        #   10Hz drain 空转周期中约 70% 无流式活跃，免去每次字典构建开销
-        if not self._status_active and self._tool_count == 0:
+        # ★ 非流式活跃时仅显示模型名
+        #   一轮聊天结束后 _status_active=False，此时 _tool_count 或 snapshot
+        #   可能有残余数据，但用户只想看到模型名字，不显示耗时/令牌数/工具计数
+        #   等统计信息。流式输出期间（_status_active=True）全量统计正常显示。
+        if not self._status_active:
             return model_part
 
         snap_func = _get_snapshot()

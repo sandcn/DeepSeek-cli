@@ -379,22 +379,22 @@ class TestBug9PositionCursorUnderLock(unittest.TestCase):
         sys.__stdout__ = self._stdout
 
     def test_branch_b_acquires_lock_before_position_cursor(self):
-        """Branch B 路径中 _position_cursor 应在持锁状态下调用。"""
+        """Branch B 路径中 force_redraw 先于 _position_cursor 在持锁状态下调用。"""
         call_order = []
 
-        def track_refresh():
-            call_order.append("refresh_status_only")
+        def track_redraw(*args, **kwargs):
+            call_order.append("force_redraw")
 
         def track_cursor():
             call_order.append("position_cursor")
 
         self.mock_bb.is_status_active = True
-        self.mock_bb.refresh_status_only.side_effect = track_refresh
+        self.mock_bb.force_redraw.side_effect = track_redraw
         self.mock_bb.check_resize.return_value = False
 
         # 绕开 _position_cursor 内部复杂的 BB 调用，
         # 直接验证调用顺序：在 drain_queue Branch B 中，
-        # refresh_status_only 先于 position_cursor 被调用。
+        # force_redraw 先于 position_cursor 被调用。
         orig_position = self.engine._position_cursor
         self.engine._position_cursor = track_cursor
 
@@ -406,8 +406,8 @@ class TestBug9PositionCursorUnderLock(unittest.TestCase):
 
         self.engine._position_cursor = orig_position
         self.assertEqual(call_order,
-                         ["refresh_status_only", "position_cursor"],
-                         "position_cursor 应在 refresh_status_only 之后调用")
+                         ["force_redraw", "position_cursor"],
+                         "position_cursor 应在 force_redraw 之后调用")
 
 
 if __name__ == "__main__":

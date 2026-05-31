@@ -133,5 +133,111 @@ class TestBottomBarCursorPos(unittest.TestCase):
                          "轻量路径光标移动应更新 _input_cursor_pos")
 
 
+
+class TestBottomBarFormatStatus(unittest.TestCase):
+    """验证 _format_status() 在流式/非流式下的返回值。
+
+    核心场景：
+      1. 流式活跃（_status_active=True, _tool_count>0）→ 返回含统计信息的完整状态行
+      2. 非流式空闲（_status_active=False），即使 _tool_count>0 → 仅返回模型名
+      3. 非流式空闲（_status_active=False），_tool_count==0 → 仅返回模型名
+    """
+
+    def setUp(self):
+        self.bb = _BottomBar()
+        self.bb._active = True
+        self.bb._model_name = "test-model"
+
+    def test_streaming_active_shows_full_stats(self):
+        """流式输出期间 _status_active=True → 返回含统计信息的完整状态行。"""
+        self.bb._status_active = True
+        self.bb._tool_count = 3
+        self.bb._tool_fail_count = 1
+
+        # mock _get_snapshot 返回模拟的统计数据
+        mock_snap = {
+            "total_tokens": 1500,
+            "elapsed_seconds": 12.5,
+            "per_second_speed": 25.3,
+        }
+
+        with patch("src.ui._bottom_bar._get_snapshot", return_value=lambda: mock_snap):
+            result = self.bb._format_status()
+
+        # 应包含模型名 + 统计信息
+        self.assertIn("test-model", result)
+        self.assertIn("t", result)      # token 数
+        self.assertIn("12.5s", result)  # 耗时
+        self.assertIn("25.3t/s", result)  # 速率
+
+    def test_streaming_inactive_hides_stats_even_with_tool_count(self):
+        """非流式空闲 _status_active=False，即使 _tool_count>0 → 仅模型名。"""
+        self.bb._status_active = False
+        self.bb._tool_count = 3
+        self.bb._tool_fail_count = 1
+
+        # mock snapshot 有数据，但 _status_active=False 时应跳过
+        with patch("src.ui._bottom_bar._get_snapshot", return_value=None):
+            result = self.bb._format_status()
+
+        # 应包含模型名（含 ANSI 颜色码）
+        self.assertIn("test-model", result)
+        # 不应包含统计关键词
+        self.assertNotIn("t/s", result)  # 速率统计不应出现
+
+    def test_streaming_inactive_no_tool_count(self):
+        """非流式空闲 _status_active=False 且 _tool_count==0 → 仅模型名。"""
+        self.bb._status_active = False
+        self.bb._tool_count = 0
+        self.bb._tool_fail_count = 0
+
+        with patch("src.ui._bottom_bar._get_snapshot", return_value=None):
+            result = self.bb._format_status()
+
+        # 应包含模型名（含 ANSI 颜色码），不含统计信息
+        self.assertIn("test-model", result)
+        self.assertNotIn("t/s", result)
+
+    def test_streaming_active_with_tool_count_zero_but_snapshot_has_data(self):
+        """流式活跃 _status_active=True，_tool_count=0，但 snapshot 有历史数据 → 应显示统计。"""
+        self.bb._status_active = True
+        self.bb._tool_count = 0
+        self.bb._tool_fail_count = 0
+
+        mock_snap = {
+            "total_tokens": 500,
+            "elapsed_seconds": 5.0,
+            "per_second_speed": 10.0,
+        }
+
+        with patch("src.ui._bottom_bar._get_snapshot", return_value=lambda: mock_snap):
+            result = self.bb._format_status()
+
+        # 应包含模型名 + 统计
+        self.assertIn("test-model", result)
+        self.assertIn("t", result)      # token
+        self.assertIn("5.0s", result)   # 耗时
+        self.assertIn("10.0t/s", result)  # 速率
+
+    def test_streaming_active_no_snapshot_no_tool_count(self):
+        """流式活跃 _status_active=True，但 snapshot 无数据且 _tool_count=0 → 仅模型名。"""
+        self.bb._status_active = True
+        self.bb._tool_count = 0
+        self.bb._tool_fail_count = 0
+
+        # snapshot 返回空数据
+        mock_snap = {
+            "total_tokens": 0,
+            "elapsed_seconds": 0.0,
+            "per_second_speed": 0.0,
+        }
+
+        with patch("src.ui._bottom_bar._get_snapshot", return_value=lambda: mock_snap):
+            result = self.bb._format_status()
+
+        self.assertIn("test-model", result)
+        self.assertNotIn("t/s", result)
+
+
 if __name__ == "__main__":
     unittest.main()
