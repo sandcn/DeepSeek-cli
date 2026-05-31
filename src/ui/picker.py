@@ -2,7 +2,6 @@
 统一选择器 — 基于 prompt_toolkit 的交互式选择界面。
 
 合并自:
-  - select_picker.py 的 run_picker (通用选择器)
   - msg_list.py 的 _run_picker (消息列表选择器)
 """
 
