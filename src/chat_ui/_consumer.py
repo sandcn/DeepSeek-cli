@@ -13,11 +13,11 @@ import time
 from typing import TYPE_CHECKING, Any, ClassVar
 
 from ._completion import _CmplHandler
-from ._const import _READER_INTERVAL, RenderCommand, _build_render_dispatch
+from ._const import _READER_INTERVAL, RenderCommand
 from ._dispatcher import EventDispatcher
 from ._engine import RenderEngine
 from ._render_state import _RenderState
-from ._renderers import ContentRenderer
+from ._renderers import ContentRenderer, _RENDER_DISPATCH
 from ..ui.tui._message_display import _display_messages
 
 if TYPE_CHECKING:
@@ -97,8 +97,9 @@ class ChatUIConsumer:
     # 向后兼容属性（委托给子系统）
     # ═══════════════════════════════════════════════════════
 
-    # _RENDER_DISPATCH — 类级别保留，供测试和调试使用
-    _RENDER_DISPATCH: ClassVar[dict[int, tuple[str, tuple[int, ...]]]] = _build_render_dispatch()
+    # _RENDER_DISPATCH — 引用 _renderers 模块级常量，消除两份副本、避免失步。
+    # 保留为 ClassVar 供测试通过 ChatUIConsumer._RENDER_DISPATCH 访问。
+    _RENDER_DISPATCH: ClassVar[dict[int, tuple[str, tuple[int, ...]]]] = _RENDER_DISPATCH  # type: ignore[misc]
 
     @property
     def _cmd_queue(self):

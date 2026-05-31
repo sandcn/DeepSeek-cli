@@ -1,9 +1,10 @@
 """chat_ui 渲染器模块 — 14 种渲染命令的执行逻辑。
 
 Layer 2 — 依赖 _const（Style常量 + RenderCommand + _ReasoningState + _MAIN_LABEL）
-          + _render_state（_RenderState）+ _screen_history（ScreenHistoryManager）。
+          + _render_state（_RenderState）。
 
-上屏历史管理已提取到 _screen_history.py 的 ScreenHistoryManager 类。
+上屏历史管理（ScreenHistoryManager）已屏蔽为 No-op，
+所有相关调用已移除，减轻每帧方法调用开销。
 """
 
 from __future__ import annotations
@@ -23,29 +24,32 @@ from ._const import (
     _STYLE_FAIL,
     _STYLE_SUCCESS,
     _STYLE_WARN,
+    _build_render_dispatch,
     _cmd_name,
 )
-from ._screen_history import ScreenHistoryManager
 
 if TYPE_CHECKING:
     from ..api.renderer.output import OutputAdapter
     from ._render_state import _RenderState
 
 
+# ── 模块级渲染命令分发表（类定义时即构建，O(1) 查找） ──
+# 替换原 ContentRenderer._ensure_dispatch() 惰性初始化模式，
+# 消除每帧 render() 调用的 _RENDER_DISPATCH is None 检查。
+_RENDER_DISPATCH: dict[int, tuple[str, tuple[int, ...]]] = _build_render_dispatch()
+
+
 class ContentRenderer:
     """内容渲染器 — 执行 RenderCommand 并输出到终端。
 
-    每个 _do_* 方法对应一种渲染命令，由 _render() 通过 O(1) 字典分发调用。
-    所有方法在 Reader 线程中串行执行，无需额外同步。
+    每个 _do_* 方法对应一种渲染命令，由 _render() 通过模块级 O(1)
+    字典分发调用。所有方法在 Reader 线程中串行执行，无需额外同步。
 
     依赖：
       - _rs (_RenderState)：渲染器生命周期（推理/内容/工具适配器）
       - _bottom_bar：底部栏状态更新（工具计数/模型名）
-      - _shm (ScreenHistoryManager)：上屏历史记录与重放
 
-    上屏历史重放（Screen History Replay）：
-      ScreenHistoryManager 管理 _screen_history 和累积缓冲区，
-      replay() 在终端 resize 后重新绘制上屏内容。
+    ScreenHistoryManager 已屏蔽为 No-op 且不在此模块中创建。
     """
 
     def __init__(
@@ -56,38 +60,21 @@ class ContentRenderer:
     ):
         self._rs = rs
         self._bb = bottom_bar
-
-        # ── 上屏历史管理器（终端 resize 后重放用） ──
-        self._shm = ScreenHistoryManager(
-            on_display_messages=on_display_messages,
-        )
+        # ── display_messages 回调（由 ChatUIConsumer 注入） ──
+        # 保持为实例属性，不受 ScreenHistoryManager 封装
+        self._on_display_messages: Callable[..., None] | None = on_display_messages
 
     @property
     def _tool_adapter(self) -> "OutputAdapter":
         return self._rs.get_tool_adapter()
 
-    @property
-    def _screen_history(self) -> list[tuple]:
-        """向后兼容：供测试/调试直接访问历史记录。"""
-        return self._shm.screen_history
-
     # ── 渲染分发 ──────────────────────────────────────
 
-    _RENDER_DISPATCH = None  # 由 _const._build_render_dispatch() 填充
-
-    @classmethod
-    def _ensure_dispatch(cls) -> dict[int, tuple[str, tuple[int, ...]]]:
-        """惰性初始化渲染命令分发表。"""
-        if cls._RENDER_DISPATCH is None:
-            from ._const import _build_render_dispatch
-            cls._RENDER_DISPATCH = _build_render_dispatch()
-        return cls._RENDER_DISPATCH
-
     def render(self, cmd: tuple) -> None:
-        """根据命令类型分发到对应渲染方法（O(1) 字典查找）。"""
+        """根据命令类型分发到对应渲染方法（模块级 O(1) 字典查找）。"""
         cid = cmd[0]
 
-        entry = self._ensure_dispatch().get(cid)
+        entry = _RENDER_DISPATCH.get(cid)
         if entry is None:
             import logging
             _logger = logging.getLogger(__name__)
@@ -99,15 +86,15 @@ class ContentRenderer:
         args = tuple(cmd[i] for i in arg_indices)
         method(*args)
 
-    # ── 上屏历史管理（委托 ScreenHistoryManager） ────
+    # ── 上屏历史管理（已屏蔽） ──────────────────────
+    # TODO(v2): 移除 clear_screen_history / replay_upper_screen，
+    # 当前无调用方且为 No-op，保留仅防外部测试直接引用。
 
     def clear_screen_history(self) -> None:
-        """清空上屏历史记录（新会话开始前调用）。"""
-        self._shm.clear()
+        """清空上屏历史记录。已屏蔽为 No-op。"""
 
     def replay_upper_screen(self) -> None:
-        """终端尺寸变化后重放上屏历史内容（委托 ScreenHistoryManager）。"""
-        self._shm.replay(self._tool_adapter, self._bb)
+        """终端 resize 后重放上屏历史。已屏蔽为 No-op。"""
 
     # ── 内容渲染 ──────────────────────────────────────
 
@@ -122,25 +109,17 @@ class ContentRenderer:
                 from ._const import _THINKING_HEADER
                 rr.write(_THINKING_HEADER)
             rr.write(text)
-        # ── 上屏历史：累积推理文本 ──
-        self._shm.append_reasoning(text)
 
     def _do_content(self, text: str) -> None:
         if self._rs.reasoning_state not in (_ReasoningState.CLOSED, _ReasoningState.INACTIVE):
             self._rs.close_reasoning()
-            # ── 上屏历史：关闭推理时刷新累积缓冲区 ──
-            self._shm.flush_reasoning()
         self._rs.get_content().write(text)
-        # ── 上屏历史：累积内容文本 ──
-        self._shm.append_content(text)
 
     def _do_phase_done(self, phase: str) -> None:
         if phase == "reasoning":
             self._rs.close_reasoning()
-            self._shm.flush_reasoning()
         elif phase == "content":
             self._rs.close_content()
-            self._shm.flush_content()
 
     # ── 工具渲染 ──────────────────────────────────────
 
@@ -152,7 +131,6 @@ class ContentRenderer:
 
     def _do_tool_output(self, text: str) -> None:
         """渲染工具执行输出（dim 样式 + 缩进）。"""
-        self._shm.flush_all()
         ta = self._tool_adapter
         if '\r' in text:
             ta.write_raw(text)
@@ -166,12 +144,9 @@ class ContentRenderer:
                 ta.write_raw("\n")
                 self._rs.last_was_carriage = False
             ta.write(Text.assemble(("   ", _STYLE_DIM), (text, _STYLE_DIM)))
-            # ── 上屏历史：保存工具输出（不含 \r 行内覆盖类） ──
-            self._shm.record('tool_output', text)
 
     def _do_tool_summary(self, successful: tuple, failed: tuple) -> None:
         """渲染工具执行汇总（着色图标 + 彩色计数）。"""
-        self._shm.flush_all()
         ta = self._tool_adapter
         if self._rs.last_was_carriage:
             ta.write_raw("\n")
@@ -185,7 +160,6 @@ class ContentRenderer:
                 ("  · ", _STYLE_SUCCESS),
                 (f"{len(successful)}工具完成", _STYLE_SUCCESS),
             ))
-        self._shm.record('tool_summary', successful, failed)
 
     @staticmethod
     def _truncate_by_visual_width(s: str, max_width: int) -> str:
@@ -242,42 +216,32 @@ class ContentRenderer:
 
     def _do_cmd_output(self, text: str) -> None:
         """渲染 / 命令执行输出，委托 _write_text_or_ansi。"""
-        self._shm.flush_all()
         self._write_text_or_ansi(text)
-        self._shm.record('cmd_output', text)
 
     def _do_user_message(self, text: str) -> None:
         """渲染用户消息（> 前缀 + 加粗）。"""
-        self._shm.flush_all()
         self._tool_adapter.write(Text.assemble(
             ("\n  > ", _STYLE_BOLD),
             (text, _STYLE_BOLD),
         ))
-        self._shm.record('user_msg', text)
 
     def _do_notification(self, text: str) -> None:
         """渲染系统通知（· 前缀）。"""
-        self._shm.flush_all()
         self._tool_adapter.write(Text.assemble(
             ("\n  · ", _STYLE_SUCCESS),
             (text, _STYLE_SUCCESS),
         ))
-        self._shm.record('notification', text)
 
     def _do_error(self, message: str) -> None:
         """渲染系统错误信息（红色 ! 样式）。"""
-        self._shm.flush_all()
         self._tool_adapter.write(Text.assemble(
             ("\n  ! ", _STYLE_ERROR),
             (message, _STYLE_ERROR),
         ))
-        self._shm.record('error', message)
 
     def _do_write_line(self, text: str) -> None:
         """渲染通用文本行，委托 _write_text_or_ansi。"""
-        self._shm.flush_all()
         self._write_text_or_ansi(text)
-        self._shm.record('write_line', text)
 
     def _write_text_or_ansi(self, text: str) -> None:
         if '\033[' in text:
@@ -288,10 +252,8 @@ class ContentRenderer:
     def _do_display_messages(self, messages: list[dict], speed: int) -> None:
         """渲染消息列表到上屏（截断/恢复后的重渲染）。
 
-        通过 self._shm 的 on_display_messages 回调调用（由 ChatUIConsumer 注入），
+        通过 self._on_display_messages 回调调用（由 ChatUIConsumer 注入），
         消除对 tui._message_display 的直接 import 依赖。
         """
-        cb = self._shm.on_display_messages
-        if cb is not None:
-            cb(messages, speed=speed)
-        self._shm.record('display_msgs', list(messages), speed)
+        if self._on_display_messages is not None:
+            self._on_display_messages(messages, speed=speed)

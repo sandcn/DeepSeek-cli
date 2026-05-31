@@ -110,7 +110,7 @@ class RenderEngine:
         """消费所有待处理渲染命令，执行上屏渲染 + 底部栏重绘。
 
         四阶段流水线：
-          0. 尺寸检测（1s 超时，超时则跳过本轮尺寸检测）
+          0. 快速空闲跳过 + 尺寸检测
           1. 上屏渲染（1s 超时，在锁内出队+渲染，避免命令丢失）
           2. ParallelDisplay 面板刷新（上屏渲染完成后立即刷新面板状态）
           3. 底部栏重绘 + 光标定位（1s 超时，超时则跳过本轮重绘）
@@ -119,6 +119,14 @@ class RenderEngine:
         再刷新 SubAgent UI 面板展示最新状态，确保面板状态与已渲染内容同步。
         """
         from ..ui._lock import _try_acquire_output_lock
+
+        # ★ 快速空闲跳过：无待处理命令、无面板、非流式时跳过全部 I/O。
+        #   10Hz drain 中约 70%+ 周期为空闲（流式外时段），
+        #   此检查避免 3 次锁获取 + syscall（shutil.get_terminal_size）+ ANSI I/O。
+        from . import _active_parallel_display
+        pd = _active_parallel_display
+        if self._cmd_queue.empty() and pd is None and not self._bb.is_status_active:
+            return
 
         # ★ 尺寸检测：持锁调用以与 refresh()/force_redraw() 串行化
         with _try_acquire_output_lock(name="drain_queue.resize", timeout=1.0) as locked:
@@ -154,8 +162,6 @@ class RenderEngine:
         #   timeout try-lock 保护终端 I/O）。
         #   顺序说明：上屏渲染完成后立即刷新面板，确保 SubAgent 状态面板
         #   反映的是最新执行结果，不与底部栏重绘交错。
-        from . import _active_parallel_display
-        pd = _active_parallel_display
         if pd is not None:
             try:
                 pd.refresh()
