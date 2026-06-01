@@ -332,34 +332,6 @@ class TestOutputConsumerWithChatUI:
         bus.publish(OutputEvent(text="cmd输出", level="info", source="cmd"))
         assert stream.getvalue() == ""
 
-
-# ===============================================================
-# 新增: resize 后渲染器宽度同步行为
-# ===============================================================
-
-class TestChatUIResizeSync:
-    """验证 resize 后渲染器宽度同步行为（仅保留在 _drain_queue() Stage 0）"""
-
-    def test_resume_no_sync(self):
-        """resume() 不应直接调用 _sync_renderer_width()，由首轮 _drain_queue() 处理"""
-        bus = DisplayEventBus()
-        chat_ui = ChatUIConsumer(event_bus=bus)
-        chat_ui._started = True  # 满足 resume 的前置条件
-
-        sync_called = False
-        def mock_sync():
-            nonlocal sync_called
-            sync_called = True
-        chat_ui._engine._sync_renderer_width = mock_sync
-
-        # mock setup 和 start 避免实际 I/O
-        chat_ui._bottom_bar.setup = lambda: None
-        chat_ui._engine.start = lambda: None
-
-        chat_ui.resume()
-        assert not sync_called, "resume() 不应直接调用 _sync_renderer_width()，resize 处理统一在 _drain_queue() Stage 0"
-
-
 # ===============================================================
 # 新增: refresh_bottom_bar() 与 ensure_cursor_lower() flush 验证
 # ===============================================================

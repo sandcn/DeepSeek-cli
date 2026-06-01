@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import logging
 import queue
-import shutil
 import sys
 import threading
 import time
@@ -28,7 +27,7 @@ class RenderEngine:
     """渲染引擎 — 管理 Reader 线程和命令队列的消费循环。
 
     Reader 线程以 10Hz 轮询命令队列，串行执行渲染命令。
-    _drain_queue() 执行四阶段流水线：尺寸检测 → 上屏渲染 → 面板刷新 → 底部栏重绘。
+    _drain_queue() 执行三阶段流水线：上屏渲染 → 面板刷新 → 底部栏重绘。
     """
 
     def __init__(
@@ -111,8 +110,8 @@ class RenderEngine:
     def _drain_queue(self) -> None:
         """消费所有待处理渲染命令，执行上屏渲染 + 底部栏重绘。
 
-        四阶段流水线：
-          0. 快速空闲跳过 + 尺寸检测 + resize 光标预定位（Fix A）
+        三阶段流水线：
+          0. 快速空闲跳过
           1. 上屏渲染（1s 超时，在锁内出队+渲染，避免命令丢失）
           2. ParallelDisplay 面板刷新（上屏渲染完成后立即刷新面板状态）
           3. 底部栏重绘 + 光标定位（1s 超时，超时则跳过本轮重绘）
@@ -122,59 +121,11 @@ class RenderEngine:
         """
         from ..ui._lock import _try_acquire_output_lock
 
-        # ★ 快速空闲跳过：无待处理命令、无面板、非流式、无待处理 resize 时跳过全部 I/O。
-        #   10Hz drain 中约 70%+ 周期为空闲（流式外时段），
-        #   此检查避免 3 次锁获取 + syscall（shutil.get_terminal_size）+ ANSI I/O。
-        #   排除 is_resize_pending：SIGWINCH 已触发但未被消费时，
-        #   即使无流式输出也必须穿透跳过，执行 _check_resize() 修复 DECSTBM。
         from . import _active_parallel_display
         pd = _active_parallel_display
         if (self._cmd_queue.empty() and pd is None
-                and not self._bb.is_status_active
-                and not self._bb.is_resize_pending):
+                and not self._bb.is_status_active):
             return
-
-        # ★ Fix A: 保存 resize 前尺寸，供 resize 后光标预定位使用。
-        #   在 resize 检测前保存，此时 _setup_height / _last_bottom_lines 仍为旧值。
-        if self._bb._active:
-            _pre_height = self._bb._setup_height
-            _pre_bottom = self._bb._last_bottom_lines
-        else:
-            _pre_height = 0
-            _pre_bottom = 0
-
-        # ★ 尺寸检测（持锁） + Fix A 光标预定位（在锁内执行 ANSI 写入，
-        #   与 check_resize 共享同一 output_lock，避免与外部 refresh() 交错）。
-        resized = False
-        with _try_acquire_output_lock(name="drain_queue.resize", timeout=1.0) as locked:
-            if locked:
-                resized = self._bb.check_resize()
-                if resized and _pre_height > 0:
-                    # ★ Fix A: resize 光标预定位 — 与 resize 检测在锁内统一处理。
-                    #   终端变高时，旧内容仍在屏幕上方的旧位置。若将光标放新
-                    #   scroll_end（最末行），渲染内容时每个 \n 会触发 DECSTBM
-                    #   滚动导致旧内容被逐行滚出清空。改为定位到旧内容末尾
-                    #   （min(old_scroll_end+1, new_scroll_end)），新内容从旧末行
-                    #   开始填充间隙，填满后才触发正常滚动。终端变小时同理。
-                    #   终端变小时必须考虑 _last_scroll_n 偏移：_check_resize()
-                    #   已通过 _scroll_up_upper() 将内容上滚 scroll_n 行，
-                    #   old_end 需减去 scroll_n 才是滚动后内容末尾的实际行号。
-                    height = self._bb._term_height()
-                    new_s = height - self._bb._bottom_lines
-                    if height > _pre_height:
-                        target = max(1, min(_pre_height - _pre_bottom + 1, new_s))
-                    else:
-                        old_end = max(1, _pre_height - _pre_bottom + 1)
-                        # ★ 防御性读取 scroll_n（兼容测试 mock 场景）
-                        scroll_n = getattr(self._bb, '_last_scroll_n', 0)
-                        if not isinstance(scroll_n, int):
-                            scroll_n = 0
-                        adjusted_end = max(1, old_end - scroll_n)
-                        target = max(1, min(adjusted_end, new_s))
-                    sys.__stdout__.write(f"\033[{target};1H")
-                    sys.__stdout__.flush()  # 确保 Fix A 光标预定位到达终端，避免 line-buffer 滞后
-        if resized:
-            self._sync_renderer_width()
 
         # ★ 阶段 1：锁内批量出队 + 上屏渲染（出队与渲染原子化，消除命令丢失窗口）
         commands: list[tuple] = []
@@ -187,13 +138,8 @@ class RenderEngine:
                     except queue.Empty:
                         break
                 if commands:
-                    # ★ resize 时光标已在 Stage 0 由 Fix A 预定位到旧内容末尾，
-                    #   跳过 ensure_cursor_upper() 避免覆盖 Fix A 的定位结果；
-                    #   非 resize 时先同步 DECSTBM 再定位光标，确保滚动区域与
-                    #   当前 _bottom_lines 一致，避免底部行数变化导致内容覆盖。
-                    if not resized:
-                        self._bb.sync_bottom_lines()
-                        self.ensure_cursor_upper()
+                    self._bb.sync_bottom_lines()
+                    self.ensure_cursor_upper()
                     for cmd in commands:
                         try:
                             self._renderer.render(cmd)
@@ -227,17 +173,16 @@ class RenderEngine:
 
         # ★ 阶段 3：底部栏重绘 + 光标定位
         # 分流策略：
-        #   - 有命令/尺寸变化 → 全量重绘（force_redraw 不含 resize 检测，
-        #     因 Stage 0 已完成检测，消除双调用窗口）
-        #   - 仅流式活跃（无命令/无尺寸变化）→ 每帧全量底部栏重绘
-        #     使用 force_redraw（不含 resize 检测），流式输出期间
+        #   - 有命令 → 全量重绘
+        #   - 仅流式活跃（无命令）→ 每帧全量底部栏重绘
+        #     使用 force_redraw，流式输出期间
         #     _format_status() 每帧返回不同文本（令牌数/速率/耗时变化），
         #     force_redraw 的快速路径（new_status == _last_status）不触发，
         #     确保每帧完整刷新底部栏全部内容（分隔线+状态行+输入区）。
-        if commands or resized:
+        if commands:
             with _try_acquire_output_lock(name="drain_queue.bottom", timeout=1.0) as locked:
                 if locked:
-                    self._bb.force_redraw()  # Bug 8: resize 由 Stage 0 统一处理
+                    self._bb.force_redraw()
                     self._position_cursor()
         elif self._bb.is_status_active:
             with _try_acquire_output_lock(name="drain_queue.streaming_redraw", timeout=1.0) as locked:
@@ -261,46 +206,3 @@ class RenderEngine:
         cursor_col = min(3 + vis_col, w)
         sys.__stdout__.write(f"\033[{r_cursor};{cursor_col}H")
         sys.__stdout__.flush()
-
-    def _sync_renderer_width(self) -> None:
-        """resize 后同步更新所有活跃 Rich Console 的宽度，消除 5s TTL 缓存滞后（B7 fix）。
-
-        遍历 _RenderState 中所有活跃渲染器（推理/内容/工具输出），
-        强制设置其 console.width = 新终端宽度，使后续渲染立即使用新宽度换行。
-        """
-        try:
-            new_width = shutil.get_terminal_size().columns
-        except Exception:
-            return
-        if new_width <= 0:
-            return
-
-        rs = self._renderer._rs
-
-        now = time.monotonic()
-
-        # 推理渲染器的 OutputAdapter
-        rr = rs.reasoning
-        if rr is not None and hasattr(rr, '_output') and hasattr(rr._output, '_console'):
-            rr._output._console.width = new_width
-            if hasattr(rr._output, '_width'):
-                rr._output._width = new_width
-            if hasattr(rr._output, '_last_width_refresh'):
-                rr._output._last_width_refresh = now
-
-        # 内容渲染器的 OutputAdapter
-        cr = rs.content
-        if cr is not None and hasattr(cr, '_output') and hasattr(cr._output, '_console'):
-            cr._output._console.width = new_width
-            if hasattr(cr._output, '_width'):
-                cr._output._width = new_width
-            if hasattr(cr._output, '_last_width_refresh'):
-                cr._output._last_width_refresh = now
-
-        # 工具输出适配器的 OutputAdapter（可能尚未惰性创建）
-        if rs._tool_adapter is not None and hasattr(rs._tool_adapter, '_console'):
-            rs._tool_adapter._console.width = new_width
-            if hasattr(rs._tool_adapter, '_width'):
-                rs._tool_adapter._width = new_width
-            if hasattr(rs._tool_adapter, '_last_width_refresh'):
-                rs._tool_adapter._last_width_refresh = now

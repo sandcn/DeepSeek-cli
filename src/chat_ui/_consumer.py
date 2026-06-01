@@ -189,12 +189,10 @@ class ChatUIConsumer:
         from ..ui._lock import output_lock
         with output_lock:
             # ★ 用固定大行号 \033[9999;1H 将光标定位到终端末行（终端自动 clamp），
-            #   为 DECSTBM 设置做准备。resize 检测由 _drain_queue() Stage 0 统一处理。
+            #   为 DECSTBM 设置做准备。
             sys.__stdout__.write("\033[9999;1H")
             sys.__stdout__.flush()
             self._bottom_bar.setup()
-            # 重新启动引擎（首轮 _drain_queue() 的 Stage 0 会自动执行
-            # check_resize() + _sync_renderer_width()）
             self._engine.start()
 
     # ═══════════════════════════════════════════════════════
@@ -231,7 +229,6 @@ class ChatUIConsumer:
           3. 光标定位（_position_cursor）
 
         与 _drain_queue 不同：不消费命令队列，专供外部定时刷新。
-        resize 检测由 _drain_queue() Stage 0 统一处理，此接口不重复处理。
         """
         from ..ui._lock import _try_acquire_output_lock
 
@@ -313,7 +310,6 @@ class ChatUIConsumer:
     def refresh_bottom_bar(self, text: str, cursor_pos: int = -1) -> None:
         """刷新底部栏输入区并定位光标到输入行。
 
-        resize 检测由 _drain_queue() Stage 0 统一处理，此处不重复检测。
         force_redraw 之后立即调用 ensure_cursor_in_lower 将光标定位到
         输入行，避免光标停留在上屏（内容区末行）。空闲期 Reader 线程
         快速跳过时不执行 _position_cursor()，必须在此路径显式定位光标。
@@ -330,10 +326,7 @@ class ChatUIConsumer:
             sys.__stdout__.flush()
 
     def redraw_bottom_bar(self) -> None:
-        """重绘底部栏。
-
-        resize 检测由 _drain_queue() Stage 0 统一处理，此处不重复检测。
-        """
+        """重绘底部栏。"""
         self._bottom_bar.force_redraw()
 
     def enable_status_refresh(self) -> None:
