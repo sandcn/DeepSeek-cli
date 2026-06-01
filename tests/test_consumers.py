@@ -338,42 +338,6 @@ class TestOutputConsumerWithChatUI:
 class TestChatUIResizeSync:
     """验证 refresh() 和 resume() 在 resize 后同步渲染器宽度"""
 
-    def test_refresh_resized_triggers_sync(self, monkeypatch):
-        """refresh() 检测到 resize 后应调用 _sync_renderer_width()"""
-        bus = DisplayEventBus()
-        chat_ui = ChatUIConsumer(event_bus=bus)
-
-        sync_called = False
-        def mock_sync():
-            nonlocal sync_called
-            sync_called = True
-        chat_ui._engine._sync_renderer_width = mock_sync
-
-        # mock check_resize 返回 True（模拟 resize 已发生）
-        chat_ui._bottom_bar.check_resize = lambda: True
-        chat_ui._bottom_bar._active = True  # 激活底部栏
-
-        chat_ui.refresh()
-        assert sync_called, "resize 后 refresh() 应调用 _sync_renderer_width()"
-
-    def test_refresh_no_resize_no_sync(self, monkeypatch):
-        """refresh() 未检测到 resize 时不应调用 _sync_renderer_width()"""
-        bus = DisplayEventBus()
-        chat_ui = ChatUIConsumer(event_bus=bus)
-
-        sync_called = False
-        def mock_sync():
-            nonlocal sync_called
-            sync_called = True
-        chat_ui._engine._sync_renderer_width = mock_sync
-
-        # mock check_resize 返回 False（无 resize）
-        chat_ui._bottom_bar.check_resize = lambda: False
-        chat_ui._bottom_bar._active = True
-
-        chat_ui.refresh()
-        assert not sync_called, "无 resize 时 refresh() 不应调用 _sync_renderer_width()"
-
     def test_resume_triggers_sync(self):
         """resume() 应始终调用 _sync_renderer_width()"""
         bus = DisplayEventBus()

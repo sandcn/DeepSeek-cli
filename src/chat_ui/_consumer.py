@@ -229,13 +229,11 @@ class ChatUIConsumer:
         安全地从任何线程调用：自行管理 output_lock 获取与释放。
         执行以下刷新操作：
           1. ParallelDisplay 面板刷新（若有活跃实例）
-          2. 终端尺寸检测（check_resize）
-          3. 底部栏重绘（force_redraw）
-          4. 光标定位（_position_cursor）
+          2. 底部栏重绘（force_redraw）
+          3. 光标定位（_position_cursor）
 
         与 _drain_queue 不同：不消费命令队列，专供外部定时刷新。
-        ParallelDisplay 面板刷新不持锁（内部自行用 try-lock 保护），
-        尺寸检测与底部栏重绘用独立 output_lock 分步串行化。
+        resize 检测由 _drain_queue() Stage 0 统一处理，此接口不重复处理。
         """
         from ..ui._lock import _try_acquire_output_lock
 
@@ -249,21 +247,8 @@ class ChatUIConsumer:
                 _logger.debug("refresh: ParallelDisplay 刷新异常", exc_info=True)
                 self._engine.push_cmd((RenderCommand.ERROR, "ParallelDisplay 刷新失败，请查看日志获取详情"))
 
-        # ★ 2. 终端尺寸检测
-        with _try_acquire_output_lock(name="refresh.resize", timeout=1.0) as locked:
-            resized = locked and self._bottom_bar.check_resize()
-
-        # ★ 2.5 同步渲染器 Console 宽度（resize 后必须同步，消除旧宽度换行错位）
-        #    与 _drain_queue() Stage 0b/2.5 的处理保持一致：check_resize() 后
-        #    必须调用 _sync_renderer_width() 更新所有活跃渲染器的 Console.width，
-        #    使后续渲染立即使用新宽度换行。不持锁——_sync_renderer_width() 仅
-        #    操作 _RenderState 中的渲染器内部属性，无需 output_lock。
-        if resized:
-            self._engine._sync_renderer_width()
-
-        # ★ 3. 底部栏重绘 + 光标定位（有活跃状态或尺寸变化时执行）
-        #    skip_resize_check=True：resize 已在步骤 2 检测过，避免双 _check_resize() 窗口。
-        if resized or self._bottom_bar.is_status_active:
+        # ★ 2. 底部栏重绘 + 光标定位（有活跃状态时执行）
+        if self._bottom_bar.is_status_active:
             with _try_acquire_output_lock(name="refresh.bottom", timeout=1.0) as locked:
                 if locked:
                     self._bottom_bar.force_redraw(skip_resize_check=True)

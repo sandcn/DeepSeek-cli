@@ -213,17 +213,10 @@ class RenderEngine:
                     "drain_queue: ParallelDisplay 刷新失败，请查看日志获取详情",
                 ))
 
-        # ★ 阶段 2.5（B4 fix）：Stage 1/2 渲染期间可能再次 resize，
-        #   在 Stage 3 force_redraw 前快速重检测，消除上下屏宽度不一致窗口
-        with _try_acquire_output_lock(name="drain_queue.resize_pre3", timeout=0.5) as locked:
-            if locked and self._bb.check_resize():
-                resized = True
-                self._sync_renderer_width()  # ★ B4/B7 fix: 同步更新 Console 宽度
-
         # ★ 阶段 3：底部栏重绘 + 光标定位
         # 分流策略：
         #   - 有命令/尺寸变化 → 全量重绘（force_redraw，跳过内部 _check_resize
-        #     因 Stage 0b/2.5 已完成检测，消除双调用窗口）
+        #     因 Stage 0 已完成检测，消除双调用窗口）
         #   - 仅流式活跃（无命令/无尺寸变化）→ 每帧全量底部栏重绘
         #     使用 force_redraw（跳过内部 _check_resize），流式输出期间
         #     _format_status() 每帧返回不同文本（令牌数/速率/耗时变化），
