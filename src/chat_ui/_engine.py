@@ -122,12 +122,16 @@ class RenderEngine:
         """
         from ..ui._lock import _try_acquire_output_lock
 
-        # ★ 快速空闲跳过：无待处理命令、无面板、非流式时跳过全部 I/O。
+        # ★ 快速空闲跳过：无待处理命令、无面板、非流式、无待处理 resize 时跳过全部 I/O。
         #   10Hz drain 中约 70%+ 周期为空闲（流式外时段），
         #   此检查避免 3 次锁获取 + syscall（shutil.get_terminal_size）+ ANSI I/O。
+        #   排除 is_resize_pending：SIGWINCH 已触发但未被消费时，
+        #   即使无流式输出也必须穿透跳过，执行 _check_resize() 修复 DECSTBM。
         from . import _active_parallel_display
         pd = _active_parallel_display
-        if self._cmd_queue.empty() and pd is None and not self._bb.is_status_active:
+        if (self._cmd_queue.empty() and pd is None
+                and not self._bb.is_status_active
+                and not self._bb.is_resize_pending):
             return
 
         # ★ 尺寸检测：持锁调用以与 refresh()/force_redraw() 串行化

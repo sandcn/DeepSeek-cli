@@ -410,5 +410,82 @@ class TestBug9PositionCursorUnderLock(unittest.TestCase):
                          "position_cursor 应在 force_redraw 之后调用")
 
 
+class TestResizeDrainSkip(unittest.TestCase):
+    """Bug 修复：无流式输出时终端 resize 被 _drain_queue() 快速空闲跳过阻塞。"""
+
+    def setUp(self):
+        from src.chat_ui._engine import RenderEngine
+        self.mock_renderer = MagicMock()
+        self.mock_bb = MagicMock()
+        self.mock_bb.is_status_active = False
+        self.mock_bb.is_resize_pending = False
+        self.mock_bb._resize_dirty = False
+        self.engine = RenderEngine(self.mock_renderer, self.mock_bb)
+        self._stdout = sys.__stdout__
+
+    def tearDown(self):
+        sys.__stdout__ = self._stdout
+
+    def test_idle_no_resize_pending_skips(self):
+        """无待处理命令、无面板、非流式、无 resize pending → 应跳过（快速空闲跳过）。"""
+        self.mock_bb.is_resize_pending = False
+
+        with patch("src.chat_ui._state._active_parallel_display", None), \
+             patch("src.ui._lock._try_acquire_output_lock",
+                   return_value=MagicMock(__enter__=MagicMock(return_value=True),
+                                         __exit__=MagicMock(return_value=False))):
+            self.engine._drain_queue()
+
+        # 快速空闲跳过 → check_resize 不应被调用
+        self.mock_bb.check_resize.assert_not_called()
+
+    def test_idle_with_resize_pending_penetrates(self):
+        """无待处理命令、无面板、非流式但 resize pending → 应穿透跳过，执行 check_resize。"""
+        self.mock_bb.is_resize_pending = True
+        self.mock_bb.check_resize.return_value = False
+
+        with patch("src.chat_ui._state._active_parallel_display", None), \
+             patch("src.ui._lock._try_acquire_output_lock",
+                   return_value=MagicMock(__enter__=MagicMock(return_value=True),
+                                         __exit__=MagicMock(return_value=False))):
+            self.engine._drain_queue()
+
+        # 穿透跳过 → check_resize 应被调用
+        self.mock_bb.check_resize.assert_called()
+
+    def test_streaming_active_always_penetrates(self):
+        """流式活跃时 (is_status_active=True) 即使无 resize pending 也应穿透。"""
+        self.mock_bb.is_status_active = True
+        self.mock_bb.is_resize_pending = False
+        self.mock_bb.check_resize.return_value = False
+        # _position_cursor 需要 get_cursor_info + _cursor_visual_pos_from_cache
+        self.mock_bb.get_cursor_info.return_value = ("", 0, 24, 80)
+        self.mock_bb._cursor_visual_pos_from_cache.return_value = (0, 0)
+        self.mock_bb._bottom_lines = 5
+        self.mock_bb._completion_popup_height = 0
+
+        with patch("src.chat_ui._state._active_parallel_display", None), \
+             patch("src.ui._lock._try_acquire_output_lock",
+                   return_value=MagicMock(__enter__=MagicMock(return_value=True),
+                                         __exit__=MagicMock(return_value=False))):
+            self.engine._drain_queue()
+
+        # 流式活跃应始终穿透
+        self.mock_bb.check_resize.assert_called()
+
+    def test_real_bottom_bar_resize_pending_property(self):
+        """真实 _BottomBar 实例的 is_resize_pending 应与 _resize_dirty 一致。"""
+        bb = _BottomBar()
+
+        self.assertFalse(bb.is_resize_pending,
+                         "初始状态 is_resize_pending 应为 False")
+        self.assertEqual(bb.is_resize_pending, bb._resize_dirty,
+                         "is_resize_pending 应返回 _resize_dirty 的值")
+
+        bb._resize_dirty = True
+        self.assertTrue(bb.is_resize_pending,
+                        "设置 _resize_dirty=True 后 is_resize_pending 应为 True")
+
+
 if __name__ == "__main__":
     unittest.main()

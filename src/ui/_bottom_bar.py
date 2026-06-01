@@ -236,6 +236,15 @@ class _BottomBar:
         """
         return self._status_active
 
+    @property
+    def is_resize_pending(self) -> bool:
+        """是否有待处理的终端尺寸变化（SIGWINCH 已触发但未消费）。
+
+        供 RenderEngine._drain_queue() 快速空闲跳过判断使用，
+        避免无流式输出时终端 resize 被跳过处理。
+        """
+        return self._resize_dirty
+
     def get_cursor_info(self) -> tuple[str, int, int, int]:
         """获取光标定位所需数据：文本、光标位置、终端高度、终端宽度。
 
