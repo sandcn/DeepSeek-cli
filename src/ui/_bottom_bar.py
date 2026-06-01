@@ -509,6 +509,25 @@ class _BottomBar:
                 self._completion_items = []
 
                 saved_text = self._last_text
+                # ★ 终端缩小时，旧上屏末行落入新底部栏区域会被分隔线覆盖。
+                #   全屏滚动后上滚最小行数，使旧末行刚好落到新滚动区末行。
+                #   旧底部栏残留随之上移，恰好落入新底部栏区域被 setup() 覆盖。
+                if height < self._setup_height:
+                    out = sys.__stdout__
+                    out.write("\033[r")  # 全屏滚动模式
+                    # 旧上屏末行行号（截断后仍可见的最高行号）
+                    last_upper = min(height, self._setup_height - self._last_bottom_lines)
+                    new_bar_start = height - 5 + 1  # setup() 用最小 5 行底部栏
+                    scroll_n = max(0, last_upper - new_bar_start + 1)
+                    if scroll_n > 0:
+                        self._scroll_up_upper(scroll_n, out, height)
+                    else:
+                        # 未上滚时，旧底部栏残留可能高于新底部栏区域，需单独清除
+                        remnant_start = max(1, last_upper + 1)
+                        if remnant_start < new_bar_start:
+                            for r in range(remnant_start, new_bar_start):
+                                out.write(f"\033[{r};1H\033[K")
+                    out.flush()
                 self._active = False
                 self.setup()  # RLock 允许可重入嵌套
                 # ★ setup() 基于 _last_text="" 计算的 _bottom_lines=5（最小），
