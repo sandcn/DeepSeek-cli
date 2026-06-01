@@ -19,7 +19,6 @@ from typing import Optional
 from wcwidth import wcswidth
 
 from ._bottom_cursor import (
-    _TAB_WIDTH,
     _compute_cursor_visual_pos,
     _expand_tabs,
     _tab_pos_to_expanded,
@@ -49,7 +48,6 @@ def _get_snapshot():
 
 
 # ── 底部栏配置 ──────────────────────────────────────────
-_BOTTOM_LINES = 3           # 底部固定行数
 _BOTTOM_MIN_HEIGHT = 10     # 终端太小时跳过底部栏
 _BOTTOM_REFRESH_MS = 0.05   # 底部栏刷新节流（50ms）
 _MIN_INPUT_ROWS = 3         # 输入区最小行数（空输入时至少显示 3 行）
@@ -98,7 +96,6 @@ class _BottomBar:
       - 纯光标移动轻量路径 → 无锁直写 ANSI 序列（GIL + 幂等性保证安全）
     """
 
-    _BOTTOM_LINES = _BOTTOM_LINES
     _MIN_HEIGHT = _BOTTOM_MIN_HEIGHT
 
     # ── 补全弹窗配置 ──────────────────────────────────────
@@ -242,15 +239,11 @@ class _BottomBar:
             self._cached_wrapped_lines = _wrap_by_width(expanded, max_width)
             self._cached_wrapped_for = text
             self._cached_wrapped_width = max_width
-            self._cached_input_rows = max(_MIN_INPUT_ROWS, len(self._cached_wrapped_lines)) + self._completion_popup_height
-            # ★ 同步 _last_rendered_text，使 force_redraw 快速路径正确识别重新渲染
-            self._last_rendered_text = text
-
         abs_cursor = len(text) if cursor_pos < 0 else cursor_pos
         # 将光标位置从原始文本映射到展开后文本
         expanded_pos = _tab_pos_to_expanded(text, abs_cursor)
         if expanded_pos < 0:
-            expanded_pos = len(self._cached_wrapped_for)  # 末尾
+            expanded_pos = sum(len(s) for s in self._cached_wrapped_lines)  # 展开后长度
         # ★ 减去光标前的 \n 数量：_tab_pos_to_expanded 将每个 \n 计为 1 位置，
         #   但 _wrap_by_width 已通过 split('\n') 剥离了 \n，缓存中不含它们。
         newlines_before = text[:abs_cursor].count('\n')
@@ -360,7 +353,7 @@ class _BottomBar:
         左右键移动光标后的位置）。光标停在输入文本末尾。
         超长文本会自动拆行，光标位于最后一行末尾。
         空输入时光标位于输入区第一行（> 提示符行）。
-        制表符按 _TAB_WIDTH 展开为空格。
+        制表符按内部默认宽度展开为空格。
         终端高度过小时将光标放在最后一行。
         """
         if not self._active:
