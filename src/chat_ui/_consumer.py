@@ -311,10 +311,23 @@ class ChatUIConsumer:
         self._bottom_bar.ensure_cursor_in_lower()
 
     def refresh_bottom_bar(self, text: str, cursor_pos: int = -1) -> None:
-        self._bottom_bar.refresh(text, cursor_pos=cursor_pos)
+        """刷新底部栏输入区。
+
+        resize 检测由 _drain_queue() Stage 0 统一处理，此处不重复检测。
+        """
+        from ..ui._lock import output_lock
+        with output_lock:
+            self._bottom_bar._last_text = text
+            self._bottom_bar._input_cursor_pos = len(text) if cursor_pos < 0 else cursor_pos
+            self._bottom_bar.force_redraw(skip_resize_check=True)
+            self._engine._position_cursor()
 
     def redraw_bottom_bar(self) -> None:
-        self._bottom_bar.redraw()
+        """重绘底部栏。
+
+        resize 检测由 _drain_queue() Stage 0 统一处理，此处不重复检测。
+        """
+        self._bottom_bar.force_redraw(skip_resize_check=True)
 
     def enable_status_refresh(self) -> None:
         self._bottom_bar.enable_status()
