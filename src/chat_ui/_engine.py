@@ -172,6 +172,7 @@ class RenderEngine:
                         adjusted_end = max(1, old_end - scroll_n)
                         target = max(1, min(adjusted_end, new_s))
                     sys.__stdout__.write(f"\033[{target};1H")
+                    sys.__stdout__.flush()  # 确保 Fix A 光标预定位到达终端，避免 line-buffer 滞后
         if resized:
             self._sync_renderer_width()
 
