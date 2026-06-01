@@ -112,7 +112,7 @@ class RenderEngine:
         """消费所有待处理渲染命令，执行上屏渲染 + 底部栏重绘。
 
         四阶段流水线：
-          0. 快速空闲跳过 + 尺寸检测
+          0. 快速空闲跳过 + 尺寸检测 + resize 光标预定位（Fix A）
           1. 上屏渲染（1s 超时，在锁内出队+渲染，避免命令丢失）
           2. ParallelDisplay 面板刷新（上屏渲染完成后立即刷新面板状态）
           3. 底部栏重绘 + 光标定位（1s 超时，超时则跳过本轮重绘）
@@ -134,12 +134,8 @@ class RenderEngine:
                 and not self._bb.is_resize_pending):
             return
 
-        # ★ Fix A: 保存 resize 前尺寸，供 resize 后 Stage 1 光标定位使用。
+        # ★ Fix A: 保存 resize 前尺寸，供 resize 后光标预定位使用。
         #   在 resize 检测前保存，此时 _setup_height / _last_bottom_lines 仍为旧值。
-        #   终端变高时，旧内容仍在屏幕上方的旧位置。若将光标放新 scroll_end（最末行），
-        #   渲染内容时每个 \n 会触发 DECSTBM 滚动导致旧内容被逐行滚出清空。
-        #   改为定位到旧内容末尾（min(old_scroll_end+1, new_scroll_end)），新内容从
-        #   旧末行开始填充间隙，填满后才触发正常滚动。
         if self._bb._active:
             _pre_height = self._bb._setup_height
             _pre_bottom = self._bb._last_bottom_lines
@@ -147,9 +143,27 @@ class RenderEngine:
             _pre_height = 0
             _pre_bottom = 0
 
-        # ★ 尺寸检测：持锁调用以与 refresh()/force_redraw() 串行化
+        # ★ 尺寸检测（持锁） + Fix A 光标预定位（在锁内执行 ANSI 写入，
+        #   与 check_resize 共享同一 output_lock，避免与外部 refresh() 交错）。
+        resized = False
         with _try_acquire_output_lock(name="drain_queue.resize", timeout=1.0) as locked:
-            resized = locked and self._bb.check_resize()
+            if locked:
+                resized = self._bb.check_resize()
+                if resized and _pre_height > 0:
+                    # ★ Fix A: resize 光标预定位 — 与 resize 检测在锁内统一处理。
+                    #   终端变高时，旧内容仍在屏幕上方的旧位置。若将光标放新
+                    #   scroll_end（最末行），渲染内容时每个 \n 会触发 DECSTBM
+                    #   滚动导致旧内容被逐行滚出清空。改为定位到旧内容末尾
+                    #   （min(old_scroll_end+1, new_scroll_end)），新内容从旧末行
+                    #   开始填充间隙，填满后才触发正常滚动。终端变小时同理。
+                    height = self._bb._term_height()
+                    new_s = height - self._bb._bottom_lines
+                    if height > _pre_height:
+                        target = max(1, min(_pre_height - _pre_bottom + 1, new_s))
+                    else:
+                        old_end = max(1, _pre_height - _pre_bottom + 1)
+                        target = max(1, min(old_end, new_s))
+                    sys.__stdout__.write(f"\033[{target};1H")
         if resized:
             self._sync_renderer_width()
 
@@ -164,24 +178,9 @@ class RenderEngine:
                     except queue.Empty:
                         break
                 if commands:
-                    if resized and _pre_height > 0:
-                        height = self._bb._term_height()
-                        new_s = height - self._bb._bottom_lines
-                        if height > _pre_height:
-                            # ★ Fix A: 终端变高，光标定位到旧内容末尾
-                            #   避免在 new_scroll_end 写内容触发 DECSTBM 滚动
-                            target = max(1, min(_pre_height - _pre_bottom + 1, new_s))
-                            sys.__stdout__.write(f"\033[{target};1H")
-                        else:
-                            # ★ 修复: 终端变小时也定位到旧内容末尾，避免在新 scroll_end
-                            #   写内容触发 DECSTBM 滚动导致旧内容被逐行滚出清空。
-                            #   旧内容末行 = _pre_height - _pre_bottom + 1，
-                            #   但缩小后被底部栏挡住的部分需要放弃，所以 clamp 到 new_s。
-                            old_end = max(1, _pre_height - _pre_bottom + 1)
-                            target = max(1, min(old_end, new_s))
-                            sys.__stdout__.write(f"\033[{target};1H")
-                    else:
-                        self.ensure_cursor_upper()
+                    # ★ resize 光标已在 Stage 0 统一预定位，此处统一使用
+                    #   ensure_cursor_upper() 将光标放到内容区底部即可。
+                    self.ensure_cursor_upper()
                     for cmd in commands:
                         try:
                             self._renderer.render(cmd)

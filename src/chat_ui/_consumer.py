@@ -312,13 +312,14 @@ class ChatUIConsumer:
         """刷新底部栏输入区。
 
         resize 检测由 _drain_queue() Stage 0 统一处理，此处不重复检测。
+        仅更新状态和重绘底部栏，光标定位由下一轮 _drain_queue() 的
+        _position_cursor() 统一处理，避免在此路径处理分屏光标定位。
         """
         from ..ui._lock import output_lock
         with output_lock:
             self._bottom_bar._last_text = text
             self._bottom_bar._input_cursor_pos = len(text) if cursor_pos < 0 else cursor_pos
             self._bottom_bar.force_redraw()
-            self._engine._position_cursor()
 
     def redraw_bottom_bar(self) -> None:
         """重绘底部栏。
