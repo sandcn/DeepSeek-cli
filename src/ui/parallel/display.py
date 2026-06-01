@@ -262,8 +262,8 @@ class ParallelDisplay(BaseDisplay):
     def refresh(self):
         """公开刷新入口 — 由 ChatUIConsumer._drain_queue 在每次渲染循环中调用。
 
-        外部调用方确保不持有 output_lock 时可直接调用此方法。
         内部 _render_frame_unlocked 自行管理终端 I/O 同步（try-lock 超时保护）。
+        可在持 output_lock 状态下安全调用（output_lock 为 RLock，可重入）。
         渲染异常被内部捕获并记录日志，不会向上传播。
         """
         self._render_frame_unlocked()

@@ -110,11 +110,16 @@ class RenderEngine:
     def _drain_queue(self) -> None:
         """消费所有待处理渲染命令，执行上屏渲染 + 底部栏重绘。
 
-        三阶段流水线：
-          0. 快速空闲跳过
-          1. 上屏渲染（1s 超时，在锁内出队+渲染，避免命令丢失）
-          2. ParallelDisplay 面板刷新（上屏渲染完成后立即刷新面板状态）
-          3. 底部栏重绘 + 光标定位（1s 超时，超时则跳过本轮重绘）
+        流水线（共用同一个 output_lock）：
+          0. 快速空闲跳过（锁外）— 队列空 + 无面板 + 状态行不活跃 + 无 resize pending 时跳过
+          1. resize 处理（锁内）— 消费 SIGWINCH 标记，更新终端尺寸和 DECSTBM
+          2. 上屏渲染（锁内）— 批量出队 + 渲染命令
+          3. ParallelDisplay 面板刷新（锁内）— 刷新 SubAgent UI 面板
+          4. 底部栏重绘 + 光标定位（锁内）— force_redraw + 光标移回输入行
+
+        0-4 步共用同一个 output_lock（第 0 步在锁外），防止上屏渲染 / 面板刷新 /
+        底部栏重绘之间的终端 I/O 交错。output_lock 为 RLock（可重入），
+        pd.refresh() 和 force_redraw() 内部取锁不会死锁。
 
         ParallelDisplay 刷新置于渲染阶段之后：先渲染上屏内容（工具输出/摘要等），
         再刷新 SubAgent UI 面板展示最新状态，确保面板状态与已渲染内容同步。
@@ -124,71 +129,68 @@ class RenderEngine:
         from . import _active_parallel_display
         pd = _active_parallel_display
         if (self._cmd_queue.empty() and pd is None
-                and not self._bb.is_status_active):
+                and not self._bb.is_status_active
+                and not self._bb.is_resize_pending):
             return
 
-        # ★ 阶段 1：锁内批量出队 + 上屏渲染（出队与渲染原子化，消除命令丢失窗口）
-        commands: list[tuple] = []
-        with _try_acquire_output_lock(name="drain_queue.render", timeout=1.0) as locked:
-            if locked:
-                while True:
+        # ★ 三个阶段共用同一个 output_lock（1s 超时）
+        with _try_acquire_output_lock(name="drain_queue", timeout=1.0) as locked:
+            if not locked:
+                return
+
+            # ★ 处理待处理的终端 resize（SIGWINCH 标记），在渲染前更新终端状态
+            self._bb.check_resize()
+
+            # ★ 阶段 1：批量出队 + 上屏渲染
+            commands: list[tuple] = []
+            while True:
+                try:
+                    commands.append(self._cmd_queue.get_nowait())
+                    self._cmd_queue.task_done()
+                except queue.Empty:
+                    break
+            if commands:
+                self._bb.sync_bottom_lines()
+                self.ensure_cursor_upper()
+                for cmd in commands:
                     try:
-                        commands.append(self._cmd_queue.get_nowait())
-                        self._cmd_queue.task_done()
-                    except queue.Empty:
-                        break
-                if commands:
-                    self._bb.sync_bottom_lines()
-                    self.ensure_cursor_upper()
-                    for cmd in commands:
-                        try:
-                            self._renderer.render(cmd)
-                        except Exception:
-                            _logger.debug(
-                                "drain_queue: 渲染命令 %s 失败", cmd,
-                                exc_info=True,
-                            )
-                            self._cmd_queue.put((
-                                RenderCommand.ERROR,
-                                f"渲染命令 {_cmd_name(cmd[0])} 失败，请查看日志获取详情",
-                            ))
-                    sys.__stdout__.flush()
+                        self._renderer.render(cmd)
+                    except Exception:
+                        _logger.debug(
+                            "drain_queue: 渲染命令 %s 失败", cmd,
+                            exc_info=True,
+                        )
+                        self._cmd_queue.put((
+                            RenderCommand.ERROR,
+                            f"渲染命令 {_cmd_name(cmd[0])} 失败，请查看日志获取详情",
+                        ))
+                sys.__stdout__.flush()
 
-        # ★ 阶段 2：ParallelDisplay 面板刷新（无锁，render_frame 内部用
-        #   timeout try-lock 保护终端 I/O）。
-        #   顺序说明：上屏渲染完成后立即刷新面板，确保 SubAgent 状态面板
-        #   反映的是最新执行结果，不与底部栏重绘交错。
-        if pd is not None:
-            try:
-                pd.refresh()
-            except Exception:
-                _logger.debug(
-                    "drain_queue: ParallelDisplay 刷新异常",
-                    exc_info=True,
-                )
-                self._cmd_queue.put((
-                    RenderCommand.ERROR,
-                    "drain_queue: ParallelDisplay 刷新失败，请查看日志获取详情",
-                ))
+            # ★ 阶段 2：ParallelDisplay 面板刷新
+            if pd is not None:
+                try:
+                    pd.refresh()
+                except Exception:
+                    _logger.debug(
+                        "drain_queue: ParallelDisplay 刷新异常",
+                        exc_info=True,
+                    )
+                    self._cmd_queue.put((
+                        RenderCommand.ERROR,
+                        "drain_queue: ParallelDisplay 刷新失败，请查看日志获取详情",
+                    ))
 
-        # ★ 阶段 3：底部栏重绘 + 光标定位
-        # 分流策略：
-        #   - 有命令 → 全量重绘
-        #   - 仅流式活跃（无命令）→ 每帧全量底部栏重绘
-        #     使用 force_redraw，流式输出期间
-        #     _format_status() 每帧返回不同文本（令牌数/速率/耗时变化），
-        #     force_redraw 的快速路径（new_status == _last_status）不触发，
-        #     确保每帧完整刷新底部栏全部内容（分隔线+状态行+输入区）。
-        if commands:
-            with _try_acquire_output_lock(name="drain_queue.bottom", timeout=1.0) as locked:
-                if locked:
-                    self._bb.force_redraw()
-                    self._position_cursor()
-        elif self._bb.is_status_active:
-            with _try_acquire_output_lock(name="drain_queue.streaming_redraw", timeout=1.0) as locked:
-                if locked:
-                    self._bb.force_redraw()
-                    self._position_cursor()
+            # ★ 阶段 3：底部栏重绘 + 光标定位
+            # 分流策略：
+            #   - 有命令 → 全量重绘
+            #   - 仅流式活跃（无命令）→ 每帧全量底部栏重绘
+            #     使用 force_redraw，流式输出期间
+            #     _format_status() 每帧返回不同文本（令牌数/速率/耗时变化），
+            #     force_redraw 的快速路径（new_status == _last_status）不触发，
+            #     确保每帧完整刷新底部栏全部内容（分隔线+状态行+输入区）。
+            if commands or self._bb.is_status_active:
+                self._bb.force_redraw()
+                self._position_cursor()
 
     def _position_cursor(self) -> None:
         """光标移回输入行，根据超长文本自动拆行定位（含最少3行输入区）。
