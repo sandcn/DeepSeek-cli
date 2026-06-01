@@ -830,9 +830,12 @@ class _BottomBar:
             delta = total - old_bottom_lines
             self._scroll_up_upper(delta, out, height)
 
-            # 清除之前所有底部行（用 old_bottom_lines 确保清干净）
+            # ★ Fix C: clamp 清除起始行到新滚动区边界 scroll_end+1。
+            #   当 old_bottom_lines > total（如弹窗关闭后底部栏缩小），
+            #   old_end < scroll_end，未 clamp 前清除范围会向上蔓延到上屏内容区。
             old_end = height - old_bottom_lines
-            for r in range(old_end + 1, height + 1):
+            clear_start = max(old_end + 1, scroll_end + 1)
+            for r in range(clear_start, height + 1):
                 out.write(f"\033[{r};1H\033[K")
 
             # ★ 底部栏缩小时，内容区底部与新的较小底部栏之间出现空隙。
@@ -981,9 +984,10 @@ class _BottomBar:
             delta = total - old_bottom_lines
             self._scroll_up_upper(delta, out, height)
 
-            # 清除旧的底部行
+            # ★ Fix C: clamp 清除起始行到新滚动区边界 scroll_end+1
             old_end = height - old_bottom_lines
-            for r in range(old_end + 1, height + 1):
+            clear_start = max(old_end + 1, scroll_end + 1)
+            for r in range(clear_start, height + 1):
                 out.write(f"\033[{r};1H\033[K")
 
             # ★ 底部栏缩小时，内容区底部与新的较小底部栏之间出现空隙。
@@ -1363,9 +1367,10 @@ class _BottomBar:
             delta = total - old_bottom_lines
             self._scroll_up_upper(delta, out, height)
 
-            # 清除旧的底部行
+            # ★ Fix C: clamp 清除起始行到新滚动区边界 scroll_end+1
             old_end = height - old_bottom_lines
-            for r in range(old_end + 1, height + 1):
+            clear_start = max(old_end + 1, scroll_end + 1)
+            for r in range(clear_start, height + 1):
                 out.write(f"\033[{r};1H\033[K")
 
             # ★ 底部栏缩小时，内容区底部与新的较小底部栏之间出现空隙。
@@ -1443,9 +1448,10 @@ class _BottomBar:
                 out.flush()
                 return
 
-            # 清除旧的底部行（用 old_bottom_lines 确保清干净所有旧行）
+            # ★ Fix C: clamp 清除起始行到新滚动区边界 scroll_end+1
             old_end = height - old_bottom_lines
-            for r in range(old_end + 1, height + 1):
+            clear_start = max(old_end + 1, scroll_end + 1)
+            for r in range(clear_start, height + 1):
                 out.write(f"\033[{r};1H\033[K")
 
             # ★ 底部栏缩小后，内容区底部与新的较小底部栏之间出现空隙。
