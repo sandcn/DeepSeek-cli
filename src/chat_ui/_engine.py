@@ -178,9 +178,11 @@ class RenderEngine:
                     except queue.Empty:
                         break
                 if commands:
-                    # ★ resize 光标已在 Stage 0 统一预定位，此处统一使用
-                    #   ensure_cursor_upper() 将光标放到内容区底部即可。
-                    self.ensure_cursor_upper()
+                    # ★ resize 时光标已在 Stage 0 由 Fix A 预定位到旧内容末尾，
+                    #   跳过 ensure_cursor_upper() 避免覆盖 Fix A 的定位结果；
+                    #   非 resize 时正常将光标放到内容区底部即可。
+                    if not resized:
+                        self.ensure_cursor_upper()
                     for cmd in commands:
                         try:
                             self._renderer.render(cmd)

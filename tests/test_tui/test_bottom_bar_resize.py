@@ -600,5 +600,137 @@ class TestHeightIncreaseGhost(unittest.TestCase):
                       "终端缩小时应走全屏滚动路径而非变大清除路径")
 
 
+class TestResizeCursorOverride(unittest.TestCase):
+    """修复：resize 后 Stage 1 不应覆盖 Fix A 光标预定位。
+
+    终端变大时，Stage 0 Fix A 将光标定位到旧内容末尾+1，
+    防止新内容 \n 触发 DECSTBM 滚动推出旧内容。
+    Stage 1 若调用 ensure_cursor_upper() 会将光标移到
+    scroll_end，覆盖 Fix A 的定位，导致旧内容被逐行清屏。
+    修复后 resize 时跳过 ensure_cursor_upper()。
+    """
+
+    def setUp(self):
+        from src.chat_ui._engine import RenderEngine
+        self.mock_renderer = MagicMock()
+        self.mock_bb = MagicMock()
+        self.mock_bb.is_status_active = False
+        self.mock_bb.is_resize_pending = False
+        self.mock_bb._active = True
+        self.mock_bb._setup_height = 30
+        self.mock_bb._last_bottom_lines = 5
+        self.mock_bb._bottom_lines = 5
+        self.mock_bb._completion_popup_height = 0
+        # _position_cursor 需要 + _cursor_visual_pos_from_cache
+        self.mock_bb.get_cursor_info.return_value = ("", 0, 24, 80)
+        self.mock_bb._cursor_visual_pos_from_cache.return_value = (0, 0)
+        self.engine = RenderEngine(self.mock_renderer, self.mock_bb)
+        self._stdout = sys.__stdout__
+
+    def tearDown(self):
+        sys.__stdout__ = self._stdout
+
+    def _enqueue_cmd(self):
+        """将一个 dummy 命令入队以触发 Stage 1 渲染分支。"""
+        from src.chat_ui._const import RenderCommand
+        self.engine.push_cmd((RenderCommand.NOTIFICATION, "test"))
+
+    def test_resized_skips_ensure_cursor_upper(self):
+        """resized=True 时 ensure_cursor_upper 不应被调用。
+
+        Fix A 已在 Stage 0 将光标预定位到旧内容末尾，
+        Stage 1 跳过 ensure_cursor_upper() 保留 Fix A 的定位。
+        """
+        self._enqueue_cmd()
+        self.mock_bb.check_resize.return_value = True
+        self.mock_bb._term_height.return_value = 35
+
+        with patch("src.chat_ui._state._active_parallel_display", None), \
+             patch("src.ui._lock._try_acquire_output_lock",
+                   return_value=MagicMock(__enter__=MagicMock(return_value=True),
+                                         __exit__=MagicMock(return_value=False))), \
+             patch.object(sys, '__stdout__', MagicMock()):
+            self.engine._drain_queue()
+
+        self.mock_bb.ensure_cursor_in_upper.assert_not_called()
+
+    def test_not_resized_calls_ensure_cursor_upper(self):
+        """resized=False 时 ensure_cursor_upper 应正常调用。
+
+        非 resize 场景行为不变：光标移到内容区底部再渲染。
+        """
+        self._enqueue_cmd()
+        self.mock_bb.check_resize.return_value = False
+
+        with patch("src.chat_ui._state._active_parallel_display", None), \
+             patch("src.ui._lock._try_acquire_output_lock",
+                   return_value=MagicMock(__enter__=MagicMock(return_value=True),
+                                         __exit__=MagicMock(return_value=False))), \
+             patch.object(sys, '__stdout__', MagicMock()):
+            self.engine._drain_queue()
+
+        self.mock_bb.ensure_cursor_in_upper.assert_called()
+
+    def test_grow_skips_ensure_cursor_upper(self):
+        """终端变大（30→40）时 ensure_cursor_upper 被跳过。
+
+        Fix A 将光标预定位到旧内容末尾（min(old_end+1, new_scroll_end)），
+        跳过 ensure_cursor_upper() 避免其将光标重新定位到 scroll_end。
+        """
+        self._enqueue_cmd()
+        self.mock_bb.check_resize.return_value = True
+        self.mock_bb._term_height.return_value = 40
+
+        with patch("src.chat_ui._state._active_parallel_display", None), \
+             patch("src.ui._lock._try_acquire_output_lock",
+                   return_value=MagicMock(__enter__=MagicMock(return_value=True),
+                                         __exit__=MagicMock(return_value=False))), \
+             patch.object(sys, '__stdout__', MagicMock()):
+            self.engine._drain_queue()
+
+        self.mock_bb.ensure_cursor_in_upper.assert_not_called()
+
+    def test_shrink_skip_is_equivalent(self):
+        """终端缩小（30→25）时跳过 ensure_cursor_upper 等价安全。
+
+        终端缩小时 Fix A 定位到 new_scroll_end = height - _bottom_lines，
+        与 ensure_cursor_upper() 的定位相同，跳过无副作用。
+        """
+        self._enqueue_cmd()
+        self.mock_bb.check_resize.return_value = True
+        # 模拟缩小：_setup_height=30（旧），term_height=25（新）
+        self.mock_bb._term_height.return_value = 25
+
+        with patch("src.chat_ui._state._active_parallel_display", None), \
+             patch("src.ui._lock._try_acquire_output_lock",
+                   return_value=MagicMock(__enter__=MagicMock(return_value=True),
+                                         __exit__=MagicMock(return_value=False))), \
+             patch.object(sys, '__stdout__', MagicMock()):
+            self.engine._drain_queue()
+
+        # 缩小场景也不应调用 ensure_cursor_upper（跳过安全，Fix A 等效）
+        self.mock_bb.ensure_cursor_in_upper.assert_not_called()
+
+    def test_no_commands_resized_still_no_call(self):
+        """resized=True 但无待处理命令时，ensure_cursor_upper 也不应被调用。
+
+        if commands 分支未进入时 ensure_cursor_upper 自然不会被调用，
+        此测试确保 resize=True 不会影响命令为空时的行为。
+        """
+        # 不推入任何命令
+        self.mock_bb.check_resize.return_value = True
+        self.mock_bb._term_height.return_value = 35
+
+        with patch("src.chat_ui._state._active_parallel_display", None), \
+             patch("src.ui._lock._try_acquire_output_lock",
+                   return_value=MagicMock(__enter__=MagicMock(return_value=True),
+                                         __exit__=MagicMock(return_value=False))), \
+             patch.object(sys, '__stdout__', MagicMock()):
+            self.engine._drain_queue()
+
+        # 无命令时不应调用 ensure_cursor_upper
+        self.mock_bb.ensure_cursor_in_upper.assert_not_called()
+
+
 if __name__ == "__main__":
     unittest.main()
