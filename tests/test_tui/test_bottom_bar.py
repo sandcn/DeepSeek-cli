@@ -418,5 +418,127 @@ class TestDrainQueueSyncBottomLines(unittest.TestCase):
         self.mock_bb.ensure_cursor_in_upper.assert_not_called()
 
 
+class TestScrollUpUpperOrdering(unittest.TestCase):
+    """验证 _scroll_up_upper 在 \033[r 之前的调用顺序。
+
+    修复 Bug: _scroll_up_upper(delta, out, height) 原在 \033[r（全屏滚动模式）之后调用，
+    导致整个屏幕滚动、上屏顶部内容丢失。
+    修复后: _scroll_up_upper 在 \033[r 之前调用，只滚动 DECSTBM 区域内的内容。
+    """
+
+    def setUp(self):
+        self.bb = _BottomBar()
+        self.bb._active = True
+        self.bb._cached_height = 30
+        self.bb._cached_width = 40  # 窄宽度，确保长文本换行
+        self.bb._setup_height = 30
+        self.bb._setup_width = 40
+        self.bb._last_text = "test"
+        self.bb._last_bottom_lines = 3  # 最小底部行数
+        self.bb._last_rendered_text = "test"
+        self._stdout = sys.__stdout__
+
+    def tearDown(self):
+        sys.__stdout__ = self._stdout
+
+    def _capture_ansi_order(self, method_call):
+        """调用指定方法，捕获 ANSI 输出序列。"""
+        buf = io.StringIO()
+        with patch.object(sys, '__stdout__', buf):
+            method_call()
+        return buf.getvalue()
+
+    def assert_ansi_before(self, output, first_seq, second_seq, msg=None):
+        """断言 first_seq 在 second_seq 之前出现在 output 中。"""
+        pos1 = output.find(first_seq)
+        pos2 = output.find(second_seq)
+        self.assertNotEqual(pos1, -1, f"未找到序列 {first_seq!r}")
+        self.assertNotEqual(pos2, -1, f"未找到序列 {second_seq!r}")
+        self.assertLess(pos1, pos2,
+                        msg or f"{first_seq!r} 应在 {second_seq!r} 之前")
+
+    def test_force_redraw_scroll_up_before_r(self):
+        """force_redraw 中 _scroll_up_upper 的 ANSI 在 \033[r 之前。"""
+        # 模拟输入文本变长导致底部栏扩大 (delta > 0)
+        self.bb._last_text = "A" * 200  # 长文本，_bottom_lines 会增大
+        self.bb._last_bottom_lines = 3  # 旧底部行数较小
+        self.bb._last_rendered_text = "old"  # 强制不走快速路径
+
+        output = self._capture_ansi_order(lambda: self.bb.force_redraw())
+
+        # _scroll_up_upper 写入 \033[{scroll_end};1H + \n*delta
+        # scroll_end = height - _bottom_lines
+        scroll_end = 30 - self.bb._bottom_lines
+        scroll_up_seq = f"\033[{scroll_end};1H"
+        full_scroll_seq = "\033[r"
+
+        self.assertIn(scroll_up_seq, output,
+                      f"应包含 _scroll_up_upper 的 ANSI 定位 \033[{scroll_end};1H")
+        self.assertIn(full_scroll_seq, output,
+                      "应包含全屏滚动模式 \033[r")
+        self.assert_ansi_before(output, scroll_up_seq, full_scroll_seq,
+                                "_scroll_up_upper 的 ANSI 应在 \033[r 之前")
+
+    def test_refresh_scroll_up_before_r(self):
+        """refresh 中 _scroll_up_upper 的 ANSI 在 \033[r 之前。"""
+        # 初始文本较短，然后传新长文本触发底部栏扩大
+        self.bb._last_text = "short"
+        self.bb._last_bottom_lines = 3
+        self.bb._last_rendered_text = "short"
+
+        # 传入更长的新文本，使 text_changed=True
+        new_text = "A" * 200
+        output = self._capture_ansi_order(
+            lambda: self.bb.refresh(new_text, 0))
+
+        scroll_end = 30 - self.bb._bottom_lines
+        scroll_up_seq = f"\033[{scroll_end};1H"
+        full_scroll_seq = "\033[r"
+
+        self.assertIn(scroll_up_seq, output,
+                      f"应包含 _scroll_up_upper 的 ANSI 定位")
+        self.assertIn(full_scroll_seq, output,
+                      "应包含全屏滚动模式 \033[r")
+        self.assert_ansi_before(output, scroll_up_seq, full_scroll_seq,
+                                "_scroll_up_upper 的 ANSI 应在 \033[r 之前")
+
+    def test_scroll_up_uses_scroll_end_not_height(self):
+        """_scroll_up_upper 使用 scroll_end 而非 height 定位。"""
+        self.bb._last_text = "A" * 200
+        self.bb._last_bottom_lines = 3
+        self.bb._last_rendered_text = "old"
+
+        output = self._capture_ansi_order(lambda: self.bb.force_redraw())
+
+        scroll_end = 30 - self.bb._bottom_lines
+        scroll_up_seq = f"\033[{scroll_end};1H"
+
+        self.assertIn(scroll_up_seq, output,
+                      f"应使用 scroll_end({scroll_end}) 定位")
+
+    def test_shrink_path_uses_height(self):
+        """_check_resize shrink 分支仍使用 height（新终端高度）定位（全屏滚动场景）。"""
+        # setup: height=30, shrink to 25
+        self.bb._last_bottom_lines = 5
+        self.bb._setup_height = 30
+        self.bb._cached_height = 30
+        self.bb._last_text = "test"
+        # 缩小后 shrink 路径使用新 height=25 定位到新终端末行
+        from unittest.mock import patch as u_patch
+        with u_patch("src.ui._bottom_bar.query_terminal_size",
+                      return_value=(80, 25)), \
+             u_patch("src.ui._bottom_bar._try_acquire_output_lock",
+                     return_value=MagicMock(__enter__=MagicMock(return_value=True),
+                                            __exit__=MagicMock(return_value=False))):
+            with patch.object(sys, '__stdout__', io.StringIO()) as buf:
+                self.bb._check_resize()
+
+        output = buf.getvalue()
+        # shrink 路径中 _scroll_up_upper(scroll_n, out, height) 使用新 height=25
+        # 定位到终端末行：\033[25;1H（新终端高度）
+        self.assertIn("\033[25;1H", output,
+                      "shrink 路径应使用新 height(25) 定位光标到终端末行")
+
+
 if __name__ == "__main__":
     unittest.main()

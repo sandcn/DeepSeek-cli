@@ -329,25 +329,28 @@ class _BottomBar:
     # ── 滚动上屏内容（防止底部栏扩大时覆盖内容） ────────────
 
     @staticmethod
-    def _scroll_up_upper(delta: int, out, height: int) -> None:
+    def _scroll_up_upper(delta: int, out, scroll_end: int) -> None:
         """输入区扩大时，将上屏内容向上滚动 delta 行，防止被新底部栏覆盖。
 
-        须在 ``\\033[r``（全屏滚动区）之后、清除旧底部行之前调用。
+        须在 ``\\033[r``（全屏滚动区）之前调用，此时 DECSTBM 仍有效，
+        滚动被限制在滚动区域内（1~scroll_end），不会影响底部固定栏。
         仅在 delta > 0 时执行，delta ≤ 0 时静默跳过。
 
         ANSI 机制：
-        - ``\\033[{height};1H`` 定位光标到终端最后一行
-        - ``\\n``（LF）在最后一行触发向上滚动，内容整体上移 1 行
-        - 重复 delta 次，顶端 delta 行滚动消失，底部 delta 行变为空行
+        - ``\\033[{scroll_end};1H`` 定位光标到滚动区最后一行
+        - ``\\n``（LF）在滚动区最后一行触发向上滚动，内容整体上移 1 行
+        - 重复 delta 次，顶端 delta 行推入滚动区（仍在屏幕内），
+          底部 delta 行变为空行，供后续清除使用
         - 原在"死区"（新滚动区与旧滚动区之间）的内容被移入新滚动区内
 
         Args:
             delta: 底部栏扩大行数（= new_bottom_lines - old_bottom_lines）。
             out: stdout 文件对象。
-            height: 终端总行数。
+            scroll_end: 滚动区域最后一行行号（= height - bottom_lines）。
         """
         if delta > 0:
-            out.write(f"\033[{height};1H")
+            scroll_end = max(1, scroll_end)  # 防御：scroll_end < 1 时 clamp 到行 1
+            out.write(f"\033[{scroll_end};1H")
             out.write("\n" * delta)
 
     @staticmethod
@@ -815,6 +818,13 @@ class _BottomBar:
 
             out = sys.__stdout__
             out.write("\0337")                       # 保存光标
+
+            # ★ 输入区扩大时，将上屏内容向上滚动 delta 行（在 DECSTBM 内滚动），
+            #   须在 \033[r 之前调用，确保滚动仅在滚动区域（1~scroll_end）内生效，
+            #   不会滚动整个屏幕导致顶部内容丢失。
+            delta = total - old_bottom_lines
+            self._scroll_up_upper(delta, out, scroll_end)
+
             out.write("\033[r")                      # 临时退出滚动区域
 
             # ★ 终端高度不足以容纳底部栏 → 清理旧行后跳过绘制
@@ -829,11 +839,6 @@ class _BottomBar:
                 out.flush()
                 self._last_cursor_pos = self._input_cursor_pos
                 return
-
-            # ★ 输入区扩大时，上屏底部内容会被新底部栏覆盖。
-            #   先将上屏内容向上滚动 delta 行，保护"死区"内容移入新滚动区。
-            delta = total - old_bottom_lines
-            self._scroll_up_upper(delta, out, height)
 
             # ★ Fix C: clamp 清除起始行到新滚动区边界 scroll_end+1。
             #   当 old_bottom_lines > total（如弹窗关闭后底部栏缩小），
@@ -969,6 +974,12 @@ class _BottomBar:
             out = sys.__stdout__
             out.write("\0337")                       # 保存光标（内容区位置）
 
+            # ★ 输入区扩大时，将上屏内容向上滚动 delta 行（在 DECSTBM 内滚动），
+            #   须在 \033[r 之前调用，确保滚动仅在滚动区域（1~scroll_end）内生效，
+            #   不会滚动整个屏幕导致顶部内容丢失。
+            delta = total - old_bottom_lines
+            self._scroll_up_upper(delta, out, scroll_end)
+
             # 临时退出滚动区域，以便写入底部行
             out.write("\033[r")
 
@@ -983,11 +994,6 @@ class _BottomBar:
                 out.write(f"\033[{height};1H")
                 out.flush()
                 return
-
-            # ★ 输入区扩大时，上屏底部内容会被新底部栏覆盖。
-            #   先将上屏内容向上滚动 delta 行，保护"死区"内容移入新滚动区。
-            delta = total - old_bottom_lines
-            self._scroll_up_upper(delta, out, height)
 
             # ★ Fix C: clamp 清除起始行到新滚动区边界 scroll_end+1
             old_end = height - old_bottom_lines
@@ -1356,6 +1362,12 @@ class _BottomBar:
             old_bottom_lines = self._last_bottom_lines
             self._last_bottom_lines = total
 
+            # ★ 输入区扩大时，将上屏内容向上滚动 delta 行（在 DECSTBM 内滚动），
+            #   须在 \033[r 之前调用，确保滚动仅在滚动区域（1~scroll_end）内生效，
+            #   不会滚动整个屏幕导致顶部内容丢失。
+            delta = total - old_bottom_lines
+            self._scroll_up_upper(delta, out, scroll_end)
+
             # 临时退出滚动区域
             out.write("\033[r")
 
@@ -1368,11 +1380,6 @@ class _BottomBar:
                 out.write(f"\033[{height};1H\033[s")
                 out.flush()
                 return
-
-            # ★ 输入区扩大时，上屏底部内容会被新底部栏覆盖。
-            #   先将上屏内容向上滚动 delta 行，保护"死区"内容移入新滚动区。
-            delta = total - old_bottom_lines
-            self._scroll_up_upper(delta, out, height)
 
             # ★ Fix C: clamp 清除起始行到新滚动区边界 scroll_end+1
             old_end = height - old_bottom_lines
