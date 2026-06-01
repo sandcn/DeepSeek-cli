@@ -28,7 +28,6 @@ from ._bottom_cursor import (
     _wrap_by_width,
 )
 from ._lock import _try_acquire_output_lock
-from .terminal_adapter import query_terminal_size
 
 _logger = logging.getLogger(__name__)
 
@@ -110,7 +109,6 @@ class _BottomBar:
         self._last_text = ""
         self._last_status = ""
         self._last_refresh = 0.0
-        self._setup_height = 0
         self._status_active = False  # 事件驱动：流式期间激活，结束后冻结
         self._tool_count = 0         # 本轮工具调用次数（仅主 Agent）
         self._tool_fail_count = 0    # 本轮失败工具数
@@ -139,18 +137,6 @@ class _BottomBar:
         # ★ 补全弹窗所占行数（弹窗可见时 > 0，用于扩展输入区）
         self._completion_popup_height: int = 0
 
-        # ── 终端尺寸缓存（减少 shutil.get_terminal_size syscall） ──
-        self._cached_height: int = 0
-        self._cached_width: int = 0
-        self._setup_height: int = 0   # 上次 setup 时的终端高度
-        self._setup_width: int = 0    # 上次 setup 时的终端宽度（Bug 3: 宽度变化检测）
-        # ── SIGWINCH 信号驱动 resize ──
-        self._resize_dirty: bool = False  # 信号处理器设置，_check_resize() 消费（Bug 1）
-        self._sigwinch_registered: bool = False  # 防止重复注册
-        # ── 终端缩到极小后恢复时保存的输入文本 ──
-        self._saved_text_before_shrink: str | None = None  # Bug 6: teardown 时保存，rebuild 时恢复
-        # ── resize scroll_n 缓存（供 Fix A 光标定位使用） ──
-        self._last_scroll_n: int = 0  # 最近一次 _check_resize shrink 的滚动行数
         # ── 最近一次 DECSTBM 设置时的 scroll_end 缓存 ──
         # 供 ensure_cursor_upper() 使用，确保光标定位与 DECSTBM 保持一致。
         self._last_scroll_end: int = 0
@@ -174,46 +160,21 @@ class _BottomBar:
             base = max(_MIN_INPUT_ROWS, len(wrapped))
         return base + self._completion_popup_height
 
-    # ── 终端尺寸查询（实例级缓存，减少 syscall） ──────────
+    # ── 终端尺寸查询 ──────────────────────────────────
 
     def _term_height(self) -> int:
-        """获取终端高度，优先返回缓存值。
-
-        缓存由 _check_resize() 在检测到尺寸变化时刷新，
-        或由 _invalidate_terminal_cache() 在 setup/teardown 时失效。
-        回退使用 query_terminal_size()（ioctl）而非 shutil，
-        避免 Android/Termux 上陈旧环境变量值。
-        """
-        if self._cached_height > 0:
-            return self._cached_height
-        try:
-            _w, _h = query_terminal_size()
-            self._cached_height = _h
-            self._cached_width = _w
-            return _h
-        except Exception:
-            return 24
+        """获取终端高度，实时查询。"""
+        _w, _h = shutil.get_terminal_size()
+        return _h
 
     def _term_width(self) -> int:
-        """获取终端宽度，优先返回缓存值。
+        """获取终端宽度，实时查询。"""
+        _w, _h = shutil.get_terminal_size()
+        return _w
 
-        回退使用 query_terminal_size()（ioctl）而非 shutil，
-        避免 Android/Termux 上陈旧环境变量值。
-        """
-        if self._cached_width > 0:
-            return self._cached_width
-        try:
-            _w, _h = query_terminal_size()
-            self._cached_height = _h
-            self._cached_width = _w
-            return _w
-        except Exception:
-            return 80
-
-    def _invalidate_terminal_cache(self) -> None:
-        """失效终端尺寸缓存，下次 _term_height/_term_width 时刷新。"""
-        self._cached_height = 0
-        self._cached_width = 0
+    def _term_size(self) -> tuple[int, int]:
+        """同时获取终端宽度和高度，避免重复 syscall。"""
+        return shutil.get_terminal_size()
 
     # ── 生命周期 ──────────────────────────────────────────
 
@@ -244,12 +205,8 @@ class _BottomBar:
 
     @property
     def is_resize_pending(self) -> bool:
-        """是否有待处理的终端尺寸变化（SIGWINCH 已触发但未消费）。
-
-        供 RenderEngine._drain_queue() 快速空闲跳过判断使用，
-        避免无流式输出时终端 resize 被跳过处理。
-        """
-        return self._resize_dirty
+        """（已禁用）始终返回 False。"""
+        return False
 
     def get_cursor_info(self) -> tuple[str, int, int, int]:
         """获取光标定位所需数据：文本、光标位置、终端高度、终端宽度。
@@ -326,53 +283,6 @@ class _BottomBar:
         except Exception:
             return 0.0
 
-    # ── 滚动上屏内容（防止底部栏扩大时覆盖内容） ────────────
-
-    @staticmethod
-    def _scroll_up_upper(delta: int, out, scroll_end: int) -> None:
-        """输入区扩大时，将上屏内容向上滚动 delta 行，防止被新底部栏覆盖。
-
-        须在 ``\\033[r``（全屏滚动区）之前调用，此时 DECSTBM 仍有效，
-        滚动被限制在滚动区域内（1~scroll_end），不会影响底部固定栏。
-        仅在 delta > 0 时执行，delta ≤ 0 时静默跳过。
-
-        ANSI 机制：
-        - ``\\033[{scroll_end};1H`` 定位光标到滚动区最后一行
-        - ``\\n``（LF）在滚动区最后一行触发向上滚动，内容整体上移 1 行
-        - 重复 delta 次，顶端 delta 行推入滚动区（仍在屏幕内），
-          底部 delta 行变为空行，供后续清除使用
-        - 原在"死区"（新滚动区与旧滚动区之间）的内容被移入新滚动区内
-
-        Args:
-            delta: 底部栏扩大行数（= new_bottom_lines - old_bottom_lines）。
-            out: stdout 文件对象。
-            scroll_end: 滚动区域最后一行行号（= height - bottom_lines）。
-        """
-        if delta > 0:
-            scroll_end = max(1, scroll_end)  # 防御：scroll_end < 1 时 clamp 到行 1
-            out.write(f"\033[{scroll_end};1H")
-            out.write("\n" * delta)
-
-    @staticmethod
-    def _scroll_down_for_shrink(delta: int, out) -> None:
-        """缩小底部栏后，将上屏内容向下滚动以消除空隙。
-
-        须在 \\033[r（全屏滚动区）之后、清除旧的底部行之后、
-        绘制新的底部栏之前调用。仅在 delta < 0 时执行。
-
-        ANSI 机制：
-        - ``\\033[{|delta|}T``（SD — Scroll Down）将滚动区内全部内容
-          向下滚动 |delta| 行，滚动区顶部出现 |delta| 行空白，
-          底部 |delta| 行滚出（清除掉的旧底部行区域），
-          内容区底部与新的较小底部栏顶部接合，消除空隙。
-
-        Args:
-            delta: 底部栏变化行数（负=缩小）。
-            out: stdout 文件对象。
-        """
-        if delta < 0:
-            out.write(f"\033[{-delta}T")
-
     def increment_tool(self) -> None:
         """递增工具调用计数。"""
         self._tool_count += 1
@@ -396,169 +306,8 @@ class _BottomBar:
         """
         self._model_name = name
 
-    def _on_sigwinch(self, cols: int, rows: int) -> None:
-        """SIGWINCH 回调：仅设置 dirty 标记（信号安全，纯 bool 赋值）。
-
-        在 _check_resize() 开头消费该标记，触发完整 resize 检测流程。
-        """
-        self._resize_dirty = True
-
     def check_resize(self) -> bool:
-        """检测终端尺寸变化并自动重设滚动区域（公开方法）。
-
-        代理 _check_resize()，供 ChatUIConsumer 等外部调用方使用，
-        避免直接访问私有方法。
-        """
-        return self._check_resize()
-
-    def _check_resize(self) -> bool:
-        """检测终端尺寸变化，自动重设滚动区域。
-
-        在 refresh/redraw 及 reader 线程 drain 循环中调用。
-        终端高度不足 _MIN_HEIGHT 时执行 teardown 恢复到全屏滚动。
-        未激活但高度已恢复到 _MIN_HEIGHT 以上时自动重建底部栏。
-
-        双路径 resize 检测：
-          1. 信号驱动：SIGWINCH → _on_sigwinch() → _resize_dirty=True
-          2. 轮询驱动：每次调用均通过 ioctl 查询真实尺寸并比较缓存
-
-        resize 路径（enlarge/shrink/width-only）不调用 setup()，
-        而是直接更新 _setup_height/_setup_width、用实际 _last_text
-        和补全状态计算 _last_bottom_lines、设置 DECSTBM、调用
-        _draw_all_locked() 重绘底部栏。_last_text 在整个过程中
-        保持不变，避免了 setup() 将其重置为 "" 导致的空文本中间态。
-
-        整个 resize 流程在单个 output_lock 作用域内完成，
-        与 refresh()/force_redraw() 串行化，消除跨线程竞争。
-
-        Returns:
-            True 表示检测到尺寸变化并已处理（直接 resize + 重绘底部栏），
-            调用方应随后执行 Stage 3 底部栏重绘以更新状态行和光标位置。
-            False 表示无变化或未激活。
-        """
-        # ★ Bug 1：SIGWINCH 快速路径 — 信号处理器设置了 dirty 标记
-        if self._resize_dirty:
-            self._resize_dirty = False
-            # 强制刷新尺寸缓存（绕过下面的比较逻辑直接走 setup）
-            try:
-                self._cached_width, self._cached_height = query_terminal_size()
-            except Exception:
-                _logger.warning("_check_resize: query_terminal_size() 失败", exc_info=True)
-
-        # ★ _check_resize 始终通过 ioctl 获取真实尺寸（更新缓存），
-        #   确保尺寸变化能被及时检测到。Android/Termux 上 shutil 回退
-        #   到 $LINES/$COLUMNS 环境变量会返回陈旧值，故使用
-        #   terminal_adapter.query_terminal_size() 的 ioctl 策略。
-        try:
-            self._cached_width, self._cached_height = query_terminal_size()
-        except Exception:
-            _logger.warning("_check_resize: query_terminal_size() 失败", exc_info=True)
-        height = self._cached_height or 24
-        width = self._cached_width or 80
-
-        # ★ 未激活但高度已恢复到 _MIN_HEIGHT 以上 → 自动重建底部栏
-        if not self._active:
-            if height >= self._MIN_HEIGHT:
-                with _try_acquire_output_lock(name="bottom_bar.check_resize.rebuild", timeout=1.0) as locked:
-                    if locked:
-                        self.setup()
-                        # ★ Bug 6 修复：恢复终端缩小前保存的输入文本
-                        if self._saved_text_before_shrink is not None:
-                            self._last_text = self._saved_text_before_shrink
-                            self._saved_text_before_shrink = None
-                return True
-            return False
-
-        # ★ 高度不足 _MIN_HEIGHT → 执行 teardown，恢复到全屏模式
-        if height < self._MIN_HEIGHT:
-            with _try_acquire_output_lock(name="bottom_bar.check_resize.teardown", timeout=1.0) as locked:
-                if locked:
-                    # ★ Bug 6 修复：保存输入文本，供终端恢复时重建
-                    self._saved_text_before_shrink = self._last_text
-                    out = sys.__stdout__
-                    out.write("\033[r")                     # 全屏滚动
-                    out.write("\0337")
-                    saved_bottom = self._last_bottom_lines
-                    self._active = False
-                    # 清除底部残留行（clamp 起始行避免行号 ≤ 0）
-                    start_row = max(1, height - saved_bottom + 1)
-                    for r in range(start_row, height + 1):
-                        out.write(f"\033[{r};1H\033[K")
-                    out.write("\0338")
-                    out.write("\033[s")
-                    out.flush()
-                    # ★ Bug 5 修复：移入 locked 块内，锁超时时不错误重置
-                    self._last_bottom_lines = _BOTTOM_LINES
-            return True
-
-        # ★ Bug 3 修复：同时检测高度和宽度变化（原仅检测高度）
-        if (height != self._setup_height or width != self._setup_width) and height >= self._MIN_HEIGHT:
-            # 单锁作用域：output_lock 是 RLock，setup() 内部的可重入获取安全
-            with _try_acquire_output_lock(name="bottom_bar.check_resize", timeout=1.0) as locked:
-                if not locked:
-                    # ★ Bug 5/7 修复：锁超时时返回 False 避免调用方执行
-                    #   force_redraw（也会超时），同时更新 _setup 避免无限循环。
-                    self._setup_height = height
-                    self._setup_width = width
-                    return False
-                # ★ 重置 scroll_n 缓存（默认值，enlarge/不变时保持 0）
-                self._last_scroll_n = 0
-
-                out = sys.__stdout__
-                # ★ 终端缩小时，旧上屏末行落入新底部栏区域会被分隔线覆盖。
-                #   全屏滚动后上滚最小行数，使旧末行刚好落到新滚动区末行。
-                #   旧底部栏残留随之上移，恰好落入新底部栏区域被 _draw_all_locked 覆盖。
-                if height < self._setup_height:
-                    out.write("\033[r")  # 全屏滚动模式
-                    # 旧上屏末行行号（截断后仍可见的最高行号）
-                    last_upper = min(height, self._setup_height - self._last_bottom_lines)
-                    # ★ 修复: 使用 _bottom_lines 属性（基于实际 _last_text+新宽度），
-                    #   而非旧缓存 _last_bottom_lines。宽度变化时文本换行数可能不同，
-                    #   使用属性值确保滚动量匹配底部栏在新宽度下的实际高度。
-                    new_bar_start = max(1, height - self._bottom_lines + 1)
-                    scroll_n = max(0, last_upper - new_bar_start + 1)
-                    if scroll_n > 0:
-                        self._scroll_up_upper(scroll_n, out, height)
-                        self._last_scroll_n = scroll_n  # ★ 保存 scroll_n 供 Fix A 使用
-                    else:
-                        # 未上滚时，旧底部栏残留可能高于新底部栏区域，需单独清除
-                        remnant_start = max(1, last_upper + 1)
-                        if remnant_start < new_bar_start:
-                            for r in range(remnant_start, new_bar_start):
-                                out.write(f"\033[{r};1H\033[K")
-                    out.flush()
-                # ★ 终端变大时，旧底部栏位置上移进入上屏成为"鬼影"。
-                #   清除旧底部栏区域，避免与新底部栏重叠。
-                elif height > self._setup_height:
-                    out.write("\033[r")  # ★ 先重置全屏滚动，与 shrink 分支对称
-                    old_bar_start = max(1, self._setup_height - self._last_bottom_lines + 1)
-                    # ★ 修复: 使用 _bottom_lines 属性（基于实际 _last_text+新宽度），
-                    #   而非旧缓存 _last_bottom_lines，确保鬼影清除范围匹配
-                    #   底部栏在新宽度下的实际高度。
-                    new_bar_start = max(1, height - self._bottom_lines + 1)
-                    if old_bar_start < new_bar_start:
-                        for r in range(old_bar_start, new_bar_start):
-                            out.write(f"\033[{r};1H\033[K")
-                    out.flush()
-                # ★ 直接 resize 操作：不调用 setup()（会重置 _last_text="" 导致清屏 Bug）。
-                #   用实际 _last_text 和补全状态直接更新尺寸、设置 DECSTBM、重绘底部栏。
-                self._setup_height = height
-                self._setup_width = width
-                self._last_bottom_lines = self._bottom_lines  # 基于实际 _last_text + 补全状态
-
-                scroll_end = height - self._last_bottom_lines
-                self._last_scroll_end = scroll_end  # 缓存 DECSTBM scroll_end
-                if scroll_end >= 1:
-                    out.write(f"\033[1;{scroll_end}r")  # 设置 DECSTBM
-                out.write("\0337")
-                self._draw_all_locked(out, height)  # 用实际文本重绘底部栏
-                out.write("\0338")
-                if scroll_end >= 1:
-                    out.write(f"\033[{scroll_end};1H\033[s")  # 保存 SCOSC
-                out.write(f"\033[{height};1H")
-                out.flush()
-                self._last_refresh = time.monotonic()  # 同步时间戳，避免 refresh() 节流误杀
-            return True
+        """（已禁用）始终返回 False。"""
         return False
 
     # ── 光标定位（渲染时在上屏/下屏间切换） ───────────────
@@ -637,31 +386,12 @@ class _BottomBar:
         """
         if self._active:
             return
-        self._invalidate_terminal_cache()
         height = self._term_height()
         if height < self._MIN_HEIGHT:
             return
         self._active = True
         self._last_text = ""
-        # ★ Bug 2/3 修复：使用 query_terminal_size() 获取真实尺寸设置 _setup，
-        #   避免 Android/Termux 上 _term_height()/_term_width() 回退到 shutil 陈旧值
-        #   导致 _check_resize() 下一次比较时陷入无限 resize 循环。
-        try:
-            _sw, _sh = query_terminal_size()
-        except Exception:
-            _sw, _sh = self._cached_width or 80, self._cached_height or 24
-        self._setup_height = _sh
-        self._setup_width = _sw
         self._last_bottom_lines = self._bottom_lines  # 缓存当前底部行数
-
-        # ★ Bug 1: 注册 SIGWINCH 回调（信号驱动 resize 检测）
-        if not self._sigwinch_registered:
-            from .terminal_adapter import register_sigwinch_callback
-            try:
-                register_sigwinch_callback(self._on_sigwinch)
-                self._sigwinch_registered = True
-            except Exception:
-                pass  # Windows 无 SIGWINCH，静默忽略
 
         scroll_end = height - self._bottom_lines  # 动态滚动区域
         self._last_scroll_end = scroll_end  # 缓存 DECSTBM scroll_end
@@ -690,21 +420,8 @@ class _BottomBar:
         """
         if not self._active:
             return
-        # ★ Bug 6 扩展修复：teardown() 直接调用时也保存 _last_text，
-        #   确保 suspend/resume 等场景下用户输入不丢失。
-        self._saved_text_before_shrink = self._last_text
         self._active = False
 
-        # ★ Bug 1: 注销 SIGWINCH 回调
-        if self._sigwinch_registered:
-            from .terminal_adapter import unregister_sigwinch_callback
-            try:
-                unregister_sigwinch_callback(self._on_sigwinch)
-                self._sigwinch_registered = False
-            except Exception:
-                pass
-
-        self._invalidate_terminal_cache()
         with _try_acquire_output_lock(name="bottom_bar.teardown", timeout=1.0) as locked:
             if locked:
                 out = sys.__stdout__
@@ -814,47 +531,25 @@ class _BottomBar:
             scroll_end = height - total
             self._last_refresh = time.monotonic()
             self._last_status = new_status
-            old_bottom_lines = self._last_bottom_lines
             self._last_bottom_lines = total
 
             out = sys.__stdout__
             out.write("\0337")                       # 保存光标
-
-            # ★ 输入区扩大时，将上屏内容向上滚动 delta 行（在 DECSTBM 内滚动），
-            #   须在 \033[r 之前调用，确保滚动仅在滚动区域（1~scroll_end）内生效，
-            #   不会滚动整个屏幕导致顶部内容丢失。
-            #   ★ 使用旧 bottom_lines 计算 scroll_end（与当前 DECSTBM 一致），
-            #   而非新的 total。否则 total≠old_bottom_lines 时 scroll_end 与
-            #   DECSTBM 底边距不匹配，\n 无法正确触发滚动，导致内容被底部栏覆盖。
-            delta = total - old_bottom_lines
-            self._scroll_up_upper(delta, out, height - old_bottom_lines)
-
-            out.write("\033[r")  # 临时退出滚动区域（此后的写入必须使用绝对定位，禁止产生 \n）
+            out.write("\033[r")                       # 临时退出滚动区域
 
             # ★ 终端高度不足以容纳底部栏 → 清理旧行后跳过绘制
             if scroll_end < 1:
-                # 清除所有旧底部行
-                old_end = height - old_bottom_lines
-                for r in range(max(1, old_end + 1), height + 1):
+                for r in range(1, height + 1):
                     out.write(f"\033[{r};1H\033[K")
                 out.write("\0338")
-                # ★ 重新保存 SCOSC
                 out.write(f"\033[{height};1H\033[s")
                 out.flush()
                 self._last_cursor_pos = self._input_cursor_pos
                 return
 
-            # ★ Fix C: clamp 清除起始行到新滚动区边界 scroll_end+1。
-            #   当 old_bottom_lines > total（如弹窗关闭后底部栏缩小），
-            #   old_end < scroll_end，未 clamp 前清除范围会向上蔓延到上屏内容区。
-            old_end = height - old_bottom_lines
-            clear_start = max(old_end + 1, scroll_end + 1)
-            for r in range(clear_start, height + 1):
+            # ★ 清除底部行
+            for r in range(scroll_end + 1, height + 1):
                 out.write(f"\033[{r};1H\033[K")
-
-            # ★ 底部栏缩小时，内容区底部与新的较小底部栏之间出现空隙。
-            #   将内容向下滚动以消除间隙。
-            self._scroll_down_for_shrink(delta, out)
 
             r1 = height - total + 1                  # 分隔线
             r2 = r1 + 1                              # 状态行
@@ -956,7 +651,6 @@ class _BottomBar:
             # ★ total/scroll_end 在锁内计算，确保 _last_text 已是最新
             total = self._bottom_lines
             scroll_end = height - total
-            old_bottom_lines = self._last_bottom_lines  # 锁内读取，避免竞态
             self._last_bottom_lines = total              # 锁内写入，避免竞态
             if status_changed:
                 self._last_status = new_status           # 锁内写入，避免竞态
@@ -977,38 +671,21 @@ class _BottomBar:
             self._last_cursor_pos = self._input_cursor_pos
             out = sys.__stdout__
             out.write("\0337")                       # 保存光标（内容区位置）
-
-            # ★ 输入区扩大时，将上屏内容向上滚动 delta 行（在 DECSTBM 内滚动），
-            #   须在 \033[r 之前调用，确保滚动仅在滚动区域（1~scroll_end）内生效，
-            #   不会滚动整个屏幕导致顶部内容丢失。
-            #   ★ 使用旧 bottom_lines 计算 scroll_end（与当前 DECSTBM 一致）。
-            delta = total - old_bottom_lines
-            self._scroll_up_upper(delta, out, height - old_bottom_lines)
-
-            # 临时退出滚动区域（此后的写入必须使用绝对定位，禁止产生 \n），以便写入底部行
-            out.write("\033[r")
+            out.write("\033[r")                       # 临时退出滚动区域
 
             # ★ 终端高度不足以容纳底部栏 → 清理旧行后跳过绘制
             if scroll_end < 1:
-                old_end = height - old_bottom_lines
-                for r in range(max(1, old_end + 1), height + 1):
+                for r in range(1, height + 1):
                     out.write(f"\033[{r};1H\033[K")
-                # ★ 恢复滚动区域 + 光标
                 out.write("\0338")
                 out.write(f"\033[{height};1H\033[s")
                 out.write(f"\033[{height};1H")
                 out.flush()
                 return
 
-            # ★ Fix C: clamp 清除起始行到新滚动区边界 scroll_end+1
-            old_end = height - old_bottom_lines
-            clear_start = max(old_end + 1, scroll_end + 1)
-            for r in range(clear_start, height + 1):
+            # ★ 清除底部行
+            for r in range(scroll_end + 1, height + 1):
                 out.write(f"\033[{r};1H\033[K")
-
-            # ★ 底部栏缩小时，内容区底部与新的较小底部栏之间出现空隙。
-            #   将内容向下滚动以消除间隙。
-            self._scroll_down_for_shrink(delta, out)
 
             # ── 分隔线（灰色） ──
             r1 = height - total + 1
@@ -1364,38 +1041,23 @@ class _BottomBar:
             height = self._term_height()
             total = self._bottom_lines  # 已包含 popup 高度
             scroll_end = height - total
-            old_bottom_lines = self._last_bottom_lines
             self._last_bottom_lines = total
-
-            # ★ 输入区扩大时，将上屏内容向上滚动 delta 行（在 DECSTBM 内滚动），
-            #   须在 \033[r 之前调用，确保滚动仅在滚动区域（1~scroll_end）内生效，
-            #   不会滚动整个屏幕导致顶部内容丢失。
-            #   ★ 使用旧 bottom_lines 计算 scroll_end（与当前 DECSTBM 一致）。
-            delta = total - old_bottom_lines
-            self._scroll_up_upper(delta, out, height - old_bottom_lines)
 
             # 临时退出滚动区域（此后的写入必须使用绝对定位，禁止产生 \n）
             out.write("\033[r")
 
             # ★ 终端高度不足以容纳底部栏 → 清理旧行后恢复
             if scroll_end < 1:
-                old_end = height - old_bottom_lines
-                for r in range(max(1, old_end + 1), height + 1):
+                for r in range(1, height + 1):
                     out.write(f"\033[{r};1H\033[K")
                 out.write("\0338")
                 out.write(f"\033[{height};1H\033[s")
                 out.flush()
                 return
 
-            # ★ Fix C: clamp 清除起始行到新滚动区边界 scroll_end+1
-            old_end = height - old_bottom_lines
-            clear_start = max(old_end + 1, scroll_end + 1)
-            for r in range(clear_start, height + 1):
+            # ★ 清除底部行
+            for r in range(scroll_end + 1, height + 1):
                 out.write(f"\033[{r};1H\033[K")
-
-            # ★ 底部栏缩小时，内容区底部与新的较小底部栏之间出现空隙。
-            #   将内容向下滚动以消除间隙。
-            self._scroll_down_for_shrink(delta, out)
 
             # 全量重绘底部栏（含输入区内的补全弹窗）
             r1 = height - total + 1
@@ -1453,7 +1115,6 @@ class _BottomBar:
             height = self._term_height()
             total = self._bottom_lines  # 已不含 popup 高度
             scroll_end = height - total
-            old_bottom_lines = self._last_bottom_lines  # 旧的含弹窗的底部行数
             self._last_bottom_lines = total
 
             # 临时退出滚动区域（此后的写入必须使用绝对定位，禁止产生 \n）
@@ -1461,23 +1122,16 @@ class _BottomBar:
 
             # ★ 终端高度不足以容纳底部栏 → 清理旧行后恢复
             if scroll_end < 1:
-                old_end = height - old_bottom_lines
-                for r in range(max(1, old_end + 1), height + 1):
+                for r in range(1, height + 1):
                     out.write(f"\033[{r};1H\033[K")
                 out.write("\0338")
                 out.write(f"\033[{height};1H\033[s")
                 out.flush()
                 return
 
-            # ★ Fix C: clamp 清除起始行到新滚动区边界 scroll_end+1
-            old_end = height - old_bottom_lines
-            clear_start = max(old_end + 1, scroll_end + 1)
-            for r in range(clear_start, height + 1):
+            # ★ 清除底部行
+            for r in range(scroll_end + 1, height + 1):
                 out.write(f"\033[{r};1H\033[K")
-
-            # ★ 底部栏缩小后，内容区底部与新的较小底部栏之间出现空隙。
-            #   将内容向下滚动以消除间隙。
-            self._scroll_down_for_shrink(total - old_bottom_lines, out)
 
             # 全量重绘底部栏（缩小后的区域）
             r1 = height - total + 1
