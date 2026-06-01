@@ -156,13 +156,21 @@ class RenderEngine:
                     #   滚动导致旧内容被逐行滚出清空。改为定位到旧内容末尾
                     #   （min(old_scroll_end+1, new_scroll_end)），新内容从旧末行
                     #   开始填充间隙，填满后才触发正常滚动。终端变小时同理。
+                    #   终端变小时必须考虑 _last_scroll_n 偏移：_check_resize()
+                    #   已通过 _scroll_up_upper() 将内容上滚 scroll_n 行，
+                    #   old_end 需减去 scroll_n 才是滚动后内容末尾的实际行号。
                     height = self._bb._term_height()
                     new_s = height - self._bb._bottom_lines
                     if height > _pre_height:
                         target = max(1, min(_pre_height - _pre_bottom + 1, new_s))
                     else:
                         old_end = max(1, _pre_height - _pre_bottom + 1)
-                        target = max(1, min(old_end, new_s))
+                        # ★ 防御性读取 scroll_n（兼容测试 mock 场景）
+                        scroll_n = getattr(self._bb, '_last_scroll_n', 0)
+                        if not isinstance(scroll_n, int):
+                            scroll_n = 0
+                        adjusted_end = max(1, old_end - scroll_n)
+                        target = max(1, min(adjusted_end, new_s))
                     sys.__stdout__.write(f"\033[{target};1H")
         if resized:
             self._sync_renderer_width()

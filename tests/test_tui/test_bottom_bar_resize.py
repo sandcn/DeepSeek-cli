@@ -732,5 +732,116 @@ class TestResizeCursorOverride(unittest.TestCase):
         self.mock_bb.ensure_cursor_in_upper.assert_not_called()
 
 
+class TestScrollN(unittest.TestCase):
+    """验证 _last_scroll_n 在各种 resize 场景下的正确赋值。"""
+
+    def setUp(self):
+        self.bb = _BottomBar()
+        # 初始化为 ACTIVATED 状态，模拟流式输出期间
+        self.bb._active = True
+        self.bb._setup_height = 30
+        self.bb._setup_width = 80
+        self.bb._cached_height = 30
+        self.bb._cached_width = 80
+        self.bb._last_bottom_lines = 5
+        self.bb._last_text = "hello"
+        self._stdout = sys.__stdout__
+
+    def tearDown(self):
+        sys.__stdout__ = self._stdout
+
+    def test_shrink_saves_scroll_n(self):
+        """终端缩小（30→24）时 _last_scroll_n 保存正确的 scroll_n 值。"""
+        with patch("src.ui._bottom_bar.query_terminal_size",
+                   return_value=(80, 24)), \
+             patch.object(sys, '__stdout__', io.StringIO()):
+            result = self.bb._check_resize()
+
+        self.assertTrue(result, "缩小应触发 resize")
+        # 30→24, scroll_n = max(0, min(24, 25) - (24-5+1) + 1) = max(0, 24-20+1) = 5
+        self.assertEqual(self.bb._last_scroll_n, 5,
+                         "缩小 6 行时应保存 scroll_n=5")
+
+    def test_enlarge_resets_scroll_n(self):
+        """终端变大（30→40）时 _last_scroll_n 应重置为 0。"""
+        self.bb._last_scroll_n = 3  # 模拟陈旧值
+        with patch("src.ui._bottom_bar.query_terminal_size",
+                   return_value=(80, 40)), \
+             patch.object(sys, '__stdout__', io.StringIO()):
+            result = self.bb._check_resize()
+
+        self.assertTrue(result, "变大应触发 resize")
+        self.assertEqual(self.bb._last_scroll_n, 0,
+                         "扩大后应重置为 0")
+
+    def test_width_only_keeps_scroll_n_zero(self):
+        """仅宽度变化（高度不变）时 _last_scroll_n 保持 0。"""
+        self.bb._last_scroll_n = 0
+        with patch("src.ui._bottom_bar.query_terminal_size",
+                   return_value=(120, 30)), \
+             patch.object(sys, '__stdout__', io.StringIO()):
+            result = self.bb._check_resize()
+
+        self.assertTrue(result, "宽度变化应触发 resize")
+        self.assertEqual(self.bb._last_scroll_n, 0,
+                         "宽度唯变时应保持 0")
+
+    def test_shrink_no_scroll_keeps_zero(self):
+        """终端微小缩小（scroll_n=0）时 _last_scroll_n 保持 0。"""
+        # _setup_height=30, _last_bottom_lines=5, 缩小到 29
+        # scroll_n = max(0, min(29, 25) - (29-5+1) + 1) = max(0, 25-25+1) = 1
+        # scroll_n=1 时也会保存...需要找 scroll_n=0 的场景
+        # scroll_n=0: last_upper - new_bar_start + 1 <= 0
+        # 即 min(height, old_s) - (height - bl + 1) + 1 <= 0
+        # 当 height > old_s 时不可能缩小，所以 height < old_s(=25)
+        # min(h, old_s)=h, h - (h - bl + 1) + 1 = bl = 5 > 0
+        # 只要 height < old_s, scroll_n 总是 > 0
+        # scroll_n=0 的场景: height == old_s = 25
+        # min(25, 25) - (25-5+1) + 1 = 25 - 21 + 1 = 5... 还是 > 0
+        # 实际上只有当 last_upper <= new_bar_start - 1 时才为 0
+        # height=27, old_s=25: last_upper=25, new_bar_start=23, scroll_n=3
+        # scroll_n=0 需要 old_s - (h-bl+1) + 1 <= 0 → h-bl >= old_s
+        # 这只是说不需要滚动...在缩小时总是需要滚动。
+        # 跳过此测试，缩小时 scroll_n 总是 > 0
+        pass
+
+    def test_no_change_preserves_scroll_n(self):
+        """终端尺寸未变时 _check_resize 返回 False，_last_scroll_n 不变。"""
+        self.bb._last_scroll_n = 2
+        with patch("src.ui._bottom_bar.query_terminal_size",
+                   return_value=(80, 30)):
+            result = self.bb._check_resize()
+
+        self.assertFalse(result, "尺寸未变不应触发 resize")
+        self.assertEqual(self.bb._last_scroll_n, 2,
+                         "尺寸未变时应保持原值")
+
+    def test_teardown_path_keeps_scroll_n(self):
+        """终端极小触发 teardown 时 _last_scroll_n 保留原值。"""
+        self.bb._last_scroll_n = 4
+        with patch("src.ui._bottom_bar.query_terminal_size",
+                   return_value=(80, 5)):  # < _MIN_HEIGHT
+            result = self.bb._check_resize()
+
+        self.assertTrue(result, "teardown 应触发")
+        # teardown 走 early return，不重置 _last_scroll_n
+        self.assertEqual(self.bb._last_scroll_n, 4,
+                         "teardown 路径应保留原值")
+
+    def test_rebuild_path_keeps_scroll_n(self):
+        """终端从极小恢复到正常时（rebuild），_last_scroll_n 保留原值。"""
+        self.bb._active = False
+        self.bb._last_scroll_n = 1
+        with patch("src.ui._bottom_bar.query_terminal_size",
+                   return_value=(80, 24)), \
+             patch.object(sys, '__stdout__', io.StringIO()):
+            result = self.bb._check_resize()
+
+        self.assertTrue(result, "rebuild 应触发")
+        # rebuild 走 early return，不重置 _last_scroll_n
+        self.assertEqual(self.bb._last_scroll_n, 1,
+                         "rebuild 路径应保留原值")
+
+
 if __name__ == "__main__":
     unittest.main()

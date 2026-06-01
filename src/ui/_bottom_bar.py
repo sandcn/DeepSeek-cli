@@ -149,6 +149,8 @@ class _BottomBar:
         self._sigwinch_registered: bool = False  # 防止重复注册
         # ── 终端缩到极小后恢复时保存的输入文本 ──
         self._saved_text_before_shrink: str | None = None  # Bug 6: teardown 时保存，rebuild 时恢复
+        # ── resize scroll_n 缓存（供 Fix A 光标定位使用） ──
+        self._last_scroll_n: int = 0  # 最近一次 _check_resize shrink 的滚动行数
 
     # ── 动态行数计算 ──────────────────────────────────────
 
@@ -509,6 +511,9 @@ class _BottomBar:
                 self._completion_popup_height = 0
                 self._completion_items = []
 
+                # ★ 重置 scroll_n 缓存（默认值，enlarge/不变时保持 0）
+                self._last_scroll_n = 0
+
                 saved_text = self._last_text
                 # ★ 终端缩小时，旧上屏末行落入新底部栏区域会被分隔线覆盖。
                 #   全屏滚动后上滚最小行数，使旧末行刚好落到新滚动区末行。
@@ -525,6 +530,7 @@ class _BottomBar:
                     scroll_n = max(0, last_upper - new_bar_start + 1)
                     if scroll_n > 0:
                         self._scroll_up_upper(scroll_n, out, height)
+                        self._last_scroll_n = scroll_n  # ★ 保存 scroll_n 供 Fix A 使用
                     else:
                         # 未上滚时，旧底部栏残留可能高于新底部栏区域，需单独清除
                         remnant_start = max(1, last_upper + 1)
