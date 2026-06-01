@@ -518,7 +518,10 @@ class _BottomBar:
                     out.write("\033[r")  # 全屏滚动模式
                     # 旧上屏末行行号（截断后仍可见的最高行号）
                     last_upper = min(height, self._setup_height - self._last_bottom_lines)
-                    new_bar_start = height - _BOTTOM_MIN_LINES + 1  # setup() 用最小底部栏行数
+                    # ★ 修复: 使用实际的 _last_bottom_lines 而非 _BOTTOM_MIN_LINES，
+                    #   使滚动量准确匹配底部栏实际高度（多行输入+补全弹窗时
+                    #   _last_bottom_lines > _BOTTOM_MIN_LINES）。
+                    new_bar_start = max(1, height - self._last_bottom_lines + 1)
                     scroll_n = max(0, last_upper - new_bar_start + 1)
                     if scroll_n > 0:
                         self._scroll_up_upper(scroll_n, out, height)
@@ -533,10 +536,11 @@ class _BottomBar:
                 #   setup() 将新底部栏画在更下方的行，旧底部栏残留
                 #   仍占据旧位置，后续 force_redraw() 基于新高度计算的
                 #   清除范围不会触及旧位置。需在此清除旧底部栏区域。
-                if height > self._setup_height:
+                elif height > self._setup_height:
                     out = sys.__stdout__
                     old_bar_start = max(1, self._setup_height - self._last_bottom_lines + 1)
-                    new_bar_start = height - _BOTTOM_MIN_LINES + 1
+                    # ★ 修复: 使用实际的 _last_bottom_lines，确保鬼影清除范围匹配
+                    new_bar_start = max(1, height - self._last_bottom_lines + 1)
                     if old_bar_start < new_bar_start:
                         for r in range(old_bar_start, new_bar_start):
                             out.write(f"\033[{r};1H\033[K")

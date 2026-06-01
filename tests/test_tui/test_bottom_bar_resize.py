@@ -510,11 +510,11 @@ class TestHeightIncreaseGhost(unittest.TestCase):
         sys.__stdout__ = self._stdout
 
     def test_height_increase_clears_old_bar_area(self):
-        """终端从 24→30 行变高时，应清除旧底部栏位置（19-25行）的鬼影。
+        """终端从 24→30 行变高时，应清除旧底部栏位置（19-24行）的鬼影。
 
         old_bar_start = max(1, 24 - 6 + 1) = 19
-        new_bar_start = 30 - 5 + 1 = 26
-        应清除行 19-25（共 7 行）。
+        new_bar_start = 30 - 6 + 1 = 25（使用 _last_bottom_lines=6）
+        应清除行 19-24（共 6 行）。
         """
         buf = io.StringIO()
         with patch("src.ui._bottom_bar.query_terminal_size",
@@ -525,7 +525,7 @@ class TestHeightIncreaseGhost(unittest.TestCase):
         output = buf.getvalue()
 
         # 验证清除序列存在于输出中
-        for r in range(19, 26):
+        for r in range(19, 25):
             expected = f"\033[{r};1H\033[K"
             self.assertIn(expected, output,
                           f"终端变高时应清除旧底部栏行 {r}")
@@ -535,12 +535,8 @@ class TestHeightIncreaseGhost(unittest.TestCase):
 
         构造场景：终端从 24→25 行，_last_bottom_lines=19：
           old_bar_start = max(1, 24 - 19 + 1) = 6
-          new_bar_start = 25 - _BOTTOM_MIN_LINES + 1 = 21
-          old_bar_start(6) < new_bar_start(21)，需清除行 6-20（共 15 行）。
-
-        注：在正常的 _last_bottom_lines ≥ 5 约束下，
-        old_bar_start < new_bar_start 恒成立（见 _check_resize 守卫注释），
-        因此"无需清除"场景不可达，本测试验证大范围清除的正确性。
+          new_bar_start = max(1, 25 - 19 + 1) = 7（使用 _last_bottom_lines=19）
+          old_bar_start(6) < new_bar_start(7)，需清除行 6（仅 1 行）。
         """
         # 模拟底部栏占满终端（_last_bottom_lines = 19，极小滚动区）
         self.bb._last_bottom_lines = 19
@@ -553,7 +549,7 @@ class TestHeightIncreaseGhost(unittest.TestCase):
 
         output = buf.getvalue()
 
-        for r in range(6, 21):
+        for r in range(6, 7):
             expected = f"\033[{r};1H\033[K"
             self.assertIn(expected, output,
                           f"大面积旧底部栏越界行 {r} 应被清除")

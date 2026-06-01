@@ -173,7 +173,13 @@ class RenderEngine:
                             target = max(1, min(_pre_height - _pre_bottom + 1, new_s))
                             sys.__stdout__.write(f"\033[{target};1H")
                         else:
-                            self.ensure_cursor_upper()
+                            # ★ 修复: 终端变小时也定位到旧内容末尾，避免在新 scroll_end
+                            #   写内容触发 DECSTBM 滚动导致旧内容被逐行滚出清空。
+                            #   旧内容末行 = _pre_height - _pre_bottom + 1，
+                            #   但缩小后被底部栏挡住的部分需要放弃，所以 clamp 到 new_s。
+                            old_end = max(1, _pre_height - _pre_bottom + 1)
+                            target = max(1, min(old_end, new_s))
+                            sys.__stdout__.write(f"\033[{target};1H")
                     else:
                         self.ensure_cursor_upper()
                     for cmd in commands:
