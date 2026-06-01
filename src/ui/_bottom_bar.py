@@ -459,10 +459,20 @@ class _BottomBar:
             height = self._term_height()
             total = self._bottom_lines
             scroll_end = height - total
-            self._last_bottom_lines = total
+            old_bottom_lines = self._last_bottom_lines
+            delta = total - old_bottom_lines
+            old_scroll_end = height - old_bottom_lines
             out = sys.__stdout__
             out.write("\0337")
+
+            # ★ 如果底部栏扩大，在禁用滚动区域之前上滚上屏内容
+            if delta > 0 and old_scroll_end >= 1:
+                out.write(f"\033[{old_scroll_end};1H")
+                out.write(f"\033[{delta}S")
+
             out.write("\033[r")                    # 临时退出滚动区域（此后的写入必须使用绝对定位，禁止产生 \n）
+
+            self._last_bottom_lines = total        # ★ 移至 ANSI 序列之后更新
 
             # ★ 终端高度不足以容纳底部栏 → 清理旧行后跳过绘制
             if scroll_end < 1:
@@ -473,8 +483,9 @@ class _BottomBar:
                 out.flush()
                 return
 
-            # 清除所有底部行
-            for r in range(scroll_end + 1, height + 1):
+            # 清除所有底部行（使用旧 scroll_end 起始，不擦穿上屏）
+            clear_start = old_scroll_end + 1
+            for r in range(clear_start, height + 1):
                 out.write(f"\033[{r};1H\033[K")
 
             self._draw_all_locked(out, height)
@@ -528,15 +539,26 @@ class _BottomBar:
             else:
                 new_status = self._format_status()
 
+            old_bottom_lines = self._last_bottom_lines
             scroll_end = height - total
+            delta = total - old_bottom_lines
+            old_scroll_end = height - old_bottom_lines
             self._last_refresh = time.monotonic()
             self._last_status = new_status
-            self._last_bottom_lines = total
 
             out = sys.__stdout__
             out.write("\0337")                       # 保存光标
+
+            # ★ 如果底部栏扩大（如输入变长），在禁用滚动区域之前
+            #   先将上屏内容上滚 delta 行，使被底部栏覆盖的旧上屏
+            #   最后一行内容移至屏幕内，避免后续 clear 误擦。
+            if delta > 0 and old_scroll_end >= 1:
+                out.write(f"\033[{old_scroll_end};1H")
+                out.write(f"\033[{delta}S")
+
             out.write("\033[r")                       # 临时退出滚动区域
 
+            self._last_bottom_lines = total           # ★ 移至 ANSI 序列之后更新
             # ★ 终端高度不足以容纳底部栏 → 清理旧行后跳过绘制
             if scroll_end < 1:
                 for r in range(1, height + 1):
@@ -547,8 +569,9 @@ class _BottomBar:
                 self._last_cursor_pos = self._input_cursor_pos
                 return
 
-            # ★ 清除底部行
-            for r in range(scroll_end + 1, height + 1):
+            # ★ 清除底部行（使用旧 scroll_end 起始，不擦穿上屏）
+            clear_start = old_scroll_end + 1
+            for r in range(clear_start, height + 1):
                 out.write(f"\033[{r};1H\033[K")
 
             r1 = height - total + 1                  # 分隔线
@@ -651,7 +674,10 @@ class _BottomBar:
             # ★ total/scroll_end 在锁内计算，确保 _last_text 已是最新
             total = self._bottom_lines
             scroll_end = height - total
-            self._last_bottom_lines = total              # 锁内写入，避免竞态
+            old_bottom_lines = self._last_bottom_lines
+            delta = total - old_bottom_lines
+            old_scroll_end = height - old_bottom_lines
+            # self._last_bottom_lines 移至 ANSI 序列之后更新
             if status_changed:
                 self._last_status = new_status           # 锁内写入，避免竞态
             # ★ 独立 if：_input_cursor_pos 的更新不应依赖 status_changed 的真假。
@@ -671,7 +697,15 @@ class _BottomBar:
             self._last_cursor_pos = self._input_cursor_pos
             out = sys.__stdout__
             out.write("\0337")                       # 保存光标（内容区位置）
+
+            # ★ 如果底部栏扩大，在禁用滚动区域之前上滚上屏内容
+            if delta > 0 and old_scroll_end >= 1:
+                out.write(f"\033[{old_scroll_end};1H")
+                out.write(f"\033[{delta}S")
+
             out.write("\033[r")                       # 临时退出滚动区域
+
+            self._last_bottom_lines = total           # ★ 移至 ANSI 序列之后更新
 
             # ★ 终端高度不足以容纳底部栏 → 清理旧行后跳过绘制
             if scroll_end < 1:
@@ -683,8 +717,9 @@ class _BottomBar:
                 out.flush()
                 return
 
-            # ★ 清除底部行
-            for r in range(scroll_end + 1, height + 1):
+            # ★ 清除底部行（使用旧 scroll_end 起始，不擦穿上屏）
+            clear_start = old_scroll_end + 1
+            for r in range(clear_start, height + 1):
                 out.write(f"\033[{r};1H\033[K")
 
             # ── 分隔线（灰色） ──
@@ -1041,10 +1076,19 @@ class _BottomBar:
             height = self._term_height()
             total = self._bottom_lines  # 已包含 popup 高度
             scroll_end = height - total
-            self._last_bottom_lines = total
+            old_bottom_lines = self._last_bottom_lines
+            delta = total - old_bottom_lines
+            old_scroll_end = height - old_bottom_lines
+
+            # ★ 如果底部栏扩大，在禁用滚动区域之前上滚上屏内容
+            if delta > 0 and old_scroll_end >= 1:
+                out.write(f"\033[{old_scroll_end};1H")
+                out.write(f"\033[{delta}S")
 
             # 临时退出滚动区域（此后的写入必须使用绝对定位，禁止产生 \n）
             out.write("\033[r")
+
+            self._last_bottom_lines = total           # ★ 移至 ANSI 序列之后更新
 
             # ★ 终端高度不足以容纳底部栏 → 清理旧行后恢复
             if scroll_end < 1:
@@ -1055,8 +1099,9 @@ class _BottomBar:
                 out.flush()
                 return
 
-            # ★ 清除底部行
-            for r in range(scroll_end + 1, height + 1):
+            # ★ 清除底部行（使用旧 scroll_end 起始，不擦穿上屏）
+            clear_start = old_scroll_end + 1
+            for r in range(clear_start, height + 1):
                 out.write(f"\033[{r};1H\033[K")
 
             # 全量重绘底部栏（含输入区内的补全弹窗）
@@ -1115,10 +1160,20 @@ class _BottomBar:
             height = self._term_height()
             total = self._bottom_lines  # 已不含 popup 高度
             scroll_end = height - total
-            self._last_bottom_lines = total
+            old_bottom_lines = self._last_bottom_lines
+            delta = total - old_bottom_lines
+            old_scroll_end = height - old_bottom_lines
+
+            # ★ 如果底部栏扩大（此场景不会发生，但保持对称），
+            #   在禁用滚动区域之前上滚上屏内容
+            if delta > 0 and old_scroll_end >= 1:
+                out.write(f"\033[{old_scroll_end};1H")
+                out.write(f"\033[{delta}S")
 
             # 临时退出滚动区域（此后的写入必须使用绝对定位，禁止产生 \n）
             out.write("\033[r")
+
+            self._last_bottom_lines = total           # ★ 移至 ANSI 序列之后更新
 
             # ★ 终端高度不足以容纳底部栏 → 清理旧行后恢复
             if scroll_end < 1:
@@ -1129,8 +1184,9 @@ class _BottomBar:
                 out.flush()
                 return
 
-            # ★ 清除底部行
-            for r in range(scroll_end + 1, height + 1):
+            # ★ 清除底部行（使用旧 scroll_end 起始，覆盖旧弹窗区域）
+            clear_start = old_scroll_end + 1
+            for r in range(clear_start, height + 1):
                 out.write(f"\033[{r};1H\033[K")
 
             # 全量重绘底部栏（缩小后的区域）

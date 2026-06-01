@@ -442,9 +442,10 @@ class TestScrollUpUpperOrdering(unittest.TestCase):
         sys.__stdout__ = self._stdout
 
     def _capture_ansi_order(self, method_call):
-        """调用指定方法，捕获 ANSI 输出序列。"""
+        """调用指定方法，捕获 ANSI 输出序列（终端尺寸固定为 80x30）。"""
         buf = io.StringIO()
-        with patch.object(sys, '__stdout__', buf):
+        with patch.object(sys, '__stdout__', buf), \
+             patch("shutil.get_terminal_size", return_value=(80, 30)):
             method_call()
         return buf.getvalue()
 
