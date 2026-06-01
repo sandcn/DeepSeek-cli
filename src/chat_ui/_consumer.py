@@ -309,17 +309,22 @@ class ChatUIConsumer:
         self._bottom_bar.ensure_cursor_in_lower()
 
     def refresh_bottom_bar(self, text: str, cursor_pos: int = -1) -> None:
-        """刷新底部栏输入区。
+        """刷新底部栏输入区并定位光标到输入行。
 
         resize 检测由 _drain_queue() Stage 0 统一处理，此处不重复检测。
-        仅更新状态和重绘底部栏，光标定位由下一轮 _drain_queue() 的
-        _position_cursor() 统一处理，避免在此路径处理分屏光标定位。
+        force_redraw 之后立即调用 ensure_cursor_in_lower 将光标定位到
+        输入行，避免光标停留在上屏（内容区末行）。空闲期 Reader 线程
+        快速跳过时不执行 _position_cursor()，必须在此路径显式定位光标。
         """
         from ..ui._lock import output_lock
         with output_lock:
             self._bottom_bar._last_text = text
             self._bottom_bar._input_cursor_pos = len(text) if cursor_pos < 0 else cursor_pos
             self._bottom_bar.force_redraw()
+            # ★ 修复：force_redraw 将光标留在 scroll_end（内容区末行/上屏底部），
+            #   空闲期 Reader 线程快速跳过时不执行 _position_cursor()，
+            #   必须在此显式将光标定位到输入行，避免用户看到光标停留在上屏。
+            self._bottom_bar.ensure_cursor_in_lower()
 
     def redraw_bottom_bar(self) -> None:
         """重绘底部栏。
