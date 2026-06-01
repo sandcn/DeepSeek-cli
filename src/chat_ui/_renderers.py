@@ -86,16 +86,6 @@ class ContentRenderer:
         args = tuple(cmd[i] for i in arg_indices)
         method(*args)
 
-    # ── 上屏历史管理（已屏蔽） ──────────────────────
-    # TODO(v2): 移除 clear_screen_history / replay_upper_screen，
-    # 当前无调用方且为 No-op，保留仅防外部测试直接引用。
-
-    def clear_screen_history(self) -> None:
-        """清空上屏历史记录。已屏蔽为 No-op。"""
-
-    def replay_upper_screen(self) -> None:
-        """终端 resize 后重放上屏历史。已屏蔽为 No-op。"""
-
     # ── 内容渲染 ──────────────────────────────────────
 
     def _do_reasoning(self, text: str) -> None:
