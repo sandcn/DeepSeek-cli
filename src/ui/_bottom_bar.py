@@ -112,7 +112,7 @@ class _BottomBar:
         self._status_active = False  # 事件驱动：流式期间激活，结束后冻结
         self._tool_count = 0         # 本轮工具调用次数（仅主 Agent）
         self._tool_fail_count = 0    # 本轮失败工具数
-        self._last_bottom_lines = _BOTTOM_LINES  # 上次绘制的底部总行数
+        self._last_bottom_lines = _BOTTOM_MIN_LINES  # 上次绘制的底部总行数（最小 5: 2 分隔线+状态行 + 3 最小输入行）
         # ★ 光标位置（与 _last_text 在 output_lock 下原子更新）
         self._input_cursor_pos: int = -1  # echo 回调的 cursor_pos，-1=末尾
         self._last_cursor_pos: int = -1   # 上次光标位置，用于检测光标移动
@@ -437,7 +437,7 @@ class _BottomBar:
                 # ★ 重新保存 SCOSC（\0337 覆盖了保存槽），供 render_frame 使用
                 out.write("\033[s")
                 out.flush()
-        self._last_bottom_lines = _BOTTOM_LINES  # 恢复默认
+        self._last_bottom_lines = _BOTTOM_MIN_LINES  # 恢复默认
 
     # ── 刷新 ──────────────────────────────────────────────
 
@@ -483,8 +483,8 @@ class _BottomBar:
                 out.flush()
                 return
 
-            # 清除所有底部行（使用旧 scroll_end 起始，不擦穿上屏）
-            clear_start = old_scroll_end + 1
+            # 清除底部行（取新旧底部栏中较小者的起始行，缩小场景避免擦穿上屏）
+            clear_start = max(old_scroll_end, scroll_end) + 1
             for r in range(clear_start, height + 1):
                 out.write(f"\033[{r};1H\033[K")
 
@@ -570,7 +570,7 @@ class _BottomBar:
                 return
 
             # ★ 清除底部行（使用旧 scroll_end 起始，不擦穿上屏）
-            clear_start = old_scroll_end + 1
+            clear_start = max(old_scroll_end, scroll_end) + 1
             for r in range(clear_start, height + 1):
                 out.write(f"\033[{r};1H\033[K")
 
@@ -718,7 +718,7 @@ class _BottomBar:
                 return
 
             # ★ 清除底部行（使用旧 scroll_end 起始，不擦穿上屏）
-            clear_start = old_scroll_end + 1
+            clear_start = max(old_scroll_end, scroll_end) + 1
             for r in range(clear_start, height + 1):
                 out.write(f"\033[{r};1H\033[K")
 
@@ -1100,7 +1100,7 @@ class _BottomBar:
                 return
 
             # ★ 清除底部行（使用旧 scroll_end 起始，不擦穿上屏）
-            clear_start = old_scroll_end + 1
+            clear_start = max(old_scroll_end, scroll_end) + 1
             for r in range(clear_start, height + 1):
                 out.write(f"\033[{r};1H\033[K")
 
@@ -1185,7 +1185,7 @@ class _BottomBar:
                 return
 
             # ★ 清除底部行（使用旧 scroll_end 起始，覆盖旧弹窗区域）
-            clear_start = old_scroll_end + 1
+            clear_start = max(old_scroll_end, scroll_end) + 1
             for r in range(clear_start, height + 1):
                 out.write(f"\033[{r};1H\033[K")
 
