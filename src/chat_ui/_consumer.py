@@ -193,6 +193,9 @@ class ChatUIConsumer:
             sys.__stdout__.write(f"\033[{height};1H")
             sys.__stdout__.flush()
             self._bottom_bar.setup()
+            # ★ 同步渲染器 Console 宽度：resume 期间终端尺寸可能已变化，
+            #   必须立即同步以避免 Reader 线程使用旧宽度换行。
+            self._engine._sync_renderer_width()
             # 重新启动引擎
             self._engine.start()
 
@@ -249,6 +252,14 @@ class ChatUIConsumer:
         # ★ 2. 终端尺寸检测
         with _try_acquire_output_lock(name="refresh.resize", timeout=1.0) as locked:
             resized = locked and self._bottom_bar.check_resize()
+
+        # ★ 2.5 同步渲染器 Console 宽度（resize 后必须同步，消除旧宽度换行错位）
+        #    与 _drain_queue() Stage 0b/2.5 的处理保持一致：check_resize() 后
+        #    必须调用 _sync_renderer_width() 更新所有活跃渲染器的 Console.width，
+        #    使后续渲染立即使用新宽度换行。不持锁——_sync_renderer_width() 仅
+        #    操作 _RenderState 中的渲染器内部属性，无需 output_lock。
+        if resized:
+            self._engine._sync_renderer_width()
 
         # ★ 3. 底部栏重绘 + 光标定位（有活跃状态或尺寸变化时执行）
         #    skip_resize_check=True：resize 已在步骤 2 检测过，避免双 _check_resize() 窗口。

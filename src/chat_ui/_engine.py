@@ -248,18 +248,24 @@ class RenderEngine:
         rr = rs.reasoning
         if rr is not None and hasattr(rr, '_output') and hasattr(rr._output, '_console'):
             rr._output._console.width = new_width
-            rr._output._width = new_width
-            rr._output._last_width_refresh = now
+            if hasattr(rr._output, '_width'):
+                rr._output._width = new_width
+            if hasattr(rr._output, '_last_width_refresh'):
+                rr._output._last_width_refresh = now
 
         # 内容渲染器的 OutputAdapter
         cr = rs.content
         if cr is not None and hasattr(cr, '_output') and hasattr(cr._output, '_console'):
             cr._output._console.width = new_width
-            cr._output._width = new_width
-            cr._output._last_width_refresh = now
+            if hasattr(cr._output, '_width'):
+                cr._output._width = new_width
+            if hasattr(cr._output, '_last_width_refresh'):
+                cr._output._last_width_refresh = now
 
         # 工具输出适配器的 OutputAdapter（可能尚未惰性创建）
         if rs._tool_adapter is not None and hasattr(rs._tool_adapter, '_console'):
             rs._tool_adapter._console.width = new_width
-            rs._tool_adapter._width = new_width
-            rs._tool_adapter._last_width_refresh = now
+            if hasattr(rs._tool_adapter, '_width'):
+                rs._tool_adapter._width = new_width
+            if hasattr(rs._tool_adapter, '_last_width_refresh'):
+                rs._tool_adapter._last_width_refresh = now
