@@ -7,7 +7,6 @@ Layer 4 — 组合 _state + _dispatcher + _renderers + _engine + _completion
 from __future__ import annotations
 
 import logging
-import shutil
 import sys
 import time
 from typing import TYPE_CHECKING, Any, ClassVar
@@ -189,14 +188,13 @@ class ChatUIConsumer:
 
         from ..ui._lock import output_lock
         with output_lock:
-            height = shutil.get_terminal_size().lines
-            sys.__stdout__.write(f"\033[{height};1H")
+            # ★ 用固定大行号 \033[9999;1H 将光标定位到终端末行（终端自动 clamp），
+            #   为 DECSTBM 设置做准备。resize 检测由 _drain_queue() Stage 0 统一处理。
+            sys.__stdout__.write("\033[9999;1H")
             sys.__stdout__.flush()
             self._bottom_bar.setup()
-            # ★ 同步渲染器 Console 宽度：resume 期间终端尺寸可能已变化，
-            #   必须立即同步以避免 Reader 线程使用旧宽度换行。
-            self._engine._sync_renderer_width()
-            # 重新启动引擎
+            # 重新启动引擎（首轮 _drain_queue() 的 Stage 0 会自动执行
+            # check_resize() + _sync_renderer_width()）
             self._engine.start()
 
     # ═══════════════════════════════════════════════════════

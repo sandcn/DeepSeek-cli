@@ -336,10 +336,10 @@ class TestOutputConsumerWithChatUI:
 # ===============================================================
 
 class TestChatUIResizeSync:
-    """验证 refresh() 和 resume() 在 resize 后同步渲染器宽度"""
+    """验证 resize 后渲染器宽度同步行为（仅保留在 _drain_queue() Stage 0）"""
 
-    def test_resume_triggers_sync(self):
-        """resume() 应始终调用 _sync_renderer_width()"""
+    def test_resume_no_sync(self):
+        """resume() 不应直接调用 _sync_renderer_width()，由首轮 _drain_queue() 处理"""
         bus = DisplayEventBus()
         chat_ui = ChatUIConsumer(event_bus=bus)
         chat_ui._started = True  # 满足 resume 的前置条件
@@ -355,4 +355,4 @@ class TestChatUIResizeSync:
         chat_ui._engine.start = lambda: None
 
         chat_ui.resume()
-        assert sync_called, "resume() 应调用 _sync_renderer_width()"
+        assert not sync_called, "resume() 不应直接调用 _sync_renderer_width()，resize 处理统一在 _drain_queue() Stage 0"
