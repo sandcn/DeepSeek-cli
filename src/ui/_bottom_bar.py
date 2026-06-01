@@ -54,6 +54,7 @@ _BOTTOM_LINES = 3           # 底部固定行数
 _BOTTOM_MIN_HEIGHT = 10     # 终端太小时跳过底部栏
 _BOTTOM_REFRESH_MS = 0.05   # 底部栏刷新节流（50ms）
 _MIN_INPUT_ROWS = 3         # 输入区最小行数（空输入时至少显示 3 行）
+_BOTTOM_MIN_LINES = 5       # setup() 中最小底部栏总行数（2 分隔线+状态行 + 3 最小输入行）
 
 # ── ANSI 颜色常量（优雅视觉风） ─────────────────────
 _COLOR_ACCENT = "\033[38;5;39m"       # 青色强调（提示符/模型名/状态）
@@ -517,7 +518,7 @@ class _BottomBar:
                     out.write("\033[r")  # 全屏滚动模式
                     # 旧上屏末行行号（截断后仍可见的最高行号）
                     last_upper = min(height, self._setup_height - self._last_bottom_lines)
-                    new_bar_start = height - 5 + 1  # setup() 用最小 5 行底部栏
+                    new_bar_start = height - _BOTTOM_MIN_LINES + 1  # setup() 用最小底部栏行数
                     scroll_n = max(0, last_upper - new_bar_start + 1)
                     if scroll_n > 0:
                         self._scroll_up_upper(scroll_n, out, height)
@@ -527,6 +528,18 @@ class _BottomBar:
                         if remnant_start < new_bar_start:
                             for r in range(remnant_start, new_bar_start):
                                 out.write(f"\033[{r};1H\033[K")
+                    out.flush()
+                # ★ 终端变大时，旧底部栏位置上移进入上屏成为"鬼影"。
+                #   setup() 将新底部栏画在更下方的行，旧底部栏残留
+                #   仍占据旧位置，后续 force_redraw() 基于新高度计算的
+                #   清除范围不会触及旧位置。需在此清除旧底部栏区域。
+                if height > self._setup_height:
+                    out = sys.__stdout__
+                    old_bar_start = max(1, self._setup_height - self._last_bottom_lines + 1)
+                    new_bar_start = height - _BOTTOM_MIN_LINES + 1
+                    if old_bar_start < new_bar_start:
+                        for r in range(old_bar_start, new_bar_start):
+                            out.write(f"\033[{r};1H\033[K")
                     out.flush()
                 self._active = False
                 self.setup()  # RLock 允许可重入嵌套

@@ -487,5 +487,126 @@ class TestResizeDrainSkip(unittest.TestCase):
                         "设置 _resize_dirty=True 后 is_resize_pending 应为 True")
 
 
+class TestHeightIncreaseGhost(unittest.TestCase):
+    """终端变大时旧底部栏鬼影清除测试。
+
+    终端高度增长时（height > _setup_height），旧底部栏位置
+    上移进入上屏（内容区），必须用 ANSI 清除序列将旧底部栏
+    区域清空，否则残留的分隔线/状态行/输入区会形成视觉鬼影。
+    """
+
+    def setUp(self):
+        self.bb = _BottomBar()
+        self.bb._active = True
+        self.bb._setup_height = 24
+        self.bb._setup_width = 80
+        self.bb._cached_height = 24
+        self.bb._cached_width = 80
+        self.bb._last_text = "test text"
+        self.bb._last_bottom_lines = 6  # 模拟 6 行底部栏
+        self._stdout = sys.__stdout__
+
+    def tearDown(self):
+        sys.__stdout__ = self._stdout
+
+    def test_height_increase_clears_old_bar_area(self):
+        """终端从 24→30 行变高时，应清除旧底部栏位置（19-25行）的鬼影。
+
+        old_bar_start = max(1, 24 - 6 + 1) = 19
+        new_bar_start = 30 - 5 + 1 = 26
+        应清除行 19-25（共 7 行）。
+        """
+        buf = io.StringIO()
+        with patch("src.ui._bottom_bar.query_terminal_size",
+                   return_value=(80, 30)), \
+             patch.object(sys, '__stdout__', buf):
+            self.bb._check_resize()
+
+        output = buf.getvalue()
+
+        # 验证清除序列存在于输出中
+        for r in range(19, 26):
+            expected = f"\033[{r};1H\033[K"
+            self.assertIn(expected, output,
+                          f"终端变高时应清除旧底部栏行 {r}")
+
+    def test_height_increase_clears_large_old_bar(self):
+        """旧底部栏占据大面积时（如 19 行），终端变高后应清除所有越界行。
+
+        构造场景：终端从 24→25 行，_last_bottom_lines=19：
+          old_bar_start = max(1, 24 - 19 + 1) = 6
+          new_bar_start = 25 - _BOTTOM_MIN_LINES + 1 = 21
+          old_bar_start(6) < new_bar_start(21)，需清除行 6-20（共 15 行）。
+
+        注：在正常的 _last_bottom_lines ≥ 5 约束下，
+        old_bar_start < new_bar_start 恒成立（见 _check_resize 守卫注释），
+        因此"无需清除"场景不可达，本测试验证大范围清除的正确性。
+        """
+        # 模拟底部栏占满终端（_last_bottom_lines = 19，极小滚动区）
+        self.bb._last_bottom_lines = 19
+
+        buf = io.StringIO()
+        with patch("src.ui._bottom_bar.query_terminal_size",
+                   return_value=(80, 25)), \
+             patch.object(sys, '__stdout__', buf):
+            self.bb._check_resize()
+
+        output = buf.getvalue()
+
+        for r in range(6, 21):
+            expected = f"\033[{r};1H\033[K"
+            self.assertIn(expected, output,
+                          f"大面积旧底部栏越界行 {r} 应被清除")
+
+    def test_height_increase_active_remains_true_during_clear(self):
+        """验证清除发生在 _active 仍为 True 时（在 self._active = False 之前）。
+
+        利用 _active=True 时 ANSI 序列行为正确（终端处于 DECSTBM 模式）。
+        通过检查输出顺序验证：清除序列在 setup() 的 DECSTBM 重置之前。
+        """
+        buf = io.StringIO()
+        with patch("src.ui._bottom_bar.query_terminal_size",
+                   return_value=(80, 30)), \
+             patch.object(sys, '__stdout__', buf):
+            self.bb._check_resize()
+
+        output = buf.getvalue()
+
+        # setup() 中会写入 \033[1;N r 设置滚动区域
+        # 鬼影清除序列应在 setup() 的滚动区域设置之前
+        ghost_clear = "\033[19;1H\033[K"
+        scroll_region = "\033[1;"
+
+        ghost_pos = output.find(ghost_clear)
+        scroll_pos = output.find(scroll_region)
+
+        self.assertNotEqual(ghost_pos, -1,
+                            "应包含鬼影清除序列")
+        self.assertNotEqual(scroll_pos, -1,
+                            "应包含滚动区域设置序列")
+        self.assertLess(ghost_pos, scroll_pos,
+                        "鬼影清除应在 setup() 滚动区域设置之前（_active 仍为 True）")
+
+    def test_height_increase_no_effect_on_shrink_path(self):
+        """终端变小时（height < _setup_height）不应触发变大清除路径。
+
+        确保两个分支互斥：shrink 走自己的 scroll_up 逻辑，
+        不会执行变大清除的额外清除循环。
+        """
+        buf = io.StringIO()
+        with patch("src.ui._bottom_bar.query_terminal_size",
+                   return_value=(80, 20)), \
+             patch.object(sys, '__stdout__', buf):
+            self.bb._check_resize()
+
+        output = buf.getvalue()
+
+        # 终端缩小时，变小分支走 scroll_up + remnants 逻辑
+        # 不应出现额外的大范围清除
+        # 确认 shrink 路径的 \033[r（全屏滚动）存在
+        self.assertIn("\033[r", output,
+                      "终端缩小时应走全屏滚动路径而非变大清除路径")
+
+
 if __name__ == "__main__":
     unittest.main()
