@@ -151,6 +151,9 @@ class _BottomBar:
         self._saved_text_before_shrink: str | None = None  # Bug 6: teardown 时保存，rebuild 时恢复
         # ── resize scroll_n 缓存（供 Fix A 光标定位使用） ──
         self._last_scroll_n: int = 0  # 最近一次 _check_resize shrink 的滚动行数
+        # ── 最近一次 DECSTBM 设置时的 scroll_end 缓存 ──
+        # 供 ensure_cursor_upper() 使用，确保光标定位与 DECSTBM 保持一致。
+        self._last_scroll_end: int = 0
 
     # ── 动态行数计算 ──────────────────────────────────────
 
@@ -540,6 +543,7 @@ class _BottomBar:
                 self._last_bottom_lines = self._bottom_lines  # 基于实际 _last_text + 补全状态
 
                 scroll_end = height - self._last_bottom_lines
+                self._last_scroll_end = scroll_end  # 缓存 DECSTBM scroll_end
                 if scroll_end >= 1:
                     out.write(f"\033[1;{scroll_end}r")  # 设置 DECSTBM
                 out.write("\0337")
@@ -555,20 +559,45 @@ class _BottomBar:
 
     # ── 光标定位（渲染时在上屏/下屏间切换） ───────────────
 
+    def sync_bottom_lines(self) -> None:
+        """同步当前 DECSTBM 滚动区域与 _bottom_lines 缓存值。
+
+        当 _bottom_lines 变化但不触发 resize 时（如用户输入变长/补全弹窗弹出），
+        此方法将最新的 _bottom_lines 转换为 scroll_end 并写入 DECSTBM ANSI 序列，
+        同步更新 _last_scroll_end 缓存，确保后续 ensure_cursor_upper() 定位准确。
+
+        调用方须持有 output_lock。
+        在 _drain_queue() Stage 1 中 ensure_cursor_upper() 之前调用。
+        """
+        if not self._active:
+            return
+        height = self._term_height()
+        scroll_end = height - self._bottom_lines
+        if scroll_end == self._last_scroll_end:
+            return
+        if scroll_end < 1:
+            scroll_end = height
+        self._last_scroll_end = scroll_end
+        out = sys.__stdout__
+        out.write(f"\033[1;{scroll_end}r")
+        # ★ 重新保存 SCOSC，供 ParallelDisplay.render_frame 使用
+        out.write(f"\033[{scroll_end};1H\033[s")
+        out.flush()
+
     def ensure_cursor_in_upper(self) -> None:
         """将光标移到上屏内容区底部（滚动区域内），准备渲染内容。
 
         渲染内容前调用：确保 renderer 写入内容时光标在正确区域，
         避免内容误写入底部固定栏（下屏）。
+        使用 _last_scroll_end 缓存值，保证光标定位与当前 DECSTBM 一致，
+        避免底部行数变化（补全弹窗/输入文本变化）时光标位置偏移导致覆盖旧内容。
         终端高度过小时将光标放在最后一行。
         """
         if not self._active:
             return
-        height = self._term_height()
-        scroll_end = height - self._bottom_lines  # 滚动区域最后一行（动态）
-        # ★ clamp 到 [1, height]，防止 total > height 时行号 ≤ 0
+        scroll_end = self._last_scroll_end  # 使用缓存值，与 DECSTBM 保持一致
         if scroll_end < 1:
-            scroll_end = height
+            scroll_end = self._term_height()
         sys.__stdout__.write(f"\033[{scroll_end};1H")
 
     def ensure_cursor_in_lower(self) -> None:
@@ -631,6 +660,7 @@ class _BottomBar:
                 pass  # Windows 无 SIGWINCH，静默忽略
 
         scroll_end = height - self._bottom_lines  # 动态滚动区域
+        self._last_scroll_end = scroll_end  # 缓存 DECSTBM scroll_end
         with _try_acquire_output_lock(name="bottom_bar.setup", timeout=1.0) as locked:
             if locked:
                 out = sys.__stdout__
@@ -728,6 +758,7 @@ class _BottomBar:
 
             self._draw_all_locked(out, height)
 
+            self._last_scroll_end = scroll_end  # 缓存 DECSTBM scroll_end
             out.write(f"\033[1;{scroll_end}r")   # 恢复滚动区域
             out.write("\0338")
             # ★ 重新保存 SCOSC，供 ParallelDisplay.render_frame 下一帧使用
@@ -833,6 +864,7 @@ class _BottomBar:
             for r in range(r2 + 1 + input_rows, height + 1):
                 out.write(f"\033[{r};1H\033[K")
 
+            self._last_scroll_end = scroll_end  # 缓存 DECSTBM scroll_end
             out.write(f"\033[1;{scroll_end}r")      # 恢复滚动区域
             out.write("\0338")                       # 恢复光标
             # ★ 重新保存 SCOSC，供 ParallelDisplay.render_frame 下一帧使用
@@ -997,6 +1029,7 @@ class _BottomBar:
             cursor_col = min(cursor_col, self._term_width())
 
             # 恢复滚动区域 + 光标
+            self._last_scroll_end = scroll_end  # 缓存 DECSTBM scroll_end
             out.write(f"\033[1;{scroll_end}r")
             out.write("\0338")                       # 恢复光标（内容区位置）
             # ★ 重新保存 SCOSC，供 ParallelDisplay.render_frame 下一帧使用
@@ -1244,6 +1277,7 @@ class _BottomBar:
             out.write("\0337")
             out.write("\033[r")
             self._draw_status_locked(out, height)
+            self._last_scroll_end = scroll_end  # 缓存 DECSTBM scroll_end
             out.write(f"\033[1;{scroll_end}r")
             out.write("\0338")
             # ★ 重新保存 SCOSC，供 ParallelDisplay.render_frame 下一帧使用
@@ -1365,6 +1399,7 @@ class _BottomBar:
                 out.write(f"\033[{r2};1H\033[K{status}")
             self._last_status = status
 
+            self._last_scroll_end = scroll_end  # 缓存 DECSTBM scroll_end
             out.write(f"\033[1;{scroll_end}r")
             out.write("\0338")
             # ★ 重新保存 SCOSC
@@ -1446,6 +1481,7 @@ class _BottomBar:
                 out.write(f"\033[{r2};1H\033[K{status}")
             self._last_status = status
 
+            self._last_scroll_end = scroll_end  # 缓存 DECSTBM scroll_end
             out.write(f"\033[1;{scroll_end}r")
             out.write("\0338")
             # ★ 重新保存 SCOSC

@@ -10,7 +10,7 @@ from __future__ import annotations
 import io
 import sys
 import unittest
-from unittest.mock import patch
+from unittest.mock import MagicMock, PropertyMock, patch
 
 from src.ui._bottom_bar import _BottomBar
 
@@ -237,6 +237,185 @@ class TestBottomBarFormatStatus(unittest.TestCase):
 
         self.assertIn("test-model", result)
         self.assertNotIn("t/s", result)
+
+
+class TestBottomBarLastScrollEnd(unittest.TestCase):
+    """验证 _last_scroll_end 缓存在 DECSTBM 设置处的正确同步。
+
+    核心场景：
+      1. _last_scroll_end 初始值为 0
+      2. setup() 后 _last_scroll_end 等于 height - _bottom_lines
+      3. ensure_cursor_in_upper() 使用 _last_scroll_end 而非动态计算
+      4. sync_bottom_lines() 在 _bottom_lines 变化时同步 DECSTBM
+      5. sync_bottom_lines() 在无变化时静默跳过
+    """
+
+    def setUp(self):
+        self.bb = _BottomBar()
+        self._stdout = sys.__stdout__
+
+    def tearDown(self):
+        sys.__stdout__ = self._stdout
+
+    def test_initial_value_is_zero(self):
+        """_last_scroll_end 初始值为 0。"""
+        self.assertEqual(self.bb._last_scroll_end, 0,
+                         "_last_scroll_end 初始值应为 0")
+
+    def test_setup_syncs_last_scroll_end(self):
+        """setup() 后 _last_scroll_end 应等于 height - _bottom_lines。"""
+        self.bb._cached_height = 30
+        self.bb._cached_width = 80
+
+        with patch.object(sys, '__stdout__', io.StringIO()), \
+             patch("src.ui._bottom_bar.query_terminal_size", return_value=(80, 30)):
+            self.bb.setup()
+
+        expected = 30 - (2 + max(3, 0))  # height - (_BOTTOM_LINES + 0 = 5) = 25
+        self.assertEqual(self.bb._last_scroll_end, 25,
+                         "setup() 后 _last_scroll_end 应为 25 (30-5)")
+
+    def test_ensure_cursor_upper_uses_cached_value(self):
+        """ensure_cursor_in_upper() 使用 _last_scroll_end 而非动态计算。"""
+        self.bb._active = True
+        self.bb._cached_height = 30
+        self.bb._cached_width = 80
+        self.bb._last_scroll_end = 25  # 模拟 setup 后的值
+        self.bb._last_text = "x" * 300  # 长文本使 _bottom_lines 很大
+
+        out = io.StringIO()
+        with patch.object(sys, '__stdout__', out):
+            self.bb.ensure_cursor_in_upper()
+
+        # 应输出 \033[25;1H（用缓存值 25），而非动态计算的更小值
+        output = out.getvalue()
+        self.assertIn("\033[25;1H", output,
+                      "ensure_cursor_in_upper 应使用 _last_scroll_end=25 而非动态值")
+
+    def test_ensure_cursor_upper_fallback_when_zero(self):
+        """_last_scroll_end=0 时降级到 terminal height。"""
+        self.bb._active = True
+        self.bb._cached_height = 30
+        self.bb._cached_width = 80
+        self.bb._last_scroll_end = 0  # 未初始化
+
+        out = io.StringIO()
+        with patch.object(sys, '__stdout__', out):
+            self.bb.ensure_cursor_in_upper()
+
+        output = out.getvalue()
+        self.assertIn("\033[30;1H", output,
+                      "_last_scroll_end=0 时应降级到 height=30")
+
+    def test_sync_bottom_lines_updates_decstbm(self):
+        """sync_bottom_lines() 在 _bottom_lines 变化时同步 DECSTBM。"""
+        self.bb._active = True
+        self.bb._cached_height = 30
+        self.bb._cached_width = 80
+        self.bb._last_scroll_end = 25  # 旧值（30-5）
+        # 让 _bottom_lines 变大（模拟补全弹窗弹出）
+        self.bb._completion_popup_height = 6
+
+        out = io.StringIO()
+        with patch.object(sys, '__stdout__', out):
+            self.bb.sync_bottom_lines()
+
+        # _bottom_lines = 2 + max(3, 0) + 6 = 11
+        # scroll_end = 30 - 11 = 19
+        output = out.getvalue()
+        self.assertIn("\033[1;19r", output,
+                      "sync_bottom_lines 应输出 DECSTBM \\033[1;19r")
+        self.assertEqual(self.bb._last_scroll_end, 19,
+                         "sync_bottom_lines 应更新 _last_scroll_end 到 19")
+
+    def test_sync_bottom_lines_skips_when_unchanged(self):
+        """sync_bottom_lines() 在 _bottom_lines 未变时静默跳过。"""
+        self.bb._active = True
+        self.bb._cached_height = 30
+        self.bb._cached_width = 80
+        self.bb._last_scroll_end = 25  # 30 - 5 = 25，与当前 _bottom_lines 一致
+
+        out = io.StringIO()
+        with patch.object(sys, '__stdout__', out):
+            self.bb.sync_bottom_lines()
+
+        output = out.getvalue()
+        self.assertEqual(output, "",
+                         "_bottom_lines 未变时 sync_bottom_lines 不应输出 ANSI 序列")
+
+
+class TestDrainQueueSyncBottomLines(unittest.TestCase):
+    """验证 _drain_queue() Stage 1 非 resize 时调用 sync_bottom_lines()。"""
+
+    def setUp(self):
+        from src.chat_ui._engine import RenderEngine
+        self.mock_renderer = MagicMock()
+        self.mock_bb = MagicMock()
+        self.mock_bb.is_status_active = False
+        self.mock_bb.is_resize_pending = False
+        self.mock_bb._active = True
+        self.mock_bb._setup_height = 30
+        self.mock_bb._last_bottom_lines = 5
+        self.mock_bb._bottom_lines = 5
+        self.mock_bb._completion_popup_height = 0
+        self.mock_bb._last_scroll_end = 25  # 模拟已缓存的值
+        self.mock_bb.get_cursor_info.return_value = ("", 0, 24, 80)
+        self.mock_bb._cursor_visual_pos_from_cache.return_value = (0, 0)
+        self.engine = RenderEngine(self.mock_renderer, self.mock_bb)
+        self._stdout = sys.__stdout__
+
+    def tearDown(self):
+        sys.__stdout__ = self._stdout
+
+    def _enqueue_cmd(self):
+        from src.chat_ui._const import RenderCommand
+        self.engine.push_cmd((RenderCommand.NOTIFICATION, "test"))
+
+    def test_not_resized_calls_sync_bottom_lines(self):
+        """resized=False 时 sync_bottom_lines 应在 ensure_cursor_upper 之前被调用。"""
+        self._enqueue_cmd()
+        self.mock_bb.check_resize.return_value = False
+
+        with patch("src.chat_ui._state._active_parallel_display", None), \
+             patch("src.ui._lock._try_acquire_output_lock",
+                   return_value=MagicMock(__enter__=MagicMock(return_value=True),
+                                         __exit__=MagicMock(return_value=False))), \
+             patch.object(sys, '__stdout__', MagicMock()):
+            self.engine._drain_queue()
+
+        # 验证 sync_bottom_lines 被调用过
+        self.mock_bb.sync_bottom_lines.assert_called()
+        # 验证 ensure_cursor_upper 也被调用（在 sync_bottom_lines 之后）
+        self.mock_bb.ensure_cursor_in_upper.assert_called()
+        # 验证调用顺序：sync_bottom_lines 先于 ensure_cursor_upper
+        call_order = self.mock_bb.method_calls
+        sync_idx = next(i for i, c in enumerate(call_order)
+                        if c[0] == 'sync_bottom_lines')
+        cursor_idx = next(i for i, c in enumerate(call_order)
+                          if c[0] == 'ensure_cursor_in_upper')
+        self.assertLess(sync_idx, cursor_idx,
+                        "sync_bottom_lines 应在 ensure_cursor_upper 之前调用")
+
+    def test_resized_skips_sync_bottom_lines(self):
+        """resized=True 时 sync_bottom_lines 不应被调用。"""
+        self._enqueue_cmd()
+        self.mock_bb.check_resize.return_value = True
+        # 模拟 resize 场景必要的属性值，避免 Fix A 逻辑报错
+        self.mock_bb._setup_height = 30
+        self.mock_bb._last_bottom_lines = 5
+        self.mock_bb._bottom_lines = 5
+        self.mock_bb._active = True
+        self.mock_bb._term_height.return_value = 35
+
+        with patch("src.chat_ui._state._active_parallel_display", None), \
+             patch("src.ui._lock._try_acquire_output_lock",
+                   return_value=MagicMock(__enter__=MagicMock(return_value=True),
+                                         __exit__=MagicMock(return_value=False))), \
+             patch.object(sys, '__stdout__', MagicMock()):
+            self.engine._drain_queue()
+
+        self.mock_bb.sync_bottom_lines.assert_not_called()
+        self.mock_bb.ensure_cursor_in_upper.assert_not_called()
 
 
 if __name__ == "__main__":

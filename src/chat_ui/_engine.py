@@ -188,8 +188,10 @@ class RenderEngine:
                 if commands:
                     # ★ resize 时光标已在 Stage 0 由 Fix A 预定位到旧内容末尾，
                     #   跳过 ensure_cursor_upper() 避免覆盖 Fix A 的定位结果；
-                    #   非 resize 时正常将光标放到内容区底部即可。
+                    #   非 resize 时先同步 DECSTBM 再定位光标，确保滚动区域与
+                    #   当前 _bottom_lines 一致，避免底部行数变化导致内容覆盖。
                     if not resized:
+                        self._bb.sync_bottom_lines()
                         self.ensure_cursor_upper()
                     for cmd in commands:
                         try:
