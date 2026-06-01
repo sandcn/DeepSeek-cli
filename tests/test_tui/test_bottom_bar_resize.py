@@ -330,8 +330,12 @@ class TestBug1SigwinchCallback(unittest.TestCase):
         mock_unreg.assert_called_once_with(bb._on_sigwinch)
 
 
-class TestBug8ForceRedrawSkipResizeCheck(unittest.TestCase):
-    """Bug 8 修复：force_redraw 支持 skip_resize_check 参数。"""
+class TestForceRedrawNoResizeCheck(unittest.TestCase):
+    """force_redraw 不应自动调用 _check_resize()。
+
+    resize 检测已集中到 _drain_queue() Stage 0 一处，
+    force_redraw 不再负责 resize 检测。
+    """
 
     def setUp(self):
         self.bb = _BottomBar()
@@ -344,21 +348,13 @@ class TestBug8ForceRedrawSkipResizeCheck(unittest.TestCase):
     def tearDown(self):
         sys.__stdout__ = self._stdout
 
-    def test_skip_resize_check_true_skips_check_resize(self):
-        """skip_resize_check=True 时不应调用 _check_resize()。"""
+    def test_force_redraw_does_not_call_check_resize(self):
+        """force_redraw() 不应自动调用 _check_resize()。"""
         with patch.object(self.bb, '_check_resize') as mock_cr, \
              patch.object(sys, '__stdout__', io.StringIO()):
-            self.bb.force_redraw(skip_resize_check=True)
+            self.bb.force_redraw()
 
         mock_cr.assert_not_called()
-
-    def test_skip_resize_check_false_calls_check_resize(self):
-        """skip_resize_check=False（默认）时应调用 _check_resize()。"""
-        with patch.object(self.bb, '_check_resize', return_value=False) as mock_cr, \
-             patch.object(sys, '__stdout__', io.StringIO()):
-            self.bb.force_redraw(skip_resize_check=False)
-
-        mock_cr.assert_called_once()
 
 
 class TestBug9PositionCursorUnderLock(unittest.TestCase):

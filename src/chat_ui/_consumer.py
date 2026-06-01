@@ -249,7 +249,7 @@ class ChatUIConsumer:
         if self._bottom_bar.is_status_active:
             with _try_acquire_output_lock(name="refresh.bottom", timeout=1.0) as locked:
                 if locked:
-                    self._bottom_bar.force_redraw(skip_resize_check=True)
+                    self._bottom_bar.force_redraw()
                     self._engine._position_cursor()
 
     def write_line(self, text: str) -> None:
@@ -317,7 +317,7 @@ class ChatUIConsumer:
         with output_lock:
             self._bottom_bar._last_text = text
             self._bottom_bar._input_cursor_pos = len(text) if cursor_pos < 0 else cursor_pos
-            self._bottom_bar.force_redraw(skip_resize_check=True)
+            self._bottom_bar.force_redraw()
             self._engine._position_cursor()
 
     def redraw_bottom_bar(self) -> None:
@@ -325,7 +325,7 @@ class ChatUIConsumer:
 
         resize 检测由 _drain_queue() Stage 0 统一处理，此处不重复检测。
         """
-        self._bottom_bar.force_redraw(skip_resize_check=True)
+        self._bottom_bar.force_redraw()
 
     def enable_status_refresh(self) -> None:
         self._bottom_bar.enable_status()

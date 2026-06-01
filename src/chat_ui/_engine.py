@@ -215,22 +215,22 @@ class RenderEngine:
 
         # ★ 阶段 3：底部栏重绘 + 光标定位
         # 分流策略：
-        #   - 有命令/尺寸变化 → 全量重绘（force_redraw，跳过内部 _check_resize
+        #   - 有命令/尺寸变化 → 全量重绘（force_redraw 不含 resize 检测，
         #     因 Stage 0 已完成检测，消除双调用窗口）
         #   - 仅流式活跃（无命令/无尺寸变化）→ 每帧全量底部栏重绘
-        #     使用 force_redraw（跳过内部 _check_resize），流式输出期间
+        #     使用 force_redraw（不含 resize 检测），流式输出期间
         #     _format_status() 每帧返回不同文本（令牌数/速率/耗时变化），
         #     force_redraw 的快速路径（new_status == _last_status）不触发，
         #     确保每帧完整刷新底部栏全部内容（分隔线+状态行+输入区）。
         if commands or resized:
             with _try_acquire_output_lock(name="drain_queue.bottom", timeout=1.0) as locked:
                 if locked:
-                    self._bb.force_redraw(skip_resize_check=True)  # Bug 8: 跳过内部 _check_resize
+                    self._bb.force_redraw()  # Bug 8: resize 由 Stage 0 统一处理
                     self._position_cursor()
         elif self._bb.is_status_active:
             with _try_acquire_output_lock(name="drain_queue.streaming_redraw", timeout=1.0) as locked:
                 if locked:
-                    self._bb.force_redraw(skip_resize_check=True)
+                    self._bb.force_redraw()
                     self._position_cursor()
 
     def _position_cursor(self) -> None:

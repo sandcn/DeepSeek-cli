@@ -226,7 +226,7 @@ class _BottomBar:
         self._status_active = False
         with _try_acquire_output_lock(name="bottom_bar.disable_status", timeout=1.0) as locked:
             if locked:
-                self.force_redraw(skip_resize_check=True)
+                self.force_redraw()
 
     @property
     def is_status_active(self) -> bool:
@@ -719,8 +719,9 @@ class _BottomBar:
 
         用于 prompt_toolkit 等外部组件覆盖底部栏后的恢复。
         仅在已激活时有效。
+
+        resize 检测由 _drain_queue() Stage 0 统一处理，此方法不重复检测。
         """
-        resized = self._check_resize()
         if not self._active:
             return
 
@@ -729,8 +730,6 @@ class _BottomBar:
                 return
             # 所有共享状态读写及终端尺寸查询均在 output_lock 保护下，与 refresh()/force_redraw() 串行化
             height = self._term_height()
-            if not resized:
-                self._last_text = ""
             total = self._bottom_lines
             scroll_end = height - total
             self._last_bottom_lines = total
@@ -762,7 +761,7 @@ class _BottomBar:
             out.write(f"\033[{scroll_end};1H\033[s")
             out.flush()
 
-    def force_redraw(self, skip_resize_check: bool = False) -> None:
+    def force_redraw(self) -> None:
         """无条件重绘全部底部栏（绕过节流和变更检测），超长文本自动拆行。
 
         所有共享可变状态在 output_lock 保护下更新，与 refresh()
@@ -775,13 +774,8 @@ class _BottomBar:
         ★ 性能优化：先检查文本和布局是否变化，确认需要重绘后再
         调用 _format_status()（含 shutil 系统调用），避免不必要开销。
 
-        Args:
-            skip_resize_check: 为 True 时跳过内部 _check_resize() 调用。
-                用于 _drain_queue() 等已在调用方完成 resize 检测的场景，
-                消除同一 drain 周期内的双 _check_resize() 窗口（Bug 8）。
+        resize 检测由 _drain_queue() Stage 0 统一处理，此方法不重复检测。
         """
-        if not skip_resize_check:
-            self._check_resize()
         if not self._active:
             return
 
@@ -877,22 +871,21 @@ class _BottomBar:
 
         节流 50ms：高频键入时合并刷新，减少锁竞争。
 
+        resize 检测由 _drain_queue() Stage 0 统一处理，此方法不重复检测。
+
         Args:
             text: 当前输入文本（空字符串则只显示 > 提示符）。
             cursor_pos: 光标在输入文本中的偏移（0=第一个字符后），
                         -1=不定位光标（放在文本末尾）。
         """
-        resized = self._check_resize()
         if not self._active:
             return
 
         # 输入文本变化检查（节流仅在文本变化时生效；状态行始终检查）
-        # ★ resize 后 memory 中 _last_text 已恢复但终端视觉仍为占位符，
-        #   必须跳过节流，强制重绘修复视觉状态
         now = time.monotonic()
         text_changed = text != self._last_text
         cursor_changed = cursor_pos >= 0 and cursor_pos != self._last_cursor_pos
-        if not text_changed and not cursor_changed and not resized and now - self._last_refresh < _BOTTOM_REFRESH_MS:
+        if not text_changed and not cursor_changed and now - self._last_refresh < _BOTTOM_REFRESH_MS:
             return
 
         # ★ 状态行始终计算（模型名字 / 流式统计），不再依赖 _status_active
@@ -900,11 +893,11 @@ class _BottomBar:
         new_status = self._format_status()
         status_changed = new_status != self._last_status
 
-        if not text_changed and not status_changed and not cursor_changed and not resized:
+        if not text_changed and not status_changed and not cursor_changed:
             return
 
         # ── 如果只有光标移动（文本/状态/尺寸均未变），走轻量路径 ──
-        if not text_changed and not status_changed and not resized and cursor_changed:
+        if not text_changed and not status_changed and cursor_changed:
             # ★ 不获取 output_lock：仅写 ANSI 光标定位序列 + 更新 int 状态。
             #   CPython GIL 保证 int 赋值原子性；ANSI 光标定位幂等，即使与
             #   force_redraw() 的 DECSTBM 序列交错，同一次 drain 末尾的
