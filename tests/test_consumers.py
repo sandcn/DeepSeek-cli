@@ -8,6 +8,8 @@
 """
 
 import io
+import sys
+from unittest.mock import MagicMock, patch, create_autospec
 
 import pytest
 
@@ -356,3 +358,61 @@ class TestChatUIResizeSync:
 
         chat_ui.resume()
         assert not sync_called, "resume() 不应直接调用 _sync_renderer_width()，resize 处理统一在 _drain_queue() Stage 0"
+
+
+# ===============================================================
+# 新增: refresh_bottom_bar() 与 ensure_cursor_lower() flush 验证
+# ===============================================================
+
+class TestCursorPositioningFlush:
+    """确保光标定位操作后 stdout 被 flush，ANSI 序列到达终端"""
+
+    def test_refresh_bottom_bar_flushes_stdout(self):
+        """refresh_bottom_bar() 调用后 sys.__stdout__.flush() 被调用"""
+        bus = DisplayEventBus()
+        chat_ui = ChatUIConsumer(event_bus=bus)
+
+        # Mock _bottom_bar 避免真实终端 I/O
+        chat_ui._bottom_bar.force_redraw = create_autospec(
+            chat_ui._bottom_bar.force_redraw)
+        chat_ui._bottom_bar.ensure_cursor_in_lower = create_autospec(
+            chat_ui._bottom_bar.ensure_cursor_in_lower)
+
+        with patch.object(sys.__stdout__, "flush") as mock_flush:
+            chat_ui.refresh_bottom_bar("test_text")
+
+        mock_flush.assert_called()
+        chat_ui._bottom_bar.ensure_cursor_in_lower.assert_called_once()
+
+    def test_ensure_cursor_lower_flushes_stdout(self):
+        """ensure_cursor_lower() 调用后 sys.__stdout__.flush() 被调用"""
+        bus = DisplayEventBus()
+        chat_ui = ChatUIConsumer(event_bus=bus)
+
+        chat_ui._bottom_bar.ensure_cursor_in_lower = create_autospec(
+            chat_ui._bottom_bar.ensure_cursor_in_lower)
+
+        with patch.object(sys.__stdout__, "flush") as mock_flush:
+            chat_ui.ensure_cursor_lower()
+
+        mock_flush.assert_called()
+        chat_ui._bottom_bar.ensure_cursor_in_lower.assert_called_once()
+
+    def test_refresh_bottom_bar_flush_called_after_reposition(self):
+        """验证 flush 在 ensure_cursor_in_lower 之后被调用（顺序保证）"""
+        bus = DisplayEventBus()
+        chat_ui = ChatUIConsumer(event_bus=bus)
+
+        call_order = []
+        chat_ui._bottom_bar.force_redraw = lambda: call_order.append("force_redraw")
+        chat_ui._bottom_bar.ensure_cursor_in_lower = lambda: call_order.append("ensure_cursor_in_lower")
+
+        def tracking_flush():
+            call_order.append("flush")
+
+        with patch.object(sys.__stdout__, "flush", tracking_flush):
+            chat_ui.refresh_bottom_bar("test")
+
+        assert call_order == ["force_redraw", "ensure_cursor_in_lower", "flush"], (
+            f"调用顺序应为 force_redraw → ensure_cursor_in_lower → flush，实际: {call_order}"
+        )

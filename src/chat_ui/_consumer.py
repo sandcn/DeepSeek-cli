@@ -307,6 +307,8 @@ class ChatUIConsumer:
     def ensure_cursor_lower(self) -> None:
         """将光标移到输入行。调用方须持有 output_lock。"""
         self._bottom_bar.ensure_cursor_in_lower()
+        # flush 确保 ANSI 光标定位序列到达终端（stdout 行缓冲模式）
+        sys.__stdout__.flush()
 
     def refresh_bottom_bar(self, text: str, cursor_pos: int = -1) -> None:
         """刷新底部栏输入区并定位光标到输入行。
@@ -321,10 +323,11 @@ class ChatUIConsumer:
             self._bottom_bar._last_text = text
             self._bottom_bar._input_cursor_pos = len(text) if cursor_pos < 0 else cursor_pos
             self._bottom_bar.force_redraw()
-            # ★ 修复：force_redraw 将光标留在 scroll_end（内容区末行/上屏底部），
-            #   空闲期 Reader 线程快速跳过时不执行 _position_cursor()，
-            #   必须在此显式将光标定位到输入行，避免用户看到光标停留在上屏。
+            # ensure_cursor_in_lower() + flush：将光标定位到输入行。
+            # force_redraw 的 \0338 将光标恢复到上屏；ensure_cursor_in_lower()
+            # 写入的 ANSI 序列需显式 flush（stdout 行缓冲，无 \n 不自动提交）。
             self._bottom_bar.ensure_cursor_in_lower()
+            sys.__stdout__.flush()
 
     def redraw_bottom_bar(self) -> None:
         """重绘底部栏。
