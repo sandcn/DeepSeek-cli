@@ -460,20 +460,25 @@ class TestScrollUpUpperOrdering(unittest.TestCase):
     def test_force_redraw_scroll_up_before_r(self):
         """force_redraw 中 _scroll_up_upper 的 ANSI 在 \033[r 之前。"""
         # 模拟输入文本变长导致底部栏扩大 (delta > 0)
-        self.bb._last_text = "A" * 200  # 长文本，_bottom_lines 会增大
+        # ★ 文本须足够长使 _bottom_lines > _last_bottom_lines
+        #   max_input=36 (40-4), 需 >3*36=108 chars 才能超过 _MIN_INPUT_ROWS=3
+        self.bb._last_text = "A" * 500  # 长文本，_bottom_lines 会增大
         self.bb._last_bottom_lines = 3  # 旧底部行数较小
         self.bb._last_rendered_text = "old"  # 强制不走快速路径
 
+        # ★ force_redraw() 会更新 _last_bottom_lines，需提前保存旧值
+        old_bl = self.bb._last_bottom_lines
+
         output = self._capture_ansi_order(lambda: self.bb.force_redraw())
 
-        # _scroll_up_upper 写入 \033[{scroll_end};1H + \n*delta
-        # scroll_end = height - _bottom_lines
-        scroll_end = 30 - self.bb._bottom_lines
-        scroll_up_seq = f"\033[{scroll_end};1H"
+        # _scroll_up_upper(delta, out, height - old_bottom_lines)
+        # ★ 修复后使用旧 bottom_lines 计算 scroll_end（与当前 DECSTBM 一致）
+        old_scroll_end = 30 - old_bl  # = 27
+        scroll_up_seq = f"\033[{old_scroll_end};1H"
         full_scroll_seq = "\033[r"
 
         self.assertIn(scroll_up_seq, output,
-                      f"应包含 _scroll_up_upper 的 ANSI 定位 \033[{scroll_end};1H")
+                      f"应包含 _scroll_up_upper 的 ANSI 定位 {scroll_up_seq}")
         self.assertIn(full_scroll_seq, output,
                       "应包含全屏滚动模式 \033[r")
         self.assert_ansi_before(output, scroll_up_seq, full_scroll_seq,
@@ -486,12 +491,16 @@ class TestScrollUpUpperOrdering(unittest.TestCase):
         self.bb._last_bottom_lines = 3
         self.bb._last_rendered_text = "short"
 
+        # ★ force_redraw()/refresh() 会更新 _last_bottom_lines，需提前保存旧值
+        old_bl = self.bb._last_bottom_lines
+
         # 传入更长的新文本，使 text_changed=True
-        new_text = "A" * 200
+        # ★ 文本须足够长使 _bottom_lines > _last_bottom_lines
+        new_text = "A" * 500
         output = self._capture_ansi_order(
             lambda: self.bb.refresh(new_text, 0))
 
-        scroll_end = 30 - self.bb._bottom_lines
+        scroll_end = 30 - old_bl  # ★ 使用旧 bottom_lines
         scroll_up_seq = f"\033[{scroll_end};1H"
         full_scroll_seq = "\033[r"
 
@@ -504,13 +513,17 @@ class TestScrollUpUpperOrdering(unittest.TestCase):
 
     def test_scroll_up_uses_scroll_end_not_height(self):
         """_scroll_up_upper 使用 scroll_end 而非 height 定位。"""
-        self.bb._last_text = "A" * 200
+        # ★ 文本须足够长使 _bottom_lines > _last_bottom_lines
+        self.bb._last_text = "A" * 500
         self.bb._last_bottom_lines = 3
         self.bb._last_rendered_text = "old"
 
+        # ★ force_redraw() 会更新 _last_bottom_lines，需提前保存旧值
+        old_bl = self.bb._last_bottom_lines
+
         output = self._capture_ansi_order(lambda: self.bb.force_redraw())
 
-        scroll_end = 30 - self.bb._bottom_lines
+        scroll_end = 30 - old_bl  # ★ 使用旧 bottom_lines
         scroll_up_seq = f"\033[{scroll_end};1H"
 
         self.assertIn(scroll_up_seq, output,

@@ -10,6 +10,7 @@
 from __future__ import annotations
 
 import io
+import re
 import struct
 import sys
 import unittest
@@ -520,6 +521,16 @@ class TestHeightIncreaseGhost(unittest.TestCase):
 
         output = buf.getvalue()
 
+        # ★ 验证 grow 分支先输出 \033[r 重置全屏滚动（与 shrink 分支对称）
+        self.assertIn("\033[r", output,
+                      "终端变高时应先输出 \\033[r 重置全屏滚动区域")
+        # 验证 \033[r 在第一个清除序列 (\033[{n};1H\033[K) 之前或紧邻之前
+        # 注意: \033[r 本身以 \033[ 开头，故用 \033[\d 匹配含数字的 CSI 序列
+        r_end = output.index("\033[r") + len("\033[r")
+        first_clear_match = re.search(r'\033\[\d', output)
+        self.assertIsNotNone(first_clear_match, "输出中应包含至少一个清除序列")
+        self.assertLessEqual(r_end, first_clear_match.start(),
+                             "\\033[r 应在第一个清除序列之前或紧邻之前")
         # 验证清除序列存在于输出中（检查子集即通过，_bottom_lines 可能比 _last_bottom_lines 小）
         for r in range(19, 25):
             expected = f"\033[{r};1H\033[K"

@@ -530,6 +530,7 @@ class _BottomBar:
                 # ★ 终端变大时，旧底部栏位置上移进入上屏成为"鬼影"。
                 #   清除旧底部栏区域，避免与新底部栏重叠。
                 elif height > self._setup_height:
+                    out.write("\033[r")  # ★ 先重置全屏滚动，与 shrink 分支对称
                     old_bar_start = max(1, self._setup_height - self._last_bottom_lines + 1)
                     # ★ 修复: 使用 _bottom_lines 属性（基于实际 _last_text+新宽度），
                     #   而非旧缓存 _last_bottom_lines，确保鬼影清除范围匹配
@@ -744,7 +745,7 @@ class _BottomBar:
             self._last_bottom_lines = total
             out = sys.__stdout__
             out.write("\0337")
-            out.write("\033[r")                    # 临时退出滚动区域
+            out.write("\033[r")                    # 临时退出滚动区域（此后的写入必须使用绝对定位，禁止产生 \n）
 
             # ★ 终端高度不足以容纳底部栏 → 清理旧行后跳过绘制
             if scroll_end < 1:
@@ -822,10 +823,13 @@ class _BottomBar:
             # ★ 输入区扩大时，将上屏内容向上滚动 delta 行（在 DECSTBM 内滚动），
             #   须在 \033[r 之前调用，确保滚动仅在滚动区域（1~scroll_end）内生效，
             #   不会滚动整个屏幕导致顶部内容丢失。
+            #   ★ 使用旧 bottom_lines 计算 scroll_end（与当前 DECSTBM 一致），
+            #   而非新的 total。否则 total≠old_bottom_lines 时 scroll_end 与
+            #   DECSTBM 底边距不匹配，\n 无法正确触发滚动，导致内容被底部栏覆盖。
             delta = total - old_bottom_lines
-            self._scroll_up_upper(delta, out, scroll_end)
+            self._scroll_up_upper(delta, out, height - old_bottom_lines)
 
-            out.write("\033[r")                      # 临时退出滚动区域
+            out.write("\033[r")  # 临时退出滚动区域（此后的写入必须使用绝对定位，禁止产生 \n）
 
             # ★ 终端高度不足以容纳底部栏 → 清理旧行后跳过绘制
             if scroll_end < 1:
@@ -977,10 +981,11 @@ class _BottomBar:
             # ★ 输入区扩大时，将上屏内容向上滚动 delta 行（在 DECSTBM 内滚动），
             #   须在 \033[r 之前调用，确保滚动仅在滚动区域（1~scroll_end）内生效，
             #   不会滚动整个屏幕导致顶部内容丢失。
+            #   ★ 使用旧 bottom_lines 计算 scroll_end（与当前 DECSTBM 一致）。
             delta = total - old_bottom_lines
-            self._scroll_up_upper(delta, out, scroll_end)
+            self._scroll_up_upper(delta, out, height - old_bottom_lines)
 
-            # 临时退出滚动区域，以便写入底部行
+            # 临时退出滚动区域（此后的写入必须使用绝对定位，禁止产生 \n），以便写入底部行
             out.write("\033[r")
 
             # ★ 终端高度不足以容纳底部栏 → 清理旧行后跳过绘制
@@ -1365,10 +1370,11 @@ class _BottomBar:
             # ★ 输入区扩大时，将上屏内容向上滚动 delta 行（在 DECSTBM 内滚动），
             #   须在 \033[r 之前调用，确保滚动仅在滚动区域（1~scroll_end）内生效，
             #   不会滚动整个屏幕导致顶部内容丢失。
+            #   ★ 使用旧 bottom_lines 计算 scroll_end（与当前 DECSTBM 一致）。
             delta = total - old_bottom_lines
-            self._scroll_up_upper(delta, out, scroll_end)
+            self._scroll_up_upper(delta, out, height - old_bottom_lines)
 
-            # 临时退出滚动区域
+            # 临时退出滚动区域（此后的写入必须使用绝对定位，禁止产生 \n）
             out.write("\033[r")
 
             # ★ 终端高度不足以容纳底部栏 → 清理旧行后恢复
@@ -1450,7 +1456,7 @@ class _BottomBar:
             old_bottom_lines = self._last_bottom_lines  # 旧的含弹窗的底部行数
             self._last_bottom_lines = total
 
-            # 临时退出滚动区域
+            # 临时退出滚动区域（此后的写入必须使用绝对定位，禁止产生 \n）
             out.write("\033[r")
 
             # ★ 终端高度不足以容纳底部栏 → 清理旧行后恢复
