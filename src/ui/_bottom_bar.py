@@ -416,21 +416,18 @@ class _BottomBar:
           1. 信号驱动：SIGWINCH → _on_sigwinch() → _resize_dirty=True
           2. 轮询驱动：每次调用均通过 ioctl 查询真实尺寸并比较缓存
 
-        setup() 内部将 _last_text 重置为 "" 并在终端上绘制占位符，
-        因此调用方必须在 resize 发生后重新绘制底部栏（force_redraw
-        或 refresh 的完整渲染），否则终端视觉状态会停留在占位符上
-        而内存中 _last_text 已恢复——用户将看到输入内容被"清空"。
+        resize 路径（enlarge/shrink/width-only）不调用 setup()，
+        而是直接更新 _setup_height/_setup_width、用实际 _last_text
+        和补全状态计算 _last_bottom_lines、设置 DECSTBM、调用
+        _draw_all_locked() 重绘底部栏。_last_text 在整个过程中
+        保持不变，避免了 setup() 将其重置为 "" 导致的空文本中间态。
 
-        _last_text 的保存/恢复在 output_lock 保护下完成，
+        整个 resize 流程在单个 output_lock 作用域内完成，
         与 refresh()/force_redraw() 串行化，消除跨线程竞争。
 
-        使用单个 output_lock 作用域包裹全程（output_lock 为 RLock，
-        setup() 内部的可重入获取安全），消除双线程并发进入
-        _check_resize 时 _last_text 被陈旧值覆盖的竞态。
-
         Returns:
-            True 表示检测到尺寸变化并已处理（setup 重建），调用方
-            应随后重绘底部栏以恢复正确的输入文本显示。
+            True 表示检测到尺寸变化并已处理（直接 resize + 重绘底部栏），
+            调用方应随后执行 Stage 3 底部栏重绘以更新状态行和光标位置。
             False 表示无变化或未激活。
         """
         # ★ Bug 1：SIGWINCH 快速路径 — 信号处理器设置了 dirty 标记
@@ -498,35 +495,21 @@ class _BottomBar:
                     self._setup_height = height
                     self._setup_width = width
                     return False
-                # ★ B3 fix: 保存并临时清除补全弹窗状态，避免 setup()
-                #   用空文本 + 旧宽度画出错误的弹窗视觉
-                saved_comp_visible = self._completion_visible
-                saved_comp_height = self._completion_popup_height
-                saved_comp_items = self._completion_items
-                saved_comp_texts = self._completion_texts
-                saved_comp_idx = self._completion_idx
-                saved_comp_start_pos = self._completion_start_pos
-                saved_comp_orig_prefix = self._completion_orig_prefix
-                saved_comp_title = self._completion_title
-                self._completion_popup_height = 0
-                self._completion_items = []
-
                 # ★ 重置 scroll_n 缓存（默认值，enlarge/不变时保持 0）
                 self._last_scroll_n = 0
 
-                saved_text = self._last_text
+                out = sys.__stdout__
                 # ★ 终端缩小时，旧上屏末行落入新底部栏区域会被分隔线覆盖。
                 #   全屏滚动后上滚最小行数，使旧末行刚好落到新滚动区末行。
-                #   旧底部栏残留随之上移，恰好落入新底部栏区域被 setup() 覆盖。
+                #   旧底部栏残留随之上移，恰好落入新底部栏区域被 _draw_all_locked 覆盖。
                 if height < self._setup_height:
-                    out = sys.__stdout__
                     out.write("\033[r")  # 全屏滚动模式
                     # 旧上屏末行行号（截断后仍可见的最高行号）
                     last_upper = min(height, self._setup_height - self._last_bottom_lines)
-                    # ★ 修复: 使用实际的 _last_bottom_lines 而非 _BOTTOM_MIN_LINES，
-                    #   使滚动量准确匹配底部栏实际高度（多行输入+补全弹窗时
-                    #   _last_bottom_lines > _BOTTOM_MIN_LINES）。
-                    new_bar_start = max(1, height - self._last_bottom_lines + 1)
+                    # ★ 修复: 使用 _bottom_lines 属性（基于实际 _last_text+新宽度），
+                    #   而非旧缓存 _last_bottom_lines。宽度变化时文本换行数可能不同，
+                    #   使用属性值确保滚动量匹配底部栏在新宽度下的实际高度。
+                    new_bar_start = max(1, height - self._bottom_lines + 1)
                     scroll_n = max(0, last_upper - new_bar_start + 1)
                     if scroll_n > 0:
                         self._scroll_up_upper(scroll_n, out, height)
@@ -539,47 +522,34 @@ class _BottomBar:
                                 out.write(f"\033[{r};1H\033[K")
                     out.flush()
                 # ★ 终端变大时，旧底部栏位置上移进入上屏成为"鬼影"。
-                #   setup() 将新底部栏画在更下方的行，旧底部栏残留
-                #   仍占据旧位置，后续 force_redraw() 基于新高度计算的
-                #   清除范围不会触及旧位置。需在此清除旧底部栏区域。
+                #   清除旧底部栏区域，避免与新底部栏重叠。
                 elif height > self._setup_height:
-                    out = sys.__stdout__
                     old_bar_start = max(1, self._setup_height - self._last_bottom_lines + 1)
-                    # ★ 修复: 使用实际的 _last_bottom_lines，确保鬼影清除范围匹配
-                    new_bar_start = max(1, height - self._last_bottom_lines + 1)
+                    # ★ 修复: 使用 _bottom_lines 属性（基于实际 _last_text+新宽度），
+                    #   而非旧缓存 _last_bottom_lines，确保鬼影清除范围匹配
+                    #   底部栏在新宽度下的实际高度。
+                    new_bar_start = max(1, height - self._bottom_lines + 1)
                     if old_bar_start < new_bar_start:
                         for r in range(old_bar_start, new_bar_start):
                             out.write(f"\033[{r};1H\033[K")
                     out.flush()
-                self._active = False
-                self.setup()  # RLock 允许可重入嵌套
-                # ★ setup() 基于 _last_text="" 计算的 _bottom_lines=5（最小），
-                #   滚动区域设为 [1, height-5]。现在恢复 _last_text 后，
-                #   实际文本可能需要更多行（如 7），导致滚动区域过大。
-                #   Stage 1 渲染会在此期间将内容写入行 height-5 ~ height-7，
-                #   后续 force_redraw 的底部栏重绘会覆盖这些越界行。
-                #   修复：恢复 _last_text + 弹窗状态后，再重算 _bottom_lines
-                #   并修正滚动区域，确保 _last_bottom_lines 包含弹窗高度。
-                self._last_text = saved_text
-                # ★ B3 fix: 先恢复弹窗状态，使 actual_total 计算包含弹窗高度
-                self._completion_visible = saved_comp_visible
-                self._completion_popup_height = saved_comp_height
-                self._completion_items = saved_comp_items
-                self._completion_texts = saved_comp_texts
-                self._completion_idx = saved_comp_idx
-                self._completion_start_pos = saved_comp_start_pos
-                self._completion_orig_prefix = saved_comp_orig_prefix
-                self._completion_title = saved_comp_title
-                actual_total = self._bottom_lines  # 基于实际文本+弹窗
-                if actual_total != self._last_bottom_lines:
-                    scroll_end = height - actual_total
-                    if scroll_end >= 1:
-                        out = sys.__stdout__
-                        out.write(f"\033[1;{scroll_end}r")
-                        out.write(f"\033[{scroll_end};1H\033[s")
-                        out.write(f"\033[{height};1H")
-                        out.flush()
-                    self._last_bottom_lines = actual_total
+                # ★ 直接 resize 操作：不调用 setup()（会重置 _last_text="" 导致清屏 Bug）。
+                #   用实际 _last_text 和补全状态直接更新尺寸、设置 DECSTBM、重绘底部栏。
+                self._setup_height = height
+                self._setup_width = width
+                self._last_bottom_lines = self._bottom_lines  # 基于实际 _last_text + 补全状态
+
+                scroll_end = height - self._last_bottom_lines
+                if scroll_end >= 1:
+                    out.write(f"\033[1;{scroll_end}r")  # 设置 DECSTBM
+                out.write("\0337")
+                self._draw_all_locked(out, height)  # 用实际文本重绘底部栏
+                out.write("\0338")
+                if scroll_end >= 1:
+                    out.write(f"\033[{scroll_end};1H\033[s")  # 保存 SCOSC
+                out.write(f"\033[{height};1H")
+                out.flush()
+                self._last_refresh = time.monotonic()  # 同步时间戳，避免 refresh() 节流误杀
             return True
         return False
 

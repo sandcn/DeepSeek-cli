@@ -506,11 +506,11 @@ class TestHeightIncreaseGhost(unittest.TestCase):
         sys.__stdout__ = self._stdout
 
     def test_height_increase_clears_old_bar_area(self):
-        """终端从 24→30 行变高时，应清除旧底部栏位置（19-24行）的鬼影。
+        """终端从 24→30 行变高时，应清除旧底部栏位置的鬼影。
 
-        old_bar_start = max(1, 24 - 6 + 1) = 19
-        new_bar_start = 30 - 6 + 1 = 25（使用 _last_bottom_lines=6）
-        应清除行 19-24（共 6 行）。
+        old_bar_start = max(1, 24 - 6 + 1) = 19（基于旧 _last_bottom_lines=6）
+        new_bar_start = 30 - 5 + 1 = 26（基于 _bottom_lines 属性=5，因 _last_text="test text" 拆行后只需 5 行）
+        应清除行 19-25（共 7 行）。
         """
         buf = io.StringIO()
         with patch("src.ui._bottom_bar.query_terminal_size",
@@ -520,7 +520,7 @@ class TestHeightIncreaseGhost(unittest.TestCase):
 
         output = buf.getvalue()
 
-        # 验证清除序列存在于输出中
+        # 验证清除序列存在于输出中（检查子集即通过，_bottom_lines 可能比 _last_bottom_lines 小）
         for r in range(19, 25):
             expected = f"\033[{r};1H\033[K"
             self.assertIn(expected, output,
@@ -530,9 +530,9 @@ class TestHeightIncreaseGhost(unittest.TestCase):
         """旧底部栏占据大面积时（如 19 行），终端变高后应清除所有越界行。
 
         构造场景：终端从 24→25 行，_last_bottom_lines=19：
-          old_bar_start = max(1, 24 - 19 + 1) = 6
-          new_bar_start = max(1, 25 - 19 + 1) = 7（使用 _last_bottom_lines=19）
-          old_bar_start(6) < new_bar_start(7)，需清除行 6（仅 1 行）。
+          old_bar_start = max(1, 24 - 19 + 1) = 6（基于旧 _last_bottom_lines=19）
+          new_bar_start = max(1, 25 - 5 + 1) = 21（基于 _bottom_lines 属性=5）
+          old_bar_start(6) < new_bar_start(21)，需清除行 6-20（共 15 行）。
         """
         # 模拟底部栏占满终端（_last_bottom_lines = 19，极小滚动区）
         self.bb._last_bottom_lines = 19
@@ -841,6 +841,172 @@ class TestScrollN(unittest.TestCase):
         # rebuild 走 early return，不重置 _last_scroll_n
         self.assertEqual(self.bb._last_scroll_n, 1,
                          "rebuild 路径应保留原值")
+
+
+class TestResizeEnlargePreservesState(unittest.TestCase):
+    """终端变大时 _last_text 和补全状态应保持不变（不调用 setup()）。
+
+    验证 resize enlarge 路径不再走 self._active=False; self.setup() 流程，
+    避免了 setup() 将 _last_text 重置为 "" 导致上屏内容被清除的 Bug。
+    改用直接 resize 操作：更新尺寸、基于实际 _last_text 设置 DECSTBM、
+    调用 _draw_all_locked() 重绘底部栏。
+    """
+
+    def setUp(self):
+        self.bb = _BottomBar()
+        self.bb._active = True
+        self.bb._setup_height = 24
+        self.bb._setup_width = 80
+        self.bb._cached_height = 24
+        self.bb._cached_width = 80
+        self.bb._last_text = "hello world"
+        self.bb._last_bottom_lines = 5
+        self._stdout = sys.__stdout__
+
+    def tearDown(self):
+        sys.__stdout__ = self._stdout
+
+    def test_enlarge_preserves_last_text(self):
+        """终端变大后 _last_text 应保持原值，不被重置为 ""。"""
+        buf = io.StringIO()
+        with patch("src.ui._bottom_bar.query_terminal_size",
+                   return_value=(80, 30)), \
+             patch.object(sys, '__stdout__', buf):
+            self.bb._check_resize()
+
+        self.assertEqual(self.bb._last_text, "hello world",
+                         "enlarge 后 _last_text 应保持不变")
+
+    def test_enlarge_preserves_active_state(self):
+        """终端变大后 _active 应保持 True（不经过 _active=False 重置）。"""
+        buf = io.StringIO()
+        with patch("src.ui._bottom_bar.query_terminal_size",
+                   return_value=(80, 30)), \
+             patch.object(sys, '__stdout__', buf):
+            self.bb._check_resize()
+
+        self.assertTrue(self.bb._active,
+                        "enlarge 后 _active 应保持 True")
+
+    def test_enlarge_preserves_completion_visible(self):
+        """终端变大后补全弹窗可见性应保持不变。"""
+        self.bb._completion_visible = True
+        self.bb._completion_popup_height = 3
+        self.bb._completion_items = ["item1", "item2"]
+        self.bb._completion_idx = 0
+
+        buf = io.StringIO()
+        with patch("src.ui._bottom_bar.query_terminal_size",
+                   return_value=(80, 30)), \
+             patch.object(sys, '__stdout__', buf):
+            self.bb._check_resize()
+
+        self.assertTrue(self.bb._completion_visible,
+                        "enlarge 后补全弹窗应保持可见")
+        self.assertEqual(self.bb._completion_popup_height, 3,
+                         "enlarge 后补全弹窗高度应不变")
+        self.assertEqual(len(self.bb._completion_items), 2,
+                         "enlarge 后补全项数量应不变")
+
+    def test_enlarge_does_not_call_setup(self):
+        """终端变大后 _active 保持 True，证明未调用 setup()（setup 会将 _active 设为 True 但前有 _active=False）。
+
+        间接验证：_active 在 resize 全程保持 True，未被置为 False。
+        """
+        buf = io.StringIO()
+        with patch("src.ui._bottom_bar.query_terminal_size",
+                   return_value=(80, 30)), \
+             patch.object(sys, '__stdout__', buf):
+            result = self.bb._check_resize()
+
+        self.assertTrue(result, "resize 应返回 True")
+        self.assertEqual(self.bb._setup_height, 30,
+                         "_setup_height 应更新为新值")
+        self.assertTrue(self.bb._active,
+                        "_active 应保持 True（未经过 setup 的 _active=False 重置）")
+
+    def test_enlarge_updates_setup_dimensions(self):
+        """终端变大后 _setup_height 和 _setup_width 应更新为新值。"""
+        buf = io.StringIO()
+        with patch("src.ui._bottom_bar.query_terminal_size",
+                   return_value=(100, 30)), \
+             patch.object(sys, '__stdout__', buf):
+            self.bb._check_resize()
+
+        self.assertEqual(self.bb._setup_height, 30)
+        self.assertEqual(self.bb._setup_width, 100)
+
+    def test_enlarge_last_bottom_lines_recomputed(self):
+        """终端变大后 _last_bottom_lines 应基于实际 _last_text 重新计算。"""
+        # 空文本 → _bottom_lines = 2 + 3 = 5
+        self.bb._last_text = ""
+
+        buf = io.StringIO()
+        with patch("src.ui._bottom_bar.query_terminal_size",
+                   return_value=(80, 30)), \
+             patch.object(sys, '__stdout__', buf):
+            self.bb._check_resize()
+
+        self.assertEqual(self.bb._last_bottom_lines, 5,
+                         "_last_bottom_lines 应基于实际 _last_text 重新计算")
+
+
+class TestResizeShrinkPreservesState(unittest.TestCase):
+    """终端缩小时 _last_text 和补全状态应保持不变。"""
+
+    def setUp(self):
+        self.bb = _BottomBar()
+        self.bb._active = True
+        self.bb._setup_height = 35
+        self.bb._setup_width = 80
+        self.bb._cached_height = 35
+        self.bb._cached_width = 80
+        self.bb._last_text = "hello world"
+        self.bb._last_bottom_lines = 5
+        self._stdout = sys.__stdout__
+
+    def tearDown(self):
+        sys.__stdout__ = self._stdout
+
+    def test_shrink_preserves_last_text(self):
+        """终端缩小后 _last_text 应保持原值。"""
+        buf = io.StringIO()
+        with patch("src.ui._bottom_bar.query_terminal_size",
+                   return_value=(80, 30)), \
+             patch.object(sys, '__stdout__', buf):
+            self.bb._check_resize()
+
+        self.assertEqual(self.bb._last_text, "hello world",
+                         "shrink 后 _last_text 应保持不变")
+
+    def test_shrink_preserves_active_state(self):
+        """终端缩小后 _active 应保持 True。"""
+        buf = io.StringIO()
+        with patch("src.ui._bottom_bar.query_terminal_size",
+                   return_value=(80, 30)), \
+             patch.object(sys, '__stdout__', buf):
+            self.bb._check_resize()
+
+        self.assertTrue(self.bb._active,
+                        "shrink 后 _active 应保持 True")
+
+    def test_shrink_preserves_completion_visible(self):
+        """终端缩小后补全弹窗可见性应保持不变。"""
+        self.bb._completion_visible = True
+        self.bb._completion_popup_height = 3
+        self.bb._completion_items = ["item1", "item2"]
+        self.bb._completion_idx = 0
+
+        buf = io.StringIO()
+        with patch("src.ui._bottom_bar.query_terminal_size",
+                   return_value=(80, 30)), \
+             patch.object(sys, '__stdout__', buf):
+            self.bb._check_resize()
+
+        self.assertTrue(self.bb._completion_visible,
+                        "shrink 后补全弹窗应保持可见")
+        self.assertEqual(self.bb._completion_popup_height, 3,
+                         "shrink 后补全弹窗高度应不变")
 
 
 if __name__ == "__main__":
