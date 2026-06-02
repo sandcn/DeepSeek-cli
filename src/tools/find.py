@@ -65,7 +65,6 @@ class FindFunc(Func):
                     "\n- path（可选）：搜索根路径，默认当前工作目录。可指定子目录如 src/"
                     "\n- type（可选）：过滤类型，可选 'file'（仅文件）或 'dir'（仅目录），省略时两者都返回"
                     "\n- depth（可选）：最大搜索深度（目录层级），默认 0 表示无限制。设置 1 表示仅在当前目录搜索（不含子目录）"
-                    "\n- max_results（可选）：最大返回结果数，默认 1000，范围 1-1000"
                     "\n\n"
                     "使用示例："
                     "\n- 找所有 Python 文件：find(pattern=\"*.py\")"
@@ -144,15 +143,6 @@ class FindFunc(Func):
                             ),
                             "default": 0,
                         },
-                        "max_results": {
-                            "type": "integer",
-                            "description": (
-                                "最大返回结果数（可选）。"
-                                "默认 1000，范围 1-1000。超出时截断并提示共有多少匹配。"
-                                "如果需要查看更多匹配，缩小 path/pattern 范围或分批搜索。"
-                            ),
-                            "default": 1000,
-                        },
                     },
                     "required": ["pattern"],
                 },
@@ -180,7 +170,6 @@ class FindFunc(Func):
         path: str | None = None,
         type: str | None = None,
         depth: int = 0,
-        max_results: int = 1000,
     ):
         super().__init__()
         self.pattern = pattern
@@ -188,7 +177,6 @@ class FindFunc(Func):
         # 避免遮蔽 Python builtin type()，内部使用 filter_type
         self.filter_type = type  # "file", "dir", or None
         self.depth = max(0, depth)
-        self.max_results = min(max(1, max_results), 1000)
 
     # ── 核心执行 ────────────────────────────────────────
 
@@ -273,10 +261,6 @@ class FindFunc(Func):
                                 if fnmatch.fnmatch(fname, p):
                                     results.append(current_path / fname)
                                     break
-                    # 截断检查
-                    if len(results) >= self.max_results:
-                        dirs.clear()
-                        break
                     continue
 
                 # ── 匹配目录名 ──
@@ -295,10 +279,6 @@ class FindFunc(Func):
                                 results.append(current_path / fname)
                                 break
 
-                # ── 结果数提前截断 ──
-                if len(results) >= self.max_results:
-                    dirs.clear()
-                    break
             except (OSError, PermissionError) as _perr:
                 # 单文件/目录权限错误不中断整个遍历，记录后继续
                 logger.debug("遍历目录时跳过不可访问条目: %s, error=%s", current, _perr)
@@ -315,7 +295,6 @@ class FindFunc(Func):
             return f"查找「{self.pattern}」未找到结果"
 
         total = len(results)
-        truncated = len(results) >= self.max_results
 
         # 生成相对路径（用于显示） + 保留绝对路径（用于类型判断）
         try:
@@ -343,10 +322,7 @@ class FindFunc(Func):
             None: "文件+目录",
         }.get(self.filter_type, "文件+目录")
 
-        header = f"查找「{self.pattern}」in {root} 找到 {total} 个{type_label}"
-        if truncated:
-            header += f"，显示前 {self.max_results} 个"
-        header += ":"
+        header = f"查找「{self.pattern}」in {root} 找到 {total} 个{type_label}:"
 
         parts = [header]
 
@@ -355,9 +331,6 @@ class FindFunc(Func):
             # 根目录自身显示为目录名而非 "."
             display_name = root.name if rel_path == Path(".") else rel_path
             parts.append(f"  {icon}{display_name}")
-
-        if truncated and total > self.max_results:
-            parts.append(f"\n  (结果已截断，共 {total} 个匹配，显示 {self.max_results} 个)")
 
         return "\n".join(parts)
 

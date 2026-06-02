@@ -34,7 +34,6 @@ logger = logging.getLogger(__name__)
 
 # ── 魔法数字常量 ──────────────────────────────────────
 _BLOCK_SIZE = 1024                   # 块大小（字节）
-_MAX_RESULTS = 1000                  # 搜索最大结果数
 BINARY_CHECK_SIZE = 512              # 二进制检测读取字节数
 SMALL_FILE_LIMIT = 512 * _BLOCK_SIZE        # 小文件阈值（512KB）
 LARGE_FILE_LIMIT = 10 * _BLOCK_SIZE * _BLOCK_SIZE  # 大文件阈值（10MB）
@@ -130,7 +129,6 @@ class SearchFunc(Func):
                     "\n- query（必填）：搜索模式（始终按正则表达式处理）"
                     "\n- path（可选）：搜索路径范围，默认当前项目根目录。可指定子目录如 src/ 或单个文件如 src/main.py"
                     "\n- include（可选）：文件类型过滤，如 *.py 只搜索 Python 文件、*.py *.js 搜索多种类型。默认搜索所有文件"
-                    "\n- max_results（可选）：最大返回结果数，默认 1000，范围 1-1000"
                     "\n\n"
                     "【搜索策略（按场景选择）】"
                     "\n- **精确搜索（已知符号名）**：直接搜符号名原样。若结果=0，补搜命名风格变体（snake_case|camelCase|PascalCase）。"
@@ -157,7 +155,6 @@ class SearchFunc(Func):
                     "\n- 自动排除非源码目录：node_modules, __pycache__, .git, venv, dist, build 等"
                     "\n- query 始终作为正则处理，支持完整正则语法（如 .* | \\b ^ $ \\d \\w 等）"
                     "\n- 搜索结果按文件路径排序输出"
-                    "\n- 超过 max_results 时截断并提示"
                     "\n- 搜索无结果时返回明确提示"
                 ),
                 "parameters": {
@@ -200,11 +197,6 @@ class SearchFunc(Func):
                                 "\n- 省略时：搜索所有文件类型"
                             ),
                         },
-                        "max_results": {
-                            "type": "integer",
-                            "description": "最大返回结果数，范围 1-1000，默认 1000。超出时截断并提示共有多少匹配。",
-                            "default": _MAX_RESULTS,
-                        },
                     },
                     "required": ["query"],
                 },
@@ -233,13 +225,11 @@ class SearchFunc(Func):
         query: str,
         path: str | None = None,
         include: str | None = None,
-        max_results: int = _MAX_RESULTS,
     ):
         super().__init__()
         self.query = query
         self.path = path or "."
         self.include = include
-        self.max_results = min(max(1, max_results), _MAX_RESULTS)
 
         # 引擎检测结果缓存（惰性初始化，首次 execute 时填充）
         self._has_rg: bool | None = None
@@ -436,13 +426,10 @@ class SearchFunc(Func):
 
         files = self._collect_files()
         results: list[tuple[str, int, str]] = []
-        limit = min(max(500, self.max_results * 4), 10000)
 
         for filepath in files:
-            if len(results) >= limit:
-                break
             try:
-                self._search_file_py(filepath, results, limit)
+                self._search_file_py(filepath, results)
             except Exception:
                 logger.debug("搜索文件时跳过 %s", filepath, exc_info=True)
 
@@ -452,7 +439,6 @@ class SearchFunc(Func):
         self,
         filepath: str,
         results: list[tuple[str, int, str]],
-        limit: int,
     ) -> None:
         """在单个文件中搜索匹配行（纯 Python）"""
         # 二进制检测
@@ -476,8 +462,6 @@ class SearchFunc(Func):
                     raw = f.read()
                     text = raw.decode("utf-8", errors="replace")
                     for line_num, line in enumerate(text.splitlines(keepends=False), 1):
-                        if len(results) >= limit:
-                            return
                         if self._line_matches(line):
                             results.append((filepath, line_num, line))
                 else:
@@ -485,8 +469,6 @@ class SearchFunc(Func):
                     line_num = 0
                     for raw_line in f:
                         line_num += 1
-                        if len(results) >= limit:
-                            return
                         line = raw_line.decode("utf-8", errors="replace").rstrip("\r\n")
                         if self._line_matches(line):
                             results.append((filepath, line_num, line))
@@ -539,14 +521,7 @@ class SearchFunc(Func):
 
         results.sort(key=lambda x: (x[0], x[1]))
 
-        truncated = total > self.max_results
-        if truncated:
-            results = results[: self.max_results]
-
-        parts = [f"搜索「{self.query}」共找到 {total} 处匹配"]
-        if truncated:
-            parts[-1] += f"，显示前 {self.max_results} 处"
-        parts[-1] += ":"
+        parts = [f"搜索「{self.query}」共找到 {total} 处匹配:"]
 
         current_file = None
         for filepath, lineno, content in results:
@@ -561,8 +536,6 @@ class SearchFunc(Func):
 
         if skipped_binary:
             parts.append(f"\n  (跳过了 {skipped_binary} 个二进制文件匹配)")
-        if truncated:
-            parts.append(f"\n  (结果已截断，还有 {total - self.max_results} 处匹配未显示)")
 
         return "\n".join(parts)
 
