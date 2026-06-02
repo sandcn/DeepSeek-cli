@@ -5,6 +5,8 @@ Ctrl+P 触发，在底部栏补全弹窗中显示命令列表。
 
 from __future__ import annotations
 
+from typing import Optional
+
 from ...core.commands import get_registered_command_names
 from ..colors import DIM, RESET
 from ._selector_base import BaseBottomBarSelector
@@ -33,7 +35,7 @@ _COMMAND_DESC: dict[str, str] = {
 }
 
 
-class CommandPalette(BaseBottomBarSelector[str, str | None]):
+class CommandPalette(BaseBottomBarSelector[str, Optional[str]]):
     """命令面板 — 搜索并快速执行命令。
 
     继承 BaseBottomBarSelector，复用 TTLCache + run_bottom_bar_selection 通用流程。

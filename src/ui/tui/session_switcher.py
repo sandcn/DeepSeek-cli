@@ -6,6 +6,7 @@ from __future__ import annotations
 import logging
 import time
 from datetime import datetime
+from typing import Optional
 
 from ...chat_msgs import list_sessions, load_session
 from ._selector_base import BaseBottomBarSelector
@@ -13,7 +14,7 @@ from ._selector_base import BaseBottomBarSelector
 _logger = logging.getLogger(__name__)
 
 
-class SessionSwitcher(BaseBottomBarSelector[dict, dict[str, object] | None]):
+class SessionSwitcher(BaseBottomBarSelector[dict, Optional[dict[str, object]]]):
     """会话切换器 — 列出已保存会话，选择后加载。
 
     继承 BaseBottomBarSelector，复用 TTLCache + run_bottom_bar_selection 通用流程。
