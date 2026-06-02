@@ -696,7 +696,7 @@ class _BottomBar(_StatusMixin):
 
         delta < 0（底部栏缩小）：在新 DECSTBM[1;scroll_end] 内做 SD 下滚。
         回收行（旧面板区域）无实际内容（已被清除），SD 仅产生顶部空白行，
-        这些行随后续流式输出自然滚出视口。
+        立即清除这些空行避免上屏出现多余空白行。
 
         参数:
             out: sys.__stdout__ 或等价的可写文件对象。
@@ -708,6 +708,9 @@ class _BottomBar(_StatusMixin):
         n = -delta
         out.write(f"\033[{scroll_end};1H")
         out.write(f"\033[{n}T")
+        # 清除 SD 下滚后在滚动区顶部产生的 n 行空行
+        for r in range(1, min(n, scroll_end) + 1):
+            out.write(f"\033[{r};1H\033[K")
 
     def _draw_input_lines_locked(self, out, text: str, r_start: int, term_width: int) -> None:
         """绘制输入行（需持有 output_lock），超长文本自动拆行。

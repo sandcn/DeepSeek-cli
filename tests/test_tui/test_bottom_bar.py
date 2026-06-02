@@ -574,12 +574,16 @@ class TestApplyScrollDelta(unittest.TestCase):
         self.assertEqual(output, "", "delta=-3 时 _apply_scroll_delta 应无输出")
 
     def test_reclaim_scroll_back_negative(self):
-        """delta < 0 时 _reclaim_scroll_back 输出 SD 序列（在新 DECSTBM 内下滚）。"""
+        """delta < 0 时 _reclaim_scroll_back 输出 SD 序列并清除顶部空行。"""
         buf = io.StringIO()
         self.bb._reclaim_scroll_back(buf, delta=-3, scroll_end=25)
         output = buf.getvalue()
         self.assertIn("\033[25;1H", output, "应定位到 scroll_end=25")
         self.assertIn("\033[3T", output, "delta=-3 时应输出 SD 下滚 3 行")
+        # 必须清除 SD 产生的顶部空行
+        for r in range(1, 4):
+            self.assertIn(f"\033[{r};1H\033[K", output,
+                          f"SD 后应清除顶部行 {r}")
 
     def test_reclaim_scroll_back_non_negative(self):
         """delta >= 0 时 _reclaim_scroll_back 无操作。"""
@@ -643,6 +647,10 @@ class TestApplyScrollDelta(unittest.TestCase):
         for r in range(22, 26):
             self.assertIn(f"\033[{r};1H\033[K", output,
                           f"hide 应清除回收行 {r}")
+        # 验证 SD 下滚后顶部空行也被清除（_reclaim_scroll_back 新增修复）
+        for r in range(1, 5):
+            self.assertIn(f"\033[{r};1H\033[K", output,
+                          f"hide 应清除 SD 产生的顶部行 {r}")
 
     def test_force_redraw_shrink_outputs_sd(self):
         """force_redraw 在 delta < 0 时通过 _reclaim_scroll_back 输出 SD。"""
@@ -696,6 +704,10 @@ class TestApplyScrollDelta(unittest.TestCase):
                       "hide 应通过 _reclaim_scroll_back 输出 SD 下滚")
         self.assertNotIn("\033[5S", hide_output,
                          "hide 不应输出 SU 上滚")
+        # 验证 SD 下滚后顶部空行被清除（_reclaim_scroll_back 新增修复）
+        for r in range(1, 6):
+            self.assertIn(f"\033[{r};1H\033[K", hide_output,
+                          f"hide 后应清除 SD 产生的顶部行 {r}")
 
 
 if __name__ == "__main__":
