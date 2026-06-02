@@ -27,6 +27,7 @@ from wcwidth import wcswidth
 from ._bottom_bar_completion import _CompletionPopup
 from ._bottom_bar_selection import run_bottom_bar_selection  # noqa: F401 — 重导出保持兼容
 from ._bottom_bar_status import _StatusMixin, _get_snapshot, _TOKEN_SPEED_SNAPSHOT  # noqa: F401 — 重导出供测试 patch
+from ._stdout_tracker import _StdoutLineTracker
 from ._bottom_bar_theme import (
     _BOTTOM_MIN_HEIGHT,
     _BOTTOM_MIN_LINES,
@@ -95,6 +96,8 @@ class _BottomBar(_StatusMixin):
         self._last_scroll_end: int = 0
         # ── 补全弹窗组合对象 ──
         self._completion = _CompletionPopup()
+        # ── stdout 行追踪器 ──
+        self._tracker: _StdoutLineTracker | None = None
 
     # ── 补全弹窗兼容 property（供外部直读私有属性的调用方） ──
 
@@ -289,6 +292,8 @@ class _BottomBar(_StatusMixin):
         if scroll_end < 1:
             scroll_end = height
         self._last_scroll_end = scroll_end
+        if self._tracker is not None:
+            self._tracker.set_scroll_end(scroll_end)
         out = sys.__stdout__
         out.write(f"\033[1;{scroll_end}r")
         out.write(f"\033[{scroll_end};1H\033[s")
@@ -349,12 +354,19 @@ class _BottomBar(_StatusMixin):
             return
         self._active = True
 
+        # ── 安装 stdout 行追踪器 ──
+        if self._tracker is None:
+            self._tracker = _StdoutLineTracker(sys.__stdout__)
+        if sys.__stdout__ is not self._tracker:
+            sys.__stdout__ = self._tracker
+
         with _try_acquire_output_lock(name="bottom_bar.setup", timeout=1.0) as locked:
             if locked:
                 self._last_text = ""
                 self._last_bottom_lines = self._bottom_lines
                 scroll_end = height - self._bottom_lines
                 self._last_scroll_end = scroll_end
+                self._tracker.set_scroll_end(scroll_end)
                 out = sys.__stdout__
                 out.write("\0337")
                 out.write(f"\033[1;{scroll_end}r")
@@ -376,6 +388,11 @@ class _BottomBar(_StatusMixin):
         if not self._active:
             return
         self._active = False
+
+        # ── 卸载 stdout 行追踪器 ──
+        if self._tracker is not None and sys.__stdout__ is self._tracker:
+            sys.__stdout__ = self._tracker._real_stdout
+            self._tracker = None
 
         with _try_acquire_output_lock(name="bottom_bar.teardown", timeout=1.0) as locked:
             if locked:
@@ -443,6 +460,8 @@ class _BottomBar(_StatusMixin):
             self._draw_all_locked(out, height)
 
             self._last_scroll_end = scroll_end
+            if self._tracker is not None:
+                self._tracker.set_scroll_end(scroll_end)
             out.write(f"\033[1;{scroll_end}r")
             self._reclaim_scroll_back(out, delta, scroll_end)
             out.write("\0338")
@@ -535,6 +554,8 @@ class _BottomBar(_StatusMixin):
                 out.write(f"\033[{r};1H\033[K")
 
             self._last_scroll_end = scroll_end
+            if self._tracker is not None:
+                self._tracker.set_scroll_end(scroll_end)
             out.write(f"\033[1;{scroll_end}r")
             self._reclaim_scroll_back(out, delta, scroll_end)
             out.write("\0338")
@@ -665,6 +686,8 @@ class _BottomBar(_StatusMixin):
             cursor_col = min(cursor_col, self._term_width())
 
             self._last_scroll_end = scroll_end
+            if self._tracker is not None:
+                self._tracker.set_scroll_end(scroll_end)
             out.write(f"\033[1;{scroll_end}r")
             self._reclaim_scroll_back(out, delta, scroll_end)
             out.write("\0338")
@@ -827,6 +850,8 @@ class _BottomBar(_StatusMixin):
             out.write("\033[r")
             self._draw_status_locked(out, height)
             self._last_scroll_end = scroll_end
+            if self._tracker is not None:
+                self._tracker.set_scroll_end(scroll_end)
             out.write(f"\033[1;{scroll_end}r")
             out.write("\0338")
             out.write(f"\033[{scroll_end};1H\033[s")
@@ -902,6 +927,10 @@ class _BottomBar(_StatusMixin):
             delta = total - old_bottom_lines
             old_scroll_end = height - old_bottom_lines
 
+            # ★ 在 SU 之前保存将被覆盖的行
+            if delta > 0 and self._tracker is not None:
+                self._tracker.save_rows_to_restore(delta)
+
             self._apply_scroll_delta(out, delta, old_scroll_end)
 
             out.write("\033[r")
@@ -947,6 +976,9 @@ class _BottomBar(_StatusMixin):
 
             self._last_scroll_end = scroll_end
             out.write(f"\033[1;{scroll_end}r")
+            # ★ 同步 tracker 的 scroll_end
+            if self._tracker is not None:
+                self._tracker.set_scroll_end(scroll_end)
             self._reclaim_scroll_back(out, delta, scroll_end)
             out.write("\0338")
             out.write(f"\033[{scroll_end};1H\033[s")
@@ -989,8 +1021,6 @@ class _BottomBar(_StatusMixin):
             delta = total - old_bottom_lines
             old_scroll_end = height - old_bottom_lines
 
-            self._apply_scroll_delta(out, delta, old_scroll_end)
-
             out.write("\033[r")
 
             self._last_bottom_lines = total
@@ -1029,7 +1059,21 @@ class _BottomBar(_StatusMixin):
 
             self._last_scroll_end = scroll_end
             out.write(f"\033[1;{scroll_end}r")
-            self._reclaim_scroll_back(out, delta, scroll_end)
+            # ★ 同步 tracker 的 scroll_end
+            if self._tracker is not None:
+                self._tracker.set_scroll_end(scroll_end)
+            # ★ 恢复已保存的行到释放的滚动区行
+            saved = self._tracker.get_saved_rows() if self._tracker is not None else None
+            if saved and delta < 0:
+                restore_count = min(len(saved), -delta)
+                for i in range(restore_count):
+                    row = scroll_end + 1 + i
+                    out.write(f"\033[{row};1H\033[K")
+                    out.write(saved[i])
+                    out.write("\n")
+                self._tracker.clear_saved()
+            else:
+                self._reclaim_scroll_back(out, delta, scroll_end)
             out.write("\0338")
             out.write(f"\033[{scroll_end};1H\033[s")
             vis_row, vis_col = _compute_cursor_visual_pos(
