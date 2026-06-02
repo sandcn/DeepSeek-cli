@@ -212,7 +212,7 @@ class ChatUIConsumer:
 
         安全地从任何线程调用：自行管理 output_lock 获取与释放。
         执行以下刷新操作：
-          1. ParallelDisplay 面板刷新（若有活跃实例）
+          1. SubAgentPanelControl 面板刷新（若有活跃实例）
           2. 底部栏重绘（force_redraw）
           3. 光标定位（position_cursor）
 
@@ -220,15 +220,15 @@ class ChatUIConsumer:
         """
         from ..ui._lock import _try_acquire_output_lock
 
-        # ★ 1. ParallelDisplay 面板刷新（无锁，内部自行用 timeout try-lock）
+        # ★ 1. SubAgentPanelControl 面板刷新（就地渲染，走 output_lock 路径）
         from . import _state
-        pd = _state._active_parallel_display
-        if pd is not None:
+        panel = _state._active_subagent_panel
+        if panel is not None:
             try:
-                pd.refresh()
+                panel.render_frame(force=False)
             except Exception:
-                _logger.debug("refresh: ParallelDisplay 刷新异常", exc_info=True)
-                self._engine.push_cmd((RenderCommand.ERROR, "ParallelDisplay 刷新失败，请查看日志获取详情"))
+                _logger.debug("refresh: SubAgentPanelControl 刷新异常", exc_info=True)
+                self._engine.push_cmd((RenderCommand.ERROR, "SubAgent 面板刷新失败，请查看日志获取详情"))
 
         # ★ 2. 底部栏重绘 + 光标定位（有活跃状态时执行）
         if self._bottom_bar.is_status_active:
@@ -287,6 +287,15 @@ class ChatUIConsumer:
         其余底部栏操作（状态刷新、模型名、工具计数等）通过此属性直接访问。
         """
         return self._bottom_bar
+
+    @property
+    def output_adapter(self) -> "OutputAdapter":
+        """OutputAdapter 对象 — 供外部模块（如 ParallelDisplay）获取
+        统一的终端输出适配器，用于创建 SubAgentPanelControl。
+
+        由 ChatUIConsumer 构造时创建，生命周期与 ChatUIConsumer 一致。
+        """
+        return self._renderer._adapter
 
     def setup_bottom_bar(self) -> None:
         from ..ui._lock import output_lock

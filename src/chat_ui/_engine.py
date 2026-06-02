@@ -1,7 +1,7 @@
 """chat_ui 渲染引擎模块 — Reader 线程 + 命令队列 + 渲染循环。
 
 Layer 3 — 依赖 _const（_READER_INTERVAL）+ _renderers（ContentRenderer）
-          + _state（_active_parallel_display）。
+          + _state（_active_subagent_panel）。
 """
 
 from __future__ import annotations
@@ -24,7 +24,7 @@ from ._utils import _cmd_name
 from ..ui._lock import _try_acquire_output_lock
 
 if TYPE_CHECKING:
-    from ..ui.parallel.display import ParallelDisplay
+    from ._controls import SubAgentPanelControl
     from ._protocols import BottomBarProtocol
     from ._renderers import ContentRenderer
 
@@ -221,21 +221,18 @@ class RenderEngine:
                 ))
         sys.__stdout__.flush()
 
-    def _phase_refresh_panels(self, pd: "ParallelDisplay | None") -> None:
-        """阶段 2：ParallelDisplay 面板刷新（在 output_lock 内调用）。
+    def _phase_refresh_panels(self, panel: "SubAgentPanelControl | None") -> None:
+        """阶段 2：SubAgent 面板刷新（在 output_lock 内调用）。
+
+        通过入队 SUBAGENT_REFRESH 命令触发面板帧渲染，
+        而非直接调用 panel.render_frame()。将刷新统一到消息路径，
+        与上屏渲染命令在同一队列中串行化处理。
 
         Args:
-            pd: 由 _drain_queue() 传入的 _active_parallel_display 引用。
+            panel: 由 _drain_queue() 传入的 _active_subagent_panel 引用。
         """
-        if pd is not None:
-            try:
-                pd.refresh()
-            except Exception:
-                _logger.debug("drain_queue: ParallelDisplay 刷新异常", exc_info=True)
-                self.push_cmd((
-                    RenderCommand.ERROR,
-                    "drain_queue: ParallelDisplay 刷新失败，请查看日志获取详情",
-                ))
+        if panel is not None and panel.needs_refresh():
+            self.push_cmd((RenderCommand.SUBAGENT_REFRESH, False))
 
     def _phase_redraw_bottom(self, has_commands: bool) -> None:
         """阶段 3：底部栏重绘 + 光标定位（在 output_lock 内调用）。
@@ -280,26 +277,26 @@ class RenderEngine:
         """消费所有待处理渲染命令（入口方法，路由到三阶段流水线）。
 
         流水线：
-          0. 快速空闲跳过（锁外）— 队列空 + 无面板 + 状态行不活跃 + 无 resize pending 时跳过
+          0. 快速空闲跳过（锁外）— 队列空 + 无面板/面板无需刷新 + 状态行不活跃 + 无 resize pending 时跳过
           0b. 终端大小变化检测（锁外）— 检测 resize 并刷新渲染器宽度缓存
           1. resize 处理（锁内）— 消费 SIGWINCH 标记，更新终端尺寸和 DECSTBM
           2. 上屏渲染（锁内）— 批量出队 + 渲染命令 → _phase_render()
-          3. ParallelDisplay 面板刷新（锁内）— 刷新 SubAgent UI 面板 → _phase_refresh_panels()
+          3. SubAgent 面板刷新（锁内）— 入队 SUBAGENT_REFRESH 命令 → _phase_refresh_panels()
           4. 底部栏重绘 + 光标定位（锁内）— force_redraw + 光标移回输入行 → _phase_redraw_bottom()
 
         步骤 0/0b 在锁外、步骤 1-4 共用同一个 output_lock，
         防止上屏渲染 / 面板刷新 / 底部栏重绘之间的终端 I/O 交错。
-        output_lock 为 RLock（可重入），pd.refresh() 和 force_redraw()
+        output_lock 为 RLock（可重入），panel.render_frame() 和 force_redraw()
         内部取锁不会死锁。
 
-        ParallelDisplay 刷新置于渲染阶段之后：先渲染上屏内容（工具输出/摘要等），
+        SubAgent 面板刷新置于渲染阶段之后：先渲染上屏内容（工具输出/摘要等），
         再刷新 SubAgent UI 面板展示最新状态，确保面板状态与已渲染内容同步。
         """
         from . import _state
-        pd = _state._active_parallel_display
-        if (self._cmd_queue.empty() and pd is None
-                and not self._bb.is_status_active
-                and not self._bb.is_resize_pending):
+        panel = _state._active_subagent_panel
+        if (self._cmd_queue.empty() and not self._bb.is_status_active
+                and not self._bb.is_resize_pending
+                and (panel is None or not panel.needs_refresh())):
             return
 
         # ★ 终端大小变化检测（锁外）— 避免 shutil.get_terminal_size()
@@ -336,7 +333,7 @@ class RenderEngine:
             if commands:
                 self._phase_render(commands, resized)
 
-            self._phase_refresh_panels(pd)
+            self._phase_refresh_panels(panel)
 
             self._phase_redraw_bottom(bool(commands))
 

@@ -91,7 +91,7 @@ class TestCaptureAndPrintAsyncConcurrency:
 class TestRefreshRegistration:
     """ParallelDisplay refresh() 及注册/注销链路测试。
 
-    验证 start()/stop() 对 chat_ui._active_parallel_display 的注册与注销，
+    验证 start()/stop() 对 chat_ui._active_subagent_panel 的注册与注销，
     以及 refresh() 公开方法的正常调用。
     """
 
@@ -101,38 +101,54 @@ class TestRefreshRegistration:
         display.refresh()
 
     def test_start_registers_to_chat_ui(self, display):
-        """start() 将实例注册到 chat_ui._state._active_parallel_display。
+        """start() 将 SubAgentPanelControl 注册到 chat_ui._state._active_subagent_panel。
 
-        注意：_active_parallel_display 定义在 _state 模块中。
-        __init__.py 的 from ._state import _active_parallel_display 创建了独立绑定，
-        赋值后与 _state 模块的变量分叉。引擎层（_engine.py/_consumer.py）均从
-        _state 模块读取，故验证目标为 _state 模块中的值。
+        ParallelDisplay.start() 创建 SubAgentPanelControl 并注册到全局引用。
+        引擎层（_engine.py/_consumer.py）均从 _state 模块读取该引用。
         """
         import src.chat_ui._state as chat_ui_state
-        assert chat_ui_state._active_parallel_display is None
+        assert chat_ui_state._active_subagent_panel is None
         display.add_agent("agent-1", "test agent")
-        display.start()
-        assert chat_ui_state._active_parallel_display is display
+        # Mock ChatUI 以提供 output_adapter
+        from unittest.mock import patch, MagicMock
+        mock_chat_ui = MagicMock()
+        mock_chat_ui.output_adapter = MagicMock()
+        # output_adapter.width 需要返回整数（render_frame 中用于 FrameRenderer）
+        mock_chat_ui.output_adapter.width = 120
+        with patch('src.chat_ui.get_active_chat_ui', return_value=mock_chat_ui):
+            display.start()
+        assert chat_ui_state._active_subagent_panel is display._panel
+        assert chat_ui_state._active_subagent_panel is not None
         display.stop()
 
     def test_stop_clears_chat_ui_reference(self, display):
-        """stop() 从 chat_ui._state._active_parallel_display 注销引用。"""
+        """stop() 从 chat_ui._state._active_subagent_panel 注销引用。"""
         import src.chat_ui._state as chat_ui_state
         display.add_agent("agent-1", "test agent")
-        display.start()
-        assert chat_ui_state._active_parallel_display is display
+        from unittest.mock import patch, MagicMock
+        mock_chat_ui = MagicMock()
+        mock_chat_ui.output_adapter = MagicMock()
+        mock_chat_ui.output_adapter.width = 120
+        with patch('src.chat_ui.get_active_chat_ui', return_value=mock_chat_ui):
+            display.start()
+        assert chat_ui_state._active_subagent_panel is display._panel
         display.stop()
-        assert chat_ui_state._active_parallel_display is None
+        assert chat_ui_state._active_subagent_panel is None
 
     def test_start_then_stop_one_cycle(self):
         """一次 start → stop 注册/注销循环正确。"""
         import src.chat_ui._state as chat_ui_state
         d = ParallelDisplay()
         d.add_agent("agent-1", "test agent")
-        d.start()
-        assert chat_ui_state._active_parallel_display is d
+        from unittest.mock import patch, MagicMock
+        mock_chat_ui = MagicMock()
+        mock_chat_ui.output_adapter = MagicMock()
+        mock_chat_ui.output_adapter.width = 120
+        with patch('src.chat_ui.get_active_chat_ui', return_value=mock_chat_ui):
+            d.start()
+        assert chat_ui_state._active_subagent_panel is d._panel
         d.stop()
-        assert chat_ui_state._active_parallel_display is None
+        assert chat_ui_state._active_subagent_panel is None
 
     def test_refresh_after_stop_safe(self, display):
         """stop() 后 refresh() 安全（_stopped 守卫跳过渲染）。"""

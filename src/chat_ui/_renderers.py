@@ -28,23 +28,12 @@ from ._const import (
     RenderCommand,
 )
 
-# ── 子代理相关渲染命令集合 ────────────────────────────
-# 这些命令由 SubAgent 事件触发（工具输出/计数变更/解析进度等）。
-# 处理完这些命令后，ContentRenderer.render() 会主动刷新
-# ParallelDisplay 面板，确保子代理状态面板持续更新。
-_SUBAGENT_RENDER_COMMANDS: frozenset[int] = frozenset({
-    RenderCommand.TOOL_OUTPUT,
-    RenderCommand.TOOL_COUNT_INC,
-    RenderCommand.TOOL_COUNT_DEC,
-    RenderCommand.TOOL_FAIL_INC,
-    RenderCommand.TOOL_SUMMARY,
-    RenderCommand.PARSE_INFO,
-})
 from ._utils import _cmd_name, _truncate_msg
 from ._controls import (
     ControlList,
     MarkdownControl,
     ParseInfoControl,
+    SubAgentPanelControl,
     TextControl,
     ToolOutputControl,
     ToolSummaryControl,
@@ -82,6 +71,7 @@ def _build_render_dispatch() -> dict[int, tuple[str, tuple[int, ...]]]:
         R.TOOL_COUNT_DEC: ("_do_tool_count_dec",  ()),
         R.TOOL_FAIL_INC:  ("_do_tool_fail_inc",   ()),
         R.ERROR:          ("_do_error",           (1,)),
+        R.SUBAGENT_REFRESH: ("_do_subagent_refresh", (1,)),
     }
 
     # 断言：确保没有废弃命令被误加到分发表中
@@ -244,18 +234,18 @@ class ContentRenderer:
         args = tuple(cmd[i] for i in arg_indices)
         method(*args)
 
-        # ★ SubAgent 相关命令处理完后，强制刷新 ParallelDisplay 面板
+        # ★ SubAgent 相关命令处理完后，强制刷新 SubAgentPanelControl 面板
+        #   命令集合（工具输出/计数变更/解析进度等）与子代理面板刷新相关。
+        _SUBAGENT_RENDER_COMMANDS: frozenset[int] = frozenset({
+            RenderCommand.TOOL_OUTPUT,
+            RenderCommand.TOOL_COUNT_INC,
+            RenderCommand.TOOL_COUNT_DEC,
+            RenderCommand.TOOL_FAIL_INC,
+            RenderCommand.TOOL_SUMMARY,
+            RenderCommand.PARSE_INFO,
+        })
         if cid in _SUBAGENT_RENDER_COMMANDS:
-            try:
-                from . import _state as _chat_ui_state
-                pd = _chat_ui_state._active_parallel_display
-                if pd is not None:
-                    pd.refresh(force=True)
-            except Exception:
-                _logger.debug(
-                    "render: ParallelDisplay 刷新异常（命令 %s）",
-                    _cmd_name(cid), exc_info=True,
-                )
+            self._do_subagent_refresh(True)
 
     # ── 内容渲染 ──────────────────────────────────────
 
@@ -316,6 +306,29 @@ class ContentRenderer:
     def _do_parse_info(self, tool_names: str, tokens: int | float, elapsed: float) -> None:
         """渲染解析进度（通过 ParseInfoControl 控件，不再使用 \\r\\033[K 进度条）。"""
         self._parse_info_ctrl.update(tool_names, tokens, elapsed)
+
+    # ── SubAgent 面板刷新 ────────────────────────────
+
+    def _do_subagent_refresh(self, force: bool = False) -> None:
+        """刷新 SubAgent 面板帧（通过 SubAgentPanelControl）。
+
+        从 _state._active_subagent_panel 获取活跃面板控件并触发帧渲染。
+        面板渲染通过 OutputAdapter.write_raw() 走 output_lock 路径，
+        与 ChatUI 其他文本输出串行化。
+
+        Args:
+            force: 跳过版本号检查强制渲染（SubAgent 命令后使用）
+        """
+        try:
+            from . import _state as _chat_ui_state
+            panel = _chat_ui_state._active_subagent_panel
+            if panel is not None:
+                panel.render_frame(force=force)
+        except Exception:
+            _logger.debug(
+                "_do_subagent_refresh: 面板刷新异常",
+                exc_info=True,
+            )
 
     # ── 样式化行渲染 — 通过 TextControl 实例委托 ──────
 

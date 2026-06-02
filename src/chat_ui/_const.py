@@ -71,6 +71,7 @@ class RenderCommand(IntEnum):
     TOOL_FAIL_INC  = 15  # (15,) — 工具失败计数+1
     ERROR          = 16  # (16, message: str) — 系统错误（红色 ! 样式）
     TOOL_COUNT_DEC = 17  # (17,) — 工具计数-1
+    SUBAGENT_REFRESH = 18  # (18, force: bool) — 刷新 SubAgent 面板帧
 
 
 # ═══════════════════════════════════════════════════════════

@@ -379,7 +379,7 @@ class TestDrainQueueSyncBottomLines(unittest.TestCase):
         self._enqueue_cmd()
         self.mock_bb.check_resize.return_value = False
 
-        with patch("src.chat_ui._state._active_parallel_display", None), \
+        with patch("src.chat_ui._state._active_subagent_panel", None), \
              patch("src.ui._lock._try_acquire_output_lock",
                    return_value=MagicMock(__enter__=MagicMock(return_value=True),
                                          __exit__=MagicMock(return_value=False))), \
@@ -410,7 +410,7 @@ class TestDrainQueueSyncBottomLines(unittest.TestCase):
         self.mock_bb._active = True
         self.mock_bb._term_height.return_value = 35
 
-        with patch("src.chat_ui._state._active_parallel_display", None), \
+        with patch("src.chat_ui._state._active_subagent_panel", None), \
              patch("src.ui._lock._try_acquire_output_lock",
                    return_value=MagicMock(__enter__=MagicMock(return_value=True),
                                          __exit__=MagicMock(return_value=False))), \

@@ -767,23 +767,23 @@ class TestChatUIConsumerPublicMethods:
 class TestChatUIConsumerRefresh:
     """refresh() 刷新接口"""
 
-    def test_refresh_with_active_parallel_display(self, consumer, mock_bus):
-        """refresh() 在有活跃 ParallelDisplay 时调用其 refresh()"""
-        mock_pd = MagicMock()
-        with patch('src.chat_ui._state._active_parallel_display', mock_pd):
+    def test_refresh_with_active_subagent_panel(self, consumer, mock_bus):
+        """refresh() 在有活跃 SubAgentPanelControl 时调用其 render_frame()"""
+        mock_panel = MagicMock()
+        with patch('src.chat_ui._state._active_subagent_panel', mock_panel):
             consumer.refresh()
-            mock_pd.refresh.assert_called_once()
+            mock_panel.render_frame.assert_called_once_with(force=False)
 
-    def test_refresh_without_parallel_display(self, consumer, mock_bus):
-        """refresh() 无活跃 ParallelDisplay 时不崩溃"""
-        with patch('src.chat_ui._state._active_parallel_display', None):
+    def test_refresh_without_subagent_panel(self, consumer, mock_bus):
+        """refresh() 无活跃 SubAgentPanelControl 时不崩溃"""
+        with patch('src.chat_ui._state._active_subagent_panel', None):
             # 不应崩溃
             consumer.refresh()
 
     def test_refresh_bottom_bar_when_active(self, consumer, mock_bus):
         """refresh() 在底部栏活跃时调用 force_redraw"""
         consumer._bottom_bar._status_active = True
-        with patch('src.chat_ui._state._active_parallel_display', None):
+        with patch('src.chat_ui._state._active_subagent_panel', None):
             with patch.object(consumer._bottom_bar, 'force_redraw') as mock_redraw:
                 with patch.object(consumer._engine, 'position_cursor'):
                     consumer.refresh()
@@ -792,7 +792,7 @@ class TestChatUIConsumerRefresh:
     def test_refresh_skips_bottom_bar_when_inactive(self, consumer, mock_bus):
         """refresh() 在底部栏不活跃时跳过 force_redraw"""
         consumer._bottom_bar._status_active = False
-        with patch('src.chat_ui._state._active_parallel_display', None):
+        with patch('src.chat_ui._state._active_subagent_panel', None):
             with patch.object(consumer._bottom_bar, 'force_redraw') as mock_redraw:
                 consumer.refresh()
                 mock_redraw.assert_not_called()

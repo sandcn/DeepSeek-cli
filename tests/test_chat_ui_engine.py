@@ -530,7 +530,7 @@ class TestRenderEngineDrainQueue:
 
         with (
             patch("src.chat_ui._engine._try_acquire_output_lock") as m_lock,
-            patch("src.chat_ui._state._active_parallel_display", None),
+            patch("src.chat_ui._state._active_subagent_panel", None),
             patch.object(engine, "position_cursor") as m_pos,
         ):
             m_lock.return_value.__enter__.return_value = True
@@ -553,7 +553,7 @@ class TestRenderEngineDrainQueue:
 
         with (
             patch("src.chat_ui._engine._try_acquire_output_lock") as m_lock,
-            patch("src.chat_ui._state._active_parallel_display", None),
+            patch("src.chat_ui._state._active_subagent_panel", None),
         ):
             m_lock.return_value.__enter__.return_value = True
 
@@ -577,7 +577,7 @@ class TestRenderEngineDrainQueue:
 
         with (
             patch("src.chat_ui._engine._try_acquire_output_lock") as m_lock,
-            patch("src.chat_ui._state._active_parallel_display", None),
+            patch("src.chat_ui._state._active_subagent_panel", None),
         ):
             m_lock.return_value.__enter__.return_value = True
 
@@ -598,7 +598,7 @@ class TestRenderEngineDrainQueue:
 
         with (
             patch("src.chat_ui._engine._try_acquire_output_lock") as m_lock,
-            patch("src.chat_ui._state._active_parallel_display", None),
+            patch("src.chat_ui._state._active_subagent_panel", None),
         ):
             m_lock.return_value.__enter__.return_value = True
 
@@ -621,7 +621,7 @@ class TestRenderEngineDrainQueue:
 
         with (
             patch("src.chat_ui._engine._try_acquire_output_lock") as m_lock,
-            patch("src.chat_ui._state._active_parallel_display", None),
+            patch("src.chat_ui._state._active_subagent_panel", None),
         ):
             m_lock.return_value.__enter__.return_value = True
 
@@ -634,47 +634,49 @@ class TestRenderEngineDrainQueue:
         err_cmd = engine._cmd_queue.get_nowait()
         assert err_cmd[0] == RenderCommand.ERROR
 
-    def test_drain_parallel_display_refreshed(self, engine):
-        """ParallelDisplay 存在时在阶段2刷新。"""
+    def test_drain_subagent_panel_refreshed(self, engine):
+        """SubAgentPanelControl 需要刷新时阶段2入队 SUBAGENT_REFRESH。"""
         engine._bb.is_status_active = False
         engine._bb.check_resize.return_value = False
-        mock_pd = MagicMock()
+        mock_panel = MagicMock()
+        mock_panel.needs_refresh.return_value = True
 
         engine._cmd_queue.put((RenderCommand.CONTENT, "数据"))
 
         with (
             patch("src.chat_ui._engine._try_acquire_output_lock") as m_lock,
-            patch("src.chat_ui._state._active_parallel_display", mock_pd),
+            patch("src.chat_ui._state._active_subagent_panel", mock_panel),
+            patch.object(engine, 'push_cmd') as mock_push,
         ):
             m_lock.return_value.__enter__.return_value = True
 
             engine._drain_queue()
 
-        mock_pd.refresh.assert_called_once()
+        # 验证 SUBAGENT_REFRESH 命令已入队
+        mock_push.assert_any_call((RenderCommand.SUBAGENT_REFRESH, False))
 
-    def test_drain_parallel_display_refresh_exception_tolerated(
-        self, engine, caplog,
-    ):
-        """ParallelDisplay.refresh 异常时被容错，不阻断流水线。"""
+    def test_drain_subagent_panel_needs_refresh_false_skip(self, engine):
+        """SubAgentPanelControl.needs_refresh() 返回 False 时跳过入队。"""
         engine._bb.is_status_active = False
         engine._bb.check_resize.return_value = False
-        mock_pd = MagicMock()
-        mock_pd.refresh.side_effect = RuntimeError("PD 刷新失败")
-        caplog.set_level(logging.DEBUG)
-
-        engine._cmd_queue.put((RenderCommand.CONTENT, "数据"))
+        mock_panel = MagicMock()
+        mock_panel.needs_refresh.return_value = False
 
         with (
             patch("src.chat_ui._engine._try_acquire_output_lock") as m_lock,
-            patch("src.chat_ui._state._active_parallel_display", mock_pd),
+            patch("src.chat_ui._state._active_subagent_panel", mock_panel),
+            patch.object(engine, 'push_cmd') as mock_push,
         ):
             m_lock.return_value.__enter__.return_value = True
 
             engine._drain_queue()
 
-        assert "ParallelDisplay 刷新异常" in caplog.text
-        # 后续 force_redraw 仍执行
-        engine._bb.force_redraw.assert_called_once()
+        # SUBAGENT_REFRESH 不应入队
+        for call_args in mock_push.call_args_list:
+            cmd = call_args[0][0]
+            assert cmd[0] != RenderCommand.SUBAGENT_REFRESH, (
+                "SUBAGENT_REFRESH 不应被推送"
+            )
 
     def test_drain_force_redraw_with_commands(self, engine):
         """有命令时不论 is_status_active 都触发 force_redraw。"""
@@ -685,7 +687,7 @@ class TestRenderEngineDrainQueue:
 
         with (
             patch("src.chat_ui._engine._try_acquire_output_lock") as m_lock,
-            patch("src.chat_ui._state._active_parallel_display", None),
+            patch("src.chat_ui._state._active_subagent_panel", None),
         ):
             m_lock.return_value.__enter__.return_value = True
 
@@ -700,7 +702,7 @@ class TestRenderEngineDrainQueue:
 
         with (
             patch("src.chat_ui._engine._try_acquire_output_lock") as m_lock,
-            patch("src.chat_ui._state._active_parallel_display", None),
+            patch("src.chat_ui._state._active_subagent_panel", None),
         ):
             m_lock.return_value.__enter__.return_value = True
 
@@ -717,7 +719,7 @@ class TestRenderEngineDrainQueue:
 
         with (
             patch("src.chat_ui._engine._try_acquire_output_lock") as m_lock,
-            patch("src.chat_ui._state._active_parallel_display", None),
+            patch("src.chat_ui._state._active_subagent_panel", None),
         ):
             m_lock.return_value.__enter__.return_value = True
 
@@ -749,7 +751,7 @@ class TestRenderEngineDrainQueue:
 
         with (
             patch("src.chat_ui._engine._try_acquire_output_lock") as m_lock,
-            patch("src.chat_ui._state._active_parallel_display", None),
+            patch("src.chat_ui._state._active_subagent_panel", None),
         ):
             m_lock.return_value.__enter__.return_value = True
 
@@ -769,7 +771,7 @@ class TestRenderEngineDrainQueue:
 
         with (
             patch("src.chat_ui._engine._try_acquire_output_lock") as m_lock,
-            patch("src.chat_ui._state._active_parallel_display", None),
+            patch("src.chat_ui._state._active_subagent_panel", None),
         ):
             m_lock.return_value.__enter__.return_value = True
 
@@ -786,7 +788,7 @@ class TestRenderEngineDrainQueue:
 
         with (
             patch("src.chat_ui._engine._try_acquire_output_lock") as m_lock,
-            patch("src.chat_ui._state._active_parallel_display", None),
+            patch("src.chat_ui._state._active_subagent_panel", None),
             patch.object(engine, "position_cursor") as m_pos,
         ):
             m_lock.return_value.__enter__.return_value = True
@@ -806,7 +808,7 @@ class TestRenderEngineDrainQueue:
 
         with (
             patch("src.chat_ui._engine._try_acquire_output_lock") as m_lock,
-            patch("src.chat_ui._state._active_parallel_display", None),
+            patch("src.chat_ui._state._active_subagent_panel", None),
         ):
             m_lock.return_value.__enter__.return_value = True
 
@@ -1036,7 +1038,7 @@ class TestRenderEngineEdgeCases:
         with patch.object(engine, "_check_resize", side_effect=OSError("终端不可用")):
             with (
                 patch("src.chat_ui._engine._try_acquire_output_lock") as m_lock,
-                patch("src.chat_ui._state._active_parallel_display", None),
+                patch("src.chat_ui._state._active_subagent_panel", None),
             ):
                 m_lock.return_value.__enter__.return_value = True
 

@@ -38,7 +38,7 @@
   ChatUIErrorHandler   — 日志→上屏投递
   _apply_completion    — Tab 补全应用（纯函数）
   _active_consumer     — 模块级活跃实例引用
-  _active_parallel_display — 模块级 ParallelDisplay 引用
+  _active_subagent_panel — 模块级 SubAgentPanelControl 引用
   _MAIN_LABEL          — 主 Agent 标签（供测试使用）
   Control              — 控件抽象基类
   ControlList          — 控件列表管理器
@@ -60,7 +60,7 @@ from ._const import (
 )
 from ._state import (
     _active_consumer,
-    _active_parallel_display,
+    _active_subagent_panel,
     get_active_chat_ui,
 )
 
@@ -74,6 +74,7 @@ from ._controls import (
     ControlList,
     MarkdownControl,
     ParseInfoControl,
+    SubAgentPanelControl,
     TextControl,
     ToolOutputControl,
     ToolSummaryControl,
@@ -92,12 +93,13 @@ __all__ = [
     "ChatUIErrorHandler",
     "_apply_completion",
     "_active_consumer",
-    "_active_parallel_display",
+    "_active_subagent_panel",
     "_MAIN_LABEL",
     "Control",
     "ControlList",
     "MarkdownControl",
     "ParseInfoControl",
+    "SubAgentPanelControl",
     "TextControl",
     "ToolOutputControl",
     "ToolSummaryControl",

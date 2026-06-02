@@ -26,6 +26,7 @@ import bisect
 import logging
 import math
 import sys
+import time
 from abc import ABC, abstractmethod
 from typing import TYPE_CHECKING
 
@@ -716,6 +717,251 @@ class ToolSummaryControl(Control, _ControlBase):
             self._adapter.write(Text.assemble(
                 (f"    ... 及其他 {len(failed) - 3} 个", self._style_dim),
             ))
+
+
+# ═══════════════════════════════════════════════════════════
+# SubAgentPanelControl — SubAgent 面板帧渲染控件
+# ═══════════════════════════════════════════════════════════
+
+class SubAgentPanelControl(Control, _ControlBase):
+    """SubAgent 面板控件 — 通过 OutputAdapter 渲染多行 Agent 状态面板。
+
+    封装 FrameRenderer + AgentStateStore，将 Agent 状态快照渲染为终端帧。
+    通过 ANSI 光标控制（\\033[s / \\033[u）实现帧覆写，与 ParallelDisplay
+    的 TerminalAdapter.render_frame() 行为一致，但走 OutputAdapter 的
+    output_lock 路径。
+
+    职责：
+      1. 持有 AgentStateStore + FrameRenderer 引用（由 ParallelDisplay 注入）
+      2. render_frame(force, final) — 版本号检查 + 帧渲染
+      3. needs_refresh() — 供 _drain_queue 空闲跳过
+      4. diff_active_set()/diff_active_clear() — 供 _DiffGuard 使用
+
+    与 ParallelDisplay 的关系：
+      - ParallelDisplay 创建并持有此控件
+      - 状态更新由 ParallelDisplay 代理到 AgentStateStore
+      - 帧渲染由 RenderCommand.SUBAGENT_REFRESH 消息驱动
+      - diff_active 由 ParallelDisplay._DiffGuard 通过 diff_active_set/clear 控制
+
+    write() 为 no-op——SubAgentPanelControl 通过 render_frame() 渲染，
+    不适用流式 write 语义。
+    """
+
+    def write(self, text: str) -> None:
+        """不支持流式写入——SubAgentPanelControl 通过 render_frame() 渲染。"""
+        return
+
+    def __init__(
+        self,
+        output_adapter: "OutputAdapter",
+        store,  # AgentStateStore
+        renderer,  # FrameRenderer
+        start_line: int = 0,
+        level: int = 0,
+    ) -> None:
+        """创建 SubAgentPanelControl 实例。
+
+        Args:
+            output_adapter: Rich Console 输出适配器（必填）
+            store: AgentStateStore 实例（状态存储）
+            renderer: FrameRenderer 实例（帧渲染器）
+            start_line: 起始行号
+            level: 层级
+
+        Raises:
+            ValueError: 若 output_adapter / store / renderer 为 None
+        """
+        if output_adapter is None:
+            raise ValueError("SubAgentPanelControl: output_adapter 不能为 None")
+        if store is None:
+            raise ValueError("SubAgentPanelControl: store 不能为 None")
+        if renderer is None:
+            raise ValueError("SubAgentPanelControl: renderer 不能为 None")
+        self._adapter = output_adapter
+        self._store = store
+        self._renderer = renderer
+        self._frame: int = 0
+        self._last_lines: int = 0
+        self._last_rendered_version: int = 0
+        self._last_eventbus_time: float = 0.0
+
+        # ── diff_active guard（线程安全由单事件循环保证） ──
+        self._diff_active: bool = False
+        self._diff_active_since: float = 0.0
+        self._diff_count: int = 0
+
+        _ControlBase.__init__(self, start_line=start_line, level=level)
+
+    # ── diff_active guard ───────────────────────────────
+
+    def diff_active_set(self) -> None:
+        """设置 diff_active 标记（引用计数递增）。
+
+        由 ParallelDisplay._DiffGuard.__enter__ 调用。
+        单事件循环模式：引用计数天然原子，无需额外锁。
+        """
+        self._diff_count += 1
+        if self._diff_count == 1:
+            self._diff_active = True
+            self._diff_active_since = time.time()
+
+    def diff_active_clear(self) -> None:
+        """清除 diff_active 标记（引用计数递减）。
+
+        由 ParallelDisplay._DiffGuard.__exit__ 调用。
+        单事件循环模式：引用计数天然原子，无需额外锁。
+        """
+        self._diff_count -= 1
+        if self._diff_count <= 0:
+            self._diff_active = False
+            self._diff_count = 0
+            self._diff_active_since = 0.0
+
+    # ── 帧渲染 ─────────────────────────────────────────
+
+    def needs_refresh(self) -> bool:
+        """是否需要帧刷新（供 _drain_queue 空闲跳过）。
+
+        条件：未关闭、非 diff_active、状态版本号有变化。
+        在 Reader 线程中调用（_drain_queue 锁外）。
+        """
+        if self._closed or self._diff_active:
+            return False
+        return self._store.version != self._last_rendered_version
+
+    def render_frame(self, force: bool = False, final: bool = False) -> None:
+        """渲染当前帧到终端。
+
+        内部版本号检查跳过无变化帧（force=True 时跳过版本号检查）。
+        diff_active 期间跳过渲染（除 final 帧）。
+        帧渲染通过 OutputAdapter.write_raw() 走 output_lock 路径，
+        与 ChatUI 其他文本输出串行化。
+
+        Args:
+            force: 跳过版本号检查，强制渲染（SubAgent 命令后使用）
+            final: 最终帧（完成/停止时调用，含 diff_active 超时兜底）
+        """
+        if self._closed:
+            return
+
+        # ── diff_active 超时兜底 ─────────────────────
+        # ParallelDisplay._DiffGuard 异常/取消时可能未正确清除
+        # diff_active。超过阈值后强制清除并记录警告。
+        _DIFF_ACTIVE_TIMEOUT = 30.0
+        if self._diff_active and not final:
+            since = self._diff_active_since
+            elapsed = time.time() - since if since > 0 else 0.0
+            if since > 0 and elapsed > _DIFF_ACTIVE_TIMEOUT:
+                _logger.warning(
+                    "SubAgentPanelControl diff_active 超过 %ds 未清除"
+                    "（_diff_count=%d），强制清除",
+                    _DIFF_ACTIVE_TIMEOUT, self._diff_count,
+                )
+                self._diff_active = False
+                self._diff_count = 0
+                self._diff_active_since = 0.0
+            else:
+                # diff 渲染中 → 跳过帧刷新
+                self._last_lines = 0
+                return
+
+        # ── 版本跳过 ───────────────────────────────
+        current_version = self._store.version
+        if not final and not force and current_version == self._last_rendered_version:
+            return
+        self._last_rendered_version = current_version
+
+        # 帧计数（通过所有跳过检查后递增）
+        self._frame += 1
+
+        # 同步终端宽度 + 渲染帧行
+        self._renderer.sync_terminal_state(
+            width=self._adapter.width,
+            frame=self._frame,
+        )
+        lines = self._renderer.render(
+            slots_snapshot=self._store.snapshot_all(),
+            order=self._store.get_order(),
+            now=time.time(),
+            final=final,
+        )
+
+        # ── 构建帧缓冲区（逻辑与 TerminalAdapter.render_frame() 一致） ──
+        # 使用 ANSI 光标控制实现帧覆写：\033[u 恢复保存的光标位置 →
+        # \033[{n}A 回退到帧顶部 → 逐行写入 → \033[s 保存新光标位置。
+        # 写完后通过 OutputAdapter.write_raw() 单次写入（含 flush）。
+        self._write_frame_buffer(lines)
+
+    def _write_frame_buffer(self, lines: list[str]) -> None:
+        """构建帧缓冲区并通过 OutputAdapter.write_raw() 写入。
+
+        复用 TerminalAdapter.render_frame() 的 ANSI 控制逻辑，
+        但通过 OutputAdapter 写入（走 output_lock 路径）。
+        """
+        total = len(lines)
+        buf = ""
+        if self._last_lines > 0:
+            buf += "\033[u"
+            buf += f"\033[{self._last_lines}A"
+
+        for i, line in enumerate(lines):
+            buf += f"\r\033[K{line}"
+            if i < total - 1:
+                buf += "\n"
+
+        extra = self._last_lines - total
+        if extra > 0:
+            for _ in range(extra):
+                buf += "\n\033[K"
+            buf += f"\033[{extra}A"
+            buf += f"\033[{extra}B"
+
+        buf += "\n\033[s"
+        self._adapter.write_raw(buf)
+        self._last_lines = max(self._last_lines, total)
+
+    def clear_frame(self) -> None:
+        """清除终端上的帧行（使用 ANSI 清除码）。
+
+        生成 clear_lines_code 并通过 OutputAdapter.write_raw() 写入。
+        """
+        if self._last_lines <= 0:
+            return
+        from ..ui.terminal_adapter import TerminalAdapter
+        code = TerminalAdapter.clear_lines_code(self._last_lines)
+        if code:
+            self._adapter.write_raw(code)
+        self._last_lines = 0
+
+    # ── 生命周期 ───────────────────────────────────────
+
+    def close(self) -> None:
+        """关闭控件：清除终端帧行 + 标记关闭。幂等。"""
+        if self._closed:
+            return
+        self._closed = True
+        self.clear_frame()
+        self._adapter.flush()
+
+    @property
+    def is_closed(self) -> bool:
+        return self._closed
+
+    def refresh_width(self) -> None:
+        """刷新终端宽度缓存（委托 OutputAdapter.force_refresh_width）。"""
+        self._adapter.force_refresh_width()
+
+    # ── 属性 ───────────────────────────────────────────
+
+    @property
+    def last_lines(self) -> int:
+        """上一帧的行数（供 _DiffGuard 快照）。"""
+        return self._last_lines
+
+    @last_lines.setter
+    def last_lines(self, value: int) -> None:
+        """设置 _last_lines（供 _DiffGuard 清除帧后归零）。"""
+        self._last_lines = value
 
 
 # ═══════════════════════════════════════════════════════════
