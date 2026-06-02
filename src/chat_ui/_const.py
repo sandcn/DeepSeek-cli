@@ -65,6 +65,12 @@ class RenderCommand(IntEnum):
     TOOL_COUNT_DEC = 17  # (17,) — 工具计数-1
 
 
+# ── 已废弃的渲染命令枚举值集合 ──────────────────────────
+# 加入此集合的枚举值在 render() 中收到时会自动告警，
+# 用于标记已废弃但暂未移除的遗留命令（如 CMD_OUTPUT=10）。
+_DEPRECATED: frozenset[int] = frozenset({RenderCommand.CMD_OUTPUT})
+
+
 # ═══════════════════════════════════════════════════════════
 # _ReasoningState — 推理渲染器状态机
 # ═══════════════════════════════════════════════════════════
