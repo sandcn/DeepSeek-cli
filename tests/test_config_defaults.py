@@ -126,13 +126,13 @@ class TestDerivedPaths:
 class TestProvidersStructure:
     """PROVIDERS 字典结构验证"""
 
-    EXPECTED_PROVIDERS = {"glm", "deepseek", "openai", "claude", "custom"}
+    EXPECTED_PROVIDERS = {"deepseek", "custom"}
     EXPECTED_KEYS = {"base_url", "default_model", "models", "token_prices"}
 
     # ── 顶层结构 ──────────────────────────────────────────────
 
     def test_contains_all_providers(self):
-        """PROVIDERS 包含全部 5 个 provider"""
+        """PROVIDERS 包含全部 2 个 provider"""
         assert set(PROVIDERS) == self.EXPECTED_PROVIDERS
 
     def test_each_provider_has_required_keys(self):
@@ -148,27 +148,11 @@ class TestProvidersStructure:
         """deepseek 的 base_url 包含 deepseek.com"""
         assert "deepseek.com" in PROVIDERS["deepseek"]["base_url"]
 
-    def test_glm_base_url_contains_z_ai(self):
-        """glm 的 base_url 包含 z.ai"""
-        assert "z.ai" in PROVIDERS["glm"]["base_url"]
-
-    def test_openai_base_url_contains_openai_dot_com(self):
-        """openai 的 base_url 包含 openai.com"""
-        assert "openai.com" in PROVIDERS["openai"]["base_url"]
-
     # ── models 数量 ───────────────────────────────────────────
 
     def test_deepseek_has_at_least_two_models(self):
         """deepseek 包含至少 2 个 models"""
         assert len(PROVIDERS["deepseek"]["models"]) >= 2
-
-    def test_openai_has_at_least_three_models(self):
-        """openai 包含至少 3 个 models"""
-        assert len(PROVIDERS["openai"]["models"]) >= 3
-
-    def test_claude_has_at_least_two_models(self):
-        """claude 包含至少 2 个 models"""
-        assert len(PROVIDERS["claude"]["models"]) >= 2
 
     def test_custom_models_is_empty(self):
         """custom 的 models 为空列表"""

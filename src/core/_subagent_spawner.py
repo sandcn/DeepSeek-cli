@@ -111,7 +111,10 @@ class SubAgentSpawner:
             import os
             from src.api.renderer import IncrementalRenderer
 
-            term_width = os.get_terminal_size().columns
+            try:
+                term_width = os.get_terminal_size().columns
+            except (OSError, PermissionError):
+                term_width = 80
             buf = io.StringIO()
             renderer = IncrementalRenderer(
                 typing_speed=0, show_indicator=False, _file=buf, width=term_width,

@@ -47,8 +47,7 @@ from ._state import (
 # ★ 显式注册 ChatUIErrorHandler 到 root logger
 #   在模块加载时立即生效（而非依赖 _consumer.py 的 side-effect import），
 #   确保 ERROR+ 级别日志能投递到 ChatUI 上屏。
-from ._error_handler import ChatUIErrorHandler, register_error_handler
-register_error_handler()
+from ._error_handler import ChatUIErrorHandler
 from ._controls import (
     Control,
     ControlList,
@@ -70,7 +69,6 @@ __all__ = [
     "get_active_chat_ui",
     "RenderCommand",
     "ChatUIErrorHandler",
-    "register_error_handler",
     "_apply_completion",
     "_active_consumer",
     "_active_parallel_display",

@@ -26,10 +26,10 @@ class TestValidateRcBasicFunctionality:
     def test_valid_config_preserved(self):
         """完整合法的配置输入，类型正确值时原样保留"""
         rc = {
-            "provider": "openai",
-            "base_url": "https://custom.openai.com/v1",
+            "provider": "custom",
+            "base_url": "https://custom.api.com/v1",
             "api_key": "sk-xxx",
-            "model": "gpt-4o",
+            "model": "my-model",
             "max_context_chars": 50000,
             "max_output_chars": 2000,
             "max_retries": 5,
@@ -41,9 +41,9 @@ class TestValidateRcBasicFunctionality:
             "auto_force_compress_threshold": 50000,
             "enable_notifications": True,
             "notify_on_chat_completion": False,
-            "models": ["gpt-4o", "gpt-3.5-turbo"],
+            "models": ["my-model"],
             "token_prices": {
-                "gpt-4o": {"input": 5.0, "output": 15.0}
+                "my-model": {"input": 5.0, "output": 15.0}
             }
         }
         result = _validate_rc(dict(rc))
@@ -269,7 +269,7 @@ class TestValidateRcProvider:
 
     def test_valid_provider_preserved(self):
         """合法 provider 字符串保留"""
-        valid_providers = ["deepseek", "openai", "glm", "claude", "custom"]
+        valid_providers = ["deepseek", "custom"]
         for provider in valid_providers:
             rc = {"provider": provider}
             result = _validate_rc(rc)
@@ -374,11 +374,10 @@ class TestValidateRcModels:
 
     def test_auto_filled_models_include_default_model(self):
         """provider 自动填充 models 后，默认 model 应被追加"""
-        # provider=openai 时 models 为空
-        rc = {"provider": "openai", "model": "custom-model"}
+        rc = {"provider": "deepseek", "model": "custom-model"}
         result = _validate_rc(rc)
         assert "custom-model" in result["models"]
-        assert result["models"] == ["gpt-4o", "gpt-4-turbo", "gpt-3.5-turbo", "custom-model"]
+        assert result["models"] == ["deepseek-v4-pro", "deepseek-v4-flash", "custom-model"]
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -516,15 +515,15 @@ class TestValidateRcBoundaryConditions:
 
     def test_empty_base_url_filled_by_provider(self):
         """空字符串 base_url 由 provider 填充"""
-        rc = {"provider": "openai", "base_url": ""}
+        rc = {"provider": "deepseek", "base_url": ""}
         result = _validate_rc(rc)
-        assert result["base_url"] == "https://api.openai.com/v1/chat/completions"
+        assert result["base_url"] == "https://api.deepseek.com/v1/chat/completions"
 
     def test_empty_models_filled_by_provider(self):
         """空列表 models 由 provider 填充"""
-        rc = {"provider": "openai", "models": []}
+        rc = {"provider": "deepseek", "models": []}
         result = _validate_rc(rc)
-        assert result["models"] == ["gpt-4o", "gpt-4-turbo", "gpt-3.5-turbo"]
+        assert result["models"] == ["deepseek-v4-pro", "deepseek-v4-flash"]
 
     def test_empty_token_prices_filled_by_provider(self):
         """空 dict token_prices 由 provider 填充"""
@@ -534,13 +533,13 @@ class TestValidateRcBoundaryConditions:
 
     def test_missing_base_url_filled_by_provider(self):
         """缺失 base_url 键由 provider 填充"""
-        rc = {"provider": "openai"}
+        rc = {"provider": "deepseek"}
         result = _validate_rc(rc)
-        assert result["base_url"] == "https://api.openai.com/v1/chat/completions"
+        assert result["base_url"] == "https://api.deepseek.com/v1/chat/completions"
 
     def test_explicit_base_url_not_overwritten(self):
         """显式提供的非空 base_url 不被 provider 覆盖"""
-        rc = {"provider": "openai", "base_url": "https://my-proxy.com/v1"}
+        rc = {"provider": "deepseek", "base_url": "https://my-proxy.com/v1"}
         result = _validate_rc(rc)
         assert result["base_url"] == "https://my-proxy.com/v1"
 
@@ -556,14 +555,6 @@ class TestValidateRcBoundaryConditions:
         result = _validate_rc(rc)
         # None 先被 int 字段处理回退为 3
         assert result["max_retries"] == 3
-
-    def test_claude_provider_auto_fills(self):
-        """claude provider 自动填充 base_url/models/token_prices"""
-        rc = {"provider": "claude"}
-        result = _validate_rc(rc)
-        assert result["base_url"] == "https://api.anthropic.com/v1"
-        assert len(result["models"]) >= 1
-        assert isinstance(result["token_prices"], dict)
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -582,22 +573,6 @@ class TestValidateRcProviderAutoFill:
         assert "deepseek-v4-flash" in result["models"]
         assert result["token_prices"]["deepseek-v4-pro"]["input"] == 0.55
 
-    def test_openai_auto_fill(self):
-        """openai provider 自动填充 base_url/models"""
-        rc = {"provider": "openai"}
-        result = _validate_rc(rc)
-        assert result["base_url"] == "https://api.openai.com/v1/chat/completions"
-        assert "gpt-4o" in result["models"]
-        assert result["token_prices"] == {}  # openai 没有 token_prices
-
-    def test_glm_auto_fill(self):
-        """glm provider 自动填充 base_url/models"""
-        rc = {"provider": "glm"}
-        result = _validate_rc(rc)
-        assert result["base_url"] == "https://api.z.ai/api/coding/paas/v4"
-        assert "glm-5.1" in result["models"]
-        assert result["token_prices"] == {}
-
     def test_custom_provider_no_auto_fill(self):
         """custom provider 不填充任何值"""
         rc = {"provider": "custom", "base_url": "", "models": [], "token_prices": {}}
@@ -607,9 +582,9 @@ class TestValidateRcProviderAutoFill:
         assert result["token_prices"] == {}
 
     def test_non_default_provider_with_model_appended(self):
-        """非 deepseek provider 且 model 不在列表中时自动追加"""
-        rc = {"provider": "openai", "model": "my-custom-model"}
+        """非默认 provider 且 model 不在列表中时自动追加"""
+        rc = {"provider": "deepseek", "model": "my-custom-model"}
         result = _validate_rc(rc)
         assert "my-custom-model" in result["models"]
         # model 是在 auto-fill 之后追加的
-        assert result["models"] == ["gpt-4o", "gpt-4-turbo", "gpt-3.5-turbo", "my-custom-model"]
+        assert result["models"] == ["deepseek-v4-pro", "deepseek-v4-flash", "my-custom-model"]
