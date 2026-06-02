@@ -5,6 +5,7 @@ import json
 import logging
 import os
 import select
+from shutil import get_terminal_size
 import sys
 import termios
 import time
@@ -185,14 +186,19 @@ class UserSelectFunc(Func):
 
         # 确保底部栏已激活（否则 show_completions 静默跳过）
         if not bb._active:
-            try:
-                bb.setup()
-            except Exception:
+            term_h = get_terminal_size().lines
+            if term_h < bb._MIN_HEIGHT:
                 self._start_monitor(monitor)
                 return json.dumps({
                     "selected": list(self.default_options or []),
-                    "action": "error: 底部栏未激活",
+                    "action": "error: 终端高度不足",
                 }, ensure_ascii=False)
+            # 最小激活：仅设置标志和缓存，跳过全量绘制（由 show_completions 完成）
+            bb._active = True
+            bb._last_text = ""
+            bb._last_rendered_text = ""
+            bb._last_bottom_lines = bb._bottom_lines
+            bb._last_scroll_end = term_h - bb._bottom_lines
 
         # 构建显示文本（带编号）
         display_items = [f"{i + 1}. {opt}" for i, opt in enumerate(self.options)]
@@ -217,6 +223,7 @@ class UserSelectFunc(Func):
         fd = sys.stdin.fileno()
         old_settings = termios.tcgetattr(fd)
         _termios_guard = self._save_termios()
+        _saved_status_active = bb._status_active
 
         try:
             # 清空 stdin 残留
@@ -225,6 +232,12 @@ class UserSelectFunc(Func):
             # ★ 先设 cbreak 关闭回显，再画弹窗，避免 echoed 字符污染画面
             tty.setcbreak(fd)
             termios.tcflush(fd, termios.TCIFLUSH)
+
+            # 修复：压制 "AI 生成中..." 占位符，显示干净输入区
+            bb._status_active = False
+            if bb._last_text:
+                bb._last_text = ""
+                bb.force_redraw()
 
             # 在底部栏补全区显示选项
             bb.show_completions(
@@ -362,11 +375,20 @@ class UserSelectFunc(Func):
                 pass
             self._restore_termios(_termios_guard)
 
-            # 确保弹窗被隐藏
+            # 合并弹窗隐藏 + 状态恢复，避免双重重绘
             try:
-                bb.hide_completions()
-            except Exception:
-                pass
+                if _saved_status_active:
+                    bb._status_active = True
+                    # 手动清除弹窗状态，由 force_redraw 统一完成终绘
+                    bb._completion._visible = False
+                    bb._completion._popup_height = 0
+                    bb._completion._items = []
+                    bb._completion._texts = []
+                    bb.force_redraw()
+                else:
+                    bb.hide_completions()
+            except Exception as e:
+                _logger.debug("user_select: cleanup failed: %s", e)
 
             # 清空 stdin 残留
             await self._flush_stdin()

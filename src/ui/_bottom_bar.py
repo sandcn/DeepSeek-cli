@@ -913,6 +913,11 @@ class _BottomBar(_StatusMixin):
                 out.flush()
                 return
 
+            # 修复：delta > 0 时显式清除旧滚动区与新滚动区之间的残留行
+            if delta > 0 and scroll_end >= 1:
+                for r in range(scroll_end + 1, min(old_scroll_end, height) + 1):
+                    out.write(f"\033[{r};1H\033[K")
+
             if delta < 0:
                 clear_start = old_scroll_end + 1
                 clear_end = scroll_end
