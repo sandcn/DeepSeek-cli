@@ -65,7 +65,7 @@ class _DiffGuard:
 
             # 阶段3：清除旧帧（通过 OutputAdapter.write_raw 走 output_lock 路径）
             if self._capture_frame and last_lines_snapshot > 0:
-                from ..ui.terminal_adapter import TerminalAdapter
+                from ..terminal_adapter import TerminalAdapter
                 code = TerminalAdapter.clear_lines_code(last_lines_snapshot)
                 if code and panel._adapter is not None:
                     panel._adapter.write_raw(code)
