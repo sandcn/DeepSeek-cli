@@ -21,7 +21,10 @@
   _active_consumer     — 模块级活跃实例引用
   _active_parallel_display — 模块级 ParallelDisplay 引用
   _MAIN_LABEL          — 主 Agent 标签（供测试使用）
+  Control              — 控件抽象基类
   ControlList          — 控件列表管理器
+  TextControl          — 纯文本控件
+  MarkdownControl      — 流式 Markdown 控件
   ToolOutputControl    — 工具输出控件
   ToolSummaryControl   — 工具汇总控件
   ParseInfoControl     — 解析进度控件
@@ -33,18 +36,15 @@ from __future__ import annotations
 from ._const import (
     RenderCommand,
     _MAIN_LABEL,
-    _CLEAR_PARSE_LINE,
-    _READER_INTERVAL,
 )
 from ._state import (
     _active_consumer,
     _active_parallel_display,
-    _handler_reentrant,
     get_active_chat_ui,
 )
 
 # ── Layer 1 导出 ──────────────────────────────────────
-from ._error_handler import ChatUIErrorHandler, _error_handler
+from ._error_handler import ChatUIErrorHandler
 from ._controls import (
     Control,
     ControlList,
@@ -61,16 +61,6 @@ from ._completion import _apply_completion
 # ── Layer 4 导出 ──────────────────────────────────────
 from ._consumer import ChatUIConsumer
 
-# ── 兼容性 — ModelPhaseEvent（测试和外部引用需要） ───
-# 延迟导出，避免循环导入
-def __getattr__(name: str):
-    """惰性导出，按需加载事件类型以避免循环导入。"""
-    if name == "ModelPhaseEvent":
-        from ..ui.events.event_types import ModelPhaseEvent
-        globals()[name] = ModelPhaseEvent  # 首次命中后缓存到模块 __dict__
-        return ModelPhaseEvent
-    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
-
 __all__ = [
     "ChatUIConsumer",
     "get_active_chat_ui",
@@ -80,7 +70,6 @@ __all__ = [
     "_active_consumer",
     "_active_parallel_display",
     "_MAIN_LABEL",
-    "ModelPhaseEvent",
     "Control",
     "ControlList",
     "MarkdownControl",

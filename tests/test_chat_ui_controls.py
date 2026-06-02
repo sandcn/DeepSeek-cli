@@ -42,10 +42,10 @@ class TestControl:
             Control()  # type: ignore[abstract]
 
     def test_interface_has_write(self):
-        """验证 Control 定义 write 抽象方法。"""
+        """验证 Control 定义 write 方法（非抽象，默认 no-op）。"""
         from src.chat_ui._controls import Control
         assert hasattr(Control, 'write')
-        assert getattr(Control.write, '__isabstractmethod__', False)
+        assert getattr(Control.write, '__isabstractmethod__', False) is False
 
     def test_interface_has_is_closed(self):
         """验证 Control 定义 is_closed 抽象属性。"""
@@ -390,7 +390,7 @@ class TestControlList:
         cl.add(c1, start_line=10)
         cl.add(c2, start_line=20)
 
-        assert [c.start_line for c in cl.controls] == [10, 20, 30]
+        assert [c.start_line for c in cl._controls] == [10, 20, 30]
 
     def test_add_auto_assigns_start_line(self, mock_adapter):
         """不指定 start_line 时自动分配 _next_line。"""
@@ -399,7 +399,7 @@ class TestControlList:
         c1 = self._make_ctrl(mock_adapter)
         cl.add(c1)  # 自动分配 start_line=1
         assert c1.start_line == 1
-        assert cl.next_line == 2
+        assert cl._next_line == 2
 
     def test_add_multiple_auto_increments(self, mock_adapter):
         """多次自动分配 start_line 依次递增。"""
@@ -414,7 +414,7 @@ class TestControlList:
         assert c1.start_line == 1
         assert c2.start_line == 2
         assert c3.start_line == 3
-        assert cl.next_line == 4
+        assert cl._next_line == 4
 
     def test_remove(self, mock_adapter):
         """移除控件后列表不包含该控件。"""
@@ -425,8 +425,8 @@ class TestControlList:
         cl.add(c1)
         cl.add(c2)
         cl.remove(c1)
-        assert len(cl) == 1
-        assert cl.controls[0] is c2
+        assert len(cl._controls) == 1
+        assert cl._controls[0] is c2
 
     def test_remove_nonexistent_silent(self, mock_adapter):
         """移除不在列表中的控件静默跳过。"""
@@ -436,7 +436,7 @@ class TestControlList:
         c2 = self._make_ctrl(mock_adapter)
         cl.add(c1)
         cl.remove(c2)  # 不抛异常
-        assert len(cl) == 1
+        assert len(cl._controls) == 1
 
     def test_close_all(self, mock_adapter):
         """close_all() 关闭所有控件并清空列表。"""
@@ -447,58 +447,10 @@ class TestControlList:
         cl.add(c1)
         cl.add(c2)
         cl.close_all()
-        assert len(cl) == 0
+        assert len(cl._controls) == 0
         assert c1.is_closed is True
         assert c2.is_closed is True
-        assert cl.next_line == 1
-
-    def test_find_by_line_exact(self, mock_adapter):
-        """精确匹配 start_line 查找控件。"""
-        from src.chat_ui._controls import ControlList
-        cl = ControlList()
-        c1 = self._make_ctrl(mock_adapter)
-        cl.add(c1, start_line=5)
-        result = cl.find_by_line(5)
-        assert result is c1
-
-    def test_find_by_line_between(self, mock_adapter):
-        """在控件范围内查找。"""
-        from src.chat_ui._controls import ControlList
-        cl = ControlList()
-        c1 = self._make_ctrl(mock_adapter)
-        c2 = self._make_ctrl(mock_adapter)
-        cl.add(c1, start_line=5)
-        cl.add(c2, start_line=10)
-        # line=7 应在 c1 范围内（start_line=5 <= 7 < 10）
-        result = cl.find_by_line(7)
-        assert result is c1
-
-    def test_find_by_line_empty(self, mock_adapter):
-        """空列表查找返回 None。"""
-        from src.chat_ui._controls import ControlList
-        cl = ControlList()
-        assert cl.find_by_line(1) is None
-
-    def test_find_active(self, mock_adapter):
-        """find_active() 返回未关闭的控件。"""
-        from src.chat_ui._controls import ControlList
-        cl = ControlList()
-        c1 = self._make_ctrl(mock_adapter)
-        c2 = self._make_ctrl(mock_adapter)
-        cl.add(c1)
-        cl.add(c2)
-        c1.close()
-        active = cl.find_active()
-        assert len(active) == 1
-        assert active[0] is c2
-
-    def test_len(self, mock_adapter):
-        """__len__ 返回控件数量。"""
-        from src.chat_ui._controls import ControlList
-        cl = ControlList()
-        assert len(cl) == 0
-        cl.add(self._make_ctrl(mock_adapter))
-        assert len(cl) == 1
+        assert cl._next_line == 1
 
 
 # ═══════════════════════════════════════════════════════════

@@ -55,10 +55,13 @@ class Control(ABC):
       close() 后 write() 静默跳过（幂等保护）。
     """
 
-    @abstractmethod
     def write(self, text: str) -> None:
-        """写入文本内容（子类实现具体渲染逻辑）。"""
-        ...
+        """写入文本内容（子类覆盖实现具体渲染逻辑）。
+
+        默认 no-op——不强制所有 Control 子类支持流式写入。
+        需流式写入的子类（TextControl、MarkdownControl 等）覆盖此方法。
+        """
+        return
 
     # ── 脏检查 ────────────────────────────────────────
 
@@ -190,29 +193,39 @@ class TextControl(Control):
             return
         self._adapter.write_raw(text)
 
-    def write_ansi(self, text: str) -> None:
-        """写入含 ANSI 转义序列的文本。
+    def _try_write_ansi(self, text: str) -> None:
+        """尝试用 Text.from_ansi() 解析渲染，失败回退到 write_raw()。
 
-        尝试用 Text.from_ansi() 解析渲染，解析失败时回退到 write_raw()。
-        回退路径也失败则记录日志并静默跳过。
-        已关闭时静默跳过。
+        封装 ANSI 文本写入的通用回退逻辑，供 TextControl 自身和
+        ToolOutputControl 子类复用，消除重复代码。
+
+        Args:
+            text: 含 ANSI 转义序列的文本（已去除 \\r 等控制字符）
         """
-        if self._closed:
-            return
         try:
             self._adapter.write(Text.from_ansi(text))
         except Exception:
             _logger.warning(
-                "TextControl.write_ansi: Text.from_ansi 解析失败，回退到 write_raw",
+                "Text.from_ansi 解析失败，回退到 write_raw",
                 exc_info=True,
             )
             try:
                 self._adapter.write_raw(text)
             except Exception:
                 _logger.warning(
-                    "TextControl.write_ansi: write_raw 回退也失败",
+                    "write_raw 回退也失败",
                     exc_info=True,
                 )
+
+    def write_ansi(self, text: str) -> None:
+        """写入含 ANSI 转义序列的文本。
+
+        委托 _try_write_ansi 执行 ANSI 解析→回退流程。
+        已关闭时静默跳过。
+        """
+        if self._closed:
+            return
+        self._try_write_ansi(text)
 
     def close(self) -> None:
         """关闭控件（标记关闭 + flush 适配器）。幂等。"""
@@ -371,37 +384,6 @@ class ControlList:
         self._controls.clear()
         self._next_line = 1
 
-    def find_by_line(self, line: int) -> Control | None:
-        """二分查找定位指定行号所在的控件。
-
-        返回满足 ``start_line <= line`` 且 start_line 最大的控件，
-        即该行位于此控件范围内。无匹配时返回 None。
-
-        Args:
-            line: 目标行号（1-based）
-
-        Returns:
-            匹配的控件或 None
-        """
-        if not self._controls:
-            return None
-        # 二分查找右边界（start_line <= line 的最大索引）
-        lo, hi = 0, len(self._controls)
-        while lo < hi:
-            mid = (lo + hi) // 2
-            if self._controls[mid].start_line <= line:
-                lo = mid + 1
-            else:
-                hi = mid
-        idx = lo - 1
-        if idx >= 0:
-            return self._controls[idx]
-        return None
-
-    def find_active(self) -> list[Control]:
-        """返回所有未关闭的控件（按 start_line 顺序）。"""
-        return [c for c in self._controls if not c.is_closed]
-
     def refresh_width_all(self) -> None:
         """刷新所有活跃控件的终端宽度缓存。"""
         for ctrl in self._controls:
@@ -410,19 +392,6 @@ class ControlList:
                     ctrl.refresh_width()
                 except Exception:
                     pass
-
-    @property
-    def controls(self) -> list[Control]:
-        """返回控件列表的只读副本。"""
-        return list(self._controls)
-
-    @property
-    def next_line(self) -> int:
-        """返回下一个可用行号。"""
-        return self._next_line
-
-    def __len__(self) -> int:
-        return len(self._controls)
 
 
 # ═══════════════════════════════════════════════════════════
@@ -531,22 +500,12 @@ class ToolOutputControl(TextControl):
     # ── 内部 ────────────────────────────────────────────
 
     def _write_with_ansi(self, text: str) -> None:
-        """处理含 ANSI 转义序列的工具输出（移除 \\r 后解析渲染）。"""
+        """处理含 ANSI 转义序列的工具输出（移除 \\r 后解析渲染）。
+
+        复用 TextControl._try_write_ansi() 的 ANSI 回退逻辑。
+        """
         clean_text = text.replace('\r', '')
-        try:
-            try:
-                self._adapter.write(Text.from_ansi(clean_text))
-            except Exception:
-                _logger.warning(
-                    "ToolOutputControl: Text.from_ansi 解析失败，回退到 write_raw",
-                    exc_info=True,
-                )
-                self._adapter.write_raw(clean_text)
-        except Exception:
-            _logger.warning(
-                "ToolOutputControl: ANSI 渲染路径异常（含回退写入）",
-                exc_info=True,
-            )
+        self._try_write_ansi(clean_text)
 
 
 # ═══════════════════════════════════════════════════════════
@@ -592,10 +551,6 @@ class ToolSummaryControl(Control):
         self._closed = False
 
     # ── 公共接口 ────────────────────────────────────────
-
-    def write(self, text: str) -> None:
-        """ToolSummaryControl 不支持流式写入，使用 summarize() 一次性渲染。"""
-        _logger.debug("ToolSummaryControl.write() 被调用但被忽略——请使用 summarize()")
 
     def summarize(self, successful: tuple, failed: tuple) -> None:
         """渲染工具汇总。内容未变时跳过渲染（脏检查）。
@@ -721,6 +676,14 @@ class ParseInfoControl(TextControl):
     # ── 清除进度哨兵（与 _const._CLEAR_PARSE_LINE 值一致） ──
     _CLEAR_SENTINEL = -1
 
+    def write(self, text: str) -> None:
+        """不支持流式写入——ParseInfoControl 通过 update() 渲染。
+
+        显式覆盖为 no-op：因为 ParseInfoControl 继承 TextControl，
+        若依赖 MRO 解析会错误调用 TextControl.write() 产生非预期输出。
+        """
+        return
+
     def __init__(
         self,
         output_adapter: "OutputAdapter",
@@ -777,10 +740,6 @@ class ParseInfoControl(TextControl):
         if self._is_unchanged(output):
             return
         self._adapter.write_raw(output)
-
-    def write(self, text: str) -> None:
-        """不支持流式写入，使用 update() 一次性渲染。"""
-        _logger.debug("ParseInfoControl.write() 被调用但被忽略——请使用 update()")
 
     def close(self) -> None:
         """关闭控件。幂等。"""

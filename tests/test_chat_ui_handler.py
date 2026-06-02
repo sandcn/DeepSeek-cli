@@ -30,7 +30,8 @@ def _reset_error_handler():
     若 handler 不存在（模块未加载），跳过。
     """
     root = logging.getLogger()
-    handler = getattr(chat_ui, '_error_handler', None)
+    from src.chat_ui._error_handler import _error_handler
+    handler = _error_handler
     if handler is not None and handler in root.handlers:
         root.removeHandler(handler)
     yield
@@ -208,7 +209,7 @@ class TestChatUIErrorHandlerSelfRef:
         验证 thread-local _handler_reentrant.is_active 能阻断
         on_error 路径中意外产生的二次 emit。
         """
-        from src.chat_ui import _handler_reentrant
+        from src.chat_ui._state import _handler_reentrant
         # 确保测试开始时重入标记为 False
         _handler_reentrant.is_active = False
 
@@ -293,7 +294,8 @@ class TestOnModelPhase:
 
     def test_error_phase_dispatches_error(self, consumer):
         """phase="error" + label="_MAIN_LABEL" + 非空 info → push ERROR 命令"""
-        from src.chat_ui import ModelPhaseEvent, _MAIN_LABEL, RenderCommand
+        from src.chat_ui import _MAIN_LABEL, RenderCommand
+        from src.ui.events.event_types import ModelPhaseEvent
         event = ModelPhaseEvent(
             label=_MAIN_LABEL, phase="error", info="test timeout error",
         )
@@ -304,7 +306,8 @@ class TestOnModelPhase:
 
     def test_subagent_label_skipped(self, consumer):
         """SubAgent label（!= _MAIN_LABEL）→ 不 push 任何命令"""
-        from src.chat_ui import ModelPhaseEvent, RenderCommand
+        from src.chat_ui import RenderCommand
+        from src.ui.events.event_types import ModelPhaseEvent
         event = ModelPhaseEvent(
             label="subagent", phase="error", info="subagent error",
         )
@@ -313,7 +316,8 @@ class TestOnModelPhase:
 
     def test_non_error_phase_skipped(self, consumer):
         """非 error phase（如 "thinking"）→ 不 push 任何命令"""
-        from src.chat_ui import ModelPhaseEvent, _MAIN_LABEL
+        from src.chat_ui import _MAIN_LABEL
+        from src.ui.events.event_types import ModelPhaseEvent
         event = ModelPhaseEvent(
             label=_MAIN_LABEL, phase="thinking", info="thinking...",
         )
@@ -322,7 +326,8 @@ class TestOnModelPhase:
 
     def test_empty_info_skipped(self, consumer):
         """空 info → 不 push 任何命令"""
-        from src.chat_ui import ModelPhaseEvent, _MAIN_LABEL
+        from src.chat_ui import _MAIN_LABEL
+        from src.ui.events.event_types import ModelPhaseEvent
         event = ModelPhaseEvent(
             label=_MAIN_LABEL, phase="error", info="",
         )
@@ -331,7 +336,8 @@ class TestOnModelPhase:
 
     def test_long_info_truncated(self, consumer):
         """超长 info（>200 字符）→ 截断并追加"..." """
-        from src.chat_ui import ModelPhaseEvent, _MAIN_LABEL, RenderCommand
+        from src.chat_ui import _MAIN_LABEL, RenderCommand
+        from src.ui.events.event_types import ModelPhaseEvent
         long_info = "x" * 300
         event = ModelPhaseEvent(
             label=_MAIN_LABEL, phase="error", info=long_info,
@@ -347,7 +353,8 @@ class TestOnModelPhase:
 
     def test_short_info_not_truncated(self, consumer):
         """短 info（<=200 字符）→ 原样传递"""
-        from src.chat_ui import ModelPhaseEvent, _MAIN_LABEL, RenderCommand
+        from src.chat_ui import _MAIN_LABEL, RenderCommand
+        from src.ui.events.event_types import ModelPhaseEvent
         info = "short error message"
         event = ModelPhaseEvent(
             label=_MAIN_LABEL, phase="error", info=info,

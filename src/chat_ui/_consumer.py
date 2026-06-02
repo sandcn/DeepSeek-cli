@@ -12,7 +12,7 @@ import time
 from typing import TYPE_CHECKING, Any, ClassVar
 
 from ._completion import _CmplHandler
-from ._const import _READER_INTERVAL, RenderCommand
+from ._const import RenderCommand
 from ._dispatcher import EventDispatcher
 from ._engine import RenderEngine
 from ._render_state import _RenderState
@@ -22,20 +22,6 @@ from ..ui.tui._message_display import _display_messages
 if TYPE_CHECKING:
     from ..api.escape_monitor import EscapeMonitor
     from ..ui.events.event_bus import DisplayEventBus
-    from ..ui.events.event_types import (
-        ContentChunkEvent,
-        ModelPhaseEvent,
-        OutputEvent,
-        ParseInfoDoneEvent,
-        ParseInfoEvent,
-        PhaseDoneEvent,
-        ReasoningChunkEvent,
-        ToolDoneEvent,
-        ToolOutputChunkEvent,
-        ToolStartedEvent,
-        ToolSummaryEvent,
-    )
-    from ..ui.parallel.display import ParallelDisplay
 
 _logger = logging.getLogger(__name__)
 
