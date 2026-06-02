@@ -255,18 +255,28 @@ class ParallelDisplay(BaseDisplay):
             self._render_frame_unlocked()
 
         # ★ 首帧渲染完成后再注册，Reader 线程 Phase 2 从此开始接管
-        _chat_ui_mod._active_parallel_display = self
+        # ★ 通过 _state 模块写入，与 _engine.py/_consumer.py 的读取路径一致。
+        #   不可用 _chat_ui_mod._active_parallel_display = self 写入，
+        #   因为 __init__.py 的 from ._state import _active_parallel_display
+        #   创建了独立绑定，赋值后与 _state 模块的变量分叉，导致 Reader
+        #   线程中的 pd 永远为 None，面板永不刷新。
+        _chat_ui_mod._state._active_parallel_display = self
         # ★ B6 fix: 注册终端 resize 回调，resize 后主动刷新面板
         register_sigwinch_callback(self._on_resize)
 
-    def refresh(self):
+    def refresh(self, force: bool = False):
         """公开刷新入口 — 由 ChatUIConsumer._drain_queue 在每次渲染循环中调用。
 
         内部 _render_frame_unlocked 自行管理终端 I/O 同步（try-lock 超时保护）。
         可在持 output_lock 状态下安全调用（output_lock 为 RLock，可重入）。
         渲染异常被内部捕获并记录日志，不会向上传播。
+
+        Args:
+            force: 是否跳过版本号检查强制渲染。当处理完 SubAgent 相关
+                   渲染命令（TOOL_OUTPUT 等）时应传入 True，确保面板
+                   及时更新展示最新子代理状态。
         """
-        self._render_frame_unlocked()
+        self._render_frame_unlocked(force=force)
 
     # ── 停止 ────────────────────────────────────────────
 
@@ -287,8 +297,8 @@ class ParallelDisplay(BaseDisplay):
 
         # 从 ChatUI 注销全局引用
         import src.chat_ui as _chat_ui_mod  # noqa: PLC0415
-        if _chat_ui_mod._active_parallel_display is self:
-            _chat_ui_mod._active_parallel_display = None
+        if _chat_ui_mod._state._active_parallel_display is self:
+            _chat_ui_mod._state._active_parallel_display = None
 
         # 注销终端 resize 回调
         unregister_sigwinch_callback(self._on_resize)
@@ -395,7 +405,7 @@ class ParallelDisplay(BaseDisplay):
 
     # ── 渲染 ───────────────────────────────────────────
 
-    def _render_frame_unlocked(self, final: bool = False):
+    def _render_frame_unlocked(self, final: bool = False, force: bool = False):
         # ── diff_active 超时兜底 ──────────────────────────────
         # capture_and_print_async / clear_frame_and_run 在异常或取消时
         # 可能未正确清除 diff_active，导致渲染被永久跳过。
@@ -422,8 +432,10 @@ class ParallelDisplay(BaseDisplay):
             return
 
         # ★ 版本跳过：state 未变化时跳过帧渲染（ioctl+render 开销较大）
+        #   force=True 时跳过此检查——由 render() 函数在处理 SubAgent
+        #   相关命令后主动调用，确保子代理面板及时刷新展示最新状态。
         current_version = self._store.version
-        if not final and current_version == self._last_rendered_version:
+        if not final and not force and current_version == self._last_rendered_version:
             return
         self._last_rendered_version = current_version
 

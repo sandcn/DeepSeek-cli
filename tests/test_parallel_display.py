@@ -101,32 +101,38 @@ class TestRefreshRegistration:
         display.refresh()
 
     def test_start_registers_to_chat_ui(self, display):
-        """start() 将实例注册到 chat_ui._active_parallel_display。"""
-        import src.chat_ui as chat_ui_mod
-        assert chat_ui_mod._active_parallel_display is None
+        """start() 将实例注册到 chat_ui._state._active_parallel_display。
+
+        注意：_active_parallel_display 定义在 _state 模块中。
+        __init__.py 的 from ._state import _active_parallel_display 创建了独立绑定，
+        赋值后与 _state 模块的变量分叉。引擎层（_engine.py/_consumer.py）均从
+        _state 模块读取，故验证目标为 _state 模块中的值。
+        """
+        import src.chat_ui._state as chat_ui_state
+        assert chat_ui_state._active_parallel_display is None
         display.add_agent("agent-1", "test agent")
         display.start()
-        assert chat_ui_mod._active_parallel_display is display
+        assert chat_ui_state._active_parallel_display is display
         display.stop()
 
     def test_stop_clears_chat_ui_reference(self, display):
-        """stop() 从 chat_ui._active_parallel_display 注销引用。"""
-        import src.chat_ui as chat_ui_mod
+        """stop() 从 chat_ui._state._active_parallel_display 注销引用。"""
+        import src.chat_ui._state as chat_ui_state
         display.add_agent("agent-1", "test agent")
         display.start()
-        assert chat_ui_mod._active_parallel_display is display
+        assert chat_ui_state._active_parallel_display is display
         display.stop()
-        assert chat_ui_mod._active_parallel_display is None
+        assert chat_ui_state._active_parallel_display is None
 
     def test_start_then_stop_one_cycle(self):
         """一次 start → stop 注册/注销循环正确。"""
-        import src.chat_ui as chat_ui_mod
+        import src.chat_ui._state as chat_ui_state
         d = ParallelDisplay()
         d.add_agent("agent-1", "test agent")
         d.start()
-        assert chat_ui_mod._active_parallel_display is d
+        assert chat_ui_state._active_parallel_display is d
         d.stop()
-        assert chat_ui_mod._active_parallel_display is None
+        assert chat_ui_state._active_parallel_display is None
 
     def test_refresh_after_stop_safe(self, display):
         """stop() 后 refresh() 安全（_stopped 守卫跳过渲染）。"""

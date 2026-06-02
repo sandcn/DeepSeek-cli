@@ -27,6 +27,19 @@ from ._const import (
     _THINKING_HEADER,
     RenderCommand,
 )
+
+# ── 子代理相关渲染命令集合 ────────────────────────────
+# 这些命令由 SubAgent 事件触发（工具输出/计数变更/解析进度等）。
+# 处理完这些命令后，ContentRenderer.render() 会主动刷新
+# ParallelDisplay 面板，确保子代理状态面板持续更新。
+_SUBAGENT_RENDER_COMMANDS: frozenset[int] = frozenset({
+    RenderCommand.TOOL_OUTPUT,
+    RenderCommand.TOOL_COUNT_INC,
+    RenderCommand.TOOL_COUNT_DEC,
+    RenderCommand.TOOL_FAIL_INC,
+    RenderCommand.TOOL_SUMMARY,
+    RenderCommand.PARSE_INFO,
+})
 from ._utils import _cmd_name, _truncate_msg
 from ._controls import (
     ControlList,
@@ -212,7 +225,13 @@ class ContentRenderer:
     # ── 渲染分发 ──────────────────────────────────────
 
     def render(self, cmd: tuple) -> None:
-        """根据命令类型分发到对应渲染方法（模块级 O(1) 字典查找）。"""
+        """根据命令类型分发到对应渲染方法（模块级 O(1) 字典查找）。
+
+        SubAgent 相关命令（工具输出/计数变更等）渲染完毕后，
+        主动刷新 ParallelDisplay 面板以展示最新子代理状态。
+        强制刷新（force=True）跳过版本号检查，确保面板
+        在处理完渲染命令后始终保持最新。
+        """
         cid = cmd[0]
 
         entry = _RENDER_DISPATCH.get(cid)
@@ -224,6 +243,19 @@ class ContentRenderer:
         method = getattr(self, method_name)
         args = tuple(cmd[i] for i in arg_indices)
         method(*args)
+
+        # ★ SubAgent 相关命令处理完后，强制刷新 ParallelDisplay 面板
+        if cid in _SUBAGENT_RENDER_COMMANDS:
+            try:
+                from . import _state as _chat_ui_state
+                pd = _chat_ui_state._active_parallel_display
+                if pd is not None:
+                    pd.refresh(force=True)
+            except Exception:
+                _logger.debug(
+                    "render: ParallelDisplay 刷新异常（命令 %s）",
+                    _cmd_name(cid), exc_info=True,
+                )
 
     # ── 内容渲染 ──────────────────────────────────────
 
