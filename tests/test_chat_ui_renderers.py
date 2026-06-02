@@ -278,8 +278,8 @@ class TestDoToolOutputAnsiFallback:
             # 不应抛出异常（外层 try/except 捕获 write_raw 的异常）
             renderer._do_tool_output("\033[31mtest\rdata")
 
-        # 能运行到这里即表示外层保护正常
-        assert True
+        # 验证回退路径被执行（write_raw 至少被调用一次）
+        mock_ta.write_raw.assert_called()
 
 
 # ═══════════════════════════════════════════════════════
@@ -343,12 +343,12 @@ class TestRenderStateForceRefreshWidth:
         rs.force_refresh_width()
 
     def test_force_refresh_calls_reasoning_renderer(self):
-        """推理渲染器已创建 → 调用其 force_refresh_width()"""
+        """推理渲染器已创建 → 调用其 refresh_width()"""
         rs = _RenderState()
         mock_rr = MagicMock()
         rs.reasoning = mock_rr
         rs.force_refresh_width()
-        mock_rr.force_refresh_width.assert_called_once()
+        mock_rr.refresh_width.assert_called_once()
 
     def test_force_refresh_skips_none_reasoning(self):
         """推理渲染器未创建 → 安全跳过"""
@@ -357,12 +357,12 @@ class TestRenderStateForceRefreshWidth:
         rs.force_refresh_width()  # 不抛异常
 
     def test_force_refresh_calls_content_renderer(self):
-        """内容渲染器已创建 → 调用其 force_refresh_width()"""
+        """内容渲染器已创建 → 调用其 refresh_width()"""
         rs = _RenderState()
         mock_cr = MagicMock()
         rs.content = mock_cr
         rs.force_refresh_width()
-        mock_cr.force_refresh_width.assert_called_once()
+        mock_cr.refresh_width.assert_called_once()
 
     def test_force_refresh_skips_none_content(self):
         """内容渲染器未创建 → 安全跳过"""
@@ -381,8 +381,8 @@ class TestRenderStateForceRefreshWidth:
         rs.content = mock_cr
         rs.force_refresh_width()
         mock_ta.force_refresh_width.assert_called_once()
-        mock_rr.force_refresh_width.assert_called_once()
-        mock_cr.force_refresh_width.assert_called_once()
+        mock_rr.refresh_width.assert_called_once()
+        mock_cr.refresh_width.assert_called_once()
 
     def test_force_refresh_mixed_state(self):
         """部分适配器未初始化 → 仅调用已初始化的"""

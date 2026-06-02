@@ -16,7 +16,6 @@ from typing import TYPE_CHECKING, Callable
 
 _logger = logging.getLogger(__name__)
 
-from rich.style import Style
 from rich.text import Text
 from wcwidth import wcswidth
 
@@ -34,6 +33,7 @@ from ._const import (
     _cmd_name,
     _truncate_msg,
 )
+from ._controls import TextControl
 
 if TYPE_CHECKING:
     from ..api.renderer.output import OutputAdapter
@@ -79,6 +79,13 @@ class ContentRenderer:
         # _cached_term_size: 上次缓存的终端 (columns, lines) 元组
         self._last_width_check: float = 0.0
         self._cached_term_size: tuple[int, int] = (0, 0)
+
+        # ── TextControl 实例（按前缀+样式分组，替代 _render_styled_line / _write_text_or_ansi） ──
+        adapter = self._tool_adapter  # 惰性初始化 OutputAdapter
+        self._user_msg_ctrl = TextControl(adapter, prefix="\n  > ", style=_STYLE_BOLD)
+        self._notif_ctrl = TextControl(adapter, prefix="\n  · ", style=_STYLE_SUCCESS)
+        self._error_ctrl = TextControl(adapter, prefix="\n  ! ", style=_STYLE_ERROR)
+        self._line_ctrl = TextControl(adapter)  # 无前缀、无样式，用于通用文本行
 
     @property
     def _tool_adapter(self) -> "OutputAdapter":
@@ -326,31 +333,18 @@ class ContentRenderer:
         )
 
     def _do_cmd_output(self, text: str) -> None:
-        """渲染 / 命令执行输出，委托 _write_text_or_ansi。"""
-        self._write_text_or_ansi(text)
+        """渲染 / 命令执行输出，通过 TextControl 写入。"""
+        self._write_line_via_ctrl(text)
 
-    # ── 样式化行渲染辅助 ──────────────────────────────
-
-    def _render_styled_line(self, prefix: str, text: str, style: Style) -> None:
-        """渲染带前缀和样式的单行文本（`\n  {prefix} {text}` 格式）。
-
-        参数:
-            prefix: 前缀符号（如 ">", "·", "!"）
-            text:   文本内容
-            style:  Rich Style 对象，同时作用于前缀和文本
-        """
-        self._tool_adapter.write(Text.assemble(
-            (f"\n  {prefix} ", style),
-            (text, style),
-        ))
+    # ── 样式化行渲染 — 通过 TextControl 实例委托 ──────
 
     def _do_user_message(self, text: str) -> None:
         """渲染用户消息（> 前缀 + 加粗）。"""
-        self._render_styled_line(">", text, _STYLE_BOLD)
+        self._user_msg_ctrl.write(text)
 
     def _do_notification(self, text: str) -> None:
         """渲染系统通知（· 前缀）。"""
-        self._render_styled_line("·", text, _STYLE_SUCCESS)
+        self._notif_ctrl.write(text)
 
     def _do_error(self, message: str) -> None:
         """渲染系统错误信息（红色 ! 样式）。
@@ -358,17 +352,18 @@ class ContentRenderer:
         超长消息（> 200 字符）自动截断并追加 ... 标记。
         """
         message = _truncate_msg(message, _MAX_ERROR_LENGTH)
-        self._render_styled_line("!", message, _STYLE_ERROR)
+        self._error_ctrl.write(message)
 
     def _do_write_line(self, text: str) -> None:
-        """渲染通用文本行，委托 _write_text_or_ansi。"""
-        self._write_text_or_ansi(text)
+        """渲染通用文本行，通过 TextControl 写入。"""
+        self._write_line_via_ctrl(text)
 
-    def _write_text_or_ansi(self, text: str) -> None:
+    def _write_line_via_ctrl(self, text: str) -> None:
+        """通过 _line_ctrl 写入文本行：ANSI 文本走 write_ansi，否则走 write_raw。"""
         if '\033[' in text:
-            self._tool_adapter.write(Text.from_ansi(text))
+            self._line_ctrl.write_ansi(text)
         else:
-            self._tool_adapter.write_raw(text + "\n")
+            self._line_ctrl.write_raw(text + "\n")
 
     def _do_display_messages(self, messages: list[dict], speed: int) -> None:
         """渲染消息列表到上屏（截断/恢复后的重渲染）。

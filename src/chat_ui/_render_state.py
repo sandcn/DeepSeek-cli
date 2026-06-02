@@ -16,8 +16,8 @@ from ._const import (
 )
 
 if TYPE_CHECKING:
-    from ..api.renderer import IncrementalRenderer
     from ..api.renderer.output import OutputAdapter
+    from ._controls import MarkdownControl
 
 
 @dataclass
@@ -34,8 +34,8 @@ class _RenderState:
     """
 
     # ── 渲染器实例（None=未创建或已关闭） ──
-    reasoning: "IncrementalRenderer | None" = None
-    content: "IncrementalRenderer | None" = None
+    reasoning: "MarkdownControl | None" = None
+    content: "MarkdownControl | None" = None
 
     # ── 推理状态机 ──
     reasoning_state: _ReasoningState = _ReasoningState.INACTIVE
@@ -50,18 +50,11 @@ class _RenderState:
     )
 
     @staticmethod
-    def _create_renderer(style: str = "") -> "IncrementalRenderer":
-        """创建 IncrementalRenderer 实例。
-
-        IncrementalRenderer 内部自行管理 Console 实例（走独立
-        OutputAdapter + 全局 output_lock），与 _tool_adapter 各用
-        各的 Console——两个渲染管线（流式 Markdown/工具输出）的
-        宽度缓存独立刷新（5s TTL），写入串行化由 output_lock 保证。
-        """
-        from ..api.renderer import IncrementalRenderer
-        return IncrementalRenderer(
+    def _create_markdown_control(style: str = "") -> "MarkdownControl":
+        """创建 MarkdownControl 实例，详见 MarkdownControl.__init__。"""
+        from ._controls import MarkdownControl
+        return MarkdownControl(
             style=style,
-            _file=sys.__stdout__,
             typing_speed=1000,
             show_indicator=False,
         )
@@ -80,7 +73,7 @@ class _RenderState:
                     self._tool_adapter = OutputAdapter(console)
         return self._tool_adapter
 
-    def get_reasoning(self) -> "IncrementalRenderer | None":
+    def get_reasoning(self) -> "MarkdownControl | None":
         """获取推理渲染器，惰性创建。
 
         状态机驱动：
@@ -91,14 +84,14 @@ class _RenderState:
         if self.reasoning_state == _ReasoningState.CLOSED:
             return None
         if self.reasoning is None:
-            self.reasoning = self._create_renderer(style="dim")
+            self.reasoning = self._create_markdown_control(style="dim")
             self.reasoning_state = _ReasoningState.ACTIVE
         return self.reasoning
 
-    def get_content(self) -> "IncrementalRenderer":
+    def get_content(self) -> "MarkdownControl":
         """获取内容渲染器，惰性创建。"""
         if self.content is None:
-            self.content = self._create_renderer()
+            self.content = self._create_markdown_control()
         return self.content
 
     def close_reasoning(self) -> None:
@@ -135,7 +128,7 @@ class _RenderState:
         """强制刷新所有活跃输出适配器的终端宽度缓存。
 
         遍历工具适配器（OutputAdapter）和推理/内容渲染器
-        （IncrementalRenderer），分别调用其 force_refresh_width()，
+        （MarkdownControl），分别调用其 refresh_width()，
         最终绕过各 OutputAdapter 的 5 秒 TTL 缓存。
         对未初始化的适配器（None）安全跳过。
         单个适配器刷新失败不阻塞其他适配器（try/except 隔离）。
@@ -152,12 +145,12 @@ class _RenderState:
                 pass
         if self.reasoning is not None:
             try:
-                self.reasoning.force_refresh_width()
+                self.reasoning.refresh_width()
             except Exception:
                 pass
         if self.content is not None:
             try:
-                self.content.force_refresh_width()
+                self.content.refresh_width()
             except Exception:
                 pass
 

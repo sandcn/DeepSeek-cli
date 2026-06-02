@@ -38,7 +38,7 @@ class DisplayEventBus:
         # 维护 handler 映射: original_handler → list of (mode, event_type, wrapper)
         # mode: 'type' 表示按类型订阅, 'all' 表示订阅所有事件
         # ★ 改为列表存储，支持同一 handler 在多个 event_type 上注册
-        self._handler_map: Dict[EventHandler, list[tuple[str, type | None, Any]]] = {}
+        self._handler_map: Dict[EventHandler, list[tuple[str, Optional[type], Any]]] = {}
         self._handler_lock = threading.RLock()
         self._source: str = ""
 
