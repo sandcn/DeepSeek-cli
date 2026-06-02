@@ -213,8 +213,9 @@ class RenderEngine:
                 return
 
             # ★ 处理待处理的终端 resize（SIGWINCH 标记），在渲染前更新终端状态
+            resized = False
             try:
-                self._bb.check_resize()
+                resized = self._bb.check_resize()
             except Exception:
                 _logger.debug(
                     "drain_queue: check_resize 异常", exc_info=True,
@@ -229,13 +230,18 @@ class RenderEngine:
                 except queue.Empty:
                     break
             if commands:
-                try:
-                    self._bb.sync_bottom_lines()
-                except Exception:
-                    _logger.debug(
-                        "drain_queue: sync_bottom_lines 异常", exc_info=True,
-                    )
-                self.ensure_cursor_upper()
+                # ★ 非 resize 路径：sync DECSTBM + 光标移到内容区底部再渲染
+                #   resize 时 check_resize() 已同步 DECSTBM 和光标预定位（Fix A），
+                #   无需重复调用 sync_bottom_lines 和 ensure_cursor_upper。
+                if not resized:
+                    try:
+                        self._bb.sync_bottom_lines()
+                    except Exception:
+                        _logger.debug(
+                            "drain_queue: sync_bottom_lines 异常",
+                            exc_info=True,
+                        )
+                    self.ensure_cursor_upper()
                 for cmd in commands:
                     try:
                         self._renderer.render(cmd)

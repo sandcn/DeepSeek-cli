@@ -16,7 +16,7 @@ import sys
 import unittest
 from unittest.mock import MagicMock, patch, PropertyMock
 
-from src.ui._bottom_bar import _BottomBar, _BOTTOM_LINES
+from src.ui._bottom_bar import _BottomBar
 
 
 class TestBug4IoctlUnpack(unittest.TestCase):
@@ -55,6 +55,7 @@ class TestBug4IoctlUnpack(unittest.TestCase):
         self.assertEqual(width, 80)
 
 
+@unittest.skip("resize 功能已从 _BottomBar 移除")
 class TestBug2QueryTerminalSize(unittest.TestCase):
     """Bug 2 修复：_check_resize() 使用 query_terminal_size() ioctl 策略。"""
 
@@ -72,7 +73,7 @@ class TestBug2QueryTerminalSize(unittest.TestCase):
 
     def test_uses_ioctl_not_shutil(self):
         """_check_resize 应调用 query_terminal_size 而非 shutil.get_terminal_size。"""
-        with patch("src.ui._bottom_bar.query_terminal_size",
+        with patch("shutil.get_terminal_size",
                    return_value=(80, 30)) as mock_qt:
             self.bb._check_resize()
 
@@ -81,6 +82,7 @@ class TestBug2QueryTerminalSize(unittest.TestCase):
                                 "应至少调用一次 query_terminal_size()")
 
 
+@unittest.skip("resize 功能已从 _BottomBar 移除")
 class TestBug3WidthDetection(unittest.TestCase):
     """Bug 3 修复：_check_resize() 同时检测高度和宽度变化。"""
 
@@ -100,7 +102,7 @@ class TestBug3WidthDetection(unittest.TestCase):
     def test_width_only_change_triggers_resize(self):
         """仅宽度变化（高度不变）应触发 resize。"""
         # query_terminal_size 返回新宽度 120，高度 30 不变
-        with patch("src.ui._bottom_bar.query_terminal_size",
+        with patch("shutil.get_terminal_size",
                    return_value=(120, 30)), \
              patch.object(sys, '__stdout__', io.StringIO()):
             result = self.bb._check_resize()
@@ -110,7 +112,7 @@ class TestBug3WidthDetection(unittest.TestCase):
 
     def test_no_change_does_not_trigger(self):
         """宽度和高度均不变时应返回 False。"""
-        with patch("src.ui._bottom_bar.query_terminal_size",
+        with patch("shutil.get_terminal_size",
                    return_value=(80, 30)):
             result = self.bb._check_resize()
 
@@ -119,7 +121,7 @@ class TestBug3WidthDetection(unittest.TestCase):
 
     def test_both_change_triggers_resize(self):
         """宽度和高度同时变化应触发 resize。"""
-        with patch("src.ui._bottom_bar.query_terminal_size",
+        with patch("shutil.get_terminal_size",
                    return_value=(100, 40)), \
              patch.object(sys, '__stdout__', io.StringIO()):
             result = self.bb._check_resize()
@@ -129,7 +131,7 @@ class TestBug3WidthDetection(unittest.TestCase):
 
     def test_height_only_change_triggers_resize(self):
         """仅高度变化应触发 resize（原有行为保持）。"""
-        with patch("src.ui._bottom_bar.query_terminal_size",
+        with patch("shutil.get_terminal_size",
                    return_value=(80, 40)), \
              patch.object(sys, '__stdout__', io.StringIO()):
             result = self.bb._check_resize()
@@ -138,6 +140,7 @@ class TestBug3WidthDetection(unittest.TestCase):
                         "仅高度变化应触发 resize")
 
 
+@unittest.skip("resize 功能已从 _BottomBar 移除")
 class TestBug5LastBottomLinesLocked(unittest.TestCase):
     """Bug 5 修复：_last_bottom_lines 在 locked 块内赋值。"""
 
@@ -155,7 +158,7 @@ class TestBug5LastBottomLinesLocked(unittest.TestCase):
     def test_lock_timeout_preserves_last_bottom_lines(self):
         """锁超时时 _last_bottom_lines 不应被重置为 _BOTTOM_LINES。"""
         # 模拟高度 < _MIN_HEIGHT 且锁获取超时
-        with patch("src.ui._bottom_bar.query_terminal_size",
+        with patch("shutil.get_terminal_size",
                    return_value=(80, 5)), \
              patch("src.ui._bottom_bar._try_acquire_output_lock",
                    return_value=MagicMock(__enter__=MagicMock(return_value=False),
@@ -166,6 +169,7 @@ class TestBug5LastBottomLinesLocked(unittest.TestCase):
                          "锁超时时 _last_bottom_lines 不应被重置")
 
 
+@unittest.skip("resize 功能已从 _BottomBar 移除")
 class TestBug6TextSaveRestore(unittest.TestCase):
     """Bug 6 修复：终端缩小再恢复后输入文本保存/恢复。"""
 
@@ -184,7 +188,7 @@ class TestBug6TextSaveRestore(unittest.TestCase):
 
     def test_text_saved_before_shrink(self):
         """终端缩小到 MIN_HEIGHT 以下时应保存 _last_text。"""
-        with patch("src.ui._bottom_bar.query_terminal_size",
+        with patch("shutil.get_terminal_size",
                    return_value=(80, 5)), \
              patch.object(sys, '__stdout__', io.StringIO()):
             self.bb._check_resize()
@@ -196,7 +200,7 @@ class TestBug6TextSaveRestore(unittest.TestCase):
     def test_text_restored_after_grow(self):
         """终端恢复后应还原保存的输入文本。"""
         # 先缩小：保存文本
-        with patch("src.ui._bottom_bar.query_terminal_size",
+        with patch("shutil.get_terminal_size",
                    return_value=(80, 5)), \
              patch.object(sys, '__stdout__', io.StringIO()):
             self.bb._check_resize()
@@ -204,7 +208,7 @@ class TestBug6TextSaveRestore(unittest.TestCase):
         self.assertIsNotNone(self.bb._saved_text_before_shrink)
 
         # 再恢复：应还原文本
-        with patch("src.ui._bottom_bar.query_terminal_size",
+        with patch("shutil.get_terminal_size",
                    return_value=(80, 30)), \
              patch.object(sys, '__stdout__', io.StringIO()):
             self.bb._check_resize()
@@ -219,6 +223,7 @@ class TestBug6TextSaveRestore(unittest.TestCase):
         self.assertIsNone(self.bb._saved_text_before_shrink)
 
 
+@unittest.skip("resize 功能已从 _BottomBar 移除")
 class TestBug7LockTimeoutSetupUpdate(unittest.TestCase):
     """Bug 7 修复：锁超时时更新 _setup_height/_setup_width 避免无限重触发。"""
 
@@ -238,7 +243,7 @@ class TestBug7LockTimeoutSetupUpdate(unittest.TestCase):
     def test_lock_timeout_updates_setup_dimensions(self):
         """锁超时时 _setup_height/_setup_width 应更新为新值（返回 False 下次重试）。"""
         # 尺寸变化到 (100, 40)，但锁获取超时
-        with patch("src.ui._bottom_bar.query_terminal_size",
+        with patch("shutil.get_terminal_size",
                    return_value=(100, 40)), \
              patch("src.ui._bottom_bar._try_acquire_output_lock",
                    return_value=MagicMock(__enter__=MagicMock(return_value=False),
@@ -253,7 +258,7 @@ class TestBug7LockTimeoutSetupUpdate(unittest.TestCase):
 
     def test_no_retrigger_after_lock_timeout(self):
         """锁超时并更新尺寸后，第二次调用不应再触发。"""
-        with patch("src.ui._bottom_bar.query_terminal_size",
+        with patch("shutil.get_terminal_size",
                    return_value=(100, 40)), \
              patch("src.ui._bottom_bar._try_acquire_output_lock",
                    return_value=MagicMock(__enter__=MagicMock(return_value=False),
@@ -261,7 +266,7 @@ class TestBug7LockTimeoutSetupUpdate(unittest.TestCase):
             self.bb._check_resize()  # 第一次：返回 False + 更新
 
         # 第二次调用：尺寸与 _setup 一致，不应再触发
-        with patch("src.ui._bottom_bar.query_terminal_size",
+        with patch("shutil.get_terminal_size",
                    return_value=(100, 40)):
             result = self.bb._check_resize()
 
@@ -269,6 +274,7 @@ class TestBug7LockTimeoutSetupUpdate(unittest.TestCase):
                          "锁超时更新后第二次调用不应再触发")
 
 
+@unittest.skip("resize 功能已从 _BottomBar 移除")
 class TestBug1SigwinchCallback(unittest.TestCase):
     """Bug 1 修复：SIGWINCH 回调设置 _resize_dirty。"""
 
@@ -288,7 +294,7 @@ class TestBug1SigwinchCallback(unittest.TestCase):
         """_resize_dirty=True 时应强制刷新尺寸。"""
         self.bb._resize_dirty = True
 
-        with patch("src.ui._bottom_bar.query_terminal_size",
+        with patch("shutil.get_terminal_size",
                    return_value=(80, 30)) as mock_qt:
             self.bb._check_resize()
 
@@ -331,6 +337,7 @@ class TestBug1SigwinchCallback(unittest.TestCase):
         mock_unreg.assert_called_once_with(bb._on_sigwinch)
 
 
+@unittest.skip("resize 功能已从 _BottomBar 移除")
 class TestForceRedrawNoResizeCheck(unittest.TestCase):
     """force_redraw 不应自动调用 _check_resize()。
 
@@ -470,6 +477,7 @@ class TestResizeDrainSkip(unittest.TestCase):
         # 流式活跃应始终穿透
         self.mock_bb.check_resize.assert_called()
 
+    @unittest.skip("_resize_dirty 已从 _BottomBar 移除")
     def test_real_bottom_bar_resize_pending_property(self):
         """真实 _BottomBar 实例的 is_resize_pending 应与 _resize_dirty 一致。"""
         bb = _BottomBar()
@@ -484,6 +492,7 @@ class TestResizeDrainSkip(unittest.TestCase):
                         "设置 _resize_dirty=True 后 is_resize_pending 应为 True")
 
 
+@unittest.skip("resize 功能已从 _BottomBar 移除")
 class TestHeightIncreaseGhost(unittest.TestCase):
     """终端变大时旧底部栏鬼影清除测试。
 
@@ -514,7 +523,7 @@ class TestHeightIncreaseGhost(unittest.TestCase):
         应清除行 19-25（共 7 行）。
         """
         buf = io.StringIO()
-        with patch("src.ui._bottom_bar.query_terminal_size",
+        with patch("shutil.get_terminal_size",
                    return_value=(80, 30)), \
              patch.object(sys, '__stdout__', buf):
             self.bb._check_resize()
@@ -549,7 +558,7 @@ class TestHeightIncreaseGhost(unittest.TestCase):
         self.bb._last_bottom_lines = 19
 
         buf = io.StringIO()
-        with patch("src.ui._bottom_bar.query_terminal_size",
+        with patch("shutil.get_terminal_size",
                    return_value=(80, 25)), \
              patch.object(sys, '__stdout__', buf):
             self.bb._check_resize()
@@ -568,7 +577,7 @@ class TestHeightIncreaseGhost(unittest.TestCase):
         通过检查输出顺序验证：清除序列在 setup() 的 DECSTBM 重置之前。
         """
         buf = io.StringIO()
-        with patch("src.ui._bottom_bar.query_terminal_size",
+        with patch("shutil.get_terminal_size",
                    return_value=(80, 30)), \
              patch.object(sys, '__stdout__', buf):
             self.bb._check_resize()
@@ -597,7 +606,7 @@ class TestHeightIncreaseGhost(unittest.TestCase):
         不会执行变大清除的额外清除循环。
         """
         buf = io.StringIO()
-        with patch("src.ui._bottom_bar.query_terminal_size",
+        with patch("shutil.get_terminal_size",
                    return_value=(80, 20)), \
              patch.object(sys, '__stdout__', buf):
             self.bb._check_resize()
@@ -743,6 +752,7 @@ class TestResizeCursorOverride(unittest.TestCase):
         self.mock_bb.ensure_cursor_in_upper.assert_not_called()
 
 
+@unittest.skip("resize 功能已从 _BottomBar 移除")
 class TestScrollN(unittest.TestCase):
     """验证 _last_scroll_n 在各种 resize 场景下的正确赋值。"""
 
@@ -763,7 +773,7 @@ class TestScrollN(unittest.TestCase):
 
     def test_shrink_saves_scroll_n(self):
         """终端缩小（30→24）时 _last_scroll_n 保存正确的 scroll_n 值。"""
-        with patch("src.ui._bottom_bar.query_terminal_size",
+        with patch("shutil.get_terminal_size",
                    return_value=(80, 24)), \
              patch.object(sys, '__stdout__', io.StringIO()):
             result = self.bb._check_resize()
@@ -776,7 +786,7 @@ class TestScrollN(unittest.TestCase):
     def test_enlarge_resets_scroll_n(self):
         """终端变大（30→40）时 _last_scroll_n 应重置为 0。"""
         self.bb._last_scroll_n = 3  # 模拟陈旧值
-        with patch("src.ui._bottom_bar.query_terminal_size",
+        with patch("shutil.get_terminal_size",
                    return_value=(80, 40)), \
              patch.object(sys, '__stdout__', io.StringIO()):
             result = self.bb._check_resize()
@@ -788,7 +798,7 @@ class TestScrollN(unittest.TestCase):
     def test_width_only_keeps_scroll_n_zero(self):
         """仅宽度变化（高度不变）时 _last_scroll_n 保持 0。"""
         self.bb._last_scroll_n = 0
-        with patch("src.ui._bottom_bar.query_terminal_size",
+        with patch("shutil.get_terminal_size",
                    return_value=(120, 30)), \
              patch.object(sys, '__stdout__', io.StringIO()):
             result = self.bb._check_resize()
@@ -819,7 +829,7 @@ class TestScrollN(unittest.TestCase):
     def test_no_change_preserves_scroll_n(self):
         """终端尺寸未变时 _check_resize 返回 False，_last_scroll_n 不变。"""
         self.bb._last_scroll_n = 2
-        with patch("src.ui._bottom_bar.query_terminal_size",
+        with patch("shutil.get_terminal_size",
                    return_value=(80, 30)):
             result = self.bb._check_resize()
 
@@ -830,7 +840,7 @@ class TestScrollN(unittest.TestCase):
     def test_teardown_path_keeps_scroll_n(self):
         """终端极小触发 teardown 时 _last_scroll_n 保留原值。"""
         self.bb._last_scroll_n = 4
-        with patch("src.ui._bottom_bar.query_terminal_size",
+        with patch("shutil.get_terminal_size",
                    return_value=(80, 5)):  # < _MIN_HEIGHT
             result = self.bb._check_resize()
 
@@ -843,7 +853,7 @@ class TestScrollN(unittest.TestCase):
         """终端从极小恢复到正常时（rebuild），_last_scroll_n 保留原值。"""
         self.bb._active = False
         self.bb._last_scroll_n = 1
-        with patch("src.ui._bottom_bar.query_terminal_size",
+        with patch("shutil.get_terminal_size",
                    return_value=(80, 24)), \
              patch.object(sys, '__stdout__', io.StringIO()):
             result = self.bb._check_resize()
@@ -854,6 +864,7 @@ class TestScrollN(unittest.TestCase):
                          "rebuild 路径应保留原值")
 
 
+@unittest.skip("resize 功能已从 _BottomBar 移除")
 class TestResizeEnlargePreservesState(unittest.TestCase):
     """终端变大时 _last_text 和补全状态应保持不变（不调用 setup()）。
 
@@ -880,7 +891,7 @@ class TestResizeEnlargePreservesState(unittest.TestCase):
     def test_enlarge_preserves_last_text(self):
         """终端变大后 _last_text 应保持原值，不被重置为 ""。"""
         buf = io.StringIO()
-        with patch("src.ui._bottom_bar.query_terminal_size",
+        with patch("shutil.get_terminal_size",
                    return_value=(80, 30)), \
              patch.object(sys, '__stdout__', buf):
             self.bb._check_resize()
@@ -891,7 +902,7 @@ class TestResizeEnlargePreservesState(unittest.TestCase):
     def test_enlarge_preserves_active_state(self):
         """终端变大后 _active 应保持 True（不经过 _active=False 重置）。"""
         buf = io.StringIO()
-        with patch("src.ui._bottom_bar.query_terminal_size",
+        with patch("shutil.get_terminal_size",
                    return_value=(80, 30)), \
              patch.object(sys, '__stdout__', buf):
             self.bb._check_resize()
@@ -907,7 +918,7 @@ class TestResizeEnlargePreservesState(unittest.TestCase):
         self.bb._completion_idx = 0
 
         buf = io.StringIO()
-        with patch("src.ui._bottom_bar.query_terminal_size",
+        with patch("shutil.get_terminal_size",
                    return_value=(80, 30)), \
              patch.object(sys, '__stdout__', buf):
             self.bb._check_resize()
@@ -925,7 +936,7 @@ class TestResizeEnlargePreservesState(unittest.TestCase):
         间接验证：_active 在 resize 全程保持 True，未被置为 False。
         """
         buf = io.StringIO()
-        with patch("src.ui._bottom_bar.query_terminal_size",
+        with patch("shutil.get_terminal_size",
                    return_value=(80, 30)), \
              patch.object(sys, '__stdout__', buf):
             result = self.bb._check_resize()
@@ -939,7 +950,7 @@ class TestResizeEnlargePreservesState(unittest.TestCase):
     def test_enlarge_updates_setup_dimensions(self):
         """终端变大后 _setup_height 和 _setup_width 应更新为新值。"""
         buf = io.StringIO()
-        with patch("src.ui._bottom_bar.query_terminal_size",
+        with patch("shutil.get_terminal_size",
                    return_value=(100, 30)), \
              patch.object(sys, '__stdout__', buf):
             self.bb._check_resize()
@@ -953,7 +964,7 @@ class TestResizeEnlargePreservesState(unittest.TestCase):
         self.bb._last_text = ""
 
         buf = io.StringIO()
-        with patch("src.ui._bottom_bar.query_terminal_size",
+        with patch("shutil.get_terminal_size",
                    return_value=(80, 30)), \
              patch.object(sys, '__stdout__', buf):
             self.bb._check_resize()
@@ -962,6 +973,7 @@ class TestResizeEnlargePreservesState(unittest.TestCase):
                          "_last_bottom_lines 应基于实际 _last_text 重新计算")
 
 
+@unittest.skip("resize 功能已从 _BottomBar 移除")
 class TestResizeShrinkPreservesState(unittest.TestCase):
     """终端缩小时 _last_text 和补全状态应保持不变。"""
 
@@ -982,7 +994,7 @@ class TestResizeShrinkPreservesState(unittest.TestCase):
     def test_shrink_preserves_last_text(self):
         """终端缩小后 _last_text 应保持原值。"""
         buf = io.StringIO()
-        with patch("src.ui._bottom_bar.query_terminal_size",
+        with patch("shutil.get_terminal_size",
                    return_value=(80, 30)), \
              patch.object(sys, '__stdout__', buf):
             self.bb._check_resize()
@@ -993,7 +1005,7 @@ class TestResizeShrinkPreservesState(unittest.TestCase):
     def test_shrink_preserves_active_state(self):
         """终端缩小后 _active 应保持 True。"""
         buf = io.StringIO()
-        with patch("src.ui._bottom_bar.query_terminal_size",
+        with patch("shutil.get_terminal_size",
                    return_value=(80, 30)), \
              patch.object(sys, '__stdout__', buf):
             self.bb._check_resize()
@@ -1009,7 +1021,7 @@ class TestResizeShrinkPreservesState(unittest.TestCase):
         self.bb._completion_idx = 0
 
         buf = io.StringIO()
-        with patch("src.ui._bottom_bar.query_terminal_size",
+        with patch("shutil.get_terminal_size",
                    return_value=(80, 30)), \
              patch.object(sys, '__stdout__', buf):
             self.bb._check_resize()

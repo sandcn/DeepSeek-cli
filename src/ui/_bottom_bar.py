@@ -32,7 +32,7 @@ _logger = logging.getLogger(__name__)
 
 
 # ── 模块级 get_token_speed_snapshot 缓存（避免内部方法每次 import） ──
-_TOKEN_SPEED_SNAPSHOT: Optional[callable] = None
+_TOKEN_SPEED_SNAPSHOT: Optional[callable] = None  # 也可赋值为 False（标记不可用）
 
 
 def _get_snapshot():
@@ -109,6 +109,7 @@ class _BottomBar:
         self._status_active = False  # 事件驱动：流式期间激活，结束后冻结
         self._tool_count = 0         # 本轮工具调用次数（仅主 Agent）
         self._tool_fail_count = 0    # 本轮失败工具数
+        self._tool_total = 0         # 本轮工具总调用次数（含成功和失败）
         self._last_bottom_lines = _BOTTOM_MIN_LINES  # 上次绘制的底部总行数（最小 5: 2 分隔线+状态行 + 3 最小输入行）
         # ★ 光标位置（与 _last_text 在 output_lock 下原子更新）
         self._input_cursor_pos: int = -1  # echo 回调的 cursor_pos，-1=末尾
@@ -130,6 +131,7 @@ class _BottomBar:
         self._completion_texts: list[str] = []      # 替换文本（可能与显示不同）
         self._completion_start_pos: int = 0         # 从光标前多少字符开始替换
         self._completion_orig_prefix: str = ""      # 原始前缀（用于重建替换）
+        self._completion_is_selection: bool = False  # 是否为选择模式（替代中文字面量比较）
         self._completion_idx = 0
         # ★ 补全弹窗所占行数（弹窗可见时 > 0，用于扩展输入区）
         self._completion_popup_height: int = 0
@@ -169,10 +171,6 @@ class _BottomBar:
         _w, _h = shutil.get_terminal_size()
         return _w
 
-    def _term_size(self) -> tuple[int, int]:
-        """同时获取终端宽度和高度，避免重复 syscall。"""
-        return shutil.get_terminal_size()
-
     # ── 生命周期 ──────────────────────────────────────────
 
     def enable_status(self) -> None:
@@ -202,7 +200,8 @@ class _BottomBar:
 
     @property
     def is_resize_pending(self) -> bool:
-        """（已禁用）始终返回 False。"""
+        """（已禁用）始终返回 False。
+        TODO: engine 清理冗余调用后移除此 property。"""
         return False
 
     def get_cursor_info(self) -> tuple[str, int, int, int]:
@@ -279,6 +278,7 @@ class _BottomBar:
     def increment_tool(self) -> None:
         """递增工具调用计数。"""
         self._tool_count += 1
+        self._tool_total += 1
 
     def decrement_tool(self) -> None:
         """递减工具调用计数（工具成功完成时调用）。
@@ -296,6 +296,7 @@ class _BottomBar:
         """重置工具计数（新轮开始时清零）。"""
         self._tool_count = 0
         self._tool_fail_count = 0
+        self._tool_total = 0
 
     def set_model_name(self, name: str) -> None:
         """设置当前模型名字，状态行实时更新。
@@ -308,7 +309,8 @@ class _BottomBar:
         self._model_name = name
 
     def check_resize(self) -> bool:
-        """（已禁用）始终返回 False。"""
+        """（已禁用）始终返回 False。
+        TODO: engine 清理冗余调用后移除此方法。"""
         return False
 
     # ── 光标定位（渲染时在上屏/下屏间切换） ───────────────
@@ -372,7 +374,7 @@ class _BottomBar:
         cursor_pos = self._input_cursor_pos
         max_input = max(1, term_w - 4)
         vis_row, vis_col = _compute_cursor_visual_pos(text, cursor_pos, max_input)
-        total = max(_BOTTOM_MIN_LINES, self._bottom_lines)  # 至少 5 行
+        total = max(_BOTTOM_MIN_LINES, self._last_bottom_lines)  # 至少 5 行，使用 output_lock 内原子更新的缓存值
         r_cursor = height - total + 3 + self._completion_popup_height + vis_row
         # ★ clamp 到 [1, height]，防止 total > height 时行号 ≤ 0 或越界
         r_cursor = max(1, min(r_cursor, height))
@@ -390,14 +392,15 @@ class _BottomBar:
         height = self._term_height()
         if height < self._MIN_HEIGHT:
             return
-        self._active = True
-        self._last_text = ""
-        self._last_bottom_lines = self._bottom_lines  # 缓存当前底部行数
+        self._active = True  # ★ 锁外设置活性标志，使后续 refresh() 等可正常进入
 
-        scroll_end = height - self._bottom_lines  # 动态滚动区域
-        self._last_scroll_end = scroll_end  # 缓存 DECSTBM scroll_end
         with _try_acquire_output_lock(name="bottom_bar.setup", timeout=1.0) as locked:
             if locked:
+                # ★ 在锁内初始化状态缓存，确保与 _draw_all_locked 内的 total 计算一致
+                self._last_text = ""
+                self._last_bottom_lines = self._bottom_lines  # 缓存当前底部行数
+                scroll_end = height - self._bottom_lines  # 动态滚动区域
+                self._last_scroll_end = scroll_end  # 缓存 DECSTBM scroll_end
                 out = sys.__stdout__
                 out.write("\0337")                        # 保存光标
                 out.write(f"\033[1;{scroll_end}r")       # 设置滚动区域
@@ -484,8 +487,8 @@ class _BottomBar:
                 out.flush()
                 return
 
-            # 清除底部行（取新旧底部栏中较小者的起始行，缩小场景避免擦穿上屏）
-            clear_start = max(old_scroll_end, scroll_end) + 1
+            # 清除所有旧底部栏行（始终从 old_scroll_end 起始，缩小场景下避免旧分隔线/状态行/输入行残留到内容区）
+            clear_start = old_scroll_end + 1
             for r in range(clear_start, height + 1):
                 out.write(f"\033[{r};1H\033[K")
 
@@ -570,8 +573,8 @@ class _BottomBar:
                 self._last_cursor_pos = self._input_cursor_pos
                 return
 
-            # ★ 清除底部行（使用旧 scroll_end 起始，不擦穿上屏）
-            clear_start = max(old_scroll_end, scroll_end) + 1
+            # ★ 清除所有旧底部栏行（始终从 old_scroll_end 起始，缩小场景下避免旧分隔线/状态行/输入行残留到内容区）
+            clear_start = old_scroll_end + 1
             for r in range(clear_start, height + 1):
                 out.write(f"\033[{r};1H\033[K")
 
@@ -586,7 +589,7 @@ class _BottomBar:
             out.write(f"\033[{r2};1H\033[K{self._last_status}")
 
             # ── 动态拆行输入区 ──
-            self._draw_input_lines_locked(out, text, r2 + 1)
+            self._draw_input_lines_locked(out, text, r2 + 1, tw)
             # ★ 清除多余行（复用缓存，避免重算 _wrap_by_width）
             input_rows = self._cached_input_rows
             for r in range(r2 + 1 + input_rows, height + 1):
@@ -718,8 +721,8 @@ class _BottomBar:
                 out.flush()
                 return
 
-            # ★ 清除底部行（使用旧 scroll_end 起始，不擦穿上屏）
-            clear_start = max(old_scroll_end, scroll_end) + 1
+            # ★ 清除所有旧底部栏行（始终从 old_scroll_end 起始，缩小场景下避免旧分隔线/状态行/输入行残留到内容区）
+            clear_start = old_scroll_end + 1
             for r in range(clear_start, height + 1):
                 out.write(f"\033[{r};1H\033[K")
 
@@ -735,8 +738,7 @@ class _BottomBar:
             out.write(f"\033[{r2};1H\033[K{new_status}")
 
             # ── 拆行输入区 ──
-            max_input = max(1, self._term_width() - 4)
-            self._draw_input_lines_locked(out, text, r2 + 1)
+            self._draw_input_lines_locked(out, text, r2 + 1, tw)
             # ★ 清除多余行（复用缓存，避免重算 _wrap_by_width）
             input_rows = self._cached_input_rows
             for r in range(r2 + 1 + input_rows, height + 1):
@@ -744,7 +746,7 @@ class _BottomBar:
 
             # ── 光标定位（使用 _compute_cursor_visual_pos 准确处理 \\n） ──
             vis_row, vis_col = _compute_cursor_visual_pos(
-                text, cursor_pos, max_input,
+                text, cursor_pos, max(1, tw - 4),
             )
             r_cursor = r2 + 1 + self._completion_popup_height + vis_row
             # ★ clamp 到 [1, height]，防御性保护
@@ -765,15 +767,16 @@ class _BottomBar:
 
     # ── 内部绘制 ──────────────────────────────────────────
 
-    def _draw_input_lines_locked(self, out, text: str, r_start: int) -> None:
+    def _draw_input_lines_locked(self, out, text: str, r_start: int, term_width: int) -> None:
         """绘制输入行（需持有 output_lock），超长文本自动拆行。
 
         Args:
             out: stdout 文件对象。
             text: 输入文本（空字符串显示占位提示）。
             r_start: 第一行输入区的行号（分隔线+状态行之后）。
+            term_width: 当前终端宽度（由调用方传入，避免重复系统调用）。
         """
-        max_input = max(1, self._term_width() - 4)
+        max_input = max(1, term_width - 4)
         expanded = _expand_tabs(text)
         wrapped = _wrap_by_width(expanded, max_input)
         # ★ 更新展开/拆行缓存，供轻量路径复用（text_changed=False 时有效）
@@ -790,8 +793,7 @@ class _BottomBar:
         # ── 补全弹窗（在输入区顶部绘制，弹出时自动扩大输入行数） ──
         if popup_height > 0 and self._completion_items:
             popup_r_start = r_start
-            tw = self._term_width()
-            popup_w = min(tw - 2, 50)
+            popup_w = min(term_width - 2, 50)
             n = len(self._completion_items)
 
             # ★ 无边框扁平样式：标题行 + 选项列表 + 快捷键提示
@@ -816,7 +818,7 @@ class _BottomBar:
             # ★ 快捷键提示行
             footer_r = popup_r_start + 1 + n
             truncated = total_items > n
-            is_selection = (self._completion_title != "补全")
+            is_selection = self._completion_is_selection
             if is_selection:
                 hint_prefix = "\u2191\u2193 Enter Esc"
             else:
@@ -872,22 +874,29 @@ class _BottomBar:
         # ★ total > height 时无法绘制，跳过
         if height - total < 1:
             return
+        self._last_bottom_lines = total  # ★ 同步缓存，确保后续光标定位使用最新值
         r1 = height - total + 1                  # 分隔线
         r2 = r1 + 1                              # 状态行
+
+        # ★ 防御性清除所有底部行，确保无旧内容残留
+        for r in range(r1, height + 1):
+            out.write(f"\033[{r};1H\033[K")
+
         # ★ 灰色分隔线
         tw = self._term_width()
         sep_len = min(tw - 2, 40)
         sep = f"{_COLOR_SEP}\u2501{_COLOR_RESET}" * sep_len
         out.write(f"\033[{r1};1H  {sep}")
-        out.write(f"\033[{r2};1H\033[K")
-        # 输入区
-        text = self._last_text or ""
-        self._draw_input_lines_locked(out, text, r2 + 1)
-        # 绘制状态行（在输入区之后写入，覆盖上面以防无状态）
+
+        # ★ 状态行（在输入区之前写入，输入从 r2+1 开始，不覆盖状态行）
         status = self._format_status()
+        self._last_status = status
         if status:
             out.write(f"\033[{r2};1H\033[K{status}")
-        self._last_status = status  # 同步缓存，避免下次 refresh() 冗余重绘
+
+        # ★ 输入区
+        text = self._last_text or ""
+        self._draw_input_lines_locked(out, text, r2 + 1, tw)
 
     def _format_status(self) -> str:
         """构建状态行文本（优雅信息风）。
@@ -923,22 +932,24 @@ class _BottomBar:
         elapsed = snap.get("elapsed_seconds", 0.0)    # 当轮耗时
         per_second_speed = snap.get("per_second_speed", 0.0)  # 实时 tok/s
 
-        if total <= 0 and elapsed <= 0 and per_second_speed <= 0 and self._tool_count <= 0:
+        if total <= 0 and elapsed <= 0 and per_second_speed <= 0 and self._tool_total <= 0:
             return model_part
 
         parts = []
 
         # 工具调用计数（带 ⚙ 图标，成功/失败分色）
-        if self._tool_count > 0:
-            done = max(0, self._tool_count - self._tool_fail_count)
+        # ★ 使用 _tool_total（总调用次数）和 _tool_fail_count（失败次数）计算：
+        #   done = total - fail（正确成功计数），避免用 _tool_count 的"运行中"语义计算导致失败时退化为 0
+        if self._tool_total > 0:
+            done = self._tool_total - self._tool_fail_count
             if self._tool_fail_count > 0:
                 parts.append(
                     f"{_COLOR_TOOL_OK}{done}{_COLOR_RESET}"
                     f"{_COLOR_DIM}/{_COLOR_RESET}"
-                    f"{_COLOR_TOOL_FAIL}{self._tool_count}{_COLOR_RESET}"
+                    f"{_COLOR_TOOL_FAIL}{self._tool_total}{_COLOR_RESET}"
                 )
             else:
-                parts.append(f"{_COLOR_TOOL_OK}{self._tool_count}{_COLOR_RESET}")
+                parts.append(f"{_COLOR_TOOL_OK}{self._tool_total}{_COLOR_RESET}")
 
         # 耗时（蓝灰高亮）
         if elapsed > 0:
@@ -1066,6 +1077,7 @@ class _BottomBar:
             self._completion_popup_height = popup_height
             self._completion_visible = True
             self._completion_title = title
+            self._completion_is_selection = (title != "补全")
             self._completion_items = list(visible_items)
             self._completion_texts = list(texts) if texts is not None else list(visible_items)
             self._completion_idx = selected_idx
@@ -1100,8 +1112,8 @@ class _BottomBar:
                 out.flush()
                 return
 
-            # ★ 清除底部行（使用旧 scroll_end 起始，不擦穿上屏）
-            clear_start = max(old_scroll_end, scroll_end) + 1
+            # ★ 清除所有旧底部栏行（始终从 old_scroll_end 起始，缩小场景下避免旧分隔线/状态行/输入行残留到内容区）
+            clear_start = old_scroll_end + 1
             for r in range(clear_start, height + 1):
                 out.write(f"\033[{r};1H\033[K")
 
@@ -1114,7 +1126,7 @@ class _BottomBar:
             out.write(f"\033[{r1};1H  {sep_s}")
             out.write(f"\033[{r2};1H\033[K")
             text = self._last_text or ""
-            self._draw_input_lines_locked(out, text, r2 + 1)
+            self._draw_input_lines_locked(out, text, r2 + 1, tw_s)
             status = self._format_status()
             if status:
                 out.write(f"\033[{r2};1H\033[K{status}")
@@ -1150,6 +1162,7 @@ class _BottomBar:
             self._completion_popup_height = 0
             self._completion_visible = False
             self._completion_title = "补全"
+            self._completion_is_selection = False
             self._completion_items = []
             self._completion_texts = []
             self._completion_idx = 0
@@ -1185,8 +1198,8 @@ class _BottomBar:
                 out.flush()
                 return
 
-            # ★ 清除底部行（使用旧 scroll_end 起始，覆盖旧弹窗区域）
-            clear_start = max(old_scroll_end, scroll_end) + 1
+            # ★ 清除所有旧底部栏行（始终从 old_scroll_end 起始，缩小场景下避免旧分隔线/状态行/输入行残留到内容区）
+            clear_start = old_scroll_end + 1
             for r in range(clear_start, height + 1):
                 out.write(f"\033[{r};1H\033[K")
 
@@ -1199,7 +1212,7 @@ class _BottomBar:
             out.write(f"\033[{r1};1H  {sep_h}")
             out.write(f"\033[{r2};1H\033[K")
             text = self._last_text or ""
-            self._draw_input_lines_locked(out, text, r2 + 1)
+            self._draw_input_lines_locked(out, text, r2 + 1, tw_h)
             status = self._format_status()
             if status:
                 out.write(f"\033[{r2};1H\033[K{status}")
@@ -1265,7 +1278,7 @@ class _BottomBar:
             total_items = len(self._completion_texts) if self._completion_texts else n
             footer_start = popup_start + 1 + n
             truncated = total_items > n
-            is_selection = (self._completion_title != "补全")
+            is_selection = self._completion_is_selection
             hint_prefix = "\u2191\u2193 Enter Esc" if is_selection else "Tab \u2191\u2193 Esc"
             if truncated:
                 hint = (f" {_COLOR_TIME}{self._completion_idx + 1}/{n}{_COLOR_RESET}"

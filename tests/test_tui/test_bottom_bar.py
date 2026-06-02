@@ -268,7 +268,7 @@ class TestBottomBarLastScrollEnd(unittest.TestCase):
         self.bb._cached_width = 80
 
         with patch.object(sys, '__stdout__', io.StringIO()), \
-             patch("src.ui._bottom_bar.query_terminal_size", return_value=(80, 30)):
+             patch("shutil.get_terminal_size", return_value=(80, 30)):
             self.bb.setup()
 
         expected = 30 - (2 + max(3, 0))  # height - (_BOTTOM_LINES + 0 = 5) = 25
@@ -300,7 +300,8 @@ class TestBottomBarLastScrollEnd(unittest.TestCase):
         self.bb._last_scroll_end = 0  # 未初始化
 
         out = io.StringIO()
-        with patch.object(sys, '__stdout__', out):
+        with patch.object(sys, '__stdout__', out), \
+             patch("shutil.get_terminal_size", return_value=(80, 30)):
             self.bb.ensure_cursor_in_upper()
 
         output = out.getvalue()
@@ -317,7 +318,8 @@ class TestBottomBarLastScrollEnd(unittest.TestCase):
         self.bb._completion_popup_height = 6
 
         out = io.StringIO()
-        with patch.object(sys, '__stdout__', out):
+        with patch.object(sys, '__stdout__', out), \
+             patch("shutil.get_terminal_size", return_value=(80, 30)):
             self.bb.sync_bottom_lines()
 
         # _bottom_lines = 2 + max(3, 0) + 6 = 11
@@ -336,7 +338,8 @@ class TestBottomBarLastScrollEnd(unittest.TestCase):
         self.bb._last_scroll_end = 25  # 30 - 5 = 25，与当前 _bottom_lines 一致
 
         out = io.StringIO()
-        with patch.object(sys, '__stdout__', out):
+        with patch.object(sys, '__stdout__', out), \
+             patch("shutil.get_terminal_size", return_value=(80, 30)):
             self.bb.sync_bottom_lines()
 
         output = out.getvalue()
@@ -530,6 +533,7 @@ class TestScrollUpUpperOrdering(unittest.TestCase):
         self.assertIn(scroll_up_seq, output,
                       f"应使用 scroll_end({scroll_end}) 定位")
 
+    @unittest.skip("_check_resize 已从 _BottomBar 移除")
     def test_shrink_path_uses_height(self):
         """_check_resize shrink 分支仍使用 height（新终端高度）定位（全屏滚动场景）。"""
         # setup: height=30, shrink to 25
@@ -539,7 +543,7 @@ class TestScrollUpUpperOrdering(unittest.TestCase):
         self.bb._last_text = "test"
         # 缩小后 shrink 路径使用新 height=25 定位到新终端末行
         from unittest.mock import patch as u_patch
-        with u_patch("src.ui._bottom_bar.query_terminal_size",
+        with u_patch("shutil.get_terminal_size",
                       return_value=(80, 25)), \
              u_patch("src.ui._bottom_bar._try_acquire_output_lock",
                      return_value=MagicMock(__enter__=MagicMock(return_value=True),
