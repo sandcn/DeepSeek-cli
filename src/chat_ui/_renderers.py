@@ -82,10 +82,10 @@ class ContentRenderer:
 
         # ── TextControl 实例（按前缀+样式分组，替代 _render_styled_line / _write_text_or_ansi） ──
         adapter = self._tool_adapter  # 惰性初始化 OutputAdapter
-        self._user_msg_ctrl = TextControl(adapter, prefix="\n  > ", style=_STYLE_BOLD)
-        self._notif_ctrl = TextControl(adapter, prefix="\n  · ", style=_STYLE_SUCCESS)
-        self._error_ctrl = TextControl(adapter, prefix="\n  ! ", style=_STYLE_ERROR)
-        self._line_ctrl = TextControl(adapter)  # 无前缀、无样式，用于通用文本行
+        self._user_msg_ctrl = TextControl(adapter, prefix="\n  > ", style=_STYLE_BOLD, level=0)
+        self._notif_ctrl = TextControl(adapter, prefix="\n  · ", style=_STYLE_SUCCESS, level=0)
+        self._error_ctrl = TextControl(adapter, prefix="\n  ! ", style=_STYLE_ERROR, level=0)
+        self._line_ctrl = TextControl(adapter, level=0)  # 无前缀、无样式，用于通用文本行
 
     @property
     def _tool_adapter(self) -> "OutputAdapter":

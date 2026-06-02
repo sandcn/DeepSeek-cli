@@ -63,13 +63,25 @@ class TestControl:
         from src.chat_ui._controls import Control
         assert hasattr(Control, 'refresh_width')
 
+    def test_interface_has_start_line(self):
+        """验证 Control 定义 start_line 属性。"""
+        from src.chat_ui._controls import Control
+        assert hasattr(Control, 'start_line')
+        assert isinstance(getattr(Control, 'start_line'), property)
+
+    def test_interface_has_level(self):
+        """验证 Control 定义 level 属性。"""
+        from src.chat_ui._controls import Control
+        assert hasattr(Control, 'level')
+        assert isinstance(getattr(Control, 'level'), property)
+
 
 # ═══════════════════════════════════════════════════════════
 # TestTextControl
 # ═══════════════════════════════════════════════════════════
 
 class TestTextControl:
-    """TextControl 功能测试（14 个测试）。"""
+    """TextControl 功能测试（18 个测试）。"""
 
     def test_write_with_prefix_and_style(self, mock_output_adapter):
         """验证 write() 输出 prefix + text 并应用 style。"""
@@ -202,13 +214,36 @@ class TestTextControl:
         assert "! " in call_arg.plain
         assert "error msg" in call_arg.plain
 
+    def test_default_start_line_and_level(self, mock_output_adapter):
+        """验证 TextControl 的 start_line 和 level 默认值为 0。"""
+        from src.chat_ui._controls import TextControl
+        ctrl = TextControl(mock_output_adapter)
+        assert ctrl.start_line == 0
+        assert ctrl.level == 0
+
+    def test_custom_start_line_and_level(self, mock_output_adapter):
+        """验证 TextControl 能正确设置 start_line 和 level。"""
+        from src.chat_ui._controls import TextControl
+        ctrl = TextControl(mock_output_adapter, start_line=42, level=3)
+        assert ctrl.start_line == 42
+        assert ctrl.level == 3
+
+    def test_setter_start_line_and_level(self, mock_output_adapter):
+        """验证 TextControl 的 setter 可修改 start_line 和 level。"""
+        from src.chat_ui._controls import TextControl
+        ctrl = TextControl(mock_output_adapter)
+        ctrl.start_line = 10
+        ctrl.level = 5
+        assert ctrl.start_line == 10
+        assert ctrl.level == 5
+
 
 # ═══════════════════════════════════════════════════════════
 # TestMarkdownControl
 # ═══════════════════════════════════════════════════════════
 
 class TestMarkdownControl:
-    """MarkdownControl 功能测试（8 个测试）。"""
+    """MarkdownControl 功能测试（12 个测试）。"""
 
     @pytest.fixture
     def mock_incremental(self):
@@ -301,3 +336,26 @@ class TestMarkdownControl:
             assert kwargs["show_indicator"] is True
             assert kwargs["typing_speed"] == 500
             assert "_file" in kwargs
+
+    def test_default_start_line_and_level(self, mock_incremental):
+        """验证 MarkdownControl 的 start_line 和 level 默认值为 0。"""
+        from src.chat_ui._controls import MarkdownControl
+        ctrl = MarkdownControl()
+        assert ctrl.start_line == 0
+        assert ctrl.level == 0
+
+    def test_custom_start_line_and_level(self, mock_incremental):
+        """验证 MarkdownControl 能正确设置 start_line 和 level。"""
+        from src.chat_ui._controls import MarkdownControl
+        ctrl = MarkdownControl(start_line=7, level=2)
+        assert ctrl.start_line == 7
+        assert ctrl.level == 2
+
+    def test_setter_start_line_and_level(self, mock_incremental):
+        """验证 MarkdownControl 的 setter 可修改 start_line 和 level。"""
+        from src.chat_ui._controls import MarkdownControl
+        ctrl = MarkdownControl()
+        ctrl.start_line = 99
+        ctrl.level = 1
+        assert ctrl.start_line == 99
+        assert ctrl.level == 1

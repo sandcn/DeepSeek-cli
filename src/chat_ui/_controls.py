@@ -53,6 +53,28 @@ class Control(ABC):
         """写入文本内容（子类实现具体渲染逻辑）。"""
         ...
 
+    # ── 公共属性 ────────────────────────────────────────
+
+    @property
+    def start_line(self) -> int:
+        """起始行号。"""
+        return self._start_line
+
+    @start_line.setter
+    def start_line(self, value: int) -> None:
+        self._start_line = value
+
+    @property
+    def level(self) -> int:
+        """层级。"""
+        return self._level
+
+    @level.setter
+    def level(self, value: int) -> None:
+        self._level = value
+
+    # ── 生命周期 ────────────────────────────────────────
+
     def close(self) -> None:
         """关闭控件，释放资源。
 
@@ -95,6 +117,8 @@ class TextControl(Control):
         output_adapter: "OutputAdapter",
         prefix: str = "",
         style: Style | None = None,
+        start_line: int = 0,
+        level: int = 0,
     ) -> None:
         """创建 TextControl 实例。
 
@@ -102,6 +126,8 @@ class TextControl(Control):
             output_adapter: Rich Console 输出适配器（必填，不能为 None）
             prefix: 前缀字符串（如 "\\n  > "、"\\n  ! "、"\\n  · "），直接拼接到文本前
             style: Rich Style 对象，同时作用于前缀和文本
+            start_line: 起始行号（默认 0）
+            level: 层级（默认 0）
 
         Raises:
             ValueError: 若 output_adapter 为 None
@@ -111,6 +137,8 @@ class TextControl(Control):
         self._adapter = output_adapter
         self._prefix = prefix
         self._style = style
+        self._start_line = start_line
+        self._level = level
         self._closed = False
 
     # ── 公共接口 ────────────────────────────────────────
@@ -193,6 +221,8 @@ class MarkdownControl(Control):
         style: str = "",
         show_indicator: bool = False,
         typing_speed: int = 1000,
+        start_line: int = 0,
+        level: int = 0,
     ) -> None:
         """创建 MarkdownControl 实例。
 
@@ -205,6 +235,8 @@ class MarkdownControl(Control):
             style: Rich Console style 字符串（如 "dim"）
             show_indicator: 是否显示流式光标指示器
             typing_speed: 打字机效果速度（字符/秒，1000=即时）
+            start_line: 起始行号（默认 0）
+            level: 层级（默认 0）
         """
         from ..api.renderer import IncrementalRenderer
         self._renderer: "IncrementalRenderer" = IncrementalRenderer(
@@ -213,6 +245,8 @@ class MarkdownControl(Control):
             typing_speed=typing_speed,
             show_indicator=show_indicator,
         )
+        self._start_line = start_line
+        self._level = level
         self._closed = False
 
     # ── 公共接口 ────────────────────────────────────────
