@@ -9,6 +9,7 @@ Layer 2 — 依赖 _const（Style常量 + RenderCommand + _ReasoningState + _MAI
 
 from __future__ import annotations
 
+import sys
 import logging
 from typing import TYPE_CHECKING, Callable
 
@@ -23,12 +24,13 @@ from ._const import (
     _STYLE_FAIL,
     _STYLE_SUCCESS,
     _STYLE_WARN,
+    _THINKING_HEADER,
     RenderCommand,
-    _cmd_name,
-    _truncate_msg,
 )
+from ._utils import _cmd_name, _truncate_msg
 from ._controls import (
     ControlList,
+    MarkdownControl,
     ParseInfoControl,
     TextControl,
     ToolOutputControl,
@@ -37,22 +39,22 @@ from ._controls import (
 
 if TYPE_CHECKING:
     from ..api.renderer.output import OutputAdapter
+    from ._protocols import BottomBarProtocol
     from ._render_state import _RenderState
-
-
-# ── 已废弃的渲染命令枚举值集合 ──────────────────────────
-# 加入此集合的枚举值在 render() 中收到时会自动告警，
-# 用于标记已废弃但暂未移除的遗留命令（如 CMD_OUTPUT=10）。
-_DEPRECATED: frozenset[int] = frozenset({RenderCommand.CMD_OUTPUT})
 
 
 def _build_render_dispatch() -> dict[int, tuple[str, tuple[int, ...]]]:
     """构建渲染命令分发表（模块级函数，类定义时即初始化）。
 
     从 _const.py 移入 _renderers.py，因其仅被 ContentRenderer 使用。
+    显式排除已废弃的 RenderCommand 值（3-5 保留位 + 10 CMD_OUTPUT），
+    防止未来误添加后出现静默吞没。
     """
+    # 已废弃的命令值（保留位，不重用不处理）
+    _DEPRECATED_COMMANDS = {3, 4, 5, 10}
+
     R = RenderCommand
-    return {
+    dispatch = {
         R.REASONING:      ("_do_reasoning",       (1,)),
         R.CONTENT:        ("_do_content",         (1,)),
         R.PHASE_DONE:     ("_do_phase_done",      (1,)),
@@ -68,6 +70,14 @@ def _build_render_dispatch() -> dict[int, tuple[str, tuple[int, ...]]]:
         R.TOOL_FAIL_INC:  ("_do_tool_fail_inc",   ()),
         R.ERROR:          ("_do_error",           (1,)),
     }
+
+    # 断言：确保没有废弃命令被误加到分发表中
+    for cid in dispatch:
+        assert cid not in _DEPRECATED_COMMANDS, (
+            f"废弃的 RenderCommand 值 {cid} 被误加到 _RENDER_DISPATCH 中"
+        )
+
+    return dispatch
 
 
 # ── 模块级渲染命令分发表（类定义时即构建，O(1) 查找） ──
@@ -92,7 +102,8 @@ class ContentRenderer:
     def __init__(
         self,
         rs: "_RenderState",
-        bottom_bar,
+        output_adapter: "OutputAdapter",
+        bottom_bar: "BottomBarProtocol",
         on_display_messages: Callable[..., None] | None = None,
     ):
         self._rs = rs
@@ -101,7 +112,16 @@ class ContentRenderer:
         # 保持为实例属性，不受 ScreenHistoryManager 封装
         self._on_display_messages: Callable[..., None] | None = on_display_messages
 
-        # ── 终端大小变化检测（字段已迁移到 RenderEngine） ──
+        # ── OutputAdapter（由 ChatUIConsumer 构造注入） ──
+        # 替代原来 ContentRenderer 内部 self._rs._tool_adapter 的注入模式。
+        # ContentRenderer 不再负责创建 Console 和 OutputAdapter，
+        # 关注点分离更清晰：ContentRenderer 只消费 adapter，不负责创建。
+        self._adapter = output_adapter
+
+        # ── 注册 MarkdownControl 工厂回调到 _RenderState ──
+        # 替代原来 _RenderState._create_markdown_control() 静态方法，
+        # 使 MarkdownControl 创建逻辑统一由 ContentRenderer 管理。
+        self._rs.control_factory = self._create_markdown_control
 
         # ── ControlList 控件列表管理（通过工厂方法创建） ──
         # 通过回调注册解耦 _RenderState 对 ControlList 的直接依赖
@@ -109,46 +129,68 @@ class ContentRenderer:
         self._rs.on_control_created = self._control_list.add
         self._rs.on_control_removed = self._control_list.remove
 
-    @property
-    def _tool_adapter(self) -> "OutputAdapter":
-        return self._rs.get_tool_adapter()
-
     # ── 控件工厂方法 ────────────────────────────────────
 
+    def _create_markdown_control(self, style: str = "") -> "MarkdownControl":
+        """创建 MarkdownControl 实例。
+
+        作为 control_factory 注入到 _RenderState，
+        替代原来 _RenderState._create_markdown_control() 静态方法，
+        使 MarkdownControl 创建逻辑统一由 ContentRenderer 管理。
+        """
+        return MarkdownControl(
+            style=style,
+            typing_speed=1000,
+            show_indicator=False,
+        )
+
+    # ── 公开方法 ─────────────────────────────────────
+
+    def refresh_width(self) -> None:
+        """刷新终端宽度缓存（公开方法）。
+
+        委托 ControlList.refresh_width_all() 遍历所有活跃控件刷新宽度。
+        推理/内容 MarkdownControl 已通过 on_control_created 回调加入
+        ControlList，无需额外遍历。统一通过 ControlList 管理。
+        """
+        self._control_list.refresh_width_all()
+
+    # ── 控件创建配置（由 _create_controls() 循环消费） ──
+    # 每个条目标识一个控件实例，包含属性名、控件类和构造参数。
+    # adapter 由 _create_controls() 在运行时注入，避免在类属性中硬编码。
+    # 不同控件类的构造参数签名可差异——kwargs 直接解包传入构造函数。
+    _CONTROL_CONFIG: list[dict] = [
+        {"attr": "_user_msg_ctrl",      "cls": TextControl,          "kwargs": {"prefix": "\n  > ", "style": _STYLE_BOLD, "level": 0}},
+        {"attr": "_notif_ctrl",         "cls": TextControl,          "kwargs": {"prefix": "\n  · ", "style": _STYLE_SUCCESS, "level": 0}},
+        {"attr": "_error_ctrl",         "cls": TextControl,          "kwargs": {"prefix": "\n  ! ", "style": _STYLE_ERROR, "level": 0}},
+        {"attr": "_line_ctrl",          "cls": TextControl,          "kwargs": {"level": 0}},
+        {"attr": "_tool_output_ctrl",   "cls": ToolOutputControl,    "kwargs": {"dim_style": _STYLE_DIM, "level": 0}},
+        {"attr": "_tool_summary_ctrl",  "cls": ToolSummaryControl,   "kwargs": {"style_success": _STYLE_SUCCESS, "style_fail": _STYLE_FAIL, "style_warn": _STYLE_WARN, "style_dim": _STYLE_DIM, "level": 0}},
+        {"attr": "_parse_info_ctrl",    "cls": ParseInfoControl,     "kwargs": {"level": 0}},
+    ]
+
     def _create_controls(self) -> ControlList:
-        """创建并返回所有 Control 控件实例（工厂方法）。
+        """创建并返回所有 Control 控件实例（工厂方法，配置驱动）。
+
+        遍历 _CONTROL_CONFIG 配置列表，自动注入 adapter 到各控件，
+        通过 setattr 注册到 self，并加入 ControlList。
 
         将控件创建与 __init__ 分离，使构造函数聚焦于依赖注入。
-        控件创建逻辑可通过子类重写此方法扩展（如自定义主题/控件类型）。
+        控件创建逻辑可通过子类重写此方法或修改 _CONTROL_CONFIG 扩展。
         返回的 ControlList 包含所有已创建的控件。
         """
-        adapter = self._tool_adapter  # 惰性初始化 OutputAdapter
+        adapter = self._adapter  # 由 ChatUIConsumer 构造注入
         control_list = ControlList()
 
-        # ── TextControl 实例（按前缀+样式分组，注册到 ControlList）──
-        self._user_msg_ctrl = TextControl(adapter, prefix="\n  > ", style=_STYLE_BOLD, level=0)
-        control_list.add(self._user_msg_ctrl)
-        self._notif_ctrl = TextControl(adapter, prefix="\n  · ", style=_STYLE_SUCCESS, level=0)
-        control_list.add(self._notif_ctrl)
-        self._error_ctrl = TextControl(adapter, prefix="\n  ! ", style=_STYLE_ERROR, level=0)
-        control_list.add(self._error_ctrl)
-        self._line_ctrl = TextControl(adapter, level=0)
-        control_list.add(self._line_ctrl)
-
-        # ── 工具控件（注册到 ControlList）──
-        self._tool_output_ctrl = ToolOutputControl(adapter, dim_style=_STYLE_DIM, level=0)
-        control_list.add(self._tool_output_ctrl)
-        self._tool_summary_ctrl = ToolSummaryControl(
-            adapter,
-            style_success=_STYLE_SUCCESS,
-            style_fail=_STYLE_FAIL,
-            style_warn=_STYLE_WARN,
-            style_dim=_STYLE_DIM,
-            level=0,
-        )
-        control_list.add(self._tool_summary_ctrl)
-        self._parse_info_ctrl = ParseInfoControl(adapter, level=0)
-        control_list.add(self._parse_info_ctrl)
+        for entry in self._CONTROL_CONFIG:
+            attr_name = entry["attr"]
+            cls = entry["cls"]
+            kwargs = dict(entry["kwargs"])
+            # 注入 output_adapter（所有控件构造函数的第一参数均为 output_adapter）
+            kwargs["output_adapter"] = adapter
+            instance = cls(**kwargs)
+            setattr(self, attr_name, instance)
+            control_list.add(instance)
 
         return control_list
 
@@ -163,7 +205,7 @@ class ContentRenderer:
         """
         self._control_list.remove(self._tool_output_ctrl)
         self._tool_output_ctrl = ToolOutputControl(
-            self._tool_adapter, dim_style=_STYLE_DIM, level=0,
+            self._adapter, dim_style=_STYLE_DIM, level=0,
         )
         self._control_list.add(self._tool_output_ctrl)
 
@@ -193,7 +235,6 @@ class ContentRenderer:
         rr = self._rs.get_reasoning()
         if rr is not None:
             if is_first:
-                from ._const import _THINKING_HEADER
                 rr.write(_THINKING_HEADER)
             rr.write(text)
 

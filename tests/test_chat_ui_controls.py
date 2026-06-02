@@ -249,9 +249,8 @@ class TestMarkdownControl:
     def mock_incremental(self):
         """mock IncrementalRenderer 构造函数的 fixture。
 
-        MarkdownControl 在 __init__ 中惰性 import IncrementalRenderer
-        （from ..api.renderer import IncrementalRenderer），
-        因此需 patch src.api.renderer 模块中的类定义。
+        IncrementalRenderer 在 _controls.py 模块级 import（模块加载时解析），
+        因此需 patch src.chat_ui._controls 模块中的引用。
         """
         from unittest.mock import patch, MagicMock
         mock_cls = MagicMock()
@@ -259,7 +258,7 @@ class TestMarkdownControl:
         mock_instance._closed = False
         mock_cls.return_value = mock_instance
         with patch(
-            "src.api.renderer.IncrementalRenderer",
+            "src.chat_ui._controls.IncrementalRenderer",
             mock_cls,
         ):
             yield mock_instance
@@ -345,7 +344,7 @@ class TestMarkdownControl:
         from src.chat_ui._controls import MarkdownControl
         from unittest.mock import patch
 
-        with patch("src.api.renderer.IncrementalRenderer") as mock_renderer_cls:
+        with patch("src.chat_ui._controls.IncrementalRenderer") as mock_renderer_cls:
             mock_instance = mock_renderer_cls.return_value
             mock_instance._closed = False
             MarkdownControl(style="dim", show_indicator=True, typing_speed=500)
@@ -470,6 +469,51 @@ class TestControlList:
         assert c1.is_closed is True
         assert c2.is_closed is True
         assert cl._next_line == 1
+
+    def test_refresh_width_all_calls_active_controls(self, mock_adapter):
+        """refresh_width_all() 遍历所有活跃控件调用 refresh_width()。"""
+        from src.chat_ui._controls import ControlList
+        from unittest.mock import MagicMock
+        cl = ControlList()
+        c1 = MagicMock()
+        c1.is_closed = False
+        c2 = MagicMock()
+        c2.is_closed = False
+        cl.add(c1)
+        cl.add(c2)
+        cl.refresh_width_all()
+        c1.refresh_width.assert_called_once()
+        c2.refresh_width.assert_called_once()
+
+    def test_refresh_width_all_skips_closed(self, mock_adapter):
+        """refresh_width_all() 跳过已关闭的控件。"""
+        from src.chat_ui._controls import ControlList
+        from unittest.mock import MagicMock
+        cl = ControlList()
+        c1 = MagicMock()
+        c1.is_closed = False
+        c2 = MagicMock()
+        c2.is_closed = True  # 已关闭
+        cl.add(c1)
+        cl.add(c2)
+        cl.refresh_width_all()
+        c1.refresh_width.assert_called_once()
+        c2.refresh_width.assert_not_called()
+
+    def test_refresh_width_all_exception_isolation(self, mock_adapter):
+        """refresh_width_all() 中单个 refresh_width 异常不阻塞其他控件。"""
+        from src.chat_ui._controls import ControlList
+        from unittest.mock import MagicMock
+        cl = ControlList()
+        c1 = MagicMock()
+        c1.is_closed = False
+        c1.refresh_width.side_effect = RuntimeError("fail")
+        c2 = MagicMock()
+        c2.is_closed = False
+        cl.add(c1)
+        cl.add(c2)
+        cl.refresh_width_all()  # 不应抛异常
+        c2.refresh_width.assert_called_once()
 
 
 # ═══════════════════════════════════════════════════════════

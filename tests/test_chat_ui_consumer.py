@@ -117,9 +117,9 @@ class TestChatUIConsumerInit:
         assert consumer._engine._cmd_queue.empty()
 
     def test_init_event_handler_names_present(self, consumer):
-        """EventDispatcher._EVENT_HANDLERS 包含 11 个事件处理器"""
-        from src.chat_ui._dispatcher import EventDispatcher
-        assert len(EventDispatcher._EVENT_HANDLERS) == 11
+        """_event_handler_registry 包含 11 个事件处理器"""
+        from src.chat_ui._dispatcher import _event_handler_registry
+        assert len(_event_handler_registry) == 11
 
     def test_init_event_bus_fallback(self):
         """未传入 event_bus 时使用 DisplayEventBus.get_default()"""
@@ -153,11 +153,11 @@ class TestChatUIConsumerStart:
                 assert mock_bus.subscribe.call_count == 11
 
     def test_start_sets_active_consumer(self, consumer, mock_bus):
-        """start() 设置 _state._active_consumer = self"""
+        """start() 调用 _state._register_consumer(self) 注册活跃实例"""
         with patch.object(consumer._engine, 'start'):
             with patch('src.chat_ui._state') as mock_state:
                 consumer.start()
-                assert mock_state._active_consumer is consumer
+                mock_state._register_consumer.assert_called_once_with(consumer)
 
     def test_start_calls_engine_start(self, consumer, mock_bus):
         """start() 调用 _engine.start()"""
@@ -312,7 +312,7 @@ class TestChatUIConsumerStop:
                     assert mock_bus.unsubscribe.call_count >= n_handlers
 
     def test_stop_clears_active_consumer(self, consumer, mock_bus):
-        """stop() 清除 _state._active_consumer = None"""
+        """stop() 调用 _state._unregister_consumer() 注销活跃实例"""
         consumer._started = True
         consumer._bound_handlers = {MagicMock(): MagicMock()}
 
@@ -320,8 +320,7 @@ class TestChatUIConsumerStop:
             with patch.object(consumer._engine, 'flush'):
                 with patch('src.chat_ui._state') as mock_state:
                     consumer.stop()
-                    # 验证 _active_consumer 被设为 None
-                    assert mock_state._active_consumer is None
+                    mock_state._unregister_consumer.assert_called_once()
 
     def test_stop_calls_bottom_bar_teardown(self, consumer, mock_bus):
         """stop() 调用 _bottom_bar.teardown()"""
@@ -771,20 +770,20 @@ class TestChatUIConsumerRefresh:
     def test_refresh_with_active_parallel_display(self, consumer, mock_bus):
         """refresh() 在有活跃 ParallelDisplay 时调用其 refresh()"""
         mock_pd = MagicMock()
-        with patch('src.chat_ui._active_parallel_display', mock_pd):
+        with patch('src.chat_ui._state._active_parallel_display', mock_pd):
             consumer.refresh()
             mock_pd.refresh.assert_called_once()
 
     def test_refresh_without_parallel_display(self, consumer, mock_bus):
         """refresh() 无活跃 ParallelDisplay 时不崩溃"""
-        with patch('src.chat_ui._active_parallel_display', None):
+        with patch('src.chat_ui._state._active_parallel_display', None):
             # 不应崩溃
             consumer.refresh()
 
     def test_refresh_bottom_bar_when_active(self, consumer, mock_bus):
         """refresh() 在底部栏活跃时调用 force_redraw"""
         consumer._bottom_bar._status_active = True
-        with patch('src.chat_ui._active_parallel_display', None):
+        with patch('src.chat_ui._state._active_parallel_display', None):
             with patch.object(consumer._bottom_bar, 'force_redraw') as mock_redraw:
                 with patch.object(consumer._engine, 'position_cursor'):
                     consumer.refresh()
@@ -793,7 +792,7 @@ class TestChatUIConsumerRefresh:
     def test_refresh_skips_bottom_bar_when_inactive(self, consumer, mock_bus):
         """refresh() 在底部栏不活跃时跳过 force_redraw"""
         consumer._bottom_bar._status_active = False
-        with patch('src.chat_ui._active_parallel_display', None):
+        with patch('src.chat_ui._state._active_parallel_display', None):
             with patch.object(consumer._bottom_bar, 'force_redraw') as mock_redraw:
                 consumer.refresh()
                 mock_redraw.assert_not_called()
@@ -937,20 +936,14 @@ class TestChatUIConsumerEdgeCases:
             consumer.bottom_bar.ensure_cursor_in_lower()
 
     def test_refresh_bottom_bar(self, consumer, mock_bus):
-        """refresh_bottom_bar() 更新底部栏文本和光标"""
-        with patch.object(consumer._bottom_bar, 'force_redraw'):
-            with patch.object(consumer._bottom_bar, 'ensure_cursor_in_lower'):
-                with patch('sys.__stdout__'):
-                    consumer.refresh_bottom_bar("test", cursor_pos=2)
-                    assert consumer._bottom_bar._last_text == "test"
-                    assert consumer._bottom_bar._input_cursor_pos == 2
+        """refresh_bottom_bar() 委托 _bottom_bar.refresh() 公开 API"""
+        with patch.object(consumer._bottom_bar, 'refresh') as mock_refresh:
+            consumer.refresh_bottom_bar("test", cursor_pos=2)
+            mock_refresh.assert_called_once_with("test", 2)
 
     def test_refresh_bottom_bar_default_cursor(self, consumer, mock_bus):
         """refresh_bottom_bar() 默认 cursor_pos=-1 使用文本长度"""
-        with patch.object(consumer._bottom_bar, 'force_redraw'):
-            with patch.object(consumer._bottom_bar, 'ensure_cursor_in_lower'):
-                with patch('sys.__stdout__'):
-                    consumer.refresh_bottom_bar("hello")
-                    assert consumer._bottom_bar._last_text == "hello"
-                    # cursor_pos=-1 → 使用 len("hello") = 5
-                    assert consumer._bottom_bar._input_cursor_pos == 5
+        with patch.object(consumer._bottom_bar, 'refresh') as mock_refresh:
+            consumer.refresh_bottom_bar("hello")
+            # cursor_pos=-1 → 使用 len("hello") = 5
+            mock_refresh.assert_called_once_with("hello", 5)

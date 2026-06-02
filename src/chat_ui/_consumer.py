@@ -18,10 +18,15 @@ from ._engine import RenderEngine
 from ._render_state import _RenderState
 from ._renderers import ContentRenderer
 from ..ui.tui._message_display import _display_messages
+from ..ui._bottom_bar import _BottomBar
+from ..ui._completion import CompletionEngine
+from ..ui.events.event_bus import DisplayEventBus
+from rich.console import Console
+from ..api.renderer.output import OutputAdapter
+from ..terminal import get_safe_console_config
 
 if TYPE_CHECKING:
     from ..api.escape_monitor import EscapeMonitor
-    from ..ui.events.event_bus import DisplayEventBus
 
 _logger = logging.getLogger(__name__)
 
@@ -40,18 +45,23 @@ class ChatUIConsumer:
     """
 
     def __init__(self, event_bus: "DisplayEventBus | None" = None):
-        from ..ui.events.event_bus import DisplayEventBus
         self._bus = event_bus or DisplayEventBus.get_default()
 
         # ── 子系统（构造顺序：被依赖者先构造） ──
         self._rs = _RenderState()             # 渲染器生命周期管理
-        from ..ui._bottom_bar import _BottomBar
         self._bottom_bar = _BottomBar()       # 终端底部固定输入栏
+
+        # ★ 创建 OutputAdapter（由 ChatUIConsumer 构造，注入到 ContentRenderer）
+        # 替代原来 ContentRenderer 内部创建 Console 和 OutputAdapter 的模式。
+        # 关注点分离：ChatUIConsumer 负责依赖创建，ContentRenderer 只负责消费。
+        console = Console(**get_safe_console_config(), file=sys.__stdout__)
+        output_adapter = OutputAdapter(console)
 
         # ★ 渲染引擎（内部管理 queue + reader 线程）
         # on_display_messages 回调注入：消除 ContentRenderer 对 tui._message_display 的直接 import
+        # output_adapter 构造注入：消除 ContentRenderer 对 rich.Console 的运行时 import
         self._renderer = ContentRenderer(
-            self._rs, self._bottom_bar,
+            self._rs, output_adapter, self._bottom_bar,
             on_display_messages=_display_messages,
         )
         self._engine = RenderEngine(self._renderer, self._bottom_bar)
@@ -59,7 +69,6 @@ class ChatUIConsumer:
         # ★ 事件分发器（通过 engine.push_cmd 回调入队，解耦队列实现）
         self._disp = EventDispatcher(push_cmd=self._engine.push_cmd)
 
-        from ..ui._completion import CompletionEngine
         self._cmpl = _CmplHandler(
             self._bottom_bar, CompletionEngine(),
         )
@@ -82,9 +91,10 @@ class ChatUIConsumer:
         # ★ 惰性绑定事件处理器（仅在首次 start 时）
         if self._bound_handlers is None:
             self._bound_handlers = {}
-            for type_name, _handler_name in EventDispatcher._EVENT_HANDLERS:
+            from ._dispatcher import _event_handler_registry
+            for type_name, handler_name in _event_handler_registry.items():
                 event_type = self._disp._get_event_type(type_name)
-                handler = getattr(self._disp, _handler_name)
+                handler = getattr(self._disp, handler_name)
                 self._bound_handlers[event_type] = handler
 
         # ★ 防御性取消旧订阅（防止多次 start/stop 后订阅泄漏）
@@ -102,10 +112,9 @@ class ChatUIConsumer:
         for event_type in self._bound_handlers:
             self._bus.subscribe(self._bound_handlers[event_type], event_type=event_type)
 
-        # ★ 设置模块级全局引用（通过 _state 模块，引用计数防竞态）
+        # ★ 设置模块级全局引用（引用计数封装在 _state 模块）
         from . import _state
-        _state._active_consumer_refcount += 1
-        _state._active_consumer = self
+        _state._register_consumer(self)
 
         self._engine.start()
         self._started = True
@@ -118,15 +127,9 @@ class ChatUIConsumer:
         # 1) 先停 reader（与 suspend() 顺序一致）
         self._engine.stop()
 
-        # 2) 引用计数递减，归零时清除全局引用（防多实例竞态）
+        # 2) 引用计数递减（封装在 _state 模块中）
         from . import _state
-        _state._active_consumer_refcount -= 1
-        try:
-            if _state._active_consumer_refcount <= 0:
-                _state._active_consumer = None
-        except TypeError:
-            # 兼容测试 mock 场景：MagicMock 不支持 int <= 比较，直接清空
-            _state._active_consumer = None
+        _state._unregister_consumer()
 
         # 3) 取消订阅（reader 已停，不可能有新入队）
         if self._bound_handlers is not None:
@@ -218,8 +221,8 @@ class ChatUIConsumer:
         from ..ui._lock import _try_acquire_output_lock
 
         # ★ 1. ParallelDisplay 面板刷新（无锁，内部自行用 timeout try-lock）
-        from . import _active_parallel_display as _apd
-        pd = _apd
+        from . import _state
+        pd = _state._active_parallel_display
         if pd is not None:
             try:
                 pd.refresh()
@@ -300,20 +303,17 @@ class ChatUIConsumer:
     def refresh_bottom_bar(self, text: str, cursor_pos: int = -1) -> None:
         """刷新底部栏输入区并定位光标到输入行。
 
-        force_redraw 之后立即调用 ensure_cursor_in_lower 将光标定位到
-        输入行，避免光标停留在上屏（内容区末行）。空闲期 Reader 线程
-        快速跳过时不执行 position_cursor()，必须在此路径显式定位光标。
+        委托 _BottomBar.refresh() 公开 API，替代直接写入私有属性
+        _last_text / _input_cursor_pos 的模式。
+        refresh() 内部已处理文本更新、全量重绘、光标定位和 flush，
+        并带有 50ms 节流合并高频键入刷新。
+
+        Args:
+            text: 当前输入文本。
+            cursor_pos: 光标在输入文本中的偏移，-1 表示文本末尾。
         """
-        from ..ui._lock import output_lock
-        with output_lock:
-            self._bottom_bar._last_text = text
-            self._bottom_bar._input_cursor_pos = len(text) if cursor_pos < 0 else cursor_pos
-            self._bottom_bar.force_redraw()
-            # ensure_cursor_in_lower() + flush：将光标定位到输入行。
-            # force_redraw 的 \0338 将光标恢复到上屏；ensure_cursor_in_lower()
-            # 写入的 ANSI 序列需显式 flush（stdout 行缓冲，无 \n 不自动提交）。
-            self._bottom_bar.ensure_cursor_in_lower()
-            sys.__stdout__.flush()
+        effective_pos = len(text) if cursor_pos < 0 else cursor_pos
+        self._bottom_bar.refresh(text, effective_pos)
 
     def flush(self, timeout: float | None = 5.0) -> None:
         """阻塞等待所有待处理渲染命令执行完毕。（委托 _engine）"""

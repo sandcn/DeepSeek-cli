@@ -7,7 +7,6 @@
   - reopen_reasoning(): CLOSED→INACTIVE 重置、非 CLOSED 无操作
   - close_content(): close、ControlList remove、None 安全
   - close_all(): close_reasoning + close_content + flush tool_adapter
-  - force_refresh_width(): 遍历所有活跃渲染器、异常隔离
 """
 
 from __future__ import annotations
@@ -66,32 +65,44 @@ class TestRenderStateGetReasoning:
         assert rs.reasoning_state == _ReasoningState.INACTIVE
         assert rs.reasoning is None
 
+    def test_get_reasoning_raises_without_control_factory(self):
+        """control_factory 未设置时 get_reasoning() 抛出 RuntimeError。"""
+        rs = _make_render_state()
+        import pytest
+        with pytest.raises(RuntimeError, match="control_factory 未注册"):
+            rs.get_reasoning()
+
+    def test_get_content_raises_without_control_factory(self):
+        """control_factory 未设置时 get_content() 抛出 RuntimeError。"""
+        rs = _make_render_state()
+        import pytest
+        with pytest.raises(RuntimeError, match="control_factory 未注册"):
+            rs.get_content()
+
     def test_get_reasoning_creates_and_switches_to_active(self):
-        """首次 get_reasoning() → 创建渲染器 + 切换到 ACTIVE。"""
+        """首次 get_reasoning() → 通过 control_factory 创建渲染器 + 切换到 ACTIVE。"""
         rs = _make_render_state()
         mock_ctrl = _make_mock_markdown_control()
+        rs.control_factory = lambda style: mock_ctrl
 
-        with patch.object(rs, "_create_markdown_control", return_value=mock_ctrl) as mock_create:
-            result = rs.get_reasoning()
+        result = rs.get_reasoning()
 
         assert result is mock_ctrl
         assert rs.reasoning is mock_ctrl
         from src.chat_ui._const import _ReasoningState
         assert rs.reasoning_state == _ReasoningState.ACTIVE
-        mock_create.assert_called_once_with(style="dim")
 
     def test_get_reasoning_returns_same_instance(self):
         """再次调用返回同一实例（不重复创建）。"""
         rs = _make_render_state()
         mock_ctrl = _make_mock_markdown_control()
+        rs.control_factory = lambda style: mock_ctrl
 
-        with patch.object(rs, "_create_markdown_control", return_value=mock_ctrl) as mock_create:
-            first = rs.get_reasoning()
-            second = rs.get_reasoning()
+        first = rs.get_reasoning()
+        second = rs.get_reasoning()
 
         assert first is second
         assert first is mock_ctrl
-        mock_create.assert_called_once()  # 只创建一次
 
     def test_get_reasoning_closed_returns_none(self):
         """CLOSED 状态 → 返回 None。"""
@@ -106,12 +117,11 @@ class TestRenderStateGetReasoning:
         from src.chat_ui._const import _ReasoningState
         rs = _make_render_state(reasoning_state=_ReasoningState.CLOSED, reasoning=None)
         mock_ctrl = _make_mock_markdown_control()
+        rs.control_factory = lambda style: mock_ctrl
 
-        with patch.object(rs, "_create_markdown_control", return_value=mock_ctrl) as mock_create:
-            result = rs.get_reasoning()
+        result = rs.get_reasoning()
 
         assert result is None
-        mock_create.assert_not_called()
 
     def test_get_reasoning_registers_to_control_list(self):
         """创建后注册到 ControlList。"""
@@ -119,9 +129,9 @@ class TestRenderStateGetReasoning:
         mock_list = MagicMock()
         rs.on_control_created = mock_list.add
         mock_ctrl = _make_mock_markdown_control()
+        rs.control_factory = lambda style: mock_ctrl
 
-        with patch.object(rs, "_create_markdown_control", return_value=mock_ctrl):
-            rs.get_reasoning()
+        rs.get_reasoning()
 
         mock_list.add.assert_called_once_with(mock_ctrl)
 
@@ -130,9 +140,9 @@ class TestRenderStateGetReasoning:
         rs = _make_render_state()
         rs.on_control_created = None
         mock_ctrl = _make_mock_markdown_control()
+        rs.control_factory = lambda style: mock_ctrl
 
-        with patch.object(rs, "_create_markdown_control", return_value=mock_ctrl):
-            result = rs.get_reasoning()
+        result = rs.get_reasoning()
 
         assert result is mock_ctrl  # 创建成功
 
@@ -151,28 +161,26 @@ class TestRenderStateGetContent:
     """
 
     def test_get_content_creates_on_first_call(self):
-        """首次 get_content() → 创建渲染器。"""
+        """首次 get_content() → 通过 control_factory 创建渲染器。"""
         rs = _make_render_state()
         mock_ctrl = _make_mock_markdown_control()
+        rs.control_factory = lambda style: mock_ctrl
 
-        with patch.object(rs, "_create_markdown_control", return_value=mock_ctrl) as mock_create:
-            result = rs.get_content()
+        result = rs.get_content()
 
         assert result is mock_ctrl
         assert rs.content is mock_ctrl
-        mock_create.assert_called_once_with()  # 无参调用
 
     def test_get_content_returns_same_instance(self):
         """重复调用返回同一实例（不重复创建）。"""
         rs = _make_render_state()
         mock_ctrl = _make_mock_markdown_control()
+        rs.control_factory = lambda style: mock_ctrl
 
-        with patch.object(rs, "_create_markdown_control", return_value=mock_ctrl) as mock_create:
-            first = rs.get_content()
-            second = rs.get_content()
+        first = rs.get_content()
+        second = rs.get_content()
 
         assert first is second
-        mock_create.assert_called_once()
 
     def test_get_content_registers_to_control_list(self):
         """创建后注册到 ControlList。"""
@@ -180,9 +188,9 @@ class TestRenderStateGetContent:
         mock_list = MagicMock()
         rs.on_control_created = mock_list.add
         mock_ctrl = _make_mock_markdown_control()
+        rs.control_factory = lambda style: mock_ctrl
 
-        with patch.object(rs, "_create_markdown_control", return_value=mock_ctrl):
-            rs.get_content()
+        rs.get_content()
 
         mock_list.add.assert_called_once_with(mock_ctrl)
 
@@ -191,9 +199,9 @@ class TestRenderStateGetContent:
         rs = _make_render_state()
         rs.on_control_created = None
         mock_ctrl = _make_mock_markdown_control()
+        rs.control_factory = lambda style: mock_ctrl
 
-        with patch.object(rs, "_create_markdown_control", return_value=mock_ctrl):
-            result = rs.get_content()
+        result = rs.get_content()
 
         assert result is mock_ctrl
         assert rs.content is mock_ctrl
@@ -340,6 +348,7 @@ class TestRenderStateReopenReasoning:
         assert rs.reasoning is None  # 旧引用已清除
 
         # step 2: get_reasoning → 创建新渲染器 → ACTIVE
+        rs.control_factory = lambda style: _make_mock_markdown_control()
         reasoning = rs.get_reasoning()
         assert reasoning is not None
         assert reasoning is not mock_ctrl  # 新实例
@@ -356,6 +365,7 @@ class TestRenderStateReopenReasoning:
         )
 
         rs.reopen_reasoning()
+        rs.control_factory = lambda style: _make_mock_markdown_control()
         reasoning = rs.get_reasoning()
 
         assert reasoning is not None
@@ -423,16 +433,14 @@ class TestRenderStateCloseAll:
     """
 
     def test_close_all_closes_everything(self):
-        """关闭推理、内容，flush 工具适配器，全部置为 None。"""
+        """关闭推理、内容，全部置为 None。"""
         from src.chat_ui._const import _ReasoningState
         mock_reasoning = _make_mock_markdown_control()
         mock_content = _make_mock_markdown_control()
-        mock_adapter = MagicMock()
         rs = _make_render_state(
             reasoning=mock_reasoning,
             reasoning_state=_ReasoningState.ACTIVE,
             content=mock_content,
-            _tool_adapter=mock_adapter,
         )
         mock_list = MagicMock()
         rs.on_control_removed = mock_list.remove
@@ -449,17 +457,13 @@ class TestRenderStateCloseAll:
         mock_content.close.assert_called_once()
         assert rs.content is None
 
-        # 工具适配器 flush
-        mock_adapter.flush.assert_called_once()
-
-    def test_close_all_without_tool_adapter(self):
-        """_tool_adapter=None 时 safe skip（不抛异常）。"""
+    def test_close_all_skips_when_no_reasoning_or_content(self):
+        """推理/内容为 None 时 safe skip（不抛异常）。"""
         mock_reasoning = _make_mock_markdown_control()
         mock_content = _make_mock_markdown_control()
         rs = _make_render_state(
             reasoning=mock_reasoning,
             content=mock_content,
-            _tool_adapter=None,
         )
 
         rs.close_all()  # 不应抛异常
@@ -467,111 +471,22 @@ class TestRenderStateCloseAll:
         assert rs.reasoning is None
         assert rs.content is None
 
-    def test_close_all_flush_exception_isolation(self):
-        """tool_adapter.flush() 异常被捕获，不影响其他关闭操作。"""
+    def test_close_all_isolates_exception(self):
+        """单个 close 异常被捕获，不影响其他关闭操作。"""
         mock_reasoning = _make_mock_markdown_control()
+        mock_reasoning.close.side_effect = RuntimeError("close failed")
         mock_content = _make_mock_markdown_control()
-        mock_adapter = MagicMock()
-        mock_adapter.flush.side_effect = RuntimeError("flush failed")
         rs = _make_render_state(
             reasoning=mock_reasoning,
             content=mock_content,
-            _tool_adapter=mock_adapter,
         )
 
         rs.close_all()  # 不应抛异常
 
-        mock_reasoning.close.assert_called_once()
         mock_content.close.assert_called_once()
-        mock_adapter.flush.assert_called_once()
 
 
 # ═══════════════════════════════════════════════════════════
-# TestRenderStateForceRefreshWidth — 强制刷新宽度
-# ═══════════════════════════════════════════════════════════
-
-class TestRenderStateForceRefreshWidth:
-    """_RenderState.force_refresh_width() 宽度刷新测试。
-
-    覆盖：
-      - 遍历所有活跃渲染器调用 refresh_width
-      - 部分渲染器为 None 时安全跳过
-      - 单个渲染器异常不阻塞其他渲染器
-    """
-
-    def test_refresh_width_all_active(self):
-        """所有活跃渲染器均调用 refresh_width。"""
-        mock_reasoning = _make_mock_markdown_control()
-        mock_content = _make_mock_markdown_control()
-        mock_adapter = MagicMock()
-        rs = _make_render_state(
-            reasoning=mock_reasoning,
-            content=mock_content,
-            _tool_adapter=mock_adapter,
-        )
-
-        rs.force_refresh_width()
-
-        mock_adapter.force_refresh_width.assert_called_once()
-        mock_reasoning.refresh_width.assert_called_once()
-        mock_content.refresh_width.assert_called_once()
-
-    def test_refresh_width_partial_active(self):
-        """部分渲染器为 None 时安全跳过。"""
-        rs = _make_render_state(reasoning=None, content=None, _tool_adapter=None)
-        rs.force_refresh_width()  # 不应抛异常
-
-    def test_refresh_width_exception_isolation(self):
-        """单个 refresh_width 异常不阻塞其他渲染器。"""
-        mock_reasoning = _make_mock_markdown_control()
-        mock_reasoning.refresh_width.side_effect = RuntimeError("fail")
-        mock_content = _make_mock_markdown_control()
-        mock_adapter = MagicMock()
-        rs = _make_render_state(
-            reasoning=mock_reasoning,
-            content=mock_content,
-            _tool_adapter=mock_adapter,
-        )
-
-        rs.force_refresh_width()  # 不应抛异常
-
-        mock_adapter.force_refresh_width.assert_called_once()
-        mock_content.refresh_width.assert_called_once()
 
 
-# ═══════════════════════════════════════════════════════════
-# TestRenderStateGetToolAdapter — 工具输出适配器获取
-# ═══════════════════════════════════════════════════════════
 
-class TestRenderStateGetToolAdapter:
-    """_RenderState.get_tool_adapter() 惰性创建测试。
-
-    覆盖：
-      - 首次调用创建 OutputAdapter
-      - 重复调用返回同一实例
-    """
-
-    def test_get_tool_adapter_creates_on_first_call(self):
-        """首次调用创建 OutputAdapter 并缓存。"""
-        rs = _make_render_state()
-        # get_tool_adapter 内部使用 rich.console.Console + OutputAdapter，
-        # 验证返回非 None 且类型正确即可
-        adapter = rs.get_tool_adapter()
-        from src.api.renderer.output import OutputAdapter
-        assert isinstance(adapter, OutputAdapter)
-        assert rs._tool_adapter is adapter
-
-    def test_get_tool_adapter_returns_same_instance(self):
-        """重复调用返回同一实例（不重复创建）。"""
-        rs = _make_render_state()
-        first = rs.get_tool_adapter()
-        second = rs.get_tool_adapter()
-        assert first is second
-
-    def test_get_tool_adapter_memoized(self):
-        """_tool_adapter 非 None 时直接返回缓存值。"""
-        rs = _make_render_state()
-        mock_adapter = MagicMock()
-        rs._tool_adapter = mock_adapter
-        result = rs.get_tool_adapter()
-        assert result is mock_adapter

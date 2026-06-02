@@ -18,8 +18,9 @@ sys.path.insert(0, "/home/DeepSeek-cli")
 
 from src.chat_ui._const import (
     _CLEAR_PARSE_LINE, _MAIN_LABEL, _MAIN_SOURCE,
-    _MAX_ERROR_LENGTH, _truncate_msg, RenderCommand,
+    _MAX_ERROR_LENGTH, RenderCommand,
 )
+from src.chat_ui._utils import _truncate_msg
 from src.chat_ui._dispatcher import EventDispatcher
 from src.ui.events.event_types import (
     ReasoningChunkEvent, ContentChunkEvent, PhaseDoneEvent,
@@ -391,9 +392,10 @@ class TestEventDispatcherEdgeCases:
         push_cmd.assert_not_called()
 
     def test_handler_not_registered_does_nothing(self, dispatcher, push_cmd):
-        """事件处理器未在 _EVENT_HANDLERS 注册表中注册不会影响行为。"""
+        """事件处理器未在 _event_handler_registry 注册表中注册不会影响行为。"""
+        from src.chat_ui._dispatcher import _event_handler_registry
         # 验证注册表包含全部 11 个 handler
-        registered_names = {name for _, name in dispatcher._EVENT_HANDLERS}
+        registered_names = set(_event_handler_registry.values())
         assert "_on_reasoning_chunk" in registered_names
         assert "_on_content_chunk" in registered_names
         assert "_on_phase_done" in registered_names

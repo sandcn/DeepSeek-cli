@@ -340,21 +340,17 @@ class TestCursorPositioningFlush:
     """确保光标定位操作后 stdout 被 flush，ANSI 序列到达终端"""
 
     def test_refresh_bottom_bar_flushes_stdout(self):
-        """refresh_bottom_bar() 调用后 sys.__stdout__.flush() 被调用"""
+        """refresh_bottom_bar() 委托 _bottom_bar.refresh() 公开 API"""
         bus = DisplayEventBus()
         chat_ui = ChatUIConsumer(event_bus=bus)
 
-        # Mock _bottom_bar 避免真实终端 I/O
-        chat_ui._bottom_bar.force_redraw = create_autospec(
-            chat_ui._bottom_bar.force_redraw)
-        chat_ui._bottom_bar.ensure_cursor_in_lower = create_autospec(
-            chat_ui._bottom_bar.ensure_cursor_in_lower)
+        # Mock _bottom_bar.refresh() 避免真实终端 I/O
+        chat_ui._bottom_bar.refresh = create_autospec(
+            chat_ui._bottom_bar.refresh)
 
-        with patch.object(sys.__stdout__, "flush") as mock_flush:
-            chat_ui.refresh_bottom_bar("test_text")
+        chat_ui.refresh_bottom_bar("test_text")
 
-        mock_flush.assert_called()
-        chat_ui._bottom_bar.ensure_cursor_in_lower.assert_called_once()
+        chat_ui._bottom_bar.refresh.assert_called_once_with("test_text", 9)
 
     def test_ensure_cursor_lower_flushes_stdout(self):
         """ensure_cursor_in_lower() 通过 bottom_bar 属性访问，不自动 flush。"""
@@ -371,20 +367,10 @@ class TestCursorPositioningFlush:
             chat_ui._bottom_bar.ensure_cursor_in_lower.assert_called_once()
 
     def test_refresh_bottom_bar_flush_called_after_reposition(self):
-        """验证 flush 在 ensure_cursor_in_lower 之后被调用（顺序保证）"""
+        """refresh_bottom_bar 委托 _bottom_bar.refresh() 公开 API"""
         bus = DisplayEventBus()
         chat_ui = ChatUIConsumer(event_bus=bus)
 
-        call_order = []
-        chat_ui._bottom_bar.force_redraw = lambda: call_order.append("force_redraw")
-        chat_ui._bottom_bar.ensure_cursor_in_lower = lambda: call_order.append("ensure_cursor_in_lower")
-
-        def tracking_flush():
-            call_order.append("flush")
-
-        with patch.object(sys.__stdout__, "flush", tracking_flush):
+        with patch.object(chat_ui._bottom_bar, 'refresh') as mock_refresh:
             chat_ui.refresh_bottom_bar("test")
-
-        assert call_order == ["force_redraw", "ensure_cursor_in_lower", "flush"], (
-            f"调用顺序应为 force_redraw → ensure_cursor_in_lower → flush，实际: {call_order}"
-        )
+            mock_refresh.assert_called_once_with("test", 4)

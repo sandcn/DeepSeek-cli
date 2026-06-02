@@ -22,7 +22,8 @@ import pytest
 # ── 将项目根目录加入 sys.path（Termux 环境需要） ──
 sys.path.insert(0, "/home/DeepSeek-cli")
 
-from src.chat_ui._const import RenderCommand, _cmd_name
+from src.chat_ui._const import RenderCommand
+from src.chat_ui._utils import _cmd_name
 from src.chat_ui._engine import RenderEngine
 
 
@@ -528,8 +529,8 @@ class TestRenderEngineDrainQueue:
         engine._bb.check_resize.return_value = False
 
         with (
-            patch("src.ui._lock._try_acquire_output_lock") as m_lock,
-            patch("src.chat_ui._active_parallel_display", None),
+            patch("src.chat_ui._engine._try_acquire_output_lock") as m_lock,
+            patch("src.chat_ui._state._active_parallel_display", None),
             patch.object(engine, "position_cursor") as m_pos,
         ):
             m_lock.return_value.__enter__.return_value = True
@@ -551,8 +552,8 @@ class TestRenderEngineDrainQueue:
         engine._cmd_queue.put((RenderCommand.CONTENT, "world"))
 
         with (
-            patch("src.ui._lock._try_acquire_output_lock") as m_lock,
-            patch("src.chat_ui._active_parallel_display", None),
+            patch("src.chat_ui._engine._try_acquire_output_lock") as m_lock,
+            patch("src.chat_ui._state._active_parallel_display", None),
         ):
             m_lock.return_value.__enter__.return_value = True
 
@@ -575,8 +576,8 @@ class TestRenderEngineDrainQueue:
         engine._cmd_queue.put((RenderCommand.CONTENT, "test"))
 
         with (
-            patch("src.ui._lock._try_acquire_output_lock") as m_lock,
-            patch("src.chat_ui._active_parallel_display", None),
+            patch("src.chat_ui._engine._try_acquire_output_lock") as m_lock,
+            patch("src.chat_ui._state._active_parallel_display", None),
         ):
             m_lock.return_value.__enter__.return_value = True
 
@@ -596,8 +597,8 @@ class TestRenderEngineDrainQueue:
         engine._cmd_queue.put((RenderCommand.CONTENT, "test"))
 
         with (
-            patch("src.ui._lock._try_acquire_output_lock") as m_lock,
-            patch("src.chat_ui._active_parallel_display", None),
+            patch("src.chat_ui._engine._try_acquire_output_lock") as m_lock,
+            patch("src.chat_ui._state._active_parallel_display", None),
         ):
             m_lock.return_value.__enter__.return_value = True
 
@@ -619,8 +620,8 @@ class TestRenderEngineDrainQueue:
         engine._cmd_queue.put((RenderCommand.CONTENT, "坏数据"))
 
         with (
-            patch("src.ui._lock._try_acquire_output_lock") as m_lock,
-            patch("src.chat_ui._active_parallel_display", None),
+            patch("src.chat_ui._engine._try_acquire_output_lock") as m_lock,
+            patch("src.chat_ui._state._active_parallel_display", None),
         ):
             m_lock.return_value.__enter__.return_value = True
 
@@ -642,8 +643,8 @@ class TestRenderEngineDrainQueue:
         engine._cmd_queue.put((RenderCommand.CONTENT, "数据"))
 
         with (
-            patch("src.ui._lock._try_acquire_output_lock") as m_lock,
-            patch("src.chat_ui._active_parallel_display", mock_pd),
+            patch("src.chat_ui._engine._try_acquire_output_lock") as m_lock,
+            patch("src.chat_ui._state._active_parallel_display", mock_pd),
         ):
             m_lock.return_value.__enter__.return_value = True
 
@@ -664,8 +665,8 @@ class TestRenderEngineDrainQueue:
         engine._cmd_queue.put((RenderCommand.CONTENT, "数据"))
 
         with (
-            patch("src.ui._lock._try_acquire_output_lock") as m_lock,
-            patch("src.chat_ui._active_parallel_display", mock_pd),
+            patch("src.chat_ui._engine._try_acquire_output_lock") as m_lock,
+            patch("src.chat_ui._state._active_parallel_display", mock_pd),
         ):
             m_lock.return_value.__enter__.return_value = True
 
@@ -683,8 +684,8 @@ class TestRenderEngineDrainQueue:
         engine._cmd_queue.put((RenderCommand.CONTENT, "数据"))
 
         with (
-            patch("src.ui._lock._try_acquire_output_lock") as m_lock,
-            patch("src.chat_ui._active_parallel_display", None),
+            patch("src.chat_ui._engine._try_acquire_output_lock") as m_lock,
+            patch("src.chat_ui._state._active_parallel_display", None),
         ):
             m_lock.return_value.__enter__.return_value = True
 
@@ -698,8 +699,8 @@ class TestRenderEngineDrainQueue:
         engine._bb.check_resize.return_value = False
 
         with (
-            patch("src.ui._lock._try_acquire_output_lock") as m_lock,
-            patch("src.chat_ui._active_parallel_display", None),
+            patch("src.chat_ui._engine._try_acquire_output_lock") as m_lock,
+            patch("src.chat_ui._state._active_parallel_display", None),
         ):
             m_lock.return_value.__enter__.return_value = True
 
@@ -715,8 +716,8 @@ class TestRenderEngineDrainQueue:
         engine._bb.check_resize.return_value = True  # 有 resize，进入锁
 
         with (
-            patch("src.ui._lock._try_acquire_output_lock") as m_lock,
-            patch("src.chat_ui._active_parallel_display", None),
+            patch("src.chat_ui._engine._try_acquire_output_lock") as m_lock,
+            patch("src.chat_ui._state._active_parallel_display", None),
         ):
             m_lock.return_value.__enter__.return_value = True
 
@@ -729,7 +730,7 @@ class TestRenderEngineDrainQueue:
         engine._bb.is_status_active = True  # 否则会跳过
 
         with (
-            patch("src.ui._lock._try_acquire_output_lock") as m_lock,
+            patch("src.chat_ui._engine._try_acquire_output_lock") as m_lock,
         ):
             m_lock.return_value.__enter__.return_value = False  # 锁未获取
 
@@ -747,8 +748,8 @@ class TestRenderEngineDrainQueue:
         engine._cmd_queue.put((RenderCommand.CONTENT, "数据"))
 
         with (
-            patch("src.ui._lock._try_acquire_output_lock") as m_lock,
-            patch("src.chat_ui._active_parallel_display", None),
+            patch("src.chat_ui._engine._try_acquire_output_lock") as m_lock,
+            patch("src.chat_ui._state._active_parallel_display", None),
         ):
             m_lock.return_value.__enter__.return_value = True
 
@@ -767,8 +768,8 @@ class TestRenderEngineDrainQueue:
         engine._cmd_queue.put((RenderCommand.CONTENT, "数据"))
 
         with (
-            patch("src.ui._lock._try_acquire_output_lock") as m_lock,
-            patch("src.chat_ui._active_parallel_display", None),
+            patch("src.chat_ui._engine._try_acquire_output_lock") as m_lock,
+            patch("src.chat_ui._state._active_parallel_display", None),
         ):
             m_lock.return_value.__enter__.return_value = True
 
@@ -784,8 +785,8 @@ class TestRenderEngineDrainQueue:
         engine._bb.force_redraw.side_effect = RuntimeError("redraw 异常")
 
         with (
-            patch("src.ui._lock._try_acquire_output_lock") as m_lock,
-            patch("src.chat_ui._active_parallel_display", None),
+            patch("src.chat_ui._engine._try_acquire_output_lock") as m_lock,
+            patch("src.chat_ui._state._active_parallel_display", None),
             patch.object(engine, "position_cursor") as m_pos,
         ):
             m_lock.return_value.__enter__.return_value = True
@@ -804,8 +805,8 @@ class TestRenderEngineDrainQueue:
         engine.position_cursor.side_effect = RuntimeError("光标异常")
 
         with (
-            patch("src.ui._lock._try_acquire_output_lock") as m_lock,
-            patch("src.chat_ui._active_parallel_display", None),
+            patch("src.chat_ui._engine._try_acquire_output_lock") as m_lock,
+            patch("src.chat_ui._state._active_parallel_display", None),
         ):
             m_lock.return_value.__enter__.return_value = True
 
@@ -1034,8 +1035,8 @@ class TestRenderEngineEdgeCases:
         engine._bb.is_status_active = True
         with patch.object(engine, "_check_resize", side_effect=OSError("终端不可用")):
             with (
-                patch("src.ui._lock._try_acquire_output_lock") as m_lock,
-                patch("src.chat_ui._active_parallel_display", None),
+                patch("src.chat_ui._engine._try_acquire_output_lock") as m_lock,
+                patch("src.chat_ui._state._active_parallel_display", None),
             ):
                 m_lock.return_value.__enter__.return_value = True
 
@@ -1049,7 +1050,7 @@ class TestRenderEngineEdgeCases:
         engine._bb.is_status_active = True
 
         with patch(
-            "src.ui._lock._try_acquire_output_lock",
+            "src.chat_ui._engine._try_acquire_output_lock",
             return_value=MagicMock(
                 __enter__=MagicMock(return_value=True),
                 __exit__=MagicMock(),
@@ -1090,7 +1091,7 @@ class TestRenderEngineCheckResize:
             mock_gs2.assert_not_called()
 
     def test_size_change_triggers_refresh(self, engine_with_resize_state):
-        """终端大小变化 → 调用 _rs.force_refresh_width()"""
+        """终端大小变化 → 调用 renderer.refresh_width()"""
         engine = engine_with_resize_state
 
         with patch('shutil.get_terminal_size') as mock_gs:
@@ -1098,17 +1099,17 @@ class TestRenderEngineCheckResize:
             engine._check_resize()
             assert engine._cached_term_size == (100, 40)
 
-        engine._renderer._rs.force_refresh_width.reset_mock()
+        engine._renderer.refresh_width.reset_mock()
 
         engine._last_width_check = 0
         with patch('shutil.get_terminal_size') as mock_gs2:
             mock_gs2.return_value = MagicMock(columns=80, lines=30)
             engine._check_resize()
-            engine._renderer._rs.force_refresh_width.assert_called_once()
+            engine._renderer.refresh_width.assert_called_once()
             assert engine._cached_term_size == (80, 30)
 
     def test_size_unchanged_no_refresh(self, engine_with_resize_state):
-        """终端大小未变 → 不调用 _rs.force_refresh_width()"""
+        """终端大小未变 → 不调用 renderer.refresh_width()"""
         engine = engine_with_resize_state
 
         with patch('shutil.get_terminal_size') as mock_gs:
@@ -1116,13 +1117,13 @@ class TestRenderEngineCheckResize:
             engine._check_resize()
             assert engine._cached_term_size == (100, 40)
 
-        engine._renderer._rs.force_refresh_width.reset_mock()
+        engine._renderer.refresh_width.reset_mock()
 
         engine._last_width_check = 0
         with patch('shutil.get_terminal_size') as mock_gs2:
             mock_gs2.return_value = MagicMock(columns=100, lines=40)
             engine._check_resize()
-            engine._renderer._rs.force_refresh_width.assert_not_called()
+            engine._renderer.refresh_width.assert_not_called()
 
     def test_shutil_exception_safe(self, engine_with_resize_state):
         """shutil.get_terminal_size() 异常 → 安全返回，不崩溃"""
@@ -1131,4 +1132,4 @@ class TestRenderEngineCheckResize:
         with patch('shutil.get_terminal_size', side_effect=OSError("模拟异常")):
             engine._check_resize()
 
-        engine._renderer._rs.force_refresh_width.assert_not_called()
+        engine._renderer.refresh_width.assert_not_called()

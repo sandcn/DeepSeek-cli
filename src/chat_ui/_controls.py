@@ -22,6 +22,7 @@ Style 常量（_STYLE_BOLD / _STYLE_DIM / _STYLE_ERROR 等）由调用方从
 
 from __future__ import annotations
 
+import bisect
 import logging
 import math
 import sys
@@ -35,9 +36,9 @@ from rich.text import Text
 from wcwidth import wcswidth
 
 from ._const import _CLEAR_PARSE_LINE
+from ..api.renderer import IncrementalRenderer
 
 if TYPE_CHECKING:
-    from ..api.renderer import IncrementalRenderer
     from ..api.renderer.output import OutputAdapter
 
 
@@ -62,6 +63,17 @@ class Control(ABC):
 
         默认 no-op——不强制所有 Control 子类支持流式写入。
         需流式写入的子类（TextControl、MarkdownControl 等）覆盖此方法。
+
+        设计决策：为何 write() 是 no-op 而非 abstractmethod？
+        ────────────────────────────────────────────────
+        不是所有 Control 子类都需要流式 write() 语义：
+          - TextControl / MarkdownControl / ToolOutputControl — 流式写入，覆盖 write()
+          - ToolSummaryControl — 一次性渲染，通过 summarize() 接口，write() 为 no-op
+          - ParseInfoControl — 周期性更新，通过 update() 接口，write() 显式覆盖为 no-op
+        
+        若 write() 为 abstractmethod，则 ToolSummaryControl 和 ParseInfoControl
+        必须实现无意义的 write() 签名，或引入额外的中间抽象层（如 WritableControl）。
+        当前设计保持基类轻量，让子类按需覆盖，更符合 Duck Typing 风格。
         """
         return
 
@@ -71,10 +83,9 @@ class Control(ABC):
         """比较新输出与上次缓存是否相同——相同则跳过渲染。
 
         子类在 write/update 入口调用此方法，若返回 True 则跳过本次渲染。
-        首次调用时 _last_output 为 None，始终返回 False。
+        首次调用时 _last_output 为 None（在 _ControlBase.__init__ 中初始化），
+        始终返回 False。
         """
-        if not hasattr(self, '_last_output'):
-            self._last_output: str | None = None
         if self._last_output == new_output:
             return True
         self._last_output = new_output
@@ -142,6 +153,8 @@ class _ControlBase:
         self._start_line: int = start_line
         self._level: int = level
         self._closed: bool = False
+        # 脏检查缓存，由 Control._is_unchanged() 使用
+        self._last_output: str | None = None
 
     def close(self) -> None:
         """关闭控件（标记关闭）。幂等——多次调用无副作用。"""
@@ -307,7 +320,6 @@ class MarkdownControl(Control, _ControlBase):
             start_line: 起始行号（默认 0）
             level: 层级（默认 0）
         """
-        from ..api.renderer import IncrementalRenderer
         self._renderer: "IncrementalRenderer" = IncrementalRenderer(
             style=style,
             _file=sys.__stdout__,
@@ -377,15 +389,8 @@ class ControlList:
         if start_line is None:
             start_line = self._next_line
         control.start_line = start_line
-        # 二分插入保持按 start_line 有序（Python 3.9 兼容——手动二分）
-        lo, hi = 0, len(self._controls)
-        while lo < hi:
-            mid = (lo + hi) // 2
-            if self._controls[mid].start_line < start_line:
-                lo = mid + 1
-            else:
-                hi = mid
-        self._controls.insert(lo, control)
+        # 二分插入保持按 start_line 有序（Python 3.10+ key 参数可用）
+        bisect.insort_left(self._controls, control, key=lambda c: c.start_line)
         # 更新 _next_line（确保单调递增）
         self._next_line = max(self._next_line, start_line + 1)
 

@@ -5,10 +5,8 @@ Layer 1 — 依赖 _const（_ReasoningState + _THINKING_SEPARATOR）。
 
 from __future__ import annotations
 
-import sys
-import threading
-from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Callable
+from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
 from ._const import (
     _ReasoningState,
@@ -16,8 +14,8 @@ from ._const import (
 )
 
 if TYPE_CHECKING:
-    from ..api.renderer.output import OutputAdapter
     from ._controls import Control, MarkdownControl
+    from ._protocols import ControlFactory, ControlLifecycleHook
 
 
 @dataclass
@@ -40,65 +38,54 @@ class _RenderState:
     # ── 推理状态机 ──
     reasoning_state: _ReasoningState = _ReasoningState.INACTIVE
 
-    # ── 工具输出适配器（延时初始化） ──
-    _tool_adapter: "OutputAdapter | None" = None
-
-    # ── 工具适配器初始化锁（double-check lock 防竞态） ──
-    _tool_adapter_lock: threading.Lock = field(
-        default_factory=threading.Lock, compare=False, repr=False,
-    )
+    # ── 控件工厂回调（由 ContentRenderer 注册，解耦双向依赖）──
+    # get_reasoning()/get_content() 通过此回调创建 MarkdownControl，
+    # 替代原来的 _create_markdown_control() 静态方法，
+    # 使控件创建逻辑统一由 ContentRenderer 管理。
+    # 使用 ControlFactory 协议类型，提供比 Callable 更严格的类型约束。
+    control_factory: "ControlFactory | None" = None
 
     # ── 控件生命周期回调（由 ContentRenderer 注册，解耦双向依赖）──
     # get_reasoning()/get_content() 创建控件后调用 on_control_created，
     # close_reasoning()/close_content() 关闭控件后调用 on_control_removed。
-    on_control_created: "Callable[[Control], None] | None" = None
-    on_control_removed: "Callable[[Control], None] | None" = None
-
-    @staticmethod
-    def _create_markdown_control(style: str = "") -> "MarkdownControl":
-        """创建 MarkdownControl 实例，详见 MarkdownControl.__init__。"""
-        from ._controls import MarkdownControl
-        return MarkdownControl(
-            style=style,
-            typing_speed=1000,
-            show_indicator=False,
-        )
-
-    def get_tool_adapter(self) -> "OutputAdapter":
-        """获取或惰性创建工具输出适配器（double-check lock 线程安全）。"""
-        if self._tool_adapter is None:
-            with self._tool_adapter_lock:
-                if self._tool_adapter is None:
-                    from rich.console import Console
-                    from ..terminal import get_safe_console_config
-                    console = Console(
-                        **get_safe_console_config(), file=sys.__stdout__,
-                    )
-                    from ..api.renderer.output import OutputAdapter
-                    self._tool_adapter = OutputAdapter(console)
-        return self._tool_adapter
+    # 使用 ControlLifecycleHook 协议类型。
+    on_control_created: "ControlLifecycleHook | None" = None
+    on_control_removed: "ControlLifecycleHook | None" = None
 
     def get_reasoning(self) -> "MarkdownControl | None":
-        """获取推理渲染器，惰性创建并注册到 ControlList。
+        """获取推理渲染器，通过 control_factory 惰性创建并注册。
 
         状态机驱动：
-        - INACTIVE → 创建渲染器 + 切换到 ACTIVE
+        - INACTIVE → 通过 control_factory 创建渲染器 + 切换到 ACTIVE
         - ACTIVE   → 直接返回已有渲染器
         - CLOSED   → 返回 None（防止惰性重建）
+
+        Raises:
+            RuntimeError: 若 control_factory 未注册（ContentRenderer 未初始化）
         """
         if self.reasoning_state == _ReasoningState.CLOSED:
             return None
         if self.reasoning is None:
-            self.reasoning = self._create_markdown_control(style="dim")
+            if self.control_factory is None:
+                raise RuntimeError(
+                    "_RenderState.control_factory 未注册。"
+                    "请确保 ContentRenderer 已初始化并设置了 control_factory。"
+                )
+            self.reasoning = self.control_factory(style="dim")
             self.reasoning_state = _ReasoningState.ACTIVE
             if self.on_control_created is not None:
                 self.on_control_created(self.reasoning)
         return self.reasoning
 
     def get_content(self) -> "MarkdownControl":
-        """获取内容渲染器，惰性创建并注册到 ControlList。"""
+        """获取内容渲染器，通过 control_factory 惰性创建并注册。"""
         if self.content is None:
-            self.content = self._create_markdown_control()
+            if self.control_factory is None:
+                raise RuntimeError(
+                    "_RenderState.control_factory 未注册。"
+                    "请确保 ContentRenderer 已初始化并设置了 control_factory。"
+                )
+            self.content = self.control_factory(style="")
             if self.on_control_created is not None:
                 self.on_control_created(self.content)
         return self.content
@@ -138,42 +125,16 @@ class _RenderState:
                 self.on_control_removed(cr)
             self.content = None
 
-    def force_refresh_width(self) -> None:
-        """强制刷新所有活跃输出适配器的终端宽度缓存。
-
-        遍历工具适配器（OutputAdapter）和推理/内容渲染器
-        （MarkdownControl），分别调用其 refresh_width()，
-        最终绕过各 OutputAdapter 的 5 秒 TTL 缓存。
-        对未初始化的适配器（None）安全跳过。
-        单个适配器刷新失败不阻塞其他适配器（try/except 隔离）。
-
-        供 ContentRenderer._check_and_refresh_width() 在检测到
-        终端大小变化后调用。
-        """
-        if self._tool_adapter is not None:
-            try:
-                self._tool_adapter.force_refresh_width()
-            except Exception:
-                # 单个适配器刷新失败不阻塞其他适配器。
-                # 无日志：降级依赖 OutputAdapter 自身的 5 秒 TTL 自动恢复。
-                pass
-        if self.reasoning is not None:
-            try:
-                self.reasoning.refresh_width()
-            except Exception:
-                pass
-        if self.content is not None:
-            try:
-                self.content.refresh_width()
-            except Exception:
-                pass
-
     def close_all(self) -> None:
-        """关闭所有渲染器并清理工具适配器。"""
-        self.close_reasoning()
-        self.close_content()
-        if self._tool_adapter is not None:
-            try:
-                self._tool_adapter.flush()
-            except Exception:
-                pass
+        """关闭所有渲染器。
+
+        单个渲染器关闭异常不阻塞其他渲染器（try/except 隔离）。
+        """
+        try:
+            self.close_reasoning()
+        except Exception:
+            pass
+        try:
+            self.close_content()
+        except Exception:
+            pass

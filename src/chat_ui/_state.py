@@ -1,11 +1,11 @@
-"""chat_ui 全局状态模块 — 活跃实例引用。
+"""chat_ui 全局状态模块 — 活跃实例引用 + 引用计数管理。
 
-Layer 0 — 仅依赖 typing，被 _error_handler + _consumer + 外部调用方引用。
+Layer 0 — 仅依赖 typing，被 _consumer + 外部调用方引用。
+注意：线程本地重入保护（_handler_reentrant）已分离到 _reentrant.py。
 """
 
 from __future__ import annotations
 
-import threading
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -23,10 +23,6 @@ _active_consumer_refcount: int = 0
 # 取代 ParallelDisplay 原有的独立定时器机制。
 _active_parallel_display: "ParallelDisplay | None" = None
 
-# ── 线程本地重入保护（防止 emit → logger → emit 递归） ──
-_handler_reentrant = threading.local()
-
-
 def get_active_chat_ui() -> "ChatUIConsumer | None":
     """获取当前活跃的 ChatUIConsumer 实例，供交互式终端工具使用。
 
@@ -34,3 +30,34 @@ def get_active_chat_ui() -> "ChatUIConsumer | None":
     引用后可调用 suspend()/resume() 暂停/恢复后台渲染。
     """
     return _active_consumer
+
+
+# ── 引用计数管理（封装 start()/stop() 中对全局变量的操作） ──
+
+def _register_consumer(consumer: "ChatUIConsumer") -> None:
+    """注册活跃 ChatUIConsumer 实例（引用计数 +1）。
+
+    多实例场景下，递增引用计数并设置引用。
+    start() 中调用此函数替代直接操作 _active_consumer_refcount。
+    """
+    global _active_consumer, _active_consumer_refcount
+    _active_consumer_refcount += 1
+    _active_consumer = consumer
+
+
+def _unregister_consumer() -> None:
+    """注销活跃 ChatUIConsumer 实例（引用计数 -1）。
+
+    引用计数归零时清空 _active_consumer。
+    包含 try/except TypeError 兼容测试 mock 场景（MagicMock 不支持 int 比较）。
+
+    stop() 中调用此函数替代直接操作 _active_consumer_refcount。
+    """
+    global _active_consumer, _active_consumer_refcount
+    _active_consumer_refcount -= 1
+    try:
+        if _active_consumer_refcount <= 0:
+            _active_consumer = None
+    except TypeError:
+        # 兼容测试 mock 场景：MagicMock 不支持 int <= 比较，直接清空
+        _active_consumer = None

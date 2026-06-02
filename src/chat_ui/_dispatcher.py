@@ -11,8 +11,9 @@ from typing import TYPE_CHECKING, Callable
 
 from ._const import (
     _CLEAR_PARSE_LINE, _MAIN_LABEL, _MAIN_SOURCE, _MAX_ERROR_LENGTH,
-    _truncate_msg, RenderCommand,
+    RenderCommand,
 )
+from ._utils import _truncate_msg
 
 if TYPE_CHECKING:
     from ..ui.events.event_types import DisplayEvent
@@ -22,6 +23,28 @@ _EVENT_MODULE = "..ui.events.event_types"
 
 # 事件处理器类型：接收 DisplayEvent，通过 push_cmd 入队
 _EventHandler = Callable[["DisplayEvent"], None]
+
+# ── 事件处理器注册表（由 @event_handler 装饰器自动填充） ──
+# 替代原来硬编码的 _EVENT_HANDLERS 元组，消除字符串双重维护。
+_event_handler_registry: dict[str, str] = {}
+
+
+def event_handler(event_type_name: str):
+    """装饰器：将实例方法注册为 DisplayEvent 事件处理器。
+
+    用法:
+        @event_handler("ReasoningChunkEvent")
+        def _on_reasoning_chunk(self, event):
+            ...
+
+    装饰器将事件类型名与方法名注册到 _event_handler_registry，
+    _get_event_type() 通过此注册表惰性加载事件类型。
+    添加新事件类型只需在对应方法上加装饰器，消除双重维护。
+    """
+    def decorator(method):
+        _event_handler_registry[event_type_name] = method.__name__
+        return method
+    return decorator
 
 
 class EventDispatcher:
@@ -36,21 +59,6 @@ class EventDispatcher:
       - SubAgent 事件通过 _is_agent_source 识别（source 前缀 "agent-"）
     """
 
-    # ── 事件处理器注册表 ──
-    _EVENT_HANDLERS: tuple[tuple[str, str], ...] = (
-        ("ReasoningChunkEvent",    "_on_reasoning_chunk"),
-        ("ContentChunkEvent",      "_on_content_chunk"),
-        ("PhaseDoneEvent",         "_on_phase_done"),
-        ("ToolStartedEvent",       "_on_tool_started"),
-        ("ToolDoneEvent",          "_on_tool_done"),
-        ("ToolOutputChunkEvent",   "_on_tool_output"),
-        ("ToolSummaryEvent",       "_on_tool_summary"),
-        ("ParseInfoEvent",         "_on_parse_info"),
-        ("ParseInfoDoneEvent",     "_on_parse_info_done"),
-        ("ModelPhaseEvent",        "_on_model_phase"),
-        ("OutputEvent",            "_on_output"),
-    )
-
     def __init__(self, push_cmd: Callable[[tuple], None]):
         self._push_cmd = push_cmd
         # 懒加载事件类型（仅在首次使用时 import）
@@ -60,8 +68,8 @@ class EventDispatcher:
     def _get_event_type(self, name: str) -> type:
         """惰性加载事件类型（首次调用时一次性加载全部 11 种）。
 
-        通过 `importlib.import_module` 从 `_EVENT_HANDLERS` 的名称列表
-        自动反射加载，消除手工 import 块和 `_EVENT_HANDLERS` 的双重维护。
+        通过 `importlib.import_module` 从 _event_handler_registry 的名称列表
+        自动反射加载，消除手工 import 块的双重维护。
 
         首次调用一次性装载全部事件类型，
         后续直接通过 self._event_types[name] 访问。
@@ -71,7 +79,7 @@ class EventDispatcher:
             mod = importlib.import_module(_EVENT_MODULE, package=__package__)
             self._event_types = {
                 name: getattr(mod, name, object)
-                for name, _ in self._EVENT_HANDLERS
+                for name in _event_handler_registry
             }
             self._event_types_loaded = True
         return self._event_types.get(name, object)
@@ -91,6 +99,7 @@ class EventDispatcher:
             return False
         return source == _MAIN_SOURCE or source.startswith("agent-")
 
+    @event_handler("ReasoningChunkEvent")
     def _on_reasoning_chunk(self, event: "DisplayEvent") -> None:
         R = self._get_event_type("ReasoningChunkEvent")
         if not isinstance(event, R):
@@ -99,6 +108,7 @@ class EventDispatcher:
             return
         self._push_cmd((RenderCommand.REASONING, event.text))
 
+    @event_handler("ContentChunkEvent")
     def _on_content_chunk(self, event: "DisplayEvent") -> None:
         R = self._get_event_type("ContentChunkEvent")
         if not isinstance(event, R):
@@ -107,6 +117,7 @@ class EventDispatcher:
             return
         self._push_cmd((RenderCommand.CONTENT, event.text))
 
+    @event_handler("PhaseDoneEvent")
     def _on_phase_done(self, event: "DisplayEvent") -> None:
         R = self._get_event_type("PhaseDoneEvent")
         if not isinstance(event, R):
@@ -115,6 +126,7 @@ class EventDispatcher:
             return
         self._push_cmd((RenderCommand.PHASE_DONE, event.phase))
 
+    @event_handler("ToolStartedEvent")
     def _on_tool_started(self, event: "DisplayEvent") -> None:
         R = self._get_event_type("ToolStartedEvent")
         if not isinstance(event, R):
@@ -123,6 +135,7 @@ class EventDispatcher:
             return
         self._push_cmd((RenderCommand.TOOL_COUNT_INC,))
 
+    @event_handler("ToolDoneEvent")
     def _on_tool_done(self, event: "DisplayEvent") -> None:
         R = self._get_event_type("ToolDoneEvent")
         if not isinstance(event, R):
@@ -134,6 +147,7 @@ class EventDispatcher:
         else:
             self._push_cmd((RenderCommand.TOOL_COUNT_DEC,))
 
+    @event_handler("ToolOutputChunkEvent")
     def _on_tool_output(self, event: "DisplayEvent") -> None:
         R = self._get_event_type("ToolOutputChunkEvent")
         if not isinstance(event, R):
@@ -144,6 +158,7 @@ class EventDispatcher:
         if text:
             self._push_cmd((RenderCommand.TOOL_OUTPUT, text))
 
+    @event_handler("ParseInfoEvent")
     def _on_parse_info(self, event: "DisplayEvent") -> None:
         R = self._get_event_type("ParseInfoEvent")
         if not isinstance(event, R):
@@ -152,6 +167,7 @@ class EventDispatcher:
             return
         self._push_cmd((RenderCommand.PARSE_INFO, event.tool_names, event.tokens, event.elapsed))
 
+    @event_handler("ParseInfoDoneEvent")
     def _on_parse_info_done(self, event: "DisplayEvent") -> None:
         R = self._get_event_type("ParseInfoDoneEvent")
         if not isinstance(event, R):
@@ -160,6 +176,7 @@ class EventDispatcher:
             return
         self._push_cmd((RenderCommand.PARSE_INFO, "", _CLEAR_PARSE_LINE, 0.0))
 
+    @event_handler("OutputEvent")
     def _on_output(self, event: "DisplayEvent") -> None:
         R = self._get_event_type("OutputEvent")
         if not isinstance(event, R):
@@ -169,6 +186,7 @@ class EventDispatcher:
         # ★ 所有 OutputEvent 统一走 WRITE_LINE（CMD_OUTPUT 已废弃）
         self._push_cmd((RenderCommand.WRITE_LINE, event.text))
 
+    @event_handler("ModelPhaseEvent")
     def _on_model_phase(self, event: "DisplayEvent") -> None:
         """处理模型阶段变更事件，phase="error" 时渲染错误到上屏。
 
@@ -195,6 +213,7 @@ class EventDispatcher:
         info = _truncate_msg(event.info, _MAX_ERROR_LENGTH)
         self._push_cmd((RenderCommand.ERROR, info))
 
+    @event_handler("ToolSummaryEvent")
     def _on_tool_summary(self, event: "DisplayEvent") -> None:
         R = self._get_event_type("ToolSummaryEvent")
         if not isinstance(event, R):

@@ -18,13 +18,14 @@ from ._const import (
     _ANSI_RESET,
     _ANSI_YELLOW,
     _READER_INTERVAL,
-    _cmd_name,
     RenderCommand,
 )
+from ._utils import _cmd_name
+from ..ui._lock import _try_acquire_output_lock
 
 if TYPE_CHECKING:
-    from ..ui._bottom_bar import _BottomBar
     from ..ui.parallel.display import ParallelDisplay
+    from ._protocols import BottomBarProtocol
     from ._renderers import ContentRenderer
 
 _logger = logging.getLogger(__name__)
@@ -43,7 +44,7 @@ class RenderEngine:
     def __init__(
         self,
         renderer: "ContentRenderer",
-        bottom_bar: "_BottomBar",
+        bottom_bar: "BottomBarProtocol",
     ):
         self._renderer = renderer
         self._bb = bottom_bar
@@ -191,8 +192,7 @@ class RenderEngine:
             return
         if new_size != self._cached_term_size:
             self._cached_term_size = new_size
-            self._renderer._rs.force_refresh_width()
-            self._renderer._control_list.refresh_width_all()
+            self._renderer.refresh_width()
 
     # ── 内部 — 三阶段流水线 ──────────────────────────
 
@@ -221,16 +221,12 @@ class RenderEngine:
                 ))
         sys.__stdout__.flush()
 
-    def _phase_refresh_panels(self, pd: "ParallelDisplay | None" = None) -> None:
+    def _phase_refresh_panels(self, pd: "ParallelDisplay | None") -> None:
         """阶段 2：ParallelDisplay 面板刷新（在 output_lock 内调用）。
 
         Args:
-            pd: 由 _drain_queue() 传入的 _active_parallel_display 引用，
-                避免方法内重复惰性导入。
+            pd: 由 _drain_queue() 传入的 _active_parallel_display 引用。
         """
-        if pd is None:
-            from . import _active_parallel_display
-            pd = _active_parallel_display
         if pd is not None:
             try:
                 pd.refresh()
@@ -299,10 +295,8 @@ class RenderEngine:
         ParallelDisplay 刷新置于渲染阶段之后：先渲染上屏内容（工具输出/摘要等），
         再刷新 SubAgent UI 面板展示最新状态，确保面板状态与已渲染内容同步。
         """
-        from ..ui._lock import _try_acquire_output_lock
-
-        from . import _active_parallel_display
-        pd = _active_parallel_display
+        from . import _state
+        pd = _state._active_parallel_display
         if (self._cmd_queue.empty() and pd is None
                 and not self._bb.is_status_active
                 and not self._bb.is_resize_pending):

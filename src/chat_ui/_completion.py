@@ -8,8 +8,8 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from ..ui._bottom_bar import _BottomBar
     from ..ui._completion import CompletionEngine
+    from ._protocols import BottomBarProtocol
 
 
 class _CmplHandler:
@@ -23,7 +23,7 @@ class _CmplHandler:
       - _CmplHandler：管理补全 UI 交互流程（弹窗/循环/应用）
     """
 
-    def __init__(self, bottom_bar: "_BottomBar", engine: "CompletionEngine"):
+    def __init__(self, bottom_bar: "BottomBarProtocol", engine: "CompletionEngine"):
         self._bb = bottom_bar
         self._engine = engine
 

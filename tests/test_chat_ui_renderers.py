@@ -6,11 +6,11 @@
    - tokens 为 float('nan') → "?"
    - tokens 为普通 int → "Nt"
 2. _truncate_msg 基础功能
-3. _RenderState.force_refresh_width 边界
-4. ContentRenderer._check_and_refresh_width 边界
 
 注：_do_tool_output / _render_failure_summary 测试已迁移到
 test_chat_ui_controls.py（ToolOutputControl / ToolSummaryControl）。
+宽度刷新由 ControlList.refresh_width_all() 统一管理，对应测试在
+test_chat_ui_controls.py TestControlList。
 """
 
 from __future__ import annotations
@@ -40,11 +40,13 @@ def mock_bb():
 
 @pytest.fixture
 def renderer(mock_ta, mock_bb):
-    """ContentRenderer 实例，_tool_adapter 替换为 mock"""
+    """ContentRenderer 实例，构造注入路径全部 mock。
+
+    由于 ChatUIConsumer 负责创建 OutputAdapter 并注入到 ContentRenderer，
+    测试环境直接传入 mock_ta 作为 output_adapter 参数，避免依赖真实终端。
+    """
     rs = _RenderState()
-    # 直接设置 _tool_adapter 绕过惰性初始化
-    rs._tool_adapter = mock_ta
-    r = ContentRenderer(rs, mock_bb, on_display_messages=None)
+    r = ContentRenderer(rs, mock_ta, mock_bb, on_display_messages=None)
     yield r
 
 
@@ -93,113 +95,41 @@ class TestTruncateMsg:
 
     def test_short_msg_unchanged(self):
         """短消息不截断"""
-        from src.chat_ui._const import _truncate_msg
+        from src.chat_ui._utils import _truncate_msg
         result = _truncate_msg("hello", 10)
         assert result == "hello"
 
     def test_exact_length_unchanged(self):
         """长度刚好等于 max_len → 不截断"""
-        from src.chat_ui._const import _truncate_msg
+        from src.chat_ui._utils import _truncate_msg
         result = _truncate_msg("12345", 5)
         assert result == "12345"
 
     def test_long_msg_truncated(self):
         """超长消息截断并追加 ..."""
-        from src.chat_ui._const import _truncate_msg
+        from src.chat_ui._utils import _truncate_msg
         result = _truncate_msg("x" * 100, 10)
         assert result == "x" * 10 + "..."
         assert len(result) == 13
 
     def test_empty_msg_empty_result(self):
         """空消息 → 空字符串"""
-        from src.chat_ui._const import _truncate_msg
+        from src.chat_ui._utils import _truncate_msg
         result = _truncate_msg("", 10)
         assert result == ""
 
     def test_max_len_zero(self):
         """max_len=0 → 全部截断"""
-        from src.chat_ui._const import _truncate_msg
+        from src.chat_ui._utils import _truncate_msg
         result = _truncate_msg("hello", 0)
         assert result == "..."
 
 
 # ═══════════════════════════════════════════════════════
-# _RenderState.force_refresh_width 测试
-# ═══════════════════════════════════════════════════════
-
-class TestRenderStateForceRefreshWidth:
-    """_RenderState.force_refresh_width() 测试"""
-
-    def test_force_refresh_calls_tool_adapter(self):
-        """工具适配器已初始化 → 调用其 force_refresh_width()"""
-        rs = _RenderState()
-        mock_adapter = MagicMock()
-        rs._tool_adapter = mock_adapter
-        rs.force_refresh_width()
-        mock_adapter.force_refresh_width.assert_called_once()
-
-    def test_force_refresh_skips_none_tool_adapter(self):
-        """工具适配器未初始化 → 安全跳过"""
-        rs = _RenderState()
-        # 不应抛出异常
-        rs.force_refresh_width()
-
-    def test_force_refresh_calls_reasoning_renderer(self):
-        """推理渲染器已创建 → 调用其 refresh_width()"""
-        rs = _RenderState()
-        mock_rr = MagicMock()
-        rs.reasoning = mock_rr
-        rs.force_refresh_width()
-        mock_rr.refresh_width.assert_called_once()
-
-    def test_force_refresh_skips_none_reasoning(self):
-        """推理渲染器未创建 → 安全跳过"""
-        rs = _RenderState()
-        rs.reasoning = None
-        rs.force_refresh_width()  # 不抛异常
-
-    def test_force_refresh_calls_content_renderer(self):
-        """内容渲染器已创建 → 调用其 refresh_width()"""
-        rs = _RenderState()
-        mock_cr = MagicMock()
-        rs.content = mock_cr
-        rs.force_refresh_width()
-        mock_cr.refresh_width.assert_called_once()
-
-    def test_force_refresh_skips_none_content(self):
-        """内容渲染器未创建 → 安全跳过"""
-        rs = _RenderState()
-        rs.content = None
-        rs.force_refresh_width()  # 不抛异常
-
-    def test_force_refresh_all_three(self):
-        """所有适配器均已初始化 → 全部调用"""
-        rs = _RenderState()
-        mock_ta = MagicMock()
-        mock_rr = MagicMock()
-        mock_cr = MagicMock()
-        rs._tool_adapter = mock_ta
-        rs.reasoning = mock_rr
-        rs.content = mock_cr
-        rs.force_refresh_width()
-        mock_ta.force_refresh_width.assert_called_once()
-        mock_rr.refresh_width.assert_called_once()
-        mock_cr.refresh_width.assert_called_once()
-
-    def test_force_refresh_mixed_state(self):
-        """部分适配器未初始化 → 仅调用已初始化的"""
-        rs = _RenderState()
-        mock_ta = MagicMock()
-        rs._tool_adapter = mock_ta
-        rs.reasoning = None
-        rs.content = None
-        rs.force_refresh_width()  # 不应抛异常
-        mock_ta.force_refresh_width.assert_called_once()
-
-
-# ═══════════════════════════════════════════════════════
 # 注：ContentRenderer._check_and_refresh_width 已迁移到
 # RenderEngine._check_resize() → 测试移至 test_chat_ui_engine.py
+# 宽度刷新由 ControlList.refresh_width_all() 统一管理 → 测试移至
+# test_chat_ui_controls.py TestControlList
 # ═══════════════════════════════════════════════════════
 
 
@@ -473,8 +403,7 @@ class TestDoDisplayMessages:
         """有回调时 → 调用 _on_display_messages()"""
         mock_cb = MagicMock()
         rs = _RenderState()
-        rs._tool_adapter = MagicMock()
-        r = ContentRenderer(rs, MagicMock(), on_display_messages=mock_cb)
+        r = ContentRenderer(rs, MagicMock(), MagicMock(), on_display_messages=mock_cb)
         msgs = [{"role": "user", "content": "hello"}]
         r._do_display_messages(msgs, speed=2)
         mock_cb.assert_called_once_with(msgs, speed=2)
@@ -504,3 +433,37 @@ class TestRender:
         with patch('src.chat_ui._renderers._logger.error') as m_log:
             renderer.render((255,))
             m_log.assert_called_once()
+
+
+# ═══════════════════════════════════════════════════════
+# TestContentRendererRefreshWidth — 宽度刷新委托
+# ═══════════════════════════════════════════════════════
+
+class TestContentRendererRefreshWidth:
+    """ContentRenderer.refresh_width() 委托路径测试
+
+    验证 refresh_width() 委托给 ControlList.refresh_width_all()，
+    不再单独遍历 _RenderState 的 reasoning/content MarkdownControl。
+    """
+
+    def test_refresh_width_delegates_to_control_list(self, renderer):
+        """refresh_width() 调用 ControlList.refresh_width_all()"""
+        with patch.object(renderer._control_list, 'refresh_width_all') as m_refresh:
+            renderer.refresh_width()
+            m_refresh.assert_called_once()
+
+    def test_refresh_width_no_crash_when_empty(self, renderer):
+        """空 ControlList 时 refresh_width() 不崩溃"""
+        # 清空所有控件
+        renderer._control_list.close_all()
+        # 不应抛异常
+        renderer.refresh_width()
+
+    def test_refresh_width_skips_closed_controls(self, renderer):
+        """已关闭的控件不会被 refresh_width。"""
+        # 关闭所有控件
+        for ctrl in renderer._control_list._controls:
+            ctrl.close()
+        with patch.object(renderer._control_list, 'refresh_width_all') as m_refresh:
+            renderer.refresh_width()
+            m_refresh.assert_called_once()
