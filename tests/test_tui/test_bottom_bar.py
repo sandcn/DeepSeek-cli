@@ -161,7 +161,7 @@ class TestBottomBarFormatStatus(unittest.TestCase):
             "per_second_speed": 25.3,
         }
 
-        with patch("src.ui._bottom_bar._get_snapshot", return_value=lambda: mock_snap):
+        with patch("src.ui._bottom_bar_status._get_snapshot", return_value=lambda: mock_snap):
             result = self.bb._format_status()
 
         # 应包含模型名 + 统计信息
@@ -177,7 +177,7 @@ class TestBottomBarFormatStatus(unittest.TestCase):
         self.bb._tool_fail_count = 1
 
         # mock snapshot 有数据，但 _status_active=False 时应跳过
-        with patch("src.ui._bottom_bar._get_snapshot", return_value=None):
+        with patch("src.ui._bottom_bar_status._get_snapshot", return_value=None):
             result = self.bb._format_status()
 
         # 应包含模型名（含 ANSI 颜色码）
@@ -191,7 +191,7 @@ class TestBottomBarFormatStatus(unittest.TestCase):
         self.bb._tool_count = 0
         self.bb._tool_fail_count = 0
 
-        with patch("src.ui._bottom_bar._get_snapshot", return_value=None):
+        with patch("src.ui._bottom_bar_status._get_snapshot", return_value=None):
             result = self.bb._format_status()
 
         # 应包含模型名（含 ANSI 颜色码），不含统计信息
@@ -210,7 +210,7 @@ class TestBottomBarFormatStatus(unittest.TestCase):
             "per_second_speed": 10.0,
         }
 
-        with patch("src.ui._bottom_bar._get_snapshot", return_value=lambda: mock_snap):
+        with patch("src.ui._bottom_bar_status._get_snapshot", return_value=lambda: mock_snap):
             result = self.bb._format_status()
 
         # 应包含模型名 + 统计
@@ -232,7 +232,7 @@ class TestBottomBarFormatStatus(unittest.TestCase):
             "per_second_speed": 0.0,
         }
 
-        with patch("src.ui._bottom_bar._get_snapshot", return_value=lambda: mock_snap):
+        with patch("src.ui._bottom_bar_status._get_snapshot", return_value=lambda: mock_snap):
             result = self.bb._format_status()
 
         self.assertIn("test-model", result)
