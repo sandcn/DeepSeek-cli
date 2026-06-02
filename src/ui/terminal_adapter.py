@@ -269,6 +269,11 @@ class TerminalAdapter:
             for _ in range(extra):
                 buf += "\n\033[K"
             buf += f"\033[{extra}A"
+            # ★ 帧缩小后，\033[s 保存的光标位置必须与 _last_lines（峰值行数）
+            #    一致。extra 行清除后光标上升到 total 行底部，需再下降 extra
+            #    行回到峰值底部，否则下一帧 \033[{last_lines}A 会从偏移位置
+            #    起算，向上越过原始帧顶部，写入内容区导致显示累积错乱。
+            buf += f"\033[{extra}B"
 
         # ★ \033[s 保存光标位置（SCOSC），供下一帧/clear_lines_code 恢复。
         #    注意 \0337 (DECSC，_BottomBar 使用) 在绝大多数终端中与
