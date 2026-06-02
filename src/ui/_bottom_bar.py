@@ -96,6 +96,126 @@ def _blessed_cursor_goto(row: int, col: int) -> str:
     except Exception:
         return f"\033[{row};{col}H"
 
+# ── Blessed 光标保存/恢复、滚动、DECSTBM 辅助函数 ─────────
+# 将保留的原始 ANSI 序列（DECSC/DECRC/SCOSC/SCRC/SU/SD/DECSTBM）
+# 封装为 Blessed API 调用，带 try/except 回退到原始 ANSI。
+
+
+def _blessed_save_cursor() -> str:
+    """保存光标位置（DECSC/SCOSC）。
+
+    通过 Blessed Terminal.sc 生成 DECSC 序列，
+    Blessed 不可用时回退到原始 ANSI。
+
+    Returns:
+        ANSI 序列字符串。
+    """
+    try:
+        sc = get_terminal().sc
+        return sc if isinstance(sc, str) and sc else "\0337"
+    except Exception:
+        return "\0337"
+
+
+def _blessed_restore_cursor() -> str:
+    """恢复光标位置（DECRC/SCRC）。
+
+    通过 Blessed Terminal.rc 生成 DECRC 序列，
+    Blessed 不可用时回退到原始 ANSI。
+
+    Returns:
+        ANSI 序列字符串。
+    """
+    try:
+        rc = get_terminal().rc
+        return rc if isinstance(rc, str) and rc else "\0338"
+    except Exception:
+        return "\0338"
+
+
+def _blessed_scroll_up(n: int) -> str:
+    """向上滚动 n 行（SU）。
+
+    通过 Blessed Terminal.indn 生成 SU 序列。
+    n <= 0 时返回空字符串。
+    Blessed 不可用时回退到原始 ANSI。
+
+    Args:
+        n: 滚动行数。
+
+    Returns:
+        ANSI 序列字符串。
+    """
+    if n <= 0:
+        return ""
+    try:
+        seq = get_terminal().indn(n)
+        return seq if isinstance(seq, str) and seq else f"\033[{n}S"
+    except Exception:
+        return f"\033[{n}S"
+
+
+def _blessed_scroll_down(n: int) -> str:
+    """向下滚动 n 行（SD/RI）。
+
+    通过 Blessed Terminal.rin 生成 SD 序列。
+    n <= 0 时返回空字符串。
+    Blessed 不可用时回退到原始 ANSI。
+
+    Args:
+        n: 滚动行数。
+
+    Returns:
+        ANSI 序列字符串。
+    """
+    if n <= 0:
+        return ""
+    try:
+        seq = get_terminal().rin(n)
+        return seq if isinstance(seq, str) and seq else f"\033[{n}T"
+    except Exception:
+        return f"\033[{n}T"
+
+
+def _blessed_set_scroll_region(top: int, bottom: int) -> str:
+    """设置滚动区域（DECSTBM）。top/bottom 为 1-based。
+
+    通过 Blessed Terminal.csr 生成 DECSTBM 序列。
+    Blessed 使用 0-based 坐标，内部自动转换。
+    Blessed 不可用时回退到原始 ANSI。
+
+    Args:
+        top: 滚动区域起始行（1-based）。
+        bottom: 滚动区域结束行（1-based）。
+
+    Returns:
+        ANSI 序列字符串。
+    """
+    try:
+        term = get_terminal()
+        seq = term.csr(top - 1, bottom - 1)
+        return seq if isinstance(seq, str) and seq else f"\033[{top};{bottom}r"
+    except Exception:
+        return f"\033[{top};{bottom}r"
+
+
+def _blessed_reset_scroll_region() -> str:
+    """重置滚动区域为全屏（DECSTBM 重置）。
+
+    通过 Blessed Terminal.csr(0, -1) 生成全屏滚动区域序列。
+    -1 表示屏幕底部。
+    Blessed 不可用时回退到原始 ANSI。
+
+    Returns:
+        ANSI 序列字符串。
+    """
+    try:
+        seq = get_terminal().csr(0, -1)
+        return seq if isinstance(seq, str) and seq else "\033[r"
+    except Exception:
+        return "\033[r"
+
+
 _logger = logging.getLogger(__name__)
 
 
@@ -349,8 +469,8 @@ class _BottomBar(_StatusMixin):
         if self._tracker is not None:
             self._tracker.set_scroll_end(scroll_end)
         out = sys.__stdout__
-        out.write(f"\033[1;{scroll_end}r")
-        out.write(_blessed_cursor_goto(scroll_end, 1) + "\033[s")
+        out.write(f"{_blessed_set_scroll_region(1, scroll_end)}")
+        out.write(_blessed_cursor_goto(scroll_end, 1) + _blessed_save_cursor())
         out.flush()
 
     def ensure_cursor_in_upper(self) -> None:
@@ -422,11 +542,11 @@ class _BottomBar(_StatusMixin):
                 self._last_scroll_end = scroll_end
                 self._tracker.set_scroll_end(scroll_end)
                 out = sys.__stdout__
-                out.write("\0337")
-                out.write(f"\033[1;{scroll_end}r")
+                out.write(_blessed_save_cursor())
+                out.write(f"{_blessed_set_scroll_region(1, scroll_end)}")
                 self._draw_all_locked(out, height)
-                out.write("\0338")
-                out.write(_blessed_cursor_goto(scroll_end, 1) + "\033[s")
+                out.write(_blessed_restore_cursor())
+                out.write(_blessed_cursor_goto(scroll_end, 1) + _blessed_save_cursor())
                 out.write(_blessed_cursor_goto(height, 1))
                 out.flush()
             else:
@@ -451,14 +571,14 @@ class _BottomBar(_StatusMixin):
         with _try_acquire_output_lock(name="bottom_bar.teardown", timeout=1.0) as locked:
             if locked:
                 out = sys.__stdout__
-                out.write("\033[r")
-                out.write("\0337")
+                out.write(_blessed_reset_scroll_region())
+                out.write(_blessed_save_cursor())
                 height = self._term_height()
                 start_row = max(1, height - self._last_bottom_lines + 1)
                 for r in range(start_row, height + 1):
                     out.write(_blessed_move_clear(r))
-                out.write("\0338")
-                out.write("\033[s")
+                out.write(_blessed_restore_cursor())
+                out.write(_blessed_save_cursor())
                 out.flush()
         self._last_bottom_lines = _BOTTOM_MIN_LINES
 
@@ -485,19 +605,19 @@ class _BottomBar(_StatusMixin):
             delta = total - old_bottom_lines
             old_scroll_end = height - old_bottom_lines
             out = sys.__stdout__
-            out.write("\0337")
+            out.write(_blessed_save_cursor())
 
             self._apply_scroll_delta(out, delta, old_scroll_end)
 
-            out.write("\033[r")
+            out.write(_blessed_reset_scroll_region())
 
             self._last_bottom_lines = total
 
             if scroll_end < 1:
                 for r in range(1, height + 1):
                     out.write(_blessed_move_clear(r))
-                out.write("\0338")
-                out.write(_blessed_cursor_goto(height, 1) + "\033[s")
+                out.write(_blessed_restore_cursor())
+                out.write(_blessed_cursor_goto(height, 1) + _blessed_save_cursor())
                 out.flush()
                 return
 
@@ -516,10 +636,10 @@ class _BottomBar(_StatusMixin):
             self._last_scroll_end = scroll_end
             if self._tracker is not None:
                 self._tracker.set_scroll_end(scroll_end)
-            out.write(f"\033[1;{scroll_end}r")
+            out.write(f"{_blessed_set_scroll_region(1, scroll_end)}")
             self._reclaim_scroll_back(out, delta, scroll_end)
-            out.write("\0338")
-            out.write(_blessed_cursor_goto(scroll_end, 1) + "\033[s")
+            out.write(_blessed_restore_cursor())
+            out.write(_blessed_cursor_goto(scroll_end, 1) + _blessed_save_cursor())
             out.flush()
 
     def force_redraw(self) -> None:
@@ -566,19 +686,19 @@ class _BottomBar(_StatusMixin):
             self._last_status = new_status
 
             out = sys.__stdout__
-            out.write("\0337")
+            out.write(_blessed_save_cursor())
 
             self._apply_scroll_delta(out, delta, old_scroll_end)
 
-            out.write("\033[r")
+            out.write(_blessed_reset_scroll_region())
 
             self._last_bottom_lines = total
 
             if scroll_end < 1:
                 for r in range(1, height + 1):
                     out.write(_blessed_move_clear(r))
-                out.write("\0338")
-                out.write(_blessed_cursor_goto(height, 1) + "\033[s")
+                out.write(_blessed_restore_cursor())
+                out.write(_blessed_cursor_goto(height, 1) + _blessed_save_cursor())
                 out.flush()
                 self._last_cursor_pos = self._input_cursor_pos
                 return
@@ -610,10 +730,10 @@ class _BottomBar(_StatusMixin):
             self._last_scroll_end = scroll_end
             if self._tracker is not None:
                 self._tracker.set_scroll_end(scroll_end)
-            out.write(f"\033[1;{scroll_end}r")
+            out.write(f"{_blessed_set_scroll_region(1, scroll_end)}")
             self._reclaim_scroll_back(out, delta, scroll_end)
-            out.write("\0338")
-            out.write(_blessed_cursor_goto(scroll_end, 1) + "\033[s")
+            out.write(_blessed_restore_cursor())
+            out.write(_blessed_cursor_goto(scroll_end, 1) + _blessed_save_cursor())
             out.flush()
             self._last_cursor_pos = self._input_cursor_pos
 
@@ -690,19 +810,19 @@ class _BottomBar(_StatusMixin):
                 self._input_cursor_pos = cursor_pos
             self._last_cursor_pos = self._input_cursor_pos
             out = sys.__stdout__
-            out.write("\0337")
+            out.write(_blessed_save_cursor())
 
             self._apply_scroll_delta(out, delta, old_scroll_end)
 
-            out.write("\033[r")
+            out.write(_blessed_reset_scroll_region())
 
             self._last_bottom_lines = total
 
             if scroll_end < 1:
                 for r in range(1, height + 1):
                     out.write(_blessed_move_clear(r))
-                out.write("\0338")
-                out.write(_blessed_cursor_goto(height, 1) + "\033[s")
+                out.write(_blessed_restore_cursor())
+                out.write(_blessed_cursor_goto(height, 1) + _blessed_save_cursor())
                 out.write(_blessed_cursor_goto(height, 1))
                 out.flush()
                 return
@@ -742,10 +862,10 @@ class _BottomBar(_StatusMixin):
             self._last_scroll_end = scroll_end
             if self._tracker is not None:
                 self._tracker.set_scroll_end(scroll_end)
-            out.write(f"\033[1;{scroll_end}r")
+            out.write(f"{_blessed_set_scroll_region(1, scroll_end)}")
             self._reclaim_scroll_back(out, delta, scroll_end)
-            out.write("\0338")
-            out.write(_blessed_cursor_goto(scroll_end, 1) + "\033[s")
+            out.write(_blessed_restore_cursor())
+            out.write(_blessed_cursor_goto(scroll_end, 1) + _blessed_save_cursor())
             out.write(_blessed_cursor_goto(r_cursor, cursor_col))
             out.flush()
 
@@ -765,7 +885,7 @@ class _BottomBar(_StatusMixin):
         if delta <= 0 or old_scroll_end < 1:
             return
         out.write(_blessed_cursor_goto(old_scroll_end, 1))
-        out.write(f"\033[{delta}S")
+        out.write(f"{_blessed_scroll_up(delta)}")
 
     @staticmethod
     def _reclaim_scroll_back(out, delta: int, scroll_end: int) -> None:
@@ -784,7 +904,7 @@ class _BottomBar(_StatusMixin):
             return
         n = -delta
         out.write(_blessed_cursor_goto(scroll_end, 1))
-        out.write(f"\033[{n}T")
+        out.write(f"{_blessed_scroll_down(n)}")
         # 清除 SD 下滚后在滚动区顶部产生的 n 行空行
         for r in range(1, min(n, scroll_end) + 1):
             out.write(_blessed_move_clear(r))
@@ -901,15 +1021,15 @@ class _BottomBar(_StatusMixin):
             out = sys.__stdout__
             if scroll_end < 1:
                 return
-            out.write("\0337")
-            out.write("\033[r")
+            out.write(_blessed_save_cursor())
+            out.write(_blessed_reset_scroll_region())
             self._draw_status_locked(out, height)
             self._last_scroll_end = scroll_end
             if self._tracker is not None:
                 self._tracker.set_scroll_end(scroll_end)
-            out.write(f"\033[1;{scroll_end}r")
-            out.write("\0338")
-            out.write(_blessed_cursor_goto(scroll_end, 1) + "\033[s")
+            out.write(f"{_blessed_set_scroll_region(1, scroll_end)}")
+            out.write(_blessed_restore_cursor())
+            out.write(_blessed_cursor_goto(scroll_end, 1) + _blessed_save_cursor())
             out.flush()
             self._last_refresh = time.monotonic()
 
@@ -974,7 +1094,7 @@ class _BottomBar(_StatusMixin):
             self._completion._orig_prefix = orig_prefix
 
             out = sys.__stdout__
-            out.write("\0337")
+            out.write(_blessed_save_cursor())
             height = self._term_height()
             total = self._bottom_lines
             scroll_end = height - total
@@ -988,15 +1108,15 @@ class _BottomBar(_StatusMixin):
 
             self._apply_scroll_delta(out, delta, old_scroll_end)
 
-            out.write("\033[r")
+            out.write(_blessed_reset_scroll_region())
 
             self._last_bottom_lines = total
 
             if scroll_end < 1:
                 for r in range(1, height + 1):
                     out.write(_blessed_move_clear(r))
-                out.write("\0338")
-                out.write(_blessed_cursor_goto(height, 1) + "\033[s")
+                out.write(_blessed_restore_cursor())
+                out.write(_blessed_cursor_goto(height, 1) + _blessed_save_cursor())
                 out.flush()
                 return
 
@@ -1030,13 +1150,13 @@ class _BottomBar(_StatusMixin):
             self._last_status = status
 
             self._last_scroll_end = scroll_end
-            out.write(f"\033[1;{scroll_end}r")
+            out.write(f"{_blessed_set_scroll_region(1, scroll_end)}")
             # ★ 同步 tracker 的 scroll_end
             if self._tracker is not None:
                 self._tracker.set_scroll_end(scroll_end)
             self._reclaim_scroll_back(out, delta, scroll_end)
-            out.write("\0338")
-            out.write(_blessed_cursor_goto(scroll_end, 1) + "\033[s")
+            out.write(_blessed_restore_cursor())
+            out.write(_blessed_cursor_goto(scroll_end, 1) + _blessed_save_cursor())
             vis_row, vis_col = _compute_cursor_visual_pos(
                 text, self._input_cursor_pos, max(1, self._term_width() - 4),
             )
@@ -1068,7 +1188,7 @@ class _BottomBar(_StatusMixin):
             self._completion._orig_prefix = ""
 
             out = sys.__stdout__
-            out.write("\0337")
+            out.write(_blessed_save_cursor())
             height = self._term_height()
             total = self._bottom_lines
             scroll_end = height - total
@@ -1076,15 +1196,15 @@ class _BottomBar(_StatusMixin):
             delta = total - old_bottom_lines
             old_scroll_end = height - old_bottom_lines
 
-            out.write("\033[r")
+            out.write(_blessed_reset_scroll_region())
 
             self._last_bottom_lines = total
 
             if scroll_end < 1:
                 for r in range(1, height + 1):
                     out.write(_blessed_move_clear(r))
-                out.write("\0338")
-                out.write(_blessed_cursor_goto(height, 1) + "\033[s")
+                out.write(_blessed_restore_cursor())
+                out.write(_blessed_cursor_goto(height, 1) + _blessed_save_cursor())
                 out.flush()
                 return
 
@@ -1113,7 +1233,7 @@ class _BottomBar(_StatusMixin):
             self._last_status = status
 
             self._last_scroll_end = scroll_end
-            out.write(f"\033[1;{scroll_end}r")
+            out.write(f"{_blessed_set_scroll_region(1, scroll_end)}")
             # ★ 同步 tracker 的 scroll_end
             if self._tracker is not None:
                 self._tracker.set_scroll_end(scroll_end)
@@ -1129,8 +1249,8 @@ class _BottomBar(_StatusMixin):
                 self._tracker.clear_saved()
             else:
                 self._reclaim_scroll_back(out, delta, scroll_end)
-            out.write("\0338")
-            out.write(_blessed_cursor_goto(scroll_end, 1) + "\033[s")
+            out.write(_blessed_restore_cursor())
+            out.write(_blessed_cursor_goto(scroll_end, 1) + _blessed_save_cursor())
             vis_row, vis_col = _compute_cursor_visual_pos(
                 text, self._input_cursor_pos, max(1, self._term_width() - 4),
             )
@@ -1157,7 +1277,7 @@ class _BottomBar(_StatusMixin):
             if not locked:
                 return self._completion._idx
             out = sys.__stdout__
-            out.write("\0337")
+            out.write(_blessed_save_cursor())
             height = self._term_height()
             total = self._bottom_lines
             popup_start = height - total + 3
@@ -1165,10 +1285,10 @@ class _BottomBar(_StatusMixin):
 
             self._completion.render_cycle_update(out, popup_start, tw)
 
-            out.write("\0338")
+            out.write(_blessed_restore_cursor())
             scroll_end = height - self._bottom_lines
             if scroll_end >= 1:
-                out.write(_blessed_cursor_goto(scroll_end, 1) + "\033[s")
+                out.write(_blessed_cursor_goto(scroll_end, 1) + _blessed_save_cursor())
                 vis_row, vis_col = _compute_cursor_visual_pos(
                     self._last_text if self._last_text else "", self._input_cursor_pos,
                     max(1, self._term_width() - 4),

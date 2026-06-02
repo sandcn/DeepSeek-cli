@@ -728,9 +728,9 @@ class SubAgentPanelControl(Control, _ControlBase):
     """SubAgent 面板控件 — 通过 OutputAdapter 渲染多行 Agent 状态面板。
 
     封装 FrameRenderer + AgentStateStore，将 Agent 状态快照渲染为终端帧。
-    通过 ANSI 光标控制（\\033[s / \\033[u）实现帧覆写，与 ParallelDisplay
-    的 TerminalAdapter.render_frame() 行为一致，但走 OutputAdapter 的
-    output_lock 路径。
+    通过 Blessed 光标控制（sc/rc 光标保存/恢复，move_up/move_down 覆写）
+    实现帧覆写，与 TerminalAdapter.render_frame() 行为一致，
+    但走 OutputAdapter 的 output_lock 路径。
 
     职责：
       1. 持有 AgentStateStore + FrameRenderer 引用（由 ParallelDisplay 注入）
@@ -896,24 +896,32 @@ class SubAgentPanelControl(Control, _ControlBase):
     def _write_frame_buffer(self, lines: list[str]) -> None:
         """构建帧缓冲区并通过 OutputAdapter.write_raw() 写入。
 
-        复用 TerminalAdapter.render_frame() 的 ANSI 控制逻辑，
+        复用 TerminalAdapter.render_frame() 的帧覆写逻辑，
         但通过 OutputAdapter 写入（走 output_lock 路径）。
-        光标移动使用 Blessed Terminal，SCOSC/SCRC 保留原始 ANSI。
+        光标移动使用 Blessed Terminal，光标保存/恢复使用 `sc`/`rc`。
         """
         try:
             term = get_terminal()
             move_up = term.move_up
             move_down = term.move_down
             clear_eol = term.clear_eol
+            sc = term.sc
+            rc = term.rc
+            if not isinstance(sc, str) or not sc:
+                sc = "\033[s"
+            if not isinstance(rc, str) or not rc:
+                rc = "\033[u"
         except Exception:
             move_up = lambda n: f"\033[{n}A"
             move_down = lambda n: f"\033[{n}B"
             clear_eol = "\033[K"
+            sc = "\033[s"
+            rc = "\033[u"
 
         total = len(lines)
         buf = ""
         if self._last_lines > 0:
-            buf += "\033[u"
+            buf += rc
             buf += move_up(self._last_lines)
 
         for i, line in enumerate(lines):
@@ -928,14 +936,15 @@ class SubAgentPanelControl(Control, _ControlBase):
             buf += move_up(extra)
             buf += move_down(extra)
 
-        buf += "\n\033[s"
+        buf += "\n" + sc
         self._adapter.write_raw(buf)
         self._last_lines = max(self._last_lines, total)
 
     def clear_frame(self) -> None:
-        """清除终端上的帧行（使用 ANSI 清除码）。
+        """清除终端上的帧行。
 
         生成清行序列并通过 OutputAdapter.write_raw() 写入。
+        光标恢复使用 Blessed `rc`，异常时回退到原始 ANSI。
         """
         if self._last_lines <= 0:
             return
@@ -943,12 +952,18 @@ class SubAgentPanelControl(Control, _ControlBase):
             term = get_terminal()
             clear_eol = term.clear_eol
             move_up = term.move_up
+            rc = term.rc
+            if not isinstance(clear_eol, str) or not clear_eol:
+                clear_eol = "\033[K"
+            if not isinstance(rc, str) or not rc:
+                rc = "\033[u"
         except Exception:
             clear_eol = "\033[K"
             move_up = lambda n: f"\033[{n}A"
+            rc = "\033[u"
 
         n = self._last_lines
-        buf = "\033[u"  # SCOSC restore
+        buf = rc  # SCRC/DECRC restore
         buf += move_up(n)
         for _ in range(n):
             buf += "\r" + clear_eol + "\n"

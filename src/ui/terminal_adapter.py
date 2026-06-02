@@ -10,11 +10,12 @@ TerminalAdapter — 终端 I/O 抽象层
 
 Blessed 替换说明：
   - 终端尺寸查询 → Blessed Terminal.width/height
-  - 窗口标题 → Terminal.title
   - 光标定位 → Terminal.move_xy()
   - 清屏 → Terminal.clear_eos()
-  - 保留原始 ANSI（Blessed 无等价物或性能关键路径）：
-    DECSTBM（滚动区域）、SU/SD（上下滚动）、SCOSC/SCRC（光标保存/恢复）
+  - 光标保存/恢复 → Terminal.sc/Terminal.rc
+  - 滚动区域 → Terminal.csr()
+  - 上/下滚动 → Terminal.indn()/Terminal.rin()
+  - 窗口标题保留原始 ANSI（Blessed window_title 为 context manager 不适合简单序列）
 """
 
 from __future__ import annotations
@@ -146,10 +147,16 @@ class TerminalAdapter:
         """
         if n <= 0:
             return ''
-        # ★ \033[u 恢复 render_frame 保存的光标位置（SCOSC），
+        # ★ rc 恢复 render_frame 保存的光标位置（SCOSC/DECRC），
         #   防止 _drain_queue → _position_cursor 移动光标后
         #   帧清除偏移（详见 204fb14e1 + cursor race 修复）
-        buf = '\033[u'
+        try:
+            rc_seq = get_terminal().rc
+            if not isinstance(rc_seq, str) or not rc_seq:
+                rc_seq = '\033[u'
+        except Exception:
+            rc_seq = '\033[u'
+        buf = rc_seq
         buf += f'\033[{n}A'
         for _ in range(n):
             buf += '\r\033[K\n'
@@ -159,23 +166,44 @@ class TerminalAdapter:
     def set_scrolling_region(self, top: int, bottom: int) -> None:
         """设置终端滚动区域（DECSTBM）。
 
-        设置后，终端仅在 [top, bottom] 行范围内滚动，
-        区域外的内容保持固定。
+        通过 Blessed Terminal.csr 生成 DECSTBM 序列。
+        Blessed 使用 0-based 坐标，内部自动转换。
+        Blessed 不可用时回退到原始 ANSI。
 
         Args:
             top: 滚动区域起始行（1-based）
             bottom: 滚动区域结束行（1-based），0 表示屏幕底部
         """
-        if bottom == 0:
-            bottom_str = ""
-        else:
-            bottom_str = str(bottom)
-        self._stdout.write(f"\033[{top};{bottom_str}r")
+        try:
+            term = get_terminal()
+            if bottom == 0:
+                seq = term.csr(top - 1, -1)
+            else:
+                seq = term.csr(top - 1, bottom - 1)
+            if not isinstance(seq, str) or not seq:
+                seq = f"\033[{top};{bottom}r" if bottom else f"\033[{top};r"
+            self._stdout.write(seq)
+        except Exception:
+            if bottom == 0:
+                self._stdout.write(f"\033[{top};r")
+            else:
+                self._stdout.write(f"\033[{top};{bottom}r")
         self._stdout.flush()
 
     def reset_scrolling_region(self) -> None:
-        """重置终端滚动区域为全屏。"""
-        self._stdout.write("\033[r")
+        """重置终端滚动区域为全屏。
+
+        通过 Blessed Terminal.csr(0, -1) 生成全屏滚动区域序列，
+        -1 表示屏幕底部。
+        Blessed 不可用时回退到原始 ANSI。
+        """
+        try:
+            seq = get_terminal().csr(0, -1)
+            if not isinstance(seq, str) or not seq:
+                seq = "\033[r"
+            self._stdout.write(seq)
+        except Exception:
+            self._stdout.write("\033[r")
         self._stdout.flush()
 
     def move_cursor_to(self, row: int, col: int = 1) -> None:
@@ -196,11 +224,18 @@ class TerminalAdapter:
     def scroll_up(self, n: int = 1) -> None:
         """向上滚动 n 行（在滚动区域内）。
 
-        保留原始 ANSI（SU）——Blessed 无等价操作。
+        通过 Blessed Terminal.indn 生成 SU 序列，
+        Blessed 不可用时回退到原始 ANSI。
         """
         if n <= 0:
             return
-        self._stdout.write(f"\033[{n}S")
+        try:
+            seq = get_terminal().indn(n)
+            if not isinstance(seq, str) or not seq:
+                seq = f"\033[{n}S"
+            self._stdout.write(seq)
+        except Exception:
+            self._stdout.write(f"\033[{n}S")
         self._stdout.flush()
 
     def clear_screen_from_cursor(self) -> None:
@@ -234,10 +269,16 @@ class TerminalAdapter:
 
         buf = ""
         if last_lines > 0:
-            # ★ \033[u 恢复上一帧保存的光标位置（SCOSC），
+            # ★ rc 恢复上一帧保存的光标位置（SCOSC/DECRC），
             #   防止 ChatUI._drain_queue → _position_cursor 将光标
             #   移到输入行后，\033[{n}A 从错误位置起算导致帧重叠/错位。
-            buf += "\033[u"
+            try:
+                rc_seq = get_terminal().rc
+                if not isinstance(rc_seq, str) or not rc_seq:
+                    rc_seq = "\033[u"
+            except Exception:
+                rc_seq = "\033[u"
+            buf += rc_seq
             buf += f"\033[{last_lines}A"
 
         for i, line in enumerate(lines):
@@ -256,11 +297,17 @@ class TerminalAdapter:
             #    起算，向上越过原始帧顶部，写入内容区导致显示累积错乱。
             buf += f"\033[{extra}B"
 
-        # ★ \033[s 保存光标位置（SCOSC），供下一帧/clear_lines_code 恢复。
-        #    注意 \0337 (DECSC，_BottomBar 使用) 在绝大多数终端中与
-        #    \033[s 共享同一保存槽，故 render_frame 必须持 output_lock
+        # ★ sc 保存光标位置（SCOSC/DECSC），供下一帧/clear_lines_code 恢复。
+        #    注意 DECSC（_BottomBar 使用）在绝大多数终端中与
+        #    SCOSC 共享同一保存槽，故 render_frame 必须持 output_lock
         #    与 _BottomBar 串行化，防止保存槽被覆盖导致帧错位。
-        self._stdout.write(buf + "\n\033[s")
+        try:
+            sc_seq = get_terminal().sc
+            if not isinstance(sc_seq, str) or not sc_seq:
+                sc_seq = "\033[s"
+        except Exception:
+            sc_seq = "\033[s"
+        self._stdout.write(buf + "\n" + sc_seq)
         self._stdout.flush()
         # ★ 返回峰值行数（max(last_lines, total)）而非仅当前 total。
         #    帧缩小时（Agent running→done，工具历史行减少），若只返回

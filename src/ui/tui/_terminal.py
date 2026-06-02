@@ -100,7 +100,13 @@ class LockedTerminal(ILockedTerminal):
         self._acquired = output_lock.acquire(timeout=self._timeout)
         if self._acquired:
             if self._save_cursor:
-                self._terminal.write_raw("\033[s")
+                try:
+                    sc = get_terminal().sc
+                    if not isinstance(sc, str) or not sc:
+                        sc = "\033[s"
+                    self._terminal.write_raw(sc)
+                except Exception:
+                    self._terminal.write_raw("\033[s")
         else:
             _logger.debug(
                 "LockedTerminal output_lock 超时（%.1fs），降级跳过",
@@ -118,7 +124,13 @@ class LockedTerminal(ILockedTerminal):
             return
         try:
             if self._save_cursor:
-                self._terminal.write_raw("\033[u")
+                try:
+                    rc = get_terminal().rc
+                    if not isinstance(rc, str) or not rc:
+                        rc = "\033[u"
+                    self._terminal.write_raw(rc)
+                except Exception:
+                    self._terminal.write_raw("\033[u")
             self._terminal.flush()
         finally:
             output_lock.release()
