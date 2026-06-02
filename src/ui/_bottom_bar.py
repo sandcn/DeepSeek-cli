@@ -280,6 +280,14 @@ class _BottomBar:
         """递增工具调用计数。"""
         self._tool_count += 1
 
+    def decrement_tool(self) -> None:
+        """递减工具调用计数（工具成功完成时调用）。
+
+        当 tool_done 事件 success=True 时，将运行中的工具计数减1，
+        使用户在状态行看到工具计数动态减少的视觉反馈。
+        """
+        self._tool_count = max(0, self._tool_count - 1)
+
     def increment_tool_fail(self) -> None:
         """递增失败工具计数（工具完成且 success=False 时调用）。"""
         self._tool_fail_count += 1
@@ -364,7 +372,7 @@ class _BottomBar:
         cursor_pos = self._input_cursor_pos
         max_input = max(1, term_w - 4)
         vis_row, vis_col = _compute_cursor_visual_pos(text, cursor_pos, max_input)
-        total = self._bottom_lines
+        total = max(_BOTTOM_MIN_LINES, self._bottom_lines)  # 至少 5 行
         r_cursor = height - total + 3 + self._completion_popup_height + vis_row
         # ★ clamp 到 [1, height]，防止 total > height 时行号 ≤ 0 或越界
         r_cursor = max(1, min(r_cursor, height))

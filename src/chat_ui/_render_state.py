@@ -6,7 +6,8 @@ Layer 1 — 依赖 _const（_ReasoningState + _THINKING_SEPARATOR）。
 from __future__ import annotations
 
 import sys
-from dataclasses import dataclass
+import threading
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
 from ._const import (
@@ -43,6 +44,11 @@ class _RenderState:
     # ── 工具输出适配器（延时初始化） ──
     _tool_adapter: "OutputAdapter | None" = None
 
+    # ── 工具适配器初始化锁（double-check lock 防竞态） ──
+    _tool_adapter_lock: threading.Lock = field(
+        default_factory=threading.Lock, compare=False, repr=False,
+    )
+
     @staticmethod
     def _create_renderer(style: str = "") -> "IncrementalRenderer":
         """创建 IncrementalRenderer 实例。
@@ -61,13 +67,17 @@ class _RenderState:
         )
 
     def get_tool_adapter(self) -> "OutputAdapter":
-        """获取或惰性创建工具输出适配器。"""
+        """获取或惰性创建工具输出适配器（double-check lock 线程安全）。"""
         if self._tool_adapter is None:
-            from rich.console import Console
-            from ..terminal import get_safe_console_config
-            console = Console(**get_safe_console_config(), file=sys.__stdout__)
-            from ..api.renderer.output import OutputAdapter
-            self._tool_adapter = OutputAdapter(console)
+            with self._tool_adapter_lock:
+                if self._tool_adapter is None:
+                    from rich.console import Console
+                    from ..terminal import get_safe_console_config
+                    console = Console(
+                        **get_safe_console_config(), file=sys.__stdout__,
+                    )
+                    from ..api.renderer.output import OutputAdapter
+                    self._tool_adapter = OutputAdapter(console)
         return self._tool_adapter
 
     def get_reasoning(self) -> "IncrementalRenderer | None":

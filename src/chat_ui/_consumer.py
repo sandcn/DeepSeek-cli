@@ -126,6 +126,15 @@ class ChatUIConsumer:
                 handler = getattr(self._disp, _handler_name)
                 self._bound_handlers[event_type] = handler
 
+        # ★ 防御性取消旧订阅（防止多次 start/stop 后订阅泄漏）
+        for event_type in self._bound_handlers:
+            try:
+                self._bus.unsubscribe(
+                    self._bound_handlers[event_type], event_type=event_type,
+                )
+            except Exception:
+                pass  # 未订阅时静默跳过
+
         # ★ 先订阅事件处理器，再设置活跃标记
         #    顺序保障：在 _active_consumer 被外界可见前，ChatUIConsumer
         #    已完整订阅 EventBus，消除 OutputEvent 在过渡期丢失的竞态窗口。
@@ -154,7 +163,15 @@ class ChatUIConsumer:
         # 3) 取消订阅（reader 已停，不可能有新入队）
         if self._bound_handlers is not None:
             for event_type in self._bound_handlers:
-                self._bus.unsubscribe(self._bound_handlers[event_type], event_type=event_type)
+                try:
+                    self._bus.unsubscribe(
+                        self._bound_handlers[event_type], event_type=event_type,
+                    )
+                except Exception:
+                    _logger.debug(
+                        "stop: unsubscribe %s 失败", event_type.__name__,
+                        exc_info=True,
+                    )
 
         # 4) flush 残留命令
         self._engine.flush()
@@ -272,7 +289,8 @@ class ChatUIConsumer:
         deadline = None if timeout is None else time.monotonic() + timeout
         while True:
             text = monitor.get_queued_input()
-            if text is not None:
+            if text:
+                # 非空字符串视为有效输入
                 return text
             if deadline is not None and time.monotonic() >= deadline:
                 return ""

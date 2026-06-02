@@ -27,6 +27,9 @@ _THINKING_HEADER = "\n  ─ 思考 ─\n"
 _CLEAR_PARSE_LINE = -1
 _THINKING_SEPARATOR = "\n  " + "\u2500" * 25 + "\n"
 
+# ── 统一错误消息截断长度 ─────────────────────────────
+_MAX_ERROR_LENGTH = 200
+
 # ── Reader 线程刷新间隔 ─────────────────────────────────
 _READER_INTERVAL = 0.1  # 100ms = 10Hz
 
@@ -59,6 +62,7 @@ class RenderCommand(IntEnum):
     TOOL_COUNT_INC = 14  # (14,) — 工具计数+1
     TOOL_FAIL_INC  = 15  # (15,) — 工具失败计数+1
     ERROR          = 16  # (16, message: str) — 系统错误（红色 ! 样式）
+    TOOL_COUNT_DEC = 17  # (17,) — 工具计数-1
 
 
 # ═══════════════════════════════════════════════════════════
@@ -102,9 +106,24 @@ def _build_render_dispatch() -> dict[int, tuple[str, tuple[int, ...]]]:
         R.WRITE_LINE:     ("_do_write_line",      (1,)),
         R.DISPLAY_MSGS:   ("_do_display_messages", (1, 2)),
         R.TOOL_COUNT_INC: ("_do_tool_count_inc",  ()),
+        R.TOOL_COUNT_DEC: ("_do_tool_count_dec",  ()),
         R.TOOL_FAIL_INC:  ("_do_tool_fail_inc",   ()),
         R.ERROR:          ("_do_error",           (1,)),
     }
+
+
+def _truncate_msg(msg: str, max_len: int) -> str:
+    """截断超长消息，追加"..."标记（尾部安全）。
+
+    若 `msg` 长度超过 `max_len`，取前 `max_len` 字符并追加 "..."。
+    若未超过，原样返回。
+
+    统一截断函数，消除在 `_renderers.py`/`_dispatcher.py`/`_error_handler.py`
+    中的重复截断逻辑。
+    """
+    if len(msg) > max_len:
+        return msg[:max_len] + "..."
+    return msg
 
 
 def _cmd_name(cid: int) -> str:

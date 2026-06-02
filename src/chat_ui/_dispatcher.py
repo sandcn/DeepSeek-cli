@@ -6,9 +6,13 @@ Layer 2 — 依赖 _const（RenderCommand + _MAIN_SOURCE + _MAIN_LABEL）。
 
 from __future__ import annotations
 
+import threading
 from typing import TYPE_CHECKING, Callable
 
-from ._const import _CLEAR_PARSE_LINE, _MAIN_LABEL, _MAIN_SOURCE, RenderCommand
+from ._const import (
+    _CLEAR_PARSE_LINE, _MAIN_LABEL, _MAIN_SOURCE, _MAX_ERROR_LENGTH,
+    _truncate_msg, RenderCommand,
+)
 
 if TYPE_CHECKING:
     from ..ui.events.event_types import DisplayEvent
@@ -48,10 +52,23 @@ class EventDispatcher:
         self._push_cmd = push_cmd
         # 懒加载事件类型（仅在首次使用时 import）
         self._event_types: dict[str, type] = {}
+        self._event_lock = threading.Lock()
 
     def _get_event_type(self, name: str) -> type:
-        """惰性加载事件类型，避免 EventDispatcher 构造时 import 事件模块。"""
-        if name not in self._event_types:
+        """惰性加载事件类型，避免 EventDispatcher 构造时 import 事件模块。
+
+        使用双重检查锁定（double-checked locking）防止多 EventBus 回调线程
+        同时首次访问时重复导入和 dict 写入。
+        """
+        # 首次检查（无锁路径，快速通过）
+        cached = self._event_types.get(name)
+        if cached is not None:
+            return cached
+        # 双重检查（加锁路径，仅首次加载时进入）
+        with self._event_lock:
+            cached = self._event_types.get(name)
+            if cached is not None:
+                return cached
             from ..ui.events.event_types import (
                 ContentChunkEvent,
                 ModelPhaseEvent,
@@ -78,10 +95,10 @@ class EventDispatcher:
                 "ModelPhaseEvent": ModelPhaseEvent,
                 "OutputEvent": OutputEvent,
             })
-        return self._event_types[name]
+            return self._event_types[name]
 
     @staticmethod
-    def _is_agent_source(source: str) -> bool:
+    def _is_agent_source(source: str | None) -> bool:
         """判断事件来源是否与 Agent/SubAgent 相关。
 
         ChatUI 需要同时显示主 Agent 和 SubAgent 的工具调用状态：
@@ -89,7 +106,10 @@ class EventDispatcher:
         - SubAgent 使用 source=self.label（例如 "agent-1", "agent-2"）
 
         返回 True 表示该来源应被 ChatUI 消费（工具计数/输出显示）。
+        None 来源（事件构造异常/缺失字段）安全返回 False。
         """
+        if source is None:
+            return False
         return source == _MAIN_SOURCE or source.startswith("agent-")
 
     def _on_reasoning_chunk(self, event: "DisplayEvent") -> None:
@@ -132,6 +152,8 @@ class EventDispatcher:
             return
         if not event.success:
             self._push_cmd((RenderCommand.TOOL_FAIL_INC,))
+        else:
+            self._push_cmd((RenderCommand.TOOL_COUNT_DEC,))
 
     def _on_tool_output(self, event: "DisplayEvent") -> None:
         R = self._get_event_type("ToolOutputChunkEvent")
@@ -193,12 +215,7 @@ class EventDispatcher:
             return
 
         # 截断超长 info 防止终端溢出
-        _MAX_ERROR_LENGTH = 200
-        info = (
-            event.info[:_MAX_ERROR_LENGTH] + "..."
-            if len(event.info) > _MAX_ERROR_LENGTH
-            else event.info
-        )
+        info = _truncate_msg(event.info, _MAX_ERROR_LENGTH)
         self._push_cmd((RenderCommand.ERROR, info))
 
     def _on_tool_summary(self, event: "DisplayEvent") -> None:

@@ -8,6 +8,7 @@ from __future__ import annotations
 import logging
 
 from . import _state
+from ._const import _MAX_ERROR_LENGTH, _truncate_msg
 
 
 class ChatUIErrorHandler(logging.Handler):
@@ -30,7 +31,7 @@ class ChatUIErrorHandler(logging.Handler):
       - ChatUI 未启动/已停止时 get_active_chat_ui() 返回 None → emit 静默跳过
     """
 
-    def __init__(self, max_length: int = 200):
+    def __init__(self, max_length: int = _MAX_ERROR_LENGTH):
         super().__init__(level=logging.ERROR)
         self._max_length = max_length
 
@@ -54,14 +55,21 @@ class ChatUIErrorHandler(logging.Handler):
             return
 
         # ★ 格式化消息（格式: "模块名: 消息内容"）
-        msg_content = record.getMessage()
+        try:
+            msg_content = record.getMessage()
+        except TypeError:
+            _logger = logging.getLogger(__name__)
+            _logger.warning(
+                "ChatUIErrorHandler: record.getMessage() 格式化失败 "
+                "(args 不匹配格式字符串), record=%s", record.name,
+            )
+            return
         if not msg_content:
             return
         msg = f"{record.name}: {msg_content}"
 
         # ★ 截断超长消息
-        if len(msg) > self._max_length:
-            msg = msg[:self._max_length] + "..."
+        msg = _truncate_msg(msg, self._max_length)
 
         # ★ 设置线程重入标记
         _state._handler_reentrant.is_active = True

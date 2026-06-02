@@ -356,3 +356,157 @@ class TestOnModelPhase:
         cmd = consumer._cmd_queue.get_nowait()
         assert cmd[0] == RenderCommand.ERROR
         assert cmd[1] == info
+
+
+# ═══════════════════════════════════════════════════════
+# _is_agent_source None 保护测试（步骤 9）
+# ═══════════════════════════════════════════════════════
+
+class TestIsAgentSource:
+    """EventDispatcher._is_agent_source None 保护测试"""
+
+    def test_none_source_returns_false(self):
+        """source=None → 返回 False，不抛异常"""
+        from src.chat_ui._dispatcher import EventDispatcher
+        assert EventDispatcher._is_agent_source(None) is False
+
+    def test_main_source_returns_true(self):
+        """source='agent' → 返回 True"""
+        from src.chat_ui._dispatcher import EventDispatcher
+        from src.chat_ui._const import _MAIN_SOURCE
+        assert EventDispatcher._is_agent_source(_MAIN_SOURCE) is True
+
+    def test_agent_prefix_returns_true(self):
+        """source='agent-1' → 返回 True"""
+        from src.chat_ui._dispatcher import EventDispatcher
+        assert EventDispatcher._is_agent_source("agent-1") is True
+
+    def test_other_source_returns_false(self):
+        """source='user' → 返回 False"""
+        from src.chat_ui._dispatcher import EventDispatcher
+        assert EventDispatcher._is_agent_source("user") is False
+
+    def test_empty_string_returns_false(self):
+        """source='' → 返回 False"""
+        from src.chat_ui._dispatcher import EventDispatcher
+        assert EventDispatcher._is_agent_source("") is False
+
+
+# ═══════════════════════════════════════════════════════
+# emit() Type­Error 保护测试（步骤 6）
+# ═══════════════════════════════════════════════════════
+
+class TestEmitGetMessageTypeError:
+    """record.getMessage() 格式化参数不匹配时的 TypeError 保护"""
+
+    def test_get_message_type_error_skipped(self):
+        """getMessage() 抛出 TypeError → emit 静默跳过，不崩溃"""
+        import logging
+        from unittest.mock import MagicMock, patch
+        from src import chat_ui
+
+        handler = chat_ui.ChatUIErrorHandler()
+
+        # 构造格式化参数不匹配的 LogRecord：格式字符串需要 2 个参数但只给了 1 个
+        record = logging.LogRecord(
+            name="test", level=logging.ERROR,
+            pathname="", lineno=0, msg="format mismatch %s %s",
+            args=("only_one",), exc_info=None,
+        )
+
+        mock_ui = MagicMock()
+        with patch.object(chat_ui._state, 'get_active_chat_ui', return_value=mock_ui):
+            # 不应抛出任何异常
+            handler.emit(record)
+
+        # 因 getMessage() 失败，on_error 不应被调用
+        mock_ui.on_error.assert_not_called()
+
+
+# ═══════════════════════════════════════════════════════
+# stop() unsubscribe 保护测试（步骤 7）
+# ═══════════════════════════════════════════════════════
+
+class TestStopUnsubscribeSafe:
+    """ChatUIConsumer.stop() 中 unsubscribe 异常保护"""
+
+    def test_stop_unsubscribe_safe(self):
+        """unsubscribe 抛出异常 → stop() 不传播异常"""
+        from unittest.mock import MagicMock, patch
+        from src.chat_ui import ChatUIConsumer
+
+        consumer = ChatUIConsumer()
+
+        # mock EventBus.unsubscribe 抛出异常
+        consumer._bus.unsubscribe = MagicMock(
+            side_effect=Exception("unsubscribe failed"),
+        )
+
+        # 模拟已启动状态（否则 stop 提前返回）
+        consumer._started = True
+        consumer._bound_handlers = {type: "handler"}
+
+        # stop() 不应传播 unsubscribe 的异常
+        try:
+            consumer.stop()
+            # 成功到达这里即可（异常被捕获）
+            passed = True
+        except Exception:
+            passed = False
+
+        assert passed, "stop() 中 unsubscribe 异常应被捕获"
+
+
+# ═══════════════════════════════════════════════════════
+# wait_for_user_input 空字符串处理测试（步骤 11）
+# ═══════════════════════════════════════════════════════
+
+class TestWaitForUserInput:
+    """wait_for_user_input 区分 None 和空字符串"""
+
+    def test_empty_string_keeps_waiting(self):
+        """get_queued_input() 返回 "" → 继续等待（非终止）直到收到有效输入"""
+        from unittest.mock import MagicMock
+        from src.chat_ui import ChatUIConsumer
+
+        consumer = ChatUIConsumer()
+
+        # 模拟 monitor：先返回 ""，再返回 "valid"
+        mock_monitor = MagicMock()
+        mock_monitor.get_queued_input.side_effect = ["", "valid"]
+
+        result = consumer.wait_for_user_input(mock_monitor, timeout=10)
+
+        # 最终应返回 "valid"（而非 "")
+        assert result == "valid"
+        # get_queued_input 应被调用至少 2 次（第 1 次返回 "" 继续等待，第 2 次返回 "valid" 退出）
+        assert mock_monitor.get_queued_input.call_count >= 2
+
+    def test_none_keeps_waiting(self):
+        """get_queued_input() 返回 None → 继续等待"""
+        from unittest.mock import MagicMock
+        from src.chat_ui import ChatUIConsumer
+
+        consumer = ChatUIConsumer()
+
+        # 模拟 monitor：先返回 None，再返回 "text"
+        mock_monitor = MagicMock()
+        mock_monitor.get_queued_input.side_effect = [None, "text"]
+
+        result = consumer.wait_for_user_input(mock_monitor, timeout=10)
+
+        assert result == "text"
+
+    def test_timeout_returns_empty(self):
+        """超时 → 返回空字符串"""
+        from unittest.mock import MagicMock
+        from src.chat_ui import ChatUIConsumer
+
+        consumer = ChatUIConsumer()
+
+        mock_monitor = MagicMock()
+        mock_monitor.get_queued_input.return_value = None
+
+        result = consumer.wait_for_user_input(mock_monitor, timeout=0.1)
+
+        assert result == ""

@@ -9,14 +9,19 @@ Layer 2 — 依赖 _const（Style常量 + RenderCommand + _ReasoningState + _MAI
 
 from __future__ import annotations
 
-import sys
+import logging
+import math
 from typing import TYPE_CHECKING, Callable
 
+_logger = logging.getLogger(__name__)
+
+from rich.style import Style
 from rich.text import Text
 from wcwidth import wcswidth
 
 from ._const import (
     _CLEAR_PARSE_LINE,
+    _MAX_ERROR_LENGTH,
     _ReasoningState,
     _STYLE_BOLD,
     _STYLE_DIM,
@@ -26,6 +31,7 @@ from ._const import (
     _STYLE_WARN,
     _build_render_dispatch,
     _cmd_name,
+    _truncate_msg,
 )
 
 if TYPE_CHECKING:
@@ -76,8 +82,6 @@ class ContentRenderer:
 
         entry = _RENDER_DISPATCH.get(cid)
         if entry is None:
-            import logging
-            _logger = logging.getLogger(__name__)
             _logger.error("未知渲染命令: %s", _cmd_name(cid))
             return
 
@@ -116,27 +120,85 @@ class ContentRenderer:
     def _do_tool_count_inc(self) -> None:
         self._bb.increment_tool()
 
+    def _do_tool_count_dec(self) -> None:
+        self._bb.decrement_tool()
+
     def _do_tool_fail_inc(self) -> None:
         self._bb.increment_tool_fail()
 
+    # ── 工具输出保护常量 ──
+    _MAX_TOOL_OUTPUT_LEN = 10000  # 超过此长度的工具输出被截断
+
     def _do_tool_output(self, text: str) -> None:
-        """渲染工具执行输出（dim 样式 + 缩进）。"""
+        """渲染工具执行输出（dim 样式 + 缩进）。
+
+        超长文本（> 10000 字符）自动截断并追加 ...(truncated) 标记。
+        """
+        if len(text) > self._MAX_TOOL_OUTPUT_LEN:
+            text = text[:self._MAX_TOOL_OUTPUT_LEN] + "...(truncated)"
+
         ta = self._tool_adapter
-        if '\r' in text:
-            ta.write_raw(text)
-            if text.endswith('\r'):
-                self._rs.last_was_carriage = True
-            else:
-                ta.write_raw('\n')
-                self._rs.last_was_carriage = False
-        else:
+
+        # ── 无 \r：标准输出 ─────────────────────────────────
+        if '\r' not in text:
             if self._rs.last_was_carriage:
                 ta.write_raw("\n")
                 self._rs.last_was_carriage = False
             ta.write(Text.assemble(("   ", _STYLE_DIM), (text, _STYLE_DIM)))
+            return
+
+        # ── 含 \r：进度条覆盖输出 ────────────────────────────
+        if '\033[' in text:
+            # 含 ANSI 转义序列 → 移除 \r 后用 Text.from_ansi() 解析
+            self._do_tool_output_with_ansi(ta, text)
+        else:
+            # 纯 \r 文本 → 按 \r 分割取最后一段（中间段被覆盖，无意义）
+            ta.write_raw(text.split('\r')[-1])
+
+        # ── \r 结尾标记 ──────────────────────────────────────
+        if text.endswith('\r'):
+            self._rs.last_was_carriage = True
+        else:
+            ta.write_raw('\n')
+            self._rs.last_was_carriage = False
+
+    def _do_tool_output_with_ansi(
+        self, ta, text: str,
+    ) -> None:
+        """处理含 ANSI 转义序列的工具输出（移除 \r 后解析渲染）。
+
+        整个路径在 try/except 保护中——Text.from_ansi 解析失败或
+        write_raw 回退失败都不抛出，日志记录后静默跳过。
+        """
+        clean_text = text.replace('\r', '')
+        try:
+            try:
+                ta.write(Text.from_ansi(clean_text))
+            except Exception:
+                _logger.warning(
+                    "_do_tool_output: Text.from_ansi 解析失败",
+                    exc_info=True,
+                )
+                ta.write_raw(clean_text)
+        except Exception:
+            _logger.warning(
+                "_do_tool_output: ANSI 渲染路径异常（含回退写入）",
+                exc_info=True,
+            )
 
     def _do_tool_summary(self, successful: tuple, failed: tuple) -> None:
-        """渲染工具执行汇总（着色图标 + 彩色计数）。"""
+        """渲染工具执行汇总（着色图标 + 彩色计数）。
+
+        None 保护：参数为 None 时视为空元组，避免 TypeError。
+        """
+        if successful is None or failed is None:
+            _logger.debug(
+                "_do_tool_summary 收到 None 参数: successful=%s, failed=%s",
+                successful, failed,
+            )
+        successful = successful or ()
+        failed = failed or ()
+
         ta = self._tool_adapter
         if self._rs.last_was_carriage:
             ta.write_raw("\n")
@@ -169,6 +231,23 @@ class ContentRenderer:
 
     @classmethod
     def _render_failure_summary(cls, ta: "OutputAdapter", failed: tuple, total: int) -> None:
+        # ★ 解包保护：若元素非 (name, error) 格式，整体转为字符串显示
+        safe_failed = []
+        for item in failed:
+            if isinstance(item, (list, tuple)) and len(item) >= 2:
+                error = str(item[1]) if item[1] is not None else ""
+                # 若元素含 3+ 元素，将额外信息追加到 error 字符串
+                if len(item) > 2:
+                    extras = ", ".join(str(x) for x in item[2:])
+                    if error:
+                        error += f" [{extras}]"
+                    else:
+                        error = f"[{extras}]"
+                safe_failed.append((str(item[0]), error))
+            else:
+                safe_failed.append((str(item), ""))
+        failed = tuple(safe_failed)
+
         failed_names = ", ".join(n for n, _ in failed)
         if len(failed) == total:
             ta.write(Text.assemble(
@@ -196,38 +275,56 @@ class ContentRenderer:
                 (f"    ... 及其他 {len(failed) - 3} 个", _STYLE_DIM),
             ))
 
-    def _do_parse_info(self, tool_names: str, tokens: int, elapsed: float) -> None:
+    def _do_parse_info(self, tool_names: str, tokens: int | float, elapsed: float) -> None:
         if tokens == _CLEAR_PARSE_LINE:
             self._tool_adapter.write_raw("\n")
             return
+        # ★ 类型保护：tokens 非 (int, float) 时显示原始字符串
+        if isinstance(tokens, (int, float)):
+            if math.isfinite(tokens):
+                tokens_str = f"{tokens}t"
+            else:
+                tokens_str = "?"
+        else:
+            tokens_str = str(tokens)
         self._tool_adapter.write_raw(
-            f"\r\033[K  ~ {tool_names} {tokens}t {elapsed:.2f}s",
+            f"\r\033[K  ~ {tool_names} {tokens_str} {elapsed:.2f}s",
         )
 
     def _do_cmd_output(self, text: str) -> None:
         """渲染 / 命令执行输出，委托 _write_text_or_ansi。"""
         self._write_text_or_ansi(text)
 
+    # ── 样式化行渲染辅助 ──────────────────────────────
+
+    def _render_styled_line(self, prefix: str, text: str, style: Style) -> None:
+        """渲染带前缀和样式的单行文本（`\n  {prefix} {text}` 格式）。
+
+        参数:
+            prefix: 前缀符号（如 ">", "·", "!"）
+            text:   文本内容
+            style:  Rich Style 对象，同时作用于前缀和文本
+        """
+        self._tool_adapter.write(Text.assemble(
+            (f"\n  {prefix} ", style),
+            (text, style),
+        ))
+
     def _do_user_message(self, text: str) -> None:
         """渲染用户消息（> 前缀 + 加粗）。"""
-        self._tool_adapter.write(Text.assemble(
-            ("\n  > ", _STYLE_BOLD),
-            (text, _STYLE_BOLD),
-        ))
+        self._render_styled_line(">", text, _STYLE_BOLD)
 
     def _do_notification(self, text: str) -> None:
         """渲染系统通知（· 前缀）。"""
-        self._tool_adapter.write(Text.assemble(
-            ("\n  · ", _STYLE_SUCCESS),
-            (text, _STYLE_SUCCESS),
-        ))
+        self._render_styled_line("·", text, _STYLE_SUCCESS)
 
     def _do_error(self, message: str) -> None:
-        """渲染系统错误信息（红色 ! 样式）。"""
-        self._tool_adapter.write(Text.assemble(
-            ("\n  ! ", _STYLE_ERROR),
-            (message, _STYLE_ERROR),
-        ))
+        """渲染系统错误信息（红色 ! 样式）。
+
+        超长消息（> 200 字符）自动截断并追加 ... 标记。
+        """
+        message = _truncate_msg(message, _MAX_ERROR_LENGTH)
+        self._render_styled_line("!", message, _STYLE_ERROR)
 
     def _do_write_line(self, text: str) -> None:
         """渲染通用文本行，委托 _write_text_or_ansi。"""
