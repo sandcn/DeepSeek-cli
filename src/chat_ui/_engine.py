@@ -184,16 +184,18 @@ class RenderEngine:
     def _drain_queue(self) -> None:
         """消费所有待处理渲染命令，执行上屏渲染 + 底部栏重绘。
 
-        流水线（共用同一个 output_lock）：
+        流水线：
           0. 快速空闲跳过（锁外）— 队列空 + 无面板 + 状态行不活跃 + 无 resize pending 时跳过
+          0b. 终端大小变化检测（锁外）— 检测 resize 并刷新渲染器宽度缓存
           1. resize 处理（锁内）— 消费 SIGWINCH 标记，更新终端尺寸和 DECSTBM
           2. 上屏渲染（锁内）— 批量出队 + 渲染命令
           3. ParallelDisplay 面板刷新（锁内）— 刷新 SubAgent UI 面板
           4. 底部栏重绘 + 光标定位（锁内）— force_redraw + 光标移回输入行
 
-        0-4 步共用同一个 output_lock（第 0 步在锁外），防止上屏渲染 / 面板刷新 /
-        底部栏重绘之间的终端 I/O 交错。output_lock 为 RLock（可重入），
-        pd.refresh() 和 force_redraw() 内部取锁不会死锁。
+        步骤 0/0b 在锁外、步骤 1-4 共用同一个 output_lock，
+        防止上屏渲染 / 面板刷新 / 底部栏重绘之间的终端 I/O 交错。
+        output_lock 为 RLock（可重入），pd.refresh() 和 force_redraw()
+        内部取锁不会死锁。
 
         ParallelDisplay 刷新置于渲染阶段之后：先渲染上屏内容（工具输出/摘要等），
         再刷新 SubAgent UI 面板展示最新状态，确保面板状态与已渲染内容同步。
@@ -206,6 +208,14 @@ class RenderEngine:
                 and not self._bb.is_status_active
                 and not self._bb.is_resize_pending):
             return
+
+        # ★ 终端大小变化检测（锁外）— 避免 shutil.get_terminal_size()
+        #   系统调用在 output_lock 内执行，减少锁持有时间。
+        #   异常静默忽略：检测失败时降级依赖 OutputAdapter 的 5 秒 TTL。
+        try:
+            self._renderer._check_and_refresh_width()
+        except Exception:
+            pass
 
         # ★ 三个阶段共用同一个 output_lock（1s 超时）
         with _try_acquire_output_lock(name="drain_queue", timeout=1.0) as locked:

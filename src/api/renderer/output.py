@@ -50,6 +50,18 @@ class OutputAdapter:
         except Exception:
             return 80
 
+    def force_refresh_width(self) -> None:
+        """强制刷新终端宽度缓存，绕过 5 秒 TTL。
+
+        供 resize 检测路径调用——当终端大小变化时立即更新宽度，
+        无需等待下一次 _refresh_width() 的 TTL 自然过期。
+        调用方可能已持有 output_lock，本方法不重复获取锁。
+        直接读写 self._width / self._last_width_refresh，在
+        CPython GIL 下对简单属性是原子操作。
+        """
+        self._last_width_refresh = time.monotonic()
+        self._width = self._get_terminal_width()
+
     @property
     def width(self) -> int:
         """终端宽度（无锁读取，GIL 保护简单属性安全，自动刷新缓存）。"""

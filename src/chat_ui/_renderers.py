@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import logging
 import math
+import time
 from typing import TYPE_CHECKING, Callable
 
 _logger = logging.getLogger(__name__)
@@ -58,6 +59,9 @@ class ContentRenderer:
     ScreenHistoryManager 已屏蔽为 No-op 且不在此模块中创建。
     """
 
+    # ── 最小 resize 检查间隔（秒），避免高频 shutil.get_terminal_size() 调用 ──
+    _RESIZE_CHECK_INTERVAL: float = 0.2
+
     def __init__(
         self,
         rs: "_RenderState",
@@ -70,11 +74,41 @@ class ContentRenderer:
         # 保持为实例属性，不受 ScreenHistoryManager 封装
         self._on_display_messages: Callable[..., None] | None = on_display_messages
 
+        # ── 终端大小变化检测 ──
+        # _last_width_check: 上次调用 shutil.get_terminal_size() 的时间戳
+        # _cached_term_size: 上次缓存的终端 (columns, lines) 元组
+        self._last_width_check: float = 0.0
+        self._cached_term_size: tuple[int, int] = (0, 0)
+
     @property
     def _tool_adapter(self) -> "OutputAdapter":
         return self._rs.get_tool_adapter()
 
     # ── 渲染分发 ──────────────────────────────────────
+
+    def _check_and_refresh_width(self) -> None:
+        """检测终端大小是否变化，变化时强制刷新所有适配器宽度缓存。
+
+        200ms 最小检查间隔避免每次调用都执行系统调用。
+        尺寸未变时零副作用（跳过所有刷新操作）。
+        该方法由 RenderEngine._drain_queue() 在 output_lock 之外调用，
+        避免 shutil.get_terminal_size() 系统调用持锁阻塞渲染管线。
+        """
+        now = time.monotonic()
+        if now - self._last_width_check < self._RESIZE_CHECK_INTERVAL:
+            return
+        self._last_width_check = now
+
+        try:
+            import shutil
+            current = shutil.get_terminal_size()
+            new_size = (current.columns, current.lines)
+        except OSError:
+            return
+
+        if new_size != self._cached_term_size:
+            self._cached_term_size = new_size
+            self._rs.force_refresh_width()
 
     def render(self, cmd: tuple) -> None:
         """根据命令类型分发到对应渲染方法（模块级 O(1) 字典查找）。"""

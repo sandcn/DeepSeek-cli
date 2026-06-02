@@ -17,6 +17,8 @@ from unittest.mock import MagicMock, patch
 from rich.console import Console
 from rich.text import Text
 
+import time
+
 from src.api.renderer.output import OutputAdapter
 
 
@@ -130,3 +132,46 @@ class TestOutputAdapterWidth:
                 adapter._last_width_refresh = float('inf')  # 强制刷新
                 w = adapter.width
                 assert w == 100
+
+
+class TestForceRefreshWidth:
+    """force_refresh_width() 测试。"""
+
+    def test_force_refresh_bypasses_ttl(self):
+        """force_refresh_width() 立即更新宽度，不等待 5s TTL。"""
+        with patch('shutil.get_terminal_size') as mock_gs:
+            mock_gs.return_value = MagicMock(columns=120)
+            adapter = OutputAdapter(MagicMock(spec=Console))
+            assert adapter.width == 120
+
+            # 模拟终端 resize 到 80 列
+            mock_gs.return_value = MagicMock(columns=80)
+
+            # 不调用 force_refresh_width → 5s TTL 内返回旧值
+            # 将 _last_width_refresh 设为当前时间，让 TTL 未过期
+            adapter._last_width_refresh = time.monotonic()
+
+            # 调用 force_refresh_width → 立即更新
+            adapter.force_refresh_width()
+            assert adapter.width == 80
+
+    def test_force_refresh_updates_timestamp(self):
+        """force_refresh_width() 同时更新 _last_width_refresh 时间戳。"""
+        with patch('shutil.get_terminal_size', return_value=MagicMock(columns=100)):
+            adapter = OutputAdapter(MagicMock(spec=Console))
+            old_ts = adapter._last_width_refresh
+
+            # 等待一小段时间后调用 force_refresh_width
+            # （time.monotonic() 精度足够）
+            adapter.force_refresh_width()
+            assert adapter._last_width_refresh >= old_ts
+
+    def test_force_refresh_no_size_change(self):
+        """尺寸未变时 force_refresh_width() 仍然更新缓存。"""
+        with patch('shutil.get_terminal_size', return_value=MagicMock(columns=100)):
+            adapter = OutputAdapter(MagicMock(spec=Console))
+            assert adapter.width == 100
+
+            # 即使尺寸不变，force_refresh_width 也执行刷新
+            adapter.force_refresh_width()
+            assert adapter.width == 100

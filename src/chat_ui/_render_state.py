@@ -131,6 +131,36 @@ class _RenderState:
             cr.close()
             self.content = None
 
+    def force_refresh_width(self) -> None:
+        """强制刷新所有活跃输出适配器的终端宽度缓存。
+
+        遍历工具适配器（OutputAdapter）和推理/内容渲染器
+        （IncrementalRenderer），分别调用其 force_refresh_width()，
+        最终绕过各 OutputAdapter 的 5 秒 TTL 缓存。
+        对未初始化的适配器（None）安全跳过。
+        单个适配器刷新失败不阻塞其他适配器（try/except 隔离）。
+
+        供 ContentRenderer._check_and_refresh_width() 在检测到
+        终端大小变化后调用。
+        """
+        if self._tool_adapter is not None:
+            try:
+                self._tool_adapter.force_refresh_width()
+            except Exception:
+                # 单个适配器刷新失败不阻塞其他适配器。
+                # 无日志：降级依赖 OutputAdapter 自身的 5 秒 TTL 自动恢复。
+                pass
+        if self.reasoning is not None:
+            try:
+                self.reasoning.force_refresh_width()
+            except Exception:
+                pass
+        if self.content is not None:
+            try:
+                self.content.force_refresh_width()
+            except Exception:
+                pass
+
     def close_all(self) -> None:
         """关闭所有渲染器。"""
         self.close_reasoning()

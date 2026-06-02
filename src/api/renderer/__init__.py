@@ -111,6 +111,15 @@ class IncrementalRenderer:
                 self._has_content = True
             self._engine.render(token)
 
+    def force_refresh_width(self) -> None:
+        """强制刷新内部 OutputAdapter 的终端宽度缓存。
+
+        供 resize 检测路径调用——终端大小变化后，渲染器内部的
+        OutputAdapter 宽度缓存需要立即失效，否则后续 Markdown
+        渲染（表格/标题/代码块等）将基于过时的宽度进行布局计算。
+        """
+        self._output.force_refresh_width()
+
     def close(self):
         if self._closed:
             return
