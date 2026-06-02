@@ -421,12 +421,12 @@ class TestDrainQueueSyncBottomLines(unittest.TestCase):
         self.mock_bb.ensure_cursor_in_upper.assert_not_called()
 
 
-class TestScrollUpUpperOrdering(unittest.TestCase):
-    """验证 _scroll_up_upper 在 \033[r 之前的调用顺序。
+class TestApplyScrollDeltaOrdering(unittest.TestCase):
+    """验证 _apply_scroll_delta 在 \\033[r 之前的调用顺序。
 
-    修复 Bug: _scroll_up_upper(delta, out, height) 原在 \033[r（全屏滚动模式）之后调用，
+    修复 Bug: _apply_scroll_delta（原 _apply_scroll_delta）在 \\033[r（全屏滚动模式）之后调用，
     导致整个屏幕滚动、上屏顶部内容丢失。
-    修复后: _scroll_up_upper 在 \033[r 之前调用，只滚动 DECSTBM 区域内的内容。
+    修复后: _apply_scroll_delta 在 \\033[r 之前调用，只滚动 DECSTBM 区域内的内容。
     """
 
     def setUp(self):
@@ -461,77 +461,57 @@ class TestScrollUpUpperOrdering(unittest.TestCase):
         self.assertLess(pos1, pos2,
                         msg or f"{first_seq!r} 应在 {second_seq!r} 之前")
 
-    def test_force_redraw_scroll_up_before_r(self):
-        """force_redraw 中 _scroll_up_upper 的 ANSI 在 \033[r 之前。"""
-        # 模拟输入文本变长导致底部栏扩大 (delta > 0)
-        # ★ 文本须足够长使 _bottom_lines > _last_bottom_lines
-        #   max_input=36 (40-4), 需 >3*36=108 chars 才能超过 _MIN_INPUT_ROWS=3
+    def test_force_redraw_expand_uses_su(self):
+        """force_redraw 在 delta > 0 时输出 SU 上滚序列（在 \\033[r 之前）。"""
         self.bb._last_text = "A" * 500  # 长文本，_bottom_lines 会增大
         self.bb._last_bottom_lines = 3  # 旧底部行数较小
-        self.bb._last_rendered_text = "old"  # 强制不走快速路径
+        self.bb._last_rendered_text = "old"
 
-        # ★ force_redraw() 会更新 _last_bottom_lines，需提前保存旧值
         old_bl = self.bb._last_bottom_lines
-
         output = self._capture_ansi_order(lambda: self.bb.force_redraw())
 
-        # _scroll_up_upper(delta, out, height - old_bottom_lines)
-        # ★ 修复后使用旧 bottom_lines 计算 scroll_end（与当前 DECSTBM 一致）
-        old_scroll_end = 30 - old_bl  # = 27
+        old_scroll_end = 30 - old_bl
         scroll_up_seq = f"\033[{old_scroll_end};1H"
-        full_scroll_seq = "\033[r"
+        self.assertIn(scroll_up_seq, output, "应定位到 old_scroll_end")
+        # SU 序列格式: \033[N S（N 为具体 delta 值，取决于文本换行）
+        import re
+        self.assertTrue(re.search(r'\x1b\[\d+S', output),
+                        "应输出 SU 上滚序列")
+        self.assert_ansi_before(output, scroll_up_seq, "\033[r",
+                                "SU 应在 \\033[r 之前")
 
-        self.assertIn(scroll_up_seq, output,
-                      f"应包含 _scroll_up_upper 的 ANSI 定位 {scroll_up_seq}")
-        self.assertIn(full_scroll_seq, output,
-                      "应包含全屏滚动模式 \033[r")
-        self.assert_ansi_before(output, scroll_up_seq, full_scroll_seq,
-                                "_scroll_up_upper 的 ANSI 应在 \033[r 之前")
-
-    def test_refresh_scroll_up_before_r(self):
-        """refresh 中 _scroll_up_upper 的 ANSI 在 \033[r 之前。"""
-        # 初始文本较短，然后传新长文本触发底部栏扩大
+    def test_refresh_expand_uses_su(self):
+        """refresh 在 delta > 0 时输出 SU 上滚序列。"""
         self.bb._last_text = "short"
         self.bb._last_bottom_lines = 3
         self.bb._last_rendered_text = "short"
 
-        # ★ force_redraw()/refresh() 会更新 _last_bottom_lines，需提前保存旧值
         old_bl = self.bb._last_bottom_lines
-
-        # 传入更长的新文本，使 text_changed=True
-        # ★ 文本须足够长使 _bottom_lines > _last_bottom_lines
         new_text = "A" * 500
         output = self._capture_ansi_order(
             lambda: self.bb.refresh(new_text, 0))
 
-        scroll_end = 30 - old_bl  # ★ 使用旧 bottom_lines
+        scroll_end = 30 - old_bl
         scroll_up_seq = f"\033[{scroll_end};1H"
-        full_scroll_seq = "\033[r"
+        self.assertIn(scroll_up_seq, output, "应定位到 old_scroll_end")
+        import re
+        self.assertTrue(re.search(r'\x1b\[\d+S', output),
+                        "应输出 SU 上滚序列")
 
-        self.assertIn(scroll_up_seq, output,
-                      f"应包含 _scroll_up_upper 的 ANSI 定位")
-        self.assertIn(full_scroll_seq, output,
-                      "应包含全屏滚动模式 \033[r")
-        self.assert_ansi_before(output, scroll_up_seq, full_scroll_seq,
-                                "_scroll_up_upper 的 ANSI 应在 \033[r 之前")
-
-    def test_scroll_up_uses_scroll_end_not_height(self):
-        """_scroll_up_upper 使用 scroll_end 而非 height 定位。"""
-        # ★ 文本须足够长使 _bottom_lines > _last_bottom_lines
-        self.bb._last_text = "A" * 500
-        self.bb._last_bottom_lines = 3
+    def test_shrink_uses_reclaim_scroll_back(self):
+        """force_redraw 在 delta < 0 时通过 _reclaim_scroll_back 输出 SD（在 DECSTBM 之后）。"""
+        self.bb._last_text = "test"
+        self.bb._last_bottom_lines = 8  # 旧值较大
         self.bb._last_rendered_text = "old"
-
-        # ★ force_redraw() 会更新 _last_bottom_lines，需提前保存旧值
-        old_bl = self.bb._last_bottom_lines
 
         output = self._capture_ansi_order(lambda: self.bb.force_redraw())
 
-        scroll_end = 30 - old_bl  # ★ 使用旧 bottom_lines
-        scroll_up_seq = f"\033[{scroll_end};1H"
-
-        self.assertIn(scroll_up_seq, output,
-                      f"应使用 scroll_end({scroll_end}) 定位")
+        # SD 应在 DECSTBM 设置之后
+        self.assertIn("\033[1;25r", output, "应设置新 DECSTBM")
+        decstbm_idx = output.index("\033[1;25r")
+        sd_idx = output.index("\033[3T")
+        self.assertLess(decstbm_idx, sd_idx,
+                        "DECSTBM 应在 SD 之前（SD 在新滚动区域内执行）")
 
     @unittest.skip("_check_resize 已从 _BottomBar 移除")
     def test_shrink_path_uses_height(self):
@@ -552,10 +532,170 @@ class TestScrollUpUpperOrdering(unittest.TestCase):
                 self.bb._check_resize()
 
         output = buf.getvalue()
-        # shrink 路径中 _scroll_up_upper(scroll_n, out, height) 使用新 height=25
+        # shrink 路径中 _apply_scroll_delta(scroll_n, out, height) 使用新 height=25
         # 定位到终端末行：\033[25;1H（新终端高度）
         self.assertIn("\033[25;1H", output,
                       "shrink 路径应使用新 height(25) 定位光标到终端末行")
+
+
+class TestApplyScrollDelta(unittest.TestCase):
+    """验证 _apply_scroll_delta 在 delta 各取值时的 ANSI 输出。
+
+    核心场景：
+      1. delta > 0 → 输出 SU（上滚）序列
+      2. delta <= 0 → 无操作（不输出 SD，避免删除上屏可见内容）
+      3. old_scroll_end < 1 → 无操作
+      4. hide_completions 触发 delta < 0 路径 → 不输出 SD 序列（回归测试）
+    """
+
+    def setUp(self):
+        self.bb = _BottomBar()
+        self.bb._active = True
+        self.bb._cached_height = 30
+        self.bb._cached_width = 80
+        self._stdout = sys.__stdout__
+
+    def tearDown(self):
+        sys.__stdout__ = self._stdout
+
+    def test_apply_scroll_delta_positive(self):
+        """delta > 0 时输出 SU 上滚序列。"""
+        buf = io.StringIO()
+        self.bb._apply_scroll_delta(buf, delta=3, old_scroll_end=25)
+        output = buf.getvalue()
+        self.assertIn("\033[25;1H", output, "应定位到 old_scroll_end=25")
+        self.assertIn("\033[3S", output, "delta=3 时应输出 SU 上滚 3 行")
+
+    def test_apply_scroll_delta_negative(self):
+        """delta < 0 时 _apply_scroll_delta 无操作（回收由 _reclaim_scroll_back 处理）。"""
+        buf = io.StringIO()
+        self.bb._apply_scroll_delta(buf, delta=-3, old_scroll_end=22)
+        output = buf.getvalue()
+        self.assertEqual(output, "", "delta=-3 时 _apply_scroll_delta 应无输出")
+
+    def test_reclaim_scroll_back_negative(self):
+        """delta < 0 时 _reclaim_scroll_back 输出 SD 序列（在新 DECSTBM 内下滚）。"""
+        buf = io.StringIO()
+        self.bb._reclaim_scroll_back(buf, delta=-3, scroll_end=25)
+        output = buf.getvalue()
+        self.assertIn("\033[25;1H", output, "应定位到 scroll_end=25")
+        self.assertIn("\033[3T", output, "delta=-3 时应输出 SD 下滚 3 行")
+
+    def test_reclaim_scroll_back_non_negative(self):
+        """delta >= 0 时 _reclaim_scroll_back 无操作。"""
+        buf = io.StringIO()
+        self.bb._reclaim_scroll_back(buf, delta=0, scroll_end=25)
+        self.assertEqual(buf.getvalue(), "", "delta=0 时应无输出")
+        buf2 = io.StringIO()
+        self.bb._reclaim_scroll_back(buf2, delta=3, scroll_end=25)
+        self.assertEqual(buf2.getvalue(), "", "delta>0 时应无输出")
+
+    def test_apply_scroll_delta_zero(self):
+        """delta == 0 时无操作。"""
+        buf = io.StringIO()
+        self.bb._apply_scroll_delta(buf, delta=0, old_scroll_end=25)
+        output = buf.getvalue()
+        self.assertEqual(output, "", "delta=0 时应无 ANSI 输出")
+
+    def test_apply_scroll_delta_scroll_end_zero(self):
+        """old_scroll_end=0 时无操作。"""
+        buf = io.StringIO()
+        self.bb._apply_scroll_delta(buf, delta=3, old_scroll_end=0)
+        output = buf.getvalue()
+        self.assertEqual(output, "", "old_scroll_end=0 时应无操作")
+
+    def test_apply_scroll_delta_scroll_end_negative(self):
+        """old_scroll_end=-1 时无操作。"""
+        buf = io.StringIO()
+        self.bb._apply_scroll_delta(buf, delta=-3, old_scroll_end=-1)
+        output = buf.getvalue()
+        self.assertEqual(output, "", "old_scroll_end=-1 时应无操作")
+
+    def test_hide_completions_scroll_down(self):
+        """hide_completions() 触发 delta < 0 路径，_reclaim_scroll_back 输出 SD 序列。"""
+        # 模拟补全弹窗已弹出（底部栏扩大）的状态
+        self.bb._completion._visible = True
+        self.bb._completion._popup_height = 4  # 弹窗占 4 行
+        self.bb._completion._title = "补全"
+        self.bb._completion._items = ["item1", "item2"]
+        self.bb._completion._texts = ["item1", "item2"]
+        self.bb._completion._idx = 0
+        self.bb._last_text = "test"
+        self.bb._last_bottom_lines = 9  # 旧底部栏：2 + 3 + 4 = 9
+        self.bb._last_rendered_text = "test"
+        self.bb._last_status = ""
+
+        buf = io.StringIO()
+        with patch.object(sys, '__stdout__', buf), \
+             patch("shutil.get_terminal_size", return_value=(80, 30)), \
+             patch.object(self.bb, '_format_status', return_value=""):
+            self.bb.hide_completions()
+
+        output = buf.getvalue()
+        # old_scroll_end = 30 - 9 = 21
+        # delta = (2 + 3 + 0) - 9 = 5 - 9 = -4
+        # scroll_end = 30 - 5 = 25
+        # _reclaim_scroll_back 应在 DECSTBM 设好后输出 SD 序列
+        self.assertIn("\033[1;25r", output, "应设置新 DECSTBM [1;25r")
+        self.assertIn("\033[4T", output,
+                      "_reclaim_scroll_back 应输出 SD 下滚序列回收间隙")
+        # 验证清除范围正确：delta < 0 时仅清除回收行
+        for r in range(22, 26):
+            self.assertIn(f"\033[{r};1H\033[K", output,
+                          f"hide 应清除回收行 {r}")
+
+    def test_force_redraw_shrink_outputs_sd(self):
+        """force_redraw 在 delta < 0 时通过 _reclaim_scroll_back 输出 SD。"""
+        self.bb._last_text = "test"
+        self.bb._last_bottom_lines = 8  # 旧值（较大）
+        self.bb._last_rendered_text = "old"
+        self.bb._last_status = ""
+
+        buf = io.StringIO()
+        with patch.object(sys, '__stdout__', buf), \
+             patch("shutil.get_terminal_size", return_value=(80, 30)), \
+             patch.object(self.bb, '_format_status', return_value=""):
+            self.bb.force_redraw()
+
+        output = buf.getvalue()
+        # delta = 5 - 8 = -3, scroll_end = 25
+        # _reclaim_scroll_back 应在新 DECSTBM 后输出 SD
+        self.assertIn("\033[1;25r", output, "应设置新 DECSTBM")
+        self.assertIn("\033[3T", output,
+                      "_reclaim_scroll_back 应输出 SD 下滚")
+
+    def test_show_completions_then_hide_no_blank_lines(self):
+        """集成测试：先 show 再 hide。show 用 SU 上滚，hide 用 _reclaim_scroll_back 下滚。"""
+        # ── Step 1: 模拟 show_completions ──
+        self.bb._last_text = "test"
+        self.bb._last_bottom_lines = 5  # 初始底部栏 5 行
+        self.bb._last_rendered_text = "test"
+        self.bb._last_status = ""
+        items = ["item_a", "item_b", "item_c"]
+
+        buf_show = io.StringIO()
+        with patch.object(sys, '__stdout__', buf_show), \
+             patch("shutil.get_terminal_size", return_value=(80, 30)), \
+             patch.object(self.bb, '_format_status', return_value=""):
+            self.bb.show_completions(items, selected_idx=0, title="补全")
+
+        show_output = buf_show.getvalue()
+        self.assertIn("\033[5S", show_output,
+                      "show 应输出 SU 上滚 \033[5S")
+
+        # ── Step 2: 模拟 hide_completions ──
+        buf_hide = io.StringIO()
+        with patch.object(sys, '__stdout__', buf_hide), \
+             patch("shutil.get_terminal_size", return_value=(80, 30)), \
+             patch.object(self.bb, '_format_status', return_value=""):
+            self.bb.hide_completions()
+
+        hide_output = buf_hide.getvalue()
+        # _reclaim_scroll_back 应输出 SD 序列（在新 DECSTBM 内）
+        self.assertIn("\033[5T", hide_output,
+                      "hide 应通过 _reclaim_scroll_back 输出 SD 下滚")
+        self.assertNotIn("\033[5S", hide_output,
+                         "hide 不应输出 SU 上滚")
 
 
 if __name__ == "__main__":

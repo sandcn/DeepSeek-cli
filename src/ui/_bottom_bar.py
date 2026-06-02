@@ -386,9 +386,7 @@ class _BottomBar(_StatusMixin):
             out = sys.__stdout__
             out.write("\0337")
 
-            if delta > 0 and old_scroll_end >= 1:
-                out.write(f"\033[{old_scroll_end};1H")
-                out.write(f"\033[{delta}S")
+            self._apply_scroll_delta(out, delta, old_scroll_end)
 
             out.write("\033[r")
 
@@ -402,14 +400,21 @@ class _BottomBar(_StatusMixin):
                 out.flush()
                 return
 
-            clear_start = old_scroll_end + 1
-            for r in range(clear_start, height + 1):
-                out.write(f"\033[{r};1H\033[K")
+            if delta < 0:
+                clear_start = old_scroll_end + 1
+                clear_end = scroll_end
+                for r in range(clear_start, clear_end + 1):
+                    out.write(f"\033[{r};1H\033[K")
+            else:
+                clear_start = old_scroll_end + 1
+                for r in range(clear_start, height + 1):
+                    out.write(f"\033[{r};1H\033[K")
 
             self._draw_all_locked(out, height)
 
             self._last_scroll_end = scroll_end
             out.write(f"\033[1;{scroll_end}r")
+            self._reclaim_scroll_back(out, delta, scroll_end)
             out.write("\0338")
             out.write(f"\033[{scroll_end};1H\033[s")
             out.flush()
@@ -460,9 +465,7 @@ class _BottomBar(_StatusMixin):
             out = sys.__stdout__
             out.write("\0337")
 
-            if delta > 0 and old_scroll_end >= 1:
-                out.write(f"\033[{old_scroll_end};1H")
-                out.write(f"\033[{delta}S")
+            self._apply_scroll_delta(out, delta, old_scroll_end)
 
             out.write("\033[r")
 
@@ -477,9 +480,15 @@ class _BottomBar(_StatusMixin):
                 self._last_cursor_pos = self._input_cursor_pos
                 return
 
-            clear_start = old_scroll_end + 1
-            for r in range(clear_start, height + 1):
-                out.write(f"\033[{r};1H\033[K")
+            if delta < 0:
+                clear_start = old_scroll_end + 1
+                clear_end = scroll_end
+                for r in range(clear_start, clear_end + 1):
+                    out.write(f"\033[{r};1H\033[K")
+            else:
+                clear_start = old_scroll_end + 1
+                for r in range(clear_start, height + 1):
+                    out.write(f"\033[{r};1H\033[K")
 
             r1 = height - total + 1
             r2 = r1 + 1
@@ -497,6 +506,7 @@ class _BottomBar(_StatusMixin):
 
             self._last_scroll_end = scroll_end
             out.write(f"\033[1;{scroll_end}r")
+            self._reclaim_scroll_back(out, delta, scroll_end)
             out.write("\0338")
             out.write(f"\033[{scroll_end};1H\033[s")
             out.flush()
@@ -577,9 +587,7 @@ class _BottomBar(_StatusMixin):
             out = sys.__stdout__
             out.write("\0337")
 
-            if delta > 0 and old_scroll_end >= 1:
-                out.write(f"\033[{old_scroll_end};1H")
-                out.write(f"\033[{delta}S")
+            self._apply_scroll_delta(out, delta, old_scroll_end)
 
             out.write("\033[r")
 
@@ -594,9 +602,15 @@ class _BottomBar(_StatusMixin):
                 out.flush()
                 return
 
-            clear_start = old_scroll_end + 1
-            for r in range(clear_start, height + 1):
-                out.write(f"\033[{r};1H\033[K")
+            if delta < 0:
+                clear_start = old_scroll_end + 1
+                clear_end = scroll_end
+                for r in range(clear_start, clear_end + 1):
+                    out.write(f"\033[{r};1H\033[K")
+            else:
+                clear_start = old_scroll_end + 1
+                for r in range(clear_start, height + 1):
+                    out.write(f"\033[{r};1H\033[K")
 
             r1 = height - total + 1
             tw = self._term_width()
@@ -622,12 +636,48 @@ class _BottomBar(_StatusMixin):
 
             self._last_scroll_end = scroll_end
             out.write(f"\033[1;{scroll_end}r")
+            self._reclaim_scroll_back(out, delta, scroll_end)
             out.write("\0338")
             out.write(f"\033[{scroll_end};1H\033[s")
             out.write(f"\033[{r_cursor};{cursor_col}H")
             out.flush()
 
     # ── 内部绘制 ──────────────────────────────────────────
+
+    def _apply_scroll_delta(self, out, delta: int, old_scroll_end: int) -> None:
+        """根据底部栏行数变化调整上屏内容滚动位置。
+
+        delta > 0（底部栏扩大）：向上滚动内容腾出空间（SU），避免面板覆盖上屏。
+        delta <= 0 或 old_scroll_end < 1：无操作。
+
+        参数:
+            out: sys.__stdout__ 或等价的可写文件对象（TextIO）。
+            delta: 底部栏行数变化量（新值 - 旧值）。
+            old_scroll_end: 旧的 DECSTBM 滚动区域底部行号。
+        """
+        if delta <= 0 or old_scroll_end < 1:
+            return
+        out.write(f"\033[{old_scroll_end};1H")
+        out.write(f"\033[{delta}S")
+
+    @staticmethod
+    def _reclaim_scroll_back(out, delta: int, scroll_end: int) -> None:
+        """缩小后在新 DECSTBM 内下滚内容以消除空白间隙。
+
+        delta < 0（底部栏缩小）：在新 DECSTBM[1;scroll_end] 内做 SD 下滚。
+        回收行（旧面板区域）无实际内容（已被清除），SD 仅产生顶部空白行，
+        这些行随后续流式输出自然滚出视口。
+
+        参数:
+            out: sys.__stdout__ 或等价的可写文件对象。
+            delta: 底部栏行数变化量（新值 - 旧值，应为负数）。
+            scroll_end: 新的 DECSTBM 滚动区域底部行号。
+        """
+        if delta >= 0 or scroll_end < 1:
+            return
+        n = -delta
+        out.write(f"\033[{scroll_end};1H")
+        out.write(f"\033[{n}T")
 
     def _draw_input_lines_locked(self, out, text: str, r_start: int, term_width: int) -> None:
         """绘制输入行（需持有 output_lock），超长文本自动拆行。
@@ -819,9 +869,7 @@ class _BottomBar(_StatusMixin):
             delta = total - old_bottom_lines
             old_scroll_end = height - old_bottom_lines
 
-            if delta > 0 and old_scroll_end >= 1:
-                out.write(f"\033[{old_scroll_end};1H")
-                out.write(f"\033[{delta}S")
+            self._apply_scroll_delta(out, delta, old_scroll_end)
 
             out.write("\033[r")
 
@@ -835,9 +883,15 @@ class _BottomBar(_StatusMixin):
                 out.flush()
                 return
 
-            clear_start = old_scroll_end + 1
-            for r in range(clear_start, height + 1):
-                out.write(f"\033[{r};1H\033[K")
+            if delta < 0:
+                clear_start = old_scroll_end + 1
+                clear_end = scroll_end
+                for r in range(clear_start, clear_end + 1):
+                    out.write(f"\033[{r};1H\033[K")
+            else:
+                clear_start = old_scroll_end + 1
+                for r in range(clear_start, height + 1):
+                    out.write(f"\033[{r};1H\033[K")
 
             r1 = height - total + 1
             r2 = r1 + 1
@@ -855,6 +909,7 @@ class _BottomBar(_StatusMixin):
 
             self._last_scroll_end = scroll_end
             out.write(f"\033[1;{scroll_end}r")
+            self._reclaim_scroll_back(out, delta, scroll_end)
             out.write("\0338")
             out.write(f"\033[{scroll_end};1H\033[s")
             vis_row, vis_col = _compute_cursor_visual_pos(
@@ -896,9 +951,7 @@ class _BottomBar(_StatusMixin):
             delta = total - old_bottom_lines
             old_scroll_end = height - old_bottom_lines
 
-            if delta > 0 and old_scroll_end >= 1:
-                out.write(f"\033[{old_scroll_end};1H")
-                out.write(f"\033[{delta}S")
+            self._apply_scroll_delta(out, delta, old_scroll_end)
 
             out.write("\033[r")
 
@@ -912,9 +965,15 @@ class _BottomBar(_StatusMixin):
                 out.flush()
                 return
 
-            clear_start = old_scroll_end + 1
-            for r in range(clear_start, height + 1):
-                out.write(f"\033[{r};1H\033[K")
+            if delta < 0:
+                clear_start = old_scroll_end + 1
+                clear_end = scroll_end
+                for r in range(clear_start, clear_end + 1):
+                    out.write(f"\033[{r};1H\033[K")
+            else:
+                clear_start = old_scroll_end + 1
+                for r in range(clear_start, height + 1):
+                    out.write(f"\033[{r};1H\033[K")
 
             r1 = height - total + 1
             r2 = r1 + 1
@@ -932,6 +991,7 @@ class _BottomBar(_StatusMixin):
 
             self._last_scroll_end = scroll_end
             out.write(f"\033[1;{scroll_end}r")
+            self._reclaim_scroll_back(out, delta, scroll_end)
             out.write("\0338")
             out.write(f"\033[{scroll_end};1H\033[s")
             vis_row, vis_col = _compute_cursor_visual_pos(
