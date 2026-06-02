@@ -81,6 +81,11 @@ def run_bottom_bar_selection(
                         bb.cycle_completion(-1)
                     elif code == _KEY_DOWN:
                         bb.cycle_completion(1)
+                    elif code == _KEY_ENTER:
+                        # ★ Android/Termux 终端可能以 KEY_ENTER(343) 序列发送 Enter
+                        idx = bb._completion_idx
+                        if 0 <= idx < len(items):
+                            return {"action": "confirmed", "index": idx}
                     elif code == _KEY_ESCAPE:
                         return {"action": "cancel", "index": None}
                     # 其他序列键忽略
