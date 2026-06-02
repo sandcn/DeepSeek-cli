@@ -1,7 +1,7 @@
 """chat_ui 渲染器模块 — 14 种渲染命令的执行逻辑。
 
 Layer 2 — 依赖 _const（Style常量 + RenderCommand + _ReasoningState + _MAIN_LABEL）
-          + _render_state（_RenderState）。
+          + _render_state（_RenderState）+ _controls（控件体系）。
 
 上屏历史管理（ScreenHistoryManager）已屏蔽为 No-op，
 所有相关调用已移除，减轻每帧方法调用开销。
@@ -10,17 +10,12 @@ Layer 2 — 依赖 _const（Style常量 + RenderCommand + _ReasoningState + _MAI
 from __future__ import annotations
 
 import logging
-import math
 import time
 from typing import TYPE_CHECKING, Callable
 
 _logger = logging.getLogger(__name__)
 
-from rich.text import Text
-from wcwidth import wcswidth
-
 from ._const import (
-    _CLEAR_PARSE_LINE,
     _MAX_ERROR_LENGTH,
     _ReasoningState,
     _STYLE_BOLD,
@@ -33,7 +28,13 @@ from ._const import (
     _cmd_name,
     _truncate_msg,
 )
-from ._controls import TextControl
+from ._controls import (
+    ControlList,
+    ParseInfoControl,
+    TextControl,
+    ToolOutputControl,
+    ToolSummaryControl,
+)
 
 if TYPE_CHECKING:
     from ..api.renderer.output import OutputAdapter
@@ -80,12 +81,36 @@ class ContentRenderer:
         self._last_width_check: float = 0.0
         self._cached_term_size: tuple[int, int] = (0, 0)
 
-        # ── TextControl 实例（按前缀+样式分组，替代 _render_styled_line / _write_text_or_ansi） ──
+        # ── ControlList 控件列表管理 ──
         adapter = self._tool_adapter  # 惰性初始化 OutputAdapter
+        self._control_list = ControlList()
+        # ★ 注入到 _RenderState，使推理/内容 MarkdownControl 创建时自动注册
+        self._rs._control_list = self._control_list
+
+        # ── TextControl 实例（按前缀+样式分组，注册到 ControlList）──
         self._user_msg_ctrl = TextControl(adapter, prefix="\n  > ", style=_STYLE_BOLD, level=0)
+        self._control_list.add(self._user_msg_ctrl)
         self._notif_ctrl = TextControl(adapter, prefix="\n  · ", style=_STYLE_SUCCESS, level=0)
+        self._control_list.add(self._notif_ctrl)
         self._error_ctrl = TextControl(adapter, prefix="\n  ! ", style=_STYLE_ERROR, level=0)
-        self._line_ctrl = TextControl(adapter, level=0)  # 无前缀、无样式，用于通用文本行
+        self._control_list.add(self._error_ctrl)
+        self._line_ctrl = TextControl(adapter, level=0)
+        self._control_list.add(self._line_ctrl)
+
+        # ── 工具控件（注册到 ControlList）──
+        self._tool_output_ctrl = ToolOutputControl(adapter, dim_style=_STYLE_DIM, level=0)
+        self._control_list.add(self._tool_output_ctrl)
+        self._tool_summary_ctrl = ToolSummaryControl(
+            adapter,
+            style_success=_STYLE_SUCCESS,
+            style_fail=_STYLE_FAIL,
+            style_warn=_STYLE_WARN,
+            style_dim=_STYLE_DIM,
+            level=0,
+        )
+        self._control_list.add(self._tool_summary_ctrl)
+        self._parse_info_ctrl = ParseInfoControl(adapter, level=0)
+        self._control_list.add(self._parse_info_ctrl)
 
     @property
     def _tool_adapter(self) -> "OutputAdapter":
@@ -116,6 +141,7 @@ class ContentRenderer:
         if new_size != self._cached_term_size:
             self._cached_term_size = new_size
             self._rs.force_refresh_width()
+            self._control_list.refresh_width_all()
 
     def render(self, cmd: tuple) -> None:
         """根据命令类型分发到对应渲染方法（模块级 O(1) 字典查找）。"""
@@ -167,174 +193,33 @@ class ContentRenderer:
     def _do_tool_fail_inc(self) -> None:
         self._bb.increment_tool_fail()
 
-    # ── 工具输出保护常量 ──
-    _MAX_TOOL_OUTPUT_LEN = 10000  # 超过此长度的工具输出被截断
+    # ── 工具输出：通过 ToolOutputControl 渲染 ──
 
     def _do_tool_output(self, text: str) -> None:
-        """渲染工具执行输出（dim 样式 + 缩进）。
+        """渲染工具执行输出（通过 ToolOutputControl 控件）。
 
-        超长文本（> 10000 字符）自动截断并追加 ...(truncated) 标记。
+        超长截断和 \\r 处理由 ToolOutputControl 封装。
+        控件关闭后自动重建——防御异常路径导致的控件意外关闭。
         """
-        if len(text) > self._MAX_TOOL_OUTPUT_LEN:
-            text = text[:self._MAX_TOOL_OUTPUT_LEN] + "...(truncated)"
-
-        ta = self._tool_adapter
-
-        # ── 无 \r：标准输出 ─────────────────────────────────
-        if '\r' not in text:
-            if self._rs.last_was_carriage:
-                ta.write_raw("\n")
-                self._rs.last_was_carriage = False
-            ta.write(Text.assemble(("   ", _STYLE_DIM), (text, _STYLE_DIM)))
-            return
-
-        # ── 含 \r：进度条覆盖输出 ────────────────────────────
-        if '\033[' in text:
-            # 含 ANSI 转义序列 → 移除 \r 后用 Text.from_ansi() 解析
-            self._do_tool_output_with_ansi(ta, text)
-        else:
-            # 纯 \r 文本 → 按 \r 分割取最后一段（中间段被覆盖，无意义）
-            ta.write_raw(text.split('\r')[-1])
-
-        # ── \r 结尾标记 ──────────────────────────────────────
-        if text.endswith('\r'):
-            self._rs.last_was_carriage = True
-        else:
-            ta.write_raw('\n')
-            self._rs.last_was_carriage = False
-
-    def _do_tool_output_with_ansi(
-        self, ta, text: str,
-    ) -> None:
-        """处理含 ANSI 转义序列的工具输出（移除 \r 后解析渲染）。
-
-        整个路径在 try/except 保护中——Text.from_ansi 解析失败或
-        write_raw 回退失败都不抛出，日志记录后静默跳过。
-        """
-        clean_text = text.replace('\r', '')
-        try:
-            try:
-                ta.write(Text.from_ansi(clean_text))
-            except Exception:
-                _logger.warning(
-                    "_do_tool_output: Text.from_ansi 解析失败",
-                    exc_info=True,
-                )
-                ta.write_raw(clean_text)
-        except Exception:
-            _logger.warning(
-                "_do_tool_output: ANSI 渲染路径异常（含回退写入）",
-                exc_info=True,
+        if self._tool_output_ctrl.is_closed:
+            self._tool_output_ctrl = ToolOutputControl(
+                self._tool_adapter, dim_style=_STYLE_DIM, level=0,
             )
+            self._control_list.add(self._tool_output_ctrl)
+        self._tool_output_ctrl.write(text)
+
+    # ── 工具汇总：通过 ToolSummaryControl 渲染 ──
 
     def _do_tool_summary(self, successful: tuple, failed: tuple) -> None:
-        """渲染工具执行汇总（着色图标 + 彩色计数）。
+        """渲染工具执行汇总（通过 ToolSummaryControl 控件，一次性渲染后关闭）。"""
+        self._tool_summary_ctrl.summarize(successful, failed)
+        self._tool_summary_ctrl.close()
 
-        None 保护：参数为 None 时视为空元组，避免 TypeError。
-        """
-        if successful is None or failed is None:
-            _logger.debug(
-                "_do_tool_summary 收到 None 参数: successful=%s, failed=%s",
-                successful, failed,
-            )
-        successful = successful or ()
-        failed = failed or ()
-
-        ta = self._tool_adapter
-        if self._rs.last_was_carriage:
-            ta.write_raw("\n")
-            self._rs.last_was_carriage = False
-
-        total = len(successful) + len(failed)
-        if failed:
-            self._render_failure_summary(ta, failed, total)
-        elif successful:
-            ta.write(Text.assemble(
-                ("  · ", _STYLE_SUCCESS),
-                (f"{len(successful)}工具完成", _STYLE_SUCCESS),
-            ))
-
-    @staticmethod
-    def _truncate_by_visual_width(s: str, max_width: int) -> str:
-        if not s:
-            return s
-        w = 0
-        cut = len(s)
-        for i, ch in enumerate(s):
-            cw = wcswidth(ch) if wcswidth(ch) >= 0 else 1
-            if w + cw > max_width - 3:
-                cut = i
-                break
-            w += cw
-        if cut < len(s):
-            return s[:cut] + "..."
-        return s
-
-    @classmethod
-    def _render_failure_summary(cls, ta: "OutputAdapter", failed: tuple, total: int) -> None:
-        # ★ 解包保护：若元素非 (name, error) 格式，整体转为字符串显示
-        safe_failed = []
-        for item in failed:
-            if isinstance(item, (list, tuple)) and len(item) >= 2:
-                error = str(item[1]) if item[1] is not None else ""
-                # 若元素含 3+ 元素，将额外信息追加到 error 字符串
-                if len(item) > 2:
-                    extras = ", ".join(str(x) for x in item[2:])
-                    if error:
-                        error += f" [{extras}]"
-                    else:
-                        error = f"[{extras}]"
-                safe_failed.append((str(item[0]), error))
-            else:
-                safe_failed.append((str(item), ""))
-        failed = tuple(safe_failed)
-
-        failed_names = ", ".join(n for n, _ in failed)
-        if len(failed) == total:
-            ta.write(Text.assemble(
-                ("  ! ", _STYLE_FAIL),
-                (f"全部失败: {failed_names}", _STYLE_FAIL),
-            ))
-        else:
-            ta.write(Text.assemble(
-                ("  ! ", _STYLE_WARN),
-                (f"{len(failed)}/{total} 失败: {failed_names}", _STYLE_WARN),
-            ))
-
-        for name, error in failed[:3]:
-            short = ""
-            if error:
-                short = error.split("\n")[0].strip()
-                if short:
-                    short = cls._truncate_by_visual_width(short, 80)
-            ta.write(Text.assemble(
-                (f"    {name}", _STYLE_DIM),
-                (f"  {short}", _STYLE_DIM) if short else ("", _STYLE_DIM),
-            ))
-        if len(failed) > 3:
-            ta.write(Text.assemble(
-                (f"    ... 及其他 {len(failed) - 3} 个", _STYLE_DIM),
-            ))
+    # ── 解析进度：通过 ParseInfoControl 渲染 ──
 
     def _do_parse_info(self, tool_names: str, tokens: int | float, elapsed: float) -> None:
-        if tokens == _CLEAR_PARSE_LINE:
-            self._tool_adapter.write_raw("\n")
-            return
-        # ★ 类型保护：tokens 非 (int, float) 时显示原始字符串
-        if isinstance(tokens, (int, float)):
-            if math.isfinite(tokens):
-                tokens_str = f"{tokens}t"
-            else:
-                tokens_str = "?"
-        else:
-            tokens_str = str(tokens)
-        self._tool_adapter.write_raw(
-            f"\r\033[K  ~ {tool_names} {tokens_str} {elapsed:.2f}s",
-        )
-
-    def _do_cmd_output(self, text: str) -> None:
-        """渲染 / 命令执行输出，通过 TextControl 写入。"""
-        self._write_line_via_ctrl(text)
+        """渲染解析进度（通过 ParseInfoControl 控件，不再使用 \\r\\033[K 进度条）。"""
+        self._parse_info_ctrl.update(tool_names, tokens, elapsed)
 
     # ── 样式化行渲染 — 通过 TextControl 实例委托 ──────
 

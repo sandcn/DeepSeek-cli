@@ -17,7 +17,7 @@ from ._const import (
 
 if TYPE_CHECKING:
     from ..api.renderer.output import OutputAdapter
-    from ._controls import MarkdownControl
+    from ._controls import ControlList, MarkdownControl
 
 
 @dataclass
@@ -39,7 +39,6 @@ class _RenderState:
 
     # ── 推理状态机 ──
     reasoning_state: _ReasoningState = _ReasoningState.INACTIVE
-    last_was_carriage: bool = False    # 上一行以 \r 结尾（进度条行内覆盖）
 
     # ── 工具输出适配器（延时初始化） ──
     _tool_adapter: "OutputAdapter | None" = None
@@ -48,6 +47,9 @@ class _RenderState:
     _tool_adapter_lock: threading.Lock = field(
         default_factory=threading.Lock, compare=False, repr=False,
     )
+
+    # ── ControlList 引用（由 ContentRenderer 注入，用于注册推理/内容控件）──
+    _control_list: "ControlList | None" = None
 
     @staticmethod
     def _create_markdown_control(style: str = "") -> "MarkdownControl":
@@ -74,7 +76,7 @@ class _RenderState:
         return self._tool_adapter
 
     def get_reasoning(self) -> "MarkdownControl | None":
-        """获取推理渲染器，惰性创建。
+        """获取推理渲染器，惰性创建并注册到 ControlList。
 
         状态机驱动：
         - INACTIVE → 创建渲染器 + 切换到 ACTIVE
@@ -86,12 +88,16 @@ class _RenderState:
         if self.reasoning is None:
             self.reasoning = self._create_markdown_control(style="dim")
             self.reasoning_state = _ReasoningState.ACTIVE
+            if self._control_list is not None:
+                self._control_list.add(self.reasoning)
         return self.reasoning
 
     def get_content(self) -> "MarkdownControl":
-        """获取内容渲染器，惰性创建。"""
+        """获取内容渲染器，惰性创建并注册到 ControlList。"""
         if self.content is None:
             self.content = self._create_markdown_control()
+            if self._control_list is not None:
+                self._control_list.add(self.content)
         return self.content
 
     def close_reasoning(self) -> None:
@@ -102,6 +108,8 @@ class _RenderState:
         if rr is not None:
             rr.write(_THINKING_SEPARATOR)
             rr.close()
+            if self._control_list is not None:
+                self._control_list.remove(rr)
             self.reasoning = None
         self.reasoning_state = _ReasoningState.CLOSED
 
@@ -114,14 +122,17 @@ class _RenderState:
         """
         if self.reasoning_state != _ReasoningState.CLOSED:
             return
+        # ★ 移除旧控件引用（已在 close_reasoning 中从 ControlList 移除）
         self.reasoning = None
         self.reasoning_state = _ReasoningState.INACTIVE
 
     def close_content(self) -> None:
-        """关闭内容渲染器。"""
+        """关闭内容渲染器并从 ControlList 移除。"""
         cr = self.content
         if cr is not None:
             cr.close()
+            if self._control_list is not None:
+                self._control_list.remove(cr)
             self.content = None
 
     def force_refresh_width(self) -> None:
@@ -155,6 +166,11 @@ class _RenderState:
                 pass
 
     def close_all(self) -> None:
-        """关闭所有渲染器。"""
+        """关闭所有渲染器并清理工具适配器。"""
         self.close_reasoning()
         self.close_content()
+        if self._tool_adapter is not None:
+            try:
+                self._tool_adapter.flush()
+            except Exception:
+                pass

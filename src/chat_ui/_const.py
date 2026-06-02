@@ -55,7 +55,7 @@ class RenderCommand(IntEnum):
     TOOL_SUMMARY  = 7   # (7, successful: tuple, failed: tuple)
     USER_MSG      = 8   # (8, text: str)
     PARSE_INFO    = 9   # (9, tool_names: str, tokens: int, elapsed: float)
-    CMD_OUTPUT    = 10  # (10, text: str)
+    CMD_OUTPUT    = 10  # ★ 已废弃 — 2026-06-02，由 WRITE_LINE 统一处理。保留枚举值防止重用
     NOTIFICATION  = 11  # (11, text: str)
     WRITE_LINE    = 12  # (12, text: str)
     DISPLAY_MSGS  = 13  # (13, messages: list, speed: int)
@@ -101,7 +101,6 @@ def _build_render_dispatch() -> dict[int, tuple[str, tuple[int, ...]]]:
         R.TOOL_SUMMARY:   ("_do_tool_summary",    (1, 2)),
         R.USER_MSG:       ("_do_user_message",    (1,)),
         R.PARSE_INFO:     ("_do_parse_info",      (1, 2, 3)),
-        R.CMD_OUTPUT:     ("_do_cmd_output",      (1,)),
         R.NOTIFICATION:   ("_do_notification",    (1,)),
         R.WRITE_LINE:     ("_do_write_line",      (1,)),
         R.DISPLAY_MSGS:   ("_do_display_messages", (1, 2)),

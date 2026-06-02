@@ -5,6 +5,7 @@
   _state         — Layer 0：全局状态（_active_consumer, _active_parallel_display）
   _error_handler — Layer 1：ChatUIErrorHandler 日志捕获+上屏投递
   _render_state  — Layer 1：_RenderState 渲染器生命周期管理
+  _controls      — Layer 1：Control 基类 + 控件子类 + ControlList 控件列表管理
   _completion    — Layer 2：_CmplHandler Tab 补全交互 + _apply_completion
   _renderers     — Layer 2：ContentRenderer 14 种渲染命令执行
   _dispatcher    — Layer 2：EventDispatcher 事件订阅/过滤/入队（11 种事件处理器）
@@ -12,14 +13,18 @@
   _consumer      — Layer 4：ChatUIConsumer 外观类，组合所有子系统
 
 公开 API（完全向后兼容）：
-  ChatUIConsumer    — 终端聊天消费者
-  get_active_chat_ui — 获取活跃实例
-  RenderCommand     — 渲染命令枚举
-  ChatUIErrorHandler — 日志→上屏投递
-  _apply_completion — Tab 补全应用（纯函数）
-  _active_consumer  — 模块级活跃实例引用
+  ChatUIConsumer       — 终端聊天消费者
+  get_active_chat_ui   — 获取活跃实例
+  RenderCommand        — 渲染命令枚举
+  ChatUIErrorHandler   — 日志→上屏投递
+  _apply_completion    — Tab 补全应用（纯函数）
+  _active_consumer     — 模块级活跃实例引用
   _active_parallel_display — 模块级 ParallelDisplay 引用
-  _MAIN_LABEL       — 主 Agent 标签（供测试使用）
+  _MAIN_LABEL          — 主 Agent 标签（供测试使用）
+  ControlList          — 控件列表管理器
+  ToolOutputControl    — 工具输出控件
+  ToolSummaryControl   — 工具汇总控件
+  ParseInfoControl     — 解析进度控件
 """
 
 from __future__ import annotations
@@ -40,6 +45,15 @@ from ._state import (
 
 # ── Layer 1 导出 ──────────────────────────────────────
 from ._error_handler import ChatUIErrorHandler, _error_handler
+from ._controls import (
+    Control,
+    ControlList,
+    MarkdownControl,
+    ParseInfoControl,
+    TextControl,
+    ToolOutputControl,
+    ToolSummaryControl,
+)
 
 # ── Layer 2 导出 ──────────────────────────────────────
 from ._completion import _apply_completion
@@ -67,4 +81,11 @@ __all__ = [
     "_active_parallel_display",
     "_MAIN_LABEL",
     "ModelPhaseEvent",
+    "Control",
+    "ControlList",
+    "MarkdownControl",
+    "ParseInfoControl",
+    "TextControl",
+    "ToolOutputControl",
+    "ToolSummaryControl",
 ]

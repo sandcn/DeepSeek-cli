@@ -359,3 +359,386 @@ class TestMarkdownControl:
         ctrl.level = 1
         assert ctrl.start_line == 99
         assert ctrl.level == 1
+
+
+# ═══════════════════════════════════════════════════════════
+# TestControlList
+# ═══════════════════════════════════════════════════════════
+
+class TestControlList:
+    """ControlList 控件列表管理器测试。"""
+
+    @pytest.fixture
+    def mock_adapter(self):
+        from unittest.mock import MagicMock
+        return MagicMock()
+
+    def _make_ctrl(self, adapter, start_line=0):
+        """创建简单 TextControl（用于 ControlList 测试）。"""
+        from src.chat_ui._controls import TextControl
+        return TextControl(adapter, start_line=start_line)
+
+    def test_add_and_sort(self, mock_adapter):
+        """添加控件后列表按 start_line 排序。"""
+        from src.chat_ui._controls import ControlList
+        cl = ControlList()
+        c1 = self._make_ctrl(mock_adapter)
+        c2 = self._make_ctrl(mock_adapter)
+        c3 = self._make_ctrl(mock_adapter)
+
+        cl.add(c3, start_line=30)
+        cl.add(c1, start_line=10)
+        cl.add(c2, start_line=20)
+
+        assert [c.start_line for c in cl.controls] == [10, 20, 30]
+
+    def test_add_auto_assigns_start_line(self, mock_adapter):
+        """不指定 start_line 时自动分配 _next_line。"""
+        from src.chat_ui._controls import ControlList
+        cl = ControlList()
+        c1 = self._make_ctrl(mock_adapter)
+        cl.add(c1)  # 自动分配 start_line=1
+        assert c1.start_line == 1
+        assert cl.next_line == 2
+
+    def test_add_multiple_auto_increments(self, mock_adapter):
+        """多次自动分配 start_line 依次递增。"""
+        from src.chat_ui._controls import ControlList
+        cl = ControlList()
+        c1 = self._make_ctrl(mock_adapter)
+        c2 = self._make_ctrl(mock_adapter)
+        c3 = self._make_ctrl(mock_adapter)
+        cl.add(c1)
+        cl.add(c2)
+        cl.add(c3)
+        assert c1.start_line == 1
+        assert c2.start_line == 2
+        assert c3.start_line == 3
+        assert cl.next_line == 4
+
+    def test_remove(self, mock_adapter):
+        """移除控件后列表不包含该控件。"""
+        from src.chat_ui._controls import ControlList
+        cl = ControlList()
+        c1 = self._make_ctrl(mock_adapter)
+        c2 = self._make_ctrl(mock_adapter)
+        cl.add(c1)
+        cl.add(c2)
+        cl.remove(c1)
+        assert len(cl) == 1
+        assert cl.controls[0] is c2
+
+    def test_remove_nonexistent_silent(self, mock_adapter):
+        """移除不在列表中的控件静默跳过。"""
+        from src.chat_ui._controls import ControlList
+        cl = ControlList()
+        c1 = self._make_ctrl(mock_adapter)
+        c2 = self._make_ctrl(mock_adapter)
+        cl.add(c1)
+        cl.remove(c2)  # 不抛异常
+        assert len(cl) == 1
+
+    def test_close_all(self, mock_adapter):
+        """close_all() 关闭所有控件并清空列表。"""
+        from src.chat_ui._controls import ControlList
+        cl = ControlList()
+        c1 = self._make_ctrl(mock_adapter)
+        c2 = self._make_ctrl(mock_adapter)
+        cl.add(c1)
+        cl.add(c2)
+        cl.close_all()
+        assert len(cl) == 0
+        assert c1.is_closed is True
+        assert c2.is_closed is True
+        assert cl.next_line == 1
+
+    def test_find_by_line_exact(self, mock_adapter):
+        """精确匹配 start_line 查找控件。"""
+        from src.chat_ui._controls import ControlList
+        cl = ControlList()
+        c1 = self._make_ctrl(mock_adapter)
+        cl.add(c1, start_line=5)
+        result = cl.find_by_line(5)
+        assert result is c1
+
+    def test_find_by_line_between(self, mock_adapter):
+        """在控件范围内查找。"""
+        from src.chat_ui._controls import ControlList
+        cl = ControlList()
+        c1 = self._make_ctrl(mock_adapter)
+        c2 = self._make_ctrl(mock_adapter)
+        cl.add(c1, start_line=5)
+        cl.add(c2, start_line=10)
+        # line=7 应在 c1 范围内（start_line=5 <= 7 < 10）
+        result = cl.find_by_line(7)
+        assert result is c1
+
+    def test_find_by_line_empty(self, mock_adapter):
+        """空列表查找返回 None。"""
+        from src.chat_ui._controls import ControlList
+        cl = ControlList()
+        assert cl.find_by_line(1) is None
+
+    def test_find_active(self, mock_adapter):
+        """find_active() 返回未关闭的控件。"""
+        from src.chat_ui._controls import ControlList
+        cl = ControlList()
+        c1 = self._make_ctrl(mock_adapter)
+        c2 = self._make_ctrl(mock_adapter)
+        cl.add(c1)
+        cl.add(c2)
+        c1.close()
+        active = cl.find_active()
+        assert len(active) == 1
+        assert active[0] is c2
+
+    def test_len(self, mock_adapter):
+        """__len__ 返回控件数量。"""
+        from src.chat_ui._controls import ControlList
+        cl = ControlList()
+        assert len(cl) == 0
+        cl.add(self._make_ctrl(mock_adapter))
+        assert len(cl) == 1
+
+
+# ═══════════════════════════════════════════════════════════
+# TestToolOutputControl
+# ═══════════════════════════════════════════════════════════
+
+class TestToolOutputControl:
+    """ToolOutputControl 工具输出控件测试。"""
+
+    @pytest.fixture
+    def mock_adapter(self):
+        from unittest.mock import MagicMock
+        return MagicMock()
+
+    @pytest.fixture
+    def dim_style(self):
+        from rich.style import Style
+        return Style(dim=True)
+
+    @pytest.fixture
+    def ctrl(self, mock_adapter, dim_style):
+        from src.chat_ui._controls import ToolOutputControl
+        return ToolOutputControl(mock_adapter, dim_style=dim_style)
+
+    def test_standard_output(self, ctrl, mock_adapter):
+        """标准输出（无 \\r）→ 走样式化 write。"""
+        ctrl.write("hello world")
+        mock_adapter.write.assert_called_once()
+        args = mock_adapter.write.call_args[0][0]
+        assert "hello world" in args.plain
+
+    def test_carriage_return_takes_last_segment(self, ctrl, mock_adapter):
+        """纯 \\r 文本 → 只取最后一段。"""
+        ctrl.write("progress\rstatus\rdone")
+        mock_adapter.write_raw.assert_any_call("done")
+        mock_adapter.write_raw.assert_any_call('\n')
+
+    def test_carriage_ending_marks_last_was_carriage(self, ctrl, mock_adapter):
+        """末尾 \\r → _last_was_carriage=True，不追加 \\n。"""
+        ctrl.write("progress\rstatus\r")
+        mock_adapter.write_raw.assert_any_call("")
+        assert ctrl._last_was_carriage is True
+
+    def test_no_carriage_resets_last_was_carriage(self, ctrl, mock_adapter):
+        """无 \\r → _last_was_carriage=False。"""
+        ctrl._last_was_carriage = True
+        # 需要 mock 一个 write_raw 调用来重置
+        mock_adapter.write_raw.reset_mock()
+        ctrl.write("hello")
+        assert ctrl._last_was_carriage is False
+
+    def test_ansi_with_carriage(self, ctrl, mock_adapter):
+        """ANSI + \\r 混合 → 移除 \\r 后走 Text.from_ansi。"""
+        from rich.text import Text
+        ctrl.write("\033[31mred\r\033[32mgreen\033[0m")
+        mock_adapter.write.assert_called_once()
+        args = mock_adapter.write.call_args[0][0]
+        assert isinstance(args[0], Text)
+
+    def test_truncation(self, ctrl, mock_adapter):
+        """超长文本 → 截断 + ...(truncated)。"""
+        from src.chat_ui._controls import ToolOutputControl
+        long_text = "x" * (ToolOutputControl._MAX_OUTPUT_LEN + 100)
+        ctrl.write(long_text)
+        mock_adapter.write.assert_called_once()
+        args = mock_adapter.write.call_args[0][0]
+        assert "...(truncated)" in args.plain
+
+    def test_close_flushes(self, ctrl, mock_adapter):
+        """close() flush 适配器。"""
+        ctrl.close()
+        mock_adapter.flush.assert_called_once()
+        assert ctrl.is_closed is True
+
+    def test_close_idempotent(self, ctrl, mock_adapter):
+        """close() 幂等。"""
+        ctrl.close()
+        ctrl.close()
+        assert mock_adapter.flush.call_count == 1
+
+    def test_close_with_carriage_appends_newline(self, ctrl, mock_adapter):
+        """_last_was_carriage=True 时 close() 补写 \\n。"""
+        ctrl._last_was_carriage = True
+        ctrl.close()
+        mock_adapter.write_raw.assert_called_with("\n")
+        mock_adapter.flush.assert_called_once()
+
+    def test_write_silent_when_closed(self, ctrl, mock_adapter):
+        """close 后 write() 静默跳过。"""
+        ctrl.close()
+        mock_adapter.reset_mock()
+        ctrl.write("should be ignored")
+        mock_adapter.write.assert_not_called()
+        mock_adapter.write_raw.assert_not_called()
+
+
+# ═══════════════════════════════════════════════════════════
+# TestToolSummaryControl
+# ═══════════════════════════════════════════════════════════
+
+class TestToolSummaryControl:
+    """ToolSummaryControl 工具汇总控件测试。"""
+
+    @pytest.fixture
+    def mock_adapter(self):
+        from unittest.mock import MagicMock
+        return MagicMock()
+
+    @pytest.fixture
+    def styles(self):
+        from rich.style import Style
+        return {
+            "success": Style(color="green"),
+            "fail": Style(color="red"),
+            "warn": Style(color="orange1"),
+            "dim": Style(dim=True),
+        }
+
+    @pytest.fixture
+    def ctrl(self, mock_adapter, styles):
+        from src.chat_ui._controls import ToolSummaryControl
+        return ToolSummaryControl(
+            mock_adapter,
+            style_success=styles["success"],
+            style_fail=styles["fail"],
+            style_warn=styles["warn"],
+            style_dim=styles["dim"],
+        )
+
+    def test_success_summary(self, ctrl, mock_adapter):
+        """成功汇总 → 绿色 · 图标。"""
+        ctrl.summarize(successful=("tool_a", "tool_b"), failed=())
+        mock_adapter.write.assert_called_once()
+        args = mock_adapter.write.call_args[0][0]
+        assert "2" in args.plain
+        assert "工具完成" in args.plain
+
+    def test_failure_summary_item1_zero(self, ctrl, mock_adapter):
+        """item[1]=0 → 显示 "0"。"""
+        ctrl.summarize(successful=(), failed=(("tool_a", 0),))
+        calls = mock_adapter.write.call_args_list
+        all_text = "".join(str(c) for c in calls)
+        assert "0" in all_text
+
+    def test_failure_summary_item1_false(self, ctrl, mock_adapter):
+        """item[1]=False → 显示 "False"。"""
+        ctrl.summarize(successful=(), failed=(("tool_a", False),))
+        calls = mock_adapter.write.call_args_list
+        all_text = "".join(str(c) for c in calls)
+        assert "False" in all_text
+
+    def test_failure_summary_item1_none(self, ctrl, mock_adapter):
+        """item[1]=None → 不显示 error 但显示工具名。"""
+        ctrl.summarize(successful=(), failed=(("tool_a", None),))
+        calls = mock_adapter.write.call_args_list
+        all_text = "".join(str(c) for c in calls)
+        assert "tool_a" in all_text
+
+    def test_failure_summary_extra_elements(self, ctrl, mock_adapter):
+        """3+ 元素 → extras 追加到 error。"""
+        ctrl.summarize(successful=(), failed=(("tool_a", "timeout", 137),))
+        calls = mock_adapter.write.call_args_list
+        all_text = "".join(str(c) for c in calls)
+        assert "137" in all_text
+
+    def test_failure_summary_non_tuple(self, ctrl, mock_adapter):
+        """非 tuple 元素 → str() 安全显示。"""
+        ctrl.summarize(successful=(), failed=("just_a_string",))
+        calls = mock_adapter.write.call_args_list
+        all_text = "".join(str(c) for c in calls)
+        assert "just_a_string" in all_text
+
+    def test_close(self, ctrl, mock_adapter):
+        """close() flush 适配器。"""
+        ctrl.close()
+        mock_adapter.flush.assert_called_once()
+        assert ctrl.is_closed is True
+
+    def test_summarize_silent_when_closed(self, ctrl, mock_adapter):
+        """close 后 summarize() 静默跳过。"""
+        ctrl.close()
+        mock_adapter.reset_mock()
+        ctrl.summarize(successful=("tool_a",), failed=())
+        mock_adapter.write.assert_not_called()
+
+
+# ═══════════════════════════════════════════════════════════
+# TestParseInfoControl
+# ═══════════════════════════════════════════════════════════
+
+class TestParseInfoControl:
+    """ParseInfoControl 解析进度控件测试。"""
+
+    @pytest.fixture
+    def mock_adapter(self):
+        from unittest.mock import MagicMock
+        return MagicMock()
+
+    @pytest.fixture
+    def ctrl(self, mock_adapter):
+        from src.chat_ui._controls import ParseInfoControl
+        return ParseInfoControl(mock_adapter)
+
+    def test_normal_tokens(self, ctrl, mock_adapter):
+        """正常 int tokens → "Nt"。"""
+        ctrl.update("tool_test", 42, 1.5)
+        mock_adapter.write_raw.assert_called_once()
+        text = mock_adapter.write_raw.call_args[0][0]
+        assert "42t" in text
+        assert "tool_test" in text
+        assert "1.50s" in text
+
+    def test_inf_tokens_shows_question_mark(self, ctrl, mock_adapter):
+        """tokens=inf → "?"。"""
+        ctrl.update("tool_test", float('inf'), 1.5)
+        text = mock_adapter.write_raw.call_args[0][0]
+        assert "?" in text
+        assert "inft" not in text
+
+    def test_nan_tokens_shows_question_mark(self, ctrl, mock_adapter):
+        """tokens=nan → "?"。"""
+        ctrl.update("tool_test", float('nan'), 1.5)
+        text = mock_adapter.write_raw.call_args[0][0]
+        assert "?" in text
+        assert "nant" not in text
+
+    def test_clear_sentinel(self, ctrl, mock_adapter):
+        """tokens=_CLEAR_SENTINEL → write_raw('\\n')。"""
+        ctrl.update("", -1, 0.0)
+        mock_adapter.write_raw.assert_called_once_with("\n")
+
+    def test_close(self, ctrl, mock_adapter):
+        """close() flush 适配器。"""
+        ctrl.close()
+        mock_adapter.flush.assert_called_once()
+        assert ctrl.is_closed is True
+
+    def test_update_silent_when_closed(self, ctrl, mock_adapter):
+        """close 后 update() 静默跳过。"""
+        ctrl.close()
+        mock_adapter.reset_mock()
+        ctrl.update("tool_test", 42, 1.5)
+        mock_adapter.write_raw.assert_not_called()

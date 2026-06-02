@@ -187,10 +187,8 @@ class EventDispatcher:
             return
         if not event.text:
             return
-        if event.source == "cmd":
-            self._push_cmd((RenderCommand.CMD_OUTPUT, event.text))
-        else:
-            self._push_cmd((RenderCommand.WRITE_LINE, event.text))
+        # ★ 所有 OutputEvent 统一走 WRITE_LINE（CMD_OUTPUT 已废弃）
+        self._push_cmd((RenderCommand.WRITE_LINE, event.text))
 
     def _on_model_phase(self, event: "DisplayEvent") -> None:
         """处理模型阶段变更事件，phase="error" 时渲染错误到上屏。
