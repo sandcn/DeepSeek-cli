@@ -383,7 +383,7 @@ class TestBug9PositionCursorUnderLock(unittest.TestCase):
         sys.__stdout__ = self._stdout
 
     def test_branch_b_acquires_lock_before_position_cursor(self):
-        """Branch B 路径中 force_redraw 先于 _position_cursor 在持锁状态下调用。"""
+        """Branch B 路径中 force_redraw 先于 position_cursor 在持锁状态下调用。"""
         call_order = []
 
         def track_redraw(*args, **kwargs):
@@ -396,11 +396,11 @@ class TestBug9PositionCursorUnderLock(unittest.TestCase):
         self.mock_bb.force_redraw.side_effect = track_redraw
         self.mock_bb.check_resize.return_value = False
 
-        # 绕开 _position_cursor 内部复杂的 BB 调用，
+        # 绕开 position_cursor 内部复杂的 BB 调用，
         # 直接验证调用顺序：在 drain_queue Branch B 中，
         # force_redraw 先于 position_cursor 被调用。
-        orig_position = self.engine._position_cursor
-        self.engine._position_cursor = track_cursor
+        orig_position = self.engine.position_cursor
+        self.engine.position_cursor = track_cursor
 
         with patch("src.chat_ui._state._active_parallel_display", None), \
              patch("src.ui._lock._try_acquire_output_lock",
@@ -408,7 +408,7 @@ class TestBug9PositionCursorUnderLock(unittest.TestCase):
                                          __exit__=MagicMock(return_value=False))):
             self.engine._drain_queue()
 
-        self.engine._position_cursor = orig_position
+        self.engine.position_cursor = orig_position
         self.assertEqual(call_order,
                          ["force_redraw", "position_cursor"],
                          "position_cursor 应在 force_redraw 之后调用")

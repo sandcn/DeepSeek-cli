@@ -30,8 +30,12 @@ def _reset_error_handler():
     若 handler 不存在（模块未加载），跳过。
     """
     root = logging.getLogger()
-    from src.chat_ui._error_handler import _error_handler
-    handler = _error_handler
+    from src.chat_ui._error_handler import ChatUIErrorHandler
+    handler = None
+    for h in root.handlers:
+        if isinstance(h, ChatUIErrorHandler):
+            handler = h
+            break
     if handler is not None and handler in root.handlers:
         root.removeHandler(handler)
     yield
@@ -262,8 +266,8 @@ class TestRenderCommandError:
 
     def test_error_in_dispatch(self):
         """_RENDER_DISPATCH 包含 ERROR 条目"""
-        from src.chat_ui import ChatUIConsumer
-        dispatch = ChatUIConsumer._RENDER_DISPATCH
+        from src.chat_ui._renderers import _RENDER_DISPATCH
+        dispatch = _RENDER_DISPATCH
         assert 16 in dispatch
         method_name, arg_indices = dispatch[16]
         assert method_name == "_do_error"
@@ -288,8 +292,8 @@ class TestOnModelPhase:
         from src.chat_ui import ChatUIConsumer
         c = ChatUIConsumer()
         # 清空可能残留的消息
-        while not c._cmd_queue.empty():
-            c._cmd_queue.get_nowait()
+        while not c._engine._cmd_queue.empty():
+            c._engine._cmd_queue.get_nowait()
         return c
 
     def test_error_phase_dispatches_error(self, consumer):
@@ -299,8 +303,8 @@ class TestOnModelPhase:
         event = ModelPhaseEvent(
             label=_MAIN_LABEL, phase="error", info="test timeout error",
         )
-        consumer._on_model_phase(event)
-        cmd = consumer._cmd_queue.get_nowait()
+        consumer._disp._on_model_phase(event)
+        cmd = consumer._engine._cmd_queue.get_nowait()
         assert cmd[0] == RenderCommand.ERROR
         assert "test timeout error" in cmd[1]
 
@@ -311,8 +315,8 @@ class TestOnModelPhase:
         event = ModelPhaseEvent(
             label="subagent", phase="error", info="subagent error",
         )
-        consumer._on_model_phase(event)
-        assert consumer._cmd_queue.empty()
+        consumer._disp._on_model_phase(event)
+        assert consumer._engine._cmd_queue.empty()
 
     def test_non_error_phase_skipped(self, consumer):
         """非 error phase（如 "thinking"）→ 不 push 任何命令"""
@@ -321,8 +325,8 @@ class TestOnModelPhase:
         event = ModelPhaseEvent(
             label=_MAIN_LABEL, phase="thinking", info="thinking...",
         )
-        consumer._on_model_phase(event)
-        assert consumer._cmd_queue.empty()
+        consumer._disp._on_model_phase(event)
+        assert consumer._engine._cmd_queue.empty()
 
     def test_empty_info_skipped(self, consumer):
         """空 info → 不 push 任何命令"""
@@ -331,8 +335,8 @@ class TestOnModelPhase:
         event = ModelPhaseEvent(
             label=_MAIN_LABEL, phase="error", info="",
         )
-        consumer._on_model_phase(event)
-        assert consumer._cmd_queue.empty()
+        consumer._disp._on_model_phase(event)
+        assert consumer._engine._cmd_queue.empty()
 
     def test_long_info_truncated(self, consumer):
         """超长 info（>200 字符）→ 截断并追加"..." """
@@ -342,8 +346,8 @@ class TestOnModelPhase:
         event = ModelPhaseEvent(
             label=_MAIN_LABEL, phase="error", info=long_info,
         )
-        consumer._on_model_phase(event)
-        cmd = consumer._cmd_queue.get_nowait()
+        consumer._disp._on_model_phase(event)
+        cmd = consumer._engine._cmd_queue.get_nowait()
         assert cmd[0] == RenderCommand.ERROR
         result = cmd[1]
         assert len(result) == 203  # 200 + "..."
@@ -359,8 +363,8 @@ class TestOnModelPhase:
         event = ModelPhaseEvent(
             label=_MAIN_LABEL, phase="error", info=info,
         )
-        consumer._on_model_phase(event)
-        cmd = consumer._cmd_queue.get_nowait()
+        consumer._disp._on_model_phase(event)
+        cmd = consumer._engine._cmd_queue.get_nowait()
         assert cmd[0] == RenderCommand.ERROR
         assert cmd[1] == info
 

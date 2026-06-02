@@ -303,6 +303,25 @@ class TestMarkdownControl:
         ctrl.refresh_width()
         mock_incremental.force_refresh_width.assert_called_once()
 
+    def test_refresh_width_multiple_calls_idempotent(self, mock_incremental):
+        """验证多次 refresh_width() 调用幂等（每次委托，不崩溃）。"""
+        from src.chat_ui._controls import MarkdownControl
+        ctrl = MarkdownControl()
+        ctrl.refresh_width()
+        ctrl.refresh_width()
+        ctrl.refresh_width()
+        # 每次调用都委托给 renderer（幂等指不崩溃，非仅调用一次）
+        assert mock_incremental.force_refresh_width.call_count == 3
+
+    def test_refresh_width_after_close(self, mock_incremental):
+        """验证 close 后 refresh_width() 仍可安全调用（委托给已关闭的 renderer）。"""
+        from src.chat_ui._controls import MarkdownControl
+        ctrl = MarkdownControl()
+        ctrl.close()
+        # close 后 refresh_width 应不崩溃（委托给 renderer.force_refresh_width）
+        ctrl.refresh_width()
+        mock_incremental.force_refresh_width.assert_called_once()
+
     def test_is_closed_initial(self, mock_incremental):
         """验证初始状态 is_closed=False。"""
         from src.chat_ui._controls import MarkdownControl
@@ -510,6 +529,34 @@ class TestToolOutputControl:
         args = mock_adapter.write.call_args[0][0]
         assert isinstance(args[0], Text)
 
+    def test_ansi_with_carriage_mixed_sequence(self, ctrl, mock_adapter):
+        """ANSI + \\r 混合多次写入 → _last_was_carriage 正确维护。"""
+        ctrl.write("\033[31mprogress\033[0m\r")
+        assert ctrl._last_was_carriage is True
+        ctrl.write("\033[32mdone\033[0m\n")
+        assert ctrl._last_was_carriage is False
+
+    def test_ansi_with_carriage_then_normal(self, ctrl, mock_adapter):
+        """ANSI+\\r 后接普通文本 → 补写换行后再走样式化输出。"""
+        ctrl.write("\033[33mstatus\033[0m\r")
+        assert ctrl._last_was_carriage is True
+        mock_adapter.reset_mock()
+        ctrl.write("hello")
+        # 应补写换行然后走样式化输出
+        assert ctrl._last_was_carriage is False
+
+    def test_carriage_ansi_only_no_text(self, ctrl, mock_adapter):
+        """仅含 ANSI+\\r 无普通文本 → ANSI 解析正确。"""
+        ctrl.write("\033[1m\033[31m\r\033[32mOK\033[0m\r")
+        assert ctrl._last_was_carriage is True
+
+    def test_ansi_with_carriage_close_appends_newline(self, ctrl, mock_adapter):
+        """ANSI+\\r 后 close → 补写 \\n。"""
+        ctrl.write("\033[34minfo\033[0m\r")
+        assert ctrl._last_was_carriage is True
+        ctrl.close()
+        mock_adapter.write_raw.assert_any_call("\n")
+
     def test_truncation(self, ctrl, mock_adapter):
         """超长文本 → 截断 + ...(truncated)。"""
         from src.chat_ui._controls import ToolOutputControl
@@ -678,7 +725,7 @@ class TestParseInfoControl:
         assert "nant" not in text
 
     def test_clear_sentinel(self, ctrl, mock_adapter):
-        """tokens=_CLEAR_SENTINEL → write_raw('\\n')。"""
+        """tokens == _CLEAR_PARSE_LINE (-1) → write_raw('\\n')。"""
         ctrl.update("", -1, 0.0)
         mock_adapter.write_raw.assert_called_once_with("\n")
 

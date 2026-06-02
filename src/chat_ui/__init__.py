@@ -1,20 +1,39 @@
 """ChatUI — 终端聊天消费者包。
 
-架构（拆分为 7 个子系统）：
-  _const         — Layer 0：RenderCommand 枚举、Rich Style 常量、_ReasoningState
-  _state         — Layer 0：全局状态（_active_consumer, _active_parallel_display）
-  _error_handler — Layer 1：ChatUIErrorHandler 日志捕获+上屏投递
-  _render_state  — Layer 1：_RenderState 渲染器生命周期管理
-  _controls      — Layer 1：Control 基类 + 控件子类 + ControlList 控件列表管理
-  _completion    — Layer 2：_CmplHandler Tab 补全交互 + _apply_completion
-  _renderers     — Layer 2：ContentRenderer 14 种渲染命令执行
-  _dispatcher    — Layer 2：EventDispatcher 事件订阅/过滤/入队（11 种事件处理器）
-  _engine        — Layer 3：RenderEngine Reader 线程 + 命令队列 + 渲染循环
-  _consumer      — Layer 4：ChatUIConsumer 外观类，组合所有子系统
+架构（拆分为 10 个子系统，严格 5 层单向依赖 L0→L1→L2→L3→L4）：
 
-公开 API（完全向后兼容）：
+  Layer 0（常量+状态）：
+    _const         — RenderCommand 枚举、Rich Style 常量、_ReasoningState 状态机
+    _state         — 全局活跃实例引用、线程本地重入保护
+
+  Layer 1（基础设施）：
+    _error_handler — ChatUIErrorHandler 日志捕获+上屏投递（模块级注册到 root logger）
+    _render_state  — _RenderState 推理/内容渲染器生命周期管理
+    _controls      — Control(ABC) → TextControl/MarkdownControl/… + ControlList
+
+  Layer 2（业务逻辑）：
+    _completion    — _CmplHandler Tab 补全交互 + _apply_completion 纯函数
+    _renderers     — ContentRenderer 14 种渲染命令 O(1) 字典分发执行
+    _dispatcher    — EventDispatcher 11 种 DisplayEvent 过滤+入队（回调解耦队列）
+
+  Layer 3（引擎）：
+    _engine        — RenderEngine Reader 线程 + Queue 命令队列 + 三阶段流水线
+
+  Layer 4（外观）：
+    _consumer      — ChatUIConsumer 外观类，组合所有子系统
+
+2026-06-02 架构改进：
+  - P0-1: resize 检测从 ContentRenderer 迁移到 RenderEngine._check_resize()
+  - P0-2: ContentRenderer 控件创建提取 _create_controls() 工厂方法
+  - P0-3: _phase_refresh_panels() 接收 pd 参数消除重复惰性导入
+  - P1-1: ChatUIConsumer 新增 bottom_bar property，底部栏 API 收敛
+  - P1-2: ContentRenderer 14 种 _do_* 命令补全系统测试
+  - P1-3: MarkdownControl.refresh_width / reopen_reasoning 完整路径 / ToolOutputControl ANSI+\\r 盲区测试
+
+公开 API：
   ChatUIConsumer       — 终端聊天消费者
   get_active_chat_ui   — 获取活跃实例
+  ChatUIConsumer.bottom_bar — 底部栏对象属性
   RenderCommand        — 渲染命令枚举
   ChatUIErrorHandler   — 日志→上屏投递
   _apply_completion    — Tab 补全应用（纯函数）
@@ -32,6 +51,8 @@
 
 from __future__ import annotations
 
+import logging
+
 # ── Layer 0 导出 ──────────────────────────────────────
 from ._const import (
     RenderCommand,
@@ -44,10 +65,10 @@ from ._state import (
 )
 
 # ── Layer 1 导出 ──────────────────────────────────────
-# ★ 显式注册 ChatUIErrorHandler 到 root logger
-#   在模块加载时立即生效（而非依赖 _consumer.py 的 side-effect import），
-#   确保 ERROR+ 级别日志能投递到 ChatUI 上屏。
+# ★ 显式注册 ChatUIErrorHandler 到 root logger（import 即生效）
+#   在 __init__.py 中显式执行 addHandler，而非依赖模块级副作用。
 from ._error_handler import ChatUIErrorHandler
+logging.getLogger().addHandler(ChatUIErrorHandler())
 from ._controls import (
     Control,
     ControlList,

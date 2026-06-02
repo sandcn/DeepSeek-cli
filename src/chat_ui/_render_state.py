@@ -8,7 +8,7 @@ from __future__ import annotations
 import sys
 import threading
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Callable
 
 from ._const import (
     _ReasoningState,
@@ -17,7 +17,7 @@ from ._const import (
 
 if TYPE_CHECKING:
     from ..api.renderer.output import OutputAdapter
-    from ._controls import ControlList, MarkdownControl
+    from ._controls import Control, MarkdownControl
 
 
 @dataclass
@@ -48,8 +48,11 @@ class _RenderState:
         default_factory=threading.Lock, compare=False, repr=False,
     )
 
-    # ── ControlList 引用（由 ContentRenderer 注入，用于注册推理/内容控件）──
-    _control_list: "ControlList | None" = None
+    # ── 控件生命周期回调（由 ContentRenderer 注册，解耦双向依赖）──
+    # get_reasoning()/get_content() 创建控件后调用 on_control_created，
+    # close_reasoning()/close_content() 关闭控件后调用 on_control_removed。
+    on_control_created: "Callable[[Control], None] | None" = None
+    on_control_removed: "Callable[[Control], None] | None" = None
 
     @staticmethod
     def _create_markdown_control(style: str = "") -> "MarkdownControl":
@@ -88,16 +91,16 @@ class _RenderState:
         if self.reasoning is None:
             self.reasoning = self._create_markdown_control(style="dim")
             self.reasoning_state = _ReasoningState.ACTIVE
-            if self._control_list is not None:
-                self._control_list.add(self.reasoning)
+            if self.on_control_created is not None:
+                self.on_control_created(self.reasoning)
         return self.reasoning
 
     def get_content(self) -> "MarkdownControl":
         """获取内容渲染器，惰性创建并注册到 ControlList。"""
         if self.content is None:
             self.content = self._create_markdown_control()
-            if self._control_list is not None:
-                self._control_list.add(self.content)
+            if self.on_control_created is not None:
+                self.on_control_created(self.content)
         return self.content
 
     def close_reasoning(self) -> None:
@@ -108,8 +111,8 @@ class _RenderState:
         if rr is not None:
             rr.write(_THINKING_SEPARATOR)
             rr.close()
-            if self._control_list is not None:
-                self._control_list.remove(rr)
+            if self.on_control_removed is not None:
+                self.on_control_removed(rr)
             self.reasoning = None
         self.reasoning_state = _ReasoningState.CLOSED
 
@@ -131,8 +134,8 @@ class _RenderState:
         cr = self.content
         if cr is not None:
             cr.close()
-            if self._control_list is not None:
-                self._control_list.remove(cr)
+            if self.on_control_removed is not None:
+                self.on_control_removed(cr)
             self.content = None
 
     def force_refresh_width(self) -> None:

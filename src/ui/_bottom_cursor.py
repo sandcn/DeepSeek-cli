@@ -1,7 +1,7 @@
 """终端光标视觉位置计算 — 拆行/制表符展开/ANSI视觉宽度。
 
 从 _bottom_bar.py 提取的纯计算函数，无状态无锁，纯函数式设计。
-供 _BottomBar 和 RenderEngine._position_cursor 使用。
+供 _BottomBar 和 RenderEngine.position_cursor 使用。
 
 职责范围：
   - 制表符展开（_expand_tabs / _tab_pos_to_expanded）

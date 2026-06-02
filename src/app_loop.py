@@ -119,14 +119,14 @@ def _make_round_callbacks(
         reset_token_speed()
         # ★ 激活底部栏状态行刷新（⏱耗时│总tok│实时tok/s）
         if chat_ui is not None:
-            chat_ui.enable_status_refresh()
+            chat_ui.bottom_bar.enable_status()
 
     def _on_round_end(interrupted=False, delta=None, **kw):
         # ★ 冻结底部栏状态行（定格最终数值），同时获取耗时供通知复用
         notify_elapsed = kw.get("elapsed", 0.0)
         if chat_ui is not None:
-            chat_ui.disable_status_refresh()
-            status_elapsed = chat_ui.get_status_elapsed()
+            chat_ui.bottom_bar.disable_status()
+            status_elapsed = chat_ui.bottom_bar.get_status_elapsed()
             if status_elapsed > 0:
                 notify_elapsed = status_elapsed
 
@@ -343,7 +343,7 @@ class InteractiveLoop:
         """
         try:
             # ★ 同步当前模型名到底部栏状态行（覆盖所有可能修改模型的路径）
-            self._chat_ui.set_model_name(state.model)
+            self._chat_ui.bottom_bar.set_model_name(state.model)
 
             # ── retry / retry_pending：放入队列执行（非直接 await） ──
             if state.retry or session.retry_pending:
@@ -432,14 +432,14 @@ class InteractiveLoop:
         reset_interrupt_async()
         # ★ 重置工具计数（新轮开始）
         if self._chat_ui is not None:
-            self._chat_ui.reset_tool_count()
+            self._chat_ui.bottom_bar.reset_tool_count()
         # 通过 ChatUI 打印用户消息
         if self._chat_ui is not None:
             self._chat_ui.on_user_message(content)
         await session.run_round(content)
         state.model = session.model
         if self._chat_ui is not None:
-            self._chat_ui.set_model_name(state.model)
+            self._chat_ui.bottom_bar.set_model_name(state.model)
         breached, _ = await session.run_pending_loop(max_iter=10)
         if breached:
             self._chat_ui.write_line(f"\n  [错误] 系统繁忙，部分消息未能处理，请重新发送")
@@ -455,14 +455,14 @@ class InteractiveLoop:
         cmd_name = content.split()[0].lower()
         if cmd_name == '/editmsg':
             await _handle_editmsg_cmd(session, state)
-            self._chat_ui.set_model_name(state.model)
+            self._chat_ui.bottom_bar.set_model_name(state.model)
             return
         if cmd_name == '/model':
             # 无参数时使用 Picker 交互选择 → 需 suspend ChatUI + EscapeMonitor
             parts = content.split(maxsplit=1)
             if len(parts) < 2 or not parts[1].strip():
                 await _handle_model_cmd(content, session, state)
-                self._chat_ui.set_model_name(state.model)
+                self._chat_ui.bottom_bar.set_model_name(state.model)
                 return
             # 有参数时直接切换，走通用路径（无需 suspend）
         if cmd_name == '/loop':
@@ -487,7 +487,7 @@ class InteractiveLoop:
             if new_model and new_model != session.model:
                 session.model = new_model
             state.model = state_dict.get("model", state.model)
-            self._chat_ui.set_model_name(state.model)
+            self._chat_ui.bottom_bar.set_model_name(state.model)
             state.retry = state_dict.get("retry", False)
             state.prefill = state_dict.get("prefill", "")
         else:
@@ -549,7 +549,7 @@ class InteractiveLoop:
         session, state = _setup_session(self._loaded_data, self._chat_ui)
 
         # ★ 同步初始模型名到底部栏状态行
-        self._chat_ui.set_model_name(state.model)
+        self._chat_ui.bottom_bar.set_model_name(state.model)
 
         # ★ 启用底部栏：终端底部固定显示 3 行输入界面（会话级持久）
         self._chat_ui.setup_bottom_bar()
@@ -644,7 +644,7 @@ class InteractiveLoop:
                 session.model = next_model
                 state.model = next_model
                 if self._chat_ui is not None:
-                    self._chat_ui.set_model_name(next_model)
+                    self._chat_ui.bottom_bar.set_model_name(next_model)
                     self._chat_ui.on_notification(f"+ 已切换到 {next_model}")
                 # 保留当前输入文本（不清空缓冲区）
                 return text

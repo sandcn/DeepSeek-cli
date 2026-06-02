@@ -33,6 +33,14 @@ _MAX_ERROR_LENGTH = 200
 # ── Reader 线程刷新间隔 ─────────────────────────────────
 _READER_INTERVAL = 0.1  # 100ms = 10Hz
 
+# ── 紧急路径 ANSI 转义序列（直写终端，绕过 Rich 管线） ──
+# 用于队列满/Reader 崩溃等无法通过正常渲染管线输出的场景。
+# 提取为常量而非散落硬编码，确保可维护性。
+_ANSI_RED = "\033[31m"
+_ANSI_YELLOW = "\033[33m"
+_ANSI_RESET = "\033[0m"
+_ANSI_CURSOR_BOTTOM = "\033[9999;1H"
+
 
 # ═══════════════════════════════════════════════════════════
 # RenderCommand — 渲染命令枚举（IntEnum，类型安全 + 自文档化）
@@ -63,12 +71,6 @@ class RenderCommand(IntEnum):
     TOOL_FAIL_INC  = 15  # (15,) — 工具失败计数+1
     ERROR          = 16  # (16, message: str) — 系统错误（红色 ! 样式）
     TOOL_COUNT_DEC = 17  # (17,) — 工具计数-1
-
-
-# ── 已废弃的渲染命令枚举值集合 ──────────────────────────
-# 加入此集合的枚举值在 render() 中收到时会自动告警，
-# 用于标记已废弃但暂未移除的遗留命令（如 CMD_OUTPUT=10）。
-_DEPRECATED: frozenset[int] = frozenset({RenderCommand.CMD_OUTPUT})
 
 
 # ═══════════════════════════════════════════════════════════

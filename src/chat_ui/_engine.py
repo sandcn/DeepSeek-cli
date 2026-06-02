@@ -10,9 +10,17 @@ import logging
 import queue
 import sys
 import threading
+import time
 from typing import TYPE_CHECKING
 
-from ._const import _READER_INTERVAL, _cmd_name, RenderCommand
+from ._const import (
+    _ANSI_RED,
+    _ANSI_RESET,
+    _ANSI_YELLOW,
+    _READER_INTERVAL,
+    _cmd_name,
+    RenderCommand,
+)
 
 if TYPE_CHECKING:
     from ..ui._bottom_bar import _BottomBar
@@ -51,6 +59,11 @@ class RenderEngine:
         # ── 队列满连续计数（超过阈值时直接警告用户） ──
         self._consecutive_full = 0
 
+        # ── 终端大小变化检测（原在 ContentRenderer，已迁移至此） ──
+        self._last_width_check: float = 0.0
+        self._RESIZE_CHECK_INTERVAL: float = 0.2
+        self._cached_term_size: tuple[int, int] = (0, 0)
+
     # ── 公开 API ─────────────────────────────────────────
 
     def push_cmd(self, cmd: tuple) -> None:
@@ -68,7 +81,7 @@ class RenderEngine:
                 # ★ ERROR 命令走直写终端路径，确保用户可见
                 msg = cmd[1] if len(cmd) > 1 else "未知错误"
                 sys.__stdout__.write(
-                    f"\033[31m! [ChatUI] 队列拥堵: {msg}\033[0m\n"
+                    f"{_ANSI_RED}! [ChatUI] 队列拥堵: {msg}{_ANSI_RESET}\n"
                 )
                 sys.__stdout__.flush()
             else:
@@ -79,7 +92,7 @@ class RenderEngine:
             # ★ 连续满超过阈值时直接警告终端
             if self._consecutive_full >= self._CONSECUTIVE_FULL_THRESHOLD:
                 sys.__stdout__.write(
-                    "\033[33m[ChatUI] 渲染输出管线持续拥堵，部分内容可能丢失\033[0m\n"
+                    f"{_ANSI_YELLOW}[ChatUI] 渲染输出管线持续拥堵，部分内容可能丢失{_ANSI_RESET}\n"
                 )
                 sys.__stdout__.flush()
 
@@ -159,6 +172,92 @@ class RenderEngine:
         """将光标移到内容区。调用方须持有 output_lock。"""
         self._bb.ensure_cursor_in_upper()
 
+    def _check_resize(self) -> None:
+        """检测终端大小变化（锁外调用），变化时刷新所有渲染器宽度缓存。
+
+        resize 检测字段（_last_width_check / _cached_term_size /
+        _RESIZE_CHECK_INTERVAL）已从 ContentRenderer 迁移至 RenderEngine 自身。
+        尺寸未变时零副作用。
+        """
+        now = time.monotonic()
+        if now - self._last_width_check < self._RESIZE_CHECK_INTERVAL:
+            return
+        self._last_width_check = now
+        try:
+            import shutil
+            current = shutil.get_terminal_size()
+            new_size = (current.columns, current.lines)
+        except OSError:
+            return
+        if new_size != self._cached_term_size:
+            self._cached_term_size = new_size
+            self._renderer._rs.force_refresh_width()
+            self._renderer._control_list.refresh_width_all()
+
+    # ── 内部 — 三阶段流水线 ──────────────────────────
+
+    def _phase_render(self, commands: list[tuple], resized: bool) -> None:
+        """阶段 1：批量出队 + 上屏渲染（在 output_lock 内调用）。
+
+        参数:
+            commands: 待渲染的命令列表
+            resized: 是否发生了终端 resize；True 时跳过
+                sync_bottom_lines 和 ensure_cursor_upper（已在 check_resize 中处理）。
+        """
+        if not resized:
+            try:
+                self._bb.sync_bottom_lines()
+            except Exception:
+                _logger.debug("drain_queue: sync_bottom_lines 异常", exc_info=True)
+            self.ensure_cursor_upper()
+        for cmd in commands:
+            try:
+                self._renderer.render(cmd)
+            except Exception:
+                _logger.debug("drain_queue: 渲染命令 %s 失败", cmd, exc_info=True)
+                self.push_cmd((
+                    RenderCommand.ERROR,
+                    f"渲染命令 {_cmd_name(cmd[0])} 失败，请查看日志获取详情",
+                ))
+        sys.__stdout__.flush()
+
+    def _phase_refresh_panels(self, pd: "ParallelDisplay | None" = None) -> None:
+        """阶段 2：ParallelDisplay 面板刷新（在 output_lock 内调用）。
+
+        Args:
+            pd: 由 _drain_queue() 传入的 _active_parallel_display 引用，
+                避免方法内重复惰性导入。
+        """
+        if pd is None:
+            from . import _active_parallel_display
+            pd = _active_parallel_display
+        if pd is not None:
+            try:
+                pd.refresh()
+            except Exception:
+                _logger.debug("drain_queue: ParallelDisplay 刷新异常", exc_info=True)
+                self.push_cmd((
+                    RenderCommand.ERROR,
+                    "drain_queue: ParallelDisplay 刷新失败，请查看日志获取详情",
+                ))
+
+    def _phase_redraw_bottom(self, has_commands: bool) -> None:
+        """阶段 3：底部栏重绘 + 光标定位（在 output_lock 内调用）。
+
+        分流策略：
+        - has_commands=True → 全量重绘
+        - is_status_active → 流式状态每帧强制重绘
+        """
+        if has_commands or self._bb.is_status_active:
+            try:
+                self._bb.force_redraw()
+            except Exception:
+                _logger.debug("drain_queue: force_redraw 异常", exc_info=True)
+            try:
+                self.position_cursor()
+            except Exception:
+                _logger.debug("drain_queue: position_cursor 异常", exc_info=True)
+
     # ── 内部 — Reader 线程 ────────────────────────────
 
     def _reader(self) -> None:
@@ -175,22 +274,22 @@ class RenderEngine:
                 )
                 # 直接写 stderr 确保用户可见（Reader 线程已死，队列无人消费）
                 sys.__stderr__.write(
-                    "\033[31m[ChatUI] Reader 线程异常终止，请联系开发人员查看日志\033[0m\n"
+                    f"{_ANSI_RED}[ChatUI] Reader 线程异常终止，请联系开发人员查看日志{_ANSI_RESET}\n"
                 )
                 sys.__stderr__.flush()
                 self._reader_running = False
                 break
 
     def _drain_queue(self) -> None:
-        """消费所有待处理渲染命令，执行上屏渲染 + 底部栏重绘。
+        """消费所有待处理渲染命令（入口方法，路由到三阶段流水线）。
 
         流水线：
           0. 快速空闲跳过（锁外）— 队列空 + 无面板 + 状态行不活跃 + 无 resize pending 时跳过
           0b. 终端大小变化检测（锁外）— 检测 resize 并刷新渲染器宽度缓存
           1. resize 处理（锁内）— 消费 SIGWINCH 标记，更新终端尺寸和 DECSTBM
-          2. 上屏渲染（锁内）— 批量出队 + 渲染命令
-          3. ParallelDisplay 面板刷新（锁内）— 刷新 SubAgent UI 面板
-          4. 底部栏重绘 + 光标定位（锁内）— force_redraw + 光标移回输入行
+          2. 上屏渲染（锁内）— 批量出队 + 渲染命令 → _phase_render()
+          3. ParallelDisplay 面板刷新（锁内）— 刷新 SubAgent UI 面板 → _phase_refresh_panels()
+          4. 底部栏重绘 + 光标定位（锁内）— force_redraw + 光标移回输入行 → _phase_redraw_bottom()
 
         步骤 0/0b 在锁外、步骤 1-4 共用同一个 output_lock，
         防止上屏渲染 / 面板刷新 / 底部栏重绘之间的终端 I/O 交错。
@@ -213,7 +312,7 @@ class RenderEngine:
         #   系统调用在 output_lock 内执行，减少锁持有时间。
         #   异常静默忽略：检测失败时降级依赖 OutputAdapter 的 5 秒 TTL。
         try:
-            self._renderer._check_and_refresh_width()
+            self._check_resize()
         except Exception:
             pass
 
@@ -231,7 +330,7 @@ class RenderEngine:
                     "drain_queue: check_resize 异常", exc_info=True,
                 )
 
-            # ★ 阶段 1：批量出队 + 上屏渲染
+            # ★ 批量出队
             commands: list[tuple] = []
             while True:
                 try:
@@ -239,82 +338,21 @@ class RenderEngine:
                     self._cmd_queue.task_done()
                 except queue.Empty:
                     break
+
             if commands:
-                # ★ 非 resize 路径：sync DECSTBM + 光标移到内容区底部再渲染
-                #   resize 时 check_resize() 已同步 DECSTBM 和光标预定位（Fix A），
-                #   无需重复调用 sync_bottom_lines 和 ensure_cursor_upper。
-                if not resized:
-                    try:
-                        self._bb.sync_bottom_lines()
-                    except Exception:
-                        _logger.debug(
-                            "drain_queue: sync_bottom_lines 异常",
-                            exc_info=True,
-                        )
-                    self.ensure_cursor_upper()
-                for cmd in commands:
-                    try:
-                        self._renderer.render(cmd)
-                    except Exception:
-                        _logger.debug(
-                            "drain_queue: 渲染命令 %s 失败", cmd,
-                            exc_info=True,
-                        )
-                        self.push_cmd((
-                            RenderCommand.ERROR,
-                            f"渲染命令 {_cmd_name(cmd[0])} 失败，请查看日志获取详情",
-                        ))
-                sys.__stdout__.flush()
+                self._phase_render(commands, resized)
 
-            # ★ 阶段 2：ParallelDisplay 面板刷新
-            if pd is not None:
-                try:
-                    pd.refresh()
-                except Exception:
-                    _logger.debug(
-                        "drain_queue: ParallelDisplay 刷新异常",
-                        exc_info=True,
-                    )
-                    self.push_cmd((
-                        RenderCommand.ERROR,
-                        "drain_queue: ParallelDisplay 刷新失败，请查看日志获取详情",
-                    ))
+            self._phase_refresh_panels(pd)
 
-            # ★ 阶段 3：底部栏重绘 + 光标定位
-            # 分流策略：
-            #   - 有命令 → 全量重绘
-            #   - 仅流式活跃（无命令）→ 每帧全量底部栏重绘
-            #     使用 force_redraw，流式输出期间
-            #     _format_status() 每帧返回不同文本（令牌数/速率/耗时变化），
-            #     force_redraw 的快速路径（new_status == _last_status）不触发，
-            #     确保每帧完整刷新底部栏全部内容（分隔线+状态行+输入区）。
-            if commands or self._bb.is_status_active:
-                try:
-                    self._bb.force_redraw()
-                except Exception:
-                    _logger.debug(
-                        "drain_queue: force_redraw 异常", exc_info=True,
-                    )
-                try:
-                    self._position_cursor()
-                except Exception:
-                    _logger.debug(
-                        "drain_queue: _position_cursor 异常", exc_info=True,
-                    )
+            self._phase_redraw_bottom(bool(commands))
 
-    def _position_cursor(self) -> None:
-        """光标移回输入行，根据超长文本自动拆行定位（含最少3行输入区）。
+    def position_cursor(self) -> None:
+        """公开方法 — 将光标移回输入行，根据超长文本自动拆行定位。
 
-        使用 _BottomBar._cursor_visual_pos_from_cache 复用拆行缓存，
-        避免每次 drain 周期都做 O(n·wcswidth) 的 _compute_cursor_visual_pos 重算。
+        通过 _BottomBar.compute_cursor_position() 公开 API 计算光标位置，
+        避免直接访问 _BottomBar 的私有属性。
         """
         text, cursor_pos, h, w = self._bb.get_cursor_info()
-        max_input = max(1, w - 4)
-
-        vis_row, vis_col = self._bb._cursor_visual_pos_from_cache(text, cursor_pos, max_input)
-        total_bottom = max(5, self._bb._bottom_lines)  # 至少 2 分隔线+状态行 + 3 最少输入行
-        popup_offset = self._bb._completion_popup_height
-        r_cursor = max(1, h - total_bottom + 3 + popup_offset + vis_row)
-        cursor_col = min(3 + vis_col, w)
+        r_cursor, cursor_col = self._bb.compute_cursor_position(text, cursor_pos, h, w)
         sys.__stdout__.write(f"\033[{r_cursor};{cursor_col}H")
         sys.__stdout__.flush()

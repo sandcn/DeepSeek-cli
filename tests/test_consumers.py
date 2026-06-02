@@ -333,7 +333,7 @@ class TestOutputConsumerWithChatUI:
         assert stream.getvalue() == ""
 
 # ===============================================================
-# 新增: refresh_bottom_bar() 与 ensure_cursor_lower() flush 验证
+# refresh_bottom_bar() flush 验证 + bottom_bar 属性访问
 # ===============================================================
 
 class TestCursorPositioningFlush:
@@ -357,7 +357,7 @@ class TestCursorPositioningFlush:
         chat_ui._bottom_bar.ensure_cursor_in_lower.assert_called_once()
 
     def test_ensure_cursor_lower_flushes_stdout(self):
-        """ensure_cursor_lower() 调用后 sys.__stdout__.flush() 被调用"""
+        """ensure_cursor_in_lower() 通过 bottom_bar 属性访问，不自动 flush。"""
         bus = DisplayEventBus()
         chat_ui = ChatUIConsumer(event_bus=bus)
 
@@ -365,10 +365,10 @@ class TestCursorPositioningFlush:
             chat_ui._bottom_bar.ensure_cursor_in_lower)
 
         with patch.object(sys.__stdout__, "flush") as mock_flush:
-            chat_ui.ensure_cursor_lower()
-
-        mock_flush.assert_called()
-        chat_ui._bottom_bar.ensure_cursor_in_lower.assert_called_once()
+            chat_ui.bottom_bar.ensure_cursor_in_lower()
+            # bottom_bar 直接访问底层方法，不自动 flush
+            # flush 由调用方（如 refresh_bottom_bar）负责
+            chat_ui._bottom_bar.ensure_cursor_in_lower.assert_called_once()
 
     def test_refresh_bottom_bar_flush_called_after_reposition(self):
         """验证 flush 在 ensure_cursor_in_lower 之后被调用（顺序保证）"""

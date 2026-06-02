@@ -187,7 +187,7 @@ class _BottomBar(_StatusMixin):
     def get_cursor_info(self) -> tuple[str, int, int, int]:
         """获取光标定位所需数据：文本、光标位置、终端高度、终端宽度。
 
-        供 ChatUIConsumer._position_cursor 使用，避免直接访问私有属性。
+        供 RenderEngine.position_cursor 使用，避免直接访问私有属性。
         返回值: (last_text, cursor_pos, term_height, term_width)
         """
         return (
@@ -196,6 +196,36 @@ class _BottomBar(_StatusMixin):
             self._term_height(),
             self._term_width(),
         )
+
+    def compute_cursor_position(
+        self, text: str, cursor_pos: int, h: int, w: int,
+    ) -> tuple[int, int]:
+        """计算光标在底部栏中的终端行号和列号（公开 API）。
+
+        封装以下私有访问：
+          - _cursor_visual_pos_from_cache(text, cursor_pos, max_width)
+          - _bottom_lines property（间接通过 _compute_input_rows 计算）
+          - _completion_popup_height property
+
+        供 RenderEngine.position_cursor() 使用。
+        纯计算函数，不执行终端 I/O，调用方负责 flush。
+
+        Args:
+            text: 当前输入文本
+            cursor_pos: 光标在文本中的偏移位置
+            h: 终端高度
+            w: 终端宽度
+
+        Returns:
+            (r_cursor, cursor_col) — 光标所在行号（1-based）和列号（1-based）
+        """
+        max_input = max(1, w - 4)
+        vis_row, vis_col = self._cursor_visual_pos_from_cache(text, cursor_pos, max_input)
+        total_bottom = max(5, 2 + self._compute_input_rows())  # 至少 2 分隔线+状态行 + 3 最少输入行
+        popup_offset = self._completion.height
+        r_cursor = max(1, h - total_bottom + 3 + popup_offset + vis_row)
+        cursor_col = min(3 + vis_col, w)
+        return (r_cursor, cursor_col)
 
     def _cursor_visual_pos_from_cache(
         self, text: str, cursor_pos: int, max_width: int,

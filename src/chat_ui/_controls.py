@@ -6,10 +6,10 @@ MarkdownControl: Layer 2 — 依赖 api.renderer（IncrementalRenderer / OutputA
 控件体系：
   Control (ABC)           — 控件基类（write / close / refresh_width / is_closed）
     ├── TextControl       — 纯文本控件（prefix + style + raw/ansi 路径）
-    │     ├── ToolOutputControl  — 工具输出控件（dim+缩进，封装 \\r 处理）
-    │     └── ParseInfoControl   — 解析进度控件（替代 \\r\\033[K 进度条）
+    │     └── ToolOutputControl  — 工具输出控件（dim+缩进，封装 \\r 处理）
     ├── MarkdownControl   — 流式 Markdown 控件（封装 IncrementalRenderer）
-    └── ToolSummaryControl — 工具汇总控件（成功/失败着色）
+    ├── ToolSummaryControl — 工具汇总控件（成功/失败着色）
+    └── ParseInfoControl   — 解析进度控件（独立继承 Control，不依赖 TextControl）
 
 ControlList — 控件列表管理器，按 start_line 排序维护控件线性列表。
 
@@ -33,6 +33,8 @@ _logger = logging.getLogger(__name__)
 from rich.style import Style
 from rich.text import Text
 from wcwidth import wcswidth
+
+from ._const import _CLEAR_PARSE_LINE
 
 if TYPE_CHECKING:
     from ..api.renderer import IncrementalRenderer
@@ -122,10 +124,41 @@ class Control(ABC):
 
 
 # ═══════════════════════════════════════════════════════════
+# _ControlBase — 控件基类混入（字段初始化 + 生命周期）
+# ═══════════════════════════════════════════════════════════
+
+class _ControlBase:
+    """控件基类混入 — 提供 start_line/level 字段初始化 + close() 幂等 + is_closed。
+
+    作为多重继承的第二个基类使用（在 Control 之后）：
+        class TextControl(Control, _ControlBase):
+            ...
+
+    子类 __init__ 中调用 _ControlBase.__init__(self, start_line=..., level=...)
+    即可获得 _start_line/_level/_closed 字段的初始化和属性存取。
+    """
+
+    def __init__(self, start_line: int = 0, level: int = 0) -> None:
+        self._start_line: int = start_line
+        self._level: int = level
+        self._closed: bool = False
+
+    def close(self) -> None:
+        """关闭控件（标记关闭）。幂等——多次调用无副作用。"""
+        if self._closed:
+            return
+        self._closed = True
+
+    @property
+    def is_closed(self) -> bool:
+        return self._closed
+
+
+# ═══════════════════════════════════════════════════════════
 # TextControl — 纯文本控件（prefix + style）
 # ═══════════════════════════════════════════════════════════
 
-class TextControl(Control):
+class TextControl(Control, _ControlBase):
     """纯文本渲染控件 — 前缀 + Rich Style 样式化输出。
 
     封装原 ContentRenderer._render_styled_line() 和 _write_text_or_ansi()
@@ -162,9 +195,7 @@ class TextControl(Control):
         self._adapter = output_adapter
         self._prefix = prefix
         self._style = style
-        self._start_line = start_line
-        self._level = level
-        self._closed = False
+        _ControlBase.__init__(self, start_line=start_line, level=level)
 
     # ── 公共接口 ────────────────────────────────────────
 
@@ -243,7 +274,7 @@ class TextControl(Control):
 # MarkdownControl — 流式 Markdown 控件
 # ═══════════════════════════════════════════════════════════
 
-class MarkdownControl(Control):
+class MarkdownControl(Control, _ControlBase):
     """流式 Markdown 渲染控件 — 封装 IncrementalRenderer。
 
     统一推理/内容两个流式 Markdown 路径，对外暴露统一 Control 接口。
@@ -283,9 +314,7 @@ class MarkdownControl(Control):
             typing_speed=typing_speed,
             show_indicator=show_indicator,
         )
-        self._start_line = start_line
-        self._level = level
-        self._closed = False
+        _ControlBase.__init__(self, start_line=start_line, level=level)
 
     # ── 公共接口 ────────────────────────────────────────
 
@@ -446,9 +475,12 @@ class ToolOutputControl(TextControl):
 
         处理路径：
           1. 超长截断（>10000 字符 → ...(truncated)）
-          2. 无 \\r → 标准样式输出
-          3. 含 \\r → 进度条覆盖输出（ANSI 分流）
+          2. 无 \\r → 标准样式输出（_write_standard）
+          3. 含 \\r → 进度条覆盖输出（_write_carriage）
         内容未变时跳过渲染（脏检查）。
+
+        委托内部方法 _write_standard() 和 _write_carriage() 完成
+        具体渲染逻辑，本方法负责前置检查和路由。
         """
         if self._closed:
             return
@@ -461,17 +493,38 @@ class ToolOutputControl(TextControl):
         if self._is_unchanged(text) and not self._last_was_carriage:
             return
 
-        # ── 无 \r：标准输出 ─────────────────────────────────
+        # ── 路由：无 \r → 标准输出 / 含 \r → 覆盖输出 ──────
         if '\r' not in text:
-            if self._last_was_carriage:
-                self._adapter.write_raw("\n")
-                self._last_was_carriage = False
-            self._adapter.write(
-                Text.assemble((self._prefix, self._dim_style), (text, self._dim_style))
-            )
-            return
+            self._write_standard(text)
+        else:
+            self._write_carriage(text)
 
-        # ── 含 \r：进度条覆盖输出 ────────────────────────────
+    # ── 内部：标准输出路径（无 \r）─────────────────────────
+
+    def _write_standard(self, text: str) -> None:
+        """标准样式输出路径——无 \\r 字符时调用。
+
+        若上一 write 以 \\r 结尾（_last_was_carriage=True），
+        先补写换行再输出样式化文本。
+        """
+        if self._last_was_carriage:
+            self._adapter.write_raw("\n")
+            self._last_was_carriage = False
+        self._adapter.write(
+            Text.assemble((self._prefix, self._dim_style), (text, self._dim_style))
+        )
+
+    # ── 内部：\\r 覆盖输出路径 ──────────────────────────
+
+    def _write_carriage(self, text: str) -> None:
+        """\\r 覆盖输出路径——含 \\r 字符时调用。
+
+        分两种子情况：
+        - 含 ANSI（\\033[）→ 移除 \\r 后走 ANSI 解析渲染
+        - 纯 \\r 文本 → 按 \\r 分割取最后一段
+
+        根据末尾是否有 \\r 维护 _last_was_carriage 状态。
+        """
         if '\033[' in text:
             self._write_with_ansi(text)
         else:
@@ -512,7 +565,7 @@ class ToolOutputControl(TextControl):
 # ToolSummaryControl — 工具汇总控件
 # ═══════════════════════════════════════════════════════════
 
-class ToolSummaryControl(Control):
+class ToolSummaryControl(Control, _ControlBase):
     """工具汇总渲染控件 — 成功/失败着色 + 详情列表。
 
     不继承 TextControl，因其渲染逻辑差异大（一次性 summarize 而非流式 write）。
@@ -546,9 +599,7 @@ class ToolSummaryControl(Control):
         self._style_fail = style_fail
         self._style_warn = style_warn
         self._style_dim = style_dim
-        self._start_line = start_line
-        self._level = level
-        self._closed = False
+        _ControlBase.__init__(self, start_line=start_line, level=level)
 
     # ── 公共接口 ────────────────────────────────────────
 
@@ -666,21 +717,18 @@ class ToolSummaryControl(Control):
 # ParseInfoControl — 解析进度控件
 # ═══════════════════════════════════════════════════════════
 
-class ParseInfoControl(TextControl):
+class ParseInfoControl(Control, _ControlBase):
     """解析进度渲染控件 — 替代 \\r\\033[K 进度条，改为普通文本行。
 
-    继承 TextControl，通过 write_raw 直写解析进度信息。
-    不再使用 \\r 覆盖——每次更新输出为独立行。
+    直接继承 Control, _ControlBase，不继承 TextControl（write() 语义不兼容）。
+    通过 update() 渲染解析进度信息，write() 为 no-op。
     """
-
-    # ── 清除进度哨兵（与 _const._CLEAR_PARSE_LINE 值一致） ──
-    _CLEAR_SENTINEL = -1
 
     def write(self, text: str) -> None:
         """不支持流式写入——ParseInfoControl 通过 update() 渲染。
 
-        显式覆盖为 no-op：因为 ParseInfoControl 继承 TextControl，
-        若依赖 MRO 解析会错误调用 TextControl.write() 产生非预期输出。
+        显式覆盖为 no-op：与 TextControl.write() 语义不兼容，
+        独立继承 Control 而非 TextControl 可避免误调用父类 write()。
         """
         return
 
@@ -697,13 +745,10 @@ class ParseInfoControl(TextControl):
             start_line: 起始行号
             level: 层级
         """
-        super().__init__(
-            output_adapter,
-            prefix="",
-            style=None,
-            start_line=start_line,
-            level=level,
-        )
+        if output_adapter is None:
+            raise ValueError("ParseInfoControl: output_adapter 不能为 None")
+        self._adapter = output_adapter
+        _ControlBase.__init__(self, start_line=start_line, level=level)
 
     # ── 公共接口 ────────────────────────────────────────
 
@@ -711,18 +756,18 @@ class ParseInfoControl(TextControl):
         """渲染解析进度行 — 同行原地更新（\\r\\033[K 覆写，不产生新行）。
 
         每次调用覆写当前行，行尾不追加 \\n，保持单行进度条行为。
-        _CLEAR_SENTINEL 时输出 \\n 结束当前进度行。
+        tokens == _CLEAR_PARSE_LINE 时输出 \\n 结束当前进度行。
         内容未变时跳过渲染（脏检查）。
 
         Args:
             tool_names: 工具名列表字符串
-            tokens: token 数量（_CLEAR_SENTINEL 时仅输出换行）
+            tokens: token 数量（== _CLEAR_PARSE_LINE 时仅输出换行）
             elapsed: 耗时秒数
         """
         if self._closed:
             return
 
-        if tokens == self._CLEAR_SENTINEL:
+        if tokens == _CLEAR_PARSE_LINE:
             self._adapter.write_raw("\n")
             self._last_output = None  # 重置缓存
             return
@@ -747,3 +792,7 @@ class ParseInfoControl(TextControl):
             return
         self._closed = True
         self._adapter.flush()
+
+    @property
+    def is_closed(self) -> bool:
+        return self._closed

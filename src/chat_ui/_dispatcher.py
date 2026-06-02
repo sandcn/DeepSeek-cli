@@ -6,7 +6,7 @@ Layer 2 — 依赖 _const（RenderCommand + _MAIN_SOURCE + _MAIN_LABEL）。
 
 from __future__ import annotations
 
-import threading
+import importlib
 from typing import TYPE_CHECKING, Callable
 
 from ._const import (
@@ -16,6 +16,9 @@ from ._const import (
 
 if TYPE_CHECKING:
     from ..ui.events.event_types import DisplayEvent
+
+# ── 事件类型模块路径（供反射加载使用） ──
+_EVENT_MODULE = "..ui.events.event_types"
 
 # 事件处理器类型：接收 DisplayEvent，通过 push_cmd 入队
 _EventHandler = Callable[["DisplayEvent"], None]
@@ -52,50 +55,26 @@ class EventDispatcher:
         self._push_cmd = push_cmd
         # 懒加载事件类型（仅在首次使用时 import）
         self._event_types: dict[str, type] = {}
-        self._event_lock = threading.Lock()
+        self._event_types_loaded: bool = False
 
     def _get_event_type(self, name: str) -> type:
-        """惰性加载事件类型，避免 EventDispatcher 构造时 import 事件模块。
+        """惰性加载事件类型（首次调用时一次性加载全部 11 种）。
 
-        使用双重检查锁定（double-checked locking）防止多 EventBus 回调线程
-        同时首次访问时重复导入和 dict 写入。
+        通过 `importlib.import_module` 从 `_EVENT_HANDLERS` 的名称列表
+        自动反射加载，消除手工 import 块和 `_EVENT_HANDLERS` 的双重维护。
+
+        首次调用一次性装载全部事件类型，
+        后续直接通过 self._event_types[name] 访问。
+        若 name 不在注册表中，返回 object 使 isinstance 安全返回 False。
         """
-        # 首次检查（无锁路径，快速通过）
-        cached = self._event_types.get(name)
-        if cached is not None:
-            return cached
-        # 双重检查（加锁路径，仅首次加载时进入）
-        with self._event_lock:
-            cached = self._event_types.get(name)
-            if cached is not None:
-                return cached
-            from ..ui.events.event_types import (
-                ContentChunkEvent,
-                ModelPhaseEvent,
-                OutputEvent,
-                ParseInfoDoneEvent,
-                ParseInfoEvent,
-                PhaseDoneEvent,
-                ReasoningChunkEvent,
-                ToolDoneEvent,
-                ToolOutputChunkEvent,
-                ToolStartedEvent,
-                ToolSummaryEvent,
-            )
-            self._event_types.update({
-                "ReasoningChunkEvent": ReasoningChunkEvent,
-                "ContentChunkEvent": ContentChunkEvent,
-                "PhaseDoneEvent": PhaseDoneEvent,
-                "ToolStartedEvent": ToolStartedEvent,
-                "ToolDoneEvent": ToolDoneEvent,
-                "ToolOutputChunkEvent": ToolOutputChunkEvent,
-                "ToolSummaryEvent": ToolSummaryEvent,
-                "ParseInfoEvent": ParseInfoEvent,
-                "ParseInfoDoneEvent": ParseInfoDoneEvent,
-                "ModelPhaseEvent": ModelPhaseEvent,
-                "OutputEvent": OutputEvent,
-            })
-            return self._event_types[name]
+        if not self._event_types_loaded:
+            mod = importlib.import_module(_EVENT_MODULE, package=__package__)
+            self._event_types = {
+                name: getattr(mod, name, object)
+                for name, _ in self._EVENT_HANDLERS
+            }
+            self._event_types_loaded = True
+        return self._event_types.get(name, object)
 
     @staticmethod
     def _is_agent_source(source: str | None) -> bool:

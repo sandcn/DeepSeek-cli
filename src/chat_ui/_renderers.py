@@ -10,7 +10,6 @@ Layer 2 — 依赖 _const（Style常量 + RenderCommand + _ReasoningState + _MAI
 from __future__ import annotations
 
 import logging
-import time
 from typing import TYPE_CHECKING, Callable
 
 _logger = logging.getLogger(__name__)
@@ -24,7 +23,7 @@ from ._const import (
     _STYLE_FAIL,
     _STYLE_SUCCESS,
     _STYLE_WARN,
-    _build_render_dispatch,
+    RenderCommand,
     _cmd_name,
     _truncate_msg,
 )
@@ -39,6 +38,36 @@ from ._controls import (
 if TYPE_CHECKING:
     from ..api.renderer.output import OutputAdapter
     from ._render_state import _RenderState
+
+
+# ── 已废弃的渲染命令枚举值集合 ──────────────────────────
+# 加入此集合的枚举值在 render() 中收到时会自动告警，
+# 用于标记已废弃但暂未移除的遗留命令（如 CMD_OUTPUT=10）。
+_DEPRECATED: frozenset[int] = frozenset({RenderCommand.CMD_OUTPUT})
+
+
+def _build_render_dispatch() -> dict[int, tuple[str, tuple[int, ...]]]:
+    """构建渲染命令分发表（模块级函数，类定义时即初始化）。
+
+    从 _const.py 移入 _renderers.py，因其仅被 ContentRenderer 使用。
+    """
+    R = RenderCommand
+    return {
+        R.REASONING:      ("_do_reasoning",       (1,)),
+        R.CONTENT:        ("_do_content",         (1,)),
+        R.PHASE_DONE:     ("_do_phase_done",      (1,)),
+        R.TOOL_OUTPUT:    ("_do_tool_output",     (1,)),
+        R.TOOL_SUMMARY:   ("_do_tool_summary",    (1, 2)),
+        R.USER_MSG:       ("_do_user_message",    (1,)),
+        R.PARSE_INFO:     ("_do_parse_info",      (1, 2, 3)),
+        R.NOTIFICATION:   ("_do_notification",    (1,)),
+        R.WRITE_LINE:     ("_do_write_line",      (1,)),
+        R.DISPLAY_MSGS:   ("_do_display_messages", (1, 2)),
+        R.TOOL_COUNT_INC: ("_do_tool_count_inc",  ()),
+        R.TOOL_COUNT_DEC: ("_do_tool_count_dec",  ()),
+        R.TOOL_FAIL_INC:  ("_do_tool_fail_inc",   ()),
+        R.ERROR:          ("_do_error",           (1,)),
+    }
 
 
 # ── 模块级渲染命令分发表（类定义时即构建，O(1) 查找） ──
@@ -60,9 +89,6 @@ class ContentRenderer:
     ScreenHistoryManager 已屏蔽为 No-op 且不在此模块中创建。
     """
 
-    # ── 最小 resize 检查间隔（秒），避免高频 shutil.get_terminal_size() 调用 ──
-    _RESIZE_CHECK_INTERVAL: float = 0.2
-
     def __init__(
         self,
         rs: "_RenderState",
@@ -75,31 +101,43 @@ class ContentRenderer:
         # 保持为实例属性，不受 ScreenHistoryManager 封装
         self._on_display_messages: Callable[..., None] | None = on_display_messages
 
-        # ── 终端大小变化检测 ──
-        # _last_width_check: 上次调用 shutil.get_terminal_size() 的时间戳
-        # _cached_term_size: 上次缓存的终端 (columns, lines) 元组
-        self._last_width_check: float = 0.0
-        self._cached_term_size: tuple[int, int] = (0, 0)
+        # ── 终端大小变化检测（字段已迁移到 RenderEngine） ──
 
-        # ── ControlList 控件列表管理 ──
+        # ── ControlList 控件列表管理（通过工厂方法创建） ──
+        # 通过回调注册解耦 _RenderState 对 ControlList 的直接依赖
+        self._control_list = self._create_controls()
+        self._rs.on_control_created = self._control_list.add
+        self._rs.on_control_removed = self._control_list.remove
+
+    @property
+    def _tool_adapter(self) -> "OutputAdapter":
+        return self._rs.get_tool_adapter()
+
+    # ── 控件工厂方法 ────────────────────────────────────
+
+    def _create_controls(self) -> ControlList:
+        """创建并返回所有 Control 控件实例（工厂方法）。
+
+        将控件创建与 __init__ 分离，使构造函数聚焦于依赖注入。
+        控件创建逻辑可通过子类重写此方法扩展（如自定义主题/控件类型）。
+        返回的 ControlList 包含所有已创建的控件。
+        """
         adapter = self._tool_adapter  # 惰性初始化 OutputAdapter
-        self._control_list = ControlList()
-        # ★ 注入到 _RenderState，使推理/内容 MarkdownControl 创建时自动注册
-        self._rs._control_list = self._control_list
+        control_list = ControlList()
 
         # ── TextControl 实例（按前缀+样式分组，注册到 ControlList）──
         self._user_msg_ctrl = TextControl(adapter, prefix="\n  > ", style=_STYLE_BOLD, level=0)
-        self._control_list.add(self._user_msg_ctrl)
+        control_list.add(self._user_msg_ctrl)
         self._notif_ctrl = TextControl(adapter, prefix="\n  · ", style=_STYLE_SUCCESS, level=0)
-        self._control_list.add(self._notif_ctrl)
+        control_list.add(self._notif_ctrl)
         self._error_ctrl = TextControl(adapter, prefix="\n  ! ", style=_STYLE_ERROR, level=0)
-        self._control_list.add(self._error_ctrl)
+        control_list.add(self._error_ctrl)
         self._line_ctrl = TextControl(adapter, level=0)
-        self._control_list.add(self._line_ctrl)
+        control_list.add(self._line_ctrl)
 
         # ── 工具控件（注册到 ControlList）──
         self._tool_output_ctrl = ToolOutputControl(adapter, dim_style=_STYLE_DIM, level=0)
-        self._control_list.add(self._tool_output_ctrl)
+        control_list.add(self._tool_output_ctrl)
         self._tool_summary_ctrl = ToolSummaryControl(
             adapter,
             style_success=_STYLE_SUCCESS,
@@ -108,40 +146,28 @@ class ContentRenderer:
             style_dim=_STYLE_DIM,
             level=0,
         )
-        self._control_list.add(self._tool_summary_ctrl)
+        control_list.add(self._tool_summary_ctrl)
         self._parse_info_ctrl = ParseInfoControl(adapter, level=0)
-        self._control_list.add(self._parse_info_ctrl)
+        control_list.add(self._parse_info_ctrl)
 
-    @property
-    def _tool_adapter(self) -> "OutputAdapter":
-        return self._rs.get_tool_adapter()
+        return control_list
+
+    # ── 工具输出控件重建工厂方法 ──────────────────────
+
+    def _recreate_tool_output_control(self) -> None:
+        """重建 _tool_output_ctrl（防御异常路径导致的控件意外关闭）。
+
+        在 _do_tool_output() 检测到控件已关闭时调用。
+        从 ControlList 移除旧引用，创建新控件并重新注册。
+        提取为独立方法而非内联重建，与 _create_controls() 工厂方法风格一致。
+        """
+        self._control_list.remove(self._tool_output_ctrl)
+        self._tool_output_ctrl = ToolOutputControl(
+            self._tool_adapter, dim_style=_STYLE_DIM, level=0,
+        )
+        self._control_list.add(self._tool_output_ctrl)
 
     # ── 渲染分发 ──────────────────────────────────────
-
-    def _check_and_refresh_width(self) -> None:
-        """检测终端大小是否变化，变化时强制刷新所有适配器宽度缓存。
-
-        200ms 最小检查间隔避免每次调用都执行系统调用。
-        尺寸未变时零副作用（跳过所有刷新操作）。
-        该方法由 RenderEngine._drain_queue() 在 output_lock 之外调用，
-        避免 shutil.get_terminal_size() 系统调用持锁阻塞渲染管线。
-        """
-        now = time.monotonic()
-        if now - self._last_width_check < self._RESIZE_CHECK_INTERVAL:
-            return
-        self._last_width_check = now
-
-        try:
-            import shutil
-            current = shutil.get_terminal_size()
-            new_size = (current.columns, current.lines)
-        except OSError:
-            return
-
-        if new_size != self._cached_term_size:
-            self._cached_term_size = new_size
-            self._rs.force_refresh_width()
-            self._control_list.refresh_width_all()
 
     def render(self, cmd: tuple) -> None:
         """根据命令类型分发到对应渲染方法（模块级 O(1) 字典查找）。"""
@@ -202,10 +228,7 @@ class ContentRenderer:
         控件关闭后自动重建——防御异常路径导致的控件意外关闭。
         """
         if self._tool_output_ctrl.is_closed:
-            self._tool_output_ctrl = ToolOutputControl(
-                self._tool_adapter, dim_style=_STYLE_DIM, level=0,
-            )
-            self._control_list.add(self._tool_output_ctrl)
+            self._recreate_tool_output_control()
         self._tool_output_ctrl.write(text)
 
     # ── 工具汇总：通过 ToolSummaryControl 渲染 ──

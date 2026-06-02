@@ -87,7 +87,3 @@ class ChatUIErrorHandler(logging.Handler):
             # ★ 清除线程重入标记
             _state._handler_reentrant.is_active = False
 
-
-# ── 注册到 root logger（模块级，全局生效） ────────────
-_error_handler = ChatUIErrorHandler()
-logging.getLogger().addHandler(_error_handler)

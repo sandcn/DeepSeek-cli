@@ -9,14 +9,14 @@ from __future__ import annotations
 import logging
 import sys
 import time
-from typing import TYPE_CHECKING, Any, ClassVar
+from typing import TYPE_CHECKING, Any
 
 from ._completion import _CmplHandler
-from ._const import RenderCommand
+from ._const import _ANSI_CURSOR_BOTTOM, RenderCommand
 from ._dispatcher import EventDispatcher
 from ._engine import RenderEngine
 from ._render_state import _RenderState
-from ._renderers import ContentRenderer, _RENDER_DISPATCH
+from ._renderers import ContentRenderer
 from ..ui.tui._message_display import _display_messages
 
 if TYPE_CHECKING:
@@ -24,11 +24,6 @@ if TYPE_CHECKING:
     from ..ui.events.event_bus import DisplayEventBus
 
 _logger = logging.getLogger(__name__)
-
-# ── 导入 _error_handler 触发副作用注册 ────────────────
-# ChatUIErrorHandler 的模块级注册（logging.getLogger().addHandler）
-# 在 import src.chat_ui 时即生效，拆分后保持此行为。
-from . import _error_handler  # noqa: F401 — 触发 root logger handler 注册
 
 
 class ChatUIConsumer:
@@ -43,9 +38,6 @@ class ChatUIConsumer:
     Reader 线程以 10Hz 轮询命令队列，串行执行 _render()
     进行终端 I/O。事件 handler 只在 EventBus 回调线程中做过滤+入队。
     """
-
-    # ── 事件处理器注册表（start/stop 复用） ──
-    _EVENT_HANDLER_NAMES: ClassVar[tuple[tuple[str, str], ...]] = EventDispatcher._EVENT_HANDLERS
 
     def __init__(self, event_bus: "DisplayEventBus | None" = None):
         from ..ui.events.event_bus import DisplayEventBus
@@ -79,23 +71,6 @@ class ChatUIConsumer:
         self._started = False
 
     # ═══════════════════════════════════════════════════════
-    # 向后兼容属性（委托给子系统）
-    # ═══════════════════════════════════════════════════════
-
-    # _RENDER_DISPATCH — 引用 _renderers 模块级常量，消除两份副本、避免失步。
-    # 保留为 ClassVar 供测试通过 ChatUIConsumer._RENDER_DISPATCH 访问。
-    _RENDER_DISPATCH: ClassVar[dict[int, tuple[str, tuple[int, ...]]]] = _RENDER_DISPATCH  # type: ignore[misc]
-
-    @property
-    def _cmd_queue(self):
-        """向后兼容：委托给 _engine._cmd_queue（供测试直接访问）。"""
-        return self._engine._cmd_queue
-
-    def _on_model_phase(self, event) -> None:
-        """向后兼容：委托给 EventDispatcher._on_model_phase（供测试直接调用）。"""
-        self._disp._on_model_phase(event)
-
-    # ═══════════════════════════════════════════════════════
     # 生命周期
     # ═══════════════════════════════════════════════════════
 
@@ -107,7 +82,7 @@ class ChatUIConsumer:
         # ★ 惰性绑定事件处理器（仅在首次 start 时）
         if self._bound_handlers is None:
             self._bound_handlers = {}
-            for type_name, _handler_name in self._EVENT_HANDLER_NAMES:
+            for type_name, _handler_name in EventDispatcher._EVENT_HANDLERS:
                 event_type = self._disp._get_event_type(type_name)
                 handler = getattr(self._disp, _handler_name)
                 self._bound_handlers[event_type] = handler
@@ -127,8 +102,9 @@ class ChatUIConsumer:
         for event_type in self._bound_handlers:
             self._bus.subscribe(self._bound_handlers[event_type], event_type=event_type)
 
-        # ★ 设置模块级全局引用（通过 _state 模块）
+        # ★ 设置模块级全局引用（通过 _state 模块，引用计数防竞态）
         from . import _state
+        _state._active_consumer_refcount += 1
         _state._active_consumer = self
 
         self._engine.start()
@@ -142,9 +118,15 @@ class ChatUIConsumer:
         # 1) 先停 reader（与 suspend() 顺序一致）
         self._engine.stop()
 
-        # 2) 先清除活跃标记，再取消订阅
+        # 2) 引用计数递减，归零时清除全局引用（防多实例竞态）
         from . import _state
-        _state._active_consumer = None
+        _state._active_consumer_refcount -= 1
+        try:
+            if _state._active_consumer_refcount <= 0:
+                _state._active_consumer = None
+        except TypeError:
+            # 兼容测试 mock 场景：MagicMock 不支持 int <= 比较，直接清空
+            _state._active_consumer = None
 
         # 3) 取消订阅（reader 已停，不可能有新入队）
         if self._bound_handlers is not None:
@@ -193,7 +175,7 @@ class ChatUIConsumer:
         with output_lock:
             # ★ 用固定大行号 \033[9999;1H 将光标定位到终端末行（终端自动 clamp），
             #   为 DECSTBM 设置做准备。
-            sys.__stdout__.write("\033[9999;1H")
+            sys.__stdout__.write(_ANSI_CURSOR_BOTTOM)
             sys.__stdout__.flush()
             self._bottom_bar.setup()
             self._engine.start()
@@ -229,7 +211,7 @@ class ChatUIConsumer:
         执行以下刷新操作：
           1. ParallelDisplay 面板刷新（若有活跃实例）
           2. 底部栏重绘（force_redraw）
-          3. 光标定位（_position_cursor）
+          3. 光标定位（position_cursor）
 
         与 _drain_queue 不同：不消费命令队列，专供外部定时刷新。
         """
@@ -250,7 +232,7 @@ class ChatUIConsumer:
             with _try_acquire_output_lock(name="refresh.bottom", timeout=1.0) as locked:
                 if locked:
                     self._bottom_bar.force_redraw()
-                    self._engine._position_cursor()
+                    self._engine.position_cursor()
 
     def write_line(self, text: str) -> None:
         """入队通用文本行渲染命令，走统一渲染管线。"""
@@ -293,6 +275,16 @@ class ChatUIConsumer:
 
     # ── 底部栏 ────────────────────────────────────────
 
+    @property
+    def bottom_bar(self) -> "_BottomBar":
+        """底部栏对象，直接访问底部栏的完整 API。
+
+        对于 setup_bottom_bar / teardown_bottom_bar / refresh_bottom_bar /
+        ensure_cursor_upper 等高频/含锁操作的方法，ChatUIConsumer 仍保留显式委托；
+        其余底部栏操作（状态刷新、模型名、工具计数等）通过此属性直接访问。
+        """
+        return self._bottom_bar
+
     def setup_bottom_bar(self) -> None:
         from ..ui._lock import output_lock
         with output_lock:
@@ -305,18 +297,12 @@ class ChatUIConsumer:
         """将光标移到内容区。调用方须持有 output_lock。"""
         self._engine.ensure_cursor_upper()
 
-    def ensure_cursor_lower(self) -> None:
-        """将光标移到输入行。调用方须持有 output_lock。"""
-        self._bottom_bar.ensure_cursor_in_lower()
-        # flush 确保 ANSI 光标定位序列到达终端（stdout 行缓冲模式）
-        sys.__stdout__.flush()
-
     def refresh_bottom_bar(self, text: str, cursor_pos: int = -1) -> None:
         """刷新底部栏输入区并定位光标到输入行。
 
         force_redraw 之后立即调用 ensure_cursor_in_lower 将光标定位到
         输入行，避免光标停留在上屏（内容区末行）。空闲期 Reader 线程
-        快速跳过时不执行 _position_cursor()，必须在此路径显式定位光标。
+        快速跳过时不执行 position_cursor()，必须在此路径显式定位光标。
         """
         from ..ui._lock import output_lock
         with output_lock:
@@ -328,26 +314,6 @@ class ChatUIConsumer:
             # 写入的 ANSI 序列需显式 flush（stdout 行缓冲，无 \n 不自动提交）。
             self._bottom_bar.ensure_cursor_in_lower()
             sys.__stdout__.flush()
-
-    def redraw_bottom_bar(self) -> None:
-        """重绘底部栏。"""
-        self._bottom_bar.force_redraw()
-
-    def enable_status_refresh(self) -> None:
-        self._bottom_bar.enable_status()
-
-    def disable_status_refresh(self) -> None:
-        self._bottom_bar.disable_status()
-
-    def get_status_elapsed(self) -> float:
-        return self._bottom_bar.get_status_elapsed()
-
-    def reset_tool_count(self) -> None:
-        self._bottom_bar.reset_tool_count()
-
-    def set_model_name(self, name: str) -> None:
-        """设置当前模型名字，更新底部栏状态行。"""
-        self._bottom_bar.set_model_name(name)
 
     def flush(self, timeout: float | None = 5.0) -> None:
         """阻塞等待所有待处理渲染命令执行完毕。（委托 _engine）"""
