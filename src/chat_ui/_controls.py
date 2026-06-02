@@ -38,6 +38,7 @@ from wcwidth import wcswidth
 
 from ._const import _CLEAR_PARSE_LINE
 from ..api.renderer import IncrementalRenderer
+from ..ui._blessed import get_terminal
 
 if TYPE_CHECKING:
     from ..api.renderer.output import OutputAdapter
@@ -897,24 +898,35 @@ class SubAgentPanelControl(Control, _ControlBase):
 
         复用 TerminalAdapter.render_frame() 的 ANSI 控制逻辑，
         但通过 OutputAdapter 写入（走 output_lock 路径）。
+        光标移动使用 Blessed Terminal，SCOSC/SCRC 保留原始 ANSI。
         """
+        try:
+            term = get_terminal()
+            move_up = term.move_up
+            move_down = term.move_down
+            clear_eol = term.clear_eol
+        except Exception:
+            move_up = lambda n: f"\033[{n}A"
+            move_down = lambda n: f"\033[{n}B"
+            clear_eol = "\033[K"
+
         total = len(lines)
         buf = ""
         if self._last_lines > 0:
             buf += "\033[u"
-            buf += f"\033[{self._last_lines}A"
+            buf += move_up(self._last_lines)
 
         for i, line in enumerate(lines):
-            buf += f"\r\033[K{line}"
+            buf += "\r" + clear_eol + line
             if i < total - 1:
                 buf += "\n"
 
         extra = self._last_lines - total
         if extra > 0:
             for _ in range(extra):
-                buf += "\n\033[K"
-            buf += f"\033[{extra}A"
-            buf += f"\033[{extra}B"
+                buf += "\n" + clear_eol
+            buf += move_up(extra)
+            buf += move_down(extra)
 
         buf += "\n\033[s"
         self._adapter.write_raw(buf)
@@ -923,14 +935,25 @@ class SubAgentPanelControl(Control, _ControlBase):
     def clear_frame(self) -> None:
         """清除终端上的帧行（使用 ANSI 清除码）。
 
-        生成 clear_lines_code 并通过 OutputAdapter.write_raw() 写入。
+        生成清行序列并通过 OutputAdapter.write_raw() 写入。
         """
         if self._last_lines <= 0:
             return
-        from ..ui.terminal_adapter import TerminalAdapter
-        code = TerminalAdapter.clear_lines_code(self._last_lines)
-        if code:
-            self._adapter.write_raw(code)
+        try:
+            term = get_terminal()
+            clear_eol = term.clear_eol
+            move_up = term.move_up
+        except Exception:
+            clear_eol = "\033[K"
+            move_up = lambda n: f"\033[{n}A"
+
+        n = self._last_lines
+        buf = "\033[u"  # SCOSC restore
+        buf += move_up(n)
+        for _ in range(n):
+            buf += "\r" + clear_eol + "\n"
+        buf += move_up(n)
+        self._adapter.write_raw(buf)
         self._last_lines = 0
 
     # ── 生命周期 ───────────────────────────────────────

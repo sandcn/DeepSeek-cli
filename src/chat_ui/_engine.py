@@ -21,6 +21,7 @@ from ._const import (
     RenderCommand,
 )
 from ._utils import _cmd_name
+from ..ui._blessed import get_terminal
 from ..ui._lock import _try_acquire_output_lock
 
 if TYPE_CHECKING:
@@ -345,5 +346,9 @@ class RenderEngine:
         """
         text, cursor_pos, h, w = self._bb.get_cursor_info()
         r_cursor, cursor_col = self._bb.compute_cursor_position(text, cursor_pos, h, w)
-        sys.__stdout__.write(f"\033[{r_cursor};{cursor_col}H")
+        try:
+            term = get_terminal()
+            sys.__stdout__.write(term.move_xy(cursor_col - 1, r_cursor - 1))
+        except Exception:
+            sys.__stdout__.write(f"\033[{r_cursor};{cursor_col}H")
         sys.__stdout__.flush()

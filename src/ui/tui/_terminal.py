@@ -1,18 +1,19 @@
 """终端 I/O 层 — 合并 _locked_terminal + narrow 宽度检测
 
 统一管理：
-  1. 终端宽度检测（TTL 缓存，减少 syscall）
+  1. 终端宽度检测（TTL 缓存，减少 syscall）— 使用 Blessed Terminal
   2. output_lock 保护的终端写入上下文管理器 LockedTerminal
 
 设计原则：
   - LockedTerminal 作为上下文管理器统一处理锁+光标+I/O
   - 终端宽度 TTL 缓存 0.5s，减少 10Hz tick 循环中 syscall 开销
+  - Blessed 用于终端宽度查询和 ANSI 序列生成（非关键路径）
+  - SCOSC/SCRC（光标保存/恢复）保留原始 ANSI（性能路径无需 Blessed）
 """
 
 from __future__ import annotations
 
 import logging
-import shutil
 from types import TracebackType
 from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
@@ -21,15 +22,16 @@ if TYPE_CHECKING:
 
 from ..terminal_adapter import TerminalAdapter
 from .._lock import output_lock, OUTPUT_LOCK_TIMEOUT
+from .._blessed import get_terminal
 from ._ttl_cache import TTLCache
 
 _logger = logging.getLogger(__name__)
 
 
 def _fetch_terminal_width() -> int:
-    """获取终端宽度（列数），异常时回退 80。"""
+    """获取终端宽度（列数），通过 Blessed Terminal，异常时回退 80。"""
     try:
-        return shutil.get_terminal_size().columns
+        return get_terminal().width
     except Exception:
         return 80
 

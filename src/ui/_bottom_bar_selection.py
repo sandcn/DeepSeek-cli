@@ -1,15 +1,24 @@
 """底部栏交互选择 — 在补全弹窗中运行阻塞式交互选择循环。
 
-从 _bottom_bar.py 提取，纯标准库实现（termios/tty/os/select），无外部依赖。
+从 _bottom_bar.py 提取，使用 Blessed Terminal.inkey() 替代原始
+termios/tty/os.read 实现。Blessed 自动处理 CSI/SS3 序列解析。
 """
 
 from __future__ import annotations
 
 import os
-import select
 import sys
-import termios
-import tty
+import logging
+
+from ._blessed import get_terminal
+
+_logger = logging.getLogger(__name__)
+
+# Blessed 按键代码常量
+_KEY_UP = 259
+_KEY_DOWN = 258
+_KEY_ENTER = 343
+_KEY_ESCAPE = 361
 
 
 def run_bottom_bar_selection(
@@ -20,8 +29,8 @@ def run_bottom_bar_selection(
 ) -> dict:
     """在底部栏补全弹窗中运行交互式选择，返回选中结果。
 
-    纯标准库实现（termios/tty/os/select），无外部库依赖。
-    同时处理 CSI（\\x1b[A/B）和 SS3（\\x1bOA/B）两种箭头序列。
+    使用 Blessed Terminal.inkey() 读取键盘输入，自动处理
+    CSI/SS3 箭头序列解析。
 
     Args:
         items: 原始选项列表（作为替换文本）。应为纯文本，不含 ANSI 码。
@@ -54,80 +63,50 @@ def run_bottom_bar_selection(
 
     bb.show_completions(display_items, initial_idx, texts=items, title=title)
 
-    old_settings = None
     try:
-        old_settings = termios.tcgetattr(fd)
-        tty.setcbreak(fd)
-        termios.tcflush(fd, termios.TCIFLUSH)
-
-        while True:
-            try:
-                ready, _, _ = select.select([fd], [], [], None)
-            except (ValueError, OSError):
-                continue
-            if not ready:
-                continue
-
-            try:
-                raw = os.read(fd, 1)
-                if not raw:
-                    continue
-            except (ValueError, OSError):
-                continue
-
-            b = raw[0]
-
-            # ── ESC / ANSI 序列 ──
-            if b == 0x1b:
+        term = get_terminal()
+        with term.cbreak():  # 替代 tty.setcbreak + termios
+            while True:
                 try:
-                    has_more, _, _ = select.select([fd], [], [], 0.3)
-                    if has_more:
-                        nxt = os.read(fd, 1)
-                        if nxt == b'[':
-                            # CSI: \x1b[A ↑, \x1b[B ↓, \x1b[C →, \x1b[D ←
-                            has_term, _, _ = select.select([fd], [], [], 0.1)
-                            if has_term:
-                                term = os.read(fd, 1)
-                                if term == b'A':
-                                    bb.cycle_completion(-1)
-                                elif term == b'B':
-                                    bb.cycle_completion(1)
-                            continue
-                        elif nxt == b'O':
-                            # SS3: \x1bOA ↑, \x1bOB ↓
-                            has_term, _, _ = select.select([fd], [], [], 0.1)
-                            if has_term:
-                                term = os.read(fd, 1)
-                                if term == b'A':
-                                    bb.cycle_completion(-1)
-                                elif term == b'B':
-                                    bb.cycle_completion(1)
-                            continue
-                except (ValueError, OSError):
-                    pass
-                return {"action": "cancel", "index": None}
+                    key = term.inkey(timeout=None)
+                except Exception:
+                    continue
+                if not key:
+                    continue
 
-            # ── Enter → 确认 ──
-            elif b in (0x0d, 0x0a):
-                idx = bb._completion_idx
-                if 0 <= idx < len(items):
-                    return {"action": "confirmed", "index": idx}
+                # ── 功能键（箭头等）─
+                if key.is_sequence:
+                    code = key.code
+                    if code == _KEY_UP:
+                        bb.cycle_completion(-1)
+                    elif code == _KEY_DOWN:
+                        bb.cycle_completion(1)
+                    elif code == _KEY_ESCAPE:
+                        return {"action": "cancel", "index": None}
+                    # 其他序列键忽略
+                    continue
 
-    except Exception:
+                # ── Enter → 确认 ──
+                if key in ('\r', '\n'):
+                    idx = bb._completion_idx
+                    if 0 <= idx < len(items):
+                        return {"action": "confirmed", "index": idx}
+
+                # ── Esc（单独收到）─
+                if key == '\x1b':
+                    return {"action": "cancel", "index": None}
+
+    except Exception as exc:
+        _logger.debug("run_bottom_bar_selection 异常: %s", exc)
         return {"action": "error", "index": None}
     finally:
-        if old_settings is not None:
-            try:
-                termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
-            except Exception:
-                pass
         try:
             bb.hide_completions()
         except Exception:
             pass
         try:
-            while select.select([sys.stdin], [], [], 0)[0]:
-                sys.stdin.read(1)
-            termios.tcflush(sys.stdin, termios.TCIFLUSH)
+            # 清空 stdin 缓冲
+            import termios as _termios
+            _termios.tcflush(sys.stdin, _termios.TCIFLUSH)
         except Exception:
             pass

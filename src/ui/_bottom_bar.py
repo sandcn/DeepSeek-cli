@@ -12,18 +12,23 @@
   - _bottom_bar_status   — 状态行格式化 + 工具计数（_StatusMixin）
   - _bottom_bar_completion — 补全弹窗（_CompletionPopup 独立类）
   - _bottom_bar_selection  — run_bottom_bar_selection() 交互选择
+
+终端控制策略：
+  - 非关键路径 ANSI 序列（光标定位、清行）使用 Blessed Terminal
+  - 性能关键路径（SCOSC/SCRC、DECSTBM、SU/SD）保留原始 ANSI
+  - 颜色常量保持原始 ANSI 字符串（与 Blessed 序列可混合使用）
 """
 
 from __future__ import annotations
 
 import logging
-import shutil
 import sys
 import time
 from typing import Optional
 
 from wcwidth import wcswidth
 
+from ._blessed import get_terminal
 from ._bottom_bar_completion import _CompletionPopup
 from ._bottom_bar_selection import run_bottom_bar_selection  # noqa: F401 — 重导出保持兼容
 from ._bottom_bar_status import _StatusMixin, _get_snapshot, _TOKEN_SPEED_SNAPSHOT  # noqa: F401 — 重导出供测试 patch
@@ -47,6 +52,49 @@ from ._bottom_cursor import (
     _wrap_by_width,
 )
 from ._lock import _try_acquire_output_lock
+
+
+# ── Blessed 辅助函数 ─────────────────────────────────────
+# 将常用的 ANSI 序列封装为 Blessed 调用，带降级回退
+
+
+def _blessed_move_clear(row: int) -> str:
+    """生成移到指定行并清行的 ANSI 序列。
+
+    通过 Blessed Terminal.move_xy + clear_eol 生成，
+    Blessed 不可用时回退到原始 ANSI。
+
+    Args:
+        row: 1-based 行号。
+
+    Returns:
+        ANSI 序列字符串。
+    """
+    try:
+        term = get_terminal()
+        return term.move_xy(0, row - 1) + term.clear_eol()
+    except Exception:
+        return f"\033[{row};1H\033[K"
+
+
+def _blessed_cursor_goto(row: int, col: int) -> str:
+    """生成移到指定行列的 ANSI 序列。
+
+    通过 Blessed Terminal.move_xy 生成。
+    Blessed 使用 0-based 坐标。
+
+    Args:
+        row: 1-based 行号。
+        col: 1-based 列号。
+
+    Returns:
+        ANSI 序列字符串。
+    """
+    try:
+        term = get_terminal()
+        return term.move_xy(col - 1, row - 1)
+    except Exception:
+        return f"\033[{row};{col}H"
 
 _logger = logging.getLogger(__name__)
 
@@ -160,17 +208,23 @@ class _BottomBar(_StatusMixin):
             base = max(_MIN_INPUT_ROWS, len(wrapped))
         return base + self._completion.height
 
-    # ── 终端尺寸查询 ──────────────────────────────────
+    # ── 终端尺寸查询（通过 Blessed Terminal） ──────────
 
     def _term_height(self) -> int:
-        """获取终端高度，实时查询。"""
-        _w, _h = shutil.get_terminal_size()
-        return _h
+        """获取终端高度，通过 Blessed Terminal 实时查询。"""
+        try:
+            return get_terminal().height
+        except Exception:
+            import shutil
+            return shutil.get_terminal_size().lines
 
     def _term_width(self) -> int:
-        """获取终端宽度，实时查询。"""
-        _w, _h = shutil.get_terminal_size()
-        return _w
+        """获取终端宽度，通过 Blessed Terminal 实时查询。"""
+        try:
+            return get_terminal().width
+        except Exception:
+            import shutil
+            return shutil.get_terminal_size().columns
 
     # ── 已废弃存根（待 engine 清理后移除） ─────────────
 
@@ -296,7 +350,7 @@ class _BottomBar(_StatusMixin):
             self._tracker.set_scroll_end(scroll_end)
         out = sys.__stdout__
         out.write(f"\033[1;{scroll_end}r")
-        out.write(f"\033[{scroll_end};1H\033[s")
+        out.write(_blessed_cursor_goto(scroll_end, 1) + "\033[s")
         out.flush()
 
     def ensure_cursor_in_upper(self) -> None:
@@ -313,7 +367,7 @@ class _BottomBar(_StatusMixin):
         scroll_end = self._last_scroll_end
         if scroll_end < 1:
             scroll_end = self._term_height()
-        sys.__stdout__.write(f"\033[{scroll_end};1H")
+        sys.__stdout__.write(_blessed_cursor_goto(scroll_end, 1))
 
     def ensure_cursor_in_lower(self) -> None:
         """渲染完成后将光标移回下屏输入行末尾（含动态拆行，最少3行输入区）。
@@ -337,7 +391,7 @@ class _BottomBar(_StatusMixin):
         r_cursor = height - total + 3 + self._completion.height + vis_row
         r_cursor = max(1, min(r_cursor, height))
         col = min(3 + vis_col, term_w)
-        sys.__stdout__.write(f"\033[{r_cursor};{col}H")
+        sys.__stdout__.write(_blessed_cursor_goto(r_cursor, col))
 
     # ── 生命周期 ──────────────────────────────────────────
 
@@ -372,8 +426,8 @@ class _BottomBar(_StatusMixin):
                 out.write(f"\033[1;{scroll_end}r")
                 self._draw_all_locked(out, height)
                 out.write("\0338")
-                out.write(f"\033[{scroll_end};1H\033[s")
-                out.write(f"\033[{height};1H")
+                out.write(_blessed_cursor_goto(scroll_end, 1) + "\033[s")
+                out.write(_blessed_cursor_goto(height, 1))
                 out.flush()
             else:
                 sys.__stdout__.write("\n" + "\u2501" * 40 + "\n")
@@ -402,7 +456,7 @@ class _BottomBar(_StatusMixin):
                 height = self._term_height()
                 start_row = max(1, height - self._last_bottom_lines + 1)
                 for r in range(start_row, height + 1):
-                    out.write(f"\033[{r};1H\033[K")
+                    out.write(_blessed_move_clear(r))
                 out.write("\0338")
                 out.write("\033[s")
                 out.flush()
@@ -441,9 +495,9 @@ class _BottomBar(_StatusMixin):
 
             if scroll_end < 1:
                 for r in range(1, height + 1):
-                    out.write(f"\033[{r};1H\033[K")
+                    out.write(_blessed_move_clear(r))
                 out.write("\0338")
-                out.write(f"\033[{height};1H\033[s")
+                out.write(_blessed_cursor_goto(height, 1) + "\033[s")
                 out.flush()
                 return
 
@@ -451,11 +505,11 @@ class _BottomBar(_StatusMixin):
                 clear_start = old_scroll_end + 1
                 clear_end = scroll_end
                 for r in range(clear_start, clear_end + 1):
-                    out.write(f"\033[{r};1H\033[K")
+                    out.write(_blessed_move_clear(r))
             else:
                 clear_start = old_scroll_end + 1
                 for r in range(clear_start, height + 1):
-                    out.write(f"\033[{r};1H\033[K")
+                    out.write(_blessed_move_clear(r))
 
             self._draw_all_locked(out, height)
 
@@ -465,7 +519,7 @@ class _BottomBar(_StatusMixin):
             out.write(f"\033[1;{scroll_end}r")
             self._reclaim_scroll_back(out, delta, scroll_end)
             out.write("\0338")
-            out.write(f"\033[{scroll_end};1H\033[s")
+            out.write(_blessed_cursor_goto(scroll_end, 1) + "\033[s")
             out.flush()
 
     def force_redraw(self) -> None:
@@ -522,9 +576,9 @@ class _BottomBar(_StatusMixin):
 
             if scroll_end < 1:
                 for r in range(1, height + 1):
-                    out.write(f"\033[{r};1H\033[K")
+                    out.write(_blessed_move_clear(r))
                 out.write("\0338")
-                out.write(f"\033[{height};1H\033[s")
+                out.write(_blessed_cursor_goto(height, 1) + "\033[s")
                 out.flush()
                 self._last_cursor_pos = self._input_cursor_pos
                 return
@@ -533,11 +587,11 @@ class _BottomBar(_StatusMixin):
                 clear_start = old_scroll_end + 1
                 clear_end = scroll_end
                 for r in range(clear_start, clear_end + 1):
-                    out.write(f"\033[{r};1H\033[K")
+                    out.write(_blessed_move_clear(r))
             else:
                 clear_start = old_scroll_end + 1
                 for r in range(clear_start, height + 1):
-                    out.write(f"\033[{r};1H\033[K")
+                    out.write(_blessed_move_clear(r))
 
             r1 = height - total + 1
             r2 = r1 + 1
@@ -545,13 +599,13 @@ class _BottomBar(_StatusMixin):
             tw = self._term_width()
             sep_len = min(tw - 2, 40)
             sep = f"{_COLOR_SEP}\u2501{_COLOR_RESET}" * sep_len
-            out.write(f"\033[{r1};1H  {sep}")
-            out.write(f"\033[{r2};1H\033[K{self._last_status}")
+            out.write(_blessed_cursor_goto(r1, 1) + "  " + sep)
+            out.write(_blessed_move_clear(r2) + self._last_status)
 
             self._draw_input_lines_locked(out, text, r2 + 1, tw)
             input_rows = self._cached_input_rows
             for r in range(r2 + 1 + input_rows, height + 1):
-                out.write(f"\033[{r};1H\033[K")
+                out.write(_blessed_move_clear(r))
 
             self._last_scroll_end = scroll_end
             if self._tracker is not None:
@@ -559,7 +613,7 @@ class _BottomBar(_StatusMixin):
             out.write(f"\033[1;{scroll_end}r")
             self._reclaim_scroll_back(out, delta, scroll_end)
             out.write("\0338")
-            out.write(f"\033[{scroll_end};1H\033[s")
+            out.write(_blessed_cursor_goto(scroll_end, 1) + "\033[s")
             out.flush()
             self._last_cursor_pos = self._input_cursor_pos
 
@@ -605,7 +659,7 @@ class _BottomBar(_StatusMixin):
             r_cursor = term_h - total + 3 + self._completion.height + vis_row
             r_cursor = max(1, min(r_cursor, term_h))
             cursor_col = min(3 + vis_col, term_w)
-            sys.__stdout__.write(f"\033[{r_cursor};{cursor_col}H")
+            sys.__stdout__.write(_blessed_cursor_goto(r_cursor, cursor_col))
             sys.__stdout__.flush()
             return
 
@@ -646,10 +700,10 @@ class _BottomBar(_StatusMixin):
 
             if scroll_end < 1:
                 for r in range(1, height + 1):
-                    out.write(f"\033[{r};1H\033[K")
+                    out.write(_blessed_move_clear(r))
                 out.write("\0338")
-                out.write(f"\033[{height};1H\033[s")
-                out.write(f"\033[{height};1H")
+                out.write(_blessed_cursor_goto(height, 1) + "\033[s")
+                out.write(_blessed_cursor_goto(height, 1))
                 out.flush()
                 return
 
@@ -657,25 +711,25 @@ class _BottomBar(_StatusMixin):
                 clear_start = old_scroll_end + 1
                 clear_end = scroll_end
                 for r in range(clear_start, clear_end + 1):
-                    out.write(f"\033[{r};1H\033[K")
+                    out.write(_blessed_move_clear(r))
             else:
                 clear_start = old_scroll_end + 1
                 for r in range(clear_start, height + 1):
-                    out.write(f"\033[{r};1H\033[K")
+                    out.write(_blessed_move_clear(r))
 
             r1 = height - total + 1
             tw = self._term_width()
             sep_len = min(tw - 2, 40)
             sep = f"{_COLOR_SEP}\u2501{_COLOR_RESET}" * sep_len
-            out.write(f"\033[{r1};1H  {sep}")
+            out.write(_blessed_cursor_goto(r1, 1) + "  " + sep)
 
             r2 = r1 + 1
-            out.write(f"\033[{r2};1H\033[K{new_status}")
+            out.write(_blessed_move_clear(r2) + new_status)
 
             self._draw_input_lines_locked(out, text, r2 + 1, tw)
             input_rows = self._cached_input_rows
             for r in range(r2 + 1 + input_rows, height + 1):
-                out.write(f"\033[{r};1H\033[K")
+                out.write(_blessed_move_clear(r))
 
             vis_row, vis_col = _compute_cursor_visual_pos(
                 text, cursor_pos, max(1, tw - 4),
@@ -691,8 +745,8 @@ class _BottomBar(_StatusMixin):
             out.write(f"\033[1;{scroll_end}r")
             self._reclaim_scroll_back(out, delta, scroll_end)
             out.write("\0338")
-            out.write(f"\033[{scroll_end};1H\033[s")
-            out.write(f"\033[{r_cursor};{cursor_col}H")
+            out.write(_blessed_cursor_goto(scroll_end, 1) + "\033[s")
+            out.write(_blessed_cursor_goto(r_cursor, cursor_col))
             out.flush()
 
     # ── 内部绘制 ──────────────────────────────────────────
@@ -710,7 +764,7 @@ class _BottomBar(_StatusMixin):
         """
         if delta <= 0 or old_scroll_end < 1:
             return
-        out.write(f"\033[{old_scroll_end};1H")
+        out.write(_blessed_cursor_goto(old_scroll_end, 1))
         out.write(f"\033[{delta}S")
 
     @staticmethod
@@ -729,11 +783,11 @@ class _BottomBar(_StatusMixin):
         if delta >= 0 or scroll_end < 1:
             return
         n = -delta
-        out.write(f"\033[{scroll_end};1H")
+        out.write(_blessed_cursor_goto(scroll_end, 1))
         out.write(f"\033[{n}T")
         # 清除 SD 下滚后在滚动区顶部产生的 n 行空行
         for r in range(1, min(n, scroll_end) + 1):
-            out.write(f"\033[{r};1H\033[K")
+            out.write(_blessed_move_clear(r))
 
     def _draw_input_lines_locked(self, out, text: str, r_start: int, term_width: int) -> None:
         """绘制输入行（需持有 output_lock），超长文本自动拆行。
@@ -764,25 +818,26 @@ class _BottomBar(_StatusMixin):
             r = text_start + i
             if i == 0:
                 if text:
-                    out.write(f"\033[{r};1H\033[K"
-                              f"{_COLOR_DEEP_CYAN}>{_COLOR_RESET}"
+                    out.write(_blessed_move_clear(r)
+                              + f"{_COLOR_DEEP_CYAN}>{_COLOR_RESET}"
                               f" {segment}")
                 else:
                     if self._status_active:
                         ph = _PLACEHOLDER_STREAMING
-                        out.write(f"\033[{r};1H\033[K"
-                                  f"{_COLOR_DEEP_CYAN}>{_COLOR_RESET}"
+                        out.write(_blessed_move_clear(r)
+                                  + f"{_COLOR_DEEP_CYAN}>{_COLOR_RESET}"
                                   f" {_COLOR_DIM}{ph}{_COLOR_RESET}")
                     else:
                         ph = _PLACEHOLDER_COMPACT if self._completion.is_visible else _PLACEHOLDER_TEXT
-                        out.write(f"\033[{r};1H\033[K"
-                                  f"{_COLOR_DEEP_CYAN}>{_COLOR_RESET}"
+                        out.write(_blessed_move_clear(r)
+                                  + f"{_COLOR_DEEP_CYAN}>{_COLOR_RESET}"
                                   f" {_COLOR_DIM}{ph}{_COLOR_RESET}")
             else:
-                out.write(f"\033[{r};1H\033[K{_COLOR_DIM}\u00b7{_COLOR_RESET} {segment}")
+                out.write(_blessed_move_clear(r)
+                          + f"{_COLOR_DIM}\u00b7{_COLOR_RESET} {segment}")
         # ★ 填充剩余空白行，确保输入区至少 3 行
         for r in range(text_start + len(wrapped), text_start + 3):
-            out.write(f"\033[{r};1H\033[K  ")
+            out.write(_blessed_move_clear(r) + "  ")
 
     def _draw_all_locked(self, out, height: int) -> None:
         """绘制全部底部行（需持有 output_lock），超长文本自动拆行。
@@ -804,17 +859,17 @@ class _BottomBar(_StatusMixin):
         r2 = r1 + 1
 
         for r in range(r1, height + 1):
-            out.write(f"\033[{r};1H\033[K")
+            out.write(_blessed_move_clear(r))
 
         tw = self._term_width()
         sep_len = min(tw - 2, 40)
         sep = f"{_COLOR_SEP}\u2501{_COLOR_RESET}" * sep_len
-        out.write(f"\033[{r1};1H  {sep}")
+        out.write(_blessed_cursor_goto(r1, 1) + "  " + sep)
 
         status = self._format_status()
         self._last_status = status
         if status:
-            out.write(f"\033[{r2};1H\033[K{status}")
+            out.write(_blessed_move_clear(r2) + status)
 
         text = self._last_text or ""
         self._draw_input_lines_locked(out, text, r2 + 1, tw)
@@ -827,7 +882,7 @@ class _BottomBar(_StatusMixin):
         self._last_status = status
         total = self._bottom_lines
         status_row = height - total + 2
-        out.write(f"\033[{status_row};1H\033[K{status}")
+        out.write(_blessed_move_clear(status_row) + status)
 
     def refresh_status_only(self) -> None:
         """仅刷新状态行（reader 线程 drain 后调用，10Hz）。
@@ -854,7 +909,7 @@ class _BottomBar(_StatusMixin):
                 self._tracker.set_scroll_end(scroll_end)
             out.write(f"\033[1;{scroll_end}r")
             out.write("\0338")
-            out.write(f"\033[{scroll_end};1H\033[s")
+            out.write(_blessed_cursor_goto(scroll_end, 1) + "\033[s")
             out.flush()
             self._last_refresh = time.monotonic()
 
@@ -939,39 +994,39 @@ class _BottomBar(_StatusMixin):
 
             if scroll_end < 1:
                 for r in range(1, height + 1):
-                    out.write(f"\033[{r};1H\033[K")
+                    out.write(_blessed_move_clear(r))
                 out.write("\0338")
-                out.write(f"\033[{height};1H\033[s")
+                out.write(_blessed_cursor_goto(height, 1) + "\033[s")
                 out.flush()
                 return
 
             # 修复：delta > 0 时显式清除旧滚动区与新滚动区之间的残留行
             if delta > 0 and scroll_end >= 1:
                 for r in range(scroll_end + 1, min(old_scroll_end, height) + 1):
-                    out.write(f"\033[{r};1H\033[K")
+                    out.write(_blessed_move_clear(r))
 
             if delta < 0:
                 clear_start = old_scroll_end + 1
                 clear_end = scroll_end
                 for r in range(clear_start, clear_end + 1):
-                    out.write(f"\033[{r};1H\033[K")
+                    out.write(_blessed_move_clear(r))
             else:
                 clear_start = old_scroll_end + 1
                 for r in range(clear_start, height + 1):
-                    out.write(f"\033[{r};1H\033[K")
+                    out.write(_blessed_move_clear(r))
 
             r1 = height - total + 1
             r2 = r1 + 1
             tw_s = self._term_width()
             sep_len_s = min(tw_s - 2, 40)
             sep_s = f"{_COLOR_SEP}\u2501{_COLOR_RESET}" * sep_len_s
-            out.write(f"\033[{r1};1H  {sep_s}")
-            out.write(f"\033[{r2};1H\033[K")
+            out.write(_blessed_cursor_goto(r1, 1) + "  " + sep_s)
+            out.write(_blessed_move_clear(r2))
             text = self._last_text or ""
             self._draw_input_lines_locked(out, text, r2 + 1, tw_s)
             status = self._format_status()
             if status:
-                out.write(f"\033[{r2};1H\033[K{status}")
+                out.write(_blessed_move_clear(r2) + status)
             self._last_status = status
 
             self._last_scroll_end = scroll_end
@@ -981,13 +1036,13 @@ class _BottomBar(_StatusMixin):
                 self._tracker.set_scroll_end(scroll_end)
             self._reclaim_scroll_back(out, delta, scroll_end)
             out.write("\0338")
-            out.write(f"\033[{scroll_end};1H\033[s")
+            out.write(_blessed_cursor_goto(scroll_end, 1) + "\033[s")
             vis_row, vis_col = _compute_cursor_visual_pos(
                 text, self._input_cursor_pos, max(1, self._term_width() - 4),
             )
             r_cursor = r2 + 1 + self._completion.height + vis_row
             cursor_col = min(3 + vis_col, self._term_width())
-            out.write(f"\033[{r_cursor};{cursor_col}H")
+            out.write(_blessed_cursor_goto(r_cursor, cursor_col))
             out.flush()
 
     def hide_completions(self) -> None:
@@ -1027,9 +1082,9 @@ class _BottomBar(_StatusMixin):
 
             if scroll_end < 1:
                 for r in range(1, height + 1):
-                    out.write(f"\033[{r};1H\033[K")
+                    out.write(_blessed_move_clear(r))
                 out.write("\0338")
-                out.write(f"\033[{height};1H\033[s")
+                out.write(_blessed_cursor_goto(height, 1) + "\033[s")
                 out.flush()
                 return
 
@@ -1037,24 +1092,24 @@ class _BottomBar(_StatusMixin):
                 clear_start = old_scroll_end + 1
                 clear_end = scroll_end
                 for r in range(clear_start, clear_end + 1):
-                    out.write(f"\033[{r};1H\033[K")
+                    out.write(_blessed_move_clear(r))
             else:
                 clear_start = old_scroll_end + 1
                 for r in range(clear_start, height + 1):
-                    out.write(f"\033[{r};1H\033[K")
+                    out.write(_blessed_move_clear(r))
 
             r1 = height - total + 1
             r2 = r1 + 1
             tw_h = self._term_width()
             sep_len_h = min(tw_h - 2, 40)
             sep_h = f"{_COLOR_SEP}\u2501{_COLOR_RESET}" * sep_len_h
-            out.write(f"\033[{r1};1H  {sep_h}")
-            out.write(f"\033[{r2};1H\033[K")
+            out.write(_blessed_cursor_goto(r1, 1) + "  " + sep_h)
+            out.write(_blessed_move_clear(r2))
             text = self._last_text or ""
             self._draw_input_lines_locked(out, text, r2 + 1, tw_h)
             status = self._format_status()
             if status:
-                out.write(f"\033[{r2};1H\033[K{status}")
+                out.write(_blessed_move_clear(r2) + status)
             self._last_status = status
 
             self._last_scroll_end = scroll_end
@@ -1068,20 +1123,20 @@ class _BottomBar(_StatusMixin):
                 restore_count = min(len(saved), -delta)
                 for i in range(restore_count):
                     row = scroll_end + 1 + i
-                    out.write(f"\033[{row};1H\033[K")
+                    out.write(_blessed_move_clear(row))
                     out.write(saved[i])
                     out.write("\n")
                 self._tracker.clear_saved()
             else:
                 self._reclaim_scroll_back(out, delta, scroll_end)
             out.write("\0338")
-            out.write(f"\033[{scroll_end};1H\033[s")
+            out.write(_blessed_cursor_goto(scroll_end, 1) + "\033[s")
             vis_row, vis_col = _compute_cursor_visual_pos(
                 text, self._input_cursor_pos, max(1, self._term_width() - 4),
             )
             r_cursor = r2 + 1 + vis_row
             cursor_col = min(3 + vis_col, self._term_width())
-            out.write(f"\033[{r_cursor};{cursor_col}H")
+            out.write(_blessed_cursor_goto(r_cursor, cursor_col))
             out.flush()
 
     def cycle_completion(self, delta: int = 1) -> int:
@@ -1113,7 +1168,7 @@ class _BottomBar(_StatusMixin):
             out.write("\0338")
             scroll_end = height - self._bottom_lines
             if scroll_end >= 1:
-                out.write(f"\033[{scroll_end};1H\033[s")
+                out.write(_blessed_cursor_goto(scroll_end, 1) + "\033[s")
                 vis_row, vis_col = _compute_cursor_visual_pos(
                     self._last_text if self._last_text else "", self._input_cursor_pos,
                     max(1, self._term_width() - 4),
@@ -1121,7 +1176,7 @@ class _BottomBar(_StatusMixin):
                 r_cursor = height - total + 3 + self._completion.height + vis_row
                 r_cursor = max(1, min(r_cursor, height))
                 cursor_col = min(3 + vis_col, self._term_width())
-                out.write(f"\033[{r_cursor};{cursor_col}H")
+                out.write(_blessed_cursor_goto(r_cursor, cursor_col))
             out.flush()
 
         return self._completion._idx

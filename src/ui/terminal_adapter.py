@@ -7,16 +7,25 @@ TerminalAdapter — 终端 I/O 抽象层
 可替换性：
 - 实现相同接口即可替换为标准输出、日志文件、WebSocket 等目标
 - 测试时可注入 MockTerminalAdapter 验证输出行为
+
+Blessed 替换说明：
+  - 终端尺寸查询 → Blessed Terminal.width/height
+  - 窗口标题 → Terminal.title
+  - 光标定位 → Terminal.move_xy()
+  - 清屏 → Terminal.clear_eos()
+  - 保留原始 ANSI（Blessed 无等价物或性能关键路径）：
+    DECSTBM（滚动区域）、SU/SD（上下滚动）、SCOSC/SCRC（光标保存/恢复）
 """
 
 from __future__ import annotations
 
 import logging
 import sys
-import shutil
 import signal as _signal
 import weakref
 from typing import Callable, List, Optional
+
+from ._blessed import get_terminal
 
 _logger = logging.getLogger(__name__)
 
@@ -27,60 +36,20 @@ _logger = logging.getLogger(__name__)
 _resize_instances = weakref.WeakSet()  # 所有注册了回调的 TerminalAdapter 实例
 
 
-# ── 模块级终端尺寸查询（ioctl 优先，避免 shutil env var 回退） ──
+# ── 模块级终端尺寸查询（通过 Blessed Terminal） ──
 
 def query_terminal_size() -> tuple[int, int]:
-    """通过 ioctl 直接获取终端尺寸，不使用 shutil（避免 env var 回退）。
+    """通过 Blessed Terminal 获取终端尺寸。
 
-    shutil.get_terminal_size() 在 sys.stdout 非 tty 时回退到
-    $LINES/$COLUMNS 环境变量。Android/Termux 上这些变量不随 resize
-    更新，返回 stale 值。
-
-    策略：
-    1. 首选 /dev/tty — 直接查询控制终端
-    2. 回退：逐个尝试 stdout/stderr/stdin 的 fileno
-    3. 最终回退：shutil（仅在所有 fd 都不可用时）
+    Blessed 内部使用 ioctl(TIOCGWINSZ) 查询终端尺寸，
+    比 shutil.get_terminal_size() 更可靠（不依赖环境变量回落）。
 
     Returns:
         (columns, rows) 元组，与 shutil.get_terminal_size() 返回值顺序一致。
     """
-    import os as _os, fcntl, termios, struct
-
-    def _try_ioctl(_fd: int) -> tuple[int, int] | None:
-        try:
-            _data = fcntl.ioctl(_fd, termios.TIOCGWINSZ,
-                                struct.pack("HHHH", 0, 0, 0, 0))
-            _rows, _cols, _, _ = struct.unpack("HHHH", _data)
-            return _cols, _rows
-        except Exception:
-            return None
-
-    # /dev/tty
     try:
-        _fd = _os.open("/dev/tty", _os.O_RDONLY)
-    except Exception:
-        _logger.debug("打开 /dev/tty 失败（非关键）")
-    else:
-        try:
-            _result = _try_ioctl(_fd)
-            if _result is not None:
-                return _result
-        finally:
-            _os.close(_fd)
-
-    # 标准流 fd
-    for _stream in (sys.stdout, sys.stderr, sys.stdin):
-        try:
-            _result = _try_ioctl(_stream.fileno())
-            if _result is not None:
-                return _result
-        except Exception:
-            _logger.debug("ioctl 获取终端大小失败（std流 %s）", type(_stream).__name__)
-
-    # 所有 ioctl 失败，回退到 shutil
-    try:
-        _sz = shutil.get_terminal_size()
-        return _sz.columns, _sz.lines
+        term = get_terminal()
+        return term.width, term.height
     except Exception:
         return 80, 24
 
@@ -159,8 +128,8 @@ class TerminalAdapter:
     def set_window_title(title: str) -> None:
         """设置终端窗口标题（OSC 0 escape sequence: \\033]0;title\\007）。
 
-        大多数终端模拟器支持此序列设置标签/窗口标题。
-        Termux / GNOME Terminal / iTerm2 / Windows Terminal 等均兼容。
+        保留原始 ANSI 序列——Blessed 的 terminal.title 能力不是标准
+        terminfo 属性，不支持跨终端。
 
         Args:
             title: 要显示的标题文本（纯文本，无需 ANSI 样式）。
@@ -210,25 +179,37 @@ class TerminalAdapter:
         self._stdout.flush()
 
     def move_cursor_to(self, row: int, col: int = 1) -> None:
-        """移动光标到指定位置（CUP）。
+        """移动光标到指定位置（通过 Blessed Terminal.move_xy）。
 
         Args:
             row: 目标行（1-based）
             col: 目标列（1-based）
         """
-        self._stdout.write(f"\033[{row};{col}H")
+        try:
+            term = get_terminal()
+            # Blessed 使用 0-based 坐标
+            self._stdout.write(term.move_xy(col - 1, row - 1))
+        except Exception:
+            self._stdout.write(f"\033[{row};{col}H")
         self._stdout.flush()
 
     def scroll_up(self, n: int = 1) -> None:
-        """向上滚动 n 行（在滚动区域内）。"""
+        """向上滚动 n 行（在滚动区域内）。
+
+        保留原始 ANSI（SU）——Blessed 无等价操作。
+        """
         if n <= 0:
             return
         self._stdout.write(f"\033[{n}S")
         self._stdout.flush()
 
     def clear_screen_from_cursor(self) -> None:
-        """清除光标位置到屏幕末尾（ED=0）。"""
-        self._stdout.write("\033[0J")
+        """清除光标位置到屏幕末尾（通过 Blessed Terminal.clear_eos）。"""
+        try:
+            term = get_terminal()
+            self._stdout.write(term.clear_eos)
+        except Exception:
+            self._stdout.write("\033[0J")
         self._stdout.flush()
 
     # ── 帧渲染 ──────────────────────────────────────────

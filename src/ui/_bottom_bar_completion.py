@@ -4,10 +4,12 @@
 提供 show/hide/cycle/get_selected + render() 绘制方法。
 
 依赖 _bottom_bar_theme 中的颜色常量和 _bottom_cursor 中的纯函数。
+使用 Blessed Terminal.move_xy / Terminal.clear_eol 替代原始 ANSI 序列。
 """
 
 from __future__ import annotations
 
+from ._blessed import get_terminal
 from ._bottom_bar_theme import (
     _COLOR_COMPLETE_TITLE,
     _COLOR_DIM,
@@ -138,6 +140,8 @@ class _CompletionPopup:
     def render(self, out, r_start: int, term_width: int) -> int:
         """绘制补全弹窗（仅弹窗部分），返回绘制的行数。
 
+        使用 Blessed Terminal.move_xy 和 clear_eol 替代原始 ANSI 序列。
+
         Args:
             out: stdout 文件对象。
             r_start: 弹窗起始行号（输入区第一行）。
@@ -150,13 +154,19 @@ class _CompletionPopup:
         if popup_height <= 0 or not self._items:
             return 0
 
+        try:
+            term = get_terminal()
+            move_clear = lambda r: term.move_xy(0, r - 1) + term.clear_eol()
+        except Exception:
+            move_clear = lambda r: f"\033[{r};1H\033[K"
+
         popup_w = min(term_width - 2, 50)
         n = len(self._items)
 
         # ── 标题行 ──
         total_items = len(self._texts)
         header = f" {_COLOR_COMPLETE_TITLE}{self._title}{_COLOR_RESET} {_COLOR_DIM}({total_items}项){_COLOR_RESET}"
-        out.write(f"\033[{r_start};1H\033[K{header}")
+        out.write(move_clear(r_start) + header)
 
         # ── 选项行 ──
         cell_w = popup_w - 3
@@ -165,12 +175,12 @@ class _CompletionPopup:
             display = _truncate_by_width(item, cell_w)
             pad = " " * max(0, cell_w - _visual_len(display))
             if i == self._idx:
-                out.write(f"\033[{r};1H\033[K"
-                          f" {_COLOR_SELECT_BG}{_COLOR_SELECT_FG}\u25b6{_COLOR_RESET}"
+                out.write(move_clear(r)
+                          + f" {_COLOR_SELECT_BG}{_COLOR_SELECT_FG}\u25b6{_COLOR_RESET}"
                           f"{_COLOR_SELECT_BG}{_COLOR_SELECT_FG} {display}{pad}{_COLOR_RESET}")
             else:
-                out.write(f"\033[{r};1H\033[K"
-                          f"  {display}{pad}")
+                out.write(move_clear(r)
+                          + f"  {display}{pad}")
 
         # ── 快捷键提示行 ──
         footer_r = r_start + 1 + n
@@ -184,12 +194,14 @@ class _CompletionPopup:
             hint = f" {_COLOR_TIME}{self._idx + 1}/{n}{_COLOR_RESET} {_COLOR_DIM}(\u524d{n}/{total_items}){_COLOR_RESET}  {hint_prefix} "
         else:
             hint = f" {hint_prefix} "
-        out.write(f"\033[{footer_r};1H\033[K{_COLOR_DIM}{hint}{_COLOR_RESET}")
+        out.write(move_clear(footer_r) + f"{_COLOR_DIM}{hint}{_COLOR_RESET}")
 
         return popup_height
 
     def render_cycle_update(self, out, popup_r_start: int, term_width: int) -> None:
         """增量更新选项行和底部快捷键提示（cycle 时使用，仅重绘弹窗行）。
+
+        使用 Blessed Terminal.move_xy 和 clear_eol 替代原始 ANSI 序列。
 
         Args:
             out: stdout 文件对象。
@@ -198,6 +210,12 @@ class _CompletionPopup:
         """
         if not self._visible or not self._items:
             return
+
+        try:
+            term = get_terminal()
+            move_clear = lambda r: term.move_xy(0, r - 1) + term.clear_eol()
+        except Exception:
+            move_clear = lambda r: f"\033[{r};1H\033[K"
 
         n = len(self._items)
         popup_w = min(term_width - 2, 50)
@@ -208,12 +226,12 @@ class _CompletionPopup:
             display = _truncate_by_width(item, cell_w)
             pad = " " * max(0, cell_w - _visual_len(display))
             if i == self._idx:
-                out.write(f"\033[{r};1H\033[K"
-                          f" {_COLOR_SELECT_BG}{_COLOR_SELECT_FG}\u25b6{_COLOR_RESET}"
+                out.write(move_clear(r)
+                          + f" {_COLOR_SELECT_BG}{_COLOR_SELECT_FG}\u25b6{_COLOR_RESET}"
                           f"{_COLOR_SELECT_BG}{_COLOR_SELECT_FG} {display}{pad}{_COLOR_RESET}")
             else:
-                out.write(f"\033[{r};1H\033[K"
-                          f"  {display}{pad}")
+                out.write(move_clear(r)
+                          + f"  {display}{pad}")
 
         # ── 快捷键提示行 ──
         total_items = len(self._texts)
@@ -226,4 +244,4 @@ class _CompletionPopup:
                     f" {_COLOR_DIM}(\u524d{n}/{total_items}){_COLOR_RESET}  {hint_prefix} ")
         else:
             hint = f" {hint_prefix} "
-        out.write(f"\033[{footer_r};1H\033[K{_COLOR_DIM}{hint}{_COLOR_RESET}")
+        out.write(move_clear(footer_r) + f"{_COLOR_DIM}{hint}{_COLOR_RESET}")

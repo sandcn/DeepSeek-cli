@@ -16,6 +16,17 @@ from src.ui._bottom_bar import _BottomBar
 from src.ui._stdout_tracker import _StdoutLineTracker
 
 
+def _mock_terminal(width=80, height=30):
+    """创建模拟 Blessed Terminal 对象，返回指定的 width/height。"""
+    mock_term = MagicMock()
+    mock_term.width = width
+    mock_term.height = height
+    # move_xy 返回实际的 ANSI 序列
+    mock_term.move_xy.side_effect = lambda x, y: f"\033[{y+1};{x+1}H"
+    mock_term.clear_eol = "\033[K"
+    return mock_term
+
+
 class TestBottomBarCursorPos(unittest.TestCase):
     """验证 _input_cursor_pos 在 refresh() 各路径中的正确更新。
 
@@ -268,8 +279,9 @@ class TestBottomBarLastScrollEnd(unittest.TestCase):
         self.bb._cached_height = 30
         self.bb._cached_width = 80
 
+        mock_term = _mock_terminal(width=80, height=30)
         with patch.object(sys, '__stdout__', io.StringIO()), \
-             patch("shutil.get_terminal_size", return_value=(80, 30)):
+             patch("src.ui._bottom_bar.get_terminal", return_value=mock_term):
             self.bb.setup()
 
         expected = 30 - (2 + max(3, 0))  # height - (_BOTTOM_LINES + 0 = 5) = 25
@@ -284,9 +296,16 @@ class TestBottomBarLastScrollEnd(unittest.TestCase):
         self.bb._last_scroll_end = 25  # 模拟 setup 后的值
         self.bb._last_text = "x" * 300  # 长文本使 _bottom_lines 很大
 
-        out = io.StringIO()
-        with patch.object(sys, '__stdout__', out):
-            self.bb.ensure_cursor_in_upper()
+        # Blessed 在非 TTY 环境下返回空字符串，需 patch get_terminal
+        mock_term = _mock_terminal(width=80, height=30)
+        with patch("src.ui._bottom_bar.get_terminal", return_value=mock_term):
+            out = io.StringIO()
+            old = sys.__stdout__
+            sys.__stdout__ = out
+            try:
+                self.bb.ensure_cursor_in_upper()
+            finally:
+                sys.__stdout__ = old
 
         # 应输出 \033[25;1H（用缓存值 25），而非动态计算的更小值
         output = out.getvalue()
@@ -300,10 +319,11 @@ class TestBottomBarLastScrollEnd(unittest.TestCase):
         self.bb._cached_width = 80
         self.bb._last_scroll_end = 0  # 未初始化
 
-        out = io.StringIO()
-        with patch.object(sys, '__stdout__', out), \
-             patch("shutil.get_terminal_size", return_value=(80, 30)):
-            self.bb.ensure_cursor_in_upper()
+        mock_term = _mock_terminal(width=80, height=30)
+        with patch("src.ui._bottom_bar.get_terminal", return_value=mock_term):
+            out = io.StringIO()
+            with patch.object(sys, '__stdout__', out):
+                self.bb.ensure_cursor_in_upper()
 
         output = out.getvalue()
         self.assertIn("\033[30;1H", output,
@@ -318,9 +338,10 @@ class TestBottomBarLastScrollEnd(unittest.TestCase):
         # 让 _bottom_lines 变大（模拟补全弹窗弹出）
         self.bb._completion_popup_height = 6
 
+        mock_term = _mock_terminal(width=80, height=30)
         out = io.StringIO()
         with patch.object(sys, '__stdout__', out), \
-             patch("shutil.get_terminal_size", return_value=(80, 30)):
+             patch("src.ui._bottom_bar.get_terminal", return_value=mock_term):
             self.bb.sync_bottom_lines()
 
         # _bottom_lines = 2 + max(3, 0) + 6 = 11
@@ -338,9 +359,10 @@ class TestBottomBarLastScrollEnd(unittest.TestCase):
         self.bb._cached_width = 80
         self.bb._last_scroll_end = 25  # 30 - 5 = 25，与当前 _bottom_lines 一致
 
+        mock_term = _mock_terminal(width=80, height=30)
         out = io.StringIO()
         with patch.object(sys, '__stdout__', out), \
-             patch("shutil.get_terminal_size", return_value=(80, 30)):
+             patch("src.ui._bottom_bar.get_terminal", return_value=mock_term):
             self.bb.sync_bottom_lines()
 
         output = out.getvalue()

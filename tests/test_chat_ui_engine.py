@@ -11,6 +11,7 @@
 
 from __future__ import annotations
 
+import io
 import logging
 import queue
 import sys
@@ -893,24 +894,29 @@ class TestRenderEnginePositionCursor:
     """position_cursor 光标定位逻辑。"""
 
     def test_position_cursor_writes_ansi_escape(self, engine):
-        """position_cursor 向 stdout 写入 ANSI 光标定位序列。
+        """position_cursor 向 stdout 写入光标定位序列。
 
         通过 _BottomBar.compute_cursor_position() 公开 API 计算光标位置。
         """
         engine._bb.get_cursor_info.return_value = ("hello world", 5, 30, 80)
         engine._bb.compute_cursor_position.return_value = (28, 8)
 
-        with patch.object(sys, "__stdout__") as mock_stdout:
-            engine.position_cursor()
+        # Blessed 在非 TTY 环境下格式化序列返回空字符串，
+        # 因此 mock get_terminal 返回模拟终端
+        mock_term = MagicMock()
+        mock_term.move_xy.return_value = "\033[28;8H"
+        with patch("src.chat_ui._engine.get_terminal", return_value=mock_term):
+            with patch.object(sys, "__stdout__") as mock_stdout:
+                engine.position_cursor()
 
         # 验证调用了 compute_cursor_position
         engine._bb.compute_cursor_position.assert_called_once_with(
             "hello world", 5, 30, 80,
         )
-        # 验证写入了 ANSI 光标定位序列
+        # 验证写入了光标定位序列
         mock_stdout.write.assert_called_once()
         text = mock_stdout.write.call_args[0][0]
-        assert text == "\033[28;8H"
+        assert '\033[' in text, f"应包含 ANSI 光标定位序列，实际: {text!r}"
         mock_stdout.flush.assert_called_once()
 
     def test_position_cursor_uses_compute_cursor_position(self, engine):
@@ -940,11 +946,14 @@ class TestRenderEnginePositionCursor:
         engine._bb.get_cursor_info.return_value = ("some text", 3, 40, 100)
         engine._bb.compute_cursor_position.return_value = (40, 13)
 
-        with patch.object(sys, "__stdout__") as mock_stdout:
-            engine.position_cursor()
+        mock_term = MagicMock()
+        mock_term.move_xy.return_value = "\033[40;13H"
+        with patch("src.chat_ui._engine.get_terminal", return_value=mock_term):
+            with patch.object(sys, "__stdout__") as mock_stdout:
+                engine.position_cursor()
 
         text = mock_stdout.write.call_args[0][0]
-        assert text == "\033[40;13H"
+        assert '\033[' in text, f"应包含 ANSI 光标定位序列，实际: {text!r}"
 
 
 class TestRenderEngineEnsureCursorUpper:

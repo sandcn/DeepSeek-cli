@@ -174,11 +174,16 @@ class ChatUIConsumer:
         if self._engine._reader_running:
             return
 
+        from ..ui._blessed import get_terminal
         from ..ui._lock import output_lock
         with output_lock:
-            # ★ 用固定大行号 \033[9999;1H 将光标定位到终端末行（终端自动 clamp），
-            #   为 DECSTBM 设置做准备。
-            sys.__stdout__.write(_ANSI_CURSOR_BOTTOM)
+            # ★ 将光标定位到终端末行，为 DECSTBM 设置做准备。
+            try:
+                term = get_terminal()
+                sys.__stdout__.write(term.move_xy(0, term.height - 1))
+            except Exception:
+                # 回退：固定大行号 \033[9999;1H（终端自动 clamp）
+                sys.__stdout__.write(_ANSI_CURSOR_BOTTOM)
             sys.__stdout__.flush()
             self._bottom_bar.setup()
             self._engine.start()
