@@ -1,11 +1,11 @@
-"""RenderEngine 单元测试 — 命令队列 / Reader 线程 / 渲染循环。
+"""RenderEngine 单元测试 — 命令队列 / render 线程 / 渲染循环。
 
 测试范围：
 1. TestRenderEnginePushCmd    — push_cmd 入队/满队列/连续满/ERROR 直写
 2. TestRenderEngineStartStop  — start/stop 生命周期管理/幂等/重启
-3. TestRenderEngineFlush      — flush 等待消费/Reader 未运行时清空/超时
+3. TestRenderEngineFlush      — flush 等待消费/render 未运行时清空/超时
 4. TestRenderEngineDrainQueue — _drain_queue 空跳过/流水线/容错/底部栏触发
-5. TestRenderEngineReader     — _reader 循环/异常崩溃
+5. TestRenderEngineRender     — _render 循环/异常崩溃
 6. TestRenderEnginePositionCursor — position_cursor / ensure_cursor_upper
 """
 
@@ -72,9 +72,9 @@ def _mock_threading_thread():
     """全局 mock threading.Thread，避免实际启动线程。
 
     使用 autouse=True，所有依赖 engine.start() 的测试自动生效。
-    start() 内部创建 Thread(target=self._reader, daemon=True) 并 .start()。
-    mock 后 Thread 不真正启动，_reader 循环不会运行。
-    需要测试 _reader 方法时单独 patch。
+    start() 内部创建 Thread(target=self._render, daemon=True) 并 .start()。
+    mock 后 Thread 不真正启动，_render 循环不会运行。
+    需要测试 _render 方法时单独 patch。
     """
     with patch("threading.Thread") as mt:
         mock_instance = MagicMock()
@@ -205,7 +205,7 @@ class TestRenderEnginePushCmd:
         assert engine._consecutive_full == 0
 
     def test_push_cmd_cmd_event_set_on_success(self, engine):
-        """成功入队时 cmd_event 被 set，唤醒 Reader 线程。"""
+        """成功入队时 cmd_event 被 set，唤醒 render 线程。"""
         engine._cmd_event.clear()
         engine.push_cmd((RenderCommand.NOTIFICATION, "测试"))
         assert engine._cmd_event.is_set()
@@ -229,11 +229,11 @@ class TestRenderEngineStartStop:
 
             # 验证 Thread 构造函数参数
             mock_thread_cls.assert_called_once_with(
-                target=engine._reader, daemon=True,
+                target=engine._render, daemon=True,
             )
             mock_t.start.assert_called_once()
-            assert engine._reader_running is True
-            assert engine._reader_thread is mock_t
+            assert engine._render_running is True
+            assert engine._render_thread is mock_t
 
     def test_start_repeat_skips_when_alive(self, engine):
         """重复 start() 且线程存活 → 跳过（幂等）。"""
@@ -260,7 +260,7 @@ class TestRenderEngineStartStop:
             mock_thread_cls.return_value = mock_t1
 
             engine.start()  # 第一次
-            engine._reader_running = False  # 模拟线程结束
+            engine._render_running = False  # 模拟线程结束
 
             # 第二次 start
             mock_t2 = MagicMock()
@@ -272,12 +272,12 @@ class TestRenderEngineStartStop:
             # 第一次的线程被 join
             mock_t1.join.assert_called_once()
             # 第二次创建了新线程
-            assert engine._reader_thread is mock_t2
+            assert engine._render_thread is mock_t2
             mock_t2.start.assert_called_once()
 
     def test_start_initial_state_no_thread(self, engine):
-        """首次 start() 时 _reader_thread 为 None → 直接创建新线程。"""
-        assert engine._reader_thread is None
+        """首次 start() 时 _render_thread 为 None → 直接创建新线程。"""
+        assert engine._render_thread is None
 
         with patch("threading.Thread") as mock_thread_cls:
             mock_t = MagicMock()
@@ -287,37 +287,37 @@ class TestRenderEngineStartStop:
             engine.start()
 
             mock_thread_cls.assert_called_once_with(
-                target=engine._reader, daemon=True,
+                target=engine._render, daemon=True,
             )
 
     def test_stop_stops_thread(self, engine):
-        """stop() 设置 _reader_running=False + 唤醒 + join。"""
+        """stop() 设置 _render_running=False + 唤醒 + join。"""
         with patch("threading.Thread") as mock_thread_cls:
             mock_t = MagicMock()
             mock_t.is_alive.return_value = False
             mock_thread_cls.return_value = mock_t
-            engine._reader_thread = mock_t
-            engine._reader_running = True
+            engine._render_thread = mock_t
+            engine._render_running = True
 
             engine.stop()
 
-            assert engine._reader_running is False
+            assert engine._render_running is False
             assert engine._cmd_event.is_set()  # 被唤醒
             mock_t.join.assert_called_once_with(timeout=2.0)
 
     def test_stop_idempotent(self, engine):
         """stop() 空状态（无线程）→ 安全跳过。"""
-        engine._reader_thread = None
-        engine._reader_running = False
+        engine._render_thread = None
+        engine._render_running = False
         # 不应抛出异常
         engine.stop()
 
-    def test_stop_wakes_reader_with_event(self, engine):
-        """stop() 设置 cmd_event 唤醒 Reader 线程。"""
+    def test_stop_wakes_render_with_event(self, engine):
+        """stop() 设置 cmd_event 唤醒 render 线程。"""
         mock_t = MagicMock()
         mock_t.is_alive.return_value = False
-        engine._reader_thread = mock_t
-        engine._reader_running = True
+        engine._render_thread = mock_t
+        engine._render_running = True
         engine._cmd_event.clear()
 
         engine.stop()
@@ -329,21 +329,21 @@ class TestRenderEngineStartStop:
         mock_t = MagicMock()
         # is_alive 前 3 次 True（超时），第 4 次 False（重试后成功）
         mock_t.is_alive.side_effect = [True, True, True, False]
-        engine._reader_thread = mock_t
-        engine._reader_running = True
+        engine._render_thread = mock_t
+        engine._render_running = True
 
         engine.stop()
 
         # 在第 1 次 join(timeout=2) 超时后，有 3 轮唤醒+重试
         assert mock_t.is_alive.call_count >= 2
-        assert engine._reader_running is False
+        assert engine._render_running is False
 
     def test_stop_retries_exhausted(self, engine):
         """stop() 所有重试都用完 → 不再尝试，返回。"""
         mock_t = MagicMock()
         mock_t.is_alive.return_value = True  # 始终存活
-        engine._reader_thread = mock_t
-        engine._reader_running = True
+        engine._render_thread = mock_t
+        engine._render_running = True
 
         engine.stop()
 
@@ -363,8 +363,8 @@ class TestRenderEngineStartStop:
 
             # 第一次 start
             engine.start()
-            first_thread = engine._reader_thread
-            engine._reader_running = False
+            first_thread = engine._render_thread
+            engine._render_running = False
 
             mock_t.is_alive.return_value = False
             # stop
@@ -377,16 +377,16 @@ class TestRenderEngineStartStop:
 
             engine.start()
 
-            assert engine._reader_thread is mock_t2
-            assert engine._reader_running is True
+            assert engine._render_thread is mock_t2
+            assert engine._render_running is True
             mock_t2.start.assert_called_once()
 
-    def test_start_sets_reader_running(self, engine):
-        """start() 将 _reader_running 置 True。"""
-        assert engine._reader_running is False
+    def test_start_sets_render_running(self, engine):
+        """start() 将 _render_running 置 True。"""
+        assert engine._render_running is False
         with patch("threading.Thread"):
             engine.start()
-        assert engine._reader_running is True
+        assert engine._render_running is True
 
 
 # ══════════════════════════════════════════════════════
@@ -394,11 +394,11 @@ class TestRenderEngineStartStop:
 # ══════════════════════════════════════════════════════
 
 class TestRenderEngineFlush:
-    """flush 等待队列消费完毕 / Reader 未运行时清空 / 超时返回。"""
+    """flush 等待队列消费完毕 / render 未运行时清空 / 超时返回。"""
 
-    def test_flush_reader_not_started_drains_queue(self, engine):
-        """Reader 线程从未启动（None）→ 直接清空队列。"""
-        engine._reader_thread = None
+    def test_flush_render_not_started_drains_queue(self, engine):
+        """render 线程从未启动（None）→ 直接清空队列。"""
+        engine._render_thread = None
         engine._cmd_queue.put((RenderCommand.CONTENT, "a"))
         engine._cmd_queue.put((RenderCommand.CONTENT, "b"))
         assert engine._cmd_queue.qsize() == 2
@@ -407,11 +407,11 @@ class TestRenderEngineFlush:
 
         assert engine._cmd_queue.empty()
 
-    def test_flush_reader_dead_drains_queue(self, engine):
-        """Reader 线程已死 → 直接清空队列。"""
+    def test_flush_render_dead_drains_queue(self, engine):
+        """render 线程已死 → 直接清空队列。"""
         mock_t = MagicMock()
         mock_t.is_alive.return_value = False
-        engine._reader_thread = mock_t
+        engine._render_thread = mock_t
         engine._cmd_queue.put((RenderCommand.CONTENT, "x"))
         engine._cmd_queue.put((RenderCommand.CONTENT, "y"))
 
@@ -425,7 +425,7 @@ class TestRenderEngineFlush:
         """空队列时 flush 快速返回。"""
         mock_t = MagicMock()
         mock_t.is_alive.return_value = True
-        engine._reader_thread = mock_t
+        engine._render_thread = mock_t
 
         with patch("threading.Thread") as mt:
             task_done_t = MagicMock()
@@ -437,11 +437,11 @@ class TestRenderEngineFlush:
             task_done_t.start.assert_called_once()
             task_done_t.join.assert_called_once_with(timeout=1.0)
 
-    def test_flush_with_reader_alive_uses_queue_join(self, engine):
-        """Reader 线程存活时通过 queue.join() 等待消费完毕。"""
+    def test_flush_with_render_alive_uses_queue_join(self, engine):
+        """render 线程存活时通过 queue.join() 等待消费完毕。"""
         mock_t = MagicMock()
         mock_t.is_alive.return_value = True
-        engine._reader_thread = mock_t
+        engine._render_thread = mock_t
 
         with patch("threading.Thread") as mt:
             task_done_t = MagicMock()
@@ -457,7 +457,7 @@ class TestRenderEngineFlush:
         """flush 超时后返回（不阻塞永久）。"""
         mock_t = MagicMock()
         mock_t.is_alive.return_value = True
-        engine._reader_thread = mock_t
+        engine._render_thread = mock_t
 
         with patch("threading.Thread") as mt:
             task_done_t = MagicMock()
@@ -469,12 +469,12 @@ class TestRenderEngineFlush:
 
             task_done_t.join.assert_called_once_with(timeout=0.1)
 
-    def test_flush_sets_cmd_event_to_wake_reader(self, engine):
-        """flush 先设置 cmd_event 唤醒 Reader。"""
+    def test_flush_sets_cmd_event_to_wake_render(self, engine):
+        """flush 先设置 cmd_event 唤醒 render。"""
         engine._cmd_event.clear()
         mock_t = MagicMock()
         mock_t.is_alive.return_value = True
-        engine._reader_thread = mock_t
+        engine._render_thread = mock_t
 
         with patch("threading.Thread") as mt:
             mt.return_value = MagicMock()
@@ -487,7 +487,7 @@ class TestRenderEngineFlush:
         """flush(timeout=None) 无限等待。"""
         mock_t = MagicMock()
         mock_t.is_alive.return_value = True
-        engine._reader_thread = mock_t
+        engine._render_thread = mock_t
 
         with patch("threading.Thread") as mt:
             task_done_t = MagicMock()
@@ -818,43 +818,43 @@ class TestRenderEngineDrainQueue:
 
 
 # ══════════════════════════════════════════════════════
-# TestRenderEngineReader
+# TestRenderEngineRender
 # ══════════════════════════════════════════════════════
 
-class TestRenderEngineReader:
-    """_reader 循环 / 异常崩溃 / 终止。"""
+class TestRenderEngineRender:
+    """_render 循环 / 异常崩溃 / 终止。"""
 
-    def test_reader_runs_while_flag_true(self, engine):
-        """_reader_running=True 时循环持续运行。"""
+    def test_render_runs_while_flag_true(self, engine):
+        """_render_running=True 时循环持续运行。"""
         # 精确控制循环次数
-        engine._reader_running = True
+        engine._render_running = True
         engine._cmd_event.wait = MagicMock(side_effect=[
             None, None, KeyboardInterrupt,  # 第3次抛出 KeyboardInterrupt 跳出
         ])
         engine._drain_queue = MagicMock()
 
         with pytest.raises(KeyboardInterrupt):
-            engine._reader()
+            engine._render()
 
         # _drain_queue 被调用了 3 次
         assert engine._drain_queue.call_count == 3
 
-    def test_reader_clears_event_after_wait(self, engine):
+    def test_render_clears_event_after_wait(self, engine):
         """每次循环后清除 cmd_event。"""
-        engine._reader_running = True
+        engine._render_running = True
         engine._cmd_event.wait = MagicMock(side_effect=[None, KeyboardInterrupt])
         engine._drain_queue = MagicMock()
         engine._cmd_event.clear = MagicMock()
 
         with pytest.raises(KeyboardInterrupt):
-            engine._reader()
+            engine._render()
 
         # clear 被调用
         engine._cmd_event.clear.assert_called_once()
 
-    def test_reader_exception_logs_and_stops(self, engine, caplog):
-        """_reader 中异常时记录 critical 日志并设置 _reader_running=False。"""
-        engine._reader_running = True
+    def test_render_exception_logs_and_stops(self, engine, caplog):
+        """_render 中异常时记录 critical 日志并设置 _render_running=False。"""
+        engine._render_running = True
         engine._drain_queue = MagicMock(side_effect=[
             None,  # 第一次正常
             RuntimeError("模拟崩溃"),  # 第二次崩溃
@@ -863,23 +863,23 @@ class TestRenderEngineReader:
         caplog.set_level(logging.CRITICAL)
 
         with patch.object(sys, "__stderr__") as mock_stderr:
-            engine._reader()
+            engine._render()
 
-        # _reader_running 被置 False
-        assert engine._reader_running is False
-        assert "Reader 线程异常崩溃" in caplog.text
+        # _render_running 被置 False
+        assert engine._render_running is False
+        assert "render 线程异常崩溃" in caplog.text
         # 终端也输出告警
         mock_stderr.write.assert_called_once()
         stderr_text = mock_stderr.write.call_args[0][0]
-        assert "Reader 线程异常终止" in stderr_text
+        assert "render 线程异常终止" in stderr_text
 
-    def test_reader_stops_when_flag_false(self, engine):
-        """_reader_running=False 时循环退出。"""
-        engine._reader_running = False  # 初始就是 False
+    def test_render_stops_when_flag_false(self, engine):
+        """_render_running=False 时循环退出。"""
+        engine._render_running = False  # 初始就是 False
         engine._drain_queue = MagicMock()
         engine._cmd_event.wait = MagicMock()
 
-        engine._reader()
+        engine._render()
 
         # 循环不进入 body
         engine._drain_queue.assert_not_called()
@@ -984,15 +984,15 @@ class TestRenderEngineEdgeCases:
         assert engine._renderer is mock_renderer
         assert engine._bb is mock_bottom_bar
         assert engine._cmd_queue.maxsize == 10000
-        assert engine._reader_thread is None
-        assert engine._reader_running is False
+        assert engine._render_thread is None
+        assert engine._render_running is False
         assert engine._consecutive_full == 0
         assert isinstance(engine._cmd_queue, queue.Queue)
         assert isinstance(engine._cmd_event, threading.Event)
 
     def test_flush_drains_multiple_commands_in_order(self, engine):
         """flush 时队列中有多条命令 → 全部清空。"""
-        engine._reader_thread = None  # 模拟 Reader 未启动
+        engine._render_thread = None  # 模拟 render 未启动
         engine._cmd_queue.put((RenderCommand.CONTENT, "a"))
         engine._cmd_queue.put((RenderCommand.PHASE_DONE, "思考"))
         engine._cmd_queue.put((RenderCommand.NOTIFICATION, "通知"))
@@ -1016,11 +1016,11 @@ class TestRenderEngineEdgeCases:
         # 所以 event 仍然 clear
         assert not engine._cmd_event.is_set()
 
-    def test_reader_uses_reader_interval(self, engine):
-        """_reader 中 cmd_event.wait(timeout=_READER_INTERVAL)。"""
-        from src.chat_ui._const import _READER_INTERVAL
+    def test_render_uses_render_interval(self, engine):
+        """_render 中 cmd_event.wait(timeout=_RENDER_INTERVAL)。"""
+        from src.chat_ui._const import _RENDER_INTERVAL
 
-        engine._reader_running = True
+        engine._render_running = True
 
         # _drain_queue 第1次正常完成，第2次退出循环
         call_count = 0
@@ -1029,17 +1029,17 @@ class TestRenderEngineEdgeCases:
             nonlocal call_count
             call_count += 1
             if call_count >= 2:
-                engine._reader_running = False
+                engine._render_running = False
 
         engine._drain_queue = MagicMock(side_effect=_side_effect_drain)
         engine._cmd_event.wait = MagicMock()
         engine._cmd_event.clear = MagicMock()
 
-        engine._reader()
+        engine._render()
 
         # 验证每次 wait 都带正确的 timeout（循环运行了 2 轮）
         assert engine._cmd_event.wait.call_count >= 1
-        engine._cmd_event.wait.assert_called_with(timeout=_READER_INTERVAL)
+        engine._cmd_event.wait.assert_called_with(timeout=_RENDER_INTERVAL)
 
     def test_drain_check_width_exception_safe(self, engine):
         """_check_resize 异常时被静默忽略。"""

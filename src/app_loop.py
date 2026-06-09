@@ -126,6 +126,7 @@ def _make_round_callbacks(
         notify_elapsed = kw.get("elapsed", 0.0)
         if chat_ui is not None:
             chat_ui.bottom_bar.disable_status()
+            chat_ui.request_bottom_redraw()
             status_elapsed = chat_ui.bottom_bar.get_status_elapsed()
             if status_elapsed > 0:
                 notify_elapsed = status_elapsed
@@ -220,7 +221,7 @@ async def _handle_editmsg_cmd(session: "ChatSession", state: SessionState) -> No
 
     # ★ 编辑后重新渲染剩余消息到上屏（scroll 区域内）
     # 通过 ChatUI 的 command queue 统一渲染，避免直接 stdout 写入
-    # 与 reader 线程（_drain_queue → force_redraw）的并发竞态。
+    # 与 render 线程（_drain_queue → force_redraw）的并发竞态。
     if _needs_rerender and chat_ui is not None:
         from .core.commands_data import filter_non_system as _filter_non_system
         non_system = _filter_non_system(session.messages)
@@ -597,7 +598,7 @@ class InteractiveLoop:
 
         def _on_special_key(action: str, text: str) -> str | None:
             if action == 'vim':
-                # ★ 暂停 ChatUI（reader 线程 + 底部栏），恢复后 vim 可独占终端
+                # ★ 暂停 ChatUI（render 线程 + 底部栏），恢复后 vim 可独占终端
                 if self._chat_ui is not None:
                     self._chat_ui.suspend()
                 try:

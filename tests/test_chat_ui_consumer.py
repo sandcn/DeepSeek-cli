@@ -251,8 +251,8 @@ class TestChatUIConsumerStart:
         with patch('src.chat_ui._state'):
             consumer.start()
             assert consumer._started is True
-            assert consumer._engine._reader_running is True
-            assert consumer._engine._reader_thread is not None
+            assert consumer._engine._render_running is True
+            assert consumer._engine._render_thread is not None
             # 停止以清理
         with patch('src.chat_ui._state'):
             consumer.stop()
@@ -486,7 +486,7 @@ class TestChatUIConsumerResume:
         """resume() 调用 _engine.start()"""
         consumer._started = True
         # 模拟 engine 未运行
-        consumer._engine._reader_running = False
+        consumer._engine._render_running = False
         with patch.object(consumer._engine, 'start') as mock_start:
             with patch.object(consumer._bottom_bar, 'setup'):
                 with patch('sys.__stdout__'):
@@ -496,7 +496,7 @@ class TestChatUIConsumerResume:
     def test_resume_calls_bottom_bar_setup(self, consumer, mock_bus):
         """resume() 调用 _bottom_bar.setup()"""
         consumer._started = True
-        consumer._engine._reader_running = False
+        consumer._engine._render_running = False
         with patch.object(consumer._engine, 'start'):
             with patch.object(consumer._bottom_bar, 'setup') as mock_setup:
                 with patch('sys.__stdout__'):
@@ -506,7 +506,7 @@ class TestChatUIConsumerResume:
     def test_resume_skips_when_engine_running(self, consumer, mock_bus):
         """engine 已在运行时 resume() 跳过"""
         consumer._started = True
-        consumer._engine._reader_running = True
+        consumer._engine._render_running = True
         with patch.object(consumer._engine, 'start') as mock_start:
             with patch.object(consumer._bottom_bar, 'setup') as mock_setup:
                 consumer.resume()
@@ -525,7 +525,7 @@ class TestChatUIConsumerResume:
     def test_resume_writes_ansi_cursor(self, consumer, mock_bus):
         """resume() 写入光标定位序列到 sys.__stdout__"""
         consumer._started = True
-        consumer._engine._reader_running = False
+        consumer._engine._render_running = False
         with patch.object(consumer._engine, 'start'):
             with patch.object(consumer._bottom_bar, 'setup'):
                 with patch('sys.__stdout__') as mock_stdout:
@@ -541,14 +541,14 @@ class TestChatUIConsumerResume:
     def test_resume_after_suspend_full_cycle(self, consumer, mock_bus):
         """suspend→resume 完整暂停恢复周期"""
         consumer._started = True
-        consumer._engine._reader_running = False
+        consumer._engine._render_running = False
 
         with patch.object(consumer._engine, 'stop'):
             with patch.object(consumer._engine, 'flush'):
                 with patch.object(consumer._bottom_bar, 'teardown'):
                     consumer.suspend()
 
-        # reader 已停止
+        # render 已停止
         with patch.object(consumer._engine, 'start') as mock_start:
             with patch.object(consumer._bottom_bar, 'setup'):
                 with patch('sys.__stdout__'):
@@ -593,7 +593,7 @@ class TestChatUIConsumerLifecycle:
                     assert consumer._started is True
 
         # resume
-        consumer._engine._reader_running = False
+        consumer._engine._render_running = False
         with patch.object(consumer._engine, 'start'):
             with patch.object(consumer._bottom_bar, 'setup'):
                 with patch('sys.__stdout__'):
@@ -784,14 +784,13 @@ class TestChatUIConsumerRefresh:
             # 不应崩溃
             consumer.refresh()
 
-    def test_refresh_bottom_bar_when_active(self, consumer, mock_bus):
-        """refresh() 在底部栏活跃时调用 force_redraw"""
+    def test_refresh_does_not_call_force_redraw(self, consumer, mock_bus):
+        """refresh() 不再直接调用 force_redraw，由 render 线程处理"""
         consumer._bottom_bar._status_active = True
         with patch('src.chat_ui._state._active_subagent_panel', None):
             with patch.object(consumer._bottom_bar, 'force_redraw') as mock_redraw:
-                with patch.object(consumer._engine, 'position_cursor'):
-                    consumer.refresh()
-                    mock_redraw.assert_called_once()
+                consumer.refresh()
+                mock_redraw.assert_not_called()
 
     def test_refresh_skips_bottom_bar_when_inactive(self, consumer, mock_bus):
         """refresh() 在底部栏不活跃时跳过 force_redraw"""

@@ -60,14 +60,11 @@ class _StatusMixin:
     def disable_status(self) -> None:
         """冻结状态行（流式结束后调用），仅显示模型名。
 
-        将 _status_active 置为 False 后立即触发底部栏重绘，
-        使状态行从全量统计（耗时/令牌/速率）切换为仅显示模型名。
+        将 _status_active 置为 False，状态行从全量统计（耗时/令牌/速率）
+        切换为仅显示模型名。调用方负责在之后推 BOTTOM_BAR_REFRESH 命令，
+        由 render 线程 _phase_redraw_bottom() 在下一周期触发 force_redraw()。
         """
         self._status_active = False
-        from ._lock import _try_acquire_output_lock
-        with _try_acquire_output_lock(name="bottom_bar.disable_status", timeout=1.0) as locked:
-            if locked:
-                self.force_redraw()
 
     @property
     def is_status_active(self) -> bool:

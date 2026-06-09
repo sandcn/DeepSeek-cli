@@ -232,14 +232,14 @@ class ParallelExecutor:
 
         策略：先将 markdown 文本用 IncrementalRenderer 渲染为 ANSI 格式
         （保留完整的 markdown 渲染能力：标题加粗、代码高亮、引用块等），
-        再将 ANSI 输出通过 chat_ui.write_line() 由 reader 线程统一上屏。
+        再将 ANSI 输出通过 chat_ui.write_line() 由 render 线程统一上屏。
 
         ChatUI 激活时用此路径替代 _stream_results_markdown，原因：
         - _stream_results_markdown 直接写 __stdout__ 会破坏 DECSTBM 分屏布局
         - 此路径用 StringIO 捕获 IncrementalRenderer 的 ANSI 输出，再路由到
-          ChatUI 的统一渲染管线（reader 线程持 output_lock 渲染，尊重分屏布局）
+          ChatUI 的统一渲染管线（render 线程持 output_lock 渲染，尊重分屏布局）
 
-        线程安全：write_line 是线程安全的（入队 → reader 线程统一消费）。
+        线程安全：write_line 是线程安全的（入队 → render 线程统一消费）。
         StringIO 无竞态（仅在当前线程中访问）。
         Parser/Engine 无实例锁（单线程专用，不与其他渲染器共享）。
         """
@@ -293,7 +293,7 @@ class ParallelExecutor:
 
         # ── ANSI 输出通过 ChatUI 上屏 ─────────────────────────────────
         # write_line 内部用 Text.from_ansi() 解析 ANSI 序列为 Rich Text，
-        # 再由 reader 线程的 OutputAdapter（Console with __stdout__）渲染。
+        # 再由 render 线程的 OutputAdapter（Console with __stdout__）渲染。
         # 双 Console 转换（StringIO Console → __stdout__ Console）对标准
         # ANSI SGR 序列（颜色/样式）无损，保留完整 markdown 渲染效果。
         output = buf.getvalue()
@@ -306,12 +306,12 @@ class ParallelExecutor:
 
         路由策略（二选一）：
         1. ChatUIConsumer 激活 → _stream_results_via_chatui
-           （write_line 入队 → reader 线程统一渲染，尊重 DECSTBM 分屏布局）
+           （write_line 入队 → render 线程统一渲染，尊重 DECSTBM 分屏布局）
         2. ChatUIConsumer 未激活 → _stream_results_markdown
            （IncrementalRenderer 直接写 __stdout__，适用于非分屏模式）
 
         ChatUI 激活时无需光标修复：write_line 内部自动处理输出位置
-        （reader 线程持 output_lock，渲染后底部栏 force_redraw 刷新光标）。
+        （render 线程持 output_lock，渲染后底部栏 force_redraw 刷新光标）。
         """
         chat_ui = get_active_chat_ui()
         if chat_ui is not None:

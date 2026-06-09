@@ -427,7 +427,7 @@ class ReadFileFunc(Func):
     def _render_syntax_to_chatui(syntax: Syntax, chat_ui) -> None:
         """将 Syntax 渲染为 ANSI 字符串，通过 ChatUI write_line 逐行上屏。
 
-        工具线程中调用，chat_ui.write_line() 是线程安全的（入队 → reader 线程渲染）。
+        工具线程中调用，chat_ui.write_line() 是线程安全的（入队 → render 线程渲染）。
         使用 StringIO Console 捕获 Rich 的 ANSI 输出，不直接写终端。
         """
         import io
@@ -447,7 +447,7 @@ class ReadFileFunc(Func):
     ) -> None:
         """渲染语法高亮到终端（Rich Syntax），供 display/web_display 复用。
 
-        ChatUI 激活时 → 渲染为 ANSI 字符串，路由到 ChatUI reader 线程串行输出
+        ChatUI 激活时 → 渲染为 ANSI 字符串，路由到 ChatUI render 线程串行输出
         （尊重 DECSTBM 分屏布局，不破坏底部栏显示）。
         ChatUI 不可用时 → console.print(syntax) 直写终端（持 output_lock）。
 
@@ -459,7 +459,7 @@ class ReadFileFunc(Func):
         if syntax is None:
             return
 
-        # ChatUI 激活 → 路由到 ChatUI reader 线程串行输出
+        # ChatUI 激活 → 路由到 ChatUI render 线程串行输出
         if chat_ui is None:
             chat_ui = self._get_chat_ui()
         if chat_ui is not None:

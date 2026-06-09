@@ -2,9 +2,6 @@
 
 Layer 2 — 依赖 _const（Style常量 + RenderCommand + _ReasoningState + _MAIN_LABEL）
           + _render_state（_RenderState）+ _controls（控件体系）。
-
-上屏历史管理（ScreenHistoryManager）已屏蔽为 No-op，
-所有相关调用已移除，减轻每帧方法调用开销。
 """
 
 from __future__ import annotations
@@ -94,7 +91,7 @@ class ContentRenderer:
     """内容渲染器 — 执行 RenderCommand 并输出到终端。
 
     每个 _do_* 方法对应一种渲染命令，由 _render() 通过模块级 O(1)
-    字典分发调用。所有方法在 Reader 线程中串行执行，无需额外同步。
+    字典分发调用。所有方法在 render 线程中串行执行，无需额外同步。
 
     依赖：
       - _rs (_RenderState)：渲染器生命周期（推理/内容/工具适配器）
@@ -334,19 +331,13 @@ class ContentRenderer:
     # ── 底部栏刷新 ──────────────────────────────────
 
     def _do_bottom_bar_refresh(self) -> None:
-        """在 Reader 线程中重绘底部栏（通过 force_redraw）。
+        """占位命令处理 — 实际重绘由 _phase_redraw_bottom() 完成。
 
-        由 BOTTOM_BAR_REFRESH 命令触发，确保终端 I/O 在
-        reader 线程中执行，避免在 EscapeMonitor 回调线程
-        中直接写终端导致的竞态。
+        BOTTOM_BAR_REFRESH 命令的作用是确保命令队列非空，
+        使同一 _drain_queue() 的后续 _phase_redraw_bottom(True)
+        触发 force_redraw()。此方法本身不再直接调用 force_redraw，
+        避免同一流水线中重复重绘。
         """
-        try:
-            self._bb.force_redraw()
-        except Exception:
-            _logger.debug(
-                "_do_bottom_bar_refresh: force_redraw 异常",
-                exc_info=True,
-            )
 
     # ── 样式化行渲染 — 通过 TextControl 实例委托 ──────
 

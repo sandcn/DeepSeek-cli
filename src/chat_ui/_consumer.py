@@ -37,10 +37,10 @@ class ChatUIConsumer:
     内部子系统：
       _rs     (_RenderState)   — 渲染器生命周期管理
       _cmpl   (_CmplHandler)   — Tab 补全交互
-      _engine (RenderEngine)   — Reader 线程 + 命令队列 + 渲染循环
+      _engine (RenderEngine)   — render 线程 + 命令队列 + 渲染循环
       _disp   (EventDispatcher)— 事件过滤+入队
 
-    Reader 线程以 10Hz 轮询命令队列，串行执行 _render()
+    render 线程以 10Hz 轮询命令队列，串行执行 _render()
     进行终端 I/O。事件 handler 只在 EventBus 回调线程中做过滤+入队。
     """
 
@@ -57,7 +57,7 @@ class ChatUIConsumer:
         console = Console(**get_safe_console_config(), file=sys.__stdout__)
         output_adapter = OutputAdapter(console)
 
-        # ★ 渲染引擎（内部管理 queue + reader 线程）
+        # ★ 渲染引擎（内部管理 queue + render 线程）
         # on_display_messages 回调注入：消除 ContentRenderer 对 tui._message_display 的直接 import
         # output_adapter 构造注入：消除 ContentRenderer 对 rich.Console 的运行时 import
         self._renderer = ContentRenderer(
@@ -84,7 +84,7 @@ class ChatUIConsumer:
     # ═══════════════════════════════════════════════════════
 
     def start(self) -> None:
-        """订阅事件 + 启动 reader 线程。幂等。"""
+        """订阅事件 + 启动 render 线程。幂等。"""
         if self._started:
             return
 
@@ -120,18 +120,18 @@ class ChatUIConsumer:
         self._started = True
 
     def stop(self) -> None:
-        """取消订阅 + 停止 reader + 关闭渲染器 + 拆除底部栏。幂等。"""
+        """取消订阅 + 停止 render + 关闭渲染器 + 拆除底部栏。幂等。"""
         if not self._started:
             return
 
-        # 1) 先停 reader（与 suspend() 顺序一致）
+        # 1) 先停 render（与 suspend() 顺序一致）
         self._engine.stop()
 
         # 2) 引用计数递减（封装在 _state 模块中）
         from . import _state
         _state._unregister_consumer()
 
-        # 3) 取消订阅（reader 已停，不可能有新入队）
+        # 3) 取消订阅（render 已停，不可能有新入队）
         if self._bound_handlers is not None:
             for event_type in self._bound_handlers:
                 try:
@@ -159,7 +159,7 @@ class ChatUIConsumer:
         """暂停渲染和终端设置，为交互式工具腾出终端。幂等。"""
         if not self._started:
             return
-        # ★ 先停 reader（flush 不会造任务阻塞在空队列上），再 flush 剩余命令
+        # ★ 先停 render（flush 不会造任务阻塞在空队列上），再 flush 剩余命令
         self._engine.stop()
         self._engine.flush()
         from ..ui._lock import output_lock
@@ -167,11 +167,11 @@ class ChatUIConsumer:
             self._bottom_bar.teardown()
 
     def resume(self) -> None:
-        """恢复渲染和终端设置。仅在已 start() 但 reader 已停止时有效。"""
+        """恢复渲染和终端设置。仅在已 start() 但 render 已停止时有效。"""
         if not self._started:
             return
-        # ★ 引擎已在运行则跳过（防止重复启动导致双 reader 线程）
-        if self._engine._reader_running:
+        # ★ 引擎已在运行则跳过（防止重复启动导致双 render 线程）
+        if self._engine._render_running:
             return
 
         from ..ui._blessed import get_terminal
@@ -215,15 +215,13 @@ class ChatUIConsumer:
     def refresh(self) -> None:
         """公开刷新接口 — 供外部程序/timer 定时调用以刷新 TUI。
 
-        安全地从任何线程调用：自行管理 output_lock 获取与释放。
+        安全地从任何线程调用。
         执行以下刷新操作：
           1. SubAgentPanelControl 面板刷新（若有活跃实例）
-          2. 底部栏重绘（force_redraw）
-          3. 光标定位（position_cursor）
+          2. 底部栏重绘由 render 线程 _phase_redraw_bottom() 10Hz 轮询处理
 
         与 _drain_queue 不同：不消费命令队列，专供外部定时刷新。
         """
-        from ..ui._lock import _try_acquire_output_lock
 
         # ★ 1. SubAgentPanelControl 面板刷新（就地渲染，走 output_lock 路径）
         from . import _state
@@ -235,12 +233,16 @@ class ChatUIConsumer:
                 _logger.debug("refresh: SubAgentPanelControl 刷新异常", exc_info=True)
                 self._engine.push_cmd((RenderCommand.ERROR, "SubAgent 面板刷新失败，请查看日志获取详情"))
 
-        # ★ 2. 底部栏重绘 + 光标定位（有活跃状态时执行）
-        if self._bottom_bar.is_status_active:
-            with _try_acquire_output_lock(name="refresh.bottom", timeout=1.0) as locked:
-                if locked:
-                    self._bottom_bar.force_redraw()
-                    self._engine.position_cursor()
+        # ★ 2. 底部栏重绘由 render 线程 _phase_redraw_bottom() 10Hz 轮询处理
+        #    无需在此处直接 force_redraw
+
+    def request_bottom_redraw(self) -> None:
+        """请求 render 线程重绘底部栏（线程安全）。
+
+        推 BOTTOM_BAR_REFRESH 命令入队，由 render 线程的 _drain_queue()
+        处理后进入 _phase_redraw_bottom(True) 阶段触发 force_redraw()。
+        """
+        self._engine.push_cmd((RenderCommand.BOTTOM_BAR_REFRESH,))
 
     def write_line(self, text: str) -> None:
         """入队通用文本行渲染命令，走统一渲染管线。"""
@@ -318,7 +320,7 @@ class ChatUIConsumer:
         """刷新底部栏输入区（线程安全：仅更新状态 + 入队渲染命令）。
 
         设置输入文本和光标位置后，入队 BOTTOM_BAR_REFRESH 命令，
-        由 Reader 线程在 output_lock 保护下执行 force_redraw()，
+        由 render 线程在 output_lock 保护下执行 force_redraw()，
         避免在 EscapeMonitor 回调线程中直接写终端。
 
         Args:

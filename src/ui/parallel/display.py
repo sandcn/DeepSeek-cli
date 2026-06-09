@@ -92,7 +92,7 @@ class ParallelDisplay(BaseDisplay):
 
     帧渲染委托给 SubAgentPanelControl（Control 体系），
     状态管理委托给 AgentStateStore。
-    刷新由 ChatUIConsumer 的 reader 线程在 _drain_queue 中触发，
+    刷新由 ChatUIConsumer 的 render 线程在 _drain_queue 中触发，
     通过 RenderCommand.SUBAGENT_REFRESH 消息路径与 ChatUI 渲染命令串行化处理。
     """
 
@@ -264,7 +264,7 @@ class ParallelDisplay(BaseDisplay):
             # 仍创建 panel 但无 OutputAdapter — 帧渲染将 no-op
             self._panel = None
 
-        # ★ 首帧渲染完成后注册 SubAgentPanelControl，Reader 线程 Phase 2 从此开始接管
+        # ★ 首帧渲染完成后注册 SubAgentPanelControl，render 线程 Phase 2 从此开始接管
         if self._panel is not None:
             _chat_ui_mod._state._active_subagent_panel = self._panel
 

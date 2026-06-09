@@ -248,7 +248,7 @@ class ToolCallbackChain:
         无法创建正确的终端输出(Vt100_Output)，Picker UI 静默回退为 PlainTextOutput。
         user_select 的 display() 自带终端输出，无需额外捕获。
 
-        执行前暂停 ChatUIConsumer（停止 reader 线程、拆除底部栏），
+        执行前暂停 ChatUIConsumer（停止 render 线程、拆除底部栏），
         执行后恢复，确保 Picker 独占终端不被后台渲染干扰。
         """
         if is_web and func.__class__.web_display is not Func.web_display:

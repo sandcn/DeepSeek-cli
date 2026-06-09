@@ -824,7 +824,7 @@ class SubAgentPanelControl(Control, _ControlBase):
         """是否需要帧刷新（供 _drain_queue 空闲跳过）。
 
         条件：未关闭、非 diff_active、状态版本号有变化。
-        在 Reader 线程中调用（_drain_queue 锁外）。
+        在 render 线程中调用（_drain_queue 锁外）。
         """
         if self._closed or self._diff_active:
             return False

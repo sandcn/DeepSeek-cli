@@ -237,7 +237,6 @@ class UserSelectFunc(Func):
             bb._status_active = False
             if bb._last_text:
                 bb._last_text = ""
-                bb.force_redraw()
 
             # 在底部栏补全区显示选项
             bb.show_completions(
@@ -375,16 +374,15 @@ class UserSelectFunc(Func):
                 pass
             self._restore_termios(_termios_guard)
 
-            # 合并弹窗隐藏 + 状态恢复，避免双重重绘
+            # 合并弹窗隐藏 + 状态恢复，由 render 线程 _phase_redraw_bottom 统一终绘
             try:
                 if _saved_status_active:
                     bb._status_active = True
-                    # 手动清除弹窗状态，由 force_redraw 统一完成终绘
+                    # 手动清除弹窗状态，render 线程将在下一周期拾取并重绘
                     bb._completion._visible = False
                     bb._completion._popup_height = 0
                     bb._completion._items = []
                     bb._completion._texts = []
-                    bb.force_redraw()
                 else:
                     bb.hide_completions()
             except Exception as e:

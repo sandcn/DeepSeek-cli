@@ -1,6 +1,6 @@
-"""chat_ui 渲染引擎模块 — Reader 线程 + 命令队列 + 渲染循环。
+"""chat_ui 渲染引擎模块 — render 线程 + 命令队列 + 渲染循环。
 
-Layer 3 — 依赖 _const（_READER_INTERVAL）+ _renderers（ContentRenderer）
+Layer 3 — 依赖 _const（_RENDER_INTERVAL）+ _renderers（ContentRenderer）
           + _state（_active_subagent_panel）。
 """
 
@@ -17,7 +17,7 @@ from ._const import (
     _ANSI_RED,
     _ANSI_RESET,
     _ANSI_YELLOW,
-    _READER_INTERVAL,
+    _RENDER_INTERVAL,
     RenderCommand,
 )
 from ._utils import _cmd_name
@@ -33,9 +33,9 @@ _logger = logging.getLogger(__name__)
 
 
 class RenderEngine:
-    """渲染引擎 — 管理 Reader 线程和命令队列的消费循环。
+    """渲染引擎 — 管理 render 线程和命令队列的消费循环。
 
-    Reader 线程以 10Hz 轮询命令队列，串行执行渲染命令。
+    render 线程以 10Hz 轮询命令队列，串行执行渲染命令。
     _drain_queue() 执行三阶段流水线：上屏渲染 → 面板刷新 → 底部栏重绘。
     """
 
@@ -54,9 +54,9 @@ class RenderEngine:
         self._cmd_queue: queue.Queue = queue.Queue(maxsize=10000)
         self._cmd_event = threading.Event()
 
-        # ── Reader 线程 ──
-        self._reader_thread: threading.Thread | None = None
-        self._reader_running = False
+        # ── render 线程 ──
+        self._render_thread: threading.Thread | None = None
+        self._render_running = False
 
         # ── 队列满连续计数（超过阈值时直接警告用户） ──
         self._consecutive_full = 0
@@ -99,63 +99,64 @@ class RenderEngine:
                 sys.__stdout__.flush()
 
     def start(self) -> None:
-        """启动 Reader 线程。
+        """启动 render 线程。
 
-        三路分支防止双 Reader 线程：
+        三路分支防止双 render 线程：
         - 线程存活 → 跳过（不创建新线程，保持单线程）
         - 线程已死 → join 清理后创建新线程
         - 无旧线程 → 直接创建新线程
 
-        不再使用 `_reader_thread = None` 清空引用，
+        不再使用 `_render_thread = None` 清空引用，
         确保 stop() join 超时后 `is_alive()` 仍能准确判断线程状态。
         """
-        if self._reader_thread is not None:
-            if self._reader_thread.is_alive():
+        if self._render_thread is not None:
+            if self._render_thread.is_alive():
                 _logger.warning(
-                    "start() 被重复调用，但 Reader 线程仍在运行，跳过"
+                    "start() 被重复调用，但 render 线程仍在运行，跳过"
                 )
                 return
+                return
             # ★ 线程已死：join 清理（join 死线程立即返回）
-            self._reader_thread.join()
+            self._render_thread.join()
         # ★ 线程 None 或已 join 清理完成：创建新线程
-        self._reader_running = True
-        self._reader_thread = threading.Thread(target=self._reader, daemon=True)
-        self._reader_thread.start()
+        self._render_running = True
+        self._render_thread = threading.Thread(target=self._render, daemon=True)
+        self._render_thread.start()
 
     def stop(self) -> None:
-        """停止 Reader 线程 + 关闭渲染器。
+        """停止 render 线程 + 关闭渲染器。
 
         join 超时（2s）后线程可能仍在运行，使用 cmd_event 循环唤醒
         （最多 3 次 × 0.5s），防止线程无限运行。
 
-        不再清空 _reader_thread 引用 —— 保留死线程引用让 start()
+        不再清空 _render_thread 引用 —— 保留死线程引用让 start()
         通过 is_alive() 准确判断线程真实状态，避免 start() 误判
-        「无存活线程」而创建第二个 Reader 线程。
+        「无存活线程」而创建第二个 render 线程。
         """
-        self._reader_running = False
+        self._render_running = False
         self._cmd_event.set()
-        if self._reader_thread is not None:
-            self._reader_thread.join(timeout=2.0)
-            if self._reader_thread.is_alive():
+        if self._render_thread is not None:
+            self._render_thread.join(timeout=2.0)
+            if self._render_thread.is_alive():
                 # ★ 超时后仍存活：用 cmd_event 多次唤醒
                 for _ in range(3):
                     self._cmd_event.set()
-                    self._reader_thread.join(timeout=0.5)
-                    if not self._reader_thread.is_alive():
+                    self._render_thread.join(timeout=0.5)
+                    if not self._render_thread.is_alive():
                         break
 
     def flush(self, timeout: float | None = 5.0) -> None:
         """阻塞等待所有待处理渲染命令执行完毕。
 
-        Reader 未运行时直接清空队列（无人消费，等待无意义），
-        Reader 运行时创建临时 daemon 线程消费 queue.join() 等待。
+        render 未运行时直接清空队列（无人消费，等待无意义），
+        render 运行时创建临时 daemon 线程消费 queue.join() 等待。
 
         参数:
             timeout: 最大等待秒数，超时后返回。默认 5 秒，None 表示无限等待。
         """
         self._cmd_event.set()
-        if self._reader_thread is None or not self._reader_thread.is_alive():
-            # Reader 线程从未启动或已终止；直接清空队列避免虚假等待
+        if self._render_thread is None or not self._render_thread.is_alive():
+            # render 线程从未启动或已终止；直接清空队列避免虚假等待
             while not self._cmd_queue.empty():
                 try:
                     self._cmd_queue.get_nowait()
@@ -163,7 +164,7 @@ class RenderEngine:
                 except queue.Empty:
                     break
             return
-        # Reader 线程存在（可能仍在运行）；通过 queue.join() 等待消费完毕
+        # render 线程存在（可能仍在运行）；通过 queue.join() 等待消费完毕
         task_done = threading.Thread(
             target=self._cmd_queue.join, daemon=True,
         )
@@ -252,26 +253,26 @@ class RenderEngine:
             except Exception:
                 _logger.debug("drain_queue: position_cursor 异常", exc_info=True)
 
-    # ── 内部 — Reader 线程 ────────────────────────────
+    # ── 内部 — render 线程 ────────────────────────────
 
-    def _reader(self) -> None:
-        """Reader 线程入口。"""
-        while self._reader_running:
+    def _render(self) -> None:
+        """render 线程入口。"""
+        while self._render_running:
             try:
                 self._drain_queue()
-                self._cmd_event.wait(timeout=_READER_INTERVAL)
+                self._cmd_event.wait(timeout=_RENDER_INTERVAL)
                 self._cmd_event.clear()
             except Exception:
                 _logger.critical(
-                    "Reader 线程异常崩溃，终止",
+                    "render 线程异常崩溃，终止",
                     exc_info=True,
                 )
-                # 直接写 stderr 确保用户可见（Reader 线程已死，队列无人消费）
+                # 直接写 stderr 确保用户可见（render 线程已死，队列无人消费）
                 sys.__stderr__.write(
-                    f"{_ANSI_RED}[ChatUI] Reader 线程异常终止，请联系开发人员查看日志{_ANSI_RESET}\n"
+                    f"{_ANSI_RED}[ChatUI] render 线程异常终止，请联系开发人员查看日志{_ANSI_RESET}\n"
                 )
                 sys.__stderr__.flush()
-                self._reader_running = False
+                self._render_running = False
                 break
 
     def _drain_queue(self) -> None:

@@ -13,7 +13,7 @@ async def print_to_terminal(text: str) -> None:
     """所有工具输出的唯一终端写入路径。
 
     通过 EventBus 发布 ToolOutputChunkEvent，由 ChatUIConsumer
-    reader 线程统一排队渲染，不与底部栏刷新竞态。
+    render 线程统一排队渲染，不与底部栏刷新竞态。
     """
     from ..ui.events.event_types import ToolOutputChunkEvent
     from ..ui.events.event_bus import DisplayEventBus

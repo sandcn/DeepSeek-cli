@@ -17,7 +17,7 @@
     _dispatcher    — EventDispatcher 11 种 DisplayEvent 过滤+入队（回调解耦队列）
 
   Layer 3（引擎）：
-    _engine        — RenderEngine Reader 线程 + Queue 命令队列 + 三阶段流水线
+    _engine        — RenderEngine render 线程 + Queue 命令队列 + 三阶段流水线
 
   Layer 4（外观）：
     _consumer      — ChatUIConsumer 外观类，组合所有子系统

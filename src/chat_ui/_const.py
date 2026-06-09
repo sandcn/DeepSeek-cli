@@ -30,11 +30,11 @@ _THINKING_SEPARATOR = "\n  " + "\u2500" * 25 + "\n"
 # ── 统一错误消息截断长度 ─────────────────────────────
 _MAX_ERROR_LENGTH = 200
 
-# ── Reader 线程刷新间隔 ─────────────────────────────────
-_READER_INTERVAL = 0.1  # 100ms = 10Hz
+# ── render 线程刷新间隔 ─────────────────────────────────
+_RENDER_INTERVAL = 0.1  # 100ms = 10Hz
 
 # ── 紧急路径 ANSI 转义序列（直写终端，绕过 Rich 管线） ──
-# 用于队列满/Reader 崩溃等无法通过正常渲染管线输出的场景。
+# 用于队列满/render 崩溃等无法通过正常渲染管线输出的场景。
 # 提取为常量而非散落硬编码，确保可维护性。
 _ANSI_RED = "\033[31m"
 _ANSI_YELLOW = "\033[33m"
@@ -72,7 +72,7 @@ class RenderCommand(IntEnum):
     ERROR          = 16  # (16, message: str) — 系统错误（红色 ! 样式）
     TOOL_COUNT_DEC = 17  # (17,) — 工具计数-1
     SUBAGENT_REFRESH = 18  # (18, force: bool) — 刷新 SubAgent 面板帧
-    BOTTOM_BAR_REFRESH = 19  # (19,) — 在 reader 线程中重绘底部栏
+    BOTTOM_BAR_REFRESH = 19  # (19,) — 在 render 线程中重绘底部栏
 
 
 # ═══════════════════════════════════════════════════════════
