@@ -317,17 +317,16 @@ class ChatUIConsumer:
     def refresh_bottom_bar(self, text: str, cursor_pos: int = -1) -> None:
         """刷新底部栏输入区并定位光标到输入行。
 
-        委托 _BottomBar.refresh() 公开 API，替代直接写入私有属性
-        _last_text / _input_cursor_pos 的模式。
-        refresh() 内部已处理文本更新、全量重绘、光标定位和 flush，
-        并带有 50ms 节流合并高频键入刷新。
+        设置输入文本和光标位置后调用 force_redraw() 全量重绘。
 
         Args:
             text: 当前输入文本。
             cursor_pos: 光标在输入文本中的偏移，-1 表示文本末尾。
         """
         effective_pos = len(text) if cursor_pos < 0 else cursor_pos
-        self._bottom_bar.refresh(text, effective_pos)
+        self._bottom_bar._last_text = text
+        self._bottom_bar._input_cursor_pos = effective_pos
+        self._bottom_bar.force_redraw()
 
     def flush(self, timeout: float | None = 5.0) -> None:
         """阻塞等待所有待处理渲染命令执行完毕。（委托 _engine）"""

@@ -339,18 +339,18 @@ class TestOutputConsumerWithChatUI:
 class TestCursorPositioningFlush:
     """确保光标定位操作后 stdout 被 flush，ANSI 序列到达终端"""
 
-    def test_refresh_bottom_bar_flushes_stdout(self):
-        """refresh_bottom_bar() 委托 _bottom_bar.refresh() 公开 API"""
+    def test_refresh_bottom_bar_sets_text_and_redraws(self):
+        """refresh_bottom_bar() 设置文本光标位后调用 force_redraw()"""
         bus = DisplayEventBus()
         chat_ui = ChatUIConsumer(event_bus=bus)
 
-        # Mock _bottom_bar.refresh() 避免真实终端 I/O
-        chat_ui._bottom_bar.refresh = create_autospec(
-            chat_ui._bottom_bar.refresh)
+        # Mock force_redraw() 避免真实终端 I/O
+        with patch.object(chat_ui._bottom_bar, 'force_redraw') as mock_redraw:
+            chat_ui.refresh_bottom_bar("test_text")
 
-        chat_ui.refresh_bottom_bar("test_text")
-
-        chat_ui._bottom_bar.refresh.assert_called_once_with("test_text", 9)
+        assert chat_ui._bottom_bar._last_text == "test_text"
+        assert chat_ui._bottom_bar._input_cursor_pos == 9  # len("test_text")
+        mock_redraw.assert_called_once()
 
     def test_ensure_cursor_lower_flushes_stdout(self):
         """ensure_cursor_in_lower() 通过 bottom_bar 属性访问，不自动 flush。"""
@@ -367,10 +367,12 @@ class TestCursorPositioningFlush:
             chat_ui._bottom_bar.ensure_cursor_in_lower.assert_called_once()
 
     def test_refresh_bottom_bar_flush_called_after_reposition(self):
-        """refresh_bottom_bar 委托 _bottom_bar.refresh() 公开 API"""
+        """refresh_bottom_bar 设置文本光标位后调用 force_redraw()"""
         bus = DisplayEventBus()
         chat_ui = ChatUIConsumer(event_bus=bus)
 
-        with patch.object(chat_ui._bottom_bar, 'refresh') as mock_refresh:
+        with patch.object(chat_ui._bottom_bar, 'force_redraw') as mock_redraw:
             chat_ui.refresh_bottom_bar("test")
-            mock_refresh.assert_called_once_with("test", 4)
+            assert chat_ui._bottom_bar._last_text == "test"
+            assert chat_ui._bottom_bar._input_cursor_pos == 4  # len("test")
+            mock_redraw.assert_called_once()

@@ -1,8 +1,8 @@
-"""_BottomBar 光标定位测试 — 验证 cursor_pos 在 refresh() 中的正确传播。
+"""_BottomBar 光标定位测试 — 验证 cursor_pos 在 force_redraw() 中的正确传播。
 
 测试策略：
-  模拟 _BottomBar 处于激活状态，直接调用 refresh() 后检查 _input_cursor_pos
-  是否正确更新。不涉及终端 I/O（ANSI 输出写入 devnull）。
+  模拟 _BottomBar 处于激活状态，直接设置输入文本后调用 force_redraw() 检查
+  _input_cursor_pos 是否正确更新。不涉及终端 I/O（ANSI 输出写入 devnull）。
 """
 
 from __future__ import annotations
@@ -28,13 +28,13 @@ def _mock_terminal(width=80, height=30):
 
 
 class TestBottomBarCursorPos(unittest.TestCase):
-    """验证 _input_cursor_pos 在 refresh() 各路径中的正确更新。
+    """验证 _input_cursor_pos 在设置文本+force_redraw() 各路径中的正确更新。
 
     核心场景：
-      1. 纯光标移动（text_changed=False, status_changed=True）→ 独立 if 分支更新
-      2. 光标移动+状态变化（text_changed=False, status_changed=True）→ 同上
-      3. cursor_pos=-1（末尾定位）→ 不更新 _input_cursor_pos
-      4. 文本变化+光标移动 → _input_cursor_pos 同步更新
+      1. 纯光标移动 → 设置 _input_cursor_pos 后 force_redraw()
+      2. 光标移动+状态变化 → 同上
+      3. cursor_pos=-1（末尾定位）→ 设置 _input_cursor_pos 为文本长度
+      4. 文本变化+光标移动 → 同步更新
     """
 
     def setUp(self):
@@ -60,89 +60,100 @@ class TestBottomBarCursorPos(unittest.TestCase):
     # ── 场景 1：纯光标移动（文本不变，状态活跃） ──────────
 
     def test_cursor_move_during_streaming(self):
-        """流式输出期间纯光标移动 → _input_cursor_pos 应更新。"""
+        """流式输出期间设置光标位置 → _input_cursor_pos 应正确更新。"""
         # 模拟用户按 ← 将光标从末尾(11)移到 "world" 的 'w'(6)
         with patch.object(sys, '__stdout__', io.StringIO()), \
              patch.object(self.bb, '_format_status', return_value="test-model ◉  5t"):
-            self.bb.refresh("hello world", cursor_pos=6)
+            self.bb._last_text = "hello world"
+            self.bb._input_cursor_pos = 6
+            self.bb.force_redraw()
 
         self.assertEqual(self.bb._input_cursor_pos, 6,
-                         "流式活跃时光标移动应更新 _input_cursor_pos")
+                         "设置光标位后 force_redraw() 应保持 _input_cursor_pos")
 
     def test_cursor_move_after_streaming(self):
-        """非流式期间纯光标移动 → _input_cursor_pos 应更新。"""
+        """非流式期间设置光标位置 → _input_cursor_pos 应正确更新。"""
         self.bb._status_active = False
         self.bb._last_status = ""
 
         with patch.object(sys, '__stdout__', io.StringIO()), \
              patch.object(self.bb, '_format_status', return_value=""):
-            self.bb.refresh("hello world", cursor_pos=6)
+            self.bb._last_text = "hello world"
+            self.bb._input_cursor_pos = 6
+            self.bb.force_redraw()
 
         self.assertEqual(self.bb._input_cursor_pos, 6,
-                         "非流式时光标移动应更新 _input_cursor_pos")
+                         "非流式时设置光标位应保持 _input_cursor_pos")
 
     # ── 场景 2：光标移动 + 状态变化 ────────────────────
 
     def test_cursor_move_with_status_change(self):
-        """流式状态变化 + 光标移动 → _input_cursor_pos 应更新（修复的核心场景）。"""
-        # _format_status() 返回新状态 → status_changed=True
+        """状态变化 + 设置光标位置 → _input_cursor_pos 应正确更新。"""
         with patch.object(sys, '__stdout__', io.StringIO()), \
              patch.object(self.bb, '_format_status', return_value="test-model ◉ 10t"):
-            self.bb.refresh("hello world", cursor_pos=3)
+            self.bb._last_text = "hello world"
+            self.bb._input_cursor_pos = 3
+            self.bb.force_redraw()
 
         self.assertEqual(self.bb._input_cursor_pos, 3,
-                         "状态变化 + 光标移动应正确更新 _input_cursor_pos")
+                         "状态变化 + 光标移动应正确保持 _input_cursor_pos")
 
-    # ── 场景 3：cursor_pos=-1（末尾定位） ─────────────
+    # ── 场景 3：文本不变，保持旧光标位置 ─────────────
 
-    def test_cursor_neg_one_preserves_position(self):
-        """cursor_pos=-1 不更新 _input_cursor_pos（保持旧值）。"""
+    def test_cursor_pos_preserved_when_not_set(self):
+        """不设置 _input_cursor_pos 时保持旧值。"""
         self.bb._input_cursor_pos = 5  # 用户之前移动到了位置 5
 
         with patch.object(sys, '__stdout__', io.StringIO()), \
              patch.object(self.bb, '_format_status', return_value="test-model ◉ 10t"):
-            self.bb.refresh("hello world", cursor_pos=-1)
+            self.bb._last_text = "hello world"
+            self.bb.force_redraw()  # 不改变 _input_cursor_pos
 
         self.assertEqual(self.bb._input_cursor_pos, 5,
-                         "cursor_pos=-1 应保持 _input_cursor_pos 不变")
+                         "不设置光标位时应保持原值")
 
     # ── 场景 4：文本变化 + 光标移动 ────────────────────
 
     def test_text_change_with_cursor_pos(self):
-        """文本变化 + 光标移动 → _input_cursor_pos 应更新。"""
+        """文本变化 + 设置光标位置 → _input_cursor_pos 应更新。"""
         with patch.object(sys, '__stdout__', io.StringIO()), \
              patch.object(self.bb, '_format_status', return_value="test-model ◉ 10t"):
-            self.bb.refresh("hello world!", cursor_pos=12)
+            self.bb._last_text = "hello world!"
+            self.bb._input_cursor_pos = 12
+            self.bb.force_redraw()
 
         self.assertEqual(self.bb._input_cursor_pos, 12,
                          "文本变化时光标应更新到新位置")
 
-    # ── 场景 5：文本变化 + cursor_pos=-1（键入字符，光标在末尾） ──
+    # ── 场景 5：文本变化，光标在末尾 ─────────────────
 
-    def test_text_change_with_cursor_neg_one(self):
-        """键入字符（text_changed=True, cursor_pos=-1）→ _input_cursor_pos 应更新到文本末尾。"""
+    def test_text_change_cursor_at_end(self):
+        """文本变化，光标在末尾 → _input_cursor_pos 应为文本长度。"""
         with patch.object(sys, '__stdout__', io.StringIO()), \
              patch.object(self.bb, '_format_status', return_value="test-model ◉ 10t"):
-            # cursor_pos=-1 表示"定位到末尾"
-            self.bb.refresh("hello world!", cursor_pos=-1)
+            self.bb._last_text = "hello world!"
+            self.bb._input_cursor_pos = 12  # 即 len("hello world!")
+            self.bb.force_redraw()
 
-        # text_changed=True 路径中：self._input_cursor_pos = cursor_pos = -1
-        self.assertEqual(self.bb._input_cursor_pos, -1,
-                         "cursor_pos=-1 的键入应将 _input_cursor_pos 设为 -1")
+        self.assertEqual(self.bb._input_cursor_pos, 12,
+                         "文本变化+末尾光标应正确保持")
 
-    # ── 场景 6：refresh 轻量路径（仅光标移动，无锁） ─────
+    # ── 场景 6：force_redraw 布局未变时快速跳过 ─────
 
-    def test_light_path_cursor_move(self):
-        """轻量路径（仅光标移动，文本/状态/尺寸未变）→ _input_cursor_pos 应更新。"""
-        self.bb._last_status = "test-model ◉"  # 与 mock 返回值一致
+    def test_force_redraw_skips_when_unchanged(self):
+        """布局和状态均未变时 force_redraw 应跳过全量重绘。"""
+        self.bb._last_status = "test-model ◉"
         self.bb._last_rendered_text = "hello world"
+        self.bb._last_text = "hello world"
+        self.bb._last_bottom_lines = self.bb._bottom_lines
 
-        with patch.object(sys, '__stdout__', io.StringIO()), \
+        out = io.StringIO()
+        with patch.object(sys, '__stdout__', out), \
              patch.object(self.bb, '_format_status', return_value="test-model ◉"):
-            self.bb.refresh("hello world", cursor_pos=3)
+            self.bb.force_redraw()
 
-        self.assertEqual(self.bb._input_cursor_pos, 3,
-                         "轻量路径光标移动应更新 _input_cursor_pos")
+        self.assertEqual(out.getvalue(), "",
+                         "布局和状态未变时 force_redraw 不应输出 ANSI 序列")
 
 
 
@@ -503,16 +514,15 @@ class TestApplyScrollDeltaOrdering(unittest.TestCase):
         self.assert_ansi_before(output, scroll_up_seq, "\033[r",
                                 "SU 应在 \\033[r 之前")
 
-    def test_refresh_expand_uses_su(self):
-        """refresh 在 delta > 0 时输出 SU 上滚序列。"""
-        self.bb._last_text = "short"
-        self.bb._last_bottom_lines = 3
+    def test_force_redraw_expand_uses_su(self):
+        """force_redraw 在 delta > 0 时输出 SU 上滚序列。"""
+        self.bb._last_text = "A" * 500  # 长文本，_bottom_lines 会增大
+        self.bb._last_bottom_lines = 3  # 旧底部行数较小
         self.bb._last_rendered_text = "short"
 
         old_bl = self.bb._last_bottom_lines
-        new_text = "A" * 500
         output = self._capture_ansi_order(
-            lambda: self.bb.refresh(new_text, 0))
+            lambda: self.bb.force_redraw())
 
         scroll_end = 30 - old_bl
         scroll_up_seq = f"\033[{scroll_end};1H"

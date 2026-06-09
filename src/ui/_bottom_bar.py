@@ -36,7 +36,6 @@ from ._stdout_tracker import _StdoutLineTracker
 from ._bottom_bar_theme import (
     _BOTTOM_MIN_HEIGHT,
     _BOTTOM_MIN_LINES,
-    _BOTTOM_REFRESH_MS,
     _COLOR_DEEP_CYAN,
     _COLOR_DIM,
     _COLOR_RESET,
@@ -584,69 +583,11 @@ class _BottomBar(_StatusMixin):
 
     # ── 刷新 ──────────────────────────────────────────────
 
-    def redraw(self) -> None:
-        """重绘全部底部栏（不改变滚动区域），超长文本自动拆行。
-
-        用于 prompt_toolkit 等外部组件覆盖底部栏后的恢复。
-        仅在已激活时有效。
-
-        resize 检测由 _drain_queue() Stage 0 统一处理，此方法不重复检测。
-        """
-        if not self._active:
-            return
-
-        with _try_acquire_output_lock(name="bottom_bar.redraw", timeout=1.0) as locked:
-            if not locked:
-                return
-            height = self._term_height()
-            total = self._bottom_lines
-            scroll_end = height - total
-            old_bottom_lines = self._last_bottom_lines
-            delta = total - old_bottom_lines
-            old_scroll_end = height - old_bottom_lines
-            out = sys.__stdout__
-            out.write(_blessed_save_cursor())
-
-            self._apply_scroll_delta(out, delta, old_scroll_end)
-
-            out.write(_blessed_reset_scroll_region())
-
-            self._last_bottom_lines = total
-
-            if scroll_end < 1:
-                for r in range(1, height + 1):
-                    out.write(_blessed_move_clear(r))
-                out.write(_blessed_restore_cursor())
-                out.write(_blessed_cursor_goto(height, 1) + _blessed_save_cursor())
-                out.flush()
-                return
-
-            if delta < 0:
-                clear_start = old_scroll_end + 1
-                clear_end = scroll_end
-                for r in range(clear_start, clear_end + 1):
-                    out.write(_blessed_move_clear(r))
-            else:
-                clear_start = old_scroll_end + 1
-                for r in range(clear_start, height + 1):
-                    out.write(_blessed_move_clear(r))
-
-            self._draw_all_locked(out, height)
-
-            self._last_scroll_end = scroll_end
-            if self._tracker is not None:
-                self._tracker.set_scroll_end(scroll_end)
-            out.write(f"{_blessed_set_scroll_region(1, scroll_end)}")
-            self._reclaim_scroll_back(out, delta, scroll_end)
-            out.write(_blessed_restore_cursor())
-            out.write(_blessed_cursor_goto(scroll_end, 1) + _blessed_save_cursor())
-            out.flush()
-
     def force_redraw(self) -> None:
         """无条件重绘全部底部栏（绕过节流和变更检测），超长文本自动拆行。
 
-        所有共享可变状态在 output_lock 保护下更新，与 refresh()
-        串行化，消除跨线程竞争。可被任何线程安全调用。
+        所有共享可变状态在 output_lock 保护下更新。
+        可被任何线程安全调用。
 
         内置快速路径：状态行文本、输入文本、底部行数三者均未变化时
         跳过全量重绘，仅更新 _last_refresh 时间戳。避免流式输出期间
@@ -736,138 +677,6 @@ class _BottomBar(_StatusMixin):
             out.write(_blessed_cursor_goto(scroll_end, 1) + _blessed_save_cursor())
             out.flush()
             self._last_cursor_pos = self._input_cursor_pos
-
-    def refresh(self, text: str, cursor_pos: int = -1) -> None:
-        """刷新底部栏全部行（分隔线/状态行/输入行一起刷新），超长文本自动拆行。
-
-        节流 50ms：高频键入时合并刷新，减少锁竞争。
-
-        resize 检测由 _drain_queue() Stage 0 统一处理，此方法不重复检测。
-
-        Args:
-            text: 当前输入文本（空字符串则只显示 > 提示符）。
-            cursor_pos: 光标在输入文本中的偏移（0=第一个字符后），
-                        -1=不定位光标（放在文本末尾）。
-        """
-        if not self._active:
-            return
-
-        now = time.monotonic()
-        text_changed = text != self._last_text
-        cursor_changed = cursor_pos >= 0 and cursor_pos != self._last_cursor_pos
-        if not text_changed and not cursor_changed and now - self._last_refresh < _BOTTOM_REFRESH_MS:
-            return
-
-        new_status = self._format_status()
-        status_changed = new_status != self._last_status
-
-        if not text_changed and not status_changed and not cursor_changed:
-            return
-
-        # ── 轻量光标路径 ──
-        if not text_changed and not status_changed and cursor_changed:
-            self._last_cursor_pos = cursor_pos
-            self._input_cursor_pos = cursor_pos
-            term_w = self._term_width()
-            term_h = self._term_height()
-            max_input = max(1, term_w - 4)
-            vis_row, vis_col = self._cursor_visual_pos_from_cache(text, cursor_pos, max_input)
-            total = (2 + self._cached_input_rows
-                     if (self._cached_wrapped_for == text
-                         and self._cached_wrapped_width == max_input)
-                     else self._bottom_lines)
-            r_cursor = term_h - total + 3 + self._completion.height + vis_row
-            r_cursor = max(1, min(r_cursor, term_h))
-            cursor_col = min(3 + vis_col, term_w)
-            sys.__stdout__.write(_blessed_cursor_goto(r_cursor, cursor_col))
-            sys.__stdout__.flush()
-            return
-
-        height = self._term_height()
-
-        with _try_acquire_output_lock(name="bottom_bar.refresh", timeout=1.0) as locked:
-            if not locked:
-                return
-            if text_changed:
-                self._last_text = text
-                self._input_cursor_pos = cursor_pos
-                self._last_refresh = now
-            total = self._bottom_lines
-            scroll_end = height - total
-            old_bottom_lines = self._last_bottom_lines
-            delta = total - old_bottom_lines
-            old_scroll_end = height - old_bottom_lines
-            if status_changed:
-                self._last_status = new_status
-            if cursor_pos >= 0:
-                if self._input_cursor_pos != cursor_pos:
-                    _logger.debug(
-                        "_input_cursor_pos 更新: %d→%d, "
-                        "text_changed=%s, status_changed=%s",
-                        self._input_cursor_pos, cursor_pos,
-                        text_changed, status_changed,
-                    )
-                self._input_cursor_pos = cursor_pos
-            self._last_cursor_pos = self._input_cursor_pos
-            out = sys.__stdout__
-            out.write(_blessed_save_cursor())
-
-            self._apply_scroll_delta(out, delta, old_scroll_end)
-
-            out.write(_blessed_reset_scroll_region())
-
-            self._last_bottom_lines = total
-
-            if scroll_end < 1:
-                for r in range(1, height + 1):
-                    out.write(_blessed_move_clear(r))
-                out.write(_blessed_restore_cursor())
-                out.write(_blessed_cursor_goto(height, 1) + _blessed_save_cursor())
-                out.write(_blessed_cursor_goto(height, 1))
-                out.flush()
-                return
-
-            if delta < 0:
-                clear_start = old_scroll_end + 1
-                clear_end = scroll_end
-                for r in range(clear_start, clear_end + 1):
-                    out.write(_blessed_move_clear(r))
-            else:
-                clear_start = old_scroll_end + 1
-                for r in range(clear_start, height + 1):
-                    out.write(_blessed_move_clear(r))
-
-            r1 = height - total + 1
-            tw = self._term_width()
-            sep_len = min(tw - 2, 40)
-            sep = f"{_COLOR_SEP}\u2501{_COLOR_RESET}" * sep_len
-            out.write(_blessed_cursor_goto(r1, 1) + "  " + sep)
-
-            r2 = r1 + 1
-            out.write(_blessed_move_clear(r2) + new_status)
-
-            self._draw_input_lines_locked(out, text, r2 + 1, tw)
-            input_rows = self._cached_input_rows
-            for r in range(r2 + 1 + input_rows, height + 1):
-                out.write(_blessed_move_clear(r))
-
-            vis_row, vis_col = _compute_cursor_visual_pos(
-                text, cursor_pos, max(1, tw - 4),
-            )
-            r_cursor = r2 + 1 + self._completion.height + vis_row
-            r_cursor = max(1, min(r_cursor, height))
-            cursor_col = 3 + vis_col
-            cursor_col = min(cursor_col, self._term_width())
-
-            self._last_scroll_end = scroll_end
-            if self._tracker is not None:
-                self._tracker.set_scroll_end(scroll_end)
-            out.write(f"{_blessed_set_scroll_region(1, scroll_end)}")
-            self._reclaim_scroll_back(out, delta, scroll_end)
-            out.write(_blessed_restore_cursor())
-            out.write(_blessed_cursor_goto(scroll_end, 1) + _blessed_save_cursor())
-            out.write(_blessed_cursor_goto(r_cursor, cursor_col))
-            out.flush()
 
     # ── 内部绘制 ──────────────────────────────────────────
 
@@ -993,45 +802,6 @@ class _BottomBar(_StatusMixin):
 
         text = self._last_text or ""
         self._draw_input_lines_locked(out, text, r2 + 1, tw)
-
-    def _draw_status_locked(self, out, height: int) -> None:
-        """仅重绘状态行（需持有 output_lock，在 \033[r 之后调用）。"""
-        status = self._format_status()
-        if status == self._last_status:
-            return
-        self._last_status = status
-        total = self._bottom_lines
-        status_row = height - total + 2
-        out.write(_blessed_move_clear(status_row) + status)
-
-    def refresh_status_only(self) -> None:
-        """仅刷新状态行（reader 线程 drain 后调用，10Hz）。
-
-        始终刷新（包含模型名），不再以 _status_active 为门控。
-        终端高度不足以容纳底部栏时跳过。
-        """
-        if not self._active:
-            return
-        height = self._term_height()
-
-        with _try_acquire_output_lock(name="bottom_bar.status", timeout=1.0) as locked:
-            if not locked:
-                return
-            scroll_end = height - self._bottom_lines
-            out = sys.__stdout__
-            if scroll_end < 1:
-                return
-            out.write(_blessed_save_cursor())
-            out.write(_blessed_reset_scroll_region())
-            self._draw_status_locked(out, height)
-            self._last_scroll_end = scroll_end
-            if self._tracker is not None:
-                self._tracker.set_scroll_end(scroll_end)
-            out.write(f"{_blessed_set_scroll_region(1, scroll_end)}")
-            out.write(_blessed_restore_cursor())
-            out.write(_blessed_cursor_goto(scroll_end, 1) + _blessed_save_cursor())
-            out.flush()
-            self._last_refresh = time.monotonic()
 
     # ── 补全弹窗（委托 _CompletionPopup） ──────────────────
 
