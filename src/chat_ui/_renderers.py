@@ -72,6 +72,7 @@ def _build_render_dispatch() -> dict[int, tuple[str, tuple[int, ...]]]:
         R.TOOL_FAIL_INC:  ("_do_tool_fail_inc",   ()),
         R.ERROR:          ("_do_error",           (1,)),
         R.SUBAGENT_REFRESH: ("_do_subagent_refresh", (1,)),
+        R.BOTTOM_BAR_REFRESH: ("_do_bottom_bar_refresh", ()),
     }
 
     # 断言：确保没有废弃命令被误加到分发表中
@@ -327,6 +328,23 @@ class ContentRenderer:
         except Exception:
             _logger.debug(
                 "_do_subagent_refresh: 面板刷新异常",
+                exc_info=True,
+            )
+
+    # ── 底部栏刷新 ──────────────────────────────────
+
+    def _do_bottom_bar_refresh(self) -> None:
+        """在 Reader 线程中重绘底部栏（通过 force_redraw）。
+
+        由 BOTTOM_BAR_REFRESH 命令触发，确保终端 I/O 在
+        reader 线程中执行，避免在 EscapeMonitor 回调线程
+        中直接写终端导致的竞态。
+        """
+        try:
+            self._bb.force_redraw()
+        except Exception:
+            _logger.debug(
+                "_do_bottom_bar_refresh: force_redraw 异常",
                 exc_info=True,
             )
 

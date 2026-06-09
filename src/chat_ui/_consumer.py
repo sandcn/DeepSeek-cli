@@ -315,9 +315,11 @@ class ChatUIConsumer:
         self._engine.ensure_cursor_upper()
 
     def refresh_bottom_bar(self, text: str, cursor_pos: int = -1) -> None:
-        """刷新底部栏输入区并定位光标到输入行。
+        """刷新底部栏输入区（线程安全：仅更新状态 + 入队渲染命令）。
 
-        设置输入文本和光标位置后调用 force_redraw() 全量重绘。
+        设置输入文本和光标位置后，入队 BOTTOM_BAR_REFRESH 命令，
+        由 Reader 线程在 output_lock 保护下执行 force_redraw()，
+        避免在 EscapeMonitor 回调线程中直接写终端。
 
         Args:
             text: 当前输入文本。
@@ -326,7 +328,7 @@ class ChatUIConsumer:
         effective_pos = len(text) if cursor_pos < 0 else cursor_pos
         self._bottom_bar._last_text = text
         self._bottom_bar._input_cursor_pos = effective_pos
-        self._bottom_bar.force_redraw()
+        self._engine.push_cmd((RenderCommand.BOTTOM_BAR_REFRESH,))
 
     def flush(self, timeout: float | None = 5.0) -> None:
         """阻塞等待所有待处理渲染命令执行完毕。（委托 _engine）"""
