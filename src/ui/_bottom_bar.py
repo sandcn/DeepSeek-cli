@@ -261,6 +261,7 @@ class _BottomBar(_StatusMixin):
         self._cached_input_rows: int = _MIN_INPUT_ROWS
         self._last_rendered_text: str = ""
         self._last_scroll_end: int = 0
+        self._last_height: int = 0  # force_redraw 时的终端高度，用于 resize 时正确计算 old_scroll_end
         # ── 补全弹窗组合对象 ──
         self._completion = _CompletionPopup()
         # ── stdout 行追踪器 ──
@@ -537,6 +538,7 @@ class _BottomBar(_StatusMixin):
             if locked:
                 self._last_text = ""
                 self._last_bottom_lines = self._bottom_lines
+                self._last_height = height
                 scroll_end = height - self._bottom_lines
                 self._last_scroll_end = scroll_end
                 self._tracker.set_scroll_end(scroll_end)
@@ -580,6 +582,7 @@ class _BottomBar(_StatusMixin):
                 out.write(_blessed_save_cursor())
                 out.flush()
         self._last_bottom_lines = _BOTTOM_MIN_LINES
+        self._last_height = 0
 
     # ── 刷新 ──────────────────────────────────────────────
 
@@ -610,7 +613,8 @@ class _BottomBar(_StatusMixin):
             total = self._bottom_lines
 
             layout_unchanged = text == self._last_rendered_text and total == self._last_bottom_lines
-            if layout_unchanged:
+            height_changed = self._last_height > 0 and height != self._last_height
+            if layout_unchanged and not height_changed:
                 new_status = self._format_status()
                 if new_status == self._last_status:
                     self._last_refresh = time.monotonic()
@@ -622,7 +626,10 @@ class _BottomBar(_StatusMixin):
             old_bottom_lines = self._last_bottom_lines
             scroll_end = height - total
             delta = total - old_bottom_lines
-            old_scroll_end = height - old_bottom_lines
+            # ★ 使用 _last_height 计算 old_scroll_end，否则终端高度变化时
+            #    会错用当前 height 算出错误的 old_scroll_end，导致无法正确
+            #    清理旧内容区域中现在属于底部栏的行。
+            old_scroll_end = (self._last_height if self._last_height > 0 else height) - old_bottom_lines
             self._last_refresh = time.monotonic()
             self._last_status = new_status
 
@@ -641,6 +648,7 @@ class _BottomBar(_StatusMixin):
                 out.write(_blessed_restore_cursor())
                 out.write(_blessed_cursor_goto(height, 1) + _blessed_save_cursor())
                 out.flush()
+                self._last_height = height
                 self._last_cursor_pos = self._input_cursor_pos
                 return
 
@@ -654,13 +662,19 @@ class _BottomBar(_StatusMixin):
                 for r in range(clear_start, height + 1):
                     out.write(_blessed_move_clear(r))
 
+            # ★ 终端高度缩小时，旧内容区中现在属于新底部栏区域的行
+            #    需要额外清理（delta=0 时上述 else 分支的 range 可能为空）
+            if self._last_height > 0 and height < self._last_height:
+                for r in range(max(scroll_end + 1, 1), min(old_scroll_end, height) + 1):
+                    out.write(_blessed_move_clear(r))
+
             r1 = height - total + 1
             r2 = r1 + 1
 
             tw = self._term_width()
             sep_len = min(tw - 2, 40)
             sep = f"{_COLOR_SEP}\u2501{_COLOR_RESET}" * sep_len
-            out.write(_blessed_cursor_goto(r1, 1) + "  " + sep)
+            out.write(_blessed_move_clear(r1) + "  " + sep)
             out.write(_blessed_move_clear(r2) + self._last_status)
 
             self._draw_input_lines_locked(out, text, r2 + 1, tw)
@@ -676,6 +690,7 @@ class _BottomBar(_StatusMixin):
             out.write(_blessed_restore_cursor())
             out.write(_blessed_cursor_goto(scroll_end, 1) + _blessed_save_cursor())
             out.flush()
+            self._last_height = height
             self._last_cursor_pos = self._input_cursor_pos
 
     # ── 内部绘制 ──────────────────────────────────────────

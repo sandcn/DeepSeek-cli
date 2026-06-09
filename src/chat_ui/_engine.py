@@ -181,6 +181,10 @@ class RenderEngine:
         resize 检测字段（_last_width_check / _cached_term_size /
         _RESIZE_CHECK_INTERVAL）已从 ContentRenderer 迁移至 RenderEngine 自身。
         尺寸未变时零副作用。
+
+        终端高度变化时额外入队 BOTTOM_BAR_REFRESH，确保 force_redraw()
+        能够在正确的 _last_height 基准下重绘底部栏，修复终端行数缩小后
+        输入内容覆盖上屏一行的 bug。
         """
         now = time.monotonic()
         if now - self._last_width_check < self._RESIZE_CHECK_INTERVAL:
@@ -193,8 +197,12 @@ class RenderEngine:
         except OSError:
             return
         if new_size != self._cached_term_size:
+            old_lines = self._cached_term_size[1] if self._cached_term_size[1] > 0 else None
             self._cached_term_size = new_size
             self._renderer.refresh_width()
+            # ★ 终端高度变化时入队 BOTTOM_BAR_REFRESH，强制底部栏重绘
+            if old_lines is not None and new_size[1] != old_lines:
+                self.push_cmd((RenderCommand.BOTTOM_BAR_REFRESH,))
 
     # ── 内部 — 三阶段流水线 ──────────────────────────
 
