@@ -284,6 +284,12 @@ class AgentStateStore:
             return len(self._order)
 
     @property
+    def has_running_agents(self) -> bool:
+        """是否有 running 状态的 Agent（快速检查，不做深拷贝）。"""
+        with self._lock:
+            return any(s.status == "running" for s in self._slots.values())
+
+    @property
     def version(self) -> int:
         """获取当前状态版本号（每次状态变化递增）。"""
         with self._lock:

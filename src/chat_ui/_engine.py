@@ -9,7 +9,7 @@ import logging
 import queue
 import sys
 import threading
-from typing import TYPE_CHECKING
+from typing import Callable, TYPE_CHECKING
 
 from ._const import (
     _ANSI_RED,
@@ -57,6 +57,10 @@ class RenderEngine:
         # ── 队列满连续计数（超过阈值时直接警告用户） ──
         self._consecutive_full = 0
 
+        # ── 面板刷新回调（由 ParallelDisplay 在 start() 中注册，
+        #     在 _phase_refresh_panels() 中被 render 线程 10Hz 调用） ──
+        self._panel_refresh_cb: Callable[[], None] | None = None
+
     # ── 公开 API ─────────────────────────────────────────
 
     def push_cmd(self, cmd: tuple) -> None:
@@ -94,6 +98,16 @@ class RenderEngine:
                     "渲染输出管线持续拥堵（%d 次连续满队列），部分内容可能丢失",
                     self._consecutive_full,
                 )
+
+    def set_panel_refresh_callback(
+        self, callback: Callable[[], None] | None,
+    ) -> None:
+        """设置面板刷新回调，由 render 线程的 _phase_refresh_panels() 以 10Hz 调用。
+
+        Args:
+            callback: 无参回调，或 None 来注销。
+        """
+        self._panel_refresh_cb = callback
 
     def start(self) -> None:
         """启动 render 线程。
@@ -199,7 +213,19 @@ class RenderEngine:
         sys.__stdout__.flush()
 
     def _phase_refresh_panels(self) -> None:
-        """阶段 2：面板刷新（已移除 SubAgent 面板，保留为空操作）。"""
+        """阶段 2：面板刷新 — 调用外部注册的刷新回调（如 ParallelDisplay）。
+
+        由 render 线程在 output_lock 保护下以 10Hz 频率调用，
+        用于驱动 SubAgent 面板的耗时显示更新（elapsed time），
+        消除独立的 500ms 定时刷新任务。
+        """
+        if self._panel_refresh_cb is not None:
+            try:
+                self._panel_refresh_cb()
+            except Exception:
+                _logger.warning(
+                    "panel_refresh_cb 异常", exc_info=True,
+                )
 
     def _phase_redraw_bottom(self, has_commands: bool) -> None:
         """阶段 3：底部栏重绘 + 光标定位（在 output_lock 内调用）。
@@ -257,13 +283,16 @@ class RenderEngine:
           1. 批量出队渲染命令
           2. 上屏渲染 → _phase_render()
           3. 底部栏重绘 + 光标定位 → _phase_redraw_bottom()
+
+        面板刷新（_phase_refresh_panels）在 output_lock 外执行，
+        遵循「持 output_lock 期间不获取其他锁」的锁顺序规则。
         """
+        commands: list[tuple] = []
         with _try_acquire_output_lock(name="drain_queue", timeout=1.0) as locked:
             if not locked:
                 return
 
             # ★ 批量出队
-            commands: list[tuple] = []
             while True:
                 try:
                     commands.append(self._cmd_queue.get_nowait())
@@ -277,6 +306,9 @@ class RenderEngine:
                 self._phase_render(commands)
 
             self._phase_redraw_bottom(has_content)
+
+        # ★ 面板刷新在 output_lock 外执行，避免持 output_lock 期间获取其他锁
+        self._phase_refresh_panels()
 
     def _drain_queue_safe(self) -> None:
         """兜底清空命令队列（无锁、不抛异常）。

@@ -31,14 +31,12 @@ from ..common.state_store import AgentStateStore
 from ..terminal_adapter import (
     register_sigwinch_callback,
     unregister_sigwinch_callback,
-    TerminalAdapter,
 )
 
 # ── 常量 ────────────────────────────────────────────────
 
 _EVENTBUS_THROTTLE = 0.3   # 300ms — EventBus 发布频率阈值，防止高频 update 路径过度发布
 _REFRESH_INTERVAL = 0.1  # 100ms — 帧刷新节流间隔（10Hz，与 ChatUI render 线程一致）
-_ELAPSED_TICKER_INTERVAL = 0.5  # 500ms — 耗时（elapsed time）定时刷新间隔（2Hz）
 _DEFAULT_HISTORY = 3
 _logger = logging.getLogger(__name__)
 
@@ -110,9 +108,6 @@ class ParallelDisplay(BaseDisplay):
         # 缩放刷新标记（信号安全：在 _on_resize 中设置，_schedule_refresh 中消费）
         self._needs_resize_refresh: bool = False
 
-        # 后台耗时定时刷新任务（在 start() 中创建，stop() 中取消）
-        self._refresh_task: asyncio.Task | None = None
-
         # stdout 捕获锁
         self._capture_lock = asyncio.Lock()
 
@@ -137,27 +132,19 @@ class ParallelDisplay(BaseDisplay):
         # ★ 设置缩放刷新标记（信号安全：仅设置布尔值，无锁无 I/O）
         self._needs_resize_refresh = True
 
-    # ── 耗时定时刷新 ────────────────────────────────────
+    # ── 面板刷新回调（由 render 线程 10Hz 调用） ─────────
 
-    async def _elapsed_ticker(self) -> None:
-        """后台任务：定期刷新面板以更新耗时显示（回答/思考耗时实时更新）。
+    def _panel_refresh_callback(self) -> None:
+        """面板刷新回调 — 由 chat_ui render 线程 _phase_refresh_panels() 10Hz 调用。
 
-        当 Agent 处于 thinking/answering 等状态但无状态变更（无新 token/工具调用）时，
-        _schedule_refresh 不会触发（版本号未变），导致耗时数字停滞。
-        此任务以 ~2Hz 频率强制刷新帧，确保耗时显示持续更新。
+        替代了原先的 _elapsed_ticker 500ms 独立定时器。
+        仅在存在 running 状态的 Agent 时才强制渲染帧，
+        使耗时显示（elapsed time）实时更新，空闲时不消耗 CPU。
         """
-        try:
-            while not self._stopped:
-                await asyncio.sleep(_ELAPSED_TICKER_INTERVAL)
-                if not self._stopped and self._adapter is not None:
-                    try:
-                        self._render_frame(force=True)
-                    except Exception:
-                        _logger.exception(
-                            "elapsed_ticker 渲染异常，跳过本次刷新"
-                        )
-        except asyncio.CancelledError:
-            pass  # 正常取消，优雅退出
+        if self._adapter is None or self._stopped:
+            return
+        if self._store.has_running_agents:
+            self._render_frame(force=True)
 
     # ── diff_active 上下文 ──────────────────────────────
 
@@ -251,7 +238,7 @@ class ParallelDisplay(BaseDisplay):
 
         安全上下文（非信号处理器）：在此处检查 _needs_resize_refresh 标记，
         刷新 _scroll_end 后调用 _render_frame(force=True) 强制重绘。
-        在 output_lock 外调用（_render_frame 内部自行管理锁）。
+        在 output_lock 外调用（下行链路 OutputAdapter.write_raw 自行管理锁）。
         """
         if self._adapter is None:
             return
@@ -487,12 +474,14 @@ class ParallelDisplay(BaseDisplay):
         # 注册终端 resize 回调
         register_sigwinch_callback(self._on_resize)
 
-        # 启动后台耗时定时刷新任务（~2Hz，确保 thinking/answering 耗时实时更新）
+        # ★ 注册面板刷新回调到 chat_ui render 线程（10Hz），
+        #   替代独立的 500ms 定时器，使 subagent 面板刷新与 render 线程同步。
         try:
-            loop = asyncio.get_running_loop()
-            self._refresh_task = loop.create_task(self._elapsed_ticker())
-        except RuntimeError:
-            _logger.debug("启动 elapsed_ticker 失败（无运行中事件循环，非关键路径静默跳过）")
+            _chat_ui.set_panel_refresh_callback(self._panel_refresh_callback)
+        except Exception:
+            _logger.debug(
+                "注册 panel_refresh_callback 失败（非关键路径，静默跳过）",
+            )
 
     def refresh(self, force: bool = False):
         """公开刷新入口 — 直接渲染当前帧到终端。
@@ -518,10 +507,14 @@ class ParallelDisplay(BaseDisplay):
         self._finished = True
         self._stopped = True
 
-        # 取消后台耗时定时刷新任务
-        if self._refresh_task is not None:
-            self._refresh_task.cancel()
-            self._refresh_task = None
+        # ★ 注销面板刷新回调（render 线程不再调用）
+        try:
+            import src.chat_ui as _chat_ui_mod  # noqa: PLC0415
+            _chat_ui = _chat_ui_mod.get_active_chat_ui()
+            if _chat_ui is not None:
+                _chat_ui.set_panel_refresh_callback(None)
+        except Exception:
+            _logger.debug("注销 panel_refresh_callback 失败", exc_info=True)
 
         # 注销终端 resize 回调
         unregister_sigwinch_callback(self._on_resize)

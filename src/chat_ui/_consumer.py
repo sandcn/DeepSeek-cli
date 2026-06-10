@@ -9,7 +9,7 @@ from __future__ import annotations
 import logging
 import sys
 import time
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Callable
 
 from ._completion import _CmplHandler
 from ._const import _ANSI_CURSOR_BOTTOM, RenderCommand
@@ -285,6 +285,19 @@ class ChatUIConsumer:
         由 ChatUIConsumer 构造时创建，生命周期与 ChatUIConsumer 一致。
         """
         return self._renderer._adapter
+
+    def set_panel_refresh_callback(
+        self, callback: Callable[[], None] | None,
+    ) -> None:
+        """设置面板刷新回调，委托给 RenderEngine。
+
+        由 ParallelDisplay 在 start() 中注册，使得 render 线程
+        的 10Hz 周期可以驱动 SubAgent 面板刷新。
+
+        Args:
+            callback: 无参回调，或 None 来注销。
+        """
+        self._engine.set_panel_refresh_callback(callback)
 
     def setup_bottom_bar(self) -> None:
         from ..ui._lock import output_lock
