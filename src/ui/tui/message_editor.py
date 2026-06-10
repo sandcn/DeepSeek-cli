@@ -191,6 +191,10 @@ class MessageEditor:
         )
         if cursor > len(ctx.data):
             _logger.warning("cursor=%d \u8d85\u51fa data \u8303\u56f4(%d)\uff0c\u56de\u9000", cursor, len(ctx.data))
+            publish_output(
+                f"  {YELLOW}\u26a0{RESET} \u5185\u90e8\u9519\u8bef: cursor={cursor} \u8d85\u51fa data \u8303\u56f4({len(ctx.data)})",
+                level="raw", source="cmd",
+            )
             return False
         _disp.display_messages(ctx.data, ctx.agent, ctx.idx_map, speed=0)
         state["prefill"] = old_content
@@ -211,7 +215,16 @@ class MessageEditor:
                 f"  {THEME['warning']}\u786e\u8ba4\u5220\u9664\u300c{msg_preview}\u300d\u53ca\u4e4b\u540e\u6240\u6709\u6d88\u606f\uff1f(y/N): {RESET}"
             )
             confirm = input().strip()
-        except (OSError, ValueError, Exception):
+        except (OSError, ValueError, Exception) as exc:
+            import traceback
+            publish_output(
+                f"  {YELLOW}\u26a0{RESET} \u5220\u9664\u64cd\u4f5c\u5f02\u5e38: {exc}",
+                level="raw", source="cmd",
+            )
+            publish_output(
+                f"  {DIM}{traceback.format_exc()}{RESET}",
+                level="raw", source="cmd",
+            )
             confirm = ""
         if confirm.lower() != 'y':
             return False
