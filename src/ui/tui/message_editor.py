@@ -24,6 +24,7 @@ from ...core.sandbox_manager import get_sandbox_manager as _get_sandbox_manager
 from ...api.interrupt_async import flush_stdin, reset_interrupt_async
 from .._lock import locked_print
 from .._bottom_bar import run_bottom_bar_selection
+from ..events import publish_output
 from . import _message_display as _disp
 from ._text_utils import truncate
 
@@ -131,7 +132,10 @@ class MessageEditor:
         # 只有 user 消息可选
         selectable = [i for i, m in enumerate(data) if m.get("role") == "user"]
         if not selectable:
-            _disp.write_line(f"  {THEME['warning']}\u6ca1\u6709\u53ef\u7f16\u8f91\u7684\u7528\u6237\u6d88\u606f{RESET}")
+            publish_output(
+                f"  {THEME['warning']}\u6ca1\u6709\u53ef\u7f16\u8f91\u7684\u7528\u6237\u6d88\u606f{RESET}",
+                level="raw", source="cmd",
+            )
             return ("quit", 0)
 
         sel_count = len(selectable)
@@ -150,7 +154,10 @@ class MessageEditor:
         )
 
         if result["action"] == "cancel":
-            _disp.write_line(f"  {DIM}\u5df2\u53d6\u6d88\u7f16\u8f91{RESET}")  # 已取消编辑
+            publish_output(
+                f"  {DIM}\u5df2\u53d6\u6d88\u7f16\u8f91{RESET}",
+                level="raw", source="cmd",
+            )
             return ("quit", 0)
         if result["action"] == "error":
             return ("quit", 0)
@@ -172,13 +179,15 @@ class MessageEditor:
         target_index = real_idx - 1 if real_idx > 0 else 0
         restore_text = _restore_sandbox_to(agent, target_index)
         if restore_text:
-            _disp.write_line(
-                f"  {BRIGHT_GREEN}\u2714{RESET} {restore_text}"
+            publish_output(
+                f"  {BRIGHT_GREEN}\u2714{RESET} {restore_text}",
+                level="raw", source="cmd",
             )
         del agent.messages[real_idx:]
         ctx = _disp.MessageDisplayContext.from_agent(agent)
-        _disp.write_line(
-            f"  {BRIGHT_GREEN}\u2714{RESET} \u5df2\u622a\u65ad\u5230\u6d88\u606f #{cursor} \uff08\u4fdd\u7559 {BRIGHT_CYAN}{len(ctx.data)}{RESET} \u6761\uff09"
+        publish_output(
+            f"  {BRIGHT_GREEN}\u2714{RESET} \u5df2\u622a\u65ad\u5230\u6d88\u606f #{cursor} \uff08\u4fdd\u7559 {BRIGHT_CYAN}{len(ctx.data)}{RESET} \u6761\uff09",
+            level="raw", source="cmd",
         )
         if cursor > len(ctx.data):
             _logger.warning("cursor=%d \u8d85\u51fa data \u8303\u56f4(%d)\uff0c\u56de\u9000", cursor, len(ctx.data))
@@ -209,32 +218,42 @@ class MessageEditor:
         target_index = real_idx - 1 if real_idx > 0 else 0
         restore_text = _restore_sandbox_to(agent, target_index)
         if restore_text:
-            _disp.write_line(
-                f"  {BRIGHT_GREEN}\u2714{RESET} {restore_text}"
+            publish_output(
+                f"  {BRIGHT_GREEN}\u2714{RESET} {restore_text}",
+                level="raw", source="cmd",
             )
         removed = len(agent.messages) - real_idx
         del agent.messages[real_idx:]
-        _disp.write_line(
-            f"  {YELLOW}\u2716{RESET} \u5df2\u5220\u9664 {BRIGHT_CYAN}{removed}{RESET} \u6761\u6d88\u606f"
+        publish_output(
+            f"  {YELLOW}\u2716{RESET} \u5df2\u5220\u9664 {BRIGHT_CYAN}{removed}{RESET} \u6761\u6d88\u606f",
+            level="raw", source="cmd",
         )
-        _disp.write_line(
-            f"  {DIM}\u2514 \u7ee7\u7eed\u8f93\u5165\u5f00\u59cb\u5bf9\u8bdd{RESET}"
+        publish_output(
+            f"  {DIM}\u2514 \u7ee7\u7eed\u8f93\u5165\u5f00\u59cb\u5bf9\u8bdd{RESET}",
+            level="raw", source="cmd",
         )
         return True
 
     def _check_last_message_role(self, agent: Any, state: dict) -> None:
         """检查最后一条消息角色，设置重试提示。"""
         if not agent.messages:
-            _disp.write_line(f"  {DIM}\u2514 \u7ee7\u7eed\u8f93\u5165\u5f00\u59cb\u5bf9\u8bdd{RESET}")
+            publish_output(
+                f"  {DIM}\u2514 \u7ee7\u7eed\u8f93\u5165\u5f00\u59cb\u5bf9\u8bdd{RESET}",
+                level="raw", source="cmd",
+            )
             return
         last_role = agent.messages[-1].get("role", "?")
         if last_role == "user":
-            _disp.write_line(
-                f"  {BRIGHT_CYAN}\u25b6{RESET} \u6700\u540e\u4e00\u6761\u662f\u7528\u6237\u6d88\u606f\uff0c\u5c06\u81ea\u52a8\u7ee7\u7eed\u751f\u6210\u56de\u590d\u2026"
+            publish_output(
+                f"  {BRIGHT_CYAN}\u25b6{RESET} \u6700\u540e\u4e00\u6761\u662f\u7528\u6237\u6d88\u606f\uff0c\u5c06\u81ea\u52a8\u7ee7\u7eed\u751f\u6210\u56de\u590d\u2026",
+                level="raw", source="cmd",
             )
             state["retry"] = True
         else:
-            _disp.write_line(f"  {DIM}\u2514 \u7ee7\u7eed\u8f93\u5165\u5f00\u59cb\u5bf9\u8bdd{RESET}")
+            publish_output(
+                f"  {DIM}\u2514 \u7ee7\u7eed\u8f93\u5165\u5f00\u59cb\u5bf9\u8bdd{RESET}",
+                level="raw", source="cmd",
+            )
 
     def _handle_resume_action(
         self, agent: Any, state: dict, cursor: int, idx_map: list[int],
@@ -243,14 +262,16 @@ class MessageEditor:
         real_idx = idx_map[cursor]
         restore_text = _restore_sandbox_to(agent, real_idx)
         if restore_text:
-            _disp.write_line(
-                f"  {BRIGHT_GREEN}\u2714{RESET} {restore_text}"
+            publish_output(
+                f"  {BRIGHT_GREEN}\u2714{RESET} {restore_text}",
+                level="raw", source="cmd",
             )
         del agent.messages[real_idx + 1:]
         ctx = _disp.MessageDisplayContext.from_agent(agent)
         remaining = len(ctx.data)
-        _disp.write_line(
-            f"  {BRIGHT_GREEN}\u2714{RESET} \u5df2\u622a\u65ad\u5230\u6d88\u606f #{cursor} \uff08\u4fdd\u7559 {BRIGHT_CYAN}{remaining}{RESET} \u6761\uff09"
+        publish_output(
+            f"  {BRIGHT_GREEN}\u2714{RESET} \u5df2\u622a\u65ad\u5230\u6d88\u606f #{cursor} \uff08\u4fdd\u7559 {BRIGHT_CYAN}{remaining}{RESET} \u6761\uff09",
+            level="raw", source="cmd",
         )
         _disp.display_messages(ctx.data, ctx.agent, ctx.idx_map, speed=0)
         self._check_last_message_role(agent, state)
@@ -259,8 +280,9 @@ class MessageEditor:
     def _handle_resume_all_action(self, agent: Any, state: dict) -> bool:
         """处理 resume_all action：恢复全部消息，不做截断。"""
         ctx = _disp.MessageDisplayContext.from_agent(agent)
-        _disp.write_line(
-            f"  {BRIGHT_GREEN}\u2714{RESET} \u5df2\u6062\u590d\u5168\u90e8\u6d88\u606f\uff08\u5171 {BRIGHT_CYAN}{len(ctx.data)}{RESET} \u6761\uff09"
+        publish_output(
+            f"  {BRIGHT_GREEN}\u2714{RESET} \u5df2\u6062\u590d\u5168\u90e8\u6d88\u606f\uff08\u5171 {BRIGHT_CYAN}{len(ctx.data)}{RESET} \u6761\uff09",
+            level="raw", source="cmd",
         )
         _disp.display_messages(ctx.data, ctx.agent, ctx.idx_map, speed=0)
         self._check_last_message_role(agent, state)
@@ -282,8 +304,10 @@ class MessageEditor:
         """
         ctx = _disp.MessageDisplayContext.from_messages(agent.messages)
         if not ctx.data:
-            _disp.write_line(
-                f"  {YELLOW}\u26a0{RESET} \u5f53\u524d\u4f1a\u8bdd\u4e3a\u7a7a\uff0c\u65e0\u6d88\u606f\u53ef\u7f16\u8f91"
+            publish_output(
+                f"  {YELLOW}\u26a0{RESET} \u5f53\u524d\u4f1a\u8bdd\u4e3a\u7a7a\uff0c\u65e0\u6d88\u606f\u53ef\u7f16\u8f91",
+                level="raw",
+                source="cmd",
             )
             return False
         return self._current_session_detail(agent, state)
@@ -292,8 +316,9 @@ class MessageEditor:
         """选择消息并编辑。"""
         ctx = _disp.MessageDisplayContext.from_agent(agent)
         if not ctx.data:
-            _disp.write_line(
-                f"  {YELLOW}\u26a0{RESET} \u5f53\u524d\u4f1a\u8bdd\u4e3a\u7a7a"
+            publish_output(
+                f"  {YELLOW}\u26a0{RESET} \u5f53\u524d\u4f1a\u8bdd\u4e3a\u7a7a",
+                level="raw", source="cmd",
             )
             return False
 
