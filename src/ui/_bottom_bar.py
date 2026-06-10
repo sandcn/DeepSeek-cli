@@ -361,6 +361,13 @@ class _BottomBar(_StatusMixin):
 
     # ── 光标定位相关 ──────────────────────────────────
 
+    def get_scroll_end(self) -> int:
+        """获取当前滚动区域底部行号（1-based）。
+
+        供 RenderEngine 在 resize 处理时保存旧 scroll_end 使用。
+        """
+        return self._last_scroll_end
+
     def get_cursor_info(self) -> tuple[str, int, int, int]:
         """获取光标定位所需数据：文本、光标位置、终端高度、终端宽度。
 

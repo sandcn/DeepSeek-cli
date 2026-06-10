@@ -63,6 +63,8 @@ class RenderEngine:
         self._last_width_check: float = 0.0
         self._RESIZE_CHECK_INTERVAL: float = 0.2
         self._cached_term_size: tuple[int, int] = (0, 0)
+        # ── 高度变化标记（_drain_queue 中用于交换渲染顺序） ──
+        self._height_changed: bool = False
 
     # ── 公开 API ─────────────────────────────────────────
 
@@ -208,6 +210,8 @@ class RenderEngine:
             # ★ 终端高度变化时入队 BOTTOM_BAR_REFRESH，强制底部栏重绘
             if old_lines is not None and new_size[1] != old_lines:
                 self.push_cmd((RenderCommand.BOTTOM_BAR_REFRESH,))
+                # ★ 标记高度变化，供 _drain_queue 在锁内交换渲染顺序
+                self._height_changed = True
 
     # ── 内部 — 三阶段流水线 ──────────────────────────
 
@@ -300,9 +304,16 @@ class RenderEngine:
         步骤 0/0b 在锁外、步骤 1-2 共用同一个 output_lock，
         防止上屏渲染 / 底部栏重绘之间的终端 I/O 交错。
         output_lock 为 RLock（可重入）。
+
+        ★ 高度变化修复：
+          终端扩大后，若先展开 DECSTBM + 光标移到新 scroll_end 再渲染内容，
+          \n 会导致滚动区域上滚、顶部丢失。修复：当高度变化时先 bottom
+          redraw（建立正确 DECSTBM），再渲染内容于旧 scroll_end 处。
         """
         if (self._cmd_queue.empty() and not self._bb.is_status_active
                 and not self._bb.is_resize_pending):
+            # ★ 重置高度变化标记（无命令时无需处理）
+            self._height_changed = False
             return
 
         # ★ 终端大小变化检测（锁外）— 避免 shutil.get_terminal_size()
@@ -339,10 +350,50 @@ class RenderEngine:
                 except queue.Empty:
                     break
 
-            if commands:
-                self._phase_render(commands, resized)
+            has_content = bool(commands)
 
-            self._phase_redraw_bottom(bool(commands))
+            # ★ 检测高度变化 + 队列中有 BOTTOM_BAR_REFRESH
+            #   此时交换渲染顺序：先 redraw 底部栏建立正确 DECSTBM，
+            #   再将光标定位到旧内容末尾，最后渲染内容命令。
+            has_bb_refresh = any(
+                cmd[0] == RenderCommand.BOTTOM_BAR_REFRESH for cmd in commands
+            )
+
+            if self._height_changed and has_bb_refresh:
+                self._height_changed = False
+                # 1) 保存旧 scroll_end（内容末尾位置）
+                old_scroll_end = self._bb.get_scroll_end()
+                # 2) force_redraw：重绘底部栏 + 设置新 DECSTBM + 光标定位到新 scroll_end
+                try:
+                    self._bb.force_redraw()
+                except Exception:
+                    _logger.debug(
+                        "drain_queue: force_redraw 异常", exc_info=True,
+                    )
+                # 3) 光标回到旧内容末尾，使新内容在展开区域中自然填充，避免 \n 导致上滚
+                if old_scroll_end > 0:
+                    try:
+                        from ..ui._blessed import get_terminal as _gt
+                        sys.__stdout__.write(_gt().move_xy(0, old_scroll_end - 1))
+                    except Exception:
+                        sys.__stdout__.write(f"\033[{old_scroll_end};1H")
+                # 4) 渲染内容命令（跳过 sync_bottom_lines / ensure_cursor_upper）
+                if commands:
+                    self._phase_render(commands, resized=True)
+                # 5) 光标定位到输入行
+                try:
+                    self.position_cursor()
+                except Exception:
+                    _logger.debug(
+                        "drain_queue: position_cursor 异常", exc_info=True,
+                    )
+                sys.__stdout__.flush()
+            else:
+                self._height_changed = False
+                if commands:
+                    self._phase_render(commands, resized)
+
+                self._phase_redraw_bottom(has_content)
 
     def _drain_queue_safe(self) -> None:
         """兜底清空命令队列（无锁、不抛异常）。
