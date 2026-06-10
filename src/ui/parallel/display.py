@@ -38,6 +38,7 @@ from ..terminal_adapter import (
 
 _EVENTBUS_THROTTLE = 0.3   # 300ms — EventBus 发布频率阈值，防止高频 update 路径过度发布
 _REFRESH_INTERVAL = 0.1  # 100ms — 帧刷新节流间隔（10Hz，与 ChatUI render 线程一致）
+_ELAPSED_TICKER_INTERVAL = 0.5  # 500ms — 耗时（elapsed time）定时刷新间隔（2Hz）
 _DEFAULT_HISTORY = 3
 _logger = logging.getLogger(__name__)
 
@@ -109,6 +110,9 @@ class ParallelDisplay(BaseDisplay):
         # 缩放刷新标记（信号安全：在 _on_resize 中设置，_schedule_refresh 中消费）
         self._needs_resize_refresh: bool = False
 
+        # 后台耗时定时刷新任务（在 start() 中创建，stop() 中取消）
+        self._refresh_task: asyncio.Task | None = None
+
         # stdout 捕获锁
         self._capture_lock = asyncio.Lock()
 
@@ -132,6 +136,28 @@ class ParallelDisplay(BaseDisplay):
 
         # ★ 设置缩放刷新标记（信号安全：仅设置布尔值，无锁无 I/O）
         self._needs_resize_refresh = True
+
+    # ── 耗时定时刷新 ────────────────────────────────────
+
+    async def _elapsed_ticker(self) -> None:
+        """后台任务：定期刷新面板以更新耗时显示（回答/思考耗时实时更新）。
+
+        当 Agent 处于 thinking/answering 等状态但无状态变更（无新 token/工具调用）时，
+        _schedule_refresh 不会触发（版本号未变），导致耗时数字停滞。
+        此任务以 ~2Hz 频率强制刷新帧，确保耗时显示持续更新。
+        """
+        try:
+            while not self._stopped:
+                await asyncio.sleep(_ELAPSED_TICKER_INTERVAL)
+                if not self._stopped and self._adapter is not None:
+                    try:
+                        self._render_frame(force=True)
+                    except Exception:
+                        _logger.exception(
+                            "elapsed_ticker 渲染异常，跳过本次刷新"
+                        )
+        except asyncio.CancelledError:
+            pass  # 正常取消，优雅退出
 
     # ── diff_active 上下文 ──────────────────────────────
 
@@ -438,6 +464,13 @@ class ParallelDisplay(BaseDisplay):
         # 注册终端 resize 回调
         register_sigwinch_callback(self._on_resize)
 
+        # 启动后台耗时定时刷新任务（~2Hz，确保 thinking/answering 耗时实时更新）
+        try:
+            loop = asyncio.get_running_loop()
+            self._refresh_task = loop.create_task(self._elapsed_ticker())
+        except RuntimeError:
+            _logger.debug("启动 elapsed_ticker 失败（无运行中事件循环，非关键路径静默跳过）")
+
     def refresh(self, force: bool = False):
         """公开刷新入口 — 直接渲染当前帧到终端。
 
@@ -461,6 +494,11 @@ class ParallelDisplay(BaseDisplay):
             return
         self._finished = True
         self._stopped = True
+
+        # 取消后台耗时定时刷新任务
+        if self._refresh_task is not None:
+            self._refresh_task.cancel()
+            self._refresh_task = None
 
         # 注销终端 resize 回调
         unregister_sigwinch_callback(self._on_resize)
