@@ -331,18 +331,23 @@ class ParallelDisplay(BaseDisplay):
         # ── 主路径：使用绝对行号定位（scroll_end 已知） ──
         if self._scroll_end > 0:
             buf = ""
-            # 清除旧面板区域（防止面板缩小时残留）
-            if self._last_lines > 0:
-                old_start = self._scroll_end - self._last_lines + 1
-                if old_start < 1:
-                    old_start = 1
-                for r in range(old_start, self._scroll_end + 1):
-                    buf += f"\033[{r};1H{clear_eol}"
 
             # 新面板起始行（紧贴滚动区域底部）
             start_row = self._scroll_end - total + 1
             if start_row < 1:
                 start_row = 1
+
+            # 清除面板区域 — 从新旧面板上边界中较上的那个开始清除
+            # 防止面板变大时（start_row < old_start）新行覆盖原有内容
+            clear_start = start_row
+            if self._last_lines > 0:
+                old_start = self._scroll_end - self._last_lines + 1
+                if old_start < clear_start:  # 面板缩小，从旧边界开始清除尾部残留
+                    clear_start = old_start
+            if clear_start < 1:
+                clear_start = 1
+            for r in range(clear_start, self._scroll_end + 1):
+                buf += f"\033[{r};1H{clear_eol}"
             buf += f"\033[{start_row};1H"
 
             for i, line in enumerate(lines):
