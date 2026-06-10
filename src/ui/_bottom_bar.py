@@ -675,7 +675,13 @@ class _BottomBar(_StatusMixin):
                     out.write(_blessed_move_clear(r))
             else:
                 clear_start = old_scroll_end + 1
-                for r in range(clear_start, height + 1):
+                # ★ 终端高度扩大时，限制清除范围只到旧底部栏末尾，
+                #   避免清除新扩展的内容区（位于旧底部栏与新 scroll_end 之间）
+                if self._last_height > 0 and height > self._last_height:
+                    clear_end = self._last_height
+                else:
+                    clear_end = height
+                for r in range(clear_start, clear_end + 1):
                     out.write(_blessed_move_clear(r))
 
             # ★ 终端高度缩小时，旧内容区中现在属于新底部栏区域的行
@@ -933,7 +939,11 @@ class _BottomBar(_StatusMixin):
                     out.write(_blessed_move_clear(r))
             else:
                 clear_start = old_scroll_end + 1
-                for r in range(clear_start, height + 1):
+                if self._last_height > 0 and height > self._last_height:
+                    clear_end = self._last_height
+                else:
+                    clear_end = height
+                for r in range(clear_start, clear_end + 1):
                     out.write(_blessed_move_clear(r))
 
             r1 = height - total + 1
@@ -1016,7 +1026,11 @@ class _BottomBar(_StatusMixin):
                     out.write(_blessed_move_clear(r))
             else:
                 clear_start = old_scroll_end + 1
-                for r in range(clear_start, height + 1):
+                if self._last_height > 0 and height > self._last_height:
+                    clear_end = self._last_height
+                else:
+                    clear_end = height
+                for r in range(clear_start, clear_end + 1):
                     out.write(_blessed_move_clear(r))
 
             r1 = height - total + 1
