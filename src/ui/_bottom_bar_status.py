@@ -61,7 +61,7 @@ class _StatusMixin:
         """冻结状态行（流式结束后调用），仅显示模型名。
 
         将 _status_active 置为 False，状态行从全量统计（耗时/令牌/速率）
-        切换为仅显示模型名。调用方负责在之后推 BOTTOM_BAR_REFRESH 命令，
+        切换为仅显示模型名。调用方负责在之后调用 request_bottom_redraw()，
         由 render 线程 _phase_redraw_bottom() 在下一周期触发 force_redraw()。
         """
         self._status_active = False

@@ -485,8 +485,8 @@ class _BottomBar(_StatusMixin):
             out.write(_blessed_move_clear(scroll_end))
             # 终端高度缩小时，清除 scroll_end+1 到 min(old_scroll, height) 整个区间，
             # 而非仅清除单一边界行。在流式输出路径中，CONTENT 渲染写入内容到滚动区
-            # 会自然「冲刷」掉这些残留行；但在 BOTTOM_BAR_REFRESH（输入）路径中，
-            # _do_bottom_bar_refresh 是 no-op，无冲刷行为，必须在此处彻底清除，
+            # 会自然「冲刷」掉这些残留行；但在底部栏刷新（输入）路径中，
+            # request_bottom_redraw 是标志位唤醒，无冲刷行为，必须在此处彻底清除，
             # 否则旧内容在 force_redraw() 执行前可见，导致视觉上的 1 行重叠。
             if shrunk and old_scroll > scroll_end:
                 for r in range(scroll_end + 1, min(old_scroll, height) + 1):

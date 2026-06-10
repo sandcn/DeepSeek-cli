@@ -340,17 +340,16 @@ class TestCursorPositioningFlush:
     """确保光标定位操作后 stdout 被 flush，ANSI 序列到达终端"""
 
     def test_refresh_bottom_bar_sets_text_and_redraws(self):
-        """refresh_bottom_bar() 更新状态后入队 BOTTOM_BAR_REFRESH 命令"""
+        """refresh_bottom_bar() 更新状态后请求重绘"""
         bus = DisplayEventBus()
         chat_ui = ChatUIConsumer(event_bus=bus)
 
-        with patch.object(chat_ui._engine, 'push_cmd') as mock_push:
+        with patch.object(chat_ui._engine, 'request_bottom_redraw') as mock_redraw:
             chat_ui.refresh_bottom_bar("test_text")
 
         assert chat_ui._bottom_bar._last_text == "test_text"
         assert chat_ui._bottom_bar._input_cursor_pos == 9  # len("test_text")
-        from src.chat_ui._const import RenderCommand
-        mock_push.assert_called_once_with((RenderCommand.BOTTOM_BAR_REFRESH,))
+        mock_redraw.assert_called_once()
 
     def test_ensure_cursor_lower_flushes_stdout(self):
         """ensure_cursor_in_lower() 通过 bottom_bar 属性访问，不自动 flush。"""
@@ -367,13 +366,12 @@ class TestCursorPositioningFlush:
             chat_ui._bottom_bar.ensure_cursor_in_lower.assert_called_once()
 
     def test_refresh_bottom_bar_flush_called_after_reposition(self):
-        """refresh_bottom_bar 更新状态后入队 BOTTOM_BAR_REFRESH 命令"""
+        """refresh_bottom_bar 更新状态后请求重绘"""
         bus = DisplayEventBus()
         chat_ui = ChatUIConsumer(event_bus=bus)
 
-        with patch.object(chat_ui._engine, 'push_cmd') as mock_push:
+        with patch.object(chat_ui._engine, 'request_bottom_redraw') as mock_redraw:
             chat_ui.refresh_bottom_bar("test")
             assert chat_ui._bottom_bar._last_text == "test"
             assert chat_ui._bottom_bar._input_cursor_pos == 4  # len("test")
-            from src.chat_ui._const import RenderCommand
-            mock_push.assert_called_once_with((RenderCommand.BOTTOM_BAR_REFRESH,))
+            mock_redraw.assert_called_once()

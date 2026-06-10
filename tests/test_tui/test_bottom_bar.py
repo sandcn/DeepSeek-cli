@@ -386,7 +386,7 @@ class TestBottomBarLastScrollEnd(unittest.TestCase):
         """终端缩小后 sync_bottom_lines 清除 scroll_end+1 到 old_scroll 整个区间。
 
         Bug 修复验证：缩小后清除全部将变为底部栏区域的行（而非仅清除单一边界行），
-        消除 BOTTOM_BAR_REFRESH（输入）路径中旧内容在 force_redraw 前的残留。
+        消除底部栏刷新（输入）路径中旧内容在 force_redraw 前的残留。
         """
         self.bb._active = True
         self.bb._cached_height = 30

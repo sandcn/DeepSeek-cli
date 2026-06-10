@@ -57,6 +57,11 @@ class RenderEngine:
         # ── 队列满连续计数（超过阈值时直接警告用户） ──
         self._consecutive_full = 0
 
+        # ── 底部栏重绘请求标志（线程安全 Event，替代废弃的 BOTTOM_BAR_REFRESH 命令）
+        #     由 ChatUIConsumer.request_bottom_redraw() / refresh_bottom_bar() 设置，
+        #     在 _phase_redraw_bottom() 中消费并清除。
+        self._bottom_redraw_requested = threading.Event()
+
         # ── 面板刷新回调（由 ParallelDisplay 在 start() 中注册，
         #     在 _phase_refresh_panels() 中被 render 线程 10Hz 调用） ──
         self._panel_refresh_cb: Callable[[], None] | None = None
@@ -108,6 +113,16 @@ class RenderEngine:
             callback: 无参回调，或 None 来注销。
         """
         self._panel_refresh_cb = callback
+
+    def request_bottom_redraw(self) -> None:
+        """请求 render 线程重绘底部栏（线程安全）。
+
+        替代废弃的 push_cmd((RenderCommand.BOTTOM_BAR_REFRESH,)) 模式，
+        使用 threading.Event 标志位避免无意义命令入队。
+        同时设置 _cmd_event 立即唤醒 render 线程。
+        """
+        self._bottom_redraw_requested.set()
+        self._cmd_event.set()
 
     def start(self) -> None:
         """启动 render 线程。
@@ -234,7 +249,9 @@ class RenderEngine:
         - has_commands=True → 全量重绘
         - is_status_active → 流式状态每帧强制重绘
         """
-        if has_commands or self._bb.is_status_active:
+        redraw = has_commands or self._bottom_redraw_requested.is_set() or self._bb.is_status_active
+        self._bottom_redraw_requested.clear()
+        if redraw:
             try:
                 self._bb.force_redraw()
             except Exception:

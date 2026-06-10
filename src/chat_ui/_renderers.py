@@ -62,7 +62,6 @@ def _build_render_dispatch() -> dict[int, tuple[str, tuple[int, ...]]]:
         R.TOOL_COUNT_DEC:  ("_do_tool_count_dec",  ()),
         R.TOOL_FAIL_INC:   ("_do_tool_fail_inc",   ()),
         R.ERROR:           ("_do_error",           (1,)),
-        R.BOTTOM_BAR_REFRESH: ("_do_bottom_bar_refresh", ()),
     }
 
     # 断言：确保没有废弃命令被误加到分发表中
@@ -324,7 +323,4 @@ class ContentRenderer:
         if self._on_display_messages is not None:
             self._on_display_messages(messages, speed=speed)
 
-    # ── 底部栏刷新 ──────────────────────────────────
-
-    def _do_bottom_bar_refresh(self) -> None:
-        """占位命令处理 — 实际重绘由 _phase_redraw_bottom() 完成。"""
+    # ── 底部栏刷新已迁移至 RenderEngine.request_bottom_redraw() ──

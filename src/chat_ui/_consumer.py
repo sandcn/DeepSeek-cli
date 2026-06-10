@@ -222,10 +222,10 @@ class ChatUIConsumer:
     def request_bottom_redraw(self) -> None:
         """请求 render 线程重绘底部栏（线程安全）。
 
-        推 BOTTOM_BAR_REFRESH 命令入队，由 render 线程的 _drain_queue()
-        处理后进入 _phase_redraw_bottom(True) 阶段触发 force_redraw()。
+        通过 _engine.request_bottom_redraw() 设置 threading.Event 标志位，
+        唤醒 render 线程在 _phase_redraw_bottom() 中触发 force_redraw()。
         """
-        self._engine.push_cmd((RenderCommand.BOTTOM_BAR_REFRESH,))
+        self._engine.request_bottom_redraw()
 
     def write_line(self, text: str) -> None:
         """入队通用文本行渲染命令，走统一渲染管线。"""
@@ -312,10 +312,11 @@ class ChatUIConsumer:
         self._engine.ensure_cursor_upper()
 
     def refresh_bottom_bar(self, text: str, cursor_pos: int = -1) -> None:
-        """刷新底部栏输入区（线程安全：仅更新状态 + 入队渲染命令）。
+        """刷新底部栏输入区（线程安全：仅更新状态 + 请求重绘）。
 
-        设置输入文本和光标位置后，入队 BOTTOM_BAR_REFRESH 命令，
-        由 render 线程在 output_lock 保护下执行 force_redraw()，
+        设置输入文本和光标位置后，调用 _engine.request_bottom_redraw()
+        设置 threading.Event 标志位并唤醒 render 线程，
+        在 _phase_redraw_bottom() 中执行 force_redraw()，
         避免在 EscapeMonitor 回调线程中直接写终端。
 
         Args:
@@ -324,7 +325,7 @@ class ChatUIConsumer:
         """
         effective_pos = len(text) if cursor_pos < 0 else cursor_pos
         self._bottom_bar.set_input_state(text, effective_pos)
-        self._engine.push_cmd((RenderCommand.BOTTOM_BAR_REFRESH,))
+        self._engine.request_bottom_redraw()
 
     def flush(self, timeout: float | None = 5.0) -> None:
         """阻塞等待所有待处理渲染命令执行完毕。（委托 _engine）"""

@@ -922,20 +922,18 @@ class TestChatUIConsumerEdgeCases:
             consumer.bottom_bar.ensure_cursor_in_lower()
 
     def test_refresh_bottom_bar(self, consumer, mock_bus):
-        """refresh_bottom_bar() 更新状态后入队 BOTTOM_BAR_REFRESH 命令"""
-        with patch.object(consumer._engine, 'push_cmd') as mock_push:
+        """refresh_bottom_bar() 更新状态后请求重绘"""
+        with patch.object(consumer._engine, 'request_bottom_redraw') as mock_redraw:
             consumer.refresh_bottom_bar("test", cursor_pos=2)
             assert consumer._bottom_bar._last_text == "test"
             assert consumer._bottom_bar._input_cursor_pos == 2
-            from src.chat_ui._const import RenderCommand
-            mock_push.assert_called_once_with((RenderCommand.BOTTOM_BAR_REFRESH,))
+            mock_redraw.assert_called_once()
 
     def test_refresh_bottom_bar_default_cursor(self, consumer, mock_bus):
         """refresh_bottom_bar() 默认 cursor_pos=-1 使用文本长度"""
-        with patch.object(consumer._engine, 'push_cmd') as mock_push:
+        with patch.object(consumer._engine, 'request_bottom_redraw') as mock_redraw:
             consumer.refresh_bottom_bar("hello")
             # cursor_pos=-1 → 使用 len("hello") = 5
             assert consumer._bottom_bar._input_cursor_pos == 5
             assert consumer._bottom_bar._last_text == "hello"
-            from src.chat_ui._const import RenderCommand
-            mock_push.assert_called_once_with((RenderCommand.BOTTOM_BAR_REFRESH,))
+            mock_redraw.assert_called_once()
