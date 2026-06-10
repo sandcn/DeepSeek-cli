@@ -88,14 +88,14 @@ class TestRenderEnginePushCmd:
     """push_cmd 入队 / 满队列 / 连续满警告 / ERROR 直写路径。"""
 
     def test_push_cmd_enqueues_content_command(self, engine):
-        """CONTENT 命令成功入队 → 队列不为空，cmd_event 被设置。"""
+        """CONTENT 命令成功入队 → 队列不为空，不主动设置 cmd_event（只靠 10Hz 心跳）。"""
         assert engine._cmd_queue.empty()
         engine._cmd_event.clear()
 
         engine.push_cmd((RenderCommand.CONTENT, "hello"))
 
         assert engine._cmd_queue.qsize() == 1
-        assert engine._cmd_event.is_set()
+        assert not engine._cmd_event.is_set()
         assert engine._consecutive_full == 0
 
     def test_push_cmd_enqueues_phase_done(self, engine):
@@ -208,11 +208,11 @@ class TestRenderEnginePushCmd:
         engine.push_cmd((RenderCommand.CONTENT, "成功"))
         assert engine._consecutive_full == 0
 
-    def test_push_cmd_cmd_event_set_on_success(self, engine):
-        """成功入队时 cmd_event 被 set，唤醒 render 线程。"""
+    def test_push_cmd_cmd_event_not_set_on_success(self, engine):
+        """成功入队时不主动 set cmd_event（只靠 10Hz 心跳唤醒）。"""
         engine._cmd_event.clear()
         engine.push_cmd((RenderCommand.NOTIFICATION, "测试"))
-        assert engine._cmd_event.is_set()
+        assert not engine._cmd_event.is_set()
 
 
 # ══════════════════════════════════════════════════════
@@ -295,7 +295,7 @@ class TestRenderEngineStartStop:
             )
 
     def test_stop_stops_thread(self, engine):
-        """stop() 设置 _render_running=False + 唤醒 + join。"""
+        """stop() 设置 _render_running=False，线程靠 10Hz 心跳自唤醒退出。"""
         with patch("threading.Thread") as mock_thread_cls:
             mock_t = MagicMock()
             mock_t.is_alive.return_value = False
@@ -306,7 +306,7 @@ class TestRenderEngineStartStop:
             engine.stop()
 
             assert engine._render_running is False
-            assert engine._cmd_event.is_set()  # 被唤醒
+            assert not engine._cmd_event.is_set()  # 不主动唤醒
             mock_t.join.assert_called_once_with(timeout=2.0)
 
     def test_stop_idempotent(self, engine):
@@ -316,8 +316,8 @@ class TestRenderEngineStartStop:
         # 不应抛出异常
         engine.stop()
 
-    def test_stop_wakes_render_with_event(self, engine):
-        """stop() 设置 cmd_event 唤醒 render 线程。"""
+    def test_stop_does_not_set_cmd_event(self, engine):
+        """stop() 不主动设置 cmd_event，线程靠 10Hz 心跳自唤醒退出。"""
         mock_t = MagicMock()
         mock_t.is_alive.return_value = False
         engine._render_thread = mock_t
@@ -326,7 +326,7 @@ class TestRenderEngineStartStop:
 
         engine.stop()
 
-        assert engine._cmd_event.is_set()
+        assert not engine._cmd_event.is_set()
 
     def test_stop_retries_if_join_timeout(self, engine):
         """stop() join 超时后多次唤醒 + join 重试。"""
@@ -473,8 +473,8 @@ class TestRenderEngineFlush:
 
             task_done_t.join.assert_called_once_with(timeout=0.1)
 
-    def test_flush_sets_cmd_event_to_wake_render(self, engine):
-        """flush 先设置 cmd_event 唤醒 render。"""
+    def test_flush_does_not_set_cmd_event(self, engine):
+        """flush 不主动设置 cmd_event，线程靠 10Hz 心跳自唤醒消费。"""
         engine._cmd_event.clear()
         mock_t = MagicMock()
         mock_t.is_alive.return_value = True
@@ -485,7 +485,7 @@ class TestRenderEngineFlush:
 
             engine.flush(timeout=1.0)
 
-        assert engine._cmd_event.is_set()
+        assert not engine._cmd_event.is_set()
 
     def test_flush_infinite_wait(self, engine):
         """flush(timeout=None) 无限等待。"""
@@ -908,8 +908,8 @@ class TestRenderEngineEdgeCases:
 
         assert engine._cmd_queue.empty()
 
-    def test_push_cmd_event_only_set_on_success(self, engine):
-        """入队成功时 set event，失败时不 set（事件已在 set 过程中）。"""
+    def test_push_cmd_event_not_set_on_queue_full(self, engine):
+        """队列满时入队失败，cmd_event 保持 clear（不主动 set）。"""
         # 满队列
         tiny_queue = queue.Queue(maxsize=1)
         tiny_queue.put((RenderCommand.CONTENT, "占位"), block=False)
@@ -918,9 +918,7 @@ class TestRenderEngineEdgeCases:
 
         # 满队列时不会 set event
         engine.push_cmd((RenderCommand.CONTENT, "丢弃"))
-        # event 在 push 过程中被 set/unset — 但满队列路径没走 set 调用
-        # （set 仅在 try 分支中被调用）
-        # 所以 event 仍然 clear
+        # 满队列路径不走 set，所以 event 仍然 clear
         assert not engine._cmd_event.is_set()
 
     def test_render_uses_render_interval(self, engine):

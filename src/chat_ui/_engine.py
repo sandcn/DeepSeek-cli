@@ -76,7 +76,6 @@ class RenderEngine:
         """
         try:
             self._cmd_queue.put(cmd, block=False)
-            self._cmd_event.set()
             self._consecutive_full = 0
         except queue.Full:
             self._consecutive_full += 1
@@ -85,7 +84,6 @@ class RenderEngine:
                 #   避免绕过 output_lock 直写终端导致 I/O 交错
                 try:
                     self._cmd_queue.put(cmd, block=True, timeout=0.5)
-                    self._cmd_event.set()
                     self._consecutive_full = 0
                 except queue.Full:
                     _logger.warning(
@@ -119,10 +117,9 @@ class RenderEngine:
 
         替代废弃的 push_cmd((RenderCommand.BOTTOM_BAR_REFRESH,)) 模式，
         使用 threading.Event 标志位避免无意义命令入队。
-        同时设置 _cmd_event 立即唤醒 render 线程。
+        由 render 线程下一个 10Hz 心跳帧消费。
         """
         self._bottom_redraw_requested.set()
-        self._cmd_event.set()
 
     def start(self) -> None:
         """启动 render 线程。
@@ -151,21 +148,20 @@ class RenderEngine:
     def stop(self) -> None:
         """停止 render 线程 + 关闭渲染器。
 
-        join 超时（2s）后线程可能仍在运行，使用 cmd_event 循环唤醒
-        （最多 3 次 × 0.5s），防止线程无限运行。
+        render 线程依赖 10Hz 心跳超时自唤醒，设置 _render_running=False
+        后，线程最多等待 100ms 检测到退出条件后自行终止。
+        join 超时（2s）后仍存活则循环等待（最多 3 次 × 0.5s）。
 
         不再清空 _render_thread 引用 —— 保留死线程引用让 start()
         通过 is_alive() 准确判断线程真实状态，避免 start() 误判
         「无存活线程」而创建第二个 render 线程。
         """
         self._render_running = False
-        self._cmd_event.set()
         if self._render_thread is not None:
             self._render_thread.join(timeout=2.0)
             if self._render_thread.is_alive():
-                # ★ 超时后仍存活：用 cmd_event 多次唤醒
+                # ★ 超时后仍存活：循环等待线程自然退出
                 for _ in range(3):
-                    self._cmd_event.set()
                     self._render_thread.join(timeout=0.5)
                     if not self._render_thread.is_alive():
                         break
@@ -182,7 +178,6 @@ class RenderEngine:
         参数:
             timeout: 最大等待秒数，超时后返回。默认 5 秒，None 表示无限等待。
         """
-        self._cmd_event.set()
         if self._render_thread is None or not self._render_thread.is_alive():
             # render 线程从未启动或已终止；直接清空队列避免虚假等待
             while not self._cmd_queue.empty():
