@@ -459,8 +459,10 @@ class _BottomBar(_StatusMixin):
         if scroll_end == self._last_scroll_end and height == self._last_sync_height:
             return
         resized = height != self._last_sync_height
+        shrunk = height < self._last_sync_height  # 终端缩小标志（更新 _last_sync_height 前保存）
         if scroll_end < 1:
             scroll_end = height
+        old_scroll = self._last_scroll_end  # 保存旧值（更新前），供缩小场景清除旧行
         self._last_scroll_end = scroll_end
         self._last_sync_height = height
         if self._tracker is not None:
@@ -471,6 +473,10 @@ class _BottomBar(_StatusMixin):
         #    确保后续内容渲染从干净行开始，消除旧内容与底部栏之间的 1 行重叠
         if resized and scroll_end >= 1:
             out.write(_blessed_move_clear(scroll_end))
+            # 终端高度缩小时，额外清除旧 scroll_end 行的残留内容，
+            # 避免该行内容在 force_redraw() 执行前与底部栏形成 1 行重叠
+            if shrunk and old_scroll > scroll_end:
+                out.write(_blessed_move_clear(min(old_scroll, height)))
         out.write(_blessed_cursor_goto(scroll_end, 1) + _blessed_save_cursor())
         out.flush()
 
@@ -669,6 +675,13 @@ class _BottomBar(_StatusMixin):
             for r in range(clear_start, clear_end + 1):
                 out.write(_blessed_move_clear(r))
 
+            # ★ 终端高度缩小时，额外清理旧内容区中现在属于新底部栏区域的行
+            #    （与 delta 符号无关），必须在画分隔线/状态行之前执行，
+            #    避免擦除已绘制内容。
+            if self._last_height > 0 and height < self._last_height:
+                for r in range(max(scroll_end + 1, 1), min(old_scroll_end, height) + 1):
+                    out.write(_blessed_move_clear(r))
+
             r1 = height - total + 1
             r2 = r1 + 1
 
@@ -677,12 +690,6 @@ class _BottomBar(_StatusMixin):
             sep = f"{_COLOR_SEP}\u2501{_COLOR_RESET}" * sep_len
             out.write(_blessed_move_clear(r1) + "  " + sep)
             out.write(_blessed_move_clear(r2) + self._last_status)
-
-            # ★ 终端高度缩小时，额外清理旧内容区中现在属于新底部栏区域的行
-            #    （delta=0 时上述 clear loop 的 range 可能未覆盖旧行）
-            if self._last_height > 0 and height < self._last_height:
-                for r in range(max(scroll_end + 1, 1), min(old_scroll_end, height) + 1):
-                    out.write(_blessed_move_clear(r))
 
             self._draw_input_lines_locked(out, text, r2 + 1, tw)
             input_rows = self._cached_input_rows
