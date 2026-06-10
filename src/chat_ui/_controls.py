@@ -427,7 +427,11 @@ class ControlList:
                 try:
                     ctrl.refresh_width()
                 except Exception:
-                    pass
+                    _logger.debug(
+                        "ControlList.refresh_width_all: 控件 %s "
+                        "refresh_width 异常",
+                        type(ctrl).__name__, exc_info=True,
+                    )
 
 
 # ═══════════════════════════════════════════════════════════
@@ -481,7 +485,7 @@ class ToolOutputControl(TextControl):
         """写入工具输出文本（覆盖父类 write）。
 
         处理路径：
-          1. 超长截断（>10000 字符 → ...(truncated)）
+          1. 先检测是否含 \\r（保存到 has_carriage），再做超长截断
           2. 无 \\r → 标准样式输出（_write_standard）
           3. 含 \\r → 进度条覆盖输出（_write_carriage）
         内容未变时跳过渲染（脏检查）。
@@ -492,19 +496,35 @@ class ToolOutputControl(TextControl):
         if self._closed:
             return
 
+        # ★ 先检测 \r 再截断（避免截断丢失 \r 导致路由错误）
+        has_carriage = '\r' in text
+
         # 超长截断
         if len(text) > self._MAX_OUTPUT_LEN:
             text = text[:self._MAX_OUTPUT_LEN] + "...(truncated)"
+            # ★ 截断后重新检测 \r（截断可能移除了末尾的 \r）
+            has_carriage = '\r' in text
 
-        # 脏检查：内容未变且状态未变 → 跳过
-        if self._is_unchanged(text) and not self._last_was_carriage:
-            return
+        # 脏检查：内容未变且状态一致 → 跳过渲染
+        # 分两级处理：
+        #   1. 内容未变 + has_carriage（\r 覆盖输出）→ 视觉输出相同，跳过
+        #   2. 内容未变 + 无 \r + 上一轮非 \r 结尾 → 跳过
+        # 避免连续相同 \r 文本时 _last_was_carriage=True 导致不跳过，
+        # 陷入每帧重复写入相同内容的循环。
+        if self._is_unchanged(text):
+            if not self._last_was_carriage:
+                return
+            if has_carriage:
+                # 未变 + \r 内容 → 视觉输出完全相同，跳过渲染
+                # 维持 _last_was_carriage 状态，确保状态机一致
+                self._last_was_carriage = text.endswith('\r')
+                return
 
-        # ── 路由：无 \r → 标准输出 / 含 \r → 覆盖输出 ──────
-        if '\r' not in text:
-            self._write_standard(text)
-        else:
+        # ── 路由：根据重新检测的 has_carriage 分流 ──────────
+        if has_carriage:
             self._write_carriage(text)
+        else:
+            self._write_standard(text)
 
     # ── 内部：标准输出路径（无 \r）─────────────────────────
 
@@ -517,6 +537,10 @@ class ToolOutputControl(TextControl):
         if self._last_was_carriage:
             self._adapter.write_raw("\n")
             self._last_was_carriage = False
+            # ★ 重置脏检查缓存：\r→标准路径转换后，即使后续内容相同
+            #   也必须渲染（因为行位置发生了变化——从 \r 覆盖行转为新行），
+            #   避免脏检查跳过实际需要的渲染。
+            self._last_output = None
         self._adapter.write(
             Text.assemble((self._prefix, self._dim_style), (text, self._dim_style))
         )
@@ -752,6 +776,9 @@ class SubAgentPanelControl(Control, _ControlBase):
         """不支持流式写入——SubAgentPanelControl 通过 render_frame() 渲染。"""
         return
 
+    # ── diff_active 超时阈值（超过此时间强制清除，防止死锁） ──
+    _DIFF_ACTIVE_TIMEOUT: float = 30.0
+
     def __init__(
         self,
         output_adapter: "OutputAdapter",
@@ -804,7 +831,7 @@ class SubAgentPanelControl(Control, _ControlBase):
         self._diff_count += 1
         if self._diff_count == 1:
             self._diff_active = True
-            self._diff_active_since = time.time()
+            self._diff_active_since = time.monotonic()
 
     def diff_active_clear(self) -> None:
         """清除 diff_active 标记（引用计数递减）。
@@ -848,22 +875,20 @@ class SubAgentPanelControl(Control, _ControlBase):
         # ── diff_active 超时兜底 ─────────────────────
         # ParallelDisplay._DiffGuard 异常/取消时可能未正确清除
         # diff_active。超过阈值后强制清除并记录警告。
-        _DIFF_ACTIVE_TIMEOUT = 30.0
         if self._diff_active and not final:
             since = self._diff_active_since
-            elapsed = time.time() - since if since > 0 else 0.0
-            if since > 0 and elapsed > _DIFF_ACTIVE_TIMEOUT:
+            elapsed = time.monotonic() - since if since > 0 else 0.0
+            if since > 0 and elapsed > self._DIFF_ACTIVE_TIMEOUT:
                 _logger.warning(
                     "SubAgentPanelControl diff_active 超过 %ds 未清除"
                     "（_diff_count=%d），强制清除",
-                    _DIFF_ACTIVE_TIMEOUT, self._diff_count,
+                    self._DIFF_ACTIVE_TIMEOUT, self._diff_count,
                 )
                 self._diff_active = False
                 self._diff_count = 0
                 self._diff_active_since = 0.0
             else:
-                # diff 渲染中 → 跳过帧刷新
-                self._last_lines = 0
+                # diff 渲染中 → 跳过帧刷新（保留 _last_lines，供后续清除）
                 return
 
         # ── 版本跳过 ───────────────────────────────
@@ -907,9 +932,12 @@ class SubAgentPanelControl(Control, _ControlBase):
             clear_eol = term.clear_eol
             sc = term.sc
             rc = term.rc
-            if not isinstance(sc, str) or not sc:
+            # ★ 空值兜底：Blessed 的 FormattingString 不继承自 str，
+            #   用 isinstance(sc, str) 检测会误判，改用布尔上下文判断。
+            #   空字符串 → False（触发回退），有效对象 → True（保持原值）。
+            if not sc:
                 sc = "\033[s"
-            if not isinstance(rc, str) or not rc:
+            if not rc:
                 rc = "\033[u"
         except Exception:
             move_up = lambda n: f"\033[{n}A"
@@ -931,14 +959,13 @@ class SubAgentPanelControl(Control, _ControlBase):
 
         extra = self._last_lines - total
         if extra > 0:
+            buf += "\n" + sc
             for _ in range(extra):
                 buf += "\n" + clear_eol
-            buf += move_up(extra)
-            buf += move_down(extra)
-
-        buf += "\n" + sc
+        else:
+            buf += "\n" + sc
         self._adapter.write_raw(buf)
-        self._last_lines = max(self._last_lines, total)
+        self._last_lines = total
 
     def clear_frame(self) -> None:
         """清除终端上的帧行。
@@ -953,9 +980,10 @@ class SubAgentPanelControl(Control, _ControlBase):
             clear_eol = term.clear_eol
             move_up = term.move_up
             rc = term.rc
-            if not isinstance(clear_eol, str) or not clear_eol:
+            # ★ 空值兜底（同 _write_frame_buffer）
+            if not clear_eol:
                 clear_eol = "\033[K"
-            if not isinstance(rc, str) or not rc:
+            if not rc:
                 rc = "\033[u"
         except Exception:
             clear_eol = "\033[K"

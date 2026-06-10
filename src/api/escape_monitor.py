@@ -142,7 +142,7 @@ class StreamInputHandler:
             text = self._submitted_text
             self._submitted_text = ""
             self._input_ready.clear()
-        return text if text else None
+        return text
 
     def has_queued_input(self) -> bool:
         """是否有排队输入等待处理。"""

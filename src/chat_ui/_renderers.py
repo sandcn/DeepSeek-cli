@@ -195,6 +195,18 @@ class ContentRenderer:
 
         return control_list
 
+    # ── SubAgent 刷新相关渲染命令集合 ────────────────
+    # 这些命令处理完后自动触发 SubAgentPanelControl 面板刷新。
+    # 提升为类常量，避免 render() 方法中每帧重复创建 frozenset。
+    _SUBAGENT_RENDER_COMMANDS: frozenset[int] = frozenset({
+        RenderCommand.TOOL_OUTPUT,
+        RenderCommand.TOOL_COUNT_INC,
+        RenderCommand.TOOL_COUNT_DEC,
+        RenderCommand.TOOL_FAIL_INC,
+        RenderCommand.TOOL_SUMMARY,
+        RenderCommand.PARSE_INFO,
+    })
+
     # ── 工具输出控件重建工厂方法 ──────────────────────
 
     def _recreate_tool_output_control(self) -> None:
@@ -233,16 +245,7 @@ class ContentRenderer:
         method(*args)
 
         # ★ SubAgent 相关命令处理完后，强制刷新 SubAgentPanelControl 面板
-        #   命令集合（工具输出/计数变更/解析进度等）与子代理面板刷新相关。
-        _SUBAGENT_RENDER_COMMANDS: frozenset[int] = frozenset({
-            RenderCommand.TOOL_OUTPUT,
-            RenderCommand.TOOL_COUNT_INC,
-            RenderCommand.TOOL_COUNT_DEC,
-            RenderCommand.TOOL_FAIL_INC,
-            RenderCommand.TOOL_SUMMARY,
-            RenderCommand.PARSE_INFO,
-        })
-        if cid in _SUBAGENT_RENDER_COMMANDS:
+        if cid in self._SUBAGENT_RENDER_COMMANDS:
             self._do_subagent_refresh(True)
 
     # ── 内容渲染 ──────────────────────────────────────
@@ -295,9 +298,33 @@ class ContentRenderer:
     # ── 工具汇总：通过 ToolSummaryControl 渲染 ──
 
     def _do_tool_summary(self, successful: tuple, failed: tuple) -> None:
-        """渲染工具执行汇总（通过 ToolSummaryControl 控件，一次性渲染后关闭）。"""
+        """渲染工具执行汇总（通过 ToolSummaryControl 控件，一次性渲染后关闭）。
+
+        已关闭时重建新控件（支持同一轮次多次工具汇总调用），
+        关闭后从 ControlList 移除。
+        """
+        if self._tool_summary_ctrl.is_closed:
+            self._recreate_tool_summary_control()
         self._tool_summary_ctrl.summarize(successful, failed)
         self._tool_summary_ctrl.close()
+        self._control_list.remove(self._tool_summary_ctrl)
+
+    def _recreate_tool_summary_control(self) -> None:
+        """重建 _tool_summary_ctrl（二次调用时替代已关闭的旧控件）。
+
+        类似 _recreate_tool_output_control()，检测到已关闭时重建。
+        从 ControlList 移除旧引用，创建新控件并重新注册。
+        """
+        self._control_list.remove(self._tool_summary_ctrl)
+        self._tool_summary_ctrl = ToolSummaryControl(
+            self._adapter,
+            style_success=_STYLE_SUCCESS,
+            style_fail=_STYLE_FAIL,
+            style_warn=_STYLE_WARN,
+            style_dim=_STYLE_DIM,
+            level=0,
+        )
+        self._control_list.add(self._tool_summary_ctrl)
 
     # ── 解析进度：通过 ParseInfoControl 渲染 ──
 

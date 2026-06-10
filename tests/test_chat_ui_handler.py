@@ -475,23 +475,23 @@ class TestStopUnsubscribeSafe:
 class TestWaitForUserInput:
     """wait_for_user_input 区分 None 和空字符串"""
 
-    def test_empty_string_keeps_waiting(self):
-        """get_queued_input() 返回 "" → 继续等待（非终止）直到收到有效输入"""
+    def test_empty_string_returns_immediately(self):
+        """get_queued_input() 返回 "" → 直接返回空字符串（不再继续等待）"""
         from unittest.mock import MagicMock
         from src.chat_ui import ChatUIConsumer
 
         consumer = ChatUIConsumer()
 
-        # 模拟 monitor：先返回 ""，再返回 "valid"
+        # 模拟 monitor：仅返回 ""（空字符串是有效输入）
         mock_monitor = MagicMock()
-        mock_monitor.get_queued_input.side_effect = ["", "valid"]
+        mock_monitor.get_queued_input.side_effect = [""]
 
         result = consumer.wait_for_user_input(mock_monitor, timeout=10)
 
-        # 最终应返回 "valid"（而非 "")
-        assert result == "valid"
-        # get_queued_input 应被调用至少 2 次（第 1 次返回 "" 继续等待，第 2 次返回 "valid" 退出）
-        assert mock_monitor.get_queued_input.call_count >= 2
+        # 空字符串 "" 是用户按 Enter 的有效输入，应直接返回
+        assert result == ""
+        # get_queued_input 应仅被调用 1 次（第 1 次返回 "" 即退出）
+        assert mock_monitor.get_queued_input.call_count == 1
 
     def test_none_keeps_waiting(self):
         """get_queued_input() 返回 None → 继续等待"""

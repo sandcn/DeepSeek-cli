@@ -398,7 +398,7 @@ class TestDrainQueueSyncBottomLines(unittest.TestCase):
         self.mock_bb._last_scroll_end = 25  # 模拟已缓存的值
         self.mock_bb.get_cursor_info.return_value = ("", 0, 24, 80)
         self.mock_bb._cursor_visual_pos_from_cache.return_value = (0, 0)
-        self.engine = RenderEngine(self.mock_renderer, self.mock_bb)
+        self.engine = RenderEngine(self.mock_renderer, self.mock_bb, MagicMock())
         self._stdout = sys.__stdout__
 
     def tearDown(self):

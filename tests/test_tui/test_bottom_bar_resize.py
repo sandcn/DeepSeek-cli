@@ -376,7 +376,7 @@ class TestBug9PositionCursorUnderLock(unittest.TestCase):
         from src.chat_ui._engine import RenderEngine
         self.mock_renderer = MagicMock()
         self.mock_bb = MagicMock()
-        self.engine = RenderEngine(self.mock_renderer, self.mock_bb)
+        self.engine = RenderEngine(self.mock_renderer, self.mock_bb, MagicMock())
         self._stdout = sys.__stdout__
 
     def tearDown(self):
@@ -424,7 +424,7 @@ class TestResizeDrainSkip(unittest.TestCase):
         self.mock_bb.is_status_active = False
         self.mock_bb.is_resize_pending = False
         self.mock_bb._resize_dirty = False
-        self.engine = RenderEngine(self.mock_renderer, self.mock_bb)
+        self.engine = RenderEngine(self.mock_renderer, self.mock_bb, MagicMock())
         self._stdout = sys.__stdout__
 
     def tearDown(self):
@@ -644,7 +644,7 @@ class TestResizeCursorOverride(unittest.TestCase):
         # _position_cursor 需要 + _cursor_visual_pos_from_cache
         self.mock_bb.get_cursor_info.return_value = ("", 0, 24, 80)
         self.mock_bb._cursor_visual_pos_from_cache.return_value = (0, 0)
-        self.engine = RenderEngine(self.mock_renderer, self.mock_bb)
+        self.engine = RenderEngine(self.mock_renderer, self.mock_bb, MagicMock())
         self._stdout = sys.__stdout__
 
     def tearDown(self):

@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import logging
 import queue
+import shutil
 import sys
 import threading
 import time
@@ -25,7 +26,6 @@ from ..ui._blessed import get_terminal
 from ..ui._lock import _try_acquire_output_lock
 
 if TYPE_CHECKING:
-    from ._controls import SubAgentPanelControl
     from ._protocols import BottomBarProtocol
     from ._renderers import ContentRenderer
 
@@ -72,6 +72,7 @@ class RenderEngine:
         """向命令队列入队（线程安全，供 EventDispatcher 回调使用）。
 
         队列满时丢弃新命令并记录警告（不阻塞 EventDispatcher 回调线程）。
+        ERROR 命令优先尝试阻塞入队（最多等 0.5s），避免绕过 output_lock 直写终端。
         """
         try:
             self._cmd_queue.put(cmd, block=False)
@@ -80,23 +81,28 @@ class RenderEngine:
         except queue.Full:
             self._consecutive_full += 1
             if cmd[0] == RenderCommand.ERROR:
-                # ★ ERROR 命令走直写终端路径，确保用户可见
-                msg = cmd[1] if len(cmd) > 1 else "未知错误"
-                sys.__stdout__.write(
-                    f"{_ANSI_RED}! [ChatUI] 队列拥堵: {msg}{_ANSI_RESET}\n"
-                )
-                sys.__stdout__.flush()
+                # ★ ERROR 命令先尝试阻塞入队（最多等 0.5s），
+                #   避免绕过 output_lock 直写终端导致 I/O 交错
+                try:
+                    self._cmd_queue.put(cmd, block=True, timeout=0.5)
+                    self._cmd_event.set()
+                    self._consecutive_full = 0
+                except queue.Full:
+                    _logger.warning(
+                        "渲染命令队列已满，ERROR 命令入队超时丢弃: %s",
+                        self._cmd_queue.qsize(),
+                    )
             else:
                 _logger.warning(
                     "渲染命令队列已满（%s 条），丢弃命令: %s",
                     self._cmd_queue.qsize(), _cmd_name(cmd[0]),
                 )
-            # ★ 连续满超过阈值时直接警告终端
+            # ★ 连续满超过阈值时记录日志（不再写终端以免 I/O 交错）
             if self._consecutive_full >= self._CONSECUTIVE_FULL_THRESHOLD:
-                sys.__stdout__.write(
-                    f"{_ANSI_YELLOW}[ChatUI] 渲染输出管线持续拥堵，部分内容可能丢失{_ANSI_RESET}\n"
+                _logger.error(
+                    "渲染输出管线持续拥堵（%d 次连续满队列），部分内容可能丢失",
+                    self._consecutive_full,
                 )
-                sys.__stdout__.flush()
 
     def start(self) -> None:
         """启动 render 线程。
@@ -114,7 +120,6 @@ class RenderEngine:
                 _logger.warning(
                     "start() 被重复调用，但 render 线程仍在运行，跳过"
                 )
-                return
                 return
             # ★ 线程已死：join 清理（join 死线程立即返回）
             self._render_thread.join()
@@ -144,6 +149,9 @@ class RenderEngine:
                     self._render_thread.join(timeout=0.5)
                     if not self._render_thread.is_alive():
                         break
+        # ★ 线程已确认停止后，清空队列中残留命令
+        #   （线程停止后无消费者，留存在队列中无意义且可能泄漏）
+        self._drain_queue_safe()
 
     def flush(self, timeout: float | None = 5.0) -> None:
         """阻塞等待所有待处理渲染命令执行完毕。
@@ -191,7 +199,6 @@ class RenderEngine:
             return
         self._last_width_check = now
         try:
-            import shutil
             current = shutil.get_terminal_size()
             new_size = (current.columns, current.lines)
         except OSError:
@@ -231,16 +238,15 @@ class RenderEngine:
                 ))
         sys.__stdout__.flush()
 
-    def _phase_refresh_panels(self, panel: "SubAgentPanelControl | None") -> None:
+    def _phase_refresh_panels(self) -> None:
         """阶段 2：SubAgent 面板刷新（在 output_lock 内调用）。
 
+        在锁内读取 _active_subagent_panel，消除锁外读取的 TOCTOU 竞态条件。
         通过入队 SUBAGENT_REFRESH 命令触发面板帧渲染，
-        而非直接调用 panel.render_frame()。将刷新统一到消息路径，
         与上屏渲染命令在同一队列中串行化处理。
-
-        Args:
-            panel: 由 _drain_queue() 传入的 _active_subagent_panel 引用。
         """
+        from . import _state
+        panel = _state._active_subagent_panel
         if panel is not None and panel.needs_refresh():
             self.push_cmd((RenderCommand.SUBAGENT_REFRESH, False))
 
@@ -264,24 +270,34 @@ class RenderEngine:
     # ── 内部 — render 线程 ────────────────────────────
 
     def _render(self) -> None:
-        """render 线程入口。"""
-        while self._render_running:
-            try:
-                self._drain_queue()
-                self._cmd_event.wait(timeout=_RENDER_INTERVAL)
-                self._cmd_event.clear()
-            except Exception:
-                _logger.critical(
-                    "render 线程异常崩溃，终止",
-                    exc_info=True,
-                )
-                # 直接写 stderr 确保用户可见（render 线程已死，队列无人消费）
-                sys.__stderr__.write(
-                    f"{_ANSI_RED}[ChatUI] render 线程异常终止，请联系开发人员查看日志{_ANSI_RESET}\n"
-                )
-                sys.__stderr__.flush()
-                self._render_running = False
-                break
+        """render 线程入口。
+
+        try/finally 确保线程无论正常/异常退出都清空命令队列，
+        避免队列残留命令被后续线程 (flush/drain_queue_safe) 消费时
+        引发 task_done 计数不匹配或队列残留。
+        """
+        try:
+            while self._render_running:
+                try:
+                    self._drain_queue()
+                    self._cmd_event.wait(timeout=_RENDER_INTERVAL)
+                    self._cmd_event.clear()
+                except Exception:
+                    _logger.critical(
+                        "render 线程异常崩溃，终止",
+                        exc_info=True,
+                    )
+                    # 直接写 stderr 确保用户可见（render 线程已死，队列无人消费）
+                    sys.__stderr__.write(
+                        f"{_ANSI_RED}[ChatUI] render 线程异常终止，"
+                        f"请联系开发人员查看日志{_ANSI_RESET}\n"
+                    )
+                    sys.__stderr__.flush()
+                    self._render_running = False
+                    break
+        finally:
+            # ★ 确保所有退出路径都清空队列（包含正常退出、KeyboardInterrupt 等）
+            self._drain_queue_safe()
 
     def _drain_queue(self) -> None:
         """消费所有待处理渲染命令（入口方法，路由到三阶段流水线）。
@@ -315,7 +331,10 @@ class RenderEngine:
         try:
             self._check_resize()
         except Exception:
-            pass
+            _logger.debug(
+                "drain_queue: _check_resize 异常，降级跳过",
+                exc_info=True,
+            )
 
         # ★ 三个阶段共用同一个 output_lock（1s 超时）
         with _try_acquire_output_lock(name="drain_queue", timeout=1.0) as locked:
@@ -343,9 +362,32 @@ class RenderEngine:
             if commands:
                 self._phase_render(commands, resized)
 
-            self._phase_refresh_panels(panel)
+            # ★ SubAgent 面板刷新 — 在锁内读取 _active_subagent_panel，
+            #   消除锁外读取的 TOCTOU 竞态条件
+            self._phase_refresh_panels()
 
             self._phase_redraw_bottom(bool(commands))
+
+    def _drain_queue_safe(self) -> None:
+        """兜底清空命令队列（无锁、不抛异常）。
+
+        用于 render 线程异常退出路径（_render() except 块 + finally 块），
+        确保已入队但未被消费的命令在线程终止前被清空。
+        不持有 output_lock——线程已终止，下游已无消费者，
+        直接清空队列避免残留命令对后续 flush() 造成干扰。
+
+        与 flush() 的区别：
+        - flush() 等待 render 线程消费队列（需要锁/output_lock）
+        - _drain_queue_safe() 直接清空队列（无锁，仅在线程死亡后调用）
+        """
+        while not self._cmd_queue.empty():
+            try:
+                self._cmd_queue.get_nowait()
+                self._cmd_queue.task_done()
+            except queue.Empty:
+                break
+            except Exception:
+                break
 
     def position_cursor(self) -> None:
         """公开方法 — 将光标移回输入行，根据超长文本自动拆行定位。

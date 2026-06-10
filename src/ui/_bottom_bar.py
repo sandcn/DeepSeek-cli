@@ -515,6 +515,15 @@ class _BottomBar(_StatusMixin):
 
     # ── 生命周期 ──────────────────────────────────────────
 
+    def set_input_state(self, text: str, cursor_pos: int) -> None:
+        """设置输入文本和光标位置（线程安全，仅更新状态，不直接 I/O）。
+
+        由 ChatUIConsumer.refresh_bottom_bar() 调用，替代直接访问
+        私有属性 _last_text 和 _input_cursor_pos 的模式。
+        """
+        self._last_text = text
+        self._input_cursor_pos = cursor_pos
+
     def setup(self) -> None:
         """启用底部栏：设置滚动区域 + 绘制初始底部栏。
 

@@ -144,6 +144,7 @@ class EventDispatcher:
             return
         if not event.success:
             self._push_cmd((RenderCommand.TOOL_FAIL_INC,))
+            self._push_cmd((RenderCommand.TOOL_COUNT_DEC,))
         else:
             self._push_cmd((RenderCommand.TOOL_COUNT_DEC,))
 

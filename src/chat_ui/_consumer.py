@@ -147,12 +147,12 @@ class ChatUIConsumer:
         # 4) flush 残留命令
         self._engine.flush()
 
-        # 5) teardown 底部栏（锁保护，与 suspend() 一致）
+        # 5) 关闭渲染器 + teardown 底部栏（锁保护，与 suspend() 一致）
         from ..ui._lock import output_lock
         with output_lock:
+            self._rs.close_all()
             self._bottom_bar.teardown()
 
-        self._rs.close_all()
         self._started = False
 
     def suspend(self) -> None:
@@ -217,21 +217,15 @@ class ChatUIConsumer:
 
         安全地从任何线程调用。
         执行以下刷新操作：
-          1. SubAgentPanelControl 面板刷新（若有活跃实例）
+          1. SubAgentPanelControl 面板刷新 → 通过入队 SUBAGENT_REFRESH 命令，
+             由 render 线程统一处理，消除多线程数据竞争
           2. 底部栏重绘由 render 线程 _phase_redraw_bottom() 10Hz 轮询处理
-
-        与 _drain_queue 不同：不消费命令队列，专供外部定时刷新。
         """
 
-        # ★ 1. SubAgentPanelControl 面板刷新（就地渲染，走 output_lock 路径）
-        from . import _state
-        panel = _state._active_subagent_panel
-        if panel is not None:
-            try:
-                panel.render_frame(force=False)
-            except Exception:
-                _logger.debug("refresh: SubAgentPanelControl 刷新异常", exc_info=True)
-                self._engine.push_cmd((RenderCommand.ERROR, "SubAgent 面板刷新失败，请查看日志获取详情"))
+        # ★ 1. SubAgentPanelControl 面板刷新 — 统一走 SUBAGENT_REFRESH 命令队列
+        #    替代直接调用 panel.render_frame() 路径，消除多线程数据竞争。
+        #    render 线程的 _do_subagent_refresh() 会在 output_lock 保护下执行渲染。
+        self._engine.push_cmd((RenderCommand.SUBAGENT_REFRESH, False))
 
         # ★ 2. 底部栏重绘由 render 线程 _phase_redraw_bottom() 10Hz 轮询处理
         #    无需在此处直接 force_redraw
@@ -267,8 +261,8 @@ class ChatUIConsumer:
         deadline = None if timeout is None else time.monotonic() + timeout
         while True:
             text = monitor.get_queued_input()
-            if text:
-                # 非空字符串视为有效输入
+            if text is not None:
+                # 任何字符串（含空字符串""）视为有效输入，None 表示无输入
                 return text
             if deadline is not None and time.monotonic() >= deadline:
                 return ""
@@ -328,8 +322,7 @@ class ChatUIConsumer:
             cursor_pos: 光标在输入文本中的偏移，-1 表示文本末尾。
         """
         effective_pos = len(text) if cursor_pos < 0 else cursor_pos
-        self._bottom_bar._last_text = text
-        self._bottom_bar._input_cursor_pos = effective_pos
+        self._bottom_bar.set_input_state(text, effective_pos)
         self._engine.push_cmd((RenderCommand.BOTTOM_BAR_REFRESH,))
 
     def flush(self, timeout: float | None = 5.0) -> None:

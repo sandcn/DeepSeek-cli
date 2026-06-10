@@ -126,51 +126,58 @@ class TestRenderEnginePushCmd:
         assert "渲染命令队列已满" in caplog.text
         assert "CONTENT" in caplog.text
 
-    def test_push_cmd_error_writes_directly_to_terminal(self, engine):
-        """ERROR 命令在队列满时走直写终端路径，不记录日志。"""
+    def test_push_cmd_error_tries_blocking_put(self, engine, caplog):
+        """ERROR 命令在队列满时尝试阻塞入队，不再直写终端。"""
         tiny_queue = queue.Queue(maxsize=1)
         tiny_queue.put((RenderCommand.CONTENT, "占位"), block=False)
         engine._cmd_queue = tiny_queue
+
+        caplog.set_level(logging.WARNING)
 
         with patch.object(sys, "__stdout__") as mock_stdout:
             engine.push_cmd((RenderCommand.ERROR, "系统繁忙"))
 
-        # 验证直写终端
-        mock_stdout.write.assert_called_once()
-        text = mock_stdout.write.call_args[0][0]
-        assert "队列拥堵" in text
-        assert "系统繁忙" in text
-        mock_stdout.flush.assert_called_once()
+        # 不再直写终端
+        mock_stdout.write.assert_not_called()
+        # 阻塞入队超时后记录日志警告
+        assert "ERROR 命令入队超时丢弃" in caplog.text
 
-    def test_push_cmd_error_no_message_fallback(self, engine):
-        """ERROR 命令无消息时回退到「未知错误」。"""
+    def test_push_cmd_error_no_message_fallback(self, engine, caplog):
+        """ERROR 命令无消息时记录日志（无「未知错误」直写）。"""
         tiny_queue = queue.Queue(maxsize=1)
         tiny_queue.put((RenderCommand.CONTENT, "占位"), block=False)
         engine._cmd_queue = tiny_queue
 
+        caplog.set_level(logging.WARNING)
+
         with patch.object(sys, "__stdout__") as mock_stdout:
             engine.push_cmd((RenderCommand.ERROR,))
 
-        text = mock_stdout.write.call_args[0][0]
-        assert "未知错误" in text
+        # 不再直写终端
+        mock_stdout.write.assert_not_called()
+        assert "ERROR 命令入队超时丢弃" in caplog.text
 
-    def test_push_cmd_consecutive_full_warns_terminal(self, engine):
-        """连续满超过阈值时输出终端警告。"""
+    def test_push_cmd_consecutive_full_warns_log(self, engine, caplog):
+        """连续满超过阈值时记录日志错误，不再写终端。"""
         tiny_queue = queue.Queue(maxsize=1)
         tiny_queue.put((RenderCommand.CONTENT, "占位"), block=False)
         engine._cmd_queue = tiny_queue
         engine._CONSECUTIVE_FULL_THRESHOLD = 3
 
+        caplog.set_level(logging.ERROR)
+
         with patch.object(sys, "__stdout__") as mock_stdout:
             for _ in range(3):
                 engine.push_cmd((RenderCommand.CONTENT, "丢弃"))
 
-        # 第3次 push 时 _consecutive_full == 3 >= 3，触发警告
+        # 不再写终端
         terminal_warning_calls = [
             c for c in mock_stdout.write.call_args_list
             if "渲染输出管线持续拥堵" in c[0][0]
-        ]
-        assert len(terminal_warning_calls) == 1
+        ] if mock_stdout.write.call_args_list else []
+        assert len(terminal_warning_calls) == 0
+        # 改为日志记录
+        assert "渲染输出管线持续拥堵" in caplog.text
 
     def test_push_cmd_consecutive_full_below_threshold(self, engine):
         """连续满未达阈值时不输出终端警告。"""

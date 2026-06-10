@@ -772,17 +772,18 @@ class TestChatUIConsumerRefresh:
     """refresh() 刷新接口"""
 
     def test_refresh_with_active_subagent_panel(self, consumer, mock_bus):
-        """refresh() 在有活跃 SubAgentPanelControl 时调用其 render_frame()"""
-        mock_panel = MagicMock()
-        with patch('src.chat_ui._state._active_subagent_panel', mock_panel):
+        """refresh() 入队 SUBAGENT_REFRESH 命令，不再直接调用 panel.render_frame()"""
+        from src.chat_ui import RenderCommand
+        with patch.object(consumer._engine, 'push_cmd') as mock_push:
             consumer.refresh()
-            mock_panel.render_frame.assert_called_once_with(force=False)
+            mock_push.assert_called_once_with((RenderCommand.SUBAGENT_REFRESH, False))
 
     def test_refresh_without_subagent_panel(self, consumer, mock_bus):
-        """refresh() 无活跃 SubAgentPanelControl 时不崩溃"""
-        with patch('src.chat_ui._state._active_subagent_panel', None):
-            # 不应崩溃
+        """refresh() 无 SubAgent 面板时仍入队 SUBAGENT_REFRESH（render 线程处理跳过）"""
+        from src.chat_ui import RenderCommand
+        with patch.object(consumer._engine, 'push_cmd') as mock_push:
             consumer.refresh()
+            mock_push.assert_called_once_with((RenderCommand.SUBAGENT_REFRESH, False))
 
     def test_refresh_does_not_call_force_redraw(self, consumer, mock_bus):
         """refresh() 不再直接调用 force_redraw，由 render 线程处理"""

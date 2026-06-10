@@ -171,10 +171,12 @@ class TestEventDispatcherToolDone:
         push_cmd.assert_called_once_with((RenderCommand.TOOL_COUNT_DEC,))
 
     def test_success_false(self, dispatcher, push_cmd):
-        """success=False → push_cmd 收到 (TOOL_FAIL_INC,)。"""
+        """success=False → push_cmd 收到 (TOOL_FAIL_INC,) + (TOOL_COUNT_DEC,)。"""
         event = ToolDoneEvent(source=_MAIN_SOURCE, label="tool_2", tool_name="bash", success=False)
         dispatcher._on_tool_done(event)
-        push_cmd.assert_called_once_with((RenderCommand.TOOL_FAIL_INC,))
+        assert push_cmd.call_count == 2
+        push_cmd.assert_any_call((RenderCommand.TOOL_FAIL_INC,))
+        push_cmd.assert_any_call((RenderCommand.TOOL_COUNT_DEC,))
 
     def test_subagent_source(self, dispatcher, push_cmd):
         """source='agent-2' 也处理（SubAgent 兼容）。"""
