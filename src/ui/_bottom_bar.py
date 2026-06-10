@@ -361,10 +361,20 @@ class _BottomBar(_StatusMixin):
 
         供 RenderEngine.position_cursor 使用，避免直接访问私有属性。
         返回值: (last_text, cursor_pos, term_height, term_width)
+
+        使用 _last_rendered_text 而非 _last_text 作为定位基准：
+        force_redraw() 渲染输入行时使用 _last_text 快照，但 EscapeMonitor
+        线程可能在 force_redraw 和 position_cursor 之间调用 set_input_state()
+        更新 _last_text。此时若新文本拆行数与渲染结果不同，position_cursor
+        会计算出错误的 r_cursor，导致光标偏移 1 行。
+        使用 _last_rendered_text 确保与屏幕显示的文本布局一致。
+        cursor_pos 被 clamp 到文本长度，防止因文本版本不一致产生越界。
         """
+        text = self._last_rendered_text if self._last_rendered_text else self._last_text
+        cursor_pos = min(self._input_cursor_pos, len(text))
         return (
-            self._last_text,
-            self._input_cursor_pos,
+            text,
+            cursor_pos,
             self._term_height(),
             self._term_width(),
         )
@@ -473,10 +483,14 @@ class _BottomBar(_StatusMixin):
         #    确保后续内容渲染从干净行开始，消除旧内容与底部栏之间的 1 行重叠
         if resized and scroll_end >= 1:
             out.write(_blessed_move_clear(scroll_end))
-            # 终端高度缩小时，额外清除旧 scroll_end 行的残留内容，
-            # 避免该行内容在 force_redraw() 执行前与底部栏形成 1 行重叠
+            # 终端高度缩小时，清除 scroll_end+1 到 min(old_scroll, height) 整个区间，
+            # 而非仅清除单一边界行。在流式输出路径中，CONTENT 渲染写入内容到滚动区
+            # 会自然「冲刷」掉这些残留行；但在 BOTTOM_BAR_REFRESH（输入）路径中，
+            # _do_bottom_bar_refresh 是 no-op，无冲刷行为，必须在此处彻底清除，
+            # 否则旧内容在 force_redraw() 执行前可见，导致视觉上的 1 行重叠。
             if shrunk and old_scroll > scroll_end:
-                out.write(_blessed_move_clear(min(old_scroll, height)))
+                for r in range(scroll_end + 1, min(old_scroll, height) + 1):
+                    out.write(_blessed_move_clear(r))
         out.write(_blessed_cursor_goto(scroll_end, 1) + _blessed_save_cursor())
         out.flush()
 
