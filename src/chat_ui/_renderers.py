@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import logging
 import sys
+import unicodedata
 from typing import TYPE_CHECKING, Callable
 
 _logger = logging.getLogger(__name__)
@@ -236,14 +237,13 @@ class ContentRenderer:
             if error:
                 short = error.split("\n")[0].strip()
                 if short:
-                    # 按视觉宽度截断
-                    from wcwidth import wcswidth
+                    # 按视觉宽度截断（使用标准库 unicodedata 替代 wcwidth）
                     max_width = 80
                     s = short
                     w = 0
                     cut = len(s)
                     for i, ch in enumerate(s):
-                        cw = wcswidth(ch) if wcswidth(ch) >= 0 else 1
+                        cw = 2 if unicodedata.east_asian_width(ch) in 'WF' else 1
                         if w + cw > max_width - 3:
                             cut = i
                             break
