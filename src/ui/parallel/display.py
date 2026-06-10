@@ -37,6 +37,7 @@ from ..terminal_adapter import (
 # ── 常量 ────────────────────────────────────────────────
 
 _EVENTBUS_THROTTLE = 0.3   # 300ms — EventBus 发布频率阈值，防止高频 update 路径过度发布
+_REFRESH_INTERVAL = 0.1  # 100ms — 帧刷新节流间隔（10Hz，与 ChatUI render 线程一致）
 _DEFAULT_HISTORY = 3
 _logger = logging.getLogger(__name__)
 
@@ -83,6 +84,7 @@ class ParallelDisplay(BaseDisplay):
         self._finished = False
         self._stopped = False
         self._last_eventbus_time: float = 0.0  # EventBus 上次发布时间戳
+        self._last_refresh_time: float = 0.0  # _schedule_refresh 上次渲染时间戳
 
         # 根据终端宽度确定显示深度
         display_config = DisplayConfig(self._terminal.terminal_width)
@@ -134,35 +136,43 @@ class ParallelDisplay(BaseDisplay):
     def add_agent(self, label: str, description: str, status: str = "running",
                   agent_type: str = "ordinary"):
         self._store.add_agent(label, description, status, agent_type=agent_type)
+        self._schedule_refresh()
 
     # ── 状态更新（代理到 AgentStateStore） ─────────────
 
     def update_agent_status(self, label: str, status: str):
         self._store.update_agent_status(label, status)
+        self._schedule_refresh()
 
     def update_status(self, label: str, status: str):
         return self.update_agent_status(label, status)
 
     def update_model_phase(self, label: str, phase: str, info: str = ""):
         self._store.update_model_phase(label, phase, info)
+        self._schedule_refresh()
 
     def tool_parsing(self, label: str, tool_name: str, arguments: str = ""):
         self._store.tool_parsing(label, tool_name, arguments)
+        self._schedule_refresh()
 
     def tool_batch_start(self, label: str, tool_names: list):
         self._store.tool_batch_start(label, tool_names)
+        self._schedule_refresh()
 
     def tool_start(self, label: str, tool_name: str, detail: str = "",
                    metadata: dict | None = None):
         self._store.tool_start(label, tool_name, detail)
+        self._schedule_refresh()
 
     def tool_done(self, label: str, tool_name: str = "",
                   success: bool = True, metadata: dict | None = None):
         self._store.tool_done(label, tool_name, success)
+        self._schedule_refresh()
 
     def update_parse_info(self, label: str, tool_names: str,
                           tokens: int, elapsed: float):
         self._store.update_parse_info(label, tool_names, tokens, elapsed)
+        self._schedule_refresh()
 
     def parse_info_done(self, label: str) -> None:
         pass
@@ -194,8 +204,21 @@ class ParallelDisplay(BaseDisplay):
 
     def set_result(self, label: str, result_text: str = "", error: str = ""):
         self._store.set_result(label, result_text, error)
+        self._schedule_refresh()
 
     # ── 帧渲染（直接通过 OutputAdapter） ──────────────
+
+    def _schedule_refresh(self) -> None:
+        """节流调度帧刷新 — 仅在间隔足够且 adapter 就绪时渲染。
+
+        在 output_lock 外调用（_render_frame 内部自行管理锁）。
+        """
+        if self._adapter is None:
+            return
+        now = time.time()
+        if now - self._last_refresh_time >= _REFRESH_INTERVAL:
+            self._last_refresh_time = now
+            self._render_frame()
 
     def _render_frame(self, force: bool = False, final: bool = False) -> None:
         """渲染当前帧到终端。
