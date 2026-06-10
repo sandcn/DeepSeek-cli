@@ -330,12 +330,21 @@ class ParallelDisplay(BaseDisplay):
 
         # ── 主路径：使用绝对行号定位（scroll_end 已知） ──
         if self._scroll_end > 0:
+            # 面板行数超过滚动区域高度时，截断上部（保留最新内容），防止覆盖上屏
+            if total > self._scroll_end:
+                lines = lines[total - self._scroll_end:]
+                total = self._scroll_end
+
             buf = ""
+
+            # ── 面板扩大时，向上滚动内容腾出空间（SU），面板向下扩展 ──
+            if self._last_lines > 0 and total > self._last_lines:
+                delta = total - self._last_lines
+                # 定位到 scroll_end 行首，执行 SU 向上滚动 delta 行
+                buf += f"\033[{self._scroll_end};1H\033[{delta}S"
 
             # 新面板起始行（紧贴滚动区域底部）
             start_row = self._scroll_end - total + 1
-            if start_row < 1:
-                start_row = 1
 
             # 清除面板区域 — 从新旧面板上边界中较上的那个开始清除
             # 防止面板变大时（start_row < old_start）新行覆盖原有内容
@@ -354,6 +363,15 @@ class ParallelDisplay(BaseDisplay):
                 buf += line
                 if i < total - 1:
                     buf += "\n"
+
+            # ── 面板缩小后回收空间：SD 下拉内容 + 清顶部空行 ──
+            restore_delta = 0
+            if self._last_lines > 0 and total < self._last_lines:
+                restore_delta = self._last_lines - total
+            if restore_delta > 0:
+                buf += f"\033[{self._scroll_end};1H\033[{restore_delta}T"
+                for r in range(1, restore_delta + 1):
+                    buf += f"\033[{r};1H{clear_eol}"
 
             self._adapter.write_raw(buf)
             self._last_lines = total
