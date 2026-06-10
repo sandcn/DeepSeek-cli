@@ -4,7 +4,7 @@
 1. TestRenderEnginePushCmd    — push_cmd 入队/满队列/连续满/ERROR 直写
 2. TestRenderEngineStartStop  — start/stop 生命周期管理/幂等/重启
 3. TestRenderEngineFlush      — flush 等待消费/render 未运行时清空/超时
-4. TestRenderEngineDrainQueue — _drain_queue 空跳过/流水线/容错/底部栏触发
+4. TestRenderEngineDrainQueue — _drain_queue 空跳过/流水线/容错/底部栏重绘
 5. TestRenderEngineRender     — _render 循环/异常崩溃
 6. TestRenderEnginePositionCursor — position_cursor / ensure_cursor_upper
 """
@@ -20,12 +20,6 @@ from unittest.mock import MagicMock, call, patch
 
 import pytest
 
-# ── _check_resize 已从 RenderEngine 移除，相关测试跳过标记 ──
-_SKIP_RESIZE_REMOVED = pytest.mark.skip(
-    reason="resize 处理已从 chat_ui 移除",
-)
-
-# ── 将项目根目录加入 sys.path（Termux 环境需要） ──
 sys.path.insert(0, "/home/DeepSeek-cli")
 
 from src.chat_ui._const import RenderCommand
@@ -513,7 +507,7 @@ class TestRenderEngineFlush:
 # ══════════════════════════════════════════════════════
 
 class TestRenderEngineDrainQueue:
-    """_drain_queue 三阶段流水线 / 容错 / 底部栏触发。"""
+    """_drain_queue 三阶段流水线 / 容错 / 底部栏重绘。"""
 
     def test_drain_empty_queue_no_skip(self, engine):
         """空队列 + 状态不活跃 → 执行锁内流水线，不渲染命令。"""
@@ -542,7 +536,6 @@ class TestRenderEngineDrainQueue:
         """空队列但 is_status_active == True → 不跳过，执行流水线。"""
         engine._bb.is_status_active = True
         engine._cmd_queue = queue.Queue()
-        engine._bb.check_resize.return_value = False
 
         with (
             patch("src.chat_ui._engine._try_acquire_output_lock") as m_lock,
@@ -560,8 +553,6 @@ class TestRenderEngineDrainQueue:
     def test_drain_commands_renders_in_order(self, engine):
         """有命令时批量出队并按顺序渲染。"""
         engine._bb.is_status_active = False
-        engine._bb.is_resize_pending = False
-        engine._bb.check_resize.return_value = False
 
         engine._cmd_queue.put((RenderCommand.CONTENT, "hello"))
         engine._cmd_queue.put((RenderCommand.CONTENT, "world"))
@@ -580,12 +571,11 @@ class TestRenderEngineDrainQueue:
             call((RenderCommand.CONTENT, "world")),
         ])
 
-    def test_drain_renders_without_resize_calls_sync_and_cursor_upper(
+    def test_drain_calls_sync_and_cursor_upper(
         self, engine,
     ):
-        """非 resize 路径：先 sync_bottom_lines 再 ensure_cursor_upper。"""
+        """渲染前先 sync_bottom_lines 再 ensure_cursor_upper。"""
         engine._bb.is_status_active = False
-        engine._bb.check_resize.return_value = False  # 非 resize
 
         engine._cmd_queue.put((RenderCommand.CONTENT, "test"))
 
@@ -596,24 +586,17 @@ class TestRenderEngineDrainQueue:
 
             engine._drain_queue()
 
-        # 非 resize 路径：sync_bottom_lines + ensure_cursor_upper
+        # sync_bottom_lines + ensure_cursor_upper
         engine._bb.sync_bottom_lines.assert_called_once()
         engine._bb.ensure_cursor_in_upper.assert_called_once()
 
-    @_SKIP_RESIZE_REMOVED
-    def test_drain_renders_with_resize_skips_sync_and_cursor_upper(
-        self, engine,
-    ):
-        """resize 路径：跳过 sync_bottom_lines 和 ensure_cursor_upper。
-        注意：resize 处理已从 chat_ui 移除，此测试仅作保留。"""
-        pass
+
 
     def test_drain_render_exception_tolerated_and_queues_error(
         self, engine, caplog,
     ):
         """渲染命令异常时被容错（记录日志 + push ERROR 命令）。"""
         engine._bb.is_status_active = False
-        engine._bb.check_resize.return_value = False
         engine._renderer.render.side_effect = RuntimeError("渲染失败")
         caplog.set_level(logging.DEBUG)
 
@@ -636,7 +619,6 @@ class TestRenderEngineDrainQueue:
     def test_drain_force_redraw_with_commands(self, engine):
         """有命令时不论 is_status_active 都触发 force_redraw。"""
         engine._bb.is_status_active = False
-        engine._bb.check_resize.return_value = False
 
         engine._cmd_queue.put((RenderCommand.CONTENT, "数据"))
 
@@ -652,7 +634,6 @@ class TestRenderEngineDrainQueue:
     def test_drain_force_redraw_with_status_active_only(self, engine):
         """无命令但 is_status_active → 触发 force_redraw。"""
         engine._bb.is_status_active = True
-        engine._bb.check_resize.return_value = False
 
         with (
             patch("src.chat_ui._engine._try_acquire_output_lock") as m_lock,
@@ -668,7 +649,6 @@ class TestRenderEngineDrainQueue:
     ):
         """无命令且 is_status_active=False → 不触发 force_redraw。"""
         engine._bb.is_status_active = False
-        engine._bb.check_resize.return_value = True  # 有 resize，进入锁
 
         with (
             patch("src.chat_ui._engine._try_acquire_output_lock") as m_lock,
@@ -694,15 +674,10 @@ class TestRenderEngineDrainQueue:
         engine._renderer.render.assert_not_called()
         engine._bb.force_redraw.assert_not_called()
 
-    @_SKIP_RESIZE_REMOVED
-    def test_drain_check_resize_exception_tolerated(self, engine):
-        """check_resize 异常时被容错（已移除）。"""
-        pass
 
     def test_drain_sync_bottom_lines_exception_tolerated(self, engine):
         """sync_bottom_lines 异常时被容错，继续渲染。"""
         engine._bb.is_status_active = False
-        engine._bb.check_resize.return_value = False
         engine._bb.sync_bottom_lines.side_effect = RuntimeError("sync 异常")
 
         engine._cmd_queue.put((RenderCommand.CONTENT, "数据"))
@@ -720,7 +695,6 @@ class TestRenderEngineDrainQueue:
     def test_drain_force_redraw_exception_tolerated(self, engine):
         """force_redraw 异常时被容错，继续光标定位。"""
         engine._bb.is_status_active = True
-        engine._bb.check_resize.return_value = False
         engine._bb.force_redraw.side_effect = RuntimeError("redraw 异常")
 
         with (
@@ -738,7 +712,6 @@ class TestRenderEngineDrainQueue:
     def test_drain_position_cursor_exception_tolerated(self, engine):
         """position_cursor 异常时被容错。"""
         engine._bb.is_status_active = True
-        engine._bb.check_resize.return_value = False
         engine.position_cursor = MagicMock()
         engine.position_cursor.side_effect = RuntimeError("光标异常")
 
@@ -975,10 +948,7 @@ class TestRenderEngineEdgeCases:
         assert engine._cmd_event.wait.call_count >= 1
         engine._cmd_event.wait.assert_called_with(timeout=_RENDER_INTERVAL)
 
-    @_SKIP_RESIZE_REMOVED
-    def test_drain_check_width_exception_safe(self, engine):
-        """_check_resize 异常时被静默忽略（已移除）。"""
-        pass
+
 
     def test_drain_lock_name_is_drain_queue(self, engine):
         """_try_acquire_output_lock 的 name 参数为 'drain_queue'。"""
@@ -995,77 +965,3 @@ class TestRenderEngineEdgeCases:
 
             m_lock.assert_called_once_with(name="drain_queue", timeout=1.0)
 
-
-# ══════════════════════════════════════════════════════
-# TestRenderEngineCheckResize — _check_resize() 单元测试
-# ══════════════════════════════════════════════════════
-
-@_SKIP_RESIZE_REMOVED
-class TestRenderEngineCheckResize:
-    """RenderEngine._check_resize() 测试（迁移自 ContentRenderer._check_and_refresh_width）"""
-
-    @pytest.fixture
-    def engine_with_resize_state(self, engine):
-        """配置 engine 的 resize 状态字段（已从 ContentRenderer 迁移至 RenderEngine）。"""
-        engine._last_width_check = 0.0
-        engine._cached_term_size = (0, 0)
-        engine._RESIZE_CHECK_INTERVAL = 0.2
-        engine._renderer._rs = MagicMock()
-        engine._renderer._control_list = MagicMock()
-        return engine
-
-    def test_no_check_within_interval(self, engine_with_resize_state):
-        """200ms 间隔内不检查终端大小"""
-        engine = engine_with_resize_state
-        with patch('shutil.get_terminal_size') as mock_gs:
-            mock_gs.return_value = MagicMock(columns=100, lines=40)
-            engine._check_resize()
-
-        # 立即再次调用 → 200ms 内不应再检查
-        with patch('shutil.get_terminal_size') as mock_gs2:
-            engine._check_resize()
-            mock_gs2.assert_not_called()
-
-    def test_size_change_triggers_refresh(self, engine_with_resize_state):
-        """终端大小变化 → 调用 renderer.refresh_width()"""
-        engine = engine_with_resize_state
-
-        with patch('shutil.get_terminal_size') as mock_gs:
-            mock_gs.return_value = MagicMock(columns=100, lines=40)
-            engine._check_resize()
-            assert engine._cached_term_size == (100, 40)
-
-        engine._renderer.refresh_width.reset_mock()
-
-        engine._last_width_check = 0
-        with patch('shutil.get_terminal_size') as mock_gs2:
-            mock_gs2.return_value = MagicMock(columns=80, lines=30)
-            engine._check_resize()
-            engine._renderer.refresh_width.assert_called_once()
-            assert engine._cached_term_size == (80, 30)
-
-    def test_size_unchanged_no_refresh(self, engine_with_resize_state):
-        """终端大小未变 → 不调用 renderer.refresh_width()"""
-        engine = engine_with_resize_state
-
-        with patch('shutil.get_terminal_size') as mock_gs:
-            mock_gs.return_value = MagicMock(columns=100, lines=40)
-            engine._check_resize()
-            assert engine._cached_term_size == (100, 40)
-
-        engine._renderer.refresh_width.reset_mock()
-
-        engine._last_width_check = 0
-        with patch('shutil.get_terminal_size') as mock_gs2:
-            mock_gs2.return_value = MagicMock(columns=100, lines=40)
-            engine._check_resize()
-            engine._renderer.refresh_width.assert_not_called()
-
-    def test_shutil_exception_safe(self, engine_with_resize_state):
-        """shutil.get_terminal_size() 异常 → 安全返回，不崩溃"""
-        engine = engine_with_resize_state
-
-        with patch('shutil.get_terminal_size', side_effect=OSError("模拟异常")):
-            engine._check_resize()
-
-        engine._renderer.refresh_width.assert_not_called()
