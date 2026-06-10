@@ -296,13 +296,11 @@ class RenderEngine:
     def _drain_queue(self) -> None:
         """消费所有待处理渲染命令。
 
-        流水线（在 output_lock 保护下）：
+        全部三阶段在 output_lock 保护下执行：
           1. 批量出队渲染命令
           2. 上屏渲染 → _phase_render()
-          3. 底部栏重绘 + 光标定位 → _phase_redraw_bottom()
-
-        面板刷新（_phase_refresh_panels）在 output_lock 外执行，
-        遵循「持 output_lock 期间不获取其他锁」的锁顺序规则。
+          3. 面板刷新 → _phase_refresh_panels()
+          4. 底部栏重绘 + 光标定位 → _phase_redraw_bottom()
         """
         commands: list[tuple] = []
         with _try_acquire_output_lock(name="drain_queue", timeout=1.0) as locked:
@@ -322,10 +320,9 @@ class RenderEngine:
             if commands:
                 self._phase_render(commands)
 
-            self._phase_redraw_bottom(has_content)
+            self._phase_refresh_panels()
 
-        # ★ 面板刷新在 output_lock 外执行，避免持 output_lock 期间获取其他锁
-        self._phase_refresh_panels()
+            self._phase_redraw_bottom(has_content)
 
     def _drain_queue_safe(self) -> None:
         """兜底清空命令队列（无锁、不抛异常）。
