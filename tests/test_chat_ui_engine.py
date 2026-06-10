@@ -20,6 +20,11 @@ from unittest.mock import MagicMock, call, patch
 
 import pytest
 
+# ── _check_resize 已从 RenderEngine 移除，相关测试跳过标记 ──
+_SKIP_RESIZE_REMOVED = pytest.mark.skip(
+    reason="resize 处理已从 chat_ui 移除",
+)
+
 # ── 将项目根目录加入 sys.path（Termux 环境需要） ──
 sys.path.insert(0, "/home/DeepSeek-cli")
 
@@ -43,15 +48,13 @@ def mock_bottom_bar():
     """Mock _BottomBar 实例。
 
     模拟 _BottomBar 对外提供的所有属性/方法：
-      - is_status_active / is_resize_pending（property）
-      - check_resize / sync_bottom_lines / force_redraw / get_cursor_info
+      - is_status_active（property）
+      - sync_bottom_lines / force_redraw / get_cursor_info
       - compute_cursor_position（公开 API）
       - ensure_cursor_in_upper
     """
     bb = MagicMock()
     bb.is_status_active = False
-    bb.is_resize_pending = False
-    bb.check_resize.return_value = False
     bb.get_cursor_info.return_value = ("hello", 5, 30, 80)
     bb.compute_cursor_position.return_value = (28, 8)
     return bb
@@ -513,29 +516,22 @@ class TestRenderEngineDrainQueue:
     """_drain_queue 三阶段流水线 / 容错 / 底部栏触发。"""
 
     def test_drain_empty_queue_no_skip(self, engine):
-        """空队列 + 状态不活跃 + 无 resize → 仍执行 resize 检测 + 锁内流水线。"""
+        """空队列 + 状态不活跃 → 执行锁内流水线，不渲染命令。"""
         engine._bb.is_status_active = False
-        engine._bb.is_resize_pending = False
 
         # 确保空队列
         while not engine._cmd_queue.empty():
             engine._cmd_queue.get_nowait()
             engine._cmd_queue.task_done()
 
-        engine._bb.check_resize.return_value = False
-
         with (
             patch("src.chat_ui._engine._try_acquire_output_lock") as m_lock,
         ):
             m_lock.return_value.__enter__.return_value = True
 
-            # drain_queue 不会跳过：先 _check_resize，再进入锁内流水线
             engine._drain_queue()
 
-        # _check_resize 被调用（阶段 0b 始终执行）
-        assert engine._cached_term_size is not None
-        # 锁内：check_resize 被调用，队列空时不渲染任何命令
-        engine._bb.check_resize.assert_called_once()
+        # 队列空时不渲染任何命令
         engine._renderer.render.assert_not_called()
         # 阶段 3：is_status_active=False → force_redraw 不被调用
         engine._bb.force_redraw.assert_not_called()
@@ -604,25 +600,13 @@ class TestRenderEngineDrainQueue:
         engine._bb.sync_bottom_lines.assert_called_once()
         engine._bb.ensure_cursor_in_upper.assert_called_once()
 
+    @_SKIP_RESIZE_REMOVED
     def test_drain_renders_with_resize_skips_sync_and_cursor_upper(
         self, engine,
     ):
-        """resize 路径：跳过 sync_bottom_lines 和 ensure_cursor_upper。"""
-        engine._bb.is_status_active = False
-        engine._bb.check_resize.return_value = True  # resize 发生
-
-        engine._cmd_queue.put((RenderCommand.CONTENT, "test"))
-
-        with (
-            patch("src.chat_ui._engine._try_acquire_output_lock") as m_lock,
-        ):
-            m_lock.return_value.__enter__.return_value = True
-
-            engine._drain_queue()
-
-        # resize 路径：不应调用 sync_bottom_lines 和 ensure_cursor_upper
-        engine._bb.sync_bottom_lines.assert_not_called()
-        engine._bb.ensure_cursor_in_upper.assert_not_called()
+        """resize 路径：跳过 sync_bottom_lines 和 ensure_cursor_upper。
+        注意：resize 处理已从 chat_ui 移除，此测试仅作保留。"""
+        pass
 
     def test_drain_render_exception_tolerated_and_queues_error(
         self, engine, caplog,
@@ -710,23 +694,10 @@ class TestRenderEngineDrainQueue:
         engine._renderer.render.assert_not_called()
         engine._bb.force_redraw.assert_not_called()
 
+    @_SKIP_RESIZE_REMOVED
     def test_drain_check_resize_exception_tolerated(self, engine):
-        """check_resize 异常时被容错（resized=False），继续流水线。"""
-        engine._bb.is_status_active = False
-        engine._bb.check_resize.side_effect = RuntimeError("resize 检测异常")
-
-        engine._cmd_queue.put((RenderCommand.CONTENT, "数据"))
-
-        with (
-            patch("src.chat_ui._engine._try_acquire_output_lock") as m_lock,
-        ):
-            m_lock.return_value.__enter__.return_value = True
-
-            # 不应抛出异常
-            engine._drain_queue()
-
-        # resized=False 路径：仍走 sync + cursor_upper
-        engine._bb.sync_bottom_lines.assert_called_once()
+        """check_resize 异常时被容错（已移除）。"""
+        pass
 
     def test_drain_sync_bottom_lines_exception_tolerated(self, engine):
         """sync_bottom_lines 异常时被容错，继续渲染。"""
@@ -1004,17 +975,10 @@ class TestRenderEngineEdgeCases:
         assert engine._cmd_event.wait.call_count >= 1
         engine._cmd_event.wait.assert_called_with(timeout=_RENDER_INTERVAL)
 
+    @_SKIP_RESIZE_REMOVED
     def test_drain_check_width_exception_safe(self, engine):
-        """_check_resize 异常时被静默忽略。"""
-        engine._bb.is_status_active = True
-        with patch.object(engine, "_check_resize", side_effect=OSError("终端不可用")):
-            with patch("src.chat_ui._engine._try_acquire_output_lock") as m_lock:
-                m_lock.return_value.__enter__.return_value = True
-
-                # 不抛异常
-                engine._drain_queue()
-
-            engine._bb.force_redraw.assert_called_once()
+        """_check_resize 异常时被静默忽略（已移除）。"""
+        pass
 
     def test_drain_lock_name_is_drain_queue(self, engine):
         """_try_acquire_output_lock 的 name 参数为 'drain_queue'。"""
@@ -1036,6 +1000,7 @@ class TestRenderEngineEdgeCases:
 # TestRenderEngineCheckResize — _check_resize() 单元测试
 # ══════════════════════════════════════════════════════
 
+@_SKIP_RESIZE_REMOVED
 class TestRenderEngineCheckResize:
     """RenderEngine._check_resize() 测试（迁移自 ContentRenderer._check_and_refresh_width）"""
 

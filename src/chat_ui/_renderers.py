@@ -99,15 +99,6 @@ class ContentRenderer:
         self._on_display_messages: Callable[..., None] | None = on_display_messages
         self._adapter = output_adapter
 
-    # ── 公开方法 ─────────────────────────────────────
-
-    def refresh_width(self) -> None:
-        """刷新终端宽度缓存（公开方法）。
-
-        不再需要委托 ControlList，直接委托 OutputAdapter 刷新宽度。
-        """
-        self._adapter.force_refresh_width()
-
     # ── 渲染分发 ──────────────────────────────────────
 
     def render(self, cmd: tuple) -> None:

@@ -487,18 +487,14 @@ class TestRender:
 # ContentRenderer.refresh_width() 测试
 # ═══════════════════════════════════════════════════════
 
+@pytest.mark.skip(reason="refresh_width() 已从 ContentRenderer 移除")
 class TestContentRendererRefreshWidth:
-    """ContentRenderer.refresh_width() 委托路径测试
-
-    验证 refresh_width() 委托给 OutputAdapter.force_refresh_width()，
-    不再委托 ControlList。
-    """
+    """ContentRenderer.refresh_width() 委托路径测试（已移除）"""
 
     def test_refresh_width_delegates_to_adapter(self, renderer, mock_ta):
-        """refresh_width() 调用 OutputAdapter.force_refresh_width()"""
-        renderer.refresh_width()
-        mock_ta.force_refresh_width.assert_called_once()
+        """refresh_width() 调用 OutputAdapter.force_refresh_width()（已移除）"""
+        pass
 
     def test_refresh_width_no_crash(self, renderer, mock_ta):
-        """任何时候 refresh_width() 不崩溃"""
-        renderer.refresh_width()
+        """任何时候 refresh_width() 不崩溃（已移除）"""
+        pass

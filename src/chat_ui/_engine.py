@@ -7,10 +7,8 @@ from __future__ import annotations
 
 import logging
 import queue
-import shutil
 import sys
 import threading
-import time
 from typing import TYPE_CHECKING
 
 from ._const import (
@@ -58,13 +56,6 @@ class RenderEngine:
 
         # ── 队列满连续计数（超过阈值时直接警告用户） ──
         self._consecutive_full = 0
-
-        # ── 终端大小变化检测（原在 ContentRenderer，已迁移至此） ──
-        self._last_width_check: float = 0.0
-        self._RESIZE_CHECK_INTERVAL: float = 0.2
-        self._cached_term_size: tuple[int, int] = (0, 0)
-        # ── 高度变化标记（_drain_queue 中用于交换渲染顺序） ──
-        self._height_changed: bool = False
 
     # ── 公开 API ─────────────────────────────────────────
 
@@ -183,52 +174,19 @@ class RenderEngine:
         """将光标移到内容区。调用方须持有 output_lock。"""
         self._bb.ensure_cursor_in_upper()
 
-    def _check_resize(self) -> None:
-        """检测终端大小变化（锁外调用），变化时刷新所有渲染器宽度缓存。
-
-        resize 检测字段（_last_width_check / _cached_term_size /
-        _RESIZE_CHECK_INTERVAL）已从 ContentRenderer 迁移至 RenderEngine 自身。
-        尺寸未变时零副作用。
-
-        终端高度变化时额外入队 BOTTOM_BAR_REFRESH，确保 force_redraw()
-        能够在正确的 _last_height 基准下重绘底部栏，修复终端行数缩小后
-        输入内容覆盖上屏一行的 bug。
-        """
-        now = time.monotonic()
-        if now - self._last_width_check < self._RESIZE_CHECK_INTERVAL:
-            return
-        self._last_width_check = now
-        try:
-            current = shutil.get_terminal_size()
-            new_size = (current.columns, current.lines)
-        except OSError:
-            return
-        if new_size != self._cached_term_size:
-            old_lines = self._cached_term_size[1] if self._cached_term_size[1] > 0 else None
-            self._cached_term_size = new_size
-            self._renderer.refresh_width()
-            # ★ 终端高度变化时入队 BOTTOM_BAR_REFRESH，强制底部栏重绘
-            if old_lines is not None and new_size[1] != old_lines:
-                self.push_cmd((RenderCommand.BOTTOM_BAR_REFRESH,))
-                # ★ 标记高度变化，供 _drain_queue 在锁内交换渲染顺序
-                self._height_changed = True
-
     # ── 内部 — 三阶段流水线 ──────────────────────────
 
-    def _phase_render(self, commands: list[tuple], resized: bool) -> None:
+    def _phase_render(self, commands: list[tuple]) -> None:
         """阶段 1：批量出队 + 上屏渲染（在 output_lock 内调用）。
 
         参数:
             commands: 待渲染的命令列表
-            resized: 是否发生了终端 resize；True 时跳过
-                sync_bottom_lines 和 ensure_cursor_upper（已在 check_resize 中处理）。
         """
-        if not resized:
-            try:
-                self._bb.sync_bottom_lines()
-            except Exception:
-                _logger.debug("drain_queue: sync_bottom_lines 异常", exc_info=True)
-            self.ensure_cursor_upper()
+        try:
+            self._bb.sync_bottom_lines()
+        except Exception:
+            _logger.debug("drain_queue: sync_bottom_lines 异常", exc_info=True)
+        self.ensure_cursor_upper()
         for cmd in commands:
             try:
                 self._renderer.render(cmd)
@@ -293,46 +251,16 @@ class RenderEngine:
             self._drain_queue_safe()
 
     def _drain_queue(self) -> None:
-        """消费所有待处理渲染命令（入口方法，路由到三阶段流水线）。
+        """消费所有待处理渲染命令。
 
-        流水线：
-          0. 终端大小变化检测（锁外）— 检测 resize 并刷新渲染器宽度缓存
-          1. resize 处理 + 上屏渲染（锁内）— 批量出队 + 渲染命令 → _phase_render()
-          2. 底部栏重绘 + 光标定位（锁内）— force_redraw + 光标移回输入行 → _phase_redraw_bottom()
-
-        步骤 0 在锁外、步骤 1-2 共用同一个 output_lock，
-        防止上屏渲染 / 底部栏重绘之间的终端 I/O 交错。
-        output_lock 为 RLock（可重入）。
-
-        ★ 高度变化修复：
-          终端扩大后，若先展开 DECSTBM + 光标移到新 scroll_end 再渲染内容，
-          \n 会导致滚动区域上滚、顶部丢失。修复：当高度变化时先 bottom
-          redraw（建立正确 DECSTBM），再渲染内容于旧 scroll_end 处。
+        流水线（在 output_lock 保护下）：
+          1. 批量出队渲染命令
+          2. 上屏渲染 → _phase_render()
+          3. 底部栏重绘 + 光标定位 → _phase_redraw_bottom()
         """
-        # ★ 终端大小变化检测（锁外）— 避免 shutil.get_terminal_size()
-        #   系统调用在 output_lock 内执行，减少锁持有时间。
-        #   异常静默忽略：检测失败时降级依赖 OutputAdapter 的 5 秒 TTL。
-        try:
-            self._check_resize()
-        except Exception:
-            _logger.debug(
-                "drain_queue: _check_resize 异常，降级跳过",
-                exc_info=True,
-            )
-
-        # ★ 两个阶段共用同一个 output_lock（1s 超时）
         with _try_acquire_output_lock(name="drain_queue", timeout=1.0) as locked:
             if not locked:
                 return
-
-            # ★ 处理待处理的终端 resize（SIGWINCH 标记），在渲染前更新终端状态
-            resized = False
-            try:
-                resized = self._bb.check_resize()
-            except Exception:
-                _logger.debug(
-                    "drain_queue: check_resize 异常", exc_info=True,
-                )
 
             # ★ 批量出队
             commands: list[tuple] = []
@@ -345,48 +273,10 @@ class RenderEngine:
 
             has_content = bool(commands)
 
-            # ★ 检测高度变化 + 队列中有 BOTTOM_BAR_REFRESH
-            #   此时交换渲染顺序：先 redraw 底部栏建立正确 DECSTBM，
-            #   再将光标定位到旧内容末尾，最后渲染内容命令。
-            has_bb_refresh = any(
-                cmd[0] == RenderCommand.BOTTOM_BAR_REFRESH for cmd in commands
-            )
+            if commands:
+                self._phase_render(commands)
 
-            if self._height_changed and has_bb_refresh:
-                self._height_changed = False
-                # 1) 保存旧 scroll_end（内容末尾位置）
-                old_scroll_end = self._bb.get_scroll_end()
-                # 2) force_redraw：重绘底部栏 + 设置新 DECSTBM + 光标定位到新 scroll_end
-                try:
-                    self._bb.force_redraw()
-                except Exception:
-                    _logger.debug(
-                        "drain_queue: force_redraw 异常", exc_info=True,
-                    )
-                # 3) 光标回到旧内容末尾，使新内容在展开区域中自然填充，避免 \n 导致上滚
-                if old_scroll_end > 0:
-                    try:
-                        from ..ui._blessed import get_terminal as _gt
-                        sys.__stdout__.write(_gt().move_xy(0, old_scroll_end - 1))
-                    except Exception:
-                        sys.__stdout__.write(f"\033[{old_scroll_end};1H")
-                # 4) 渲染内容命令（跳过 sync_bottom_lines / ensure_cursor_upper）
-                if commands:
-                    self._phase_render(commands, resized=True)
-                # 5) 光标定位到输入行
-                try:
-                    self.position_cursor()
-                except Exception:
-                    _logger.debug(
-                        "drain_queue: position_cursor 异常", exc_info=True,
-                    )
-                sys.__stdout__.flush()
-            else:
-                self._height_changed = False
-                if commands:
-                    self._phase_render(commands, resized)
-
-                self._phase_redraw_bottom(has_content)
+            self._phase_redraw_bottom(has_content)
 
     def _drain_queue_safe(self) -> None:
         """兜底清空命令队列（无锁、不抛异常）。

@@ -365,6 +365,7 @@ class TestForceRedrawNoResizeCheck(unittest.TestCase):
         mock_cr.assert_not_called()
 
 
+@unittest.skip("resize 功能已从 chat_ui 移除")
 class TestBug9PositionCursorUnderLock(unittest.TestCase):
     """Bug 9 修复：Branch B 中 _position_cursor 应在锁内执行。
 
@@ -414,6 +415,7 @@ class TestBug9PositionCursorUnderLock(unittest.TestCase):
                          "position_cursor 应在 force_redraw 之后调用")
 
 
+@unittest.skip("resize 功能已从 chat_ui 移除")
 class TestResizeDrainSkip(unittest.TestCase):
     """Bug 修复：无流式输出时终端 resize 被 _drain_queue() 快速空闲跳过阻塞。"""
 
@@ -620,6 +622,7 @@ class TestHeightIncreaseGhost(unittest.TestCase):
                       "终端缩小时应走全屏滚动路径而非变大清除路径")
 
 
+@unittest.skip("resize 功能已从 chat_ui 移除")
 class TestResizeCursorOverride(unittest.TestCase):
     """修复：resize 后 Stage 1 不应覆盖 Fix A 光标预定位。
 
