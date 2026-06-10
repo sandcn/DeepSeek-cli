@@ -298,8 +298,10 @@ class ParallelExecutor:
         # ANSI SGR 序列（颜色/样式）无损，保留完整 markdown 渲染效果。
         output = buf.getvalue()
         if output:
-            for line in output.split("\n"):
+            chat_ui.write_line("")  # 开头空行
+            for line in output.rstrip("\n").split("\n"):
                 chat_ui.write_line(line)
+            chat_ui.write_line("")  # 结尾空行
 
     def _do_terminal_output(self, results: List[Dict[str, Any]]):
         """在线程池中执行所有终端输出操作，避免同步 IO 阻塞事件循环。

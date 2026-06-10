@@ -126,8 +126,10 @@ class SubAgentSpawner:
 
             output = buf.getvalue()
             if output:
-                for line in output.split("\n"):
+                chat_ui.write_line("")  # 开头空行
+                for line in output.rstrip("\n").split("\n"):
                     chat_ui.write_line(line)
+                chat_ui.write_line("")  # 结尾空行
         else:
             # ChatUI 未激活 → 直接写 __stdout__（原逻辑）
             import sys as _sys
