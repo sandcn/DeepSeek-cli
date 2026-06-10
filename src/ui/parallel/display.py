@@ -333,9 +333,12 @@ class ParallelDisplay(BaseDisplay):
         except Exception:
             clear_eol = "\033[K"
 
-        # ★ 无需插入空行：摘要行（彩色图标+进度条）本身具有醒目视觉风格，
-        #    足以在面板与上屏内容之间形成清晰边界。额外空行会使 total 膨胀 1，
-        #    start_row 上移一行，导致面板覆盖上屏内容的最后一行。
+        # ★ 面板与上屏内容之间空一行，确保视觉上清晰分离。
+        #    start_row = scroll_end - total + 2 在面板顶部留出 1 行空白，
+        #    最后一行溢出到 scroll_end+1（底部栏分隔线行），
+        #    但 render 线程的 _phase_redraw_bottom 会在同一周期重绘底部栏覆盖此行。
+        #    注意：不要用插入空行到 lines 的方式（会使 total 膨胀 1），
+        #    否则 start_row 会上移导致覆盖上屏内容——直接在 start_row 公式加 1。
         total = len(lines)
 
         # ── 主路径：使用绝对行号定位（scroll_end 已知） ──
@@ -353,8 +356,8 @@ class ParallelDisplay(BaseDisplay):
                 # 定位到 scroll_end 行首，执行 SU 向上滚动 delta 行
                 buf += f"\033[{self._scroll_end};1H\033[{delta}S"
 
-            # 新面板起始行（紧贴滚动区域底部）
-            start_row = self._scroll_end - total + 1
+            # 新面板起始行（与上屏内容之间空一行）
+            start_row = self._scroll_end - total + 2
 
             # 清除面板区域 — 从新旧面板上边界中较上的那个开始清除
             # 防止面板变大时（start_row < old_start）新行覆盖原有内容
@@ -363,7 +366,7 @@ class ParallelDisplay(BaseDisplay):
             #    （start_row ~ scroll_end），避免终端 resize 扩大时
             #    激进清除（原 20 行）破坏上屏聊天内容。
             if self._last_lines > 0:
-                old_start = self._scroll_end - self._last_lines + 1
+                old_start = self._scroll_end - self._last_lines + 2
                 if old_start < clear_start:  # 面板缩小，从旧边界开始清除尾部残留
                     clear_start = old_start
             if clear_start < 1:
@@ -439,11 +442,11 @@ class ParallelDisplay(BaseDisplay):
             except Exception:
                 clear_eol = "\033[K"
 
-            start = self._scroll_end - self._last_lines + 1
+            start = self._scroll_end - self._last_lines + 2
             if start < 1:
                 start = 1
             code = ""
-            for r in range(start, self._scroll_end + 1):
+            for r in range(start, self._scroll_end + 2):
                 code += f"\033[{r};1H{clear_eol}"
             self._adapter.write_raw(code)
             self._last_lines = 0
