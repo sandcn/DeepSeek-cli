@@ -333,11 +333,9 @@ class ParallelDisplay(BaseDisplay):
         except Exception:
             clear_eol = "\033[K"
 
-        # ── 面板顶部插入空行，与上屏内容之间空出一行间距 ──
-        # 空间不足时（内容已填满滚动区域）跳过，避免触发截断丢失空行
-        if len(lines) < self._scroll_end or self._scroll_end <= 0:
-            lines = [""] + lines
-
+        # ★ 无需插入空行：摘要行（彩色图标+进度条）本身具有醒目视觉风格，
+        #    足以在面板与上屏内容之间形成清晰边界。额外空行会使 total 膨胀 1，
+        #    start_row 上移一行，导致面板覆盖上屏内容的最后一行。
         total = len(lines)
 
         # ── 主路径：使用绝对行号定位（scroll_end 已知） ──
