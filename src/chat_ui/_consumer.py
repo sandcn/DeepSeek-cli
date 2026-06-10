@@ -216,19 +216,8 @@ class ChatUIConsumer:
         """公开刷新接口 — 供外部程序/timer 定时调用以刷新 TUI。
 
         安全地从任何线程调用。
-        执行以下刷新操作：
-          1. SubAgentPanelControl 面板刷新 → 通过入队 SUBAGENT_REFRESH 命令，
-             由 render 线程统一处理，消除多线程数据竞争
-          2. 底部栏重绘由 render 线程 _phase_redraw_bottom() 10Hz 轮询处理
+        底部栏重绘由 render 线程 _phase_redraw_bottom() 10Hz 轮询处理。
         """
-
-        # ★ 1. SubAgentPanelControl 面板刷新 — 统一走 SUBAGENT_REFRESH 命令队列
-        #    替代直接调用 panel.render_frame() 路径，消除多线程数据竞争。
-        #    render 线程的 _do_subagent_refresh() 会在 output_lock 保护下执行渲染。
-        self._engine.push_cmd((RenderCommand.SUBAGENT_REFRESH, False))
-
-        # ★ 2. 底部栏重绘由 render 线程 _phase_redraw_bottom() 10Hz 轮询处理
-        #    无需在此处直接 force_redraw
 
     def request_bottom_redraw(self) -> None:
         """请求 render 线程重绘底部栏（线程安全）。
@@ -291,8 +280,7 @@ class ChatUIConsumer:
 
     @property
     def output_adapter(self) -> "OutputAdapter":
-        """OutputAdapter 对象 — 供外部模块（如 ParallelDisplay）获取
-        统一的终端输出适配器，用于创建 SubAgentPanelControl。
+        """OutputAdapter 对象 — 供外部模块获取统一的终端输出适配器。
 
         由 ChatUIConsumer 构造时创建，生命周期与 ChatUIConsumer 一致。
         """

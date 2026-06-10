@@ -10,18 +10,12 @@ from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from ._consumer import ChatUIConsumer
-    from ._controls import SubAgentPanelControl
 
 # ── 活跃实例引用（供交互式工具暂停/恢复，引用计数防竞态） ──
 # 多实例场景下，start() 递增计数并设置引用，stop() 递减计数，
 # 仅归零时清空引用。防止 A.stop() 误清 B 的活跃引用。
 _active_consumer: "ChatUIConsumer | None" = None
 _active_consumer_refcount: int = 0
-
-# ── 活跃 SubAgentPanelControl 引用（由 ParallelDisplay.start/stop 管理） ──
-# 供 ChatUIConsumer._drain_queue 在每次渲染循环中驱动帧刷新，
-# 取代 ParallelDisplay 原有的独立定时器机制。
-_active_subagent_panel: "SubAgentPanelControl | None" = None
 
 def get_active_chat_ui() -> "ChatUIConsumer | None":
     """获取当前活跃的 ChatUIConsumer 实例，供交互式终端工具使用。

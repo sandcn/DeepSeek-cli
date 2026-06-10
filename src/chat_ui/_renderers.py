@@ -1,20 +1,21 @@
 """chat_ui 渲染器模块 — 14 种渲染命令的执行逻辑。
 
 Layer 2 — 依赖 _const（Style常量 + RenderCommand + _ReasoningState + _MAIN_LABEL）
-          + _render_state（_RenderState）+ _controls（控件体系）。
+          + _render_state（_RenderState）。
+不再使用 Control 控件体系，每个 _do_* 方法直接通过 OutputAdapter 或 sys.__stdout__ 输出。
 """
 
 from __future__ import annotations
 
-import sys
 import logging
+import sys
 from typing import TYPE_CHECKING, Callable
 
 _logger = logging.getLogger(__name__)
 
 from ._const import (
+    _CLEAR_PARSE_LINE,
     _MAX_ERROR_LENGTH,
-    _ReasoningState,
     _STYLE_BOLD,
     _STYLE_DIM,
     _STYLE_ERROR,
@@ -22,19 +23,11 @@ from ._const import (
     _STYLE_SUCCESS,
     _STYLE_WARN,
     _THINKING_HEADER,
+    _ReasoningState,
     RenderCommand,
 )
-
 from ._utils import _cmd_name, _truncate_msg
-from ._controls import (
-    ControlList,
-    MarkdownControl,
-    ParseInfoControl,
-    SubAgentPanelControl,
-    TextControl,
-    ToolOutputControl,
-    ToolSummaryControl,
-)
+from rich.text import Text
 
 if TYPE_CHECKING:
     from ..api.renderer.output import OutputAdapter
@@ -54,21 +47,20 @@ def _build_render_dispatch() -> dict[int, tuple[str, tuple[int, ...]]]:
 
     R = RenderCommand
     dispatch = {
-        R.REASONING:      ("_do_reasoning",       (1,)),
-        R.CONTENT:        ("_do_content",         (1,)),
-        R.PHASE_DONE:     ("_do_phase_done",      (1,)),
-        R.TOOL_OUTPUT:    ("_do_tool_output",     (1,)),
-        R.TOOL_SUMMARY:   ("_do_tool_summary",    (1, 2)),
-        R.USER_MSG:       ("_do_user_message",    (1,)),
-        R.PARSE_INFO:     ("_do_parse_info",      (1, 2, 3)),
-        R.NOTIFICATION:   ("_do_notification",    (1,)),
-        R.WRITE_LINE:     ("_do_write_line",      (1,)),
-        R.DISPLAY_MSGS:   ("_do_display_messages", (1, 2)),
-        R.TOOL_COUNT_INC: ("_do_tool_count_inc",  ()),
-        R.TOOL_COUNT_DEC: ("_do_tool_count_dec",  ()),
-        R.TOOL_FAIL_INC:  ("_do_tool_fail_inc",   ()),
-        R.ERROR:          ("_do_error",           (1,)),
-        R.SUBAGENT_REFRESH: ("_do_subagent_refresh", (1,)),
+        R.REASONING:       ("_do_reasoning",       (1,)),
+        R.CONTENT:         ("_do_content",         (1,)),
+        R.PHASE_DONE:      ("_do_phase_done",      (1,)),
+        R.TOOL_OUTPUT:     ("_do_tool_output",     (1,)),
+        R.TOOL_SUMMARY:    ("_do_tool_summary",    (1, 2)),
+        R.USER_MSG:        ("_do_user_message",    (1,)),
+        R.PARSE_INFO:      ("_do_parse_info",      (1, 2, 3)),
+        R.NOTIFICATION:    ("_do_notification",    (1,)),
+        R.WRITE_LINE:      ("_do_write_line",      (1,)),
+        R.DISPLAY_MSGS:    ("_do_display_messages", (1, 2)),
+        R.TOOL_COUNT_INC:  ("_do_tool_count_inc",  ()),
+        R.TOOL_COUNT_DEC:  ("_do_tool_count_dec",  ()),
+        R.TOOL_FAIL_INC:   ("_do_tool_fail_inc",   ()),
+        R.ERROR:           ("_do_error",           (1,)),
         R.BOTTOM_BAR_REFRESH: ("_do_bottom_bar_refresh", ()),
     }
 
@@ -82,22 +74,17 @@ def _build_render_dispatch() -> dict[int, tuple[str, tuple[int, ...]]]:
 
 
 # ── 模块级渲染命令分发表（类定义时即构建，O(1) 查找） ──
-# 替换原 ContentRenderer._ensure_dispatch() 惰性初始化模式，
-# 消除每帧 render() 调用的 _RENDER_DISPATCH is None 检查。
 _RENDER_DISPATCH: dict[int, tuple[str, tuple[int, ...]]] = _build_render_dispatch()
 
 
 class ContentRenderer:
-    """内容渲染器 — 执行 RenderCommand 并输出到终端。
+    """内容渲染器 — 执行 RenderCommand 并直接输出到终端。
 
     每个 _do_* 方法对应一种渲染命令，由 _render() 通过模块级 O(1)
     字典分发调用。所有方法在 render 线程中串行执行，无需额外同步。
 
-    依赖：
-      - _rs (_RenderState)：渲染器生命周期（推理/内容/工具适配器）
-      - _bottom_bar：底部栏状态更新（工具计数/模型名）
-
-    ScreenHistoryManager 已屏蔽为 No-op 且不在此模块中创建。
+    不再使用 Control 控件体系，每个方法直接通过 OutputAdapter
+    或 sys.__stdout__ 输出终端内容。
     """
 
     def __init__(
@@ -109,144 +96,31 @@ class ContentRenderer:
     ):
         self._rs = rs
         self._bb = bottom_bar
-        # ── display_messages 回调（由 ChatUIConsumer 注入） ──
-        # 保持为实例属性，不受 ScreenHistoryManager 封装
         self._on_display_messages: Callable[..., None] | None = on_display_messages
-
-        # ── OutputAdapter（由 ChatUIConsumer 构造注入） ──
-        # 替代原来 ContentRenderer 内部 self._rs._tool_adapter 的注入模式。
-        # ContentRenderer 不再负责创建 Console 和 OutputAdapter，
-        # 关注点分离更清晰：ContentRenderer 只消费 adapter，不负责创建。
         self._adapter = output_adapter
-
-        # ── 注册 MarkdownControl 工厂回调到 _RenderState ──
-        # 替代原来 _RenderState._create_markdown_control() 静态方法，
-        # 使 MarkdownControl 创建逻辑统一由 ContentRenderer 管理。
-        self._rs.control_factory = self._create_markdown_control
-
-        # ── ControlList 控件列表管理（通过工厂方法创建） ──
-        # 通过回调注册解耦 _RenderState 对 ControlList 的直接依赖
-        self._control_list = self._create_controls()
-        self._rs.on_control_created = self._control_list.add
-        self._rs.on_control_removed = self._control_list.remove
-
-    # ── 控件工厂方法 ────────────────────────────────────
-
-    def _create_markdown_control(self, style: str = "") -> "MarkdownControl":
-        """创建 MarkdownControl 实例。
-
-        作为 control_factory 注入到 _RenderState，
-        替代原来 _RenderState._create_markdown_control() 静态方法，
-        使 MarkdownControl 创建逻辑统一由 ContentRenderer 管理。
-        """
-        return MarkdownControl(
-            style=style,
-            typing_speed=1000,
-            show_indicator=False,
-        )
 
     # ── 公开方法 ─────────────────────────────────────
 
     def refresh_width(self) -> None:
         """刷新终端宽度缓存（公开方法）。
 
-        委托 ControlList.refresh_width_all() 遍历所有活跃控件刷新宽度。
-        推理/内容 MarkdownControl 已通过 on_control_created 回调加入
-        ControlList，无需额外遍历。统一通过 ControlList 管理。
+        不再需要委托 ControlList，直接委托 OutputAdapter 刷新宽度。
         """
-        self._control_list.refresh_width_all()
-
-    # ── 控件创建配置（由 _create_controls() 循环消费） ──
-    # 每个条目标识一个控件实例，包含属性名、控件类和构造参数。
-    # adapter 由 _create_controls() 在运行时注入，避免在类属性中硬编码。
-    # 不同控件类的构造参数签名可差异——kwargs 直接解包传入构造函数。
-    _CONTROL_CONFIG: list[dict] = [
-        {"attr": "_user_msg_ctrl",      "cls": TextControl,          "kwargs": {"prefix": "\n  > ", "style": _STYLE_BOLD, "level": 0}},
-        {"attr": "_notif_ctrl",         "cls": TextControl,          "kwargs": {"prefix": "\n  · ", "style": _STYLE_SUCCESS, "level": 0}},
-        {"attr": "_error_ctrl",         "cls": TextControl,          "kwargs": {"prefix": "\n  ! ", "style": _STYLE_ERROR, "level": 0}},
-        {"attr": "_line_ctrl",          "cls": TextControl,          "kwargs": {"level": 0}},
-        {"attr": "_tool_output_ctrl",   "cls": ToolOutputControl,    "kwargs": {"dim_style": _STYLE_DIM, "level": 0}},
-        {"attr": "_tool_summary_ctrl",  "cls": ToolSummaryControl,   "kwargs": {"style_success": _STYLE_SUCCESS, "style_fail": _STYLE_FAIL, "style_warn": _STYLE_WARN, "style_dim": _STYLE_DIM, "level": 0}},
-        {"attr": "_parse_info_ctrl",    "cls": ParseInfoControl,     "kwargs": {"level": 0}},
-    ]
-
-    def _create_controls(self) -> ControlList:
-        """创建并返回所有 Control 控件实例（工厂方法，配置驱动）。
-
-        遍历 _CONTROL_CONFIG 配置列表，自动注入 adapter 到各控件，
-        通过 setattr 注册到 self，并加入 ControlList。
-
-        将控件创建与 __init__ 分离，使构造函数聚焦于依赖注入。
-        控件创建逻辑可通过子类重写此方法或修改 _CONTROL_CONFIG 扩展。
-        返回的 ControlList 包含所有已创建的控件。
-        """
-        adapter = self._adapter  # 由 ChatUIConsumer 构造注入
-        control_list = ControlList()
-
-        for entry in self._CONTROL_CONFIG:
-            attr_name = entry["attr"]
-            cls = entry["cls"]
-            kwargs = dict(entry["kwargs"])
-            # 注入 output_adapter（所有控件构造函数的第一参数均为 output_adapter）
-            kwargs["output_adapter"] = adapter
-            instance = cls(**kwargs)
-            setattr(self, attr_name, instance)
-            control_list.add(instance)
-
-        return control_list
-
-    # ── SubAgent 刷新相关渲染命令集合 ────────────────
-    # 这些命令处理完后自动触发 SubAgentPanelControl 面板刷新。
-    # 提升为类常量，避免 render() 方法中每帧重复创建 frozenset。
-    _SUBAGENT_RENDER_COMMANDS: frozenset[int] = frozenset({
-        RenderCommand.TOOL_OUTPUT,
-        RenderCommand.TOOL_COUNT_INC,
-        RenderCommand.TOOL_COUNT_DEC,
-        RenderCommand.TOOL_FAIL_INC,
-        RenderCommand.TOOL_SUMMARY,
-        RenderCommand.PARSE_INFO,
-    })
-
-    # ── 工具输出控件重建工厂方法 ──────────────────────
-
-    def _recreate_tool_output_control(self) -> None:
-        """重建 _tool_output_ctrl（防御异常路径导致的控件意外关闭）。
-
-        在 _do_tool_output() 检测到控件已关闭时调用。
-        从 ControlList 移除旧引用，创建新控件并重新注册。
-        提取为独立方法而非内联重建，与 _create_controls() 工厂方法风格一致。
-        """
-        self._control_list.remove(self._tool_output_ctrl)
-        self._tool_output_ctrl = ToolOutputControl(
-            self._adapter, dim_style=_STYLE_DIM, level=0,
-        )
-        self._control_list.add(self._tool_output_ctrl)
+        self._adapter.force_refresh_width()
 
     # ── 渲染分发 ──────────────────────────────────────
 
     def render(self, cmd: tuple) -> None:
-        """根据命令类型分发到对应渲染方法（模块级 O(1) 字典查找）。
-
-        SubAgent 相关命令（工具输出/计数变更等）渲染完毕后，
-        主动刷新 ParallelDisplay 面板以展示最新子代理状态。
-        强制刷新（force=True）跳过版本号检查，确保面板
-        在处理完渲染命令后始终保持最新。
-        """
+        """根据命令类型分发到对应渲染方法（模块级 O(1) 字典查找）。"""
         cid = cmd[0]
-
         entry = _RENDER_DISPATCH.get(cid)
         if entry is None:
             _logger.error("未知渲染命令: %s", _cmd_name(cid))
             return
-
         method_name, arg_indices = entry
         method = getattr(self, method_name)
         args = tuple(cmd[i] for i in arg_indices)
         method(*args)
-
-        # ★ SubAgent 相关命令处理完后，强制刷新 SubAgentPanelControl 面板
-        if cid in self._SUBAGENT_RENDER_COMMANDS:
-            self._do_subagent_refresh(True)
 
     # ── 内容渲染 ──────────────────────────────────────
 
@@ -283,98 +157,152 @@ class ContentRenderer:
     def _do_tool_fail_inc(self) -> None:
         self._bb.increment_tool_fail()
 
-    # ── 工具输出：通过 ToolOutputControl 渲染 ──
+    # ── 工具输出（直接通过 OutputAdapter 写入，不再使用 ToolOutputControl） ──
 
     def _do_tool_output(self, text: str) -> None:
-        """渲染工具执行输出（通过 ToolOutputControl 控件）。
+        """渲染工具执行输出 — 直接格式化后通过 OutputAdapter 写入。
 
-        超长截断和 \\r 处理由 ToolOutputControl 封装。
-        控件关闭后自动重建——防御异常路径导致的控件意外关闭。
+        处理 \r 覆盖输出和 ANSI 转义序列。
+        超长文本截断（>10000 字符）。
         """
-        if self._tool_output_ctrl.is_closed:
-            self._recreate_tool_output_control()
-        self._tool_output_ctrl.write(text)
+        MAX_OUTPUT_LEN = 10000
+        if len(text) > MAX_OUTPUT_LEN:
+            text = text[:MAX_OUTPUT_LEN] + "...(truncated)"
 
-    # ── 工具汇总：通过 ToolSummaryControl 渲染 ──
+        has_carriage = '\r' in text
 
-    def _do_tool_summary(self, successful: tuple, failed: tuple) -> None:
-        """渲染工具执行汇总（通过 ToolSummaryControl 控件，一次性渲染后关闭）。
-
-        已关闭时重建新控件（支持同一轮次多次工具汇总调用），
-        关闭后从 ControlList 移除。
-        """
-        if self._tool_summary_ctrl.is_closed:
-            self._recreate_tool_summary_control()
-        self._tool_summary_ctrl.summarize(successful, failed)
-        self._tool_summary_ctrl.close()
-        self._control_list.remove(self._tool_summary_ctrl)
-
-    def _recreate_tool_summary_control(self) -> None:
-        """重建 _tool_summary_ctrl（二次调用时替代已关闭的旧控件）。
-
-        类似 _recreate_tool_output_control()，检测到已关闭时重建。
-        从 ControlList 移除旧引用，创建新控件并重新注册。
-        """
-        self._control_list.remove(self._tool_summary_ctrl)
-        self._tool_summary_ctrl = ToolSummaryControl(
-            self._adapter,
-            style_success=_STYLE_SUCCESS,
-            style_fail=_STYLE_FAIL,
-            style_warn=_STYLE_WARN,
-            style_dim=_STYLE_DIM,
-            level=0,
-        )
-        self._control_list.add(self._tool_summary_ctrl)
-
-    # ── 解析进度：通过 ParseInfoControl 渲染 ──
-
-    def _do_parse_info(self, tool_names: str, tokens: int | float, elapsed: float) -> None:
-        """渲染解析进度（通过 ParseInfoControl 控件，不再使用 \\r\\033[K 进度条）。"""
-        self._parse_info_ctrl.update(tool_names, tokens, elapsed)
-
-    # ── SubAgent 面板刷新 ────────────────────────────
-
-    def _do_subagent_refresh(self, force: bool = False) -> None:
-        """刷新 SubAgent 面板帧（通过 SubAgentPanelControl）。
-
-        从 _state._active_subagent_panel 获取活跃面板控件并触发帧渲染。
-        面板渲染通过 OutputAdapter.write_raw() 走 output_lock 路径，
-        与 ChatUI 其他文本输出串行化。
-
-        Args:
-            force: 跳过版本号检查强制渲染（SubAgent 命令后使用）
-        """
-        try:
-            from . import _state as _chat_ui_state
-            panel = _chat_ui_state._active_subagent_panel
-            if panel is not None:
-                panel.render_frame(force=force)
-        except Exception:
-            _logger.debug(
-                "_do_subagent_refresh: 面板刷新异常",
-                exc_info=True,
+        if has_carriage:
+            # \r 覆盖输出路径
+            if '\033[' in text:
+                # 含 ANSI：移除 \r 后尝试 ANSI 解析
+                clean_text = text.replace('\r', '')
+                try:
+                    self._adapter.write(Text.from_ansi(clean_text))
+                except Exception:
+                    self._adapter.write_raw(clean_text)
+            else:
+                # 纯 \r 文本：取最后一段
+                self._adapter.write_raw(text.split('\r')[-1])
+            if not text.endswith('\r'):
+                self._adapter.write_raw('\n')
+        else:
+            # 标准输出（3 空格缩进 + dim 样式）
+            self._adapter.write(
+                Text.assemble(("   ", _STYLE_DIM), (text, _STYLE_DIM))
             )
 
-    # ── 底部栏刷新 ──────────────────────────────────
+    # ── 工具汇总（直接通过 OutputAdapter 写入，不再使用 ToolSummaryControl） ──
 
-    def _do_bottom_bar_refresh(self) -> None:
-        """占位命令处理 — 实际重绘由 _phase_redraw_bottom() 完成。
+    def _do_tool_summary(self, successful: tuple, failed: tuple) -> None:
+        """渲染工具执行汇总 — 直接格式化输出。
 
-        BOTTOM_BAR_REFRESH 命令的作用是确保命令队列非空，
-        使同一 _drain_queue() 的后续 _phase_redraw_bottom(True)
-        触发 force_redraw()。此方法本身不再直接调用 force_redraw，
-        避免同一流水线中重复重绘。
+        Args:
+            successful: 成功工具列表
+            failed: 失败工具列表（(name, error) 元组）
         """
+        successful = successful or ()
+        failed = failed or ()
+        total = len(successful) + len(failed)
+        if failed:
+            self._render_failure_summary(failed, total)
+        elif successful:
+            self._adapter.write(Text.assemble(
+                ("  · ", _STYLE_SUCCESS),
+                (f"{len(successful)}工具完成", _STYLE_SUCCESS),
+            ))
 
-    # ── 样式化行渲染 — 通过 TextControl 实例委托 ──────
+    def _render_failure_summary(self, failed: tuple, total: int) -> None:
+        """渲染失败工具汇总（着色图标 + 彩色计数 + 详情列表）。"""
+        safe_failed = []
+        for item in failed:
+            if isinstance(item, (list, tuple)) and len(item) >= 2:
+                error = str(item[1]) if item[1] is not None else ""
+                if len(item) > 2:
+                    extras = ", ".join(str(x) for x in item[2:])
+                    if error:
+                        error += f" [{extras}]"
+                    else:
+                        error = f"[{extras}]"
+                safe_failed.append((str(item[0]), error))
+            else:
+                safe_failed.append((str(item), ""))
+        failed = tuple(safe_failed)
+
+        failed_names = ", ".join(n for n, _ in failed)
+        if len(failed) == total:
+            self._adapter.write(Text.assemble(
+                ("  ! ", _STYLE_FAIL),
+                (f"全部失败: {failed_names}", _STYLE_FAIL),
+            ))
+        else:
+            self._adapter.write(Text.assemble(
+                ("  ! ", _STYLE_WARN),
+                (f"{len(failed)}/{total} 失败: {failed_names}", _STYLE_WARN),
+            ))
+
+        for name, error in failed[:3]:
+            short = ""
+            if error:
+                short = error.split("\n")[0].strip()
+                if short:
+                    # 按视觉宽度截断
+                    from wcwidth import wcswidth
+                    max_width = 80
+                    s = short
+                    w = 0
+                    cut = len(s)
+                    for i, ch in enumerate(s):
+                        cw = wcswidth(ch) if wcswidth(ch) >= 0 else 1
+                        if w + cw > max_width - 3:
+                            cut = i
+                            break
+                        w += cw
+                    if cut < len(s):
+                        short = s[:cut] + "..."
+            self._adapter.write(Text.assemble(
+                (f"    {name}", _STYLE_DIM),
+                (f"  {short}", _STYLE_DIM) if short else ("", _STYLE_DIM),
+            ))
+        if len(failed) > 3:
+            self._adapter.write(Text.assemble(
+                (f"    ... 及其他 {len(failed) - 3} 个", _STYLE_DIM),
+            ))
+
+    # ── 解析进度（直接通过 sys.__stdout__ 写入，不再使用 ParseInfoControl） ──
+
+    def _do_parse_info(
+        self, tool_names: str, tokens: int | float, elapsed: float,
+    ) -> None:
+        """渲染解析进度 — 同行原地更新（\\r\\033[K 覆写，不产生新行）。"""
+        if tokens == _CLEAR_PARSE_LINE:
+            sys.__stdout__.write("\n")
+            sys.__stdout__.flush()
+            return
+        if isinstance(tokens, (int, float)):
+            import math
+            if math.isfinite(tokens):
+                tokens_str = f"{tokens}t"
+            else:
+                tokens_str = "?"
+        else:
+            tokens_str = str(tokens)
+        output = f"\r\033[K  ~ {tool_names} {tokens_str} {elapsed:.2f}s"
+        sys.__stdout__.write(output)
+        sys.__stdout__.flush()
+
+    # ── 样式化行渲染 — 直接通过 OutputAdapter ──────
 
     def _do_user_message(self, text: str) -> None:
         """渲染用户消息（> 前缀 + 加粗）。"""
-        self._user_msg_ctrl.write(text)
+        self._adapter.write(
+            Text.assemble(("\n  > ", _STYLE_BOLD), (text, _STYLE_BOLD))
+        )
 
     def _do_notification(self, text: str) -> None:
-        """渲染系统通知（· 前缀）。"""
-        self._notif_ctrl.write(text)
+        """渲染系统通知（· 前缀 + 成功样式）。"""
+        self._adapter.write(
+            Text.assemble(("\n  · ", _STYLE_SUCCESS), (text, _STYLE_SUCCESS))
+        )
 
     def _do_error(self, message: str) -> None:
         """渲染系统错误信息（红色 ! 样式）。
@@ -382,24 +310,30 @@ class ContentRenderer:
         超长消息（> 200 字符）自动截断并追加 ... 标记。
         """
         message = _truncate_msg(message, _MAX_ERROR_LENGTH)
-        self._error_ctrl.write(message)
+        self._adapter.write(
+            Text.assemble(("\n  ! ", _STYLE_ERROR), (message, _STYLE_ERROR))
+        )
 
     def _do_write_line(self, text: str) -> None:
-        """渲染通用文本行，通过 TextControl 写入。"""
-        self._write_line_via_ctrl(text)
+        """渲染通用文本行。
 
-    def _write_line_via_ctrl(self, text: str) -> None:
-        """通过 _line_ctrl 写入文本行：ANSI 文本走 write_ansi，否则走 write_raw。"""
+        含 ANSI 转义序列时走 Text.from_ansi 解析，
+        否则直接写入并追加换行。
+        """
         if '\033[' in text:
-            self._line_ctrl.write_ansi(text)
+            try:
+                self._adapter.write(Text.from_ansi(text))
+            except Exception:
+                self._adapter.write_raw(text + "\n")
         else:
-            self._line_ctrl.write_raw(text + "\n")
+            self._adapter.write_raw(text + "\n")
 
     def _do_display_messages(self, messages: list[dict], speed: int) -> None:
-        """渲染消息列表到上屏（截断/恢复后的重渲染）。
-
-        通过 self._on_display_messages 回调调用（由 ChatUIConsumer 注入），
-        消除对 tui._message_display 的直接 import 依赖。
-        """
+        """渲染消息列表到上屏（截断/恢复后的重渲染）。"""
         if self._on_display_messages is not None:
             self._on_display_messages(messages, speed=speed)
+
+    # ── 底部栏刷新 ──────────────────────────────────
+
+    def _do_bottom_bar_refresh(self) -> None:
+        """占位命令处理 — 实际重绘由 _phase_redraw_bottom() 完成。"""

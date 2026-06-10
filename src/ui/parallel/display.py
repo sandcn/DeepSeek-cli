@@ -3,18 +3,15 @@
 
 职责分层：
   - ParallelDisplay：生命周期控制 + 状态代理 + 刷新调度
-  - SubAgentPanelControl：Control 子系统，帧渲染（通过 OutputAdapter）
   - FrameRenderer：纯函数渲染（state → 行列表）
 
-刷新由 ChatUIConsumer 的 _drain_queue 驱动（通过 RenderCommand.SUBAGENT_REFRESH
-消息触发 SubAgentPanelControl.render_frame()），替代原 asyncio 定时器周期刷新。
-状态更新只写存储不触发现渲染。
+渲染路径：ParallelDisplay → FrameRenderer → OutputAdapter 直接写入。
+不再依赖 chat_ui Control 体系和 SUBAGENT_REFRESH 命令队列。
 
-2026-06-02 重构：
-  - 将帧渲染 I/O 从 ParallelDisplay 迁移到 SubAgentPanelControl（chat_ui 控件体系）
-  - diff_active guard 从全局 Event 迁移到 SubAgentPanelControl 实例级标志
-  - 刷新路径从直接终端 I/O 改为 RenderCommand.SUBAGENT_REFRESH 消息驱动
-  - 全局引用 _active_parallel_display → _active_subagent_panel
+2026-06-10 重构：
+  - 移除 SubAgentPanelControl 依赖
+  - 面板帧直接通过 OutputAdapter 写入，不经过 chat_ui 命令队列
+  - 移除 _active_subagent_panel 全局引用
 """
 
 from __future__ import annotations
@@ -31,7 +28,11 @@ from ..events.event_types import LiveOutputEvent
 from ._config import DisplayConfig
 from ..base_display import BaseDisplay
 from ..common.state_store import AgentStateStore
-from ..terminal_adapter import register_sigwinch_callback, unregister_sigwinch_callback
+from ..terminal_adapter import (
+    register_sigwinch_callback,
+    unregister_sigwinch_callback,
+    TerminalAdapter,
+)
 
 # ── 常量 ────────────────────────────────────────────────
 
@@ -41,11 +42,10 @@ _logger = logging.getLogger(__name__)
 
 
 class _DiffGuard:
-    """diff_active 上下文管理器 — 通过 SubAgentPanelControl 控制。
+    """diff_active 上下文管理器 — 通过 OutputAdapter 直接控制。
 
-    职责：在 diff 输出期间设置 panel.diff_active_set() 阻止面板渲染，
-    输出完成后调用 panel.diff_active_clear() 恢复面板渲染。
-    不主动触发渲染——由 ChatUI _drain_queue 在下一跳自然恢复。
+    职责：在 diff 输出期间清除并阻止面板渲染，
+    输出完成后恢复面板渲染。
     """
 
     def __init__(self, display: "ParallelDisplay", capture_frame: bool):
@@ -54,46 +54,24 @@ class _DiffGuard:
 
     def __enter__(self):
         d = self._display
-        panel = d._panel
-
-        if panel is not None:
-            # 阶段1：快照帧行数
-            last_lines_snapshot = panel.last_lines
-
-            # 阶段2：设置 diff_active（引用计数，单事件循环天然原子）
-            panel.diff_active_set()
-
-            # 阶段3：清除旧帧（通过 OutputAdapter.write_raw 走 output_lock 路径）
-            if self._capture_frame and last_lines_snapshot > 0:
-                from ..terminal_adapter import TerminalAdapter
-                code = TerminalAdapter.clear_lines_code(last_lines_snapshot)
-                if code and panel._adapter is not None:
-                    panel._adapter.write_raw(code)
-                panel.last_lines = 0
+        if self._capture_frame and d._last_lines > 0:
+            d._clear_frame_lines()
 
     def __exit__(self, exc_type, exc_val, exc_tb):
-        d = self._display
-        panel = d._panel
-
-        if panel is not None:
-            panel.diff_active_clear()
-
         return False
 
 
 class ParallelDisplay(BaseDisplay):
-    """并行 Agent 实时显示管理器 — ChatUI 驱动版（代理层）
+    """并行 Agent 实时显示管理器 — 直接渲染版（代理层）
 
     职责：
     1. 生命周期控制（start/stop）
     2. 状态更新代理（代理到 AgentStateStore）
-    3. 刷新调度（通过 RenderCommand.SUBAGENT_REFRESH 消息驱动 SubAgentPanelControl）
+    3. 面板刷新调度（直接通过 OutputAdapter 渲染帧）
     4. 特殊输出（capture_and_print/print_output）
 
-    帧渲染委托给 SubAgentPanelControl（Control 体系），
-    状态管理委托给 AgentStateStore。
-    刷新由 ChatUIConsumer 的 render 线程在 _drain_queue 中触发，
-    通过 RenderCommand.SUBAGENT_REFRESH 消息路径与 ChatUI 渲染命令串行化处理。
+    帧渲染通过 OutputAdapter 直接写入终端，不经过 chat_ui 命令队列。
+    output_lock 由 OutputAdapter 内部自行管理。
     """
 
     def __init__(self, max_history: int = _DEFAULT_HISTORY,
@@ -110,44 +88,41 @@ class ParallelDisplay(BaseDisplay):
         display_config = DisplayConfig(self._terminal.terminal_width)
         self.max_history = max_history or display_config.max_tool_history_items
 
-        # 初始化渲染器（终端状态在每帧渲染前同步）
+        # 初始化渲染器
         self._renderer = FrameRenderer(
             terminal_width=self._terminal.terminal_width,
             frame=0,
             max_history=self.max_history,
         )
 
-        # SubAgentPanelControl — 在 start() 中创建
-        self._panel: "SubAgentPanelControl | None" = None
+        # OutputAdapter（由 start() 中从 ChatUIConsumer 获取）
+        self._adapter = None
 
-        # stdout 捕获锁：串行化 capture_and_print_async 的 redirect_stdout 访问，
-        # 防止多协程并发时 save/restore 模式被协程交错破坏（输出丢失/泄漏）
+        # 帧状态
+        self._frame: int = 0
+        self._last_lines: int = 0
+        self._last_rendered_version: int = 0
+
+        # stdout 捕获锁
         self._capture_lock = asyncio.Lock()
-
-        # ★ 延迟导入 SubAgentPanelControl，避免循环引用
-        from src.chat_ui._controls import SubAgentPanelControl  # noqa: PLC0415
-        self._SubAgentPanelControl = SubAgentPanelControl
 
     # ── 终端缩放回调 ────────────────────────────────────
 
     def _on_resize(self, width: int, height: int) -> None:
-        """终端缩放回调：重建 DisplayConfig + 入队 SUBAGENT_REFRESH 刷新面板。"""
+        """终端缩放回调：重建 DisplayConfig + 刷新宽度。"""
         if width <= 0:
             return
         new_config = DisplayConfig(width)
         self.max_history = new_config.max_tool_history_items
 
-        # 更新 renderer 并刷新
-        if self._panel is not None:
-            self._panel.refresh_width()
-        self._push_refresh()
+        # 刷新渲染器宽度
+        if self._adapter is not None:
+            self._adapter.force_refresh_width()
 
     # ── diff_active 上下文 ──────────────────────────────
 
     def _diff_active_guard(self, capture_frame: bool = True):
-        """diff_active 上下文管理器 — 设置/清除 + 引用计数 + 超时保护。
-
-        单事件循环设计：引用计数在单线程中天然原子，无需额外锁保护。
+        """diff_active 上下文管理器 — 清除旧帧并阻止渲染。
 
         Returns:
             _DiffGuard 实例
@@ -200,7 +175,7 @@ class ParallelDisplay(BaseDisplay):
 
     def update_live_output(self, label: str, tokens: int):
         self._store.update_live_output(label, tokens)
-        # EventBus 发布去抖：_EVENTBUS_THROTTLE 窗口内只发一次，避免高频路径过度发布
+        # EventBus 发布去抖
         now = time.time()
         if now - self._last_eventbus_time >= _EVENTBUS_THROTTLE:
             self._last_eventbus_time = now
@@ -220,12 +195,104 @@ class ParallelDisplay(BaseDisplay):
     def set_result(self, label: str, result_text: str = "", error: str = ""):
         self._store.set_result(label, result_text, error)
 
-    # ── 刷新调度（ChatUI 驱动） ──────────────────────
-    #
-    # 不再使用独立 asyncio 定时器周期刷新。
-    # 注册 SubAgentPanelControl 到 chat_ui._state._active_subagent_panel，
-    # 由 ChatUIConsumer._drain_queue 通过 RenderCommand.SUBAGENT_REFRESH
-    # 消息驱动帧刷新。
+    # ── 帧渲染（直接通过 OutputAdapter） ──────────────
+
+    def _render_frame(self, force: bool = False, final: bool = False) -> None:
+        """渲染当前帧到终端。
+
+        直接通过 OutputAdapter 写入帧缓冲区，不经过 chat_ui 命令队列。
+        OutputAdapter.write_raw() 内部自动管理 output_lock。
+
+        Args:
+            force: 跳过版本号检查强制渲染
+            final: 最终帧
+        """
+        if self._adapter is None:
+            return
+
+        current_version = self._store.version
+        if not final and not force and current_version == self._last_rendered_version:
+            return
+        self._last_rendered_version = current_version
+
+        self._frame += 1
+        self._renderer.sync_terminal_state(
+            width=self._adapter.width,
+            frame=self._frame,
+        )
+        lines = self._renderer.render(
+            slots_snapshot=self._store.snapshot_all(),
+            order=self._store.get_order(),
+            now=time.time(),
+            final=final,
+        )
+
+        self._write_frame_buffer(lines)
+
+    def _write_frame_buffer(self, lines: list[str]) -> None:
+        """构建帧缓冲区并通过 OutputAdapter 写入。
+
+        使用 ANSI 光标控制实现帧覆写（sc/rc 光标保存/恢复）。
+        """
+        try:
+            from .._blessed import get_terminal
+            term = get_terminal()
+            move_up = term.move_up
+            move_down = term.move_down
+            clear_eol = term.clear_eol
+            sc = term.sc if term.sc else "\033[s"
+            rc = term.rc if term.rc else "\033[u"
+        except Exception:
+            move_up = lambda n: f"\033[{n}A"
+            move_down = lambda n: f"\033[{n}B"
+            clear_eol = "\033[K"
+            sc = "\033[s"
+            rc = "\033[u"
+
+        total = len(lines)
+        buf = ""
+        if self._last_lines > 0:
+            buf += rc
+            buf += move_up(self._last_lines)
+
+        for i, line in enumerate(lines):
+            buf += "\r" + clear_eol + line
+            if i < total - 1:
+                buf += "\n"
+
+        extra = self._last_lines - total
+        if extra > 0:
+            buf += "\n" + sc
+            for _ in range(extra):
+                buf += "\n" + clear_eol
+        else:
+            buf += "\n" + sc
+        self._adapter.write_raw(buf)
+        self._last_lines = total
+
+    def _clear_frame_lines(self) -> None:
+        """清除终端上的帧行。"""
+        if self._adapter is None or self._last_lines <= 0:
+            return
+        try:
+            from .._blessed import get_terminal
+            term = get_terminal()
+            clear_eol = term.clear_eol if term.clear_eol else "\033[K"
+            move_up = term.move_up
+            rc = term.rc if term.rc else "\033[u"
+        except Exception:
+            clear_eol = "\033[K"
+            move_up = lambda n: f"\033[{n}A"
+            rc = "\033[u"
+
+        code = rc + move_up(self._last_lines)
+        for _ in range(self._last_lines):
+            code += "\r" + clear_eol + "\n"
+        code += move_up(self._last_lines)
+        self._adapter.write_raw(code)
+        self._last_lines = 0
+
+    # ── 生命周期 ────────────────────────────────────────
 
     def start(self):
         if self._started:
@@ -236,93 +303,53 @@ class ParallelDisplay(BaseDisplay):
         import src.chat_ui as _chat_ui_mod  # noqa: PLC0415
         _chat_ui = _chat_ui_mod.get_active_chat_ui()
         if _chat_ui is not None:
-            # ★ 获取 OutputAdapter（通过 ChatUIConsumer 注入）
-            adapter = _chat_ui.output_adapter
-
-            # ★ 创建 SubAgentPanelControl
-            self._panel = self._SubAgentPanelControl(
-                output_adapter=adapter,
-                store=self._store,
-                renderer=self._renderer,
-            )
-
-            # ★ 首次渲染前确保光标在上屏区域（内容区），防止面板首次渲
-            #   染时光标位于下屏（输入区），导致面板内容先渲染到输入区
-            #   再被后续 _drain_queue 的 refresh 修正到上屏的闪烁问题。
+            self._adapter = _chat_ui.output_adapter
+            # 首次渲染
             from .._lock import _try_acquire_output_lock
             with _try_acquire_output_lock(
                 name="parallel_display.start", timeout=0.5,
             ) as _locked:
                 if _locked:
                     _chat_ui.ensure_cursor_upper()
-                    self._panel.render_frame()
+                    self._render_frame()
                 else:
-                    # 锁超时降级：不持锁直接渲染（与修改前行为一致）
-                    self._panel.render_frame()
-        else:
-            # ChatUI 未激活，无底部栏分屏，无需关心光标位置
-            # 仍创建 panel 但无 OutputAdapter — 帧渲染将 no-op
-            self._panel = None
+                    self._render_frame()
 
-        # ★ 首帧渲染完成后注册 SubAgentPanelControl，render 线程 Phase 2 从此开始接管
-        if self._panel is not None:
-            _chat_ui_mod._state._active_subagent_panel = self._panel
-
-        # ★ 注册终端 resize 回调
+        # 注册终端 resize 回调
         register_sigwinch_callback(self._on_resize)
 
     def refresh(self, force: bool = False):
-        """公开刷新入口 — 由 ChatUIConsumer._drain_queue 触发。
-
-        通过 RenderCommand.SUBAGENT_REFRESH 消息路径驱动帧刷新，
-        统一到 ChatUI 命令队列中串行化处理。
+        """公开刷新入口 — 直接渲染当前帧到终端。
 
         Args:
             force: 是否跳过版本号检查强制渲染。
         """
-        self._push_refresh()
-
-    def _push_refresh(self) -> None:
-        """入队 SUBAGENT_REFRESH 命令到活跃 ChatUI 的引擎队列。"""
-        import src.chat_ui as _chat_ui_mod  # noqa: PLC0415
-        _chat_ui = _chat_ui_mod.get_active_chat_ui()
-        if _chat_ui is not None:
-            try:
-                _chat_ui._engine.push_cmd(
-                    (_chat_ui_mod.RenderCommand.SUBAGENT_REFRESH, False)
-                )
-            except Exception:
-                _logger.debug("_push_refresh: 入队 SUBAGENT_REFRESH 失败", exc_info=True)
+        if self._adapter is not None:
+            self._render_frame(force=force)
 
     # ── 停止 ────────────────────────────────────────────
 
     def stop(self, final: bool = False) -> None:
         """停止显示（实现 DisplayPort 接口）。
 
-        清除终端上的并行面板，关闭 SubAgentPanelControl。
-        确保后续 subagent 结果输出不会与旧帧行重叠。
+        清除终端上的并行面板。
 
         Args:
-            final: 是否为最终停止（兼容 EventBus 的 SessionStopped 事件）
+            final: 是否为最终停止
         """
         if self._finished:
             return
         self._finished = True
         self._stopped = True
 
-        # 从 ChatUI 注销全局引用
-        import src.chat_ui as _chat_ui_mod  # noqa: PLC0415
-        if (self._panel is not None
-                and _chat_ui_mod._state._active_subagent_panel is self._panel):
-            _chat_ui_mod._state._active_subagent_panel = None
-
         # 注销终端 resize 回调
         unregister_sigwinch_callback(self._on_resize)
 
-        # ★ 关闭 SubAgentPanelControl（清除终端帧 + 标记关闭）
-        if self._panel is not None:
-            self._panel.close()
-            self._panel = None
+        # 清除终端帧
+        if self._adapter is not None:
+            self._clear_frame_lines()
+            self._adapter.flush()
+        self._adapter = None
 
     async def await_stop(self, timeout: float = 2.0):
         """异步停止（兼容旧调用方，委托给 stop）。"""
@@ -331,11 +358,7 @@ class ParallelDisplay(BaseDisplay):
     # ── 特殊输出 ───────────────────────────────────────
 
     def capture_and_print(self, func) -> Any:
-        """同步捕获 func 的自定义输出并写入终端。
-
-        调用方应在 _diff_active_guard 上下文内调用此方法，
-        或确保 diff_active 已置位，避免面板渲染与输出交错。
-        """
+        """同步捕获 func 的自定义输出并写入终端。"""
         from io import StringIO
         import contextlib
         buf = StringIO()
@@ -344,18 +367,11 @@ class ParallelDisplay(BaseDisplay):
         diff_text = buf.getvalue()
         if diff_text:
             text = diff_text.rstrip()
-            # diff_active 已设置 → 渲染被跳过
-            # TerminalTarget.write_line() 内部自管理 output_lock
             self._terminal.write_line(text)
         return result
 
     async def capture_and_print_async(self, async_func) -> Any:
-        """异步版 capture_and_print，用于 subagent 的 func.display() 调用。
-
-        单事件循环设计：_DiffGuard 的引用计数天然原子，
-        无需锁保护 diff_active 状态。
-        output_lock 由 TerminalTarget.write_line() 内部自行管理（带超时）。
-        """
+        """异步版 capture_and_print。"""
         from io import StringIO
         import contextlib
 
@@ -374,22 +390,13 @@ class ParallelDisplay(BaseDisplay):
             return await _run()
 
     def clear_frame_and_run(self, func) -> Any:
-        """清除显示帧 + 设置 diff_active，然后执行 func（func 直接写 stdout）。
-
-        与 _diff_active_guard 配合，确保 func 的输出不与面板渲染交错。
-        单事件循环设计，无需锁保护。
-        """
+        """清除显示帧然后执行 func（func 直接写 stdout）。"""
         with self._diff_active_guard(capture_frame=True):
             return func()
 
     def print_output(self, text: str):
-        """输出文本到终端，清除当前帧并替换。
-
-        通过 SubAgentPanelControl.clear_frame() 清除帧行，
-        然后通过 TerminalTarget.write_line() 写入新文本。
-        """
+        """输出文本到终端，清除当前帧并替换。"""
         if not text:
             return
-        if self._panel is not None:
-            self._panel.clear_frame()
+        self._clear_frame_lines()
         self._terminal.write_line(text)

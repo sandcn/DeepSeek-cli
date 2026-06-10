@@ -12,30 +12,7 @@ _BottomBar 无需显式声明 implements BottomBarProtocol。
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Protocol, runtime_checkable
-
-if TYPE_CHECKING:
-    from ._controls import Control, MarkdownControl
-
-
-class ControlFactory(Protocol):
-    """控件工厂协议 — 根据 style 创建 MarkdownControl 实例。
-
-    由 ContentRenderer 注册到 _RenderState.control_factory，
-    使 _RenderState.get_reasoning()/get_content() 可通过回调创建控件，
-    消除 _RenderState 对 ContentRenderer 的直接依赖。
-    """
-    def __call__(self, style: str) -> "MarkdownControl": ...
-
-
-class ControlLifecycleHook(Protocol):
-    """控件生命周期钩子协议 — 创建/移除 Control 时的回调。
-
-    由 ContentRenderer 注册到 _RenderState.on_control_created/
-    on_control_removed，使 _RenderState 在创建/关闭控件时自动通知
-    ControlList 更新。
-    """
-    def __call__(self, control: "Control") -> None: ...
+from typing import Protocol, runtime_checkable
 
 
 @runtime_checkable

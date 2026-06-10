@@ -1,7 +1,6 @@
 """chat_ui 渲染引擎模块 — render 线程 + 命令队列 + 渲染循环。
 
-Layer 3 — 依赖 _const（_RENDER_INTERVAL）+ _renderers（ContentRenderer）
-          + _state（_active_subagent_panel）。
+Layer 3 — 依赖 _const（_RENDER_INTERVAL）+ _renderers（ContentRenderer）。
 """
 
 from __future__ import annotations
@@ -17,7 +16,6 @@ from typing import TYPE_CHECKING
 from ._const import (
     _ANSI_RED,
     _ANSI_RESET,
-    _ANSI_YELLOW,
     _RENDER_INTERVAL,
     RenderCommand,
 )
@@ -239,16 +237,7 @@ class RenderEngine:
         sys.__stdout__.flush()
 
     def _phase_refresh_panels(self) -> None:
-        """阶段 2：SubAgent 面板刷新（在 output_lock 内调用）。
-
-        在锁内读取 _active_subagent_panel，消除锁外读取的 TOCTOU 竞态条件。
-        通过入队 SUBAGENT_REFRESH 命令触发面板帧渲染，
-        与上屏渲染命令在同一队列中串行化处理。
-        """
-        from . import _state
-        panel = _state._active_subagent_panel
-        if panel is not None and panel.needs_refresh():
-            self.push_cmd((RenderCommand.SUBAGENT_REFRESH, False))
+        """阶段 2：面板刷新（已移除 SubAgent 面板，保留为空操作）。"""
 
     def _phase_redraw_bottom(self, has_commands: bool) -> None:
         """阶段 3：底部栏重绘 + 光标定位（在 output_lock 内调用）。
@@ -300,29 +289,20 @@ class RenderEngine:
             self._drain_queue_safe()
 
     def _drain_queue(self) -> None:
-        """消费所有待处理渲染命令（入口方法，路由到三阶段流水线）。
+        """消费所有待处理渲染命令（入口方法，路由到两阶段流水线）。
 
         流水线：
-          0. 快速空闲跳过（锁外）— 队列空 + 无面板/面板无需刷新 + 状态行不活跃 + 无 resize pending 时跳过
+          0. 快速空闲跳过（锁外）— 队列空 + 状态行不活跃 + 无 resize pending 时跳过
           0b. 终端大小变化检测（锁外）— 检测 resize 并刷新渲染器宽度缓存
-          1. resize 处理（锁内）— 消费 SIGWINCH 标记，更新终端尺寸和 DECSTBM
-          2. 上屏渲染（锁内）— 批量出队 + 渲染命令 → _phase_render()
-          3. SubAgent 面板刷新（锁内）— 入队 SUBAGENT_REFRESH 命令 → _phase_refresh_panels()
-          4. 底部栏重绘 + 光标定位（锁内）— force_redraw + 光标移回输入行 → _phase_redraw_bottom()
+          1. resize 处理 + 上屏渲染（锁内）— 批量出队 + 渲染命令 → _phase_render()
+          2. 底部栏重绘 + 光标定位（锁内）— force_redraw + 光标移回输入行 → _phase_redraw_bottom()
 
-        步骤 0/0b 在锁外、步骤 1-4 共用同一个 output_lock，
-        防止上屏渲染 / 面板刷新 / 底部栏重绘之间的终端 I/O 交错。
-        output_lock 为 RLock（可重入），panel.render_frame() 和 force_redraw()
-        内部取锁不会死锁。
-
-        SubAgent 面板刷新置于渲染阶段之后：先渲染上屏内容（工具输出/摘要等），
-        再刷新 SubAgent UI 面板展示最新状态，确保面板状态与已渲染内容同步。
+        步骤 0/0b 在锁外、步骤 1-2 共用同一个 output_lock，
+        防止上屏渲染 / 底部栏重绘之间的终端 I/O 交错。
+        output_lock 为 RLock（可重入）。
         """
-        from . import _state
-        panel = _state._active_subagent_panel
         if (self._cmd_queue.empty() and not self._bb.is_status_active
-                and not self._bb.is_resize_pending
-                and (panel is None or not panel.needs_refresh())):
+                and not self._bb.is_resize_pending):
             return
 
         # ★ 终端大小变化检测（锁外）— 避免 shutil.get_terminal_size()
@@ -336,7 +316,7 @@ class RenderEngine:
                 exc_info=True,
             )
 
-        # ★ 三个阶段共用同一个 output_lock（1s 超时）
+        # ★ 两个阶段共用同一个 output_lock（1s 超时）
         with _try_acquire_output_lock(name="drain_queue", timeout=1.0) as locked:
             if not locked:
                 return
@@ -361,10 +341,6 @@ class RenderEngine:
 
             if commands:
                 self._phase_render(commands, resized)
-
-            # ★ SubAgent 面板刷新 — 在锁内读取 _active_subagent_panel，
-            #   消除锁外读取的 TOCTOU 竞态条件
-            self._phase_refresh_panels()
 
             self._phase_redraw_bottom(bool(commands))
 

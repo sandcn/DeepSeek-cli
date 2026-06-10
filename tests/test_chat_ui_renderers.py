@@ -6,11 +6,7 @@
    - tokens 为 float('nan') → "?"
    - tokens 为普通 int → "Nt"
 2. _truncate_msg 基础功能
-
-注：_do_tool_output / _render_failure_summary 测试已迁移到
-test_chat_ui_controls.py（ToolOutputControl / ToolSummaryControl）。
-宽度刷新由 ControlList.refresh_width_all() 统一管理，对应测试在
-test_chat_ui_controls.py TestControlList。
+3. 各 _do_* 方法直接输出到 OutputAdapter 的行为
 """
 
 from __future__ import annotations
@@ -18,6 +14,7 @@ from __future__ import annotations
 from unittest.mock import MagicMock, patch
 
 import pytest
+from rich.text import Text
 
 from src.chat_ui._renderers import ContentRenderer
 from src.chat_ui._const import _CLEAR_PARSE_LINE, RenderCommand
@@ -51,39 +48,47 @@ def renderer(mock_ta, mock_bb):
 
 
 # ═══════════════════════════════════════════════════════
-# _do_parse_info 测试（通过 ParseInfoControl 代理）
+# _do_parse_info 测试（通过 sys.__stdout__ 输出）
 # ═══════════════════════════════════════════════════════
 
 class TestDoParseInfo:
-    """_do_parse_info 边缘情况测试"""
+    """_do_parse_info 边缘情况测试
 
-    def test_inf_tokens_shows_question_mark(self, renderer, mock_ta):
+    注：新实现直接写入 sys.__stdout__，不再委托 ParseInfoControl。
+    """
+
+    def test_inf_tokens_shows_question_mark(self, renderer):
         """tokens=float('inf') → 显示 "?" """
-        renderer._do_parse_info("tool_test", float('inf'), 1.5)
-        mock_ta.write_raw.assert_called_once()
-        text = mock_ta.write_raw.call_args[0][0]
-        assert "?" in text
-        assert "inft" not in text
+        with patch('sys.__stdout__') as mock_stdout:
+            renderer._do_parse_info("tool_test", float('inf'), 1.5)
+            mock_stdout.write.assert_called_once()
+            text = mock_stdout.write.call_args[0][0]
+            assert "?" in text
+            assert "inf" not in text
 
-    def test_nan_tokens_shows_question_mark(self, renderer, mock_ta):
+    def test_nan_tokens_shows_question_mark(self, renderer):
         """tokens=float('nan') → 显示 "?" """
-        renderer._do_parse_info("tool_test", float('nan'), 1.5)
-        mock_ta.write_raw.assert_called_once()
-        text = mock_ta.write_raw.call_args[0][0]
-        assert "?" in text
-        assert "nant" not in text
+        with patch('sys.__stdout__') as mock_stdout:
+            renderer._do_parse_info("tool_test", float('nan'), 1.5)
+            mock_stdout.write.assert_called_once()
+            text = mock_stdout.write.call_args[0][0]
+            assert "?" in text
+            assert "nan" not in text
 
-    def test_normal_int_tokens(self, renderer, mock_ta):
+    def test_normal_int_tokens(self, renderer):
         """普通 int tokens → 显示 "Nt" """
-        renderer._do_parse_info("tool_test", 42, 1.5)
-        mock_ta.write_raw.assert_called_once()
-        text = mock_ta.write_raw.call_args[0][0]
-        assert "42t" in text
+        with patch('sys.__stdout__') as mock_stdout:
+            renderer._do_parse_info("tool_test", 42, 1.5)
+            mock_stdout.write.assert_called_once()
+            text = mock_stdout.write.call_args[0][0]
+            assert "42t" in text
 
-    def test_clear_parse_line_sentinel(self, renderer, mock_ta):
-        """tokens=_CLEAR_PARSE_LINE → write_raw('\\n') """
-        renderer._do_parse_info("", _CLEAR_PARSE_LINE, 0.0)
-        mock_ta.write_raw.assert_called_once_with("\n")
+    def test_clear_parse_line_sentinel(self, renderer):
+        """tokens=_CLEAR_PARSE_LINE → write('\\n') """
+        with patch('sys.__stdout__') as mock_stdout:
+            renderer._do_parse_info("", _CLEAR_PARSE_LINE, 0.0)
+            mock_stdout.write.assert_called_once_with("\n")
+            mock_stdout.flush.assert_called_once()
 
 
 # ═══════════════════════════════════════════════════════
@@ -123,14 +128,6 @@ class TestTruncateMsg:
         from src.chat_ui._utils import _truncate_msg
         result = _truncate_msg("hello", 0)
         assert result == "..."
-
-
-# ═══════════════════════════════════════════════════════
-# 注：ContentRenderer._check_and_refresh_width 已迁移到
-# RenderEngine._check_resize() → 测试移至 test_chat_ui_engine.py
-# 宽度刷新由 ControlList.refresh_width_all() 统一管理 → 测试移至
-# test_chat_ui_controls.py TestControlList
-# ═══════════════════════════════════════════════════════
 
 
 # ═══════════════════════════════════════════════════════
@@ -240,156 +237,207 @@ class TestDoToolCount:
 
 
 # ═══════════════════════════════════════════════════════
-# _do_tool_output 测试
+# _do_tool_output 测试（直接通过 OutputAdapter 输出）
 # ═══════════════════════════════════════════════════════
 
 class TestDoToolOutput:
-    """_do_tool_output 渲染命令测试"""
+    """_do_tool_output 渲染命令测试
+
+    不再委托 ToolOutputControl，直接在方法内处理 \\r 和 ANSI 后
+    通过 OutputAdapter 输出。
+    """
 
     def test_tool_output_normal(self, renderer, mock_ta):
-        """正常文本 → 委托 _tool_output_ctrl.write()"""
-        with patch.object(renderer._tool_output_ctrl, 'write') as m_write:
-            renderer._do_tool_output("output text")
-            m_write.assert_called_once_with("output text")
-
-    def test_tool_output_recreates_when_closed(self, renderer, mock_ta):
-        """控件已关闭 → 自动重建"""
-        renderer._tool_output_ctrl.close()
-        old_ctrl = renderer._tool_output_ctrl
-        renderer._do_tool_output("new output")
-        assert renderer._tool_output_ctrl is not old_ctrl
-        assert renderer._tool_output_ctrl.is_closed is False
+        """正常文本（无 \\r）→ adapter.write 以 dim 样式输出"""
+        renderer._do_tool_output("output text")
+        mock_ta.write.assert_called_once()
+        text_arg = mock_ta.write.call_args[0][0]
+        assert isinstance(text_arg, Text)
+        assert "output text" in text_arg.plain
 
     def test_tool_output_empty_text(self, renderer, mock_ta):
-        """空文本 → 仍委托（控件处理跳过逻辑）"""
-        with patch.object(renderer._tool_output_ctrl, 'write') as m_write:
-            renderer._do_tool_output("")
-            m_write.assert_called_once_with("")
+        """空文本 → 仍调用 adapter.write"""
+        renderer._do_tool_output("")
+        mock_ta.write.assert_called_once()
 
-    def test_tool_output_long_text(self, renderer, mock_ta):
-        """超长文本 → 透传到控件（截断由 ToolOutputControl 内部处理）。"""
-        from src.chat_ui._controls import ToolOutputControl
-        long_text = "x" * (ToolOutputControl._MAX_OUTPUT_LEN + 50)
-        with patch.object(renderer._tool_output_ctrl, 'write') as m_write:
-            renderer._do_tool_output(long_text)
-            # ContentRenderer 不做截断，透传原始文本
-            m_write.assert_called_once_with(long_text)
+    def test_tool_output_long_text_truncated(self, renderer, mock_ta):
+        """超长文本 → 截断后输出"""
+        long_text = "x" * 10050
+        renderer._do_tool_output(long_text)
+        mock_ta.write.assert_called_once()
+        text_arg = mock_ta.write.call_args[0][0]
+        assert isinstance(text_arg, Text)
+        assert text_arg.plain == "   " + "x" * 10000 + "...(truncated)"
+
+    def test_tool_output_with_carriage_return(self, renderer, mock_ta):
+        """含 \\r 的文本 → 取最后一段通过 write_raw 输出，续写入 \\n"""
+        renderer._do_tool_output("first\rsecond")
+        assert mock_ta.write_raw.call_count == 2
+        assert mock_ta.write_raw.call_args_list[0][0][0] == "second"
+        assert mock_ta.write_raw.call_args_list[1][0][0] == "\n"
+
+    def test_tool_output_carriage_ends_with_r(self, renderer, mock_ta):
+        """以 \\r 结尾 → 不追加额外 \\n"""
+        renderer._do_tool_output("first\r")
+        mock_ta.write_raw.assert_called_once()
+        # 最后一段是空字符串
+        assert mock_ta.write_raw.call_args[0][0] == ""
+
+    def test_tool_output_carriage_with_newline(self, renderer, mock_ta):
+        """含 \\r 且不以 \\r 结尾 → 末尾追加 \\n"""
+        renderer._do_tool_output("a\rb")
+        assert mock_ta.write_raw.call_count == 2
+        assert mock_ta.write_raw.call_args_list[0][0][0] == "b"
+        assert mock_ta.write_raw.call_args_list[1][0][0] == "\n"
 
 
 # ═══════════════════════════════════════════════════════
-# _do_tool_summary 测试
+# _do_tool_summary 测试（直接通过 OutputAdapter 格式化输出）
 # ═══════════════════════════════════════════════════════
 
 class TestDoToolSummary:
-    """_do_tool_summary 渲染命令测试"""
+    """_do_tool_summary 渲染命令测试
+
+    不再委托 ToolSummaryControl，直接在方法内格式化后通过 OutputAdapter 输出。
+    """
 
     def test_summary_all_success(self, renderer, mock_ta):
-        """全成功 → 委托 summarize + close"""
-        with patch.object(renderer._tool_summary_ctrl, 'summarize') as m_sum:
-            renderer._do_tool_summary(("tool_a", "tool_b"), ())
-            m_sum.assert_called_once_with(("tool_a", "tool_b"), ())
-            assert renderer._tool_summary_ctrl.is_closed is True
+        """全成功 → adapter.write 输出成功信息"""
+        renderer._do_tool_summary(("tool_a", "tool_b"), ())
+        mock_ta.write.assert_called_once()
+        text_arg = mock_ta.write.call_args[0][0]
+        assert isinstance(text_arg, Text)
+        assert "2工具完成" in text_arg.plain
 
     def test_summary_partial_failure(self, renderer, mock_ta):
-        """部分失败 → 委托 summarize + close"""
-        with patch.object(renderer._tool_summary_ctrl, 'summarize') as m_sum:
-            renderer._do_tool_summary(("tool_a",), (("tool_b", "error"),))
-            m_sum.assert_called_once_with(("tool_a",), (("tool_b", "error"),))
+        """部分失败 → adapter.write 输出失败信息"""
+        renderer._do_tool_summary(("tool_a",), (("tool_b", "error"),))
+        mock_ta.write.assert_called()
+        texts = " ".join(
+            c[0][0].plain for c in mock_ta.write.call_args_list
+            if c[0] and hasattr(c[0][0], 'plain')
+        )
+        assert "失败" in texts
+        assert "1/2" in texts
 
     def test_summary_all_failure(self, renderer, mock_ta):
-        """全失败 → 委托 summarize + close"""
-        with patch.object(renderer._tool_summary_ctrl, 'summarize') as m_sum:
-            renderer._do_tool_summary((), (("tool_a", "err1"), ("tool_b", "err2")))
-            m_sum.assert_called_once_with((), (("tool_a", "err1"), ("tool_b", "err2")))
+        """全失败 → adapter.write 输出全部失败信息"""
+        renderer._do_tool_summary((), (("tool_a", "err1"), ("tool_b", "err2")))
+        mock_ta.write.assert_called()
+        texts = " ".join(
+            c[0][0].plain for c in mock_ta.write.call_args_list
+            if c[0] and hasattr(c[0][0], 'plain')
+        )
+        assert "失败" in texts
+        assert "全部失败" in texts
 
     def test_summary_empty_skip(self, renderer, mock_ta):
-        """空摘要 → summarize 仍被调用（控件内部跳过逻辑）"""
+        """空摘要 → 不输出任何内容"""
         renderer._do_tool_summary((), ())
-        assert renderer._tool_summary_ctrl.is_closed is True
+        mock_ta.write.assert_not_called()
 
 
 # ═══════════════════════════════════════════════════════
-# _do_user_message 测试
+# _do_user_message 测试（直接通过 OutputAdapter 输出）
 # ═══════════════════════════════════════════════════════
 
 class TestDoUserMessage:
-    """_do_user_message 渲染命令测试"""
+    """_do_user_message 渲染命令测试
+
+    不再委托 UserMsgControl，直接通过 OutputAdapter 输出。
+    """
 
     def test_user_message_normal(self, renderer, mock_ta):
-        """正常文本 → 委托 _user_msg_ctrl.write()"""
-        with patch.object(renderer._user_msg_ctrl, 'write') as m_write:
-            renderer._do_user_message("hello")
-            m_write.assert_called_once_with("hello")
+        """正常文本 → adapter.write 以 bold 样式输出"""
+        renderer._do_user_message("hello")
+        mock_ta.write.assert_called_once()
+        text_arg = mock_ta.write.call_args[0][0]
+        assert isinstance(text_arg, Text)
+        assert "hello" in text_arg.plain
 
     def test_user_message_empty(self, renderer, mock_ta):
-        """空文本 → 委托 _user_msg_ctrl.write()"""
-        with patch.object(renderer._user_msg_ctrl, 'write') as m_write:
-            renderer._do_user_message("")
-            m_write.assert_called_once_with("")
+        """空文本 → adapter.write 仍被调用"""
+        renderer._do_user_message("")
+        mock_ta.write.assert_called_once()
 
 
 # ═══════════════════════════════════════════════════════
-# _do_notification 测试
+# _do_notification 测试（直接通过 OutputAdapter 输出）
 # ═══════════════════════════════════════════════════════
 
 class TestDoNotification:
-    """_do_notification 渲染命令测试"""
+    """_do_notification 渲染命令测试
+
+    不再委托 NotifControl，直接通过 OutputAdapter 输出。
+    """
 
     def test_notification_normal(self, renderer, mock_ta):
-        """正常文本 → 委托 _notif_ctrl.write()"""
-        with patch.object(renderer._notif_ctrl, 'write') as m_write:
-            renderer._do_notification("notify")
-            m_write.assert_called_once_with("notify")
+        """正常文本 → adapter.write 以 success 样式输出"""
+        renderer._do_notification("notify")
+        mock_ta.write.assert_called_once()
+        text_arg = mock_ta.write.call_args[0][0]
+        assert isinstance(text_arg, Text)
+        assert "notify" in text_arg.plain
 
 
 # ═══════════════════════════════════════════════════════
-# _do_error 测试
+# _do_error 测试（直接通过 OutputAdapter 输出）
 # ═══════════════════════════════════════════════════════
 
 class TestDoError:
-    """_do_error 渲染命令测试"""
+    """_do_error 渲染命令测试
+
+    不再委托 ErrorControl，直接在方法内截断后通过 OutputAdapter 输出。
+    """
 
     def test_error_normal(self, renderer, mock_ta):
-        """正常消息 → 委托 _error_ctrl.write()"""
-        with patch.object(renderer._error_ctrl, 'write') as m_write:
-            renderer._do_error("error msg")
-            m_write.assert_called_once_with("error msg")
+        """正常消息 → adapter.write 以 error 样式输出"""
+        renderer._do_error("error msg")
+        mock_ta.write.assert_called_once()
+        text_arg = mock_ta.write.call_args[0][0]
+        assert isinstance(text_arg, Text)
+        assert "error msg" in text_arg.plain
 
     def test_error_truncated(self, renderer, mock_ta):
-        """超长消息 → 截断后委托"""
+        """超长消息 → 截断后输出"""
         from src.chat_ui._const import _MAX_ERROR_LENGTH
         long_msg = "x" * (_MAX_ERROR_LENGTH + 50)
-        with patch.object(renderer._error_ctrl, 'write') as m_write:
-            renderer._do_error(long_msg)
-            args = m_write.call_args[0][0]
-            assert len(args) <= _MAX_ERROR_LENGTH + 3  # +3 for "..."
-            assert args.endswith("...")
+        renderer._do_error(long_msg)
+        mock_ta.write.assert_called_once()
+        text_arg = mock_ta.write.call_args[0][0]
+        assert isinstance(text_arg, Text)
+        assert "..." in text_arg.plain
+        # 截断后的消息主体（不含前缀）不应超过 _MAX_ERROR_LENGTH + 3（...）
+        body = text_arg.plain.replace("\n  ! ", "", 1)
+        assert len(body) <= _MAX_ERROR_LENGTH + 3
 
 
 # ═══════════════════════════════════════════════════════
-# _do_write_line 测试
+# _do_write_line 测试（直接通过 OutputAdapter 输出）
 # ═══════════════════════════════════════════════════════
 
 class TestDoWriteLine:
-    """_do_write_line 渲染命令测试"""
+    """_do_write_line 渲染命令测试
+
+    不再委托 LineControl，直接通过 OutputAdapter 输出。
+    """
 
     def test_write_line_plain(self, renderer, mock_ta):
-        """纯文本 → 委托 _line_ctrl.write_raw()"""
-        with patch.object(renderer._line_ctrl, 'write_raw') as m_raw:
-            renderer._do_write_line("plain text")
-            m_raw.assert_called_once_with("plain text\n")
+        """纯文本 → adapter.write_raw 输出并追加换行"""
+        renderer._do_write_line("plain text")
+        mock_ta.write_raw.assert_called_once_with("plain text\n")
 
     def test_write_line_ansi(self, renderer, mock_ta):
-        """ANSI 文本 → 委托 _line_ctrl.write_ansi()"""
-        with patch.object(renderer._line_ctrl, 'write_ansi') as m_ansi:
-            renderer._do_write_line("\033[31mred\033[0m")
-            m_ansi.assert_called_once_with("\033[31mred\033[0m")
+        """ANSI 文本 → adapter.write(Text.from_ansi(...))"""
+        renderer._do_write_line("\033[31mred\033[0m")
+        mock_ta.write.assert_called_once()
+        text_arg = mock_ta.write.call_args[0][0]
+        assert isinstance(text_arg, Text)
 
     def test_write_line_empty(self, renderer, mock_ta):
-        """空文本 → 委托 _line_ctrl.write_raw() 含换行"""
-        with patch.object(renderer._line_ctrl, 'write_raw') as m_raw:
-            renderer._do_write_line("")
-            m_raw.assert_called_once_with("\n")
+        """空文本 → 仅输出换行"""
+        renderer._do_write_line("")
+        mock_ta.write_raw.assert_called_once_with("\n")
 
 
 # ═══════════════════════════════════════════════════════
@@ -436,34 +484,21 @@ class TestRender:
 
 
 # ═══════════════════════════════════════════════════════
-# TestContentRendererRefreshWidth — 宽度刷新委托
+# ContentRenderer.refresh_width() 测试
 # ═══════════════════════════════════════════════════════
 
 class TestContentRendererRefreshWidth:
     """ContentRenderer.refresh_width() 委托路径测试
 
-    验证 refresh_width() 委托给 ControlList.refresh_width_all()，
-    不再单独遍历 _RenderState 的 reasoning/content MarkdownControl。
+    验证 refresh_width() 委托给 OutputAdapter.force_refresh_width()，
+    不再委托 ControlList。
     """
 
-    def test_refresh_width_delegates_to_control_list(self, renderer):
-        """refresh_width() 调用 ControlList.refresh_width_all()"""
-        with patch.object(renderer._control_list, 'refresh_width_all') as m_refresh:
-            renderer.refresh_width()
-            m_refresh.assert_called_once()
-
-    def test_refresh_width_no_crash_when_empty(self, renderer):
-        """空 ControlList 时 refresh_width() 不崩溃"""
-        # 清空所有控件
-        renderer._control_list.close_all()
-        # 不应抛异常
+    def test_refresh_width_delegates_to_adapter(self, renderer, mock_ta):
+        """refresh_width() 调用 OutputAdapter.force_refresh_width()"""
         renderer.refresh_width()
+        mock_ta.force_refresh_width.assert_called_once()
 
-    def test_refresh_width_skips_closed_controls(self, renderer):
-        """已关闭的控件不会被 refresh_width。"""
-        # 关闭所有控件
-        for ctrl in renderer._control_list._controls:
-            ctrl.close()
-        with patch.object(renderer._control_list, 'refresh_width_all') as m_refresh:
-            renderer.refresh_width()
-            m_refresh.assert_called_once()
+    def test_refresh_width_no_crash(self, renderer, mock_ta):
+        """任何时候 refresh_width() 不崩溃"""
+        renderer.refresh_width()

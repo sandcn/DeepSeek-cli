@@ -402,7 +402,7 @@ class TestBug9PositionCursorUnderLock(unittest.TestCase):
         orig_position = self.engine.position_cursor
         self.engine.position_cursor = track_cursor
 
-        with patch("src.chat_ui._state._active_subagent_panel", None), \
+        with \
              patch("src.ui._lock._try_acquire_output_lock",
                    return_value=MagicMock(__enter__=MagicMock(return_value=True),
                                          __exit__=MagicMock(return_value=False))):
@@ -434,7 +434,7 @@ class TestResizeDrainSkip(unittest.TestCase):
         """无待处理命令、无面板、非流式、无 resize pending → 应跳过（快速空闲跳过）。"""
         self.mock_bb.is_resize_pending = False
 
-        with patch("src.chat_ui._state._active_subagent_panel", None), \
+        with \
              patch("src.ui._lock._try_acquire_output_lock",
                    return_value=MagicMock(__enter__=MagicMock(return_value=True),
                                          __exit__=MagicMock(return_value=False))):
@@ -448,7 +448,7 @@ class TestResizeDrainSkip(unittest.TestCase):
         self.mock_bb.is_resize_pending = True
         self.mock_bb.check_resize.return_value = False
 
-        with patch("src.chat_ui._state._active_subagent_panel", None), \
+        with \
              patch("src.ui._lock._try_acquire_output_lock",
                    return_value=MagicMock(__enter__=MagicMock(return_value=True),
                                          __exit__=MagicMock(return_value=False))):
@@ -468,7 +468,7 @@ class TestResizeDrainSkip(unittest.TestCase):
         self.mock_bb._bottom_lines = 5
         self.mock_bb._completion_popup_height = 0
 
-        with patch("src.chat_ui._state._active_subagent_panel", None), \
+        with \
              patch("src.ui._lock._try_acquire_output_lock",
                    return_value=MagicMock(__enter__=MagicMock(return_value=True),
                                          __exit__=MagicMock(return_value=False))):
@@ -665,7 +665,7 @@ class TestResizeCursorOverride(unittest.TestCase):
         self.mock_bb.check_resize.return_value = True
         self.mock_bb._term_height.return_value = 35
 
-        with patch("src.chat_ui._state._active_subagent_panel", None), \
+        with \
              patch("src.ui._lock._try_acquire_output_lock",
                    return_value=MagicMock(__enter__=MagicMock(return_value=True),
                                          __exit__=MagicMock(return_value=False))), \
@@ -682,7 +682,7 @@ class TestResizeCursorOverride(unittest.TestCase):
         self._enqueue_cmd()
         self.mock_bb.check_resize.return_value = False
 
-        with patch("src.chat_ui._state._active_subagent_panel", None), \
+        with \
              patch("src.ui._lock._try_acquire_output_lock",
                    return_value=MagicMock(__enter__=MagicMock(return_value=True),
                                          __exit__=MagicMock(return_value=False))), \
@@ -701,7 +701,7 @@ class TestResizeCursorOverride(unittest.TestCase):
         self.mock_bb.check_resize.return_value = True
         self.mock_bb._term_height.return_value = 40
 
-        with patch("src.chat_ui._state._active_subagent_panel", None), \
+        with \
              patch("src.ui._lock._try_acquire_output_lock",
                    return_value=MagicMock(__enter__=MagicMock(return_value=True),
                                          __exit__=MagicMock(return_value=False))), \
@@ -721,7 +721,7 @@ class TestResizeCursorOverride(unittest.TestCase):
         # 模拟缩小：_setup_height=30（旧），term_height=25（新）
         self.mock_bb._term_height.return_value = 25
 
-        with patch("src.chat_ui._state._active_subagent_panel", None), \
+        with \
              patch("src.ui._lock._try_acquire_output_lock",
                    return_value=MagicMock(__enter__=MagicMock(return_value=True),
                                          __exit__=MagicMock(return_value=False))), \
@@ -741,7 +741,7 @@ class TestResizeCursorOverride(unittest.TestCase):
         self.mock_bb.check_resize.return_value = True
         self.mock_bb._term_height.return_value = 35
 
-        with patch("src.chat_ui._state._active_subagent_panel", None), \
+        with \
              patch("src.ui._lock._try_acquire_output_lock",
                    return_value=MagicMock(__enter__=MagicMock(return_value=True),
                                          __exit__=MagicMock(return_value=False))), \

@@ -771,35 +771,17 @@ class TestChatUIConsumerPublicMethods:
 class TestChatUIConsumerRefresh:
     """refresh() 刷新接口"""
 
-    def test_refresh_with_active_subagent_panel(self, consumer, mock_bus):
-        """refresh() 入队 SUBAGENT_REFRESH 命令，不再直接调用 panel.render_frame()"""
-        from src.chat_ui import RenderCommand
+    def test_refresh_does_not_push_command(self, consumer, mock_bus):
+        """refresh() 为空方法，不推送任何命令"""
         with patch.object(consumer._engine, 'push_cmd') as mock_push:
             consumer.refresh()
-            mock_push.assert_called_once_with((RenderCommand.SUBAGENT_REFRESH, False))
-
-    def test_refresh_without_subagent_panel(self, consumer, mock_bus):
-        """refresh() 无 SubAgent 面板时仍入队 SUBAGENT_REFRESH（render 线程处理跳过）"""
-        from src.chat_ui import RenderCommand
-        with patch.object(consumer._engine, 'push_cmd') as mock_push:
-            consumer.refresh()
-            mock_push.assert_called_once_with((RenderCommand.SUBAGENT_REFRESH, False))
+            mock_push.assert_not_called()
 
     def test_refresh_does_not_call_force_redraw(self, consumer, mock_bus):
-        """refresh() 不再直接调用 force_redraw，由 render 线程处理"""
-        consumer._bottom_bar._status_active = True
-        with patch('src.chat_ui._state._active_subagent_panel', None):
-            with patch.object(consumer._bottom_bar, 'force_redraw') as mock_redraw:
-                consumer.refresh()
-                mock_redraw.assert_not_called()
-
-    def test_refresh_skips_bottom_bar_when_inactive(self, consumer, mock_bus):
-        """refresh() 在底部栏不活跃时跳过 force_redraw"""
-        consumer._bottom_bar._status_active = False
-        with patch('src.chat_ui._state._active_subagent_panel', None):
-            with patch.object(consumer._bottom_bar, 'force_redraw') as mock_redraw:
-                consumer.refresh()
-                mock_redraw.assert_not_called()
+        """refresh() 不调用 force_redraw"""
+        with patch.object(consumer._bottom_bar, 'force_redraw') as mock_redraw:
+            consumer.refresh()
+            mock_redraw.assert_not_called()
 
 
 # ═══════════════════════════════════════════════════════

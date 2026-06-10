@@ -2,7 +2,6 @@
 
 import asyncio
 import sys
-from io import StringIO
 
 import pytest
 
@@ -88,42 +87,20 @@ class TestCaptureAndPrintAsyncConcurrency:
         )
 
 
-class TestRefreshRegistration:
-    """ParallelDisplay refresh() 及注册/注销链路测试。
+class TestParallelDisplayLifecycle:
+    """ParallelDisplay 生命周期测试（start/stop/refresh）。
 
-    验证 start()/stop() 对 chat_ui._active_subagent_panel 的注册与注销，
-    以及 refresh() 公开方法的正常调用。
+    新实现不依赖 SubAgentPanelControl 和 chat_ui._state._active_subagent_panel，
+    帧渲染直接通过 OutputAdapter.write_raw() 写入终端。
     """
 
     def test_refresh_called_safely(self, display):
-        """refresh() 可被安全调用（无渲染状态时静默跳过）。"""
-        # 尚未 start()，无 agent 注册，refresh 不应抛异常
+        """refresh() 可被安全调用（无 adapter 时静默跳过）。"""
+        # 尚未 start()，_adapter 为 None，refresh 不应抛异常
         display.refresh()
 
-    def test_start_registers_to_chat_ui(self, display):
-        """start() 将 SubAgentPanelControl 注册到 chat_ui._state._active_subagent_panel。
-
-        ParallelDisplay.start() 创建 SubAgentPanelControl 并注册到全局引用。
-        引擎层（_engine.py/_consumer.py）均从 _state 模块读取该引用。
-        """
-        import src.chat_ui._state as chat_ui_state
-        assert chat_ui_state._active_subagent_panel is None
-        display.add_agent("agent-1", "test agent")
-        # Mock ChatUI 以提供 output_adapter
-        from unittest.mock import patch, MagicMock
-        mock_chat_ui = MagicMock()
-        mock_chat_ui.output_adapter = MagicMock()
-        # output_adapter.width 需要返回整数（render_frame 中用于 FrameRenderer）
-        mock_chat_ui.output_adapter.width = 120
-        with patch('src.chat_ui.get_active_chat_ui', return_value=mock_chat_ui):
-            display.start()
-        assert chat_ui_state._active_subagent_panel is display._panel
-        assert chat_ui_state._active_subagent_panel is not None
-        display.stop()
-
-    def test_stop_clears_chat_ui_reference(self, display):
-        """stop() 从 chat_ui._state._active_subagent_panel 注销引用。"""
-        import src.chat_ui._state as chat_ui_state
+    def test_start_acquires_adapter(self, display):
+        """start() 从 ChatUI 获取 OutputAdapter。"""
         display.add_agent("agent-1", "test agent")
         from unittest.mock import patch, MagicMock
         mock_chat_ui = MagicMock()
@@ -131,13 +108,31 @@ class TestRefreshRegistration:
         mock_chat_ui.output_adapter.width = 120
         with patch('src.chat_ui.get_active_chat_ui', return_value=mock_chat_ui):
             display.start()
-        assert chat_ui_state._active_subagent_panel is display._panel
+        assert display._adapter is not None, (
+            "start() 应设置 _adapter 为 ChatUI 的 output_adapter"
+        )
         display.stop()
-        assert chat_ui_state._active_subagent_panel is None
+
+    def test_stop_clears_adapter(self, display):
+        """stop() 将 _adapter 置 None 并停止渲染。"""
+        display.add_agent("agent-1", "test agent")
+        from unittest.mock import patch, MagicMock
+        mock_chat_ui = MagicMock()
+        mock_chat_ui.output_adapter = MagicMock()
+        mock_chat_ui.output_adapter.width = 120
+        with patch('src.chat_ui.get_active_chat_ui', return_value=mock_chat_ui):
+            display.start()
+        assert display._adapter is not None
+        display.stop()
+        assert display._adapter is None, (
+            "stop() 应将 _adapter 置为 None"
+        )
+        assert display._finished is True, (
+            "stop() 应设置 _finished = True"
+        )
 
     def test_start_then_stop_one_cycle(self):
-        """一次 start → stop 注册/注销循环正确。"""
-        import src.chat_ui._state as chat_ui_state
+        """一次 start → stop 生命周期完整，adapter 正确获取和释放。"""
         d = ParallelDisplay()
         d.add_agent("agent-1", "test agent")
         from unittest.mock import patch, MagicMock
@@ -146,18 +141,53 @@ class TestRefreshRegistration:
         mock_chat_ui.output_adapter.width = 120
         with patch('src.chat_ui.get_active_chat_ui', return_value=mock_chat_ui):
             d.start()
-        assert chat_ui_state._active_subagent_panel is d._panel
+        assert d._adapter is not None, "start() 后应持有 adapter"
+        assert d._started is True, "start() 后 _started 应为 True"
         d.stop()
-        assert chat_ui_state._active_subagent_panel is None
+        assert d._adapter is None, "stop() 后 adapter 应被释放"
+        assert d._finished is True, "stop() 后 _finished 应为 True"
 
     def test_refresh_after_stop_safe(self, display):
-        """stop() 后 refresh() 安全（_stopped 守卫跳过渲染）。"""
+        """stop() 后 refresh() 安全（无 adapter，渲染提前返回）。"""
         display.add_agent("a", "test")
-        display.start()
+        from unittest.mock import patch, MagicMock
+        mock_chat_ui = MagicMock()
+        mock_chat_ui.output_adapter = MagicMock()
+        mock_chat_ui.output_adapter.width = 120
+        with patch('src.chat_ui.get_active_chat_ui', return_value=mock_chat_ui):
+            display.start()
         display.stop()
         display.refresh()  # 不应抛异常
 
     def test_refresh_with_active_agents(self, display):
-        """有活跃 agent 时 refresh() 正常渲染不抛异常。"""
+        """有活跃 agent 时 refresh() 正常渲染不抛异常（无 adapter 时返回）。"""
         display.add_agent("agent-1", "test agent", status="running")
-        display.refresh()  # 不抛异常即通过
+        display.refresh()  # 不抛异常即通过（_adapter=None，_render_frame 提前返回）
+
+
+class TestDiffGuard:
+    """_DiffGuard 上下文管理器测试。
+
+    新实现不依赖 SubAgentPanelControl.diff_active_set/clear，
+    直接在 __enter__ 中清除帧行，__exit__ 不抑制异常。
+    """
+
+    def test_diff_guard_does_not_suppress_exception(self, display):
+        """_DiffGuard.__exit__ 返回 False（不抑制异常）。"""
+        guard = display._diff_active_guard(capture_frame=False)
+        result = guard.__exit__(None, None, None)
+        assert result is False, (
+            "__exit__ 应返回 False 以允许异常自然传播"
+        )
+
+    def test_clear_frame_and_run_returns_result(self, display):
+        """clear_frame_and_run 正确执行 func 并返回结果。"""
+        result = display.clear_frame_and_run(lambda: 42)
+        assert result == 42, (
+            f"clear_frame_and_run 应返回 func 执行结果: expected 42, got {result}"
+        )
+
+    def test_clear_frame_and_run_no_adapter_safe(self, display):
+        """clear_frame_and_run 在无 adapter 时安全（_clear_frame_lines 提前返回）。"""
+        result = display.clear_frame_and_run(lambda: "safe")
+        assert result == "safe"
