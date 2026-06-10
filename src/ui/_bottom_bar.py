@@ -670,7 +670,7 @@ class _BottomBar(_StatusMixin):
                 self._last_height = height
                 return
 
-            clear_start = old_scroll_end + 1
+            clear_start = max(old_scroll_end, scroll_end) + 1
             clear_end = height
             for r in range(clear_start, clear_end + 1):
                 out.write(_blessed_move_clear(r))
@@ -928,7 +928,7 @@ class _BottomBar(_StatusMixin):
                 for r in range(scroll_end + 1, min(old_scroll_end, height) + 1):
                     out.write(_blessed_move_clear(r))
 
-            clear_start = old_scroll_end + 1
+            clear_start = max(old_scroll_end, scroll_end) + 1
             clear_end = height
             for r in range(clear_start, clear_end + 1):
                 out.write(_blessed_move_clear(r))
@@ -1010,7 +1010,7 @@ class _BottomBar(_StatusMixin):
                 out.flush()
                 return
 
-            clear_start = old_scroll_end + 1
+            clear_start = max(old_scroll_end, scroll_end) + 1
             clear_end = height
             for r in range(clear_start, clear_end + 1):
                 out.write(_blessed_move_clear(r))
