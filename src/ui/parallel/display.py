@@ -104,6 +104,10 @@ class ParallelDisplay(BaseDisplay):
         self._frame: int = 0
         self._last_lines: int = 0
         self._last_rendered_version: int = 0
+        # DECSTBM 滚动区域底部行号（由 start() 从 chat_ui bottom_bar 获取）
+        self._scroll_end: int = 0
+        # 缩放刷新标记（信号安全：在 _on_resize 中设置，_schedule_refresh 中消费）
+        self._needs_resize_refresh: bool = False
 
         # stdout 捕获锁
         self._capture_lock = asyncio.Lock()
@@ -111,15 +115,23 @@ class ParallelDisplay(BaseDisplay):
     # ── 终端缩放回调 ────────────────────────────────────
 
     def _on_resize(self, width: int, height: int) -> None:
-        """终端缩放回调：重建 DisplayConfig + 刷新宽度。"""
+        """终端缩放回调：重建 DisplayConfig + 刷新宽度 + 设置缩放刷新标记。
+
+        信号安全约束（terminal_adapter._handle_sigwinch 禁止获取锁）：
+        不在此处调用 _schedule_refresh() 或任何 I/O/锁操作，
+        仅设置标记 _needs_resize_refresh，由 _schedule_refresh 安全上下文处理。
+        """
         if width <= 0:
             return
         new_config = DisplayConfig(width)
         self.max_history = new_config.max_tool_history_items
 
-        # 刷新渲染器宽度
+        # 刷新渲染器宽度（无锁，直接写简单属性）
         if self._adapter is not None:
             self._adapter.force_refresh_width()
+
+        # ★ 设置缩放刷新标记（信号安全：仅设置布尔值，无锁无 I/O）
+        self._needs_resize_refresh = True
 
     # ── diff_active 上下文 ──────────────────────────────
 
@@ -211,10 +223,32 @@ class ParallelDisplay(BaseDisplay):
     def _schedule_refresh(self) -> None:
         """节流调度帧刷新 — 仅在间隔足够且 adapter 就绪时渲染。
 
+        安全上下文（非信号处理器）：在此处检查 _needs_resize_refresh 标记，
+        刷新 _scroll_end 后调用 _render_frame(force=True) 强制重绘。
         在 output_lock 外调用（_render_frame 内部自行管理锁）。
         """
         if self._adapter is None:
             return
+
+        # ★ 缩放刷新标记处理（由 _on_resize 信号安全上下文中设置）
+        if self._needs_resize_refresh:
+            self._needs_resize_refresh = False
+            # 重新获取 scroll_end（缩放后底部行高可能变化）
+            try:
+                import src.chat_ui as _chat_ui_mod  # noqa: PLC0415
+                _chat_ui = _chat_ui_mod.get_active_chat_ui()
+                if _chat_ui is not None:
+                    se = _chat_ui.bottom_bar.get_scroll_end()
+                    self._scroll_end = int(se) if se is not None else 0
+            except Exception:
+                pass
+            self._render_frame(force=True)
+            return
+
+        # 版本未变化时跳过（避免无意义消耗节流时隙）
+        if self._store.version == self._last_rendered_version:
+            return
+
         now = time.time()
         if now - self._last_refresh_time >= _REFRESH_INTERVAL:
             self._last_refresh_time = now
@@ -255,24 +289,57 @@ class ParallelDisplay(BaseDisplay):
     def _write_frame_buffer(self, lines: list[str]) -> None:
         """构建帧缓冲区并通过 OutputAdapter 写入。
 
-        使用 ANSI 光标控制实现帧覆写（sc/rc 光标保存/恢复）。
+        使用绝对行号 \033[{row};1H 定位面板在 DECSTBM 滚动区域底部。
+        相较于旧的 sc/rc 方式，不受内容区滚动影响。
+        无 scroll_end（非 chat_ui 模式）时降级到旧 sc/rc 行为。
         """
         try:
             from .._blessed import get_terminal
             term = get_terminal()
+            clear_eol = term.clear_eol if term.clear_eol else "\033[K"
+        except Exception:
+            clear_eol = "\033[K"
+
+        total = len(lines)
+
+        # ── 主路径：使用绝对行号定位（scroll_end 已知） ──
+        if self._scroll_end > 0:
+            buf = ""
+            # 清除旧面板区域（防止面板缩小时残留）
+            if self._last_lines > 0:
+                old_start = self._scroll_end - self._last_lines + 1
+                if old_start < 1:
+                    old_start = 1
+                for r in range(old_start, self._scroll_end + 1):
+                    buf += f"\033[{r};1H{clear_eol}"
+
+            # 新面板起始行（紧贴滚动区域底部）
+            start_row = self._scroll_end - total + 1
+            if start_row < 1:
+                start_row = 1
+            buf += f"\033[{start_row};1H"
+
+            for i, line in enumerate(lines):
+                buf += line
+                if i < total - 1:
+                    buf += "\n"
+
+            self._adapter.write_raw(buf)
+            self._last_lines = total
+            return
+
+        # ── 降级路径：无 scroll_end 时使用旧 sc/rc ──
+        try:
+            from .._blessed import get_terminal
+            term = get_terminal()
             move_up = term.move_up
-            move_down = term.move_down
-            clear_eol = term.clear_eol
             sc = term.sc if term.sc else "\033[s"
             rc = term.rc if term.rc else "\033[u"
         except Exception:
             move_up = lambda n: f"\033[{n}A"
-            move_down = lambda n: f"\033[{n}B"
-            clear_eol = "\033[K"
             sc = "\033[s"
             rc = "\033[u"
 
-        total = len(lines)
         buf = ""
         if self._last_lines > 0:
             buf += rc
@@ -294,9 +361,33 @@ class ParallelDisplay(BaseDisplay):
         self._last_lines = total
 
     def _clear_frame_lines(self) -> None:
-        """清除终端上的帧行。"""
+        """清除终端上的帧行。
+
+        有 scroll_end 时使用绝对行号清除，否则降级到旧 sc/rc 行为。
+        """
         if self._adapter is None or self._last_lines <= 0:
             return
+
+        # ── 主路径：绝对行号清除 ──
+        if self._scroll_end > 0:
+            try:
+                from .._blessed import get_terminal
+                term = get_terminal()
+                clear_eol = term.clear_eol if term.clear_eol else "\033[K"
+            except Exception:
+                clear_eol = "\033[K"
+
+            start = self._scroll_end - self._last_lines + 1
+            if start < 1:
+                start = 1
+            code = ""
+            for r in range(start, self._scroll_end + 1):
+                code += f"\033[{r};1H{clear_eol}"
+            self._adapter.write_raw(code)
+            self._last_lines = 0
+            return
+
+        # ── 降级路径 ──
         try:
             from .._blessed import get_terminal
             term = get_terminal()
@@ -327,6 +418,12 @@ class ParallelDisplay(BaseDisplay):
         _chat_ui = _chat_ui_mod.get_active_chat_ui()
         if _chat_ui is not None:
             self._adapter = _chat_ui.output_adapter
+            # ★ 保存 DECSTBM 滚动区域底部行号，供 _write_frame_buffer 绝对定位使用
+            try:
+                se = _chat_ui.bottom_bar.get_scroll_end()
+                self._scroll_end = int(se) if se is not None else 0
+            except Exception:
+                self._scroll_end = 0
             # 首次渲染
             from .._lock import _try_acquire_output_lock
             with _try_acquire_output_lock(
