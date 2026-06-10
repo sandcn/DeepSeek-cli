@@ -638,7 +638,10 @@ class _BottomBar(_StatusMixin):
             old_bottom_lines = self._last_bottom_lines
             scroll_end = height - total
             delta = total - old_bottom_lines
-            old_scroll_end = height - old_bottom_lines
+            # ★ 使用 _last_height 计算 old_scroll_end，否则终端高度变化时
+            #    会错用当前 height 算出错误的 old_scroll_end，导致无法正确
+            #    清理旧内容区域中现在属于底部栏的行。
+            old_scroll_end = (self._last_height if self._last_height > 0 else height) - old_bottom_lines
             self._last_refresh = time.monotonic()
             self._last_status = new_status
 
@@ -674,6 +677,12 @@ class _BottomBar(_StatusMixin):
             sep = f"{_COLOR_SEP}\u2501{_COLOR_RESET}" * sep_len
             out.write(_blessed_move_clear(r1) + "  " + sep)
             out.write(_blessed_move_clear(r2) + self._last_status)
+
+            # ★ 终端高度缩小时，额外清理旧内容区中现在属于新底部栏区域的行
+            #    （delta=0 时上述 clear loop 的 range 可能未覆盖旧行）
+            if self._last_height > 0 and height < self._last_height:
+                for r in range(max(scroll_end + 1, 1), min(old_scroll_end, height) + 1):
+                    out.write(_blessed_move_clear(r))
 
             self._draw_input_lines_locked(out, text, r2 + 1, tw)
             input_rows = self._cached_input_rows
@@ -883,7 +892,10 @@ class _BottomBar(_StatusMixin):
             scroll_end = height - total
             old_bottom_lines = self._last_bottom_lines
             delta = total - old_bottom_lines
-            old_scroll_end = height - old_bottom_lines
+            # ★ 使用 _last_height 计算 old_scroll_end，避免终端高度变化时
+            #    使用当前 height 计算出错误的 old_scroll_end，导致 SU 定位和
+            #    清除范围不正确。
+            old_scroll_end = (self._last_height if self._last_height > 0 else height) - old_bottom_lines
 
             # ★ 在 SU 之前保存将被覆盖的行
             if delta > 0 and self._tracker is not None:
@@ -974,7 +986,9 @@ class _BottomBar(_StatusMixin):
             scroll_end = height - total
             old_bottom_lines = self._last_bottom_lines
             delta = total - old_bottom_lines
-            old_scroll_end = height - old_bottom_lines
+            # ★ 使用 _last_height 计算 old_scroll_end，避免终端高度变化时
+            #    使用当前 height 计算出错误的 old_scroll_end，导致清除范围不正确。
+            old_scroll_end = (self._last_height if self._last_height > 0 else height) - old_bottom_lines
 
             out.write(_blessed_reset_scroll_region())
 

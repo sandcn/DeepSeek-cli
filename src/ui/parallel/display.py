@@ -358,6 +358,11 @@ class ParallelDisplay(BaseDisplay):
             # 清除面板区域 — 从新旧面板上边界中较上的那个开始清除
             # 防止面板变大时（start_row < old_start）新行覆盖原有内容
             clear_start = start_row
+            # ★ 首次渲染或 scroll_end 变化后首次渲染（_last_lines==0），
+            #    旧面板内容的行数未知，从 scroll_end-20 开始清除
+            #    （20 行覆盖典型面板最大高度），确保无旧面板内容残留。
+            if self._last_lines == 0:
+                clear_start = max(1, self._scroll_end - 20)
             if self._last_lines > 0:
                 old_start = self._scroll_end - self._last_lines + 1
                 if old_start < clear_start:  # 面板缩小，从旧边界开始清除尾部残留
