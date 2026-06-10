@@ -261,6 +261,8 @@ class _BottomBar(_StatusMixin):
         self._cached_input_rows: int = _MIN_INPUT_ROWS
         self._last_rendered_text: str = ""
         self._last_scroll_end: int = 0
+        self._last_height: int = 0  # 哨兵值，首次 force_redraw() 必然触发全量重绘（终端高度始终 ≥1）
+        self._last_sync_height: int = 0  # sync_bottom_lines() 中用于检测终端 resize
         # ── 补全弹窗组合对象 ──
         self._completion = _CompletionPopup()
         # ── stdout 行追踪器 ──
@@ -454,15 +456,21 @@ class _BottomBar(_StatusMixin):
             return
         height = self._term_height()
         scroll_end = height - self._bottom_lines
-        if scroll_end == self._last_scroll_end:
+        if scroll_end == self._last_scroll_end and height == self._last_sync_height:
             return
+        resized = height != self._last_sync_height
         if scroll_end < 1:
             scroll_end = height
         self._last_scroll_end = scroll_end
+        self._last_sync_height = height
         if self._tracker is not None:
             self._tracker.set_scroll_end(scroll_end)
         out = sys.__stdout__
         out.write(f"{_blessed_set_scroll_region(1, scroll_end)}")
+        # ★ resize 后清除新 scroll_end 行上由终端模拟器位移残留的旧内容，
+        #    确保后续内容渲染从干净行开始，消除旧内容与底部栏之间的 1 行重叠
+        if resized and scroll_end >= 1:
+            out.write(_blessed_move_clear(scroll_end))
         out.write(_blessed_cursor_goto(scroll_end, 1) + _blessed_save_cursor())
         out.flush()
 
@@ -542,6 +550,8 @@ class _BottomBar(_StatusMixin):
                 self._last_bottom_lines = self._bottom_lines
                 scroll_end = height - self._bottom_lines
                 self._last_scroll_end = scroll_end
+                self._last_sync_height = height
+                self._last_height = height
                 self._tracker.set_scroll_end(scroll_end)
                 out = sys.__stdout__
                 out.write(_blessed_save_cursor())
@@ -583,6 +593,8 @@ class _BottomBar(_StatusMixin):
                 out.write(_blessed_save_cursor())
                 out.flush()
         self._last_bottom_lines = _BOTTOM_MIN_LINES
+        self._last_height = 0
+        self._last_sync_height = 0
 
     # ── 刷新 ──────────────────────────────────────────────
 
@@ -611,7 +623,9 @@ class _BottomBar(_StatusMixin):
             text = self._last_text
             total = self._bottom_lines
 
-            layout_unchanged = text == self._last_rendered_text and total == self._last_bottom_lines
+            layout_unchanged = (text == self._last_rendered_text
+                                and total == self._last_bottom_lines
+                                and height == self._last_height)
             if layout_unchanged:
                 new_status = self._format_status()
                 if new_status == self._last_status:
@@ -644,6 +658,7 @@ class _BottomBar(_StatusMixin):
                 out.write(_blessed_cursor_goto(height, 1) + _blessed_save_cursor())
                 out.flush()
                 self._last_cursor_pos = self._input_cursor_pos
+                self._last_height = height
                 return
 
             clear_start = old_scroll_end + 1
@@ -674,6 +689,7 @@ class _BottomBar(_StatusMixin):
             out.write(_blessed_cursor_goto(scroll_end, 1) + _blessed_save_cursor())
             out.flush()
             self._last_cursor_pos = self._input_cursor_pos
+            self._last_height = height
 
     # ── 内部绘制 ──────────────────────────────────────────
 
@@ -884,6 +900,7 @@ class _BottomBar(_StatusMixin):
                     out.write(_blessed_move_clear(r))
                 out.write(_blessed_restore_cursor())
                 out.write(_blessed_cursor_goto(height, 1) + _blessed_save_cursor())
+                self._last_height = height
                 out.flush()
                 return
 
@@ -925,6 +942,7 @@ class _BottomBar(_StatusMixin):
             r_cursor = r2 + 1 + self._completion.height + vis_row
             cursor_col = min(3 + vis_col, self._term_width())
             out.write(_blessed_cursor_goto(r_cursor, cursor_col))
+            self._last_height = height
             out.flush()
 
     def hide_completions(self) -> None:
@@ -967,6 +985,7 @@ class _BottomBar(_StatusMixin):
                     out.write(_blessed_move_clear(r))
                 out.write(_blessed_restore_cursor())
                 out.write(_blessed_cursor_goto(height, 1) + _blessed_save_cursor())
+                self._last_height = height
                 out.flush()
                 return
 
@@ -1014,6 +1033,7 @@ class _BottomBar(_StatusMixin):
             r_cursor = r2 + 1 + vis_row
             cursor_col = min(3 + vis_col, self._term_width())
             out.write(_blessed_cursor_goto(r_cursor, cursor_col))
+            self._last_height = height
             out.flush()
 
     def cycle_completion(self, delta: int = 1) -> int:
@@ -1054,6 +1074,7 @@ class _BottomBar(_StatusMixin):
                 r_cursor = max(1, min(r_cursor, height))
                 cursor_col = min(3 + vis_col, self._term_width())
                 out.write(_blessed_cursor_goto(r_cursor, cursor_col))
+            self._last_height = height
             out.flush()
 
         return self._completion._idx

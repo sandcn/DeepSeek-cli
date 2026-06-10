@@ -144,6 +144,23 @@ class ParallelDisplay(BaseDisplay):
         if self._adapter is None or self._stopped:
             return
         if self._store.has_running_agents:
+            # ★ 每帧刷新 scroll_end，确保终端 resize 后
+            #    面板使用最新的 DECSTBM 边界进行定位
+            try:
+                import src.chat_ui as _chat_ui_mod  # noqa: PLC0415
+                _chat_ui = _chat_ui_mod.get_active_chat_ui()
+                if _chat_ui is not None:
+                    se = _chat_ui.bottom_bar.get_scroll_end()
+                    if se is not None and se > 0:
+                        new_se = int(se)
+                        if new_se != self._scroll_end:
+                            # scroll_end 变化（终端 resize）→ 废弃旧 _last_lines，
+                            # 防止 _write_frame_buffer 的 SU/SD delta 计算
+                            # 使用新 scroll_end + 旧 _last_lines 导致错误滚动
+                            self._last_lines = 0
+                            self._scroll_end = new_se
+            except Exception:
+                pass
             self._render_frame(force=True)
 
     # ── diff_active 上下文 ──────────────────────────────

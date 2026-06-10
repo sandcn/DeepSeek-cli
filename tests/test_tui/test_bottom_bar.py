@@ -146,6 +146,7 @@ class TestBottomBarCursorPos(unittest.TestCase):
         self.bb._last_rendered_text = "hello world"
         self.bb._last_text = "hello world"
         self.bb._last_bottom_lines = self.bb._bottom_lines
+        self.bb._last_height = self.bb._term_height()  # 需同步终端高度才能命中快速路径
 
         out = io.StringIO()
         with patch.object(sys, '__stdout__', out), \
@@ -364,11 +365,12 @@ class TestBottomBarLastScrollEnd(unittest.TestCase):
                          "sync_bottom_lines 应更新 _last_scroll_end 到 19")
 
     def test_sync_bottom_lines_skips_when_unchanged(self):
-        """sync_bottom_lines() 在 _bottom_lines 未变时静默跳过。"""
+        """sync_bottom_lines() 在 _bottom_lines 未变且终端高度未变时静默跳过。"""
         self.bb._active = True
         self.bb._cached_height = 30
         self.bb._cached_width = 80
         self.bb._last_scroll_end = 25  # 30 - 5 = 25，与当前 _bottom_lines 一致
+        self.bb._last_sync_height = 30  # 终端高度未变
 
         mock_term = _mock_terminal(width=80, height=30)
         out = io.StringIO()
