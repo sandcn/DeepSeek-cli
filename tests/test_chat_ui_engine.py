@@ -510,10 +510,10 @@ class TestRenderEngineFlush:
 # ══════════════════════════════════════════════════════
 
 class TestRenderEngineDrainQueue:
-    """_drain_queue 空跳过 / 三阶段流水线 / 容错 / 底部栏触发。"""
+    """_drain_queue 三阶段流水线 / 容错 / 底部栏触发。"""
 
-    def test_drain_empty_queue_skip(self, engine):
-        """空队列 + 无面板 + 状态行不活跃 + 无 resize → 快速跳过。"""
+    def test_drain_empty_queue_no_skip(self, engine):
+        """空队列 + 状态不活跃 + 无 resize → 仍执行 resize 检测 + 锁内流水线。"""
         engine._bb.is_status_active = False
         engine._bb.is_resize_pending = False
 
@@ -522,11 +522,23 @@ class TestRenderEngineDrainQueue:
             engine._cmd_queue.get_nowait()
             engine._cmd_queue.task_done()
 
-        with patch.object(engine, "_check_resize") as m_check:
-            # drain_queue 应直接 return，不会进入锁和后续逻辑
+        engine._bb.check_resize.return_value = False
+
+        with (
+            patch("src.chat_ui._engine._try_acquire_output_lock") as m_lock,
+        ):
+            m_lock.return_value.__enter__.return_value = True
+
+            # drain_queue 不会跳过：先 _check_resize，再进入锁内流水线
             engine._drain_queue()
 
-            m_check.assert_not_called()
+        # _check_resize 被调用（阶段 0b 始终执行）
+        assert engine._cached_term_size is not None
+        # 锁内：check_resize 被调用，队列空时不渲染任何命令
+        engine._bb.check_resize.assert_called_once()
+        engine._renderer.render.assert_not_called()
+        # 阶段 3：is_status_active=False → force_redraw 不被调用
+        engine._bb.force_redraw.assert_not_called()
 
     def test_drain_empty_queue_with_status_active_triggers_redraw(
         self, engine,

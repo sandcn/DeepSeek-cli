@@ -293,15 +293,14 @@ class RenderEngine:
             self._drain_queue_safe()
 
     def _drain_queue(self) -> None:
-        """消费所有待处理渲染命令（入口方法，路由到两阶段流水线）。
+        """消费所有待处理渲染命令（入口方法，路由到三阶段流水线）。
 
         流水线：
-          0. 快速空闲跳过（锁外）— 队列空 + 状态行不活跃 + 无 resize pending 时跳过
-          0b. 终端大小变化检测（锁外）— 检测 resize 并刷新渲染器宽度缓存
+          0. 终端大小变化检测（锁外）— 检测 resize 并刷新渲染器宽度缓存
           1. resize 处理 + 上屏渲染（锁内）— 批量出队 + 渲染命令 → _phase_render()
           2. 底部栏重绘 + 光标定位（锁内）— force_redraw + 光标移回输入行 → _phase_redraw_bottom()
 
-        步骤 0/0b 在锁外、步骤 1-2 共用同一个 output_lock，
+        步骤 0 在锁外、步骤 1-2 共用同一个 output_lock，
         防止上屏渲染 / 底部栏重绘之间的终端 I/O 交错。
         output_lock 为 RLock（可重入）。
 
@@ -310,12 +309,6 @@ class RenderEngine:
           \n 会导致滚动区域上滚、顶部丢失。修复：当高度变化时先 bottom
           redraw（建立正确 DECSTBM），再渲染内容于旧 scroll_end 处。
         """
-        if (self._cmd_queue.empty() and not self._bb.is_status_active
-                and not self._bb.is_resize_pending):
-            # ★ 重置高度变化标记（无命令时无需处理）
-            self._height_changed = False
-            return
-
         # ★ 终端大小变化检测（锁外）— 避免 shutil.get_terminal_size()
         #   系统调用在 output_lock 内执行，减少锁持有时间。
         #   异常静默忽略：检测失败时降级依赖 OutputAdapter 的 5 秒 TTL。
