@@ -715,13 +715,6 @@ class _BottomBar(_StatusMixin):
                 self._tracker.set_scroll_end(scroll_end)
             out.write(f"{_blessed_set_scroll_region(1, scroll_end)}")
             self._reclaim_scroll_back(out, delta, scroll_end)
-            # ★ resize 后强制清除分隔线行（r1），防止终端 reflow 导致的 1 行偏移。
-            #   某些终端模拟器在缩小后重新排布内容，使旧内容位移导致底部栏偏高 1 行。
-            #   此处额外清除 r1 确保分隔线从干净行开始绘制——即使之前已通过 _blessed_move_clear
-            #   清除过，终端的物理重排可能使该行再次出现旧内容。
-            if height != self._last_height:
-                out.write(_blessed_move_clear(r1))
-                out.write(_blessed_move_clear(r2))
             out.write(_blessed_restore_cursor())
             out.write(_blessed_cursor_goto(scroll_end, 1) + _blessed_save_cursor())
             out.flush()
