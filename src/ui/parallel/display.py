@@ -272,6 +272,9 @@ class ParallelDisplay(BaseDisplay):
                     self._scroll_end = int(se) if se is not None else 0
             except Exception:
                 pass
+            # ★ scroll_end 变化后废弃旧 _last_lines，防止 SU/SD delta
+            #    在 resize 后的新坐标系下计算错误（与 _panel_refresh_callback 一致）
+            self._last_lines = 0
             self._render_frame(force=True)
             return
 
@@ -358,11 +361,9 @@ class ParallelDisplay(BaseDisplay):
             # 清除面板区域 — 从新旧面板上边界中较上的那个开始清除
             # 防止面板变大时（start_row < old_start）新行覆盖原有内容
             clear_start = start_row
-            # ★ 首次渲染或 scroll_end 变化后首次渲染（_last_lines==0），
-            #    旧面板内容的行数未知，从 scroll_end-20 开始清除
-            #    （20 行覆盖典型面板最大高度），确保无旧面板内容残留。
-            if self._last_lines == 0:
-                clear_start = max(1, self._scroll_end - 20)
+            # ★ _last_lines==0 时清除范围精确限定为新面板实际占用的行
+            #    （start_row ~ scroll_end），避免终端 resize 扩大时
+            #    激进清除（原 20 行）破坏上屏聊天内容。
             if self._last_lines > 0:
                 old_start = self._scroll_end - self._last_lines + 1
                 if old_start < clear_start:  # 面板缩小，从旧边界开始清除尾部残留
