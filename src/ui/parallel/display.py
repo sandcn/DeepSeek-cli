@@ -144,20 +144,19 @@ class ParallelDisplay(BaseDisplay):
         if self._adapter is None or self._stopped:
             return
         if self._store.has_running_agents:
-            # ★ 每帧刷新底部栏起始行，确保终端 resize 后
-            #    面板使用最新的底部栏边界进行定位
+            # ★ 每帧刷新 scroll_end，确保终端 resize 后
+            #    面板使用最新的 DECSTBM 边界进行定位
             try:
                 import src.chat_ui as _chat_ui_mod  # noqa: PLC0415
                 _chat_ui = _chat_ui_mod.get_active_chat_ui()
                 if _chat_ui is not None:
-                    bs = _chat_ui.bottom_bar.get_bottom_start()
-                    if bs is not None and bs > 0:
-                        # scroll_end (面板可用最后行) = bottom_start - 1
-                        new_se = int(bs) - 1
+                    se = _chat_ui.bottom_bar.get_scroll_end()
+                    if se is not None and se > 0:
+                        new_se = int(se)
                         if new_se != self._scroll_end:
-                            # 底部栏边界变化（终端 resize）→ 废弃旧 _last_lines，
+                            # scroll_end 变化（终端 resize）→ 废弃旧 _last_lines，
                             # 防止 _write_frame_buffer 的 SU/SD delta 计算
-                            # 使用新边界 + 旧 _last_lines 导致错误滚动
+                            # 使用新 scroll_end + 旧 _last_lines 导致错误滚动
                             self._last_lines = 0
                             self._scroll_end = new_se
             except Exception:
@@ -264,13 +263,13 @@ class ParallelDisplay(BaseDisplay):
         # ★ 缩放刷新标记处理（由 _on_resize 信号安全上下文中设置）
         if self._needs_resize_refresh:
             self._needs_resize_refresh = False
-            # 重新获取底部栏边界（缩放后底部行高可能变化）
+            # 重新获取 scroll_end（缩放后底部行高可能变化）
             try:
                 import src.chat_ui as _chat_ui_mod  # noqa: PLC0415
                 _chat_ui = _chat_ui_mod.get_active_chat_ui()
                 if _chat_ui is not None:
-                    bs = _chat_ui.bottom_bar.get_bottom_start()
-                    self._scroll_end = (int(bs) - 1) if bs is not None and bs > 0 else 0
+                    se = _chat_ui.bottom_bar.get_scroll_end()
+                    self._scroll_end = int(se) if se is not None else 0
             except Exception:
                 pass
             # ★ scroll_end 变化后废弃旧 _last_lines，防止 SU/SD delta
@@ -481,10 +480,10 @@ class ParallelDisplay(BaseDisplay):
         _chat_ui = _chat_ui_mod.get_active_chat_ui()
         if _chat_ui is not None:
             self._adapter = _chat_ui.output_adapter
-            # ★ 保存底部栏边界行号，供 _write_frame_buffer 绝对定位使用
+            # ★ 保存 DECSTBM 滚动区域底部行号，供 _write_frame_buffer 绝对定位使用
             try:
-                bs = _chat_ui.bottom_bar.get_bottom_start()
-                self._scroll_end = (int(bs) - 1) if bs is not None and bs > 0 else 0
+                se = _chat_ui.bottom_bar.get_scroll_end()
+                self._scroll_end = int(se) if se is not None else 0
             except Exception:
                 self._scroll_end = 0
             # 首次渲染

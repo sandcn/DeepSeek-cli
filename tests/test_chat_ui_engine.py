@@ -496,8 +496,8 @@ class TestRenderEngineDrainQueue:
 
         # 队列空时不渲染任何命令
         engine._renderer.render.assert_not_called()
-        # 阶段 3：每 0.1s 强制刷新，即使无命令也调用 force_redraw
-        engine._bb.force_redraw.assert_called_once_with(from_content_end=False)
+        # 阶段 3：is_status_active=False → force_redraw 不被调用
+        engine._bb.force_redraw.assert_not_called()
 
     def test_drain_empty_queue_with_status_active_triggers_redraw(
         self, engine,
@@ -540,10 +540,10 @@ class TestRenderEngineDrainQueue:
             call((RenderCommand.CONTENT, "world")),
         ])
 
-    def test_drain_calls_clear_old_bottom(
+    def test_drain_calls_sync_and_cursor_upper(
         self, engine,
     ):
-        """渲染前先 clear_old_bottom。"""
+        """渲染前先 sync_bottom_lines 再 ensure_cursor_upper。"""
         engine._bb.is_status_active = False
 
         engine._cmd_queue.put((RenderCommand.CONTENT, "test"))
@@ -555,8 +555,9 @@ class TestRenderEngineDrainQueue:
 
             engine._drain_queue()
 
-        # clear_old_bottom
-        engine._bb.clear_old_bottom.assert_called_once()
+        # sync_bottom_lines + ensure_cursor_upper
+        engine._bb.sync_bottom_lines.assert_called_once()
+        engine._bb.ensure_cursor_in_upper.assert_called_once()
 
 
 
@@ -612,10 +613,10 @@ class TestRenderEngineDrainQueue:
 
         engine._bb.force_redraw.assert_called_once()
 
-    def test_drain_always_force_redraw(
+    def test_drain_no_force_redraw_when_no_commands_and_no_status(
         self, engine,
     ):
-        """无命令且 is_status_active=False → 仍每 0.1s 强制刷新底部栏。"""
+        """无命令且 is_status_active=False → 不触发 force_redraw。"""
         engine._bb.is_status_active = False
 
         with (
@@ -625,7 +626,7 @@ class TestRenderEngineDrainQueue:
 
             engine._drain_queue()
 
-        engine._bb.force_redraw.assert_called_once_with(from_content_end=False)
+        engine._bb.force_redraw.assert_not_called()
 
     def test_drain_lock_timeout_returns(self, engine):
         """output_lock 超时 → 方法直接返回，不执行渲染。"""
@@ -831,24 +832,18 @@ class TestRenderEnginePositionCursor:
         assert '\033[' in text, f"应包含 ANSI 光标定位序列，实际: {text!r}"
 
 
-class TestRenderEngineDrainQueueClearOldBottom:
-    """clear_old_bottom 委托到底部栏。"""
+class TestRenderEngineEnsureCursorUpper:
+    """ensure_cursor_upper 委托到底部栏。"""
 
-    def test_phase_render_clear_old_bottom_exception_tolerated(self, engine, caplog):
-        """clear_old_bottom 异常时应继续渲染命令。"""
-        engine._bb.is_status_active = False
-        engine._bb.clear_old_bottom.side_effect = RuntimeError("boom")
-        caplog.set_level(logging.DEBUG)
+    def test_ensure_cursor_upper_delegates_to_bottom_bar(self, engine):
+        """ensure_cursor_upper 调用 _bb.ensure_cursor_in_upper()。"""
+        engine.ensure_cursor_upper()
+        engine._bb.ensure_cursor_in_upper.assert_called_once()
 
-        engine._cmd_queue.put((RenderCommand.CONTENT, "test"))
-        with (
-            patch("src.chat_ui._engine._try_acquire_output_lock") as m_lock,
-        ):
-            m_lock.return_value.__enter__.return_value = True
-            engine._drain_queue()
-
-        # 异常被吞掉，仍然渲染了命令
-        engine._renderer.render.assert_called()
+    def test_ensure_cursor_upper_method_bound(self, engine):
+        """验证 ensure_cursor_upper 是绑定的实例方法。"""
+        assert hasattr(engine, "ensure_cursor_upper")
+        assert callable(engine.ensure_cursor_upper)
 
 
 # ══════════════════════════════════════════════════════
