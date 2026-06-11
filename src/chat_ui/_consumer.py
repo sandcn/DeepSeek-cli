@@ -124,14 +124,7 @@ class ChatUIConsumer:
         if not self._started:
             return
 
-        # 1) 先停 render（与 suspend() 顺序一致）
-        self._engine.stop()
-
-        # 2) 引用计数递减（封装在 _state 模块中）
-        from . import _state
-        _state._unregister_consumer()
-
-        # 3) 取消订阅（render 已停，不可能有新入队）
+        # ★ 先取消订阅（防止新命令入队）
         if self._bound_handlers is not None:
             for event_type in self._bound_handlers:
                 try:
@@ -144,10 +137,18 @@ class ChatUIConsumer:
                         exc_info=True,
                     )
 
-        # 4) flush 残留命令
+        # ★ 再 flush — 等待 render 线程消费完队列中所有待处理命令
+        #    确保最终消息（如"再见"）被渲染到终端后再停止引擎。
         self._engine.flush()
 
-        # 5) 关闭渲染器 + teardown 底部栏（锁保护，与 suspend() 一致）
+        # ★ 最后停 render（内部 drain 残量队列，flush 后应为空）
+        self._engine.stop()
+
+        # 引用计数递减（封装在 _state 模块中）
+        from . import _state
+        _state._unregister_consumer()
+
+        # 关闭渲染器 + teardown 底部栏（锁保护，与 suspend() 一致）
         from ..ui._lock import output_lock
         with output_lock:
             self._rs.close_all()

@@ -331,7 +331,12 @@ class RenderEngine:
 
         通过 _BottomBar.compute_cursor_position() 公开 API 计算光标位置，
         避免直接访问 _BottomBar 的私有属性。
+
+        仅在底部栏激活时有效（单次模式底部栏未激活，跳过避免产生
+        无意义的 ANSI 光标定位序列）。
         """
+        if not self._bb._active:
+            return
         text, cursor_pos, h, w = self._bb.get_cursor_info()
         r_cursor, cursor_col = self._bb.compute_cursor_position(text, cursor_pos, h, w)
         try:
