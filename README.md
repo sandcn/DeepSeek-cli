@@ -14,7 +14,7 @@
 
 ```bash
 # 安装全部核心依赖
-pip install aiohttp httpx rich Pygments Jinja2 beautifulsoup4 chardet aiofiles
+pip install aiohttp httpx rich Pygments Jinja2 beautifulsoup4 chardet aiofiles blessed
 
 # 安装开发依赖（测试/代码检查等）
 pip install pytest pytest-asyncio pytest-xdist pytest-cov ruff mypy
@@ -42,6 +42,7 @@ pip install ".[dev]"
 | `beautifulsoup4` | HTML 解析 | `pip install beautifulsoup4` |
 | `chardet` | 字符编码检测 | `pip install chardet` |
 | `aiofiles` | 异步文件操作 | `pip install aiofiles` |
+| `blessed` | 终端底层控制（光标移动、屏幕管理、键盘事件） | `pip install blessed` |
 
 ---
 
@@ -103,10 +104,12 @@ pip install ".[dev]"
 
 #### 支持的多模型 Provider
 
-| Provider | 说明 |
-|---|---|
-| `deepseek` | DeepSeek 官方 API（默认） |
-| `custom` | 自定义 OpenAI 兼容 API |
+| Provider | 适配器 | 说明 |
+|---|---|---|
+| `deepseek` | `DeepSeekAdapter` | DeepSeek 官方 API（默认），支持 v4-pro、v4-flash、reasoner、chat、coder 系列 |
+| `custom` | `OpenAICompatAdapter` | 任意 OpenAI 兼容 API（OpenAI / GLM / 通义千问等），自动检测 reasoner 模型 |
+| `anthropic` | `AnthropicAdapter` | Anthropic Claude 系列模型（API 格式自动转换） |
+| `ollama` | `OllamaAdapter` | 本地 Ollama 部署模型（默认 `localhost:11434`） |
 
 ---
 
@@ -354,21 +357,94 @@ AI 代理在对话中可调用以下工具完成各类操作。共 **14 个内�
 ## 目录结构
 
 ```
-├── src/                 # 核心源码
-│   ├── api/             # API 适配层
-│   ├── config/          # 配置加载与校验
-│   ├── core/            # 核心业务逻辑
-│   ├── chat_ui/         # 终端聊天消费者（渲染引擎）
-│   ├── notifications/   # 通知系统
-│   ├── observability/   # 可观测性
-│   ├── prompt_builder/  # prompt 构建
-│   ├── tools/           # 工具调用系统
-│   ├── ui/              # 终端 UI
-│   └── webui/           # Web 界面
-├── tests/               # 测试
-├── prompts/             # 系统提词
-├── chat.py              # 入口
-└── pyproject.toml       # 项目配置与依赖
+├── chat.py                # 入口脚本（asyncio.run(main())）
+├── pyproject.toml         # 项目配置与依赖
+├── prompts/               # 系统提示词（main/sub/map/plan/review）
+├── tests/                 # 测试（100+ 测试文件，4000+ 测试用例）
+│
+├── src/                   # 核心源码
+│   ├── app.py             # 入口 re-export
+│   ├── app_init.py        # 应用初始化（参数解析、模式选择）
+│   ├── app_loop.py        # 交互式/单次模式主循环
+│   ├── application.py     # 应用层编排（Application、AppMode）
+│   ├── chat_msgs.py       # 对话消息存/取/列/导出
+│   ├── checkpoint.py      # 任务断点保存与恢复
+│   ├── paths.py           # 路径常量
+│   │
+│   ├── api/               # API 适配层
+│   │   ├── client_async.py    # httpx 异步 HTTP 客户端
+│   │   ├── model_async.py     # 模型调用入口 + 重试
+│   │   ├── interrupt_async.py # 全局中断信号
+│   │   ├── stream/            # 流式输出处理（含推理/工具调用/速度）
+│   │   ├── stream_parse.py    # 流式工具调用解析
+│   │   ├── tokens.py          # Token 启发式估算
+│   │   ├── stats.py           # 会话级 Token 统计
+│   │   ├── json_repair.py     # JSON 格式自动修复
+│   │   ├── protocols.py       # LLM 协议定义
+│   │   ├── adapters/          # 多模型适配器（DeepSeek/OpenAI/Anthropic/Ollama）
+│   │   └── renderer/          # 增量流式 Markdown 渲染引擎（AST + VNode + Diff/Patch）
+│   │
+│   ├── config/            # 配置系统
+│   │   ├── loader.py          # 配置加载/持久化（~/.chat_config/chatrc.json）
+│   │   ├── defaults.py        # 默认配置 + Provider 定义
+│   │   └── schema.py          # 配置校验
+│   │
+│   ├── core/               # 核心业务逻辑
+│   │   ├── agent.py           # 对话代理（Pipeline 中间件管道）
+│   │   ├── base_agent.py      # Agent 基类
+│   │   ├── session.py         # ChatSession 会话（状态机驱动）
+│   │   ├── subagent.py        # SubAgent 子代理
+│   │   ├── state_machine.py   # 会话状态机
+│   │   ├── pipeline.py        # 处理管道
+│   │   ├── compression.py     # 上下文压缩（策略模式）
+│   │   ├── context_manager.py # 上下文管理器
+│   │   ├── context_selector.py / context_summarizer.py
+│   │   ├── sandbox_manager.py # 文件沙盒管理器
+│   │   ├── parallel_executor.py # 并行执行器
+│   │   ├── tool_executor_async.py # 异步工具执行器
+│   │   ├── commands/          # 命令插件系统
+│   │   ├── events/            # 事件系统
+│   │   ├── middleware/        # Pipeline 中间件（审计/中断/状态机/可观测性）
+│   │   ├── ports/             # 六边形架构端口定义（13 个端口）
+│   │   └── telemetry/         # 可观测性（指标/追踪/上下文）
+│   │
+│   ├── chat_ui/            # 终端聊天渲染引擎
+│   │   ├── _consumer.py       # 事件消费者（队列 → 增量渲染）
+│   │   ├── _engine.py         # 增量渲染引擎
+│   │   ├── _dispatcher.py     # 事件分发
+│   │   └── _renderers.py      # 渲染器集合
+│   │
+│   ├── tools/              # 工具调用系统（14 个内置工具）
+│   │   ├── base.py            # Func 基类 + 元数据系统
+│   │   ├── registry.py        # 工具注册表（自动发现 + 调度）
+│   │   ├── read_file.py / write_file.py / update_file.py
+│   │   ├── search.py / find.py / ls.py
+│   │   ├── bash.py / cp.py / mv.py / rm.py / mk.py
+│   │   ├── web_search.py / user_select.py / dispatch_agent.py
+│   │   └── parsers/           # 搜索引擎结果解析器
+│   │
+│   ├── ui/                 # 终端 UI
+│   │   ├── display.py         # 显示系统
+│   │   ├── theme.py           # 主题（dark/light/high-contrast）
+│   │   ├── tui/               # TUI 组件（消息显示/状态栏/选择器）
+│   │   ├── parallel/          # 并行工具显示
+│   │   ├── events/            # UI 事件总线
+│   │   ├── common/            # 公共基础设施（state_store）
+│   │   ├── components/        # UI 组件（cost_display）
+│   │   ├── formatters/        # 参数格式化
+│   │   ├── renderer/          # 帧渲染器
+│   │   └── state/             # 显示状态管理
+│   │
+│   ├── webui/              # Web 界面
+│   │   ├── server.py          # aiohttp HTTP 服务器 + WebSocket
+│   │   ├── bridge.py          # WebEventBridge（EventBus → WebSocket）
+│   │   ├── routing/           # WebSocket 消息路由
+│   │   ├── ws_handler/        # WebSocket 处理器
+│   │   └── static/            # 前端 SPA（HTML/CSS/JS）
+│   │
+│   ├── prompt_builder/     # 系统提示词构建
+│   ├── notifications/      # 桌面通知（Termux/Linux/Windows）
+│   └── observability/      # 可观测性门面
 ```
 
 ---
