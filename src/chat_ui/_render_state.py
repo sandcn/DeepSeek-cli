@@ -6,6 +6,7 @@ Layer 1 — 依赖 _const（_ReasoningState + _THINKING_SEPARATOR）。
 
 from __future__ import annotations
 
+import logging
 import sys
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
@@ -15,8 +16,11 @@ from ._const import (
     _THINKING_SEPARATOR,
 )
 
+_logger = logging.getLogger(__name__)
+
 if TYPE_CHECKING:
     from ..api.renderer import IncrementalRenderer
+    from ..api.renderer.output import OutputAdapter
 
 
 @dataclass
@@ -41,6 +45,18 @@ class _RenderState:
     # ── 推理状态机 ──
     reasoning_state: _ReasoningState = _ReasoningState.INACTIVE
 
+    # ── 共享 OutputAdapter（由 ChatUIConsumer 注入，所有渲染器共用同一实例） ──
+    #     替代每个 IncrementalRenderer 独立创建 Console+OutputAdapter 的模式。
+    _shared_adapter: "OutputAdapter | None" = None
+
+    def set_output_adapter(self, adapter: "OutputAdapter") -> None:
+        """设置共享 OutputAdapter，供所有惰性创建的 IncrementalRenderer 使用。
+
+        必须在 get_reasoning()/get_content() 首次调用之前设置，
+        否则已创建的渲染器不会使用共享实例。
+        """
+        self._shared_adapter = adapter
+
     def get_reasoning(self) -> "IncrementalRenderer | None":
         """获取推理渲染器，惰性创建。
 
@@ -52,12 +68,17 @@ class _RenderState:
         if self.reasoning_state == _ReasoningState.CLOSED:
             return None
         if self.reasoning is None:
+            if self._shared_adapter is None:
+                _logger.warning(
+                    "get_reasoning: _shared_adapter 未设置，将使用独立 Console/OutputAdapter"
+                )
             from ..api.renderer import IncrementalRenderer
             self.reasoning = IncrementalRenderer(
                 style="dim",
                 _file=sys.__stdout__,
                 typing_speed=1000,
                 show_indicator=False,
+                output_adapter=self._shared_adapter,
             )
             self.reasoning_state = _ReasoningState.ACTIVE
         return self.reasoning
@@ -65,12 +86,17 @@ class _RenderState:
     def get_content(self) -> "IncrementalRenderer":
         """获取内容渲染器，惰性创建。"""
         if self.content is None:
+            if self._shared_adapter is None:
+                _logger.warning(
+                    "get_content: _shared_adapter 未设置，将使用独立 Console/OutputAdapter"
+                )
             from ..api.renderer import IncrementalRenderer
             self.content = IncrementalRenderer(
                 style="",
                 _file=sys.__stdout__,
                 typing_speed=1000,
                 show_indicator=False,
+                output_adapter=self._shared_adapter,
             )
         return self.content
 

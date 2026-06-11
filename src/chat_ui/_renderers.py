@@ -441,7 +441,7 @@ class ContentRenderer:
                 for r in range(1, restore_delta + 1):
                     buf += f"\033[{r};1H{clear_eol}"
 
-            self._adapter.write_raw(buf)
+            self._adapter.write_raw_buffered(buf)
             return
 
         # ── 降级路径：无 scroll_end 时使用 sc/rc ──
@@ -473,6 +473,6 @@ class ContentRenderer:
                 buf += "\n" + clear_eol
         else:
             buf += "\n" + sc
-        self._adapter.write_raw(buf)
+        self._adapter.write_raw_buffered(buf)
 
     # ── 底部栏刷新已迁移至 RenderEngine.request_bottom_redraw() ──

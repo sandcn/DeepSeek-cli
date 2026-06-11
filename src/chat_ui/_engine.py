@@ -22,6 +22,10 @@ from ..ui._blessed import get_terminal
 from ..ui._cursor_tracker import CursorTracker
 from ..ui._lock import _try_acquire_output_lock
 
+# ── 动态轮询间隔常量 ──
+_ACTIVE_RENDER_INTERVAL = 0.005   # 5ms — 有内容时的快速轮询间隔（200Hz）
+_IDLE_DRAIN_THRESHOLD = 5         # 连续 N 次空 drain 后切回 idle 间隔
+
 if TYPE_CHECKING:
     from ._protocols import BottomBarProtocol
     from ._renderers import ContentRenderer
@@ -226,7 +230,9 @@ class RenderEngine:
             "_phase_render: %d 命令, tracker %s → %s",
             len(commands), pre_render, post_render,
         )
-        sys.__stdout__.flush()
+        # ★ flush 已由每个 adapter.write()/write_raw() 内部完成，
+        #   position_cursor() 在 _phase_redraw_bottom 末尾另做一次完整 flush，
+        #   此处不再重复 flush。
 
     def _phase_pre_update_panels(self) -> None:
         """阶段 0：面板状态预更新 — 在批量出队前执行。
@@ -275,15 +281,31 @@ class RenderEngine:
     def _render(self) -> None:
         """render 线程入口。
 
+        动态轮询间隔：
+        - 有内容输出时：5ms active 间隔（200Hz），快速响应后续内容
+        - 空闲时：连续 N 次空 drain 后切回 100ms idle 间隔
+        - _cmd_event.set() 事件唤醒机制始终生效，突发场景即时响应
+
         try/finally 确保线程无论正常/异常退出都清空命令队列，
         避免队列残留命令被后续线程 (flush/drain_queue_safe) 消费时
         引发 task_done 计数不匹配或队列残留。
         """
+        idle_count = 0
         try:
             while self._render_running:
                 try:
-                    self._drain_queue()
-                    self._cmd_event.wait(timeout=_RENDER_INTERVAL)
+                    has_content = self._drain_queue()
+                    if has_content:
+                        idle_count = 0
+                        wait_timeout = _ACTIVE_RENDER_INTERVAL
+                    else:
+                        idle_count += 1
+                        wait_timeout = (
+                            _RENDER_INTERVAL
+                            if idle_count >= _IDLE_DRAIN_THRESHOLD
+                            else _ACTIVE_RENDER_INTERVAL
+                        )
+                    self._cmd_event.wait(timeout=wait_timeout)
                     self._cmd_event.clear()
                 except Exception:
                     _logger.critical(
@@ -302,13 +324,16 @@ class RenderEngine:
             # ★ 确保所有退出路径都清空队列（包含正常退出、KeyboardInterrupt 等）
             self._drain_queue_safe()
 
-    def _drain_queue(self) -> None:
+    def _drain_queue(self) -> bool:
         """消费所有待处理渲染命令。
 
         三阶段布局（Phase 0 在锁外，Phase 1-3 在 output_lock 内）：
           0. 面板状态更新 → _phase_pre_update_panels()  ← 锁外，不写终端，只推命令到队列
           1. 批量出队 + 上屏渲染 → _phase_render()      ← 锁内，含 SUBAGENT_FRAME
           2. 底部栏重绘 + 光标定位 → _phase_redraw_bottom()
+
+        Returns:
+            bool: True 表示有命令被处理，False 表示空队列。
         """
         commands: list[tuple] = []
 
@@ -320,7 +345,7 @@ class RenderEngine:
 
         with _try_acquire_output_lock(name="drain_queue", timeout=1.0) as locked:
             if not locked:
-                return
+                return False
 
             # ★ 批量出队（含上一步推送的 SUBAGENT_FRAME 命令）
             while True:
@@ -336,6 +361,8 @@ class RenderEngine:
                 self._phase_render(commands)
 
             self._phase_redraw_bottom(has_content)
+
+            return has_content
 
     def _drain_queue_safe(self) -> None:
         """兜底清空命令队列（无锁、不抛异常）。

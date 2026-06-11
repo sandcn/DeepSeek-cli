@@ -80,6 +80,10 @@ class ChatUIConsumer:
         # ★ 事件分发器（通过 engine.push_cmd 回调入队，解耦队列实现）
         self._disp = EventDispatcher(push_cmd=self._engine.push_cmd)
 
+        # ★ 将 OutputAdapter 注入 _RenderState，使推理/内容渲染器共享同一实例
+        #    替代每个 IncrementalRenderer 独立创建 Console+OutputAdapter 的模式。
+        self._rs.set_output_adapter(output_adapter)
+
         self._cmpl = _CmplHandler(
             self._bottom_bar, CompletionEngine(),
             request_redraw=self._engine.request_bottom_redraw,

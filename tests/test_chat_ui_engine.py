@@ -891,19 +891,22 @@ class TestRenderEngineEdgeCases:
         assert not engine._cmd_event.is_set()
 
     def test_render_uses_render_interval(self, engine):
-        """_render 中 cmd_event.wait(timeout=_RENDER_INTERVAL)。"""
+        """_render 中动态轮询间隔：空 drain 连续 N 次后切 idle 间隔。"""
         from src.chat_ui._const import _RENDER_INTERVAL
+        from src.chat_ui._engine import _ACTIVE_RENDER_INTERVAL, _IDLE_DRAIN_THRESHOLD
 
         engine._render_running = True
 
-        # _drain_queue 第1次正常完成，第2次退出循环
+        # _drain_queue 返回 False（空队列），连续跑超过 idle 阈值
         call_count = 0
+        total_calls = _IDLE_DRAIN_THRESHOLD + 2  # 阈值后的 idle 调用
 
         def _side_effect_drain():
             nonlocal call_count
             call_count += 1
-            if call_count >= 2:
+            if call_count >= total_calls:
                 engine._render_running = False
+            return False  # 空队列
 
         engine._drain_queue = MagicMock(side_effect=_side_effect_drain)
         engine._cmd_event.wait = MagicMock()
@@ -911,9 +914,17 @@ class TestRenderEngineEdgeCases:
 
         engine._render()
 
-        # 验证每次 wait 都带正确的 timeout（循环运行了 2 轮）
-        assert engine._cmd_event.wait.call_count >= 1
-        engine._cmd_event.wait.assert_called_with(timeout=_RENDER_INTERVAL)
+        all_calls = engine._cmd_event.wait.call_args_list
+        # 前 IDLE_DRAIN_THRESHOLD-1 次：idle_count < 阈值 → active 间隔
+        for idx in range(_IDLE_DRAIN_THRESHOLD - 1):
+            assert all_calls[idx] == call(timeout=_ACTIVE_RENDER_INTERVAL), (
+                f"第 {idx+1} 次应使用 active 间隔"
+            )
+        # 第 IDLE_DRAIN_THRESHOLD 次起：idle_count >= 阈值 → idle 间隔
+        for idx in range(_IDLE_DRAIN_THRESHOLD - 1, len(all_calls)):
+            assert all_calls[idx] == call(timeout=_RENDER_INTERVAL), (
+                f"第 {idx+1} 次应使用 idle 间隔"
+            )
 
 
 

@@ -55,22 +55,27 @@ class IncrementalRenderer:
 
     def __init__(self, code_theme: str = "monokai", style: str = "",
                  show_indicator: bool = True, typing_speed: int = 1000,
-                 show_summary: bool = False, _file=None, width: int | None = None):
+                 show_summary: bool = False, _file=None, width: int | None = None,
+                 output_adapter: OutputAdapter | None = None):
         self._closed = False
         self._ctx = RenderContext()
         # 标题自动编号（默认关闭，开启后会在标题前显示如 "1.2.3  " 编号）
         self._ctx.heading_numbering = False
         self._show_summary = show_summary
 
-        console_config = get_safe_console_config()
-        if style:
-            console_config["style"] = style
-        if _file is not None:
-            console_config["file"] = _file
-        if width is not None:
-            console_config["width"] = width
-        console = Console(**console_config)
-        self._output = OutputAdapter(console)
+        # ★ 支持外部注入 OutputAdapter（共享模式），消除双 Console 实例竞争
+        if output_adapter is not None:
+            self._output = output_adapter
+        else:
+            console_config = get_safe_console_config()
+            if style:
+                console_config["style"] = style
+            if _file is not None:
+                console_config["file"] = _file
+            if width is not None:
+                console_config["width"] = width
+            console = Console(**console_config)
+            self._output = OutputAdapter(console)
 
         self._parser = RecursiveDescentParser(ctx=self._ctx)
         self._indicator = StreamingIndicator(self._output)

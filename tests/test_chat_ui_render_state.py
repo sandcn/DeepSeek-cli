@@ -82,6 +82,7 @@ class TestRenderStateGetReasoning:
             _file=sys.__stdout__,
             typing_speed=1000,
             show_indicator=False,
+            output_adapter=None,
         )
 
     def test_get_reasoning_returns_same_instance(self):
@@ -141,6 +142,7 @@ class TestRenderStateGetContent:
             _file=sys.__stdout__,
             typing_speed=1000,
             show_indicator=False,
+            output_adapter=None,
         )
 
     def test_get_content_returns_same_instance(self):
