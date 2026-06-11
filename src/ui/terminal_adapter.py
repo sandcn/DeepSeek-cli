@@ -22,11 +22,19 @@ from __future__ import annotations
 
 import logging
 import sys
-from typing import List, Optional
+import signal as _signal
+import weakref
+from typing import Callable, List, Optional
 
 from ._blessed import get_terminal
 
 _logger = logging.getLogger(__name__)
+
+
+# ── SIGWINCH 注册表 ─────────────────────────────────────
+# 使用 WeakSet 替代 list，避免 __del__ 不可靠调用导致的引用泄漏。
+# 当 TerminalAdapter 实例被 GC 回收时，WeakSet 自动移除该引用。
+_resize_instances = weakref.WeakSet()  # 所有注册了回调的 TerminalAdapter 实例
 
 
 # ── 模块级终端尺寸查询（通过 Blessed Terminal） ──
@@ -56,6 +64,18 @@ class TerminalAdapter:
 
     def __init__(self, stdout: Optional = None):
         self._stdout = stdout or sys.stdout
+        self._on_resize = None  # 终端尺寸变化回调: (new_width, new_height) -> None
+        _resize_instances.add(self)
+
+    # ── 回调注册 ────────────────────────────────────────
+
+    def set_resize_callback(self, callback: Callable[[int, int], None]) -> None:
+        """设置终端尺寸变化回调。callback 签名: (width: int, height: int) -> None"""
+        self._on_resize = callback
+
+    def get_resize_callback(self):
+        """获取当前终端尺寸变化回调。返回 None 表示无回调。"""
+        return self._on_resize
 
     # ── 终端尺寸 ────────────────────────────────────────
 
@@ -295,3 +315,57 @@ class TerminalAdapter:
         #    旧帧顶部行，形成终端残留。保留峰值确保帧定位始终覆盖
         #    历史最大区域。
         return max(last_lines, total)
+
+
+# ── SIGWINCH 信号处理 ──────────────────────────────────
+
+# 模块级回调列表：供非 TerminalAdapter 消费者（如 _BottomBar）注册
+# 信号安全的轻量回调。回调签名: (cols: int, rows: int) -> None
+_sigwinch_callbacks: list = []
+
+
+def register_sigwinch_callback(cb) -> None:
+    """注册 SIGWINCH 回调（模块级，信号安全）。
+
+    cb 签名: (cols: int, rows: int) -> None。
+    回调中仅做轻量操作（如设置 bool 标记），避免死锁。
+    """
+    if cb not in _sigwinch_callbacks:
+        _sigwinch_callbacks.append(cb)
+
+
+def unregister_sigwinch_callback(cb) -> None:
+    """注销 SIGWINCH 回调。"""
+    try:
+        _sigwinch_callbacks.remove(cb)
+    except ValueError:
+        pass
+
+
+def _handle_sigwinch(signum, frame):
+    """SIGWINCH 处理：通知所有已注册的 TerminalAdapter 实例 + 模块级回调。
+
+    注意：此为信号处理器，禁止使用 logging（非信号安全），
+    禁止获取锁（可能导致死锁）。异常静默丢弃。
+    """
+    try:
+        cols, rows = query_terminal_size()
+    except Exception:
+        cols, rows = 80, 24
+    for inst in _resize_instances:
+        if inst._on_resize:
+            try:
+                inst._on_resize(cols, rows)
+            except Exception:
+                pass  # 信号安全：不使用 logging
+    for cb in _sigwinch_callbacks:
+        try:
+            cb(cols, rows)
+        except Exception:
+            pass  # 信号安全：不使用 logging
+
+
+try:
+    _signal.signal(_signal.SIGWINCH, _handle_sigwinch)
+except (AttributeError, ValueError):
+    pass  # Windows 不支持 SIGWINCH，静默忽略
