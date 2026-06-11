@@ -20,11 +20,11 @@ from .base import Func, tool_metadata
 class DispatchAgents(Func):
     name = "dispatch_agent"
 
-    def __init__(self, description: str, prompt: str, agent_type: str = "ordinary"):
+    def __init__(self, description: str, prompt: str, target_agent_type: str = "ordinary"):
         super().__init__()
         self.description = description
         self.prompt = prompt
-        self.agent_type = agent_type
+        self.target_agent_type = target_agent_type  # 目标子Agent类型，与 Func.agent_type 独立
 
     @classmethod
     def display_params(cls, arguments: dict, max_len: int = 80) -> str:
@@ -45,7 +45,7 @@ class DispatchAgents(Func):
                     "【参数行为说明】"
                     "\n- **description**：UI标题，用作子任务在界面中的显示标签"
                     "\n- **prompt**：完整任务指令，子Agent据此独立执行全部工作"
-                    "\n- **type**：子Agent类型（ordinary 通用型 / map 只读分析型），后续可扩展"
+                    "\n- **type**：子Agent类型。ordinary（通用）/ map（只读分析）/ review（代码审查）/ plan（计划生成，write_file/update_file 仅限 .chat/plan/ 目录）"
                     "\n\n"
                     "【使用限制】"
                     "\n- 单次调用执行单个子Agent任务（独立执行），同一轮多次调用自动共享执行器实现真正并行"
@@ -73,7 +73,7 @@ class DispatchAgents(Func):
                         "type": {
                             "type": "string",
                             "enum": ["ordinary", "map", "review", "plan"],
-                            "description": "子Agent类型。ordinary（默认）：排除 user_select 和 dispatch_agent，其他工具全开。map：只读分析型，仅保留 read_file/search/find/ls 等读取工具，专用于项目代码分析和地图生成。review：代码审查型，只读工具集（含 read_file/search/find/ls/web_search），专用于文件列表的 Code Review（P0-P3 分级输出）。plan：计划型，只读分析工具 + write_file/update_file，根据指令生成计划并写入 .chat/plan/ 目录。",
+                            "description": "子Agent类型。ordinary（默认）：排除 user_select 和 dispatch_agent，其他工具全开。map：只读分析型，仅保留 read_file/search/find/ls 等读取工具，专用于项目代码分析和地图生成。review：代码审查型，只读工具集（含 read_file/search/find/ls/web_search），专用于文件列表的 Code Review（P0-P3 分级输出）。plan：计划型，只读分析工具 + write_file/update_file（仅限写入 .chat/plan/ 目录），根据指令生成计划。",
                         },
                     },
                     "required": ["description", "prompt"],
@@ -86,7 +86,7 @@ class DispatchAgents(Func):
         return cls(
             description=args.get("description", ""),
             prompt=args.get("prompt", ""),
-            agent_type=args.get("type", "ordinary"),
+            target_agent_type=args.get("type", "ordinary"),
         )
 
     async def execute(self) -> str:
@@ -100,7 +100,7 @@ class DispatchAgents(Func):
         if shared is not None and shared.is_batch_mode:
             # 传递 tool_label，用于前端将 subagent 路由到对应的 dispatch 工具容器
             tool_label = getattr(self, 'tool_label', '')
-            idx = shared.add_agent(self.description, self.prompt, agent_type=self.agent_type, model=getattr(self.agent, 'model', None), tool_label=tool_label)
+            idx = shared.add_agent(self.description, self.prompt, agent_type=self.target_agent_type, model=getattr(self.agent, 'model', None), tool_label=tool_label)
             await shared.register_and_wait()
             r = shared.get_result(idx)
             return self._format_single(r)

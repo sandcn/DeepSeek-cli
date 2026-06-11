@@ -21,6 +21,13 @@ _logger = logging.getLogger(__name__)
 
 # ── 类型策略：agent_type → 排除的工具集合 ─────────────
 # 每种类型映射一个不可用工具集，便于未来扩展。
+#
+# 策略差异说明：
+# - ordinary: 通用型，排除用户交互和子代理调度
+# - map: 只读分析，排除所有写入类工具 + web_search
+# - review: 代码审查，排除所有写入类工具，保留 web_search（可查文档）
+# - plan: 计划生成，保留 write_file/update_file，但在 FileToolBase
+#   ._validate_path_and_size() 中有额外的路径白名单校验（仅限 .chat/plan/）
 _TOOL_EXCLUSION_MAP = {
     "ordinary": {"dispatch_agent", "user_select"},
     "map": {
@@ -214,6 +221,7 @@ class SubAgent(BaseAgent):
                     # on_before 是同步回调，用 run_in_executor 避免阻塞事件循环
                     await asyncio.get_running_loop().run_in_executor(None, on_before, tc, detail)
                 func = self._registry.dispatch(tc["name"], tc["arguments"], agent=self.parent)
+                func.agent_type = self.agent_type  # 注入 agent_type，供工具运行时判断权限
                 if run_method:
                     output = await run_method(func, tc)
                 else:

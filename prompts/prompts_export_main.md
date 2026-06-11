@@ -146,6 +146,8 @@
 ## 修改/新需求先委派 plan Agent（强制）
 涉及文件修改或新需求，必须先 `dispatch_agent(type="plan")`，产出计划文件到 `.chat/plan/`。执行顺序：map → plan → execute。
 
+**必须传入关联文件列表（强制）**：派发 plan Agent 时，prompt 中必须传入所有关联文件列表（调用方/被调用方/依赖模块/配置/被引用文件），按 `N. src/...` 编号格式逐行列出。
+
 文件名格式：`plan_YYYYMMDD_HHMMSS_<slug>.md`，slug 英文小写+下划线+数字 ≤40 字符，**裸文件名禁止路径分隔符**。prompt 首行强制写入 `计划文件名:`。
 
 ```
@@ -202,8 +204,10 @@ dispatch_agent(type="plan", description="计划: <摘要>", prompt="计划文件
 ## 先审查再完成（强制）
 所有修改完成后必须 `dispatch_agent(type="review")` 审查。多文件并发派发。
 
+**必须传入 map 关联文件列表（强制）**：派发 review Agent 时，prompt 中必须传入 map 返回的所有关联文件列表（调用方/被调用方/依赖模块/配置/被引用文件），按 `N. src/...` 编号格式逐行列出。
+
 ```
-dispatch_agent(type="review", description="CR: <模块>", prompt="map 返回的所有关联文件列表+\n修改类型+修改摘要+调用链+计划文件路径+\n\nmap 关联文件列表:\n<map 返回的所有关联文件，按 N. src/... 编号格式逐行列出>")
+dispatch_agent(type="review", description="CR: <模块>", prompt="修改类型+修改摘要+调用链+计划文件路径\n\nmap 关联文件列表:\n<map 返回的所有关联文件，按 N. src/... 编号格式逐行列出>")
 ```
 
 - P0/P1/P2/P3 → 阻断，必须全部修复。审查通过标准：零问题。

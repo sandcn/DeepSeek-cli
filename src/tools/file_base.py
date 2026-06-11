@@ -132,6 +132,33 @@ class FileToolBase(Func):
                     raise PathSecurityError(f"符号链接指向越界路径: {self.path} -> {real}")
         except ValueError as e:
             raise PathSecurityError(str(e))
+
+        # plan agent 路径白名单校验：只能写入 .chat/plan/ 目录
+        # 设计说明：仅当 agent_type 显式为 "plan" 时触发，默认值 None 不触发。
+        # agent_type 由 SubAgent._handle_tool_calls 注入，保证 plan 子代理的所有
+        # 工具调用都会被正确标记。若未注入（直接 ToolRegistry.dispatch），无 agent
+        # 上下文即无 plan 语义，不限制是正确行为。
+        if getattr(self, 'agent_type', None) == 'plan':
+            # 使用 os.path.realpath 解析 .chat/plan/ 的所有符号链接中间目录，
+            # 防止 plan_dir 本身是符号链接指向外部目录时被绕过
+            plan_dir = os.path.realpath(os.path.abspath(os.path.join(os.getcwd(), '.chat', 'plan')))
+            abs_path = os.path.abspath(self.path)
+            # os.path.commonpath 判断子路径关系，防 ../ 穿越
+            try:
+                common = os.path.commonpath([plan_dir, abs_path])
+                if common != plan_dir:
+                    raise PathSecurityError(
+                        f"plan agent 只能在 .chat/plan/ 目录下写入文件。"
+                        f"当前路径: {self.path}（解析后: {abs_path}），"
+                        f"不在允许的目录: {plan_dir}"
+                    )
+            except ValueError:
+                # 不同驱动器（Windows）等无法比较的情况
+                raise PathSecurityError(
+                    f"plan agent 只能在 .chat/plan/ 目录下写入文件。"
+                    f"当前路径: {self.path} 无法与 .chat/plan/ 比较"
+                )
+
         if os.path.exists(self.path):
             try:
                 check_file_size(self.path, MAX_FILE_SIZE_MB)

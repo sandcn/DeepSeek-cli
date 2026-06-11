@@ -28,6 +28,7 @@ class Func(abc.ABC):
 
     def __init__(self):
         self.agent = None  # 调用工具的Agent实例
+        self.agent_type: str | None = None  # 调用方Agent类型（ordinary/map/review/plan），None表示未知
         self.execution_time: float = 0.0
         self.execution_count: int = 0
         self.execution_success: int = 0
@@ -35,6 +36,27 @@ class Func(abc.ABC):
 
     def set_agent(self, agent):
         self.agent = agent
+
+    @classmethod
+    def can_use(cls, tool_name: str, agent_type: str = "ordinary") -> "tuple[bool, str | None]":
+        """检查指定类型的 agent 能否使用某工具。
+
+        Args:
+            tool_name: 工具名称
+            agent_type: Agent 类型（ordinary/map/review/plan），默认 ordinary
+
+        Returns:
+            (is_allowed: bool, error_message: str | None)
+            - True + None：可以使用
+            - False + 错误信息：不可使用，附带原因
+        """
+        # 延迟导入：避免 tools.base ↔ core.subagent 的循环依赖
+        from ..core.subagent import _get_excluded_tools
+        excluded = _get_excluded_tools(agent_type)
+        if tool_name in excluded:
+            return (False, f"工具 '{tool_name}' 不可用于 '{agent_type}' 类型 agent，"
+                    f"该 agent 类型的工具白名单已排除此工具")
+        return (True, None)
 
     @classmethod
     def get_metadata(cls) -> Optional["ToolMetadata"]:

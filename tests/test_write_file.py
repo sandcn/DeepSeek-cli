@@ -263,3 +263,129 @@ class TestMeta:
     def test_mode_desc(self, tmp_path):
         wf = WriteFileFunc(str(tmp_path / "x.txt"), "")
         assert wf._mode_desc() == "覆盖写入整个文件"
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# 8. plan agent 路径白名单校验
+# ═══════════════════════════════════════════════════════════════════════════
+
+class TestPlanAgentPathRestriction:
+    """plan agent write_file/update_file 只能写入 .chat/plan/ 目录。"""
+
+    @pytest.fixture
+    def _mock_sandbox(self):
+        with patch(
+            "src.tools.file_base.async_record_file_change_from_context",
+            AsyncMock(),
+        ):
+            yield
+
+    @pytest.mark.asyncio
+    async def test_plan_agent_writes_to_chat_plan_succeeds(self, tmp_path, _mock_sandbox, monkeypatch):
+        """plan agent 写入 .chat/plan/ 下的文件应成功。"""
+        # 将 cwd 临时设置为 tmp_path，并创建 .chat/plan/ 目录
+        monkeypatch.chdir(tmp_path)
+        plan_dir = tmp_path / ".chat" / "plan"
+        plan_dir.mkdir(parents=True)
+
+        plan_file = plan_dir / "test_plan.md"
+        wf = WriteFileFunc(str(plan_file), "# Plan Content")
+        wf.agent_type = "plan"
+        result = await wf.execute()
+
+        assert "写入成功" in result
+        assert plan_file.read_text() == "# Plan Content"
+
+    @pytest.mark.asyncio
+    async def test_plan_agent_writes_outside_chat_plan_fails(self, tmp_path, monkeypatch):
+        """plan agent 写入 .chat/plan/ 外的文件应失败。"""
+        monkeypatch.chdir(tmp_path)
+        # 确保 .chat/plan/ 存在
+        plan_dir = tmp_path / ".chat" / "plan"
+        plan_dir.mkdir(parents=True)
+
+        outside_file = tmp_path / "outside.md"
+        wf = WriteFileFunc(str(outside_file), "content")
+        wf.agent_type = "plan"
+        result = await wf.execute()
+
+        assert "写入失败" in result
+        assert "plan agent" in result or ".chat/plan/" in result
+
+    @pytest.mark.asyncio
+    async def test_plan_agent_path_traversal_blocked(self, tmp_path, monkeypatch):
+        """plan agent 路径穿越被阻止（../ 绕过）。"""
+        monkeypatch.chdir(tmp_path)
+        plan_dir = tmp_path / ".chat" / "plan"
+        plan_dir.mkdir(parents=True)
+
+        # 尝试用 ../ 穿越到外部目录
+        traversal_path = str(plan_dir / ".." / ".." / "etc" / "passwd")
+        wf = WriteFileFunc(traversal_path, "malicious")
+        wf.agent_type = "plan"
+        result = await wf.execute()
+
+        assert "写入失败" in result
+
+    @pytest.mark.asyncio
+    async def test_plan_agent_writes_to_chat_plan_root_succeeds(self, tmp_path, _mock_sandbox, monkeypatch):
+        """plan agent 直接写入 .chat/plan/ 目录路径本身（目录写入会被底层拒绝，但校验应通过）。"""
+        monkeypatch.chdir(tmp_path)
+        plan_dir = tmp_path / ".chat" / "plan"
+        plan_dir.mkdir(parents=True)
+
+        # 写入 .chat/plan/ 根下的文件
+        plan_root_file = plan_dir / "index.md"
+        wf = WriteFileFunc(str(plan_root_file), "# Index")
+        wf.agent_type = "plan"
+        result = await wf.execute()
+
+        assert "写入成功" in result
+        assert plan_root_file.read_text() == "# Index"
+
+    @pytest.mark.asyncio
+    async def test_plan_agent_subdir_in_chat_plan_succeeds(self, tmp_path, _mock_sandbox, monkeypatch):
+        """plan agent 写入 .chat/plan/subdir/ 下的文件应成功。"""
+        monkeypatch.chdir(tmp_path)
+        plan_subdir = tmp_path / ".chat" / "plan" / "archive"
+        plan_subdir.mkdir(parents=True)
+
+        plan_file = plan_subdir / "archived_plan.md"
+        wf = WriteFileFunc(str(plan_file), "# Archived")
+        wf.agent_type = "plan"
+        result = await wf.execute()
+
+        assert "写入成功" in result
+
+    @pytest.mark.asyncio
+    async def test_non_plan_agent_no_restriction(self, tmp_path, _mock_sandbox, monkeypatch):
+        """非 plan agent（agent_type=None 或 ordinary）无路径限制。"""
+        monkeypatch.chdir(tmp_path)
+
+        # agent_type 为 None
+        outside_file = tmp_path / "no_restrict.md"
+        wf = WriteFileFunc(str(outside_file), "content")
+        wf.agent_type = None
+        result = await wf.execute()
+        assert "写入成功" in result
+
+        # agent_type 为 ordinary
+        outside_file2 = tmp_path / "no_restrict2.md"
+        wf2 = WriteFileFunc(str(outside_file2), "content")
+        wf2.agent_type = "ordinary"
+        result = await wf2.execute()
+        assert "写入成功" in result
+
+    @pytest.mark.asyncio
+    async def test_plan_agent_chat_plan_not_exist_fails(self, tmp_path, monkeypatch):
+        """.chat/plan/ 目录不存在时 plan agent 写入也应失败（路径不在白名单内）。"""
+        monkeypatch.chdir(tmp_path)
+        # 不创建 .chat/plan/ 目录
+
+        outside_file = tmp_path / "some_file.md"
+        wf = WriteFileFunc(str(outside_file), "content")
+        wf.agent_type = "plan"
+        result = await wf.execute()
+
+        # 即使 .chat/plan/ 不存在，写入外部路径也应被拒绝
+        assert "写入失败" in result

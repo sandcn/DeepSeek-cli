@@ -426,3 +426,117 @@ class TestDisplayParams:
     def test_default_with_max_len_param(self):
         result = _ConcreteTool.display_params({"key": "value"}, max_len=40)
         assert result == ""
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# 12. can_use
+# ═══════════════════════════════════════════════════════════════════════════
+
+class TestCanUse:
+    """can_use() 类方法根据 agent_type 判断工具是否可用。"""
+
+    def test_default_ordinary_allows_write_file(self):
+        """ordinary agent 可以使用 write_file。"""
+        allowed, err = Func.can_use("write_file", "ordinary")
+        assert allowed is True
+        assert err is None
+
+    def test_default_ordinary_allows_read_file(self):
+        """ordinary agent 可以使用 read_file。"""
+        allowed, err = Func.can_use("read_file", "ordinary")
+        assert allowed is True
+        assert err is None
+
+    def test_ordinary_excludes_dispatch_agent(self):
+        """ordinary agent 不能使用 dispatch_agent。"""
+        allowed, err = Func.can_use("dispatch_agent", "ordinary")
+        assert allowed is False
+        assert err is not None
+        assert "dispatch_agent" in err
+        assert "ordinary" in err
+
+    def test_ordinary_excludes_user_select(self):
+        """ordinary agent 不能使用 user_select。"""
+        allowed, err = Func.can_use("user_select", "ordinary")
+        assert allowed is False
+        assert err is not None
+
+    def test_map_allows_read_only_tools(self):
+        """map agent 只能使用只读工具。"""
+        # read_file 可用
+        allowed, err = Func.can_use("read_file", "map")
+        assert allowed is True
+
+        # write_file 不可用
+        allowed, err = Func.can_use("write_file", "map")
+        assert allowed is False
+        assert err is not None
+
+    def test_map_excludes_write_tools(self):
+        """map agent 不能使用写入类工具。"""
+        for tool in ("write_file", "update_file", "bash", "rm", "mv", "cp", "mk"):
+            allowed, err = Func.can_use(tool, "map")
+            assert allowed is False, f"map agent 不应能使用 {tool}"
+
+    def test_review_excludes_write_tools(self):
+        """review agent 不能使用写入类工具。"""
+        for tool in ("write_file", "update_file", "bash", "rm", "mv", "cp", "mk"):
+            allowed, err = Func.can_use(tool, "review")
+            assert allowed is False, f"review agent 不应能使用 {tool}"
+
+    def test_review_allows_web_search(self):
+        """review agent 可以使用 web_search。"""
+        allowed, err = Func.can_use("web_search", "review")
+        assert allowed is True
+
+    def test_plan_allows_write_file(self):
+        """plan agent 可以使用 write_file（但运行时受路径限制）。"""
+        allowed, err = Func.can_use("write_file", "plan")
+        assert allowed is True
+        assert err is None
+
+    def test_plan_allows_update_file(self):
+        """plan agent 可以使用 update_file（但运行时受路径限制）。"""
+        allowed, err = Func.can_use("update_file", "plan")
+        assert allowed is True
+        assert err is None
+
+    def test_plan_excludes_bash(self):
+        """plan agent 不能使用 bash。"""
+        allowed, err = Func.can_use("bash", "plan")
+        assert allowed is False
+        assert err is not None
+
+    def test_unknown_agent_type_falls_back_to_ordinary(self):
+        """未知 agent_type 回退 ordinary 策略。"""
+        allowed, err = Func.can_use("write_file", "unknown_type")
+        # ordinary 允许 write_file
+        assert allowed is True
+
+    def test_can_use_is_class_method(self):
+        """can_use 是类方法，无需实例化即可调用。"""
+        # 直接通过 Func 基类调用
+        allowed, err = Func.can_use("read_file", "ordinary")
+        assert allowed is True
+
+        # 通过子类调用
+        allowed, err = _ConcreteTool.can_use("read_file", "ordinary")
+        assert allowed is True
+
+    def test_can_use_default_agent_type(self):
+        """默认 agent_type 为 ordinary。"""
+        allowed, err = Func.can_use("write_file")
+        assert allowed is True
+        allowed, err = Func.can_use("dispatch_agent")
+        assert allowed is False
+
+    def test_agent_type_instance_attribute_default(self):
+        """Func 实例的 agent_type 默认为 None。"""
+        tool = _ConcreteTool()
+        assert tool.agent_type is None
+
+    def test_agent_type_can_be_set(self):
+        """agent_type 可以手动设置。"""
+        tool = _ConcreteTool()
+        tool.agent_type = "plan"
+        assert tool.agent_type == "plan"

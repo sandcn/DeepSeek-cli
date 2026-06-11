@@ -45,19 +45,19 @@ class TestDispatchAgentsInit:
         assert da.prompt == ""
 
     def test_init_default_agent_type(self):
-        """默认 agent_type 为 ordinary"""
+        """默认 target_agent_type 为 ordinary"""
         da = DispatchAgents(description="task", prompt="do it")
-        assert da.agent_type == "ordinary"
+        assert da.target_agent_type == "ordinary"
 
     def test_init_custom_agent_type(self):
-        """可以指定 agent_type"""
-        da = DispatchAgents(description="task", prompt="do it", agent_type="ordinary")
-        assert da.agent_type == "ordinary"
+        """可以指定 target_agent_type"""
+        da = DispatchAgents(description="task", prompt="do it", target_agent_type="ordinary")
+        assert da.target_agent_type == "ordinary"
 
     def test_init_map_agent_type(self):
         """map 类型正确设置"""
-        da = DispatchAgents(description="分析项目", prompt="生成项目地图", agent_type="map")
-        assert da.agent_type == "map"
+        da = DispatchAgents(description="分析项目", prompt="生成项目地图", target_agent_type="map")
+        assert da.target_agent_type == "map"
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -106,7 +106,7 @@ class TestDispatchAgentsFromArgs:
             "prompt": "do it",
             "type": "ordinary",
         })
-        assert da.agent_type == "ordinary"
+        assert da.target_agent_type == "ordinary"
 
     def test_from_args_with_map_type(self):
         """from_args 解析 map 类型"""
@@ -115,7 +115,7 @@ class TestDispatchAgentsFromArgs:
             "prompt": "生成完整项目地图",
             "type": "map",
         })
-        assert da.agent_type == "map"
+        assert da.target_agent_type == "map"
 
     def test_from_args_default_type(self):
         """from_args 缺省 type 时默认 ordinary"""
@@ -123,7 +123,7 @@ class TestDispatchAgentsFromArgs:
             "description": "task",
             "prompt": "do it",
         })
-        assert da.agent_type == "ordinary"
+        assert da.target_agent_type == "ordinary"
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -276,7 +276,7 @@ class TestDispatchAgentsExecute:
         mock_agent = MagicMock()
         mock_agent._shared_executor = mock_executor
 
-        da = DispatchAgents(description="项目地图", prompt="分析项目", agent_type="map")
+        da = DispatchAgents(description="项目地图", prompt="分析项目", target_agent_type="map")
         da.set_agent(mock_agent)
 
         result = await da.execute()
@@ -302,7 +302,7 @@ class TestDispatchAgentsExecute:
         mock_agent = MagicMock()
         mock_agent._shared_executor = mock_executor
 
-        da = DispatchAgents(description="代码审查", prompt="审查 user.py", agent_type="review")
+        da = DispatchAgents(description="代码审查", prompt="审查 user.py", target_agent_type="review")
         da.set_agent(mock_agent)
 
         result = await da.execute()
