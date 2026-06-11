@@ -28,10 +28,6 @@ from ..events.event_types import LiveOutputEvent
 from ._config import DisplayConfig
 from ..base_display import BaseDisplay
 from ..common.state_store import AgentStateStore
-from ..terminal_adapter import (
-    register_sigwinch_callback,
-    unregister_sigwinch_callback,
-)
 
 # ── 常量 ────────────────────────────────────────────────
 
@@ -105,32 +101,9 @@ class ParallelDisplay(BaseDisplay):
         self._last_rendered_version: int = 0
         # DECSTBM 滚动区域底部行号（由 start() 从 chat_ui bottom_bar 获取）
         self._scroll_end: int = 0
-        # 缩放刷新标记（信号安全：在 _on_resize 中设置，_schedule_refresh 中消费）
-        self._needs_resize_refresh: bool = False
 
         # stdout 捕获锁
         self._capture_lock = asyncio.Lock()
-
-    # ── 终端缩放回调 ────────────────────────────────────
-
-    def _on_resize(self, width: int, height: int) -> None:
-        """终端缩放回调：重建 DisplayConfig + 刷新宽度 + 设置缩放刷新标记。
-
-        信号安全约束（terminal_adapter._handle_sigwinch 禁止获取锁）：
-        不在此处调用 _schedule_refresh() 或任何 I/O/锁操作，
-        仅设置标记 _needs_resize_refresh，由 _schedule_refresh 安全上下文处理。
-        """
-        if width <= 0:
-            return
-        new_config = DisplayConfig(width)
-        self.max_history = new_config.max_tool_history_items
-
-        # 刷新渲染器宽度（无锁，直接写简单属性）
-        if self._adapter is not None:
-            self._adapter.force_refresh_width()
-
-        # ★ 设置缩放刷新标记（信号安全：仅设置布尔值，无锁无 I/O）
-        self._needs_resize_refresh = True
 
     # ── 面板刷新回调（由 render 线程 10Hz 调用） ─────────
 
@@ -144,7 +117,7 @@ class ParallelDisplay(BaseDisplay):
         if self._adapter is None or self._stopped:
             return
         if self._store.has_running_agents:
-            # ★ 每帧刷新底部栏起始行，确保终端 resize 后
+            # ★ 每帧刷新底部栏起始行，确保底部栏边界变化后
             #    面板使用最新的底部栏边界进行定位
             try:
                 import src.chat_ui as _chat_ui_mod  # noqa: PLC0415
@@ -155,7 +128,7 @@ class ParallelDisplay(BaseDisplay):
                         # scroll_end (面板可用最后行) = bottom_start - 1
                         new_se = int(bs) - 1
                         if new_se != self._scroll_end:
-                            # 底部栏边界变化（终端 resize）→ 废弃旧 _last_lines，
+                            # 底部栏边界变化 → 废弃旧 _last_lines，
                             # 防止 _write_frame_buffer 的 SU/SD delta 计算
                             # 使用新边界 + 旧 _last_lines 导致错误滚动
                             self._last_lines = 0
@@ -254,29 +227,9 @@ class ParallelDisplay(BaseDisplay):
     def _schedule_refresh(self) -> None:
         """节流调度帧刷新 — 仅在间隔足够且 adapter 就绪时渲染。
 
-        安全上下文（非信号处理器）：在此处检查 _needs_resize_refresh 标记，
-        刷新 _scroll_end 后调用 _render_frame(force=True) 强制重绘。
         在 output_lock 外调用（下行链路 OutputAdapter.write_raw 自行管理锁）。
         """
         if self._adapter is None:
-            return
-
-        # ★ 缩放刷新标记处理（由 _on_resize 信号安全上下文中设置）
-        if self._needs_resize_refresh:
-            self._needs_resize_refresh = False
-            # 重新获取底部栏边界（缩放后底部行高可能变化）
-            try:
-                import src.chat_ui as _chat_ui_mod  # noqa: PLC0415
-                _chat_ui = _chat_ui_mod.get_active_chat_ui()
-                if _chat_ui is not None:
-                    bs = _chat_ui.bottom_bar.get_bottom_start()
-                    self._scroll_end = (int(bs) - 1) if bs is not None and bs > 0 else 0
-            except Exception:
-                pass
-            # ★ scroll_end 变化后废弃旧 _last_lines，防止 SU/SD delta
-            #    在 resize 后的新坐标系下计算错误（与 _panel_refresh_callback 一致）
-            self._last_lines = 0
-            self._render_frame(force=True)
             return
 
         # 版本未变化时跳过（避免无意义消耗节流时隙）
@@ -499,8 +452,6 @@ class ParallelDisplay(BaseDisplay):
                     self._render_frame()
 
         # 注册终端 resize 回调
-        register_sigwinch_callback(self._on_resize)
-
         # ★ 注册面板刷新回调到 chat_ui render 线程（10Hz），
         #   替代独立的 500ms 定时器，使 subagent 面板刷新与 render 线程同步。
         try:
@@ -542,9 +493,6 @@ class ParallelDisplay(BaseDisplay):
                 _chat_ui.set_panel_refresh_callback(None)
         except Exception:
             _logger.debug("注销 panel_refresh_callback 失败", exc_info=True)
-
-        # 注销终端 resize 回调
-        unregister_sigwinch_callback(self._on_resize)
 
         # 清除终端帧
         if self._adapter is not None:
