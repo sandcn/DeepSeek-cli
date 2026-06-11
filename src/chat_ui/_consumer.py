@@ -342,3 +342,10 @@ class ChatUIConsumer:
     def flush(self, timeout: float | None = 5.0) -> None:
         """阻塞等待所有待处理渲染命令执行完毕。（委托 _engine）"""
         self._engine.flush(timeout=timeout)
+
+    def push_cmd(self, cmd: tuple) -> None:
+        """向渲染命令队列入队（线程安全）。
+
+        由 ParallelDisplay 等外部模块使用，委托给 RenderEngine.push_cmd()。
+        """
+        self._engine.push_cmd(cmd)

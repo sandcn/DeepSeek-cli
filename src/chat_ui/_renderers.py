@@ -54,7 +54,8 @@ _RENDER_DISPATCH: dict[int, tuple[str, tuple[int, ...]]] = {
     RenderCommand.TOOL_COUNT_DEC:  ("_do_tool_count_dec",  ()),
     RenderCommand.TOOL_FAIL_INC:   ("_do_tool_fail_inc",   ()),
     RenderCommand.ERROR:           ("_do_error",           (1,)),
-    # 值 18-20 已废弃 — 补全弹窗由 _CmplHandler 直接设置状态 + 请求 render 线程重绘
+    RenderCommand.SUBAGENT_FRAME:  ("_do_subagent_frame",  (1,)),
+    # 值 19-20 已废弃 — 补全弹窗由 _CmplHandler 直接设置状态 + 请求 render 线程重绘
 }
 
 
@@ -373,5 +374,105 @@ class ContentRenderer:
             self._on_display_messages(messages, speed=speed)
         # 消息列表的行数不易估算，保守记录至少 1 行
         self._tracker.record_newlines(1)
+
+    # ── SubAgent 面板帧渲染 ──────────────────────────
+
+    def _do_subagent_frame(self, frame_lines: tuple) -> None:
+        """渲染 SubAgent 面板帧 — frame_lines 为预渲染的 ANSI 行列表。
+
+        通过 OutputAdapter 直接写入终端（行间自动加 \n 换行）。
+        frame_lines 是 tuple 类型（经由命令队列传递），
+        结构为 (lines_list, scroll_end, last_lines, clear_eol)。
+
+        内联实现 ANSI 绝对行号定位（同原 ParallelDisplay._write_frame_buffer
+        主路径逻辑），由 ParallelDisplay._push_frame_cmd() 打包推送。
+        """
+        # frame_lines 结构: (lines_list, scroll_end, last_lines, clear_eol)
+        # 由 ParallelDisplay._push_frame_cmd() 打包
+        if not frame_lines:
+            return
+        lines = frame_lines[0]
+        scroll_end = frame_lines[1]
+        last_lines = frame_lines[2]
+        clear_eol = frame_lines[3]
+
+        if not lines or not isinstance(lines, (list, tuple)):
+            return
+
+        # ── 使用绝对行号定位（同 _write_frame_buffer 主路径逻辑） ──
+        total = len(lines)
+        buf = ""
+
+        # 面板行数超过滚动区域高度时，截断上部
+        if scroll_end > 0 and total > scroll_end:
+            lines = lines[total - scroll_end:]
+            total = scroll_end
+
+        if scroll_end > 0 and last_lines > 0 and total > last_lines:
+            delta = total - last_lines
+            buf += f"\033[{scroll_end};1H\033[{delta}S"
+
+        if scroll_end > 0:
+            start_row = scroll_end - total + 1
+
+            # 清除面板区域
+            clear_start = start_row
+            if last_lines > 0:
+                old_start = scroll_end - last_lines + 1
+                if old_start < clear_start:
+                    clear_start = old_start
+            if clear_start < 1:
+                clear_start = 1
+            for r in range(clear_start, scroll_end + 1):
+                buf += f"\033[{r};1H{clear_eol}"
+            buf += f"\033[{start_row};1H"
+
+            for i, line in enumerate(lines):
+                buf += line
+                if i < total - 1:
+                    buf += "\n"
+
+            # 面板缩小后回收空间
+            restore_delta = 0
+            if last_lines > 0 and total < last_lines:
+                restore_delta = last_lines - total
+            if restore_delta > 0:
+                buf += f"\033[{scroll_end};1H\033[{restore_delta}T"
+                for r in range(1, restore_delta + 1):
+                    buf += f"\033[{r};1H{clear_eol}"
+
+            self._adapter.write_raw(buf)
+            return
+
+        # ── 降级路径：无 scroll_end 时使用 sc/rc ──
+        try:
+            from ..ui._blessed import get_terminal
+            term = get_terminal()
+            move_up = term.move_up
+            sc = term.sc if term.sc else "\033[s"
+            rc = term.rc if term.rc else "\033[u"
+        except Exception:
+            move_up = lambda n: f"\033[{n}A"
+            sc = "\033[s"
+            rc = "\033[u"
+
+        buf = ""
+        if last_lines > 0:
+            buf += rc
+            buf += move_up(last_lines)
+
+        for i, line in enumerate(lines):
+            buf += "\r" + clear_eol + line
+            if i < total - 1:
+                buf += "\n"
+
+        extra = last_lines - total
+        if extra > 0:
+            buf += "\n" + sc
+            for _ in range(extra):
+                buf += "\n" + clear_eol
+        else:
+            buf += "\n" + sc
+        self._adapter.write_raw(buf)
 
     # ── 底部栏刷新已迁移至 RenderEngine.request_bottom_redraw() ──

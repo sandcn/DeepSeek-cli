@@ -71,7 +71,8 @@ class RenderCommand(IntEnum):
     TOOL_FAIL_INC  = 15  # (15,) — 工具失败计数+1
     ERROR          = 16  # (16, message: str) — 系统错误（红色 ! 样式）
     TOOL_COUNT_DEC     = 17  # (17,) — 工具计数-1
-    # 值 18-20 已废弃 — 补全弹窗状态由 _CmplHandler 直接设置 + 请求 render 线程重绘
+    SUBAGENT_FRAME     = 18  # (18, frame_lines: tuple[str]) — SubAgent 面板帧
+    # 值 19-20 已废弃 — 补全弹窗状态由 _CmplHandler 直接设置 + 请求 render 线程重绘
 
 
 # ═══════════════════════════════════════════════════════════

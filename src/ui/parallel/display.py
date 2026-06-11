@@ -5,13 +5,13 @@
   - ParallelDisplay：生命周期控制 + 状态代理 + 刷新调度
   - FrameRenderer：纯函数渲染（state → 行列表）
 
-渲染路径：ParallelDisplay → FrameRenderer → OutputAdapter 直接写入。
-不再依赖 chat_ui Control 体系和 SUBAGENT_REFRESH 命令队列。
+渲染路径：ParallelDisplay → push_cmd(RenderCommand.SUBAGENT_FRAME) → 命令队列
+  → render 线程出队 → ContentRenderer._do_subagent_frame() → 终端输出。
 
-2026-06-10 重构：
-  - 移除 SubAgentPanelControl 依赖
-  - 面板帧直接通过 OutputAdapter 写入，不经过 chat_ui 命令队列
-  - 移除 _active_subagent_panel 全局引用
+2026-06-12 重构：
+  - 面板帧改为通过 RenderCommand.SUBAGENT_FRAME 命令队列渲染
+  - 10Hz fps 状态更新（_phase_pre_update_panels）移到批量出队前执行
+  - 移除直接调用 _write_frame_buffer() 的路径
 """
 
 from __future__ import annotations
@@ -32,6 +32,7 @@ from ..terminal_adapter import (
     register_sigwinch_callback,
     unregister_sigwinch_callback,
 )
+from ...chat_ui._const import RenderCommand
 
 # ── 常量 ────────────────────────────────────────────────
 
@@ -62,16 +63,17 @@ class _DiffGuard:
 
 
 class ParallelDisplay(BaseDisplay):
-    """并行 Agent 实时显示管理器 — 直接渲染版（代理层）
+    """并行 Agent 实时显示管理器 — 命令队列渲染版（代理层）
 
     职责：
     1. 生命周期控制（start/stop）
     2. 状态更新代理（代理到 AgentStateStore）
-    3. 面板刷新调度（直接通过 OutputAdapter 渲染帧）
+    3. 面板刷新调度（通过 RenderCommand.SUBAGENT_FRAME 命令队列渲染）
     4. 特殊输出（capture_and_print/print_output）
 
-    帧渲染通过 OutputAdapter 直接写入终端，不经过 chat_ui 命令队列。
-    output_lock 由 OutputAdapter 内部自行管理。
+    帧渲染通过 RenderCommand 推送到 chat_ui 命令队列，
+    由 render 线程的 ContentRenderer._do_subagent_frame() 消费并输出。
+    fps 状态更新在 _drain_queue() 的 Phase 0（批量出队前）执行。
     """
 
     def __init__(self, max_history: int = _DEFAULT_HISTORY,
@@ -98,6 +100,9 @@ class ParallelDisplay(BaseDisplay):
 
         # OutputAdapter（由 start() 中从 ChatUIConsumer 获取）
         self._adapter = None
+
+        # ★ push_cmd 回调（由 start() 从 ChatUIConsumer 获取，线程安全）
+        self._push_cmd: Any = None
 
         # 帧状态
         self._frame: int = 0
@@ -132,20 +137,21 @@ class ParallelDisplay(BaseDisplay):
         # ★ 设置缩放刷新标记（信号安全：仅设置布尔值，无锁无 I/O）
         self._needs_resize_refresh = True
 
-    # ── 面板刷新回调（由 render 线程 10Hz 调用） ─────────
+    # ── 面板刷新回调（由 render 线程 10Hz Phase 0 调用） ──
 
     def _panel_refresh_callback(self) -> None:
-        """面板刷新回调 — 由 chat_ui render 线程 _phase_refresh_panels() 10Hz 调用。
+        """面板刷新回调 — 由 chat_ui render 线程 _phase_pre_update_panels() 10Hz 调用。
 
-        替代了原先的 _elapsed_ticker 500ms 独立定时器。
-        仅在存在 running 状态的 Agent 时才强制渲染帧，
-        使耗时显示（elapsed time）实时更新，空闲时不消耗 CPU。
+        仅在存在 running 状态的 Agent 时工作：
+        1. 更新 scroll_end（终端 resize 自适应）
+        2. 推送 SUBAGENT_FRAME 命令到渲染队列（由 Phase 1 批量出队消费）
+
+        注意：不在本回调中直接写终端，所有面板渲染都通过命令队列执行。
         """
         if self._adapter is None or self._stopped:
             return
         if self._store.has_running_agents:
-            # ★ 每帧刷新 scroll_end，确保终端 resize 后
-            #    面板使用最新的 DECSTBM 边界进行定位
+            # 每帧刷新 scroll_end，确保终端 resize 后面板定位正确
             try:
                 import src.chat_ui as _chat_ui_mod  # noqa: PLC0415
                 _chat_ui = _chat_ui_mod.get_active_chat_ui()
@@ -154,14 +160,12 @@ class ParallelDisplay(BaseDisplay):
                     if se is not None and se > 0:
                         new_se = int(se)
                         if new_se != self._scroll_end:
-                            # scroll_end 变化（终端 resize）→ 废弃旧 _last_lines，
-                            # 防止 _write_frame_buffer 的 SU/SD delta 计算
-                            # 使用新 scroll_end + 旧 _last_lines 导致错误滚动
                             self._last_lines = 0
                             self._scroll_end = new_se
             except Exception:
                 pass
-            self._render_frame(force=True)
+            # 推送 SUBAGENT_FRAME 命令到渲染队列
+            self._push_frame_cmd()
 
     # ── diff_active 上下文 ──────────────────────────────
 
@@ -248,14 +252,13 @@ class ParallelDisplay(BaseDisplay):
         self._store.set_result(label, result_text, error)
         self._schedule_refresh()
 
-    # ── 帧渲染（直接通过 OutputAdapter） ──────────────
+    # ── 帧渲染（通过命令队列） ────────────────────────
 
     def _schedule_refresh(self) -> None:
-        """节流调度帧刷新 — 仅在间隔足够且 adapter 就绪时渲染。
+        """节流调度帧刷新 — 推送 SUBAGENT_FRAME 命令到渲染队列。
 
         安全上下文（非信号处理器）：在此处检查 _needs_resize_refresh 标记，
-        刷新 _scroll_end 后调用 _render_frame(force=True) 强制重绘。
-        在 output_lock 外调用（下行链路 OutputAdapter.write_raw 自行管理锁）。
+        刷新 _scroll_end 后推送命令。不在此处直接写终端。
         """
         if self._adapter is None:
             return
@@ -263,7 +266,6 @@ class ParallelDisplay(BaseDisplay):
         # ★ 缩放刷新标记处理（由 _on_resize 信号安全上下文中设置）
         if self._needs_resize_refresh:
             self._needs_resize_refresh = False
-            # 重新获取 scroll_end（缩放后底部行高可能变化）
             try:
                 import src.chat_ui as _chat_ui_mod  # noqa: PLC0415
                 _chat_ui = _chat_ui_mod.get_active_chat_ui()
@@ -272,37 +274,37 @@ class ParallelDisplay(BaseDisplay):
                     self._scroll_end = int(se) if se is not None else 0
             except Exception:
                 pass
-            # ★ scroll_end 变化后废弃旧 _last_lines，防止 SU/SD delta
-            #    在 resize 后的新坐标系下计算错误（与 _panel_refresh_callback 一致）
             self._last_lines = 0
-            self._render_frame(force=True)
+            self._push_frame_cmd()
             return
 
-        # 版本未变化时跳过（避免无意义消耗节流时隙）
+        # 版本未变化时跳过
         if self._store.version == self._last_rendered_version:
             return
 
         now = time.time()
         if now - self._last_refresh_time >= _REFRESH_INTERVAL:
             self._last_refresh_time = now
-            self._render_frame()
+            self._push_frame_cmd()
 
-    def _render_frame(self, force: bool = False, final: bool = False) -> None:
-        """渲染当前帧到终端。
+    def _build_frame(self, final: bool = False) -> tuple | None:
+        """构建面板帧数据（纯函数，不写终端）。
 
-        直接通过 OutputAdapter 写入帧缓冲区，不经过 chat_ui 命令队列。
-        OutputAdapter.write_raw() 内部自动管理 output_lock。
+        渲染当前状态到行列表，打包为 (lines, scroll_end, last_lines, clear_eol) 元组，
+        供 _push_frame_cmd() 推送到命令队列。
 
         Args:
-            force: 跳过版本号检查强制渲染
-            final: 最终帧
+            final: 是否结束帧
+
+        Returns:
+            (lines, scroll_end, last_lines, clear_eol) 或 None（adapter 缺失时）
         """
         if self._adapter is None:
-            return
+            return None
 
         current_version = self._store.version
-        if not final and not force and current_version == self._last_rendered_version:
-            return
+        if not final and current_version == self._last_rendered_version:
+            return None
         self._last_rendered_version = current_version
 
         self._frame += 1
@@ -317,15 +319,6 @@ class ParallelDisplay(BaseDisplay):
             final=final,
         )
 
-        self._write_frame_buffer(lines)
-
-    def _write_frame_buffer(self, lines: list[str]) -> None:
-        """构建帧缓冲区并通过 OutputAdapter 写入。
-
-        使用绝对行号 \033[{row};1H 定位面板在 DECSTBM 滚动区域底部。
-        相较于旧的 sc/rc 方式，不受内容区滚动影响。
-        无 scroll_end（非 chat_ui 模式）时降级到旧 sc/rc 行为。
-        """
         try:
             from .._blessed import get_terminal
             term = get_terminal()
@@ -333,94 +326,22 @@ class ParallelDisplay(BaseDisplay):
         except Exception:
             clear_eol = "\033[K"
 
-        # ★ 无需插入空行：摘要行（彩色图标+进度条）本身具有醒目视觉风格，
-        #    足以在面板与上屏内容之间形成清晰边界。额外空行会使 total 膨胀 1，
-        #    start_row 上移一行，导致面板覆盖上屏内容的最后一行。
-        total = len(lines)
+        return (lines, self._scroll_end, self._last_lines, clear_eol)
 
-        # ── 主路径：使用绝对行号定位（scroll_end 已知） ──
-        if self._scroll_end > 0:
-            # 面板行数超过滚动区域高度时，截断上部（保留最新内容），防止覆盖上屏
-            if total > self._scroll_end:
-                lines = lines[total - self._scroll_end:]
-                total = self._scroll_end
+    def _push_frame_cmd(self) -> None:
+        """渲染当前帧并推送 SUBAGENT_FRAME 命令到 chat_ui 渲染队列。
 
-            buf = ""
-
-            # ── 面板扩大时，向上滚动内容腾出空间（SU），面板向下扩展 ──
-            if self._last_lines > 0 and total > self._last_lines:
-                delta = total - self._last_lines
-                # 定位到 scroll_end 行首，执行 SU 向上滚动 delta 行
-                buf += f"\033[{self._scroll_end};1H\033[{delta}S"
-
-            # 新面板起始行（紧贴滚动区域底部）
-            start_row = self._scroll_end - total + 1
-
-            # 清除面板区域 — 从新旧面板上边界中较上的那个开始清除
-            # 防止面板变大时（start_row < old_start）新行覆盖原有内容
-            clear_start = start_row
-            # ★ _last_lines==0 时清除范围精确限定为新面板实际占用的行
-            #    （start_row ~ scroll_end），避免终端 resize 扩大时
-            #    激进清除（原 20 行）破坏上屏聊天内容。
-            if self._last_lines > 0:
-                old_start = self._scroll_end - self._last_lines + 1
-                if old_start < clear_start:  # 面板缩小，从旧边界开始清除尾部残留
-                    clear_start = old_start
-            if clear_start < 1:
-                clear_start = 1
-            for r in range(clear_start, self._scroll_end + 1):
-                buf += f"\033[{r};1H{clear_eol}"
-            buf += f"\033[{start_row};1H"
-
-            for i, line in enumerate(lines):
-                buf += line
-                if i < total - 1:
-                    buf += "\n"
-
-            # ── 面板缩小后回收空间：SD 下拉内容 + 清顶部空行 ──
-            restore_delta = 0
-            if self._last_lines > 0 and total < self._last_lines:
-                restore_delta = self._last_lines - total
-            if restore_delta > 0:
-                buf += f"\033[{self._scroll_end};1H\033[{restore_delta}T"
-                for r in range(1, restore_delta + 1):
-                    buf += f"\033[{r};1H{clear_eol}"
-
-            self._adapter.write_raw(buf)
-            self._last_lines = total
+        由 _schedule_refresh() 和 _panel_refresh_callback() 调用。
+        帧数据在消费侧（ContentRenderer._do_subagent_frame）写入终端。
+        """
+        packed = self._build_frame()
+        if packed is None:
             return
-
-        # ── 降级路径：无 scroll_end 时使用旧 sc/rc ──
-        try:
-            from .._blessed import get_terminal
-            term = get_terminal()
-            move_up = term.move_up
-            sc = term.sc if term.sc else "\033[s"
-            rc = term.rc if term.rc else "\033[u"
-        except Exception:
-            move_up = lambda n: f"\033[{n}A"
-            sc = "\033[s"
-            rc = "\033[u"
-
-        buf = ""
-        if self._last_lines > 0:
-            buf += rc
-            buf += move_up(self._last_lines)
-
-        for i, line in enumerate(lines):
-            buf += "\r" + clear_eol + line
-            if i < total - 1:
-                buf += "\n"
-
-        extra = self._last_lines - total
-        if extra > 0:
-            buf += "\n" + sc
-            for _ in range(extra):
-                buf += "\n" + clear_eol
-        else:
-            buf += "\n" + sc
-        self._adapter.write_raw(buf)
-        self._last_lines = total
+        # 更新 _last_lines 供下次 SU/SD delta 计算
+        lines = packed[0]
+        self._last_lines = len(lines)
+        if self._push_cmd is not None:
+            self._push_cmd((RenderCommand.SUBAGENT_FRAME, packed))
 
     def _clear_frame_lines(self) -> None:
         """清除终端上的帧行。
@@ -480,22 +401,22 @@ class ParallelDisplay(BaseDisplay):
         _chat_ui = _chat_ui_mod.get_active_chat_ui()
         if _chat_ui is not None:
             self._adapter = _chat_ui.output_adapter
-            # ★ 保存 DECSTBM 滚动区域底部行号，供 _write_frame_buffer 绝对定位使用
+            # ★ 获取 push_cmd 回调（向命令队列推送 SUBAGENT_FRAME 命令）
+            self._push_cmd = _chat_ui.push_cmd
+            # ★ 保存 DECSTBM 滚动区域底部行号，供帧定位使用
             try:
                 se = _chat_ui.bottom_bar.get_scroll_end()
                 self._scroll_end = int(se) if se is not None else 0
             except Exception:
                 self._scroll_end = 0
-            # 首次渲染
+            # 首次渲染（推送 SUBAGENT_FRAME 命令到队列）
             from .._lock import _try_acquire_output_lock
             with _try_acquire_output_lock(
                 name="parallel_display.start", timeout=0.5,
             ) as _locked:
                 if _locked:
                     _chat_ui.ensure_cursor_upper()
-                    self._render_frame()
-                else:
-                    self._render_frame()
+                self._push_frame_cmd()
 
         # 注册终端 resize 回调
         register_sigwinch_callback(self._on_resize)
@@ -510,13 +431,13 @@ class ParallelDisplay(BaseDisplay):
             )
 
     def refresh(self, force: bool = False):
-        """公开刷新入口 — 直接渲染当前帧到终端。
+        """公开刷新入口 — 推送 SUBAGENT_FRAME 命令到渲染队列。
 
         Args:
-            force: 是否跳过版本号检查强制渲染。
+            force: 是否跳过版本号检查强制渲染（当前忽略，由 _build_frame 内部检查）。
         """
         if self._adapter is not None:
-            self._render_frame(force=force)
+            self._push_frame_cmd()
 
     # ── 停止 ────────────────────────────────────────────
 

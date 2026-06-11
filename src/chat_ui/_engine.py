@@ -70,7 +70,7 @@ class RenderEngine:
         self._bottom_redraw_requested = threading.Event()
 
         # ── 面板刷新回调（由 ParallelDisplay 在 start() 中注册，
-        #     在 _phase_refresh_panels() 中被 render 线程 10Hz 调用） ──
+        #     在 _phase_pre_update_panels() 中被 render 线程 10Hz 调用） ──
         self._panel_refresh_cb: Callable[[], None] | None = None
 
     # ── 公开 API ─────────────────────────────────────────
@@ -100,7 +100,7 @@ class RenderEngine:
     def set_panel_refresh_callback(
         self, callback: Callable[[], None] | None,
     ) -> None:
-        """设置面板刷新回调，由 render 线程的 _phase_refresh_panels() 以 10Hz 调用。
+        """设置面板刷新回调，由 render 线程的 _phase_pre_update_panels() 以 10Hz 调用。
 
         Args:
             callback: 无参回调，或 None 来注销。
@@ -228,12 +228,16 @@ class RenderEngine:
         )
         sys.__stdout__.flush()
 
-    def _phase_refresh_panels(self) -> None:
-        """阶段 2：面板刷新 — 调用外部注册的刷新回调（如 ParallelDisplay）。
+    def _phase_pre_update_panels(self) -> None:
+        """阶段 0：面板状态预更新 — 在批量出队前执行。
 
-        由 render 线程在 output_lock 保护下以 10Hz 频率调用，
-        用于驱动 SubAgent 面板的耗时显示更新（elapsed time），
-        消除独立的 500ms 定时刷新任务。
+        调用外部注册的刷新回调（如 ParallelDisplay）来更新面板状态
+        （scroll_end、resize 标记等），回调内部会推送 SUBAGENT_FRAME
+        命令到队列，随后在批量出队阶段被消费。
+
+        与旧版 _phase_refresh_panels 的区别：
+        - 旧版：在 Phase 2 直接渲染面板（不经过命令队列）
+        - 新版：在 Phase 0 更新状态 + 推送命令，渲染在 Phase 1 通过命令队列执行
         """
         if self._panel_refresh_cb is not None:
             try:
@@ -302,17 +306,21 @@ class RenderEngine:
         """消费所有待处理渲染命令。
 
         全部三阶段在 output_lock 保护下执行：
+          0. 面板状态更新 → _phase_pre_update_panels()  ← 在批量出队前执行
           1. 批量出队渲染命令
-          2. 上屏渲染 → _phase_render()
-          3. 面板刷新 → _phase_refresh_panels()
-          4. 底部栏重绘 + 光标定位 → _phase_redraw_bottom()
+          2. 上屏渲染 → _phase_render()                 ← 含 SUBAGENT_FRAME
+          3. 底部栏重绘 + 光标定位 → _phase_redraw_bottom()
         """
         commands: list[tuple] = []
         with _try_acquire_output_lock(name="drain_queue", timeout=1.0) as locked:
             if not locked:
                 return
 
-            # ★ 批量出队
+            # ★ Phase 0: 面板状态更新（fps 更新）在渲染前执行
+            #    更新 spinner 帧号、耗时等状态，然后由回调推送 SUBAGENT_FRAME 命令
+            self._phase_pre_update_panels()
+
+            # ★ 批量出队（含上一步推送的 SUBAGENT_FRAME 命令）
             while True:
                 try:
                     commands.append(self._cmd_queue.get_nowait())
@@ -324,8 +332,6 @@ class RenderEngine:
 
             if commands:
                 self._phase_render(commands)
-
-            self._phase_refresh_panels()
 
             self._phase_redraw_bottom(has_content)
 
