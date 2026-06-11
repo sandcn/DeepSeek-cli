@@ -201,18 +201,17 @@ def _blessed_set_scroll_region(top: int, bottom: int) -> str:
 def _blessed_reset_scroll_region() -> str:
     """重置滚动区域为全屏（DECSTBM 重置）。
 
-    通过 Blessed Terminal.csr(0, -1) 生成全屏滚动区域序列。
-    -1 表示屏幕底部。
-    Blessed 不可用时回退到原始 ANSI。
+    ★ P0 修复 2026-06-11: 始终返回原始 ANSI 序列 \033[r，不使用
+    Blessed Terminal.csr(0, -1) 生成。Blessed 的 csr(0, -1) 会返回
+    \033[1;0r（因为 -1+1=0），这是非法的 DECSTBM 参数——底部行号 0
+    小于顶部行号 1。不同终端对此非法序列的处理不一致：
+    Termux/部分终端会清空屏幕或行为异常，导致「弹出补全信息清空上屏内容」的 Bug。
+    \033[r（无参数）是标准 ANSI/DEC 重置序列，所有终端正确支持。
 
     Returns:
-        ANSI 序列字符串。
+        ANSI 序列字符串（"\033[r"）。
     """
-    try:
-        seq = get_terminal().csr(0, -1)
-        return seq if isinstance(seq, str) and seq else "\033[r"
-    except Exception:
-        return "\033[r"
+    return "\033[r"
 
 
 _logger = logging.getLogger(__name__)
