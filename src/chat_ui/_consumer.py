@@ -20,6 +20,7 @@ from ._renderers import ContentRenderer
 from ..ui.tui._message_display import _display_messages
 from ..ui._bottom_bar import _BottomBar
 from ..ui._completion import CompletionEngine
+from ..ui._cursor_tracker import CursorTracker
 from ..ui.events.event_bus import DisplayEventBus
 from rich.console import Console
 from ..api.renderer.output import OutputAdapter
@@ -49,7 +50,12 @@ class ChatUIConsumer:
 
         # ── 子系统（构造顺序：被依赖者先构造） ──
         self._rs = _RenderState()             # 渲染器生命周期管理
-        self._bottom_bar = _BottomBar()       # 终端底部固定输入栏
+
+        # ★ 全局光标坐标追踪器（所有渲染子系统共享同一实例）
+        self._cursor_tracker = CursorTracker()
+
+        # ★ 终端底部固定输入栏（注入光标追踪器）
+        self._bottom_bar = _BottomBar(cursor_tracker=self._cursor_tracker)
 
         # ★ 创建 OutputAdapter（由 ChatUIConsumer 构造，注入到 ContentRenderer）
         # 替代原来 ContentRenderer 内部创建 Console 和 OutputAdapter 的模式。
@@ -60,11 +66,16 @@ class ChatUIConsumer:
         # ★ 渲染引擎（内部管理 queue + render 线程）
         # on_display_messages 回调注入：消除 ContentRenderer 对 tui._message_display 的直接 import
         # output_adapter 构造注入：消除 ContentRenderer 对 rich.Console 的运行时 import
+        # cursor_tracker 注入：所有渲染子系统共享同一光标追踪实例
         self._renderer = ContentRenderer(
             self._rs, output_adapter, self._bottom_bar,
             on_display_messages=_display_messages,
+            cursor_tracker=self._cursor_tracker,
         )
-        self._engine = RenderEngine(self._renderer, self._bottom_bar)
+        self._engine = RenderEngine(
+            self._renderer, self._bottom_bar,
+            cursor_tracker=self._cursor_tracker,
+        )
 
         # ★ 事件分发器（通过 engine.push_cmd 回调入队，解耦队列实现）
         self._disp = EventDispatcher(push_cmd=self._engine.push_cmd)

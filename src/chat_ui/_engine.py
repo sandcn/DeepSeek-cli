@@ -19,6 +19,7 @@ from ._const import (
 )
 from ._utils import _cmd_name
 from ..ui._blessed import get_terminal
+from ..ui._cursor_tracker import CursorTracker
 from ..ui._lock import _try_acquire_output_lock
 
 if TYPE_CHECKING:
@@ -42,9 +43,15 @@ class RenderEngine:
         self,
         renderer: "ContentRenderer",
         bottom_bar: "BottomBarProtocol",
+        cursor_tracker: CursorTracker | None = None,
     ):
         self._renderer = renderer
         self._bb = bottom_bar
+
+        # ── 光标坐标追踪器（全局共享实例）
+        #     若外部传入则使用外部实例（与 ContentRenderer / _BottomBar 共享），
+        #     否则创建独立实例（测试/独立使用场景）。
+        self._cursor_tracker = cursor_tracker or CursorTracker()
 
         # ── 渲染命令队列（线程安全，maxsize=10000 防 OOM） ──
         self._cmd_queue: queue.Queue = queue.Queue(maxsize=10000)
@@ -183,7 +190,10 @@ class RenderEngine:
         task_done.join(timeout=timeout)
 
     def ensure_cursor_upper(self) -> None:
-        """将光标移到内容区。调用方须持有 output_lock。"""
+        """将光标移到内容区。调用方须持有 output_lock。
+
+        坐标追踪：定位后同步 tracker 到 scroll_end。
+        """
         self._bb.ensure_cursor_in_upper()
 
     # ── 内部 — 三阶段流水线 ──────────────────────────
@@ -199,6 +209,8 @@ class RenderEngine:
         except Exception:
             _logger.debug("drain_queue: sync_bottom_lines 异常", exc_info=True)
         self.ensure_cursor_upper()
+        # ★ 记录渲染起始坐标
+        pre_render = self._cursor_tracker.save()
         for cmd in commands:
             try:
                 self._renderer.render(cmd)
@@ -208,6 +220,12 @@ class RenderEngine:
                     RenderCommand.ERROR,
                     f"渲染命令 {_cmd_name(cmd[0])} 失败，请查看日志获取详情",
                 ))
+        # ★ 记录渲染结束坐标（每个 _do_* 方法已累加行数）
+        post_render = self._cursor_tracker.pos
+        _logger.debug(
+            "_phase_render: %d 命令, tracker %s → %s",
+            len(commands), pre_render, post_render,
+        )
         sys.__stdout__.flush()
 
     def _phase_refresh_panels(self) -> None:
@@ -231,6 +249,10 @@ class RenderEngine:
         分流策略：
         - has_commands=True → 全量重绘
         - is_status_active → 流式状态每帧强制重绘
+
+        坐标追踪：
+        - force_redraw() 内部使用 tracker.move_to() 定位每一行
+        - position_cursor() 计算精确的光标位置后更新 tracker
         """
         redraw = has_commands or self._bottom_redraw_requested.is_set() or self._bb.is_status_active
         self._bottom_redraw_requested.clear()
@@ -334,6 +356,8 @@ class RenderEngine:
 
         仅在底部栏激活时有效（单次模式底部栏未激活，跳过避免产生
         无意义的 ANSI 光标定位序列）。
+
+        坐标追踪：定位完成后更新 tracker 为精确光标位置。
         """
         if not self._bb._active:
             return
@@ -345,3 +369,5 @@ class RenderEngine:
         except Exception:
             sys.__stdout__.write(f"\033[{r_cursor};{cursor_col}H")
         sys.__stdout__.flush()
+        # ★ 追踪器同步：记录光标最终位置
+        self._cursor_tracker.set(r_cursor, cursor_col)

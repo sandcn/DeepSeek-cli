@@ -28,6 +28,7 @@ from ._const import (
     RenderCommand,
 )
 from ._utils import _cmd_name, _truncate_msg
+from ..ui._cursor_tracker import CursorTracker
 from rich.text import Text
 
 if TYPE_CHECKING:
@@ -73,11 +74,40 @@ class ContentRenderer:
         output_adapter: "OutputAdapter",
         bottom_bar: "BottomBarProtocol",
         on_display_messages: Callable[..., None] | None = None,
+        cursor_tracker: CursorTracker | None = None,
     ):
         self._rs = rs
         self._bb = bottom_bar
         self._on_display_messages: Callable[..., None] | None = on_display_messages
         self._adapter = output_adapter
+        self._tracker = cursor_tracker or CursorTracker()
+
+    # ── 行数估计辅助 ──────────────────────────────────
+
+    @staticmethod
+    def _estimate_content_lines(text: str) -> int:
+        """估计输出纯文本后光标前进的行数。
+
+        ★ 近似估算：仅按 \\n 计数，未考虑 Rich Console 自动换行、
+          IncrementalRenderer Markdown 渲染展开等额外行数。
+          对于纯文本和简单消息，此估算足够准确。
+          对于复杂 Markdown 内容（代码块、表格、自动折行），
+          实际行数可能多于估算值。但 tracker 的误差在每个
+          drain cycle 末尾被 ensure_cursor_upper/position_cursor
+          修正，不影响功能正确性。
+
+        Rich Console 的 console.print(text) 在尾部自动追加换行，
+        因此至少产生 1 行。若 text 本身包含 \\n 则产生多行。
+
+        Args:
+            text: 输出文本（纯字符串）。
+
+        Returns:
+            估计的行数（至少 1）。
+        """
+        if not text:
+            return 1
+        return text.count('\n') + 1
 
     # ── 渲染分发 ──────────────────────────────────────
 
@@ -100,16 +130,23 @@ class ContentRenderer:
         if self._rs.reasoning_state == _ReasoningState.CLOSED:
             self._rs.reopen_reasoning()
         is_first = self._rs.reasoning_state == _ReasoningState.INACTIVE
+        # ★ 坐标追踪：推理头单独记录行数
         rr = self._rs.get_reasoning()
         if rr is not None:
+            lines = 0
             if is_first:
                 rr.write(_THINKING_HEADER)
+                lines += self._estimate_content_lines(_THINKING_HEADER)
             rr.write(text)
+            lines += self._estimate_content_lines(text)
+            self._tracker.record_newlines(lines)
 
     def _do_content(self, text: str) -> None:
         if self._rs.reasoning_state not in (_ReasoningState.CLOSED, _ReasoningState.INACTIVE):
             self._rs.close_reasoning()
         self._rs.get_content().write(text)
+        # ★ 坐标追踪：内容输出后更新光标位置
+        self._tracker.record_newlines(self._estimate_content_lines(text))
 
     def _do_phase_done(self, phase: str) -> None:
         if phase == "reasoning":
@@ -137,32 +174,42 @@ class ContentRenderer:
 
         处理 \r 覆盖输出和 ANSI 转义序列。
         超长文本截断（>10000 字符）。
+
+        坐标追踪：
+        - \r 覆盖输出（不含尾部 \r）：产生 1 行新行
+        - \r 覆盖输出（以 \r 结尾）：原地覆写，不产生新行
+        - 标准输出：text 的 \n 数 + 1 行
         """
         MAX_OUTPUT_LEN = 10000
         if len(text) > MAX_OUTPUT_LEN:
             text = text[:MAX_OUTPUT_LEN] + "...(truncated)"
 
         has_carriage = '\r' in text
+        tracker = self._tracker
 
         if has_carriage:
             # \r 覆盖输出路径
             if '\033[' in text:
-                # 含 ANSI：移除 \r 后尝试 ANSI 解析
                 clean_text = text.replace('\r', '')
                 try:
                     self._adapter.write(Text.from_ansi(clean_text))
                 except Exception:
                     self._adapter.write_raw(clean_text)
             else:
-                # 纯 \r 文本：取最后一段
                 self._adapter.write_raw(text.split('\r')[-1])
             if not text.endswith('\r'):
                 self._adapter.write_raw('\n')
+                # ★ 含 \r 的文本中可能还包含 \n（如进度条中间夹杂换行），
+                #    使用 clean_text 估算实际行数，而非硬编码 1。
+                clean = text.replace('\r', '') if '\033[' in text else text.split('\r')[-1]
+                tracker.record_newlines(self._estimate_content_lines(clean))
+            # else: \r 结尾，原地覆写，不产生新行
         else:
             # 标准输出（3 空格缩进 + dim 样式）
             self._adapter.write(
                 Text.assemble(("   ", _STYLE_DIM), (text, _STYLE_DIM))
             )
+            tracker.record_newlines(self._estimate_content_lines(text))
 
     # ── 工具汇总（直接通过 OutputAdapter 写入，不再使用 ToolSummaryControl） ──
 
@@ -176,13 +223,16 @@ class ContentRenderer:
         successful = successful or ()
         failed = failed or ()
         total = len(successful) + len(failed)
+        tracker = self._tracker
         if failed:
             self._render_failure_summary(failed, total)
+            # _render_failure_summary 内部已记录行数
         elif successful:
             self._adapter.write(Text.assemble(
                 ("  · ", _STYLE_SUCCESS),
                 (f"{len(successful)}工具完成", _STYLE_SUCCESS),
             ))
+            tracker.record_newlines(1)
 
     def _render_failure_summary(self, failed: tuple, total: int) -> None:
         """渲染失败工具汇总（着色图标 + 彩色计数 + 详情列表）。"""
@@ -201,6 +251,9 @@ class ContentRenderer:
                 safe_failed.append((str(item), ""))
         failed = tuple(safe_failed)
 
+        tracker = self._tracker
+        lines = 1  # 汇总标题行
+
         failed_names = ", ".join(n for n, _ in failed)
         if len(failed) == total:
             self._adapter.write(Text.assemble(
@@ -213,12 +266,12 @@ class ContentRenderer:
                 (f"{len(failed)}/{total} 失败: {failed_names}", _STYLE_WARN),
             ))
 
+        detail_lines = 0
         for name, error in failed[:3]:
             short = ""
             if error:
                 short = error.split("\n")[0].strip()
                 if short:
-                    # 按视觉宽度截断（使用标准库 unicodedata 替代 wcwidth）
                     max_width = 80
                     s = short
                     w = 0
@@ -235,20 +288,28 @@ class ContentRenderer:
                 (f"    {name}", _STYLE_DIM),
                 (f"  {short}", _STYLE_DIM) if short else ("", _STYLE_DIM),
             ))
+            detail_lines += 1
         if len(failed) > 3:
             self._adapter.write(Text.assemble(
                 (f"    ... 及其他 {len(failed) - 3} 个", _STYLE_DIM),
             ))
+            detail_lines += 1
+
+        tracker.record_newlines(lines + detail_lines)
 
     # ── 解析进度（直接通过 sys.__stdout__ 写入，不再使用 ParseInfoControl） ──
 
     def _do_parse_info(
         self, tool_names: str, tokens: int | float, elapsed: float,
     ) -> None:
-        """渲染解析进度 — 同行原地更新（\\r\\033[K 覆写，不产生新行）。"""
+        """渲染解析进度 — 同行原地更新（\\r\\033[K 覆写，不产生新行）。
+
+        坐标追踪：\r 覆写同行不产生新行；\n 清理时产生 1 行新行。
+        """
         if tokens == _CLEAR_PARSE_LINE:
             sys.__stdout__.write("\n")
             sys.__stdout__.flush()
+            self._tracker.record_newlines(1)
             return
         if isinstance(tokens, (int, float)):
             import math
@@ -261,6 +322,7 @@ class ContentRenderer:
         output = f"\r\033[K  ~ {tool_names} {tokens_str} {elapsed:.2f}s"
         sys.__stdout__.write(output)
         sys.__stdout__.flush()
+        # \r 覆写同行，不产生新行，因此不更新 tracker
 
     # ── 样式化行渲染 — 直接通过 OutputAdapter ──────
 
@@ -269,12 +331,15 @@ class ContentRenderer:
         self._adapter.write(
             Text.assemble(("\n  > ", _STYLE_BOLD), (text, _STYLE_BOLD))
         )
+        # \n + text 行 = 至少 2 行（开头的 \n 产生 1 行，text 产生 1 行）
+        self._tracker.record_newlines(self._estimate_content_lines(f"\n{text}"))
 
     def _do_notification(self, text: str) -> None:
         """渲染系统通知（· 前缀 + 成功样式）。"""
         self._adapter.write(
             Text.assemble(("\n  · ", _STYLE_SUCCESS), (text, _STYLE_SUCCESS))
         )
+        self._tracker.record_newlines(self._estimate_content_lines(f"\n{text}"))
 
     def _do_error(self, message: str) -> None:
         """渲染系统错误信息（红色 ! 样式）。
@@ -285,6 +350,7 @@ class ContentRenderer:
         self._adapter.write(
             Text.assemble(("\n  ! ", _STYLE_ERROR), (message, _STYLE_ERROR))
         )
+        self._tracker.record_newlines(self._estimate_content_lines(f"\n{message}"))
 
     def _do_write_line(self, text: str) -> None:
         """渲染通用文本行。
@@ -299,10 +365,13 @@ class ContentRenderer:
                 self._adapter.write_raw(text + "\n")
         else:
             self._adapter.write_raw(text + "\n")
+        self._tracker.record_newlines(self._estimate_content_lines(text))
 
     def _do_display_messages(self, messages: list[dict], speed: int) -> None:
         """渲染消息列表到上屏（截断/恢复后的重渲染）。"""
         if self._on_display_messages is not None:
             self._on_display_messages(messages, speed=speed)
+        # 消息列表的行数不易估算，保守记录至少 1 行
+        self._tracker.record_newlines(1)
 
     # ── 底部栏刷新已迁移至 RenderEngine.request_bottom_redraw() ──

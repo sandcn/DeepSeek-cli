@@ -50,6 +50,7 @@ from ._bottom_cursor import (
     _expand_tabs,
     _wrap_by_width,
 )
+from ._cursor_tracker import CursorTracker
 from ._lock import _try_acquire_output_lock
 
 
@@ -241,7 +242,7 @@ class _BottomBar(_StatusMixin):
 
     _MIN_HEIGHT = _BOTTOM_MIN_HEIGHT
 
-    def __init__(self):
+    def __init__(self, cursor_tracker: CursorTracker | None = None):
         self._active = False
         self._last_text = ""
         self._last_status = ""
@@ -265,9 +266,11 @@ class _BottomBar(_StatusMixin):
         self._last_height: int = 0  # 哨兵值，首次 force_redraw() 必然触发全量重绘（终端高度始终 ≥1）
         self._last_sync_height: int = 0  # sync_bottom_lines() 中用于检测终端 resize
         # ── 补全弹窗组合对象 ──
-        self._completion = _CompletionPopup()
+        self._completion = _CompletionPopup(cursor_tracker=cursor_tracker)
         # ── stdout 行追踪器 ──
         self._tracker: _StdoutLineTracker | None = None
+        # ── 光标坐标追踪器（全局共享实例） ──
+        self._cursor_tracker = cursor_tracker or CursorTracker()
 
     # ── 补全弹窗兼容 property（供外部直读私有属性的调用方） ──
 
@@ -503,6 +506,8 @@ class _BottomBar(_StatusMixin):
         使用 _last_scroll_end 缓存值，保证光标定位与当前 DECSTBM 一致，
         避免底部行数变化（补全弹窗/输入文本变化）时光标位置偏移导致覆盖旧内容。
         终端高度过小时将光标放在最后一行。
+
+        坐标追踪：定位后同步 tracker 到 scroll_end。
         """
         if not self._active:
             return
@@ -510,6 +515,7 @@ class _BottomBar(_StatusMixin):
         if scroll_end < 1:
             scroll_end = self._term_height()
         sys.__stdout__.write(_blessed_cursor_goto(scroll_end, 1))
+        self._cursor_tracker.set(scroll_end, 1)
 
     def ensure_cursor_in_lower(self) -> None:
         """渲染完成后将光标移回下屏输入行末尾（含动态拆行，最少3行输入区）。
@@ -520,6 +526,8 @@ class _BottomBar(_StatusMixin):
         空输入时光标位于输入区第一行（> 提示符行）。
         制表符按内部默认宽度展开为空格。
         终端高度过小时将光标放在最后一行。
+
+        坐标追踪：定位后同步 tracker 到精确光标位置。
         """
         if not self._active:
             return
@@ -534,6 +542,7 @@ class _BottomBar(_StatusMixin):
         r_cursor = max(1, min(r_cursor, height))
         col = min(3 + vis_col, term_w)
         sys.__stdout__.write(_blessed_cursor_goto(r_cursor, col))
+        self._cursor_tracker.set(r_cursor, col)
 
     # ── 生命周期 ──────────────────────────────────────────
 
@@ -689,6 +698,7 @@ class _BottomBar(_StatusMixin):
                 out.write(_blessed_restore_cursor())
                 out.write(_blessed_cursor_goto(height, 1) + _blessed_save_cursor())
                 out.flush()
+                self._cursor_tracker.set(height, 1)
                 self._last_cursor_pos = self._input_cursor_pos
                 self._last_height = height
                 return
@@ -697,6 +707,7 @@ class _BottomBar(_StatusMixin):
             clear_end = height
             for r in range(clear_start, clear_end + 1):
                 out.write(_blessed_move_clear(r))
+            self._cursor_tracker.set(clear_end, 1)
 
             # ★ 终端高度缩小时，额外清理旧内容区中现在属于新底部栏区域的行
             #    （与 delta 符号无关），必须在画分隔线/状态行之前执行，
@@ -704,6 +715,7 @@ class _BottomBar(_StatusMixin):
             if self._last_height > 0 and height < self._last_height:
                 for r in range(max(scroll_end + 1, 1), min(old_scroll_end, height) + 1):
                     out.write(_blessed_move_clear(r))
+                self._cursor_tracker.set(min(old_scroll_end, height), 1)
 
             r1 = height - total + 1
             r2 = r1 + 1
@@ -712,12 +724,17 @@ class _BottomBar(_StatusMixin):
             sep_len = min(tw - 2, 40)
             sep = f"{_COLOR_SEP}\u2501{_COLOR_RESET}" * sep_len
             out.write(_blessed_move_clear(r1) + "  " + sep)
+            # ★ force_redraw 中的 tracker.set 是近似值，仅记录当前绘制行号。
+            #    最终光标位置在方法末尾 set(scroll_end, 1) 处修正。
+            self._cursor_tracker.set(r1, 3)  # 分隔线从第3列开始
             out.write(_blessed_move_clear(r2) + self._last_status)
+            self._cursor_tracker.set(r2, 1)
 
             self._draw_input_lines_locked(out, text, r2 + 1, tw)
             input_rows = self._cached_input_rows
             for r in range(r2 + 1 + input_rows, height + 1):
                 out.write(_blessed_move_clear(r))
+            self._cursor_tracker.set(height, 1)
 
             self._last_scroll_end = scroll_end
             if self._tracker is not None:
@@ -728,8 +745,10 @@ class _BottomBar(_StatusMixin):
             if delta < 0 and old_scroll_end > 0:
                 for r in range(old_scroll_end + 1, scroll_end + 1):
                     out.write(_blessed_move_clear(r))
+                self._cursor_tracker.set(scroll_end, 1)
             out.write(_blessed_restore_cursor())
             out.write(_blessed_cursor_goto(scroll_end, 1) + _blessed_save_cursor())
+            self._cursor_tracker.set(scroll_end, 1)
             out.flush()
             self._last_cursor_pos = self._input_cursor_pos
             self._last_height = height
@@ -830,9 +849,11 @@ class _BottomBar(_StatusMixin):
             else:
                 out.write(_blessed_move_clear(r)
                           + f"{_COLOR_DIM}\u00b7{_COLOR_RESET} {segment}")
+            self._cursor_tracker.set(r, 3)  # 提示符从第3列开始
         # ★ 填充剩余空白行，确保输入区至少 3 行
         for r in range(text_start + len(wrapped), text_start + 3):
             out.write(_blessed_move_clear(r) + "  ")
+            self._cursor_tracker.set(r, 1)
 
     def _draw_all_locked(self, out, height: int) -> None:
         """绘制全部底部行（需持有 output_lock），超长文本自动拆行。

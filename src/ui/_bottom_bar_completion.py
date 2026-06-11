@@ -9,6 +9,8 @@
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 from ._blessed import get_terminal
 from ._bottom_bar_theme import (
     _COLOR_COMPLETE_TITLE,
@@ -19,6 +21,9 @@ from ._bottom_bar_theme import (
     _COLOR_TIME,
 )
 from ._bottom_cursor import _truncate_by_width, _visual_len
+
+if TYPE_CHECKING:
+    from ._cursor_tracker import CursorTracker
 
 
 class _CompletionPopup:
@@ -36,7 +41,7 @@ class _CompletionPopup:
 
     _COMPLETION_MAX_ITEMS = 10      # 单屏最多显示多少条
 
-    def __init__(self):
+    def __init__(self, cursor_tracker: "CursorTracker | None" = None):
         self._visible = False
         self._title = "补全"              # 弹窗标题前缀
         self._items: list[str] = []      # 显示文本
@@ -46,6 +51,7 @@ class _CompletionPopup:
         self._is_selection: bool = False  # 是否为选择模式
         self._idx: int = 0               # 当前选中索引
         self._popup_height: int = 0      # 弹窗所占行数
+        self._tracker = cursor_tracker
 
     # ── 公开属性（供 _BottomBar 和外部调用方访问） ──────────
 
@@ -167,6 +173,8 @@ class _CompletionPopup:
         total_items = len(self._texts)
         header = f" {_COLOR_COMPLETE_TITLE}{self._title}{_COLOR_RESET} {_COLOR_DIM}({total_items}项){_COLOR_RESET}"
         out.write(move_clear(r_start) + header)
+        if self._tracker:
+            self._tracker.set(r_start, 1)
 
         # ── 选项行 ──
         cell_w = popup_w - 3
@@ -181,6 +189,8 @@ class _CompletionPopup:
             else:
                 out.write(move_clear(r)
                           + f"  {display}{pad}")
+            if self._tracker:
+                self._tracker.set(r, 1)
 
         # ── 快捷键提示行 ──
         footer_r = r_start + 1 + n
@@ -195,6 +205,8 @@ class _CompletionPopup:
         else:
             hint = f" {hint_prefix} "
         out.write(move_clear(footer_r) + f"{_COLOR_DIM}{hint}{_COLOR_RESET}")
+        if self._tracker:
+            self._tracker.set(footer_r, 1)
 
         return popup_height
 
@@ -232,6 +244,8 @@ class _CompletionPopup:
             else:
                 out.write(move_clear(r)
                           + f"  {display}{pad}")
+            if self._tracker:
+                self._tracker.set(r, 1)
 
         # ── 快捷键提示行 ──
         total_items = len(self._texts)
@@ -245,3 +259,5 @@ class _CompletionPopup:
         else:
             hint = f" {hint_prefix} "
         out.write(move_clear(footer_r) + f"{_COLOR_DIM}{hint}{_COLOR_RESET}")
+        if self._tracker:
+            self._tracker.set(footer_r, 1)
