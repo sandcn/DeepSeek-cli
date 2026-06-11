@@ -269,7 +269,7 @@ AI 代理在对话中可调用以下工具完成各类操作。共 **14 个内�
 | `mk` | mk | IO | ✅ | 创建目录，支持递归创建父目录 |
 | `web_search` | ws | 网络 | ❌ | 搜索引擎搜索 + 网页全文抓取（百度/必应） |
 | `user_select` | us | 交互 | ❌ | 向用户显示交互式选择界面（单选/多选） |
-| `dispatch_agent` | da | Agent | ❌ | 并行派发子 Agent 执行独立任务 |
+| `dispatch_agent` | da | Agent | ❌ | 并行派发子 Agent 执行独立任务（支持类型：ordinary/map/review/plan） |
 
 ### 工具分类
 
@@ -288,6 +288,56 @@ AI 代理在对话中可调用以下工具完成各类操作。共 **14 个内�
 - **沙盒安全** — 文件操作自动备份，支持撤回（undo）
 - **元数据系统** — 每工具声明并行安全、网络依赖、超时估计等元数据，供调度层优化
 - **双端适配** — 同时支持终端（`display()`）和 Web UI（`web_display()`）两种渲染路径
+
+### 工具权限系统（v2.2.0+）
+
+不同 SubAgent 类型对工具有不同的访问权限，通过 `Func.can_use()` 统一检查：
+
+```python
+@classmethod
+def can_use(cls, tool_name: str, agent_type: str = "ordinary") -> tuple[bool, str | None]:
+    """检查指定类型的 agent 能否使用某工具。"""
+```
+
+- **agent_type 注入** — SubAgent 在 `_handle_tool_calls()` 中自动注入 `func.agent_type = self.agent_type`
+- **排除规则** — 定义在 `src/core/subagent.py` 的 `_TOOL_EXCLUSION_MAP`（详见下方 SubAgent 类型表）
+- **路径白名单** — `FileToolBase._validate_path_and_size()` 对 plan Agent 实施路径限制，仅允许写入 `.chat/plan/` 目录，防止误写项目源码
+
+---
+
+## 光标坐标追踪系统（CursorTracker）
+
+新增于 v2.2.0，全局统一的终端光标坐标追踪基础设施，消除分散在各渲染组件中的坐标推算累积误差。
+
+### 核心 API
+
+| 方法 | 功能 |
+|------|------|
+| `move_to(row, col)` | 写 ANSI CUP 序列 + 更新内部坐标 |
+| `move_xy(col, row)` | 0-based → 1-based 转换入口（blessed 风格） |
+| `set(row, col)` | 仅更新内部状态，不写终端 |
+| `record_newlines(n)` | 追加 `n` 行后自动更新行号 + 列号复位 |
+| `record_move_down(n)` | 下移 `n` 行（滚动场景） |
+| `save()` / `restore(pos)` | 检查点模式（返回/恢复 CursorPosition 快照），支持渲染前后坐标范围对比 |
+| `pos → CursorPosition` | 获取当前坐标快照 |
+
+### 集成架构
+
+```
+ChatUIConsumer
+  └── CursorTracker（唯一实例，构造注入到所有子系统）
+        ├── ContentRenderer   → _do_content / _do_tool_output 等 14 种渲染后调用 record_newlines()
+        ├── RenderEngine       → _phase_render 记录渲染坐标范围，position_cursor 同步最终光标
+        ├── _BottomBar         → force_redraw / sync_bottom_lines / ensure_cursor_* 中 set 光标位置
+        └── _CompletionPopup   → render / render_cycle_update 中 set 弹窗行坐标
+```
+
+### 设计决策
+
+- **单线程使用** — 仅在 render 线程中操作，无需锁
+- **1-based 坐标** — 与终端 ANSI CUP 序列一致
+- **轻量无依赖** — 仅标准库，零外部依赖
+- **检查点模式** — `save/restore` 支持嵌套渲染场景的坐标回退
 
 ---
 
@@ -341,12 +391,16 @@ AI 代理在对话中可调用以下工具完成各类操作。共 **14 个内�
 
 ### SubAgent 类型
 
-| 类型 | 能力 | 用途 |
+各类型 SubAgent 通过 `_TOOL_EXCLUSION_MAP`（定义在 `src/core/subagent.py`）控制工具可用性。
+
+| 类型 | 可用工具 | 用途 |
 |---|---|---|
-| **plan** | 只读分析 + write_file | 任务拆解、依赖分析、生成计划文件到 `.chat/plan/` |
+| **plan** | 只读分析 + write_file/update_file（仅限 `.chat/plan/` 目录） | 任务拆解、依赖分析、生成计划文件到 `.chat/plan/` |
 | **map** | 只读（read_file/search/find/ls） | 项目探底、模块地图、调用链追踪、引用关系分析 |
 | **review** | 只读 + web_search | Code Review、P0-P3 分级审查、跨文件一致性验证 |
 | **ordinary** | 全工具（不含 user_select/dispatch_agent） | 读/写/改代码、执行测试、通用任务 |
+
+> **工具排除策略**：plan 排除 `bash/rm/mv/cp/mk/dispatch_agent/user_select`；map 额外排除 `bash/write_file/update_file/rm/mv/cp/mk/web_search/dispatch_agent/user_select`；review 排除 `bash/write_file/update_file/rm/mv/cp/mk/dispatch_agent/user_select`（保留 web_search）。SubAgent 在 `_handle_tool_calls()` 中注入 `agent_type` 到 Func 实例，`Func.can_use()` 进行统一检查。`FileToolBase._validate_path_and_size()` 额外实施 plan Agent 路径白名单——仅允许写入 `.chat/plan/` 目录。
 
 ### 并发调度策略
 
@@ -359,8 +413,11 @@ AI 代理在对话中可调用以下工具完成各类操作。共 **14 个内�
 ```
 ├── chat.py                # 入口脚本（asyncio.run(main())）
 ├── pyproject.toml         # 项目配置与依赖
-├── prompts/               # 系统提示词（main/sub/map/plan/review）
-├── tests/                 # 测试（100+ 测试文件，4000+ 测试用例）
+├── prompts/               # 系统提示词（main/sub/map/plan/review + memory 指南）
+├── tests/                 # 测试（109 个测试文件，4000+ 测试用例）
+├── .chat/                 # 运行时数据目录
+│   ├── memory/            # 跨对话记忆系统（索引 + 详情）
+│   └── plan/              # Plan Agent 计划文件
 │
 ├── src/                   # 核心源码
 │   ├── app.py             # 入口 re-export
@@ -391,45 +448,71 @@ AI 代理在对话中可调用以下工具完成各类操作。共 **14 个内�
 │   │
 │   ├── core/               # 核心业务逻辑
 │   │   ├── agent.py           # 对话代理（Pipeline 中间件管道）
-│   │   ├── base_agent.py      # Agent 基类
+│   │   ├── base_agent.py      # Agent 基类（消息管理、沙盒上下文）
 │   │   ├── session.py         # ChatSession 会话（状态机驱动）
-│   │   ├── subagent.py        # SubAgent 子代理
-│   │   ├── state_machine.py   # 会话状态机
-│   │   ├── pipeline.py        # 处理管道
+│   │   ├── state_machine.py   # 会话状态机（INIT→IDLE→RUNNING→COMPLETED/INTERRUPTED）
+│   │   ├── subagent.py        # SubAgent 子代理（含 _TOOL_EXCLUSION_MAP 工具排除策略 + agent_type 注入）
+│   │   ├── _subagent_spawner.py # SubAgentSpawner — 创建/渲染/事件发布
+│   │   ├── _tool_callbacks.py   # ToolCallbackChain — 工具生命周期回调（before/after/run）
+│   │   ├── pipeline.py        # 中间件处理管道（Pipeline.run_round_async）
 │   │   ├── compression.py     # 上下文压缩（策略模式）
-│   │   ├── context_manager.py # 上下文管理器
+│   │   ├── context_manager.py # 上下文管理器 + 消息上限控制
 │   │   ├── context_selector.py / context_summarizer.py
 │   │   ├── sandbox_manager.py # 文件沙盒管理器
-│   │   ├── parallel_executor.py # 并行执行器
-│   │   ├── tool_executor_async.py # 异步工具执行器
-│   │   ├── commands/          # 命令插件系统
-│   │   ├── events/            # 事件系统
-│   │   ├── middleware/        # Pipeline 中间件（审计/中断/状态机/可观测性）
+│   │   ├── parallel_executor.py # ParallelExecutor — 并行 SubAgent 调度（批量模式）
+│   │   ├── tool_executor_async.py # AsyncToolExecutor — 异步工具执行器
+│   │   ├── commands/          # 命令插件系统（/help, /model, /editmsg 等）
+│   │   ├── commands_config.py / commands_data.py / commands_session.py
+│   │   ├── events/            # 核心事件总线 + 事件类型
+│   │   ├── middleware/        # Pipeline 中间件（审计/中断/状态机/可观测性/工具适配器）
 │   │   ├── ports/             # 六边形架构端口定义（13 个端口）
-│   │   └── telemetry/         # 可观测性（指标/追踪/上下文）
+│   │   └── telemetry/         # 可观测性（指标/追踪/上下文传播）
 │   │
 │   ├── chat_ui/            # 终端聊天渲染引擎
-│   │   ├── _consumer.py       # 事件消费者（队列 → 增量渲染）
-│   │   ├── _engine.py         # 增量渲染引擎
-│   │   ├── _dispatcher.py     # 事件分发
-│   │   └── _renderers.py      # 渲染器集合
+│   │   ├── _consumer.py       # 事件消费者（队列 → 增量渲染），持有 CursorTracker 实例注入所有子系统
+│   │   ├── _engine.py         # 增量渲染引擎（render 线程 10Hz），集成 CursorTracker 坐标同步
+│   │   ├── _dispatcher.py     # 事件分发（11 种事件类型 → 渲染命令）
+│   │   ├── _renderers.py      # 渲染器集合（14 种 _do_* 方法，集成 CursorTracker 行数追踪）
+│   │   ├── _render_state.py   # 渲染状态管理
+│   │   ├── _completion.py     # Tab 命令/会话 ID 自动补全
+│   │   ├── _const.py          # 渲染相关常量定义
+│   │   ├── _protocols.py      # 渲染协议定义
+│   │   ├── _state.py          # 渲染状态追踪
+│   │   ├── _utils.py          # 渲染工具函数
+│   │   └── _error_handler.py  # 日志→上屏（日志显示在底部栏上方）
 │   │
 │   ├── tools/              # 工具调用系统（14 个内置工具）
-│   │   ├── base.py            # Func 基类 + 元数据系统
-│   │   ├── registry.py        # 工具注册表（自动发现 + 调度）
+│   │   ├── base.py            # Func 基类 + 元数据系统（含 can_use 工具可用性检查 / agent_type）
+│   │   ├── file_base.py       # FileToolBase 文件操作基类（含 plan agent 路径白名单——仅限 .chat/plan/）
+│   │   ├── registry.py        # 工具注册表（自动发现 + 调度 + 元数据索引）
 │   │   ├── read_file.py / write_file.py / update_file.py
 │   │   ├── search.py / find.py / ls.py
 │   │   ├── bash.py / cp.py / mv.py / rm.py / mk.py
 │   │   ├── web_search.py / user_select.py / dispatch_agent.py
-│   │   └── parsers/           # 搜索引擎结果解析器
+│   │   ├── file_ops.py        # 文件操作原子工具（原子写入、路径安全校验、沙盒记录）
+│   │   ├── _constants.py      # 共享常量（排除目录、安全路径、编码等）
+│   │   ├── encoding.py        # 编码检测工具函数
+│   │   ├── utils.py           # 工具通用辅助函数
+│   │   ├── page_fetcher.py    # 网页内容抓取（web_search 内部依赖）
+│   │   └── parsers/           # 搜索引擎结果解析器（baidu / bing / generic）
 │   │
 │   ├── ui/                 # 终端 UI
-│   │   ├── display.py         # 显示系统
+│   │   ├── display.py         # 显示系统（含 ANSI 输出、ParallelDisplay）
 │   │   ├── theme.py           # 主题（dark/light/high-contrast）
+│   │   ├── _cursor_tracker.py # ★ 全局光标坐标追踪系统（1-based row/col，save/restore 检查点）
+│   │   ├── _bottom_bar.py     # 底部固定输入栏（3 行），集成 CursorTracker 坐标同步
+│   │   ├── _bottom_bar_completion.py # 底部补全弹窗，集成 CursorTracker
+│   │   ├── _bottom_bar_status.py     # 底部栏状态行格式化
+│   │   ├── _bottom_bar_theme.py      # 底部栏主题颜色常量
+│   │   ├── _bottom_bar_selection.py  # 底部栏交互选择
+│   │   ├── _bottom_cursor.py         # 光标视觉位置计算
+│   │   ├── _completion.py     # Tab 命令/路径自动补全
+│   │   ├── _lock.py           # 输出锁机制（render 线程独占）
+│   │   ├── _stdout_tracker.py # stdout 行追踪器
 │   │   ├── tui/               # TUI 组件（消息显示/状态栏/选择器）
-│   │   ├── parallel/          # 并行工具显示
-│   │   ├── events/            # UI 事件总线
-│   │   ├── common/            # 公共基础设施（state_store）
+│   │   ├── parallel/          # 并行 SubAgent 面板显示
+│   │   ├── events/            # UI 事件总线（15 种事件类型）
+│   │   ├── common/            # 公共基础设施（AgentStateStore）
 │   │   ├── components/        # UI 组件（cost_display）
 │   │   ├── formatters/        # 参数格式化
 │   │   ├── renderer/          # 帧渲染器
@@ -456,6 +539,7 @@ AI 代理在对话中可调用以下工具完成各类操作。共 **14 个内�
 重构终端用户界面渲染层，提升视觉体验与交互流畅度：
 
 - **流式渲染性能优化** ✅ — 降低增量 Markdown 渲染延迟，消除大 Token 输出时的界面卡顿（`chat_ui/` 增量流式渲染引擎已实现）
+- **光标坐标追踪** ✅ — 新增 `CursorTracker` 全局光标坐标追踪系统，集成到 ContentRenderer / RenderEngine / _BottomBar / _CompletionPopup，消除坐标推算累积误差
 - **富交互组件** — 在终端中嵌入可交互元素（选择列表、确认弹窗、进度条），减少纯文本输出的信息密度
 - **语法高亮增强** — 支持更多编程语言的代码块高亮，优化长代码段的折叠/展开机制
 - **多面板布局** — 对话区/工具调用日志/系统状态分屏显示，便于调试与观察 Agent 行为
