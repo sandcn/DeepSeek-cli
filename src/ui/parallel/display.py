@@ -8,10 +8,13 @@
 渲染路径：ParallelDisplay → push_cmd(RenderCommand.SUBAGENT_FRAME) → 命令队列
   → render 线程出队 → ContentRenderer._do_subagent_frame() → 终端输出。
 
-2026-06-12 重构：
+2026-06-12 重构（渲染路径精简）：
   - 面板帧改为通过 RenderCommand.SUBAGENT_FRAME 命令队列渲染
   - 10Hz fps 状态更新（_phase_pre_update_panels）移到批量出队前执行
-  - 移除直接调用 _write_frame_buffer() 的路径
+  - 帧刷新改为仅由 _panel_refresh_callback() (10Hz Phase 0 定时) 驱动
+  - 所有事件驱动路径（add_agent/update_*/tool_* 等）不再触发立即刷新
+  - 事件仅写入 AgentStateStore，下一轮 10Hz 心跳自然拾取状态变更
+  - 终端缩放（SIGWINCH）设标记 _needs_resize_refresh，由定时回调消费
 """
 
 from __future__ import annotations
@@ -36,8 +39,7 @@ from ...chat_ui._const import RenderCommand
 
 # ── 常量 ────────────────────────────────────────────────
 
-_EVENTBUS_THROTTLE = 0.3   # 300ms — EventBus 发布频率阈值，防止高频 update 路径过度发布
-_REFRESH_INTERVAL = 0.1  # 100ms — 帧刷新节流间隔（10Hz，与 ChatUI render 线程一致）
+_EVENTBUS_THROTTLE = 0.3   # 300ms — EventBus 发布频率阈值
 _DEFAULT_HISTORY = 3
 _logger = logging.getLogger(__name__)
 
@@ -85,7 +87,6 @@ class ParallelDisplay(BaseDisplay):
         self._finished = False
         self._stopped = False
         self._last_eventbus_time: float = 0.0  # EventBus 上次发布时间戳
-        self._last_refresh_time: float = 0.0  # _schedule_refresh 上次渲染时间戳
 
         # 根据终端宽度确定显示深度
         display_config = DisplayConfig(self._terminal.terminal_width)
@@ -110,7 +111,7 @@ class ParallelDisplay(BaseDisplay):
         self._last_rendered_version: int = 0
         # DECSTBM 滚动区域底部行号（由 start() 从 chat_ui bottom_bar 获取）
         self._scroll_end: int = 0
-        # 缩放刷新标记（信号安全：在 _on_resize 中设置，_schedule_refresh 中消费）
+        # 缩放刷新标记（信号安全：在 _on_resize 中设置，_panel_refresh_callback 中消费）
         self._needs_resize_refresh: bool = False
 
         # stdout 捕获锁
@@ -122,8 +123,8 @@ class ParallelDisplay(BaseDisplay):
         """终端缩放回调：重建 DisplayConfig + 刷新宽度 + 设置缩放刷新标记。
 
         信号安全约束（terminal_adapter._handle_sigwinch 禁止获取锁）：
-        不在此处调用 _schedule_refresh() 或任何 I/O/锁操作，
-        仅设置标记 _needs_resize_refresh，由 _schedule_refresh 安全上下文处理。
+        不在此处调用 _push_frame_cmd() 或任何 I/O/锁操作，
+        仅设置标记 _needs_resize_refresh，由 _panel_refresh_callback() 10Hz 安全上下文处理。
         """
         if width <= 0:
             return
@@ -142,30 +143,50 @@ class ParallelDisplay(BaseDisplay):
     def _panel_refresh_callback(self) -> None:
         """面板刷新回调 — 由 chat_ui render 线程 _phase_pre_update_panels() 10Hz 调用。
 
-        仅在存在 running 状态的 Agent 时工作：
-        1. 更新 scroll_end（终端 resize 自适应）
-        2. 推送 SUBAGENT_FRAME 命令到渲染队列（由 Phase 1 批量出队消费）
+        唯一的面板刷新路径：所有事件驱动的 _schedule_refresh() 已改为空操作，
+        只有本回调以 10Hz 频率推动面板帧渲染。
+
+        职责：
+        1. 消费终端缩放标记（_needs_resize_refresh，由 SIGWINCH → _on_resize 设置）
+        2. 更新 scroll_end（终端 resize 自适应）
+        3. 推送 SUBAGENT_FRAME 命令到渲染队列（由 Phase 1 批量出队消费）
 
         注意：不在本回调中直接写终端，所有面板渲染都通过命令队列执行。
+        _build_frame() 内部通过版本号检查自动跳过无变更场景。
         """
         if self._adapter is None or self._stopped:
             return
-        if self._store.has_running_agents:
-            # 每帧刷新 scroll_end，确保终端 resize 后面板定位正确
-            try:
-                import src.chat_ui as _chat_ui_mod  # noqa: PLC0415
-                _chat_ui = _chat_ui_mod.get_active_chat_ui()
-                if _chat_ui is not None:
-                    se = _chat_ui.bottom_bar.get_scroll_end()
-                    if se is not None and se > 0:
-                        new_se = int(se)
-                        if new_se != self._scroll_end:
-                            self._last_lines = 0
-                            self._scroll_end = new_se
-            except Exception:
-                pass
-            # 推送 SUBAGENT_FRAME 命令到渲染队列
-            self._push_frame_cmd()
+
+        # 合并 resize 标记消费 + 每帧 scroll_end 刷新，避免重复 import
+        reset_last_lines = False
+        new_scroll_end: int | None = None
+
+        if self._needs_resize_refresh:
+            self._needs_resize_refresh = False
+            self._last_rendered_version = 0  # 强制 _build_frame() 跳过版本检查重建帧
+            reset_last_lines = True
+
+        try:
+            import src.chat_ui as _chat_ui_mod  # noqa: PLC0415
+            _chat_ui = _chat_ui_mod.get_active_chat_ui()
+            if _chat_ui is not None:
+                se = _chat_ui.bottom_bar.get_scroll_end()
+                if se is not None and se > 0:
+                    new_scroll_end = int(se)
+        except Exception:
+            pass
+
+        if reset_last_lines:
+            if new_scroll_end is not None:
+                self._scroll_end = new_scroll_end
+            self._last_lines = 0
+        elif new_scroll_end is not None and new_scroll_end != self._scroll_end:
+            self._last_lines = 0
+            self._scroll_end = new_scroll_end
+
+        # 推送 SUBAGENT_FRAME 命令到渲染队列
+        # _build_frame() 通过版本号检查跳过无变更场景，不会产生无效帧
+        self._push_frame_cmd()
 
     # ── diff_active 上下文 ──────────────────────────────
 
@@ -255,37 +276,11 @@ class ParallelDisplay(BaseDisplay):
     # ── 帧渲染（通过命令队列） ────────────────────────
 
     def _schedule_refresh(self) -> None:
-        """节流调度帧刷新 — 推送 SUBAGENT_FRAME 命令到渲染队列。
+        """空操作 — 帧刷新由 _panel_refresh_callback() (10Hz 定时) 统一调度。
 
-        安全上下文（非信号处理器）：在此处检查 _needs_resize_refresh 标记，
-        刷新 _scroll_end 后推送命令。不在此处直接写终端。
+        保留本方法供外部调用方兼容（add_agent/update_* 等仍可安全调用），
+        但不触发任何实际刷新，避免事件驱动的冗余帧推送。
         """
-        if self._adapter is None:
-            return
-
-        # ★ 缩放刷新标记处理（由 _on_resize 信号安全上下文中设置）
-        if self._needs_resize_refresh:
-            self._needs_resize_refresh = False
-            try:
-                import src.chat_ui as _chat_ui_mod  # noqa: PLC0415
-                _chat_ui = _chat_ui_mod.get_active_chat_ui()
-                if _chat_ui is not None:
-                    se = _chat_ui.bottom_bar.get_scroll_end()
-                    self._scroll_end = int(se) if se is not None else 0
-            except Exception:
-                pass
-            self._last_lines = 0
-            self._push_frame_cmd()
-            return
-
-        # 版本未变化时跳过
-        if self._store.version == self._last_rendered_version:
-            return
-
-        now = time.time()
-        if now - self._last_refresh_time >= _REFRESH_INTERVAL:
-            self._last_refresh_time = now
-            self._push_frame_cmd()
 
     def _build_frame(self, final: bool = False) -> tuple | None:
         """构建面板帧数据（纯函数，不写终端）。
@@ -331,7 +326,7 @@ class ParallelDisplay(BaseDisplay):
     def _push_frame_cmd(self) -> None:
         """渲染当前帧并推送 SUBAGENT_FRAME 命令到 chat_ui 渲染队列。
 
-        由 _schedule_refresh() 和 _panel_refresh_callback() 调用。
+        仅由 _panel_refresh_callback() (10Hz 定时) 调用。
         帧数据在消费侧（ContentRenderer._do_subagent_frame）写入终端。
         """
         packed = self._build_frame()
