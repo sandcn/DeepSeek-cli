@@ -133,16 +133,20 @@ class TestEventDispatcherToolStarted:
     """ToolStartedEvent 处理器测试。"""
 
     def test_agent_source(self, dispatcher, push_cmd):
-        """source='agent' → push_cmd 收到 (TOOL_COUNT_INC,)。"""
+        """source='agent' → push_cmd 收到 (TOOL_COUNT_INC,) + (TOOL_OUTPUT_START, ...)。"""
         event = ToolStartedEvent(source=_MAIN_SOURCE, label="tool_call_1", tool_name="bash")
         dispatcher._on_tool_started(event)
-        push_cmd.assert_called_once_with((RenderCommand.TOOL_COUNT_INC,))
+        assert push_cmd.call_count == 2
+        push_cmd.assert_any_call((RenderCommand.TOOL_COUNT_INC,))
+        push_cmd.assert_any_call((RenderCommand.TOOL_OUTPUT_START, "bash", ""))
 
     def test_subagent_source(self, dispatcher, push_cmd):
         """source='agent-1' → 同样入队（SubAgent 兼容）。"""
         event = ToolStartedEvent(source="agent-1", label="tool_call_2", tool_name="read_file")
         dispatcher._on_tool_started(event)
-        push_cmd.assert_called_once_with((RenderCommand.TOOL_COUNT_INC,))
+        assert push_cmd.call_count == 2
+        push_cmd.assert_any_call((RenderCommand.TOOL_COUNT_INC,))
+        push_cmd.assert_any_call((RenderCommand.TOOL_OUTPUT_START, "read_file", ""))
 
     def test_user_source_skipped(self, dispatcher, push_cmd):
         """source='user' 跳过。"""
@@ -165,24 +169,29 @@ class TestEventDispatcherToolDone:
     """ToolDoneEvent 处理器测试。"""
 
     def test_success_true(self, dispatcher, push_cmd):
-        """success=True → push_cmd 收到 (TOOL_COUNT_DEC,)。"""
+        """success=True → push_cmd 收到 (TOOL_COUNT_DEC,) + (TOOL_OUTPUT_END, ...)。"""
         event = ToolDoneEvent(source=_MAIN_SOURCE, label="tool_1", tool_name="bash", success=True)
         dispatcher._on_tool_done(event)
-        push_cmd.assert_called_once_with((RenderCommand.TOOL_COUNT_DEC,))
+        assert push_cmd.call_count == 2
+        push_cmd.assert_any_call((RenderCommand.TOOL_COUNT_DEC,))
+        push_cmd.assert_any_call((RenderCommand.TOOL_OUTPUT_END, "bash", True))
 
     def test_success_false(self, dispatcher, push_cmd):
-        """success=False → push_cmd 收到 (TOOL_FAIL_INC,) + (TOOL_COUNT_DEC,)。"""
+        """success=False → push_cmd 收到 (TOOL_FAIL_INC,) + (TOOL_COUNT_DEC,) + (TOOL_OUTPUT_END, ...)。"""
         event = ToolDoneEvent(source=_MAIN_SOURCE, label="tool_2", tool_name="bash", success=False)
         dispatcher._on_tool_done(event)
-        assert push_cmd.call_count == 2
+        assert push_cmd.call_count == 3
         push_cmd.assert_any_call((RenderCommand.TOOL_FAIL_INC,))
         push_cmd.assert_any_call((RenderCommand.TOOL_COUNT_DEC,))
+        push_cmd.assert_any_call((RenderCommand.TOOL_OUTPUT_END, "bash", False))
 
     def test_subagent_source(self, dispatcher, push_cmd):
         """source='agent-2' 也处理（SubAgent 兼容）。"""
         event = ToolDoneEvent(source="agent-2", label="tool_3", tool_name="read_file", success=True)
         dispatcher._on_tool_done(event)
-        push_cmd.assert_called_once_with((RenderCommand.TOOL_COUNT_DEC,))
+        assert push_cmd.call_count == 2
+        push_cmd.assert_any_call((RenderCommand.TOOL_COUNT_DEC,))
+        push_cmd.assert_any_call((RenderCommand.TOOL_OUTPUT_END, "read_file", True))
 
     def test_non_agent_source_skipped(self, dispatcher, push_cmd):
         """非 agent source 跳过。"""
