@@ -53,8 +53,6 @@ _RENDER_DISPATCH: dict[int, tuple[str, tuple[int, ...]]] = {
     RenderCommand.TOOL_COUNT_DEC:  ("_do_tool_count_dec",  ()),
     RenderCommand.TOOL_FAIL_INC:   ("_do_tool_fail_inc",   ()),
     RenderCommand.ERROR:           ("_do_error",           (1,)),
-    RenderCommand.TOOL_OUTPUT_START: ("_do_tool_output_start", (1, 2)),
-    RenderCommand.TOOL_OUTPUT_END:   ("_do_tool_output_end",   (1, 2)),
 }
 
 
@@ -79,8 +77,6 @@ class ContentRenderer:
         self._bb = bottom_bar
         self._on_display_messages: Callable[..., None] | None = on_display_messages
         self._adapter = output_adapter
-        # 当前工具区域状态 — None 表示不在任何工具区域内
-        self._current_tool: str | None = None
 
     # ── 渲染分发 ──────────────────────────────────────
 
@@ -164,55 +160,6 @@ class ContentRenderer:
             self._adapter.write(
                 Text.assemble(("   ", _STYLE_DIM), (text, _STYLE_DIM))
             )
-
-    # ── 工具输出区域（分隔线分组，同一工具的输出集中显示） ──
-
-    def _do_tool_output_start(self, tool_name: str, detail: str) -> None:
-        """渲染工具输出区域头部 — 开始一个新的工具执行区域。
-
-        自动关闭上一个未关闭的区域（防御性编程）。
-        使用分隔线作为区域标识：── <tool_name>(<detail>) ──
-
-        Args:
-            tool_name: 工具名称（如 "read_file"）
-            detail: 工具参数摘要（如 "path=user.py"）
-        """
-        # 防御性：自动关闭上一个未关闭的区域
-        if self._current_tool is not None:
-            self._do_tool_output_end(self._current_tool, True)
-
-        self._current_tool = tool_name
-        MAX_DETAIL_WIDTH = 80
-        if len(detail) > MAX_DETAIL_WIDTH:
-            detail = detail[:MAX_DETAIL_WIDTH - 3] + "..."
-
-        if detail:
-            header = f"  \u2500\u2500 {tool_name}({detail}) \u2500\u2500"
-        else:
-            header = f"  \u2500\u2500 {tool_name} \u2500\u2500"
-
-        self._adapter.write_raw(header + "\n")
-
-    def _do_tool_output_end(self, tool_name: str, success: bool) -> None:
-        """渲染工具输出区域尾部 — 关闭当前工具执行区域。
-
-        Args:
-            tool_name: 工具名称
-            success: 是否执行成功
-        """
-        if self._current_tool is None:
-            return  # 没有活跃区域，安全跳过
-
-        # 只关闭匹配的区域
-        if self._current_tool != tool_name:
-            _logger.debug(
-                "区域关闭不匹配: 当前=%s, 收到=%s", self._current_tool, tool_name
-            )
-            return
-
-        icon = "\u2713" if success else "\u2717"  # ✓ or ✗
-        self._adapter.write_raw(f"  \u2500\u2500 {icon} {tool_name} \u2500\u2500\n")
-        self._current_tool = None
 
     # ── 工具汇总（直接通过 OutputAdapter 写入，不再使用 ToolSummaryControl） ──
 

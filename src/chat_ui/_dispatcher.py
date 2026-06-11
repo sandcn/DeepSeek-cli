@@ -101,8 +101,6 @@ class EventDispatcher:
         if not self._is_agent_source(event.source):
             return
         self._push_cmd((RenderCommand.TOOL_COUNT_INC,))
-        # 推送工具输出区域开始命令，携带工具名称和参数摘要
-        self._push_cmd((RenderCommand.TOOL_OUTPUT_START, event.tool_name, event.detail))
 
     def _on_tool_done(self, event: "DisplayEvent") -> None:
         if not isinstance(event, ToolDoneEvent):
@@ -114,8 +112,6 @@ class EventDispatcher:
             self._push_cmd((RenderCommand.TOOL_COUNT_DEC,))
         else:
             self._push_cmd((RenderCommand.TOOL_COUNT_DEC,))
-        # 推送工具输出区域结束命令
-        self._push_cmd((RenderCommand.TOOL_OUTPUT_END, event.tool_name, event.success))
 
     def _on_tool_output(self, event: "DisplayEvent") -> None:
         if not isinstance(event, ToolOutputChunkEvent):

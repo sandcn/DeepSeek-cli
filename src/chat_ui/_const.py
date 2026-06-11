@@ -71,8 +71,6 @@ class RenderCommand(IntEnum):
     TOOL_FAIL_INC  = 15  # (15,) — 工具失败计数+1
     ERROR          = 16  # (16, message: str) — 系统错误（红色 ! 样式）
     TOOL_COUNT_DEC = 17  # (17,) — 工具计数-1
-    TOOL_OUTPUT_START = 18  # (18, tool_name: str, detail: str) — 工具输出区域开始
-    TOOL_OUTPUT_END = 19    # (19, tool_name: str, success: bool) — 工具输出区域结束
 
 
 # ═══════════════════════════════════════════════════════════
