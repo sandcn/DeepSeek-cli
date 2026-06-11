@@ -305,20 +305,22 @@ class RenderEngine:
     def _drain_queue(self) -> None:
         """消费所有待处理渲染命令。
 
-        全部三阶段在 output_lock 保护下执行：
-          0. 面板状态更新 → _phase_pre_update_panels()  ← 在批量出队前执行
-          1. 批量出队渲染命令
-          2. 上屏渲染 → _phase_render()                 ← 含 SUBAGENT_FRAME
-          3. 底部栏重绘 + 光标定位 → _phase_redraw_bottom()
+        三阶段布局（Phase 0 在锁外，Phase 1-3 在 output_lock 内）：
+          0. 面板状态更新 → _phase_pre_update_panels()  ← 锁外，不写终端，只推命令到队列
+          1. 批量出队 + 上屏渲染 → _phase_render()      ← 锁内，含 SUBAGENT_FRAME
+          2. 底部栏重绘 + 光标定位 → _phase_redraw_bottom()
         """
         commands: list[tuple] = []
+
+        # ★ Phase 0: 面板状态更新 — 在锁外执行
+        #    不写终端，只更新 scroll_end/resize 标记 + 推送 SUBAGENT_FRAME 命令到队列。
+        #    锁获取可能阻塞（争抢时 1s 超时），Phase 0 放在锁外确保面板状态始终更新，
+        #    不与 output_lock 争用。命令随后在 Phase 1 的批量出队中被消费。
+        self._phase_pre_update_panels()
+
         with _try_acquire_output_lock(name="drain_queue", timeout=1.0) as locked:
             if not locked:
                 return
-
-            # ★ Phase 0: 面板状态更新（fps 更新）在渲染前执行
-            #    更新 spinner 帧号、耗时等状态，然后由回调推送 SUBAGENT_FRAME 命令
-            self._phase_pre_update_panels()
 
             # ★ 批量出队（含上一步推送的 SUBAGENT_FRAME 命令）
             while True:
