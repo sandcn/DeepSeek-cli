@@ -45,8 +45,8 @@ class _RenderState:
     # ── 推理状态机 ──
     reasoning_state: _ReasoningState = _ReasoningState.INACTIVE
 
-    # ── 共享 OutputAdapter（由 ChatUIConsumer 注入，所有渲染器共用同一实例） ──
-    #     替代每个 IncrementalRenderer 独立创建 Console+OutputAdapter 的模式。
+    # ── 共享 OutputAdapter（由 ChatUIConsumer 注入，内容渲染器使用） ──
+    #     推理渲染器自建带 dim 样式的 Console，内容渲染器使用此共享实例。
     _shared_adapter: "OutputAdapter | None" = None
 
     def set_output_adapter(self, adapter: "OutputAdapter") -> None:
@@ -68,17 +68,12 @@ class _RenderState:
         if self.reasoning_state == _ReasoningState.CLOSED:
             return None
         if self.reasoning is None:
-            if self._shared_adapter is None:
-                _logger.warning(
-                    "get_reasoning: _shared_adapter 未设置，将使用独立 Console/OutputAdapter"
-                )
             from ..api.renderer import IncrementalRenderer
             self.reasoning = IncrementalRenderer(
                 style="dim",
                 _file=sys.__stdout__,
                 typing_speed=1000,
                 show_indicator=False,
-                output_adapter=self._shared_adapter,
             )
             self.reasoning_state = _ReasoningState.ACTIVE
         return self.reasoning
