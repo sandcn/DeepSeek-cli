@@ -492,9 +492,10 @@ class TestDrainQueueSyncBottomLines(unittest.TestCase):
 class TestApplyScrollDeltaOrdering(unittest.TestCase):
     """验证 2026-06-12 修复后的 force_redraw 行为。
 
-    2026-06-11 修复曾停用 SU/SD，改为直接覆盖+清除策略。
-    2026-06-12 修复恢复 SU 上滚（扩展时），但将滚动区域限定为旧内容区
-    (1, old_scroll_end)，确保 SU 仅作用于内容区。底部栏缩小时仍直接清除回收区。
+    2026-06-12 修复：移除 SU（底部栏扩大时不再上滚内容）。
+    SU 在 DECSTBM 内无 scrollback 缓冲，滚出顶部的行永久丢失，
+    改为直接缩小滚动区域，让弹窗覆盖底部内容区少数行。
+    底部栏缩小时直接清除回收区域行（不使用 SD 下滚）。
     """
 
     def setUp(self):
@@ -542,14 +543,15 @@ class TestApplyScrollDeltaOrdering(unittest.TestCase):
         self.assertLess(pos1, pos2,
                         msg or f"{first_seq!r} 应在 {second_seq!r} 之前")
 
-    def test_force_redraw_expand_with_su(self):
-        """★ 2026-06-12 修复: force_redraw 在 delta > 0 时恢复 SU 上滚序列。
+    def test_force_redraw_expand_no_su(self):
+        """★ 2026-06-12 修复: force_redraw 在 delta > 0 时不再输出 SU 上滚序列。
 
-        将滚动区域限定为旧内容区 (1, old_scroll_end) 后执行 SU，
-        确保 SU 仅作用于内容区而不影响底部栏区域。顶行可能丢失但
-        优于底部最新内容被覆盖。
-        验证：① SU 序列存在且在正确位置；② 旧内容区滚动区域在 SU 之前设置；
-        ③ \\033[r 在 SU 之后重置；④ 新 DECSTBM 已设置。
+        移除 SU（Scroll Up）以避免丢失上屏顶部内容。
+        底部栏扩大时，新划入底部栏的区域（原内容区底部行）直接由
+        _draw_input_lines_locked() 覆盖。
+
+        验证：① SU 序列不存在；② \\033[r 存在（重置滚动区域为全屏）；
+        ③ 新 DECSTBM 正确设置。
         """
         self.bb._last_text = "A" * 500  # 长文本，_bottom_lines 会增大
         self.bb._last_bottom_lines = 3  # 旧底部行数较小
@@ -558,31 +560,14 @@ class TestApplyScrollDeltaOrdering(unittest.TestCase):
         output = self._capture_ansi_order(lambda: self.bb.force_redraw())
 
         import re
-        # ★ 验证 SU 上滚序列存在
+        # ★ 验证无 SU 序列
         su_match = re.search(r'\x1b\[(\d+)S', output)
-        self.assertIsNotNone(su_match, "应输出 SU 上滚序列")
-        su_pos = su_match.start()
-        # ★ 验证 \\033[r 在 SU 之前（重置滚动区域为全屏，然后 SU 在旧内容区内）
-        first_r_pos = output.find("\033[r")
-        self.assertNotEqual(first_r_pos, -1, "应输出 \\033[r 重置滚动区域")
-        self.assertLess(first_r_pos, su_pos,
-                        "\\033[r 应在 SU 之前（先重置全屏再限定旧内容区 SU）")
-        # ★ 验证旧内容区滚动区域设置在 SU 之前: \\033[1;{old_scroll_end}r
-        #    old_scroll_end = _last_height - old_bottom_lines = 30 - 3 = 27
-        old_region = "\033[1;27r"
-        old_region_pos = output.find(old_region)
-        self.assertNotEqual(old_region_pos, -1,
-                            f"应设置旧内容区滚动区域 {old_region}")
-        self.assertLess(old_region_pos, su_pos,
-                        "旧内容区滚动区域应在 SU 之前设置")
-        # ★ 验证第二个 \\033[r 在 SU 之后（重置全屏）：
-        #    查找 SU 之后出现的 \\033[r
-        second_r_pos = output.find("\033[r", su_pos)
-        self.assertNotEqual(second_r_pos, -1,
-                            "SU 之后应有 \\033[r 重置滚动区域")
-        # ★ 验证新 DECSTBM 在 SU 之后设置
-        new_decstbm = re.search(r'\x1b\[\d+;\d+r', output[su_pos:])
-        self.assertIsNotNone(new_decstbm, "SU 之后应设置新 DECSTBM")
+        self.assertIsNone(su_match, "不应输出 SU 上滚序列")
+        # ★ 验证 \\033[r 存在（重置滚动区域为全屏）
+        self.assertIn("\033[r", output, "应输出 \\033[r 重置滚动区域")
+        # ★ 验证新 DECSTBM 存在
+        new_decstbm = re.search(r'\x1b\[\d+;\d+r', output)
+        self.assertIsNotNone(new_decstbm, "应设置新 DECSTBM")
 
     def test_shrink_clears_reclaimed_area(self):
         """★ 2026-06-11 修复: force_redraw 在 delta < 0 时不再输出 SD 下滚序列。

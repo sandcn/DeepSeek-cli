@@ -265,7 +265,6 @@ class _BottomBar(_StatusMixin):
         self._last_scroll_end: int = 0
         self._last_height: int = 0  # 哨兵值，首次 force_redraw() 必然触发全量重绘（终端高度始终 ≥1）
         self._last_sync_height: int = 0  # sync_bottom_lines() 中用于检测终端 resize
-        self._su_applied_at_scroll_end: int = 0  # 记录 sync_bottom_lines() 中 SU 已应用的 scroll_end，force_redraw() 据此去重
         # ── 补全弹窗组合对象 ──
         self._completion = _CompletionPopup(cursor_tracker=cursor_tracker)
         # ── stdout 行追踪器 ──
@@ -484,19 +483,11 @@ class _BottomBar(_StatusMixin):
             self._tracker.set_scroll_end(scroll_end)
         out = sys.__stdout__
 
-        # ★ 底部栏扩大时，在设置新 DECSTBM 之前先 SU 上滚旧内容区。
-        #    必须在 content 渲染之前执行——若推迟到 force_redraw()，
-        #    会连带将 Phase 1 新渲染的内容也上移，产生空行间隙。
-        delta_expand = old_scroll - scroll_end  # > 0 表示底部栏扩大（旧内容区 > 新内容区）
-        if delta_expand > 0 and old_scroll >= 1 and scroll_end >= 1:
-            clamped = min(old_scroll, height)
-            out.write(_blessed_reset_scroll_region())
-            out.write(_blessed_set_scroll_region(1, clamped))
-            out.write(_blessed_cursor_goto(clamped, 1))
-            out.write(_blessed_scroll_up(delta_expand))
-            out.write(_blessed_reset_scroll_region())
-            self._su_applied_at_scroll_end = scroll_end
-
+        # ★ 底部栏扩大时，直接设置新 DECSTBM 滚动区域。
+        #    不执行 SU（Scroll Up）上滚旧内容区——SU 在 DECSTBM 区域内
+        #    无 scrollback 缓冲，滚出顶部的行永久丢失。底部栏扩大导致
+        #    滚动区域缩小时，新划入底部栏的区域（原内容区底部行）会被
+        #    force_redraw() 中的 _draw_input_lines_locked() 覆盖。
         out.write(f"{_blessed_set_scroll_region(1, scroll_end)}")
         # ★ resize 后清除新 scroll_end 行上由终端模拟器位移残留的旧内容，
         #    确保后续内容渲染从干净行开始，消除旧内容与底部栏之间的 1 行重叠
@@ -697,25 +688,19 @@ class _BottomBar(_StatusMixin):
             out = sys.__stdout__
             out.write(_blessed_save_cursor())
 
-            # ★ 底部栏扩大时，SU 上滚旧内容区为底部栏腾空间。
-            #    sync_bottom_lines() 在 Phase 1 已优先执行 SU（在 content 渲染前），
-            #    此处仅处理 sync 未覆盖的直接调用路径（如 show_completions）。
-            #    底部栏缩小时直接清除回收区域（见下方），不做 SD 下滚。
-            #    终端过小（scroll_end < 1）时跳过 SU，后续全屏清除已覆盖此场景。
+            # ★ 底部栏扩大时不执行 SU（Scroll Up）上滚旧内容区。
+            #    SU 在 DECSTBM 区域内无 scrollback 缓冲，滚出顶部的行永久丢失。
+            #    新划入底部栏的区域（原内容区底部行）会被后续的
+            #    _draw_input_lines_locked() 覆盖，不影响上屏顶部内容。
 
             out.write(_blessed_reset_scroll_region())
 
-            # ★ 底部栏扩大：若 sync 尚未处理，在旧内容区内执行 SU 上滚
-            if delta > 0 and old_scroll_end >= 1 and scroll_end >= 1 and scroll_end != self._su_applied_at_scroll_end:
-                # ★ 终端缩小时 old_scroll_end 可能大于当前 height，需 clamp
-                clamped = min(old_scroll_end, height)
-                out.write(_blessed_set_scroll_region(1, clamped))
-                out.write(_blessed_cursor_goto(clamped, 1))
-                out.write(_blessed_scroll_up(delta))
-                out.write(_blessed_reset_scroll_region())
-            self._su_applied_at_scroll_end = 0  # 重置标记
-
             self._last_bottom_lines = total
+
+            # ★ 底部栏扩大时（delta > 0），在上屏内容被底部栏覆盖前，
+            #    保存被覆盖行的内容到 ring buffer，供缩小后恢复使用。
+            if delta > 0 and self._tracker is not None:
+                self._tracker.save_rows_to_restore(delta)
 
             if scroll_end < 1:
                 for r in range(1, height + 1):
@@ -765,12 +750,23 @@ class _BottomBar(_StatusMixin):
             if self._tracker is not None:
                 self._tracker.set_scroll_end(scroll_end)
             out.write(f"{_blessed_set_scroll_region(1, scroll_end)}")
-            # ★ 底部栏缩小时，直接清除回收区域行（不使用 SD 下滚），
-            #    避免内容位移。回收区域空白将由新输出自然填充。
+            # ★ 底部栏缩小时（delta < 0），恢复之前保存的上屏内容行，
+            #    确保上屏内容在弹窗弹出/缩回后保持原样。
             if delta < 0 and old_scroll_end > 0:
-                for r in range(old_scroll_end + 1, scroll_end + 1):
-                    out.write(_blessed_move_clear(r))
-                self._cursor_tracker.set(scroll_end, 1)
+                saved = self._tracker.get_saved_rows() if self._tracker is not None else None
+                if saved:
+                    n_rows = min(-delta, scroll_end - old_scroll_end)
+                    for i, line in enumerate(saved[:n_rows]):
+                        r = old_scroll_end + 1 + i
+                        if r <= height:
+                            out.write(_blessed_move_clear(r) + line.rstrip('\n'))
+                    self._cursor_tracker.set(min(old_scroll_end + n_rows, scroll_end), 1)
+                    if self._tracker is not None:
+                        self._tracker.clear_saved()
+                else:
+                    for r in range(old_scroll_end + 1, scroll_end + 1):
+                        out.write(_blessed_move_clear(r))
+                    self._cursor_tracker.set(scroll_end, 1)
             out.write(_blessed_restore_cursor())
             out.write(_blessed_cursor_goto(scroll_end, 1) + _blessed_save_cursor())
             self._cursor_tracker.set(scroll_end, 1)
@@ -783,15 +779,13 @@ class _BottomBar(_StatusMixin):
     def _apply_scroll_delta(self, out, delta: int, old_scroll_end: int) -> None:
         """根据底部栏行数变化调整上屏内容滚动位置。
 
-        ★ 自 2026-06-11 起 force_redraw() 不再调用此方法。
-        保留供将来可能的回退或替代方案使用。
+        ★ 自 2026-06-12 起 force_redraw() 不再调用此方法。
+        SU 在 DECSTBM 区域内无 scrollback 缓冲，滚出顶部的行永久丢失，
+        因此底部栏扩大时不再执行 SU，改为让弹窗直接覆盖底部内容区行。
+        保留供将来可能的回退或替代方案使用（历史测试仍验证此方法）。
 
         delta > 0（底部栏扩大）：向上滚动内容腾出空间（SU）。
         delta <= 0 或 old_scroll_end < 1：无操作。
-
-        注意：SU 在 DECSTBM 区域内无 scrollback 缓冲，滚出顶部的行永久丢失。
-        此行为已确认会导致补全弹窗弹出时上屏对话历史顶行被清掉，因此 force_redraw()
-        改为直接覆盖+清除策略。
 
         参数:
             out: sys.__stdout__ 或等价的可写文件对象（TextIO）。
@@ -807,7 +801,8 @@ class _BottomBar(_StatusMixin):
     def _reclaim_scroll_back(out, delta: int, scroll_end: int) -> None:
         """缩小后在新 DECSTBM 内下滚内容以消除空白间隙。
 
-        ★ 自 2026-06-11 起 force_redraw() 不再调用此方法。
+        ★ 自 2026-06-12 起 force_redraw() 不再调用此方法。
+        SD 下滚会产生顶部空白行，回收区域直接清除即可，由新输出自然填充。
         保留供将来可能的回退或替代方案使用。
 
         delta < 0（底部栏缩小）：在新 DECSTBM[1;scroll_end] 内做 SD 下滚。
