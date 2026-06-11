@@ -56,6 +56,7 @@
 
 ## 操作纪律
 - `dispatch_agent` 不能与普通工具同轮并行；同轮多次 dispatch 合法。例外：map 输出文件 `read_file` 可与后续 plan 的 `dispatch_agent` 同轮
+- **禁止未经 map 分析直接 read_file 项目源码（强制）**：任何项目内代码文件（`.py`/`.js`/`.ts`/`.sh`/`Makefile`/`Dockerfile` 等可执行或编译文件）在被 `read_file` 读取之前，必须先经过 `dispatch_agent(type="map")` 分析确认。`read_file` 只能读取 map 返回的「关联文件列表」中的文件。例外：记忆文件（`.chat/memory/`）、计划文件（`.chat/plan/`）、map 输出文件（`.chat/map/`）、配置文件（`.toml`/`.cfg`/`.ini`/`.env`/`.yml`/`.yaml`/`.json` 等非可执行声明式配置）、纯文档（`.md`/`.rst`/`.txt` 等非可执行文档，含本 prompt 文件）、系统/第三方库文件（`/usr/`、`site-packages/` 等非项目路径）。零逻辑变更（typo/排版/注释调整）豁免本规则，以任务描述或 map 已确认的信息为判定依据，禁止为判定「是否零逻辑」而绕过 map 读取源码
 - 临时性错误最多重试 2 次（指数退避），连续 3 次失败停止
 - 客观失败按「遇难不轻退」处理
 - 禁止吞异常（例外：finally 清理+日志、非关键降级，不得裸 `except:`）
@@ -86,7 +87,7 @@
 
 ## map 前置规则（强制）
 
-**禁止在 map 前读源码**：派发 `dispatch_agent(type="map")` 完成全量分析之前，禁止 `read_file` 读取任何源码文件内容。例外：`find`/`ls` 获取文件列表、记忆文件（`.chat/memory/`）、计划文件（`.chat/plan/`）、配置文件、纯文档。
+**禁止在 map 前读源码**：派发 `dispatch_agent(type="map")` 完成全量分析之前，禁止 `read_file` 读取任何源码文件内容。例外：`find`/`ls` 获取文件列表、记忆文件（`.chat/memory/`）、计划文件（`.chat/plan/`）、map 输出文件（`.chat/map/`）、配置文件（`.toml`/`.cfg`/`.ini`/`.env`/`.yml`/`.yaml`/`.json` 等）、纯文档（`.md`/`.rst`/`.txt` 等）、系统/第三方库文件（非项目路径）、零逻辑变更（以任务描述或 map 已确认的信息为判定依据）。
 
 **读码仅限关联文件**：map 返回后，`read_file` 只能读取 map 返回的「关联文件列表」中的文件，且仅作为补充验证手段。优先从 map 的结构化输出（CFG/DFG/状态机图/调用链/模块结构/类图）中获取信息。需读取列表外文件时，必须先重新派发 map。
 
