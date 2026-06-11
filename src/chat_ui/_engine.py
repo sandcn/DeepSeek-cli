@@ -182,23 +182,21 @@ class RenderEngine:
         task_done.start()
         task_done.join(timeout=timeout)
 
-    def ensure_cursor_upper(self) -> None:
-        """将光标移到内容区。调用方须持有 output_lock。"""
-        self._bb.ensure_cursor_in_upper()
-
     # ── 内部 — 三阶段流水线 ──────────────────────────
 
     def _phase_render(self, commands: list[tuple]) -> None:
-        """阶段 1：批量出队 + 上屏渲染（在 output_lock 内调用）。
+        """阶段 1：清除旧底部栏 + 上屏渲染（在 output_lock 内调用）。
+
+        在命令渲染完成后保存光标位置（\\0337），
+        供阶段 3 force_redraw 使用：从内容末尾的下一行开始绘制底部栏。
 
         参数:
             commands: 待渲染的命令列表
         """
         try:
-            self._bb.sync_bottom_lines()
+            self._bb.clear_old_bottom()
         except Exception:
-            _logger.debug("drain_queue: sync_bottom_lines 异常", exc_info=True)
-        self.ensure_cursor_upper()
+            _logger.debug("drain_queue: clear_old_bottom 异常", exc_info=True)
         for cmd in commands:
             try:
                 self._renderer.render(cmd)
@@ -208,6 +206,9 @@ class RenderEngine:
                     RenderCommand.ERROR,
                     f"渲染命令 {_cmd_name(cmd[0])} 失败，请查看日志获取详情",
                 ))
+        # ★ 保存光标位置：记录命令输出结束位置，
+        #    force_redraw 从此位置的下一行开始绘制底部栏
+        sys.__stdout__.write("\0337")
         sys.__stdout__.flush()
 
     def _phase_refresh_panels(self) -> None:
@@ -229,20 +230,18 @@ class RenderEngine:
         """阶段 3：底部栏重绘 + 光标定位（在 output_lock 内调用）。
 
         分流策略：
-        - has_commands=True → 全量重绘
-        - is_status_active → 流式状态每帧强制重绘
+        - has_commands=True → 从命令输出末尾的下一行开始绘制底部栏
+        - 每 0.1s 强制刷新（render 线程心跳周期）
         """
-        redraw = has_commands or self._bottom_redraw_requested.is_set() or self._bb.is_status_active
         self._bottom_redraw_requested.clear()
-        if redraw:
-            try:
-                self._bb.force_redraw()
-            except Exception:
-                _logger.debug("drain_queue: force_redraw 异常", exc_info=True)
-            try:
-                self.position_cursor()
-            except Exception:
-                _logger.debug("drain_queue: position_cursor 异常", exc_info=True)
+        try:
+            self._bb.force_redraw(from_content_end=has_commands)
+        except Exception:
+            _logger.debug("drain_queue: force_redraw 异常", exc_info=True)
+        try:
+            self.position_cursor()
+        except Exception:
+            _logger.debug("drain_queue: position_cursor 异常", exc_info=True)
 
     # ── 内部 — render 线程 ────────────────────────────
 

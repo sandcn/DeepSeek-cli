@@ -263,15 +263,12 @@ class TestBottomBarFormatStatus(unittest.TestCase):
         self.assertNotIn("t/s", result)
 
 
-class TestBottomBarLastScrollEnd(unittest.TestCase):
-    """验证 _last_scroll_end 缓存在 DECSTBM 设置处的正确同步。
+class TestBottomBarClearOldBottom(unittest.TestCase):
+    """验证 clear_old_bottom() 清除旧底部栏区域。
 
     核心场景：
-      1. _last_scroll_end 初始值为 0
-      2. setup() 后 _last_scroll_end 等于 height - _bottom_lines
-      3. ensure_cursor_in_upper() 使用 _last_scroll_end 而非动态计算
-      4. sync_bottom_lines() 在 _bottom_lines 变化时同步 DECSTBM
-      5. sync_bottom_lines() 在无变化时静默跳过
+      1. clear_old_bottom() 非活跃时跳过
+      2. clear_old_bottom() 清除旧底部栏行并定位光标
     """
 
     def setUp(self):
@@ -281,157 +278,49 @@ class TestBottomBarLastScrollEnd(unittest.TestCase):
     def tearDown(self):
         sys.__stdout__ = self._stdout
 
-    def test_initial_value_is_zero(self):
-        """_last_scroll_end 初始值为 0。"""
-        self.assertEqual(self.bb._last_scroll_end, 0,
-                         "_last_scroll_end 初始值应为 0")
+    def test_clear_old_bottom_inactive(self):
+        """非活跃时 clear_old_bottom() 不输出任何序列。"""
+        self.bb._active = False
+        out = io.StringIO()
+        with patch.object(sys, '__stdout__', out):
+            self.bb.clear_old_bottom()
+        self.assertEqual(out.getvalue(), "")
 
-    def test_setup_syncs_last_scroll_end(self):
-        """setup() 后 _last_scroll_end 应等于 height - _bottom_lines。"""
-        self.bb._cached_height = 30
-        self.bb._cached_width = 80
-
-        mock_term = _mock_terminal(width=80, height=30)
-        with patch.object(sys, '__stdout__', io.StringIO()), \
-             patch("src.ui._bottom_bar.get_terminal", return_value=mock_term):
-            self.bb.setup()
-
-        expected = 30 - (2 + max(3, 0))  # height - (_BOTTOM_LINES + 0 = 5) = 25
-        self.assertEqual(self.bb._last_scroll_end, 25,
-                         "setup() 后 _last_scroll_end 应为 25 (30-5)")
-
-    def test_ensure_cursor_upper_uses_cached_value(self):
-        """ensure_cursor_in_upper() 使用 _last_scroll_end 而非动态计算。"""
+    def test_clear_old_bottom_active(self):
+        """活跃时 clear_old_bottom() 清除 last_height 区域内行。"""
         self.bb._active = True
-        self.bb._cached_height = 30
-        self.bb._cached_width = 80
-        self.bb._last_scroll_end = 25  # 模拟 setup 后的值
-        self.bb._last_text = "x" * 300  # 长文本使 _bottom_lines 很大
-
-        # Blessed 在非 TTY 环境下返回空字符串，需 patch get_terminal
-        mock_term = _mock_terminal(width=80, height=30)
-        with patch("src.ui._bottom_bar.get_terminal", return_value=mock_term):
-            out = io.StringIO()
-            old = sys.__stdout__
-            sys.__stdout__ = out
-            try:
-                self.bb.ensure_cursor_in_upper()
-            finally:
-                sys.__stdout__ = old
-
-        # 应输出 \033[25;1H（用缓存值 25），而非动态计算的更小值
-        output = out.getvalue()
-        self.assertIn("\033[25;1H", output,
-                      "ensure_cursor_in_upper 应使用 _last_scroll_end=25 而非动态值")
-
-    def test_ensure_cursor_upper_fallback_when_zero(self):
-        """_last_scroll_end=0 时降级到 terminal height。"""
-        self.bb._active = True
-        self.bb._cached_height = 30
-        self.bb._cached_width = 80
-        self.bb._last_scroll_end = 0  # 未初始化
-
-        mock_term = _mock_terminal(width=80, height=30)
-        with patch("src.ui._bottom_bar.get_terminal", return_value=mock_term):
-            out = io.StringIO()
-            with patch.object(sys, '__stdout__', out):
-                self.bb.ensure_cursor_in_upper()
-
-        output = out.getvalue()
-        self.assertIn("\033[30;1H", output,
-                      "_last_scroll_end=0 时应降级到 height=30")
-
-    def test_sync_bottom_lines_updates_decstbm(self):
-        """sync_bottom_lines() 在 _bottom_lines 变化时同步 DECSTBM。"""
-        self.bb._active = True
-        self.bb._cached_height = 30
-        self.bb._cached_width = 80
-        self.bb._last_scroll_end = 25  # 旧值（30-5）
-        # 让 _bottom_lines 变大（模拟补全弹窗弹出）
-        self.bb._completion_popup_height = 6
+        self.bb._last_height = 30
+        self.bb._last_bottom_lines = 5  # 旧底部栏 5 行
 
         mock_term = _mock_terminal(width=80, height=30)
         out = io.StringIO()
         with patch.object(sys, '__stdout__', out), \
              patch("src.ui._bottom_bar.get_terminal", return_value=mock_term):
-            self.bb.sync_bottom_lines()
-
-        # _bottom_lines = 2 + max(3, 0) + 6 = 11
-        # scroll_end = 30 - 11 = 19
-        output = out.getvalue()
-        self.assertIn("\033[1;19r", output,
-                      "sync_bottom_lines 应输出 DECSTBM \\033[1;19r")
-        self.assertEqual(self.bb._last_scroll_end, 19,
-                         "sync_bottom_lines 应更新 _last_scroll_end 到 19")
-
-    def test_sync_bottom_lines_skips_when_unchanged(self):
-        """sync_bottom_lines() 在 _bottom_lines 未变且终端高度未变时静默跳过。"""
-        self.bb._active = True
-        self.bb._cached_height = 30
-        self.bb._cached_width = 80
-        self.bb._last_scroll_end = 25  # 30 - 5 = 25，与当前 _bottom_lines 一致
-        self.bb._last_sync_height = 30  # 终端高度未变
-
-        mock_term = _mock_terminal(width=80, height=30)
-        out = io.StringIO()
-        with patch.object(sys, '__stdout__', out), \
-             patch("src.ui._bottom_bar.get_terminal", return_value=mock_term):
-            self.bb.sync_bottom_lines()
+            self.bb.clear_old_bottom()
 
         output = out.getvalue()
-        self.assertEqual(output, "",
-                         "_bottom_lines 未变时 sync_bottom_lines 不应输出 ANSI 序列")
-
-    def test_sync_bottom_lines_shrink_clears_interval(self):
-        """终端缩小后 sync_bottom_lines 清除 scroll_end+1 到 old_scroll 整个区间。
-
-        Bug 修复验证：缩小后清除全部将变为底部栏区域的行（而非仅清除单一边界行），
-        消除底部栏刷新（输入）路径中旧内容在 force_redraw 前的残留。
-        """
-        self.bb._active = True
-        self.bb._cached_height = 30
-        self.bb._cached_width = 80
-        # 模拟旧状态：scroll_end=25（30-5）
-        self.bb._last_scroll_end = 25
-        self.bb._last_sync_height = 30
-        self.bb._last_text = ""
-
-        # 终端缩小到 25 行
-        mock_term = _mock_terminal(width=80, height=25)
-        out = io.StringIO()
-        with patch.object(sys, '__stdout__', out), \
-             patch("src.ui._bottom_bar.get_terminal", return_value=mock_term):
-            self.bb.sync_bottom_lines()
-
-        output = out.getvalue()
-        # scroll_end = 25 - 5 = 20, old_scroll = 25
-        # 应清除行 21-25 整个区间
-        for r in range(21, 26):
+        # 旧底部栏起始行: 30 - 5 + 1 = 26
+        # 应清除行 26-30
+        for r in range(26, 31):
             self.assertIn(f"\033[{r};1H\033[K", output,
-                          f"终端缩小后应清除旧内容残留行 {r}")
-        # DECSTBM 应更新为 (1, 20)
-        self.assertIn("\033[1;20r", output,
-                      "终端缩小后 DECSTBM 应更新为 (1, 20)")
+                          f"应清除行 {r}")
+        # 光标应定位到 26 行（清除区域起始行）
+        self.assertIn("\033[26;1H", output)
 
 
-class TestDrainQueueSyncBottomLines(unittest.TestCase):
-    """验证 _drain_queue() Stage 1 非 resize 时调用 sync_bottom_lines()。"""
+class TestDrainQueueClearOldBottom(unittest.TestCase):
+    """验证 _drain_queue() Stage 1 调用 clear_old_bottom()。"""
 
     def setUp(self):
         from src.chat_ui._engine import RenderEngine
         self.mock_renderer = MagicMock()
         self.mock_bb = MagicMock()
         self.mock_bb.is_status_active = False
-        self.mock_bb.is_resize_pending = False
         self.mock_bb._active = True
-        self.mock_bb._setup_height = 30
+        self.mock_bb._last_height = 30
         self.mock_bb._last_bottom_lines = 5
-        self.mock_bb._bottom_lines = 5
-        self.mock_bb._completion_popup_height = 0
-        self.mock_bb._last_scroll_end = 25  # 模拟已缓存的值
         self.mock_bb.get_cursor_info.return_value = ("", 0, 24, 80)
-        self.mock_bb._cursor_visual_pos_from_cache.return_value = (0, 0)
-        self.engine = RenderEngine(self.mock_renderer, self.mock_bb, MagicMock())
+        self.engine = RenderEngine(self.mock_renderer, self.mock_bb)
         self._stdout = sys.__stdout__
 
     def tearDown(self):
@@ -441,10 +330,9 @@ class TestDrainQueueSyncBottomLines(unittest.TestCase):
         from src.chat_ui._const import RenderCommand
         self.engine.push_cmd((RenderCommand.NOTIFICATION, "test"))
 
-    def test_not_resized_calls_sync_bottom_lines(self):
-        """resized=False 时 sync_bottom_lines 应在 ensure_cursor_upper 之前被调用。"""
+    def test_phase_render_calls_clear_old_bottom(self):
+        """_phase_render 应先调用 clear_old_bottom 再渲染命令。"""
         self._enqueue_cmd()
-        self.mock_bb.check_resize.return_value = False
 
         with \
              patch("src.ui._lock._try_acquire_output_lock",
@@ -453,29 +341,15 @@ class TestDrainQueueSyncBottomLines(unittest.TestCase):
              patch.object(sys, '__stdout__', MagicMock()):
             self.engine._drain_queue()
 
-        # 验证 sync_bottom_lines 被调用过
-        self.mock_bb.sync_bottom_lines.assert_called()
-        # 验证 ensure_cursor_upper 也被调用（在 sync_bottom_lines 之后）
-        self.mock_bb.ensure_cursor_in_upper.assert_called()
-        # 验证调用顺序：sync_bottom_lines 先于 ensure_cursor_upper
-        call_order = self.mock_bb.method_calls
-        sync_idx = next(i for i, c in enumerate(call_order)
-                        if c[0] == 'sync_bottom_lines')
-        cursor_idx = next(i for i, c in enumerate(call_order)
-                          if c[0] == 'ensure_cursor_in_upper')
-        self.assertLess(sync_idx, cursor_idx,
-                        "sync_bottom_lines 应在 ensure_cursor_upper 之前调用")
+        # 验证 clear_old_bottom 被调用过
+        self.mock_bb.clear_old_bottom.assert_called()
+        # 验证渲染器被调用
+        self.mock_renderer.render.assert_called()
 
-    def test_resized_skips_sync_bottom_lines(self):
-        """resized=True 时 sync_bottom_lines 不应被调用。"""
+    def test_clear_old_bottom_exception_tolerated(self):
+        """clear_old_bottom 异常时应继续渲染命令。"""
         self._enqueue_cmd()
-        self.mock_bb.check_resize.return_value = True
-        # 模拟 resize 场景必要的属性值，避免 Fix A 逻辑报错
-        self.mock_bb._setup_height = 30
-        self.mock_bb._last_bottom_lines = 5
-        self.mock_bb._bottom_lines = 5
-        self.mock_bb._active = True
-        self.mock_bb._term_height.return_value = 35
+        self.mock_bb.clear_old_bottom.side_effect = RuntimeError("boom")
 
         with \
              patch("src.ui._lock._try_acquire_output_lock",
@@ -484,220 +358,97 @@ class TestDrainQueueSyncBottomLines(unittest.TestCase):
              patch.object(sys, '__stdout__', MagicMock()):
             self.engine._drain_queue()
 
-        self.mock_bb.sync_bottom_lines.assert_not_called()
-        self.mock_bb.ensure_cursor_in_upper.assert_not_called()
+        # 渲染器仍被调用（异常被吞掉）
+        self.mock_renderer.render.assert_called()
 
 
-class TestApplyScrollDeltaOrdering(unittest.TestCase):
-    """验证 _apply_scroll_delta 在 \\033[r 之前的调用顺序。
-
-    修复 Bug: _apply_scroll_delta（原 _apply_scroll_delta）在 \\033[r（全屏滚动模式）之后调用，
-    导致整个屏幕滚动、上屏顶部内容丢失。
-    修复后: _apply_scroll_delta 在 \\033[r 之前调用，只滚动 DECSTBM 区域内的内容。
-    """
+class TestForceRedrawNoDECSTBM(unittest.TestCase):
+    """验证 force_redraw 不输出 DECSTBM/SU/SD 序列。"""
 
     def setUp(self):
         self.bb = _BottomBar()
         self.bb._active = True
-        self.bb._cached_height = 30
-        self.bb._cached_width = 40  # 窄宽度，确保长文本换行
-        self.bb._setup_height = 30
-        self.bb._setup_width = 40
         self.bb._last_text = "test"
-        self.bb._last_bottom_lines = 3  # 最小底部行数
+        self.bb._last_bottom_lines = 5
         self.bb._last_rendered_text = "test"
+        self.bb._last_height = 30
         self._stdout = sys.__stdout__
 
     def tearDown(self):
         sys.__stdout__ = self._stdout
 
-    def _capture_ansi_order(self, method_call):
-        """调用指定方法，捕获 ANSI 输出序列（终端尺寸固定为 80x30）。"""
+    def test_force_redraw_no_decstbm(self):
+        """force_redraw 输出不应包含 DECSTBM 序列。"""
         buf = io.StringIO()
         with patch.object(sys, '__stdout__', buf), \
              patch("shutil.get_terminal_size", return_value=(80, 30)):
-            method_call()
-        return buf.getvalue()
-
-    def assert_ansi_before(self, output, first_seq, second_seq, msg=None):
-        """断言 first_seq 在 second_seq 之前出现在 output 中。"""
-        pos1 = output.find(first_seq)
-        pos2 = output.find(second_seq)
-        self.assertNotEqual(pos1, -1, f"未找到序列 {first_seq!r}")
-        self.assertNotEqual(pos2, -1, f"未找到序列 {second_seq!r}")
-        self.assertLess(pos1, pos2,
-                        msg or f"{first_seq!r} 应在 {second_seq!r} 之前")
-
-    def test_force_redraw_expand_uses_su(self):
-        """force_redraw 在 delta > 0 时输出 SU 上滚序列（在 \\033[r 之前）。"""
-        self.bb._last_text = "A" * 500  # 长文本，_bottom_lines 会增大
-        self.bb._last_bottom_lines = 3  # 旧底部行数较小
-        self.bb._last_rendered_text = "old"
-
-        old_bl = self.bb._last_bottom_lines
-        output = self._capture_ansi_order(lambda: self.bb.force_redraw())
-
-        old_scroll_end = 30 - old_bl
-        scroll_up_seq = f"\033[{old_scroll_end};1H"
-        self.assertIn(scroll_up_seq, output, "应定位到 old_scroll_end")
-        # SU 序列格式: \033[N S（N 为具体 delta 值，取决于文本换行）
-        import re
-        self.assertTrue(re.search(r'\x1b\[\d+S', output),
-                        "应输出 SU 上滚序列")
-        self.assert_ansi_before(output, scroll_up_seq, "\033[r",
-                                "SU 应在 \\033[r 之前")
-
-    def test_force_redraw_expand_uses_su(self):
-        """force_redraw 在 delta > 0 时输出 SU 上滚序列。"""
-        self.bb._last_text = "A" * 500  # 长文本，_bottom_lines 会增大
-        self.bb._last_bottom_lines = 3  # 旧底部行数较小
-        self.bb._last_rendered_text = "short"
-
-        old_bl = self.bb._last_bottom_lines
-        output = self._capture_ansi_order(
-            lambda: self.bb.force_redraw())
-
-        scroll_end = 30 - old_bl
-        scroll_up_seq = f"\033[{scroll_end};1H"
-        self.assertIn(scroll_up_seq, output, "应定位到 old_scroll_end")
-        import re
-        self.assertTrue(re.search(r'\x1b\[\d+S', output),
-                        "应输出 SU 上滚序列")
-
-    def test_shrink_uses_reclaim_scroll_back(self):
-        """force_redraw 在 delta < 0 时通过 _reclaim_scroll_back 输出 SD（在 DECSTBM 之后）。"""
-        self.bb._last_text = "test"
-        self.bb._last_bottom_lines = 8  # 旧值较大
-        self.bb._last_rendered_text = "old"
-
-        output = self._capture_ansi_order(lambda: self.bb.force_redraw())
-
-        # SD 应在 DECSTBM 设置之后
-        self.assertIn("\033[1;25r", output, "应设置新 DECSTBM")
-        decstbm_idx = output.index("\033[1;25r")
-        sd_idx = output.index("\033[3T")
-        self.assertLess(decstbm_idx, sd_idx,
-                        "DECSTBM 应在 SD 之前（SD 在新滚动区域内执行）")
-
-    @unittest.skip("_check_resize 已从 _BottomBar 移除")
-    def test_shrink_path_uses_height(self):
-        """_check_resize shrink 分支仍使用 height（新终端高度）定位（全屏滚动场景）。"""
-        # setup: height=30, shrink to 25
-        self.bb._last_bottom_lines = 5
-        self.bb._setup_height = 30
-        self.bb._cached_height = 30
-        self.bb._last_text = "test"
-        # 缩小后 shrink 路径使用新 height=25 定位到新终端末行
-        from unittest.mock import patch as u_patch
-        with u_patch("shutil.get_terminal_size",
-                      return_value=(80, 25)), \
-             u_patch("src.ui._bottom_bar._try_acquire_output_lock",
-                     return_value=MagicMock(__enter__=MagicMock(return_value=True),
-                                            __exit__=MagicMock(return_value=False))):
-            with patch.object(sys, '__stdout__', io.StringIO()) as buf:
-                self.bb._check_resize()
+            self.bb.force_redraw()
 
         output = buf.getvalue()
-        # shrink 路径中 _apply_scroll_delta(scroll_n, out, height) 使用新 height=25
-        # 定位到终端末行：\033[25;1H（新终端高度）
-        self.assertIn("\033[25;1H", output,
-                      "shrink 路径应使用新 height(25) 定位光标到终端末行")
+        # 不应包含 DECSTBM 设置序列
+        self.assertNotIn("\033[1;25r", output, "不应包含 DECSTBM 设置序列")
+        # 不应包含 DECSTBM 重置序列
+        self.assertNotIn("\033[r", output, "不应包含 DECSTBM 重置序列")
+
+    def test_force_redraw_no_su_sd(self):
+        """force_redraw 输出不应包含 SU/SD 序列。"""
+        self.bb._last_text = "A" * 500  # 长文本
+        self.bb._last_bottom_lines = 3  # 旧值较小，触发扩展
+        self.bb._last_rendered_text = "old"
+
+        buf = io.StringIO()
+        with patch.object(sys, '__stdout__', buf), \
+             patch("shutil.get_terminal_size", return_value=(80, 30)):
+            self.bb.force_redraw()
+
+        output = buf.getvalue()
+        import re
+        self.assertFalse(re.search(r'\x1b\[\d+S', output),
+                         "不应包含 SU 上滚序列")
+        self.assertFalse(re.search(r'\x1b\[\d+T', output),
+                         "不应包含 SD 下滚序列")
 
 
-class TestApplyScrollDelta(unittest.TestCase):
-    """验证 _apply_scroll_delta 在 delta 各取值时的 ANSI 输出。
-
-    核心场景：
-      1. delta > 0 → 输出 SU（上滚）序列
-      2. delta <= 0 → 无操作（不输出 SD，避免删除上屏可见内容）
-      3. old_scroll_end < 1 → 无操作
-      4. hide_completions 触发 delta < 0 路径 → 不输出 SD 序列（回归测试）
-    """
+class TestShowHideCompletionsNoDECSTBM(unittest.TestCase):
+    """验证 show/hide_completions 不输出 DECSTBM/SU/SD 序列。"""
 
     def setUp(self):
         self.bb = _BottomBar()
         self.bb._active = True
-        self.bb._cached_height = 30
-        self.bb._cached_width = 80
+        self.bb._last_text = "test"
+        self.bb._last_bottom_lines = 5
+        self.bb._last_rendered_text = "test"
+        self.bb._last_height = 30
         self._stdout = sys.__stdout__
 
     def tearDown(self):
         sys.__stdout__ = self._stdout
 
-    def test_apply_scroll_delta_positive(self):
-        """delta > 0 时输出 SU 上滚序列。"""
+    def test_show_completions_no_decstbm(self):
+        """show_completions 输出不应包含 DECSTBM 序列。"""
+        self.bb._last_bottom_lines = 5
+        self.bb._last_rendered_text = "test"
+        self.bb._last_height = 30
+
         buf = io.StringIO()
-        self.bb._apply_scroll_delta(buf, delta=3, old_scroll_end=25)
+        with patch.object(sys, '__stdout__', buf), \
+             patch("shutil.get_terminal_size", return_value=(80, 30)):
+            self.bb.show_completions(["item1", "item2"], 0)
+
         output = buf.getvalue()
-        self.assertIn("\033[25;1H", output, "应定位到 old_scroll_end=25")
-        self.assertIn("\033[3S", output, "delta=3 时应输出 SU 上滚 3 行")
+        self.assertNotIn("\033[1;2", output, "不应包含 DECSTBM 设置序列")
+        self.assertNotIn("\033[r", output, "不应包含 DECSTBM 重置序列")
 
-    def test_apply_scroll_delta_negative(self):
-        """delta < 0 时 _apply_scroll_delta 无操作（回收由 _reclaim_scroll_back 处理）。"""
-        buf = io.StringIO()
-        self.bb._apply_scroll_delta(buf, delta=-3, old_scroll_end=22)
-        output = buf.getvalue()
-        self.assertEqual(output, "", "delta=-3 时 _apply_scroll_delta 应无输出")
-
-    def test_reclaim_scroll_back_negative(self):
-        """delta < 0 时 _reclaim_scroll_back 输出 SD 序列并清除顶部空行。"""
-        buf = io.StringIO()
-        self.bb._reclaim_scroll_back(buf, delta=-3, scroll_end=25)
-        output = buf.getvalue()
-        self.assertIn("\033[25;1H", output, "应定位到 scroll_end=25")
-        self.assertIn("\033[3T", output, "delta=-3 时应输出 SD 下滚 3 行")
-        # 必须清除 SD 产生的顶部空行
-        for r in range(1, 4):
-            self.assertIn(f"\033[{r};1H\033[K", output,
-                          f"SD 后应清除顶部行 {r}")
-
-    def test_reclaim_scroll_back_non_negative(self):
-        """delta >= 0 时 _reclaim_scroll_back 无操作。"""
-        buf = io.StringIO()
-        self.bb._reclaim_scroll_back(buf, delta=0, scroll_end=25)
-        self.assertEqual(buf.getvalue(), "", "delta=0 时应无输出")
-        buf2 = io.StringIO()
-        self.bb._reclaim_scroll_back(buf2, delta=3, scroll_end=25)
-        self.assertEqual(buf2.getvalue(), "", "delta>0 时应无输出")
-
-    def test_apply_scroll_delta_zero(self):
-        """delta == 0 时无操作。"""
-        buf = io.StringIO()
-        self.bb._apply_scroll_delta(buf, delta=0, old_scroll_end=25)
-        output = buf.getvalue()
-        self.assertEqual(output, "", "delta=0 时应无 ANSI 输出")
-
-    def test_apply_scroll_delta_scroll_end_zero(self):
-        """old_scroll_end=0 时无操作。"""
-        buf = io.StringIO()
-        self.bb._apply_scroll_delta(buf, delta=3, old_scroll_end=0)
-        output = buf.getvalue()
-        self.assertEqual(output, "", "old_scroll_end=0 时应无操作")
-
-    def test_apply_scroll_delta_scroll_end_negative(self):
-        """old_scroll_end=-1 时无操作。"""
-        buf = io.StringIO()
-        self.bb._apply_scroll_delta(buf, delta=-3, old_scroll_end=-1)
-        output = buf.getvalue()
-        self.assertEqual(output, "", "old_scroll_end=-1 时应无操作")
-
-    def test_hide_completions_scroll_down(self):
-        """hide_completions() 触发 delta < 0 路径，用 tracker 恢复保存的行（不输出 SD）。"""
-        # 模拟补全弹窗已弹出（底部栏扩大）的状态
+    def test_hide_completions_no_decstbm(self):
+        """hide_completions 输出不应包含 DECSTBM 序列。"""
+        # 先设置补全状态
         self.bb._completion._visible = True
-        self.bb._completion._popup_height = 4  # 弹窗占 4 行
-        self.bb._completion._title = "补全"
+        self.bb._completion._popup_height = 4
         self.bb._completion._items = ["item1", "item2"]
         self.bb._completion._texts = ["item1", "item2"]
         self.bb._completion._idx = 0
-        self.bb._last_text = "test"
-        self.bb._last_bottom_lines = 9  # 旧底部栏：2 + 3 + 4 = 9
-        self.bb._last_rendered_text = "test"
-        self.bb._last_status = ""
-        # ★ 安装 mock tracker 模拟恢复路径
-        tracker = MagicMock()
-        tracker.get_saved_rows.return_value = ["saved_line_1", "saved_line_2", "saved_line_3", "saved_line_4"]
-        self.bb._tracker = tracker
+        self.bb._last_bottom_lines = 9  # 旧底部栏较大
+        self.bb._last_height = 30
 
         buf = io.StringIO()
         with patch.object(sys, '__stdout__', buf), \
@@ -706,31 +457,11 @@ class TestApplyScrollDelta(unittest.TestCase):
             self.bb.hide_completions()
 
         output = buf.getvalue()
-        # old_scroll_end = 30 - 9 = 21
-        # delta = (2 + 3 + 0) - 9 = 5 - 9 = -4
-        # scroll_end = 30 - 5 = 25
-        self.assertIn("\033[1;25r", output, "应设置新 DECSTBM [1;25r")
-        self.assertNotIn("\033[4T", output,
-                         "hide 不应输出 SD 下滚（tracker 恢复路径）")
-        # ★ 验证恢复内容存在
-        self.assertIn("saved_line_1", output, "应恢复第 1 行保存内容")
-        self.assertIn("saved_line_2", output, "应恢复第 2 行保存内容")
-        self.assertIn("saved_line_3", output, "应恢复第 3 行保存内容")
-        self.assertIn("saved_line_4", output, "应恢复第 4 行保存内容")
-        # ★ 验证恢复行定位正确
-        for r in range(26, 30):
-            self.assertIn(f"\033[{r};1H\033[K", output,
-                          f"hide 应在行 {r} 恢复保存内容")
-        # ★ 验证 tracker 交互
-        tracker.get_saved_rows.assert_called_once()
-        tracker.clear_saved.assert_called_once()
-        # 清除顶部行不应出现（非 SD 路径）
-        for r in range(1, 5):
-            self.assertNotIn(f"\033[{r};1H\033[K", output,
-                             f"hide 不应清除 SD 产生的顶部行 {r}")
+        self.assertNotIn("\033[1;2", output, "不应包含 DECSTBM 设置序列")
+        self.assertNotIn("\033[r", output, "不应包含 DECSTBM 重置序列")
 
     def test_force_redraw_shrink_outputs_sd(self):
-        """force_redraw 在 delta < 0 时通过 _reclaim_scroll_back 输出 SD。"""
+        """force_redraw 不应输出 DECSTBM 或 SD 序列（无 DECSTBM 模式）。"""
         self.bb._last_text = "test"
         self.bb._last_bottom_lines = 8  # 旧值（较大）
         self.bb._last_rendered_text = "old"
@@ -743,22 +474,14 @@ class TestApplyScrollDelta(unittest.TestCase):
             self.bb.force_redraw()
 
         output = buf.getvalue()
-        # delta = 5 - 8 = -3, scroll_end = 25
-        # _reclaim_scroll_back 应在新 DECSTBM 后输出 SD
-        self.assertIn("\033[1;25r", output, "应设置新 DECSTBM")
-        self.assertIn("\033[3T", output,
-                      "_reclaim_scroll_back 应输出 SD 下滚")
+        self.assertNotIn("\033[1;25r", output, "不应包含 DECSTBM 序列")
+        self.assertNotIn("\033[3T", output, "不应包含 SD 序列")
+        self.assertNotIn("\033[r", output, "不应包含 DECSTBM 重置")
 
     def test_show_completions_then_hide_no_blank_lines(self):
-        """集成测试：show 用 SU 上滚 + tracker 保存行，hide 用 tracker 恢复行（不输出 SD）。"""
-        # ── 安装 mock tracker ──
-        tracker = MagicMock()
-        tracker.get_saved_rows.return_value = None  # show 阶段还没保存
-        self.bb._tracker = tracker
-
-        # ── Step 1: 模拟 show_completions ──
+        """集成测试：show/hide 不再使用 SU/SD/tracker（无 DECSTBM 模式）。"""
         self.bb._last_text = "test"
-        self.bb._last_bottom_lines = 5  # 初始底部栏 5 行
+        self.bb._last_bottom_lines = 5
         self.bb._last_rendered_text = "test"
         self.bb._last_status = ""
         items = ["item_a", "item_b", "item_c"]
@@ -770,16 +493,13 @@ class TestApplyScrollDelta(unittest.TestCase):
             self.bb.show_completions(items, selected_idx=0, title="补全")
 
         show_output = buf_show.getvalue()
-        self.assertIn("\033[5S", show_output,
-                      "show 应输出 SU 上滚 \033[5S")
-        # ★ 验证 save_rows_to_restore 被调用
-        tracker.save_rows_to_restore.assert_called_once_with(5)
+        self.assertNotIn("\033[5S", show_output, "不应包含 SU 序列")
+        self.assertNotIn("\033[r", show_output, "不应包含 DECSTBM 重置")
+        # 弹窗内容应出现
+        for item in items:
+            self.assertIn(item, show_output, f"应包含弹窗项: {item}")
 
-        # ── Step 2: 模拟 hide_completions ──
-        # 更新 mock 让 get_saved_rows 返回已保存的行
-        tracker.get_saved_rows.return_value = ["saved_a", "saved_b", "saved_c", "saved_d", "saved_e"]
-        tracker.save_rows_to_restore.reset_mock()
-
+        # Step 2: hide
         buf_hide = io.StringIO()
         with patch.object(sys, '__stdout__', buf_hide), \
              patch("shutil.get_terminal_size", return_value=(80, 30)), \
@@ -787,21 +507,9 @@ class TestApplyScrollDelta(unittest.TestCase):
             self.bb.hide_completions()
 
         hide_output = buf_hide.getvalue()
-        self.assertNotIn("\033[5T", hide_output,
-                         "hide 不应输出 SD 下滚（tracker 恢复路径）")
-        self.assertNotIn("\033[5S", hide_output,
-                         "hide 不应输出 SU 上滚")
-        # ★ 验证恢复内容存在
-        for content in ["saved_a", "saved_b", "saved_c", "saved_d", "saved_e"]:
-            self.assertIn(content, hide_output,
-                          f"hide 应恢复保存内容: {content}")
-        # ★ 验证 tracker 交互
-        tracker.get_saved_rows.assert_called()
-        tracker.clear_saved.assert_called_once()
-        # 不应有 SD 产生的顶部清除
-        for r in range(1, 6):
-            self.assertNotIn(f"\033[{r};1H\033[K", hide_output,
-                             f"hide 后不应清除 SD 产生的顶部行 {r}")
+        self.assertNotIn("\033[5T", hide_output, "不应包含 SD 序列")
+        self.assertNotIn("\033[5S", hide_output, "不应包含 SU 序列")
+        self.assertNotIn("\033[r", hide_output, "不应包含 DECSTBM 重置")
 
 
 class TestStdoutLineTracker(unittest.TestCase):
@@ -995,56 +703,51 @@ class TestStdoutLineTracker(unittest.TestCase):
         self.assertEqual(result, 5)
 
 
-class TestCompletionShowHideWithTracker(unittest.TestCase):
-    """集成测试：安装 tracker 后 show/hide 的完整交互。
+class TestCompletionShowHideNoTracker(unittest.TestCase):
+    """集成测试：show/hide 不再使用 tracker（无 DECSTBM 模式）。
 
     核心场景：
-      1. show → 验证 save_rows_to_restore 被调用
-      2. hide → 验证 get_saved_rows + clear_saved 被调用
-      3. hide → 输出包含恢复内容
-      4. hide → 输出不包含 SD 序列
+      1. show → 清除旧底部栏并绘制含弹窗的新底部栏
+      2. hide → 清除旧底部栏并绘制无弹窗的新底部栏
+      3. hide → 输出不包含 SD/DECSTBM 序列
     """
 
     def setUp(self):
         self.bb = _BottomBar()
         self.bb._active = True
-        self.bb._cached_height = 30
-        self.bb._cached_width = 80
         self.bb._last_text = "test"
         self.bb._last_bottom_lines = 5
         self.bb._last_rendered_text = "test"
         self.bb._last_status = ""
+        self.bb._last_height = 30
         self._stdout = sys.__stdout__
-        # Create mock tracker
-        self.tracker = MagicMock()
-        self.tracker.get_saved_rows.return_value = None
 
     def tearDown(self):
         sys.__stdout__ = self._stdout
 
-    def test_show_completions_saves_rows_via_tracker(self):
-        """show_completions 在 SU 之前调用 save_rows_to_restore。"""
-        self.bb._tracker = self.tracker
+    def test_show_completions_no_decstbm(self):
+        """show_completions 应正确绘制弹窗而不输出 DECSTBM 序列。"""
         items = ["item_a", "item_b", "item_c", "item_d", "item_e"]
 
-        with patch.object(sys, '__stdout__', io.StringIO()), \
+        buf = io.StringIO()
+        with patch.object(sys, '__stdout__', buf), \
              patch("shutil.get_terminal_size", return_value=(80, 30)), \
              patch.object(self.bb, '_format_status', return_value=""):
             self.bb.show_completions(items, selected_idx=0, title="补全")
 
-        # delta = (2+3+7) - 5 = 12 - 5 = 7 → save_rows_to_restore(7)
-        self.tracker.save_rows_to_restore.assert_called()
-        call_args = self.tracker.save_rows_to_restore.call_args[0]
-        self.assertGreater(call_args[0], 0,
-                           "save_rows_to_restore 应被调用且参数 > 0")
+        output = buf.getvalue()
+        # 不应包含 DECSTBM/SD 序列
+        import re
+        self.assertFalse(re.search(r'\x1b\[\d+;\d+r', output),
+                         "不应包含 DECSTBM 序列")
+        self.assertFalse(re.search(r'\x1b\[\d+[ST]', output),
+                         "不应包含 SU/SD 序列")
+        # 应包含弹窗内容
+        for item in items:
+            self.assertIn(item, output, f"应包含弹窗项: {item}")
 
-    def test_hide_completions_restores_saved_rows(self):
-        """hide_completions 从 tracker 获取保存行并恢复到释放区域。"""
-        self.bb._tracker = self.tracker
-        self.tracker.get_saved_rows.return_value = [
-            "restored_1", "restored_2", "restored_3", "restored_4",
-        ]
-        # Setup completion visible state
+    def test_hide_completions_no_sd(self):
+        """hide_completions 不应输出 SD 序列。"""
         self.bb._completion._visible = True
         self.bb._completion._popup_height = 4
         self.bb._completion._title = "补全"
@@ -1059,59 +762,10 @@ class TestCompletionShowHideWithTracker(unittest.TestCase):
             self.bb.hide_completions()
 
         output = buf.getvalue()
-        # Verify restore content
-        for content in ["restored_1", "restored_2", "restored_3", "restored_4"]:
-            self.assertIn(content, output,
-                          f"hide 应输出恢复内容: {content}")
-        # Verify no SD
         self.assertNotIn("\033[4T", output,
                          "hide 不应输出 SD 下滚")
-        # Verify tracker interaction
-        self.tracker.get_saved_rows.assert_called()
-        self.tracker.clear_saved.assert_called_once()
-
-    def test_hide_completions_no_tracker_falls_back_to_sd(self):
-        """无 tracker 时 hide_completions 应回退到 _reclaim_scroll_back（输出 SD）。"""
-        self.bb._tracker = None  # No tracker
-        self.bb._completion._visible = True
-        self.bb._completion._popup_height = 4
-        self.bb._completion._title = "补全"
-        self.bb._completion._items = ["item1", "item2"]
-        self.bb._completion._texts = ["item1", "item2"]
-        self.bb._last_bottom_lines = 9
-
-        buf = io.StringIO()
-        with patch.object(sys, '__stdout__', buf), \
-             patch("shutil.get_terminal_size", return_value=(80, 30)), \
-             patch.object(self.bb, '_format_status', return_value=""):
-            self.bb.hide_completions()
-
-        output = buf.getvalue()
-        # Fallback: SD should be present
-        self.assertIn("\033[4T", output,
-                      "无 tracker 时 hide 应回退到 SD 下滚")
-
-    def test_hide_completions_no_saved_rows_falls_back_to_sd(self):
-        """tracker 存在但无已保存行时 hide_completions 应回退到 SD。"""
-        self.bb._tracker = self.tracker
-        self.tracker.get_saved_rows.return_value = None  # No saved rows
-        self.bb._completion._visible = True
-        self.bb._completion._popup_height = 4
-        self.bb._completion._title = "补全"
-        self.bb._completion._items = ["item1", "item2"]
-        self.bb._completion._texts = ["item1", "item2"]
-        self.bb._last_bottom_lines = 9
-
-        buf = io.StringIO()
-        with patch.object(sys, '__stdout__', buf), \
-             patch("shutil.get_terminal_size", return_value=(80, 30)), \
-             patch.object(self.bb, '_format_status', return_value=""):
-            self.bb.hide_completions()
-
-        output = buf.getvalue()
-        # Fallback: SD should be present
-        self.assertIn("\033[4T", output,
-                      "无保存行时 hide 应回退到 SD 下滚")
+        self.assertNotIn("\033[r", output,
+                         "hide 不应输出 DECSTBM 重置")
 
 
 if __name__ == "__main__":

@@ -12,7 +12,7 @@ import time
 from typing import TYPE_CHECKING, Any, Callable
 
 from ._completion import _CmplHandler
-from ._const import _ANSI_CURSOR_BOTTOM, RenderCommand
+from ._const import RenderCommand
 from ._dispatcher import EventDispatcher
 from ._engine import RenderEngine
 from ._render_state import _RenderState
@@ -173,17 +173,8 @@ class ChatUIConsumer:
         if self._engine._render_running:
             return
 
-        from ..ui._blessed import get_terminal
         from ..ui._lock import output_lock
         with output_lock:
-            # ★ 将光标定位到终端末行，为 DECSTBM 设置做准备。
-            try:
-                term = get_terminal()
-                sys.__stdout__.write(term.move_xy(0, term.height - 1))
-            except Exception:
-                # 回退：固定大行号 \033[9999;1H（终端自动 clamp）
-                sys.__stdout__.write(_ANSI_CURSOR_BOTTOM)
-            sys.__stdout__.flush()
             self._bottom_bar.setup()
             self._engine.start()
 
@@ -307,8 +298,8 @@ class ChatUIConsumer:
         self._bottom_bar.teardown()
 
     def ensure_cursor_upper(self) -> None:
-        """将光标移到内容区。调用方须持有 output_lock。"""
-        self._engine.ensure_cursor_upper()
+        """将光标移到内容区。无 DECSTBM 时，此方法为空操作。"""
+        pass
 
     def refresh_bottom_bar(self, text: str, cursor_pos: int = -1) -> None:
         """刷新底部栏输入区（线程安全：仅更新状态 + 请求重绘）。
