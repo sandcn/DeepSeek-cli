@@ -70,7 +70,10 @@ class RenderCommand(IntEnum):
     TOOL_COUNT_INC = 14  # (14,) — 工具计数+1
     TOOL_FAIL_INC  = 15  # (15,) — 工具失败计数+1
     ERROR          = 16  # (16, message: str) — 系统错误（红色 ! 样式）
-    TOOL_COUNT_DEC = 17  # (17,) — 工具计数-1
+    TOOL_COUNT_DEC     = 17  # (17,) — 工具计数-1
+    SHOW_COMPLETIONS   = 18  # (18, items, selected_idx, texts, start_pos, orig_prefix, title) — 显示补全弹窗
+    HIDE_COMPLETIONS   = 19  # (19,) — 隐藏补全弹窗
+    CYCLE_COMPLETION   = 20  # (20, delta: int) — 切换补全选中项
 
 
 # ═══════════════════════════════════════════════════════════

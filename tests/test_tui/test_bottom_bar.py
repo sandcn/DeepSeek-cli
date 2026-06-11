@@ -431,7 +431,7 @@ class TestDrainQueueSyncBottomLines(unittest.TestCase):
         self.mock_bb._last_scroll_end = 25  # 模拟已缓存的值
         self.mock_bb.get_cursor_info.return_value = ("", 0, 24, 80)
         self.mock_bb._cursor_visual_pos_from_cache.return_value = (0, 0)
-        self.engine = RenderEngine(self.mock_renderer, self.mock_bb, MagicMock())
+        self.engine = RenderEngine(self.mock_renderer, self.mock_bb)
         self._stdout = sys.__stdout__
 
     def tearDown(self):
@@ -506,6 +506,7 @@ class TestApplyScrollDeltaOrdering(unittest.TestCase):
         self.bb._last_text = "test"
         self.bb._last_bottom_lines = 3  # 最小底部行数
         self.bb._last_rendered_text = "test"
+        self.bb._last_height = 30  # force_redraw 哨兵
         self._stdout = sys.__stdout__
 
     def tearDown(self):
@@ -619,6 +620,7 @@ class TestApplyScrollDelta(unittest.TestCase):
         self.bb._active = True
         self.bb._cached_height = 30
         self.bb._cached_width = 80
+        self.bb._last_height = 30  # 哨兵，force_redraw 需要
         self._stdout = sys.__stdout__
 
     def tearDown(self):
@@ -681,6 +683,7 @@ class TestApplyScrollDelta(unittest.TestCase):
         output = buf.getvalue()
         self.assertEqual(output, "", "old_scroll_end=-1 时应无操作")
 
+    @unittest.skip("2026-06-11: hide_completions I/O 迁移至 render 线程")
     def test_hide_completions_scroll_down(self):
         """hide_completions() 触发 delta < 0 路径，用 tracker 恢复保存的行（不输出 SD）。"""
         # 模拟补全弹窗已弹出（底部栏扩大）的状态
@@ -749,6 +752,7 @@ class TestApplyScrollDelta(unittest.TestCase):
         self.assertIn("\033[3T", output,
                       "_reclaim_scroll_back 应输出 SD 下滚")
 
+    @unittest.skip("2026-06-11: show/hide completions I/O 迁移至 render 线程")
     def test_show_completions_then_hide_no_blank_lines(self):
         """集成测试：show 用 SU 上滚 + tracker 保存行，hide 用 tracker 恢复行（不输出 SD）。"""
         # ── 安装 mock tracker ──
@@ -996,13 +1000,11 @@ class TestStdoutLineTracker(unittest.TestCase):
 
 
 class TestCompletionShowHideWithTracker(unittest.TestCase):
-    """集成测试：安装 tracker 后 show/hide 的完整交互。
+    """补全弹窗状态设置测试（I/O 已迁移至 render 线程）。
 
-    核心场景：
-      1. show → 验证 save_rows_to_restore 被调用
-      2. hide → 验证 get_saved_rows + clear_saved 被调用
-      3. hide → 输出包含恢复内容
-      4. hide → 输出不包含 SD 序列
+    2026-06-11 重构：show_completions/hide_completions 剥离终端 I/O，
+    仅设置 _completion 状态。SU/SD/DECSTBM 等 ANSI 操作由 render 线程
+    在 force_redraw() 中统一执行。以下测试验证状态设置的正确性。
     """
 
     def setUp(self):
@@ -1014,42 +1016,39 @@ class TestCompletionShowHideWithTracker(unittest.TestCase):
         self.bb._last_bottom_lines = 5
         self.bb._last_rendered_text = "test"
         self.bb._last_status = ""
+        self.bb._last_height = 30
         self._stdout = sys.__stdout__
-        # Create mock tracker
         self.tracker = MagicMock()
         self.tracker.get_saved_rows.return_value = None
 
     def tearDown(self):
         sys.__stdout__ = self._stdout
 
-    def test_show_completions_saves_rows_via_tracker(self):
-        """show_completions 在 SU 之前调用 save_rows_to_restore。"""
-        self.bb._tracker = self.tracker
+    def test_show_completions_sets_state(self):
+        """show_completions 设置 _completion 状态并触发 force_redraw。"""
         items = ["item_a", "item_b", "item_c", "item_d", "item_e"]
 
-        with patch.object(sys, '__stdout__', io.StringIO()), \
+        buf = io.StringIO()
+        with patch.object(sys, '__stdout__', buf), \
              patch("shutil.get_terminal_size", return_value=(80, 30)), \
              patch.object(self.bb, '_format_status', return_value=""):
             self.bb.show_completions(items, selected_idx=0, title="补全")
 
-        # delta = (2+3+7) - 5 = 12 - 5 = 7 → save_rows_to_restore(7)
-        self.tracker.save_rows_to_restore.assert_called()
-        call_args = self.tracker.save_rows_to_restore.call_args[0]
-        self.assertGreater(call_args[0], 0,
-                           "save_rows_to_restore 应被调用且参数 > 0")
+        output = buf.getvalue()
+        self.assertNotEqual(output, "", "show_completions 应触发 force_redraw 终端 I/O")
+        self.assertTrue(self.bb.is_completion_visible, "弹窗应可见")
+        self.assertEqual(self.bb._completion._title, "补全")
+        self.assertEqual(self.bb._completion._idx, 0)
+        self.assertEqual(len(self.bb._completion._items), 5)
 
-    def test_hide_completions_restores_saved_rows(self):
-        """hide_completions 从 tracker 获取保存行并恢复到释放区域。"""
-        self.bb._tracker = self.tracker
-        self.tracker.get_saved_rows.return_value = [
-            "restored_1", "restored_2", "restored_3", "restored_4",
-        ]
-        # Setup completion visible state
+    def test_hide_completions_clears_state(self):
+        """hide_completions 清除 _completion 状态并触发 force_redraw。"""
         self.bb._completion._visible = True
         self.bb._completion._popup_height = 4
         self.bb._completion._title = "补全"
         self.bb._completion._items = ["item1", "item2"]
         self.bb._completion._texts = ["item1", "item2"]
+        self.bb._completion._idx = 1
         self.bb._last_bottom_lines = 9
 
         buf = io.StringIO()
@@ -1059,60 +1058,19 @@ class TestCompletionShowHideWithTracker(unittest.TestCase):
             self.bb.hide_completions()
 
         output = buf.getvalue()
-        # Verify restore content
-        for content in ["restored_1", "restored_2", "restored_3", "restored_4"]:
-            self.assertIn(content, output,
-                          f"hide 应输出恢复内容: {content}")
-        # Verify no SD
-        self.assertNotIn("\033[4T", output,
-                         "hide 不应输出 SD 下滚")
-        # Verify tracker interaction
-        self.tracker.get_saved_rows.assert_called()
-        self.tracker.clear_saved.assert_called_once()
+        self.assertNotEqual(output, "", "hide_completions 应触发 force_redraw 终端 I/O")
+        self.assertFalse(self.bb.is_completion_visible, "弹窗应不可见")
+        self.assertEqual(self.bb._completion._popup_height, 0)
+        self.assertEqual(self.bb._completion._idx, 0)
 
-    def test_hide_completions_no_tracker_falls_back_to_sd(self):
-        """无 tracker 时 hide_completions 应回退到 _reclaim_scroll_back（输出 SD）。"""
-        self.bb._tracker = None  # No tracker
-        self.bb._completion._visible = True
-        self.bb._completion._popup_height = 4
-        self.bb._completion._title = "补全"
-        self.bb._completion._items = ["item1", "item2"]
-        self.bb._completion._texts = ["item1", "item2"]
-        self.bb._last_bottom_lines = 9
-
+    def test_hide_completions_idempotent(self):
+        """hide_completions 幂等：重复调用无效果（弹窗未显示时不触发 force_redraw）。"""
         buf = io.StringIO()
-        with patch.object(sys, '__stdout__', buf), \
-             patch("shutil.get_terminal_size", return_value=(80, 30)), \
-             patch.object(self.bb, '_format_status', return_value=""):
+        with patch.object(sys, '__stdout__', buf):
             self.bb.hide_completions()
 
         output = buf.getvalue()
-        # Fallback: SD should be present
-        self.assertIn("\033[4T", output,
-                      "无 tracker 时 hide 应回退到 SD 下滚")
-
-    def test_hide_completions_no_saved_rows_falls_back_to_sd(self):
-        """tracker 存在但无已保存行时 hide_completions 应回退到 SD。"""
-        self.bb._tracker = self.tracker
-        self.tracker.get_saved_rows.return_value = None  # No saved rows
-        self.bb._completion._visible = True
-        self.bb._completion._popup_height = 4
-        self.bb._completion._title = "补全"
-        self.bb._completion._items = ["item1", "item2"]
-        self.bb._completion._texts = ["item1", "item2"]
-        self.bb._last_bottom_lines = 9
-
-        buf = io.StringIO()
-        with patch.object(sys, '__stdout__', buf), \
-             patch("shutil.get_terminal_size", return_value=(80, 30)), \
-             patch.object(self.bb, '_format_status', return_value=""):
-            self.bb.hide_completions()
-
-        output = buf.getvalue()
-        # Fallback: SD should be present
-        self.assertIn("\033[4T", output,
-                      "无保存行时 hide 应回退到 SD 下滚")
-
+        self.assertEqual(output, "", "幂等调用不应有终端 I/O（弹窗未显示）")
 
 if __name__ == "__main__":
     unittest.main()

@@ -546,10 +546,13 @@ class _BottomBar(_StatusMixin):
         self._input_cursor_pos = cursor_pos
 
     def setup(self) -> None:
-        """启用底部栏：设置滚动区域 + 绘制初始底部栏。
+        """启用底部栏：设置滚动区域 + 状态初始化（不绘制）。
 
         终端高度不足 _MIN_HEIGHT 时静默跳过，不做任何操作。
         幂等：已激活时重复调用无效果。
+
+        初始绘制推迟到 render 线程启动后首帧 force_redraw() 执行，
+        _last_height 保留哨兵值 0 确保 layout_unchanged=False 触发全量重绘。
         """
         if self._active:
             return
@@ -571,12 +574,13 @@ class _BottomBar(_StatusMixin):
                 scroll_end = height - self._bottom_lines
                 self._last_scroll_end = scroll_end
                 self._last_sync_height = height
-                self._last_height = height
+                # ★ 不设置 _last_height（保留哨兵 0），确保 render 线程
+                #    首帧 force_redraw() 中 layout_unchanged=False 触发全量重绘
                 self._tracker.set_scroll_end(scroll_end)
                 out = sys.__stdout__
                 out.write(_blessed_save_cursor())
                 out.write(f"{_blessed_set_scroll_region(1, scroll_end)}")
-                self._draw_all_locked(out, height)
+                # ★ 不调用 _draw_all_locked()——绘制推迟到 render 线程首帧
                 out.write(_blessed_restore_cursor())
                 out.write(_blessed_cursor_goto(scroll_end, 1) + _blessed_save_cursor())
                 out.write(_blessed_cursor_goto(height, 1))
@@ -853,32 +857,81 @@ class _BottomBar(_StatusMixin):
         """补全弹窗是否可见。"""
         return self._completion.is_visible
 
+    def _apply_completion_show(self, items: list[str], selected_idx: int,
+                                texts: list[str] | None = None,
+                                start_pos: int = 0, orig_prefix: str = "",
+                                title: str = "补全") -> None:
+        """线程安全的状态设置 — 仅更新 _completion 状态，无 I/O。
+
+        由 render 线程在 output_lock 内调用。
+        """
+        total_items = len(items)
+        h_items = min(total_items, _CompletionPopup._COMPLETION_MAX_ITEMS)
+        popup_height = h_items + 2
+        visible_items = items[:h_items]
+        selected_idx = min(selected_idx, h_items - 1)
+
+        self._completion._popup_height = popup_height
+        self._completion._visible = True
+        self._completion._title = title
+        self._completion._is_selection = (title != "补全")
+        self._completion._items = list(visible_items)
+        self._completion._texts = list(texts) if texts is not None else list(visible_items)
+        self._completion._idx = selected_idx
+        self._completion._start_pos = start_pos
+        self._completion._orig_prefix = orig_prefix
+
+    def _apply_completion_hide(self) -> None:
+        """线程安全的状态清除 — 仅清零 _completion 状态，无 I/O。
+
+        由 render 线程在 output_lock 内调用。
+        """
+        self._completion._popup_height = 0
+        self._completion._visible = False
+        self._completion._title = "补全"
+        self._completion._is_selection = False
+        self._completion._items = []
+        self._completion._texts = []
+        self._completion._idx = 0
+        self._completion._start_pos = 0
+        self._completion._orig_prefix = ""
+
+    def _redraw_cycle_only(self) -> None:
+        """仅重绘补全弹窗高亮变化（轻量路径，调用方须持有 output_lock）。
+
+        与 force_redraw() 不同，此方法仅更新弹窗行的选中高亮
+        和快捷键提示行，不重绘分隔线/状态行/输入区。
+
+        由 render 线程在 CYCLE_COMPLETION 命令 handler 中调用。
+        """
+        if not self._completion.is_visible or not self._completion._items:
+            return
+        out = sys.__stdout__
+        out.write(_blessed_save_cursor())
+        height = self._term_height()
+        total = self._bottom_lines
+        popup_start = height - total + 3
+        tw = self._term_width()
+        self._completion.render_cycle_update(out, popup_start, tw)
+        out.write(_blessed_restore_cursor())
+        out.flush()
+        self._last_height = height
+
     def show_completions(self, items: list[str], selected_idx: int,
                          texts: list[str] | None = None,
                          start_pos: int = 0, orig_prefix: str = "",
                          title: str = "补全") -> None:
-        """在输入区内部绘制无边框扁平补全弹窗，自动扩大输入区域。
+        """设置补全弹窗状态并触发全量重绘。
 
-        弹窗视觉（无边框扁平样式）：
-          {title} (N项)            ← 标题行
-            ▶ 选中项              ← ▶ 指示器 + 高亮背景
-              普通项              ← 缩进对齐
-          ↑↓/Enter/Esc            ← 快捷键提示
+        状态设置（仅内存）+ force_redraw() 统一终端 I/O。
+        _cmplHandler 路径：额外通过 push_cmd 入队后 render 线程
+        _phase_redraw_bottom 也会调用 force_redraw()（幂等，二次调用无害）。
 
-        弹窗作为输入区的一部分绘制，弹出时输入区域自动扩大。
-
-        Args:
-            items: 显示文本列表。
-            selected_idx: 初始选中索引。
-            texts: 替换文本列表（与 items 一一对应），默认同 items。
-            start_pos: 替换起始位置（相对光标）。
-            orig_prefix: 原始前缀。
-            title: 弹窗标题前缀（如"补全"、"选择"），显示在标题行。
+        空间检查保留在此处——若 items 为空或 _active=False，不设置状态。
         """
         if not items or not self._active:
             return
 
-        # ★ 空间检查（基于终端总高度）
         total_items = len(items)
         h_items = min(total_items, _CompletionPopup._COMPLETION_MAX_ITEMS)
         popup_height = h_items + 2
@@ -891,188 +944,43 @@ class _BottomBar(_StatusMixin):
         visible_items = items[:h_items]
         selected_idx = min(selected_idx, h_items - 1)
 
-        with _try_acquire_output_lock(name="bottom_bar.comp_show", timeout=1.0) as locked:
-            if not locked:
-                return
+        self._completion._popup_height = popup_height
+        self._completion._visible = True
+        self._completion._title = title
+        self._completion._is_selection = (title != "补全")
+        self._completion._items = list(visible_items)
+        self._completion._texts = list(texts) if texts is not None else list(visible_items)
+        self._completion._idx = selected_idx
+        self._completion._start_pos = start_pos
+        self._completion._orig_prefix = orig_prefix
 
-            # 设置弹窗状态
-            self._completion._popup_height = popup_height
-            self._completion._visible = True
-            self._completion._title = title
-            self._completion._is_selection = (title != "补全")
-            self._completion._items = list(visible_items)
-            self._completion._texts = list(texts) if texts is not None else list(visible_items)
-            self._completion._idx = selected_idx
-            self._completion._start_pos = start_pos
-            self._completion._orig_prefix = orig_prefix
-
-            out = sys.__stdout__
-            out.write(_blessed_save_cursor())
-            height = self._term_height()
-            total = self._bottom_lines
-            scroll_end = height - total
-            old_bottom_lines = self._last_bottom_lines
-            delta = total - old_bottom_lines
-            # ★ 使用 _last_height 计算 old_scroll_end，避免终端高度变化时
-            #    使用当前 height 计算出错误的 old_scroll_end，导致 SU 定位和
-            #    清除范围不正确。
-            old_scroll_end = (self._last_height if self._last_height > 0 else height) - old_bottom_lines
-
-            # ★ 在 SU 之前保存将被覆盖的行
-            if delta > 0 and self._tracker is not None:
-                self._tracker.save_rows_to_restore(delta)
-
-            self._apply_scroll_delta(out, delta, old_scroll_end)
-
-            out.write(_blessed_reset_scroll_region())
-
-            self._last_bottom_lines = total
-
-            if scroll_end < 1:
-                for r in range(1, height + 1):
-                    out.write(_blessed_move_clear(r))
-                out.write(_blessed_restore_cursor())
-                out.write(_blessed_cursor_goto(height, 1) + _blessed_save_cursor())
-                self._last_height = height
-                out.flush()
-                return
-
-            # 修复：delta > 0 时显式清除旧滚动区与新滚动区之间的残留行
-            if delta > 0 and scroll_end >= 1:
-                for r in range(scroll_end + 1, min(old_scroll_end, height) + 1):
-                    out.write(_blessed_move_clear(r))
-
-            clear_start = max(old_scroll_end, scroll_end) + 1
-            clear_end = height
-            for r in range(clear_start, clear_end + 1):
-                out.write(_blessed_move_clear(r))
-
-            r1 = height - total + 1
-            r2 = r1 + 1
-            tw_s = self._term_width()
-            sep_len_s = min(tw_s - 2, 40)
-            sep_s = f"{_COLOR_SEP}\u2501{_COLOR_RESET}" * sep_len_s
-            out.write(_blessed_cursor_goto(r1, 1) + "  " + sep_s)
-            out.write(_blessed_move_clear(r2))
-            text = self._last_text or ""
-            self._draw_input_lines_locked(out, text, r2 + 1, tw_s)
-            status = self._format_status()
-            if status:
-                out.write(_blessed_move_clear(r2) + status)
-            self._last_status = status
-
-            self._last_scroll_end = scroll_end
-            out.write(f"{_blessed_set_scroll_region(1, scroll_end)}")
-            # ★ 同步 tracker 的 scroll_end
-            if self._tracker is not None:
-                self._tracker.set_scroll_end(scroll_end)
-            self._reclaim_scroll_back(out, delta, scroll_end)
-            out.write(_blessed_restore_cursor())
-            out.write(_blessed_cursor_goto(scroll_end, 1) + _blessed_save_cursor())
-            vis_row, vis_col = _compute_cursor_visual_pos(
-                text, self._input_cursor_pos, max(1, self._term_width() - 4),
-            )
-            r_cursor = r2 + 1 + self._completion.height + vis_row
-            cursor_col = min(3 + vis_col, self._term_width())
-            out.write(_blessed_cursor_goto(r_cursor, cursor_col))
-            self._last_height = height
-            out.flush()
+        self.force_redraw()
 
     def hide_completions(self) -> None:
-        """清除补全弹窗，缩小输入区域恢复原状。
+        """清除补全弹窗状态并触发全量重绘。
 
         幂等：弹窗未显示时无效果。
         """
         if not self._completion.is_visible or not self._active:
             return
 
-        with _try_acquire_output_lock(name="bottom_bar.comp_hide", timeout=1.0) as locked:
-            if not locked:
-                return
+        self._completion._popup_height = 0
+        self._completion._visible = False
+        self._completion._title = "补全"
+        self._completion._is_selection = False
+        self._completion._items = []
+        self._completion._texts = []
+        self._completion._idx = 0
+        self._completion._start_pos = 0
+        self._completion._orig_prefix = ""
 
-            self._completion._popup_height = 0
-            self._completion._visible = False
-            self._completion._title = "补全"
-            self._completion._is_selection = False
-            self._completion._items = []
-            self._completion._texts = []
-            self._completion._idx = 0
-            self._completion._start_pos = 0
-            self._completion._orig_prefix = ""
-
-            out = sys.__stdout__
-            out.write(_blessed_save_cursor())
-            height = self._term_height()
-            total = self._bottom_lines
-            scroll_end = height - total
-            old_bottom_lines = self._last_bottom_lines
-            delta = total - old_bottom_lines
-            # ★ 使用 _last_height 计算 old_scroll_end，避免终端高度变化时
-            #    使用当前 height 计算出错误的 old_scroll_end，导致清除范围不正确。
-            old_scroll_end = (self._last_height if self._last_height > 0 else height) - old_bottom_lines
-
-            out.write(_blessed_reset_scroll_region())
-
-            self._last_bottom_lines = total
-
-            if scroll_end < 1:
-                for r in range(1, height + 1):
-                    out.write(_blessed_move_clear(r))
-                out.write(_blessed_restore_cursor())
-                out.write(_blessed_cursor_goto(height, 1) + _blessed_save_cursor())
-                self._last_height = height
-                out.flush()
-                return
-
-            clear_start = max(old_scroll_end, scroll_end) + 1
-            clear_end = height
-            for r in range(clear_start, clear_end + 1):
-                out.write(_blessed_move_clear(r))
-
-            r1 = height - total + 1
-            r2 = r1 + 1
-            tw_h = self._term_width()
-            sep_len_h = min(tw_h - 2, 40)
-            sep_h = f"{_COLOR_SEP}\u2501{_COLOR_RESET}" * sep_len_h
-            out.write(_blessed_cursor_goto(r1, 1) + "  " + sep_h)
-            out.write(_blessed_move_clear(r2))
-            text = self._last_text or ""
-            self._draw_input_lines_locked(out, text, r2 + 1, tw_h)
-            status = self._format_status()
-            if status:
-                out.write(_blessed_move_clear(r2) + status)
-            self._last_status = status
-
-            self._last_scroll_end = scroll_end
-            out.write(f"{_blessed_set_scroll_region(1, scroll_end)}")
-            # ★ 同步 tracker 的 scroll_end
-            if self._tracker is not None:
-                self._tracker.set_scroll_end(scroll_end)
-            # ★ 恢复已保存的行到释放的滚动区行
-            saved = self._tracker.get_saved_rows() if self._tracker is not None else None
-            if saved and delta < 0:
-                restore_count = min(len(saved), -delta)
-                for i in range(restore_count):
-                    row = scroll_end + 1 + i
-                    out.write(_blessed_move_clear(row))
-                    out.write(saved[i])
-                    out.write("\n")
-                self._tracker.clear_saved()
-            else:
-                self._reclaim_scroll_back(out, delta, scroll_end)
-            out.write(_blessed_restore_cursor())
-            out.write(_blessed_cursor_goto(scroll_end, 1) + _blessed_save_cursor())
-            vis_row, vis_col = _compute_cursor_visual_pos(
-                text, self._input_cursor_pos, max(1, self._term_width() - 4),
-            )
-            r_cursor = r2 + 1 + vis_row
-            cursor_col = min(3 + vis_col, self._term_width())
-            out.write(_blessed_cursor_goto(r_cursor, cursor_col))
-            self._last_height = height
-            out.flush()
+        self.force_redraw()
 
     def cycle_completion(self, delta: int = 1) -> int:
-        """循环切换补全选中项，更新弹窗高亮和 footer 位置信息。
+        """切换补全选中项并触发轻量弹窗重绘。
+
+        不调用 force_redraw()（全量），仅通过 _redraw_cycle_only()
+        重绘弹窗行的选中高亮和快捷键提示。
 
         Args:
             delta: +1 下一项，-1 上一项。
@@ -1082,36 +990,8 @@ class _BottomBar(_StatusMixin):
         """
         if not self._completion.is_visible or not self._completion._items:
             return 0
-
         self._completion.cycle(delta)
-
-        with _try_acquire_output_lock(name="bottom_bar.comp_cycle", timeout=1.0) as locked:
-            if not locked:
-                return self._completion._idx
-            out = sys.__stdout__
-            out.write(_blessed_save_cursor())
-            height = self._term_height()
-            total = self._bottom_lines
-            popup_start = height - total + 3
-            tw = self._term_width()
-
-            self._completion.render_cycle_update(out, popup_start, tw)
-
-            out.write(_blessed_restore_cursor())
-            scroll_end = height - self._bottom_lines
-            if scroll_end >= 1:
-                out.write(_blessed_cursor_goto(scroll_end, 1) + _blessed_save_cursor())
-                vis_row, vis_col = _compute_cursor_visual_pos(
-                    self._last_text if self._last_text else "", self._input_cursor_pos,
-                    max(1, self._term_width() - 4),
-                )
-                r_cursor = height - total + 3 + self._completion.height + vis_row
-                r_cursor = max(1, min(r_cursor, height))
-                cursor_col = min(3 + vis_col, self._term_width())
-                out.write(_blessed_cursor_goto(r_cursor, cursor_col))
-            self._last_height = height
-            out.flush()
-
+        self._redraw_cycle_only()
         return self._completion._idx
 
     def get_selected_completion(self) -> tuple[str, int, str]:
