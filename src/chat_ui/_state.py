@@ -1,7 +1,7 @@
 """chat_ui 全局状态模块 — 活跃实例引用 + 引用计数管理。
 
 Layer 0 — 仅依赖 typing，被 _consumer + 外部调用方引用。
-注意：线程本地重入保护（_handler_reentrant）已分离到 _reentrant.py。
+注意：线程本地重入保护（_handler_reentrant）定义在 _error_handler.py。
 """
 
 from __future__ import annotations

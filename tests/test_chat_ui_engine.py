@@ -85,17 +85,17 @@ def _mock_threading_thread():
 # ══════════════════════════════════════════════════════
 
 class TestRenderEnginePushCmd:
-    """push_cmd 入队 / 满队列 / 连续满警告 / ERROR 直写路径。"""
+    """push_cmd 入队 / 满队列 / 连续满警告。"""
 
     def test_push_cmd_enqueues_content_command(self, engine):
-        """CONTENT 命令成功入队 → 队列不为空，不主动设置 cmd_event（只靠 10Hz 心跳）。"""
+        """CONTENT 命令成功入队 → 队列不为空，cmd_event 被 set 以立即唤醒 render 线程。"""
         assert engine._cmd_queue.empty()
         engine._cmd_event.clear()
 
         engine.push_cmd((RenderCommand.CONTENT, "hello"))
 
         assert engine._cmd_queue.qsize() == 1
-        assert not engine._cmd_event.is_set()
+        assert engine._cmd_event.is_set()  # Bug fix: push_cmd 立即唤醒 render 线程
         assert engine._consecutive_full == 0
 
     def test_push_cmd_enqueues_phase_done(self, engine):
@@ -111,7 +111,7 @@ class TestRenderEnginePushCmd:
         assert engine._consecutive_full == 0
 
     def test_push_cmd_queue_full_logs_warning(self, engine, caplog):
-        """队列满时丢弃命令并记录 warning（非 ERROR 命令）。"""
+        """队列满时丢弃命令并记录 warning。"""
         tiny_queue = queue.Queue(maxsize=1)
         tiny_queue.put((RenderCommand.CONTENT, "已占位"), block=False)
         engine._cmd_queue = tiny_queue
@@ -122,37 +122,6 @@ class TestRenderEnginePushCmd:
         assert engine._consecutive_full >= 1
         assert "渲染命令队列已满" in caplog.text
         assert "CONTENT" in caplog.text
-
-    def test_push_cmd_error_tries_blocking_put(self, engine, caplog):
-        """ERROR 命令在队列满时尝试阻塞入队，不再直写终端。"""
-        tiny_queue = queue.Queue(maxsize=1)
-        tiny_queue.put((RenderCommand.CONTENT, "占位"), block=False)
-        engine._cmd_queue = tiny_queue
-
-        caplog.set_level(logging.WARNING)
-
-        with patch.object(sys, "__stdout__") as mock_stdout:
-            engine.push_cmd((RenderCommand.ERROR, "系统繁忙"))
-
-        # 不再直写终端
-        mock_stdout.write.assert_not_called()
-        # 阻塞入队超时后记录日志警告
-        assert "ERROR 命令入队超时丢弃" in caplog.text
-
-    def test_push_cmd_error_no_message_fallback(self, engine, caplog):
-        """ERROR 命令无消息时记录日志（无「未知错误」直写）。"""
-        tiny_queue = queue.Queue(maxsize=1)
-        tiny_queue.put((RenderCommand.CONTENT, "占位"), block=False)
-        engine._cmd_queue = tiny_queue
-
-        caplog.set_level(logging.WARNING)
-
-        with patch.object(sys, "__stdout__") as mock_stdout:
-            engine.push_cmd((RenderCommand.ERROR,))
-
-        # 不再直写终端
-        mock_stdout.write.assert_not_called()
-        assert "ERROR 命令入队超时丢弃" in caplog.text
 
     def test_push_cmd_consecutive_full_warns_log(self, engine, caplog):
         """连续满超过阈值时记录日志错误，不再写终端。"""
@@ -208,11 +177,11 @@ class TestRenderEnginePushCmd:
         engine.push_cmd((RenderCommand.CONTENT, "成功"))
         assert engine._consecutive_full == 0
 
-    def test_push_cmd_cmd_event_not_set_on_success(self, engine):
-        """成功入队时不主动 set cmd_event（只靠 10Hz 心跳唤醒）。"""
+    def test_push_cmd_cmd_event_set_on_success(self, engine):
+        """Bug fix: 成功入队时 set cmd_event 以立即唤醒 render 线程。"""
         engine._cmd_event.clear()
         engine.push_cmd((RenderCommand.NOTIFICATION, "测试"))
-        assert not engine._cmd_event.is_set()
+        assert engine._cmd_event.is_set()
 
 
 # ══════════════════════════════════════════════════════

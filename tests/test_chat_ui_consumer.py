@@ -117,9 +117,9 @@ class TestChatUIConsumerInit:
         assert consumer._engine._cmd_queue.empty()
 
     def test_init_event_handler_names_present(self, consumer):
-        """_event_handler_registry 包含 11 个事件处理器"""
-        from src.chat_ui._dispatcher import _event_handler_registry
-        assert len(_event_handler_registry) == 11
+        """_HANDLER_MAP 包含 11 个事件处理器"""
+        from src.chat_ui._dispatcher import _HANDLER_MAP
+        assert len(_HANDLER_MAP) == 11
 
     def test_init_event_bus_fallback(self):
         """未传入 event_bus 时使用 DisplayEventBus.get_default()"""

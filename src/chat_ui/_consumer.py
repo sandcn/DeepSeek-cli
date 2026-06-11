@@ -91,9 +91,8 @@ class ChatUIConsumer:
         # ★ 惰性绑定事件处理器（仅在首次 start 时）
         if self._bound_handlers is None:
             self._bound_handlers = {}
-            from ._dispatcher import _event_handler_registry
-            for type_name, handler_name in _event_handler_registry.items():
-                event_type = self._disp._get_event_type(type_name)
+            from ._dispatcher import _HANDLER_MAP
+            for _, (event_type, handler_name) in _HANDLER_MAP.items():
                 handler = getattr(self._disp, handler_name)
                 self._bound_handlers[event_type] = handler
 

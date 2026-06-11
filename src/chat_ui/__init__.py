@@ -6,7 +6,6 @@
     _const         — RenderCommand 枚举、Rich Style 常量、_ReasoningState 状态机
     _state         — 全局活跃实例引用
     _utils         — 通用工具函数
-    _reentrant     — 线程本地重入保护
 
   Layer 1（基础设施）：
     _error_handler — ChatUIErrorHandler 日志捕获+上屏投递（模块级注册到 root logger）

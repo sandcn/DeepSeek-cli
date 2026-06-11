@@ -55,7 +55,6 @@ class RenderCommand(IntEnum):
 
     注意：值 3-5 为已废弃命令保留位（TOOL_STARTED/TOOL_DONE/
     PARSE_INFO_DONE），不重用以免产生歧义。
-    值 19 为已删除的 BOTTOM_BAR_REFRESH 保留位，不重用。
     """
     REASONING     = 0   # (0, text: str)
     CONTENT       = 1   # (1, text: str)
@@ -72,7 +71,6 @@ class RenderCommand(IntEnum):
     TOOL_FAIL_INC  = 15  # (15,) — 工具失败计数+1
     ERROR          = 16  # (16, message: str) — 系统错误（红色 ! 样式）
     TOOL_COUNT_DEC = 17  # (17,) — 工具计数-1
-    SUBAGENT_REFRESH = 18  # (18, force: bool) — 刷新 SubAgent 面板帧
 
 
 # ═══════════════════════════════════════════════════════════

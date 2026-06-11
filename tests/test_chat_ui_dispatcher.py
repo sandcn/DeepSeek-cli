@@ -394,56 +394,26 @@ class TestEventDispatcherEdgeCases:
         push_cmd.assert_not_called()
 
     def test_handler_not_registered_does_nothing(self, dispatcher, push_cmd):
-        """事件处理器未在 _event_handler_registry 注册表中注册不会影响行为。"""
-        from src.chat_ui._dispatcher import _event_handler_registry
-        # 验证注册表包含全部 11 个 handler
-        registered_names = set(_event_handler_registry.values())
-        assert "_on_reasoning_chunk" in registered_names
-        assert "_on_content_chunk" in registered_names
-        assert "_on_phase_done" in registered_names
-        assert "_on_tool_started" in registered_names
-        assert "_on_tool_done" in registered_names
-        assert "_on_tool_output" in registered_names
-        assert "_on_tool_summary" in registered_names
-        assert "_on_parse_info" in registered_names
-        assert "_on_parse_info_done" in registered_names
-        assert "_on_model_phase" in registered_names
-        assert "_on_output" in registered_names
-        assert len(registered_names) == 11
+        """_HANDLER_MAP 包含全部 11 个事件处理器。"""
+        from src.chat_ui._dispatcher import _HANDLER_MAP
+        registered_handlers = {name for name, (_, _) in _HANDLER_MAP.items()}
+        assert len(registered_handlers) == 11
+        assert "ReasoningChunkEvent" in registered_handlers
+        assert "ContentChunkEvent" in registered_handlers
+        assert "PhaseDoneEvent" in registered_handlers
+        assert "ToolStartedEvent" in registered_handlers
+        assert "ToolDoneEvent" in registered_handlers
+        assert "ToolOutputChunkEvent" in registered_handlers
+        assert "ToolSummaryEvent" in registered_handlers
+        assert "ParseInfoEvent" in registered_handlers
+        assert "ParseInfoDoneEvent" in registered_handlers
+        assert "ModelPhaseEvent" in registered_handlers
+        assert "OutputEvent" in registered_handlers
 
 
 # ═══════════════════════════════════════════════════════════
-# TestEventDispatcherLazyLoading
+# TestEventDispatcherLazyLoading（已移除 — 2026-06-11 简化后不再需要惰性加载）
 # ═══════════════════════════════════════════════════════════
-
-class TestEventDispatcherLazyLoading:
-    """验证 _get_event_type 惰性加载机制。"""
-
-    def test_event_types_cache_populated_on_first_call(self):
-        """首次调用 handler 时惰性加载事件类型并缓存。"""
-        push_cmd = MagicMock()
-        d = EventDispatcher(push_cmd=push_cmd)
-        # 构造时事件类型字典为空
-        assert len(d._event_types) == 0
-        # 首次调用触发惰性加载
-        event = ReasoningChunkEvent(label=_MAIN_LABEL, text="test")
-        d._on_reasoning_chunk(event)
-        # 加载后应包含全部 11 种事件类型
-        assert len(d._event_types) == 11
-        assert "ReasoningChunkEvent" in d._event_types
-        assert "ContentChunkEvent" in d._event_types
-
-    def test_subsequent_calls_use_cache(self, dispatcher, push_cmd):
-        """后续调用使用缓存，不重复 import。"""
-        # 首次调用 - 加载
-        event = ReasoningChunkEvent(label=_MAIN_LABEL, text="test")
-        dispatcher._on_reasoning_chunk(event)
-        first_len = len(dispatcher._event_types)
-        # 第二次调用 - 应使用缓存
-        event2 = ContentChunkEvent(label=_MAIN_LABEL, text="content")
-        dispatcher._on_content_chunk(event2)
-        # 事件类型数量不变（已缓存）
-        assert len(dispatcher._event_types) == first_len
 
 
 # ═══════════════════════════════════════════════════════════

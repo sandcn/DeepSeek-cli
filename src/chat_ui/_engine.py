@@ -72,30 +72,18 @@ class RenderEngine:
         """向命令队列入队（线程安全，供 EventDispatcher 回调使用）。
 
         队列满时丢弃新命令并记录警告（不阻塞 EventDispatcher 回调线程）。
-        ERROR 命令优先尝试阻塞入队（最多等 0.5s），避免绕过 output_lock 直写终端。
+        所有命令统一处理，ERROR 命令不设特殊优先级——队列满即丢弃。
         """
         try:
             self._cmd_queue.put(cmd, block=False)
             self._consecutive_full = 0
+            self._cmd_event.set()  # 唤醒 render 线程立即处理
         except queue.Full:
             self._consecutive_full += 1
-            if cmd[0] == RenderCommand.ERROR:
-                # ★ ERROR 命令先尝试阻塞入队（最多等 0.5s），
-                #   避免绕过 output_lock 直写终端导致 I/O 交错
-                try:
-                    self._cmd_queue.put(cmd, block=True, timeout=0.5)
-                    self._consecutive_full = 0
-                except queue.Full:
-                    _logger.warning(
-                        "渲染命令队列已满，ERROR 命令入队超时丢弃: %s",
-                        self._cmd_queue.qsize(),
-                    )
-            else:
-                _logger.warning(
-                    "渲染命令队列已满（%s 条），丢弃命令: %s",
-                    self._cmd_queue.qsize(), _cmd_name(cmd[0]),
-                )
-            # ★ 连续满超过阈值时记录日志（不再写终端以免 I/O 交错）
+            _logger.warning(
+                "渲染命令队列已满（%s 条），丢弃命令: %s",
+                self._cmd_queue.qsize(), _cmd_name(cmd[0]),
+            )
             if self._consecutive_full >= self._CONSECUTIVE_FULL_THRESHOLD:
                 _logger.error(
                     "渲染输出管线持续拥堵（%d 次连续满队列），部分内容可能丢失",
@@ -336,8 +324,6 @@ class RenderEngine:
                 self._cmd_queue.get_nowait()
                 self._cmd_queue.task_done()
             except queue.Empty:
-                break
-            except Exception:
                 break
 
     def position_cursor(self) -> None:

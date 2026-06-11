@@ -36,45 +36,24 @@ if TYPE_CHECKING:
     from ._render_state import _RenderState
 
 
-def _build_render_dispatch() -> dict[int, tuple[str, tuple[int, ...]]]:
-    """构建渲染命令分发表（模块级函数，类定义时即初始化）。
-
-    从 _const.py 移入 _renderers.py，因其仅被 ContentRenderer 使用。
-    显式排除已废弃的 RenderCommand 值（3-5 保留位 + 10 CMD_OUTPUT），
-    防止未来误添加后出现静默吞没。
-    """
-    # 已废弃的命令值（保留位，不重用不处理）
-    _DEPRECATED_COMMANDS = {3, 4, 5, 10}
-
-    R = RenderCommand
-    dispatch = {
-        R.REASONING:       ("_do_reasoning",       (1,)),
-        R.CONTENT:         ("_do_content",         (1,)),
-        R.PHASE_DONE:      ("_do_phase_done",      (1,)),
-        R.TOOL_OUTPUT:     ("_do_tool_output",     (1,)),
-        R.TOOL_SUMMARY:    ("_do_tool_summary",    (1, 2)),
-        R.USER_MSG:        ("_do_user_message",    (1,)),
-        R.PARSE_INFO:      ("_do_parse_info",      (1, 2, 3)),
-        R.NOTIFICATION:    ("_do_notification",    (1,)),
-        R.WRITE_LINE:      ("_do_write_line",      (1,)),
-        R.DISPLAY_MSGS:    ("_do_display_messages", (1, 2)),
-        R.TOOL_COUNT_INC:  ("_do_tool_count_inc",  ()),
-        R.TOOL_COUNT_DEC:  ("_do_tool_count_dec",  ()),
-        R.TOOL_FAIL_INC:   ("_do_tool_fail_inc",   ()),
-        R.ERROR:           ("_do_error",           (1,)),
-    }
-
-    # 断言：确保没有废弃命令被误加到分发表中
-    for cid in dispatch:
-        assert cid not in _DEPRECATED_COMMANDS, (
-            f"废弃的 RenderCommand 值 {cid} 被误加到 _RENDER_DISPATCH 中"
-        )
-
-    return dispatch
-
-
-# ── 模块级渲染命令分发表（类定义时即构建，O(1) 查找） ──
-_RENDER_DISPATCH: dict[int, tuple[str, tuple[int, ...]]] = _build_render_dispatch()
+# ── 渲染命令分发表（O(1) 字典查找） ──
+# 已废弃的命令值（保留位，不重用不处理）: {3, 4, 5, 10}
+_RENDER_DISPATCH: dict[int, tuple[str, tuple[int, ...]]] = {
+    RenderCommand.REASONING:       ("_do_reasoning",       (1,)),
+    RenderCommand.CONTENT:         ("_do_content",         (1,)),
+    RenderCommand.PHASE_DONE:      ("_do_phase_done",      (1,)),
+    RenderCommand.TOOL_OUTPUT:     ("_do_tool_output",     (1,)),
+    RenderCommand.TOOL_SUMMARY:    ("_do_tool_summary",    (1, 2)),
+    RenderCommand.USER_MSG:        ("_do_user_message",    (1,)),
+    RenderCommand.PARSE_INFO:      ("_do_parse_info",      (1, 2, 3)),
+    RenderCommand.NOTIFICATION:    ("_do_notification",    (1,)),
+    RenderCommand.WRITE_LINE:      ("_do_write_line",      (1,)),
+    RenderCommand.DISPLAY_MSGS:    ("_do_display_messages", (1, 2)),
+    RenderCommand.TOOL_COUNT_INC:  ("_do_tool_count_inc",  ()),
+    RenderCommand.TOOL_COUNT_DEC:  ("_do_tool_count_dec",  ()),
+    RenderCommand.TOOL_FAIL_INC:   ("_do_tool_fail_inc",   ()),
+    RenderCommand.ERROR:           ("_do_error",           (1,)),
+}
 
 
 class ContentRenderer:

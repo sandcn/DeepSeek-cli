@@ -213,7 +213,7 @@ class TestChatUIErrorHandlerSelfRef:
         验证 thread-local _handler_reentrant.is_active 能阻断
         on_error 路径中意外产生的二次 emit。
         """
-        from src.chat_ui._reentrant import _handler_reentrant
+        from src.chat_ui._error_handler import _handler_reentrant
         # 确保测试开始时重入标记为 False
         _handler_reentrant.is_active = False
 
