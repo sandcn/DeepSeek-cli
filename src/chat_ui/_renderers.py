@@ -53,9 +53,7 @@ _RENDER_DISPATCH: dict[int, tuple[str, tuple[int, ...]]] = {
     RenderCommand.TOOL_COUNT_DEC:  ("_do_tool_count_dec",  ()),
     RenderCommand.TOOL_FAIL_INC:   ("_do_tool_fail_inc",   ()),
     RenderCommand.ERROR:           ("_do_error",           (1,)),
-    RenderCommand.SHOW_COMPLETIONS: ("_do_show_completions", (1, 2, 3, 4, 5, 6)),
-    RenderCommand.HIDE_COMPLETIONS: ("_do_hide_completions", ()),
-    RenderCommand.CYCLE_COMPLETION: ("_do_cycle_completion", (1,)),
+    # 值 18-20 已废弃 — 补全弹窗由 _CmplHandler 直接设置状态 + 请求 render 线程重绘
 }
 
 
@@ -130,36 +128,7 @@ class ContentRenderer:
     def _do_tool_fail_inc(self) -> None:
         self._bb.increment_tool_fail()
 
-    # ── 补全弹窗（状态在 render 线程 output_lock 内设置，I/O 由 force_redraw 统一执行） ──
-
-    def _do_show_completions(
-        self, items: list[str], selected_idx: int,
-        texts: list[str] | None = None,
-        start_pos: int = 0, orig_prefix: str = "",
-        title: str = "补全",
-    ) -> None:
-        """显示补全弹窗 — 设置状态后标记底部栏重绘。
-
-        仅做状态设置（无终端 I/O），重绘由 _phase_redraw_bottom
-        在 force_redraw() 中统一执行。
-        """
-        self._bb._apply_completion_show(
-            items, selected_idx, texts=texts,
-            start_pos=start_pos, orig_prefix=orig_prefix, title=title,
-        )
-
-    def _do_hide_completions(self) -> None:
-        """隐藏补全弹窗 — 清除状态后标记底部栏重绘。"""
-        self._bb._apply_completion_hide()
-
-    def _do_cycle_completion(self, delta: int) -> None:
-        """切换补全选中项 — 更新索引后轻量重绘弹窗高亮。
-
-        不调用 force_redraw()（全量），仅通过 _redraw_cycle_only()
-        重绘弹窗行的选中高亮和快捷键提示。
-        """
-        self._bb.cycle_completion(delta)
-        self._bb._redraw_cycle_only()
+    # ── 补全弹窗（已移除 via cmd 18~20，改为 _CmplHandler 直接设置状态 + 请求重绘） ──
 
     # ── 工具输出（直接通过 OutputAdapter 写入，不再使用 ToolOutputControl） ──
 

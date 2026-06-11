@@ -2,19 +2,16 @@
 
 Layer 2 — 依赖 _BottomBar + CompletionEngine（来自 ui 层）。
 
-补全弹窗的终端 I/O 全部由 render 线程统一执行。
-_CmplHandler 在 EscapeMonitor 线程中仅做：
+_CmplHandler 在 EscapeMonitor 线程中：
   1. 计算候选项（CompletionEngine）
   2. 设置补全状态（self._bb.show_completions / hide_completions / cycle_completion）
-  3. 入队渲染命令（self._push_cmd）
+  3. 请求 render 线程重绘（self._request_redraw）
   4. 查询只读状态（is_completion_visible / get_selected_completion）
 """
 
 from __future__ import annotations
 
 from typing import Callable, TYPE_CHECKING
-
-from ._const import RenderCommand
 
 if TYPE_CHECKING:
     from ..ui._completion import CompletionEngine
@@ -34,11 +31,11 @@ class _CmplHandler:
 
     def __init__(
         self, bottom_bar: "BottomBarProtocol", engine: "CompletionEngine",
-        push_cmd: Callable[[tuple], None],
+        request_redraw: Callable[[], None],
     ):
         self._bb = bottom_bar
         self._engine = engine
-        self._push_cmd = push_cmd
+        self._request_redraw = request_redraw
 
     def on_tab(self, text: str) -> str | None:
         """Tab 补全入口。
@@ -51,13 +48,9 @@ class _CmplHandler:
         return self._first_tab(text)
 
     def on_dismiss(self) -> None:
-        """关闭补全弹窗（ESC/非 Tab 按键触发）。
-
-        设置补全状态为隐藏 + 入队 HIDE_COMPLETIONS 命令。
-        终端 I/O 由 render 线程统一执行。
-        """
+        """关闭补全弹窗（ESC/非 Tab 按键触发）。"""
         self._bb.hide_completions()
-        self._push_cmd((RenderCommand.HIDE_COMPLETIONS,))
+        self._request_redraw()
 
     def on_navigate(self, delta: int, text: str) -> str | None:
         """上下键导航补全弹窗（delta: -1=上, +1=下）。
@@ -66,11 +59,12 @@ class _CmplHandler:
         确保与 on_tab 使用同一来源的 text，消除 _last_text 过期风险。
 
         弹窗不可见时返回 None，EscapeMonitor 回退为正常上下键行为。
-        弹窗可见时入队 CYCLE_COMPLETION 命令，render 线程执行轻量弹窗重绘。
+        弹窗可见时更新选中状态 + 请求 render 线程重绘。
         """
         if not self._bb.is_completion_visible:
             return None
-        self._push_cmd((RenderCommand.CYCLE_COMPLETION, delta))
+        self._bb.cycle_completion(delta)
+        self._request_redraw()
         return text  # 仅导航高亮，不应用补全文字
 
     def on_auto(self, text: str) -> None:
@@ -81,24 +75,22 @@ class _CmplHandler:
           - 不以 / 开头且长度 < 2 → 隐藏弹窗（避免过早弹出）
           - 有候选项 → 显示/更新弹窗，选中索引重置为 0
           - 无候选项 → 隐藏弹窗
-
-        终端 I/O 由 render 线程统一执行。
         """
         if not text:
             self._bb.hide_completions()
-            self._push_cmd((RenderCommand.HIDE_COMPLETIONS,))
+            self._request_redraw()
             return
 
         # 最小触发长度：命令（/开头）1字符即可，普通文本至少2字符
         if not text.startswith('/') and len(text) < 2:
             self._bb.hide_completions()
-            self._push_cmd((RenderCommand.HIDE_COMPLETIONS,))
+            self._request_redraw()
             return
 
         items = self._engine.complete(text)
         if not items:
             self._bb.hide_completions()
-            self._push_cmd((RenderCommand.HIDE_COMPLETIONS,))
+            self._request_redraw()
             return
 
         words = text.split()
@@ -110,12 +102,7 @@ class _CmplHandler:
             start_pos=items[0].start_pos,
             orig_prefix=last_word,
         )
-        self._push_cmd((
-            RenderCommand.SHOW_COMPLETIONS,
-            [item.display for item in items], 0,
-            [item.text for item in items],
-            items[0].start_pos, last_word, "补全",
-        ))
+        self._request_redraw()
 
     # ── 内部方法 ──────────────────────────────────────
 
@@ -132,11 +119,11 @@ class _CmplHandler:
         return _apply_completion(text, repl_text, start_pos, orig_prefix)
 
     def _first_tab(self, text: str) -> str | None:
-        """首次 Tab → 计算候选项，设置状态 + 入队渲染命令。"""
+        """首次 Tab → 计算候选项，设置状态 + 请求重绘。"""
         items = self._engine.complete(text)
         if not items:
             self._bb.hide_completions()
-            self._push_cmd((RenderCommand.HIDE_COMPLETIONS,))
+            self._request_redraw()
             return None
 
         words = text.split()
@@ -148,12 +135,7 @@ class _CmplHandler:
             start_pos=items[0].start_pos,
             orig_prefix=last_word,
         )
-        self._push_cmd((
-            RenderCommand.SHOW_COMPLETIONS,
-            [item.display for item in items], 0,
-            [item.text for item in items],
-            items[0].start_pos, last_word, "补全",
-        ))
+        self._request_redraw()
         return _apply_completion(
             text, items[0].text, items[0].start_pos, last_word,
         )

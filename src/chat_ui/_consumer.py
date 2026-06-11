@@ -71,7 +71,7 @@ class ChatUIConsumer:
 
         self._cmpl = _CmplHandler(
             self._bottom_bar, CompletionEngine(),
-            push_cmd=self._engine.push_cmd,
+            request_redraw=self._engine.request_bottom_redraw,
         )
 
         # ★ 预绑定事件处理器（用于 EventBus subscribe/unsubscribe）

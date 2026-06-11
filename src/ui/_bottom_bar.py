@@ -1010,7 +1010,10 @@ class _BottomBar(_StatusMixin):
         if not self._completion.is_visible or not self._completion._items:
             return 0
         self._completion.cycle(delta)
-        self._redraw_cycle_only()
+        with _try_acquire_output_lock(name="bottom_bar.cycle_completion", timeout=0.3) as locked:
+            if locked:
+                self._redraw_cycle_only()
+            # ★ 拿不到锁时跳过 I/O，下次 force_redraw 会纠正视觉状态
         return self._completion._idx
 
     def get_selected_completion(self) -> tuple[str, int, str]:
