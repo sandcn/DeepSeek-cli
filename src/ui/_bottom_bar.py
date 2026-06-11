@@ -61,7 +61,7 @@ def _blessed_move_clear(row: int) -> str:
     """生成移到指定行并清行的 ANSI 序列。
 
     通过 Blessed Terminal.move_xy + clear_eol 生成，
-    Blessed 不可用时回退到原始 ANSI。
+    Blessed 不可用时或返回空时回退到原始 ANSI。
 
     Args:
         row: 1-based 行号。
@@ -71,7 +71,8 @@ def _blessed_move_clear(row: int) -> str:
     """
     try:
         term = get_terminal()
-        return term.move_xy(0, row - 1) + term.clear_eol()
+        result = term.move_xy(0, row - 1) + term.clear_eol()
+        return result if result else f"\033[{row};1H\033[K"
     except Exception:
         return f"\033[{row};1H\033[K"
 
@@ -80,7 +81,7 @@ def _blessed_cursor_goto(row: int, col: int) -> str:
     """生成移到指定行列的 ANSI 序列。
 
     通过 Blessed Terminal.move_xy 生成。
-    Blessed 使用 0-based 坐标。
+    Blessed 使用 0-based 坐标，不可用时或返回空时回退到原始 ANSI。
 
     Args:
         row: 1-based 行号。
@@ -91,7 +92,8 @@ def _blessed_cursor_goto(row: int, col: int) -> str:
     """
     try:
         term = get_terminal()
-        return term.move_xy(col - 1, row - 1)
+        result = term.move_xy(col - 1, row - 1)
+        return result if result else f"\033[{row};{col}H"
     except Exception:
         return f"\033[{row};{col}H"
 
@@ -671,7 +673,11 @@ class _BottomBar(_StatusMixin):
             out = sys.__stdout__
             out.write(_blessed_save_cursor())
 
-            self._apply_scroll_delta(out, delta, old_scroll_end)
+            # ★ 不再使用 SU 上滚内容为底部栏扩高腾空间。
+            #    SU 在 DECSTBM 区域内无 scrollback 缓冲，滚出顶部的行永久丢失，
+            #    导致补全弹窗弹出时上屏对话历史顶行被清掉。
+            #    改为：底部栏扩大时直接覆盖新占区域，内容区不做位移。
+            #    底部栏缩小时直接清除回收区域（见下方），不做 SD 下滚。
 
             out.write(_blessed_reset_scroll_region())
 
@@ -717,7 +723,11 @@ class _BottomBar(_StatusMixin):
             if self._tracker is not None:
                 self._tracker.set_scroll_end(scroll_end)
             out.write(f"{_blessed_set_scroll_region(1, scroll_end)}")
-            self._reclaim_scroll_back(out, delta, scroll_end)
+            # ★ 底部栏缩小时，直接清除回收区域行（不使用 SD 下滚），
+            #    避免内容位移。回收区域空白将由新输出自然填充。
+            if delta < 0 and old_scroll_end > 0:
+                for r in range(old_scroll_end + 1, scroll_end + 1):
+                    out.write(_blessed_move_clear(r))
             out.write(_blessed_restore_cursor())
             out.write(_blessed_cursor_goto(scroll_end, 1) + _blessed_save_cursor())
             out.flush()
@@ -729,8 +739,15 @@ class _BottomBar(_StatusMixin):
     def _apply_scroll_delta(self, out, delta: int, old_scroll_end: int) -> None:
         """根据底部栏行数变化调整上屏内容滚动位置。
 
-        delta > 0（底部栏扩大）：向上滚动内容腾出空间（SU），避免面板覆盖上屏。
+        ★ 自 2026-06-11 起 force_redraw() 不再调用此方法。
+        保留供将来可能的回退或替代方案使用。
+
+        delta > 0（底部栏扩大）：向上滚动内容腾出空间（SU）。
         delta <= 0 或 old_scroll_end < 1：无操作。
+
+        注意：SU 在 DECSTBM 区域内无 scrollback 缓冲，滚出顶部的行永久丢失。
+        此行为已确认会导致补全弹窗弹出时上屏对话历史顶行被清掉，因此 force_redraw()
+        改为直接覆盖+清除策略。
 
         参数:
             out: sys.__stdout__ 或等价的可写文件对象（TextIO）。
@@ -745,6 +762,9 @@ class _BottomBar(_StatusMixin):
     @staticmethod
     def _reclaim_scroll_back(out, delta: int, scroll_end: int) -> None:
         """缩小后在新 DECSTBM 内下滚内容以消除空白间隙。
+
+        ★ 自 2026-06-11 起 force_redraw() 不再调用此方法。
+        保留供将来可能的回退或替代方案使用。
 
         delta < 0（底部栏缩小）：在新 DECSTBM[1;scroll_end] 内做 SD 下滚。
         回收行（旧面板区域）无实际内容（已被清除），SD 仅产生顶部空白行，

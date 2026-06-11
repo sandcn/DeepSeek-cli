@@ -489,11 +489,12 @@ class TestDrainQueueSyncBottomLines(unittest.TestCase):
 
 
 class TestApplyScrollDeltaOrdering(unittest.TestCase):
-    """验证 _apply_scroll_delta 在 \\033[r 之前的调用顺序。
+    """验证 2026-06-11 修复后的 force_redraw 行为。
 
-    修复 Bug: _apply_scroll_delta（原 _apply_scroll_delta）在 \\033[r（全屏滚动模式）之后调用，
-    导致整个屏幕滚动、上屏顶部内容丢失。
-    修复后: _apply_scroll_delta 在 \\033[r 之前调用，只滚动 DECSTBM 区域内的内容。
+    修复前：_apply_scroll_delta 使用 SU 将 DECSTBM 区域内容上滚（顶行丢失），
+           _reclaim_scroll_back 使用 SD 下滚回收空间。
+    修复后：不再使用 SU/SD。底部栏扩大时直接覆盖新占区域（内容区不做位移），
+           底部栏缩小时直接清除回收区域行（等待新输出自然填充）。
     """
 
     def setUp(self):
@@ -513,11 +514,23 @@ class TestApplyScrollDeltaOrdering(unittest.TestCase):
         sys.__stdout__ = self._stdout
 
     def _capture_ansi_order(self, method_call):
-        """调用指定方法，捕获 ANSI 输出序列（终端尺寸固定为 80x30）。"""
+        """调用指定方法，捕获 ANSI 输出序列（终端尺寸固定为 80x30）。
+
+        同时 mock get_terminal() 的 height/width 属性以确保测试可重复。
+        """
         buf = io.StringIO()
         with patch.object(sys, '__stdout__', buf), \
              patch("shutil.get_terminal_size", return_value=(80, 30)):
-            method_call()
+            # ★ 同时 mock get_terminal() 的 height/width，确保 _term_height/Width 返回 mock 值
+            from unittest.mock import MagicMock
+            mock_term = MagicMock()
+            mock_term.height = 30
+            mock_term.width = 80
+            # move_xy 生成原始 ANSI（确保测试可重复，不依赖 blessed 实现）
+            mock_term.move_xy = lambda x, y: f"\033[{y + 1};{x + 1}H"
+            mock_term.clear_eol = "\033[K"
+            with patch("src.ui._bottom_bar.get_terminal", return_value=mock_term):
+                method_call()
         return buf.getvalue()
 
     def assert_ansi_before(self, output, first_seq, second_seq, msg=None):
@@ -529,56 +542,60 @@ class TestApplyScrollDeltaOrdering(unittest.TestCase):
         self.assertLess(pos1, pos2,
                         msg or f"{first_seq!r} 应在 {second_seq!r} 之前")
 
-    def test_force_redraw_expand_uses_su(self):
-        """force_redraw 在 delta > 0 时输出 SU 上滚序列（在 \\033[r 之前）。"""
+    def test_force_redraw_expand_no_su(self):
+        """★ 2026-06-11 修复: force_redraw 在 delta > 0 时不再输出 SU 上滚序列。
+
+        SU 在 DECSTBM 区域内无 scrollback 缓冲，滚出顶部的行永久丢失。
+        改为：底部栏扩大时直接覆盖新占区域，内容区不做位移。
+        验证：① SU 序列不存在；② \\033[r 重置滚动区域存在。
+        """
         self.bb._last_text = "A" * 500  # 长文本，_bottom_lines 会增大
         self.bb._last_bottom_lines = 3  # 旧底部行数较小
         self.bb._last_rendered_text = "old"
 
-        old_bl = self.bb._last_bottom_lines
         output = self._capture_ansi_order(lambda: self.bb.force_redraw())
 
-        old_scroll_end = 30 - old_bl
-        scroll_up_seq = f"\033[{old_scroll_end};1H"
-        self.assertIn(scroll_up_seq, output, "应定位到 old_scroll_end")
-        # SU 序列格式: \033[N S（N 为具体 delta 值，取决于文本换行）
         import re
-        self.assertTrue(re.search(r'\x1b\[\d+S', output),
-                        "应输出 SU 上滚序列")
-        self.assert_ansi_before(output, scroll_up_seq, "\033[r",
-                                "SU 应在 \\033[r 之前")
+        # ★ 验证 SU 上滚序列不存在
+        self.assertIsNone(re.search(r'\x1b\[\d+S', output),
+                          "不应输出 SU 上滚序列")
+        # ★ 验证 \033[r 仍然存在（重置滚动区域为全屏）
+        self.assertIn("\033[r", output,
+                      "应输出 \\033[r 重置滚动区域")
+        # ★ 验证新 DECSTBM 已设置
+        self.assertTrue(re.search(r'\x1b\[\d+;\d+r', output),
+                        "应设置新 DECSTBM")
 
-    def test_force_redraw_expand_uses_su(self):
-        """force_redraw 在 delta > 0 时输出 SU 上滚序列。"""
-        self.bb._last_text = "A" * 500  # 长文本，_bottom_lines 会增大
-        self.bb._last_bottom_lines = 3  # 旧底部行数较小
-        self.bb._last_rendered_text = "short"
+    def test_shrink_clears_reclaimed_area(self):
+        """★ 2026-06-11 修复: force_redraw 在 delta < 0 时不再输出 SD 下滚序列。
 
-        old_bl = self.bb._last_bottom_lines
-        output = self._capture_ansi_order(
-            lambda: self.bb.force_redraw())
-
-        scroll_end = 30 - old_bl
-        scroll_up_seq = f"\033[{scroll_end};1H"
-        self.assertIn(scroll_up_seq, output, "应定位到 old_scroll_end")
-        import re
-        self.assertTrue(re.search(r'\x1b\[\d+S', output),
-                        "应输出 SU 上滚序列")
-
-    def test_shrink_uses_reclaim_scroll_back(self):
-        """force_redraw 在 delta < 0 时通过 _reclaim_scroll_back 输出 SD（在 DECSTBM 之后）。"""
+        改为：直接清除回收区域行（不使用 SD 下滚），避免内容位移。
+        回收区域空白将由新输出自然填充。
+        验证：① SD 不存在；② \\033[r 存在；③ 新 DECSTBM 存在；
+        ④ 清除操作发生在 DECSTBM 之后（回收区域 23-25，因 _last_height=30, old_bl=8, new_bl=5）。
+        """
         self.bb._last_text = "test"
         self.bb._last_bottom_lines = 8  # 旧值较大
         self.bb._last_rendered_text = "old"
 
         output = self._capture_ansi_order(lambda: self.bb.force_redraw())
 
-        # SD 应在 DECSTBM 设置之后
-        self.assertIn("\033[1;25r", output, "应设置新 DECSTBM")
-        decstbm_idx = output.index("\033[1;25r")
-        sd_idx = output.index("\033[3T")
-        self.assertLess(decstbm_idx, sd_idx,
-                        "DECSTBM 应在 SD 之前（SD 在新滚动区域内执行）")
+        import re
+        # ★ 验证 SD 下滚序列不存在
+        self.assertIsNone(re.search(r'\x1b\[\d+T', output),
+                          "不应输出 SD 下滚序列")
+        # ★ 验证 \033[r 仍然存在
+        self.assertIn("\033[r", output,
+                      "应输出 \\033[r 重置滚动区域")
+        # ★ 验证新 DECSTBM 已设置: delta = 5-8 = -3, scroll_end = 30-5 = 25
+        self.assertIn("\033[1;25r", output, "应设置新 DECSTBM [1;25r")
+        # ★ 验证清除操作发生在 DECSTBM 之后（回收区域 23-25）
+        decstbm_pos = output.index("\033[1;25r")
+        for r in range(23, 26):
+            self.assertIn(f"\033[{r};1H\033[K", output,
+                          f"应清除回收区域行 {r}")
+            self.assertGreater(output.index(f"\033[{r};1H\033[K"), decstbm_pos,
+                               f"行 {r} 的清除应在 DECSTBM 之后")
 
     @unittest.skip("_check_resize 已从 _BottomBar 移除")
     def test_shrink_path_uses_height(self):
@@ -732,8 +749,12 @@ class TestApplyScrollDelta(unittest.TestCase):
             self.assertNotIn(f"\033[{r};1H\033[K", output,
                              f"hide 不应清除 SD 产生的顶部行 {r}")
 
-    def test_force_redraw_shrink_outputs_sd(self):
-        """force_redraw 在 delta < 0 时通过 _reclaim_scroll_back 输出 SD。"""
+    def test_force_redraw_shrink_no_sd(self):
+        """★ 2026-06-11 修复: force_redraw 在 delta < 0 时不再输出 SD 下滚序列。
+
+        改为：直接清除回收区域行，避免内容位移。
+        验证：① SD 不存在；② 新 DECSTBM 存在；③ 清除操作确实发生。
+        """
         self.bb._last_text = "test"
         self.bb._last_bottom_lines = 8  # 旧值（较大）
         self.bb._last_rendered_text = "old"
@@ -741,16 +762,25 @@ class TestApplyScrollDelta(unittest.TestCase):
 
         buf = io.StringIO()
         with patch.object(sys, '__stdout__', buf), \
-             patch("shutil.get_terminal_size", return_value=(80, 30)), \
+             patch.object(self.bb, '_term_height', return_value=30), \
+             patch.object(self.bb, '_term_width', return_value=80), \
              patch.object(self.bb, '_format_status', return_value=""):
             self.bb.force_redraw()
 
         output = buf.getvalue()
-        # delta = 5 - 8 = -3, scroll_end = 25
-        # _reclaim_scroll_back 应在新 DECSTBM 后输出 SD
-        self.assertIn("\033[1;25r", output, "应设置新 DECSTBM")
-        self.assertIn("\033[3T", output,
-                      "_reclaim_scroll_back 应输出 SD 下滚")
+        import re
+        # ★ 验证 SD 下滚序列不存在
+        self.assertIsNone(re.search(r'\x1b\[\d+T', output),
+                          "不应输出 SD 下滚序列")
+        # ★ 验证新 DECSTBM 已设置: delta = 5-8 = -3, scroll_end = 30-5 = 25
+        self.assertIn("\033[1;25r", output, "应设置新 DECSTBM [1;25r")
+        # ★ 验证清除操作发生在 DECSTBM 之后（回收区域 23-25）
+        decstbm_pos = output.index("\033[1;25r")
+        for r in range(23, 26):
+            self.assertIn(f"\033[{r};1H\033[K", output,
+                          f"应清除回收区域行 {r}")
+            self.assertGreater(output.index(f"\033[{r};1H\033[K"), decstbm_pos,
+                               f"行 {r} 的清除应在 DECSTBM 之后")
 
     @unittest.skip("2026-06-11: show/hide completions I/O 迁移至 render 线程")
     def test_show_completions_then_hide_no_blank_lines(self):
