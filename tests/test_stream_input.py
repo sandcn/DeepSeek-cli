@@ -12,11 +12,18 @@
 
 from __future__ import annotations
 
+import os
 import threading
 import pytest
 from unittest.mock import MagicMock
 
-from src.api.escape_monitor import EscapeMonitor
+from src.api.escape_monitor import (
+    EscapeMonitor,
+    _append_to_history_file,
+    _compact_history_file,
+    _read_history_file,
+    _HISTORY_COMPACT_RATIO,
+)
 
 
 class TestStreamInputBuffer:
@@ -462,3 +469,197 @@ class TestHistoryFileSerialization:
         handler._history = ["stale"]
         handler.load_history()
         assert handler._history == ["stale"]
+
+
+class TestMultiProcessHistory:
+    """多进程历史写入测试（追加写入、去重、压缩）。
+
+    使用临时文件隔离，避免 xdist 并行竞态。
+    """
+
+    @pytest.fixture(autouse=True)
+    def _isolate_history_file(self, tmp_path):
+        """每个测试使用独立的临时历史文件。"""
+        self._test_path = tmp_path / "input_history"
+        import src.config.defaults as defaults
+        import src.api.escape_monitor as em
+        self._saved_defaults_path = defaults.INPUT_HISTORY_FILE
+        self._saved_em_path = em.INPUT_HISTORY_FILE
+        defaults.INPUT_HISTORY_FILE = self._test_path
+        em.INPUT_HISTORY_FILE = self._test_path
+        yield
+        defaults.INPUT_HISTORY_FILE = self._saved_defaults_path
+        em.INPUT_HISTORY_FILE = self._saved_em_path
+
+    # ── 追加写入 ──────────────────────────────────────────
+
+    def test_append_write_no_overwrite(self):
+        """模拟多进程追加写入，验证内容不互相覆盖。"""
+        # 进程 A：写入 entry_a
+        result_a = _append_to_history_file("entry_a")
+        assert result_a is True
+
+        # 进程 B：写入 entry_b
+        result_b = _append_to_history_file("entry_b")
+        assert result_b is True
+
+        # 验证文件同时包含两条条目（而非互相覆盖）
+        content = self._test_path.read_text(encoding="utf-8")
+        assert "entry_a" in content, f"缺少 entry_a: {repr(content)}"
+        assert "entry_b" in content, f"缺少 entry_b: {repr(content)}"
+        lines = content.strip().splitlines()
+        assert len(lines) >= 2, f"文件行数不足 2: {lines}"
+
+    def test_append_utf8_multiline(self):
+        """多行 UTF-8 条目的追加和读取。"""
+        # 写入含中文和 \n 的条目
+        text = "你好\n世界"
+        escaped = text.replace("\n", "\\n")
+        result = _append_to_history_file(escaped)
+        assert result is True
+
+        # 验证文件内容：\n 被转义为字面 \\n
+        content = self._test_path.read_text(encoding="utf-8")
+        assert "你好\\n世界" in content, f"转义不正确: {repr(content)}"
+
+        # 通过 load_history 读取验证还原
+        monitor = EscapeMonitor()
+        handler = monitor._input_handler
+        handler._history = []
+        handler.load_history()
+        assert "你好\n世界" in handler._history, \
+            f"还原后应为真实 \\n: {handler._history}"
+
+    def test_append_history_file_not_found(self):
+        """父目录不存在时自动创建。"""
+        import shutil
+        # 使用深层临时路径确保目录不存在
+        deep_path = self._test_path.parent / "subdir" / "input_history"
+        import src.api.escape_monitor as em
+        saved = em.INPUT_HISTORY_FILE
+        try:
+            em.INPUT_HISTORY_FILE = deep_path
+            # 确保目录不存在
+            if deep_path.parent.exists():
+                shutil.rmtree(deep_path.parent)
+            result = _append_to_history_file("test_entry")
+            assert result is True
+            assert deep_path.exists(), "文件应被自动创建"
+            content = deep_path.read_text(encoding="utf-8")
+            assert "test_entry" in content
+        finally:
+            em.INPUT_HISTORY_FILE = saved
+            if deep_path.parent.exists():
+                shutil.rmtree(deep_path.parent)
+
+    # ── 去重 ──────────────────────────────────────────────
+
+    def test_load_dedup_last_wins(self):
+        """加载时去重：保留最新出现的条目（后出现覆盖先出现）。"""
+        # 手动构造文件：entry1 出现两次（第二次在末尾，表示最新）
+        self._test_path.write_text("entry1\nentry2\nentry1\n", encoding="utf-8")
+
+        monitor = EscapeMonitor()
+        handler = monitor._input_handler
+        handler._history = []
+        handler.load_history()
+
+        # entry1 应只出现一次
+        assert handler._history.count("entry1") == 1, \
+            f"entry1 出现多次: {handler._history}"
+        # entry2 在 entry1 之前（entry1 的第一次出现被覆盖掉，保留的是末尾那次）
+        idx1 = handler._history.index("entry1")
+        idx2 = handler._history.index("entry2")
+        assert idx2 < idx1, \
+            f"entry2 应在 entry1 之前: {handler._history}"
+
+    def test_dedup_across_append(self):
+        """多次追加同一条目后加载只保留一条。"""
+        # 模拟多个进程都写入了 "hello"
+        _append_to_history_file("hello")
+        _append_to_history_file("world")
+        _append_to_history_file("hello")
+
+        monitor = EscapeMonitor()
+        handler = monitor._input_handler
+        handler._history = []
+        handler.load_history()
+
+        assert handler._history.count("hello") == 1, \
+            f"去重后 hello 应只出现一次: {handler._history}"
+        assert "world" in handler._history
+
+    # ── 压缩 ──────────────────────────────────────────────
+
+    def test_compact_triggers(self):
+        """文件重复行数超过比例时触发压缩。"""
+        # 构造文件：10 行内容，去重后 4 条（比例 10/4=2.5 > 1.5）
+        lines = ["a", "b", "c", "d"] + ["a", "b", "c", "d", "a", "b"]
+        self._test_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        original_size = self._test_path.stat().st_size
+
+        # 触发压缩
+        result = _compact_history_file()
+        assert result is True
+
+        # 验证文件被重写、尺寸缩小
+        compressed_size = self._test_path.stat().st_size
+        content = self._test_path.read_text(encoding="utf-8")
+        compressed_lines = content.strip().splitlines()
+        assert len(compressed_lines) == 4, \
+            f"压缩后应为 4 条 {_HISTORY_COMPACT_RATIO}: {compressed_lines}"
+        # 验证顺序：保留最新出现（a, b, c, d 的最晚出现）
+        assert compressed_lines == ["c", "d", "a", "b"], \
+            f"顺序应保留最新: {compressed_lines}"
+
+    def test_compact_skip_when_not_needed(self):
+        """文件行数不超过比例时不触发压缩。"""
+        # 构造文件：4 行，去重后 4 条（比例 4/4=1.0 < 1.5，不应触发）
+        lines = ["a", "b", "c", "d"]
+        self._test_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        original_content = self._test_path.read_text(encoding="utf-8")
+
+        result = _compact_history_file()
+        assert result is False
+
+        # 验证文件内容未被修改
+        new_content = self._test_path.read_text(encoding="utf-8")
+        assert new_content == original_content, "不应修改文件"
+
+    def test_compact_empty_file(self):
+        """空文件不触发压缩。"""
+        self._test_path.write_text("", encoding="utf-8")
+        result = _compact_history_file()
+        assert result is False
+
+    def test_compact_file_not_found(self):
+        """文件不存在时压缩静默跳过。"""
+        if self._test_path.exists():
+            self._test_path.unlink()
+        result = _compact_history_file()
+        assert result is False
+
+    @pytest.mark.skipif(
+        os.name == 'nt',
+        reason="fcntl 在 Windows 上不可用，跳过文件锁测试",
+    )
+    def test_file_lock_excludes_concurrent_writes(self):
+        """文件锁防止并发写入交叉。"""
+        import fcntl
+
+        # 创建文件并加独占锁（模拟另一个进程正在写入）
+        self._test_path.write_text("initial\n", encoding="utf-8")
+        fd = os.open(self._test_path, os.O_RDWR | os.O_APPEND)
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+
+            # 此时另一个进程尝试追加写入应失败（超时但非阻塞返回False）
+            result = _append_to_history_file("should_fail")
+            assert result is False, "被锁定时写入应返回 False"
+        finally:
+            fcntl.flock(fd, fcntl.LOCK_UN)
+            os.close(fd)
+
+        # 锁释放后，验证文件未被追加
+        content = self._test_path.read_text(encoding="utf-8")
+        assert "should_fail" not in content

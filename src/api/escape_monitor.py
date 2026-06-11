@@ -45,9 +45,174 @@ UNIX_SELECT_TIMEOUT = 0.1     # Unix select 超时时间（秒）
 WINDOWS_POLL_INTERVAL = 0.05  # Windows 轮询间隔（秒）
 _POLL_INTERVAL = 0.1          # ESC序列检测等待超时（秒）— 100ms 确保 ANSI 序列（如 ↑↓箭头）有充足时间到达
 
+# ── 输入历史多进程写入配置 ────────────────────────────────
+_HISTORY_MAX_ENTRIES = 1000       # 内存历史最大条目数
+_HISTORY_COMPACT_RATIO = 1.5      # 压缩触发比例：行数 > 去重后*1.5 时触发
+
 # 全局活跃实例（供其他模块暂停/恢复）
 _active_monitor = None
 _active_monitor_lock = threading.RLock()
+
+
+# ── 跨进程文件锁辅助函数（输入历史多进程写入） ──────────────
+
+
+def _lock_history_file(fd: int, shared: bool = False) -> bool:
+    """对历史文件加跨进程锁（基于 fcntl.flock）。
+
+    Args:
+        fd: 文件描述符（open() 返回的 fileno()）。
+        shared: True=共享锁（LOCK_SH，读取用），False=独占锁（LOCK_EX，写入用）。
+
+    Returns:
+        True=获取锁成功，False=获取失败（非阻塞跳过，不阻塞 UI）。
+    """
+    try:
+        import fcntl
+        op = fcntl.LOCK_SH if shared else fcntl.LOCK_EX
+        fcntl.flock(fd, op | fcntl.LOCK_NB)
+        return True
+    except ImportError:
+        # Windows: fcntl 不可用，跳过锁（单进程无需锁）
+        return True
+    except (BlockingIOError, OSError) as exc:
+        _logger.warning("历史文件锁获取失败(%s): %s", "共享" if shared else "独占", exc)
+        return False
+
+
+def _unlock_history_file(fd: int) -> None:
+    """释放历史文件锁。Windows 降级跳过。"""
+    try:
+        import fcntl
+        fcntl.flock(fd, fcntl.LOCK_UN)
+    except ImportError:
+        pass  # Windows: fcntl 不可用
+    except (ValueError, OSError):
+        pass  # fd 已关闭等正常降级
+
+
+def _read_history_file() -> tuple[str, bool]:
+    """加共享锁读取历史文件，保证跨进程读取一致性。
+
+    Returns:
+        (content: str, locked: bool)
+        content — 文件全部内容（文件不存在返回空字符串）。
+        locked  — 是否成功获取文件锁。
+    """
+    try:
+        with open(INPUT_HISTORY_FILE, "r", encoding="utf-8", errors="replace") as f:
+            locked = _lock_history_file(f.fileno(), shared=True)
+            try:
+                content = f.read()
+            finally:
+                if locked:
+                    _unlock_history_file(f.fileno())
+        return content, locked
+    except (OSError, FileNotFoundError):
+        return "", False
+
+
+def _append_to_history_file(text: str) -> bool:
+    """加独占锁追加写入一行到历史文件。
+
+    仅追加当前条目，不覆写整个文件。多进程安全。
+    Args:
+        text: 已转义（\\n→\\\\n）的单行字符串。
+    Returns:
+        True=写入成功，False=写入失败（不阻塞 UI）。
+    """
+    try:
+        INPUT_HISTORY_FILE.parent.mkdir(parents=True, exist_ok=True)
+        with open(INPUT_HISTORY_FILE, "a", encoding="utf-8") as f:
+            locked = _lock_history_file(f.fileno(), shared=False)
+            if not locked:
+                return False
+            try:
+                f.write(text + "\n")
+                os.fsync(f.fileno())  # 强制落盘，Android Termux ext4 安全
+            finally:
+                _unlock_history_file(f.fileno())
+        return True
+    except OSError as exc:
+        _logger.warning("历史文件追加写入失败: %s", exc)
+        return False
+
+
+def _compact_history_file() -> bool:
+    """加独占锁压缩历史文件：读取→去重→重写。
+
+    使用两趟 O(n) 算法：
+      第一趟：记录每个条目在文件中的最后出现索引。
+      第二趟：只保留最后出现的条目，保持原始先后顺序。
+    仅在文件行数 > 去重后条数 * _HISTORY_COMPACT_RATIO 时触发重写。
+
+    使用以新换旧策略确保 crash 安全：
+      先写入临时文件，再 os.rename() 原子替换原文件。
+
+    Returns:
+        True=完成压缩，False=无需压缩/锁失败。
+    """
+    try:
+        with open(INPUT_HISTORY_FILE, "r", encoding="utf-8", errors="replace") as f:
+            locked = _lock_history_file(f.fileno(), shared=False)
+            if not locked:
+                return False
+            try:
+                raw = f.read()
+            finally:
+                _unlock_history_file(f.fileno())
+    except (OSError, FileNotFoundError):
+        return False
+
+    if not raw:
+        return False
+
+    lines = raw.splitlines()
+    if not lines:
+        return False
+
+    # 第一趟 O(n)：记录每个条目在文件中的最后出现索引（含转义后的 unescape）
+    latest: dict[str, int] = {}
+    for i, line in enumerate(lines):
+        stripped = line.strip()
+        if not stripped:
+            continue
+        latest[stripped] = i
+
+    # 第二趟 O(n)：只保留最后出现的条目，保持原始顺序
+    kept: set[str] = set()
+    unique: list[str] = []
+    for i, line in enumerate(lines):
+        stripped = line.strip()
+        if not stripped:
+            continue
+        # 仅在该行是此条目的最后出现时才保留
+        if i == latest.get(stripped) and stripped not in kept:
+            unique.append(stripped)
+            kept.add(stripped)
+
+    if len(lines) <= len(unique) * _HISTORY_COMPACT_RATIO:
+        return False  # 无需压缩
+
+    # 使用临时文件原子替换（crash 安全：原文件在 rename 前始终完整）
+    import tempfile
+    try:
+        tmp_path = INPUT_HISTORY_FILE.with_suffix(".tmp")
+        with open(tmp_path, "w", encoding="utf-8") as tmp:
+            tmp.write("\n".join(unique) + "\n")
+            tmp.flush()
+            os.fsync(tmp.fileno())
+        os.rename(tmp_path, INPUT_HISTORY_FILE)
+        _logger.debug("历史文件压缩完成: %d 行 → %d 条", len(lines), len(unique))
+        return True
+    except OSError as exc:
+        _logger.warning("历史文件压缩失败: %s", exc)
+        # 清理临时文件
+        try:
+            tmp_path.unlink(missing_ok=True)
+        except OSError:
+            pass
+        return False
 
 
 class StreamInputHandler:
@@ -246,34 +411,61 @@ class StreamInputHandler:
         return line.replace("\\n", "\n")
 
     def load_history(self) -> None:
-        """从 INPUT_HISTORY_FILE 加载历史行。
+        """从 INPUT_HISTORY_FILE 加载历史行（多进程安全）。
 
-        文件每行一条记录，记录中的 \\n 为转义后的字面 \\n（兼容逐行存储）。
-        读取时还原 \\n 到真实换行符。
+        通过 _read_history_file() 加共享锁读取，保证跨进程一致性。
+        使用两趟 O(n) 去重：第一趟记录最后出现索引，第二趟只保留最后出现。
+        append 模式下文件末尾的条目最新，后出现覆盖先出现。
 
         兼容旧格式（\\n 未转义的历史文件）。
-        限制最多 1000 条防内存膨胀。
-        加载完成后恢复上次未提交的输入草稿（崩溃/重启后恢复）。
+        限制最多 _HISTORY_MAX_ENTRIES 条防内存膨胀。
+        加载完成后触发压缩（如需要）并恢复草稿。
+
+        注意：跨进程历史同步为启动时一次性加载，运行期间其他进程
+        写入的条目在下次 EscapeMonitor.start() 前不可见（内存历史
+        优先策略，避免冲掉当前会话的最新输入）。
         """
-        try:
-            raw = INPUT_HISTORY_FILE.read_text(encoding="utf-8", errors="replace")
-        except (OSError, FileNotFoundError):
-            # 文件不存在时保留内存中已有的历史，不清空
+        raw, locked = _read_history_file()
+        if not raw:
+            # 文件不存在或为空时保留内存中已有的历史
+            if not raw.strip():
+                draft = self._load_draft()
+                if draft:
+                    self._buffer = draft
+                    self._cursor_pos = len(draft)
+                return
+
+        lines = raw.splitlines()
+        if not lines:
             return
 
-        seen: set[str] = set()
-        unique: list[str] = []
-        for line in raw.splitlines():
+        # 第一趟 O(n)：记录每个条目在文件中的最后出现索引（unescape 后）
+        latest: dict[str, int] = {}
+        for i, line in enumerate(lines):
             stripped = line.strip()
             if not stripped:
                 continue
-            # 还原转义的 \\n（兼容新旧格式：旧格式无反斜杠+n，还原无影响）
             entry = self._unescape(stripped)
-            if entry and entry not in seen:
-                seen.add(entry)
+            if not entry:
+                continue
+            latest[entry] = i
+
+        # 第二趟 O(n)：只保留最后出现的条目，保持原始顺序
+        seen: set[str] = set()
+        unique: list[str] = []
+        for i, line in enumerate(lines):
+            stripped = line.strip()
+            if not stripped:
+                continue
+            entry = self._unescape(stripped)
+            if not entry:
+                continue
+            if i == latest.get(entry) and entry not in seen:
                 unique.append(entry)
-        # 合并文件条目到现有内存历史（防止文件过时时冲掉内存中的最新条目）
-        file_entries = unique[:1000]
+                seen.add(entry)
+
+        # 合并到现有内存历史（防止文件过时时冲掉内存中的最新条目）
+        file_entries = unique[:_HISTORY_MAX_ENTRIES]
         if self._history:
             if file_entries:
                 existing = set(self._history)
@@ -281,10 +473,14 @@ class StreamInputHandler:
                     if entry not in existing:
                         self._history.append(entry)
                         existing.add(entry)
-                self._history = self._history[:1000]
-            # 文件为空时保留现有内存历史不变
+                self._history = self._history[:_HISTORY_MAX_ENTRIES]
+            # 文件无内容时保留现有内存历史不变
         else:
             self._history = file_entries
+
+        # 成功获取锁时尝试压缩（避免多进程同时压缩）
+        if locked:
+            _compact_history_file()
 
         # 加载上次未提交的输入草稿（崩溃/重启后恢复）
         draft = self._load_draft()
@@ -347,6 +543,7 @@ class StreamInputHandler:
     def _append_history_locked(self, text: str) -> None:
         """保存输入到历史（需持 _lock）。
 
+        内存去重后追加写入文件，多进程安全。
         持久化文件每行一条记录，记录中的 \\n 转义为字面 \\n（反斜杠+n），
         兼容 prompt_toolkit FileHistory 的逐行读取格式。
         """
@@ -357,17 +554,12 @@ class StreamInputHandler:
             self._history.remove(text)
         self._history.insert(0, text)
         # 限制最多 1000 条
-        if len(self._history) > 1000:
-            self._history = self._history[:1000]
-        # 持久化
-        try:
-            INPUT_HISTORY_FILE.parent.mkdir(parents=True, exist_ok=True)
-            INPUT_HISTORY_FILE.write_text(
-                "\n".join(h.replace("\n", "\\n") for h in self._history),
-                encoding="utf-8",
-            )
-        except OSError:
-            _logger.warning("历史文件写入失败: %s", INPUT_HISTORY_FILE, exc_info=True)
+        if len(self._history) > _HISTORY_MAX_ENTRIES:
+            self._history = self._history[:_HISTORY_MAX_ENTRIES]
+        # 持久化（仅追加当前条目，多进程安全）
+        escaped = text.replace("\n", "\\n")
+        if not _append_to_history_file(escaped):
+            _logger.warning("历史文件追加写入失败: %s", INPUT_HISTORY_FILE)
 
     def _up(self) -> None:
         """上箭头：多行时间光标上移一行；首行或单行回退到历史浏览。
