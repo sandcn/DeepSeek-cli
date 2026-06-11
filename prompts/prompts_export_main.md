@@ -149,7 +149,7 @@
 文件名格式：`plan_YYYYMMDD_HHMMSS_<slug>.md`，slug 英文小写+下划线+数字 ≤40 字符，**裸文件名禁止路径分隔符**。prompt 首行强制写入 `计划文件名:`。
 
 ```
-dispatch_agent(type="plan", description="计划: <摘要>", prompt="计划文件名: plan_YYYYMMDD_HHMMSS_<slug>.md\n<需求完整描述> + 约束条件")
+dispatch_agent(type="plan", description="计划: <摘要>", prompt="计划文件名: plan_YYYYMMDD_HHMMSS_<slug>.md\n<需求完整描述> + 约束条件\n\nmap 关联文件列表:\n<map 返回的所有关联文件，按 N. src/... 编号格式逐行列出>")
 ```
 
 - plan Agent 超时/失败：重试 1 次，均失败则降级手动规划
@@ -203,7 +203,7 @@ dispatch_agent(type="plan", description="计划: <摘要>", prompt="计划文件
 所有修改完成后必须 `dispatch_agent(type="review")` 审查。多文件并发派发。
 
 ```
-dispatch_agent(type="review", description="CR: <模块>", prompt="文件列表+修改类型+修改摘要+调用链+计划文件路径")
+dispatch_agent(type="review", description="CR: <模块>", prompt="map 返回的所有关联文件列表+\n修改类型+修改摘要+调用链+计划文件路径+\n\nmap 关联文件列表:\n<map 返回的所有关联文件，按 N. src/... 编号格式逐行列出>")
 ```
 
 - P0/P1/P2/P3 → 阻断，必须全部修复。审查通过标准：零问题。
