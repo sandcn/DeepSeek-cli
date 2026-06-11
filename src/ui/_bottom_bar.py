@@ -682,13 +682,20 @@ class _BottomBar(_StatusMixin):
             out = sys.__stdout__
             out.write(_blessed_save_cursor())
 
-            # ★ 不再使用 SU 上滚内容为底部栏扩高腾空间。
-            #    SU 在 DECSTBM 区域内无 scrollback 缓冲，滚出顶部的行永久丢失，
-            #    导致补全弹窗弹出时上屏对话历史顶行被清掉。
-            #    改为：底部栏扩大时直接覆盖新占区域，内容区不做位移。
+            # ★ 底部栏扩大时，SU 上滚旧内容区为底部栏腾空间。
+            #    先将滚动区域限定为旧内容区 (1, old_scroll_end)，确保 SU
+            #    仅作用于内容区而不影响底部栏区域。顶行可能丢失（无 scrollback），
+            #    但优于底部最新内容被覆盖。
             #    底部栏缩小时直接清除回收区域（见下方），不做 SD 下滚。
 
             out.write(_blessed_reset_scroll_region())
+
+            # ★ 底部栏扩大：在旧内容区内执行 SU 上滚，为底部栏腾出空间
+            if delta > 0 and old_scroll_end >= 1:
+                out.write(f"{_blessed_set_scroll_region(1, old_scroll_end)}")
+                out.write(_blessed_cursor_goto(old_scroll_end, 1))
+                out.write(f"{_blessed_scroll_up(delta)}")
+                out.write(_blessed_reset_scroll_region())
 
             self._last_bottom_lines = total
 
