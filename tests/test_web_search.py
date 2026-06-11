@@ -170,7 +170,7 @@ class TestWebSearchSchema:
 
     def test_schema_engine_enum(self):
         props = WebSearchFunc.to_tool_schema()["function"]["parameters"]["properties"]
-        assert props["engine"]["enum"] == ["baidu", "bing"]
+        assert props["engine"]["enum"] == ["baidu", "bing", "github"]
         assert props["engine"]["default"] == "baidu"
 
     def test_schema_num_results_default_and_range(self):
@@ -188,8 +188,10 @@ class TestWebSearchSchema:
         description = WebSearchFunc.to_tool_schema()["function"]["parameters"]["properties"]["engine"]["description"]
         assert "百度" in description
         assert "必应" in description
+        assert "GitHub" in description
         assert "baidu" in description
         assert "bing" in description
+        assert "github" in description
 
     def test_schema_time_range_description_contains_labels(self):
         description = WebSearchFunc.to_tool_schema()["function"]["parameters"]["properties"]["time_range"]["description"]
@@ -213,6 +215,12 @@ class TestWebSearchDisplayParams:
         result = WebSearchFunc.display_params({"query": "test", "engine": "bing"})
         assert "[必应]" in result
         assert "test" in result
+
+    def test_search_mode_github(self):
+        result = WebSearchFunc.display_params({"query": "async python", "engine": "github"})
+        assert "[GitHub]" in result
+        assert "async" in result
+        assert "python" in result
 
     def test_search_mode_with_time_range_day(self):
         result = WebSearchFunc.display_params({
@@ -313,6 +321,18 @@ class TestWebSearchBuildUrl:
         url = WebSearchFunc._build_search_url("baidu", "a&b=c", "any")
         assert "%26" in url  # & encoded
 
+    def test_github_url(self):
+        url = WebSearchFunc._build_search_url("github", "async python", "any")
+        assert "github.com/search" in url
+        assert "q=async+python" in url or "q=async%20python" in url
+        assert "type=repositories" in url
+
+    def test_github_time_range_ignored(self):
+        """GitHub 不支持 time_range，any 之外不应追加时间参数"""
+        url_default = WebSearchFunc._build_search_url("github", "test", "any")
+        url_day = WebSearchFunc._build_search_url("github", "test", "day")
+        assert url_default == url_day  # time_range 不影响 GitHub URL
+
 
 # ═══════════════════════════════════════════════════════════════════════════
 # 6. _random_ua User-Agent 轮换
@@ -349,18 +369,20 @@ class TestWebSearchRandomUA:
 class TestWebSearchConfig:
     """ENGINES / TIME_RANGES / ENGINE_TIME_PARAMS 配置完整性"""
 
-    def test_engines_contains_baidu_and_bing(self):
+    def test_engines_contains_all(self):
         assert "baidu" in WebSearchFunc.ENGINES
         assert "bing" in WebSearchFunc.ENGINES
+        assert "github" in WebSearchFunc.ENGINES
 
     def test_engines_have_required_keys(self):
-        for key in ("label", "base_url", "referer"):
-            assert key in WebSearchFunc.ENGINES["baidu"]
-            assert key in WebSearchFunc.ENGINES["bing"]
+        for engine in ("baidu", "bing", "github"):
+            for key in ("label", "base_url", "referer"):
+                assert key in WebSearchFunc.ENGINES[engine], f"{engine} missing key {key}"
 
     def test_engines_labels(self):
         assert WebSearchFunc.ENGINES["baidu"]["label"] == "百度"
         assert WebSearchFunc.ENGINES["bing"]["label"] == "必应"
+        assert WebSearchFunc.ENGINES["github"]["label"] == "GitHub"
 
     def test_time_ranges_contains_all(self):
         expected = {"any", "day", "week", "month", "year"}
@@ -371,9 +393,10 @@ class TestWebSearchConfig:
         assert WebSearchFunc.TIME_RANGES["day"] == "过去24小时"
         assert WebSearchFunc.TIME_RANGES["week"] == "过去一周"
 
-    def test_engine_time_params_has_both_engines(self):
+    def test_engine_time_params_has_all_engines(self):
         assert "bing" in WebSearchFunc.ENGINE_TIME_PARAMS
         assert "baidu" in WebSearchFunc.ENGINE_TIME_PARAMS
+        assert "github" in WebSearchFunc.ENGINE_TIME_PARAMS
 
     def test_bing_time_params_all_ranges(self):
         bing = WebSearchFunc.ENGINE_TIME_PARAMS["bing"]
@@ -383,6 +406,9 @@ class TestWebSearchConfig:
 
     def test_baidu_time_params_empty(self):
         assert WebSearchFunc.ENGINE_TIME_PARAMS["baidu"] == {}
+
+    def test_github_time_params_empty(self):
+        assert WebSearchFunc.ENGINE_TIME_PARAMS["github"] == {}
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -512,6 +538,33 @@ class TestWebSearchExecuteSearch:
             assert "百度" in result
             assert "失败" in result
             assert "unexpected failure" in result
+
+    async def test_search_github_engine(self):
+        """使用 GitHub 引擎搜索"""
+        mock_client = AsyncMock()
+        mock_response = AsyncMock()
+        mock_response.status_code = 200
+        mock_response.text = "<html>result</html>"
+        mock_client.get.return_value = mock_response
+
+        with patch.object(WebSearchFunc, '_get_client', return_value=mock_client):
+            with patch('src.tools.web_search.importlib.import_module') as mock_import:
+                mock_parser = MagicMock()
+                mock_parser.parse.return_value = [
+                    {"title": "owner/repo", "link": "https://github.com/owner/repo", "abstract": "A great repo"},
+                ]
+                mock_import.return_value = mock_parser
+
+                f = WebSearchFunc(query="async python", engine="github")
+                result = await f.execute()
+
+                assert "owner/repo" in result
+                assert "https://github.com/owner/repo" in result
+                assert "A great repo" in result
+                # 验证调用了正确的引擎配置
+                call_url = mock_client.get.call_args[0][0]
+                assert "github.com/search" in call_url
+                assert "type=repositories" in call_url
 
     async def test_search_bing_engine(self):
         """使用必应引擎搜索"""

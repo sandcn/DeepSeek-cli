@@ -7,10 +7,12 @@ from .base import BaseParser
 from .baidu import BaiduParser, parse as baidu_parse
 from .bing import BingParser, parse as bing_parse
 from .generic import parse as generic_parse
+from .github import GitHubParser, parse as github_parse
 
 __all__ = [
     "BaseParser",
     "BaiduParser", "baidu_parse",
     "BingParser", "bing_parse",
     "generic_parse",
+    "GitHubParser", "github_parse",
 ]

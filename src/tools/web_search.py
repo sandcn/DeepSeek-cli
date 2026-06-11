@@ -50,6 +50,11 @@ class WebSearchFunc(Func):
             "base_url": "https://www.bing.com/search?q={query}&setlang=zh-cn&cc=cn",
             "referer": "https://www.bing.com/",
         },
+        "github": {
+            "label": "GitHub",
+            "base_url": "https://github.com/search?q={query}&type=repositories",
+            "referer": "https://github.com/",
+        },
     }
 
     TIME_RANGES = {
@@ -69,6 +74,9 @@ class WebSearchFunc(Func):
         },
         "baidu": {
             # Baidu 暂不支持通过 URL 参数直接筛选时间范围
+        },
+        "github": {
+            # GitHub 搜索暂不支持通过 URL 参数直接筛选时间范围
         },
     }
 
@@ -113,7 +121,7 @@ class WebSearchFunc(Func):
     def to_tool_schema(cls):
         engine_desc = ("搜索引擎，可选: " + ", ".join(
             f"{k}({v['label']})" for k, v in cls.ENGINES.items()
-        ) + "。百度(baidu)国内中文搜索最优、必应(bing)两者兼顾。仅 mode='search' 时有效。")
+        ) + "。百度(baidu)国内中文搜索最优、必应(bing)两者兼顾、GitHub(github)仓库搜索。仅 mode='search' 时有效。")
         time_range_desc = ("时间范围，可选: " + ", ".join(
             f"{k}({v})" for k, v in cls.TIME_RANGES.items()
         ) + "。注意：百度不支持URL参数筛选时间范围，仅必应有效。仅 mode='search' 时有效。")
