@@ -265,6 +265,7 @@ class _BottomBar(_StatusMixin):
         self._last_scroll_end: int = 0
         self._last_height: int = 0  # 哨兵值，首次 force_redraw() 必然触发全量重绘（终端高度始终 ≥1）
         self._last_sync_height: int = 0  # sync_bottom_lines() 中用于检测终端 resize
+        self._su_applied_at_scroll_end: int = 0  # 记录 sync_bottom_lines() 中 SU 已应用的 scroll_end，force_redraw() 据此去重
         # ── 补全弹窗组合对象 ──
         self._completion = _CompletionPopup(cursor_tracker=cursor_tracker)
         # ── stdout 行追踪器 ──
@@ -482,6 +483,20 @@ class _BottomBar(_StatusMixin):
         if self._tracker is not None:
             self._tracker.set_scroll_end(scroll_end)
         out = sys.__stdout__
+
+        # ★ 底部栏扩大时，在设置新 DECSTBM 之前先 SU 上滚旧内容区。
+        #    必须在 content 渲染之前执行——若推迟到 force_redraw()，
+        #    会连带将 Phase 1 新渲染的内容也上移，产生空行间隙。
+        delta_expand = old_scroll - scroll_end  # > 0 表示底部栏扩大（旧内容区 > 新内容区）
+        if delta_expand > 0 and old_scroll >= 1 and scroll_end >= 1:
+            clamped = min(old_scroll, height)
+            out.write(_blessed_reset_scroll_region())
+            out.write(_blessed_set_scroll_region(1, clamped))
+            out.write(_blessed_cursor_goto(clamped, 1))
+            out.write(_blessed_scroll_up(delta_expand))
+            out.write(_blessed_reset_scroll_region())
+            self._su_applied_at_scroll_end = scroll_end
+
         out.write(f"{_blessed_set_scroll_region(1, scroll_end)}")
         # ★ resize 后清除新 scroll_end 行上由终端模拟器位移残留的旧内容，
         #    确保后续内容渲染从干净行开始，消除旧内容与底部栏之间的 1 行重叠
@@ -683,19 +698,22 @@ class _BottomBar(_StatusMixin):
             out.write(_blessed_save_cursor())
 
             # ★ 底部栏扩大时，SU 上滚旧内容区为底部栏腾空间。
-            #    先将滚动区域限定为旧内容区 (1, old_scroll_end)，确保 SU
-            #    仅作用于内容区而不影响底部栏区域。顶行可能丢失（无 scrollback），
-            #    但优于底部最新内容被覆盖。
+            #    sync_bottom_lines() 在 Phase 1 已优先执行 SU（在 content 渲染前），
+            #    此处仅处理 sync 未覆盖的直接调用路径（如 show_completions）。
             #    底部栏缩小时直接清除回收区域（见下方），不做 SD 下滚。
+            #    终端过小（scroll_end < 1）时跳过 SU，后续全屏清除已覆盖此场景。
 
             out.write(_blessed_reset_scroll_region())
 
-            # ★ 底部栏扩大：在旧内容区内执行 SU 上滚，为底部栏腾出空间
-            if delta > 0 and old_scroll_end >= 1:
-                out.write(f"{_blessed_set_scroll_region(1, old_scroll_end)}")
-                out.write(_blessed_cursor_goto(old_scroll_end, 1))
-                out.write(f"{_blessed_scroll_up(delta)}")
+            # ★ 底部栏扩大：若 sync 尚未处理，在旧内容区内执行 SU 上滚
+            if delta > 0 and old_scroll_end >= 1 and scroll_end >= 1 and scroll_end != self._su_applied_at_scroll_end:
+                # ★ 终端缩小时 old_scroll_end 可能大于当前 height，需 clamp
+                clamped = min(old_scroll_end, height)
+                out.write(_blessed_set_scroll_region(1, clamped))
+                out.write(_blessed_cursor_goto(clamped, 1))
+                out.write(_blessed_scroll_up(delta))
                 out.write(_blessed_reset_scroll_region())
+            self._su_applied_at_scroll_end = 0  # 重置标记
 
             self._last_bottom_lines = total
 

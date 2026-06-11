@@ -466,6 +466,7 @@ class TestDrainQueueSyncBottomLines(unittest.TestCase):
         self.assertLess(sync_idx, cursor_idx,
                         "sync_bottom_lines 应在 ensure_cursor_upper 之前调用")
 
+    @unittest.skip("check_resize 已从 RenderEngine 移除，sync_bottom_lines 始终在 _phase_render 中调用")
     def test_resized_skips_sync_bottom_lines(self):
         """resized=True 时 sync_bottom_lines 不应被调用。"""
         self._enqueue_cmd()
