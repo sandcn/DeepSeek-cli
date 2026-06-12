@@ -641,7 +641,7 @@ class StreamInputHandler:
                 self._history = self._history[:_HISTORY_MAX_ENTRIES]
             # 文件无内容时保留现有内存历史不变
         else:
-            self._history = file_entries
+            self._history = list(reversed(file_entries))
 
         # 成功获取锁时尝试压缩（避免多进程同时压缩）
         if locked:

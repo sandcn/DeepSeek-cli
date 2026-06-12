@@ -567,11 +567,11 @@ class TestMultiProcessHistory:
         # entry1 应只出现一次
         assert handler._history.count("entry1") == 1, \
             f"entry1 出现多次: {handler._history}"
-        # entry2 在 entry1 之前（entry1 的第一次出现被覆盖掉，保留的是末尾那次）
+        # entry1 在 entry2 之前（entry1 是更新的一条，最后出现在文件末尾）
         idx1 = handler._history.index("entry1")
         idx2 = handler._history.index("entry2")
-        assert idx2 < idx1, \
-            f"entry2 应在 entry1 之前: {handler._history}"
+        assert idx1 < idx2, \
+            f"entry1 应在 entry2 之前（最新在前）: {handler._history}"
 
     def test_dedup_across_append(self):
         """多次追加同一条目后加载只保留一条。"""
