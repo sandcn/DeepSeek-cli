@@ -663,3 +663,210 @@ class TestMultiProcessHistory:
         # 锁释放后，验证文件未被追加
         content = self._test_path.read_text(encoding="utf-8")
         assert "should_fail" not in content
+
+
+class TestDraftPersistence:
+    """输入草稿多进程追加式写入测试。
+
+    测试转义/还原圆环、追加写入、按 PID 取最新记录、清除标记语义。
+    使用临时文件隔离，避免 xdist 并行竞态。
+    """
+
+    @pytest.fixture(autouse=True)
+    def _isolate_draft_file(self, tmp_path):
+        """每个测试使用独立的临时草稿文件。"""
+        self._test_path = tmp_path / "input_draft"
+        import src.config.defaults as defaults
+        import src.api.escape_monitor as em
+        self._saved_defaults_path = defaults.INPUT_DRAFT_FILE
+        self._saved_em_path = em.INPUT_DRAFT_FILE
+        defaults.INPUT_DRAFT_FILE = self._test_path
+        em.INPUT_DRAFT_FILE = self._test_path
+        yield
+        defaults.INPUT_DRAFT_FILE = self._saved_defaults_path
+        em.INPUT_DRAFT_FILE = self._saved_em_path
+
+    # ── 转义/还原圆环测试 ───────────────────────────────
+
+    def test_escape_unescape_roundtrip_simple(self):
+        """简单文本经 escape→unescape 圆环还原不变。"""
+        from src.api.escape_monitor import _escape_draft_content, _unescape_draft_content
+        text = "hello world"
+        assert _unescape_draft_content(_escape_draft_content(text)) == text
+
+    def test_escape_unescape_roundtrip_newline(self):
+        """含换行的文本经 escape→unescape 圆环还原不变。"""
+        from src.api.escape_monitor import _escape_draft_content, _unescape_draft_content
+        text = "line1\nline2\nline3"
+        assert _unescape_draft_content(_escape_draft_content(text)) == text
+
+    def test_escape_unescape_roundtrip_pipe(self):
+        """含 | 的文本经 escape→unescape 圆环还原不变。"""
+        from src.api.escape_monitor import _escape_draft_content, _unescape_draft_content
+        text = "a|b|c"
+        assert _unescape_draft_content(_escape_draft_content(text)) == text
+
+    def test_escape_unescape_roundtrip_backslash(self):
+        """含反斜杠的文本经 escape→unescape 圆环还原不变。"""
+        from src.api.escape_monitor import _escape_draft_content, _unescape_draft_content
+        text = "path\\to\\file"
+        assert _unescape_draft_content(_escape_draft_content(text)) == text
+
+    def test_escape_unescape_roundtrip_all_special(self):
+        """三个特殊字符交叉混合经 escape→unescape 圆环还原不变。"""
+        from src.api.escape_monitor import _escape_draft_content, _unescape_draft_content
+        text = "a\\b\nc|d\\n|e\\|f"
+        assert _unescape_draft_content(_escape_draft_content(text)) == text
+
+    # ── 追加写入与读取测试 ─────────────────────────────
+
+    def test_append_and_read_records(self):
+        """追加写入后能正确读取。"""
+        from src.api.escape_monitor import _append_to_draft_file, _read_draft_records
+        result = _append_to_draft_file("hello")
+        assert result is True
+
+        records = _read_draft_records()
+        assert records == ["hello"]
+
+    def test_append_multiple_records(self):
+        """多次追加记录，全部读取。"""
+        from src.api.escape_monitor import _append_to_draft_file, _read_draft_records
+        _append_to_draft_file("first")
+        _append_to_draft_file("second")
+        _append_to_draft_file("third")
+
+        records = _read_draft_records()
+        assert records == ["first", "second", "third"]
+
+    def test_append_multiline_content(self):
+        """含多行文本的草稿正确保存和读取。"""
+        from src.api.escape_monitor import _append_to_draft_file, _read_draft_records
+        text = "line1\nline2\nline3"
+        _append_to_draft_file(text)
+        records = _read_draft_records()
+        assert records == [text]
+
+    # ── 全局最新记录测试 ───────────────────────────────
+
+    def test_load_latest_draft(self):
+        """_load_draft 取文件最后一行（最新写入）。"""
+        monitor = EscapeMonitor()
+        handler = monitor._input_handler
+
+        from src.api.escape_monitor import _append_to_draft_file
+        _append_to_draft_file("old_draft")
+        _append_to_draft_file("latest_draft")
+
+        result = handler._load_draft()
+        assert result == "latest_draft"
+
+    def test_load_draft_empty_file(self):
+        """空文件加载返回空字符串。"""
+        monitor = EscapeMonitor()
+        result = monitor._input_handler._load_draft()
+        assert result == ""
+
+    def test_load_draft_skip_empty_lines(self):
+        """空行（清除标记）被跳过，取上一个非空行。"""
+        from src.api.escape_monitor import _append_to_draft_file, _read_latest_draft
+        _append_to_draft_file("draft")
+        _append_to_draft_file("")  # 清除标记
+
+        result = _read_latest_draft()
+        assert result == "draft"
+
+    # ── 清除标记测试 ─────────────────────────────────────
+
+    def test_clear_draft_appends_empty_line(self):
+        """清除草稿追加空行，文件仍存在。"""
+        monitor = EscapeMonitor()
+        handler = monitor._input_handler
+
+        from src.api.escape_monitor import _append_to_draft_file
+        _append_to_draft_file("saved_draft")
+
+        handler._clear_draft()
+        # 文件仍存在
+        assert self._test_path.exists()
+        # 读取记录应有两条（内容 + 空行清除标记）
+        content = self._test_path.read_text(encoding="utf-8")
+        lines = content.splitlines()  # 注意：不用 strip()，保留尾随空行
+        assert len(lines) == 2, f"应有2行, 实际{lines}"
+        # 第一行是草稿，第二行是空（清除标记）
+        assert lines[0] == "saved_draft"
+
+    def test_clear_draft_then_load_returns_empty(self):
+        """清除后最后行非空且不是清除标记时，加载返回空。"""
+        monitor = EscapeMonitor()
+        handler = monitor._input_handler
+
+        from src.api.escape_monitor import _append_to_draft_file
+        _append_to_draft_file("saved_draft")
+        handler._clear_draft()
+        # 清除后追加新草稿，最后一行非空
+        _append_to_draft_file("resume_draft")
+
+        result = handler._load_draft()
+        assert result == "resume_draft"
+
+    def test_clear_draft_all_processes_share(self):
+        """清除标记全局生效：空行后所有进程的草稿都被清除。"""
+        from src.api.escape_monitor import _append_to_draft_file, _read_latest_draft
+        _append_to_draft_file("draft_before")
+
+        # 某个进程清除
+        _append_to_draft_file("")
+
+        # 再写入新草稿
+        _append_to_draft_file("draft_after")
+
+        result = _read_latest_draft()
+        assert result == "draft_after"
+
+    # ── 集成测试：实时保存 → 清除 → 加载 ────────────────
+
+    def test_save_draft_throttle(self):
+        """_save_draft 节流机制：短时间内不重复写。"""
+        monitor = EscapeMonitor()
+        handler = monitor._input_handler
+        handler._draft_throttle = 10.0  # 10秒节流，确保测试中不触发
+
+        handler._save_draft("text1")
+        records_before = len(self._test_path.read_text(encoding="utf-8").splitlines()) if self._test_path.exists() else 0
+
+        handler._save_draft("text2")
+        # 因为节流，不会再次写入，文件行数不变
+        records_after = len(self._test_path.read_text(encoding="utf-8").splitlines()) if self._test_path.exists() else 0
+        assert records_after == records_before
+
+    def test_save_draft_then_load(self):
+        """保存草稿后加载可恢复。"""
+        monitor = EscapeMonitor()
+        handler = monitor._input_handler
+        handler._draft_throttle = 0.0  # 关闭节流，确保每次输入都保存
+
+        handler.handle_char('h')
+        handler.handle_char('e')
+        handler.handle_char('l')
+        handler.handle_char('l')
+        handler.handle_char('o')
+
+        from src.api.escape_monitor import _read_latest_draft
+        result = _read_latest_draft()
+        assert "hello" in result
+
+    def test_reset_clears_draft(self):
+        """reset() 清除草稿。"""
+        monitor = EscapeMonitor()
+        handler = monitor._input_handler
+
+        from src.api.escape_monitor import _append_to_draft_file
+        _append_to_draft_file("draft_before_reset")
+
+        handler.reset()
+
+        # 重置后最后行应是空行（清除标记）
+        content = self._test_path.read_text(encoding="utf-8")
+        lines = content.splitlines()  # 不用 strip()
+        assert lines[-1] == "", f"最后行应是空行, 实际: {lines}"

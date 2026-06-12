@@ -215,6 +215,168 @@ def _compact_history_file() -> bool:
         return False
 
 
+# ── 跨进程文件锁辅助函数（输入草稿多进程写入） ────────────
+
+
+def _escape_draft_content(content: str) -> str:
+    """转义草稿内容：\\ → \\\\, \\n → \\n"""
+    return content.replace("\\", "\\\\").replace("\n", "\\n")
+
+
+def _unescape_draft_content(escaped: str) -> str:
+    """还原草稿内容：单遍左到右扫描。
+
+    处理顺序：\\\\ → \\, \\n → \\n（最长匹配优先）。
+    """
+    result: list[str] = []
+    i = 0
+    n = len(escaped)
+    while i < n:
+        if escaped[i:i+2] == "\\\\":
+            result.append("\\")
+            i += 2
+        elif escaped[i:i+2] == "\\n":
+            result.append("\n")
+            i += 2
+        else:
+            result.append(escaped[i])
+            i += 1
+    return "".join(result)
+
+
+def _append_to_draft_file(content: str) -> bool:
+    """加独占锁追加写入一行草稿内容。
+
+    每行一条草稿内容（已转义），仅追加不覆写。多进程安全。
+    Args:
+        content: 草稿内容（空字符串 = 清除标记）。
+    Returns:
+        True=写入成功，False=写入失败（不阻塞 UI）。
+    """
+    escaped = _escape_draft_content(content)
+    try:
+        INPUT_DRAFT_FILE.parent.mkdir(parents=True, exist_ok=True)
+        with open(INPUT_DRAFT_FILE, "a", encoding="utf-8") as f:
+            locked = _lock_history_file(f.fileno(), shared=False)  # 复用 flock
+            if not locked:
+                return False
+            try:
+                f.write(escaped + "\n")
+                os.fsync(f.fileno())
+            finally:
+                _unlock_history_file(f.fileno())
+        return True
+    except OSError as exc:
+        _logger.warning("草稿文件追加写入失败: %s", exc)
+        return False
+
+
+def _read_draft_records() -> list[str]:
+    """加共享锁读取草稿文件全量记录。
+
+    Returns:
+        [content, ...] 按行序排列（最早→最新），已还原。空行/格式错跳过。
+        文件不存在返回空列表。
+    """
+    try:
+        with open(INPUT_DRAFT_FILE, "r", encoding="utf-8", errors="replace") as f:
+            locked = _lock_history_file(f.fileno(), shared=True)
+            try:
+                raw = f.read()
+            finally:
+                if locked:
+                    _unlock_history_file(f.fileno())
+    except (OSError, FileNotFoundError):
+        return []
+
+    if not raw:
+        return []
+
+    records: list[str] = []
+    for line in raw.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        records.append(_unescape_draft_content(line))
+    return records
+
+
+def _read_latest_draft() -> str:
+    """取草稿文件最新一条记录（追加日志，末行即最新）。
+
+    空行（清除标记）返回空字符串。
+    所有进程共享同一个草稿值，最后写入者胜出。
+    Returns:
+        草稿文本（无可用草稿返回空字符串）。
+    """
+    try:
+        with open(INPUT_DRAFT_FILE, "r", encoding="utf-8", errors="replace") as f:
+            raw = f.read()
+    except (OSError, FileNotFoundError):
+        return ""
+
+    if not raw:
+        return ""
+
+    # 从文件尾找第一个非空行
+    for line in reversed(raw.splitlines()):
+        line = line.strip()
+        if not line:
+            continue
+        return _unescape_draft_content(line)
+    return ""
+
+
+# ── 草稿文件压缩（避免追加日志无限增长） ──────────────────
+
+_DRAFT_COMPACT_THRESHOLD = 500  # 记录数超此阈值触发压缩
+
+
+def _compact_draft_file_internal() -> bool:
+    """压缩草稿文件：去重保留每个草稿值的最后一条出现。
+
+    追加日志中同一草稿出现多次时，只保留最末尾那次。
+    使用临时文件 + os.rename() 确保 crash 安全。
+    Returns:
+        True=完成压缩，False=无需压缩/锁失败/文件不存在。
+    """
+    records = _read_draft_records()
+    if not records or len(records) <= _DRAFT_COMPACT_THRESHOLD:
+        return False
+
+    # 保留每个唯一值的最后出现（反向去重）
+    seen: set[str] = set()
+    unique: list[str] = []
+    for content in reversed(records):
+        if content not in seen:
+            unique.append(content)
+            seen.add(content)
+    unique.reverse()  # 恢复文件顺序
+
+    if len(unique) >= len(records):
+        return False  # 没有冗余
+
+    # 原子重写
+    import tempfile
+    try:
+        tmp_path = INPUT_DRAFT_FILE.with_suffix(".draft.tmp")
+        with open(tmp_path, "w", encoding="utf-8") as tmp:
+            for content in unique:
+                tmp.write(_escape_draft_content(content) + "\n")
+            tmp.flush()
+            os.fsync(tmp.fileno())
+        os.rename(tmp_path, INPUT_DRAFT_FILE)
+        _logger.debug("草稿文件压缩完成: %d 条 → %d 条唯一", len(records), len(unique))
+        return True
+    except OSError as exc:
+        _logger.warning("草稿文件压缩失败: %s", exc)
+        try:
+            tmp_path.unlink(missing_ok=True)
+        except OSError:
+            pass
+        return False
+
+
 class StreamInputHandler:
     """封装流式输入系统：字符缓冲、历史导航、回显回调。
 
@@ -234,7 +396,6 @@ class StreamInputHandler:
         self._history_idx: int = -1          # -1=非导航模式，>=0=历史索引
         self._saved_input_before_history: str = ""  # 进入历史导航前的原始输入
         # ── 输入草稿持久化（实时保存缓冲区到文件，崩溃/重启后恢复） ──
-        self._draft_path = INPUT_DRAFT_FILE
         self._last_draft_save = 0.0       # 上次保存时间戳（节流用）
         self._draft_throttle = 0.3        # 至少间隔 300ms 写一次磁盘
 
@@ -319,7 +480,7 @@ class StreamInputHandler:
             return self._buffer
 
     def reset(self) -> None:
-        """清空所有流式输入状态（缓冲区、提交文本、历史导航）。线程安全。"""
+        """清空所有流式输入状态（缓冲区、提交文本、历史导航、草稿）。线程安全。"""
         with self._lock:
             self._buffer = ""
             self._cursor_pos = 0
@@ -327,6 +488,7 @@ class StreamInputHandler:
             self._input_ready.clear()
             self._history_idx = -1
             self._saved_input_before_history = ""
+        self._clear_draft()
 
     def drain_all(self) -> tuple[str | None, str]:
         """排出所有流式输入状态：返回 (submitted_text, buffer_text)。
@@ -365,11 +527,12 @@ class StreamInputHandler:
             self._cursor_pos = len(text)
             self._history_idx = -1
 
-    # ── 输入草稿持久化 ──────────────────────────────────
+    # ── 输入草稿持久化（多进程安全，追加式写入） ────────────
 
     def _save_draft(self, text: str) -> None:
-        """实时保存当前输入文本到草稿文件（节流）。
+        """追加写入当前输入文本到草稿文件（节流 + 多进程安全）。
 
+        每行一条草稿内容（已转义），仅追加不覆写，fcntl.flock 保证多进程安全。
         以 _draft_throttle 秒为间隔节流磁盘写入，避免每字符 I/O。
         仅在 text 非空时保存（空文本表示已提交/清空，不应覆盖草稿）。
         """
@@ -377,25 +540,27 @@ class StreamInputHandler:
         if now - self._last_draft_save < self._draft_throttle:
             return
         self._last_draft_save = now
-        try:
-            self._draft_path.parent.mkdir(parents=True, exist_ok=True)
-            self._draft_path.write_text(text, encoding="utf-8")
-        except OSError:
-            _logger.debug("草稿文件保存失败: %s", self._draft_path, exc_info=True)
+        _append_to_draft_file(text)
 
     def _clear_draft(self) -> None:
-        """提交后删除草稿文件（文本已进入输入历史，无需继续保存）。"""
-        try:
-            self._draft_path.unlink(missing_ok=True)
-        except OSError:
-            _logger.debug("草稿文件清除失败: %s", self._draft_path, exc_info=True)
+        """追加空行到草稿文件作为清除标记。
+
+        最后一行是空行 = 无草稿。
+        多进程安全：fcntl.flock 保证追加原子性。
+        """
+        _append_to_draft_file("")
 
     def _load_draft(self) -> str:
-        """加载上次未提交的输入草稿（崩溃/重启后恢复）。"""
-        try:
-            return self._draft_path.read_text(encoding="utf-8", errors="replace")
-        except OSError:
-            return ""
+        """读取草稿文件，按当前 PID 取最新有效记录（反向查找，遇 PID 即停）。
+
+        从追加日志末尾反向查找本进程 PID 的记录，
+        找到即停（文件尾是最新记录），避免解析全量记录。
+
+        跨进程安全：不同进程的草稿互不覆盖，各自取各自的。
+        Returns:
+            草稿文本（无可用草稿返回空字符串）。
+        """
+        return _read_latest_draft()
 
     @staticmethod
     def _unescape(line: str) -> str:
