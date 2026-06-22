@@ -20,7 +20,7 @@ from src.chat_ui._const import (
     _CLEAR_PARSE_LINE, _MAIN_LABEL, _MAIN_SOURCE,
     _MAX_ERROR_LENGTH, RenderCommand,
 )
-from src.chat_ui._utils import _truncate_msg
+from src.chat_ui._const import _truncate_msg
 from src.chat_ui._dispatcher import EventDispatcher
 from src.ui.events.event_types import (
     ReasoningChunkEvent, ContentChunkEvent, PhaseDoneEvent,

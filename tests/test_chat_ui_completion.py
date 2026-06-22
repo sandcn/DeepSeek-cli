@@ -210,7 +210,7 @@ class TestCmplHandlerOnAuto:
     def _make_handler(bb, engine):
         """创建 _CmplHandler 并注入 mock request_redraw。"""
         from unittest.mock import MagicMock
-        from src.chat_ui._completion import _CmplHandler
+        from src.chat_ui import _CmplHandler
         request_redraw = MagicMock()
         return _CmplHandler(bb, engine, request_redraw=request_redraw), request_redraw
 
@@ -347,7 +347,7 @@ class TestCmplHandlerTab:
 
     @staticmethod
     def _make_handler(bb, engine):
-        from src.chat_ui._completion import _CmplHandler
+        from src.chat_ui import _CmplHandler
         from unittest.mock import MagicMock
         request_redraw = MagicMock()
         return _CmplHandler(bb, engine, request_redraw=request_redraw), request_redraw
@@ -433,7 +433,7 @@ class TestCmplHandlerNavigate:
 
     @staticmethod
     def _make_handler(bb, engine):
-        from src.chat_ui._completion import _CmplHandler
+        from src.chat_ui import _CmplHandler
         from unittest.mock import MagicMock
         request_redraw = MagicMock()
         return _CmplHandler(bb, engine, request_redraw=request_redraw), request_redraw
