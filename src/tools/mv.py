@@ -68,7 +68,7 @@ class MvFunc(FileSystemToolBase):
         source = arguments.get("source", "")
         destination = arguments.get("destination", "")
         display = f"'{cls._sanitize_display(source)}' -> '{cls._sanitize_display(destination)}'"
-        return cls._truncate_display(display, max_len)
+        return display
 
     def __init__(self, source: str, destination: str):
         super().__init__()

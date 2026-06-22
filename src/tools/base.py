@@ -102,13 +102,6 @@ class Func(abc.ABC):
         """转义 \\r \\n 等不可见字符，适合终端显示"""
         return text.replace('\r', '/r').replace('\n', '/n')
 
-    @staticmethod
-    def _truncate_display(text: str, max_len: int, suffix: str = "...") -> str:
-        """截断过长的显示文本"""
-        if len(text) <= max_len:
-            return text
-        return text[:max_len - len(suffix)] + suffix
-
     # ── 通用显示辅助 ──
 
     @staticmethod

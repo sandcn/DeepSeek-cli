@@ -365,7 +365,6 @@ def extract_page(html: str, url: str) -> dict:
             - domain: 来源域名
             - date: 发布日期（如能提取到）
             - body: 正文文本
-            - truncated: 是否因大小限制截断
     """
     soup = BeautifulSoup(html, 'lxml')
 
@@ -382,10 +381,8 @@ def extract_page(html: str, url: str) -> dict:
     # 正文
     body = _extract_main_content(soup)
 
-    truncated = False
     if len(body) > MAX_BODY_CHARS:
         body = body[:MAX_BODY_CHARS] + "\n\n... [正文过长已截断]"
-        truncated = True
 
     return {
         "title": title,
@@ -393,7 +390,6 @@ def extract_page(html: str, url: str) -> dict:
         "domain": domain,
         "date": date,
         "body": body,
-        "truncated": truncated,
     }
 
 
@@ -441,10 +437,6 @@ def format_fetch_result(data: dict) -> str:
     else:
         lines.append("(未提取到正文内容)")
 
-    if data.get('truncated'):
-        lines.append("")
-        lines.append("⚠️ 正文过长已截断，如需完整内容请分段查看")
-
     return "\n".join(lines)
 
 
@@ -456,7 +448,7 @@ async def fetch_page(url: str, client: Optional[object] = None) -> dict:
         client: 可选的 httpx.AsyncClient 实例（用于连接池复用）
 
     Returns:
-        dict，包含 title/url/domain/date/body/truncated/error 等字段
+        dict，包含 title/url/domain/date/body/error 等字段
     """
     # 安全校验
     error_msg = _validate_fetch_url(url)

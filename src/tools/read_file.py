@@ -142,7 +142,6 @@ class ReadFileFunc(Func):
             extras.append(f"limit:{arguments['end_line']}")
         if extras:
             display += " " + " ".join(extras)
-        display = cls._truncate_display(display, max_len)
         return display
 
     def __init__(self, path, start_line=None, end_line=None):

@@ -66,7 +66,7 @@ class MkFunc(FileSystemToolBase):
         display = f"'{cls._sanitize_display(path)}'"
         if arguments.get("parents"):
             display += " -p"
-        return cls._truncate_display(display, max_len)
+        return display
 
     def __init__(self, path: str, parents: bool = False):
         super().__init__()

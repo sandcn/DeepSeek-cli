@@ -155,45 +155,7 @@ class TestSanitizeDisplay:
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# 4. _truncate_display
-# ═══════════════════════════════════════════════════════════════════════════
-
-class TestTruncateDisplay:
-    """_truncate_display() 正确截断文本，添加后缀。"""
-
-    def test_no_truncation_needed(self):
-        text = "short"
-        result = Func._truncate_display(text, max_len=10)
-        assert result == "short"
-
-    def test_truncation_with_default_suffix(self):
-        text = "a" * 100
-        result = Func._truncate_display(text, max_len=10)
-        assert len(result) == 10
-        assert result == "a" * 7 + "..."
-
-    def test_custom_suffix(self):
-        text = "a" * 100
-        result = Func._truncate_display(text, max_len=8, suffix=">>")
-        assert len(result) == 8
-        assert result == "a" * 6 + ">>"
-
-    def test_exact_max_len(self):
-        text = "exact_len"
-        result = Func._truncate_display(text, max_len=9)
-        assert result == "exact_len"
-
-    def test_one_over_max_len(self):
-        text = "1234567890"
-        result = Func._truncate_display(text, max_len=5)
-        assert result == "12..."
-
-    def test_empty_string(self):
-        assert Func._truncate_display("", max_len=10) == ""
-
-
-# ═══════════════════════════════════════════════════════════════════════════
-# 5. from_args
+# 4. from_args
 # ═══════════════════════════════════════════════════════════════════════════
 
 class TestFromArgs:
@@ -271,7 +233,7 @@ class TestDisplay:
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# 7. get_metadata（未设置元数据时）
+# 6. get_metadata（未设置元数据时）
 # ═══════════════════════════════════════════════════════════════════════════
 
 class TestGetMetadataNone:
@@ -337,7 +299,7 @@ class TestToolMetadata:
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# 9. tool_metadata 装饰器
+# 8. tool_metadata 装饰器
 # ═══════════════════════════════════════════════════════════════════════════
 
 class TestToolMetadataDecorator:

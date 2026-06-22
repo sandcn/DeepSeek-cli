@@ -475,10 +475,11 @@ class TestDisplayParams:
         r = FindFunc.display_params({"pattern": "a\nb"})
         assert "/n" in r
 
-    def test_max_len_truncation(self):
+    def test_long_pattern_not_truncated(self):
+        """长 pattern 不再被截断，返回完整内容。"""
         long_pattern = "a" * 100
         r = FindFunc.display_params({"pattern": long_pattern}, max_len=20)
-        assert len(r) <= 25
+        assert "a" * 100 in r
 
 
 # ═══════════════════════════════════════════════════════════════════════════

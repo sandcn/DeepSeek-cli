@@ -500,10 +500,11 @@ class TestDisplayParams:
         result = ReadFileFunc.display_params({"paths": ["/tmp/test.txt"]})
         assert "/tmp/test.txt" in result
 
-    def test_truncation(self):
+    def test_long_path_not_truncated(self):
+        """长路径不再被截断，返回完整内容。"""
         long_path = "/" + "a" * 100
         result = ReadFileFunc.display_params({"path": long_path}, max_len=20)
-        assert len(result) <= 20
+        assert "a" * 100 in result
 
 
 # ═══════════════════════════════════════════════════════════════════════════

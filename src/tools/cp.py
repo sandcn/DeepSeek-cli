@@ -78,7 +78,7 @@ class CpFunc(FileSystemToolBase):
         display = f"'{cls._sanitize_display(source)}' \u2192 '{cls._sanitize_display(destination)}'"
         if arguments.get("recursive"):
             display += " -r"
-        return cls._truncate_display(display, max_len)
+        return display
 
     def __init__(self, source: str, destination: str, recursive: bool = False):
         super().__init__()

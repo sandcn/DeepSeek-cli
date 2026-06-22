@@ -139,10 +139,11 @@ class TestDisplayParams:
         r = BashFunc.display_params({"command": "echo a\nb"})
         assert "/n" in r
 
-    def test_truncation(self):
+    def test_long_command_not_truncated(self):
+        """长命令不再被截断，返回完整内容。"""
         long_cmd = "echo " + "a" * 100
         r = BashFunc.display_params({"command": long_cmd}, max_len=20)
-        assert len(r) <= 25
+        assert "a" * 100 in r
 
     def test_empty_command(self):
         r = BashFunc.display_params({"command": ""})

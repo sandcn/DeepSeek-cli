@@ -162,7 +162,7 @@ class FindFunc(Func):
         display = cls._sanitize_display(pattern)
         if extras:
             display += f" ({', '.join(extras)})"
-        return f"'{cls._truncate_display(display, max_len)}'"
+        return f"'{display}'"
 
     def __init__(
         self,

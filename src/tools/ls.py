@@ -103,7 +103,7 @@ class LsFunc(Func):
         display = path or "."
         if opts:
             display = f"{' '.join(opts)} {display}"
-        return f"'{cls._truncate_display(cls._sanitize_display(display), max_len)}'"
+        return f"'{cls._sanitize_display(display)}'"
 
     def __init__(
         self,

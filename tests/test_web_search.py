@@ -634,7 +634,6 @@ class TestWebSearchExecuteFetch:
             "domain": "example.com",
             "date": "2024-06-15",
             "body": "This is the page content body.",
-            "truncated": False,
         }
 
         with patch.object(WebSearchFunc, '_get_client', return_value=mock_client):

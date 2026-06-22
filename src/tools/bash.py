@@ -236,7 +236,7 @@ class BashFunc(Func):
     def display_params(cls, arguments: dict, max_len: int = 80) -> str:
         cmd = arguments.get("command", "")
         display_cmd = cls._sanitize_display(cmd)
-        return f"'{cls._truncate_display(display_cmd, max_len)}'"
+        return f"'{display_cmd}'"
 
     @classmethod
     def _get_subprocess_env(cls) -> dict:

@@ -79,7 +79,7 @@ class RmFunc(FileSystemToolBase):
         display = f"'{cls._sanitize_display(path)}'"
         if arguments.get("recursive"):
             display += " -r"
-        return cls._truncate_display(display, max_len)
+        return display
 
     def __init__(self, path: str, recursive: bool = False):
         super().__init__()
