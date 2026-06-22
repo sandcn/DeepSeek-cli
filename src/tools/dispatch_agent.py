@@ -45,7 +45,7 @@ class DispatchAgents(Func):
                     "【参数行为说明】"
                     "\n- **description**：UI标题，用作子任务在界面中的显示标签"
                     "\n- **prompt**：完整任务指令，子Agent据此独立执行全部工作"
-                    "\n- **type**：子Agent类型。ordinary（通用）/ map（只读分析）/ review（代码审查）/ plan（计划生成，write_file/update_file 仅限 .chat/plan/ 目录）"
+                    "\n- **type**：子Agent类型。ordinary（通用）/ map（只读分析）/ review（代码审查）/ plan（计划生成，write_file/update_file 仅限 .chat/plan/ 目录）/ read_memory（只读记忆检索）/ write_memory（读写记忆更新，仅限 .chat/memory/ 目录）"
                     "\n\n"
                     "【使用限制】"
                     "\n- 单次调用执行单个子Agent任务（独立执行），同一轮多次调用自动共享执行器实现真正并行"

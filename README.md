@@ -267,9 +267,9 @@ AI 代理在对话中可调用以下工具完成各类操作。共 **14 个内�
 | `mv` | mv | IO | ✅ | 移动文件或目录，支持跨文件系统 |
 | `rm` | rm | IO | ❌ | 删除文件或目录（删除前自动备份到沙盒） |
 | `mk` | mk | IO | ✅ | 创建目录，支持递归创建父目录 |
-| `web_search` | ws | 网络 | ❌ | 搜索引擎搜索 + 网页全文抓取（百度/必应） |
-| `user_select` | us | 交互 | ❌ | 向用户显示交互式选择界面（单选/多选） |
-| `dispatch_agent` | da | Agent | ❌ | 并行派发子 Agent 执行独立任务（支持类型：ordinary/map/review/plan） |
+| `web_search` | ws | 网络 | ❌ | 搜索引擎搜索 + 网页全文抓取（百度/必应/GitHub） |
+| `user_select` | us | 交互 | ❌ | 向用户显示交互式选择界面（单选/多选/超时回退/非交互回退） |
+| `dispatch_agent` | da | Agent | ❌ | 并行派发子 Agent 执行独立任务（支持类型：ordinary/map/review/plan/read_memory/write_memory） |
 
 ### 工具分类
 
@@ -301,7 +301,7 @@ def can_use(cls, tool_name: str, agent_type: str = "ordinary") -> tuple[bool, st
 
 - **agent_type 注入** — SubAgent 在 `_handle_tool_calls()` 中自动注入 `func.agent_type = self.agent_type`
 - **排除规则** — 定义在 `src/core/subagent.py` 的 `_TOOL_EXCLUSION_MAP`（详见下方 SubAgent 类型表）
-- **路径白名单** — `FileToolBase._validate_path_and_size()` 对 plan Agent 实施路径限制，仅允许写入 `.chat/plan/` 目录，防止误写项目源码
+- **路径白名单** — `FileToolBase._validate_path_and_size()` 对 plan/write_memory Agent 实施路径限制，分别仅允许写入 `.chat/plan/` 和 `.chat/memory/` 目录，防止误写项目源码
 
 ---
 
@@ -348,25 +348,25 @@ ChatUIConsumer
 ```
 ┌──────────────────────────────────────────────────────────────────┐
 │                         Main Agent                               │
-│                   主控 Agent，负责任务调度                          │
+│                   主控 Agent，负责任务调度（7 步工作流）                 │
 │                                                                  │
-│  ① 规划 ─→ ② 探底分析 ─→ ③ 修改执行 ─→ ④ 审查 ─→ ⑤ 验证       │
-└───────┬─────────────┬────────────┬────────────┬─────────────────┘
-        │             │            │            │
-        │ dispatch    │ dispatch   │ dispatch   │
-        ▼             ▼            ▼            ▼
-┌─────────────┐ ┌────────────┐ ┌────────────┐ ┌──────────────┐
-│ plan        │ │ map        │ │ review     │ │ ordinary     │
-│ SubAgent    │ │ SubAgent   │ │ SubAgent   │ │ SubAgent     │
-│             │ │            │ │            │ │              │
-│ 计划型      │ │ 只读分析型  │ │ 代码审查型  │ │ 通用型       │
-│             │ │            │ │            │ │              │
-│ • 任务拆解  │ │ • 项目探底 │ │ • P0-P3    │ │ • 读/写文件  │
-│ • 依赖分析  │ │ • 模块地图 │ │   分级审查  │ │ • 修改代码   │
-│ • 资源估算  │ │ • 调用链   │ │ • 循环审查  │ │ • 创建文件   │
-│ • 风险识别  │ │ • 引用关系 │ │ • 阻断策略  │ │ • 测试运行   │
-│ • 动态重规划│ │            │ │            │ │ • 执行验证   │
-└─────────────┘ └────────────┘ └────────────┘ └──────────────┘
+│  ① 规划 ─→ ② 探底分析 ─→ ③ 记忆检索 ─→ ④ 修改执行 ─→ ⑤ 审查 ─→ ⑥ 验证 ─→ ⑦ 记忆更新（完成）│
+└───────┬───────┬───────┬───────┬───────┬───────┘
+        │       │       │       │       │       │
+        │dispatch│dispatch│dispatch│dispatch│dispatch│dispatch
+        ▼       ▼       ▼       ▼       ▼       ▼
+┌─────────────┐ ┌────────────┐ ┌────────────┐ ┌──────────────┐ ┌─────────────────┐ ┌──────────────────┐
+│ plan        │ │ map        │ │ review     │ │ ordinary     │ │ read_memory     │ │ write_memory     │
+│ SubAgent    │ │ SubAgent   │ │ SubAgent   │ │ SubAgent     │ │ SubAgent        │ │ SubAgent         │
+│             │ │            │ │            │ │              │ │                 │ │                  │
+│ 计划型      │ │ 只读分析型  │ │ 代码审查型  │ │ 通用型       │ │ 只读记忆型      │ │ 读写记忆型       │
+│             │ │            │ │            │ │              │ │                 │ │                  │
+│ • 任务拆解  │ │ • 项目探底 │ │ • P0-P3    │ │ • 读/写文件  │ │ • 检索记忆索引  │ │ • 新增/更新记忆  │
+│ • 依赖分析  │ │ • 模块地图 │ │   分级审查  │ │ • 修改代码   │ │ • 读取记忆条目  │ │ • 合并记忆条目   │
+│ • 资源估算  │ │ • 调用链   │ │ • 循环审查  │ │ • 创建文件   │ │ • 关键词搜索    │ │ • 写入 .chat/    │
+│ • 风险识别  │ │ • 引用关系 │ │ • 阻断策略  │ │ • 测试运行   │ │                 │ │   memory/        │
+│ • 动态重规划│ │            │ │            │ │ • 执行验证   │ │                 │ │                  │
+└─────────────┘ └────────────┘ └────────────┘ └──────────────┘ └─────────────────┘ └──────────────────┘
 ```
 
 ### 工作流说明
@@ -377,16 +377,19 @@ ChatUIConsumer
 2. 探底 ──→  委派 map SubAgent 获取模块地图 + 调用链分析
      │         （只读分析，不修改代码）
      │
-3. 修改 ──→  基于探底结果执行代码修改
+3. 记忆 ──→  委派 read_memory SubAgent 检索相关记忆
+     │         关键词搜索 .chat/memory/ 目录
+     │
+4. 修改 ──→  基于探底结果执行代码修改
      │         多个独立目标可并发派发 ordinary SubAgent
      │
-4. 审查 ──→  委派 review SubAgent 逐文件审查
+5. 审查 ──→  委派 review SubAgent 逐文件审查
      │         P0/P1/P2 阻断修复，P3 纳入记录
      │         最多三轮循环审查
      │
-5. 验证 ──→  语法检查 → 新增测试 → 运行测试 → 运行验证
+6. 验证 ──→  语法检查 → 新增测试 → 运行测试 → 运行验证
      │
-6. 完成 ──→  输出变更总结，更新跨对话记忆
+7. 完成 ──→  输出变更总结，委派 write_memory SubAgent 更新跨对话记忆
 ```
 
 ### SubAgent 类型
@@ -399,8 +402,10 @@ ChatUIConsumer
 | **map** | 只读（read_file/search/find/ls） | 项目探底、模块地图、调用链追踪、引用关系分析 |
 | **review** | 只读 + web_search | Code Review、P0-P3 分级审查、跨文件一致性验证 |
 | **ordinary** | 全工具（不含 user_select/dispatch_agent） | 读/写/改代码、执行测试、通用任务 |
+| **read_memory** | 只读（read_file/search/find/ls） | 检索 `.chat/memory/` 目录下的记忆文件 |
+| **write_memory** | 只读 + write_file/update_file/mk（仅限 `.chat/memory/` 目录） | 维护记忆文件（新增/更新/合并条目） |
 
-> **工具排除策略**：plan 排除 `bash/rm/mv/cp/mk/dispatch_agent/user_select`；map 额外排除 `bash/write_file/update_file/rm/mv/cp/mk/web_search/dispatch_agent/user_select`；review 排除 `bash/write_file/update_file/rm/mv/cp/mk/dispatch_agent/user_select`（保留 web_search）。SubAgent 在 `_handle_tool_calls()` 中注入 `agent_type` 到 Func 实例，`Func.can_use()` 进行统一检查。`FileToolBase._validate_path_and_size()` 额外实施 plan Agent 路径白名单——仅允许写入 `.chat/plan/` 目录。
+> **工具排除策略**：ordinary 排除 `dispatch_agent/user_select`；map 排除 `bash/write_file/update_file/rm/mv/cp/mk/web_search/dispatch_agent/user_select`；review 排除 `bash/write_file/update_file/rm/mv/cp/mk/dispatch_agent/user_select`（保留 web_search）；plan 排除 `bash/rm/mv/cp/mk/dispatch_agent/user_select`，write_file/update_file 仅限 `.chat/plan/` 目录；read_memory 与 map 策略一致（排除所有写入类+web_search+dispatch_agent+user_select）；write_memory 排除 `bash/rm/mv/cp/web_search/dispatch_agent/user_select`，write_file/update_file/mk 仅限 `.chat/memory/` 目录。SubAgent 在 `_handle_tool_calls()` 中注入 `agent_type` 到 Func 实例，`Func.can_use()` 进行统一检查。`FileToolBase._validate_path_and_size()` 额外实施 plan/write_memory Agent 路径白名单校验。
 
 ### 并发调度策略
 
@@ -414,7 +419,7 @@ ChatUIConsumer
 ├── chat.py                # 入口脚本（asyncio.run(main())）
 ├── pyproject.toml         # 项目配置与依赖
 ├── prompts/               # 系统提示词（main/sub/map/plan/review + memory 指南）
-├── tests/                 # 测试（109 个测试文件，4000+ 测试用例）
+├── tests/                 # 测试（107 个测试文件）
 ├── .chat/                 # 运行时数据目录
 │   ├── memory/            # 跨对话记忆系统（索引 + 详情）
 │   └── plan/              # Plan Agent 计划文件
@@ -427,6 +432,8 @@ ChatUIConsumer
 │   ├── chat_msgs.py       # 对话消息存/取/列/导出
 │   ├── checkpoint.py      # 任务断点保存与恢复
 │   ├── paths.py           # 路径常量
+│   ├── terminal.py        # 终端颜色配置（始终启用颜色）
+│   ├── _compat.py         # Python 版本兼容（dataclass/aclosing/get_event_loop）
 │   │
 │   ├── api/               # API 适配层
 │   │   ├── client_async.py    # httpx 异步 HTTP 客户端
@@ -438,8 +445,12 @@ ChatUIConsumer
 │   │   ├── stats.py           # 会话级 Token 统计
 │   │   ├── json_repair.py     # JSON 格式自动修复
 │   │   ├── protocols.py       # LLM 协议定义
+│   │   ├── telemetry.py        # API 层可观测性
+│   │   ├── escape_monitor.py   # 键盘输入监听
+│   │   ├── events.py           # API 事件定义
+│   │   ├── _model_loops.py / _stats_core.py / _stream_lifecycle.py / _token_speed.py / _tool_parse_utils.py  # 内部辅助模块
 │   │   ├── adapters/          # 多模型适配器（DeepSeek/OpenAI/Anthropic/Ollama）
-│   │   └── renderer/          # 增量流式 Markdown 渲染引擎（AST + VNode + Diff/Patch）
+│   │   └── renderer/          # 增量流式 Markdown 渲染引擎（AST + VNode + Diff/Patch，~99 文件）
 │   │
 │   ├── config/            # 配置系统
 │   │   ├── loader.py          # 配置加载/持久化（~/.chat_config/chatrc.json）
@@ -454,6 +465,11 @@ ChatUIConsumer
 │   │   ├── subagent.py        # SubAgent 子代理（含 _TOOL_EXCLUSION_MAP 工具排除策略 + agent_type 注入）
 │   │   ├── _subagent_spawner.py # SubAgentSpawner — 创建/渲染/事件发布
 │   │   ├── _tool_callbacks.py   # ToolCallbackChain — 工具生命周期回调（before/after/run）
+│   │   ├── _command_core.py     # 命令核心 — 调度基础设施、注册表、帮助文本
+│   │   ├── _capture_manager.py  # stdout 捕获管理器（工具输出捕获）
+│   │   ├── message_queue.py     # MessageQueue — 异步消息队列（asyncio.Queue）
+│   │   ├── message_edit.py      # 消息编辑功能
+│   │   ├── file_change_record.py # 文件变更记录
 │   │   ├── pipeline.py        # 中间件处理管道（Pipeline.run_round_async）
 │   │   ├── compression.py     # 上下文压缩（策略模式）
 │   │   ├── context_manager.py # 上下文管理器 + 消息上限控制
@@ -461,7 +477,10 @@ ChatUIConsumer
 │   │   ├── sandbox_manager.py # 文件沙盒管理器
 │   │   ├── parallel_executor.py # ParallelExecutor — 并行 SubAgent 调度（批量模式）
 │   │   ├── tool_executor_async.py # AsyncToolExecutor — 异步工具执行器
-│   │   ├── commands/          # 命令插件系统（/help, /model, /editmsg 等）
+│   │   ├── cache.py             # 增量统计缓存
+│   │   ├── constants.py          # 主题常量
+│   │   ├── commands.py           # 命令系统入口
+│   │   ├── commands/              # 命令插件子模块
 │   │   ├── commands_config.py / commands_data.py / commands_session.py
 │   │   ├── events/            # 核心事件总线 + 事件类型
 │   │   ├── middleware/        # Pipeline 中间件（审计/中断/状态机/可观测性/工具适配器）
@@ -483,7 +502,7 @@ ChatUIConsumer
 │   │
 │   ├── tools/              # 工具调用系统（14 个内置工具）
 │   │   ├── base.py            # Func 基类 + 元数据系统（含 can_use 工具可用性检查 / agent_type）
-│   │   ├── file_base.py       # FileToolBase 文件操作基类（含 plan agent 路径白名单——仅限 .chat/plan/）
+│   │   ├── file_base.py       # FileToolBase 文件操作基类（含 plan/write_memory agent 路径白名单）
 │   │   ├── registry.py        # 工具注册表（自动发现 + 调度 + 元数据索引）
 │   │   ├── read_file.py / write_file.py / update_file.py
 │   │   ├── search.py / find.py / ls.py
@@ -494,7 +513,7 @@ ChatUIConsumer
 │   │   ├── encoding.py        # 编码检测工具函数
 │   │   ├── utils.py           # 工具通用辅助函数
 │   │   ├── page_fetcher.py    # 网页内容抓取（web_search 内部依赖）
-│   │   └── parsers/           # 搜索引擎结果解析器（baidu / bing / generic）
+│   │   └── parsers/           # 搜索引擎结果解析器（baidu / bing / generic / github）
 │   │
 │   ├── ui/                 # 终端 UI
 │   │   ├── display.py         # 显示系统（含 ANSI 输出、ParallelDisplay）
@@ -509,6 +528,16 @@ ChatUIConsumer
 │   │   ├── _completion.py     # Tab 命令/路径自动补全
 │   │   ├── _lock.py           # 输出锁机制（render 线程独占）
 │   │   ├── _stdout_tracker.py # stdout 行追踪器
+│   │   ├── _blessed.py        # blessed 终端封装
+│   │   ├── ansi.py / colors.py # ANSI / 颜色常量
+│   │   ├── console.py         # Rich 控制台
+│   │   ├── base_display.py    # BaseDisplay 基类
+│   │   ├── adapters.py        # UI 适配器
+│   │   ├── diff_renderer.py   # Diff 渲染
+│   │   ├── msg_list.py        # 消息列表编辑
+│   │   ├── narrow.py          # 窄屏检测
+│   │   ├── output_target.py   # 输出目标
+│   │   ├── terminal_adapter.py # 终端适配器
 │   │   ├── tui/               # TUI 组件（消息显示/状态栏/选择器）
 │   │   ├── parallel/          # 并行 SubAgent 面板显示
 │   │   ├── events/            # UI 事件总线（15 种事件类型）
@@ -521,6 +550,15 @@ ChatUIConsumer
 │   ├── webui/              # Web 界面
 │   │   ├── server.py          # aiohttp HTTP 服务器 + WebSocket
 │   │   ├── bridge.py          # WebEventBridge（EventBus → WebSocket）
+│   │   ├── session.py         # WEBChatSession（Web 会话管理）
+│   │   ├── display.py         # WebDisplay 适配器
+│   │   ├── types.py           # WebSocket 消息类型定义
+│   │   ├── output_target.py   # 输出目标适配
+│   │   ├── cleanup.py         # 资源清理逻辑
+│   │   ├── msg_index.py       # 消息索引管理
+│   │   ├── _base_sender.py    # WebSocket 发送基类
+│   │   ├── _pending_selects.py # user_select 待决追踪
+│   │   ├── _termux.py         # Termux 浏览器适配
 │   │   ├── routing/           # WebSocket 消息路由
 │   │   ├── ws_handler/        # WebSocket 处理器
 │   │   └── static/            # 前端 SPA（HTML/CSS/JS）
@@ -550,7 +588,7 @@ ChatUIConsumer
 
 ### 2. ✅ 🧠 Plan Agent 架构 — 已完成
 
-独立的 **Plan Agent** 层已实现并投入使用。任何文件修改或新需求前，必须先通过 `dispatch_agent(type="plan")` 委派 plan SubAgent 生成结构化计划文件（`.chat/plan/`），主 Agent 读取后逐条执行，形成「规划 → 探底 → 执行 → 审查 → 验证」五阶段流水线。详见上方 🔄 [Agent 工作流程](#agent-工作流程)。
+独立的 **Plan Agent** 层已实现并投入使用。任何文件修改或新需求前，必须先通过 `dispatch_agent(type="plan")` 委派 plan SubAgent 生成结构化计划文件（`.chat/plan/`），主 Agent 读取后逐条执行，形成「规划 → 探底 → 记忆检索 → 执行 → 审查 → 验证 → 记忆更新」七阶段流水线。详见上方 🔄 [Agent 工作流程](#agent-工作流程)。
 
 ---
 
