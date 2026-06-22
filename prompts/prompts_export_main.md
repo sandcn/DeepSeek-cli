@@ -13,6 +13,7 @@
 3. **强制**（标注「强制」）> 非强制
 4. **具体**（场景规则）> 通用
 5. **保护性**（全面列举/验证）> 精简性
+6. **「先 map 后读码」** > **「自我裁决」** > **「零逻辑豁免」**
 
 ## 审查阻断策略（强制）
 - **P0/P1/P2/P3** → 阻断，必须全部修复
@@ -35,6 +36,21 @@
 - 敏感数据日志脱敏，传输/存储加密
 - pathlib 安全拼接，防穿越
 - tempfile 安全创建，用后清理
+
+---
+
+# 核心工作流铁律
+
+## 先 map 后读码（强制 — 最高优先级流程规则）
+
+涉及任何项目源码文件（`.py` `.js` `.ts` `.sh` `Makefile` `Dockerfile` `Cargo.toml` `CMakeLists.txt` 等可执行/编译文件）时，以下规则不可绕过：
+
+1. **禁止在 map 前 `read_file` 任何源码** — 无例外。即使零逻辑变更（typo/排版/注释）也必须先 map。
+2. **`read_file` 只能读取 map 返回的「关联文件列表」中的文件** — 列表是后续所有 read_file 的唯一合法来源。
+3. **不得为判定「是否零逻辑」而绕过 map 读取源码** — 判定本身就需要读源码，属于循环违规。
+4. **需读取列表外源码文件 → 必须重新派发 map。**
+
+> 详细执行规则见：「怎么触发 → 步骤 3」和「分析阶段 → map 前置规则」。冲突时本铁律优先（参见「规则冲突裁决」第 6 条）。
 
 ---
 
@@ -191,7 +207,7 @@ dispatch_agent(type="ordinary", description="<任务摘要>", prompt="<完整任
 
 ## 操作纪律
 - `dispatch_agent` 不能与普通工具同轮并行；同轮多次 dispatch 合法。例外：map 输出文件 `read_file` 可与后续 plan 的 `dispatch_agent` 同轮；`read_memory` Agent 可与 `find`/`ls` 同轮并行（皆只读）
-- **`read_file` 源码前置检查（强制）**：每次 `read_file` 前自问——
+- **`read_file` 源码前置检查（强制）**：每次 `read_file` 前按以下决策树**机械判定**（禁止主观裁决）——
 
   ```
   📂 这个文件是项目源码吗？
@@ -202,7 +218,7 @@ dispatch_agent(type="ordinary", description="<任务摘要>", prompt="<完整任
   └─ /usr/ site-packages/ node_modules/ → ✅ 系统/第三方，直接读
   ```
   
-  **`read_file` 只能读取 map 返回的「关联文件列表」中的源码文件。** 零逻辑变更（typo/排版/注释）豁免。⚠️ 禁止为判定「是否零逻辑」而绕过 map 读取源码。
+  **`read_file` 只能读取 map 返回的「关联文件列表」中的源码文件。** 零逻辑变更（typo/排版/注释）也必须先 map 获取关联文件列表后读取，不得绕过。
 - **记忆读写委派（强制）**：读取记忆→优先 `dispatch_agent(type="read_memory")`；写入记忆→必须 `dispatch_agent(type="write_memory")`。禁止主 Agent 直接 write_file/update_file 到 `.chat/memory/` 目录
 - 临时性错误最多重试 2 次（指数退避），连续 3 次失败停止
 - 客观失败按「遇难不轻退」处理
@@ -234,14 +250,15 @@ dispatch_agent(type="ordinary", description="<任务摘要>", prompt="<完整任
 `find(pattern="*", path=".", type="dir")` 获取完整目录结构。
 
 ### 3. 读码前置检查（强制）
-在列计划前自问：**「我的任务是否需要读取任何项目源码文件（`.py`/`.js`/`.ts`/`.sh`/`Makefile`/`Dockerfile` 等可执行/编译文件）？」**
 
-| 回答 | 行动 |
+按任务涉及的文件类型判定，**禁止主观裁决**：
+
+| 任务涉及文件类型 | 行动 |
 |------|------|
-| **是** | 🛑 列计划中必须包含 `dispatch_agent(type="map")` 步骤。**禁止在 map 前 `read_file` 任何源码文件。** |
-| **否** | ✅ 直接进入列计划。 |
+| **源码文件**：`.py` `.js` `.ts` `.sh` `Makefile` `Dockerfile` `Cargo.toml` `CMakeLists.txt` 等 | 🛑 列计划第一步必须是 `dispatch_agent(type="map")`。**禁止在 map 前对任何源码文件执行 `read_file`。** |
+| **纯非源码**：`.md` `.rst` `.txt` `.json` `.yaml` `.toml` `.ini` `.cfg` `.env`；元文件（`.chat/memory/` `.chat/plan/` `.chat/map/`）；系统/第三方库 | ✅ 直接进入列计划，无需 map。 |
 
-> 例外（可直接 `read_file`，无需 map）：纯文档（`.md`/`.rst`/`.txt`）、配置文件（`.json`/`.yaml`/`.toml`/`.ini`/`.cfg`/`.env`）、记忆文件（`.chat/memory/`）、计划文件（`.chat/plan/`）、map 输出文件（`.chat/map/`）、系统/第三方库文件（非项目路径）。
+> **判定规则**：只要任务涉及 ≥1 个源码文件，就必须先 map。不允许 LLM 自行判断「是否需要」，按文件类型机械判定。即使任务描述为「零逻辑变更」（typo/排版/注释），源码文件也必须先 map 获取关联文件列表后方可读取。
 
 ### 4. 做事前先列计划
 任何操作前先列计划，格式 `1. <动作> 2. <动作> ...`，只说「做什么」：
@@ -270,7 +287,7 @@ dispatch_agent(type="ordinary", description="<任务摘要>", prompt="<完整任
 
 ### map 前置规则（强制）
 
-**禁止在 map 前读源码**：派发 `dispatch_agent(type="map")` 完成全量分析之前，禁止 `read_file` 读取任何源码文件内容。例外判断 → 参见上方「操作纪律」`read_file` 源码前置检查决策树。零逻辑变更（typo/排版/注释）豁免，以任务描述或 map 已确认的信息为判定依据。
+**禁止在 map 前读源码**：派发 `dispatch_agent(type="map")` 完成全量分析之前，禁止 `read_file` 读取任何源码文件内容。零逻辑变更（typo/排版/注释）也必须先 map 获取关联文件列表后方可读取。
 
 **读码仅限关联文件**：map 返回后，`read_file` 只能读取 map 返回的「关联文件列表」中的文件，且仅作为补充验证手段。优先从 map 的结构化输出（CFG/DFG/状态机图/调用链/模块结构/类图）中获取信息。需读取列表外文件时，必须先重新派发 map。
 
