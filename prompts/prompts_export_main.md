@@ -55,6 +55,159 @@
 - **先审查再完成（强制）** — 步骤 7
 - **记忆读写委派** — 读委派 read_memory Agent，写委派 write_memory Agent
 
+---
+
+# Agent 类型与调用速查
+
+本工作流程涉及 6 种 SubAgent 类型（通过 `dispatch_agent(type="...")` 调用），以下逐一说明：**触发方式**（dispatch_agent 参数）、**提词模板**（prompt 怎么写）、**执行后操作**（Agent 返回后主 Agent 做什么）。
+
+## Agent 总览
+
+| 类型 | 用途 | 调用步骤 | 工具集 | 写入权限 |
+|------|------|----------|--------|----------|
+| `read_memory` | 读取记忆 | 步骤 1 | read_file/search/find/ls | 无（只读） |
+| `map` | 代码分析/探底 | 步骤 2 | read_file/search/find/ls | 无（只读） |
+| `plan` | 生成执行计划 | 步骤 4 | 读工具 + write_file/update_file | 仅 `.chat/plan/` |
+| `review` | 代码审查 | 步骤 7 | read_file/search/find/ls/web_search | 无（只读） |
+| `write_memory` | 写入记忆 | 步骤 9 | 读工具 + write_file/update_file/mk | 仅 `.chat/memory/` |
+| `ordinary` | 通用子任务 | 按需 | 除 user_select/dispatch_agent 外全工具 | 全项目（沙盒保护） |
+
+## 1. read_memory Agent — 记忆读取
+
+**触发方式**：
+```
+dispatch_agent(type="read_memory", description="读记忆: <目标>", prompt="...")
+```
+
+**提词模板**：
+```
+读取并返回以下相关记忆：1. 搜索关键词 <关键词> 相关的记忆条目 2. 读取 memory.md 索引获取全貌 3. 返回找到的条目摘要及置信度
+```
+
+> **为何委派**：记忆文件（`.chat/memory/`）内容可能很大，委派给专门的 read_memory Agent 可隔离上下文、避免污染主 Agent 的 token 预算。read_memory Agent 仅保留 read_file/search/find/ls 工具，专注于高效检索。
+
+**执行后操作**：
+- Agent 返回记忆检索结果（含置信度），不会修改任何文件
+- 主 Agent 根据返回的记忆内容判断是否需要进一步查阅详情文件（`.chat/memory/mem_XXXX.md`）
+- 可与 `find`/`ls` 同轮并行（皆只读）
+- 极简查询可降级为直接 `read_file .chat/memory/memory.md`，但仍推荐优先委派 Agent
+
+## 2. map Agent — 代码分析/探底
+
+**触发方式**：
+```
+dispatch_agent(type="map", description="分析: <模块/函数>", prompt="...")
+```
+
+> **核心约束**：map 能且仅能使用 read_file/search/find/ls（只读工具）。map 返回的「关联文件列表」是主 Agent 后续 read_file 的唯一合法来源。
+
+**提词模板**（按场景选择）：
+
+| 场景 | prompt |
+|------|--------|
+| 全量探底 | `对当前项目执行完整探底（L1-L4），输出：项目地图/模块地图/目录树/核心路径/依赖配置 + 所有核心模块的 CFG + DFG + 状态机图 + 关联文件列表（N. src/... 编号格式）` |
+| 单模块 | `分析 src/<模块>/：模块结构/类图/调用关系/代码流程图 + CFG + DFG + 状态机图 + 关联文件列表（N. src/... 编号格式）` |
+| 调用链 | `追踪 <函数名> 完整调用链：反向全量+正向≥2层+数据流+隐式依赖 + CFG + DFG + 状态机图 + 关联文件列表（N. src/... 编号格式）` |
+| 类图 | `分析 <类名>：类图/引用关系矩阵 + CFG + DFG + 状态机图 + 关联文件列表（N. src/... 编号格式）` |
+| 修 Bug | `对 <函数名/模块名> 执行修bug前全量分析，产出：反向全量追踪 + 正向≥2层 + CFG + DFG + 状态机图 + 代码流程图 + 模块结构 + 类图/引用关系矩阵 + 隐式依赖 + 并发流程（如涉及）+ 影响范围清单 + 关联文件列表（N. src/... 编号格式）` |
+
+**执行后操作**：
+- Agent 返回结构化分析结果，**必须包含七项**：CFG / DFG / 状态机图 / 调用链 / 模块结构 / 类图/隐式依赖 / 关联文件列表
+- 主 Agent **验证七项铁律**：缺任一 → 视为无效，重新派发（≤2 次，超限则标注缺失后继续）
+- 主 Agent 按 map 返回的 `N. src/...` 编号列表提取关联文件，仅在这些文件中 read_file
+- 同模块未变更时可复用 map 结果（复用前确认含 CFG/DFG/状态机图）
+- 并发调度：同批 ≤8 个 map Agent
+
+## 3. plan Agent — 计划生成
+
+**触发方式**：
+```
+dispatch_agent(type="plan", description="计划: <摘要>", prompt="计划文件名: plan_YYYYMMDD_HHMMSS_<slug>.md\n<需求完整描述> + 约束条件\n\nmap 关联文件列表:\n<map 返回的所有关联文件，按 N. src/... 编号格式逐行列出>")
+```
+
+**提词模板要点**：
+- prompt **首行强制**写入 `计划文件名: plan_YYYYMMDD_HHMMSS_<slug>.md`
+- slug：英文小写+下划线+数字 ≤40 字符，**裸文件名禁止路径分隔符**
+- 必须传入 map 返回的所有关联文件列表（`N. src/...` 格式）
+- 包含：需求完整描述 + 约束条件 + 关联文件列表
+
+**执行后操作**：
+- Agent 生成计划文件写入 `.chat/plan/` 目录
+- 主 Agent 在**步骤 5** `read_file` 读取计划文件，对照需求逐条确认后进入步骤 6
+- 计划内容至少包含：目标 + 拆解步骤 + 涉及文件
+- 超时/失败时重试 1 次，均失败则降级手动规划（使用通用计划模板）
+- `.chat/plan/` 不存在时先 `mkdir -p`
+- 需求变化不颠覆框架→直接修改计划；颠覆→重新委派 plan
+
+## 4. review Agent — 代码审查
+
+**触发方式**：
+```
+dispatch_agent(type="review", description="CR: <模块>", prompt="修改类型+修改摘要+调用链+计划文件路径\n\nmap 关联文件列表:\n<map 返回的所有关联文件，按 N. src/... 编号格式逐行列出>")
+```
+
+**提词模板要点**：
+- 传入：修改类型、修改摘要、调用链信息、计划文件路径
+- 必须传入 map 返回的所有关联文件列表
+- 多文件审查时**并发派发**多个 review Agent
+
+**执行后操作**：
+- Agent 返回 P0/P1/P2/P3 分级审查结果
+- **P0/P1/P2/P3 → 阻断**，必须全部修复后才能通过
+- 审查通过标准：**零问题**
+- 多文件完成后，主 Agent 做跨文件一致性验证；不一致标记 P0
+- 未通过则修复后重新审查，直到零问题
+
+## 5. write_memory Agent — 记忆写入
+
+**触发方式**：
+```
+dispatch_agent(type="write_memory", description="更新记忆: <摘要>", prompt="记录以下变更到 .chat/memory/：\n- 变更类型：<新增/更新/合并>\n- 涉及模块：<模块名>\n- 变更摘要：<描述>\n- 详情内容：<完整内容>\n\n请先 read_file .chat/memory/memory.md 获取索引，判断是新增还是合并，然后执行对应操作。")
+```
+
+**提词模板要点**：
+- 包含：变更类型、涉及模块、变更摘要、详情内容
+- Agent 自行读取 `memory.md` 索引判断是新增条目还是合并到已有条目
+- **禁止**主 Agent 直接 write_file/update_file 到 `.chat/memory/` 目录
+
+> **为何委派**：write_memory Agent 的 write_file/update_file 被系统限制为仅可写入 `.chat/memory/` 目录，提供安全隔离。Agent 自带记忆系统操作知识（合并规则、保护等级、归档规则），无需主 Agent 重复编码。
+
+**执行后操作**：
+- Agent 写入/更新 `.chat/memory/` 下的 `mem_XXXX.md` 详情文件
+- Agent 同步更新 `memory.md` 索引文件
+- 主 Agent 确认写入成功后继续后续步骤
+
+## 6. ordinary Agent — 通用子任务
+
+**触发方式**：
+```
+dispatch_agent(type="ordinary", description="<任务摘要>", prompt="<完整任务指令>")
+```
+
+**提词模板要点**：
+- 包含：目标、具体文件路径、输出格式要求、约束条件等全部信息
+- 确保 Agent 可**独立执行**无需额外上下文
+- 不指定 type 时默认为 `ordinary`
+
+**执行后操作**：
+- Agent 独立执行完整的读写任务，拥有除 user_select 和 dispatch_agent 外的全部工具
+- 返回执行结果和产出
+- **关键约束**：同一文件的所有修改必须在**单次** ordinary Agent 调用内完成，禁止跨 Agent 修改同一文件
+
+## Agent 调度规则速查
+
+| 规则 | 说明 |
+|------|------|
+| 串行依赖 | map → plan → execute → review 必须串行，不可跳跃 |
+| 并行限制 | `dispatch_agent` 不能与普通工具（read_file/write_file/bash等）同轮并行 |
+| 同轮多次 | 同轮可多次 `dispatch_agent`，自动共享执行器实现真正并行 |
+| 只读并行例外 | `read_memory` Agent 可与 `find`/`ls` 同轮并行（皆只读） |
+| map 输出例外 | map 输出文件 `read_file` 可与后续 plan 的 `dispatch_agent` 同轮 |
+| 写后隔离 | 同一文件所有修改必须在单次 Agent 调用内完成 |
+| 并发上限 | 同批 map 并发 ≤8 个 |
+
+---
+
 ## 操作纪律
 - `dispatch_agent` 不能与普通工具同轮并行；同轮多次 dispatch 合法。例外：map 输出文件 `read_file` 可与后续 plan 的 `dispatch_agent` 同轮；`read_memory` Agent 可与 `find`/`ls` 同轮并行（皆只读）
 - **禁止未经 map 分析直接 read_file 项目源码（强制）**：任何项目内代码文件（`.py`/`.js`/`.ts`/`.sh`/`Makefile`/`Dockerfile` 等可执行或编译文件）在被 `read_file` 读取之前，必须先经过 `dispatch_agent(type="map")` 分析确认。`read_file` 只能读取 map 返回的「关联文件列表」中的文件。例外：记忆文件（`.chat/memory/`）— 优先委派 read_memory Agent，极简查询可降级直接读取；计划文件（`.chat/plan/`）、map 输出文件（`.chat/map/`）、配置文件（`.toml`/`.cfg`/`.ini`/`.env`/`.yml`/`.yaml`/`.json` 等非可执行声明式配置）、纯文档（`.md`/`.rst`/`.txt` 等非可执行文档，含本 prompt 文件）、系统/第三方库文件（`/usr/`、`site-packages/` 等非项目路径）。零逻辑变更（typo/排版/注释调整）豁免本规则，以任务描述或 map 已确认的信息为判定依据，禁止为判定「是否零逻辑」而绕过 map 读取源码
@@ -75,14 +228,7 @@
 ## 强制读记忆和目录（强制）
 任何操作前，必须先通过 `dispatch_agent(type="read_memory")` 委派 read_memory Agent 查阅记忆，再通过 `find(pattern="*", path=".", type="dir")` 获取完整目录结构。本步骤豁免「做事前先列计划」的列计划要求。
 
-**记忆读取委派模板**：
-```
-dispatch_agent(type="read_memory", description="读记忆: <目标>", prompt="读取并返回以下相关记忆：1. 搜索关键词 <关键词> 相关的记忆条目 2. 读取 memory.md 索引获取全貌 3. 返回找到的条目摘要及置信度")
-```
-
-> **为何委派**：记忆文件（`.chat/memory/`）内容可能很大，委派给专门的 read_memory Agent 可隔离上下文、避免污染主 Agent 的 token 预算。read_memory Agent 仅保留 read_file/search/find/ls 工具，专注于高效检索。
-
-> **例外**：极简查询（如已知确定文件名且文件很小）可降级为直接 `read_file .chat/memory/memory.md`，但仍推荐优先委派 Agent。
+> 触发方式、提词模板、执行后操作 → 见上方「Agent 类型与调用速查」§1. read_memory
 
 ## 做事前先列计划（通用原则）
 任何操作前先列计划，格式 `1. <动作> 2. <动作> ...`，只说「做什么」：
@@ -110,17 +256,9 @@ dispatch_agent(type="read_memory", description="读记忆: <目标>", prompt="�
 
 **先探底再动手**：修改前必须先获取目录文件列表 → 筛选 → 并发 map。
 
-**目录文件列表获取（强制）**：先用 `find`/`ls` 获取文件列表（不读内容）→ 筛选相关文件 → 并发派发 map（同批 ≤8 个）。
+**目录文件列表获取（强制）**：先用 `find`/`ls` 获取文件列表（不读内容）→ 筛选相关文件 → 并发派发 map（同批 ≤8 个）。一切探底必须通过 map SubAgent，禁止自行执行。
 
-**项目探底**：一切探底必须通过 map SubAgent，禁止自行执行。探底模板：
-
-| 场景 | prompt |
-|------|--------|
-| 全量探底 | `对当前项目执行完整探底（L1-L4），输出：项目地图/模块地图/目录树/核心路径/依赖配置 + 所有核心模块的 CFG + DFG + 状态机图 + 关联文件列表（N. src/... 编号格式）` |
-| 单模块 | `分析 src/<模块>/：模块结构/类图/调用关系/代码流程图 + CFG + DFG + 状态机图 + 关联文件列表（N. src/... 编号格式）` |
-| 调用链 | `追踪 <函数名> 完整调用链：反向全量+正向≥2层+数据流+隐式依赖 + CFG + DFG + 状态机图 + 关联文件列表（N. src/... 编号格式）` |
-| 类图 | `分析 <类名>：类图/引用关系矩阵 + CFG + DFG + 状态机图 + 关联文件列表（N. src/... 编号格式）` |
-| 修 Bug | `对 <函数名/模块名> 执行修bug前全量分析，产出：反向全量追踪 + 正向≥2层 + CFG + DFG + 状态机图 + 代码流程图 + 模块结构 + 类图/引用关系矩阵 + 隐式依赖 + 并发流程（如涉及）+ 影响范围清单 + 关联文件列表（N. src/... 编号格式）` |
+> 触发方式、5 场景提词模板、执行后操作 → 见上方「Agent 类型与调用速查」§2. map
 
 **触发**：首次接触→全量；接手新模块→模块分析；跨模块/Bug→模块+调用链；方案评估→候选模块并行；读/改单文件→分析该模块。
 
@@ -158,13 +296,7 @@ dispatch_agent(type="read_memory", description="读记忆: <目标>", prompt="�
 ## 修改/新需求先委派 plan Agent（强制）
 涉及文件修改或新需求，必须先 `dispatch_agent(type="plan")`，产出计划文件到 `.chat/plan/`。执行顺序：map → plan → execute。
 
-**必须传入关联文件列表（强制）**：派发 plan Agent 时，prompt 中必须传入所有关联文件列表（调用方/被调用方/依赖模块/配置/被引用文件），按 `N. src/...` 编号格式逐行列出。
-
-文件名格式：`plan_YYYYMMDD_HHMMSS_<slug>.md`，slug 英文小写+下划线+数字 ≤40 字符，**裸文件名禁止路径分隔符**。prompt 首行强制写入 `计划文件名:`。
-
-```
-dispatch_agent(type="plan", description="计划: <摘要>", prompt="计划文件名: plan_YYYYMMDD_HHMMSS_<slug>.md\n<需求完整描述> + 约束条件\n\nmap 关联文件列表:\n<map 返回的所有关联文件，按 N. src/... 编号格式逐行列出>")
-```
+> 触发方式、提词模板（含文件名规则）、执行后操作 → 见上方「Agent 类型与调用速查」§3. plan
 
 - plan Agent 超时/失败：重试 1 次，均失败则降级手动规划
 - 计划校验：至少含目标+拆解步骤+涉及文件
@@ -216,11 +348,7 @@ dispatch_agent(type="plan", description="计划: <摘要>", prompt="计划文件
 ## 先审查再完成（强制）
 所有修改完成后必须 `dispatch_agent(type="review")` 审查。多文件并发派发。
 
-**必须传入 map 关联文件列表（强制）**：派发 review Agent 时，prompt 中必须传入 map 返回的所有关联文件列表（调用方/被调用方/依赖模块/配置/被引用文件），按 `N. src/...` 编号格式逐行列出。
-
-```
-dispatch_agent(type="review", description="CR: <模块>", prompt="修改类型+修改摘要+调用链+计划文件路径\n\nmap 关联文件列表:\n<map 返回的所有关联文件，按 N. src/... 编号格式逐行列出>")
-```
+> 触发方式、提词模板、执行后操作 → 见上方「Agent 类型与调用速查」§4. review
 
 - P0/P1/P2/P3 → 阻断，必须全部修复。审查通过标准：零问题。
 - 多文件完成后做跨文件一致性验证；不一致标记 P0。
@@ -240,16 +368,9 @@ dispatch_agent(type="review", description="CR: <模块>", prompt="修改类型+�
 
 有逻辑影响的变更完成后必须记录。**强制委派 write_memory Agent 执行记忆写入**，禁止主 Agent 直接 write_file/update_file 到 `.chat/memory/` 目录。
 
-**记忆写入委派模板**：
-```
-dispatch_agent(type="write_memory", description="更新记忆: <摘要>", prompt="记录以下变更到 .chat/memory/：\n- 变更类型：<新增/更新/合并>\n- 涉及模块：<模块名>\n- 变更摘要：<描述>\n- 详情内容：<完整内容>\n\n请先 read_file .chat/memory/memory.md 获取索引，判断是新增还是合并，然后执行对应操作。")
-```
+> 触发方式、提词模板、执行后操作 → 见上方「Agent 类型与调用速查」§5. write_memory
 
-**操作流程**：判定需记录 → 构造 prompt（含完整内容）→ `dispatch_agent(type="write_memory", ...)` → 等待完成。
-
-> **为何委派**：write_memory Agent 的 write_file/update_file 被系统限制为仅可写入 `.chat/memory/` 目录，提供安全隔离。Agent 自带记忆系统操作知识（合并规则、保护等级、归档规则），无需主 Agent 重复编码。
-
-> **禁止**：主 Agent 直接 `write_file`/`update_file` 到 `.chat/memory/` 目录。此操作被系统路径白名单拦截，必须通过 write_memory Agent 执行。
+**操作流程**：判定需记录 → 构造 prompt → `dispatch_agent(type="write_memory", ...)` → 等待完成。
 
 ---
 
