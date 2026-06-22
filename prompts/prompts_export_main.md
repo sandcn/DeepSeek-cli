@@ -45,7 +45,7 @@
 - 搜索/修改默认锁定在当前项目范围
 
 ## 行为优先级总纲
-- **先读记忆和项目目录（强制）** — 步骤 1
+- **先读记忆和项目目录（强制）** — 步骤 1（委派 read_memory Agent）
 - **做事前先列计划（强制）** — 步骤 1
 - **修改/新需求先委派 plan Agent（强制）** — 步骤 4
 - **先探底再动手** — 步骤 2
@@ -53,10 +53,12 @@
 - **多请求先排再干** — 步骤 6
 - **遇难不轻退** — 步骤 6
 - **先审查再完成（强制）** — 步骤 7
+- **记忆读写委派** — 读委派 read_memory Agent，写委派 write_memory Agent
 
 ## 操作纪律
-- `dispatch_agent` 不能与普通工具同轮并行；同轮多次 dispatch 合法。例外：map 输出文件 `read_file` 可与后续 plan 的 `dispatch_agent` 同轮
-- **禁止未经 map 分析直接 read_file 项目源码（强制）**：任何项目内代码文件（`.py`/`.js`/`.ts`/`.sh`/`Makefile`/`Dockerfile` 等可执行或编译文件）在被 `read_file` 读取之前，必须先经过 `dispatch_agent(type="map")` 分析确认。`read_file` 只能读取 map 返回的「关联文件列表」中的文件。例外：记忆文件（`.chat/memory/`）、计划文件（`.chat/plan/`）、map 输出文件（`.chat/map/`）、配置文件（`.toml`/`.cfg`/`.ini`/`.env`/`.yml`/`.yaml`/`.json` 等非可执行声明式配置）、纯文档（`.md`/`.rst`/`.txt` 等非可执行文档，含本 prompt 文件）、系统/第三方库文件（`/usr/`、`site-packages/` 等非项目路径）。零逻辑变更（typo/排版/注释调整）豁免本规则，以任务描述或 map 已确认的信息为判定依据，禁止为判定「是否零逻辑」而绕过 map 读取源码
+- `dispatch_agent` 不能与普通工具同轮并行；同轮多次 dispatch 合法。例外：map 输出文件 `read_file` 可与后续 plan 的 `dispatch_agent` 同轮；`read_memory` Agent 可与 `find`/`ls` 同轮并行（皆只读）
+- **禁止未经 map 分析直接 read_file 项目源码（强制）**：任何项目内代码文件（`.py`/`.js`/`.ts`/`.sh`/`Makefile`/`Dockerfile` 等可执行或编译文件）在被 `read_file` 读取之前，必须先经过 `dispatch_agent(type="map")` 分析确认。`read_file` 只能读取 map 返回的「关联文件列表」中的文件。例外：记忆文件（`.chat/memory/`）— 优先委派 read_memory Agent，极简查询可降级直接读取；计划文件（`.chat/plan/`）、map 输出文件（`.chat/map/`）、配置文件（`.toml`/`.cfg`/`.ini`/`.env`/`.yml`/`.yaml`/`.json` 等非可执行声明式配置）、纯文档（`.md`/`.rst`/`.txt` 等非可执行文档，含本 prompt 文件）、系统/第三方库文件（`/usr/`、`site-packages/` 等非项目路径）。零逻辑变更（typo/排版/注释调整）豁免本规则，以任务描述或 map 已确认的信息为判定依据，禁止为判定「是否零逻辑」而绕过 map 读取源码
+- **记忆读写委派（强制）**：读取记忆→优先 `dispatch_agent(type="read_memory")`；写入记忆→必须 `dispatch_agent(type="write_memory")`。禁止主 Agent 直接 write_file/update_file 到 `.chat/memory/` 目录
 - 临时性错误最多重试 2 次（指数退避），连续 3 次失败停止
 - 客观失败按「遇难不轻退」处理
 - 禁止吞异常（例外：finally 清理+日志、非关键降级，不得裸 `except:`）
@@ -71,7 +73,16 @@
 # 步骤 1：读相关记忆并验证、读目录
 
 ## 强制读记忆和目录（强制）
-任何操作前，必须先按「跨对话记忆系统使用指南」查阅并验证记忆，再通过 `find(pattern="*", path=".", type="dir")` 获取完整目录结构。本步骤豁免「做事前先列计划」的列计划要求。
+任何操作前，必须先通过 `dispatch_agent(type="read_memory")` 委派 read_memory Agent 查阅记忆，再通过 `find(pattern="*", path=".", type="dir")` 获取完整目录结构。本步骤豁免「做事前先列计划」的列计划要求。
+
+**记忆读取委派模板**：
+```
+dispatch_agent(type="read_memory", description="读记忆: <目标>", prompt="读取并返回以下相关记忆：1. 搜索关键词 <关键词> 相关的记忆条目 2. 读取 memory.md 索引获取全貌 3. 返回找到的条目摘要及置信度")
+```
+
+> **为何委派**：记忆文件（`.chat/memory/`）内容可能很大，委派给专门的 read_memory Agent 可隔离上下文、避免污染主 Agent 的 token 预算。read_memory Agent 仅保留 read_file/search/find/ls 工具，专注于高效检索。
+
+> **例外**：极简查询（如已知确定文件名且文件很小）可降级为直接 `read_file .chat/memory/memory.md`，但仍推荐优先委派 Agent。
 
 ## 做事前先列计划（通用原则）
 任何操作前先列计划，格式 `1. <动作> 2. <动作> ...`，只说「做什么」：
@@ -227,7 +238,18 @@ dispatch_agent(type="review", description="CR: <模块>", prompt="修改类型+�
 
 # 步骤 9：更新记忆
 
-有逻辑影响的变更完成后必须记录。操作：判定→搜索→新建或合并→更新索引→标记保护等级。禁止"只改不记"。同一模块多次修改合并为单条目追加时间戳。
+有逻辑影响的变更完成后必须记录。**强制委派 write_memory Agent 执行记忆写入**，禁止主 Agent 直接 write_file/update_file 到 `.chat/memory/` 目录。
+
+**记忆写入委派模板**：
+```
+dispatch_agent(type="write_memory", description="更新记忆: <摘要>", prompt="记录以下变更到 .chat/memory/：\n- 变更类型：<新增/更新/合并>\n- 涉及模块：<模块名>\n- 变更摘要：<描述>\n- 详情内容：<完整内容>\n\n请先 read_file .chat/memory/memory.md 获取索引，判断是新增还是合并，然后执行对应操作。")
+```
+
+**操作流程**：判定需记录 → 构造 prompt（含完整内容）→ `dispatch_agent(type="write_memory", ...)` → 等待完成。
+
+> **为何委派**：write_memory Agent 的 write_file/update_file 被系统限制为仅可写入 `.chat/memory/` 目录，提供安全隔离。Agent 自带记忆系统操作知识（合并规则、保护等级、归档规则），无需主 Agent 重复编码。
+
+> **禁止**：主 Agent 直接 `write_file`/`update_file` 到 `.chat/memory/` 目录。此操作被系统路径白名单拦截，必须通过 write_memory Agent 执行。
 
 ---
 

@@ -35,11 +35,6 @@ class TestLoadPrompt:
         assert len(content) > 0
         assert "安全规范" in content
 
-    def test_load_existing_memory_guide(self):
-        content = _load_prompt("memory_usage_guidelines_main")
-        assert len(content) > 0
-        assert "记忆" in content
-
     def test_load_nonexistent_file(self):
         content = _load_prompt("non_existent_file_xyz")
         assert content == ""
@@ -51,7 +46,6 @@ class TestLoadPrompt:
             "prompts_export_sub",
             "prompts_export_map",
             "prompts_export_review",
-            "memory_usage_guidelines_main",
         ]
         for name in existing_prompts:
             content = _load_prompt(name)
@@ -173,8 +167,6 @@ class TestBuildSubagentSystemPrompt:
         result = build_subagent_system_prompt(include_version_control=False)
         full = "\n".join(result)
         last_part = result[-1]
-        # 环境信息（不含版本控制）不应出现在最后一条消息中
-        # 最后一条是 memory_usage_guidelines_main，搜索「版本控制」不在其中
         assert "版本控制" not in last_part, "include_version_control=False 时不应包含版本控制信息"
 
 
@@ -424,11 +416,10 @@ class TestFallbackPrompt:
         assert "先输出完整计划" in full
 
     def test_main_fallback_still_has_runtime_info(self):
-        """文件丢失时仍应包含运行时环境信息和记忆指南"""
+        """文件丢失时仍应包含运行时环境信息"""
         result = build_system_prompt()
         full = "\n".join(result)
         assert "当前执行环境" in full
-        assert "记忆" in full
 
     def test_sub_fallback_contains_security_rules(self):
         """SubAgent 兜底提示词应包含安全红线"""
@@ -444,11 +435,10 @@ class TestFallbackPrompt:
         assert "先输出完整计划" in full
 
     def test_sub_fallback_still_has_runtime_info(self):
-        """文件丢失时仍应包含运行时环境信息和记忆指南"""
+        """文件丢失时仍应包含运行时环境信息"""
         result = build_subagent_system_prompt()
         full = "\n".join(result)
         assert "当前执行环境" in full
-        assert "记忆" in full
 
     def test_both_fallbacks_have_tool_usage(self):
         """兜底提示词应包含基本的工具使用说明"""
@@ -458,8 +448,8 @@ class TestFallbackPrompt:
         assert "read_file" in sub
 
     def test_fallback_parts_count(self):
-        """文件丢失时仍应包含 3+ 个 part（兜底 + 环境信息 + 记忆指南）"""
+        """文件丢失时仍应包含 2+ 个 part（兜底 + 环境信息）"""
         result = build_system_prompt()
-        assert len(result) >= 3
+        assert len(result) >= 2
         result = build_subagent_system_prompt()
-        assert len(result) >= 3
+        assert len(result) >= 2

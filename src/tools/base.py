@@ -28,7 +28,7 @@ class Func(abc.ABC):
 
     def __init__(self):
         self.agent = None  # 调用工具的Agent实例
-        self.agent_type: str | None = None  # 调用方Agent类型（ordinary/map/review/plan），None表示未知
+        self.agent_type: str | None = None  # 调用方Agent类型，None表示未知
         self.execution_time: float = 0.0
         self.execution_count: int = 0
         self.execution_success: int = 0

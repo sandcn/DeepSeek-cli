@@ -26,15 +26,19 @@ AGENT_TYPE_ABBREV = {
     "map": "mp",
     "review": "rv",
     "plan": "pl",
+    "read_memory": "rm",
+    "write_memory": "wm",
 }
 
 # ── SubAgent 类型 → 256色 ANSI 前景色 ──────────────────
-# 使用 256 色调色板：od=绿色(40) mp=蓝色(33) rv=紫色(129) pl=琥珀色(214)
+# 使用 256 色调色板：od=绿色(40) mp=蓝色(33) rv=紫色(129) pl=琥珀色(214) rm=青色(45) wm=黄色(226)
 AGENT_TYPE_COLORS = {
     "ordinary": "\033[38;5;40m",   # 亮绿
     "map": "\033[38;5;33m",        # 深蓝
     "review": "\033[38;5;129m",    # 紫
     "plan": "\033[38;5;214m",      # 琥珀
+    "read_memory": "\033[38;5;45m",   # 青色
+    "write_memory": "\033[38;5;226m", # 黄色
 }
 
 # ── 工具类别 → 256色 ANSI 前景色 ──────────────────────

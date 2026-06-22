@@ -113,7 +113,6 @@ def _build_prompt(
     fallback: str,
     include_version_control: bool = True,
     cwd: str | None = None,
-    include_memory_guide: bool = True,
 ) -> list[str]:
     """构建提示词的公共逻辑。
 
@@ -124,7 +123,6 @@ def _build_prompt(
         fallback: 文件丢失时的兜底提示词
         include_version_control: 是否包含版本控制信息
         cwd: 工作目录
-        include_memory_guide: 是否包含跨对话记忆使用指南
     """
     cwd = _resolve_cwd(cwd)
     parts: list[str] = []
@@ -146,10 +144,6 @@ def _build_prompt(
         vcs_info, _has_git = _build_vcs_info(cwd)
         env_info += vcs_info
     parts.append(env_info)
-
-    # 跨对话记忆使用指南（仅主代理和子代理需要，map/review 无需记忆维护能力）
-    if include_memory_guide:
-        parts.append(_load_prompt("memory_usage_guidelines_main"))
 
     # 过滤空字符串（文件丢失/读取失败时 _load_prompt 返回空字符串）
     return [p for p in parts if p]
@@ -176,9 +170,9 @@ def build_map_agent_system_prompt(
     """构建 map 类型子代理系统提示词。
 
     从 prompts_export_map.md 加载静态规则，追加运行时动态信息。
-    Map 类型专用于项目代码分析，只读工具集，无需加载跨对话记忆使用指南。
+    Map 类型专用于项目代码分析，只读工具集。
     """
-    return _build_prompt("prompts_export_map", _FALLBACK_SUB_PROMPT, include_version_control, cwd, include_memory_guide=False)
+    return _build_prompt("prompts_export_map", _FALLBACK_SUB_PROMPT, include_version_control, cwd)
 
 
 def build_review_agent_system_prompt(
@@ -188,10 +182,9 @@ def build_review_agent_system_prompt(
     """构建 review 类型子代理系统提示词。
 
     从 prompts_export_review.md 加载静态规则，追加运行时动态信息。
-    Review 类型专用于代码审查（Code Review），只读工具集，P0-P3 分级输出，
-    无需加载跨对话记忆使用指南。
+    Review 类型专用于代码审查（Code Review），只读工具集，P0-P3 分级输出。
     """
-    return _build_prompt("prompts_export_review", _FALLBACK_SUB_PROMPT, include_version_control, cwd, include_memory_guide=False)
+    return _build_prompt("prompts_export_review", _FALLBACK_SUB_PROMPT, include_version_control, cwd)
 
 
 def build_plan_agent_system_prompt(
@@ -202,9 +195,35 @@ def build_plan_agent_system_prompt(
 
     从 prompts_export_plan.md 加载静态规则，追加运行时动态信息。
     Plan 类型专用于制定可执行计划并写入 .chat/plan/ 目录，
-    只读分析工具 + write_file/update_file，无需加载跨对话记忆使用指南。
+    只读分析工具 + write_file/update_file。
     """
-    return _build_prompt("prompts_export_plan", _FALLBACK_SUB_PROMPT, include_version_control, cwd, include_memory_guide=False)
+    return _build_prompt("prompts_export_plan", _FALLBACK_SUB_PROMPT, include_version_control, cwd)
+
+
+def build_read_memory_agent_system_prompt(
+    include_version_control: bool = True,
+    cwd: str | None = None,
+) -> list[str]:
+    """构建 read_memory 类型子代理系统提示词。
+
+    从 prompts_export_read_memory.md 加载静态规则，追加运行时动态信息。
+    read_memory 类型仅保留 read_file/search/find/ls 只读工具，
+    专用于搜索和读取 .chat/memory/ 目录下的记忆文件。
+    """
+    return _build_prompt("prompts_export_read_memory", _FALLBACK_SUB_PROMPT, include_version_control, cwd)
+
+
+def build_write_memory_agent_system_prompt(
+    include_version_control: bool = True,
+    cwd: str | None = None,
+) -> list[str]:
+    """构建 write_memory 类型子代理系统提示词。
+
+    从 prompts_export_write_memory.md 加载静态规则，追加运行时动态信息。
+    write_memory 类型保留读工具 + write_file/update_file/mk，
+    写入仅限 .chat/memory/ 目录，专用于创建和更新记忆文件。
+    """
+    return _build_prompt("prompts_export_write_memory", _FALLBACK_SUB_PROMPT, include_version_control, cwd)
 
 
 # =================== 主代理提示词 ===================
@@ -227,5 +246,7 @@ __all__ = [
     "build_map_agent_system_prompt",
     "build_review_agent_system_prompt",
     "build_plan_agent_system_prompt",
+    "build_read_memory_agent_system_prompt",
+    "build_write_memory_agent_system_prompt",
     "reset_prompts_cache",
 ]
