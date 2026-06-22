@@ -13,7 +13,6 @@ from functools import lru_cache
 from ..config import (
     MAX_CONTEXT_CHARS, MAX_CONTEXT_TOKENS,
     KEEP_RECENT_MESSAGES, AUTO_FORCE_COMPRESS_THRESHOLD,
-    TOOL_OUTPUT_TRUNCATE,
 )
 from ..api.tokens import estimate_tokens
 from ._message_stats_cache import MessageStatsCache  # noqa: F401 — re-exported for backward compat
@@ -108,7 +107,7 @@ def message_to_text(msg):
 
     if role == "tool":
         tool_id = msg.get("tool_call_id", "")
-        return f"[工具结果 {tool_id[:12]}] {content[:TOOL_OUTPUT_TRUNCATE]}"
+        return f"[工具结果 {tool_id[:12]}] {content}"
 
     return content
 

@@ -56,7 +56,6 @@ _RC_KEY_MAP: dict[str, tuple[tuple[str, ...], Any]] = {
     "SUMMARY_TOKEN_BUDGET":              (("summary_token_budget",),     DEFAULTS["summary_token_budget"]),
     "AUTO_FORCE_COMPRESS_THRESHOLD":     (("auto_force_compress_threshold",), DEFAULTS["auto_force_compress_threshold"]),
     "TOKEN_PRICES":                      (("token_prices",),             {}),
-    "TOOL_OUTPUT_TRUNCATE":              (("tool_output_truncate",),     DEFAULTS["tool_output_truncate"]),
     "HTTP_CONNECT_TIMEOUT":              (("performance", "http_client", "connect_timeout"),           30),
     "HTTP_READ_TIMEOUT":                 (("performance", "http_client", "read_timeout"),             120),
     "HTTP_WRITE_TIMEOUT":                (("performance", "http_client", "write_timeout"),            120),

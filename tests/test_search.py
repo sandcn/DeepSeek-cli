@@ -122,20 +122,6 @@ async def test_path_filter(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_max_results_respected(tmp_path):
-    """max_results 截断"""
-    f = tmp_path / "test.py"
-    f.write_text("\n".join(["hello world"] * 100))
-
-    sf = SearchFunc(query="hello", path=str(f), max_results=10)
-    result = await sf.execute()
-
-    assert "显示前 10 处" in result
-    assert "共找到 100 处匹配" in result
-    assert "结果已截断" in result
-
-
-@pytest.mark.asyncio
 async def test_from_args():
     """from_args 正确解析参数"""
     sf = SearchFunc.from_args({
@@ -167,4 +153,3 @@ async def test_to_tool_schema_no_mode():
     assert "query" in props
     assert "path" in props
     assert "include" in props
-    assert "max_results" in props

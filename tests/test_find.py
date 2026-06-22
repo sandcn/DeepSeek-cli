@@ -59,7 +59,6 @@ class TestInit:
         assert f.root_path == os.getcwd()
         assert f.filter_type is None
         assert f.depth == 0
-        assert f.max_results == 1000
 
     def test_explicit_path(self):
         f = FindFunc(pattern="*.py", path="/tmp")
@@ -81,18 +80,6 @@ class TestInit:
         f = FindFunc(pattern="*.py", depth=-5)
         assert f.depth == 0
 
-    def test_max_results_clamped_low(self):
-        f = FindFunc(pattern="*.py", max_results=0)
-        assert f.max_results == 1  # min is 1
-
-    def test_max_results_clamped_high(self):
-        f = FindFunc(pattern="*.py", max_results=2000)
-        assert f.max_results == 1000  # max is 1000
-
-    def test_max_results_normal(self):
-        f = FindFunc(pattern="*.py", max_results=50)
-        assert f.max_results == 50
-
 
 # ═══════════════════════════════════════════════════════════════════════════
 # 3. from_args
@@ -107,21 +94,6 @@ class TestFromArgs:
         assert f.root_path == os.getcwd()
         assert f.filter_type is None
         assert f.depth == 0
-        assert f.max_results == 1000
-
-    def test_all_params(self):
-        f = FindFunc.from_args({
-            "pattern": "*.py",
-            "path": "/tmp",
-            "type": "file",
-            "depth": 2,
-            "max_results": 50,
-        })
-        assert f.pattern == "*.py"
-        assert f.root_path == "/tmp"
-        assert f.filter_type == "file"
-        assert f.depth == 2
-        assert f.max_results == 50
 
     def test_extra_params_ignored(self):
         f = FindFunc.from_args({"pattern": "*.py", "unknown": "ignored", "extra": 42})
@@ -285,18 +257,6 @@ class TestSyncFindFiles:
         results = f._sync_find_files(tmp_path)
         assert results == []
 
-    def test_max_results_truncation(self, tmp_path):
-        """截断按 os.walk 目录级别检查，跨目录时触发。"""
-        for i in range(8):
-            sub = tmp_path / f"dir_{i}"
-            sub.mkdir()
-            (sub / "file.py").write_text("")
-
-        f = FindFunc(pattern="*.py", path=str(tmp_path), max_results=3)
-        results = f._sync_find_files(tmp_path)
-        # 每个目录处理完后检查，结果应 <= max_results
-        assert len(results) <= 3
-
     # ── 根目录自身匹配 ──
 
     def test_root_directory_self_match(self, tmp_path):
@@ -407,16 +367,6 @@ class TestExecute:
         assert "test.py" in result
         assert "找到" in result
 
-    async def test_max_results_truncation_in_output(self, tmp_path):
-        src = tmp_path / "src"
-        src.mkdir()
-        for i in range(20):
-            (src / f"f{i}.py").write_text("")
-        f = FindFunc(pattern="*.py", path=str(tmp_path), max_results=5)
-        result = await f.execute()
-        assert "显示前" in result
-        assert "结果已截断" in result
-
     async def test_unicode_filename(self, tmp_path):
         src = tmp_path / "src"
         src.mkdir()
@@ -468,12 +418,6 @@ class TestFormatResults:
         f = FindFunc(pattern="*.py", path=str(tmp_path), type="file")
         result = f._format_results([p], tmp_path)
         assert "文件" in result
-
-    def test_truncation_message(self, tmp_path):
-        results = [tmp_path / f"{i}.py" for i in range(10)]
-        f = FindFunc(pattern="*.py", path=str(tmp_path), max_results=5)
-        result = f._format_results(results, tmp_path)
-        assert "结果已截断" in result
 
     def test_mixed_file_and_dir(self, tmp_path):
         (tmp_path / "file.py").write_text("")

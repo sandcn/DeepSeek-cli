@@ -189,35 +189,6 @@ class TestBuildSummaryPromptTruncation:
         user_text = content_part.split("user: ", 1)[1]
         assert len(user_text) == 3000, f"期望 3000 字符，实际 {len(user_text)}"
 
-    def test_long_tool_message_truncated_by_tool_output_truncate(self):
-        """tool 消息按 TOOL_OUTPUT_TRUNCATE 截断并附加后缀。"""
-        # 构建一条超长 tool 消息（超过 500 字符）
-        long_tool_content = "X" * 1000
-        msgs = [
-            {"role": "user", "content": "运行"},
-            {"role": "tool", "content": long_tool_content, "tool_call_id": "call_999"},
-        ]
-        result = build_summary_prompt(msgs, False)
-        # tool 截断长度 = TOOL_OUTPUT_TRUNCATE (500) + "...(已截断)"
-        # 注意 message_to_text 给 tool 消息加了前缀 "[工具结果 call_999] "
-        # 所以 text 的长度 = 前缀 + "X"*1000
-        # 截断后 text[:500] + "...(已截断)" 共 500+5=505 字符
-        assert "...(已截断)" in result
-        tool_line = [line for line in result.split("\n") if line.startswith("tool:")][0]
-        # 后缀应该在末尾
-        assert tool_line.endswith("...(已截断)")
-
-    def test_tool_message_shorter_than_truncate_not_cut(self):
-        """tool 消息短于 TOOL_OUTPUT_TRUNCATE 时不被截断。"""
-        short_tool = "正常输出"
-        msgs = [
-            {"role": "user", "content": "运行"},
-            {"role": "tool", "content": short_tool, "tool_call_id": "call_111"},
-        ]
-        result = build_summary_prompt(msgs, False)
-        assert short_tool in result
-        assert "...(已截断)" not in result
-
     def test_per_msg_has_minimum_200_chars(self):
         """per_msg 最小值为 200。"""
         # 20 条消息时：per_msg = max(200, 3000 // 20) = max(200, 150) = 200
@@ -533,30 +504,6 @@ class TestEdgeCases:
         for line in lines:
             # 每行都是 1000 字符的 content
             assert len(line.split(": ", 1)[1]) == 1000
-
-    def test_mixed_tool_and_non_tool_truncation(self):
-        """混合 tool 和非 tool 消息，各自按不同规则截断。"""
-        # 1条 user + 1条 tool，per_msg = 1500
-        # tool 的 text 包含前缀，超过 500 时按 TOOL_OUTPUT_TRUNCATE 截断
-        # user 的 text 超过 1500 时按 per_msg 截断
-        msgs = [
-            {"role": "user", "content": "U" * 3000},
-            {"role": "tool", "content": "T" * 1000, "tool_call_id": "call_x"},
-        ]
-        result = build_summary_prompt(msgs, False)
-        after_sep = result.split("--- 对话内容 ---")[1]
-        lines = [l for l in after_sep.split("\n") if l.strip()]
-
-        # user line
-        user_line = [l for l in lines if l.startswith("user:")][0]
-        user_text = user_line.split("user: ", 1)[1]
-        assert len(user_text) == 1500, f"user 应按 per_msg(1500) 截断，实际 {len(user_text)}"
-
-        # tool line
-        tool_line = [l for l in lines if l.startswith("tool:")][0]
-        # tool text = "[工具结果 call_x] " + "T"*1000，共 18+1000=1018 字符
-        # 截断后：[工具结果 call_x] <前500-18=482个T>...(已截断)
-        assert "...(已截断)" in tool_line
 
     def test_large_number_of_messages(self):
         """大量消息时正常处理，不崩溃。"""

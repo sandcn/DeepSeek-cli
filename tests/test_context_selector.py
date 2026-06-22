@@ -216,14 +216,6 @@ class TestMessageToText:
         assert result.startswith("[工具结果 call_abc123]")
         assert "查询结果" in result
 
-    def test_tool_message_truncated_content(self):
-        """tool 消息 content 超过 TOOL_OUTPUT_TRUNCATE（500）应被截断"""
-        long_content = "数据" * 300  # 600 中文字符
-        msg = {"role": "tool", "tool_call_id": "call_1", "content": long_content}
-        result = message_to_text(msg)
-        # 原始内容 600 字符，截断到 500
-        assert len(result) < 550  # 前缀约 20 字 + 内容 500 字
-
     def test_tool_message_no_tool_call_id(self):
         """tool 消息缺少 tool_call_id"""
         msg = {"role": "tool", "content": "结果"}

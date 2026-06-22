@@ -39,10 +39,6 @@ SOFT_BLUE: str = "\033[94m"
 SOFT_YELLOW: str = "\033[93m"
 DARK_GRAY: str = GRAY
 
-# 工具输出截断长度（字符数）
-# 可通过 config 模块覆盖此值：在 chatrc.json 中设置 tool_output_truncate
-TOOL_OUTPUT_TRUNCATE = 500
-
 # ── Token 格式化常量 ──
 
 _TOKEN_K_THRESHOLD = 1000

@@ -46,6 +46,5 @@ DEFAULTS = {
     "notify_on_chat_completion": True,
     "models": [],
     "token_prices": {},
-    "tool_output_truncate": 500,
     "theme": "dark",
 }

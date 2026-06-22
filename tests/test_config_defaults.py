@@ -186,7 +186,7 @@ class TestDefaultsStructure:
         "max_session_messages", "keep_recent_messages",
         "max_context_tokens", "summary_token_budget", "auto_force_compress_threshold",
         "enable_notifications", "notify_on_chat_completion",
-        "models", "token_prices", "tool_output_truncate", "theme",
+        "models", "token_prices", "theme",
     }
 
     def test_contains_all_expected_keys(self):
@@ -210,10 +210,6 @@ class TestDefaultsStructure:
     def test_default_max_retries(self):
         """max_retries 默认值为 3"""
         assert DEFAULTS["max_retries"] == 3
-
-    def test_default_tool_output_truncate(self):
-        """tool_output_truncate 默认值为 500"""
-        assert DEFAULTS["tool_output_truncate"] == 500
 
     def test_default_enable_notifications(self):
         """enable_notifications 默认值为 True"""
@@ -307,7 +303,7 @@ class TestTypes:
             "max_context_chars", "max_output_chars", "max_retries",
             "retry_base_sec", "max_session_messages", "keep_recent_messages",
             "max_context_tokens", "summary_token_budget",
-            "auto_force_compress_threshold", "tool_output_truncate",
+            "auto_force_compress_threshold",
         ]
         for key in numeric_keys:
             val = DEFAULTS[key]

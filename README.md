@@ -68,7 +68,6 @@ pip install ".[dev]"
     "max_context_tokens": 60000,
     "summary_token_budget": 2000,
     "auto_force_compress_threshold": 60000,
-    "tool_output_truncate": 500,
     "enable_notifications": true,
     "notify_on_chat_completion": true,
     "performance": {

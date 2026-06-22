@@ -8,7 +8,7 @@
 import random
 import time as _time
 
-from ..config import SUMMARY_TOKEN_BUDGET, TOOL_OUTPUT_TRUNCATE
+from ..config import SUMMARY_TOKEN_BUDGET
 from .context_selector import message_to_text
 
 _SUMMARY_SYSTEM = """\
@@ -71,10 +71,7 @@ def build_summary_prompt(messages_to_compress, has_prior_summary):
         role = msg.get("role", "unknown")
         text = message_to_text(msg)
 
-        if role == "tool" and len(text) > TOOL_OUTPUT_TRUNCATE:
-            text = text[:TOOL_OUTPUT_TRUNCATE] + "...(已截断)"
-        else:
-            text = text[:per_msg]
+        text = text[:per_msg]
 
         lines.append(f"{role}: {text}")
 
