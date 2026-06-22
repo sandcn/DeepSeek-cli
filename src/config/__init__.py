@@ -4,7 +4,7 @@ import os
 import threading
 from typing import Any
 
-from .defaults import CONFIG_DIR, LOG_FILE, RC_FILE, INPUT_HISTORY_FILE, INPUT_DRAFT_FILE, PROVIDERS, DEFAULTS
+from .defaults import CONFIG_DIR, LOG_FILE, RC_FILE, INPUT_HISTORY_FILE, PROVIDERS, DEFAULTS
 
 from .loader import (
     _ensure_config_dir, _load_rc, get_rc, update_config,

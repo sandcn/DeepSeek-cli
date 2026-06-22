@@ -387,8 +387,6 @@ ws.on('messages_truncated', (data) => {
 const _INPUT_HISTORY_KEY = 'chat_input_history';
 const _INPUT_HISTORY_MAX = 50;
 let _inputHistory = [];
-let _historyIdx = -1;     // -1 = 草稿模式，0 = 最旧消息，len-1 = 最新消息
-let _savedDraft = '';     // 首次按 ↑ 时保存的当前输入内容
 
 // 从 localStorage 恢复历史
 try {
@@ -427,8 +425,6 @@ function sendMessage() {
     }
     _saveInputHistory();
   }
-  _historyIdx = -1;
-  _savedDraft = '';
 
   inputEl.value = '';
   inputEl.style.height = 'auto';
@@ -440,39 +436,6 @@ inputEl.addEventListener('keydown', (e) => {
   if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
     e.preventDefault();
     sendMessage();
-    return;
-  }
-
-  // ── ↑ 上一条历史 ──
-  if (e.key === 'ArrowUp' && _inputHistory.length > 0) {
-    e.preventDefault();
-    if (_historyIdx === -1) {
-      // 首次按 ↑：保存草稿，切到最新一条
-      _savedDraft = inputEl.value;
-      _historyIdx = _inputHistory.length - 1;
-    } else if (_historyIdx > 0) {
-      _historyIdx--;
-    } else {
-      return; // 已到最旧，不动
-    }
-    inputEl.value = _inputHistory[_historyIdx];
-    _moveCursorToEnd(inputEl);
-    return;
-  }
-
-  // ── ↓ 下一条历史 ──
-  if (e.key === 'ArrowDown') {
-    if (_historyIdx === -1) return; // 已在新消息模式
-    e.preventDefault();
-    if (_historyIdx < _inputHistory.length - 1) {
-      _historyIdx++;
-      inputEl.value = _inputHistory[_historyIdx];
-    } else {
-      // 回到草稿
-      _historyIdx = -1;
-      inputEl.value = _savedDraft;
-    }
-    _moveCursorToEnd(inputEl);
     return;
   }
 });

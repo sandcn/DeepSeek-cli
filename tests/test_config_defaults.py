@@ -7,7 +7,6 @@ from src.config.defaults import (
     LOG_FILE,
     RC_FILE,
     INPUT_HISTORY_FILE,
-    INPUT_DRAFT_FILE,
     PROVIDERS,
     DEFAULTS,
 )
@@ -100,23 +99,6 @@ class TestDerivedPaths:
         """INPUT_HISTORY_FILE 完整路径正确"""
         assert INPUT_HISTORY_FILE == CONFIG_DIR / "input_history"
 
-    # ── INPUT_DRAFT_FILE ──────────────────────────────────────
-
-    def test_input_draft_file_is_path(self):
-        """INPUT_DRAFT_FILE 是 Path 对象"""
-        assert isinstance(INPUT_DRAFT_FILE, Path)
-
-    def test_input_draft_file_under_config_dir(self):
-        """INPUT_DRAFT_FILE 位于 CONFIG_DIR 下"""
-        assert INPUT_DRAFT_FILE.parent == CONFIG_DIR
-
-    def test_input_draft_file_name(self):
-        """INPUT_DRAFT_FILE 文件名为 input_draft"""
-        assert INPUT_DRAFT_FILE.name == "input_draft"
-
-    def test_input_draft_file_full_path(self):
-        """INPUT_DRAFT_FILE 完整路径正确"""
-        assert INPUT_DRAFT_FILE == CONFIG_DIR / "input_draft"
 
 
 # ═══════════════════════════════════════════════════════════════
