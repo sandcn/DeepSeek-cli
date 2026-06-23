@@ -499,3 +499,62 @@ class TestContentRendererRefreshWidth:
     def test_refresh_width_no_crash(self, renderer, mock_ta):
         """任何时候 refresh_width() 不崩溃（已移除）"""
         pass
+
+# ═══════════════════════════════════════════════════════
+# render_tree 树形组件渲染测试
+# ═══════════════════════════════════════════════════════
+
+class TestRenderTree:
+    """TuiRenderer.render_tree() 树形组件渲染测试"""
+
+    def test_render_tree_empty_component(self, renderer, mock_ta):
+        """渲染空组件（无 children 的 TuiComponent 子类）"""
+        from src.chat_ui._box import Box
+
+        box = Box()
+        result = renderer.render_tree(box)
+        mock_ta.write.assert_called_once()
+        # 空 Box 的 render() 返回 ""，_estimate_content_lines("") 返回 1
+        assert result == 1
+
+    def test_render_tree_single_text(self, renderer, mock_ta):
+        """渲染单个 Text 组件，验证 adapter.write 被调用"""
+        from src.chat_ui._box import Text
+
+        text = Text("hello")
+        result = renderer.render_tree(text)
+        mock_ta.write.assert_called_once()
+        assert "hello" in str(mock_ta.write.call_args[0][0])
+        assert result == 1
+
+    def test_render_tree_nested_box(self, renderer, mock_ta):
+        """渲染嵌套 Box（Box > Box > Text），验证适配器输出内容"""
+        from src.chat_ui._box import Box, Text
+
+        root = Box(children=[Box(children=[Text("nested")])])
+        result = renderer.render_tree(root)
+        mock_ta.write.assert_called_once()
+        text_arg = mock_ta.write.call_args[0][0]
+        assert "nested" in str(text_arg)
+
+    def test_render_tree_returns_lines(self, renderer, mock_ta):
+        """验证 render_tree 返回正确的行数"""
+        from src.chat_ui._box import Text
+
+        text = Text("single line")
+        assert renderer.render_tree(text) == 1
+
+        text2 = Text("line1\nline2\nline3")
+        assert renderer.render_tree(text2) == 3
+
+    def test_render_tree_exception_returns_zero(self, renderer, mock_ta):
+        """组件渲染抛异常时返回 0"""
+        from src.chat_ui._components import TuiComponent
+
+        class BrokenComponent(TuiComponent):
+            def render(self):
+                raise RuntimeError("broken")
+
+        comp = BrokenComponent()
+        result = renderer.render_tree(comp)
+        assert result == 0

@@ -13,6 +13,7 @@ from typing import TYPE_CHECKING, Any, Callable
 if TYPE_CHECKING:
     from ..api.renderer import IncrementalRenderer
     from ..api.renderer.output import OutputAdapter
+    from ._components import TuiComponent
     from ._protocols import BottomBarProtocol
 
 from ._const import (
@@ -257,3 +258,43 @@ class TuiRenderer:
         else:
             buf += "\n" + sc
         self._adapter.write_raw_buffered(buf)
+
+    # ── 树形组件渲染 ─────────────────────────────
+
+    def render_tree(self, root: "TuiComponent") -> int:
+        """渲染组件树并返回估计行数。
+
+        调用根组件的 render_to_adapter 进行渲染，children 的递归渲染
+        由组件自身在 render_to_adapter 中处理。
+
+        Args:
+            root: 组件树根节点。
+
+        Returns:
+            渲染产生的总估计行数；渲染失败时返回 0。
+        """
+        try:
+            total = self._render_component(root)
+            self._record_lines(total)
+            return total
+        except Exception:
+            _logger.exception("组件树渲染失败: %s", type(root).__name__)
+            return 0
+
+    def _render_component(self, comp: "TuiComponent") -> int:
+        """渲染单个组件节点，返回行数。
+
+        调用组件的 render_to_adapter 进行输出，不自行递归处理 children
+        （children 由组件自身在 render_to_adapter 中处理）。
+
+        Args:
+            comp: 要渲染的组件。
+
+        Returns:
+            组件渲染产生的估计行数；渲染失败时返回 0。
+        """
+        try:
+            return comp.render_to_adapter(self._adapter)
+        except Exception:
+            _logger.exception("组件渲染失败: %s", type(comp).__name__)
+            return 0

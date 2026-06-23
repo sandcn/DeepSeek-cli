@@ -38,7 +38,32 @@ class TuiComponent:
     """React Ink-like 渲染组件基类。
 
     子类至少实现 render()，可选重写 render_to_adapter() 以直接操作 OutputAdapter。
+
+    children 参数允许构建声明式组件树，所有子类自动继承此能力。
+    现有子类无需调用 super().__init__() 即可安全访问 children 属性。
     """
+
+    _children: list["TuiComponent"]
+
+    def __init__(self, children: list["TuiComponent"] | None = None):
+        """初始化组件。
+
+        Args:
+            children: 子组件列表，默认空列表。所有现有子类无需修改即可兼容。
+        """
+        self._children = list(children) if children is not None else []
+
+    def _ensure_children(self) -> list["TuiComponent"]:
+        """惰性初始化 _children（兼容未调用 super().__init__() 的旧子类）。"""
+        if not hasattr(self, '_children'):
+            self._children = []
+        return self._children
+
+    @property
+    def children(self) -> list["TuiComponent"]:
+        """子组件列表（只读视图）。"""
+        return self._ensure_children()
+
     def render(self) -> str | Text:
         raise NotImplementedError
 
@@ -53,6 +78,46 @@ class TuiComponent:
             adapter.write(output)
             return _estimate_content_lines(str(output))
         return 0
+
+    def render_children(self) -> str | Text:
+        """遍历 children，调用每个子组件的 render()，返回拼接结果。
+
+        返回类型为 str | Text，自动处理混合类型（部分子组件 render str，部分 render Text）。
+        无子组件时返回空字符串。
+        """
+        ch = self._ensure_children()
+        if not ch:
+            return ""
+
+        outputs: list[str | Text] = []
+        for child in ch:
+            result = child.render()
+            if isinstance(result, (str, Text)):
+                outputs.append(result)
+
+        if not outputs:
+            return ""
+
+        # 全部为 str 时直接拼接（避免不必要的 Text 对象开销）
+        if all(isinstance(o, str) for o in outputs):
+            return "\n".join(o for o in outputs if isinstance(o, str))
+
+        # 混合类型或全 Text：使用 Text.assemble 拼接
+        assembled: list[str | Text] = []
+        for i, o in enumerate(outputs):
+            if i > 0:
+                assembled.append("\n")
+            assembled.append(o)
+        return Text.assemble(*assembled) if assembled else ""
+
+    def add_child(self, child: "TuiComponent") -> "TuiComponent":
+        """链式添加子组件并返回 self。
+
+        示例:
+            box = Box().add_child(Text("hello")).add_child(Text("world"))
+        """
+        self._ensure_children().append(child)
+        return self
 
 
 # ═══════════════════════════════════════════════════════════

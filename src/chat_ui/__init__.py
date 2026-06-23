@@ -77,6 +77,17 @@ def setup_chat_ui_error_handler() -> None:
 # ── 补全纯函数 ────────────────────────────────────
 from ._completion import _apply_completion
 
+# ── 布局组件（React Ink-like） ─────────────────────
+from ._box import (
+    Box,
+    Static,
+    Text,
+    FlexDirection,
+)
+
+# ── 测量工具 ──────────────────────────────────────
+from ._measure import measureElement
+
 # ── 核心 TUI（组件化架构） ─────────────────────────
 from ._consumer import ChatUIConsumer
 
@@ -89,5 +100,11 @@ __all__ = [
     "_active_consumer",
     "_MAIN_LABEL",
     "setup_chat_ui_error_handler",
+    # ── 布局组件（React Ink-like v2.0）──
+    "Box",
+    "Static",
+    "Text",
+    "FlexDirection",
+    "measureElement",
 ]
 
