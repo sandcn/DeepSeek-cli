@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import logging
+import os
 import queue
 import sys
 import threading
@@ -70,8 +71,12 @@ class TuiEngine:
         self._consecutive_full = 0
         self._bottom_redraw_requested = threading.Event()
         self._panel_refresh_cb: Callable[[], None] | None = None
-        # React Ink 渲染后端（默认启用）
-        self._renderer_backend: str = "ink" if renderer_backend is None else renderer_backend
+        # React Ink 渲染后端
+        self._renderer_backend: str = (
+            renderer_backend
+            if renderer_backend is not None
+            else os.environ.get("CHAT_UI_RENDERER_BACKEND", "legacy")
+        )
         self._ink_state: InkState | None = None
         self._ink_renderer: InkRenderer | None = None
 
