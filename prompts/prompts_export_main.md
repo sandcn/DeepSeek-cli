@@ -84,12 +84,12 @@ dispatch_agent(type="read_memory", description="读记忆: <目标>", prompt="..
 读取并返回以下相关记忆：
 1. 搜索关键词 <关键词> 相关的记忆条目
 2. 读取 memory.md 索引获取全貌
-3. 返回找到的条目摘要及置信度
+3. 返回验证后的记忆详细内容
 ```
 > **为何委派**：记忆文件（`.chat/memory/`）内容可能很大，委派给专门的 read_memory Agent 可隔离上下文、避免污染主 Agent 的 token 预算。Agent 仅保留 read_file/search/find/ls 工具，专注于高效检索。
 
 ### 执行之后干嘛
-- Agent 返回记忆检索结果（含置信度），**不会修改任何文件**
+- Agent 返回记忆检索结果（含可靠性标记），**不会修改任何文件**
 - 主 Agent 根据返回的记忆内容判断是否需要进一步查阅详情文件（`.chat/memory/mem_XXXX.md`）
 - 极简查询可降级为直接 `read_file .chat/memory/memory.md`，但仍推荐优先委派 Agent
 
