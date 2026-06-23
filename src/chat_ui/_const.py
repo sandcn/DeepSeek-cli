@@ -29,6 +29,7 @@ _THINKING_SEPARATOR = "\n  " + "\u2500" * 25 + "\n"
 
 # ── 统一错误消息截断长度 ─────────────────────────────
 _MAX_ERROR_LENGTH = 200
+_MAX_OUTPUT_LEN = 10000  # 工具输出最大长度（字符），与 _MAX_ERROR_LENGTH 对齐
 
 # ── render 线程刷新间隔 ─────────────────────────────────
 _RENDER_INTERVAL = 0.1  # 100ms = 10Hz
@@ -92,3 +93,7 @@ class _ReasoningState(Enum):
     INACTIVE = "inactive"
     ACTIVE = "active"
     CLOSED = "closed"
+
+
+# ── drain 锁超时 ─────────────────────────────────────
+_DRAIN_LOCK_TIMEOUT = 0.1  # drain_queue 获取输出锁的超时（秒），与 _RENDER_INTERVAL (0.1) 对齐，避免一方修改引入竞态

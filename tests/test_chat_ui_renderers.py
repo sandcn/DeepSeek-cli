@@ -16,9 +16,10 @@ from unittest.mock import MagicMock, patch
 import pytest
 from rich.text import Text
 
-from src.chat_ui._renderers import ContentRenderer
+from src.chat_ui._renderer import TuiRenderer as ContentRenderer
 from src.chat_ui._const import _CLEAR_PARSE_LINE, RenderCommand
-from src.chat_ui._render_state import _RenderState, _ReasoningState
+from src.chat_ui._renderer import _RenderState
+from src.chat_ui._const import _ReasoningState
 
 
 # ── Fixtures ────────────────────────────────────────────
@@ -478,7 +479,7 @@ class TestRender:
 
     def test_render_unknown_command_logs_error(self, renderer, mock_ta):
         """未知命令 ID → 记录日志（不崩溃）"""
-        with patch('src.chat_ui._renderers._logger.error') as m_log:
+        with patch('src.chat_ui._renderer._logger.error') as m_log:
             renderer.render((255,))
             m_log.assert_called_once()
 

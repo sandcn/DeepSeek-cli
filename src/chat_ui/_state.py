@@ -6,6 +6,7 @@ Layer 0 — 仅依赖 typing，被 _consumer + 外部调用方引用。
 
 from __future__ import annotations
 
+import threading
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -16,6 +17,7 @@ if TYPE_CHECKING:
 # 仅归零时清空引用。防止 A.stop() 误清 B 的活跃引用。
 _active_consumer: "ChatUIConsumer | None" = None
 _active_consumer_refcount: int = 0
+_state_global_lock = threading.Lock()
 
 def get_active_chat_ui() -> "ChatUIConsumer | None":
     """获取当前活跃的 ChatUIConsumer 实例，供交互式终端工具使用。
@@ -34,9 +36,10 @@ def _register_consumer(consumer: "ChatUIConsumer") -> None:
     多实例场景下，递增引用计数并设置引用。
     start() 中调用此函数替代直接操作 _active_consumer_refcount。
     """
-    global _active_consumer, _active_consumer_refcount
-    _active_consumer_refcount += 1
-    _active_consumer = consumer
+    with _state_global_lock:
+        global _active_consumer, _active_consumer_refcount
+        _active_consumer_refcount += 1
+        _active_consumer = consumer
 
 
 def _unregister_consumer() -> None:
@@ -47,11 +50,12 @@ def _unregister_consumer() -> None:
 
     stop() 中调用此函数替代直接操作 _active_consumer_refcount。
     """
-    global _active_consumer, _active_consumer_refcount
-    _active_consumer_refcount -= 1
-    try:
-        if _active_consumer_refcount <= 0:
+    with _state_global_lock:
+        global _active_consumer, _active_consumer_refcount
+        _active_consumer_refcount -= 1
+        try:
+            if _active_consumer_refcount <= 0:
+                _active_consumer = None
+        except TypeError:
+            # 兼容测试 mock 场景：MagicMock 不支持 int <= 比较，直接清空
             _active_consumer = None
-    except TypeError:
-        # 兼容测试 mock 场景：MagicMock 不支持 int <= 比较，直接清空
-        _active_consumer = None

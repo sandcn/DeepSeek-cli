@@ -24,7 +24,7 @@ sys.path.insert(0, "/home/DeepSeek-cli")
 
 from src.chat_ui._const import RenderCommand
 from src.chat_ui._utils import _cmd_name
-from src.chat_ui._engine import RenderEngine
+from src.chat_ui._engine import TuiEngine as RenderEngine, _ACTIVE_RENDER_INTERVAL, _IDLE_DRAIN_THRESHOLD
 
 
 # ══════════════════════════════════════════════════════
@@ -508,7 +508,7 @@ class TestRenderEngineDrainQueue:
 
         with (
             patch("src.chat_ui._engine._try_acquire_output_lock") as m_lock,
-            patch.object(engine, "position_cursor") as m_pos,
+            patch.object(engine, "_position_cursor") as m_pos,
         ):
             m_lock.return_value.__enter__.return_value = True
 
@@ -668,7 +668,7 @@ class TestRenderEngineDrainQueue:
 
         with (
             patch("src.chat_ui._engine._try_acquire_output_lock") as m_lock,
-            patch.object(engine, "position_cursor") as m_pos,
+            patch.object(engine, "_position_cursor") as m_pos,
         ):
             m_lock.return_value.__enter__.return_value = True
 
@@ -681,8 +681,8 @@ class TestRenderEngineDrainQueue:
     def test_drain_position_cursor_exception_tolerated(self, engine):
         """position_cursor 异常时被容错。"""
         engine._bb.is_status_active = True
-        engine.position_cursor = MagicMock()
-        engine.position_cursor.side_effect = RuntimeError("光标异常")
+        engine._position_cursor = MagicMock()
+        engine._position_cursor.side_effect = RuntimeError("光标异常")
 
         with (
             patch("src.chat_ui._engine._try_acquire_output_lock") as m_lock,
@@ -716,16 +716,16 @@ class TestRenderEngineRender:
         assert engine._drain_queue.call_count == 3
 
     def test_render_clears_event_after_wait(self, engine):
-        """每次循环后清除 cmd_event。"""
+        """空轮询后清除 cmd_event（有内容时不 clear 避免信号丢失）。"""
         engine._render_running = True
         engine._cmd_event.wait = MagicMock(side_effect=[None, KeyboardInterrupt])
-        engine._drain_queue = MagicMock()
+        engine._drain_queue = MagicMock(return_value=False)
         engine._cmd_event.clear = MagicMock()
 
         with pytest.raises(KeyboardInterrupt):
             engine._render()
 
-        # clear 被调用
+        # clear 仅在 drain_queue 无内容时调用（避免竞态丢失 push_cmd 的信号）
         engine._cmd_event.clear.assert_called_once()
 
     def test_render_exception_logs_and_stops(self, engine, caplog):
@@ -781,9 +781,9 @@ class TestRenderEnginePositionCursor:
         # 因此 mock get_terminal 返回模拟终端
         mock_term = MagicMock()
         mock_term.move_xy.return_value = "\033[28;8H"
-        with patch("src.chat_ui._engine.get_terminal", return_value=mock_term):
+        with patch("src.ui._blessed.get_terminal", return_value=mock_term):
             with patch.object(sys, "__stdout__") as mock_stdout:
-                engine.position_cursor()
+                engine._position_cursor()
 
         # 验证调用了 compute_cursor_position
         engine._bb.compute_cursor_position.assert_called_once_with(
@@ -801,7 +801,7 @@ class TestRenderEnginePositionCursor:
         engine._bb.compute_cursor_position.return_value = (27, 8)
 
         with patch.object(sys, "__stdout__"):
-            engine.position_cursor()
+            engine._position_cursor()
 
         engine._bb.compute_cursor_position.assert_called_once_with(
             "hello", 5, 30, 80,
@@ -813,7 +813,7 @@ class TestRenderEnginePositionCursor:
         engine._bb.compute_cursor_position.return_value = (23, 5)
 
         with patch.object(sys, "__stdout__") as mock_stdout:
-            engine.position_cursor()
+            engine._position_cursor()
 
         mock_stdout.write.assert_called_once()
 
@@ -824,9 +824,9 @@ class TestRenderEnginePositionCursor:
 
         mock_term = MagicMock()
         mock_term.move_xy.return_value = "\033[40;13H"
-        with patch("src.chat_ui._engine.get_terminal", return_value=mock_term):
+        with patch("src.ui._blessed.get_terminal", return_value=mock_term):
             with patch.object(sys, "__stdout__") as mock_stdout:
-                engine.position_cursor()
+                engine._position_cursor()
 
         text = mock_stdout.write.call_args[0][0]
         assert '\033[' in text, f"应包含 ANSI 光标定位序列，实际: {text!r}"
@@ -941,5 +941,5 @@ class TestRenderEngineEdgeCases:
         ) as m_lock:
             engine._drain_queue()
 
-            m_lock.assert_called_once_with(name="drain_queue", timeout=1.0)
+            m_lock.assert_called_once_with(name="drain_queue", timeout=0.1)
 

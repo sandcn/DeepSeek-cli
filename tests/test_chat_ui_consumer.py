@@ -101,7 +101,7 @@ class TestChatUIConsumerInit:
         assert hasattr(consumer, '_disp')
         assert hasattr(consumer, '_cmpl')
         assert hasattr(consumer, '_bottom_bar')
-        assert hasattr(consumer, '_renderer')
+        assert hasattr(consumer, '_tui_renderer')
         assert hasattr(consumer, '_bus')
 
     def test_init_started_false(self, consumer):
@@ -118,7 +118,7 @@ class TestChatUIConsumerInit:
 
     def test_init_event_handler_names_present(self, consumer):
         """_HANDLER_MAP 包含 11 个事件处理器"""
-        from src.chat_ui._dispatcher import _HANDLER_MAP
+        from src.chat_ui._tui import _HANDLER_MAP
         assert len(_HANDLER_MAP) == 11
 
     def test_init_event_bus_fallback(self):
@@ -155,9 +155,9 @@ class TestChatUIConsumerStart:
     def test_start_sets_active_consumer(self, consumer, mock_bus):
         """start() 调用 _state._register_consumer(self) 注册活跃实例"""
         with patch.object(consumer._engine, 'start'):
-            with patch('src.chat_ui._state') as mock_state:
+            with patch('src.chat_ui._consumer._register_consumer') as mock_register:
                 consumer.start()
-                mock_state._register_consumer.assert_called_once_with(consumer)
+                mock_register.assert_called_once_with(consumer)
 
     def test_start_calls_engine_start(self, consumer, mock_bus):
         """start() 调用 _engine.start()"""
@@ -318,9 +318,9 @@ class TestChatUIConsumerStop:
 
         with patch.object(consumer._engine, 'stop'):
             with patch.object(consumer._engine, 'flush'):
-                with patch('src.chat_ui._state') as mock_state:
+                with patch('src.chat_ui._consumer._unregister_consumer') as mock_unregister:
                     consumer.stop()
-                    mock_state._unregister_consumer.assert_called_once()
+                    mock_unregister.assert_called_once()
 
     def test_stop_calls_bottom_bar_teardown(self, consumer, mock_bus):
         """stop() 调用 _bottom_bar.teardown()"""

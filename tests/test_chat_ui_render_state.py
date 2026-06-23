@@ -30,7 +30,7 @@ def _make_render_state(**overrides):
         rs = _make_render_state()
         rs = _make_render_state(reasoning_state=_ReasoningState.CLOSED)
     """
-    from src.chat_ui._render_state import _RenderState
+    from src.chat_ui._renderer import _RenderState
     return _RenderState(**overrides)
 
 
@@ -279,7 +279,7 @@ class TestRenderStateReopenReasoning:
         reasoning = rs.get_reasoning()
         assert reasoning is not None
         assert reasoning is mock_rr_new
-        assert reasoning is not rs.reasoning or True  # 同一实例引用
+        assert reasoning is rs.reasoning
         assert rs.reasoning_state == _ReasoningState.ACTIVE
 
 
