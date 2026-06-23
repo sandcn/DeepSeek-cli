@@ -242,6 +242,11 @@ class TestAddAgent:
         executor.add_agent("分析项目", "生成地图", agent_type="map")
         assert executor._pending_specs[0]["agent_type"] == "map"
 
+    def test_plan_execute_agent_type(self, executor):
+        """可传入 plan_execute agent_type"""
+        executor.add_agent("执行计划", "执行步骤", agent_type="plan_execute")
+        assert executor._pending_specs[0]["agent_type"] == "plan_execute"
+
 
 # ═══════════════════════════════════════════════════════════════
 # get_result

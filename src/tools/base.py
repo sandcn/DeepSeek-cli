@@ -43,7 +43,7 @@ class Func(abc.ABC):
 
         Args:
             tool_name: 工具名称
-            agent_type: Agent 类型（ordinary/map/review/plan/read_memory/write_memory），默认 ordinary
+            agent_type: Agent 类型（ordinary/map/review/plan/read_memory/write_memory/plan_execute），默认 ordinary
 
         Returns:
             (is_allowed: bool, error_message: str | None)

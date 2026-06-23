@@ -138,6 +138,8 @@ class FileToolBase(Func):
         # agent_type 由 SubAgent._handle_tool_calls 注入，保证子代理的所有
         # 工具调用都会被正确标记。若未注入（直接 ToolRegistry.dispatch），无 agent
         # 上下文即无语义，不限制是正确行为。
+        # plan_execute agent 无路径白名单限制（与 ordinary 行为一致），
+        # 因其需要修改项目源码文件来执行计划步骤。
         agent_type_val = getattr(self, 'agent_type', None)
         if agent_type_val in ('plan', 'write_memory'):
             if agent_type_val == 'plan':

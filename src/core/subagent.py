@@ -33,6 +33,8 @@ _logger = logging.getLogger(__name__)
 # - write_memory: 读写记忆，保留 write_file/update_file/mk，但在 FileToolBase
 #   ._validate_path_and_size() 中有额外的路径白名单校验（仅限 .chat/memory/）
 #   （保留 mk 以便在 .chat/memory/ 目录不存在时自行创建，与 plan 不含 mk 的策略不同）
+# - plan_execute: 计划执行型，保留读写工具 + bash，排除 web_search + dispatch_agent + user_select，
+#   无路径白名单限制（与 ordinary 行为一致），用于执行计划文件步骤并返回修改文件列表
 _TOOL_EXCLUSION_MAP = {
     "ordinary": {"dispatch_agent", "user_select"},
     "map": {
@@ -66,6 +68,11 @@ _TOOL_EXCLUSION_MAP = {
         "web_search",
         "dispatch_agent",
         "user_select",
+    },
+    "plan_execute": {
+        "dispatch_agent",
+        "user_select",
+        "web_search",
     },
 }
 
@@ -117,6 +124,8 @@ class SubAgent(BaseAgent):
             system_parts = prompt_port.build_read_memory_agent_system_prompt()
         elif agent_type == "write_memory":
             system_parts = prompt_port.build_write_memory_agent_system_prompt()
+        elif agent_type == "plan_execute":
+            system_parts = prompt_port.build_plan_execute_agent_system_prompt()
         else:
             system_parts = prompt_port.build_subagent_prompt()
         self.messages: List[Dict[str, Any]] = [

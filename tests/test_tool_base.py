@@ -469,6 +469,48 @@ class TestCanUse:
         assert allowed is False
         assert err is not None
 
+    def test_plan_execute_allows_write_file(self):
+        """plan_execute agent 可以使用 write_file（无路径白名单限制）。"""
+        allowed, err = Func.can_use("write_file", "plan_execute")
+        assert allowed is True
+        assert err is None
+
+    def test_plan_execute_allows_bash(self):
+        """plan_execute agent 可以使用 bash。"""
+        allowed, err = Func.can_use("bash", "plan_execute")
+        assert allowed is True
+        assert err is None
+
+    def test_plan_execute_allows_read_file(self):
+        """plan_execute agent 可以使用 read_file。"""
+        allowed, err = Func.can_use("read_file", "plan_execute")
+        assert allowed is True
+        assert err is None
+
+    def test_plan_execute_allows_file_ops(self):
+        """plan_execute agent 可以使用 rm/mv/cp/mk。"""
+        for tool in ("rm", "mv", "cp", "mk"):
+            allowed, err = Func.can_use(tool, "plan_execute")
+            assert allowed is True, f"plan_execute agent 应能使用 {tool}"
+
+    def test_plan_execute_excludes_web_search(self):
+        """plan_execute agent 不能使用 web_search。"""
+        allowed, err = Func.can_use("web_search", "plan_execute")
+        assert allowed is False
+        assert err is not None
+
+    def test_plan_execute_excludes_dispatch_agent(self):
+        """plan_execute agent 不能使用 dispatch_agent。"""
+        allowed, err = Func.can_use("dispatch_agent", "plan_execute")
+        assert allowed is False
+        assert err is not None
+
+    def test_plan_execute_excludes_user_select(self):
+        """plan_execute agent 不能使用 user_select。"""
+        allowed, err = Func.can_use("user_select", "plan_execute")
+        assert allowed is False
+        assert err is not None
+
     def test_unknown_agent_type_falls_back_to_ordinary(self):
         """未知 agent_type 回退 ordinary 策略。"""
         allowed, err = Func.can_use("write_file", "unknown_type")

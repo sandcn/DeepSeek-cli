@@ -28,6 +28,7 @@ AGENT_TYPE_ABBREV = {
     "plan": "pl",
     "read_memory": "rm",
     "write_memory": "wm",
+    "plan_execute": "pe",
 }
 
 # ── SubAgent 类型 → 256色 ANSI 前景色 ──────────────────
@@ -39,6 +40,7 @@ AGENT_TYPE_COLORS = {
     "plan": "\033[38;5;214m",      # 琥珀
     "read_memory": "\033[38;5;45m",   # 青色
     "write_memory": "\033[38;5;226m", # 黄色
+    "plan_execute": "\033[38;5;208m",   # 橙色
 }
 
 # ── 工具类别 → 256色 ANSI 前景色 ──────────────────────

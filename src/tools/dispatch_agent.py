@@ -45,7 +45,7 @@ class DispatchAgents(Func):
                     "【参数行为说明】"
                     "\n- **description**：UI标题，用作子任务在界面中的显示标签"
                     "\n- **prompt**：完整任务指令，子Agent据此独立执行全部工作"
-                    "\n- **type**：子Agent类型。ordinary（通用）/ map（只读分析）/ review（代码审查）/ plan（计划生成，write_file/update_file 仅限 .chat/plan/ 目录）/ read_memory（只读记忆检索）/ write_memory（读写记忆更新，仅限 .chat/memory/ 目录）"
+                    "\n- **type**：子Agent类型。ordinary（通用）/ map（只读分析）/ review（代码审查）/ plan（计划生成，write_file/update_file 仅限 .chat/plan/ 目录）/ read_memory（只读记忆检索）/ write_memory（读写记忆更新，仅限 .chat/memory/ 目录） / plan_execute（计划执行，读写+bash，无路径限制）"
                     "\n\n"
                     "【使用限制】"
                     "\n- 单次调用执行单个子Agent任务（独立执行），同一轮多次调用自动共享执行器实现真正并行"
@@ -72,8 +72,8 @@ class DispatchAgents(Func):
                         },
                         "type": {
                             "type": "string",
-                            "enum": ["ordinary", "map", "review", "plan", "read_memory", "write_memory"],
-                            "description": "子Agent类型。ordinary（默认）：排除 user_select 和 dispatch_agent，其他工具全开。map：只读分析型，仅保留 read_file/search/find/ls 等读取工具，专用于项目代码分析和地图生成。review：代码审查型，只读工具集（含 read_file/search/find/ls/web_search），专用于文件列表的 Code Review（P0-P3 分级输出）。plan：计划型，只读分析工具 + write_file/update_file（仅限写入 .chat/plan/ 目录），根据指令生成计划。read_memory：只读记忆型，仅保留 read_file/search/find/ls，专用于读取 .chat/memory/ 目录下的记忆文件。write_memory：读写记忆型，保留读工具 + write_file/update_file/mk（写入仅限 .chat/memory/ 目录），专用于维护记忆文件。",
+                            "enum": ["ordinary", "map", "review", "plan", "read_memory", "write_memory", "plan_execute"],
+                            "description": "子Agent类型。ordinary（默认）：排除 user_select 和 dispatch_agent，其他工具全开。map：只读分析型，仅保留 read_file/search/find/ls 等读取工具，专用于项目代码分析和地图生成。review：代码审查型，只读工具集（含 read_file/search/find/ls/web_search），专用于文件列表的 Code Review（P0-P3 分级输出）。plan：计划型，只读分析工具 + write_file/update_file（仅限写入 .chat/plan/ 目录），根据指令生成计划。read_memory：只读记忆型，仅保留 read_file/search/find/ls，专用于读取 .chat/memory/ 目录下的记忆文件。write_memory：读写记忆型，保留读工具 + write_file/update_file/mk（写入仅限 .chat/memory/ 目录），专用于维护记忆文件。plan_execute：计划执行型，读写工具 + bash，独立上下文，执行计划步骤并返回修改文件列表。",
                         },
                     },
                     "required": ["description", "prompt"],
