@@ -5,7 +5,7 @@ Layer 0 — 无内部依赖，被所有上层模块引用。
 
 from __future__ import annotations
 
-from enum import Enum, IntEnum
+from enum import IntEnum
 
 from rich.style import Style
 
@@ -53,9 +53,6 @@ class RenderCommand(IntEnum):
     每个枚举值对应 _render() 分发的方法签名，
     值用于 _RENDER_DISPATCH 的 O(1) 字典查找。
     格式: (cmd_value, *args) — cmd_value 即枚举值。
-
-    注意：值 3-5 为已废弃命令保留位（TOOL_STARTED/TOOL_DONE/
-    PARSE_INFO_DONE），不重用以免产生歧义。
     """
     REASONING     = 0   # (0, text: str)
     CONTENT       = 1   # (1, text: str)
@@ -64,7 +61,6 @@ class RenderCommand(IntEnum):
     TOOL_SUMMARY  = 7   # (7, successful: tuple, failed: tuple)
     USER_MSG      = 8   # (8, text: str)
     PARSE_INFO    = 9   # (9, tool_names: str, tokens: int, elapsed: float)
-    CMD_OUTPUT    = 10  # ★ 已废弃 — 2026-06-02，由 WRITE_LINE 统一处理。保留枚举值防止重用
     NOTIFICATION  = 11  # (11, text: str)
     WRITE_LINE    = 12  # (12, text: str)
     DISPLAY_MSGS  = 13  # (13, messages: list, speed: int)
@@ -73,26 +69,6 @@ class RenderCommand(IntEnum):
     ERROR          = 16  # (16, message: str) — 系统错误（红色 ! 样式）
     TOOL_COUNT_DEC     = 17  # (17,) — 工具计数-1
     SUBAGENT_FRAME     = 18  # (18, frame_lines: tuple[str]) — SubAgent 面板帧
-    # 值 19-20 已废弃 — 补全弹窗状态由 _CmplHandler 直接设置 + 请求 render 线程重绘
-
-
-# ═══════════════════════════════════════════════════════════
-# _ReasoningState — 推理渲染器状态机
-# ═══════════════════════════════════════════════════════════
-
-class _ReasoningState(Enum):
-    """推理渲染器状态机，替代两个布尔值（thinking_header_printed + reasoning_closed）。
-
-    状态转换：
-      INACTIVE → 首个推理块到达 → ACTIVE（创建渲染器+打印标题）
-      ACTIVE   → close_reasoning() → CLOSED（写入分隔线+关闭渲染器）
-      INACTIVE → close_reasoning() → CLOSED（推理块从未到达即关闭）
-      CLOSED   → reopen_reasoning() → INACTIVE（二次推理重新打开）
-      CLOSED   → 其他转换不生效（幂等）
-    """
-    INACTIVE = "inactive"
-    ACTIVE = "active"
-    CLOSED = "closed"
 
 
 # ── drain 锁超时 ─────────────────────────────────────

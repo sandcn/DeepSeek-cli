@@ -269,6 +269,10 @@ async def main():
         locked_print(f"  Chat {VERSION}")
         return
 
+    # ── 注册 ChatUI 错误处理器 ──
+    from src.chat_ui import setup_chat_ui_error_handler
+    setup_chat_ui_error_handler()
+
     # ── 设置日志级别 ──
     if args.verbose >= 2:
         logging.basicConfig(level=logging.DEBUG)

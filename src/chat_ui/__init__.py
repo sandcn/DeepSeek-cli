@@ -20,8 +20,6 @@ React Ink-like TUI 架构（组件化设计，已拆分为 5 个子模块）：
   _consumer.py  — 消费者 API
     └── ChatUIConsumer  — 对外公开 API（含 RenderEngine/ContentRenderer 兼容别名）
 
-  _tui.py — 兼容重导出层（1-2 版本后移除，直接 import 子模块）
-
 基础设施模块：
   _const         — RenderCommand 枚举、Rich Style 常量
   _state         — 全局活跃实例引用 + 引用计数
@@ -80,7 +78,7 @@ def setup_chat_ui_error_handler() -> None:
 from ._completion import _apply_completion
 
 # ── 核心 TUI（组件化架构） ─────────────────────────
-from ._tui import ChatUIConsumer
+from ._consumer import ChatUIConsumer
 
 __all__ = [
     "ChatUIConsumer",
@@ -93,5 +91,3 @@ __all__ = [
     "setup_chat_ui_error_handler",
 ]
 
-# Deprecated 自动注册 — 后续版本移除
-setup_chat_ui_error_handler()

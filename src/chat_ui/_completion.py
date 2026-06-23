@@ -15,7 +15,7 @@ from typing import Callable, TYPE_CHECKING
 
 if TYPE_CHECKING:
     from ..ui._completion import CompletionEngine
-    from ._tui import BottomBarProtocol
+    from ._protocols import BottomBarProtocol
 
 
 class _CmplHandler:

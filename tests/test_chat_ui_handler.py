@@ -266,7 +266,7 @@ class TestRenderCommandError:
 
     def test_error_in_dispatch(self):
         """_RENDER_DISPATCH 包含 ERROR 条目"""
-        from src.chat_ui._tui import _RENDER_DISPATCH
+        from src.chat_ui._renderer import _RENDER_DISPATCH
         dispatch = _RENDER_DISPATCH
         assert 16 in dispatch
         method_name, arg_indices = dispatch[16]
@@ -378,28 +378,28 @@ class TestIsAgentSource:
 
     def test_none_source_returns_false(self):
         """source=None → 返回 False，不抛异常"""
-        from src.chat_ui._tui import EventDispatcher
+        from src.chat_ui._dispatcher import EventDispatcher
         assert EventDispatcher._is_agent_source(None) is False
 
     def test_main_source_returns_true(self):
         """source='agent' → 返回 True"""
-        from src.chat_ui._tui import EventDispatcher
+        from src.chat_ui._dispatcher import EventDispatcher
         from src.chat_ui._const import _MAIN_SOURCE
         assert EventDispatcher._is_agent_source(_MAIN_SOURCE) is True
 
     def test_agent_prefix_returns_true(self):
         """source='agent-1' → 返回 True"""
-        from src.chat_ui._tui import EventDispatcher
+        from src.chat_ui._dispatcher import EventDispatcher
         assert EventDispatcher._is_agent_source("agent-1") is True
 
     def test_other_source_returns_false(self):
         """source='user' → 返回 False"""
-        from src.chat_ui._tui import EventDispatcher
+        from src.chat_ui._dispatcher import EventDispatcher
         assert EventDispatcher._is_agent_source("user") is False
 
     def test_empty_string_returns_false(self):
         """source='' → 返回 False"""
-        from src.chat_ui._tui import EventDispatcher
+        from src.chat_ui._dispatcher import EventDispatcher
         assert EventDispatcher._is_agent_source("") is False
 
 

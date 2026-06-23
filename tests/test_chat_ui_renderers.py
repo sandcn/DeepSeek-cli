@@ -19,7 +19,7 @@ from rich.text import Text
 from src.chat_ui._renderer import TuiRenderer as ContentRenderer
 from src.chat_ui._const import _CLEAR_PARSE_LINE, RenderCommand
 from src.chat_ui._renderer import _RenderState
-from src.chat_ui._const import _ReasoningState
+from src.chat_ui._render_state import _ReasoningState
 
 
 # ── Fixtures ────────────────────────────────────────────

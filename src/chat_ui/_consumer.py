@@ -38,13 +38,13 @@ from ._state import (
     get_active_chat_ui,
 )
 
-from ..ui._lock import output_lock
+from ._lock import output_lock
 from ..ui._blessed import get_terminal
 
 from ._engine import TuiEngine
 from ._renderer import TuiRenderer, _RenderState
 from ._dispatcher import EventDispatcher, _HANDLER_MAP
-from ._components import BottomBarProtocol
+from ._protocols import BottomBarProtocol
 from ._completion import _CmplHandler, _apply_completion
 
 _logger = logging.getLogger(__name__)
@@ -314,9 +314,3 @@ class ChatUIConsumer:
         self._engine.push_cmd(cmd)
 
 
-# ═══════════════════════════════════════════════════════════
-# 兼容别名 — 供测试和旧引用使用
-# ═══════════════════════════════════════════════════════════
-
-RenderEngine = TuiEngine
-ContentRenderer = TuiRenderer

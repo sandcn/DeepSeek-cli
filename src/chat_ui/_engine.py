@@ -12,8 +12,9 @@ import threading
 from typing import TYPE_CHECKING, Any, Callable
 
 if TYPE_CHECKING:
-    from ._renderer import TuiRenderer
-    from ._components import BottomBarProtocol
+    from ._protocols import BottomBarProtocol
+
+from ._renderer import TuiRenderer
 
 from ._const import (
     RenderCommand,
@@ -24,7 +25,7 @@ from ._const import (
 
 from ._utils import _cmd_name
 
-from ..ui._lock import _try_acquire_output_lock
+from ._lock import _try_acquire_output_lock
 
 _logger = logging.getLogger(__name__)
 
@@ -277,3 +278,8 @@ class TuiEngine:
         sys.__stdout__.flush()
         if self._cursor_tracker is not None:
             self._cursor_tracker.set(r_cursor, cursor_col)
+
+
+# @deprecated — 使用 TuiEngine/TuiRenderer 替代，v1.3+ 将移除
+RenderEngine = TuiEngine
+ContentRenderer = TuiRenderer

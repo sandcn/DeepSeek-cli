@@ -1,13 +1,14 @@
-"""组件层 — TuiComponent 基类 + 11 个子类 + BottomBarProtocol。
+"""组件层 — TuiComponent 基类 + 11 个子类。
 
 从 _tui.py 拆分，包含所有消息流组件和底部栏组件的数据模型定义。
+BottomBarProtocol 已移至 _protocols.py，此处保留兼容 re-export。
 """
 
 from __future__ import annotations
 
 import logging
 import unicodedata
-from typing import TYPE_CHECKING, Protocol, runtime_checkable
+from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from ..api.renderer.output import OutputAdapter
@@ -17,40 +18,17 @@ from rich.text import Text
 
 from ._const import (
     _STYLE_DIM, _STYLE_FAIL, _STYLE_WARN, _STYLE_SUCCESS, _STYLE_ERROR, _STYLE_BOLD,
-    _THINKING_HEADER, _THINKING_SEPARATOR,
+    _THINKING_HEADER,
     _MAX_ERROR_LENGTH, _MAX_OUTPUT_LEN,
-    _ReasoningState,
 )
+
+from ._render_state import _ReasoningState
 
 from ._utils import _truncate_msg
 
+from ._protocols import BottomBarProtocol  # 兼容 re-export（定义已移至 _protocols.py）
+
 _logger = logging.getLogger(__name__)
-
-
-# ═══════════════════════════════════════════════════════════
-# 协议
-# ═══════════════════════════════════════════════════════════
-
-@runtime_checkable
-class BottomBarProtocol(Protocol):
-    def increment_tool(self) -> None: ...
-    def decrement_tool(self) -> None: ...
-    def increment_tool_fail(self) -> None: ...
-    def force_redraw(self) -> None: ...
-    def sync_bottom_lines(self) -> None: ...
-    @property
-    def is_status_active(self) -> bool: ...
-    def ensure_cursor_in_upper(self) -> None: ...
-    def get_scroll_end(self) -> int: ...
-    def get_cursor_info(self) -> tuple[str, int, int, int]: ...
-    def compute_cursor_position(self, text: str, cursor_pos: int, h: int, w: int) -> tuple[int, int]: ...
-    @property
-    def is_completion_visible(self) -> bool: ...
-    def hide_completions(self) -> None: ...
-    def cycle_completion(self, delta: int) -> None: ...
-    def show_completions(self, items: list[str], selected: int = 0, texts: list[str] | None = None, start_pos: int = 0, orig_prefix: str = "") -> None: ...
-    def get_selected_completion(self) -> tuple[str, int, str]: ...
-
 
 # ═══════════════════════════════════════════════════════════
 # 组件基类

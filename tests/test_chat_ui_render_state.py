@@ -59,7 +59,7 @@ class TestRenderStateGetReasoning:
     def test_initial_state_inactive(self):
         """初始状态为 INACTIVE，reasoning 为 None。"""
         rs = _make_render_state()
-        from src.chat_ui._const import _ReasoningState
+        from src.chat_ui._render_state import _ReasoningState
 
         assert rs.reasoning_state == _ReasoningState.INACTIVE
         assert rs.reasoning is None
@@ -75,7 +75,7 @@ class TestRenderStateGetReasoning:
 
         assert result is mock_rr
         assert rs.reasoning is mock_rr
-        from src.chat_ui._const import _ReasoningState
+        from src.chat_ui._render_state import _ReasoningState
         assert rs.reasoning_state == _ReasoningState.ACTIVE
         MockRenderer.assert_called_once_with(
             style="dim",
@@ -89,7 +89,7 @@ class TestRenderStateGetReasoning:
         rs = _make_render_state()
         mock_rr = _make_mock_incremental_renderer()
         rs.reasoning = mock_rr
-        from src.chat_ui._const import _ReasoningState
+        from src.chat_ui._render_state import _ReasoningState
         rs.reasoning_state = _ReasoningState.ACTIVE
 
         first = rs.get_reasoning()
@@ -100,7 +100,7 @@ class TestRenderStateGetReasoning:
 
     def test_get_reasoning_closed_returns_none(self):
         """CLOSED 状态 → 返回 None。"""
-        from src.chat_ui._const import _ReasoningState
+        from src.chat_ui._render_state import _ReasoningState
         rs = _make_render_state(reasoning_state=_ReasoningState.CLOSED)
 
         result = rs.get_reasoning()
@@ -109,7 +109,7 @@ class TestRenderStateGetReasoning:
     @patch("src.api.renderer.IncrementalRenderer")
     def test_get_reasoning_closed_does_not_create(self, MockRenderer):
         """CLOSED 状态即使 reasoning=None 也不创建渲染器。"""
-        from src.chat_ui._const import _ReasoningState
+        from src.chat_ui._render_state import _ReasoningState
         rs = _make_render_state(reasoning_state=_ReasoningState.CLOSED, reasoning=None)
 
         result = rs.get_reasoning()
@@ -172,7 +172,8 @@ class TestRenderStateCloseReasoning:
 
     def test_close_reasoning_writes_separator_and_closes(self):
         """关闭时写入分隔线、close、状态→CLOSED。"""
-        from src.chat_ui._const import _THINKING_SEPARATOR, _ReasoningState
+        from src.chat_ui._const import _THINKING_SEPARATOR
+        from src.chat_ui._render_state import _ReasoningState
         rs = _make_render_state(reasoning_state=_ReasoningState.ACTIVE)
         mock_rr = _make_mock_incremental_renderer()
         rs.reasoning = mock_rr
@@ -186,7 +187,7 @@ class TestRenderStateCloseReasoning:
 
     def test_close_reasoning_from_inactive(self):
         """从 INACTIVE 状态关闭 → CLOSED，reasoning=None 时不写分隔线。"""
-        from src.chat_ui._const import _ReasoningState
+        from src.chat_ui._render_state import _ReasoningState
         rs = _make_render_state(reasoning_state=_ReasoningState.INACTIVE, reasoning=None)
 
         rs.close_reasoning()
@@ -197,7 +198,7 @@ class TestRenderStateCloseReasoning:
 
     def test_close_reasoning_idempotent(self):
         """CLOSED 状态重复关闭——幂等（无副作用）。"""
-        from src.chat_ui._const import _ReasoningState
+        from src.chat_ui._render_state import _ReasoningState
         rs = _make_render_state(reasoning_state=_ReasoningState.CLOSED, reasoning=None)
 
         rs.close_reasoning()
@@ -220,7 +221,7 @@ class TestRenderStateReopenReasoning:
 
     def test_reopen_reasoning_from_closed(self):
         """CLOSED → INACTIVE，reasoning 置为 None。"""
-        from src.chat_ui._const import _ReasoningState
+        from src.chat_ui._render_state import _ReasoningState
         mock_rr = _make_mock_incremental_renderer()
         rs = _make_render_state(
             reasoning_state=_ReasoningState.CLOSED,
@@ -234,7 +235,7 @@ class TestRenderStateReopenReasoning:
 
     def test_reopen_reasoning_from_active_no_op(self):
         """ACTIVE 状态调用 reopen — 无操作，保持 ACTIVE。"""
-        from src.chat_ui._const import _ReasoningState
+        from src.chat_ui._render_state import _ReasoningState
         mock_rr = _make_mock_incremental_renderer()
         rs = _make_render_state(
             reasoning_state=_ReasoningState.ACTIVE,
@@ -248,7 +249,7 @@ class TestRenderStateReopenReasoning:
 
     def test_reopen_reasoning_from_inactive_no_op(self):
         """INACTIVE 状态调用 reopen — 无操作，保持 INACTIVE。"""
-        from src.chat_ui._const import _ReasoningState
+        from src.chat_ui._render_state import _ReasoningState
         rs = _make_render_state(
             reasoning_state=_ReasoningState.INACTIVE,
             reasoning=None,
@@ -262,7 +263,7 @@ class TestRenderStateReopenReasoning:
     @patch("src.api.renderer.IncrementalRenderer")
     def test_reopen_reasoning_full_cycle(self, MockRenderer):
         """close → reopen → get_reasoning 完整路径：CLOSED→INACTIVE→重新创建→ACTIVE。"""
-        from src.chat_ui._const import _ReasoningState
+        from src.chat_ui._render_state import _ReasoningState
         mock_rr_new = _make_mock_incremental_renderer()
         MockRenderer.return_value = mock_rr_new
         rs = _make_render_state(
@@ -328,7 +329,7 @@ class TestRenderStateCloseAll:
 
     def test_close_all_closes_everything(self):
         """关闭推理、内容，全部置为 None。"""
-        from src.chat_ui._const import _ReasoningState
+        from src.chat_ui._render_state import _ReasoningState
         mock_reasoning = _make_mock_incremental_renderer()
         mock_content = _make_mock_incremental_renderer()
         rs = _make_render_state(

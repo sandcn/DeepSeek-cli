@@ -118,7 +118,7 @@ class TestChatUIConsumerInit:
 
     def test_init_event_handler_names_present(self, consumer):
         """_HANDLER_MAP 包含 11 个事件处理器"""
-        from src.chat_ui._tui import _HANDLER_MAP
+        from src.chat_ui._dispatcher import _HANDLER_MAP
         assert len(_HANDLER_MAP) == 11
 
     def test_init_event_bus_fallback(self):
