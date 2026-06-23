@@ -1,6 +1,6 @@
 """ChatUI — 终端聊天消费者包。
 
-React Ink-like TUI 架构（组件化设计，已拆分为 5 个子模块）：
+组件化 TUI 架构：
 
   _components.py — 组件层
     ├── BottomBarProtocol / TuiComponent (基类)
@@ -77,21 +77,6 @@ def setup_chat_ui_error_handler() -> None:
 # ── 补全纯函数 ────────────────────────────────────
 from ._completion import _apply_completion
 
-# ── 布局组件（React Ink-like） ─────────────────────
-from ._box import (
-    Box,
-    Static,
-    Text,
-    FlexDirection,
-)
-
-# ── 测量工具 ──────────────────────────────────────
-from ._measure import measureElement
-
-# ── Ink 渲染状态与渲染器 ───────────────────────────
-from ._ink_state import InkState
-from ._ink_renderer import InkRenderer
-
 # ── 核心 TUI（组件化架构） ─────────────────────────
 from ._consumer import ChatUIConsumer
 
@@ -104,13 +89,5 @@ __all__ = [
     "_active_consumer",
     "_MAIN_LABEL",
     "setup_chat_ui_error_handler",
-    # ── 布局组件（React Ink-like v2.0）──
-    "Box",
-    "Static",
-    "Text",
-    "FlexDirection",
-    "measureElement",
-    "InkState",
-    "InkRenderer",
 ]
 

@@ -6,7 +6,6 @@
 from __future__ import annotations
 
 import logging
-import os
 import queue
 import sys
 import threading
@@ -16,9 +15,6 @@ if TYPE_CHECKING:
     from ._protocols import BottomBarProtocol
 
 from ._renderer import TuiRenderer
-from ._ink_state import InkState
-from ._ink_renderer import InkRenderer
-
 from ._const import (
     RenderCommand,
     _RENDER_INTERVAL,
@@ -59,7 +55,6 @@ class TuiEngine:
         renderer: "TuiRenderer",
         bottom_bar: "BottomBarProtocol",
         cursor_tracker: Any = None,
-        renderer_backend: str | None = None,
     ):
         self._renderer = renderer
         self._bb = bottom_bar
@@ -71,14 +66,6 @@ class TuiEngine:
         self._consecutive_full = 0
         self._bottom_redraw_requested = threading.Event()
         self._panel_refresh_cb: Callable[[], None] | None = None
-        # React Ink 渲染后端
-        self._renderer_backend: str = (
-            renderer_backend
-            if renderer_backend is not None
-            else os.environ.get("CHAT_UI_RENDERER_BACKEND", "legacy")
-        )
-        self._ink_state: InkState | None = None
-        self._ink_renderer: InkRenderer | None = None
 
     def push_cmd(self, cmd: tuple) -> None:
         """入队渲染命令到命令队列。
@@ -142,32 +129,6 @@ class TuiEngine:
     def ensure_cursor_upper(self) -> None:
         self._bb.ensure_cursor_in_upper()
 
-    # ── React Ink 渲染后端注入 ─────────────────────
-
-    def set_ink_renderer(
-        self, ink_renderer: "InkRenderer", ink_state: "InkState"
-    ) -> None:
-        """注入 InkRenderer 和 InkState 实例。
-
-        当 renderer_backend == "ink" 时启用新渲染路径。
-        调用时机：ChatUIConsumer 初始化完成后注入。
-
-        Args:
-            ink_renderer: InkRenderer 实例（Layer 2）
-            ink_state: InkState 实例（Layer 0）
-        """
-        self._ink_renderer = ink_renderer
-        self._ink_state = ink_state
-
-    @property
-    def renderer_backend(self) -> str:
-        """渲染后端标识符 — 公开只读属性。
-
-        返回值："ink" 或 "legacy"。
-        供外部消费者（如 ChatUIConsumer）读取以决定是否初始化 Ink 子系统。
-        """
-        return self._renderer_backend
-
     # ── 三阶段流水线 ──────────────────────────────
 
     def _phase_pre_update_panels(self) -> None:
@@ -185,45 +146,24 @@ class TuiEngine:
     def _phase_render(self, commands: list[tuple]) -> None:
         """阶段 2：执行渲染命令。
 
-        双路径分发：
-        - React Ink 路径：InkState.apply_commands → InkRenderer.render_frame → apply_frame
-        - Legacy 路径：逐条分发给 TuiRenderer.render（原有逻辑保持不变）
+        逐条分发给 TuiRenderer.render 进行渲染。
 
         Args:
             commands: 一批待渲染的命令元组列表，每项格式为 (command_id, *args)
         """
-        if (
-            self._renderer_backend == "ink"
-            and self._ink_state is not None
-            and self._ink_renderer is not None
-        ):
-            # ── React Ink 路径 ──────────────────────
+        try:
+            self._bb.sync_bottom_lines()
+        except Exception:
+            _logger.debug("sync_bottom_lines 异常", exc_info=True)
+        self.ensure_cursor_upper()
+        for cmd in commands:
             try:
-                self._bb.sync_bottom_lines()
-                self.ensure_cursor_upper()
-                self._ink_state.apply_commands(commands)
-                patches = self._ink_renderer.render_frame(self._ink_state)
-                self._ink_renderer.apply_frame(patches)
+                self._renderer.render(cmd)
             except Exception:
-                _logger.debug("Ink render failed, falling back", exc_info=True)
-                # 推送错误到队列
-                for cmd in commands:
-                    self._renderer.render(cmd)
-        else:
-            # ── Legacy 路径（保持原有逻辑不变） ─────
-            try:
-                self._bb.sync_bottom_lines()
-            except Exception:
-                _logger.debug("sync_bottom_lines 异常", exc_info=True)
-            self.ensure_cursor_upper()
-            for cmd in commands:
-                try:
-                    self._renderer.render(cmd)
-                except Exception:
-                    _logger.debug("渲染命令 %s 失败", cmd, exc_info=True)
-                    self.push_cmd(
-                        (RenderCommand.ERROR, f"渲染命令 {_cmd_name(cmd[0])} 失败")
-                    )
+                _logger.debug("渲染命令 %s 失败", cmd, exc_info=True)
+                self.push_cmd(
+                    (RenderCommand.ERROR, f"渲染命令 {_cmd_name(cmd[0])} 失败")
+                )
 
     def _phase_redraw_bottom(self, has_commands: bool) -> None:
         """阶段 3：重绘底部栏。
