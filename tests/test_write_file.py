@@ -359,7 +359,7 @@ class TestPlanAgentPathRestriction:
 
     @pytest.mark.asyncio
     async def test_non_plan_agent_no_restriction(self, tmp_path, _mock_sandbox, monkeypatch):
-        """非 plan agent（agent_type=None 或 ordinary）无路径限制。"""
+        """非 plan agent（agent_type=None 或 plan_execute）无路径限制。"""
         monkeypatch.chdir(tmp_path)
 
         # agent_type 为 None
@@ -369,10 +369,10 @@ class TestPlanAgentPathRestriction:
         result = await wf.execute()
         assert "写入成功" in result
 
-        # agent_type 为 ordinary
+        # agent_type 为 plan_execute
         outside_file2 = tmp_path / "no_restrict2.md"
         wf2 = WriteFileFunc(str(outside_file2), "content")
-        wf2.agent_type = "ordinary"
+        wf2.agent_type = "plan_execute"
         result = await wf2.execute()
         assert "写入成功" in result
 

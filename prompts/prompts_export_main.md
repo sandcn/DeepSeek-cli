@@ -66,7 +66,7 @@
 | `plan` | 生成执行计划 | 触发了做什么（规划） | 读工具 + write_file/update_file | 仅 `.chat/plan/` |
 | `review` | 代码审查 | 触发了做什么（执行） | read_file/search/find/ls/web_search | 无（只读） |
 | `write_memory` | 写入记忆 | 完成所有后 | 读工具 + write_file/update_file/mk | 仅 `.chat/memory/` |
-| `ordinary` | 通用子任务 | 按需 | 除 user_select/dispatch_agent 外全工具 | 全项目（沙盒保护） |
+| `plan_execute` | 通用子任务（默认） | 按需 | 除 user_select/dispatch_agent 外全工具 | 全项目（沙盒保护） |
 
 ---
 
@@ -207,31 +207,6 @@ prompt 必须包含：
 1. Agent 写入/更新 `.chat/memory/` 下的 `mem_XXXX.md` 详情文件
 2. Agent 同步更新 `memory.md` 索引文件
 3. 主 Agent 确认写入成功后 → 输出最终结果（变更总结）
-
----
-
-# ordinary — 通用子任务
-
-### 怎么引发
-```
-dispatch_agent(type="ordinary", description="<任务摘要>", prompt="<完整任务指令>")
-```
-- **调用时机**：需要独立执行完整读写任务的场景（如批量文件修改、独立模块开发）
-- **工具范围**：除 user_select 和 dispatch_agent 外的全部工具
-- **默认类型**：不指定 type 时默认为 `ordinary`
-
-### 怎么给提词
-prompt 必须包含：
-- **目标**：要完成什么任务
-- **具体文件路径**：涉及哪些文件
-- **输出格式要求**：期望的返回格式
-- **约束条件**：安全红线、风格要求、兼容性限制
-- 确保 Agent 可**独立执行**，无需额外上下文追问
-
-### 执行之后干嘛
-1. Agent 独立完成读写任务，返回执行结果和产出
-2. 主 Agent 检查返回结果是否符合预期
-3. **关键约束**：同一文件的所有修改必须在**单次** ordinary Agent 调用内完成，禁止跨 Agent 修改同一文件
 
 ---
 

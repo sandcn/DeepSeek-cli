@@ -23,7 +23,6 @@ _logger = logging.getLogger(__name__)
 # 每种类型映射一个不可用工具集，便于未来扩展。
 #
 # 策略差异说明：
-# - ordinary: 通用型，排除用户交互和子代理调度
 # - map: 只读分析，排除所有写入类工具 + web_search
 # - review: 代码审查，排除所有写入类工具，保留 web_search（可查文档）
 # - plan: 计划生成，保留 write_file/update_file，但在 FileToolBase
@@ -33,10 +32,9 @@ _logger = logging.getLogger(__name__)
 # - write_memory: 读写记忆，保留 write_file/update_file/mk，但在 FileToolBase
 #   ._validate_path_and_size() 中有额外的路径白名单校验（仅限 .chat/memory/）
 #   （保留 mk 以便在 .chat/memory/ 目录不存在时自行创建，与 plan 不含 mk 的策略不同）
-# - plan_execute: 计划执行型，保留读写工具 + bash，排除 web_search + dispatch_agent + user_select，
-#   无路径白名单限制（与 ordinary 行为一致），用于执行计划文件步骤并返回修改文件列表
+# - plan_execute: 计划执行型（默认），保留读写工具 + bash，排除 web_search + dispatch_agent + user_select，
+#   无路径白名单限制，用于执行计划文件步骤并返回修改文件列表
 _TOOL_EXCLUSION_MAP = {
-    "ordinary": {"dispatch_agent", "user_select"},
     "map": {
         "bash", "write_file", "update_file", "rm", "mv", "cp", "mk",
         "web_search",
@@ -78,8 +76,8 @@ _TOOL_EXCLUSION_MAP = {
 
 
 def _get_excluded_tools(agent_type: str) -> set:
-    """根据 agent_type 返回应排除的工具名集合。未知类型回退 ordinary 策略。"""
-    return _TOOL_EXCLUSION_MAP.get(agent_type, _TOOL_EXCLUSION_MAP["ordinary"])
+    """根据 agent_type 返回应排除的工具名集合。未知类型回退 plan_execute 策略。"""
+    return _TOOL_EXCLUSION_MAP.get(agent_type, _TOOL_EXCLUSION_MAP["plan_execute"])
 
 
 class SubAgent(BaseAgent):
@@ -93,7 +91,7 @@ class SubAgent(BaseAgent):
         parent_agent,
         model: str = None,
         model_port=None,
-        agent_type: str = "ordinary",
+        agent_type: str = "plan_execute",
     ):
         super().__init__()
 

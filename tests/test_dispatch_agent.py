@@ -47,14 +47,14 @@ class TestDispatchAgentsInit:
         assert da.prompt == ""
 
     def test_init_default_agent_type(self):
-        """默认 target_agent_type 为 ordinary"""
+        """默认 target_agent_type 为 plan_execute"""
         da = DispatchAgents(description="task", prompt="do it")
-        assert da.target_agent_type == "ordinary"
+        assert da.target_agent_type == "plan_execute"
 
     def test_init_custom_agent_type(self):
         """可以指定 target_agent_type"""
-        da = DispatchAgents(description="task", prompt="do it", target_agent_type="ordinary")
-        assert da.target_agent_type == "ordinary"
+        da = DispatchAgents(description="task", prompt="do it", target_agent_type="plan_execute")
+        assert da.target_agent_type == "plan_execute"
 
     def test_init_map_agent_type(self):
         """map 类型正确设置"""
@@ -111,9 +111,9 @@ class TestDispatchAgentsFromArgs:
         da = DispatchAgents.from_args({
             "description": "task",
             "prompt": "do it",
-            "type": "ordinary",
+            "type": "plan_execute",
         })
-        assert da.target_agent_type == "ordinary"
+        assert da.target_agent_type == "plan_execute"
 
     def test_from_args_with_map_type(self):
         """from_args 解析 map 类型"""
@@ -134,12 +134,12 @@ class TestDispatchAgentsFromArgs:
         assert da.target_agent_type == "plan_execute"
 
     def test_from_args_default_type(self):
-        """from_args 缺省 type 时默认 ordinary"""
+        """from_args 缺省 type 时默认 plan_execute"""
         da = DispatchAgents.from_args({
             "description": "task",
             "prompt": "do it",
         })
-        assert da.target_agent_type == "ordinary"
+        assert da.target_agent_type == "plan_execute"
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -171,7 +171,7 @@ class TestDispatchAgentsSchema:
         assert props["description"]["type"] == "string"
         assert props["prompt"]["type"] == "string"
         assert props["type"]["type"] == "string"
-        assert props["type"]["enum"] == ["ordinary", "map", "review", "plan", "read_memory", "write_memory", "plan_execute"]
+        assert props["type"]["enum"] == ["map", "review", "plan", "read_memory", "write_memory", "plan_execute"]
 
     def test_schema_parameters_required(self):
         required = DispatchAgents.to_tool_schema()["function"]["parameters"]["required"]
@@ -274,7 +274,7 @@ class TestDispatchAgentsExecute:
 
         # 验证调用链
         mock_executor.add_agent.assert_called_once_with(
-            "分析 user.py", "读取 user.py", agent_type="ordinary",
+            "分析 user.py", "读取 user.py", agent_type="plan_execute",
             model=mock_agent.model, tool_label="",
         )
 
@@ -372,7 +372,7 @@ class TestDispatchAgentsExecute:
         await da.execute()
 
         mock_executor.add_agent.assert_called_once_with(
-            "task", "do it", agent_type="ordinary",
+            "task", "do it", agent_type="plan_execute",
             model=mock_agent.model, tool_label="web_search",
         )
 

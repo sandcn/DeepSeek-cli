@@ -38,12 +38,12 @@ class Func(abc.ABC):
         self.agent = agent
 
     @classmethod
-    def can_use(cls, tool_name: str, agent_type: str = "ordinary") -> "tuple[bool, str | None]":
+    def can_use(cls, tool_name: str, agent_type: str = "plan_execute") -> "tuple[bool, str | None]":
         """检查指定类型的 agent 能否使用某工具。
 
         Args:
             tool_name: 工具名称
-            agent_type: Agent 类型（ordinary/map/review/plan/read_memory/write_memory/plan_execute），默认 ordinary
+            agent_type: Agent 类型（map/review/plan/read_memory/write_memory/plan_execute），默认 plan_execute
 
         Returns:
             (is_allowed: bool, error_message: str | None)

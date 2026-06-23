@@ -135,14 +135,14 @@ class ParallelExecutor:
         else:
             await self._all_done.wait()
 
-    def add_agent(self, description: str, prompt: str, agent_type: str = "ordinary",
+    def add_agent(self, description: str, prompt: str, agent_type: str = "plan_execute",
                   model: str = None, tool_label: str = None) -> int:
         """注册一个 agent spec，返回其在结果列表中的索引。
 
         Args:
             description: Agent 描述
             prompt: 完整指令
-            agent_type: 子Agent 类型（默认 ordinary，后续可扩展）
+            agent_type: 子Agent 类型（默认 plan_execute，后续可扩展）
             model: 模型名（可选）
             tool_label: 所属 dispatch_agent 工具的 label，用于前端路由到正确容器
         """
@@ -213,7 +213,7 @@ class ParallelExecutor:
             for i, r in enumerate(results, 1):
                 label = r.get(_LABEL_KEY, f"agent-{i}")
                 desc = r.get(_DESCRIPTION_KEY, label)
-                agent_type = r.get(_AGENT_TYPE_KEY, "ordinary")
+                agent_type = r.get(_AGENT_TYPE_KEY, "plan_execute")
                 abbr = AGENT_TYPE_ABBREV.get(agent_type, "??")
                 result_text = r.get(_RESULT_KEY, "")
                 error = r.get(_ERROR_KEY, "")
@@ -254,7 +254,7 @@ class ParallelExecutor:
         md_parts: list[str] = []
         for i, r in enumerate(results, 1):
             desc = r.get(_DESCRIPTION_KEY, f"子任务 {i}")
-            agent_type = r.get(_AGENT_TYPE_KEY, "ordinary")
+            agent_type = r.get(_AGENT_TYPE_KEY, "plan_execute")
             abbr = AGENT_TYPE_ABBREV.get(agent_type, "??")
             result_text = r.get(_RESULT_KEY, "")
             error = r.get(_ERROR_KEY, "")
@@ -377,7 +377,7 @@ class ParallelExecutor:
                 {_LABEL_KEY: f"agent-{i+1}",
                  _DESCRIPTION_KEY: spec.get(_DESCRIPTION_KEY, f"子任务 {i+1}"),
                  _RESULT_KEY: "", _ERROR_KEY: "cancelled",
-                 _AGENT_TYPE_KEY: spec.get("agent_type", "ordinary")}
+                 _AGENT_TYPE_KEY: spec.get("agent_type", "plan_execute")}
                 for i, spec in enumerate(specs)
             ] if specs else []
 
@@ -415,11 +415,11 @@ class ParallelExecutor:
                 {_LABEL_KEY: f"agent-{i+1}",
                  _DESCRIPTION_KEY: spec.get(_DESCRIPTION_KEY, f"子任务 {i+1}"),
                  _RESULT_KEY: "", _ERROR_KEY: f"{error_prefix}: {e}",
-                 _AGENT_TYPE_KEY: spec.get("agent_type", "ordinary")}
+                 _AGENT_TYPE_KEY: spec.get("agent_type", "plan_execute")}
                 for i, spec in enumerate(specs)
             ] if specs else [{_LABEL_KEY: "?", _DESCRIPTION_KEY: "?",
                               _RESULT_KEY: "", _ERROR_KEY: f"{error_prefix}: {e}",
-                              _AGENT_TYPE_KEY: "ordinary"}]
+                              _AGENT_TYPE_KEY: "plan_execute"}]
         finally:
             # 用 None 哨兵检查 results 是否已被赋值
             if results is None:
@@ -427,7 +427,7 @@ class ParallelExecutor:
                     {_LABEL_KEY: f"agent-{i+1}",
                      _DESCRIPTION_KEY: spec.get(_DESCRIPTION_KEY, f"子任务 {i+1}"),
                      _RESULT_KEY: "", _ERROR_KEY: "结果未就绪",
-                     _AGENT_TYPE_KEY: spec.get("agent_type", "ordinary")}
+                     _AGENT_TYPE_KEY: spec.get("agent_type", "plan_execute")}
                     for i, spec in enumerate(specs)
                 ]
 

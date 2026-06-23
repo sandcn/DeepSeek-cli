@@ -397,29 +397,29 @@ class TestDisplayParams:
 class TestCanUse:
     """can_use() 类方法根据 agent_type 判断工具是否可用。"""
 
-    def test_default_ordinary_allows_write_file(self):
-        """ordinary agent 可以使用 write_file。"""
-        allowed, err = Func.can_use("write_file", "ordinary")
+    def test_default_plan_execute_allows_write_file(self):
+        """plan_execute agent 可以使用 write_file。"""
+        allowed, err = Func.can_use("write_file", "plan_execute")
         assert allowed is True
         assert err is None
 
-    def test_default_ordinary_allows_read_file(self):
-        """ordinary agent 可以使用 read_file。"""
-        allowed, err = Func.can_use("read_file", "ordinary")
+    def test_default_plan_execute_allows_read_file(self):
+        """plan_execute agent 可以使用 read_file。"""
+        allowed, err = Func.can_use("read_file", "plan_execute")
         assert allowed is True
         assert err is None
 
-    def test_ordinary_excludes_dispatch_agent(self):
-        """ordinary agent 不能使用 dispatch_agent。"""
-        allowed, err = Func.can_use("dispatch_agent", "ordinary")
+    def test_plan_execute_excludes_dispatch_agent(self):
+        """plan_execute agent 不能使用 dispatch_agent。"""
+        allowed, err = Func.can_use("dispatch_agent", "plan_execute")
         assert allowed is False
         assert err is not None
         assert "dispatch_agent" in err
-        assert "ordinary" in err
+        assert "plan_execute" in err
 
-    def test_ordinary_excludes_user_select(self):
-        """ordinary agent 不能使用 user_select。"""
-        allowed, err = Func.can_use("user_select", "ordinary")
+    def test_plan_execute_excludes_user_select(self):
+        """plan_execute agent 不能使用 user_select。"""
+        allowed, err = Func.can_use("user_select", "plan_execute")
         assert allowed is False
         assert err is not None
 
@@ -499,36 +499,24 @@ class TestCanUse:
         assert allowed is False
         assert err is not None
 
-    def test_plan_execute_excludes_dispatch_agent(self):
-        """plan_execute agent 不能使用 dispatch_agent。"""
-        allowed, err = Func.can_use("dispatch_agent", "plan_execute")
-        assert allowed is False
-        assert err is not None
-
-    def test_plan_execute_excludes_user_select(self):
-        """plan_execute agent 不能使用 user_select。"""
-        allowed, err = Func.can_use("user_select", "plan_execute")
-        assert allowed is False
-        assert err is not None
-
-    def test_unknown_agent_type_falls_back_to_ordinary(self):
-        """未知 agent_type 回退 ordinary 策略。"""
+    def test_unknown_agent_type_falls_back_to_plan_execute(self):
+        """未知 agent_type 回退 plan_execute 策略。"""
         allowed, err = Func.can_use("write_file", "unknown_type")
-        # ordinary 允许 write_file
+        # plan_execute 允许 write_file
         assert allowed is True
 
     def test_can_use_is_class_method(self):
         """can_use 是类方法，无需实例化即可调用。"""
         # 直接通过 Func 基类调用
-        allowed, err = Func.can_use("read_file", "ordinary")
+        allowed, err = Func.can_use("read_file", "plan_execute")
         assert allowed is True
 
         # 通过子类调用
-        allowed, err = _ConcreteTool.can_use("read_file", "ordinary")
+        allowed, err = _ConcreteTool.can_use("read_file", "plan_execute")
         assert allowed is True
 
     def test_can_use_default_agent_type(self):
-        """默认 agent_type 为 ordinary。"""
+        """默认 agent_type 为 plan_execute。"""
         allowed, err = Func.can_use("write_file")
         assert allowed is True
         allowed, err = Func.can_use("dispatch_agent")
