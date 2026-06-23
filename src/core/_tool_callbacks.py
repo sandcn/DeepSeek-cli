@@ -2,6 +2,12 @@
 
 从 agent.py 提取，封装工具执行的完整生命周期：
   handle_tool_calls → _run_tool_method → _on_before_tool / _on_after_tool
+
+工具执行四波排序：
+  Wave 0: user_select 串行（独占终端）
+  Wave 1: 只读工具并行（read_file/search/find/ls/web_search）
+  Wave 2: 写工具串行（write_file/update_file/cp/mv/rm/mk/bash 等）
+  Wave 3: dispatch_agent 并发（SubAgent，前三波完成后执行）
 """
 
 from __future__ import annotations
@@ -17,6 +23,13 @@ from ..tools.registry import get_tool_display_name
 from ..config import audit_logger
 
 _logger = logging.getLogger(__name__)
+
+# ── 只读工具集合（并行安全、无副作用） ──────────────────
+# 这些工具仅读取/搜索，不修改文件系统或外部状态，可以安全并行。
+# 注意：bash 不在此集合中，因为无法在调用侧判断其读写性质。
+_READ_ONLY_TOOLS: frozenset[str] = frozenset({
+    "read_file", "search", "find", "ls", "web_search",
+})
 
 
 def _safe_json_dumps(obj) -> str:
@@ -60,7 +73,12 @@ class ToolCallbackChain:
     # ── 工具调用主入口 ──────────────────────────────────
 
     async def handle_tool_calls(self, content, tool_calls, reasoning_content=None, usage=None):
-        """处理工具调用，通过 AsyncToolExecutor 执行"""
+        """处理工具调用，按四波排序执行：
+        Wave 0: user_select 串行（独占终端）
+        Wave 1: 只读工具并行（read_file/search/find/ls/web_search）
+        Wave 2: 写工具串行（write_file/update_file/cp/mv/rm/mk/bash 等）
+        Wave 3: dispatch_agent 并发（SubAgent，前三波完成后执行）
+        """
         agent = self._agent
         parse_elapsed = (usage or {}).get("tool_parse_elapsed", 0.0)
 
@@ -76,43 +94,77 @@ class ToolCallbackChain:
 
         agent._append_assistant_message(content, tool_calls, reasoning_content)
 
+        # ── 工具分类（按四波排序） ──────────────────────
         # user_select 是交互式终端工具，必须串行执行：
         # 其 _execute_terminal() 在子线程中通过 asyncio.to_thread 运行，
         # 并行执行时其他工具的 _start_tool_output_capture() 会竞态替换
         # sys.stdout 为 _SharedCapture（非 TTY），导致 prompt_toolkit 的
         # create_output() 回退为 PlainTextOutput，Picker TUI 无法显示。
         user_select_calls = [tc for tc in tool_calls if tc.get("name") == "user_select"]
-        other_calls = [tc for tc in tool_calls if tc.get("name") != "user_select"]
+        dispatch_agent_calls = [tc for tc in tool_calls if tc.get("name") == "dispatch_agent"]
+        read_only_calls = [tc for tc in tool_calls if tc.get("name") in _READ_ONLY_TOOLS]
+        # 写工具：不在上述三类中的所有工具（含 bash 等）
+        _excluded = {"user_select", "dispatch_agent"} | _READ_ONLY_TOOLS
+        write_calls = [tc for tc in tool_calls if tc.get("name") not in _excluded]
 
-        # 先串行执行 user_select（独占终端输入）
+        # ── 回调工厂（消除 lambda 重复） ────────────────
+        def _on_before(tc, detail):
+            return self._on_before_tool(tc, detail, parse_elapsed)
+        def _on_after(tc, output, success):
+            return self._on_after_tool(tc, output, success)
+
+        # ── 按波次执行 ─────────────────────────────────
         try:
-            user_select_results: list = []
-            if user_select_calls:
-                user_select_results = await agent._async_tool_executor.execute_async(
-                    user_select_calls,
-                    agent_ref=agent,
-                    on_before=lambda tc, detail: self._on_before_tool(tc, detail, parse_elapsed),
-                    on_after=lambda tc, output, success: self._on_after_tool(tc, output, success),
-                    run_method=self._run_tool_method,
-                    parallel=False,
-                )
+            results_map: dict[str, tuple] = {}  # tool_call_id → (id, output, success)
+            # 依赖 Python 3.7+ dict 插入顺序保持；各波次按序插入后，
+            # 最终按原始 tool_calls 顺序提取结果。
 
-            # 再并行执行其余工具
-            other_results: list = []
-            if other_calls:
-                other_results = await agent._async_tool_executor.execute_async(
-                    other_calls,
+            async def _execute_wave(calls, parallel):
+                """执行一波工具调用，结果写入 results_map"""
+                if not calls:
+                    return
+                wave_results = await agent._async_tool_executor.execute_async(
+                    calls,
                     agent_ref=agent,
-                    on_before=lambda tc, detail: self._on_before_tool(tc, detail, parse_elapsed),
-                    on_after=lambda tc, output, success: self._on_after_tool(tc, output, success),
+                    on_before=_on_before,
+                    on_after=_on_after,
                     run_method=self._run_tool_method,
-                    parallel=True,
+                    parallel=parallel,
                 )
+                for r in wave_results:
+                    results_map[r[0]] = r
+
+            # Wave 0: user_select 串行（独占终端输入）
+            await _execute_wave(user_select_calls, parallel=False)
+
+            # Wave 1: 只读工具并行
+            await _execute_wave(read_only_calls, parallel=True)
+
+            # Wave 2: 写工具串行
+            await _execute_wave(write_calls, parallel=False)
+
+            # Wave 3: dispatch_agent 并发（SubAgent 在前三波完成后执行）
+            await _execute_wave(dispatch_agent_calls, parallel=True)
+
         finally:
-            # 确保取消/异常时也清理共享 executor
+            # 确保取消/异常时也释放 barrier 并清理共享 executor
+            # 若 Wave 0-2 异常导致 Wave 3 未执行，已注册但等待
+            # _all_done 的 dispatch_agent 协程会永久挂起——
+            # 显式 set() 确保它们收到释放信号后正常退出。
+            if agent._shared_executor is not None:
+                agent._shared_executor._all_done.set()
             agent._shared_executor = None
 
-        results = user_select_results + other_results
+        # 按原始 tool_calls 顺序重建结果列表
+        results = []
+        for tc in tool_calls:
+            tc_id = tc["id"]
+            if tc_id in results_map:
+                results.append(results_map[tc_id])
+            else:
+                # 极端异常路径：execute_async 未返回某工具的结果
+                _logger.warning("工具结果丢失: %s (id=%s)", tc.get("name", "?"), tc_id)
+                results.append((tc_id, f"错误：工具 '{tc.get('name', '?')}' 结果丢失", False))
 
         successful_tools = []
         failed_tools = []
