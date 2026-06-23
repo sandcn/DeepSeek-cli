@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import logging
+import os
 import queue
 import sys
 import threading
@@ -14,7 +15,7 @@ from typing import TYPE_CHECKING, Any, Callable
 if TYPE_CHECKING:
     from ._protocols import BottomBarProtocol
 
-from ._renderer import TuiRenderer
+from ._renderer import TuiRenderer, RichLiveContentRenderer
 from ._const import (
     RenderCommand,
     _RENDER_INTERVAL,
@@ -68,11 +69,29 @@ class TuiEngine:
         self._bottom_redraw_requested = threading.Event()
         self._panel_refresh_cb: Callable[[], None] | None = None
 
+        # Rich Live 差分渲染（默认关闭，通过环境变量启用）
+        self._use_rich_live: bool = (
+            os.environ.get('CHAT_UI_RENDER_USE_RICH_LIVE', '').strip().lower()
+            in ('1', 'true', 'yes', 'on')
+        )
+        self._rich_renderer: RichLiveContentRenderer | None = None
+        if self._use_rich_live:
+            # 使用 getattr 访问 _rs 以避免直接访问私有属性
+            _render_state = getattr(renderer, '_rs', None)
+            if _render_state is not None:
+                self._rich_renderer = RichLiveContentRenderer(
+                    _render_state, renderer.output_adapter
+                )
+            if not self._rich_renderer.available:
+                _logger.warning("Rich Live 不可用（缺少 rich 库），回退到手动渲染")
+                self._rich_renderer = None
+                self._use_rich_live = False
+
     def push_cmd(self, cmd: tuple) -> None:
         """入队渲染命令到命令队列。
 
-        非阻塞写入，队列满时丢弃并记录警告。
-        连续满载超过阈值时升级为错误日志。
+        非阻塞写入，队列满时优先合并同类型 CONTENT/REASONING 命令，
+        合并失败则丢弃并记录警告。连续满载超过阈值时升级为错误日志。
 
         Args:
             cmd: 渲染命令元组，格式为 (command_id, *args)
@@ -83,6 +102,22 @@ class TuiEngine:
                 self._consecutive_full = 0
             self._cmd_event.set()
         except queue.Full:
+            cmd_type = cmd[0]
+            if cmd_type in (RenderCommand.REASONING, RenderCommand.CONTENT) and len(cmd) >= 2:
+                try:
+                    dq = self._cmd_queue.queue
+                    if dq:
+                        last = dq[-1]
+                        if last[0] == cmd_type and len(last) >= 2:
+                            merged_text = last[1] + cmd[1]
+                            new_cmd = (cmd_type, merged_text)
+                            dq[-1] = new_cmd
+                            with self._full_lock:
+                                self._consecutive_full = 0
+                            self._cmd_event.set()
+                            return
+                except (AttributeError, IndexError, TypeError):
+                    pass
             with self._full_lock:
                 self._consecutive_full += 1
                 full_count = self._consecutive_full
@@ -105,6 +140,11 @@ class TuiEngine:
         self._render_running = True
         self._render_thread = threading.Thread(target=self._render, daemon=True)
         self._render_thread.start()
+        if self._rich_renderer is not None:
+            try:
+                self._rich_renderer.start()
+            except Exception:
+                _logger.warning("Rich Live 启动失败", exc_info=True)
 
     def stop(self) -> None:
         self._render_running = False
@@ -116,6 +156,11 @@ class TuiEngine:
                     if not self._render_thread.is_alive():
                         break
         self._drain_queue_safe()
+        if self._rich_renderer is not None:
+            try:
+                self._rich_renderer.stop()
+            except Exception:
+                _logger.warning("Rich Live 停止失败", exc_info=True)
 
     def flush(self, timeout: float | None = 5.0) -> None:
         if self._render_thread is None or not self._render_thread.is_alive():
@@ -152,7 +197,9 @@ class TuiEngine:
     def _phase_render(self, commands: list[tuple]) -> None:
         """阶段 2：执行渲染命令。
 
-        逐条分发给 TuiRenderer.render 进行渲染。
+        当 _use_rich_live=True 时，CONTENT/REASONING 命令通过 Rich Live
+        差分渲染（减少手动 ANSI 刷新），其他命令仍走 TuiRenderer 直出。
+        底部栏 DECSTBM 管理不受影响。
 
         Args:
             commands: 一批待渲染的命令元组列表，每项格式为 (command_id, *args)
@@ -162,14 +209,34 @@ class TuiEngine:
         except Exception:
             _logger.debug("sync_bottom_lines 异常", exc_info=True)
         self.ensure_cursor_upper()
-        for cmd in commands:
+
+        if self._use_rich_live and self._rich_renderer is not None:
+            # Rich Live 路径：内容命令走差分渲染，其他命令直出
             try:
-                self._renderer.render(cmd)
+                for cmd in commands:
+                    if cmd[0] in (RenderCommand.CONTENT, RenderCommand.REASONING) and len(cmd) >= 2:
+                        self._rich_renderer.update_content(cmd[1])
+                    else:
+                        try:
+                            self._renderer.render(cmd)
+                        except Exception:
+                            _logger.debug("渲染命令 %s 失败", cmd, exc_info=True)
+                            self.push_cmd(
+                                (RenderCommand.ERROR, f"渲染命令 {_cmd_name(cmd[0])} 失败")
+                            )
+                self._rich_renderer.refresh()
             except Exception:
-                _logger.debug("渲染命令 %s 失败", cmd, exc_info=True)
-                self.push_cmd(
-                    (RenderCommand.ERROR, f"渲染命令 {_cmd_name(cmd[0])} 失败")
-                )
+                _logger.debug("Rich Live 渲染异常", exc_info=True)
+        else:
+            # 默认路径：逐条分发渲染
+            for cmd in commands:
+                try:
+                    self._renderer.render(cmd)
+                except Exception:
+                    _logger.debug("渲染命令 %s 失败", cmd, exc_info=True)
+                    self.push_cmd(
+                        (RenderCommand.ERROR, f"渲染命令 {_cmd_name(cmd[0])} 失败")
+                    )
 
     def _phase_redraw_bottom(self, has_commands: bool) -> None:
         """阶段 3：重绘底部栏。

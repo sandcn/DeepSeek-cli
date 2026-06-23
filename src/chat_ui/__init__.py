@@ -7,7 +7,7 @@
     ├── UserMsgBlock / ThinkingBlock / AnswerBlock
     ├── ToolOutputBlock / ToolSummaryBlock
     ├── ErrorBlock / NotificationBlock / WriteLineBlock
-    └── StatusLine / InputLine / CompletionPopup / SelectionMenu
+    └── StatusLine / InputLine / CompletionPopup / SelectionMenu (@dataclass 数据模型)
   _renderer.py  — 渲染器（TuiRenderer + _RENDER_DISPATCH 命令分发表）
     ├── _RenderState  — IncrementalRenderer 生命周期管理
     ├── _RENDER_DISPATCH — 渲染命令分发表

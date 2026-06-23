@@ -3,12 +3,14 @@
 从 _bottom_bar.py 提取，供 _BottomBar 及其子模块共享。
 
 颜色策略（双轨制）：
-  - 现有 _COLOR_* 常量保持原始 ANSI 字符串不变（向后兼容，零开销）
+  - _COLOR_* 常量通过 StyledText.to_ansi_raw() 生成（单一 ANSI 事实来源）
   - _blessed_* 辅助函数供需要动态颜色的新代码使用
   - 颜色常量为纯字符串，可直接与 Blessed 的 move_xy/clear_eol 混合使用
 """
 
 from __future__ import annotations
+
+from ..chat_ui._styled import StyledText
 
 
 # ── 底部栏布局配置 ──────────────────────────────────────────
@@ -17,20 +19,20 @@ _BOTTOM_REFRESH_MS = 0.05   # 底部栏刷新节流（50ms）
 _MIN_INPUT_ROWS = 3         # 输入区最小行数（空输入时至少显示 3 行）
 _BOTTOM_MIN_LINES = 5       # setup() 中最小底部栏总行数（2 分隔线+状态行 + 3 最小输入行）
 
-# ── ANSI 颜色常量（优雅视觉风，保留原始 ANSI 字符串） ──
-_COLOR_ACCENT = "\033[38;5;39m"       # 青色强调（提示符/模型名/状态）
-_COLOR_DEEP_CYAN = "\033[38;5;30m"    # 深青（输入提示符最暗色）
-_COLOR_DIM = "\033[38;5;245m"         # 灰色次要（分隔线/占位/统计）
+# ── ANSI 颜色常量（通过 StyledText.to_ansi_raw() 生成） ──
+_COLOR_ACCENT = StyledText.to_ansi_raw(color_number=39)       # 青色强调（提示符/模型名/状态）
+_COLOR_DEEP_CYAN = StyledText.to_ansi_raw(color_number=30)    # 深青（输入提示符最暗色）
+_COLOR_DIM = StyledText.to_ansi_raw(color_number=245)         # 灰色次要（分隔线/占位/统计）
 _COLOR_RESET = "\033[0m"              # 重置
-_COLOR_SELECT_BG = "\033[48;5;238m"   # 选中项高亮背景（深灰背景，#238 比 #236 略亮，改善 light 主题可见性）
-_COLOR_SELECT_FG = "\033[38;5;15m"    # 选中项前景色（亮白，确保反显高对比度）
-_COLOR_SEP = "\033[38;5;237m"         # 分隔线深灰
-_COLOR_COMPLETE_TITLE = "\033[1;38;5;45m"   # 补全弹窗标题色（亮青加粗）
-_COLOR_TOOL_OK = "\033[38;5;40m"      # 工具成功计数
-_COLOR_TOOL_FAIL = "\033[38;5;9m"     # 工具失败计数
-_COLOR_TIME = "\033[38;5;110m"        # 蓝灰（耗时/时间戳）
-_COLOR_TOKEN = "\033[38;5;68m"        # 靛蓝（Token 计数）
-_COLOR_SPEED = "\033[38;5;214m"       # 琥珀色（速率）
+_COLOR_SELECT_BG = StyledText.to_ansi_raw(bg_color_number=238)   # 选中项高亮背景（深灰背景，#238 比 #236 略亮，改善 light 主题可见性）
+_COLOR_SELECT_FG = StyledText.to_ansi_raw(color_number=15)    # 选中项前景色（亮白，确保反显高对比度）
+_COLOR_SEP = StyledText.to_ansi_raw(color_number=237)         # 分隔线深灰
+_COLOR_COMPLETE_TITLE = StyledText.to_ansi_raw(color_number=45, bold=True)   # 补全弹窗标题色（亮青加粗）
+_COLOR_TOOL_OK = StyledText.to_ansi_raw(color_number=40)      # 工具成功计数
+_COLOR_TOOL_FAIL = StyledText.to_ansi_raw(color_number=9)     # 工具失败计数
+_COLOR_TIME = StyledText.to_ansi_raw(color_number=110)        # 蓝灰（耗时/时间戳）
+_COLOR_TOKEN = StyledText.to_ansi_raw(color_number=68)        # 靛蓝（Token 计数）
+_COLOR_SPEED = StyledText.to_ansi_raw(color_number=214)       # 琥珀色（速率）
 
 # ── በBlessed 颜色辅助函数 ─────────────────────────────────────
 # 供需要动态颜色的新代码使用，与现有 _COLOR_* 常量共存

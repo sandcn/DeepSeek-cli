@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import logging
+import os
 import sys
 import threading
 import time
@@ -46,6 +47,12 @@ from ._renderer import TuiRenderer, _RenderState
 from ._dispatcher import EventDispatcher, _HANDLER_MAP
 from ._protocols import BottomBarProtocol
 from ._completion import _CmplHandler, _apply_completion
+
+try:
+    from ._prompt_input import PromptInputManager, _PROMPT_TOOLKIT_AVAILABLE
+except ImportError:
+    _PROMPT_TOOLKIT_AVAILABLE = False
+    PromptInputManager = None  # type: ignore[assignment]
 
 _logger = logging.getLogger(__name__)
 
@@ -98,10 +105,19 @@ class ChatUIConsumer:
         )
         self._disp = EventDispatcher(push_cmd=self._engine.push_cmd)
         self._rs.set_output_adapter(output_adapter)
+        self._completion_engine = CompletionEngine()
         self._cmpl = _CmplHandler(
-            self._bottom_bar, CompletionEngine(),
+            self._bottom_bar, self._completion_engine,
             request_redraw=self._engine.request_bottom_redraw,
         )
+        # ── prompt_toolkit 输入管理器（可选依赖） ──
+        self._prompt_input: PromptInputManager | None = None
+        if (_PROMPT_TOOLKIT_AVAILABLE
+                and os.environ.get('CHAT_UI_USE_PROMPT_TOOLKIT', '').lower()
+                in ('1', 'true', 'yes', 'on')):
+            self._prompt_input = PromptInputManager()
+            self._prompt_input.set_completion_engine(self._completion_engine)
+            _logger.debug("PromptInputManager 已初始化（prompt_toolkit 可用）")
         self._bound_handlers: dict[type, Any] | None = None
         self._state_lock = threading.Lock()
         self._started = False
@@ -274,6 +290,13 @@ class ChatUIConsumer:
         monitor.set_dismiss_completion_callback(self._cmpl.on_dismiss)
         monitor.set_completion_navigate_callback(self._cmpl.on_navigate)
         monitor.set_auto_completion_callback(self._cmpl.on_auto)
+
+    def get_input_manager(self) -> "PromptInputManager | None":
+        """返回 PromptInputManager 实例（可选依赖）。
+
+        当 prompt_toolkit 不可用时返回 None，调用方应回退到 EscapeMonitor。
+        """
+        return self._prompt_input
 
     @property
     def bottom_bar(self):

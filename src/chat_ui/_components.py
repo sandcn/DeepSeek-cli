@@ -1,4 +1,4 @@
-"""组件层 — TuiComponent 基类 + 11 个子类。
+"""组件层 — TuiComponent 基类 + 8 个消息流子类 + 4 个 @dataclass 数据模型。
 
 从 _tui.py 拆分，包含所有消息流组件和底部栏组件的数据模型定义。
 BottomBarProtocol 已移至 _protocols.py，此处保留兼容 re-export。
@@ -10,6 +10,7 @@ import logging
 import shutil
 import time
 import unicodedata
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -335,18 +336,18 @@ class WriteLineBlock(TuiComponent):
 # 底部栏组件
 # ═══════════════════════════════════════════════════════════
 
-class StatusLine(TuiComponent):
+@dataclass
+class StatusLine:
     """状态行 — 模型名 · tokens · 时间 · 工具计数。
 
     由底部栏 _BottomBar 负责实际渲染，此组件为数据模型。
     """
-    def __init__(self):
-        self.model: str = ""
-        self.tokens: int = 0
-        self.elapsed: float = 0.0
-        self.tool_count: int = 0
-        self.tool_fail: int = 0
-        self.streaming: bool = False
+    model: str = ""
+    tokens: int = 0
+    elapsed: float = 0.0
+    tool_count: int = 0
+    tool_fail: int = 0
+    streaming: bool = False
 
     def render(self) -> str:
         """渲染为单行状态文本。"""
@@ -365,28 +366,28 @@ class StatusLine(TuiComponent):
         return " · ".join(parts) if parts else ""
 
 
-class InputLine(TuiComponent):
+@dataclass
+class InputLine:
     """输入行 — > 提示符 + 用户输入文本 + 光标。
 
     由底部栏 _BottomBar 负责实际渲染，此组件为数据模型。
     """
-    def __init__(self):
-        self.text: str = ""
-        self.cursor_pos: int = 0
+    text: str = ""
+    cursor_pos: int = 0
 
     def render(self) -> str:
         return f"> {self.text}"
 
 
-class CompletionPopup(TuiComponent):
+@dataclass
+class CompletionPopup:
     """补全弹窗 — 浮动在输入行上方的候选项列表。
 
     由底部栏 _CompletionPopup 负责实际渲染，此组件为数据模型。
     """
-    def __init__(self):
-        self.items: list[str] = []
-        self.selected: int = 0
-        self.visible: bool = False
+    items: list[str] = field(default_factory=list)
+    selected: int = 0
+    visible: bool = False
 
     def show(self, items: list[str], selected: int = 0) -> None:
         self.items = items
@@ -407,16 +408,16 @@ class CompletionPopup(TuiComponent):
         return "\n".join(lines)
 
 
-class SelectionMenu(TuiComponent):
+@dataclass
+class SelectionMenu:
     """底部选择菜单 — 供 user_select / 消息编辑 / 命令面板等使用。
 
     由底部栏 _BottomBar.run_bottom_bar_selection() 实际渲染。
     """
-    def __init__(self):
-        self.items: list[str] = []
-        self.selected: int = 0
-        self.visible: bool = False
-        self.title: str = ""
+    items: list[str] = field(default_factory=list)
+    selected: int = 0
+    visible: bool = False
+    title: str = ""
 
     def render(self) -> str:
         if not self.visible:

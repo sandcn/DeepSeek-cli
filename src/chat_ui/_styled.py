@@ -16,7 +16,8 @@ import logging
 import re
 from dataclasses import dataclass, field
 
-from ._ansi import style, _RESET, ANSI_RESET
+from ._ansi import (style, _RESET, ANSI_RESET, _fg_code, _bg_code,
+                    ANSI_BOLD, ANSI_DIM, ANSI_ITALIC, ANSI_UNDERLINE, ANSI_REVERSE)
 
 _logger = logging.getLogger(__name__)
 
@@ -27,13 +28,17 @@ class Span:
 
     Attributes:
         text: 文本内容
-        fg: 前景色名
-        bg: 背景色名
+        fg: 前景色名（如 'red', '#FF0000'），与 color_number 互斥
+        bg: 背景色名，与 bg_color_number 互斥
+        color_number: 256 色前景色号（0-255），优先于 fg
+        bg_color_number: 256 色背景色号（0-255），优先于 bg
         bold/dim/italic/underline/reverse/strikethrough: 样式标志
     """
     text: str
     fg: str | None = None
     bg: str | None = None
+    color_number: int | None = None
+    bg_color_number: int | None = None
     bold: bool = False
     dim: bool = False
     italic: bool = False
@@ -42,11 +47,51 @@ class Span:
     strikethrough: bool = False
 
     def to_ansi(self) -> str:
-        """将 Span 转为 ANSI 包裹的字符串。"""
-        return style(self.text, fg=self.fg, bg=self.bg,
-                     bold=self.bold, dim=self.dim, italic=self.italic,
-                     underline=self.underline, reverse=self.reverse,
-                     strikethrough=self.strikethrough)
+        """将 Span 转为 ANSI 包裹的字符串（含重置码）。
+
+        当 color_number/bg_color_number 存在时，生成合并的 SGR 序列
+        （如 \\033[1;38;5;45mtext\\033[0m），与原始硬编码 ANSI 逐字节兼容。
+        """
+        # 使用 to_ansi_raw 的合并 SGR 逻辑生成前缀
+        prefix = _span_to_ansi_prefix(self)
+        if not prefix:
+            return self.text
+        return f"{prefix}{self.text}{ANSI_RESET}"
+
+
+def _span_to_ansi_prefix(span: Span) -> str:
+    """从 Span 生成合并的 ANSI 前缀字符串（不含文本和重置码）。
+
+    当存在 color_number/bg_color_number 时，尽量合并为单条 SGR 序列；
+    否则回退到 _fg_code/_bg_code 拼接模式。
+    """
+    params: list[int] = []
+    if span.bold:            params.append(1)
+    if span.dim:             params.append(2)
+    if span.italic:          params.append(3)
+    if span.underline:       params.append(4)
+    if span.reverse:         params.append(7)
+    if span.strikethrough:   params.append(9)
+
+    # 前景色
+    if span.color_number is not None:
+        params.extend([38, 5, span.color_number])
+    elif span.fg:
+        codes = [f"\033[{p}m" for p in params] if params else []
+        codes.append(_fg_code(span.fg))
+        return "".join(codes)
+
+    # 背景色
+    if span.bg_color_number is not None:
+        params.extend([48, 5, span.bg_color_number])
+    elif span.bg:
+        codes = [f"\033[{p}m" for p in params] if params else []
+        codes.append(_bg_code(span.bg))
+        return "".join(codes)
+
+    if not params:
+        return ""
+    return f"\033[{';'.join(map(str, params))}m"
 
 
 class StyledText:
@@ -62,6 +107,8 @@ class StyledText:
 
     def __init__(self, text: str = "", *,
                  fg: str | None = None, bg: str | None = None,
+                 color_number: int | None = None,
+                 bg_color_number: int | None = None,
                  bold: bool = False, dim: bool = False,
                  italic: bool = False, underline: bool = False,
                  reverse: bool = False, strikethrough: bool = False):
@@ -69,13 +116,16 @@ class StyledText:
 
         Args:
             text: 文本内容
-            fg/bg: 前景/背景色名
+            fg/bg: 前景/背景色名（与 color_number/bg_color_number 互斥）
+            color_number: 256 色前景色号（0-255），优先于 fg
+            bg_color_number: 256 色背景色号（0-255），优先于 bg
             bold/dim/italic/underline/reverse/strikethrough: 样式标志
         """
         self._spans: list[Span] = []
         if text:
             self._spans.append(Span(
                 text=text, fg=fg, bg=bg,
+                color_number=color_number, bg_color_number=bg_color_number,
                 bold=bold, dim=dim, italic=italic,
                 underline=underline, reverse=reverse,
                 strikethrough=strikethrough,
@@ -120,9 +170,13 @@ class StyledText:
         result = RichText()
         for span in self._spans:
             style_kwargs: dict = {}
-            if span.fg:
+            if span.color_number is not None:
+                style_kwargs["color"] = f"#{_256_to_hex(span.color_number)}"
+            elif span.fg:
                 style_kwargs["color"] = span.fg
-            if span.bg:
+            if span.bg_color_number is not None:
+                style_kwargs["bgcolor"] = f"#{_256_to_hex(span.bg_color_number)}"
+            elif span.bg:
                 style_kwargs["bgcolor"] = span.bg
             if span.bold:
                 style_kwargs["bold"] = True
@@ -199,6 +253,8 @@ class StyledText:
         """从 ANSI 转义文本解析为 StyledText。
 
         解析 `\\033[...m` 序列，将 SGR 参数映射为 Span 样式。
+        256 色（38;5;N / 48;5;N）保留原始色号，
+        标准 16 色和 bright 变体映射为色名。
 
         Args:
             text: 含 ANSI 转义序列的文本
@@ -214,6 +270,8 @@ class StyledText:
 
         current_fg: str | None = None
         current_bg: str | None = None
+        current_color_number: int | None = None
+        current_bg_color_number: int | None = None
         current_bold = False
         current_dim = False
         current_italic = False
@@ -221,31 +279,34 @@ class StyledText:
         current_reverse = False
         current_strikethrough = False
 
+        def _make_span(t: str) -> Span:
+            return Span(
+                text=t,
+                fg=current_fg, bg=current_bg,
+                color_number=current_color_number,
+                bg_color_number=current_bg_color_number,
+                bold=current_bold, dim=current_dim,
+                italic=current_italic, underline=current_underline,
+                reverse=current_reverse, strikethrough=current_strikethrough,
+            )
+
         pos = 0
         for m in ansi_re.finditer(text):
             # 输出前面的纯文本
             if m.start() > pos:
                 plain = text[pos:m.start()]
                 if plain:
-                    result._spans.append(Span(
-                        text=plain, fg=current_fg, bg=current_bg,
-                        bold=current_bold, dim=current_dim,
-                        italic=current_italic, underline=current_underline,
-                        reverse=current_reverse, strikethrough=current_strikethrough,
-                    ))
+                    result._spans.append(_make_span(plain))
 
             # 解析 SGR 参数
             params_str = m.group(1)
             if params_str == "" or params_str == "0":
                 # 重置
-                current_fg = None
-                current_bg = None
-                current_bold = False
-                current_dim = False
-                current_italic = False
-                current_underline = False
-                current_reverse = False
-                current_strikethrough = False
+                current_fg = None; current_bg = None
+                current_color_number = None; current_bg_color_number = None
+                current_bold = False; current_dim = False
+                current_italic = False; current_underline = False
+                current_reverse = False; current_strikethrough = False
             else:
                 params = [int(p) for p in params_str.split(";") if p]
                 i = 0
@@ -253,6 +314,7 @@ class StyledText:
                     p = params[i]
                     if p == 0:
                         current_fg = None; current_bg = None
+                        current_color_number = None; current_bg_color_number = None
                         current_bold = False; current_dim = False
                         current_italic = False; current_underline = False
                         current_reverse = False; current_strikethrough = False
@@ -267,35 +329,39 @@ class StyledText:
                     elif p == 24: current_underline = False
                     elif p == 27: current_reverse = False
                     elif p == 29: current_strikethrough = False
-                    elif p == 39: current_fg = None
-                    elif p == 49: current_bg = None
+                    elif p == 39: current_fg = None; current_color_number = None
+                    elif p == 49: current_bg = None; current_bg_color_number = None
                     elif 30 <= p <= 37:
                         fg_map = {30:"black",31:"red",32:"green",33:"yellow",
                                   34:"blue",35:"magenta",36:"cyan",37:"white"}
                         current_fg = fg_map.get(p)
+                        current_color_number = None
                     elif 40 <= p <= 47:
                         bg_map = {40:"black",41:"red",42:"green",43:"yellow",
                                   44:"blue",45:"magenta",46:"cyan",47:"white"}
                         current_bg = bg_map.get(p)
+                        current_bg_color_number = None
                     elif 90 <= p <= 97:
                         fg_map = {90:"bright_black",91:"bright_red",92:"bright_green",
                                   93:"bright_yellow",94:"bright_blue",95:"bright_magenta",
                                   96:"bright_cyan",97:"bright_white"}
                         current_fg = fg_map.get(p)
+                        current_color_number = None
                     elif 100 <= p <= 107:
                         bg_map = {100:"bright_black",101:"bright_red",102:"bright_green",
                                   103:"bright_yellow",104:"bright_blue",105:"bright_magenta",
                                   106:"bright_cyan",107:"bright_white"}
                         current_bg = bg_map.get(p)
+                        current_bg_color_number = None
                     elif p == 38 and i + 2 < len(params) and params[i+1] == 5:
-                        # 38;5;N — 256 色前景
-                        idx = params[i+2]
-                        current_fg = f"#{_256_to_hex(idx)}"
+                        # 38;5;N — 256 色前景（保留原始色号）
+                        current_color_number = params[i+2]
+                        current_fg = None
                         i += 2
                     elif p == 48 and i + 2 < len(params) and params[i+1] == 5:
-                        # 48;5;N — 256 色背景
-                        idx = params[i+2]
-                        current_bg = f"#{_256_to_hex(idx)}"
+                        # 48;5;N — 256 色背景（保留原始色号）
+                        current_bg_color_number = params[i+2]
+                        current_bg = None
                         i += 2
                     i += 1
 
@@ -305,14 +371,62 @@ class StyledText:
         if pos < len(text):
             plain = text[pos:]
             if plain:
-                result._spans.append(Span(
-                    text=plain, fg=current_fg, bg=current_bg,
-                    bold=current_bold, dim=current_dim,
-                    italic=current_italic, underline=current_underline,
-                    reverse=current_reverse, strikethrough=current_strikethrough,
-                ))
+                result._spans.append(_make_span(plain))
 
         return result
+
+    @staticmethod
+    def to_ansi_raw(fg=None, bg=None, bold=False, dim=False, italic=False,
+                    underline=False, reverse=False, strikethrough=False,
+                    color_number=None, bg_color_number=None):
+        """返回纯 ANSI 前缀字符串（不含文本和重置码），用于底部栏颜色常量。
+
+        生成尽可能合并的 SGR 序列（如 \\033[1;38;5;45m），
+        与原始硬编码 ANSI 逐字节兼容。
+
+        Args:
+            fg: 前景色名（如 'red', '#FF0000'），与 color_number 互斥
+            bg: 背景色名，与 bg_color_number 互斥
+            bold/dim/italic/underline/reverse/strikethrough: 样式标志
+            color_number: 256 色前景色号（0-255），优先于 fg
+            bg_color_number: 256 色背景色号（0-255），优先于 bg
+
+        Returns:
+            ANSI 前缀字符串（如 "\\033[38;5;39m"），无属性时返回空字符串。
+        """
+        params: list[int] = []
+        if bold:            params.append(1)
+        if dim:             params.append(2)
+        if italic:          params.append(3)
+        if underline:       params.append(4)
+        if reverse:         params.append(7)
+        if strikethrough:   params.append(9)
+
+        # 前景色
+        if color_number is not None:
+            params.extend([38, 5, color_number])
+        elif fg:
+            # 命名颜色与样式参数无法合并，回退到拼接模式
+            codes = _params_to_codes(params) if params else []
+            codes.append(_fg_code(fg))
+            return "".join(codes)
+
+        # 背景色
+        if bg_color_number is not None:
+            params.extend([48, 5, bg_color_number])
+        elif bg:
+            codes = _params_to_codes(params) if params else []
+            codes.append(_bg_code(bg))
+            return "".join(codes)
+
+        if not params:
+            return ""
+        return f"\033[{';'.join(map(str, params))}m"
+
+
+def _params_to_codes(params: list[int]) -> list[str]:
+    """将 SGR 参数列表转为 ANSI 序列列表（每个样式单独一条）。"""
+    return [f"\033[{p}m" for p in params]
 
 
 def _256_to_hex(idx: int) -> str:

@@ -240,10 +240,76 @@ class TuiRenderer:
 
 
 # ═══════════════════════════════════════════════════════════
+# RichLiveContentRenderer — Rich Live 内容区渲染器
+# ═══════════════════════════════════════════════════════════
+
+class RichLiveContentRenderer:
+    """Rich Live 内容区渲染器 — 差分渲染，替代手动 ANSI 刷新。
+
+    通过配置开关 chat_ui.render.use_rich_live 控制启用。
+    仅管理滚动内容区（DECSTBM 上方），底部栏保留手动 DECSTBM 管理。
+    """
+
+    def __init__(self, render_state: _RenderState, output_adapter):
+        self._rs = render_state
+        self._adapter = output_adapter
+        self._live = None
+        self._content_buffer: list[str] = []
+        self._available = False
+        try:
+            from rich.live import Live
+            from rich.panel import Panel
+            self._Live = Live
+            self._Panel = Panel
+            self._available = True
+        except ImportError:
+            pass
+
+    @property
+    def available(self) -> bool:
+        return self._available
+
+    def start(self) -> None:
+        """启动 Rich Live 上下文。"""
+        if not self._available:
+            return
+        self._live = self._Live(
+            self._Panel(" ", title="Chat"),
+            refresh_per_second=10,
+            auto_refresh=False,
+            console=self._adapter._console if hasattr(self._adapter, '_console') else None,
+        )
+        self._live.start()
+
+    def update_content(self, text: str) -> None:
+        """追加内容到缓冲区"""
+        self._content_buffer.append(text)
+
+    def refresh(self) -> None:
+        """触发布局刷新"""
+        if self._live and self._available:
+            try:
+                content = "\n".join(self._content_buffer[-100:])  # 最近100行
+                self._live.update(
+                    self._Panel(content or " ", title="Chat")
+                )
+            except Exception:
+                pass
+            self._content_buffer = self._content_buffer[-200:]
+
+    def stop(self) -> None:
+        if self._live:
+            try:
+                self._live.stop()
+            except Exception:
+                pass
+            self._live = None
+
+
+# ═══════════════════════════════════════════════════════════
 # 向后兼容别名
 # ═══════════════════════════════════════════════════════════
 
-RenderEngine = TuiRenderer
 ContentRenderer = TuiRenderer
 
-__all__ = ["TuiRenderer", "RenderEngine", "ContentRenderer", "_RenderState"]
+__all__ = ["TuiRenderer", "ContentRenderer", "_RenderState", "RichLiveContentRenderer"]

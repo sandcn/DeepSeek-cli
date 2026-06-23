@@ -55,6 +55,7 @@ class _RenderState:
             self.reasoning = IncrementalRenderer(
                 style="dim", _file=sys.__stdout__,
                 typing_speed=1000, show_indicator=False,
+                output_adapter=self._shared_adapter,
             )
             self.reasoning_state = _ReasoningState.ACTIVE
         return self.reasoning

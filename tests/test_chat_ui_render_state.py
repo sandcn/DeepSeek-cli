@@ -82,6 +82,7 @@ class TestRenderStateGetReasoning:
             _file=sys.__stdout__,
             typing_speed=1000,
             show_indicator=False,
+            output_adapter=None,
         )
 
     def test_get_reasoning_returns_same_instance(self):
@@ -116,6 +117,26 @@ class TestRenderStateGetReasoning:
 
         assert result is None
         MockRenderer.assert_not_called()
+
+    @patch("src.api.renderer.IncrementalRenderer")
+    def test_get_reasoning_passes_shared_adapter(self, MockRenderer):
+        """_shared_adapter 已设置时，传给 IncrementalRenderer 的 output_adapter。"""
+        mock_adapter = MagicMock()
+        mock_rr = _make_mock_incremental_renderer()
+        MockRenderer.return_value = mock_rr
+        rs = _make_render_state()
+        rs.set_output_adapter(mock_adapter)
+
+        result = rs.get_reasoning()
+
+        assert result is mock_rr
+        MockRenderer.assert_called_once_with(
+            style="dim",
+            _file=sys.__stdout__,
+            typing_speed=1000,
+            show_indicator=False,
+            output_adapter=mock_adapter,
+        )
 
 
 # ═══════════════════════════════════════════════════════════

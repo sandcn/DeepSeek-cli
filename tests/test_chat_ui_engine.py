@@ -113,20 +113,20 @@ class TestRenderEnginePushCmd:
     def test_push_cmd_queue_full_logs_warning(self, engine, caplog):
         """队列满时丢弃命令并记录 warning。"""
         tiny_queue = queue.Queue(maxsize=1)
-        tiny_queue.put((RenderCommand.CONTENT, "已占位"), block=False)
+        tiny_queue.put((RenderCommand.NOTIFICATION, "已占位"), block=False)
         engine._cmd_queue = tiny_queue
         caplog.set_level(logging.WARNING)
 
-        engine.push_cmd((RenderCommand.CONTENT, "被丢弃"))
+        engine.push_cmd((RenderCommand.NOTIFICATION, "被丢弃"))
 
         assert engine._consecutive_full >= 1
         assert "渲染命令队列已满" in caplog.text
-        assert "CONTENT" in caplog.text
+        assert "NOTIFICATION" in caplog.text
 
     def test_push_cmd_consecutive_full_warns_log(self, engine, caplog):
         """连续满超过阈值时记录日志错误，不再写终端。"""
         tiny_queue = queue.Queue(maxsize=1)
-        tiny_queue.put((RenderCommand.CONTENT, "占位"), block=False)
+        tiny_queue.put((RenderCommand.NOTIFICATION, "占位"), block=False)
         engine._cmd_queue = tiny_queue
         engine._CONSECUTIVE_FULL_THRESHOLD = 3
 
@@ -134,7 +134,7 @@ class TestRenderEnginePushCmd:
 
         with patch.object(sys, "__stdout__") as mock_stdout:
             for _ in range(3):
-                engine.push_cmd((RenderCommand.CONTENT, "丢弃"))
+                engine.push_cmd((RenderCommand.NOTIFICATION, "丢弃"))
 
         # 不再写终端
         terminal_warning_calls = [
@@ -148,13 +148,13 @@ class TestRenderEnginePushCmd:
     def test_push_cmd_consecutive_full_below_threshold(self, engine):
         """连续满未达阈值时不输出终端警告。"""
         tiny_queue = queue.Queue(maxsize=1)
-        tiny_queue.put((RenderCommand.CONTENT, "占位"), block=False)
+        tiny_queue.put((RenderCommand.NOTIFICATION, "占位"), block=False)
         engine._cmd_queue = tiny_queue
         engine._CONSECUTIVE_FULL_THRESHOLD = 10
 
         with patch.object(sys, "__stdout__") as mock_stdout:
             for _ in range(5):
-                engine.push_cmd((RenderCommand.CONTENT, "丢弃"))
+                engine.push_cmd((RenderCommand.NOTIFICATION, "丢弃"))
 
         terminal_warning_calls = [
             c for c in mock_stdout.write.call_args_list
@@ -165,11 +165,11 @@ class TestRenderEnginePushCmd:
     def test_push_cmd_success_resets_consecutive_after_full(self, engine):
         """满队列后下一次成功入队 → _consecutive_full 清零。"""
         tiny_queue = queue.Queue(maxsize=1)
-        tiny_queue.put((RenderCommand.CONTENT, "占位"), block=False)
+        tiny_queue.put((RenderCommand.NOTIFICATION, "占位"), block=False)
         engine._cmd_queue = tiny_queue
 
         # 第一次满队列（队列已占位，再 push 触发 Full）
-        engine.push_cmd((RenderCommand.CONTENT, "a"))
+        engine.push_cmd((RenderCommand.NOTIFICATION, "a"))
         assert engine._consecutive_full == 1
 
         # 重建正常队列后 push 成功 → 清零
@@ -182,6 +182,65 @@ class TestRenderEnginePushCmd:
         engine._cmd_event.clear()
         engine.push_cmd((RenderCommand.NOTIFICATION, "测试"))
         assert engine._cmd_event.is_set()
+
+    def test_push_cmd_merge_content_on_full(self, engine):
+        """队列满且队尾为 CONTENT → 合并 text。"""
+        tiny_queue = queue.Queue(maxsize=1)
+        tiny_queue.put((RenderCommand.CONTENT, "Hello "), block=False)
+        engine._cmd_queue = tiny_queue
+        engine._cmd_event.clear()
+
+        engine.push_cmd((RenderCommand.CONTENT, "World"))
+
+        assert engine._cmd_queue.qsize() == 1
+        merged = engine._cmd_queue.get_nowait()
+        assert merged == (RenderCommand.CONTENT, "Hello World")
+        assert engine._consecutive_full == 0
+        assert engine._cmd_event.is_set()
+
+    def test_push_cmd_merge_reasoning_on_full(self, engine):
+        """队列满且队尾为 REASONING → 合并 text。"""
+        tiny_queue = queue.Queue(maxsize=1)
+        tiny_queue.put((RenderCommand.REASONING, "思考中"), block=False)
+        engine._cmd_queue = tiny_queue
+        engine._cmd_event.clear()
+
+        engine.push_cmd((RenderCommand.REASONING, "..."))
+
+        assert engine._cmd_queue.qsize() == 1
+        merged = engine._cmd_queue.get_nowait()
+        assert merged == (RenderCommand.REASONING, "思考中...")
+        assert engine._consecutive_full == 0
+        assert engine._cmd_event.is_set()
+
+    def test_push_cmd_no_merge_different_type(self, engine, caplog):
+        """队列满且队尾为不同类型 → 丢弃。"""
+        tiny_queue = queue.Queue(maxsize=1)
+        tiny_queue.put((RenderCommand.REASONING, "reasoning"), block=False)
+        engine._cmd_queue = tiny_queue
+        caplog.set_level(logging.WARNING)
+
+        engine.push_cmd((RenderCommand.CONTENT, "content"))
+
+        assert engine._consecutive_full >= 1
+        assert "渲染命令队列已满" in caplog.text
+        assert engine._cmd_queue.qsize() == 1
+        existing = engine._cmd_queue.get_nowait()
+        assert existing == (RenderCommand.REASONING, "reasoning")
+
+    def test_push_cmd_no_merge_empty_queue(self, engine, caplog):
+        """队列满但无法访问底层 deque → 丢弃。"""
+        mock_q = MagicMock()
+        mock_q.put.side_effect = queue.Full
+        mock_q.qsize.return_value = 1
+        engine._cmd_queue = mock_q
+        engine._cmd_event.clear()
+        caplog.set_level(logging.WARNING)
+
+        engine.push_cmd((RenderCommand.CONTENT, "text"))
+
+        assert engine._consecutive_full >= 1
+        assert "渲染命令队列已满" in caplog.text
 
 
 # ══════════════════════════════════════════════════════
@@ -878,14 +937,14 @@ class TestRenderEngineEdgeCases:
 
     def test_push_cmd_event_not_set_on_queue_full(self, engine):
         """队列满时入队失败，cmd_event 保持 clear（不主动 set）。"""
-        # 满队列
+        # 满队列（使用 NOTIFICATION 避免触发合并逻辑）
         tiny_queue = queue.Queue(maxsize=1)
-        tiny_queue.put((RenderCommand.CONTENT, "占位"), block=False)
+        tiny_queue.put((RenderCommand.NOTIFICATION, "占位"), block=False)
         engine._cmd_queue = tiny_queue
         engine._cmd_event.clear()
 
         # 满队列时不会 set event
-        engine.push_cmd((RenderCommand.CONTENT, "丢弃"))
+        engine.push_cmd((RenderCommand.NOTIFICATION, "丢弃"))
         # 满队列路径不走 set，所以 event 仍然 clear
         assert not engine._cmd_event.is_set()
 
