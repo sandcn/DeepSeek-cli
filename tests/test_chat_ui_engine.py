@@ -442,8 +442,8 @@ class TestRenderEngineFlush:
 
             task_done_t.join.assert_called_once_with(timeout=0.1)
 
-    def test_flush_does_not_set_cmd_event(self, engine):
-        """flush 不主动设置 cmd_event，线程靠 10Hz 心跳自唤醒消费。"""
+    def test_flush_sets_cmd_event(self, engine):
+        """flush 现在主动设置 cmd_event 以唤醒渲染线程。"""
         engine._cmd_event.clear()
         mock_t = MagicMock()
         mock_t.is_alive.return_value = True
@@ -454,7 +454,7 @@ class TestRenderEngineFlush:
 
             engine.flush(timeout=1.0)
 
-        assert not engine._cmd_event.is_set()
+        assert engine._cmd_event.is_set()
 
     def test_flush_infinite_wait(self, engine):
         """flush(timeout=None) 无限等待。"""
@@ -738,15 +738,14 @@ class TestRenderEngineRender:
         engine._cmd_event.wait = MagicMock(return_value=None)
         caplog.set_level(logging.CRITICAL)
 
-        with patch.object(sys, "__stderr__") as mock_stderr:
-            engine._render()
+        engine._render()
 
         # _render_running 被置 False
         assert engine._render_running is False
         assert "render 线程异常崩溃" in caplog.text
-        # 终端也输出告警
-        mock_stderr.write.assert_called_once()
-        stderr_text = mock_stderr.write.call_args[0][0]
+        # 通过 output_adapter.write_raw 输出告警
+        engine._renderer.output_adapter.write_raw.assert_called_once()
+        stderr_text = engine._renderer.output_adapter.write_raw.call_args[0][0]
         assert "render 线程异常终止" in stderr_text
 
     def test_render_stops_when_flag_false(self, engine):

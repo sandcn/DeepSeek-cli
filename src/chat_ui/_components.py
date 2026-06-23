@@ -7,6 +7,8 @@ BottomBarProtocol 已移至 _protocols.py，此处保留兼容 re-export。
 from __future__ import annotations
 
 import logging
+import shutil
+import time
 import unicodedata
 from typing import TYPE_CHECKING
 
@@ -430,8 +432,45 @@ class SelectionMenu(TuiComponent):
 # 行数估算辅助（内部使用）
 # ═══════════════════════════════════════════════════════════
 
+_term_width_cache: tuple[float, int] = (0.0, 80)  # (timestamp, width)
+
+
+def _get_terminal_width() -> int:
+    """获取终端宽度，带 2 秒 TTL 缓存。"""
+    global _term_width_cache
+    now = time.monotonic()
+    if now - _term_width_cache[0] < 2.0:
+        return _term_width_cache[1]
+    try:
+        w = shutil.get_terminal_size().columns
+    except Exception:
+        w = 80
+    if w <= 0:
+        w = 80
+    _term_width_cache = (now, w)
+    return w
+
+
 def _estimate_content_lines(text: str) -> int:
+    """估算文本在终端中占用的行数，考虑 CJK 宽字符和终端宽度。
+
+    对每行文本按字符宽度（CJK 宽字符 2 列，其他 1 列）计算实际占列数，
+    除以终端宽度向上取整得出该行占用行数，累加所有行。
+    若终端宽度获取失败则回退到纯换行计数。
+    """
     if not text:
         return 1
-    return text.count('\n') + 1
+    try:
+        term_w = _get_terminal_width()
+    except Exception:
+        return text.count('\n') + 1
+    if term_w <= 0:
+        return text.count('\n') + 1
+    total = 0
+    for line in text.split('\n'):
+        line_w = 0
+        for ch in line:
+            line_w += 2 if unicodedata.east_asian_width(ch) in 'WF' else 1
+        total += max(1, (line_w + term_w - 1) // term_w)
+    return total
 

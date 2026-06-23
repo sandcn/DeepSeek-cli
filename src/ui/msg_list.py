@@ -5,11 +5,12 @@
 此文件保持向后兼容，所有符号从 tui 子模块重新导出。
 
 新代码应直接导入：
-    from src.ui.tui.message_editor import edit_current_messages, display_messages
+    from src.ui.tui.message_editor import MessageEditor
+    from src.ui.tui._message_display import display_messages
 """
 
-from .tui.message_editor import (  # noqa: F401
-    edit_current_messages,
-    display_messages,
-)
+from .tui.message_editor import MessageEditor  # noqa: F401
+from .tui._message_display import display_messages  # noqa: F401
+
+edit_current_messages = lambda agent, state: MessageEditor().edit_current_messages(agent, state)
 

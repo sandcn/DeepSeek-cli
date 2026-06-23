@@ -7,10 +7,9 @@
                              _ttl_cache.py, _time_format.py,
                              _text_utils.py
                              (_ttl_cache.py / _time_format.py 仅供同包内部使用，不对外导出)
-  Layer 1 — 端口:          ports.py
-  Layer 2 — 显示层:        _message_display.py
-  Layer 3 — 选择器基础设施: _selector_base.py
-  Layer 4 — 功能层:        message_editor.py, status_bar.py,
+  Layer 1 — 显示层:        _message_display.py
+  Layer 2 — 选择器基础设施: _selector_base.py
+  Layer 3 — 功能层:        message_editor.py, status_bar.py,
                              command_palette.py, session_switcher.py
 
 架构原则：
@@ -94,7 +93,8 @@ from ._terminal import (
     is_narrow, get_terminal_width,
     narrow_truncate, narrow_indent, narrow_sep_width,
 )
-from .message_editor import MessageEditor, edit_current_messages, display_messages
+from .message_editor import MessageEditor
+from ._message_display import display_messages
 from .status_bar import StatusBar
 from .command_palette import CommandPalette
 from .session_switcher import SessionSwitcher
@@ -103,7 +103,7 @@ from ._state import (
     TUIStateTree, UISessionState, InputState,
 )
 
-from .ports import ILockedTerminal
+from ._terminal import ILockedTerminal
 from ._selector_base import BaseBottomBarSelector
 from ._text_utils import truncate
 
@@ -115,7 +115,7 @@ __all__ = [
     "is_narrow", "get_terminal_width",
     "narrow_truncate", "narrow_indent", "narrow_sep_width",
     # ── message_editor ──
-    "MessageEditor", "edit_current_messages", "display_messages",
+    "MessageEditor", "display_messages",
     # ── status_bar ──
     "StatusBar",
     # ── command_palette ──

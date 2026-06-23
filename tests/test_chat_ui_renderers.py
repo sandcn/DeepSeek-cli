@@ -55,41 +55,36 @@ def renderer(mock_ta, mock_bb):
 class TestDoParseInfo:
     """_do_parse_info 边缘情况测试
 
-    注：新实现直接写入 sys.__stdout__，不再委托 ParseInfoControl。
+    注：新实现通过 self._adapter.write_raw() 输出，不再直接写 sys.__stdout__。
     """
 
     def test_inf_tokens_shows_question_mark(self, renderer):
         """tokens=float('inf') → 显示 "?" """
-        with patch('sys.__stdout__') as mock_stdout:
-            renderer._do_parse_info("tool_test", float('inf'), 1.5)
-            mock_stdout.write.assert_called_once()
-            text = mock_stdout.write.call_args[0][0]
-            assert "?" in text
-            assert "inf" not in text
+        renderer._do_parse_info("tool_test", float('inf'), 1.5)
+        renderer._adapter.write_raw.assert_called_once()
+        text = renderer._adapter.write_raw.call_args[0][0]
+        assert "?" in text
+        assert "inf" not in text
 
     def test_nan_tokens_shows_question_mark(self, renderer):
         """tokens=float('nan') → 显示 "?" """
-        with patch('sys.__stdout__') as mock_stdout:
-            renderer._do_parse_info("tool_test", float('nan'), 1.5)
-            mock_stdout.write.assert_called_once()
-            text = mock_stdout.write.call_args[0][0]
-            assert "?" in text
-            assert "nan" not in text
+        renderer._do_parse_info("tool_test", float('nan'), 1.5)
+        renderer._adapter.write_raw.assert_called_once()
+        text = renderer._adapter.write_raw.call_args[0][0]
+        assert "?" in text
+        assert "nan" not in text
 
     def test_normal_int_tokens(self, renderer):
         """普通 int tokens → 显示 "Nt" """
-        with patch('sys.__stdout__') as mock_stdout:
-            renderer._do_parse_info("tool_test", 42, 1.5)
-            mock_stdout.write.assert_called_once()
-            text = mock_stdout.write.call_args[0][0]
-            assert "42t" in text
+        renderer._do_parse_info("tool_test", 42, 1.5)
+        renderer._adapter.write_raw.assert_called_once()
+        text = renderer._adapter.write_raw.call_args[0][0]
+        assert "42t" in text
 
     def test_clear_parse_line_sentinel(self, renderer):
         """tokens=_CLEAR_PARSE_LINE → write('\\n') """
-        with patch('sys.__stdout__') as mock_stdout:
-            renderer._do_parse_info("", _CLEAR_PARSE_LINE, 0.0)
-            mock_stdout.write.assert_called_once_with("\n")
-            mock_stdout.flush.assert_called_once()
+        renderer._do_parse_info("", _CLEAR_PARSE_LINE, 0.0)
+        renderer._adapter.write_raw.assert_called_once_with("\n")
 
 
 # ═══════════════════════════════════════════════════════

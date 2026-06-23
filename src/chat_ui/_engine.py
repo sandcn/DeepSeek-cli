@@ -64,6 +64,7 @@ class TuiEngine:
         self._render_thread: threading.Thread | None = None
         self._render_running = False
         self._consecutive_full = 0
+        self._full_lock = threading.Lock()
         self._bottom_redraw_requested = threading.Event()
         self._panel_refresh_cb: Callable[[], None] | None = None
 
@@ -78,13 +79,16 @@ class TuiEngine:
         """
         try:
             self._cmd_queue.put(cmd, block=False)
-            self._consecutive_full = 0
+            with self._full_lock:
+                self._consecutive_full = 0
             self._cmd_event.set()
         except queue.Full:
-            self._consecutive_full += 1
+            with self._full_lock:
+                self._consecutive_full += 1
+                full_count = self._consecutive_full
             _logger.warning("渲染命令队列已满（%s 条），丢弃命令: %s", self._cmd_queue.qsize(), _cmd_name(cmd[0]))
-            if self._consecutive_full >= self._CONSECUTIVE_FULL_THRESHOLD:
-                _logger.error("渲染输出管线持续拥堵（%d 次连续满队列）", self._consecutive_full)
+            if full_count >= self._CONSECUTIVE_FULL_THRESHOLD:
+                _logger.error("渲染输出管线持续拥堵（%d 次连续满队列）", full_count)
 
     def set_panel_refresh_callback(self, callback: Callable[[], None] | None) -> None:
         self._panel_refresh_cb = callback
@@ -122,6 +126,8 @@ class TuiEngine:
                 except queue.Empty:
                     break
             return
+        # 唤醒渲染线程避免卡在 wait() 而非处理队列
+        self._cmd_event.set()
         task_done = threading.Thread(target=self._cmd_queue.join, daemon=True)
         task_done.start()
         task_done.join(timeout=timeout)
@@ -218,11 +224,15 @@ class TuiEngine:
                         self._cmd_event.clear()
                 except Exception:
                     _logger.critical("render 线程异常崩溃", exc_info=True)
-                    sys.__stderr__.write(
+                    error_msg = (
                         f"{_ANSI_RED}[ChatUI] render 线程异常终止，"
                         f"请联系开发人员查看日志{_ANSI_RESET}\n"
                     )
-                    sys.__stderr__.flush()
+                    try:
+                        self._renderer.output_adapter.write_raw(error_msg)
+                    except Exception:
+                        sys.__stderr__.write(error_msg)
+                        sys.__stderr__.flush()
                     self._render_running = False
                     break
         finally:

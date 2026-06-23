@@ -183,22 +183,32 @@ class MessageEditor:
                 f"  {BRIGHT_GREEN}\u2714{RESET} {restore_text}",
                 level="raw", source="cmd",
             )
-        del agent.messages[real_idx:]
-        ctx = _disp.MessageDisplayContext.from_agent(agent)
-        publish_output(
-            f"  {BRIGHT_GREEN}\u2714{RESET} \u5df2\u622a\u65ad\u5230\u6d88\u606f #{cursor} \uff08\u4fdd\u7559 {BRIGHT_CYAN}{len(ctx.data)}{RESET} \u6761\uff09",
-            level="raw", source="cmd",
-        )
-        if cursor > len(ctx.data):
-            _logger.warning("cursor=%d \u8d85\u51fa data \u8303\u56f4(%d)\uff0c\u56de\u9000", cursor, len(ctx.data))
+        _snapshot = list(agent.messages[real_idx:])
+        try:
+            del agent.messages[real_idx:]
+            ctx = _disp.MessageDisplayContext.from_agent(agent)
             publish_output(
-                f"  {YELLOW}\u26a0{RESET} \u5185\u90e8\u9519\u8bef: cursor={cursor} \u8d85\u51fa data \u8303\u56f4({len(ctx.data)})",
+                f"  {BRIGHT_GREEN}\u2714{RESET} \u5df2\u622a\u65ad\u5230\u6d88\u606f #{cursor} \uff08\u4fdd\u7559 {BRIGHT_CYAN}{len(ctx.data)}{RESET} \u6761\uff09",
+                level="raw", source="cmd",
+            )
+            if cursor > len(ctx.data):
+                _logger.warning("cursor=%d \u8d85\u51fa data \u8303\u56f4(%d)\uff0c\u56de\u9000", cursor, len(ctx.data))
+                publish_output(
+                    f"  {YELLOW}\u26a0{RESET} \u5185\u90e8\u9519\u8bef: cursor={cursor} \u8d85\u51fa data \u8303\u56f4({len(ctx.data)})",
+                    level="raw", source="cmd",
+                )
+                return False
+            _disp.display_messages(ctx.data, ctx.agent, ctx.idx_map, speed=0)
+            state["prefill"] = old_content
+            return True
+        except Exception:
+            _logger.exception("编辑操作异常，恢复消息快照")
+            agent.messages.extend(_snapshot)
+            publish_output(
+                f"  {THEME['warning']}\u26a0{RESET} 编辑操作失败，已恢复消息",
                 level="raw", source="cmd",
             )
             return False
-        _disp.display_messages(ctx.data, ctx.agent, ctx.idx_map, speed=0)
-        state["prefill"] = old_content
-        return True
 
     def _handle_delete_action(
         self, agent: Any, cursor: int, idx_map: list[int],
@@ -236,16 +246,26 @@ class MessageEditor:
                 level="raw", source="cmd",
             )
         removed = len(agent.messages) - real_idx
-        del agent.messages[real_idx:]
-        publish_output(
-            f"  {YELLOW}\u2716{RESET} \u5df2\u5220\u9664 {BRIGHT_CYAN}{removed}{RESET} \u6761\u6d88\u606f",
-            level="raw", source="cmd",
-        )
-        publish_output(
-            f"  {DIM}\u2514 \u7ee7\u7eed\u8f93\u5165\u5f00\u59cb\u5bf9\u8bdd{RESET}",
-            level="raw", source="cmd",
-        )
-        return True
+        _snapshot = list(agent.messages[real_idx:])
+        try:
+            del agent.messages[real_idx:]
+            publish_output(
+                f"  {YELLOW}\u2716{RESET} \u5df2\u5220\u9664 {BRIGHT_CYAN}{removed}{RESET} \u6761\u6d88\u606f",
+                level="raw", source="cmd",
+            )
+            publish_output(
+                f"  {DIM}\u2514 \u7ee7\u7eed\u8f93\u5165\u5f00\u59cb\u5bf9\u8bdd{RESET}",
+                level="raw", source="cmd",
+            )
+            return True
+        except Exception:
+            _logger.exception("删除操作异常，恢复消息快照")
+            agent.messages.extend(_snapshot)
+            publish_output(
+                f"  {THEME['warning']}\u26a0{RESET} 删除操作失败，已恢复消息",
+                level="raw", source="cmd",
+            )
+            return False
 
     def _check_last_message_role(self, agent: Any, state: dict) -> None:
         """检查最后一条消息角色，设置重试提示。"""
@@ -279,16 +299,26 @@ class MessageEditor:
                 f"  {BRIGHT_GREEN}\u2714{RESET} {restore_text}",
                 level="raw", source="cmd",
             )
-        del agent.messages[real_idx + 1:]
-        ctx = _disp.MessageDisplayContext.from_agent(agent)
-        remaining = len(ctx.data)
-        publish_output(
-            f"  {BRIGHT_GREEN}\u2714{RESET} \u5df2\u622a\u65ad\u5230\u6d88\u606f #{cursor} \uff08\u4fdd\u7559 {BRIGHT_CYAN}{remaining}{RESET} \u6761\uff09",
-            level="raw", source="cmd",
-        )
-        _disp.display_messages(ctx.data, ctx.agent, ctx.idx_map, speed=0)
-        self._check_last_message_role(agent, state)
-        return True
+        _snapshot = list(agent.messages[real_idx + 1:])
+        try:
+            del agent.messages[real_idx + 1:]
+            ctx = _disp.MessageDisplayContext.from_agent(agent)
+            remaining = len(ctx.data)
+            publish_output(
+                f"  {BRIGHT_GREEN}\u2714{RESET} \u5df2\u622a\u65ad\u5230\u6d88\u606f #{cursor} \uff08\u4fdd\u7559 {BRIGHT_CYAN}{remaining}{RESET} \u6761\uff09",
+                level="raw", source="cmd",
+            )
+            _disp.display_messages(ctx.data, ctx.agent, ctx.idx_map, speed=0)
+            self._check_last_message_role(agent, state)
+            return True
+        except Exception:
+            _logger.exception("恢复操作异常，恢复消息快照")
+            agent.messages.extend(_snapshot)
+            publish_output(
+                f"  {THEME['warning']}\u26a0{RESET} 恢复操作失败，已恢复消息",
+                level="raw", source="cmd",
+            )
+            return False
 
     def _handle_resume_all_action(self, agent: Any, state: dict) -> bool:
         """处理 resume_all action：恢复全部消息，不做截断。"""
@@ -343,30 +373,8 @@ class MessageEditor:
         return False
 
 
-# ═══════════════════════════════════════════════════════════
-# 向后兼容入口（模块级函数 → 委托 MessageEditor 实例）
-# ═══════════════════════════════════════════════════════════
-
-
-def edit_current_messages(agent: Any, state: dict) -> bool:
-    """直接进入当前会话消息编辑（模块级入口，向后兼容）。
-
-    Args:
-        agent: ChatAgent 实例。
-        state: 编辑状态字典。
-
-    Returns:
-        True 表示有修改，False 表示无操作。
-    """
-    return MessageEditor().edit_current_messages(agent, state)
-
-
-# 保持 display_messages 向后兼容（从 _message_display 重新导出）
-from ._message_display import display_messages  # noqa: F401
 
 
 __all__ = [
     "MessageEditor",
-    "edit_current_messages",
-    "display_messages",
 ]
