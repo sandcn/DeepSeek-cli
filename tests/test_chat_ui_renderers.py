@@ -14,7 +14,7 @@ from __future__ import annotations
 from unittest.mock import MagicMock, patch
 
 import pytest
-from rich.text import Text
+from src.chat_ui._styled import StyledText
 
 from src.chat_ui._renderer import TuiRenderer as ContentRenderer
 from src.chat_ui._const import _CLEAR_PARSE_LINE, RenderCommand
@@ -253,7 +253,7 @@ class TestDoToolOutput:
         renderer._do_tool_output("output text")
         mock_ta.write.assert_called_once()
         text_arg = mock_ta.write.call_args[0][0]
-        assert isinstance(text_arg, Text)
+        assert isinstance(text_arg, StyledText)
         assert "output text" in text_arg.plain
 
     def test_tool_output_empty_text(self, renderer, mock_ta):
@@ -267,7 +267,7 @@ class TestDoToolOutput:
         renderer._do_tool_output(long_text)
         mock_ta.write.assert_called_once()
         text_arg = mock_ta.write.call_args[0][0]
-        assert isinstance(text_arg, Text)
+        assert isinstance(text_arg, StyledText)
         assert text_arg.plain == "   " + "x" * 10000 + "...(truncated)"
 
     def test_tool_output_with_carriage_return(self, renderer, mock_ta):
@@ -307,7 +307,7 @@ class TestDoToolSummary:
         renderer._do_tool_summary(("tool_a", "tool_b"), ())
         mock_ta.write.assert_called_once()
         text_arg = mock_ta.write.call_args[0][0]
-        assert isinstance(text_arg, Text)
+        assert isinstance(text_arg, StyledText)
         assert "2工具完成" in text_arg.plain
 
     def test_summary_partial_failure(self, renderer, mock_ta):
@@ -353,7 +353,7 @@ class TestDoUserMessage:
         renderer._do_user_message("hello")
         mock_ta.write.assert_called_once()
         text_arg = mock_ta.write.call_args[0][0]
-        assert isinstance(text_arg, Text)
+        assert isinstance(text_arg, StyledText)
         assert "hello" in text_arg.plain
 
     def test_user_message_empty(self, renderer, mock_ta):
@@ -377,7 +377,7 @@ class TestDoNotification:
         renderer._do_notification("notify")
         mock_ta.write.assert_called_once()
         text_arg = mock_ta.write.call_args[0][0]
-        assert isinstance(text_arg, Text)
+        assert isinstance(text_arg, StyledText)
         assert "notify" in text_arg.plain
 
 
@@ -396,7 +396,7 @@ class TestDoError:
         renderer._do_error("error msg")
         mock_ta.write.assert_called_once()
         text_arg = mock_ta.write.call_args[0][0]
-        assert isinstance(text_arg, Text)
+        assert isinstance(text_arg, StyledText)
         assert "error msg" in text_arg.plain
 
     def test_error_truncated(self, renderer, mock_ta):
@@ -406,7 +406,7 @@ class TestDoError:
         renderer._do_error(long_msg)
         mock_ta.write.assert_called_once()
         text_arg = mock_ta.write.call_args[0][0]
-        assert isinstance(text_arg, Text)
+        assert isinstance(text_arg, StyledText)
         assert "..." in text_arg.plain
         # 截断后的消息主体（不含前缀）不应超过 _MAX_ERROR_LENGTH + 3（...）
         body = text_arg.plain.replace("\n  ! ", "", 1)
@@ -433,7 +433,7 @@ class TestDoWriteLine:
         renderer._do_write_line("\033[31mred\033[0m")
         mock_ta.write.assert_called_once()
         text_arg = mock_ta.write.call_args[0][0]
-        assert isinstance(text_arg, Text)
+        assert isinstance(text_arg, StyledText)
 
     def test_write_line_empty(self, renderer, mock_ta):
         """空文本 → 仅输出换行"""
@@ -479,7 +479,7 @@ class TestRender:
 
     def test_render_unknown_command_logs_error(self, renderer, mock_ta):
         """未知命令 ID → 记录日志（不崩溃）"""
-        with patch('src.chat_ui._renderer_legacy._logger.error') as m_log:
+        with patch('src.chat_ui._renderer._logger.error') as m_log:
             renderer.render((255,))
             m_log.assert_called_once()
 

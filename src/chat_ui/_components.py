@@ -13,8 +13,7 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from ..api.renderer.output import OutputAdapter
 
-from rich.style import Style
-from rich.text import Text
+from ._styled import StyledText
 
 from ._const import (
     _STYLE_DIM, _STYLE_FAIL, _STYLE_WARN, _STYLE_SUCCESS, _STYLE_ERROR, _STYLE_BOLD,
@@ -64,7 +63,7 @@ class TuiComponent:
         """子组件列表（只读视图）。"""
         return self._ensure_children()
 
-    def render(self) -> str | Text:
+    def render(self) -> str | StyledText:
         raise NotImplementedError
 
     def render_to_adapter(self, adapter: "OutputAdapter") -> int:
@@ -74,25 +73,25 @@ class TuiComponent:
         子类可重写以绕过 render() 直接操作 adapter（如 ToolOutputBlock）。
         """
         output = self.render()
-        if isinstance(output, (str, Text)):
+        if isinstance(output, (str, StyledText)):
             adapter.write(output)
             return _estimate_content_lines(str(output))
         return 0
 
-    def render_children(self) -> str | Text:
+    def render_children(self) -> str | StyledText:
         """遍历 children，调用每个子组件的 render()，返回拼接结果。
 
-        返回类型为 str | Text，自动处理混合类型（部分子组件 render str，部分 render Text）。
+        返回类型为 str | StyledText，自动处理混合类型（部分子组件 render str，部分 render StyledText）。
         无子组件时返回空字符串。
         """
         ch = self._ensure_children()
         if not ch:
             return ""
 
-        outputs: list[str | Text] = []
+        outputs: list[str | StyledText] = []
         for child in ch:
             result = child.render()
-            if isinstance(result, (str, Text)):
+            if isinstance(result, (str, StyledText)):
                 outputs.append(result)
 
         if not outputs:
@@ -102,13 +101,13 @@ class TuiComponent:
         if all(isinstance(o, str) for o in outputs):
             return "\n".join(o for o in outputs if isinstance(o, str))
 
-        # 混合类型或全 Text：使用 Text.assemble 拼接
-        assembled: list[str | Text] = []
+        # 混合类型或全 StyledText：使用 StyledText.assemble 拼接
+        assembled: list[str | StyledText] = []
         for i, o in enumerate(outputs):
             if i > 0:
                 assembled.append("\n")
             assembled.append(o)
-        return Text.assemble(*assembled) if assembled else ""
+        return StyledText.assemble(*assembled) if assembled else ""
 
     def add_child(self, child: "TuiComponent") -> "TuiComponent":
         """链式添加子组件并返回 self。
@@ -129,8 +128,8 @@ class UserMsgBlock(TuiComponent):
     def __init__(self, text: str):
         self.text = text
 
-    def render(self) -> Text:
-        return Text.assemble(("\n  > ", _STYLE_BOLD), (self.text, _STYLE_BOLD))
+    def render(self) -> StyledText:
+        return StyledText.assemble(("\n  > ", _STYLE_BOLD), (self.text, _STYLE_BOLD))
 
 class ThinkingBlock(TuiComponent):
     """思考/推理内容块 — 流式追加写入 IncrementalRenderer。"""
@@ -192,7 +191,7 @@ class ToolOutputBlock(TuiComponent):
             if '\033[' in text:
                 clean = text.replace('\r', '')
                 try:
-                    adapter.write(Text.from_ansi(clean))
+                    adapter.write(StyledText.from_ansi(clean))
                 except Exception:
                     _logger.debug("tool_output ANSI 解析失败, 回退 raw 输出", exc_info=True)
                     adapter.write_raw(clean)
@@ -204,7 +203,7 @@ class ToolOutputBlock(TuiComponent):
                 return _estimate_content_lines(clean)
             return 0
         else:
-            adapter.write(Text.assemble(("   ", _STYLE_DIM), (text, _STYLE_DIM)))
+            adapter.write(StyledText.assemble(("   ", _STYLE_DIM), (text, _STYLE_DIM)))
             return _estimate_content_lines(text)
 
     def render(self) -> str:
@@ -223,7 +222,7 @@ class ToolSummaryBlock(TuiComponent):
         if failed:
             return self._render_failure(failed, total, adapter)
         elif self.successful:
-            adapter.write(Text.assemble(
+            adapter.write(StyledText.assemble(
                 ("  · ", _STYLE_SUCCESS),
                 (f"{len(self.successful)}工具完成", _STYLE_SUCCESS),
             ))
@@ -246,12 +245,12 @@ class ToolSummaryBlock(TuiComponent):
     def _render_failure(self, failed: tuple, total: int, adapter: "OutputAdapter") -> int:
         names = ", ".join(n for n, _ in failed)
         if len(failed) == total:
-            adapter.write(Text.assemble(
+            adapter.write(StyledText.assemble(
                 ("  ! ", _STYLE_FAIL),
                 (f"全部失败: {names}", _STYLE_FAIL),
             ))
         else:
-            adapter.write(Text.assemble(
+            adapter.write(StyledText.assemble(
                 ("  ! ", _STYLE_WARN),
                 (f"{len(failed)}/{total} 失败: {names}", _STYLE_WARN),
             ))
@@ -274,13 +273,13 @@ class ToolSummaryBlock(TuiComponent):
                         w += cw
                     if cut < len(s):
                         short = s[:cut] + "..."
-            adapter.write(Text.assemble(
+            adapter.write(StyledText.assemble(
                 (f"    {name}", _STYLE_DIM),
                 (f"  {short}", _STYLE_DIM) if short else ("", _STYLE_DIM),
             ))
             detail += 1
         if len(failed) > 3:
-            adapter.write(Text.assemble(
+            adapter.write(StyledText.assemble(
                 (f"    ... 及其他 {len(failed) - 3} 个", _STYLE_DIM),
             ))
             detail += 1
@@ -294,16 +293,16 @@ class ErrorBlock(TuiComponent):
     def __init__(self, message: str):
         self.message = _truncate_msg(message, _MAX_ERROR_LENGTH)
 
-    def render(self) -> Text:
-        return Text.assemble(("\n  ! ", _STYLE_ERROR), (self.message, _STYLE_ERROR))
+    def render(self) -> StyledText:
+        return StyledText.assemble(("\n  ! ", _STYLE_ERROR), (self.message, _STYLE_ERROR))
 
 class NotificationBlock(TuiComponent):
     """系统通知块 — 绿色 · 前缀。"""
     def __init__(self, text: str):
         self.text = text
 
-    def render(self) -> Text:
-        return Text.assemble(("\n  · ", _STYLE_SUCCESS), (self.text, _STYLE_SUCCESS))
+    def render(self) -> StyledText:
+        return StyledText.assemble(("\n  · ", _STYLE_SUCCESS), (self.text, _STYLE_SUCCESS))
 
 class WriteLineBlock(TuiComponent):
     """单行输出块 — 支持 ANSI 转义序列。
@@ -317,7 +316,7 @@ class WriteLineBlock(TuiComponent):
         text = self.text
         if '\033[' in text:
             try:
-                adapter.write(Text.from_ansi(text))
+                adapter.write(StyledText.from_ansi(text))
             except Exception:
                 _logger.debug("write_line ANSI 解析失败, 回退 raw 输出", exc_info=True)
                 adapter.write_raw(text + "\n")

@@ -1,4 +1,4 @@
-"""chat_ui 常量模块 — RenderCommand 枚举、Rich Style 常量、推理状态机。
+"""chat_ui 常量模块 — RenderCommand 枚举、ANSI 样式常量、推理状态机。
 
 Layer 0 — 无内部依赖，被所有上层模块引用。
 """
@@ -7,19 +7,17 @@ from __future__ import annotations
 
 from enum import IntEnum
 
-from rich.style import Style
-
 # ── 主 Agent 标识 ───────────────────────────────────────
 _MAIN_LABEL = "assistant"
 _MAIN_SOURCE = "agent"
 
-# ── Rich Style 常量（供 OutputAdapter + Rich 渲染管线使用） ──
-_STYLE_DIM = Style(dim=True)
-_STYLE_FAIL = Style(color="red")
-_STYLE_WARN = Style(color="orange1")
-_STYLE_SUCCESS = Style(color="green")
-_STYLE_ERROR = Style(color="red", bold=True)
-_STYLE_BOLD = Style(bold=True)
+# ── ANSI 样式常量（供渲染管线使用） ──
+_STYLE_DIM = "dim"
+_STYLE_FAIL = "red"
+_STYLE_WARN = "yellow"  # orange1 不可用，使用 yellow
+_STYLE_SUCCESS = "green"
+_STYLE_ERROR = "bold red"
+_STYLE_BOLD = "bold"
 
 _THINKING_HEADER = "\n  ─ 思考 ─\n"
 

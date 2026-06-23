@@ -74,7 +74,7 @@ class ChatUIConsumer:
         from ..ui._cursor_tracker import CursorTracker
         from ..ui._bottom_bar import _BottomBar
         from ..ui._completion import CompletionEngine
-        from rich.console import Console
+        from rich.console import Console  # 仅用于 OutputAdapter 初始化（api 层依赖，不在本次重构范围）
         from ..api.renderer.output import OutputAdapter
         from ..terminal import get_safe_console_config
 

@@ -1,0 +1,339 @@
+"""纯 Python 样式化文本模块 — Span + StyledText。
+
+替代 rich.text.Text，无第三方依赖。
+提供样式化文本的组装、拼接和 ANSI 解析功能。
+
+使用示例:
+    from ._styled import StyledText
+    t = StyledText("hello", fg="red", bold=True)
+    print(str(t))  # 输出 ANSI 包裹的红色加粗文本
+    print(t.plain)  # 输出纯文本 "hello"
+"""
+
+from __future__ import annotations
+
+import logging
+import re
+from dataclasses import dataclass, field
+
+from ._ansi import style, _RESET, ANSI_RESET
+
+_logger = logging.getLogger(__name__)
+
+
+@dataclass
+class Span:
+    """样式化文本片段。
+
+    Attributes:
+        text: 文本内容
+        fg: 前景色名
+        bg: 背景色名
+        bold/dim/italic/underline/reverse/strikethrough: 样式标志
+    """
+    text: str
+    fg: str | None = None
+    bg: str | None = None
+    bold: bool = False
+    dim: bool = False
+    italic: bool = False
+    underline: bool = False
+    reverse: bool = False
+    strikethrough: bool = False
+
+    def to_ansi(self) -> str:
+        """将 Span 转为 ANSI 包裹的字符串。"""
+        return style(self.text, fg=self.fg, bg=self.bg,
+                     bold=self.bold, dim=self.dim, italic=self.italic,
+                     underline=self.underline, reverse=self.reverse,
+                     strikethrough=self.strikethrough)
+
+
+class StyledText:
+    """样式化文本 — 纯 Python 替代 rich.text.Text。
+
+    支持:
+    - 单段样式文本: StyledText("hello", fg="red", bold=True)
+    - 多段组装: StyledText.assemble(("hello", style_str), (" world", style_str))
+    - ANSI 解析: StyledText.from_ansi("\\033[31mred\\033[0m")
+    - 纯文本提取: .plain 属性
+    - ANSI 渲染: str() / .render_str()
+    """
+
+    def __init__(self, text: str = "", *,
+                 fg: str | None = None, bg: str | None = None,
+                 bold: bool = False, dim: bool = False,
+                 italic: bool = False, underline: bool = False,
+                 reverse: bool = False, strikethrough: bool = False):
+        """创建单段样式文本。
+
+        Args:
+            text: 文本内容
+            fg/bg: 前景/背景色名
+            bold/dim/italic/underline/reverse/strikethrough: 样式标志
+        """
+        self._spans: list[Span] = []
+        if text:
+            self._spans.append(Span(
+                text=text, fg=fg, bg=bg,
+                bold=bold, dim=dim, italic=italic,
+                underline=underline, reverse=reverse,
+                strikethrough=strikethrough,
+            ))
+
+    # ── 属性 ──────────────────────────────────────────────
+
+    @property
+    def spans(self) -> list[Span]:
+        """样式化文本片段列表（浅拷贝）。"""
+        return list(self._spans)
+
+    @property
+    def plain(self) -> str:
+        """返回无样式纯文本。"""
+        return "".join(s.text for s in self._spans)
+
+    def __str__(self) -> str:
+        """返回 ANSI 包裹的字符串（用于 print / adapter.write）。"""
+        return self.render_str()
+
+    def __repr__(self) -> str:
+        return f"StyledText({self.plain!r})"
+
+    def render_str(self) -> str:
+        """渲染为 ANSI 转义字符串。"""
+        return "".join(s.to_ansi() for s in self._spans)
+
+    def __rich_console__(self, console, options):
+        """Rich Console 协议 — 将 StyledText 转换为 Rich Text 渲染。
+
+        当 StyledText 传递给 Console.print() 时（如 OutputAdapter.write()），
+        Rich 会调用此方法获取原生 Rich Text 对象，避免将 ANSI 字符串
+        当作 Rich markup 解析导致颜色丢失。
+
+        此方法依赖 rich（仅在 Rich 渲染路径触发时惰性导入），
+        StyledText 的其他路径保持纯 Python。
+        """
+        from rich.style import Style as RichStyle
+        from rich.text import Text as RichText
+
+        result = RichText()
+        for span in self._spans:
+            style_kwargs: dict = {}
+            if span.fg:
+                style_kwargs["color"] = span.fg
+            if span.bg:
+                style_kwargs["bgcolor"] = span.bg
+            if span.bold:
+                style_kwargs["bold"] = True
+            if span.dim:
+                style_kwargs["dim"] = True
+            if span.italic:
+                style_kwargs["italic"] = True
+            if span.underline:
+                style_kwargs["underline"] = True
+            if span.reverse:
+                style_kwargs["reverse"] = True
+            if span.strikethrough:
+                style_kwargs["strike"] = True
+            rich_style = RichStyle(**style_kwargs) if style_kwargs else None
+            result.append(span.text, style=rich_style)
+        yield result
+
+    # ── 工厂方法 ──────────────────────────────────────────
+
+    @staticmethod
+    def assemble(*segments: str | tuple) -> StyledText:
+        """组装多段样式文本。
+
+        支持两种参数格式:
+        - 纯字符串: StyledText.assemble("hello ", "world")
+        - (text, style_str) 元组: StyledText.assemble(("hello", "red"), (" world", "bold"))
+          其中 style_str 格式: "red", "bold red", "bold dim red" 等空格分隔的修饰符
+
+        Args:
+            *segments: 字符串或 (text, style_str) 元组序列
+
+        Returns:
+            组装后的 StyledText 实例
+        """
+        result = StyledText.__new__(StyledText)
+        result._spans = []
+
+        for seg in segments:
+            if isinstance(seg, str):
+                result._spans.append(Span(text=seg))
+            elif isinstance(seg, tuple) and len(seg) >= 1:
+                text = seg[0]
+                style_str = seg[1] if len(seg) > 1 and seg[1] else ""
+
+                # 解析 style_str 为样式属性
+                kwargs: dict = {}
+                if style_str:
+                    # 如果 style_str 直接是一个 ANSI 字符串常量（如 _ANSI_RED）
+                    # 我们需要判断这是颜色常量还是样式描述
+                    parts = style_str.split() if isinstance(style_str, str) else []
+                    for p in parts:
+                        p_lower = p.lower()
+                        if p_lower in ("bold", "dim", "italic", "underline", "reverse", "strikethrough"):
+                            kwargs[p_lower] = True
+                        elif p_lower in ("red", "green", "yellow", "blue", "magenta", "cyan",
+                                         "white", "black", "bright_red", "bright_green",
+                                         "bright_yellow", "bright_blue", "bright_magenta",
+                                         "bright_cyan", "bright_white"):
+                            kwargs["fg"] = p_lower
+                        else:
+                            # 不可识别的样式，忽略
+                            _logger.debug("assemble: 不可识别的样式标记: %r", p)
+                            pass
+
+                result._spans.append(Span(text=str(text), **kwargs))
+            elif isinstance(seg, StyledText):
+                # 支持拼接已有的 StyledText
+                result._spans.extend(seg.spans)
+
+        return result
+
+    @staticmethod
+    def from_ansi(text: str) -> StyledText:
+        """从 ANSI 转义文本解析为 StyledText。
+
+        解析 `\\033[...m` 序列，将 SGR 参数映射为 Span 样式。
+
+        Args:
+            text: 含 ANSI 转义序列的文本
+
+        Returns:
+            解析后的 StyledText 实例
+        """
+        result = StyledText.__new__(StyledText)
+        result._spans = []
+
+        # 解析 ANSI SGR 序列
+        ansi_re = re.compile(r'\033\[([\d;]*)m')
+
+        current_fg: str | None = None
+        current_bg: str | None = None
+        current_bold = False
+        current_dim = False
+        current_italic = False
+        current_underline = False
+        current_reverse = False
+        current_strikethrough = False
+
+        pos = 0
+        for m in ansi_re.finditer(text):
+            # 输出前面的纯文本
+            if m.start() > pos:
+                plain = text[pos:m.start()]
+                if plain:
+                    result._spans.append(Span(
+                        text=plain, fg=current_fg, bg=current_bg,
+                        bold=current_bold, dim=current_dim,
+                        italic=current_italic, underline=current_underline,
+                        reverse=current_reverse, strikethrough=current_strikethrough,
+                    ))
+
+            # 解析 SGR 参数
+            params_str = m.group(1)
+            if params_str == "" or params_str == "0":
+                # 重置
+                current_fg = None
+                current_bg = None
+                current_bold = False
+                current_dim = False
+                current_italic = False
+                current_underline = False
+                current_reverse = False
+                current_strikethrough = False
+            else:
+                params = [int(p) for p in params_str.split(";") if p]
+                i = 0
+                while i < len(params):
+                    p = params[i]
+                    if p == 0:
+                        current_fg = None; current_bg = None
+                        current_bold = False; current_dim = False
+                        current_italic = False; current_underline = False
+                        current_reverse = False; current_strikethrough = False
+                    elif p == 1: current_bold = True
+                    elif p == 2: current_dim = True
+                    elif p == 3: current_italic = True
+                    elif p == 4: current_underline = True
+                    elif p == 7: current_reverse = True
+                    elif p == 9: current_strikethrough = True
+                    elif p == 22: current_bold = False; current_dim = False
+                    elif p == 23: current_italic = False
+                    elif p == 24: current_underline = False
+                    elif p == 27: current_reverse = False
+                    elif p == 29: current_strikethrough = False
+                    elif p == 39: current_fg = None
+                    elif p == 49: current_bg = None
+                    elif 30 <= p <= 37:
+                        fg_map = {30:"black",31:"red",32:"green",33:"yellow",
+                                  34:"blue",35:"magenta",36:"cyan",37:"white"}
+                        current_fg = fg_map.get(p)
+                    elif 40 <= p <= 47:
+                        bg_map = {40:"black",41:"red",42:"green",43:"yellow",
+                                  44:"blue",45:"magenta",46:"cyan",47:"white"}
+                        current_bg = bg_map.get(p)
+                    elif 90 <= p <= 97:
+                        fg_map = {90:"bright_black",91:"bright_red",92:"bright_green",
+                                  93:"bright_yellow",94:"bright_blue",95:"bright_magenta",
+                                  96:"bright_cyan",97:"bright_white"}
+                        current_fg = fg_map.get(p)
+                    elif 100 <= p <= 107:
+                        bg_map = {100:"bright_black",101:"bright_red",102:"bright_green",
+                                  103:"bright_yellow",104:"bright_blue",105:"bright_magenta",
+                                  106:"bright_cyan",107:"bright_white"}
+                        current_bg = bg_map.get(p)
+                    elif p == 38 and i + 2 < len(params) and params[i+1] == 5:
+                        # 38;5;N — 256 色前景
+                        idx = params[i+2]
+                        current_fg = f"#{_256_to_hex(idx)}"
+                        i += 2
+                    elif p == 48 and i + 2 < len(params) and params[i+1] == 5:
+                        # 48;5;N — 256 色背景
+                        idx = params[i+2]
+                        current_bg = f"#{_256_to_hex(idx)}"
+                        i += 2
+                    i += 1
+
+            pos = m.end()
+
+        # 剩余文本
+        if pos < len(text):
+            plain = text[pos:]
+            if plain:
+                result._spans.append(Span(
+                    text=plain, fg=current_fg, bg=current_bg,
+                    bold=current_bold, dim=current_dim,
+                    italic=current_italic, underline=current_underline,
+                    reverse=current_reverse, strikethrough=current_strikethrough,
+                ))
+
+        return result
+
+
+def _256_to_hex(idx: int) -> str:
+    """将 256 色调色板索引转为 #RRGGBB 字符串。"""
+    if idx < 16:
+        # 标准 16 色
+        hex_map = [
+            "000000", "800000", "008000", "808000",
+            "000080", "800080", "008080", "c0c0c0",
+            "808080", "ff0000", "00ff00", "ffff00",
+            "0000ff", "ff00ff", "00ffff", "ffffff",
+        ]
+        return hex_map[idx]
+    elif idx < 232:
+        # 216 色立方
+        idx -= 16
+        r = (idx // 36) * 51
+        g = ((idx % 36) // 6) * 51
+        b = (idx % 6) * 51
+        return f"{r:02x}{g:02x}{b:02x}"
+    else:
+        # 灰度
+        gray = (idx - 232) * 10 + 8
+        return f"{gray:02x}{gray:02x}{gray:02x}"

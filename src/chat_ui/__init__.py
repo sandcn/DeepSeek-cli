@@ -8,7 +8,7 @@
     ├── ToolOutputBlock / ToolSummaryBlock
     ├── ErrorBlock / NotificationBlock / WriteLineBlock
     └── StatusLine / InputLine / CompletionPopup / SelectionMenu
-  _renderer.py  — 渲染器
+  _renderer.py  — 渲染器（TuiRenderer + _RENDER_DISPATCH 命令分发表）
     ├── _RenderState  — IncrementalRenderer 生命周期管理
     ├── _RENDER_DISPATCH — 渲染命令分发表
     └── TuiRenderer     — 组件化渲染分发
@@ -21,7 +21,9 @@
     └── ChatUIConsumer  — 对外公开 API（含 RenderEngine/ContentRenderer 兼容别名）
 
 基础设施模块：
-  _const         — RenderCommand 枚举、Rich Style 常量
+  _ansi         — ANSI 转义序列工具（16色/样式/光标）
+  _styled       — StyledText 纯 Python 样式化文本
+  _const         — RenderCommand 枚举、ANSI 样式常量
   _state         — 全局活跃实例引用 + 引用计数
   _utils         — 通用工具函数
   _error_handler — 日志→上屏投递
