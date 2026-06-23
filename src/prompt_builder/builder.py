@@ -254,6 +254,7 @@ def build_system_prompt(
 
 
 __all__ = [
+    "build_environment_info",
     "build_system_prompt",
     "build_subagent_system_prompt",
     "build_map_agent_system_prompt",
