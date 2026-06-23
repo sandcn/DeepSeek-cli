@@ -479,7 +479,7 @@ class TestRender:
 
     def test_render_unknown_command_logs_error(self, renderer, mock_ta):
         """未知命令 ID → 记录日志（不崩溃）"""
-        with patch('src.chat_ui._renderer._logger.error') as m_log:
+        with patch('src.chat_ui._renderer_legacy._logger.error') as m_log:
             renderer.render((255,))
             m_log.assert_called_once()
 

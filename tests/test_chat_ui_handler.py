@@ -266,7 +266,7 @@ class TestRenderCommandError:
 
     def test_error_in_dispatch(self):
         """_RENDER_DISPATCH 包含 ERROR 条目"""
-        from src.chat_ui._renderer import _RENDER_DISPATCH
+        from src.chat_ui._renderer_legacy import _RENDER_DISPATCH
         dispatch = _RENDER_DISPATCH
         assert 16 in dispatch
         method_name, arg_indices = dispatch[16]

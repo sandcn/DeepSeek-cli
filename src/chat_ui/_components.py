@@ -18,7 +18,7 @@ from rich.text import Text
 
 from ._const import (
     _STYLE_DIM, _STYLE_FAIL, _STYLE_WARN, _STYLE_SUCCESS, _STYLE_ERROR, _STYLE_BOLD,
-    _THINKING_HEADER,
+    _THINKING_HEADER, _THINKING_SEPARATOR,
     _MAX_ERROR_LENGTH, _MAX_OUTPUT_LEN,
 )
 
@@ -132,7 +132,6 @@ class UserMsgBlock(TuiComponent):
     def render(self) -> Text:
         return Text.assemble(("\n  > ", _STYLE_BOLD), (self.text, _STYLE_BOLD))
 
-
 class ThinkingBlock(TuiComponent):
     """思考/推理内容块 — 流式追加写入 IncrementalRenderer。"""
     def __init__(self, rs: "_RenderState"):
@@ -160,7 +159,6 @@ class ThinkingBlock(TuiComponent):
     def render(self) -> str:
         return ""
 
-
 class AnswerBlock(TuiComponent):
     """助手回答块 — 流式 Markdown 渲染。"""
     def __init__(self, rs: "_RenderState"):
@@ -178,7 +176,6 @@ class AnswerBlock(TuiComponent):
 
     def render(self) -> str:
         return ""
-
 
 class ToolOutputBlock(TuiComponent):
     """工具执行输出块。"""
@@ -212,7 +209,6 @@ class ToolOutputBlock(TuiComponent):
 
     def render(self) -> str:
         return self.text
-
 
 class ToolSummaryBlock(TuiComponent):
     """工具完成汇总块。"""
@@ -293,7 +289,6 @@ class ToolSummaryBlock(TuiComponent):
     def render(self) -> str:
         return f"ToolSummary(success={len(self.successful)}, fail={len(self.failed)})"
 
-
 class ErrorBlock(TuiComponent):
     """错误提示块 — 红色 ! 前缀。"""
     def __init__(self, message: str):
@@ -302,7 +297,6 @@ class ErrorBlock(TuiComponent):
     def render(self) -> Text:
         return Text.assemble(("\n  ! ", _STYLE_ERROR), (self.message, _STYLE_ERROR))
 
-
 class NotificationBlock(TuiComponent):
     """系统通知块 — 绿色 · 前缀。"""
     def __init__(self, text: str):
@@ -310,7 +304,6 @@ class NotificationBlock(TuiComponent):
 
     def render(self) -> Text:
         return Text.assemble(("\n  · ", _STYLE_SUCCESS), (self.text, _STYLE_SUCCESS))
-
 
 class WriteLineBlock(TuiComponent):
     """单行输出块 — 支持 ANSI 转义序列。
@@ -336,7 +329,6 @@ class WriteLineBlock(TuiComponent):
 
     def render(self) -> str:
         return self.text
-
 
 # ═══════════════════════════════════════════════════════════
 # 底部栏组件
@@ -443,3 +435,4 @@ def _estimate_content_lines(text: str) -> int:
     if not text:
         return 1
     return text.count('\n') + 1
+

@@ -88,6 +88,10 @@ from ._box import (
 # ── 测量工具 ──────────────────────────────────────
 from ._measure import measureElement
 
+# ── Ink 渲染状态与渲染器 ───────────────────────────
+from ._ink_state import InkState
+from ._ink_renderer import InkRenderer
+
 # ── 核心 TUI（组件化架构） ─────────────────────────
 from ._consumer import ChatUIConsumer
 
@@ -106,5 +110,7 @@ __all__ = [
     "Text",
     "FlexDirection",
     "measureElement",
+    "InkState",
+    "InkRenderer",
 ]
 

@@ -43,6 +43,8 @@ from ..ui._blessed import get_terminal
 
 from ._engine import TuiEngine
 from ._renderer import TuiRenderer, _RenderState
+from ._ink_state import InkState
+from ._ink_renderer import InkRenderer
 from ._dispatcher import EventDispatcher, _HANDLER_MAP
 from ._protocols import BottomBarProtocol
 from ._completion import _CmplHandler, _apply_completion
@@ -102,6 +104,14 @@ class ChatUIConsumer:
             self._tui_renderer, self._bottom_bar,
             cursor_tracker=self._cursor_tracker,
         )
+        # 如果引擎使用 ink 后端，初始化 InkRenderer
+        if self._engine.renderer_backend == "ink":
+            self._ink_state = InkState()
+            self._ink_renderer = InkRenderer(adapter=self._tui_renderer.output_adapter)
+            self._engine.set_ink_renderer(self._ink_renderer, self._ink_state)
+        else:
+            self._ink_state = None
+            self._ink_renderer = None
         self._disp = EventDispatcher(push_cmd=self._engine.push_cmd)
         self._rs.set_output_adapter(output_adapter)
         self._cmpl = _CmplHandler(
@@ -287,7 +297,7 @@ class ChatUIConsumer:
 
     @property
     def output_adapter(self):
-        return self._tui_renderer._adapter
+        return self._tui_renderer.output_adapter
 
     def set_panel_refresh_callback(self, callback: Callable[[], None] | None) -> None:
         self._engine.set_panel_refresh_callback(callback)
