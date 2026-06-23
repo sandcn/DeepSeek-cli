@@ -14,6 +14,7 @@
 from __future__ import annotations
 
 import logging
+import threading
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import TYPE_CHECKING
@@ -29,6 +30,8 @@ _logger = logging.getLogger(__name__)
 
 _counter: int = 0
 
+_counter_lock = threading.Lock()
+
 
 def _reset_counter() -> None:
     """重置全局计数器（仅供测试使用）。"""
@@ -37,11 +40,12 @@ def _reset_counter() -> None:
 
 
 def _next_key() -> int:
-    """生成下一个唯一整数 key。"""
-    global _counter
-    key = _counter
-    _counter += 1
-    return key
+    """生成下一个唯一整数 key（线程安全）。"""
+    with _counter_lock:
+        global _counter
+        key = _counter
+        _counter += 1
+        return key
 
 
 # ═══════════════════════════════════════════════════════════
@@ -152,8 +156,8 @@ def _extract_props(component: TuiComponent) -> dict:
             continue
         if callable(value):
             continue
-        # Rich Style 对象（有 __rich_console__ 或 isinstance Style）
-        if hasattr(value, '__rich_console__') or isinstance(value, Style):
+        # Rich Style 对象
+        if isinstance(value, Style):
             props[attr_name] = repr(value)
         elif isinstance(value, (str, int, float, bool, type(None))):
             props[attr_name] = value
@@ -254,7 +258,7 @@ def diff(old_root: CVNode | None, new_root: CVNode | None) -> list[CVPatch]:
             ))
         # 纯追加时仍需检查 REORDER：新增子节点可能改变兄弟顺序
         _detect_reorder(parent_children_old, parent_children_new, patches)
-        _sort_patches_depth_first(patches, new_map)
+        _sort_patches_depth_first(patches, new_map, old_map)
         return patches
 
     # ── INSERT：新树有、旧树无 ──────────────────────────
@@ -291,7 +295,7 @@ def diff(old_root: CVNode | None, new_root: CVNode | None) -> list[CVPatch]:
     _detect_reorder(parent_children_old, parent_children_new, patches)
 
     # ── 深度优先排序（先父后子） ────────────────────────
-    _sort_patches_depth_first(patches, new_map)
+    _sort_patches_depth_first(patches, new_map, old_map)
 
     return patches
 
@@ -315,20 +319,33 @@ def _detect_reorder(
 ) -> None:
     """检测子节点顺序变化，生成 REORDER 补丁。
 
-    仅在父节点下子节点 key 集合完全相同但顺序不同时触发。
-    若子节点有增删（key 集合不同），顺序变化视为增删的附带效应，
-    不单独生成 REORDER。
+    当父节点下子节点 key 集合完全相同时检测整体顺序。
+    当有新增/删除子节点时，检测仅含旧 key 的子序列顺序变化。
     """
     common_parents = set(parent_children_old.keys()) & set(parent_children_new.keys())
     for parent_key in common_parents:
         old_seq = parent_children_old[parent_key]
         new_seq = parent_children_new[parent_key]
-        if set(old_seq) == set(new_seq) and old_seq != new_seq:
-            patches.append(CVPatch(
-                type=CVPatchType.REORDER,
-                key=parent_key,
-                index=-1,
-            ))
+        if set(old_seq) == set(new_seq):
+            # 子节点集合相同，整体顺序不同 → REORDER
+            if old_seq != new_seq:
+                patches.append(CVPatch(
+                    type=CVPatchType.REORDER,
+                    key=parent_key,
+                    index=-1,
+                ))
+        else:
+            # 有新增/删除，但旧 key 子集可能仍有顺序变化
+            old_set = set(old_seq)
+            new_set = set(new_seq)
+            filtered_new = [k for k in new_seq if k in old_set]
+            filtered_old = [k for k in old_seq if k in new_set]
+            if len(filtered_new) >= 2 and filtered_new != filtered_old:
+                patches.append(CVPatch(
+                    type=CVPatchType.REORDER,
+                    key=parent_key,
+                    index=-1,
+                ))
 
 
 def _collect_inserts(
@@ -379,6 +396,7 @@ def _all_unchanged(
 def _sort_patches_depth_first(
     patches: list[CVPatch],
     new_map: dict[str, tuple[CVNode, str | None, int]],
+    old_map: dict[str, tuple[CVNode, str | None, int]] | None = None,
 ) -> None:
     """按深度优先顺序排序补丁（先父后子）。
 
@@ -396,9 +414,15 @@ def _sort_patches_depth_first(
         if key in depth_cache:
             return depth_cache[key]
         if key not in new_map:
-            # 仅存在于旧树的节点（DELETE），深度按 0 处理
-            depth_cache[key] = 0
-            return 0
+            if old_map is not None and key in old_map:
+                _, parent_key, _ = old_map[key]
+                if parent_key is None:
+                    depth_cache[key] = 0
+                else:
+                    depth_cache[key] = get_depth(parent_key) + 1
+            else:
+                depth_cache[key] = 0
+            return depth_cache[key]
         _, parent_key, _ = new_map[key]
         if parent_key is None:
             depth_cache[key] = 0

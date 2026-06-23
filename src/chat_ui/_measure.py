@@ -18,8 +18,13 @@ from rich.text import Text
 _logger = logging.getLogger(__name__)
 
 
-# 覆盖 CSI + OSC + DCS + APC 等序列
-_ANSI_RE = re.compile(r'\x1b\[[0-9;]*[a-zA-Z]|\x1b\][^\x07]*\x07|\x1b[PX^_][^\x1b]*\x1b\\')
+# 覆盖 CSI + OSC (BEL/ST 终止) + DCS/APC/PM/SOS (ST 终止) 等序列
+_ANSI_RE = re.compile(
+    r'\x1b\[[0-9;]*[a-zA-Z]'          # CSI: \x1b[ ... 字母
+    r'|\x1b\][^\x07]*\x07'             # OSC BEL 终止
+    r'|\x1b\][^\x1b]*\x1b\\'           # OSC ST 终止
+    r'|\x1b[PX^_][^\x1b]*\x1b\\'       # DCS/APC/PM/SOS ST 终止
+)
 
 
 def _strip_ansi(text: str) -> str:
@@ -31,19 +36,44 @@ def _char_width(ch: str) -> int:
     """返回单个字符的显示宽度（CJK 字符占 2 列）。
 
     基于 Unicode codepoint 范围实现，与 src/api/renderer/_utils/_display.py
-    的 cjk_display_width 保持一致的区间定义。
+    的 cjk_display_width 基于相同的 CJK 宽度约定，但区间范围存在已知分歧（Hangul
+    Jamo 上限、Yi 音节、CJK Extension B 上限、组合变音符号处理、emoji 区间等）。
+    建议未来统一到 wcwidth 库（src/ui/_bottom_cursor.py 已使用）。参见 P2-11 记录。
     """
     cp = ord(ch)
     # 零宽字符
-    if cp in (0x00AD,) or 0x0300 <= cp <= 0x036F or 0x0483 <= cp <= 0x0489:
+    if (cp in (0x00AD,) or
+            0x0300 <= cp <= 0x036F or
+            0x0483 <= cp <= 0x0489 or
+            0x200B <= cp <= 0x200F or
+            0x2028 <= cp <= 0x202E or
+            0x2060 <= cp <= 0x2069 or
+            0xFE00 <= cp <= 0xFE0F or
+            cp == 0xFEFF):
         return 0
-    # CJK 范围
+    # CJK/宽字符范围（含 Emoji、杂项符号、国旗区域指示符等）
     if (0x1100 <= cp <= 0x115F or 0x2329 <= cp <= 0x232A or
             0x2E80 <= cp <= 0xA4CF or 0xA960 <= cp <= 0xA97C or
             0xAC00 <= cp <= 0xD7A3 or 0xF900 <= cp <= 0xFAFF or
             0xFE10 <= cp <= 0xFE19 or 0xFE30 <= cp <= 0xFE6F or
             0xFF01 <= cp <= 0xFF60 or 0xFFE0 <= cp <= 0xFFE6 or
-            0x1F004 <= cp <= 0x1F251 or 0x20000 <= cp <= 0x3FFFD):
+            0x1F004 <= cp <= 0x1F251 or 0x20000 <= cp <= 0x3FFFD or
+            0x1F300 <= cp <= 0x1F9FF or
+            0x231A <= cp <= 0x231B or
+            0x23E9 <= cp <= 0x23F3 or
+            0x23F8 <= cp <= 0x23FA or
+            cp == 0x24C2 or
+            0x25AA <= cp <= 0x25AB or
+            cp == 0x25B6 or
+            cp == 0x25C0 or
+            0x25FB <= cp <= 0x25FE or
+            0x2600 <= cp <= 0x27BF or
+            0x2934 <= cp <= 0x2935 or
+            cp == 0x2B50 or
+            cp == 0x2B55 or
+            cp == 0x3030 or
+            cp == 0x303E or
+            0x1F1E6 <= cp <= 0x1F1FF):
         return 2
     return 1
 
@@ -100,6 +130,10 @@ def measureElement(component: "TuiComponent", terminal_width: int = 80) -> tuple
         - rows: 组件占用的行数（>= 1，空组件返回 0）
         - cols: 组件占用最大列宽（字符数）
     """
+    if terminal_width <= 0:
+        _logger.debug("measureElement: terminal_width=%d <= 0, 回退为默认值 80", terminal_width)
+        terminal_width = 80
+
     # 调用 render() 获取输出
     try:
         output = component.render()

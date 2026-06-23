@@ -72,7 +72,6 @@ class InkState:
         subagent_frame: SubAgent 帧数据
         display_messages: 历史消息数据
         write_lines: 直接写入的文本行列表
-        command_queue: 待处理命令队列
         _version: 单调递增版本号（每次状态变更 +1）
     """
 
@@ -91,7 +90,6 @@ class InkState:
     subagent_frame: tuple = ()
     display_messages: tuple = ()
     write_lines: list[str] = field(default_factory=list)
-    command_queue: list = field(default_factory=list)
     _version: int = 1
 
     _lock: threading.Lock = field(default_factory=threading.Lock, repr=False, compare=False)
@@ -201,7 +199,6 @@ class InkState:
             self.subagent_frame = ()
             self.display_messages = ()
             self.write_lines.clear()
-            self.command_queue.clear()
             self._version = 1
 
     # ── 命令处理方法 ─────────────────────────────────

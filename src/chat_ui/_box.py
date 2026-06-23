@@ -329,20 +329,3 @@ class Text(TuiComponent):
         return RichText(self.content, style=self.style)
 
 
-# ═══════════════════════════════════════════════════════════
-# 内部辅助函数
-# ═══════════════════════════════════════════════════════════
-
-def _pad_or_truncate(line: str, width: int) -> str:
-    """将行截断或填充至指定宽度。
-
-    Args:
-        line: 输入行
-        width: 目标宽度
-
-    Returns:
-        调整后的行，长度恰好为 width
-    """
-    if len(line) > width:
-        return line[:width]
-    return line.ljust(width)
