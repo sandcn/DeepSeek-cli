@@ -305,7 +305,7 @@ prompt 必须包含：
 - 规划阶段由 plan Agent 产出执行计划（`.chat/plan/`）
 - 执行中若出现重大调整，须重新列计划
 
-> `dispatch_agent` 调用豁免本规则（由「修改/新需求先委派 plan Agent」覆盖）。
+> `dispatch_agent` 调用豁免本规则（由「修改/新需求先委派 plan Agent（强制 · 零豁免）」覆盖）。
 
 ---
 
@@ -359,8 +359,10 @@ prompt 必须包含：
 
 ## 规划阶段
 
-### 修改/新需求先委派 plan Agent（强制）
-涉及文件修改或新需求，必须先 `dispatch_agent(type="plan")`，产出计划文件到 `.chat/plan/`。执行顺序：map → plan → execute。
+### 修改/新需求先委派 plan Agent（强制 · 零豁免）
+涉及文件修改或新需求，必须先 **必须** `dispatch_agent(type="plan")`——**不论修改多少个文件，哪怕只改一个也绝无例外，** 无论修改规模大小、是否「零逻辑变更」，产出计划文件到 `.chat/plan/`。执行顺序：map → plan → execute。
+
+> **plan 零豁免（强制）**：只要涉及文件修改就必须委派 plan Agent，不可跳过。无例外。
 
 > 三要素速查 → 见上方「plan — 计划生成」
 
