@@ -46,6 +46,9 @@ class TestLoadPrompt:
             "prompts_export_sub",
             "prompts_export_map",
             "prompts_export_review",
+            "prompts_export_plan",
+            "prompts_export_read_memory",
+            "prompts_export_write_memory",
         ]
         for name in existing_prompts:
             content = _load_prompt(name)
