@@ -9,7 +9,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from ._consumer import ChatUIConsumer
+    from ._tui import ChatUIConsumer
 
 # ── 活跃实例引用（供交互式工具暂停/恢复，引用计数防竞态） ──
 # 多实例场景下，start() 递增计数并设置引用，stop() 递减计数，

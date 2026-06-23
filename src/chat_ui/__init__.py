@@ -1,32 +1,26 @@
 """ChatUI — 终端聊天消费者包。
 
-架构（拆分为 4 层单向依赖 L0→L1→L2→L3）：
+React Ink-like TUI 架构（组件化设计）：
 
-  Layer 0（常量+状态）：
-    _const         — RenderCommand 枚举、Rich Style 常量、_ReasoningState 状态机
-    _state         — 全局活跃实例引用
-    _utils         — 通用工具函数
+  _tui.py — 单模块 React Ink-like 渲染引擎
+    ├── 组件层
+    │   ├── UserMsgBlock / ThinkingBlock / AnswerBlock
+    │   ├── ToolOutputBlock / ToolSummaryBlock
+    │   ├── ErrorBlock / NotificationBlock
+    │   ├── StatusLine / InputLine
+    │   └── CompletionPopup / SelectionMenu
+    ├── 渲染引擎
+    │   ├── TuiRenderer  — 组件化渲染分发
+    │   ├── TuiEngine    — render 线程 + 命令队列
+    │   └── EventDispatcher — DisplayEvent → RenderCommand
+    └── ChatUIConsumer  — 对外公开 API
 
-  Layer 1（基础设施）：
-    _error_handler — ChatUIErrorHandler 日志捕获+上屏投递（模块级注册到 root logger）
-    _render_state  — _RenderState 推理/内容渲染器生命周期管理（直接使用 IncrementalRenderer）
-
-  Layer 2（业务逻辑）：
-    _completion    — _CmplHandler Tab 补全交互 + _apply_completion 纯函数
-    _renderers     — ContentRenderer 渲染命令 O(1) 字典分发，直接通过 OutputAdapter 打印
-    _dispatcher    — EventDispatcher 11 种 DisplayEvent 过滤+入队（回调解耦队列）
-
-  Layer 3（引擎）：
-    _engine        — RenderEngine render 线程 + Queue 命令队列 + 渲染循环
-
-  Layer 4（外观）：
-    _consumer      — ChatUIConsumer 外观类，组合所有子系统
-
-2026-06-10 架构简化：
-  - 移除完整 Control 控件体系（Control/TextControl/MarkdownControl/ControlList等7个类）
-  - ContentRenderer 直接通过 OutputAdapter 或 sys.__stdout__ 打印
-  - 移除 _active_subagent_panel 全局引用
-  - 移除 RenderCommand.SUBAGENT_REFRESH
+保留模块：
+  _const         — RenderCommand 枚举、Rich Style 常量（保留兼容）
+  _state         — 全局活跃实例引用 + 引用计数
+  _utils         — 通用工具函数（保留兼容）
+  _error_handler — 日志→上屏投递
+  _completion    — _apply_completion 纯函数 + _CmplHandler
 
 公开 API：
   ChatUIConsumer       — 终端聊天消费者
@@ -42,27 +36,27 @@ from __future__ import annotations
 
 import logging
 
-# ── Layer 0 导出 ──────────────────────────────────────
+# ── 常量导出 ──────────────────────────────────────
 from ._const import (
     RenderCommand,
     _MAIN_LABEL,
 )
+
+# ── 全局状态导出 ──────────────────────────────────
 from ._state import (
     _active_consumer,
     get_active_chat_ui,
 )
 
-# ── Layer 1 导出 ──────────────────────────────────────
-# ★ 显式注册 ChatUIErrorHandler 到 root logger（import 即生效）
-#   在 __init__.py 中显式执行 addHandler，而非依赖模块级副作用。
+# ── 错误处理 ──────────────────────────────────────
 from ._error_handler import ChatUIErrorHandler
 logging.getLogger().addHandler(ChatUIErrorHandler())
 
-# ── Layer 2 导出 ──────────────────────────────────────
+# ── 补全纯函数 ────────────────────────────────────
 from ._completion import _apply_completion
 
-# ── Layer 4 导出 ──────────────────────────────────────
-from ._consumer import ChatUIConsumer
+# ── 核心 TUI（组件化架构） ─────────────────────────
+from ._tui import ChatUIConsumer
 
 __all__ = [
     "ChatUIConsumer",
