@@ -196,7 +196,7 @@ class UserSelectFunc(Func):
             # 最小激活：仅设置标志和缓存，跳过全量绘制（由 show_completions 完成）
             bb._active = True
             bb._last_text = ""
-            bb._last_rendered_text = ""
+            bb._input._last_rendered_text = ""
             bb._last_bottom_lines = bb._bottom_lines
             bb._last_scroll_end = term_h - bb._bottom_lines
 

@@ -20,6 +20,24 @@ from ._const import (
     RenderCommand,
     _CLEAR_PARSE_LINE,
 )
+
+from ._cmd import (
+    CmdReasoning,
+    CmdContent,
+    CmdPhaseDone,
+    CmdToolOutput,
+    CmdToolSummary,
+    CmdUserMsg,
+    CmdParseInfo,
+    CmdNotification,
+    CmdWriteLine,
+    CmdDisplayMsgs,
+    CmdToolCountInc,
+    CmdToolFailInc,
+    CmdToolCountDec,
+    CmdError,
+    CmdSubagentFrame,
+)
 from ._render_state import _RenderState
 
 from ._components import (
@@ -41,7 +59,7 @@ _logger = logging.getLogger(__name__)
 
 
 # ═══════════════════════════════════════════════════════════
-# 渲染分发表
+# 渲染分发表（@deprecated — 保留供外部引用，内部已改用 isinstance dispatch）
 # ═══════════════════════════════════════════════════════════
 
 _RENDER_DISPATCH: dict[int, tuple[str, tuple[int, ...]]] = {
@@ -96,26 +114,48 @@ class TuiRenderer:
         """
         return self._adapter
 
-    def render(self, cmd: tuple) -> None:
-        """分发渲染命令到对应的 _do_* 方法。
+    def render(self, cmd) -> None:
+        """分发渲染命令到对应的 _do_* 方法（isinstance 多态分发）。
 
-        通过 _RENDER_DISPATCH 表将命令 ID 映射到方法名和参数索引，
-        提取参数后调用对应处理方法。
+        通过 match-case 替代 _RENDER_DISPATCH 字典查表 + getattr 反射，
+        提供类型安全和 IDE 自动补全。
 
         Args:
-            cmd: 渲染命令元组，格式为 (command_id, *args)
+            cmd: 渲染命令 dataclass 实例（CmdReasoning / CmdContent / ...）
         """
-        if not cmd:
-            return
-        cid = cmd[0]
-        entry = _RENDER_DISPATCH.get(cid)
-        if entry is None:
-            _logger.error("未知渲染命令: %s", _cmd_name(cid))
-            return
-        method_name, arg_indices = entry
-        method = getattr(self, method_name)
-        args = tuple(cmd[i] for i in arg_indices)
-        method(*args)
+        match cmd:
+            case CmdReasoning(text=text):
+                self._do_reasoning(text)
+            case CmdContent(text=text):
+                self._do_content(text)
+            case CmdPhaseDone(phase=phase):
+                self._do_phase_done(phase)
+            case CmdToolOutput(text=text):
+                self._do_tool_output(text)
+            case CmdToolSummary(successful=s, failed=f):
+                self._do_tool_summary(s, f)
+            case CmdUserMsg(text=text):
+                self._do_user_message(text)
+            case CmdParseInfo(tool_names=tn, tokens=tok, elapsed=el):
+                self._do_parse_info(tn, tok, el)
+            case CmdNotification(text=text):
+                self._do_notification(text)
+            case CmdWriteLine(text=text):
+                self._do_write_line(text)
+            case CmdDisplayMsgs(messages=msgs, speed=spd):
+                self._do_display_messages(msgs, spd)
+            case CmdToolCountInc():
+                self._do_tool_count_inc()
+            case CmdToolFailInc():
+                self._do_tool_fail_inc()
+            case CmdToolCountDec():
+                self._do_tool_count_dec()
+            case CmdError(message=msg):
+                self._do_error(msg)
+            case CmdSubagentFrame(frame_lines=fl):
+                self._do_subagent_frame(fl)
+            case _:
+                _logger.error("未知渲染命令类型: %s", type(cmd).__name__)
 
     def _record_lines(self, n: int) -> None:
         if self._tracker is not None:

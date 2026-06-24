@@ -20,6 +20,11 @@ from src.chat_ui._const import (
     _CLEAR_PARSE_LINE, _MAIN_LABEL, _MAIN_SOURCE,
     _MAX_ERROR_LENGTH, RenderCommand,
 )
+from src.chat_ui._cmd import (
+    CmdContent, CmdError, CmdParseInfo, CmdPhaseDone,
+    CmdReasoning, CmdToolCountDec, CmdToolCountInc, CmdToolFailInc,
+    CmdToolOutput, CmdToolSummary, CmdWriteLine,
+)
 from src.chat_ui._utils import _truncate_msg
 from src.chat_ui._dispatcher import EventDispatcher, _HANDLER_MAP
 from src.ui.events.event_types import (
@@ -57,7 +62,7 @@ class TestEventDispatcherReasoningChunk:
         """正常 ReasoningChunkEvent → push_cmd 收到 (REASONING, text)。"""
         event = ReasoningChunkEvent(label=_MAIN_LABEL, text="thinking step 1...")
         dispatcher._on_reasoning_chunk(event)
-        push_cmd.assert_called_once_with((RenderCommand.REASONING, "thinking step 1..."))
+        push_cmd.assert_called_once_with(CmdReasoning(text="thinking step 1..."))
 
     def test_empty_text_skipped(self, dispatcher, push_cmd):
         """空 text（空字符串）跳过，不调用 push_cmd。"""
@@ -70,7 +75,7 @@ class TestEventDispatcherReasoningChunk:
         event = ReasoningChunkEvent(label=_MAIN_LABEL, text="   ")
         dispatcher._on_reasoning_chunk(event)  # "   " is truthy, so actually it WILL push
         # text="   " 是非空字符串（truthy），应触发 push
-        push_cmd.assert_called_once_with((RenderCommand.REASONING, "   "))
+        push_cmd.assert_called_once_with(CmdReasoning(text="   "))
 
     def test_non_main_label_skipped(self, dispatcher, push_cmd):
         """label != _MAIN_LABEL 跳过。"""
@@ -90,7 +95,7 @@ class TestEventDispatcherContentChunk:
         """正常 ContentChunkEvent → push_cmd 收到 (CONTENT, text)。"""
         event = ContentChunkEvent(label=_MAIN_LABEL, text="Hello world")
         dispatcher._on_content_chunk(event)
-        push_cmd.assert_called_once_with((RenderCommand.CONTENT, "Hello world"))
+        push_cmd.assert_called_once_with(CmdContent(text="Hello world"))
 
     def test_empty_text_skipped(self, dispatcher, push_cmd):
         """空 text 跳过。"""
@@ -116,7 +121,7 @@ class TestEventDispatcherPhaseDone:
         """正常 PhaseDoneEvent → push_cmd 收到 (PHASE_DONE, phase)。"""
         event = PhaseDoneEvent(label=_MAIN_LABEL, phase="content")
         dispatcher._on_phase_done(event)
-        push_cmd.assert_called_once_with((RenderCommand.PHASE_DONE, "content"))
+        push_cmd.assert_called_once_with(CmdPhaseDone(phase="content"))
 
     def test_non_main_label_skipped(self, dispatcher, push_cmd):
         """label != _MAIN_LABEL 跳过。"""
@@ -136,13 +141,13 @@ class TestEventDispatcherToolStarted:
         """source='agent' → push_cmd 收到 (TOOL_COUNT_INC,)。"""
         event = ToolStartedEvent(source=_MAIN_SOURCE, label="tool_call_1", tool_name="bash")
         dispatcher._on_tool_started(event)
-        push_cmd.assert_called_once_with((RenderCommand.TOOL_COUNT_INC,))
+        push_cmd.assert_called_once_with(CmdToolCountInc())
 
     def test_subagent_source(self, dispatcher, push_cmd):
         """source='agent-1' → 同样入队（SubAgent 兼容）。"""
         event = ToolStartedEvent(source="agent-1", label="tool_call_2", tool_name="read_file")
         dispatcher._on_tool_started(event)
-        push_cmd.assert_called_once_with((RenderCommand.TOOL_COUNT_INC,))
+        push_cmd.assert_called_once_with(CmdToolCountInc())
 
     def test_user_source_skipped(self, dispatcher, push_cmd):
         """source='user' 跳过。"""
@@ -168,21 +173,21 @@ class TestEventDispatcherToolDone:
         """success=True → push_cmd 收到 (TOOL_COUNT_DEC,)。"""
         event = ToolDoneEvent(source=_MAIN_SOURCE, label="tool_1", tool_name="bash", success=True)
         dispatcher._on_tool_done(event)
-        push_cmd.assert_called_once_with((RenderCommand.TOOL_COUNT_DEC,))
+        push_cmd.assert_called_once_with(CmdToolCountDec())
 
     def test_success_false(self, dispatcher, push_cmd):
         """success=False → push_cmd 收到 (TOOL_FAIL_INC,) + (TOOL_COUNT_DEC,)。"""
         event = ToolDoneEvent(source=_MAIN_SOURCE, label="tool_2", tool_name="bash", success=False)
         dispatcher._on_tool_done(event)
         assert push_cmd.call_count == 2
-        push_cmd.assert_any_call((RenderCommand.TOOL_FAIL_INC,))
-        push_cmd.assert_any_call((RenderCommand.TOOL_COUNT_DEC,))
+        push_cmd.assert_any_call(CmdToolFailInc())
+        push_cmd.assert_any_call(CmdToolCountDec())
 
     def test_subagent_source(self, dispatcher, push_cmd):
         """source='agent-2' 也处理（SubAgent 兼容）。"""
         event = ToolDoneEvent(source="agent-2", label="tool_3", tool_name="read_file", success=True)
         dispatcher._on_tool_done(event)
-        push_cmd.assert_called_once_with((RenderCommand.TOOL_COUNT_DEC,))
+        push_cmd.assert_called_once_with(CmdToolCountDec())
 
     def test_non_agent_source_skipped(self, dispatcher, push_cmd):
         """非 agent source 跳过。"""
@@ -203,7 +208,7 @@ class TestEventDispatcherToolOutput:
         event = ToolOutputChunkEvent(source=_MAIN_SOURCE, label="tool_1", text="line1\nline2\n")
         dispatcher._on_tool_output(event)
         # rstrip("\n") 去掉尾部换行
-        push_cmd.assert_called_once_with((RenderCommand.TOOL_OUTPUT, "line1\nline2"))
+        push_cmd.assert_called_once_with(CmdToolOutput(text="line1\nline2"))
 
     def test_empty_text_skipped(self, dispatcher, push_cmd):
         """空文本（rstrip 后为空）跳过。"""
@@ -233,7 +238,7 @@ class TestEventDispatcherToolSummary:
             source=_MAIN_SOURCE, successful_tools=successful, failed_tools=failed,
         )
         dispatcher._on_tool_summary(event)
-        push_cmd.assert_called_once_with((RenderCommand.TOOL_SUMMARY, successful, failed))
+        push_cmd.assert_called_once_with(CmdToolSummary(successful=successful, failed=failed))
 
     def test_empty_lists_skipped(self, dispatcher, push_cmd):
         """空列表（successful=() 且 failed=()）跳过。"""
@@ -265,7 +270,7 @@ class TestEventDispatcherParseInfo:
         )
         dispatcher._on_parse_info(event)
         push_cmd.assert_called_once_with(
-            (RenderCommand.PARSE_INFO, "bash,read_file", 150, 1.25),
+            CmdParseInfo(tool_names="bash,read_file", tokens=150, elapsed=1.25),
         )
 
     def test_non_agent_source_skipped(self, dispatcher, push_cmd):
@@ -287,7 +292,7 @@ class TestEventDispatcherParseInfoDone:
         event = ParseInfoDoneEvent(source=_MAIN_SOURCE, label="assistant")
         dispatcher._on_parse_info_done(event)
         push_cmd.assert_called_once_with(
-            (RenderCommand.PARSE_INFO, "", _CLEAR_PARSE_LINE, 0.0),
+            CmdParseInfo(tool_names="", tokens=_CLEAR_PARSE_LINE, elapsed=0.0),
         )
 
     def test_non_agent_source_skipped(self, dispatcher, push_cmd):
@@ -308,7 +313,7 @@ class TestEventDispatcherOutput:
         """正常 OutputEvent → push_cmd 收到 (WRITE_LINE, text)。"""
         event = OutputEvent(text="System initialized", level="info")
         dispatcher._on_output(event)
-        push_cmd.assert_called_once_with((RenderCommand.WRITE_LINE, "System initialized"))
+        push_cmd.assert_called_once_with(CmdWriteLine(text="System initialized"))
 
     def test_empty_text_skipped(self, dispatcher, push_cmd):
         """空 text 跳过。"""
@@ -334,7 +339,7 @@ class TestEventDispatcherModelPhase:
         """phase='error' + label=_MAIN_LABEL + info='msg' → (ERROR, 'msg')。"""
         event = ModelPhaseEvent(label=_MAIN_LABEL, phase="error", info="Connection failed")
         dispatcher._on_model_phase(event)
-        push_cmd.assert_called_once_with((RenderCommand.ERROR, "Connection failed"))
+        push_cmd.assert_called_once_with(CmdError(message="Connection failed"))
 
     def test_non_error_phase_skipped(self, dispatcher, push_cmd):
         """非 error phase 跳过。"""
@@ -360,7 +365,7 @@ class TestEventDispatcherModelPhase:
         expected = _truncate_msg(long_msg, _MAX_ERROR_LENGTH)
         event = ModelPhaseEvent(label=_MAIN_LABEL, phase="error", info=long_msg)
         dispatcher._on_model_phase(event)
-        push_cmd.assert_called_once_with((RenderCommand.ERROR, expected))
+        push_cmd.assert_called_once_with(CmdError(message=expected))
         assert len(expected) == _MAX_ERROR_LENGTH + 3  # 原始长度 + "..."
 
     def test_info_at_boundary_not_truncated(self, dispatcher, push_cmd):
@@ -368,7 +373,7 @@ class TestEventDispatcherModelPhase:
         msg = "x" * _MAX_ERROR_LENGTH
         event = ModelPhaseEvent(label=_MAIN_LABEL, phase="error", info=msg)
         dispatcher._on_model_phase(event)
-        push_cmd.assert_called_once_with((RenderCommand.ERROR, msg))
+        push_cmd.assert_called_once_with(CmdError(message=msg))
 
 
 # ═══════════════════════════════════════════════════════════

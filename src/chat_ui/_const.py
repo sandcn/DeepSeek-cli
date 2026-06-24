@@ -32,6 +32,10 @@ _MAX_OUTPUT_LEN = 10000  # 工具输出最大长度（字符），与 _MAX_ERROR
 # ── render 线程刷新间隔 ─────────────────────────────────
 _RENDER_INTERVAL = 0.1  # 100ms = 10Hz
 
+# ── 固定帧率常量（Phase 3: 固定帧率渲染循环） ──
+_FIXED_FRAME_INTERVAL = 0.016  # ~60fps (16ms)
+_ENV_FIXED_FPS = "CHAT_UI_RENDER_FIXED_FPS"
+
 # ── 紧急路径 ANSI 转义序列（直写终端，绕过 Rich 管线） ──
 # 用于队列满/render 崩溃等无法通过正常渲染管线输出的场景。
 # 提取为常量而非散落硬编码，确保可维护性。

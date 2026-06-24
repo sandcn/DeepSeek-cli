@@ -17,6 +17,7 @@ from unittest.mock import patch, MagicMock
 import pytest
 
 from src import chat_ui
+from src.chat_ui._cmd import CmdError
 
 
 # ── Fixture: ChatUIErrorHandler 实例 ───────────────────
@@ -274,11 +275,10 @@ class TestRenderCommandError:
         assert arg_indices == (1,)
 
     def test_error_instance_creation(self):
-        """ERROR 枚举值可实例化命令元组"""
-        from src.chat_ui import RenderCommand
-        cmd = (RenderCommand.ERROR, "test error message")
-        assert cmd[0] == 16
-        assert cmd[1] == "test error message"
+        """CmdError dataclass 可实例化"""
+        cmd = CmdError(message="test error message")
+        assert cmd.kind == 16
+        assert cmd.message == "test error message"
 
 
 # ── Test: _on_model_phase handler ─────────────────────
@@ -298,15 +298,15 @@ class TestOnModelPhase:
 
     def test_error_phase_dispatches_error(self, consumer):
         """phase="error" + label="_MAIN_LABEL" + 非空 info → push ERROR 命令"""
-        from src.chat_ui import _MAIN_LABEL, RenderCommand
+        from src.chat_ui import _MAIN_LABEL
         from src.ui.events.event_types import ModelPhaseEvent
         event = ModelPhaseEvent(
             label=_MAIN_LABEL, phase="error", info="test timeout error",
         )
         consumer._disp._on_model_phase(event)
         cmd = consumer._engine._cmd_queue.get_nowait()
-        assert cmd[0] == RenderCommand.ERROR
-        assert "test timeout error" in cmd[1]
+        assert isinstance(cmd, CmdError)
+        assert "test timeout error" in cmd.message
 
     def test_subagent_label_skipped(self, consumer):
         """SubAgent label（!= _MAIN_LABEL）→ 不 push 任何命令"""
@@ -340,7 +340,7 @@ class TestOnModelPhase:
 
     def test_long_info_truncated(self, consumer):
         """超长 info（>200 字符）→ 截断并追加"..." """
-        from src.chat_ui import _MAIN_LABEL, RenderCommand
+        from src.chat_ui import _MAIN_LABEL
         from src.ui.events.event_types import ModelPhaseEvent
         long_info = "x" * 300
         event = ModelPhaseEvent(
@@ -348,8 +348,8 @@ class TestOnModelPhase:
         )
         consumer._disp._on_model_phase(event)
         cmd = consumer._engine._cmd_queue.get_nowait()
-        assert cmd[0] == RenderCommand.ERROR
-        result = cmd[1]
+        assert isinstance(cmd, CmdError)
+        result = cmd.message
         assert len(result) == 203  # 200 + "..."
         assert result.endswith("...")
         # 截断后的内容应为前 200 个字符 + "..."
@@ -357,7 +357,7 @@ class TestOnModelPhase:
 
     def test_short_info_not_truncated(self, consumer):
         """短 info（<=200 字符）→ 原样传递"""
-        from src.chat_ui import _MAIN_LABEL, RenderCommand
+        from src.chat_ui import _MAIN_LABEL
         from src.ui.events.event_types import ModelPhaseEvent
         info = "short error message"
         event = ModelPhaseEvent(
@@ -365,8 +365,8 @@ class TestOnModelPhase:
         )
         consumer._disp._on_model_phase(event)
         cmd = consumer._engine._cmd_queue.get_nowait()
-        assert cmd[0] == RenderCommand.ERROR
-        assert cmd[1] == info
+        assert isinstance(cmd, CmdError)
+        assert cmd.message == info
 
 
 # ═══════════════════════════════════════════════════════

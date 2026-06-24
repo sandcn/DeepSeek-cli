@@ -28,8 +28,15 @@ if TYPE_CHECKING:
     )
 
 from ._const import (
-    RenderCommand,
     _ANSI_CURSOR_BOTTOM,
+)
+
+from ._cmd import (
+    CmdUserMsg,
+    CmdNotification,
+    CmdError,
+    CmdWriteLine,
+    CmdDisplayMsgs,
 )
 
 from ._state import (
@@ -239,15 +246,15 @@ class ChatUIConsumer:
     # ── 公开方法 ──────────────────────────────────
 
     def on_user_message(self, text: str) -> None:
-        self._engine.push_cmd((RenderCommand.USER_MSG, text))
+        self._engine.push_cmd(CmdUserMsg(text=text))
 
     def on_notification(self, text: str) -> None:
-        self._engine.push_cmd((RenderCommand.NOTIFICATION, text))
+        self._engine.push_cmd(CmdNotification(text=text))
 
     def on_error(self, message: str) -> None:
         if not message:
             return
-        self._engine.push_cmd((RenderCommand.ERROR, message))
+        self._engine.push_cmd(CmdError(message=message))
 
     def refresh(self) -> None:
         pass
@@ -256,10 +263,10 @@ class ChatUIConsumer:
         self._engine.request_bottom_redraw()
 
     def write_line(self, text: str) -> None:
-        self._engine.push_cmd((RenderCommand.WRITE_LINE, text))
+        self._engine.push_cmd(CmdWriteLine(text=text))
 
     def display_messages(self, messages: list[dict], speed: int = 0) -> None:
-        self._engine.push_cmd((RenderCommand.DISPLAY_MSGS, messages, speed))
+        self._engine.push_cmd(CmdDisplayMsgs(messages=messages, speed=speed))
 
     def wait_for_user_input(self, monitor, prefill: str = "", timeout: float | None = None) -> str:
         """阻塞等待用户通过 monitor 输入文本。
@@ -327,7 +334,7 @@ class ChatUIConsumer:
     def flush(self, timeout: float | None = 5.0) -> None:
         self._engine.flush(timeout=timeout)
 
-    def push_cmd(self, cmd: tuple) -> None:
+    def push_cmd(self, cmd: object) -> None:
         self._engine.push_cmd(cmd)
 
 

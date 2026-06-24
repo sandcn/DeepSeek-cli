@@ -22,6 +22,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from src.chat_ui._cmd import CmdUserMsg, CmdNotification, CmdError, CmdWriteLine, CmdDisplayMsgs
 
 # ── 项目根目录 ───────────────────────────────────────
 sys.path.insert(0, "/home/DeepSeek-cli")
@@ -673,43 +674,38 @@ class TestChatUIConsumerPublicMethods:
 
     def test_on_user_message_enqueues(self, consumer, mock_bus):
         """on_user_message('hello') → 命令入队"""
-        from src.chat_ui import RenderCommand
         consumer.on_user_message("hello")
         cmd = consumer._engine._cmd_queue.get_nowait()
-        assert cmd[0] == RenderCommand.USER_MSG
-        assert cmd[1] == "hello"
+        assert isinstance(cmd, CmdUserMsg)
+        assert cmd.text == "hello"
 
     def test_on_user_message_empty(self, consumer, mock_bus):
         """on_user_message('') → 入队空字符串"""
-        from src.chat_ui import RenderCommand
         consumer.on_user_message("")
         cmd = consumer._engine._cmd_queue.get_nowait()
-        assert cmd[0] == RenderCommand.USER_MSG
-        assert cmd[1] == ""
+        assert isinstance(cmd, CmdUserMsg)
+        assert cmd.text == ""
 
     def test_on_notification_enqueues(self, consumer, mock_bus):
         """on_notification('通知') → 命令入队"""
-        from src.chat_ui import RenderCommand
         consumer.on_notification("通知")
         cmd = consumer._engine._cmd_queue.get_nowait()
-        assert cmd[0] == RenderCommand.NOTIFICATION
-        assert cmd[1] == "通知"
+        assert isinstance(cmd, CmdNotification)
+        assert cmd.text == "通知"
 
     def test_on_notification_empty(self, consumer, mock_bus):
         """on_notification('') → 入队空字符串"""
-        from src.chat_ui import RenderCommand
         consumer.on_notification("")
         cmd = consumer._engine._cmd_queue.get_nowait()
-        assert cmd[0] == RenderCommand.NOTIFICATION
-        assert cmd[1] == ""
+        assert isinstance(cmd, CmdNotification)
+        assert cmd.text == ""
 
     def test_on_error_enqueues(self, consumer, mock_bus):
         """on_error('错误') → 命令入队"""
-        from src.chat_ui import RenderCommand
         consumer.on_error("错误消息")
         cmd = consumer._engine._cmd_queue.get_nowait()
-        assert cmd[0] == RenderCommand.ERROR
-        assert cmd[1] == "错误消息"
+        assert isinstance(cmd, CmdError)
+        assert cmd.message == "错误消息"
 
     def test_on_error_empty_skipped(self, consumer, mock_bus):
         """on_error('') → 不入队（防御式检查）"""
@@ -725,25 +721,22 @@ class TestChatUIConsumerPublicMethods:
 
     def test_write_line_enqueues(self, consumer, mock_bus):
         """write_line('文本') → 命令入队"""
-        from src.chat_ui import RenderCommand
         consumer.write_line("通用文本")
         cmd = consumer._engine._cmd_queue.get_nowait()
-        assert cmd[0] == RenderCommand.WRITE_LINE
-        assert cmd[1] == "通用文本"
+        assert isinstance(cmd, CmdWriteLine)
+        assert cmd.text == "通用文本"
 
     def test_display_messages_enqueues(self, consumer, mock_bus):
         """display_messages([...]) → 命令入队"""
-        from src.chat_ui import RenderCommand
         msgs = [{"role": "user", "content": "hi"}]
         consumer.display_messages(msgs, speed=1)
         cmd = consumer._engine._cmd_queue.get_nowait()
-        assert cmd[0] == RenderCommand.DISPLAY_MSGS
-        assert cmd[1] == msgs
-        assert cmd[2] == 1
+        assert isinstance(cmd, CmdDisplayMsgs)
+        assert cmd.messages == msgs
+        assert cmd.speed == 1
 
     def test_multiple_calls_queue_order(self, consumer, mock_bus):
         """多次入队保持 FIFO 顺序"""
-        from src.chat_ui import RenderCommand
         consumer.on_user_message("first")
         consumer.on_notification("second")
         consumer.on_error("third")
@@ -752,16 +745,21 @@ class TestChatUIConsumerPublicMethods:
         cmd2 = consumer._engine._cmd_queue.get_nowait()
         cmd3 = consumer._engine._cmd_queue.get_nowait()
 
-        assert cmd1 == (RenderCommand.USER_MSG, "first")
-        assert cmd2 == (RenderCommand.NOTIFICATION, "second")
-        assert cmd3 == (RenderCommand.ERROR, "third")
+        assert isinstance(cmd1, CmdUserMsg)
+        assert cmd1.text == "first"
+        assert isinstance(cmd2, CmdNotification)
+        assert cmd2.text == "second"
+        assert isinstance(cmd3, CmdError)
+        assert cmd3.message == "third"
 
     def test_push_cmd_delegates_to_engine(self, consumer, mock_bus):
         """入队委托给 _engine.push_cmd"""
-        from src.chat_ui import RenderCommand
         with patch.object(consumer._engine, 'push_cmd') as mock_push:
             consumer.on_user_message("delegated")
-            mock_push.assert_called_once_with((RenderCommand.USER_MSG, "delegated"))
+            mock_push.assert_called_once()
+            args, _ = mock_push.call_args
+            assert isinstance(args[0], CmdUserMsg)
+            assert args[0].text == "delegated"
 
 
 # ═══════════════════════════════════════════════════════
@@ -904,11 +902,10 @@ class TestChatUIConsumerEdgeCases:
 
     def test_on_error_with_whitespace(self, consumer, mock_bus):
         """on_error('  ') → 入队（空格非空）"""
-        from src.chat_ui import RenderCommand
         consumer.on_error("  ")
         cmd = consumer._engine._cmd_queue.get_nowait()
-        assert cmd[0] == RenderCommand.ERROR
-        assert cmd[1] == "  "
+        assert isinstance(cmd, CmdError)
+        assert cmd.message == "  "
 
     def test_ensure_cursor_upper(self, consumer, mock_bus):
         """ensure_cursor_upper() 委托给 _engine"""

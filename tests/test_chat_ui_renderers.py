@@ -20,6 +20,7 @@ from src.chat_ui._renderer import TuiRenderer as ContentRenderer
 from src.chat_ui._const import _CLEAR_PARSE_LINE, RenderCommand
 from src.chat_ui._renderer import _RenderState
 from src.chat_ui._render_state import _ReasoningState
+from src.chat_ui._cmd import CmdNotification
 
 
 # ── Fixtures ────────────────────────────────────────────
@@ -469,7 +470,7 @@ class TestRender:
         """已知命令 → 正确分发到对应 _do_* 方法"""
         method_name = "do_" + RenderCommand.NOTIFICATION.name.lower()
         with patch.object(renderer, f"_{method_name}") as m_method:
-            renderer.render((RenderCommand.NOTIFICATION, "test"))
+            renderer.render(CmdNotification(text="test"))
             m_method.assert_called_once_with("test")
 
     def test_render_unknown_command_logs_error(self, renderer, mock_ta):

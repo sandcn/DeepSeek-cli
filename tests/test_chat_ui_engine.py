@@ -22,6 +22,7 @@ import pytest
 
 sys.path.insert(0, "/home/DeepSeek-cli")
 
+from src.chat_ui._cmd import CmdContent, CmdReasoning, CmdPhaseDone, CmdNotification, CmdError, CmdToolCountDec
 from src.chat_ui._const import RenderCommand
 from src.chat_ui._utils import _cmd_name
 from src.chat_ui._engine import TuiEngine as RenderEngine, _ACTIVE_RENDER_INTERVAL, _IDLE_DRAIN_THRESHOLD
@@ -92,7 +93,7 @@ class TestRenderEnginePushCmd:
         assert engine._cmd_queue.empty()
         engine._cmd_event.clear()
 
-        engine.push_cmd((RenderCommand.CONTENT, "hello"))
+        engine.push_cmd(CmdContent(text="hello"))
 
         assert engine._cmd_queue.qsize() == 1
         assert engine._cmd_event.is_set()  # Bug fix: push_cmd 立即唤醒 render 线程
@@ -100,33 +101,33 @@ class TestRenderEnginePushCmd:
 
     def test_push_cmd_enqueues_phase_done(self, engine):
         """PHASE_DONE 命令成功入队。"""
-        engine.push_cmd((RenderCommand.PHASE_DONE, "思考"))
+        engine.push_cmd(CmdPhaseDone(phase="思考"))
         cmd = engine._cmd_queue.get_nowait()
-        assert cmd == (RenderCommand.PHASE_DONE, "思考")
+        assert cmd == CmdPhaseDone(phase="思考")
 
     def test_push_cmd_resets_consecutive_full_on_success(self, engine):
         """入队成功时 _consecutive_full 清零。"""
         engine._consecutive_full = 5
-        engine.push_cmd((RenderCommand.CONTENT, "x"))
+        engine.push_cmd(CmdContent(text="x"))
         assert engine._consecutive_full == 0
 
     def test_push_cmd_queue_full_logs_warning(self, engine, caplog):
         """队列满时丢弃命令并记录 warning。"""
         tiny_queue = queue.Queue(maxsize=1)
-        tiny_queue.put((RenderCommand.NOTIFICATION, "已占位"), block=False)
+        tiny_queue.put(CmdNotification(text="已占位"), block=False)
         engine._cmd_queue = tiny_queue
         caplog.set_level(logging.WARNING)
 
-        engine.push_cmd((RenderCommand.NOTIFICATION, "被丢弃"))
+        engine.push_cmd(CmdNotification(text="被丢弃"))
 
         assert engine._consecutive_full >= 1
         assert "渲染命令队列已满" in caplog.text
-        assert "NOTIFICATION" in caplog.text
+        assert "CmdNotification" in caplog.text
 
     def test_push_cmd_consecutive_full_warns_log(self, engine, caplog):
         """连续满超过阈值时记录日志错误，不再写终端。"""
         tiny_queue = queue.Queue(maxsize=1)
-        tiny_queue.put((RenderCommand.NOTIFICATION, "占位"), block=False)
+        tiny_queue.put(CmdNotification(text="占位"), block=False)
         engine._cmd_queue = tiny_queue
         engine._CONSECUTIVE_FULL_THRESHOLD = 3
 
@@ -134,7 +135,7 @@ class TestRenderEnginePushCmd:
 
         with patch.object(sys, "__stdout__") as mock_stdout:
             for _ in range(3):
-                engine.push_cmd((RenderCommand.NOTIFICATION, "丢弃"))
+                engine.push_cmd(CmdNotification(text="丢弃"))
 
         # 不再写终端
         terminal_warning_calls = [
@@ -148,13 +149,13 @@ class TestRenderEnginePushCmd:
     def test_push_cmd_consecutive_full_below_threshold(self, engine):
         """连续满未达阈值时不输出终端警告。"""
         tiny_queue = queue.Queue(maxsize=1)
-        tiny_queue.put((RenderCommand.NOTIFICATION, "占位"), block=False)
+        tiny_queue.put(CmdNotification(text="占位"), block=False)
         engine._cmd_queue = tiny_queue
         engine._CONSECUTIVE_FULL_THRESHOLD = 10
 
         with patch.object(sys, "__stdout__") as mock_stdout:
             for _ in range(5):
-                engine.push_cmd((RenderCommand.NOTIFICATION, "丢弃"))
+                engine.push_cmd(CmdNotification(text="丢弃"))
 
         terminal_warning_calls = [
             c for c in mock_stdout.write.call_args_list
@@ -165,68 +166,68 @@ class TestRenderEnginePushCmd:
     def test_push_cmd_success_resets_consecutive_after_full(self, engine):
         """满队列后下一次成功入队 → _consecutive_full 清零。"""
         tiny_queue = queue.Queue(maxsize=1)
-        tiny_queue.put((RenderCommand.NOTIFICATION, "占位"), block=False)
+        tiny_queue.put(CmdNotification(text="占位"), block=False)
         engine._cmd_queue = tiny_queue
 
         # 第一次满队列（队列已占位，再 push 触发 Full）
-        engine.push_cmd((RenderCommand.NOTIFICATION, "a"))
+        engine.push_cmd(CmdNotification(text="a"))
         assert engine._consecutive_full == 1
 
         # 重建正常队列后 push 成功 → 清零
         engine._cmd_queue = queue.Queue(maxsize=10000)
-        engine.push_cmd((RenderCommand.CONTENT, "成功"))
+        engine.push_cmd(CmdContent(text="成功"))
         assert engine._consecutive_full == 0
 
     def test_push_cmd_cmd_event_set_on_success(self, engine):
         """Bug fix: 成功入队时 set cmd_event 以立即唤醒 render 线程。"""
         engine._cmd_event.clear()
-        engine.push_cmd((RenderCommand.NOTIFICATION, "测试"))
+        engine.push_cmd(CmdNotification(text="测试"))
         assert engine._cmd_event.is_set()
 
     def test_push_cmd_merge_content_on_full(self, engine):
         """队列满且队尾为 CONTENT → 合并 text。"""
         tiny_queue = queue.Queue(maxsize=1)
-        tiny_queue.put((RenderCommand.CONTENT, "Hello "), block=False)
+        tiny_queue.put(CmdContent(text="Hello "), block=False)
         engine._cmd_queue = tiny_queue
         engine._cmd_event.clear()
 
-        engine.push_cmd((RenderCommand.CONTENT, "World"))
+        engine.push_cmd(CmdContent(text="World"))
 
         assert engine._cmd_queue.qsize() == 1
         merged = engine._cmd_queue.get_nowait()
-        assert merged == (RenderCommand.CONTENT, "Hello World")
+        assert merged == CmdContent(text="Hello World")
         assert engine._consecutive_full == 0
         assert engine._cmd_event.is_set()
 
     def test_push_cmd_merge_reasoning_on_full(self, engine):
         """队列满且队尾为 REASONING → 合并 text。"""
         tiny_queue = queue.Queue(maxsize=1)
-        tiny_queue.put((RenderCommand.REASONING, "思考中"), block=False)
+        tiny_queue.put(CmdReasoning(text="思考中"), block=False)
         engine._cmd_queue = tiny_queue
         engine._cmd_event.clear()
 
-        engine.push_cmd((RenderCommand.REASONING, "..."))
+        engine.push_cmd(CmdReasoning(text="..."))
 
         assert engine._cmd_queue.qsize() == 1
         merged = engine._cmd_queue.get_nowait()
-        assert merged == (RenderCommand.REASONING, "思考中...")
+        assert merged == CmdReasoning(text="思考中...")
         assert engine._consecutive_full == 0
         assert engine._cmd_event.is_set()
 
     def test_push_cmd_no_merge_different_type(self, engine, caplog):
         """队列满且队尾为不同类型 → 丢弃。"""
         tiny_queue = queue.Queue(maxsize=1)
-        tiny_queue.put((RenderCommand.REASONING, "reasoning"), block=False)
+        tiny_queue.put(CmdReasoning(text="reasoning"), block=False)
         engine._cmd_queue = tiny_queue
         caplog.set_level(logging.WARNING)
 
-        engine.push_cmd((RenderCommand.CONTENT, "content"))
+        engine.push_cmd(CmdContent(text="content"))
 
         assert engine._consecutive_full >= 1
         assert "渲染命令队列已满" in caplog.text
         assert engine._cmd_queue.qsize() == 1
         existing = engine._cmd_queue.get_nowait()
-        assert existing == (RenderCommand.REASONING, "reasoning")
+        assert existing == CmdReasoning(text="reasoning")
 
     def test_push_cmd_no_merge_empty_queue(self, engine, caplog):
         """队列满但无法访问底层 deque → 丢弃。"""
@@ -237,7 +238,7 @@ class TestRenderEnginePushCmd:
         engine._cmd_event.clear()
         caplog.set_level(logging.WARNING)
 
-        engine.push_cmd((RenderCommand.CONTENT, "text"))
+        engine.push_cmd(CmdContent(text="text"))
 
         assert engine._consecutive_full >= 1
         assert "渲染命令队列已满" in caplog.text
@@ -431,8 +432,8 @@ class TestRenderEngineFlush:
     def test_flush_render_not_started_drains_queue(self, engine):
         """render 线程从未启动（None）→ 直接清空队列。"""
         engine._render_thread = None
-        engine._cmd_queue.put((RenderCommand.CONTENT, "a"))
-        engine._cmd_queue.put((RenderCommand.CONTENT, "b"))
+        engine._cmd_queue.put(CmdContent(text="a"))
+        engine._cmd_queue.put(CmdContent(text="b"))
         assert engine._cmd_queue.qsize() == 2
 
         engine.flush(timeout=1.0)
@@ -444,8 +445,8 @@ class TestRenderEngineFlush:
         mock_t = MagicMock()
         mock_t.is_alive.return_value = False
         engine._render_thread = mock_t
-        engine._cmd_queue.put((RenderCommand.CONTENT, "x"))
-        engine._cmd_queue.put((RenderCommand.CONTENT, "y"))
+        engine._cmd_queue.put(CmdContent(text="x"))
+        engine._cmd_queue.put(CmdContent(text="y"))
 
         engine.flush(timeout=1.0)
 
@@ -582,8 +583,8 @@ class TestRenderEngineDrainQueue:
         """有命令时批量出队并按顺序渲染。"""
         engine._bb.is_status_active = False
 
-        engine._cmd_queue.put((RenderCommand.CONTENT, "hello"))
-        engine._cmd_queue.put((RenderCommand.CONTENT, "world"))
+        engine._cmd_queue.put(CmdContent(text="hello"))
+        engine._cmd_queue.put(CmdContent(text="world"))
 
         with (
             patch("src.chat_ui._engine._try_acquire_output_lock") as m_lock,
@@ -595,8 +596,8 @@ class TestRenderEngineDrainQueue:
         # 两个命令按顺序渲染
         assert engine._renderer.render.call_count == 2
         engine._renderer.render.assert_has_calls([
-            call((RenderCommand.CONTENT, "hello")),
-            call((RenderCommand.CONTENT, "world")),
+            call(CmdContent(text="hello")),
+            call(CmdContent(text="world")),
         ])
 
     def test_drain_calls_sync_and_cursor_upper(
@@ -605,7 +606,7 @@ class TestRenderEngineDrainQueue:
         """渲染前先 sync_bottom_lines 再 ensure_cursor_upper。"""
         engine._bb.is_status_active = False
 
-        engine._cmd_queue.put((RenderCommand.CONTENT, "test"))
+        engine._cmd_queue.put(CmdContent(text="test"))
 
         with (
             patch("src.chat_ui._engine._try_acquire_output_lock") as m_lock,
@@ -628,7 +629,7 @@ class TestRenderEngineDrainQueue:
         engine._renderer.render.side_effect = RuntimeError("渲染失败")
         caplog.set_level(logging.DEBUG)
 
-        engine._cmd_queue.put((RenderCommand.CONTENT, "坏数据"))
+        engine._cmd_queue.put(CmdContent(text="坏数据"))
 
         with (
             patch("src.chat_ui._engine._try_acquire_output_lock") as m_lock,
@@ -642,13 +643,13 @@ class TestRenderEngineDrainQueue:
         # ERROR 命令被推回队列
         assert engine._cmd_queue.qsize() == 1
         err_cmd = engine._cmd_queue.get_nowait()
-        assert err_cmd[0] == RenderCommand.ERROR
+        assert isinstance(err_cmd, CmdError)
 
     def test_drain_force_redraw_with_commands(self, engine):
         """有命令时不论 is_status_active 都触发 force_redraw。"""
         engine._bb.is_status_active = False
 
-        engine._cmd_queue.put((RenderCommand.CONTENT, "数据"))
+        engine._cmd_queue.put(CmdContent(text="数据"))
 
         with (
             patch("src.chat_ui._engine._try_acquire_output_lock") as m_lock,
@@ -708,7 +709,7 @@ class TestRenderEngineDrainQueue:
         engine._bb.is_status_active = False
         engine._bb.sync_bottom_lines.side_effect = RuntimeError("sync 异常")
 
-        engine._cmd_queue.put((RenderCommand.CONTENT, "数据"))
+        engine._cmd_queue.put(CmdContent(text="数据"))
 
         with (
             patch("src.chat_ui._engine._try_acquire_output_lock") as m_lock,
@@ -927,9 +928,9 @@ class TestRenderEngineEdgeCases:
     def test_flush_drains_multiple_commands_in_order(self, engine):
         """flush 时队列中有多条命令 → 全部清空。"""
         engine._render_thread = None  # 模拟 render 未启动
-        engine._cmd_queue.put((RenderCommand.CONTENT, "a"))
-        engine._cmd_queue.put((RenderCommand.PHASE_DONE, "思考"))
-        engine._cmd_queue.put((RenderCommand.NOTIFICATION, "通知"))
+        engine._cmd_queue.put(CmdContent(text="a"))
+        engine._cmd_queue.put(CmdPhaseDone(phase="思考"))
+        engine._cmd_queue.put(CmdNotification(text="通知"))
 
         engine.flush(timeout=1.0)
 
@@ -939,12 +940,12 @@ class TestRenderEngineEdgeCases:
         """队列满时入队失败，cmd_event 保持 clear（不主动 set）。"""
         # 满队列（使用 NOTIFICATION 避免触发合并逻辑）
         tiny_queue = queue.Queue(maxsize=1)
-        tiny_queue.put((RenderCommand.NOTIFICATION, "占位"), block=False)
+        tiny_queue.put(CmdNotification(text="占位"), block=False)
         engine._cmd_queue = tiny_queue
         engine._cmd_event.clear()
 
         # 满队列时不会 set event
-        engine.push_cmd((RenderCommand.NOTIFICATION, "丢弃"))
+        engine.push_cmd(CmdNotification(text="丢弃"))
         # 满队列路径不走 set，所以 event 仍然 clear
         assert not engine._cmd_event.is_set()
 

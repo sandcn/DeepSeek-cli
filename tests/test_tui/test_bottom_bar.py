@@ -142,8 +142,10 @@ class TestBottomBarCursorPos(unittest.TestCase):
 
     def test_force_redraw_skips_when_unchanged(self):
         """布局和状态均未变时 force_redraw 应跳过全量重绘。"""
+        # ★ 重构后 _last_rendered_text 存储在 InputRenderer 上，
+        #    force_redraw() 通过 self._input._last_rendered_text 检查布局变更。
         self.bb._last_status = "test-model ◉"
-        self.bb._last_rendered_text = "hello world"
+        self.bb._input._last_rendered_text = "hello world"
         self.bb._last_text = "hello world"
         self.bb._last_bottom_lines = self.bb._bottom_lines
         self.bb._last_height = self.bb._term_height()  # 需同步终端高度才能命中快速路径
@@ -293,10 +295,11 @@ class TestBottomBarLastScrollEnd(unittest.TestCase):
 
         mock_term = _mock_terminal(width=80, height=30)
         with patch.object(sys, '__stdout__', io.StringIO()), \
-             patch("src.ui._bottom_bar.get_terminal", return_value=mock_term):
+             patch("src.ui._bottom_bar.get_terminal", return_value=mock_term), \
+             patch("src.ui._scroll_region.get_terminal", return_value=mock_term):
             self.bb.setup()
 
-        expected = 30 - (2 + max(3, 0))  # height - (_BOTTOM_LINES + 0 = 5) = 25
+        expected = 30 - (2 + max(3, 0))  # height - (2 + 3 + 0 = 5) = 25
         self.assertEqual(self.bb._last_scroll_end, 25,
                          "setup() 后 _last_scroll_end 应为 25 (30-5)")
 
@@ -332,7 +335,8 @@ class TestBottomBarLastScrollEnd(unittest.TestCase):
         self.bb._last_scroll_end = 0  # 未初始化
 
         mock_term = _mock_terminal(width=80, height=30)
-        with patch("src.ui._bottom_bar.get_terminal", return_value=mock_term):
+        with patch("src.ui._bottom_bar.get_terminal", return_value=mock_term), \
+             patch("src.ui._scroll_region.get_terminal", return_value=mock_term):
             out = io.StringIO()
             with patch.object(sys, '__stdout__', out):
                 self.bb.ensure_cursor_in_upper()
@@ -353,7 +357,8 @@ class TestBottomBarLastScrollEnd(unittest.TestCase):
         mock_term = _mock_terminal(width=80, height=30)
         out = io.StringIO()
         with patch.object(sys, '__stdout__', out), \
-             patch("src.ui._bottom_bar.get_terminal", return_value=mock_term):
+             patch("src.ui._bottom_bar.get_terminal", return_value=mock_term), \
+             patch("src.ui._scroll_region.get_terminal", return_value=mock_term):
             self.bb.sync_bottom_lines()
 
         # _bottom_lines = 2 + max(3, 0) + 6 = 11
@@ -375,7 +380,8 @@ class TestBottomBarLastScrollEnd(unittest.TestCase):
         mock_term = _mock_terminal(width=80, height=30)
         out = io.StringIO()
         with patch.object(sys, '__stdout__', out), \
-             patch("src.ui._bottom_bar.get_terminal", return_value=mock_term):
+             patch("src.ui._bottom_bar.get_terminal", return_value=mock_term), \
+             patch("src.ui._scroll_region.get_terminal", return_value=mock_term):
             self.bb.sync_bottom_lines()
 
         output = out.getvalue()
@@ -400,7 +406,8 @@ class TestBottomBarLastScrollEnd(unittest.TestCase):
         mock_term = _mock_terminal(width=80, height=25)
         out = io.StringIO()
         with patch.object(sys, '__stdout__', out), \
-             patch("src.ui._bottom_bar.get_terminal", return_value=mock_term):
+             patch("src.ui._bottom_bar.get_terminal", return_value=mock_term), \
+             patch("src.ui._scroll_region.get_terminal", return_value=mock_term):
             self.bb.sync_bottom_lines()
 
         output = out.getvalue()
@@ -530,7 +537,8 @@ class TestApplyScrollDeltaOrdering(unittest.TestCase):
             # move_xy 生成原始 ANSI（确保测试可重复，不依赖 blessed 实现）
             mock_term.move_xy = lambda x, y: f"\033[{y + 1};{x + 1}H"
             mock_term.clear_eol = "\033[K"
-            with patch("src.ui._bottom_bar.get_terminal", return_value=mock_term):
+            with patch("src.ui._bottom_bar.get_terminal", return_value=mock_term), \
+                 patch("src.ui._scroll_region.get_terminal", return_value=mock_term):
                 method_call()
         return buf.getvalue()
 

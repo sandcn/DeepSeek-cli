@@ -17,13 +17,20 @@ if TYPE_CHECKING:
 
 from ._renderer import TuiRenderer, RichLiveContentRenderer
 from ._const import (
-    RenderCommand,
     _RENDER_INTERVAL,
     _DRAIN_LOCK_TIMEOUT,
     _ANSI_RED, _ANSI_RESET,
+    _FIXED_FRAME_INTERVAL,
+    _ENV_FIXED_FPS,
 )
 
-from ._utils import _cmd_name
+from ._cmd import (
+    CmdReasoning,
+    CmdContent,
+    CmdError,
+)
+
+from ._utils import _cmd_name  # noqa: F401 — 保留供旧代码兼容
 
 from ._lock import _try_acquire_output_lock
 
@@ -87,14 +94,22 @@ class TuiEngine:
                 self._rich_renderer = None
                 self._use_rich_live = False
 
-    def push_cmd(self, cmd: tuple) -> None:
+        # ── 固定帧率渲染（默认关闭，通过环境变量启用） ──
+        self._use_fixed_fps: bool = (
+            os.environ.get(_ENV_FIXED_FPS, '').strip().lower()
+            in ('1', 'true', 'yes', 'on')
+        )
+        if self._use_fixed_fps:
+            _logger.info("固定帧率渲染已启用（%.0f fps）", 1.0 / _FIXED_FRAME_INTERVAL)
+
+    def push_cmd(self, cmd) -> None:
         """入队渲染命令到命令队列。
 
-        非阻塞写入，队列满时优先合并同类型 CONTENT/REASONING 命令，
-        合并失败则丢弃并记录警告。连续满载超过阈值时升级为错误日志。
+        接受 RenderCommand dataclass 实例（如 CmdContent / CmdReasoning 等），
+        非阻塞写入，队列满时优先合并同类型 CONTENT/REASONING 命令。
 
         Args:
-            cmd: 渲染命令元组，格式为 (command_id, *args)
+            cmd: 渲染命令 dataclass 实例
         """
         try:
             self._cmd_queue.put(cmd, block=False)
@@ -102,15 +117,15 @@ class TuiEngine:
                 self._consecutive_full = 0
             self._cmd_event.set()
         except queue.Full:
-            cmd_type = cmd[0]
-            if cmd_type in (RenderCommand.REASONING, RenderCommand.CONTENT) and len(cmd) >= 2:
+            # 合并逻辑：CONTENT/REASONING 同类型合并 text
+            # ★ 使用 cmd_queue.mutex 保护 deque 的并发访问
+            if isinstance(cmd, (CmdContent, CmdReasoning)):
                 try:
-                    dq = self._cmd_queue.queue
-                    if dq:
-                        last = dq[-1]
-                        if last[0] == cmd_type and len(last) >= 2:
-                            merged_text = last[1] + cmd[1]
-                            new_cmd = (cmd_type, merged_text)
+                    with self._cmd_queue.mutex:
+                        dq = self._cmd_queue.queue
+                        if dq and type(dq[-1]) is type(cmd):
+                            merged_text = dq[-1].text + cmd.text
+                            new_cmd = type(cmd)(text=merged_text)
                             dq[-1] = new_cmd
                             with self._full_lock:
                                 self._consecutive_full = 0
@@ -121,7 +136,8 @@ class TuiEngine:
             with self._full_lock:
                 self._consecutive_full += 1
                 full_count = self._consecutive_full
-            _logger.warning("渲染命令队列已满（%s 条），丢弃命令: %s", self._cmd_queue.qsize(), _cmd_name(cmd[0]))
+            _logger.warning("渲染命令队列已满（%s 条），丢弃命令: %s",
+                             self._cmd_queue.qsize(), type(cmd).__name__)
             if full_count >= self._CONSECUTIVE_FULL_THRESHOLD:
                 _logger.error("渲染输出管线持续拥堵（%d 次连续满队列）", full_count)
 
@@ -194,7 +210,7 @@ class TuiEngine:
             except Exception:
                 _logger.warning("panel_refresh_cb 异常", exc_info=True)
 
-    def _phase_render(self, commands: list[tuple]) -> None:
+    def _phase_render(self, commands: list) -> None:
         """阶段 2：执行渲染命令。
 
         当 _use_rich_live=True 时，CONTENT/REASONING 命令通过 Rich Live
@@ -214,16 +230,14 @@ class TuiEngine:
             # Rich Live 路径：内容命令走差分渲染，其他命令直出
             try:
                 for cmd in commands:
-                    if cmd[0] in (RenderCommand.CONTENT, RenderCommand.REASONING) and len(cmd) >= 2:
-                        self._rich_renderer.update_content(cmd[1])
+                    if isinstance(cmd, (CmdContent, CmdReasoning)):
+                        self._rich_renderer.update_content(cmd.text)
                     else:
                         try:
                             self._renderer.render(cmd)
                         except Exception:
                             _logger.debug("渲染命令 %s 失败", cmd, exc_info=True)
-                            self.push_cmd(
-                                (RenderCommand.ERROR, f"渲染命令 {_cmd_name(cmd[0])} 失败")
-                            )
+                            self.push_cmd(CmdError(message=f"渲染命令 {type(cmd).__name__} 失败"))
                 self._rich_renderer.refresh()
             except Exception:
                 _logger.debug("Rich Live 渲染异常", exc_info=True)
@@ -234,9 +248,7 @@ class TuiEngine:
                     self._renderer.render(cmd)
                 except Exception:
                     _logger.debug("渲染命令 %s 失败", cmd, exc_info=True)
-                    self.push_cmd(
-                        (RenderCommand.ERROR, f"渲染命令 {_cmd_name(cmd[0])} 失败")
-                    )
+                    self.push_cmd(CmdError(message=f"渲染命令 {type(cmd).__name__} 失败"))
 
     def _phase_redraw_bottom(self, has_commands: bool) -> None:
         """阶段 3：重绘底部栏。
@@ -266,10 +278,58 @@ class TuiEngine:
     def _render(self) -> None:
         """Render 线程主循环。
 
+        支持两种模式（通过 CHAT_UI_RENDER_FIXED_FPS 环境变量切换）：
+          - 默认：Event.wait 自适应等待模式（原有行为）
+          - 固定帧率：固定 16ms (60fps) 循环，帧内批量 drain
+
+        异常时记录 critical 日志并终止循环。
+        退出时（finally）安全排空命令队列。
+        """
+        if self._use_fixed_fps:
+            self._render_fixed_fps()
+        else:
+            self._render_adaptive()
+
+    def _render_fixed_fps(self) -> None:
+        """固定帧率渲染循环（60fps / 16ms）。
+
+        每帧批量 drain 命令队列、执行渲染、重绘底部栏。
+        不使用 _cmd_event 信号，完全由固定帧间隔驱动。
+
+        空帧时防御性清理底部栏重绘标记（该标记由 _drain_queue → _phase_redraw_bottom 消费，
+        此处仅清理空闲帧的过期标记，避免下一帧误触发冗余重绘）。
+        """
+        import time as _time_mod
+        while self._render_running:
+            frame_start = _time_mod.monotonic()
+            try:
+                has_content = self._drain_queue()
+                if not has_content and not self._bottom_redraw_requested.is_set():
+                    self._bottom_redraw_requested.clear()
+            except Exception:
+                _logger.critical("render 线程异常崩溃（固定帧率）", exc_info=True)
+                error_msg = (
+                    f"{_ANSI_RED}[ChatUI] render 线程异常终止，"
+                    f"请联系开发人员查看日志{_ANSI_RESET}\n"
+                )
+                try:
+                    self._renderer.output_adapter.write_raw(error_msg)
+                except Exception:
+                    sys.__stderr__.write(error_msg)
+                    sys.__stderr__.flush()
+                self._render_running = False
+                break
+            elapsed = _time_mod.monotonic() - frame_start
+            sleep_time = _FIXED_FRAME_INTERVAL - elapsed
+            if sleep_time > 0:
+                _time_mod.sleep(sleep_time)
+        self._drain_queue_safe()
+
+    def _render_adaptive(self) -> None:
+        """自适应等待渲染循环（原有行为）。
+
         在 daemon 线程中持续运行，循环执行三阶段流水线：
         drain_queue → 自适应等待 → 重复。异常时记录 critical 日志并终止循环。
-
-        退出时（finally）安全排空命令队列。
         """
         idle_count = 0
         try:
@@ -315,7 +375,7 @@ class TuiEngine:
         Returns:
             是否处理了至少一条渲染命令
         """
-        commands: list[tuple] = []
+        commands: list = []
         self._phase_pre_update_panels()
         with _try_acquire_output_lock(name="drain_queue", timeout=_DRAIN_LOCK_TIMEOUT) as locked:
             if not locked:

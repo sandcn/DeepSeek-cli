@@ -1,6 +1,6 @@
-"""事件分发器 — DisplayEvent → RenderCommand 过滤+入队。
+"""事件分发器 — DisplayEvent → 渲染命令 dataclass 过滤+入队。
 
-从 _tui.py 拆分，11 种事件类型映射到对应 RenderCommand。
+从 _tui.py 拆分，11 种事件类型映射到对应命令 dataclass。
 """
 
 from __future__ import annotations
@@ -8,10 +8,26 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Callable
 
 from ._const import (
-    RenderCommand,
     _MAIN_LABEL, _MAIN_SOURCE,
     _CLEAR_PARSE_LINE,
     _MAX_ERROR_LENGTH,
+)
+
+from ._cmd import (
+    CmdReasoning,
+    CmdContent,
+    CmdPhaseDone,
+    CmdToolOutput,
+    CmdToolSummary,
+    CmdUserMsg,
+    CmdParseInfo,
+    CmdNotification,
+    CmdWriteLine,
+    CmdDisplayMsgs,
+    CmdToolCountInc,
+    CmdToolFailInc,
+    CmdToolCountDec,
+    CmdError,
 )
 
 from ._utils import _truncate_msg
@@ -75,7 +91,7 @@ class EventDispatcher:
     所有事件经过 label/source 过滤后才入队，非主 Agent 事件被丢弃。
     """
 
-    def __init__(self, push_cmd: Callable[[tuple], None]):
+    def __init__(self, push_cmd: Callable[[object], None]):
         self._push_cmd = push_cmd
 
     @staticmethod
@@ -90,7 +106,7 @@ class EventDispatcher:
             return
         if event.label != _MAIN_LABEL or not event.text:
             return
-        self._push_cmd((RenderCommand.REASONING, event.text))
+        self._push_cmd(CmdReasoning(text=event.text))
 
     def _on_content_chunk(self, event) -> None:
         from ..ui.events.event_types import ContentChunkEvent  # 运行时 isinstance 需要
@@ -98,7 +114,7 @@ class EventDispatcher:
             return
         if event.label != _MAIN_LABEL or not event.text:
             return
-        self._push_cmd((RenderCommand.CONTENT, event.text))
+        self._push_cmd(CmdContent(text=event.text))
 
     def _on_phase_done(self, event) -> None:
         from ..ui.events.event_types import PhaseDoneEvent  # 运行时 isinstance 需要
@@ -106,7 +122,7 @@ class EventDispatcher:
             return
         if event.label != _MAIN_LABEL:
             return
-        self._push_cmd((RenderCommand.PHASE_DONE, event.phase))
+        self._push_cmd(CmdPhaseDone(phase=event.phase))
 
     def _on_tool_started(self, event) -> None:
         from ..ui.events.event_types import ToolStartedEvent  # 运行时 isinstance 需要
@@ -114,7 +130,7 @@ class EventDispatcher:
             return
         if not self._is_agent_source(event.source):
             return
-        self._push_cmd((RenderCommand.TOOL_COUNT_INC,))
+        self._push_cmd(CmdToolCountInc())
 
     def _on_tool_done(self, event) -> None:
         from ..ui.events.event_types import ToolDoneEvent  # 运行时 isinstance 需要
@@ -123,10 +139,10 @@ class EventDispatcher:
         if not self._is_agent_source(event.source):
             return
         if not event.success:
-            self._push_cmd((RenderCommand.TOOL_FAIL_INC,))
-            self._push_cmd((RenderCommand.TOOL_COUNT_DEC,))
+            self._push_cmd(CmdToolFailInc())
+            self._push_cmd(CmdToolCountDec())
         else:
-            self._push_cmd((RenderCommand.TOOL_COUNT_DEC,))
+            self._push_cmd(CmdToolCountDec())
 
     def _on_tool_output(self, event) -> None:
         from ..ui.events.event_types import ToolOutputChunkEvent  # 运行时 isinstance 需要
@@ -136,7 +152,7 @@ class EventDispatcher:
             return
         text = event.text.rstrip("\n")
         if text:
-            self._push_cmd((RenderCommand.TOOL_OUTPUT, text))
+            self._push_cmd(CmdToolOutput(text=text))
 
     def _on_parse_info(self, event) -> None:
         from ..ui.events.event_types import ParseInfoEvent  # 运行时 isinstance 需要
@@ -144,7 +160,9 @@ class EventDispatcher:
             return
         if not self._is_agent_source(event.source):
             return
-        self._push_cmd((RenderCommand.PARSE_INFO, event.tool_names, event.tokens, event.elapsed))
+        self._push_cmd(CmdParseInfo(
+            tool_names=event.tool_names, tokens=event.tokens, elapsed=event.elapsed,
+        ))
 
     def _on_parse_info_done(self, event) -> None:
         from ..ui.events.event_types import ParseInfoDoneEvent  # 运行时 isinstance 需要
@@ -152,7 +170,7 @@ class EventDispatcher:
             return
         if not self._is_agent_source(event.source):
             return
-        self._push_cmd((RenderCommand.PARSE_INFO, "", _CLEAR_PARSE_LINE, 0.0))
+        self._push_cmd(CmdParseInfo(tool_names="", tokens=_CLEAR_PARSE_LINE, elapsed=0.0))
 
     def _on_output(self, event) -> None:
         from ..ui.events.event_types import OutputEvent  # 运行时 isinstance 需要
@@ -160,7 +178,7 @@ class EventDispatcher:
             return
         if not event.text:
             return
-        self._push_cmd((RenderCommand.WRITE_LINE, event.text))
+        self._push_cmd(CmdWriteLine(text=event.text))
 
     def _on_model_phase(self, event) -> None:
         from ..ui.events.event_types import ModelPhaseEvent  # 运行时 isinstance 需要
@@ -173,7 +191,7 @@ class EventDispatcher:
         if not event.info:
             return
         info = _truncate_msg(event.info, _MAX_ERROR_LENGTH)
-        self._push_cmd((RenderCommand.ERROR, info))
+        self._push_cmd(CmdError(message=info))
 
     def _on_tool_summary(self, event) -> None:
         from ..ui.events.event_types import ToolSummaryEvent  # 运行时 isinstance 需要
@@ -183,4 +201,6 @@ class EventDispatcher:
             return
         if not event.successful_tools and not event.failed_tools:
             return
-        self._push_cmd((RenderCommand.TOOL_SUMMARY, event.successful_tools, event.failed_tools))
+        self._push_cmd(CmdToolSummary(
+            successful=event.successful_tools, failed=event.failed_tools,
+        ))

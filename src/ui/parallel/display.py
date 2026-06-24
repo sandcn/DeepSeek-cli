@@ -35,7 +35,7 @@ from ..terminal_adapter import (
     register_sigwinch_callback,
     unregister_sigwinch_callback,
 )
-from ...chat_ui._const import RenderCommand
+from ...chat_ui._cmd import CmdSubagentFrame
 
 # ── 常量 ────────────────────────────────────────────────
 
@@ -336,7 +336,7 @@ class ParallelDisplay(BaseDisplay):
         lines = packed[0]
         self._last_lines = len(lines)
         if self._push_cmd is not None:
-            self._push_cmd((RenderCommand.SUBAGENT_FRAME, packed))
+            self._push_cmd(CmdSubagentFrame(frame_lines=packed))
 
     def _clear_frame_lines(self) -> None:
         """清除终端上的帧行。
