@@ -15,6 +15,7 @@ if TYPE_CHECKING:
     from ..api.renderer.output import OutputAdapter
     from ._components import TuiComponent
     from ._protocols import BottomBarProtocol
+    from ._terminal_io import TerminalIO
 
 from ._const import (
     RenderCommand,
@@ -98,12 +99,14 @@ class TuiRenderer:
         bottom_bar: "BottomBarProtocol",
         on_display_messages: Callable[..., None] | None = None,
         cursor_tracker: Any = None,
+        terminal_io: "TerminalIO | None" = None,
     ):
         self._rs = rs
         self._bb = bottom_bar
         self._on_display_messages = on_display_messages
         self._adapter = output_adapter
         self._tracker = cursor_tracker
+        self._tio = terminal_io
 
     @property
     def output_adapter(self):
@@ -164,11 +167,11 @@ class TuiRenderer:
     # ── 内容渲染 ──────────────────────────────────
 
     def _do_reasoning(self, text: str) -> None:
-        block = ThinkingBlock(self._rs)
+        block = self._rs.get_thinking_block()
         self._record_lines(block.write(text))
 
     def _do_content(self, text: str) -> None:
-        block = AnswerBlock(self._rs)
+        block = self._rs.get_answer_block()
         self._record_lines(block.write(text))
 
     def _do_phase_done(self, phase: str) -> None:

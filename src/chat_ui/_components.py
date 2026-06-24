@@ -121,6 +121,60 @@ class TuiComponent:
         self._ensure_children().append(child)
         return self
 
+    # ── 生命周期（Phase 7） ──────────────────────────
+
+    @property
+    def key(self) -> str:
+        """稳定标识符 — 用于 VNode Diff 的 key 匹配。
+
+        默认返回类名，子类可重写以提供更稳定的标识。
+        """
+        return type(self).__name__
+
+    def mount(self) -> None:
+        """组件挂载到 VNode 树时调用。
+
+        子类可重写以初始化资源（如订阅事件、打开文件等）。
+        默认 no-op。
+        """
+        pass
+
+    def unmount(self) -> None:
+        """组件从 VNode 树移除时调用。
+
+        子类可重写以清理资源（如取消订阅、关闭文件等）。
+        默认 no-op。
+        """
+        pass
+
+    def update(self, props: dict) -> bool:
+        """接收新 props，返回 True 表示需要重渲染。
+
+        子类可重写以判断 props 是否实际变化，
+        避免不必要的 render 调用。
+
+        Args:
+            props: 新的属性字典
+
+        Returns:
+            True 如果组件需要重渲染，False 如果可跳过
+        """
+        return False  # 默认不消费更新，子类按需重写为 True
+
+    def render_vnode(self) -> "VNode":
+        """产出 VNode — 声明式渲染的主入口。
+
+        默认调用 render() 并将结果包装为 VNode。
+        子类可重写以直接产出 VNode 树（跳过 render()）。
+        """
+        from ._vnode import VNode
+        result = self.render()
+        return VNode(
+            type=type(self).__name__,
+            key=self.key,
+            props={"text": str(result)} if result else {},
+        )
+
 
 # ═══════════════════════════════════════════════════════════
 # 消息流组件
@@ -158,6 +212,26 @@ class ThinkingBlock(TuiComponent):
     def close(self) -> None:
         self._rs.close_reasoning()
 
+    @property
+    def key(self) -> str:
+        return "thinking"
+
+    def update(self, props: dict) -> bool:
+        """接收新 props。ThinkingBlock 的 render 由 write() 驱动，
+        update() 返回 True 仅表示状态已变更。"""
+        return True
+
+    def render_vnode(self) -> "VNode":
+        from ._vnode import VNode
+        return VNode(
+            type="thinking_block",
+            key=self.key,
+            props={
+                "text": "",  # ThinkingBlock 通过 IncrementalRenderer 输出
+                "phase": self._rs.reasoning_state.name if self._rs else "INACTIVE",
+            },
+        )
+
     def render(self) -> str:
         return ""
 
@@ -175,6 +249,24 @@ class AnswerBlock(TuiComponent):
 
     def close(self) -> None:
         self._rs.close_content()
+
+    @property
+    def key(self) -> str:
+        return "answer"
+
+    def update(self, props: dict) -> bool:
+        return True
+
+    def render_vnode(self) -> "VNode":
+        from ._vnode import VNode
+        return VNode(
+            type="answer_block",
+            key=self.key,
+            props={
+                "text": "",
+                "phase": "content",
+            },
+        )
 
     def render(self) -> str:
         return ""

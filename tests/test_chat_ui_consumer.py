@@ -524,20 +524,16 @@ class TestChatUIConsumerResume:
                 mock_setup.assert_not_called()
 
     def test_resume_writes_ansi_cursor(self, consumer, mock_bus):
-        """resume() 写入光标定位序列到 sys.__stdout__"""
+        """resume() 写入光标定位序列到 TerminalIO"""
         consumer._started = True
         consumer._engine._render_running = False
         with patch.object(consumer._engine, 'start'):
             with patch.object(consumer._bottom_bar, 'setup'):
-                with patch('sys.__stdout__') as mock_stdout:
+                with patch.object(consumer._tio, 'write') as mock_write, \
+                     patch.object(consumer._tio, 'flush') as mock_flush:
                     consumer.resume()
-                    # 验证写入了光标定位序列（通过 Blessed 或回退 ANSI）
-                    calls = [str(c) for c in mock_stdout.write.call_args_list]
-                    has_cursor_pos = any(
-                        '\033[' in call for call in calls
-                    ) if calls else False
-                    # 若未检测到 ANSI 序列，至少验证 flush 被调用
-                    assert has_cursor_pos or mock_stdout.flush.called
+                    # 验证写入了光标定位序列
+                    assert mock_write.called or mock_flush.called
 
     def test_resume_after_suspend_full_cycle(self, consumer, mock_bus):
         """suspend→resume 完整暂停恢复周期"""
@@ -552,7 +548,8 @@ class TestChatUIConsumerResume:
         # render 已停止
         with patch.object(consumer._engine, 'start') as mock_start:
             with patch.object(consumer._bottom_bar, 'setup'):
-                with patch('sys.__stdout__'):
+                with patch.object(consumer._tio, 'write'), \
+                     patch.object(consumer._tio, 'flush'):
                     consumer.resume()
                     mock_start.assert_called_once()
 

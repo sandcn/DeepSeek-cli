@@ -28,3 +28,26 @@ class BottomBarProtocol(Protocol):
     def cycle_completion(self, delta: int) -> None: ...
     def show_completions(self, items: list[str], selected: int = 0, texts: list[str] | None = None, start_pos: int = 0, orig_prefix: str = "") -> None: ...
     def get_selected_completion(self) -> tuple[str, int, str]: ...
+
+
+class RenderPhase(Protocol):
+    """渲染阶段协议 — 可插拔管线的基础接口。
+
+    每个 Phase 实现 execute 方法，接收引擎引用、命令列表和状态快照。
+    引擎按 phases 列表顺序调用各 Phase.execute()。
+    """
+
+    def execute(
+        self,
+        engine: "TuiEngine",
+        commands: list,
+        state: "TuiState | None",
+    ) -> None:
+        """执行本阶段的渲染逻辑。
+
+        Args:
+            engine: TuiEngine 实例（用于访问 renderer、bottom_bar、_tio 等）
+            commands: 本轮 drain 的所有渲染命令列表
+            state: 当前 TuiState（VNode 路径启用时非 None）
+        """
+        ...

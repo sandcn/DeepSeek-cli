@@ -14,6 +14,10 @@ from typing import TYPE_CHECKING, Any, Callable
 
 if TYPE_CHECKING:
     from ._protocols import BottomBarProtocol
+    from ._terminal_io import TerminalIO
+    from ._vnode import VNode
+    from ._store import TuiStore
+    from ._store import TuiState
 
 from ._renderer import TuiRenderer, RichLiveContentRenderer
 from ._const import (
@@ -30,7 +34,9 @@ from ._cmd import (
     CmdError,
 )
 
-from ._utils import _cmd_name  # noqa: F401 — 保留供旧代码兼容
+from ._vnode import diff as _vnode_diff
+from ._vnode import PatchKind
+_NOOP = PatchKind.NOOP
 
 from ._lock import _try_acquire_output_lock
 
@@ -63,10 +69,12 @@ class TuiEngine:
         renderer: "TuiRenderer",
         bottom_bar: "BottomBarProtocol",
         cursor_tracker: Any = None,
+        terminal_io: "TerminalIO | None" = None,
     ):
         self._renderer = renderer
         self._bb = bottom_bar
         self._cursor_tracker = cursor_tracker
+        self._tio = terminal_io
         self._cmd_queue: queue.Queue = queue.Queue(maxsize=10000)
         self._cmd_event = threading.Event()
         self._render_thread: threading.Thread | None = None
@@ -101,6 +109,29 @@ class TuiEngine:
         )
         if self._use_fixed_fps:
             _logger.info("固定帧率渲染已启用（%.0f fps）", 1.0 / _FIXED_FRAME_INTERVAL)
+
+        # ── VNode Diff 渲染（默认关闭，通过环境变量启用） ──
+        self._use_vnode: bool = (
+            os.environ.get('CHAT_UI_RENDER_USE_VNODE', '').strip().lower()
+            in ('1', 'true', 'yes', 'on')
+        )
+        self._old_vnode: "VNode | None" = None  # 缓存上帧 VNode 树
+        self._store: "TuiStore | None" = None    # VNode 路径专用状态容器
+        if self._use_vnode:
+            from ._store import TuiStore
+            self._store = TuiStore()
+            _logger.info("VNode Diff 渲染已启用")
+
+        # ── 可插拔渲染管线（默认关闭，通过环境变量启用） ──
+        self._use_phases: bool = (
+            os.environ.get('CHAT_UI_RENDER_PHASES', '').strip().lower()
+            in ('1', 'true', 'yes', 'on')
+        )
+        self._phases: list = []
+        if self._use_phases:
+            from ._render_phase import _DEFAULT_PHASES
+            self._phases = list(_DEFAULT_PHASES)
+            _logger.info("可插拔渲染管线已启用（%d 个 Phase）", len(self._phases))
 
     def push_cmd(self, cmd) -> None:
         """入队渲染命令到命令队列。
@@ -213,18 +244,24 @@ class TuiEngine:
     def _phase_render(self, commands: list) -> None:
         """阶段 2：执行渲染命令。
 
-        当 _use_rich_live=True 时，CONTENT/REASONING 命令通过 Rich Live
-        差分渲染（减少手动 ANSI 刷新），其他命令仍走 TuiRenderer 直出。
-        底部栏 DECSTBM 管理不受影响。
-
-        Args:
-            commands: 一批待渲染的命令元组列表，每项格式为 (command_id, *args)
+        支持三种路径：
+          - VNode Diff 路径（CHAT_UI_RENDER_USE_VNODE=1）：dispatch→store→build→diff→apply patches
+          - Rich Live 路径（CHAT_UI_RENDER_USE_RICH_LIVE=1）：内容差分渲染
+          - 默认路径：逐条 dispatch 到 TuiRenderer
         """
         try:
             self._bb.sync_bottom_lines()
         except Exception:
             _logger.debug("sync_bottom_lines 异常", exc_info=True)
         self.ensure_cursor_upper()
+
+        if self._use_vnode:
+            if self._store is None:
+                _logger.warning("CHAT_UI_RENDER_USE_VNODE=1 但 TuiStore 未初始化，回退到直接渲染")
+            else:
+                # ── VNode Diff 路径 ──
+                self._phase_render_vnode(commands)
+                return
 
         if self._use_rich_live and self._rich_renderer is not None:
             # Rich Live 路径：内容命令走差分渲染，其他命令直出
@@ -249,6 +286,60 @@ class TuiEngine:
                 except Exception:
                     _logger.debug("渲染命令 %s 失败", cmd, exc_info=True)
                     self.push_cmd(CmdError(message=f"渲染命令 {type(cmd).__name__} 失败"))
+
+    def _phase_render_vnode(self, commands: list) -> None:
+        """VNode Diff 渲染路径。
+
+        1. 逐条 dispatch commands 到 TuiStore
+        2. 获取最新 TuiState
+        3. 构建新 VNode 树
+        4. Diff 新旧树
+        5. 若检测到变更，通过 _renderer 渲染所有命令
+        6. 缓存新树供下一帧 diff
+        """
+        try:
+            # 1. Dispatch 所有命令到 Store
+            for cmd in commands:
+                try:
+                    self._store.dispatch(cmd)
+                except Exception:
+                    _logger.debug("VNode dispatch %s 失败", type(cmd).__name__, exc_info=True)
+
+            # 2. 获取最新状态
+            state = self._store.get_state()
+
+            # 3. 构建新 VNode 树
+            from ._vnode_builder import build_vnode_tree
+            new_vnode = build_vnode_tree(state)
+
+            # 4. Diff
+            patches = _vnode_diff(self._old_vnode, new_vnode)
+
+            # 5. 若有实质性变更，通过 _renderer 渲染所有命令
+            if patches:
+                has_change = any(
+                    p.kind != _NOOP for p in patches
+                    if hasattr(p, 'kind')
+                )
+                if has_change:
+                    for cmd in commands:
+                        try:
+                            self._renderer.render(cmd)
+                        except Exception:
+                            _logger.debug("VNode 渲染命令 %s 失败", type(cmd).__name__, exc_info=True)
+                    _logger.debug("VNode diff 检测到 %d 个 patches，已触发渲染", len(patches))
+
+            # 6. 缓存新树
+            self._old_vnode = new_vnode
+
+        except Exception:
+            _logger.warning("VNode Diff 渲染异常，回退到直接渲染", exc_info=True)
+            # 回退：逐条直接渲染
+            for cmd in commands:
+                try:
+                    self._renderer.render(cmd)
+                except Exception:
+                    _logger.debug("回退渲染 %s 失败", type(cmd).__name__, exc_info=True)
 
     def _phase_redraw_bottom(self, has_commands: bool) -> None:
         """阶段 3：重绘底部栏。
@@ -308,15 +399,7 @@ class TuiEngine:
                     self._bottom_redraw_requested.clear()
             except Exception:
                 _logger.critical("render 线程异常崩溃（固定帧率）", exc_info=True)
-                error_msg = (
-                    f"{_ANSI_RED}[ChatUI] render 线程异常终止，"
-                    f"请联系开发人员查看日志{_ANSI_RESET}\n"
-                )
-                try:
-                    self._renderer.output_adapter.write_raw(error_msg)
-                except Exception:
-                    sys.__stderr__.write(error_msg)
-                    sys.__stderr__.flush()
+                self._emit_crash_error()
                 self._render_running = False
                 break
             elapsed = _time_mod.monotonic() - frame_start
@@ -351,19 +434,34 @@ class TuiEngine:
                         self._cmd_event.clear()
                 except Exception:
                     _logger.critical("render 线程异常崩溃", exc_info=True)
-                    error_msg = (
-                        f"{_ANSI_RED}[ChatUI] render 线程异常终止，"
-                        f"请联系开发人员查看日志{_ANSI_RESET}\n"
-                    )
-                    try:
-                        self._renderer.output_adapter.write_raw(error_msg)
-                    except Exception:
-                        sys.__stderr__.write(error_msg)
-                        sys.__stderr__.flush()
+                    self._emit_crash_error()
                     self._render_running = False
                     break
         finally:
             self._drain_queue_safe()
+
+    def _emit_crash_error(self) -> None:
+        """输出渲染线程崩溃错误消息到终端（紧急降级路径）。
+
+        优先使用 TerminalIO（写+flush），其次 OutputAdapter，
+        最终回退到 sys.__stderr__（写+flush 目标一致）。
+        """
+        error_msg = (
+            f"{_ANSI_RED}[ChatUI] render 线程异常终止，"
+            f"请联系开发人员查看日志{_ANSI_RESET}\n"
+        )
+        if self._tio is not None:
+            try:
+                self._tio.write_raw(error_msg)
+                self._tio.flush()
+                return
+            except Exception:
+                pass
+        try:
+            self._renderer.output_adapter.write_raw(error_msg)
+        except Exception:
+            sys.__stderr__.write(error_msg)
+            sys.__stderr__.flush()
 
     def _drain_queue(self) -> bool:
         """三阶段流水线：预处理面板→获取输出锁→渲染命令→重绘底部栏。
@@ -387,9 +485,23 @@ class TuiEngine:
                 except queue.Empty:
                     break
             has_content = bool(commands)
-            if commands:
-                self._phase_render(commands)
-            self._phase_redraw_bottom(has_content)
+            if self._use_phases and self._phases:
+                # ── 可插拔管线路径 ──
+                state = self._store.get_state() if self._store is not None else None
+                for phase in self._phases:
+                    try:
+                        phase.execute(self, commands, state)
+                    except Exception:
+                        _logger.debug("Phase %s 执行异常", type(phase).__name__, exc_info=True)
+                # 防御性底部栏重绘：确保即使 phases 列表遗漏 BottomBarPhase/CursorPhase 也能刷新
+                from ._render_phase import BottomBarPhase as _BBP
+                if not any(isinstance(p, _BBP) for p in self._phases):
+                    self._phase_redraw_bottom(has_content)
+            else:
+                # ── 原有硬编码管线路径 ──
+                if commands:
+                    self._phase_render(commands)
+                self._phase_redraw_bottom(has_content)
             return has_content
 
     def _drain_queue_safe(self) -> None:
@@ -405,14 +517,18 @@ class TuiEngine:
             return
         text, cursor_pos, h, w = self._bb.get_cursor_info()
         r_cursor, cursor_col = self._bb.compute_cursor_position(text, cursor_pos, h, w)
-        try:
-            from ..ui._blessed import get_terminal
-            term = get_terminal()
-            sys.__stdout__.write(term.move_xy(cursor_col - 1, r_cursor - 1))
-        except Exception:
-            _logger.debug("position_cursor Blessed 不可用, 使用 ANSI 回退", exc_info=True)
-            sys.__stdout__.write(f"\033[{r_cursor};{cursor_col}H")
-        sys.__stdout__.flush()
+        if self._tio is not None:
+            self._tio.move_cursor(r_cursor, cursor_col)
+            self._tio.flush()
+        else:
+            try:
+                from ..ui._blessed import get_terminal
+                term = get_terminal()
+                sys.__stdout__.write(term.move_xy(cursor_col - 1, r_cursor - 1))
+            except Exception:
+                _logger.debug("position_cursor Blessed 不可用, 使用 ANSI 回退", exc_info=True)
+                sys.__stdout__.write(f"\033[{r_cursor};{cursor_col}H")
+            sys.__stdout__.flush()
         if self._cursor_tracker is not None:
             self._cursor_tracker.set(r_cursor, cursor_col)
 

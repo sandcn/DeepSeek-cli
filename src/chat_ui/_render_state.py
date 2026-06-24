@@ -8,13 +8,14 @@ from __future__ import annotations
 
 import logging
 import sys
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import Enum
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from ..api.renderer import IncrementalRenderer
     from ..api.renderer.output import OutputAdapter
+    from ._components import ThinkingBlock, AnswerBlock
 
 from ._const import _THINKING_SEPARATOR
 
@@ -42,10 +43,29 @@ class _RenderState:
     reasoning: "IncrementalRenderer | None" = None
     content: "IncrementalRenderer | None" = None
     reasoning_state: _ReasoningState = _ReasoningState.INACTIVE
-    _shared_adapter: "OutputAdapter | None" = None
+    _shared_adapter: "OutputAdapter | None" = field(default=None, repr=False, compare=False)
+
+    # ── 组件实例缓存（Phase 7：实例复用） ──
+    # 使用 field(init=False, repr=False, compare=False) 避免污染 dataclass 契约
+    _thinking_block: "ThinkingBlock | None" = field(default=None, init=False, repr=False, compare=False)
+    _answer_block: "AnswerBlock | None" = field(default=None, init=False, repr=False, compare=False)
 
     def set_output_adapter(self, adapter: "OutputAdapter") -> None:
         self._shared_adapter = adapter
+
+    def get_thinking_block(self) -> "ThinkingBlock":
+        """获取或创建 ThinkingBlock 实例（复用）。"""
+        if self._thinking_block is None:
+            from ._components import ThinkingBlock
+            self._thinking_block = ThinkingBlock(self)
+        return self._thinking_block
+
+    def get_answer_block(self) -> "AnswerBlock":
+        """获取或创建 AnswerBlock 实例（复用）。"""
+        if self._answer_block is None:
+            from ._components import AnswerBlock
+            self._answer_block = AnswerBlock(self)
+        return self._answer_block
 
     def get_reasoning(self) -> "IncrementalRenderer | None":
         if self.reasoning_state == _ReasoningState.CLOSED:

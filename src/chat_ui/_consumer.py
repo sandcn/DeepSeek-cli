@@ -47,6 +47,9 @@ from ._state import (
 )
 
 from ._lock import output_lock
+
+from ._terminal_io import TerminalIO
+
 from ..ui._blessed import get_terminal
 
 from ._engine import TuiEngine
@@ -95,6 +98,7 @@ class ChatUIConsumer:
         self._rs = _RenderState()
         self._cursor_tracker = CursorTracker()
         self._bottom_bar = _BottomBar(cursor_tracker=self._cursor_tracker)
+        self._tio = TerminalIO(lock=output_lock)
 
         console = Console(**get_safe_console_config(), file=sys.__stdout__)
         output_adapter = OutputAdapter(console)
@@ -105,10 +109,12 @@ class ChatUIConsumer:
             self._rs, output_adapter, self._bottom_bar,
             on_display_messages=_display_messages,
             cursor_tracker=self._cursor_tracker,
+            terminal_io=self._tio,
         )
         self._engine = TuiEngine(
             self._tui_renderer, self._bottom_bar,
             cursor_tracker=self._cursor_tracker,
+            terminal_io=self._tio,
         )
         self._disp = EventDispatcher(push_cmd=self._engine.push_cmd)
         self._rs.set_output_adapter(output_adapter)
@@ -235,11 +241,11 @@ class ChatUIConsumer:
             with output_lock:
                 try:
                     term = get_terminal()
-                    sys.__stdout__.write(term.move_xy(0, term.height - 1))
+                    self._tio.write(term.move_xy(0, term.height - 1))
                 except Exception:
                     _logger.debug("resume 光标定位失败, 使用 ANSI 回退", exc_info=True)
-                    sys.__stdout__.write(_ANSI_CURSOR_BOTTOM)
-                sys.__stdout__.flush()
+                    self._tio.write(_ANSI_CURSOR_BOTTOM)
+                self._tio.flush()
                 self._bottom_bar.setup()
                 self._engine.start()
 

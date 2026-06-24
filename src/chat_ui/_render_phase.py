@@ -1,0 +1,97 @@
+"""_render_phase — 可插拔渲染管线 Phase 实现。
+
+定义 4 个默认 Phase，按序执行：
+  PreUpdatePhase → ContentRenderPhase → BottomBarPhase → CursorPhase
+
+每个 Phase 实现 RenderPhase Protocol，可由环境变量 CHAT_UI_RENDER_PHASES 控制启用。
+"""
+
+from __future__ import annotations
+
+import logging
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from ._engine import TuiEngine
+    from ._store import TuiState
+    from ._protocols import RenderPhase
+
+_logger = logging.getLogger(__name__)
+
+# ═══════════════════════════════════════════════════════════
+# 默认 Phase 实现
+# ═══════════════════════════════════════════════════════════
+
+class PreUpdatePhase:
+    """阶段 1: 面板预更新。
+
+    委托 engine._phase_pre_update_panels()，刷新 SubAgent 面板等。
+    """
+
+    def execute(
+        self,
+        engine: "TuiEngine",
+        commands: list,
+        state: "TuiState | None",
+    ) -> None:
+        engine._phase_pre_update_panels()
+
+
+class ContentRenderPhase:
+    """阶段 2: 内容渲染。
+
+    委托 engine._phase_render(commands)，支持 VNode/Rich Live/直接渲染三种路径。
+    """
+
+    def execute(
+        self,
+        engine: "TuiEngine",
+        commands: list,
+        state: "TuiState | None",
+    ) -> None:
+        if commands:
+            engine._phase_render(commands)
+
+
+class BottomBarPhase:
+    """阶段 3: 底部栏重绘。
+
+    委托 engine._phase_redraw_bottom(has_commands)。
+    当 VNode 路径启用且有 patches 变更时触发重绘。
+    """
+
+    def execute(
+        self,
+        engine: "TuiEngine",
+        commands: list,
+        state: "TuiState | None",
+    ) -> None:
+        engine._phase_redraw_bottom(bool(commands))
+
+
+class CursorPhase:
+    """阶段 4: 光标定位。
+
+    在底部栏重绘后定位光标到输入位置。
+    """
+
+    def execute(
+        self,
+        engine: "TuiEngine",
+        commands: list,
+        state: "TuiState | None",
+    ) -> None:
+        try:
+            engine._position_cursor()
+        except Exception:
+            _logger.debug("CursorPhase 异常", exc_info=True)
+
+
+# ── 默认 Phase 列表 ──────────────────────────────
+
+_DEFAULT_PHASES: tuple = (
+    PreUpdatePhase(),
+    ContentRenderPhase(),
+    BottomBarPhase(),
+    CursorPhase(),
+)
