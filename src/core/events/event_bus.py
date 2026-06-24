@@ -1,6 +1,14 @@
 """核心事件总线 — 通用事件发布/订阅系统
 
 线程安全，支持通配符订阅和优先级排序。
+
+当前角色说明：
+- CoreEventBus 是基础事件分发引擎，本身不直接绑定任何业务事件类型。
+- 实际生产使用通过 ui/events/event_bus.py 的 DisplayEventBus 委托实现：
+  DisplayEventBus._bus 持有 CoreEventBus 实例，将 DisplayEvent 包装为
+  CoreEvent 后发布，复用 CoreEventBus 的线程安全分发、通配符匹配和异常隔离。
+- core/events/event_types.py 中定义的事件类型常量（MODEL_CALL_STARTED 等）
+  当前未在生产代码中使用，保留供未来核心模块间直接通信集成。
 """
 
 from __future__ import annotations

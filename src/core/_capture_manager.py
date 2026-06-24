@@ -19,6 +19,20 @@ import threading
 
 _logger = logging.getLogger(__name__)
 
+# 模块级 EventPort（由 UI 层通过 set_event_port() 注入）
+_event_port = None
+
+
+def set_event_port(port) -> None:
+    """注入模块级 EventPort，供 CaptureManager 默认使用。"""
+    global _event_port
+    _event_port = port
+
+
+def get_event_port():
+    """获取模块级 EventPort。"""
+    return _event_port
+
 
 # ═══════════════════════════════════════════════════════════════
 # SharedCapture — 多 label 共享 stdout 捕获
@@ -31,25 +45,27 @@ class SharedCapture(io.StringIO):
     分发到对应气泡，同时写入 real_stdout 确保终端直接可见。
     """
 
-    def __init__(self, tool_labels: list, real_stdout, bus):
+    def __init__(self, tool_labels: list, real_stdout, event_port):
         super().__init__()
         self._tool_labels = tool_labels
         self._real_stdout = real_stdout
-        self._bus = bus
+        self._event_port = event_port
 
     def write(self, s: str) -> int:
+        # 防御性检查：EventPort 未注入时静默降级，避免 NoneType 崩溃
+        if self._event_port is None:
+            return len(s) if s else 0
         if s and s.strip():
-            from ..ui.events.event_types import ToolOutputChunkEvent
             for lbl in list(self._tool_labels):
                 try:
-                    self._bus.publish(ToolOutputChunkEvent(
-                        label=lbl, text=s, source="agent",
-                    ))
+                    self._event_port.publish("tool_output_chunk", {
+                        "label": lbl, "text": s, "source": "agent",
+                    })
                 except asyncio.CancelledError:
                     raise
                 except Exception:
                     _logger.warning("发布工具输出事件异常", exc_info=True)
-        # ChatUI 通过 EventBus 消费 ToolOutputChunkEvent 统一终端输出，
+        # ChatUI 通过 EventPort 消费 "tool_output_chunk" 事件统一终端输出，
         # 不再需要 _real_stdout 直写（避免与 ChatUI 重复打印）。
         return len(s) if s else 0
 
@@ -87,15 +103,14 @@ class CaptureManager:
     使用，不再各自维护 _capture_state 属性和 7 个分散方法。
     """
 
-    def __init__(self, event_bus=None):
+    def __init__(self, event_port=None):
         self._state: dict | None = None
         self._init_lock = threading.Lock()
 
-        if event_bus is not None:
-            self._event_bus = event_bus
+        if event_port is not None:
+            self._event_port = event_port
         else:
-            from ..ui.events.event_bus import DisplayEventBus
-            self._event_bus = DisplayEventBus.get_default()
+            self._event_port = _event_port
 
     # ── 属性 ──────────────────────────────────────────────
 
@@ -164,7 +179,7 @@ class CaptureManager:
 
         重定向 sys.stdout → SharedCapture，将工具 print 输出：
         1. 通过 SharedCapture.write() 推送到 real_stdout（终端打印）
-        2. 同时发布为 ToolOutputChunkEvent → EventBus → WebUI
+        2. 同时发布为 "tool_output_chunk" 事件 → EventPort → WebUI
 
         多个工具可共享同一个 SharedCapture 实例（并发捕获）。
         """
@@ -177,7 +192,7 @@ class CaptureManager:
                 state['capture'] = SharedCapture(
                     tool_labels=state['active_labels'],
                     real_stdout=state['real_stdout'],
-                    bus=self._event_bus,
+                    event_port=self._event_port,
                 )
                 sys.stdout = state['capture']
         except Exception:

@@ -6,7 +6,7 @@ from ..core.ports.output import get_default_output_port
 from ..ui.theme import set_theme, get_active_theme, get_theme_names_with_desc
 from ..config import update_config
 from ..ui._bottom_bar_selection import run_bottom_bar_selection
-from ..chat_ui import get_active_chat_ui
+from .ports.chat_ui import get_default_chat_ui_port
 from ._command_core import register_command, CommandContext, show_cost
 
 _out = get_default_output_port()
@@ -63,10 +63,10 @@ def _cmd_model(ctx):
         marker = "  <-当前" if m == current else ""
         display_items.append(f"{m}{marker}")
 
-    chat_ui = get_active_chat_ui()
+    port = get_default_chat_ui_port()
     result = run_bottom_bar_selection(
         MODELS, display_items, current_idx, title="模型选择",
-        bottom_bar=chat_ui.bottom_bar if chat_ui else None
+        bottom_bar=port.get_bottom_bar()
     )
 
     if result["action"] == "confirmed" and result["index"] is not None:

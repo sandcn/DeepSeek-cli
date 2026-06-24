@@ -54,8 +54,8 @@ class TestNullPort:
 
     def test_agent_methods_no_error(self):
         port = _NullPort()
-        port.add_agent("lbl", "desc")
-        port.update_agent_status("lbl", "running")
+        port.add_agent("lbl", "plan_execute", "desc")
+        port.update_agent_status("lbl", "running", "detail")
         port.update_model_phase("lbl", "thinking")
         port.update_usage("lbl", {"tokens": 100})
         port.update_speed("lbl", 1.5)

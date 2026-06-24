@@ -1,23 +1,20 @@
 """chat_ui 错误处理模块 — 将 ERROR+ 日志投递到 ChatUI 上屏。
 
-Layer 1 — 依赖 _state（get_active_chat_ui）+ 内部 _handler_reentrant。
+Layer 1 — 依赖 _state（get_active_chat_ui + 错误处理状态访问函数）。
 
-2026-06-11 简化：内联 4 个守卫方法到 emit()，合并 _handler_reentrant。
+2026-06-11 简化：内联 4 个守卫方法到 emit()。
+2026-06-24 重构：线程本地重入保护移至 _state._error_handler_reentrant。
 """
 
 from __future__ import annotations
 
 import logging
-import threading
 
 _logger = logging.getLogger(__name__)
 
 from . import _state
 from ._const import _MAX_ERROR_LENGTH
 from ._utils import _truncate_msg
-
-# 线程本地重入保护（防止 emit → logger → emit 递归）
-_handler_reentrant = threading.local()
 
 
 class ChatUIErrorHandler(logging.Handler):
@@ -38,7 +35,7 @@ class ChatUIErrorHandler(logging.Handler):
         if record.levelno < logging.ERROR:
             return
         # 守卫 2: 线程重入检测
-        if getattr(_handler_reentrant, 'is_active', False):
+        if _state.is_error_handler_reentrant():
             return
         # 守卫 3: 同一 record 已被处理
         if getattr(record, '_chatui_reported', False):
@@ -55,12 +52,12 @@ class ChatUIErrorHandler(logging.Handler):
         msg = _truncate_msg(f"{record.name}: {msg_content}", self._max_length)
 
         # 设置重入标记 → 入队 → finally 清理
-        _handler_reentrant.is_active = True
+        _state.set_error_handler_reentrant(True)
         try:
             consumer = _state.get_active_chat_ui()
             if consumer is not None:
                 consumer.on_error(msg)
         finally:
             record._chatui_reported = True
-            _handler_reentrant.is_active = False
+            _state.set_error_handler_reentrant(False)
 

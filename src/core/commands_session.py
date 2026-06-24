@@ -184,6 +184,7 @@ def _cmd_editmsg(ctx):
         "model": ctx.state.get("model", ""),
         "retry": ctx.state.get("retry", False),
         "prefill": ctx.state.get("prefill", ""),
+        "bottom_bar": None,  # 由实际调用方注入（ctx 中不可获取）
     }
     return True
 

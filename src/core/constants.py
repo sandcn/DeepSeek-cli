@@ -100,3 +100,17 @@ def filter_non_system(messages: list[dict]) -> list[dict]:
 def filter_non_system_indices(messages: list[dict]) -> list[int]:
     """返回非系统消息在消息列表中的下标列表。"""
     return [i for i, m in enumerate(messages) if m.get("role") != "system"]
+
+
+# ── SubAgent 类型 → 两字符缩写 ──────────────────────────
+# 从 ui/parallel/_tool_icons.py 提取至 core 层，消除 core→ui 的反向依赖。
+# ui/parallel/_tool_icons.py 从此处 re-export 以保持向后兼容。
+
+AGENT_TYPE_ABBREV: dict[str, str] = {
+    "map": "mp",
+    "review": "rv",
+    "plan": "pl",
+    "read_memory": "rm",
+    "write_memory": "wm",
+    "plan_execute": "pe",
+}

@@ -86,13 +86,67 @@ class DisplayPort(ABC):
         ...
 
     @abstractmethod
-    def update_agent_status(self, label: str, status: str) -> None:
-        """更新代理状态"""
+    def update_agent_status(self, agent_id: str, status: str, detail: str) -> None:
+        """更新代理状态（并行显示用）
+
+        Args:
+            agent_id: 代理唯一标识
+            status: 状态字符串（running/done/fail）
+            detail: 状态详情
+        """
         ...
 
     @abstractmethod
-    def add_agent(self, label: str, description: str, status: str = "running") -> None:
-        """添加代理"""
+    def add_agent(self, agent_id: str, agent_type: str, description: str) -> None:
+        """添加代理（并行显示用）
+
+        Args:
+            agent_id: 代理唯一标识
+            agent_type: 代理类型（如 plan_execute）
+            description: 代理描述
+        """
+        ...
+
+    # ── 并行显示上下文 ──────────────────────────────────
+
+    @abstractmethod
+    def set_panel_context(self, context: Any) -> None:
+        """注入 PanelContext（替代 get_active_chat_ui() 调用）
+
+        由外部调用方在 start() 前调用，注入 ChatUIConsumer 实例。
+        """
+        ...
+
+    @abstractmethod
+    def create_sub_display(self, max_history: int) -> "DisplayPort":
+        """创建子 DisplayPort（用于并行显示场景）
+
+        Args:
+            max_history: 工具历史最大显示数量
+
+        Returns:
+            新的 DisplayPort 实例，用于独立的并行 Agent 显示
+        """
+        ...
+
+    @abstractmethod
+    def set_result(self, agent_id: str, result: str | None = None, error: str | None = None) -> None:
+        """设置代理执行结果
+
+        Args:
+            agent_id: 代理唯一标识
+            result: 成功结果文本
+            error: 错误信息
+        """
+        ...
+
+    @abstractmethod
+    def remove_agent(self, agent_id: str) -> None:
+        """移除代理显示
+
+        Args:
+            agent_id: 代理唯一标识
+        """
         ...
 
     # ── 生命周期 ────────────────────────────────────────

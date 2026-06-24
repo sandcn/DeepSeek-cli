@@ -24,7 +24,6 @@ from ...core.sandbox_manager import get_sandbox_manager as _get_sandbox_manager
 from ...api.interrupt_async import flush_stdin, reset_interrupt_async
 from .._lock import locked_print
 from .._bottom_bar_selection import run_bottom_bar_selection
-from ...chat_ui import get_active_chat_ui
 from ..events import publish_output
 from . import _message_display as _disp
 from ._text_utils import truncate
@@ -113,6 +112,7 @@ class MessageEditor:
         ctx: _disp.MessageDisplayContext,
         title: str,
         is_current: bool = False,
+        bottom_bar=None,
     ) -> tuple[str, int]:
         """在底部栏补全弹窗中选择消息，回车编辑，Esc 取消。
 
@@ -120,6 +120,7 @@ class MessageEditor:
             ctx: 消息显示上下文。
             title: 显示标题。
             is_current: 是否为当前会话。
+            bottom_bar: 底部栏实例（由调用方注入）。
 
         Returns:
             (action, real_idx): action = "edit"|"quit"
@@ -148,12 +149,11 @@ class MessageEditor:
         # ★ 消息选择弹窗：显示用户可选消息总数
         title_display = f"{BRIGHT_CYAN}{title}{RESET}{DIM}{tag}{RESET}  {DIM}\u2502{RESET}  {CYAN}{sel_count}{RESET} \u6761\u53ef\u7f16\u8f91"  # 当前会话(当前) │ N 条可编辑
 
-        chat_ui = get_active_chat_ui()
         result = run_bottom_bar_selection(
             selectable, user_display,
             initial_idx=sel_count - 1,
             title=title_display,
-            bottom_bar=chat_ui.bottom_bar if chat_ui else None,
+            bottom_bar=bottom_bar,
         )
 
         if result["action"] == "cancel":
@@ -338,12 +338,13 @@ class MessageEditor:
 
     # ── 公开入口 ────────────────────────────────────────
 
-    def edit_current_messages(self, agent: Any, state: dict) -> bool:
+    def edit_current_messages(self, agent: Any, state: dict, bottom_bar=None) -> bool:
         """进入当前会话消息编辑（Ctrl+O / /editmsg）。
 
         Args:
             agent: ChatAgent 实例（包含 messages 列表）。
             state: 编辑状态字典，用于传递重试/预填等标记。
+            bottom_bar: 底部栏实例（由调用方注入）。
 
         Returns:
             True 表示有修改（调用方应重新发送/继续），False 表示无操作。
@@ -356,9 +357,9 @@ class MessageEditor:
                 source="cmd",
             )
             return False
-        return self._current_session_detail(agent, state)
+        return self._current_session_detail(agent, state, bottom_bar)
 
-    def _current_session_detail(self, agent: Any, state: dict) -> bool:
+    def _current_session_detail(self, agent: Any, state: dict, bottom_bar=None) -> bool:
         """选择消息并编辑。"""
         ctx = _disp.MessageDisplayContext.from_agent(agent)
         if not ctx.data:
@@ -369,7 +370,7 @@ class MessageEditor:
             return False
 
         action, cursor = self._interactive_message_select(
-            ctx, "\u5f53\u524d\u4f1a\u8bdd", is_current=True,
+            ctx, "\u5f53\u524d\u4f1a\u8bdd", is_current=True, bottom_bar=bottom_bar,
         )
         if action == "edit":
             return self._handle_edit_action(agent, state, cursor, ctx.idx_map)

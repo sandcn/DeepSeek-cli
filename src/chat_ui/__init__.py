@@ -18,7 +18,7 @@
     ├── _HANDLER_MAP     — 事件类型映射表
     └── EventDispatcher  — DisplayEvent → RenderCommand
   _consumer.py  — 消费者 API
-    └── ChatUIConsumer  — 对外公开 API（含 RenderEngine/ContentRenderer 兼容别名）
+    └── ChatUIConsumer  — 对外公开 API
 
 基础设施模块：
   _ansi         — ANSI 转义序列工具（16色/样式/光标）
@@ -42,10 +42,6 @@
 from __future__ import annotations
 
 import logging
-import threading
-
-_error_handler_registered: bool = False
-_error_handler_lock = threading.Lock()
 
 # ── 常量导出 ──────────────────────────────────────
 from ._const import (
@@ -57,6 +53,9 @@ from ._const import (
 from ._state import (
     _active_consumer,
     get_active_chat_ui,
+    is_error_handler_registered,
+    set_error_handler_registered,
+    get_error_handler_lock,
 )
 
 # ── 错误处理 ──────────────────────────────────────
@@ -69,12 +68,11 @@ def setup_chat_ui_error_handler() -> None:
     替代此前 __init__.py 导入时的隐式副作用。
     幂等操作——重复调用不重复注册。
     """
-    global _error_handler_registered
-    with _error_handler_lock:
-        if _error_handler_registered:
+    with get_error_handler_lock():
+        if is_error_handler_registered():
             return
         logging.getLogger().addHandler(ChatUIErrorHandler())
-        _error_handler_registered = True
+        set_error_handler_registered(True)
 
 # ── 补全纯函数 ────────────────────────────────────
 from ._completion import _apply_completion

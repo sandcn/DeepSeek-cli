@@ -8,6 +8,7 @@ from .pipeline import Pipeline, PipelineContext
 from .tool_executor_async import AsyncToolExecutor
 from ..tools.registry import ToolRegistry
 from ..core.ports import ConfigPort
+from ..core.ports.chat_ui import ChatUIPort, get_default_chat_ui_port
 from ..core.ports.tool_registry import ToolRegistryPort
 from ..core.ports.prompt_builder import PromptBuilderPort, DefaultPromptBuilderAdapter
 from .middleware.observability import _AsyncObservabilityMiddleware  # noqa: F401 — re-exported
@@ -27,7 +28,7 @@ class Agent(BaseAgent):
     def __init__(self, model=None, registry=None, sandbox=None,
                  display_port=None, event_port=None, output_port=None,
                  config_port=None, async_model_port=None,
-                 prompt_builder_port=None):
+                 prompt_builder_port=None, chat_ui_port: ChatUIPort | None = None):
         """初始化 Agent。
 
         Args:
@@ -42,12 +43,13 @@ class Agent(BaseAgent):
                               默认 DefaultAsyncModelAdapter()（异步优先）
                               传入 None 禁用异步路径
             prompt_builder_port: PromptBuilderPort 实例
+            chat_ui_port: ChatUIPort 依赖倒置端口，默认从全局获取
         """
         super().__init__()
-        # CaptureManager — 统一的 stdout 捕获管理器
-        self._capture_mgr = CaptureManager()
         # ToolCallbackChain — 工具回调链独立封装
         self._tool_callbacks = ToolCallbackChain(self)
+        # ChatUIPort — 依赖倒置端口，ToolCallbackChain 可通过 self._agent._chat_ui_port 访问
+        self._chat_ui_port = chat_ui_port if chat_ui_port is not None else get_default_chat_ui_port()
 
         self._registry = registry or ToolRegistry.default()
 
@@ -88,17 +90,21 @@ class Agent(BaseAgent):
             self._event_port = event_port
             self._output_port = output_port
         else:
-            from ..ui.adapters import UIDisplayAdapter, UIEventAdapter, UIOutputAdapter
-            from ..ui.events.adapters import EventBusDisplayProxy
-            # ★ ChatUI 统一处理终端输出（工具/思考/回答），
-            #   不再需要 ToolExecutionDisplay + DisplayEventAdapter。
-            #   EventBusDisplayProxy 仅发布事件到 EventBus，
-            #   ChatUIConsumer 在 app_loop 中订阅并渲染。
-            _real_display = EventBusDisplayProxy(source="agent")
-            self._display_port = UIDisplayAdapter(_real_display)
-            self._event_port = UIEventAdapter()
-            self._output_port = UIOutputAdapter()
+            # ★ 默认实现封装在 _default_adapters 中，agent 不再直接引用 ui. 命名空间。
+            #   工厂函数内部通过惰性导入访问 ui.adapters / ui.events.adapters。
+            from ..core.ports._default_adapters import (
+                create_default_display_port,
+                create_default_event_port,
+                create_default_output_port,
+            )
+            self._display_port = create_default_display_port()
+            self._event_port = create_default_event_port()
+            self._output_port = create_default_output_port()
         self.display = self._display_port
+
+        # CaptureManager — 统一的 stdout 捕获管理器，注入 EventPort
+        self._capture_mgr = CaptureManager(event_port=self._event_port)
+
         self.context_manager = None
         self._shared_executor = None
         # ── 工具完成回调列表（TUI 刷新等外部监听） ────────

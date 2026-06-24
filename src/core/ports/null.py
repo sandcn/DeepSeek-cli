@@ -84,13 +84,26 @@ class _NullPort:
     def parse_info_done(self, label: str) -> None:
         pass
 
-    def update_agent_status(self, label: str, status: str) -> None:
+    def update_agent_status(self, agent_id: str, status: str, detail: str) -> None:
         pass
 
-    def add_agent(self, label: str, description: str, status: str = "running") -> None:
+    def add_agent(self, agent_id: str, agent_type: str, description: str) -> None:
         pass
 
     def update_status(self, label: str, status: str) -> None:
+        pass
+
+    def set_panel_context(self, context) -> None:
+        pass
+
+    def create_sub_display(self, max_history: int):
+        """创建子 DisplayPort — 空实现返回自身（Postel's Law）"""
+        return self
+
+    def set_result(self, agent_id: str, result: str | None = None, error: str | None = None) -> None:
+        pass
+
+    def remove_agent(self, agent_id: str) -> None:
         pass
 
 

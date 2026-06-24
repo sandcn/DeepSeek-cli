@@ -38,31 +38,33 @@ class CoreEvent:
 
 
 # ── 事件类型常量 ────────────────────────────────────────
+# 注意：以下所有常量当前均未在生产代码中使用（仅测试引用）。
+# 保留作为基础设施，供未来的核心模块间通信集成。
 
-# 模型调用
+# 模型调用（未使用，保留供未来集成）
 MODEL_CALL_STARTED = "model.call.started"
 MODEL_CALL_COMPLETED = "model.call.completed"
 MODEL_CALL_FAILED = "model.call.failed"
 MODEL_STREAM_CHUNK = "model.stream.chunk"
 
-# 工具调用
+# 工具调用（未使用，保留供未来集成）
 TOOL_CALL_STARTED = "tool.call.started"
 TOOL_CALL_COMPLETED = "tool.call.completed"
 TOOL_CALL_FAILED = "tool.call.failed"
 
-# 会话生命周期
+# 会话生命周期（未使用，保留供未来集成）
 SESSION_STARTED = "session.started"
 SESSION_COMPLETED = "session.completed"
 SESSION_INTERRUPTED = "session.interrupted"
 SESSION_SAVED = "session.saved"
 
-# 上下文管理
+# 上下文管理（未使用，保留供未来集成）
 CONTEXT_COMPRESSED = "context.compressed"
 CONTEXT_COMPRESS_FAILED = "context.compress.failed"
 
-# 配置变更
+# 配置变更（未使用，保留供未来集成）
 CONFIG_CHANGED = "config.changed"
 
-# 应用生命周期
+# 应用生命周期（未使用，保留供未来集成）
 APP_BOOTSTRAP = "app.bootstrap"
 APP_SHUTDOWN = "app.shutdown"

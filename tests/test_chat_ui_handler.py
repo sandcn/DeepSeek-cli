@@ -211,12 +211,12 @@ class TestChatUIErrorHandlerSelfRef:
     def test_no_recursion_via_reentrant_guard(self):
         """同一线程 emit → on_error → logger → emit → 线程重入标记阻断递归
 
-        验证 thread-local _handler_reentrant.is_active 能阻断
+        验证 thread-local _error_handler_reentrant.active 能阻断
         on_error 路径中意外产生的二次 emit。
         """
-        from src.chat_ui._error_handler import _handler_reentrant
+        from src.chat_ui._state import set_error_handler_reentrant, is_error_handler_reentrant
         # 确保测试开始时重入标记为 False
-        _handler_reentrant.is_active = False
+        set_error_handler_reentrant(False)
 
         handler = chat_ui.ChatUIErrorHandler()
 
@@ -232,7 +232,7 @@ class TestChatUIErrorHandlerSelfRef:
                 pathname="", lineno=0, msg="inner error (from on_error path)",
                 args=(), exc_info=None,
             )
-            # 此时 handler 已处于 emit 中（reentrant.is_active=True）
+            # 此时 handler 已处于 emit 中（_error_handler_reentrant.active=True）
             # 该次 emit 应被重入标记阻断，不调用 on_error
             handler.emit(inner_record)
 
@@ -251,7 +251,7 @@ class TestChatUIErrorHandlerSelfRef:
         # on_error 只被调用 1 次（outer record 触发），inner 被重入标记阻断
         assert call_count == 1
         # 退出 emit 后重入标记已清除
-        assert getattr(_handler_reentrant, 'is_active', False) is False
+        assert is_error_handler_reentrant() is False
 
 
 # ── Test: RenderCommand.ERROR 枚举 ─────────────────────

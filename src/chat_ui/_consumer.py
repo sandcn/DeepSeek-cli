@@ -137,6 +137,10 @@ class ChatUIConsumer:
         )
         self._bound_handlers = ref[0]
 
+        # 注册 ChatUIPort 到全局默认端口，使 core 层可通过端口接口访问 ChatUI
+        from ._chat_ui_port_adapter import register_chat_ui_port
+        register_chat_ui_port(self)
+
         # 注册回调到 ui/_lock.py，替代 ui/ → chat_ui 的直接 import
         # 依赖方向：chat_ui → ui（单向），符合架构分层
         from ..ui._lock import register_write_line_callback, register_is_chat_ui_active_callback
@@ -160,6 +164,10 @@ class ChatUIConsumer:
             unregister_fn=_unregister_consumer,
         )
         self._bound_handlers = ref[0]
+
+        # 从全局默认端口注销 ChatUIPort
+        from ._chat_ui_port_adapter import unregister_chat_ui_port
+        unregister_chat_ui_port()
 
     def suspend(self) -> None:
         """暂停渲染引擎，供交互式工具独占终端。

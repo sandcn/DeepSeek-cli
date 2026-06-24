@@ -357,8 +357,4 @@ class RichLiveContentRenderer:
             self._live = None
 
 
-# @deprecated: 使用 TuiRenderer 替代。
-# 保留仅为测试文件的向后兼容引用。
-ContentRenderer = TuiRenderer
-
-__all__ = ["TuiRenderer", "ContentRenderer", "_RenderState", "RichLiveContentRenderer"]
+__all__ = ["TuiRenderer", "_RenderState", "RichLiveContentRenderer"]

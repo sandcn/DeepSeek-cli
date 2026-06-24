@@ -14,8 +14,17 @@
 - DisplayPort       — 用户显示
 - EventPort         — 事件总线
 - OutputPort        — 文本输出
+- ChatUIPort        — ChatUI 交互（暂停/恢复/写屏/底部栏）
 """
 
+from .chat_ui import (
+    ChatUIPort,
+    NullChatUIPort,
+    DefaultChatUIPort,
+    get_default_chat_ui_port,
+    set_default_chat_ui_port,
+    reset_default_chat_ui_port,
+)
 from .http import HttpClientPort, DefaultHttpClientAdapter
 from .config import ConfigPort, DefaultConfigAdapter, MockConfigAdapter
 from .display import DisplayPort
@@ -43,6 +52,9 @@ __all__ = [
     "PersistencePort", "CheckpointPort", "JsonFilePersistence", "JsonFileCheckpoint",
     # UI
     "DisplayPort", "EventPort", "OutputPort",
+    # ChatUI
+    "ChatUIPort", "NullChatUIPort", "DefaultChatUIPort",
+    "get_default_chat_ui_port", "set_default_chat_ui_port", "reset_default_chat_ui_port",
     # HTTP
     "HttpClientPort", "DefaultHttpClientAdapter",
     # 中断检查

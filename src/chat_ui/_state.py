@@ -1,7 +1,6 @@
-"""chat_ui 全局状态模块 — 活跃实例引用 + 引用计数管理。
+"""chat_ui 全局状态模块 — 活跃实例引用 + 引用计数 + 错误处理状态。
 
-Layer 0 — 仅依赖 typing，被 _consumer + 外部调用方引用。
-注意：线程本地重入保护（_handler_reentrant）定义在 _error_handler.py。
+Layer 0 — 仅依赖 typing + threading，被 _consumer + _error_handler + 外部调用方引用。
 """
 
 from __future__ import annotations
@@ -18,6 +17,41 @@ if TYPE_CHECKING:
 _active_consumer: "ChatUIConsumer | None" = None
 _active_consumer_refcount: int = 0
 _state_global_lock = threading.Lock()
+
+# ── 错误处理状态 ──
+# 线程本地重入保护（防止 emit → logger → emit 递归）
+_error_handler_reentrant = threading.local()
+
+# 错误 handler 注册状态（幂等注册）
+_error_handler_registered: bool = False
+_error_handler_lock = threading.Lock()
+
+
+def is_error_handler_reentrant() -> bool:
+    """检查当前线程是否已进入错误处理流程（防递归重入）。"""
+    return getattr(_error_handler_reentrant, 'active', False)
+
+
+def set_error_handler_reentrant(value: bool) -> None:
+    """设置当前线程的错误处理重入标记。"""
+    _error_handler_reentrant.active = value
+
+
+def is_error_handler_registered() -> bool:
+    """检查 ChatUIErrorHandler 是否已注册到 root logger。"""
+    return _error_handler_registered
+
+
+def set_error_handler_registered(value: bool) -> None:
+    """设置 ChatUIErrorHandler 注册状态。"""
+    global _error_handler_registered
+    _error_handler_registered = value
+
+
+def get_error_handler_lock() -> threading.Lock:
+    """获取错误 handler 注册的线程锁。"""
+    return _error_handler_lock
+
 
 def get_active_chat_ui() -> "ChatUIConsumer | None":
     """获取当前活跃的 ChatUIConsumer 实例，供交互式终端工具使用。

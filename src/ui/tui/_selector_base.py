@@ -22,7 +22,6 @@ from __future__ import annotations
 from typing import Generic, TypeVar
 
 from .._bottom_bar_selection import run_bottom_bar_selection
-from ...chat_ui import get_active_chat_ui
 from ._ttl_cache import TTLCache
 
 T = TypeVar("T")
@@ -102,8 +101,11 @@ class BaseBottomBarSelector(Generic[T, R]):
         """强制刷新缓存（线程安全）。"""
         self._cache.refresh()
 
-    def show(self) -> R | None:
+    def show(self, bottom_bar=None) -> R | None:
         """在底部栏补全弹窗中打开选择器。
+
+        Args:
+            bottom_bar: 底部栏实例，用于交互选择（传入 None 时底部栏不可用）。
 
         完整流程：
           1. 从 TTLCache 获取候选项
@@ -123,12 +125,11 @@ class BaseBottomBarSelector(Generic[T, R]):
         # BaseBottomBarSelector 场景仅依赖返回的 index 在本地 items 中查找，
         # 不依赖 _completion_texts 取值，因此传同一 list 安全。
         # 若未来 run_bottom_bar_selection 对 items 做字符串操作则需改用独立副本。
-        chat_ui = get_active_chat_ui()
         result = run_bottom_bar_selection(
             display, display,
             title=self._get_title(),
             initial_idx=self._get_initial_idx(items),
-            bottom_bar=chat_ui.bottom_bar if chat_ui else None,
+            bottom_bar=bottom_bar,
         )
 
         if result["action"] == "confirmed" and result["index"] is not None:

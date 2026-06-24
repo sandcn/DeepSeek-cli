@@ -21,7 +21,7 @@ class SessionSwitcher(BaseBottomBarSelector[dict, Optional[dict[str, object]]]):
 
     用法：
         switcher = SessionSwitcher()
-        data = switcher.show()
+        data = switcher.show(bottom_bar=chat_ui.bottom_bar)
 
     向后兼容保留：
         refresh_cache() → 委托 self.refresh()

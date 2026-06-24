@@ -207,6 +207,7 @@ async def _handle_editmsg_cmd(session: "ChatSession", state: SessionState) -> No
         edit_state = {"model": state.model, "retry": False, "prefill": ""}
         await asyncio.to_thread(
             MessageEditor().edit_current_messages, session.agent, edit_state,
+            chat_ui.bottom_bar if chat_ui else None,
         )
         state.prefill = edit_state.get("prefill", "")
         state.retry = edit_state.get("retry", False)

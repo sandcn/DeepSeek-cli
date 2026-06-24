@@ -18,17 +18,19 @@ from typing import List, Dict, Any
 from ._capture_manager import _safe_restore as safe_restore_stdout
 from ._subagent_spawner import SubAgentSpawner
 from .subagent import SubAgent
-from ..ui._lock import locked_print
 from ..ui.parallel import ParallelDisplay
-from ..chat_ui import get_active_chat_ui
+from .ports.chat_ui import get_default_chat_ui_port
+# TODO(Phase 3.2): 替换 ParallelDisplay → DisplayPort.create_sub_display()
+#   当前保留 ParallelDisplay 直接引用，因接口不匹配：
+#   - update_agent_status 签名差异（2 vs 3 参数）
+#   - set_result 参数顺序差异
+#   - await_stop 在 DisplayPort 中为 stop（不支持超时）
+# TODO(Phase 2.4): 替换 get_active_chat_ui → ChatUIPort
+#   当前 set_panel_context 仍需 ChatUIConsumer 实例（PanelContext），
+#   ChatUIPort 未暴露完整 PanelContext 接口
+from ..chat_ui import get_active_chat_ui  # set_panel_context 仍需 ChatUIConsumer 实例（ChatUIPort 未暴露）
 from ..config import STAGGER_MIN_DELAY, STAGGER_MAX_DELAY
-from ..ui.events import DisplayEventBus
-from ..ui.events.event_types import (
-    AgentAddedEvent,
-    AgentStatusChanged,
-)
-from ..ui.parallel._tool_icons import AGENT_TYPE_ABBREV
-from .constants import RED, RESET
+from .constants import RED, RESET, AGENT_TYPE_ABBREV
 
 _logger = logging.getLogger(__name__)
 
@@ -82,11 +84,18 @@ class ParallelExecutor:
     - 最后一个注册的协程触发执行
     """
 
-    def __init__(self, parent_agent, max_history: int = 3, agent_factory=None, is_web: bool = False):
+    def __init__(self, parent_agent, max_history: int = 3, agent_factory=None, is_web: bool = False,
+                 output_port=None, event_port=None):
         self.parent = parent_agent
         self.max_history = max_history
         self._agent_factory = agent_factory or SubAgent
         self._is_web = is_web
+
+        # Ports（依赖注入，替代 ui 层直接引用）
+        from .ports.output import get_default_output_port
+        from .ports.events import get_default_event_port
+        self._output_port = output_port if output_port is not None else get_default_output_port()
+        self._event_port = event_port if event_port is not None else get_default_event_port()
 
         # SubAgent 创建 + 显示委托
         self._spawner = SubAgentSpawner(parent_agent, self._agent_factory, is_web)
@@ -174,17 +183,17 @@ class ParallelExecutor:
 
         display = ParallelDisplay(max_history=self.max_history)
 
-        # ★ 先发布 AgentAddedEvent，让前端提前创建 agent DOM 和 activeAgents 条目
+        # ★ 先发布 agent_added 事件，让前端提前创建 agent DOM 和 activeAgents 条目
         #   这样后续统一批量发布的 AgentResultEvent 才能被前端正确处理
         #   （handleAgentResult 依赖 activeAgents[label] 存在，否则丢弃结果）
         for i, spec in enumerate(self._pending_specs):
             label = f"agent-{i + 1}"
             desc = spec.get(_DESCRIPTION_KEY, label)
             dispatch_label = spec.get("tool_label", "")
-            DisplayEventBus.get_default().publish(AgentAddedEvent(
-                label=label, description=desc, status="running", source="parallel",
-                dispatch_label=dispatch_label,
-            ))
+            self._event_port.publish("agent_added", {
+                "label": label, "description": desc, "status": "running",
+                "dispatch_label": dispatch_label,
+            }, source="parallel")
 
         try:
             coro = self._run_agents(self._pending_specs, display)
@@ -232,7 +241,7 @@ class ParallelExecutor:
 
         策略：先将 markdown 文本用 IncrementalRenderer 渲染为 ANSI 格式
         （保留完整的 markdown 渲染能力：标题加粗、代码高亮、引用块等），
-        再将 ANSI 输出通过 chat_ui.write_line() 由 render 线程统一上屏。
+        再将 ANSI 输出通过 port.write_line() 由 render 线程统一上屏。
 
         ChatUI 激活时用此路径替代 _stream_results_markdown，原因：
         - _stream_results_markdown 直接写 __stdout__ 会破坏 DECSTBM 分屏布局
@@ -246,8 +255,8 @@ class ParallelExecutor:
         import io
         from src.api.renderer import IncrementalRenderer
 
-        chat_ui = get_active_chat_ui()
-        if chat_ui is None:
+        port = get_default_chat_ui_port()
+        if not port.is_active():
             return
 
         # ── 构造完整的 markdown 文本 ──────────────────────────────────
@@ -298,10 +307,10 @@ class ParallelExecutor:
         # ANSI SGR 序列（颜色/样式）无损，保留完整 markdown 渲染效果。
         output = buf.getvalue()
         if output:
-            chat_ui.write_line("")  # 开头空行
+            port.write_line("")  # 开头空行
             for line in output.rstrip("\n").split("\n"):
-                chat_ui.write_line(line)
-            chat_ui.write_line("")  # 结尾空行
+                port.write_line(line)
+            port.write_line("")  # 结尾空行
 
     def _do_terminal_output(self, results: List[Dict[str, Any]]):
         """在线程池中执行所有终端输出操作，避免同步 IO 阻塞事件循环。
@@ -315,8 +324,8 @@ class ParallelExecutor:
         ChatUI 激活时无需光标修复：write_line 内部自动处理输出位置
         （render 线程持 output_lock，渲染后底部栏 force_redraw 刷新光标）。
         """
-        chat_ui = get_active_chat_ui()
-        if chat_ui is not None:
+        port = get_default_chat_ui_port()
+        if port.is_active():
             # ChatUI 激活 → 走统一渲染管线
             self._stream_results_via_chatui(results)
             return
@@ -453,8 +462,8 @@ class ParallelExecutor:
                                 _logger.warning("dispatch_agent tool_done 异常", exc_info=True)
                 # 换行，确保后续 markdown 内容从新行开始
                 # ChatUI 激活时 write_line 自带换行，无需写 __stdout__ 破坏分屏布局
-                if get_active_chat_ui() is None:
-                    locked_print(file=_sys.__stdout__)
+                if not get_default_chat_ui_port().is_active():
+                    self._output_port.write_with_lock("")
 
             # 在线程池中执行所有终端输出操作，避免同步 IO 阻塞事件循环
             # 统一通过 _do_terminal_output 路由：ChatUI 激活时走 write_line，
@@ -536,9 +545,9 @@ class ParallelExecutor:
         try:
             result = await sa.run()
             display.update_agent_status(sa.label, "done")
-            DisplayEventBus.get_default().publish(AgentStatusChanged(
-                label=sa.label, status="done", source="parallel",
-            ))
+            self._event_port.publish("agent_status_changed", {
+                "label": sa.label, "status": "done",
+            }, source="parallel")
             display.set_result(sa.label, result_text=result)
             # AgentResultEvent 不再逐个发布，待全部 subagent 完成后统一批量发布
             return {_LABEL_KEY: sa.label, _DESCRIPTION_KEY: sa.description,
@@ -549,9 +558,9 @@ class ParallelExecutor:
             display.update_model_phase(sa.label, "error", "cancelled")
             display.update_agent_status(sa.label, "fail")
             display.set_result(sa.label, error="cancelled")
-            DisplayEventBus.get_default().publish(AgentStatusChanged(
-                label=sa.label, status="fail", source="parallel",
-            ))
+            self._event_port.publish("agent_status_changed", {
+                "label": sa.label, "status": "fail",
+            }, source="parallel")
             # 不 raise，改为返回结果 dict，保证 agent 身份不丢失
             return {_LABEL_KEY: sa.label, _DESCRIPTION_KEY: sa.description,
                     _RESULT_KEY: "", _ERROR_KEY: "cancelled",
@@ -561,9 +570,9 @@ class ParallelExecutor:
             display.update_model_phase(sa.label, "error", str(e))
             display.update_agent_status(sa.label, "fail")
             display.set_result(sa.label, error=str(e))
-            DisplayEventBus.get_default().publish(AgentStatusChanged(
-                label=sa.label, status="fail", source="parallel",
-            ))
+            self._event_port.publish("agent_status_changed", {
+                "label": sa.label, "status": "fail",
+            }, source="parallel")
             # AgentResultEvent 不再逐个发布，待全部 subagent 完成后统一批量发布
             return {_LABEL_KEY: sa.label, _DESCRIPTION_KEY: sa.description,
                     _RESULT_KEY: "", _ERROR_KEY: str(e),

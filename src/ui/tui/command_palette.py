@@ -42,7 +42,7 @@ class CommandPalette(BaseBottomBarSelector[str, Optional[str]]):
 
     用法：
         palette = CommandPalette()
-        result = palette.show()
+        result = palette.show(bottom_bar=chat_ui.bottom_bar)
     """
 
     def _fetch_items(self) -> list[str]:

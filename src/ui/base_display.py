@@ -98,10 +98,26 @@ class BaseDisplay(DisplayPort):
         """解析信息完成。默认空实现，子类可按需覆盖。"""
         pass
 
-    def add_agent(self, label: str, description: str, status: str = "running") -> None:
+    def add_agent(self, agent_id: str, agent_type: str, description: str) -> None:
         """添加代理。默认空实现，子类可按需覆盖。"""
         pass
 
-    def update_agent_status(self, label: str, status: str) -> None:
+    def update_agent_status(self, agent_id: str, status: str, detail: str) -> None:
         """更新代理状态。默认空实现，子类可按需覆盖。"""
+        pass
+
+    def set_panel_context(self, context) -> None:
+        """注入 PanelContext。默认空实现，子类可按需覆盖。"""
+        pass
+
+    def create_sub_display(self, max_history: int) -> "DisplayPort":
+        """创建子 DisplayPort。默认返回自身（降级）。"""
+        return self
+
+    def set_result(self, agent_id: str, result: str | None = None, error: str | None = None) -> None:
+        """设置代理执行结果。默认空实现，子类可按需覆盖。"""
+        pass
+
+    def remove_agent(self, agent_id: str) -> None:
+        """移除代理显示。默认空实现，子类可按需覆盖。"""
         pass

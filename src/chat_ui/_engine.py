@@ -6,27 +6,24 @@
 from __future__ import annotations
 
 import logging
-import os
 import queue
 import sys
 import threading
-from warnings import deprecated
+
 from typing import TYPE_CHECKING, Any, Callable
 
 if TYPE_CHECKING:
     from ._protocols import BottomBarProtocol
     from ._terminal_io import TerminalIO
-    from ._store import TuiStore
     from ._store import TuiState
 
 from ._renderer import TuiRenderer
-from ._render_strategy import RenderStrategy, DirectRenderStrategy, VNodeRenderStrategy, PhaseRenderStrategy
+from ._render_strategy import RenderStrategy, VNodeRenderStrategy
+from ._strategy_factory import create_render_strategy
 from ._const import (
     _RENDER_INTERVAL,
     _DRAIN_LOCK_TIMEOUT,
     _ANSI_RED, _ANSI_RESET,
-    _FIXED_FRAME_INTERVAL,
-    _ENV_FIXED_FPS,
     _ACTIVE_RENDER_INTERVAL,
     _IDLE_DRAIN_THRESHOLD,
     _CONSECUTIVE_FULL_THRESHOLD,
@@ -91,61 +88,13 @@ class TuiEngine:
     def _select_strategy(self) -> RenderStrategy:
         """一次读取所有渲染相关环境变量，选择渲染策略（仅在 __init__ 调用一次）。
 
-        环境变量读取集中于此方法，不再散落在渲染循环中。
-        _use_fixed_fps 和 _use_phases 保留为实例属性（供 RenderLoop 使用）。
-        Phase 管线优先于 VNode：当 CHAT_UI_RENDER_PHASES=1 时忽略 CHAT_UI_RENDER_USE_VNODE。
+        委托给 _strategy_factory.create_render_strategy()，该方法集中管理
+        环境变量读取和策略实例化逻辑。
         """
-        use_vnode: bool = (
-            os.environ.get("CHAT_UI_RENDER_USE_VNODE", "").strip().lower()
-            in ("1", "true", "yes", "on")
+        strategy, self._use_fixed_fps, self._use_phases, self._store = (
+            create_render_strategy(self._renderer)
         )
-        use_fixed_fps: bool = (
-            os.environ.get(_ENV_FIXED_FPS, "").strip().lower()
-            in ("1", "true", "yes", "on")
-        )
-        use_phases: bool = (
-            os.environ.get("CHAT_UI_RENDER_PHASES", "").strip().lower()
-            in ("1", "true", "yes", "on")
-        )
-
-        # 帧率/phase 配置保留为实例属性（供 RenderLoop 使用）
-        self._use_fixed_fps = use_fixed_fps
-        self._use_phases = use_phases
-        if use_fixed_fps:
-            _logger.info("固定帧率渲染已启用（%.0f fps）", 1.0 / _FIXED_FRAME_INTERVAL)
-
-        # 选择渲染策略（Phase 管线优先于 VNode）
-        if use_phases:
-            from ._render_phase import (
-                PreUpdatePhase, ContentRenderPhase, BottomBarPhase, CursorPhase
-            )
-            phases = [
-                PreUpdatePhase(),
-                ContentRenderPhase(self._renderer),
-                BottomBarPhase(),
-                CursorPhase(),
-            ]
-            self._store: "TuiStore | None" = None
-            _logger.info("可插拔渲染管线已启用（%d 个 Phase）", len(phases))
-            return PhaseRenderStrategy(
-                self._renderer, phases, store=self._store
-            )
-        elif use_vnode:
-            from ._store import TuiStore
-            from ._vnode_builder import build_vnode_tree
-            self._store: "TuiStore | None" = TuiStore()
-            _logger.info("VNode Diff 渲染已启用")
-
-            # 创建输出函数：写入 OutputAdapter（通过公开属性而非私有 _adapter）
-            def _output_func(text: str) -> None:
-                self._renderer.output_adapter.write(text)
-
-            return VNodeRenderStrategy(
-                self._renderer, self._store, build_vnode_tree, _output_func,
-            )
-        else:
-            self._store: "TuiStore | None" = None
-            return DirectRenderStrategy(self._renderer)
+        return strategy
 
     # ── 向后兼容属性 ──────────────────────────────
 
@@ -278,14 +227,6 @@ class TuiEngine:
             except Exception:
                 _logger.warning("panel_refresh_cb 异常", exc_info=True)
 
-    @deprecated("步骤 9：Phase 管线已迁移到 PhaseRenderStrategy，此方法不再使用")
-    def _phase_render(self, commands: list) -> None:
-        """[已废弃] 阶段 2：执行渲染命令。
-
-        步骤 9 后 Phase 管线已整合进 PhaseRenderStrategy，
-        ContentRenderPhase 直接使用 TuiRenderer 渲染，不再通过此方法。
-        """
-        self._strategy.render_commands(self, commands)
 
     def _phase_redraw_bottom(self, has_commands: bool) -> None:
         """阶段 3：重绘底部栏。
@@ -335,72 +276,6 @@ class TuiEngine:
             self._render_running = False
             self._drain_queue_safe()
 
-    @deprecated("_render_fixed_fps() 已废弃，请使用 RenderLoop 包装器")
-    def _render_fixed_fps(self) -> None:
-        """[已废弃] 固定帧率渲染循环（60fps / 16ms）。
-
-        每帧批量 drain 命令队列、执行渲染、重绘底部栏。
-        不使用 _cmd_event 信号，完全由固定帧间隔驱动。
-
-        空帧时防御性清理底部栏重绘标记（该标记由 _drain_queue → _phase_redraw_bottom 消费，
-        此处仅清理空闲帧的过期标记，避免下一帧误触发冗余重绘）。
-
-        已废弃: 帧调度逻辑已迁移到 RenderLoop 包装器，_render() 方法直接委托给 RenderLoop.run()。
-        保留此方法仅供向后兼容，新代码请使用 RenderLoop。
-        """
-        import time as _time_mod
-        while self._render_running:
-            frame_start = _time_mod.monotonic()
-            try:
-                has_content = self._drain_queue()
-                if not has_content and not self._bottom_redraw_requested.is_set():
-                    self._bottom_redraw_requested.clear()
-            except Exception:
-                _logger.critical("render 线程异常崩溃（固定帧率）", exc_info=True)
-                self._emit_crash_error()
-                self._render_running = False
-                break
-            elapsed = _time_mod.monotonic() - frame_start
-            sleep_time = _FIXED_FRAME_INTERVAL - elapsed
-            if sleep_time > 0:
-                _time_mod.sleep(sleep_time)
-        self._drain_queue_safe()
-
-    @deprecated("_render_adaptive() 已废弃，请使用 RenderLoop 包装器")
-    def _render_adaptive(self) -> None:
-        """[已废弃] 自适应等待渲染循环（原有行为）。
-
-        在 daemon 线程中持续运行，循环执行三阶段流水线：
-        drain_queue → 自适应等待 → 重复。异常时记录 critical 日志并终止循环。
-
-        已废弃: 帧调度逻辑已迁移到 RenderLoop 包装器，_render() 方法直接委托给 RenderLoop.run()。
-        保留此方法仅供向后兼容，新代码请使用 RenderLoop。
-        """
-        idle_count = 0
-        try:
-            while self._render_running:
-                try:
-                    has_content = self._drain_queue()
-                    if has_content:
-                        idle_count = 0
-                        wait_timeout = self._ACTIVE_RENDER_INTERVAL
-                    else:
-                        idle_count += 1
-                        wait_timeout = (
-                            _RENDER_INTERVAL
-                            if idle_count >= self._IDLE_DRAIN_THRESHOLD
-                            else self._ACTIVE_RENDER_INTERVAL
-                        )
-                    self._cmd_event.wait(timeout=wait_timeout)
-                    if not has_content:
-                        self._cmd_event.clear()
-                except Exception:
-                    _logger.critical("render 线程异常崩溃", exc_info=True)
-                    self._emit_crash_error()
-                    self._render_running = False
-                    break
-        finally:
-            self._drain_queue_safe()
 
     def _emit_crash_error(self) -> None:
         """输出渲染线程崩溃错误消息到终端（紧急降级路径）。
@@ -487,3 +362,5 @@ class TuiEngine:
 # 保留仅为测试文件的向后兼容引用（26+ 处）。
 RenderEngine: type = TuiEngine  # @deprecated
 ContentRenderer: type = TuiRenderer  # @deprecated
+
+
