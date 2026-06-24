@@ -377,6 +377,16 @@ class _BottomBar(_StatusMixin):
                     self._last_refresh = time.monotonic()
                     self._last_cursor_pos = self._input_cursor_pos
                     return
+                # ★ 仅状态行变化 → 单行重写（避免全量重绘）
+                self._last_status = new_status
+                self._last_refresh = time.monotonic()
+                self._last_cursor_pos = self._input_cursor_pos
+                out = sys.__stdout__
+                status_row = height - total + 2
+                out.write(_blessed_move_clear(status_row))
+                out.write(f"\r\033[K{new_status}")
+                out.flush()
+                return
             else:
                 new_status = self._format_status()
 

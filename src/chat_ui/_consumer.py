@@ -332,6 +332,21 @@ class ChatUIConsumer:
     def ensure_cursor_upper(self) -> None:
         self._engine.ensure_cursor_upper()
 
+    def get_echo_callback(self):
+        """返回 echo 回调函数。
+
+        VNode 路径（CHAT_UI_RENDER_USE_VNODE=1）时返回 push_cmd 版本，
+        默认返回原有的 refresh_bottom_bar 版本。
+        """
+        if getattr(self._engine, '_use_vnode', False):
+            from ._cmd import CmdInputChanged
+
+            def _vnode_echo(text: str, cursor_pos: int) -> None:
+                self._engine.push_cmd(CmdInputChanged(text=text, cursor_pos=cursor_pos))
+
+            return _vnode_echo
+        return self.refresh_bottom_bar
+
     def refresh_bottom_bar(self, text: str, cursor_pos: int = -1) -> None:
         effective_pos = len(text) if cursor_pos < 0 else cursor_pos
         self._bottom_bar.set_input_state(text, effective_pos)

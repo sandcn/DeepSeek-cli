@@ -522,6 +522,49 @@ class SelectionMenu:
 
 
 # ═══════════════════════════════════════════════════════════
+# React Ink 风格输入栏组件（Phase 8+：声明式底部栏）
+# ═══════════════════════════════════════════════════════════
+
+class InputBarComponent(TuiComponent):
+    """React Ink 风格的输入栏组件。
+
+    封装 InputLine + 状态行的声明式渲染。
+    通过 render_vnode() 产出 VNode 参与 diff，
+    仅变更时触发底部栏重绘。
+    """
+    def __init__(self, text: str = "", cursor_pos: int = 0):
+        self.text = text
+        self.cursor_pos = cursor_pos
+
+    @property
+    def key(self) -> str:
+        return "input_bar"
+
+    def update(self, props: dict) -> bool:
+        new_text = props.get("text", "")
+        new_pos = props.get("cursor_pos", 0)
+        if new_text == self.text and new_pos == self.cursor_pos:
+            return False
+        self.text = new_text
+        self.cursor_pos = new_pos
+        return True
+
+    def render_vnode(self) -> "VNode":
+        from ._vnode import VNode
+        return VNode(
+            type="input_bar",
+            key=self.key,
+            props={
+                "text": self.text,
+                "cursor_pos": self.cursor_pos,
+            },
+        )
+
+    def render(self) -> str:
+        return f"> {self.text}"
+
+
+# ═══════════════════════════════════════════════════════════
 # 行数估算辅助（内部使用）
 # ═══════════════════════════════════════════════════════════
 

@@ -655,9 +655,8 @@ class InteractiveLoop:
         self._monitor.start()
 
         # ★ 始终注册回显回调：非流式期间用户键入也实时显示在底部栏
-        self._monitor.set_echo_callback(
-            lambda text, cursor_pos=-1: self._chat_ui.refresh_bottom_bar(text, cursor_pos)
-        )
+        # VNode 路径下通过 push_cmd 声明式驱动，默认路径保持 refresh_bottom_bar 行为
+        self._monitor.set_echo_callback(self._chat_ui.get_echo_callback())
 
         # ★ 注册 Tab 补全回调
         if self._chat_ui is not None:

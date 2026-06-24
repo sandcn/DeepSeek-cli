@@ -23,10 +23,12 @@ from ._cmd import (
     CmdContent,
     CmdDisplayMsgs,
     CmdError,
+    CmdInputChanged,
     CmdNotification,
     CmdParseInfo,
     CmdPhaseDone,
     CmdReasoning,
+    CmdStatusUpdate,
     CmdSubagentFrame,
     CmdToolCountDec,
     CmdToolCountInc,
@@ -171,6 +173,30 @@ def _reduce_subagent_frame(state: TuiState, cmd: CmdSubagentFrame) -> TuiState:
     return replace(state, subagent_frames=tuple(frames))
 
 
+def _reduce_input_changed(state: TuiState, cmd: CmdInputChanged) -> TuiState:
+    """用户输入变更 reducer。"""
+    new_input = replace(state.input_line, text=cmd.text, cursor_pos=cmd.cursor_pos)
+    return replace(state, input_line=new_input)
+
+
+def _reduce_status_update(state: TuiState, cmd: CmdStatusUpdate) -> TuiState:
+    """状态行更新 reducer。
+
+    使用 None 哨兵区分「未提供」与「零值」：
+      - 字段为 None → 保留旧值
+      - 字段非 None → 使用新值（包括 0 / 0.0 / ""）
+    """
+    new_status = replace(state.status,
+        model=cmd.model if cmd.model is not None else state.status.model,
+        tokens=cmd.tokens if cmd.tokens is not None else state.status.tokens,
+        elapsed=cmd.elapsed if cmd.elapsed is not None else state.status.elapsed,
+        tool_count=cmd.tool_count if cmd.tool_count is not None else state.status.tool_count,
+        tool_fail=cmd.tool_fail if cmd.tool_fail is not None else state.status.tool_fail,
+        streaming=cmd.streaming,
+    )
+    return replace(state, status=new_status)
+
+
 # ═══════════════════════════════════════════════════════════
 # 步骤 6.2: TuiStore 不可变状态容器
 # ═══════════════════════════════════════════════════════════
@@ -204,6 +230,8 @@ class TuiStore:
             CmdToolFailInc: _reduce_tool_fail_inc,
             CmdError: _reduce_error,
             CmdSubagentFrame: _reduce_subagent_frame,
+            CmdInputChanged: _reduce_input_changed,
+            CmdStatusUpdate: _reduce_status_update,
         }
 
     def dispatch(self, action: Any) -> TuiState:

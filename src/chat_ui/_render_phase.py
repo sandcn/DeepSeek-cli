@@ -58,6 +58,9 @@ class BottomBarPhase:
 
     委托 engine._phase_redraw_bottom(has_commands)。
     当 VNode 路径启用且有 patches 变更时触发重绘。
+    
+    VNode 路径优化：未来可仅 diff bottom_bar 子树避免冗余重绘，
+    当前简化策略为「有命令处理 = 可能变更 = 触发重绘」。
     """
 
     def execute(
@@ -66,7 +69,17 @@ class BottomBarPhase:
         commands: list,
         state: "TuiState | None",
     ) -> None:
-        engine._phase_redraw_bottom(bool(commands))
+        has_commands = bool(commands)
+
+        # VNode 路径：检查底部栏是否需要重绘
+        # （当前简化策略：有命令处理 = 可能变更 = 重绘）
+        # 未来可优化为仅 diff bottom_bar 子树
+        if getattr(engine, '_use_vnode', False) and getattr(engine, '_old_vnode', None) is not None:
+            # 占位：后续可在此处添加 bottom_bar 子树 diff 检查，
+            # 仅当子树有变更时才触发重绘
+            pass
+
+        engine._phase_redraw_bottom(has_commands)
 
 
 class CursorPhase:

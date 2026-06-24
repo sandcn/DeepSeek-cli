@@ -124,3 +124,27 @@ class CmdSubagentFrame:
     """SubAgent 面板帧 — 对应 RenderCommand.SUBAGENT_FRAME (18)。"""
     frame_lines: tuple
     kind: int = 18
+
+
+@dataclass(frozen=True)
+class CmdInputChanged:
+    """输入文本变更 — 用户按键导致输入缓冲区变化。"""
+    text: str
+    cursor_pos: int
+    kind: int = 19
+
+
+@dataclass(frozen=True)
+class CmdStatusUpdate:
+    """状态行更新 — 模型名/tokens/时间/工具计数等 BottomBar 状态变化。
+
+    所有字段默认 None 表示「未提供」（保留旧值），
+    显式传入非 None 值表示「更新为该值」（包括 0 / 0.0 / ""）。
+    """
+    model: str | None = None
+    tokens: int | None = None
+    elapsed: float | None = None
+    tool_count: int | None = None
+    tool_fail: int | None = None
+    streaming: bool = False
+    kind: int = 20

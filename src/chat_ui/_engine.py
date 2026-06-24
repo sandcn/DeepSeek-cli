@@ -32,6 +32,7 @@ from ._cmd import (
     CmdReasoning,
     CmdContent,
     CmdError,
+    CmdInputChanged,
 )
 
 from ._vnode import diff as _vnode_diff
@@ -148,16 +149,20 @@ class TuiEngine:
                 self._consecutive_full = 0
             self._cmd_event.set()
         except queue.Full:
-            # 合并逻辑：CONTENT/REASONING 同类型合并 text
-            # ★ 使用 cmd_queue.mutex 保护 deque 的并发访问
-            if isinstance(cmd, (CmdContent, CmdReasoning)):
+            # 合并逻辑：CONTENT/REASONING 同类型合并 text；
+            # CmdInputChanged 仅保留最新一条（类似 React setState 批处理）
+            if isinstance(cmd, (CmdContent, CmdReasoning, CmdInputChanged)):
                 try:
                     with self._cmd_queue.mutex:
                         dq = self._cmd_queue.queue
                         if dq and type(dq[-1]) is type(cmd):
-                            merged_text = dq[-1].text + cmd.text
-                            new_cmd = type(cmd)(text=merged_text)
-                            dq[-1] = new_cmd
+                            if isinstance(cmd, CmdInputChanged):
+                                # CmdInputChanged：替换为最新值而非合并 text
+                                dq[-1] = cmd
+                            else:
+                                merged_text = dq[-1].text + cmd.text
+                                new_cmd = type(cmd)(text=merged_text)
+                                dq[-1] = new_cmd
                             with self._full_lock:
                                 self._consecutive_full = 0
                             self._cmd_event.set()
