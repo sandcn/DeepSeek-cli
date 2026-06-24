@@ -4,14 +4,13 @@
 TuiEngine.__init__ 一次性选择策略，_drain_queue() 不再含每帧策略分支。
 
 策略：
-  - DirectRenderStrategy：默认策略，同时处理直接渲染和 Rich Live 两种子路径
+  - DirectRenderStrategy：默认策略，直接渲染命令
   - VNodeRenderStrategy：VNode Diff 增量渲染策略
 """
 
 from __future__ import annotations
 
 import logging
-import os
 from typing import Protocol, TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -29,8 +28,7 @@ class RenderStrategy(Protocol):
     """渲染策略协议：定义内容渲染接口，不含帧调度。
 
     所有渲染策略必须实现 render_commands() 方法。
-    start() / stop() 为可选生命周期方法（DirectRenderStrategy
-    用于管理 Rich Live 上下文，VNodeRenderStrategy 为空操作）。
+    start() / stop() 为可选生命周期方法。
     """
 
     def render_commands(
@@ -50,54 +48,24 @@ class RenderStrategy(Protocol):
 
 
 # ═══════════════════════════════════════════════════════════
-# DirectRenderStrategy — 默认 + Rich Live 双路径
+# DirectRenderStrategy — 直接渲染
 # ═══════════════════════════════════════════════════════════
 
 class DirectRenderStrategy:
-    """默认策略：逐条命令通过 TuiRenderer 直接渲染。
-
-    通过构造函数中的环境变量 CHAT_UI_RENDER_USE_RICH_LIVE 选择子路径：
-      - 默认：逐条 dispatch 到 TuiRenderer.render()
-      - Rich Live：内容命令走 Rich Live 缓冲区差分渲染，其余走直接渲染
-    """
+    """默认策略：逐条命令通过 TuiRenderer 直接渲染。"""
 
     def __init__(self, renderer):
         self._renderer = renderer
-        self._use_rich_live: bool = (
-            os.environ.get("CHAT_UI_RENDER_USE_RICH_LIVE", "").strip().lower()
-            in ("1", "true", "yes", "on")
-        )
-        self._rich_renderer = None
-        if self._use_rich_live:
-            # 使用公开 render_state 属性（避免 getattr 访问私有 _rs）
-            _render_state = renderer.render_state
-            if _render_state is not None:
-                from ._renderer import RichLiveContentRenderer
-                self._rich_renderer = RichLiveContentRenderer(
-                    _render_state, renderer.output_adapter
-                )
-            if self._rich_renderer is None or not self._rich_renderer.available:
-                _logger.warning("Rich Live 不可用（缺少 rich 库），回退到手动渲染")
-                self._rich_renderer = None
-                self._use_rich_live = False
 
     # ── 生命周期 ──────────────────────────────────
 
     def start(self) -> None:
-        """启动 Rich Live 上下文（若启用）。"""
-        if self._rich_renderer is not None:
-            try:
-                self._rich_renderer.start()
-            except Exception:
-                _logger.warning("Rich Live 启动失败", exc_info=True)
+        """启动策略（无操作）。"""
+        pass
 
     def stop(self) -> None:
-        """停止 Rich Live 上下文（若启用）。"""
-        if self._rich_renderer is not None:
-            try:
-                self._rich_renderer.stop()
-            except Exception:
-                _logger.warning("Rich Live 停止失败", exc_info=True)
+        """停止策略（无操作）。"""
+        pass
 
     # ── 核心渲染 ──────────────────────────────────
 
@@ -123,8 +91,6 @@ class DirectRenderStrategy:
         except Exception:
             _logger.debug("sync_bottom_lines 异常", exc_info=True)
         engine.ensure_cursor_upper()
-        if self._rich_renderer is not None:
-            return self._render_rich_live(engine, commands)
         return self._render_direct(engine, commands)
 
     def _render_direct(self, engine: "TuiEngine", commands: list) -> bool:
@@ -138,26 +104,6 @@ class DirectRenderStrategy:
                 engine.push_cmd(CmdError(message=f"渲染命令 {type(cmd).__name__} 失败"))
         return True
 
-    def _render_rich_live(self, engine: "TuiEngine", commands: list) -> bool:
-        """Rich Live 路径：内容命令走差分渲染，其余命令直出。"""
-        from ._cmd import CmdContent, CmdReasoning, CmdError
-        has_content = False
-        for cmd in commands:
-            if isinstance(cmd, (CmdContent, CmdReasoning)):
-                self._rich_renderer.update_content(cmd.text)
-                has_content = True
-            else:
-                try:
-                    self._renderer.render(cmd)
-                except Exception:
-                    _logger.debug("渲染命令 %s 失败", cmd, exc_info=True)
-                    engine.push_cmd(CmdError(message=f"渲染命令 {type(cmd).__name__} 失败"))
-        if has_content:
-            try:
-                self._rich_renderer.refresh()
-            except Exception:
-                _logger.debug("Rich Live 渲染异常", exc_info=True)
-        return True
 
 
 # ═══════════════════════════════════════════════════════════

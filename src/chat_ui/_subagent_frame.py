@@ -71,7 +71,7 @@ class SubagentFrameRenderer:
             adapter.write_raw_buffered(buf)
             return
         try:
-            from ..ui._blessed import get_terminal
+            from ._blessed import get_terminal
             term = get_terminal()
             move_up = term.move_up
             sc = term.sc if term.sc else "\033[s"

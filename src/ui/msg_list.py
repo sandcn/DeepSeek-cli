@@ -9,8 +9,8 @@
     from src.ui.tui._message_display import display_messages
 """
 
-from .tui.message_editor import MessageEditor  # noqa: F401
-from .tui._message_display import display_messages  # noqa: F401
+from src.chat_ui.tui.message_editor import MessageEditor  # noqa: F401
+from src.chat_ui.tui._message_display import display_messages  # noqa: F401
 
 edit_current_messages = lambda agent, state: MessageEditor().edit_current_messages(agent, state)
 

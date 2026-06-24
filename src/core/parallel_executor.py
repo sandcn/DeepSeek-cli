@@ -19,7 +19,7 @@ from ._capture_manager import _safe_restore as safe_restore_stdout
 from ._subagent_spawner import SubAgentSpawner
 from .subagent import SubAgent
 from ..ui._lock import locked_print
-from ..ui.parallel import ParallelDisplay
+from ..chat_ui.parallel import ParallelDisplay
 from ..chat_ui import get_active_chat_ui
 from ..config import STAGGER_MIN_DELAY, STAGGER_MAX_DELAY
 from ..ui.events import DisplayEventBus
@@ -27,7 +27,7 @@ from ..ui.events.event_types import (
     AgentAddedEvent,
     AgentStatusChanged,
 )
-from ..ui.parallel._tool_icons import AGENT_TYPE_ABBREV
+from ..chat_ui.parallel._tool_icons import AGENT_TYPE_ABBREV
 from .constants import RED, RESET
 
 _logger = logging.getLogger(__name__)

@@ -1,4 +1,4 @@
-"""_BottomBar — 流式输出期间固定底部输入栏（动态拆行）。
+"""BottomBar — 流式输出期间固定底部输入栏（动态拆行）。
 
 在终端底部使用 ANSI DECSTBM 滚动区域创建固定区域：
 上方内容区正常滚动，底部固定显示（分隔线 + 状态行 + 输入区）。
@@ -7,25 +7,28 @@
   - 内容变更全量重绘（文本/状态/尺寸变化）→ output_lock 串行化
   - 纯光标移动轻量路径 → 无锁直写 ANSI 序列（GIL + 幂等性保证安全）
 
-拆分为多个子模块：
-  - _bottom_bar_theme    — ANSI 颜色常量 + 占位符 + 布局配置
-  - _bottom_bar_status   — 状态行格式化 + 工具计数（_StatusMixin）
-  - _bottom_bar_completion — 补全弹窗（_CompletionPopup 独立类）
-  - _bottom_bar_selection  — run_bottom_bar_selection() 交互选择
+子模块（chat_ui/bottom_bar/）：
+  - _theme              — ANSI 颜色常量 + 占位符 + 布局配置
+  - _status             — 状态行格式化 + 工具计数（StatusRenderer）
+  - _completion_popup   — 补全弹窗（_CompletionPopup 独立类）
+  - _selection          — run_bottom_bar_selection() 交互选择
+  - _scroll_region      — DECSTBM 滚动区域管理
+  - _input_renderer     — 输入行拆行渲染
+  - _cursor_tracker     — 光标坐标追踪器
 
 终端控制策略：
   - 非关键路径 ANSI 序列（光标定位、清行）使用 Blessed Terminal
   - 性能关键路径（SCOSC/SCRC、DECSTBM、SU/SD）保留原始 ANSI
   - 颜色常量保持原始 ANSI 字符串（与 Blessed 序列可混合使用）
+
+与旧 _BottomBar（ui/）的差异：
+  - 类名从 _BottomBar 改为 BottomBar（公开 API 类）
+  - 不再继承 _StatusMixin，改为组合独立的 StatusRenderer
+  - 移除 _completion_* 兼容 proxy properties（改用 _completion 直接访问）
+  - 导入路径适配 chat_ui/bottom_bar/ 子模块布局
 """
 
 from __future__ import annotations
-
-import warnings
-warnings.warn(
-    "ui._bottom_bar is deprecated. Use chat_ui.bottom_bar.BottomBar instead.",
-    DeprecationWarning, stacklevel=2,
-)
 
 import logging
 import sys
@@ -34,12 +37,12 @@ from typing import Optional
 
 from wcwidth import wcswidth
 
-from ._blessed import get_terminal
-from ._bottom_bar_completion import _CompletionPopup
-from ._bottom_bar_selection import run_bottom_bar_selection  # noqa: F401 — 重导出保持兼容
-from ._bottom_bar_status import _StatusMixin, _get_snapshot, _TOKEN_SPEED_SNAPSHOT  # noqa: F401 — 重导出供测试 patch
-from ._stdout_tracker import _StdoutLineTracker
-from ._bottom_bar_theme import (
+from .._blessed import get_terminal
+from ._completion_popup import _CompletionPopup
+from ._selection import run_bottom_bar_selection  # noqa: F401 — 重导出保持兼容
+from ._status import StatusRenderer, _get_snapshot, _TOKEN_SPEED_SNAPSHOT  # noqa: F401 — 重导出供测试 patch
+from .._stdout_tracker import _StdoutLineTracker  # 待后续步骤创建 src/chat_ui/_stdout_tracker.py
+from ._theme import (
     _BOTTOM_MIN_HEIGHT,
     _BOTTOM_MIN_LINES,
     _COLOR_DEEP_CYAN,
@@ -49,8 +52,8 @@ from ._bottom_bar_theme import (
     _MIN_INPUT_ROWS,
     _PLACEHOLDER_TEXT,
 )
-from ..chat_ui.bottom_bar import CursorTracker
-from ._lock import _try_acquire_output_lock
+from ._cursor_tracker import CursorTracker, CursorPosition
+from .._lock import _try_acquire_output_lock
 
 # ── 新模块导入（BottomBar 拆解） ──
 from ._scroll_region import (
@@ -68,7 +71,7 @@ from ._scroll_region import (
 )
 from ._input_renderer import InputRenderer
 
-# ── 兼容别名（旧 _blessed_* 函数仍可从 _bottom_bar 导入） ──
+# ── 兼容别名（旧 _blessed_* 函数仍可从 _bar 导入） ──
 _blessed_move_clear = blessed_move_clear
 _blessed_cursor_goto = blessed_cursor_goto
 _blessed_save_cursor = blessed_save_cursor
@@ -82,7 +85,7 @@ _blessed_reset_scroll_region = blessed_reset_scroll_region
 _logger = logging.getLogger(__name__)
 
 
-class _BottomBar(_StatusMixin):
+class BottomBar:
     """终端底部固定输入栏，流式输出期间始终可见。
 
     使用 ANSI DECSTBM 滚动区域：上方内容区（1 至 H-底部行数）正常滚动，
@@ -109,12 +112,14 @@ class _BottomBar(_StatusMixin):
         self._last_text = ""
         self._last_status = ""
         self._last_refresh = 0.0
-        # ── _StatusMixin 依赖字段 ──
+        # ── 状态字段（由 BottomBar 直接管理，委托 StatusRenderer 格式化） ──
         self._status_active: bool = False
         self._model_name: str = ""
         self._tool_count: int = 0
         self._tool_fail_count: int = 0
         self._tool_total: int = 0
+        # ── StatusRenderer 组合（仅用于 format_status / get_status_elapsed） ──
+        self._status_renderer = StatusRenderer()
         # ── 布局/光标 ──
         self._last_bottom_lines = _BOTTOM_MIN_LINES
         self._input_cursor_pos: int = -1
@@ -128,51 +133,83 @@ class _BottomBar(_StatusMixin):
         self._tracker: _StdoutLineTracker | None = None
         # ── 光标坐标追踪器（全局共享实例） ──
         self._cursor_tracker = cursor_tracker or CursorTracker()
-        # ── 新拆解模块（Phase 2） ──
+        # ── 新拆解模块 ──
         self._scroll = ScrollRegionManager(self._cursor_tracker)
         self._input = InputRenderer()
 
-    # ── 补全弹窗兼容 property（供外部直读私有属性的调用方） ──
+    # ── 状态管理方法（替代原 _StatusMixin 继承） ──────────────────
+
+    def enable_status(self) -> None:
+        """激活状态行刷新（流式输出期间调用）。"""
+        self._status_active = True
+        self._last_status = ""  # 强制下次刷新
+
+    def disable_status(self) -> None:
+        """冻结状态行（流式结束后调用），仅显示模型名。
+
+        将 _status_active 置为 False，状态行从全量统计（耗时/令牌/速率）
+        切换为仅显示模型名。调用方负责在之后触发重绘。
+        """
+        self._status_active = False
 
     @property
-    def _completion_visible(self) -> bool:
-        return self._completion._visible
+    def is_status_active(self) -> bool:
+        """状态行是否处于活跃刷新中（流式输出期间）。
 
-    @property
-    def _completion_title(self) -> str:
-        return self._completion._title
+        供 ChatUIConsumer 等外部调用方读取状态行刷新开关，
+        避免直接访问私有属性 _status_active。
+        """
+        return self._status_active
 
-    @property
-    def _completion_items(self) -> list[str]:
-        return self._completion._items
+    def get_status_elapsed(self) -> float:
+        """获取状态行最后一次记录的耗时（秒），用于通知等场景。"""
+        return self._status_renderer.get_status_elapsed()
 
-    @property
-    def _completion_texts(self) -> list[str]:
-        return self._completion._texts
+    def increment_tool(self) -> None:
+        """递增工具调用计数。"""
+        self._tool_count += 1
+        self._tool_total += 1
 
-    @property
-    def _completion_start_pos(self) -> int:
-        return self._completion._start_pos
+    def decrement_tool(self) -> None:
+        """递减工具调用计数（工具成功完成时调用）。
 
-    @property
-    def _completion_orig_prefix(self) -> str:
-        return self._completion._orig_prefix
+        当 tool_done 事件 success=True 时，将运行中的工具计数减1，
+        使用户在状态行看到工具计数动态减少的视觉反馈。
+        """
+        self._tool_count = max(0, self._tool_count - 1)
 
-    @property
-    def _completion_is_selection(self) -> bool:
-        return self._completion._is_selection
+    def increment_tool_fail(self) -> None:
+        """递增失败工具计数（工具完成且 success=False 时调用）。"""
+        self._tool_fail_count += 1
 
-    @property
-    def _completion_idx(self) -> int:
-        return self._completion._idx
+    def reset_tool_count(self) -> None:
+        """重置工具计数（新轮开始时清零）。"""
+        self._tool_count = 0
+        self._tool_fail_count = 0
+        self._tool_total = 0
 
-    @property
-    def _completion_popup_height(self) -> int:
-        return self._completion._popup_height
+    def set_model_name(self, name: str) -> None:
+        """设置当前模型名字，状态行实时更新。
 
-    @_completion_popup_height.setter
-    def _completion_popup_height(self, value: int) -> None:
-        self._completion._popup_height = value
+        跨线程安全：由 monitor 线程（Ctrl+N/Ctrl+R 回调）和 asyncio 线程
+        （_handle_round / 命令处理）两条路径写入。CPython GIL 保证
+        简单 str 属性赋值原子安全。
+        """
+        self._model_name = name
+
+    def _format_status(self) -> str:
+        """构建状态行文本，委托给 StatusRenderer.format_status()。
+
+        将 BottomBar 自有的状态字段传入 StatusRenderer 进行格式化，
+        StatusRenderer 不持有 BottomBar 的状态引用。
+        """
+        return self._status_renderer.format_status(
+            model_name=self._model_name,
+            tool_count=self._tool_count,
+            tool_fail_count=self._tool_fail_count,
+            tool_total=self._tool_total,
+            status_active=self._status_active,
+        )
 
     # ── 动态行数计算 ──────────────────────────────────────
 
@@ -361,7 +398,6 @@ class _BottomBar(_StatusMixin):
 
         ★ 性能优化：先检查文本和布局是否变化，确认需要重绘后再
         调用 _format_status()（含 shutil 系统调用），避免不必要开销。
-
         """
         if not self._active:
             return

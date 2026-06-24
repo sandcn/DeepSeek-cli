@@ -10,7 +10,7 @@
 from __future__ import annotations
 
 import pytest
-from src.ui.tui._text_utils import truncate
+from src.chat_ui.tui._text_utils import truncate
 
 
 class TestTruncateNormalizeTrue:

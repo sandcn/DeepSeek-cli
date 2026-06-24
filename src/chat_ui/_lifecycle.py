@@ -61,7 +61,7 @@ class ChatUILifecycle:
         from rich.console import Console
         from ..api.renderer.output import OutputAdapter
         from ..terminal import get_safe_console_config
-        from ..ui.tui._message_display import _display_messages
+        from .tui._message_display import _display_messages
         from ._lock import output_lock
 
         rs = _RenderState()
@@ -247,7 +247,7 @@ class ChatUILifecycle:
             output_lock: 输出锁
         """
         from ._const import _ANSI_CURSOR_BOTTOM
-        from ..ui._blessed import get_terminal
+        from ._blessed import get_terminal
 
         with state_lock:
             if not self._started:

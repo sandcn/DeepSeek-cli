@@ -1,6 +1,6 @@
 """底部栏交互选择 — 在补全弹窗中运行阻塞式交互选择循环。
 
-从 _bottom_bar.py 提取，使用 Blessed Terminal.inkey() 替代原始
+从 ui/_bottom_bar_selection.py 迁移，使用 Blessed Terminal.inkey() 替代原始
 termios/tty/os.read 实现。Blessed 自动处理 CSI/SS3 序列解析。
 """
 
@@ -10,7 +10,7 @@ import os
 import sys
 import logging
 
-from ._blessed import get_terminal
+from .._blessed import get_terminal
 
 _logger = logging.getLogger(__name__)
 
@@ -42,7 +42,7 @@ def run_bottom_bar_selection(
         {"action": "confirmed"|"cancel"|"error",
          "index": int | None}
     """
-    from ..chat_ui import get_active_chat_ui
+    from .. import get_active_chat_ui
 
     fd = sys.stdin.fileno()
     if not os.isatty(fd):

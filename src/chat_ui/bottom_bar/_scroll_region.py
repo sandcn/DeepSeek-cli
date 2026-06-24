@@ -21,7 +21,7 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from ._cursor_tracker import CursorTracker
 
-from ._blessed import get_terminal
+from .._blessed import get_terminal
 
 _logger = logging.getLogger(__name__)
 
@@ -204,9 +204,9 @@ class ScrollRegionManager:
         text = last_text or ""
         max_input = max(1, term_w - 4)
         # 复用 _compute_cursor_visual_pos（从旧模块导入）
-        from ._bottom_cursor import _compute_cursor_visual_pos
+        from ._cursor import _compute_cursor_visual_pos
         vis_row, vis_col = _compute_cursor_visual_pos(text, cursor_pos, max_input)
-        from ._bottom_bar_theme import _BOTTOM_MIN_LINES
+        from ._theme import _BOTTOM_MIN_LINES
         total = max(_BOTTOM_MIN_LINES, last_bottom_lines)
         r_cursor = height - total + 3 + popup_height + vis_row
         r_cursor = max(1, min(r_cursor, height))

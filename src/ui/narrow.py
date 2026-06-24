@@ -8,7 +8,7 @@
     from src.ui.tui._terminal import is_narrow, ...
 """
 
-from .tui._terminal import (
+from src.chat_ui.tui._terminal import (
     is_narrow,
     narrow_truncate,
     narrow_indent,

@@ -5,7 +5,7 @@ import sys
 
 import pytest
 
-from src.ui.parallel.display import ParallelDisplay
+from src.chat_ui.parallel.display import ParallelDisplay
 
 
 @pytest.fixture
