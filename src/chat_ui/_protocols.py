@@ -42,12 +42,15 @@ class RenderPhase(Protocol):
         engine: "TuiEngine",
         commands: list,
         state: "TuiState | None",
-    ) -> None:
+    ) -> bool:
         """执行本阶段的渲染逻辑。
 
         Args:
             engine: TuiEngine 实例（用于访问 renderer、bottom_bar、_tio 等）
             commands: 本轮 drain 的所有渲染命令列表
             state: 当前 TuiState（VNode 路径启用时非 None）
+
+        Returns:
+            True 表示本阶段有实际渲染输出，False 表示无输出。
         """
         ...

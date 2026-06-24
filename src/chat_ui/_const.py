@@ -32,6 +32,11 @@ _MAX_OUTPUT_LEN = 10000  # 工具输出最大长度（字符），与 _MAX_ERROR
 # ── render 线程刷新间隔 ─────────────────────────────────
 _RENDER_INTERVAL = 0.1  # 100ms = 10Hz
 
+# ── 自适应渲染参数 ──────────────────────────────────────
+_ACTIVE_RENDER_INTERVAL = 0.005  # 5ms（活动帧间隔）
+_IDLE_DRAIN_THRESHOLD = 5        # 连续空闲轮次阈值（超过后切换空闲间隔）
+_CONSECUTIVE_FULL_THRESHOLD = 10  # 连续满队列阈值（触发拥堵告警）
+
 # ── 固定帧率常量（Phase 3: 固定帧率渲染循环） ──
 _FIXED_FRAME_INTERVAL = 0.016  # ~60fps (16ms)
 _ENV_FIXED_FPS = "CHAT_UI_RENDER_FIXED_FPS"

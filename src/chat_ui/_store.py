@@ -38,7 +38,7 @@ from ._cmd import (
     CmdUserMsg,
     CmdWriteLine,
 )
-from ._components import CompletionPopup, InputLine, SelectionMenu, StatusLine
+from ._data_models import CompletionPopup, InputLine, SelectionMenu, StatusLine
 
 
 # ═══════════════════════════════════════════════════════════

@@ -33,24 +33,35 @@ class PreUpdatePhase:
         engine: "TuiEngine",
         commands: list,
         state: "TuiState | None",
-    ) -> None:
+    ) -> bool:
         engine._phase_pre_update_panels()
+        return False  # 面板预更新自身无终端输出
 
 
 class ContentRenderPhase:
     """阶段 2: 内容渲染。
 
-    委托 engine._phase_render(commands)，支持 VNode/Rich Live/直接渲染三种路径。
+    直接使用 TuiRenderer 逐条渲染命令（避免通过 _phase_render 循环回策略）。
     """
+
+    def __init__(self, renderer):
+        self._renderer = renderer
 
     def execute(
         self,
         engine: "TuiEngine",
         commands: list,
         state: "TuiState | None",
-    ) -> None:
+    ) -> bool:
         if commands:
-            engine._phase_render(commands)
+            from ._cmd import CmdError
+            for cmd in commands:
+                try:
+                    self._renderer.render(cmd)
+                except Exception:
+                    _logger.debug("渲染命令 %s 失败", cmd, exc_info=True)
+            return True
+        return False
 
 
 class BottomBarPhase:
@@ -68,7 +79,7 @@ class BottomBarPhase:
         engine: "TuiEngine",
         commands: list,
         state: "TuiState | None",
-    ) -> None:
+    ) -> bool:
         has_commands = bool(commands)
 
         # VNode 路径：检查底部栏是否需要重绘
@@ -80,6 +91,7 @@ class BottomBarPhase:
             pass
 
         engine._phase_redraw_bottom(has_commands)
+        return has_commands
 
 
 class CursorPhase:
@@ -93,18 +105,9 @@ class CursorPhase:
         engine: "TuiEngine",
         commands: list,
         state: "TuiState | None",
-    ) -> None:
+    ) -> bool:
         try:
             engine._position_cursor()
         except Exception:
             _logger.debug("CursorPhase 异常", exc_info=True)
-
-
-# ── 默认 Phase 列表 ──────────────────────────────
-
-_DEFAULT_PHASES: tuple = (
-    PreUpdatePhase(),
-    ContentRenderPhase(),
-    BottomBarPhase(),
-    CursorPhase(),
-)
+        return bool(commands)  # 光标定位本身无内容输出，返回是否有命令

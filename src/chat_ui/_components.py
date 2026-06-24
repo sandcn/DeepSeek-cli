@@ -10,7 +10,6 @@ import logging
 import shutil
 import time
 import unicodedata
-from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -29,6 +28,7 @@ from ._render_state import _ReasoningState
 from ._utils import _truncate_msg
 
 from ._protocols import BottomBarProtocol  # 兼容 re-export（定义已移至 _protocols.py）
+from ._data_models import StatusLine, InputLine, CompletionPopup, SelectionMenu  # re-export（定义已移至 _data_models.py）
 
 _logger = logging.getLogger(__name__)
 
@@ -161,6 +161,11 @@ class TuiComponent:
         """
         return False  # 默认不消费更新，子类按需重写为 True
 
+    # @dead_code: VNode 渲染路径要求所有子类覆盖此方法。
+    # 当前仅 ThinkingBlock / AnswerBlock / InputBarComponent 已覆盖，
+    # 其余 6 个子类（UserMsgBlock / ToolOutputBlock / ToolSummaryBlock /
+    # ErrorBlock / NotificationBlock / WriteLineBlock）使用默认实现，
+    # 其 VNode 产出未经 diff 优化。待所有子类覆盖后可改为 raise NotImplementedError。
     def render_vnode(self) -> "VNode":
         """产出 VNode — 声明式渲染的主入口。
 
@@ -425,103 +430,6 @@ class WriteLineBlock(TuiComponent):
         return self.text
 
 # ═══════════════════════════════════════════════════════════
-# 底部栏组件
-# ═══════════════════════════════════════════════════════════
-
-@dataclass
-class StatusLine:
-    """状态行 — 模型名 · tokens · 时间 · 工具计数。
-
-    由底部栏 _BottomBar 负责实际渲染，此组件为数据模型。
-    """
-    model: str = ""
-    tokens: int = 0
-    elapsed: float = 0.0
-    tool_count: int = 0
-    tool_fail: int = 0
-    streaming: bool = False
-
-    def render(self) -> str:
-        """渲染为单行状态文本。"""
-        parts = []
-        if self.model:
-            parts.append(self.model)
-        if self.tokens:
-            parts.append(f"{self.tokens}t")
-        if self.elapsed:
-            parts.append(f"{self.elapsed:.1f}s")
-        if self.tool_count:
-            s = f"⚙{self.tool_count}"
-            if self.tool_fail:
-                s += f"!{self.tool_fail}"
-            parts.append(s)
-        return " · ".join(parts) if parts else ""
-
-
-@dataclass
-class InputLine:
-    """输入行 — > 提示符 + 用户输入文本 + 光标。
-
-    由底部栏 _BottomBar 负责实际渲染，此组件为数据模型。
-    """
-    text: str = ""
-    cursor_pos: int = 0
-
-    def render(self) -> str:
-        return f"> {self.text}"
-
-
-@dataclass
-class CompletionPopup:
-    """补全弹窗 — 浮动在输入行上方的候选项列表。
-
-    由底部栏 _CompletionPopup 负责实际渲染，此组件为数据模型。
-    """
-    items: list[str] = field(default_factory=list)
-    selected: int = 0
-    visible: bool = False
-
-    def show(self, items: list[str], selected: int = 0) -> None:
-        self.items = items
-        self.selected = selected
-        self.visible = True
-
-    def hide(self) -> None:
-        self.visible = False
-        self.items.clear()
-
-    def render(self) -> str:
-        if not self.visible:
-            return ""
-        lines = []
-        for i, item in enumerate(self.items):
-            prefix = "→ " if i == self.selected else "  "
-            lines.append(f"{prefix}{item}")
-        return "\n".join(lines)
-
-
-@dataclass
-class SelectionMenu:
-    """底部选择菜单 — 供 user_select / 消息编辑 / 命令面板等使用。
-
-    由底部栏 _BottomBar.run_bottom_bar_selection() 实际渲染。
-    """
-    items: list[str] = field(default_factory=list)
-    selected: int = 0
-    visible: bool = False
-    title: str = ""
-
-    def render(self) -> str:
-        if not self.visible:
-            return ""
-        lines = [f"  {self.title}"] if self.title else []
-        for i, item in enumerate(self.items):
-            prefix = "▶ " if i == self.selected else "  "
-            lines.append(f"{prefix}{item}")
-        return "\n".join(lines)
-
-
-# ═══════════════════════════════════════════════════════════
 # React Ink 风格输入栏组件（Phase 8+：声明式底部栏）
 # ═══════════════════════════════════════════════════════════
 
@@ -568,36 +476,54 @@ class InputBarComponent(TuiComponent):
 # 行数估算辅助（内部使用）
 # ═══════════════════════════════════════════════════════════
 
-_term_width_cache: tuple[float, int] = (0.0, 80)  # (timestamp, width)
+# 模块级缓存（由 TuiEngine.__init__ 注入，未注入时使用临时回退）
+_term_width_cache: dict | None = None
+_TERM_WIDTH_TTL = 2.0  # 2 秒 TTL
 
 
-def _get_terminal_width() -> int:
-    """获取终端宽度，带 2 秒 TTL 缓存。"""
-    global _term_width_cache
+def _get_terminal_width(cache: dict | None = None) -> int:
+    """获取终端宽度，支持缓存。
+
+    Args:
+        cache: 可选的缓存字典 {'value': int, 'ts': float}。
+               传入时使用该缓存（如 TuiEngine 实例属性），
+               不传且模块级缓存为 None 时创建临时回退缓存。
+    """
+    _cache = cache if cache is not None else _term_width_cache
+    if _cache is None:
+        _cache = {"value": 80, "ts": 0.0}
     now = time.monotonic()
-    if now - _term_width_cache[0] < 2.0:
-        return _term_width_cache[1]
+
+    if _cache["value"] > 0 and (now - _cache["ts"]) < _TERM_WIDTH_TTL:
+        return _cache["value"]
+
     try:
         w = shutil.get_terminal_size().columns
     except Exception:
         w = 80
     if w <= 0:
         w = 80
-    _term_width_cache = (now, w)
-    return w
+    _cache["value"] = w
+    _cache["ts"] = now
+
+    return _cache["value"]
 
 
-def _estimate_content_lines(text: str) -> int:
+def _estimate_content_lines(text: str, cache: dict | None = None) -> int:
     """估算文本在终端中占用的行数，考虑 CJK 宽字符和终端宽度。
 
     对每行文本按字符宽度（CJK 宽字符 2 列，其他 1 列）计算实际占列数，
     除以终端宽度向上取整得出该行占用行数，累加所有行。
     若终端宽度获取失败则回退到纯换行计数。
+
+    Args:
+        text: 要估算行数的文本。
+        cache: 可选的宽度缓存字典。不传时使用模块级回退缓存。
     """
     if not text:
         return 1
     try:
-        term_w = _get_terminal_width()
+        term_w = _get_terminal_width(cache)
     except Exception:
         return text.count('\n') + 1
     if term_w <= 0:

@@ -24,7 +24,7 @@ from src.chat_ui import _components
 
 def reset_cache() -> None:
     """重置模块级 _term_width_cache 到初始状态。"""
-    _components._term_width_cache = (0.0, 80)
+    _components._term_width_cache = {"value": 80, "ts": 0.0}
 
 
 def _make_terminal_size(columns: int):
@@ -226,7 +226,7 @@ class TestTerminalWidthCache:
         assert r2 == 100
 
     def test_cache_default_value(self):
-        """模块初始状态：_term_width_cache = (0.0, 80)。
+        """模块初始状态：_term_width_cache = {"value": 80, "ts": 0.0}。
 
         缓存未命中时调用真实 get_terminal_size()，
         返回值取决于实际终端环境（可能不为 80）。
@@ -242,14 +242,14 @@ class TestTerminalWidthCache:
         """get_terminal_size() 异常时缓存默认值 80。"""
         reset_cache()
         # 推进时间使缓存失效
-        _components._term_width_cache = (0.0, 80)  # 确保初始状态
+        _components._term_width_cache = {"value": 80, "ts": 0.0}  # 确保初始状态
         with patch("time.monotonic", return_value=5.0):
             with patch("shutil.get_terminal_size", side_effect=OSError):
                 w = _components._get_terminal_width()
         assert w == 80
         # 缓存已更新
-        assert _components._term_width_cache[1] == 80
-        assert _components._term_width_cache[0] == 5.0
+        assert _components._term_width_cache["value"] == 80
+        assert _components._term_width_cache["ts"] == 5.0
 
 
 # ── 真实终端宽度集成测试 ──────────────────────────────
@@ -261,7 +261,7 @@ class TestEstimateContentLinesRealTerminal:
         """真实终端环境下不崩溃。"""
         reset_cache()
         # 使缓存失效
-        _components._term_width_cache = (0.0, 80)
+        _components._term_width_cache = {"value": 80, "ts": 0.0}
         with patch("time.monotonic", return_value=100.0):
             result = _components._estimate_content_lines("test")
         assert result >= 1
@@ -269,7 +269,7 @@ class TestEstimateContentLinesRealTerminal:
     def test_long_text_real_terminal(self):
         """长文本在真实终端下估算行数 ≥ 换行数 + 1。"""
         reset_cache()
-        _components._term_width_cache = (0.0, 80)
+        _components._term_width_cache = {"value": 80, "ts": 0.0}
         with patch("time.monotonic", return_value=100.0):
             text = "x" * 200
             result = _components._estimate_content_lines(text)

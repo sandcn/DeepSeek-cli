@@ -10,22 +10,26 @@ import os
 import queue
 import sys
 import threading
+from warnings import deprecated
 from typing import TYPE_CHECKING, Any, Callable
 
 if TYPE_CHECKING:
     from ._protocols import BottomBarProtocol
     from ._terminal_io import TerminalIO
-    from ._vnode import VNode
     from ._store import TuiStore
     from ._store import TuiState
 
-from ._renderer import TuiRenderer, RichLiveContentRenderer
+from ._renderer import TuiRenderer
+from ._render_strategy import RenderStrategy, DirectRenderStrategy, VNodeRenderStrategy, PhaseRenderStrategy
 from ._const import (
     _RENDER_INTERVAL,
     _DRAIN_LOCK_TIMEOUT,
     _ANSI_RED, _ANSI_RESET,
     _FIXED_FRAME_INTERVAL,
     _ENV_FIXED_FPS,
+    _ACTIVE_RENDER_INTERVAL,
+    _IDLE_DRAIN_THRESHOLD,
+    _CONSECUTIVE_FULL_THRESHOLD,
 )
 
 from ._cmd import (
@@ -35,19 +39,9 @@ from ._cmd import (
     CmdInputChanged,
 )
 
-from ._vnode import diff as _vnode_diff
-from ._vnode import PatchKind
-_NOOP = PatchKind.NOOP
-
 from ._lock import _try_acquire_output_lock
 
 _logger = logging.getLogger(__name__)
-
-# ── 引擎常量 ──────────────────────────────────────
-
-_ACTIVE_RENDER_INTERVAL = 0.005
-_IDLE_DRAIN_THRESHOLD = 5
-_CONSECUTIVE_FULL_THRESHOLD = 10
 
 
 # ═══════════════════════════════════════════════════════════
@@ -85,54 +79,90 @@ class TuiEngine:
         self._bottom_redraw_requested = threading.Event()
         self._panel_refresh_cb: Callable[[], None] | None = None
 
-        # Rich Live 差分渲染（默认关闭，通过环境变量启用）
-        self._use_rich_live: bool = (
-            os.environ.get('CHAT_UI_RENDER_USE_RICH_LIVE', '').strip().lower()
-            in ('1', 'true', 'yes', 'on')
-        )
-        self._rich_renderer: RichLiveContentRenderer | None = None
-        if self._use_rich_live:
-            # 使用 getattr 访问 _rs 以避免直接访问私有属性
-            _render_state = getattr(renderer, '_rs', None)
-            if _render_state is not None:
-                self._rich_renderer = RichLiveContentRenderer(
-                    _render_state, renderer.output_adapter
-                )
-            if not self._rich_renderer.available:
-                _logger.warning("Rich Live 不可用（缺少 rich 库），回退到手动渲染")
-                self._rich_renderer = None
-                self._use_rich_live = False
+        # ── 终端宽度缓存（主副本，供组件层通过 cache 参数使用）──
+        self._term_width_cache: dict = {"value": 80, "ts": 0.0}
+        # 注入到 _components 模块，使 _get_terminal_width 默认使用此缓存
+        import src.chat_ui._components as _comp
+        _comp._term_width_cache = self._term_width_cache
 
-        # ── 固定帧率渲染（默认关闭，通过环境变量启用） ──
-        self._use_fixed_fps: bool = (
-            os.environ.get(_ENV_FIXED_FPS, '').strip().lower()
-            in ('1', 'true', 'yes', 'on')
+        # ── 一次性选择渲染策略（集中读取环境变量，替代分散在渲染循环中的 if/else 分支）──
+        self._strategy: RenderStrategy = self._select_strategy()
+
+    def _select_strategy(self) -> RenderStrategy:
+        """一次读取所有渲染相关环境变量，选择渲染策略（仅在 __init__ 调用一次）。
+
+        环境变量读取集中于此方法，不再散落在渲染循环中。
+        _use_fixed_fps 和 _use_phases 保留为实例属性（供 RenderLoop 使用）。
+        Phase 管线优先于 VNode：当 CHAT_UI_RENDER_PHASES=1 时忽略 CHAT_UI_RENDER_USE_VNODE。
+        """
+        use_vnode: bool = (
+            os.environ.get("CHAT_UI_RENDER_USE_VNODE", "").strip().lower()
+            in ("1", "true", "yes", "on")
         )
-        if self._use_fixed_fps:
+        use_fixed_fps: bool = (
+            os.environ.get(_ENV_FIXED_FPS, "").strip().lower()
+            in ("1", "true", "yes", "on")
+        )
+        use_phases: bool = (
+            os.environ.get("CHAT_UI_RENDER_PHASES", "").strip().lower()
+            in ("1", "true", "yes", "on")
+        )
+
+        # 帧率/phase 配置保留为实例属性（供 RenderLoop 使用）
+        self._use_fixed_fps = use_fixed_fps
+        self._use_phases = use_phases
+        if use_fixed_fps:
             _logger.info("固定帧率渲染已启用（%.0f fps）", 1.0 / _FIXED_FRAME_INTERVAL)
 
-        # ── VNode Diff 渲染（默认关闭，通过环境变量启用） ──
-        self._use_vnode: bool = (
-            os.environ.get('CHAT_UI_RENDER_USE_VNODE', '').strip().lower()
-            in ('1', 'true', 'yes', 'on')
-        )
-        self._old_vnode: "VNode | None" = None  # 缓存上帧 VNode 树
-        self._store: "TuiStore | None" = None    # VNode 路径专用状态容器
-        if self._use_vnode:
+        # 选择渲染策略（Phase 管线优先于 VNode）
+        if use_phases:
+            from ._render_phase import (
+                PreUpdatePhase, ContentRenderPhase, BottomBarPhase, CursorPhase
+            )
+            phases = [
+                PreUpdatePhase(),
+                ContentRenderPhase(self._renderer),
+                BottomBarPhase(),
+                CursorPhase(),
+            ]
+            self._store: "TuiStore | None" = None
+            _logger.info("可插拔渲染管线已启用（%d 个 Phase）", len(phases))
+            return PhaseRenderStrategy(
+                self._renderer, phases, store=self._store
+            )
+        elif use_vnode:
             from ._store import TuiStore
-            self._store = TuiStore()
+            from ._vnode_builder import build_vnode_tree
+            self._store: "TuiStore | None" = TuiStore()
             _logger.info("VNode Diff 渲染已启用")
 
-        # ── 可插拔渲染管线（默认关闭，通过环境变量启用） ──
-        self._use_phases: bool = (
-            os.environ.get('CHAT_UI_RENDER_PHASES', '').strip().lower()
-            in ('1', 'true', 'yes', 'on')
-        )
-        self._phases: list = []
-        if self._use_phases:
-            from ._render_phase import _DEFAULT_PHASES
-            self._phases = list(_DEFAULT_PHASES)
-            _logger.info("可插拔渲染管线已启用（%d 个 Phase）", len(self._phases))
+            # 创建输出函数：写入 OutputAdapter（通过公开属性而非私有 _adapter）
+            def _output_func(text: str) -> None:
+                self._renderer.output_adapter.write(text)
+
+            return VNodeRenderStrategy(
+                self._renderer, self._store, build_vnode_tree, _output_func,
+            )
+        else:
+            self._store: "TuiStore | None" = None
+            return DirectRenderStrategy(self._renderer)
+
+    # ── 向后兼容属性 ──────────────────────────────
+
+    @property
+    def _use_vnode(self) -> bool:
+        """是否为 VNode 渲染策略（向后兼容，供 _consumer.py / _render_phase.py 查询）。"""
+        return isinstance(self._strategy, VNodeRenderStrategy)
+
+    @property
+    def _old_vnode(self):
+        """缓存的上一帧 VNode 树（向后兼容，供 _render_phase.py 查询）。
+
+        步骤 9（Phase 整合）已完成，此属性保留供 BottomBarPhase VNode 路径使用。
+        """
+        if isinstance(self._strategy, VNodeRenderStrategy):
+            return self._strategy._old_vnode
+        return None
 
     def push_cmd(self, cmd) -> None:
         """入队渲染命令到命令队列。
@@ -192,11 +222,12 @@ class TuiEngine:
         self._render_running = True
         self._render_thread = threading.Thread(target=self._render, daemon=True)
         self._render_thread.start()
-        if self._rich_renderer is not None:
+        start_fn = getattr(self._strategy, "start", None)
+        if start_fn is not None:
             try:
-                self._rich_renderer.start()
+                start_fn()
             except Exception:
-                _logger.warning("Rich Live 启动失败", exc_info=True)
+                _logger.warning("策略 start 失败", exc_info=True)
 
     def stop(self) -> None:
         self._render_running = False
@@ -208,11 +239,12 @@ class TuiEngine:
                     if not self._render_thread.is_alive():
                         break
         self._drain_queue_safe()
-        if self._rich_renderer is not None:
+        stop_fn = getattr(self._strategy, "stop", None)
+        if stop_fn is not None:
             try:
-                self._rich_renderer.stop()
+                stop_fn()
             except Exception:
-                _logger.warning("Rich Live 停止失败", exc_info=True)
+                _logger.warning("策略 stop 失败", exc_info=True)
 
     def flush(self, timeout: float | None = 5.0) -> None:
         if self._render_thread is None or not self._render_thread.is_alive():
@@ -246,105 +278,14 @@ class TuiEngine:
             except Exception:
                 _logger.warning("panel_refresh_cb 异常", exc_info=True)
 
+    @deprecated("步骤 9：Phase 管线已迁移到 PhaseRenderStrategy，此方法不再使用")
     def _phase_render(self, commands: list) -> None:
-        """阶段 2：执行渲染命令。
+        """[已废弃] 阶段 2：执行渲染命令。
 
-        支持三种路径：
-          - VNode Diff 路径（CHAT_UI_RENDER_USE_VNODE=1）：dispatch→store→build→diff→apply patches
-          - Rich Live 路径（CHAT_UI_RENDER_USE_RICH_LIVE=1）：内容差分渲染
-          - 默认路径：逐条 dispatch 到 TuiRenderer
+        步骤 9 后 Phase 管线已整合进 PhaseRenderStrategy，
+        ContentRenderPhase 直接使用 TuiRenderer 渲染，不再通过此方法。
         """
-        try:
-            self._bb.sync_bottom_lines()
-        except Exception:
-            _logger.debug("sync_bottom_lines 异常", exc_info=True)
-        self.ensure_cursor_upper()
-
-        if self._use_vnode:
-            if self._store is None:
-                _logger.warning("CHAT_UI_RENDER_USE_VNODE=1 但 TuiStore 未初始化，回退到直接渲染")
-            else:
-                # ── VNode Diff 路径 ──
-                self._phase_render_vnode(commands)
-                return
-
-        if self._use_rich_live and self._rich_renderer is not None:
-            # Rich Live 路径：内容命令走差分渲染，其他命令直出
-            try:
-                for cmd in commands:
-                    if isinstance(cmd, (CmdContent, CmdReasoning)):
-                        self._rich_renderer.update_content(cmd.text)
-                    else:
-                        try:
-                            self._renderer.render(cmd)
-                        except Exception:
-                            _logger.debug("渲染命令 %s 失败", cmd, exc_info=True)
-                            self.push_cmd(CmdError(message=f"渲染命令 {type(cmd).__name__} 失败"))
-                self._rich_renderer.refresh()
-            except Exception:
-                _logger.debug("Rich Live 渲染异常", exc_info=True)
-        else:
-            # 默认路径：逐条分发渲染
-            for cmd in commands:
-                try:
-                    self._renderer.render(cmd)
-                except Exception:
-                    _logger.debug("渲染命令 %s 失败", cmd, exc_info=True)
-                    self.push_cmd(CmdError(message=f"渲染命令 {type(cmd).__name__} 失败"))
-
-    def _phase_render_vnode(self, commands: list) -> None:
-        """VNode Diff 渲染路径。
-
-        1. 逐条 dispatch commands 到 TuiStore
-        2. 获取最新 TuiState
-        3. 构建新 VNode 树
-        4. Diff 新旧树
-        5. 若检测到变更，通过 _renderer 渲染所有命令
-        6. 缓存新树供下一帧 diff
-        """
-        try:
-            # 1. Dispatch 所有命令到 Store
-            for cmd in commands:
-                try:
-                    self._store.dispatch(cmd)
-                except Exception:
-                    _logger.debug("VNode dispatch %s 失败", type(cmd).__name__, exc_info=True)
-
-            # 2. 获取最新状态
-            state = self._store.get_state()
-
-            # 3. 构建新 VNode 树
-            from ._vnode_builder import build_vnode_tree
-            new_vnode = build_vnode_tree(state)
-
-            # 4. Diff
-            patches = _vnode_diff(self._old_vnode, new_vnode)
-
-            # 5. 若有实质性变更，通过 _renderer 渲染所有命令
-            if patches:
-                has_change = any(
-                    p.kind != _NOOP for p in patches
-                    if hasattr(p, 'kind')
-                )
-                if has_change:
-                    for cmd in commands:
-                        try:
-                            self._renderer.render(cmd)
-                        except Exception:
-                            _logger.debug("VNode 渲染命令 %s 失败", type(cmd).__name__, exc_info=True)
-                    _logger.debug("VNode diff 检测到 %d 个 patches，已触发渲染", len(patches))
-
-            # 6. 缓存新树
-            self._old_vnode = new_vnode
-
-        except Exception:
-            _logger.warning("VNode Diff 渲染异常，回退到直接渲染", exc_info=True)
-            # 回退：逐条直接渲染
-            for cmd in commands:
-                try:
-                    self._renderer.render(cmd)
-                except Exception:
-                    _logger.debug("回退渲染 %s 失败", type(cmd).__name__, exc_info=True)
+        self._strategy.render_commands(self, commands)
 
     def _phase_redraw_bottom(self, has_commands: bool) -> None:
         """阶段 3：重绘底部栏。
@@ -372,28 +313,40 @@ class TuiEngine:
     # ── render 线程 ────────────────────────────────
 
     def _render(self) -> None:
-        """Render 线程主循环。
+        """渲染线程主循环（委托给 RenderLoop）。
 
-        支持两种模式（通过 CHAT_UI_RENDER_FIXED_FPS 环境变量切换）：
-          - 默认：Event.wait 自适应等待模式（原有行为）
-          - 固定帧率：固定 16ms (60fps) 循环，帧内批量 drain
-
-        异常时记录 critical 日志并终止循环。
-        退出时（finally）安全排空命令队列。
+        异常处理、崩溃通知、运行标志清理和队列排空均在 _render() 层完成，
+        RenderLoop 仅负责帧调度，异常时向上传播。
         """
-        if self._use_fixed_fps:
-            self._render_fixed_fps()
-        else:
-            self._render_adaptive()
+        from ._render_strategy import RenderLoop
 
+        loop = RenderLoop(
+            drain_fn=self._drain_queue,
+            cmd_event=self._cmd_event,
+            get_running=lambda: self._render_running,
+            use_fixed_fps=self._use_fixed_fps,
+        )
+        try:
+            loop.run()
+        except Exception:
+            _logger.critical("render 线程异常崩溃", exc_info=True)
+            self._emit_crash_error()
+        finally:
+            self._render_running = False
+            self._drain_queue_safe()
+
+    @deprecated("_render_fixed_fps() 已废弃，请使用 RenderLoop 包装器")
     def _render_fixed_fps(self) -> None:
-        """固定帧率渲染循环（60fps / 16ms）。
+        """[已废弃] 固定帧率渲染循环（60fps / 16ms）。
 
         每帧批量 drain 命令队列、执行渲染、重绘底部栏。
         不使用 _cmd_event 信号，完全由固定帧间隔驱动。
 
         空帧时防御性清理底部栏重绘标记（该标记由 _drain_queue → _phase_redraw_bottom 消费，
         此处仅清理空闲帧的过期标记，避免下一帧误触发冗余重绘）。
+
+        已废弃: 帧调度逻辑已迁移到 RenderLoop 包装器，_render() 方法直接委托给 RenderLoop.run()。
+        保留此方法仅供向后兼容，新代码请使用 RenderLoop。
         """
         import time as _time_mod
         while self._render_running:
@@ -413,11 +366,15 @@ class TuiEngine:
                 _time_mod.sleep(sleep_time)
         self._drain_queue_safe()
 
+    @deprecated("_render_adaptive() 已废弃，请使用 RenderLoop 包装器")
     def _render_adaptive(self) -> None:
-        """自适应等待渲染循环（原有行为）。
+        """[已废弃] 自适应等待渲染循环（原有行为）。
 
         在 daemon 线程中持续运行，循环执行三阶段流水线：
         drain_queue → 自适应等待 → 重复。异常时记录 critical 日志并终止循环。
+
+        已废弃: 帧调度逻辑已迁移到 RenderLoop 包装器，_render() 方法直接委托给 RenderLoop.run()。
+        保留此方法仅供向后兼容，新代码请使用 RenderLoop。
         """
         idle_count = 0
         try:
@@ -473,8 +430,9 @@ class TuiEngine:
 
         阶段 1: _phase_pre_update_panels() — 刷新面板回调
         阶段 2: 获取输出锁，批量取出队列中所有命令
-        阶段 3: _phase_render() 执行渲染命令，_phase_redraw_bottom() 重绘底部栏
+        阶段 3: 策略统一渲染命令 + _phase_redraw_bottom() 重绘底部栏
 
+        所有渲染策略（Direct / VNode / Phase）统一通过 self._strategy.render_commands()。
         Returns:
             是否处理了至少一条渲染命令
         """
@@ -489,24 +447,11 @@ class TuiEngine:
                     self._cmd_queue.task_done()
                 except queue.Empty:
                     break
-            has_content = bool(commands)
-            if self._use_phases and self._phases:
-                # ── 可插拔管线路径 ──
-                state = self._store.get_state() if self._store is not None else None
-                for phase in self._phases:
-                    try:
-                        phase.execute(self, commands, state)
-                    except Exception:
-                        _logger.debug("Phase %s 执行异常", type(phase).__name__, exc_info=True)
-                # 防御性底部栏重绘：确保即使 phases 列表遗漏 BottomBarPhase/CursorPhase 也能刷新
-                from ._render_phase import BottomBarPhase as _BBP
-                if not any(isinstance(p, _BBP) for p in self._phases):
-                    self._phase_redraw_bottom(has_content)
+            if commands:
+                has_content = self._strategy.render_commands(self, commands)
             else:
-                # ── 原有硬编码管线路径 ──
-                if commands:
-                    self._phase_render(commands)
-                self._phase_redraw_bottom(has_content)
+                has_content = False
+            self._phase_redraw_bottom(has_content)
             return has_content
 
     def _drain_queue_safe(self) -> None:
@@ -538,6 +483,7 @@ class TuiEngine:
             self._cursor_tracker.set(r_cursor, cursor_col)
 
 
-# @deprecated — 使用 TuiEngine/TuiRenderer 替代，v1.3+ 将移除
-RenderEngine = TuiEngine
-ContentRenderer = TuiRenderer
+# @deprecated: 使用 TuiEngine 替代。
+# 保留仅为测试文件的向后兼容引用（26+ 处）。
+RenderEngine: type = TuiEngine  # @deprecated
+ContentRenderer: type = TuiRenderer  # @deprecated

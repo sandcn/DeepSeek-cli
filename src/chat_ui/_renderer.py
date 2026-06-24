@@ -59,10 +59,9 @@ from ._subagent_frame import SubagentFrameRenderer
 _logger = logging.getLogger(__name__)
 
 
-# ═══════════════════════════════════════════════════════════
-# 渲染分发表（@deprecated — 保留供外部引用，内部已改用 isinstance dispatch）
-# ═══════════════════════════════════════════════════════════
-
+# @deprecated: 使用 TuiRenderer.render() 中的 match-case 分发替代。
+# 保留仅为 test_chat_ui_handler.py:269 的向后兼容引用。
+# 计划 2 个版本后移除。
 _RENDER_DISPATCH: dict[int, tuple[str, tuple[int, ...]]] = {
     RenderCommand.REASONING:       ("_do_reasoning",       (1,)),
     RenderCommand.CONTENT:         ("_do_content",         (1,)),
@@ -116,6 +115,15 @@ class TuiRenderer:
         避免直接访问私有属性 _adapter。
         """
         return self._adapter
+
+    @property
+    def render_state(self):
+        """RenderState 实例 — 公开只读属性。
+
+        供 DirectRenderStrategy / RichLiveContentRenderer 等
+        外部模块获取渲染状态，避免通过 getattr 访问私有 _rs。
+        """
+        return self._rs
 
     def render(self, cmd) -> None:
         """分发渲染命令到对应的 _do_* 方法（isinstance 多态分发）。
@@ -349,10 +357,8 @@ class RichLiveContentRenderer:
             self._live = None
 
 
-# ═══════════════════════════════════════════════════════════
-# 向后兼容别名
-# ═══════════════════════════════════════════════════════════
-
+# @deprecated: 使用 TuiRenderer 替代。
+# 保留仅为测试文件的向后兼容引用。
 ContentRenderer = TuiRenderer
 
 __all__ = ["TuiRenderer", "ContentRenderer", "_RenderState", "RichLiveContentRenderer"]
