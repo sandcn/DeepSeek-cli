@@ -840,7 +840,7 @@ class TestRenderEnginePositionCursor:
         # 因此 mock get_terminal 返回模拟终端
         mock_term = MagicMock()
         mock_term.move_xy.return_value = "\033[28;8H"
-        with patch("src.chat_ui._blessed.get_terminal", return_value=mock_term):
+        with patch("src.ui._blessed.get_terminal", return_value=mock_term):
             with patch.object(sys, "__stdout__") as mock_stdout:
                 engine._position_cursor()
 
@@ -883,7 +883,7 @@ class TestRenderEnginePositionCursor:
 
         mock_term = MagicMock()
         mock_term.move_xy.return_value = "\033[40;13H"
-        with patch("src.chat_ui._blessed.get_terminal", return_value=mock_term):
+        with patch("src.ui._blessed.get_terminal", return_value=mock_term):
             with patch.object(sys, "__stdout__") as mock_stdout:
                 engine._position_cursor()
 

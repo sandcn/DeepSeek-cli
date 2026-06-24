@@ -23,8 +23,8 @@ from .core.message_queue import MessageQueue
 
 from .ui.colors import CYAN, DIM, RESET, GREEN, YELLOW
 from .ui.msg_list import edit_current_messages
-from .chat_ui.tui._message_display import _display_messages
-from .chat_ui.tui._ttl_cache import TTLCache
+from .ui.tui._message_display import _display_messages
+from .ui.tui._ttl_cache import TTLCache
 from .chat_msgs import save_session, get_recover_cmd
 from .paths import CHAT_MSGS_DIR
 from .ui.narrow import is_narrow, narrow_sep_width
@@ -791,7 +791,7 @@ async def run_single_mode_async(prompt_text):
     """单次对话模式（异步版）：输入一句话，回答后退出"""
     chat_ui = ChatUIConsumer()
     chat_ui.start()
-    from .chat_ui.tui._terminal import narrow_sep_width
+    from .ui.tui._terminal import narrow_sep_width
     _sep_w = narrow_sep_width(30)
     chat_ui.write_line(f"{CYAN}  > {MODEL} Chat{RESET} {DIM}· 单次模式{RESET}")
     chat_ui.write_line(f"{DIM}  {'─' * _sep_w}{RESET}")

@@ -21,12 +21,6 @@
 
 from __future__ import annotations
 
-import warnings
-warnings.warn(
-    "ui._bottom_bar is deprecated. Use chat_ui.bottom_bar.BottomBar instead.",
-    DeprecationWarning, stacklevel=2,
-)
-
 import logging
 import sys
 import time
@@ -49,7 +43,7 @@ from ._bottom_bar_theme import (
     _MIN_INPUT_ROWS,
     _PLACEHOLDER_TEXT,
 )
-from ..chat_ui.bottom_bar import CursorTracker
+from ._cursor_tracker import CursorTracker
 from ._lock import _try_acquire_output_lock
 
 # ── 新模块导入（BottomBar 拆解） ──

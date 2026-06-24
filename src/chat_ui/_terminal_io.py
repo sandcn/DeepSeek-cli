@@ -182,7 +182,7 @@ class TerminalIO:
         """惰性初始化 Blessed Terminal 单例。"""
         if self._blessed_term is None:
             try:
-                from ._blessed import get_terminal
+                from ..ui._blessed import get_terminal
                 self._blessed_term = get_terminal()
                 self._blessed_available = True
             except Exception:

@@ -1,9 +1,9 @@
-"""底部栏补全弹窗 — 独立 _CompletionPopup 类。
+"""_BottomBar 补全弹窗 — 独立 _CompletionPopup 类。
 
-从 ui/_bottom_bar_completion.py 迁移，_BottomBar 通过组合使用。
+从 _bottom_bar.py 提取，_BottomBar 通过组合使用。
 提供 show/hide/cycle/get_selected + render() 绘制方法。
 
-依赖 _theme 中的颜色常量和 _cursor 中的纯函数。
+依赖 _bottom_bar_theme 中的颜色常量和 _bottom_cursor 中的纯函数。
 使用 Blessed Terminal.move_xy / Terminal.clear_eol 替代原始 ANSI 序列。
 """
 
@@ -11,8 +11,8 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from .._blessed import get_terminal
-from ._theme import (
+from ._blessed import get_terminal
+from ._bottom_bar_theme import (
     _COLOR_COMPLETE_TITLE,
     _COLOR_DIM,
     _COLOR_RESET,
@@ -20,10 +20,10 @@ from ._theme import (
     _COLOR_SELECT_FG,
     _COLOR_TIME,
 )
-from ._cursor import _truncate_by_width, _visual_len
+from ._bottom_cursor import _truncate_by_width, _visual_len
 
 if TYPE_CHECKING:
-    from ._cursor_tracker import CursorTracker, CursorPosition
+    from ._cursor_tracker import CursorTracker
 
 
 class _CompletionPopup:

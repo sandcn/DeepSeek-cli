@@ -103,7 +103,7 @@ def _cmd_load(ctx):
     _out.write(f"{GREEN}  + 已加载会话 {title_info}{arg} ({len(loaded_msgs)} 条消息, 模型: {model}){RESET}", level="raw", source="cmd")
 
     # 显示恢复的消息摘要（用项目流式渲染器回放）
-    from ..chat_ui.tui._message_display import _display_messages
+    from ..ui.tui._message_display import _display_messages
     non_system = filter_non_system(ctx.messages)
     _display_messages(non_system, speed=1000)
 

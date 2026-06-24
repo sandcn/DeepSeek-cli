@@ -11,9 +11,9 @@ from __future__ import annotations
 import time
 from unittest.mock import patch
 
-from src.chat_ui.parallel._text_formatter import TextFormatter
-from src.chat_ui.tui._state import UISessionState, StreamingState, TUIStateTree
-from src.chat_ui.tui.status_bar import (
+from src.ui.parallel._text_formatter import TextFormatter
+from src.ui.tui._state import UISessionState, StreamingState, TUIStateTree
+from src.ui.tui.status_bar import (
     render_normal,
     render_streaming_line,
     build_normal_parts,
@@ -212,10 +212,10 @@ class TestRenderNormalNarrow:
 
         注：使用 monkeypatch 模拟窄屏环境，CI 慢速环境可能 flaky。
         """
-        from src.chat_ui.tui.status_bar import render_normal
-        monkeypatch.setattr("src.chat_ui.tui.status_bar.is_narrow", lambda: True)
+        from src.ui.tui.status_bar import render_normal
+        monkeypatch.setattr("src.ui.tui.status_bar.is_narrow", lambda: True)
         monkeypatch.setattr(
-            "src.chat_ui.tui.status_bar.get_terminal_width", lambda: 30,
+            "src.ui.tui.status_bar.get_terminal_width", lambda: 30,
         )
         state = UISessionState(model="test-model", message_count=10, status_text="processing")
         result = render_normal(state)

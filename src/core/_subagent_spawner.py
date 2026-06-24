@@ -13,7 +13,7 @@ from typing import List, Dict, Any
 from .subagent import SubAgent
 from ..ui.events import DisplayEventBus
 from ..ui.events.event_types import AgentResultEvent
-from ..chat_ui.parallel._tool_icons import AGENT_TYPE_ABBREV
+from ..ui.parallel._tool_icons import AGENT_TYPE_ABBREV
 from .constants import RED, RESET
 
 _logger = logging.getLogger(__name__)

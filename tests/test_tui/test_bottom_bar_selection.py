@@ -16,11 +16,11 @@ import sys
 import unittest
 from unittest.mock import MagicMock, patch
 
-from src.chat_ui.bottom_bar import run_bottom_bar_selection, _KEY_ENTER, _KEY_UP, _KEY_DOWN, _KEY_ESCAPE
+from src.ui._bottom_bar_selection import run_bottom_bar_selection, _KEY_ENTER, _KEY_UP, _KEY_DOWN, _KEY_ESCAPE
 
 # 统一的 patch 目标
 _CHAT_UI_PATCH = "src.chat_ui.get_active_chat_ui"
-_TERMINAL_PATCH = "src.chat_ui.bottom_bar._selection.get_terminal"
+_TERMINAL_PATCH = "src.ui._bottom_bar_selection.get_terminal"
 
 
 class _MockKeystroke:

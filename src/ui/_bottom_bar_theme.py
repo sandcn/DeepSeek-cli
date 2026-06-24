@@ -10,7 +10,7 @@
 
 from __future__ import annotations
 
-from .._styled import StyledText
+from ..chat_ui._styled import StyledText
 
 
 # ── 底部栏布局配置 ──────────────────────────────────────────
@@ -50,7 +50,7 @@ def _blessed_fg(color_num: int) -> str:
         ANSI 颜色序列字符串。
     """
     try:
-        from .._blessed import get_terminal as _get_term
+        from ._blessed import get_terminal as _get_term
         return _get_term().color(color_num)
     except Exception:
         return f"\033[38;5;{color_num}m"
@@ -68,7 +68,7 @@ def _blessed_bg(color_num: int) -> str:
         ANSI 背景色序列字符串。
     """
     try:
-        from .._blessed import get_terminal as _get_term
+        from ._blessed import get_terminal as _get_term
         return _get_term().on_color(color_num)
     except Exception:
         return f"\033[48;5;{color_num}m"

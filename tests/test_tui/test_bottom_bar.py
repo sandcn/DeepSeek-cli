@@ -12,8 +12,8 @@ import sys
 import unittest
 from unittest.mock import MagicMock, PropertyMock, patch
 
-from src.chat_ui.bottom_bar import BottomBar as _BottomBar
-from src.chat_ui._stdout_tracker import _StdoutLineTracker
+from src.ui._bottom_bar import _BottomBar
+from src.ui._stdout_tracker import _StdoutLineTracker
 
 
 def _mock_terminal(width=80, height=30):
@@ -187,7 +187,7 @@ class TestBottomBarFormatStatus(unittest.TestCase):
             "per_second_speed": 25.3,
         }
 
-        with patch("src.chat_ui.bottom_bar._status._get_snapshot", return_value=lambda: mock_snap):
+        with patch("src.ui._bottom_bar_status._get_snapshot", return_value=lambda: mock_snap):
             result = self.bb._format_status()
 
         # 应包含模型名 + 统计信息
@@ -203,7 +203,7 @@ class TestBottomBarFormatStatus(unittest.TestCase):
         self.bb._tool_fail_count = 1
 
         # mock snapshot 有数据，但 _status_active=False 时应跳过
-        with patch("src.chat_ui.bottom_bar._status._get_snapshot", return_value=None):
+        with patch("src.ui._bottom_bar_status._get_snapshot", return_value=None):
             result = self.bb._format_status()
 
         # 应包含模型名（含 ANSI 颜色码）
@@ -217,7 +217,7 @@ class TestBottomBarFormatStatus(unittest.TestCase):
         self.bb._tool_count = 0
         self.bb._tool_fail_count = 0
 
-        with patch("src.chat_ui.bottom_bar._status._get_snapshot", return_value=None):
+        with patch("src.ui._bottom_bar_status._get_snapshot", return_value=None):
             result = self.bb._format_status()
 
         # 应包含模型名（含 ANSI 颜色码），不含统计信息
@@ -236,7 +236,7 @@ class TestBottomBarFormatStatus(unittest.TestCase):
             "per_second_speed": 10.0,
         }
 
-        with patch("src.chat_ui.bottom_bar._status._get_snapshot", return_value=lambda: mock_snap):
+        with patch("src.ui._bottom_bar_status._get_snapshot", return_value=lambda: mock_snap):
             result = self.bb._format_status()
 
         # 应包含模型名 + 统计
@@ -258,7 +258,7 @@ class TestBottomBarFormatStatus(unittest.TestCase):
             "per_second_speed": 0.0,
         }
 
-        with patch("src.chat_ui.bottom_bar._status._get_snapshot", return_value=lambda: mock_snap):
+        with patch("src.ui._bottom_bar_status._get_snapshot", return_value=lambda: mock_snap):
             result = self.bb._format_status()
 
         self.assertIn("test-model", result)
@@ -295,8 +295,8 @@ class TestBottomBarLastScrollEnd(unittest.TestCase):
 
         mock_term = _mock_terminal(width=80, height=30)
         with patch.object(sys, '__stdout__', io.StringIO()), \
-             patch("src.chat_ui.bottom_bar._bar.get_terminal", return_value=mock_term), \
-             patch("src.chat_ui.bottom_bar._scroll_region.get_terminal", return_value=mock_term):
+             patch("src.ui._bottom_bar.get_terminal", return_value=mock_term), \
+             patch("src.ui._scroll_region.get_terminal", return_value=mock_term):
             self.bb.setup()
 
         expected = 30 - (2 + max(3, 0))  # height - (2 + 3 + 0 = 5) = 25
@@ -313,7 +313,7 @@ class TestBottomBarLastScrollEnd(unittest.TestCase):
 
         # Blessed 在非 TTY 环境下返回空字符串，需 patch get_terminal
         mock_term = _mock_terminal(width=80, height=30)
-        with patch("src.chat_ui.bottom_bar._bar.get_terminal", return_value=mock_term):
+        with patch("src.ui._bottom_bar.get_terminal", return_value=mock_term):
             out = io.StringIO()
             old = sys.__stdout__
             sys.__stdout__ = out
@@ -335,8 +335,8 @@ class TestBottomBarLastScrollEnd(unittest.TestCase):
         self.bb._last_scroll_end = 0  # 未初始化
 
         mock_term = _mock_terminal(width=80, height=30)
-        with patch("src.chat_ui.bottom_bar._bar.get_terminal", return_value=mock_term), \
-             patch("src.chat_ui.bottom_bar._scroll_region.get_terminal", return_value=mock_term):
+        with patch("src.ui._bottom_bar.get_terminal", return_value=mock_term), \
+             patch("src.ui._scroll_region.get_terminal", return_value=mock_term):
             out = io.StringIO()
             with patch.object(sys, '__stdout__', out):
                 self.bb.ensure_cursor_in_upper()
@@ -352,13 +352,13 @@ class TestBottomBarLastScrollEnd(unittest.TestCase):
         self.bb._cached_width = 80
         self.bb._last_scroll_end = 25  # 旧值（30-5）
         # 让 _bottom_lines 变大（模拟补全弹窗弹出）
-        self.bb._completion._popup_height = 6
+        self.bb._completion_popup_height = 6
 
         mock_term = _mock_terminal(width=80, height=30)
         out = io.StringIO()
         with patch.object(sys, '__stdout__', out), \
-             patch("src.chat_ui.bottom_bar._bar.get_terminal", return_value=mock_term), \
-             patch("src.chat_ui.bottom_bar._scroll_region.get_terminal", return_value=mock_term):
+             patch("src.ui._bottom_bar.get_terminal", return_value=mock_term), \
+             patch("src.ui._scroll_region.get_terminal", return_value=mock_term):
             self.bb.sync_bottom_lines()
 
         # _bottom_lines = 2 + max(3, 0) + 6 = 11
@@ -380,8 +380,8 @@ class TestBottomBarLastScrollEnd(unittest.TestCase):
         mock_term = _mock_terminal(width=80, height=30)
         out = io.StringIO()
         with patch.object(sys, '__stdout__', out), \
-             patch("src.chat_ui.bottom_bar._bar.get_terminal", return_value=mock_term), \
-             patch("src.chat_ui.bottom_bar._scroll_region.get_terminal", return_value=mock_term):
+             patch("src.ui._bottom_bar.get_terminal", return_value=mock_term), \
+             patch("src.ui._scroll_region.get_terminal", return_value=mock_term):
             self.bb.sync_bottom_lines()
 
         output = out.getvalue()
@@ -406,8 +406,8 @@ class TestBottomBarLastScrollEnd(unittest.TestCase):
         mock_term = _mock_terminal(width=80, height=25)
         out = io.StringIO()
         with patch.object(sys, '__stdout__', out), \
-             patch("src.chat_ui.bottom_bar._bar.get_terminal", return_value=mock_term), \
-             patch("src.chat_ui.bottom_bar._scroll_region.get_terminal", return_value=mock_term):
+             patch("src.ui._bottom_bar.get_terminal", return_value=mock_term), \
+             patch("src.ui._scroll_region.get_terminal", return_value=mock_term):
             self.bb.sync_bottom_lines()
 
         output = out.getvalue()
@@ -434,7 +434,7 @@ class TestDrainQueueSyncBottomLines(unittest.TestCase):
         self.mock_bb._setup_height = 30
         self.mock_bb._last_bottom_lines = 5
         self.mock_bb._bottom_lines = 5
-        self.mock_bb._completion._popup_height = 0
+        self.mock_bb._completion_popup_height = 0
         self.mock_bb._last_scroll_end = 25  # 模拟已缓存的值
         self.mock_bb.get_cursor_info.return_value = ("", 0, 24, 80)
         self.mock_bb._cursor_visual_pos_from_cache.return_value = (0, 0)
@@ -537,8 +537,8 @@ class TestApplyScrollDeltaOrdering(unittest.TestCase):
             # move_xy 生成原始 ANSI（确保测试可重复，不依赖 blessed 实现）
             mock_term.move_xy = lambda x, y: f"\033[{y + 1};{x + 1}H"
             mock_term.clear_eol = "\033[K"
-            with patch("src.chat_ui.bottom_bar._bar.get_terminal", return_value=mock_term), \
-                 patch("src.chat_ui.bottom_bar._scroll_region.get_terminal", return_value=mock_term):
+            with patch("src.ui._bottom_bar.get_terminal", return_value=mock_term), \
+                 patch("src.ui._scroll_region.get_terminal", return_value=mock_term):
                 method_call()
         return buf.getvalue()
 
@@ -620,7 +620,7 @@ class TestApplyScrollDeltaOrdering(unittest.TestCase):
         from unittest.mock import patch as u_patch
         with u_patch("shutil.get_terminal_size",
                       return_value=(80, 25)), \
-             u_patch("src.chat_ui.bottom_bar._bar._try_acquire_output_lock",
+             u_patch("src.ui._bottom_bar._try_acquire_output_lock",
                      return_value=MagicMock(__enter__=MagicMock(return_value=True),
                                             __exit__=MagicMock(return_value=False))):
             with patch.object(sys, '__stdout__', io.StringIO()) as buf:
