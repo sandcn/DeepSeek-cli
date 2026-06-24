@@ -142,13 +142,13 @@ class _StatusMixin:
         """构建状态行文本（优雅信息风）。
 
         流式输出期间显示全量统计：模型名 · 耗时 · 令牌数 · 实时速率 · 工具计数。
-        非流式空闲时仅显示模型名字（带 ◉ 图标），不显示任何统计信息。
-        使用多色分层：模型名高亮（带 ◉）、耗时蓝灰色、令牌数灰色。
+        非流式空闲时仅显示模型名字（带 ⏣ 图标），不显示任何统计信息。
+        使用多色分层：模型名高亮（带 ⏣）、耗时蓝灰色、令牌数灰色。
         工具计数值得高亮区分成功/失败（成功绿/失败红）。
         """
-        # ── 模型名字（始终显示，带 ◉ 图标） ──
+        # ── 模型名字（始终显示，带 ⏣ 图标） ──
         model_part = (
-            f"{_COLOR_ACCENT}\u25c9{_COLOR_RESET} {_COLOR_ACCENT}{self._model_name}{_COLOR_RESET}"
+            f"{_COLOR_ACCENT}\u23e3{_COLOR_RESET} {_COLOR_ACCENT}{self._model_name}{_COLOR_RESET}"
             if self._model_name else ""
         )
 

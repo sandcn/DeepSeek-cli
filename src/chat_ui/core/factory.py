@@ -20,6 +20,18 @@ if TYPE_CHECKING:
 _logger = logging.getLogger(__name__)
 
 
+def _create_vnode_output_func(adapter):
+    """创建 VNode 渲染输出函数。
+
+    契约：每次调用输出一行文本并追加换行符。
+    适用于 user_messages、tool_outputs、notifications、errors、write_lines 等
+    一次性块类型的输出。流式类型（answer_block、thinking_block）不经过此函数。
+    """
+    def _output(text: str) -> None:
+        adapter.write_raw(text + "\n")
+    return _output
+
+
 def create_render_strategy(renderer: "TuiRenderer") -> tuple[RenderStrategy, bool, bool, Any]:
     """根据环境变量选择并创建渲染策略。
 
@@ -63,8 +75,7 @@ def create_render_strategy(renderer: "TuiRenderer") -> tuple[RenderStrategy, boo
         get_hooks_runtime()
         _logger.info("React Ink 渲染已启用（VNode + Hooks）")
 
-        def _output_func(text: str) -> None:
-            renderer.output_adapter.write_raw(text + "\n")
+        _output_func = _create_vnode_output_func(renderer.output_adapter)
 
         return VNodeRenderStrategy(
             renderer, store, build_vnode_tree, _output_func,

@@ -50,7 +50,7 @@ class TestBottomBarCursorPos(unittest.TestCase):
         # 模拟流式状态活跃（_format_status() 返回非空）
         self.bb._status_active = True
         self.bb._model_name = "test-model"
-        self.bb._last_status = "test-model ◉"
+        self.bb._last_status = "test-model ⏣"
         # 禁用终端 I/O
         self._stdout = sys.__stdout__
 
@@ -63,7 +63,7 @@ class TestBottomBarCursorPos(unittest.TestCase):
         """流式输出期间设置光标位置 → _input_cursor_pos 应正确更新。"""
         # 模拟用户按 ← 将光标从末尾(11)移到 "world" 的 'w'(6)
         with patch.object(sys, '__stdout__', io.StringIO()), \
-             patch.object(self.bb, '_format_status', return_value="test-model ◉  5t"):
+             patch.object(self.bb, '_format_status', return_value="test-model ⏣  5t"):
             self.bb._last_text = "hello world"
             self.bb._input_cursor_pos = 6
             self.bb.force_redraw()
@@ -90,7 +90,7 @@ class TestBottomBarCursorPos(unittest.TestCase):
     def test_cursor_move_with_status_change(self):
         """状态变化 + 设置光标位置 → _input_cursor_pos 应正确更新。"""
         with patch.object(sys, '__stdout__', io.StringIO()), \
-             patch.object(self.bb, '_format_status', return_value="test-model ◉ 10t"):
+             patch.object(self.bb, '_format_status', return_value="test-model ⏣ 10t"):
             self.bb._last_text = "hello world"
             self.bb._input_cursor_pos = 3
             self.bb.force_redraw()
@@ -105,7 +105,7 @@ class TestBottomBarCursorPos(unittest.TestCase):
         self.bb._input_cursor_pos = 5  # 用户之前移动到了位置 5
 
         with patch.object(sys, '__stdout__', io.StringIO()), \
-             patch.object(self.bb, '_format_status', return_value="test-model ◉ 10t"):
+             patch.object(self.bb, '_format_status', return_value="test-model ⏣ 10t"):
             self.bb._last_text = "hello world"
             self.bb.force_redraw()  # 不改变 _input_cursor_pos
 
@@ -117,7 +117,7 @@ class TestBottomBarCursorPos(unittest.TestCase):
     def test_text_change_with_cursor_pos(self):
         """文本变化 + 设置光标位置 → _input_cursor_pos 应更新。"""
         with patch.object(sys, '__stdout__', io.StringIO()), \
-             patch.object(self.bb, '_format_status', return_value="test-model ◉ 10t"):
+             patch.object(self.bb, '_format_status', return_value="test-model ⏣ 10t"):
             self.bb._last_text = "hello world!"
             self.bb._input_cursor_pos = 12
             self.bb.force_redraw()
@@ -130,7 +130,7 @@ class TestBottomBarCursorPos(unittest.TestCase):
     def test_text_change_cursor_at_end(self):
         """文本变化，光标在末尾 → _input_cursor_pos 应为文本长度。"""
         with patch.object(sys, '__stdout__', io.StringIO()), \
-             patch.object(self.bb, '_format_status', return_value="test-model ◉ 10t"):
+             patch.object(self.bb, '_format_status', return_value="test-model ⏣ 10t"):
             self.bb._last_text = "hello world!"
             self.bb._input_cursor_pos = 12  # 即 len("hello world!")
             self.bb.force_redraw()
@@ -144,7 +144,7 @@ class TestBottomBarCursorPos(unittest.TestCase):
         """布局和状态均未变时 force_redraw 应跳过全量重绘。"""
         # ★ 重构后 _last_rendered_text 存储在 InputRenderer 上，
         #    force_redraw() 通过 self._input._last_rendered_text 检查布局变更。
-        self.bb._last_status = "test-model ◉"
+        self.bb._last_status = "test-model ⏣"
         self.bb._input._last_rendered_text = "hello world"
         self.bb._last_text = "hello world"
         self.bb._last_bottom_lines = self.bb._bottom_lines
@@ -152,7 +152,7 @@ class TestBottomBarCursorPos(unittest.TestCase):
 
         out = io.StringIO()
         with patch.object(sys, '__stdout__', out), \
-             patch.object(self.bb, '_format_status', return_value="test-model ◉"):
+             patch.object(self.bb, '_format_status', return_value="test-model ⏣"):
             self.bb.force_redraw()
 
         self.assertEqual(out.getvalue(), "",

@@ -154,10 +154,10 @@ def render_normal(state: UISessionState) -> str:
 
 
 def _model_label(state: UISessionState) -> str:
-    """模型名标签 — 使用主题高亮色，带 ◉ 图标前缀。"""
+    """模型名标签 — 使用主题高亮色，带 ⏣ 图标前缀。"""
     if state.model:
-        return f"{BRIGHT_CYAN}\u25c9{RESET} {BOLD}{THEME['title']}{state.model}{RESET}"
-    return f"{DIM}\u25c9 no model{RESET}"
+        return f"{BRIGHT_CYAN}\u23e3{RESET} {BOLD}{THEME['title']}{state.model}{RESET}"
+    return f"{DIM}\u23e3 no model{RESET}"
 
 
 def _build_detail_parts(state: UISessionState, narrow: bool) -> list[str]:
@@ -235,7 +235,7 @@ def build_normal_parts(state: UISessionState, narrow: bool | None = None) -> lis
 def render_streaming_line(state: UISessionState, streaming: StreamingState) -> str:
     """渲染流式输出状态行。
 
-    格式：◉ gpt-4 · ⏱ 3.2s · ⬡ 450t · ⚡ 120t/s
+    格式：⏣ gpt-4 · ⏱ 3.2s · ⬡ 450t · ⚡ 120t/s
 
     Args:
         state: 会话级状态快照（主要用于获取模型名）。
@@ -250,7 +250,7 @@ def render_streaming_line(state: UISessionState, streaming: StreamingState) -> s
 
     parts: list[str] = []
     if state.model:
-        parts.append(f"{BRIGHT_CYAN}\u25c9{RESET} {BOLD}{THEME['title']}{state.model}{RESET}")
+        parts.append(f"{BRIGHT_CYAN}\u23e3{RESET} {BOLD}{THEME['title']}{state.model}{RESET}")
     parts.append(f"{GREEN}\u23f1{_SP}{format_elapsed(elapsed)}{RESET}")
     tok_str = TextFormatter.format_token_count(tokens)
     parts.append(f"{CYAN}\u2b21{_SP}{tok_str}t{RESET}")

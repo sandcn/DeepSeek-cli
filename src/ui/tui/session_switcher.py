@@ -63,7 +63,7 @@ class SessionSwitcher(BaseBottomBarSelector[dict, Optional[dict[str, object]]]):
                     pass
 
             # ★ 美化：增加视觉层次，图标对齐
-            label = f"{DARK_GRAY}{sid_short}{RESET} {time_info}  {BRIGHT_CYAN}{title_info}{RESET}  {CYAN}\u25c9 {model}{RESET}  {GREEN}\u25c6 {count}m{RESET}"
+            label = f"{DARK_GRAY}{sid_short}{RESET} {time_info}  {BRIGHT_CYAN}{title_info}{RESET}  {CYAN}\u23e3 {model}{RESET}  {GREEN}\u25c6 {count}m{RESET}"
             labels.append(label)
         return labels
 

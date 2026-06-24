@@ -370,6 +370,8 @@ class TuiEngine:
                 if clock is not None:
                     try:
                         clock._tick()
+                        if hasattr(self._strategy, 'set_animating'):
+                            self._strategy.set_animating(True)
                     except Exception:
                         _logger.warning("AnimationClock._tick() 异常", exc_info=True)
 
@@ -377,7 +379,10 @@ class TuiEngine:
             if content_cmds:
                 has_content = self._strategy.render_commands(self, content_cmds)
             else:
-                has_content = bool(anim_ticks)
+                if anim_ticks and hasattr(self._strategy, 'set_animating'):
+                    has_content = self._strategy.render_commands(self, [])
+                else:
+                    has_content = bool(anim_ticks)
 
             self._phase_redraw_bottom(has_content)
             return has_content

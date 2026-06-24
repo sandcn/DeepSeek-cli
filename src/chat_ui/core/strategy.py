@@ -185,6 +185,21 @@ class VNodeRenderStrategy:
         self._last_tool_outputs: tuple = ()
         self._last_notifications_count: int = 0
         self._last_errors_count: int = 0
+        self._animating: bool = False
+        self._anim_frame_count: int = 0
+        self._anim_idle_count: int = 0
+        self._ANIM_IDLE_SKIP_THRESHOLD = 5
+        self._ANIM_IDLE_SKIP_FRAMES = 10
+
+    # ── 动画活跃状态控制 ──────────────────────────
+
+    def set_animating(self, active: bool) -> None:
+        """设置动画活跃状态（由 _drain_queue 在动画滴答时调用）。
+
+        当 AnimationClock 产生 tick 时，_drain_queue 调用此方法
+        通知策略当前有活跃动画，允许空命令列表触发 VNode 重建。
+        """
+        self._animating = active
 
     # ── 生命周期（空操作）────────────────────────
 
@@ -215,7 +230,16 @@ class VNodeRenderStrategy:
             是否有实质性变更（用于底部栏重绘决策）
         """
         if not commands:
-            return False
+            if not self._animating:
+                return False
+            # 动画活跃但无命令：触发 VNode 重建以反映动画状态变化
+            # 空帧退避：连续无变更帧跳过 VNode 重建
+            self._anim_frame_count += 1
+            if self._anim_idle_count >= self._ANIM_IDLE_SKIP_THRESHOLD:
+                return False
+        else:
+            self._anim_frame_count = 0
+            self._anim_idle_count = 0
         # ── 前置设置（从 _drain_queue 上移）──
         try:
             engine._bb.sync_bottom_lines()
@@ -242,6 +266,12 @@ class VNodeRenderStrategy:
 
             # 5. 检测是否有实质性变更
             has_change = any(p.kind != PatchKind.NOOP for p in patches)
+
+            # 空帧计数逻辑：追踪连续无变更帧，供空帧退避使用
+            if not has_change:
+                self._anim_idle_count += 1
+            else:
+                self._anim_idle_count = 0
 
             if has_change:
                 # 渲染回调：将 VNode 渲染为终端输出
@@ -317,10 +347,19 @@ class VNodeRenderStrategy:
                         if new_count > self._last_write_lines_count:
                             for line in lines[self._last_write_lines_count:]:
                                 if self._output:
-                                    self._output(f"{line}\n")
+                                    self._output(line)
                             self._last_write_lines_count = new_count
+                    elif vnode.type == "subagent_frames":
+                        frames = vnode.props.get("frames", ())
+                        if frames:
+                            from ..components.subagent_frame import SubagentFrameRenderer
+                            renderer = SubagentFrameRenderer()
+                            for frame in frames:
+                                try:
+                                    renderer.render(frame, self._renderer.output_adapter)
+                                except Exception:
+                                    pass
                     # input_bar / status_line / completion_popup 由底部栏管理，不在此渲染
-                    # subagent_frames 由面板回调管理
 
                 _apply_patches(self._old_vnode, patches, _render_node)
                 _logger.debug("VNode diff 检测到 %d 个 patches，已触发增量渲染", len(patches))
