@@ -8,13 +8,13 @@ from __future__ import annotations
 
 import pytest
 
-from src.chat_ui.react_ink._devtools import (
+from src.chat_ui.devtools.stats import (
     ErrorBoundary,
     debug_component_tree,
     inspect_hooks,
     RenderStats,
 )
-from src.chat_ui._components import TuiComponent
+from src.chat_ui.components.base import TuiComponent
 
 
 # ── 测试辅助 ────────────────────────────────────────────
@@ -155,7 +155,7 @@ class TestDebugComponentTree:
 
     def test_component_with_hooks(self):
         """含 hooks 的组件显示 hooks 信息。"""
-        from src.chat_ui.react_ink._types import HookState
+        from src.chat_ui.vdom.types import HookState
 
         comp = _GoodComp()
         comp._ensure_hooks()
@@ -181,7 +181,7 @@ class TestInspectHooks:
 
     def test_state_hook(self):
         """state hook 显示值。"""
-        from src.chat_ui.react_ink._types import HookState
+        from src.chat_ui.vdom.types import HookState
 
         comp = _GoodComp()
         comp._ensure_hooks()
@@ -193,7 +193,7 @@ class TestInspectHooks:
 
     def test_effect_hook(self):
         """effect hook 显示依赖和 cleanup 信息。"""
-        from src.chat_ui.react_ink._types import HookState
+        from src.chat_ui.vdom.types import HookState
 
         comp = _GoodComp()
         comp._ensure_hooks()
@@ -206,7 +206,7 @@ class TestInspectHooks:
 
     def test_ref_hook(self):
         """ref hook 显示 current 值。"""
-        from src.chat_ui.react_ink._types import HookState
+        from src.chat_ui.vdom.types import HookState
 
         comp = _GoodComp()
         comp._ensure_hooks()

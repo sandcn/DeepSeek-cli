@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import pytest
 
-from src.chat_ui.react_ink._focus import FocusManager, _FocusableEntry
+from src.chat_ui.vdom.focus import FocusManager, _FocusableEntry
 
 
 # ── 测试辅助 ────────────────────────────────────────────

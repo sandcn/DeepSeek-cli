@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import pytest
 
-from src.chat_ui.react_ink._hooks import (
+from src.chat_ui.vdom.hooks import (
     _HooksRuntime,
     _hooks_runtime,
     use_state,
@@ -25,7 +25,7 @@ from src.chat_ui.react_ink._hooks import (
     get_hooks_runtime,
     HookError,
 )
-from src.chat_ui.react_ink._types import HookState, EffectState
+from src.chat_ui.vdom.types import HookState, EffectState
 
 
 # ── 测试辅助 ────────────────────────────────────────────

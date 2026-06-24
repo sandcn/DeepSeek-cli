@@ -85,7 +85,7 @@ class TestDefaultBuild:
     def test_build_components_types(self, builder, mock_event_bus):
         """build() 返回的字段具有正确的类型。"""
         try:
-            from src.chat_ui._protocols import (
+            from src.chat_ui.infrastructure.protocol import (
                 BottomBarProtocol,
                 ContentRendererProtocol,
                 EventDispatcherProtocol,

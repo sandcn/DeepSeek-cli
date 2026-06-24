@@ -19,7 +19,7 @@ import sys
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from .._cursor_tracker import CursorTracker
+    from ..infrastructure.cursor_tracker import CursorTracker
 
 from ...ui._blessed import get_terminal as _blessed_get_terminal
 

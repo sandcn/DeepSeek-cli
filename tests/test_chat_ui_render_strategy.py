@@ -1,7 +1,7 @@
 """VNodeRenderStrategy 增量渲染测试"""
 from unittest.mock import MagicMock, call
-from src.chat_ui._render_strategy import VNodeRenderStrategy
-from src.chat_ui._vnode import VNode, Patch, PatchKind, diff
+from src.chat_ui.core.strategy import VNodeRenderStrategy
+from src.chat_ui.vdom.vnode import VNode, Patch, PatchKind, diff
 
 
 class TestVNodeRenderStrategyDelta:

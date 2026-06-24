@@ -374,7 +374,7 @@ class TestBug9PositionCursorUnderLock(unittest.TestCase):
     """
 
     def setUp(self):
-        from src.chat_ui._engine import RenderEngine
+        from src.chat_ui.core.engine import RenderEngine
         self.mock_renderer = MagicMock()
         self.mock_bb = MagicMock()
         self.engine = RenderEngine(self.mock_renderer, self.mock_bb, MagicMock())
@@ -420,7 +420,7 @@ class TestResizeDrainSkip(unittest.TestCase):
     """Bug 修复：无流式输出时终端 resize 被 _drain_queue() 快速空闲跳过阻塞。"""
 
     def setUp(self):
-        from src.chat_ui._engine import RenderEngine
+        from src.chat_ui.core.engine import RenderEngine
         self.mock_renderer = MagicMock()
         self.mock_bb = MagicMock()
         self.mock_bb.is_status_active = False
@@ -634,7 +634,7 @@ class TestResizeCursorOverride(unittest.TestCase):
     """
 
     def setUp(self):
-        from src.chat_ui._engine import RenderEngine
+        from src.chat_ui.core.engine import RenderEngine
         self.mock_renderer = MagicMock()
         self.mock_bb = MagicMock()
         self.mock_bb.is_status_active = False
@@ -655,7 +655,7 @@ class TestResizeCursorOverride(unittest.TestCase):
 
     def _enqueue_cmd(self):
         """将一个 dummy 命令入队以触发 Stage 1 渲染分支。"""
-        from src.chat_ui._const import RenderCommand
+        from src.chat_ui.commands.const import RenderCommand
         self.engine.push_cmd((RenderCommand.NOTIFICATION, "test"))
 
     def test_resized_skips_ensure_cursor_upper(self):

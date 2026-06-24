@@ -13,7 +13,7 @@ import re
 import pytest
 
 from src.chat_ui.react_ink import Box, BoxBorderStyle
-from src.chat_ui._components import TuiComponent
+from src.chat_ui.components.base import TuiComponent
 
 
 # ── 测试辅助 ────────────────────────────────────────────

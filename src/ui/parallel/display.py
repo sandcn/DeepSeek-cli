@@ -25,7 +25,7 @@ import time
 from typing import Any, TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from ...chat_ui._protocols import PanelContext
+    from ...chat_ui.infrastructure.protocol import PanelContext
 
 from ..output_target import IOutputTarget, TerminalTarget
 from ..renderer import FrameRenderer
@@ -38,7 +38,7 @@ from ..terminal_adapter import (
     register_sigwinch_callback,
     unregister_sigwinch_callback,
 )
-from ...chat_ui._cmd import CmdSubagentFrame
+from ...chat_ui.commands.types import CmdSubagentFrame
 
 # ── 常量 ────────────────────────────────────────────────
 

@@ -7,17 +7,17 @@ from __future__ import annotations
 
 import pytest
 
-from src.chat_ui.react_ink._hooks import (
+from src.chat_ui.vdom.hooks import (
     _hooks_runtime,
     use_state,
     use_effect,
     use_ref,
 )
-from src.chat_ui.react_ink._focus import FocusManager, _FocusableEntry
-from src.chat_ui.react_ink._box import Box
-from src.chat_ui.react_ink._animation import AnimationClock, _AnimationState
-from src.chat_ui._components import TuiComponent
-from src.chat_ui.react_ink._types import HookState
+from src.chat_ui.vdom.focus import FocusManager, _FocusableEntry
+from src.chat_ui.components.box import Box
+from src.chat_ui.components.animation import AnimationClock, _AnimationState
+from src.chat_ui.components.base import TuiComponent
+from src.chat_ui.vdom.types import HookState
 
 
 # ── 测试辅助 ────────────────────────────────────────────

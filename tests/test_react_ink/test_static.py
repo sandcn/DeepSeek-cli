@@ -9,8 +9,8 @@ from __future__ import annotations
 
 import pytest
 
-from src.chat_ui.react_ink._static import Static
-from src.chat_ui._components import TuiComponent
+from src.chat_ui.components.static import Static
+from src.chat_ui.components.base import TuiComponent
 
 
 # ── 测试辅助 ────────────────────────────────────────────

@@ -198,7 +198,7 @@ class TestMoveCursorToBottom:
         ):
             cursor.move_cursor_to_bottom()
 
-        from src.chat_ui._const import _ANSI_CURSOR_BOTTOM
+        from src.chat_ui.commands.const import _ANSI_CURSOR_BOTTOM
         mock_stdout.write.assert_called_once_with(_ANSI_CURSOR_BOTTOM)
         mock_stdout.flush.assert_called_once()
 
@@ -211,7 +211,7 @@ class TestMoveCursorToBottom:
             # side_effect 为列表：[第1次调用抛出, 第2次返回None]
             mock_stdout.write.side_effect = [OSError("stdout closed"), None]
 
-            from src.chat_ui._const import _ANSI_CURSOR_BOTTOM
+            from src.chat_ui.commands.const import _ANSI_CURSOR_BOTTOM
             cursor.move_cursor_to_bottom()
 
         # _write_ansi 捕获异常后写 fallback（带 blessed move_xy 的 ANSI）

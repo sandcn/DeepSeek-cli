@@ -8,12 +8,12 @@ from __future__ import annotations
 
 import pytest
 
-from src.chat_ui.react_ink._transform import (
+from src.chat_ui.components.transform import (
     Transform,
     _strip_ansi_prefix,
     _preserve_ansi_prefix,
 )
-from src.chat_ui._components import TuiComponent
+from src.chat_ui.components.base import TuiComponent
 
 
 # ── 测试辅助 ────────────────────────────────────────────

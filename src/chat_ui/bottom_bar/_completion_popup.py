@@ -23,7 +23,7 @@ from ._theme import (
 from ._cursor import _truncate_by_width, _visual_len
 
 if TYPE_CHECKING:
-    from .._cursor_tracker import CursorTracker
+    from ..infrastructure.cursor_tracker import CursorTracker
 
 
 class _CompletionPopup:

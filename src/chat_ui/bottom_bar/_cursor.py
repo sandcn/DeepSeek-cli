@@ -339,7 +339,7 @@ class CursorController:
         优先通过 blessed term.move_xy(0, height-1)，失败回退
         _ANSI_CURSOR_BOTTOM 常量。
         """
-        from src.chat_ui._const import _ANSI_CURSOR_BOTTOM
+        from ..commands.const import _ANSI_CURSOR_BOTTOM
         try:
             term = self._get_terminal()
             ans_seq = term.move_xy(0, term.height - 1)

@@ -17,7 +17,7 @@ from unittest.mock import patch
 
 import pytest
 
-from src.chat_ui import _components
+from src.chat_ui.components import base as _components
 
 
 # ── Helpers ────────────────────────────────────────────

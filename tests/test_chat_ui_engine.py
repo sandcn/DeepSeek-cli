@@ -22,10 +22,10 @@ import pytest
 
 sys.path.insert(0, "/home/DeepSeek-cli")
 
-from src.chat_ui._cmd import CmdContent, CmdReasoning, CmdPhaseDone, CmdNotification, CmdError, CmdToolCountDec
-from src.chat_ui._const import RenderCommand
-from src.chat_ui._utils import _cmd_name
-from src.chat_ui._engine import TuiEngine as RenderEngine, _ACTIVE_RENDER_INTERVAL, _IDLE_DRAIN_THRESHOLD
+from src.chat_ui.commands.types import CmdContent, CmdReasoning, CmdPhaseDone, CmdNotification, CmdError, CmdToolCountDec
+from src.chat_ui.commands.const import RenderCommand
+from src.chat_ui.infrastructure.utils import _cmd_name
+from src.chat_ui.core.engine import TuiEngine as RenderEngine, _ACTIVE_RENDER_INTERVAL, _IDLE_DRAIN_THRESHOLD
 
 
 # ══════════════════════════════════════════════════════
@@ -548,7 +548,7 @@ class TestRenderEngineDrainQueue:
             engine._cmd_queue.task_done()
 
         with (
-            patch("src.chat_ui._engine._try_acquire_output_lock") as m_lock,
+            patch("src.chat_ui.core.engine._try_acquire_output_lock") as m_lock,
         ):
             m_lock.return_value.__enter__.return_value = True
 
@@ -567,7 +567,7 @@ class TestRenderEngineDrainQueue:
         engine._cmd_queue = queue.Queue()
 
         with (
-            patch("src.chat_ui._engine._try_acquire_output_lock") as m_lock,
+            patch("src.chat_ui.core.engine._try_acquire_output_lock") as m_lock,
             patch.object(engine, "_position_cursor") as m_pos,
         ):
             m_lock.return_value.__enter__.return_value = True
@@ -587,7 +587,7 @@ class TestRenderEngineDrainQueue:
         engine._cmd_queue.put(CmdContent(text="world"))
 
         with (
-            patch("src.chat_ui._engine._try_acquire_output_lock") as m_lock,
+            patch("src.chat_ui.core.engine._try_acquire_output_lock") as m_lock,
         ):
             m_lock.return_value.__enter__.return_value = True
 
@@ -609,7 +609,7 @@ class TestRenderEngineDrainQueue:
         engine._cmd_queue.put(CmdContent(text="test"))
 
         with (
-            patch("src.chat_ui._engine._try_acquire_output_lock") as m_lock,
+            patch("src.chat_ui.core.engine._try_acquire_output_lock") as m_lock,
         ):
             m_lock.return_value.__enter__.return_value = True
 
@@ -632,7 +632,7 @@ class TestRenderEngineDrainQueue:
         engine._cmd_queue.put(CmdContent(text="坏数据"))
 
         with (
-            patch("src.chat_ui._engine._try_acquire_output_lock") as m_lock,
+            patch("src.chat_ui.core.engine._try_acquire_output_lock") as m_lock,
         ):
             m_lock.return_value.__enter__.return_value = True
 
@@ -652,7 +652,7 @@ class TestRenderEngineDrainQueue:
         engine._cmd_queue.put(CmdContent(text="数据"))
 
         with (
-            patch("src.chat_ui._engine._try_acquire_output_lock") as m_lock,
+            patch("src.chat_ui.core.engine._try_acquire_output_lock") as m_lock,
         ):
             m_lock.return_value.__enter__.return_value = True
 
@@ -665,7 +665,7 @@ class TestRenderEngineDrainQueue:
         engine._bb.is_status_active = True
 
         with (
-            patch("src.chat_ui._engine._try_acquire_output_lock") as m_lock,
+            patch("src.chat_ui.core.engine._try_acquire_output_lock") as m_lock,
         ):
             m_lock.return_value.__enter__.return_value = True
 
@@ -680,7 +680,7 @@ class TestRenderEngineDrainQueue:
         engine._bb.is_status_active = False
 
         with (
-            patch("src.chat_ui._engine._try_acquire_output_lock") as m_lock,
+            patch("src.chat_ui.core.engine._try_acquire_output_lock") as m_lock,
         ):
             m_lock.return_value.__enter__.return_value = True
 
@@ -693,7 +693,7 @@ class TestRenderEngineDrainQueue:
         engine._bb.is_status_active = True  # 否则会跳过
 
         with (
-            patch("src.chat_ui._engine._try_acquire_output_lock") as m_lock,
+            patch("src.chat_ui.core.engine._try_acquire_output_lock") as m_lock,
         ):
             m_lock.return_value.__enter__.return_value = False  # 锁未获取
 
@@ -712,7 +712,7 @@ class TestRenderEngineDrainQueue:
         engine._cmd_queue.put(CmdContent(text="数据"))
 
         with (
-            patch("src.chat_ui._engine._try_acquire_output_lock") as m_lock,
+            patch("src.chat_ui.core.engine._try_acquire_output_lock") as m_lock,
         ):
             m_lock.return_value.__enter__.return_value = True
 
@@ -727,7 +727,7 @@ class TestRenderEngineDrainQueue:
         engine._bb.force_redraw.side_effect = RuntimeError("redraw 异常")
 
         with (
-            patch("src.chat_ui._engine._try_acquire_output_lock") as m_lock,
+            patch("src.chat_ui.core.engine._try_acquire_output_lock") as m_lock,
             patch.object(engine, "_position_cursor") as m_pos,
         ):
             m_lock.return_value.__enter__.return_value = True
@@ -745,7 +745,7 @@ class TestRenderEngineDrainQueue:
         engine._position_cursor.side_effect = RuntimeError("光标异常")
 
         with (
-            patch("src.chat_ui._engine._try_acquire_output_lock") as m_lock,
+            patch("src.chat_ui.core.engine._try_acquire_output_lock") as m_lock,
         ):
             m_lock.return_value.__enter__.return_value = True
 
@@ -951,8 +951,8 @@ class TestRenderEngineEdgeCases:
 
     def test_render_uses_render_interval(self, engine):
         """_render 中动态轮询间隔：空 drain 连续 N 次后切 idle 间隔。"""
-        from src.chat_ui._const import _RENDER_INTERVAL
-        from src.chat_ui._engine import _ACTIVE_RENDER_INTERVAL, _IDLE_DRAIN_THRESHOLD
+        from src.chat_ui.commands.const import _RENDER_INTERVAL
+        from src.chat_ui.core.engine import _ACTIVE_RENDER_INTERVAL, _IDLE_DRAIN_THRESHOLD
 
         engine._render_running = True
 
@@ -992,7 +992,7 @@ class TestRenderEngineEdgeCases:
         engine._bb.is_status_active = True
 
         with patch(
-            "src.chat_ui._engine._try_acquire_output_lock",
+            "src.chat_ui.core.engine._try_acquire_output_lock",
             return_value=MagicMock(
                 __enter__=MagicMock(return_value=True),
                 __exit__=MagicMock(),

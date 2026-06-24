@@ -43,7 +43,7 @@ from ._theme import (
     _MIN_INPUT_ROWS,
     _PLACEHOLDER_TEXT,
 )
-from .._cursor_tracker import CursorTracker
+from ..infrastructure.cursor_tracker import CursorTracker
 from ...ui._lock import _try_acquire_output_lock
 
 # ── 新模块导入（BottomBar 拆解） ──

@@ -10,7 +10,7 @@ from __future__ import annotations
 import time
 import pytest
 
-from src.chat_ui.react_ink._animation import (
+from src.chat_ui.components.animation import (
     AnimationClock,
     _AnimationState,
     use_animation,

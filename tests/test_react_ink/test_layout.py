@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import pytest
 
-from src.chat_ui.react_ink._layout import (
+from src.chat_ui.vdom.layout import (
     FlexLayout,
     FlexStyle,
     _resolve_dimension,
@@ -19,7 +19,7 @@ from src.chat_ui.react_ink._layout import (
     _resolve_margin,
     _clamp,
 )
-from src.chat_ui.react_ink._types import LayoutBox, LayoutError
+from src.chat_ui.vdom.types import LayoutBox, LayoutError
 
 
 # ── 测试辅助 ────────────────────────────────────────────
