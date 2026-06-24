@@ -179,6 +179,9 @@ class VNodeRenderStrategy:
         self._build_vnode = vnode_builder  # build_vnode_tree 函数
         self._old_vnode: "VNode | None" = None
         self._output = output_func  # 输出函数: callable(str) → 写终端
+        # 缓存 React Ink Feature Flag（避免每帧读取环境变量）
+        from .react_ink import _is_enabled
+        self._use_react_ink: bool = _is_enabled()
 
     # ── 生命周期（空操作）────────────────────────
 
@@ -240,6 +243,42 @@ class VNodeRenderStrategy:
             if has_change:
                 # 渲染回调：将 VNode 渲染为终端输出
                 def _render_node(vnode: "VNode") -> None:
+                    # ── React Ink Box 渲染（Feature Flag 门控） ──
+                    if self._use_react_ink:
+                        try:
+                            from .react_ink._message_blocks import create_message_box
+
+                            # 多条目 VNode 类型：每条独立 Box
+                            _MULTI_ITEM_TYPES: dict[str, str] = {
+                                "user_messages": "messages",
+                                "tool_outputs": "outputs",
+                                "errors": "items",
+                                "notifications": "items",
+                            }
+                            prop_key = _MULTI_ITEM_TYPES.get(vnode.type)
+                            if prop_key is not None:
+                                for item in vnode.props.get(prop_key, ()):
+                                    box = create_message_box(vnode.type, str(item))
+                                    if self._output:
+                                        self._output(box.render())
+                                return
+
+                            # 单条目类型（thinking_block / answer_block 等）
+                            text = vnode.props.get("text", "")
+                            if text:
+                                box = create_message_box(vnode.type, text)
+                                if self._output:
+                                    self._output(box.render())
+                                return
+                        except KeyError:
+                            pass  # 未知 VNode type，fallthrough
+                        except Exception:
+                            _logger.debug("Box 渲染异常，回退到纯文本", exc_info=True)
+                            # fallthrough
+                        else:
+                            return  # Box 渲染成功，跳过原有路径
+
+                    # ── 原有渲染路径（Feature Flag 关闭时生效） ──
                     if vnode.type == "thinking_block":
                         text = vnode.props.get("text", "")
                         if text and self._output:

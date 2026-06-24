@@ -14,6 +14,7 @@ from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from ..api.renderer.output import OutputAdapter
+    from .react_ink._types import HookState
 
 from ._styled import StyledText
 
@@ -47,6 +48,12 @@ class TuiComponent:
 
     _children: list["TuiComponent"]
 
+    # ── Hooks 支持（惰性初始化，旧子类不触发） ──────────
+    _hooks: list["HookState"] | None = None   # hook 状态列表（惰性创建）
+    _hook_index: int = 0                       # 当前 hook 调用索引（每次 render 前重置）
+    _dirty: bool = False                       # 脏标记（状态变更时置 True）
+    _mounted: bool = False                     # 是否已挂载
+
     def __init__(self, children: list["TuiComponent"] | None = None):
         """初始化组件。
 
@@ -54,12 +61,50 @@ class TuiComponent:
             children: 子组件列表，默认空列表。所有现有子类无需修改即可兼容。
         """
         self._children = list(children) if children is not None else []
+        # _hooks / _hook_index / _dirty / _mounted 使用类属性默认值，
+        # 不在 __init__ 中重复赋值以避免与类属性默认值冗余。
 
     def _ensure_children(self) -> list["TuiComponent"]:
         """惰性初始化 _children（兼容未调用 super().__init__() 的旧子类）。"""
         if not hasattr(self, '_children'):
             self._children = []
         return self._children
+
+    # ── Hooks 支持方法 ────────────────────────────────
+
+    def _ensure_hooks(self) -> list["HookState"]:
+        """惰性初始化 _hooks 列表。
+
+        仅在组件首次使用 hooks 时创建，确保不触发 hooks 的旧子类零开销。
+
+        Returns:
+            hooks 状态列表（首次访问时自动创建为空列表）。
+        """
+        if self._hooks is None:
+            self._hooks = []
+        return self._hooks
+
+    def _reset_hooks(self) -> None:
+        """每次 render 前重置 hook_index。
+
+        应在 render() 或 render_vnode() 入口处调用，
+        确保 hooks 按正确顺序匹配。
+
+        @todo: 需要 VNode 渲染流程集成 — 当前由组件开发者手动调用，
+        后续应在 VNodeRenderStrategy.render_commands() 遍历组件树时自动调用
+        _reset_hooks()，类似 React 的 beginWork() 机制。
+        """
+        self._hook_index = 0
+
+    def _cleanup(self) -> None:
+        """Unmount 时清理所有 hooks 资源。
+
+        调用全局 hooks 运行时清理该组件的所有 effect cleanup 函数，
+        并标记组件为未挂载状态。
+        """
+        from .react_ink._hooks import get_hooks_runtime
+        get_hooks_runtime().cleanup_component(self)
+        self._mounted = False
 
     @property
     def children(self) -> list["TuiComponent"]:
@@ -135,9 +180,9 @@ class TuiComponent:
         """组件挂载到 VNode 树时调用。
 
         子类可重写以初始化资源（如订阅事件、打开文件等）。
-        默认 no-op。
+        默认设置 _mounted=True 标记挂载状态。
         """
-        pass
+        self._mounted = True
 
     def unmount(self) -> None:
         """组件从 VNode 树移除时调用。

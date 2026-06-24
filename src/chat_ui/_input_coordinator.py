@@ -14,6 +14,68 @@ if TYPE_CHECKING:
     from ._completion import _CmplHandler
 
 
+def _try_focus_navigate(key: str, is_shift: bool = False) -> bool:
+    """公共焦点导航逻辑，供 create_focus_key_handler 和 handle_focus_key 复用。
+
+    当 FocusManager 中有已注册的可聚焦组件时执行焦点遍历，
+    无焦点组件或焦点管理被禁用时返回 False。
+
+    Args:
+        key: 按键标识（如 'tab'）。
+        is_shift: Shift 修饰键是否按下（反向遍历焦点）。
+
+    Returns:
+        True 表示按键已被焦点系统处理，应阻止默认行为。
+    """
+    if key != "tab":
+        return False
+
+    from .react_ink._focus import FocusManager
+
+    fm = FocusManager()
+    if not fm.has_focusables or not fm.enabled:
+        return False
+
+    if is_shift:
+        fm.focus_previous()
+    else:
+        fm.focus_next()
+    return True
+
+
+# @reserved: 待 prompt_toolkit KeyBindings 集成
+def create_focus_key_handler():
+    """创建焦点遍历按键处理器，适用于 prompt_toolkit 等输入框架的 key_bindings。
+
+    返回的 handler 接受 (key_name, is_shift) 两个参数：
+    - key_name='tab', is_shift=False → 正向遍历焦点
+    - key_name='tab', is_shift=True  → 反向遍历焦点
+    仅在 FocusManager 有已注册组件时处理，否则返回 False。
+
+    Returns:
+        callable(key_name: str, is_shift: bool) -> bool
+
+    使用示例（prompt_toolkit）：
+        kb = KeyBindings()
+        focus_handler = create_focus_key_handler()
+
+        @kb.add('tab')
+        def _(event):
+            if focus_handler('tab', False):
+                return  # 焦点系统已处理
+            # 否则执行默认补全...
+
+        @kb.add('s-tab')
+        def _(event):
+            focus_handler('tab', True)
+    """
+
+    def handler(key_name: str = 'tab', is_shift: bool = False) -> bool:
+        return _try_focus_navigate(key_name, is_shift)
+
+    return handler
+
+
 class ChatUIInputCoordinator:
     """ChatUIConsumer 输入协调器。
 
@@ -73,3 +135,21 @@ class ChatUIInputCoordinator:
     def teardown_bottom_bar(self) -> None:
         """拆除底部栏。"""
         self._consumer._bottom_bar.teardown()
+
+    # @reserved: 待 prompt_toolkit KeyBindings 集成
+    def handle_focus_key(self, key: str, shift_pressed: bool = False) -> bool:
+        """处理焦点导航按键（Tab / Shift+Tab）。
+
+        委托给 _try_focus_navigate()，当 FocusManager 中有已注册的可聚焦组件时：
+        - key='tab', shift_pressed=False → 正向遍历焦点
+        - key='tab', shift_pressed=True  → 反向遍历焦点
+        无焦点组件或焦点管理被禁用时返回 False，由调用方执行默认行为。
+
+        Args:
+            key: 按键标识（如 'tab'）。
+            shift_pressed: Shift 修饰键是否按下。
+
+        Returns:
+            True 表示按键已被焦点系统处理，应阻止默认行为。
+        """
+        return _try_focus_navigate(key, shift_pressed)

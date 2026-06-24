@@ -38,6 +38,7 @@ from ._cmd import (
     CmdToolCountDec,
     CmdError,
     CmdSubagentFrame,
+    CmdAnimationTick,
 )
 from ._render_state import _RenderState
 
@@ -165,6 +166,10 @@ class TuiRenderer:
                 self._do_error(msg)
             case CmdSubagentFrame(frame_lines=fl):
                 self._do_subagent_frame(fl)
+            case CmdAnimationTick():
+                # 动画滴答由 TuiEngine._drain_queue() 统一处理，
+                # 此处为防御性空操作，防止未过滤的 CmdAnimationTick 落入 _ 分支。
+                pass
             case _:
                 _logger.error("未知渲染命令类型: %s", type(cmd).__name__)
 

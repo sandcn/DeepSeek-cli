@@ -148,3 +148,13 @@ class CmdStatusUpdate:
     tool_fail: int | None = None
     streaming: bool = False
     kind: int = 20
+
+
+@dataclass(frozen=True)
+class CmdAnimationTick:
+    """动画时钟滴答 — 驱动 AnimationClock._tick() 更新所有注册动画状态。
+
+    由 AnimationClock 定时器通过 TuiEngine.push_cmd() 入队，
+    在 render 线程中处理，避免竞态条件。
+    """
+    kind: int = 21

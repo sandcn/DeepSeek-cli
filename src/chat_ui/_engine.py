@@ -36,6 +36,15 @@ from ._cmd import (
     CmdInputChanged,
 )
 
+# ── React Ink 动画系统（条件导入，react_ink 子包可能不可用）──
+try:
+    from src.chat_ui.react_ink import AnimationClock, _is_enabled as _react_ink_enabled
+    from ._cmd import CmdAnimationTick
+except ImportError:
+    AnimationClock = None  # type: ignore[assignment]
+    CmdAnimationTick = None  # type: ignore[assignment]
+    _react_ink_enabled = lambda: False
+
 from ._lock import _try_acquire_output_lock
 
 _logger = logging.getLogger(__name__)
@@ -81,6 +90,9 @@ class TuiEngine:
         # 注入到 _components 模块，使 _get_terminal_width 默认使用此缓存
         import src.chat_ui._components as _comp
         _comp._term_width_cache = self._term_width_cache
+
+        # ── 动画时钟（React Ink 动画系统，惰性初始化）──
+        self._anim_clock = None  # AnimationClock | None，仅在 _is_enabled() 时创建
 
         # ── 一次性选择渲染策略（集中读取环境变量，替代分散在渲染循环中的 if/else 分支）──
         self._strategy: RenderStrategy = self._select_strategy()
@@ -178,6 +190,18 @@ class TuiEngine:
             except Exception:
                 _logger.warning("策略 start 失败", exc_info=True)
 
+        # ── 启动动画时钟（React Ink 动画系统）──
+        if self._anim_clock is None and AnimationClock is not None:
+            try:
+                if _react_ink_enabled():
+                    self._anim_clock = AnimationClock(
+                        on_tick=lambda: self.push_cmd(CmdAnimationTick())
+                    )
+                    self._anim_clock.start()
+                    _logger.debug("AnimationClock 已启动")
+            except Exception:
+                _logger.warning("AnimationClock 启动失败", exc_info=True)
+
     def stop(self) -> None:
         self._render_running = False
         if self._render_thread is not None:
@@ -194,6 +218,15 @@ class TuiEngine:
                 stop_fn()
             except Exception:
                 _logger.warning("策略 stop 失败", exc_info=True)
+
+        # ── 停止动画时钟 ──
+        if self._anim_clock is not None:
+            try:
+                self._anim_clock.stop()
+                _logger.debug("AnimationClock 已停止")
+            except Exception:
+                _logger.warning("AnimationClock 停止失败", exc_info=True)
+            self._anim_clock = None
 
     def flush(self, timeout: float | None = 5.0) -> None:
         if self._render_thread is None or not self._render_thread.is_alive():
@@ -308,8 +341,11 @@ class TuiEngine:
         阶段 3: 策略统一渲染命令 + _phase_redraw_bottom() 重绘底部栏
 
         所有渲染策略（Direct / VNode / Phase）统一通过 self._strategy.render_commands()。
+        CmdAnimationTick 在策略渲染前单独处理（直接调用 AnimationClock._tick()），
+        确保所有策略路径均能正确驱动动画。
+
         Returns:
-            是否处理了至少一条渲染命令
+            是否处理了至少一条渲染命令（含动画滴答）
         """
         commands: list = []
         self._phase_pre_update_panels()
@@ -322,10 +358,27 @@ class TuiEngine:
                     self._cmd_queue.task_done()
                 except queue.Empty:
                     break
-            if commands:
-                has_content = self._strategy.render_commands(self, commands)
+
+            # 分离动画滴答命令与内容命令
+            anim_ticks = [c for c in commands if isinstance(c, CmdAnimationTick)]
+            content_cmds = [c for c in commands if not isinstance(c, CmdAnimationTick)]
+
+            # 处理动画滴答（在 render 线程中更新所有动画状态）
+            # 缓存到局部变量防止 stop() 置 None 竞态
+            if anim_ticks:
+                clock = self._anim_clock
+                if clock is not None:
+                    try:
+                        clock._tick()
+                    except Exception:
+                        _logger.warning("AnimationClock._tick() 异常", exc_info=True)
+
+            # 渲染内容命令
+            if content_cmds:
+                has_content = self._strategy.render_commands(self, content_cmds)
             else:
-                has_content = False
+                has_content = bool(anim_ticks)
+
             self._phase_redraw_bottom(has_content)
             return has_content
 

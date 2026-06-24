@@ -89,5 +89,42 @@ __all__ = [
     "_active_consumer",
     "_MAIN_LABEL",
     "setup_chat_ui_error_handler",
+    "_lazy_import_react_ink",
 ]
+
+
+def _lazy_import_react_ink() -> dict:
+    """惰性导入 react_ink 子包的所有公共 API 符号。
+
+    用途：供外部模块（如 ChatUIConsumer / TuiEngine）在运行时按需获取
+    React Ink 的公共 API，避免在模块导入时就加载整个 react_ink 子包。
+
+    调用方：
+    - src/chat_ui/_consumer.py：启用 React Ink 模式时导入 hooks/组件
+    - src/chat_ui/_engine.py：启动 AnimationClock 时导入动画 API
+    - 外部脚本/测试：通过 ChatUIConsumer 间接调用
+
+    仅在环境变量 CHAT_UI_USE_REACT_LIKE 启用时返回非空 dict，
+    否则返回空 dict（零开销，不触发任何 react_ink 模块加载）。
+
+    Returns:
+        包含所有 react_ink 公共 API 符号的 dict（键为符号名，值为符号对象），
+        或空 dict（未启用时）。
+    """
+    from src.chat_ui.react_ink import _is_enabled
+    if _is_enabled():
+        from src.chat_ui.react_ink import (
+            use_state, use_effect, use_ref, use_memo, use_callback,
+            use_context, use_reducer, create_context,
+            use_focus, use_focus_manager, FocusManager,
+            Box, BoxBorderStyle,
+            use_animation, AnimationClock,
+            Static, Transform,
+            FlexLayout, FlexStyle,
+            ErrorBoundary, debug_component_tree, inspect_hooks,
+        )
+        _api = dict(locals())  # 复制 locals() 避免自引用问题
+        _api.pop("_is_enabled", None)  # 排除 Feature Flag 函数本身
+        return _api
+    return {}
 
