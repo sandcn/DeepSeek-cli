@@ -137,6 +137,12 @@ class ChatUIConsumer:
         )
         self._bound_handlers = ref[0]
 
+        # 注册回调到 ui/_lock.py，替代 ui/ → chat_ui 的直接 import
+        # 依赖方向：chat_ui → ui（单向），符合架构分层
+        from ..ui._lock import register_write_line_callback, register_is_chat_ui_active_callback
+        register_write_line_callback(self.write_line)
+        register_is_chat_ui_active_callback(lambda: get_active_chat_ui() is not None)
+
     def stop(self) -> None:
         """停止 ChatUI 消费者。
 

@@ -22,7 +22,10 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
-from typing import Any
+from typing import Any, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from ...chat_ui._protocols import PanelContext
 
 from ..output_target import IOutputTarget, TerminalTarget
 from ..renderer import FrameRenderer
@@ -30,7 +33,7 @@ from ..events.event_bus import DisplayEventBus
 from ..events.event_types import LiveOutputEvent
 from ._config import DisplayConfig
 from ..base_display import BaseDisplay
-from ..common.state_store import AgentStateStore
+from ..state.agent_state import AgentStateStore
 from ..terminal_adapter import (
     register_sigwinch_callback,
     unregister_sigwinch_callback,
@@ -117,6 +120,18 @@ class ParallelDisplay(BaseDisplay):
         # stdout 捕获锁
         self._capture_lock = asyncio.Lock()
 
+        # PanelContext 注入（替代 get_active_chat_ui() 调用）
+        self._panel_ctx: "PanelContext | None" = None
+
+    def set_panel_context(self, ctx) -> None:
+        """注入 PanelContext（替代 get_active_chat_ui() 调用）。
+
+        由外部调用方（parallel_executor）在 start() 前调用，
+        注入 ChatUIConsumer 实例，display.py 通过此协议访问 ChatUI，
+        避免直接 import chat_ui 模块。
+        """
+        self._panel_ctx = ctx
+
     # ── 终端缩放回调 ────────────────────────────────────
 
     def _on_resize(self, width: int, height: int) -> None:
@@ -167,10 +182,8 @@ class ParallelDisplay(BaseDisplay):
             reset_last_lines = True
 
         try:
-            import src.chat_ui as _chat_ui_mod  # noqa: PLC0415
-            _chat_ui = _chat_ui_mod.get_active_chat_ui()
-            if _chat_ui is not None:
-                se = _chat_ui.bottom_bar.get_scroll_end()
+            if self._panel_ctx is not None:
+                se = self._panel_ctx.bottom_bar.get_scroll_end()
                 if se is not None and se > 0:
                     new_scroll_end = int(se)
         except Exception:
@@ -392,26 +405,26 @@ class ParallelDisplay(BaseDisplay):
         self._started = True
         self._stopped = False
 
-        import src.chat_ui as _chat_ui_mod  # noqa: PLC0415
-        _chat_ui = _chat_ui_mod.get_active_chat_ui()
-        if _chat_ui is not None:
-            self._adapter = _chat_ui.output_adapter
-            # ★ 获取 push_cmd 回调（向命令队列推送 SUBAGENT_FRAME 命令）
-            self._push_cmd = _chat_ui.push_cmd
-            # ★ 保存 DECSTBM 滚动区域底部行号，供帧定位使用
-            try:
-                se = _chat_ui.bottom_bar.get_scroll_end()
-                self._scroll_end = int(se) if se is not None else 0
-            except Exception:
-                self._scroll_end = 0
-            # 首次渲染（推送 SUBAGENT_FRAME 命令到队列）
-            from .._lock import _try_acquire_output_lock
-            with _try_acquire_output_lock(
-                name="parallel_display.start", timeout=0.5,
-            ) as _locked:
-                if _locked:
-                    _chat_ui.ensure_cursor_upper()
-                self._push_frame_cmd()
+        if self._panel_ctx is None:
+            return
+        _chat_ui = self._panel_ctx
+        self._adapter = _chat_ui.output_adapter
+        # ★ 获取 push_cmd 回调（向命令队列推送 SUBAGENT_FRAME 命令）
+        self._push_cmd = _chat_ui.push_cmd
+        # ★ 保存 DECSTBM 滚动区域底部行号，供帧定位使用
+        try:
+            se = _chat_ui.bottom_bar.get_scroll_end()
+            self._scroll_end = int(se) if se is not None else 0
+        except Exception:
+            self._scroll_end = 0
+        # 首次渲染（推送 SUBAGENT_FRAME 命令到队列）
+        from .._lock import _try_acquire_output_lock
+        with _try_acquire_output_lock(
+            name="parallel_display.start", timeout=0.5,
+        ) as _locked:
+            if _locked:
+                _chat_ui.ensure_cursor_upper()
+            self._push_frame_cmd()
 
         # 注册终端 resize 回调
         register_sigwinch_callback(self._on_resize)
@@ -451,10 +464,8 @@ class ParallelDisplay(BaseDisplay):
 
         # ★ 注销面板刷新回调（render 线程不再调用）
         try:
-            import src.chat_ui as _chat_ui_mod  # noqa: PLC0415
-            _chat_ui = _chat_ui_mod.get_active_chat_ui()
-            if _chat_ui is not None:
-                _chat_ui.set_panel_refresh_callback(None)
+            if self._panel_ctx is not None:
+                self._panel_ctx.set_panel_refresh_callback(None)
         except Exception:
             _logger.debug("注销 panel_refresh_callback 失败", exc_info=True)
 

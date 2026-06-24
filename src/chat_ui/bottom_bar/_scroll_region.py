@@ -19,11 +19,35 @@ import sys
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from ._cursor_tracker import CursorTracker
+    from .._cursor_tracker import CursorTracker
 
-from ._blessed import get_terminal
+from ...ui._blessed import get_terminal as _blessed_get_terminal
 
 _logger = logging.getLogger(__name__)
+
+
+def _get_terminal():
+    """获取 get_terminal 函数引用，兼容测试通过 stub 路径或新路径 patch。
+
+    双重路径兼容：
+      1. 旧测试走 src.ui._scroll_region stub（检查 sys.modules）
+      2. 新测试可直接 patch 本模块的 get_terminal 变量（module-level fallback）
+    最终 fallback 到 get_terminal（而非 _blessed_get_terminal 直接引用），
+    确保 patch 能覆盖到本模块的模块级变量。
+    """
+    try:
+        _stub_mod = sys.modules.get("src.ui._scroll_region")
+        if _stub_mod is not None:
+            _stub_gt = _stub_mod.get_terminal
+            if _stub_gt is not _blessed_get_terminal:
+                return _stub_gt
+    except Exception:
+        pass
+    return get_terminal
+
+
+# ── 公开别名（供 stub 模块重导出） ──
+get_terminal = _blessed_get_terminal
 
 
 # ═══════════════════════════════════════════════════════════
@@ -33,7 +57,7 @@ _logger = logging.getLogger(__name__)
 def blessed_move_clear(row: int) -> str:
     """生成移到指定行并清行的 ANSI 序列（1-based row）。"""
     try:
-        term = get_terminal()
+        term = _get_terminal()()
         result = term.move_xy(0, row - 1) + term.clear_eol()
         return result if result else f"\033[{row};1H\033[K"
     except Exception:
@@ -43,7 +67,7 @@ def blessed_move_clear(row: int) -> str:
 def blessed_cursor_goto(row: int, col: int) -> str:
     """生成移到指定行列的 ANSI 序列（1-based）。"""
     try:
-        term = get_terminal()
+        term = _get_terminal()()
         result = term.move_xy(col - 1, row - 1)
         return result if result else f"\033[{row};{col}H"
     except Exception:
@@ -53,7 +77,7 @@ def blessed_cursor_goto(row: int, col: int) -> str:
 def blessed_save_cursor() -> str:
     """保存光标位置（DECSC/SCOSC）。"""
     try:
-        sc = get_terminal().sc
+        sc = _get_terminal()().sc
         return sc if isinstance(sc, str) and sc else "\0337"
     except Exception:
         return "\0337"
@@ -62,7 +86,7 @@ def blessed_save_cursor() -> str:
 def blessed_restore_cursor() -> str:
     """恢复光标位置（DECRC/SCRC）。"""
     try:
-        rc = get_terminal().rc
+        rc = _get_terminal()().rc
         return rc if isinstance(rc, str) and rc else "\0338"
     except Exception:
         return "\0338"
@@ -73,7 +97,7 @@ def blessed_scroll_up(n: int) -> str:
     if n <= 0:
         return ""
     try:
-        seq = get_terminal().indn(n)
+        seq = _get_terminal()().indn(n)
         return seq if isinstance(seq, str) and seq else f"\033[{n}S"
     except Exception:
         return f"\033[{n}S"
@@ -84,7 +108,7 @@ def blessed_scroll_down(n: int) -> str:
     if n <= 0:
         return ""
     try:
-        seq = get_terminal().rin(n)
+        seq = _get_terminal()().rin(n)
         return seq if isinstance(seq, str) and seq else f"\033[{n}T"
     except Exception:
         return f"\033[{n}T"
@@ -93,7 +117,7 @@ def blessed_scroll_down(n: int) -> str:
 def blessed_set_scroll_region(top: int, bottom: int) -> str:
     """设置滚动区域 DECSTBM（1-based）。"""
     try:
-        term = get_terminal()
+        term = _get_terminal()()
         seq = term.csr(top - 1, bottom - 1)
         return seq if isinstance(seq, str) and seq else f"\033[{top};{bottom}r"
     except Exception:
@@ -112,7 +136,7 @@ def blessed_reset_scroll_region() -> str:
 def _term_height() -> int:
     """获取终端高度。"""
     try:
-        return get_terminal().height
+        return _get_terminal()().height
     except Exception:
         import shutil
         return shutil.get_terminal_size().lines
@@ -121,7 +145,7 @@ def _term_height() -> int:
 def _term_width() -> int:
     """获取终端宽度。"""
     try:
-        return get_terminal().width
+        return _get_terminal()().width
     except Exception:
         import shutil
         return shutil.get_terminal_size().columns
@@ -203,10 +227,10 @@ class ScrollRegionManager:
         term_w = _term_width()
         text = last_text or ""
         max_input = max(1, term_w - 4)
-        # 复用 _compute_cursor_visual_pos（从旧模块导入）
-        from ._bottom_cursor import _compute_cursor_visual_pos
+        # 复用 _compute_cursor_visual_pos（从迁移模块导入）
+        from ._cursor import _compute_cursor_visual_pos
         vis_row, vis_col = _compute_cursor_visual_pos(text, cursor_pos, max_input)
-        from ._bottom_bar_theme import _BOTTOM_MIN_LINES
+        from ._theme import _BOTTOM_MIN_LINES
         total = max(_BOTTOM_MIN_LINES, last_bottom_lines)
         r_cursor = height - total + 3 + popup_height + vis_row
         r_cursor = max(1, min(r_cursor, height))

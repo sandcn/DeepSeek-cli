@@ -26,6 +26,7 @@ def run_bottom_bar_selection(
     display_items: list[str],
     initial_idx: int = 0,
     title: str = "选择",
+    bottom_bar=None,  # _BottomBar 实例，传入时直接使用（避免 get_active_chat_ui）
 ) -> dict:
     """在底部栏补全弹窗中运行交互式选择，返回选中结果。
 
@@ -42,17 +43,13 @@ def run_bottom_bar_selection(
         {"action": "confirmed"|"cancel"|"error",
          "index": int | None}
     """
-    from ..chat_ui import get_active_chat_ui
-
     fd = sys.stdin.fileno()
     if not os.isatty(fd):
         return {"action": "error", "index": None}
 
-    chat_ui = get_active_chat_ui()
-    if chat_ui is None:
-        return {"action": "error", "index": None}
-    bb = chat_ui._bottom_bar
-    if bb is None:
+    if bottom_bar is not None:
+        bb = bottom_bar
+    else:
         return {"action": "error", "index": None}
 
     if not bb._active:

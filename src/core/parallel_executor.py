@@ -509,6 +509,7 @@ class ParallelExecutor:
             sa = self._spawner.spawn(spec, i, display)
             agents.append(sa)
 
+        display.set_panel_context(get_active_chat_ui())
         display.start()
         coros = [self._run_one(sa, display, stagger=i) for i, sa in enumerate(agents)]
         raw_results = await asyncio.gather(*coros, return_exceptions=True)

@@ -2,11 +2,12 @@
 from __future__ import annotations
 
 import shutil
-from ..colors import RESET, DARK_GRAY
+from ...core.constants import RESET, DARK_GRAY
 from ..ansi import strip_ansi, truncate_ansi_line
 from ...config import MAX_CONTEXT_CHARS
 from ...core.context_selector import calc_usage_percent_values, total_chars
 from .._lock import _try_acquire_output_lock
+from .. import _lock as _lock_mod  # 通过模块访问回调变量，支持运行时注册
 from ..parallel._text_formatter import TextFormatter
 
 _COMPRESS_WARN_PCT = 90
@@ -93,13 +94,12 @@ def show_round_cost(delta_in, delta_out, delta_calls, model, prices, total_stats
     if max_w > 10:
         line = truncate_ansi_line(line, max_w)
     with _try_acquire_output_lock(name="cost_display", timeout=1.0):
-        chat_ui = None
+        # 通过回调路由到 ChatUI 上屏（回调由 chat_ui 侧在初始化时注册）
         try:
-            from ...chat_ui import get_active_chat_ui
-            chat_ui = get_active_chat_ui()
+            if _lock_mod._write_line_callback is not None:
+                _lock_mod._write_line_callback(line)
+                return
         except Exception:
             pass
-        if chat_ui is not None:
-            chat_ui.write_line(line)
-        else:
-            print(line)
+        # 回调不可用 → 降级为 print()
+        print(line)

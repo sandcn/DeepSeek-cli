@@ -20,7 +20,7 @@ from __future__ import annotations
 import time
 
 from ..ansi import strip_ansi, truncate_ansi_sgr
-from ..colors import DIM, RESET, CYAN, BOLD, DARK_GRAY, \
+from ...core.constants import DIM, RESET, CYAN, BOLD, DARK_GRAY, \
     BRIGHT_CYAN, GREEN, YELLOW
 from ..theme import THEME
 from ..parallel._text_formatter import TextFormatter

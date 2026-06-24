@@ -6,7 +6,7 @@
 
 from __future__ import annotations
 
-from typing import Protocol, runtime_checkable
+from typing import Any, Protocol, runtime_checkable
 
 
 @runtime_checkable
@@ -54,3 +54,16 @@ class RenderPhase(Protocol):
             True 表示本阶段有实际渲染输出，False 表示无输出。
         """
         ...
+
+
+class PanelContext(Protocol):
+    """parallel/display.py 通过此协议访问 ChatUI，避免直接 import chat_ui。
+
+    ChatUIConsumer 隐式满足此协议（拥有 bottom_bar、output_adapter、push_cmd）。
+    """
+
+    @property
+    def bottom_bar(self) -> Any: ...
+    @property
+    def output_adapter(self) -> Any: ...
+    def push_cmd(self, cmd: Any) -> None: ...

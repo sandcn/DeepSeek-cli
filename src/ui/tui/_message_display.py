@@ -132,7 +132,7 @@ class _OutputFileAdapter:
 
 # ── 颜色快捷引用 ──────────────────────────────────────────
 
-from ..colors import CYAN as _C, DIM as _D, RESET as _R, GREEN as _G, \
+from ...core.constants import CYAN as _C, DIM as _D, RESET as _R, GREEN as _G, \
     YELLOW as _Y, BLUE as _B, BRIGHT_CYAN as _BC, BRIGHT_WHITE as _BW, \
     BOLD as _BD, DARK_GRAY as _DG, BRIGHT_GREEN as _BG
 

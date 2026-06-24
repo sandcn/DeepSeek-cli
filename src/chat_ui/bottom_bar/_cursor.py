@@ -13,6 +13,9 @@
 
 from __future__ import annotations
 
+import sys
+from typing import Callable
+
 from wcwidth import wcswidth
 
 
@@ -24,6 +27,7 @@ __all__ = [
     "_wrap_by_width",
     "_compute_cursor_visual_pos",
     "_visual_len",
+    "CursorController",
 ]
 
 
@@ -267,3 +271,79 @@ def _visual_len(s: str) -> int:
             w += cw if cw >= 0 else 1
             i += 1
     return w
+
+
+# ═══════════════════════════════════════════════════════════
+# CursorController — 光标定位控制器
+# ═══════════════════════════════════════════════════════════
+
+class CursorController:
+    """光标定位控制器 — 封装 blessed/ANSI 光标操作。
+
+    负责：光标定位(position_cursor)、移动到底部(move_cursor_to_bottom)、
+    确保光标在上部(ensure_cursor_upper)、写 ANSI 转义序列(_write_ansi)。
+
+    构造注入：get_terminal 回调（可选），用于测试/DI；None 时使用
+    src.ui._blessed.get_terminal 模块级默认值。
+    """
+
+    def __init__(self, bottom_bar, get_terminal: Callable | None = None):
+        self._bb = bottom_bar
+        if get_terminal is not None:
+            self._get_terminal = get_terminal
+        else:
+            self._get_terminal = self._default_get_terminal
+
+    @staticmethod
+    def _default_get_terminal():
+        """模块级默认值：延迟导入避免循环依赖。"""
+        from ...ui._blessed import get_terminal
+        return get_terminal()
+
+    def _write_ansi(self, text: str, fallback: str) -> None:
+        """写 ANSI 转义序列：优先 blessed 路径，失败回退 raw ANSI。
+
+        Args:
+            text: blessed 生成的 ANSI 转义序列。
+            fallback: 当 blessed 不可用或 write 失败时的回退序列。
+        """
+        try:
+            self._get_terminal()
+            sys.__stdout__.write(text)
+        except Exception:
+            sys.__stdout__.write(fallback)
+        sys.__stdout__.flush()
+
+    def position_cursor(self) -> None:
+        """根据 _bb 的光标信息定位终端光标。
+
+        委托 _bb.get_cursor_info() + _bb.compute_cursor_position()
+        获取目标行列，通过 blessed（优先）或 raw ANSI（回退）写入。
+        """
+        text, cursor_pos, h, w = self._bb.get_cursor_info()
+        r_cursor, cursor_col = self._bb.compute_cursor_position(text, cursor_pos, h, w)
+        try:
+            term = self._get_terminal()
+            sys.__stdout__.write(term.move_xy(cursor_col - 1, r_cursor - 1))
+        except Exception:
+            sys.__stdout__.write(f"\033[{r_cursor};{cursor_col}H")
+        sys.__stdout__.flush()
+
+    def ensure_cursor_upper(self) -> None:
+        """委托 _bb 确保光标在上部区域。"""
+        self._bb.ensure_cursor_in_upper()
+
+    def move_cursor_to_bottom(self) -> None:
+        """移动光标到终端底部。
+
+        优先通过 blessed term.move_xy(0, height-1)，失败回退
+        _ANSI_CURSOR_BOTTOM 常量。
+        """
+        from src.chat_ui._const import _ANSI_CURSOR_BOTTOM
+        try:
+            term = self._get_terminal()
+            ans_seq = term.move_xy(0, term.height - 1)
+            self._write_ansi(ans_seq, _ANSI_CURSOR_BOTTOM)
+        except Exception:
+            sys.__stdout__.write(_ANSI_CURSOR_BOTTOM)
+            sys.__stdout__.flush()

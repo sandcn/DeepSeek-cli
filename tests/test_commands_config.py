@@ -77,7 +77,7 @@ _MOCK_MODULES = {
     'src.ui.colors': _mock_colors,
     'src.ui.theme': _mock_theme,
     'src.ui._lock': MagicMock(),
-    'src.ui._bottom_bar': MagicMock(),
+    'src.chat_ui.bottom_bar._bar': MagicMock(),
     'src.ui._completion': MagicMock(),
     'src.ui.picker': MagicMock(),  # 已删除的 picker.py，防御性 mock
     'src.api': MagicMock(),

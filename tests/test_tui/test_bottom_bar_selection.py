@@ -19,7 +19,6 @@ from unittest.mock import MagicMock, patch
 from src.ui._bottom_bar_selection import run_bottom_bar_selection, _KEY_ENTER, _KEY_UP, _KEY_DOWN, _KEY_ESCAPE
 
 # 统一的 patch 目标
-_CHAT_UI_PATCH = "src.chat_ui.get_active_chat_ui"
 _TERMINAL_PATCH = "src.ui._bottom_bar_selection.get_terminal"
 
 
@@ -89,8 +88,7 @@ class TestRunBottomBarSelectionEnter(unittest.TestCase):
         mock_stdin = MagicMock()
         mock_stdin.fileno.return_value = 0
 
-        with patch(_CHAT_UI_PATCH, return_value=mock_chat_ui), \
-             patch(_TERMINAL_PATCH, return_value=mock_term), \
+        with patch(_TERMINAL_PATCH, return_value=mock_term), \
              patch("sys.stdin", mock_stdin), \
              patch("os.isatty", return_value=True), \
              patch.object(sys, '__stdout__', MagicMock()):
@@ -99,6 +97,7 @@ class TestRunBottomBarSelectionEnter(unittest.TestCase):
                 display_items=display_items,
                 initial_idx=initial_idx,
                 title=title,
+                bottom_bar=mock_chat_ui._bottom_bar,
             )
 
     # ── KEY_ENTER 序列键确认 ─────────────────────────

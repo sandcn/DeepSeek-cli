@@ -137,7 +137,7 @@ class TestCursorVisualPosFromCache:
 
     def test_newline_boundary_returns_next_segment_start(self):
         """\\n 后边界 → 返回下一段起始。"""
-        from src.ui._bottom_bar import _BottomBar
+        from src.chat_ui.bottom_bar._bar import _BottomBar
         bb = _BottomBar()
         text = "ab\ncd"
         # 模拟 _draw_input_lines_locked 已执行后的缓存状态
@@ -148,7 +148,7 @@ class TestCursorVisualPosFromCache:
 
     def test_newline_boundary_last_line_no_next(self):
         """文件末尾（无下一段）→ 走正常分支返回段内 col。"""
-        from src.ui._bottom_bar import _BottomBar
+        from src.chat_ui.bottom_bar._bar import _BottomBar
         bb = _BottomBar()
         text = "ab\ncd"
         bb._cached_wrapped_for = text
@@ -158,7 +158,7 @@ class TestCursorVisualPosFromCache:
 
     def test_mid_segment_no_boundary(self):
         """段内位置（非边界）→ 走正常分支。"""
-        from src.ui._bottom_bar import _BottomBar
+        from src.chat_ui.bottom_bar._bar import _BottomBar
         bb = _BottomBar()
         text = "abcdef"
         bb._cached_wrapped_for = text
@@ -176,7 +176,7 @@ class TestCursorVisualPosFromCache:
 
     def test_newline_boundary_returns_next_segment_start(self):
         """\n 后边界 → 返回下一段起始。"""
-        from src.ui._bottom_bar import _BottomBar
+        from src.chat_ui.bottom_bar._bar import _BottomBar
         bb = _BottomBar()
         text = "ab\ncd"
         bb._cached_wrapped_for = text
@@ -185,7 +185,7 @@ class TestCursorVisualPosFromCache:
 
     def test_newline_boundary_last_line_no_next(self):
         """文件末尾（无下一段）→ 走正常分支返回段尾 col。"""
-        from src.ui._bottom_bar import _BottomBar
+        from src.chat_ui.bottom_bar._bar import _BottomBar
         bb = _BottomBar()
         text = "ab\ncd"
         bb._cached_wrapped_for = text
@@ -195,7 +195,7 @@ class TestCursorVisualPosFromCache:
 
     def test_mid_segment_no_boundary(self):
         """段内位置（非边界）→ 走正常分支。"""
-        from src.ui._bottom_bar import _BottomBar
+        from src.chat_ui.bottom_bar._bar import _BottomBar
         bb = _BottomBar()
         text = "abcdef"
         bb._cached_wrapped_for = text

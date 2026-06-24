@@ -14,7 +14,7 @@ from functools import lru_cache
 from typing import Optional, TYPE_CHECKING
 
 from ._lock import diff_active, _try_acquire_output_lock, locked_print
-from .colors import DIM, RED, GREEN, RESET
+from ..core.constants import DIM, RED, GREEN, RESET
 
 _logger = logging.getLogger(__name__)
 

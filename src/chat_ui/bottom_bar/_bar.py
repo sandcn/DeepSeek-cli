@@ -8,10 +8,10 @@
   - 纯光标移动轻量路径 → 无锁直写 ANSI 序列（GIL + 幂等性保证安全）
 
 拆分为多个子模块：
-  - _bottom_bar_theme    — ANSI 颜色常量 + 占位符 + 布局配置
-  - _bottom_bar_status   — 状态行格式化 + 工具计数（_StatusMixin）
-  - _bottom_bar_completion — 补全弹窗（_CompletionPopup 独立类）
-  - _bottom_bar_selection  — run_bottom_bar_selection() 交互选择
+  - _theme              — ANSI 颜色常量 + 占位符 + 布局配置
+  - _status             — 状态行格式化 + 工具计数（_StatusMixin）
+  - _completion_popup   — 补全弹窗（_CompletionPopup 独立类）
+  - _bottom_bar_selection — run_bottom_bar_selection() 交互选择（仍在 ui/ 层）
 
 终端控制策略：
   - 非关键路径 ANSI 序列（光标定位、清行）使用 Blessed Terminal
@@ -28,12 +28,12 @@ from typing import Optional
 
 from wcwidth import wcswidth
 
-from ._blessed import get_terminal
-from ._bottom_bar_completion import _CompletionPopup
-from ._bottom_bar_selection import run_bottom_bar_selection  # noqa: F401 — 重导出保持兼容
-from ._bottom_bar_status import _StatusMixin, _get_snapshot, _TOKEN_SPEED_SNAPSHOT  # noqa: F401 — 重导出供测试 patch
+from ...ui._blessed import get_terminal
+from ._completion_popup import _CompletionPopup
+from ...ui._bottom_bar_selection import run_bottom_bar_selection  # noqa: F401 — 重导出保持兼容
+from ._status import _StatusMixin, _get_snapshot, _TOKEN_SPEED_SNAPSHOT  # noqa: F401 — 重导出供测试 patch
 from ._stdout_tracker import _StdoutLineTracker
-from ._bottom_bar_theme import (
+from ._theme import (
     _BOTTOM_MIN_HEIGHT,
     _BOTTOM_MIN_LINES,
     _COLOR_DEEP_CYAN,
@@ -43,8 +43,8 @@ from ._bottom_bar_theme import (
     _MIN_INPUT_ROWS,
     _PLACEHOLDER_TEXT,
 )
-from ._cursor_tracker import CursorTracker
-from ._lock import _try_acquire_output_lock
+from .._cursor_tracker import CursorTracker
+from ...ui._lock import _try_acquire_output_lock
 
 # ── 新模块导入（BottomBar 拆解） ──
 from ._scroll_region import (
@@ -72,6 +72,34 @@ _blessed_scroll_down = blessed_scroll_down
 _blessed_set_scroll_region = blessed_set_scroll_region
 _blessed_reset_scroll_region = blessed_reset_scroll_region
 
+# ── 显式 __all__ 以确保 `from ... import *` 正确重导出 _ 前缀名称 ──
+__all__ = [
+    "_BottomBar",
+    "_CompletionPopup",
+    "_StatusMixin",
+    "_get_snapshot",
+    "_TOKEN_SPEED_SNAPSHOT",
+    "run_bottom_bar_selection",
+    "ScrollRegionManager",
+    "InputRenderer",
+    "get_terminal",
+    "blessed_save_cursor",
+    "blessed_restore_cursor",
+    "blessed_set_scroll_region",
+    "blessed_reset_scroll_region",
+    "blessed_move_clear",
+    "blessed_cursor_goto",
+    "blessed_scroll_up",
+    "blessed_scroll_down",
+    "_blessed_move_clear",
+    "_blessed_cursor_goto",
+    "_blessed_save_cursor",
+    "_blessed_restore_cursor",
+    "_blessed_scroll_up",
+    "_blessed_scroll_down",
+    "_blessed_set_scroll_region",
+    "_blessed_reset_scroll_region",
+]
 
 _logger = logging.getLogger(__name__)
 

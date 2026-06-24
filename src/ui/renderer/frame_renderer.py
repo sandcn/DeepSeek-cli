@@ -13,7 +13,7 @@ import re
 import unicodedata
 from typing import Dict, List
 
-from ..colors import RESET as _C_RESET
+from ...core.constants import RESET as _C_RESET
 from ..parallel._config import (
     SUMMARY_SEPARATOR as _DEFAULT_SUMMARY_SEPARATOR,
     SUMMARY_ICON_RUNNING as _DEFAULT_SUMMARY_ICON_RUNNING,

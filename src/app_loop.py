@@ -21,13 +21,13 @@ from .core.agent import Agent
 from .core.commands import handle_command
 from .core.message_queue import MessageQueue
 
-from .ui.colors import CYAN, DIM, RESET, GREEN, YELLOW
-from .ui.msg_list import edit_current_messages
+from .core.constants import CYAN, DIM, RESET, GREEN, YELLOW
+from .ui.tui.message_editor import MessageEditor
 from .ui.tui._message_display import _display_messages
 from .ui.tui._ttl_cache import TTLCache
 from .chat_msgs import save_session, get_recover_cmd
 from .paths import CHAT_MSGS_DIR
-from .ui.narrow import is_narrow, narrow_sep_width
+from .ui.tui._terminal import is_narrow, narrow_sep_width
 from .api.escape_monitor import EscapeMonitor, get_active_monitor, stop_active_monitor
 from .api.interrupt_async import reset_interrupt_async
 from .api.stats import reset_token_speed
@@ -206,7 +206,7 @@ async def _handle_editmsg_cmd(session: "ChatSession", state: SessionState) -> No
     try:
         edit_state = {"model": state.model, "retry": False, "prefill": ""}
         await asyncio.to_thread(
-            edit_current_messages, session.agent, edit_state,
+            MessageEditor().edit_current_messages, session.agent, edit_state,
         )
         state.prefill = edit_state.get("prefill", "")
         state.retry = edit_state.get("retry", False)

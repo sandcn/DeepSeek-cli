@@ -17,13 +17,14 @@ from __future__ import annotations
 import logging
 from typing import Any, Callable
 
-from ..colors import CYAN, DIM, GREEN, RESET, YELLOW, BRIGHT_CYAN, \
+from ...core.constants import CYAN, DIM, GREEN, RESET, YELLOW, BRIGHT_CYAN, \
     BRIGHT_GREEN, DARK_GRAY, BOLD, BLUE
 from ..theme import THEME
 from ...core.sandbox_manager import get_sandbox_manager as _get_sandbox_manager
 from ...api.interrupt_async import flush_stdin, reset_interrupt_async
 from .._lock import locked_print
-from .._bottom_bar import run_bottom_bar_selection
+from .._bottom_bar_selection import run_bottom_bar_selection
+from ...chat_ui import get_active_chat_ui
 from ..events import publish_output
 from . import _message_display as _disp
 from ._text_utils import truncate
@@ -147,10 +148,12 @@ class MessageEditor:
         # ★ 消息选择弹窗：显示用户可选消息总数
         title_display = f"{BRIGHT_CYAN}{title}{RESET}{DIM}{tag}{RESET}  {DIM}\u2502{RESET}  {CYAN}{sel_count}{RESET} \u6761\u53ef\u7f16\u8f91"  # 当前会话(当前) │ N 条可编辑
 
+        chat_ui = get_active_chat_ui()
         result = run_bottom_bar_selection(
             selectable, user_display,
             initial_idx=sel_count - 1,
             title=title_display,
+            bottom_bar=chat_ui.bottom_bar if chat_ui else None,
         )
 
         if result["action"] == "cancel":

@@ -21,7 +21,8 @@ from __future__ import annotations
 
 from typing import Generic, TypeVar
 
-from .._bottom_bar import run_bottom_bar_selection
+from .._bottom_bar_selection import run_bottom_bar_selection
+from ...chat_ui import get_active_chat_ui
 from ._ttl_cache import TTLCache
 
 T = TypeVar("T")
@@ -122,10 +123,12 @@ class BaseBottomBarSelector(Generic[T, R]):
         # BaseBottomBarSelector 场景仅依赖返回的 index 在本地 items 中查找，
         # 不依赖 _completion_texts 取值，因此传同一 list 安全。
         # 若未来 run_bottom_bar_selection 对 items 做字符串操作则需改用独立副本。
+        chat_ui = get_active_chat_ui()
         result = run_bottom_bar_selection(
             display, display,
             title=self._get_title(),
             initial_idx=self._get_initial_idx(items),
+            bottom_bar=chat_ui.bottom_bar if chat_ui else None,
         )
 
         if result["action"] == "confirmed" and result["index"] is not None:

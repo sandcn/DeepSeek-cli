@@ -8,7 +8,7 @@ from __future__ import annotations
 from typing import Optional
 
 from ...core.commands import get_registered_command_names
-from ..colors import DIM, RESET
+from ...core.constants import DIM, RESET
 from ._selector_base import BaseBottomBarSelector
 
 
@@ -54,7 +54,7 @@ class CommandPalette(BaseBottomBarSelector[str, Optional[str]]):
 
         对已知命令附加描述信息，未知命令保持原样。
         """
-        from ..colors import BRIGHT_CYAN, BRIGHT_GREEN
+        from ...core.constants import BRIGHT_CYAN, BRIGHT_GREEN
         labels: list[str] = []
         for cmd in items:
             desc = _COMMAND_DESC.get(cmd, '')

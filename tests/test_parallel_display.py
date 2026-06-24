@@ -102,12 +102,12 @@ class TestParallelDisplayLifecycle:
     def test_start_acquires_adapter(self, display):
         """start() 从 ChatUI 获取 OutputAdapter。"""
         display.add_agent("agent-1", "test agent")
-        from unittest.mock import patch, MagicMock
+        from unittest.mock import MagicMock
         mock_chat_ui = MagicMock()
         mock_chat_ui.output_adapter = MagicMock()
         mock_chat_ui.output_adapter.width = 120
-        with patch('src.chat_ui.get_active_chat_ui', return_value=mock_chat_ui):
-            display.start()
+        display.set_panel_context(mock_chat_ui)
+        display.start()
         assert display._adapter is not None, (
             "start() 应设置 _adapter 为 ChatUI 的 output_adapter"
         )
@@ -116,12 +116,12 @@ class TestParallelDisplayLifecycle:
     def test_stop_clears_adapter(self, display):
         """stop() 将 _adapter 置 None 并停止渲染。"""
         display.add_agent("agent-1", "test agent")
-        from unittest.mock import patch, MagicMock
+        from unittest.mock import MagicMock
         mock_chat_ui = MagicMock()
         mock_chat_ui.output_adapter = MagicMock()
         mock_chat_ui.output_adapter.width = 120
-        with patch('src.chat_ui.get_active_chat_ui', return_value=mock_chat_ui):
-            display.start()
+        display.set_panel_context(mock_chat_ui)
+        display.start()
         assert display._adapter is not None
         display.stop()
         assert display._adapter is None, (
@@ -135,12 +135,12 @@ class TestParallelDisplayLifecycle:
         """一次 start → stop 生命周期完整，adapter 正确获取和释放。"""
         d = ParallelDisplay()
         d.add_agent("agent-1", "test agent")
-        from unittest.mock import patch, MagicMock
+        from unittest.mock import MagicMock
         mock_chat_ui = MagicMock()
         mock_chat_ui.output_adapter = MagicMock()
         mock_chat_ui.output_adapter.width = 120
-        with patch('src.chat_ui.get_active_chat_ui', return_value=mock_chat_ui):
-            d.start()
+        d.set_panel_context(mock_chat_ui)
+        d.start()
         assert d._adapter is not None, "start() 后应持有 adapter"
         assert d._started is True, "start() 后 _started 应为 True"
         d.stop()
@@ -150,12 +150,12 @@ class TestParallelDisplayLifecycle:
     def test_refresh_after_stop_safe(self, display):
         """stop() 后 refresh() 安全（无 adapter，渲染提前返回）。"""
         display.add_agent("a", "test")
-        from unittest.mock import patch, MagicMock
+        from unittest.mock import MagicMock
         mock_chat_ui = MagicMock()
         mock_chat_ui.output_adapter = MagicMock()
         mock_chat_ui.output_adapter.width = 120
-        with patch('src.chat_ui.get_active_chat_ui', return_value=mock_chat_ui):
-            display.start()
+        display.set_panel_context(mock_chat_ui)
+        display.start()
         display.stop()
         display.refresh()  # 不应抛异常
 

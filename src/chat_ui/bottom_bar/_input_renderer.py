@@ -17,7 +17,7 @@ from typing import TYPE_CHECKING
 from wcwidth import wcswidth
 
 from ._scroll_region import blessed_move_clear
-from ._bottom_bar_theme import (
+from ._theme import (
     _COLOR_DEEP_CYAN,
     _COLOR_DIM,
     _COLOR_RESET,
@@ -26,13 +26,13 @@ from ._bottom_bar_theme import (
     _PLACEHOLDER_STREAMING,
     _PLACEHOLDER_TEXT,
 )
-from ._bottom_cursor import (
+from ._cursor import (
     _expand_tabs,
     _wrap_by_width,
 )
 
 if TYPE_CHECKING:
-    from ._bottom_bar_completion import _CompletionPopup
+    from ._completion_popup import _CompletionPopup
     from ._scroll_region import _term_height, _term_width
 
 
@@ -129,7 +129,7 @@ class InputRenderer:
             self._cached_wrapped_for = text
             self._cached_wrapped_width = max_width
         abs_cursor = len(text) if cursor_pos < 0 else cursor_pos
-        from ._bottom_cursor import _tab_pos_to_expanded
+        from ._cursor import _tab_pos_to_expanded
         expanded_pos = _tab_pos_to_expanded(text, abs_cursor)
         if expanded_pos < 0:
             expanded_pos = sum(len(s) for s in self._cached_wrapped_lines)

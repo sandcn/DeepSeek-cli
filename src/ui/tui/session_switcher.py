@@ -33,7 +33,7 @@ class SessionSwitcher(BaseBottomBarSelector[dict, Optional[dict[str, object]]]):
 
     def _format_display(self, items: list[dict]) -> list[str]:
         """格式化会话字典列表为显示标签 — 美化展示。"""
-        from ..colors import CYAN, RESET, DARK_GRAY, GREEN, BRIGHT_CYAN, DIM
+        from ...core.constants import CYAN, RESET, DARK_GRAY, GREEN, BRIGHT_CYAN, DIM
         labels: list[str] = []
         now = time.time()
         for s in items:

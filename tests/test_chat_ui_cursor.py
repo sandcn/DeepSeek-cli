@@ -44,14 +44,14 @@ def mock_term():
 @pytest.fixture
 def cursor(mock_bb, mock_term):
     """CursorController 实例，注入 mock get_terminal。"""
-    from src.chat_ui._cursor import CursorController
+    from src.chat_ui.bottom_bar._cursor import CursorController
     return CursorController(mock_bb, get_terminal=lambda: mock_term)
 
 
 @pytest.fixture
 def cursor_default_import(mock_bb):
     """CursorController 实例，使用默认模块级 import（get_terminal=None）。"""
-    from src.chat_ui._cursor import CursorController
+    from src.chat_ui.bottom_bar._cursor import CursorController
     return CursorController(mock_bb, get_terminal=None)
 
 
@@ -198,7 +198,7 @@ class TestMoveCursorToBottom:
         ):
             cursor.move_cursor_to_bottom()
 
-        from src.chat_ui.const import _ANSI_CURSOR_BOTTOM
+        from src.chat_ui._const import _ANSI_CURSOR_BOTTOM
         mock_stdout.write.assert_called_once_with(_ANSI_CURSOR_BOTTOM)
         mock_stdout.flush.assert_called_once()
 
@@ -211,7 +211,7 @@ class TestMoveCursorToBottom:
             # side_effect 为列表：[第1次调用抛出, 第2次返回None]
             mock_stdout.write.side_effect = [OSError("stdout closed"), None]
 
-            from src.chat_ui.const import _ANSI_CURSOR_BOTTOM
+            from src.chat_ui._const import _ANSI_CURSOR_BOTTOM
             cursor.move_cursor_to_bottom()
 
         # _write_ansi 捕获异常后写 fallback（带 blessed move_xy 的 ANSI）
