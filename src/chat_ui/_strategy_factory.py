@@ -64,7 +64,7 @@ def create_render_strategy(renderer: "TuiRenderer") -> tuple[RenderStrategy, boo
         _logger.info("React Ink 渲染已启用（VNode + Hooks）")
 
         def _output_func(text: str) -> None:
-            renderer.output_adapter.write(text)
+            renderer.output_adapter.write_raw(text + "\n")
 
         return VNodeRenderStrategy(
             renderer, store, build_vnode_tree, _output_func,

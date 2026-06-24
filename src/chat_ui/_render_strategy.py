@@ -179,9 +179,12 @@ class VNodeRenderStrategy:
         self._build_vnode = vnode_builder  # build_vnode_tree 函数
         self._old_vnode: "VNode | None" = None
         self._output = output_func  # 输出函数: callable(str) → 写终端
-        # 缓存 React Ink Feature Flag（避免每帧读取环境变量）
-        from .react_ink import _is_enabled
-        self._use_react_ink: bool = _is_enabled()
+        self._last_answer_text: str = ""  # answer_block 增量渲染缓存（假设文本只增不减）
+        self._last_write_lines_count: int = 0
+        self._last_user_messages_count: int = 0
+        self._last_tool_outputs: tuple = ()
+        self._last_notifications_count: int = 0
+        self._last_errors_count: int = 0
 
     # ── 生命周期（空操作）────────────────────────
 
@@ -243,70 +246,79 @@ class VNodeRenderStrategy:
             if has_change:
                 # 渲染回调：将 VNode 渲染为终端输出
                 def _render_node(vnode: "VNode") -> None:
-                    # ── React Ink Box 渲染（Feature Flag 门控） ──
-                    if self._use_react_ink:
-                        try:
-                            from .react_ink._message_blocks import create_message_box
+                    # ── 容器类型：递归渲染子节点 ──
+                    # root: 递归遍历 children → content_area → children
+                    if vnode.type == "root":
+                        for child in vnode.children:
+                            if child.type == "content_area":
+                                for sub_child in child.children:
+                                    _render_node(sub_child)
+                            else:
+                                _render_node(child)
+                        return
 
-                            # 多条目 VNode 类型：每条独立 Box
-                            _MULTI_ITEM_TYPES: dict[str, str] = {
-                                "user_messages": "messages",
-                                "tool_outputs": "outputs",
-                                "errors": "items",
-                                "notifications": "items",
-                            }
-                            prop_key = _MULTI_ITEM_TYPES.get(vnode.type)
-                            if prop_key is not None:
-                                for item in vnode.props.get(prop_key, ()):
-                                    box = create_message_box(vnode.type, str(item))
-                                    if self._output:
-                                        self._output(box.render())
-                                return
-
-                            # 单条目类型（thinking_block / answer_block 等）
-                            text = vnode.props.get("text", "")
-                            if text:
-                                box = create_message_box(vnode.type, text)
-                                if self._output:
-                                    self._output(box.render())
-                                return
-                        except KeyError:
-                            pass  # 未知 VNode type，fallthrough
-                        except Exception:
-                            _logger.debug("Box 渲染异常，回退到纯文本", exc_info=True)
-                            # fallthrough
-                        else:
-                            return  # Box 渲染成功，跳过原有路径
-
-                    # ── 原有渲染路径（Feature Flag 关闭时生效） ──
+                    # ── 流式文本类型 ──
+                    # answer_block: 增量渲染（仅输出新增文本，避免全量覆写叠加）
+                    # thinking_block: 跳过内联渲染（多行思考内容在 DECSTBM 下会滚动堆积）
+                    if vnode.type == "answer_block":
+                        text = vnode.props.get("text", "")
+                        if text:
+                            delta = text[len(self._last_answer_text):]
+                            if delta:
+                                self._renderer.output_adapter.write_raw(delta)
+                            self._last_answer_text = text
+                        return
                     if vnode.type == "thinking_block":
-                        text = vnode.props.get("text", "")
-                        if text and self._output:
-                            self._output(f"\n  {text}")
-                    elif vnode.type == "answer_block":
-                        text = vnode.props.get("text", "")
-                        if text and self._output:
-                            self._output(text)
-                    elif vnode.type == "user_messages":
-                        for msg in vnode.props.get("messages", ()):
-                            if self._output:
-                                self._output(f"\n  > {msg}")
+                        return
+
+                    # ── 一次性块类型：增量渲染（仅输出新增条目，避免每帧重复）──
+                    if vnode.type == "user_messages":
+                        msgs = vnode.props.get("messages", ())
+                        new_count = len(msgs)
+                        if new_count > self._last_user_messages_count:
+                            for msg in msgs[self._last_user_messages_count:]:
+                                if self._output:
+                                    self._output(f"\n  > {msg}")
+                            self._last_user_messages_count = new_count
                     elif vnode.type == "tool_outputs":
-                        for output in vnode.props.get("outputs", ()):
-                            if self._output:
-                                self._output(f"   {output}")
+                        outputs = vnode.props.get("outputs", ())
+                        old_len = len(self._last_tool_outputs)
+                        new_len = len(outputs)
+                        if new_len > old_len:
+                            # 有新条目：输出新增的
+                            for output in outputs[old_len:]:
+                                if self._output:
+                                    self._output(f"   {output}")
+                        elif new_len == old_len and old_len > 0:
+                            # 条目数不变但内容变了（最后一项被追加修改）：输出修改后的最后一项
+                            if outputs[-1] != self._last_tool_outputs[-1]:
+                                if self._output:
+                                    self._output(f"   {outputs[-1]}")
+                        self._last_tool_outputs = outputs
                     elif vnode.type == "notifications":
-                        for item in vnode.props.get("items", ()):
-                            if self._output:
-                                self._output(f"\n  · {item}")
+                        items = vnode.props.get("items", ())
+                        new_count = len(items)
+                        if new_count > self._last_notifications_count:
+                            for item in items[self._last_notifications_count:]:
+                                if self._output:
+                                    self._output(f"\n  · {item}")
+                            self._last_notifications_count = new_count
                     elif vnode.type == "errors":
-                        for item in vnode.props.get("items", ()):
-                            if self._output:
-                                self._output(f"\n  ! {item}")
+                        items = vnode.props.get("items", ())
+                        new_count = len(items)
+                        if new_count > self._last_errors_count:
+                            for item in items[self._last_errors_count:]:
+                                if self._output:
+                                    self._output(f"\n  ! {item}")
+                            self._last_errors_count = new_count
                     elif vnode.type == "write_lines":
-                        for line in vnode.props.get("lines", ()):
-                            if self._output:
-                                self._output(f"{line}\n")
+                        lines = vnode.props.get("lines", ())
+                        new_count = len(lines)
+                        if new_count > self._last_write_lines_count:
+                            for line in lines[self._last_write_lines_count:]:
+                                if self._output:
+                                    self._output(f"{line}\n")
+                            self._last_write_lines_count = new_count
                     # input_bar / status_line / completion_popup 由底部栏管理，不在此渲染
                     # subagent_frames 由面板回调管理
 
