@@ -142,9 +142,10 @@ def _reduce_tool_summary(state: TuiState, cmd: CmdToolSummary) -> TuiState:
 
 
 def _reduce_user_msg(state: TuiState, cmd: CmdUserMsg) -> TuiState:
+    """追加用户消息，同时清空 subagent_slots（新一轮对话开始）。"""
     msgs = list(state.user_messages)
     msgs.append(cmd.text)
-    return replace(state, user_messages=msgs)
+    return replace(state, user_messages=msgs, subagent_slots={})
 
 
 def _reduce_parse_info(state: TuiState, cmd: CmdParseInfo) -> TuiState:
