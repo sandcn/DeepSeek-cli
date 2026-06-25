@@ -9,7 +9,7 @@ from datetime import datetime
 from typing import Optional
 
 from ...chat_msgs import list_sessions, load_session
-from ._selector_base import BaseBottomBarSelector
+from ..infrastructure.selector_base import BaseBottomBarSelector
 
 _logger = logging.getLogger(__name__)
 

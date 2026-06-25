@@ -7,9 +7,9 @@ from __future__ import annotations
 
 from typing import Optional
 
-from ...core.commands import get_registered_command_names
-from ...core.constants import DIM, RESET
-from ._selector_base import BaseBottomBarSelector
+from ....core.commands import get_registered_command_names
+from ....core.constants import DIM, RESET
+from ..infrastructure.selector_base import BaseBottomBarSelector
 
 
 # ── 命令描述映射 — 带 Emoji 图标，为用户提供直观的操作提示 ──
@@ -54,7 +54,7 @@ class CommandPalette(BaseBottomBarSelector[str, Optional[str]]):
 
         对已知命令附加描述信息，未知命令保持原样。
         """
-        from ...core.constants import BRIGHT_CYAN, BRIGHT_GREEN
+        from ....core.constants import BRIGHT_CYAN, BRIGHT_GREEN
         labels: list[str] = []
         for cmd in items:
             desc = _COMMAND_DESC.get(cmd, '')

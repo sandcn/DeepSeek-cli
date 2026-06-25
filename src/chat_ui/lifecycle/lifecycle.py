@@ -61,7 +61,7 @@ class ChatUILifecycle:
         from rich.console import Console
         from ...api.renderer.output import OutputAdapter
         from ...terminal import get_safe_console_config
-        from ...ui.tui._message_display import _display_messages
+        from ..infrastructure.message_display import _display_messages
         from ..infrastructure.lock import output_lock
 
         rs = _RenderState()

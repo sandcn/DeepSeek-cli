@@ -12,8 +12,8 @@ import time
 from unittest.mock import patch
 
 from src.ui.parallel._text_formatter import TextFormatter
-from src.ui.tui._state import UISessionState, StreamingState, TUIStateTree
-from src.ui.tui.status_bar import (
+from src.chat_ui.state.tui_state import UISessionState, StreamingState, TUIStateTree
+from src.chat_ui.bottom_bar.status_bar import (
     render_normal,
     render_streaming_line,
     build_normal_parts,
@@ -212,13 +212,12 @@ class TestRenderNormalNarrow:
 
         注：使用 monkeypatch 模拟窄屏环境，CI 慢速环境可能 flaky。
         """
-        from src.ui.tui.status_bar import render_normal
-        monkeypatch.setattr("src.ui.tui.status_bar.is_narrow", lambda: True)
+        from src.chat_ui.bottom_bar.status_bar import render_normal
+        monkeypatch.setattr("src.chat_ui.bottom_bar.status_bar.is_narrow", lambda: True)
         monkeypatch.setattr(
-            "src.ui.tui.status_bar.get_terminal_width", lambda: 30,
+            "src.chat_ui.bottom_bar.status_bar.get_terminal_width", lambda: 30,
         )
         state = UISessionState(model="test-model", message_count=10, status_text="processing")
         result = render_normal(state)
         assert isinstance(result, str)
         assert "\033[0m" in result  # 确保有样式重置
-

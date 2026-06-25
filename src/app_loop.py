@@ -22,12 +22,12 @@ from .core.commands import handle_command
 from .core.message_queue import MessageQueue
 
 from .core.constants import CYAN, DIM, RESET, GREEN, YELLOW
-from .ui.tui.message_editor import MessageEditor
-from .ui.tui._message_display import _display_messages
-from .ui.tui._ttl_cache import TTLCache
+from .chat_ui.components.message_editor import MessageEditor
+from .chat_ui.infrastructure.message_display import _display_messages
+from .ui.common.ttl_cache import TTLCache
 from .chat_msgs import save_session, get_recover_cmd
 from .paths import CHAT_MSGS_DIR
-from .ui.tui._terminal import is_narrow, narrow_sep_width
+from .chat_ui.infrastructure.terminal_utils import is_narrow, narrow_sep_width
 from .api.escape_monitor import EscapeMonitor, get_active_monitor, stop_active_monitor
 from .api.interrupt_async import reset_interrupt_async
 from .api.stats import reset_token_speed
@@ -792,7 +792,7 @@ async def run_single_mode_async(prompt_text):
     """单次对话模式（异步版）：输入一句话，回答后退出"""
     chat_ui = ChatUIConsumer()
     chat_ui.start()
-    from .ui.tui._terminal import narrow_sep_width
+    from .chat_ui.infrastructure.terminal_utils import narrow_sep_width
     _sep_w = narrow_sep_width(30)
     chat_ui.write_line(f"{CYAN}  > {MODEL} Chat{RESET} {DIM}· 单次模式{RESET}")
     chat_ui.write_line(f"{DIM}  {'─' * _sep_w}{RESET}")

@@ -178,7 +178,7 @@ def _cmd_editmsg(ctx):
 
     设置 edit_msg 联络信号，让 app.py 执行异步编辑流程。
     """
-    from ..ui.tui.message_editor import MessageEditor
+    from ..chat_ui.components.message_editor import MessageEditor
     ctx.edit_msg = {
         "handler": MessageEditor().edit_current_messages,
         "model": ctx.state.get("model", ""),

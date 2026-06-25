@@ -17,11 +17,11 @@ import os
 
 from ...api.renderer import IncrementalRenderer
 from ...core.sandbox_manager import get_sandbox_manager as _get_sandbox_manager
-from ._terminal import (get_terminal_width, NARROW_THRESHOLD,
-                        is_narrow, narrow_truncate, narrow_indent,
-                        narrow_sep_width)
-from ._text_utils import truncate
-from ..output_target import IOutputTarget, TerminalTarget
+from .terminal_utils import (get_terminal_width, NARROW_THRESHOLD,
+                             is_narrow, narrow_truncate, narrow_indent,
+                             narrow_sep_width)
+from ...ui.common.text_utils import truncate
+from ...ui.output_target import IOutputTarget, TerminalTarget
 
 
 def _scroll_window(cursor: int, state: dict, total: int) -> tuple[int, int]:

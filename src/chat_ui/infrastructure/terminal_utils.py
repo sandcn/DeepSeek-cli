@@ -20,10 +20,10 @@ from typing import TYPE_CHECKING, Protocol, runtime_checkable
 if TYPE_CHECKING:
     from typing import Self
 
-from ..terminal_adapter import TerminalAdapter
-from .._lock import output_lock, OUTPUT_LOCK_TIMEOUT
-from .._blessed import get_terminal
-from ._ttl_cache import TTLCache
+from ...ui.terminal_adapter import TerminalAdapter
+from ...ui._lock import output_lock, OUTPUT_LOCK_TIMEOUT
+from ...ui._blessed import get_terminal
+from ...ui.common.ttl_cache import TTLCache
 
 _logger = logging.getLogger(__name__)
 

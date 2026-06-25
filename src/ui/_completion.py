@@ -52,7 +52,7 @@ class CompletionEngine:
     def __init__(
         self, commands_source: Callable[[], list[str]] | None = None,
     ):
-        from .tui._ttl_cache import TTLCache
+        from .common.ttl_cache import TTLCache
         source = commands_source or _default_commands_source
         self._commands_cache = TTLCache(fetcher=source, ttl=60.0)
         self._sessions_cache = TTLCache(

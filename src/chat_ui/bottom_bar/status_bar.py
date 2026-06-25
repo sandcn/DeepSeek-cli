@@ -19,14 +19,14 @@ from __future__ import annotations
 
 import time
 
-from ..ansi import strip_ansi, truncate_ansi_sgr
+from ...ui.ansi import strip_ansi, truncate_ansi_sgr
 from ...core.constants import DIM, RESET, CYAN, BOLD, DARK_GRAY, \
     BRIGHT_CYAN, GREEN, YELLOW
-from ..theme import THEME
-from ..parallel._text_formatter import TextFormatter
-from ._terminal import is_narrow, get_terminal_width
-from ._time_format import format_elapsed, format_speed
-from ._state import TUIStateTree, UISessionState, StreamingState
+from ...ui.theme import THEME
+from ...ui.parallel._text_formatter import TextFormatter
+from ..infrastructure.terminal_utils import is_narrow, get_terminal_width
+from ...ui.common.time_format import format_elapsed, format_speed
+from ..state.tui_state import TUIStateTree, UISessionState, StreamingState
 
 # ── 流式状态行空格常量（图标与数值间视觉间距） ──
 _SP = " "  # 单一空格，视觉平衡
@@ -36,7 +36,7 @@ _STATUS_BAR_COMPACT_THRESHOLD = 60
 
 # ── Claude Code 风格门控（惰性导入） ──
 try:
-    from ...chat_ui.infrastructure.claude_style import _is_claude_style_enabled
+    from ..infrastructure.claude_style import _is_claude_style_enabled
 except ImportError:
     _is_claude_style_enabled = lambda: False  # noqa: E731
 

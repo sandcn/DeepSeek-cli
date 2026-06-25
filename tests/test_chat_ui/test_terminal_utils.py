@@ -1,6 +1,6 @@
 """窄屏自适应模块测试"""
 
-from src.ui.tui._terminal import (
+from src.chat_ui.infrastructure.terminal_utils import (
     is_narrow,
     narrow_truncate,
     narrow_indent,
