@@ -21,7 +21,7 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from ..infrastructure.cursor_tracker import CursorTracker
 
-from ...ui._blessed import get_terminal as _blessed_get_terminal
+from ..infrastructure.terminal import get_terminal as _blessed_get_terminal
 
 _logger = logging.getLogger(__name__)
 

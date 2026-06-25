@@ -22,6 +22,17 @@ from typing import TextIO
 _logger = logging.getLogger(__name__)
 
 
+def get_terminal():
+    """获取 Blessed Terminal 实例 — chat_ui 统一入口。
+    
+    所有 chat_ui 模块应通过此函数获取终端实例，
+    而非直接 import src.ui._blessed。
+    infrastructure/terminal.py 是 chat_ui 内唯一允许 import ui._blessed 的模块。
+    """
+    from ...ui._blessed import get_terminal as _get_blessed
+    return _get_blessed()
+
+
 class TerminalIO:
     """终端 I/O 统一抽象。
 

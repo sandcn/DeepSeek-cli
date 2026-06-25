@@ -25,10 +25,6 @@ from .ports.chat_ui import get_default_chat_ui_port
 #   - update_agent_status 签名差异（2 vs 3 参数）
 #   - set_result 参数顺序差异
 #   - await_stop 在 DisplayPort 中为 stop（不支持超时）
-# TODO(Phase 2.4): 替换 get_active_chat_ui → ChatUIPort
-#   当前 set_panel_context 仍需 ChatUIConsumer 实例（PanelContext），
-#   ChatUIPort 未暴露完整 PanelContext 接口
-from ..chat_ui import get_active_chat_ui  # set_panel_context 仍需 ChatUIConsumer 实例（ChatUIPort 未暴露）
 from ..config import STAGGER_MIN_DELAY, STAGGER_MAX_DELAY
 from .constants import RED, RESET, AGENT_TYPE_ABBREV
 from ..ui.parallel._tool_icons import AGENT_TYPE_COLORS
@@ -515,7 +511,7 @@ class ParallelExecutor:
             结果列表 [{"label", "description", "result", "error"}]
         """
         agents: List[SubAgent] = []
-        display.set_panel_context(get_active_chat_ui())
+        display.set_panel_context(get_default_chat_ui_port().get_panel_context())
         display.start()
 
         for i, spec in enumerate(specs):

@@ -2,6 +2,10 @@
 
 从 _engine.py 拆分，将 TuiEngine._select_strategy() 提取为独立模块。
 统一渲染策略：始终返回 VNodeRenderStrategy（唯一策略）。
+
+环境变量：
+    CHAT_UI_LAYERED_RENDER: 分层渲染开关（默认启用，设为 0/off/false/no 可降级）
+    CHAT_UI_RENDER_FIXED_FPS: 固定帧率渲染（默认自适应）
 """
 
 from __future__ import annotations
@@ -72,7 +76,7 @@ def create_render_strategy(renderer: "TuiRenderer") -> tuple[VNodeRenderStrategy
     _output_func = _create_vnode_output_func(renderer.output_adapter)
 
     use_layered: bool = (
-        os.environ.get(_ENV_LAYERED_RENDER, "0").strip().lower()
+        os.environ.get(_ENV_LAYERED_RENDER, "1").strip().lower()
         not in ("0", "", "false", "no")
     )
     if use_layered:

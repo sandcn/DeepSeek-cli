@@ -8,8 +8,10 @@ from __future__ import annotations
 
 from contextlib import nullcontext
 
+from .display import DisplayPort
 
-class _NullPort:
+
+class _NullPort(DisplayPort):
     """通用空端口 — 为已知方法提供显式空实现。
 
     不覆盖 __getattr__，避免 hasattr 误报。

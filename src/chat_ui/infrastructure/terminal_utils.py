@@ -22,7 +22,7 @@ if TYPE_CHECKING:
 
 from ...ui.terminal_adapter import TerminalAdapter
 from ...ui._lock import output_lock, OUTPUT_LOCK_TIMEOUT
-from ...ui._blessed import get_terminal
+from .terminal import get_terminal
 from ...ui.common.ttl_cache import TTLCache
 
 _logger = logging.getLogger(__name__)

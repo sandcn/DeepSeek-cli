@@ -401,7 +401,7 @@ class TuiEngine:
             self._tio.flush()
         else:
             try:
-                from ...ui._blessed import get_terminal
+                from ..infrastructure.terminal import get_terminal
                 term = get_terminal()
                 sys.__stdout__.write(term.move_xy(cursor_col - 1, r_cursor - 1))
             except Exception:

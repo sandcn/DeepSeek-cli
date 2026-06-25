@@ -46,6 +46,20 @@ class ChatUIPortAdapter(ChatUIPort):
             return self._consumer.bottom_bar
         return None
 
+    def get_panel_context(self) -> Any | None:
+        """返回 ChatUIConsumer 自身作为 PanelContext（满足 PanelContext Protocol）。"""
+        return self._consumer
+
+    def display_messages(self, data: list[dict], agent: Any = None, idx_map=None, speed: int = 0) -> None:
+        """委托给 chat_ui 的 message_display 模块。"""
+        from .infrastructure.message_display import _display_messages
+        _display_messages(data, agent=agent, idx_map=idx_map, speed=speed)
+
+    def edit_current_messages(self, agent: Any, state: dict, bottom_bar: Any = None) -> bool:
+        """委托给 MessageEditor。"""
+        from .components.message_editor import MessageEditor
+        return MessageEditor().edit_current_messages(agent, state, bottom_bar=bottom_bar)
+
 
 def register_chat_ui_port(consumer: ChatUIConsumer) -> None:
     """注册 ChatUIConsumer 到全局默认 ChatUIPort。

@@ -28,7 +28,7 @@ from typing import Optional
 
 from wcwidth import wcswidth
 
-from ...ui._blessed import get_terminal
+from ..infrastructure.terminal import get_terminal
 from ._completion_popup import _CompletionPopup
 from ...ui._bottom_bar_selection import run_bottom_bar_selection  # noqa: F401 — 重导出保持兼容
 from ._status import _StatusMixin, _get_snapshot, _TOKEN_SPEED_SNAPSHOT  # noqa: F401 — 重导出供测试 patch

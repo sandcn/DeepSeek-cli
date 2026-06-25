@@ -247,7 +247,7 @@ class ChatUILifecycle:
             output_lock: 输出锁
         """
         from ..commands.const import _ANSI_CURSOR_BOTTOM
-        from ...ui._blessed import get_terminal
+        from ..infrastructure.terminal import get_terminal
 
         with state_lock:
             if not self._started:

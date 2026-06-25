@@ -58,6 +58,38 @@ class ChatUIPort(Protocol):
         """
         ...
 
+    def get_panel_context(self) -> Any | None:
+        """获取 PanelContext 实例（用于 ParallelDisplay.set_panel_context()）。
+
+        返回的对象满足 PanelContext Protocol（bottom_bar/output_adapter/push_cmd 等）。
+        返回 None 表示 ChatUI 未激活。
+        """
+        ...
+
+    def display_messages(self, data: list[dict], agent: Any = None, idx_map: list[int] | None = None, speed: int = 0) -> None:
+        """以流式打字效果显示消息列表。
+
+        Args:
+            data: 消息列表（过滤 system 后的结果）。
+            agent: 可选的 agent 引用（用于沙盒查询等）。
+            idx_map: data 索引到全量消息索引的映射。
+            speed: 打字速度（字符/秒），0 表示即时显示。
+        """
+        ...
+
+    def edit_current_messages(self, agent: Any, state: dict, bottom_bar: Any = None) -> bool:
+        """进入当前会话消息编辑模式（Ctrl+O / /editmsg）。
+
+        Args:
+            agent: ChatAgent 实例（包含 messages 列表）。
+            state: 编辑状态字典，用于传递重试/预填等标记。
+            bottom_bar: 底部栏实例（由调用方注入，可选）。
+
+        Returns:
+            True 表示有修改，False 表示无操作。
+        """
+        ...
+
 
 class NullChatUIPort(ChatUIPort):
     """空实现 — 所有操作为空操作，用于 ChatUI 不存在时的降级。"""
@@ -76,6 +108,15 @@ class NullChatUIPort(ChatUIPort):
 
     def get_bottom_bar(self) -> Any | None:
         return None
+
+    def get_panel_context(self) -> Any | None:
+        return None
+
+    def display_messages(self, data: list[dict], agent: Any = None, idx_map: list[int] | None = None, speed: int = 0) -> None:
+        pass
+
+    def edit_current_messages(self, agent: Any, state: dict, bottom_bar: Any = None) -> bool:
+        return False
 
 
 class DefaultChatUIPort(ChatUIPort):
@@ -106,6 +147,15 @@ class DefaultChatUIPort(ChatUIPort):
 
     def get_bottom_bar(self) -> Any | None:
         return self._port.get_bottom_bar()
+
+    def get_panel_context(self) -> Any | None:
+        return self._port.get_panel_context()
+
+    def display_messages(self, data: list[dict], agent: Any = None, idx_map: list[int] | None = None, speed: int = 0) -> None:
+        self._port.display_messages(data, agent=agent, idx_map=idx_map, speed=speed)
+
+    def edit_current_messages(self, agent: Any, state: dict, bottom_bar: Any = None) -> bool:
+        return self._port.edit_current_messages(agent, state, bottom_bar=bottom_bar)
 
 
 # 线程安全的全局默认端口

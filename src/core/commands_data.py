@@ -9,6 +9,7 @@ from ..prompt_builder.project_summary import generate_summary_prompt
 from ..chat_msgs import save_session as _save_direct, load_session as _load_direct, list_sessions as _list_direct
 from ..core.sandbox_manager import get_sandbox_manager
 from ._command_core import register_command
+from .ports.chat_ui import get_default_chat_ui_port
 
 _out = get_default_output_port()
 
@@ -103,9 +104,8 @@ def _cmd_load(ctx):
     _out.write(f"{GREEN}  + 已加载会话 {title_info}{arg} ({len(loaded_msgs)} 条消息, 模型: {model}){RESET}", level="raw", source="cmd")
 
     # 显示恢复的消息摘要（用项目流式渲染器回放）
-    from ..chat_ui.infrastructure.message_display import _display_messages
     non_system = filter_non_system(ctx.messages)
-    _display_messages(non_system, speed=1000)
+    get_default_chat_ui_port().display_messages(non_system, speed=1000)
 
     # 检查最后一条消息角色
     if ctx.messages and ctx.messages[-1].get("role") in ("assistant", "tool"):

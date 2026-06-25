@@ -297,7 +297,7 @@ class CursorController:
     @staticmethod
     def _default_get_terminal():
         """模块级默认值：延迟导入避免循环依赖。"""
-        from ...ui._blessed import get_terminal
+        from ..infrastructure.terminal import get_terminal
         return get_terminal()
 
     def _write_ansi(self, text: str, fallback: str) -> None:

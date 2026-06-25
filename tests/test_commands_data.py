@@ -52,6 +52,7 @@ _MOCK_MODULES = {
         filter_non_system=lambda msgs: [m for m in msgs if m.get('role') != 'system'],
     ),
     'src.core.ports': MagicMock(),
+    'src.core.ports.chat_ui': MagicMock(),
     'src.core.ports.output': MagicMock(
         get_default_output_port=MagicMock(return_value=_output_port_mock),
     ),
@@ -78,6 +79,12 @@ for mod_name, mod in _MOCK_MODULES.items():
     if mod_name not in _ORIGINAL_MODULES_DATA:
         _ORIGINAL_MODULES_DATA[mod_name] = sys.modules.get(mod_name)
     sys.modules[mod_name] = mod
+
+# 设置 ChatUIPort mock — get_default_chat_ui_port() 返回带 display_messages 的 mock
+_chat_ui_port_mock = MagicMock()
+_MOCK_MODULES['src.core.ports.chat_ui'].get_default_chat_ui_port = MagicMock(
+    return_value=_chat_ui_port_mock,
+)
 
 # ── 直接加载 commands_data.py ──────────────────────────────────
 _spec = importlib.util.spec_from_file_location(
@@ -123,6 +130,8 @@ def reset_mocks():
         sys.modules[mod_name] = mod
     _output_port_mock.reset_mock()
     _output_port_mock._mock_side_effect = None
+    _chat_ui_port_mock.reset_mock()
+    _chat_ui_port_mock._mock_side_effect = None
     for mod in _MOCK_MODULES.values():
         _deep_reset_mock(mod)
     yield
@@ -182,8 +191,8 @@ def _mock_get_sandbox_manager():
 
 
 def _mock_display_messages():
-    """快捷：获取 _display_messages mock"""
-    return _MOCK_MODULES['src.chat_ui.infrastructure.message_display']._display_messages
+    """快捷：获取 display_messages mock（通过 ChatUIPort）"""
+    return _MOCK_MODULES['src.core.ports.chat_ui'].get_default_chat_ui_port().display_messages
 
 
 # ═══════════════════════════════════════════════════════════════════════════

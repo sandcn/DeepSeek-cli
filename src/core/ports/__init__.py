@@ -11,7 +11,11 @@
 - StatsPort         — 统计收集
 - PersistencePort   — 会话持久化
 - CheckpointPort    — 任务断点
-- DisplayPort       — 用户显示
+- DisplayPort       — 用户显示（组合协议）
+  - ToolDisplayPort   — 工具调用显示
+  - AgentStatusPort   — Agent 状态显示
+  - LiveMetricPort    — 实时指标显示
+  - SubDisplayPort    — 子显示管理
 - EventPort         — 事件总线
 - OutputPort        — 文本输出
 - ChatUIPort        — ChatUI 交互（暂停/恢复/写屏/底部栏）
@@ -27,7 +31,10 @@ from .chat_ui import (
 )
 from .http import HttpClientPort, DefaultHttpClientAdapter
 from .config import ConfigPort, DefaultConfigAdapter, MockConfigAdapter
-from .display import DisplayPort
+from .display import (
+    DisplayPort, ToolDisplayPort, AgentStatusPort,
+    LiveMetricPort, SubDisplayPort,
+)
 from .events import EventPort
 from .interrupt import InterruptPort
 from .model import AsyncModelPort, DefaultAsyncModelAdapter, MockAsyncModelAdapter, ModelResult
@@ -51,7 +58,9 @@ __all__ = [
     # 持久化
     "PersistencePort", "CheckpointPort", "JsonFilePersistence", "JsonFileCheckpoint",
     # UI
-    "DisplayPort", "EventPort", "OutputPort",
+    "DisplayPort", "ToolDisplayPort", "AgentStatusPort",
+    "LiveMetricPort", "SubDisplayPort",
+    "EventPort", "OutputPort",
     # ChatUI
     "ChatUIPort", "NullChatUIPort", "DefaultChatUIPort",
     "get_default_chat_ui_port", "set_default_chat_ui_port", "reset_default_chat_ui_port",

@@ -2,11 +2,14 @@
 
 线程安全，支持通配符订阅和优先级排序。
 
+⚠ Infrastructure-only: 此类作为线程安全事件分发的参考实现保留。
+生产路径已迁移至 src/ui/events/event_bus.py::DisplayEventBus（自包含实现）。
+保留供测试引用及未来核心模块间直接通信集成。
+
 当前角色说明：
 - CoreEventBus 是基础事件分发引擎，本身不直接绑定任何业务事件类型。
-- 实际生产使用通过 ui/events/event_bus.py 的 DisplayEventBus 委托实现：
-  DisplayEventBus._bus 持有 CoreEventBus 实例，将 DisplayEvent 包装为
-  CoreEvent 后发布，复用 CoreEventBus 的线程安全分发、通配符匹配和异常隔离。
+- 生产使用已迁移至 src/ui/events/event_bus.py 的 DisplayEventBus（内联了
+  CoreEventBus 的线程安全分发、通配符匹配和异常隔离逻辑，不再委托）。
 - core/events/event_types.py 中定义的事件类型常量（MODEL_CALL_STARTED 等）
   当前未在生产代码中使用，保留供未来核心模块间直接通信集成。
 """

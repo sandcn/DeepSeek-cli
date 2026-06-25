@@ -185,7 +185,14 @@ class TuiRenderer:
                                    params_summary=ps, elapsed_ms=ems):
                 self._do_tool_call_update(tid, name, status, text, ps, ems)
             case _:
-                _logger.error("未知渲染命令类型: %s", type(cmd).__name__)
+                # 动态检查：若命令类型已在 TuiStore 注册 reducer，
+                # 则为已知类型（由 VNode 路径消费），防御性 pass。
+                # 仅在完全未知的类型上记录错误。
+                from ..state.store import _REDUCER_REGISTRY
+                if type(cmd) in _REDUCER_REGISTRY:
+                    pass
+                else:
+                    _logger.error("未知渲染命令类型: %s", type(cmd).__name__)
 
     def _record_lines(self, n: int) -> None:
         if self._tracker is not None:

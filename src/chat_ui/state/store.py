@@ -98,6 +98,40 @@ class TuiState:
 Reducer = Callable[[TuiState, Any], TuiState]
 
 
+# ═══════════════════════════════════════════════════════════
+# Reducer 注册表 — 装饰器自动注册，消除手动 _reducers dict
+# ═══════════════════════════════════════════════════════════
+
+_REDUCER_REGISTRY: dict[type, Reducer] = {}
+
+
+def register_reducer(cmd_type: type):
+    """装饰器：将 reducer 纯函数注册到全局注册表。
+
+    用法:
+        @register_reducer(CmdReasoning)
+        def _reduce_reasoning(state, cmd):
+            ...
+
+    所有通过此装饰器注册的 reducer 在 TuiStore.__init__ 中自动收集，
+    无需手动维护 _reducers dict。
+    """
+    def decorator(fn: Reducer) -> Reducer:
+        _REDUCER_REGISTRY[cmd_type] = fn
+        return fn
+    return decorator
+
+
+def get_known_command_types() -> frozenset:
+    """返回所有已注册 reducer 的命令类型集合。
+
+    供 renderer.py 的 _ 通配分支动态判断已知类型，
+    消除手动同步 pass 分支的维护负担。
+    """
+    return frozenset(_REDUCER_REGISTRY.keys())
+
+
+@register_reducer(CmdReasoning)
 def _reduce_reasoning(state: TuiState, cmd: CmdReasoning) -> TuiState:
     return replace(state,
         reasoning_text=state.reasoning_text + cmd.text,
@@ -105,6 +139,7 @@ def _reduce_reasoning(state: TuiState, cmd: CmdReasoning) -> TuiState:
     )
 
 
+@register_reducer(CmdContent)
 def _reduce_content(state: TuiState, cmd: CmdContent) -> TuiState:
     return replace(state,
         content_text=state.content_text + cmd.text,
@@ -112,10 +147,12 @@ def _reduce_content(state: TuiState, cmd: CmdContent) -> TuiState:
     )
 
 
+@register_reducer(CmdPhaseDone)
 def _reduce_phase_done(state: TuiState, cmd: CmdPhaseDone) -> TuiState:
     return replace(state, phase="")
 
 
+@register_reducer(CmdToolOutput)
 def _reduce_tool_output(state: TuiState, cmd: CmdToolOutput) -> TuiState:
     outputs = list(state.tool_outputs)
     # 若当前不在 tool 阶段（新工具开始），追加新条目而非合并到旧条目
@@ -137,10 +174,12 @@ def _reduce_tool_output(state: TuiState, cmd: CmdToolOutput) -> TuiState:
     return replace(state, tool_outputs=outputs, phase="tool")
 
 
+@register_reducer(CmdToolSummary)
 def _reduce_tool_summary(state: TuiState, cmd: CmdToolSummary) -> TuiState:
     return replace(state, tool_summary=(cmd.successful, cmd.failed))
 
 
+@register_reducer(CmdUserMsg)
 def _reduce_user_msg(state: TuiState, cmd: CmdUserMsg) -> TuiState:
     """追加用户消息，同时清空 subagent_slots（新一轮对话开始）。"""
     msgs = list(state.user_messages)
@@ -148,6 +187,7 @@ def _reduce_user_msg(state: TuiState, cmd: CmdUserMsg) -> TuiState:
     return replace(state, user_messages=msgs, subagent_slots={})
 
 
+@register_reducer(CmdParseInfo)
 def _reduce_parse_info(state: TuiState, cmd: CmdParseInfo) -> TuiState:
     # CmdParseInfo 有 tool_names, tokens, elapsed
     if cmd.tokens == -1:  # _CLEAR_PARSE_LINE
@@ -156,37 +196,45 @@ def _reduce_parse_info(state: TuiState, cmd: CmdParseInfo) -> TuiState:
     return replace(state, parse_info=p)
 
 
+@register_reducer(CmdNotification)
 def _reduce_notification(state: TuiState, cmd: CmdNotification) -> TuiState:
     return replace(state, notifications=state.notifications + [cmd.text])
 
 
+@register_reducer(CmdWriteLine)
 def _reduce_write_line(state: TuiState, cmd: CmdWriteLine) -> TuiState:
     return replace(state, write_lines=state.write_lines + [cmd.text])
 
 
+@register_reducer(CmdDisplayMsgs)
 def _reduce_display_msgs(state: TuiState, cmd: CmdDisplayMsgs) -> TuiState:
     return replace(state, displayed_messages=list(cmd.messages))
 
 
+@register_reducer(CmdToolCountInc)
 def _reduce_tool_count_inc(state: TuiState, cmd: CmdToolCountInc) -> TuiState:
     s = state.status
     return replace(state, status=replace(s, tool_count=s.tool_count + 1))
 
 
+@register_reducer(CmdToolCountDec)
 def _reduce_tool_count_dec(state: TuiState, cmd: CmdToolCountDec) -> TuiState:
     s = state.status
     return replace(state, status=replace(s, tool_count=max(0, s.tool_count - 1)))
 
 
+@register_reducer(CmdToolFailInc)
 def _reduce_tool_fail_inc(state: TuiState, cmd: CmdToolFailInc) -> TuiState:
     s = state.status
     return replace(state, status=replace(s, tool_fail=s.tool_fail + 1))
 
 
+@register_reducer(CmdError)
 def _reduce_error(state: TuiState, cmd: CmdError) -> TuiState:
     return replace(state, errors=state.errors + [cmd.message])
 
 
+@register_reducer(CmdSubagentSlotUpdate)
 def _reduce_subagent_slot_update(state: TuiState, cmd: CmdSubagentSlotUpdate) -> TuiState:
     """将 AgentStateStore 的 slot 数据合并到 TuiState.subagent_slots。
 
@@ -202,12 +250,14 @@ def _reduce_subagent_slot_update(state: TuiState, cmd: CmdSubagentSlotUpdate) ->
     return replace(state, subagent_slots=slots)
 
 
+@register_reducer(CmdInputChanged)
 def _reduce_input_changed(state: TuiState, cmd: CmdInputChanged) -> TuiState:
     """用户输入变更 reducer。"""
     new_input = replace(state.input_line, text=cmd.text, cursor_pos=cmd.cursor_pos)
     return replace(state, input_line=new_input)
 
 
+@register_reducer(CmdStatusUpdate)
 def _reduce_status_update(state: TuiState, cmd: CmdStatusUpdate) -> TuiState:
     """状态行更新 reducer。
 
@@ -226,6 +276,7 @@ def _reduce_status_update(state: TuiState, cmd: CmdStatusUpdate) -> TuiState:
     return replace(state, status=new_status)
 
 
+@register_reducer(CmdToolCallUpdate)
 def _reduce_tool_call_update(state: TuiState, cmd: CmdToolCallUpdate) -> TuiState:
     """工具调用状态更新 reducer — 根据 tool_id 更新或添加 tool_calls 条目。
 
@@ -268,6 +319,7 @@ def _reduce_tool_call_update(state: TuiState, cmd: CmdToolCallUpdate) -> TuiStat
     return replace(state, tool_calls=new_calls)
 
 
+@register_reducer(CmdAnimationTick)
 def _reduce_animation_tick(state: TuiState, cmd: CmdAnimationTick) -> TuiState:
     """动画滴答 reducer — 递增全局动画帧计数。
 
@@ -293,28 +345,8 @@ class TuiStore:
     def __init__(self, initial_state: TuiState | None = None):
         self._state = initial_state if initial_state is not None else TuiState()
 
-        # 注册全部 reducer 纯函数
-        self._reducers: dict[type, Reducer] = {
-            CmdReasoning: _reduce_reasoning,
-            CmdContent: _reduce_content,
-            CmdPhaseDone: _reduce_phase_done,
-            CmdToolOutput: _reduce_tool_output,
-            CmdToolSummary: _reduce_tool_summary,
-            CmdUserMsg: _reduce_user_msg,
-            CmdParseInfo: _reduce_parse_info,
-            CmdNotification: _reduce_notification,
-            CmdWriteLine: _reduce_write_line,
-            CmdDisplayMsgs: _reduce_display_msgs,
-            CmdToolCountInc: _reduce_tool_count_inc,
-            CmdToolCountDec: _reduce_tool_count_dec,
-            CmdToolFailInc: _reduce_tool_fail_inc,
-            CmdError: _reduce_error,
-            CmdSubagentSlotUpdate: _reduce_subagent_slot_update,
-            CmdInputChanged: _reduce_input_changed,
-            CmdStatusUpdate: _reduce_status_update,
-            CmdToolCallUpdate: _reduce_tool_call_update,
-            CmdAnimationTick: _reduce_animation_tick,
-        }
+        # 注册全部 reducer 纯函数（自动收集自 @register_reducer 装饰器）
+        self._reducers: dict[type, Reducer] = dict(_REDUCER_REGISTRY)
 
     def dispatch(self, action: Any) -> TuiState:
         """dispatch action，返回新 TuiState。

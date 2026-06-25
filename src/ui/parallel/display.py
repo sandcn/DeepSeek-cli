@@ -13,7 +13,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
-from typing import Any, TYPE_CHECKING
+from typing import Any, Dict, TYPE_CHECKING
 
 if TYPE_CHECKING:
     from ...chat_ui.infrastructure.protocol import PanelContext
@@ -23,7 +23,6 @@ from ..events.event_bus import DisplayEventBus
 from ..events.event_types import LiveOutputEvent
 from ._config import DisplayConfig
 from ..base_display import BaseDisplay
-from ..state.agent_state import AgentStateStore
 
 # 跨层引用说明：CmdSubagentSlotUpdate 是纯数据 dataclass，
 # 属于数据契约层。在 chat_ui/commands/types.py 中定义（与所有 Cmd* 类型同文件），
@@ -38,12 +37,12 @@ _logger = logging.getLogger(__name__)
 
 
 class ParallelDisplay(BaseDisplay):
-    """并行 Agent 实时显示管理器 — 命令队列渲染版（代理层）
+    """并行 Agent 实时显示管理器 — 命令队列渲染版
 
     职责：
     1. 生命周期控制（start/stop）
-    2. 状态更新代理（代理到 AgentStateStore）
-    3. 面板刷新调度（通过 RenderCommand.SUBAGENT_FRAME 命令队列渲染）
+    2. 状态管理（本地 dict 存储，通过 _push_slot_update 同步到 TuiState）
+    3. 面板刷新调度（通过 CmdSubagentSlotUpdate 命令队列渲染）
     4. 特殊输出（capture_and_print/print_output）
 
     状态更新通过 CmdSubagentSlotUpdate 推送到 chat_ui 命令队列，
@@ -54,7 +53,7 @@ class ParallelDisplay(BaseDisplay):
     def __init__(self, max_history: int = _DEFAULT_HISTORY,
                  output_target: IOutputTarget | None = None):
         super().__init__(output_target=output_target)
-        self._store = AgentStateStore()
+        self._slots: Dict[str, Dict[str, Any]] = {}
         self._terminal = output_target or TerminalTarget()
         self._started = False
         self._finished = False
@@ -85,14 +84,34 @@ class ParallelDisplay(BaseDisplay):
 
     def add_agent(self, label: str, description: str, status: str = "running",
                   agent_type: str = "plan_execute"):
-        self._store.add_agent(label, description, status, agent_type=agent_type)
+        self._slots[label] = {
+            "label": label, "description": description, "agent_type": agent_type,
+            "status": status, "start_time": time.time(), "end_time": 0.0,
+            "tool_history": [], "total_calls": 0,
+            "input_tokens": 0, "output_tokens": 0,
+            "live_input_tokens": 0, "live_output_tokens": 0,
+            "last_speed": 0.0, "model_phase": "", "model_info": "",
+            "result_text": "", "result_error": "",
+        }
         self._push_slot_update(label)
         self._schedule_refresh()
 
-    # ── 状态更新（代理到 AgentStateStore） ─────────────
+    def remove_agent(self, label: str) -> None:
+        self._slots.pop(label, None)
+
+    # ── 状态更新 ─────────────────────────────────────
 
     def update_agent_status(self, label: str, status: str):
-        self._store.update_agent_status(label, status)
+        slot = self._slots.get(label)
+        if not slot:
+            return
+        slot["status"] = status
+        if status in ("done", "fail"):
+            slot["end_time"] = time.time()
+            for rec in slot["tool_history"]:
+                if rec["phase"] in ("running", "parsing"):
+                    rec["phase"] = "done" if status == "done" else "fail"
+                    rec["end_time"] = time.time()
         self._push_slot_update(label)
         if status in ("done", "fail"):
             self.remove_agent_slot(label)
@@ -102,52 +121,127 @@ class ParallelDisplay(BaseDisplay):
         return self.update_agent_status(label, status)
 
     def update_model_phase(self, label: str, phase: str, info: str = ""):
-        self._store.update_model_phase(label, phase, info)
-        self._push_slot_update(label)
-        self._schedule_refresh()
+        slot = self._slots.get(label)
+        if slot:
+            if phase != slot["model_phase"]:
+                pass  # model_phase_start not tracked in simple dict
+            slot["model_phase"] = phase
+            slot["model_info"] = info
+            self._push_slot_update(label)
+            self._schedule_refresh()
 
     def tool_parsing(self, label: str, tool_name: str, arguments: str = ""):
-        self._store.tool_parsing(label, tool_name, arguments)
+        slot = self._slots.get(label)
+        if not slot:
+            return
+        slot["model_phase"] = "parsing"
+        truncated = arguments[:120] + "…" if len(arguments) > 120 else arguments
+        slot["model_info"] = f"{tool_name} {truncated}" if truncated else tool_name
+        if slot["tool_history"]:
+            last = slot["tool_history"][-1]
+            if last["tool_name"] == tool_name and last["phase"] == "parsing":
+                last["detail"] = arguments
+                self._push_slot_update(label)
+                self._schedule_refresh()
+                return
+        slot["tool_history"].append({
+            "tool_name": tool_name, "detail": arguments,
+            "start_time": time.time(), "end_time": 0.0, "phase": "parsing",
+        })
+        slot["total_calls"] += 1
         self._push_slot_update(label)
         self._schedule_refresh()
 
     def tool_batch_start(self, label: str, tool_names: list):
-        self._store.tool_batch_start(label, tool_names)
+        slot = self._slots.get(label)
+        if not slot:
+            return
+        names_str = ", ".join(tool_names)
+        slot["model_phase"] = "batch"
+        slot["model_info"] = f"{len(tool_names)}x parallel: {names_str}"
         self._push_slot_update(label)
         self._schedule_refresh()
 
     def tool_start(self, label: str, tool_name: str, detail: str = "",
                    metadata: dict | None = None):
-        self._store.tool_start(label, tool_name, detail)
+        slot = self._slots.get(label)
+        if not slot:
+            return
+        for rec in reversed(slot["tool_history"]):
+            if rec["phase"] == "parsing" and rec["tool_name"] == tool_name:
+                rec["detail"] = detail
+                rec["phase"] = "running"
+                self._push_slot_update(label)
+                self._schedule_refresh()
+                return
+        slot["tool_history"].append({
+            "tool_name": tool_name, "detail": detail,
+            "start_time": time.time(), "end_time": 0.0, "phase": "running",
+        })
         self._push_slot_update(label)
         self._schedule_refresh()
 
     def tool_done(self, label: str, tool_name: str = "",
                   success: bool = True, metadata: dict | None = None):
-        self._store.tool_done(label, tool_name, success)
+        slot = self._slots.get(label)
+        if not slot:
+            return
+        for rec in reversed(slot["tool_history"]):
+            if rec["phase"] in ("running", "parsing"):
+                if tool_name:
+                    if rec["tool_name"] == tool_name:
+                        rec["phase"] = "done" if success else "fail"
+                        rec["end_time"] = time.time()
+                        break
+                else:
+                    rec["phase"] = "done" if success else "fail"
+                    rec["end_time"] = time.time()
+                    break
         self._push_slot_update(label)
         self._schedule_refresh()
 
     def update_parse_info(self, label: str, tool_names: str,
                           tokens: int, elapsed: float):
-        self._store.update_parse_info(label, tool_names, tokens, elapsed)
-        self._push_slot_update(label)
-        self._schedule_refresh()
+        slot = self._slots.get(label)
+        if slot:
+            slot["model_phase"] = "parsing"
+            slot["model_info"] = f"{tool_names} {elapsed:.1f}s"
+            self._push_slot_update(label)
+            self._schedule_refresh()
 
     def parse_info_done(self, label: str) -> None:
         pass
 
     def update_tokens(self, label: str, tokens: int):
-        self._store.update_tokens(label, tokens)
-        self._push_slot_update(label)
+        slot = self._slots.get(label)
+        if slot:
+            slot["output_tokens"] += tokens
+            self._push_slot_update(label)
 
     def update_usage(self, label: str, usage: dict, replace: bool = False):
-        self._store.update_usage(label, usage, replace)
+        slot = self._slots.get(label)
+        if not slot:
+            return
+        if replace:
+            if "input" in usage:
+                slot["input_tokens"] = usage["input"]
+            if "output" in usage:
+                slot["output_tokens"] = usage["output"]
+            slot["live_input_tokens"] = 0
+            slot["live_output_tokens"] = 0
+        else:
+            slot["input_tokens"] += usage.get("input", 0)
+            slot["output_tokens"] += usage.get("output", 0)
+        speed = usage.get("speed", 0.0)
+        if speed and speed > 0:
+            slot["last_speed"] = speed
         self._push_slot_update(label)
 
     def update_live_output(self, label: str, tokens: int):
-        self._store.update_live_output(label, tokens)
-        self._push_slot_update(label)
+        slot = self._slots.get(label)
+        if slot:
+            slot["live_output_tokens"] += tokens
+            self._push_slot_update(label)
         # EventBus 发布去抖
         now = time.time()
         if now - self._last_eventbus_time >= _EVENTBUS_THROTTLE:
@@ -160,23 +254,27 @@ class ParallelDisplay(BaseDisplay):
                 _logger.debug("EventBus 发布 LiveOutputEvent 失败（非关键路径，忽略）")
 
     def update_live_input(self, label: str, tokens: int):
-        self._store.update_live_input(label, tokens)
-        self._push_slot_update(label)
+        slot = self._slots.get(label)
+        if slot and slot["input_tokens"] == 0:
+            slot["live_input_tokens"] = tokens
+            self._push_slot_update(label)
 
     def update_speed(self, label: str, speed: float):
-        self._store.update_speed(label, speed)
-        self._push_slot_update(label)
+        slot = self._slots.get(label)
+        if slot and speed > 0:
+            slot["last_speed"] = speed
+            self._push_slot_update(label)
 
     def set_result(self, label: str, result_text: str = "", error: str = ""):
-        self._store.set_result(label, result_text, error)
-        slot = self._store.get_slot(label)
-        if slot and slot.status in ("done", "fail"):
-            # agent 已完成：无需再推送 slot 到 TUI（update_agent_status 已推送最终状态），
-            # 直接清除 slot 条目，避免 update_agent_status 的 remove + set_result 的 push 形成冗余。
-            self.remove_agent_slot(label)
-        else:
-            self._push_slot_update(label)
-        self._schedule_refresh()
+        slot = self._slots.get(label)
+        if slot:
+            slot["result_text"] = result_text
+            slot["result_error"] = error
+            if slot["status"] in ("done", "fail"):
+                self.remove_agent_slot(label)
+            else:
+                self._push_slot_update(label)
+            self._schedule_refresh()
 
     # ── 帧渲染（通过命令队列） ────────────────────────
 
@@ -184,11 +282,11 @@ class ParallelDisplay(BaseDisplay):
         """空操作 — 帧刷新的占位方法（保留供外部调用方兼容）。"""
 
     def _push_slot_update(self, label: str) -> None:
-        """将 AgentStateStore 中指定 label 的槽位数据同步到 TuiState。
+        """将本地 _slots 中指定 label 的槽位数据同步到 TuiState。
 
-        从 AgentStateStore 读取最新 slot 快照，转换为可序列化 dict，
-        通过 push_cmd 推送 CmdSubagentSlotUpdate 到 chat_ui 命令队列，
-        由 TuiStore._reduce_subagent_slot_update 合并到 TuiState.subagent_slots。
+        从 self._slots 读取 dict，通过 push_cmd 推送 CmdSubagentSlotUpdate
+        到 chat_ui 命令队列，由 TuiStore._reduce_subagent_slot_update 合并到
+        TuiState.subagent_slots。
 
         已包含字段：label, description, agent_type, status, start_time, end_time,
             total_calls, input_tokens, output_tokens, live_input_tokens,
@@ -198,38 +296,11 @@ class ParallelDisplay(BaseDisplay):
         """
         if self._push_cmd is None:
             return
-        slot = self._store.get_slot(label)
+        slot = self._slots.get(label)
         if slot is None:
             return
-        slot_dict = {
-            "label": slot.label,
-            "description": slot.description,
-            "agent_type": slot.agent_type,
-            "status": slot.status,
-            "start_time": slot.start_time,
-            "end_time": slot.end_time,
-            "total_calls": slot.total_calls,
-            "input_tokens": slot.input_tokens,
-            "output_tokens": slot.output_tokens,
-            "live_input_tokens": slot.live_input_tokens,
-            "live_output_tokens": slot.live_output_tokens,
-            "last_speed": slot.last_speed,
-            "model_phase": slot.model_phase,
-            "model_info": slot.model_info,
-            "result_text": slot.result_text,
-            "result_error": slot.result_error,
-            "tool_history": [
-                {
-                    "tool_name": r.tool_name,
-                    "detail": r.detail,
-                    "start_time": r.start_time,
-                    "end_time": r.end_time,
-                    "phase": r.phase,
-                }
-                for r in slot.tool_history
-            ],
-        }
-        self._push_cmd(CmdSubagentSlotUpdate(label=label, slot=slot_dict))
+        # slot 已经是 dict，直接传递（浅拷贝以保证 reducer 侧不可变语义）
+        self._push_cmd(CmdSubagentSlotUpdate(label=label, slot=dict(slot)))
 
     def remove_agent_slot(self, label: str) -> None:
         """从 TuiState.subagent_slots 中清除指定 agent 的 slot 条目。

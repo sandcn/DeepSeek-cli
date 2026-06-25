@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from ...ui._blessed import get_terminal
+from ..infrastructure.terminal import get_terminal
 from ._theme import (
     _COLOR_COMPLETE_TITLE,
     _COLOR_DIM,
