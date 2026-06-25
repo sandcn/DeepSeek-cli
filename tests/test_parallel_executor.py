@@ -459,6 +459,19 @@ class TestRunAgents:
             call("agent-2", "任务2", status="running", agent_type="plan_execute"),
         ])
         display.start.assert_called_once()
+        display.set_panel_context.assert_called_once()
+
+        # 验证 set_panel_context → start → add_agent 调用顺序
+        # （回归保护 subagent TUI 初始化顺序 bug）
+        ctx_seen = start_seen = False
+        for mc in display.method_calls:
+            if mc[0] == 'set_panel_context':
+                ctx_seen = True
+            elif mc[0] == 'start':
+                assert ctx_seen, "set_panel_context must be called before start()"
+                start_seen = True
+            elif mc[0] == 'add_agent':
+                assert start_seen, "start() must be called before add_agent()"
 
         # 验证 run 调用
         mock_sa1.run.assert_awaited_once()
@@ -494,6 +507,15 @@ class TestRunAgents:
 
         assert results == []
         mock_display.start.assert_called_once()
+        mock_display.set_panel_context.assert_called_once()
+
+        # 验证 set_panel_context → start 调用顺序（空 specs 路径也应保证）
+        ctx_seen = False
+        for mc in mock_display.method_calls:
+            if mc[0] == 'set_panel_context':
+                ctx_seen = True
+            elif mc[0] == 'start':
+                assert ctx_seen, "set_panel_context must be called before start()"
 
     @pytest.mark.asyncio
     async def test_one_agent_fails(self, executor, mock_display):

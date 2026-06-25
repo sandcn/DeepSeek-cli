@@ -207,6 +207,17 @@ class VNodeRenderStrategy:
         self._anim_idle_count: int = 0
         self._ANIM_IDLE_SKIP_THRESHOLD = 3
         self._ANIM_IDLE_SKIP_FRAMES = 6
+        self._last_subagent_line_count: int = 0  # subagent_slots 原地刷新行数追踪
+
+    # ── SubAgent 类型缩写映射（类常量，避免每帧重建）──
+    _SUBAGENT_TYPE_ABBR: dict = {
+        "plan_execute": "exec",
+        "map": "map",
+        "review": "review",
+        "plan": "plan",
+        "read_memory": "mem",
+        "write_memory": "wmem",
+    }
 
     # ── 动画活跃状态控制 ──────────────────────────
 
@@ -434,60 +445,58 @@ class VNodeRenderStrategy:
                         except Exception:
                             _logger.warning("tool_results 渲染异常", exc_info=True)
                     elif vnode.type == "subagent_slots":
-                        """SubAgent 槽位内联渲染 — 读取 subagent_slots dict 输出样式化行。
+                        """SubAgent 槽位内联渲染 — 原地刷新多行 subagent 状态。
 
-                        每个 agent slot 渲染为一行：
+                        每个 agent slot 渲染为一行（ANSI 样式化）：
                           ⏺ [abbr] description  · N out  · elapsed  (running)
                           ✓ [abbr] description  · N out  · elapsed  (done)
                           ✗ [abbr] description  · elapsed  (fail)
 
-                        增量跟踪：使用 _last_agent_slots_cache 按 label 追踪版本号，
-                        仅当 slot dict 的 id() 或显式版本号变化时输出。
+                        原地刷新策略：首次渲染输出 N 行；后续刷新先用 \\033[{N}A
+                        上移光标覆盖旧行，再重写全部行。新行数 < 旧行数时清除多余行。
                         """
                         try:
                             slots = vnode.props.get("slots", {})
-                            if slots:
-                                cached = getattr(self, '_last_agent_slots_cache', {})
-                                if not hasattr(self, '_last_agent_slots_cache'):
-                                    self._last_agent_slots_cache = {}
-                                for label, slot in slots.items():
-                                    # 跳过已缓存的（按 label + slot id 指纹）
-                                    prev_id = cached.get(label)
-                                    current_id = id(slot)
-                                    if prev_id == current_id:
-                                        continue
-                                    # 更新缓存
-                                    self._last_agent_slots_cache[label] = current_id
+                            old_count = self._last_subagent_line_count
+                            adapter = self._renderer.output_adapter
 
+                            if slots:
+                                import time
+                                _now = time.time()
+
+                                # ── 原地刷新：上移光标覆盖旧行 ──
+                                if old_count > 0:
+                                    adapter.write_raw(f"\033[{old_count}A")
+
+                                from ..infrastructure.styled import StyledText
+
+                                abbrs = self._SUBAGENT_TYPE_ABBR
+
+                                new_line_count = 0
+                                for label, slot in slots.items():
                                     # 提取字段
                                     desc = slot.get("description", label)
                                     agent_type = slot.get("agent_type", "plan_execute")
                                     status = slot.get("status", "running")
-                                    output_tokens = slot.get("output_tokens", 0) + slot.get("live_output_tokens", 0)
-                                    input_tokens = slot.get("input_tokens", 0) + slot.get("live_input_tokens", 0)
+                                    output_tokens = slot.get("output_tokens", 0) + slot.get(
+                                        "live_output_tokens", 0)
                                     start_time = slot.get("start_time", 0)
                                     end_time = slot.get("end_time", 0)
-                                    now = start_time  # 粗略估计（调用方未传 now 时用 start_time）
-                                    elapsed = end_time - start_time if end_time > 0 else 0.0
 
-                                    # 构建 Claude 风格行
-                                    from ..infrastructure.styled import StyledText
+                                    # elapsed: running 用实时时钟，done/fail 用记录的 end_time
+                                    if status == "running" and start_time > 0:
+                                        elapsed = _now - start_time
+                                    elif end_time > 0:
+                                        elapsed = end_time - start_time
+                                    else:
+                                        elapsed = 0.0
 
-                                    indent = "  "
-                                    abbrs = {
-                                        "plan_execute": "exec",
-                                        "map": "map",
-                                        "review": "review",
-                                        "plan": "plan",
-                                        "read_memory": "mem",
-                                        "write_memory": "wmem",
-                                    }
                                     type_tag = abbrs.get(agent_type, agent_type[:4])
 
                                     if status == "running":
                                         icon = "\u23fa"  # ⏺
                                         token_str = f"{output_tokens}"
-                                        elapsed_str = f"{elapsed:.1f}s" if elapsed > 0 else ""
+                                        elapsed_str = f"{elapsed:.1f}s" if elapsed > 0.5 else ""
                                         line_parts = [
                                             (f"  {icon} ", "cyan"),
                                             (f"[{type_tag}] ", "dim"),
@@ -500,8 +509,6 @@ class VNodeRenderStrategy:
                                             line_parts.append(("  · ", "dim"))
                                             line_parts.append((f"{elapsed_str}", "dim"))
                                         rendered = StyledText.assemble(*line_parts)
-                                        if self._output:
-                                            self._output(rendered)
                                     elif status in ("done", "completed"):
                                         icon = "\u2713"  # ✓
                                         token_str = f"{output_tokens}"
@@ -518,9 +525,7 @@ class VNodeRenderStrategy:
                                             line_parts.append(("  · ", "dim"))
                                             line_parts.append((f"{elapsed_str}", "dim"))
                                         rendered = StyledText.assemble(*line_parts)
-                                        if self._output:
-                                            self._output(rendered)
-                                    elif status == "fail":
+                                    else:  # fail
                                         icon = "\u2717"  # ✗
                                         elapsed_str = f"{elapsed:.1f}s" if elapsed > 0 else ""
                                         line_parts = [
@@ -532,8 +537,24 @@ class VNodeRenderStrategy:
                                             line_parts.append(("  · ", "dim"))
                                             line_parts.append((f"{elapsed_str}", "dim"))
                                         rendered = StyledText.assemble(*line_parts)
-                                        if self._output:
-                                            self._output(rendered)
+
+                                    # 输出行：\\r 回行首 + \\033[K 清除 → StyledText → \\n 换行
+                                    adapter.write_raw(f"\r\033[K{rendered}\n")
+                                    new_line_count += 1
+
+                                # ── 清除多余的残留行（新行数 < 旧行数时）──
+                                if new_line_count < old_count:
+                                    for _ in range(old_count - new_line_count):
+                                        adapter.write_raw("\r\033[K\n")
+
+                                self._last_subagent_line_count = new_line_count
+                            else:
+                                # 无 slots：清除全部旧行
+                                if old_count > 0:
+                                    adapter.write_raw(f"\033[{old_count}A")
+                                    for _ in range(old_count):
+                                        adapter.write_raw("\r\033[K\n")
+                                self._last_subagent_line_count = 0
                         except Exception:
                             _logger.warning("subagent_slots 渲染异常", exc_info=True)
                     # input_bar / status_line / completion_popup 由底部栏管理，不在此渲染

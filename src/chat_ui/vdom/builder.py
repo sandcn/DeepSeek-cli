@@ -91,14 +91,6 @@ def build_vnode_tree(state: TuiState) -> VNode:
             props={"lines": tuple(state.write_lines)},
         ))
 
-    # SubAgent 槽位数据（通过 VNode 内联渲染）
-    if state.subagent_slots:
-        content_children.append(VNode(
-            type="subagent_slots",
-            key="subagent_slots",
-            props={"slots": state.subagent_slots},
-        ))
-
     # 工具调用（进行中）
     if state.tool_calls:
         content_children.append(VNode(
@@ -113,6 +105,15 @@ def build_vnode_tree(state: TuiState) -> VNode:
             type="tool_results",
             key="tool_results",
             props={"results": tuple(state.tool_results)},
+        ))
+
+    # SubAgent 槽位数据（必须为 content_area 最后一个子节点 —
+    # 原地刷新使用 \\033[{n}A 相对光标上移，依赖后续无其他内容渲染）
+    if state.subagent_slots:
+        content_children.append(VNode(
+            type="subagent_slots",
+            key="subagent_slots",
+            props={"slots": state.subagent_slots},
         ))
 
     if content_children:

@@ -23,11 +23,14 @@ def _create_vnode_output_func(adapter):
     """创建 VNode 渲染输出函数。
 
     契约：每次调用输出一行文本并追加换行符。
-    适用于 user_messages、tool_outputs、notifications、errors、write_lines 等
-    一次性块类型的输出。流式类型（answer_block、thinking_block）不经过此函数。
+    适用于 user_messages、notifications、errors、write_lines、tool_calls、
+    tool_results 等一次性块类型的输出。流式类型（answer_block、thinking_block）
+    不经过此函数。subagent_slots 直接使用 adapter.write_raw() 实现原地刷新。
+
+    支持 str 和 StyledText 两种输入类型。
     """
-    def _output(text: str) -> None:
-        adapter.write_raw(text + "\n")
+    def _output(text) -> None:
+        adapter.write_raw(str(text) + "\n")
     return _output
 
 
