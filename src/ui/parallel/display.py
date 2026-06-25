@@ -185,10 +185,8 @@ class ParallelDisplay(BaseDisplay):
         已包含字段：label, description, agent_type, status, start_time, end_time,
             total_calls, input_tokens, output_tokens, live_input_tokens,
             live_output_tokens, last_speed, model_phase, model_info,
-            result_text, result_error
-
-        未包含字段：tool_history（待后续支持 — ToolRecord 列表需先设计序列化方案，
-            届时需在 CmdSubagentSlotUpdate 中新增 tool_history 字段）。
+            result_text, result_error, tool_history（List[dict]，
+            每项含 tool_name/detail/start_time/end_time/phase）。
         """
         if self._push_cmd is None:
             return
@@ -212,6 +210,16 @@ class ParallelDisplay(BaseDisplay):
             "model_info": slot.model_info,
             "result_text": slot.result_text,
             "result_error": slot.result_error,
+            "tool_history": [
+                {
+                    "tool_name": r.tool_name,
+                    "detail": r.detail,
+                    "start_time": r.start_time,
+                    "end_time": r.end_time,
+                    "phase": r.phase,
+                }
+                for r in slot.tool_history
+            ],
         }
         self._push_cmd(CmdSubagentSlotUpdate(label=label, slot=slot_dict))
 

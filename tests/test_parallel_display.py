@@ -183,3 +183,121 @@ class TestDiffGuard:
         """clear_frame_and_run 在无 adapter 时安全。"""
         result = display.clear_frame_and_run(lambda: "safe")
         assert result == "safe"
+
+
+class TestToolHistorySerialization:
+    """测试 _push_slot_update 中 tool_history 的序列化。
+
+    通过 mock _push_cmd 拦截 CmdSubagentSlotUpdate，
+    验证 slot_dict 中 tool_history 字段的 ToolRecord → dict 转换。
+    """
+
+    @staticmethod
+    def _setup_display_with_capture(display):
+        """设置 display._push_cmd 为捕获回调，返回捕获列表。"""
+        from unittest.mock import MagicMock
+        captured = []
+        mock_push = MagicMock()
+        mock_push.side_effect = lambda cmd: captured.append(cmd)
+        display._push_cmd = mock_push
+        return captured
+
+    def test_tool_history_empty_list_on_add_agent(self, display):
+        """add_agent 时 tool_history 为空列表 []。"""
+        captured = self._setup_display_with_capture(display)
+        display.add_agent("agent-1", "test agent")
+
+        assert len(captured) >= 1
+        slot = captured[-1].slot
+        assert "tool_history" in slot
+        assert slot["tool_history"] == []
+
+    def test_tool_history_single_parsing_entry(self, display):
+        """tool_parsing 后序列化一条 parsing 状态的 ToolRecord。"""
+        captured = self._setup_display_with_capture(display)
+        display.add_agent("agent-1", "test agent")
+        display.tool_parsing("agent-1", "read_file", '{"path": "a.py"}')
+
+        history = captured[-1].slot["tool_history"]
+        assert len(history) == 1
+        rec = history[0]
+        assert rec["tool_name"] == "read_file"
+        assert rec["phase"] == "parsing"
+        assert rec["detail"] == '{"path": "a.py"}'
+        assert rec["start_time"] > 0
+        assert "end_time" in rec
+
+    def test_tool_history_parsing_to_done(self, display):
+        """tool_parsing → tool_start → tool_done 后 phase 为 done 且有 end_time。"""
+        captured = self._setup_display_with_capture(display)
+        display.add_agent("agent-1", "test agent")
+        display.tool_parsing("agent-1", "bash", "ls -la")
+        display.tool_start("agent-1", "bash", "ls -la /home")
+        display.tool_done("agent-1", "bash", success=True)
+
+        history = captured[-1].slot["tool_history"]
+        assert len(history) == 1
+        rec = history[0]
+        assert rec["tool_name"] == "bash"
+        assert rec["phase"] == "done"
+        assert rec["end_time"] > 0
+
+    def test_tool_history_parsing_to_fail(self, display):
+        """tool_done(success=False) 后 phase 为 fail。"""
+        captured = self._setup_display_with_capture(display)
+        display.add_agent("agent-1", "test agent")
+        display.tool_parsing("agent-1", "bash", "bad_cmd")
+        display.tool_start("agent-1", "bash", "bad_cmd --flag")
+        display.tool_done("agent-1", "bash", success=False)
+
+        history = captured[-1].slot["tool_history"]
+        assert len(history) == 1
+        assert history[0]["phase"] == "fail"
+
+    def test_tool_history_multiple_entries_ordered(self, display):
+        """多次工具调用后 tool_history 按调用顺序包含全部记录。"""
+        captured = self._setup_display_with_capture(display)
+        display.add_agent("agent-1", "test agent")
+
+        for i, (name, detail) in enumerate([
+            ("read_file", "a.py"),
+            ("bash", "pytest -x"),
+            ("write_file", "b.py:42"),
+        ]):
+            display.tool_parsing("agent-1", name, detail)
+            display.tool_start("agent-1", name, detail)
+            display.tool_done("agent-1", name, success=True)
+
+        history = captured[-1].slot["tool_history"]
+        assert len(history) == 3
+        assert [r["tool_name"] for r in history] == ["read_file", "bash", "write_file"]
+        assert all(r["phase"] == "done" for r in history)
+
+    def test_tool_history_agent_done_cleans_running(self, display):
+        """agent status → done 时，running/parsing 的 ToolRecord 被批量标记为 done。"""
+        captured = self._setup_display_with_capture(display)
+        display.add_agent("agent-1", "test agent")
+        # 遗留一条 running 状态记录（模拟异常场景）
+        display.tool_parsing("agent-1", "search", "pattern")
+        display.tool_start("agent-1", "search", "pattern.*")
+        # 不调用 tool_done，直接标记 agent 为 done
+        display.update_agent_status("agent-1", "done")
+
+        history = captured[-1].slot["tool_history"]
+        assert len(history) == 1
+        # AgentStateStore.update_agent_status 会将残留 running/parsing 批量标记为 done
+        assert history[0]["phase"] in ("done", "fail")
+
+    def test_tool_history_dict_keys_match_toolrecord_fields(self, display):
+        """序列化后的 dict 键与 ToolRecord 字段一一对应。"""
+        captured = self._setup_display_with_capture(display)
+        display.add_agent("agent-1", "test agent")
+        display.tool_parsing("agent-1", "read_file", "main.py")
+        display.tool_start("agent-1", "read_file", "main.py:1-10")
+        display.tool_done("agent-1", "read_file", success=True)
+
+        rec = captured[-1].slot["tool_history"][0]
+        expected_keys = {"tool_name", "detail", "start_time", "end_time", "phase"}
+        assert set(rec.keys()) == expected_keys, (
+            f"tool_history dict 键应为 {expected_keys}，实际为 {set(rec.keys())}"
+        )

@@ -459,6 +459,8 @@ class VNodeRenderStrategy:
                             slots = vnode.props.get("slots", {})
                             old_count = self._last_subagent_line_count
                             adapter = self._renderer.output_adapter
+                            from ...ui.ansi import truncate_ansi_visual
+                            tw = getattr(adapter, 'width', None) or 80
 
                             if slots:
                                 import time
@@ -493,10 +495,22 @@ class VNodeRenderStrategy:
 
                                     type_tag = abbrs.get(agent_type, agent_type[:4])
 
+                                    # ── 预计算共享字段 ──
+                                    token_str = f"{output_tokens}" if output_tokens else ""
+                                    elapsed_str = f"{elapsed:.1f}s" if elapsed > 0 else ""
+
+                                    # ── 终端宽度感知截断 ──
+                                    prefix_w = 7 + len(type_tag)  # "  X [tag] "
+                                    suffix_w = 0
+                                    if status != "fail" and token_str:
+                                        suffix_w += 4 + len(token_str) + 4  # "  · {n} out"
+                                    if elapsed_str:
+                                        suffix_w += 4 + len(elapsed_str)  # "  · {N.Ns}"
+                                    available = max(tw - prefix_w - suffix_w - 1, 10)
+                                    desc = truncate_ansi_visual(desc, max_visual=available)
+
                                     if status == "running":
                                         icon = "\u23fa"  # ⏺
-                                        token_str = f"{output_tokens}"
-                                        elapsed_str = f"{elapsed:.1f}s" if elapsed > 0.5 else ""
                                         line_parts = [
                                             (f"  {icon} ", "cyan"),
                                             (f"[{type_tag}] ", "dim"),
@@ -511,8 +525,6 @@ class VNodeRenderStrategy:
                                         rendered = StyledText.assemble(*line_parts)
                                     elif status in ("done", "completed"):
                                         icon = "\u2713"  # ✓
-                                        token_str = f"{output_tokens}"
-                                        elapsed_str = f"{elapsed:.1f}s" if elapsed > 0 else ""
                                         line_parts = [
                                             (f"  {icon} ", "green"),
                                             (f"[{type_tag}] ", "dim"),
@@ -527,7 +539,6 @@ class VNodeRenderStrategy:
                                         rendered = StyledText.assemble(*line_parts)
                                     else:  # fail
                                         icon = "\u2717"  # ✗
-                                        elapsed_str = f"{elapsed:.1f}s" if elapsed > 0 else ""
                                         line_parts = [
                                             (f"  {icon} ", "red"),
                                             (f"[{type_tag}] ", "dim"),
@@ -540,6 +551,56 @@ class VNodeRenderStrategy:
 
                                     # 输出行：\\r 回行首 + \\033[K 清除 → StyledText → \\n 换行
                                     adapter.write_raw(f"\r\033[K{rendered}\n")
+                                    # ── 工具调用历史（最近 3 条，倒序）──
+                                    tool_history = slot.get("tool_history", [])
+                                    if tool_history:
+                                        recent_tools = list(reversed(tool_history[-3:]))
+                                        for rec in recent_tools:
+                                            t_name = rec.get("tool_name") or "?"
+                                            t_detail = rec.get("detail", "")
+                                            t_phase = rec.get("phase", "running")
+                                            t_start = rec.get("start_time", 0)
+                                            t_end = rec.get("end_time", 0)
+                                            
+                                            # elapsed
+                                            if t_phase in ("running", "parsing") and t_start > 0:
+                                                t_elapsed = _now - t_start
+                                            elif t_end > 0:
+                                                t_elapsed = t_end - t_start
+                                            else:
+                                                t_elapsed = 0.0
+                                            
+                                            tool_desc = f"{t_name} {t_detail}" if t_detail else t_name
+                                            
+                                            t_elapsed_str = f"{t_elapsed:.1f}s" if t_elapsed > 0 else ""
+                                            
+                                            # 终端宽度截断
+                                            t_prefix_w = 6  # "    X "
+                                            t_suffix_w = 4 + len(t_elapsed_str) if t_elapsed_str else 0  # "  · {N.Ns}"
+                                            t_available = max(tw - t_prefix_w - t_suffix_w - 1, 10)
+                                            tool_desc = truncate_ansi_visual(tool_desc, max_visual=t_available)
+                                            
+                                            if t_phase in ("done",):
+                                                t_icon = "\u2713"  # ✓
+                                                t_icon_color = "dim green"
+                                            elif t_phase in ("fail",):
+                                                t_icon = "\u2717"  # ✗
+                                                t_icon_color = "dim red"
+                                            else:  # running / parsing
+                                                t_icon = "\u27f3"  # ⟳
+                                                t_icon_color = "dim yellow"
+                                            
+                                            t_parts = [
+                                                (f"    {t_icon} ", t_icon_color),
+                                                (f"{tool_desc}", "dim"),
+                                            ]
+                                            if t_elapsed_str:
+                                                t_parts.append(("  \u00b7 ", "dim"))
+                                                t_parts.append((t_elapsed_str, "dim"))
+                                            
+                                            t_line = StyledText.assemble(*t_parts)
+                                            adapter.write_raw(f"\r\033[K{t_line}\n")
+                                            new_line_count += 1
                                     new_line_count += 1
 
                                 # ── 清除多余的残留行（新行数 < 旧行数时）──
