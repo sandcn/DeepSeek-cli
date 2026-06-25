@@ -20,6 +20,7 @@ from dataclasses import dataclass, field, replace
 from typing import Any, Callable
 
 from ..commands.types import (
+    CmdAnimationTick,
     CmdContent,
     CmdDisplayMsgs,
     CmdError,
@@ -30,6 +31,7 @@ from ..commands.types import (
     CmdReasoning,
     CmdStatusUpdate,
     CmdSubagentFrame,
+    CmdSubagentSlotUpdate,
     CmdToolCallUpdate,
     CmdToolCountDec,
     CmdToolCountInc,
@@ -81,10 +83,14 @@ class TuiState:
     parse_info: str = ""  # 当前解析信息文本
     tool_summary: tuple[tuple, tuple] = field(default_factory=lambda: ((), ()))  # (successful, failed)
     subagent_frames: tuple[tuple[str, ...], ...] = ()  # 多 SubAgent 帧行
+    subagent_slots: dict = field(default_factory=dict)  # label → slot dict（合并自 AgentStateStore）
 
     # ── 工具 ──
     tool_count: int = 0
     tool_fail: int = 0
+
+    # ── 动画 ──
+    animation_frame: int = 0  # AnimationClock 驱动的全局帧计数
 
 
 # ═══════════════════════════════════════════════════════════
@@ -178,6 +184,16 @@ def _reduce_subagent_frame(state: TuiState, cmd: CmdSubagentFrame) -> TuiState:
     return replace(state, subagent_frames=tuple(frames))
 
 
+def _reduce_subagent_slot_update(state: TuiState, cmd: CmdSubagentSlotUpdate) -> TuiState:
+    """将 AgentStateStore 的 slot 数据合并到 TuiState.subagent_slots。
+
+    以 label 为键，将 cmd.slot dict 浅拷贝到 subagent_slots。
+    """
+    slots = dict(state.subagent_slots)
+    slots[cmd.label] = dict(cmd.slot)  # 浅拷贝 slot dict
+    return replace(state, subagent_slots=slots)
+
+
 def _reduce_input_changed(state: TuiState, cmd: CmdInputChanged) -> TuiState:
     """用户输入变更 reducer。"""
     new_input = replace(state.input_line, text=cmd.text, cursor_pos=cmd.cursor_pos)
@@ -244,6 +260,15 @@ def _reduce_tool_call_update(state: TuiState, cmd: CmdToolCallUpdate) -> TuiStat
     return replace(state, tool_calls=new_calls)
 
 
+def _reduce_animation_tick(state: TuiState, cmd: CmdAnimationTick) -> TuiState:
+    """动画滴答 reducer — 递增全局动画帧计数。
+
+    由 AnimationClock 定时器推送 CmdAnimationTick 驱动，
+    每帧 +1。VNodeRenderStrategy 读取此计数判断是否需要重新渲染。
+    """
+    return replace(state, animation_frame=state.animation_frame + 1)
+
+
 # ═══════════════════════════════════════════════════════════
 # 步骤 6.2: TuiStore 不可变状态容器
 # ═══════════════════════════════════════════════════════════
@@ -277,9 +302,11 @@ class TuiStore:
             CmdToolFailInc: _reduce_tool_fail_inc,
             CmdError: _reduce_error,
             CmdSubagentFrame: _reduce_subagent_frame,
+            CmdSubagentSlotUpdate: _reduce_subagent_slot_update,
             CmdInputChanged: _reduce_input_changed,
             CmdStatusUpdate: _reduce_status_update,
             CmdToolCallUpdate: _reduce_tool_call_update,
+            CmdAnimationTick: _reduce_animation_tick,
         }
 
     def dispatch(self, action: Any) -> TuiState:

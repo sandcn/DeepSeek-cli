@@ -38,7 +38,10 @@ from ..terminal_adapter import (
     register_sigwinch_callback,
     unregister_sigwinch_callback,
 )
-from ...chat_ui.commands.types import CmdSubagentFrame
+# 跨层引用说明：CmdSubagentFrame 和 CmdSubagentSlotUpdate 是纯数据 dataclass，
+# 属于数据契约层。它们在 chat_ui/commands/types.py 中定义（与所有 Cmd* 类型同文件），
+# 保留此 import 作为数据契约引用，避免为两个类型创建独立的共享模块。
+from ...chat_ui.commands.types import CmdSubagentFrame, CmdSubagentSlotUpdate
 
 # ── 常量 ────────────────────────────────────────────────
 
@@ -122,6 +125,8 @@ class ParallelDisplay(BaseDisplay):
 
         # PanelContext 注入（替代 get_active_chat_ui() 调用）
         self._panel_ctx: "PanelContext | None" = None
+        # claude_style 缓存（由 set_panel_context() 从 PanelContext 获取）
+        self._claude_style_enabled: bool = False
 
     def set_panel_context(self, ctx) -> None:
         """注入 PanelContext（替代 get_active_chat_ui() 调用）。
@@ -129,8 +134,24 @@ class ParallelDisplay(BaseDisplay):
         由外部调用方（parallel_executor）在 start() 前调用，
         注入 ChatUIConsumer 实例，display.py 通过此协议访问 ChatUI，
         避免直接 import chat_ui 模块。
+
+        同时从 PanelContext 获取 claude_style 开关值并缓存，
+        传递给 FrameRenderer，避免 FrameRenderer 直接 import chat_ui 模块。
         """
         self._panel_ctx = ctx
+        # 从 PanelContext 获取 claude_style 开关值
+        claude_style = getattr(ctx, 'claude_style_enabled', False)
+        if callable(claude_style):
+            claude_style = claude_style()
+        self._claude_style_enabled = bool(claude_style)
+
+        # 用正确的 claude_style 值重建 FrameRenderer
+        self._renderer = FrameRenderer(
+            terminal_width=self._terminal.terminal_width,
+            frame=0,
+            max_history=self.max_history,
+            claude_style=self._claude_style_enabled,
+        )
 
     # ── 终端缩放回调 ────────────────────────────────────
 
@@ -216,12 +237,14 @@ class ParallelDisplay(BaseDisplay):
     def add_agent(self, label: str, description: str, status: str = "running",
                   agent_type: str = "plan_execute"):
         self._store.add_agent(label, description, status, agent_type=agent_type)
+        self._push_slot_update(label)
         self._schedule_refresh()
 
     # ── 状态更新（代理到 AgentStateStore） ─────────────
 
     def update_agent_status(self, label: str, status: str):
         self._store.update_agent_status(label, status)
+        self._push_slot_update(label)
         self._schedule_refresh()
 
     def update_status(self, label: str, status: str):
@@ -229,29 +252,35 @@ class ParallelDisplay(BaseDisplay):
 
     def update_model_phase(self, label: str, phase: str, info: str = ""):
         self._store.update_model_phase(label, phase, info)
+        self._push_slot_update(label)
         self._schedule_refresh()
 
     def tool_parsing(self, label: str, tool_name: str, arguments: str = ""):
         self._store.tool_parsing(label, tool_name, arguments)
+        self._push_slot_update(label)
         self._schedule_refresh()
 
     def tool_batch_start(self, label: str, tool_names: list):
         self._store.tool_batch_start(label, tool_names)
+        self._push_slot_update(label)
         self._schedule_refresh()
 
     def tool_start(self, label: str, tool_name: str, detail: str = "",
                    metadata: dict | None = None):
         self._store.tool_start(label, tool_name, detail)
+        self._push_slot_update(label)
         self._schedule_refresh()
 
     def tool_done(self, label: str, tool_name: str = "",
                   success: bool = True, metadata: dict | None = None):
         self._store.tool_done(label, tool_name, success)
+        self._push_slot_update(label)
         self._schedule_refresh()
 
     def update_parse_info(self, label: str, tool_names: str,
                           tokens: int, elapsed: float):
         self._store.update_parse_info(label, tool_names, tokens, elapsed)
+        self._push_slot_update(label)
         self._schedule_refresh()
 
     def parse_info_done(self, label: str) -> None:
@@ -259,12 +288,15 @@ class ParallelDisplay(BaseDisplay):
 
     def update_tokens(self, label: str, tokens: int):
         self._store.update_tokens(label, tokens)
+        self._push_slot_update(label)
 
     def update_usage(self, label: str, usage: dict, replace: bool = False):
         self._store.update_usage(label, usage, replace)
+        self._push_slot_update(label)
 
     def update_live_output(self, label: str, tokens: int):
         self._store.update_live_output(label, tokens)
+        self._push_slot_update(label)
         # EventBus 发布去抖
         now = time.time()
         if now - self._last_eventbus_time >= _EVENTBUS_THROTTLE:
@@ -278,12 +310,15 @@ class ParallelDisplay(BaseDisplay):
 
     def update_live_input(self, label: str, tokens: int):
         self._store.update_live_input(label, tokens)
+        self._push_slot_update(label)
 
     def update_speed(self, label: str, speed: float):
         self._store.update_speed(label, speed)
+        self._push_slot_update(label)
 
     def set_result(self, label: str, result_text: str = "", error: str = ""):
         self._store.set_result(label, result_text, error)
+        self._push_slot_update(label)
         self._schedule_refresh()
 
     # ── 帧渲染（通过命令队列） ────────────────────────
@@ -294,6 +329,57 @@ class ParallelDisplay(BaseDisplay):
         保留本方法供外部调用方兼容（add_agent/update_* 等仍可安全调用），
         但不触发任何实际刷新，避免事件驱动的冗余帧推送。
         """
+
+    def _push_slot_update(self, label: str) -> None:
+        """将 AgentStateStore 中指定 label 的槽位数据同步到 TuiState。
+
+        从 AgentStateStore 读取最新 slot 快照，转换为可序列化 dict，
+        通过 push_cmd 推送 CmdSubagentSlotUpdate 到 chat_ui 命令队列，
+        由 TuiStore._reduce_subagent_slot_update 合并到 TuiState.subagent_slots。
+
+        已包含字段：label, description, agent_type, status, start_time, end_time,
+            total_calls, input_tokens, output_tokens, live_input_tokens,
+            live_output_tokens, last_speed, model_phase, model_info,
+            result_text, result_error
+
+        未包含字段：tool_history（待后续支持 — ToolRecord 列表需先设计序列化方案，
+            届时需在 CmdSubagentSlotUpdate 中新增 tool_history 字段）。
+        """
+        if self._push_cmd is None:
+            return
+        slot = self._store.get_slot(label)
+        if slot is None:
+            return
+        slot_dict = {
+            "label": slot.label,
+            "description": slot.description,
+            "agent_type": slot.agent_type,
+            "status": slot.status,
+            "start_time": slot.start_time,
+            "end_time": slot.end_time,
+            "total_calls": slot.total_calls,
+            "input_tokens": slot.input_tokens,
+            "output_tokens": slot.output_tokens,
+            "live_input_tokens": slot.live_input_tokens,
+            "live_output_tokens": slot.live_output_tokens,
+            "last_speed": slot.last_speed,
+            "model_phase": slot.model_phase,
+            "model_info": slot.model_info,
+            "result_text": slot.result_text,
+            "result_error": slot.result_error,
+        }
+        self._push_cmd(CmdSubagentSlotUpdate(label=label, slot=slot_dict))
+
+    def _build_version_from_tui_state(self) -> dict | None:
+        """从 TuiState.subagent_slots 构建帧渲染所需的快照数据（存根）。
+
+        当前返回 None，表示尚未从 TuiState 读取。待 TuiState 补全 tool_history
+        字段后，此方法将从 self._panel_ctx 获取 TuiState 并转换为
+        FrameRenderer.render() 所需的 (slots_snapshot, order) 格式。
+
+        迁移完成后，_build_frame() 将调用此方法替代 self._store.snapshot_all()。
+        """
+        return None
 
     def _build_frame(self, final: bool = False) -> tuple | None:
         """构建面板帧数据（纯函数，不写终端）。
@@ -307,6 +393,10 @@ class ParallelDisplay(BaseDisplay):
         Returns:
             (lines, scroll_end, last_lines, clear_eol) 或 None（adapter 缺失时）
         """
+        # TODO: 当前仍从 AgentStateStore（self._store）读取快照和顺序，
+        # 这是临时过渡方案。计划在 TuiState 补全 tool_history 支持后，
+        # 改为从 TuiState.subagent_slots 读取数据，实现完全的状态统一。
+        # 届时：slots_snapshot = self._build_version_from_tui_state()
         if self._adapter is None:
             return None
 

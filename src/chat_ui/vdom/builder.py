@@ -92,11 +92,14 @@ def build_vnode_tree(state: TuiState) -> VNode:
         ))
 
     # SubAgent 帧
-    if state.subagent_frames:
+    if state.subagent_frames or state.subagent_slots:
+        subagent_props: dict = {"frames": state.subagent_frames}
+        if state.subagent_slots:
+            subagent_props["slots"] = state.subagent_slots
         content_children.append(VNode(
             type="subagent_frames",
             key="subagent_frames",
-            props={"frames": state.subagent_frames},
+            props=subagent_props,
         ))
 
     # 工具调用（进行中）

@@ -75,7 +75,7 @@ class FrameRenderer:
         frame: int = 0,
         max_history: int = 3,
         *,
-        claude_style: bool | None = None,
+        claude_style: bool = False,
         summary_separator: str = _DEFAULT_SUMMARY_SEPARATOR,
         summary_icon_running: str = _DEFAULT_SUMMARY_ICON_RUNNING,
         summary_icon_done: str = _DEFAULT_SUMMARY_ICON_DONE,
@@ -87,10 +87,6 @@ class FrameRenderer:
         self._frame = frame
         self.max_history = max_history
 
-        # ── Claude Code 风格门控（惰性导入） ──
-        if claude_style is None:
-            from ...chat_ui.infrastructure.claude_style import _is_claude_style_enabled
-            claude_style = _is_claude_style_enabled()
         self._claude_style = claude_style
 
         if claude_style:
@@ -105,13 +101,8 @@ class FrameRenderer:
             self._icon_done = "✓"
             self._icon_fail = "✗"
             self._icon_running = "⏺"
-            # Claude 工具图标（Claude 优先，默认兜底）
-            from ...chat_ui.infrastructure.claude_style import CLAUDE_TOOL_ICONS
-            _merged = dict(_DEFAULT_TOOL_ICONS)
-            _merged.update(CLAUDE_TOOL_ICONS)
-            if tool_icons:
-                _merged.update(tool_icons)
-            self._tool_icons = _merged
+            # Claude 工具图标（由调用方通过 tool_icons 参数传入）
+            self._tool_icons = tool_icons or dict(_DEFAULT_TOOL_ICONS)
         else:
             self._c_running = _C_RUNNING
             self._c_done = _C_DONE

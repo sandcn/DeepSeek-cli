@@ -588,17 +588,18 @@ class TestRenderEngineDrainQueue:
 
         with (
             patch("src.chat_ui.core.engine._try_acquire_output_lock") as m_lock,
+            patch.object(engine._strategy, "render_commands", wraps=engine._strategy.render_commands) as m_rc,
         ):
             m_lock.return_value.__enter__.return_value = True
 
             engine._drain_queue()
 
-        # 两个命令按顺序渲染
-        assert engine._renderer.render.call_count == 2
-        engine._renderer.render.assert_has_calls([
-            call(CmdContent(text="hello")),
-            call(CmdContent(text="world")),
-        ])
+        # 两个命令被传递给策略统一渲染
+        assert m_rc.call_count == 1
+        cmds_arg = m_rc.call_args[0][1]  # commands 参数（位置参数索引 1）
+        assert len(cmds_arg) == 2
+        assert cmds_arg[0].text == "hello"
+        assert cmds_arg[1].text == "world"
 
     def test_drain_calls_sync_and_cursor_upper(
         self, engine,
@@ -624,26 +625,22 @@ class TestRenderEngineDrainQueue:
     def test_drain_render_exception_tolerated_and_queues_error(
         self, engine, caplog,
     ):
-        """渲染命令异常时被容错（记录日志 + push ERROR 命令）。"""
+        """VNode 策略 dispatch 异常时被容错（记录日志，不影响后续处理）。"""
         engine._bb.is_status_active = False
-        engine._renderer.render.side_effect = RuntimeError("渲染失败")
         caplog.set_level(logging.DEBUG)
 
         engine._cmd_queue.put(CmdContent(text="坏数据"))
 
         with (
             patch("src.chat_ui.core.engine._try_acquire_output_lock") as m_lock,
+            patch.object(engine._store, "dispatch", side_effect=RuntimeError("dispatch 失败")),
         ):
             m_lock.return_value.__enter__.return_value = True
 
             engine._drain_queue()
 
-        # 异常被记录，不传播
-        assert "渲染命令" in caplog.text
-        # ERROR 命令被推回队列
-        assert engine._cmd_queue.qsize() == 1
-        err_cmd = engine._cmd_queue.get_nowait()
-        assert isinstance(err_cmd, CmdError)
+        # dispatch 异常被记录
+        assert "VNode dispatch" in caplog.text
 
     def test_drain_force_redraw_with_commands(self, engine):
         """有命令时不论 is_status_active 都触发 force_redraw。"""
@@ -713,13 +710,14 @@ class TestRenderEngineDrainQueue:
 
         with (
             patch("src.chat_ui.core.engine._try_acquire_output_lock") as m_lock,
+            patch.object(engine._strategy, "render_commands", wraps=engine._strategy.render_commands) as m_rc,
         ):
             m_lock.return_value.__enter__.return_value = True
 
             engine._drain_queue()
 
-        # 渲染仍成功
-        engine._renderer.render.assert_called_once()
+        # 策略 render_commands 仍被调用（sync_bottom_lines 异常在策略内部容错）
+        m_rc.assert_called_once()
 
     def test_drain_force_redraw_exception_tolerated(self, engine):
         """force_redraw 异常时被容错，继续光标定位。"""

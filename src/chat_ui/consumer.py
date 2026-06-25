@@ -248,6 +248,16 @@ class ChatUIConsumer:
     def output_adapter(self):
         return self._tui_renderer.output_adapter
 
+    @property
+    def claude_style_enabled(self) -> bool:
+        """Claude Code 风格开关（供 PanelContext 协议消费）。
+
+        ParallelDisplay 通过此属性获取 claude_style 值并传入 FrameRenderer，
+        避免 ui/ 层直接 import chat_ui.infrastructure.claude_style。
+        """
+        from .infrastructure.claude_style import _is_claude_style_enabled
+        return _is_claude_style_enabled()
+
     def set_panel_refresh_callback(self, callback: Callable[[], None] | None) -> None:
         self._engine.set_panel_refresh_callback(callback)
 
@@ -265,19 +275,20 @@ class ChatUIConsumer:
         self._engine.ensure_cursor_upper()
 
     def get_echo_callback(self):
-        """返回 echo 回调函数。
+        """返回 echo 回调函数（始终使用 VNode 路径）。
 
-        VNode 路径（CHAT_UI_RENDER_USE_VNODE=1）时返回 push_cmd 版本，
-        默认返回原有的 refresh_bottom_bar 版本。
+        通过 push_cmd(CmdInputChanged) 通知渲染引擎输入变更，
+        由 VNodeRenderStrategy 统一处理增量渲染。
+        同时更新 bottom_bar 内部状态，确保 force_redraw() 读取最新输入。
         """
-        if getattr(self._engine, '_use_vnode', False):
-            from .commands.types import CmdInputChanged
+        from .commands.types import CmdInputChanged
 
-            def _vnode_echo(text: str, cursor_pos: int) -> None:
-                self._engine.push_cmd(CmdInputChanged(text=text, cursor_pos=cursor_pos))
+        def _vnode_echo(text: str, cursor_pos: int) -> None:
+            effective_pos = len(text) if cursor_pos < 0 else cursor_pos
+            self._bottom_bar.set_input_state(text, effective_pos)
+            self._engine.push_cmd(CmdInputChanged(text=text, cursor_pos=cursor_pos))
 
-            return _vnode_echo
-        return self.refresh_bottom_bar
+        return _vnode_echo
 
     def refresh_bottom_bar(self, text: str, cursor_pos: int = -1) -> None:
         effective_pos = len(text) if cursor_pos < 0 else cursor_pos

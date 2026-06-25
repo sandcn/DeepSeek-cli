@@ -184,10 +184,20 @@ class TuiRenderer:
     # ── 内容渲染 ──────────────────────────────────
 
     def _do_reasoning(self, text: str) -> None:
+        """渲染推理文本（DirectRenderStrategy 路径）。
+
+        VNode 路径下此方法不触发 — 推理内容由 VNodeRenderStrategy._render_node()
+        通过 VDOM diff + IncrementalRenderer 直接写终端，TuiRenderer 仅用于降级路径。
+        """
         block = self._rs.get_thinking_block()
         self._record_lines(block.write(text))
 
     def _do_content(self, text: str) -> None:
+        """渲染回答文本（DirectRenderStrategy 路径）。
+
+        VNode 路径下此方法不触发 — 回答内容由 VNodeRenderStrategy._render_node()
+        通过 VDOM diff + IncrementalRenderer 直接写终端，TuiRenderer 仅用于降级路径。
+        """
         block = self._rs.get_answer_block()
         self._record_lines(block.write(text))
 
@@ -352,7 +362,9 @@ class TuiRenderer:
 # ═══════════════════════════════════════════════════════════
 
 class RichLiveContentRenderer:
-    """Rich Live 内容区渲染器 — 差分渲染，替代手动 ANSI 刷新。
+    """@deprecated: Rich Live 内容区渲染器 — 差分渲染，替代手动 ANSI 刷新。
+
+    已由 VNodeRenderStrategy 统一渲染路径取代。
 
     通过配置开关 chat_ui.render.use_rich_live 控制启用。
     仅管理滚动内容区（DECSTBM 上方），底部栏保留手动 DECSTBM 管理。
@@ -414,4 +426,4 @@ class RichLiveContentRenderer:
             self._live = None
 
 
-__all__ = ["TuiRenderer", "_RenderState", "RichLiveContentRenderer"]
+__all__ = ["TuiRenderer", "_RenderState"]

@@ -1,4 +1,6 @@
-"""_render_phase — 可插拔渲染管线 Phase 实现。
+"""@deprecated: _render_phase — 可插拔渲染管线 Phase 实现。
+
+已由 VNodeRenderStrategy 统一渲染路径取代。保留仅为向后兼容。
 
 定义 4 个默认 Phase，按序执行：
   PreUpdatePhase → ContentRenderPhase → BottomBarPhase → CursorPhase
@@ -23,7 +25,7 @@ _logger = logging.getLogger(__name__)
 # ═══════════════════════════════════════════════════════════
 
 class PreUpdatePhase:
-    """阶段 1: 面板预更新。
+    """@deprecated: 阶段 1: 面板预更新。
 
     委托 engine._phase_pre_update_panels()，刷新 SubAgent 面板等。
     """
@@ -39,7 +41,7 @@ class PreUpdatePhase:
 
 
 class ContentRenderPhase:
-    """阶段 2: 内容渲染。
+    """@deprecated: 阶段 2: 内容渲染。
 
     直接使用 TuiRenderer 逐条渲染命令（避免通过 _phase_render 循环回策略）。
     """
@@ -65,7 +67,7 @@ class ContentRenderPhase:
 
 
 class BottomBarPhase:
-    """阶段 3: 底部栏重绘。
+    """@deprecated: 阶段 3: 底部栏重绘。
 
     委托 engine._phase_redraw_bottom(has_commands)。
     当 VNode 路径启用且有 patches 变更时触发重绘。
@@ -95,7 +97,7 @@ class BottomBarPhase:
 
 
 class CursorPhase:
-    """阶段 4: 光标定位。
+    """@deprecated: 阶段 4: 光标定位。
 
     在底部栏重绘后定位光标到输入位置。
     """

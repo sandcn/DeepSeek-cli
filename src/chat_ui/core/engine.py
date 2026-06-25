@@ -36,14 +36,9 @@ from ..commands.types import (
     CmdInputChanged,
 )
 
-# ── React Ink 动画系统（条件导入，react_ink 子包可能不可用）──
-try:
-    from src.chat_ui.react_ink import AnimationClock, _is_enabled as _react_ink_enabled
-    from ..commands.types import CmdAnimationTick
-except ImportError:
-    AnimationClock = None  # type: ignore[assignment]
-    CmdAnimationTick = None  # type: ignore[assignment]
-    _react_ink_enabled = lambda: False
+# ── React Ink 动画系统（直接导入）──
+from ..react_ink import AnimationClock, _is_enabled as _react_ink_enabled
+from ..commands.types import CmdAnimationTick
 
 from ..infrastructure.lock import _try_acquire_output_lock
 
@@ -94,16 +89,20 @@ class TuiEngine:
         # ── 动画时钟（React Ink 动画系统，惰性初始化）──
         self._anim_clock = None  # AnimationClock | None，仅在 _is_enabled() 时创建
 
+        # ── 渲染策略相关属性（显式初始化，由 _select_strategy() 赋值）──
+        self._use_fixed_fps: bool = False
+        self._store = None
+
         # ── 一次性选择渲染策略（集中读取环境变量，替代分散在渲染循环中的 if/else 分支）──
         self._strategy: RenderStrategy = self._select_strategy()
 
     def _select_strategy(self) -> RenderStrategy:
         """一次读取所有渲染相关环境变量，选择渲染策略（仅在 __init__ 调用一次）。
 
-        委托给 _strategy_factory.create_render_strategy()，该方法集中管理
-        环境变量读取和策略实例化逻辑。
+        委托给 create_render_strategy()，该方法集中管理环境变量读取和策略实例化逻辑。
+        统一返回 VNodeRenderStrategy（唯一策略）。
         """
-        strategy, self._use_fixed_fps, self._use_phases, self._store = (
+        strategy, self._use_fixed_fps, self._store = (
             create_render_strategy(self._renderer)
         )
         return strategy
@@ -112,8 +111,8 @@ class TuiEngine:
 
     @property
     def _use_vnode(self) -> bool:
-        """是否为 VNode 渲染策略（向后兼容，供 _consumer.py / _render_phase.py 查询）。"""
-        return isinstance(self._strategy, VNodeRenderStrategy)
+        """是否为 VNode 渲染策略（始终返回 True，VNodeRenderStrategy 为唯一策略）。"""
+        return True
 
     @property
     def _old_vnode(self):
@@ -191,7 +190,7 @@ class TuiEngine:
                 _logger.warning("策略 start 失败", exc_info=True)
 
         # ── 启动动画时钟（React Ink 动画系统）──
-        if self._anim_clock is None and AnimationClock is not None:
+        if self._anim_clock is None:
             try:
                 if _react_ink_enabled():
                     self._anim_clock = AnimationClock(
@@ -363,12 +362,17 @@ class TuiEngine:
             anim_ticks = [c for c in commands if isinstance(c, CmdAnimationTick)]
             content_cmds = [c for c in commands if not isinstance(c, CmdAnimationTick)]
 
-            # 处理动画滴答（在 render 线程中更新所有动画状态）
+            # 处理动画滴答（统一通过 store.dispatch 管理帧计数 + clock._tick 更新动画状态）
             # 缓存到局部变量防止 stop() 置 None 竞态
             if anim_ticks:
                 clock = self._anim_clock
                 if clock is not None:
                     try:
+                        # 通过 store.dispatch 统一管理动画帧计数（一等命令）
+                        if self._store is not None:
+                            for tick in anim_ticks:
+                                self._store.dispatch(tick)
+                        # AnimationClock 仍负责实际的动画状态更新
                         clock._tick()
                         if hasattr(self._strategy, 'set_animating'):
                             self._strategy.set_animating(True)

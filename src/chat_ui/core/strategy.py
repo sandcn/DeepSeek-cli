@@ -54,7 +54,10 @@ class RenderStrategy(Protocol):
 # ═══════════════════════════════════════════════════════════
 
 class DirectRenderStrategy:
-    """默认策略：逐条命令通过 TuiRenderer 直接渲染。
+    """@deprecated: 默认策略：逐条命令通过 TuiRenderer 直接渲染。
+
+    已由 VNodeRenderStrategy 取代。仅在 CHAT_UI_RENDER_LEGACY_FALLBACK=1 环境变量
+    设置时允许无警告使用，否则发出 DeprecationWarning。
 
     通过构造函数中的环境变量 CHAT_UI_RENDER_USE_RICH_LIVE 选择子路径：
       - 默认：逐条 dispatch 到 TuiRenderer.render()
@@ -62,6 +65,16 @@ class DirectRenderStrategy:
     """
 
     def __init__(self, renderer):
+        import warnings
+        if not os.environ.get("CHAT_UI_RENDER_LEGACY_FALLBACK", "").strip().lower() in (
+            "1", "true", "yes", "on"
+        ):
+            warnings.warn(
+                "DirectRenderStrategy 已废弃，请使用 VNodeRenderStrategy。"
+                "设置 CHAT_UI_RENDER_LEGACY_FALLBACK=1 可消除此警告。",
+                DeprecationWarning,
+                stacklevel=2,
+            )
         self._renderer = renderer
         self._use_rich_live: bool = (
             os.environ.get("CHAT_UI_RENDER_USE_RICH_LIVE", "").strip().lower()
@@ -180,6 +193,7 @@ class VNodeRenderStrategy:
         self._old_vnode: "VNode | None" = None
         self._output = output_func  # 输出函数: callable(str) → 写终端
         self._last_answer_text: str = ""  # answer_block 增量渲染缓存（假设文本只增不减）
+        self._last_reasoning_text: str = ""  # thinking_block 增量渲染缓存
         self._last_write_lines_count: int = 0
         self._last_user_messages_count: int = 0
         self._last_tool_outputs: tuple = ()
@@ -278,6 +292,8 @@ class VNodeRenderStrategy:
                 self._anim_idle_count = 0
 
             if has_change:
+                # 渲染回调所需命令类型
+                from ..commands.types import CmdContent, CmdReasoning, CmdToolOutput
                 # 渲染回调：将 VNode 渲染为终端输出
                 def _render_node(vnode: "VNode") -> None:
                     # ── 容器类型：递归渲染子节点 ──
@@ -293,18 +309,26 @@ class VNodeRenderStrategy:
 
                     # ── 流式文本类型 ──
                     # answer_block: 增量渲染（仅输出新增文本，避免全量覆写叠加）
-                    # thinking_block: 跳过内联渲染（多行思考内容在 DECSTBM 下会滚动堆积）
+                    # 通过 TuiRenderer.render(CmdContent) 路由到 IncrementalRenderer，
+                    # 确保 Markdown → ANSI 渲染管线完整（代码高亮/表格/粗体等样式）。
+                    # thinking_block: 同样通过 TuiRenderer 路由（支持 Markdown 思考内容）
                     if vnode.type == "answer_block":
                         text = vnode.props.get("text", "")
                         if text:
                             delta = text[len(self._last_answer_text):]
                             if delta:
-                                # \r\033[K 清除行残留后再写增量文本
-                                delta = f"\r\033[K{delta}"
-                                self._renderer.output_adapter.write_raw(delta)
+                                # 路由到 TuiRenderer → IncrementalRenderer 完成 Markdown→ANSI
+                                self._renderer.render(CmdContent(text=delta))
                             self._last_answer_text = text
                         return
                     if vnode.type == "thinking_block":
+                        # 思考内容也通过 IncrementalRenderer 渲染（支持代码块等 Markdown）
+                        text = vnode.props.get("text", "")
+                        if text:
+                            delta = text[len(self._last_reasoning_text):]
+                            if delta:
+                                self._renderer.render(CmdReasoning(text=delta))
+                            self._last_reasoning_text = text
                         return
 
                     # ── 一次性块类型：增量渲染（仅输出新增条目，避免每帧重复）──
@@ -321,15 +345,15 @@ class VNodeRenderStrategy:
                         old_len = len(self._last_tool_outputs)
                         new_len = len(outputs)
                         if new_len > old_len:
-                            # 有新条目：输出新增的
+                            # 有新条目：通过 TuiRenderer 路由（ToolOutputBlock 处理 ANSI + dim 样式）
                             for output in outputs[old_len:]:
-                                if self._output:
-                                    self._output(f"   {output}")
+                                _, text = output  # (name, text) 元组
+                                self._renderer.render(CmdToolOutput(text=text))
                         elif new_len == old_len and old_len > 0:
-                            # 条目数不变但内容变了（最后一项被追加修改）：输出修改后的最后一项
+                            # 条目数不变但内容变了（最后一项被追加修改）
                             if outputs[-1] != self._last_tool_outputs[-1]:
-                                if self._output:
-                                    self._output(f"   {outputs[-1]}")
+                                _, text = outputs[-1]
+                                self._renderer.render(CmdToolOutput(text=text))
                         self._last_tool_outputs = outputs
                     elif vnode.type == "notifications":
                         items = vnode.props.get("items", ())
@@ -437,13 +461,26 @@ class VNodeRenderStrategy:
 # ═══════════════════════════════════════════════════════════
 
 class PhaseRenderStrategy:
-    """可插拔 Phase 管线渲染策略。
+    """@deprecated: 可插拔 Phase 管线渲染策略。
+
+    已由 VNodeRenderStrategy 取代。仅在 CHAT_UI_RENDER_LEGACY_FALLBACK=1 环境变量
+    设置时允许无警告使用，否则发出 DeprecationWarning。
 
     将渲染流程拆分为独立的 Phase（PreUpdate → ContentRender → BottomBar → Cursor），
     每个 Phase 实现 RenderPhase Protocol。
     """
 
     def __init__(self, renderer, phases: list, store=None):
+        import warnings
+        if not os.environ.get("CHAT_UI_RENDER_LEGACY_FALLBACK", "").strip().lower() in (
+            "1", "true", "yes", "on"
+        ):
+            warnings.warn(
+                "PhaseRenderStrategy 已废弃，请使用 VNodeRenderStrategy。"
+                "设置 CHAT_UI_RENDER_LEGACY_FALLBACK=1 可消除此警告。",
+                DeprecationWarning,
+                stacklevel=2,
+            )
         self._renderer = renderer
         self._phases = phases
         self._store = store
@@ -489,6 +526,8 @@ class PhaseRenderStrategy:
                 _log.warning("Phase %s 执行失败", type(phase).__name__, exc_info=True)
 
         # 防御性检查：如果 phases 中没有 BottomBarPhase，手动触发底部栏重绘
+        # 惰性导入 BottomBarPhase 以避免循环依赖：
+        # strategy → phase → engine → strategy。移到模块顶部会导致 ImportError。
         from ..core.phase import BottomBarPhase
         has_bottom_bar_phase = any(isinstance(p, BottomBarPhase) for p in self._phases)
         if not has_bottom_bar_phase:
