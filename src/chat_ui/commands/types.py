@@ -24,6 +24,7 @@ from typing import Any
 class CmdReasoning:
     """推理内容块 — 对应 RenderCommand.REASONING (0)。"""
     text: str
+    layer: int = 10
     kind: int = 0
 
 
@@ -31,6 +32,7 @@ class CmdReasoning:
 class CmdContent:
     """助手回答块 — 对应 RenderCommand.CONTENT (1)。"""
     text: str
+    layer: int = 10
     kind: int = 1
 
 
@@ -38,6 +40,7 @@ class CmdContent:
 class CmdPhaseDone:
     """阶段完成 — 对应 RenderCommand.PHASE_DONE (2)。"""
     phase: str
+    layer: int = 10
     kind: int = 2
 
 
@@ -45,6 +48,7 @@ class CmdPhaseDone:
 class CmdToolOutput:
     """工具输出内容 — 对应 RenderCommand.TOOL_OUTPUT (6)。"""
     text: str
+    layer: int = 10
     kind: int = 6
 
 
@@ -53,6 +57,7 @@ class CmdToolSummary:
     """工具汇总块 — 对应 RenderCommand.TOOL_SUMMARY (7)。"""
     successful: tuple[str, ...]
     failed: tuple[str, ...]
+    layer: int = 10
     kind: int = 7
 
 
@@ -60,6 +65,7 @@ class CmdToolSummary:
 class CmdUserMsg:
     """用户消息 — 对应 RenderCommand.USER_MSG (8)。"""
     text: str
+    layer: int = 10
     kind: int = 8
 
 
@@ -69,6 +75,7 @@ class CmdParseInfo:
     tool_names: str
     tokens: Any   # int | _CLEAR_PARSE_LINE (-1)
     elapsed: float
+    layer: int = 10
     kind: int = 9
 
 
@@ -76,6 +83,7 @@ class CmdParseInfo:
 class CmdNotification:
     """通知消息 — 对应 RenderCommand.NOTIFICATION (11)。"""
     text: str
+    layer: int = 20
     kind: int = 11
 
 
@@ -83,6 +91,7 @@ class CmdNotification:
 class CmdWriteLine:
     """样式化行输出 — 对应 RenderCommand.WRITE_LINE (12)。"""
     text: str
+    layer: int = 10
     kind: int = 12
 
 
@@ -91,18 +100,21 @@ class CmdDisplayMsgs:
     """显示消息列表 — 对应 RenderCommand.DISPLAY_MSGS (13)。"""
     messages: list[dict]
     speed: int
+    layer: int = 10
     kind: int = 13
 
 
 @dataclass(frozen=True)
 class CmdToolCountInc:
     """工具计数+1 — 对应 RenderCommand.TOOL_COUNT_INC (14)。"""
+    layer: int = 10
     kind: int = 14
 
 
 @dataclass(frozen=True)
 class CmdToolFailInc:
     """工具失败计数+1 — 对应 RenderCommand.TOOL_FAIL_INC (15)。"""
+    layer: int = 10
     kind: int = 15
 
 
@@ -110,12 +122,14 @@ class CmdToolFailInc:
 class CmdError:
     """系统错误 — 对应 RenderCommand.ERROR (16)。"""
     message: str
+    layer: int = 20
     kind: int = 16
 
 
 @dataclass(frozen=True)
 class CmdToolCountDec:
     """工具计数-1 — 对应 RenderCommand.TOOL_COUNT_DEC (17)。"""
+    layer: int = 10
     kind: int = 17
 
 
@@ -128,6 +142,7 @@ class CmdSubagentFrame:
     保留类定义避免 import 报错，实际不再被 VNode 渲染路径消费。
     """
     frame_lines: tuple
+    layer: int = 10
     kind: int = 18
 
 
@@ -136,6 +151,7 @@ class CmdInputChanged:
     """输入文本变更 — 用户按键导致输入缓冲区变化。"""
     text: str
     cursor_pos: int
+    layer: int = 10
     kind: int = 19
 
 
@@ -152,6 +168,7 @@ class CmdStatusUpdate:
     tool_count: int | None = None
     tool_fail: int | None = None
     streaming: bool = False
+    layer: int = 10
     kind: int = 20
 
 
@@ -162,6 +179,7 @@ class CmdAnimationTick:
     由 AnimationClock 定时器通过 TuiEngine.push_cmd() 入队，
     在 render 线程中处理，避免竞态条件。
     """
+    layer: int = 10
     kind: int = 21
 
 
@@ -186,6 +204,7 @@ class CmdToolCallUpdate:
     text: str = ""
     params_summary: str = ""
     elapsed_ms: float = 0.0
+    layer: int = 10
     kind: int = 22
 
 
@@ -202,4 +221,5 @@ class CmdSubagentSlotUpdate:
     """
     label: str
     slot: dict
+    layer: int = 10
     kind: int = 23

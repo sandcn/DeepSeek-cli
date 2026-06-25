@@ -10,7 +10,7 @@ import logging
 import os
 from typing import Any, TYPE_CHECKING
 
-from ..commands.const import _ENV_FIXED_FPS, _FIXED_FRAME_INTERVAL
+from ..commands.const import _ENV_FIXED_FPS, _FIXED_FRAME_INTERVAL, _ENV_LAYERED_RENDER
 from ..core.strategy import VNodeRenderStrategy
 
 if TYPE_CHECKING:
@@ -71,7 +71,16 @@ def create_render_strategy(renderer: "TuiRenderer") -> tuple[VNodeRenderStrategy
 
     _output_func = _create_vnode_output_func(renderer.output_adapter)
 
+    use_layered: bool = (
+        os.environ.get(_ENV_LAYERED_RENDER, "0").strip().lower()
+        not in ("0", "", "false", "no")
+    )
+    if use_layered:
+        _logger.info("层级渲染已启用（CHAT_UI_LAYERED_RENDER=1）")
+
     _logger.info("VNode Diff 渲染已启用")
     return VNodeRenderStrategy(
         renderer, store, build_vnode_tree, _output_func,
+        use_layered=use_layered,
+        output_adapter=renderer.output_adapter,
     ), use_fixed_fps, store

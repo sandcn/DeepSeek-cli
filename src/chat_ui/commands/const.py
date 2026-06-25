@@ -81,3 +81,18 @@ class RenderCommand(IntEnum):
     TOOL_COUNT_DEC     = 17  # (17,) — 工具计数-1
     # ── drain 锁超时 ─────────────────────────────────────
 _DRAIN_LOCK_TIMEOUT = 0.1  # drain_queue 获取输出锁的超时（秒），与 _RENDER_INTERVAL (0.1) 对齐，避免一方修改引入竞态
+
+# ── 层级渲染 Feature Flag ──────────────────────────────────────────
+
+# 环境变量：控制分层渲染开关（默认关闭，向后兼容）
+_ENV_LAYERED_RENDER = "CHAT_UI_LAYERED_RENDER"
+
+# 环境变量：最大层级数（默认 8）
+_ENV_LAYER_MAX_COUNT = "CHAT_UI_LAYER_MAX_COUNT"
+
+# 环境变量：全量刷新阈值（变化行数占比，默认 0.5）
+_ENV_LAYER_DIFF_THRESHOLD = "CHAT_UI_LAYER_DIFF_THRESHOLD"
+
+# 默认值
+_DEFAULT_LAYER_MAX_COUNT = 8
+_DEFAULT_LAYER_DIFF_THRESHOLD = 0.5

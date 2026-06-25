@@ -186,7 +186,8 @@ class VNodeRenderStrategy:
     管理自己的 _old_vnode 缓存，供下一帧 diff 使用。
     """
 
-    def __init__(self, renderer, store, vnode_builder, output_func=None):
+    def __init__(self, renderer, store, vnode_builder, output_func=None,
+                 use_layered=False, output_adapter=None):
         self._renderer = renderer
         self._store = store
         self._build_vnode = vnode_builder  # build_vnode_tree 函数
@@ -207,6 +208,122 @@ class VNodeRenderStrategy:
         self._anim_idle_count: int = 0
         self._ANIM_IDLE_SKIP_THRESHOLD = 3
         self._ANIM_IDLE_SKIP_FRAMES = 6
+
+        # ── 层级渲染系统 ──
+        self._use_layered: bool = use_layered
+        self._output_adapter = output_adapter  # 供 IncrementalLayerRenderer 使用
+        self._layer_manager: object | None = None
+        self._compositor: object | None = None
+        self._layer_renderer: object | None = None
+
+        if self._use_layered:
+            # 延迟导入，避免循环依赖
+            from ..layer import LayerManager, Compositor, IncrementalLayerRenderer
+            from ..layer.types import Layer
+            from ..commands.const import _DEFAULT_LAYER_DIFF_THRESHOLD
+
+            terminal_height = 80  # 合理的默认值，运行时会通过 engine 更新
+            terminal_width = 120
+            self._layer_manager = LayerManager(terminal_height, terminal_width)
+            self._compositor = Compositor()
+            # layer_renderer 在策略首次渲染时延迟创建（需要 output_adapter）
+            self._layer_renderer: IncrementalLayerRenderer | None = None
+
+    # ── 分层渲染回调 ──────────────────────────────
+
+    def _render_node_to_layer(self, vnode: "VNode") -> None:
+        """分层渲染回调：将 VNode 内容写入 layer buffer。
+
+        与 _render_node_direct（内联于 render_commands）功能对等，
+        但输出目标从终端改为 layer_manager buffer。
+        """
+        from ..layer.types import Layer
+        lm = self._layer_manager
+
+        # ── 容器类型：递归渲染子节点 ──
+        if vnode.type == "root":
+            for child in vnode.children:
+                if child.type == "content_area":
+                    for sub_child in child.children:
+                        self._render_node_to_layer(sub_child)
+                else:
+                    self._render_node_to_layer(child)
+            return
+
+        # ── 流式文本类型 → Layer.CONTENT ──
+        if vnode.type == "answer_block":
+            text = vnode.props.get("text", "")
+            if text:
+                lm.append(Layer.CONTENT, text)
+            return
+        if vnode.type == "thinking_block":
+            text = vnode.props.get("text", "")
+            if text:
+                lm.append(Layer.CONTENT, text)
+            return
+
+        # ── 一次性块类型 ──
+        if vnode.type == "user_messages":
+            msgs = vnode.props.get("messages", ())
+            if msgs:
+                for msg in msgs:
+                    lm.append(Layer.CONTENT, f"\n  > {msg}")
+        elif vnode.type == "tool_outputs":
+            outputs = vnode.props.get("outputs", ())
+            if outputs:
+                for _, text in outputs:
+                    lm.append(Layer.CONTENT, text)
+        elif vnode.type == "notifications":
+            items = vnode.props.get("items", ())
+            if items:
+                for item in items:
+                    lm.append(Layer.OVERLAY, f"\n  · {item}")
+        elif vnode.type == "errors":
+            items = vnode.props.get("items", ())
+            if items:
+                for item in items:
+                    lm.append(Layer.OVERLAY, f"\n  ! {item}")
+        elif vnode.type == "write_lines":
+            lines = vnode.props.get("lines", ())
+            if lines:
+                for line in lines:
+                    lm.append(Layer.CONTENT, line)
+        elif vnode.type == "tool_calls":
+            try:
+                calls = vnode.props.get("calls", ())
+                if calls:
+                    from ..components.message_blocks import ToolCallBlockBox
+                    for call in calls:
+                        box = ToolCallBlockBox(
+                            tool_name=call.get("name", "unknown"),
+                            status=call.get("status", "running"),
+                            text=call.get("text", ""),
+                            params_summary=call.get("params_summary", ""),
+                            elapsed_ms=call.get("elapsed_ms", 0.0),
+                        )
+                        rendered = box.render()
+                        if rendered:
+                            lm.append(Layer.CONTENT, rendered)
+            except Exception:
+                _logger.warning("tool_calls 分层渲染异常", exc_info=True)
+        elif vnode.type == "tool_results":
+            try:
+                results = vnode.props.get("results", ())
+                if results:
+                    from ..components.message_blocks import ToolResultBlockBox
+                    for result in results:
+                        box = ToolResultBlockBox(
+                            tool_name=result.get("name", "unknown"),
+                            text=result.get("text", ""),
+                            success=result.get("status", "completed") == "completed",
+                        )
+                        rendered = box.render()
+                        if rendered:
+                            lm.append(Layer.CONTENT, rendered)
+            except Exception:
+                _logger.warning("tool_results 分层渲染异常", exc_info=True)
+        # input_bar / status_line / completion_popup 由底部栏管理，不在此渲染
+
     # ── 动画活跃状态控制 ──────────────────────────
 
     def set_animating(self, active: bool) -> None:
@@ -294,17 +411,17 @@ class VNodeRenderStrategy:
             if has_change:
                 # 渲染回调所需命令类型
                 from ..commands.types import CmdContent, CmdReasoning, CmdToolOutput
-                # 渲染回调：将 VNode 渲染为终端输出
-                def _render_node(vnode: "VNode") -> None:
+                # 直接渲染回调：将 VNode 渲染为终端输出
+                def _render_node_direct(vnode: "VNode") -> None:
                     # ── 容器类型：递归渲染子节点 ──
                     # root: 递归遍历 children → content_area → children
                     if vnode.type == "root":
                         for child in vnode.children:
                             if child.type == "content_area":
                                 for sub_child in child.children:
-                                    _render_node(sub_child)
+                                    _render_node_direct(sub_child)
                             else:
-                                _render_node(child)
+                                _render_node_direct(child)
                         return
 
                     # ── 流式文本类型 ──
@@ -434,7 +551,29 @@ class VNodeRenderStrategy:
                             _logger.warning("tool_results 渲染异常", exc_info=True)
                     # input_bar / status_line / completion_popup 由底部栏管理，不在此渲染
 
+                # ── 选择渲染回调 ──
+                if self._use_layered and self._layer_manager is not None:
+                    _render_node = self._render_node_to_layer
+                else:
+                    _render_node = _render_node_direct
+
                 _apply_patches(self._old_vnode, patches, _render_node)
+
+                if self._use_layered and self._layer_manager is not None:
+                    # 合并层级 → 增量输出
+                    try:
+                        buffers = self._layer_manager.get_all_buffers()
+                        frame_lines = self._compositor.composite(buffers)
+
+                        if self._layer_renderer is None:
+                            from ..layer import IncrementalLayerRenderer
+                            self._layer_renderer = IncrementalLayerRenderer(self._output_adapter)
+
+                        self._layer_renderer.render(frame_lines)
+                        self._layer_manager.clear_all()
+                    except Exception:
+                        _logger.warning("分层渲染异常，回退", exc_info=True)
+
                 _logger.debug("VNode diff 检测到 %d 个 patches，已触发增量渲染", len(patches))
 
             # 6. 缓存新树
