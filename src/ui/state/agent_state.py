@@ -134,6 +134,13 @@ class AgentStateStore:
             slot = self._slots.get(label)
             if not slot:
                 return
+            # 设置 model_phase 使 FrameRenderer._build_phase_line() 显示
+            # "…parsing {tool_name} {arguments}" 阶段行。
+            slot.model_phase = "parsing"
+            slot.model_phase_start = time.time()
+            # 截断参数以避免超长 JSON 溢出终端
+            truncated = arguments[:120] + "…" if len(arguments) > 120 else arguments
+            slot.model_info = f"{tool_name} {truncated}" if truncated else tool_name
             # 流式参数会分多个 chunk 到达，同一工具的后续 chunk
             # 应更新已有 parsing 记录的 detail，而非追加新记录。
             if slot.tool_history:
