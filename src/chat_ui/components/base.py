@@ -20,7 +20,7 @@ from ..infrastructure.styled import StyledText
 
 from ..commands.const import (
     _STYLE_DIM, _STYLE_FAIL, _STYLE_WARN, _STYLE_SUCCESS, _STYLE_ERROR, _STYLE_BOLD,
-    _THINKING_HEADER, _THINKING_SEPARATOR,
+    _THINKING_HEADER, _CLAUDE_THINKING_HEADER, _THINKING_SEPARATOR,
     _MAX_ERROR_LENGTH, _MAX_OUTPUT_LEN,
 )
 
@@ -231,11 +231,22 @@ class TuiComponent:
 # ═══════════════════════════════════════════════════════════
 
 class UserMsgBlock(TuiComponent):
-    """用户消息块 — "> text" 加粗样式。"""
+    """用户消息块 — "> text" 加粗样式（Claude Code 风格下使用 ❯ 前缀）。"""
     def __init__(self, text: str):
         self.text = text
 
     def render(self) -> StyledText:
+        # Claude Code 风格：使用 ❯ 前缀
+        try:
+            from ..infrastructure.claude_style import _is_claude_style_enabled, CLAUDE_PROMPT_ICON
+            if _is_claude_style_enabled():
+                return StyledText.assemble(
+                    ("\n  " + CLAUDE_PROMPT_ICON + " ", _STYLE_BOLD),
+                    (self.text, _STYLE_BOLD)
+                )
+        except ImportError:
+            pass
+        # 默认风格：使用 > 前缀
         return StyledText.assemble(("\n  > ", _STYLE_BOLD), (self.text, _STYLE_BOLD))
 
 class ThinkingBlock(TuiComponent):
@@ -253,8 +264,15 @@ class ThinkingBlock(TuiComponent):
             return 0
         lines = 0
         if is_first:
-            rr.write(_THINKING_HEADER)
-            lines += _estimate_content_lines(_THINKING_HEADER)
+            # ── Claude Code 风格门控（惰性导入）─────────────
+            from ..infrastructure.claude_style import _is_claude_style_enabled
+            if _is_claude_style_enabled():
+                from ..infrastructure.ansi import style
+                header = style(_CLAUDE_THINKING_HEADER, dim=True, italic=True)
+            else:
+                header = _THINKING_HEADER
+            rr.write(header)
+            lines += _estimate_content_lines(header)
         rr.write(text)
         lines += _estimate_content_lines(text)
         return lines
@@ -286,14 +304,43 @@ class ThinkingBlock(TuiComponent):
         return ""
 
 class AnswerBlock(TuiComponent):
-    """助手回答块 — 流式 Markdown 渲染。"""
+    """助手回答块 — 流式 Markdown 渲染。
+
+    Claude Code 风格（CHAT_UI_CLAUDE_STYLE=1）下：
+    - write() 累积原始 Markdown 文本到 _pending_text
+    - render_vnode() 产出已渲染的 ANSI 样式字符串
+    - 非 Claude 路径行为不变（通过 IncrementalRenderer 渲染）
+    """
     def __init__(self, rs: "_RenderState"):
         self._rs = rs
+        self._pending_text: str = ""
+        self._claude_checked: bool = False
+        self._claude_mode: bool = False
+        # 增量渲染缓存：避免每帧对全部累积文本重复渲染（O(n²)→O(n)）
+        self._last_rendered_len: int = 0
+        self._cached_rendered: str = ""
+
+    def _check_claude_mode(self) -> bool:
+        """惰性检测 Claude Code 风格门控（仅首次调用时检查）。"""
+        if not self._claude_checked:
+            self._claude_checked = True
+            try:
+                from ..infrastructure.claude_style import _is_claude_style_enabled
+                self._claude_mode = _is_claude_style_enabled()
+            except ImportError:
+                self._claude_mode = False
+        return self._claude_mode
 
     def write(self, text: str) -> int:
-        """写入内容，返回估计行数。"""
+        """写入内容，返回估计行数。
+
+        Claude 风格下累积原始 Markdown 文本到 _pending_text，
+        同时写入 IncrementalRenderer 保持 Direct 路径兼容。
+        """
         if self._rs.reasoning_state not in (_ReasoningState.CLOSED, _ReasoningState.INACTIVE):
             self._rs.close_reasoning()
+        if self._check_claude_mode():
+            self._pending_text += text
         self._rs.get_content().write(text)
         return _estimate_content_lines(text)
 
@@ -309,11 +356,23 @@ class AnswerBlock(TuiComponent):
 
     def render_vnode(self) -> "VNode":
         from ..vdom.vnode import VNode
+        # Claude Code 风格：产出已渲染的 ANSI 样式文本
+        text = ""
+        if self._check_claude_mode() and self._pending_text:
+            cur_len = len(self._pending_text)
+            # 增量渲染：仅对新增部分调用 render_markdown，追加到缓存
+            if cur_len > self._last_rendered_len:
+                from ..infrastructure.markdown_renderer import render_markdown
+                delta = self._pending_text[self._last_rendered_len:]
+                delta_rendered = render_markdown(delta)
+                self._cached_rendered += delta_rendered
+                self._last_rendered_len = cur_len
+            text = self._cached_rendered
         return VNode(
             type="answer_block",
             key=self.key,
             props={
-                "text": "",
+                "text": text,
                 "phase": "content",
             },
         )

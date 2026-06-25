@@ -352,10 +352,10 @@ class TestSpinnerNewTypesAllWork:
                 f"{spinner_type}[{i}] 不应为空字符串"
             )
 
-    def test_spinner_count_is_12(self):
-        """SPINNER_FRAMES 总量为 12（7 原有 + 5 新增）。"""
-        assert len(SPINNER_FRAMES) == 12, (
-            f"SPINNER_FRAMES 预期 12 种，实际: {len(SPINNER_FRAMES)}"
+    def test_spinner_count_is_14(self):
+        """SPINNER_FRAMES 总量为 14（12 原有 + 2 Claude Code 新增）。"""
+        assert len(SPINNER_FRAMES) == 14, (
+            f"SPINNER_FRAMES 预期 14 种，实际: {len(SPINNER_FRAMES)}"
         )
 
     def test_clock_spinner_symbols(self):
@@ -395,7 +395,7 @@ class TestTypewriterEnhancedFields:
     """
 
     def test_typewriter_returns_all_fields(self):
-        """use_typewriter 返回 dict 含全部 6 个字段。"""
+        """use_typewriter 返回 dict 含全部 7 个字段（含新增 is_paused）。"""
         from unittest.mock import patch
 
         with patch(
@@ -403,11 +403,12 @@ class TestTypewriterEnhancedFields:
             return_value={"frame": 0, "time": 50, "delta": 16, "reset": lambda: None},
         ):
             tw = use_typewriter("hello world", {"speed": 50})
-        assert set(tw.keys()) == {"output", "progress", "done",
+        assert set(tw.keys()) == {"output", "progress", "done", "is_paused",
                                    "cursor_visible", "cursor_char", "reset"}
         assert isinstance(tw["output"], str)
         assert isinstance(tw["progress"], float)
         assert isinstance(tw["done"], bool)
+        assert isinstance(tw["is_paused"], bool)
         assert isinstance(tw["cursor_visible"], bool)
         assert isinstance(tw["cursor_char"], str)
         assert callable(tw["reset"])

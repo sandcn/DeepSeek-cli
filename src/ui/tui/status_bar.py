@@ -34,6 +34,12 @@ _SP = " "  # 单一空格，视觉平衡
 # 状态栏极窄屏阈值：窄于此宽度仅显示模型名+消息数
 _STATUS_BAR_COMPACT_THRESHOLD = 60
 
+# ── Claude Code 风格门控（惰性导入） ──
+try:
+    from ...chat_ui.infrastructure.claude_style import _is_claude_style_enabled
+except ImportError:
+    _is_claude_style_enabled = lambda: False  # noqa: E731
+
 
 class StatusBar:
     """单数据源状态栏 — 所有数据从 TUIStateTree 实时读取，实例本身无本地缓存。
@@ -94,11 +100,26 @@ class StatusBar:
         普通模式 → 拼装各信息段（委托 render_normal）
         自动根据终端宽度精简显示。
 
+        Claude Code 风格（CHAT_UI_CLAUDE_STYLE=1）：
+        流式模式 → ⏺ Thinking… · model_name · N tokens · N/s
+        普通模式 → model_name · N tokens · $X.XX · N% context
+
         数据从 TUIStateTree 直接读取，无本地缓存。
         """
+        if _is_claude_style_enabled():
+            return self._render_claude_style()
         if self._tree.streaming.active:
             return render_streaming_line(self._tree.session, self._tree.streaming)
         return render_normal(self._tree.session)
+
+    def _render_claude_style(self) -> str:
+        """Claude Code 风格状态栏渲染。
+
+        委托 _render_claude_style_streaming（流式）或 _render_claude_style_normal（普通）。
+        """
+        if self._tree.streaming.active:
+            return _render_claude_style_streaming(self._tree.session, self._tree.streaming)
+        return _render_claude_style_normal(self._tree.session)
 
 
 # ── 纯渲染函数（无 Side Effect） ──────────────────────────
@@ -129,12 +150,16 @@ def _narrow_split_line(line: str, max_w: int, half: int) -> str:
 def render_normal(state: UISessionState) -> str:
     """渲染普通模式（非流式）状态栏文本。
 
+    Claude Code 风格（CHAT_UI_CLAUDE_STYLE=1）委托 _render_claude_style_normal。
+
     Args:
         state: 会话级状态快照。
 
     Returns:
         ANSI 格式的状态栏文本。
     """
+    if _is_claude_style_enabled():
+        return _render_claude_style_normal(state)
     narrow = is_narrow()
     parts = build_normal_parts(state, narrow=narrow)
     if not narrow:
@@ -266,6 +291,91 @@ def render_streaming_line(state: UISessionState, streaming: StreamingState) -> s
         half = max(tw // 2 - 4, 10)
         line = _narrow_split_line(line, max_w, half)
     return line
+
+
+# ── Claude Code 风格渲染函数 ──────────────────────────────
+
+
+def _render_claude_style_normal(state: UISessionState) -> str:
+    """Claude Code 风格普通模式状态行。
+
+    格式：model_name · N tokens · $X.XX · N% context
+    整行使用 dim 样式，分隔符使用 · (middle dot)。
+
+    Args:
+        state: 会话级状态快照。
+
+    Returns:
+        ANSI 格式的 Claude Code 风格状态行文本。
+    """
+    total_tokens = state.input_tokens + state.output_tokens
+    tok_str = TextFormatter.format_token_count(total_tokens)
+    # 费用估算：基于 token 数粗略估算（$0.01/1K tokens）
+    if state.cost_usd > 0:
+        cost_str = f"${state.cost_usd:.2f}"
+    else:
+        cost_str = f"${total_tokens * 0.00001:.2f}"
+    ctx_str = f"{state.context_pct:.0f}%" if state.context_pct > 0 else "—%"
+
+    parts: list[str] = []
+    if state.model:
+        parts.append(f"{BOLD}{state.model}{RESET}")
+    if total_tokens > 0:
+        parts.append(f"{tok_str} tokens")
+    else:
+        parts.append("0 tokens")
+    parts.append(cost_str)
+    parts.append(f"{ctx_str} context")
+
+    sep = f" {DIM}\u00b7{RESET} "
+    line = sep.join(parts)
+
+    # 窄屏截断
+    if is_narrow():
+        tw = get_terminal_width()
+        max_w = max(tw - 2, 30)
+        half = max(tw // 2 - 4, 10)
+        line = _narrow_split_line(line, max_w, half)
+
+    return f"{DIM}{line}{RESET}"
+
+
+def _render_claude_style_streaming(state: UISessionState, streaming: StreamingState) -> str:
+    """Claude Code 风格流式状态行。
+
+    格式：⏺ Thinking… · model_name · N tokens · N/s
+    整行使用 dim 样式，分隔符使用 · (middle dot)。
+
+    Args:
+        state: 会话级状态快照（主要用于获取模型名）。
+        streaming: 流式输出状态（计时/Token/速率）。
+
+    Returns:
+        ANSI 格式的 Claude Code 风格流式状态行文本。
+    """
+    tokens = streaming.output_tokens
+    speed = streaming.speed
+    tok_str = TextFormatter.format_token_count(tokens)
+    speed_str = format_speed(speed)
+
+    parts: list[str] = []
+    parts.append(f"\u23fa Thinking\u2026")  # ⏺ Thinking…
+    if state.model:
+        parts.append(f"{state.model}")
+    parts.append(f"{tok_str} tokens")
+    parts.append(f"{speed_str}/s")
+
+    sep = f" {DIM}\u00b7{RESET} "
+    line = sep.join(parts)
+
+    # 窄屏截断
+    if is_narrow():
+        tw = get_terminal_width()
+        max_w = max(tw - 2, 30)
+        half = max(tw // 2 - 4, 10)
+        line = _narrow_split_line(line, max_w, half)
+
+    return f"{DIM}{line}{RESET}"
 
 
 __all__ = [

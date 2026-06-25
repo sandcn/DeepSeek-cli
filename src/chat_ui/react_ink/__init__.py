@@ -37,6 +37,20 @@ from ..components.progress import Progress  # noqa: F401
 from ..components.animation import use_spinner, use_progress, use_typewriter, SPINNER_FRAMES  # noqa: F401
 from ..components.message_blocks import ToolCallBlockBox, ToolResultBlockBox  # noqa: F401
 
+# Claude Code 风格模块
+from ..infrastructure.claude_style import (  # noqa: F401
+    _is_claude_style_enabled,
+    _is_feature_enabled,
+    CLAUDE_THINKING_ICON,
+    CLAUDE_PROMPT_ICON,
+    CLAUDE_SUCCESS_ICON,
+    CLAUDE_FAIL_ICON,
+    CLAUDE_TOOL_ICONS,
+    CLAUDE_COLORS,
+    CLAUDE_SPINNER_FRAMES,
+    CLAUDE_TOOL_CARD_STYLE,
+)
+
 
 def _is_enabled() -> bool:
     """检测是否启用 React Ink 特性。
@@ -128,4 +142,15 @@ __all__ = [
     "LayoutError",
     # Commands
     "CmdToolCallUpdate",
+    # Claude Code Style
+    "_is_claude_style_enabled",
+    "_is_feature_enabled",
+    "CLAUDE_THINKING_ICON",
+    "CLAUDE_PROMPT_ICON",
+    "CLAUDE_SUCCESS_ICON",
+    "CLAUDE_FAIL_ICON",
+    "CLAUDE_TOOL_ICONS",
+    "CLAUDE_COLORS",
+    "CLAUDE_SPINNER_FRAMES",
+    "CLAUDE_TOOL_CARD_STYLE",
 ]

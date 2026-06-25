@@ -32,6 +32,10 @@ __all__ = [
     "_COLOR_SPEED",
     "_COLOR_STREAMING",
     "_COLOR_MODEL_NAME",
+    # Claude Code 风格主题色
+    "CLAUDE_BOTTOM_BAR_BG",
+    "CLAUDE_PROMPT_COLOR",
+    "_BOTTOM_THEMES",
     # Blessed 颜色辅助函数
     "_blessed_fg",
     "_blessed_bg",
@@ -108,3 +112,18 @@ def _blessed_bg(color_num: int) -> str:
 _PLACEHOLDER_TEXT = "输入消息 · /help 查看命令 · Ctrl+N 切换模型 · Tab 补全"
 _PLACEHOLDER_COMPACT = "/help · Ctrl+N · Tab"  # 补全弹窗可见时使用
 _PLACEHOLDER_STREAMING = "AI 生成中..."   # 流式输出期间使用
+
+# ── Claude Code 风格主题色 ───────────────────────────────
+CLAUDE_BOTTOM_BAR_BG = "\033[48;5;235m"   # 底部栏背景色（深灰，近似 Claude Code）
+CLAUDE_PROMPT_COLOR = "\033[38;5;39m"     # ❯ 提示符颜色（青色）
+
+# ── 底部栏主题字典 ──────────────────────────────────────
+_BOTTOM_THEMES: dict = {
+    "default": {},
+    "claude": {
+        "bg": CLAUDE_BOTTOM_BAR_BG,
+        "prompt_color": CLAUDE_PROMPT_COLOR,
+        "dim_color": "\033[2m",           # ANSI dim（与 CLAUDE_COLORS["muted"] 对应）
+        "placeholder": "Type a message...",
+    },
+}

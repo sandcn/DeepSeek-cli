@@ -190,33 +190,93 @@ class ThinkingBlockBox(_MessageBlockBox):
         """渲染推理块。
 
         活跃状态下标题前显示动画 spinner；折叠时显示 ▶，展开非活跃时显示 ▼。
+        CHAT_UI_CLAUDE_STYLE 启用时使用 Claude Code 风格：⏺ Thinking… + braille spinner（dim italic）。
         """
-        if self._thinking_active and not self.collapsed:
-            from ..components.animation import use_spinner
-            spinner = use_spinner({"type": "dots", "interval": 100})
-            self.title = f"{spinner['char']} Thinking..."
-        elif self.collapsed:
-            self.title = "▶ Thinking..."
+        # ── Claude Code 风格门控（惰性导入）─────────────
+        from ..infrastructure.claude_style import (
+            _is_claude_style_enabled, CLAUDE_THINKING_ICON,
+            CLAUDE_SPINNER_FRAMES, CLAUDE_COLORS,
+        )
+        if _is_claude_style_enabled():
+            from ..infrastructure.ansi import ANSI_RESET
+            # 边框颜色改为 dim (bright_black)
+            self.border_color = "bright_black"
+            self.border_dim_color = False
+            # 清除 title_color，避免 Box 的 _styled() 覆盖 dim+italic 预样式
+            self.title_color = ""
+            dim_italic_prefix = CLAUDE_COLORS["thinking"]
+            icon = CLAUDE_THINKING_ICON
+
+            if self._thinking_active and not self.collapsed:
+                from ..components.animation import use_animation
+                anim = use_animation({"interval": 100})
+                idx = anim["frame"] % len(CLAUDE_SPINNER_FRAMES)
+                spinner_char = CLAUDE_SPINNER_FRAMES[idx]
+                self.title = f"{spinner_char} {icon} Thinking…"
+            elif self.collapsed:
+                self.title = f"▶ {icon} Thinking…"
+            else:
+                self.title = f"▼ {icon} Thinking…"
+
+            # 预应用 dim + italic ANSI 样式到标题
+            self.title = f"{dim_italic_prefix}{self.title}{ANSI_RESET}"
         else:
-            self.title = "▼ Thinking..."
+            if self._thinking_active and not self.collapsed:
+                from ..components.animation import use_spinner
+                spinner = use_spinner({"type": "dots", "interval": 100})
+                self.title = f"{spinner['char']} Thinking..."
+            elif self.collapsed:
+                self.title = "▶ Thinking..."
+            else:
+                self.title = "▼ Thinking..."
         return super().render()
 
 
 class AnswerBlockBox(_MessageBlockBox):
-    """回答块 — dim round border。"""
+    """回答块 — dim round border。
+
+    Claude Code 风格（CHAT_UI_CLAUDE_STYLE=1）下：
+    - 将原始 Markdown 文本渲染为 ANSI 样式字符串后显示
+    - 支持标题、粗体、斜体、行内代码、列表、引用、代码块等
+    - 非 Claude 路径行为不变（直接显示原始文本）
+    """
 
     def __init__(self, text: str = "", **kwargs: Any) -> None:
         style = dict(_MSG_BLOCK_STYLES["answer"])
         style.update(kwargs)
-        super().__init__(**style)
+
+        # ── Claude Code 风格：渲染 Markdown ──
+        self._claude_rendered: str = ""
         if text:
+            try:
+                from ..infrastructure.claude_style import _is_claude_style_enabled
+                if _is_claude_style_enabled():
+                    from ..infrastructure.markdown_renderer import render_markdown
+                    self._claude_rendered = render_markdown(text)
+            except ImportError:
+                pass
+
+        super().__init__(**style)
+        if self._claude_rendered:
+            self.add_child(_make_text_component(self._claude_rendered))
+        elif text:
             self.add_child(_make_text_component(text))
 
 
 class UserMsgBlockBox(_MessageBlockBox):
-    """用户消息块 — cyan round border。"""
+    """用户消息块 — cyan round border（Claude Code 风格下标题前添加 ❯ 前缀）。"""
 
     def __init__(self, text: str = "", **kwargs: Any) -> None:
+        # Claude Code 风格：标题前添加 ❯ 前缀
+        try:
+            from ..infrastructure.claude_style import (
+                _is_claude_style_enabled, CLAUDE_PROMPT_ICON,
+            )
+            if _is_claude_style_enabled():
+                if "title" not in kwargs:
+                    kwargs["title"] = CLAUDE_PROMPT_ICON + " User"
+        except ImportError:
+            pass
         style = dict(_MSG_BLOCK_STYLES["user_msg"])
         style.update(kwargs)
         super().__init__(**style)
@@ -260,65 +320,196 @@ class NotificationBlockBox(_MessageBlockBox):
 class ToolCallBlockBox(_MessageBlockBox):
     """工具调用块 — round cyan border + spinner + tool name。
 
+    Claude Code 风格（CHAT_UI_CLAUDE_STYLE_TOOLS=1）下渲染为可展开卡片：
+    图标 + 名称 + 参数摘要 + braille spinner + ✓/✗ + 耗时 + 展开/折叠。
+    非 Claude 风格下保持原有行为不变。
+
     构造参数:
         tool_name: 工具名称。
         status: 状态，可选 "running" / "completed" / "failed"，默认 "running"。
+        text: 附加文本内容。
+        params_summary: 工具参数摘要（如 "src/main.py"），Claude 风格使用。
+        elapsed_ms: 工具调用耗时（毫秒），Claude 风格使用。
     """
 
     def __init__(self, tool_name: str = "", status: str = "running",
-                 text: str = "", **kwargs: Any) -> None:
+                 text: str = "", params_summary: str = "",
+                 elapsed_ms: float = 0.0, **kwargs: Any) -> None:
         self.tool_name = tool_name
         self._status = status
         self._elapsed_start = kwargs.pop('elapsed_start', None)
+        self._claude_params_summary = params_summary
+        self._claude_elapsed_ms = elapsed_ms
+
+        # ── Claude Code 风格门控 ──────────────────────
+        self._claude_mode = False
+        self._claude_tool_icon = "\u2699"  # ⚙ 默认图标
+        try:
+            from ..infrastructure.claude_style import (
+                _is_feature_enabled, CLAUDE_TOOL_ICONS
+            )
+            self._claude_mode = _is_feature_enabled("TOOLS")
+            if self._claude_mode:
+                self._claude_tool_icon = CLAUDE_TOOL_ICONS.get(
+                    tool_name, "\u2699")
+        except ImportError:
+            pass
+
         # 工具名称截断：超过 40 字符自动截断 + ...
         display_name = tool_name
         if len(tool_name) > 40:
             display_name = tool_name[:37] + "..."
         self._display_name = display_name
+
         style = dict(_MSG_BLOCK_STYLES["tool_call"])
-        # 根据 status 设置 title 和颜色
-        if status == "completed":
-            style["title"] = f"✓ {display_name}"
-            style["title_color"] = "green"
-            style["border_color"] = "green"
-        elif status == "failed":
-            style["title"] = f"✗ {display_name}"
-            style["title_color"] = "red"
-            style["border_color"] = "red"
-        else:  # running
-            if tool_name:
-                style["title"] = f"⚙ {display_name}"
-            style["title_color"] = "cyan"
-            style["border_color"] = "cyan"
+
+        if self._claude_mode:
+            # Claude 风格：可折叠卡片
+            style["collapsible"] = True
+            style["collapsed"] = (status != "running")
+
+            # 卡片缩进
+            try:
+                from ..infrastructure.claude_style import CLAUDE_TOOL_CARD_STYLE
+                indent = CLAUDE_TOOL_CARD_STYLE.get("indent", 2)
+                style["margin_x"] = indent
+            except ImportError:
+                pass
+
+            # 状态颜色
+            if status == "completed":
+                style["border_color"] = "green"
+                style["title_color"] = "green"
+            elif status == "failed":
+                style["border_color"] = "red"
+                style["title_color"] = "red"
+            else:  # running
+                style["border_color"] = "cyan"
+                style["title_color"] = "cyan"
+            # title 在 render() 中动态设置（含 spinner 和耗时）
+        else:
+            # 非 Claude：原有行为完全不变
+            if status == "completed":
+                style["title"] = f"\u2713 {display_name}"
+                style["title_color"] = "green"
+                style["border_color"] = "green"
+            elif status == "failed":
+                style["title"] = f"\u2717 {display_name}"
+                style["title_color"] = "red"
+                style["border_color"] = "red"
+            else:  # running
+                if tool_name:
+                    style["title"] = f"\u2699 {display_name}"
+                style["title_color"] = "cyan"
+                style["border_color"] = "cyan"
+
         style.update(kwargs)
         super().__init__(**style)
         if text:
             self.add_child(_make_text_component(text))
 
+    @staticmethod
+    def _format_elapsed(seconds: float) -> str:
+        """格式化耗时为 Claude Code 风格字符串。
+
+        < 1s → "0.8s"，< 60s → "12.3s"，≥ 60s → "1:23"。
+        """
+        if seconds >= 60:
+            mins = int(seconds // 60)
+            secs = int(seconds % 60)
+            return f"({mins}:{secs:02d})"
+        else:
+            return f"({seconds:.1f}s)"
+
     def render(self) -> str:
         """渲染工具调用块。
 
-        running 状态时，使用 use_spinner 获取动态 spinner 字符并计算耗时，
-        更新 title 后再调用父类 render()。
+        Claude 风格：braille spinner + 工具图标 + 参数摘要 + 耗时。
+        非 Claude 风格：dots spinner + ⚙ 图标 + 耗时（保持原有行为）。
+        窄屏降级为单行摘要（仅显示工具名 + 状态）。
         """
-        if self._status == "running":
-            from ..components.animation import use_spinner
-            spinner = use_spinner({"type": "dots", "interval": 80})
-
-            # 构建标题
-            title_parts = [f"{spinner['char']} {self._display_name}"]
-
-            # 计算耗时
-            if self._elapsed_start is not None:
-                elapsed = time.monotonic() - self._elapsed_start
-                if elapsed >= 60:
-                    mins = int(elapsed // 60)
-                    secs = int(elapsed % 60)
-                    title_parts.append(f"({mins}:{secs:02d})")
+        if self._claude_mode:
+            # ── Claude Code 风格渲染 ────────────────────
+            if _is_narrow_screen():
+                # 窄屏降级：仅显示工具名 + 状态
+                if self._status == "completed":
+                    self.title = f"\u2713 {self._display_name}"
+                elif self._status == "failed":
+                    self.title = f"\u2717 {self._display_name}"
                 else:
-                    title_parts.append(f"({elapsed:.1f}s)")
+                    self.title = self._display_name
+                return super().render()
 
-            self.title = " ".join(title_parts)
+            if self._status == "running":
+                from ..components.animation import use_spinner
+                spinner = use_spinner({"type": "braille", "interval": 80})
+
+                title_parts = [
+                    f"{spinner['char']} {self._claude_tool_icon}"
+                    f" {self._display_name}"
+                ]
+
+                if self._claude_params_summary:
+                    title_parts.append(self._claude_params_summary)
+
+                # 计算耗时
+                if self._elapsed_start is not None:
+                    elapsed = time.monotonic() - self._elapsed_start
+                    title_parts.append(self._format_elapsed(elapsed))
+                elif self._claude_elapsed_ms > 0:
+                    title_parts.append(
+                        self._format_elapsed(self._claude_elapsed_ms / 1000.0))
+
+                self.title = " ".join(title_parts)
+            else:
+                # completed / failed
+                try:
+                    from ..infrastructure.claude_style import (
+                        CLAUDE_SUCCESS_ICON, CLAUDE_FAIL_ICON
+                    )
+                    status_icon = (CLAUDE_SUCCESS_ICON
+                                   if self._status == "completed"
+                                   else CLAUDE_FAIL_ICON)
+                except ImportError:
+                    status_icon = ("\u2713" if self._status == "completed"
+                                   else "\u2717")
+
+                title_parts = [
+                    f"{status_icon} {self._claude_tool_icon}"
+                    f" {self._display_name}"
+                ]
+
+                # 耗时
+                elapsed = None
+                if self._claude_elapsed_ms > 0:
+                    elapsed = self._claude_elapsed_ms / 1000.0
+                elif self._elapsed_start is not None:
+                    elapsed = time.monotonic() - self._elapsed_start
+
+                if elapsed is not None:
+                    title_parts.append(self._format_elapsed(elapsed))
+
+                self.title = " ".join(title_parts)
+        else:
+            # ── 非 Claude：保持原有行为 ────────────────
+            if self._status == "running":
+                from ..components.animation import use_spinner
+                spinner = use_spinner({"type": "dots", "interval": 80})
+
+                # 构建标题
+                title_parts = [f"{spinner['char']} {self._display_name}"]
+
+                # 计算耗时
+                if self._elapsed_start is not None:
+                    elapsed = time.monotonic() - self._elapsed_start
+                    if elapsed >= 60:
+                        mins = int(elapsed // 60)
+                        secs = int(elapsed % 60)
+                        title_parts.append(f"({mins}:{secs:02d})")
+                    else:
+                        title_parts.append(f"({elapsed:.1f}s)")
+
+                self.title = " ".join(title_parts)
         return super().render()
 
 

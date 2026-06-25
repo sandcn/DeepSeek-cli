@@ -382,6 +382,8 @@ class VNodeRenderStrategy:
                                         tool_name=call.get("name", "unknown"),
                                         status=status,
                                         text=call.get("text", ""),
+                                        params_summary=call.get("params_summary", ""),
+                                        elapsed_ms=call.get("elapsed_ms", 0.0),
                                     )
                                     rendered = box.render()
                                     if rendered and self._output:

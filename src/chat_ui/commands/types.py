@@ -172,9 +172,13 @@ class CmdToolCallUpdate:
         name: 工具名称（如 "read_file"、"bash"）
         status: 状态 — "running" / "completed" / "failed"
         text: 附加文本（工具输出摘要，可选）
+        params_summary: 工具参数摘要（如 "src/main.py"），Claude 风格卡片使用
+        elapsed_ms: 工具调用耗时（毫秒），Claude 风格卡片使用
     """
     tool_id: str
     name: str
     status: str = "running"  # "running" / "completed" / "failed"
     text: str = ""
+    params_summary: str = ""
+    elapsed_ms: float = 0.0
     kind: int = 22

@@ -171,8 +171,9 @@ class TuiRenderer:
                 # 动画滴答由 TuiEngine._drain_queue() 统一处理，
                 # 此处为防御性空操作，防止未过滤的 CmdAnimationTick 落入 _ 分支。
                 pass
-            case CmdToolCallUpdate(tool_id=tid, name=name, status=status, text=text):
-                self._do_tool_call_update(tid, name, status, text)
+            case CmdToolCallUpdate(tool_id=tid, name=name, status=status, text=text,
+                                   params_summary=ps, elapsed_ms=ems):
+                self._do_tool_call_update(tid, name, status, text, ps, ems)
             case _:
                 _logger.error("未知渲染命令类型: %s", type(cmd).__name__)
 
@@ -215,7 +216,8 @@ class TuiRenderer:
         block = ToolSummaryBlock(successful, failed)
         self._record_lines(block.render_to_adapter(self._adapter))
 
-    def _do_tool_call_update(self, tool_id: str, name: str, status: str, text: str) -> None:
+    def _do_tool_call_update(self, tool_id: str, name: str, status: str, text: str,
+                             params_summary: str = "", elapsed_ms: float = 0.0) -> None:
         """渲染工具调用状态更新。
 
         running: 渲染带 spinner 图标的 ⚙ {name} 行（dim 样式）

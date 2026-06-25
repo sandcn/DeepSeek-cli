@@ -47,6 +47,8 @@ class UISessionState:
     show_time: bool = True
     show_tokens: bool = True
     show_duration: bool = False
+    cost_usd: float = 0.0       # Claude 风格：费用估算（基于 token 数粗略估算）
+    context_pct: float = 0.0    # Claude 风格：上下文使用百分比
 
 
 @dataclass(slots=True)

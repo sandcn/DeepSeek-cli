@@ -146,7 +146,59 @@ class _StatusMixin:
         非流式空闲时仅显示模型名字（带 ⏣ 图标），不显示任何统计信息。
         使用多色分层：模型名高亮（带 ⏣）、耗时蓝灰色、令牌数灰色。
         工具计数值得高亮区分成功/失败（成功绿/失败红）。
+
+        Claude Code 风格下（CHAT_UI_CLAUDE_STYLE=1）：整行使用 dim 样式，
+        格式为 model_name · N tokens · $X.XX，去除颜色装饰。
         """
+        # ── Claude Code 风格门控 ──
+        try:
+            from ..infrastructure.claude_style import (
+                _is_claude_style_enabled,
+                CLAUDE_COLORS,
+            )
+        except ImportError:
+            _is_claude_style_enabled = lambda: False  # noqa: E731
+            CLAUDE_COLORS = {}
+
+        if _is_claude_style_enabled():
+            muted = CLAUDE_COLORS.get("muted", _COLOR_DIM)
+
+            # 非流式时仅显示模型名（dim 样式）
+            if not self._status_active:
+                return f"{muted}{self._model_name}{_COLOR_RESET}" if self._model_name else ""
+
+            snap_func = _get_snapshot()
+            if snap_func is None:
+                return f"{muted}{self._model_name}{_COLOR_RESET}" if self._model_name else ""
+
+            try:
+                snap = snap_func()
+            except Exception:
+                return f"{muted}{self._model_name}{_COLOR_RESET}" if self._model_name else ""
+
+            total = snap.get("total_tokens", 0)
+
+            parts = []
+            if self._model_name:
+                parts.append(self._model_name)
+            if total > 0:
+                tok_str = f"{total / 1000:.1f}k" if total >= 1000 else str(total)
+                parts.append(f"{tok_str} tokens")
+            else:
+                parts.append("0 tokens")
+
+            # 尝试计算费用
+            try:
+                from ...api._stats_core import get_token_stats
+                stats = get_token_stats()
+                cost = stats["input"] / 1000 * 0.01 + stats["output"] / 1000 * 0.03
+                parts.append(f"${cost:.2f}")
+            except Exception:
+                parts.append("$0.00")
+
+            sep = f" {muted}\u00b7 "
+            return f"{muted}{sep.join(parts)}{_COLOR_RESET}"
+
         # ── 模型名字（始终显示，带 ⏣ 图标） ──
         model_part = (
             f"{_COLOR_MODEL_NAME}\u23e3{_COLOR_RESET} {_COLOR_MODEL_NAME}{self._model_name}{_COLOR_RESET}"

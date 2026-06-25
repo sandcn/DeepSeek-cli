@@ -11,6 +11,9 @@ from enum import IntEnum
 _MAIN_LABEL = "assistant"
 _MAIN_SOURCE = "agent"
 
+# ── Claude Code 风格默认值 ───────────────────────────────
+_CLAUDE_STYLE_ENABLED_DEFAULT: bool = False
+
 # ── ANSI 样式常量（供渲染管线使用） ──
 _STYLE_DIM = "dim"
 _STYLE_FAIL = "red"
@@ -20,6 +23,7 @@ _STYLE_ERROR = "bold red"
 _STYLE_BOLD = "bold"
 
 _THINKING_HEADER = "\n  ─ 思考 ─\n"
+_CLAUDE_THINKING_HEADER = "\n  ⏺ Thinking…\n"
 
 # ── 解析进度清除哨兵 ───────────────────────────────────
 _CLEAR_PARSE_LINE = -1

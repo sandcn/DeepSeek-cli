@@ -186,23 +186,44 @@ class InputRenderer:
 
         # 输入文本行
         text_start = r_start + popup_height
+
+        # ── Claude Code 风格门控 ──
+        try:
+            from ..infrastructure.claude_style import (
+                _is_claude_style_enabled,
+                CLAUDE_PROMPT_ICON,
+            )
+        except ImportError:
+            _is_claude_style_enabled = lambda: False  # noqa: E731
+            CLAUDE_PROMPT_ICON = "\u276f"
+
+        _claude = _is_claude_style_enabled()
+        prompt_icon = CLAUDE_PROMPT_ICON if _claude else "\u276f"
+        claude_placeholder = "Type a message..."
+
         for i, segment in enumerate(wrapped):
             r = text_start + i
             if i == 0:
                 if text:
                     out.write(blessed_move_clear(r)
-                              + f"{_COLOR_ACCENT}❯{_COLOR_RESET}"
+                              + f"{_COLOR_ACCENT}{prompt_icon}{_COLOR_RESET}"
                               f" {segment}")
                 else:
                     if status_active:
-                        ph = _PLACEHOLDER_STREAMING
+                        if _claude:
+                            ph = claude_placeholder
+                        else:
+                            ph = _PLACEHOLDER_STREAMING
                         out.write(blessed_move_clear(r)
-                                  + f"{_COLOR_ACCENT}❯{_COLOR_RESET}"
+                                  + f"{_COLOR_ACCENT}{prompt_icon}{_COLOR_RESET}"
                                   f" {_COLOR_DIM}{ph}{_COLOR_RESET}")
                     else:
-                        ph = _PLACEHOLDER_COMPACT if completion.is_visible else _PLACEHOLDER_TEXT
+                        if _claude:
+                            ph = claude_placeholder
+                        else:
+                            ph = _PLACEHOLDER_COMPACT if completion.is_visible else _PLACEHOLDER_TEXT
                         out.write(blessed_move_clear(r)
-                                  + f"{_COLOR_ACCENT}❯{_COLOR_RESET}"
+                                  + f"{_COLOR_ACCENT}{prompt_icon}{_COLOR_RESET}"
                                   f" {_COLOR_DIM}{ph}{_COLOR_RESET}")
             else:
                 out.write(blessed_move_clear(r)

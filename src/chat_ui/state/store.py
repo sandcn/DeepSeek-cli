@@ -68,7 +68,7 @@ class TuiState:
 
     # ── 工具调用与结果 ──
     tool_calls: list[dict] = field(default_factory=list)
-    tool_results: list[dict] = field(default_factory=list)  # [{"tool_id": str, "name": str, "status": str, "text": str}, ...]
+    tool_results: list[dict] = field(default_factory=list)  # [{"tool_id": str, "name": str, "status": str, "text": str, "params_summary": str, "elapsed_ms": float}, ...]
 
     # ── 底部栏 ──
     status: StatusLine = field(default_factory=StatusLine)
@@ -205,7 +205,8 @@ def _reduce_status_update(state: TuiState, cmd: CmdStatusUpdate) -> TuiState:
 def _reduce_tool_call_update(state: TuiState, cmd: CmdToolCallUpdate) -> TuiState:
     """工具调用状态更新 reducer — 根据 tool_id 更新或添加 tool_calls 条目。
 
-    条目格式: {"tool_id": str, "name": str, "status": str, "text": str}
+    条目格式: {"tool_id": str, "name": str, "status": str, "text": str,
+              "params_summary": str, "elapsed_ms": float}
 
     当 cmd.status 为 "completed" 或 "failed" 时，同步追加条目到
     tool_results 并从 tool_calls 中移除已完成条目。
@@ -218,6 +219,8 @@ def _reduce_tool_call_update(state: TuiState, cmd: CmdToolCallUpdate) -> TuiStat
             "name": cmd.name,
             "status": cmd.status,
             "text": cmd.text,
+            "params_summary": cmd.params_summary,
+            "elapsed_ms": cmd.elapsed_ms,
         })
         # 从 tool_calls 中移除已完成的
         new_calls = [c for c in new_calls if c["tool_id"] != cmd.tool_id]
@@ -228,12 +231,16 @@ def _reduce_tool_call_update(state: TuiState, cmd: CmdToolCallUpdate) -> TuiStat
     for i, call in enumerate(new_calls):
         if call.get("tool_id") == cmd.tool_id:
             new_calls[i] = {"tool_id": cmd.tool_id, "name": cmd.name,
-                            "status": cmd.status, "text": cmd.text}
+                            "status": cmd.status, "text": cmd.text,
+                            "params_summary": cmd.params_summary,
+                            "elapsed_ms": cmd.elapsed_ms}
             updated = True
             break
     if not updated:
         new_calls.append({"tool_id": cmd.tool_id, "name": cmd.name,
-                          "status": cmd.status, "text": cmd.text})
+                          "status": cmd.status, "text": cmd.text,
+                          "params_summary": cmd.params_summary,
+                          "elapsed_ms": cmd.elapsed_ms})
     return replace(state, tool_calls=new_calls)
 
 

@@ -50,6 +50,12 @@ _C_DIMMEST   = "\033[38;5;238m"  # 更深灰 — 分隔线/边框
 _C_SUMMARY_DIM = "\033[38;5;245m"  # 中灰 — 摘要行次要信息
 _C_SPINNER   = "\033[38;5;221m"  # 金色 — spinner 动画
 
+# ── Claude Code 风格 ANSI 颜色（标准 16 色） ─────────────
+_C_CLAUDE_ACTIVE = "\033[36m"   # cyan — 活跃/运行中
+_C_CLAUDE_DONE   = "\033[32m"   # green — 完成
+_C_CLAUDE_FAIL   = "\033[31m"   # red — 失败
+_C_CLAUDE_DIM     = "\033[2m"   # dim — 元数据/辅助信息
+
 # ── 渲染器 ──────────────────────────────────────────────
 
 class FrameRenderer:
@@ -69,6 +75,7 @@ class FrameRenderer:
         frame: int = 0,
         max_history: int = 3,
         *,
+        claude_style: bool | None = None,
         summary_separator: str = _DEFAULT_SUMMARY_SEPARATOR,
         summary_icon_running: str = _DEFAULT_SUMMARY_ICON_RUNNING,
         summary_icon_done: str = _DEFAULT_SUMMARY_ICON_DONE,
@@ -79,10 +86,47 @@ class FrameRenderer:
         self._terminal_width = terminal_width
         self._frame = frame
         self.max_history = max_history
+
+        # ── Claude Code 风格门控（惰性导入） ──
+        if claude_style is None:
+            from ...chat_ui.infrastructure.claude_style import _is_claude_style_enabled
+            claude_style = _is_claude_style_enabled()
+        self._claude_style = claude_style
+
+        if claude_style:
+            # Claude 颜色：dim(元数据) / cyan(活跃) / green(完成)
+            self._c_running = _C_CLAUDE_ACTIVE
+            self._c_done = _C_CLAUDE_DONE
+            self._c_fail = _C_CLAUDE_FAIL
+            self._c_dimmer = _C_CLAUDE_DIM
+            self._c_summary_dim = _C_CLAUDE_DIM
+            self._c_spinner = _C_CLAUDE_ACTIVE
+            # Claude 图标
+            self._icon_done = "✓"
+            self._icon_fail = "✗"
+            self._icon_running = "⏺"
+            # Claude 工具图标（Claude 优先，默认兜底）
+            from ...chat_ui.infrastructure.claude_style import CLAUDE_TOOL_ICONS
+            _merged = dict(_DEFAULT_TOOL_ICONS)
+            _merged.update(CLAUDE_TOOL_ICONS)
+            if tool_icons:
+                _merged.update(tool_icons)
+            self._tool_icons = _merged
+        else:
+            self._c_running = _C_RUNNING
+            self._c_done = _C_DONE
+            self._c_fail = _C_FAIL
+            self._c_dimmer = _C_DIMMER
+            self._c_summary_dim = _C_SUMMARY_DIM
+            self._c_spinner = _C_SPINNER
+            self._icon_done = "✔"
+            self._icon_fail = "✖"
+            self._icon_running = None  # 非 Claude 模式使用 braille spinner
+            self._tool_icons = tool_icons or _DEFAULT_TOOL_ICONS
+
         self._summary_separator = summary_separator
         self._summary_icon_running = summary_icon_running
         self._summary_icon_done = summary_icon_done
-        self._tool_icons = tool_icons or _DEFAULT_TOOL_ICONS
         self._text_formatter = text_formatter or _DefaultTextFormatter
         self._spinner_frames = spinner_frames or _DEFAULT_SPINNER_FRAMES
 
@@ -257,7 +301,27 @@ class FrameRenderer:
         """构建摘要行 — Claude Code 极简格式。
 
         从 render() 中提取，负责速度计算和摘要文本组装。
+        Claude 风格：⏺ N agents · M outputs · elapsed（无速度、无 done 计数）。
         """
+        if self._claude_style:
+            # ── Claude Code 风格摘要 ──
+            if done_count < total_agents:
+                icon = f"{self._c_running}{self._summary_icon_running}{_C_RESET}"
+                summary = (
+                    f"{icon} {self._c_dimmer}{total_agents} agents{_C_RESET}"
+                    f" {self._summary_separator} {self._c_dimmer}{output_str} outputs{_C_RESET}"
+                    f" {self._summary_separator} {self._c_dimmer}{elapsed_str}{_C_RESET}"
+                )
+            else:
+                icon = f"{self._c_done}{self._summary_icon_done}{_C_RESET}"
+                summary = (
+                    f"{icon} {self._c_done}{total_agents} agents{_C_RESET}"
+                    f" {self._summary_separator} {self._c_dimmer}{output_str} outputs{_C_RESET}"
+                    f" {self._summary_separator} {self._c_dimmer}{elapsed_str}{_C_RESET}"
+                )
+            return self.truncate_to_width(summary)
+
+        # ── 默认风格摘要 ──
         if done_count == total_agents:
             speed_value = 0.0
         elif has_running:
@@ -268,22 +332,22 @@ class FrameRenderer:
 
         if done_count < total_agents:
             # ── 运行中 ──
-            icon = f"{_C_RUNNING}{self._summary_icon_running}{_C_RESET}"
+            icon = f"{self._c_running}{self._summary_icon_running}{_C_RESET}"
             summary = (
-                f"{icon} {_C_SUMMARY_DIM}{total_agents} agents{_C_RESET}"
-                f" {self._summary_separator} {_C_SUMMARY_DIM}{output_str} out{_C_RESET}"
-                f" {self._summary_separator} {_C_SUMMARY_DIM}{speed_str}{_C_RESET}"
-                f" {self._summary_separator} {_C_SUMMARY_DIM}{elapsed_str}{_C_RESET}"
-                f" {self._summary_separator} {_C_RUNNING}{done_count}/{total_agents} done{_C_RESET}"
+                f"{icon} {self._c_summary_dim}{total_agents} agents{_C_RESET}"
+                f" {self._summary_separator} {self._c_summary_dim}{output_str} out{_C_RESET}"
+                f" {self._summary_separator} {self._c_summary_dim}{speed_str}{_C_RESET}"
+                f" {self._summary_separator} {self._c_summary_dim}{elapsed_str}{_C_RESET}"
+                f" {self._summary_separator} {self._c_running}{done_count}/{total_agents} done{_C_RESET}"
             )
         else:
             # ── 完成 ──
-            icon = f"{_C_DONE}{self._summary_icon_done}{_C_RESET}"
+            icon = f"{self._c_done}{self._summary_icon_done}{_C_RESET}"
             summary = (
-                f"{icon} {_C_DONE}{total_agents} agents{_C_RESET}"
-                f" {self._summary_separator} {_C_SUMMARY_DIM}{output_str} out{_C_RESET}"
-                f" {self._summary_separator} {_C_SUMMARY_DIM}{elapsed_str}{_C_RESET}"
-                f" {self._summary_separator} {_C_DONE}{done_count}/{total_agents} done{_C_RESET}"
+                f"{icon} {self._c_done}{total_agents} agents{_C_RESET}"
+                f" {self._summary_separator} {self._c_summary_dim}{output_str} out{_C_RESET}"
+                f" {self._summary_separator} {self._c_summary_dim}{elapsed_str}{_C_RESET}"
+                f" {self._summary_separator} {self._c_done}{done_count}/{total_agents} done{_C_RESET}"
             )
         return self.truncate_to_width(summary)
 
@@ -300,16 +364,16 @@ class FrameRenderer:
             phase_time = f"{phase_elapsed:.1f}s"
             if slot.model_phase == "thinking":
                 phase_lines.append(self.truncate_to_width(
-                    f"{_C_DIMMER}    …thinking  {phase_time}{_C_RESET}"))
+                    f"{self._c_dimmer}    …thinking  {phase_time}{_C_RESET}"))
             elif slot.model_phase == "answering":
                 phase_lines.append(self.truncate_to_width(
-                    f"{_C_DIMMER}    {_C_ANSWERING}…answering{_C_DIMMER}  {phase_time}{_C_RESET}"))
+                    f"{self._c_dimmer}    {_C_ANSWERING}…answering{self._c_dimmer}  {phase_time}{_C_RESET}"))
             elif slot.model_phase == "parsing":
                 phase_lines.append(self.truncate_to_width(
-                    f"{_C_DIMMER}    {_C_PARSING}…parsing{_C_DIMMER}  {slot.model_info}{_C_RESET}"))
+                    f"{self._c_dimmer}    {_C_PARSING}…parsing{self._c_dimmer}  {slot.model_info}{_C_RESET}"))
             elif slot.model_phase == "batch":
                 phase_lines.append(self.truncate_to_width(
-                    f"{_C_DIMMER}    {_C_BATCH}…batch{_C_DIMMER}  {slot.model_info}  {phase_time}{_C_RESET}"))
+                    f"{self._c_dimmer}    {_C_BATCH}…batch{self._c_dimmer}  {slot.model_info}  {phase_time}{_C_RESET}"))
         return phase_lines
 
     def _build_agent_lines(
@@ -320,7 +384,8 @@ class FrameRenderer:
     ) -> List[str]:
         """构建单个 Agent 的增强显示行。
 
-        使用 256 色 + braille spinner + 彩色类型标签（Claude Code 极简风格）。
+        默认：256 色 + braille spinner + 彩色类型标签。
+        Claude Code 风格：⏺ 图标 + dim 类型标签 + ✓/✗ 状态图标。
         """
         lines: list[str] = []
 
@@ -332,32 +397,40 @@ class FrameRenderer:
         speed_value = slot.last_speed if slot.status == "running" else 0.0
         speed_str = self._text_formatter.format_compact_speed(speed_value)
 
-        # ── 类型标签（256 色背景） ──
+        # ── 类型标签 ──
         abbr = AGENT_TYPE_ABBREV.get(slot.agent_type, "??")
-        type_color = AGENT_TYPE_COLORS.get(slot.agent_type, _C_DIMMER)
-        type_tag = f"{type_color}[{abbr}]{_C_RESET}"
+        if self._claude_style:
+            # Claude 风格：dim 样式类型标签
+            type_tag = f"{self._c_dimmer}[{abbr}]{_C_RESET}"
+        else:
+            type_color = AGENT_TYPE_COLORS.get(slot.agent_type, _C_DIMMER)
+            type_tag = f"{type_color}[{abbr}]{_C_RESET}"
 
         # ── 标题行 ──
         if slot.status == "done":
-            icon = f"{_C_DONE}✔{_C_RESET}"
-            suffix = f"  {_C_DIMMER}{output_str}{_C_RESET}  {_C_DIMMER}{elapsed_str}{_C_RESET}"
+            icon = f"{self._c_done}{self._icon_done}{_C_RESET}"
+            suffix = f"  {self._c_dimmer}{output_str}{_C_RESET}  {self._c_dimmer}{elapsed_str}{_C_RESET}"
             title = f"  {icon} {type_tag} {slot.description}{suffix}"
         elif slot.status == "fail":
-            icon = f"{_C_FAIL}✖{_C_RESET}"
-            suffix = f"  {_C_DIMMER}{elapsed_str}{_C_RESET}"
+            icon = f"{self._c_fail}{self._icon_fail}{_C_RESET}"
+            suffix = f"  {self._c_dimmer}{elapsed_str}{_C_RESET}"
             title = f"  {icon} {type_tag} {slot.description}{suffix}"
         else:
-            # 运行中 — braille spinner 动画（10 帧循环）
-            if not final:
+            # 运行中
+            if self._claude_style:
+                # Claude 风格：⏺ 静态图标
+                dot = f"{self._c_running}{self._icon_running}{_C_RESET}"
+            elif not final:
+                # 默认风格：braille spinner 动画（10 帧循环）
                 spinner_idx = self._frame % len(self._spinner_frames)
                 spinner_char = self._spinner_frames[spinner_idx]
-                dot = f"{_C_SPINNER}{spinner_char}{_C_RESET}"
+                dot = f"{self._c_spinner}{spinner_char}{_C_RESET}"
             else:
-                dot = f"{_C_DIMMER}●{_C_RESET}"
+                dot = f"{self._c_dimmer}●{_C_RESET}"
             suffix = (
-                f"  {_C_DIMMER}{output_str}{_C_RESET}"
-                f"  {_C_SUMMARY_DIM}{speed_str}{_C_RESET}"
-                f"  {_C_DIMMER}{elapsed_str}{_C_RESET}"
+                f"  {self._c_dimmer}{output_str}{_C_RESET}"
+                f"  {self._c_summary_dim}{speed_str}{_C_RESET}"
+                f"  {self._c_dimmer}{elapsed_str}{_C_RESET}"
             )
             title = f"  {dot} {type_tag} {slot.description}{suffix}"
         lines.append(self.truncate_to_width(title))
@@ -382,7 +455,7 @@ class FrameRenderer:
                 result_preview = self._truncate_result(display_text)
                 for line in result_preview:
                     lines.append(self.truncate_to_width(
-                        f"{_C_DIMMER}    {line}{_C_RESET}"))
+                        f"{self._c_dimmer}    {line}{_C_RESET}"))
 
         return lines
 
@@ -407,6 +480,7 @@ class FrameRenderer:
         """格式化工具记录 — 彩色分类 + 图标。
 
         工具根据类别使用不同颜色（shell=绿/file_read=蓝/file_write=粉/search=金/agent=浅蓝/delete=橙红）。
+        Claude 风格下使用 CLAUDE_TOOL_ICONS 图标 + dim/cyan/green 颜色。
         """
         elapsed = (rec.end_time or now) - rec.start_time if rec.start_time else 0
         time_str = f"{elapsed:.1f}s"
@@ -425,16 +499,16 @@ class FrameRenderer:
         else:
             tool_abbr = f"{tool_color}{display_name}{_C_RESET}"
 
-        detail_display = f" {_C_DIMMER}{detail}{_C_RESET}" if detail else ""
+        detail_display = f" {self._c_dimmer}{detail}{_C_RESET}" if detail else ""
         prefix = "    "
 
         if rec.phase == "parsing":
             line = f"{prefix}{_C_PARSING}{tool_abbr}{detail_display}"
         elif rec.phase == "running":
-            line = f"{prefix}{_C_RUNNING}{tool_abbr}{detail_display}  {_C_DIMMER}{time_str}{_C_RESET}"
+            line = f"{prefix}{self._c_running}{tool_abbr}{detail_display}  {self._c_dimmer}{time_str}{_C_RESET}"
         elif rec.phase == "done":
-            line = f"{prefix}{_C_DONE}{tool_abbr}{detail_display}  {_C_DIMMER}{time_str}{_C_RESET}"
+            line = f"{prefix}{self._c_done}{tool_abbr}{detail_display}  {self._c_dimmer}{time_str}{_C_RESET}"
         else:
-            line = f"{prefix}{_C_FAIL}{tool_abbr}{detail_display}  {_C_DIMMER}{time_str}{_C_RESET}"
+            line = f"{prefix}{self._c_fail}{tool_abbr}{detail_display}  {self._c_dimmer}{time_str}{_C_RESET}"
 
         return self.truncate_to_width(line)
