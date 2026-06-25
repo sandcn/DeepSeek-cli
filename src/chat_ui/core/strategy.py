@@ -21,6 +21,24 @@ if TYPE_CHECKING:
 _logger = logging.getLogger(__name__)
 
 
+def _read_legacy_fallback() -> bool:
+    """读取 CHAT_UI_RENDER_LEGACY_FALLBACK 开关。
+
+    优先通过 FeatureFlags 统一注册表读取，失败时回退到
+    直接读取环境变量。
+
+    Returns:
+        True 当 CHAT_UI_RENDER_LEGACY_FALLBACK 为启用的真值。
+    """
+    try:
+        from src.shared_events.feature_flags import get_feature_flags
+        return get_feature_flags().chat_ui_render_legacy_fallback
+    except Exception:
+        return os.environ.get("CHAT_UI_RENDER_LEGACY_FALLBACK", "").strip().lower() in (
+            "1", "true", "yes", "on"
+        )
+
+
 # ═══════════════════════════════════════════════════════════
 # RenderStrategy Protocol
 # ═══════════════════════════════════════════════════════════
@@ -66,9 +84,8 @@ class DirectRenderStrategy:
 
     def __init__(self, renderer):
         import warnings
-        if not os.environ.get("CHAT_UI_RENDER_LEGACY_FALLBACK", "").strip().lower() in (
-            "1", "true", "yes", "on"
-        ):
+        _legacy_fallback = _read_legacy_fallback()
+        if not _legacy_fallback:
             warnings.warn(
                 "DirectRenderStrategy 已废弃，请使用 VNodeRenderStrategy。"
                 "设置 CHAT_UI_RENDER_LEGACY_FALLBACK=1 可消除此警告。",
@@ -620,9 +637,8 @@ class PhaseRenderStrategy:
 
     def __init__(self, renderer, phases: list, store=None):
         import warnings
-        if not os.environ.get("CHAT_UI_RENDER_LEGACY_FALLBACK", "").strip().lower() in (
-            "1", "true", "yes", "on"
-        ):
+        _legacy_fallback = _read_legacy_fallback()
+        if not _legacy_fallback:
             warnings.warn(
                 "PhaseRenderStrategy 已废弃，请使用 VNodeRenderStrategy。"
                 "设置 CHAT_UI_RENDER_LEGACY_FALLBACK=1 可消除此警告。",
@@ -673,13 +689,9 @@ class PhaseRenderStrategy:
                 _log = logging.getLogger(__name__)
                 _log.warning("Phase %s 执行失败", type(phase).__name__, exc_info=True)
 
-        # 防御性检查：如果 phases 中没有 BottomBarPhase，手动触发底部栏重绘
-        # 惰性导入 BottomBarPhase 以避免循环依赖：
-        # strategy → phase → engine → strategy。移到模块顶部会导致 ImportError。
-        from ..core.phase import BottomBarPhase
-        has_bottom_bar_phase = any(isinstance(p, BottomBarPhase) for p in self._phases)
-        if not has_bottom_bar_phase:
-            engine._phase_redraw_bottom(has_any_content)
+        # 防御性检查：始终触发底部栏重绘
+        # （原通过 isinstance(phase, BottomBarPhase) 检测，phase.py 已删除）
+        engine._phase_redraw_bottom(has_any_content)
 
         # 命令已处理：即使所有 phase 都返回 False，也返回 True
         return has_any_content or bool(commands)

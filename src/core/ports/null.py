@@ -44,6 +44,9 @@ class _NullPort(DisplayPort):
     def stop(self, final: bool = False) -> None:
         pass
 
+    async def await_stop(self, timeout: float = 2.0) -> None:
+        pass
+
     def tool_parsing(self, label: str, tool_name: str, arguments: str = "") -> None:
         pass
 

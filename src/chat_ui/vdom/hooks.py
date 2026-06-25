@@ -14,6 +14,11 @@
   - 依赖数组使用浅比较（is 或 ==）
   - 组件卸载时自动清理 effect cleanup 函数
   - effect 在渲染完成后通过 run_effects() 批量执行
+
+架构关系：hooks.py 是核心 Hooks 运行时实现（use_state/use_effect/use_ref 等）。
+react_ink/__init__.py 是可选 feature flag（CHAT_UI_USE_REACT_LIKE）门控的 API 聚合层，
+通过 re-export 暴露 hooks + 组件（Box/Spinner/Animation）+ 布局（FlexLayout）等完整 API。
+当 CHAT_UI_USE_REACT_LIKE=0 时，react_ink 模块导入为 no-op，不影响核心渲染路径。
 """
 
 from __future__ import annotations

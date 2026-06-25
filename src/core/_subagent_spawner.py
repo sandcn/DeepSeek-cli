@@ -12,7 +12,7 @@ from typing import List, Dict, Any
 
 from .subagent import SubAgent
 from .constants import AGENT_TYPE_ABBREV, RESET
-from ..ui.parallel._tool_icons import AGENT_TYPE_COLORS
+from .constants import AGENT_TYPE_COLORS
 
 _logger = logging.getLogger(__name__)
 

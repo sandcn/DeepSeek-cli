@@ -177,6 +177,15 @@ class SubDisplayPort(ABC):
         ...
 
     @abstractmethod
+    async def await_stop(self, timeout: float = 2.0) -> None:
+        """异步等待显示停止（含超时）。
+
+        用于在 stop() 后等待显示线程清理完成。
+        ParallelDisplay 的对应方法签名：async def await_stop(self, timeout: float = 2.0)
+        """
+        ...
+
+    @abstractmethod
     def update_parse_info(self, label: str, tool_name: str, tokens: int, elapsed: float) -> None:
         """更新解析信息"""
         ...

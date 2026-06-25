@@ -185,6 +185,10 @@ class EventBusDisplayProxy(_BaseDisplay):
     def stop(self, final: bool = False) -> None:
         self._bus.publish(SessionStopped(final=final, source=self._source))
 
+    async def await_stop(self, timeout: float = 2.0) -> None:
+        """EventBusDisplayProxy 无后台线程，stop 是同步操作，直接返回。"""
+        pass
+
     # ── 捕获显示函数输出 ────────────────────────────────
 
     def capture_and_print(self, display_func) -> str:

@@ -60,10 +60,10 @@ class DefaultEventPort(EventPort):
     def _build_event(event_type: str, data: Any, source: str) -> Any:
         """将字符串事件类型 + data dict 转换为类型化 DisplayEvent 对象。
 
-        延迟导入事件类，避免 core 层编译期依赖 ui.events.event_types。
+        延迟导入事件类，避免 core 层编译期依赖 shared_events 模块。
         """
         if event_type == "agent_added":
-            from ...ui.events.event_types import AgentAddedEvent
+            from src.shared_events.types import AgentAddedEvent
             return AgentAddedEvent(
                 label=data.get("label", "?"),
                 description=data.get("description", ""),
@@ -72,7 +72,7 @@ class DefaultEventPort(EventPort):
                 dispatch_label=data.get("dispatch_label", ""),
             )
         elif event_type == "agent_status_changed":
-            from ...ui.events.event_types import AgentStatusChanged
+            from src.shared_events.types import AgentStatusChanged
             return AgentStatusChanged(
                 label=data.get("label", "?"),
                 status=data.get("status", "?"),

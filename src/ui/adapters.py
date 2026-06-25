@@ -125,6 +125,12 @@ class UIDisplayAdapter(DisplayPort):
         if self._wrapped is not None:
             self._wrapped.stop()
 
+    async def await_stop(self, timeout: float = 2.0) -> None:
+        """委托给 _wrapped 的 await_stop 实现。"""
+        if self._wrapped is not None and hasattr(self._wrapped, 'await_stop'):
+            await self._wrapped.await_stop(timeout)
+        # 无 _wrapped 时直接返回
+
 
 class UIEventAdapter(EventPort):
     """实现 EventPort 接口，委托给 ui.events 模块"""

@@ -29,15 +29,19 @@ from .ansi import ANSI_DIM, ANSI_CYAN, ANSI_RESET, style
 def _is_claude_style_enabled() -> bool:
     """检查 Claude Code 风格全局开关。
 
-    通过 CHAT_UI_CLAUDE_STYLE 环境变量控制，遵循项目约定：
-    "1"/"true"/"yes"/"on" → 启用，其他值 → 禁用。
+    优先通过 FeatureFlags 统一注册表读取，失败时回退到
+    直接读取 CHAT_UI_CLAUDE_STYLE 环境变量。
 
     Returns:
         True 当 CHAT_UI_CLAUDE_STYLE 为启用的真值。
     """
-    return os.environ.get("CHAT_UI_CLAUDE_STYLE", "").strip().lower() in (
-        "1", "true", "yes", "on"
-    )
+    try:
+        from src.shared_events.feature_flags import get_feature_flags
+        return get_feature_flags().chat_ui_claude_style
+    except Exception:
+        return os.environ.get("CHAT_UI_CLAUDE_STYLE", "").strip().lower() in (
+            "1", "true", "yes", "on"
+        )
 
 
 def _is_feature_enabled(feature_name: str) -> bool:

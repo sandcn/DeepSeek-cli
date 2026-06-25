@@ -1,5 +1,17 @@
 """React Ink — 声明式终端 UI 框架子包。
 
+架构关系：本模块是 API 聚合层，实际实现分布在：
+- vdom/hooks.py — Hooks 运行时（use_state/use_effect/use_ref/use_memo/use_callback）
+- vdom/layout.py — FlexLayout 布局引擎
+- vdom/types.py — HookState/HookError 类型
+- components/animation.py — use_animation/AnimationClock
+- components/spinner.py — use_spinner
+- components/box.py — Box/边框/阴影
+- components/message_blocks.py — 声明式消息块组件
+- infrastructure/claude_style.py — Claude Code 风格门控
+- devtools/stats.py — ErrorBoundary/调试工具
+通过 CHAT_UI_USE_REACT_LIKE 环境变量门控启用。
+
 提供 React Ink 风格的声明式终端 UI 能力。此包保留为兼容性 re-export，
 实际模块已迁移至 vdom/ 和 components/ 子包。
 
@@ -55,16 +67,19 @@ from ..infrastructure.claude_style import (  # noqa: F401
 def _is_enabled() -> bool:
     """检测是否启用 React Ink 特性。
 
-    通过检查环境变量 CHAT_UI_USE_REACT_LIKE 决定是否启用新特性。
-    遵循项目约定：仅当值为 "1"/"true"/"yes"/"on" 时启用，
-    "0"/"false"/"no"/"off"/空字符串/未设置均为禁用。
+    优先通过 FeatureFlags 统一注册表读取，失败时回退到
+    直接读取 CHAT_UI_USE_REACT_LIKE 环境变量。
 
     Returns:
         True 当 CHAT_UI_USE_REACT_LIKE 为启用的真值。
     """
-    return os.environ.get("CHAT_UI_USE_REACT_LIKE", "").strip().lower() in (
-        "1", "true", "yes", "on"
-    )
+    try:
+        from src.shared_events.feature_flags import get_feature_flags
+        return get_feature_flags().chat_ui_use_react_like
+    except Exception:
+        return os.environ.get("CHAT_UI_USE_REACT_LIKE", "").strip().lower() in (
+            "1", "true", "yes", "on"
+        )
 
 
 # ── 公共 API 符号 ──

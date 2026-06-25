@@ -24,10 +24,8 @@ from ..events.event_types import LiveOutputEvent
 from ._config import DisplayConfig
 from ..base_display import BaseDisplay
 
-# 跨层引用说明：CmdSubagentSlotUpdate 是纯数据 dataclass，
-# 属于数据契约层。在 chat_ui/commands/types.py 中定义（与所有 Cmd* 类型同文件），
-# 保留此 import 作为数据契约引用，避免为两个类型创建独立的共享模块。
-from ...chat_ui.commands.types import CmdSubagentSlotUpdate
+# CmdSubagentSlotUpdate 定义已迁移至 src.shared_events.types（P3-9）
+from src.shared_events.types import CmdSubagentSlotUpdate
 
 # ── 常量 ────────────────────────────────────────────────
 

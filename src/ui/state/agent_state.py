@@ -60,26 +60,28 @@ class AgentSlot:
 
 
 class AgentStateStore:
-    """@deprecated: Agent 状态存储 — 纯状态管理，无渲染/输出逻辑。
+    """@deprecated: Agent 状态存储 — 已完全废弃，始终发出 DeprecationWarning。
 
-    ⚠ 已由 TuiState.subagent_slots 取代。ParallelDisplay 现在双写到
-    AgentStateStore（本地状态）和 TuiState（全局状态），帧渲染也从
-    AgentStateStore.snapshot_all() 迁移到 TuiState.subagent_slots。
+    迁移路径：
+    - ParallelDisplay 已通过 CmdSubagentSlotUpdate 单写到 TuiState.subagent_slots。
+    - 帧渲染从 AgentStateStore.snapshot_all() 已完全迁移到 TuiState.subagent_slots。
+    - 所有读/写操作均应使用 TuiState.subagent_slots 而非本类。
 
-    保留本类以支持过渡期兼容，计划阶段三完成后物理删除。
+    本类保留仅用于向后兼容，计划在后续版本中物理删除。
 
-    线程安全。提供状态更新和快照方法，供 ParallelDisplay 消费。
+    线程安全。提供状态更新和快照方法。
     """
 
     def __init__(self):
         import warnings
-        import os
-        if not os.environ.get("CHAT_UI_RENDER_LEGACY_FALLBACK", "").strip().lower() in ("1", "true", "yes", "on"):
-            warnings.warn(
-                "AgentStateStore is deprecated. Use TuiState.subagent_slots instead.",
-                DeprecationWarning,
-                stacklevel=2,
-            )
+        warnings.warn(
+            "AgentStateStore is deprecated. Use TuiState.subagent_slots instead."
+            " 迁移路径：ParallelDisplay 已通过 CmdSubagentSlotUpdate + TuiState.subagent_slots 单写。"
+            " 帧渲染从 AgentStateStore.snapshot_all() 已完全迁移到 TuiState.subagent_slots。"
+            " 本类计划在后续版本中物理删除。",
+            DeprecationWarning,
+            stacklevel=2,
+        )
         self._slots: Dict[str, AgentSlot] = {}
         self._order: List[str] = []
         self._lock = threading.Lock()

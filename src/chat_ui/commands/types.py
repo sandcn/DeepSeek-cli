@@ -208,18 +208,7 @@ class CmdToolCallUpdate:
     kind: int = 22
 
 
-@dataclass(frozen=True)
-class CmdSubagentSlotUpdate:
-    """SubAgent 状态槽位更新 — 将 AgentStateStore 状态同步到 TuiState。
-
-    由 ParallelDisplay 在 update_* 方法中推送，TuiStore 通过
-    _reduce_subagent_slot_update reducer 合并到 subagent_slots dict。
-
-    Attributes:
-        label: Agent 标识名（如 "agent-1"）
-        slot: Agent 槽位数据（可序列化 dict，字段与 AgentSlot 对齐）
-    """
-    label: str
-    slot: dict
-    layer: int = 10
-    kind: int = 23
+# CmdSubagentSlotUpdate 定义已迁移至 src.shared_events.types
+# （P3-9: 打破 ui ↔ chat_ui 循环依赖）
+# 此 re-export 保持所有现有 `from ..commands.types import CmdSubagentSlotUpdate` 有效
+from src.shared_events.types import CmdSubagentSlotUpdate  # noqa: F401

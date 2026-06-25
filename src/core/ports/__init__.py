@@ -44,6 +44,7 @@ from .tool_registry import ToolRegistryPort
 from .prompt_builder import PromptBuilderPort, DefaultPromptBuilderAdapter
 from .render import RenderPort, DefaultRenderAdapter, NullRenderAdapter
 from .stats import StatsPort, DefaultStatsAdapter, MockStatsAdapter
+from .completion import CompletionDataPort, DefaultCompletionDataPort
 from ..cache import CachePort, LRUCache, NullCache
 
 __all__ = [
@@ -74,4 +75,6 @@ __all__ = [
     "PromptBuilderPort", "DefaultPromptBuilderAdapter",
     # 渲染
     "RenderPort", "DefaultRenderAdapter", "NullRenderAdapter",
+    # 补全数据
+    "CompletionDataPort", "DefaultCompletionDataPort",
 ]

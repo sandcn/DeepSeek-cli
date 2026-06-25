@@ -15,7 +15,7 @@ async def print_to_terminal(text: str) -> None:
     通过 EventBus 发布 ToolOutputChunkEvent，由 ChatUIConsumer
     render 线程统一排队渲染，不与底部栏刷新竞态。
     """
-    from ..ui.events.event_types import ToolOutputChunkEvent
+    from src.shared_events.types import ToolOutputChunkEvent
     from ..ui.events.event_bus import DisplayEventBus
     DisplayEventBus.get_default().publish(ToolOutputChunkEvent(
         label="assistant", text=text, source="agent",
@@ -107,7 +107,7 @@ class Func(abc.ABC):
     @staticmethod
     def _publish_tool_text(text: str) -> None:
         """将工具显示文本发布到 EventBus，统一走 ChatUIConsumer cmd 队列渲染。"""
-        from ..ui.events.event_types import ToolOutputChunkEvent
+        from src.shared_events.types import ToolOutputChunkEvent
         from ..ui.events.event_bus import DisplayEventBus
         try:
             DisplayEventBus.get_default().publish(ToolOutputChunkEvent(

@@ -14,7 +14,7 @@ import logging
 from typing import Callable
 
 from ..ui.events.event_bus import DisplayEventBus
-from ..ui.events.event_types import (
+from src.shared_events.types import (
     AgentAddedEvent,
     AgentResultEvent,
     AgentStatusChanged,

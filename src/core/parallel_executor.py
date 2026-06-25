@@ -21,13 +21,13 @@ from .subagent import SubAgent
 from ..ui.parallel import ParallelDisplay
 from .ports.chat_ui import get_default_chat_ui_port
 # TODO(Phase 3.2): 替换 ParallelDisplay → DisplayPort.create_sub_display()
-#   当前保留 ParallelDisplay 直接引用，因接口不匹配：
-#   - update_agent_status 签名差异（2 vs 3 参数）
+#   await_stop 已添加至 SubDisplayPort 协议（步骤 16）。
+#   - update_agent_status 签名差异（ParallelDisplay: (label, status) → AgentStatusPort: (agent_id, status, detail)）
 #   - set_result 参数顺序差异
-#   - await_stop 在 DisplayPort 中为 stop（不支持超时）
+#   → 需统一接口签名后再替换
 from ..config import STAGGER_MIN_DELAY, STAGGER_MAX_DELAY
 from .constants import RED, RESET, AGENT_TYPE_ABBREV
-from ..ui.parallel._tool_icons import AGENT_TYPE_COLORS
+from .constants import AGENT_TYPE_COLORS
 
 _logger = logging.getLogger(__name__)
 

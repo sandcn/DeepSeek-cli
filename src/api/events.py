@@ -25,7 +25,7 @@ def publish_event(event_type: str, **kwargs) -> bool:
     """
     try:
         from src.ui.events.event_bus import DisplayEventBus
-        from src.ui.events import event_types as evt
+        from src.shared_events import types as evt
         event_cls = getattr(evt, event_type, None)
         if event_cls is not None:
             DisplayEventBus.get_default().publish(event_cls(**kwargs))

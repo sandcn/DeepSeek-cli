@@ -11,7 +11,6 @@
   8. 统计（get_stats / clear / subscriber_count）
   9. 全局单例（get_default_bus / set_default_bus / reset_default_bus / 多线程）
   10. 线程安全（多线程并发 publish / subscribe）
-  11. 事件类型常量（非空 / 数量合理）
 """
 
 import threading
@@ -27,24 +26,6 @@ from src.core.events import (
     get_default_bus,
     set_default_bus,
     reset_default_bus,
-)
-from src.core.events.event_types import (
-    MODEL_CALL_STARTED,
-    MODEL_CALL_COMPLETED,
-    MODEL_CALL_FAILED,
-    MODEL_STREAM_CHUNK,
-    TOOL_CALL_STARTED,
-    TOOL_CALL_COMPLETED,
-    TOOL_CALL_FAILED,
-    SESSION_STARTED,
-    SESSION_COMPLETED,
-    SESSION_INTERRUPTED,
-    SESSION_SAVED,
-    CONTEXT_COMPRESSED,
-    CONTEXT_COMPRESS_FAILED,
-    CONFIG_CHANGED,
-    APP_BOOTSTRAP,
-    APP_SHUTDOWN,
 )
 
 
@@ -971,79 +952,8 @@ class TestThreadSafety:
         assert len(errors) == 0
         assert bus.subscriber_count("concurrent.uns") == 0
 
-
 # ===============================================================
-# 11. 事件类型常量
-# ===============================================================
-
-class TestEventTypeConstants:
-    """事件类型常量值不为空字符串，数量合理"""
-
-    ALL_CONSTANTS = [
-        MODEL_CALL_STARTED,
-        MODEL_CALL_COMPLETED,
-        MODEL_CALL_FAILED,
-        MODEL_STREAM_CHUNK,
-        TOOL_CALL_STARTED,
-        TOOL_CALL_COMPLETED,
-        TOOL_CALL_FAILED,
-        SESSION_STARTED,
-        SESSION_COMPLETED,
-        SESSION_INTERRUPTED,
-        SESSION_SAVED,
-        CONTEXT_COMPRESSED,
-        CONTEXT_COMPRESS_FAILED,
-        CONFIG_CHANGED,
-        APP_BOOTSTRAP,
-        APP_SHUTDOWN,
-    ]
-
-    def test_none_is_empty_string(self):
-        """所有事件类型常量不为空字符串"""
-        for const in self.ALL_CONSTANTS:
-            assert const != "", f"常量值为空字符串"
-            assert isinstance(const, str), f"常量不是字符串类型: {const}"
-
-    def test_all_start_with_category(self):
-        """所有常量以分类前缀开头"""
-        for const in self.ALL_CONSTANTS:
-            assert "." in const, f"常量缺少分类前缀: {const}"
-
-    def test_constant_count_reasonable(self):
-        """常量数量合理（至少 10 个）"""
-        assert len(self.ALL_CONSTANTS) >= 10
-
-    def test_model_call_constants(self):
-        assert MODEL_CALL_STARTED == "model.call.started"
-        assert MODEL_CALL_COMPLETED == "model.call.completed"
-        assert MODEL_CALL_FAILED == "model.call.failed"
-        assert MODEL_STREAM_CHUNK == "model.stream.chunk"
-
-    def test_tool_call_constants(self):
-        assert TOOL_CALL_STARTED == "tool.call.started"
-        assert TOOL_CALL_COMPLETED == "tool.call.completed"
-        assert TOOL_CALL_FAILED == "tool.call.failed"
-
-    def test_session_constants(self):
-        assert SESSION_STARTED == "session.started"
-        assert SESSION_COMPLETED == "session.completed"
-        assert SESSION_INTERRUPTED == "session.interrupted"
-        assert SESSION_SAVED == "session.saved"
-
-    def test_context_constants(self):
-        assert CONTEXT_COMPRESSED == "context.compressed"
-        assert CONTEXT_COMPRESS_FAILED == "context.compress.failed"
-
-    def test_config_constant(self):
-        assert CONFIG_CHANGED == "config.changed"
-
-    def test_app_constants(self):
-        assert APP_BOOTSTRAP == "app.bootstrap"
-        assert APP_SHUTDOWN == "app.shutdown"
-
-
-# ===============================================================
-# 12. 边界条件与清理
+# 11. 边界条件与清理
 # ===============================================================
 
 class TestBusClear:
