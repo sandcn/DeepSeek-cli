@@ -372,6 +372,14 @@ class TuiEngine:
                 else:
                     has_content = bool(anim_ticks)
 
+            # ── 传递 subagent 数据给 bottom bar（固定区域渲染）──
+            if self._store is not None:
+                try:
+                    state = self._store.get_state()
+                    self._bb.set_subagent_slots(state.subagent_slots)
+                except Exception:
+                    pass
+
             self._phase_redraw_bottom(has_content)
             return has_content
 

@@ -60,6 +60,7 @@ from ._scroll_region import (
     _term_width as _sr_term_width,
 )
 from ._input_renderer import InputRenderer
+from ._subagent import render_subagent_slots
 
 # ── 兼容别名（旧 _blessed_* 函数仍可从 _bottom_bar 导入） ──
 _blessed_move_clear = blessed_move_clear
@@ -153,6 +154,11 @@ class _BottomBar(_StatusMixin):
         self._scroll = ScrollRegionManager(self._cursor_tracker)
         self._input = InputRenderer()
 
+        # ── SubAgent 槽位数据（由 engine 通过 set_subagent_slots 注入）──
+        self._subagent_slots: dict = {}
+        self._subagent_line_count: int = 0
+        self._subagent_slots_dirty: bool = False
+
     # ── 补全弹窗兼容 property（供外部直读私有属性的调用方） ──
 
     @property
@@ -199,10 +205,10 @@ class _BottomBar(_StatusMixin):
 
     @property
     def _bottom_lines(self) -> int:
-        """当前底部栏总行数（分隔线 + 状态行 + 输入行），根据输入内容动态计算。"""
-        return self._input.bottom_lines(
+        base = self._input.bottom_lines(
             self._last_text or "", self._term_width(), self._completion.height,
         )
+        return base + self._subagent_line_count
 
     def _compute_input_rows(self) -> int:
         """根据当前输入文本计算所需的输入行数（最少 3 行 + 补全弹窗高度）。"""
@@ -292,6 +298,25 @@ class _BottomBar(_StatusMixin):
         """
         self._last_text = text
         self._input_cursor_pos = cursor_pos
+
+    def set_subagent_slots(self, slots: dict) -> None:
+        """设置 subagent 槽位数据（供 engine 调用）。
+        
+        预计算行数（每个 slot 1 行 + tool_history 最多 3 行/每 slot），
+        供 _bottom_lines 计算使用。
+        """
+        self._subagent_slots = slots
+        if not slots:
+            self._subagent_line_count = 0
+            return
+        count = 0
+        for slot in slots.values():
+            count += 1  # 主行
+            tool_history = slot.get("tool_history", [])
+            if tool_history:
+                count += min(len(tool_history), 3)  # 最多 3 条历史
+        self._subagent_line_count = count
+        self._subagent_slots_dirty = True
 
     def setup(self) -> None:
         """启用底部栏：设置滚动区域 + 状态初始化（不绘制）。
@@ -397,7 +422,8 @@ class _BottomBar(_StatusMixin):
 
             layout_unchanged = (text == self._input.last_rendered_text
                                 and total == self._last_bottom_lines
-                                and height == self._last_height)
+                                and height == self._last_height
+                                and not self._subagent_slots_dirty)
             if layout_unchanged:
                 new_status = self._format_status()
                 if new_status == self._last_status:
@@ -409,7 +435,7 @@ class _BottomBar(_StatusMixin):
                 self._last_refresh = time.monotonic()
                 self._last_cursor_pos = self._input_cursor_pos
                 out = sys.__stdout__
-                status_row = height - total + 2
+                status_row = height - total + self._subagent_line_count + 2
                 out.write(_blessed_move_clear(status_row))
                 out.write(f"\r\033[K{new_status}")
                 out.flush()
@@ -470,12 +496,16 @@ class _BottomBar(_StatusMixin):
                 self._cursor_tracker.set(min(old_scroll_end, height), 1)
 
             r1 = height - total + 1
-            r2 = r1 + 1
+            r2 = r1 + self._subagent_line_count + 1
+
+            # ── 渲染 SubAgent 槽位（在分隔线上方）──
+            if self._subagent_slots:
+                render_subagent_slots(out, self._subagent_slots, r1, self._term_width())
 
             tw = self._term_width()
             sep_len = min(tw - 2, 40)
             sep = f"{_COLOR_SEP}\u2501{_COLOR_RESET}" * sep_len
-            out.write(_blessed_move_clear(r1) + "  " + sep)
+            out.write(_blessed_move_clear(r1 + self._subagent_line_count) + "  " + sep)
             # ★ force_redraw 中的 tracker.set 是近似值，仅记录当前绘制行号。
             #    最终光标位置在方法末尾 set(scroll_end, 1) 处修正。
             self._cursor_tracker.set(r1, 3)  # 分隔线从第3列开始
@@ -514,6 +544,7 @@ class _BottomBar(_StatusMixin):
             self._cursor_tracker.set(scroll_end, 1)
             out.flush()
             self._last_cursor_pos = self._input_cursor_pos
+            self._subagent_slots_dirty = False
             self._last_height = height
 
     # ── 内部绘制 ──────────────────────────────────────────

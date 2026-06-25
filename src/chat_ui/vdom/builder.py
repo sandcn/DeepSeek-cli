@@ -107,15 +107,6 @@ def build_vnode_tree(state: TuiState) -> VNode:
             props={"results": tuple(state.tool_results)},
         ))
 
-    # SubAgent 槽位数据（必须为 content_area 最后一个子节点 —
-    # 原地刷新使用 \\033[{n}A 相对光标上移，依赖后续无其他内容渲染。
-    # 始终创建 — 策略层 else 分支处理空 slots 清理与计数器重置。）
-    content_children.append(VNode(
-        type="subagent_slots",
-        key="subagent_slots",
-        props={"slots": state.subagent_slots},
-    ))
-
     if content_children:
         children.append(VNode(
             type="content_area",
