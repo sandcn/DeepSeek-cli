@@ -399,12 +399,23 @@ class VNodeRenderStrategy:
             _logger.debug("sync_bottom_lines 异常", exc_info=True)
         engine.ensure_cursor_upper()
         try:
-            # 1. Dispatch 所有命令到 Store
+            # 1. Dispatch 所有命令到 Store，同步路由工具计数命令到 TuiRenderer
+            #    （更新 BottomBar 自有计数器 _tool_total，确保状态行正确显示 ⚙ 图标）
             for cmd in commands:
                 try:
                     self._store.dispatch(cmd)
                 except Exception:
                     _logger.debug("VNode dispatch %s 失败", type(cmd).__name__, exc_info=True)
+                # ── 工具计数命令需额外路由到 TuiRenderer ──
+                # VNode 路径下 store.dispatch 仅更新 TuiState.status.tool_count，
+                # 但 _BottomBar._format_status() 读取的是 BottomBar 自有计数器 _tool_total。
+                # 路由到 TuiRenderer._do_tool_count_inc/dec/fail_inc() → bb.increment_tool()
+                # 确保双状态源一致。
+                if isinstance(cmd, (CmdToolCountInc, CmdToolCountDec, CmdToolFailInc)):
+                    try:
+                        self._renderer.render(cmd)
+                    except Exception:
+                        _logger.debug("工具计数命令渲染异常", exc_info=True)
 
             # 2. 获取最新状态
             state = self._store.get_state()
@@ -419,6 +430,11 @@ class VNodeRenderStrategy:
             # 5. 检测是否有实质性变更
             has_change = any(p.kind != PatchKind.NOOP for p in patches)
 
+            # 6. 导入 VNode 渲染路径所需命令类型（提升到 has_change 块外，避免
+            #    条件导入在 has_change=False 时 UnboundLocalError）
+            from ..commands.types import CmdContent, CmdReasoning, CmdToolOutput, CmdPhaseDone, \
+                CmdToolCountInc, CmdToolCountDec, CmdToolFailInc
+
             # 空帧计数逻辑：追踪连续无变更帧，供空帧退避使用
             if not has_change:
                 self._anim_idle_count += 1
@@ -426,8 +442,6 @@ class VNodeRenderStrategy:
                 self._anim_idle_count = 0
 
             if has_change:
-                # 渲染回调所需命令类型
-                from ..commands.types import CmdContent, CmdReasoning, CmdToolOutput, CmdPhaseDone
                 # 直接渲染回调：将 VNode 渲染为终端输出
                 def _render_node_direct(vnode: "VNode") -> None:
                     # ── 容器类型：递归渲染子节点 ──
