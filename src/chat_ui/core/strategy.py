@@ -410,7 +410,7 @@ class VNodeRenderStrategy:
 
             if has_change:
                 # 渲染回调所需命令类型
-                from ..commands.types import CmdContent, CmdReasoning, CmdToolOutput
+                from ..commands.types import CmdContent, CmdReasoning, CmdToolOutput, CmdPhaseDone
                 # 直接渲染回调：将 VNode 渲染为终端输出
                 def _render_node_direct(vnode: "VNode") -> None:
                     # ── 容器类型：递归渲染子节点 ──
@@ -575,6 +575,17 @@ class VNodeRenderStrategy:
                         _logger.warning("分层渲染异常，回退", exc_info=True)
 
                 _logger.debug("VNode diff 检测到 %d 个 patches，已触发增量渲染", len(patches))
+
+            # ── 路由 CmdPhaseDone 到 TuiRenderer ──
+            # VNode 路径下 cmd 仅 dispatch 到 Store，CmdPhaseDone 还需路由到
+            # TuiRenderer 以触发 IncrementalRenderer.close() → parser flush，
+            # 确保缓冲区中无换行结尾的末尾 token 得以输出到终端。
+            for cmd in commands:
+                if isinstance(cmd, CmdPhaseDone):
+                    try:
+                        self._renderer.render(cmd)
+                    except Exception:
+                        _logger.debug("CmdPhaseDone 渲染异常", exc_info=True)
 
             # 6. 缓存新树
             self._old_vnode = new_vnode
