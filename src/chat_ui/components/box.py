@@ -19,6 +19,7 @@
 
 from __future__ import annotations
 
+import os
 import re
 import shutil
 import unicodedata
@@ -26,6 +27,8 @@ from typing import Any
 
 from ..components.base import TuiComponent
 from ..infrastructure.ansi import _fg_code, _bg_code, ANSI_DIM, ANSI_BOLD, ANSI_RESET
+from ..infrastructure.styled import (StyledText, Span,
+                                     _interpolate_256, _named_color_to_256)
 
 
 # ── 边框样式常量 ────────────────────────────────────────
@@ -310,6 +313,23 @@ class Box(TuiComponent):
         }
         return attr_map.get(side, None) or self.border_background_color
 
+    # ── 渐变辅助 ────────────────────────────────────────
+
+    def _is_gradient_enabled(self) -> bool:
+        """检查渐变边框是否启用。
+
+        需同时满足：
+        - border_color_gradient 非 None
+        - 环境变量 CHAT_UI_BORDER_GRADIENT 不为 "0"（默认启用）
+
+        Returns:
+            True 当渐变边框应生效。
+        """
+        if self.border_color_gradient is None:
+            return False
+        env_val = os.environ.get("CHAT_UI_BORDER_GRADIENT", "1").strip()
+        return env_val != "0"
+
     # ── 渲染 ────────────────────────────────────────────
 
     def render(self) -> str:
@@ -407,14 +427,27 @@ class Box(TuiComponent):
                 lines.append("")
             return "\n".join(lines)
 
+        # ── 渐变总行数（用于竖线逐行采样）──
+        _gradient_total_lines = 2 * self.padding_y + content_height
+        _line_idx = 0
+
         # top 边框行（含标题）
         if self.show_top:
-            top_line = self._build_top_line(inner_width, chars, collapsed=False)
+            if self._is_gradient_enabled():
+                top_line = self._build_gradient_top_line(
+                    inner_width, chars, collapsed=False)
+            else:
+                top_line = self._build_top_line(
+                    inner_width, chars, collapsed=False)
             lines.append(top_line)
 
         # padding 顶行（含左右边框）
         for _ in range(self.padding_y):
-            lines.append(self._build_side_line(inner_width, chars))
+            lines.append(self._build_side_line(
+                inner_width, chars,
+                line_index=_line_idx,
+                total_lines=_gradient_total_lines))
+            _line_idx += 1
 
         # 内容行（含左右边框）
         # 补齐 content_lines 到 content_height
@@ -424,32 +457,43 @@ class Box(TuiComponent):
 
         for line in padded_lines:
             lines.append(self._build_content_line(
-                line, inner_width, chars))
+                line, inner_width, chars,
+                line_index=_line_idx,
+                total_lines=_gradient_total_lines))
+            _line_idx += 1
 
         # padding 底行（含左右边框）
         for _ in range(self.padding_y):
-            lines.append(self._build_side_line(inner_width, chars))
+            lines.append(self._build_side_line(
+                inner_width, chars,
+                line_index=_line_idx,
+                total_lines=_gradient_total_lines))
+            _line_idx += 1
 
         # bottom 边框行
         if self.show_bottom:
-            bottom_fg = self._border_fg("bottom")
-            bottom_bg = self._border_bg("bottom")
-            if inner_width > 0:
-                bottom_line = (
-                    _styled(chars["bl"], fg=bottom_fg, bg=bottom_bg,
-                            dim=self.border_dim_color)
-                    + _styled(chars["h"] * inner_width, fg=bottom_fg,
-                              bg=bottom_bg, dim=self.border_dim_color)
-                    + _styled(chars["br"], fg=bottom_fg, bg=bottom_bg,
-                              dim=self.border_dim_color)
-                )
+            if self._is_gradient_enabled():
+                bottom_line = self._build_gradient_bottom_line(
+                    inner_width, chars)
             else:
-                bottom_line = (
-                    _styled(chars["bl"], fg=bottom_fg, bg=bottom_bg,
-                            dim=self.border_dim_color)
-                    + _styled(chars["br"], fg=bottom_fg, bg=bottom_bg,
-                              dim=self.border_dim_color)
-                )
+                bottom_fg = self._border_fg("bottom")
+                bottom_bg = self._border_bg("bottom")
+                if inner_width > 0:
+                    bottom_line = (
+                        _styled(chars["bl"], fg=bottom_fg, bg=bottom_bg,
+                                dim=self.border_dim_color)
+                        + _styled(chars["h"] * inner_width, fg=bottom_fg,
+                                  bg=bottom_bg, dim=self.border_dim_color)
+                        + _styled(chars["br"], fg=bottom_fg, bg=bottom_bg,
+                                  dim=self.border_dim_color)
+                    )
+                else:
+                    bottom_line = (
+                        _styled(chars["bl"], fg=bottom_fg, bg=bottom_bg,
+                                dim=self.border_dim_color)
+                        + _styled(chars["br"], fg=bottom_fg, bg=bottom_bg,
+                                  dim=self.border_dim_color)
+                    )
             lines.append(bottom_line)
 
         # margin bottom
@@ -461,12 +505,16 @@ class Box(TuiComponent):
     # ── 行构建辅助 ──────────────────────────────────────
 
     def _build_side_line(self, inner_width: int,
-                         chars: dict[str, str]) -> str:
+                         chars: dict[str, str],
+                         line_index: int = 0,
+                         total_lines: int = 1) -> str:
         """构建仅含左右边框 + 空白的行（padding 行）。
 
         Args:
             inner_width: 内部宽度（不含左右边框）。
             chars: 边框字符映射。
+            line_index: 当前行在竖线渐变中的索引（0-based）。
+            total_lines: 竖线渐变总行数。
 
         Returns:
             带 ANSI 样式的行字符串。
@@ -480,9 +528,13 @@ class Box(TuiComponent):
 
         # 左边框
         if self.show_left:
-            parts.append(_styled(
-                chars["v"], fg=left_fg, bg=left_bg,
-                dim=self.border_dim_color))
+            if self._is_gradient_enabled():
+                parts.append(self._build_gradient_vbar(
+                    chars["v"], line_index, total_lines))
+            else:
+                parts.append(_styled(
+                    chars["v"], fg=left_fg, bg=left_bg,
+                    dim=self.border_dim_color))
 
         # 空白填充区（可选背景色）
         if self.background_color:
@@ -493,20 +545,28 @@ class Box(TuiComponent):
 
         # 右边框
         if self.show_right:
-            parts.append(_styled(
-                chars["v"], fg=right_fg, bg=right_bg,
-                dim=self.border_dim_color))
+            if self._is_gradient_enabled():
+                parts.append(self._build_gradient_vbar(
+                    chars["v"], line_index, total_lines))
+            else:
+                parts.append(_styled(
+                    chars["v"], fg=right_fg, bg=right_bg,
+                    dim=self.border_dim_color))
 
         return "".join(parts)
 
     def _build_content_line(self, content: str, inner_width: int,
-                            chars: dict[str, str]) -> str:
+                            chars: dict[str, str],
+                            line_index: int = 0,
+                            total_lines: int = 1) -> str:
         """构建含左右边框 + 内容文本的行。
 
         Args:
             content: 原始内容文本（可能含 ANSI 序列）。
             inner_width: 内部宽度（不含左右边框）。
             chars: 边框字符映射。
+            line_index: 当前行在竖线渐变中的索引（0-based）。
+            total_lines: 竖线渐变总行数。
 
         Returns:
             带 ANSI 样式的行字符串。
@@ -520,9 +580,13 @@ class Box(TuiComponent):
 
         # 左边框
         if self.show_left:
-            parts.append(_styled(
-                chars["v"], fg=left_fg, bg=left_bg,
-                dim=self.border_dim_color))
+            if self._is_gradient_enabled():
+                parts.append(self._build_gradient_vbar(
+                    chars["v"], line_index, total_lines))
+            else:
+                parts.append(_styled(
+                    chars["v"], fg=left_fg, bg=left_bg,
+                    dim=self.border_dim_color))
 
         # 内容文本（已含原始 ANSI 样式）
         content_visual_w = _visual_width(content)
@@ -550,11 +614,161 @@ class Box(TuiComponent):
 
         # 右边框
         if self.show_right:
-            parts.append(_styled(
-                chars["v"], fg=right_fg, bg=right_bg,
-                dim=self.border_dim_color))
+            if self._is_gradient_enabled():
+                parts.append(self._build_gradient_vbar(
+                    chars["v"], line_index, total_lines))
+            else:
+                parts.append(_styled(
+                    chars["v"], fg=right_fg, bg=right_bg,
+                    dim=self.border_dim_color))
 
         return "".join(parts)
+
+    # ── 渐变竖线构建 ────────────────────────────────────
+
+    def _build_gradient_vbar(self, char: str, line_index: int,
+                             total_lines: int) -> str:
+        """构建渐变色竖线字符（逐行采样）。
+
+        根据当前行在总行数中的位置，在 start_color → end_color 的
+        256 色调色板上线性插值采样。
+
+        Args:
+            char: 竖线字符（如 "│"、"║"）。
+            line_index: 当前行索引（0-based）。
+            total_lines: 竖线总行数（用于计算渐变位置）。
+
+        Returns:
+            带 ANSI color_number 的竖线字符串。
+        """
+        start_color, end_color = self.border_color_gradient  # type: ignore[misc]
+        start_idx = _named_color_to_256(start_color)
+        end_idx = _named_color_to_256(end_color)
+        max_t = max(total_lines - 1, 1)
+        t = line_index / max_t
+        color_num = _interpolate_256(start_idx, end_idx, t)
+        return Span(text=char, color_number=color_num).to_ansi()
+
+    # ── 渐变顶边构建 ────────────────────────────────────
+
+    def _build_gradient_top_line(self, inner_width: int,
+                                 chars: dict[str, str],
+                                 collapsed: bool = False) -> str:
+        """构建渐变色上边框行（逐字符水平渐变）。
+
+        使用 StyledText.gradient() 对水平边框字符逐字符着色，
+        角字符使用渐变首/尾色。
+
+        Args:
+            inner_width: 内部宽度（不含左右角字符）。
+            chars: 边框字符映射。
+            collapsed: 折叠模式时追加 ▶ 展开指示符。
+
+        Returns:
+            带 ANSI 渐变色的上边框行字符串。
+        """
+        start_color, end_color = self.border_color_gradient  # type: ignore[misc]
+
+        # 角字符使用渐变首/尾色
+        tl_styled = StyledText(chars["tl"], fg=start_color)
+        tr_styled = StyledText(chars["tr"], fg=end_color)
+
+        title = self.title
+        if title == "":
+            title = None
+
+        suffix = " ▶" if collapsed else ""
+
+        if title is None and not suffix:
+            # ── 无标题、非折叠：整条水平线渐变 ──────────
+            if inner_width > 0:
+                h_line = chars["h"] * inner_width
+                gradient_h = StyledText.gradient(
+                    h_line, start_color, end_color)
+                return str(tl_styled) + str(gradient_h) + str(tr_styled)
+            else:
+                return str(tl_styled) + str(tr_styled)
+
+        # ── 含标题/折叠后缀：分段渐变 ────────────────────
+        if title is not None:
+            styled_title = (_styled(title, fg=self.title_color)
+                            if self.title_color else title)
+            decorated = f" ✦ {styled_title} " + suffix
+        else:
+            decorated = suffix
+
+        deco_vw = _visual_width(decorated)
+        remaining = inner_width - deco_vw
+
+        if remaining < 0 and title is not None:
+            # 宽度不足：逐步截短 title
+            prefix_w = _visual_width(" ✦ ")
+            suffix_full = " " + suffix
+            suffix_w = _visual_width(suffix_full)
+            available = inner_width - prefix_w - suffix_w
+            if available < 1:
+                title = None
+                decorated = suffix
+                deco_vw = _visual_width(decorated)
+                remaining = inner_width - deco_vw
+            else:
+                truncated = ""
+                for ch in title:
+                    ch_w = 2 if unicodedata.east_asian_width(ch) in 'WF' else 1
+                    if _visual_width(truncated) + ch_w > available:
+                        break
+                    truncated += ch
+                title = truncated
+                styled_title = (_styled(title, fg=self.title_color)
+                                if self.title_color else title)
+                decorated = f" ✦ {styled_title} " + suffix
+                deco_vw = _visual_width(decorated)
+                remaining = inner_width - deco_vw
+
+        left_h = max(0, remaining // 2) if remaining > 0 else 0
+        right_h = max(0, remaining - left_h) if remaining > 0 else 0
+
+        # 生成完整渐变并拆分
+        if inner_width > 0 and left_h + right_h > 0:
+            full_gradient = StyledText.gradient(
+                chars["h"] * inner_width, start_color, end_color)
+            full_spans = full_gradient.spans
+            left_str = "".join(s.to_ansi() for s in full_spans[:left_h])
+            right_str = "".join(
+                s.to_ansi() for s in full_spans[inner_width - right_h:])
+        else:
+            left_str = ""
+            right_str = ""
+
+        return (str(tl_styled) + left_str + decorated
+                + right_str + str(tr_styled))
+
+    # ── 渐变底边构建 ────────────────────────────────────
+
+    def _build_gradient_bottom_line(self, inner_width: int,
+                                    chars: dict[str, str]) -> str:
+        """构建渐变色下边框行（逐字符水平渐变）。
+
+        逻辑同 _build_gradient_top_line，但使用 bl/br 角字符。
+
+        Args:
+            inner_width: 内部宽度（不含左右角字符）。
+            chars: 边框字符映射。
+
+        Returns:
+            带 ANSI 渐变色的下边框行字符串。
+        """
+        start_color, end_color = self.border_color_gradient  # type: ignore[misc]
+
+        bl_styled = StyledText(chars["bl"], fg=start_color)
+        br_styled = StyledText(chars["br"], fg=end_color)
+
+        if inner_width > 0:
+            h_line = chars["h"] * inner_width
+            gradient_h = StyledText.gradient(h_line, start_color, end_color)
+            return str(bl_styled) + str(gradient_h) + str(br_styled)
+        else:
+            return str(bl_styled) + str(br_styled)
 
     # ── 上边框行构建 ────────────────────────────────────
 

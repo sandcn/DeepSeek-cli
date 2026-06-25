@@ -36,7 +36,6 @@ from ._stdout_tracker import _StdoutLineTracker
 from ._theme import (
     _BOTTOM_MIN_HEIGHT,
     _BOTTOM_MIN_LINES,
-    _COLOR_DEEP_CYAN,
     _COLOR_DIM,
     _COLOR_RESET,
     _COLOR_SEP,
@@ -115,7 +114,7 @@ class _BottomBar(_StatusMixin):
       - 分隔线：蓝灰 `━` 实线做内容区与输入区边界
       - 状态行：多色分层（⏣ 模型名·耗时·令牌数·工具计数）
                 使用亮青/蓝灰/灰色三层颜色，信息密度高但易读
-      - 输入区：亮青 `>` 提示符，空输入时显示灰色占位提示
+      - 输入区：亮青 `❯` 提示符，空输入时显示灰色占位提示
                 多行续行以灰色 `·` 前缀连接，视觉连贯
       - 补全弹窗：无边框扁平样式（标题行 + ▶ 指示器高亮 + 快捷键提示）
 
@@ -586,7 +585,7 @@ class _BottomBar(_StatusMixin):
         布局（简约风）：
           第 1 行：左青右灰渐变分隔线（内容区与输入区的视觉边界）
           第 2 行：状态行（模型名·耗时·令牌数，青/灰两色）
-          第 3 行起：青 > <text>   （输入提示符 + 实时键入文本，超长拆行）
+          第 3 行起：亮青 ❯ <text>   （输入提示符 + 实时键入文本，超长拆行）
                      灰 · <text>    （续行，· 前缀）
                      （空输入时显示灰色占位提示）
 

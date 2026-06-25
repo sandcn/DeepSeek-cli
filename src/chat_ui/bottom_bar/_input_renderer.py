@@ -18,7 +18,7 @@ from wcwidth import wcswidth
 
 from ._scroll_region import blessed_move_clear
 from ._theme import (
-    _COLOR_DEEP_CYAN,
+    _COLOR_ACCENT,
     _COLOR_DIM,
     _COLOR_RESET,
     _MIN_INPUT_ROWS,
@@ -191,22 +191,22 @@ class InputRenderer:
             if i == 0:
                 if text:
                     out.write(blessed_move_clear(r)
-                              + f"{_COLOR_DEEP_CYAN}>{_COLOR_RESET}"
+                              + f"{_COLOR_ACCENT}❯{_COLOR_RESET}"
                               f" {segment}")
                 else:
                     if status_active:
                         ph = _PLACEHOLDER_STREAMING
                         out.write(blessed_move_clear(r)
-                                  + f"{_COLOR_DEEP_CYAN}>{_COLOR_RESET}"
+                                  + f"{_COLOR_ACCENT}❯{_COLOR_RESET}"
                                   f" {_COLOR_DIM}{ph}{_COLOR_RESET}")
                     else:
                         ph = _PLACEHOLDER_COMPACT if completion.is_visible else _PLACEHOLDER_TEXT
                         out.write(blessed_move_clear(r)
-                                  + f"{_COLOR_DEEP_CYAN}>{_COLOR_RESET}"
+                                  + f"{_COLOR_ACCENT}❯{_COLOR_RESET}"
                                   f" {_COLOR_DIM}{ph}{_COLOR_RESET}")
             else:
                 out.write(blessed_move_clear(r)
-                          + f"{_COLOR_DIM}\u00b7{_COLOR_RESET} {segment}")
+                          + f"{_COLOR_DIM}  {_COLOR_RESET} {segment}")
             cursor_tracker.set(r, 3)
         # 填充剩余空白行
         for r in range(text_start + len(wrapped), text_start + 3):

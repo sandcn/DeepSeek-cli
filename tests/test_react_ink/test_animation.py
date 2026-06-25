@@ -12,8 +12,10 @@ import pytest
 
 from src.chat_ui.components.animation import (
     AnimationClock,
+    SPINNER_FRAMES,
     _AnimationState,
     use_animation,
+    use_typewriter,
 )
 
 
@@ -219,3 +221,153 @@ class TestAnimationState:
         # 重新激活
         anim.is_active = True
         assert anim.is_active is True
+
+
+# ═══════════════════════════════════════════════════════════
+# TestSpinnerNewTypes
+# ═══════════════════════════════════════════════════════════
+
+NEW_SPINNER_TYPES = [
+    "dots_matrix",
+    "arc",
+    "bouncing_ball",
+    "clock",
+    "shark",
+]
+
+
+class TestSpinnerNewTypes:
+    """SPINNER_FRAMES 新增 5 种 spinner 类型测试。"""
+
+    @pytest.mark.parametrize("spinner_type", NEW_SPINNER_TYPES)
+    def test_all_new_spinner_types_return_char(self, spinner_type: str):
+        """参数化测试：5 种新类型均返回非空帧列表且每帧为有效字符串。"""
+        frames = SPINNER_FRAMES[spinner_type]
+        assert isinstance(frames, list), f"{spinner_type} 帧列表应为 list"
+        assert len(frames) > 0, f"{spinner_type} 帧列表不应为空"
+
+        for i, frame in enumerate(frames):
+            assert isinstance(frame, str), (
+                f"{spinner_type}[{i}] 应为 str，实际: {type(frame).__name__}"
+            )
+            assert len(frame) > 0, f"{spinner_type}[{i}] 不应为空字符串"
+
+    def test_dots_matrix_frames(self):
+        """dots_matrix 每帧长度均为 3（3×3 点阵）。"""
+        frames = SPINNER_FRAMES["dots_matrix"]
+        assert len(frames) == 6, f"dots_matrix 应有 6 帧，实际: {len(frames)}"
+
+        for i, frame in enumerate(frames):
+            assert len(frame) == 3, (
+                f"dots_matrix[{i}] 长度应为 3，实际: {len(frame)}（值: {frame!r}）"
+            )
+
+    def test_new_types_in_spinner_frames(self):
+        """SPINNER_FRAMES 包含全部 5 种新类型的 key。"""
+        for spinner_type in NEW_SPINNER_TYPES:
+            assert spinner_type in SPINNER_FRAMES, (
+                f"SPINNER_FRAMES 缺少 key: {spinner_type!r}"
+            )
+
+
+# ═══════════════════════════════════════════════════════════
+# TestTypewriterEnhanced
+# ═══════════════════════════════════════════════════════════
+
+class TestTypewriterEnhanced:
+    """use_typewriter 增强测试 — 光标闪烁、样式、done 过渡。"""
+
+    def test_cursor_blinks(self):
+        """光标在相邻帧切换可见/不可见（frame 奇偶决定）。"""
+        from unittest.mock import patch
+
+        # frame 0 (even) → cursor visible (time=150 确保 chars_shown≥1)
+        with patch(
+            "src.chat_ui.components.animation.use_animation",
+            return_value={"frame": 0, "time": 150, "delta": 16, "reset": lambda: None},
+        ):
+            tw = use_typewriter("hello", {"speed": 100, "cursor": True})
+        assert tw["cursor_visible"] is True
+        assert "▊" in tw["output"]
+
+        # frame 1 (odd) → cursor hidden
+        with patch(
+            "src.chat_ui.components.animation.use_animation",
+            return_value={"frame": 1, "time": 100, "delta": 16, "reset": lambda: None},
+        ):
+            tw = use_typewriter("hello", {"speed": 100, "cursor": True})
+        assert tw["cursor_visible"] is False
+        assert "▊" not in tw["output"]
+
+    def test_cursor_removed_after_done(self):
+        """done 后延迟约 300ms 光标最终消失。"""
+        from unittest.mock import patch
+
+        # done=true + time 仍在 300ms 窗口内（done_time=2*100=200, time=250 < 500）
+        with patch(
+            "src.chat_ui.components.animation.use_animation",
+            return_value={"frame": 20, "time": 250, "delta": 16, "reset": lambda: None},
+        ):
+            tw = use_typewriter("hi", {"speed": 100, "cursor": True})
+        assert tw["done"] is True
+        assert tw["cursor_visible"] is True  # frame 20 even, 仍在过渡期
+        assert "▊" in tw["output"]
+
+        # done=true + time 远超 300ms 窗口（done_time=200, time=600 > 500）
+        with patch(
+            "src.chat_ui.components.animation.use_animation",
+            return_value={"frame": 50, "time": 600, "delta": 16, "reset": lambda: None},
+        ):
+            tw = use_typewriter("hi", {"speed": 100, "cursor": True})
+        assert tw["done"] is True
+        assert tw["cursor_visible"] is False
+        assert "▊" not in tw["output"]
+
+    def test_cursor_style_line(self):
+        """cursor_style="line" 输出 | 光标字符。"""
+        from unittest.mock import patch
+
+        with patch(
+            "src.chat_ui.components.animation.use_animation",
+            return_value={"frame": 0, "time": 0, "delta": 16, "reset": lambda: None},
+        ):
+            tw = use_typewriter("test", {"speed": 100, "cursor": True, "cursor_style": "line"})
+        assert tw["cursor_char"] == "|"
+        assert "|" in tw["output"]
+
+    def test_custom_cursor_char(self):
+        """自定义 cursor_char 覆盖 style 推导值。"""
+        from unittest.mock import patch
+
+        with patch(
+            "src.chat_ui.components.animation.use_animation",
+            return_value={"frame": 0, "time": 0, "delta": 16, "reset": lambda: None},
+        ):
+            tw = use_typewriter(
+                "test",
+                {"speed": 100, "cursor": True, "cursor_char": "█", "cursor_style": "line"},
+            )
+        # 显式 cursor_char 覆盖 cursor_style="line" 推导的 "|"
+        assert tw["cursor_char"] == "█"
+        assert "█" in tw["output"]
+
+    def test_return_fields(self):
+        """验证返回 dict 含所有新增字段。"""
+        from unittest.mock import patch
+
+        with patch(
+            "src.chat_ui.components.animation.use_animation",
+            return_value={"frame": 0, "time": 50, "delta": 16, "reset": lambda: None},
+        ):
+            tw = use_typewriter("hello world", {"speed": 50})
+        assert "output" in tw
+        assert "progress" in tw
+        assert "done" in tw
+        assert "cursor_visible" in tw
+        assert "cursor_char" in tw
+        assert "reset" in tw
+        assert callable(tw["reset"])
+        assert tw["cursor_char"] == "▊"
+        assert isinstance(tw["cursor_visible"], bool)
+        assert isinstance(tw["progress"], float)
+        assert isinstance(tw["done"], bool)

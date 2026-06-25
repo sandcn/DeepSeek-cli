@@ -17,6 +17,7 @@
 
 from __future__ import annotations
 
+import os
 import threading
 import time
 import weakref
@@ -34,6 +35,11 @@ SPINNER_FRAMES: dict[str, list[str]] = {
     "bounce": ["[= ]", "[==]", "[ =]", "[==]"],
     "dots_wave": ["⠁", "⠂", "⠄", "⡀", "⠄", "⠂"],
     "arrow": ["→", "↘", "↓", "↙", "←", "↖", "↑", "↗"],
+    "dots_matrix": ["⠁⠁⠁", "⠂⠂⠂", "⠄⠄⠄", "⡀⡀⡀", "⠄⠄⠄", "⠂⠂⠂"],
+    "arc": ["◜", "◝", "◞", "◟"],
+    "bouncing_ball": ["(●    )", "( ●   )", "(  ●  )", "(   ● )", "(    ●)", "(   ● )", "(  ●  )", "( ●   )"],
+    "clock": ["🕐", "🕑", "🕒", "🕓", "🕔", "🕕", "🕖", "🕗", "🕘", "🕙", "🕚", "🕛"],
+    "shark": ["▁", "▂", "▃", "▄", "▅", "▆", "▇", "█", "▇", "▆", "▅", "▄", "▃", "▂"],
 }
 
 
@@ -459,13 +465,19 @@ def use_typewriter(text: str, options: dict | None = None) -> dict:
             - "speed" (int): 每字符前进所需毫秒，默认 30。speed 越小越快
               （每 speed 毫秒前进约 1 字符）。
             - "cursor" (bool): 是否显示光标，默认 True。
-            - "cursor_char" (str): 光标字符，默认 "▊"。
+            - "cursor_style" (str): 光标样式，支持 "block"（默认 ▊）、
+              "line"（|）、"underscore"（_）。
+            - "cursor_char" (str): 光标字符，默认由 cursor_style 决定，
+              也可直接指定覆盖 style 推导值。
 
     Returns:
         {
-            "output": str,     # 当前可见文本（含光标字符，done 时不显示光标）
-            "progress": float, # 0.0~1.0 完成度
-            "done": bool,      # 是否已完整显示全部文本
+            "output": str,           # 当前可见文本（含光标字符，done 后延迟移除）
+            "progress": float,       # 0.0~1.0 完成度
+            "done": bool,            # 是否已完整显示全部文本
+            "cursor_visible": bool,  # 当前光标是否可见
+            "cursor_char": str,      # 当前使用的光标字符
+            "reset": Callable,       # 重置打字机状态（重新开始）
         }
 
     示例:
@@ -476,7 +488,14 @@ def use_typewriter(text: str, options: dict | None = None) -> dict:
     opts = options or {}
     speed = int(opts.get("speed", 30))
     cursor = bool(opts.get("cursor", True))
-    cursor_char = str(opts.get("cursor_char", "▊"))
+    cursor_style = str(opts.get("cursor_style", "block"))
+    cursor_chars = {"block": "▊", "line": "|", "underscore": "_"}
+    cursor_char = str(opts.get("cursor_char", cursor_chars.get(cursor_style, "▊")))
+
+    # 环境变量 CHAT_UI_TYPING_CURSOR 全局控制光标启用/禁用
+    env_cursor_val = os.environ.get("CHAT_UI_TYPING_CURSOR", "").strip()
+    if env_cursor_val and env_cursor_val.lower() in ("0", "false", "no", "off"):
+        cursor = False
 
     # 安全处理 text
     safe_text = str(text) if not isinstance(text, str) else text
@@ -492,15 +511,31 @@ def use_typewriter(text: str, options: dict | None = None) -> dict:
 
     output = safe_text[:visible_len]
 
+    # 光标闪烁（与文本前进解耦，使用 anim["frame"] 独立控制）
+    cursor_visible = False
     if cursor and not done:
-        # 光标闪烁：偶数帧显示光标字符
-        if anim["frame"] % 2 == 0:
+        cursor_visible = anim["frame"] % 2 == 0
+        if cursor_visible:
             output += cursor_char
+    elif cursor and done:
+        # done 后延迟约 300ms 再移除光标
+        done_time = text_len * speed
+        if anim["time"] < done_time + 300:
+            cursor_visible = anim["frame"] % 2 == 0
+            if cursor_visible:
+                output += cursor_char
 
     progress = visible_len / text_len if text_len > 0 else 1.0
+
+    def reset() -> None:
+        """重置打字机状态以重新开始。"""
+        anim["reset"]()
 
     return {
         "output": output,
         "progress": progress,
         "done": done,
+        "cursor_visible": cursor_visible,
+        "cursor_char": cursor_char,
+        "reset": reset,
     }

@@ -12,10 +12,11 @@ import logging
 from typing import Optional
 
 from ._theme import (
-    _COLOR_ACCENT,
     _COLOR_DIM,
+    _COLOR_MODEL_NAME,
     _COLOR_RESET,
     _COLOR_SPEED,
+    _COLOR_STREAMING,
     _COLOR_TIME,
     _COLOR_TOKEN,
     _COLOR_TOOL_FAIL,
@@ -148,7 +149,7 @@ class _StatusMixin:
         """
         # ── 模型名字（始终显示，带 ⏣ 图标） ──
         model_part = (
-            f"{_COLOR_ACCENT}\u23e3{_COLOR_RESET} {_COLOR_ACCENT}{self._model_name}{_COLOR_RESET}"
+            f"{_COLOR_MODEL_NAME}\u23e3{_COLOR_RESET} {_COLOR_MODEL_NAME}{self._model_name}{_COLOR_RESET}"
             if self._model_name else ""
         )
 
@@ -156,21 +157,24 @@ class _StatusMixin:
         if not self._status_active:
             return model_part
 
+        # 流式输出脉冲指示器
+        streaming_indicator = f"{_COLOR_STREAMING}●{_COLOR_RESET} "
+
         snap_func = _get_snapshot()
         if snap_func is None:
-            return model_part
+            return f"{streaming_indicator}{model_part}"
 
         try:
             snap = snap_func()
         except Exception:
-            return model_part
+            return f"{streaming_indicator}{model_part}"
 
         total = snap.get("total_tokens", 0)           # 历史累计总tok
         elapsed = snap.get("elapsed_seconds", 0.0)    # 当轮耗时
         per_second_speed = snap.get("per_second_speed", 0.0)  # 实时 tok/s
 
         if total <= 0 and elapsed <= 0 and per_second_speed <= 0 and self._tool_total <= 0:
-            return model_part
+            return f"{streaming_indicator}{model_part}"
 
         parts = []
 
@@ -179,12 +183,10 @@ class _StatusMixin:
             done = self._tool_total - self._tool_fail_count
             if self._tool_fail_count > 0:
                 parts.append(
-                    f"{_COLOR_TOOL_OK}{done}{_COLOR_RESET}"
-                    f"{_COLOR_DIM}/{_COLOR_RESET}"
-                    f"{_COLOR_TOOL_FAIL}{self._tool_total}{_COLOR_RESET}"
+                    f"⚙ {_COLOR_TOOL_OK}{done}{_COLOR_RESET}/{_COLOR_TOOL_FAIL}{self._tool_total}{_COLOR_RESET}"
                 )
             else:
-                parts.append(f"{_COLOR_TOOL_OK}{self._tool_total}{_COLOR_RESET}")
+                parts.append(f"⚙ {_COLOR_TOOL_OK}{self._tool_total}{_COLOR_RESET}")
 
         # 耗时（蓝灰高亮）
         if elapsed > 0:
@@ -212,5 +214,5 @@ class _StatusMixin:
         sep = f" {_COLOR_DIM}\u00b7{_COLOR_RESET} "
         status = sep.join(parts) if parts else ""
         if model_part and status:
-            return f"{model_part}  {status}"
-        return model_part or status
+            return f"{streaming_indicator}{model_part}  {status}"
+        return f"{streaming_indicator}{model_part}" if model_part else streaming_indicator.rstrip()

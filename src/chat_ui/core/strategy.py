@@ -190,8 +190,8 @@ class VNodeRenderStrategy:
         self._animating: bool = False
         self._anim_frame_count: int = 0
         self._anim_idle_count: int = 0
-        self._ANIM_IDLE_SKIP_THRESHOLD = 5
-        self._ANIM_IDLE_SKIP_FRAMES = 10
+        self._ANIM_IDLE_SKIP_THRESHOLD = 3
+        self._ANIM_IDLE_SKIP_FRAMES = 6
 
     # ── 动画活跃状态控制 ──────────────────────────
 
@@ -235,10 +235,12 @@ class VNodeRenderStrategy:
             if not self._animating:
                 return False
             # 动画活跃但无命令：触发 VNode 重建以反映动画状态变化
-            # 空帧退避：连续无变更帧跳过 VNode 重建
-            self._anim_frame_count += 1
+            # 两级退避：空闲阈值触发后，再跳过 _ANIM_IDLE_SKIP_FRAMES 帧才真正休眠
             if self._anim_idle_count >= self._ANIM_IDLE_SKIP_THRESHOLD:
-                return False
+                self._anim_frame_count += 1
+                if self._anim_frame_count < self._ANIM_IDLE_SKIP_FRAMES:
+                    return False
+                self._anim_frame_count = 0
         else:
             self._anim_frame_count = 0
             self._anim_idle_count = 0
@@ -297,6 +299,8 @@ class VNodeRenderStrategy:
                         if text:
                             delta = text[len(self._last_answer_text):]
                             if delta:
+                                # \r\033[K 清除行残留后再写增量文本
+                                delta = f"\r\033[K{delta}"
                                 self._renderer.output_adapter.write_raw(delta)
                             self._last_answer_text = text
                         return

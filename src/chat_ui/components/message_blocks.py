@@ -1,7 +1,7 @@
 """消息块 Box 包装组件 — React Ink Box 边框的消息流组件包装器。
 
 为 8 种消息块类型提供声明式 Box 边框渲染：
-  - ThinkingBlockBox: 推理块（dim round border + "Thinking..." title）
+  - ThinkingBlockBox: 推理块（blue round border + "Thinking..." title，可折叠）
   - AnswerBlockBox: 回答块（dim round border）
   - UserMsgBlockBox: 用户消息块（cyan round border）
   - ToolOutputBlockBox: 工具输出块（yellow dim round border）
@@ -20,6 +20,7 @@
 from __future__ import annotations
 
 import shutil
+import time
 from typing import Any
 
 from .box import Box
@@ -51,10 +52,10 @@ def _is_narrow_screen(threshold: int = _NARROW_TERM_THRESHOLD) -> bool:
 _MSG_BLOCK_STYLES: dict[str, dict[str, Any]] = {
     "thinking": {
         "border_style": "round",
-        "border_color": "bright_black",  # dim gray
-        "border_dim_color": True,
+        "border_color": "blue",
+        "border_dim_color": False,
         "title": "Thinking...",
-        "title_color": "bright_black",
+        "title_color": "blue",
         "padding_x": 1,
         "padding_y": 0,
         "margin_y": 0,
@@ -169,15 +170,36 @@ class _MessageBlockBox(Box):
 # ── 消息块 Box 组件 ──────────────────────────────
 
 class ThinkingBlockBox(_MessageBlockBox):
-    """推理块 — dim round border + "Thinking..." title（可折叠）。"""
+    """推理块 — blue round border + "Thinking..." title（可折叠）。
 
-    def __init__(self, text: str = "", **kwargs: Any) -> None:
+    构造参数:
+        text: 推理内容文本。
+        is_active: 是否正在活跃推理中（默认 True）。活跃时标题前显示动画指示符。
+    """
+
+    def __init__(self, text: str = "", is_active: bool = True, **kwargs: Any) -> None:
+        self._thinking_active = is_active
         style = dict(_MSG_BLOCK_STYLES["thinking"])
         style["collapsible"] = True
         style.update(kwargs)
         super().__init__(**style)
         if text:
             self.add_child(_make_text_component(text))
+
+    def render(self) -> str:
+        """渲染推理块。
+
+        活跃状态下标题前显示动画 spinner；折叠时显示 ▶，展开非活跃时显示 ▼。
+        """
+        if self._thinking_active and not self.collapsed:
+            from ..components.animation import use_spinner
+            spinner = use_spinner({"type": "dots", "interval": 100})
+            self.title = f"{spinner['char']} Thinking..."
+        elif self.collapsed:
+            self.title = "▶ Thinking..."
+        else:
+            self.title = "▼ Thinking..."
+        return super().render()
 
 
 class AnswerBlockBox(_MessageBlockBox):
@@ -247,19 +269,25 @@ class ToolCallBlockBox(_MessageBlockBox):
                  text: str = "", **kwargs: Any) -> None:
         self.tool_name = tool_name
         self._status = status
+        self._elapsed_start = kwargs.pop('elapsed_start', None)
+        # 工具名称截断：超过 40 字符自动截断 + ...
+        display_name = tool_name
+        if len(tool_name) > 40:
+            display_name = tool_name[:37] + "..."
+        self._display_name = display_name
         style = dict(_MSG_BLOCK_STYLES["tool_call"])
         # 根据 status 设置 title 和颜色
         if status == "completed":
-            style["title"] = f"✓ {tool_name}"
+            style["title"] = f"✓ {display_name}"
             style["title_color"] = "green"
             style["border_color"] = "green"
         elif status == "failed":
-            style["title"] = f"✗ {tool_name}"
+            style["title"] = f"✗ {display_name}"
             style["title_color"] = "red"
             style["border_color"] = "red"
         else:  # running
             if tool_name:
-                style["title"] = f"⚙ {tool_name}"
+                style["title"] = f"⚙ {display_name}"
             style["title_color"] = "cyan"
             style["border_color"] = "cyan"
         style.update(kwargs)
@@ -270,13 +298,27 @@ class ToolCallBlockBox(_MessageBlockBox):
     def render(self) -> str:
         """渲染工具调用块。
 
-        running 状态时，使用 use_spinner 获取动态 spinner 字符，
+        running 状态时，使用 use_spinner 获取动态 spinner 字符并计算耗时，
         更新 title 后再调用父类 render()。
         """
         if self._status == "running":
             from ..components.animation import use_spinner
             spinner = use_spinner({"type": "dots", "interval": 80})
-            self.title = f"{spinner['char']} {self.tool_name}"
+
+            # 构建标题
+            title_parts = [f"{spinner['char']} {self._display_name}"]
+
+            # 计算耗时
+            if self._elapsed_start is not None:
+                elapsed = time.monotonic() - self._elapsed_start
+                if elapsed >= 60:
+                    mins = int(elapsed // 60)
+                    secs = int(elapsed % 60)
+                    title_parts.append(f"({mins}:{secs:02d})")
+                else:
+                    title_parts.append(f"({elapsed:.1f}s)")
+
+            self.title = " ".join(title_parts)
         return super().render()
 
 

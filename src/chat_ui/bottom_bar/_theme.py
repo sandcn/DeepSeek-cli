@@ -30,6 +30,8 @@ __all__ = [
     "_COLOR_TIME",
     "_COLOR_TOKEN",
     "_COLOR_SPEED",
+    "_COLOR_STREAMING",
+    "_COLOR_MODEL_NAME",
     # Blessed 颜色辅助函数
     "_blessed_fg",
     "_blessed_bg",
@@ -59,6 +61,8 @@ _COLOR_TOOL_FAIL = "\033[38;5;9m"     # 色号 9 — 工具失败计数
 _COLOR_TIME = "\033[38;5;110m"        # 色号 110 — 蓝灰（耗时/时间戳）
 _COLOR_TOKEN = "\033[38;5;68m"        # 色号 68 — 靛蓝（Token 计数）
 _COLOR_SPEED = "\033[38;5;214m"       # 色号 214 — 琥珀色（速率）
+_COLOR_STREAMING = "\033[38;5;45m"    # 色号 45 — 亮青（流式输出指示器）
+_COLOR_MODEL_NAME = "\033[1;38;5;39m"   # 色号 39, bold — 模型名高亮
 
 # ── በBlessed 颜色辅助函数 ─────────────────────────────────────
 # 供需要动态颜色的新代码使用，与现有 _COLOR_* 常量共存
