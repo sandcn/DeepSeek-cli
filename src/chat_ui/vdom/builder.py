@@ -91,15 +91,12 @@ def build_vnode_tree(state: TuiState) -> VNode:
             props={"lines": tuple(state.write_lines)},
         ))
 
-    # SubAgent 帧
-    if state.subagent_frames or state.subagent_slots:
-        subagent_props: dict = {"frames": state.subagent_frames}
-        if state.subagent_slots:
-            subagent_props["slots"] = state.subagent_slots
+    # SubAgent 槽位数据（通过 VNode 内联渲染）
+    if state.subagent_slots:
         content_children.append(VNode(
-            type="subagent_frames",
-            key="subagent_frames",
-            props=subagent_props,
+            type="subagent_slots",
+            key="subagent_slots",
+            props={"slots": state.subagent_slots},
         ))
 
     # 工具调用（进行中）

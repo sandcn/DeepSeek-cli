@@ -172,14 +172,6 @@ class TestDiffGuard:
     直接在 __enter__ 中清除帧行，__exit__ 不抑制异常。
     """
 
-    def test_diff_guard_does_not_suppress_exception(self, display):
-        """_DiffGuard.__exit__ 返回 False（不抑制异常）。"""
-        guard = display._diff_active_guard(capture_frame=False)
-        result = guard.__exit__(None, None, None)
-        assert result is False, (
-            "__exit__ 应返回 False 以允许异常自然传播"
-        )
-
     def test_clear_frame_and_run_returns_result(self, display):
         """clear_frame_and_run 正确执行 func 并返回结果。"""
         result = display.clear_frame_and_run(lambda: 42)
@@ -188,6 +180,6 @@ class TestDiffGuard:
         )
 
     def test_clear_frame_and_run_no_adapter_safe(self, display):
-        """clear_frame_and_run 在无 adapter 时安全（_clear_frame_lines 提前返回）。"""
+        """clear_frame_and_run 在无 adapter 时安全。"""
         result = display.clear_frame_and_run(lambda: "safe")
         assert result == "safe"

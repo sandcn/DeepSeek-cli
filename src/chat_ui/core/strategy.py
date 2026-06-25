@@ -387,19 +387,7 @@ class VNodeRenderStrategy:
                                 if self._output:
                                     self._output(line)
                             self._last_write_lines_count = new_count
-                    elif vnode.type == "subagent_frames":
-                        frames = vnode.props.get("frames", ())
-                        # 仅渲染最新帧 — SubagentFrameRenderer 依赖 last_lines
-                        # 进行增量原地刷新（ANSI 转义序列坐标计算基于上一帧行数），
-                        # 全量重放历史帧会因 last_lines 过期导致定位错误。
-                        # VNode diff 保证仅在帧内容变化时才触发此回调。
-                        if frames:
-                            from ..components.subagent_frame import SubagentFrameRenderer
-                            renderer = SubagentFrameRenderer()
-                            try:
-                                renderer.render(frames[-1], self._renderer.output_adapter)
-                            except Exception:
-                                pass
+
                     elif vnode.type == "tool_calls":
                         try:
                             calls = vnode.props.get("calls", ())
@@ -445,6 +433,109 @@ class VNodeRenderStrategy:
                                     self._last_tool_results_count = new_count
                         except Exception:
                             _logger.warning("tool_results 渲染异常", exc_info=True)
+                    elif vnode.type == "subagent_slots":
+                        """SubAgent 槽位内联渲染 — 读取 subagent_slots dict 输出样式化行。
+
+                        每个 agent slot 渲染为一行：
+                          ⏺ [abbr] description  · N out  · elapsed  (running)
+                          ✓ [abbr] description  · N out  · elapsed  (done)
+                          ✗ [abbr] description  · elapsed  (fail)
+
+                        增量跟踪：使用 _last_agent_slots_cache 按 label 追踪版本号，
+                        仅当 slot dict 的 id() 或显式版本号变化时输出。
+                        """
+                        try:
+                            slots = vnode.props.get("slots", {})
+                            if slots:
+                                cached = getattr(self, '_last_agent_slots_cache', {})
+                                if not hasattr(self, '_last_agent_slots_cache'):
+                                    self._last_agent_slots_cache = {}
+                                for label, slot in slots.items():
+                                    # 跳过已缓存的（按 label + slot id 指纹）
+                                    prev_id = cached.get(label)
+                                    current_id = id(slot)
+                                    if prev_id == current_id:
+                                        continue
+                                    # 更新缓存
+                                    self._last_agent_slots_cache[label] = current_id
+
+                                    # 提取字段
+                                    desc = slot.get("description", label)
+                                    agent_type = slot.get("agent_type", "plan_execute")
+                                    status = slot.get("status", "running")
+                                    output_tokens = slot.get("output_tokens", 0) + slot.get("live_output_tokens", 0)
+                                    input_tokens = slot.get("input_tokens", 0) + slot.get("live_input_tokens", 0)
+                                    start_time = slot.get("start_time", 0)
+                                    end_time = slot.get("end_time", 0)
+                                    now = start_time  # 粗略估计（调用方未传 now 时用 start_time）
+                                    elapsed = end_time - start_time if end_time > 0 else 0.0
+
+                                    # 构建 Claude 风格行
+                                    from ..infrastructure.styled import StyledText
+
+                                    indent = "  "
+                                    abbrs = {
+                                        "plan_execute": "exec",
+                                        "map": "map",
+                                        "review": "review",
+                                        "plan": "plan",
+                                        "read_memory": "mem",
+                                        "write_memory": "wmem",
+                                    }
+                                    type_tag = abbrs.get(agent_type, agent_type[:4])
+
+                                    if status == "running":
+                                        icon = "\u23fa"  # ⏺
+                                        token_str = f"{output_tokens}"
+                                        elapsed_str = f"{elapsed:.1f}s" if elapsed > 0 else ""
+                                        line_parts = [
+                                            (f"  {icon} ", "cyan"),
+                                            (f"[{type_tag}] ", "dim"),
+                                            (f"{desc}", ""),
+                                        ]
+                                        if token_str:
+                                            line_parts.append(("  · ", "dim"))
+                                            line_parts.append((f"{token_str} out", "dim"))
+                                        if elapsed_str:
+                                            line_parts.append(("  · ", "dim"))
+                                            line_parts.append((f"{elapsed_str}", "dim"))
+                                        rendered = StyledText.assemble(*line_parts)
+                                        if self._output:
+                                            self._output(rendered)
+                                    elif status in ("done", "completed"):
+                                        icon = "\u2713"  # ✓
+                                        token_str = f"{output_tokens}"
+                                        elapsed_str = f"{elapsed:.1f}s" if elapsed > 0 else ""
+                                        line_parts = [
+                                            (f"  {icon} ", "green"),
+                                            (f"[{type_tag}] ", "dim"),
+                                            (f"{desc}", ""),
+                                        ]
+                                        if token_str:
+                                            line_parts.append(("  · ", "dim"))
+                                            line_parts.append((f"{token_str} out", "dim"))
+                                        if elapsed_str:
+                                            line_parts.append(("  · ", "dim"))
+                                            line_parts.append((f"{elapsed_str}", "dim"))
+                                        rendered = StyledText.assemble(*line_parts)
+                                        if self._output:
+                                            self._output(rendered)
+                                    elif status == "fail":
+                                        icon = "\u2717"  # ✗
+                                        elapsed_str = f"{elapsed:.1f}s" if elapsed > 0 else ""
+                                        line_parts = [
+                                            (f"  {icon} ", "red"),
+                                            (f"[{type_tag}] ", "dim"),
+                                            (f"{desc}", ""),
+                                        ]
+                                        if elapsed_str:
+                                            line_parts.append(("  · ", "dim"))
+                                            line_parts.append((f"{elapsed_str}", "dim"))
+                                        rendered = StyledText.assemble(*line_parts)
+                                        if self._output:
+                                            self._output(rendered)
+                        except Exception:
+                            _logger.warning("subagent_slots 渲染异常", exc_info=True)
                     # input_bar / status_line / completion_popup 由底部栏管理，不在此渲染
 
                 _apply_patches(self._old_vnode, patches, _render_node)

@@ -30,7 +30,6 @@ from ..commands.types import (
     CmdPhaseDone,
     CmdReasoning,
     CmdStatusUpdate,
-    CmdSubagentFrame,
     CmdSubagentSlotUpdate,
     CmdToolCallUpdate,
     CmdToolCountDec,
@@ -82,7 +81,6 @@ class TuiState:
     phase: str = ""  # "reasoning" | "content" | "tool" | ""
     parse_info: str = ""  # 当前解析信息文本
     tool_summary: tuple[tuple, tuple] = field(default_factory=lambda: ((), ()))  # (successful, failed)
-    subagent_frames: tuple[tuple[str, ...], ...] = ()  # 多 SubAgent 帧行
     subagent_slots: dict = field(default_factory=dict)  # label → slot dict（合并自 AgentStateStore）
 
     # ── 工具 ──
@@ -186,12 +184,6 @@ def _reduce_tool_fail_inc(state: TuiState, cmd: CmdToolFailInc) -> TuiState:
 
 def _reduce_error(state: TuiState, cmd: CmdError) -> TuiState:
     return replace(state, errors=state.errors + [cmd.message])
-
-
-def _reduce_subagent_frame(state: TuiState, cmd: CmdSubagentFrame) -> TuiState:
-    """仅保留最新帧 — SubagentFrameRenderer 基于 last_lines 做增量原地刷新，
-    历史帧数据对渲染无意义且会无限增长导致内存泄漏。"""
-    return replace(state, subagent_frames=(tuple(cmd.frame_lines),))
 
 
 def _reduce_subagent_slot_update(state: TuiState, cmd: CmdSubagentSlotUpdate) -> TuiState:
@@ -311,7 +303,6 @@ class TuiStore:
             CmdToolCountDec: _reduce_tool_count_dec,
             CmdToolFailInc: _reduce_tool_fail_inc,
             CmdError: _reduce_error,
-            CmdSubagentFrame: _reduce_subagent_frame,
             CmdSubagentSlotUpdate: _reduce_subagent_slot_update,
             CmdInputChanged: _reduce_input_changed,
             CmdStatusUpdate: _reduce_status_update,

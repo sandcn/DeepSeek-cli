@@ -79,8 +79,5 @@ class RenderCommand(IntEnum):
     TOOL_FAIL_INC  = 15  # (15,) — 工具失败计数+1
     ERROR          = 16  # (16, message: str) — 系统错误（红色 ! 样式）
     TOOL_COUNT_DEC     = 17  # (17,) — 工具计数-1
-    SUBAGENT_FRAME     = 18  # (18, frame_lines: tuple[str]) — SubAgent 面板帧
-
-
-# ── drain 锁超时 ─────────────────────────────────────
+    # ── drain 锁超时 ─────────────────────────────────────
 _DRAIN_LOCK_TIMEOUT = 0.1  # drain_queue 获取输出锁的超时（秒），与 _RENDER_INTERVAL (0.1) 对齐，避免一方修改引入竞态

@@ -119,9 +119,14 @@ class CmdToolCountDec:
     kind: int = 17
 
 
+# @deprecated: 由 VNode 内联渲染替代。subagent_slots 数据通过 CmdSubagentSlotUpdate + TuiState.subagent_slots 传递。
 @dataclass(frozen=True)
 class CmdSubagentFrame:
-    """SubAgent 面板帧 — 对应 RenderCommand.SUBAGENT_FRAME (18)。"""
+    """SubAgent 面板帧 — 对应 RenderCommand.SUBAGENT_FRAME (18)。
+
+    @deprecated: 已废弃，由 CmdSubagentSlotUpdate + VNode 内联渲染替代。
+    保留类定义避免 import 报错，实际不再被 VNode 渲染路径消费。
+    """
     frame_lines: tuple
     kind: int = 18
 

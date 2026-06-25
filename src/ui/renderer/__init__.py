@@ -1,4 +1,1 @@
-"""渲染引擎 — 纯函数渲染器"""
-from .frame_renderer import FrameRenderer
-
-__all__ = ["FrameRenderer"]
+"""渲染引擎 — 已废弃，由 VNode 内联渲染替代。"""

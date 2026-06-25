@@ -259,7 +259,8 @@ class ChatUIConsumer:
         return _is_claude_style_enabled()
 
     def set_panel_refresh_callback(self, callback: Callable[[], None] | None) -> None:
-        self._engine.set_panel_refresh_callback(callback)
+        """空操作 — SubAgent 面板现通过 VNode 内联渲染。"""
+        pass
 
     def setup_bottom_bar(self) -> None:
         """设置底部栏（初始状态）。

@@ -37,7 +37,6 @@ from ..commands.types import (
     CmdToolFailInc,
     CmdToolCountDec,
     CmdError,
-    CmdSubagentFrame,
     CmdAnimationTick,
     CmdToolCallUpdate,
 )
@@ -56,7 +55,6 @@ from ..components.base import (
 )
 
 from ..infrastructure.utils import _cmd_name
-from ..components.subagent_frame import SubagentFrameRenderer
 
 _logger = logging.getLogger(__name__)
 
@@ -79,7 +77,6 @@ _RENDER_DISPATCH: dict[int, tuple[str, tuple[int, ...]]] = {
     RenderCommand.TOOL_COUNT_DEC:  ("_do_tool_count_dec",  ()),
     RenderCommand.TOOL_FAIL_INC:   ("_do_tool_fail_inc",   ()),
     RenderCommand.ERROR:           ("_do_error",           (1,)),
-    RenderCommand.SUBAGENT_FRAME:  ("_do_subagent_frame",  (1,)),
 }
 
 
@@ -165,8 +162,6 @@ class TuiRenderer:
                 self._do_tool_count_dec()
             case CmdError(message=msg):
                 self._do_error(msg)
-            case CmdSubagentFrame(frame_lines=fl):
-                self._do_subagent_frame(fl)
             case CmdAnimationTick():
                 # 动画滴答由 TuiEngine._drain_queue() 统一处理，
                 # 此处为防御性空操作，防止未过滤的 CmdAnimationTick 落入 _ 分支。
@@ -310,11 +305,6 @@ class TuiRenderer:
         if self._on_display_messages is not None:
             self._on_display_messages(messages, speed=speed)
         self._record_lines(1)
-
-    # ── SubAgent 面板 ─────────────────────────────
-
-    def _do_subagent_frame(self, frame_lines: tuple) -> None:
-        SubagentFrameRenderer().render(frame_lines, self._adapter)
 
     # ── 树形组件渲染 ─────────────────────────────
 

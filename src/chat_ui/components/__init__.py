@@ -25,5 +25,4 @@ from .message_blocks import (  # noqa: F401
     create_message_box,
 )
 from .static import Static  # noqa: F401
-from .subagent_frame import SubagentFrameRenderer  # noqa: F401
 from .transform import Transform  # noqa: F401

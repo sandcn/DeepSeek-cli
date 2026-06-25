@@ -1,6 +1,6 @@
 """渲染引擎 — TuiEngine + render 线程 + 命令队列。
 
-从 _tui.py 拆分，管理三阶段渲染流水线（预更新面板→获取输出锁→渲染命令→重绘底部栏）。
+从 _tui.py 拆分，管理二阶段渲染流水线（获取输出锁→渲染命令→重绘底部栏）。
 """
 
 from __future__ import annotations
@@ -78,8 +78,6 @@ class TuiEngine:
         self._consecutive_full = 0
         self._full_lock = threading.Lock()
         self._bottom_redraw_requested = threading.Event()
-        self._panel_refresh_cb: Callable[[], None] | None = None
-
         # ── 终端宽度缓存（主副本，供组件层通过 cache 参数使用）──
         self._term_width_cache: dict = {"value": 80, "ts": 0.0}
         # 注入到 _components 模块，使 _get_terminal_width 默认使用此缓存
@@ -168,7 +166,8 @@ class TuiEngine:
                 _logger.error("渲染输出管线持续拥堵（%d 次连续满队列）", full_count)
 
     def set_panel_refresh_callback(self, callback: Callable[[], None] | None) -> None:
-        self._panel_refresh_cb = callback
+        """空操作 — SubAgent 面板现通过 VNode 内联渲染。"""
+        pass
 
     def request_bottom_redraw(self) -> None:
         self._bottom_redraw_requested.set()
@@ -247,19 +246,6 @@ class TuiEngine:
 
     # ── 三阶段流水线 ──────────────────────────────
 
-    def _phase_pre_update_panels(self) -> None:
-        """阶段 1：预更新面板回调。
-
-        调用外部注册的面板刷新回调（如 SubAgent 面板帧更新），
-        为空或异常均安全跳过。
-        """
-        if self._panel_refresh_cb is not None:
-            try:
-                self._panel_refresh_cb()
-            except Exception:
-                _logger.warning("panel_refresh_cb 异常", exc_info=True)
-
-
     def _phase_redraw_bottom(self, has_commands: bool) -> None:
         """阶段 3：重绘底部栏。
 
@@ -333,11 +319,10 @@ class TuiEngine:
             sys.__stderr__.flush()
 
     def _drain_queue(self) -> bool:
-        """三阶段流水线：预处理面板→获取输出锁→渲染命令→重绘底部栏。
+        """二阶段流水线：获取输出锁→渲染命令→重绘底部栏。
 
-        阶段 1: _phase_pre_update_panels() — 刷新面板回调
-        阶段 2: 获取输出锁，批量取出队列中所有命令
-        阶段 3: 策略统一渲染命令 + _phase_redraw_bottom() 重绘底部栏
+        阶段 1: 获取输出锁，批量取出队列中所有命令
+        阶段 2: 策略统一渲染命令 + _phase_redraw_bottom() 重绘底部栏
 
         所有渲染策略（Direct / VNode / Phase）统一通过 self._strategy.render_commands()。
         CmdAnimationTick 在策略渲染前单独处理（直接调用 AnimationClock._tick()），
@@ -347,7 +332,6 @@ class TuiEngine:
             是否处理了至少一条渲染命令（含动画滴答）
         """
         commands: list = []
-        self._phase_pre_update_panels()
         with _try_acquire_output_lock(name="drain_queue", timeout=_DRAIN_LOCK_TIMEOUT) as locked:
             if not locked:
                 return False
