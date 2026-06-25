@@ -20,7 +20,7 @@ from src.chat_ui.core.renderer import TuiRenderer as ContentRenderer
 from src.chat_ui.commands.const import _CLEAR_PARSE_LINE, RenderCommand
 from src.chat_ui.core.renderer import _RenderState
 from src.chat_ui.state.render_state import _ReasoningState
-from src.chat_ui.commands.types import CmdNotification
+from src.chat_ui.commands.types import CmdInputChanged, CmdNotification, CmdSubagentSlotUpdate
 
 
 # ── Fixtures ────────────────────────────────────────────
@@ -478,6 +478,20 @@ class TestRender:
         with patch('src.chat_ui.core.renderer._logger.error') as m_log:
             renderer.render((255,))
             m_log.assert_called_once()
+
+    def test_render_input_changed_is_noop(self, renderer, mock_ta):
+        """CmdInputChanged → 防御性空操作，不抛异常且不记录错误日志。"""
+        with patch('src.chat_ui.core.renderer._logger.error') as m_log:
+            renderer.render(CmdInputChanged(text="test input", cursor_pos=4))
+            # 不应记录 "未知渲染命令类型" ERROR 日志
+            m_log.assert_not_called()
+        # 不应崩溃，且不抛异常
+
+    def test_render_subagent_slot_update_is_noop(self, renderer, mock_ta):
+        """CmdSubagentSlotUpdate → 防御性空操作，不抛异常且不记录错误日志。"""
+        with patch('src.chat_ui.core.renderer._logger.error') as m_log:
+            renderer.render(CmdSubagentSlotUpdate(label="agent-1", slot={"status": "running"}))
+            m_log.assert_not_called()
 
 
 # ═══════════════════════════════════════════════════════

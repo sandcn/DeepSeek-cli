@@ -38,6 +38,9 @@ from ..commands.types import (
     CmdToolCountDec,
     CmdError,
     CmdAnimationTick,
+    CmdInputChanged,
+    CmdSubagentSlotUpdate,
+    CmdStatusUpdate,
     CmdToolCallUpdate,
 )
 from ..state.render_state import _RenderState
@@ -165,6 +168,18 @@ class TuiRenderer:
             case CmdAnimationTick():
                 # 动画滴答由 TuiEngine._drain_queue() 统一处理，
                 # 此处为防御性空操作，防止未过滤的 CmdAnimationTick 落入 _ 分支。
+                pass
+            case CmdInputChanged():
+                # 输入变更由 BottomBar 通过 set_input_state() + force_redraw() 完成渲染，
+                # 此处为防御性空操作，防止回退路径（VNode 异常/DirectRenderStrategy）中 CmdInputChanged 落入 _ 分支。
+                pass
+            case CmdSubagentSlotUpdate():
+                # SubAgent 槽位更新由 TuiStore.dispatch → VNode 内联渲染消费，
+                # 此处为防御性空操作，防止回退路径中 CmdSubagentSlotUpdate 落入 _ 分支。
+                pass
+            case CmdStatusUpdate():
+                # 状态更新由 TuiStore.dispatch → VNode 内联渲染消费，
+                # 此处为防御性空操作，防止回退路径中 CmdStatusUpdate 落入 _ 分支。
                 pass
             case CmdToolCallUpdate(tool_id=tid, name=name, status=status, text=text,
                                    params_summary=ps, elapsed_ms=ems):
