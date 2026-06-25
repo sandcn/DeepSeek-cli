@@ -34,6 +34,7 @@ from ..commands.types import (
     CmdContent,
     CmdError,
     CmdInputChanged,
+    CmdPhaseDone,
 )
 
 # ── React Ink 动画系统（直接导入）──
@@ -138,14 +139,14 @@ class TuiEngine:
             self._cmd_event.set()
         except queue.Full:
             # 合并逻辑：CONTENT/REASONING 同类型合并 text；
-            # CmdInputChanged 仅保留最新一条（类似 React setState 批处理）
-            if isinstance(cmd, (CmdContent, CmdReasoning, CmdInputChanged)):
+            # CmdInputChanged/CmdPhaseDone 仅保留最新一条（类似 React setState 批处理）
+            if isinstance(cmd, (CmdContent, CmdReasoning, CmdInputChanged, CmdPhaseDone)):
                 try:
                     with self._cmd_queue.mutex:
                         dq = self._cmd_queue.queue
                         if dq and type(dq[-1]) is type(cmd):
-                            if isinstance(cmd, CmdInputChanged):
-                                # CmdInputChanged：替换为最新值而非合并 text
+                            if isinstance(cmd, (CmdInputChanged, CmdPhaseDone)):
+                                # CmdInputChanged/CmdPhaseDone：替换为最新值而非合并 text
                                 dq[-1] = cmd
                             else:
                                 merged_text = dq[-1].text + cmd.text

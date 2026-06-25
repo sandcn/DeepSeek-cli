@@ -243,6 +243,37 @@ class TestRenderEnginePushCmd:
         assert engine._consecutive_full >= 1
         assert "渲染命令队列已满" in caplog.text
 
+    def test_push_cmd_queue_full_merges_phase_done(self, engine):
+        """队列满时 CmdPhaseDone 被合并替换队尾同类。"""
+        tiny_queue = queue.Queue(maxsize=1)
+        tiny_queue.put(CmdPhaseDone(phase="思考"), block=False)
+        engine._cmd_queue = tiny_queue
+        engine._cmd_event.clear()
+
+        engine.push_cmd(CmdPhaseDone(phase="回答"))
+
+        assert engine._cmd_queue.qsize() == 1
+        merged = engine._cmd_queue.get_nowait()
+        assert merged == CmdPhaseDone(phase="回答")
+        assert engine._consecutive_full == 0
+        assert engine._cmd_event.is_set()
+
+    def test_push_cmd_queue_full_phase_done_no_merge_different_type(self, engine, caplog):
+        """队列满且队尾为不同类型时 CmdPhaseDone 不合并。"""
+        tiny_queue = queue.Queue(maxsize=1)
+        tiny_queue.put(CmdContent(text="content"), block=False)
+        engine._cmd_queue = tiny_queue
+        caplog.set_level(logging.WARNING)
+
+        engine.push_cmd(CmdPhaseDone(phase="回答"))
+
+        # CmdPhaseDone 与 CmdContent 类型不同，不应合并
+        assert engine._consecutive_full >= 1
+        assert "渲染命令队列已满" in caplog.text
+        assert engine._cmd_queue.qsize() == 1
+        existing = engine._cmd_queue.get_nowait()
+        assert existing == CmdContent(text="content")
+
 
 # ══════════════════════════════════════════════════════
 # TestRenderEngineStartStop

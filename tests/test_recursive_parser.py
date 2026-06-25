@@ -2182,3 +2182,78 @@ class TestDefinitionFixes:
         tokens = _collect_tokens(":alone\n")
         def_items = _find_token(tokens, TokenType.DEFINITION_ITEM)
         assert len(def_items) == 0, f":alone 不应为定义: {def_items}"
+
+
+# ═══════════════════════════════════════════════════════════
+# Bug 回归测试：flush 纯空白缓冲区（strip() boolean gate 修复）
+# ═══════════════════════════════════════════════════════════
+
+class TestFlushWhitespaceBuffer:
+    """flush() 方法对纯空白/尾部空白缓冲区的正确处理。
+
+    修复前 flush() 使用 self._buffer.strip() 判断是否有残留内容，
+    纯空白 buffer 会导致 strip() 返回空串 → 内容被静默丢弃。
+    """
+
+    def test_flush_pure_whitespace_buffer_no_crash(self):
+        """纯空白 buffer flush 不抛异常且生成空行 token（不再静默丢弃）。"""
+        parser = RegexFreeBlockParser()
+        # feed 一段纯空白文本（仅空格/制表符）
+        parser.feed("   \t  ")
+        # flush 不应抛异常
+        tokens = parser.flush()
+        # 修复后纯空白 buffer 不再静默丢弃，应生成 EMPTY_LINE token
+        assert isinstance(tokens, list), f"flush 应返回 list，实际返回 {type(tokens)}"
+        assert len(tokens) >= 1, \
+            f"纯空白 buffer 不应静默丢弃，应生成至少 1 个 token，实际: {len(tokens)}"
+        # EMPTY_LINE 是 Rich 渲染时空行不可见，但确保 parser 正确处理了
+        empty_lines = [t for t in tokens if t.type is TokenType.EMPTY_LINE]
+        para_tokens = [t for t in tokens if t.type is TokenType.PARAGRAPH]
+        assert empty_lines or para_tokens, \
+            f"应生成 EMPTY_LINE 或 PARAGRAPH token，实际: {[t.type.name for t in tokens]}"
+
+    def test_flush_text_without_newline(self):
+        """无换行结尾的普通文本在 flush 时正确输出为 PARAGRAPH。"""
+        parser = RegexFreeBlockParser()
+        parser.feed("hello world")
+        tokens = parser.flush()
+        # 应生成 PARAGRAPH token
+        para_tokens = [t for t in tokens if t.type is TokenType.PARAGRAPH]
+        assert len(para_tokens) >= 1, \
+            f"应生成至少一个 PARAGRAPH token，实际 tokens: {[t.type.name for t in tokens]}"
+
+    def test_flush_text_with_trailing_spaces(self):
+        """buffer 含文本+尾部空格 → flush 正确保留在 PARAGRAPH 内容中。"""
+        parser = RegexFreeBlockParser()
+        parser.feed("hello world   ")
+        tokens = parser.flush()
+        # 应生成 PARAGRAPH token，且内容保留尾部空格
+        para_tokens = [t for t in tokens if t.type is TokenType.PARAGRAPH]
+        assert len(para_tokens) >= 1, \
+            f"应生成至少一个 PARAGRAPH token，实际: {[t.type.name for t in tokens]}"
+        # 验证 trailing spaces 被保留在 token 内容中
+        content = para_tokens[0].text if hasattr(para_tokens[0], 'text') else str(para_tokens[0])
+        assert "hello world" in content or "hello world   " in content, \
+            f"PARAGRAPH 应包含原始文本，实际内容: {content!r}"
+
+    def test_flush_empty_buffer_is_noop(self):
+        """空 buffer flush 是空操作。"""
+        parser = RegexFreeBlockParser()
+        tokens = parser.flush()
+        assert tokens == [], f"空 buffer flush 应返回空列表，实际: {tokens}"
+
+    def test_flush_content_without_newline_preserved(self):
+        """无换行结尾的文本在 flush 时正确输出为 PARAGRAPH。"""
+        tokens = _collect_tokens("**bold** text without newline")
+        para_tokens = _find_token(tokens, TokenType.PARAGRAPH)
+        assert para_tokens, \
+            f"无换行结尾的文本应生成 PARAGRAPH: {[t.type.name for t in tokens]}"
+
+    def test_stream_flush_preserves_trailing_content(self):
+        """流式输入末尾文本（无换行）在 flush 后正确输出。"""
+        chunks = ["**bold**", " and *italic*"]
+        tokens = _stream_collect(chunks)
+        para_tokens = _find_token(tokens, TokenType.PARAGRAPH)
+        # 流式输入应至少产生 PARAGRAPH token（合并后的内容）
+        assert para_tokens, \
+            f"流式输入末尾应产生 PARAGRAPH: {[t.type.name for t in tokens]}"

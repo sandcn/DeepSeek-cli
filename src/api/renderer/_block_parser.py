@@ -255,8 +255,7 @@ class RegexFreeBlockParser:
         tokens: list[Token] = []
 
         # ── 第1步：处理残留缓冲区 ──
-        remaining = self._buffer.strip()
-        if remaining:
+        if self._buffer:
             line = self._buffer + '\n'
             self._buffer = ''
             if self._state != _State.NORMAL:

@@ -604,6 +604,28 @@ class VNodeRenderStrategy:
                     except Exception:
                         _logger.debug("CmdPhaseDone 渲染异常", exc_info=True)
 
+            # ★ 防御性检测：CmdPhaseDone 处理完后不应再有 CmdContent 在同一帧中
+            #   （PhaseDone 已关闭 IncrementalRenderer，后续 CmdContent.write() 会因
+            #    self._closed=True 直接 return，导致数据静默丢失）
+            #   仅当 CmdPhaseDone 在命令列表中出现在 CmdContent 之后时才告警——
+            #   因为 dispatch→VNode→patches 阶段已处理完所有 CmdContent 的渲染，
+            #   PhaseDone 在最后出现是正常时序（close 刷出 buffer 残余）。
+            phase_done_indices = [
+                i for i, c in enumerate(commands) if isinstance(c, CmdPhaseDone)
+            ]
+            if phase_done_indices:
+                content_indices = [
+                    i for i, c in enumerate(commands) if isinstance(c, CmdContent)
+                ]
+                if content_indices and max(phase_done_indices) < min(content_indices):
+                    # CmdPhaseDone 在 CmdContent 之前 → 渲染器已关闭，后续内容丢失
+                    trailing = [c for c in commands if isinstance(c, CmdContent)]
+                    _logger.warning(
+                        "CmdPhaseDone 先于 %d 条 CmdContent 到达，"
+                        "渲染器已关闭可能导致数据丢失",
+                        len(trailing),
+                    )
+
             # 6. 缓存新树
             self._old_vnode = new_vnode
 
