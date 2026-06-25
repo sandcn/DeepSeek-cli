@@ -190,10 +190,15 @@ def _reduce_error(state: TuiState, cmd: CmdError) -> TuiState:
 def _reduce_subagent_slot_update(state: TuiState, cmd: CmdSubagentSlotUpdate) -> TuiState:
     """将 AgentStateStore 的 slot 数据合并到 TuiState.subagent_slots。
 
-    以 label 为键，将 cmd.slot dict 浅拷贝到 subagent_slots。
+    以 label 为键：
+    - cmd.slot 非空时 → 浅拷贝并添加/更新到 subagent_slots
+    - cmd.slot 为空 {} 时 → 从 subagent_slots 中移除该 label 条目
     """
     slots = dict(state.subagent_slots)
-    slots[cmd.label] = dict(cmd.slot)  # 浅拷贝 slot dict
+    if cmd.slot:
+        slots[cmd.label] = dict(cmd.slot)  # 浅拷贝 slot dict
+    else:
+        slots.pop(cmd.label, None)  # 移除条目（幂等）
     return replace(state, subagent_slots=slots)
 
 

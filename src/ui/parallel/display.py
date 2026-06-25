@@ -94,6 +94,8 @@ class ParallelDisplay(BaseDisplay):
     def update_agent_status(self, label: str, status: str):
         self._store.update_agent_status(label, status)
         self._push_slot_update(label)
+        if status in ("done", "fail"):
+            self.remove_agent_slot(label)
         self._schedule_refresh()
 
     def update_status(self, label: str, status: str):
@@ -167,7 +169,13 @@ class ParallelDisplay(BaseDisplay):
 
     def set_result(self, label: str, result_text: str = "", error: str = ""):
         self._store.set_result(label, result_text, error)
-        self._push_slot_update(label)
+        slot = self._store.get_slot(label)
+        if slot and slot.status in ("done", "fail"):
+            # agent 已完成：无需再推送 slot 到 TUI（update_agent_status 已推送最终状态），
+            # 直接清除 slot 条目，避免 update_agent_status 的 remove + set_result 的 push 形成冗余。
+            self.remove_agent_slot(label)
+        else:
+            self._push_slot_update(label)
         self._schedule_refresh()
 
     # ── 帧渲染（通过命令队列） ────────────────────────
@@ -222,6 +230,15 @@ class ParallelDisplay(BaseDisplay):
             ],
         }
         self._push_cmd(CmdSubagentSlotUpdate(label=label, slot=slot_dict))
+
+    def remove_agent_slot(self, label: str) -> None:
+        """从 TuiState.subagent_slots 中清除指定 agent 的 slot 条目。
+
+        推送空 slot dict 给 reducer 触发删除（参见 _reduce_subagent_slot_update）。
+        幂等：label 不存在时无害。
+        """
+        if self._push_cmd is not None:
+            self._push_cmd(CmdSubagentSlotUpdate(label=label, slot={}))
 
     # ── 生命周期 ────────────────────────────────────────
 

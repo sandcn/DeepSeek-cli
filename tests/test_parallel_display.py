@@ -283,7 +283,10 @@ class TestToolHistorySerialization:
         # 不调用 tool_done，直接标记 agent 为 done
         display.update_agent_status("agent-1", "done")
 
-        history = captured[-1].slot["tool_history"]
+        # update_agent_status("done") 先推送最终 slot，再调用 remove_agent_slot 清除，
+        # 所以 captured[-2] 是带 tool_history 的最终 slot 数据
+        final_slot = captured[-2].slot
+        history = final_slot["tool_history"]
         assert len(history) == 1
         # AgentStateStore.update_agent_status 会将残留 running/parsing 批量标记为 done
         assert history[0]["phase"] in ("done", "fail")
