@@ -76,7 +76,7 @@ def create_render_strategy(renderer: "TuiRenderer") -> tuple[VNodeRenderStrategy
     _output_func = _create_vnode_output_func(renderer.output_adapter)
 
     use_layered: bool = (
-        os.environ.get(_ENV_LAYERED_RENDER, "1").strip().lower()
+        os.environ.get(_ENV_LAYERED_RENDER, "0").strip().lower()
         not in ("0", "", "false", "no")
     )
     if use_layered:
