@@ -24,6 +24,19 @@ from dataclasses import dataclass
 from typing import Any, Callable
 
 
+# ── 预设 Spinner 帧集合 ──────────────────────────────────
+
+SPINNER_FRAMES: dict[str, list[str]] = {
+    "braille": ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"],
+    "dots": ["⣾", "⣽", "⣻", "⢿", "⡿", "⣟", "⣯", "⣷"],
+    "line": ["|", "/", "-", "\\"],
+    "pulse": ["█", "▓", "▒", "░", "▒", "▓"],
+    "bounce": ["[= ]", "[==]", "[ =]", "[==]"],
+    "dots_wave": ["⠁", "⠂", "⠄", "⡀", "⠄", "⠂"],
+    "arrow": ["→", "↘", "↓", "↙", "←", "↖", "↑", "↗"],
+}
+
+
 # ── 动画状态 ────────────────────────────────────────────
 
 
@@ -165,7 +178,9 @@ class AnimationClock:
             try:
                 self._on_tick()
             except Exception:
-                pass
+                import logging
+                _log = logging.getLogger(__name__)
+                _log.debug("AnimationClock tick 异常", exc_info=True)
 
     # ── 动画注册 ──────────────────────────────────
 
@@ -325,4 +340,167 @@ def use_animation(options: dict | None = None) -> dict:
         "time": state.time,
         "delta": state.delta,
         "reset": reset,
+    }
+
+
+# ── use_spinner Hook ────────────────────────────────────
+
+
+def use_spinner(options: dict | None = None) -> dict:
+    """预设 spinner 动画 Hook。
+
+    基于 SPINNER_FRAMES 预设帧集合，返回当前帧的 spinner 字符。
+    内部调用 use_animation 驱动帧更新。
+
+    Args:
+        options: 可选配置字典：
+            - "type" (str): spinner 类型，默认 "dots"。
+              可选值见 SPINNER_FRAMES 的键：braille, dots, line, pulse,
+              bounce, dots_wave, arrow。
+            - "interval" (int): 帧间隔毫秒，默认 80。
+            - "color" (str | None): 颜色名（预留），默认 None。
+
+    Returns:
+        {
+            "char": str,       # 当前 spinner 字符
+            "frame": int,      # 当前帧号
+            "time": float,     # 累计毫秒
+        }
+
+    示例:
+        >>> spinner = use_spinner({"type": "braille", "interval": 100})
+        >>> print(spinner["char"])  # 每帧输出不同的 braille 字符
+    """
+    opts = options or {}
+    spinner_type = opts.get("type", "dots")
+    interval = int(opts.get("interval", 80))
+
+    frames = SPINNER_FRAMES.get(spinner_type, SPINNER_FRAMES["dots"])
+    anim = use_animation({"interval": interval})
+
+    idx = anim["frame"] % len(frames)
+    return {
+        "char": frames[idx],
+        "frame": anim["frame"],
+        "time": anim["time"],
+    }
+
+
+# ── use_progress Hook ───────────────────────────────────
+
+
+def use_progress(options: dict | None = None) -> dict:
+    """进度条 Hook。
+
+    支持确定模式（value 给定）和 indeterminate 模式（value=None）：
+    - 确定模式：渲染填充块 + 百分比数字。
+    - indeterminate 模式：3 格亮块动画扫过，无百分比。
+
+    Args:
+        options: 可选配置字典：
+            - "value" (float | None): 进度值 0.0~1.0，None 表示 indeterminate 模式。
+            - "width" (int): 进度条宽度（字符数），默认 20。
+            - "style" (str): 样式名（预留），默认 "bar"。
+            - "color" (str): 颜色名（预留），默认 "cyan"。
+
+    Returns:
+        {
+            "rendered": str,   # 渲染后的进度条字符串，如 "[████████░░░░░░░░] 50%"
+            "percent": int,    # 百分比整数（indeterminate 模式返回 0）
+        }
+
+    示例:
+        >>> prog = use_progress({"value": 0.5, "width": 10})
+        >>> print(prog["rendered"])  # "[█████░░░░░] 50%"
+        >>> indet = use_progress({"value": None, "width": 20})
+        >>> print(indet["rendered"])  # 动画扫过
+    """
+    opts = options or {}
+    value = opts.get("value", None)
+    width = int(opts.get("width", 20))
+
+    if value is not None:
+        # 确定模式
+        clamped = max(0.0, min(1.0, float(value)))
+        filled = int(clamped * width)
+        percent = int(clamped * 100)
+        rendered = "[" + "█" * filled + "░" * (width - filled) + f"] {percent}%"
+    else:
+        # indeterminate 模式：动画扫过 3 格亮块
+        anim = use_animation({"interval": int(opts.get("interval", 80))})
+        frame = anim["frame"]
+        # 亮块在宽度为 width 的条上滑动，周期为 width*2
+        pos = frame % max(width * 2, 1)
+
+        # 3 格亮块扫过
+        bars = ["░"] * width
+        for i in range(3):
+            idx = (pos + i) % width
+            bars[idx] = "█"
+
+        rendered = "[" + "".join(bars) + "]"
+        percent = 0
+
+    return {"rendered": rendered, "percent": percent}
+
+
+# ── use_typewriter Hook ─────────────────────────────────
+
+
+def use_typewriter(text: str, options: dict | None = None) -> dict:
+    """打字机效果 Hook。
+
+    逐字显示文本，配合可选光标闪烁，模拟打字机输出效果。
+    内部调用 use_animation 驱动帧更新，speed 控制每帧前进字符数。
+
+    Args:
+        text: 要逐字显示的文本。非 str 时自动 str() 转换。
+        options: 可选配置字典：
+            - "speed" (int): 每字符前进所需毫秒，默认 30。speed 越小越快
+              （每 speed 毫秒前进约 1 字符）。
+            - "cursor" (bool): 是否显示光标，默认 True。
+            - "cursor_char" (str): 光标字符，默认 "▊"。
+
+    Returns:
+        {
+            "output": str,     # 当前可见文本（含光标字符，done 时不显示光标）
+            "progress": float, # 0.0~1.0 完成度
+            "done": bool,      # 是否已完整显示全部文本
+        }
+
+    示例:
+        >>> tw = use_typewriter("Hello, World!", {"speed": 50})
+        >>> print(tw["output"])   # "Hel▊"（逐帧增加）
+        >>> print(tw["done"])     # False（未完成时）
+    """
+    opts = options or {}
+    speed = int(opts.get("speed", 30))
+    cursor = bool(opts.get("cursor", True))
+    cursor_char = str(opts.get("cursor_char", "▊"))
+
+    # 安全处理 text
+    safe_text = str(text) if not isinstance(text, str) else text
+    text_len = len(safe_text)
+
+    anim = use_animation({"interval": max(speed // 10, 16)})
+
+    # 每帧前进字符数 = 累计时间 / speed
+    chars_shown = int(anim["time"] // speed) if speed > 0 else text_len
+    visible_len = min(chars_shown, text_len)
+
+    done = visible_len >= text_len
+
+    output = safe_text[:visible_len]
+
+    if cursor and not done:
+        # 光标闪烁：偶数帧显示光标字符
+        if anim["frame"] % 2 == 0:
+            output += cursor_char
+
+    progress = visible_len / text_len if text_len > 0 else 1.0
+
+    return {
+        "output": output,
+        "progress": progress,
+        "done": done,
     }

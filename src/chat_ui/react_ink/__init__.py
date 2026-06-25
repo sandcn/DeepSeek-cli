@@ -31,6 +31,12 @@ from ..components.message_blocks import (  # noqa: F401
     create_message_box,
 )
 
+from ..commands.types import CmdToolCallUpdate  # noqa: F401
+from ..components.spinner import Spinner  # noqa: F401
+from ..components.progress import Progress  # noqa: F401
+from ..components.animation import use_spinner, use_progress, use_typewriter, SPINNER_FRAMES  # noqa: F401
+from ..components.message_blocks import ToolCallBlockBox, ToolResultBlockBox  # noqa: F401
+
 
 def _is_enabled() -> bool:
     """检测是否启用 React Ink 特性。
@@ -86,6 +92,13 @@ __all__ = [
     # Animation
     "use_animation",
     "AnimationClock",
+    "use_spinner",
+    "use_progress",
+    "use_typewriter",
+    "SPINNER_FRAMES",
+    # Components
+    "Spinner",
+    "Progress",
     # Static
     "Static",
     # Transform
@@ -101,6 +114,8 @@ __all__ = [
     "ThinkingBlockBox",
     "AnswerBlockBox",
     "UserMsgBlockBox",
+    "ToolCallBlockBox",
+    "ToolResultBlockBox",
     "ToolOutputBlockBox",
     "ErrorBlockBox",
     "NotificationBlockBox",
@@ -111,4 +126,6 @@ __all__ = [
     "LayoutBox",
     "HookError",
     "LayoutError",
+    # Commands
+    "CmdToolCallUpdate",
 ]

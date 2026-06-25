@@ -39,6 +39,7 @@ from ..commands.types import (
     CmdError,
     CmdSubagentFrame,
     CmdAnimationTick,
+    CmdToolCallUpdate,
 )
 from ..state.render_state import _RenderState
 
@@ -170,6 +171,8 @@ class TuiRenderer:
                 # 动画滴答由 TuiEngine._drain_queue() 统一处理，
                 # 此处为防御性空操作，防止未过滤的 CmdAnimationTick 落入 _ 分支。
                 pass
+            case CmdToolCallUpdate(tool_id=tid, name=name, status=status, text=text):
+                self._do_tool_call_update(tid, name, status, text)
             case _:
                 _logger.error("未知渲染命令类型: %s", type(cmd).__name__)
 
@@ -211,6 +214,53 @@ class TuiRenderer:
     def _do_tool_summary(self, successful: tuple, failed: tuple) -> None:
         block = ToolSummaryBlock(successful, failed)
         self._record_lines(block.render_to_adapter(self._adapter))
+
+    def _do_tool_call_update(self, tool_id: str, name: str, status: str, text: str) -> None:
+        """渲染工具调用状态更新。
+
+        running: 渲染带 spinner 图标的 ⚙ {name} 行（dim 样式）
+        completed: 渲染 ✓ {name} 完成标记（green 样式）
+        failed: 渲染 ✗ {name} 失败标记（red 样式）
+        """
+        try:
+            from ..infrastructure.styled import StyledText
+
+            text = text.strip()
+
+            if status == "running":
+                line = StyledText.assemble(
+                    ("  ⚙ ", "bright_black"),
+                    (name, "bright_black"),
+                )
+            elif status == "completed":
+                line = StyledText.assemble(
+                    ("  ✓ ", "green"),
+                    (name, "green"),
+                )
+            elif status == "failed":
+                line = StyledText.assemble(
+                    ("  ✗ ", "red"),
+                    (name, "red"),
+                )
+            else:
+                line = StyledText.assemble(
+                    ("  · ", ""),
+                    (name, ""),
+                )
+
+            self._adapter.write(line)
+            self._record_lines(1)
+
+            # 如果有附加文本（工具输出摘要），也渲染出来
+            if text:
+                summary = StyledText.assemble(
+                    ("     ", "bright_black"),
+                    (text, "bright_black"),
+                )
+                self._adapter.write(summary)
+                self._record_lines(1)
+        except Exception:
+            _logger.warning("_do_tool_call_update 渲染异常", exc_info=True)
 
     # ── 解析进度 ──────────────────────────────────
 

@@ -185,6 +185,8 @@ class VNodeRenderStrategy:
         self._last_tool_outputs: tuple = ()
         self._last_notifications_count: int = 0
         self._last_errors_count: int = 0
+        self._last_tool_calls: dict = {}
+        self._last_tool_results_count: int = 0
         self._animating: bool = False
         self._anim_frame_count: int = 0
         self._anim_idle_count: int = 0
@@ -359,6 +361,49 @@ class VNodeRenderStrategy:
                                     renderer.render(frame, self._renderer.output_adapter)
                                 except Exception:
                                     pass
+                    elif vnode.type == "tool_calls":
+                        try:
+                            calls = vnode.props.get("calls", ())
+                            if calls:
+                                from ..components.message_blocks import ToolCallBlockBox
+                                for call in calls:
+                                    tool_id = call.get("tool_id", "")
+                                    status = call.get("status", "running")
+                                    # 增量跟踪：仅渲染新增或状态变更的条目
+                                    prev = self._last_tool_calls.get(tool_id)
+                                    if prev is not None and prev == status:
+                                        continue
+                                    self._last_tool_calls[tool_id] = status
+                                    box = ToolCallBlockBox(
+                                        tool_name=call.get("name", "unknown"),
+                                        status=status,
+                                        text=call.get("text", ""),
+                                    )
+                                    rendered = box.render()
+                                    if rendered and self._output:
+                                        self._output(rendered)
+                        except Exception:
+                            _logger.warning("tool_calls 渲染异常", exc_info=True)
+                    elif vnode.type == "tool_results":
+                        try:
+                            results = vnode.props.get("results", ())
+                            if results:
+                                # 仅输出新增条目（增量跟踪）
+                                new_count = len(results)
+                                if new_count > self._last_tool_results_count:
+                                    from ..components.message_blocks import ToolResultBlockBox
+                                    for result in results[self._last_tool_results_count:]:
+                                        box = ToolResultBlockBox(
+                                            tool_name=result.get("name", "unknown"),
+                                            text=result.get("text", ""),
+                                            success=result.get("status", "completed") == "completed",
+                                        )
+                                        rendered = box.render()
+                                        if rendered and self._output:
+                                            self._output(rendered)
+                                    self._last_tool_results_count = new_count
+                        except Exception:
+                            _logger.warning("tool_results 渲染异常", exc_info=True)
                     # input_bar / status_line / completion_popup 由底部栏管理，不在此渲染
 
                 _apply_patches(self._old_vnode, patches, _render_node)

@@ -375,6 +375,37 @@ class StyledText:
 
         return result
 
+    @classmethod
+    def gradient(cls, text: str, start_color: str, end_color: str, steps: int | None = None) -> StyledText:
+        """创建渐变文本 — 将 text 按字符均分，在 start_color → end_color 的 256 色调色板上均匀采样。
+
+        Args:
+            text: 要渲染渐变的文本。
+            start_color: 起始颜色名（如 'cyan'、'blue'、'magenta'）。
+            end_color: 结束颜色名。
+            steps: 渐变步数，默认等于 len(text)。
+
+        Returns:
+            每个字符独立 Span + color_number 的 StyledText。
+        """
+        if not text:
+            return cls()
+
+        steps = steps if steps is not None else len(text)
+        start_idx = _named_color_to_256(start_color)
+        end_idx = _named_color_to_256(end_color)
+
+        result = cls.__new__(cls)
+        result._spans = []
+
+        max_t = max(steps - 1, 1)
+        for i, char in enumerate(text):
+            t = i / max_t
+            color_num = _interpolate_256(start_idx, end_idx, t)
+            result._spans.append(Span(text=char, color_number=color_num))
+
+        return result
+
     @staticmethod
     def to_ansi_raw(fg=None, bg=None, bold=False, dim=False, italic=False,
                     underline=False, reverse=False, strikethrough=False,
@@ -451,3 +482,93 @@ def _256_to_hex(idx: int) -> str:
         # 灰度
         gray = (idx - 232) * 10 + 8
         return f"{gray:02x}{gray:02x}{gray:02x}"
+
+
+# 命名颜色 → 256 色调色板索引映射
+_NAMED_COLOR_MAP: dict[str, int] = {
+    "red": 196, "green": 46, "yellow": 226, "blue": 21,
+    "magenta": 201, "cyan": 51, "white": 15, "black": 0,
+    "bright_red": 196, "bright_green": 46, "bright_yellow": 226,
+    "bright_blue": 21, "bright_magenta": 201, "bright_cyan": 51,
+    "bright_white": 15, "bright_black": 8,
+}
+
+
+def _named_color_to_256(name: str) -> int:
+    """将颜色名映射到 256 色调色板索引。
+
+    支持标准 16 色名称及其 bright 变体。
+
+    Args:
+        name: 颜色名（如 'red'、'cyan'、'bright_blue'）。
+
+    Returns:
+        256 色调色板索引（0-255）。
+
+    Raises:
+        ValueError: 颜色名不被支持时。
+    """
+    idx = _NAMED_COLOR_MAP.get(name)
+    if idx is None:
+        raise ValueError(f"不支持的颜色名: {name!r}")
+    return idx
+
+
+def _hex_to_256(hex_str: str) -> int:
+    """将 #RRGGBB 字符串映射到最接近的 256 色调色板索引。
+
+    使用欧几里得距离在 RGB 空间中搜索最近色。
+
+    Args:
+        hex_str: 6 位十六进制 RGB 字符串（如 "ff0000"）。
+
+    Returns:
+        最接近的 256 色调色板索引（0-255）。
+    """
+    r = int(hex_str[0:2], 16)
+    g = int(hex_str[2:4], 16)
+    b = int(hex_str[4:6], 16)
+
+    best_idx = 0
+    best_dist = float('inf')
+    for idx in range(256):
+        idx_hex = _256_to_hex(idx)
+        idx_r = int(idx_hex[0:2], 16)
+        idx_g = int(idx_hex[2:4], 16)
+        idx_b = int(idx_hex[4:6], 16)
+        dist = (r - idx_r) ** 2 + (g - idx_g) ** 2 + (b - idx_b) ** 2
+        if dist < best_dist:
+            best_dist = dist
+            best_idx = idx
+    return best_idx
+
+
+def _interpolate_256(start_idx: int, end_idx: int, t: float) -> int:
+    """在 256 色调色板上执行 RGB 空间线性插值。
+
+    将 256 色索引映射到 RGB，执行线性插值后映射回最接近的 256 色索引。
+
+    Args:
+        start_idx: 起始 256 色索引。
+        end_idx: 结束 256 色索引。
+        t: 插值参数，范围 [0.0, 1.0]。
+
+    Returns:
+        插值后的 256 色调色板索引（0-255）。
+    """
+    start_hex = _256_to_hex(start_idx)
+    end_hex = _256_to_hex(end_idx)
+    sr = int(start_hex[0:2], 16)
+    sg = int(start_hex[2:4], 16)
+    sb = int(start_hex[4:6], 16)
+    er = int(end_hex[0:2], 16)
+    eg = int(end_hex[2:4], 16)
+    eb = int(end_hex[4:6], 16)
+    r = int(sr + (er - sr) * t)
+    g = int(sg + (eg - sg) * t)
+    b = int(sb + (eb - sb) * t)
+    # 裁剪到 [0, 255]
+    r = max(0, min(255, r))
+    g = max(0, min(255, g))
+    b = max(0, min(255, b))
+    return _hex_to_256(f"{r:02x}{g:02x}{b:02x}")

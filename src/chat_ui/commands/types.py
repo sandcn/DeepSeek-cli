@@ -158,3 +158,23 @@ class CmdAnimationTick:
     在 render 线程中处理，避免竞态条件。
     """
     kind: int = 21
+
+
+@dataclass(frozen=True)
+class CmdToolCallUpdate:
+    """工具调用状态更新命令。
+
+    由 Agent 工具调用生命周期事件触发，通过 TuiRenderer._do_tool_call_update()
+    渲染为带状态图标的单行输出（running→⚙ / completed→✓ / failed→✗）。
+
+    Attributes:
+        tool_id: 工具调用的唯一标识符（用于去重/关联）
+        name: 工具名称（如 "read_file"、"bash"）
+        status: 状态 — "running" / "completed" / "failed"
+        text: 附加文本（工具输出摘要，可选）
+    """
+    tool_id: str
+    name: str
+    status: str = "running"  # "running" / "completed" / "failed"
+    text: str = ""
+    kind: int = 22

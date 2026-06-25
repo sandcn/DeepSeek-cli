@@ -1,10 +1,12 @@
 """消息块 Box 包装组件 — React Ink Box 边框的消息流组件包装器。
 
-为 6 种消息块类型提供声明式 Box 边框渲染：
-  - ThinkingBlockBox: 推理块（dim single border）
-  - AnswerBlockBox: 回答块（dim single border）
-  - UserMsgBlockBox: 用户消息块（cyan single border）
-  - ToolOutputBlockBox: 工具输出块（yellow dim single border）
+为 8 种消息块类型提供声明式 Box 边框渲染：
+  - ThinkingBlockBox: 推理块（dim round border + "Thinking..." title）
+  - AnswerBlockBox: 回答块（dim round border）
+  - UserMsgBlockBox: 用户消息块（cyan round border）
+  - ToolOutputBlockBox: 工具输出块（yellow dim round border）
+  - ToolCallBlockBox: 工具调用块（round cyan border + 状态标记）
+  - ToolResultBlockBox: 工具结果块（round border + 成功/失败标记）
   - ErrorBlockBox: 错误块（red single border）
   - NotificationBlockBox: 通知块（green borderless）
 
@@ -48,15 +50,17 @@ def _is_narrow_screen(threshold: int = _NARROW_TERM_THRESHOLD) -> bool:
 
 _MSG_BLOCK_STYLES: dict[str, dict[str, Any]] = {
     "thinking": {
-        "border_style": "single",
+        "border_style": "round",
         "border_color": "bright_black",  # dim gray
         "border_dim_color": True,
+        "title": "Thinking...",
+        "title_color": "bright_black",
         "padding_x": 1,
         "padding_y": 0,
         "margin_y": 0,
     },
     "answer": {
-        "border_style": "single",
+        "border_style": "round",
         "border_color": "bright_black",
         "border_dim_color": True,
         "padding_x": 1,
@@ -64,15 +68,32 @@ _MSG_BLOCK_STYLES: dict[str, dict[str, Any]] = {
         "margin_y": 0,
     },
     "user_msg": {
-        "border_style": "single",
+        "border_style": "round",
         "border_color": "cyan",
         "padding_x": 1,
         "margin_y": 0,
     },
     "tool_output": {
-        "border_style": "single",
+        "border_style": "round",
         "border_color": "yellow",
         "border_dim_color": True,
+        "title": "",
+        "padding_x": 1,
+        "margin_y": 0,
+    },
+    "tool_call": {
+        "border_style": "round",
+        "border_color": "cyan",
+        "title": "⚙ Tool",
+        "title_color": "cyan",
+        "padding_x": 1,
+        "margin_y": 0,
+    },
+    "tool_result": {
+        "border_style": "round",
+        "border_color": "green",
+        "title": "",
+        "title_color": "",
         "padding_x": 1,
         "margin_y": 0,
     },
@@ -148,10 +169,11 @@ class _MessageBlockBox(Box):
 # ── 消息块 Box 组件 ──────────────────────────────
 
 class ThinkingBlockBox(_MessageBlockBox):
-    """推理块 — dim single border。"""
+    """推理块 — dim round border + "Thinking..." title（可折叠）。"""
 
     def __init__(self, text: str = "", **kwargs: Any) -> None:
         style = dict(_MSG_BLOCK_STYLES["thinking"])
+        style["collapsible"] = True
         style.update(kwargs)
         super().__init__(**style)
         if text:
@@ -159,7 +181,7 @@ class ThinkingBlockBox(_MessageBlockBox):
 
 
 class AnswerBlockBox(_MessageBlockBox):
-    """回答块 — dim single border。"""
+    """回答块 — dim round border。"""
 
     def __init__(self, text: str = "", **kwargs: Any) -> None:
         style = dict(_MSG_BLOCK_STYLES["answer"])
@@ -170,7 +192,7 @@ class AnswerBlockBox(_MessageBlockBox):
 
 
 class UserMsgBlockBox(_MessageBlockBox):
-    """用户消息块 — cyan single border。"""
+    """用户消息块 — cyan round border。"""
 
     def __init__(self, text: str = "", **kwargs: Any) -> None:
         style = dict(_MSG_BLOCK_STYLES["user_msg"])
@@ -181,7 +203,7 @@ class UserMsgBlockBox(_MessageBlockBox):
 
 
 class ToolOutputBlockBox(_MessageBlockBox):
-    """工具输出块 — yellow dim single border。"""
+    """工具输出块 — yellow dim round border。"""
 
     def __init__(self, text: str = "", **kwargs: Any) -> None:
         style = dict(_MSG_BLOCK_STYLES["tool_output"])
@@ -213,12 +235,85 @@ class NotificationBlockBox(_MessageBlockBox):
             self.add_child(_make_text_component(text))
 
 
+class ToolCallBlockBox(_MessageBlockBox):
+    """工具调用块 — round cyan border + spinner + tool name。
+
+    构造参数:
+        tool_name: 工具名称。
+        status: 状态，可选 "running" / "completed" / "failed"，默认 "running"。
+    """
+
+    def __init__(self, tool_name: str = "", status: str = "running",
+                 text: str = "", **kwargs: Any) -> None:
+        self.tool_name = tool_name
+        self._status = status
+        style = dict(_MSG_BLOCK_STYLES["tool_call"])
+        # 根据 status 设置 title 和颜色
+        if status == "completed":
+            style["title"] = f"✓ {tool_name}"
+            style["title_color"] = "green"
+            style["border_color"] = "green"
+        elif status == "failed":
+            style["title"] = f"✗ {tool_name}"
+            style["title_color"] = "red"
+            style["border_color"] = "red"
+        else:  # running
+            if tool_name:
+                style["title"] = f"⚙ {tool_name}"
+            style["title_color"] = "cyan"
+            style["border_color"] = "cyan"
+        style.update(kwargs)
+        super().__init__(**style)
+        if text:
+            self.add_child(_make_text_component(text))
+
+    def render(self) -> str:
+        """渲染工具调用块。
+
+        running 状态时，使用 use_spinner 获取动态 spinner 字符，
+        更新 title 后再调用父类 render()。
+        """
+        if self._status == "running":
+            from ..components.animation import use_spinner
+            spinner = use_spinner({"type": "dots", "interval": 80})
+            self.title = f"{spinner['char']} {self.tool_name}"
+        return super().render()
+
+
+class ToolResultBlockBox(_MessageBlockBox):
+    """工具结果块 — round border + 成功/失败标记。
+
+    构造参数:
+        tool_name: 工具名称。
+        text: 结果文本内容。
+        success: 是否成功，默认 True。
+    """
+
+    def __init__(self, tool_name: str = "", text: str = "",
+                 success: bool = True, **kwargs: Any) -> None:
+        style = dict(_MSG_BLOCK_STYLES["tool_result"])
+        if success:
+            style["border_color"] = "green"
+            style["title"] = f"✓ {tool_name}"
+            style["title_color"] = "green"
+        else:
+            style["border_color"] = "red"
+            style["title"] = f"✗ {tool_name}"
+            style["title_color"] = "red"
+        style.update(kwargs)
+        super().__init__(**style)
+        if text:
+            self.add_child(_make_text_component(text))
+
+
 # VNode type → Box 子类映射
 _VNODE_TYPE_TO_CLASS: dict[str, type[_MessageBlockBox]] = {
     "thinking_block": ThinkingBlockBox,
     "answer_block": AnswerBlockBox,
     "user_messages": UserMsgBlockBox,
     "tool_outputs": ToolOutputBlockBox,
+    "tool_calls": ToolCallBlockBox,
+    "tool_results": ToolResultBlockBox,
     "notifications": NotificationBlockBox,
     "errors": ErrorBlockBox,
 }
@@ -252,6 +347,8 @@ __all__ = [
     "ToolOutputBlockBox",
     "ErrorBlockBox",
     "NotificationBlockBox",
+    "ToolCallBlockBox",
+    "ToolResultBlockBox",
     "TextContent",
     "_MSG_BLOCK_STYLES",
     "_is_narrow_screen",

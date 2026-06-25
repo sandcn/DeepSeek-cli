@@ -30,6 +30,7 @@ from ..commands.types import (
     CmdReasoning,
     CmdStatusUpdate,
     CmdSubagentFrame,
+    CmdToolCallUpdate,
     CmdToolCountDec,
     CmdToolCountInc,
     CmdToolFailInc,
@@ -64,6 +65,10 @@ class TuiState:
     user_messages: list[str] = field(default_factory=list)
     write_lines: list[str] = field(default_factory=list)
     displayed_messages: list[dict[str, Any]] = field(default_factory=list)
+
+    # ── 工具调用与结果 ──
+    tool_calls: list[dict] = field(default_factory=list)
+    tool_results: list[dict] = field(default_factory=list)  # [{"tool_id": str, "name": str, "status": str, "text": str}, ...]
 
     # ── 底部栏 ──
     status: StatusLine = field(default_factory=StatusLine)
@@ -197,6 +202,41 @@ def _reduce_status_update(state: TuiState, cmd: CmdStatusUpdate) -> TuiState:
     return replace(state, status=new_status)
 
 
+def _reduce_tool_call_update(state: TuiState, cmd: CmdToolCallUpdate) -> TuiState:
+    """工具调用状态更新 reducer — 根据 tool_id 更新或添加 tool_calls 条目。
+
+    条目格式: {"tool_id": str, "name": str, "status": str, "text": str}
+
+    当 cmd.status 为 "completed" 或 "failed" 时，同步追加条目到
+    tool_results 并从 tool_calls 中移除已完成条目。
+    """
+    new_calls = list(state.tool_calls)
+    if cmd.status in ("completed", "failed"):
+        new_results = list(state.tool_results)
+        new_results.append({
+            "tool_id": cmd.tool_id,
+            "name": cmd.name,
+            "status": cmd.status,
+            "text": cmd.text,
+        })
+        # 从 tool_calls 中移除已完成的
+        new_calls = [c for c in new_calls if c["tool_id"] != cmd.tool_id]
+        return replace(state, tool_calls=new_calls, tool_results=new_results)
+
+    # running: 更新或添加
+    updated = False
+    for i, call in enumerate(new_calls):
+        if call.get("tool_id") == cmd.tool_id:
+            new_calls[i] = {"tool_id": cmd.tool_id, "name": cmd.name,
+                            "status": cmd.status, "text": cmd.text}
+            updated = True
+            break
+    if not updated:
+        new_calls.append({"tool_id": cmd.tool_id, "name": cmd.name,
+                          "status": cmd.status, "text": cmd.text})
+    return replace(state, tool_calls=new_calls)
+
+
 # ═══════════════════════════════════════════════════════════
 # 步骤 6.2: TuiStore 不可变状态容器
 # ═══════════════════════════════════════════════════════════
@@ -213,7 +253,7 @@ class TuiStore:
     def __init__(self, initial_state: TuiState | None = None):
         self._state = initial_state if initial_state is not None else TuiState()
 
-        # 注册全部 15 种 reducer 纯函数
+        # 注册全部 reducer 纯函数
         self._reducers: dict[type, Reducer] = {
             CmdReasoning: _reduce_reasoning,
             CmdContent: _reduce_content,
@@ -232,6 +272,7 @@ class TuiStore:
             CmdSubagentFrame: _reduce_subagent_frame,
             CmdInputChanged: _reduce_input_changed,
             CmdStatusUpdate: _reduce_status_update,
+            CmdToolCallUpdate: _reduce_tool_call_update,
         }
 
     def dispatch(self, action: Any) -> TuiState:

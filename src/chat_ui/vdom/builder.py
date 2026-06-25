@@ -99,6 +99,22 @@ def build_vnode_tree(state: TuiState) -> VNode:
             props={"frames": state.subagent_frames},
         ))
 
+    # 工具调用（进行中）
+    if state.tool_calls:
+        content_children.append(VNode(
+            type="tool_calls",
+            key="tool_calls",
+            props={"calls": tuple(state.tool_calls)},
+        ))
+
+    # 工具结果（历史已完成）
+    if state.tool_results:
+        content_children.append(VNode(
+            type="tool_results",
+            key="tool_results",
+            props={"results": tuple(state.tool_results)},
+        ))
+
     if content_children:
         children.append(VNode(
             type="content_area",

@@ -9,6 +9,10 @@
   - backgroundColor 内容区背景填充
   - 每条边可见性控制（showTop / showBottom / showLeft / showRight）
   - padding / margin / width / height 尺寸控制
+  - title 边框标题（嵌入上边框行，带颜色控制）
+  - collapsible / collapsed 折叠模式（▶ 展开指示符）
+  - min_height / max_height 内容高度约束
+  - border_color_gradient 渐变色对（暂存属性）
 
 继承自 TuiComponent，复用现有 StyledText ANSI 渲染能力。
 """
@@ -153,8 +157,16 @@ class Box(TuiComponent):
         width: int | str | None — 内容区宽度。
                int: 固定列数（含 padding）。
                str: 百分比（如 '50%'），相对于终端宽度。
+               "auto": 等价于 None，自适应子组件内容宽度。
                None: 自适应子组件内容宽度。
         height: int | None — 内容区最小高度（行数）。None 表示自适应。
+        title: str | None — 边框标题，嵌入上边框行（如 ── ✦ 标题 ──）。
+        title_color: str | None — 标题前景色名。
+        collapsible: bool — 是否可折叠（默认 False）。
+        collapsed: bool — 当前折叠状态（默认 False）。True 时仅渲染上边框 + ▶ 指示符。
+        min_height: int | None — 最小内容高度（行数），不足补空行。
+        max_height: int | None — 最大内容高度（行数），超出截断并追加省略指示。
+        border_color_gradient: tuple[str, str] | None — 渐变色对（暂存属性）。
     """
 
     # ── 初始化 ──────────────────────────────────────────
@@ -216,8 +228,27 @@ class Box(TuiComponent):
         self.padding_y: int = props.get('padding_y', 0)
         self.margin_x: int = props.get('margin_x', 0)
         self.margin_y: int = props.get('margin_y', 0)
-        self.width: int | str | None = props.get('width', None)
+        width_raw = props.get('width', None)
+        if width_raw == "auto":
+            width_raw = None
+        self.width: int | str | None = width_raw
         self.height: int | str | None = props.get('height', None)
+
+        # 标题
+        self.title: str | None = props.get('title', None)
+        self.title_color: str | None = props.get('title_color', None)
+
+        # 折叠
+        self.collapsible: bool = props.get('collapsible', False)
+        self.collapsed: bool = props.get('collapsed', False)
+
+        # 高度约束
+        self.min_height: int | None = props.get('min_height', None)
+        self.max_height: int | None = props.get('max_height', None)
+
+        # 渐变色（暂存属性，渲染逻辑后续迭代实现）
+        self.border_color_gradient: tuple[str, str] | None = props.get(
+            'border_color_gradient', None)
 
     # ── 边框字符解析 ────────────────────────────────────
 
@@ -341,6 +372,21 @@ class Box(TuiComponent):
                 except (ValueError, OSError):
                     pass
 
+        # min_height：不足补空行
+        if self.min_height is not None:
+            content_height = max(content_height, self.min_height)
+
+        # max_height：超出截断
+        if self.max_height is not None and content_height > self.max_height:
+            keep = max(self.max_height - 1, 0)
+            content_lines = content_lines[:keep]
+            indicator_full = "... (truncated)"
+            indicator = (indicator_full
+                         if inner_width >= _visual_width(indicator_full)
+                         else "...")
+            content_lines.append(indicator)
+            content_height = len(content_lines)
+
         # ── 4. 解析边框字符 ──────────────────────────────
         chars = self._resolve_border_chars()
 
@@ -351,27 +397,19 @@ class Box(TuiComponent):
         for _ in range(self.margin_y):
             lines.append("")
 
-        # top 边框行
+        # ── 折叠模式：仅渲染上边框行（若 show_top 启用）──
+        if self.collapsed:
+            if self.show_top:
+                top_line = self._build_top_line(inner_width, chars, collapsed=True)
+                lines.append(top_line)
+            # margin bottom
+            for _ in range(self.margin_y):
+                lines.append("")
+            return "\n".join(lines)
+
+        # top 边框行（含标题）
         if self.show_top:
-            top_fg = self._border_fg("top")
-            top_bg = self._border_bg("top")
-            if inner_width > 0:
-                top_line = (
-                    _styled(chars["tl"], fg=top_fg, bg=top_bg,
-                            dim=self.border_dim_color)
-                    + _styled(chars["h"] * inner_width, fg=top_fg, bg=top_bg,
-                              dim=self.border_dim_color)
-                    + _styled(chars["tr"], fg=top_fg, bg=top_bg,
-                              dim=self.border_dim_color)
-                )
-            else:
-                # 极小宽度：仅渲染两个角
-                top_line = (
-                    _styled(chars["tl"], fg=top_fg, bg=top_bg,
-                            dim=self.border_dim_color)
-                    + _styled(chars["tr"], fg=top_fg, bg=top_bg,
-                              dim=self.border_dim_color)
-                )
+            top_line = self._build_top_line(inner_width, chars, collapsed=False)
             lines.append(top_line)
 
         # padding 顶行（含左右边框）
@@ -517,3 +555,98 @@ class Box(TuiComponent):
                 dim=self.border_dim_color))
 
         return "".join(parts)
+
+    # ── 上边框行构建 ────────────────────────────────────
+
+    def _build_top_line(self, inner_width: int,
+                        chars: dict[str, str],
+                        collapsed: bool = False) -> str:
+        """构建上边框行，可选嵌入标题。
+
+        Args:
+            inner_width: 内部宽度（不含左右角字符）。
+            chars: 边框字符映射。
+            collapsed: 折叠模式时追加 ▶ 展开指示符。
+
+        Returns:
+            带 ANSI 样式的上边框行字符串。
+        """
+        top_fg = self._border_fg("top")
+        top_bg = self._border_bg("top")
+
+        title = self.title
+        if title == "":
+            title = None
+
+        suffix = " ▶" if collapsed else ""
+
+        if title is None and not suffix:
+            # ── 无标题、非折叠：原有行为 ──────────────────
+            if inner_width > 0:
+                return (
+                    _styled(chars["tl"], fg=top_fg, bg=top_bg,
+                            dim=self.border_dim_color)
+                    + _styled(chars["h"] * inner_width, fg=top_fg, bg=top_bg,
+                              dim=self.border_dim_color)
+                    + _styled(chars["tr"], fg=top_fg, bg=top_bg,
+                              dim=self.border_dim_color)
+                )
+            else:
+                return (
+                    _styled(chars["tl"], fg=top_fg, bg=top_bg,
+                            dim=self.border_dim_color)
+                    + _styled(chars["tr"], fg=top_fg, bg=top_bg,
+                              dim=self.border_dim_color)
+                )
+
+        # ── 构建标题装饰片段 ─────────────────────────────
+        if title is not None:
+            styled_title = (_styled(title, fg=self.title_color)
+                            if self.title_color else title)
+            decorated = f" ✦ {styled_title} " + suffix
+        else:
+            decorated = suffix
+
+        deco_vw = _visual_width(decorated)
+        remaining = inner_width - deco_vw
+
+        if remaining < 0 and title is not None:
+            # 宽度不足：逐步截短 title 直到装饰文本视觉宽度 ≤ inner_width
+            prefix_w = _visual_width(" ✦ ")
+            suffix_full = " " + suffix
+            suffix_w = _visual_width(suffix_full)
+            available = inner_width - prefix_w - suffix_w
+            if available < 1:
+                # 极小宽度：退化为无标题
+                title = None
+                decorated = suffix
+                deco_vw = _visual_width(decorated)
+                remaining = inner_width - deco_vw
+            else:
+                truncated = ""
+                for ch in title:
+                    ch_w = 2 if unicodedata.east_asian_width(ch) in 'WF' else 1
+                    if _visual_width(truncated) + ch_w > available:
+                        break
+                    truncated += ch
+                title = truncated
+                styled_title = (_styled(title, fg=self.title_color)
+                                if self.title_color else title)
+                decorated = f" ✦ {styled_title} " + suffix
+                deco_vw = _visual_width(decorated)
+                remaining = inner_width - deco_vw
+
+        left_h = max(0, remaining // 2) if remaining > 0 else 0
+        right_h = max(0, remaining - left_h) if remaining > 0 else 0
+
+        return (
+            _styled(chars["tl"], fg=top_fg, bg=top_bg,
+                    dim=self.border_dim_color)
+            + _styled(chars["h"] * left_h, fg=top_fg, bg=top_bg,
+                      dim=self.border_dim_color)
+            + decorated
+            + _styled(chars["h"] * right_h, fg=top_fg, bg=top_bg,
+                      dim=self.border_dim_color)
+            + _styled(chars["tr"], fg=top_fg, bg=top_bg,
+                      dim=self.border_dim_color)
+        )
