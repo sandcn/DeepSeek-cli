@@ -123,7 +123,17 @@ def _reduce_tool_output(state: TuiState, cmd: CmdToolOutput) -> TuiState:
     # 若当前不在 tool 阶段（新工具开始），追加新条目而非合并到旧条目
     if outputs and state.phase == "tool":
         last_name, last_text = outputs[-1]
-        outputs[-1] = (last_name, last_text + cmd.text)
+        # ★ 修复：拼接时确保有换行分隔，防止相邻 chunk 行粘连。
+        #   EventDispatcher._on_tool_output 中去掉了 chunk 尾部 \n，
+        #   若直接 last_text + cmd.text 会导致流式场景（每个 chunk 一行）
+        #   所有输出行粘合在一起（如 "\n$ ls" + "file1" → "\n$ lsfile1"）。
+        #   当 last_text 不以 \n 结尾且 cmd.text 不以 \n 开头时插入 \n 分隔。
+        if (last_text and not last_text.endswith('\n')
+                and not cmd.text.startswith('\n')):
+            separator = '\n'
+        else:
+            separator = ''
+        outputs[-1] = (last_name, last_text + separator + cmd.text)
     else:
         outputs.append(("", cmd.text))
     return replace(state, tool_outputs=outputs, phase="tool")

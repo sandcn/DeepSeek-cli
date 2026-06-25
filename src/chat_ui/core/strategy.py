@@ -197,6 +197,7 @@ class VNodeRenderStrategy:
         self._last_write_lines_count: int = 0
         self._last_user_messages_count: int = 0
         self._last_tool_outputs: tuple = ()
+        self._last_tool_output_text: str = ""  # tool_outputs 最后一项已渲染文本（增量渲染用）
         self._last_notifications_count: int = 0
         self._last_errors_count: int = 0
         self._last_tool_calls: dict = {}
@@ -349,11 +350,18 @@ class VNodeRenderStrategy:
                             for output in outputs[old_len:]:
                                 _, text = output  # (name, text) 元组
                                 self._renderer.render(CmdToolOutput(text=text))
+                            if outputs:
+                                self._last_tool_output_text = outputs[-1][1]
                         elif new_len == old_len and old_len > 0:
-                            # 条目数不变但内容变了（最后一项被追加修改）
+                            # 条目数不变但内容变了（reducer 拼接文本到最后一个条目）
+                            # ★ 增量渲染：仅输出新增部分（类似 answer_block 的 delta 逻辑），
+                            #   避免每次 UPDATE 都重新渲染整个累积文本导致内容重复显示。
                             if outputs[-1] != self._last_tool_outputs[-1]:
                                 _, text = outputs[-1]
-                                self._renderer.render(CmdToolOutput(text=text))
+                                delta = text[len(self._last_tool_output_text):]
+                                if delta:
+                                    self._renderer.render(CmdToolOutput(text=delta))
+                                self._last_tool_output_text = text
                         self._last_tool_outputs = outputs
                     elif vnode.type == "notifications":
                         items = vnode.props.get("items", ())
