@@ -208,7 +208,7 @@ def _reduce_write_line(state: TuiState, cmd: CmdWriteLine) -> TuiState:
 
 @register_reducer(CmdDisplayMsgs)
 def _reduce_display_msgs(state: TuiState, cmd: CmdDisplayMsgs) -> TuiState:
-    return replace(state, displayed_messages=list(cmd.messages))
+    return replace(state, displayed_messages=list(cmd.messages), user_messages=[])
 
 
 @register_reducer(CmdToolCountInc)

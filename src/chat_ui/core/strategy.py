@@ -483,6 +483,10 @@ class VNodeRenderStrategy:
                     if vnode.type == "user_messages":
                         msgs = vnode.props.get("messages", ())
                         new_count = len(msgs)
+                        # user_messages 被清除后重建时（如 editmsg 截断），
+                        # _last_user_messages_count 残留旧值，需重置计数器
+                        if new_count < self._last_user_messages_count:
+                            self._last_user_messages_count = 0
                         if new_count > self._last_user_messages_count:
                             for msg in msgs[self._last_user_messages_count:]:
                                 if self._output:
