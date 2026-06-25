@@ -31,6 +31,7 @@ from .ports.chat_ui import get_default_chat_ui_port
 from ..chat_ui import get_active_chat_ui  # set_panel_context 仍需 ChatUIConsumer 实例（ChatUIPort 未暴露）
 from ..config import STAGGER_MIN_DELAY, STAGGER_MAX_DELAY
 from .constants import RED, RESET, AGENT_TYPE_ABBREV
+from ..ui.parallel._tool_icons import AGENT_TYPE_COLORS
 
 _logger = logging.getLogger(__name__)
 
@@ -226,7 +227,7 @@ class ParallelExecutor:
                 abbr = AGENT_TYPE_ABBREV.get(agent_type, "??")
                 result_text = r.get(_RESULT_KEY, "")
                 error = r.get(_ERROR_KEY, "")
-                renderer.write(f"### {i}. {RED}[{abbr}]{RESET} {desc}")
+                renderer.write(f"### {i}. {AGENT_TYPE_COLORS.get(agent_type, RESET)}[{abbr}]{RESET} {desc}")
                 if error:
                     renderer.write(f"\n> 错误: {error}\n")
                 if result_text:
@@ -268,7 +269,7 @@ class ParallelExecutor:
             result_text = r.get(_RESULT_KEY, "")
             error = r.get(_ERROR_KEY, "")
 
-            md_parts.append(f"### {i}. {RED}[{abbr}]{RESET} {desc}")
+            md_parts.append(f"### {i}. {AGENT_TYPE_COLORS.get(agent_type, RESET)}[{abbr}]{RESET} {desc}")
             if error:
                 md_parts.append(f"\n> 错误: {error}\n")
             if result_text:

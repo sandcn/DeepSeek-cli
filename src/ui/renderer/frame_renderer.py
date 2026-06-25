@@ -48,7 +48,6 @@ _C_BATCH     = "\033[38;5;140m"  # 淡紫 — 批量工具调用
 _C_DIMMER    = "\033[38;5;240m"  # 暗灰 — 辅助信息
 _C_DIMMEST   = "\033[38;5;238m"  # 更深灰 — 分隔线/边框
 _C_SUMMARY_DIM = "\033[38;5;245m"  # 中灰 — 摘要行次要信息
-_C_BRANCH    = "\033[38;5;239m"  # 灰 — 树状连接线
 _C_SPINNER   = "\033[38;5;221m"  # 金色 — spinner 动画
 
 # ── 渲染器 ──────────────────────────────────────────────
@@ -205,8 +204,7 @@ class FrameRenderer:
             slot = slots_snapshot.get(label)
             if slot is None:
                 continue
-            is_last = (idx == len(order) - 1)
-            lines.extend(self._build_agent_lines(slot, now, final, is_last))
+            lines.extend(self._build_agent_lines(slot, now, final))
 
         # 清理尾部空行
         while lines and lines[-1] == "":
@@ -256,7 +254,7 @@ class FrameRenderer:
         has_running: bool,
         final: bool,
     ) -> str:
-        """构建增强摘要行 — 彩色进度条 + 分层信息。
+        """构建摘要行 — Claude Code 极简格式。
 
         从 render() 中提取，负责速度计算和摘要文本组装。
         """
@@ -268,39 +266,24 @@ class FrameRenderer:
             speed_value = 0.0
         speed_str = self._text_formatter.format_compact_speed(speed_value)
 
-        sep = f" {_C_DIMMER}·{_C_RESET} "
-
-        if done_count < total_agents and not final:
-            # ── 运行中：进度条 + 统计 ──
-            bar_width = min(12, total_agents * 4)
-            filled = int(bar_width * done_count / total_agents) if total_agents else 0
-            bar = (
-                _C_RUNNING + "▰" * filled
-                + _C_DIMMEST + "▱" * (bar_width - filled)
-                + _C_RESET
-            ) if filled > 0 else (
-                _C_DIMMEST + "▱" * bar_width + _C_RESET
-            )
+        if done_count < total_agents:
+            # ── 运行中 ──
             icon = f"{_C_RUNNING}{self._summary_icon_running}{_C_RESET}"
             summary = (
                 f"{icon} {_C_SUMMARY_DIM}{total_agents} agents{_C_RESET}"
-                f" {bar}"
-                f"{sep}{_C_SUMMARY_DIM}{output_str} out{_C_RESET}"
-                f"{sep}{_C_SUMMARY_DIM}{speed_str}{_C_RESET}"
-                f"{sep}{_C_SUMMARY_DIM}{elapsed_str}{_C_RESET}"
-                f"{sep}{_C_RUNNING}{done_count}/{total_agents} done{_C_RESET}"
+                f" {self._summary_separator} {_C_SUMMARY_DIM}{output_str} out{_C_RESET}"
+                f" {self._summary_separator} {_C_SUMMARY_DIM}{speed_str}{_C_RESET}"
+                f" {self._summary_separator} {_C_SUMMARY_DIM}{elapsed_str}{_C_RESET}"
+                f" {self._summary_separator} {_C_RUNNING}{done_count}/{total_agents} done{_C_RESET}"
             )
         else:
-            # ── 完成：全绿进度条 ──
-            bar_width = min(12, total_agents * 4)
-            bar = _C_DONE + "▰" * bar_width + _C_RESET
+            # ── 完成 ──
             icon = f"{_C_DONE}{self._summary_icon_done}{_C_RESET}"
             summary = (
                 f"{icon} {_C_DONE}{total_agents} agents{_C_RESET}"
-                f" {bar}"
-                f"{sep}{_C_SUMMARY_DIM}{output_str} out{_C_RESET}"
-                f"{sep}{_C_SUMMARY_DIM}{elapsed_str}{_C_RESET}"
-                f"{sep}{_C_DONE}{done_count}/{total_agents} done{_C_RESET}"
+                f" {self._summary_separator} {_C_SUMMARY_DIM}{output_str} out{_C_RESET}"
+                f" {self._summary_separator} {_C_SUMMARY_DIM}{elapsed_str}{_C_RESET}"
+                f" {self._summary_separator} {_C_DONE}{done_count}/{total_agents} done{_C_RESET}"
             )
         return self.truncate_to_width(summary)
 
@@ -308,7 +291,6 @@ class FrameRenderer:
         self,
         slot: AgentSlot,
         now: float,
-        cont: str,
         final: bool,
     ) -> List[str]:
         """构建阶段指示行 — 彩色分类。返回行列表（可能为空）。"""
@@ -318,16 +300,16 @@ class FrameRenderer:
             phase_time = f"{phase_elapsed:.1f}s"
             if slot.model_phase == "thinking":
                 phase_lines.append(self.truncate_to_width(
-                    f"{_C_DIMMER}{cont}   …thinking  {phase_time}{_C_RESET}"))
+                    f"{_C_DIMMER}    …thinking  {phase_time}{_C_RESET}"))
             elif slot.model_phase == "answering":
                 phase_lines.append(self.truncate_to_width(
-                    f"{_C_DIMMER}{cont}   {_C_ANSWERING}…answering{_C_DIMMER}  {phase_time}{_C_RESET}"))
+                    f"{_C_DIMMER}    {_C_ANSWERING}…answering{_C_DIMMER}  {phase_time}{_C_RESET}"))
             elif slot.model_phase == "parsing":
                 phase_lines.append(self.truncate_to_width(
-                    f"{_C_DIMMER}{cont}   {_C_PARSING}…parsing{_C_DIMMER}  {slot.model_info}{_C_RESET}"))
+                    f"{_C_DIMMER}    {_C_PARSING}…parsing{_C_DIMMER}  {slot.model_info}{_C_RESET}"))
             elif slot.model_phase == "batch":
                 phase_lines.append(self.truncate_to_width(
-                    f"{_C_DIMMER}{cont}   {_C_BATCH}…batch{_C_DIMMER}  {slot.model_info}  {phase_time}{_C_RESET}"))
+                    f"{_C_DIMMER}    {_C_BATCH}…batch{_C_DIMMER}  {slot.model_info}  {phase_time}{_C_RESET}"))
         return phase_lines
 
     def _build_agent_lines(
@@ -335,16 +317,12 @@ class FrameRenderer:
         slot: AgentSlot,
         now: float,
         final: bool = False,
-        is_last: bool = False,
     ) -> List[str]:
         """构建单个 Agent 的增强显示行。
 
-        使用 256 色 + braille spinner + 树形连接线 + 彩色类型标签。
+        使用 256 色 + braille spinner + 彩色类型标签（Claude Code 极简风格）。
         """
         lines: list[str] = []
-        # 树形连接线：末行用 └─，非末行用 ├─，延续用 │
-        branch = "  " if is_last else " │"
-        cont   = "   " if is_last else " │ "
 
         elapsed = (slot.end_time or now) - slot.start_time
         elapsed_str = self._text_formatter.format_duration(elapsed)
@@ -363,13 +341,13 @@ class FrameRenderer:
         if slot.status == "done":
             icon = f"{_C_DONE}✔{_C_RESET}"
             suffix = f"  {_C_DIMMER}{output_str}{_C_RESET}  {_C_DIMMER}{elapsed_str}{_C_RESET}"
-            title = f"{_C_BRANCH}{branch}{_C_RESET} {icon} {type_tag} {slot.description}{suffix}"
+            title = f"  {icon} {type_tag} {slot.description}{suffix}"
         elif slot.status == "fail":
             icon = f"{_C_FAIL}✖{_C_RESET}"
             suffix = f"  {_C_DIMMER}{elapsed_str}{_C_RESET}"
-            title = f"{_C_BRANCH}{branch}{_C_RESET} {icon} {type_tag} {slot.description}{suffix}"
+            title = f"  {icon} {type_tag} {slot.description}{suffix}"
         else:
-            # 运行中 — braille spinner 动画（8 帧循环）
+            # 运行中 — braille spinner 动画（10 帧循环）
             if not final:
                 spinner_idx = self._frame % len(self._spinner_frames)
                 spinner_char = self._spinner_frames[spinner_idx]
@@ -381,17 +359,17 @@ class FrameRenderer:
                 f"  {_C_SUMMARY_DIM}{speed_str}{_C_RESET}"
                 f"  {_C_DIMMER}{elapsed_str}{_C_RESET}"
             )
-            title = f"{_C_BRANCH}{branch}{_C_RESET} {dot} {type_tag} {slot.description}{suffix}"
+            title = f"  {dot} {type_tag} {slot.description}{suffix}"
         lines.append(self.truncate_to_width(title))
 
         # ── 阶段指示（彩色） ──
-        lines.extend(self._build_phase_line(slot, now, cont, final))
+        lines.extend(self._build_phase_line(slot, now, final))
 
         # ── 工具历史（倒序：最近工具在最上面，最多显示最近 max_history 条） ──
         if final or slot.status not in ("done", "fail"):
             history = slot.tool_history[-self.max_history:]
             for rec in reversed(history):
-                lines.append(self._format_tool_record(rec, now, cont))
+                lines.append(self._format_tool_record(rec, now))
 
         # ── 结果文本（仅 final 帧显示） ──
         if final:
@@ -404,7 +382,7 @@ class FrameRenderer:
                 result_preview = self._truncate_result(display_text)
                 for line in result_preview:
                     lines.append(self.truncate_to_width(
-                        f"{_C_DIMMER}{cont}   {line}{_C_RESET}"))
+                        f"{_C_DIMMER}    {line}{_C_RESET}"))
 
         return lines
 
@@ -425,7 +403,7 @@ class FrameRenderer:
             total += len(line[:remaining])
         return result
 
-    def _format_tool_record(self, rec: ToolRecord, now: float, cont: str = "   ") -> str:
+    def _format_tool_record(self, rec: ToolRecord, now: float) -> str:
         """格式化工具记录 — 彩色分类 + 图标。
 
         工具根据类别使用不同颜色（shell=绿/file_read=蓝/file_write=粉/search=金/agent=浅蓝/delete=橙红）。
@@ -448,15 +426,15 @@ class FrameRenderer:
             tool_abbr = f"{tool_color}{display_name}{_C_RESET}"
 
         detail_display = f" {_C_DIMMER}{detail}{_C_RESET}" if detail else ""
-        prefix = f"{_C_BRANCH}{cont}{_C_RESET}   "
+        prefix = "    "
 
         if rec.phase == "parsing":
-            line = f"{prefix}{_C_PARSING}◌{_C_RESET} {tool_abbr}{detail_display}"
+            line = f"{prefix}{_C_PARSING}{tool_abbr}{detail_display}"
         elif rec.phase == "running":
-            line = f"{prefix}{_C_RUNNING}●{_C_RESET} {tool_abbr}{detail_display}  {_C_DIMMER}{time_str}{_C_RESET}"
+            line = f"{prefix}{_C_RUNNING}{tool_abbr}{detail_display}  {_C_DIMMER}{time_str}{_C_RESET}"
         elif rec.phase == "done":
-            line = f"{prefix}{_C_DONE}✔{_C_RESET} {tool_abbr}{detail_display}  {_C_DIMMER}{time_str}{_C_RESET}"
+            line = f"{prefix}{_C_DONE}{tool_abbr}{detail_display}  {_C_DIMMER}{time_str}{_C_RESET}"
         else:
-            line = f"{prefix}{_C_FAIL}✖{_C_RESET} {tool_abbr}{detail_display}  {_C_DIMMER}{time_str}{_C_RESET}"
+            line = f"{prefix}{_C_FAIL}{tool_abbr}{detail_display}  {_C_DIMMER}{time_str}{_C_RESET}"
 
         return self.truncate_to_width(line)

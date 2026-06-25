@@ -31,11 +31,11 @@ DETAILED_MODE_CONFIG = {
 # ── 摘要行样式 ──────────────────────────────────────
 
 SUMMARY_SEPARATOR = "·"
-SUMMARY_ICON_RUNNING = "⬡"
+SUMMARY_ICON_RUNNING = "⏺"
 SUMMARY_ICON_DONE = "✔"
 
-# ── Spinner 动画帧（braille 点阵，8 帧循环） ────────────
-SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧"]
+# ── Spinner 动画帧（braille 点阵，10 帧循环） ────────────
+SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
 
 
 # ── 显示配置类 ──────────────────────────────────────

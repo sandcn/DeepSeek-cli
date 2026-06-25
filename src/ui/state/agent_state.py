@@ -244,7 +244,7 @@ class AgentStateStore:
             slot = self._slots.get(label)
             if slot:
                 slot.model_phase = "parsing"
-                slot.model_info = f"{tool_names} {tokens}t {elapsed:.1f}s"
+                slot.model_info = f"{tool_names} {elapsed:.1f}s"
                 self._version += 1
 
     def set_result(self, label: str, result_text: str = "", error: str = "") -> None:

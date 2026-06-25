@@ -11,7 +11,8 @@ import logging
 from typing import List, Dict, Any
 
 from .subagent import SubAgent
-from .constants import AGENT_TYPE_ABBREV, RED, RESET
+from .constants import AGENT_TYPE_ABBREV, RESET
+from ..ui.parallel._tool_icons import AGENT_TYPE_COLORS
 
 _logger = logging.getLogger(__name__)
 
@@ -96,7 +97,8 @@ class SubAgentSpawner:
             abbr = AGENT_TYPE_ABBREV.get(agent_type, "??")
             prompt = spec.get("prompt", "")
             if prompt:
-                md_parts.append(f"### {i}. {RED}[{abbr}]{RESET} {desc}")
+                type_color = AGENT_TYPE_COLORS.get(agent_type, RESET)
+                md_parts.append(f"### {i}. {type_color}[{abbr}]{RESET} {desc}")
                 md_parts.append(prompt)
 
         md_text = "\n".join(md_parts)
@@ -145,7 +147,8 @@ class SubAgentSpawner:
                     abbr = AGENT_TYPE_ABBREV.get(agent_type, "??")
                     prompt = spec.get("prompt", "")
                     if prompt:
-                        renderer.write(f"### {i}. {RED}[{abbr}]{RESET} {desc}")
+                        type_color = AGENT_TYPE_COLORS.get(agent_type, RESET)
+                        renderer.write(f"### {i}. {type_color}[{abbr}]{RESET} {desc}")
                         renderer.write(prompt)
             finally:
                 renderer.close()
