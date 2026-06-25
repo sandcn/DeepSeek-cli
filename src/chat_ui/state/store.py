@@ -179,9 +179,9 @@ def _reduce_error(state: TuiState, cmd: CmdError) -> TuiState:
 
 
 def _reduce_subagent_frame(state: TuiState, cmd: CmdSubagentFrame) -> TuiState:
-    frames = list(state.subagent_frames)
-    frames.append(tuple(cmd.frame_lines))
-    return replace(state, subagent_frames=tuple(frames))
+    """仅保留最新帧 — SubagentFrameRenderer 基于 last_lines 做增量原地刷新，
+    历史帧数据对渲染无意义且会无限增长导致内存泄漏。"""
+    return replace(state, subagent_frames=(tuple(cmd.frame_lines),))
 
 
 def _reduce_subagent_slot_update(state: TuiState, cmd: CmdSubagentSlotUpdate) -> TuiState:

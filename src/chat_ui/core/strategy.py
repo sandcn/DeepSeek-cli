@@ -381,14 +381,17 @@ class VNodeRenderStrategy:
                             self._last_write_lines_count = new_count
                     elif vnode.type == "subagent_frames":
                         frames = vnode.props.get("frames", ())
+                        # 仅渲染最新帧 — SubagentFrameRenderer 依赖 last_lines
+                        # 进行增量原地刷新（ANSI 转义序列坐标计算基于上一帧行数），
+                        # 全量重放历史帧会因 last_lines 过期导致定位错误。
+                        # VNode diff 保证仅在帧内容变化时才触发此回调。
                         if frames:
                             from ..components.subagent_frame import SubagentFrameRenderer
                             renderer = SubagentFrameRenderer()
-                            for frame in frames:
-                                try:
-                                    renderer.render(frame, self._renderer.output_adapter)
-                                except Exception:
-                                    pass
+                            try:
+                                renderer.render(frames[-1], self._renderer.output_adapter)
+                            except Exception:
+                                pass
                     elif vnode.type == "tool_calls":
                         try:
                             calls = vnode.props.get("calls", ())
