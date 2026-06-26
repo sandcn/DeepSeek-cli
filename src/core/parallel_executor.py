@@ -520,6 +520,17 @@ class ParallelExecutor:
         coros = [self._run_one(sa, display, stagger=i) for i, sa in enumerate(agents)]
         raw_results = await asyncio.gather(*coros, return_exceptions=True)
 
+        # ★ 所有 agent 已完成 — 立即清除 subagent 槽位，防止信息残留到 TUI 界面
+        for label in list(display._slots.keys()):
+            display.remove_agent_slot(label)
+        # 排空命令队列，确保渲染线程处理清除命令
+        port = get_default_chat_ui_port()
+        if port.is_active():
+            try:
+                port.flush()
+            except Exception:
+                _logger.warning("_run_agents port.flush() 异常", exc_info=True)
+
         results = []
         for r in raw_results:
             if isinstance(r, BaseException):

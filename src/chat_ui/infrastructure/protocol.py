@@ -60,7 +60,7 @@ class PanelContext(Protocol):
     """parallel/display.py 通过此协议访问 ChatUI，避免直接 import chat_ui。
 
     ChatUIConsumer 隐式满足此协议（拥有 bottom_bar、output_adapter、push_cmd、
-    claude_style_enabled）。
+    flush、claude_style_enabled）。
     """
 
     @property
@@ -70,3 +70,4 @@ class PanelContext(Protocol):
     @property
     def claude_style_enabled(self) -> bool: ...
     def push_cmd(self, cmd: Any) -> None: ...
+    def flush(self, timeout: float | None = 5.0) -> None: ...

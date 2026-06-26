@@ -304,3 +304,93 @@ class TestToolHistorySerialization:
         assert set(rec.keys()) == expected_keys, (
             f"tool_history dict 键应为 {expected_keys}，实际为 {set(rec.keys())}"
         )
+
+class TestStopClearsSlotsAndPushCmd:
+    """stop() 清除 subagent 槽位和 push_cmd 回调的测试。"""
+
+    def test_stop_clears_slots_and_push_cmd(self):
+        """stop() 后 _slots 应被清空、_push_cmd 应为 None。"""
+        from unittest.mock import MagicMock
+        d = ParallelDisplay()
+        d.add_agent("agent-1", "test agent")
+        d.add_agent("agent-2", "test agent 2")
+        mock_ctx = MagicMock()
+        mock_ctx.output_adapter = MagicMock()
+        mock_ctx.output_adapter.width = 120
+        mock_ctx.push_cmd = MagicMock()
+        d.set_panel_context(mock_ctx)
+        d.start()
+        assert len(d._slots) == 2
+        assert d._push_cmd is not None
+        d.stop()
+        assert len(d._slots) == 0, "stop() 应清空 _slots"
+        assert d._push_cmd is None, "stop() 应将 _push_cmd 置为 None"
+
+    def test_stop_exception_protection(self):
+        """stop() 中 remove_agent_slot 抛异常时 _slots 仍被清空。"""
+        from unittest.mock import MagicMock
+        d = ParallelDisplay()
+        d.add_agent("agent-1", "test agent")
+        mock_ctx = MagicMock()
+        mock_ctx.output_adapter = MagicMock()
+        mock_ctx.output_adapter.width = 120
+        # push_cmd 抛异常模拟 remove_agent_slot 失败
+        mock_ctx.push_cmd = MagicMock(side_effect=RuntimeError("push failed"))
+        d.set_panel_context(mock_ctx)
+        d.start()
+        assert len(d._slots) == 1
+        # 不应抛异常
+        d.stop()
+        assert len(d._slots) == 0, "即使 remove_agent_slot 抛异常，_slots 也应被清空"
+        assert d._push_cmd is None, "即使 remove_agent_slot 抛异常，_push_cmd 也应置 None"
+        assert d._finished is True
+
+
+class TestAgentStatusExceptionProtection:
+    """update_agent_status 和 set_result 中 remove_agent_slot 异常保护的测试。"""
+
+    def test_update_agent_status_handles_push_cmd_exception(self):
+        """update_agent_status 中 remove_agent_slot 抛异常不应传播。
+
+        _push_slot_update 先于 remove_agent_slot 调用同一 _push_cmd 回调。
+        模拟前两次调用成功（_push_slot_update + 可能的其他调用），
+        第三次调用抛异常（remove_agent_slot），验证异常被捕获且不传播。
+        """
+        from unittest.mock import MagicMock
+        d = ParallelDisplay()
+        d.add_agent("agent-1", "test agent")
+        mock_ctx = MagicMock()
+        mock_ctx.output_adapter = MagicMock()
+        mock_ctx.output_adapter.width = 120
+        # 第一次成功（_push_slot_update），第二次抛异常（remove_agent_slot）
+        call_count = [0]
+
+        def _push_side_effect(*args, **kwargs):
+            call_count[0] += 1
+            if call_count[0] >= 2:
+                raise RuntimeError("push failed on remove_agent_slot")
+
+        mock_ctx.push_cmd = MagicMock(side_effect=_push_side_effect)
+        d.set_panel_context(mock_ctx)
+        d.start()
+        # 不应抛异常
+        d.update_agent_status("agent-1", "done")
+        # 即使推送失败，本地状态仍应更新
+        slot = d._slots.get("agent-1")
+        assert slot is not None, "即使推送失败，本地 slot 仍应存在"
+        assert slot["status"] == "done"
+
+    def test_set_result_handles_push_cmd_exception(self):
+        """set_result 中 push_cmd 抛异常不应传播。"""
+        from unittest.mock import MagicMock
+        d = ParallelDisplay()
+        d.add_agent("agent-1", "test agent")
+        d._slots["agent-1"]["status"] = "done"
+        mock_ctx = MagicMock()
+        mock_ctx.output_adapter = MagicMock()
+        mock_ctx.output_adapter.width = 120
+        mock_ctx.push_cmd = MagicMock(side_effect=RuntimeError("push failed"))
+        d.set_panel_context(mock_ctx)
+        d.start()
+        # 不应抛异常
+        d.set_result("agent-1", result_text="done result")

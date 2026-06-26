@@ -66,6 +66,14 @@ class ChatUIPort(Protocol):
         """
         ...
 
+    def flush(self, timeout: float | None = 5.0) -> None:
+        """排空渲染命令队列，确保所有待处理命令被渲染线程消费。
+
+        Args:
+            timeout: 等待队列排空的超时时间（秒），None 表示无限等待。
+        """
+        ...
+
     def display_messages(self, data: list[dict], agent: Any = None, idx_map: list[int] | None = None, speed: int = 0) -> None:
         """以流式打字效果显示消息列表。
 
@@ -112,6 +120,9 @@ class NullChatUIPort(ChatUIPort):
     def get_panel_context(self) -> Any | None:
         return None
 
+    def flush(self, timeout: float | None = 5.0) -> None:
+        pass
+
     def display_messages(self, data: list[dict], agent: Any = None, idx_map: list[int] | None = None, speed: int = 0) -> None:
         pass
 
@@ -150,6 +161,9 @@ class DefaultChatUIPort(ChatUIPort):
 
     def get_panel_context(self) -> Any | None:
         return self._port.get_panel_context()
+
+    def flush(self, timeout: float | None = 5.0) -> None:
+        self._port.flush(timeout=timeout)
 
     def display_messages(self, data: list[dict], agent: Any = None, idx_map: list[int] | None = None, speed: int = 0) -> None:
         self._port.display_messages(data, agent=agent, idx_map=idx_map, speed=speed)

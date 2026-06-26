@@ -305,9 +305,12 @@ class _BottomBar(_StatusMixin):
         预计算行数（每个 slot 1 行 + tool_history 最多 3 行/每 slot），
         供 _bottom_lines 计算使用。
         """
+        if slots == self._subagent_slots:
+            return
         self._subagent_slots = slots
         if not slots:
             self._subagent_line_count = 0
+            self._subagent_slots_dirty = True
             return
         count = 0
         for slot in slots.values():
@@ -392,6 +395,9 @@ class _BottomBar(_StatusMixin):
         self._last_bottom_lines = _BOTTOM_MIN_LINES
         self._last_height = 0
         self._last_sync_height = 0
+        self._subagent_slots = {}
+        self._subagent_line_count = 0
+        self._subagent_slots_dirty = False
 
     # ── 刷新 ──────────────────────────────────────────────
 

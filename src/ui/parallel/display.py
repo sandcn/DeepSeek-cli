@@ -112,7 +112,10 @@ class ParallelDisplay(BaseDisplay):
                     rec["end_time"] = time.time()
         self._push_slot_update(label)
         if status in ("done", "fail"):
-            self.remove_agent_slot(label)
+            try:
+                self.remove_agent_slot(label)
+            except Exception:
+                _logger.warning("update_agent_status 清除 slot '%s' 失败", label, exc_info=True)
         self._schedule_refresh()
 
     def update_status(self, label: str, status: str):
@@ -269,7 +272,10 @@ class ParallelDisplay(BaseDisplay):
             slot["result_text"] = result_text
             slot["result_error"] = error
             if slot["status"] in ("done", "fail"):
-                self.remove_agent_slot(label)
+                try:
+                    self.remove_agent_slot(label)
+                except Exception:
+                    _logger.warning("set_result 清除 slot '%s' 失败", label, exc_info=True)
             else:
                 self._push_slot_update(label)
             self._schedule_refresh()
@@ -335,8 +341,22 @@ class ParallelDisplay(BaseDisplay):
             return
         self._finished = True
         self._stopped = True
+        # 清除所有残留的 subagent 槽位，防止上一轮信息残留到 TUI 界面
+        for label in self._slots:
+            try:
+                self.remove_agent_slot(label)
+            except Exception:
+                _logger.warning("stop() 清除 slot '%s' 失败", label, exc_info=True)
+        self._slots.clear()
+        self._push_cmd = None
         if self._adapter is not None:
             self._adapter.flush()
+        # 排空命令队列，确保所有清除命令被渲染线程处理
+        if self._panel_ctx is not None:
+            try:
+                self._panel_ctx.flush()
+            except Exception:
+                _logger.warning("stop() panel_ctx.flush() 失败", exc_info=True)
         self._adapter = None
 
     async def await_stop(self, timeout: float = 2.0):

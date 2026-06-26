@@ -1115,3 +1115,54 @@ class TestCompletionShowHideWithTracker(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+class TestSubagentSlotsStateManagement(unittest.TestCase):
+    """set_subagent_slots 变更检测和 teardown 状态清理的测试。"""
+
+    def setUp(self):
+        self.bb = _BottomBar()
+
+    def test_set_subagent_slots_same_value_noop(self):
+        """连续传入相同 slots 应触发 early return，不反复设 dirty。"""
+        slots = {"agent-1": {"description": "test", "status": "running",
+                             "tool_history": []}}
+        self.bb.set_subagent_slots(slots)
+        assert self.bb._subagent_slots_dirty is True
+        # 重置 dirty 模拟 force_redraw 已完成
+        self.bb._subagent_slots_dirty = False
+        # 再次传入相同 slots
+        self.bb.set_subagent_slots(slots)
+        assert self.bb._subagent_slots_dirty is False, (
+            "传入相同 slots 不应重新设置 dirty 标记"
+        )
+
+    def test_set_subagent_slots_empty_repeat_noop(self):
+        """连续传入空 dict 应触发 early return。"""
+        # _subagent_slots 初始为 {}，需先设置为非空值才能使空 dict 成为有效变更
+        self.bb._subagent_slots = {"agent-1": {"description": "x", "status": "idle",
+                                                "tool_history": []}}
+        self.bb.set_subagent_slots({})
+        assert self.bb._subagent_slots_dirty is True
+        self.bb._subagent_slots_dirty = False
+        self.bb.set_subagent_slots({})
+        assert self.bb._subagent_slots_dirty is False, (
+            "重复传入空 dict 不应重新设置 dirty 标记"
+        )
+
+    def test_teardown_clears_subagent_state(self):
+        """teardown 后 subagent 状态应重置为初始值。"""
+        self.bb._active = True
+        slots = {"agent-1": {"description": "test", "status": "running",
+                             "tool_history": [{"tool_name": "bash", "detail": "",
+                                               "start_time": 0, "end_time": 0,
+                                               "phase": "running"}]}}
+        self.bb.set_subagent_slots(slots)
+        assert self.bb._subagent_line_count > 0
+        assert len(self.bb._subagent_slots) > 0
+        # 模拟 teardown（需要 mock stdout）
+        import io, sys
+        with patch.object(sys, '__stdout__', io.StringIO()):
+            self.bb.teardown()
+        assert self.bb._subagent_slots == {}, "teardown 应清空 _subagent_slots"
+        assert self.bb._subagent_line_count == 0, "teardown 应重置 _subagent_line_count"
+        assert self.bb._subagent_slots_dirty is False, "teardown 应重置 _subagent_slots_dirty"

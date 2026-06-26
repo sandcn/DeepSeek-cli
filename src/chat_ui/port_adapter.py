@@ -50,6 +50,11 @@ class ChatUIPortAdapter(ChatUIPort):
         """返回 ChatUIConsumer 自身作为 PanelContext（满足 PanelContext Protocol）。"""
         return self._consumer
 
+    def flush(self, timeout: float | None = 5.0) -> None:
+        """排空命令队列，委托给 ChatUIConsumer.flush()。"""
+        if self._consumer:
+            self._consumer.flush(timeout=timeout)
+
     def display_messages(self, data: list[dict], agent: Any = None, idx_map=None, speed: int = 0) -> None:
         """委托给 chat_ui 的 message_display 模块。"""
         from .infrastructure.message_display import _display_messages
