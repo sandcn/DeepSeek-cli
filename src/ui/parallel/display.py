@@ -88,7 +88,7 @@ class ParallelDisplay(BaseDisplay):
             "tool_history": [], "total_calls": 0,
             "input_tokens": 0, "output_tokens": 0,
             "live_input_tokens": 0, "live_output_tokens": 0,
-            "last_speed": 0.0, "model_phase": "", "model_info": "",
+            "last_speed": 0.0, "model_phase": "", "model_phase_start": 0.0, "model_info": "",
             "result_text": "", "result_error": "",
         }
         self._push_slot_update(label)
@@ -125,7 +125,7 @@ class ParallelDisplay(BaseDisplay):
         slot = self._slots.get(label)
         if slot:
             if phase != slot["model_phase"]:
-                pass  # model_phase_start not tracked in simple dict
+                slot["model_phase_start"] = time.time()
             slot["model_phase"] = phase
             slot["model_info"] = info
             self._push_slot_update(label)
@@ -136,6 +136,7 @@ class ParallelDisplay(BaseDisplay):
         if not slot:
             return
         slot["model_phase"] = "parsing"
+        slot["model_phase_start"] = time.time()
         truncated = arguments[:120] + "…" if len(arguments) > 120 else arguments
         slot["model_info"] = f"{tool_name} {truncated}" if truncated else tool_name
         if slot["tool_history"]:
@@ -206,6 +207,7 @@ class ParallelDisplay(BaseDisplay):
         slot = self._slots.get(label)
         if slot:
             slot["model_phase"] = "parsing"
+            slot["model_phase_start"] = time.time()
             slot["model_info"] = f"{tool_names} {elapsed:.1f}s"
             self._push_slot_update(label)
             self._schedule_refresh()
@@ -294,7 +296,7 @@ class ParallelDisplay(BaseDisplay):
 
         已包含字段：label, description, agent_type, status, start_time, end_time,
             total_calls, input_tokens, output_tokens, live_input_tokens,
-            live_output_tokens, last_speed, model_phase, model_info,
+            live_output_tokens, last_speed, model_phase, model_phase_start, model_info,
             result_text, result_error, tool_history（List[dict]，
             每项含 tool_name/detail/start_time/end_time/phase）。
         """

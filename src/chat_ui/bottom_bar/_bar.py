@@ -315,6 +315,9 @@ class _BottomBar(_StatusMixin):
         count = 0
         for slot in slots.values():
             count += 1  # 主行
+            # 模型阶段状态行（思考中/回答中/接收工具参数中 + 耗时）
+            if slot.get("model_phase", ""):
+                count += 1
             tool_history = slot.get("tool_history", [])
             if tool_history:
                 count += min(len(tool_history), 3)  # 最多 3 条历史

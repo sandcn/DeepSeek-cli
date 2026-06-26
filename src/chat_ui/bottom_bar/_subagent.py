@@ -131,6 +131,50 @@ def render_subagent_slots(out, slots: dict, row_start: int, term_width: int) -> 
         row += 1
         new_line_count += 1
 
+        # ── 模型阶段状态行（思考中/回答中/接收工具参数中 + 耗时）──
+        model_phase = slot.get("model_phase", "")
+        model_phase_start = slot.get("model_phase_start", 0.0)
+        if model_phase:
+            if model_phase_start > 0:
+                phase_elapsed = _now - model_phase_start
+            else:
+                phase_elapsed = 0.0
+
+            phase_elapsed_str = f"{phase_elapsed:.1f}s" if phase_elapsed > 0 else ""
+
+            # 根据 phase 确定中文标签和颜色
+            if model_phase == "thinking":
+                phase_label = "思考中"
+                phase_color = "yellow"
+            elif model_phase == "answering":
+                phase_label = "回答中"
+                phase_color = "cyan"
+            elif model_phase == "parsing":
+                phase_label = "接收工具参数中"
+                phase_color = "yellow"
+            else:
+                phase_label = model_phase
+                phase_color = ""
+
+            # 终端宽度截断
+            phase_prefix_w = 6  # "    ⟳ "
+            phase_suffix_w = 4 + len(phase_elapsed_str) if phase_elapsed_str else 0
+            phase_available = max(tw - phase_prefix_w - phase_suffix_w - 1, 10)
+            display_label = truncate_ansi_visual(phase_label, max_visual=phase_available)
+
+            phase_parts = [
+                (f"    \u27f3 ", f"dim {phase_color}" if phase_color else "dim"),
+                (f"{display_label}", "dim"),
+            ]
+            if phase_elapsed_str:
+                phase_parts.append(("  \u00b7 ", "dim"))
+                phase_parts.append((phase_elapsed_str, "dim"))
+
+            phase_line = StyledText.assemble(*phase_parts)
+            out.write(_blessed_move_clear(row) + f"\r{phase_line}")
+            row += 1
+            new_line_count += 1
+
         # ── 工具调用历史（最近 3 条，倒序）──
         tool_history = slot.get("tool_history", [])
         if tool_history:
