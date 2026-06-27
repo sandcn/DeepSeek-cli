@@ -38,10 +38,11 @@ class TestRenderNormal:
         assert "gpt-4" in result
 
     def test_no_model_shows_fallback(self):
-        """无模型时显示 'no model'。"""
+        """无模型时显示 'no model'（非 Claude Code 风格下）。"""
         state = UISessionState(model="")
-        result = render_normal(state)
-        assert "no model" in result
+        with patch("src.chat_ui.bottom_bar.status_bar._is_claude_style_enabled", return_value=False):
+            result = render_normal(state)
+            assert "no model" in result
 
     def test_message_count_appears(self):
         """消息数 > 0 时显示计数。"""
@@ -155,9 +156,10 @@ class TestStatusBarInstance:
         tree = TUIStateTree()
         tree.update_session(model="test-model", message_count=5)
         sb = StatusBar(tree)
-        result = sb.render()
-        assert "test-model" in result
-        assert "5" in result
+        with patch("src.chat_ui.bottom_bar.status_bar._is_claude_style_enabled", return_value=False):
+            result = sb.render()
+            assert "test-model" in result
+            assert "5" in result
 
     def test_status_bar_render_streaming(self):
         """测试 StatusBar.render() 在流式模式下的输出。"""
@@ -165,9 +167,10 @@ class TestStatusBarInstance:
         tree.streaming.start()
         tree.update_session(model="test-model")
         sb = StatusBar(tree)
-        result = sb.render()
-        assert "test-model" in result
-        assert "t/" in result
+        with patch("src.chat_ui.bottom_bar.status_bar._is_claude_style_enabled", return_value=False):
+            result = sb.render()
+            assert "test-model" in result
+            assert "t/" in result
 
     def test_status_bar_start_stop_streaming(self):
         """测试 start_streaming/stop_streaming 的状态转换。"""

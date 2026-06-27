@@ -772,9 +772,9 @@ class TestChatUIConsumerRefresh:
             consumer.refresh()
             mock_push.assert_not_called()
 
-    def test_refresh_does_not_call_force_redraw(self, consumer, mock_bus):
-        """refresh() 不调用 force_redraw"""
-        with patch.object(consumer._bottom_bar, 'force_redraw') as mock_redraw:
+    def test_refresh_does_not_call_force_redraw_from_vnode(self, consumer, mock_bus):
+        """refresh() 不调用 force_redraw_from_vnode"""
+        with patch.object(consumer._bottom_bar, 'force_redraw_from_vnode') as mock_redraw:
             consumer.refresh()
             mock_redraw.assert_not_called()
 
@@ -829,7 +829,7 @@ class TestChatUIConsumerBottomBarMethods:
         assert consumer.bottom_bar is consumer._bottom_bar
 
     def test_set_model_name_via_bottom_bar(self, consumer, mock_bus):
-        """set_model_name() 通过 bottom_bar 委托"""
+        """set_model_name() 通过 bottom_bar 委托（向后兼容）"""
         with patch.object(consumer._bottom_bar, 'set_model_name') as mock_set:
             consumer.bottom_bar.set_model_name("deepseek-v3")
             mock_set.assert_called_once_with("deepseek-v3")
@@ -847,22 +847,21 @@ class TestChatUIConsumerBottomBarMethods:
             mock_disable.assert_called_once()
 
     def test_reset_tool_count_via_bottom_bar(self, consumer, mock_bus):
-        """reset_tool_count() 通过 bottom_bar 委托"""
+        """reset_tool_count() 通过 bottom_bar 委托（向后兼容）"""
         with patch.object(consumer._bottom_bar, 'reset_tool_count') as mock_reset:
             consumer.bottom_bar.reset_tool_count()
             mock_reset.assert_called_once()
 
     def test_get_status_elapsed_via_bottom_bar(self, consumer, mock_bus):
-        """get_status_elapsed() 通过 bottom_bar 委托"""
-        with patch.object(consumer._bottom_bar, 'get_status_elapsed', return_value=1.5):
-            result = consumer.bottom_bar.get_status_elapsed()
-            assert result == 1.5
+        """is_status_active 通过 bottom_bar property（get_status_elapsed 已移至 StatusBar）"""
+        result = consumer.bottom_bar.is_status_active
+        assert isinstance(result, bool)
 
     def test_redraw_via_bottom_bar(self, consumer, mock_bus):
-        """force_redraw() 通过 bottom_bar 委托"""
-        with patch.object(consumer._bottom_bar, 'force_redraw') as mock_redraw:
-            consumer.bottom_bar.force_redraw()
-            mock_redraw.assert_called_once()
+        """force_redraw_from_vnode() 通过 bottom_bar 委托"""
+        with patch.object(consumer._bottom_bar, 'force_redraw_from_vnode') as mock_redraw:
+            consumer.bottom_bar.force_redraw_from_vnode("test content")
+            mock_redraw.assert_called_once_with("test content")
 
     def test_flush_delegates_to_engine(self, consumer, mock_bus):
         """flush() 委托给 _engine.flush()"""

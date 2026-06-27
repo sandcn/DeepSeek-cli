@@ -40,18 +40,22 @@ def mock_renderer():
 
 @pytest.fixture
 def mock_bottom_bar():
-    """Mock _BottomBar 实例。
+    """Mock BottomBarBridge 实例。
 
-    模拟 _BottomBar 对外提供的所有属性/方法：
+    模拟 BottomBarBridge 对外提供的所有属性/方法：
       - is_status_active（property）
-      - sync_bottom_lines / force_redraw / get_cursor_info
-      - compute_cursor_position（公开 API）
-      - ensure_cursor_in_upper
+      - get_cursor_info / compute_cursor_position
+      - force_redraw_from_vnode（替代 force_redraw）
+      - setup / teardown / enable_status / disable_status
+      - ensure_cursor_in_upper / sync_bottom_lines / set_subagent_slots
+      - _active / set_completion_height / get_scroll_end
     """
     bb = MagicMock()
     bb.is_status_active = False
+    bb._active = True
     bb.get_cursor_info.return_value = ("hello", 5, 30, 80)
     bb.compute_cursor_position.return_value = (28, 8)
+    bb.get_scroll_end.return_value = 25
     return bb
 
 
@@ -289,7 +293,9 @@ class TestRenderEngineStartStop:
             mock_t.is_alive.return_value = False
             mock_thread_cls.return_value = mock_t
 
-            engine.start()
+            # 禁用 AnimationClock 线程创建
+            with patch("src.chat_ui.core.engine._react_ink_enabled", return_value=False):
+                engine.start()
 
             # 验证 Thread 构造函数参数
             mock_thread_cls.assert_called_once_with(
@@ -420,7 +426,10 @@ class TestRenderEngineStartStop:
 
     def test_start_after_stop_restart(self, engine):
         """start() → stop() → start() 可重启。"""
-        with patch("threading.Thread") as mock_thread_cls:
+        with (
+            patch("threading.Thread") as mock_thread_cls,
+            patch("src.chat_ui.core.engine._react_ink_enabled", return_value=False),
+        ):
             mock_t = MagicMock()
             mock_t.is_alive.return_value = False
             mock_thread_cls.return_value = mock_t
@@ -580,6 +589,7 @@ class TestRenderEngineDrainQueue:
 
         with (
             patch("src.chat_ui.core.engine._try_acquire_output_lock") as m_lock,
+            patch.object(engine, "_position_cursor") as m_pos,
         ):
             m_lock.return_value.__enter__.return_value = True
 
@@ -587,13 +597,13 @@ class TestRenderEngineDrainQueue:
 
         # 队列空时不渲染任何命令
         engine._renderer.render.assert_not_called()
-        # 阶段 3：is_status_active=False → force_redraw 不被调用
-        engine._bb.force_redraw.assert_not_called()
+        # 阶段 3：is_status_active=False + 无命令 → _position_cursor 不被调用
+        m_pos.assert_not_called()
 
     def test_drain_empty_queue_with_status_active_triggers_redraw(
         self, engine,
     ):
-        """空队列但 is_status_active == True → 不跳过，执行流水线。"""
+        """空队列但 is_status_active == True → 不跳过，执行光标定位。"""
         engine._bb.is_status_active = True
         engine._cmd_queue = queue.Queue()
 
@@ -605,9 +615,7 @@ class TestRenderEngineDrainQueue:
 
             engine._drain_queue()
 
-            # force_redraw 被调用（is_status_active True）
-            engine._bb.force_redraw.assert_called_once()
-            # position_cursor 也被调用
+            # is_status_active True → _position_cursor 被调用
             m_pos.assert_called_once()
 
     def test_drain_commands_renders_in_order(self, engine):
@@ -632,10 +640,10 @@ class TestRenderEngineDrainQueue:
         assert cmds_arg[0].text == "hello"
         assert cmds_arg[1].text == "world"
 
-    def test_drain_calls_sync_and_cursor_upper(
+    def test_drain_calls_cursor_upper(
         self, engine,
     ):
-        """渲染前先 sync_bottom_lines 再 ensure_cursor_upper。"""
+        """渲染前先调用 ensure_cursor_in_upper（sync_bottom_lines 已从 _drain_queue 移除）。"""
         engine._bb.is_status_active = False
 
         engine._cmd_queue.put(CmdContent(text="test"))
@@ -647,9 +655,8 @@ class TestRenderEngineDrainQueue:
 
             engine._drain_queue()
 
-        # sync_bottom_lines + ensure_cursor_upper
-        engine._bb.sync_bottom_lines.assert_called_once()
-        engine._bb.ensure_cursor_in_upper.assert_called_once()
+        # ensure_cursor_in_upper 被调用（sync_bottom_lines 不再在 _drain_queue 中调用）
+        engine._bb.ensure_cursor_in_upper.assert_called()
 
 
 
@@ -674,47 +681,53 @@ class TestRenderEngineDrainQueue:
         assert "VNode dispatch" in caplog.text
 
     def test_drain_force_redraw_with_commands(self, engine):
-        """有命令时不论 is_status_active 都触发 force_redraw。"""
+        """有命令时不论 is_status_active 都触发 _position_cursor。"""
         engine._bb.is_status_active = False
 
         engine._cmd_queue.put(CmdContent(text="数据"))
 
         with (
             patch("src.chat_ui.core.engine._try_acquire_output_lock") as m_lock,
+            patch.object(engine, "_position_cursor") as m_pos,
         ):
             m_lock.return_value.__enter__.return_value = True
 
             engine._drain_queue()
 
-        engine._bb.force_redraw.assert_called_once()
+        # 有命令 → _position_cursor 被调用
+        m_pos.assert_called_once()
 
     def test_drain_force_redraw_with_status_active_only(self, engine):
-        """无命令但 is_status_active → 触发 force_redraw。"""
+        """无命令但 is_status_active → 触发 _position_cursor。"""
         engine._bb.is_status_active = True
 
         with (
             patch("src.chat_ui.core.engine._try_acquire_output_lock") as m_lock,
+            patch.object(engine, "_position_cursor") as m_pos,
         ):
             m_lock.return_value.__enter__.return_value = True
 
             engine._drain_queue()
 
-        engine._bb.force_redraw.assert_called_once()
+        # is_status_active → _position_cursor 被调用
+        m_pos.assert_called_once()
 
     def test_drain_no_force_redraw_when_no_commands_and_no_status(
         self, engine,
     ):
-        """无命令且 is_status_active=False → 不触发 force_redraw。"""
+        """无命令且 is_status_active=False → 不触发 _position_cursor。"""
         engine._bb.is_status_active = False
 
         with (
             patch("src.chat_ui.core.engine._try_acquire_output_lock") as m_lock,
+            patch.object(engine, "_position_cursor") as m_pos,
         ):
             m_lock.return_value.__enter__.return_value = True
 
             engine._drain_queue()
 
-        engine._bb.force_redraw.assert_not_called()
+        # 无命令 + 无状态 → _position_cursor 不被调用
+        m_pos.assert_not_called()
 
     def test_drain_lock_timeout_returns(self, engine):
         """output_lock 超时 → 方法直接返回，不执行渲染。"""
@@ -722,6 +735,7 @@ class TestRenderEngineDrainQueue:
 
         with (
             patch("src.chat_ui.core.engine._try_acquire_output_lock") as m_lock,
+            patch.object(engine, "_position_cursor") as m_pos,
         ):
             m_lock.return_value.__enter__.return_value = False  # 锁未获取
 
@@ -729,13 +743,13 @@ class TestRenderEngineDrainQueue:
 
         # 锁没拿到，不应执行任何渲染
         engine._renderer.render.assert_not_called()
-        engine._bb.force_redraw.assert_not_called()
+        m_pos.assert_not_called()
 
 
     def test_drain_sync_bottom_lines_exception_tolerated(self, engine):
         """sync_bottom_lines 异常时被容错，继续渲染。"""
         engine._bb.is_status_active = False
-        engine._bb.sync_bottom_lines.side_effect = RuntimeError("sync 异常")
+        engine._bb.sync_bottom_lines.side_effect = RuntimeError("sync_bottom_lines 异常")
 
         engine._cmd_queue.put(CmdContent(text="数据"))
 
@@ -751,30 +765,25 @@ class TestRenderEngineDrainQueue:
         m_rc.assert_called_once()
 
     def test_drain_force_redraw_exception_tolerated(self, engine):
-        """force_redraw 异常时被容错，继续光标定位。"""
+        """_position_cursor 异常时被容错（不影响后续帧）。"""
         engine._bb.is_status_active = True
-        engine._bb.force_redraw.side_effect = RuntimeError("redraw 异常")
 
         with (
             patch("src.chat_ui.core.engine._try_acquire_output_lock") as m_lock,
-            patch.object(engine, "_position_cursor") as m_pos,
+            patch.object(engine, "_position_cursor", side_effect=RuntimeError("position_cursor 异常")),
         ):
             m_lock.return_value.__enter__.return_value = True
 
             # 不应抛出异常
             engine._drain_queue()
 
-        # position_cursor 仍被调用
-        m_pos.assert_called_once()
-
     def test_drain_position_cursor_exception_tolerated(self, engine):
         """position_cursor 异常时被容错。"""
         engine._bb.is_status_active = True
-        engine._position_cursor = MagicMock()
-        engine._position_cursor.side_effect = RuntimeError("光标异常")
 
         with (
             patch("src.chat_ui.core.engine._try_acquire_output_lock") as m_lock,
+            patch.object(engine, "_position_cursor", side_effect=RuntimeError("光标异常")),
         ):
             m_lock.return_value.__enter__.return_value = True
 

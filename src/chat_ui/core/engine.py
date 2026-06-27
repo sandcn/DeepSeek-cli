@@ -248,23 +248,14 @@ class TuiEngine:
     # ── 三阶段流水线 ──────────────────────────────
 
     def _phase_redraw_bottom(self, has_commands: bool) -> None:
-        """阶段 3：重绘底部栏。
+        """阶段 3：光标定位。
 
-        在以下任一条件满足时触发强制重绘：
-        - 本轮有渲染命令被处理
-        - 外部请求了底部栏重绘（_bottom_redraw_requested）
-        - 状态栏处于活跃状态
-
-        Args:
-            has_commands: 本轮 _drain_queue 是否处理了至少一条命令
+        底部栏内容渲染已由 strategy._render_bottom_bar() 在 _drain_queue 中完成。
+        此方法仅处理光标定位。
         """
         redraw = has_commands or self._bottom_redraw_requested.is_set() or self._bb.is_status_active
         self._bottom_redraw_requested.clear()
         if redraw:
-            try:
-                self._bb.force_redraw()
-            except Exception:
-                _logger.debug("force_redraw 异常", exc_info=True)
             try:
                 self._position_cursor()
             except Exception:

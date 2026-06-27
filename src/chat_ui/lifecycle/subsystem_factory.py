@@ -8,16 +8,16 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from ..bottom_bar._bar import _BottomBar
+    from ..bottom_bar._bridge import BottomBarBridge
     from ..infrastructure.cursor_tracker import CursorTracker
     from ...ui._completion import CompletionEngine
     from ...ui.events.event_bus import DisplayEventBus
 
 
-def create_bottom_bar(cursor_tracker: "CursorTracker | None" = None) -> "_BottomBar":
+def create_bottom_bar(cursor_tracker: "CursorTracker | None" = None) -> "BottomBarBridge":
     """创建底部栏实例"""
-    from ..bottom_bar._bar import _BottomBar  # noqa: PLC0415
-    return _BottomBar(cursor_tracker=cursor_tracker)
+    from ..bottom_bar._bridge import BottomBarBridge  # noqa: PLC0415
+    return BottomBarBridge(cursor_tracker=cursor_tracker)
 
 
 def create_cursor_tracker() -> "CursorTracker":

@@ -33,7 +33,7 @@ def mock_ta():
 
 @pytest.fixture
 def mock_bb():
-    """Mock _BottomBar"""
+    """Mock BottomBarBridge"""
     return MagicMock()
 
 
@@ -43,6 +43,7 @@ def renderer(mock_ta, mock_bb):
 
     由于 ChatUIConsumer 负责创建 OutputAdapter 并注入到 ContentRenderer，
     测试环境直接传入 mock_ta 作为 output_adapter 参数，避免依赖真实终端。
+    mock_bb 模拟 BottomBarBridge 接口。
     """
     rs = _RenderState()
     r = ContentRenderer(rs, mock_ta, mock_bb, on_display_messages=None)
@@ -215,7 +216,8 @@ class TestDoPhaseDone:
 # ═══════════════════════════════════════════════════════
 
 class TestDoToolCount:
-    """工具计数渲染命令测试"""
+    """工具计数渲染命令测试（注：increment_tool/decrement_tool/increment_tool_fail
+    计划从 BottomBarBridge 移除，这些测试将在步骤 14 完成后更新）。"""
 
     def test_tool_count_inc(self, renderer, mock_bb):
         """TOOL_COUNT_INC → 委托 _bb.increment_tool()"""

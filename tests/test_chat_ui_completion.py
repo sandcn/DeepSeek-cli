@@ -128,79 +128,9 @@ class TestApplyCompletionCrossCoverage:
         assert result == "xyz"
 
 
-class TestCursorVisualPosFromCache:
-    """_cursor_visual_pos_from_cache 在 \\n 后边界的光标位置计算（P1 修复回归测试）
-
-    验证当光标位于 \\n 后边界（段尾且存在下一段）时，
-    正确返回下一段起始 (i+1, 0) 而非当前段末尾 (i, col)。
-    """
-
-    def test_newline_boundary_returns_next_segment_start(self):
-        """\\n 后边界 → 返回下一段起始。"""
-        from src.chat_ui.bottom_bar._bar import _BottomBar
-        bb = _BottomBar()
-        text = "ab\ncd"
-        # 模拟 _draw_input_lines_locked 已执行后的缓存状态
-        bb._cached_wrapped_for = text
-        bb._cached_wrapped_lines = ["ab", "cd"]
-        # cursor_pos=3 在 \\n 之后、'c' 之前 → 期望 (1, 0)
-        assert bb._cursor_visual_pos_from_cache(text, 3, 80) == (1, 0)
-
-    def test_newline_boundary_last_line_no_next(self):
-        """文件末尾（无下一段）→ 走正常分支返回段内 col。"""
-        from src.chat_ui.bottom_bar._bar import _BottomBar
-        bb = _BottomBar()
-        text = "ab\ncd"
-        bb._cached_wrapped_for = text
-        bb._cached_wrapped_lines = ["ab", "cd"]
-        # cursor_pos=4 在最后一段 'c' 上 → 期望 (1, 0)
-        assert bb._cursor_visual_pos_from_cache(text, 4, 80) == (1, 0)
-
-    def test_mid_segment_no_boundary(self):
-        """段内位置（非边界）→ 走正常分支。"""
-        from src.chat_ui.bottom_bar._bar import _BottomBar
-        bb = _BottomBar()
-        text = "abcdef"
-        bb._cached_wrapped_for = text
-        bb._cached_wrapped_lines = ["abcdef"]
-        # cursor_pos=2 在 'c' 上 → 期望 (0, 2)
-        assert bb._cursor_visual_pos_from_cache(text, 2, 80) == (0, 2)
-
-
-class TestCursorVisualPosFromCache:
-    """_cursor_visual_pos_from_cache 在 \n 后边界的光标位置计算（P1 修复回归测试）
-
-    验证当光标位于 \n 后边界（段尾且存在下一段）时，
-    正确返回下一段起始 (i+1, 0) 而非当前段末尾 (i, col)。
-    """
-
-    def test_newline_boundary_returns_next_segment_start(self):
-        """\n 后边界 → 返回下一段起始。"""
-        from src.chat_ui.bottom_bar._bar import _BottomBar
-        bb = _BottomBar()
-        text = "ab\ncd"
-        bb._cached_wrapped_for = text
-        bb._cached_wrapped_lines = ["ab", "cd"]
-        assert bb._cursor_visual_pos_from_cache(text, 3, 80) == (1, 0)
-
-    def test_newline_boundary_last_line_no_next(self):
-        """文件末尾（无下一段）→ 走正常分支返回段尾 col。"""
-        from src.chat_ui.bottom_bar._bar import _BottomBar
-        bb = _BottomBar()
-        text = "ab\ncd"
-        bb._cached_wrapped_for = text
-        bb._cached_wrapped_lines = ["ab", "cd"]
-        # cursor_pos=5（末尾在'd'之后）无下一段 → 走正常分支返回段尾 col=2
-        assert bb._cursor_visual_pos_from_cache(text, 5, 80) == (1, 2)
-
-    def test_mid_segment_no_boundary(self):
-        """段内位置（非边界）→ 走正常分支。"""
-        from src.chat_ui.bottom_bar._bar import _BottomBar
-        bb = _BottomBar()
-        text = "abcdef"
-        bb._cached_wrapped_for = text
-        bb._cached_wrapped_lines = ["abcdef"]
-        assert bb._cursor_visual_pos_from_cache(text, 2, 80) == (0, 2)
+# TestCursorVisualPosFromCache 类（共 2 个重复定义）已移除。
+# _cursor_visual_pos_from_cache() 方法已从 BottomBarBridge 删除；
+# 光标定位现在使用 _compute_cursor_visual_pos() 纯函数。
 
 
 class TestCmplHandlerOnAuto:

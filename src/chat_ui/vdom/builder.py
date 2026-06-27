@@ -23,10 +23,7 @@ def build_vnode_tree(state: TuiState) -> VNode:
         │   ├── notifications (key="notifications") — 通知
         │   ├── errors (key="errors") — 错误
         │   └── write_lines (key="write_lines") — 单行输出
-        └── bottom_bar (key="bottom_bar")
-            ├── status_line (key="status") — 状态行
-            ├── input_bar (key="input") — 输入栏（React Ink 风格）
-            └── completion_popup (key="completion") — 补全弹窗
+        └── bottom_bar (key="bottom_bar") — 底部栏原始数据（status/input_line/completion/subagent_slots）
 
     每个 VNode 使用稳定的 key 以便 diff 算法正确匹配。
     """
@@ -115,52 +112,19 @@ def build_vnode_tree(state: TuiState) -> VNode:
         ))
 
     # ── 底部栏 ──
-    bottom_children: list[VNode] = []
-
-    # 状态行
-    status = state.status
-    status_text = status.render() if hasattr(status, 'render') else ""
-    bottom_children.append(VNode(
-        type="status_line",
-        key="status",
+    # 将底部栏原始数据打包到单个 VNode，由 strategy.py 渲染路径
+    # 使用 BottomBarContent 组件实例化并产出 ANSI 字符串
+    bottom_vnode = VNode(
+        type="bottom_bar",
+        key="bottom_bar",
         props={
-            "text": status_text,
-            "model": status.model,
-            "tokens": status.tokens,
-            "elapsed": status.elapsed,
-            "tool_count": status.tool_count,
-            "tool_fail": status.tool_fail,
-            "streaming": status.streaming,
+            "status": state.status,
+            "input_line": state.input_line,
+            "completion": state.completion,
+            "subagent_slots": state.subagent_slots,
         },
-    ))
-
-    # 输入栏（React Ink 风格 — 通过 InputBarComponent 产出 VNode）
-    from ..components.base import InputBarComponent
-    input_bar = InputBarComponent(
-        text=state.input_line.text,
-        cursor_pos=state.input_line.cursor_pos,
     )
-    bottom_children.append(input_bar.render_vnode())
-
-    # 补全弹窗
-    completion = state.completion
-    if completion.visible:
-        bottom_children.append(VNode(
-            type="completion_popup",
-            key="completion",
-            props={
-                "items": tuple(completion.items),
-                "selected": completion.selected,
-                "visible": True,
-            },
-        ))
-
-    if bottom_children:
-        children.append(VNode(
-            type="bottom_bar",
-            key="bottom_bar",
-            children=bottom_children,
-        ))
+    children.append(bottom_vnode)
 
     return VNode(
         type="root",

@@ -43,6 +43,8 @@ __all__ = [
     "_PLACEHOLDER_TEXT",
     "_PLACEHOLDER_COMPACT",
     "_PLACEHOLDER_STREAMING",
+    # SubAgent 类型缩写
+    "_SUBAGENT_TYPE_ABBR",
 ]
 
 # ── 底部栏布局配置 ──────────────────────────────────────────
@@ -126,4 +128,14 @@ _BOTTOM_THEMES: dict = {
         "dim_color": "\033[2m",           # ANSI dim（与 CLAUDE_COLORS["muted"] 对应）
         "placeholder": "Type a message...",
     },
+}
+
+# ── SubAgent 类型缩写映射（从 _subagent.py 迁移） ──
+_SUBAGENT_TYPE_ABBR: dict[str, str] = {
+    "plan_execute": "exec",
+    "map": "map",
+    "review": "review",
+    "plan": "plan",
+    "read_memory": "mem",
+    "write_memory": "wmem",
 }

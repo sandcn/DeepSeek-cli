@@ -341,6 +341,74 @@ class VNodeRenderStrategy:
                 _logger.warning("tool_results 分层渲染异常", exc_info=True)
         # input_bar / status_line / completion_popup 由底部栏管理，不在此渲染
 
+    # ── bottom_bar VNode 渲染 ──────────────────────────
+
+    def _render_bottom_bar(self, vnode: "VNode") -> None:
+        """渲染 bottom_bar VNode 到终端固定区域。
+
+        从 vnode.props 提取原始数据，实例化 BottomBarContent 组件，
+        调用 render() 产出 ANSI 字符串，通过 engine 的 BottomBarBridge
+        写入终端固定区域。
+        """
+        from ..components.bottom_bar_content import BottomBarContent
+        from ..bottom_bar.status_bar import render_normal, render_streaming_line
+        from ..infrastructure.claude_style import _is_claude_style_enabled
+        from ..state.tui_state import UISessionState, StreamingState
+        import shutil
+
+        props = vnode.props
+        status = props.get("status")
+        input_line = props.get("input_line")
+        completion = props.get("completion")
+        subagent_slots = props.get("subagent_slots", {})
+
+        # ── 构建 StatusBar 所需的状态行文本 ──
+        # 优先从 TuiState.status.model 读取，回退到 BottomBarBridge._model_name
+        model = status.model if (hasattr(status, 'model') and status.model) else ""
+        if not model and hasattr(self, '_engine') and self._engine is not None:
+            model = getattr(self._engine._bb, '_model_name', '')
+        session = UISessionState(
+            model=model,
+            message_count=0,
+            input_tokens=0,
+            output_tokens=status.tokens if hasattr(status, 'tokens') else 0,
+        )
+
+        claude = _is_claude_style_enabled()
+        is_streaming = status.streaming if hasattr(status, 'streaming') else False
+
+        if is_streaming and not claude:
+            streaming = StreamingState()
+            streaming.active = True
+            streaming.output_tokens = status.tokens if hasattr(status, 'tokens') else 0
+            status_text = render_streaming_line(session, streaming)
+        else:
+            status_text = render_normal(session)
+
+        # ── 终端宽度 ──
+        term_width = shutil.get_terminal_size().columns
+
+        # ── 实例化 BottomBarContent 组件 ──
+        component = BottomBarContent(
+            term_width=term_width,
+            status_text=status_text,
+            input_text=input_line.text if hasattr(input_line, 'text') else "",
+            input_cursor_pos=input_line.cursor_pos if hasattr(input_line, 'cursor_pos') else 0,
+            is_streaming=is_streaming,
+            completion_items=tuple(completion.items) if hasattr(completion, 'items') else (),
+            completion_selected=completion.selected if hasattr(completion, 'selected') else 0,
+            completion_visible=completion.visible if hasattr(completion, 'visible') else False,
+            subagent_slots=subagent_slots,
+            claude_style=claude,
+        )
+
+        # ── 渲染为 ANSI 字符串 ──
+        content = component.render()
+
+        # ── 通过 engine 的 BottomBarBridge 写入终端固定区域 ──
+        if hasattr(self, '_engine') and self._engine is not None:
+            self._engine._bb.force_redraw_from_vnode(content)
+
     # ── 动画活跃状态控制 ──────────────────────────
 
     def set_animating(self, active: bool) -> None:
@@ -379,6 +447,9 @@ class VNodeRenderStrategy:
         Returns:
             是否有实质性变更（用于底部栏重绘决策）
         """
+        # 存储 engine 引用，供 _render_bottom_bar 使用
+        self._engine = engine
+
         if not commands:
             if not self._animating:
                 return False
@@ -399,23 +470,12 @@ class VNodeRenderStrategy:
             _logger.debug("sync_bottom_lines 异常", exc_info=True)
         engine.ensure_cursor_upper()
         try:
-            # 1. Dispatch 所有命令到 Store，同步路由工具计数命令到 TuiRenderer
-            #    （更新 BottomBar 自有计数器 _tool_total，确保状态行正确显示 ⚙ 图标）
+            # 1. Dispatch 所有命令到 Store
             for cmd in commands:
                 try:
                     self._store.dispatch(cmd)
                 except Exception:
                     _logger.debug("VNode dispatch %s 失败", type(cmd).__name__, exc_info=True)
-                # ── 工具计数命令需额外路由到 TuiRenderer ──
-                # VNode 路径下 store.dispatch 仅更新 TuiState.status.tool_count，
-                # 但 _BottomBar._format_status() 读取的是 BottomBar 自有计数器 _tool_total。
-                # 路由到 TuiRenderer._do_tool_count_inc/dec/fail_inc() → bb.increment_tool()
-                # 确保双状态源一致。
-                if isinstance(cmd, (CmdToolCountInc, CmdToolCountDec, CmdToolFailInc)):
-                    try:
-                        self._renderer.render(cmd)
-                    except Exception:
-                        _logger.debug("工具计数命令渲染异常", exc_info=True)
 
             # 2. 获取最新状态
             state = self._store.get_state()
@@ -432,8 +492,7 @@ class VNodeRenderStrategy:
 
             # 6. 导入 VNode 渲染路径所需命令类型（提升到 has_change 块外，避免
             #    条件导入在 has_change=False 时 UnboundLocalError）
-            from ..commands.types import CmdContent, CmdReasoning, CmdToolOutput, CmdPhaseDone, \
-                CmdToolCountInc, CmdToolCountDec, CmdToolFailInc
+            from ..commands.types import CmdContent, CmdReasoning, CmdToolOutput, CmdPhaseDone
 
             # 空帧计数逻辑：追踪连续无变更帧，供空帧退避使用
             if not has_change:
@@ -447,12 +506,24 @@ class VNodeRenderStrategy:
                     # ── 容器类型：递归渲染子节点 ──
                     # root: 递归遍历 children → content_area → children
                     if vnode.type == "root":
+                        bottom_bar_vnode = None
                         for child in vnode.children:
                             if child.type == "content_area":
                                 for sub_child in child.children:
                                     _render_node_direct(sub_child)
+                            elif child.type == "bottom_bar":
+                                bottom_bar_vnode = child
                             else:
                                 _render_node_direct(child)
+
+                        # 渲染 bottom_bar 到固定区域
+                        if bottom_bar_vnode is not None:
+                            self._render_bottom_bar(bottom_bar_vnode)
+                        return
+
+                    # ── 底部栏渲染 ──
+                    if vnode.type == "bottom_bar":
+                        self._render_bottom_bar(vnode)
                         return
 
                     # ── 流式文本类型 ──
@@ -646,6 +717,19 @@ class VNodeRenderStrategy:
 
             # 6. 缓存新树
             self._old_vnode = new_vnode
+
+            # ── 7. 始终渲染底部栏（不依赖 has_change）──
+            # 底部栏的数据（model_name 等）可能通过 set_model_name 绕过 TuiStore 更新，
+            # 因此需要在每帧都触发底部栏渲染以确保状态行显示最新模型名。
+            # force_redraw_from_vnode 内部有快速路径（内容不变时跳过终端 I/O）。
+            if new_vnode is not None:
+                for child in new_vnode.children:
+                    if child.type == "bottom_bar":
+                        try:
+                            self._render_bottom_bar(child)
+                        except Exception:
+                            _logger.debug("底部栏渲染异常", exc_info=True)
+                        break
 
             return has_change
 

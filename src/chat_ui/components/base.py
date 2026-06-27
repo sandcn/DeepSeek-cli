@@ -545,8 +545,10 @@ class InputBarComponent(TuiComponent):
     仅变更时触发底部栏重绘。
     """
     def __init__(self, text: str = "", cursor_pos: int = 0):
+        super().__init__(children=None)
         self.text = text
         self.cursor_pos = cursor_pos
+        self._props = {}
 
     @property
     def key(self) -> str:
@@ -559,6 +561,7 @@ class InputBarComponent(TuiComponent):
             return False
         self.text = new_text
         self.cursor_pos = new_pos
+        self._props = props
         return True
 
     def render_vnode(self) -> "VNode":
@@ -573,7 +576,41 @@ class InputBarComponent(TuiComponent):
         )
 
     def render(self) -> str:
-        return f"> {self.text}"
+        """渲染为底部栏输入行格式。
+
+        支持三种占位符文本（正常/流式/补全）和 Claude Code 风格适配。
+        优先从 _props 读取属性，回退到实例属性以保持向后兼容。
+        """
+        text = self._props.get("text", self.text) if self._props else self.text
+        cursor_pos = self._props.get("cursor_pos", self.cursor_pos) if self._props else self.cursor_pos
+
+        from ..bottom_bar._theme import (
+            _COLOR_ACCENT, _COLOR_DIM, _COLOR_RESET,
+            _PLACEHOLDER_TEXT, _PLACEHOLDER_COMPACT, _PLACEHOLDER_STREAMING,
+        )
+
+        # Claude Code 风格检测
+        try:
+            from ..infrastructure.claude_style import _is_claude_style_enabled, CLAUDE_PROMPT_ICON
+        except ImportError:
+            _is_claude_style_enabled = lambda: False
+            CLAUDE_PROMPT_ICON = "\u276f"
+
+        claude = _is_claude_style_enabled()
+        prompt = CLAUDE_PROMPT_ICON if claude else "\u276f"
+        is_streaming = self._props.get("is_streaming", False) if self._props else False
+        has_completion = self._props.get("has_completion", False) if self._props else False
+
+        if text:
+            return f"{_COLOR_ACCENT}{prompt}{_COLOR_RESET} {text}"
+        else:
+            if is_streaming:
+                ph = "Type a message..." if claude else _PLACEHOLDER_STREAMING
+            elif has_completion:
+                ph = "Type a message..." if claude else _PLACEHOLDER_COMPACT
+            else:
+                ph = "Type a message..." if claude else _PLACEHOLDER_TEXT
+            return f"{_COLOR_ACCENT}{prompt}{_COLOR_RESET} {_COLOR_DIM}{ph}{_COLOR_RESET}"
 
 
 # ═══════════════════════════════════════════════════════════
