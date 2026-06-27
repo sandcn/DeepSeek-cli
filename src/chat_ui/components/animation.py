@@ -661,3 +661,337 @@ def use_typewriter(text: str, options: dict | None = None) -> dict:
         "cursor_char": cursor_char,
         "reset": reset,
     }
+
+
+# ── 自适应帧跳过常量 ──────────────────────────────────
+
+# 帧间隔边界（毫秒），保证最低 6.25fps
+_ADAPTIVE_MIN_INTERVAL: int = 16   # ~60fps 上限
+_ADAPTIVE_MAX_INTERVAL: int = 160  # ~6.25fps 下限
+_ADAPTIVE_DEFAULT_INTERVAL: int = 50  # 默认 20fps
+
+
+# ── use_adaptive_animation Hook ────────────────────────
+
+
+def use_adaptive_animation(options: dict | None = None) -> dict:
+    """自适应帧率动画 Hook。
+
+    根据渲染负载自动调整帧间隔，在高负载时降低帧率以减轻终端 I/O 压力，
+    低负载时恢复流畅帧率。保证最低 6.25fps（max 160ms 间隔）。
+
+    内部基于 use_animation 实现，通过监控帧时间动态调整 interval 参数。
+
+    Args:
+        options: 可选配置字典：
+            - "baseInterval" (int): 基础帧间隔毫秒，默认 50（20fps）。
+            - "isActive" (bool): 是否激活，默认 True。
+            - "sampleWindow" (int): 负载采样窗口帧数，默认 8。
+
+    Returns:
+        {
+            "frame": int,        # 离散帧计数
+            "time": float,       # 累计毫秒
+            "delta": float,      # 上一帧到当前的毫秒差
+            "currentInterval": int,  # 当前动态帧间隔（毫秒）
+            "load": float,       # 当前负载因子 [0.0, 1.0]
+            "reset": Callable,   # 重置所有计数器
+        }
+
+    Raises:
+        HookError: 在组件 render 上下文外调用时。
+
+    示例:
+        >>> anim = use_adaptive_animation({"baseInterval": 30})
+        >>> spinner_frames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
+        >>> char = spinner_frames[anim["frame"] % len(spinner_frames)]
+    """
+    import time as _time_mod
+    from ..vdom.hooks import use_effect, use_ref
+
+    opts = options or {}
+    base_interval = int(opts.get("baseInterval", _ADAPTIVE_DEFAULT_INTERVAL))
+    is_active = bool(opts.get("isActive", True))
+    sample_window = max(1, int(opts.get("sampleWindow", 8)))
+
+    # ── 负载追踪状态（跨渲染周期持久化）──
+    load_ref = use_ref({
+        "frame_times": [],      # 最近 N 帧的耗时（毫秒）
+        "last_tick": 0.0,       # 上一次 tick 的 monotonic 时间
+        "current_load": 0.0,    # 当前负载因子
+    })
+    load_state = load_ref["current"]
+
+    # 计算动态 interval
+    def _compute_interval() -> int:
+        """根据负载因子计算动态帧间隔。"""
+        load = load_state["current_load"]
+        # load=0 → base_interval; load=1 → max_interval
+        dynamic = int(base_interval + (_ADAPTIVE_MAX_INTERVAL - base_interval) * load)
+        return max(_ADAPTIVE_MIN_INTERVAL, min(_ADAPTIVE_MAX_INTERVAL, dynamic))
+
+    # 使用动态 interval 驱动动画
+    current_interval = _compute_interval()
+    anim = use_animation({
+        "interval": current_interval,
+        "isActive": is_active,
+    })
+
+    # ── 每一帧后更新负载估算 ──
+    now = _time_mod.monotonic()
+    if load_state["last_tick"] > 0:
+        frame_dt = (now - load_state["last_tick"]) * 1000  # 毫秒
+        load_state["frame_times"].append(frame_dt)
+        # 保持采样窗口大小
+        if len(load_state["frame_times"]) > sample_window:
+            load_state["frame_times"] = load_state["frame_times"][-sample_window:]
+    load_state["last_tick"] = now
+
+    # 计算平均帧时间
+    if load_state["frame_times"]:
+        avg_frame_time = sum(load_state["frame_times"]) / len(load_state["frame_times"])
+        # 归一化负载：avgFrameTime 在 [base_interval, max_interval] 范围映射到 [0, 1]
+        span = _ADAPTIVE_MAX_INTERVAL - _ADAPTIVE_MIN_INTERVAL
+        if span > 0:
+            load = (avg_frame_time - _ADAPTIVE_MIN_INTERVAL) / span
+            load_state["current_load"] = max(0.0, min(1.0, load))
+        else:
+            load_state["current_load"] = 0.0
+
+    def reset() -> None:
+        """重置所有计数器。"""
+        anim["reset"]()
+        load_state["frame_times"].clear()
+        load_state["last_tick"] = 0.0
+        load_state["current_load"] = 0.0
+
+    return {
+        "frame": anim["frame"],
+        "time": anim["time"],
+        "delta": anim["delta"],
+        "currentInterval": current_interval,
+        "load": load_state["current_load"],
+        "reset": reset,
+    }
+
+
+# ── 缓动函数 ──────────────────────────────────────────
+
+
+def _ease_out_expo(t: float) -> float:
+    """easeOutExpo 缓动：t ∈ [0, 1] → 减速到零。"""
+    if t >= 1.0:
+        return 1.0
+    return 1.0 - (2.0 ** (-10.0 * t))
+
+
+def _ease_out_cubic(t: float) -> float:
+    """easeOutCubic 缓动。"""
+    t = max(0.0, min(1.0, t))
+    return 1.0 - ((1.0 - t) ** 3)
+
+
+def _ease_linear(t: float) -> float:
+    """线性缓动（恆速）。"""
+    return max(0.0, min(1.0, t))
+
+
+# 缓动函数注册表
+_EASING_FUNCTIONS: dict[str, callable] = {
+    "linear": _ease_linear,
+    "easeOutExpo": _ease_out_expo,
+    "easeOutCubic": _ease_out_cubic,
+}
+
+
+# ── use_count_up Hook ──────────────────────────────────
+
+
+def use_count_up(options: dict | None = None) -> dict:
+    """数字滚动动画 Hook。
+
+    从起始值动画过渡到目标值，支持多种缓动函数。
+
+    Args:
+        options: 可选配置字典：
+            - "start" (float): 起始值，默认 0。
+            - "target" (float): 目标值，默认 100。
+            - "duration" (float): 动画时长（毫秒），默认 1000。
+            - "easing" (str): 缓动函数名，可选 "linear"、"easeOutExpo"、"easeOutCubic"，默认 "easeOutExpo"。
+            - "isActive" (bool): 是否激活，默认 True。
+            - "decimals" (int): 小数位数，默认 0（整数）。
+            - "onComplete" (Callable | None): 动画完成回调。
+
+    Returns:
+        {
+            "value": float,        # 当前显示值
+            "display": str,        # 格式化后的显示字符串
+            "progress": float,     # 0.0~1.0 动画进度
+            "done": bool,          # 是否已完成
+            "reset": Callable,     # 重置动画
+        }
+
+    示例:
+        >>> counter = use_count_up({"start": 0, "target": 500, "duration": 2000})
+        >>> print(counter["display"])  # "123"（逐帧增加）
+    """
+    from ..vdom.hooks import use_effect, use_ref
+
+    opts = options or {}
+    start = float(opts.get("start", 0))
+    target = float(opts.get("target", 100))
+    duration = max(1, float(opts.get("duration", 1000)))
+    easing_name = str(opts.get("easing", "easeOutExpo"))
+    is_active = bool(opts.get("isActive", True))
+    decimals = max(0, int(opts.get("decimals", 0)))
+    on_complete = opts.get("onComplete", None)
+
+    easing_fn = _EASING_FUNCTIONS.get(easing_name, _ease_out_expo)
+
+    # 计算帧间隔：让动画在 duration 毫秒内完成约 30 帧
+    frame_interval = max(16, int(duration / 30))
+    anim = use_animation({"interval": frame_interval, "isActive": is_active})
+
+    # ── 完成回调管理 ──
+    done_ref = use_ref(False)  # 供外部消费者通过 ref 读取 done 状态
+    called_ref = use_ref(False)
+
+    elapsed = anim["time"]  # 累计毫秒
+    progress = min(1.0, elapsed / duration)
+    eased = easing_fn(progress)
+
+    value = start + (target - start) * eased
+    done = progress >= 1.0
+    done_ref["current"] = done
+
+    # 格式化显示
+    if decimals > 0:
+        display = f"{value:.{decimals}f}"
+    else:
+        display = str(int(round(value)))
+
+    # ── onComplete 回调 ──
+    def _on_complete_effect() -> Callable[[], None] | None:
+        if done and not called_ref["current"] and on_complete is not None:
+            called_ref["current"] = True
+            on_complete()
+        return None
+
+    try:
+        use_effect(_on_complete_effect, [done])
+    except Exception:
+        _on_complete_effect()
+
+    def reset() -> None:
+        """重置动画到起始状态。"""
+        anim["reset"]()
+        called_ref["current"] = False
+
+    return {
+        "value": value,
+        "display": display,
+        "progress": progress,
+        "done": done,
+        "reset": reset,
+    }
+
+
+# ── 色相环常量 ────────────────────────────────────────
+
+# 6 个色相锚点（红→黄→绿→青→蓝→品→红），均匀分布在 256 色调色板上
+_RAINBOW_COLORS: list[tuple[int, str]] = [
+    (196, "red"),        # 红
+    (214, "orange"),     # 橙
+    (226, "yellow"),     # 黄
+    (46,  "green"),      # 绿
+    (51,  "cyan"),       # 青
+    (21,  "blue"),       # 蓝
+    (201, "magenta"),    # 品
+]
+
+
+def _interpolate_rainbow(t: float) -> int:
+    """在彩虹色相环上按 t ∈ [0, 1) 采样 256 色索引。
+
+    Args:
+        t: 色相位置 [0, 1)，在 7 个锚点间循环插值。
+
+    Returns:
+        256 色调色板索引。
+    """
+    from ..infrastructure.styled import _interpolate_256
+    # 将 t 映射到 [0, 6] 的锚点区间
+    segments = len(_RAINBOW_COLORS) - 1  # 6 段
+    t_wrapped = (t % 1.0) * segments
+    seg_idx = int(t_wrapped)
+    seg_t = t_wrapped - seg_idx
+
+    # 循环：最后一个锚点连接到第一个（红→红闭环）
+    start_color_idx = _RAINBOW_COLORS[seg_idx][0]
+    if seg_idx + 1 < len(_RAINBOW_COLORS):
+        end_color_idx = _RAINBOW_COLORS[seg_idx + 1][0]
+    else:
+        end_color_idx = _RAINBOW_COLORS[0][0]  # 闭环
+
+    return _interpolate_256(start_color_idx, end_color_idx, seg_t)
+
+
+# ── use_rainbow Hook ───────────────────────────────────
+
+
+def use_rainbow(options: dict | None = None) -> dict:
+    """彩虹色渐变 Hook。
+
+    返回当前帧对应的彩虹色样式文本，可用于文本或边框的循环渐变色。
+
+    Args:
+        options: 可选配置字典：
+            - "text" (str): 要着色的文本，默认 ""。
+            - "speed" (float): 色相旋转速度（每毫秒色相偏移量），默认 0.001。
+            - "isActive" (bool): 是否激活，默认 True。
+            - "saturation" (float): 饱和度，保留（当前不支持，预留接口）。
+
+    Returns:
+        {
+            "colorIndex": int,    # 当前 256 色索引
+            "styled": StyledText, # 着色后的 StyledText（若 text 非空，逐字符渐变）
+            "phase": float,       # 当前色相位置 [0, 1)
+        }
+
+    示例:
+        >>> rainbow = use_rainbow({"text": "Hello"})
+        >>> print(str(rainbow["styled"]))  # 彩虹色 "Hello"
+        >>> border_color = rainbow["colorIndex"]  # 用于边框颜色
+    """
+    from ..infrastructure.styled import StyledText
+
+    opts = options or {}
+    text = str(opts.get("text", ""))
+    speed = float(opts.get("speed", 0.001))
+    is_active = bool(opts.get("isActive", True))
+
+    anim = use_animation({"interval": 50, "isActive": is_active})
+
+    # 色相位置随时间推进
+    phase = (anim["time"] * speed) % 1.0
+    color_idx = _interpolate_rainbow(phase)
+
+    # 若有文本，生成逐字符渐变的 StyledText
+    if text:
+        chars = len(text)
+        from ..infrastructure.styled import Span
+        styled = StyledText.__new__(StyledText)
+        styled._spans = []
+        span_count = max(chars, 1)
+        for i, char in enumerate(text):
+            char_phase = (phase + i / span_count) % 1.0
+            char_color = _interpolate_rainbow(char_phase)
+            styled._spans.append(Span(text=char, color_number=char_color))
+    else:
+        styled = StyledText("")
+
+    return {
+        "colorIndex": color_idx,
+        "styled": styled,
+        "phase": phase,
+    }
