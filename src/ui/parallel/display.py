@@ -339,50 +339,23 @@ class ParallelDisplay(BaseDisplay):
             self._push_cmd((RenderCommand.SUBAGENT_FRAME, packed))
 
     def _clear_frame_lines(self) -> None:
-        """清除终端上的帧行。
+        """清除 subagent 面板（通过 bottom_bar 清除下屏面板数据）。
 
-        有 scroll_end 时使用绝对行号清除，否则降级到旧 sc/rc 行为。
+        后续 force_redraw() 会自动在下屏移除面板行。
         """
-        if self._adapter is None or self._last_lines <= 0:
+        if self._last_lines <= 0:
             return
 
-        # ── 主路径：绝对行号清除 ──
-        if self._scroll_end > 0:
-            try:
-                from .._blessed import get_terminal
-                term = get_terminal()
-                clear_eol = term.clear_eol if term.clear_eol else "\033[K"
-            except Exception:
-                clear_eol = "\033[K"
-
-            start = self._scroll_end - self._last_lines + 1
-            if start < 1:
-                start = 1
-            code = ""
-            for r in range(start, self._scroll_end + 1):
-                code += f"\033[{r};1H{clear_eol}"
-            self._adapter.write_raw(code)
-            self._last_lines = 0
-            return
-
-        # ── 降级路径 ──
-        try:
-            from .._blessed import get_terminal
-            term = get_terminal()
-            clear_eol = term.clear_eol if term.clear_eol else "\033[K"
-            move_up = term.move_up
-            rc = term.rc if term.rc else "\033[u"
-        except Exception:
-            clear_eol = "\033[K"
-            move_up = lambda n: f"\033[{n}A"
-            rc = "\033[u"
-
-        code = rc + move_up(self._last_lines)
-        for _ in range(self._last_lines):
-            code += "\r" + clear_eol + "\n"
-        code += move_up(self._last_lines)
-        self._adapter.write_raw(code)
         self._last_lines = 0
+        try:
+            import src.chat_ui as _chat_ui_mod  # noqa: PLC0415
+            _chat_ui = _chat_ui_mod.get_active_chat_ui()
+            if _chat_ui is not None:
+                bb = _chat_ui.bottom_bar
+                if hasattr(bb, 'set_subagent_frame'):
+                    bb.set_subagent_frame([])
+        except Exception:
+            _logger.debug("清除 subagent 面板失败（非关键路径，静默跳过）")
 
     # ── 生命周期 ────────────────────────────────────────
 
@@ -461,9 +434,9 @@ class ParallelDisplay(BaseDisplay):
         # 注销终端 resize 回调
         unregister_sigwinch_callback(self._on_resize)
 
-        # 清除终端帧
+        # 清除终端帧（通过 bottom_bar）
+        self._clear_frame_lines()
         if self._adapter is not None:
-            self._clear_frame_lines()
             self._adapter.flush()
         self._adapter = None
 

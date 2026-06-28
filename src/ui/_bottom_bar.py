@@ -253,6 +253,8 @@ class _BottomBar(_StatusMixin):
         self._tool_count: int = 0
         self._tool_fail_count: int = 0
         self._tool_total: int = 0
+        self._subagent_lines: list[str] = []
+        self._last_subagent_lines: list[str] = []
         # ── 布局/光标 ──
         self._last_bottom_lines = _BOTTOM_MIN_LINES
         self._input_cursor_pos: int = -1
@@ -318,8 +320,8 @@ class _BottomBar(_StatusMixin):
 
     @property
     def _bottom_lines(self) -> int:
-        """当前底部栏总行数（分隔线 + 状态行 + 输入行），根据输入内容动态计算。"""
-        return 2 + self._compute_input_rows()
+        """当前底部栏总行数（分隔线 + subagent面板行 + 状态行 + 输入行）。"""
+        return 2 + len(self._subagent_lines) + self._compute_input_rows()
 
     def _compute_input_rows(self) -> int:
         """根据当前输入文本计算所需的输入行数（最少 3 行 + 补全弹窗高度）。"""
@@ -407,7 +409,7 @@ class _BottomBar(_StatusMixin):
         """
         max_input = max(1, w - 4)
         vis_row, vis_col = self._cursor_visual_pos_from_cache(text, cursor_pos, max_input)
-        total_bottom = max(5, 2 + self._compute_input_rows())  # 至少 2 分隔线+状态行 + 3 最少输入行
+        total_bottom = max(5, self._bottom_lines)  # 至少 2 分隔线+状态行 + 3 最少输入行
         popup_offset = self._completion.height
         r_cursor = max(1, h - total_bottom + 3 + popup_offset + vis_row)
         cursor_col = min(3 + vis_col, w)
@@ -503,6 +505,14 @@ class _BottomBar(_StatusMixin):
                     out.write(_blessed_move_clear(r))
         out.write(_blessed_cursor_goto(scroll_end, 1) + _blessed_save_cursor())
         out.flush()
+
+    def set_subagent_frame(self, lines: list[str]) -> None:
+        """设置 subagent 面板行数据（仅写内存，由 force_redraw() 消费）。
+
+        由 TuiRenderer._do_subagent_frame() 调用，在同一次 drain_queue
+        的 output_lock 临界区内 force_redraw() 会自动拾取新数据。
+        """
+        self._subagent_lines = list(lines)
 
     def ensure_cursor_in_upper(self) -> None:
         """将光标移到上屏内容区底部（滚动区域内），准备渲染内容。
@@ -665,7 +675,8 @@ class _BottomBar(_StatusMixin):
 
             layout_unchanged = (text == self._last_rendered_text
                                 and total == self._last_bottom_lines
-                                and height == self._last_height)
+                                and height == self._last_height
+                                and self._subagent_lines == self._last_subagent_lines)
             if layout_unchanged:
                 new_status = self._format_status()
                 if new_status == self._last_status:
@@ -684,6 +695,7 @@ class _BottomBar(_StatusMixin):
             old_scroll_end = (self._last_height if self._last_height > 0 else height) - old_bottom_lines
             self._last_refresh = time.monotonic()
             self._last_status = new_status
+            self._last_subagent_lines = list(self._subagent_lines)
 
             out = sys.__stdout__
             out.write(_blessed_save_cursor())
@@ -728,7 +740,8 @@ class _BottomBar(_StatusMixin):
                 self._cursor_tracker.set(min(old_scroll_end, height), 1)
 
             r1 = height - total + 1
-            r2 = r1 + 1
+            subagent_start = r1 + 1
+            r2 = subagent_start + len(self._subagent_lines)
 
             tw = self._term_width()
             sep_len = min(tw - 2, 40)
@@ -737,6 +750,10 @@ class _BottomBar(_StatusMixin):
             # ★ force_redraw 中的 tracker.set 是近似值，仅记录当前绘制行号。
             #    最终光标位置在方法末尾 set(scroll_end, 1) 处修正。
             self._cursor_tracker.set(r1, 3)  # 分隔线从第3列开始
+            # ── subagent 面板行（在分隔线与状态行之间） ──
+            for i, line in enumerate(self._subagent_lines):
+                sr = subagent_start + i
+                out.write(_blessed_move_clear(sr) + line)
             out.write(_blessed_move_clear(r2) + self._last_status)
             self._cursor_tracker.set(r2, 1)
 
@@ -892,7 +909,8 @@ class _BottomBar(_StatusMixin):
             return
         self._last_bottom_lines = total
         r1 = height - total + 1
-        r2 = r1 + 1
+        subagent_start = r1 + 1
+        r2 = subagent_start + len(self._subagent_lines)
 
         for r in range(r1, height + 1):
             out.write(_blessed_move_clear(r))
@@ -901,6 +919,11 @@ class _BottomBar(_StatusMixin):
         sep_len = min(tw - 2, 40)
         sep = f"{_COLOR_SEP}\u2501{_COLOR_RESET}" * sep_len
         out.write(_blessed_cursor_goto(r1, 1) + "  " + sep)
+
+        # ── subagent 面板行（在分隔线与状态行之间） ──
+        for i, line in enumerate(self._subagent_lines):
+            sr = subagent_start + i
+            out.write(_blessed_move_clear(sr) + line)
 
         status = self._format_status()
         self._last_status = status

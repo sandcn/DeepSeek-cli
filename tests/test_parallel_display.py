@@ -191,3 +191,76 @@ class TestDiffGuard:
         """clear_frame_and_run 在无 adapter 时安全（_clear_frame_lines 提前返回）。"""
         result = display.clear_frame_and_run(lambda: "safe")
         assert result == "safe"
+
+# ═══════════════════════════════════════════════════════
+# _clear_frame_lines 委托给 BottomBar 测试
+# ═══════════════════════════════════════════════════════
+
+class TestClearFrameLinesBottomBar:
+    """验证 _clear_frame_lines 通过 bottom_bar.set_subagent_frame([]) 清除面板"""
+
+    def test_clear_frame_lines_calls_set_subagent_frame(self):
+        """_clear_frame_lines → 调用 bottom_bar.set_subagent_frame([])"""
+        from unittest.mock import MagicMock, patch
+        from src.ui.parallel.display import ParallelDisplay
+
+        pd = ParallelDisplay(max_history=3)
+        pd._last_lines = 5  # 模拟有面板行
+
+        mock_bb = MagicMock()
+        mock_bb.set_subagent_frame = MagicMock()
+
+        mock_chat_ui = MagicMock()
+        mock_chat_ui.bottom_bar = mock_bb
+
+        with patch('src.chat_ui.get_active_chat_ui', return_value=mock_chat_ui):
+            pd._clear_frame_lines()
+
+        mock_bb.set_subagent_frame.assert_called_once_with([])
+        assert pd._last_lines == 0
+
+    def test_clear_frame_lines_no_chat_ui_no_crash(self):
+        """无活跃 ChatUI 时 _clear_frame_lines 静默跳过不崩溃"""
+        from unittest.mock import patch
+        from src.ui.parallel.display import ParallelDisplay
+
+        pd = ParallelDisplay(max_history=3)
+        pd._last_lines = 5
+
+        with patch('src.chat_ui.get_active_chat_ui', return_value=None):
+            try:
+                pd._clear_frame_lines()
+            except Exception as e:
+                pytest.fail(f"_clear_frame_lines 应静默跳过但抛异常: {e}")
+
+    def test_clear_frame_lines_no_set_subagent_method(self):
+        """bottom_bar 无 set_subagent_frame 方法 → 静默跳过"""
+        from unittest.mock import MagicMock, patch
+        from src.ui.parallel.display import ParallelDisplay
+
+        pd = ParallelDisplay(max_history=3)
+        pd._last_lines = 5
+
+        mock_bb = MagicMock(spec=['force_redraw'])  # 不含 set_subagent_frame
+        mock_chat_ui = MagicMock()
+        mock_chat_ui.bottom_bar = mock_bb
+
+        with patch('src.chat_ui.get_active_chat_ui', return_value=mock_chat_ui):
+            try:
+                pd._clear_frame_lines()
+            except Exception as e:
+                pytest.fail(f"_clear_frame_lines 应静默跳过但抛异常: {e}")
+
+    def test_clear_zero_lines_skipped(self):
+        """_last_lines=0 时 _clear_frame_lines 应直接返回"""
+        from unittest.mock import MagicMock, patch
+        from src.ui.parallel.display import ParallelDisplay
+
+        pd = ParallelDisplay(max_history=3)
+        pd._last_lines = 0  # 无面板行
+
+        with patch('src.chat_ui.get_active_chat_ui') as mock_get:
+            pd._clear_frame_lines()
+
+        # get_active_chat_ui 不应被调用（因为 _last_lines=0 提前返回）
+        mock_get.assert_not_called()

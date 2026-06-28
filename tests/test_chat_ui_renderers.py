@@ -499,3 +499,35 @@ class TestContentRendererRefreshWidth:
     def test_refresh_width_no_crash(self, renderer, mock_ta):
         """任何时候 refresh_width() 不崩溃（已移除）"""
         pass
+
+
+# ═══════════════════════════════════════════════════════
+# _do_subagent_frame 测试（委托给 BottomBar）
+# ═══════════════════════════════════════════════════════
+
+class TestDoSubagentFrame:
+    """_do_subagent_frame 渲染命令测试 — 委托给 BottomBar"""
+
+    def test_subagent_frame_delegates_to_bottom_bar(self, renderer, mock_bb):
+        """SUBAGENT_FRAME 命令 → 调用 mock_bb.set_subagent_frame"""
+        mock_lines = ["summary line", "agent line 1", "agent line 2"]
+        frame_data = (mock_lines, 25, 0, "\033[K")
+        renderer._do_subagent_frame(frame_data)
+        mock_bb.set_subagent_frame.assert_called_once_with(mock_lines)
+
+    def test_subagent_frame_empty_lines_skipped(self, renderer, mock_bb):
+        """空 frame_lines → 不调用 set_subagent_frame"""
+        renderer._do_subagent_frame(None)
+        mock_bb.set_subagent_frame.assert_not_called()
+        renderer._do_subagent_frame(())
+        mock_bb.set_subagent_frame.assert_not_called()
+
+    def test_subagent_frame_no_set_subagent_method(self, renderer, mock_bb):
+        """mock_bb 无 set_subagent_frame 方法 → 静默跳过不崩溃"""
+        from unittest.mock import MagicMock
+        # 用 spec 限制的 mock，不含 set_subagent_frame
+        restricted_bb = MagicMock(spec=['force_redraw', 'increment_tool'])
+        renderer._bb = restricted_bb
+        frame_data = (["line1"], 25, 0, "\033[K")
+        # 不应抛出异常；若抛出，pytest 自动失败并输出完整 traceback
+        renderer._do_subagent_frame(frame_data)
