@@ -932,45 +932,6 @@ class _BottomBar(_StatusMixin):
         """补全弹窗是否可见。"""
         return self._completion.is_visible
 
-    def _apply_completion_show(self, items: list[str], selected_idx: int,
-                                texts: list[str] | None = None,
-                                start_pos: int = 0, orig_prefix: str = "",
-                                title: str = "补全") -> None:
-        """线程安全的状态设置 — 仅更新 _completion 状态，无 I/O。
-
-        由 render 线程在 output_lock 内调用。
-        """
-        total_items = len(items)
-        h_items = min(total_items, _CompletionPopup._COMPLETION_MAX_ITEMS)
-        popup_height = h_items + 2
-        visible_items = items[:h_items]
-        selected_idx = min(selected_idx, h_items - 1)
-
-        self._completion._popup_height = popup_height
-        self._completion._visible = True
-        self._completion._title = title
-        self._completion._is_selection = (title != "补全")
-        self._completion._items = list(visible_items)
-        self._completion._texts = list(texts) if texts is not None else list(visible_items)
-        self._completion._idx = selected_idx
-        self._completion._start_pos = start_pos
-        self._completion._orig_prefix = orig_prefix
-
-    def _apply_completion_hide(self) -> None:
-        """线程安全的状态清除 — 仅清零 _completion 状态，无 I/O。
-
-        由 render 线程在 output_lock 内调用。
-        """
-        self._completion._popup_height = 0
-        self._completion._visible = False
-        self._completion._title = "补全"
-        self._completion._is_selection = False
-        self._completion._items = []
-        self._completion._texts = []
-        self._completion._idx = 0
-        self._completion._start_pos = 0
-        self._completion._orig_prefix = ""
-
     def _redraw_cycle_only(self) -> None:
         """仅重绘补全弹窗高亮变化（轻量路径，调用方须持有 output_lock）。
 
@@ -995,7 +956,9 @@ class _BottomBar(_StatusMixin):
     def show_completions(self, items: list[str], selected_idx: int,
                          texts: list[str] | None = None,
                          start_pos: int = 0, orig_prefix: str = "",
-                         title: str = "补全") -> None:
+                         title: str = "补全",
+                         types: list[str] | None = None,
+                         match_prefix: str = "") -> None:
         """设置补全弹窗状态并触发全量重绘。
 
         状态设置（仅内存）+ force_redraw() 统一终端 I/O。
@@ -1028,6 +991,8 @@ class _BottomBar(_StatusMixin):
         self._completion._idx = selected_idx
         self._completion._start_pos = start_pos
         self._completion._orig_prefix = orig_prefix
+        self._completion._types = list(types) if types is not None else []
+        self._completion._match_prefix = match_prefix
 
         self.force_redraw()
 
@@ -1048,6 +1013,8 @@ class _BottomBar(_StatusMixin):
         self._completion._idx = 0
         self._completion._start_pos = 0
         self._completion._orig_prefix = ""
+        self._completion._types = []
+        self._completion._match_prefix = ""
 
         self.force_redraw()
 

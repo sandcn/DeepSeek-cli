@@ -36,6 +36,7 @@ class _CmplHandler:
         self._bb = bottom_bar
         self._engine = engine
         self._request_redraw = request_redraw
+        self._last_auto_text: str | None = None
 
     def on_tab(self, text: str) -> str | None:
         """Tab 补全入口。
@@ -51,6 +52,7 @@ class _CmplHandler:
         """关闭补全弹窗（ESC/非 Tab 按键触发）。"""
         self._bb.hide_completions()
         self._request_redraw()
+        self._last_auto_text = None  # 重置防抖，允许下次相同文本重新触发
 
     def on_navigate(self, delta: int, text: str) -> str | None:
         """上下键导航补全弹窗（delta: -1=上, +1=下）。
@@ -76,33 +78,50 @@ class _CmplHandler:
           - 有候选项 → 显示/更新弹窗，选中索引重置为 0
           - 无候选项 → 隐藏弹窗
         """
+        # 防抖：文本未变化时跳过重复计算（None 为哨兵值，首次调用不跳过）
+        if self._last_auto_text is not None and text == self._last_auto_text:
+            return
+
         if not text:
             self._bb.hide_completions()
             self._request_redraw()
+            self._last_auto_text = text
             return
 
         # 最小触发长度：命令（/开头）1字符即可，普通文本至少2字符
         if not text.startswith('/') and len(text) < 2:
             self._bb.hide_completions()
             self._request_redraw()
+            self._last_auto_text = text
             return
 
         items = self._engine.complete(text)
         if not items:
             self._bb.hide_completions()
             self._request_redraw()
+            self._last_auto_text = text
             return
 
         words = text.split()
         last_word = words[-1] if words else ""
+
+        # 路径补全场景：match_prefix 使用 basename（弹窗显示只有 basename）
+        if items and items[0].item_type in ("file", "dir"):
+            import os
+            match_prefix = os.path.basename(last_word) if '/' in last_word else last_word
+        else:
+            match_prefix = last_word
 
         self._bb.show_completions(
             [item.display for item in items], 0,
             texts=[item.text for item in items],
             start_pos=items[0].start_pos,
             orig_prefix=last_word,
+            types=[item.item_type for item in items],
+            match_prefix=match_prefix,
         )
         self._request_redraw()
+        self._last_auto_text = text
 
     # ── 内部方法 ──────────────────────────────────────
 
@@ -129,11 +148,20 @@ class _CmplHandler:
         words = text.split()
         last_word = words[-1] if words else ""
 
+        # 路径补全场景：match_prefix 使用 basename
+        if items and items[0].item_type in ("file", "dir"):
+            import os
+            match_prefix = os.path.basename(last_word) if '/' in last_word else last_word
+        else:
+            match_prefix = last_word
+
         self._bb.show_completions(
             [item.display for item in items], 0,
             texts=[item.text for item in items],
             start_pos=items[0].start_pos,
             orig_prefix=last_word,
+            types=[item.item_type for item in items],
+            match_prefix=match_prefix,
         )
         self._request_redraw()
         return _apply_completion(

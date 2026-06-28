@@ -22,12 +22,13 @@ from typing import Callable
 class CompletionItem:
     """单个补全项。"""
 
-    __slots__ = ("text", "display", "start_pos")
+    __slots__ = ("text", "display", "start_pos", "item_type")
 
-    def __init__(self, text: str, display: str = "", start_pos: int = 0):
+    def __init__(self, text: str, display: str = "", start_pos: int = 0, item_type: str = ""):
         self.text = text          # 替换文本
         self.display = display or text  # 显示文本
         self.start_pos = start_pos     # 从光标前多少字符开始替换
+        self.item_type = item_type     # 补全项类型：command/dir/file/param/session
 
 
 def _default_commands_source() -> list[str]:
@@ -141,7 +142,7 @@ class CompletionEngine:
         result: list[CompletionItem] = []
         for cmd in commands:
             if cmd.startswith(prefix):
-                result.append(CompletionItem(cmd, start_pos=-len(prefix)))
+                result.append(CompletionItem(cmd, start_pos=-len(prefix), item_type="command"))
         return result
 
     # ── 参数补全 ───────────────────────────────────────
@@ -172,14 +173,14 @@ class CompletionEngine:
         if cmd_name == "/model":
             models = self._models_cache.get()
             return [
-                CompletionItem(m, start_pos=start)
+                CompletionItem(m, start_pos=start, item_type="param")
                 for m in models if m.startswith(param_last)
             ]
 
         elif cmd_name == "/theme":
             themes = self._theme_cache.get()
             return [
-                CompletionItem(name, start_pos=start)
+                CompletionItem(name, start_pos=start, item_type="param")
                 for name, _desc in themes if name.startswith(param_last)
             ]
 
@@ -191,7 +192,7 @@ class CompletionEngine:
                 title: str = s.get("title", "")
                 if sid.startswith(param_last) or title.startswith(param_last):
                     display = f"{sid[:8]} - {title}" if title else sid[:8]
-                    result.append(CompletionItem(sid, display=display, start_pos=start))
+                    result.append(CompletionItem(sid, display=display, start_pos=start, item_type="session"))
             return result
 
         return []
@@ -243,7 +244,8 @@ class CompletionEngine:
         result: list[CompletionItem] = []
         for p in matches[:max_items]:
             name = os.path.basename(p)
-            if os.path.isdir(p):
+            is_dir = os.path.isdir(p)
+            if is_dir:
                 name += os.sep
             # 计算替换范围：从 base 末尾到词尾
             display = name
@@ -251,5 +253,6 @@ class CompletionEngine:
                 text=base + name if base else name,
                 display=display,
                 start_pos=-len(prefix),
+                item_type="dir" if is_dir else "file",
             ))
         return result
