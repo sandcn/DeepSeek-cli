@@ -532,3 +532,94 @@ class TestCanUse:
         tool = _ConcreteTool()
         tool.agent_type = "plan"
         assert tool.agent_type == "plan"
+
+    # ——— 路径白名单校验 ———
+
+    def test_plan_write_file_in_allowed_dir(self):
+        """plan agent 写 .chat/plan/ 下文件 → 允许。"""
+        allowed, err = Func.can_use("write_file", "plan", path=".chat/plan/test.md")
+        assert allowed is True
+        assert err is None
+
+    def test_plan_write_file_outside_allowed_dir(self):
+        """plan agent 写外部路径 → 拒绝。"""
+        allowed, err = Func.can_use("write_file", "plan", path="../evil.md")
+        assert allowed is False
+        assert err is not None
+        assert "只能在" in err
+
+    def test_plan_update_file_in_allowed_dir(self):
+        """plan agent update .chat/plan/ 下文件 → 允许。"""
+        allowed, err = Func.can_use("update_file", "plan", path=".chat/plan/test.md")
+        assert allowed is True
+        assert err is None
+
+    def test_plan_update_file_outside_allowed_dir(self):
+        """plan agent update 外部路径 → 拒绝。"""
+        allowed, err = Func.can_use("update_file", "plan", path="src/main.py")
+        assert allowed is False
+        assert err is not None
+        assert "只能在" in err
+
+    def test_write_memory_write_file_in_allowed_dir(self):
+        """write_memory agent 写 .chat/memory/ 下文件 → 允许。"""
+        allowed, err = Func.can_use("write_file", "write_memory", path=".chat/memory/test.md")
+        assert allowed is True
+        assert err is None
+
+    def test_write_memory_write_file_outside_allowed_dir(self):
+        """write_memory agent 写外部路径 → 拒绝。"""
+        allowed, err = Func.can_use("write_file", "write_memory", path="src/main.py")
+        assert allowed is False
+        assert err is not None
+        assert "只能在" in err
+
+    def test_write_memory_write_plan_dir_rejected(self):
+        """write_memory agent 写 .chat/plan/ 目录 → 拒绝（跨目录校验）。"""
+        allowed, err = Func.can_use("write_file", "write_memory", path=".chat/plan/test.md")
+        assert allowed is False
+        assert err is not None
+        assert "只能在" in err
+
+    def test_plan_write_plan_dir_with_traversal(self):
+        """plan agent 通过 ../ 穿越 → 拒绝。"""
+        allowed, err = Func.can_use("write_file", "plan", path=".chat/plan/../../etc/passwd")
+        assert allowed is False
+        assert err is not None
+        assert "只能在" in err
+
+    def test_path_none_backward_compatible(self):
+        """path=None 时不触发路径校验（向后兼容）。"""
+        allowed, err = Func.can_use("write_file", "plan", path=None)
+        assert allowed is True
+        assert err is None
+
+    def test_plan_agent_other_tool_no_path_check(self):
+        """plan agent 使用非 write_file/update_file 工具时不触发路径校验。"""
+        allowed, err = Func.can_use("read_file", "plan", path="../outside.md")
+        assert allowed is True
+        assert err is None
+
+    def test_write_memory_other_tool_no_path_check(self):
+        """write_memory agent 使用非写入工具时不触发路径校验。"""
+        allowed, err = Func.can_use("read_file", "write_memory", path="../outside.md")
+        assert allowed is True
+        assert err is None
+
+    def test_plan_execute_no_path_restriction(self):
+        """plan_execute agent 即使传入 path 也不触发路径白名单校验。"""
+        allowed, err = Func.can_use("write_file", "plan_execute", path="../outside.md")
+        assert allowed is True
+        assert err is None
+
+    def test_map_no_path_restriction(self):
+        """map agent 即使传入 path 也不触发路径白名单校验。"""
+        # map agent 本身不能用 write_file（排除集中），验证拒绝来自排除集而非路径白名单
+        allowed, err = Func.can_use("write_file", "map", path="../outside.md")
+        assert allowed is False
+        assert err is not None
+        assert "map" in err
+        # read_file 允许且不触发路径校验
+        allowed, err = Func.can_use("read_file", "map", path="../outside.md")
+        assert allowed is True
+        assert err is None

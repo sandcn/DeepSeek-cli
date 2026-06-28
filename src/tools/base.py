@@ -3,6 +3,7 @@ from __future__ import annotations
 import abc
 import inspect
 import logging
+import os
 
 from src._compat import dataclass
 from typing import Optional
@@ -38,12 +39,13 @@ class Func(abc.ABC):
         self.agent = agent
 
     @classmethod
-    def can_use(cls, tool_name: str, agent_type: str = "plan_execute") -> "tuple[bool, str | None]":
+    def can_use(cls, tool_name: str, agent_type: str = "plan_execute", path: str | None = None) -> "tuple[bool, str | None]":
         """检查指定类型的 agent 能否使用某工具。
 
         Args:
             tool_name: 工具名称
             agent_type: Agent 类型（map/review/plan/read_memory/write_memory/plan_execute），默认 plan_execute
+            path: 目标文件路径（可选），用于 plan / write_memory agent 写入文件时的路径白名单校验
 
         Returns:
             (is_allowed: bool, error_message: str | None)
@@ -56,6 +58,25 @@ class Func(abc.ABC):
         if tool_name in excluded:
             return (False, f"工具 '{tool_name}' 不可用于 '{agent_type}' 类型 agent，"
                     f"该 agent 类型的工具白名单已排除此工具")
+        # 路径白名单校验：plan / write_memory agent 使用 write_file / update_file 时限制写入目录
+        if path is not None and agent_type in ('plan', 'write_memory') and tool_name in ('write_file', 'update_file'):
+            if agent_type == 'plan':
+                allowed_dir = os.path.realpath(os.path.abspath(os.path.join(os.getcwd(), '.chat', 'plan')))
+                agent_label = "plan agent"
+            else:  # write_memory
+                allowed_dir = os.path.realpath(os.path.abspath(os.path.join(os.getcwd(), '.chat', 'memory')))
+                agent_label = "write_memory agent"
+            try:
+                abs_path = os.path.abspath(path)
+                common = os.path.commonpath([allowed_dir, abs_path])
+                if common != allowed_dir:
+                    return (False, f"{agent_label} 只能在 {allowed_dir} 目录下写入文件。"
+                            f"当前路径: {path}（解析后: {abs_path}），"
+                            f"不在允许的目录: {allowed_dir}")
+            except ValueError:
+                return (False, f"{agent_label} 只能在 {allowed_dir} 目录下写入文件。"
+                        f"当前路径: {path}（解析后: {abs_path}），"
+                        f"无法与 {allowed_dir} 比较")
         return (True, None)
 
     @classmethod
