@@ -16,7 +16,7 @@ from .ui.theme import set_theme
 from .chat_msgs import load_session, list_sessions
 from .core.telemetry.trace_context import generate_trace_id, get_current_trace_id, set_current_trace_id
 from .observability import get_default_facade
-from .core.constants import CYAN, DIM, RESET, YELLOW
+from .ui.colors import CYAN, DIM, RESET, YELLOW
 from .ui._lock import locked_print
 
 from .api.escape_monitor import get_active_monitor, stop_active_monitor
@@ -223,7 +223,7 @@ def _apply_theme(args: argparse.Namespace) -> None:
 def _handle_session_command(args: argparse.Namespace) -> None:
     """处理 session 子命令（list/delete/export）"""
     from .chat_msgs import list_sessions, delete_session, export_session
-    from .core.constants import CYAN, DIM, RESET, YELLOW, GREEN
+    from .ui.colors import CYAN, DIM, RESET, YELLOW, GREEN
 
     if args.session_cmd == 'list':
         sessions = list_sessions()

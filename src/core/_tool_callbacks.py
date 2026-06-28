@@ -306,18 +306,15 @@ class ToolCallbackChain:
         if is_web and func.__class__.web_display is not Func.web_display:
             return await func.web_display()
 
-        from .ports.chat_ui import get_default_chat_ui_port
-        port = get_default_chat_ui_port()
-        # 保存 suspend 前的原始状态，避免 finally 中重新调用 is_active()
-        # 时状态已被 suspend 改变导致 resume 被跳过
-        was_active = port.is_active()
-        if was_active:
-            port.suspend()
+        from ..chat_ui import get_active_chat_ui
+        chat_ui = get_active_chat_ui()
+        if chat_ui is not None:
+            chat_ui.suspend()
         try:
             return await func.execute()
         finally:
-            if was_active:
-                port.resume()
+            if chat_ui is not None:
+                chat_ui.resume()
 
     async def _run_with_capture(self, func, tool_label: str, is_web: bool):
         """执行通用工具，带 stdout 捕获和 spinner 刷新。

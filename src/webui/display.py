@@ -72,10 +72,6 @@ class WebDisplay(BaseDisplay, BaseWebSocketSender):
     def stop(self, final: bool = False) -> None:
         self.send_json(msg_display_stopped(final=final))
 
-    async def await_stop(self, timeout: float = 2.0) -> None:
-        """WebDisplay 无后台线程，stop 是同步操作，直接返回。"""
-        pass
-
     # ═══════════════════════════════════════════════════════
     # 工具调用 — BaseDisplay 接口
     # ═══════════════════════════════════════════════════════

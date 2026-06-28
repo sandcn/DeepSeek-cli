@@ -2,8 +2,6 @@
 工具颜色和图标主题定义
 """
 
-from ...core.constants import AGENT_TYPE_ABBREV, AGENT_TYPE_COLORS  # re-export，定义移至 core 层
-
 # ── 工具 → 颜色名（兼容旧接口） ──────────────────────────
 TOOL_COLORS = {
     "bash": "green",
@@ -20,6 +18,27 @@ TOOL_COLORS = {
     "grep": "yellow",
     "find": "yellow",
     "glob": "yellow",
+}
+
+# ── SubAgent 类型 → 两字符缩写 ──────────────────────────
+AGENT_TYPE_ABBREV = {
+    "map": "mp",
+    "review": "rv",
+    "plan": "pl",
+    "read_memory": "rm",
+    "write_memory": "wm",
+    "plan_execute": "pe",
+}
+
+# ── SubAgent 类型 → 256色 ANSI 前景色 ──────────────────
+# 使用 256 色调色板：mp=蓝色(33) rv=紫色(129) pl=琥珀色(214) rm=青色(45) wm=黄色(226)
+AGENT_TYPE_COLORS = {
+    "map": "\033[38;5;33m",        # 深蓝
+    "review": "\033[38;5;129m",    # 紫
+    "plan": "\033[38;5;214m",      # 琥珀
+    "read_memory": "\033[38;5;45m",   # 青色
+    "write_memory": "\033[38;5;226m", # 黄色
+    "plan_execute": "\033[38;5;208m",   # 橙色
 }
 
 # ── 工具类别 → 256色 ANSI 前景色 ──────────────────────

@@ -8,10 +8,8 @@ from __future__ import annotations
 
 from contextlib import nullcontext
 
-from .display import DisplayPort
 
-
-class _NullPort(DisplayPort):
+class _NullPort:
     """通用空端口 — 为已知方法提供显式空实现。
 
     不覆盖 __getattr__，避免 hasattr 误报。
@@ -42,9 +40,6 @@ class _NullPort(DisplayPort):
         pass
 
     def stop(self, final: bool = False) -> None:
-        pass
-
-    async def await_stop(self, timeout: float = 2.0) -> None:
         pass
 
     def tool_parsing(self, label: str, tool_name: str, arguments: str = "") -> None:
@@ -89,26 +84,13 @@ class _NullPort(DisplayPort):
     def parse_info_done(self, label: str) -> None:
         pass
 
-    def update_agent_status(self, agent_id: str, status: str, detail: str) -> None:
+    def update_agent_status(self, label: str, status: str) -> None:
         pass
 
-    def add_agent(self, agent_id: str, agent_type: str, description: str) -> None:
+    def add_agent(self, label: str, description: str, status: str = "running") -> None:
         pass
 
     def update_status(self, label: str, status: str) -> None:
-        pass
-
-    def set_panel_context(self, context) -> None:
-        pass
-
-    def create_sub_display(self, max_history: int):
-        """创建子 DisplayPort — 空实现返回自身（Postel's Law）"""
-        return self
-
-    def set_result(self, agent_id: str, result: str | None = None, error: str | None = None) -> None:
-        pass
-
-    def remove_agent(self, agent_id: str) -> None:
         pass
 
 

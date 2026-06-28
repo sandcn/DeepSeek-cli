@@ -1,17 +1,6 @@
 """核心事件总线 — 通用事件发布/订阅系统
 
-@deprecated: 生产路径已迁移至 src/ui/events/event_bus.py::DisplayEventBus。此类仅保留供测试引用。
-
 线程安全，支持通配符订阅和优先级排序。
-
-⚠ Infrastructure-only: 此类作为线程安全事件分发的参考实现保留。
-生产路径已迁移至 src/ui/events/event_bus.py::DisplayEventBus（自包含实现）。
-保留供测试引用及未来核心模块间直接通信集成。
-
-当前角色说明：
-- CoreEventBus 是基础事件分发引擎，本身不直接绑定任何业务事件类型。
-- 生产使用已迁移至 src/ui/events/event_bus.py 的 DisplayEventBus（内联了
-  CoreEventBus 的线程安全分发、通配符匹配和异常隔离逻辑，不再委托）。
 """
 
 from __future__ import annotations
@@ -32,8 +21,6 @@ EventHandler = Callable[[CoreEvent], None]
 
 class CoreEventBus:
     """核心事件总线
-
-    @deprecated: 使用 DisplayEventBus (src/ui/events/event_bus.py) 替代。
 
     特性：
     - 线程安全（读写锁保护）

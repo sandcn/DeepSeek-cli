@@ -5,7 +5,7 @@
 - 使用 importlib 直接加载模块文件，避免触发 src/__init__.py 的级联导入
 - 预先在 sys.modules 中 mock 所有外部依赖
 - 模块内部有延迟导入（_cmd_init 中 from ..tools.utils import atomic_write_file，
-  _cmd_load 中 from ..chat_ui.infrastructure.message_display import _display_messages），因此 mocks
+  _cmd_load 中 from ..ui.tui._message_display import _display_messages），因此 mocks
   在测试执行期间保留在 sys.modules 中
 - 使用 pytest fixture 管理共享的 mock 状态和测试隔离
 - 每个测试类对应一个命令函数，每个测试方法覆盖一个场景
@@ -27,7 +27,7 @@ import importlib.util
 from unittest.mock import MagicMock, patch, ANY, call
 
 # ── 在导入被测试模块前 mock 所有外部依赖 ────────────────────────────────
-_MODULE_PATH = '/home/DeepSeek-cli/src/core/commands_data.py'
+_MODULE_PATH = '/home/simple/chat/src/core/commands_data.py'
 
 # 预创建输出端口 mock（被 _out 变量引用，后续可在 fixture 中重置）
 _output_port_mock = MagicMock()
@@ -45,14 +45,7 @@ _MOCK_MODULES = {
         DIM='\x1b[2m', RESET='\x1b[0m', TEAL='\x1b[36m', CYAN='\x1b[36m',
     ),
     'src.core': MagicMock(),
-    'src.core.constants': MagicMock(
-        GREEN='\033[32m', YELLOW='\033[33m', RED='\033[31m',
-        DIM='\033[2m', RESET='\033[0m', CYAN='\033[36m',
-        filter_system=lambda msgs: [m for m in msgs if m.get('role') == 'system'],
-        filter_non_system=lambda msgs: [m for m in msgs if m.get('role') != 'system'],
-    ),
     'src.core.ports': MagicMock(),
-    'src.core.ports.chat_ui': MagicMock(),
     'src.core.ports.output': MagicMock(
         get_default_output_port=MagicMock(return_value=_output_port_mock),
     ),
@@ -66,9 +59,6 @@ _MOCK_MODULES = {
     'src.core._command_core': MagicMock(),
     'src.tools': MagicMock(),
     'src.tools.utils': MagicMock(),
-    'src.chat_ui': MagicMock(),
-    'src.chat_ui.infrastructure': MagicMock(),
-    'src.chat_ui.infrastructure.message_display': MagicMock(),
     'src.ui.tui': MagicMock(),
     'src.ui.tui._message_display': MagicMock(),
     'src.ui.msg_list': MagicMock(),
@@ -79,12 +69,6 @@ for mod_name, mod in _MOCK_MODULES.items():
     if mod_name not in _ORIGINAL_MODULES_DATA:
         _ORIGINAL_MODULES_DATA[mod_name] = sys.modules.get(mod_name)
     sys.modules[mod_name] = mod
-
-# 设置 ChatUIPort mock — get_default_chat_ui_port() 返回带 display_messages 的 mock
-_chat_ui_port_mock = MagicMock()
-_MOCK_MODULES['src.core.ports.chat_ui'].get_default_chat_ui_port = MagicMock(
-    return_value=_chat_ui_port_mock,
-)
 
 # ── 直接加载 commands_data.py ──────────────────────────────────
 _spec = importlib.util.spec_from_file_location(
@@ -130,8 +114,6 @@ def reset_mocks():
         sys.modules[mod_name] = mod
     _output_port_mock.reset_mock()
     _output_port_mock._mock_side_effect = None
-    _chat_ui_port_mock.reset_mock()
-    _chat_ui_port_mock._mock_side_effect = None
     for mod in _MOCK_MODULES.values():
         _deep_reset_mock(mod)
     yield
@@ -191,8 +173,8 @@ def _mock_get_sandbox_manager():
 
 
 def _mock_display_messages():
-    """快捷：获取 display_messages mock（通过 ChatUIPort）"""
-    return _MOCK_MODULES['src.core.ports.chat_ui'].get_default_chat_ui_port().display_messages
+    """快捷：获取 _display_messages mock"""
+    return _MOCK_MODULES['src.ui.tui._message_display']._display_messages
 
 
 # ═══════════════════════════════════════════════════════════════════════════

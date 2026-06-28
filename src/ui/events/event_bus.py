@@ -1,7 +1,7 @@
-"""DisplayEventBus — 显示层事件总线（自包含线程安全实现）
+"""DisplayEventBus — 显示层事件总线（基于 CoreEventBus 实现）
 
-直接在 DisplayEventBus 内实现线程安全的事件分发（精确匹配 + 通配符匹配），
-不再委托给 CoreEventBus，消除三层委托结构（CoreEventBus → DisplayEventBus → EventDispatcher）。
+内部委托给 CoreEventBus 实现线程安全的事件分发，
+消除与核心层事件总线的功能重叠。
 
 对外接口完全不变。
 """
@@ -10,44 +10,35 @@ from __future__ import annotations
 
 import logging
 import threading
-from collections import defaultdict
 from typing import Any, Callable, Dict, Optional, Type
 
 from .event_types import DisplayEvent
+from ...core.events.event_bus import CoreEventBus
+from ...core.events.event_types import CoreEvent, EventPriority
 
 _logger = logging.getLogger(__name__)
 
 EventHandler = Callable[[DisplayEvent], Any]
 
-# 默认优先级值（与原 CoreEventBus.EventPriority.NORMAL = 50 保持一致）
-_DEFAULT_PRIORITY = 50
-
 
 class DisplayEventBus:
-    """显示层事件总线 — 同步发布/订阅（自包含线程安全实现）。
+    """显示层事件总线 — 同步发布/订阅（基于 CoreEventBus 实现）。
 
     线程安全。支持按事件类型过滤订阅。
     默认单例可通过 DisplayEventBus.get_default() 获取。
-
-    特性：
-    - 线程安全（RLock 保护 _handlers / _stats）
-    - 通配符订阅（"*" 匹配所有事件类型）
-    - 优先级排序（按优先级降序分发）
-    - 异常隔离（单个处理器异常不影响其他处理器）
+    内部委托给 CoreEventBus 进行事件分发。
     """
 
     _default_instance: Optional["DisplayEventBus"] = None
     _default_lock = threading.RLock()
 
     def __init__(self):
-        self._lock = threading.RLock()
-        # event_type_name → [(priority, handler), ...] 按优先级降序
-        self._handlers: dict[str, list[tuple[int, EventHandler]]] = defaultdict(list)
-        self._stats: dict[str, int] = defaultdict(int)  # event_type → 发布计数
-        # 记录每个 handler 的订阅信息，用于 unsubscribe 精确移除
-        # handler → [(mode, event_type), ...]
-        #   mode: 'type' = 按事件类型订阅, 'all' = 订阅所有事件
-        self._handler_map: Dict[EventHandler, list[tuple[str, Optional[Type[DisplayEvent]]]]] = {}
+        # 内部委托给 CoreEventBus（复用线程安全分发+异常隔离）
+        self._bus = CoreEventBus()
+        # 维护 handler 映射: original_handler → list of (mode, event_type, wrapper)
+        # mode: 'type' 表示按类型订阅, 'all' 表示订阅所有事件
+        # ★ 改为列表存储，支持同一 handler 在多个 event_type 上注册
+        self._handler_map: Dict[EventHandler, list[tuple[str, Optional[type], Any]]] = {}
         self._handler_lock = threading.RLock()
         self._source: str = ""
 
@@ -81,28 +72,23 @@ class DisplayEventBus:
 
         Args:
             handler: 事件处理函数，接受 DisplayEvent 参数
-            event_type: 指定订阅的事件类型。None 表示订阅所有事件（通配符 "*"）。
+            event_type: 指定订阅的事件类型。None 表示订阅所有事件。
         """
         if event_type is not None:
             if not issubclass(event_type, DisplayEvent):
                 raise TypeError(f"event_type 必须是 DisplayEvent 的子类，收到: {event_type}")
-            event_type_str = event_type.__name__
-            with self._lock:
-                handlers = self._handlers[event_type_str]
-                handlers.append((_DEFAULT_PRIORITY, handler))
-                # 按优先级降序排列
-                handlers.sort(key=lambda x: x[0], reverse=True)
+            # 创建包装器：CoreEvent → 提取 DisplayEvent → 调用原始 handler
+            wrapper = self._make_wrapper(handler)
+            self._bus.subscribe(event_type.__name__, wrapper, priority=EventPriority.NORMAL)
             with self._handler_lock:
                 entries = self._handler_map.setdefault(handler, [])
-                entries.append(('type', event_type))
+                entries.append(('type', event_type, wrapper))
         else:
-            with self._lock:
-                handlers = self._handlers['*']
-                handlers.append((_DEFAULT_PRIORITY, handler))
-                handlers.sort(key=lambda x: x[0], reverse=True)
+            wrapper = self._make_wrapper(handler)
+            self._bus.subscribe('*', wrapper, priority=EventPriority.NORMAL)
             with self._handler_lock:
                 entries = self._handler_map.setdefault(handler, [])
-                entries.append(('all', None))
+                entries.append(('all', None, wrapper))
 
     def unsubscribe(
         self,
@@ -113,15 +99,14 @@ class DisplayEventBus:
 
         Args:
             handler: 之前注册的事件处理函数
-            event_type: 指定取消订阅的类型。None 表示从全局订阅（"*"）中移除。
+            event_type: 指定取消订阅的类型。None 表示从全局订阅中移除。
         """
-        # 第一步：从 _handler_map 中查找并移除记录
         with self._handler_lock:
             entries = self._handler_map.get(handler)
             if not entries:
                 return
             # 找到匹配的条目移除
-            for i, (mode, et) in enumerate(entries):
+            for i, (mode, et, wrapper) in enumerate(entries):
                 if (event_type is None and mode == 'all') or \
                    (event_type is not None and mode == 'type' and et == event_type):
                     entry = entries.pop(i)
@@ -130,35 +115,22 @@ class DisplayEventBus:
                     break
             else:
                 return  # 无匹配条目
-
-        # 第二步：从 _handlers 中移除 handler
-        mode, et = entry
-        event_type_str = '*' if mode == 'all' else et.__name__
-        with self._lock:
-            handlers = self._handlers.get(event_type_str)
-            if not handlers:
-                return
-            for i, (_, h) in enumerate(handlers):
-                if h == handler:
-                    handlers.pop(i)
-                    if not handlers:
-                        # 清理空列表以保持 subscriber_count 准确
-                        del self._handlers[event_type_str]
-                    return
+        mode, et, wrapper = entry
+        if mode == 'type' and et is not None:
+            self._bus.unsubscribe(et.__name__, wrapper)
+        else:
+            self._bus.unsubscribe('*', wrapper)
 
     def clear(self) -> None:
-        """清除所有订阅和统计。"""
-        with self._lock:
-            self._handlers.clear()
-            self._stats.clear()
+        """清除所有订阅。"""
+        self._bus.clear()
         with self._handler_lock:
             self._handler_map.clear()
 
     @property
     def subscriber_count(self) -> int:
         """获取当前订阅者总数。"""
-        with self._lock:
-            return sum(len(h) for h in self._handlers.values())
+        return self._bus.subscriber_count()
 
     # ── 发布 ────────────────────────────────────────────
 
@@ -168,64 +140,39 @@ class DisplayEventBus:
         Args:
             event: 要发布的事件对象
         """
+        # 将 DisplayEvent 包装为 CoreEvent 发布
         event_type_name = type(event).__name__
-        self._dispatch(event_type_name, event)
+        self._bus.publish(
+            event_type=event_type_name,
+            data={'_display_event': event},
+            source=event.source or self._source,
+        )
 
-    def _dispatch(self, event_type_name: str, event: DisplayEvent) -> None:
-        """将事件分发给所有匹配的处理器（线程安全，异常隔离）。
+    # ── 内部方法 ────────────────────────────────────────
 
-        分发策略（与 CoreEventBus._dispatch 等效）：
-        1. 精确匹配：按事件类型名精确查找 handlers
-        2. 通配符匹配：查找前缀通配符（"prefix.*"）和全通配符（"*"）
-        3. 去重：精确匹配优先于通配符匹配（首现保留原则）
-        4. 锁外分发：在释放锁后调用 handler，避免死锁
-        5. 异常隔离：单个 handler 异常不影响其他 handler 和总线状态
+    @staticmethod
+    def _make_wrapper(handler: EventHandler) -> Callable[[CoreEvent], None]:
+        """创建 CoreEvent → DisplayEvent 的适配包装器
+
+        从 CoreEvent.data['_display_event'] 中提取原始 DisplayEvent，
+        再调用原始 handler。
+
+        Args:
+            handler: 原始 DisplayEvent handler
+
+        Returns:
+            适配后的 CoreEvent handler
         """
-        with self._lock:
-            self._stats[event_type_name] += 1
-
-            # 精确匹配 — 组内已按优先级降序
-            exact_matched = self._handlers.get(event_type_name, [])
-
-            # 通配符匹配: "prefix.*" 匹配 "prefix.something"
-            wildcard_matched: list[tuple[int, EventHandler]] = []
-            for pattern, handlers in self._handlers.items():
-                if pattern.endswith('*') and not pattern.endswith('**'):
-                    prefix = pattern[:-1]
-                    if event_type_name.startswith(prefix):
-                        wildcard_matched.extend(handlers)
-                elif pattern == '*':
-                    wildcard_matched.extend(handlers)
-
-            # 通配符全局按优先级降序
-            wildcard_matched.sort(key=lambda x: x[0], reverse=True)
-
-            # 去重：精确优先于通配符（首现保留原则）
-            seen: set[EventHandler] = set()
-            unique_handlers: list[EventHandler] = []
-            for _, h in exact_matched:
-                if h not in seen:
-                    seen.add(h)
-                    unique_handlers.append(h)
-            for _, h in wildcard_matched:
-                if h not in seen:
-                    seen.add(h)
-                    unique_handlers.append(h)
-
-        # 在锁外分发，避免处理器死锁
-        for handler in unique_handlers:
+        def wrapper(core_event: CoreEvent) -> None:
+            display_event = core_event.data.get('_display_event')
+            if display_event is None:
+                return
             try:
-                handler(event)
+                handler(display_event)
             except Exception:
                 _logger.exception(
-                    "事件处理器异常: event_type=%s handler=%s",
-                    event_type_name,
+                    "事件处理函数 %s 处理 %s 时异常",
                     getattr(handler, "__name__", repr(handler)),
+                    type(display_event).__name__,
                 )
-
-    # ── 工具方法 ────────────────────────────────────────
-
-    def get_stats(self) -> dict[str, int]:
-        """获取各事件类型的发布计数。"""
-        with self._lock:
-            return dict(self._stats)
+        return wrapper

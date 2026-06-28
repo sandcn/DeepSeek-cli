@@ -11,30 +11,14 @@
 - StatsPort         — 统计收集
 - PersistencePort   — 会话持久化
 - CheckpointPort    — 任务断点
-- DisplayPort       — 用户显示（组合协议）
-  - ToolDisplayPort   — 工具调用显示
-  - AgentStatusPort   — Agent 状态显示
-  - LiveMetricPort    — 实时指标显示
-  - SubDisplayPort    — 子显示管理
+- DisplayPort       — 用户显示
 - EventPort         — 事件总线
 - OutputPort        — 文本输出
-- ChatUIPort        — ChatUI 交互（暂停/恢复/写屏/底部栏）
 """
 
-from .chat_ui import (
-    ChatUIPort,
-    NullChatUIPort,
-    DefaultChatUIPort,
-    get_default_chat_ui_port,
-    set_default_chat_ui_port,
-    reset_default_chat_ui_port,
-)
 from .http import HttpClientPort, DefaultHttpClientAdapter
 from .config import ConfigPort, DefaultConfigAdapter, MockConfigAdapter
-from .display import (
-    DisplayPort, ToolDisplayPort, AgentStatusPort,
-    LiveMetricPort, SubDisplayPort,
-)
+from .display import DisplayPort
 from .events import EventPort
 from .interrupt import InterruptPort
 from .model import AsyncModelPort, DefaultAsyncModelAdapter, MockAsyncModelAdapter, ModelResult
@@ -44,7 +28,6 @@ from .tool_registry import ToolRegistryPort
 from .prompt_builder import PromptBuilderPort, DefaultPromptBuilderAdapter
 from .render import RenderPort, DefaultRenderAdapter, NullRenderAdapter
 from .stats import StatsPort, DefaultStatsAdapter, MockStatsAdapter
-from .completion import CompletionDataPort, DefaultCompletionDataPort
 from ..cache import CachePort, LRUCache, NullCache
 
 __all__ = [
@@ -59,12 +42,7 @@ __all__ = [
     # 持久化
     "PersistencePort", "CheckpointPort", "JsonFilePersistence", "JsonFileCheckpoint",
     # UI
-    "DisplayPort", "ToolDisplayPort", "AgentStatusPort",
-    "LiveMetricPort", "SubDisplayPort",
-    "EventPort", "OutputPort",
-    # ChatUI
-    "ChatUIPort", "NullChatUIPort", "DefaultChatUIPort",
-    "get_default_chat_ui_port", "set_default_chat_ui_port", "reset_default_chat_ui_port",
+    "DisplayPort", "EventPort", "OutputPort",
     # HTTP
     "HttpClientPort", "DefaultHttpClientAdapter",
     # 中断检查
@@ -75,6 +53,4 @@ __all__ = [
     "PromptBuilderPort", "DefaultPromptBuilderAdapter",
     # 渲染
     "RenderPort", "DefaultRenderAdapter", "NullRenderAdapter",
-    # 补全数据
-    "CompletionDataPort", "DefaultCompletionDataPort",
 ]

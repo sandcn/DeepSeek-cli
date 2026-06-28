@@ -11,7 +11,7 @@
 
 测试隔离：
 - 每个测试从 root logger 移除/恢复 _error_handler（全局副作用）
-- 每个测试恢复 app_state._active_consumer 避免测试间污染
+- 每个测试恢复 _state._active_consumer 避免测试间污染
 - 所有 EventBus 使用 MagicMock，不依赖真实 DisplayEventBus
 - engine 的 start/stop 在需要时 patch（避免真实线程创建）
 """
@@ -22,7 +22,6 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from src.chat_ui.commands.types import CmdUserMsg, CmdNotification, CmdError, CmdWriteLine, CmdDisplayMsgs
 
 # ── 项目根目录 ───────────────────────────────────────
 sys.path.insert(0, "/home/DeepSeek-cli")
@@ -40,7 +39,7 @@ def _reset_error_handler():
     而非依赖模块级 _error_handler 变量（P1-1 后已移除）。
     """
     root = logging.getLogger()
-    from src.chat_ui.error_handler import ChatUIErrorHandler
+    from src.chat_ui._error_handler import ChatUIErrorHandler
     handler = None
     for h in root.handlers:
         if isinstance(h, ChatUIErrorHandler):
@@ -55,11 +54,11 @@ def _reset_error_handler():
 
 @pytest.fixture(autouse=True)
 def _reset_active_consumer():
-    """每个测试恢复 app_state._active_consumer 避免测试间污染。"""
-    from src.chat_ui.state import app_state
-    original = app_state._active_consumer
+    """每个测试恢复 _state._active_consumer 避免测试间污染。"""
+    from src.chat_ui import _state
+    original = _state._active_consumer
     yield
-    app_state._active_consumer = original
+    _state._active_consumer = original
 
 
 @pytest.fixture
@@ -119,7 +118,7 @@ class TestChatUIConsumerInit:
 
     def test_init_event_handler_names_present(self, consumer):
         """_HANDLER_MAP 包含 11 个事件处理器"""
-        from src.chat_ui.dispatch.dispatcher import _HANDLER_MAP
+        from src.chat_ui._dispatcher import _HANDLER_MAP
         assert len(_HANDLER_MAP) == 11
 
     def test_init_event_bus_fallback(self):
@@ -141,14 +140,14 @@ class TestChatUIConsumerStart:
     def test_start_sets_started_true(self, consumer, mock_bus):
         """start() 后 _started=True"""
         with patch.object(consumer._engine, 'start'):
-            with patch('src.chat_ui.state.app_state') as mock_state:
+            with patch('src.chat_ui._state') as mock_state:
                 consumer.start()
                 assert consumer._started is True
 
     def test_start_subscribes_events(self, consumer, mock_bus):
         """start() 为每个事件处理器调用 subscribe"""
         with patch.object(consumer._engine, 'start'):
-            with patch('src.chat_ui.state.app_state'):
+            with patch('src.chat_ui._state'):
                 consumer.start()
                 # 11 个事件处理器
                 assert mock_bus.subscribe.call_count == 11
@@ -156,27 +155,27 @@ class TestChatUIConsumerStart:
     def test_start_sets_active_consumer(self, consumer, mock_bus):
         """start() 调用 _state._register_consumer(self) 注册活跃实例"""
         with patch.object(consumer._engine, 'start'):
-            with patch('src.chat_ui.consumer._register_consumer') as mock_register:
+            with patch('src.chat_ui._consumer._register_consumer') as mock_register:
                 consumer.start()
                 mock_register.assert_called_once_with(consumer)
 
     def test_start_calls_engine_start(self, consumer, mock_bus):
         """start() 调用 _engine.start()"""
         with patch.object(consumer._engine, 'start') as mock_engine_start:
-            with patch('src.chat_ui.state.app_state'):
+            with patch('src.chat_ui._state'):
                 consumer.start()
                 mock_engine_start.assert_called_once()
 
     def test_start_is_idempotent(self, consumer, mock_bus):
         """重复 start() 幂等——第二次不重复订阅"""
         with patch.object(consumer._engine, 'start'):
-            with patch('src.chat_ui.state.app_state'):
+            with patch('src.chat_ui._state'):
                 consumer.start()
                 first_count = mock_bus.subscribe.call_count
 
         # 第二次 start
         with patch.object(consumer._engine, 'start') as mock_engine_start:
-            with patch('src.chat_ui.state.app_state'):
+            with patch('src.chat_ui._state'):
                 consumer.start()
                 # subscribe 不应再被调用
                 assert mock_bus.subscribe.call_count == first_count
@@ -186,7 +185,7 @@ class TestChatUIConsumerStart:
     def test_start_lazy_binds_handlers(self, consumer, mock_bus):
         """首次 start() 后 _bound_handlers 已创建"""
         with patch.object(consumer._engine, 'start'):
-            with patch('src.chat_ui.state.app_state'):
+            with patch('src.chat_ui._state'):
                 consumer.start()
                 assert consumer._bound_handlers is not None
                 assert len(consumer._bound_handlers) == 11
@@ -197,7 +196,7 @@ class TestChatUIConsumerStart:
         验证顺序：先调用 unsubscribe 再调用 subscribe
         """
         with patch.object(consumer._engine, 'start'):
-            with patch('src.chat_ui.state.app_state'):
+            with patch('src.chat_ui._state'):
                 consumer.start()
 
         # 验证 unsubscribe 被调用（即使首次 start 也会防御性取消）
@@ -223,7 +222,7 @@ class TestChatUIConsumerStart:
         mock_bus.unsubscribe.side_effect = Exception("not subscribed")
 
         with patch.object(consumer._engine, 'start'):
-            with patch('src.chat_ui.state.app_state'):
+            with patch('src.chat_ui._state'):
                 # 不应传播异常
                 consumer.start()
 
@@ -236,7 +235,7 @@ class TestChatUIConsumerStart:
         我们通过检查 subscribe call_count 来确认订阅已完成。
         """
         with patch.object(consumer._engine, 'start'):
-            with patch('src.chat_ui.state.app_state'):
+            with patch('src.chat_ui._state'):
                 consumer.start()
 
         # 11 个事件已全部订阅
@@ -249,13 +248,13 @@ class TestChatUIConsumerStart:
 
         引擎线程为 daemon 线程，测试结束时自动清理。
         """
-        with patch('src.chat_ui.state.app_state'):
+        with patch('src.chat_ui._state'):
             consumer.start()
             assert consumer._started is True
             assert consumer._engine._render_running is True
             assert consumer._engine._render_thread is not None
             # 停止以清理
-        with patch('src.chat_ui.state.app_state'):
+        with patch('src.chat_ui._state'):
             consumer.stop()
 
 
@@ -274,7 +273,7 @@ class TestChatUIConsumerStop:
 
         with patch.object(consumer._engine, 'stop'):
             with patch.object(consumer._engine, 'flush'):
-                with patch('src.chat_ui.state.app_state'):
+                with patch('src.chat_ui._state'):
                     consumer.stop()
                     assert consumer._started is False
 
@@ -285,7 +284,7 @@ class TestChatUIConsumerStop:
 
         with patch.object(consumer._engine, 'stop') as mock_stop:
             with patch.object(consumer._engine, 'flush'):
-                with patch('src.chat_ui.state.app_state'):
+                with patch('src.chat_ui._state'):
                     consumer.stop()
                     mock_stop.assert_called_once()
 
@@ -296,7 +295,7 @@ class TestChatUIConsumerStop:
 
         with patch.object(consumer._engine, 'stop'):
             with patch.object(consumer._engine, 'flush') as mock_flush:
-                with patch('src.chat_ui.state.app_state'):
+                with patch('src.chat_ui._state'):
                     consumer.stop()
                     mock_flush.assert_called_once()
 
@@ -308,7 +307,7 @@ class TestChatUIConsumerStop:
 
         with patch.object(consumer._engine, 'stop'):
             with patch.object(consumer._engine, 'flush'):
-                with patch('src.chat_ui.state.app_state'):
+                with patch('src.chat_ui._state'):
                     consumer.stop()
                     assert mock_bus.unsubscribe.call_count >= n_handlers
 
@@ -319,7 +318,7 @@ class TestChatUIConsumerStop:
 
         with patch.object(consumer._engine, 'stop'):
             with patch.object(consumer._engine, 'flush'):
-                with patch('src.chat_ui.consumer._unregister_consumer') as mock_unregister:
+                with patch('src.chat_ui._consumer._unregister_consumer') as mock_unregister:
                     consumer.stop()
                     mock_unregister.assert_called_once()
 
@@ -330,7 +329,7 @@ class TestChatUIConsumerStop:
 
         with patch.object(consumer._engine, 'stop'):
             with patch.object(consumer._engine, 'flush'):
-                with patch('src.chat_ui.state.app_state'):
+                with patch('src.chat_ui._state'):
                     with patch.object(consumer._bottom_bar, 'teardown') as mock_teardown:
                         consumer.stop()
                         mock_teardown.assert_called_once()
@@ -342,7 +341,7 @@ class TestChatUIConsumerStop:
 
         with patch.object(consumer._engine, 'stop'):
             with patch.object(consumer._engine, 'flush'):
-                with patch('src.chat_ui.state.app_state'):
+                with patch('src.chat_ui._state'):
                     with patch.object(consumer._rs, 'close_all') as mock_close:
                         consumer.stop()
                         mock_close.assert_called_once()
@@ -353,7 +352,7 @@ class TestChatUIConsumerStop:
 
         with patch.object(consumer._engine, 'stop') as mock_stop:
             with patch.object(consumer._engine, 'flush') as mock_flush:
-                with patch('src.chat_ui.state.app_state'):
+                with patch('src.chat_ui._state'):
                     with patch.object(consumer._bottom_bar, 'teardown') as mock_teardown:
                         consumer.stop()
                         mock_stop.assert_not_called()
@@ -371,7 +370,7 @@ class TestChatUIConsumerStop:
 
         with patch.object(consumer._engine, 'stop'):
             with patch.object(consumer._engine, 'flush'):
-                with patch('src.chat_ui.state.app_state'):
+                with patch('src.chat_ui._state'):
                     # 不应抛出异常
                     consumer.stop()
 
@@ -380,27 +379,27 @@ class TestChatUIConsumerStop:
     def test_stop_resets_after_start_stop_start(self, consumer, mock_bus):
         """start→stop→start→stop 完整周期可正常执行"""
         with patch.object(consumer._engine, 'start'):
-            with patch('src.chat_ui.state.app_state'):
+            with patch('src.chat_ui._state'):
                 consumer.start()
                 assert consumer._started is True
 
         with patch.object(consumer._engine, 'stop'):
             with patch.object(consumer._engine, 'flush'):
-                with patch('src.chat_ui.state.app_state'):
+                with patch('src.chat_ui._state'):
                     with patch.object(consumer._bottom_bar, 'teardown'):
                         consumer.stop()
                         assert consumer._started is False
 
         # 第二次 start
         with patch.object(consumer._engine, 'start'):
-            with patch('src.chat_ui.state.app_state'):
+            with patch('src.chat_ui._state'):
                 consumer.start()
                 assert consumer._started is True
 
         # 第二次 stop
         with patch.object(consumer._engine, 'stop'):
             with patch.object(consumer._engine, 'flush'):
-                with patch('src.chat_ui.state.app_state'):
+                with patch('src.chat_ui._state'):
                     with patch.object(consumer._bottom_bar, 'teardown'):
                         consumer.stop()
                         assert consumer._started is False
@@ -524,16 +523,20 @@ class TestChatUIConsumerResume:
                 mock_setup.assert_not_called()
 
     def test_resume_writes_ansi_cursor(self, consumer, mock_bus):
-        """resume() 写入光标定位序列到 TerminalIO"""
+        """resume() 写入光标定位序列到 sys.__stdout__"""
         consumer._started = True
         consumer._engine._render_running = False
         with patch.object(consumer._engine, 'start'):
             with patch.object(consumer._bottom_bar, 'setup'):
-                with patch.object(consumer._tio, 'write') as mock_write, \
-                     patch.object(consumer._tio, 'flush') as mock_flush:
+                with patch('sys.__stdout__') as mock_stdout:
                     consumer.resume()
-                    # 验证写入了光标定位序列
-                    assert mock_write.called or mock_flush.called
+                    # 验证写入了光标定位序列（通过 Blessed 或回退 ANSI）
+                    calls = [str(c) for c in mock_stdout.write.call_args_list]
+                    has_cursor_pos = any(
+                        '\033[' in call for call in calls
+                    ) if calls else False
+                    # 若未检测到 ANSI 序列，至少验证 flush 被调用
+                    assert has_cursor_pos or mock_stdout.flush.called
 
     def test_resume_after_suspend_full_cycle(self, consumer, mock_bus):
         """suspend→resume 完整暂停恢复周期"""
@@ -548,8 +551,7 @@ class TestChatUIConsumerResume:
         # render 已停止
         with patch.object(consumer._engine, 'start') as mock_start:
             with patch.object(consumer._bottom_bar, 'setup'):
-                with patch.object(consumer._tio, 'write'), \
-                     patch.object(consumer._tio, 'flush'):
+                with patch('sys.__stdout__'):
                     consumer.resume()
                     mock_start.assert_called_once()
 
@@ -564,13 +566,13 @@ class TestChatUIConsumerLifecycle:
     def test_lifecycle_start_stop(self, consumer, mock_bus):
         """start → stop 基础生命周期"""
         with patch.object(consumer._engine, 'start'):
-            with patch('src.chat_ui.state.app_state'):
+            with patch('src.chat_ui._state'):
                 consumer.start()
                 assert consumer._started is True
 
         with patch.object(consumer._engine, 'stop'):
             with patch.object(consumer._engine, 'flush'):
-                with patch('src.chat_ui.state.app_state'):
+                with patch('src.chat_ui._state'):
                     with patch.object(consumer._bottom_bar, 'teardown'):
                         consumer.stop()
                         assert consumer._started is False
@@ -579,7 +581,7 @@ class TestChatUIConsumerLifecycle:
         """start → suspend → resume → stop 完整串行"""
         # start
         with patch.object(consumer._engine, 'start'):
-            with patch('src.chat_ui.state.app_state'):
+            with patch('src.chat_ui._state'):
                 consumer.start()
                 assert consumer._started is True
 
@@ -600,7 +602,7 @@ class TestChatUIConsumerLifecycle:
         # stop
         with patch.object(consumer._engine, 'stop'):
             with patch.object(consumer._engine, 'flush'):
-                with patch('src.chat_ui.state.app_state'):
+                with patch('src.chat_ui._state'):
                     with patch.object(consumer._bottom_bar, 'teardown'):
                         consumer.stop()
                         assert consumer._started is False
@@ -609,13 +611,13 @@ class TestChatUIConsumerLifecycle:
         """start → stop → start → stop 双周期"""
         for _ in range(2):
             with patch.object(consumer._engine, 'start'):
-                with patch('src.chat_ui.state.app_state'):
+                with patch('src.chat_ui._state'):
                     consumer.start()
                     assert consumer._started is True
 
             with patch.object(consumer._engine, 'stop'):
                 with patch.object(consumer._engine, 'flush'):
-                    with patch('src.chat_ui.state.app_state'):
+                    with patch('src.chat_ui._state'):
                         with patch.object(consumer._bottom_bar, 'teardown'):
                             consumer.stop()
                             assert consumer._started is False
@@ -635,7 +637,7 @@ class TestChatUIConsumerLifecycle:
     def test_lifecycle_start_then_suspend_twice(self, consumer, mock_bus):
         """start → suspend → suspend（第二次幂等）"""
         with patch.object(consumer._engine, 'start'):
-            with patch('src.chat_ui.state.app_state'):
+            with patch('src.chat_ui._state'):
                 consumer.start()
 
         with patch.object(consumer._engine, 'stop'):
@@ -649,13 +651,13 @@ class TestChatUIConsumerLifecycle:
     def test_lifecycle_no_unexpected_events(self, consumer, mock_bus):
         """完整周期中不产生意外副作用"""
         with patch.object(consumer._engine, 'start'):
-            with patch('src.chat_ui.state.app_state'):
+            with patch('src.chat_ui._state'):
                 consumer.start()
                 assert mock_bus.subscribe.call_count == 11
 
         with patch.object(consumer._engine, 'stop'):
             with patch.object(consumer._engine, 'flush'):
-                with patch('src.chat_ui.state.app_state'):
+                with patch('src.chat_ui._state'):
                     with patch.object(consumer._bottom_bar, 'teardown'):
                         consumer.stop()
                         # unsubscribe 至少调用了 11 次
@@ -671,38 +673,43 @@ class TestChatUIConsumerPublicMethods:
 
     def test_on_user_message_enqueues(self, consumer, mock_bus):
         """on_user_message('hello') → 命令入队"""
+        from src.chat_ui import RenderCommand
         consumer.on_user_message("hello")
         cmd = consumer._engine._cmd_queue.get_nowait()
-        assert isinstance(cmd, CmdUserMsg)
-        assert cmd.text == "hello"
+        assert cmd[0] == RenderCommand.USER_MSG
+        assert cmd[1] == "hello"
 
     def test_on_user_message_empty(self, consumer, mock_bus):
         """on_user_message('') → 入队空字符串"""
+        from src.chat_ui import RenderCommand
         consumer.on_user_message("")
         cmd = consumer._engine._cmd_queue.get_nowait()
-        assert isinstance(cmd, CmdUserMsg)
-        assert cmd.text == ""
+        assert cmd[0] == RenderCommand.USER_MSG
+        assert cmd[1] == ""
 
     def test_on_notification_enqueues(self, consumer, mock_bus):
         """on_notification('通知') → 命令入队"""
+        from src.chat_ui import RenderCommand
         consumer.on_notification("通知")
         cmd = consumer._engine._cmd_queue.get_nowait()
-        assert isinstance(cmd, CmdNotification)
-        assert cmd.text == "通知"
+        assert cmd[0] == RenderCommand.NOTIFICATION
+        assert cmd[1] == "通知"
 
     def test_on_notification_empty(self, consumer, mock_bus):
         """on_notification('') → 入队空字符串"""
+        from src.chat_ui import RenderCommand
         consumer.on_notification("")
         cmd = consumer._engine._cmd_queue.get_nowait()
-        assert isinstance(cmd, CmdNotification)
-        assert cmd.text == ""
+        assert cmd[0] == RenderCommand.NOTIFICATION
+        assert cmd[1] == ""
 
     def test_on_error_enqueues(self, consumer, mock_bus):
         """on_error('错误') → 命令入队"""
+        from src.chat_ui import RenderCommand
         consumer.on_error("错误消息")
         cmd = consumer._engine._cmd_queue.get_nowait()
-        assert isinstance(cmd, CmdError)
-        assert cmd.message == "错误消息"
+        assert cmd[0] == RenderCommand.ERROR
+        assert cmd[1] == "错误消息"
 
     def test_on_error_empty_skipped(self, consumer, mock_bus):
         """on_error('') → 不入队（防御式检查）"""
@@ -718,22 +725,25 @@ class TestChatUIConsumerPublicMethods:
 
     def test_write_line_enqueues(self, consumer, mock_bus):
         """write_line('文本') → 命令入队"""
+        from src.chat_ui import RenderCommand
         consumer.write_line("通用文本")
         cmd = consumer._engine._cmd_queue.get_nowait()
-        assert isinstance(cmd, CmdWriteLine)
-        assert cmd.text == "通用文本"
+        assert cmd[0] == RenderCommand.WRITE_LINE
+        assert cmd[1] == "通用文本"
 
     def test_display_messages_enqueues(self, consumer, mock_bus):
         """display_messages([...]) → 命令入队"""
+        from src.chat_ui import RenderCommand
         msgs = [{"role": "user", "content": "hi"}]
         consumer.display_messages(msgs, speed=1)
         cmd = consumer._engine._cmd_queue.get_nowait()
-        assert isinstance(cmd, CmdDisplayMsgs)
-        assert cmd.messages == msgs
-        assert cmd.speed == 1
+        assert cmd[0] == RenderCommand.DISPLAY_MSGS
+        assert cmd[1] == msgs
+        assert cmd[2] == 1
 
     def test_multiple_calls_queue_order(self, consumer, mock_bus):
         """多次入队保持 FIFO 顺序"""
+        from src.chat_ui import RenderCommand
         consumer.on_user_message("first")
         consumer.on_notification("second")
         consumer.on_error("third")
@@ -742,21 +752,16 @@ class TestChatUIConsumerPublicMethods:
         cmd2 = consumer._engine._cmd_queue.get_nowait()
         cmd3 = consumer._engine._cmd_queue.get_nowait()
 
-        assert isinstance(cmd1, CmdUserMsg)
-        assert cmd1.text == "first"
-        assert isinstance(cmd2, CmdNotification)
-        assert cmd2.text == "second"
-        assert isinstance(cmd3, CmdError)
-        assert cmd3.message == "third"
+        assert cmd1 == (RenderCommand.USER_MSG, "first")
+        assert cmd2 == (RenderCommand.NOTIFICATION, "second")
+        assert cmd3 == (RenderCommand.ERROR, "third")
 
     def test_push_cmd_delegates_to_engine(self, consumer, mock_bus):
         """入队委托给 _engine.push_cmd"""
+        from src.chat_ui import RenderCommand
         with patch.object(consumer._engine, 'push_cmd') as mock_push:
             consumer.on_user_message("delegated")
-            mock_push.assert_called_once()
-            args, _ = mock_push.call_args
-            assert isinstance(args[0], CmdUserMsg)
-            assert args[0].text == "delegated"
+            mock_push.assert_called_once_with((RenderCommand.USER_MSG, "delegated"))
 
 
 # ═══════════════════════════════════════════════════════
@@ -772,9 +777,9 @@ class TestChatUIConsumerRefresh:
             consumer.refresh()
             mock_push.assert_not_called()
 
-    def test_refresh_does_not_call_force_redraw_from_vnode(self, consumer, mock_bus):
-        """refresh() 不调用 force_redraw_from_vnode"""
-        with patch.object(consumer._bottom_bar, 'force_redraw_from_vnode') as mock_redraw:
+    def test_refresh_does_not_call_force_redraw(self, consumer, mock_bus):
+        """refresh() 不调用 force_redraw"""
+        with patch.object(consumer._bottom_bar, 'force_redraw') as mock_redraw:
             consumer.refresh()
             mock_redraw.assert_not_called()
 
@@ -829,7 +834,7 @@ class TestChatUIConsumerBottomBarMethods:
         assert consumer.bottom_bar is consumer._bottom_bar
 
     def test_set_model_name_via_bottom_bar(self, consumer, mock_bus):
-        """set_model_name() 通过 bottom_bar 委托（向后兼容）"""
+        """set_model_name() 通过 bottom_bar 委托"""
         with patch.object(consumer._bottom_bar, 'set_model_name') as mock_set:
             consumer.bottom_bar.set_model_name("deepseek-v3")
             mock_set.assert_called_once_with("deepseek-v3")
@@ -847,21 +852,22 @@ class TestChatUIConsumerBottomBarMethods:
             mock_disable.assert_called_once()
 
     def test_reset_tool_count_via_bottom_bar(self, consumer, mock_bus):
-        """reset_tool_count() 通过 bottom_bar 委托（向后兼容）"""
+        """reset_tool_count() 通过 bottom_bar 委托"""
         with patch.object(consumer._bottom_bar, 'reset_tool_count') as mock_reset:
             consumer.bottom_bar.reset_tool_count()
             mock_reset.assert_called_once()
 
     def test_get_status_elapsed_via_bottom_bar(self, consumer, mock_bus):
-        """is_status_active 通过 bottom_bar property（get_status_elapsed 已移至 StatusBar）"""
-        result = consumer.bottom_bar.is_status_active
-        assert isinstance(result, bool)
+        """get_status_elapsed() 通过 bottom_bar 委托"""
+        with patch.object(consumer._bottom_bar, 'get_status_elapsed', return_value=1.5):
+            result = consumer.bottom_bar.get_status_elapsed()
+            assert result == 1.5
 
     def test_redraw_via_bottom_bar(self, consumer, mock_bus):
-        """force_redraw_from_vnode() 通过 bottom_bar 委托"""
-        with patch.object(consumer._bottom_bar, 'force_redraw_from_vnode') as mock_redraw:
-            consumer.bottom_bar.force_redraw_from_vnode("test content")
-            mock_redraw.assert_called_once_with("test content")
+        """force_redraw() 通过 bottom_bar 委托"""
+        with patch.object(consumer._bottom_bar, 'force_redraw') as mock_redraw:
+            consumer.bottom_bar.force_redraw()
+            mock_redraw.assert_called_once()
 
     def test_flush_delegates_to_engine(self, consumer, mock_bus):
         """flush() 委托给 _engine.flush()"""
@@ -898,10 +904,11 @@ class TestChatUIConsumerEdgeCases:
 
     def test_on_error_with_whitespace(self, consumer, mock_bus):
         """on_error('  ') → 入队（空格非空）"""
+        from src.chat_ui import RenderCommand
         consumer.on_error("  ")
         cmd = consumer._engine._cmd_queue.get_nowait()
-        assert isinstance(cmd, CmdError)
-        assert cmd.message == "  "
+        assert cmd[0] == RenderCommand.ERROR
+        assert cmd[1] == "  "
 
     def test_ensure_cursor_upper(self, consumer, mock_bus):
         """ensure_cursor_upper() 委托给 _engine"""

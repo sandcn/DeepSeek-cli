@@ -14,7 +14,7 @@ import logging
 from typing import List, Tuple, Optional, Callable
 
 from ..core.ports.tool_registry import ToolRegistryPort
-from ..ui import extract_key_params
+from ..ui.display import extract_key_params
 
 _logger = logging.getLogger(__name__)
 

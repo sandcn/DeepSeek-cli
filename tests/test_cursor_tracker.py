@@ -12,7 +12,7 @@ from dataclasses import dataclass
 
 import pytest
 
-from src.chat_ui.infrastructure.cursor_tracker import CursorPosition, CursorTracker
+from src.ui._cursor_tracker import CursorPosition, CursorTracker
 
 
 # ═══════════════════════════════════════════════════════════

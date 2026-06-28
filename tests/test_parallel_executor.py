@@ -319,7 +319,9 @@ class TestRunOne:
         sa = mock_subagent_instance
         display = mock_display
 
-        with patch.object(executor._event_port, 'publish') as mock_publish:
+        with patch("src.core.parallel_executor.DisplayEventBus") as MockBus:
+            mock_bus = MagicMock()
+            MockBus.get_default.return_value = mock_bus
 
             result = await executor._run_one(sa, display, stagger=0)
 
@@ -331,7 +333,7 @@ class TestRunOne:
         sa.run.assert_awaited_once()
         display.update_agent_status.assert_called_with("agent-1", "done")
         display.set_result.assert_called_with("agent-1", result_text="执行成功")
-        mock_publish.assert_called()
+        mock_bus.publish.assert_called()
 
     @pytest.mark.asyncio
     async def test_run_one_cancelled(self, executor, mock_subagent_instance, mock_display):
@@ -340,7 +342,7 @@ class TestRunOne:
         sa.run = AsyncMock(side_effect=asyncio.CancelledError())
         display = mock_display
 
-        with patch.object(executor._event_port, 'publish'):
+        with patch("src.core.parallel_executor.DisplayEventBus"):
             result = await executor._run_one(sa, display, stagger=0)
 
         assert result["label"] == "agent-1"
@@ -358,7 +360,7 @@ class TestRunOne:
         sa.run = AsyncMock(side_effect=ValueError("测试错误"))
         display = mock_display
 
-        with patch.object(executor._event_port, 'publish'):
+        with patch("src.core.parallel_executor.DisplayEventBus"):
             result = await executor._run_one(sa, display, stagger=0)
 
         assert result["label"] == "agent-1"
@@ -378,7 +380,7 @@ class TestRunOne:
 
         with patch("asyncio.sleep", AsyncMock()) as mock_sleep, \
                 patch("random.uniform", return_value=0.2), \
-                patch.object(executor._event_port, 'publish'):
+                patch("src.core.parallel_executor.DisplayEventBus"):
             result = await executor._run_one(sa, display, stagger=2)
 
         assert result["result"] == "执行成功"
@@ -394,7 +396,7 @@ class TestRunOne:
         display = mock_display
 
         with patch("asyncio.sleep", AsyncMock()) as mock_sleep, \
-                patch.object(executor._event_port, 'publish'):
+                patch("src.core.parallel_executor.DisplayEventBus"):
             await executor._run_one(sa, display, stagger=0)
 
         mock_sleep.assert_not_awaited()
@@ -429,7 +431,7 @@ class TestRunAgents:
         ]
 
         with patch("asyncio.sleep", AsyncMock()), \
-                patch.object(executor._event_port, 'publish'):
+                patch("src.core.parallel_executor.DisplayEventBus"):
             results = await executor._run_agents(specs, display)
 
         assert len(results) == 2
@@ -459,19 +461,6 @@ class TestRunAgents:
             call("agent-2", "任务2", status="running", agent_type="plan_execute"),
         ])
         display.start.assert_called_once()
-        display.set_panel_context.assert_called_once()
-
-        # 验证 set_panel_context → start → add_agent 调用顺序
-        # （回归保护 subagent TUI 初始化顺序 bug）
-        ctx_seen = start_seen = False
-        for mc in display.method_calls:
-            if mc[0] == 'set_panel_context':
-                ctx_seen = True
-            elif mc[0] == 'start':
-                assert ctx_seen, "set_panel_context must be called before start()"
-                start_seen = True
-            elif mc[0] == 'add_agent':
-                assert start_seen, "start() must be called before add_agent()"
 
         # 验证 run 调用
         mock_sa1.run.assert_awaited_once()
@@ -491,7 +480,7 @@ class TestRunAgents:
         specs = [{"description": "单任务", "prompt": "prompt"}]
 
         with patch("asyncio.sleep", AsyncMock()), \
-                patch.object(executor._event_port, 'publish'):
+                patch("src.core.parallel_executor.DisplayEventBus"):
             results = await executor._run_agents(specs, display)
 
         assert len(results) == 1
@@ -502,20 +491,11 @@ class TestRunAgents:
     @pytest.mark.asyncio
     async def test_empty_specs(self, executor, mock_display):
         """空 specs 返回空结果列表"""
-        with patch.object(executor._event_port, 'publish'):
+        with patch("src.core.parallel_executor.DisplayEventBus"):
             results = await executor._run_agents([], mock_display)
 
         assert results == []
         mock_display.start.assert_called_once()
-        mock_display.set_panel_context.assert_called_once()
-
-        # 验证 set_panel_context → start 调用顺序（空 specs 路径也应保证）
-        ctx_seen = False
-        for mc in mock_display.method_calls:
-            if mc[0] == 'set_panel_context':
-                ctx_seen = True
-            elif mc[0] == 'start':
-                assert ctx_seen, "set_panel_context must be called before start()"
 
     @pytest.mark.asyncio
     async def test_one_agent_fails(self, executor, mock_display):
@@ -539,7 +519,7 @@ class TestRunAgents:
         ]
 
         with patch("asyncio.sleep", AsyncMock()), \
-                patch.object(executor._event_port, 'publish'):
+                patch("src.core.parallel_executor.DisplayEventBus"):
             results = await executor._run_agents(specs, display)
 
         assert len(results) == 2
@@ -562,7 +542,7 @@ class TestRun:
         specs = [{"description": "任务1", "prompt": "prompt1"}]
 
         with patch("src.core.parallel_executor.ParallelDisplay") as MockDisplay, \
-                patch.object(executor._event_port, 'publish'), \
+                patch("src.core.parallel_executor.DisplayEventBus"), \
                 patch.object(executor, "_run_agents") as mock_run_agents, \
                 patch.object(executor, "_stream_results_markdown"), \
                 patch.object(executor._spawner, "publish_summary"), \
@@ -589,7 +569,7 @@ class TestRun:
         specs = [{"description": "任务1", "prompt": "prompt1"}]
 
         with patch("src.core.parallel_executor.ParallelDisplay") as MockDisplay, \
-                patch.object(executor._event_port, 'publish'), \
+                patch("src.core.parallel_executor.DisplayEventBus"), \
                 patch.object(executor, "_stream_results_markdown"), \
                 patch.object(executor._spawner, "publish_summary"):
 
@@ -609,7 +589,7 @@ class TestRun:
         specs = [{"description": "任务1", "prompt": "prompt1"}]
 
         with patch("src.core.parallel_executor.ParallelDisplay") as MockDisplay, \
-                patch.object(executor._event_port, 'publish'), \
+                patch("src.core.parallel_executor.DisplayEventBus"), \
                 patch.object(executor, "_stream_results_markdown"), \
                 patch.object(executor._spawner, "publish_summary"):
 
@@ -629,7 +609,7 @@ class TestRun:
     async def test_run_empty_specs(self, executor):
         """空 specs 返回空结果"""
         with patch("src.core.parallel_executor.ParallelDisplay"), \
-                patch.object(executor._event_port, 'publish'), \
+                patch("src.core.parallel_executor.DisplayEventBus"), \
                 patch.object(executor, "_run_agents", AsyncMock(return_value=[])), \
                 patch.object(executor, "_stream_results_markdown"), \
                 patch.object(executor._spawner, "publish_summary"):

@@ -288,7 +288,7 @@ class TestOutputConsumerWithChatUI:
 
     def test_skips_when_chatui_active(self, monkeypatch):
         """ChatUI 活跃时，非 cmd OutputEvent 被跳过（stream 无输出）"""
-        monkeypatch.setattr("src.ui._lock._is_chat_ui_active_callback", lambda: True)
+        monkeypatch.setattr("src.chat_ui.get_active_chat_ui", lambda: object())
         bus = DisplayEventBus()
         stream = io.StringIO()
         consumer = OutputConsumer(event_bus=bus, stream=stream)
@@ -300,7 +300,7 @@ class TestOutputConsumerWithChatUI:
 
     def test_writes_when_chatui_inactive(self, monkeypatch):
         """ChatUI 不活跃时，非 cmd OutputEvent 正常直写（stream 有输出）"""
-        monkeypatch.setattr("src.ui._lock._is_chat_ui_active_callback", lambda: False)
+        monkeypatch.setattr("src.chat_ui.get_active_chat_ui", lambda: None)
         bus = DisplayEventBus()
         stream = io.StringIO()
         consumer = OutputConsumer(event_bus=bus, stream=stream)
@@ -312,7 +312,7 @@ class TestOutputConsumerWithChatUI:
 
     def test_cmd_skipped_when_chatui_active(self, monkeypatch):
         """ChatUI 活跃时，cmd OutputEvent 被 OutputConsumer 跳过（由 ChatUIConsumer 处理）"""
-        monkeypatch.setattr("src.ui._lock._is_chat_ui_active_callback", lambda: True)
+        monkeypatch.setattr("src.chat_ui.get_active_chat_ui", lambda: object())
         bus = DisplayEventBus()
         stream = io.StringIO()
         consumer = OutputConsumer(event_bus=bus, stream=stream)
@@ -323,7 +323,7 @@ class TestOutputConsumerWithChatUI:
 
     def test_cmd_skipped_when_chatui_inactive(self, monkeypatch):
         """ChatUI 不活跃时，cmd OutputEvent 也被 OutputConsumer 跳过（预存行为，非本次修改引入）"""
-        monkeypatch.setattr("src.ui._lock._is_chat_ui_active_callback", lambda: False)
+        monkeypatch.setattr("src.chat_ui.get_active_chat_ui", lambda: None)
         bus = DisplayEventBus()
         stream = io.StringIO()
         consumer = OutputConsumer(event_bus=bus, stream=stream)

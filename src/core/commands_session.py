@@ -3,8 +3,7 @@
 from __future__ import annotations
 
 from ..core.ports.output import get_default_output_port
-from .ports.chat_ui import get_default_chat_ui_port
-from ..core.constants import GREEN, YELLOW, DIM, RESET, CYAN
+from ..ui.colors import GREEN, YELLOW, DIM, RESET, CYAN
 from ..ui.diff_renderer import render_diff_to_ansi
 from .context_selector import total_chars
 from .sandbox_manager import get_sandbox_manager
@@ -179,13 +178,12 @@ def _cmd_editmsg(ctx):
 
     设置 edit_msg 联络信号，让 app.py 执行异步编辑流程。
     """
-    port = get_default_chat_ui_port()
+    from ..ui.msg_list import edit_current_messages
     ctx.edit_msg = {
-        "handler": port.edit_current_messages,
+        "handler": edit_current_messages,
         "model": ctx.state.get("model", ""),
         "retry": ctx.state.get("retry", False),
         "prefill": ctx.state.get("prefill", ""),
-        "bottom_bar": None,  # 由实际调用方注入（ctx 中不可获取）
     }
     return True
 

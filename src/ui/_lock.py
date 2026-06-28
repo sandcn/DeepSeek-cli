@@ -35,30 +35,13 @@ UI 层输出同步锁
 import threading
 import logging
 from contextlib import contextmanager
-from typing import Callable, Generator
+from typing import Generator
 
 output_lock = threading.RLock()
 diff_active = threading.Event()
 
 # ★ P0 防递归保护：locked_print → chat_ui.write_line → locked_print 递归
 _locked_print_reentrant = threading.local()
-
-# 回调注入机制：替代 ui/ 层对 chat_ui 的直接 import
-# 由 chat_ui 侧在初始化时注册，确保依赖方向为 chat_ui → ui（单向）
-_write_line_callback: Callable[[str], None] | None = None
-_is_chat_ui_active_callback: Callable[[], bool] | None = None
-
-
-def register_write_line_callback(cb: Callable[[str], None]) -> None:
-    """注册写行回调（由 chat_ui 侧在初始化时调用）。"""
-    global _write_line_callback
-    _write_line_callback = cb
-
-
-def register_is_chat_ui_active_callback(cb: Callable[[], bool]) -> None:
-    """注册 ChatUI 活跃状态查询回调（由 chat_ui 侧在初始化时调用）。"""
-    global _is_chat_ui_active_callback
-    _is_chat_ui_active_callback = cb
 
 # 终端写锁超时阈值（秒）— PTY 缓冲区满时防止锁被长期持有
 OUTPUT_LOCK_TIMEOUT = 1.0
@@ -125,22 +108,27 @@ def locked_print(*args, sep: str = " ", end: str = "\n", **kwargs):
             print(*args, sep=sep, end=end, **kwargs)
         return
 
-    # 尝试通过回调路由到 ChatUI 上屏（回调由 chat_ui 侧在初始化时注册）
-    if _write_line_callback is not None:
-        text = sep.join(str(a) for a in args)
-        if text:
-            _locked_print_reentrant.is_active = True
-            try:
-                _write_line_callback(text + end.rstrip("\n"))
-            finally:
-                _locked_print_reentrant.is_active = False
-        elif end.strip():
-            _locked_print_reentrant.is_active = True
-            try:
-                _write_line_callback(end.rstrip("\n"))
-            finally:
-                _locked_print_reentrant.is_active = False
-        return
+    # 尝试路由到 ChatUI 上屏
+    try:
+        from ..chat_ui import get_active_chat_ui  # noqa: PLC0415
+        chat_ui = get_active_chat_ui()
+        if chat_ui is not None:
+            text = sep.join(str(a) for a in args)
+            if text:
+                _locked_print_reentrant.is_active = True
+                try:
+                    chat_ui.write_line(text + end.rstrip("\n"))
+                finally:
+                    _locked_print_reentrant.is_active = False
+            elif end.strip():
+                _locked_print_reentrant.is_active = True
+                try:
+                    chat_ui.write_line(end.rstrip("\n"))
+                finally:
+                    _locked_print_reentrant.is_active = False
+            return
+    except Exception:
+        pass
 
     # ChatUI 不可用 → 降级为 print()
     with _try_acquire_output_lock(name="locked_print"):

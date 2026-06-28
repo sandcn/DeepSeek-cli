@@ -31,23 +31,11 @@ DETAILED_MODE_CONFIG = {
 # ── 摘要行样式 ──────────────────────────────────────
 
 SUMMARY_SEPARATOR = "·"
-SUMMARY_ICON_RUNNING = "⏺"
+SUMMARY_ICON_RUNNING = "⬡"
 SUMMARY_ICON_DONE = "✔"
 
-# ── Spinner 动画帧（braille 点阵，10 帧循环） ────────────
-SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
-
-
-# ── Claude Code 风格预设 ──────────────────────────────
-
-CLAUDE_DISPLAY_CONFIG = {
-    "separator": "·",
-    "icon_running": "⏺",
-    "icon_done": "✓",
-    "icon_fail": "✗",
-    "summary_icon_running": "⏺",
-    "summary_icon_done": "✓",
-}
+# ── Spinner 动画帧（braille 点阵，8 帧循环） ────────────
+SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧"]
 
 
 # ── 显示配置类 ──────────────────────────────────────
@@ -55,16 +43,14 @@ CLAUDE_DISPLAY_CONFIG = {
 class DisplayConfig:
     """显示配置类，根据终端宽度自适应显示模式"""
 
-    def __init__(self, terminal_width: int, claude: bool = False):
+    def __init__(self, terminal_width: int):
         """
         初始化显示配置
 
         Args:
             terminal_width: 终端宽度（字符数）
-            claude: 是否启用 Claude Code 风格
         """
         self.terminal_width = terminal_width
-        self.claude = claude
         self.display_mode = self._get_display_mode()
         self._apply_mode_config()
 
@@ -79,18 +65,6 @@ class DisplayConfig:
 
     def _apply_mode_config(self):
         """应用当前显示模式的配置"""
-        if self.claude:
-            self.summary_separator = CLAUDE_DISPLAY_CONFIG["separator"]
-            self.summary_icon_running = CLAUDE_DISPLAY_CONFIG["summary_icon_running"]
-            self.summary_icon_done = CLAUDE_DISPLAY_CONFIG["summary_icon_done"]
-            self.icon_running = CLAUDE_DISPLAY_CONFIG["icon_running"]
-            self.icon_done = CLAUDE_DISPLAY_CONFIG["icon_done"]
-            self.icon_fail = CLAUDE_DISPLAY_CONFIG["icon_fail"]
-        else:
-            self.summary_separator = SUMMARY_SEPARATOR
-            self.summary_icon_running = SUMMARY_ICON_RUNNING
-            self.summary_icon_done = SUMMARY_ICON_DONE
-
         if self.display_mode == "compact":
             config = COMPACT_MODE_CONFIG
         elif self.display_mode == "normal":

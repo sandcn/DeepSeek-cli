@@ -102,12 +102,12 @@ class TestParallelDisplayLifecycle:
     def test_start_acquires_adapter(self, display):
         """start() 从 ChatUI 获取 OutputAdapter。"""
         display.add_agent("agent-1", "test agent")
-        from unittest.mock import MagicMock
+        from unittest.mock import patch, MagicMock
         mock_chat_ui = MagicMock()
         mock_chat_ui.output_adapter = MagicMock()
         mock_chat_ui.output_adapter.width = 120
-        display.set_panel_context(mock_chat_ui)
-        display.start()
+        with patch('src.chat_ui.get_active_chat_ui', return_value=mock_chat_ui):
+            display.start()
         assert display._adapter is not None, (
             "start() 应设置 _adapter 为 ChatUI 的 output_adapter"
         )
@@ -116,12 +116,12 @@ class TestParallelDisplayLifecycle:
     def test_stop_clears_adapter(self, display):
         """stop() 将 _adapter 置 None 并停止渲染。"""
         display.add_agent("agent-1", "test agent")
-        from unittest.mock import MagicMock
+        from unittest.mock import patch, MagicMock
         mock_chat_ui = MagicMock()
         mock_chat_ui.output_adapter = MagicMock()
         mock_chat_ui.output_adapter.width = 120
-        display.set_panel_context(mock_chat_ui)
-        display.start()
+        with patch('src.chat_ui.get_active_chat_ui', return_value=mock_chat_ui):
+            display.start()
         assert display._adapter is not None
         display.stop()
         assert display._adapter is None, (
@@ -135,12 +135,12 @@ class TestParallelDisplayLifecycle:
         """一次 start → stop 生命周期完整，adapter 正确获取和释放。"""
         d = ParallelDisplay()
         d.add_agent("agent-1", "test agent")
-        from unittest.mock import MagicMock
+        from unittest.mock import patch, MagicMock
         mock_chat_ui = MagicMock()
         mock_chat_ui.output_adapter = MagicMock()
         mock_chat_ui.output_adapter.width = 120
-        d.set_panel_context(mock_chat_ui)
-        d.start()
+        with patch('src.chat_ui.get_active_chat_ui', return_value=mock_chat_ui):
+            d.start()
         assert d._adapter is not None, "start() 后应持有 adapter"
         assert d._started is True, "start() 后 _started 应为 True"
         d.stop()
@@ -150,12 +150,12 @@ class TestParallelDisplayLifecycle:
     def test_refresh_after_stop_safe(self, display):
         """stop() 后 refresh() 安全（无 adapter，渲染提前返回）。"""
         display.add_agent("a", "test")
-        from unittest.mock import MagicMock
+        from unittest.mock import patch, MagicMock
         mock_chat_ui = MagicMock()
         mock_chat_ui.output_adapter = MagicMock()
         mock_chat_ui.output_adapter.width = 120
-        display.set_panel_context(mock_chat_ui)
-        display.start()
+        with patch('src.chat_ui.get_active_chat_ui', return_value=mock_chat_ui):
+            display.start()
         display.stop()
         display.refresh()  # 不应抛异常
 
@@ -172,6 +172,14 @@ class TestDiffGuard:
     直接在 __enter__ 中清除帧行，__exit__ 不抑制异常。
     """
 
+    def test_diff_guard_does_not_suppress_exception(self, display):
+        """_DiffGuard.__exit__ 返回 False（不抑制异常）。"""
+        guard = display._diff_active_guard(capture_frame=False)
+        result = guard.__exit__(None, None, None)
+        assert result is False, (
+            "__exit__ 应返回 False 以允许异常自然传播"
+        )
+
     def test_clear_frame_and_run_returns_result(self, display):
         """clear_frame_and_run 正确执行 func 并返回结果。"""
         result = display.clear_frame_and_run(lambda: 42)
@@ -180,217 +188,6 @@ class TestDiffGuard:
         )
 
     def test_clear_frame_and_run_no_adapter_safe(self, display):
-        """clear_frame_and_run 在无 adapter 时安全。"""
+        """clear_frame_and_run 在无 adapter 时安全（_clear_frame_lines 提前返回）。"""
         result = display.clear_frame_and_run(lambda: "safe")
         assert result == "safe"
-
-
-class TestToolHistorySerialization:
-    """测试 _push_slot_update 中 tool_history 的序列化。
-
-    通过 mock _push_cmd 拦截 CmdSubagentSlotUpdate，
-    验证 slot_dict 中 tool_history 字段的 ToolRecord → dict 转换。
-    """
-
-    @staticmethod
-    def _setup_display_with_capture(display):
-        """设置 display._push_cmd 为捕获回调，返回捕获列表。"""
-        from unittest.mock import MagicMock
-        captured = []
-        mock_push = MagicMock()
-        mock_push.side_effect = lambda cmd: captured.append(cmd)
-        display._push_cmd = mock_push
-        return captured
-
-    def test_tool_history_empty_list_on_add_agent(self, display):
-        """add_agent 时 tool_history 为空列表 []。"""
-        captured = self._setup_display_with_capture(display)
-        display.add_agent("agent-1", "test agent")
-
-        assert len(captured) >= 1
-        slot = captured[-1].slot
-        assert "tool_history" in slot
-        assert slot["tool_history"] == []
-
-    def test_tool_history_single_parsing_entry(self, display):
-        """tool_parsing 后序列化一条 parsing 状态的 ToolRecord。"""
-        captured = self._setup_display_with_capture(display)
-        display.add_agent("agent-1", "test agent")
-        display.tool_parsing("agent-1", "read_file", '{"path": "a.py"}')
-
-        history = captured[-1].slot["tool_history"]
-        assert len(history) == 1
-        rec = history[0]
-        assert rec["tool_name"] == "read_file"
-        assert rec["phase"] == "parsing"
-        assert rec["detail"] == '{"path": "a.py"}'
-        assert rec["start_time"] > 0
-        assert "end_time" in rec
-
-    def test_tool_history_parsing_to_done(self, display):
-        """tool_parsing → tool_start → tool_done 后 phase 为 done 且有 end_time。"""
-        captured = self._setup_display_with_capture(display)
-        display.add_agent("agent-1", "test agent")
-        display.tool_parsing("agent-1", "bash", "ls -la")
-        display.tool_start("agent-1", "bash", "ls -la /home")
-        display.tool_done("agent-1", "bash", success=True)
-
-        history = captured[-1].slot["tool_history"]
-        assert len(history) == 1
-        rec = history[0]
-        assert rec["tool_name"] == "bash"
-        assert rec["phase"] == "done"
-        assert rec["end_time"] > 0
-
-    def test_tool_history_parsing_to_fail(self, display):
-        """tool_done(success=False) 后 phase 为 fail。"""
-        captured = self._setup_display_with_capture(display)
-        display.add_agent("agent-1", "test agent")
-        display.tool_parsing("agent-1", "bash", "bad_cmd")
-        display.tool_start("agent-1", "bash", "bad_cmd --flag")
-        display.tool_done("agent-1", "bash", success=False)
-
-        history = captured[-1].slot["tool_history"]
-        assert len(history) == 1
-        assert history[0]["phase"] == "fail"
-
-    def test_tool_history_multiple_entries_ordered(self, display):
-        """多次工具调用后 tool_history 按调用顺序包含全部记录。"""
-        captured = self._setup_display_with_capture(display)
-        display.add_agent("agent-1", "test agent")
-
-        for i, (name, detail) in enumerate([
-            ("read_file", "a.py"),
-            ("bash", "pytest -x"),
-            ("write_file", "b.py:42"),
-        ]):
-            display.tool_parsing("agent-1", name, detail)
-            display.tool_start("agent-1", name, detail)
-            display.tool_done("agent-1", name, success=True)
-
-        history = captured[-1].slot["tool_history"]
-        assert len(history) == 3
-        assert [r["tool_name"] for r in history] == ["read_file", "bash", "write_file"]
-        assert all(r["phase"] == "done" for r in history)
-
-    def test_tool_history_agent_done_cleans_running(self, display):
-        """agent status → done 时，running/parsing 的 ToolRecord 被批量标记为 done。"""
-        captured = self._setup_display_with_capture(display)
-        display.add_agent("agent-1", "test agent")
-        # 遗留一条 running 状态记录（模拟异常场景）
-        display.tool_parsing("agent-1", "search", "pattern")
-        display.tool_start("agent-1", "search", "pattern.*")
-        # 不调用 tool_done，直接标记 agent 为 done
-        display.update_agent_status("agent-1", "done")
-
-        # update_agent_status("done") 先推送最终 slot，再调用 remove_agent_slot 清除，
-        # 所以 captured[-2] 是带 tool_history 的最终 slot 数据
-        final_slot = captured[-2].slot
-        history = final_slot["tool_history"]
-        assert len(history) == 1
-        # AgentStateStore.update_agent_status 会将残留 running/parsing 批量标记为 done
-        assert history[0]["phase"] in ("done", "fail")
-
-    def test_tool_history_dict_keys_match_toolrecord_fields(self, display):
-        """序列化后的 dict 键与 ToolRecord 字段一一对应。"""
-        captured = self._setup_display_with_capture(display)
-        display.add_agent("agent-1", "test agent")
-        display.tool_parsing("agent-1", "read_file", "main.py")
-        display.tool_start("agent-1", "read_file", "main.py:1-10")
-        display.tool_done("agent-1", "read_file", success=True)
-
-        rec = captured[-1].slot["tool_history"][0]
-        expected_keys = {"tool_name", "detail", "start_time", "end_time", "phase"}
-        assert set(rec.keys()) == expected_keys, (
-            f"tool_history dict 键应为 {expected_keys}，实际为 {set(rec.keys())}"
-        )
-
-class TestStopClearsSlotsAndPushCmd:
-    """stop() 清除 subagent 槽位和 push_cmd 回调的测试。"""
-
-    def test_stop_clears_slots_and_push_cmd(self):
-        """stop() 后 _slots 应被清空、_push_cmd 应为 None。"""
-        from unittest.mock import MagicMock
-        d = ParallelDisplay()
-        d.add_agent("agent-1", "test agent")
-        d.add_agent("agent-2", "test agent 2")
-        mock_ctx = MagicMock()
-        mock_ctx.output_adapter = MagicMock()
-        mock_ctx.output_adapter.width = 120
-        mock_ctx.push_cmd = MagicMock()
-        d.set_panel_context(mock_ctx)
-        d.start()
-        assert len(d._slots) == 2
-        assert d._push_cmd is not None
-        d.stop()
-        assert len(d._slots) == 0, "stop() 应清空 _slots"
-        assert d._push_cmd is None, "stop() 应将 _push_cmd 置为 None"
-
-    def test_stop_exception_protection(self):
-        """stop() 中 remove_agent_slot 抛异常时 _slots 仍被清空。"""
-        from unittest.mock import MagicMock
-        d = ParallelDisplay()
-        d.add_agent("agent-1", "test agent")
-        mock_ctx = MagicMock()
-        mock_ctx.output_adapter = MagicMock()
-        mock_ctx.output_adapter.width = 120
-        # push_cmd 抛异常模拟 remove_agent_slot 失败
-        mock_ctx.push_cmd = MagicMock(side_effect=RuntimeError("push failed"))
-        d.set_panel_context(mock_ctx)
-        d.start()
-        assert len(d._slots) == 1
-        # 不应抛异常
-        d.stop()
-        assert len(d._slots) == 0, "即使 remove_agent_slot 抛异常，_slots 也应被清空"
-        assert d._push_cmd is None, "即使 remove_agent_slot 抛异常，_push_cmd 也应置 None"
-        assert d._finished is True
-
-
-class TestAgentStatusExceptionProtection:
-    """update_agent_status 和 set_result 中 remove_agent_slot 异常保护的测试。"""
-
-    def test_update_agent_status_handles_push_cmd_exception(self):
-        """update_agent_status 中 remove_agent_slot 抛异常不应传播。
-
-        _push_slot_update 先于 remove_agent_slot 调用同一 _push_cmd 回调。
-        模拟前两次调用成功（_push_slot_update + 可能的其他调用），
-        第三次调用抛异常（remove_agent_slot），验证异常被捕获且不传播。
-        """
-        from unittest.mock import MagicMock
-        d = ParallelDisplay()
-        d.add_agent("agent-1", "test agent")
-        mock_ctx = MagicMock()
-        mock_ctx.output_adapter = MagicMock()
-        mock_ctx.output_adapter.width = 120
-        # 第一次成功（_push_slot_update），第二次抛异常（remove_agent_slot）
-        call_count = [0]
-
-        def _push_side_effect(*args, **kwargs):
-            call_count[0] += 1
-            if call_count[0] >= 2:
-                raise RuntimeError("push failed on remove_agent_slot")
-
-        mock_ctx.push_cmd = MagicMock(side_effect=_push_side_effect)
-        d.set_panel_context(mock_ctx)
-        d.start()
-        # 不应抛异常
-        d.update_agent_status("agent-1", "done")
-        # 即使推送失败，本地状态仍应更新
-        slot = d._slots.get("agent-1")
-        assert slot is not None, "即使推送失败，本地 slot 仍应存在"
-        assert slot["status"] == "done"
-
-    def test_set_result_handles_push_cmd_exception(self):
-        """set_result 中 push_cmd 抛异常不应传播。"""
-        from unittest.mock import MagicMock
-        d = ParallelDisplay()
-        d.add_agent("agent-1", "test agent")
-        d._slots["agent-1"]["status"] = "done"
-        mock_ctx = MagicMock()
-        mock_ctx.output_adapter = MagicMock()
-        mock_ctx.output_adapter.width = 120
-        mock_ctx.push_cmd = MagicMock(side_effect=RuntimeError("push failed"))
-        d.set_panel_context(mock_ctx)
-        d.start()
-        # 不应抛异常
-        d.set_result("agent-1", result_text="done result")

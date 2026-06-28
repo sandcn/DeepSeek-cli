@@ -60,28 +60,12 @@ class AgentSlot:
 
 
 class AgentStateStore:
-    """@deprecated: Agent 状态存储 — 已完全废弃，始终发出 DeprecationWarning。
+    """Agent 状态存储 — 纯状态管理，无渲染/输出逻辑。
 
-    迁移路径：
-    - ParallelDisplay 已通过 CmdSubagentSlotUpdate 单写到 TuiState.subagent_slots。
-    - 帧渲染从 AgentStateStore.snapshot_all() 已完全迁移到 TuiState.subagent_slots。
-    - 所有读/写操作均应使用 TuiState.subagent_slots 而非本类。
-
-    本类保留仅用于向后兼容，计划在后续版本中物理删除。
-
-    线程安全。提供状态更新和快照方法。
+    线程安全。提供状态更新和快照方法，供 ParallelDisplay 消费。
     """
 
     def __init__(self):
-        import warnings
-        warnings.warn(
-            "AgentStateStore is deprecated. Use TuiState.subagent_slots instead."
-            " 迁移路径：ParallelDisplay 已通过 CmdSubagentSlotUpdate + TuiState.subagent_slots 单写。"
-            " 帧渲染从 AgentStateStore.snapshot_all() 已完全迁移到 TuiState.subagent_slots。"
-            " 本类计划在后续版本中物理删除。",
-            DeprecationWarning,
-            stacklevel=2,
-        )
         self._slots: Dict[str, AgentSlot] = {}
         self._order: List[str] = []
         self._lock = threading.Lock()
@@ -136,13 +120,6 @@ class AgentStateStore:
             slot = self._slots.get(label)
             if not slot:
                 return
-            # 设置 model_phase 使 FrameRenderer._build_phase_line() 显示
-            # "…parsing {tool_name} {arguments}" 阶段行。
-            slot.model_phase = "parsing"
-            slot.model_phase_start = time.time()
-            # 截断参数以避免超长 JSON 溢出终端
-            truncated = arguments[:120] + "…" if len(arguments) > 120 else arguments
-            slot.model_info = f"{tool_name} {truncated}" if truncated else tool_name
             # 流式参数会分多个 chunk 到达，同一工具的后续 chunk
             # 应更新已有 parsing 记录的 detail，而非追加新记录。
             if slot.tool_history:
@@ -267,7 +244,7 @@ class AgentStateStore:
             slot = self._slots.get(label)
             if slot:
                 slot.model_phase = "parsing"
-                slot.model_info = f"{tool_names} {elapsed:.1f}s"
+                slot.model_info = f"{tool_names} {tokens}t {elapsed:.1f}s"
                 self._version += 1
 
     def set_result(self, label: str, result_text: str = "", error: str = "") -> None:

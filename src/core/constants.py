@@ -100,30 +100,3 @@ def filter_non_system(messages: list[dict]) -> list[dict]:
 def filter_non_system_indices(messages: list[dict]) -> list[int]:
     """返回非系统消息在消息列表中的下标列表。"""
     return [i for i, m in enumerate(messages) if m.get("role") != "system"]
-
-
-# ── SubAgent 类型 → 两字符缩写 ──────────────────────────
-# 从 ui/parallel/_tool_icons.py 提取至 core 层，消除 core→ui 的反向依赖。
-# ui/parallel/_tool_icons.py 从此处 re-export 以保持向后兼容。
-
-AGENT_TYPE_ABBREV: dict[str, str] = {
-    "map": "mp",
-    "review": "rv",
-    "plan": "pl",
-    "read_memory": "rm",
-    "write_memory": "wm",
-    "plan_execute": "pe",
-}
-
-# ── SubAgent 类型 → 256色 ANSI 前景色 ──────────────────
-# 从 ui/parallel/_tool_icons.py 提取至 core 层，消除 core→ui 的反向依赖。
-# 使用 256 色调色板：mp=蓝色(33) rv=紫色(129) pl=琥珀色(214) rm=青色(45) wm=黄色(226)
-
-AGENT_TYPE_COLORS: dict[str, str] = {
-    "map": "\033[38;5;33m",          # 深蓝
-    "review": "\033[38;5;129m",     # 紫
-    "plan": "\033[38;5;214m",       # 琥珀
-    "read_memory": "\033[38;5;45m",    # 青色
-    "write_memory": "\033[38;5;226m",  # 黄色
-    "plan_execute": "\033[38;5;208m",  # 橙色
-}

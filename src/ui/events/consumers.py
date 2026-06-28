@@ -15,7 +15,6 @@ from typing import List, Optional
 
 from .event_bus import DisplayEventBus
 from .._lock import _try_acquire_output_lock
-from .. import _lock as _lock_mod  # 通过模块访问回调变量，支持运行时注册
 from .event_types import (
     DisplayEvent,
     OutputEvent,
@@ -74,9 +73,12 @@ class OutputConsumer:
             return
         # ChatUI 活跃时，所有 OutputEvent 由 ChatUIConsumer 渲染管线处理，
         # OutputConsumer 跳过直写避免重复和绕过 ChatUI
-        # （回调由 chat_ui 侧在初始化时注册，确保依赖方向为 chat_ui → ui）
-        if _lock_mod._is_chat_ui_active_callback is not None and _lock_mod._is_chat_ui_active_callback():
-            return
+        try:
+            from ...chat_ui import get_active_chat_ui
+            if get_active_chat_ui() is not None:
+                return
+        except ImportError:
+            pass
         self._write(event.text, event.level)
 
     def _write(self, text: str, level: str = "info") -> None:

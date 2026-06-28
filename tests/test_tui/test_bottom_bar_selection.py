@@ -5,7 +5,7 @@
 
 测试策略：
   - Mock Blessed Terminal.inkey() 返回模拟 Keystroke 对象
-  - Mock BottomBarBridge、sys.stdin、os.isatty
+  - Mock src.chat_ui.get_active_chat_ui、_BottomBar、sys.stdin、os.isatty
   - 验证 KEY_ENTER(343)、'\\r'、'\\n' 三种 Enter 形式均返回 confirmed
 """
 
@@ -16,10 +16,11 @@ import sys
 import unittest
 from unittest.mock import MagicMock, patch
 
-from src.chat_ui.infrastructure.bottom_bar_selection import run_bottom_bar_selection, _KEY_ENTER, _KEY_UP, _KEY_DOWN, _KEY_ESCAPE
+from src.ui._bottom_bar_selection import run_bottom_bar_selection, _KEY_ENTER, _KEY_UP, _KEY_DOWN, _KEY_ESCAPE
 
 # 统一的 patch 目标
-_TERMINAL_PATCH = "src.chat_ui.infrastructure.bottom_bar_selection.get_terminal"
+_CHAT_UI_PATCH = "src.chat_ui.get_active_chat_ui"
+_TERMINAL_PATCH = "src.ui._bottom_bar_selection.get_terminal"
 
 
 class _MockKeystroke:
@@ -64,31 +65,11 @@ class TestRunBottomBarSelectionEnter(unittest.TestCase):
         sys.__stdout__ = self._stdout
 
     def _make_mock_chat_ui(self):
-        """创建模拟的 ChatUI，包含活跃的 BottomBarBridge。"""
+        """创建模拟的 ChatUI，包含活跃的 _BottomBar。"""
         mock_bb = MagicMock()
         mock_bb._active = True
-        mock_bb.completion_index = 0  # 默认选中第一条（property → 直接设 attribute）
-
-        # _cmpl 子对象 — _render_and_redraw() 需要
-        mock_cmpl = MagicMock()
-        mock_cmpl._items = []
-        mock_cmpl._idx = 0
-        mock_cmpl.is_visible = False
-        mock_cmpl._title = "测试"
-        mock_cmpl._is_selection = False
-        mock_bb._cmpl = mock_cmpl
-
-        # 其他内部状态 — _render_and_redraw() + BottomBarContent 需要
-        mock_bb._last_text = ""
-        mock_bb._input_cursor_pos = -1
-        mock_bb._status_active = False
-        mock_bb._subagent_slots = {}
-
+        mock_bb._completion_idx = 0  # 默认选中第一条
         mock_bb.show_completions.return_value = None
-        mock_bb.cycle_completion.return_value = 0
-        mock_bb.hide_completions.return_value = None
-        mock_bb.force_redraw_from_vnode.return_value = None
-        mock_bb.setup.return_value = None
 
         mock_chat_ui = MagicMock()
         mock_chat_ui._bottom_bar = mock_bb
@@ -108,7 +89,8 @@ class TestRunBottomBarSelectionEnter(unittest.TestCase):
         mock_stdin = MagicMock()
         mock_stdin.fileno.return_value = 0
 
-        with patch(_TERMINAL_PATCH, return_value=mock_term), \
+        with patch(_CHAT_UI_PATCH, return_value=mock_chat_ui), \
+             patch(_TERMINAL_PATCH, return_value=mock_term), \
              patch("sys.stdin", mock_stdin), \
              patch("os.isatty", return_value=True), \
              patch.object(sys, '__stdout__', MagicMock()):
@@ -117,7 +99,6 @@ class TestRunBottomBarSelectionEnter(unittest.TestCase):
                 display_items=display_items,
                 initial_idx=initial_idx,
                 title=title,
-                bottom_bar=mock_chat_ui._bottom_bar,
             )
 
     # ── KEY_ENTER 序列键确认 ─────────────────────────
@@ -138,9 +119,9 @@ class TestRunBottomBarSelectionEnter(unittest.TestCase):
         self.assertEqual(result["index"], 0)
 
     def test_sequence_key_enter_with_nonzero_index(self):
-        """KEY_ENTER 应在 completion_index 非 0 时正确返回索引。"""
+        """KEY_ENTER 应在 _completion_idx 非 0 时正确返回索引。"""
         mock_chat_ui = self._make_mock_chat_ui()
-        mock_chat_ui._bottom_bar.completion_index = 2
+        mock_chat_ui._bottom_bar._completion_idx = 2
         enter_key = _MockKeystroke(is_sequence=True, code=_KEY_ENTER)
         mock_term = self._make_mock_terminal([enter_key])
 
@@ -203,12 +184,12 @@ class TestRunBottomBarSelectionEnter(unittest.TestCase):
         self.assertEqual(result["action"], "cancel")
         self.assertIsNone(result["index"])
 
-    # ── completion_index 验证 ─────────────────────────
+    # ── _completion_idx 验证 ─────────────────────────
 
     def test_sequence_key_enter_respects_completion_idx(self):
-        """KEY_ENTER 在 completion_index 为 1 时返回索引 1。"""
+        """KEY_ENTER 在 _completion_idx 为 1 时返回索引 1。"""
         mock_chat_ui = self._make_mock_chat_ui()
-        mock_chat_ui._bottom_bar.completion_index = 1
+        mock_chat_ui._bottom_bar._completion_idx = 1
         enter_key = _MockKeystroke(is_sequence=True, code=_KEY_ENTER)
         mock_term = self._make_mock_terminal([enter_key])
 

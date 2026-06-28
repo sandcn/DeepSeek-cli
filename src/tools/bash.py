@@ -600,7 +600,7 @@ class BashFunc(Func):
           - Web：通过 EventBus 发布 ToolOutputChunkEvent 到前端
         """
         from ..ui.events.event_bus import DisplayEventBus
-        from src.shared_events.types import ToolOutputChunkEvent
+        from ..ui.events.event_types import ToolOutputChunkEvent
         bus = DisplayEventBus.get_default()
 
         # 获取当前工具自己的 label（由 ToolCallbackChain._run_tool_method 设置）

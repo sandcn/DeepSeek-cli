@@ -112,7 +112,7 @@ class SessionManager:
 
         sid = session.save()
         if sid:
-            from .core.constants import GREEN, CYAN, DIM, RESET
+            from .ui.colors import GREEN, CYAN, DIM, RESET
             filepath = f"{CHAT_MSGS_DIR}/{sid}.json"
             recover_cmd = get_recover_cmd(sid)
             output.write(f"\n{GREEN}  ✓ 对话已保存到 {filepath}{RESET}", level="raw")

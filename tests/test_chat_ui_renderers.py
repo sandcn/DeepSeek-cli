@@ -14,13 +14,12 @@ from __future__ import annotations
 from unittest.mock import MagicMock, patch
 
 import pytest
-from src.chat_ui.infrastructure.styled import StyledText
+from rich.text import Text
 
-from src.chat_ui.core.renderer import TuiRenderer as ContentRenderer
-from src.chat_ui.commands.const import _CLEAR_PARSE_LINE, RenderCommand
-from src.chat_ui.core.renderer import _RenderState
-from src.chat_ui.state.render_state import _ReasoningState
-from src.chat_ui.commands.types import CmdInputChanged, CmdNotification, CmdSubagentSlotUpdate
+from src.chat_ui._renderer import TuiRenderer as ContentRenderer
+from src.chat_ui._const import _CLEAR_PARSE_LINE, RenderCommand
+from src.chat_ui._renderer import _RenderState
+from src.chat_ui._render_state import _ReasoningState
 
 
 # ── Fixtures ────────────────────────────────────────────
@@ -33,7 +32,7 @@ def mock_ta():
 
 @pytest.fixture
 def mock_bb():
-    """Mock BottomBarBridge"""
+    """Mock _BottomBar"""
     return MagicMock()
 
 
@@ -43,7 +42,6 @@ def renderer(mock_ta, mock_bb):
 
     由于 ChatUIConsumer 负责创建 OutputAdapter 并注入到 ContentRenderer，
     测试环境直接传入 mock_ta 作为 output_adapter 参数，避免依赖真实终端。
-    mock_bb 模拟 BottomBarBridge 接口。
     """
     rs = _RenderState()
     r = ContentRenderer(rs, mock_ta, mock_bb, on_display_messages=None)
@@ -57,36 +55,41 @@ def renderer(mock_ta, mock_bb):
 class TestDoParseInfo:
     """_do_parse_info 边缘情况测试
 
-    注：新实现通过 self._adapter.write_raw() 输出，不再直接写 sys.__stdout__。
+    注：新实现直接写入 sys.__stdout__，不再委托 ParseInfoControl。
     """
 
     def test_inf_tokens_shows_question_mark(self, renderer):
         """tokens=float('inf') → 显示 "?" """
-        renderer._do_parse_info("tool_test", float('inf'), 1.5)
-        renderer._adapter.write_raw.assert_called_once()
-        text = renderer._adapter.write_raw.call_args[0][0]
-        assert "?" in text
-        assert "inf" not in text
+        with patch('sys.__stdout__') as mock_stdout:
+            renderer._do_parse_info("tool_test", float('inf'), 1.5)
+            mock_stdout.write.assert_called_once()
+            text = mock_stdout.write.call_args[0][0]
+            assert "?" in text
+            assert "inf" not in text
 
     def test_nan_tokens_shows_question_mark(self, renderer):
         """tokens=float('nan') → 显示 "?" """
-        renderer._do_parse_info("tool_test", float('nan'), 1.5)
-        renderer._adapter.write_raw.assert_called_once()
-        text = renderer._adapter.write_raw.call_args[0][0]
-        assert "?" in text
-        assert "nan" not in text
+        with patch('sys.__stdout__') as mock_stdout:
+            renderer._do_parse_info("tool_test", float('nan'), 1.5)
+            mock_stdout.write.assert_called_once()
+            text = mock_stdout.write.call_args[0][0]
+            assert "?" in text
+            assert "nan" not in text
 
     def test_normal_int_tokens(self, renderer):
         """普通 int tokens → 显示 "Nt" """
-        renderer._do_parse_info("tool_test", 42, 1.5)
-        renderer._adapter.write_raw.assert_called_once()
-        text = renderer._adapter.write_raw.call_args[0][0]
-        assert "42t" in text
+        with patch('sys.__stdout__') as mock_stdout:
+            renderer._do_parse_info("tool_test", 42, 1.5)
+            mock_stdout.write.assert_called_once()
+            text = mock_stdout.write.call_args[0][0]
+            assert "42t" in text
 
     def test_clear_parse_line_sentinel(self, renderer):
         """tokens=_CLEAR_PARSE_LINE → write('\\n') """
-        renderer._do_parse_info("", _CLEAR_PARSE_LINE, 0.0)
-        renderer._adapter.write_raw.assert_called_once_with("\n")
+        with patch('sys.__stdout__') as mock_stdout:
+            renderer._do_parse_info("", _CLEAR_PARSE_LINE, 0.0)
+            mock_stdout.write.assert_called_once_with("\n")
+            mock_stdout.flush.assert_called_once()
 
 
 # ═══════════════════════════════════════════════════════
@@ -98,32 +101,32 @@ class TestTruncateMsg:
 
     def test_short_msg_unchanged(self):
         """短消息不截断"""
-        from src.chat_ui.infrastructure.utils import _truncate_msg
+        from src.chat_ui._utils import _truncate_msg
         result = _truncate_msg("hello", 10)
         assert result == "hello"
 
     def test_exact_length_unchanged(self):
         """长度刚好等于 max_len → 不截断"""
-        from src.chat_ui.infrastructure.utils import _truncate_msg
+        from src.chat_ui._utils import _truncate_msg
         result = _truncate_msg("12345", 5)
         assert result == "12345"
 
     def test_long_msg_truncated(self):
         """超长消息截断并追加 ..."""
-        from src.chat_ui.infrastructure.utils import _truncate_msg
+        from src.chat_ui._utils import _truncate_msg
         result = _truncate_msg("x" * 100, 10)
         assert result == "x" * 10 + "..."
         assert len(result) == 13
 
     def test_empty_msg_empty_result(self):
         """空消息 → 空字符串"""
-        from src.chat_ui.infrastructure.utils import _truncate_msg
+        from src.chat_ui._utils import _truncate_msg
         result = _truncate_msg("", 10)
         assert result == ""
 
     def test_max_len_zero(self):
         """max_len=0 → 全部截断"""
-        from src.chat_ui.infrastructure.utils import _truncate_msg
+        from src.chat_ui._utils import _truncate_msg
         result = _truncate_msg("hello", 0)
         assert result == "..."
 
@@ -216,8 +219,7 @@ class TestDoPhaseDone:
 # ═══════════════════════════════════════════════════════
 
 class TestDoToolCount:
-    """工具计数渲染命令测试（注：increment_tool/decrement_tool/increment_tool_fail
-    计划从 BottomBarBridge 移除，这些测试将在步骤 14 完成后更新）。"""
+    """工具计数渲染命令测试"""
 
     def test_tool_count_inc(self, renderer, mock_bb):
         """TOOL_COUNT_INC → 委托 _bb.increment_tool()"""
@@ -251,7 +253,7 @@ class TestDoToolOutput:
         renderer._do_tool_output("output text")
         mock_ta.write.assert_called_once()
         text_arg = mock_ta.write.call_args[0][0]
-        assert isinstance(text_arg, StyledText)
+        assert isinstance(text_arg, Text)
         assert "output text" in text_arg.plain
 
     def test_tool_output_empty_text(self, renderer, mock_ta):
@@ -265,7 +267,7 @@ class TestDoToolOutput:
         renderer._do_tool_output(long_text)
         mock_ta.write.assert_called_once()
         text_arg = mock_ta.write.call_args[0][0]
-        assert isinstance(text_arg, StyledText)
+        assert isinstance(text_arg, Text)
         assert text_arg.plain == "   " + "x" * 10000 + "...(truncated)"
 
     def test_tool_output_with_carriage_return(self, renderer, mock_ta):
@@ -305,7 +307,7 @@ class TestDoToolSummary:
         renderer._do_tool_summary(("tool_a", "tool_b"), ())
         mock_ta.write.assert_called_once()
         text_arg = mock_ta.write.call_args[0][0]
-        assert isinstance(text_arg, StyledText)
+        assert isinstance(text_arg, Text)
         assert "2工具完成" in text_arg.plain
 
     def test_summary_partial_failure(self, renderer, mock_ta):
@@ -351,7 +353,7 @@ class TestDoUserMessage:
         renderer._do_user_message("hello")
         mock_ta.write.assert_called_once()
         text_arg = mock_ta.write.call_args[0][0]
-        assert isinstance(text_arg, StyledText)
+        assert isinstance(text_arg, Text)
         assert "hello" in text_arg.plain
 
     def test_user_message_empty(self, renderer, mock_ta):
@@ -375,7 +377,7 @@ class TestDoNotification:
         renderer._do_notification("notify")
         mock_ta.write.assert_called_once()
         text_arg = mock_ta.write.call_args[0][0]
-        assert isinstance(text_arg, StyledText)
+        assert isinstance(text_arg, Text)
         assert "notify" in text_arg.plain
 
 
@@ -394,17 +396,17 @@ class TestDoError:
         renderer._do_error("error msg")
         mock_ta.write.assert_called_once()
         text_arg = mock_ta.write.call_args[0][0]
-        assert isinstance(text_arg, StyledText)
+        assert isinstance(text_arg, Text)
         assert "error msg" in text_arg.plain
 
     def test_error_truncated(self, renderer, mock_ta):
         """超长消息 → 截断后输出"""
-        from src.chat_ui.commands.const import _MAX_ERROR_LENGTH
+        from src.chat_ui._const import _MAX_ERROR_LENGTH
         long_msg = "x" * (_MAX_ERROR_LENGTH + 50)
         renderer._do_error(long_msg)
         mock_ta.write.assert_called_once()
         text_arg = mock_ta.write.call_args[0][0]
-        assert isinstance(text_arg, StyledText)
+        assert isinstance(text_arg, Text)
         assert "..." in text_arg.plain
         # 截断后的消息主体（不含前缀）不应超过 _MAX_ERROR_LENGTH + 3（...）
         body = text_arg.plain.replace("\n  ! ", "", 1)
@@ -431,7 +433,7 @@ class TestDoWriteLine:
         renderer._do_write_line("\033[31mred\033[0m")
         mock_ta.write.assert_called_once()
         text_arg = mock_ta.write.call_args[0][0]
-        assert isinstance(text_arg, StyledText)
+        assert isinstance(text_arg, Text)
 
     def test_write_line_empty(self, renderer, mock_ta):
         """空文本 → 仅输出换行"""
@@ -472,28 +474,14 @@ class TestRender:
         """已知命令 → 正确分发到对应 _do_* 方法"""
         method_name = "do_" + RenderCommand.NOTIFICATION.name.lower()
         with patch.object(renderer, f"_{method_name}") as m_method:
-            renderer.render(CmdNotification(text="test"))
+            renderer.render((RenderCommand.NOTIFICATION, "test"))
             m_method.assert_called_once_with("test")
 
     def test_render_unknown_command_logs_error(self, renderer, mock_ta):
         """未知命令 ID → 记录日志（不崩溃）"""
-        with patch('src.chat_ui.core.renderer._logger.error') as m_log:
+        with patch('src.chat_ui._renderer._logger.error') as m_log:
             renderer.render((255,))
             m_log.assert_called_once()
-
-    def test_render_input_changed_is_noop(self, renderer, mock_ta):
-        """CmdInputChanged → 防御性空操作，不抛异常且不记录错误日志。"""
-        with patch('src.chat_ui.core.renderer._logger.error') as m_log:
-            renderer.render(CmdInputChanged(text="test input", cursor_pos=4))
-            # 不应记录 "未知渲染命令类型" ERROR 日志
-            m_log.assert_not_called()
-        # 不应崩溃，且不抛异常
-
-    def test_render_subagent_slot_update_is_noop(self, renderer, mock_ta):
-        """CmdSubagentSlotUpdate → 防御性空操作，不抛异常且不记录错误日志。"""
-        with patch('src.chat_ui.core.renderer._logger.error') as m_log:
-            renderer.render(CmdSubagentSlotUpdate(label="agent-1", slot={"status": "running"}))
-            m_log.assert_not_called()
 
 
 # ═══════════════════════════════════════════════════════

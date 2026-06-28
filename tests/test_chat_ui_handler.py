@@ -17,7 +17,6 @@ from unittest.mock import patch, MagicMock
 import pytest
 
 from src import chat_ui
-from src.chat_ui.commands.types import CmdError
 
 
 # ── Fixture: ChatUIErrorHandler 实例 ───────────────────
@@ -31,7 +30,7 @@ def _reset_error_handler():
     若 handler 不存在（模块未加载），跳过。
     """
     root = logging.getLogger()
-    from src.chat_ui.error_handler import ChatUIErrorHandler
+    from src.chat_ui._error_handler import ChatUIErrorHandler
     handler = None
     for h in root.handlers:
         if isinstance(h, ChatUIErrorHandler):
@@ -59,7 +58,7 @@ class TestChatUIErrorHandlerEmit:
         )
 
         mock_ui = MagicMock()
-        with patch.object(chat_ui.state.app_state, 'get_active_chat_ui', return_value=mock_ui):
+        with patch.object(chat_ui._state, 'get_active_chat_ui', return_value=mock_ui):
             handler.emit(record)
 
         mock_ui.on_error.assert_called_once()
@@ -78,7 +77,7 @@ class TestChatUIErrorHandlerEmit:
         )
 
         mock_ui = MagicMock()
-        with patch.object(chat_ui.state.app_state, 'get_active_chat_ui', return_value=mock_ui):
+        with patch.object(chat_ui._state, 'get_active_chat_ui', return_value=mock_ui):
             handler.emit(record)
 
         mock_ui.on_error.assert_called_once()
@@ -94,7 +93,7 @@ class TestChatUIErrorHandlerEmit:
         )
 
         mock_ui = MagicMock()
-        with patch.object(chat_ui.state.app_state, 'get_active_chat_ui', return_value=mock_ui):
+        with patch.object(chat_ui._state, 'get_active_chat_ui', return_value=mock_ui):
             handler.emit(record)
 
         mock_ui.on_error.assert_not_called()
@@ -110,7 +109,7 @@ class TestChatUIErrorHandlerEmit:
         )
 
         mock_ui = MagicMock()
-        with patch.object(chat_ui.state.app_state, 'get_active_chat_ui', return_value=mock_ui):
+        with patch.object(chat_ui._state, 'get_active_chat_ui', return_value=mock_ui):
             handler.emit(record)
 
         called_msg = mock_ui.on_error.call_args[0][0]
@@ -133,7 +132,7 @@ class TestChatUIErrorHandlerInactive:
         )
 
         mock_ui = MagicMock()
-        with patch.object(chat_ui.state.app_state, 'get_active_chat_ui', return_value=None):
+        with patch.object(chat_ui._state, 'get_active_chat_ui', return_value=None):
             # 不应抛出任何异常
             handler.emit(record)
 
@@ -161,7 +160,7 @@ class TestChatUIErrorHandlerLevelFilter:
         )
 
         mock_ui = MagicMock()
-        with patch.object(chat_ui.state.app_state, 'get_active_chat_ui', return_value=mock_ui):
+        with patch.object(chat_ui._state, 'get_active_chat_ui', return_value=mock_ui):
             handler.emit(record)
 
         if should_emit:
@@ -187,7 +186,7 @@ class TestChatUIErrorHandlerSelfRef:
         record._chatui_reported = True
 
         mock_ui = MagicMock()
-        with patch.object(chat_ui.state.app_state, 'get_active_chat_ui', return_value=mock_ui):
+        with patch.object(chat_ui._state, 'get_active_chat_ui', return_value=mock_ui):
             handler.emit(record)
 
         mock_ui.on_error.assert_not_called()
@@ -202,7 +201,7 @@ class TestChatUIErrorHandlerSelfRef:
         )
 
         mock_ui = MagicMock()
-        with patch.object(chat_ui.state.app_state, 'get_active_chat_ui', return_value=mock_ui):
+        with patch.object(chat_ui._state, 'get_active_chat_ui', return_value=mock_ui):
             handler.emit(record)
 
         # emit 后 record 必须被标记
@@ -211,12 +210,12 @@ class TestChatUIErrorHandlerSelfRef:
     def test_no_recursion_via_reentrant_guard(self):
         """同一线程 emit → on_error → logger → emit → 线程重入标记阻断递归
 
-        验证 thread-local _error_handler_reentrant.active 能阻断
+        验证 thread-local _handler_reentrant.is_active 能阻断
         on_error 路径中意外产生的二次 emit。
         """
-        from src.chat_ui.state.app_state import set_error_handler_reentrant, is_error_handler_reentrant
+        from src.chat_ui._error_handler import _handler_reentrant
         # 确保测试开始时重入标记为 False
-        set_error_handler_reentrant(False)
+        _handler_reentrant.is_active = False
 
         handler = chat_ui.ChatUIErrorHandler()
 
@@ -232,14 +231,14 @@ class TestChatUIErrorHandlerSelfRef:
                 pathname="", lineno=0, msg="inner error (from on_error path)",
                 args=(), exc_info=None,
             )
-            # 此时 handler 已处于 emit 中（_error_handler_reentrant.active=True）
+            # 此时 handler 已处于 emit 中（reentrant.is_active=True）
             # 该次 emit 应被重入标记阻断，不调用 on_error
             handler.emit(inner_record)
 
         mock_ui = MagicMock()
         mock_ui.on_error.side_effect = _on_error_side_effect
 
-        with patch.object(chat_ui.state.app_state, 'get_active_chat_ui', return_value=mock_ui):
+        with patch.object(chat_ui._state, 'get_active_chat_ui', return_value=mock_ui):
             handler.emit(
                 logging.LogRecord(
                     name="test", level=logging.ERROR,
@@ -251,7 +250,7 @@ class TestChatUIErrorHandlerSelfRef:
         # on_error 只被调用 1 次（outer record 触发），inner 被重入标记阻断
         assert call_count == 1
         # 退出 emit 后重入标记已清除
-        assert is_error_handler_reentrant() is False
+        assert getattr(_handler_reentrant, 'is_active', False) is False
 
 
 # ── Test: RenderCommand.ERROR 枚举 ─────────────────────
@@ -267,7 +266,7 @@ class TestRenderCommandError:
 
     def test_error_in_dispatch(self):
         """_RENDER_DISPATCH 包含 ERROR 条目"""
-        from src.chat_ui.core.renderer import _RENDER_DISPATCH
+        from src.chat_ui._renderer import _RENDER_DISPATCH
         dispatch = _RENDER_DISPATCH
         assert 16 in dispatch
         method_name, arg_indices = dispatch[16]
@@ -275,10 +274,11 @@ class TestRenderCommandError:
         assert arg_indices == (1,)
 
     def test_error_instance_creation(self):
-        """CmdError dataclass 可实例化"""
-        cmd = CmdError(message="test error message")
-        assert cmd.kind == 16
-        assert cmd.message == "test error message"
+        """ERROR 枚举值可实例化命令元组"""
+        from src.chat_ui import RenderCommand
+        cmd = (RenderCommand.ERROR, "test error message")
+        assert cmd[0] == 16
+        assert cmd[1] == "test error message"
 
 
 # ── Test: _on_model_phase handler ─────────────────────
@@ -298,15 +298,15 @@ class TestOnModelPhase:
 
     def test_error_phase_dispatches_error(self, consumer):
         """phase="error" + label="_MAIN_LABEL" + 非空 info → push ERROR 命令"""
-        from src.chat_ui import _MAIN_LABEL
+        from src.chat_ui import _MAIN_LABEL, RenderCommand
         from src.ui.events.event_types import ModelPhaseEvent
         event = ModelPhaseEvent(
             label=_MAIN_LABEL, phase="error", info="test timeout error",
         )
         consumer._disp._on_model_phase(event)
         cmd = consumer._engine._cmd_queue.get_nowait()
-        assert isinstance(cmd, CmdError)
-        assert "test timeout error" in cmd.message
+        assert cmd[0] == RenderCommand.ERROR
+        assert "test timeout error" in cmd[1]
 
     def test_subagent_label_skipped(self, consumer):
         """SubAgent label（!= _MAIN_LABEL）→ 不 push 任何命令"""
@@ -340,7 +340,7 @@ class TestOnModelPhase:
 
     def test_long_info_truncated(self, consumer):
         """超长 info（>200 字符）→ 截断并追加"..." """
-        from src.chat_ui import _MAIN_LABEL
+        from src.chat_ui import _MAIN_LABEL, RenderCommand
         from src.ui.events.event_types import ModelPhaseEvent
         long_info = "x" * 300
         event = ModelPhaseEvent(
@@ -348,8 +348,8 @@ class TestOnModelPhase:
         )
         consumer._disp._on_model_phase(event)
         cmd = consumer._engine._cmd_queue.get_nowait()
-        assert isinstance(cmd, CmdError)
-        result = cmd.message
+        assert cmd[0] == RenderCommand.ERROR
+        result = cmd[1]
         assert len(result) == 203  # 200 + "..."
         assert result.endswith("...")
         # 截断后的内容应为前 200 个字符 + "..."
@@ -357,7 +357,7 @@ class TestOnModelPhase:
 
     def test_short_info_not_truncated(self, consumer):
         """短 info（<=200 字符）→ 原样传递"""
-        from src.chat_ui import _MAIN_LABEL
+        from src.chat_ui import _MAIN_LABEL, RenderCommand
         from src.ui.events.event_types import ModelPhaseEvent
         info = "short error message"
         event = ModelPhaseEvent(
@@ -365,8 +365,8 @@ class TestOnModelPhase:
         )
         consumer._disp._on_model_phase(event)
         cmd = consumer._engine._cmd_queue.get_nowait()
-        assert isinstance(cmd, CmdError)
-        assert cmd.message == info
+        assert cmd[0] == RenderCommand.ERROR
+        assert cmd[1] == info
 
 
 # ═══════════════════════════════════════════════════════
@@ -378,28 +378,28 @@ class TestIsAgentSource:
 
     def test_none_source_returns_false(self):
         """source=None → 返回 False，不抛异常"""
-        from src.chat_ui.dispatch.dispatcher import EventDispatcher
+        from src.chat_ui._dispatcher import EventDispatcher
         assert EventDispatcher._is_agent_source(None) is False
 
     def test_main_source_returns_true(self):
         """source='agent' → 返回 True"""
-        from src.chat_ui.dispatch.dispatcher import EventDispatcher
-        from src.chat_ui.commands.const import _MAIN_SOURCE
+        from src.chat_ui._dispatcher import EventDispatcher
+        from src.chat_ui._const import _MAIN_SOURCE
         assert EventDispatcher._is_agent_source(_MAIN_SOURCE) is True
 
     def test_agent_prefix_returns_true(self):
         """source='agent-1' → 返回 True"""
-        from src.chat_ui.dispatch.dispatcher import EventDispatcher
+        from src.chat_ui._dispatcher import EventDispatcher
         assert EventDispatcher._is_agent_source("agent-1") is True
 
     def test_other_source_returns_false(self):
         """source='user' → 返回 False"""
-        from src.chat_ui.dispatch.dispatcher import EventDispatcher
+        from src.chat_ui._dispatcher import EventDispatcher
         assert EventDispatcher._is_agent_source("user") is False
 
     def test_empty_string_returns_false(self):
         """source='' → 返回 False"""
-        from src.chat_ui.dispatch.dispatcher import EventDispatcher
+        from src.chat_ui._dispatcher import EventDispatcher
         assert EventDispatcher._is_agent_source("") is False
 
 
@@ -426,7 +426,7 @@ class TestEmitGetMessageTypeError:
         )
 
         mock_ui = MagicMock()
-        with patch.object(chat_ui.state.app_state, 'get_active_chat_ui', return_value=mock_ui):
+        with patch.object(chat_ui._state, 'get_active_chat_ui', return_value=mock_ui):
             # 不应抛出任何异常
             handler.emit(record)
 

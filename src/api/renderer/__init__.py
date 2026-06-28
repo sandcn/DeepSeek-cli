@@ -97,13 +97,10 @@ class IncrementalRenderer:
         self._show_indicator = show_indicator
         # 记录渲染开始时间（用于统计摘要）
         self._ctx.start_time = time.monotonic()
-        # 累积原始文本（供 InkState 查询纯文本内容）
-        self._raw_text = ""
 
     def write(self, text: str):
         if not text or self._closed:
             return
-        self._raw_text += text
         if not self._indicator_started:
             stripped = text.strip()
             if stripped:
@@ -127,26 +124,6 @@ class IncrementalRenderer:
         渲染（表格/标题/代码块等）将基于过时的宽度进行布局计算。
         """
         self._output.force_refresh_width()
-
-    def get_raw_text(self) -> str:
-        """返回已写入的全部原始 Markdown 文本（含 **bold** 等标记）。
-
-        供 InkState 等上层组件查询渲染器的累积文本内容。
-        文本在 write() 调用时累积，不受解析/渲染管线影响。
-
-        Returns:
-            原始 Markdown 文本字符串（未经去标记处理）。
-        """
-        return self._raw_text
-
-    # @deprecated — 请使用 get_raw_text()。此别名仅保留向后兼容。
-    def get_plain_text(self) -> str:
-        """[已弃用] 请使用 get_raw_text()。
-
-        返回原始 Markdown 文本，并非去除标记后的纯文本。
-        此别名保留向后兼容，将在后续版本移除。
-        """
-        return self.get_raw_text()
 
     def close(self):
         if self._closed:

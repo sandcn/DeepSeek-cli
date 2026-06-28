@@ -1,8 +1,9 @@
-"""BottomBarBridge resize 处理测试 — 大部分测试已被 skip。
+"""_BottomBar resize 处理测试 — 验证 9 个 Bug 修复。
 
 测试策略：
-  - Bug 4: 测试 _get_terminal_width() ioctl 解包（独立于 BottomBarBridge）
-  - 其他 resize 测试已被 @unittest.skip 跳过（resize 功能已从 BottomBarBridge 移除）
+  - Bug 1/2/3/5/6/7/8: 直接测试 _check_resize() 方法和相关状态
+  - Bug 4: 测试 _get_terminal_width() ioctl 解包
+  - Bug 9: 测试 _drain_queue Branch B 锁策略
   所有测试禁用终端 I/O（ANSI 输出写入 devnull）。
 """
 
@@ -15,7 +16,7 @@ import sys
 import unittest
 from unittest.mock import MagicMock, patch, PropertyMock
 
-from src.chat_ui.infrastructure.bottom_bar_bridge import BottomBarBridge
+from src.ui._bottom_bar import _BottomBar
 
 
 class TestBug4IoctlUnpack(unittest.TestCase):
@@ -59,7 +60,7 @@ class TestBug2QueryTerminalSize(unittest.TestCase):
     """Bug 2 修复：_check_resize() 使用 query_terminal_size() ioctl 策略。"""
 
     def setUp(self):
-        self.bb = BottomBarBridge()
+        self.bb = _BottomBar()
         self.bb._active = True
         self.bb._setup_height = 30
         self.bb._setup_width = 80
@@ -86,7 +87,7 @@ class TestBug3WidthDetection(unittest.TestCase):
     """Bug 3 修复：_check_resize() 同时检测高度和宽度变化。"""
 
     def setUp(self):
-        self.bb = BottomBarBridge()
+        self.bb = _BottomBar()
         self.bb._active = True
         self.bb._setup_height = 30
         self.bb._setup_width = 80
@@ -144,7 +145,7 @@ class TestBug5LastBottomLinesLocked(unittest.TestCase):
     """Bug 5 修复：_last_bottom_lines 在 locked 块内赋值。"""
 
     def setUp(self):
-        self.bb = BottomBarBridge()
+        self.bb = _BottomBar()
         self.bb._active = True
         self.bb._setup_height = 50
         self.bb._setup_width = 80
@@ -159,7 +160,7 @@ class TestBug5LastBottomLinesLocked(unittest.TestCase):
         # 模拟高度 < _MIN_HEIGHT 且锁获取超时
         with patch("shutil.get_terminal_size",
                    return_value=(80, 5)), \
-             patch("src.ui._lock._try_acquire_output_lock",
+             patch("src.ui._bottom_bar._try_acquire_output_lock",
                    return_value=MagicMock(__enter__=MagicMock(return_value=False),
                                          __exit__=MagicMock(return_value=False))):
             self.bb._check_resize()
@@ -173,7 +174,7 @@ class TestBug6TextSaveRestore(unittest.TestCase):
     """Bug 6 修复：终端缩小再恢复后输入文本保存/恢复。"""
 
     def setUp(self):
-        self.bb = BottomBarBridge()
+        self.bb = _BottomBar()
         self.bb._active = True
         self.bb._setup_height = 30
         self.bb._setup_width = 80
@@ -227,7 +228,7 @@ class TestBug7LockTimeoutSetupUpdate(unittest.TestCase):
     """Bug 7 修复：锁超时时更新 _setup_height/_setup_width 避免无限重触发。"""
 
     def setUp(self):
-        self.bb = BottomBarBridge()
+        self.bb = _BottomBar()
         self.bb._active = True
         self.bb._setup_height = 30  # 旧值
         self.bb._setup_width = 80   # 旧值
@@ -244,7 +245,7 @@ class TestBug7LockTimeoutSetupUpdate(unittest.TestCase):
         # 尺寸变化到 (100, 40)，但锁获取超时
         with patch("shutil.get_terminal_size",
                    return_value=(100, 40)), \
-             patch("src.ui._lock._try_acquire_output_lock",
+             patch("src.ui._bottom_bar._try_acquire_output_lock",
                    return_value=MagicMock(__enter__=MagicMock(return_value=False),
                                          __exit__=MagicMock(return_value=False))):
             result = self.bb._check_resize()
@@ -259,7 +260,7 @@ class TestBug7LockTimeoutSetupUpdate(unittest.TestCase):
         """锁超时并更新尺寸后，第二次调用不应再触发。"""
         with patch("shutil.get_terminal_size",
                    return_value=(100, 40)), \
-             patch("src.ui._lock._try_acquire_output_lock",
+             patch("src.ui._bottom_bar._try_acquire_output_lock",
                    return_value=MagicMock(__enter__=MagicMock(return_value=False),
                                          __exit__=MagicMock(return_value=False))):
             self.bb._check_resize()  # 第一次：返回 False + 更新
@@ -278,7 +279,7 @@ class TestBug1SigwinchCallback(unittest.TestCase):
     """Bug 1 修复：SIGWINCH 回调设置 _resize_dirty。"""
 
     def setUp(self):
-        self.bb = BottomBarBridge()
+        self.bb = _BottomBar()
         self.bb._active = True
         self.bb._setup_height = 30
         self.bb._setup_width = 80
@@ -311,7 +312,7 @@ class TestBug1SigwinchCallback(unittest.TestCase):
 
     def test_sigwinch_callback_registered_on_setup(self):
         """setup() 应注册 SIGWINCH 回调。"""
-        bb = BottomBarBridge()
+        bb = _BottomBar()
         bb._cached_height = 30
         bb._cached_width = 80
 
@@ -323,7 +324,7 @@ class TestBug1SigwinchCallback(unittest.TestCase):
 
     def test_sigwinch_callback_unregistered_on_teardown(self):
         """teardown() 应注销 SIGWINCH 回调。"""
-        bb = BottomBarBridge()
+        bb = _BottomBar()
         bb._active = True
         bb._sigwinch_registered = True
         bb._cached_height = 30
@@ -345,7 +346,7 @@ class TestForceRedrawNoResizeCheck(unittest.TestCase):
     """
 
     def setUp(self):
-        self.bb = BottomBarBridge()
+        self.bb = _BottomBar()
         self.bb._active = True
         self.bb._cached_height = 30
         self.bb._cached_width = 80
@@ -373,7 +374,7 @@ class TestBug9PositionCursorUnderLock(unittest.TestCase):
     """
 
     def setUp(self):
-        from src.chat_ui.core.engine import RenderEngine
+        from src.chat_ui._engine import RenderEngine
         self.mock_renderer = MagicMock()
         self.mock_bb = MagicMock()
         self.engine = RenderEngine(self.mock_renderer, self.mock_bb, MagicMock())
@@ -419,7 +420,7 @@ class TestResizeDrainSkip(unittest.TestCase):
     """Bug 修复：无流式输出时终端 resize 被 _drain_queue() 快速空闲跳过阻塞。"""
 
     def setUp(self):
-        from src.chat_ui.core.engine import RenderEngine
+        from src.chat_ui._engine import RenderEngine
         self.mock_renderer = MagicMock()
         self.mock_bb = MagicMock()
         self.mock_bb.is_status_active = False
@@ -481,7 +482,7 @@ class TestResizeDrainSkip(unittest.TestCase):
     @unittest.skip("_resize_dirty 已从 _BottomBar 移除")
     def test_real_bottom_bar_resize_pending_property(self):
         """真实 _BottomBar 实例的 is_resize_pending 应与 _resize_dirty 一致。"""
-        bb = BottomBarBridge()
+        bb = _BottomBar()
 
         self.assertFalse(bb.is_resize_pending,
                          "初始状态 is_resize_pending 应为 False")
@@ -503,7 +504,7 @@ class TestHeightIncreaseGhost(unittest.TestCase):
     """
 
     def setUp(self):
-        self.bb = BottomBarBridge()
+        self.bb = _BottomBar()
         self.bb._active = True
         self.bb._setup_height = 24
         self.bb._setup_width = 80
@@ -633,7 +634,7 @@ class TestResizeCursorOverride(unittest.TestCase):
     """
 
     def setUp(self):
-        from src.chat_ui.core.engine import RenderEngine
+        from src.chat_ui._engine import RenderEngine
         self.mock_renderer = MagicMock()
         self.mock_bb = MagicMock()
         self.mock_bb.is_status_active = False
@@ -654,7 +655,7 @@ class TestResizeCursorOverride(unittest.TestCase):
 
     def _enqueue_cmd(self):
         """将一个 dummy 命令入队以触发 Stage 1 渲染分支。"""
-        from src.chat_ui.commands.const import RenderCommand
+        from src.chat_ui._const import RenderCommand
         self.engine.push_cmd((RenderCommand.NOTIFICATION, "test"))
 
     def test_resized_skips_ensure_cursor_upper(self):
@@ -759,7 +760,7 @@ class TestScrollN(unittest.TestCase):
     """验证 _last_scroll_n 在各种 resize 场景下的正确赋值。"""
 
     def setUp(self):
-        self.bb = BottomBarBridge()
+        self.bb = _BottomBar()
         # 初始化为 ACTIVATED 状态，模拟流式输出期间
         self.bb._active = True
         self.bb._setup_height = 30
@@ -877,7 +878,7 @@ class TestResizeEnlargePreservesState(unittest.TestCase):
     """
 
     def setUp(self):
-        self.bb = BottomBarBridge()
+        self.bb = _BottomBar()
         self.bb._active = True
         self.bb._setup_height = 24
         self.bb._setup_width = 80
@@ -980,7 +981,7 @@ class TestResizeShrinkPreservesState(unittest.TestCase):
     """终端缩小时 _last_text 和补全状态应保持不变。"""
 
     def setUp(self):
-        self.bb = BottomBarBridge()
+        self.bb = _BottomBar()
         self.bb._active = True
         self.bb._setup_height = 35
         self.bb._setup_width = 80
