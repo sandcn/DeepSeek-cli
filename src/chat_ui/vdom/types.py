@@ -78,6 +78,8 @@ class LayoutBox:
         height: 元素高度（行数）。
         content_width: 内容自然宽度。
         content_height: 内容自然高度。
+        z_index: 层叠顺序（越高越靠前显示，默认 0）。
+        position: 定位模式（"relative" 参与正常流，"absolute" 脱离正常流）。
     """
     x: int = 0
     y: int = 0
@@ -85,5 +87,7 @@ class LayoutBox:
     height: int = 0
     content_width: int = 0
     content_height: int = 0
+    z_index: int = 0
+    position: str = "relative"
 
 

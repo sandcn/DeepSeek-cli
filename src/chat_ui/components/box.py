@@ -253,6 +253,155 @@ class Box(TuiComponent):
         self.border_color_gradient: tuple[str, str] | None = props.get(
             'border_color_gradient', None)
 
+        # ══ Flex item 属性 ────────────────────────────
+        self._flex_grow: int = props.get('flex_grow', 0)
+        self._flex_shrink: int = props.get('flex_shrink', 1)
+        self._flex_basis: int | str | None = props.get('flex_basis', None)
+
+        # ══ Flex 容器属性 ────────────────────────────
+        self._flex_direction: str | None = props.get('flex_direction', None)
+        self._align_items: str | None = props.get('align_items', None)
+        self._justify_content: str | None = props.get('justify_content', None)
+        self._gap: int | None = props.get('gap', None)
+        self._flex_wrap: str | None = props.get('flex_wrap', None)
+
+        # ══ 尺寸约束 ──────────────────────────────────
+        self._min_width: int | None = props.get('min_width', None)
+        self._max_width: int | None = props.get('max_width', None)
+
+        # ══ 定位 & 溢出 ───────────────────────────────
+        self._position: str | None = props.get('position', None)
+        self._overflow: str | None = props.get('overflow', None)
+
+    # ── Flex 样式导出 ────────────────────────────────────
+
+    def get_flex_style(self) -> dict:
+        """返回 FlexStyle 兼容的样式字典，供 FlexLayout 使用。
+
+        将 Box 的 flex/position/overflow 属性映射为 camelCase 键名的
+        FlexStyle dict，与 FlexLayout 布局引擎的 FlexStyle TypedDict 对接。
+        """
+        style: dict = {}
+        if self._flex_grow != 0:
+            style["flexGrow"] = self._flex_grow
+        if self._flex_shrink != 1:
+            style["flexShrink"] = self._flex_shrink
+        if self._flex_basis is not None:
+            style["flexBasis"] = self._flex_basis
+        if self._flex_direction is not None:
+            style["flexDirection"] = self._flex_direction
+        if self._align_items is not None:
+            style["alignItems"] = self._align_items
+        if self._justify_content is not None:
+            style["justifyContent"] = self._justify_content
+        if self._gap is not None:
+            style["gap"] = self._gap
+        if self._flex_wrap is not None:
+            style["flexWrap"] = self._flex_wrap
+        if self._min_width is not None:
+            style["minWidth"] = self._min_width
+        if self._max_width is not None:
+            style["maxWidth"] = self._max_width
+        if self._position is not None:
+            style["position"] = self._position
+        if self._overflow is not None:
+            style["overflow"] = self._overflow
+        # 传递现有尺寸属性
+        if self.width is not None:
+            style["width"] = self.width
+        if self.height is not None:
+            style["height"] = self.height
+        if self.min_height is not None:
+            style["minHeight"] = self.min_height
+        if self.max_height is not None:
+            style["maxHeight"] = self.max_height
+        return style
+
+    # ── 生命周期方法 ────────────────────────────────────
+
+    def update(self, props: dict) -> bool:
+        """接收新 props，检测变更决定是否需要重渲染。
+
+        比较 flex/position/overflow 新属性及所有现有边框/尺寸属性，
+        任一项变化即返回 True。
+
+        Args:
+            props: 新的属性字典。
+
+        Returns:
+            True 如果任何属性发生变化需要重渲染。
+        """
+        # Flex item
+        if props.get('flex_grow', 0) != self._flex_grow:
+            return True
+        if props.get('flex_shrink', 1) != self._flex_shrink:
+            return True
+        if props.get('flex_basis', None) != self._flex_basis:
+            return True
+        # Flex 容器
+        if props.get('flex_direction', None) != self._flex_direction:
+            return True
+        if props.get('align_items', None) != self._align_items:
+            return True
+        if props.get('justify_content', None) != self._justify_content:
+            return True
+        if props.get('gap', None) != self._gap:
+            return True
+        if props.get('flex_wrap', None) != self._flex_wrap:
+            return True
+        # 尺寸约束
+        if props.get('min_width', None) != self._min_width:
+            return True
+        if props.get('max_width', None) != self._max_width:
+            return True
+        # 定位 & 溢出
+        if props.get('position', None) != self._position:
+            return True
+        if props.get('overflow', None) != self._overflow:
+            return True
+        # 现有边框/尺寸属性
+        if props.get('border_style', 'single') != self.border_style:
+            return True
+        if props.get('border_color', None) != self.border_color:
+            return True
+        if props.get('width', None) != self.width:
+            return True
+        if props.get('height', None) != self.height:
+            return True
+        if props.get('min_height', None) != self.min_height:
+            return True
+        if props.get('max_height', None) != self.max_height:
+            return True
+        if props.get('padding_x', 0) != self.padding_x:
+            return True
+        if props.get('padding_y', 0) != self.padding_y:
+            return True
+        if props.get('margin_x', 0) != self.margin_x:
+            return True
+        if props.get('margin_y', 0) != self.margin_y:
+            return True
+        if props.get('title', None) != self.title:
+            return True
+        if props.get('collapsed', False) != self.collapsed:
+            return True
+        return False
+
+    def render_vnode(self) -> "VNode":
+        """产出 VNode — 包含 flex/position/overflow 属性。
+
+        除边框渲染文本外，将 flex 布局属性传递给 FlexLayout 消费。
+        """
+        from ..vdom.vnode import VNode
+        result = self.render()
+        props_dict: dict = {"text": str(result)} if result else {}
+        # 合并 flex 样式属性到 VNode props
+        props_dict.update(self.get_flex_style())
+        return VNode(
+            type=type(self).__name__,
+            key=self.key,
+            props=props_dict,
+        )
+
     # ── 边框字符解析 ────────────────────────────────────
 
     def _resolve_border_chars(self) -> dict[str, str]:

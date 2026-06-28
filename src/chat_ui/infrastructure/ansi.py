@@ -49,6 +49,7 @@ ANSI_DIM = f"{_CSI}2m"
 ANSI_ITALIC = f"{_CSI}3m"
 ANSI_UNDERLINE = f"{_CSI}4m"
 ANSI_REVERSE = f"{_CSI}7m"
+ANSI_HIDDEN = f"{_CSI}8m"
 
 # ── 光标移动 ─────────────────────────────────────────────
 def cursor_up(n: int = 1) -> str:
@@ -170,14 +171,14 @@ def _bg_code(color: str) -> str:
 def style(text: str = "", *, fg: str | None = None, bg: str | None = None,
           bold: bool = False, dim: bool = False, italic: bool = False,
           underline: bool = False, reverse: bool = False,
-          strikethrough: bool = False) -> str:
+          strikethrough: bool = False, hidden: bool = False) -> str:
     """用 ANSI 转义序列包裹文本。
 
     Args:
         text: 要样式化的文本
         fg: 前景色名（如 'red', 'green', '#FF0000'）
         bg: 背景色名
-        bold/dim/italic/underline/reverse/strikethrough: 样式标志
+        bold/dim/italic/underline/reverse/strikethrough/hidden: 样式标志
 
     Returns:
         包裹了 ANSI 序列的字符串，末尾带重置码。
@@ -199,6 +200,8 @@ def style(text: str = "", *, fg: str | None = None, bg: str | None = None,
         codes.append(ANSI_REVERSE)
     if strikethrough:
         codes.append(f"{_CSI}9m")
+    if hidden:
+        codes.append(ANSI_HIDDEN)
 
     if not codes:
         return text

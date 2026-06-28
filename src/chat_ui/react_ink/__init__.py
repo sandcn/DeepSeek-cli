@@ -29,6 +29,14 @@ from ..components.box import Box, BORDER_STYLES as BoxBorderStyle  # noqa: F401
 from ..components.animation import use_animation, AnimationClock  # noqa: F401
 from ..components.static import Static  # noqa: F401
 from ..components.transform import Transform  # noqa: F401
+from ..components.text import Text  # noqa: F401
+from ..components.newline import Newline  # noqa: F401
+from ..components.spacer import Spacer  # noqa: F401
+from ..components.unordered_list import UnorderedList  # noqa: F401
+from ..components.ordered_list import OrderedList  # noqa: F401
+from ..components.link import Link  # noqa: F401
+from ..components.scrollbar import Scrollbar  # noqa: F401
+from ..components.table import Table  # noqa: F401
 from ..vdom.types import HookState, EffectState, HookError, LayoutBox, LayoutError  # noqa: F401
 from ..vdom.builder import build_vnode_tree  # noqa: F401
 from ..devtools.stats import ErrorBoundary, debug_component_tree, inspect_hooks, RenderStats  # noqa: F401
@@ -141,6 +149,7 @@ from ..vdom.hooks import (  # noqa: F401, E402
     create_context,
     get_hooks_runtime,
 )
+from ..vdom.hooks import use_input, use_app, use_stdin, use_stdout, use_stderr  # noqa: F401, E402
 
 # Focus 系统
 from ..vdom.focus import use_focus, use_focus_manager, FocusManager  # noqa: F401, E402
@@ -163,6 +172,12 @@ __all__ = [
     "use_focus",
     "use_focus_manager",
     "FocusManager",
+    # IO Hooks
+    "use_input",
+    "use_app",
+    "use_stdin",
+    "use_stdout",
+    "use_stderr",
     # Box
     "Box",
     "BoxBorderStyle",
@@ -183,6 +198,14 @@ __all__ = [
     "Tree",
     "TreeNode",
     "subagent_slots_to_tree",
+    "Text",
+    "Newline",
+    "Spacer",
+    "UnorderedList",
+    "OrderedList",
+    "Link",
+    "Scrollbar",
+    "Table",
     # Static
     "Static",
     # Transform

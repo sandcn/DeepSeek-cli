@@ -32,6 +32,8 @@ from __future__ import annotations
 import copy
 from typing import Any, Literal, TypedDict
 
+from wcwidth import wcswidth
+
 from .types import LayoutBox, LayoutError
 
 
@@ -80,6 +82,7 @@ class FlexStyle(TypedDict, total=False):
     aspectRatio: float | None
     position: Position
     overflow: Overflow
+    zIndex: int
     gap: int
     columnGap: int
     rowGap: int
@@ -267,6 +270,35 @@ def _clamp(value: int, min_val: int | None, max_val: int | None) -> int:
     return value
 
 
+def _truncate_lines(lines: list[str], max_width: int, max_height: int, overflow: str) -> list[str]:
+    """根据 overflow 设置裁剪行列表。
+
+    Args:
+        lines: 待裁剪的行列表（纯文本，无 ANSI）。
+        max_width: 最大视觉宽度（列数）。
+        max_height: 最大行数。
+        overflow: "hidden" 时执行裁剪，"visible" 时原样返回。
+
+    Returns:
+        裁剪后的行列表。
+    """
+    if overflow != "hidden":
+        return lines
+
+    truncated: list[str] = []
+    for line in lines[:max_height]:
+        vis_w = 0
+        cut = 0
+        for ch in line:
+            cw = wcswidth(ch) if wcswidth(ch) >= 0 else 1
+            if vis_w + cw > max_width:
+                break
+            vis_w += cw
+            cut += 1
+        truncated.append(line[:cut])
+    return truncated
+
+
 # ── FlexLayout 核心类 ─────────────────────────────────────
 
 class FlexLayout:
@@ -309,12 +341,16 @@ class FlexLayout:
         """计算所有子元素的布局位置。
 
         核心算法流程：
-          1. 解析容器样式（flexDirection / gap / padding / margin）
-          2. 沿主轴分配空间（flexGrow / flexShrink / flexBasis）
-          3. 沿主轴排列（justifyContent）
-          4. 沿交叉轴排列（alignItems）
-          5. 处理 flexWrap 换行
-          6. 处理 alignContent
+          1. 分离 normal flow 和 absolute 子元素
+          2. 解析容器样式（flexDirection / gap / padding / margin）
+          3. 沿主轴分配空间（flexGrow / flexShrink / flexBasis）
+          4. 沿主轴排列（justifyContent）
+          5. 沿交叉轴排列（alignItems）
+          6. 处理 flexWrap 换行
+          7. 处理 alignContent
+          8. 定位 absolute 子元素
+          9. 应用 overflow 裁剪
+          10. 按 zIndex 排序返回
 
         Args:
             children: 子元素的 LayoutBox 列表（content_width/height 已填充）。
@@ -327,7 +363,19 @@ class FlexLayout:
             return []
 
         # 深拷贝子元素，避免修改原对象
-        result = [copy.deepcopy(c) for c in children]
+        all_children = [copy.deepcopy(c) for c in children]
+
+        # ── 步骤 0：分离 normal flow 和 absolute 子元素 ──
+        normal_flow: list[LayoutBox] = []
+        absolute_children: list[LayoutBox] = []
+        for box in all_children:
+            if box.position == "absolute":
+                absolute_children.append(box)
+            else:
+                normal_flow.append(box)
+
+        # 仅 normal flow 子元素参与 flex 布局
+        result = normal_flow
 
         # 解析容器样式
         direction: FlexDirection = self.style.get("flexDirection", "row")
@@ -335,6 +383,7 @@ class FlexLayout:
         justify: JustifyContent = self.style.get("justifyContent", "flex-start")
         align: AlignItems = self.style.get("alignItems", "stretch")
         align_content: AlignContent = self.style.get("alignContent", "stretch")
+        container_overflow: Overflow = self.style.get("overflow", "visible")
 
         # 解析 padding
         pt, pb, pl, pr = _resolve_padding(self.style)
@@ -375,15 +424,17 @@ class FlexLayout:
         width_raw = self.style.get("width")
         height_raw = self.style.get("height")
 
-        # ── 步骤 1：将子元素分组为 flex 行 ──────────────
-        lines = self._group_into_lines(
-            result, main_content_size, main_gap,
-            main_margin_leading, main_margin_trailing,
-            flex_basis_raw, flex_grow, flex_shrink,
-            min_w, min_h, max_w, max_h,
-            width_raw, height_raw,
-            direction, wrap,
-        )
+        # ── 步骤 1：将 normal flow 子元素分组为 flex 行 ──
+        lines: list[list[LayoutBox]] = []
+        if result:
+            lines = self._group_into_lines(
+                result, main_content_size, main_gap,
+                main_margin_leading, main_margin_trailing,
+                flex_basis_raw, flex_grow, flex_shrink,
+                min_w, min_h, max_w, max_h,
+                width_raw, height_raw,
+                direction, wrap,
+            )
 
         # ── 步骤 2：对每行执行主轴/交叉轴计算 ──────────
         line_cross_sizes: list[int] = []
@@ -487,18 +538,47 @@ class FlexLayout:
                 # 交叉轴位置稍后统一设置
 
         # ── 步骤 3：多行交叉轴排版（alignContent） ──────
-        self._apply_align_content(
-            lines, line_cross_sizes, direction, align_content,
-            align, cross_content_size, cross_gap,
-            cross_margin_leading, cross_margin_trailing,
-            wrap_reverse, is_row,
-            min_w, min_h, max_w, max_h,
-        )
+        if lines:
+            self._apply_align_content(
+                lines, line_cross_sizes, direction, align_content,
+                align, cross_content_size, cross_gap,
+                cross_margin_leading, cross_margin_trailing,
+                wrap_reverse, is_row,
+                min_w, min_h, max_w, max_h,
+            )
 
         # ── 步骤 4：应用容器 padding 偏移 ──────────────
         for box in result:
             box.x += pl
             box.y += pt
+
+        # ── 步骤 5：定位 absolute 子元素 ────────────────
+        # absolute 元素相对于容器内容区原点定位
+        for box in absolute_children:
+            # 从 x/y 读取可能的 top/left 偏移（由调用方通过 LayoutBox 的 x/y 传入）
+            # 若未设置（x=0, y=0），默认定位到内容区原点
+            box.x = box.x + pl
+            box.y = box.y + pt
+            # 标记为 absolute（已由 LayoutBox.position 字段携带）
+            result.append(box)
+
+        # ── 步骤 6：应用 overflow 裁剪 ───────────────────
+        if container_overflow == "hidden":
+            for box in result:
+                # 裁剪宽度：不超过容器内容宽度
+                box_right = box.x + box.width
+                container_right = pl + content_w
+                if box_right > container_right:
+                    box.width = max(0, container_right - box.x)
+                # 裁剪高度：不超过容器内容高度
+                box_bottom = box.y + box.height
+                container_bottom = pt + content_h
+                if box_bottom > container_bottom:
+                    box.height = max(0, container_bottom - box.y)
+
+        # ── 步骤 7：按 zIndex 排序 ───────────────────────
+        # higher zIndex = rendered later (on top)
+        result.sort(key=lambda b: b.z_index)
 
         return result
 

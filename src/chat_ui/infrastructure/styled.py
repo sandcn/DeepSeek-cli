@@ -32,7 +32,7 @@ class Span:
         bg: 背景色名，与 bg_color_number 互斥
         color_number: 256 色前景色号（0-255），优先于 fg
         bg_color_number: 256 色背景色号（0-255），优先于 bg
-        bold/dim/italic/underline/reverse/strikethrough: 样式标志
+        bold/dim/italic/underline/reverse/strikethrough/hidden: 样式标志
     """
     text: str
     fg: str | None = None
@@ -45,6 +45,7 @@ class Span:
     underline: bool = False
     reverse: bool = False
     strikethrough: bool = False
+    hidden: bool = False
 
     def to_ansi(self) -> str:
         """将 Span 转为 ANSI 包裹的字符串（含重置码）。
@@ -72,6 +73,7 @@ def _span_to_ansi_prefix(span: Span) -> str:
     if span.underline:       params.append(4)
     if span.reverse:         params.append(7)
     if span.strikethrough:   params.append(9)
+    if span.hidden:          params.append(8)
 
     # 前景色
     if span.color_number is not None:
@@ -278,6 +280,7 @@ class StyledText:
         current_underline = False
         current_reverse = False
         current_strikethrough = False
+        current_hidden = False
 
         def _make_span(t: str) -> Span:
             return Span(
@@ -288,6 +291,7 @@ class StyledText:
                 bold=current_bold, dim=current_dim,
                 italic=current_italic, underline=current_underline,
                 reverse=current_reverse, strikethrough=current_strikethrough,
+                hidden=current_hidden,
             )
 
         pos = 0
@@ -307,6 +311,7 @@ class StyledText:
                 current_bold = False; current_dim = False
                 current_italic = False; current_underline = False
                 current_reverse = False; current_strikethrough = False
+                current_hidden = False
             else:
                 params = [int(p) for p in params_str.split(";") if p]
                 i = 0
@@ -318,17 +323,20 @@ class StyledText:
                         current_bold = False; current_dim = False
                         current_italic = False; current_underline = False
                         current_reverse = False; current_strikethrough = False
+                        current_hidden = False
                     elif p == 1: current_bold = True
                     elif p == 2: current_dim = True
                     elif p == 3: current_italic = True
                     elif p == 4: current_underline = True
                     elif p == 7: current_reverse = True
                     elif p == 9: current_strikethrough = True
+                    elif p == 8: current_hidden = True
                     elif p == 22: current_bold = False; current_dim = False
                     elif p == 23: current_italic = False
                     elif p == 24: current_underline = False
                     elif p == 27: current_reverse = False
                     elif p == 29: current_strikethrough = False
+                    elif p == 28: current_hidden = False
                     elif p == 39: current_fg = None; current_color_number = None
                     elif p == 49: current_bg = None; current_bg_color_number = None
                     elif 30 <= p <= 37:

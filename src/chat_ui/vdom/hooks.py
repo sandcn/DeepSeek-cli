@@ -525,3 +525,140 @@ def create_context(default_value: Any) -> dict:
         "_stack": [],  # Provider 值栈，最近的在栈顶
         "default_value": default_value,
     }
+
+
+# ── React Ink 兼容 Hooks ─────────────────────────────────
+
+
+def use_input(on_input: Callable[[str, dict], None]) -> None:
+    """React Ink useInput hook — 订阅键盘输入。
+
+    通过 stdin raw mode 监听按键，每次按键时调用 on_input(input_str, modifiers)。
+    modifiers 包含: ctrl (bool), shift (bool), meta (bool)。
+
+    Args:
+        on_input: 回调函数，接收 (input_char: str, modifiers: dict)
+                  - input_char: 输入的字符或键名 (如 "return", "escape", "tab")
+                  - modifiers: {"ctrl": bool, "shift": bool, "meta": bool}
+
+    使用方式:
+        def MyComponent():
+            def handle_input(char, mods):
+                if char == "q" and mods.get("ctrl"):
+                    exit()
+            use_input(handle_input)
+
+    Raises:
+        HookError: 在组件 render 上下文外调用时。
+    """
+    runtime = get_hooks_runtime()
+    comp = runtime._current_component
+    if comp is None:
+        return
+    # 注册到组件的输入回调列表
+    if not hasattr(comp, "_input_callbacks"):
+        comp._input_callbacks = []
+    comp._input_callbacks.append(on_input)
+
+
+def use_app() -> dict:
+    """React Ink useApp hook — 访问应用实例。
+
+    Returns:
+        dict with "exit" and "restore" callables:
+        - exit(error=None): 退出应用，可选传递错误对象
+        - restore(): 恢复终端原始设置
+
+    使用方式:
+        app = use_app()
+        app["exit"]()  # 退出
+
+    Raises:
+        HookError: 在组件 render 上下文外调用时。
+    """
+    import sys as _sys
+
+    def _exit_app(error=None):
+        if error:
+            import traceback
+
+            traceback.print_exception(type(error), error, error.__traceback__)
+        _sys.exit(1 if error else 0)
+
+    def _restore_terminal():
+        # 恢复终端原始设置（termios）
+        try:
+            import termios
+
+            fd = _sys.stdin.fileno()
+            termios.tcsetattr(fd, termios.TCSANOW, termios.tcgetattr(fd))
+        except Exception:
+            pass
+
+    return {"exit": _exit_app, "restore": _restore_terminal}
+
+
+def use_stdin():
+    """React Ink useStdin hook — 访问原始 stdin 流。
+
+    Returns:
+        sys.stdin 对象。
+
+    Raises:
+        HookError: 在组件 render 上下文外调用时。
+    """
+    import sys as _sys
+
+    return _sys.stdin
+
+
+def use_stdout():
+    """React Ink useStdout hook — 访问原始 stdout 流。
+
+    Returns:
+        sys.stdout 对象。
+
+    Raises:
+        HookError: 在组件 render 上下文外调用时。
+    """
+    import sys as _sys
+
+    return _sys.stdout
+
+
+def use_stderr():
+    """React Ink useStderr hook — 访问原始 stderr 流。
+
+    Returns:
+        sys.stderr 对象。
+
+    Raises:
+        HookError: 在组件 render 上下文外调用时。
+    """
+    import sys as _sys
+
+    return _sys.stderr
+
+
+# ── 公共 API ────────────────────────────────────────────
+
+__all__ = [
+    # 运行时
+    "get_hooks_runtime",
+    "_HooksRuntime",
+    # 核心 Hooks (7)
+    "use_state",
+    "use_effect",
+    "use_ref",
+    "use_memo",
+    "use_callback",
+    "use_context",
+    "use_reducer",
+    "create_context",
+    # React Ink 兼容 Hooks (5)
+    "use_input",
+    "use_app",
+    "use_stdin",
+    "use_stdout",
+    "use_stderr",
+]
