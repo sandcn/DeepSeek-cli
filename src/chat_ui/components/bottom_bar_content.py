@@ -13,6 +13,7 @@ from wcwidth import wcswidth
 
 from .base import TuiComponent
 from .box import Box
+from .fixed_box import FixedSizeBox
 from .text import Text
 from .tree import Tree
 from ..infrastructure.bottom_theme import (
@@ -139,9 +140,27 @@ class BottomBarContent(TuiComponent):
             popup_box = self._build_completion_popup_box()
             children.append(popup_box)
 
-        # 组装顶层 Box 容器并渲染
-        box = Box(border_style="single", border_dim_color=True,
-                  children=children)
+        # 组装顶层 FixedSizeBox 容器并渲染
+        # 固定宽度 = 终端宽度 - 2（左右边框），确保内容不水平溢出
+        inner_w = max(1, self.term_width - 2)
+
+        # 预计算内容行数作为 FixedSizeBox height
+        total_lines = 0
+        for child in children:
+            r = child.render()
+            text = str(r) if r else ""
+            if text:
+                total_lines += text.count('\n') + 1
+
+        box = FixedSizeBox(
+            width=inner_w,
+            height=max(1, total_lines),
+            border_style="single",
+            border_dim=True,
+            padding_x=0,
+            padding_y=0,
+            children=children,
+        )
         return box.render()
 
     # ── SubAgent 树构建 ──────────────────────────────────

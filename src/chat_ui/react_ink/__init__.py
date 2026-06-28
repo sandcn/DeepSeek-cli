@@ -25,15 +25,29 @@ import os
 # ── 子模块导入（从新位置 re-export） ──
 from ..vdom.layout import FlexLayout, FlexStyle  # noqa: F401
 from ..vdom.vnode import VNode, Patch, PatchKind, diff, apply_patches  # noqa: F401
+from ..components.accordion import Accordion  # noqa: F401
+from ..components.alert import Alert  # noqa: F401
 from ..components.box import Box, BORDER_STYLES as BoxBorderStyle  # noqa: F401
 from ..components.badge import Badge  # noqa: F401
 from ..components.breadcrumbs import Breadcrumbs  # noqa: F401
+from ..components.card import Card  # noqa: F401
+from ..components.checkbox import Checkbox  # noqa: F401
 from ..components.code import Code  # noqa: F401
 from ..components.collapsible import Collapsible  # noqa: F401
 from ..components.columns import Columns  # noqa: F401
 from ..components.divider import Divider  # noqa: F401
+from ..components.fixed_box import FixedSizeBox  # noqa: F401
 from ..components.key_value import KeyValue  # noqa: F401
+from ..components.list_view import ListView  # noqa: F401
+from ..components.meter import Meter  # noqa: F401
 from ..components.panel import Panel  # noqa: F401
+from ..components.radio_group import RadioGroup  # noqa: F401
+from ..components.skeleton import Skeleton  # noqa: F401
+from ..components.status_dot import StatusDot  # noqa: F401
+from ..components.switch import Switch  # noqa: F401
+from ..components.tabs import Tabs  # noqa: F401
+from ..components.tag import Tag  # noqa: F401
+from ..components.toast import Toast  # noqa: F401
 from ..components.animation import use_animation, AnimationClock  # noqa: F401
 from ..components.static import Static  # noqa: F401
 from ..components.transform import Transform  # noqa: F401
@@ -186,17 +200,31 @@ __all__ = [
     "use_stdin",
     "use_stdout",
     "use_stderr",
-    # Box
+    # Components
+    "Accordion",
+    "Alert",
     "Badge",
     "Box",
     "BoxBorderStyle",
     "Breadcrumbs",
+    "Card",
+    "Checkbox",
     "Code",
     "Collapsible",
     "Columns",
     "Divider",
+    "FixedSizeBox",
     "KeyValue",
+    "ListView",
+    "Meter",
     "Panel",
+    "RadioGroup",
+    "Skeleton",
+    "StatusDot",
+    "Switch",
+    "Tabs",
+    "Tag",
+    "Toast",
     # Animation
     "use_animation",
     "AnimationClock",
