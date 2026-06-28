@@ -411,7 +411,10 @@ class _BottomBar(_StatusMixin):
         vis_row, vis_col = self._cursor_visual_pos_from_cache(text, cursor_pos, max_input)
         total_bottom = max(5, self._bottom_lines)  # 至少 2 分隔线+状态行 + 3 最少输入行
         popup_offset = self._completion.height
-        r_cursor = max(1, h - total_bottom + 3 + popup_offset + vis_row)
+        # ★ +3 跳过 分隔线(1) + 状态行(1) + 输入区起始偏移(1)，
+        #   +len(_subagent_lines) 补偿分隔线与状态行之间的 subagent 面板行
+        subagent_offset = len(self._subagent_lines)
+        r_cursor = max(1, h - total_bottom + 3 + subagent_offset + popup_offset + vis_row)
         cursor_col = min(3 + vis_col, w)
         return (r_cursor, cursor_col)
 
@@ -554,7 +557,10 @@ class _BottomBar(_StatusMixin):
         max_input = max(1, term_w - 4)
         vis_row, vis_col = _compute_cursor_visual_pos(text, cursor_pos, max_input)
         total = max(_BOTTOM_MIN_LINES, self._last_bottom_lines)
-        r_cursor = height - total + 3 + self._completion.height + vis_row
+        # ★ +3 跳过 分隔线(1) + 状态行(1) + 输入区起始偏移(1)，
+        #   +len(_subagent_lines) 补偿分隔线与状态行之间的 subagent 面板行
+        subagent_offset = len(self._subagent_lines)
+        r_cursor = height - total + 3 + subagent_offset + self._completion.height + vis_row
         r_cursor = max(1, min(r_cursor, height))
         col = min(3 + vis_col, term_w)
         sys.__stdout__.write(_blessed_cursor_goto(r_cursor, col))

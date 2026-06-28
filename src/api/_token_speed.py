@@ -31,6 +31,10 @@ class _TokenSpeedTracker:
         # 每个元素: (timestamp, total_tokens_snapshot)
         self._speed_records: deque[tuple[float, int]] = deque()
 
+        # ── 快照去重（避免高频 stats_snapshot() 产生冗余 _speed_records）──
+        self._last_snapshot_total: int = -1   # 上次快照时的 _total_tokens
+        self._last_snapshot_time: float = 0.0 # 上次快照时间戳
+
     def add_token_size(self, size: int) -> None:
         """添加一批 token，自动更新总计数和速率窗口。"""
         if size <= 0:
@@ -125,6 +129,8 @@ class _TokenSpeedTracker:
             self._start_time = None
             self._window.clear()
             self._speed_records.clear()
+            self._last_snapshot_total = -1
+            self._last_snapshot_time = 0.0
 
     @property
     def per_second_speed(self) -> float:
@@ -137,8 +143,16 @@ class _TokenSpeedTracker:
         """
         now = time.time()
         with self._lock:
-            # 记录当前总 tok 快照
-            self._speed_records.append((now, self._total_tokens))
+            # ★ 去重守卫（与 stats_snapshot() 共用去重状态，避免高频调用
+            #    产生冗余 _speed_records 快照，导致速度计算窗口缩窄/虚高）
+            _total = self._total_tokens
+            _total_changed = _total != self._last_snapshot_total
+            _time_elapsed = now - self._last_snapshot_time >= 0.1
+            if _total_changed or _time_elapsed:
+                self._speed_records.append((now, _total))
+                self._last_snapshot_total = _total
+                self._last_snapshot_time = now
+
             # 清理超出 1 秒的旧记录
             cutoff = now - 1.0
             while len(self._speed_records) > 1 and self._speed_records[0][0] < cutoff:
@@ -166,7 +180,15 @@ class _TokenSpeedTracker:
             elapsed = now - start if start else 0.0
 
             # 计算每秒速度（总 tok 差值法）
-            self._speed_records.append((now, total))
+            # ★ 去重：仅当 total 变化或距上次快照 ≥100ms 时才追加记录，
+            #   避免高频 force_redraw() → _format_status() → stats_snapshot()
+            #   在 5ms 间隔下产生 ~200 条/秒的冗余快照。
+            _total_changed = total != self._last_snapshot_total
+            _time_elapsed = now - self._last_snapshot_time >= 0.1
+            if _total_changed or _time_elapsed:
+                self._speed_records.append((now, total))
+                self._last_snapshot_total = total
+                self._last_snapshot_time = now
             cutoff = now - 1.0
             while len(self._speed_records) > 1 and self._speed_records[0][0] < cutoff:
                 self._speed_records.popleft()

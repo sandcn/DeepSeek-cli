@@ -152,6 +152,46 @@ class TestTokenSpeedTracker:
         assert snapshot["window_speed"] == 0.0
         assert snapshot["elapsed_seconds"] == 0.0
 
+    def test_stats_snapshot_dedup_same_total(self):
+        """连续两次 stats_snapshot() 且 total 不变时不追加重复快照。"""
+        tracker = _TokenSpeedTracker()
+        tracker.add_token_size(100)
+        snap1 = tracker.stats_snapshot()
+        total1 = snap1["total_tokens"]
+        # 立即再次调用，total 未变
+        snap2 = tracker.stats_snapshot()
+        total2 = snap2["total_tokens"]
+        assert total1 == total2
+        # _speed_records 不应增加（total 未变且时间间隔 <100ms）
+        assert len(tracker._speed_records) == 1
+
+    def test_stats_snapshot_dedup_time_threshold(self):
+        """≥100ms 间隔后即使 total 不变也追加新记录。"""
+        tracker = _TokenSpeedTracker()
+        tracker.add_token_size(100)
+        _ = tracker.stats_snapshot()  # 触发首次快照
+        assert len(tracker._speed_records) == 1
+        # 模拟 ≥100ms 时间流逝（直接操纵 _last_snapshot_time）
+        tracker._last_snapshot_time -= 0.15
+        _ = tracker.stats_snapshot()  # 触发第二次快照
+        # 应追加新记录（时间阈值触发）
+        assert len(tracker._speed_records) == 2
+
+    def test_stats_snapshot_dedup_after_reset(self):
+        """reset 后去重状态正确重置，首次 stats_snapshot 必定追加。"""
+        tracker = _TokenSpeedTracker()
+        tracker.add_token_size(100)
+        tracker.stats_snapshot()
+        assert len(tracker._speed_records) == 1
+        # reset 后 _last_snapshot_total 应重置为 -1
+        tracker.reset()
+        assert tracker._last_snapshot_total == -1
+        assert tracker._last_snapshot_time == 0.0
+        # reset 后首次 stats_snapshot 必定追加（total != -1）
+        tracker.add_token_size(50)
+        tracker.stats_snapshot()
+        assert len(tracker._speed_records) == 1
+
     def test_multiple_add_then_window_speed(self):
         """多次添加后 window_speed 应反映所有窗口内 token"""
         tracker = _TokenSpeedTracker(window_seconds=5.0)

@@ -385,13 +385,7 @@ class ParallelDisplay(BaseDisplay):
             except Exception:
                 self._scroll_end = 0
             # 首次渲染（推送 SUBAGENT_FRAME 命令到队列）
-            from .._lock import _try_acquire_output_lock
-            with _try_acquire_output_lock(
-                name="parallel_display.start", timeout=0.5,
-            ) as _locked:
-                if _locked:
-                    _chat_ui.ensure_cursor_upper()
-                self._push_frame_cmd()
+            self._push_frame_cmd()
 
         # 注册终端 resize 回调
         register_sigwinch_callback(self._on_resize)
@@ -429,20 +423,36 @@ class ParallelDisplay(BaseDisplay):
         self._finished = True
         self._stopped = True
 
-        # ★ 注销面板刷新回调（render 线程不再调用）
+        # 获取 chat_ui 引用（供后续注销回调和请求重绘使用）
+        _chat_ui = None
         try:
             import src.chat_ui as _chat_ui_mod  # noqa: PLC0415
             _chat_ui = _chat_ui_mod.get_active_chat_ui()
-            if _chat_ui is not None:
-                _chat_ui.set_panel_refresh_callback(None)
         except Exception:
-            _logger.debug("注销 panel_refresh_callback 失败", exc_info=True)
+            pass
+
+        # ★ 注销面板刷新回调（render 线程不再调用）
+        if _chat_ui is not None:
+            try:
+                _chat_ui.set_panel_refresh_callback(None)
+            except Exception:
+                _logger.debug("注销 panel_refresh_callback 失败", exc_info=True)
 
         # 注销终端 resize 回调
         unregister_sigwinch_callback(self._on_resize)
 
-        # 清除终端帧（通过 bottom_bar）
+        # 清除终端帧（通过 bottom_bar 清内存）
         self._clear_frame_lines()
+
+        # ★ 显式请求底部栏重绘（清除内存后再触发终端重绘，
+        #   确保 _subagent_lines 变为空使 force_redraw() 的
+        #   layout_unchanged 判定为 False，执行真正的终端清屏）
+        if _chat_ui is not None:
+            try:
+                _chat_ui.request_bottom_redraw()
+            except Exception:
+                _logger.debug("request_bottom_redraw 失败（非关键路径，静默跳过）")
+
         if self._adapter is not None:
             self._adapter.flush()
         self._adapter = None
