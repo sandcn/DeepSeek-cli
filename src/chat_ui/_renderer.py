@@ -33,7 +33,7 @@ from ._components import (
     _estimate_content_lines,
 )
 
-from ._utils import _cmd_name
+from ._utils import _cmd_name, _emergency_write
 
 _logger = logging.getLogger(__name__)
 
@@ -84,6 +84,11 @@ class TuiRenderer:
         self._on_display_messages = on_display_messages
         self._adapter = output_adapter
         self._tracker = cursor_tracker
+
+    @property
+    def output_adapter(self) -> "OutputAdapter":
+        """获取当前 OutputAdapter 实例。"""
+        return self._adapter
 
     def render(self, cmd: tuple) -> None:
         """分发渲染命令到对应的 _do_* 方法。
@@ -149,8 +154,7 @@ class TuiRenderer:
 
     def _do_parse_info(self, tool_names: str, tokens, elapsed: float) -> None:
         if tokens == _CLEAR_PARSE_LINE:
-            sys.__stdout__.write("\n")
-            sys.__stdout__.flush()
+            _emergency_write("\n")
             self._record_lines(1)
             return
         if isinstance(tokens, (int, float)):
@@ -158,8 +162,7 @@ class TuiRenderer:
         else:
             tokens_str = str(tokens)
         output = f"\r\033[K  ~ {tool_names} {tokens_str} {elapsed:.2f}s"
-        sys.__stdout__.write(output)
-        sys.__stdout__.flush()
+        _emergency_write(output)
 
     # ── 样式化行渲染 ──────────────────────────────
 

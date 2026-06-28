@@ -18,6 +18,8 @@ from ._utils import _truncate_msg
 
 # 线程本地重入保护（防止 emit → logger → emit 递归）
 _handler_reentrant = threading.local()
+# 跨线程锁（threading.local 重入保护不能防止跨线程并发）
+_emit_lock = threading.Lock()
 
 
 class ChatUIErrorHandler(logging.Handler):
@@ -55,12 +57,13 @@ class ChatUIErrorHandler(logging.Handler):
         msg = _truncate_msg(f"{record.name}: {msg_content}", self._max_length)
 
         # 设置重入标记 → 入队 → finally 清理
-        _handler_reentrant.is_active = True
-        try:
-            consumer = _state.get_active_chat_ui()
-            if consumer is not None:
-                consumer.on_error(msg)
-        finally:
-            record._chatui_reported = True
-            _handler_reentrant.is_active = False
+        with _emit_lock:
+            _handler_reentrant.is_active = True
+            try:
+                consumer = _state.get_active_chat_ui()
+                if consumer is not None:
+                    consumer.on_error(msg)
+            finally:
+                record._chatui_reported = True
+                _handler_reentrant.is_active = False
 

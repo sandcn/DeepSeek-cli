@@ -12,10 +12,23 @@ _CmplHandler 在 EscapeMonitor 线程中：
 from __future__ import annotations
 
 from typing import Callable, TYPE_CHECKING
+import os
 
 if TYPE_CHECKING:
     from ..ui._completion import CompletionEngine
     from ._protocols import BottomBarProtocol
+
+
+def _get_match_prefix(items: list, last_word: str) -> str:
+    """计算补全弹窗的匹配前缀。
+
+    路径补全场景（file/dir 类型）：使用 basename 作为匹配前缀，
+    因为弹窗中只显示文件名（不显示路径前缀）。
+    非路径场景：直接使用最后一个词。
+    """
+    if items and items[0].item_type in ("file", "dir"):
+        return os.path.basename(last_word) if '/' in last_word else last_word
+    return last_word
 
 
 class _CmplHandler:
@@ -105,12 +118,7 @@ class _CmplHandler:
         words = text.split()
         last_word = words[-1] if words else ""
 
-        # 路径补全场景：match_prefix 使用 basename（弹窗显示只有 basename）
-        if items and items[0].item_type in ("file", "dir"):
-            import os
-            match_prefix = os.path.basename(last_word) if '/' in last_word else last_word
-        else:
-            match_prefix = last_word
+        match_prefix = _get_match_prefix(items, last_word)
 
         self._bb.show_completions(
             [item.display for item in items], 0,
@@ -148,12 +156,7 @@ class _CmplHandler:
         words = text.split()
         last_word = words[-1] if words else ""
 
-        # 路径补全场景：match_prefix 使用 basename
-        if items and items[0].item_type in ("file", "dir"):
-            import os
-            match_prefix = os.path.basename(last_word) if '/' in last_word else last_word
-        else:
-            match_prefix = last_word
+        match_prefix = _get_match_prefix(items, last_word)
 
         self._bb.show_completions(
             [item.display for item in items], 0,

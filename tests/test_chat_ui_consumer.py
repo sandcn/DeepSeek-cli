@@ -191,30 +191,20 @@ class TestChatUIConsumerStart:
                 assert len(consumer._bound_handlers) == 11
 
     def test_start_defensive_unsubscribe(self, consumer, mock_bus):
-        """start() 先防御性取消旧订阅再重新订阅
+        """首次 start() 跳过防御性 unsubscribe（从未订阅过）
 
-        验证顺序：先调用 unsubscribe 再调用 subscribe
+        架构修复（2026-06-29）：消除 unsubscribe→subscribe 时序窗口。
+        首次启动时从未订阅过任何事件，跳过不必要的防御性 unsubscribe。
+        后续重新启动（stop→start）时，先 subscribe 再 unsubscribe 旧 handler。
         """
         with patch.object(consumer._engine, 'start'):
             with patch('src.chat_ui._state'):
                 consumer.start()
 
-        # 验证 unsubscribe 被调用（即使首次 start 也会防御性取消）
-        # start() 中先对每个 handler 调用 unsubscribe，再 subscribe
-        assert mock_bus.unsubscribe.call_count >= 11
-        # unsubscribe 在 subscribe 之前调用
-        # 检查调用顺序：第 1 个 unsubscribe 应在第 1 个 subscribe 之前
-        unsubscribe_calls = [
-            c for c in mock_bus.method_calls if c[0] == 'unsubscribe'
-        ]
-        subscribe_calls = [
-            c for c in mock_bus.method_calls if c[0] == 'subscribe'
-        ]
-        if unsubscribe_calls and subscribe_calls:
-            # 确保最后一个 unsubscribe 在第一个 subscribe 之前
-            last_unsub_idx = mock_bus.method_calls.index(unsubscribe_calls[-1])
-            first_sub_idx = mock_bus.method_calls.index(subscribe_calls[0])
-            assert last_unsub_idx < first_sub_idx
+        # 首次 start：跳过防御性 unsubscribe（从未订阅过）
+        assert mock_bus.unsubscribe.call_count == 0
+        # subscribe 仍正常执行
+        assert mock_bus.subscribe.call_count == 11
 
     def test_start_defensive_unsubscribe_ignored(self, consumer, mock_bus):
         """防御性 unsubscribe 抛出异常时静默跳过（未订阅时）"""

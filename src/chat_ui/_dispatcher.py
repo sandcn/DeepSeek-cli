@@ -31,6 +31,8 @@ if TYPE_CHECKING:
         ModelPhaseEvent,
     )
 
+from ..ui.events import event_types as _EVENT_TYPES
+
 
 # ═══════════════════════════════════════════════════════════
 # 事件处理映射表
@@ -85,40 +87,35 @@ class EventDispatcher:
         return source == _MAIN_SOURCE or source.startswith("agent-")
 
     def _on_reasoning_chunk(self, event) -> None:
-        from ..ui.events.event_types import ReasoningChunkEvent  # 运行时 isinstance 需要
-        if not isinstance(event, ReasoningChunkEvent):
+        if not isinstance(event, _EVENT_TYPES.ReasoningChunkEvent):
             return
         if event.label != _MAIN_LABEL or not event.text:
             return
         self._push_cmd((RenderCommand.REASONING, event.text))
 
     def _on_content_chunk(self, event) -> None:
-        from ..ui.events.event_types import ContentChunkEvent  # 运行时 isinstance 需要
-        if not isinstance(event, ContentChunkEvent):
+        if not isinstance(event, _EVENT_TYPES.ContentChunkEvent):
             return
         if event.label != _MAIN_LABEL or not event.text:
             return
         self._push_cmd((RenderCommand.CONTENT, event.text))
 
     def _on_phase_done(self, event) -> None:
-        from ..ui.events.event_types import PhaseDoneEvent  # 运行时 isinstance 需要
-        if not isinstance(event, PhaseDoneEvent):
+        if not isinstance(event, _EVENT_TYPES.PhaseDoneEvent):
             return
         if event.label != _MAIN_LABEL:
             return
         self._push_cmd((RenderCommand.PHASE_DONE, event.phase))
 
     def _on_tool_started(self, event) -> None:
-        from ..ui.events.event_types import ToolStartedEvent  # 运行时 isinstance 需要
-        if not isinstance(event, ToolStartedEvent):
+        if not isinstance(event, _EVENT_TYPES.ToolStartedEvent):
             return
         if not self._is_agent_source(event.source):
             return
         self._push_cmd((RenderCommand.TOOL_COUNT_INC,))
 
     def _on_tool_done(self, event) -> None:
-        from ..ui.events.event_types import ToolDoneEvent  # 运行时 isinstance 需要
-        if not isinstance(event, ToolDoneEvent):
+        if not isinstance(event, _EVENT_TYPES.ToolDoneEvent):
             return
         if not self._is_agent_source(event.source):
             return
@@ -129,8 +126,7 @@ class EventDispatcher:
             self._push_cmd((RenderCommand.TOOL_COUNT_DEC,))
 
     def _on_tool_output(self, event) -> None:
-        from ..ui.events.event_types import ToolOutputChunkEvent  # 运行时 isinstance 需要
-        if not isinstance(event, ToolOutputChunkEvent):
+        if not isinstance(event, _EVENT_TYPES.ToolOutputChunkEvent):
             return
         if not self._is_agent_source(event.source):
             return
@@ -139,32 +135,28 @@ class EventDispatcher:
             self._push_cmd((RenderCommand.TOOL_OUTPUT, text))
 
     def _on_parse_info(self, event) -> None:
-        from ..ui.events.event_types import ParseInfoEvent  # 运行时 isinstance 需要
-        if not isinstance(event, ParseInfoEvent):
+        if not isinstance(event, _EVENT_TYPES.ParseInfoEvent):
             return
         if not self._is_agent_source(event.source):
             return
         self._push_cmd((RenderCommand.PARSE_INFO, event.tool_names, event.tokens, event.elapsed))
 
     def _on_parse_info_done(self, event) -> None:
-        from ..ui.events.event_types import ParseInfoDoneEvent  # 运行时 isinstance 需要
-        if not isinstance(event, ParseInfoDoneEvent):
+        if not isinstance(event, _EVENT_TYPES.ParseInfoDoneEvent):
             return
         if not self._is_agent_source(event.source):
             return
         self._push_cmd((RenderCommand.PARSE_INFO, "", _CLEAR_PARSE_LINE, 0.0))
 
     def _on_output(self, event) -> None:
-        from ..ui.events.event_types import OutputEvent  # 运行时 isinstance 需要
-        if not isinstance(event, OutputEvent):
+        if not isinstance(event, _EVENT_TYPES.OutputEvent):
             return
         if not event.text:
             return
         self._push_cmd((RenderCommand.WRITE_LINE, event.text))
 
     def _on_model_phase(self, event) -> None:
-        from ..ui.events.event_types import ModelPhaseEvent  # 运行时 isinstance 需要
-        if not isinstance(event, ModelPhaseEvent):
+        if not isinstance(event, _EVENT_TYPES.ModelPhaseEvent):
             return
         if event.label != _MAIN_LABEL:
             return
@@ -176,8 +168,7 @@ class EventDispatcher:
         self._push_cmd((RenderCommand.ERROR, info))
 
     def _on_tool_summary(self, event) -> None:
-        from ..ui.events.event_types import ToolSummaryEvent  # 运行时 isinstance 需要
-        if not isinstance(event, ToolSummaryEvent):
+        if not isinstance(event, _EVENT_TYPES.ToolSummaryEvent):
             return
         if not self._is_agent_source(event.source):
             return

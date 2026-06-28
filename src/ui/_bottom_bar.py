@@ -274,6 +274,13 @@ class _BottomBar(_StatusMixin):
         # ── 光标坐标追踪器（全局共享实例） ──
         self._cursor_tracker = cursor_tracker or CursorTracker()
 
+    # ── 活跃状态 property ──────────────────────────────────
+
+    @property
+    def is_active(self) -> bool:
+        """底部栏是否已激活（setup 后为 True，teardown 后为 False）。"""
+        return self._active
+
     # ── 补全弹窗兼容 property（供外部直读私有属性的调用方） ──
 
     @property

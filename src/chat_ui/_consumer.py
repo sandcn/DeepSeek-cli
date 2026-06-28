@@ -111,13 +111,16 @@ class ChatUIConsumer:
         self._bound_handlers: dict[type, Any] | None = None
         self._state_lock = threading.Lock()
         self._started = False
+        self._handlers_bound = False
 
     # ── 生命周期 ──────────────────────────────────
 
     def start(self) -> None:
         """启动 ChatUI 消费者。
 
-        订阅 11 种 DisplayEvent、先取消已有绑定避免重复注册、
+        订阅 11 种 DisplayEvent。首次启动时跳过防御性 unsubscribe
+        （从未订阅过任何事件）；后续重新启动时先 subscribe 新 handler
+        再 unsubscribe 旧 handler，消除事件丢失的时序窗口。
         启动渲染线程、注册为活跃消费者。幂等操作——重复调用安全返回。
 
         Thread safety: _started 读写由 _state_lock 保护。
@@ -150,13 +153,15 @@ class ChatUIConsumer:
                     event_type = _event_type_map[key]
                     handler = getattr(self._disp, handler_name)
                     self._bound_handlers[event_type] = handler
-            for event_type in self._bound_handlers:
-                try:
-                    self._bus.unsubscribe(self._bound_handlers[event_type], event_type=event_type)
-                except Exception:
-                    _logger.debug("start: unsubscribe %s 失败", event_type.__name__, exc_info=True)
+            if self._handlers_bound:
+                for event_type in self._bound_handlers:
+                    try:
+                        self._bus.unsubscribe(self._bound_handlers[event_type], event_type=event_type)
+                    except Exception:
+                        _logger.debug("start: unsubscribe %s 失败", event_type.__name__, exc_info=True)
             for event_type in self._bound_handlers:
                 self._bus.subscribe(self._bound_handlers[event_type], event_type=event_type)
+            self._handlers_bound = True
             _register_consumer(self)
             self._engine.start()
             self._started = True
@@ -287,7 +292,8 @@ class ChatUIConsumer:
 
     @property
     def output_adapter(self):
-        return self._tui_renderer._adapter
+        """获取当前 OutputAdapter 实例。"""
+        return self._tui_renderer.output_adapter
 
     def set_panel_refresh_callback(self, callback: Callable[[], None] | None) -> None:
         self._engine.set_panel_refresh_callback(callback)

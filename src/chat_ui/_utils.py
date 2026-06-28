@@ -5,6 +5,8 @@ Layer 0 — 仅依赖 _const（RenderCommand 枚举），无其他内部依赖�
 
 from __future__ import annotations
 
+import sys
+
 from ._const import RenderCommand
 
 
@@ -29,3 +31,19 @@ def _cmd_name(cid: int) -> str:
         return RenderCommand(cid).name
     except ValueError:
         return str(cid)
+
+
+def _emergency_write(text: str, stream: str = "stdout") -> None:
+    """紧急输出 — 绕过 OutputAdapter 直写终端。
+
+    仅在渲染管线不可用时使用（崩溃/队列满等紧急场景）。
+    不持有 output_lock，不经过 Rich/OutputAdapter 处理。
+    适用于：render 线程崩溃通知、队列满降级通知、parse_info 实时覆盖行。
+
+    Args:
+        text: 要写入的文本。
+        stream: 输出流，'stdout' 或 'stderr'。
+    """
+    f = sys.__stdout__ if stream == "stdout" else sys.__stderr__
+    f.write(text)
+    f.flush()

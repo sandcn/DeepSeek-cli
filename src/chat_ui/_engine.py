@@ -23,7 +23,7 @@ from ._const import (
     _ANSI_RED, _ANSI_RESET,
 )
 
-from ._utils import _cmd_name
+from ._utils import _cmd_name, _emergency_write
 
 from ._lock import _try_acquire_output_lock
 
@@ -218,15 +218,29 @@ class TuiEngine:
                         self._cmd_event.clear()
                 except Exception:
                     _logger.critical("render 线程异常崩溃", exc_info=True)
-                    sys.__stderr__.write(
+                    _emergency_write(
                         f"{_ANSI_RED}[ChatUI] render 线程异常终止，"
-                        f"请联系开发人员查看日志{_ANSI_RESET}\n"
+                        f"请联系开发人员查看日志{_ANSI_RESET}\n",
+                        stream="stderr",
                     )
-                    sys.__stderr__.flush()
                     self._render_running = False
                     break
         finally:
-            self._drain_queue_safe()
+            # 统计并报告丢弃的待处理命令
+            dropped = 0
+            while not self._cmd_queue.empty():
+                try:
+                    self._cmd_queue.get_nowait()
+                    self._cmd_queue.task_done()
+                    dropped += 1
+                except queue.Empty:
+                    break
+            if dropped > 0:
+                _emergency_write(
+                    f"{_ANSI_RED}[ChatUI] render 线程已终止，"
+                    f"丢弃 {dropped} 条待处理命令{_ANSI_RESET}\n",
+                    stream="stderr",
+                )
 
     def _drain_queue(self) -> bool:
         """三阶段流水线：预处理面板→获取输出锁→渲染命令→重绘底部栏。
@@ -264,7 +278,7 @@ class TuiEngine:
                 break
 
     def _position_cursor(self) -> None:
-        if not getattr(self._bb, '_active', False):
+        if not self._bb.is_active:
             return
         text, cursor_pos, h, w = self._bb.get_cursor_info()
         r_cursor, cursor_col = self._bb.compute_cursor_position(text, cursor_pos, h, w)
