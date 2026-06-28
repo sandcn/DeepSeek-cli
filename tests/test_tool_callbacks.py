@@ -2,24 +2,25 @@
 
 覆盖内容：
   1. _is_parallel_safe() metadata 驱动查询正确性
-  2. handle_tool_calls 四波分类正确性（通过 mock execute_async 验证波次顺序）
+  2. handle_tool_calls DAG 调度正确性（通过 mock execute_dag_async 验证层顺序）
   3. 结果按原始 tool_calls 顺序重建
   4. results_map 缺失键的降级处理
   5. dispatch_agent ParallelExecutor barrier 设置
 """
 
 import asyncio
-from unittest.mock import MagicMock, AsyncMock, PropertyMock
+from unittest.mock import MagicMock, AsyncMock, PropertyMock, patch
 
 import pytest
 
 from src.core._tool_callbacks import ToolCallbackChain, _is_parallel_safe
 
 
-def _meta(parallel_safe=False):
-    """创建 mock metadata 对象，仅设置 parallel_safe 属性。"""
+def _meta(parallel_safe=False, requires_terminal=False):
+    """创建 mock metadata 对象"""
     m = MagicMock()
     m.parallel_safe = parallel_safe
+    m.requires_terminal = requires_terminal
     return m
 
 
@@ -36,10 +37,8 @@ def mock_agent():
     type(agent._display_port).is_web = PropertyMock(return_value=False)
     agent._async_tool_executor = MagicMock()
     agent._async_tool_executor.execute_async = AsyncMock(return_value=[])
-    # 配置 registry.get_metadata 使 metadata 驱动分类正确：
-    #   parallel_safe=True:  read_file, search, find, ls, web_search
-    #   parallel_safe=False: write_file, update_file, bash, cp, mv, rm, mk,
-    #                        dispatch_agent, user_select
+    agent._async_tool_executor.execute_dag_async = AsyncMock(return_value=[])
+    # 配置 registry.get_metadata
     _registry = MagicMock()
 
     def _get_metadata(tool_name):
@@ -140,127 +139,62 @@ class TestIsParallelSafe:
 
 
 # ═══════════════════════════════════════════════════════════════
-# 四波分类与执行顺序
+# DAG 调度执行验证
 # ═══════════════════════════════════════════════════════════════
 
-class TestWaveOrdering:
-    """handle_tool_calls 四波执行顺序验证"""
+class TestDAGExecution:
+    """handle_tool_calls DAG 调度验证"""
 
     @pytest.mark.asyncio
-    async def test_wave_order_user_select_first(self, chain, mock_agent, tool_calls_mixed):
-        """Wave 0 (user_select) 最先执行"""
-        wave_order = []
-
-        async def record_wave(calls, **kwargs):
-            names = [tc["name"] for tc in calls]
-            wave_order.append(names)
-            return [(tc["id"], f"result_{tc['name']}", True) for tc in calls]
-
-        mock_agent._async_tool_executor.execute_async = AsyncMock(side_effect=record_wave)
-
-        await chain.handle_tool_calls("content", tool_calls_mixed)
-
-        # 第一次调用应为 user_select
-        assert wave_order[0] == ["user_select"]
-
-    @pytest.mark.asyncio
-    async def test_wave_order_parallel_safe_before_non_parallel(self, chain, mock_agent, tool_calls_mixed):
-        """Wave 1 (并行安全) 在 Wave 2 (非并行安全) 之前执行"""
-        wave_order = []
-
-        async def record_wave(calls, **kwargs):
-            names = [tc["name"] for tc in calls]
-            wave_order.append(names)
-            return [(tc["id"], f"result_{tc['name']}", True) for tc in calls]
-
-        mock_agent._async_tool_executor.execute_async = AsyncMock(side_effect=record_wave)
-
-        await chain.handle_tool_calls("content", tool_calls_mixed)
-
-        # 第二个波次应全是并行安全工具（metadata 驱动）
-        assert set(wave_order[1]) == {"read_file", "search", "find", "ls"}
-
-        # 第三个波次应全是非并行安全工具（metadata 驱动）
-        assert set(wave_order[2]) == {"write_file", "bash", "update_file"}
-
-    @pytest.mark.asyncio
-    async def test_dispatch_agent_last_wave(self, chain, mock_agent, tool_calls_mixed):
-        """dispatch_agent 在所有其他工具之后执行"""
-        wave_order = []
-
-        async def record_wave(calls, **kwargs):
-            names = [tc["name"] for tc in calls]
-            wave_order.append(names)
-            return [(tc["id"], f"result_{tc['name']}", True) for tc in calls]
-
-        mock_agent._async_tool_executor.execute_async = AsyncMock(side_effect=record_wave)
-
-        await chain.handle_tool_calls("content", tool_calls_mixed)
-
-        # 最后一波应为 dispatch_agent
-        assert wave_order[-1] == ["dispatch_agent"]
-
-    @pytest.mark.asyncio
-    async def test_parallel_safe_parallel(self, chain, mock_agent):
-        """Wave 1（并行安全工具，metadata 驱动）以 parallel=True 执行"""
+    async def test_single_tool_uses_execute_async(self, chain, mock_agent):
+        """单工具 → 使用 execute_async (非 DAG)"""
         calls = [
             {"id": "tc_0", "name": "read_file", "arguments": {"path": "a.txt"}},
-            {"id": "tc_1", "name": "search", "arguments": {"query": "x"}},
         ]
-        parallel_flags = []
-
-        async def record_parallel(calls, **kwargs):
-            parallel_flags.append(kwargs.get("parallel"))
-            return [(tc["id"], f"result_{tc['name']}", True) for tc in calls]
-
-        mock_agent._async_tool_executor.execute_async = AsyncMock(side_effect=record_parallel)
 
         await chain.handle_tool_calls("content", calls)
 
-        # Wave 1 应为 parallel=True（没有 user_select 所以第一个波次是并行安全工具）
-        assert parallel_flags[0] is True
+        mock_agent._async_tool_executor.execute_async.assert_awaited_once()
+        mock_agent._async_tool_executor.execute_dag_async.assert_not_awaited()
 
     @pytest.mark.asyncio
-    async def test_non_parallel_safe_serial(self, chain, mock_agent):
-        """Wave 2（非并行安全工具，metadata 驱动）以 parallel=False 执行"""
-        calls = [
-            {"id": "tc_0", "name": "write_file",
-             "arguments": {"path": "a.txt", "content": "x"}},
-            {"id": "tc_1", "name": "bash",
-             "arguments": {"command": "echo hi"}},
-        ]
-        parallel_flags = []
+    async def test_multi_tool_uses_execute_dag_async(self, chain, mock_agent, tool_calls_mixed):
+        """多工具 → 使用 execute_dag_async"""
+        await chain.handle_tool_calls("content", tool_calls_mixed)
 
-        async def record_parallel(calls, **kwargs):
-            parallel_flags.append(kwargs.get("parallel"))
-            return [(tc["id"], f"result_{tc['name']}", True) for tc in calls]
-
-        mock_agent._async_tool_executor.execute_async = AsyncMock(side_effect=record_parallel)
-
-        await chain.handle_tool_calls("content", calls)
-
-        # Wave 2 应为 parallel=False
-        assert parallel_flags[0] is False
+        mock_agent._async_tool_executor.execute_dag_async.assert_awaited_once()
+        mock_agent._async_tool_executor.execute_async.assert_not_awaited()
 
     @pytest.mark.asyncio
-    async def test_four_distinct_waves(self, chain, mock_agent, tool_calls_mixed):
-        """验证正好产生四个波次"""
-        wave_order = []
+    async def test_empty_tool_calls(self, chain, mock_agent):
+        """空工具列表 → 无执行器调用"""
+        await chain.handle_tool_calls("content", [])
 
-        async def record_wave(calls, **kwargs):
-            names = [tc["name"] for tc in calls]
-            wave_order.append(names)
-            return [(tc["id"], f"result_{tc['name']}", True) for tc in calls]
+        mock_agent._async_tool_executor.execute_async.assert_not_awaited()
+        mock_agent._async_tool_executor.execute_dag_async.assert_not_awaited()
 
-        mock_agent._async_tool_executor.execute_async = AsyncMock(side_effect=record_wave)
+    @pytest.mark.asyncio
+    async def test_dag_passes_correct_agent_ref(self, chain, mock_agent, tool_calls_mixed):
+        """execute_dag_async 接收正确的 agent_ref"""
+        captured_kwargs = {}
+
+        async def capture_dag(dag, **kwargs):
+            captured_kwargs.update(kwargs)
+            # 为每个工具返回结果
+            return [(tc["id"], f"result_{tc['name']}", True)
+                    for tc in tool_calls_mixed]
+
+        mock_agent._async_tool_executor.execute_dag_async = AsyncMock(
+            side_effect=capture_dag
+        )
 
         await chain.handle_tool_calls("content", tool_calls_mixed)
 
-        assert len(wave_order) == 4
-        assert wave_order[0] == ["user_select"]
-        assert set(wave_order[1]) == {"read_file", "search", "find", "ls"}
-        assert set(wave_order[2]) == {"write_file", "bash", "update_file"}
-        assert wave_order[3] == ["dispatch_agent"]
+        assert captured_kwargs["agent_ref"] is mock_agent
+        # run_method 是 bound method，用 __self__ + __name__ 验证
+        run_method = captured_kwargs.get("run_method")
+        assert run_method.__self__ is chain
+        assert run_method.__name__ == "_run_tool_method"
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -273,10 +207,14 @@ class TestResultOrdering:
     @pytest.mark.asyncio
     async def test_results_preserve_original_order(self, chain, mock_agent, tool_calls_mixed):
         """执行完成后的 results 列表与原始 tool_calls 顺序一致"""
-        async def execute_async(calls, **kwargs):
-            return [(tc["id"], f"result_{tc['name']}", True) for tc in calls]
+        async def execute_dag(dag, **kwargs):
+            # 用 DAG 的原始顺序返回
+            return [(tc_id, f"result_{dag.get_node(tc_id).name}", True)
+                    for tc_id in dag._original_order]
 
-        mock_agent._async_tool_executor.execute_async = AsyncMock(side_effect=execute_async)
+        mock_agent._async_tool_executor.execute_dag_async = AsyncMock(
+            side_effect=execute_dag
+        )
 
         await chain.handle_tool_calls("content", tool_calls_mixed)
 
@@ -290,21 +228,18 @@ class TestResultOrdering:
 
     @pytest.mark.asyncio
     async def test_results_missing_key_logs_warning(self, chain, mock_agent, caplog):
-        """execute_async 未返回某工具的结果时，记录 warning 并生成降级结果"""
+        """execute_dag_async 未返回某工具的结果时，记录 warning 并生成降级结果"""
         calls = [
             {"id": "tc_0", "name": "read_file", "arguments": {"path": "a.txt"}},
             {"id": "tc_1", "name": "search", "arguments": {"query": "x"}},
         ]
 
-        # Wave 1 只返回一个结果（丢失 tc_0）
-        async def execute_async_missing(calls, **kwargs):
-            if kwargs.get("parallel") is True:
-                # 只返回 tc_1 的结果，丢失 tc_0
-                return [("tc_1", "result_search", True)]
-            return [(tc["id"], f"result_{tc['name']}", True) for tc in calls]
+        # DAG 只返回一个结果（丢失 tc_0）
+        async def execute_dag_missing(dag, **kwargs):
+            return [("tc_1", "result_search", True)]
 
-        mock_agent._async_tool_executor.execute_async = AsyncMock(
-            side_effect=execute_async_missing
+        mock_agent._async_tool_executor.execute_dag_async = AsyncMock(
+            side_effect=execute_dag_missing
         )
 
         import logging
@@ -333,7 +268,7 @@ class TestDispatchAgentBarrier:
     @pytest.mark.asyncio
     async def test_barrier_setup_when_dispatch_agent_present(self, chain, mock_agent):
         """有 dispatch_agent 时创建 ParallelExecutor，setup_barrier 被调用，
-        且在 Wave 0-2 期间 _shared_executor 非 None"""
+        且在 DAG 执行期间 _shared_executor 非 None"""
         executor_states = []  # 记录各阶段 _shared_executor 状态
 
         calls = [
@@ -342,20 +277,18 @@ class TestDispatchAgentBarrier:
              "arguments": {"description": "a", "prompt": "p", "type": "plan_execute"}},
         ]
 
-        async def execute_async_spy(calls, **kwargs):
+        async def execute_dag_spy(dag, **kwargs):
             executor_states.append(mock_agent._shared_executor is not None)
             return [(tc["id"], "ok", True) for tc in calls]
 
-        mock_agent._async_tool_executor.execute_async = AsyncMock(
-            side_effect=execute_async_spy
+        mock_agent._async_tool_executor.execute_dag_async = AsyncMock(
+            side_effect=execute_dag_spy
         )
 
         await chain.handle_tool_calls("content", calls)
 
-        # Wave 1（read_file）期间 _shared_executor 应非 None
+        # DAG 执行期间 _shared_executor 应非 None
         assert executor_states[0] is True
-        # Wave 3（dispatch_agent）期间 _shared_executor 应非 None
-        assert executor_states[1] is True
         # finally 后 _shared_executor 应被清理
         assert mock_agent._shared_executor is None
 
@@ -384,12 +317,12 @@ class TestDispatchAgentBarrier:
             {"id": "tc_1", "name": "read_file", "arguments": {"path": "a.txt"}},
         ]
 
-        # read_file 在 Wave 1 执行时抛出异常
-        async def execute_async_error(calls, **kwargs):
+        # DAG 执行时让 execute_dag_async 抛出异常
+        async def execute_dag_error(dag, **kwargs):
             raise RuntimeError("boom")
 
-        mock_agent._async_tool_executor.execute_async = AsyncMock(
-            side_effect=execute_async_error
+        mock_agent._async_tool_executor.execute_dag_async = AsyncMock(
+            side_effect=execute_dag_error
         )
 
         with pytest.raises(RuntimeError, match="boom"):
@@ -400,7 +333,7 @@ class TestDispatchAgentBarrier:
 
     @pytest.mark.asyncio
     async def test_all_done_released_on_early_failure(self, chain, mock_agent):
-        """Wave 0-2 异常时 _all_done.set() 被调用，防止 dispatch_agent 协程永久挂起"""
+        """DAG 异常时 _all_done.set() 被调用，防止 dispatch_agent 协程永久挂起"""
         from unittest.mock import patch
 
         calls = [
@@ -409,21 +342,17 @@ class TestDispatchAgentBarrier:
             {"id": "tc_1", "name": "read_file", "arguments": {"path": "a.txt"}},
         ]
 
-        # 在 ParallelExecutor 构造后获取 spy 引用
         _all_done_spy = None
 
-        orig_init = ToolCallbackChain.__init__
-
-        async def execute_async_error(calls, **kwargs):
-            # 在 Wave 1 执行时，_shared_executor 应已创建
+        async def execute_dag_error(dag, **kwargs):
             nonlocal _all_done_spy
             if mock_agent._shared_executor is not None:
                 _all_done_spy = MagicMock(wraps=mock_agent._shared_executor._all_done)
                 mock_agent._shared_executor._all_done = _all_done_spy
             raise RuntimeError("boom")
 
-        mock_agent._async_tool_executor.execute_async = AsyncMock(
-            side_effect=execute_async_error
+        mock_agent._async_tool_executor.execute_dag_async = AsyncMock(
+            side_effect=execute_dag_error
         )
 
         with pytest.raises(RuntimeError, match="boom"):

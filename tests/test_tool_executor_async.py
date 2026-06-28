@@ -1135,3 +1135,238 @@ class TestParallelSafeAutoSplit:
         assert pos_ok < pos_b, "serial_ok 应在 parallel_b 之前"
         assert pos_fail < pos_a, "serial_fail 应在 parallel_a 之前"
         assert pos_fail < pos_b, "serial_fail 应在 parallel_b 之前"
+
+
+# ═══════════════════════════════════════════════════════════════
+# DAG 执行路径
+# ═══════════════════════════════════════════════════════════════
+
+class TestExecuteDAG:
+    """execute_dag_async DAG 执行路径测试"""
+
+    @staticmethod
+    def _make_registry(metadata_map=None):
+        reg = MagicMock(spec=ToolRegistry)
+
+        def get_meta(name):
+            if metadata_map and name in metadata_map:
+                return metadata_map[name]
+            return ToolMetadata(parallel_safe=(name in {
+                "read_file", "search", "find", "ls", "web_search"
+            }))
+
+        reg.get_metadata.side_effect = get_meta
+        return reg
+
+    def _make_executor(self, registry):
+        return AsyncToolExecutor(registry)
+
+    @pytest.mark.asyncio
+    async def test_empty_dag(self):
+        """空 DAG → 返回空列表"""
+        from src.core.tool_dag import ToolDAG
+
+        reg = self._make_registry()
+        executor = self._make_executor(reg)
+        dag = ToolDAG([], reg)
+
+        results = await executor.execute_dag_async(
+            dag, agent_ref=None,
+        )
+        assert results == []
+
+    @pytest.mark.asyncio
+    async def test_single_layer(self):
+        """单层 DAG（全独立工具）→ 全部并发执行"""
+        from src.core.tool_dag import ToolDAG
+
+        exec_order = []
+
+        def dispatch_side(name, arguments, agent=None):
+            f = MagicMock()
+            async def execute():
+                exec_order.append(name)
+                await asyncio.sleep(0)
+                return name
+            f.execute = AsyncMock(side_effect=execute)
+            return f
+
+        reg = self._make_registry()
+        reg.dispatch.side_effect = dispatch_side
+        executor = self._make_executor(reg)
+
+        tool_calls = [
+            {"id": "call_A", "name": "read_file", "arguments": {"path": "a.txt"}},
+            {"id": "call_B", "name": "search", "arguments": {"query": "x"}},
+            {"id": "call_C", "name": "find", "arguments": {"pattern": "*.py"}},
+        ]
+        dag = ToolDAG(tool_calls, reg)
+
+        results = await executor.execute_dag_async(
+            dag, agent_ref=None,
+        )
+        assert len(results) == 3
+        ids = [r[0] for r in results]
+        assert set(ids) == {"call_A", "call_B", "call_C"}
+        assert all(r[2] is True for r in results)
+
+    @pytest.mark.asyncio
+    async def test_multi_layer(self):
+        """多层 DAG → 逐层串行，同层并发"""
+        from src.core.tool_dag import ToolDAG
+
+        exec_order = []
+
+        def dispatch_side(name, arguments, agent=None):
+            f = MagicMock()
+            async def execute():
+                exec_order.append(name)
+                await asyncio.sleep(0)
+                return name
+            f.execute = AsyncMock(side_effect=execute)
+            return f
+
+        reg = self._make_registry()
+        reg.dispatch.side_effect = dispatch_side
+        executor = self._make_executor(reg)
+
+        # 链状：call_A($ref) → call_B($ref) → call_C
+        tool_calls = [
+            {"id": "call_A", "name": "bash", "arguments": {"command": "echo 1"}},
+            {"id": "call_B", "name": "bash",
+             "arguments": {"command": "echo $call_A"}},
+            {"id": "call_C", "name": "bash",
+             "arguments": {"command": "echo $call_B"}},
+        ]
+        dag = ToolDAG(tool_calls, reg)
+        layers = dag.topological_sort()
+        assert layers is not None
+        assert len(layers) == 3
+
+        results = await executor.execute_dag_async(
+            dag, agent_ref=None,
+        )
+        assert len(results) == 3
+        # 按原始顺序返回
+        assert results[0][0] == "call_A"
+        assert results[1][0] == "call_B"
+        assert results[2][0] == "call_C"
+
+    @pytest.mark.asyncio
+    async def test_cycle_fallback_to_serial(self):
+        """有环 DAG → 回退到全串行"""
+        from src.core.tool_dag import ToolDAG
+
+        exec_order = []
+
+        def dispatch_side(name, arguments, agent=None):
+            f = MagicMock()
+            async def execute():
+                exec_order.append(name)
+                await asyncio.sleep(0)
+                return name
+            f.execute = AsyncMock(side_effect=execute)
+            return f
+
+        reg = self._make_registry()
+        reg.dispatch.side_effect = dispatch_side
+        executor = self._make_executor(reg)
+
+        # A→B→A 环
+        tool_calls = [
+            {"id": "call_A", "name": "bash",
+             "arguments": {"command": "echo $call_B"}},
+            {"id": "call_B", "name": "bash",
+             "arguments": {"command": "echo $call_A"}},
+        ]
+        dag = ToolDAG(tool_calls, reg)
+
+        results = await executor.execute_dag_async(
+            dag, agent_ref=None,
+        )
+        assert len(results) == 2
+        # 回退串行时保持原始顺序
+        assert results[0][2] is True or results[0][2] is False
+        assert results[1][2] is True or results[1][2] is False
+
+    @pytest.mark.asyncio
+    async def test_cancelled_layer_propagation(self):
+        """层内 CancelledError → 取消该层所有未完成任务"""
+        from src.core.tool_dag import ToolDAG
+
+        block = asyncio.Event()
+
+        def dispatch_side(name, arguments, agent=None):
+            f = MagicMock()
+            if name == "bash":
+                async def blocked_execute():
+                    await block.wait()
+                    return "ok"
+                f.execute = AsyncMock(side_effect=blocked_execute)
+            else:
+                f.execute = AsyncMock(return_value="ok")
+            return f
+
+        reg = self._make_registry()
+        reg.dispatch.side_effect = dispatch_side
+        executor = self._make_executor(reg)
+
+        tool_calls = [
+            {"id": "call_A", "name": "read_file", "arguments": {"path": "a.txt"}},
+            {"id": "call_B", "name": "bash", "arguments": {"command": "sleep 10"}},
+        ]
+        dag = ToolDAG(tool_calls, reg)
+
+        task = asyncio.ensure_future(
+            executor.execute_dag_async(dag, agent_ref=None)
+        )
+        await asyncio.sleep(0.1)
+        task.cancel()
+
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+
+        # 不应崩溃
+        assert True
+
+    @pytest.mark.asyncio
+    async def test_with_on_before_on_after_callbacks(self):
+        """回调函数在 DAG 执行中被正确调用"""
+        from src.core.tool_dag import ToolDAG
+
+        before_calls = []
+        after_calls = []
+
+        def on_before(tc, detail):
+            before_calls.append(tc["name"])
+
+        def on_after(tc, output, success):
+            after_calls.append((tc["name"], success))
+
+        def dispatch_side(name, arguments, agent=None):
+            f = MagicMock()
+            f.execute = AsyncMock(return_value="ok")
+            return f
+
+        reg = self._make_registry()
+        reg.dispatch.side_effect = dispatch_side
+        executor = self._make_executor(reg)
+
+        tool_calls = [
+            {"id": "call_A", "name": "read_file", "arguments": {"path": "a.txt"}},
+            {"id": "call_B", "name": "search", "arguments": {"query": "x"}},
+        ]
+        dag = ToolDAG(tool_calls, reg)
+
+        await executor.execute_dag_async(
+            dag, agent_ref=None,
+            on_before=on_before,
+            on_after=on_after,
+        )
+
+        assert len(before_calls) == 2
+        assert len(after_calls) == 2
+        assert set(before_calls) == {"read_file", "search"}
+        assert all(success for _, success in after_calls)

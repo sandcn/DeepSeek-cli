@@ -16,6 +16,9 @@ from typing import List, Tuple, Optional, Callable
 from ..core.ports.tool_registry import ToolRegistryPort
 from ..ui.display import extract_key_params
 
+# 延迟导入 ToolDAG（避免循环依赖）
+# from .tool_dag import ToolDAG  — 在方法内延迟导入
+
 _logger = logging.getLogger(__name__)
 
 
@@ -155,6 +158,102 @@ class AsyncToolExecutor:
 
         # 按原始顺序返回
         return [results_map[tc["id"]] for tc in tool_calls]
+
+    async def execute_dag_async(
+        self,
+        dag,
+        *,
+        agent_ref,
+        on_before: Optional[Callable] = None,
+        on_after: Optional[Callable] = None,
+        run_method: Optional[Callable] = None,
+    ) -> List[Tuple[str, str, bool]]:
+        """按 DAG 拓扑层执行工具调用。
+
+        1. 拓扑排序获取层列表
+        2. 环检测：有环则回退到全串行
+        3. 逐层执行：
+           - 同层工具并发执行（asyncio.gather + Semaphore 限流）
+           - 层内 FIRST_EXCEPTION 级联取消
+           - 层间串行等待（上一层的输出是下一层的输入）
+        4. 按原始 tool_calls 顺序返回结果
+
+        Args:
+            dag: ToolDAG 实例
+            agent_ref: 传给 registry.dispatch() 的 agent 引用
+            on_before: (tc, detail) -> None  执行前回调
+            on_after: (tc, output, success) -> None  执行后回调
+            run_method: (func, tc) -> str  自定义执行方式
+
+        Returns:
+            [(tool_call_id, output, success)] 列表
+        """
+        if dag.size == 0:
+            return []
+
+        # 检查环
+        if dag.has_cycle():
+            _logger.warning("DAG cycle detected, falling back to serial execution")
+            # 重建原始 tool_calls 列表
+            all_calls = [{
+                "id": tc_id,
+                "name": dag.get_node(tc_id).name,
+                "arguments": dag.get_node(tc_id).arguments,
+            } for tc_id in dag._original_order]
+            return await self._execute_serial(
+                all_calls, agent_ref=agent_ref,
+                on_before=on_before, on_after=on_after, run_method=run_method,
+            )
+
+        # 获取拓扑层
+        layers = dag.topological_sort()
+        if layers is None:
+            # 拓扑排序失败（理论上 has_cycle 已检测，兜底回退串行）
+            all_calls = [{
+                "id": tc_id,
+                "name": dag.get_node(tc_id).name,
+                "arguments": dag.get_node(tc_id).arguments,
+            } for tc_id in dag._original_order]
+            return await self._execute_serial(
+                all_calls, agent_ref=agent_ref,
+                on_before=on_before, on_after=on_after, run_method=run_method,
+            )
+
+        # 逐层执行
+        results_map: dict[str, tuple[str, str, bool]] = {}
+        for layer in layers:
+            if not layer:
+                continue
+
+            # 构建当前层的 tool_call dict 列表
+            layer_calls = []
+            for tc_id in layer:
+                node = dag.get_node(tc_id)
+                if node is None:
+                    continue
+                layer_calls.append({
+                    "id": node.tc_id,
+                    "name": node.name,
+                    "arguments": node.arguments,
+                })
+
+            if not layer_calls:
+                continue
+
+            # 同层工具并发执行
+            layer_results = await self._execute_concurrent(
+                layer_calls,
+                agent_ref=agent_ref,
+                on_before=on_before,
+                on_after=on_after,
+                run_method=run_method,
+            )
+            for r in layer_results:
+                results_map[r[0]] = r
+
+        # 按原始顺序返回
+        return [results_map[tc_id] for tc_id in dag._original_order
+                if tc_id in results_map]
 
     async def _execute_serial(
         self, tool_calls: list, *,

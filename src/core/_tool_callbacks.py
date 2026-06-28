@@ -3,11 +3,10 @@
 从 agent.py 提取，封装工具执行的完整生命周期：
   handle_tool_calls → _run_tool_method → _on_before_tool / _on_after_tool
 
-工具执行四波排序：
-  Wave 0: user_select 串行（独占终端）
-  Wave 1: 并行安全工具并发（metadata 驱动，parallel_safe=True）
-  Wave 2: 非并行安全工具串行（metadata 驱动，parallel_safe=False）
-  Wave 3: dispatch_agent 并发（SubAgent，前三波完成后执行）
+工具执行使用 DAG 引擎：
+  1. ToolDAG 构建依赖图（显式引用 + 隐式路径重叠 + user_select 独占约束）
+  2. Kahn 拓扑排序 → 分层
+  3. 逐层并发执行（同层无依赖工具并行，层间串行等待）
 """
 
 from __future__ import annotations
@@ -99,70 +98,50 @@ class ToolCallbackChain:
 
         agent._append_assistant_message(content, tool_calls, reasoning_content)
 
-        # ── 工具分类（按四波排序） ──────────────────────
-        # user_select 是交互式终端工具，必须串行执行：
-        # 其 _execute_terminal() 在子线程中通过 asyncio.to_thread 运行，
-        # 并行执行时其他工具的 _start_tool_output_capture() 会竞态替换
-        # sys.stdout 为 _SharedCapture（非 TTY），导致 prompt_toolkit 的
-        # create_output() 回退为 PlainTextOutput，Picker TUI 无法显示。
-        user_select_calls = [tc for tc in tool_calls if tc.get("name") == "user_select"]
-        dispatch_agent_calls = [tc for tc in tool_calls if tc.get("name") == "dispatch_agent"]
-        parallel_safe_calls = [
-            tc for tc in tool_calls
-            if tc.get("name") not in {"user_select", "dispatch_agent"}
-            and _is_parallel_safe(agent._async_tool_executor.registry, tc.get("name", ""))
-        ]
-        # 非并行安全工具（写工具等）：不在 user_select/dispatch_agent/parallel_safe 中的工具
-        non_parallel_calls = [
-            tc for tc in tool_calls
-            if tc.get("name") not in {"user_select", "dispatch_agent"}
-            and not _is_parallel_safe(agent._async_tool_executor.registry, tc.get("name", ""))
-        ]
-
         # ── 回调工厂（消除 lambda 重复） ────────────────
         def _on_before(tc, detail):
             return self._on_before_tool(tc, detail, parse_elapsed)
         def _on_after(tc, output, success):
             return self._on_after_tool(tc, output, success)
 
-        # ── 按波次执行 ─────────────────────────────────
+        # ── DAG 调度执行 ───────────────────────────────
         try:
-            results_map: dict[str, tuple] = {}  # tool_call_id → (id, output, success)
-            # 依赖 Python 3.7+ dict 插入顺序保持；各波次按序插入后，
-            # 最终按原始 tool_calls 顺序提取结果。
+            from .tool_dag import ToolDAG
 
-            async def _execute_wave(calls, parallel):
-                """执行一波工具调用，结果写入 results_map"""
-                if not calls:
-                    return
-                wave_results = await agent._async_tool_executor.execute_async(
-                    calls,
+            dag = ToolDAG(tool_calls, agent._async_tool_executor.registry)
+            results_map: dict[str, tuple] = {}  # tool_call_id → (id, output, success)
+
+            if dag.size == 0:
+                pass  # 无工具调用
+            elif dag.size == 1:
+                # 单工具：直接串行执行
+                node = next(iter(dag.nodes.values()))
+                single_call = [{"id": node.tc_id, "name": node.name,
+                                "arguments": node.arguments}]
+                single_result = await agent._async_tool_executor.execute_async(
+                    single_call,
                     agent_ref=agent,
                     on_before=_on_before,
                     on_after=_on_after,
                     run_method=self._run_tool_method,
-                    parallel=parallel,
+                    parallel=False,
                 )
-                for r in wave_results:
+                for r in single_result:
+                    results_map[r[0]] = r
+            else:
+                # 多工具：使用 DAG 引擎调度
+                dag_results = await agent._async_tool_executor.execute_dag_async(
+                    dag,
+                    agent_ref=agent,
+                    on_before=_on_before,
+                    on_after=_on_after,
+                    run_method=self._run_tool_method,
+                )
+                for r in dag_results:
                     results_map[r[0]] = r
 
-            # Wave 0: user_select 串行（独占终端输入）
-            await _execute_wave(user_select_calls, parallel=False)
-
-            # Wave 1: 并行安全工具并发（metadata 驱动）
-            await _execute_wave(parallel_safe_calls, parallel=True)
-
-            # Wave 2: 非并行安全工具串行（metadata 驱动）
-            await _execute_wave(non_parallel_calls, parallel=False)
-
-            # Wave 3: dispatch_agent 并发（SubAgent 在前三波完成后执行）
-            await _execute_wave(dispatch_agent_calls, parallel=True)
-
         finally:
-            # 确保取消/异常时也释放 barrier 并清理共享 executor
-            # 若 Wave 0-2 异常导致 Wave 3 未执行，已注册但等待
-            # _all_done 的 dispatch_agent 协程会永久挂起——
-            # 显式 set() 确保它们收到释放信号后正常退出。
+            # 确保取消/异常时释放 barrier
             if agent._shared_executor is not None:
                 agent._shared_executor._all_done.set()
             agent._shared_executor = None
