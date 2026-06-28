@@ -700,14 +700,20 @@ class _BottomBar(_StatusMixin):
             out = sys.__stdout__
             out.write(_blessed_save_cursor())
 
-            # ★ 底部栏扩大时不执行 SU（Scroll Up）上滚旧内容区。
-            #    SU 在 DECSTBM 区域内无 scrollback 缓冲，滚出顶部的行永久丢失。
-            #    新划入底部栏的区域（原内容区底部行）会被后续的
-            #    _draw_input_lines_locked() 覆盖，不影响上屏顶部内容。
-
             out.write(_blessed_reset_scroll_region())
 
             self._last_bottom_lines = total
+
+            # ★ 底部栏扩大时（delta > 0），在内容区做 SU 上滚以腾出空间。
+            #    先临时将 DECSTBM 设为仅内容区 [1, old_scroll_end]，
+            #    再 SU(delta) 将内容整体上移，底部留出空白行供底部栏使用。
+            #    顶部滚出的行从终端显示消失（DECSTBM 内 SU 无 scrollback），
+            #    但消息/状态在内存中保留，需要时可通过 display_messages 重显。
+            if delta > 0 and old_scroll_end > 0:
+                out.write(f"{_blessed_set_scroll_region(1, old_scroll_end)}")
+                out.write(_blessed_cursor_goto(old_scroll_end, 1))
+                out.write(f"{_blessed_scroll_up(delta)}")
+                out.write(_blessed_reset_scroll_region())
 
 
 

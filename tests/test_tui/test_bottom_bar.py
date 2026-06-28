@@ -476,12 +476,11 @@ class TestDrainQueueSyncBottomLines(unittest.TestCase):
 
 
 class TestApplyScrollDeltaOrdering(unittest.TestCase):
-    """验证 2026-06-12 修复后的 force_redraw 行为。
+    """验证 2026-06-28 修复后的 force_redraw 行为。
 
-    2026-06-12 修复：移除 SU（底部栏扩大时不再上滚内容）。
-    SU 在 DECSTBM 内无 scrollback 缓冲，滚出顶部的行永久丢失，
-    改为直接缩小滚动区域，让弹窗覆盖底部内容区少数行。
-    底部栏缩小时直接清除回收区域行（不使用 SD 下滚）。
+    2026-06-28 修复：底部栏扩大时（delta > 0），在内容区 DECSTBM 内
+    做 SU 上滚以腾出空间，内容整体上移而不被底部栏覆盖。
+    底部栏缩小时直接清除释放区域行。
     """
 
     def setUp(self):
@@ -527,15 +526,13 @@ class TestApplyScrollDeltaOrdering(unittest.TestCase):
         self.assertLess(pos1, pos2,
                         msg or f"{first_seq!r} 应在 {second_seq!r} 之前")
 
-    def test_force_redraw_expand_no_su(self):
-        """★ 2026-06-12 修复: force_redraw 在 delta > 0 时不再输出 SU 上滚序列。
+    def test_force_redraw_expand_does_su(self):
+        """★ 2026-06-28 修复: force_redraw 在 delta > 0 时执行 SU 上滚序列。
 
-        移除 SU（Scroll Up）以避免丢失上屏顶部内容。
-        底部栏扩大时，新划入底部栏的区域（原内容区底部行）直接由
-        _draw_input_lines_locked() 覆盖。
+        底部栏扩大时，在临时 DECSTBM [1, old_scroll_end] 内做 SU(delta)
+        将内容区整体上移，底部留出空白行供底部栏使用，避免直接覆盖上屏内容。
 
-        验证：① SU 序列不存在；② \\033[r 存在（重置滚动区域为全屏）；
-        ③ 新 DECSTBM 正确设置。
+        验证：① SU 序列存在；② \\033[r 存在（重置后）；③ 新 DECSTBM 正确设置。
         """
         self.bb._last_text = "A" * 500  # 长文本，_bottom_lines 会增大
         self.bb._last_bottom_lines = 3  # 旧底部行数较小
@@ -544,9 +541,9 @@ class TestApplyScrollDeltaOrdering(unittest.TestCase):
         output = self._capture_ansi_order(lambda: self.bb.force_redraw())
 
         import re
-        # ★ 验证无 SU 序列
+        # ★ 验证 SU 序列存在（delta > 0 时上滚内容）
         su_match = re.search(r'\x1b\[(\d+)S', output)
-        self.assertIsNone(su_match, "不应输出 SU 上滚序列")
+        self.assertIsNotNone(su_match, "delta > 0 时应输出 SU 上滚序列")
         # ★ 验证 \\033[r 存在（重置滚动区域为全屏）
         self.assertIn("\033[r", output, "应输出 \\033[r 重置滚动区域")
         # ★ 验证新 DECSTBM 存在
@@ -775,7 +772,7 @@ class TestApplyScrollDelta(unittest.TestCase):
             self.bb.show_completions(items, selected_idx=0, title="补全")
 
         show_output = buf_show.getvalue()
-        # show 设置 DECSTBM 并重绘底部栏，不输出 SU（SU 已从 force_redraw 移除）
+        # show 设置 DECSTBM 并重绘底部栏，delta>0 时执行 SU 上滚内容
         self.assertNotEqual(show_output, "", "show_completions 应触发 force_redraw")
 
         # ── Step 2: 模拟 hide_completions ──
