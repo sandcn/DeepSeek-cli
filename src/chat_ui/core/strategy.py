@@ -18,6 +18,8 @@ if TYPE_CHECKING:
     from ..core.engine import TuiEngine
     from ..vdom.vnode import VNode
 
+from ...api.stats import get_total_tokens, get_per_second_speed
+
 _logger = logging.getLogger(__name__)
 
 
@@ -225,6 +227,7 @@ class VNodeRenderStrategy:
         self._anim_idle_count: int = 0
         self._ANIM_IDLE_SKIP_THRESHOLD = 3
         self._ANIM_IDLE_SKIP_FRAMES = 6
+        self._frozen_elapsed: float = 0.0
 
         # ── 层级渲染系统 ──
         self._use_layered: bool = use_layered
@@ -370,12 +373,25 @@ class VNodeRenderStrategy:
         if not model_name and hasattr(self, '_engine') and self._engine is not None:
             model_name = getattr(self._engine._bb, '_model_name', '')
 
+        # 从 BottomBarBridge 读取真实的流式状态
+        # StatusLine.streaming 依赖 CmdStatusUpdate 派发，但 app_loop 不派发该命令，
+        # 实际流式状态由 BottomBarBridge._status_active 维护（enable_status/disable_status）
+        is_streaming = False
+        if hasattr(self, '_engine') and self._engine is not None:
+            is_streaming = self._engine._bb.is_status_active
+
         # 计算本轮耗时
+        # 流式时实时计时并更新 _frozen_elapsed，非流式时使用冻结值（停止计时不清0）
         round_elapsed = 0.0
         if hasattr(status_line, 'round_start_time') and status_line.round_start_time > 0:
-            round_elapsed = _time_module.time() - status_line.round_start_time
-        elif hasattr(status_line, 'elapsed') and status_line.elapsed > 0:
-            round_elapsed = status_line.elapsed
+            if is_streaming:
+                round_elapsed = _time_module.time() - status_line.round_start_time
+                self._frozen_elapsed = round_elapsed
+            else:
+                round_elapsed = self._frozen_elapsed
+        else:
+            round_elapsed = 0.0
+            self._frozen_elapsed = 0.0
 
         # 构建状态文本（工具计数）
         status_text = ""
@@ -386,7 +402,7 @@ class VNodeRenderStrategy:
             if tool_fail > 0:
                 status_text += f"!{tool_fail}"
 
-        _output_tokens = status_line.tokens if hasattr(status_line, 'tokens') else 0
+        _output_tokens = get_total_tokens()
         session = UISessionState(
             model=model_name,
             message_count=0,
@@ -402,12 +418,6 @@ class VNodeRenderStrategy:
         )
 
         claude = _is_claude_style_enabled()
-        # 从 BottomBarBridge 读取真实的流式状态
-        # StatusLine.streaming 依赖 CmdStatusUpdate 派发，但 app_loop 不派发该命令，
-        # 实际流式状态由 BottomBarBridge._status_active 维护（enable_status/disable_status）
-        is_streaming = False
-        if hasattr(self, '_engine') and self._engine is not None:
-            is_streaming = self._engine._bb.is_status_active
 
         if is_streaming and not claude:
             streaming = StreamingState()
@@ -415,7 +425,8 @@ class VNodeRenderStrategy:
             # 设置 start_time 使 elapsed property 返回正确的实时耗时
             if round_elapsed > 0:
                 streaming.start_time = _time_module.monotonic() - round_elapsed
-            streaming.output_tokens = status_line.tokens if hasattr(status_line, 'tokens') else 0
+            streaming.output_tokens = get_total_tokens()
+            streaming.speed = get_per_second_speed()
             status_text = render_streaming_line(session, streaming)
         else:
             status_text = render_normal(session)

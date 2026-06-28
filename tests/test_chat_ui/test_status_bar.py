@@ -191,6 +191,103 @@ class TestStatusBarInstance:
         assert tree.streaming.output_tokens == 100
 
 
+class TestRenderClaudeStyleNormal:
+    """Claude Code 风格普通模式渲染测试。
+
+    覆盖：
+      - 删除 $X.XX · N% context 显示
+      - 新增本轮对话耗时显示（>=60s → m:s 秒不补零，<60s → xx.xs）
+      - 模型名和 token 计数正常显示
+    """
+
+    def _make_claude_state(self, **kwargs) -> UISessionState:
+        """创建 Claude 风格测试用的 UISessionState。"""
+        defaults = dict(model="gpt-4", input_tokens=100, output_tokens=200,
+                        session_duration=3.5, show_duration=True)
+        defaults.update(kwargs)
+        return UISessionState(**defaults)
+
+    def test_minimal_state_no_crash(self):
+        """最小状态下不报错。"""
+        state = UISessionState()
+        with patch("src.chat_ui.infrastructure.status_bar._is_claude_style_enabled",
+                   return_value=True):
+            result = render_normal(state)
+        assert isinstance(result, str)
+        assert len(result) > 0
+
+    def test_no_cost_or_context(self):
+        """输出中不含 $ 和 % context。"""
+        state = self._make_claude_state()
+        with patch("src.chat_ui.infrastructure.status_bar._is_claude_style_enabled",
+                   return_value=True):
+            result = render_normal(state)
+        assert "$" not in result
+        assert "%" not in result
+        assert "context" not in result
+
+    def test_duration_under_60s(self):
+        """<60s 显示 xx.xs 格式。"""
+        state = self._make_claude_state(session_duration=3.5)
+        with patch("src.chat_ui.infrastructure.status_bar._is_claude_style_enabled",
+                   return_value=True):
+            result = render_normal(state)
+        assert "3.5s" in result
+
+    def test_duration_over_60s(self):
+        """>=60s 显示 m:s 格式（秒不补零）。"""
+        state = self._make_claude_state(session_duration=65)
+        with patch("src.chat_ui.infrastructure.status_bar._is_claude_style_enabled",
+                   return_value=True):
+            result = render_normal(state)
+        assert "1:5" in result
+
+    def test_duration_exact_60s(self):
+        """正好 60s 显示 1:0。"""
+        state = self._make_claude_state(session_duration=60)
+        with patch("src.chat_ui.infrastructure.status_bar._is_claude_style_enabled",
+                   return_value=True):
+            result = render_normal(state)
+        assert "1:0" in result
+
+    def test_duration_zero(self):
+        """耗时为 0 显示 0.0s。"""
+        state = self._make_claude_state(session_duration=0)
+        with patch("src.chat_ui.infrastructure.status_bar._is_claude_style_enabled",
+                   return_value=True):
+            result = render_normal(state)
+        assert "0.0s" in result
+
+    def test_model_and_tokens_appear(self):
+        """模型名和 token 计数正常显示。"""
+        state = self._make_claude_state(model="gpt-4", input_tokens=100,
+                                        output_tokens=200)
+        with patch("src.chat_ui.infrastructure.status_bar._is_claude_style_enabled",
+                   return_value=True):
+            result = render_normal(state)
+        assert "gpt-4" in result
+        assert "tokens" in result
+
+    def test_no_tokens_shows_zero(self):
+        """token 为 0 时显示 '0 tokens'。"""
+        state = self._make_claude_state(input_tokens=0, output_tokens=0)
+        with patch("src.chat_ui.infrastructure.status_bar._is_claude_style_enabled",
+                   return_value=True):
+            result = render_normal(state)
+        assert "0 tokens" in result
+
+    def test_speed_appears_in_output(self):
+        """实时 tok/s 显示出现在输出中。"""
+        state = self._make_claude_state()
+        with patch("src.chat_ui.infrastructure.status_bar._is_claude_style_enabled",
+                   return_value=True):
+            with patch("src.chat_ui.infrastructure.status_bar.get_per_second_speed",
+                       return_value=15.0):
+                result = render_normal(state)
+        assert "/s" in result
+        assert "15" in result
+
+
 class TestFormatTokenCount:
     """format_token_count 格式化函数测试（委托 TextFormatter）。"""
 

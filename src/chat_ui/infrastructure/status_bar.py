@@ -26,6 +26,7 @@ from ...ui.theme import THEME
 from ...ui.parallel._text_formatter import TextFormatter
 from .terminal_utils import is_narrow, get_terminal_width
 from ...ui.common.time_format import format_elapsed, format_speed
+from ...api.stats import get_per_second_speed
 from ..state.tui_state import TUIStateTree, UISessionState, StreamingState
 
 # ── 流式状态行空格常量（图标与数值间视觉间距） ──
@@ -299,7 +300,7 @@ def render_streaming_line(state: UISessionState, streaming: StreamingState) -> s
 def _render_claude_style_normal(state: UISessionState) -> str:
     """Claude Code 风格普通模式状态行。
 
-    格式：model_name · N tokens · $X.XX · N% context
+    格式：model_name · N tokens · dur · N/s
     整行使用 dim 样式，分隔符使用 · (middle dot)。
 
     Args:
@@ -310,12 +311,17 @@ def _render_claude_style_normal(state: UISessionState) -> str:
     """
     total_tokens = state.input_tokens + state.output_tokens
     tok_str = TextFormatter.format_token_count(total_tokens)
-    # 费用估算：基于 token 数粗略估算（$0.01/1K tokens）
-    if state.cost_usd > 0:
-        cost_str = f"${state.cost_usd:.2f}"
+
+    # 本轮对话耗时（>=60s 显示 m:s 秒不补零，<60s 显示 xx.xs）
+    dur = max(0.0, state.session_duration)
+    if dur >= 60:
+        mins = int(dur // 60)
+        secs = int(dur % 60)
+        dur_str = f"{mins}:{secs}"
+    elif dur > 0:
+        dur_str = f"{dur:.1f}s"
     else:
-        cost_str = f"${total_tokens * 0.00001:.2f}"
-    ctx_str = f"{state.context_pct:.0f}%" if state.context_pct > 0 else "—%"
+        dur_str = "0.0s"
 
     parts: list[str] = []
     if state.model:
@@ -324,8 +330,9 @@ def _render_claude_style_normal(state: UISessionState) -> str:
         parts.append(f"{tok_str} tokens")
     else:
         parts.append("0 tokens")
-    parts.append(cost_str)
-    parts.append(f"{ctx_str} context")
+    parts.append(dur_str)
+    speed = get_per_second_speed()
+    parts.append(f"{format_speed(speed)}/s")
 
     sep = f" {DIM}\u00b7{RESET} "
     line = sep.join(parts)

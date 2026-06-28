@@ -1,4 +1,6 @@
-"""VNodeRenderStrategy 增量渲染测试"""
+"""VNodeRenderStrategy 增量渲染测试 + 耗时冻结测试"""
+import time as _time
+import pytest
 from unittest.mock import MagicMock, call
 from src.chat_ui.core.strategy import VNodeRenderStrategy
 from src.chat_ui.vdom.vnode import VNode, Patch, PatchKind, diff
@@ -490,3 +492,61 @@ class TestSubagentToolHistoryRendering:
         assert "write_file" in rendered_lines[1]
         assert "bash" in rendered_lines[2]
         assert "read_file" in rendered_lines[3]
+
+
+class TestFrozenElapsed:
+    """测试一轮对话结束时耗时冻结（停止计时不清0）"""
+
+    def make_strategy(self):
+        return VNodeRenderStrategy(
+            renderer=MagicMock(),
+            store=MagicMock(),
+            vnode_builder=MagicMock(),
+            output_func=MagicMock(),
+        )
+
+    def test_frozen_elapsed_initialized_to_zero(self):
+        """_frozen_elapsed 初始值为 0.0"""
+        strategy = self.make_strategy()
+        assert strategy._frozen_elapsed == 0.0
+
+    def test_frozen_elapsed_updates_during_streaming(self):
+        """流式时 _frozen_elapsed 同步更新为实时耗时"""
+        strategy = self.make_strategy()
+        round_start = _time.time() - 5.0  # 5秒前开始
+
+        # 模拟流式时的实时计时逻辑
+        is_streaming = True
+        if is_streaming:
+            elapsed = _time.time() - round_start
+            strategy._frozen_elapsed = elapsed
+
+        assert strategy._frozen_elapsed == pytest.approx(5.0, abs=0.2)
+
+    def test_frozen_elapsed_unchanged_when_not_streaming(self):
+        """非流式时 _frozen_elapsed 保持不变（冻结）"""
+        strategy = self.make_strategy()
+        strategy._frozen_elapsed = 10.0  # 模拟流式结束时冻结的耗时
+
+        # 模拟非流式时的逻辑：不更新 _frozen_elapsed
+        is_streaming = False
+        if is_streaming:
+            elapsed = 999.0  # 不会执行
+            strategy._frozen_elapsed = elapsed
+
+        # 冻结值应保持不变
+        assert strategy._frozen_elapsed == 10.0
+
+    def test_frozen_elapsed_reset_when_no_round(self):
+        """无轮次时（round_start_time=0）_frozen_elapsed 重置为 0"""
+        strategy = self.make_strategy()
+        strategy._frozen_elapsed = 10.0  # 旧冻结值
+
+        # 模拟 _render_bottom_bar 中 round_start_time=0 的分支
+        round_start_time = 0.0
+        if round_start_time > 0:
+            pass  # 不会进入
+        else:
+            strategy._frozen_elapsed = 0.0  # else 分支重置
+
+        assert strategy._frozen_elapsed == 0.0

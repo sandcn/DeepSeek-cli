@@ -97,12 +97,14 @@ class StreamingState:
     def speed(self) -> float:
         """获取 token 速率（tok/s）。
 
-        优先使用 output_tokens / elapsed 自动计算，
-        仅在未启动或无输出时回退 `_speed_override`（0.0）。
+        当 `_speed_override > 0.0` 时优先返回覆盖值，
+        否则自动计算 output_tokens / elapsed，兜底返回 0.0。
         """
+        if self._speed_override > 0.0:
+            return self._speed_override
         if self.active and self.elapsed > 0 and self.output_tokens > 0:
             return self.output_tokens / self.elapsed
-        return self._speed_override
+        return 0.0
 
     @speed.setter
     def speed(self, value: float) -> None:
