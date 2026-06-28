@@ -2,7 +2,10 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from typing import Any, Type
+from typing import TYPE_CHECKING, Any, Optional, Type
+
+if TYPE_CHECKING:
+    from ...tools.base import ToolMetadata
 
 
 class ToolRegistryPort(ABC):
@@ -20,4 +23,8 @@ class ToolRegistryPort(ABC):
 
     @abstractmethod
     def get_tools(self) -> dict[str, Type]:
+        ...
+
+    @abstractmethod
+    def get_metadata(self, tool_name: str) -> Optional[ToolMetadata]:
         ...

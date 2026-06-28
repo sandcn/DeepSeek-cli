@@ -6,6 +6,7 @@
   3. execute_async 串行模式（单工具/多工具/异常传播/空列表）
   4. execute_async 并发模式（多工具/单工具降级串行/Semaphore限流/首错取消）
   5. 取消与清理（task 完成确认）
+  6. parallel_safe metadata 自动分流（全并发/全串行/混合/异常降级/失败隔离）
 """
 
 import asyncio
@@ -15,6 +16,7 @@ import pytest
 
 from src.core.tool_executor_async import AsyncToolExecutor, _MAX_CONCURRENT_TOOLS
 from src.tools.registry import ToolRegistry
+from src.tools.base import ToolMetadata
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -785,3 +787,351 @@ class TestCancellationCleanup:
             assert isinstance(r, tuple)
             assert len(r) == 3
             assert r[2] is False
+
+
+# ═══════════════════════════════════════════════════════════════
+# parallel_safe metadata 自动分流
+# ═══════════════════════════════════════════════════════════════
+
+class TestParallelSafeAutoSplit:
+    """测试 parallel_safe metadata 驱动的自动分流。"""
+
+    @staticmethod
+    def _make_tool_calls(names):
+        """根据工具名列表生成 tool_calls 列表。"""
+        return [
+            {"id": f"call_{i}", "name": name, "arguments": {}}
+            for i, name in enumerate(names)
+        ]
+
+    @staticmethod
+    def _make_registry(metadata_map, exec_order, execute_factory=None):
+        """创建 mock registry，支持 get_metadata 和 dispatch。
+
+        Args:
+            metadata_map: {tool_name: ToolMetadata} — get_metadata 的返回映射
+            exec_order: 共享执行顺序列表，每个工具的 execute() 会将工具名追加到此列表
+            execute_factory: 可选， (tool_name) -> async callable，自定义 execute 行为
+        """
+        reg = MagicMock()
+
+        def get_meta(name):
+            return metadata_map.get(name)
+
+        reg.get_metadata.side_effect = get_meta
+
+        def dispatch(name, arguments, agent=None):
+            f = MagicMock()
+            if execute_factory:
+                f.execute = AsyncMock(side_effect=execute_factory(name))
+            else:
+                async def default_execute():
+                    exec_order.append(name)
+                    await asyncio.sleep(0)
+                    return name
+
+                f.execute = AsyncMock(side_effect=default_execute)
+            return f
+
+        reg.dispatch.side_effect = dispatch
+        return reg
+
+    def _make_executor(self, registry):
+        """创建 AsyncToolExecutor 实例。"""
+        return AsyncToolExecutor(registry)
+
+    # ── 全并发 ──────────────────────────────────────────────
+
+    @pytest.mark.asyncio
+    async def test_all_parallel_safe_executes_concurrently(self):
+        """全 parallel_safe=True → 全并发执行（结果顺序不变）"""
+        exec_order = []
+        barrier = asyncio.Event()
+        started = []
+
+        def execute_factory(name):
+            async def execute():
+                started.append(name)
+                await barrier.wait()
+                exec_order.append(name)
+                return name
+
+            return execute
+
+        meta_safe = ToolMetadata(parallel_safe=True)
+        metadata_map = {"tool_a": meta_safe, "tool_b": meta_safe, "tool_c": meta_safe}
+        reg = self._make_registry(metadata_map, exec_order, execute_factory)
+        executor = self._make_executor(reg)
+        tool_calls = self._make_tool_calls(["tool_a", "tool_b", "tool_c"])
+
+        task = asyncio.ensure_future(
+            executor.execute_async(tool_calls, agent_ref=None, parallel=True)
+        )
+
+        # 等待所有工具启动（到达 barrier）
+        await asyncio.sleep(0.15)
+        # 验证至少 2 个工具已启动（证明并发）
+        assert len(started) >= 2, (
+            f"期望至少 2 个工具并发启动，实际启动: {len(started)}"
+        )
+
+        # 释放屏障
+        barrier.set()
+        results = await task
+
+        # 结果按原始顺序排列
+        assert len(results) == 3
+        assert [r[0] for r in results] == ["call_0", "call_1", "call_2"]
+        assert [r[1] for r in results] == ["tool_a", "tool_b", "tool_c"]
+        assert all(r[2] for r in results)
+
+    # ── 全串行 ──────────────────────────────────────────────
+
+    @pytest.mark.asyncio
+    async def test_all_not_parallel_safe_executes_serially(self):
+        """全 parallel_safe=False → 全串行执行（结果顺序不变）"""
+        exec_order = []
+        meta_unsafe = ToolMetadata(parallel_safe=False)
+        metadata_map = {"tool_a": meta_unsafe, "tool_b": meta_unsafe, "tool_c": meta_unsafe}
+        reg = self._make_registry(metadata_map, exec_order)
+        executor = self._make_executor(reg)
+        tool_calls = self._make_tool_calls(["tool_a", "tool_b", "tool_c"])
+
+        results = await executor.execute_async(
+            tool_calls, agent_ref=None, parallel=True
+        )
+
+        # 结果按原始顺序
+        assert len(results) == 3
+        assert [r[0] for r in results] == ["call_0", "call_1", "call_2"]
+        assert [r[1] for r in results] == ["tool_a", "tool_b", "tool_c"]
+        assert all(r[2] for r in results)
+
+        # 执行顺序严格与输入顺序一致
+        assert exec_order == ["tool_a", "tool_b", "tool_c"], (
+            f"串行执行顺序应为输入顺序，实际: {exec_order}"
+        )
+
+    # ── 混合分流 ────────────────────────────────────────────
+
+    @pytest.mark.asyncio
+    async def test_mixed_split_serial_then_parallel(self):
+        """混合 → 先串行后并发，结果按原顺序"""
+        exec_order = []
+        meta_safe = ToolMetadata(parallel_safe=True)
+        meta_unsafe = ToolMetadata(parallel_safe=False)
+        metadata_map = {
+            "tool_a": meta_unsafe,  # serial
+            "tool_b": meta_unsafe,  # serial
+            "tool_c": meta_safe,    # parallel
+            "tool_d": meta_safe,    # parallel
+        }
+        reg = self._make_registry(metadata_map, exec_order)
+        executor = self._make_executor(reg)
+        tool_calls = self._make_tool_calls(
+            ["tool_a", "tool_b", "tool_c", "tool_d"]
+        )
+
+        results = await executor.execute_async(
+            tool_calls, agent_ref=None, parallel=True
+        )
+
+        # 结果按原始顺序
+        assert len(results) == 4
+        assert [r[0] for r in results] == ["call_0", "call_1", "call_2", "call_3"]
+        assert [r[1] for r in results] == ["tool_a", "tool_b", "tool_c", "tool_d"]
+        assert all(r[2] for r in results)
+
+        # 串行工具全部在并发工具之前执行
+        pos_a = exec_order.index("tool_a")
+        pos_b = exec_order.index("tool_b")
+        pos_c = exec_order.index("tool_c")
+        pos_d = exec_order.index("tool_d")
+
+        assert pos_a < pos_b, "串行工具 tool_a 应在 tool_b 之前"
+        assert pos_a < pos_c, "串行工具 tool_a 应在并发工具 tool_c 之前"
+        assert pos_a < pos_d, "串行工具 tool_a 应在并发工具 tool_d 之前"
+        assert pos_b < pos_c, "串行工具 tool_b 应在并发工具 tool_c 之前"
+        assert pos_b < pos_d, "串行工具 tool_b 应在并发工具 tool_d 之前"
+
+    # ── 严格顺序 ────────────────────────────────────────────
+
+    @pytest.mark.asyncio
+    async def test_parallel_safe_false_strict_order(self):
+        """parallel_safe=False 工具严格顺序执行"""
+        exec_order = []
+        meta_unsafe = ToolMetadata(parallel_safe=False)
+        metadata_map = {
+            "step_1": meta_unsafe,
+            "step_2": meta_unsafe,
+            "step_3": meta_unsafe,
+            "step_4": meta_unsafe,
+        }
+        reg = self._make_registry(metadata_map, exec_order)
+        executor = self._make_executor(reg)
+        tool_calls = self._make_tool_calls(
+            ["step_1", "step_2", "step_3", "step_4"]
+        )
+
+        results = await executor.execute_async(
+            tool_calls, agent_ref=None, parallel=True
+        )
+
+        # 执行顺序严格匹配输入顺序
+        assert exec_order == ["step_1", "step_2", "step_3", "step_4"], (
+            f"严格顺序执行失败，实际: {exec_order}"
+        )
+        # 结果也按原始顺序
+        assert [r[1] for r in results] == ["step_1", "step_2", "step_3", "step_4"]
+        assert all(r[2] for r in results)
+
+    # ── metadata 查询失败 → 默认串行 ────────────────────────
+
+    @pytest.mark.asyncio
+    async def test_metadata_query_failure_defaults_to_serial(self):
+        """metadata 查询失败 → 默认串行"""
+        exec_order = []
+        # get_metadata 返回 None（模拟未注册工具）
+        metadata_map = {}  # 空 map：所有工具查询返回 None
+        reg = self._make_registry(metadata_map, exec_order)
+        executor = self._make_executor(reg)
+        tool_calls = self._make_tool_calls(["tool_a", "tool_b", "tool_c"])
+
+        results = await executor.execute_async(
+            tool_calls, agent_ref=None, parallel=True
+        )
+
+        # 结果按原始顺序
+        assert len(results) == 3
+        assert [r[0] for r in results] == ["call_0", "call_1", "call_2"]
+        assert all(r[2] for r in results)
+
+        # 默认串行 → 执行顺序与输入顺序一致
+        assert exec_order == ["tool_a", "tool_b", "tool_c"], (
+            f"metadata 查询失败应默认串行，实际: {exec_order}"
+        )
+
+    @pytest.mark.asyncio
+    async def test_metadata_query_exception_defaults_to_serial(self):
+        """get_metadata 抛出异常 → 默认串行"""
+        exec_order = []
+        reg = MagicMock()
+        reg.get_metadata.side_effect = RuntimeError("metadata store down")
+
+        def dispatch(name, arguments, agent=None):
+            f = MagicMock()
+
+            async def execute():
+                exec_order.append(name)
+                await asyncio.sleep(0)
+                return name
+
+            f.execute = AsyncMock(side_effect=execute)
+            return f
+
+        reg.dispatch.side_effect = dispatch
+        executor = self._make_executor(reg)
+        tool_calls = self._make_tool_calls(["tool_a", "tool_b"])
+
+        results = await executor.execute_async(
+            tool_calls, agent_ref=None, parallel=True
+        )
+
+        # 异常被捕获，默认串行执行
+        assert len(results) == 2
+        assert all(r[2] for r in results)
+        assert exec_order == ["tool_a", "tool_b"], (
+            f"metadata 异常应默认串行，实际: {exec_order}"
+        )
+
+    # ── parallel=False 不受影响 ──────────────────────────────
+
+    @pytest.mark.asyncio
+    async def test_parallel_false_unaffected(self):
+        """parallel=False 路径不受 metadata 影响"""
+        exec_order = []
+        meta_safe = ToolMetadata(parallel_safe=True)
+        metadata_map = {
+            "tool_a": meta_safe,
+            "tool_b": meta_safe,
+            "tool_c": meta_safe,
+        }
+        reg = self._make_registry(metadata_map, exec_order)
+        executor = self._make_executor(reg)
+        tool_calls = self._make_tool_calls(["tool_a", "tool_b", "tool_c"])
+
+        results = await executor.execute_async(
+            tool_calls, agent_ref=None, parallel=False
+        )
+
+        # parallel=False → 始终串行，忽略 metadata
+        assert len(results) == 3
+        assert [r[0] for r in results] == ["call_0", "call_1", "call_2"]
+        assert all(r[2] for r in results)
+        assert exec_order == ["tool_a", "tool_b", "tool_c"], (
+            f"parallel=False 应始终串行，实际: {exec_order}"
+        )
+
+    # ── 串行失败不影响并发 ──────────────────────────────────
+
+    @pytest.mark.asyncio
+    async def test_serial_failure_does_not_block_parallel(self):
+        """串行部分失败不影响并发部分执行"""
+        exec_order = []
+        meta_safe = ToolMetadata(parallel_safe=True)
+        meta_unsafe = ToolMetadata(parallel_safe=False)
+        metadata_map = {
+            "serial_ok": meta_unsafe,
+            "serial_fail": meta_unsafe,
+            "parallel_a": meta_safe,
+            "parallel_b": meta_safe,
+        }
+
+        def execute_factory(name):
+            async def execute():
+                exec_order.append(name)
+                await asyncio.sleep(0)
+                if name == "serial_fail":
+                    raise ValueError("serial tool failure")
+                return name
+
+            return execute
+
+        reg = self._make_registry(metadata_map, exec_order, execute_factory)
+        executor = self._make_executor(reg)
+        tool_calls = self._make_tool_calls(
+            ["serial_ok", "serial_fail", "parallel_a", "parallel_b"]
+        )
+
+        results = await executor.execute_async(
+            tool_calls, agent_ref=None, parallel=True
+        )
+
+        # 所有 4 个工具的结果都存在
+        assert len(results) == 4
+        assert [r[0] for r in results] == ["call_0", "call_1", "call_2", "call_3"]
+
+        # serial_ok 成功
+        assert results[0][1] == "serial_ok"
+        assert results[0][2] is True
+
+        # serial_fail 失败
+        assert results[1][2] is False
+        assert "serial tool failure" in results[1][1]
+
+        # 并发工具成功执行（未被串行失败阻断）
+        assert results[2][1] == "parallel_a"
+        assert results[2][2] is True
+        assert results[3][1] == "parallel_b"
+        assert results[3][2] is True
+
+        # 串行工具在并发工具之前执行
+        pos_ok = exec_order.index("serial_ok")
+        pos_fail = exec_order.index("serial_fail")
+        pos_a = exec_order.index("parallel_a")
+        pos_b = exec_order.index("parallel_b")
+
+        assert pos_ok < pos_a, "serial_ok 应在 parallel_a 之前"
+        assert pos_ok < pos_b, "serial_ok 应在 parallel_b 之前"
+        assert pos_fail < pos_a, "serial_fail 应在 parallel_a 之前"
+        assert pos_fail < pos_b, "serial_fail 应在 parallel_b 之前"

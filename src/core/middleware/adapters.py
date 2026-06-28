@@ -1,9 +1,13 @@
 """ToolRegistryPort 适配器 — 包装 ToolRegistry 实例"""
+from __future__ import annotations
 
-from typing import Type
+from typing import TYPE_CHECKING, Optional, Type
 
 from ..ports.tool_registry import ToolRegistryPort
 from ...tools.registry import ToolRegistry
+
+if TYPE_CHECKING:
+    from ...tools.base import ToolMetadata
 
 
 class _ToolRegistryAdapter(ToolRegistryPort):
@@ -23,3 +27,6 @@ class _ToolRegistryAdapter(ToolRegistryPort):
 
     def get_tools(self) -> dict[str, Type]:
         return self._registry.get_tools()
+
+    def get_metadata(self, tool_name: str) -> Optional[ToolMetadata]:
+        return self._registry.get_metadata(tool_name)

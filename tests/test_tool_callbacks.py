@@ -1,7 +1,7 @@
 """Tests for src/core/_tool_callbacks.py — ToolCallbackChain
 
 覆盖内容：
-  1. _READ_ONLY_TOOLS 常量正确性
+  1. _is_parallel_safe() metadata 驱动查询正确性
   2. handle_tool_calls 四波分类正确性（通过 mock execute_async 验证波次顺序）
   3. 结果按原始 tool_calls 顺序重建
   4. results_map 缺失键的降级处理
@@ -13,7 +13,14 @@ from unittest.mock import MagicMock, AsyncMock, PropertyMock
 
 import pytest
 
-from src.core._tool_callbacks import ToolCallbackChain, _READ_ONLY_TOOLS
+from src.core._tool_callbacks import ToolCallbackChain, _is_parallel_safe
+
+
+def _meta(parallel_safe=False):
+    """创建 mock metadata 对象，仅设置 parallel_safe 属性。"""
+    m = MagicMock()
+    m.parallel_safe = parallel_safe
+    return m
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -29,6 +36,21 @@ def mock_agent():
     type(agent._display_port).is_web = PropertyMock(return_value=False)
     agent._async_tool_executor = MagicMock()
     agent._async_tool_executor.execute_async = AsyncMock(return_value=[])
+    # 配置 registry.get_metadata 使 metadata 驱动分类正确：
+    #   parallel_safe=True:  read_file, search, find, ls, web_search
+    #   parallel_safe=False: write_file, update_file, bash, cp, mv, rm, mk,
+    #                        dispatch_agent, user_select
+    _registry = MagicMock()
+
+    def _get_metadata(tool_name):
+        if tool_name in {"read_file", "search", "find", "ls", "web_search"}:
+            return _meta(parallel_safe=True)
+        if tool_name in {"write_file", "update_file", "bash", "cp", "mv", "rm", "mk",
+                         "dispatch_agent", "user_select"}:
+            return _meta(parallel_safe=False)
+        return None
+    _registry.get_metadata = MagicMock(side_effect=_get_metadata)
+    agent._async_tool_executor.registry = _registry
     agent._capture_mgr = MagicMock()
     agent._event_port = MagicMock()
     agent._on_tool_completed_callbacks = []
@@ -63,56 +85,58 @@ def tool_calls_mixed():
 
 
 # ═══════════════════════════════════════════════════════════════
-# _READ_ONLY_TOOLS 常量
+# _is_parallel_safe() metadata 驱动查询
 # ═══════════════════════════════════════════════════════════════
 
-class TestReadOnlyTools:
-    """_READ_ONLY_TOOLS 常量正确性"""
+class TestIsParallelSafe:
+    """测试 _is_parallel_safe() metadata 驱动查询。"""
 
-    def test_contains_read_file(self):
-        assert "read_file" in _READ_ONLY_TOOLS
+    def test_parallel_safe_true_tools(self):
+        """parallel_safe=True 的工具返回 True — read_file, search, find, ls, web_search"""
+        registry = MagicMock()
 
-    def test_contains_search(self):
-        assert "search" in _READ_ONLY_TOOLS
+        def get_metadata(name):
+            if name in {"read_file", "search", "find", "ls", "web_search"}:
+                return _meta(parallel_safe=True)
+            return None
+        registry.get_metadata = MagicMock(side_effect=get_metadata)
 
-    def test_contains_find(self):
-        assert "find" in _READ_ONLY_TOOLS
+        for name in ("read_file", "search", "find", "ls", "web_search"):
+            assert _is_parallel_safe(registry, name) is True
 
-    def test_contains_ls(self):
-        assert "ls" in _READ_ONLY_TOOLS
+    def test_parallel_safe_false_tools(self):
+        """parallel_safe=False 的工具返回 False — write_file, update_file, bash, cp, mv, rm, mk"""
+        registry = MagicMock()
 
-    def test_contains_web_search(self):
-        assert "web_search" in _READ_ONLY_TOOLS
+        def get_metadata(name):
+            if name in {"write_file", "update_file", "bash", "cp", "mv", "rm", "mk"}:
+                return _meta(parallel_safe=False)
+            return None
+        registry.get_metadata = MagicMock(side_effect=get_metadata)
 
-    def test_excludes_write_file(self):
-        assert "write_file" not in _READ_ONLY_TOOLS
+        for name in ("write_file", "update_file", "bash", "cp", "mv", "rm", "mk"):
+            assert _is_parallel_safe(registry, name) is False
 
-    def test_excludes_update_file(self):
-        assert "update_file" not in _READ_ONLY_TOOLS
+    def test_unregistered_tool_returns_false(self):
+        """未注册工具返回 False（metadata 查询返回 None → 安全优先）"""
+        registry = MagicMock()
+        registry.get_metadata = MagicMock(return_value=None)
 
-    def test_excludes_bash(self):
-        assert "bash" not in _READ_ONLY_TOOLS
+        assert _is_parallel_safe(registry, "nonexistent_tool") is False
 
-    def test_excludes_dispatch_agent(self):
-        assert "dispatch_agent" not in _READ_ONLY_TOOLS
+    def test_user_select_not_parallel_safe(self):
+        """user_select 返回 False（交互式终端工具不可并行）"""
+        registry = MagicMock()
+        registry.get_metadata = MagicMock(return_value=_meta(parallel_safe=False))
 
-    def test_excludes_user_select(self):
-        assert "user_select" not in _READ_ONLY_TOOLS
+        assert _is_parallel_safe(registry, "user_select") is False
 
-    def test_excludes_cp(self):
-        assert "cp" not in _READ_ONLY_TOOLS
+    def test_dispatch_agent_not_parallel_safe(self):
+        """dispatch_agent 返回 False（SubAgent 需独立一波）"""
+        registry = MagicMock()
+        registry.get_metadata = MagicMock(return_value=_meta(parallel_safe=False))
 
-    def test_excludes_mv(self):
-        assert "mv" not in _READ_ONLY_TOOLS
-
-    def test_excludes_rm(self):
-        assert "rm" not in _READ_ONLY_TOOLS
-
-    def test_excludes_mk(self):
-        assert "mk" not in _READ_ONLY_TOOLS
-
-    def test_is_frozenset(self):
-        assert isinstance(_READ_ONLY_TOOLS, frozenset)
+        assert _is_parallel_safe(registry, "dispatch_agent") is False
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -140,8 +164,8 @@ class TestWaveOrdering:
         assert wave_order[0] == ["user_select"]
 
     @pytest.mark.asyncio
-    async def test_wave_order_read_before_write(self, chain, mock_agent, tool_calls_mixed):
-        """Wave 1 (只读) 在 Wave 2 (写) 之前执行"""
+    async def test_wave_order_parallel_safe_before_non_parallel(self, chain, mock_agent, tool_calls_mixed):
+        """Wave 1 (并行安全) 在 Wave 2 (非并行安全) 之前执行"""
         wave_order = []
 
         async def record_wave(calls, **kwargs):
@@ -153,10 +177,10 @@ class TestWaveOrdering:
 
         await chain.handle_tool_calls("content", tool_calls_mixed)
 
-        # 第二个波次应全是只读工具
+        # 第二个波次应全是并行安全工具（metadata 驱动）
         assert set(wave_order[1]) == {"read_file", "search", "find", "ls"}
 
-        # 第三个波次应全是写工具
+        # 第三个波次应全是非并行安全工具（metadata 驱动）
         assert set(wave_order[2]) == {"write_file", "bash", "update_file"}
 
     @pytest.mark.asyncio
@@ -177,8 +201,8 @@ class TestWaveOrdering:
         assert wave_order[-1] == ["dispatch_agent"]
 
     @pytest.mark.asyncio
-    async def test_read_only_parallel(self, chain, mock_agent):
-        """Wave 1（只读工具）以 parallel=True 执行"""
+    async def test_parallel_safe_parallel(self, chain, mock_agent):
+        """Wave 1（并行安全工具，metadata 驱动）以 parallel=True 执行"""
         calls = [
             {"id": "tc_0", "name": "read_file", "arguments": {"path": "a.txt"}},
             {"id": "tc_1", "name": "search", "arguments": {"query": "x"}},
@@ -193,12 +217,12 @@ class TestWaveOrdering:
 
         await chain.handle_tool_calls("content", calls)
 
-        # Wave 1 应为 parallel=True（没有 user_select 所以 wave_order[0] 是只读）
+        # Wave 1 应为 parallel=True（没有 user_select 所以第一个波次是并行安全工具）
         assert parallel_flags[0] is True
 
     @pytest.mark.asyncio
-    async def test_write_serial(self, chain, mock_agent):
-        """Wave 2（写工具）以 parallel=False 执行"""
+    async def test_non_parallel_safe_serial(self, chain, mock_agent):
+        """Wave 2（非并行安全工具，metadata 驱动）以 parallel=False 执行"""
         calls = [
             {"id": "tc_0", "name": "write_file",
              "arguments": {"path": "a.txt", "content": "x"}},

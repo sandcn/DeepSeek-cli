@@ -13,7 +13,7 @@ import time
 import logging
 from typing import Dict, Type, Any, List, Optional
 
-from .base import Func
+from .base import Func, ToolMetadata, get_tool_metadata
 from ..core.ports.tool_registry import ToolRegistryPort
 from ._constants import TOOL_ABBR
 
@@ -73,6 +73,21 @@ class ToolRegistry(ToolRegistryPort):
         """
         self._ensure_initialized()
         return self._tools.copy()
+
+    def get_metadata(self, tool_name: str) -> Optional[ToolMetadata]:
+        """获取指定工具的元数据
+
+        Args:
+            tool_name: 工具名称
+
+        Returns:
+            工具的 ToolMetadata，工具未注册或未设置元数据时返回 None
+        """
+        self._ensure_initialized()
+        tool_class = self._tools.get(tool_name)
+        if tool_class is None:
+            return None
+        return get_tool_metadata(tool_class)
 
     def get_schemas(self) -> List[Dict[str, Any]]:
         """

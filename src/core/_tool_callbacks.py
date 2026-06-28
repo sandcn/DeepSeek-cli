@@ -5,8 +5,8 @@
 
 工具执行四波排序：
   Wave 0: user_select 串行（独占终端）
-  Wave 1: 只读工具并行（read_file/search/find/ls/web_search）
-  Wave 2: 写工具串行（write_file/update_file/cp/mv/rm/mk/bash 等）
+  Wave 1: 并行安全工具并发（metadata 驱动，parallel_safe=True）
+  Wave 2: 非并行安全工具串行（metadata 驱动，parallel_safe=False）
   Wave 3: dispatch_agent 并发（SubAgent，前三波完成后执行）
 """
 
@@ -24,12 +24,17 @@ from ..config import audit_logger
 
 _logger = logging.getLogger(__name__)
 
-# ── 只读工具集合（并行安全、无副作用） ──────────────────
-# 这些工具仅读取/搜索，不修改文件系统或外部状态，可以安全并行。
-# 注意：bash 不在此集合中，因为无法在调用侧判断其读写性质。
-_READ_ONLY_TOOLS: frozenset[str] = frozenset({
-    "read_file", "search", "find", "ls", "web_search",
-})
+def _is_parallel_safe(registry, tool_name: str) -> bool:
+    """通过 metadata 动态查询工具是否并行安全。
+
+    metadata 查询失败时默认返回 False（安全优先）。
+    """
+    try:
+        meta = registry.get_metadata(tool_name)
+        return meta is not None and meta.parallel_safe
+    except Exception:
+        _logger.debug("_is_parallel_safe 查询失败，工具 '%s' 默认返回 False", tool_name, exc_info=True)
+        return False
 
 
 def _safe_json_dumps(obj) -> str:
@@ -75,8 +80,8 @@ class ToolCallbackChain:
     async def handle_tool_calls(self, content, tool_calls, reasoning_content=None, usage=None):
         """处理工具调用，按四波排序执行：
         Wave 0: user_select 串行（独占终端）
-        Wave 1: 只读工具并行（read_file/search/find/ls/web_search）
-        Wave 2: 写工具串行（write_file/update_file/cp/mv/rm/mk/bash 等）
+        Wave 1: 并行安全工具并发（metadata 驱动，parallel_safe=True）
+        Wave 2: 非并行安全工具串行（metadata 驱动，parallel_safe=False）
         Wave 3: dispatch_agent 并发（SubAgent，前三波完成后执行）
         """
         agent = self._agent
@@ -102,10 +107,17 @@ class ToolCallbackChain:
         # create_output() 回退为 PlainTextOutput，Picker TUI 无法显示。
         user_select_calls = [tc for tc in tool_calls if tc.get("name") == "user_select"]
         dispatch_agent_calls = [tc for tc in tool_calls if tc.get("name") == "dispatch_agent"]
-        read_only_calls = [tc for tc in tool_calls if tc.get("name") in _READ_ONLY_TOOLS]
-        # 写工具：不在上述三类中的所有工具（含 bash 等）
-        _excluded = {"user_select", "dispatch_agent"} | _READ_ONLY_TOOLS
-        write_calls = [tc for tc in tool_calls if tc.get("name") not in _excluded]
+        parallel_safe_calls = [
+            tc for tc in tool_calls
+            if tc.get("name") not in {"user_select", "dispatch_agent"}
+            and _is_parallel_safe(agent._async_tool_executor.registry, tc.get("name", ""))
+        ]
+        # 非并行安全工具（写工具等）：不在 user_select/dispatch_agent/parallel_safe 中的工具
+        non_parallel_calls = [
+            tc for tc in tool_calls
+            if tc.get("name") not in {"user_select", "dispatch_agent"}
+            and not _is_parallel_safe(agent._async_tool_executor.registry, tc.get("name", ""))
+        ]
 
         # ── 回调工厂（消除 lambda 重复） ────────────────
         def _on_before(tc, detail):
@@ -137,11 +149,11 @@ class ToolCallbackChain:
             # Wave 0: user_select 串行（独占终端输入）
             await _execute_wave(user_select_calls, parallel=False)
 
-            # Wave 1: 只读工具并行
-            await _execute_wave(read_only_calls, parallel=True)
+            # Wave 1: 并行安全工具并发（metadata 驱动）
+            await _execute_wave(parallel_safe_calls, parallel=True)
 
-            # Wave 2: 写工具串行
-            await _execute_wave(write_calls, parallel=False)
+            # Wave 2: 非并行安全工具串行（metadata 驱动）
+            await _execute_wave(non_parallel_calls, parallel=False)
 
             # Wave 3: dispatch_agent 并发（SubAgent 在前三波完成后执行）
             await _execute_wave(dispatch_agent_calls, parallel=True)

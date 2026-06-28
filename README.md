@@ -417,11 +417,20 @@ ChatUIConsumer
 ```
 ├── chat.py                # 入口脚本（asyncio.run(main())）
 ├── pyproject.toml         # 项目配置与依赖
-├── prompts/               # 系统提示词（main/sub/map/plan/review + memory 指南）
-├── tests/                 # 测试（107 个测试文件）
+├── prompts/               # 系统提示词（8 个文件）
+│   ├── prompts_export_main.md    # 主 Agent 系统提示词
+│   ├── prompts_export_sub.md     # SubAgent 通用提示词
+│   ├── prompts_export_map.md     # map SubAgent 探底提示词
+│   ├── prompts_export_plan.md    # plan SubAgent 计划提示词
+│   ├── prompts_export_plan_execute.md  # plan_execute SubAgent 提示词
+│   ├── prompts_export_review.md  # review SubAgent 审查提示词
+│   ├── prompts_export_read_memory.md   # read_memory SubAgent 提示词
+│   └── prompts_export_write_memory.md  # write_memory SubAgent 提示词
+├── tests/                 # 测试（112 个测试文件）
 ├── .chat/                 # 运行时数据目录
 │   ├── memory/            # 跨对话记忆系统（索引 + 详情）
-│   └── plan/              # Plan Agent 计划文件
+│   ├── plan/              # Plan Agent 计划文件
+│   └── msg_list/          # 会话消息存储（JSON 格式）
 │
 ├── src/                   # 核心源码
 │   ├── app.py             # 入口 re-export
@@ -449,7 +458,13 @@ ChatUIConsumer
 │   │   ├── events.py           # API 事件定义
 │   │   ├── _model_loops.py / _stats_core.py / _stream_lifecycle.py / _token_speed.py / _tool_parse_utils.py  # 内部辅助模块
 │   │   ├── adapters/          # 多模型适配器（DeepSeek/OpenAI/Anthropic/Ollama）
-│   │   └── renderer/          # 增量流式 Markdown 渲染引擎（AST + VNode + Diff/Patch，~99 文件）
+│   │   └── renderer/          # 增量流式 Markdown 渲染引擎（~99 文件）
+│   │       ├── ast/               # AST 构建→扁平化→优化→渲染
+│   │       ├── vnode/             # VNode 虚拟节点 + Differ 差异计算 + Patcher 补丁应用
+│   │       ├── handlers/          # 块级元素处理器（code/table/mermaid/math/admonition 等）
+│   │       ├── pipeline.py / pipeline_filters/  # 渲染流水线 + 流式优化过滤器
+│   │       └── targets/           # 多目标渲染适配（terminal/web）
+│   │       （另有 `_rendering/`、`_utils/`、`math_symbols/` 等内部辅助子目录）
 │   │
 │   ├── config/            # 配置系统
 │   │   ├── loader.py          # 配置加载/持久化（~/.chat_config/chatrc.json）
@@ -460,6 +475,8 @@ ChatUIConsumer
 │   │   ├── agent.py           # 对话代理（Pipeline 中间件管道）
 │   │   ├── base_agent.py      # Agent 基类（消息管理、沙盒上下文）
 │   │   ├── session.py         # ChatSession 会话（状态机驱动）
+│   │   ├── _session_persistence.py # 会话持久化辅助（保存/加载/断点管理）
+│   │   ├── _session_messages.py    # 会话消息管理（添加/过滤/属性）
 │   │   ├── state_machine.py   # 会话状态机（INIT→IDLE→RUNNING→COMPLETED/INTERRUPTED）
 │   │   ├── subagent.py        # SubAgent 子代理（含 _TOOL_EXCLUSION_MAP 工具排除策略 + agent_type 注入）
 │   │   ├── _subagent_spawner.py # SubAgentSpawner — 创建/渲染/事件发布
@@ -474,30 +491,34 @@ ChatUIConsumer
 │   │   ├── context_manager.py # 上下文管理器 + 消息上限控制
 │   │   ├── context_selector.py / context_summarizer.py
 │   │   ├── sandbox_manager.py # 文件沙盒管理器
+│   │   ├── _sandbox_history.py   # 文件历史记录管理器（按消息索引查询/恢复）
 │   │   ├── parallel_executor.py # ParallelExecutor — 并行 SubAgent 调度（批量模式）
 │   │   ├── tool_executor_async.py # AsyncToolExecutor — 异步工具执行器
 │   │   ├── cache.py             # 增量统计缓存
+│   │   ├── _message_stats_cache.py # 消息统计缓存（每消息字符/token 增量维护）
 │   │   ├── constants.py          # 主题常量
 │   │   ├── commands.py           # 命令系统入口
 │   │   ├── commands/              # 命令插件子模块
 │   │   ├── commands_config.py / commands_data.py / commands_session.py
 │   │   ├── events/            # 核心事件总线 + 事件类型
 │   │   ├── middleware/        # Pipeline 中间件（审计/中断/状态机/可观测性/工具适配器）
-│   │   ├── ports/             # 六边形架构端口定义（13 个端口）
+│   │   ├── ports/             # 六边形架构端口定义（14 个端口）
 │   │   └── telemetry/         # 可观测性（指标/追踪/上下文传播）
 │   │
 │   ├── chat_ui/            # 终端聊天渲染引擎
 │   │   ├── _consumer.py       # 事件消费者（队列 → 增量渲染），持有 CursorTracker 实例注入所有子系统
 │   │   ├── _engine.py         # 增量渲染引擎（render 线程 10Hz），集成 CursorTracker 坐标同步
 │   │   ├── _dispatcher.py     # 事件分发（11 种事件类型 → 渲染命令）
-│   │   ├── _renderers.py      # 渲染器集合（14 种 _do_* 方法，集成 CursorTracker 行数追踪）
+│   │   ├── _renderer.py       # 渲染器集合（15 种 _do_* 方法，集成 CursorTracker 行数追踪）
 │   │   ├── _render_state.py   # 渲染状态管理
 │   │   ├── _completion.py     # Tab 命令/会话 ID 自动补全
+│   │   ├── _components.py     # 组件层（TuiComponent 基类 + 12 个子类）
 │   │   ├── _const.py          # 渲染相关常量定义
 │   │   ├── _protocols.py      # 渲染协议定义
 │   │   ├── _state.py          # 渲染状态追踪
 │   │   ├── _utils.py          # 渲染工具函数
-│   │   └── _error_handler.py  # 日志→上屏（日志显示在底部栏上方）
+│   │   ├── _error_handler.py  # 日志→上屏（日志显示在底部栏上方）
+│   │   └── _lock.py           # 渲染锁（re-export ui._lock 全局锁对象）
 │   │
 │   ├── tools/              # 工具调用系统（14 个内置工具）
 │   │   ├── base.py            # Func 基类 + 元数据系统（含 can_use 工具可用性检查 / agent_type）
@@ -564,8 +585,101 @@ ChatUIConsumer
 │   │
 │   ├── prompt_builder/     # 系统提示词构建
 │   ├── notifications/      # 桌面通知（Termux/Linux/Windows）
-│   └── observability/      # 可观测性门面
+│   └── observability/      # 可观测性门面（聚合指标/追踪/遥测日志）
 ```
+
+---
+
+## 六边形架构（Ports & Adapters）
+
+核心层通过 **14 个端口接口** 访问基础设施，实现依赖倒置——核心层不直接依赖 `api`、`ui`、`chat_msgs` 等具体实现模块，基础设施层通过适配器模式实现这些端口。
+
+| 端口 | 文件 | 说明 |
+|------|------|------|
+| `ConfigPort` | `ports/config.py` | 配置管理（读取/写入/默认值） |
+| `AsyncModelPort` | `ports/model.py` | 异步模型调用（LLM API） |
+| `CachePort` | `cache.py` | 通用缓存（LRU / Null 实现） |
+| `StatsPort` | `ports/stats.py` | 统计收集（Token 用量等） |
+| `PersistencePort` | `ports/persistence.py` | 会话持久化（JSON 文件存储） |
+| `CheckpointPort` | `ports/persistence.py` | 任务断点保存与恢复 |
+| `DisplayPort` | `ports/display.py` | 用户显示输出 |
+| `EventPort` | `ports/events.py` | 事件总线发布/订阅 |
+| `OutputPort` | `ports/output.py` | 文本输出（含级别标记） |
+| `InterruptPort` | `ports/interrupt.py` | 中断信号检查 |
+| `ToolRegistryPort` | `ports/tool_registry.py` | 工具注册表访问 |
+| `PromptBuilderPort` | `ports/prompt_builder.py` | 系统提示词构建 |
+| `RenderPort` | `ports/render.py` | 增量 Markdown 渲染引擎 |
+| `HttpClientPort` | `ports/http.py` | HTTP 客户端 |
+
+**设计原则**：所有端口均为 Protocol 或抽象基类，核心层仅依赖端口接口，不感知具体实现。测试时可通过 Mock 适配器替换基础设施，实现核心逻辑的独立单元测试。
+
+---
+
+## 事件系统
+
+### 核心事件总线（`src/core/events/`）
+
+通用事件发布/订阅系统，支持通配符订阅和优先级排序。定义 **16 种事件类型**：
+
+| 事件常量 | 事件类型字符串 | 说明 |
+|----------|---------------|------|
+| `MODEL_CALL_STARTED` | `model.call.started` | 模型调用开始 |
+| `MODEL_CALL_COMPLETED` | `model.call.completed` | 模型调用完成 |
+| `MODEL_CALL_FAILED` | `model.call.failed` | 模型调用失败 |
+| `MODEL_STREAM_CHUNK` | `model.stream.chunk` | 流式内容块 |
+| `TOOL_CALL_STARTED` | `tool.call.started` | 工具调用开始 |
+| `TOOL_CALL_COMPLETED` | `tool.call.completed` | 工具调用完成 |
+| `TOOL_CALL_FAILED` | `tool.call.failed` | 工具调用失败 |
+| `SESSION_STARTED` | `session.started` | 会话开始 |
+| `SESSION_COMPLETED` | `session.completed` | 会话完成 |
+| `SESSION_INTERRUPTED` | `session.interrupted` | 会话中断 |
+| `SESSION_SAVED` | `session.saved` | 会话保存 |
+| `CONTEXT_COMPRESSED` | `context.compressed` | 上下文压缩完成 |
+| `CONTEXT_COMPRESS_FAILED` | `context.compress.failed` | 上下文压缩失败 |
+| `CONFIG_CHANGED` | `config.changed` | 配置变更 |
+| `APP_BOOTSTRAP` | `app.bootstrap` | 应用启动 |
+| `APP_SHUTDOWN` | `app.shutdown` | 应用关闭 |
+
+**特性**：通配符订阅（如 `model.*` 匹配所有模型事件）、优先级排序（`EventPriority` 枚举，LOWEST→HIGHEST）、不可变事件数据类（`frozen dataclass`）。
+
+### UI 事件总线（`src/ui/events/`）
+
+显示层事件系统，定义 **24 种 `DisplayEvent`** 类型（生命周期/工具调用/Agent 状态/模型阶段/流式内容/附加状态/通用输出/用户交互），基于 `CoreEventBus` 底层发布机制实现。`DisplayEventBus` 对 `DisplayEvent` 子类提供类型安全包装，与核心事件（字符串类型）并行独立运作，确保终端和 Web UI 双端共享相同的事件语义。
+
+---
+
+## Pipeline 中间件管道
+
+Pipeline 将 Agent 对话循环编排为可插拔中间件链。中间件按注册顺序依次执行，每个钩子可拦截/增强/跳过特定阶段。
+
+### 中间件列表（5 个）
+
+| 中间件 | 文件 | 功能 |
+|--------|------|------|
+| `_InterruptCheckMiddleware` | `middleware/interrupt.py` | 模型调用前检查中断信号 |
+| `_AsyncObservabilityMiddleware` | `middleware/observability.py` | 指标采集 + 调用链追踪 |
+| `_AuditLogMiddleware` | `middleware/audit.py` | 审计日志记录 |
+| `StateMachineMiddleware` | `middleware/state_machine.py` | 状态机自动状态转换 |
+| `_ToolRegistryAdapter` | `middleware/adapters.py` | 工具注册表端口适配器（继承 ToolRegistryPort） |
+
+### 生命周期钩子（6 个）
+
+| 钩子 | 触发时机 |
+|------|----------|
+| `before_model_call` | 模型调用之前 |
+| `after_model_call` | 模型调用之后 |
+| `before_tool_execution` | 工具执行之前 |
+| `after_tool_execution` | 工具执行之后 |
+| `on_round_complete` | 一轮对话完成 |
+| `on_exception` | 异常发生时 |
+
+---
+
+## 版本控制
+
+- **分支**: `main`
+- **当前版本**: `v2.2.0`
+- **仓库**: Git 管理，`.gitignore` 排除 `__pycache__/`、`*.pyc`、虚拟环境及运行时数据
 
 ---
 

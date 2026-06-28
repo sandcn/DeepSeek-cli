@@ -101,47 +101,94 @@ class AsyncToolExecutor:
     ) -> List[Tuple[str, str, bool]]:
         """异步执行工具调用列表。
 
+        parallel=False 时所有工具串行执行。
+        parallel=True 时自动根据工具 metadata 的 parallel_safe 字段分流：
+        - parallel_safe=False 的工具先串行执行（保证安全顺序）
+        - parallel_safe=True 的工具再并发执行（Semaphore 限流）
+        - 最终按原始 tool_calls 顺序返回结果
+
         Args:
             tool_calls: 工具调用列表 [{"id", "name", "arguments"}]
             agent_ref: 传给 registry.dispatch() 的 agent 引用
             on_before: (tc, detail) -> None  执行前回调
             on_after: (tc, output, success) -> None  执行后回调
             run_method: (func, tc) -> str  自定义执行方式
-            parallel: 是否并发执行多个工具调用
+            parallel: 是否启用并行调度（自动 metadata 分流）
 
         Returns:
             [(tool_call_id, output, success)] 列表
         """
         if not parallel or len(tool_calls) <= 1:
-            results = []
-            for tc in tool_calls:
-                try:
-                    result = await self._execute_one_async(
-                        tc,
-                        agent_ref=agent_ref,
-                        on_before=on_before,
-                        on_after=on_after,
-                        run_method=run_method,
-                    )
-                except asyncio.CancelledError:
-                    _logger.warning("Serial async tool %s cancelled, 停止后续工具", tc["name"])
-                    results.append((tc["id"], f"工具执行被取消: {tc['name']}", False))
-                    break
-                except Exception as e:
-                    _logger.error("Serial async tool %s failed: %s", tc["name"], e)
-                    result = (tc["id"], f"工具执行失败: {e}", False)
-                    results.append(result)
-                    continue
-                results.append(result)
-            return results
+            return await self._execute_serial(tool_calls, agent_ref=agent_ref, on_before=on_before, on_after=on_after, run_method=run_method)
 
-        # 并发执行
-        # TODO: 后续可利用 tool metadata 的 parallel_safe 字段做更精细的并行调度：
-        #       将 parallel_safe=True 的工具并发执行，parallel_safe=False 的工具串行执行，
-        #       实现 metadata 驱动的智能调度，避免非线程安全工具同时访问共享资源。
-        # 使用 asyncio.wait(return_when=FIRST_EXCEPTION) 替代
-        # 手动 fail_event + cancel_monitor 模式，减少调度开销。
-        # 首个工具抛出异常时立即取消其余未完成的任务。
+        # 根据 parallel_safe metadata 自动分流
+        serial_calls = []
+        parallel_calls = []
+        for tc in tool_calls:
+            is_safe = False
+            try:
+                meta = self.registry.get_metadata(tc["name"])
+                if meta is not None:
+                    is_safe = meta.parallel_safe
+            except Exception:
+                _logger.debug("metadata 查询失败，工具 '%s' 默认串行执行", tc.get("name", "?"), exc_info=True)
+                # 查询失败 → 默认串行（安全优先）
+
+            if is_safe:
+                parallel_calls.append(tc)
+            else:
+                serial_calls.append(tc)
+
+        results_map = {}
+
+        # 先串行执行非 parallel_safe 工具
+        if serial_calls:
+            serial_results = await self._execute_serial(serial_calls, agent_ref=agent_ref, on_before=on_before, on_after=on_after, run_method=run_method)
+            for r in serial_results:
+                results_map[r[0]] = r
+
+        # 再并发执行 parallel_safe 工具
+        if parallel_calls:
+            parallel_results = await self._execute_concurrent(parallel_calls, agent_ref=agent_ref, on_before=on_before, on_after=on_after, run_method=run_method)
+            for r in parallel_results:
+                results_map[r[0]] = r
+
+        # 按原始顺序返回
+        return [results_map[tc["id"]] for tc in tool_calls]
+
+    async def _execute_serial(
+        self, tool_calls: list, *,
+        agent_ref, on_before: Optional[Callable] = None,
+        on_after: Optional[Callable] = None,
+        run_method: Optional[Callable] = None,
+    ) -> List[Tuple[str, str, bool]]:
+        """串行执行工具调用列表，保持原始顺序，遇到取消则停止后续。"""
+        results = []
+        for tc in tool_calls:
+            try:
+                result = await self._execute_one_async(
+                    tc, agent_ref=agent_ref, on_before=on_before,
+                    on_after=on_after, run_method=run_method,
+                )
+            except asyncio.CancelledError:
+                _logger.warning("Serial async tool %s cancelled, 停止后续工具", tc["name"])
+                results.append((tc["id"], f"工具执行被取消: {tc['name']}", False))
+                break
+            except Exception as e:
+                _logger.error("Serial async tool %s failed: %s", tc["name"], e)
+                result = (tc["id"], f"工具执行失败: {e}", False)
+                results.append(result)
+                continue
+            results.append(result)
+        return results
+
+    async def _execute_concurrent(
+        self, tool_calls: list, *,
+        agent_ref, on_before: Optional[Callable] = None,
+        on_after: Optional[Callable] = None,
+        run_method: Optional[Callable] = None,
+    ) -> List[Tuple[str, str, bool]]:
+        """并发执行工具调用列表，使用 Semaphore 限流 + FIRST_EXCEPTION 级联取消。"""
         sem = self._semaphore
 
         async def _run_with_semaphore(tc):
@@ -212,5 +259,4 @@ class AsyncToolExecutor:
                 await asyncio.gather(*tasks.keys(), return_exceptions=True)
 
         # 按原顺序返回结果
-        final_results = [results_map[tc["id"]] for tc in tool_calls]
-        return final_results
+        return [results_map[tc["id"]] for tc in tool_calls]
