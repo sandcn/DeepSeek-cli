@@ -709,10 +709,7 @@ class _BottomBar(_StatusMixin):
 
             self._last_bottom_lines = total
 
-            # ★ 底部栏扩大时（delta > 0），在上屏内容被底部栏覆盖前，
-            #    保存被覆盖行的内容到 ring buffer，供缩小后恢复使用。
-            if delta > 0 and self._tracker is not None:
-                self._tracker.save_rows_to_restore(delta)
+
 
             if scroll_end < 1:
                 for r in range(1, height + 1):
@@ -767,23 +764,12 @@ class _BottomBar(_StatusMixin):
             if self._tracker is not None:
                 self._tracker.set_scroll_end(scroll_end)
             out.write(f"{_blessed_set_scroll_region(1, scroll_end)}")
-            # ★ 底部栏缩小时（delta < 0），恢复之前保存的上屏内容行，
-            #    确保上屏内容在弹窗弹出/缩回后保持原样。
+            # ★ 底部栏缩小时（delta < 0），清除释放的上屏内容区域（原先
+            #    被底部栏覆盖的行），后续内容渲染会自然填充该区域。
             if delta < 0 and old_scroll_end > 0:
-                saved = self._tracker.get_saved_rows() if self._tracker is not None else None
-                if saved:
-                    n_rows = min(-delta, scroll_end - old_scroll_end)
-                    for i, line in enumerate(saved[:n_rows]):
-                        r = old_scroll_end + 1 + i
-                        if r <= height:
-                            out.write(_blessed_move_clear(r) + line.rstrip('\n'))
-                    self._cursor_tracker.set(min(old_scroll_end + n_rows, scroll_end), 1)
-                    if self._tracker is not None:
-                        self._tracker.clear_saved()
-                else:
-                    for r in range(old_scroll_end + 1, scroll_end + 1):
-                        out.write(_blessed_move_clear(r))
-                    self._cursor_tracker.set(scroll_end, 1)
+                for r in range(old_scroll_end + 1, scroll_end + 1):
+                    out.write(_blessed_move_clear(r))
+                self._cursor_tracker.set(scroll_end, 1)
             out.write(_blessed_restore_cursor())
             out.write(_blessed_cursor_goto(scroll_end, 1) + _blessed_save_cursor())
             self._cursor_tracker.set(scroll_end, 1)

@@ -1,8 +1,7 @@
-"""_StdoutLineTracker — transparent stdout line tracker for save/restore.
+"""_StdoutLineTracker — transparent stdout line tracker.
 
 Wraps sys.__stdout__ transparently, passing all writes through while tracking
-complete lines (detected by \n) in a ring buffer. Used by _BottomBar to save
-scroll-area content before completion popup expansion and restore it after collapse.
+complete lines (detected by \n) in a ring buffer.
 
 机制：
   - 所有 write/flush 原封不动穿透到真实 stdout
@@ -21,7 +20,7 @@ _CURSOR_POS_RE = re.compile(r'\x1b\[(\d+);(\d+)H')
 
 
 class _StdoutLineTracker:
-    """Transparent stdout wrapper that tracks complete lines for save/restore.
+    """Transparent stdout wrapper that tracks complete lines.
 
     All write/flush calls pass through to the real stdout unchanged.
     Lines are detected by \\n characters and stored in a ring buffer.
@@ -37,7 +36,6 @@ class _StdoutLineTracker:
         self._partial_line: str = ""
         self._scroll_end: int = 0
         self._in_bottom_bar: bool = False
-        self._saved_rows: list[str] | None = None
 
     # ── File object protocol ──
 
@@ -128,28 +126,4 @@ class _StdoutLineTracker:
                 for line in complete_lines:
                     self._ring.append(line)
 
-    # ── Save/restore API ──
 
-    def save_rows_to_restore(self, n: int) -> None:
-        """Save the last n complete lines from the ring buffer.
-
-        Called before SU scroll in show_completions() to snapshot the
-        content that will be scrolled out of view.
-
-        Args:
-            n: Number of rows to save.
-        """
-        if n <= 0:
-            return
-        ring_list = list(self._ring)
-        if not ring_list:
-            return
-        self._saved_rows = list(ring_list[-n:]) if len(ring_list) >= n else list(ring_list)
-
-    def get_saved_rows(self) -> list[str] | None:
-        """Get the saved rows for restoration, or None if nothing saved."""
-        return self._saved_rows
-
-    def clear_saved(self) -> None:
-        """Clear saved rows after they have been restored to the terminal."""
-        self._saved_rows = None

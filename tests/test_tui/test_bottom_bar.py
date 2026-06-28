@@ -41,8 +41,6 @@ class TestBottomBarCursorPos(unittest.TestCase):
         self.bb = _BottomBar()
         # 激活底部栏（模拟 setup 后的状态）
         self.bb._active = True
-        self.bb._cached_height = 30
-        self.bb._cached_width = 80
         # 模拟已输入的文本和光标位置
         self.bb._last_text = "hello world"
         self.bb._input_cursor_pos = 11  # 末尾
@@ -288,8 +286,6 @@ class TestBottomBarLastScrollEnd(unittest.TestCase):
 
     def test_setup_syncs_last_scroll_end(self):
         """setup() 后 _last_scroll_end 应等于 height - _bottom_lines。"""
-        self.bb._cached_height = 30
-        self.bb._cached_width = 80
 
         mock_term = _mock_terminal(width=80, height=30)
         with patch.object(sys, '__stdout__', io.StringIO()), \
@@ -303,8 +299,6 @@ class TestBottomBarLastScrollEnd(unittest.TestCase):
     def test_ensure_cursor_upper_uses_cached_value(self):
         """ensure_cursor_in_upper() 使用 _last_scroll_end 而非动态计算。"""
         self.bb._active = True
-        self.bb._cached_height = 30
-        self.bb._cached_width = 80
         self.bb._last_scroll_end = 25  # 模拟 setup 后的值
         self.bb._last_text = "x" * 300  # 长文本使 _bottom_lines 很大
 
@@ -327,8 +321,6 @@ class TestBottomBarLastScrollEnd(unittest.TestCase):
     def test_ensure_cursor_upper_fallback_when_zero(self):
         """_last_scroll_end=0 时降级到 terminal height。"""
         self.bb._active = True
-        self.bb._cached_height = 30
-        self.bb._cached_width = 80
         self.bb._last_scroll_end = 0  # 未初始化
 
         mock_term = _mock_terminal(width=80, height=30)
@@ -344,8 +336,6 @@ class TestBottomBarLastScrollEnd(unittest.TestCase):
     def test_sync_bottom_lines_updates_decstbm(self):
         """sync_bottom_lines() 在 _bottom_lines 变化时同步 DECSTBM。"""
         self.bb._active = True
-        self.bb._cached_height = 30
-        self.bb._cached_width = 80
         self.bb._last_scroll_end = 25  # 旧值（30-5）
         # 让 _bottom_lines 变大（模拟补全弹窗弹出）
         self.bb._completion_popup_height = 6
@@ -367,8 +357,6 @@ class TestBottomBarLastScrollEnd(unittest.TestCase):
     def test_sync_bottom_lines_skips_when_unchanged(self):
         """sync_bottom_lines() 在 _bottom_lines 未变且终端高度未变时静默跳过。"""
         self.bb._active = True
-        self.bb._cached_height = 30
-        self.bb._cached_width = 80
         self.bb._last_scroll_end = 25  # 30 - 5 = 25，与当前 _bottom_lines 一致
         self.bb._last_sync_height = 30  # 终端高度未变
 
@@ -389,8 +377,6 @@ class TestBottomBarLastScrollEnd(unittest.TestCase):
         消除底部栏刷新（输入）路径中旧内容在 force_redraw 前的残留。
         """
         self.bb._active = True
-        self.bb._cached_height = 30
-        self.bb._cached_width = 80
         # 模拟旧状态：scroll_end=25（30-5）
         self.bb._last_scroll_end = 25
         self.bb._last_sync_height = 30
@@ -501,8 +487,6 @@ class TestApplyScrollDeltaOrdering(unittest.TestCase):
     def setUp(self):
         self.bb = _BottomBar()
         self.bb._active = True
-        self.bb._cached_height = 30
-        self.bb._cached_width = 40  # 窄宽度，确保长文本换行
         self.bb._setup_height = 30
         self.bb._setup_width = 40
         self.bb._last_text = "test"
@@ -606,7 +590,6 @@ class TestApplyScrollDeltaOrdering(unittest.TestCase):
         # setup: height=30, shrink to 25
         self.bb._last_bottom_lines = 5
         self.bb._setup_height = 30
-        self.bb._cached_height = 30
         self.bb._last_text = "test"
         # 缩小后 shrink 路径使用新 height=25 定位到新终端末行
         from unittest.mock import patch as u_patch
@@ -638,8 +621,6 @@ class TestApplyScrollDelta(unittest.TestCase):
     def setUp(self):
         self.bb = _BottomBar()
         self.bb._active = True
-        self.bb._cached_height = 30
-        self.bb._cached_width = 80
         self.bb._last_height = 30  # 哨兵，force_redraw 需要
         self._stdout = sys.__stdout__
 
@@ -703,9 +684,8 @@ class TestApplyScrollDelta(unittest.TestCase):
         output = buf.getvalue()
         self.assertEqual(output, "", "old_scroll_end=-1 时应无操作")
 
-    @unittest.skip("2026-06-11: hide_completions I/O 迁移至 render 线程")
     def test_hide_completions_scroll_down(self):
-        """hide_completions() 触发 delta < 0 路径，用 tracker 恢复保存的行（不输出 SD）。"""
+        """★ 2026-06-28: hide_completions() 触发 delta < 0，仅清除释放区域，不调用 save/restore。"""
         # 模拟补全弹窗已弹出（底部栏扩大）的状态
         self.bb._completion._visible = True
         self.bb._completion._popup_height = 4  # 弹窗占 4 行
@@ -717,14 +697,13 @@ class TestApplyScrollDelta(unittest.TestCase):
         self.bb._last_bottom_lines = 9  # 旧底部栏：2 + 3 + 4 = 9
         self.bb._last_rendered_text = "test"
         self.bb._last_status = ""
-        # ★ 安装 mock tracker 模拟恢复路径
-        tracker = MagicMock()
-        tracker.get_saved_rows.return_value = ["saved_line_1", "saved_line_2", "saved_line_3", "saved_line_4"]
-        self.bb._tracker = tracker
 
         buf = io.StringIO()
+        # ★ mock _term_height/_term_width（而非 shutil.get_terminal_size），
+        #    因为 force_redraw() 优先使用 Blessed Terminal
         with patch.object(sys, '__stdout__', buf), \
-             patch("shutil.get_terminal_size", return_value=(80, 30)), \
+             patch.object(self.bb, '_term_height', return_value=30), \
+             patch.object(self.bb, '_term_width', return_value=80), \
              patch.object(self.bb, '_format_status', return_value=""):
             self.bb.hide_completions()
 
@@ -734,19 +713,11 @@ class TestApplyScrollDelta(unittest.TestCase):
         # scroll_end = 30 - 5 = 25
         self.assertIn("\033[1;25r", output, "应设置新 DECSTBM [1;25r")
         self.assertNotIn("\033[4T", output,
-                         "hide 不应输出 SD 下滚（tracker 恢复路径）")
-        # ★ 验证恢复内容存在
-        self.assertIn("saved_line_1", output, "应恢复第 1 行保存内容")
-        self.assertIn("saved_line_2", output, "应恢复第 2 行保存内容")
-        self.assertIn("saved_line_3", output, "应恢复第 3 行保存内容")
-        self.assertIn("saved_line_4", output, "应恢复第 4 行保存内容")
-        # ★ 验证恢复行定位正确
-        for r in range(26, 30):
+                         "hide 不应输出 SD 下滚")
+        # ★ 验证 delta<0 释放区域被清空（行 22-25，即 old_scroll_end+1 到 scroll_end）
+        for r in range(22, 26):
             self.assertIn(f"\033[{r};1H\033[K", output,
-                          f"hide 应在行 {r} 恢复保存内容")
-        # ★ 验证 tracker 交互
-        tracker.get_saved_rows.assert_called_once()
-        tracker.clear_saved.assert_called_once()
+                          f"hide 应清除 delta<0 释放区域行 {r}")
         # 清除顶部行不应出现（非 SD 路径）
         for r in range(1, 5):
             self.assertNotIn(f"\033[{r};1H\033[K", output,
@@ -785,14 +756,8 @@ class TestApplyScrollDelta(unittest.TestCase):
             self.assertGreater(output.index(f"\033[{r};1H\033[K"), decstbm_pos,
                                f"行 {r} 的清除应在 DECSTBM 之后")
 
-    @unittest.skip("2026-06-11: show/hide completions I/O 迁移至 render 线程")
     def test_show_completions_then_hide_no_blank_lines(self):
-        """集成测试：show 用 SU 上滚 + tracker 保存行，hide 用 tracker 恢复行（不输出 SD）。"""
-        # ── 安装 mock tracker ──
-        tracker = MagicMock()
-        tracker.get_saved_rows.return_value = None  # show 阶段还没保存
-        self.bb._tracker = tracker
-
+        """★ 2026-06-28: hide 时清空释放区域，不恢复旧内容（save/restore 已移除）。"""
         # ── Step 1: 模拟 show_completions ──
         self.bb._last_text = "test"
         self.bb._last_bottom_lines = 5  # 初始底部栏 5 行
@@ -801,40 +766,39 @@ class TestApplyScrollDelta(unittest.TestCase):
         items = ["item_a", "item_b", "item_c"]
 
         buf_show = io.StringIO()
+        # ★ mock _term_height/_term_width（而非 shutil.get_terminal_size），
+        #    因为 force_redraw() 优先使用 Blessed Terminal
         with patch.object(sys, '__stdout__', buf_show), \
-             patch("shutil.get_terminal_size", return_value=(80, 30)), \
+             patch.object(self.bb, '_term_height', return_value=30), \
+             patch.object(self.bb, '_term_width', return_value=80), \
              patch.object(self.bb, '_format_status', return_value=""):
             self.bb.show_completions(items, selected_idx=0, title="补全")
 
         show_output = buf_show.getvalue()
-        self.assertIn("\033[5S", show_output,
-                      "show 应输出 SU 上滚 \033[5S")
-        # ★ 验证 save_rows_to_restore 被调用
-        tracker.save_rows_to_restore.assert_called_once_with(5)
+        # show 设置 DECSTBM 并重绘底部栏，不输出 SU（SU 已从 force_redraw 移除）
+        self.assertNotEqual(show_output, "", "show_completions 应触发 force_redraw")
 
         # ── Step 2: 模拟 hide_completions ──
-        # 更新 mock 让 get_saved_rows 返回已保存的行
-        tracker.get_saved_rows.return_value = ["saved_a", "saved_b", "saved_c", "saved_d", "saved_e"]
-        tracker.save_rows_to_restore.reset_mock()
-
         buf_hide = io.StringIO()
         with patch.object(sys, '__stdout__', buf_hide), \
-             patch("shutil.get_terminal_size", return_value=(80, 30)), \
+             patch.object(self.bb, '_term_height', return_value=30), \
+             patch.object(self.bb, '_term_width', return_value=80), \
              patch.object(self.bb, '_format_status', return_value=""):
             self.bb.hide_completions()
 
         hide_output = buf_hide.getvalue()
         self.assertNotIn("\033[5T", hide_output,
-                         "hide 不应输出 SD 下滚（tracker 恢复路径）")
+                         "hide 不应输出 SD 下滚")
         self.assertNotIn("\033[5S", hide_output,
                          "hide 不应输出 SU 上滚")
-        # ★ 验证恢复内容存在
-        for content in ["saved_a", "saved_b", "saved_c", "saved_d", "saved_e"]:
-            self.assertIn(content, hide_output,
-                          f"hide 应恢复保存内容: {content}")
-        # ★ 验证 tracker 交互
-        tracker.get_saved_rows.assert_called()
-        tracker.clear_saved.assert_called_once()
+        # ★ 验证释放区域被清空而非恢复旧内容
+        self.assertIn("\033[r", hide_output,
+                      "hide 应重置滚动区域为全屏")
+        # ★ 验证 delta<0 释放区域被清空（行 22-25，即 old_scroll_end+1 到 scroll_end）
+        # old_scroll_end = 30 - 9 = 21, scroll_end = 30 - 5 = 25
+        for r in range(22, 26):
+            self.assertIn(f"\033[{r};1H\033[K", hide_output,
+                          f"hide 应清除 delta<0 释放区域行 {r}")
         # 不应有 SD 产生的顶部清除
         for r in range(1, 6):
             self.assertNotIn(f"\033[{r};1H\033[K", hide_output,
@@ -848,10 +812,9 @@ class TestStdoutLineTracker(unittest.TestCase):
       1. 穿透写入 — 所有 write/flush 原封不动传到真实 stdout
       2. 行检测与环形缓冲区 — \\n 将内容按行拆分存入 deque
       3. 底部栏内容过滤 — 光标定位到 r > scroll_end 时跳过追踪
-      4. 保存/恢复 — save_rows_to_restore / get_saved_rows / clear_saved
-      5. 容量限制 — deque maxlen=300
-      6. scroll_end=0 跳过追踪
-      7. 文件协议属性 — encoding, errors, buffer, fileno, isatty, writable
+      4. 容量限制 — deque maxlen=300
+      5. scroll_end=0 跳过追踪
+      6. 文件协议属性 — encoding, errors, buffer, fileno, isatty, writable
     """
 
     def setUp(self):
@@ -883,21 +846,21 @@ class TestStdoutLineTracker(unittest.TestCase):
     # ── 2. 行检测与环形缓冲区 ──
 
     def test_line_detection_basic(self):
-        """\\n 将内容按行拆分存入缓冲区。"""
+        """\\n 将内容按行拆分存入环形缓冲区。"""
         tracker = self._make_tracker()
         tracker.write("line1\nline2\nline3\n")
-        saved = tracker.get_saved_rows()
-        self.assertIsNone(saved, "未调用 save_rows_to_restore 时应为 None")
+        ring_lines = list(tracker._ring)
+        self.assertEqual(len(ring_lines), 3)
+        self.assertEqual(ring_lines, ["line1", "line2", "line3"])
 
     def test_line_detection_with_ansi(self):
-        """包含 ANSI 码的行应原样存入缓冲区。"""
+        """包含 ANSI 码的行应原样存入环形缓冲区。"""
         tracker = self._make_tracker()
         tracker.write("\033[32mgreen text\033[0m\n")
         tracker.write("normal text\n")
-        tracker.save_rows_to_restore(2)
-        saved = tracker.get_saved_rows()
-        self.assertEqual(len(saved), 2)
-        self.assertIn("\033[32mgreen text\033[0m", saved[0])
+        ring_lines = list(tracker._ring)
+        self.assertEqual(len(ring_lines), 2)
+        self.assertIn("\033[32mgreen text\033[0m", ring_lines[0])
 
     def test_partial_line_handling(self):
         """不完整的行（无 \\n）暂存，\\n 到来时才提交。"""
@@ -905,18 +868,9 @@ class TestStdoutLineTracker(unittest.TestCase):
         tracker.write("start ")
         tracker.write("middle ")
         tracker.write("end\n")
-        tracker.save_rows_to_restore(1)
-        saved = tracker.get_saved_rows()
-        self.assertEqual(len(saved), 1)
-        self.assertEqual(saved[0], "start middle end")
-
-    def test_save_rows_to_restore_partial(self):
-        """请求保存的行数超过缓冲区时返回全部。"""
-        tracker = self._make_tracker()
-        tracker.write("a\nb\n")
-        tracker.save_rows_to_restore(10)
-        saved = tracker.get_saved_rows()
-        self.assertEqual(len(saved), 2)
+        ring_lines = list(tracker._ring)
+        self.assertEqual(len(ring_lines), 1)
+        self.assertEqual(ring_lines[0], "start middle end")
 
     # ── 3. 底部栏内容过滤 ──
 
@@ -928,12 +882,11 @@ class TestStdoutLineTracker(unittest.TestCase):
         tracker.write("\033[21;1Hbottom bar content")
         # 恢复定位到 row 20
         tracker.write("\033[20;1Hsecond visible line\n")
-        tracker.save_rows_to_restore(10)
-        saved = tracker.get_saved_rows()
-        self.assertIn("visible line", saved[0])
-        self.assertIn("second visible line", saved[1])
+        ring_lines = list(tracker._ring)
+        self.assertIn("visible line", ring_lines[0])
+        self.assertIn("second visible line", ring_lines[1])
         # 底部栏内容不应出现在缓冲区
-        all_text = "\n".join(saved)
+        all_text = "\n".join(ring_lines)
         self.assertNotIn("bottom bar content", all_text)
 
     def test_bottom_bar_cursor_restore_exits_mode(self):
@@ -943,9 +896,8 @@ class TestStdoutLineTracker(unittest.TestCase):
         tracker.write("bottom stuff")
         tracker.write("\0338")       # Restore cursor → exit bottom bar
         tracker.write("visible again\n")
-        tracker.save_rows_to_restore(1)
-        saved = tracker.get_saved_rows()
-        self.assertIn("visible again", saved[0])
+        ring_lines = list(tracker._ring)
+        self.assertIn("visible again", ring_lines[0])
 
     def test_cursor_position_to_scroll_area_exits_bottom_bar(self):
         """定位到 r <= scroll_end 应退出底部栏模式。"""
@@ -954,37 +906,8 @@ class TestStdoutLineTracker(unittest.TestCase):
         tracker.write("bottom stuff")
         tracker.write("\033[20;1H")  # Back to scroll area
         tracker.write("scroll content\n")
-        tracker.save_rows_to_restore(1)
-        saved = tracker.get_saved_rows()
-        self.assertIn("scroll content", saved[0])
-
-    # ── 4. 保存/恢复 ──
-
-    def test_save_and_get_rows(self):
-        """save_rows_to_restore 保存最后 n 行，get_saved_rows 返回它们。"""
-        tracker = self._make_tracker()
-        for i in range(5):
-            tracker.write(f"line_{i}\n")
-        tracker.save_rows_to_restore(3)
-        saved = tracker.get_saved_rows()
-        self.assertEqual(len(saved), 3)
-        self.assertEqual(saved, ["line_2", "line_3", "line_4"])
-
-    def test_clear_saved(self):
-        """clear_saved 后 get_saved_rows 返回 None。"""
-        tracker = self._make_tracker()
-        tracker.write("test\n")
-        tracker.save_rows_to_restore(1)
-        self.assertIsNotNone(tracker.get_saved_rows())
-        tracker.clear_saved()
-        self.assertIsNone(tracker.get_saved_rows())
-
-    def test_save_zero_rows_does_nothing(self):
-        """save_rows_to_restore(0) 不保存任何内容。"""
-        tracker = self._make_tracker()
-        tracker.write("test\n")
-        tracker.save_rows_to_restore(0)
-        self.assertIsNone(tracker.get_saved_rows())
+        ring_lines = list(tracker._ring)
+        self.assertIn("scroll content", ring_lines[0])
 
     # ── 5. 容量限制 ──
 
@@ -993,9 +916,8 @@ class TestStdoutLineTracker(unittest.TestCase):
         tracker = self._make_tracker()
         for i in range(500):
             tracker.write(f"line_{i}\n")
-        tracker.save_rows_to_restore(500)
-        saved = tracker.get_saved_rows()
-        self.assertLessEqual(len(saved), 300)
+        ring_lines = list(tracker._ring)
+        self.assertLessEqual(len(ring_lines), 300)
 
     # ── 6. scroll_end=0 跳过追踪 ──
 
@@ -1003,9 +925,8 @@ class TestStdoutLineTracker(unittest.TestCase):
         """scroll_end < 1 时完全跳过行追踪。"""
         tracker = _StdoutLineTracker(self._buf)  # scroll_end=0 by default
         tracker.write("line1\nline2\n")
-        tracker.save_rows_to_restore(10)
-        saved = tracker.get_saved_rows()
-        self.assertIsNone(saved, "scroll_end=0 时 save 应无效果")
+        ring_lines = list(tracker._ring)
+        self.assertEqual(len(ring_lines), 0, "scroll_end=0 时不应追踪任何行")
 
     # ── 7. 文件协议属性 ──
 
@@ -1043,16 +964,12 @@ class TestCompletionShowHideWithTracker(unittest.TestCase):
     def setUp(self):
         self.bb = _BottomBar()
         self.bb._active = True
-        self.bb._cached_height = 30
-        self.bb._cached_width = 80
         self.bb._last_text = "test"
         self.bb._last_bottom_lines = 5
         self.bb._last_rendered_text = "test"
         self.bb._last_status = ""
         self.bb._last_height = 30
         self._stdout = sys.__stdout__
-        self.tracker = MagicMock()
-        self.tracker.get_saved_rows.return_value = None
 
     def tearDown(self):
         sys.__stdout__ = self._stdout
