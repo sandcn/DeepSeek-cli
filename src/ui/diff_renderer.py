@@ -14,7 +14,7 @@ from functools import lru_cache
 from typing import Optional, TYPE_CHECKING
 
 from ._lock import diff_active, _try_acquire_output_lock, locked_print
-from .colors import DIM, RED, GREEN, RESET
+from .colors import DIM, RED, GREEN, RESET, BRIGHT_RED, BRIGHT_GREEN, BRIGHT_BLACK, BRIGHT_CYAN, BOLD
 
 _logger = logging.getLogger(__name__)
 
@@ -114,13 +114,17 @@ def _parse_diff_hunks(diff_list, line_offset=0):
     old_num = new_num = 0
     parsed = []
     for line in diff_list:
-        if line.startswith('---') or line.startswith('+++'):
+        if line.startswith('---'):
+            parsed.append(('old_file', line, 0, 0))
+            continue
+        if line.startswith('+++'):
+            parsed.append(('new_file', line, 0, 0))
             continue
         m = hunk_re.match(line)
         if m:
             old_num = line_offset + int(m.group(1))
             new_num = line_offset + int(m.group(2))
-            parsed.append(('hunk', '', old_num, new_num))
+            parsed.append(('hunk', line, old_num, new_num))
             continue
         if line.startswith('-'):
             parsed.append(('del', line, old_num, 0))
@@ -177,7 +181,7 @@ def _write_diff_line(text: str, output_target=None):
 
 
 def _render_chunk(item, w, lexer_name, output_target):
-    """渲染一个非增删类型的 diff 块（hunk/fold/ctx）。
+    """渲染一个非增删类型的 diff 块（old_file/new_file/hunk/ctx/fold）。
 
     Args:
         item: folded 列表中的条目 (typ, line, old_num, new_num)
@@ -186,25 +190,77 @@ def _render_chunk(item, w, lexer_name, output_target):
         output_target: 可选的输出目标
     """
     typ = item[0]
+    if typ == 'old_file':
+        path = item[1][4:] if len(item[1]) > 4 else ""
+        _write_diff_line(f"  {DIM}┌─ {path}{RESET}", output_target)
+        return
+    if typ == 'new_file':
+        path = item[1][4:] if len(item[1]) > 4 else ""
+        _write_diff_line(f"  {DIM}└─ {path}{RESET}", output_target)
+        return
     if typ == 'hunk':
+        _write_diff_line(f"  {BOLD}{BRIGHT_CYAN}{item[1]}{RESET}", output_target)
         return
     if typ == 'fold':
-        _write_diff_line(f"  {DIM}{'':>{w}} | ...{RESET}", output_target)
-    else:
-        ctx_text = item[1][1:] if item[1].startswith(' ') else item[1]
-        hl_text = _syntax_hl(ctx_text, lexer_name) if lexer_name else ctx_text
-        _write_diff_line(f"  {DIM}{item[2]:>{w}} |{RESET} {hl_text}{RESET}", output_target)
+        hidden = item[1]
+        _write_diff_line(
+            f"  {DIM}{BRIGHT_BLACK}│ {'':>{w}} │{RESET} {DIM}┄ {hidden} lines ┄{RESET}",
+            output_target,
+        )
+        return
+    # ctx: 上下文行
+    ctx_text = item[1][1:] if item[1].startswith(' ') else item[1]
+    hl_text = _syntax_hl(ctx_text, lexer_name) if lexer_name else ctx_text
+    _write_diff_line(
+        f"  {DIM}{BRIGHT_BLACK}│ {item[2]:>{w}} │{RESET} {hl_text}{RESET}",
+        output_target,
+    )
+
+
+def _render_diff_summary(diff_list, output_target=None):
+    """渲染 diff 变更统计摘要（增删行数）。
+
+    从 diff_list 中统计 +/-/ctx 行数，输出分隔线和统计行。
+    排除 ---/+++ 文件头和 @@ 块头行。
+    """
+    adds = dels = ctx = 0
+    for line in diff_list:
+        if line.startswith('---') or line.startswith('+++') or line.startswith('@@'):
+            continue
+        if line.startswith('+'):
+            adds += 1
+        elif line.startswith('-'):
+            dels += 1
+        else:
+            ctx += 1
+
+    if adds == 0 and dels == 0:
+        return
+
+    # 分隔线
+    _write_diff_line(f"  {DIM}╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌{RESET}", output_target)
+
+    parts = []
+    if adds:
+        parts.append(f"{GREEN}🟢 +{adds}{RESET}")
+    if dels:
+        parts.append(f"{RED}🔴 -{dels}{RESET}")
+    if ctx:
+        parts.append(f"{BRIGHT_BLACK}⚪ {ctx} unchanged{RESET}")
+    _write_diff_line(f"  {'  '.join(parts)}", output_target)
 
 
 def render_diff(diff_list, w, line_offset=0, lexer_name='', output_target: Optional["IOutputTarget"] = None):
     """
-    Claude Code 风格的差异渲染：
-    - 行号右对齐 + │ 分隔
-    - 语法高亮（上下文行 + 纯增删行）
-    - 删除行红色 - 前缀，新增行绿色 + 前缀
-    - 成对修改行内高亮差异部分（背景色）
-    - 上下文行灰色暗淡
-    - 连续未变更行折叠为 ...
+    美化后的差异渲染：
+    - 文件头：┌─ a/path（old） / └─ b/path（new）
+    - hunk 头：@@ -L,N +L,N @@ — 加粗亮青色
+    - 删除行：RED▐ 左颜色条 + 暗红行号 + BRIGHT_RED - 前缀
+    - 新增行：GREEN▐ 左颜色条 + 暗绿行号 + BRIGHT_GREEN + 前缀
+    - 上下文行：浅灰 │ 行号 │ 内容（语法高亮）
+    - 折叠行：┄ N lines ┄
+    - 多 hunk 间 ╌╌╌ 分隔线
+    - 成对修改行内高亮差异部分（红/绿背景色）
     """
     def _hl(text):
         return _syntax_hl(text, lexer_name) if lexer_name else text
@@ -220,16 +276,29 @@ def render_diff(diff_list, w, line_offset=0, lexer_name='', output_target: Optio
                 _, d_line, d_oln, _ = del_buf[i]
                 _, a_line, _, a_nln = add_buf[i]
                 h_old, h_new = _inline_highlight(d_line[1:], a_line[1:])
-                _write_diff_line(f"  {RED}{d_oln:>{w}} | -{h_old}{RESET}", output_target)
-                _write_diff_line(f"  {GREEN}{a_nln:>{w}} | +{h_new}{RESET}", output_target)
+                _write_diff_line(
+                    f"  {RED}▐ {DIM}{RED}{d_oln:>{w}} │{RESET} {BRIGHT_RED}-{RESET}{h_old}{RESET}",
+                    output_target,
+                )
+                _write_diff_line(
+                    f"  {GREEN}▐ {DIM}{GREEN}{a_nln:>{w}} │{RESET} {BRIGHT_GREEN}+{RESET}{h_new}{RESET}",
+                    output_target,
+                )
             elif i < len(del_buf):
                 _, d_line, d_oln, _ = del_buf[i]
-                _write_diff_line(f"  {RED}{d_oln:>{w}} | -{RESET}{_hl(d_line[1:])}{RESET}", output_target)
+                _write_diff_line(
+                    f"  {RED}▐ {DIM}{RED}{d_oln:>{w}} │{RESET} {BRIGHT_RED}-{RESET}{_hl(d_line[1:])}{RESET}",
+                    output_target,
+                )
             else:
                 _, a_line, _, a_nln = add_buf[i]
-                _write_diff_line(f"  {GREEN}{a_nln:>{w}} | +{RESET}{_hl(a_line[1:])}{RESET}", output_target)
+                _write_diff_line(
+                    f"  {GREEN}▐ {DIM}{GREEN}{a_nln:>{w}} │{RESET} {BRIGHT_GREEN}+{RESET}{_hl(a_line[1:])}{RESET}",
+                    output_target,
+                )
 
     del_buf, add_buf = [], []
+    _hunk_count = 0
     for item in folded:
         typ = item[0]
         if typ == 'del':
@@ -243,6 +312,14 @@ def render_diff(diff_list, w, line_offset=0, lexer_name='', output_target: Optio
             if del_buf or add_buf:
                 _flush_pairs(del_buf, add_buf)
                 del_buf, add_buf = [], []
+            # 多 hunk 间输出分隔线
+            if typ == 'hunk':
+                _hunk_count += 1
+                if _hunk_count > 1:
+                    _write_diff_line(
+                        f"  {DIM}╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌{RESET}",
+                        output_target,
+                    )
             _render_chunk(item, w, lexer_name, output_target)
     if del_buf or add_buf:
         _flush_pairs(del_buf, add_buf)
@@ -265,7 +342,7 @@ def render_diff_to_ansi(path: str, old_content: str, new_content: str) -> str:
 
     diff_list = list(difflib.unified_diff(
         old_lines, new_lines,
-        fromfile='旧文件', tofile='新文件',
+        fromfile=f'a/{path}', tofile=f'b/{path}',
         lineterm='', n=3
     ))
     if not diff_list:
@@ -286,6 +363,8 @@ def render_diff_to_ansi(path: str, old_content: str, new_content: str) -> str:
             cls._target.append(text)
 
     render_diff(diff_list, w, lexer_name=lexer_name, output_target=_Collector)
+    # 追加变更统计摘要
+    _render_diff_summary(diff_list, output_target=_Collector)
     # 移除最后的空行（如有）
     while collected and collected[-1] == '':
         collected.pop()
@@ -314,7 +393,7 @@ def show_file_diff(path, old_content, new_content, output_target: Optional["IOut
 
     diff_list = list(difflib.unified_diff(
         old_lines, new_lines,
-        fromfile='旧文件', tofile='新文件',
+        fromfile=f'a/{path}', tofile=f'b/{path}',
         lineterm='', n=3
     ))
     if not diff_list:
@@ -335,6 +414,7 @@ def show_file_diff(path, old_content, new_content, output_target: Optional["IOut
     try:
         with _try_acquire_output_lock(name=f"show_file_diff:{os.path.basename(path)}"):
             render_diff(diff_list, w, lexer_name=lexer_name, output_target=output_target)
+            _render_diff_summary(diff_list, output_target=output_target)
     finally:
         if not diff_was_active:
             diff_active.clear()
