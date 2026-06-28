@@ -1,19 +1,19 @@
-"""消息块 Box 包装组件 — React Ink Box 边框的消息流组件包装器。
+"""消息块 Box 包装组件 — React Ink 无边框消息流组件包装器。
 
-为 8 种消息块类型提供声明式 Box 边框渲染：
-  - ThinkingBlockBox: 推理块（blue round border + "Thinking..." title，可折叠）
-  - AnswerBlockBox: 回答块（dim round border）
-  - UserMsgBlockBox: 用户消息块（cyan round border）
-  - ToolOutputBlockBox: 工具输出块（yellow dim round border）
-  - ToolCallBlockBox: 工具调用块（round cyan border + 状态标记）
-  - ToolResultBlockBox: 工具结果块（round border + 成功/失败标记）
-  - ErrorBlockBox: 错误块（red single border）
-  - NotificationBlockBox: 通知块（green borderless）
+为 8 种消息块类型提供声明式 Box 渲染（默认无边框）：
+  - ThinkingBlockBox: 推理块（可折叠，"Thinking..." title）
+  - AnswerBlockBox: 回答块
+  - UserMsgBlockBox: 用户消息块（❯ User prefix）
+  - ToolOutputBlockBox: 工具输出块
+  - ToolCallBlockBox: 工具调用块（⚙ + 状态标记 + 耗时）
+  - ToolResultBlockBox: 工具结果块（✓/✗ + 工具名）
+  - ErrorBlockBox: 错误块
+  - NotificationBlockBox: 通知块
 
-窄屏（< 40 列）自动降级为无边框模式。
+窄屏（< 40 列）自动降级保留边框隐藏逻辑，用于未来可能的样式回切。
 
-样式集中管理在 _MSG_BLOCK_STYLES 字典中，未来新增块类型或调整样式
-只需修改此字典。工厂函数 create_message_box() 根据 VNode type 字符串
+样式集中管理在 _MSG_BLOCK_STYLES 字典中，所有块默认 border_style="none"。
+工厂函数 create_message_box() 根据 VNode type 字符串
 自动创建对应的 Box + TextContent 实例。
 """
 
@@ -51,7 +51,7 @@ def _is_narrow_screen(threshold: int = _NARROW_TERM_THRESHOLD) -> bool:
 
 _MSG_BLOCK_STYLES: dict[str, dict[str, Any]] = {
     "thinking": {
-        "border_style": "round",
+        "border_style": "none",
         "border_color": "blue",
         "border_dim_color": False,
         "title": "Thinking...",
@@ -61,7 +61,7 @@ _MSG_BLOCK_STYLES: dict[str, dict[str, Any]] = {
         "margin_y": 0,
     },
     "answer": {
-        "border_style": "round",
+        "border_style": "none",
         "border_color": "bright_black",
         "border_dim_color": True,
         "padding_x": 1,
@@ -69,13 +69,13 @@ _MSG_BLOCK_STYLES: dict[str, dict[str, Any]] = {
         "margin_y": 0,
     },
     "user_msg": {
-        "border_style": "round",
+        "border_style": "none",
         "border_color": "cyan",
         "padding_x": 1,
         "margin_y": 0,
     },
     "tool_output": {
-        "border_style": "round",
+        "border_style": "none",
         "border_color": "yellow",
         "border_dim_color": True,
         "title": "",
@@ -83,7 +83,7 @@ _MSG_BLOCK_STYLES: dict[str, dict[str, Any]] = {
         "margin_y": 0,
     },
     "tool_call": {
-        "border_style": "round",
+        "border_style": "none",
         "border_color": "cyan",
         "title": "⚙ Tool",
         "title_color": "cyan",
@@ -91,7 +91,7 @@ _MSG_BLOCK_STYLES: dict[str, dict[str, Any]] = {
         "margin_y": 0,
     },
     "tool_result": {
-        "border_style": "round",
+        "border_style": "none",
         "border_color": "green",
         "title": "",
         "title_color": "",
@@ -99,7 +99,7 @@ _MSG_BLOCK_STYLES: dict[str, dict[str, Any]] = {
         "margin_y": 0,
     },
     "error": {
-        "border_style": "single",
+        "border_style": "none",
         "border_color": "red",
         "padding_x": 1,
         "margin_y": 0,
@@ -156,15 +156,18 @@ class _MessageBlockBox(Box):
     """
 
     def render(self) -> str:
-        is_no_border = self.border_style == "none" or _is_narrow_screen()
-        if not is_no_border:
+        # border_style 为 None/"none" → Box 原生无边框路径处理（含 title/padding）
+        if self.border_style in (None, "none"):
             return super().render()
-        saved = (self.show_top, self.show_bottom, self.show_left, self.show_right)
-        self.show_top = self.show_bottom = self.show_left = self.show_right = False
-        try:
-            return super().render()
-        finally:
-            (self.show_top, self.show_bottom, self.show_left, self.show_right) = saved
+        # 窄屏降级：隐藏边框但保留 layout 约束
+        if _is_narrow_screen():
+            saved = (self.show_top, self.show_bottom, self.show_left, self.show_right)
+            self.show_top = self.show_bottom = self.show_left = self.show_right = False
+            try:
+                return super().render()
+            finally:
+                (self.show_top, self.show_bottom, self.show_left, self.show_right) = saved
+        return super().render()
 
 
 # ── 消息块 Box 组件 ──────────────────────────────

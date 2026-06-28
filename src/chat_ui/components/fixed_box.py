@@ -27,7 +27,7 @@ _ANSI_SGR_RE = re.compile(r'\033\[[\d;]*m')
 
 def _ensure_border_chars(border_style: str | dict | None) -> dict[str, str] | None:
     """解析边框字符集，返回 None 表示无边框。"""
-    if border_style is None:
+    if border_style is None or border_style == "none":
         return None
     if isinstance(border_style, dict):
         base = _BORDER_STYLES["single"].copy()

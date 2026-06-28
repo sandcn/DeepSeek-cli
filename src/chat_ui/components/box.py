@@ -404,7 +404,7 @@ class Box(TuiComponent):
 
     # ── 边框字符解析 ────────────────────────────────────
 
-    def _resolve_border_chars(self) -> dict[str, str]:
+    def _resolve_border_chars(self) -> dict[str, str] | None:
         """解析边框字符集。
 
         支持两种格式：
@@ -413,7 +413,11 @@ class Box(TuiComponent):
 
         Returns:
             字符映射 dict，包含 tl, tr, bl, br, h, v 六个键。
+            返回 None 表示无边框模式。
         """
+        # 无边框快速路径
+        if self.border_style is None or self.border_style == "none":
+            return None
         if isinstance(self.border_style, dict):
             # 自定义样式 — 以 single 为 base，逐个覆盖
             base = _BORDER_STYLES["single"].copy()
@@ -485,14 +489,55 @@ class Box(TuiComponent):
         """渲染 Box 边框及子内容。
 
         流程:
-            1. 渲染子组件获取内容文本
-            2. 计算内容尺寸
-            3. 应用 width/height 约束计算内部宽高
-            4. 解析边框字符集
-            5. 逐行构建输出（margin → top 边 → padding → content → padding → bottom 边 → margin）
+            1. 解析边框字符集（优先，无边框时走快速路径避免浪费计算）
+            2. 渲染子组件获取内容文本
+            3. 计算内容尺寸
+            4. 应用 width/height 约束计算内部宽高
+            5. 逐行构建输出
             6. 拼接为 ANSI 字符串返回
+
+        无边框模式（border_style=None/"none"）：
+            跳过边框装饰，title 渲染为独立内容行，
+            collapsed 时 title 和 ▶ 合并为一行（如 "▶ title"）。
         """
-        # ── 1. 渲染子组件 ────────────────────────────────
+        # ── 1. 解析边框字符（优先，无边框时走快速路径）───
+        chars = self._resolve_border_chars()
+
+        # ── 无边框快速路径 ────────────────────────────────
+        # 跳过所有边框构建和尺寸约束计算，直接渲染内容
+        if chars is None:
+            lines: list[str] = []
+            # margin top
+            for _ in range(self.margin_y):
+                lines.append("")
+            # padding top
+            for _ in range(self.padding_y):
+                lines.append("")
+
+            if self.collapsed:
+                # 折叠模式：title 与 ▶ 合并为一行
+                collapsed_line = f"▶ {self.title}" if self.title else "▶"
+                lines.append(collapsed_line)
+            else:
+                # title as content line (if present, may contain ANSI)
+                if self.title:
+                    lines.append(self.title)
+                # content — 仅渲染一次，避免副作用
+                content = self.render_children()
+                if content:
+                    pad = " " * self.padding_x if self.padding_x > 0 else ""
+                    for line in str(content).split('\n'):
+                        lines.append(f"{pad}{line}")
+
+            # padding bottom
+            for _ in range(self.padding_y):
+                lines.append("")
+            # margin bottom
+            for _ in range(self.margin_y):
+                lines.append("")
+            return "\n".join(lines)
+
+        # ── 2. 渲染子组件 ────────────────────────────────
         raw_content = self.render_children()
         content_str: str
         if isinstance(raw_content, str):
@@ -502,12 +547,12 @@ class Box(TuiComponent):
 
         content_lines = content_str.split('\n') if content_str else [""]
 
-        # ── 2. 计算内容尺寸 ──────────────────────────────
+        # ── 3. 计算内容尺寸 ──────────────────────────────
         content_width = max(
             (_visual_width(line) for line in content_lines), default=0)
         content_height = len(content_lines)
 
-        # ── 3. 计算内部宽度 ──────────────────────────────
+        # ── 4. 计算内部宽度 ──────────────────────────────
         inner_width = content_width + 2 * self.padding_x
 
         # 处理 width 属性
@@ -555,9 +600,6 @@ class Box(TuiComponent):
                          else "...")
             content_lines.append(indicator)
             content_height = len(content_lines)
-
-        # ── 4. 解析边框字符 ──────────────────────────────
-        chars = self._resolve_border_chars()
 
         # ── 5. 逐行构建输出 ──────────────────────────────
         lines: list[str] = []

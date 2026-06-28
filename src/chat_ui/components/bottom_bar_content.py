@@ -108,7 +108,7 @@ class BottomBarContent(TuiComponent):
         """产出完整底部栏 ANSI 字符串。
 
         使用 Box / Text / Tree 标准控件构建组件树：
-        Box (border_style="single", border_dim_color=True)
+        FixedSizeBox (border_style=None, border_dim=True)
         ├── Tree (subagent_slots)        — 仅在 slots 非空时
         ├── Text (分隔线, dim=True)
         ├── Text (状态行)
@@ -155,8 +155,7 @@ class BottomBarContent(TuiComponent):
         box = FixedSizeBox(
             width=inner_w,
             height=max(1, total_lines),
-            border_style="single",
-            border_dim=True,
+            border_style=None,
             padding_x=0,
             padding_y=0,
             children=children,
@@ -322,4 +321,4 @@ class BottomBarContent(TuiComponent):
 
         popup_children.append(Text(f"{_COLOR_DIM}{hint}{_COLOR_RESET}"))
 
-        return Box(border_style="single", children=popup_children)
+        return Box(border_style="none", children=popup_children)
