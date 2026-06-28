@@ -26,6 +26,14 @@ import os
 from ..vdom.layout import FlexLayout, FlexStyle  # noqa: F401
 from ..vdom.vnode import VNode, Patch, PatchKind, diff, apply_patches  # noqa: F401
 from ..components.box import Box, BORDER_STYLES as BoxBorderStyle  # noqa: F401
+from ..components.badge import Badge  # noqa: F401
+from ..components.breadcrumbs import Breadcrumbs  # noqa: F401
+from ..components.code import Code  # noqa: F401
+from ..components.collapsible import Collapsible  # noqa: F401
+from ..components.columns import Columns  # noqa: F401
+from ..components.divider import Divider  # noqa: F401
+from ..components.key_value import KeyValue  # noqa: F401
+from ..components.panel import Panel  # noqa: F401
 from ..components.animation import use_animation, AnimationClock  # noqa: F401
 from ..components.static import Static  # noqa: F401
 from ..components.transform import Transform  # noqa: F401
@@ -179,8 +187,16 @@ __all__ = [
     "use_stdout",
     "use_stderr",
     # Box
+    "Badge",
     "Box",
     "BoxBorderStyle",
+    "Breadcrumbs",
+    "Code",
+    "Collapsible",
+    "Columns",
+    "Divider",
+    "KeyValue",
+    "Panel",
     # Animation
     "use_animation",
     "AnimationClock",
