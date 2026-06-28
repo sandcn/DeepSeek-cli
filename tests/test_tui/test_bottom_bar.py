@@ -17,8 +17,8 @@ import sys
 import unittest
 from unittest.mock import MagicMock, PropertyMock, patch
 
-from src.chat_ui.bottom_bar._bridge import BottomBarBridge
-from src.chat_ui.bottom_bar._stdout_tracker import _StdoutLineTracker
+from src.chat_ui.infrastructure.bottom_bar_bridge import BottomBarBridge
+from src.chat_ui.infrastructure.bottom_bar_bridge import _StdoutLineTracker
 
 
 def _mock_terminal(width=80, height=30):
@@ -470,9 +470,6 @@ class TestCompletionShowHideWithTracker(unittest.TestCase):
     def test_hide_completions_idempotent(self):
         pass
 
-if __name__ == "__main__":
-    unittest.main()
-
 class TestSubagentSlotsStateManagement(unittest.TestCase):
     """set_subagent_slots 变更检测和 teardown 状态清理的测试。"""
 
@@ -522,3 +519,7 @@ class TestSubagentSlotsStateManagement(unittest.TestCase):
         assert self.bb._subagent_slots == {}, "teardown 应清空 _subagent_slots"
         assert self.bb._subagent_line_count == 0, "teardown 应重置 _subagent_line_count"
         assert self.bb._subagent_slots_dirty is False, "teardown 应重置 _subagent_slots_dirty"
+
+
+if __name__ == "__main__":
+    unittest.main()

@@ -1,7 +1,7 @@
 """BottomBarContent — React Ink 底部栏内容渲染组件。
 
 产出完整底部栏 ANSI 字符串（含分隔线、状态行、输入区、补全弹窗、SubAgent 槽位）。
-纯渲染组件，render() 返回 ANSI 字符串，不做终端 I/O。
+使用 Box / Text / Tree 标准控件构建 VNode 组件树，替代旧的手动 ANSI 字符串拼接。
 
 从 _bottom_bar.py 的 _draw_all_locked() + _draw_input_lines_locked() 职责迁移，
 替代旧的命令式 ANSI 直接写入。
@@ -12,14 +12,17 @@ from __future__ import annotations
 from wcwidth import wcswidth
 
 from .base import TuiComponent
-from ..bottom_bar._theme import (
-    _COLOR_ACCENT, _COLOR_DIM, _COLOR_RESET, _COLOR_SEP,
+from .box import Box
+from .text import Text
+from .tree import Tree
+from ..infrastructure.bottom_theme import (
+    _COLOR_ACCENT, _COLOR_DIM, _COLOR_RESET,
     _COLOR_SELECT_BG, _COLOR_SELECT_FG, _COLOR_COMPLETE_TITLE,
     _PLACEHOLDER_TEXT, _PLACEHOLDER_COMPACT, _PLACEHOLDER_STREAMING,
     _COLOR_TIME,
     CLAUDE_PROMPT_COLOR,
 )
-from ..bottom_bar._cursor import _truncate_by_width, _visual_len, _wrap_by_width
+from ..infrastructure.text_visual import _truncate_by_width, _visual_len, _wrap_by_width
 
 # ── 补全弹窗常量 ──────────────────────────────────────────
 _COMPLETION_MAX_ITEMS = 10       # 单屏最多显示选项数
@@ -103,77 +106,70 @@ class BottomBarContent(TuiComponent):
     def render(self) -> str:
         """产出完整底部栏 ANSI 字符串。
 
-        输出结构（按行拼接，用 \\n 分隔）：
-        1. SubAgent 槽位行（若非空）
-        2. 分隔线
-        3. 状态行
-        4. 输入区（❯ 提示符 + 文本/占位符）
-        5. 补全弹窗（若可见）
+        使用 Box / Text / Tree 标准控件构建组件树：
+        Box (border_style="single", border_dim_color=True)
+        ├── Tree (subagent_slots)        — 仅在 slots 非空时
+        ├── Text (分隔线, dim=True)
+        ├── Text (状态行)
+        ├── Text × N (输入区)
+        └── Box (补全弹窗)               — 仅在 visible 时
         """
-        lines: list[str] = []
+        children: list[TuiComponent] = []
 
-        # 1. SubAgent 槽位
-        subagent_lines = self._render_subagent_slots()
-        if subagent_lines:
-            lines.extend(subagent_lines)
+        # 1. SubAgent 槽位 → Tree
+        subagent_tree = self._build_subagent_tree()
+        if subagent_tree is not None:
+            children.append(subagent_tree)
 
-        # 2. 分隔线
-        lines.append(self._render_separator())
-
-        # 3. 状态行
-        if self.status_text:
-            lines.append(self.status_text)
-
-        # 4. 输入区
-        lines.extend(self._render_input_area())
-
-        # 5. 补全弹窗
-        if self.completion_visible and self.completion_items:
-            lines.extend(self._render_completion_popup())
-
-        return "\n".join(lines)
-
-    # ── 分隔线渲染 ───────────────────────────────────────
-
-    def _render_separator(self) -> str:
-        """渲染分隔线：━ 字符 × min(term_width - 2, 40)。"""
+        # 2. 分隔线 → Text
         sep_width = min(self.term_width - 2, 40)
         sep_width = max(sep_width, 1)
-        sep_chars = "━" * sep_width
-        return f"{_COLOR_SEP}{sep_chars}{_COLOR_RESET}"
+        children.append(Text("━" * sep_width, dim=True))
 
-    # ── SubAgent 槽位渲染 ────────────────────────────────
+        # 3. 状态行 → Text（status_text 已是 ANSI 字符串，透传即可）
+        if self.status_text:
+            children.append(Text(self.status_text))
 
-    def _render_subagent_slots(self) -> list[str]:
-        """渲染 SubAgent 槽位行，使用 Tree 树控件渲染。
+        # 4. 输入区 → Text（可能多行）
+        input_texts = self._render_input_area_texts()
+        children.extend(input_texts)
+
+        # 5. 补全弹窗 → Box
+        if self.completion_visible and self.completion_items:
+            popup_box = self._build_completion_popup_box()
+            children.append(popup_box)
+
+        # 组装顶层 Box 容器并渲染
+        box = Box(border_style="single", border_dim_color=True,
+                  children=children)
+        return box.render()
+
+    # ── SubAgent 树构建 ──────────────────────────────────
+
+    def _build_subagent_tree(self) -> Tree | None:
+        """将 subagent_slots 转换为 Tree 组件。
 
         Returns:
-            渲染后的行列表（可能为空）。
+            Tree 组件实例，或 None（slots 为空/转换失败时）。
         """
         slots = self.subagent_slots
         if not slots:
-            return []
+            return None
         try:
             from .subagent_tree import subagent_slots_to_tree
-            from .tree import Tree
 
             tree_root = subagent_slots_to_tree(slots)
             if tree_root is None:
-                return []
+                return None
 
-            tree = Tree(root=tree_root, indent=2)
-            rendered = tree.render()
-            if not rendered:
-                return []
-
-            return rendered.split('\n')
+            return Tree(root=tree_root, indent=2)
         except Exception:
-            return []
+            return None
 
     # ── 输入区渲染 ────────────────────────────────────────
 
-    def _render_input_area(self) -> list[str]:
-        """渲染输入区：❯ 提示符 + 输入文本（或占位符）。
+    def _render_input_area_texts(self) -> list[Text]:
+        """渲染输入区为 Text 组件列表。
 
         拆行处理超长输入，续行使用 · 前缀。
         """
@@ -181,27 +177,25 @@ class BottomBarContent(TuiComponent):
         tw = self.term_width
 
         prompt_color = CLAUDE_PROMPT_COLOR if self.claude_style else _COLOR_ACCENT
-        lines: list[str] = []
 
         if not text:
             # 空输入 → 显示占位符
             placeholder = self._get_placeholder()
-            prompt = f"{prompt_color}❯{_COLOR_RESET} "
-            lines.append(f"{prompt}{_COLOR_DIM}{placeholder}{_COLOR_RESET}")
-            return lines
+            line = (
+                f"{prompt_color}❯{_COLOR_RESET} "
+                f"{_COLOR_DIM}{placeholder}{_COLOR_RESET}"
+            )
+            return [Text(line)]
 
         # 有输入文本 → 按宽度拆行
-        # 展开制表符
-        from ..bottom_bar._cursor import _expand_tabs
+        from ..infrastructure.text_visual import _expand_tabs
         expanded = _expand_tabs(text)
 
-        # 按终端宽度拆行
-        # 第一行前缀宽度：❯ 占 1 列视觉宽度（但它是 CJK 兼容的）
-        # 使用 wcswidth 计算 ❯ 的宽度：通常是 2（CJK ambiguous width）
+        # 第一行前缀宽度：❯ 的视觉宽度（CJK ambiguous，通常为 2）
         prompt_char = "❯"
         prompt_visual_w = wcswidth(prompt_char) if wcswidth(prompt_char) >= 0 else 1
-        first_line_prefix = "  "  # 2 空格缩进
-        first_line_avail = tw - len(first_line_prefix) - prompt_visual_w - 1  # -1 for space after ❯
+        first_line_prefix = "  "
+        first_line_avail = tw - len(first_line_prefix) - prompt_visual_w - 1  # -1 for space
 
         if first_line_avail <= 0:
             first_line_avail = tw - 2
@@ -209,29 +203,29 @@ class BottomBarContent(TuiComponent):
         cont_line_prefix = "   · "
         cont_line_avail = tw - len(cont_line_prefix)
 
-        # 拆行
         wrapped = _wrap_by_width(expanded, first_line_avail)
-
         if not wrapped:
             wrapped = [""]
 
+        texts: list[Text] = []
+
         # 第一行：  ❯ first_segment
         first_segment = wrapped[0]
-        prompt = f"{prompt_color}❯{_COLOR_RESET} "
-        lines.append(f"{first_line_prefix}{prompt}{first_segment}")
+        line = f"{first_line_prefix}{prompt_color}❯{_COLOR_RESET} {first_segment}"
+        texts.append(Text(line))
 
-        # 续行：   · rest
+        # 续行：   · rest（dim 色）
         remaining = expanded[len(wrapped[0]):]
         while remaining:
-            # 重新按 cont_line_avail 拆行
             cont_wrapped = _wrap_by_width(remaining, cont_line_avail)
             if not cont_wrapped:
                 break
             seg = cont_wrapped[0]
-            lines.append(f"{cont_line_prefix}{_COLOR_DIM}{seg}{_COLOR_RESET}")
+            line = f"{cont_line_prefix}{_COLOR_DIM}{seg}{_COLOR_RESET}"
+            texts.append(Text(line))
             remaining = remaining[len(seg):]
 
-        return lines
+        return texts
 
     def _get_placeholder(self) -> str:
         """根据当前状态返回合适的占位符文本。"""
@@ -243,8 +237,8 @@ class BottomBarContent(TuiComponent):
 
     # ── 补全弹窗渲染 ─────────────────────────────────────
 
-    def _render_completion_popup(self) -> list[str]:
-        """渲染补全弹窗（内联实现，不创建额外文件）。
+    def _build_completion_popup_box(self) -> Box:
+        """构建补全弹窗 Box 组件。
 
         输出结构：
         - 标题行：{title} (N项)
@@ -253,7 +247,7 @@ class BottomBarContent(TuiComponent):
         """
         items = list(self.completion_items)
         if not items:
-            return []
+            return Box(children=[])
 
         tw = self.term_width
         popup_w = min(tw - 2, _COMPLETION_MAX_WIDTH)
@@ -266,14 +260,14 @@ class BottomBarContent(TuiComponent):
         n = len(display_items)
         truncated = total > n
 
-        lines: list[str] = []
+        popup_children: list[TuiComponent] = []
 
         # ── 标题行 ──
         header = (
             f" {_COLOR_COMPLETE_TITLE}{self.completion_title}{_COLOR_RESET}"
             f" {_COLOR_DIM}({total}项){_COLOR_RESET}"
         )
-        lines.append(header)
+        popup_children.append(Text(header))
 
         # ── 选项行 ──
         for i, item in enumerate(display_items):
@@ -282,30 +276,31 @@ class BottomBarContent(TuiComponent):
             pad = " " * max(0, cell_w - vis_len)
             if i == selected:
                 # 选中项：▶ 前缀 + 高亮背景
-                lines.append(
-                    f" {_COLOR_SELECT_BG}{_COLOR_SELECT_FG}\u25b6{_COLOR_RESET}"
+                line = (
+                    f" {_COLOR_SELECT_BG}{_COLOR_SELECT_FG}▶{_COLOR_RESET}"
                     f"{_COLOR_SELECT_BG}{_COLOR_SELECT_FG} {display}{pad}{_COLOR_RESET}"
                 )
             else:
                 # 普通项：缩进对齐
-                lines.append(f"  {display}{pad}")
+                line = f"  {display}{pad}"
+            popup_children.append(Text(line))
 
         # ── 快捷键提示行 ──
         is_selection = self.completion_is_selection
         if is_selection:
-            hint_prefix = "\u2191\u2193 Enter Esc"
+            hint_prefix = "↑↓ Enter Esc"
         else:
-            hint_prefix = "Tab \u2191\u2193 Esc"
+            hint_prefix = "Tab ↑↓ Esc"
 
         if truncated:
             hint = (
                 f" {_COLOR_TIME}{selected + 1}/{n}{_COLOR_RESET}"
-                f" {_COLOR_DIM}(\u524d{n}/{total}){_COLOR_RESET}"
+                f" {_COLOR_DIM}(前{n}/{total}){_COLOR_RESET}"
                 f"  {hint_prefix} "
             )
         else:
             hint = f" {hint_prefix} "
 
-        lines.append(f"{_COLOR_DIM}{hint}{_COLOR_RESET}")
+        popup_children.append(Text(f"{_COLOR_DIM}{hint}{_COLOR_RESET}"))
 
-        return lines
+        return Box(border_style="single", children=popup_children)

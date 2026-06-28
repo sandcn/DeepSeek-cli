@@ -1,6 +1,6 @@
-"""_BottomBar 视觉主题常量 — ANSI 颜色、占位符文本、布局配置。
+"""底部栏视觉主题常量 — ANSI 颜色、占位符文本、布局配置。
 
-从 _bottom_bar.py 提取，供 _BottomBar 及其子模块共享。
+从 _bottom_bar.py / bottom_bar/_theme.py 提取，供 _BottomBar 及其子模块共享。
 
 颜色策略（双轨制）：
   - _COLOR_* 常量为硬编码 ANSI 序列（原始色号标注于注释，便于追溯）
@@ -70,7 +70,7 @@ _COLOR_SPEED = "\033[38;5;214m"       # 色号 214 — 琥珀色（速率）
 _COLOR_STREAMING = "\033[38;5;45m"    # 色号 45 — 亮青（流式输出指示器）
 _COLOR_MODEL_NAME = "\033[1;38;5;39m"   # 色号 39, bold — 模型名高亮
 
-# ── በBlessed 颜色辅助函数 ─────────────────────────────────────
+# ── Blessed 颜色辅助函数 ─────────────────────────────────────
 # 供需要动态颜色的新代码使用，与现有 _COLOR_* 常量共存
 
 
@@ -86,7 +86,7 @@ def _blessed_fg(color_num: int) -> str:
         ANSI 颜色序列字符串。
     """
     try:
-        from ..infrastructure.terminal import get_terminal as _get_term
+        from .terminal import get_terminal as _get_term
         return _get_term().color(color_num)
     except Exception:
         return f"\033[38;5;{color_num}m"
@@ -104,7 +104,7 @@ def _blessed_bg(color_num: int) -> str:
         ANSI 背景色序列字符串。
     """
     try:
-        from ..infrastructure.terminal import get_terminal as _get_term
+        from .terminal import get_terminal as _get_term
         return _get_term().on_color(color_num)
     except Exception:
         return f"\033[48;5;{color_num}m"

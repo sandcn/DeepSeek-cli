@@ -21,7 +21,7 @@ from __future__ import annotations
 
 from typing import Generic, TypeVar
 
-from ...ui._bottom_bar_selection import run_bottom_bar_selection
+from .bottom_bar_selection import run_bottom_bar_selection
 from ...ui.common.ttl_cache import TTLCache
 
 T = TypeVar("T")

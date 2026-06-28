@@ -5,7 +5,7 @@ from ..config import MODELS, MODEL
 from ..core.ports.output import get_default_output_port
 from ..ui.theme import set_theme, get_active_theme, get_theme_names_with_desc
 from ..config import update_config
-from ..ui._bottom_bar_selection import run_bottom_bar_selection
+from ..chat_ui.infrastructure.bottom_bar_selection import run_bottom_bar_selection
 from .ports.chat_ui import get_default_chat_ui_port
 from ._command_core import register_command, CommandContext, show_cost
 

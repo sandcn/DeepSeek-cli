@@ -9,7 +9,7 @@ from __future__ import annotations
 import time
 
 from .tree import TreeNode
-from ..bottom_bar._theme import _SUBAGENT_TYPE_ABBR
+from ..infrastructure.bottom_theme import _SUBAGENT_TYPE_ABBR
 
 
 # Tool phase → TreeNode status 映射

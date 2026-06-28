@@ -351,7 +351,7 @@ class VNodeRenderStrategy:
         写入终端固定区域。
         """
         from ..components.bottom_bar_content import BottomBarContent
-        from ..bottom_bar.status_bar import render_normal, render_streaming_line
+        from ..infrastructure.status_bar import render_normal, render_streaming_line
         from ..infrastructure.claude_style import _is_claude_style_enabled
         from ..state.tui_state import UISessionState, StreamingState
         import shutil

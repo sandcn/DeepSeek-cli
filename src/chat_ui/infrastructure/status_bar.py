@@ -24,7 +24,7 @@ from ...core.constants import DIM, RESET, CYAN, BOLD, DARK_GRAY, \
     BRIGHT_CYAN, GREEN, YELLOW
 from ...ui.theme import THEME
 from ...ui.parallel._text_formatter import TextFormatter
-from ..infrastructure.terminal_utils import is_narrow, get_terminal_width
+from .terminal_utils import is_narrow, get_terminal_width
 from ...ui.common.time_format import format_elapsed, format_speed
 from ..state.tui_state import TUIStateTree, UISessionState, StreamingState
 
@@ -36,7 +36,7 @@ _STATUS_BAR_COMPACT_THRESHOLD = 60
 
 # ── Claude Code 风格门控（惰性导入） ──
 try:
-    from ..infrastructure.claude_style import _is_claude_style_enabled
+    from .claude_style import _is_claude_style_enabled
 except ImportError:
     _is_claude_style_enabled = lambda: False  # noqa: E731
 

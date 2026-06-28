@@ -1,6 +1,6 @@
 """终端光标视觉位置计算 — 拆行/制表符展开/ANSI视觉宽度。
 
-从 _bottom_bar.py 提取的纯计算函数，无状态无锁，纯函数式设计。
+从 _bottom_bar.py / bottom_bar/_cursor.py 提取的纯计算函数，无状态无锁，纯函数式设计。
 供 _BottomBar 和 RenderEngine.position_cursor 使用。
 
 职责范围：
@@ -297,7 +297,7 @@ class CursorController:
     @staticmethod
     def _default_get_terminal():
         """模块级默认值：延迟导入避免循环依赖。"""
-        from ..infrastructure.terminal import get_terminal
+        from .terminal import get_terminal
         return get_terminal()
 
     def _write_ansi(self, text: str, fallback: str) -> None:

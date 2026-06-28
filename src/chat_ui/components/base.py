@@ -584,7 +584,7 @@ class InputBarComponent(TuiComponent):
         text = self._props.get("text", self.text) if self._props else self.text
         cursor_pos = self._props.get("cursor_pos", self.cursor_pos) if self._props else self.cursor_pos
 
-        from ..bottom_bar._theme import (
+        from ..infrastructure.bottom_theme import (
             _COLOR_ACCENT, _COLOR_DIM, _COLOR_RESET,
             _PLACEHOLDER_TEXT, _PLACEHOLDER_COMPACT, _PLACEHOLDER_STREAMING,
         )

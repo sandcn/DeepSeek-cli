@@ -13,7 +13,7 @@ from unittest.mock import patch
 
 from src.ui.parallel._text_formatter import TextFormatter
 from src.chat_ui.state.tui_state import UISessionState, StreamingState, TUIStateTree
-from src.chat_ui.bottom_bar.status_bar import (
+from src.chat_ui.infrastructure.status_bar import (
     render_normal,
     render_streaming_line,
     build_normal_parts,
@@ -40,7 +40,7 @@ class TestRenderNormal:
     def test_no_model_shows_fallback(self):
         """无模型时显示 'no model'（非 Claude Code 风格下）。"""
         state = UISessionState(model="")
-        with patch("src.chat_ui.bottom_bar.status_bar._is_claude_style_enabled", return_value=False):
+        with patch("src.chat_ui.infrastructure.status_bar._is_claude_style_enabled", return_value=False):
             result = render_normal(state)
             assert "no model" in result
 
@@ -156,7 +156,7 @@ class TestStatusBarInstance:
         tree = TUIStateTree()
         tree.update_session(model="test-model", message_count=5)
         sb = StatusBar(tree)
-        with patch("src.chat_ui.bottom_bar.status_bar._is_claude_style_enabled", return_value=False):
+        with patch("src.chat_ui.infrastructure.status_bar._is_claude_style_enabled", return_value=False):
             result = sb.render()
             assert "test-model" in result
             assert "5" in result
@@ -167,7 +167,7 @@ class TestStatusBarInstance:
         tree.streaming.start()
         tree.update_session(model="test-model")
         sb = StatusBar(tree)
-        with patch("src.chat_ui.bottom_bar.status_bar._is_claude_style_enabled", return_value=False):
+        with patch("src.chat_ui.infrastructure.status_bar._is_claude_style_enabled", return_value=False):
             result = sb.render()
             assert "test-model" in result
             assert "t/" in result
@@ -215,10 +215,10 @@ class TestRenderNormalNarrow:
 
         注：使用 monkeypatch 模拟窄屏环境，CI 慢速环境可能 flaky。
         """
-        from src.chat_ui.bottom_bar.status_bar import render_normal
-        monkeypatch.setattr("src.chat_ui.bottom_bar.status_bar.is_narrow", lambda: True)
+        from src.chat_ui.infrastructure.status_bar import render_normal
+        monkeypatch.setattr("src.chat_ui.infrastructure.status_bar.is_narrow", lambda: True)
         monkeypatch.setattr(
-            "src.chat_ui.bottom_bar.status_bar.get_terminal_width", lambda: 30,
+            "src.chat_ui.infrastructure.status_bar.get_terminal_width", lambda: 30,
         )
         state = UISessionState(model="test-model", message_count=10, status_text="processing")
         result = render_normal(state)

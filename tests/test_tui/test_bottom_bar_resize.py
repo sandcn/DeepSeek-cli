@@ -15,7 +15,7 @@ import sys
 import unittest
 from unittest.mock import MagicMock, patch, PropertyMock
 
-from src.chat_ui.bottom_bar._bridge import BottomBarBridge
+from src.chat_ui.infrastructure.bottom_bar_bridge import BottomBarBridge
 
 
 class TestBug4IoctlUnpack(unittest.TestCase):
@@ -159,7 +159,7 @@ class TestBug5LastBottomLinesLocked(unittest.TestCase):
         # 模拟高度 < _MIN_HEIGHT 且锁获取超时
         with patch("shutil.get_terminal_size",
                    return_value=(80, 5)), \
-             patch("src.chat_ui.bottom_bar._bar._try_acquire_output_lock",
+             patch("src.ui._lock._try_acquire_output_lock",
                    return_value=MagicMock(__enter__=MagicMock(return_value=False),
                                          __exit__=MagicMock(return_value=False))):
             self.bb._check_resize()
@@ -244,7 +244,7 @@ class TestBug7LockTimeoutSetupUpdate(unittest.TestCase):
         # 尺寸变化到 (100, 40)，但锁获取超时
         with patch("shutil.get_terminal_size",
                    return_value=(100, 40)), \
-             patch("src.chat_ui.bottom_bar._bar._try_acquire_output_lock",
+             patch("src.ui._lock._try_acquire_output_lock",
                    return_value=MagicMock(__enter__=MagicMock(return_value=False),
                                          __exit__=MagicMock(return_value=False))):
             result = self.bb._check_resize()
@@ -259,7 +259,7 @@ class TestBug7LockTimeoutSetupUpdate(unittest.TestCase):
         """锁超时并更新尺寸后，第二次调用不应再触发。"""
         with patch("shutil.get_terminal_size",
                    return_value=(100, 40)), \
-             patch("src.chat_ui.bottom_bar._bar._try_acquire_output_lock",
+             patch("src.ui._lock._try_acquire_output_lock",
                    return_value=MagicMock(__enter__=MagicMock(return_value=False),
                                          __exit__=MagicMock(return_value=False))):
             self.bb._check_resize()  # 第一次：返回 False + 更新
