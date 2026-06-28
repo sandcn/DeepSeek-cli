@@ -113,6 +113,8 @@ class ParallelDisplay(BaseDisplay):
         self._scroll_end: int = 0
         # 缩放刷新标记（信号安全：在 _on_resize 中设置，_panel_refresh_callback 中消费）
         self._needs_resize_refresh: bool = False
+        # 上次帧渲染时间戳（用于定时强制刷新，保持 spinner 动画）
+        self._last_frame_time: float = 0.0
 
         # stdout 捕获锁
         self._capture_lock = asyncio.Lock()
@@ -298,9 +300,14 @@ class ParallelDisplay(BaseDisplay):
             return None
 
         current_version = self._store.version
+        now_local = time.monotonic()
         if not final and current_version == self._last_rendered_version:
-            return None
-        self._last_rendered_version = current_version
+            # 版本号未变时：如果距上次渲染超过 80ms，强制刷新以保持 spinner 动画
+            if now_local - self._last_frame_time < 0.08:
+                return None
+        else:
+            self._last_rendered_version = current_version
+        self._last_frame_time = now_local
 
         self._frame += 1
         self._renderer.sync_terminal_state(
