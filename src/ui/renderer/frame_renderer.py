@@ -51,6 +51,9 @@ _C_SUMMARY_DIM = "\033[38;5;245m"  # 中灰 — 摘要行次要信息
 _C_BRANCH    = "\033[38;5;239m"  # 灰 — 树状连接线
 _C_SPINNER   = "\033[38;5;221m"  # 金色 — spinner 动画
 
+# ── 树形缩进常量 ────────────────────────────────────────
+_INDENT = "  "  # 子行统一缩进（2 空格），用于 phase/tool/result 行
+
 # ── 渲染器 ──────────────────────────────────────────────
 
 class FrameRenderer:
@@ -201,12 +204,18 @@ class FrameRenderer:
         lines.append(self.truncate_to_width(sep_line))
 
         # ── 各 Agent 行 ──
+        prev_agent_lines = 0
         for idx, label in enumerate(order):
             slot = slots_snapshot.get(label)
             if slot is None:
                 continue
             is_last = (idx == len(order) - 1)
-            lines.extend(self._build_agent_lines(slot, now, final, is_last))
+            # ★ Agent 间空白呼吸行（前一个 Agent 有子行时插入竖线延续）
+            if idx > 0 and prev_agent_lines > 1:
+                lines.append(f"{_C_BRANCH} │ {_C_RESET}")
+            agent_lines = self._build_agent_lines(slot, now, final, is_last)
+            lines.extend(agent_lines)
+            prev_agent_lines = len(agent_lines)
 
         # 清理尾部空行
         while lines and lines[-1] == "":
@@ -318,16 +327,16 @@ class FrameRenderer:
             phase_time = f"{phase_elapsed:.1f}s"
             if slot.model_phase == "thinking":
                 phase_lines.append(self.truncate_to_width(
-                    f"{_C_DIMMER}{cont}   …thinking  {phase_time}{_C_RESET}"))
+                    f"{_C_DIMMER}{cont}{_INDENT}…thinking  {phase_time}{_C_RESET}"))
             elif slot.model_phase == "answering":
                 phase_lines.append(self.truncate_to_width(
-                    f"{_C_DIMMER}{cont}   {_C_ANSWERING}…answering{_C_DIMMER}  {phase_time}{_C_RESET}"))
+                    f"{_C_DIMMER}{cont}{_INDENT}{_C_ANSWERING}…answering{_C_DIMMER}  {phase_time}{_C_RESET}"))
             elif slot.model_phase == "parsing":
                 phase_lines.append(self.truncate_to_width(
-                    f"{_C_DIMMER}{cont}   {_C_PARSING}…parsing{_C_DIMMER}  {slot.model_info}{_C_RESET}"))
+                    f"{_C_DIMMER}{cont}{_INDENT}{_C_PARSING}…parsing{_C_DIMMER}  {slot.model_info}{_C_RESET}"))
             elif slot.model_phase == "batch":
                 phase_lines.append(self.truncate_to_width(
-                    f"{_C_DIMMER}{cont}   {_C_BATCH}…batch{_C_DIMMER}  {slot.model_info}  {phase_time}{_C_RESET}"))
+                    f"{_C_DIMMER}{cont}{_INDENT}{_C_BATCH}…batch{_C_DIMMER}  {slot.model_info}  {phase_time}{_C_RESET}"))
         return phase_lines
 
     def _build_agent_lines(
@@ -343,7 +352,7 @@ class FrameRenderer:
         """
         lines: list[str] = []
         # 树形连接线：末行用 └─，非末行用 ├─，延续用 │
-        branch = "  " if is_last else " │"
+        branch = " └─" if is_last else " ├─"
         cont   = "   " if is_last else " │ "
 
         elapsed = (slot.end_time or now) - slot.start_time
@@ -404,7 +413,7 @@ class FrameRenderer:
                 result_preview = self._truncate_result(display_text)
                 for line in result_preview:
                     lines.append(self.truncate_to_width(
-                        f"{_C_DIMMER}{cont}   {line}{_C_RESET}"))
+                        f"{_C_DIMMER}{cont}{_INDENT}{line}{_C_RESET}"))
 
         return lines
 
@@ -448,7 +457,7 @@ class FrameRenderer:
             tool_abbr = f"{tool_color}{display_name}{_C_RESET}"
 
         detail_display = f" {_C_DIMMER}{detail}{_C_RESET}" if detail else ""
-        prefix = f"{_C_BRANCH}{cont}{_C_RESET}   "
+        prefix = f"{_C_BRANCH}{cont}{_C_RESET}{_INDENT}"
 
         if rec.phase == "parsing":
             line = f"{prefix}{_C_PARSING}◌{_C_RESET} {tool_abbr}{detail_display}"
