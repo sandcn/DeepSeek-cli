@@ -244,6 +244,7 @@ class UserSelectFunc(Func):
                 texts=multi_texts,
                 title="选择",
             )
+            _render_and_redraw(bb)
 
             # 多选状态跟踪
             selected_indices: set[int] = set()
@@ -286,8 +287,10 @@ class UserSelectFunc(Func):
                                     term = os.read(fd, 1)
                                     if term == b'A':      # ↑
                                         bb.cycle_completion(-1)
+                                        _render_and_redraw(bb)
                                     elif term == b'B':    # ↓
                                         bb.cycle_completion(1)
+                                        _render_and_redraw(bb)
                                 continue
                             elif nxt == b'O':
                                 # SS3 序列：\x1bOA ↑, \x1bOB ↓
@@ -296,13 +299,16 @@ class UserSelectFunc(Func):
                                     term = os.read(fd, 1)
                                     if term == b'A':
                                         bb.cycle_completion(-1)
+                                        _render_and_redraw(bb)
                                     elif term == b'B':
                                         bb.cycle_completion(1)
+                                        _render_and_redraw(bb)
                                 continue
                     except (ValueError, OSError):
                         pass
                     # 单 ESC → 取消
                     bb.hide_completions()
+                    _render_and_redraw(bb)
                     return json.dumps({
                         "selected": list(self.default_options or []),
                         "action": "cancel",
@@ -310,7 +316,7 @@ class UserSelectFunc(Func):
 
                 # ── 空格 → 切换选中（多选） ──
                 elif b == 0x20 and self.multi_select:
-                    idx = bb._completion_idx
+                    idx = bb.completion_index
                     if not (0 <= idx < len(self.options)):
                         continue
                     if idx in selected_indices:
@@ -322,12 +328,13 @@ class UserSelectFunc(Func):
                     for i, opt in enumerate(self.options):
                         prefix = "✓ " if i in selected_indices else "  "
                         new_disp.append(f"{prefix}{opt}")
-                    show_idx = min(bb._completion_idx, len(new_disp) - 1)
+                    show_idx = min(bb.completion_index, len(new_disp) - 1)
                     bb.show_completions(
                         new_disp, show_idx,
                         texts=self.options,
                         title="选择",
                     )
+                    _render_and_redraw(bb)
                     continue
 
                 # ── Enter → 确认（单选=当前项，多选=全部选中项） ──
@@ -337,16 +344,18 @@ class UserSelectFunc(Func):
                         if not selected:
                             selected = list(self.default_options or [])
                         bb.hide_completions()
+                        _render_and_redraw(bb)
                         return json.dumps({
                             "selected": selected,
                             "action": "confirmed",
                         }, ensure_ascii=False)
                     else:
-                        idx = bb._completion_idx
+                        idx = bb.completion_index
                         if not (0 <= idx < len(self.options)):
                             continue
                         chosen = self.options[idx]
                         bb.hide_completions()
+                        _render_and_redraw(bb)
                         return json.dumps({
                             "selected": [chosen],
                             "action": "confirmed",
@@ -354,6 +363,7 @@ class UserSelectFunc(Func):
 
             # 超时
             bb.hide_completions()
+            _render_and_redraw(bb)
             return json.dumps({
                 "selected": list(self.default_options or []),
                 "action": "timeout",
@@ -378,13 +388,8 @@ class UserSelectFunc(Func):
             try:
                 if _saved_status_active:
                     bb._status_active = True
-                    # 手动清除弹窗状态，render 线程将在下一周期拾取并重绘
-                    bb._completion._visible = False
-                    bb._completion._popup_height = 0
-                    bb._completion._items = []
-                    bb._completion._texts = []
-                else:
-                    bb.hide_completions()
+                bb.hide_completions()
+                _render_and_redraw(bb)
             except Exception as e:
                 _logger.debug("user_select: cleanup failed: %s", e)
 
@@ -485,3 +490,31 @@ class UserSelectFunc(Func):
                 }, ensure_ascii=False)
         finally:
             pending_selects._pending.pop(select_id, None)
+
+
+def _render_and_redraw(bb) -> None:
+    """从 bridge 状态构建 BottomBarContent VNode，渲染并写入终端。
+
+    与主 render 线程使用相同的 output_lock 串行化终端 I/O，
+    因此可在 EscapeMonitor 线程中安全调用。
+    """
+    from ..chat_ui.components.bottom_bar_content import BottomBarContent  # noqa: PLC0415
+
+    tw = get_terminal_size().columns
+    snap = bb.get_completion_snapshot()
+
+    content = BottomBarContent(
+        term_width=tw,
+        status_text="",
+        input_text=bb._last_text,
+        input_cursor_pos=bb._input_cursor_pos,
+        is_streaming=bb._status_active,
+        completion_items=tuple(snap["items"]),
+        completion_selected=snap["selected"],
+        completion_visible=bb.is_completion_visible,
+        completion_title=snap["title"],
+        completion_is_selection=snap["is_selection"],
+        subagent_slots=bb._subagent_slots,
+        claude_style=False,
+    )
+    bb.force_redraw_from_vnode(content.render())
