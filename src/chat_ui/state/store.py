@@ -16,6 +16,8 @@ TuiState 是完整 TUI 状态快照（frozen dataclass），所有渲染命令 d
 
 from __future__ import annotations
 
+import time
+
 from dataclasses import dataclass, field, replace
 from typing import Any, Callable
 
@@ -184,7 +186,8 @@ def _reduce_user_msg(state: TuiState, cmd: CmdUserMsg) -> TuiState:
     """追加用户消息，同时清空 subagent_slots（新一轮对话开始）。"""
     msgs = list(state.user_messages)
     msgs.append(cmd.text)
-    return replace(state, user_messages=msgs, subagent_slots={})
+    new_status = replace(state.status, round_start_time=time.time())
+    return replace(state, user_messages=msgs, subagent_slots={}, status=new_status)
 
 
 @register_reducer(CmdParseInfo)
@@ -272,6 +275,7 @@ def _reduce_status_update(state: TuiState, cmd: CmdStatusUpdate) -> TuiState:
         tool_count=cmd.tool_count if cmd.tool_count is not None else state.status.tool_count,
         tool_fail=cmd.tool_fail if cmd.tool_fail is not None else state.status.tool_fail,
         streaming=cmd.streaming,
+        round_start_time=cmd.round_start_time if cmd.round_start_time is not None else state.status.round_start_time,
     )
     return replace(state, status=new_status)
 

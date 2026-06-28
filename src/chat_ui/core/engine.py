@@ -71,6 +71,7 @@ class TuiEngine:
         self._renderer = renderer
         self._bb = bottom_bar
         self._cursor_tracker = cursor_tracker
+        self._last_positioned: tuple = (-1, -1)
         self._tio = terminal_io
         self._cmd_queue: queue.Queue = queue.Queue(maxsize=10000)
         self._cmd_event = threading.Event()
@@ -251,11 +252,11 @@ class TuiEngine:
         """阶段 3：光标定位。
 
         底部栏内容渲染已由 strategy._render_bottom_bar() 在 _drain_queue 中完成。
-        此方法仅处理光标定位。
+        此方法仅处理光标定位。当 bottom_bar 激活时始终执行定位，
+        _position_cursor() 内部通过 _last_positioned 缓存跳过无变化的位置更新。
         """
-        redraw = has_commands or self._bottom_redraw_requested.is_set() or self._bb.is_status_active
         self._bottom_redraw_requested.clear()
-        if redraw:
+        if getattr(self._bb, '_active', False):
             try:
                 self._position_cursor()
             except Exception:
@@ -388,6 +389,9 @@ class TuiEngine:
             return
         text, cursor_pos, h, w = self._bb.get_cursor_info()
         r_cursor, cursor_col = self._bb.compute_cursor_position(text, cursor_pos, h, w)
+        if (r_cursor, cursor_col) == self._last_positioned:
+            return
+        self._last_positioned = (r_cursor, cursor_col)
         if self._tio is not None:
             self._tio.move_cursor(r_cursor, cursor_col)
             self._tio.flush()

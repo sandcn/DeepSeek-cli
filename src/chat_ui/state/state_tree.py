@@ -17,6 +17,7 @@ class StatusLine:
     tool_count: int = 0
     tool_fail: int = 0
     streaming: bool = False
+    round_start_time: float = 0.0
 
     def render(self) -> str:
         """渲染为单行状态文本。"""

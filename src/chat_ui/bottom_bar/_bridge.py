@@ -317,11 +317,11 @@ class BottomBarBridge:
         self._input_cursor_pos = cursor_pos
 
     def set_subagent_slots(self, slots: dict) -> None:
-        """设置 SubAgent 槽位数据，预计算行数（仅内存）。
+        """设置 SubAgent 槽位数据，通过 Tree 组件动态计算行数（仅内存）。
 
-        每个 slot 1 行 + model_phase 最多 1 行 + tool_history 最多 3 行。
-        行数供 _bottom_lines 计算使用，标记 _subagent_slots_dirty
-        通知 VNode 渲染路径需要重新渲染。
+        使用 subagent_slots_to_tree() + Tree.render() 动态计算实际渲染行数，
+        确保 _bottom_lines 计算与 Tree 渲染产出精确一致。
+        标记 _subagent_slots_dirty 通知 VNode 渲染路径需要重新渲染。
         """
         if slots == self._subagent_slots:
             return
@@ -330,16 +330,17 @@ class BottomBarBridge:
             self._subagent_line_count = 0
             self._subagent_slots_dirty = True
             return
-        count = 0
-        for slot in slots.values():
-            count += 1  # 主行
-            # 模型阶段状态行（思考中/回答中/接收工具参数中 + 耗时）
-            if slot.get("model_phase", ""):
-                count += 1
-            tool_history = slot.get("tool_history", [])
-            if tool_history:
-                count += min(len(tool_history), 3)  # 最多 3 条历史
-        self._subagent_line_count = count
+
+        # 使用 Tree 组件动态计算行数
+        from ..components.subagent_tree import subagent_slots_to_tree
+        from ..components.tree import Tree
+        tree_root = subagent_slots_to_tree(slots)
+        if tree_root is not None:
+            tree = Tree(root=tree_root, indent=2)
+            rendered = tree.render()
+            self._subagent_line_count = rendered.count('\n') + 1 if rendered else 0
+        else:
+            self._subagent_line_count = 0
         self._subagent_slots_dirty = True
 
     def set_completion_height(self, height: int) -> None:
@@ -422,7 +423,9 @@ class BottomBarBridge:
             out.write(blessed_save_cursor())
 
             height = self._term_height()
-            total = self._bottom_lines
+            # 从实际渲染内容计算行数，确保与 vnode_content 一致
+            # （不再依赖可能过时的 _bottom_lines 属性）
+            total = len(vnode_content.split('\n')) if vnode_content else self._bottom_lines
             scroll_end = height - total
 
             if scroll_end < 1:

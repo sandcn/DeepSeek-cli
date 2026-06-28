@@ -9,7 +9,6 @@
 
 from __future__ import annotations
 
-import time
 from wcwidth import wcswidth
 
 from .base import TuiComponent
@@ -21,9 +20,6 @@ from ..bottom_bar._theme import (
     CLAUDE_PROMPT_COLOR,
 )
 from ..bottom_bar._cursor import _truncate_by_width, _visual_len, _wrap_by_width
-from ..bottom_bar._theme import _SUBAGENT_TYPE_ABBR
-from ..infrastructure.styled import StyledText
-from ...ui.ansi import truncate_ansi_visual
 
 # ── 补全弹窗常量 ──────────────────────────────────────────
 _COMPLETION_MAX_ITEMS = 10       # 单屏最多显示选项数
@@ -149,7 +145,7 @@ class BottomBarContent(TuiComponent):
     # ── SubAgent 槽位渲染 ────────────────────────────────
 
     def _render_subagent_slots(self) -> list[str]:
-        """渲染 SubAgent 槽位行，复用 _subagent.py 的 _SUBAGENT_TYPE_ABBR 映射。
+        """渲染 SubAgent 槽位行，使用 Tree 树控件渲染。
 
         Returns:
             渲染后的行列表（可能为空）。
@@ -157,182 +153,22 @@ class BottomBarContent(TuiComponent):
         slots = self.subagent_slots
         if not slots:
             return []
+        try:
+            from .subagent_tree import subagent_slots_to_tree
+            from .tree import Tree
 
-        _now = time.time()
-        abbrs = _SUBAGENT_TYPE_ABBR
-        tw = self.term_width
-        lines: list[str] = []
+            tree_root = subagent_slots_to_tree(slots)
+            if tree_root is None:
+                return []
 
-        for label, slot in slots.items():
-            if not isinstance(slot, dict):
-                continue
+            tree = Tree(root=tree_root, indent=2)
+            rendered = tree.render()
+            if not rendered:
+                return []
 
-            desc = slot.get("description", label)
-            agent_type = slot.get("agent_type", "plan_execute")
-            status = slot.get("status", "running")
-            output_tokens = slot.get("output_tokens", 0) + slot.get(
-                "live_output_tokens", 0)
-            start_time = slot.get("start_time", 0)
-            end_time = slot.get("end_time", 0)
-
-            # elapsed: running 用实时时钟，done/fail 用记录的 end_time
-            if status == "running" and start_time > 0:
-                elapsed = _now - start_time
-            elif end_time > 0:
-                elapsed = end_time - start_time
-            else:
-                elapsed = 0.0
-
-            type_tag = abbrs.get(agent_type, agent_type[:4])
-
-            # 预计算共享字段
-            token_str = f"{output_tokens}" if output_tokens else ""
-            elapsed_str = f"{elapsed:.1f}s" if elapsed > 0 else ""
-
-            # 终端宽度感知截断
-            prefix_w = 7 + len(type_tag)  # "  X [tag] "
-            suffix_w = 0
-            if status != "fail" and token_str:
-                suffix_w += 4 + len(token_str) + 4  # "  · {n} out"
-            if elapsed_str:
-                suffix_w += 4 + len(elapsed_str)  # "  · {N.Ns}"
-            available = max(tw - prefix_w - suffix_w - 1, 10)
-            desc_display = truncate_ansi_visual(desc, max_visual=available)
-
-            # 构建样式化文本
-            if status == "running":
-                icon = "\u23fa"  # ⏺
-                line_parts = [
-                    (f"  {icon} ", "cyan"),
-                    (f"[{type_tag}] ", "dim"),
-                    (f"{desc_display}", ""),
-                ]
-                if token_str:
-                    line_parts.append(("  · ", "dim"))
-                    line_parts.append((f"{token_str} out", "dim"))
-                if elapsed_str:
-                    line_parts.append(("  · ", "dim"))
-                    line_parts.append((f"{elapsed_str}", "dim"))
-                rendered = StyledText.assemble(*line_parts)
-            elif status in ("done", "completed"):
-                icon = "\u2713"  # ✓
-                line_parts = [
-                    (f"  {icon} ", "green"),
-                    (f"[{type_tag}] ", "dim"),
-                    (f"{desc_display}", ""),
-                ]
-                if token_str:
-                    line_parts.append(("  · ", "dim"))
-                    line_parts.append((f"{token_str} out", "dim"))
-                if elapsed_str:
-                    line_parts.append(("  · ", "dim"))
-                    line_parts.append((f"{elapsed_str}", "dim"))
-                rendered = StyledText.assemble(*line_parts)
-            else:  # fail
-                icon = "\u2717"  # ✗
-                line_parts = [
-                    (f"  {icon} ", "red"),
-                    (f"[{type_tag}] ", "dim"),
-                    (f"{desc_display}", ""),
-                ]
-                if elapsed_str:
-                    line_parts.append(("  · ", "dim"))
-                    line_parts.append((f"{elapsed_str}", "dim"))
-                rendered = StyledText.assemble(*line_parts)
-
-            lines.append(str(rendered))
-
-            # ── 模型阶段状态行（思考中/回答中/接收工具参数中 + 耗时）──
-            model_phase = slot.get("model_phase", "")
-            model_phase_start = slot.get("model_phase_start", 0.0)
-            if model_phase:
-                if model_phase_start > 0:
-                    phase_elapsed = _now - model_phase_start
-                else:
-                    phase_elapsed = 0.0
-
-                phase_elapsed_str = f"{phase_elapsed:.1f}s" if phase_elapsed > 0 else ""
-
-                if model_phase == "thinking":
-                    phase_label = "思考中"
-                    phase_color = "yellow"
-                elif model_phase == "answering":
-                    phase_label = "回答中"
-                    phase_color = "cyan"
-                elif model_phase == "parsing":
-                    phase_label = "接收工具参数中"
-                    phase_color = "yellow"
-                else:
-                    phase_label = model_phase
-                    phase_color = ""
-
-                phase_prefix_w = 6
-                phase_suffix_w = 4 + len(phase_elapsed_str) if phase_elapsed_str else 0
-                phase_available = max(tw - phase_prefix_w - phase_suffix_w - 1, 10)
-                display_label = truncate_ansi_visual(phase_label, max_visual=phase_available)
-
-                dim_color = f"dim {phase_color}" if phase_color else "dim"
-                phase_parts = [
-                    (f"    \u27f3 ", dim_color),
-                    (f"{display_label}", "dim"),
-                ]
-                if phase_elapsed_str:
-                    phase_parts.append(("  · ", "dim"))
-                    phase_parts.append((phase_elapsed_str, "dim"))
-
-                phase_line = StyledText.assemble(*phase_parts)
-                lines.append(str(phase_line))
-
-            # ── 工具调用历史（最近 3 条，倒序）──
-            tool_history = slot.get("tool_history", [])
-            if tool_history:
-                recent_tools = list(reversed(tool_history[-3:]))
-                for rec in recent_tools:
-                    if not isinstance(rec, dict):
-                        continue
-                    t_name = rec.get("tool_name") or "?"
-                    t_detail = rec.get("detail", "")
-                    t_phase = rec.get("phase", "running")
-                    t_start = rec.get("start_time", 0)
-                    t_end = rec.get("end_time", 0)
-
-                    if t_phase in ("running", "parsing") and t_start > 0:
-                        t_elapsed = _now - t_start
-                    elif t_end > 0:
-                        t_elapsed = t_end - t_start
-                    else:
-                        t_elapsed = 0.0
-
-                    tool_desc = f"{t_name} {t_detail}" if t_detail else t_name
-                    t_elapsed_str = f"{t_elapsed:.1f}s" if t_elapsed > 0 else ""
-
-                    t_prefix_w = 6
-                    t_suffix_w = 4 + len(t_elapsed_str) if t_elapsed_str else 0
-                    t_available = max(tw - t_prefix_w - t_suffix_w - 1, 10)
-                    tool_desc = truncate_ansi_visual(tool_desc, max_visual=t_available)
-
-                    if t_phase in ("done",):
-                        t_icon = "\u2713"  # ✓
-                        t_icon_color = "dim green"
-                    elif t_phase in ("fail",):
-                        t_icon = "\u2717"  # ✗
-                        t_icon_color = "dim red"
-                    else:
-                        t_icon = "\u27f3"  # ⟳
-                        t_icon_color = "dim yellow"
-
-                    t_parts = [
-                        (f"    {t_icon} ", t_icon_color),
-                        (f"{tool_desc}", "dim"),
-                    ]
-                    if t_elapsed_str:
-                        t_parts.append(("  · ", "dim"))
-                        t_parts.append((t_elapsed_str, "dim"))
-
-                    t_line = StyledText.assemble(*t_parts)
-                    lines.append(str(t_line))
-
-        return lines
+            return rendered.split('\n')
+        except Exception:
+            return []
 
     # ── 输入区渲染 ────────────────────────────────────────
 

@@ -168,6 +168,7 @@ class CmdStatusUpdate:
     tool_count: int | None = None
     tool_fail: int | None = None
     streaming: bool = False
+    round_start_time: float | None = None
     layer: int = 10
     kind: int = 20
 

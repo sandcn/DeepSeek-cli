@@ -120,19 +120,32 @@ def subagent_slots_to_tree(slots: dict | None) -> TreeNode | None:
             parts.append(phase_str)
         label_text = " ".join(parts)
 
-        # ── 构建 tool_history 子节点 ──
+        # ── 构建 tool_history 子节点（只保留最近 3 条）──
         tool_children: list[TreeNode] = []
         if isinstance(tool_history, list):
-            for tool in tool_history:
+            recent_tools = tool_history[-3:]  # 只显示最近 3 条工具历史
+            for tool in recent_tools:
                 if not isinstance(tool, dict):
                     continue
                 tool_name = tool.get("tool_name", "?")
+                t_detail = tool.get("detail", "")
                 tool_phase = tool.get("phase", "running")
+                t_start = tool.get("start_time", 0)
+                t_end = tool.get("end_time", 0)
                 tool_status = _TOOL_PHASE_STATUS.get(tool_phase, "running")
-                tool_label = f"{tool_name}"
+                if tool_phase in ("running", "parsing") and t_start > 0:
+                    t_elapsed = time.time() - t_start
+                elif t_end > 0:
+                    t_elapsed = t_end - t_start
+                else:
+                    t_elapsed = 0.0
+                tool_desc = f"{tool_name} {t_detail}" if t_detail else tool_name
+                t_elapsed_str = f" {t_elapsed:.1f}s" if t_elapsed > 0 else ""
+                tool_label = f"{tool_desc}{t_elapsed_str}"
                 tool_children.append(TreeNode(
                     label=tool_label,
                     status=tool_status,
+                    is_expanded=True,
                 ))
 
         # ── 构建 agent 节点 ──

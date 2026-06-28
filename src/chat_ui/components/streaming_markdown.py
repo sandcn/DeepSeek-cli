@@ -106,7 +106,24 @@ class StreamingMarkdown(TuiComponent):
         return result
 
     def mark_done(self) -> None:
-        """标记流式写入完成，停止光标闪烁。"""
+        """标记流式写入完成，停止光标闪烁。
+        
+        在标记完成前，强制刷新所有未渲染的缓冲内容，
+        确保最后几个 token 不会丢失。
+        """
+        # 强制渲染所有剩余未渲染内容
+        cur_len = len(self._pending_text)
+        if cur_len > self._last_rendered_len:
+            from ..infrastructure.markdown_renderer import render_markdown
+            try:
+                from .base import _get_terminal_width
+                term_w = _get_terminal_width()
+            except Exception:
+                term_w = 80
+            delta = self._pending_text[self._last_rendered_len:]
+            delta_rendered = render_markdown(delta, width=term_w)
+            self._cached_rendered += delta_rendered
+            self._last_rendered_len = cur_len
         self._done = True
 
     def reset(self) -> None:

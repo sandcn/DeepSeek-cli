@@ -357,30 +357,60 @@ class VNodeRenderStrategy:
         import shutil
 
         props = vnode.props
-        status = props.get("status")
+        status_line = props.get("status")
         input_line = props.get("input_line")
         completion = props.get("completion")
         subagent_slots = props.get("subagent_slots", {})
 
+        import time as _time_module
+
         # ── 构建 StatusBar 所需的状态行文本 ──
         # 优先从 TuiState.status.model 读取，回退到 BottomBarBridge._model_name
-        model = status.model if (hasattr(status, 'model') and status.model) else ""
-        if not model and hasattr(self, '_engine') and self._engine is not None:
-            model = getattr(self._engine._bb, '_model_name', '')
+        model_name = status_line.model if (hasattr(status_line, 'model') and status_line.model) else ""
+        if not model_name and hasattr(self, '_engine') and self._engine is not None:
+            model_name = getattr(self._engine._bb, '_model_name', '')
+
+        # 计算本轮耗时
+        round_elapsed = 0.0
+        if hasattr(status_line, 'round_start_time') and status_line.round_start_time > 0:
+            round_elapsed = _time_module.time() - status_line.round_start_time
+        elif hasattr(status_line, 'elapsed') and status_line.elapsed > 0:
+            round_elapsed = status_line.elapsed
+
+        # 构建状态文本（工具计数）
+        status_text = ""
+        tool_count = status_line.tool_count if hasattr(status_line, 'tool_count') else 0
+        tool_fail = status_line.tool_fail if hasattr(status_line, 'tool_fail') else 0
+        if tool_count > 0:
+            status_text = f"⚙{tool_count}"
+            if tool_fail > 0:
+                status_text += f"!{tool_fail}"
+
+        _output_tokens = status_line.tokens if hasattr(status_line, 'tokens') else 0
         session = UISessionState(
-            model=model,
+            model=model_name,
             message_count=0,
             input_tokens=0,
-            output_tokens=status.tokens if hasattr(status, 'tokens') else 0,
+            output_tokens=_output_tokens,
+            status_text=status_text,
+            session_duration=round_elapsed,
+            show_duration=True,
+            show_tokens=True,
+            show_time=True,
+            cost_usd=_output_tokens * 0.00001 if _output_tokens > 0 else 0.0,
+            context_pct=0.0,  # TuiState 未追踪上下文百分比，保持默认
         )
 
         claude = _is_claude_style_enabled()
-        is_streaming = status.streaming if hasattr(status, 'streaming') else False
+        is_streaming = status_line.streaming if hasattr(status_line, 'streaming') else False
 
         if is_streaming and not claude:
             streaming = StreamingState()
             streaming.active = True
-            streaming.output_tokens = status.tokens if hasattr(status, 'tokens') else 0
+            # 设置 start_time 使 elapsed property 返回正确的实时耗时
+            if round_elapsed > 0:
+                streaming.start_time = _time_module.monotonic() - round_elapsed
+            streaming.output_tokens = status_line.tokens if hasattr(status_line, 'tokens') else 0
             status_text = render_streaming_line(session, streaming)
         else:
             status_text = render_normal(session)
@@ -404,6 +434,16 @@ class VNodeRenderStrategy:
 
         # ── 渲染为 ANSI 字符串 ──
         content = component.render()
+
+        # 同步补全弹窗高度到 BottomBarBridge（影响 _bottom_lines 和光标定位）
+        completion_visible_val = completion.visible if hasattr(completion, 'visible') else False
+        completion_items_tuple = tuple(completion.items) if hasattr(completion, 'items') else ()
+        completion_height = 0
+        if completion_visible_val and completion_items_tuple:
+            # 标题行(1) + 选项行(min(len, _COMPLETION_MAX_ITEMS)) + 快捷键行(1) + 额外1行buffer
+            completion_height = 2 + min(len(completion_items_tuple), 10)
+        if hasattr(self, '_engine') and self._engine is not None:
+            self._engine._bb.set_completion_height(completion_height)
 
         # ── 通过 engine 的 BottomBarBridge 写入终端固定区域 ──
         if hasattr(self, '_engine') and self._engine is not None:
