@@ -47,6 +47,7 @@ class TestLoadPrompt:
             "prompts_export_map",
             "prompts_export_review",
             "prompts_export_plan",
+            "prompts_export_plan_execute",
             "prompts_export_read_memory",
             "prompts_export_write_memory",
         ]
