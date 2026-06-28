@@ -414,13 +414,21 @@ class InteractiveLoop:
         await _save_loop_snapshot(session, self._chat_ui)
         self._chat_ui.write_line(f"  {GREEN}+ 开始循环 {count} 次: \"{prompt[:60]}{'...' if len(prompt) > 60 else ''}\"{RESET}")
         for i in range(count):
-            self._chat_ui.write_line(f"  {DIM}  ─ 第 {i+1}/{count} 轮 ─{RESET}")
-            # 清空对话（复用 session.clear_messages()）
+            self._chat_ui.write_line(f"  {DIM}  ─ 第 {i+1}/{count} 轮 · 第1次 ─{RESET}")
+            # 清空对话（每轮开始前清空）
             reset_interrupt_async()
             session.clear_messages()
-            # 执行一轮对话，返回结果包含 interrupted 标志
+            # 第1次运行
             result = await session.run_round(prompt)
             if result.get("interrupted", False):
+                self._chat_ui.write_line(f"  {YELLOW}+ ESC 中断，提前结束循环（已执行 {i+1}/{count} 轮）{RESET}")
+                break
+
+            # 第2次运行（同一提词，同一轮）
+            self._chat_ui.write_line(f"  {DIM}  ─ 第 {i+1}/{count} 轮 · 第2次 ─{RESET}")
+            reset_interrupt_async()
+            result2 = await session.run_round(prompt)
+            if result2.get("interrupted", False):
                 self._chat_ui.write_line(f"  {YELLOW}+ ESC 中断，提前结束循环（已执行 {i+1}/{count} 轮）{RESET}")
                 break
         else:
