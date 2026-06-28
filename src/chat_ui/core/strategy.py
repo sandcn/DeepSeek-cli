@@ -402,7 +402,12 @@ class VNodeRenderStrategy:
         )
 
         claude = _is_claude_style_enabled()
-        is_streaming = status_line.streaming if hasattr(status_line, 'streaming') else False
+        # 从 BottomBarBridge 读取真实的流式状态
+        # StatusLine.streaming 依赖 CmdStatusUpdate 派发，但 app_loop 不派发该命令，
+        # 实际流式状态由 BottomBarBridge._status_active 维护（enable_status/disable_status）
+        is_streaming = False
+        if hasattr(self, '_engine') and self._engine is not None:
+            is_streaming = self._engine._bb.is_status_active
 
         if is_streaming and not claude:
             streaming = StreamingState()
