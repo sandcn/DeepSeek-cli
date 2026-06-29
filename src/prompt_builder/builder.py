@@ -71,8 +71,8 @@ _FALLBACK_CORE_RULES = """## 安全红线（一票否决）
 
 ## 通用规范
 - 密钥从环境变量读取，禁止硬编码
-- pathlib 安全拼接路径
-- tempfile 安全创建临时文件，用后清理
+- 语言对应的路径安全库（如 pathlib / Node.js path / Rust std::path::Path / Java java.nio.file.Path），安全拼接，防穿越
+- 语言对应的临时文件安全 API（如 tempfile / Node.js tmp / Go os.CreateTemp / Rust tempfile crate / Java Files.createTempFile），安全创建，用后清理
 - 中文纯文本输出，禁止 HTML
 - 操作前先输出完整计划，逐项对照执行
 """
@@ -98,7 +98,7 @@ _FALLBACK_MAIN_PROMPT = f"""# 核心目标
 - 使用 read_file 读文件，update_file 改文件
 - 使用 search 搜索代码，禁止 bash grep
 - 修改前 read_file 确认内容
-- 修改后用 py_compile 检查语法，pytest 运行测试
+- 修改后执行语言对应的语法检查（如 Python `python -m py_compile` / Node.js `node --check` / Go `go vet` / Rust `cargo check` / Java `javac -Xlint`），并运行对应测试框架（如 Python pytest / Node.js Jest/Mocha / Go `go test` / Rust `cargo test` / Java JUnit）
 
 ## 测试
 - 新增功能/修复 Bug 同步更新测试
@@ -113,6 +113,7 @@ def _build_prompt(
     fallback: str,
     include_version_control: bool = True,
     cwd: str | None = None,
+    include_init_md: bool = True,
 ) -> list[str]:
     """构建提示词的公共逻辑。
 
@@ -123,6 +124,7 @@ def _build_prompt(
         fallback: 文件丢失时的兜底提示词
         include_version_control: 是否包含版本控制信息
         cwd: 工作目录
+        include_init_md: 是否从 init.md 加载项目摘要信息
     """
     cwd = _resolve_cwd(cwd)
     parts: list[str] = []
@@ -134,9 +136,10 @@ def _build_prompt(
     parts.append(export_content if export_content else fallback)
 
     # 运行时：从 init.md 动态加载项目摘要（放在环境信息前）
-    init_summary = build_init_md_summary(cwd=cwd)
-    if init_summary:
-        parts.append(init_summary)
+    if include_init_md:
+        init_summary = build_init_md_summary(cwd=cwd)
+        if init_summary:
+            parts.append(init_summary)
 
     # 运行时动态信息
     env_info = build_environment_info(cwd)
@@ -160,7 +163,7 @@ def build_subagent_system_prompt(
 
     从 prompts_export_sub.md 加载静态规则，追加运行时动态信息。
     """
-    return _build_prompt("prompts_export_sub", _FALLBACK_SUB_PROMPT, include_version_control, cwd)
+    return _build_prompt("prompts_export_sub", _FALLBACK_SUB_PROMPT, include_version_control, cwd, include_init_md=False)
 
 
 def build_map_agent_system_prompt(
@@ -172,7 +175,7 @@ def build_map_agent_system_prompt(
     从 prompts_export_map.md 加载静态规则，追加运行时动态信息。
     Map 类型专用于项目代码分析，只读工具集。
     """
-    return _build_prompt("prompts_export_map", _FALLBACK_SUB_PROMPT, include_version_control, cwd)
+    return _build_prompt("prompts_export_map", _FALLBACK_SUB_PROMPT, include_version_control, cwd, include_init_md=False)
 
 
 def build_review_agent_system_prompt(
@@ -184,7 +187,7 @@ def build_review_agent_system_prompt(
     从 prompts_export_review.md 加载静态规则，追加运行时动态信息。
     Review 类型专用于代码审查（Code Review），只读工具集，P0-P3 分级输出。
     """
-    return _build_prompt("prompts_export_review", _FALLBACK_SUB_PROMPT, include_version_control, cwd)
+    return _build_prompt("prompts_export_review", _FALLBACK_SUB_PROMPT, include_version_control, cwd, include_init_md=False)
 
 
 def build_plan_agent_system_prompt(
@@ -197,7 +200,7 @@ def build_plan_agent_system_prompt(
     Plan 类型专用于制定可执行计划并写入 .chat/plan/ 目录，
     只读分析工具 + write_file/update_file。
     """
-    return _build_prompt("prompts_export_plan", _FALLBACK_SUB_PROMPT, include_version_control, cwd)
+    return _build_prompt("prompts_export_plan", _FALLBACK_SUB_PROMPT, include_version_control, cwd, include_init_md=False)
 
 
 def build_read_memory_agent_system_prompt(
@@ -210,7 +213,7 @@ def build_read_memory_agent_system_prompt(
     read_memory 类型仅保留 read_file/search/find/ls 只读工具，
     专用于搜索和读取 .chat/memory/ 目录下的记忆文件。
     """
-    return _build_prompt("prompts_export_read_memory", _FALLBACK_SUB_PROMPT, include_version_control, cwd)
+    return _build_prompt("prompts_export_read_memory", _FALLBACK_SUB_PROMPT, include_version_control, cwd, include_init_md=False)
 
 
 def build_write_memory_agent_system_prompt(
@@ -223,7 +226,7 @@ def build_write_memory_agent_system_prompt(
     write_memory 类型保留读工具 + write_file/update_file/mk，
     写入仅限 .chat/memory/ 目录，专用于创建和更新记忆文件。
     """
-    return _build_prompt("prompts_export_write_memory", _FALLBACK_SUB_PROMPT, include_version_control, cwd)
+    return _build_prompt("prompts_export_write_memory", _FALLBACK_SUB_PROMPT, include_version_control, cwd, include_init_md=False)
 
 
 def build_execute_agent_system_prompt(
@@ -236,7 +239,7 @@ def build_execute_agent_system_prompt(
     execute 类型拥有完整读写+bash 工具集，独立上下文，
     用于执行计划文件中的具体步骤，完成后返回修改的文件列表。
     """
-    return _build_prompt("prompts_export_execute", _FALLBACK_SUB_PROMPT, include_version_control, cwd)
+    return _build_prompt("prompts_export_execute", _FALLBACK_SUB_PROMPT, include_version_control, cwd, include_init_md=False)
 
 
 # =================== 主代理提示词 ===================

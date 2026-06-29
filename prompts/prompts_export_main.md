@@ -34,8 +34,8 @@
 - 引入依赖前评估维护/许可证/漏洞；禁止来源不明的包
 - 密钥从环境变量读取，禁止硬编码
 - 敏感数据日志脱敏，传输/存储加密
-- pathlib 安全拼接，防穿越
-- tempfile 安全创建，用后清理
+- **路径安全**：语言对应的路径安全库（如 pathlib / Node.js path / Rust std::path::Path / Java java.nio.file.Path），安全拼接，防穿越
+- **临时文件**：语言对应的临时文件安全 API（如 tempfile / Node.js tmp / Go os.CreateTemp / Rust tempfile crate / Java Files.createTempFile），安全创建，用后清理
 
 ---
 
@@ -43,7 +43,7 @@
 
 ## 先 map 后读码（强制 — 最高优先级流程规则）
 
-涉及任何项目文件（`.py` `.js` `.ts` `.sh` `Makefile` `Dockerfile` `Cargo.toml` `CMakeLists.txt` `.md` `.json` `.yaml` `.toml` `.ini` `.cfg` `.env` `.rst` `.txt` 等）时，以下规则不可绕过。**哪怕只涉及一个文件也必须先 map，无例外。**
+涉及任何项目文件（`.py` `.js` `.ts` `.jsx` `.tsx` `.go` `.rs` `.java` `.c` `.cpp` `.h` `.rb` `.php` `.swift` `.kt` `.scala` `.sh` `Makefile` `Dockerfile` `Cargo.toml` `CMakeLists.txt` `.md` `.json` `.yaml` `.toml` `.ini` `.cfg` `.env` `.rst` `.txt` 等）时，以下规则不可绕过。**哪怕只涉及一个文件也必须先 map，无例外。**
 
 1. **禁止在 map 前 `read_file` 任何项目文件** — 无例外。所有项目文件（含 `.md` 文档/`.json` 配置）都必须先 map 获取全量信息后方可读取。
 2. **`read_file` 只能读取 map 返回的「关联文件列表」中的文件** — 列表是后续所有 read_file 的唯一合法来源。
@@ -283,17 +283,17 @@ prompt 为自然语言描述任务目标，只说「做什么」不说「怎么�
 
   ```
   📂 这个文件是项目文件吗？
-  ├─ 项目内所有文件（.py .js .ts .sh .md .json .yaml .toml .ini .cfg .env 等，含 Makefile Dockerfile Cargo.toml CMakeLists.txt .rst .txt）→ 🛑 必须先 map
+  ├─ 项目内所有文件（.py .js .ts .jsx .tsx .go .rs .java .c .cpp .h .rb .php .swift .kt .scala .sh .md .json .yaml .toml .ini .cfg .env 等，含 Makefile Dockerfile Cargo.toml CMakeLists.txt .rst .txt）→ 🛑 必须先 map
   ├─ .chat/memory/ .chat/plan/ .chat/map/ → ✅ 元文件，直接读
-  └─ /usr/ site-packages/ node_modules/ → ✅ 系统/第三方，直接读
+  └─ /usr/ site-packages/ (Python) / node_modules/ (Node.js) / vendor/ (Go) / target/ (Rust/Java) → ✅ 系统/第三方，直接读
   ```
   
   **`read_file` 只能读取 map 返回的「关联文件列表」中的项目文件。** 任何项目文件（含 `.md` `.json` `.yaml` 等）都必须先 map 获取关联文件列表后读取，不得绕过。
 - **记忆读写委派（强制）**：读取记忆→优先 `dispatch_agent(type="read_memory")`；写入记忆→必须 `dispatch_agent(type="write_memory")`。禁止主 Agent 直接 write_file/update_file 到 `.chat/memory/` 目录
 - 临时性错误最多重试 2 次（指数退避），连续 3 次失败停止
 - 客观失败按「遇难不轻退」处理
-- 禁止吞异常（例外：finally 清理+日志、非关键降级，不得裸 `except:`）
-- `__exit__` 必须返回 `False`，只做清理不吞异常
+- 禁止吞异常（例外：finally 清理+日志、非关键降级，不得裸异常捕获（如 Python `except:` / Java `catch (Exception e) {}` 无处理 / JS `catch(e) {}` 空块））
+- 资源清理协议（如 Python `__exit__` / Java try-with-resources / C# `IDisposable` / Go `defer`）必须只做清理不吞异常
 - 删除代码前须 search 全量引用
 - 修改须与现有代码风格一致
 - 文档/注释须同步更新
@@ -324,8 +324,8 @@ prompt 为自然语言描述任务目标，只说「做什么」不说「怎么�
 
 | 任务涉及文件类型 | 行动 |
 |------|------|
-| **项目文件**：`.py` `.js` `.ts` `.sh` `Makefile` `Dockerfile` `Cargo.toml` `CMakeLists.txt` `.md` `.rst` `.txt` `.json` `.yaml` `.toml` `.ini` `.cfg` `.env` 等 | 🛑 列计划第一步必须是 `dispatch_agent(type="map")`。**哪怕只涉及一个文件也必须先 map**，项目的所有信息都必须先通过 map Agent 获取全貌后，方可进行后续分析和 `read_file`。 |
-| **元文件**：`.chat/memory/` `.chat/plan/` `.chat/map/`；系统/第三方库（`/usr/`、`site-packages/`、`node_modules/`） | ✅ 直接进入列计划，无需 map。 |
+| **项目文件**：`.py` `.js` `.ts` `.jsx` `.tsx` `.go` `.rs` `.java` `.c` `.cpp` `.h` `.rb` `.php` `.swift` `.kt` `.scala` `.sh` `Makefile` `Dockerfile` `Cargo.toml` `CMakeLists.txt` `.md` `.rst` `.txt` `.json` `.yaml` `.toml` `.ini` `.cfg` `.env` 等 | 🛑 列计划第一步必须是 `dispatch_agent(type="map")`。**哪怕只涉及一个文件也必须先 map**，项目的所有信息都必须先通过 map Agent 获取全貌后，方可进行后续分析和 `read_file`。 |
+| **元文件**：`.chat/memory/` `.chat/plan/` `.chat/map/`；系统/第三方库（`/usr/`、`site-packages/` (Python) / `node_modules/` (Node.js) / `vendor/` (Go) / `target/` (Rust/Java)） | ✅ 直接进入列计划，无需 map。 |
 
 > **判定规则**：只要任务涉及 ≥1 个项目文件，就必须先 map——哪怕只有一个文件也绝无例外。不允许 LLM 自行判断「是否需要」，按文件类型机械判定。任何项目文件（含 `.md` `.json` `.yaml` 等配置文件）都必须先 map 获取全量信息后方可读取和分析。
 
@@ -421,7 +421,7 @@ prompt 为自然语言描述任务目标，只说「做什么」不说「怎么�
 ## 执行阶段
 
 ### 执行计划步骤（通过 execute Agent）
-主 Agent 读取计划文件 → 解析「依赖与顺序」→ 按依赖分批派发 `dispatch_agent(type="execute")`。每个 execute Agent 在独立上下文中执行指定步骤、返回结构化结果（含修改文件列表）。主 Agent 收集汇总所有结果 → 修改文件去重合并 → 全部步骤完成后先执行统一验证（语法检查/测试/运行）→ 验证通过后进入审查阶段。execute Agent 本身不做验证（语法检查/pytest 等），验证统一由主 Agent 在所有步骤完成后执行。
+主 Agent 读取计划文件 → 解析「依赖与顺序」→ 按依赖分批派发 `dispatch_agent(type="execute")`。每个 execute Agent 在独立上下文中执行指定步骤、返回结构化结果（含修改文件列表）。主 Agent 收集汇总所有结果 → 修改文件去重合并 → 全部步骤完成后先执行统一验证（语法检查/测试/运行）→ 验证通过后进入审查阶段。execute Agent 本身不做验证（语法检查/测试等），验证统一由主 Agent 在所有步骤完成后执行。
 
 > 三要素速查 → 见上方「execute — 计划执行」
 
@@ -447,10 +447,10 @@ prompt 为自然语言描述任务目标，只说「做什么」不说「怎么�
 
 ### 验证修改（所有 execute 步骤完成后、review 审查前执行）
 - **时机**：在所有 execute 步骤完成之后、派发 review Agent 之前执行。
-- **语法检查**：对所有修改的 Python 文件执行 `python -m py_compile`。
-- **构建/编译**：检测项目是否包含构建系统文件（Makefile、CMakeLists.txt、Cargo.toml、package.json、go.mod、pyproject.toml 等），若有则执行对应的构建命令（make、cmake --build、cargo build、npm run build、go build、pip install -e . 等），确保修改后代码可成功编译生成目标程序。
-- **加测试**：新增功能→单元测试；Bug 修复→回归测试（命名 `test_<场景>_regression`，Arrange/Act/Assert，边界 +1/-1）。
-- **运行测试**：执行 `pytest`。
+- **语法检查**：对修改的代码文件执行对应语言的语法检查（如 Python `python -m py_compile` / Node.js `node --check` / Go `go vet` / Rust `cargo check` / Java `javac -Xlint`），确保无语法错误。
+- **构建/编译**：检测项目是否包含构建系统文件（如 Makefile / CMakeLists.txt / Cargo.toml / package.json / go.mod / pyproject.toml / pom.xml / build.gradle / Gemfile / composer.json / Package.swift / build.sbt 等），若有则执行对应的构建命令（如 make / cmake --build / cargo build / npm run build / go build / pip install -e . / mvn compile / gradle build / swift build / sbt compile 等），确保修改后代码可成功编译生成目标程序。
+- **加测试**：新增功能→单元测试；Bug 修复→回归测试（命名遵循语言惯例，如 Python `test_<场景>_regression` / JS `test('<场景> regression')` / Go `Test<场景>Regression`，Arrange/Act/Assert，边界 +1/-1）。
+- **运行测试**：执行项目对应的测试框架（如 Python pytest / Node.js Jest/Mocha / Go `go test` / Rust `cargo test` / Java JUnit），确保全部通过。
 - **运行验证**：有 CLI/服务入口则启动验证。后台服务等待 30s，未异常退出即通过。外部依赖缺失可标注跳过。
 
 ### 先审查再完成（强制 · 零豁免）
@@ -538,9 +538,9 @@ prompt 为自然语言描述任务目标，只说「做什么」不说「怎么�
 | 虚构函数参数 | read_file 确认签名 |
 | 虚构类/方法 | read_file 完整定义 |
 | 凭记忆写代码 | 每次修改前重读 |
-| 虚构测试结果 | 以 pytest 为准 |
+| 虚构测试结果 | 以测试框架实际运行结果为准 |
 | 虚构调用链 | 委派 map SubAgent |
 | 过时注释误导 | 以代码逻辑为准 |
 
 ## 处理
-发现幻觉→停止→read_file/search/pytest 验证→修正。禁止：偷偷修正、新幻觉掩盖旧幻觉、归因"环境"。
+发现幻觉→停止→read_file/search/测试框架运行验证→修正。禁止：偷偷修正、新幻觉掩盖旧幻觉、归因"环境"。

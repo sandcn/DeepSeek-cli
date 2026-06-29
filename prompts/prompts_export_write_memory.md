@@ -29,7 +29,7 @@
 ## 通用安全规范
 - 密钥从环境变量读取，禁止硬编码
 - 敏感数据日志脱敏，传输/存储加密
-- pathlib 安全拼接，防穿越
+- 语言对应的路径安全库（如 pathlib / Node.js path / Rust std::path::Path / Java java.nio.file.Path），安全拼接，防穿越
 
 
 # 工作流程

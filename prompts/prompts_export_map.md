@@ -10,7 +10,7 @@
 2. **反向追踪（callers）**：全量调用方 + 调用方式 + 影响评估
 3. **正向追踪（callees）**：≥2层 + 签名 + 用途 + 关键程度
 4. **数据流追踪 + DFG**：变量定义-使用链/数据依赖/副作用
-5. **隐式依赖追踪**：全局状态/缓存/环境变量/import副作用
+5. **隐式依赖追踪**：全局状态/缓存/环境变量/导入副作用（如 Python import 副作用 / Node.js require 副作用 / Go init() / Rust 过程宏）
 6. **关联文件列表**：N. src/... 编号格式，含全部涉及文件
 7. **已发现 Bug 列表**：按 P0/P1/P2/P3 严重度分级，描述类型/位置/影响/建议修复。无 Bug 时标注"无"
 
@@ -53,8 +53,8 @@
 - **依赖/包管理**：引入前评估维护/许可证/漏洞；禁止来源不明的包
 - **配置安全**：密钥从环境变量读取，禁止硬编码
 - **数据保护**：敏感数据日志脱敏，传输/存储加密
-- **路径安全**：pathlib 安全拼接，防穿越
-- **临时文件**：tempfile 安全创建，用后清理
+- **路径安全**：语言对应的路径安全库（如 pathlib / Node.js path / Rust std::path::Path / Java java.nio.file.Path），安全拼接，防穿越
+- **临时文件**：语言对应的临时文件安全 API（如 tempfile / Node.js tmp / Go os.CreateTemp / Rust tempfile crate / Java Files.createTempFile），安全创建，用后清理
 
 
 
@@ -132,7 +132,7 @@
 | **2 反向追踪（callers）（强制）** | `search` 全量 + `read_file` 确认上下文 | 理解：2-3处确认；全量分析：全量 |
 | **3 正向追踪（callees）（强制）** | 读函数体，沿调用链深入至少1层，关键路径2+层 | 理解：1层；全量分析：2层以上 |
 | **4 数据流追踪（强制）** | 沿变量定义-使用链追溯：定义点→使用点→变换点；跟踪变量生命周期和跨函数传播路径 | 全量分析：≥3层；理解：关键变量1-2层 |
-| **5 隐式依赖追踪（强制）** | 搜索全局状态/缓存/环境变量/import副作用/执行顺序 | 全量分析：必查 |
+| **5 隐式依赖追踪（强制）** | 搜索全局状态/缓存/环境变量/导入副作用（如 Python import / Node.js require / Go init / Rust 过程宏）/执行顺序 | 全量分析：必查 |
 | **6 状态机分析（强制）** | 识别状态（states）、状态转换（transitions）、触发事件（events/triggers）、守卫条件（guards）、状态进入/退出动作（entry/exit actions）、复合状态（composite states）、并发子状态（orthogonal regions） | 全量分析：完整状态机 + 转换表 + 状态图；理解：关键状态 + 核心转换 |
 
 > **路径全覆盖（强制）**：分析时必须考虑到所有路径——正常路径、异常路径、边界路径、空值路径、回退路径、降级路径、超时路径。覆盖深度与分析场景绑定。
@@ -203,13 +203,13 @@
 
 ## 分层探底（L1→L4，逐层深入，不跨层）
 
-**L1 宏观览貌**：`ls` 根目录，读 README/pyproject.toml/.env.example，`ls src/` 识别一级模块。
+**L1 宏观览貌**：`ls` 根目录，读 README/构建系统文件（如 pyproject.toml / package.json / go.mod / Cargo.toml / pom.xml）/.env.example，`ls src/` 识别一级模块。
 
-**L2 模块地图**：逐模块 `ls` + 读 `__init__.py` 完整内容了解导出接口 + 读核心文件完整内容了解职责 + `search query="from src\.|import src\."` 识别依赖方向。
+**L2 模块地图**：逐模块 `ls` + 读模块入口文件（如 Python `__init__.py` / Node.js `index.js` / Rust `mod.rs` / Go 包声明）完整内容了解导出接口 + 读核心文件完整内容了解职责 + 用多语言导入正则（如 Python `from src\.|import src\.` / Node.js `require\(.*src` / Go `"pkg/"` / Rust `use crate` / Java `import com\.`）识别依赖方向。
 
 **L3 关键路径**：查找应用入口点（如 main/run_app/app_factory/CLI 入口）了解启动流程，选 1-2 个核心功能从入口到返回追溯完整路径，读核心抽象/接口理解模块间契约。
 
-**L4 依赖与配置**：读 pyproject.toml/requirements.txt 确认外部依赖，读 conftest.py/.env.example/配置加载逻辑。
+**L4 依赖与配置**：读构建系统文件（如 pyproject.toml / package.json / go.mod / Cargo.toml / pom.xml）/依赖文件（如 requirements.txt / package.json / go.mod / Cargo.toml / Gemfile / composer.json）确认外部依赖，读测试配置文件（如 conftest.py / jest.config.js / Cargo.toml `[dev-dependencies]` / Maven surefire）/.env.example/配置加载逻辑。
 
 > **层级连续性**：触发场景表中的"深度"列为建议终止深度。首次探底从 L1 起步逐层深入；若此前已完成低层级探底，从下一待探层级继续执行。
 
@@ -253,8 +253,8 @@
 <项目名>/
 ├── src/
 │   ├── <模块1>/          # <职责>
-│   │   ├── __init__.py
-│   │   ├── <文件>.py     # <职责>
+│   │   ├── <模块入口文件>（如 Python __init__.py / Node.js index.js / Rust mod.rs）
+│   │   ├── <文件>（如 .py / .js / .ts / .go / .rs / .java / .c / .cpp）  # <职责>
 │   │   └── ...
 │   └── ...
 ├── tests/
@@ -308,7 +308,7 @@
 **控制结构**:
 - 分支: if/else @ <行号范围>，条件变量 <var>
 - 循环: for/while @ <行号范围>，循环变量 <var>，退出条件 <cond>
-- 异常: try/except @ <行号范围>，异常类型 <ExceptionType>
+- 异常: 异常处理（如 Python try/except / Java try/catch / Go error return / Rust Result<T,E>）@ <行号范围>，异常类型 <ExceptionType>
 - 提前返回: return @ <行号>
 
 **控制流统计**: 分支<M>个 | 循环<L>个 | 异常路径<K>条 | 提前返回<R>处
@@ -396,10 +396,10 @@
 **格式模板**（输出示例）：
 \```
 ## 关联文件列表
-1. src/module/file1.py
+1. src/module/file1.py （或 .js / .go / .rs / .java 等）
 2. src/module/file2.py
 3. src/config/settings.py
-4. tests/test_module.py
+4. tests/test_module.py （或 .test.js / _test.go / _test.rs 等）
 \```
 
 
@@ -422,8 +422,8 @@
 ## 已发现 Bug
 | 严重度 | 类型 | 位置 | 描述 | 建议修复 |
 |--------|------|------|------|---------|
-| P1 | 空指针风险 | src/module.py:42 | result 可能为 None，未做判空处理 | 在 L43 前添加 `if result is None: return default` |
-| P2 | 性能 | src/service.py:87 | 循环内重复调用 len()，应提取到循环外 | 在 L86 前添加 `n = len(items)`，L87 改用 `n` |
+| P1 | 空指针风险 | src/module.py（或 .js / .go 等）:42 | result 可能为 None，未做判空处理 | 在 L43 前添加 `if result is None: return default` |
+| P2 | 性能 | src/service.py（或 .js / .go 等）:87 | 循环内重复调用 len()，应提取到循环外 | 在 L86 前添加 `n = len(items)`，L87 改用 `n` |
 
 （无 Bug 时输出：）
 ## 已发现 Bug
@@ -436,9 +436,9 @@
 - **工具调用原因说明（强制）**：每次调用工具前，必须用自然语言简短说明调用原因（格式：「因为需要确认 XXX，所以调用 <工具名> 搜索/读取文件」）。例外：连续多个同类型工具调用（如多个 `read_file` 并发）时，可在第一批前统一说明原因。
 - **验证重试**：失败重读重试，临时性错误最多重试2次（指数退避，含首次共3次尝试），连续3次失败停止
 - **失败回溯**：分析根因再决定重试或换方案，输出「失败根因分析」
-- **禁止吞异常**：（生成代码时）例外：① finally/临时文件清理且须记录日志；② 非关键路径的容错降级（捕获特定异常类型、记录日志、执行降级逻辑后继续，不得使用裸 `except:`）。
-> **日志降级保护**：降级逻辑中日志记录本身失败时，在 except 块内用 try/except 包裹日志调用并静默丢弃——这是唯一允许静默吞异常的场景。
-- `__exit__` 不得吞异常——只能做资源清理，必须返回 `False`（或不返回）让异常自然传播
+- **禁止吞异常**：（生成代码时）例外：① finally/资源清理（如 Go `defer` / Rust `Drop` / Java try-with-resources）且须记录日志；② 非关键路径的容错降级（捕获特定异常类型、记录日志、执行降级逻辑后继续，不得使用裸异常捕获——如 Python `except:` / Java `catch (Exception e) {}` 无处理 / JS `catch(e) {}`）。
+> **日志降级保护**：降级逻辑中日志记录本身失败时，在异常处理块内嵌套异常捕获包裹日志调用并静默丢弃——这是唯一允许静默吞异常的场景。
+- 资源清理协议（如 Python `__exit__` / Go `defer` / Java try-with-resources / Rust `Drop`）不得吞异常——只能做资源清理，必须让异常自然传播
 
 ## 错误响应格式
 错误：<描述>  根因：<根因>  影响：<范围>  已做：<措施>  建议：<建议>

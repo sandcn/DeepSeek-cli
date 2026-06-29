@@ -12,10 +12,15 @@ import re
 import pytest
 
 from src.prompt_builder.builder import (
+    _build_prompt,
     build_system_prompt,
     build_subagent_system_prompt,
     build_map_agent_system_prompt,
     build_review_agent_system_prompt,
+    build_plan_agent_system_prompt,
+    build_read_memory_agent_system_prompt,
+    build_write_memory_agent_system_prompt,
+    build_execute_agent_system_prompt,
     _load_prompt,
 )
 
@@ -72,9 +77,9 @@ class TestBuildSystemPrompt:
         sections = [
             "核心目标",
             "安全规范",
-            "测试规范",
-            "Code Review",
-            "调用链分析委托 map SubAgent",
+            "验证修改",
+            "review — 代码审查",
+            "map — 代码分析/探底",
             "代码修改工作流",
             "当前执行环境",
         ]
@@ -469,3 +474,344 @@ class TestFallbackPrompt:
         assert len(result) >= 2
         result = build_subagent_system_prompt()
         assert len(result) >= 2
+
+# ═══════════════════════════════════════════════════════════
+# include_init_md 参数行为测试
+# ═══════════════════════════════════════════════════════════
+
+class TestIncludeInitMdParam:
+    """验证 _build_prompt() 的 include_init_md 参数控制 init.md 加载行为"""
+
+    MOCK_INIT_MD = (
+        "# 测试项目\n"
+        "这是一个测试项目。\n\n"
+        "## 核心功能\n"
+        "- 功能A：自动化测试\n"
+        "- 功能B：代码生成\n\n"
+        "## 技术栈\n"
+        "- Python 3.13\n"
+        "- pytest\n"
+    )
+
+    @pytest.fixture(autouse=True)
+    def setup(self, tmp_path, monkeypatch):
+        """在每个测试前：
+        1. 在 tmp_path 创建 init.md
+        2. mock _load_prompt 返回固定假内容，避免依赖 prompts/ 目录
+        """
+        # 创建 init.md 供 build_init_md_summary 读取
+        init_path = tmp_path / "init.md"
+        init_path.write_text(self.MOCK_INIT_MD, encoding="utf-8")
+
+        # mock _load_prompt 返回固定内容
+        monkeypatch.setattr(
+            "src.prompt_builder.builder._load_prompt",
+            lambda name: "MOCKED_PROMPT_CONTENT",
+        )
+
+        self.cwd = str(tmp_path)
+
+    def test_include_init_md_true_includes_summary(self):
+        """include_init_md=True 时输出应包含「项目摘要」"""
+        result = _build_prompt(
+            "test_export", "fallback", cwd=self.cwd, include_init_md=True
+        )
+        full = "\n".join(result)
+        assert "项目摘要" in full, "include_init_md=True 时应包含项目摘要"
+        assert "功能A" in full, "摘要应包含核心功能项"
+
+    def test_include_init_md_false_excludes_summary(self):
+        """include_init_md=False 时输出不应包含「项目摘要」"""
+        result = _build_prompt(
+            "test_export", "fallback", cwd=self.cwd, include_init_md=False
+        )
+        full = "\n".join(result)
+        assert "项目摘要" not in full, "include_init_md=False 时不应包含项目摘要"
+        assert "功能A" not in full, "include_init_md=False 时不应包含核心功能项"
+
+    def test_include_init_md_default_is_true(self):
+        """include_init_md 默认值为 True"""
+        result = _build_prompt("test_export", "fallback", cwd=self.cwd)
+        full = "\n".join(result)
+        assert "项目摘要" in full, "include_init_md 默认值应为 True"
+
+
+# ═══════════════════════════════════════════════════════════
+# SubAgent 排除 init.md 测试
+# ═══════════════════════════════════════════════════════════
+
+class TestSubAgentExcludesInitMd:
+    """验证所有 7 种 SubAgent 类型的 system prompt 不包含 init.md 项目摘要"""
+
+    MOCK_INIT_MD = (
+        "# 测试项目\n"
+        "这是一个测试项目。\n\n"
+        "## 核心功能\n"
+        "- 功能A：自动化测试\n"
+        "- 功能B：代码生成\n\n"
+        "## 技术栈\n"
+        "- Python 3.13\n"
+        "- pytest\n"
+    )
+
+    @pytest.fixture(autouse=True)
+    def setup(self, tmp_path, monkeypatch):
+        """在 tmp_path 创建 init.md，mock _load_prompt 隔离 prompts 文件依赖"""
+        init_path = tmp_path / "init.md"
+        init_path.write_text(self.MOCK_INIT_MD, encoding="utf-8")
+        assert init_path.exists(), "init.md 应已创建"
+
+        # mock _load_prompt 返回固定内容，避免依赖真实 prompts/ 目录
+        monkeypatch.setattr(
+            "src.prompt_builder.builder._load_prompt",
+            lambda name: "MOCKED_PROMPT_CONTENT",
+        )
+
+        self.cwd = str(tmp_path)
+
+    def test_sub_agent_excludes_init_md(self):
+        """sub 类型不应包含项目摘要"""
+        result = build_subagent_system_prompt(cwd=self.cwd)
+        full = "\n".join(result)
+        assert "项目摘要" not in full
+
+    def test_map_agent_excludes_init_md(self):
+        """map 类型不应包含项目摘要"""
+        result = build_map_agent_system_prompt(cwd=self.cwd)
+        full = "\n".join(result)
+        assert "项目摘要" not in full
+
+    def test_review_agent_excludes_init_md(self):
+        """review 类型不应包含项目摘要"""
+        result = build_review_agent_system_prompt(cwd=self.cwd)
+        full = "\n".join(result)
+        assert "项目摘要" not in full
+
+    def test_plan_agent_excludes_init_md(self):
+        """plan 类型不应包含项目摘要"""
+        result = build_plan_agent_system_prompt(cwd=self.cwd)
+        full = "\n".join(result)
+        assert "项目摘要" not in full
+
+    def test_read_memory_agent_excludes_init_md(self):
+        """read_memory 类型不应包含项目摘要"""
+        result = build_read_memory_agent_system_prompt(cwd=self.cwd)
+        full = "\n".join(result)
+        assert "项目摘要" not in full
+
+    def test_write_memory_agent_excludes_init_md(self):
+        """write_memory 类型不应包含项目摘要"""
+        result = build_write_memory_agent_system_prompt(cwd=self.cwd)
+        full = "\n".join(result)
+        assert "项目摘要" not in full
+
+    def test_execute_agent_excludes_init_md(self):
+        """execute 类型不应包含项目摘要"""
+        result = build_execute_agent_system_prompt(cwd=self.cwd)
+        full = "\n".join(result)
+        assert "项目摘要" not in full
+
+
+# ═══════════════════════════════════════════════════════════
+# MainAgent 包含 init.md 测试
+# ═══════════════════════════════════════════════════════════
+
+class TestMainAgentIncludesInitMd:
+    """验证 Main Agent 的 system prompt 包含 init.md 项目摘要"""
+
+    MOCK_INIT_MD = (
+        "# 测试项目\n"
+        "这是一个测试项目。\n\n"
+        "## 核心功能\n"
+        "- 功能A：自动化测试\n"
+        "- 功能B：代码生成\n\n"
+        "## 技术栈\n"
+        "- Python 3.13\n"
+        "- pytest\n"
+    )
+
+    @pytest.fixture(autouse=True)
+    def setup(self, tmp_path, monkeypatch):
+        """在 tmp_path 创建 init.md，mock _load_prompt 隔离 prompts 文件依赖"""
+        init_path = tmp_path / "init.md"
+        init_path.write_text(self.MOCK_INIT_MD, encoding="utf-8")
+        assert init_path.exists(), "init.md 应已创建"
+
+        # mock _load_prompt 返回固定内容，避免依赖真实 prompts/ 目录
+        monkeypatch.setattr(
+            "src.prompt_builder.builder._load_prompt",
+            lambda name: "MOCKED_PROMPT_CONTENT",
+        )
+
+        self.cwd = str(tmp_path)
+
+    def test_main_agent_includes_init_md(self):
+        """Main Agent 应包含项目摘要（include_init_md 默认 True）"""
+        result = build_system_prompt(cwd=self.cwd)
+        full = "\n".join(result)
+        assert "项目摘要" in full, "Main Agent 应包含项目摘要"
+        assert "功能A" in full, "摘要应包含核心功能项"
+
+
+# ═══════════════════════════════════════════════════════════
+# Plan Agent 系统提示词构建测试
+# ═══════════════════════════════════════════════════════════
+
+class TestBuildPlanAgentSystemPrompt:
+    def test_returns_list_of_strings(self):
+        result = build_plan_agent_system_prompt()
+        assert isinstance(result, list)
+        assert all(isinstance(p, str) for p in result)
+
+    def test_has_security_rules(self):
+        """Plan 提示词应包含安全红线"""
+        result = build_plan_agent_system_prompt()
+        full = "\n".join(result)
+        assert "禁止读写传密钥" in full
+
+    def test_has_decision_framework(self):
+        """Plan 提示词应包含决策框架"""
+        result = build_plan_agent_system_prompt()
+        full = "\n".join(result)
+        assert "决策框架" in full
+
+    def test_has_environment_info(self):
+        """Plan 提示词应包含运行时环境信息"""
+        result = build_plan_agent_system_prompt()
+        full = "\n".join(result)
+        assert "当前执行环境" in full
+
+    def test_content_non_empty(self):
+        """Plan 提示词应非空"""
+        result = build_plan_agent_system_prompt()
+        assert len(result) > 0
+        assert any(len(p.strip()) > 0 for p in result)
+
+    def test_can_exclude_version_control(self):
+        """Plan 提示词支持 include_version_control=False"""
+        result = build_plan_agent_system_prompt(include_version_control=False)
+        last_part = result[-1]
+        assert "版本控制" not in last_part
+
+
+# ═══════════════════════════════════════════════════════════
+# ReadMemory Agent 系统提示词构建测试
+# ═══════════════════════════════════════════════════════════
+
+class TestBuildReadMemoryAgentSystemPrompt:
+    def test_returns_list_of_strings(self):
+        result = build_read_memory_agent_system_prompt()
+        assert isinstance(result, list)
+        assert all(isinstance(p, str) for p in result)
+
+    def test_has_read_only_constraint(self):
+        """ReadMemory 提示词应包含只读约束说明"""
+        result = build_read_memory_agent_system_prompt()
+        full = "\n".join(result)
+        assert "只读" in full
+
+    def test_has_memory_directory_focus(self):
+        """ReadMemory 提示词应聚焦 .chat/memory/ 目录"""
+        result = build_read_memory_agent_system_prompt()
+        full = "\n".join(result)
+        assert ".chat/memory/" in full
+
+    def test_has_environment_info(self):
+        """ReadMemory 提示词应包含运行时环境信息"""
+        result = build_read_memory_agent_system_prompt()
+        full = "\n".join(result)
+        assert "当前执行环境" in full
+
+    def test_content_non_empty(self):
+        """ReadMemory 提示词应非空"""
+        result = build_read_memory_agent_system_prompt()
+        assert len(result) > 0
+        assert any(len(p.strip()) > 0 for p in result)
+
+    def test_can_exclude_version_control(self):
+        """ReadMemory 提示词支持 include_version_control=False"""
+        result = build_read_memory_agent_system_prompt(include_version_control=False)
+        last_part = result[-1]
+        assert "版本控制" not in last_part
+
+
+# ═══════════════════════════════════════════════════════════
+# WriteMemory Agent 系统提示词构建测试
+# ═══════════════════════════════════════════════════════════
+
+class TestBuildWriteMemoryAgentSystemPrompt:
+    def test_returns_list_of_strings(self):
+        result = build_write_memory_agent_system_prompt()
+        assert isinstance(result, list)
+        assert all(isinstance(p, str) for p in result)
+
+    def test_has_security_rules(self):
+        """WriteMemory 提示词应包含安全红线"""
+        result = build_write_memory_agent_system_prompt()
+        full = "\n".join(result)
+        assert "禁止读写传密钥" in full
+
+    def test_has_hallucination_prevention(self):
+        """WriteMemory 提示词应包含幻觉防止规范"""
+        result = build_write_memory_agent_system_prompt()
+        full = "\n".join(result)
+        assert "大模型幻觉防止" in full
+
+    def test_has_environment_info(self):
+        """WriteMemory 提示词应包含运行时环境信息"""
+        result = build_write_memory_agent_system_prompt()
+        full = "\n".join(result)
+        assert "当前执行环境" in full
+
+    def test_content_non_empty(self):
+        """WriteMemory 提示词应非空"""
+        result = build_write_memory_agent_system_prompt()
+        assert len(result) > 0
+        assert any(len(p.strip()) > 0 for p in result)
+
+    def test_can_exclude_version_control(self):
+        """WriteMemory 提示词支持 include_version_control=False"""
+        result = build_write_memory_agent_system_prompt(include_version_control=False)
+        last_part = result[-1]
+        assert "版本控制" not in last_part
+
+
+# ═══════════════════════════════════════════════════════════
+# Execute Agent 系统提示词构建测试
+# ═══════════════════════════════════════════════════════════
+
+class TestBuildExecuteAgentSystemPrompt:
+    def test_returns_list_of_strings(self):
+        result = build_execute_agent_system_prompt()
+        assert isinstance(result, list)
+        assert all(isinstance(p, str) for p in result)
+
+    def test_has_security_rules(self):
+        """Execute 提示词应包含安全红线"""
+        result = build_execute_agent_system_prompt()
+        full = "\n".join(result)
+        assert "禁止读写传密钥" in full
+
+    def test_has_decision_framework(self):
+        """Execute 提示词应包含决策框架"""
+        result = build_execute_agent_system_prompt()
+        full = "\n".join(result)
+        assert "决策框架" in full
+
+    def test_has_environment_info(self):
+        """Execute 提示词应包含运行时环境信息"""
+        result = build_execute_agent_system_prompt()
+        full = "\n".join(result)
+        assert "当前执行环境" in full
+
+    def test_content_non_empty(self):
+        """Execute 提示词应非空"""
+        result = build_execute_agent_system_prompt()
+        assert len(result) > 0
+        assert any(len(p.strip()) > 0 for p in result)
+
+    def test_can_exclude_version_control(self):
+        """Execute 提示词支持 include_version_control=False"""
+        result = build_execute_agent_system_prompt(include_version_control=False)
+        last_part = result[-1]
+        assert "版本控制" not in last_part
