@@ -24,7 +24,7 @@ sys.path.insert(0, "/home/DeepSeek-cli")
 
 from src.chat_ui._const import RenderCommand
 from src.chat_ui._utils import _cmd_name
-from src.chat_ui._engine import TuiEngine as RenderEngine, _ACTIVE_RENDER_INTERVAL, _IDLE_DRAIN_THRESHOLD
+from src.chat_ui._engine import TuiEngine as RenderEngine, _ACTIVE_RENDER_INTERVAL
 
 
 # ══════════════════════════════════════════════════════
@@ -890,23 +890,23 @@ class TestRenderEngineEdgeCases:
         # 满队列路径不走 set，所以 event 仍然 clear
         assert not engine._cmd_event.is_set()
 
-    def test_render_uses_render_interval(self, engine):
-        """_render 中动态轮询间隔：空 drain 连续 N 次后切 idle 间隔。"""
+    def test_render_uses_exponential_backoff(self, engine):
+        """_render 中自适应轮询间隔：空闲时指数退避平滑过渡。"""
         from src.chat_ui._const import _RENDER_INTERVAL
-        from src.chat_ui._engine import _ACTIVE_RENDER_INTERVAL, _IDLE_DRAIN_THRESHOLD
+        from src.chat_ui._engine import _ACTIVE_RENDER_INTERVAL
 
         engine._render_running = True
 
-        # _drain_queue 返回 False（空队列），连续跑超过 idle 阈值
+        # 模拟 7 次 drain → 全部返回 False（空闲）
         call_count = 0
-        total_calls = _IDLE_DRAIN_THRESHOLD + 2  # 阈值后的 idle 调用
+        total_calls = 7
 
         def _side_effect_drain():
             nonlocal call_count
             call_count += 1
             if call_count >= total_calls:
                 engine._render_running = False
-            return False  # 空队列
+            return False  # 空队列，触发退避
 
         engine._drain_queue = MagicMock(side_effect=_side_effect_drain)
         engine._cmd_event.wait = MagicMock()
@@ -915,16 +915,63 @@ class TestRenderEngineEdgeCases:
         engine._render()
 
         all_calls = engine._cmd_event.wait.call_args_list
-        # 前 IDLE_DRAIN_THRESHOLD-1 次：idle_count < 阈值 → active 间隔
-        for idx in range(_IDLE_DRAIN_THRESHOLD - 1):
-            assert all_calls[idx] == call(timeout=_ACTIVE_RENDER_INTERVAL), (
-                f"第 {idx+1} 次应使用 active 间隔"
+        # 指数退避期望值序列（idle_count=0 开始）：
+        # idle_count=0: min(0.005 * 2^0, 0.1) = 0.005 → idle_count=1
+        # idle_count=1: min(0.005 * 2^1, 0.1) = 0.01  → idle_count=2
+        # idle_count=2: min(0.005 * 2^2, 0.1) = 0.02  → idle_count=3
+        # idle_count=3: min(0.005 * 2^3, 0.1) = 0.04  → idle_count=4
+        # idle_count=4: min(0.005 * 2^4, 0.1) = 0.08  → idle_count=5
+        # idle_count=5: min(0.005 * 2^5, 0.1) = 0.1   → idle_count=6
+        # idle_count=6: min(0.005 * 2^6, 0.1) = 0.1   → idle_count=7
+        expected_timeouts = [
+            _ACTIVE_RENDER_INTERVAL,         # 0.005s
+            _ACTIVE_RENDER_INTERVAL * 2,      # 0.01s
+            _ACTIVE_RENDER_INTERVAL * 4,      # 0.02s
+            _ACTIVE_RENDER_INTERVAL * 8,      # 0.04s
+            _ACTIVE_RENDER_INTERVAL * 16,     # 0.08s
+            _RENDER_INTERVAL,                 # 0.1s
+            _RENDER_INTERVAL,                 # 0.1s
+        ]
+        for idx, expected in enumerate(expected_timeouts):
+            assert all_calls[idx] == call(timeout=expected), (
+                f"第 {idx+1} 次空闲应使用 timeout={expected}，"
+                f"实际={all_calls[idx]}"
             )
-        # 第 IDLE_DRAIN_THRESHOLD 次起：idle_count >= 阈值 → idle 间隔
-        for idx in range(_IDLE_DRAIN_THRESHOLD - 1, len(all_calls)):
-            assert all_calls[idx] == call(timeout=_RENDER_INTERVAL), (
-                f"第 {idx+1} 次应使用 idle 间隔"
-            )
+
+    def test_render_resets_backoff_on_content(self, engine):
+        """有内容时 idle_count 重置为 0，退避重新从 5ms 开始。"""
+        from src.chat_ui._engine import _ACTIVE_RENDER_INTERVAL
+
+        engine._render_running = True
+
+        # drain 返回序列：False×2（退避到10ms）→ True（重置）→ False（重新从5ms开始）
+        call_count = 0
+        total_calls = 4
+        results = [False, False, True, False]
+
+        def _side_effect_drain():
+            nonlocal call_count
+            idx = call_count
+            call_count += 1
+            if call_count >= total_calls:
+                engine._render_running = False
+            return results[idx]
+
+        engine._drain_queue = MagicMock(side_effect=_side_effect_drain)
+        engine._cmd_event.wait = MagicMock()
+        engine._cmd_event.clear = MagicMock()
+
+        engine._render()
+
+        all_calls = engine._cmd_event.wait.call_args_list
+        # 第1次空闲: idle_count=0 → 5ms (退避)
+        assert all_calls[0] == call(timeout=_ACTIVE_RENDER_INTERVAL)
+        # 第2次空闲: idle_count=1 → 10ms (退避)
+        assert all_calls[1] == call(timeout=_ACTIVE_RENDER_INTERVAL * 2)
+        # 有内容: idle_count=0 → 5ms (活跃)
+        assert all_calls[2] == call(timeout=_ACTIVE_RENDER_INTERVAL)
+        # 有内容后再次空闲: idle_count=0 → 5ms (退避重新开始)
+        assert all_calls[3] == call(timeout=_ACTIVE_RENDER_INTERVAL)
 
 
 

@@ -32,7 +32,6 @@ _logger = logging.getLogger(__name__)
 # ── 引擎常量 ──────────────────────────────────────
 
 _ACTIVE_RENDER_INTERVAL = 0.005
-_IDLE_DRAIN_THRESHOLD = 5
 _CONSECUTIVE_FULL_THRESHOLD = 10
 
 
@@ -49,7 +48,6 @@ class TuiEngine:
 
     # 类级常量（从模块常量复制，允许测试通过实例属性覆盖）
     _ACTIVE_RENDER_INTERVAL = _ACTIVE_RENDER_INTERVAL
-    _IDLE_DRAIN_THRESHOLD = _IDLE_DRAIN_THRESHOLD
     _CONSECUTIVE_FULL_THRESHOLD = _CONSECUTIVE_FULL_THRESHOLD
 
     def __init__(
@@ -223,12 +221,12 @@ class TuiEngine:
                         idle_count = 0
                         wait_timeout = self._ACTIVE_RENDER_INTERVAL
                     else:
-                        idle_count += 1
-                        wait_timeout = (
-                            _RENDER_INTERVAL
-                            if idle_count >= self._IDLE_DRAIN_THRESHOLD
-                            else self._ACTIVE_RENDER_INTERVAL
+                        # 指数退避平滑过渡：5ms → 10ms → 20ms → 40ms → 80ms → 100ms
+                        wait_timeout = min(
+                            self._ACTIVE_RENDER_INTERVAL * (2 ** idle_count),
+                            _RENDER_INTERVAL,
                         )
+                        idle_count += 1
                     self._cmd_event.wait(timeout=wait_timeout)
                     if not has_content:
                         self._cmd_event.clear()
