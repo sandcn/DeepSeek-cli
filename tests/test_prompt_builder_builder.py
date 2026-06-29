@@ -102,6 +102,18 @@ class TestBuildSystemPrompt:
         non_empty = [p for p in result if p.strip()]
         assert len(non_empty) == len(result), "存在空 part"
 
+    def test_has_build_compile_rule(self):
+        """验证修改章节中包含构建/编译规则"""
+        result = build_system_prompt()
+        full = "\n".join(result)
+        # 确保「验证修改」章节中包含构建/编译规则
+        assert "构建/编译" in full, "系统提示词中缺少「构建/编译」规则"
+        # 确保包含常见构建系统关键词（至少2个）
+        # 使用高唯一性关键词（仅在构建/编译规则中出现，其他章节不包含）确保分辨力
+        build_keywords = ["package.json", "go.mod", "pyproject.toml"]
+        found = [kw for kw in build_keywords if kw in full]
+        assert len(found) >= 2, f"构建系统关键词缺失，仅找到: {found}"
+
     def test_old_include_code_workflow_param_raises_type_error(self):
         """已废弃的参数应抛出 TypeError"""
         with pytest.raises(TypeError):

@@ -430,6 +430,7 @@ prompt 模板：
 ### 验证修改（所有 plan_execute 步骤完成后、review 审查前执行）
 - **时机**：在所有 plan_execute 步骤完成之后、派发 review Agent 之前执行。
 - **语法检查**：对所有修改的 Python 文件执行 `python -m py_compile`。
+- **构建/编译**：检测项目是否包含构建系统文件（Makefile、CMakeLists.txt、Cargo.toml、package.json、go.mod、pyproject.toml 等），若有则执行对应的构建命令（make、cmake --build、cargo build、npm run build、go build、pip install -e . 等），确保修改后代码可成功编译生成目标程序。
 - **加测试**：新增功能→单元测试；Bug 修复→回归测试（命名 `test_<场景>_regression`，Arrange/Act/Assert，边界 +1/-1）。
 - **运行测试**：执行 `pytest`。
 - **运行验证**：有 CLI/服务入口则启动验证。后台服务等待 30s，未异常退出即通过。外部依赖缺失可标注跳过。
