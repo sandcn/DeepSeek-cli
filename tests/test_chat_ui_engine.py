@@ -743,11 +743,13 @@ class TestRenderEngineRender:
 
         # _render_running 被置 False
         assert engine._render_running is False
+        assert engine._cmd_event.is_set() is True
         assert "render 线程异常崩溃" in caplog.text
-        # 终端也输出告警
+        # 终端也输出告警（含异常类型和消息）
         mock_stderr.write.assert_called_once()
         stderr_text = mock_stderr.write.call_args[0][0]
         assert "render 线程异常终止" in stderr_text
+        assert "RuntimeError: 模拟崩溃" in stderr_text
 
     def test_render_stops_when_flag_false(self, engine):
         """_render_running=False 时循环退出。"""
@@ -844,6 +846,21 @@ class TestRenderEngineEnsureCursorUpper:
         """验证 ensure_cursor_upper 是绑定的实例方法。"""
         assert hasattr(engine, "ensure_cursor_upper")
         assert callable(engine.ensure_cursor_upper)
+
+    def test_ensure_cursor_upper_exception_tolerated(self, engine):
+        """ensure_cursor_upper 容错 _bb.ensure_cursor_in_upper 异常。"""
+        engine._bb.ensure_cursor_in_upper.side_effect = OSError("终端 I/O 错误")
+        # 不应抛出异常
+        engine.ensure_cursor_upper()
+
+    def test_phase_render_ensure_cursor_upper_exception_tolerated(self, engine):
+        """_phase_render 中 ensure_cursor_upper 异常不影响后续渲染。"""
+        engine._bb.sync_bottom_lines = MagicMock()
+        engine._bb.ensure_cursor_in_upper.side_effect = RuntimeError("光标定位失败")
+        cmd = (RenderCommand.CONTENT, "hello")
+        # 不应抛出异常，后续命令应正常渲染
+        engine._phase_render([cmd])
+        engine._renderer.render.assert_called_once_with(cmd)
 
 
 # ══════════════════════════════════════════════════════

@@ -142,7 +142,10 @@ class TuiEngine:
         task_done.join(timeout=timeout)
 
     def ensure_cursor_upper(self) -> None:
-        self._bb.ensure_cursor_in_upper()
+        try:
+            self._bb.ensure_cursor_in_upper()
+        except Exception:
+            _logger.debug("ensure_cursor_in_upper 异常", exc_info=True)
 
     # ── 三阶段流水线 ──────────────────────────────
 
@@ -171,7 +174,10 @@ class TuiEngine:
             self._bb.sync_bottom_lines()
         except Exception:
             _logger.debug("sync_bottom_lines 异常", exc_info=True)
-        self.ensure_cursor_upper()
+        try:
+            self.ensure_cursor_upper()
+        except Exception:
+            _logger.debug("phase_render ensure_cursor_upper 异常", exc_info=True)
         for cmd in commands:
             try:
                 self._renderer.render(cmd)
@@ -230,14 +236,20 @@ class TuiEngine:
                     self._cmd_event.wait(timeout=wait_timeout)
                     if not has_content:
                         self._cmd_event.clear()
-                except Exception:
+                except Exception as exc:
                     self._render_crashed.set()
-                    _logger.critical("render 线程异常崩溃", exc_info=True)
-                    _emergency_write(
-                        f"{_ANSI_RED}[ChatUI] render 线程异常终止，"
-                        f"请联系开发人员查看日志{_ANSI_RESET}\n",
-                        stream="stderr",
-                    )
+                    try:
+                        _logger.critical("render 线程异常崩溃", exc_info=True)
+                        _emergency_write(
+                            f"{_ANSI_RED}[ChatUI] render 线程异常终止: "
+                            f"{type(exc).__name__}: {exc}{_ANSI_RESET}\n",
+                            stream="stderr",
+                        )
+                    except Exception:
+                        # 终端可能已完全不可用（如 PTY 断开），
+                        # 不能因此跳过关键清理
+                        pass
+                    self._cmd_event.set()
                     self._render_running = False
                     break
         finally:
