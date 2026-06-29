@@ -30,10 +30,30 @@ class _ReasoningState(Enum):
       INACTIVE → close_reasoning() → CLOSED（推理块从未到达即关闭）
       CLOSED   → reopen_reasoning() → INACTIVE（二次推理重新打开）
       CLOSED   → 其他转换不生效（幂等）
+
+    合法转换（集中定义在 _TRANSITIONS）：
+      (INACTIVE, ACTIVE), (ACTIVE, CLOSED), (INACTIVE, CLOSED), (CLOSED, INACTIVE)
     """
     INACTIVE = "inactive"
     ACTIVE = "active"
     CLOSED = "closed"
+
+    def can_transition_to(self, target: "_ReasoningState") -> bool:
+        """检查从当前状态到目标状态的转换是否合法。
+
+        查询 _REASONING_STATE_TRANSITIONS 字典，未明确定义的转换返回 False。
+        """
+        return _REASONING_STATE_TRANSITIONS.get((self, target), False)
+
+
+# 合法状态转换表 — 集中验证，消除分散的条件判断
+# Python Enum 会将其它非 dunder 名称转为枚举成员，故定义为模块级常量
+_REASONING_STATE_TRANSITIONS: dict[tuple[_ReasoningState, _ReasoningState], bool] = {
+    (_ReasoningState.INACTIVE, _ReasoningState.ACTIVE): True,
+    (_ReasoningState.ACTIVE, _ReasoningState.CLOSED): True,
+    (_ReasoningState.INACTIVE, _ReasoningState.CLOSED): True,
+    (_ReasoningState.CLOSED, _ReasoningState.INACTIVE): True,
+}
 
 
 @dataclass
@@ -51,6 +71,9 @@ class _RenderState:
         if self.reasoning_state == _ReasoningState.CLOSED:
             return None
         if self.reasoning is None:
+            assert self.reasoning_state.can_transition_to(_ReasoningState.ACTIVE), (
+                f"非法状态转换: {self.reasoning_state} -> ACTIVE"
+            )
             from ..api.renderer import IncrementalRenderer  # 保留运行时惰性 import（避免循环）
             self.reasoning = IncrementalRenderer(
                 style="dim", _file=sys.__stdout__,
@@ -74,6 +97,9 @@ class _RenderState:
     def close_reasoning(self) -> None:
         if self.reasoning_state == _ReasoningState.CLOSED:
             return
+        assert self.reasoning_state.can_transition_to(_ReasoningState.CLOSED), (
+            f"非法状态转换: {self.reasoning_state} -> CLOSED"
+        )
         rr = self.reasoning
         if rr is not None:
             rr.write(_THINKING_SEPARATOR)
@@ -84,6 +110,9 @@ class _RenderState:
     def reopen_reasoning(self) -> None:
         if self.reasoning_state != _ReasoningState.CLOSED:
             return
+        assert self.reasoning_state.can_transition_to(_ReasoningState.INACTIVE), (
+            f"非法状态转换: {self.reasoning_state} -> INACTIVE"
+        )
         self.reasoning = None
         self.reasoning_state = _ReasoningState.INACTIVE
 

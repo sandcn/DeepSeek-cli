@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import threading
 from typing import TYPE_CHECKING
+from weakref import WeakValueDictionary
 
 if TYPE_CHECKING:
     from ._consumer import ChatUIConsumer
@@ -19,13 +20,22 @@ _active_consumer: "ChatUIConsumer | None" = None
 _active_consumer_refcount: int = 0
 _state_global_lock = threading.Lock()
 
+# 弱引用注册表：以线程 ID 为键，在 _active_consumer 悬空时提供兜底恢复
+_weak_consumer_registry: "WeakValueDictionary[int, ChatUIConsumer]" = WeakValueDictionary()
+
 def get_active_chat_ui() -> "ChatUIConsumer | None":
     """获取当前活跃的 ChatUIConsumer 实例，供交互式终端工具使用。
 
     user_select 等工具需要独占终端，通过此函数获取 ChatUIConsumer
     引用后可调用 suspend()/resume() 暂停/恢复后台渲染。
+
+    若 _active_consumer 已被清空（引用计数归零），
+    尝试从 _weak_consumer_registry 恢复当前线程的 consumer。
     """
-    return _active_consumer
+    if _active_consumer is not None:
+        return _active_consumer
+    # 兜底：从弱引用注册表恢复（覆盖引用计数悬空场景）
+    return _weak_consumer_registry.get(threading.get_ident())
 
 
 # ── 引用计数管理（封装 start()/stop() 中对全局变量的操作） ──
@@ -40,6 +50,7 @@ def _register_consumer(consumer: "ChatUIConsumer") -> None:
         global _active_consumer, _active_consumer_refcount
         _active_consumer_refcount += 1
         _active_consumer = consumer
+        _weak_consumer_registry[threading.get_ident()] = consumer
 
 
 def _unregister_consumer() -> None:
@@ -53,6 +64,7 @@ def _unregister_consumer() -> None:
     with _state_global_lock:
         global _active_consumer, _active_consumer_refcount
         _active_consumer_refcount -= 1
+        _weak_consumer_registry.pop(threading.get_ident(), None)
         try:
             if _active_consumer_refcount <= 0:
                 _active_consumer = None

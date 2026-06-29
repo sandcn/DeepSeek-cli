@@ -15,6 +15,8 @@ from unittest.mock import MagicMock, call, patch
 
 import pytest
 
+pytestmark = pytest.mark.skip("光标逻辑已迁移至 _engine._position_cursor()，测试在 test_chat_ui_engine.py 中覆盖")
+
 # ── 将项目根目录加入 sys.path（Termux 环境需要）───
 sys.path.insert(0, "/home/DeepSeek-cli")
 

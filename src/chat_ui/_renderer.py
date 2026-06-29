@@ -21,7 +21,7 @@ from ._const import (
 )
 from ._render_state import _RenderState
 
-from ._components import (
+from .components import (
     ThinkingBlock,
     AnswerBlock,
     UserMsgBlock,
@@ -39,26 +39,22 @@ _logger = logging.getLogger(__name__)
 
 
 # ═══════════════════════════════════════════════════════════
-# 渲染分发表
+# 渲染分发表 — 由 @register_render_command 装饰器自动注册
 # ═══════════════════════════════════════════════════════════
 
-_RENDER_DISPATCH: dict[int, tuple[str, tuple[int, ...]]] = {
-    RenderCommand.REASONING:       ("_do_reasoning",       (1,)),
-    RenderCommand.CONTENT:         ("_do_content",         (1,)),
-    RenderCommand.PHASE_DONE:      ("_do_phase_done",      (1,)),
-    RenderCommand.TOOL_OUTPUT:     ("_do_tool_output",     (1,)),
-    RenderCommand.TOOL_SUMMARY:    ("_do_tool_summary",    (1, 2)),
-    RenderCommand.USER_MSG:        ("_do_user_message",    (1,)),
-    RenderCommand.PARSE_INFO:      ("_do_parse_info",      (1, 2, 3)),
-    RenderCommand.NOTIFICATION:    ("_do_notification",    (1,)),
-    RenderCommand.WRITE_LINE:      ("_do_write_line",      (1,)),
-    RenderCommand.DISPLAY_MSGS:    ("_do_display_messages", (1, 2)),
-    RenderCommand.TOOL_COUNT_INC:  ("_do_tool_count_inc",  ()),
-    RenderCommand.TOOL_COUNT_DEC:  ("_do_tool_count_dec",  ()),
-    RenderCommand.TOOL_FAIL_INC:   ("_do_tool_fail_inc",   ()),
-    RenderCommand.ERROR:           ("_do_error",           (1,)),
-    RenderCommand.SUBAGENT_FRAME:  ("_do_subagent_frame",  (1,)),
-}
+def register_render_command(command_id: int, arg_indices: tuple[int, ...] = ()) -> Callable:
+    """装饰器工厂：将 _do_* 方法自动注册到 _RENDER_DISPATCH。
+
+    用法: 在 _do_* 方法上使用 @register_render_command(RenderCommand.XXX, (i,))，
+    方法定义时自动将 command_id → (method_name, arg_indices) 写入 _RENDER_DISPATCH。
+    """
+    def decorator(method: Callable) -> Callable:
+        _RENDER_DISPATCH[command_id] = (method.__name__, arg_indices)
+        return method
+    return decorator
+
+
+_RENDER_DISPATCH: dict[int, tuple[str, tuple[int, ...]]] = {}
 
 
 # ═══════════════════════════════════════════════════════════
@@ -117,14 +113,17 @@ class TuiRenderer:
 
     # ── 内容渲染 ──────────────────────────────────
 
+    @register_render_command(RenderCommand.REASONING, (1,))
     def _do_reasoning(self, text: str) -> None:
         block = ThinkingBlock(self._rs)
         self._record_lines(block.write(text))
 
+    @register_render_command(RenderCommand.CONTENT, (1,))
     def _do_content(self, text: str) -> None:
         block = AnswerBlock(self._rs)
         self._record_lines(block.write(text))
 
+    @register_render_command(RenderCommand.PHASE_DONE, (1,))
     def _do_phase_done(self, phase: str) -> None:
         if phase == "reasoning":
             self._rs.close_reasoning()
@@ -133,25 +132,31 @@ class TuiRenderer:
 
     # ── 工具渲染 ──────────────────────────────────
 
+    @register_render_command(RenderCommand.TOOL_COUNT_INC, ())
     def _do_tool_count_inc(self) -> None:
         self._bb.increment_tool()
 
+    @register_render_command(RenderCommand.TOOL_COUNT_DEC, ())
     def _do_tool_count_dec(self) -> None:
         self._bb.decrement_tool()
 
+    @register_render_command(RenderCommand.TOOL_FAIL_INC, ())
     def _do_tool_fail_inc(self) -> None:
         self._bb.increment_tool_fail()
 
+    @register_render_command(RenderCommand.TOOL_OUTPUT, (1,))
     def _do_tool_output(self, text: str) -> None:
         block = ToolOutputBlock(text)
         self._record_lines(block.render_to_adapter(self._adapter))
 
+    @register_render_command(RenderCommand.TOOL_SUMMARY, (1, 2))
     def _do_tool_summary(self, successful: tuple, failed: tuple) -> None:
         block = ToolSummaryBlock(successful, failed)
         self._record_lines(block.render_to_adapter(self._adapter))
 
     # ── 解析进度 ──────────────────────────────────
 
+    @register_render_command(RenderCommand.PARSE_INFO, (1, 2, 3))
     def _do_parse_info(self, tool_names: str, tokens, elapsed: float) -> None:
         if tokens == _CLEAR_PARSE_LINE:
             _emergency_write("\n")
@@ -166,22 +171,27 @@ class TuiRenderer:
 
     # ── 样式化行渲染 ──────────────────────────────
 
+    @register_render_command(RenderCommand.USER_MSG, (1,))
     def _do_user_message(self, text: str) -> None:
         block = UserMsgBlock(text)
         self._record_lines(block.render_to_adapter(self._adapter))
 
+    @register_render_command(RenderCommand.NOTIFICATION, (1,))
     def _do_notification(self, text: str) -> None:
         block = NotificationBlock(text)
         self._record_lines(block.render_to_adapter(self._adapter))
 
+    @register_render_command(RenderCommand.ERROR, (1,))
     def _do_error(self, message: str) -> None:
         block = ErrorBlock(message)
         self._record_lines(block.render_to_adapter(self._adapter))
 
+    @register_render_command(RenderCommand.WRITE_LINE, (1,))
     def _do_write_line(self, text: str) -> None:
         block = WriteLineBlock(text)
         self._record_lines(block.render_to_adapter(self._adapter))
 
+    @register_render_command(RenderCommand.DISPLAY_MSGS, (1, 2))
     def _do_display_messages(self, messages: list[dict], speed: int) -> None:
         if self._on_display_messages is not None:
             self._on_display_messages(messages, speed=speed)
@@ -189,6 +199,7 @@ class TuiRenderer:
 
     # ── SubAgent 面板 ─────────────────────────────
 
+    @register_render_command(RenderCommand.SUBAGENT_FRAME, (1,))
     def _do_subagent_frame(self, frame_lines: tuple) -> None:
         """将 subagent 面板行数据传递给 BottomBar 渲染。
 

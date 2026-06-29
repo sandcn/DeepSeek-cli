@@ -44,7 +44,7 @@ from ..ui._blessed import get_terminal
 from ._engine import TuiEngine
 from ._renderer import TuiRenderer, _RenderState
 from ._dispatcher import EventDispatcher, _HANDLER_MAP
-from ._protocols import BottomBarProtocol
+from ._protocols import BottomBarProtocol, RenderEngine
 from ._completion import _CmplHandler, _apply_completion
 
 _logger = logging.getLogger(__name__)
@@ -65,7 +65,7 @@ class ChatUIConsumer:
 
     内部子系统：
       _rs       (_RenderState)    — 渲染器生命周期
-      _engine   (TuiEngine)       — render 线程 + 命令队列
+      _engine   (RenderEngine)    — render 线程 + 命令队列
       _disp     (EventDispatcher) — 事件过滤+入队
       _renderer (TuiRenderer)     — 组件化渲染分发
       _cmpl     (_CmplHandler)    — Tab 补全交互
@@ -98,7 +98,7 @@ class ChatUIConsumer:
             on_display_messages=_display_messages,
             cursor_tracker=self._cursor_tracker,
         )
-        self._engine = TuiEngine(
+        self._engine: RenderEngine = TuiEngine(
             self._tui_renderer, self._bottom_bar,
             cursor_tracker=self._cursor_tracker,
         )

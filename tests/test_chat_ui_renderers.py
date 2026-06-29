@@ -470,12 +470,26 @@ class TestDoDisplayMessages:
 class TestRender:
     """render() 命令分发测试"""
 
+    def test_render_dispatch_has_15_entries(self):
+        """_RENDER_DISPATCH 应包含全部 15 种命令类型"""
+        from src.chat_ui._renderer import _RENDER_DISPATCH
+        assert len(_RENDER_DISPATCH) == 15, (
+            f"期望 15 种渲染命令，实际 {len(_RENDER_DISPATCH)} 种"
+        )
+
     def test_render_known_command(self, renderer, mock_ta):
         """已知命令 → 正确分发到对应 _do_* 方法"""
         method_name = "do_" + RenderCommand.NOTIFICATION.name.lower()
         with patch.object(renderer, f"_{method_name}") as m_method:
             renderer.render((RenderCommand.NOTIFICATION, "test"))
             m_method.assert_called_once_with("test")
+
+    def test_render_dropped_notification(self, renderer, mock_ta):
+        """丢弃通知格式的 NOTIFICATION 命令正确分发到 _do_notification"""
+        method_name = "do_" + RenderCommand.NOTIFICATION.name.lower()
+        with patch.object(renderer, f"_{method_name}") as m_method:
+            renderer.render((RenderCommand.NOTIFICATION, "渲染队列已丢弃 100 条命令"))
+            m_method.assert_called_once_with("渲染队列已丢弃 100 条命令")
 
     def test_render_unknown_command_logs_error(self, renderer, mock_ta):
         """未知命令 ID → 记录日志（不崩溃）"""

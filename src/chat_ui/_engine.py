@@ -12,7 +12,7 @@ import threading
 from typing import TYPE_CHECKING, Any, Callable
 
 if TYPE_CHECKING:
-    from ._protocols import BottomBarProtocol
+    from ._protocols import BottomBarProtocol, RenderEngine
 
 from ._renderer import TuiRenderer
 
@@ -43,6 +43,7 @@ _CONSECUTIVE_FULL_THRESHOLD = 10
 class TuiEngine:
     """渲染引擎 — render 线程 + Queue 命令队列 + 三阶段渲染循环。
 
+    实现 RenderEngine 协议。
     组件化架构：所有内容通过 TuiRenderer 渲染，底部栏由 BottomBarProtocol 管理。
     """
 
@@ -67,6 +68,8 @@ class TuiEngine:
         self._consecutive_full = 0
         self._bottom_redraw_requested = threading.Event()
         self._panel_refresh_cb: Callable[[], None] | None = None
+        self._cmd_queue_dropped: int = 0
+        self._render_crashed: threading.Event = threading.Event()
 
     def push_cmd(self, cmd: tuple) -> None:
         """入队渲染命令到命令队列。
@@ -83,9 +86,22 @@ class TuiEngine:
             self._cmd_event.set()
         except queue.Full:
             self._consecutive_full += 1
+            self._cmd_queue_dropped += 1
             _logger.warning("渲染命令队列已满（%s 条），丢弃命令: %s", self._cmd_queue.qsize(), _cmd_name(cmd[0]))
             if self._consecutive_full >= self._CONSECUTIVE_FULL_THRESHOLD:
                 _logger.error("渲染输出管线持续拥堵（%d 次连续满队列）", self._consecutive_full)
+            if self._cmd_queue_dropped > 0 and self._cmd_queue_dropped % 100 == 0:
+                try:
+                    self._cmd_queue.put_nowait(
+                        (RenderCommand.NOTIFICATION, f"渲染队列已丢弃 {self._cmd_queue_dropped} 条命令")
+                    )
+                except queue.Full:
+                    pass
+
+    @property
+    def render_crashed(self) -> bool:
+        """Render 线程是否已崩溃。"""
+        return self._render_crashed.is_set()
 
     def set_panel_refresh_callback(self, callback: Callable[[], None] | None) -> None:
         self._panel_refresh_cb = callback
@@ -217,6 +233,7 @@ class TuiEngine:
                     if not has_content:
                         self._cmd_event.clear()
                 except Exception:
+                    self._render_crashed.set()
                     _logger.critical("render 线程异常崩溃", exc_info=True)
                     _emergency_write(
                         f"{_ANSI_RED}[ChatUI] render 线程异常终止，"
@@ -276,6 +293,8 @@ class TuiEngine:
                 self._cmd_queue.task_done()
             except queue.Empty:
                 break
+        if self._cmd_queue_dropped > 0:
+            _logger.info("render 线程终止，共丢弃 %d 条命令", self._cmd_queue_dropped)
 
     def _position_cursor(self) -> None:
         if not self._bb.is_active:

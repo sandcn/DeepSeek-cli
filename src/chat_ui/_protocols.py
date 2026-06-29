@@ -6,7 +6,43 @@
 
 from __future__ import annotations
 
-from typing import Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Callable, Protocol, runtime_checkable
+
+if TYPE_CHECKING:
+    from ..api.renderer.output import OutputAdapter
+
+
+@runtime_checkable
+class RenderEngine(Protocol):
+    """渲染引擎协议 — TuiEngine 实现此协议，Consumer 仅依赖协议而非具体类。
+
+    定义渲染引擎与消费者之间的接口契约，支持解耦测试和替代实现。
+    """
+
+    def push_cmd(self, cmd: tuple) -> None:
+        """入队渲染命令到命令队列。"""
+
+    def flush(self, timeout: float | None = 5.0) -> None:
+        """排空命令队列，等待所有命令处理完成。"""
+
+    def start(self) -> None:
+        """启动渲染引擎（render 线程）。"""
+
+    def stop(self) -> None:
+        """停止渲染引擎。"""
+
+    def request_bottom_redraw(self) -> None:
+        """请求底部栏重绘。"""
+
+    def ensure_cursor_upper(self) -> None:
+        """确保光标位于上部区域。"""
+
+    def set_panel_refresh_callback(self, callback: Callable[[], None] | None) -> None:
+        """注册面板刷新回调。"""
+
+    @property
+    def output_adapter(self) -> OutputAdapter:
+        """获取当前 OutputAdapter 实例。"""
 
 
 @runtime_checkable
