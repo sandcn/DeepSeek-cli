@@ -354,19 +354,27 @@ class TestHistoryFileSerialization:
     def _isolate_history_file(self, tmp_path):
         """每个测试使用独立的临时历史文件，避免 xdist 并行竞态。
 
-        需同时替换 defaults 模块和 escape_monitor 模块中的引用，
-        因为 escape_monitor 在模块级 from ..config.defaults import INPUT_HISTORY_FILE。
+        需同时替换 defaults 模块、escape_monitor 包及子模块中的引用，
+        因为拆分后 _history、_input_handler 均在模块级 from ... import INPUT_HISTORY_FILE。
         """
         self._test_path = tmp_path / "input_history"
         import src.config.defaults as defaults
         import src.api.escape_monitor as em
+        import src.api.escape_monitor._history as em_history
+        import src.api.escape_monitor._input_handler as em_input
         self._saved_defaults_path = defaults.INPUT_HISTORY_FILE
         self._saved_em_path = em.INPUT_HISTORY_FILE
+        self._saved_em_history_path = em_history.INPUT_HISTORY_FILE
+        self._saved_em_input_path = em_input.INPUT_HISTORY_FILE
         defaults.INPUT_HISTORY_FILE = self._test_path
         em.INPUT_HISTORY_FILE = self._test_path
+        em_history.INPUT_HISTORY_FILE = self._test_path
+        em_input.INPUT_HISTORY_FILE = self._test_path
         yield
         defaults.INPUT_HISTORY_FILE = self._saved_defaults_path
         em.INPUT_HISTORY_FILE = self._saved_em_path
+        em_history.INPUT_HISTORY_FILE = self._saved_em_history_path
+        em_input.INPUT_HISTORY_FILE = self._saved_em_input_path
 
     # ── _unescape 纯函数单元测试 ────────────────────────
 
@@ -483,13 +491,21 @@ class TestMultiProcessHistory:
         self._test_path = tmp_path / "input_history"
         import src.config.defaults as defaults
         import src.api.escape_monitor as em
+        import src.api.escape_monitor._history as em_history
+        import src.api.escape_monitor._input_handler as em_input
         self._saved_defaults_path = defaults.INPUT_HISTORY_FILE
         self._saved_em_path = em.INPUT_HISTORY_FILE
+        self._saved_em_history_path = em_history.INPUT_HISTORY_FILE
+        self._saved_em_input_path = em_input.INPUT_HISTORY_FILE
         defaults.INPUT_HISTORY_FILE = self._test_path
         em.INPUT_HISTORY_FILE = self._test_path
+        em_history.INPUT_HISTORY_FILE = self._test_path
+        em_input.INPUT_HISTORY_FILE = self._test_path
         yield
         defaults.INPUT_HISTORY_FILE = self._saved_defaults_path
         em.INPUT_HISTORY_FILE = self._saved_em_path
+        em_history.INPUT_HISTORY_FILE = self._saved_em_history_path
+        em_input.INPUT_HISTORY_FILE = self._saved_em_input_path
 
     # ── 追加写入 ──────────────────────────────────────────
 
@@ -536,9 +552,15 @@ class TestMultiProcessHistory:
         # 使用深层临时路径确保目录不存在
         deep_path = self._test_path.parent / "subdir" / "input_history"
         import src.api.escape_monitor as em
+        import src.api.escape_monitor._history as em_history
+        import src.api.escape_monitor._input_handler as em_input
         saved = em.INPUT_HISTORY_FILE
+        saved_h = em_history.INPUT_HISTORY_FILE
+        saved_i = em_input.INPUT_HISTORY_FILE
         try:
             em.INPUT_HISTORY_FILE = deep_path
+            em_history.INPUT_HISTORY_FILE = deep_path
+            em_input.INPUT_HISTORY_FILE = deep_path
             # 确保目录不存在
             if deep_path.parent.exists():
                 shutil.rmtree(deep_path.parent)
@@ -549,6 +571,8 @@ class TestMultiProcessHistory:
             assert "test_entry" in content
         finally:
             em.INPUT_HISTORY_FILE = saved
+            em_history.INPUT_HISTORY_FILE = saved_h
+            em_input.INPUT_HISTORY_FILE = saved_i
             if deep_path.parent.exists():
                 shutil.rmtree(deep_path.parent)
 

@@ -52,169 +52,23 @@ from ._bottom_cursor import (
 )
 from ._cursor_tracker import CursorTracker
 from ._lock import _try_acquire_output_lock
-
-
-# ── Blessed 辅助函数 ─────────────────────────────────────
-# 将常用的 ANSI 序列封装为 Blessed 调用，带降级回退
-
-
-def _blessed_move_clear(row: int) -> str:
-    """生成移到指定行并清行的 ANSI 序列。
-
-    通过 Blessed Terminal.move_xy + clear_eol 生成，
-    Blessed 不可用时或返回空时回退到原始 ANSI。
-
-    Args:
-        row: 1-based 行号。
-
-    Returns:
-        ANSI 序列字符串。
-    """
-    try:
-        term = get_terminal()
-        result = term.move_xy(0, row - 1) + term.clear_eol()
-        return result if result else f"\033[{row};1H\033[K"
-    except Exception:
-        return f"\033[{row};1H\033[K"
-
-
-def _blessed_cursor_goto(row: int, col: int) -> str:
-    """生成移到指定行列的 ANSI 序列。
-
-    通过 Blessed Terminal.move_xy 生成。
-    Blessed 使用 0-based 坐标，不可用时或返回空时回退到原始 ANSI。
-
-    Args:
-        row: 1-based 行号。
-        col: 1-based 列号。
-
-    Returns:
-        ANSI 序列字符串。
-    """
-    try:
-        term = get_terminal()
-        result = term.move_xy(col - 1, row - 1)
-        return result if result else f"\033[{row};{col}H"
-    except Exception:
-        return f"\033[{row};{col}H"
-
-# ── Blessed 光标保存/恢复、滚动、DECSTBM 辅助函数 ─────────
-# 将保留的原始 ANSI 序列（DECSC/DECRC/SCOSC/SCRC/SU/SD/DECSTBM）
-# 封装为 Blessed API 调用，带 try/except 回退到原始 ANSI。
-
-
-def _blessed_save_cursor() -> str:
-    """保存光标位置（DECSC/SCOSC）。
-
-    通过 Blessed Terminal.sc 生成 DECSC 序列，
-    Blessed 不可用时回退到原始 ANSI。
-
-    Returns:
-        ANSI 序列字符串。
-    """
-    try:
-        sc = get_terminal().sc
-        return sc if isinstance(sc, str) and sc else "\0337"
-    except Exception:
-        return "\0337"
-
-
-def _blessed_restore_cursor() -> str:
-    """恢复光标位置（DECRC/SCRC）。
-
-    通过 Blessed Terminal.rc 生成 DECRC 序列，
-    Blessed 不可用时回退到原始 ANSI。
-
-    Returns:
-        ANSI 序列字符串。
-    """
-    try:
-        rc = get_terminal().rc
-        return rc if isinstance(rc, str) and rc else "\0338"
-    except Exception:
-        return "\0338"
-
-
-def _blessed_scroll_up(n: int) -> str:
-    """向上滚动 n 行（SU）。
-
-    通过 Blessed Terminal.indn 生成 SU 序列。
-    n <= 0 时返回空字符串。
-    Blessed 不可用时回退到原始 ANSI。
-
-    Args:
-        n: 滚动行数。
-
-    Returns:
-        ANSI 序列字符串。
-    """
-    if n <= 0:
-        return ""
-    try:
-        seq = get_terminal().indn(n)
-        return seq if isinstance(seq, str) and seq else f"\033[{n}S"
-    except Exception:
-        return f"\033[{n}S"
-
-
-def _blessed_scroll_down(n: int) -> str:
-    """向下滚动 n 行（SD/RI）。
-
-    通过 Blessed Terminal.rin 生成 SD 序列。
-    n <= 0 时返回空字符串。
-    Blessed 不可用时回退到原始 ANSI。
-
-    Args:
-        n: 滚动行数。
-
-    Returns:
-        ANSI 序列字符串。
-    """
-    if n <= 0:
-        return ""
-    try:
-        seq = get_terminal().rin(n)
-        return seq if isinstance(seq, str) and seq else f"\033[{n}T"
-    except Exception:
-        return f"\033[{n}T"
-
-
-def _blessed_set_scroll_region(top: int, bottom: int) -> str:
-    """设置滚动区域（DECSTBM）。top/bottom 为 1-based。
-
-    通过 Blessed Terminal.csr 生成 DECSTBM 序列。
-    Blessed 使用 0-based 坐标，内部自动转换。
-    Blessed 不可用时回退到原始 ANSI。
-
-    Args:
-        top: 滚动区域起始行（1-based）。
-        bottom: 滚动区域结束行（1-based）。
-
-    Returns:
-        ANSI 序列字符串。
-    """
-    try:
-        term = get_terminal()
-        seq = term.csr(top - 1, bottom - 1)
-        return seq if isinstance(seq, str) and seq else f"\033[{top};{bottom}r"
-    except Exception:
-        return f"\033[{top};{bottom}r"
-
-
-def _blessed_reset_scroll_region() -> str:
-    """重置滚动区域为全屏（DECSTBM 重置）。
-
-    ★ P0 修复 2026-06-11: 始终返回原始 ANSI 序列 \033[r，不使用
-    Blessed Terminal.csr(0, -1) 生成。Blessed 的 csr(0, -1) 会返回
-    \033[1;0r（因为 -1+1=0），这是非法的 DECSTBM 参数——底部行号 0
-    小于顶部行号 1。不同终端对此非法序列的处理不一致：
-    Termux/部分终端会清空屏幕或行为异常，导致「弹出补全信息清空上屏内容」的 Bug。
-    \033[r（无参数）是标准 ANSI/DEC 重置序列，所有终端正确支持。
-
-    Returns:
-        ANSI 序列字符串（"\033[r"）。
-    """
-    return "\033[r"
+from ._bottom_bar_blessed import (
+    _blessed_move_clear,
+    _blessed_cursor_goto,
+    _blessed_save_cursor,
+    _blessed_restore_cursor,
+    _blessed_scroll_up,
+    _blessed_scroll_down,
+    _blessed_set_scroll_region,
+    _blessed_reset_scroll_region,
+)
+from ._bottom_bar_draw import (
+    _draw_input_lines_locked as _draw_impl_input_lines,
+    _draw_all_locked as _draw_impl_all,
+    _redraw_cycle_only as _draw_impl_redraw_cycle,
+    _apply_scroll_delta as _draw_impl_apply_scroll,
+    _reclaim_scroll_back as _draw_impl_reclaim_scroll,
+)
 
 
 _logger = logging.getLogger(__name__)
@@ -814,13 +668,9 @@ class _BottomBar(_StatusMixin):
             delta: 底部栏行数变化量（新值 - 旧值）。
             old_scroll_end: 旧的 DECSTBM 滚动区域底部行号。
         """
-        if delta <= 0 or old_scroll_end < 1:
-            return
-        out.write(_blessed_cursor_goto(old_scroll_end, 1))
-        out.write(f"{_blessed_scroll_up(delta)}")
+        _draw_impl_apply_scroll(out, delta, old_scroll_end)
 
-    @staticmethod
-    def _reclaim_scroll_back(out, delta: int, scroll_end: int) -> None:
+    def _reclaim_scroll_back(self, out, delta: int, scroll_end: int) -> None:
         """缩小后在新 DECSTBM 内下滚内容以消除空白间隙。
 
         ★ 自 2026-06-12 起 force_redraw() 不再调用此方法。
@@ -836,14 +686,7 @@ class _BottomBar(_StatusMixin):
             delta: 底部栏行数变化量（新值 - 旧值，应为负数）。
             scroll_end: 新的 DECSTBM 滚动区域底部行号。
         """
-        if delta >= 0 or scroll_end < 1:
-            return
-        n = -delta
-        out.write(_blessed_cursor_goto(scroll_end, 1))
-        out.write(f"{_blessed_scroll_down(n)}")
-        # 清除 SD 下滚后在滚动区顶部产生的 n 行空行
-        for r in range(1, min(n, scroll_end) + 1):
-            out.write(_blessed_move_clear(r))
+        _draw_impl_reclaim_scroll(out, delta, scroll_end)
 
     def _draw_input_lines_locked(self, out, text: str, r_start: int, term_width: int) -> None:
         """绘制输入行（需持有 output_lock），超长文本自动拆行。
@@ -854,48 +697,7 @@ class _BottomBar(_StatusMixin):
             r_start: 第一行输入区的行号（分隔线+状态行之后）。
             term_width: 当前终端宽度（由调用方传入，避免重复系统调用）。
         """
-        max_input = max(1, term_width - 4)
-        expanded = _expand_tabs(text)
-        wrapped = _wrap_by_width(expanded, max_input)
-        self._cached_wrapped_for = text
-        self._cached_wrapped_width = max_input
-        self._cached_wrapped_lines = wrapped
-        base_rows = max(_MIN_INPUT_ROWS, len(wrapped))
-        self._cached_input_rows = base_rows + self._completion.height
-        self._last_rendered_text = text
-
-        # ── 补全弹窗（委托 _CompletionPopup.render） ──
-        self._completion.render(out, r_start, term_width)
-        popup_height = self._completion.height
-
-        # ── 输入文本行（在弹窗下方） ──
-        text_start = r_start + popup_height
-        for i, segment in enumerate(wrapped):
-            r = text_start + i
-            if i == 0:
-                if text:
-                    out.write(_blessed_move_clear(r)
-                              + f"{_COLOR_DEEP_CYAN}>{_COLOR_RESET}"
-                              f" {segment}")
-                else:
-                    if self._status_active:
-                        ph = _PLACEHOLDER_STREAMING
-                        out.write(_blessed_move_clear(r)
-                                  + f"{_COLOR_DEEP_CYAN}>{_COLOR_RESET}"
-                                  f" {_COLOR_DIM}{ph}{_COLOR_RESET}")
-                    else:
-                        ph = _PLACEHOLDER_COMPACT if self._completion.is_visible else _PLACEHOLDER_TEXT
-                        out.write(_blessed_move_clear(r)
-                                  + f"{_COLOR_DEEP_CYAN}>{_COLOR_RESET}"
-                                  f" {_COLOR_DIM}{ph}{_COLOR_RESET}")
-            else:
-                out.write(_blessed_move_clear(r)
-                          + f"{_COLOR_DIM}\u00b7{_COLOR_RESET} {segment}")
-            self._cursor_tracker.set(r, 3)  # 提示符从第3列开始
-        # ★ 填充剩余空白行，确保输入区至少 3 行
-        for r in range(text_start + len(wrapped), text_start + 3):
-            out.write(_blessed_move_clear(r) + "  ")
-            self._cursor_tracker.set(r, 1)
+        _draw_impl_input_lines(self, out, text, r_start, term_width)
 
     def _draw_all_locked(self, out, height: int) -> None:
         """绘制全部底部行（需持有 output_lock），超长文本自动拆行。
@@ -909,34 +711,7 @@ class _BottomBar(_StatusMixin):
 
         终端高度不足以容纳底部栏时跳过绘制。
         """
-        total = self._bottom_lines
-        if height - total < 1:
-            return
-        self._last_bottom_lines = total
-        r1 = height - total + 1
-        subagent_start = r1 + 1
-        r2 = subagent_start + len(self._subagent_lines)
-
-        for r in range(r1, height + 1):
-            out.write(_blessed_move_clear(r))
-
-        tw = self._term_width()
-        sep_len = min(tw - 2, 40)
-        sep = f"{_COLOR_SEP}\u2501{_COLOR_RESET}" * sep_len
-        out.write(_blessed_cursor_goto(r1, 1) + "  " + sep)
-
-        # ── subagent 面板行（在分隔线与状态行之间） ──
-        for i, line in enumerate(self._subagent_lines):
-            sr = subagent_start + i
-            out.write(_blessed_move_clear(sr) + line)
-
-        status = self._format_status()
-        self._last_status = status
-        if status:
-            out.write(_blessed_move_clear(r2) + status)
-
-        text = self._last_text or ""
-        self._draw_input_lines_locked(out, text, r2 + 1, tw)
+        _draw_impl_all(self, out, height)
 
     # ── 补全弹窗（委托 _CompletionPopup） ──────────────────
 
@@ -953,18 +728,7 @@ class _BottomBar(_StatusMixin):
 
         由 render 线程在 CYCLE_COMPLETION 命令 handler 中调用。
         """
-        if not self._completion.is_visible or not self._completion._items:
-            return
-        out = sys.__stdout__
-        out.write(_blessed_save_cursor())
-        height = self._term_height()
-        total = self._bottom_lines
-        popup_start = height - total + 3
-        tw = self._term_width()
-        self._completion.render_cycle_update(out, popup_start, tw)
-        out.write(_blessed_restore_cursor())
-        out.flush()
-        self._last_height = height
+        _draw_impl_redraw_cycle(self)
 
     def show_completions(self, items: list[str], selected_idx: int,
                          texts: list[str] | None = None,

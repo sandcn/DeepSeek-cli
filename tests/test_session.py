@@ -53,7 +53,7 @@ class TestRunPendingLoopEnumerate:
     async def test_exception_remaining_correct(self, session):
         """异常时 remaining 使用 i+1 而非 index(msg)，确保即使有重复消息也正确"""
         # 构造 _pending_messages 有重复项的场景
-        session._pending_messages = ["msg_A", "msg_B", "msg_A"]  # 重复 msg_A
+        session._state.pending_messages = ["msg_A", "msg_B", "msg_A"]  # 重复 msg_A
 
         # mock run_round 在第二个 msg_A 上抛异常
         call_count = 0
@@ -72,13 +72,13 @@ class TestRunPendingLoopEnumerate:
 
         # 验证：异常时 remaining = pending[i+1:] 应只包含后续消息
         # pending = ["msg_A", "msg_B", "msg_A"], i=2 时异常 → remaining = []
-        assert len(session._pending_messages) == 0, (
+        assert len(session._state.pending_messages) == 0, (
             "第三个消息异常时 i=2，remaining = pending[3:] = []，不应有消息重新入队"
         )
 
     async def test_enumerate_index_matches_order(self, session):
         """enumerate 的索引与消息顺序一致，确保剩余消息计算正确"""
-        session._pending_messages = ["first", "second", "third"]
+        session._state.pending_messages = ["first", "second", "third"]
 
         call_log = []
 
@@ -96,8 +96,8 @@ class TestRunPendingLoopEnumerate:
         # pending = ["first", "second", "third"]
         # 第二个消息(i=1)异常 → remaining = pending[2:] = ["third"]
         # 应被重新放回 _pending_messages
-        assert session._pending_messages == ["third"], (
-            f"期望 remaining=['third']，实际={session._pending_messages}"
+        assert session._state.pending_messages == ["third"], (
+            f"期望 remaining=['third']，实际={session._state.pending_messages}"
         )
 
 

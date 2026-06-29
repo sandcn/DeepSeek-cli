@@ -23,7 +23,6 @@ import asyncio
 import contextlib
 import time
 import logging
-from collections import defaultdict
 from typing import AsyncIterator, Callable
 
 from .agent import Agent
@@ -44,6 +43,7 @@ from ._session_persistence import (
     has_checkpoint_session, resume_from_checkpoint_session, safe_save_state,
 )
 from ._session_messages import add_message, non_system_messages, system_messages
+from ._session_state import SessionState as _SessionData
 
 _logger = logging.getLogger(__name__)
 
@@ -84,7 +84,6 @@ class ChatSession:
 
         # ── 核心对象 ──────────────────────────────────────
         self._model: str = model or self._config_port.get_model()
-        self._session_id: str | None = None
 
         # 创建 Agent（注入 NullPort 避免 UI 依赖）
         null_display = _NullPort()
@@ -101,31 +100,16 @@ class ChatSession:
         # 上下文管理器（延迟初始化，需等待 messages 就绪）
         self._ctx_mgr: ContextManager | None = None
 
+        # ── 状态容器（会话可变状态集中管理） ──────────────
+        self._state = _SessionData()
+
         # ── 状态机（形式化会话生命周期） ──────────────────
         self._state_machine = SessionStateMachine()
         self._setup_state_machine_hooks()
 
-        # retry_pending 标志（用于 app.py 的自动续接判断，与状态机共存）
-        self._retry_pending: bool = False
-
-        # ★ Bug3 修复：排队消息缓冲区（run_round 在 RUNNING 状态下被调用时暂存）
-        self._pending_messages: list[str] = []
-
-        # ★ Bug2（P1）修复：run_round 并发锁，防止 TOCTOU 竞态
-        self._round_lock = asyncio.Lock()
-
-        # ── Hook 系统 ─────────────────────────────────────
-        self._hooks: dict[str, list[Callable]] = defaultdict(list)
-
         # ── 可观测性 ──────────────────────────────────────
         self._metrics = get_default_collector()
         self._tracer = get_default_tracer()
-
-        # ── LLM 生成期间捕获文本 ──────────────────────────
-        self._captured_prefill: str = ""
-
-        # ── WebUI 页面刷新保护：存放被取消但仍在后台执行的 LLM 任务 ──
-        self._orphaned_task: asyncio.Task | None = None
 
 
     def _setup_state_machine_hooks(self) -> None:
@@ -164,11 +148,11 @@ class ChatSession:
 
     @property
     def session_id(self) -> str | None:
-        return self._session_id
+        return self._state.session_id
 
     @session_id.setter
     def session_id(self, value: str | None) -> None:
-        self._session_id = value
+        self._state.session_id = value
 
     @property
     def agent(self) -> Agent:
@@ -181,16 +165,16 @@ class ChatSession:
     @property
     def retry_pending(self) -> bool:
         """是否有待重试的回合（最后一条消息是 user 且尚未回复）"""
-        return self._retry_pending
+        return self._state.retry_pending
 
     def sync_retry_pending(self) -> None:
-        """★ Bug#2 修复：根据最后一条消息的角色同步 _retry_pending 标志。
+        """★ Bug#2 修复：根据最后一条消息的角色同步 retry_pending 标志。
 
-        编辑/截断消息后调用此方法，确保 _retry_pending 与 messages 的实际状态一致：
-        - 最后一条是 user → _retry_pending = True（待自动续接）
-        - 否则 → _retry_pending = False
+        编辑/截断消息后调用此方法，确保 retry_pending 与 messages 的实际状态一致：
+        - 最后一条是 user → retry_pending = True（待自动续接）
+        - 否则 → retry_pending = False
         """
-        self._retry_pending = (
+        self._state.retry_pending = (
             len(self._agent.messages) > 0
             and self._agent.messages[-1].get(_ROLE_KEY) == "user"
         )
@@ -202,18 +186,16 @@ class ChatSession:
     @property
     def pending_messages(self) -> list[str]:
         """当前排队的用户消息列表（只读视图）"""
-        return list(self._pending_messages)
+        return list(self._state.pending_messages)
 
     def pop_pending_messages(self) -> list[str]:
         """弹出并返回所有排队的用户消息。
 
         run_round 在 RUNNING 状态下被重复调用时，消息会被暂存到
-        _pending_messages 队列中。调用者应在每轮 run_round 完成后
+        pending_messages 队列中。调用者应在每轮 run_round 完成后
         检查并处理这些排队消息。
         """
-        msgs = list(self._pending_messages)
-        self._pending_messages.clear()
-        return msgs
+        return self._state.pop_pending_messages()
 
     @property
     def state_machine(self) -> SessionStateMachine:
@@ -228,12 +210,12 @@ class ChatSession:
     @property
     def captured_prefill(self) -> str:
         """获取 LLM 生成期间用户键入的捕获文本"""
-        return self._captured_prefill
+        return self._state.captured_prefill
 
     @captured_prefill.setter
     def captured_prefill(self, value: str) -> None:
         """设置 LLM 生成期间用户键入的捕获文本"""
-        self._captured_prefill = value
+        self._state.captured_prefill = value
 
     @property
     def _non_system_messages(self) -> list[dict]:
@@ -258,21 +240,15 @@ class ChatSession:
             checkpoint_cleared  — 断点已清除
             messages_changed    — 消息列表被外部修改
         """
-        self._hooks[event].append(callback)
+        self._state.on(event, callback)
 
     def off(self, event: str, callback: Callable) -> None:
         """移除事件回调。"""
-        handlers = self._hooks.get(event, [])
-        if callback in handlers:
-            handlers.remove(callback)
+        self._state.off(event, callback)
 
     def _emit(self, event: str, **data) -> None:
         """触发事件，依次调用所有注册的回调。"""
-        for cb in self._hooks.get(event, []):
-            try:
-                cb(**data)
-            except Exception:
-                _logger.exception("ChatSession hook '%s' 异常", event)
+        self._state._emit(event, **data)
 
     # ── 初始化 ────────────────────────────────────────────
 
@@ -417,12 +393,12 @@ class ChatSession:
              "delta": dict, "pending": bool}
              pending=True 表示消息已排队（上一轮尚在执行中）。
         """
-        async with self._round_lock:
+        async with self._state.round_lock:
             # ★ Bug3 修复：已在执行中则排队消息，不影响当前轮次
             if self._state_machine.is_(SessionState.RUNNING):
-                self._pending_messages.append(user_input)
+                self._state.pending_messages.append(user_input)
                 _logger.warning("run_round 被重复调用，消息已排队 (#%d): %s...",
-                                len(self._pending_messages), user_input[:_LOG_TRUNCATE_LENGTH])
+                                len(self._state.pending_messages), user_input[:_LOG_TRUNCATE_LENGTH])
                 return {"interrupted": False, "session_id": None,
                         "delta": {"input": 0, "output": 0, "calls": 0},
                         "pending": True}
@@ -437,9 +413,9 @@ class ChatSession:
                 self._force_state_recovery()
                 raise
             # ── AI 回复前提前分配 session_id ──────────────────
-            # 标题生成在后台并行执行，需要 _session_id 已就绪才能保存标题。
-            if not self._session_id:
-                self._session_id = self._persistence_port.generate_id()
+            # 标题生成在后台并行执行，需要 session_id 已就绪才能保存标题。
+            if not self._state.session_id:
+                self._state.session_id = self._persistence_port.generate_id()
             try:
                 async with self._handle_round_error("run_round"):
                     return await self._execute_round()
@@ -447,13 +423,13 @@ class ChatSession:
                 raise
             except Exception:
                 # 个性化清理（_handle_round_error 已记录日志并恢复状态机）
-                self._session_id = None  # 回滚 orphan ID
+                self._state.session_id = None  # 回滚 orphan ID
                 # ★ P1-7 修复：回滚已添加的 user 消息，防止幽灵消息污染消息列表
                 if self._agent.messages and self._agent.messages[-1].get(_ROLE_KEY) == "user":
                     self._agent.messages.pop()
                     _logger.warning("run_round 异常，已回滚最后一条 user 消息")
                 # ★ Bug2 修复：清理已排队的消息，防止异常后残留无效数据
-                self._pending_messages.clear()
+                self._state.pending_messages.clear()
                 raise
 
     async def run_pending_loop(self, max_iter: int = _MAX_PENDING_LOOP_ITER) -> tuple[bool, list[str]]:
@@ -487,7 +463,7 @@ class ChatSession:
                 except Exception:
                     remaining = pending[i + 1:]
                     if remaining:
-                        self._pending_messages = remaining + self._pending_messages
+                        self._state.pending_messages = remaining + self._state.pending_messages
                         _logger.error("排队消息处理异常，剩余 %d 条已重新入队", len(remaining))
                     raise
             pending = self.pop_pending_messages()
@@ -496,16 +472,16 @@ class ChatSession:
             _logger.error("排队消息处理超过熔断阈值 (%d)，终止循环", max_iter)
             remaining = self.pop_pending_messages()
             if remaining:
-                self._pending_messages = remaining + self._pending_messages
-            return True, list(self._pending_messages)
+                self._state.pending_messages = remaining + self._state.pending_messages
+            return True, list(self._state.pending_messages)
 
         return False, []
 
     async def retry(self) -> dict:
         """重新执行上一轮对话。
         """
-        async with self._round_lock:
-            self._retry_pending = False
+        async with self._state.round_lock:
+            self._state.retry_pending = False
             if self._state_machine.is_(SessionState.INIT):
                 self._ensure_idle()
             self._state_machine.retry()
@@ -516,18 +492,18 @@ class ChatSession:
                 raise
             except Exception:
                 # 个性化清理（_handle_round_error 已记录日志并恢复状态机）
-                self._retry_pending = False
+                self._state.retry_pending = False
                 raise
 
     async def run_single(self, prompt: str) -> dict:
         """单次对话模式。
         """
-        async with self._round_lock:
+        async with self._state.round_lock:
             self._ensure_idle()
             self._agent.add_user_message(prompt)
             # ── AI 回复前提前分配 session_id ──────────────────
-            if not self._session_id:
-                self._session_id = self._persistence_port.generate_id()
+            if not self._state.session_id:
+                self._state.session_id = self._persistence_port.generate_id()
             async with self._handle_round_error("run_single"):
                 result = await self._execute_round()
             self.save()
@@ -615,7 +591,7 @@ class ChatSession:
             # 在主线程中提取消息快照，避免子线程访问 messages 的竞态
             snapshot = list(self._agent.messages)
             snapshot_model = self._model
-            snapshot_sid = self._session_id
+            snapshot_sid = self._state.session_id
 
             non_system = [m for m in snapshot if m.get(_ROLE_KEY) != _SYSTEM_ROLE]
             if not non_system:
@@ -630,7 +606,7 @@ class ChatSession:
                 snapshot_model,
                 snapshot_sid,
             )
-            self._session_id = session_id
+            self._state.session_id = session_id
             self._safe_save_state()
             self._emit("saved", session_id=session_id)
             return session_id
@@ -668,7 +644,7 @@ class ChatSession:
                    elapsed=elapsed)
 
         # ★ 修复：每轮执行完成后复位 retry_pending，避免应用层误判需要自动续接
-        self._retry_pending = False
+        self._state.retry_pending = False
 
         return {
             "interrupted": interrupted,

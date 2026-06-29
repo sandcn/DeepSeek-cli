@@ -10,7 +10,7 @@
 - renderer/         —— 流式输出 Markdown 渲染（策略模式）
 - json_repair.py    —— JSON 格式自动修复
 - stream_parse.py   —— 流式工具调用解析
-- escape_monitor.py —— Esc 键中断监听（双平台）
+- escape_monitor/ —— Esc 键中断监听（包，原 escape_monitor.py 拆分）
 """
 
 from .tokens import estimate_tokens  # noqa: F401
