@@ -227,18 +227,22 @@ class TuiEngine:
                         idle_count = 0
                         wait_timeout = self._ACTIVE_RENDER_INTERVAL
                     else:
-                        # 指数退避平滑过渡：5ms → 10ms → 20ms → 40ms → 80ms → 100ms
+                        # 指数退避平滑过渡：5ms → 10ms → 20ms → 40ms → 80ms → 100ms（钳位）
                         wait_timeout = min(
                             self._ACTIVE_RENDER_INTERVAL * (2 ** idle_count),
                             _RENDER_INTERVAL,
                         )
                         idle_count += 1
+                        if idle_count > 10:
+                            idle_count = 10
                     self._cmd_event.wait(timeout=wait_timeout)
                     if not has_content:
                         self._cmd_event.clear()
                 except Exception as exc:
                     self._render_crashed.set()
                     try:
+                        _logger.critical("idle_count=%d, cmd_queue.qsize=%d",
+                                         idle_count, self._cmd_queue.qsize())
                         _logger.critical("render 线程异常崩溃", exc_info=True)
                         _emergency_write(
                             f"{_ANSI_RED}[ChatUI] render 线程异常终止: "

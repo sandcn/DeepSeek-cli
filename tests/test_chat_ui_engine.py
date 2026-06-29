@@ -1007,3 +1007,64 @@ class TestRenderEngineEdgeCases:
 
             m_lock.assert_called_once_with(name="drain_queue", timeout=0.1)
 
+    def test_idle_count_does_not_exceed_10(self, engine):
+        """长时间空闲时 idle_count 被钳位到 10，不会无限增长。"""
+        engine._render_running = True
+
+        # 模拟 20 次空闲 drain（远超正常退避范围）
+        call_count = 0
+        total_calls = 20
+
+        def _side_effect_drain():
+            nonlocal call_count
+            call_count += 1
+            if call_count >= total_calls:
+                engine._render_running = False
+            return False  # 始终空闲
+
+        engine._drain_queue = MagicMock(side_effect=_side_effect_drain)
+        engine._cmd_event.wait = MagicMock()
+        engine._cmd_event.clear = MagicMock()
+
+        engine._render()
+
+        all_calls = engine._cmd_event.wait.call_args_list
+        # idle_count ≥5 后恒为 _RENDER_INTERVAL(0.1s)
+        from src.chat_ui._const import _RENDER_INTERVAL
+        for idx, call_args in enumerate(all_calls):
+            if idx >= 5:
+                assert call_args == call(timeout=_RENDER_INTERVAL), (
+                    f"第 {idx+1} 次空闲应 timeout={_RENDER_INTERVAL}，"
+                    f"实际={call_args}"
+                )
+
+    def test_idle_count_no_overflow_from_large_exponent(self, engine):
+        """idle_count 上限 10 确保 2**idle_count 始终在安全范围内。"""
+        # 模拟长时间运行：多次空闲迭代
+        engine._render_running = True
+
+        call_count = 0
+        total_calls = 30
+
+        def _side_effect_drain():
+            nonlocal call_count
+            call_count += 1
+            if call_count >= total_calls:
+                engine._render_running = False
+            return False
+
+        engine._drain_queue = MagicMock(side_effect=_side_effect_drain)
+        engine._cmd_event.wait = MagicMock()
+        engine._cmd_event.clear = MagicMock()
+
+        # 不应抛出任何异常（包括 OverflowError）
+        engine._render()
+
+        # idle_count≥10 后 2**idle_count = 2**10 = 1024（封顶），
+        # 0.005 * 1024 = 5.12，min(5.12, 0.1) = 0.1，完全安全
+        all_timeouts = [
+            c[1]["timeout"] for c in engine._cmd_event.wait.call_args_list
+        ]
+        assert all(t >= 0 for t in all_timeouts), "timeout 不能为负数"
+        assert all(t <= 0.1 for t in all_timeouts), "timeout 不能超过 0.1"
+
