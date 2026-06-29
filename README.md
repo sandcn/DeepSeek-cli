@@ -268,7 +268,7 @@ AI 代理在对话中可调用以下工具完成各类操作。共 **14 个内�
 | `mk` | mk | IO | ✅ | 创建目录，支持递归创建父目录 |
 | `web_search` | ws | 网络 | ❌ | 搜索引擎搜索 + 网页全文抓取（百度/必应/GitHub） |
 | `user_select` | us | 交互 | ❌ | 向用户显示交互式选择界面（单选/多选/超时回退/非交互回退） |
-| `dispatch_agent` | da | Agent | ❌ | 并行派发子 Agent 执行独立任务（支持类型：map/review/plan/read_memory/write_memory/plan_execute） |
+| `dispatch_agent` | da | Agent | ❌ | 并行派发子 Agent 执行独立任务（支持类型：map/review/plan/read_memory/write_memory/execute） |
 
 ### 工具分类
 
@@ -294,7 +294,7 @@ AI 代理在对话中可调用以下工具完成各类操作。共 **14 个内�
 
 ```python
 @classmethod
-def can_use(cls, tool_name: str, agent_type: str = "plan_execute") -> tuple[bool, str | None]:
+def can_use(cls, tool_name: str, agent_type: str = "execute") -> tuple[bool, str | None]:
     """检查指定类型的 agent 能否使用某工具。"""
 ```
 
@@ -355,7 +355,7 @@ ChatUIConsumer
         │dispatch│dispatch│dispatch│dispatch│dispatch│dispatch
         ▼       ▼       ▼       ▼       ▼       ▼
 ┌─────────────┐ ┌────────────┐ ┌────────────┐ ┌──────────────┐ ┌─────────────────┐ ┌──────────────────┐
-│ plan        │ │ map        │ │ review     │ │ plan_execute│ │ read_memory     │ │ write_memory     │
+│ plan        │ │ map        │ │ review     │ │ execute     │ │ read_memory     │ │ write_memory     │
 │ SubAgent    │ │ SubAgent   │ │ SubAgent   │ │ SubAgent    │ │ SubAgent        │ │ SubAgent         │
 │             │ │            │ │            │ │             │ │                 │ │                  │
 │ 计划型      │ │ 只读分析型  │ │ 代码审查型  │ │ 执行型      │ │ 只读记忆型      │ │ 读写记忆型       │
@@ -380,7 +380,7 @@ ChatUIConsumer
      │         关键词搜索 .chat/memory/ 目录
      │
 4. 修改 ──→  基于探底结果执行代码修改
-     │         多个独立目标可并发派发 plan_execute SubAgent
+     │         多个独立目标可并发派发 execute SubAgent
      │
 5. 审查 ──→  委派 review SubAgent 逐文件审查
      │         P0/P1/P2 阻断修复，P3 纳入记录
@@ -400,11 +400,11 @@ ChatUIConsumer
 | **plan** | 只读分析 + write_file/update_file（仅限 `.chat/plan/` 目录） | 任务拆解、依赖分析、生成计划文件到 `.chat/plan/` |
 | **map** | 只读（read_file/search/find/ls） | 项目探底、模块地图、调用链追踪、引用关系分析 |
 | **review** | 只读 + web_search | Code Review、P0-P3 分级审查、跨文件一致性验证 |
-| **plan_execute** | 全工具（不含 user_select/dispatch_agent） | 读/写/改代码、执行测试、通用任务 |
+| **execute** | 全工具（不含 user_select/dispatch_agent） | 读/写/改代码、执行测试、通用任务 |
 | **read_memory** | 只读（read_file/search/find/ls） | 检索 `.chat/memory/` 目录下的记忆文件 |
 | **write_memory** | 只读 + write_file/update_file/mk（仅限 `.chat/memory/` 目录） | 维护记忆文件（新增/更新/合并条目） |
 
-> **工具排除策略**：plan_execute 排除 `dispatch_agent/user_select`；map 排除 `bash/write_file/update_file/rm/mv/cp/mk/web_search/dispatch_agent/user_select`；review 排除 `bash/write_file/update_file/rm/mv/cp/mk/dispatch_agent/user_select`（保留 web_search）；plan 排除 `bash/rm/mv/cp/mk/dispatch_agent/user_select`，write_file/update_file 仅限 `.chat/plan/` 目录；read_memory 与 map 策略一致（排除所有写入类+web_search+dispatch_agent+user_select）；write_memory 排除 `bash/rm/mv/cp/web_search/dispatch_agent/user_select`，write_file/update_file/mk 仅限 `.chat/memory/` 目录。SubAgent 在 `_handle_tool_calls()` 中注入 `agent_type` 到 Func 实例，`Func.can_use()` 进行统一检查。`FileToolBase._validate_path_and_size()` 额外实施 plan/write_memory Agent 路径白名单校验。
+> **工具排除策略**：execute 排除 `dispatch_agent/user_select`；map 排除 `bash/write_file/update_file/rm/mv/cp/mk/web_search/dispatch_agent/user_select`；review 排除 `bash/write_file/update_file/rm/mv/cp/mk/dispatch_agent/user_select`（保留 web_search）；plan 排除 `bash/rm/mv/cp/mk/dispatch_agent/user_select`，write_file/update_file 仅限 `.chat/plan/` 目录；read_memory 与 map 策略一致（排除所有写入类+web_search+dispatch_agent+user_select）；write_memory 排除 `bash/rm/mv/cp/web_search/dispatch_agent/user_select`，write_file/update_file/mk 仅限 `.chat/memory/` 目录。SubAgent 在 `_handle_tool_calls()` 中注入 `agent_type` 到 Func 实例，`Func.can_use()` 进行统一检查。`FileToolBase._validate_path_and_size()` 额外实施 plan/write_memory Agent 路径白名单校验。
 
 ### 并发调度策略
 
@@ -422,7 +422,7 @@ ChatUIConsumer
 │   ├── prompts_export_sub.md     # SubAgent 通用提示词
 │   ├── prompts_export_map.md     # map SubAgent 探底提示词
 │   ├── prompts_export_plan.md    # plan SubAgent 计划提示词
-│   ├── prompts_export_plan_execute.md  # plan_execute SubAgent 提示词
+│   ├── prompts_export_execute.md  # execute SubAgent 提示词
 │   ├── prompts_export_review.md  # review SubAgent 审查提示词
 │   ├── prompts_export_read_memory.md   # read_memory SubAgent 提示词
 │   └── prompts_export_write_memory.md  # write_memory SubAgent 提示词

@@ -32,7 +32,7 @@ _logger = logging.getLogger(__name__)
 # - write_memory: 读写记忆，保留 write_file/update_file/mk，但在 FileToolBase
 #   ._validate_path_and_size() 中有额外的路径白名单校验（仅限 .chat/memory/）
 #   （保留 mk 以便在 .chat/memory/ 目录不存在时自行创建，与 plan 不含 mk 的策略不同）
-# - plan_execute: 计划执行型（默认），保留读写工具 + bash，排除 web_search + dispatch_agent + user_select，
+# - execute: 计划执行型（默认），保留读写工具 + bash，排除 web_search + dispatch_agent + user_select，
 #   无路径白名单限制，用于执行计划文件步骤并返回修改文件列表
 _TOOL_EXCLUSION_MAP = {
     "map": {
@@ -67,7 +67,7 @@ _TOOL_EXCLUSION_MAP = {
         "dispatch_agent",
         "user_select",
     },
-    "plan_execute": {
+    "execute": {
         "dispatch_agent",
         "user_select",
         "web_search",
@@ -76,8 +76,8 @@ _TOOL_EXCLUSION_MAP = {
 
 
 def _get_excluded_tools(agent_type: str) -> set:
-    """根据 agent_type 返回应排除的工具名集合。未知类型回退 plan_execute 策略。"""
-    return _TOOL_EXCLUSION_MAP.get(agent_type, _TOOL_EXCLUSION_MAP["plan_execute"])
+    """根据 agent_type 返回应排除的工具名集合。未知类型回退 execute 策略。"""
+    return _TOOL_EXCLUSION_MAP.get(agent_type, _TOOL_EXCLUSION_MAP["execute"])
 
 
 class SubAgent(BaseAgent):
@@ -91,7 +91,7 @@ class SubAgent(BaseAgent):
         parent_agent,
         model: str = None,
         model_port=None,
-        agent_type: str = "plan_execute",
+        agent_type: str = "execute",
     ):
         super().__init__()
 
@@ -122,8 +122,8 @@ class SubAgent(BaseAgent):
             system_parts = prompt_port.build_read_memory_agent_system_prompt()
         elif agent_type == "write_memory":
             system_parts = prompt_port.build_write_memory_agent_system_prompt()
-        elif agent_type == "plan_execute":
-            system_parts = prompt_port.build_plan_execute_agent_system_prompt()
+        elif agent_type == "execute":
+            system_parts = prompt_port.build_execute_agent_system_prompt()
         else:
             system_parts = prompt_port.build_subagent_prompt()
         self.messages: List[Dict[str, Any]] = [

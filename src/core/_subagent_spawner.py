@@ -64,7 +64,7 @@ class SubAgentSpawner:
         """创建单个 SubAgent 实例：构造标签、调用工厂、绑定 display。"""
         label = f"agent-{index + 1}"
         desc = spec.get(_DESCRIPTION_KEY, f"子任务 {index + 1}")
-        agent_type = spec.get("agent_type", "plan_execute")
+        agent_type = spec.get("agent_type", "execute")
         sa = self._agent_factory(
             label=label,
             description=desc,
@@ -92,7 +92,7 @@ class SubAgentSpawner:
         md_parts: list[str] = []
         for i, spec in enumerate(specs, 1):
             desc = spec.get(_DESCRIPTION_KEY, f"子任务 {i}")
-            agent_type = spec.get("agent_type", "plan_execute")
+            agent_type = spec.get("agent_type", "execute")
             abbr = AGENT_TYPE_ABBREV.get(agent_type, "??")
             prompt = spec.get("prompt", "")
             if prompt:
@@ -141,7 +141,7 @@ class SubAgentSpawner:
             try:
                 for i, spec in enumerate(specs, 1):
                     desc = spec.get(_DESCRIPTION_KEY, f"子任务 {i}")
-                    agent_type = spec.get("agent_type", "plan_execute")
+                    agent_type = spec.get("agent_type", "execute")
                     abbr = AGENT_TYPE_ABBREV.get(agent_type, "??")
                     prompt = spec.get("prompt", "")
                     if prompt:

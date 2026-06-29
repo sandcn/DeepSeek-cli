@@ -203,7 +203,7 @@ class ParallelDisplay(BaseDisplay):
     # ── 注册 ────────────────────────────────────────────
 
     def add_agent(self, label: str, description: str, status: str = "running",
-                  agent_type: str = "plan_execute"):
+                  agent_type: str = "execute"):
         self._store.add_agent(label, description, status, agent_type=agent_type)
         self._schedule_refresh()
 

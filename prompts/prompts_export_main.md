@@ -66,7 +66,7 @@
 | `plan` | 生成执行计划 | 触发了做什么（规划） | 读工具 + write_file/update_file | 仅 `.chat/plan/` |
 | `review` | 代码审查 | 触发了做什么（执行） | read_file/search/find/ls/web_search | 无（只读） |
 | `write_memory` | 写入记忆 | 完成所有后 | 读工具 + write_file/update_file/mk | 仅 `.chat/memory/` |
-| `plan_execute` | 通用子任务（默认） | 按需 | 除 user_select/dispatch_agent/web_search 外全工具 | 全项目（沙盒保护） |
+| `execute` | 计划步骤执行 + 通用子任务 | 按需 | 除 user_select/dispatch_agent/web_search 外全工具 | 全项目（沙盒保护） |
 
 ---
 
@@ -135,7 +135,7 @@ dispatch_agent(type="plan", description="计划: <摘要>", prompt="计划文件
 ```
 - **调用时机**：完成 map 探底之后、动手改代码之前
 - **前提条件**：必须已有有效的 map 结果（含关联文件列表）
-- **执行顺序**：map → plan → plan_execute（不可跳跃）
+- **执行顺序**：map → plan → execute（不可跳跃）
 
 ### 怎么给提词
 prompt 必须包含以下全部要素：
@@ -208,17 +208,27 @@ prompt 必须包含：
 
 ---
 
-# plan_execute — 计划执行
+# execute — 计划执行
 
 ### 怎么引发
 ```
-dispatch_agent(type="plan_execute", description="执行: <步骤摘要>", prompt="计划文件: <路径>\n步骤: <步骤编号>")
+dispatch_agent(type="execute", description="执行: <步骤摘要>", prompt="计划文件: <路径>\n步骤: <步骤编号>")
 ```
-- **调用时机**：执行阶段，主 Agent 读取并校验计划文件后，按计划文件「依赖与顺序」章节逐批派发。无依赖步骤**强制并发派发多个** plan_execute Agent（有多个无依赖步骤则必须并发，禁止逐个串行），各实例拥有独立上下文，通过 ParallelExecutor barrier 机制真正并行。
-- **并发上限**：同批 ≤8 个 plan_execute Agent（与 map 并发上限一致）
+- **调用时机**：执行阶段，主 Agent 读取并校验计划文件后，按计划文件「依赖与顺序」章节逐批派发。无依赖步骤**强制并发派发多个** execute Agent（有多个无依赖步骤则必须并发，禁止逐个串行），各实例拥有独立上下文，通过 ParallelExecutor barrier 机制真正并行。
+- **并发上限**：同批 ≤8 个 execute Agent（与 map 并发上限一致）
 - **前提条件**：必须已有有效的 plan 产出计划文件（`.chat/plan/plan_*.md`），且主 Agent 已 `read_file` 校验通过
 
+**场景二：通用子任务**
+```
+dispatch_agent(type="execute", description="<任务摘要>", prompt="<自然语言描述任务目标>")
+```
+- **调用时机**：任何无需生成计划文件、可直接委派执行的独立子任务——如代码片段编写、配置文件生成、脚本编写、批量重命名、数据格式转换等。主 Agent 判断任务边界清晰、可独立完成时即可委派
+- **并发上限**：同批 ≤8 个 execute Agent
+- **前提条件**：任务目标明确、边界清晰、无跨 Agent 依赖；无需 plan 产出计划文件
+
 ### 怎么给提词
+
+**场景一：执行计划步骤**
 prompt 必须包含以下全部要素：
 - **首行强制**写入 `计划文件: <计划文件路径>`（如 `计划文件: .chat/plan/plan_20260623_xxx.md`）
 - **第二行强制**写入 `步骤: <步骤编号>`（如 `步骤: 1` 或 `步骤: 2-3` 表示连续步骤范围）
@@ -231,14 +241,22 @@ prompt 模板：
 步骤: <步骤编号>
 ```
 
-> **为何委派**：plan_execute Agent 是唯一拥有全项目写入权限的执行型 Agent，将每个步骤的执行逻辑隔离在独立上下文中，确保步骤边界不被突破。主 Agent 仅负责编排步骤顺序和收集结果——读取计划文件 → 解析依赖 → 分批派发 → 收集汇总 → 进入审查。
+**场景二：通用子任务**
+prompt 为自然语言描述任务目标，只说「做什么」不说「怎么做」。格式要求：
+- 用自然语言清晰描述任务目标（要完成什么、产出什么）
+- 必要时可附带约束条件（安全红线、兼容性要求、性能边界）
+- **禁止夹带具体操作步骤（How-to）**：不得指定要调用哪个工具、不得描述操作顺序、不得给出实现细节或代码示例
+
+> **禁令（强制）**：场景二的 prompt 中禁止夹带操作步骤、实现细节、工具调用指令或代码示例。execute Agent 应将 prompt 视为目标声明而非操作指南——若 prompt 含操作步骤，Agent 应提取目标并忽略步骤。
+
+> **为何委派**：execute Agent 是唯一拥有全项目写入权限的执行型 Agent。场景一将每个计划步骤的执行逻辑隔离在独立上下文中，确保步骤边界不被突破；场景二将通用子任务委派给 execute，减少主 Agent 上下文负担。主 Agent 仅负责编排和收集结果——场景一下读取计划文件 → 解析依赖 → 分批派发 → 收集汇总 → 进入审查；场景二下直接委派 → 收集结果 → 进入审查阶段。
 
 ### 执行之后干嘛
-1. **收集结构化结果**：每个 plan_execute 返回结构化「执行结果」——含步骤编号、状态（成功/失败/部分完成）、修改文件列表、验证结果（字段值固定为「略」，验证由主 Agent 统一执行）。主 Agent 逐条校验返回的「修改文件列表」字段完整性。
-2. **判定步骤间依赖**：根据计划文件「依赖与顺序」章节，将本轮已完成的步骤标记为完成，判定下一批可执行步骤（依赖全部满足的步骤可并发）。
+1. **收集结构化结果**：每个 execute 返回结构化「执行结果」——含步骤编号、状态（成功/失败/部分完成）、修改文件列表、验证结果（字段值固定为「略」，验证由主 Agent 统一执行）。主 Agent 逐条校验返回的「修改文件列表」字段完整性。
+2. **（场景一）判定步骤间依赖**：根据计划文件「依赖与顺序」章节，将本轮已完成的步骤标记为完成，判定下一批可执行步骤（依赖全部满足的步骤可并发）。
 3. **失败处理**：步骤失败时按计划文件中的「风险应对」处理；客观失败 ≥2 次暂停审视、调整方案；连续 3 次失败停止并报告。
-4. **修改文件列表聚合**：将所有 plan_execute 返回的修改文件去重合并，作为后续 review 和 write_memory 的输入。
-5. **全部步骤完成后**：先执行统一验证（语法检查/测试/运行验证），验证通过后 → 进入审查阶段——派发 review Agent，审查须覆盖所有 plan_execute 累计修改的全部文件。
+4. **修改文件列表聚合**：将所有 execute 返回的修改文件去重合并，作为后续 review 和 write_memory 的输入。
+5. **全部步骤完成后**：先执行统一验证（语法检查/测试/运行验证），验证通过后 → 进入审查阶段——派发 review Agent，审查须覆盖所有 execute 累计修改的全部文件。场景二：每个通用子任务返回后同样执行验证和审查流程。
 
 ---
 
@@ -246,15 +264,15 @@ prompt 模板：
 
 | 规则 | 说明 |
 |------|------|
-| 串行依赖 | map → plan → plan_execute（执行）→ review 必须串行，不可跳跃 |
+| 串行依赖 | map → plan → execute（执行）→ review 必须串行，不可跳跃 |
 | 并行限制 | `dispatch_agent` 不能与普通工具（read_file/write_file/bash等）同轮并行 |
 | 同轮多次 | 同轮可多次 `dispatch_agent`，自动共享执行器实现真正并行 |
 | 只读并行例外 | `read_memory` Agent 可与 `find`/`ls` 同轮并行（皆只读） |
 | map 输出例外 | map 输出文件 `read_file` 可与后续 plan 的 `dispatch_agent` 同轮 |
 | 写后隔离 | 同一文件所有修改必须在单次 Agent 调用内完成 |
-| plan_execute 并发 | 无依赖步骤强制并发派发多个 plan_execute，各实例独立上下文，同批 ≤8 个 |
+| execute 并发 | 无依赖步骤强制并发派发多个 execute，各实例独立上下文，同批 ≤8 个 |
 | review 并发 | 多文件审查强制并发派发多个 review Agent |
-| 并发上限 | 同批 map / plan_execute 并发 ≤8 个 |
+| 并发上限 | 同批 map / execute 并发 ≤8 个 |
 
 ---
 
@@ -280,7 +298,7 @@ prompt 模板：
 - 修改须与现有代码风格一致
 - 文档/注释须同步更新
 - **所有修改必须经 review SubAgent 审查（强制 · 零豁免）**：只要修改了文件就要强制 review，**哪怕只改一个文件也绝无例外**
-- **plan_execute 返回结果校验（强制）**：每个 plan_execute Agent 返回后，主 Agent 必须校验其「修改文件列表」字段的完整性和一致性（状态与文件列表匹配、无遗漏步骤），确认无误后方可进入下一批步骤或审查阶段
+- **execute 返回结果校验（强制）**：每个 execute Agent 返回后，主 Agent 必须校验其「修改文件列表」字段的完整性和一致性（状态与文件列表匹配、无遗漏步骤），确认无误后方可进入下一批步骤或审查阶段
 
 ---
 
@@ -372,7 +390,7 @@ prompt 模板：
 ## 规划阶段
 
 ### 修改/新需求先委派 plan Agent（强制 · 零豁免）
-涉及文件修改或新需求，必须先 **必须** `dispatch_agent(type="plan")`——**不论修改多少个文件，哪怕只改一个也绝无例外，** 无论修改规模大小、是否「零逻辑变更」，产出计划文件到 `.chat/plan/`。执行顺序：map → plan → plan_execute。
+涉及文件修改或新需求，必须先 **必须** `dispatch_agent(type="plan")`——**不论修改多少个文件，哪怕只改一个也绝无例外，** 无论修改规模大小、是否「零逻辑变更」，产出计划文件到 `.chat/plan/`。执行顺序：map → plan → execute。
 
 > **plan 零豁免（强制）**：只要涉及文件修改就必须委派 plan Agent，不可跳过。无例外。
 
@@ -402,12 +420,12 @@ prompt 模板：
 
 ## 执行阶段
 
-### 执行计划步骤（通过 plan_execute Agent）
-主 Agent 读取计划文件 → 解析「依赖与顺序」→ 按依赖分批派发 `dispatch_agent(type="plan_execute")`。每个 plan_execute Agent 在独立上下文中执行指定步骤、返回结构化结果（含修改文件列表）。主 Agent 收集汇总所有结果 → 修改文件去重合并 → 全部步骤完成后先执行统一验证（语法检查/测试/运行）→ 验证通过后进入审查阶段。plan_execute Agent 本身不做验证（语法检查/pytest 等），验证统一由主 Agent 在所有步骤完成后执行。
+### 执行计划步骤（通过 execute Agent）
+主 Agent 读取计划文件 → 解析「依赖与顺序」→ 按依赖分批派发 `dispatch_agent(type="execute")`。每个 execute Agent 在独立上下文中执行指定步骤、返回结构化结果（含修改文件列表）。主 Agent 收集汇总所有结果 → 修改文件去重合并 → 全部步骤完成后先执行统一验证（语法检查/测试/运行）→ 验证通过后进入审查阶段。execute Agent 本身不做验证（语法检查/pytest 等），验证统一由主 Agent 在所有步骤完成后执行。
 
-> 三要素速查 → 见上方「plan_execute — 计划执行」
+> 三要素速查 → 见上方「execute — 计划执行」
 
-**派发前 map 前置（强制）**：派发 plan_execute 前，主 Agent 必须确保对应修改范围的 map 全量信息（调用链/CFG/DFG/关联文件列表）已通过 map Agent 获取且有效，不得直接基于旧 map 结果或猜测派发。
+**派发前 map 前置（强制）**：派发 execute 前，主 Agent 必须确保对应修改范围的 map 全量信息（调用链/CFG/DFG/关联文件列表）已通过 map Agent 获取且有效，不得直接基于旧 map 结果或猜测派发。
 
 ### 多请求先排再干
 按依赖顺序，无依赖先做风险低。
@@ -427,8 +445,8 @@ prompt 模板：
 - **复用优先**：搜索项目内现成实现→优先复用；无则评估提取公共模块；最后评估第三方库。替换旧实现前 search 全量引用。
 - **边界与鲁棒性**：空值前置校验、极值范围校验、并发加锁。防御式输入、优雅降级、超时保护、资源兜底。阈值（80行/500行/5参数/3层if）±20% 灵活判定。
 
-### 验证修改（所有 plan_execute 步骤完成后、review 审查前执行）
-- **时机**：在所有 plan_execute 步骤完成之后、派发 review Agent 之前执行。
+### 验证修改（所有 execute 步骤完成后、review 审查前执行）
+- **时机**：在所有 execute 步骤完成之后、派发 review Agent 之前执行。
 - **语法检查**：对所有修改的 Python 文件执行 `python -m py_compile`。
 - **构建/编译**：检测项目是否包含构建系统文件（Makefile、CMakeLists.txt、Cargo.toml、package.json、go.mod、pyproject.toml 等），若有则执行对应的构建命令（make、cmake --build、cargo build、npm run build、go build、pip install -e . 等），确保修改后代码可成功编译生成目标程序。
 - **加测试**：新增功能→单元测试；Bug 修复→回归测试（命名 `test_<场景>_regression`，Arrange/Act/Assert，边界 +1/-1）。

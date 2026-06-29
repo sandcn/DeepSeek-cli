@@ -39,12 +39,12 @@ class Func(abc.ABC):
         self.agent = agent
 
     @classmethod
-    def can_use(cls, tool_name: str, agent_type: str = "plan_execute", path: str | None = None) -> "tuple[bool, str | None]":
+    def can_use(cls, tool_name: str, agent_type: str = "execute", path: str | None = None) -> "tuple[bool, str | None]":
         """检查指定类型的 agent 能否使用某工具。
 
         Args:
             tool_name: 工具名称
-            agent_type: Agent 类型（map/review/plan/read_memory/write_memory/plan_execute），默认 plan_execute
+            agent_type: Agent 类型（map/review/plan/read_memory/write_memory/execute），默认 execute
             path: 目标文件路径（可选），用于 plan / write_memory agent 写入文件时的路径白名单校验
 
         Returns:

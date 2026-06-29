@@ -47,24 +47,24 @@ class TestDispatchAgentsInit:
         assert da.prompt == ""
 
     def test_init_default_agent_type(self):
-        """默认 target_agent_type 为 plan_execute"""
+        """默认 target_agent_type 为 execute"""
         da = DispatchAgents(description="task", prompt="do it")
-        assert da.target_agent_type == "plan_execute"
+        assert da.target_agent_type == "execute"
 
     def test_init_custom_agent_type(self):
         """可以指定 target_agent_type"""
-        da = DispatchAgents(description="task", prompt="do it", target_agent_type="plan_execute")
-        assert da.target_agent_type == "plan_execute"
+        da = DispatchAgents(description="task", prompt="do it", target_agent_type="execute")
+        assert da.target_agent_type == "execute"
 
     def test_init_map_agent_type(self):
         """map 类型正确设置"""
         da = DispatchAgents(description="分析项目", prompt="生成项目地图", target_agent_type="map")
         assert da.target_agent_type == "map"
 
-    def test_init_plan_execute_agent_type(self):
-        """plan_execute 类型正确设置"""
-        da = DispatchAgents(description="执行计划", prompt="执行步骤", target_agent_type="plan_execute")
-        assert da.target_agent_type == "plan_execute"
+    def test_init_execute_agent_type(self):
+        """execute 类型正确设置"""
+        da = DispatchAgents(description="执行计划", prompt="执行步骤", target_agent_type="execute")
+        assert da.target_agent_type == "execute"
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -111,9 +111,9 @@ class TestDispatchAgentsFromArgs:
         da = DispatchAgents.from_args({
             "description": "task",
             "prompt": "do it",
-            "type": "plan_execute",
+            "type": "execute",
         })
-        assert da.target_agent_type == "plan_execute"
+        assert da.target_agent_type == "execute"
 
     def test_from_args_with_map_type(self):
         """from_args 解析 map 类型"""
@@ -124,22 +124,22 @@ class TestDispatchAgentsFromArgs:
         })
         assert da.target_agent_type == "map"
 
-    def test_from_args_with_plan_execute_type(self):
-        """from_args 解析 plan_execute 类型"""
+    def test_from_args_with_execute_type(self):
+        """from_args 解析 execute 类型"""
         da = DispatchAgents.from_args({
             "description": "执行计划步骤",
             "prompt": "按照计划执行文件修改",
-            "type": "plan_execute",
+            "type": "execute",
         })
-        assert da.target_agent_type == "plan_execute"
+        assert da.target_agent_type == "execute"
 
     def test_from_args_default_type(self):
-        """from_args 缺省 type 时默认 plan_execute"""
+        """from_args 缺省 type 时默认 execute"""
         da = DispatchAgents.from_args({
             "description": "task",
             "prompt": "do it",
         })
-        assert da.target_agent_type == "plan_execute"
+        assert da.target_agent_type == "execute"
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -171,7 +171,7 @@ class TestDispatchAgentsSchema:
         assert props["description"]["type"] == "string"
         assert props["prompt"]["type"] == "string"
         assert props["type"]["type"] == "string"
-        assert props["type"]["enum"] == ["map", "review", "plan", "read_memory", "write_memory", "plan_execute"]
+        assert props["type"]["enum"] == ["map", "review", "plan", "read_memory", "write_memory", "execute"]
 
     def test_schema_parameters_required(self):
         required = DispatchAgents.to_tool_schema()["function"]["parameters"]["required"]
@@ -274,7 +274,7 @@ class TestDispatchAgentsExecute:
 
         # 验证调用链
         mock_executor.add_agent.assert_called_once_with(
-            "分析 user.py", "读取 user.py", agent_type="plan_execute",
+            "分析 user.py", "读取 user.py", agent_type="execute",
             model=mock_agent.model, tool_label="",
         )
 
@@ -328,27 +328,27 @@ class TestDispatchAgentsExecute:
             model=mock_agent.model, tool_label="",
         )
 
-    async def test_shared_executor_plan_execute_type(self):
-        """plan_execute 类型 agent_type 正确传递给 executor"""
+    async def test_shared_executor_execute_type(self):
+        """execute 类型 agent_type 正确传递给 executor"""
         shared = MagicMock()
         shared.is_batch_mode = True
         shared.add_agent = MagicMock(return_value=0)
         shared.register_and_wait = AsyncMock()
         shared.get_result = MagicMock(return_value={
             "label": "agent-1", "description": "执行计划", "result": "成功",
-            "error": "", "agent_type": "plan_execute",
+            "error": "", "agent_type": "execute",
         })
 
         agent = Mock()
         agent._shared_executor = shared
         agent.model = "gpt-4"
 
-        da = DispatchAgents(description="执行计划", prompt="执行步骤", target_agent_type="plan_execute")
+        da = DispatchAgents(description="执行计划", prompt="执行步骤", target_agent_type="execute")
         da.agent = agent
 
         await da.execute()
         shared.add_agent.assert_called_once_with(
-            "执行计划", "执行步骤", agent_type="plan_execute", model="gpt-4", tool_label="",
+            "执行计划", "执行步骤", agent_type="execute", model="gpt-4", tool_label="",
         )
 
     async def test_shared_executor_with_tool_label(self):
@@ -372,7 +372,7 @@ class TestDispatchAgentsExecute:
         await da.execute()
 
         mock_executor.add_agent.assert_called_once_with(
-            "task", "do it", agent_type="plan_execute",
+            "task", "do it", agent_type="execute",
             model=mock_agent.model, tool_label="web_search",
         )
 

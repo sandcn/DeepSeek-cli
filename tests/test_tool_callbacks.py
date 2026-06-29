@@ -74,7 +74,7 @@ def tool_calls_mixed():
         {"id": "tc_3", "name": "bash", "arguments": {"command": "echo hi"}},
         {"id": "tc_4", "name": "find", "arguments": {"pattern": "*.py"}},
         {"id": "tc_5", "name": "dispatch_agent",
-         "arguments": {"description": "test", "prompt": "do", "type": "plan_execute"}},
+         "arguments": {"description": "test", "prompt": "do", "type": "execute"}},
         {"id": "tc_6", "name": "user_select",
          "arguments": {"title": "pick", "options": ["a", "b"]}},
         {"id": "tc_7", "name": "ls", "arguments": {"path": "src/"}},
@@ -274,7 +274,7 @@ class TestDispatchAgentBarrier:
         calls = [
             {"id": "tc_0", "name": "read_file", "arguments": {"path": "a.txt"}},
             {"id": "tc_1", "name": "dispatch_agent",
-             "arguments": {"description": "a", "prompt": "p", "type": "plan_execute"}},
+             "arguments": {"description": "a", "prompt": "p", "type": "execute"}},
         ]
 
         async def execute_dag_spy(dag, **kwargs):
@@ -313,7 +313,7 @@ class TestDispatchAgentBarrier:
         """异常时 finally 清理 _shared_executor 并释放 _all_done"""
         calls = [
             {"id": "tc_0", "name": "dispatch_agent",
-             "arguments": {"description": "a", "prompt": "p", "type": "plan_execute"}},
+             "arguments": {"description": "a", "prompt": "p", "type": "execute"}},
             {"id": "tc_1", "name": "read_file", "arguments": {"path": "a.txt"}},
         ]
 
@@ -338,7 +338,7 @@ class TestDispatchAgentBarrier:
 
         calls = [
             {"id": "tc_0", "name": "dispatch_agent",
-             "arguments": {"description": "a", "prompt": "p", "type": "plan_execute"}},
+             "arguments": {"description": "a", "prompt": "p", "type": "execute"}},
             {"id": "tc_1", "name": "read_file", "arguments": {"path": "a.txt"}},
         ]
 

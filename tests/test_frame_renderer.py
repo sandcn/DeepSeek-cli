@@ -10,7 +10,7 @@ class TestClaudeTreeStyle:
     def _make_renderer(self, width=120, max_history=3):
         return FrameRenderer(terminal_width=width, frame=0, max_history=max_history)
 
-    def _make_slot(self, label, description, status="running", agent_type="plan_execute",
+    def _make_slot(self, label, description, status="running", agent_type="execute",
                    output_tokens=0, live_output_tokens=0, last_speed=0.0,
                    model_phase="", tool_history=None):
         slot = AgentSlot(label=label, description=description,

@@ -226,17 +226,17 @@ def build_write_memory_agent_system_prompt(
     return _build_prompt("prompts_export_write_memory", _FALLBACK_SUB_PROMPT, include_version_control, cwd)
 
 
-def build_plan_execute_agent_system_prompt(
+def build_execute_agent_system_prompt(
     include_version_control: bool = True,
     cwd: str | None = None,
 ) -> list[str]:
-    """构建 plan_execute 类型子代理系统提示词。
+    """构建 execute 类型子代理系统提示词。
 
-    从 prompts_export_plan_execute.md 加载静态规则，追加运行时动态信息。
-    plan_execute 类型拥有完整读写+bash 工具集，独立上下文，
+    从 prompts_export_execute.md 加载静态规则，追加运行时动态信息。
+    execute 类型拥有完整读写+bash 工具集，独立上下文，
     用于执行计划文件中的具体步骤，完成后返回修改的文件列表。
     """
-    return _build_prompt("prompts_export_plan_execute", _FALLBACK_SUB_PROMPT, include_version_control, cwd)
+    return _build_prompt("prompts_export_execute", _FALLBACK_SUB_PROMPT, include_version_control, cwd)
 
 
 # =================== 主代理提示词 ===================
@@ -262,6 +262,6 @@ __all__ = [
     "build_plan_agent_system_prompt",
     "build_read_memory_agent_system_prompt",
     "build_write_memory_agent_system_prompt",
-    "build_plan_execute_agent_system_prompt",
+    "build_execute_agent_system_prompt",
     "reset_prompts_cache",
 ]

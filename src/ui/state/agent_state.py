@@ -25,7 +25,7 @@ class AgentSlot:
     """单个 Agent 的状态槽位。"""
     label: str
     description: str
-    agent_type: str = "plan_execute"
+    agent_type: str = "execute"
     status: Literal["running", "done", "fail"] = "running"
     start_time: float = field(default_factory=time.time)
     end_time: float = 0.0
@@ -74,7 +74,7 @@ class AgentStateStore:
     # ── 注册 ──
 
     def add_agent(self, label: str, description: str, status: str = "running",
-                  agent_type: str = "plan_execute") -> None:
+                  agent_type: str = "execute") -> None:
         with self._lock:
             slot = AgentSlot(label=label, description=description,
                              status=status, agent_type=agent_type)

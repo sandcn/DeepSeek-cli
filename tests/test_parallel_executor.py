@@ -213,7 +213,7 @@ class TestAddAgent:
         spec = executor._pending_specs[0]
         assert spec["description"] == "测试"
         assert spec["prompt"] == "prompt内容"
-        assert spec["agent_type"] == "plan_execute"
+        assert spec["agent_type"] == "execute"
         assert spec["model"] == "gpt-4"
         assert spec["tool_label"] == "my_tool"
 
@@ -227,25 +227,25 @@ class TestAddAgent:
         executor.add_agent("测试", "prompt")
         assert executor._pending_specs[0]["tool_label"] is None
 
-    def test_default_agent_type_plan_execute(self, executor):
-        """不传 agent_type 时默认 plan_execute"""
+    def test_default_agent_type_execute(self, executor):
+        """不传 agent_type 时默认 execute"""
         executor.add_agent("测试", "prompt")
-        assert executor._pending_specs[0]["agent_type"] == "plan_execute"
+        assert executor._pending_specs[0]["agent_type"] == "execute"
 
     def test_custom_agent_type(self, executor):
         """可传入自定义 agent_type"""
-        executor.add_agent("测试", "prompt", agent_type="plan_execute")
-        assert executor._pending_specs[0]["agent_type"] == "plan_execute"
+        executor.add_agent("测试", "prompt", agent_type="execute")
+        assert executor._pending_specs[0]["agent_type"] == "execute"
 
     def test_map_agent_type(self, executor):
         """可传入 map agent_type"""
         executor.add_agent("分析项目", "生成地图", agent_type="map")
         assert executor._pending_specs[0]["agent_type"] == "map"
 
-    def test_plan_execute_agent_type(self, executor):
-        """可传入 plan_execute agent_type"""
-        executor.add_agent("执行计划", "执行步骤", agent_type="plan_execute")
-        assert executor._pending_specs[0]["agent_type"] == "plan_execute"
+    def test_execute_agent_type(self, executor):
+        """可传入 execute agent_type"""
+        executor.add_agent("执行计划", "执行步骤", agent_type="execute")
+        assert executor._pending_specs[0]["agent_type"] == "execute"
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -448,17 +448,17 @@ class TestRunAgents:
         assert executor._spawner._agent_factory.call_count == 2
         executor._spawner._agent_factory.assert_any_call(
             label="agent-1", description="任务1", prompt="prompt1",
-            parent_agent=executor.parent, model="gpt-4", agent_type="plan_execute",
+            parent_agent=executor.parent, model="gpt-4", agent_type="execute",
         )
         executor._spawner._agent_factory.assert_any_call(
             label="agent-2", description="任务2", prompt="prompt2",
-            parent_agent=executor.parent, model=None, agent_type="plan_execute",
+            parent_agent=executor.parent, model=None, agent_type="execute",
         )
 
         # 验证 display 调用
         display.add_agent.assert_has_calls([
-            call("agent-1", "任务1", status="running", agent_type="plan_execute"),
-            call("agent-2", "任务2", status="running", agent_type="plan_execute"),
+            call("agent-1", "任务1", status="running", agent_type="execute"),
+            call("agent-2", "任务2", status="running", agent_type="execute"),
         ])
         display.start.assert_called_once()
 
@@ -486,7 +486,7 @@ class TestRunAgents:
         assert len(results) == 1
         assert results[0]["result"] == "结果"
         executor._spawner._agent_factory.assert_called_once()
-        display.add_agent.assert_called_once_with("agent-1", "单任务", status="running", agent_type="plan_execute")
+        display.add_agent.assert_called_once_with("agent-1", "单任务", status="running", agent_type="execute")
 
     @pytest.mark.asyncio
     async def test_empty_specs(self, executor, mock_display):

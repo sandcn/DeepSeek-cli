@@ -35,7 +35,7 @@ class PromptBuilderPort(ABC):
         ...
 
     @abstractmethod
-    def build_plan_execute_agent_system_prompt(self, cwd: Optional[str] = None) -> list[str]:
+    def build_execute_agent_system_prompt(self, cwd: Optional[str] = None) -> list[str]:
         ...
 
 
@@ -68,8 +68,8 @@ class DefaultPromptBuilderAdapter(PromptBuilderPort):
         from ...prompt_builder import build_write_memory_agent_system_prompt
         return build_write_memory_agent_system_prompt(cwd=cwd)
 
-    def build_plan_execute_agent_system_prompt(self, cwd: Optional[str] = None) -> list[str]:
-        from ...prompt_builder import build_plan_execute_agent_system_prompt
-        return build_plan_execute_agent_system_prompt(cwd=cwd)
+    def build_execute_agent_system_prompt(self, cwd: Optional[str] = None) -> list[str]:
+        from ...prompt_builder import build_execute_agent_system_prompt
+        return build_execute_agent_system_prompt(cwd=cwd)
 
 
