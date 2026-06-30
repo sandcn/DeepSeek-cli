@@ -139,6 +139,12 @@ class TestBuildSystemPrompt:
         with pytest.raises(TypeError):
             build_system_prompt(extra_modules=[])
 
+    def test_has_bug_confirm_rule(self):
+        """验证系统提示词包含「Bug 确认 — 日志或测试重现（强制）」规则"""
+        result = build_system_prompt()
+        full = "\n".join(result)
+        assert "Bug 确认 — 日志或测试重现（强制）" in full
+
 
 # ═══════════════════════════════════════════════════════════
 # SubAgent 系统提示词构建测试
@@ -189,6 +195,12 @@ class TestBuildSubagentSystemPrompt:
         full = "\n".join(result)
         last_part = result[-1]
         assert "版本控制" not in last_part, "include_version_control=False 时不应包含版本控制信息"
+
+    def test_has_bug_confirm_rule(self):
+        """验证子代理系统提示词包含「Bug 确认 — 日志或测试重现（强制）」规则"""
+        result = build_subagent_system_prompt()
+        full = "\n".join(result)
+        assert "Bug 确认 — 日志或测试重现（强制）" in full
 
 
 # ═══════════════════════════════════════════════════════════
