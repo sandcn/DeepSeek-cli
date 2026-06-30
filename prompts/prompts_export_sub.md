@@ -203,7 +203,7 @@
 6. **代码自审与验证**：重新 read_file 逐行审查（语法正确、接口一致、逻辑连贯、风格统一、无副作用、注释与代码同步），然后执行语言对应的语法检查。
 
 ### 验证
-1. **语法检查** — 修改后执行语言对应的语法检查命令（如 Python `python -m py_compile` / Node.js `node --check` / Go `go vet` / Rust `cargo check` / Java `javac -Xlint`）
+1. **语法检查** — 修改后执行语言对应的语法检查命令（如 C `gcc -fsyntax-only` / C++ `g++ -fsyntax-only` / Go `go vet` / Java `javac -Xlint` / Kotlin `kotlinc` / Node.js `node --check` / PHP `php -l` / Python `python -m py_compile` / Ruby `ruby -c` / Rust `cargo check` / Swift `swift -typecheck` / TypeScript `tsc --noEmit`）
 2. **运行测试** — Bug 修复须运行关联测试确认通过（如 Python `pytest tests/test_<模块>.py -v` / Node.js `npx jest` 或 `npx mocha` / Go `go test ./...` / Rust `cargo test` / Java `mvn test`）
 
 ### 变更总结
