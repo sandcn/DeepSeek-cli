@@ -149,6 +149,31 @@ class TuiEngine:
 
     # ── 三阶段流水线 ──────────────────────────────
 
+    # ★ 内容区域命令集合 — 需要光标定位到上屏的命令类型
+    _CONTENT_COMMANDS = frozenset({
+        RenderCommand.REASONING,
+        RenderCommand.CONTENT,
+        RenderCommand.PHASE_DONE,
+        RenderCommand.TOOL_OUTPUT,
+        RenderCommand.TOOL_SUMMARY,
+        RenderCommand.USER_MSG,
+        RenderCommand.ERROR,
+        RenderCommand.WRITE_LINE,
+        RenderCommand.NOTIFICATION,
+        RenderCommand.DISPLAY_MSGS,
+    })
+
+    @staticmethod
+    def _has_content_command(commands: list[tuple]) -> bool:
+        """检查命令批次中是否包含需要上屏渲染的内容命令。
+
+        用于跳过非内容命令（如工具计数增减）时的光标定位开销。
+        """
+        for cmd in commands:
+            if cmd and cmd[0] in TuiEngine._CONTENT_COMMANDS:
+                return True
+        return False
+
     def _phase_pre_update_panels(self) -> None:
         """阶段 1：预更新面板回调。
 
@@ -167,6 +192,10 @@ class TuiEngine:
         同步底部栏行数后，遍历命令列表逐条分发给 TuiRenderer。
         单条命令失败时记录调试日志并入队错误提示，不中断循环。
 
+        性能优化：仅当命令批次包含内容命令时（REASONING/CONTENT等）
+        才调用 ensure_cursor_upper() 定位光标。纯工具计数命令
+        （TOOL_COUNT_INC/DEC/FAIL_INC）不需要移动光标位置。
+
         Args:
             commands: 一批待渲染的命令元组列表，每项格式为 (command_id, *args)
         """
@@ -174,10 +203,12 @@ class TuiEngine:
             self._bb.sync_bottom_lines()
         except Exception:
             _logger.debug("sync_bottom_lines 异常", exc_info=True)
-        try:
-            self.ensure_cursor_upper()
-        except Exception:
-            _logger.debug("phase_render ensure_cursor_upper 异常", exc_info=True)
+        # ★ 性能优化：仅当有内容命令时才定位光标到上屏
+        if self._has_content_command(commands):
+            try:
+                self.ensure_cursor_upper()
+            except Exception:
+                _logger.debug("phase_render ensure_cursor_upper 异常", exc_info=True)
         for cmd in commands:
             try:
                 self._renderer.render(cmd)
@@ -280,14 +311,19 @@ class TuiEngine:
         阶段 2: 获取输出锁，批量取出队列中所有命令
         阶段 3: _phase_render() 执行渲染命令，_phase_redraw_bottom() 重绘底部栏
 
+        性能优化：
+        - 仅在面板回调注册时执行阶段 1（默认 None，跳过空调用）
+        - 仅在获取到输出锁后才执行阶段 1（避免无锁空转）
+
         Returns:
             是否处理了至少一条渲染命令
         """
         commands: list[tuple] = []
-        self._phase_pre_update_panels()
         with _try_acquire_output_lock(name="drain_queue", timeout=_DRAIN_LOCK_TIMEOUT) as locked:
             if not locked:
                 return False
+            # ★ 仅在获取到锁后才执行面板刷新（避免无锁空转）
+            self._phase_pre_update_panels()
             while True:
                 try:
                     commands.append(self._cmd_queue.get_nowait())

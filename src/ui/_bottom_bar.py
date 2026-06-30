@@ -17,6 +17,17 @@
   - 非关键路径 ANSI 序列（光标定位、清行）使用 Blessed Terminal
   - 性能关键路径（SCOSC/SCRC、DECSTBM、SU/SD）保留原始 ANSI
   - 颜色常量保持原始 ANSI 字符串（与 Blessed 序列可混合使用）
+
+性能优化 — 终端尺寸缓存（★ 2026-07-01 新增）：
+  核心思路：_term_height() / _term_width() 每次调用都触发 Blessed Terminal
+  property 读取，底层走 ioctl(TIOCGWINSZ) 系统调用。流式输出活跃态
+  可达 200Hz × 5次/cycle = 1000次/秒 ioctl。
+  
+  优化方式：实例级缓存 + TTL（0.1s）消峰，通过 force_refresh_dimensions()
+  在 SIGWINCH/resize 检测路径中立即刷新缓存。
+  
+  适用环境：Android Termux（无 SIGWINCH）下由 TTL 自然过期兜底，
+  在 resize 检测路径中通过 force_refresh_dimensions() 立即刷新。
 """
 
 from __future__ import annotations
@@ -52,6 +63,7 @@ from ._bottom_cursor import (
 )
 from ._cursor_tracker import CursorTracker
 from ._lock import _try_acquire_output_lock
+from .terminal_adapter import register_sigwinch_callback, unregister_sigwinch_callback
 from ._bottom_bar_blessed import (
     _blessed_move_clear,
     _blessed_cursor_goto,
@@ -127,6 +139,12 @@ class _BottomBar(_StatusMixin):
         self._tracker: _StdoutLineTracker | None = None
         # ── 光标坐标追踪器（全局共享实例） ──
         self._cursor_tracker = cursor_tracker or CursorTracker()
+        # ── 终端尺寸缓存（性能优化，避免高频 ioctl） ──
+        self._cached_height: int = 0
+        self._cached_width: int = 0
+        self._last_dimension_refresh: float = 0.0
+        self._DIMENSION_TTL: float = 0.1  # 与 _RENDER_INTERVAL 对齐
+        self._sigwinch_cb: Any = None  # SIGWINCH 回调引用，teardown 时注销
 
     # ── 活跃状态 property ──────────────────────────────────
 
@@ -196,23 +214,49 @@ class _BottomBar(_StatusMixin):
             base = max(_MIN_INPUT_ROWS, len(wrapped))
         return base + self._completion.height
 
-    # ── 终端尺寸查询（通过 Blessed Terminal） ──────────
+    # ── 终端尺寸查询（缓存版本，避免高频 ioctl） ──────────
+
+    def _refresh_dimensions(self) -> None:
+        """刷新终端尺寸缓存（带 TTL 消峰）。
+
+        每 _DIMENSION_TTL (0.1s) 最多执行一次 ioctl，
+        将高频调用（200Hz）消峰到 10Hz。
+        """
+        now = time.monotonic()
+        if now - self._last_dimension_refresh < self._DIMENSION_TTL:
+            return
+        self._last_dimension_refresh = now
+        try:
+            term = get_terminal()
+            self._cached_height = term.height
+            self._cached_width = term.width
+        except Exception:
+            import shutil
+            try:
+                sz = shutil.get_terminal_size()
+                self._cached_height = sz.lines
+                self._cached_width = sz.columns
+            except Exception:
+                pass
+
+    def force_refresh_dimensions(self) -> None:
+        """强制刷新终端尺寸缓存，绕过 TTL。
+
+        供 resize 检测路径（SIGWINCH / 轮询）调用。
+        调用后下一次 _term_height/_term_width 立即使用新值。
+        """
+        self._last_dimension_refresh = 0.0
+        self._refresh_dimensions()
 
     def _term_height(self) -> int:
-        """获取终端高度，通过 Blessed Terminal 实时查询。"""
-        try:
-            return get_terminal().height
-        except Exception:
-            import shutil
-            return shutil.get_terminal_size().lines
+        """获取终端高度（缓存版本，避免高频 ioctl）。"""
+        self._refresh_dimensions()
+        return self._cached_height or 24
 
     def _term_width(self) -> int:
-        """获取终端宽度，通过 Blessed Terminal 实时查询。"""
-        try:
-            return get_terminal().width
-        except Exception:
-            import shutil
-            return shutil.get_terminal_size().columns
+        """获取终端宽度（缓存版本，避免高频 ioctl）。"""
+        self._refresh_dimensions()
+        return self._cached_width or 80
 
     # ── 光标定位相关 ──────────────────────────────────
 
@@ -349,16 +393,19 @@ class _BottomBar(_StatusMixin):
             self._tracker.set_scroll_end(scroll_end)
         out = sys.__stdout__
 
+        # ★ 性能优化：批量收集 ANSI 写入
+        _buf: list[str] = []
+
         # ★ 底部栏扩大时，直接设置新 DECSTBM 滚动区域。
         #    不执行 SU（Scroll Up）上滚旧内容区——SU 在 DECSTBM 区域内
         #    无 scrollback 缓冲，滚出顶部的行永久丢失。底部栏扩大导致
         #    滚动区域缩小时，新划入底部栏的区域（原内容区底部行）会被
         #    force_redraw() 中的 _draw_input_lines_locked() 覆盖。
-        out.write(f"{_blessed_set_scroll_region(1, scroll_end)}")
+        _buf.append(f"{_blessed_set_scroll_region(1, scroll_end)}")
         # ★ resize 后清除新 scroll_end 行上由终端模拟器位移残留的旧内容，
         #    确保后续内容渲染从干净行开始，消除旧内容与底部栏之间的 1 行重叠
         if resized and scroll_end >= 1:
-            out.write(_blessed_move_clear(scroll_end))
+            _buf.append(_blessed_move_clear(scroll_end))
             # 终端高度缩小时，清除 scroll_end+1 到 min(old_scroll, height) 整个区间，
             # 而非仅清除单一边界行。在流式输出路径中，CONTENT 渲染写入内容到滚动区
             # 会自然「冲刷」掉这些残留行；但在底部栏刷新（输入）路径中，
@@ -366,8 +413,9 @@ class _BottomBar(_StatusMixin):
             # 否则旧内容在 force_redraw() 执行前可见，导致视觉上的 1 行重叠。
             if shrunk and old_scroll > scroll_end:
                 for r in range(scroll_end + 1, min(old_scroll, height) + 1):
-                    out.write(_blessed_move_clear(r))
-        out.write(_blessed_cursor_goto(scroll_end, 1) + _blessed_save_cursor())
+                    _buf.append(_blessed_move_clear(r))
+        _buf.append(_blessed_cursor_goto(scroll_end, 1) + _blessed_save_cursor())
+        out.write(''.join(_buf))
         out.flush()
 
     def set_subagent_frame(self, lines: list[str]) -> None:
@@ -454,6 +502,14 @@ class _BottomBar(_StatusMixin):
             return
         self._active = True
 
+        # ── 注册 SIGWINCH 回调（终端 resize 时刷新尺寸缓存） ──
+        def _on_sigwinch(cols: int, rows: int) -> None:
+            self._last_dimension_refresh = 0.0
+            self._cached_height = rows
+            self._cached_width = cols
+        self._sigwinch_cb = _on_sigwinch
+        register_sigwinch_callback(self._sigwinch_cb)
+
         # ── 安装 stdout 行追踪器 ──
         if self._tracker is None:
             self._tracker = _StdoutLineTracker(sys.__stdout__)
@@ -471,12 +527,15 @@ class _BottomBar(_StatusMixin):
                 #    首帧 force_redraw() 中 layout_unchanged=False 触发全量重绘
                 self._tracker.set_scroll_end(scroll_end)
                 out = sys.__stdout__
-                out.write(_blessed_save_cursor())
-                out.write(f"{_blessed_set_scroll_region(1, scroll_end)}")
-                # ★ 不调用 _draw_all_locked()——绘制推迟到 render 线程首帧
-                out.write(_blessed_restore_cursor())
-                out.write(_blessed_cursor_goto(scroll_end, 1) + _blessed_save_cursor())
-                out.write(_blessed_cursor_goto(height, 1))
+                _buf = [
+                    f"{_blessed_save_cursor()}",
+                    f"{_blessed_set_scroll_region(1, scroll_end)}",
+                    # ★ 不调用 _draw_all_locked()——绘制推迟到 render 线程首帧
+                    f"{_blessed_restore_cursor()}",
+                    f"{_blessed_cursor_goto(scroll_end, 1)}{_blessed_save_cursor()}",
+                    f"{_blessed_cursor_goto(height, 1)}",
+                ]
+                out.write(''.join(_buf))
                 out.flush()
             else:
                 sys.__stdout__.write("\n" + "\u2501" * 40 + "\n")
@@ -492,6 +551,14 @@ class _BottomBar(_StatusMixin):
             return
         self._active = False
 
+        # ── 注销 SIGWINCH 回调 ──
+        if self._sigwinch_cb is not None:
+            try:
+                unregister_sigwinch_callback(self._sigwinch_cb)
+            except Exception:
+                pass
+            self._sigwinch_cb = None
+
         # ── 卸载 stdout 行追踪器 ──
         if self._tracker is not None and sys.__stdout__ is self._tracker:
             sys.__stdout__ = self._tracker._real_stdout
@@ -500,14 +567,15 @@ class _BottomBar(_StatusMixin):
         with _try_acquire_output_lock(name="bottom_bar.teardown", timeout=1.0) as locked:
             if locked:
                 out = sys.__stdout__
-                out.write(_blessed_reset_scroll_region())
-                out.write(_blessed_save_cursor())
                 height = self._term_height()
                 start_row = max(1, height - self._last_bottom_lines + 1)
+                # ★ 批量收集清行 ANSI 序列
+                _buf = [f"{_blessed_reset_scroll_region()}", f"{_blessed_save_cursor()}"]
                 for r in range(start_row, height + 1):
-                    out.write(_blessed_move_clear(r))
-                out.write(_blessed_restore_cursor())
-                out.write(_blessed_save_cursor())
+                    _buf.append(_blessed_move_clear(r))
+                _buf.append(_blessed_restore_cursor())
+                _buf.append(_blessed_save_cursor())
+                out.write(''.join(_buf))
                 out.flush()
         self._last_bottom_lines = _BOTTOM_MIN_LINES
         self._last_height = 0
@@ -584,11 +652,15 @@ class _BottomBar(_StatusMixin):
 
 
 
+            # ★ 性能优化：批量收集写入缓冲区，减少独立 write() 调用
+            _buf: list[str] = []
+
             if scroll_end < 1:
                 for r in range(1, height + 1):
-                    out.write(_blessed_move_clear(r))
-                out.write(_blessed_restore_cursor())
-                out.write(_blessed_cursor_goto(height, 1) + _blessed_save_cursor())
+                    _buf.append(_blessed_move_clear(r))
+                _buf.append(_blessed_restore_cursor())
+                _buf.append(_blessed_cursor_goto(height, 1) + _blessed_save_cursor())
+                out.write(''.join(_buf))
                 out.flush()
                 self._cursor_tracker.set(height, 1)
                 self._last_cursor_pos = self._input_cursor_pos
@@ -598,7 +670,7 @@ class _BottomBar(_StatusMixin):
             clear_start = max(old_scroll_end, scroll_end) + 1
             clear_end = height
             for r in range(clear_start, clear_end + 1):
-                out.write(_blessed_move_clear(r))
+                _buf.append(_blessed_move_clear(r))
             self._cursor_tracker.set(clear_end, 1)
 
             # ★ 终端高度缩小时，额外清理旧内容区中现在属于新底部栏区域的行
@@ -606,7 +678,7 @@ class _BottomBar(_StatusMixin):
             #    避免擦除已绘制内容。
             if self._last_height > 0 and height < self._last_height:
                 for r in range(max(scroll_end + 1, 1), min(old_scroll_end, height) + 1):
-                    out.write(_blessed_move_clear(r))
+                    _buf.append(_blessed_move_clear(r))
                 self._cursor_tracker.set(min(old_scroll_end, height), 1)
 
             r1 = height - total + 1
@@ -616,21 +688,28 @@ class _BottomBar(_StatusMixin):
             tw = self._term_width()
             sep_len = min(tw - 2, 40)
             sep = f"{_COLOR_SEP}\u2501{_COLOR_RESET}" * sep_len
-            out.write(_blessed_move_clear(r1) + "  " + sep)
+            _buf.append(_blessed_move_clear(r1) + "  " + sep)
             # ★ force_redraw 中的 tracker.set 是近似值，仅记录当前绘制行号。
             #    最终光标位置在方法末尾 set(scroll_end, 1) 处修正。
             self._cursor_tracker.set(r1, 3)  # 分隔线从第3列开始
             # ── subagent 面板行（在分隔线与状态行之间） ──
             for i, line in enumerate(self._subagent_lines):
                 sr = subagent_start + i
-                out.write(_blessed_move_clear(sr) + line)
-            out.write(_blessed_move_clear(r2) + self._last_status)
+                _buf.append(_blessed_move_clear(sr) + line)
+            _buf.append(_blessed_move_clear(r2) + self._last_status)
             self._cursor_tracker.set(r2, 1)
+
+            # 写入收集好的全部 ANSI 序列（分隔线+subagent+状态行）
+            out.write(''.join(_buf))
 
             self._draw_input_lines_locked(out, text, r2 + 1, tw)
             input_rows = self._cached_input_rows
+            # ★ 清多余行：也批量收集
+            _buf2: list[str] = []
             for r in range(r2 + 1 + input_rows, height + 1):
-                out.write(_blessed_move_clear(r))
+                _buf2.append(_blessed_move_clear(r))
+            if _buf2:
+                out.write(''.join(_buf2))
             self._cursor_tracker.set(height, 1)
 
             self._last_scroll_end = scroll_end
@@ -640,8 +719,11 @@ class _BottomBar(_StatusMixin):
             # ★ 底部栏缩小时（delta < 0），清除释放的上屏内容区域（原先
             #    被底部栏覆盖的行），后续内容渲染会自然填充该区域。
             if delta < 0 and old_scroll_end > 0:
+                # 批量收集
+                _buf3: list[str] = []
                 for r in range(old_scroll_end + 1, scroll_end + 1):
-                    out.write(_blessed_move_clear(r))
+                    _buf3.append(_blessed_move_clear(r))
+                out.write(''.join(_buf3))
                 self._cursor_tracker.set(scroll_end, 1)
             out.write(_blessed_restore_cursor())
             out.write(_blessed_cursor_goto(scroll_end, 1) + _blessed_save_cursor())

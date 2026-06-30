@@ -56,6 +56,9 @@ def _draw_input_lines_locked(
 ) -> None:
     """绘制输入行（需持有 output_lock），超长文本自动拆行。
 
+    性能优化：将所有 ANSI 序列收集到缓冲区后一次写入，
+    减少高频循环中的独立 write() 系统调用次数。
+
     Args:
         bar: _BottomBar 实例。
         out: stdout 文件对象。
@@ -79,32 +82,36 @@ def _draw_input_lines_locked(
 
     # ── 输入文本行（在弹窗下方） ──
     text_start = r_start + popup_height
+    # ★ 性能优化：批量收集 ANSI 序列，一次 write
+    buf: list[str] = []
     for i, segment in enumerate(wrapped):
         r = text_start + i
         if i == 0:
             if text:
-                out.write(_blessed_move_clear(r)
-                          + f"{_COLOR_DEEP_CYAN}>{_COLOR_RESET}"
-                          f" {segment}")
+                buf.append(_blessed_move_clear(r)
+                           + f"{_COLOR_DEEP_CYAN}>{_COLOR_RESET}"
+                           f" {segment}")
             else:
                 if bar._status_active:
                     ph = _PLACEHOLDER_STREAMING
-                    out.write(_blessed_move_clear(r)
-                              + f"{_COLOR_DEEP_CYAN}>{_COLOR_RESET}"
-                              f" {_COLOR_DIM}{ph}{_COLOR_RESET}")
+                    buf.append(_blessed_move_clear(r)
+                               + f"{_COLOR_DEEP_CYAN}>{_COLOR_RESET}"
+                               f" {_COLOR_DIM}{ph}{_COLOR_RESET}")
                 else:
                     ph = _PLACEHOLDER_COMPACT if bar._completion.is_visible else _PLACEHOLDER_TEXT
-                    out.write(_blessed_move_clear(r)
-                              + f"{_COLOR_DEEP_CYAN}>{_COLOR_RESET}"
-                              f" {_COLOR_DIM}{ph}{_COLOR_RESET}")
+                    buf.append(_blessed_move_clear(r)
+                               + f"{_COLOR_DEEP_CYAN}>{_COLOR_RESET}"
+                               f" {_COLOR_DIM}{ph}{_COLOR_RESET}")
         else:
-            out.write(_blessed_move_clear(r)
-                      + f"{_COLOR_DIM}\u00b7{_COLOR_RESET} {segment}")
+            buf.append(_blessed_move_clear(r)
+                       + f"{_COLOR_DIM}\u00b7{_COLOR_RESET} {segment}")
         bar._cursor_tracker.set(r, 3)  # 提示符从第3列开始
     # ★ 填充剩余空白行，确保输入区至少 3 行
     for r in range(text_start + len(wrapped), text_start + 3):
-        out.write(_blessed_move_clear(r) + "  ")
+        buf.append(_blessed_move_clear(r) + "  ")
         bar._cursor_tracker.set(r, 1)
+    if buf:
+        out.write(''.join(buf))
 
 
 def _draw_all_locked(bar: _BottomBar, out, height: int) -> None:
@@ -118,6 +125,8 @@ def _draw_all_locked(bar: _BottomBar, out, height: int) -> None:
                  （空输入时显示灰色占位提示）
 
     终端高度不足以容纳底部栏时跳过绘制。
+
+    性能优化：批量收集 ANSI 序列后一次写入，减少独立 write() 次数。
     """
     total = bar._bottom_lines
     if height - total < 1:
@@ -127,23 +136,28 @@ def _draw_all_locked(bar: _BottomBar, out, height: int) -> None:
     subagent_start = r1 + 1
     r2 = subagent_start + len(bar._subagent_lines)
 
+    # ★ 批量收集清行序列
+    buf: list[str] = []
     for r in range(r1, height + 1):
-        out.write(_blessed_move_clear(r))
+        buf.append(_blessed_move_clear(r))
 
     tw = bar._term_width()
     sep_len = min(tw - 2, 40)
     sep = f"{_COLOR_SEP}\u2501{_COLOR_RESET}" * sep_len
-    out.write(_blessed_cursor_goto(r1, 1) + "  " + sep)
+    buf.append(_blessed_cursor_goto(r1, 1) + "  " + sep)
 
     # ── subagent 面板行（在分隔线与状态行之间） ──
     for i, line in enumerate(bar._subagent_lines):
         sr = subagent_start + i
-        out.write(_blessed_move_clear(sr) + line)
+        buf.append(_blessed_move_clear(sr) + line)
 
     status = bar._format_status()
     bar._last_status = status
     if status:
-        out.write(_blessed_move_clear(r2) + status)
+        buf.append(_blessed_move_clear(r2) + status)
+
+    if buf:
+        out.write(''.join(buf))
 
     text = bar._last_text or ""
     _draw_input_lines_locked(bar, out, text, r2 + 1, tw)
