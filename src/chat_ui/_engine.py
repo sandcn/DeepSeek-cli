@@ -150,12 +150,17 @@ class TuiEngine:
     # ── 三阶段流水线 ──────────────────────────────
 
     # ★ 内容区域命令集合 — 需要光标定位到上屏的命令类型
+    #   PARSE_INFO 使用 \r\033[K 直接写终端（_do_parse_info），
+    #   若不在本集合中，批处理唯此命令时 cursor 留在输入区域，
+    #   \r\033[K 会视觉覆盖输入框内容。必须加入以确保光标先
+    #   ensure_cursor_upper() 定位到上屏内容区再写入。
     _CONTENT_COMMANDS = frozenset({
         RenderCommand.REASONING,
         RenderCommand.CONTENT,
         RenderCommand.PHASE_DONE,
         RenderCommand.TOOL_OUTPUT,
         RenderCommand.TOOL_SUMMARY,
+        RenderCommand.PARSE_INFO,
         RenderCommand.USER_MSG,
         RenderCommand.ERROR,
         RenderCommand.WRITE_LINE,
