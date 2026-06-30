@@ -643,6 +643,80 @@ class TestRenderEngineDrainQueue:
         engine._renderer.render.assert_not_called()
         engine._bb.force_redraw.assert_not_called()
 
+    def test_drain_lock_timeout_panel_refresh_cb_still_called(self, engine):
+        """★ 锁超时时 panel_refresh_cb 仍在锁外执行，SUBAGENT_FRAME 入队不被丢弃。
+
+        验证 _phase_pre_update_panels() 移出锁后：
+        - 即使 output_lock 获取失败，panel_refresh_cb 仍被调用
+        - panel_refresh_cb 推入的 SUBAGENT_FRAME 命令留在队列中供下次 drain 消费
+        """
+        engine._bb.is_status_active = False
+
+        # 设置 panel_refresh_cb：将 SUBAGENT_FRAME 命令推入队列
+        captured_frames = []
+
+        def panel_cb():
+            captured_frames.append(True)
+            engine._cmd_queue.put((RenderCommand.SUBAGENT_FRAME, ("line1", "line2")))
+
+        engine.set_panel_refresh_callback(panel_cb)
+
+        with (
+            patch("src.chat_ui._engine._try_acquire_output_lock") as m_lock,
+        ):
+            m_lock.return_value.__enter__.return_value = False  # 锁超时
+
+            result = engine._drain_queue()
+
+        # 锁超时返回 False（未进入锁内渲染）
+        assert result is False
+        # panel_refresh_cb 在锁外执行，已被调用
+        assert len(captured_frames) == 1, "锁超时时 panel_refresh_cb 仍应被调用"
+        # SUBAGENT_FRAME 命令留在队列中供下次 drain 消费
+        assert engine._cmd_queue.qsize() == 1, "SUBAGENT_FRAME 应留在队列中"
+        cmd = engine._cmd_queue.get_nowait()
+        assert cmd[0] == RenderCommand.SUBAGENT_FRAME
+        assert cmd[1] == ("line1", "line2")
+        # 锁没拿到，不执行任何渲染
+        engine._renderer.render.assert_not_called()
+        engine._bb.force_redraw.assert_not_called()
+
+    def test_drain_panel_refresh_cb_called_before_lock(self, engine):
+        """★ panel_refresh_cb 在获取锁之前被调用（锁外执行验证）。
+
+        验证调用顺序：panel_refresh_cb → 获取锁 → 渲染命令。
+        """
+        engine._bb.is_status_active = False
+
+        call_order = []
+
+        def panel_cb():
+            call_order.append("panel_cb")
+
+        engine.set_panel_refresh_callback(panel_cb)
+        engine._cmd_queue.put((RenderCommand.CONTENT, "hello"))
+
+        # 创建一个记录调用顺序的 mock context manager
+        class _CallTracker:
+            def __enter__(self):
+                call_order.append("lock_enter")
+                return True
+            def __exit__(self, *args):
+                call_order.append("lock_exit")
+
+        with patch("src.chat_ui._engine._try_acquire_output_lock",
+                   return_value=_CallTracker()):
+            engine._drain_queue()
+
+        # panel_refresh_cb 在锁获取之前被调用
+        panel_idx = call_order.index("panel_cb")
+        lock_idx = call_order.index("lock_enter")
+        assert panel_idx < lock_idx, (
+            f"panel_refresh_cb 应在锁获取之前调用，实际顺序: {call_order}"
+        )
+        # 渲染正常进行
+        engine._renderer.render.assert_called_once()
+
 
     def test_drain_sync_bottom_lines_exception_tolerated(self, engine):
         """sync_bottom_lines 异常时被容错，继续渲染。"""

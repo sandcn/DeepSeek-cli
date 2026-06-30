@@ -589,9 +589,14 @@ class _BottomBar(_StatusMixin):
         所有共享可变状态在 output_lock 保护下更新。
         可被任何线程安全调用。
 
-        内置快速路径：状态行文本、输入文本、底部行数三者均未变化时
-        跳过全量重绘，仅更新 _last_refresh 时间戳。避免流式输出期间
-        高频 CONTENT chunk 触发的冗余终端 I/O（~5 行写入→0 行）。
+        三级路径（按开销升序）：
+        1. 快速路径：布局不变且状态不变 → 仅更新时间戳，零 I/O
+        2. 增量重绘：布局不变仅状态行变化 → 仅重绘状态行那一行
+           （save_cursor → move_clear → write status → restore_cursor → flush）
+        3. 全量重绘：布局变化 → 重绘分隔线+subagent+状态行+输入行+DECSTBM
+
+        快速路径/增量重绘避免流式输出期间高频 CONTENT chunk 触发
+        的冗余终端 I/O（全量 ~5+ 行写入 → 增量 1 行或 0 行）。
 
         ★ 性能优化：先检查文本和布局是否变化，确认需要重绘后再
         调用 _format_status()（含 shutil 系统调用），避免不必要开销。
@@ -618,6 +623,20 @@ class _BottomBar(_StatusMixin):
                     self._last_refresh = time.monotonic()
                     self._last_cursor_pos = self._input_cursor_pos
                     return
+                # ★ 增量重绘：布局未变仅状态行变化时，只重绘状态行那一行
+                #   避免全量重绘（分隔线→subagent→状态行→输入行→DECSTBM）
+                r2 = height - total + 2 + len(self._subagent_lines)
+                r2 = max(1, min(r2, height))  # 防御性裁剪，确保在终端范围内
+                out = sys.__stdout__
+                out.write(_blessed_save_cursor())
+                out.write(_blessed_move_clear(r2))
+                out.write(new_status)
+                out.write(_blessed_restore_cursor())
+                out.flush()
+                self._last_status = new_status
+                self._last_refresh = time.monotonic()
+                self._last_cursor_pos = self._input_cursor_pos
+                return
             else:
                 new_status = self._format_status()
 

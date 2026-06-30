@@ -307,23 +307,23 @@ class TuiEngine:
     def _drain_queue(self) -> bool:
         """三阶段流水线：预处理面板→获取输出锁→渲染命令→重绘底部栏。
 
-        阶段 1: _phase_pre_update_panels() — 刷新面板回调
+        阶段 1: _phase_pre_update_panels() — 刷新面板回调（锁外执行）
         阶段 2: 获取输出锁，批量取出队列中所有命令
         阶段 3: _phase_render() 执行渲染命令，_phase_redraw_bottom() 重绘底部栏
 
         性能优化：
         - 仅在面板回调注册时执行阶段 1（默认 None，跳过空调用）
-        - 仅在获取到输出锁后才执行阶段 1（避免无锁空转）
+        - 面板回调（CPU 渲染 + Queue.put）在锁外执行，减少 output_lock 持锁时间
 
         Returns:
             是否处理了至少一条渲染命令
         """
         commands: list[tuple] = []
+        # ★ 阶段 1：锁外执行面板刷新，减少持锁时间
+        self._phase_pre_update_panels()
         with _try_acquire_output_lock(name="drain_queue", timeout=_DRAIN_LOCK_TIMEOUT) as locked:
             if not locked:
                 return False
-            # ★ 仅在获取到锁后才执行面板刷新（避免无锁空转）
-            self._phase_pre_update_panels()
             while True:
                 try:
                     commands.append(self._cmd_queue.get_nowait())

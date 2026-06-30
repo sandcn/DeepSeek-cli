@@ -39,10 +39,10 @@ class ToolOutputBlock(TuiComponent):
                     _logger.debug("tool_output ANSI 解析失败, 回退 raw 输出", exc_info=True)
                     adapter.write_raw(clean)
             else:
-                adapter.write_raw(text.split('\r')[-1])
+                clean = text.split('\r')[-1]
+                adapter.write_raw(clean)
             if not text.endswith('\r'):
                 adapter.write_raw('\n')
-                clean = text.replace('\r', '') if '\033[' in text else text.split('\r')[-1]
                 return _estimate_content_lines(clean)
             return 0
         else:

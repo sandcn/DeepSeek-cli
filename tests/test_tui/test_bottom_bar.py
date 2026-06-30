@@ -154,6 +154,55 @@ class TestBottomBarCursorPos(unittest.TestCase):
         self.assertEqual(out.getvalue(), "",
                          "布局和状态未变时 force_redraw 不应输出 ANSI 序列")
 
+    def test_incremental_redraw_status_change_only(self):
+        """★ 布局不变仅状态变化时，仅重绘状态行（增量重绘路径）。
+
+        验证 force_redraw() 增量重绘路径：
+        - layout_unchanged=True 且 new_status != _last_status 时
+        - 仅输出 save_cursor → move_clear(r2) → new_status → restore_cursor
+        - 不输出分隔线、subagent 面板行、输入行、DECSTBM 等全量重绘内容
+        """
+        # 设置 layout_unchanged=True 的条件
+        self.bb._last_rendered_text = "hello world"
+        self.bb._last_text = "hello world"
+        self.bb._last_bottom_lines = self.bb._bottom_lines
+        self.bb._last_height = self.bb._term_height()
+        self.bb._last_subagent_lines = []
+        self.bb._subagent_lines = []
+        self.bb._last_status = "test-model ◉"
+
+        new_status = "test-model ◉  10t"
+
+        out = io.StringIO()
+        with patch.object(sys, '__stdout__', out), \
+             patch.object(self.bb, '_format_status', return_value=new_status):
+            self.bb.force_redraw()
+
+        output = out.getvalue()
+
+        # 应有输出（非零 I/O 快速路径）
+        self.assertNotEqual(output, "",
+                            "仅状态变化时应产生增量重绘输出")
+
+        # 应包含 save_cursor + move_clear + new_status + restore_cursor
+        self.assertIn("\0337", output, "应包含 save_cursor (\\0337)")
+        self.assertIn(new_status, output, f"应包含新状态文本: {new_status}")
+        self.assertIn("\0338", output, "应包含 restore_cursor (\\0338)")
+        self.assertIn("\033[K", output, "应包含 clear_eol (\\033[K)")
+
+        # 不应包含全量重绘特有的内容
+        self.assertNotIn("\u2501", output, "不应包含分隔线字符 (━)")
+        self.assertNotIn("\033[r", output, "不应包含 DECSTBM 重置序列 (\\033[r)")
+        # DECSTBM 设置序列以 \033[1; 开头（scroll region top=1）
+        self.assertNotIn("\033[1;", output,
+                         "不应包含 DECSTBM 设置序列")
+
+        # 验证增量重绘后状态正确更新
+        self.assertEqual(self.bb._last_status, new_status,
+                         "增量重绘后 _last_status 应更新为新状态")
+        self.assertEqual(self.bb._last_cursor_pos, self.bb._input_cursor_pos,
+                         "增量重绘后 _last_cursor_pos 应与 _input_cursor_pos 同步")
+
 
 
 class TestBottomBarFormatStatus(unittest.TestCase):
