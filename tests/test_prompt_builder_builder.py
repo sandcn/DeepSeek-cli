@@ -164,7 +164,6 @@ class TestBuildSubagentSystemPrompt:
         sections = [
             "安全规范",
             "大模型幻觉防止规范",
-            "测试规范",
             "当前执行环境",
         ]
         for section in sections:
@@ -198,11 +197,23 @@ class TestBuildSubagentSystemPrompt:
         last_part = result[-1]
         assert "版本控制" not in last_part, "include_version_control=False 时不应包含版本控制信息"
 
-    def test_has_bug_confirm_rule(self):
-        """验证子代理系统提示词包含「Bug 确认 — 日志或测试重现（强制）」规则"""
+    def test_has_security_section(self):
+        """验证子代理系统提示词包含「安全规范」核心章节"""
         result = build_subagent_system_prompt()
         full = "\n".join(result)
-        assert "Bug 确认 — 日志或测试重现（强制）" in full
+        assert "安全规范" in full
+
+    def test_essential_security_present(self):
+        """验证精简后 sub.md 仍包含核心安全内容（红线 + 路径安全 + 幻觉防止）"""
+        result = build_subagent_system_prompt()
+        full = "\n".join(result)
+        # 安全红线核心条目
+        assert "禁止读写传密钥" in full
+        assert "禁止 rm -rf" in full
+        # 通用安全规范核心条目
+        assert "路径安全" in full
+        # 大模型幻觉防止黄金三原则
+        assert "先读后写" in full
 
 
 # ═══════════════════════════════════════════════════════════
