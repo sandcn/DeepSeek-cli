@@ -72,8 +72,8 @@ class DispatchAgents(Func):
                         },
                         "type": {
                             "type": "string",
-                            "enum": ["map", "review", "plan", "read_memory", "write_memory", "execute"],
-                            "description": "子Agent类型。execute（默认）：排除 dispatch_agent、user_select 和 web_search，保留所有读写工具+bash，无路径限制，用于执行计划文件步骤并返回修改文件列表。map：只读分析型，仅保留 read_file/search/find/ls 等读取工具，专用于项目代码分析和地图生成。review：代码审查型，只读工具集（含 read_file/search/find/ls/web_search），专用于文件列表的 Code Review（P0-P3 分级输出）。plan：计划型，只读分析工具 + write_file/update_file（仅限写入 .chat/plan/ 目录），根据指令生成计划。read_memory：只读记忆型，仅保留 read_file/search/find/ls，专用于读取 .chat/memory/ 目录下的记忆文件。write_memory：读写记忆型，保留读工具 + write_file/update_file/mk（写入仅限 .chat/memory/ 目录），专用于维护记忆文件。",
+                            "enum": ["map", "think", "review", "plan", "read_memory", "write_memory", "execute"],
+                            "description": "子Agent类型。execute（默认）：排除 dispatch_agent、user_select 和 web_search，保留所有读写工具+bash，无路径限制，用于执行计划文件步骤并返回修改文件列表。map：只读分析型，仅保留 read_file/search/find/ls 等读取工具，专用于项目代码分析和地图生成。think：深度推理型，只读工具集（read_file/search/find/ls），在 map 分析完成后强制调用，专用于在独立上下文中深度思考/推理/分析问题，将结论返回主 Agent。review：代码审查型，只读工具集（含 read_file/search/find/ls/web_search），专用于文件列表的 Code Review（P0-P3 分级输出）。plan：计划型，只读分析工具 + write_file/update_file（仅限写入 .chat/plan/ 目录），根据指令生成计划。read_memory：只读记忆型，仅保留 read_file/search/find/ls，专用于读取 .chat/memory/ 目录下的记忆文件。write_memory：读写记忆型，保留读工具 + write_file/update_file/mk（写入仅限 .chat/memory/ 目录），专用于维护记忆文件。",
                         },
                     },
                     "required": ["description", "prompt"],

@@ -171,7 +171,7 @@ class TestDispatchAgentsSchema:
         assert props["description"]["type"] == "string"
         assert props["prompt"]["type"] == "string"
         assert props["type"]["type"] == "string"
-        assert props["type"]["enum"] == ["map", "review", "plan", "read_memory", "write_memory", "execute"]
+        assert props["type"]["enum"] == ["map", "think", "review", "plan", "read_memory", "write_memory", "execute"]
 
     def test_schema_parameters_required(self):
         required = DispatchAgents.to_tool_schema()["function"]["parameters"]["required"]
@@ -433,7 +433,63 @@ class TestDispatchAgentsExecute:
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# 6. _format_single 结果格式化
+# 6. think 类型测试
+# ═══════════════════════════════════════════════════════════════════════════
+
+class TestDispatchAgentsThinkType:
+    """think 类型 SubAgent 的 dispatch_agent 集成测试"""
+
+    def test_from_args_with_think_type(self):
+        """from_args 解析 think 类型"""
+        da = DispatchAgents.from_args({
+            "description": "深度推理分析",
+            "prompt": "分析模块依赖关系并推理最佳拆分方案",
+            "type": "think",
+        })
+        assert da.target_agent_type == "think"
+
+    def test_init_think_agent_type(self):
+        """__init__ 正确设置 think 类型"""
+        da = DispatchAgents(
+            description="深度推理分析",
+            prompt="分析模块依赖关系并推理最佳拆分方案",
+            target_agent_type="think",
+        )
+        assert da.target_agent_type == "think"
+
+    async def test_shared_executor_think_type(self):
+        """think 类型 agent_type 正确传递给 executor"""
+        mock_executor = MagicMock()
+        mock_executor.is_batch_mode = True
+        mock_executor.add_agent.return_value = 0
+        mock_executor.register_and_wait = AsyncMock()
+        mock_executor.get_result.return_value = {
+            "description": "深度推理",
+            "result": "推理结论：建议按功能拆分",
+        }
+
+        mock_agent = MagicMock()
+        mock_agent._shared_executor = mock_executor
+
+        da = DispatchAgents(
+            description="深度推理",
+            prompt="分析模块依赖关系",
+            target_agent_type="think",
+        )
+        da.set_agent(mock_agent)
+
+        result = await da.execute()
+
+        mock_executor.add_agent.assert_called_once_with(
+            "深度推理", "分析模块依赖关系", agent_type="think",
+            model=mock_agent.model, tool_label="",
+        )
+        assert "## 深度推理" in result
+        assert "推理结论" in result
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# 7. _format_single 结果格式化
 # ═══════════════════════════════════════════════════════════════════════════
 
 class TestDispatchAgentsFormatSingle:

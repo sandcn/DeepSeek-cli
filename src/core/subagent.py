@@ -40,6 +40,12 @@ _TOOL_EXCLUSION_MAP = {
         "web_search",
         "dispatch_agent", "user_select",
     },
+    "think": {
+        # 只读+无web_search，当前与 map 一致但语义独立，未来可能分化
+        "bash", "write_file", "update_file", "rm", "mv", "cp", "mk",
+        "web_search",
+        "dispatch_agent", "user_select",
+    },
     "review": {
         "bash", "write_file", "update_file", "rm", "mv", "cp", "mk",
         "dispatch_agent", "user_select",
@@ -114,6 +120,8 @@ class SubAgent(BaseAgent):
         prompt_port = parent_agent.get_prompt_builder_port()
         if agent_type == "map":
             system_parts = prompt_port.build_map_agent_prompt()
+        elif agent_type == "think":
+            system_parts = prompt_port.build_think_agent_system_prompt()
         elif agent_type == "review":
             system_parts = prompt_port.build_review_agent_prompt()
         elif agent_type == "plan":

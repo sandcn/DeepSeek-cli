@@ -17,6 +17,7 @@ from src.prompt_builder.builder import (
     build_subagent_system_prompt,
     build_map_agent_system_prompt,
     build_review_agent_system_prompt,
+    build_think_agent_system_prompt,
     build_plan_agent_system_prompt,
     build_read_memory_agent_system_prompt,
     build_write_memory_agent_system_prompt,
@@ -50,6 +51,7 @@ class TestLoadPrompt:
             "prompts_export_main",
             "prompts_export_sub",
             "prompts_export_map",
+            "prompts_export_think",
             "prompts_export_review",
             "prompts_export_plan",
             "prompts_export_execute",
@@ -373,6 +375,79 @@ class TestBuildReviewAgentSystemPrompt:
 
 
 # ═══════════════════════════════════════════════════════════
+# Think Agent 系统提示词构建测试
+# ═══════════════════════════════════════════════════════════
+
+class TestBuildThinkAgentSystemPrompt:
+    def test_returns_list_of_strings(self):
+        result = build_think_agent_system_prompt()
+        assert isinstance(result, list)
+        assert all(isinstance(p, str) for p in result)
+
+    def test_has_deep_reasoning_focus(self):
+        """Think 提示词应聚焦深度推理分析"""
+        result = build_think_agent_system_prompt()
+        full = "\n".join(result)
+        assert "推理" in full or "分析" in full
+
+    def test_has_security_rules(self):
+        """Think 提示词应包含安全红线"""
+        result = build_think_agent_system_prompt()
+        full = "\n".join(result)
+        assert "禁止读写传密钥" in full
+
+    def test_has_readonly_toolset(self):
+        """Think 提示词应明确只读工具集"""
+        result = build_think_agent_system_prompt()
+        full = "\n".join(result)
+        assert "read_file" in full
+
+    def test_has_decision_framework(self):
+        """Think 提示词应包含决策框架"""
+        result = build_think_agent_system_prompt()
+        full = "\n".join(result)
+        assert "决策框架" in full
+
+    def test_has_environment_info(self):
+        """Think 提示词应包含运行时环境信息"""
+        result = build_think_agent_system_prompt()
+        full = "\n".join(result)
+        assert "当前执行环境" in full
+
+    def test_has_hallucination_prevention(self):
+        """Think 提示词应包含幻觉防止规范"""
+        result = build_think_agent_system_prompt()
+        full = "\n".join(result)
+        assert "大模型幻觉防止规范" in full
+        assert "先读后推" in full
+
+    def test_content_non_empty(self):
+        """Think 提示词应非空"""
+        result = build_think_agent_system_prompt()
+        assert len(result) > 0
+        assert any(len(p.strip()) > 0 for p in result)
+
+    def test_can_exclude_version_control(self):
+        """Think 提示词支持 include_version_control=False"""
+        result = build_think_agent_system_prompt(include_version_control=False)
+        last_part = result[-1]
+        assert "版本控制" not in last_part
+
+    def test_no_memory_guide(self):
+        """Think 提示词不应包含跨对话记忆使用指南"""
+        result = build_think_agent_system_prompt()
+        full = "\n".join(result)
+        assert "跨对话记忆系统使用指南" not in full
+
+    def test_with_cwd(self):
+        """指定 cwd 不应崩溃"""
+        import os
+        result = build_think_agent_system_prompt(cwd=os.getcwd())
+        assert isinstance(result, list)
+        assert len(result) > 0
+
+
+# ═══════════════════════════════════════════════════════════
 # 运行时环境信息测试
 # ═══════════════════════════════════════════════════════════
 
@@ -596,6 +671,12 @@ class TestSubAgentExcludesInitMd:
     def test_review_agent_excludes_init_md(self):
         """review 类型不应包含项目摘要"""
         result = build_review_agent_system_prompt(cwd=self.cwd)
+        full = "\n".join(result)
+        assert "项目摘要" not in full
+
+    def test_think_agent_excludes_init_md(self):
+        """think 类型不应包含项目摘要"""
+        result = build_think_agent_system_prompt(cwd=self.cwd)
         full = "\n".join(result)
         assert "项目摘要" not in full
 

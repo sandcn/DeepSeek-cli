@@ -24,6 +24,7 @@ TOOL_COLORS = {
 AGENT_TYPE_ABBREV = {
     "map": "mp",
     "review": "rv",
+    "think": "th",
     "plan": "pl",
     "read_memory": "rm",
     "write_memory": "wm",
@@ -35,6 +36,7 @@ AGENT_TYPE_ABBREV = {
 AGENT_TYPE_COLORS = {
     "map": "\033[38;5;33m",        # 深蓝
     "review": "\033[38;5;129m",    # 紫
+    "think": "\033[38;5;49m",      # 薄荷绿/亮青
     "plan": "\033[38;5;214m",      # 琥珀
     "read_memory": "\033[38;5;45m",   # 青色
     "write_memory": "\033[38;5;226m", # 黄色
