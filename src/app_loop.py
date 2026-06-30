@@ -116,20 +116,26 @@ def _make_round_callbacks(
 
     def _on_round_start():
         # ★ 重置轮次耗时（⏱从 0 开始计时）
-        reset_token_speed()
+        # /loop 模式下跳过重置，让耗时跨轮累加
+        if not loop_state.get("_loop_mode"):
+            reset_token_speed()
         # ★ 激活底部栏状态行刷新（⏱耗时│总tok│实时tok/s）
         if chat_ui is not None:
             chat_ui.bottom_bar.enable_status()
 
     def _on_round_end(interrupted=False, delta=None, **kw):
-        # ★ 冻结底部栏状态行（定格最终数值），同时获取耗时供通知复用
-        notify_elapsed = kw.get("elapsed", 0.0)
-        if chat_ui is not None:
-            chat_ui.bottom_bar.disable_status()
-            chat_ui.request_bottom_redraw()
-            status_elapsed = chat_ui.bottom_bar.get_status_elapsed()
-            if status_elapsed > 0:
-                notify_elapsed = status_elapsed
+        # /loop 模式下不冻结状态行、不发桌面通知，保持状态行活跃
+        if not loop_state.get("_loop_mode"):
+            # ★ 冻结底部栏状态行（定格最终数值），同时获取耗时供通知复用
+            notify_elapsed = kw.get("elapsed", 0.0)
+            if chat_ui is not None:
+                chat_ui.bottom_bar.disable_status()
+                chat_ui.request_bottom_redraw()
+                status_elapsed = chat_ui.bottom_bar.get_status_elapsed()
+                if status_elapsed > 0:
+                    notify_elapsed = status_elapsed
+            # 桌面通知
+            notify_chat_completed(session.messages, elapsed=notify_elapsed)
 
         # ★ 排出流式输入：queued（Enter提交）优先 → 跳过下轮输入提示
         #   buffer_text（未提交）→ 作为 prefill
@@ -146,9 +152,6 @@ def _make_round_callbacks(
         captured = monitor.drain_captured_input()
         if captured:
             session.captured_prefill = captured
-
-        # 桌面通知
-        notify_chat_completed(session.messages, elapsed=notify_elapsed)
 
     return {"on_start": _on_round_start, "on_end": _on_round_end}
 
@@ -412,27 +415,41 @@ class InteractiveLoop:
         self._force_exit.clear()
         # ── 自动保存循环前的对话 ────────────────────────────
         await _save_loop_snapshot(session, self._chat_ui)
-        self._chat_ui.write_line(f"  {GREEN}+ 开始循环 {count} 次: \"{prompt[:60]}{'...' if len(prompt) > 60 else ''}\"{RESET}")
-        for i in range(count):
-            self._chat_ui.write_line(f"  {DIM}  ─ 第 {i+1}/{count} 轮 · 第1次 ─{RESET}")
-            # 清空对话（每轮开始前清空）
-            reset_interrupt_async()
-            session.clear_messages()
-            # 第1次运行
-            result = await session.run_round(prompt)
-            if result.get("interrupted", False):
-                self._chat_ui.write_line(f"  {YELLOW}+ ESC 中断，提前结束循环（已执行 {i+1}/{count} 轮）{RESET}")
-                break
+        # ── /loop 模式：启用状态行持续活跃 + 跨轮累加耗时 ────
+        try:
+            # _loop_mode + enable_status + write_line 全部在 try 内，
+            # 确保 finally 始终清理 _loop_mode，防止状态泄漏
+            self._loop_state["_loop_mode"] = True
+            if self._chat_ui is not None:
+                self._chat_ui.bottom_bar.enable_status()
+            self._chat_ui.write_line(f"  {GREEN}+ 开始循环 {count} 次: \"{prompt[:60]}{'...' if len(prompt) > 60 else ''}\"{RESET}")
+            for i in range(count):
+                self._chat_ui.write_line(f"  {DIM}  ─ 第 {i+1}/{count} 轮 · 第1次 ─{RESET}")
+                # 清空对话（每轮开始前清空）
+                reset_interrupt_async()
+                session.clear_messages()
+                # 第1次运行
+                result = await session.run_round(prompt)
+                if result.get("interrupted", False):
+                    self._chat_ui.write_line(f"  {YELLOW}+ ESC 中断，提前结束循环（已执行 {i+1}/{count} 轮）{RESET}")
+                    break
 
-            # 第2次运行（同一提词，同一轮）
-            self._chat_ui.write_line(f"  {DIM}  ─ 第 {i+1}/{count} 轮 · 第2次 ─{RESET}")
-            reset_interrupt_async()
-            result2 = await session.run_round(prompt)
-            if result2.get("interrupted", False):
-                self._chat_ui.write_line(f"  {YELLOW}+ ESC 中断，提前结束循环（已执行 {i+1}/{count} 轮）{RESET}")
-                break
-        else:
-            self._chat_ui.write_line(f"  {GREEN}+ 循环 {count} 次执行完毕{RESET}")
+                # 第2次运行（同一提词，同一轮）
+                self._chat_ui.write_line(f"  {DIM}  ─ 第 {i+1}/{count} 轮 · 第2次 ─{RESET}")
+                reset_interrupt_async()
+                result2 = await session.run_round(prompt)
+                if result2.get("interrupted", False):
+                    self._chat_ui.write_line(f"  {YELLOW}+ ESC 中断，提前结束循环（已执行 {i+1}/{count} 轮）{RESET}")
+                    break
+            else:
+                self._chat_ui.write_line(f"  {GREEN}+ 循环 {count} 次执行完毕{RESET}")
+        finally:
+            # ── /loop 结束：清理 _loop_mode 标志 + 重置状态 ────
+            self._loop_state["_loop_mode"] = False
+            if self._chat_ui is not None:
+                self._chat_ui.bottom_bar.disable_status()
+                self._chat_ui.bottom_bar.reset_tool_count()
+            reset_token_speed()
         # ── 自动保存循环后的对话 ────────────────────────────
         await _save_loop_snapshot(session, self._chat_ui)
 
