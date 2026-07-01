@@ -14,8 +14,15 @@ from ..core.ports.output import OutputPort
 from .events import publish_output
 
 
-class UIDisplayAdapter(DisplayPort):
-    """实现 DisplayPort 接口，全部委托给 self._wrapped。"""
+class UIDisplayAdapter:
+    """实现 DisplayPort 接口，全部委托给 self._wrapped。
+
+    有真实逻辑的方法（tool_start/tool_done）保留显式定义，
+    其余方法通过 __getattr__ 动态转发到 self._wrapped。
+
+    通过 DisplayPort.register 注册为虚拟子类以绕过 ABC 抽象方法
+    检查（动态转发在类定义时不可见）。
+    """
 
     def __init__(self, wrapped_display: Optional[DisplayPort] = None):
         self._wrapped = wrapped_display
@@ -24,8 +31,6 @@ class UIDisplayAdapter(DisplayPort):
     @property
     def is_web(self) -> bool:
         return getattr(self._wrapped, 'is_web', False)
-
-    # ── DisplayPort 抽象方法实现（委托给 _wrapped） ──
 
     def tool_start(self, tool_label, tool_name, detail, metadata=None):
         self._tool_names[tool_label] = tool_name
@@ -38,73 +43,23 @@ class UIDisplayAdapter(DisplayPort):
             self._wrapped.tool_done(label=tool_label, tool_name=name,
                                     success=success, metadata=metadata)
 
-    def capture_and_print(self, display_func):
-        if self._wrapped is not None:
-            return self._wrapped.capture_and_print(display_func)
-        return display_func() if callable(display_func) else ""
+    def __getattr__(self, name: str):
+        """动态转发到 self._wrapped。
 
-    def capture_and_print_async(self, display_func):
-        if self._wrapped is not None:
-            return self._wrapped.capture_and_print_async(display_func)
-        return self.capture_and_print(display_func)
+        捕获 DisplayPort 接口中除显式定义方法外的所有抽象方法调用。
+        """
+        # 防止递归：__getattr__ 在 __init__ 中访问 self._wrapped 时被调用
+        if name == '_wrapped':
+            raise AttributeError(name)
+        wrapped = object.__getattribute__(self, '_wrapped')
+        if wrapped is not None:
+            attr = getattr(wrapped, name, None)
+            if attr is not None:
+                return attr
+        raise AttributeError(f"'UIDisplayAdapter' has no attribute '{name}'")
 
-    def update_status(self, label: str, status: str) -> None:
-        if self._wrapped is not None:
-            self._wrapped.update_status(label, status)
 
-    # ── 以下方法满足 ABC 抽象方法要求，委托给 _wrapped ──
-
-    def update_model_phase(self, label, phase, message=""):
-        if self._wrapped is not None:
-            self._wrapped.update_model_phase(label, phase, message)
-
-    def update_usage(self, label, usage, replace=False):
-        if self._wrapped is not None:
-            self._wrapped.update_usage(label, usage, replace)
-
-    def update_speed(self, label, speed):
-        if self._wrapped is not None:
-            self._wrapped.update_speed(label, speed)
-
-    def update_live_input(self, label, tokens):
-        if self._wrapped is not None:
-            self._wrapped.update_live_input(label, tokens)
-
-    def update_live_output(self, label, tokens):
-        if self._wrapped is not None:
-            self._wrapped.update_live_output(label, tokens)
-
-    def tool_batch_start(self, label, names):
-        if self._wrapped is not None:
-            self._wrapped.tool_batch_start(label, names)
-
-    def tool_parsing(self, label, tool_name, arguments=""):
-        if self._wrapped is not None:
-            self._wrapped.tool_parsing(label, tool_name, arguments)
-
-    def update_parse_info(self, label, tool_name, tokens, elapsed):
-        if self._wrapped is not None:
-            self._wrapped.update_parse_info(label, tool_name, tokens, elapsed)
-
-    def parse_info_done(self, label):
-        if self._wrapped is not None:
-            self._wrapped.parse_info_done(label)
-
-    def update_agent_status(self, label, status):
-        if self._wrapped is not None:
-            self._wrapped.update_agent_status(label, status)
-
-    def add_agent(self, label, description, status="running"):
-        if self._wrapped is not None:
-            self._wrapped.add_agent(label, description, status)
-
-    def start(self):
-        if self._wrapped is not None:
-            self._wrapped.start()
-
-    def stop(self):
-        if self._wrapped is not None:
-            self._wrapped.stop()
+DisplayPort.register(UIDisplayAdapter)
 
 
 class UIEventAdapter(EventPort):

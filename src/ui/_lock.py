@@ -43,6 +43,13 @@ diff_active = threading.Event()
 # ★ P0 防递归保护：locked_print → chat_ui.write_line → locked_print 递归
 _locked_print_reentrant = threading.local()
 
+# ★ P2 锁调试追踪 — 记录当前线程的锁持有栈
+# 仅用于调试，不影响运行时行为。
+# held_stack 是一个 list[str]，记录当前线程获取的锁名称。
+# 在 _try_acquire_output_lock 中维护。
+_lock_debug = threading.local()
+_lock_debug.held_stack = []  # type: list[str]
+
 # 终端写锁超时阈值（秒）— PTY 缓冲区满时防止锁被长期持有
 OUTPUT_LOCK_TIMEOUT = 1.0
 
@@ -67,13 +74,18 @@ def _try_acquire_output_lock(
     Yields:
         bool - True 表示成功获取锁，False 表示超时
     """
+    if not hasattr(_lock_debug, 'held_stack'):
+        _lock_debug.held_stack = []
+    _lock_debug.held_stack.append("output_lock")
     acquired = output_lock.acquire(timeout=timeout)
     if acquired:
         try:
             yield True
         finally:
+            _lock_debug.held_stack.pop()
             output_lock.release()
     else:
+        _lock_debug.held_stack.pop()
         _logger.warning("output_lock 超时（%s, %.1fs），降级为直写", name, timeout)
         yield False
 

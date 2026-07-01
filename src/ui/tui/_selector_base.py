@@ -101,7 +101,7 @@ class BaseBottomBarSelector(Generic[T, R]):
         """强制刷新缓存（线程安全）。"""
         self._cache.refresh()
 
-    def show(self) -> R | None:
+    def show(self, bottom_bar=None) -> R | None:
         """在底部栏补全弹窗中打开选择器。
 
         完整流程：
@@ -109,6 +109,9 @@ class BaseBottomBarSelector(Generic[T, R]):
           2. 格式化显示文本
           3. 调用 run_bottom_bar_selection 交互
           4. 用户确认后调用 _on_selected 处理结果
+
+        Args:
+            bottom_bar: _BottomBar 实例（可选），传递给 run_bottom_bar_selection。
 
         Returns:
             _on_selected 的返回值；候选项为空或用户取消时返回 None。
@@ -126,6 +129,7 @@ class BaseBottomBarSelector(Generic[T, R]):
             display, display,
             title=self._get_title(),
             initial_idx=self._get_initial_idx(items),
+            bottom_bar=bottom_bar,
         )
 
         if result["action"] == "confirmed" and result["index"] is not None:

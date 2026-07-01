@@ -147,6 +147,7 @@ class MessageEditor:
         # ★ 消息选择弹窗：显示用户可选消息总数
         title_display = f"{BRIGHT_CYAN}{title}{RESET}{DIM}{tag}{RESET}  {DIM}\u2502{RESET}  {CYAN}{sel_count}{RESET} \u6761\u53ef\u7f16\u8f91"  # 当前会话(当前) │ N 条可编辑
 
+        # TODO: 后续可通过依赖注入传入 bottom_bar（依赖注入 DI 第二步）
         result = run_bottom_bar_selection(
             selectable, user_display,
             initial_idx=sel_count - 1,

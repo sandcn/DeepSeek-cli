@@ -78,8 +78,6 @@ from ._bottom_bar_draw import (
     _draw_input_lines_locked as _draw_impl_input_lines,
     _draw_all_locked as _draw_impl_all,
     _redraw_cycle_only as _draw_impl_redraw_cycle,
-    _apply_scroll_delta as _draw_impl_apply_scroll,
-    _reclaim_scroll_back as _draw_impl_reclaim_scroll,
 )
 
 
@@ -769,41 +767,7 @@ class _BottomBar(_StatusMixin):
 
     # ── 内部绘制 ──────────────────────────────────────────
 
-    def _apply_scroll_delta(self, out, delta: int, old_scroll_end: int) -> None:
-        """根据底部栏行数变化调整上屏内容滚动位置。
 
-        ★ 自 2026-06-12 起 force_redraw() 不再调用此方法。
-        SU 在 DECSTBM 区域内无 scrollback 缓冲，滚出顶部的行永久丢失，
-        因此底部栏扩大时不再执行 SU，改为让弹窗直接覆盖底部内容区行。
-        保留供将来可能的回退或替代方案使用（历史测试仍验证此方法）。
-
-        delta > 0（底部栏扩大）：向上滚动内容腾出空间（SU）。
-        delta <= 0 或 old_scroll_end < 1：无操作。
-
-        参数:
-            out: sys.__stdout__ 或等价的可写文件对象（TextIO）。
-            delta: 底部栏行数变化量（新值 - 旧值）。
-            old_scroll_end: 旧的 DECSTBM 滚动区域底部行号。
-        """
-        _draw_impl_apply_scroll(out, delta, old_scroll_end)
-
-    def _reclaim_scroll_back(self, out, delta: int, scroll_end: int) -> None:
-        """缩小后在新 DECSTBM 内下滚内容以消除空白间隙。
-
-        ★ 自 2026-06-12 起 force_redraw() 不再调用此方法。
-        SD 下滚会产生顶部空白行，回收区域直接清除即可，由新输出自然填充。
-        保留供将来可能的回退或替代方案使用。
-
-        delta < 0（底部栏缩小）：在新 DECSTBM[1;scroll_end] 内做 SD 下滚。
-        回收行（旧面板区域）无实际内容（已被清除），SD 仅产生顶部空白行，
-        立即清除这些空行避免上屏出现多余空白行。
-
-        参数:
-            out: sys.__stdout__ 或等价的可写文件对象。
-            delta: 底部栏行数变化量（新值 - 旧值，应为负数）。
-            scroll_end: 新的 DECSTBM 滚动区域底部行号。
-        """
-        _draw_impl_reclaim_scroll(out, delta, scroll_end)
 
     def _draw_input_lines_locked(self, out, text: str, r_start: int, term_width: int) -> None:
         """绘制输入行（需持有 output_lock），超长文本自动拆行。

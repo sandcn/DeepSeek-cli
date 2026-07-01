@@ -41,11 +41,7 @@ from ._state import (
 from ._lock import output_lock
 from ..ui._blessed import get_terminal
 
-from ._engine import TuiEngine
-from ._renderer import TuiRenderer, _RenderState
-from ._dispatcher import EventDispatcher, _HANDLER_MAP
-from ._protocols import BottomBarProtocol, RenderEngine
-from ._completion import _CmplHandler, _apply_completion
+from ._dispatcher import _HANDLER_MAP
 
 _logger = logging.getLogger(__name__)
 
@@ -77,37 +73,17 @@ class ChatUIConsumer:
             event_bus = DisplayEventBus.get_default()
         self._bus = event_bus
 
-        from ..ui._cursor_tracker import CursorTracker
-        from ..ui._bottom_bar import _BottomBar
-        from ..ui._completion import CompletionEngine
-        from rich.console import Console
-        from ..api.renderer.output import OutputAdapter
-        from ..terminal import get_safe_console_config
+        from ._factory import _create_chat_ui_components
+        components = _create_chat_ui_components(event_bus)
 
-        self._rs = _RenderState()
-        self._cursor_tracker = CursorTracker()
-        self._bottom_bar = _BottomBar(cursor_tracker=self._cursor_tracker)
+        self._rs = components.rs
+        self._cursor_tracker = components.cursor_tracker
+        self._bottom_bar = components.bottom_bar
+        self._tui_renderer = components.tui_renderer
+        self._engine = components.engine
+        self._disp = components.dispatcher
+        self._cmpl = components.cmpl_handler
 
-        console = Console(**get_safe_console_config(), file=sys.__stdout__)
-        output_adapter = OutputAdapter(console)
-
-        from ..ui.tui._message_display import _display_messages
-
-        self._tui_renderer = TuiRenderer(
-            self._rs, output_adapter, self._bottom_bar,
-            on_display_messages=_display_messages,
-            cursor_tracker=self._cursor_tracker,
-        )
-        self._engine: RenderEngine = TuiEngine(
-            self._tui_renderer, self._bottom_bar,
-            cursor_tracker=self._cursor_tracker,
-        )
-        self._disp = EventDispatcher(push_cmd=self._engine.push_cmd)
-        self._rs.set_output_adapter(output_adapter)
-        self._cmpl = _CmplHandler(
-            self._bottom_bar, CompletionEngine(),
-            request_redraw=self._engine.request_bottom_redraw,
-        )
         self._bound_handlers: dict[type, Any] | None = None
         self._state_lock = threading.Lock()
         self._started = False

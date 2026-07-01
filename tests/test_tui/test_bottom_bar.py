@@ -648,87 +648,12 @@ class TestApplyScrollDeltaOrdering(unittest.TestCase):
                 self.bb._check_resize()
 
         output = buf.getvalue()
-        # shrink 路径中 _apply_scroll_delta(scroll_n, out, height) 使用新 height=25
         # 定位到终端末行：\033[25;1H（新终端高度）
         self.assertIn("\033[25;1H", output,
                       "shrink 路径应使用新 height(25) 定位光标到终端末行")
 
 
-class TestApplyScrollDelta(unittest.TestCase):
-    """验证 _apply_scroll_delta 在 delta 各取值时的 ANSI 输出。
 
-    核心场景：
-      1. delta > 0 → 输出 SU（上滚）序列
-      2. delta <= 0 → 无操作（不输出 SD，避免删除上屏可见内容）
-      3. old_scroll_end < 1 → 无操作
-      4. hide_completions 触发 delta < 0 路径 → 不输出 SD 序列（回归测试）
-    """
-
-    def setUp(self):
-        self.bb = _BottomBar()
-        self.bb._active = True
-        self.bb._last_height = 30  # 哨兵，force_redraw 需要
-        self._stdout = sys.__stdout__
-
-    def tearDown(self):
-        sys.__stdout__ = self._stdout
-
-    def test_apply_scroll_delta_positive(self):
-        """delta > 0 时输出 SU 上滚序列。"""
-        buf = io.StringIO()
-        self.bb._apply_scroll_delta(buf, delta=3, old_scroll_end=25)
-        output = buf.getvalue()
-        self.assertIn("\033[25;1H", output, "应定位到 old_scroll_end=25")
-        self.assertIn("\033[3S", output, "delta=3 时应输出 SU 上滚 3 行")
-
-    def test_apply_scroll_delta_negative(self):
-        """delta < 0 时 _apply_scroll_delta 无操作（回收由 _reclaim_scroll_back 处理）。"""
-        buf = io.StringIO()
-        self.bb._apply_scroll_delta(buf, delta=-3, old_scroll_end=22)
-        output = buf.getvalue()
-        self.assertEqual(output, "", "delta=-3 时 _apply_scroll_delta 应无输出")
-
-    def test_reclaim_scroll_back_negative(self):
-        """delta < 0 时 _reclaim_scroll_back 输出 SD 序列并清除顶部空行。"""
-        buf = io.StringIO()
-        self.bb._reclaim_scroll_back(buf, delta=-3, scroll_end=25)
-        output = buf.getvalue()
-        self.assertIn("\033[25;1H", output, "应定位到 scroll_end=25")
-        self.assertIn("\033[3T", output, "delta=-3 时应输出 SD 下滚 3 行")
-        # 必须清除 SD 产生的顶部空行
-        for r in range(1, 4):
-            self.assertIn(f"\033[{r};1H\033[K", output,
-                          f"SD 后应清除顶部行 {r}")
-
-    def test_reclaim_scroll_back_non_negative(self):
-        """delta >= 0 时 _reclaim_scroll_back 无操作。"""
-        buf = io.StringIO()
-        self.bb._reclaim_scroll_back(buf, delta=0, scroll_end=25)
-        self.assertEqual(buf.getvalue(), "", "delta=0 时应无输出")
-        buf2 = io.StringIO()
-        self.bb._reclaim_scroll_back(buf2, delta=3, scroll_end=25)
-        self.assertEqual(buf2.getvalue(), "", "delta>0 时应无输出")
-
-    def test_apply_scroll_delta_zero(self):
-        """delta == 0 时无操作。"""
-        buf = io.StringIO()
-        self.bb._apply_scroll_delta(buf, delta=0, old_scroll_end=25)
-        output = buf.getvalue()
-        self.assertEqual(output, "", "delta=0 时应无 ANSI 输出")
-
-    def test_apply_scroll_delta_scroll_end_zero(self):
-        """old_scroll_end=0 时无操作。"""
-        buf = io.StringIO()
-        self.bb._apply_scroll_delta(buf, delta=3, old_scroll_end=0)
-        output = buf.getvalue()
-        self.assertEqual(output, "", "old_scroll_end=0 时应无操作")
-
-    def test_apply_scroll_delta_scroll_end_negative(self):
-        """old_scroll_end=-1 时无操作。"""
-        buf = io.StringIO()
-        self.bb._apply_scroll_delta(buf, delta=-3, old_scroll_end=-1)
-        output = buf.getvalue()
-        self.assertEqual(output, "", "old_scroll_end=-1 时应无操作")
 
     def test_hide_completions_scroll_down(self):
         """★ 2026-06-28: hide_completions() 触发 delta < 0，仅清除释放区域，不调用 save/restore。"""

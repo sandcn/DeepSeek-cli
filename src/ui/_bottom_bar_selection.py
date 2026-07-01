@@ -26,6 +26,7 @@ def run_bottom_bar_selection(
     display_items: list[str],
     initial_idx: int = 0,
     title: str = "选择",
+    bottom_bar=None,
 ) -> dict:
     """在底部栏补全弹窗中运行交互式选择，返回选中结果。
 
@@ -37,23 +38,25 @@ def run_bottom_bar_selection(
         display_items: 显示文本列表（与 items 一一对应）。建议纯文本。
         initial_idx: 初始光标位置。
         title: 弹窗标题。
+        bottom_bar: _BottomBar 实例（可选）。传入后避免反向依赖 chat_ui 获取底部栏。
 
     Returns:
         {"action": "confirmed"|"cancel"|"error",
          "index": int | None}
     """
-    from ..chat_ui import get_active_chat_ui
-
     fd = sys.stdin.fileno()
     if not os.isatty(fd):
         return {"action": "error", "index": None}
 
-    chat_ui = get_active_chat_ui()
-    if chat_ui is None:
-        return {"action": "error", "index": None}
-    bb = chat_ui._bottom_bar
+    bb = bottom_bar
     if bb is None:
-        return {"action": "error", "index": None}
+        from ..chat_ui import get_active_chat_ui  # fallback — 让 ui/tui 调用方传入 bottom_bar
+        chat_ui = get_active_chat_ui()
+        if chat_ui is None:
+            return {"action": "error", "index": None}
+        bb = chat_ui._bottom_bar
+        if bb is None:
+            return {"action": "error", "index": None}
 
     if not bb._active:
         try:
