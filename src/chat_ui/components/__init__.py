@@ -11,10 +11,7 @@
   _error.py           — ErrorBlock
   _notification.py    — NotificationBlock
   _write_line.py      — WriteLineBlock
-  _status_line.py     — StatusLine
-  _input_line.py      — InputLine
-  _completion_popup.py — CompletionPopup
-  _selection_menu.py  — SelectionMenu
+  （已移除 4 个死组件：StatusLine / InputLine / CompletionPopup / SelectionMenu）
 
 兼容 re-export：BottomBarProtocol（定义在 _protocols.py）
 """
@@ -37,12 +34,6 @@ from ._error import ErrorBlock
 from ._notification import NotificationBlock
 from ._write_line import WriteLineBlock
 
-# 底部栏组件
-from ._status_line import StatusLine
-from ._input_line import InputLine
-from ._completion_popup import CompletionPopup
-from ._selection_menu import SelectionMenu
-
 # 兼容 re-export（定义已移至 _protocols.py）
 from .._protocols import BottomBarProtocol
 
@@ -57,9 +48,5 @@ __all__ = [
     "ErrorBlock",
     "NotificationBlock",
     "WriteLineBlock",
-    "StatusLine",
-    "InputLine",
-    "CompletionPopup",
-    "SelectionMenu",
     "BottomBarProtocol",
 ]

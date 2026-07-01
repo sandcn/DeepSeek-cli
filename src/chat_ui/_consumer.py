@@ -55,9 +55,9 @@ class ChatUIConsumer:
 
     React Ink-like 组件层次：
       MessageStream ─── 滚动消息区（AnswerBlock / ThinkingBlock / ...）
-      StatusLine    ─── 状态栏
-      InputLine     ─── 输入行
-      Overlay       ─── 补全弹窗 / 选择菜单（条件渲染）
+      状态行        ─── 由 _BottomBar._format_status() 渲染
+      输入行        ─── 由 _BottomBar._draw_input_lines_locked() 渲染
+      Overlay       ─── 由 _CompletionPopup / _BottomBar 渲染
 
     内部子系统：
       _rs       (_RenderState)    — 渲染器生命周期
@@ -219,9 +219,6 @@ class ChatUIConsumer:
         if not message:
             return
         self._engine.push_cmd((RenderCommand.ERROR, message))
-
-    def refresh(self) -> None:
-        pass
 
     def request_bottom_redraw(self) -> None:
         self._engine.request_bottom_redraw()

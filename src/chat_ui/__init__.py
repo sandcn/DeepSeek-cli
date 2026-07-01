@@ -2,12 +2,12 @@
 
 React Ink-like TUI 架构（组件化设计，已拆分为 5 个子模块）：
 
-  _components.py — 组件层
+  components/     — 组件层
     ├── BottomBarProtocol / TuiComponent (基类)
     ├── UserMsgBlock / ThinkingBlock / AnswerBlock
     ├── ToolOutputBlock / ToolSummaryBlock
     ├── ErrorBlock / NotificationBlock / WriteLineBlock
-    └── StatusLine / InputLine / CompletionPopup / SelectionMenu
+    └──（4 个死组件 StatusLine/InputLine/CompletionPopup/SelectionMenu 已移除）
   _renderer.py  — 渲染器
     ├── _RenderState  — IncrementalRenderer 生命周期管理
     ├── _RENDER_DISPATCH — 渲染命令分发表

@@ -754,25 +754,6 @@ class TestChatUIConsumerPublicMethods:
             mock_push.assert_called_once_with((RenderCommand.USER_MSG, "delegated"))
 
 
-# ═══════════════════════════════════════════════════════
-# TestChatUIConsumerRefresh
-# ═══════════════════════════════════════════════════════
-
-class TestChatUIConsumerRefresh:
-    """refresh() 刷新接口"""
-
-    def test_refresh_does_not_push_command(self, consumer, mock_bus):
-        """refresh() 为空方法，不推送任何命令"""
-        with patch.object(consumer._engine, 'push_cmd') as mock_push:
-            consumer.refresh()
-            mock_push.assert_not_called()
-
-    def test_refresh_does_not_call_force_redraw(self, consumer, mock_bus):
-        """refresh() 不调用 force_redraw"""
-        with patch.object(consumer._bottom_bar, 'force_redraw') as mock_redraw:
-            consumer.refresh()
-            mock_redraw.assert_not_called()
-
 
 # ═══════════════════════════════════════════════════════
 # TestChatUIConsumerSetupCompletion
