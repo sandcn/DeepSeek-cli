@@ -656,3 +656,90 @@ class TestModeEquivalence:
         b = BashFunc(command="echo hello")
         r = await b.execute()
         assert r == "hello"
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# 15. _truncate_output 行数截断测试
+# ═══════════════════════════════════════════════════════════════════════════
+
+class TestTruncateOutput:
+    """BashFunc._truncate_output 输出行数截断。"""
+
+    def test_below_limit_not_truncated(self):
+        """输出行数不超过 1000 行时不截断。"""
+        output = '\n'.join([f"line{i}" for i in range(10)])
+        result = BashFunc._truncate_output(output)
+        assert result == output
+        assert "(输出已截断" not in result
+
+    def test_exactly_limit_not_truncated(self):
+        """输出正好 1000 行时不截断。"""
+        output = '\n'.join([f"line{i}" for i in range(1000)])
+        result = BashFunc._truncate_output(output)
+        assert result == output
+
+    def test_over_limit_truncated(self):
+        """输出超过 1000 行时截断，保留前 1000 行并添加截断标记。"""
+        lines = [f"line{i}" for i in range(1005)]
+        output = '\n'.join(lines)
+        result = BashFunc._truncate_output(output)
+        result_lines = result.split('\n')
+        # 前 1000 行保留
+        assert result_lines[0] == "line0"
+        assert result_lines[999] == "line999"
+        # 第 1001 行是截断标记（索引 1000）
+        assert "输出已截断" in result_lines[1000]
+        # 总行数 = 1000 + 1(截断标记) = 1001
+        assert len(result_lines) == 1001
+
+    def test_custom_max_lines(self):
+        """支持自定义 max_lines 参数。"""
+        output = '\n'.join([f"line{i}" for i in range(20)])
+        result = BashFunc._truncate_output(output, max_lines=5)
+        result_lines = result.split('\n')
+        assert result_lines[0] == "line0"
+        assert result_lines[4] == "line4"
+        assert "输出已截断" in result_lines[5]
+        assert len(result_lines) == 6
+
+    def test_error_message_not_truncated(self):
+        """以 '(' 开头的错误/提示信息不截断。"""
+        output = (
+            "(无输出)"
+        )
+        # 模拟超长但以 '(' 开头的输出
+        long_error = '(' + 'x' * 10000 + ')'
+        result = BashFunc._truncate_output(long_error)
+        assert result == long_error
+
+    def test_empty_string(self):
+        """空字符串返回空字符串。"""
+        assert BashFunc._truncate_output("") == ""
+
+    def test_single_line_below_limit(self):
+        """单行输出不超过限制时原样返回。"""
+        result = BashFunc._truncate_output("hello world")
+        assert result == "hello world"
+        assert "(输出已截断" not in result
+
+    def test_single_line_over_limit_is_not_truncated(self):
+        """单行输出（无换行符）即使超过 1000 行也不截断（因为没有换行符来分割）。"""
+        # 注意：没有换行符时 split('\n') 返回 1 个元素，所以不会触发截断
+        # 这实际上是期望行为——单行超大文本不会被错误截断
+        output = "a" * 10000
+        result = BashFunc._truncate_output(output)
+        assert result == output
+
+    def test_empty_lines_counted(self):
+        """空行应被计入行数，触发截断。"""
+        # 999 行有效内容 + 2 空行 = 1001 行，应触发截断
+        lines = [f"line{i}" for i in range(999)] + ['', '']
+        output = '\n'.join(lines)
+        result = BashFunc._truncate_output(output)
+        result_lines = result.split('\n')
+        # 前 999 行有效 + 第 1000 行是空行 = 截断线（max_lines=1000）
+        assert result_lines[0] == "line0"
+        assert result_lines[998] == "line998"
+        assert result_lines[999] == ""          # 第 1000 行是空行
+        assert "输出已截断" in result_lines[1000]  # 第 1001 行是截断标记
+        assert len(result_lines) == 1001

@@ -6,7 +6,6 @@ import asyncio
 import logging
 from .base import Func, tool_metadata, print_to_terminal
 
-_logger = logging.getLogger(__name__)
 from ..core.constants import GREEN, RED, DIM, RESET
 from ..api.interrupt_async import is_interrupted
 
@@ -175,7 +174,7 @@ class BashFunc(Func):
                     "【边界信息】"
                     "\n- 工作目录(cwd)不存在时返回明确错误，不会在错误目录下执行"
                     "\n- 禁止运行交互式命令（vim/top/less等），会导致进程挂起"
-                    "\n- 输出限制：无显式截断"
+                    "\n- 输出限制：超过1000行后截断，末尾添加截断标记"
                     "\n\n"
                     "【Android (Termux) 兼容】"
                     "\n- 避免使用 `timeout` 命令（行为差异可能导致孤儿进程），"
@@ -210,7 +209,7 @@ class BashFunc(Func):
                                 "输出处理："
                                 "\n- stdout 和 stderr 自动拼接为单一字符串返回（stderr 追加在 stdout 之后）"
                                 "\n- 无输出时返回 '(无输出)'"
-                                "\n- 输出截断：当前无显式截断（输出长度仅受系统内存限制）"
+                                "\n- 输出截断：超过1000行后截断，末尾添加截断标记"
                             )
                         },
                         "cwd": {
@@ -269,6 +268,29 @@ class BashFunc(Func):
         if cwd and not os.path.isdir(cwd):
             return f"(工作目录不存在: {cwd})"
         return None
+
+    # ── 输出截断 ────────────────────────────────────────
+    # 返回给大模型的输出超过 MAX_LINES 行时自动截断，
+    # 避免大模型上下文窗口被超长输出占满，影响推理质量。
+    MAX_LINES = 1000
+
+    @staticmethod
+    def _truncate_output(output: str, max_lines: int | None = None) -> str:
+        """将输出截断到指定行数（默认 MAX_LINES 行），超出时追加截断标记。
+
+        以 '(' 开头的输出视为错误/提示信息（如 "(无输出)"），不截断。
+        """
+        if max_lines is None:
+            max_lines = BashFunc.MAX_LINES
+        if not output or output.startswith('('):
+            return output
+        lines = output.split('\n')
+        if len(lines) > max_lines:
+            logger.debug("输出截断: %d 行 -> %d 行", len(lines), max_lines)
+            return '\n'.join(lines[:max_lines]) + (
+                f'\n...(输出已截断：超过 {max_lines} 行，仅展示前 {max_lines} 行)'
+            )
+        return output
 
     # ── 共享读取循环 ─────────────────────────────────────
 
@@ -422,7 +444,7 @@ class BashFunc(Func):
                 fcntl.ioctl(slave_fd, termios.TIOCSWINSZ,
                             struct.pack('HHHH', 24, 120, 0, 0))
             except Exception:
-                _logger.debug("PTY TIOCSWINSZ 设置失败")
+                logger.debug("PTY TIOCSWINSZ 设置失败")
 
             # ★ pty_ready_fn 回调：通知外层 PTY master fd，
             #   用于终端 resize 时同步更新 PTY winsize。
@@ -430,7 +452,7 @@ class BashFunc(Func):
                 try:
                     pty_ready_fn(master_fd)
                 except Exception:
-                    _logger.debug("pty_ready_fn 回调异常")
+                    logger.debug("pty_ready_fn 回调异常")
 
             env = self._get_subprocess_env()
             env['TERM'] = 'xterm-256color'  # 告诉子进程这是终端
@@ -515,16 +537,18 @@ class BashFunc(Func):
 
         try:
             if _HAS_PTY:
-                return await self._run_pty(
+                result = await self._run_pty(
                     show_command=False,
                     show_output=show_output,
                     publish_line_fn=None,
                 )
-            return await self._run_pipe(
-                show_command=False,
-                show_output=show_output,
-                publish_line_fn=None,
-            )
+            else:
+                result = await self._run_pipe(
+                    show_command=False,
+                    show_output=show_output,
+                    publish_line_fn=None,
+                )
+            return self._truncate_output(result)
         except asyncio.CancelledError:
             return "(命令已被取消)"
         except Exception as e:
@@ -561,14 +585,16 @@ class BashFunc(Func):
 
         try:
             if _HAS_PTY:
-                return await self._run_pty(
+                result = await self._run_pty(
                     show_command=False, show_output=False,
                     publish_line_fn=on_line, pty_ready_fn=None,
                 )
-            return await self._run_pipe(
-                show_command=False, show_output=False,
-                publish_line_fn=on_line,
-            )
+            else:
+                result = await self._run_pipe(
+                    show_command=False, show_output=False,
+                    publish_line_fn=on_line,
+                )
+            return self._truncate_output(result)
         except asyncio.CancelledError:
             return "(命令已被取消)"
         except Exception as e:
