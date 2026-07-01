@@ -414,6 +414,12 @@ class _BottomBar(_StatusMixin):
             if shrunk and old_scroll > scroll_end:
                 for r in range(scroll_end + 1, min(old_scroll, height) + 1):
                     _buf.append(_blessed_move_clear(r))
+            # ★ 终端高度扩大时，清除 old_scroll+1 到 scroll_end 整个区间。
+            #    旧底部栏占行 old_scroll+1 ~ old_scroll+bottom_lines，
+            #    终端扩大后这些行成为新内容区的一部分，必须清除旧底部栏残留。
+            elif old_scroll < scroll_end:
+                for r in range(old_scroll + 1, scroll_end + 1):
+                    _buf.append(_blessed_move_clear(r))
         _buf.append(_blessed_cursor_goto(scroll_end, 1) + _blessed_save_cursor())
         out.write(''.join(_buf))
         out.flush()
@@ -699,6 +705,16 @@ class _BottomBar(_StatusMixin):
                 for r in range(max(scroll_end + 1, 1), min(old_scroll_end, height) + 1):
                     _buf.append(_blessed_move_clear(r))
                 self._cursor_tracker.set(min(old_scroll_end, height), 1)
+
+            # ★ 终端高度扩大时，清除旧底部栏区域残留
+            #    旧底部栏占行 (old_scroll_end+1) ~ height（旧终端高度），
+            #    扩大后这些行成为新内容区的一部分，必须清除旧底部栏的
+            #    边框绘制元素（━ 分隔线、状态行文本等）残留。
+            #    使用 elif 保证与缩小时互斥，增强抗误改能力（与 sync_bottom_lines 风格一致）。
+            elif self._last_height > 0 and height > self._last_height:
+                for r in range(old_scroll_end + 1, scroll_end + 1):
+                    _buf.append(_blessed_move_clear(r))
+                self._cursor_tracker.set(scroll_end, 1)
 
             r1 = height - total + 1
             subagent_start = r1 + 1

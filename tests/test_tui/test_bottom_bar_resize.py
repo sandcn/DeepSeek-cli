@@ -494,132 +494,151 @@ class TestResizeDrainSkip(unittest.TestCase):
                         "设置 _resize_dirty=True 后 is_resize_pending 应为 True")
 
 
-@unittest.skip("resize 功能已从 _BottomBar 移除")
 class TestHeightIncreaseGhost(unittest.TestCase):
     """终端变大时旧底部栏鬼影清除测试。
 
-    终端高度增长时（height > _setup_height），旧底部栏位置
-    上移进入上屏（内容区），必须用 ANSI 清除序列将旧底部栏
-    区域清空，否则残留的分隔线/状态行/输入区会形成视觉鬼影。
+    终端高度增长时，旧底部栏位置进入上屏（内容区），
+    force_redraw() 和 sync_bottom_lines() 必须用 ANSI 清除序列将
+    旧底部栏区域清空，否则残留的分隔线/状态行/输入区会形成视觉鬼影。
+
+    测试直接调用这两个方法（而非 _check_resize），mock 终端尺寸和
+    sys.__stdout__ 捕获输出的 ANSI 序列，验证清行范围正确。
     """
 
     def setUp(self):
         self.bb = _BottomBar()
         self.bb._active = True
-        self.bb._setup_height = 24
-        self.bb._setup_width = 80
-        self.bb._cached_height = 24
-        self.bb._cached_width = 80
-        self.bb._last_text = "test text"
-        self.bb._last_bottom_lines = 6  # 模拟 6 行底部栏
+        self.bb._last_text = "test"
+        self.bb._last_bottom_lines = 10
+        self.bb._last_scroll_end = 30
+        self.bb._subagent_lines = []
         self._stdout = sys.__stdout__
 
     def tearDown(self):
         sys.__stdout__ = self._stdout
 
-    def test_height_increase_clears_old_bar_area(self):
-        """终端从 24→30 行变高时，应清除旧底部栏位置的鬼影。
+    def test_sync_bottom_lines_grow_clears_old_bar_area(self):
+        """sync_bottom_lines: 终端 40→50 行时清除旧底部栏行 31-40。
 
-        old_bar_start = max(1, 24 - 6 + 1) = 19（基于旧 _last_bottom_lines=6）
-        new_bar_start = 30 - 5 + 1 = 26（基于 _bottom_lines 属性=5，因 _last_text="test text" 拆行后只需 5 行）
-        应清除行 19-25（共 7 行）。
+        场景：旧高度=40，旧 scroll_end=30（底部栏 10 行占行 31-40），
+        新高度=50，新 scroll_end=40（底部栏 10 行占行 41-50）。
+        sync_bottom_lines 中 old_scroll(30) < scroll_end(40)，
+        应清除 range(old_scroll+1, scroll_end+1) = range(31, 41)。
         """
-        buf = io.StringIO()
-        with patch("shutil.get_terminal_size",
-                   return_value=(80, 30)), \
-             patch.object(sys, '__stdout__', buf):
-            self.bb._check_resize()
-
-        output = buf.getvalue()
-
-        # ★ 验证 grow 分支先输出 \033[r 重置全屏滚动（与 shrink 分支对称）
-        self.assertIn("\033[r", output,
-                      "终端变高时应先输出 \\033[r 重置全屏滚动区域")
-        # 验证 \033[r 在第一个清除序列 (\033[{n};1H\033[K) 之前或紧邻之前
-        # 注意: \033[r 本身以 \033[ 开头，故用 \033[\d 匹配含数字的 CSI 序列
-        r_end = output.index("\033[r") + len("\033[r")
-        first_clear_match = re.search(r'\033\[\d', output)
-        self.assertIsNotNone(first_clear_match, "输出中应包含至少一个清除序列")
-        self.assertLessEqual(r_end, first_clear_match.start(),
-                             "\\033[r 应在第一个清除序列之前或紧邻之前")
-        # 验证清除序列存在于输出中（检查子集即通过，_bottom_lines 可能比 _last_bottom_lines 小）
-        for r in range(19, 25):
-            expected = f"\033[{r};1H\033[K"
-            self.assertIn(expected, output,
-                          f"终端变高时应清除旧底部栏行 {r}")
-
-    def test_height_increase_clears_large_old_bar(self):
-        """旧底部栏占据大面积时（如 19 行），终端变高后应清除所有越界行。
-
-        构造场景：终端从 24→25 行，_last_bottom_lines=19：
-          old_bar_start = max(1, 24 - 19 + 1) = 6（基于旧 _last_bottom_lines=19）
-          new_bar_start = max(1, 25 - 5 + 1) = 21（基于 _bottom_lines 属性=5）
-          old_bar_start(6) < new_bar_start(21)，需清除行 6-20（共 15 行）。
-        """
-        # 模拟底部栏占满终端（_last_bottom_lines = 19，极小滚动区）
-        self.bb._last_bottom_lines = 19
+        self.bb._last_sync_height = 40
 
         buf = io.StringIO()
-        with patch("shutil.get_terminal_size",
-                   return_value=(80, 25)), \
-             patch.object(sys, '__stdout__', buf):
-            self.bb._check_resize()
+        with patch.object(sys, '__stdout__', buf), \
+             patch.object(self.bb, '_term_height', return_value=50), \
+             patch.object(type(self.bb), '_bottom_lines',
+                          PropertyMock(return_value=10)):
+            self.bb.sync_bottom_lines()
 
         output = buf.getvalue()
+        # 旧底部栏行 31-40 应被清除
+        for r in range(31, 41):
+            self.assertIn(f"\033[{r};1H\033[K", output,
+                          f"sync_bottom_lines 扩大时应清除旧底部栏行 {r}")
 
-        for r in range(6, 7):
-            expected = f"\033[{r};1H\033[K"
-            self.assertIn(expected, output,
-                          f"大面积旧底部栏越界行 {r} 应被清除")
+    def test_force_redraw_grow_clears_old_bar_area(self):
+        """force_redraw: 终端 40→50 行时清除旧底部栏行 31-40。
 
-    def test_height_increase_active_remains_true_during_clear(self):
-        """验证清除发生在 _active 仍为 True 时（在 self._active = False 之前）。
-
-        利用 _active=True 时 ANSI 序列行为正确（终端处于 DECSTBM 模式）。
-        通过检查输出顺序验证：清除序列在 setup() 的 DECSTBM 重置之前。
+        场景：旧高度=40，_last_bottom_lines=10 → old_scroll_end=30，
+        新高度=50，total=10 → scroll_end=40。
+        force_redraw 中 height(50) > _last_height(40)，
+        应清除 range(old_scroll_end+1, scroll_end+1) = range(31, 41)。
         """
+        self.bb._last_height = 40
+
         buf = io.StringIO()
-        with patch("shutil.get_terminal_size",
-                   return_value=(80, 30)), \
-             patch.object(sys, '__stdout__', buf):
-            self.bb._check_resize()
+        with patch.object(sys, '__stdout__', buf), \
+             patch.object(self.bb, '_term_height', return_value=50), \
+             patch.object(self.bb, '_term_width', return_value=80), \
+             patch.object(type(self.bb), '_bottom_lines',
+                          PropertyMock(return_value=10)), \
+             patch.object(self.bb, '_format_status', return_value="status"):
+            self.bb.force_redraw()
 
         output = buf.getvalue()
+        for r in range(31, 41):
+            self.assertIn(f"\033[{r};1H\033[K", output,
+                          f"force_redraw 扩大时应清除旧底部栏行 {r}")
 
-        # setup() 中会写入 \033[1;N r 设置滚动区域
-        # 鬼影清除序列应在 setup() 的滚动区域设置之前
-        ghost_clear = "\033[19;1H\033[K"
-        scroll_region = "\033[1;"
+    def test_grow_clear_does_not_affect_shrink(self):
+        """缩小场景（50→40）的清理逻辑不受扩大分支影响。
 
-        ghost_pos = output.find(ghost_clear)
-        scroll_pos = output.find(scroll_region)
-
-        self.assertNotEqual(ghost_pos, -1,
-                            "应包含鬼影清除序列")
-        self.assertNotEqual(scroll_pos, -1,
-                            "应包含滚动区域设置序列")
-        self.assertLess(ghost_pos, scroll_pos,
-                        "鬼影清除应在 setup() 滚动区域设置之前（_active 仍为 True）")
-
-    def test_height_increase_no_effect_on_shrink_path(self):
-        """终端变小时（height < _setup_height）不应触发变大清除路径。
-
-        确保两个分支互斥：shrink 走自己的 scroll_up 逻辑，
-        不会执行变大清除的额外清除循环。
+        验证缩小场景中旧底部栏区域的清行仍正常执行，
+        且扩大分支的条件（height > _last_height）不满足所以不触发。
         """
+        # force_redraw 缩小场景
+        self.bb._last_height = 50
+        self.bb._last_bottom_lines = 10
+        self.bb._last_scroll_end = 40
+        self.bb._last_rendered_text = "test"
+        self.bb._last_subagent_lines = []
+
         buf = io.StringIO()
-        with patch("shutil.get_terminal_size",
-                   return_value=(80, 20)), \
-             patch.object(sys, '__stdout__', buf):
-            self.bb._check_resize()
+        with patch.object(sys, '__stdout__', buf), \
+             patch.object(self.bb, '_term_height', return_value=40), \
+             patch.object(self.bb, '_term_width', return_value=80), \
+             patch.object(type(self.bb), '_bottom_lines',
+                          PropertyMock(return_value=10)), \
+             patch.object(self.bb, '_format_status', return_value="status"):
+            self.bb.force_redraw()
 
         output = buf.getvalue()
+        # 缩小场景：height(40) < _last_height(50)
+        # old_scroll_end = 50 - 10 = 40, scroll_end = 40 - 10 = 30
+        # shrink clear: range(max(31,1), min(40,40)+1) = range(31, 41) → 行 31-40
+        # grow clear: range(41, 31) → 空区间不触发
+        for r in range(31, 41):
+            self.assertIn(f"\033[{r};1H\033[K", output,
+                          f"缩小时应清除旧底部栏行 {r}")
+        # 验证扩大分支条件不满足：self._last_height=50, height=40 → 40>50 为 False
+        # 缩小走 shrink 分支而非 grow 分支
 
-        # 终端缩小时，变小分支走 scroll_up + remnants 逻辑
-        # 不应出现额外的大范围清除
-        # 确认 shrink 路径的 \033[r（全屏滚动）存在
-        self.assertIn("\033[r", output,
-                      "终端缩小时应走全屏滚动路径而非变大清除路径")
+    def test_grow_clear_height_unchanged(self):
+        """高度不变时扩大分支不触发，无额外清行输出。
+
+        sync_bottom_lines 高度不变时 early return（零输出）。
+        force_redraw 高度不变且布局/状态均不变时走快速路径（零 I/O）。
+        """
+        # ── sync_bottom_lines 高度不变 ──
+        self.bb._last_sync_height = 40
+        self.bb._last_scroll_end = 30
+
+        buf = io.StringIO()
+        with patch.object(sys, '__stdout__', buf), \
+             patch.object(self.bb, '_term_height', return_value=40), \
+             patch.object(type(self.bb), '_bottom_lines',
+                          PropertyMock(return_value=10)):
+            self.bb.sync_bottom_lines()
+
+        output = buf.getvalue()
+        # height=40 == _last_sync_height=40, scroll_end(30) == _last_scroll_end(30)
+        # → early return, 零输出
+        self.assertEqual(output, "",
+                         "高度不变时 sync_bottom_lines 应 early return 无输出")
+
+        # ── force_redraw 高度不变 ──
+        self.bb._last_height = 40
+        self.bb._last_rendered_text = "test"
+        self.bb._last_bottom_lines = 10
+        self.bb._last_status = "status"
+
+        buf2 = io.StringIO()
+        with patch.object(sys, '__stdout__', buf2), \
+             patch.object(self.bb, '_term_height', return_value=40), \
+             patch.object(type(self.bb), '_bottom_lines',
+                          PropertyMock(return_value=10)), \
+             patch.object(self.bb, '_format_status', return_value="status"):
+            self.bb.force_redraw()
+
+        output2 = buf2.getvalue()
+        # layout_unchanged=True, new_status="status" == _last_status="status"
+        # → 快速路径, 零 I/O
+        self.assertEqual(output2, "",
+                         "高度/布局/状态均不变时 force_redraw 应走快速路径无输出")
 
 
 @unittest.skip("resize 功能已从 chat_ui 移除")
