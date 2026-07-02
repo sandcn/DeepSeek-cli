@@ -68,7 +68,7 @@ for mod_name in _MOCK_MODULES:
 for mod_name, mod in _MOCK_MODULES.items():
     sys.modules[mod_name] = mod
 
-_SCRIPT_DIR = '/home/simple/chat/src/api'
+_SCRIPT_DIR = '/home/DeepSeek-cli/src/api'
 
 # ── 直接加载 json_repair.py（拆分后的新文件）─────────────────────────
 _json_repair_spec = importlib.util.spec_from_file_location(
@@ -129,7 +129,9 @@ json_loads_safe = _json_repair_module.json_loads_safe
 get_repair_stats = _json_repair_module.get_repair_stats
 reset_repair_stats = _json_repair_module.reset_repair_stats
 convert_tool_calls_map = _stream_parse_module.convert_tool_calls_map
+convert_tool_calls_map_with_status = _stream_parse_module.convert_tool_calls_map_with_status
 parse_raw_tool_calls = _stream_parse_module.parse_raw_tool_calls
+parse_raw_tool_calls_with_status = _stream_parse_module.parse_raw_tool_calls_with_status
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -698,7 +700,10 @@ class TestRepairStats:
     def test_initial_stats(self):
         reset_repair_stats()
         stats = get_repair_stats()
-        assert stats == {"attempts": 0, "success": 0, "fail": 0}
+        # 检查核心计数器归零（stats 可能含其他扩展键如 parse_retry）
+        assert stats["attempts"] == 0
+        assert stats["success"] == 0
+        assert stats["fail"] == 0
 
     def test_reset_clears_counts(self):
         reset_repair_stats()
@@ -710,7 +715,10 @@ class TestRepairStats:
 
         reset_repair_stats()
         stats = get_repair_stats()
-        assert stats == {"attempts": 0, "success": 0, "fail": 0}
+        # 检查核心计数器归零（stats 可能含其他扩展键如 parse_retry）
+        assert stats["attempts"] == 0
+        assert stats["success"] == 0
+        assert stats["fail"] == 0
 
     def test_stats_count_successful_repair(self):
         reset_repair_stats()
@@ -1010,6 +1018,288 @@ class TestEdgeCases:
         assert names == ["good", "good2"]
         assert calls[0]["id"] == "c1"
         assert calls[1]["id"] == "c3"
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# 17. convert_tool_calls_map_with_status
+# ═══════════════════════════════════════════════════════════════════════════
+
+class TestConvertToolCallsMapWithStatus:
+    """测试 convert_tool_calls_map_with_status — 返回解析失败 ID 列表。"""
+
+    def test_normal_parse_no_failures(self):
+        """正常解析：返回空 failed_ids。"""
+        tool_calls_map = {
+            0: {"id": "call1", "name": "get_weather", "arguments": '{"city": "北京"}'},
+        }
+        tool_calls, failed_ids = convert_tool_calls_map_with_status(tool_calls_map)
+        assert len(tool_calls) == 1
+        assert tool_calls[0]["id"] == "call1"
+        assert tool_calls[0]["name"] == "get_weather"
+        assert tool_calls[0]["arguments"] == {"city": "北京"}
+        assert failed_ids == []
+
+    def test_partial_failure(self):
+        """部分解析失败：成功项正常返回，失败项记录 ID。"""
+        tool_calls_map = {
+            0: {"id": "call1", "name": "good_tool", "arguments": '{"a": 1}'},
+            1: {"id": "call2", "name": "bad_tool", "arguments": '{invalid json}'},
+            2: {"id": "call3", "name": "good_tool2", "arguments": '{"b": 2}'},
+        }
+        tool_calls, failed_ids = convert_tool_calls_map_with_status(tool_calls_map)
+        assert len(tool_calls) == 2
+        assert tool_calls[0]["id"] == "call1"
+        assert tool_calls[1]["id"] == "call3"
+        assert len(failed_ids) == 1
+        assert "call2" in failed_ids
+
+    def test_all_failures(self):
+        """全部解析失败：tool_calls 为空，failed_ids 包含所有 ID。"""
+        tool_calls_map = {
+            0: {"id": "call1", "name": "bad1", "arguments": '{broken}'},
+            1: {"id": "call2", "name": "bad2", "arguments": '{also broken}'},
+        }
+        tool_calls, failed_ids = convert_tool_calls_map_with_status(tool_calls_map)
+        assert tool_calls == []
+        assert len(failed_ids) == 2
+
+    def test_empty_map(self):
+        """空 map：返回空列表。"""
+        tool_calls, failed_ids = convert_tool_calls_map_with_status({})
+        assert tool_calls == []
+        assert failed_ids == []
+
+    def test_failed_id_uses_stream_label(self):
+        """解析失败时，_stream_label 优先于 id。"""
+        tool_calls_map = {
+            0: {"id": "call1", "_stream_label": "stream_1",
+                "name": "bad", "arguments": '{broken}'},
+        }
+        tool_calls, failed_ids = convert_tool_calls_map_with_status(tool_calls_map)
+        assert tool_calls == []
+        assert failed_ids == ["stream_1"]
+
+    def test_failed_id_uses_auto_id(self):
+        """解析失败时，无 id 和 _stream_label 则使用 auto_{idx}。"""
+        tool_calls_map = {
+            0: {"id": "", "name": "bad", "arguments": '{broken}'},
+        }
+        tool_calls, failed_ids = convert_tool_calls_map_with_status(tool_calls_map)
+        assert tool_calls == []
+        assert failed_ids == ["auto_0"]
+
+    def test_sorted_by_index(self):
+        """结果按 index 排序。"""
+        tool_calls_map = {
+            2: {"id": "c3", "name": "tool_c", "arguments": '{"c": 3}'},
+            0: {"id": "c1", "name": "tool_a", "arguments": '{"a": 1}'},
+            1: {"id": "c2", "name": "tool_b", "arguments": '{"b": 2}'},
+        }
+        tool_calls, failed_ids = convert_tool_calls_map_with_status(tool_calls_map)
+        assert failed_ids == []
+        assert [tc["id"] for tc in tool_calls] == ["c1", "c2", "c3"]
+
+    def test_repairable_arguments(self):
+        """可修复的参数（单引号 JSON）正常解析。"""
+        tool_calls_map = {
+            0: {"id": "c1", "name": "tool_a", "arguments": "{'city': '上海'}"},
+        }
+        tool_calls, failed_ids = convert_tool_calls_map_with_status(tool_calls_map)
+        assert failed_ids == []
+        assert tool_calls[0]["arguments"] == {"city": "上海"}
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# 18. parse_raw_tool_calls_with_status
+# ═══════════════════════════════════════════════════════════════════════════
+
+class TestParseRawToolCallsWithStatus:
+    """测试 parse_raw_tool_calls_with_status — 返回解析失败 ID 列表。"""
+
+    def test_normal_parse_no_failures(self):
+        """正常解析：返回空 failed_ids。"""
+        raw = [
+            {"id": "call1", "function": {"name": "get_weather", "arguments": '{"city": "北京"}'}},
+        ]
+        calls, total_args, names, failed_ids = parse_raw_tool_calls_with_status(raw)
+        assert len(calls) == 1
+        assert calls[0]["id"] == "call1"
+        assert calls[0]["name"] == "get_weather"
+        assert calls[0]["arguments"] == {"city": "北京"}
+        assert total_args == '{"city": "北京"}'
+        assert names == ["get_weather"]
+        assert failed_ids == []
+
+    def test_mixed_valid_invalid(self):
+        """混合有效和无效的工具调用。"""
+        raw = [
+            {"id": "c1", "function": {"name": "good", "arguments": '{"a": 1}'}},
+            {"id": "c2", "function": {"name": "bad", "arguments": '{broken}'}},
+            {"id": "c3", "function": {"name": "good2", "arguments": '{"b": 2}'}},
+        ]
+        calls, total_args, names, failed_ids = parse_raw_tool_calls_with_status(raw)
+        assert len(calls) == 2
+        assert calls[0]["id"] == "c1"
+        assert calls[1]["id"] == "c3"
+        assert names == ["good", "good2"]
+        assert total_args == '{"a": 1}{"b": 2}'
+        assert failed_ids == ["c2"]
+
+    def test_empty_list(self):
+        """空列表：所有返回值均为空。"""
+        calls, total_args, names, failed_ids = parse_raw_tool_calls_with_status([])
+        assert calls == []
+        assert total_args == ""
+        assert names == []
+        assert failed_ids == []
+
+    def test_all_invalid(self):
+        """全部无效：calls 和 names 为空，所有 ID 计入 failed_ids。"""
+        raw = [
+            {"id": "c1", "function": {"name": "bad1", "arguments": '{broken1}'}},
+            {"id": "c2", "function": {"name": "bad2", "arguments": '{broken2}'}},
+        ]
+        calls, total_args, names, failed_ids = parse_raw_tool_calls_with_status(raw)
+        assert calls == []
+        assert total_args == ""
+        assert names == []
+        assert len(failed_ids) == 2
+        assert "c1" in failed_ids
+        assert "c2" in failed_ids
+
+    def test_empty_arguments(self):
+        """空 arguments：正常返回空 dict，不计入 failed_ids。"""
+        raw = [
+            {"id": "call1", "function": {"name": "no_args", "arguments": ""}},
+        ]
+        calls, total_args, names, failed_ids = parse_raw_tool_calls_with_status(raw)
+        assert calls[0]["arguments"] == {}
+        assert total_args == ""
+        assert names == ["no_args"]
+        assert failed_ids == []
+
+    def test_repairable_arguments(self):
+        """可修复参数（单引号 JSON）正常解析。"""
+        raw = [
+            {"id": "call1", "function": {"name": "test_tool", "arguments": "{'city': '北京'}"}},
+        ]
+        calls, total_args, names, failed_ids = parse_raw_tool_calls_with_status(raw)
+        assert failed_ids == []
+        assert calls[0]["arguments"] == {"city": "北京"}
+
+    def test_multiple_calls_with_names(self):
+        """多个工具调用，验证 names 和 total_args 累加正确。"""
+        raw = [
+            {"id": "c1", "function": {"name": "tool_a", "arguments": '{"a": 1}'}},
+            {"id": "c2", "function": {"name": "tool_b", "arguments": '{"b": 2}'}},
+        ]
+        calls, total_args, names, failed_ids = parse_raw_tool_calls_with_status(raw)
+        assert total_args == '{"a": 1}{"b": 2}'
+        assert names == ["tool_a", "tool_b"]
+        assert failed_ids == []
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# 19. 回归测试 — convert_tool_calls_map / parse_raw_tool_calls 行为不变
+# ═══════════════════════════════════════════════════════════════════════════
+
+class TestToolParseRegression:
+    """验证重构后原函数 convert_tool_calls_map / parse_raw_tool_calls 行为不变。"""
+
+    # ── convert_tool_calls_map 回归 ──
+
+    def test_convert_basic(self):
+        """基本转换：与重构前一致。"""
+        tool_calls_map = {
+            0: {"id": "call1", "name": "get_weather", "arguments": '{"city": "北京"}'},
+        }
+        result = convert_tool_calls_map(tool_calls_map)
+        assert len(result) == 1
+        assert result[0]["id"] == "call1"
+        assert result[0]["name"] == "get_weather"
+        assert result[0]["arguments"] == {"city": "北京"}
+
+    def test_convert_parse_error_skipped(self):
+        """参数解析失败时跳过（静默 continue，不抛异常）。"""
+        tool_calls_map = {
+            0: {"id": "call1", "name": "bad_tool", "arguments": '{invalid json}'},
+        }
+        result = convert_tool_calls_map(tool_calls_map)
+        assert result == []
+
+    def test_convert_empty_map(self):
+        """空 map 返回空列表。"""
+        assert convert_tool_calls_map({}) == []
+
+    def test_convert_stream_label_priority(self):
+        """_stream_label 优先于 id。"""
+        tool_calls_map = {
+            0: {"id": "call1", "_stream_label": "stream_1",
+                "name": "tool", "arguments": '{"x": 1}'},
+        }
+        result = convert_tool_calls_map(tool_calls_map)
+        assert result[0]["id"] == "stream_1"
+
+    def test_convert_arguments_not_dict_fallback(self):
+        """arguments 解析后不是 dict 则兜底为空 dict。"""
+        tool_calls_map = {
+            0: {"id": "call1", "name": "get_val", "arguments": '"string_val"'},
+        }
+        result = convert_tool_calls_map(tool_calls_map)
+        assert result[0]["arguments"] == {}
+
+    # ── parse_raw_tool_calls 回归 ──
+
+    def test_parse_basic(self):
+        """基本解析：与重构前一致。"""
+        raw = [
+            {"id": "call1", "function": {"name": "get_weather", "arguments": '{"city": "北京"}'}},
+        ]
+        calls, total_args, names = parse_raw_tool_calls(raw)
+        assert len(calls) == 1
+        assert calls[0]["id"] == "call1"
+        assert calls[0]["name"] == "get_weather"
+        assert total_args == '{"city": "北京"}'
+        assert names == ["get_weather"]
+
+    def test_parse_invalid_skipped(self):
+        """无效 JSON 参数被跳过，不抛异常。"""
+        raw = [
+            {"id": "call1", "function": {"name": "bad", "arguments": "{invalid}"}},
+        ]
+        calls, total_args, names = parse_raw_tool_calls(raw)
+        assert calls == []
+        assert total_args == ""
+        assert names == []
+
+    def test_parse_empty_list(self):
+        """空列表返回空结果。"""
+        calls, total_args, names = parse_raw_tool_calls([])
+        assert calls == []
+        assert total_args == ""
+        assert names == []
+
+    def test_parse_mixed_valid_invalid(self):
+        """混合有效无效：只返回有效的，无效静默跳过。"""
+        raw = [
+            {"id": "c1", "function": {"name": "good", "arguments": '{"a": 1}'}},
+            {"id": "c2", "function": {"name": "bad", "arguments": '{broken}'}},
+            {"id": "c3", "function": {"name": "good2", "arguments": '{"b": 2}'}},
+        ]
+        calls, total_args, names = parse_raw_tool_calls(raw)
+        assert len(calls) == 2
+        assert names == ["good", "good2"]
+        assert calls[0]["id"] == "c1"
+        assert calls[1]["id"] == "c3"
+
+    def test_parse_total_args_concatenation(self):
+        """total_args 为所有成功解析的参数串拼接。"""
+        raw = [
+            {"id": "c1", "function": {"name": "tool_a", "arguments": '{"a": 1}'}},
+            {"id": "c2", "function": {"name": "tool_b", "arguments": '{"b": 2}'}},
+        ]
+        calls, total_args, names = parse_raw_tool_calls(raw)
+        assert total_args == '{"a": 1}{"b": 2}'
 
 
 @pytest.fixture(autouse=True)

@@ -19,7 +19,7 @@ import threading
 # 注意：不使用 from src.api.json_repair import ... 以避免触发 src/__init__.py
 # 的级联导入。json_repair.py 仅依赖标准库模块，无需 mock。
 
-_SCRIPT_DIR = '/home/simple/chat/src/api'
+_SCRIPT_DIR = '/home/DeepSeek-cli/src/api'
 _json_repair_spec = importlib.util.spec_from_file_location(
     'src.api.json_repair', f'{_SCRIPT_DIR}/json_repair.py',
 )
@@ -1064,7 +1064,13 @@ class TestRepairStats:
 
     def test_initial_stats(self):
         stats = get_repair_stats()
-        assert stats == {"attempts": 0, "success": 0, "fail": 0}
+        assert stats["attempts"] == 0
+        assert stats["success"] == 0
+        assert stats["fail"] == 0
+        assert "parse_retry" in stats
+        assert stats["parse_retry"]["retry_triggered"] == 0
+        assert stats["parse_retry"]["retry_success"] == 0
+        assert stats["parse_retry"]["retry_exhausted"] == 0
 
     def test_reset_clears_counts(self):
         _repair_json("{'a': 1}")
@@ -1074,7 +1080,12 @@ class TestRepairStats:
 
         reset_repair_stats()
         stats = get_repair_stats()
-        assert stats == {"attempts": 0, "success": 0, "fail": 0}
+        assert stats["attempts"] == 0
+        assert stats["success"] == 0
+        assert stats["fail"] == 0
+        assert stats["parse_retry"]["retry_triggered"] == 0
+        assert stats["parse_retry"]["retry_success"] == 0
+        assert stats["parse_retry"]["retry_exhausted"] == 0
 
     def test_stats_count_successful_repair(self):
         _repair_json("{'a': 1}")

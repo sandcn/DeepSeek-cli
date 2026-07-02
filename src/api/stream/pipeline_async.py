@@ -28,7 +28,7 @@ from ..stats import (
     _notify_stream_ended,
     _notify_stream_progress,
 )
-from ..stream_parse import convert_tool_calls_map
+from ..stream_parse import convert_tool_calls_map_with_status
 from .context import StreamContext
 from .handlers import ReasoningHandler, ContentHandler, ToolCallsHandler, SpeedHandler
 from ...core.constants import YELLOW, RESET
@@ -265,6 +265,7 @@ class AsyncStreamPipeline:
             elif _INTERRUPTED_MSG_TEXT not in content:
                 content += f" ({_INTERRUPTED_MSG_TEXT})"
             # ★ 修复：中断时丢弃不完整的工具调用，避免下游执行损坏的 tool_calls
+            ctx.usage.pop("_parse_failed_ids", None)
             return reasoning, content, ctx.usage, []
 
         if ctx.tracker.interrupted:
@@ -277,9 +278,12 @@ class AsyncStreamPipeline:
             # convert_tool_calls_map 中的 json_loads_safe 可能返回
             # 部分解析结果，导致下游执行残缺的工具调用。
             # 与 esc_interrupted 路径一致，丢弃不完整的工具调用。
+            ctx.usage.pop("_parse_failed_ids", None)
             return reasoning, content, ctx.usage, []
 
-        tool_calls = convert_tool_calls_map(ctx.tool_calls_map)
+        tool_calls, failed_ids = convert_tool_calls_map_with_status(ctx.tool_calls_map)
+        if failed_ids:
+            ctx.usage["_parse_failed_ids"] = failed_ids
         if not ctx.silent:
             self._print_usage_summary(ctx)
 

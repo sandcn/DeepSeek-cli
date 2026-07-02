@@ -1,6 +1,7 @@
 """流式工具调用解析模块 — 从 api/tool_parse.py 拆分而来
 
-包含：工具调用格式转换（convert_tool_calls_map, parse_raw_tool_calls）
+包含：工具调用格式转换（convert_tool_calls_map, convert_tool_calls_map_with_status,
+parse_raw_tool_calls, parse_raw_tool_calls_with_status）
 和流式解析计时器（ToolParseTracker）。
 """
 
@@ -10,7 +11,7 @@ import logging
 import time
 import asyncio
 
-from ._tool_parse_utils import convert_tool_calls_map, parse_raw_tool_calls  # noqa: F401 — 重导出
+from ._tool_parse_utils import convert_tool_calls_map, convert_tool_calls_map_with_status, parse_raw_tool_calls, parse_raw_tool_calls_with_status  # noqa: F401 — 重导出
 from .tokens import estimate_tokens
 from .stats import set_tool_parse_elapsed
 from .interrupt_async import is_interrupted_async

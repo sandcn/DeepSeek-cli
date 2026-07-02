@@ -18,19 +18,27 @@ _logger = logging.getLogger(__name__)
 _JSON_REPAIR_STATS = {"attempts": 0, "success": 0, "fail": 0}
 _JSON_REPAIR_LOCK = threading.RLock()
 
+# 解析重试统计（由 model_async._retry_on_parse_failure_async 更新）
+_PARSE_RETRY_STATS: dict[str, int] = {"retry_triggered": 0, "retry_success": 0, "retry_exhausted": 0}
+
 
 def get_repair_stats():
-    """返回 JSON 修复统计字典的深拷贝（线程安全）。"""
+    """返回 JSON 修复统计 + 解析重试统计的深拷贝（线程安全）。"""
     with _JSON_REPAIR_LOCK:
-        return copy.deepcopy(_JSON_REPAIR_STATS)
+        stats = copy.deepcopy(_JSON_REPAIR_STATS)
+        stats["parse_retry"] = dict(_PARSE_RETRY_STATS)
+        return stats
 
 
 def reset_repair_stats():
-    """重置 JSON 修复统计计数器为零（线程安全）。"""
+    """重置 JSON 修复统计和解析重试统计计数器为零（线程安全）。"""
     with _JSON_REPAIR_LOCK:
         _JSON_REPAIR_STATS["attempts"] = 0
         _JSON_REPAIR_STATS["success"] = 0
         _JSON_REPAIR_STATS["fail"] = 0
+        _PARSE_RETRY_STATS["retry_triggered"] = 0
+        _PARSE_RETRY_STATS["retry_success"] = 0
+        _PARSE_RETRY_STATS["retry_exhausted"] = 0
 
 
 # ── 内部修复函数 ──

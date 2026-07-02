@@ -133,9 +133,11 @@ class BaseLLMAdapter(ABC):
         tool_calls = []
         raw_tool_calls = msg.get("tool_calls")
         if raw_tool_calls:
-            from ..stream_parse import parse_raw_tool_calls
-            parsed, _, _ = parse_raw_tool_calls(raw_tool_calls)
+            from ..stream_parse import parse_raw_tool_calls_with_status
+            parsed, _, _, failed_ids = parse_raw_tool_calls_with_status(raw_tool_calls)
             tool_calls = parsed
+            if failed_ids:
+                usage["_parse_failed_ids"] = failed_ids
 
         return {
             "content": content,
