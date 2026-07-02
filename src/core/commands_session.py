@@ -190,7 +190,7 @@ def _cmd_editmsg(ctx):
 
 # ── 注册会话命令 ──────────────────────────────────────
 register_command("/clear", _cmd_clear, "清空对话")
-register_command("/loop", _cmd_loop, "循环执行 N 次指定提词（每轮运行2次同一提词后清空）")
+register_command("/loop", _cmd_loop, "循环执行 N 次指定提词（每轮第1次用用户提词，第2次用固定提词\"继续完成所有\"）")
 register_command("/compress", _cmd_compress, "手动压缩上下文")
 register_command("/pin", _cmd_pin, "标记重要消息")
 register_command("/undo", _cmd_undo, "撤销上一轮对话")

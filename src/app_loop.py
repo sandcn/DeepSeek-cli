@@ -434,10 +434,10 @@ class InteractiveLoop:
                     self._chat_ui.write_line(f"  {YELLOW}+ ESC 中断，提前结束循环（已执行 {i+1}/{count} 轮）{RESET}")
                     break
 
-                # 第2次运行（同一提词，同一轮）
+                # 第2次运行（固定提词"继续完成所有"）
                 self._chat_ui.write_line(f"  {DIM}  ─ 第 {i+1}/{count} 轮 · 第2次 ─{RESET}")
                 reset_interrupt_async()
-                result2 = await session.run_round(prompt)
+                result2 = await session.run_round("继续完成所有")
                 if result2.get("interrupted", False):
                     self._chat_ui.write_line(f"  {YELLOW}+ ESC 中断，提前结束循环（已执行 {i+1}/{count} 轮）{RESET}")
                     break
