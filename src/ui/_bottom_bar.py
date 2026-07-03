@@ -143,6 +143,8 @@ class _BottomBar(_StatusMixin):
         self._last_dimension_refresh: float = 0.0
         self._DIMENSION_TTL: float = 0.1  # 与 _RENDER_INTERVAL 对齐
         self._sigwinch_cb: Any = None  # SIGWINCH 回调引用，teardown 时注销
+        # ── resize 保护状态 ──
+        self._needs_full_repaint: bool = False  # resize 后标记，force_redraw 中消费并重建
 
     # ── 活跃状态 property ──────────────────────────────────
 
@@ -237,14 +239,25 @@ class _BottomBar(_StatusMixin):
             except Exception:
                 pass
 
+    def set_full_repaint_needed(self) -> None:
+        """标记需要全屏重建（仅在 resize 后调用）。
+
+        由 resize 检测路径（SIGWINCH 回调 / TTL 轮询 / force_refresh_dimensions）
+        设置此标记，force_redraw() 消费此标记并执行全屏重建。
+        幂等调用安全，信号安全（仅设置布尔值，无 I/O 无锁）。
+        """
+        self._needs_full_repaint = True
+
     def force_refresh_dimensions(self) -> None:
         """强制刷新终端尺寸缓存，绕过 TTL。
 
         供 resize 检测路径（SIGWINCH / 轮询）调用。
         调用后下一次 _term_height/_term_width 立即使用新值。
+        ★ resize 保护：刷新尺寸时自动标记全屏重建需要。
         """
         self._last_dimension_refresh = 0.0
         self._refresh_dimensions()
+        self.set_full_repaint_needed()
 
     def _term_height(self) -> int:
         """获取终端高度（缓存版本，避免高频 ioctl）。"""
@@ -400,25 +413,26 @@ class _BottomBar(_StatusMixin):
         #    滚动区域缩小时，新划入底部栏的区域（原内容区底部行）会被
         #    force_redraw() 中的 _draw_input_lines_locked() 覆盖。
         _buf.append(f"{_blessed_set_scroll_region(1, scroll_end)}")
-        # ★ resize 后清除新 scroll_end 行上由终端模拟器位移残留的旧内容，
-        #    确保后续内容渲染从干净行开始，消除旧内容与底部栏之间的 1 行重叠
-        if resized and scroll_end >= 1:
-            _buf.append(_blessed_move_clear(scroll_end))
-            # 终端高度缩小时，清除 scroll_end+1 到 min(old_scroll, height) 整个区间，
-            # 而非仅清除单一边界行。在流式输出路径中，CONTENT 渲染写入内容到滚动区
-            # 会自然「冲刷」掉这些残留行；但在底部栏刷新（输入）路径中，
-            # request_bottom_redraw 是标志位唤醒，无冲刷行为，必须在此处彻底清除，
-            # 否则旧内容在 force_redraw() 执行前可见，导致视觉上的 1 行重叠。
-            if shrunk and old_scroll > scroll_end:
-                for r in range(scroll_end + 1, min(old_scroll, height) + 1):
-                    _buf.append(_blessed_move_clear(r))
-            # ★ 终端高度扩大时，清除 old_scroll+1 到 scroll_end 整个区间。
-            #    旧底部栏占行 old_scroll+1 ~ old_scroll+bottom_lines，
-            #    终端扩大后这些行成为新内容区的一部分，必须清除旧底部栏残留。
-            elif old_scroll < scroll_end:
-                for r in range(old_scroll + 1, scroll_end + 1):
-                    _buf.append(_blessed_move_clear(r))
-        _buf.append(_blessed_cursor_goto(scroll_end, 1) + _blessed_save_cursor())
+        # ★ resize 后保护：不清除 scroll_end 行（该行可能是上屏最后一行内容），
+        #    也不清除任何上屏区域行。上屏内容由全屏重建（_needs_full_repaint）
+        #    统一恢复，在重建前不清除任何上屏行。
+        #    resize 后的残留清理由 force_redraw() 中的底部栏重绘自然覆盖。
+        if not resized:
+            # 非 resize 场景：正常清除 scroll_end 行的残留
+            if scroll_end >= 1:
+                _buf.append(_blessed_move_clear(scroll_end))
+                if old_scroll > scroll_end:
+                    for r in range(scroll_end + 1, min(old_scroll, height) + 1):
+                        _buf.append(_blessed_move_clear(r))
+                elif old_scroll < scroll_end:
+                    for r in range(old_scroll + 1, scroll_end + 1):
+                        _buf.append(_blessed_move_clear(r))
+        # ★ resize 后跳过保存光标位置（SCOSC/DECSC 保存槽在 resize 后失效），
+        #    使用绝对定位替代。
+        if resized:
+            _buf.append(_blessed_cursor_goto(scroll_end, 1))
+        else:
+            _buf.append(_blessed_cursor_goto(scroll_end, 1) + _blessed_save_cursor())
         out.write(''.join(_buf))
         out.flush()
 
@@ -511,6 +525,8 @@ class _BottomBar(_StatusMixin):
             self._last_dimension_refresh = 0.0
             self._cached_height = rows
             self._cached_width = cols
+            # ★ resize 保护：标记全屏重建需要（信号安全——仅设置布尔值，无 I/O 无锁）
+            self._needs_full_repaint = True
         self._sigwinch_cb = _on_sigwinch
         register_sigwinch_callback(self._sigwinch_cb)
 
@@ -662,12 +678,17 @@ class _BottomBar(_StatusMixin):
 
             self._last_bottom_lines = total
 
+            # 是否为全屏重建模式（resize 后保护上屏内容不被删除）
+            full_repaint = self._needs_full_repaint
+            self._needs_full_repaint = False
+
             # ★ 底部栏扩大时（delta > 0），在内容区做 SU 上滚以腾出空间。
             #    先临时将 DECSTBM 设为仅内容区 [1, old_scroll_end]，
             #    再 SU(delta) 将内容整体上移，底部留出空白行供底部栏使用。
             #    顶部滚出的行从终端显示消失（DECSTBM 内 SU 无 scrollback），
             #    但消息/状态在内存中保留，需要时可通过 display_messages 重显。
-            if delta > 0 and old_scroll_end > 0:
+            # ★ resize 保护：全屏重建模式下跳过 SU 上滚（避免顶部内容丢失）。
+            if delta > 0 and old_scroll_end > 0 and not full_repaint:
                 out.write(f"{_blessed_set_scroll_region(1, old_scroll_end)}")
                 out.write(_blessed_cursor_goto(old_scroll_end, 1))
                 out.write(f"{_blessed_scroll_up(delta)}")
@@ -699,7 +720,9 @@ class _BottomBar(_StatusMixin):
             # ★ 终端高度缩小时，额外清理旧内容区中现在属于新底部栏区域的行
             #    （与 delta 符号无关），必须在画分隔线/状态行之前执行，
             #    避免擦除已绘制内容。
-            if self._last_height > 0 and height < self._last_height:
+            # ★ resize 保护：全屏重建模式下跳过清理——底部栏直接绘制覆盖即可，
+            #    不清除上屏内容行。
+            if not full_repaint and self._last_height > 0 and height < self._last_height:
                 for r in range(max(scroll_end + 1, 1), min(old_scroll_end, height) + 1):
                     _buf.append(_blessed_move_clear(r))
                 self._cursor_tracker.set(min(old_scroll_end, height), 1)
@@ -709,7 +732,8 @@ class _BottomBar(_StatusMixin):
             #    扩大后这些行成为新内容区的一部分，必须清除旧底部栏的
             #    边框绘制元素（━ 分隔线、状态行文本等）残留。
             #    使用 elif 保证与缩小时互斥，增强抗误改能力（与 sync_bottom_lines 风格一致）。
-            elif self._last_height > 0 and height > self._last_height:
+            # ★ resize 保护：全屏重建模式下跳过清理。
+            elif not full_repaint and self._last_height > 0 and height > self._last_height:
                 for r in range(old_scroll_end + 1, scroll_end + 1):
                     _buf.append(_blessed_move_clear(r))
                 self._cursor_tracker.set(scroll_end, 1)

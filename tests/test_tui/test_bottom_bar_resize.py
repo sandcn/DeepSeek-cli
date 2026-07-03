@@ -518,12 +518,11 @@ class TestHeightIncreaseGhost(unittest.TestCase):
         sys.__stdout__ = self._stdout
 
     def test_sync_bottom_lines_grow_clears_old_bar_area(self):
-        """sync_bottom_lines: 终端 40→50 行时清除旧底部栏行 31-40。
+        """sync_bottom_lines: 终端 40→50 行时不清除旧底部栏行（resize 保护）。
 
-        场景：旧高度=40，旧 scroll_end=30（底部栏 10 行占行 31-40），
-        新高度=50，新 scroll_end=40（底部栏 10 行占行 41-50）。
-        sync_bottom_lines 中 old_scroll(30) < scroll_end(40)，
-        应清除 range(old_scroll+1, scroll_end+1) = range(31, 41)。
+        ★ Resize 保护：sync_bottom_lines 在 resize 场景跳过清除操作，
+        不清除 old_scroll+1 到 scroll_end 区间的旧底部栏残留行。
+        这些行由后续 force_redraw() 绘制底部栏时自然覆盖。
         """
         self.bb._last_sync_height = 40
 
@@ -535,10 +534,10 @@ class TestHeightIncreaseGhost(unittest.TestCase):
             self.bb.sync_bottom_lines()
 
         output = buf.getvalue()
-        # 旧底部栏行 31-40 应被清除
+        # ★ Resize 保护：扩大场景不清除旧底部栏行 31-40
         for r in range(31, 41):
-            self.assertIn(f"\033[{r};1H\033[K", output,
-                          f"sync_bottom_lines 扩大时应清除旧底部栏行 {r}")
+            self.assertNotIn(f"\033[{r};1H\033[K", output,
+                             f"sync_bottom_lines resize 保护，不应清除旧底部栏行 {r}")
 
     def test_force_redraw_grow_clears_old_bar_area(self):
         """force_redraw: 终端 40→50 行时清除旧底部栏行 31-40。

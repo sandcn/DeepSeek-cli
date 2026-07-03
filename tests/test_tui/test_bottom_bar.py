@@ -420,10 +420,10 @@ class TestBottomBarLastScrollEnd(unittest.TestCase):
                          "_bottom_lines 未变时 sync_bottom_lines 不应输出 ANSI 序列")
 
     def test_sync_bottom_lines_shrink_clears_interval(self):
-        """终端缩小后 sync_bottom_lines 清除 scroll_end+1 到 old_scroll 整个区间。
+        """终端缩小后 sync_bottom_lines 应保护上屏内容不清除 + DECSTBM 正确更新。
 
-        Bug 修复验证：缩小后清除全部将变为底部栏区域的行（而非仅清除单一边界行），
-        消除底部栏刷新（输入）路径中旧内容在 force_redraw 前的残留。
+        ★ Resize 保护：终端缩小后 sync_bottom_lines 跳过清除 scroll_end 行和
+        上屏区域行（这些行由上屏内容保留），仅更新 DECSTBM 滚动区域。 
         """
         self.bb._active = True
         # 模拟旧状态：scroll_end=25（30-5）
@@ -439,11 +439,11 @@ class TestBottomBarLastScrollEnd(unittest.TestCase):
             self.bb.sync_bottom_lines()
 
         output = out.getvalue()
-        # scroll_end = 25 - 5 = 20, old_scroll = 25
-        # 应清除行 21-25 整个区间
+        # ★ Resize 保护：缩小场景不清除任何上屏区域行（行 21+）
+        # scroll_end = 25 - 5 = 20
         for r in range(21, 26):
-            self.assertIn(f"\033[{r};1H\033[K", output,
-                          f"终端缩小后应清除旧内容残留行 {r}")
+            self.assertNotIn(f"\033[{r};1H\033[K", output,
+                             f"终端缩小后应保护上屏内容不清除行 {r}")
         # DECSTBM 应更新为 (1, 20)
         self.assertIn("\033[1;20r", output,
                       "终端缩小后 DECSTBM 应更新为 (1, 20)")
