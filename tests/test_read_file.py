@@ -148,6 +148,16 @@ class TestFromArgs:
         })
         assert rf.start_line is None
 
+    def test_from_args_empty_dict_raises(self):
+        """空字典 args 应抛出 ValueError"""
+        with pytest.raises(ValueError, match="缺少必需参数"):
+            ReadFileFunc.from_args({})
+
+    def test_from_args_missing_path_raises(self):
+        """缺失 path 参数的 args 应抛出 ValueError"""
+        with pytest.raises(ValueError, match="缺少必需参数"):
+            ReadFileFunc.from_args({"start_line": 1})
+
 
 # ═══════════════════════════════════════════════════════════════════════════
 # 5. _try_decode

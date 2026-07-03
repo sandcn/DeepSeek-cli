@@ -109,6 +109,8 @@ class ReadFileFunc(Func):
     @classmethod
     def from_args(cls, args):
         path = args.get("path") or args.get("paths")
+        if path is None:
+            raise ValueError("缺少必需参数: path")
         start_line = args.get("start_line")
         end_line = args.get("end_line")
 

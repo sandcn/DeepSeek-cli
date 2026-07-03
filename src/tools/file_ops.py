@@ -30,6 +30,8 @@ from ._constants import (
 
 def validate_path_security(path):
     """验证路径安全性，不安全时抛出 ValueError"""
+    if path is None:
+        raise ValueError("缺少必需参数: path")
     if any(path.startswith(p) for p in WIN_DEVICE_PREFIXES):
         raise ValueError(f"不允许写入原始设备路径: {path}")
     normalized = os.path.normpath(path)

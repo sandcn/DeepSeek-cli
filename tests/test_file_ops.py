@@ -222,6 +222,13 @@ class TestValidatePathSecurity:
         """以点开头的路径应通过"""
         validate_path_security("./local/file.txt")
 
+    # ── None 路径防御 ────────────────────────────────────────────
+
+    def test_none_path_raises_valueerror(self):
+        """传入 None 时应抛出 ValueError"""
+        with pytest.raises(ValueError, match="缺少必需参数"):
+            validate_path_security(None)
+
 
 # ═══════════════════════════════════════════════════════════════════════════
 # TestCheckFileSize
