@@ -195,17 +195,18 @@ async def _handle_retry_sentinel(session: "ChatSession") -> None:
 async def _handle_editmsg_cmd(session: "ChatSession", state: SessionState) -> None:
     """处理 /editmsg 命令
 
-    停止 EscapeMonitor（join 线程、恢复 cooked 终端），执行后恢复。
-    不暂停 ChatUIConsumer——底部栏保持活跃，用于消息选择弹窗。
-    确保消息编辑器的底部栏交互不被 EscapeMonitor 的终端监听干扰。
+    暂停 ChatUIConsumer + 停止 EscapeMonitor（join 线程、恢复 cooked 终端），
+    让底部栏补全弹窗 + raw I/O 处理 ↑↓/Enter/Esc 交互，
+    选择完成后恢复两者。与 /model 命令保持一致。
     """
     from .chat_ui import get_active_chat_ui
-    from .api.escape_monitor import get_active_monitor
     chat_ui = get_active_chat_ui()
     monitor = get_active_monitor()
+    if chat_ui is not None:
+        chat_ui.suspend()
     if monitor is not None:
         monitor.stop()
-    _needs_rerender = False
+    needs_rerender = False
     try:
         edit_state = {"model": state.model, "retry": False, "prefill": ""}
         await asyncio.to_thread(
@@ -217,17 +218,18 @@ async def _handle_editmsg_cmd(session: "ChatSession", state: SessionState) -> No
         session.sync_retry_pending()
 
         # ★ 编辑生效（retry=True）后，标记需重新渲染剩余消息到上屏
-        _needs_rerender = bool(state.retry or state.prefill)
+        needs_rerender = bool(state.retry or state.prefill)
     finally:
         if monitor is not None:
             monitor.start()
+        if chat_ui is not None:
+            chat_ui.resume()
 
     # ★ 编辑后重新渲染剩余消息到上屏（scroll 区域内）
     # 通过 ChatUI 的 command queue 统一渲染，避免直接 stdout 写入
     # 与 render 线程（_drain_queue → force_redraw）的并发竞态。
-    if _needs_rerender and chat_ui is not None:
-        from .core.commands_data import filter_non_system as _filter_non_system
-        non_system = _filter_non_system(session.messages)
+    if needs_rerender and chat_ui is not None:
+        non_system = _non_system_messages(session)
         chat_ui.display_messages(non_system, speed=0)
 
 
