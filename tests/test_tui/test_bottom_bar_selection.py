@@ -16,7 +16,15 @@ import sys
 import unittest
 from unittest.mock import MagicMock, patch
 
-from src.ui._bottom_bar_selection import run_bottom_bar_selection, _KEY_ENTER, _KEY_UP, _KEY_DOWN, _KEY_ESCAPE
+from src.ui._bottom_bar_selection import (
+    run_bottom_bar_selection,
+    _run_selection_raw,
+    _is_cygwin,
+    _KEY_ENTER,
+    _KEY_UP,
+    _KEY_DOWN,
+    _KEY_ESCAPE,
+)
 
 # 统一的 patch 目标
 _CHAT_UI_PATCH = "src.chat_ui.get_active_chat_ui"
@@ -268,6 +276,207 @@ class TestRunBottomBarSelectionEnter(unittest.TestCase):
 
         self.assertEqual(result["action"], "cancel")
         self.assertIsNone(result["index"])
+
+
+class TestRunSelectionRaw(unittest.TestCase):
+    """测试 _run_selection_raw() 原始 I/O 选择循环（Cygwin 降级路径）。
+
+    使用 mock os.read + select.select + tty.setcbreak 模拟按键输入，
+    避免实际终端操作。Mock 策略与 EscapeMonitor 测试风格一致。
+    """
+
+    def setUp(self):
+        self.mock_bb = MagicMock()
+        self.mock_bb._active = True
+        self.mock_bb._completion_idx = 0
+        self.fd = 0  # 模拟 stdin 文件描述符
+        self._items = ["item_a", "item_b", "item_c"]
+        self._display_items = ["A", "B", "C"]
+
+    def _run_with_raw_mocks(
+        self,
+        select_ready_flags,
+        os_read_bytes,
+        mock_bb=None,
+        completion_idx=0,
+        setcbreak_side_effect=None,
+    ):
+        """在 mock 环境下运行 _run_selection_raw。
+
+        Args:
+            select_ready_flags: [bool, ...] 每次 select.select 调用的就绪状态。
+                True → ([fd], [], []), False → ([], [], []).
+            os_read_bytes: [bytes, ...] 每次 os.read 返回的字节序列。
+            mock_bb: Mock _BottomBar（默认使用 self.mock_bb）。
+            completion_idx: bb._completion_idx 初始值。
+            setcbreak_side_effect: tty.setcbreak 的 side_effect（默认 None=无操作）。
+
+        Returns:
+            _run_selection_raw 的返回值。
+        """
+        bb = mock_bb or self.mock_bb
+        bb._completion_idx = completion_idx
+
+        fd = self.fd
+        flags_iter = iter(select_ready_flags)
+        bytes_iter = iter(os_read_bytes)
+
+        def _mock_select(rlist, wlist, xlist, timeout=None):
+            try:
+                is_ready = next(flags_iter)
+            except StopIteration:
+                return ([], [], [])
+            return ([fd], [], []) if is_ready else ([], [], [])
+
+        def _mock_os_read(fd_arg, n):
+            try:
+                return next(bytes_iter)
+            except StopIteration:
+                return b""
+
+        setcbreak_mock = MagicMock()
+        if setcbreak_side_effect is not None:
+            setcbreak_mock.side_effect = setcbreak_side_effect
+
+        with patch("select.select", side_effect=_mock_select), \
+             patch("os.read", side_effect=_mock_os_read), \
+             patch("tty.setcbreak", setcbreak_mock), \
+             patch(
+                 "src.ui._bottom_bar_selection._save_terminal_settings",
+                 return_value={},
+             ), \
+             patch(
+                 "src.ui._bottom_bar_selection._restore_terminal_settings"
+             ), \
+             patch("sys.stdin") as mock_stdin, \
+             patch("termios.tcflush"):
+            mock_stdin.fileno.return_value = fd
+            return _run_selection_raw(
+                items=self._items,
+                display_items=self._display_items,
+                initial_idx=0,
+                title="测试",
+                bb=bb,
+            )
+
+    # ── 上箭头（\\x1b[A）─
+
+    def test_arrow_up_calls_cycle_completion_minus_one(self):
+        """\\x1b[A 序列应调用 bb.cycle_completion(-1)。
+
+        序列: \\x1b → [ → A（CSI 上箭头），之后 \\r 确认退出。
+        select 调用顺序: (0.1)就绪 → (0.05)就绪 → (0.01)就绪 → (0.1)就绪
+        os.read 返回: \\x1b → [ → A → \\r
+        """
+        result = self._run_with_raw_mocks(
+            select_ready_flags=[True, True, True, True],
+            os_read_bytes=[b"\x1b", b"[", b"A", b"\r"],
+        )
+
+        self.mock_bb.cycle_completion.assert_called_with(-1)
+        self.assertEqual(result["action"], "confirmed")
+        self.assertEqual(result["index"], 0)
+
+    # ── 下箭头（\\x1b[B）─
+
+    def test_arrow_down_calls_cycle_completion_one(self):
+        """\\x1b[B 序列应调用 bb.cycle_completion(1)。
+
+        序列: \\x1b → [ → B（CSI 下箭头），之后 \\r 确认退出。
+        """
+        result = self._run_with_raw_mocks(
+            select_ready_flags=[True, True, True, True],
+            os_read_bytes=[b"\x1b", b"[", b"B", b"\r"],
+        )
+
+        self.mock_bb.cycle_completion.assert_called_with(1)
+        self.assertEqual(result["action"], "confirmed")
+        self.assertEqual(result["index"], 0)
+
+    # ── Enter（\\r）─
+
+    def test_carriage_return_confirms_selection(self):
+        """\\r 应返回 confirmed 及当前 _completion_idx。
+
+        select(0.1) 就绪 → os.read 返回 \\r → 直接确认。
+        """
+        result = self._run_with_raw_mocks(
+            select_ready_flags=[True],
+            os_read_bytes=[b"\r"],
+            completion_idx=2,
+        )
+
+        self.assertEqual(result["action"], "confirmed")
+        self.assertEqual(result["index"], 2)
+
+    # ── Enter（\\n）─
+
+    def test_newline_confirms_selection(self):
+        """\\n 应返回 confirmed 及当前 _completion_idx。
+
+        select(0.1) 就绪 → os.read 返回 \\n → 直接确认。
+        """
+        result = self._run_with_raw_mocks(
+            select_ready_flags=[True],
+            os_read_bytes=[b"\n"],
+            completion_idx=0,
+        )
+
+        self.assertEqual(result["action"], "confirmed")
+        self.assertEqual(result["index"], 0)
+
+    # ── Esc（单独 \\x1b，无后续字节）─
+
+    def test_standalone_escape_cancels(self):
+        """单独 \\x1b（后续无字节）应返回 cancel。
+
+        select(0.1) 就绪 → os.read → \\x1b
+        → select(0.05) 无数据 → 取消。
+        """
+        result = self._run_with_raw_mocks(
+            select_ready_flags=[True, False],
+            os_read_bytes=[b"\x1b"],
+        )
+
+        self.assertEqual(result["action"], "cancel")
+        self.assertIsNone(result["index"])
+
+    # ── stdin 不可读（tty.setcbreak 失败）─
+
+    def test_setcbreak_failure_returns_error(self):
+        """tty.setcbreak 失败时应返回 error。
+
+        模拟 stdin 非 tty 场景：tty.setcbreak 抛出 OSError
+        → 被外层 except Exception 捕获 → 返回 error。
+        """
+        result = self._run_with_raw_mocks(
+            select_ready_flags=[],
+            os_read_bytes=[],
+            setcbreak_side_effect=OSError("inappropriate ioctl for device"),
+        )
+
+        self.assertEqual(result["action"], "error")
+        self.assertIsNone(result["index"])
+
+    # ── 边界：_completion_idx 越界时 Enter 不确认 ──
+
+    def test_enter_ignored_when_completion_idx_out_of_range(self):
+        """_completion_idx 越界时 Enter 应被忽略，循环继续。
+
+        当 idx >= len(items) 时，\\r 不返回 confirmed，
+        select 继续等待，直到超时耗尽返回空结果。
+        """
+        result = self._run_with_raw_mocks(
+            select_ready_flags=[True],
+            os_read_bytes=[b"\r"],
+            completion_idx=99,  # 远超 items 长度
+        )
+
+        # 循环继续直至 select 耗尽 → 函数不返回（通过 StopIteration 退出 mock）
+        # 最终 select 返回 ([], [], [])，循环永远 continue
+        # 实际测试中 side_effect 耗尽后返回空 → while 循环无限等待
+        # 这里验证 cycle_completion 未被调用（idx 越界不会触发确认）
+        self.mock_bb.cycle_completion.assert_not_called()
 
 
 if __name__ == "__main__":

@@ -1,10 +1,14 @@
-"""Tests for src/app_loop.py — /loop 命令状态行守卫逻辑与清理路径
+"""Tests for src/app_loop.py — /loop 命令状态行守卫逻辑与清理路径，
+以及 /editmsg 命令的 suspend/resume + monitor stop/start 对齐。
 
 测试覆盖：
   - _on_round_start: _loop_mode 守卫跳过/不跳过 reset_token_speed()
   - _on_round_end: _loop_mode 守卫跳过/不跳过 disable_status() 和 notify_chat_completed()
   - _handle_loop_cmd 正常完成路径：finally 清理
   - _handle_loop_cmd 中断路径：break 后 finally 仍执行清理
+  - _handle_editmsg_cmd: chat_ui suspend/resume 和 monitor stop/start 调用验证
+  - _handle_editmsg_cmd: chat_ui/monitor 为 None 的边界情况
+  - _handle_editmsg_cmd: 异常路径 finally 仍执行恢复
 """
 
 import pytest
@@ -534,3 +538,242 @@ class TestHandleLoopCmdCleanup:
         loop_instance._chat_ui.bottom_bar.reset_tool_count.assert_not_called()
         mock_reset_speed.assert_not_called()
         mock_save.assert_not_called()
+
+
+# ═══════════════════════════════════════════════════════════
+# _handle_editmsg_cmd — suspend/resume + monitor stop/start 测试
+# ═══════════════════════════════════════════════════════════
+
+
+class TestHandleEditmsgCmd:
+    """测试 _handle_editmsg_cmd 的 suspend/resume 对齐 /model 模式。
+
+    核心断言：
+    - chat_ui 不为 None 时调用 suspend() 和 resume()
+    - monitor 不为 None 时调用 stop() 和 start()
+    - chat_ui 为 None 时不崩溃，也不调用 suspend/resume
+    - monitor 为 None 时不崩溃，也不调用 stop/start
+    - 异常路径 finally 仍执行 monitor.start() + chat_ui.resume()
+    """
+
+    @pytest.fixture
+    def mock_session(self):
+        """创建 mock ChatSession。"""
+        session = MagicMock()
+        session.agent = MagicMock()
+        session.messages = []
+        session.sync_retry_pending = MagicMock()
+        return session
+
+    @pytest.fixture
+    def mock_state(self):
+        """创建 SessionState 实例。"""
+        from src.app_loop import SessionState
+        return SessionState(model="test-model")
+
+    # ── 场景 1：正常路径 suspend/resume ──
+
+    async def test_suspend_resume_called(self, mock_session, mock_state):
+        """chat_ui 和 monitor 均存在时，suspend/stop → 执行 → start/resume 全部调用。"""
+        mock_chat_ui = MagicMock()
+        mock_monitor = MagicMock()
+        from src.app_loop import _handle_editmsg_cmd
+
+        with patch("src.chat_ui.get_active_chat_ui", return_value=mock_chat_ui), \
+             patch("src.app_loop.get_active_monitor", return_value=mock_monitor), \
+             patch("src.app_loop.asyncio.to_thread", new_callable=AsyncMock):
+            await _handle_editmsg_cmd(mock_session, mock_state)
+
+        mock_chat_ui.suspend.assert_called_once()
+        mock_chat_ui.resume.assert_called_once()
+
+    async def test_monitor_stop_start_called(self, mock_session, mock_state):
+        """monitor 不为 None 时 stop() 和 start() 被调用。"""
+        mock_chat_ui = MagicMock()
+        mock_monitor = MagicMock()
+        from src.app_loop import _handle_editmsg_cmd
+
+        with patch("src.chat_ui.get_active_chat_ui", return_value=mock_chat_ui), \
+             patch("src.app_loop.get_active_monitor", return_value=mock_monitor), \
+             patch("src.app_loop.asyncio.to_thread", new_callable=AsyncMock):
+            await _handle_editmsg_cmd(mock_session, mock_state)
+
+        mock_monitor.stop.assert_called_once()
+        mock_monitor.start.assert_called_once()
+
+    async def test_suspend_before_monitor_stop_order(self, mock_session, mock_state):
+        """suspend() 在 monitor.stop() 之前调用（先暂停渲染，再停止键盘监听）。"""
+        mock_chat_ui = MagicMock()
+        mock_monitor = MagicMock()
+        from src.app_loop import _handle_editmsg_cmd
+
+        call_order = []
+
+        def _record_suspend():
+            call_order.append("suspend")
+        def _record_stop():
+            call_order.append("stop")
+
+        mock_chat_ui.suspend.side_effect = _record_suspend
+        mock_monitor.stop.side_effect = _record_stop
+
+        with patch("src.chat_ui.get_active_chat_ui", return_value=mock_chat_ui), \
+             patch("src.app_loop.get_active_monitor", return_value=mock_monitor), \
+             patch("src.app_loop.asyncio.to_thread", new_callable=AsyncMock):
+            await _handle_editmsg_cmd(mock_session, mock_state)
+
+        assert call_order == ["suspend", "stop"], (
+            f"预期调用顺序 [suspend, stop]，实际: {call_order}"
+        )
+
+    async def test_resume_after_monitor_start_order(self, mock_session, mock_state):
+        """finally 中 monitor.start() 在 chat_ui.resume() 之前调用。"""
+        mock_chat_ui = MagicMock()
+        mock_monitor = MagicMock()
+        from src.app_loop import _handle_editmsg_cmd
+
+        call_order = []
+
+        def _record_start():
+            call_order.append("start")
+        def _record_resume():
+            call_order.append("resume")
+
+        mock_monitor.start.side_effect = _record_start
+        mock_chat_ui.resume.side_effect = _record_resume
+
+        with patch("src.chat_ui.get_active_chat_ui", return_value=mock_chat_ui), \
+             patch("src.app_loop.get_active_monitor", return_value=mock_monitor), \
+             patch("src.app_loop.asyncio.to_thread", new_callable=AsyncMock):
+            await _handle_editmsg_cmd(mock_session, mock_state)
+
+        assert call_order == ["start", "resume"], (
+            f"预期调用顺序 [start, resume]，实际: {call_order}"
+        )
+
+    # ── 场景 2：chat_ui 为 None ──
+
+    async def test_chat_ui_none_no_crash(self, mock_session, mock_state):
+        """chat_ui 为 None 时不崩溃。"""
+        mock_monitor = MagicMock()
+        from src.app_loop import _handle_editmsg_cmd
+
+        with patch("src.chat_ui.get_active_chat_ui", return_value=None), \
+             patch("src.app_loop.get_active_monitor", return_value=mock_monitor), \
+             patch("src.app_loop.asyncio.to_thread", new_callable=AsyncMock):
+            await _handle_editmsg_cmd(mock_session, mock_state)
+
+        # monitor 仍正常调用
+        mock_monitor.stop.assert_called_once()
+        mock_monitor.start.assert_called_once()
+
+    # ── 场景 3：monitor 为 None ──
+
+    async def test_monitor_none_no_crash(self, mock_session, mock_state):
+        """monitor 为 None 时不崩溃，chat_ui suspend/resume 仍正常。"""
+        mock_chat_ui = MagicMock()
+        from src.app_loop import _handle_editmsg_cmd
+
+        with patch("src.chat_ui.get_active_chat_ui", return_value=mock_chat_ui), \
+             patch("src.app_loop.get_active_monitor", return_value=None), \
+             patch("src.app_loop.asyncio.to_thread", new_callable=AsyncMock):
+            await _handle_editmsg_cmd(mock_session, mock_state)
+
+        mock_chat_ui.suspend.assert_called_once()
+        mock_chat_ui.resume.assert_called_once()
+
+    # ── 场景 4：两者均为 None ──
+
+    async def test_both_none_no_crash(self, mock_session, mock_state):
+        """chat_ui 和 monitor 均为 None 时不崩溃。"""
+        from src.app_loop import _handle_editmsg_cmd
+
+        with patch("src.chat_ui.get_active_chat_ui", return_value=None), \
+             patch("src.app_loop.get_active_monitor", return_value=None), \
+             patch("src.app_loop.asyncio.to_thread", new_callable=AsyncMock):
+            await _handle_editmsg_cmd(mock_session, mock_state)
+
+        # 无异常即为通过
+
+    # ── 场景 5：异常路径 finally 仍执行恢复 ──
+
+    async def test_exception_still_resumes(self, mock_session, mock_state):
+        """to_thread 抛出异常时 finally 仍执行 monitor.start() + chat_ui.resume()。"""
+        mock_chat_ui = MagicMock()
+        mock_monitor = MagicMock()
+        from src.app_loop import _handle_editmsg_cmd
+
+        with patch("src.chat_ui.get_active_chat_ui", return_value=mock_chat_ui), \
+             patch("src.app_loop.get_active_monitor", return_value=mock_monitor), \
+             patch("src.app_loop.asyncio.to_thread", side_effect=RuntimeError("LLM API 错误")):
+            with pytest.raises(RuntimeError, match="LLM API 错误"):
+                await _handle_editmsg_cmd(mock_session, mock_state)
+
+        # finally 仍执行恢复
+        mock_monitor.start.assert_called_once()
+        mock_chat_ui.resume.assert_called_once()
+
+    async def test_exception_after_stop_still_resumes(self, mock_session, mock_state):
+        """to_thread 异常时：stop 已调用，finally 仍调用 start + resume。"""
+        mock_chat_ui = MagicMock()
+        mock_monitor = MagicMock()
+        from src.app_loop import _handle_editmsg_cmd
+
+        with patch("src.chat_ui.get_active_chat_ui", return_value=mock_chat_ui), \
+             patch("src.app_loop.get_active_monitor", return_value=mock_monitor), \
+             patch("src.app_loop.asyncio.to_thread", side_effect=RuntimeError("测试异常")):
+            with pytest.raises(RuntimeError):
+                await _handle_editmsg_cmd(mock_session, mock_state)
+
+        # 确认 stop 已调用（异常前），start 也已调用（finally）
+        mock_monitor.stop.assert_called_once()
+        mock_monitor.start.assert_called_once()
+
+    # ── 场景 6：display_messages 条件调用（_needs_rerender） ──
+
+    async def test_display_messages_called_when_retry_true(self, mock_session, mock_state):
+        """retry=True 时 display_messages 被调用（_needs_rerender 为 True）。"""
+        mock_chat_ui = MagicMock()
+        mock_monitor = MagicMock()
+        from src.app_loop import _handle_editmsg_cmd
+
+        # 模拟 edit_current_messages 设置了 retry=True
+        async def _fake_to_thread(func, *args, **kwargs):
+            edit_state = args[1]  # 第二个位置参数是 edit_state dict
+            edit_state["retry"] = True
+
+        with patch("src.chat_ui.get_active_chat_ui", return_value=mock_chat_ui), \
+             patch("src.app_loop.get_active_monitor", return_value=mock_monitor), \
+             patch("src.app_loop.asyncio.to_thread", side_effect=_fake_to_thread), \
+             patch("src.app_loop._non_system_messages", return_value=[]):
+            await _handle_editmsg_cmd(mock_session, mock_state)
+
+        mock_chat_ui.display_messages.assert_called_once()
+
+    async def test_display_messages_not_called_when_no_change(self, mock_session, mock_state):
+        """retry=False + prefill='' 时 display_messages 不被调用。"""
+        mock_chat_ui = MagicMock()
+        mock_monitor = MagicMock()
+        from src.app_loop import _handle_editmsg_cmd
+
+        with patch("src.chat_ui.get_active_chat_ui", return_value=mock_chat_ui), \
+             patch("src.app_loop.get_active_monitor", return_value=mock_monitor), \
+             patch("src.app_loop.asyncio.to_thread", new_callable=AsyncMock):
+            await _handle_editmsg_cmd(mock_session, mock_state)
+
+        mock_chat_ui.display_messages.assert_not_called()
+
+    async def test_display_messages_skipped_when_chat_ui_none(self, mock_session, mock_state):
+        """chat_ui=None 时即使 retry=True 也不调用 display_messages。"""
+        from src.app_loop import _handle_editmsg_cmd
+
+        async def _fake_to_thread(func, *args, **kwargs):
+            edit_state = args[1]
+            edit_state["retry"] = True
+
+        with patch("src.chat_ui.get_active_chat_ui", return_value=None), \
+             patch("src.app_loop.get_active_monitor", return_value=None), \
+             patch("src.app_loop.asyncio.to_thread", side_effect=_fake_to_thread):
+            await _handle_editmsg_cmd(mock_session, mock_state)
+
+        # 无异常即为通过（没有 chat_ui.display_messages 可断言）

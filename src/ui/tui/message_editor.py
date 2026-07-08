@@ -27,6 +27,7 @@ from .._bottom_bar import run_bottom_bar_selection
 from ..events import publish_output
 from . import _message_display as _disp
 from ._text_utils import truncate
+from ._terminal import get_terminal_width
 
 _logger = logging.getLogger(__name__)
 
@@ -47,43 +48,65 @@ def _restore_sandbox_to(agent: Any, target_idx: int) -> str:
     return ""
 
 
+def _get_editor_msg_max_width() -> int:
+    """根据终端宽度计算消息摘要的最大截断宽度。
+
+    终端宽度减去前缀边距（约 12 字符），再 clamp 到 [25, 80] 区间：
+    - 宽屏（≥120 列）→ 最多 80 字符
+    - 标准屏（80 列）→ 约 68 字符
+    - 窄屏（≤30 列）→ 最少 25 字符
+
+    Returns:
+        计算后的最大宽度（int），异常时回退到 80。
+    """
+    try:
+        term_width = get_terminal_width()
+    except Exception:
+        term_width = 80
+    # 减去前缀装饰/边距约 12 字符，clamp 到 [25, 80]
+    return max(25, min(term_width - 12, 80))
+
+
 def _msg_short_summary(msg: dict) -> str:
-    """生成消息的简短摘要（单行，适合弹窗显示）。
+    """生成消息的简短摘要（纯文本，适合弹窗显示）。
 
-    格式: ● │ 用户消息前35字...  (亮青色)
-          ◆ │ 助手回复前35字...  (亮绿色)
-          ◆ ⚙ func_name          (助手带 tool_calls)
-          ⚙ name: 内容前30字      (工具消息, 深灰)
-          · 其他角色消息前35字... (蓝色圆点)
+    截断宽度根据终端宽度动态计算（_get_editor_msg_max_width），
+    宽屏显示更多内容，窄屏自动缩减。
 
-    角色图标使用语义化符号，与消息显示对齐。
+    格式: ● │ 用户消息摘要...  (动态宽度 [25-80])
+          ◆ │ 助手回复摘要...  (动态宽度 [25-80])
+          ◆ ⚙ func_name        (助手带 tool_calls, 动态宽度 ≤45)
+          ⚙ name: 内容摘要     (工具消息, 动态宽度 ≤60)
+          · 其他角色消息摘要... (动态宽度 [25-80])
+
+    注意：输出纯文本（不含 ANSI 颜色转义码），颜色由弹窗自身渲染。
     """
     role = msg.get("role", "?")
     content = msg.get("content", "") or ""
     icon_map = {"user": "\u25cf", "assistant": "\u25c6", "tool": "\u2699"}
     icon = icon_map.get(role, "\u00b7")
+    max_w = _get_editor_msg_max_width()
     if role == "user":
         text = content.replace("\n", " ").strip()
-        # ★ 美化：用户消息用亮青色 + 竖线装饰
-        return f"{BRIGHT_CYAN}{icon}{RESET} {BRIGHT_CYAN}\u2502{RESET} {truncate(text, 35)}"
+        return f"{icon} \u2502 {truncate(text, max_w)}"
     elif role == "assistant":
         if content:
             text = content.replace("\n", " ").strip()
-            return f"{BRIGHT_GREEN}{icon}{RESET} {BRIGHT_GREEN}\u2502{RESET} {truncate(text, 35)}"
+            return f"{icon} \u2502 {truncate(text, max_w)}"
         # tool_calls
         tcs = msg.get("tool_calls", [])
         if tcs:
             names = ", ".join(tc.get("function", {}).get("name", "?") for tc in tcs[:2])
-            return f"{BRIGHT_GREEN}{icon}{RESET} {YELLOW}\u2699{RESET} {truncate(names, 30)}"
-        return f"{DIM}{icon}{RESET} {DIM}(\u7a7a){RESET}"
+            return f"{icon} \u2699 {truncate(names, min(max_w, 45))}"
+        return f"{icon} (\u7a7a)"
     elif role == "tool":
         text = content.replace("\n", " ").strip()
         name = msg.get("name", "")
-        prefix = f"{DARK_GRAY}{name}:{RESET} " if name else ""
-        return f"{DIM}{icon}{RESET} {prefix}{DIM}{truncate(text, 30)}{RESET}"
+        prefix = f"{name}: " if name else ""
+        return f"{icon} {prefix}{truncate(text, min(max_w, 60))}"
     else:
         text = content.replace("\n", " ").strip()
-        return f"{BLUE}\u00b7{RESET} {truncate(text, 35)}"
+        return f"\u00b7 {truncate(text, max_w)}"
 
 
 def _build_message_items(data: list[dict]) -> list[str]:
@@ -121,10 +144,16 @@ class MessageEditor:
             is_current: 是否为当前会话。
 
         Returns:
-            (action, real_idx): action = "edit"|"quit"
+            (action, real_idx): action = "edit" 表示用户确认选择, real_idx 为实际消息索引；
+                                action = "quit" 表示取消/错误/无可选消息, real_idx 为 0（无效）。
         """
         data = ctx.data
         if not data:
+            _logger.warning("消息选择失败: 当前会话无消息")
+            publish_output(
+                f"  {THEME['warning']}当前会话无消息{RESET}",
+                level="raw", source="cmd",
+            )
             return ("quit", 0)
 
         tag = " (\u5f53\u524d)" if is_current else ""  # (当前)
@@ -132,6 +161,7 @@ class MessageEditor:
         # 只有 user 消息可选
         selectable = [i for i, m in enumerate(data) if m.get("role") == "user"]
         if not selectable:
+            _logger.warning("消息选择失败: 没有可编辑的用户消息")
             publish_output(
                 f"  {THEME['warning']}\u6ca1\u6709\u53ef\u7f16\u8f91\u7684\u7528\u6237\u6d88\u606f{RESET}",
                 level="raw", source="cmd",
@@ -161,9 +191,19 @@ class MessageEditor:
             )
             return ("quit", 0)
         if result["action"] == "error":
+            _logger.warning("消息选择失败: run_bottom_bar_selection 返回 error action")
+            publish_output(
+                f"  {THEME['warning']}消息选择失败，终端输入解析异常（如为 Cygwin/Mintty 环境，请确认终端支持 ANSI escape 序列）{RESET}",
+                level="raw", source="cmd",
+            )
             return ("quit", 0)
 
         if result["index"] is None or result["index"] >= len(selectable):
+            _logger.warning("消息选择索引无效: index=%s, len=%d", result.get("index"), len(selectable))
+            publish_output(
+                f"  {THEME['warning']}选择索引无效{RESET}",
+                level="raw", source="cmd",
+            )
             return ("quit", 0)
 
         real_idx = selectable[result["index"]]
