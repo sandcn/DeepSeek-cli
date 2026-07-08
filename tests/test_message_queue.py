@@ -215,8 +215,8 @@ class TestMessageQueue:
 
         assert received == ["before"]
 
-    async def test_async_consume_cancel_re_enqueues_message(self):
-        """取消 async_consume 时正在处理的消息应放回队列"""
+    async def test_async_consume_cancel_taken_skips_requeue(self):
+        """★ Bug 5 修复：回调已开始处理（taken=True）后取消，消息不应重新入队"""
         q = MessageQueue()
         blocked = asyncio.Event()
 
@@ -228,7 +228,7 @@ class TestMessageQueue:
         consumer = asyncio.create_task(q.async_consume(blocking_callback, poll_interval=0.05))
 
         await q.put("stuck")
-        await blocked.wait()  # 等待回调开始处理
+        await blocked.wait()  # 等待回调开始处理（此时 taken=True）
         await asyncio.sleep(0.05)
         consumer.cancel()
         try:
@@ -236,10 +236,9 @@ class TestMessageQueue:
         except asyncio.CancelledError:
             pass
 
-        # 消息应被重新入队
+        # ★ Bug 5 修复：taken=True 时消息不应重新入队（防止重复处理）
         re_queued = await q.get(timeout=0.1)
-        assert re_queued is not None
-        assert re_queued.content == "stuck"
+        assert re_queued is None, "taken=True 时取消不应重新入队消息"
 
     # ── is_running ─────────────────────────────────────────────
 
@@ -280,3 +279,114 @@ class TestMessageQueue:
 
         assert len(results) == 10
         assert sorted(results) == [f"msg_{i}" for i in range(10)]
+
+
+# ═══════════════════════════════════════════════════════════════
+# Bug 5 回归测试 — TestTwoPhaseConsumeCancel
+# ═══════════════════════════════════════════════════════════════
+
+class TestTwoPhaseConsumeCancel:
+    """★ Bug 5 回归: 双阶段确认防止重复处理。
+
+    taken=True → 取消时不重新入队（防止重复处理）
+    taken=False → 取消时重新入队（避免消息丢失）
+    确保 msg.taken 在 try 外设置，不因 CancelledError 回滚。
+    """
+
+    @pytest.mark.asyncio
+    async def test_cancel_with_taken_true_skips_requeue(self):
+        """taken=True 时取消，消息不重新入队"""
+        q = MessageQueue()
+        blocked = asyncio.Event()
+
+        async def blocking_callback(msg):
+            blocked.set()
+            await asyncio.Event().wait()  # 永久阻塞
+
+        consumer = asyncio.create_task(q.async_consume(blocking_callback, poll_interval=0.05))
+        await q.put("msg1")
+        await blocked.wait()
+        await asyncio.sleep(0.05)
+
+        consumer.cancel()
+        try:
+            await consumer
+        except asyncio.CancelledError:
+            pass
+
+        # taken=True → 不应重新入队
+        re_queued = await q.get(timeout=0.1)
+        assert re_queued is None, "taken=True 时取消不应重新入队"
+
+    @pytest.mark.asyncio
+    async def test_taken_set_before_callback(self):
+        """验证 msg.taken 在 try 块外设置（在 callback 调用前）"""
+        q = MessageQueue()
+        msg_taken_before_callback = False
+
+        async def check_callback(msg):
+            nonlocal msg_taken_before_callback
+            msg_taken_before_callback = msg.taken
+
+        consumer = asyncio.create_task(q.async_consume(check_callback, poll_interval=0.05))
+        await q.put("check_taken")
+        await asyncio.sleep(0.2)
+
+        consumer.cancel()
+        try:
+            await consumer
+        except asyncio.CancelledError:
+            pass
+
+        assert msg_taken_before_callback is True, "callback 被调用时 msg.taken 应为 True"
+
+    @pytest.mark.asyncio
+    async def test_multiple_messages_with_cancel(self):
+        """多个消息处理中取消，已处理的消息不应重新入队"""
+        q = MessageQueue()
+        processed = []
+
+        async def slow_callback(msg):
+            await asyncio.sleep(0.1)
+            processed.append(msg.content)
+
+        consumer = asyncio.create_task(q.async_consume(slow_callback, poll_interval=0.05))
+
+        await q.put("m1")
+        await q.put("m2")
+        await asyncio.sleep(0.15)  # m1 已处理，m2 可能刚被 taken
+
+        consumer.cancel()
+        try:
+            await consumer
+        except asyncio.CancelledError:
+            pass
+
+        # 队列中不应有已处理消息的残留
+        remaining = []
+        while True:
+            msg = await q.get(timeout=0.1)
+            if msg is None:
+                break
+            remaining.append(msg.content)
+
+        for processed_msg in processed:
+            assert processed_msg not in remaining, (
+                f"已处理的消息 '{processed_msg}' 不应出现在队列中"
+            )
+
+    @pytest.mark.asyncio
+    async def test_async_consume_cancel_running_false(self):
+        """取消后 _running 被设为 False"""
+        q = MessageQueue()
+        consumer = asyncio.create_task(q.async_consume(lambda msg: asyncio.sleep(1), poll_interval=0.05))
+
+        await q.put("test")
+        await asyncio.sleep(0.05)
+        consumer.cancel()
+        try:
+            await consumer
+        except asyncio.CancelledError:
+            pass
+
+        assert q.is_running is False, "取消后 _running 应为 False"

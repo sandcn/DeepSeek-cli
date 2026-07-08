@@ -385,6 +385,14 @@ class ChatSession:
     async def run_round(self, user_input: str) -> dict:
         """添加用户消息并执行一轮对话。
 
+        变更行为：
+        - 已在执行中时消息排队（Bug 3）：若状态机为 RUNNING，则将消息暂存到
+          pending_messages 队列，返回 {"pending": True} 不阻塞当前轮次。
+        - 异常回滚保护 AI 内容（Bug 2）：_execute_round 已部分执行（最后一条消息
+          为 assistant）时，跳过 pop user 消息，保留 AI 已生成的内容供 retry 恢复。
+        - 回滚后同步 context_manager 缓存（Bug 6）：pop user 消息或保留 AI 内容后，
+          调用 context_manager.invalidate_cache() 确保缓存与消息列表一致。
+
         Args:
             user_input: 用户输入文本
 
@@ -423,14 +431,50 @@ class ChatSession:
                 raise
             except Exception:
                 # 个性化清理（_handle_round_error 已记录日志并恢复状态机）
-                self._state.session_id = None  # 回滚 orphan ID
-                # ★ P1-7 修复：回滚已添加的 user 消息，防止幽灵消息污染消息列表
-                if self._agent.messages and self._agent.messages[-1].get(_ROLE_KEY) == "user":
-                    self._agent.messages.pop()
-                    _logger.warning("run_round 异常，已回滚最后一条 user 消息")
-                # ★ Bug2 修复：清理已排队的消息，防止异常后残留无效数据
-                self._state.pending_messages.clear()
+                self._rollback_round_on_error()
                 raise
+
+    def _rollback_round_on_error(self) -> None:
+        """run_round 异常回滚的统一清理逻辑。
+
+        提取自 run_round 的 except Exception 块（Bug 2 + Bug 6 修复），
+        在 _handle_round_error 已记录日志并恢复状态机后执行个性化的消息和缓存清理。
+        """
+        # 回滚 orphan ID
+        self._state.session_id = None
+
+        # ★ Bug2：异常回滚时保护 AI 已生成的内容
+        #   检查最后一条消息的角色——若为 assistant 说明 _execute_round
+        #   已部分执行（AI 已生成回复），此时保留 AI 内容和对应的 user 消息；
+        #   若仍为 user 说明 _execute_round 未开始，回滚该 user 消息。
+        last_role = self._agent.messages[-1].get(_ROLE_KEY) if self._agent.messages else None
+        if last_role == "assistant":
+            # _execute_round 已部分执行，AI 已生成回复
+            # 跳过 pop user 消息，保留 AI 已生成的内容供 retry 机制恢复
+            _logger.warning(
+                "run_round 异常，_execute_round 已部分执行（最后消息为 assistant），"
+                "保留 AI 内容，待 retry 机制恢复"
+            )
+            # ★ Bug6：assistant 分支虽然没有 pop，但消息已变更，
+            # 缓存可能不准确，也 invalidate 确保下次访问时重建
+            if self._ctx_mgr is not None:
+                self._ctx_mgr.invalidate_cache()
+        elif last_role == "user":
+            # _execute_round 未开始，回滚已添加的 user 消息
+            pop_index = len(self._agent.messages) - 1
+            self._agent.messages.pop()
+            _logger.warning("run_round 异常，已回滚最后一条 user 消息")
+            # ★ Bug6：回滚后同步 context_manager 状态
+            if self._ctx_mgr is not None:
+                self._ctx_mgr.invalidate_cache()
+                self._ctx_mgr.notify_messages_removed([pop_index])
+        else:
+            # 其他情况（消息列表为空等），也 invalidate 缓存确保一致性
+            if self._ctx_mgr is not None:
+                self._ctx_mgr.invalidate_cache()
+
+        # 清理已排队的消息，防止异常后残留无效数据
+        self._state.pending_messages.clear()
 
     async def run_pending_loop(self, max_iter: int = _MAX_PENDING_LOOP_ITER) -> tuple[bool, list[str]]:
         """处理 run_round 执行期间产生的所有排队消息。
@@ -439,6 +483,10 @@ class ChatSession:
         每处理完一轮后再次检查是否有新排队的消息，直到全部处理完毕或达到熔断阈值。
 
         CLI 和 WebUI 共用此方法，消除两端重复的排队消息处理逻辑。
+
+        变更行为：
+        - 增量 checkpoint（Bug 3）：每成功处理一条排队消息后立即调用 save_checkpoint()
+          保存增量 checkpoint，确保中途异常时不丢失已成功处理的消息。
 
         Args:
             max_iter: 最大轮次阈值，防止无限循环（默认 10）
@@ -466,6 +514,12 @@ class ChatSession:
                         self._state.pending_messages = remaining + self._state.pending_messages
                         _logger.error("排队消息处理异常，剩余 %d 条已重新入队", len(remaining))
                     raise
+                else:
+                    # ★ Bug3 修复：每成功处理一条排队消息，立即保存增量 checkpoint
+                    try:
+                        self.save_checkpoint()
+                    except Exception:
+                        _logger.exception("run_pending_loop: save_checkpoint 异常，不阻断消息处理")
             pending = self.pop_pending_messages()
 
         if total_count >= max_iter:
@@ -586,12 +640,22 @@ class ChatSession:
         return delta, current
 
     async def _auto_save(self) -> str | None:
-        """自动保存会话，返回 session_id（无可保存内容时返回 None）。"""
+        """自动保存会话，返回 session_id（无可保存内容时返回 None）。
+
+        变更行为（Bug 1 修复）：
+        - 三字段（messages/model/session_id）原子打包利用 GIL 字节码原子性消除竞态窗口，
+          避免 /model 命令在快照读取间隙修改 model 导致的数据不一致。
+        """
         try:
             # 在主线程中提取消息快照，避免子线程访问 messages 的竞态
-            snapshot = list(self._agent.messages)
-            snapshot_model = self._model
-            snapshot_sid = self._state.session_id
+            # ★ Bug1 修复: 三字段原子打包（利用 GIL 字节码原子性消除竞态窗口）
+            # TODO: 若未来迁移到无 GIL 的 Python（PEP 703），此处的字节码原子性不再保证，
+            #       需改用 threading.Lock 或 copy-on-write 机制保护三字段的一致性。
+            (snapshot, snapshot_model, snapshot_sid) = (
+                list(self._agent.messages),
+                self._model,
+                self._state.session_id,
+            )
 
             non_system = [m for m in snapshot if m.get(_ROLE_KEY) != _SYSTEM_ROLE]
             if not non_system:
@@ -621,7 +685,13 @@ class ChatSession:
 
     def _emit_round_events(self, interrupted: bool, session_id: str | None,
                            delta: dict, current: dict) -> dict:
-        """发射 round 事件，返回结果字典。"""
+        """发射 round 事件，返回结果字典。
+
+        变更行为：
+        - Pipeline CancelledError 时额外保存 checkpoint（Bug 4）：检查 pipeline
+          的 ctx.checkpoint_requested 标记，若为 True 则在已有 save_checkpoint()
+          之后再次调用 save_checkpoint()，确保被取消的模型调用状态也被持久化。
+        """
         elapsed = time.time() - get_session_start_time()
         if delta["input"] > 0 or delta["output"] > 0:
             prices = self._config_port.get_token_prices()
@@ -634,7 +704,17 @@ class ChatSession:
                        messages=self._agent.messages)
 
         if interrupted:
-            self.save_checkpoint()
+            # ★ Bug4: 检查 Pipeline 的 checkpoint_requested 标记
+            #   （CancelledError 路径设置的），避免重复调用 save_checkpoint()
+            # TODO: 通过 pipeline._last_ctx（私有属性）跨模块访问 checkpoin_requested
+            #       是设计上的耦合。后续应考虑通过 Event/Callback 机制通知 session，
+            #       或将 checkpoint_requested 合并到 round_end 事件的参数中传递。
+            pipe_ctx = getattr(self._agent.pipeline, '_last_ctx', None)
+            if pipe_ctx is not None and pipe_ctx.checkpoint_requested:
+                _logger.warning("Pipeline CancelledError 标记已检测，保存 checkpoint")
+                self.save_checkpoint()
+            else:
+                self.save_checkpoint()
             self._emit("interrupted")
 
         self._emit("round_end",

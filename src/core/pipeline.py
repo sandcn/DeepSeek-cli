@@ -41,11 +41,18 @@ class PipelineContext:
 
     在 pipeline.run_round_async() 执行期间，
     每个生命周期钩子都可以读取和修改此对象。
+
+    字段说明：
+    - checkpoint_requested: 当 CancelledError 发生时设为 True（Bug 4），
+      供 session._emit_round_events 检查以保存 checkpoint。
     """
 
     agent: "Agent"
     interrupted: bool = False
     round_complete: bool = False
+
+    # ★ Bug4: Pipeline CancelledError 时请求保存 checkpoint 的标记
+    checkpoint_requested: bool = False
 
     # 当前模型调用的结果
     reasoning: str = ""
@@ -124,6 +131,9 @@ class Pipeline:
 
     def __init__(self):
         self._async_middlewares: list[AsyncMiddleware] = []
+        # ★ Bug4: 最近一次 run_round_async 的 PipelineContext 引用，
+        #   供 session._emit_round_events 检查 checkpoint_requested 标记
+        self._last_ctx: PipelineContext | None = None
 
     # ── 中间件管理（异步） ───────────────────────────────
 
@@ -177,6 +187,8 @@ class Pipeline:
                 ctx.interrupted = True
                 ctx.round_complete = True
                 ctx.error = asyncio.CancelledError("Pipeline 模型调用被取消")
+                # ★ Bug4: 标记 checkpoint 请求，让 session 在 _emit_round_events 中保存 checkpoint
+                ctx.checkpoint_requested = True
                 # 不 raise：让 round 以 interrupted 状态正常完成
                 # 后续 session._execute_round 仍会执行上下文压缩、保存、状态转换
             except Exception as e:
@@ -241,6 +253,9 @@ class Pipeline:
 
         # ── on_round_complete ─────────────────────────────
         await self._fire_hooks_async('on_round_complete', ctx)
+
+        # ★ Bug4: 保存 ctx 引用供 session 检查 checkpoint_requested 标记
+        self._last_ctx = ctx
 
         return ctx.interrupted
 

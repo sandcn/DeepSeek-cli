@@ -91,6 +91,16 @@ class ContextManager:
         # 同步提示缓存
         self._hint_chars = self._cache.total_chars
 
+    def invalidate_cache(self):
+        """使缓存失效，下次访问时通过 _ensure_cache() 自动重新同步。
+
+        线程安全：由现有 _lock 保护。
+        用于外部（如 session.run_round 异常回滚后）通知缓存已过时。
+        """
+        with self._lock:
+            self._cache.invalidate()
+            self._hint_chars = 0
+
     # ── 压缩入口 ──────────────────────────────────────────
 
     def check_and_compress(self, force=False):
@@ -228,3 +238,14 @@ class ContextManager:
                 self._on_changed(event)
             except Exception:
                 _logger.exception("ContextManager 回调异常")
+
+    def notify_messages_removed(self, indices: list[int]):
+        """手动通知消息已被删除，触发 _on_changed 回调同步。
+
+        用于外部在直接操作 messages 列表后（如异常回滚 pop），
+        手动触发 sandbox manager 的索引同步。
+
+        线程安全：由现有 _lock 保护。
+        """
+        with self._lock:
+            self._notify_changed({"type": "remove", "indices": indices})

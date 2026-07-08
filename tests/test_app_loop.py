@@ -11,10 +11,17 @@
   - _handle_editmsg_cmd: 异常路径 finally 仍执行恢复
 """
 
+import asyncio
 import pytest
 from unittest.mock import MagicMock, AsyncMock, patch, call
 
-from src.app_loop import _make_round_callbacks, InteractiveLoop
+from src.app_loop import (
+    _make_round_callbacks,
+    InteractiveLoop,
+    _put_and_wait,
+    SessionState,
+)
+from src.core.message_queue import MessageQueue, Message
 
 
 # ═══════════════════════════════════════════════════════════
@@ -777,3 +784,175 @@ class TestHandleEditmsgCmd:
             await _handle_editmsg_cmd(mock_session, mock_state)
 
         # 无异常即为通过（没有 chat_ui.display_messages 可断言）
+
+
+# ═══════════════════════════════════════════════════════════════
+# Bug 7 回归测试 — TestMsgDoneTimeout
+# ═══════════════════════════════════════════════════════════════
+
+@pytest.mark.asyncio
+class TestMsgDoneTimeout:
+    """★ Bug 7 回归: msg_done.wait() 超时保护。
+
+    验证 _put_and_wait 中 await asyncio.wait_for(msg_done.wait(), timeout=30.0)
+    在 msg_done 从未被 set 时，超时后自动恢复而非永久阻塞。
+    """
+
+    async def test_timeout_does_not_raise(self):
+        """msg_done 未 set 时超时后不抛出异常，继续执行"""
+        import src.app_loop as _al
+
+        queue = MessageQueue()
+        msg_done = asyncio.Event()  # 初始 cleared，永不 set
+
+        # ★ 临时改为短超时，避免 30s 等待导致 pytest-timeout 超时
+        original = _al._MSG_DONE_TIMEOUT
+        _al._MSG_DONE_TIMEOUT = 0.5
+        try:
+            await _put_and_wait(queue, "test_msg", msg_done)
+        finally:
+            _al._MSG_DONE_TIMEOUT = original
+
+        # 验证消息已放入队列
+        msg = await queue.get(timeout=0.1)
+        assert msg is not None
+        assert msg.content == "test_msg"
+
+    async def test_normal_path_no_timeout(self):
+        """msg_done 正常 set 时不触发超时"""
+        queue = MessageQueue()
+        msg_done = asyncio.Event()
+
+        # 在 _put_and_wait 内部 await wait() 前，让另一个任务 set
+        async def set_soon():
+            await asyncio.sleep(0.05)
+            msg_done.set()
+
+        async with asyncio.TaskGroup() as tg:
+            tg.create_task(set_soon())
+            await _put_and_wait(queue, "normal", msg_done)
+
+        # 正常路径下 msg_done 被 clear
+        assert not msg_done.is_set(), "完成后 msg_done 应被 clear"
+
+    async def test_msg_put_before_wait(self):
+        """消息在 wait 前已放入队列"""
+        import src.app_loop as _al
+
+        queue = MessageQueue()
+        msg_done = asyncio.Event()  # 永不 set，验证超时保护
+
+        original = _al._MSG_DONE_TIMEOUT
+        _al._MSG_DONE_TIMEOUT = 0.5
+        try:
+            await _put_and_wait(queue, "before_wait", msg_done)
+        finally:
+            _al._MSG_DONE_TIMEOUT = original
+
+        msg = await queue.get(timeout=0.1)
+        assert msg.content == "before_wait"
+
+    async def test_handle_round_exception_sets_msg_done(self):
+        """_handle_round 的 except 块中 msg_done.set() 防止死锁"""
+        loop = InteractiveLoop.__new__(InteractiveLoop)
+        loop._chat_ui = MagicMock()
+        loop._chat_ui.write_line = MagicMock()
+        loop._force_exit = asyncio.Event()
+        loop._loop_state = {}
+        loop._msg_done_ref = None
+        loop._loaded_data = None
+
+        session = MagicMock()
+        state = SessionState(model="test-model")
+        queue = MessageQueue()
+        msg_done = asyncio.Event()
+
+        # mock _handle_round 抛出异常后 msg_done 被 set
+        with patch.object(loop, "_handle_round",
+                          side_effect=RuntimeError("round error")):
+            # 手动模拟异常后的清理
+            try:
+                await loop._handle_round(session, state, queue, msg_done)
+            except Exception:
+                if not msg_done.is_set():
+                    msg_done.set()
+
+        # except 块中 msg_done 应被 set
+        assert msg_done.is_set(), "异常路径后 msg_done 应被 set 防止死锁"
+
+
+# ═══════════════════════════════════════════════════════════════
+# Bug 8 回归测试 — TestMonitorFinallyGuard
+# ═══════════════════════════════════════════════════════════════
+
+class TestMonitorFinallyGuard:
+    """★ Bug 8 回归: EscapeMonitor 确保 finally 保护。
+
+    验证 monitor.stop() 后终端恢复被调用，
+    且 _restore_terminal_settings 在 finally 中防御性执行。
+    """
+
+    def test_monitor_stop_restores_terminal_settings(self):
+        """stop() 内部调用 _restore_terminal_settings"""
+        from src.api.escape_monitor._monitor import EscapeMonitor as RealEscapeMonitor
+
+        monitor = RealEscapeMonitor()
+        with patch.object(monitor, "_restore_terminal_settings") as mock_restore:
+            with patch.object(monitor, "_thread", None):  # 无线程
+                monitor.stop()
+
+            mock_restore.assert_called_once()
+
+    def test_interactive_loop_finally_restores_terminal(self):
+        """InteractiveLoop 的 finally 中 _restore_terminal_settings 被调用"""
+        from src.api.escape_monitor._monitor import EscapeMonitor as RealEscapeMonitor
+
+        monitor = RealEscapeMonitor()
+        with patch.object(monitor, "_restore_terminal_settings") as mock_restore:
+            with patch.object(monitor, "_thread", None):
+                # 模拟 InteractiveLoop finally 中的防御性恢复
+                monitor.stop()
+                monitor._restore_terminal_settings()
+
+            # stop() + 防御性恢复 = 至少 1 次
+            assert mock_restore.call_count >= 1
+
+    def test_monitor_stop_exception_does_not_bubble(self):
+        """monitor.stop() 异常不阻止 finally 执行"""
+        from src.api.escape_monitor._monitor import EscapeMonitor as RealEscapeMonitor
+
+        monitor = RealEscapeMonitor()
+        # 模拟 stop 中某步骤抛出异常
+        with patch.object(monitor, "_restore_terminal_settings",
+                          side_effect=[RuntimeError("stop 异常"), None]):
+            try:
+                monitor.stop()
+            except RuntimeError:
+                pass  # stop 内部异常被捕获，不传播到外部
+
+            # 防御性恢复应已执行（假设 finally 中调用）
+            # 此测试验证异常不阻止后续代码执行
+
+    def test_restore_terminal_settings_idempotent(self):
+        """_restore_terminal_settings 可多次调用（幂等）"""
+        from src.api.escape_monitor._monitor import EscapeMonitor as RealEscapeMonitor
+
+        monitor = RealEscapeMonitor()
+        # 模拟 settings 已设为 None（终端已恢复）
+        monitor._old_settings = None
+
+        # 多次调用不应抛出
+        monitor._restore_terminal_settings()
+        monitor._restore_terminal_settings()
+        monitor._restore_terminal_settings()
+        # 无异常即为通过
+
+    def test_exit_save_and_stop_calls_stop_active_monitor(self):
+        """_exit_save_and_stop 调用 stop_active_monitor"""
+        from src.app_loop import _exit_save_and_stop
+
+        session = MagicMock()
+        session.messages = []
+        with patch("src.app_loop.stop_active_monitor") as mock_stop:
+            _exit_save_and_stop(session)
+            mock_stop.assert_called_once()

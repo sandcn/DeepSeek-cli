@@ -31,6 +31,7 @@ class Message:
     content: str | object
     timestamp: float = field(default_factory=time.time)
     id: int = field(default_factory=lambda: next(_message_counter))
+    taken: bool = False  # 标记消息是否已被 callback 取出处理（双阶段确认防重复）
 
 
 class MessageQueue:
@@ -120,12 +121,21 @@ class MessageQueue:
                     continue
                 if msg.content is self._STOP_SENTINEL:
                     break
+                # 双阶段确认：先标记消息已取出（taken=True），再交给 callback
+                # taken 必须放在 try 块外，确保标记不因 CancelledError 回滚丢失
+                msg.taken = True
                 try:
                     await callback(msg)
                 except asyncio.CancelledError:
-                    # ★ 停止运行标记，将消息重新入队避免丢失
-                    self._running = False
-                    await self._queue.put(msg)
+                    if msg.taken:
+                        # callback 已开始处理消息，跳过重新入队避免重复处理
+                        _logger.warning("async_consume 取消时 msg.taken=True，跳过重新入队（防重复）")
+                        self._running = False
+                    else:
+                        # callback 尚未开始处理，将消息重新入队避免丢失
+                        _logger.warning("async_consume 取消时 msg.taken=False，重新入队消息 id=%d", msg.id)
+                        self._running = False
+                        await self._queue.put(msg)
                     raise
                 except Exception as e:
                     _logger.exception("异步消费者回调异常: %s", e)

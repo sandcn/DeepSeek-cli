@@ -63,6 +63,10 @@ class _RoundResult:
 # 重试哨兵 — 放入 MessageQueue 表示执行 session.retry()
 _RETRY_SENTINEL = object()
 
+# _put_and_wait 中 msg_done.wait() 的最大等待秒数
+# Bug 7: 超时保护防止死锁，正常情况下 set 在数百毫秒内完成
+_MSG_DONE_TIMEOUT = 30.0
+
 
 async def _put_and_wait(queue: MessageQueue, msg: object, msg_done: asyncio.Event) -> None:
     """将消息放入队列并等待消费者处理完成。
@@ -72,7 +76,10 @@ async def _put_and_wait(queue: MessageQueue, msg: object, msg_done: asyncio.Even
     """
     await queue.put(msg)
     if not msg_done.is_set():
-        await msg_done.wait()
+        try:
+            await asyncio.wait_for(msg_done.wait(), timeout=_MSG_DONE_TIMEOUT)
+        except asyncio.TimeoutError:
+            _logger.warning("msg_done.wait() 超时 (%ss)，强制继续", _MSG_DONE_TIMEOUT)
     msg_done.clear()
 
 
@@ -205,6 +212,10 @@ async def _handle_editmsg_cmd(session: "ChatSession", state: SessionState) -> No
     if chat_ui is not None:
         chat_ui.suspend()
     if monitor is not None:
+        # ★ stop 在 try 外（非 finally）：必须在进入编辑交互前确认终端
+        #   已恢复 cooked 模式（EditMsg Picker 需要 raw I/O 处理 ↑↓/Enter），
+        #   若放入 finally，edit 过程中终端仍处于 cbreak 模式，Picker 将无法正常工作。
+        #   start 在 finally 中确保编辑完成后始终恢复监听，无竞态风险。
         monitor.stop()
     needs_rerender = False
     try:
@@ -250,6 +261,10 @@ async def _handle_model_cmd(
     if chat_ui is not None:
         chat_ui.suspend()
     if monitor is not None:
+        # ★ stop 在 try 外（非 finally）：必须在进入模型选择 Picker 交互前
+        #   确认终端已恢复 cooked 模式（Picker 需要 raw I/O 处理 ↑↓/Enter），
+        #   若放入 finally，Picker 过程中终端仍处于 cbreak 模式，无法正常交互。
+        #   start 在 finally 中确保选择完成后始终恢复监听，无竞态风险。
         monitor.stop()
     try:
         state_dict = {"model": state.model, "retry": False, "prefill": ""}
@@ -348,6 +363,8 @@ class InteractiveLoop:
         所有用户输入通过 MessageQueue 投递，与 WebUI 共用同一消息处理机制。
         """
         try:
+            # ★ Bug 7: 确保 msg_done 为 cleared 状态，避免异常路径遗留 set 状态导致逻辑混乱
+            msg_done.clear()
             # ★ 同步当前模型名到底部栏状态行（覆盖所有可能修改模型的路径）
             self._chat_ui.bottom_bar.set_model_name(state.model)
 
@@ -400,6 +417,8 @@ class InteractiveLoop:
         except Exception as e:
             _logger.exception("对话轮次异常")
             self._chat_ui.write_line(f"\n  [错误] {e}，可继续输入")
+            if not msg_done.is_set():
+                msg_done.set()
             return _RoundResult(should_exit=False)
 
     async def _handle_loop_cmd(self, content: str, session: "ChatSession", state: SessionState) -> None:
@@ -465,6 +484,11 @@ class InteractiveLoop:
         if self._chat_ui is not None:
             self._chat_ui.on_user_message(content)
         await session.run_round(content)
+        # ★ Bug3 修复：首轮消息完成后保存 checkpoint，确保异常时已成功处理的消息不丢失
+        try:
+            session.save_checkpoint()
+        except Exception:
+            _logger.exception("_handle_regular_msg: save_checkpoint 异常，不阻断消息处理")
         state.model = session.model
         if self._chat_ui is not None:
             self._chat_ui.bottom_bar.set_model_name(state.model)
@@ -730,6 +754,7 @@ class InteractiveLoop:
                 _exit_save_and_stop(session, self._chat_ui)
             except Exception:
                 _logger.exception("异常路径保存会话失败")
+            _logger.info("异常路径：终端设置已恢复")
             raise  # 重新抛出，由 main() 中的 except 处理
         finally:
             # ★ P0 修复：清理 msg_done 引用
@@ -738,6 +763,11 @@ class InteractiveLoop:
             # 停止 EscapeMonitor
             if self._monitor is not None:
                 self._monitor.stop()
+                # ★ Bug 8 防御性终端恢复：stop() 内部已通过 _restore_terminal_settings()
+                #   恢复终端设置，此处额外调用确保线程异常退出或竞争条件下终端不残留
+                #   cooked/cbreak 不一致状态。若终端已恢复则 _restore_terminal_settings()
+                #   使用 _saved_original_settings 重试，操作幂等无害。
+                self._monitor._restore_terminal_settings()
                 self._monitor = None
 
             # 停止 ChatUI 消费者

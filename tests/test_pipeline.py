@@ -486,6 +486,70 @@ class TestRunRoundAsyncInterrupt:
 
 
 # ═══════════════════════════════════════════════════════════════
+# Bug 4 回归测试 — TestCancelledErrorCheckpoint
+# ═══════════════════════════════════════════════════════════════
+
+@pytest.mark.asyncio
+class TestCancelledErrorCheckpoint:
+    """★ Bug 4 回归: Pipeline CancelledError 时设置 checkpoint_requested。
+
+    验证 CancelledError 时 ctx.checkpoint_requested 为 True，
+    且 pipeline 保存 ctx 引用供 session 检查。
+    """
+
+    async def test_checkpoint_requested_on_cancelled_error(self):
+        """CancelledError 时 checkpoint_requested 被设为 True"""
+        agent = _MockAgent()
+        agent._call_model_async = AsyncMock(side_effect=asyncio.CancelledError())
+
+        ctx = PipelineContext(agent)
+        p = Pipeline()
+
+        result = await p.run_round_async(ctx)
+
+        assert result is True  # interrupted
+        assert ctx.checkpoint_requested is True, (
+            "CancelledError 后 checkpoint_requested 应为 True"
+        )
+
+    async def test_last_ctx_saved_for_session_access(self):
+        """pipeline 保存 _last_ctx 引用供 session._emit_round_events 检查"""
+        agent = _MockAgent()
+        agent._call_model_async = AsyncMock(side_effect=asyncio.CancelledError())
+
+        ctx = PipelineContext(agent)
+        p = Pipeline()
+
+        await p.run_round_async(ctx)
+
+        assert p._last_ctx is ctx, "_last_ctx 应指向最近一次的 PipelineContext"
+        assert p._last_ctx.checkpoint_requested is True
+
+    async def test_checkpoint_not_requested_on_normal_completion(self):
+        """正常完成时 checkpoint_requested 保持 False"""
+        agent = _MockAgent()
+        ctx = PipelineContext(agent)
+        p = Pipeline()
+
+        await p.run_round_async(ctx)
+
+        assert ctx.checkpoint_requested is False, "正常完成时不应请求 checkpoint"
+
+    async def test_checkpoint_requested_preserves_round_complete(self):
+        """CancelledError 时 round_complete 也为 True"""
+        agent = _MockAgent()
+        agent._call_model_async = AsyncMock(side_effect=asyncio.CancelledError())
+
+        ctx = PipelineContext(agent)
+        p = Pipeline()
+
+        await p.run_round_async(ctx)
+
+        assert ctx.round_complete is True, "CancelledError 后 round_complete 应为 True"
+        assert ctx.checkpoint_requested is True
+
+
+# ═══════════════════════════════════════════════════════════════
 # Pipeline.__repr__
 # ═══════════════════════════════════════════════════════════════
 
