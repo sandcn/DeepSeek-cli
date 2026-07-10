@@ -31,6 +31,7 @@ from ..core.session import ChatSession
 from ..core.commands import CommandContext
 from ..core.commands.plugins import get_interactive_registry
 from ..core.message_queue import MessageQueue
+from ..core.exceptions import is_fatal_exception
 from ..ui.colors import CYAN, DIM, RESET, GREEN, YELLOW
 from ..ui.tui._ttl_cache import TTLCache
 from ..ui.narrow import is_narrow, narrow_sep_width
@@ -67,9 +68,9 @@ class InteractiveLoop:
         """检查消费者任务是否有未捕获的异常。异常时设置 _force_exit 并唤醒 msg_done 防止死锁。"""
         if not task.done():
             return
+        # 任务取消是正常退出路径，不设置 _force_exit
         if task.cancelled():
-            _logger.warning("消息队列消费者任务被取消")
-            self._force_exit.set()
+            _logger.info("消息队列消费者任务被取消")
             if self._msg_done_ref is not None and not self._msg_done_ref.is_set():
                 self._msg_done_ref.set()
             return
@@ -79,8 +80,12 @@ class InteractiveLoop:
             _logger.warning("检查消费者异常时出错: %s", e)
             return
         if exc is not None:
-            _logger.critical("消息队列消费者异常退出: %s", exc, exc_info=exc)
-            self._force_exit.set()
+            if is_fatal_exception(exc):
+                _logger.critical("消息队列消费者致命异常: %s", exc, exc_info=exc)
+                self._force_exit.set()
+            else:
+                _logger.warning("消息队列消费者非致命异常 [non-fatal]: %s", exc, exc_info=exc)
+            # 无论致命/非致命，都需要唤醒 msg_done 防止死锁
             if self._msg_done_ref is not None and not self._msg_done_ref.is_set():
                 self._msg_done_ref.set()
 
@@ -290,9 +295,12 @@ class InteractiveLoop:
         except asyncio.CancelledError:
             _logger.info("CLI 消息消费者被取消")
             raise
-        except Exception:
-            _logger.exception("CLI 消息消费者异常")
-            self._force_exit.set()
+        except Exception as exc:
+            if is_fatal_exception(exc):
+                _logger.critical("CLI 消息消费者致命异常: %s", exc, exc_info=exc)
+                self._force_exit.set()
+            else:
+                _logger.warning("CLI 消息消费者非致命异常 [non-fatal]: %s", exc, exc_info=exc)
         finally:
             if not msg_done.is_set():
                 msg_done.set()

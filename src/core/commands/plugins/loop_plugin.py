@@ -44,7 +44,7 @@ class LoopPlugin(InteractiveCommandPlugin):
             return False
 
         # 延迟导入避免模块加载时级联依赖（app_loop → plugins → app_loop 循环导入）
-        from ..constants import DIM, RESET, GREEN, YELLOW
+        from ...constants import DIM, RESET, GREEN, YELLOW
         from ....app_loop import _save_loop_snapshot
         from ....api.interrupt_async import reset_interrupt_async
         from ....api.stats import reset_token_speed

@@ -723,11 +723,14 @@ class ChatSession:
             #       是设计上的耦合。后续应考虑通过 Event/Callback 机制通知 session，
             #       或将 checkpoint_requested 合并到 round_end 事件的参数中传递。
             pipe_ctx = getattr(self._agent.pipeline, '_last_ctx', None)
-            if pipe_ctx is not None and pipe_ctx.checkpoint_requested:
-                _logger.warning("Pipeline CancelledError 标记已检测，保存 checkpoint")
-                self.save_checkpoint()
-            else:
-                self.save_checkpoint()
+            try:
+                if pipe_ctx is not None and pipe_ctx.checkpoint_requested:
+                    _logger.warning("Pipeline CancelledError 标记已检测，保存 checkpoint")
+                    self.save_checkpoint()
+                else:
+                    self.save_checkpoint()
+            except Exception as exc:
+                _logger.warning("save_checkpoint 失败，不阻断事件发射: %s", exc)
             self._emit("interrupted")
 
         self._emit("round_end",

@@ -172,7 +172,11 @@ class SessionPersistenceManager:
 
     def save_checkpoint(self) -> None:
         """保存断点（任务中断时调用）。"""
-        self._checkpoint.save(self._get_messages(), self._get_model())
+        try:
+            self._checkpoint.save(self._get_messages(), self._get_model())
+        except Exception as exc:
+            _logger.warning("保存断点失败: %s", exc)
+            raise
         self._emit("checkpoint_saved")
 
     def clear_checkpoint(self) -> None:
