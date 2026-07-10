@@ -71,6 +71,15 @@ class EditmsgPlugin(InteractiveCommandPlugin):
             state["model"] = edit_state.get("model", state.get("model", ""))
             session.sync_retry_pending()
 
+            # ★ Bug 修复: Edit 语义是预填旧内容供用户编辑重发，不是自动续接。
+            #   当有 prefill 且非主动 retry 时，重置 retry_pending = False，
+            #   确保下一轮 _handle_round 走 prefill 路径（显示旧内容到编辑行），
+            #   而不是 retry 路径（自动重新生成回复，绕过 prefill）。
+            #   不做此重置时，若截断后最后一条消息角色是 user（如连续两条 user 消息），
+            #   sync_retry_pending 会设 retry_pending=True，导致 prefill 被静默吞掉。
+            if state["prefill"] and not state["retry"]:
+                session.reset_retry_pending()
+
             # ★ 编辑生效（retry=True）后，标记需重新渲染剩余消息到上屏
             needs_rerender = bool(state["retry"] or state["prefill"])
         finally:

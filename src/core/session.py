@@ -226,6 +226,15 @@ class ChatSession:
             and self._agent.messages[-1].get(_ROLE_KEY) == "user"
         )
 
+    def reset_retry_pending(self) -> None:
+        """强制重置 retry_pending 为 False。
+
+        在某些场景下，调用方需要绕过 sync_retry_pending() 的自动推导逻辑，
+        主动清除 retry_pending 标志。例如 /editmsg 编辑后，用户期望预填
+        旧内容到编辑行重发，而非自动续接回复。
+        """
+        self._state.retry_pending = False
+
     def _safe_save_state(self) -> None:
         """安全执行状态机 save 转换（忽略无效转换）。"""
         self._persistence_mgr._safe_save_state()

@@ -48,6 +48,13 @@ async def _handle_editmsg_cmd(session, state) -> None:
         state.model = edit_state.get("model", state.model)
         session.sync_retry_pending()
 
+        # ★ Bug 修复（同 editmsg_plugin.py）: Edit 语义是预填旧内容供用户编辑重发，不是自动续接。
+        #   当有 prefill 且非主动 retry 时，重置 retry_pending = False，
+        #   确保下一轮 _handle_round 走 prefill 路径（显示旧内容到编辑行），
+        #   而不是 retry 路径（自动重新生成回复，绕过 prefill）。
+        if state.prefill and not state.retry:
+            session.reset_retry_pending()
+
         # ★ 编辑生效（retry=True）后，标记需重新渲染剩余消息到上屏
         needs_rerender = bool(state.retry or state.prefill)
     finally:
