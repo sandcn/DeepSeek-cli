@@ -1,12 +1,10 @@
 """配置命令 — 模型/系统提示词/费用/主题相关命令处理函数"""
 
-from .constants import GREEN, YELLOW, DIM, RESET, CYAN
-from ..config import MODELS, MODEL
-from ..core.ports.output import get_default_output_port
-from ..ui.theme import set_theme, get_active_theme, get_theme_names_with_desc
-from ..config import update_config
-from ..ui._bottom_bar import run_bottom_bar_selection
-from .internal._command_core import register_command, CommandContext, show_cost
+from ..constants import GREEN, YELLOW, DIM, RESET, CYAN
+from ...config import MODELS, MODEL
+from ..ports.output import get_default_output_port
+from ...config import update_config
+from ..internal._command_core import register_command, CommandContext, show_cost
 
 _out = get_default_output_port()
 
@@ -62,7 +60,8 @@ def _cmd_model(ctx):
         marker = "  <-当前" if m == current else ""
         display_items.append(f"{m}{marker}")
 
-    result = run_bottom_bar_selection(MODELS, display_items, current_idx, title="模型选择")
+    from ...ui._bottom_bar import run_bottom_bar_selection as _bottom_bar_select
+    result = _bottom_bar_select(MODELS, display_items, current_idx, title="模型选择")
 
     if result["action"] == "confirmed" and result["index"] is not None:
         selected = MODELS[result["index"]]
@@ -139,13 +138,15 @@ def _cmd_theme(ctx):
     """切换 UI 配色主题"""
     arg = ctx.arg.strip()
 
+    from ...ui.theme import get_theme_names_with_desc, get_active_theme, set_theme as _set_theme
+
     themes = get_theme_names_with_desc()
 
     if arg:
         # 直接参数切换：/theme dark
         for name, desc in themes:
             if arg == name:
-                set_theme(name)
+                _set_theme(name)
                 update_config("theme", name)
                 _out.write(f"{GREEN}  + 已切换到主题「{name}」({desc}){RESET}", level="raw", source="cmd")
                 return True

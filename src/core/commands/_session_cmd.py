@@ -2,12 +2,11 @@
 
 from __future__ import annotations
 
-from ..core.ports.output import get_default_output_port
-from ..ui.colors import GREEN, YELLOW, DIM, RESET, CYAN
-from ..ui.diff_renderer import render_diff_to_ansi
-from .context_selector import total_chars
-from .sandbox_manager import get_sandbox_manager
-from .internal._command_core import register_command, _pop_assistant_tool_messages
+from ..ports.output import get_default_output_port
+from ..constants import GREEN, YELLOW, DIM, RESET, CYAN
+from ..context_selector import total_chars
+from ..sandbox_manager import get_sandbox_manager
+from ..internal._command_core import register_command, _pop_assistant_tool_messages
 
 _out = get_default_output_port()
 
@@ -29,7 +28,7 @@ def _cmd_clear(ctx):
 
 
 def _cmd_compress(ctx):
-    from ..config import MAX_CONTEXT_CHARS, MODEL as _default_model
+    from ...config import MAX_CONTEXT_CHARS, MODEL as _default_model
 
     tc = total_chars(ctx.messages)
     _out.write(f"{DIM}  当前消息数: {len(ctx.messages)}，总字符数: {tc}{RESET}", level="raw", source="cmd")
@@ -48,7 +47,7 @@ def _cmd_compress(ctx):
 
         cm = ctx.context_manager
         if cm is None:
-            from ..core.context_manager import ContextManager
+            from ..context_manager import ContextManager
             cm = ContextManager(ctx.messages, ctx.state.get("model", _default_model))
         cm.check_and_compress(force=True)
 
@@ -178,9 +177,9 @@ def _cmd_editmsg(ctx):
 
     设置 edit_msg 联络信号，让 app.py 执行异步编辑流程。
     """
-    from ..ui.msg_list import edit_current_messages
+    from ...ui.msg_list import edit_current_messages as _edit_msgs
     ctx.edit_msg = {
-        "handler": edit_current_messages,
+        "handler": _edit_msgs,
         "model": ctx.state.get("model", ""),
         "retry": ctx.state.get("retry", False),
         "prefill": ctx.state.get("prefill", ""),
@@ -260,7 +259,8 @@ def _cmd_changes(ctx):
         if before == after:
             continue
 
-        diff_text = render_diff_to_ansi(file_path, before or "", after or "")
+        from ...ui.diff_renderer import render_diff_to_ansi as _render_diff
+        diff_text = _render_diff(file_path, before or "", after or "")
         if not diff_text:
             _out.write(f"  {DIM}  (无差异内容){RESET}", level="raw", source="cmd")
         else:

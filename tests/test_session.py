@@ -293,17 +293,15 @@ class TestAtomicAutoSave:
             assert non_system == [{"role": "user", "content": "hi"}]
 
     async def test_auto_save_no_non_system_skips_save_session(self, session):
-        """没有非 system 消息时不调用 save_session，调用 _safe_save_state"""
+        """没有非 system 消息时不调用 save_session"""
         session._agent.messages.append({"role": "system", "content": "You are helpful"})
         session._state.session_id = "test-sid-empty"
 
         with patch("src.core.session.asyncio.to_thread", new_callable=AsyncMock) as mock_thread:
-            with patch.object(session, "_safe_save_state") as mock_safe_save:
-                result = await session._auto_save()
+            result = await session._auto_save()
 
-                assert result == "test-sid-empty"  # 返回 session_id 即使没有保存
-                mock_thread.assert_not_awaited()
-                mock_safe_save.assert_called_once()
+            assert result == "test-sid-empty"  # 返回 session_id 即使没有保存
+            mock_thread.assert_not_awaited()
 
     async def test_auto_save_exception_returns_none(self, session):
         """_auto_save 异常时返回 None，不抛出"""

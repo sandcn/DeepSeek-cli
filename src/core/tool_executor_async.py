@@ -14,7 +14,6 @@ import logging
 from typing import List, Tuple, Optional, Callable
 
 from ..core.ports.tool_registry import ToolRegistryPort
-from ..ui.display import extract_key_params
 
 # 延迟导入 ToolDAG（避免循环依赖）
 # from .tool_dag import ToolDAG  — 在方法内延迟导入
@@ -64,7 +63,8 @@ class AsyncToolExecutor:
         dispatch_agent 内部使用 asyncio.Event 纯异步等待 barrier，
         不消耗任何线程池工人。
         """
-        detail = extract_key_params(tc["name"], tc["arguments"], show_all=True)
+        from ..ui.display import extract_key_params as _extract_key_params
+        detail = _extract_key_params(tc["name"], tc["arguments"], show_all=True)
 
         if on_before:
             on_before(tc, detail)

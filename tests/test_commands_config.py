@@ -1,4 +1,4 @@
-"""测试 src.core.commands_config：配置命令处理函数。
+"""测试 src.core.commands._config_cmd：配置命令处理函数。
 
 模块概况
 --------
@@ -18,6 +18,7 @@
 
 import sys
 import pytest
+import types
 import importlib.util
 from pathlib import Path
 from unittest.mock import MagicMock, call, ANY
@@ -86,8 +87,24 @@ _MOCK_MODULES = {
     'src.chat_ui': MagicMock(get_active_chat_ui=MagicMock(return_value=None)),
 }
 
+# 注册父包为 proper package（使相对导入可解析）
+# 这些包不能使用 MagicMock（无 __path__），使用 ModuleType + __path__ = []
+# 重要：这些包不在 _MOCK_MODULES 中，以避免被下方的循环用 MagicMock 覆盖
+import types as _types
+_PACKAGE_MODULES: dict[str, object] = {}
+for _pkg in ('src', 'src.core', 'src.core.ports', 'src.core.commands', 'src.core.internal'):
+    _pm = _types.ModuleType(_pkg)
+    _pm.__path__ = []
+    _pm.__package__ = _pkg
+    _PACKAGE_MODULES[_pkg] = _pm
+
 # 保存原始模块，无条件注入 mock（即使模块已被其他测试加载）
 _ORIGINAL_MODULES: dict[str, object] = {}
+# 先注入包模块（不会被 _MOCK_MODULES 覆盖因为有 if 判断保护）
+for _pkg_name, _pkg_mod in _PACKAGE_MODULES.items():
+    _ORIGINAL_MODULES[_pkg_name] = sys.modules.get(_pkg_name)
+    sys.modules[_pkg_name] = _pkg_mod
+# 再注入 mock 模块
 for mod_name, mod in _MOCK_MODULES.items():
     _ORIGINAL_MODULES[mod_name] = sys.modules.get(mod_name)
     sys.modules[mod_name] = mod
@@ -98,10 +115,10 @@ for mod_name, mod in _MOCK_MODULES.items():
 
 _SCRIPT_DIR = str(Path(__file__).resolve().parent.parent / 'src' / 'core')
 _spec = importlib.util.spec_from_file_location(
-    'src.core.commands_config', f'{_SCRIPT_DIR}/commands_config.py',
+    'src.core.commands._config_cmd', f'{_SCRIPT_DIR}/commands/_config_cmd.py',
 )
 _mod = importlib.util.module_from_spec(_spec)
-sys.modules['src.core.commands_config'] = _mod
+sys.modules['src.core.commands._config_cmd'] = _mod
 _spec.loader.exec_module(_mod)
 
 # ── 提取被测试符号 ──────────────────────────────────────────────────────
@@ -117,7 +134,13 @@ for mod_name in list(_MOCK_MODULES.keys()):
         sys.modules[mod_name] = orig
     else:
         sys.modules.pop(mod_name, None)
-sys.modules.pop('src.core.commands_config', None)
+sys.modules.pop('src.core.commands._config_cmd', None)
+for _pkg_name in list(_PACKAGE_MODULES.keys()):
+    orig = _ORIGINAL_MODULES.get(_pkg_name)
+    if orig is not None:
+        sys.modules[_pkg_name] = orig
+    else:
+        sys.modules.pop(_pkg_name, None)
 
 
 # ═══════════════════════════════════════════════════════════════════════════

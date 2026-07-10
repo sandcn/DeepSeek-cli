@@ -1,4 +1,4 @@
-"""测试 src.core.commands_data：数据命令处理函数（/init, /load, /sessions）
+"""测试 src.core.commands._data_cmd：数据命令处理函数（/init, /load, /sessions）
 
 测试策略
 --------
@@ -27,7 +27,7 @@ import importlib.util
 from unittest.mock import MagicMock, patch, ANY, call
 
 # ── 在导入被测试模块前 mock 所有外部依赖 ────────────────────────────────
-_MODULE_PATH = '/home/simple/chat/src/core/commands_data.py'
+_MODULE_PATH = '/home/simple/chat/src/core/commands/_data_cmd.py'
 
 # 预创建输出端口 mock（被 _out 变量引用，后续可在 fixture 中重置）
 _output_port_mock = MagicMock()
@@ -72,10 +72,10 @@ for mod_name, mod in _MOCK_MODULES.items():
 
 # ── 直接加载 commands_data.py ──────────────────────────────────
 _spec = importlib.util.spec_from_file_location(
-    'src.core.commands_data', _MODULE_PATH,
+    'src.core.commands._data_cmd', _MODULE_PATH,
 )
 _module = importlib.util.module_from_spec(_spec)
-sys.modules['src.core.commands_data'] = _module
+sys.modules['src.core.commands._data_cmd'] = _module
 _spec.loader.exec_module(_module)
 
 # ── 提取被测试符号 ──────────────────────────────────────────────

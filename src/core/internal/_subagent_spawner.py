@@ -11,9 +11,6 @@ import logging
 from typing import List, Dict, Any
 
 from ..subagent import SubAgent
-from ...ui.events import DisplayEventBus
-from ...ui.events.event_types import AgentResultEvent
-from ...ui.parallel._tool_icons import AGENT_TYPE_ABBREV
 from ..constants import RED, RESET
 
 _logger = logging.getLogger(__name__)
@@ -93,7 +90,8 @@ class SubAgentSpawner:
         for i, spec in enumerate(specs, 1):
             desc = spec.get(_DESCRIPTION_KEY, f"子任务 {i}")
             agent_type = spec.get("agent_type", "execute")
-            abbr = AGENT_TYPE_ABBREV.get(agent_type, "??")
+            from ...ui.parallel._tool_icons import AGENT_TYPE_ABBREV as _AGENT_TYPE_ABBREV
+            abbr = _AGENT_TYPE_ABBREV.get(agent_type, "??")
             prompt = spec.get("prompt", "")
             if prompt:
                 md_parts.append(f"### {i}. {RED}[{abbr}]{RESET} {desc}")
@@ -142,7 +140,8 @@ class SubAgentSpawner:
                 for i, spec in enumerate(specs, 1):
                     desc = spec.get(_DESCRIPTION_KEY, f"子任务 {i}")
                     agent_type = spec.get("agent_type", "execute")
-                    abbr = AGENT_TYPE_ABBREV.get(agent_type, "??")
+                    from ...ui.parallel._tool_icons import AGENT_TYPE_ABBREV as _AGENT_TYPE_ABBREV
+                    abbr = _AGENT_TYPE_ABBREV.get(agent_type, "??")
                     prompt = spec.get("prompt", "")
                     if prompt:
                         renderer.write(f"### {i}. {RED}[{abbr}]{RESET} {desc}")
@@ -152,8 +151,10 @@ class SubAgentSpawner:
 
     def _publish_tool_summary(self, results: List[Dict[str, Any]]) -> None:
         """批量发布所有 subagent 的 AgentResultEvent（全部完成后统一发送）。"""
+        from ...ui.events import DisplayEventBus as _DisplayEventBus
+        from ...ui.events.event_types import AgentResultEvent as _AgentResultEvent
         for r in results:
-            DisplayEventBus.get_default().publish(AgentResultEvent(
+            _DisplayEventBus.get_default().publish(_AgentResultEvent(
                 label=r.get(_LABEL_KEY, "?"),
                 description=r.get(_DESCRIPTION_KEY, "?"),
                 result=r.get(_RESULT_KEY, ""),

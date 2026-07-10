@@ -1,14 +1,14 @@
 """数据命令 — 文件读写/会话管理相关命令处理函数"""
 
 import os
-from .constants import GREEN, YELLOW, RED, DIM, RESET, CYAN, filter_system, filter_non_system
-from ..core.ports.output import get_default_output_port
-from ..config import MODEL
-from ..api.model_async import call_model_sync
-from ..prompt_builder.project_summary import generate_summary_prompt
-from ..chat_msgs import save_session as _save_direct, load_session as _load_direct, list_sessions as _list_direct
-from ..core.sandbox_manager import get_sandbox_manager
-from .internal._command_core import register_command
+from ..constants import GREEN, YELLOW, RED, DIM, RESET, CYAN, filter_system, filter_non_system
+from ..ports.output import get_default_output_port
+from ...config import MODEL
+from ...api.model_async import call_model_sync
+from ...prompt_builder.project_summary import generate_summary_prompt
+from ...chat_msgs import save_session as _save_direct, load_session as _load_direct, list_sessions as _list_direct
+from ..sandbox_manager import get_sandbox_manager
+from ..internal._command_core import register_command
 
 _out = get_default_output_port()
 
@@ -43,7 +43,7 @@ def _cmd_init(ctx):
         if len(summary_text) > _SUMMARY_MAX_CHARS:
             _out.write(f"{YELLOW}  ! 摘要过长({len(summary_text)}字符)，已截断至{_SUMMARY_MAX_CHARS}字符{RESET}", level="raw", source="cmd")
             summary_text = summary_text[:_SUMMARY_MAX_CHARS]
-        from ..tools.utils import atomic_write_file
+        from ...tools.utils import atomic_write_file
         atomic_write_file(filepath, summary_text)
         _out.write(f"{GREEN}  + 已生成 {filepath}{RESET}", level="raw", source="cmd")
         _out.write(f"  {DIM}项目摘要已由模型生成，包含项目名称、描述、技术栈、结构等信息。{RESET}", level="raw", source="cmd")
@@ -103,7 +103,7 @@ def _cmd_load(ctx):
     _out.write(f"{GREEN}  + 已加载会话 {title_info}{arg} ({len(loaded_msgs)} 条消息, 模型: {model}){RESET}", level="raw", source="cmd")
 
     # 显示恢复的消息摘要（用项目流式渲染器回放）
-    from ..ui.tui._message_display import _display_messages
+    from ...ui.tui._message_display import _display_messages
     non_system = filter_non_system(ctx.messages)
     _display_messages(non_system, speed=1000)
 

@@ -17,7 +17,7 @@ from ..internal._command_core import (
     _format_cost_duration,
 )
 
-from ..commands_session import (
+from ._session_cmd import (
     _cmd_clear,
     _cmd_compress,
     _cmd_pin,
@@ -28,14 +28,14 @@ from ..commands_session import (
     _cmd_changes,
 )
 
-from ..commands_config import (
+from ._config_cmd import (
     _cmd_model,
     _cmd_system,
     _cmd_cost,
     _cmd_theme,
 )
 
-from ..commands_data import (
+from ._data_cmd import (
     _cmd_init,
     _cmd_load,
     _cmd_sessions,

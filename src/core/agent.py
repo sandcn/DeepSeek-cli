@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import logging
+from typing import Optional
+
 from .internal._capture_manager import CaptureManager
 from .base_agent import BaseAgent
 from .internal._tool_callbacks import ToolCallbackChain
@@ -10,6 +12,8 @@ from ..tools.registry import ToolRegistry
 from ..core.ports import ConfigPort
 from ..core.ports.tool_registry import ToolRegistryPort
 from ..core.ports.prompt_builder import PromptBuilderPort
+from ..core.ports.observability import ObservabilityPort
+from ..core.adapters.observability import DefaultObservabilityAdapter
 from ..core.adapters.prompt_builder import DefaultPromptBuilderAdapter
 from .middleware.observability import _AsyncObservabilityMiddleware  # noqa: F401 — re-exported
 from .middleware.audit import _AuditLogMiddleware  # noqa: F401 — re-exported
@@ -28,7 +32,8 @@ class Agent(BaseAgent):
     def __init__(self, model=None, registry=None, sandbox=None,
                  display_port=None, event_port=None, output_port=None,
                  config_port=None, async_model_port=None,
-                 prompt_builder_port=None):
+                 prompt_builder_port=None,
+                 observability_port: Optional[ObservabilityPort] = None):
         """初始化 Agent。
 
         Args:
@@ -43,6 +48,8 @@ class Agent(BaseAgent):
                               默认 DefaultAsyncModelAdapter()（异步优先）
                               传入 None 禁用异步路径
             prompt_builder_port: PromptBuilderPort 实例
+            observability_port: ObservabilityPort 实例（可观测性）
+                                默认 DefaultObservabilityAdapter()
         """
         super().__init__()
         # CaptureManager — 统一的 stdout 捕获管理器
@@ -76,6 +83,12 @@ class Agent(BaseAgent):
             self._config_port = DefaultConfigAdapter()
         self.model = model or self._config_port.get_model()
         self.tools = self._registry.get_schemas()
+
+        # ── ObservabilityPort（可观测性） ────────────────
+        if observability_port is not None:
+            self._observability_port = observability_port
+        else:
+            self._observability_port = DefaultObservabilityAdapter()
 
         # ── ToolRegistryPort 包装 ─────────────────────────
         self._tool_registry_port: ToolRegistryPort = _ToolRegistryAdapter(self._registry)
@@ -188,6 +201,10 @@ class Agent(BaseAgent):
     def get_config_port(self) -> ConfigPort:
         """返回 ConfigPort 实例"""
         return self._config_port
+
+    def get_observability_port(self) -> ObservabilityPort:
+        """返回 ObservabilityPort 实例"""
+        return self._observability_port
 
     def _append_assistant_msg(self, content, reasoning=None):
         """追加普通 assistant 消息（不含 tool_calls），委托给 _append_assistant_message。"""

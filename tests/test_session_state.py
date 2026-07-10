@@ -11,6 +11,7 @@ import asyncio
 import pytest
 from unittest.mock import MagicMock
 
+from src.core.hooks import CoreHooks
 from src.core.internal._session_state import SessionState
 
 
@@ -35,8 +36,8 @@ class TestDefaultValues:
 
     def test_hooks_default(self):
         state = SessionState()
-        assert state.hooks == {}
-        # 验证是 defaultdict，访问不存在的键返回空列表
+        assert isinstance(state.hooks, CoreHooks)
+        # 验证通过 __getitem__ 委托，访问不存在的键返回空列表
         assert state.hooks["nonexistent"] == []
 
     def test_captured_prefill_default(self):
@@ -99,45 +100,45 @@ class TestHookSystem:
     def test_on_registers_callback(self):
         state = SessionState()
         cb = MagicMock()
-        state.on("round_end", cb)
+        state.hooks.on("round_end", cb)
         assert cb in state.hooks["round_end"]
 
     def test_emit_calls_callback(self):
         state = SessionState()
         cb = MagicMock()
-        state.on("round_end", cb)
-        state._emit("round_end", foo="bar")
+        state.hooks.on("round_end", cb)
+        state.hooks._emit("round_end", foo="bar")
         cb.assert_called_once_with(foo="bar")
 
     def test_emit_calls_multiple_callbacks(self):
         state = SessionState()
         cb1 = MagicMock()
         cb2 = MagicMock()
-        state.on("round_end", cb1)
-        state.on("round_end", cb2)
-        state._emit("round_end")
+        state.hooks.on("round_end", cb1)
+        state.hooks.on("round_end", cb2)
+        state.hooks._emit("round_end")
         cb1.assert_called_once()
         cb2.assert_called_once()
 
     def test_emit_skips_unregistered_event(self):
         state = SessionState()
         cb = MagicMock()
-        state.on("round_start", cb)
-        state._emit("round_end")  # 不同事件
+        state.hooks.on("round_start", cb)
+        state.hooks._emit("round_end")  # 不同事件
         cb.assert_not_called()
 
     def test_off_removes_callback(self):
         state = SessionState()
         cb = MagicMock()
-        state.on("round_end", cb)
-        state.off("round_end", cb)
-        assert cb not in state.hooks.get("round_end", [])
+        state.hooks.on("round_end", cb)
+        state.hooks.off("round_end", cb)
+        assert cb not in state.hooks["round_end"]
 
     def test_off_noop_for_unregistered_callback(self):
         state = SessionState()
         cb = MagicMock()
         # 不报错即可
-        state.off("round_end", cb)
+        state.hooks.off("round_end", cb)
 
     def test_emit_exception_swallowed(self):
         """单个回调异常不应阻止其他回调执行"""
@@ -145,11 +146,11 @@ class TestHookSystem:
         cb1 = MagicMock(side_effect=ValueError("模拟异常"))
         cb2 = MagicMock()
 
-        state.on("round_end", cb1)
-        state.on("round_end", cb2)
+        state.hooks.on("round_end", cb1)
+        state.hooks.on("round_end", cb2)
 
         # 不应抛出异常
-        state._emit("round_end")
+        state.hooks._emit("round_end")
 
         cb2.assert_called_once()
 
@@ -168,10 +169,10 @@ class TestInstanceIsolation:
         cb1 = MagicMock()
         cb2 = MagicMock()
 
-        state1.on("round_end", cb1)
-        state2.on("round_end", cb2)
+        state1.hooks.on("round_end", cb1)
+        state2.hooks.on("round_end", cb2)
 
-        state1._emit("round_end")
+        state1.hooks._emit("round_end")
         cb1.assert_called_once()
         cb2.assert_not_called()
 

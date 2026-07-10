@@ -18,7 +18,7 @@ from .internal._command_core import (  # noqa: F401, F811
     _cmd_help,
 )
 
-from .commands_session import (  # noqa: F401, F811
+from .commands._session_cmd import (  # noqa: F401, F811
     _cmd_clear,
     _cmd_compress,
     _cmd_pin,
@@ -29,14 +29,14 @@ from .commands_session import (  # noqa: F401, F811
     _cmd_changes,
 )
 
-from .commands_config import (  # noqa: F401, F811
+from .commands._config_cmd import (  # noqa: F401, F811
     _cmd_model,
     _cmd_system,
     _cmd_cost,
     _cmd_theme,
 )
 
-from .commands_data import (  # noqa: F401, F811
+from .commands._data_cmd import (  # noqa: F401, F811
     _cmd_init,
     _cmd_load,
     _cmd_sessions,

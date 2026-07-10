@@ -319,7 +319,7 @@ class TestRunOne:
         sa = mock_subagent_instance
         display = mock_display
 
-        with patch("src.core.parallel_executor.DisplayEventBus") as MockBus:
+        with patch("src.ui.events.DisplayEventBus") as MockBus:
             mock_bus = MagicMock()
             MockBus.get_default.return_value = mock_bus
 
@@ -342,7 +342,7 @@ class TestRunOne:
         sa.run = AsyncMock(side_effect=asyncio.CancelledError())
         display = mock_display
 
-        with patch("src.core.parallel_executor.DisplayEventBus"):
+        with patch("src.ui.events.DisplayEventBus"):
             result = await executor._run_one(sa, display, stagger=0)
 
         assert result["label"] == "agent-1"
@@ -360,7 +360,7 @@ class TestRunOne:
         sa.run = AsyncMock(side_effect=ValueError("测试错误"))
         display = mock_display
 
-        with patch("src.core.parallel_executor.DisplayEventBus"):
+        with patch("src.ui.events.DisplayEventBus"):
             result = await executor._run_one(sa, display, stagger=0)
 
         assert result["label"] == "agent-1"
@@ -380,7 +380,7 @@ class TestRunOne:
 
         with patch("asyncio.sleep", AsyncMock()) as mock_sleep, \
                 patch("random.uniform", return_value=0.2), \
-                patch("src.core.parallel_executor.DisplayEventBus"):
+                patch("src.ui.events.DisplayEventBus"):
             result = await executor._run_one(sa, display, stagger=2)
 
         assert result["result"] == "执行成功"
@@ -396,7 +396,7 @@ class TestRunOne:
         display = mock_display
 
         with patch("asyncio.sleep", AsyncMock()) as mock_sleep, \
-                patch("src.core.parallel_executor.DisplayEventBus"):
+                patch("src.ui.events.DisplayEventBus"):
             await executor._run_one(sa, display, stagger=0)
 
         mock_sleep.assert_not_awaited()
@@ -431,7 +431,7 @@ class TestRunAgents:
         ]
 
         with patch("asyncio.sleep", AsyncMock()), \
-                patch("src.core.parallel_executor.DisplayEventBus"):
+                patch("src.ui.events.DisplayEventBus"):
             results = await executor._run_agents(specs, display)
 
         assert len(results) == 2
@@ -480,7 +480,7 @@ class TestRunAgents:
         specs = [{"description": "单任务", "prompt": "prompt"}]
 
         with patch("asyncio.sleep", AsyncMock()), \
-                patch("src.core.parallel_executor.DisplayEventBus"):
+                patch("src.ui.events.DisplayEventBus"):
             results = await executor._run_agents(specs, display)
 
         assert len(results) == 1
@@ -491,7 +491,7 @@ class TestRunAgents:
     @pytest.mark.asyncio
     async def test_empty_specs(self, executor, mock_display):
         """空 specs 返回空结果列表"""
-        with patch("src.core.parallel_executor.DisplayEventBus"):
+        with patch("src.ui.events.DisplayEventBus"):
             results = await executor._run_agents([], mock_display)
 
         assert results == []
@@ -519,7 +519,7 @@ class TestRunAgents:
         ]
 
         with patch("asyncio.sleep", AsyncMock()), \
-                patch("src.core.parallel_executor.DisplayEventBus"):
+                patch("src.ui.events.DisplayEventBus"):
             results = await executor._run_agents(specs, display)
 
         assert len(results) == 2
@@ -541,8 +541,8 @@ class TestRun:
         """独立模式基本流程：创建 display → _run_agents → 返回结果"""
         specs = [{"description": "任务1", "prompt": "prompt1"}]
 
-        with patch("src.core.parallel_executor.ParallelDisplay") as MockDisplay, \
-                patch("src.core.parallel_executor.DisplayEventBus"), \
+        with patch("src.ui.parallel.ParallelDisplay") as MockDisplay, \
+                patch("src.ui.events.DisplayEventBus"), \
                 patch.object(executor, "_run_agents") as mock_run_agents, \
                 patch.object(executor, "_stream_results_markdown"), \
                 patch.object(executor._spawner, "publish_summary"), \
@@ -568,8 +568,8 @@ class TestRun:
         """独立模式被取消时构造降级结果并重新 raise"""
         specs = [{"description": "任务1", "prompt": "prompt1"}]
 
-        with patch("src.core.parallel_executor.ParallelDisplay") as MockDisplay, \
-                patch("src.core.parallel_executor.DisplayEventBus"), \
+        with patch("src.ui.parallel.ParallelDisplay") as MockDisplay, \
+                patch("src.ui.events.DisplayEventBus"), \
                 patch.object(executor, "_stream_results_markdown"), \
                 patch.object(executor._spawner, "publish_summary"):
 
@@ -588,8 +588,8 @@ class TestRun:
         """独立模式异常时降级为错误结果"""
         specs = [{"description": "任务1", "prompt": "prompt1"}]
 
-        with patch("src.core.parallel_executor.ParallelDisplay") as MockDisplay, \
-                patch("src.core.parallel_executor.DisplayEventBus"), \
+        with patch("src.ui.parallel.ParallelDisplay") as MockDisplay, \
+                patch("src.ui.events.DisplayEventBus"), \
                 patch.object(executor, "_stream_results_markdown"), \
                 patch.object(executor._spawner, "publish_summary"):
 
@@ -608,8 +608,8 @@ class TestRun:
     @pytest.mark.asyncio
     async def test_run_empty_specs(self, executor):
         """空 specs 返回空结果"""
-        with patch("src.core.parallel_executor.ParallelDisplay"), \
-                patch("src.core.parallel_executor.DisplayEventBus"), \
+        with patch("src.ui.parallel.ParallelDisplay"), \
+                patch("src.ui.events.DisplayEventBus"), \
                 patch.object(executor, "_run_agents", AsyncMock(return_value=[])), \
                 patch.object(executor, "_stream_results_markdown"), \
                 patch.object(executor._spawner, "publish_summary"):

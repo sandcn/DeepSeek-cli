@@ -2,6 +2,10 @@
 
 聚合 MetricsCollector + Tracer + Telemetry 日志。
 支持 Prometheus 格式导出。
+
+v2.3 新增：支持通过 ObservabilityPort 注入可观测性实现，
+使得 Agent/ChatSession 等核心层可通过端口使用可观测性，
+而不直接依赖全局单例。
 """
 
 from __future__ import annotations
@@ -20,6 +24,7 @@ from ..core.telemetry.trace_context import (
     get_current_trace_id,
     generate_trace_id,
 )
+from ..core.ports.observability import ObservabilityPort
 
 _logger = logging.getLogger(__name__)
 
@@ -28,6 +33,10 @@ class ObservabilityFacade:
     """可观测性门面
 
     聚合指标收集、调用链追踪、遥测日志三大能力。
+
+    支持两种初始化模式：
+    1. 传统模式（不传 observability_port）：通过 metrics/tracer 参数注入
+    2. 端口模式（传 observability_port）：通过 ObservabilityPort 注入
 
     使用方式:
         obs = ObservabilityFacade()
@@ -40,10 +49,30 @@ class ObservabilityFacade:
         self,
         metrics: Optional[MetricsCollector] = None,
         tracer: Optional[Tracer] = None,
+        observability_port: Optional[ObservabilityPort] = None,
     ):
-        self._metrics = metrics or get_default_collector()
-        self._tracer = tracer or get_default_tracer()
+        self._observability_port = observability_port
+        self._metrics = metrics
+        self._tracer = tracer
         self._start_time: float = 0.0
+
+        # 端口模式：使用端口实例，忽略 metrics/tracer 参数
+        if observability_port is not None:
+            self._port_mode = True
+        else:
+            self._port_mode = False
+            self._metrics = metrics or get_default_collector()
+            self._tracer = tracer or get_default_tracer()
+
+    # ── 内部代理 ──────────────────────────────────────────
+
+    @property
+    def _active_metrics(self) -> MetricsCollector:
+        if self._port_mode:
+            # 端口模式下通过计数器和仪表盘需要额外包装
+            # 返回 None 表示走端口路径
+            return None  # type: ignore
+        return self._metrics
 
     # ── 指标（Metrics） ────────────────────────────────
 
@@ -53,15 +82,24 @@ class ObservabilityFacade:
 
     def counter(self, name: str, value: int = 1) -> None:
         """递增计数器"""
-        self._metrics.counter(name, value)
+        if self._port_mode:
+            self._observability_port.counter(name, value)
+        else:
+            self._metrics.counter(name, value)
 
     def histogram(self, name: str, value: float) -> None:
         """记录直方图观测值"""
-        self._metrics.histogram(name, value)
+        if self._port_mode:
+            self._observability_port.histogram(name, value)
+        else:
+            self._metrics.histogram(name, value)
 
     def gauge(self, name: str, value: float) -> None:
         """设置仪表盘值"""
-        self._metrics.gauge(name, value)
+        if self._port_mode:
+            self._observability_port.gauge(name, value)
+        else:
+            self._metrics.gauge(name, value)
 
     # ── 追踪（Tracing） ────────────────────────────────
 
@@ -71,10 +109,14 @@ class ObservabilityFacade:
 
     def trace_id(self) -> str:
         """获取当前 trace_id"""
+        if self._port_mode:
+            return self._observability_port.get_current_trace_id()
         return get_current_trace_id()
 
     def new_trace_id(self) -> str:
         """生成新的 trace_id"""
+        if self._port_mode:
+            return self._observability_port.generate_trace_id()
         return generate_trace_id()
 
     # ── 生命周期 ────────────────────────────────────────
@@ -95,14 +137,24 @@ class ObservabilityFacade:
 
     def metrics_report(self) -> str:
         """获取指标文本报告"""
+        if self._port_mode:
+            return "(port mode) 指标报告通过 ObservablePort 获取"
         return self._metrics.report()
 
     def trace_report(self) -> str:
         """获取追踪文本报告"""
+        if self._port_mode:
+            return "(port mode) 追踪报告通过 ObservablePort 获取"
         return self._tracer.report()
 
     def snapshot(self) -> dict:
         """获取完整可观测性快照"""
+        if self._port_mode:
+            return {
+                "uptime_seconds": self.uptime(),
+                "trace_id": self.trace_id(),
+                "mode": "port",
+            }
         return {
             "uptime_seconds": self.uptime(),
             "trace_id": self.trace_id(),

@@ -64,7 +64,7 @@ def tool_calls():
 @pytest.fixture(autouse=True)
 def _patch_extract_key_params():
     """所有测试统一 patch extract_key_params，避免 UI 模块依赖"""
-    with patch("src.core.tool_executor_async.extract_key_params",
+    with patch("src.ui.display.extract_key_params",
                return_value="(mock detail)"):
         yield
 

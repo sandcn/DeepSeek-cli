@@ -1,4 +1,4 @@
-"""测试 src/core/commands_session.py — 会话命令处理函数
+"""测试 src/core/commands/_session_cmd.py — 会话命令处理函数
 
 测试策略
 --------
@@ -219,11 +219,11 @@ _make_mock_module('src.core.context_manager',
 _SCRIPT_DIR = '/home/simple/chat/src/core'
 
 _commands_session_spec = importlib.util.spec_from_file_location(
-    'src.core.commands_session',
-    f'{_SCRIPT_DIR}/commands_session.py',
+    'src.core.commands._session_cmd',
+    f'{_SCRIPT_DIR}/commands/_session_cmd.py',
 )
 _commands_session_module = importlib.util.module_from_spec(_commands_session_spec)
-sys.modules['src.core.commands_session'] = _commands_session_module
+sys.modules['src.core.commands._session_cmd'] = _commands_session_module
 _commands_session_spec.loader.exec_module(_commands_session_module)
 
 # ── 提取所有被测试符号 ────────────────────────────────────
@@ -317,8 +317,8 @@ def reset_mocks():
     for _name in _MOCKED_MODULE_NAMES:
         _saved_modules[_name] = sys.modules.get(_name)
     _setup_mocks()
-    if 'src.core.commands_session' not in sys.modules:
-        sys.modules['src.core.commands_session'] = _commands_session_module
+    if 'src.core.commands._session_cmd' not in sys.modules:
+        sys.modules['src.core.commands._session_cmd'] = _commands_session_module
     shared_mocks['output'].writes.clear()
     shared_mocks['sandbox'].cleared = False
     yield
@@ -900,7 +900,7 @@ _MOCKED_MODULE_NAMES = [
     'src.core.ports.output', 'src.core.context_selector',
     'src.core.sandbox_manager', 'src.core.internal._command_core',
     'src.core.message_edit', 'src.core.context_manager',
-    'src.core.commands_session',
+    'src.core.commands._session_cmd',
 ]
 for _mod_name in _MOCKED_MODULE_NAMES:
     orig = _ORIGINAL_MODULES_SESSION.get(_mod_name)

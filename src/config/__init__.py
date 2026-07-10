@@ -104,3 +104,7 @@ def __getattr__(name):
         if name not in _value_cache:
             _value_cache[name] = _resolve_rc_key(name, rc)
         return _value_cache[name]
+
+
+# 导出 ConfigProxy 实例（作为 __getattr__ 的补充，提供 IDE 类型提示）
+from .proxy import config as config

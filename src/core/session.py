@@ -33,17 +33,22 @@ from .sandbox_manager import create_sandbox_manager, get_sandbox_manager
 from .middleware.state_machine import StateMachineMiddleware
 from ..api.stats import get_token_stats, get_session_start_time  # noqa: F401 — kept for backward compat
 from ..core.ports import PersistencePort, CheckpointPort, ConfigPort
+from ..core.ports.observability import ObservabilityPort
 from ..core.adapters.persistence import JsonFilePersistence, JsonFileCheckpoint
 from ..core.adapters.config import DefaultConfigAdapter
+from ..core.adapters.observability import DefaultObservabilityAdapter
 from ..core.ports.null import _NullPort, _NullOutputPort  # noqa: F401 — re-exported
 from .internal._session_persistence import (
-    save_session, load_session_data, list_sessions_fn, get_session_ids_fn,
+    save_session as _save_session_legacy,
+    load_session_data as _load_session_data_legacy,
     save_checkpoint_session, clear_checkpoint_session, load_checkpoint_data,
     has_checkpoint_session, resume_from_checkpoint_session, safe_save_state,
 )
 from .internal._session_messages import add_message, non_system_messages, system_messages
 from .internal._session_state import SessionState as _SessionData
 from .internal._session_compression import _validate_compress_preconditions
+from .internal._session_persistence_manager import SessionPersistenceManager
+from .internal._session_messaging_manager import SessionMessagingManager
 
 _logger = logging.getLogger(__name__)
 
@@ -76,7 +81,14 @@ class ChatSession:
                  sandbox=None,
                  persistence_port: PersistencePort | None = None,
                  checkpoint_port: CheckpointPort | None = None,
-                 config_port: ConfigPort | None = None):
+                 config_port: ConfigPort | None = None,
+                 observability_port: ObservabilityPort | None = None):
+        # ── ObservablePort（可观测性，优先传入） ──────────
+        if observability_port is not None:
+            self._observability_port = observability_port
+        else:
+            self._observability_port = DefaultObservabilityAdapter()
+
         # ── 端口注入（默认适配器保持向后兼容） ──────────
         self._persistence_port = persistence_port or JsonFilePersistence()
         self._checkpoint_port = checkpoint_port or JsonFileCheckpoint()
@@ -85,7 +97,7 @@ class ChatSession:
         # ── 核心对象 ──────────────────────────────────────
         self._model: str = model or self._config_port.get_model()
 
-        # 创建 Agent（注入 NullPort 避免 UI 依赖）
+        # 创建 Agent（注入 NullPort 避免 UI 依赖，传递 observability_port）
         null_display = _NullPort()
         null_event = _NullPort()
         null_output = _NullOutputPort()
@@ -95,6 +107,7 @@ class ChatSession:
             event_port=null_event,
             output_port=null_output,
             sandbox=sandbox,
+            observability_port=self._observability_port,
         )
 
         # 上下文管理器（延迟初始化，需等待 messages 就绪）
@@ -107,22 +120,55 @@ class ChatSession:
         self._state_machine = SessionStateMachine()
         self._setup_state_machine_hooks()
 
-        # ── 可观测性 ──────────────────────────────────────
+        # ── 可观测性（向后兼容：self._metrics / self._tracer 仍可用） ──
         self._metrics = get_default_collector()
         self._tracer = get_default_tracer()
 
+        # ── 持久化管理器 ─────────────────────────────────
+        self._persistence_mgr = SessionPersistenceManager(
+            messages_getter=lambda: self._agent.messages,
+            model_getter=lambda: self._model,
+            model_setter=lambda v: setattr(self, '_model', v),
+            session_id_getter=lambda: self._state.session_id,
+            session_id_setter=lambda v: setattr(self._state, 'session_id', v),
+            persistence_port=self._persistence_port,
+            checkpoint_port=self._checkpoint_port,
+            state_machine=self._state_machine,
+            emit_fn=self._emit,
+            observability_port=self._observability_port,
+        )
+
+        # ── 消息管理器（延迟初始化，等待 messages 和 ctx_mgr 就绪） ──
+        self._msg_mgr: SessionMessagingManager | None = None
+
+    def _init_msg_mgr(self) -> SessionMessagingManager:
+        """惰性初始化消息管理器（需等待 ctx_mgr 就绪）。"""
+        if self._msg_mgr is None:
+            self._msg_mgr = SessionMessagingManager(
+                messages=self._agent.messages,
+                model_getter=lambda: self._model,
+                context_manager_getter=lambda: self._ctx_mgr,
+                context_manager_setter=lambda v: setattr(self, '_ctx_mgr', v),
+                sandbox_getter=get_sandbox_manager,
+                state_machine=self._state_machine,
+                emit_fn=self._emit,
+                observability_port=self._observability_port,
+                retry_pending_getter=lambda: self._state.retry_pending,
+                retry_pending_setter=lambda v: setattr(self._state, 'retry_pending', v),
+            )
+        return self._msg_mgr
 
     def _setup_state_machine_hooks(self) -> None:
         """设置状态机转换回调（用于可观测性等）"""
         def _on_enter_running(old, new, **kw):
-            self._metrics.counter("session.rounds", 1)
+            self._observability_port.counter("session.rounds", 1)
 
         def _on_enter_interrupted(old, new, **kw):
-            self._metrics.counter("session.interrupts", 1)
+            self._observability_port.counter("session.interrupts", 1)
 
         def _on_enter_completed(old, new, **kw):
             # 记录消息数到仪表盘
-            self._metrics.gauge("session.messages", len(self._agent.messages))
+            self._observability_port.gauge("session.messages", len(self._agent.messages))
 
         self._state_machine.on_enter(SessionState.RUNNING, _on_enter_running)
         self._state_machine.on_enter(SessionState.INTERRUPTED, _on_enter_interrupted)
@@ -181,7 +227,7 @@ class ChatSession:
 
     def _safe_save_state(self) -> None:
         """安全执行状态机 save 转换（忽略无效转换）。"""
-        return safe_save_state(self)
+        self._persistence_mgr._safe_save_state()
 
     @property
     def pending_messages(self) -> list[str]:
@@ -240,15 +286,15 @@ class ChatSession:
             checkpoint_cleared  — 断点已清除
             messages_changed    — 消息列表被外部修改
         """
-        self._state.on(event, callback)
+        self._state.hooks.on(event, callback)
 
     def off(self, event: str, callback: Callable) -> None:
         """移除事件回调。"""
-        self._state.off(event, callback)
+        self._state.hooks.off(event, callback)
 
     def _emit(self, event: str, **data) -> None:
         """触发事件，依次调用所有注册的回调。"""
-        self._state._emit(event, **data)
+        self._state.hooks._emit(event, **data)
 
     # ── 初始化 ────────────────────────────────────────────
 
@@ -308,7 +354,7 @@ class ChatSession:
             pass
 
         # 初始化可观测性
-        self._metrics.gauge("session.messages", len(self._agent.messages))
+        self._observability_port.gauge("session.messages", len(self._agent.messages))
 
         # ── 注册状态机 Pipeline 中间件 ──────────────────
         # ★ P1 修复: isinstance(mw, type) 对实例永远为 False，
@@ -640,47 +686,14 @@ class ChatSession:
         return delta, current
 
     async def _auto_save(self) -> str | None:
-        """自动保存会话，返回 session_id（无可保存内容时返回 None）。
-
-        变更行为（Bug 1 修复）：
-        - 三字段（messages/model/session_id）原子打包利用 GIL 字节码原子性消除竞态窗口，
-          避免 /model 命令在快照读取间隙修改 model 导致的数据不一致。
-        """
+        """自动保存会话，返回 session_id（无可保存内容时返回 None）。"""
         try:
-            # 在主线程中提取消息快照，避免子线程访问 messages 的竞态
-            # ★ Bug1 修复: 三字段原子打包（利用 GIL 字节码原子性消除竞态窗口）
-            # TODO: 若未来迁移到无 GIL 的 Python（PEP 703），此处的字节码原子性不再保证，
-            #       需改用 threading.Lock 或 copy-on-write 机制保护三字段的一致性。
-            (snapshot, snapshot_model, snapshot_sid) = (
-                list(self._agent.messages),
-                self._model,
-                self._state.session_id,
+            return await self._persistence_mgr.auto_save(
+                lambda: self._agent.messages,
             )
-
-            non_system = [m for m in snapshot if m.get(_ROLE_KEY) != _SYSTEM_ROLE]
-            if not non_system:
-                # 无可保存内容，在主线程中执行状态转换即可
-                self._safe_save_state()
-                return snapshot_sid
-
-            # 在子线程中只做文件 IO
-            session_id = await asyncio.to_thread(
-                self._persistence_port.save_session,
-                non_system,
-                snapshot_model,
-                snapshot_sid,
-            )
-            self._state.session_id = session_id
-            self._safe_save_state()
-            self._emit("saved", session_id=session_id)
-            return session_id
         except Exception as exc:
             _logger.exception("自动保存会话失败: %s", exc)
-            # ★ P0 修复：save 异常后强制恢复状态机，防止残留在 COMPLETED/INTERRUPTED
-            #   导致下次 run_round() 触发 InvalidTransitionError
             self._force_state_recovery()
-            # ★ Bug3 修复：save 失败时返回 None 表示保存失败
-            #   避免 _session_id 残留无效值被下游使用
             return None
 
     def _emit_round_events(self, interrupted: bool, session_id: str | None,
@@ -733,7 +746,7 @@ class ChatSession:
             "elapsed": elapsed,
         }
 
-    # ── 消息管理 ──────────────────────────────────────────
+    # ── 消息管理（委托给 SessionMessagingManager） ──
 
     def add_user_message(self, content: str) -> None:
         """追加用户消息。"""
@@ -742,55 +755,29 @@ class ChatSession:
     def clear_messages(self) -> int:
         """清空对话（保留 system prompt）。
 
-        必须在非 RUNNING 状态下调用（RUNNING 状态下不允许 clear）。
-        如需在 RUNNING 状态下清空，先 interrupt() 再 clear()。
-
         Returns:
             被删除的消息数量
         """
-        # ★ P0 修复: RUNNING→clear 转换已从 state_machine 移除。
-        #   clear_messages() 在 RUNNING 状态下被调用时，状态机转换会失败，
-        #   但消息仍被清空（仅限非 RUNNING 调用场景）。
         try:
             self._state_machine.clear()
         except InvalidTransitionError:
             pass
 
-        system_msgs = self._system_messages
-        removed = len(self._agent.messages) - len(system_msgs)
-        self._agent.messages[:] = system_msgs
-        self.sync_retry_pending()
-        # 清空 sandbox
-        sm = get_sandbox_manager()
-        if sm:
-            sm.clear()
-        self._emit("messages_changed", action="clear", removed=removed)
-
-        # 更新仪表盘
-        self._metrics.gauge("session.messages", 0)
-        return removed
+        mgr = self._init_msg_mgr()
+        return mgr.clear_messages(
+            system_messages_fn=lambda: self._system_messages,
+            build_system_prompt_fn=lambda: self._agent.build_system_prompt(),
+        )
 
     def undo_last_round(self) -> int:
-        """撤销上一轮对话（移除末尾的 assistant + tool + user 消息）。
-
-        Returns:
-            移除的消息数量
-        """
-        removed = 0
-        while self._agent.messages and self._agent.messages[-1][_ROLE_KEY] in ("assistant", "tool"):
-            self._agent.messages.pop()
-            removed += 1
-        if self._agent.messages and self._agent.messages[-1][_ROLE_KEY] == "user":
-            self._agent.messages.pop()
-            removed += 1
-        self._emit("messages_changed", action="undo", removed=removed)
-        self._metrics.gauge("session.messages", len(self._agent.messages))
-        return removed
+        """撤销上一轮对话。"""
+        mgr = self._init_msg_mgr()
+        return mgr.undo_last_round()
 
     def add_system_message(self, content: str) -> None:
         """追加系统消息。"""
-        self._agent.messages.append({_ROLE_KEY: _SYSTEM_ROLE, "content": content})
-        self._emit("messages_changed", action="add_system")
+        mgr = self._init_msg_mgr()
+        mgr.add_system_message(content)
 
     def compress(self, force: bool = True) -> None:
         """手动执行上下文压缩（同步版本，会阻塞事件循环）。"""
@@ -808,65 +795,48 @@ class ChatSession:
             return
         await asyncio.to_thread(self._ctx_mgr.check_and_compress, force=force)
 
-    # ── 会话持久化 ────────────────────────────────────────
+    # ── 会话持久化（委托给 SessionPersistenceManager） ──
 
     def save(self) -> str | None:
-        """保存当前会话到 .chat/msg_list/。
-
-        状态转换: COMPLETED/INTERRUPTED/IDLE → IDLE
-
-        Returns:
-            session_id，无可保存内容时返回 None
-        """
-        return save_session(self)
+        """保存当前会话到 .chat/msg_list/。"""
+        return self._persistence_mgr.save()
 
     def load(self, session_id: str) -> dict | None:
-        """加载历史会话。
-
-        会替换当前非 system 消息，保留当前 system prompt。
-        根据最后一条消息的角色设置状态机的 retry 能力。
-
-        Args:
-            session_id: 会话 ID（可带或不带 .json 后缀）
-
-        Returns:
-            会话数据字典，不存在时返回 None
-        """
-        return load_session_data(self, session_id)
+        """加载历史会话。"""
+        return self._persistence_mgr.load(session_id)
 
     def list_sessions(self) -> list[dict]:
         """列出所有保存的会话。"""
-        return list_sessions_fn(self)
+        return self._persistence_mgr.list_sessions()
 
     def get_session_ids(self) -> list[str]:
         """列出所有保存的会话 ID。"""
-        return get_session_ids_fn(self)
+        return self._persistence_mgr.get_session_ids()
 
-    # ── 断点管理 ──────────────────────────────────────────
+    # ── 断点管理（委托给 SessionPersistenceManager） ──
 
     def save_checkpoint(self) -> None:
         """保存断点（任务中断时调用）。"""
-        return save_checkpoint_session(self)
+        self._persistence_mgr.save_checkpoint()
 
     def clear_checkpoint(self) -> None:
         """清除断点（任务成功完成时调用）。"""
-        return clear_checkpoint_session(self)
+        self._persistence_mgr.clear_checkpoint()
 
     def load_checkpoint(self) -> dict | None:
         """加载断点数据。"""
-        return load_checkpoint_data(self)
+        return self._persistence_mgr.load_checkpoint()
 
     def has_checkpoint(self) -> bool:
         """检查是否存在有效断点。"""
-        return has_checkpoint_session(self)
+        return self._persistence_mgr.has_checkpoint()
 
     def resume_from_checkpoint(self) -> bool:
-        """从断点恢复任务。
-
-        Returns:
-            是否成功恢复
-        """
-        return resume_from_checkpoint_session(self)
+        """从断点恢复任务。"""
+        return self._persistence_mgr.resume_from_checkpoint(
+            self._agent.messages, self._model,
+            lambda v: setattr(self, '_model', v),
+        )
 
     # ── 工具辅助 ──────────────────────────────────────────
 
