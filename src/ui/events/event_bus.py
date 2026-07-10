@@ -110,13 +110,12 @@ class DisplayEventBus:
                 if (event_type is None and mode == 'all') or \
                    (event_type is not None and mode == 'type' and et == event_type):
                     entry = entries.pop(i)
-                    _mode, _et, _wrapper = entry  # 锁内提取到局部变量
                     if not entries:
                         del self._handler_map[handler]
                     break
             else:
                 return  # 无匹配条目
-        mode, et, wrapper = _mode, _et, _wrapper  # 锁外使用局部变量
+        mode, et, wrapper = entry
         if mode == 'type' and et is not None:
             self._bus.unsubscribe(et.__name__, wrapper)
         else:

@@ -15,7 +15,7 @@ from typing import List, Dict, Any, Optional, Tuple, Callable
 
 from .base_agent import BaseAgent
 
-from ..core.ports.stats import DefaultStatsAdapter
+from ..api.stats import accumulate_usage
 
 _logger = logging.getLogger(__name__)
 
@@ -109,7 +109,6 @@ class SubAgent(BaseAgent):
 
         self._registry = parent_agent.get_tool_registry()
         self._model_port = model_port or getattr(parent_agent, '_async_model_port', None)
-        self._stats_port = DefaultStatsAdapter()
 
         self.model = model or parent_agent.model
         excluded = _get_excluded_tools(agent_type)
@@ -231,7 +230,7 @@ class SubAgent(BaseAgent):
             if usage is not None:
                 self.display.update_usage(self.label, usage, replace=False)
                 # 累加到全局统计
-                self._stats_port.accumulate_usage(usage.get("input", 0), usage.get("output", 0))
+                accumulate_usage(usage)
                 # 同步发布到 DisplayEventBus（Web 前端通过此事件更新用量显示）
                 DisplayEventBus.get_default().publish(UsageUpdatedEvent(
                     label=self.label, usage=usage, replace=False, source=self.label,
@@ -270,15 +269,9 @@ class SubAgent(BaseAgent):
                 output = f"工具执行被取消: {tc.get('name', '?')}"
                 _logger.warning("SubAgent tool %s cancelled", tc["name"])
                 success = False
-            except KeyboardInterrupt:
-                raise
             except Exception as e:
                 output = f"工具执行失败: {e}"
                 _logger.error("SubAgent tool %s failed: %s", tc["name"], e)
-                success = False
-            except BaseException as e:
-                output = f"工具执行被中断: {e}"
-                _logger.warning("SubAgent tool %s interrupted by %s: %s", tc["name"], type(e).__name__, e)
                 success = False
             # ★ P0 修复: on_after 移入 try 块，确保异常不会传播到 asyncio.gather
             #   导致 results 列表混入 Exception 对象、后续解包崩溃。

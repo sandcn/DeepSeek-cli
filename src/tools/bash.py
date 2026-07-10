@@ -8,7 +8,6 @@ from .base import Func, tool_metadata, print_to_terminal
 
 from ..core.constants import GREEN, RED, DIM, RESET
 from ..api.interrupt_async import is_interrupted
-import re as _re
 
 logger = logging.getLogger(__name__)
 
@@ -77,6 +76,7 @@ _INTERRUPT_CHECK_INTERVAL = 0.2
 import errno as _errno
 
 # ── ANSI 转义码剥离 ─────────────────────────────────────
+import re as _re
 
 def _strip_ansi(text: str) -> str:
     """剥离所有 ANSI 转义序列和破坏终端布局的控制字符。
@@ -483,20 +483,13 @@ class BashFunc(Func):
             reader = asyncio.StreamReader()
             protocol = asyncio.StreamReaderProtocol(reader)
 
-            # ★ 使用 closefd=False 确保文件对象不拥有 fd 的所有权，
-            #   后续 except 块中 os.close(master_fd) 能正常工作
-            master_fp = os.fdopen(master_fd, 'rb', buffering=0)
             try:
                 transport, _ = await loop.connect_read_pipe(
                     lambda: protocol,
-                    master_fp,
+                    os.fdopen(master_fd, 'rb', buffering=0),
                 )
             except Exception:
-                master_fp.close()
                 os.close(master_fd)
-                # ★ 子进程已启动，必须 kill + wait 防止孤儿进程
-                process.kill()
-                await process.wait()
                 raise
 
             lines = []
@@ -512,7 +505,6 @@ class BashFunc(Func):
                     raise
             except asyncio.CancelledError:
                 process.kill()
-                await process.wait()
                 raise
             finally:
                 try:

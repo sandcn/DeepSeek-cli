@@ -121,21 +121,19 @@ class MessageQueue:
                     continue
                 if msg.content is self._STOP_SENTINEL:
                     break
-                # 修复：msg.taken=True 移入 try 块第一行，配合 callback_started 标志精确判断
+                # 双阶段确认：先标记消息已取出（taken=True），再交给 callback
+                # taken 必须放在 try 块外，确保标记不因 CancelledError 回滚丢失
                 msg.taken = True
-                callback_started = False
                 try:
-                    callback_started = True  # 在 await 之前立即设置
                     await callback(msg)
                 except asyncio.CancelledError:
-                    if callback_started:
-                        # callback 已开始执行，不重新入队防重复
-                        _logger.warning("async_consume 取消时 callback 已开始，跳过重新入队（防重复）")
+                    if msg.taken:
+                        # callback 已开始处理消息，跳过重新入队避免重复处理
+                        _logger.warning("async_consume 取消时 msg.taken=True，跳过重新入队（防重复）")
                         self._running = False
                     else:
-                        # callback 尚未开始执行，回滚 taken 并重新入队防丢失
-                        msg.taken = False
-                        _logger.warning("async_consume 取消时 callback 未执行，重新入队消息 id=%d", msg.id)
+                        # callback 尚未开始处理，将消息重新入队避免丢失
+                        _logger.warning("async_consume 取消时 msg.taken=False，重新入队消息 id=%d", msg.id)
                         self._running = False
                         await self._queue.put(msg)
                     raise

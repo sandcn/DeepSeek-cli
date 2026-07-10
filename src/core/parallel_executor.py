@@ -106,13 +106,6 @@ class ParallelExecutor:
         """是否已设置为批量模式（用于 dispatch_agent 判断）。"""
         return self._expected_count > 0
 
-    def signal_all_done(self) -> None:
-        """公共方法：设置 _all_done 事件，释放 barrier 等待的协程。
-
-        供 ToolCallbackChain 在 finally 块中调用，替代直接访问私有属性 _all_done。
-        """
-        self._all_done.set()
-
     def setup_barrier(self, count: int):
         """初始化并行执行，等待 count 个 agent 注册后统一执行。"""
         if count <= 0:
@@ -212,10 +205,10 @@ class ParallelExecutor:
         仅在 ChatUIConsumer 未激活（无底部栏分屏）时使用。
         """
         import sys as _sys
-        from ..core.ports.render import DefaultRenderAdapter
+        from src.api.renderer import IncrementalRenderer
 
-        renderer = DefaultRenderAdapter(typing_speed=0, show_indicator=False,
-                                        _file=_sys.__stdout__)
+        renderer = IncrementalRenderer(typing_speed=0, show_indicator=False,
+                                       _file=_sys.__stdout__)
         try:
             for i, r in enumerate(results, 1):
                 label = r.get(_LABEL_KEY, f"agent-{i}")
@@ -251,7 +244,7 @@ class ParallelExecutor:
         Parser/Engine 无实例锁（单线程专用，不与其他渲染器共享）。
         """
         import io
-        from ..core.ports.render import DefaultRenderAdapter
+        from src.api.renderer import IncrementalRenderer
 
         chat_ui = get_active_chat_ui()
         if chat_ui is None:
@@ -290,7 +283,7 @@ class ParallelExecutor:
         #   通过 ioctl(/dev/tty) 获取真实宽度并传入，消除错位重叠问题。
         term_width = _get_terminal_width()
         buf = io.StringIO()
-        renderer = DefaultRenderAdapter(
+        renderer = IncrementalRenderer(
             typing_speed=0, show_indicator=False, _file=buf, width=term_width,
         )
         try:
@@ -349,10 +342,9 @@ class ParallelExecutor:
         #   全部使用 __stdout__（真实终端），而非 sys.stdout（可能被并发工具
         #   的 _SharedCapture 劫持），消除竞态窗口。
         from ..ui._lock import _try_acquire_output_lock
-        with _try_acquire_output_lock(name="parallel_executor.cursor_fix", timeout=1.0) as locked:
-            if locked:
-                _sys.__stdout__.write('\r\n')
-                _sys.__stdout__.flush()
+        with _try_acquire_output_lock(name="parallel_executor.cursor_fix", timeout=1.0):
+            _sys.__stdout__.write('\r\n')
+            _sys.__stdout__.flush()
 
     async def _execute_with_error_handling(
         self, coro, specs: List[Dict[str, Any]], display: ParallelDisplay,
@@ -377,7 +369,6 @@ class ParallelExecutor:
         mode_name = "批量模式" if is_batch else "独立模式"
 
         results: list | None = None
-        _output_already_done = False
         try:
             results = await coro
         except asyncio.CancelledError:
@@ -417,7 +408,6 @@ class ParallelExecutor:
 
             if results:
                 self._spawner.publish_summary(results)
-            _output_already_done = True
             raise
         except Exception as e:
             _logger.error("%s: %s", error_prefix, e, exc_info=True)
@@ -442,12 +432,10 @@ class ParallelExecutor:
                 ]
 
             # 停止 display（终止刷新线程 + 渲染最终帧）
-            # CancelledError 路径下已在 except 块中执行过 await_stop，跳过避免双重执行
-            if not _output_already_done:
-                try:
-                    await display.await_stop(timeout=5.0 if is_batch else _TIMEOUT)
-                except Exception:
-                    _logger.exception("%s await_stop 异常", log_prefix)
+            try:
+                await display.await_stop(timeout=5.0 if is_batch else _TIMEOUT)
+            except Exception:
+                _logger.exception("%s await_stop 异常", log_prefix)
 
             # ★ 批量模式：在打印 markdown 结果前，停止 dispatch_agent 的 Spinner
             if is_batch and not self._is_web and results:
@@ -471,23 +459,19 @@ class ParallelExecutor:
             # 在线程池中执行所有终端输出操作，避免同步 IO 阻塞事件循环
             # 统一通过 _do_terminal_output 路由：ChatUI 激活时走 write_line，
             # ChatUI 未激活时走 IncrementalRenderer 直接写 __stdout__。
-            # CancelledError 路径下已在 except 块中执行过 _do_terminal_output，跳过避免双重执行
-            if results and not _output_already_done:
+            if results:
                 await asyncio.to_thread(self._do_terminal_output, results)
 
             # ★ sys.stdout 泄漏检测
-            # CancelledError 路径下已在 except 块中执行过 safe_restore_stdout，跳过避免双重执行
-            if not _output_already_done:
-                try:
-                    safe_restore_stdout(
-                        f"{trace_prefix} 检测到 sys.stdout 泄漏 (孤立 _SharedCapture)"
-                    )
-                except Exception:
-                    _logger.warning("%s stdout 泄漏检测异常", trace_prefix, exc_info=True)
+            try:
+                safe_restore_stdout(
+                    f"{trace_prefix} 检测到 sys.stdout 泄漏 (孤立 _SharedCapture)"
+                )
+            except Exception:
+                _logger.warning("%s stdout 泄漏检测异常", trace_prefix, exc_info=True)
 
             # 统一批量发布 AgentResultEvent
-            # CancelledError 路径下已在 except 块中执行过 publish_summary，跳过避免双重执行
-            if results and not _output_already_done:
+            if results:
                 self._spawner.publish_summary(results)
         return results
 

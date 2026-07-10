@@ -14,18 +14,13 @@
 - DisplayPort       — 用户显示
 - EventPort         — 事件总线
 - OutputPort        — 文本输出
-- InterruptPort     — 中断信号检查
-- TokensPort        — Token 估算
-- ToolRegistryPort  — 工具注册表
-- PromptBuilderPort — 提示词构建
-- RenderPort        — 渲染引擎
 """
 
 from .http import HttpClientPort, DefaultHttpClientAdapter
 from .config import ConfigPort, DefaultConfigAdapter, MockConfigAdapter
 from .display import DisplayPort
 from .events import EventPort
-from .interrupt import InterruptPort, DefaultInterruptAdapter
+from .interrupt import InterruptPort
 from .model import AsyncModelPort, DefaultAsyncModelAdapter, MockAsyncModelAdapter, ModelResult
 from .output import OutputPort
 from .persistence import PersistencePort, CheckpointPort, JsonFilePersistence, JsonFileCheckpoint
@@ -33,7 +28,6 @@ from .tool_registry import ToolRegistryPort
 from .prompt_builder import PromptBuilderPort, DefaultPromptBuilderAdapter
 from .render import RenderPort, DefaultRenderAdapter, NullRenderAdapter
 from .stats import StatsPort, DefaultStatsAdapter, MockStatsAdapter
-from .tokens import TokensPort, DefaultTokensAdapter
 from ..cache import CachePort, LRUCache, NullCache
 
 __all__ = [
@@ -52,13 +46,11 @@ __all__ = [
     # HTTP
     "HttpClientPort", "DefaultHttpClientAdapter",
     # 中断检查
-    "InterruptPort", "DefaultInterruptAdapter",
+    "InterruptPort",
     # 工具注册表
     "ToolRegistryPort",
     # 提示词构建
     "PromptBuilderPort", "DefaultPromptBuilderAdapter",
     # 渲染
     "RenderPort", "DefaultRenderAdapter", "NullRenderAdapter",
-    # Token 估算
-    "TokensPort", "DefaultTokensAdapter",
 ]

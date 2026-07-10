@@ -160,25 +160,13 @@ def _fix_extra_brackets(s: str) -> str:
     escape = False
 
     for i, ch in enumerate(s):
-        # ── 字符串值状态机 ──
-        # 设计意图：正确跳过字符串内的括号字符，避免误删/误处理。
-        # 转义序列处理顺序：
-        #   ① escape=True（前一个字符是 \）→ 当前字符无条件被「消耗」，不触发任何字符串结束逻辑
-        #      这确保了 \" 中的双引号不会误结束字符串
-        #   ② 遇到 \ 且当前不在转义中 → 进入转义状态，期待下一个字符
-        #      注意：\\ 序列中，第二个 \ 会进入 ① 分支被消耗（escape→False），不会为后续 " 设置转义
-        #      所以 \\" 的正确语义是：一个字面反斜杠 + 字符串结束引号
-        #   ③ 遇到 " 且不在转义中 → 字符串正常结束
+        # 跳过字符串值内的内容
         if in_string:
             if escape:
-                # ① 转义生效中：当前字符被「消耗」，退出转义状态
-                # 无论当前字符是什么（包括 "、\、{、} 等），都不触发任何特殊逻辑
                 escape = False
             elif ch == '\\':
-                # ② 遇到反斜杠：进入转义状态，标记下一个字符被转义
                 escape = True
             elif ch == '"':
-                # ③ 未转义的双引号：字符串值结束
                 in_string = False
             continue
         if ch == '"':
@@ -391,7 +379,6 @@ def _repair_json(s: str) -> str:
 
 def json_loads_safe(s: str):
     """安全的 JSON 解析，含自动修复。返回 (dict, 是否修复)。"""
-    s = s.lstrip('\ufeff')
     if not s or s.strip() == "null":
         return {}, False
     try:

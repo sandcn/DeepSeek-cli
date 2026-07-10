@@ -6,9 +6,6 @@
 
 import threading
 
-# 注意：使用 threading.Lock 而非 asyncio.Lock，因为
-# _notify_stream_* 函数可能在同步上下文中被调用（非 async def）。
-# 锁持有时间极短（仅增减整数/赋值），不会造成事件循环阻塞。
 
 # 嵌套深度计数 ─────────────────────────────────────────
 _stream_depth: int = 0

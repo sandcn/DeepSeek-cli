@@ -14,9 +14,7 @@ from ..config import (
     MAX_CONTEXT_CHARS, MAX_CONTEXT_TOKENS,
     KEEP_RECENT_MESSAGES, AUTO_FORCE_COMPRESS_THRESHOLD,
 )
-from ..core.ports.tokens import DefaultTokensAdapter
-
-_tokens_port = DefaultTokensAdapter()
+from ..api.tokens import estimate_tokens
 from ._message_stats_cache import MessageStatsCache  # noqa: F401 — re-exported for backward compat
 
 _EXCESS_BUFFER = 1.3  # 30% 超额释放缓冲，避免频繁触发压缩
@@ -31,7 +29,7 @@ def compute_message_stats(messages):
     for m in messages:
         text = message_to_text(m)
         total_chars_val += len(text)
-        total_tokens_val += _tokens_port.estimate_tokens(text)
+        total_tokens_val += estimate_tokens(text)
     return total_chars_val, total_tokens_val
 
 

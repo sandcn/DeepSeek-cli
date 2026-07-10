@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import logging
 import sys
-import threading
 from dataclasses import dataclass
 from enum import Enum
 from typing import TYPE_CHECKING
@@ -65,80 +64,70 @@ class _RenderState:
     reasoning_state: _ReasoningState = _ReasoningState.INACTIVE
     _shared_adapter: "OutputAdapter | None" = None
 
-    def __post_init__(self) -> None:
-        self._lock = threading.RLock()
-
     def set_output_adapter(self, adapter: "OutputAdapter") -> None:
-        with self._lock:
-            self._shared_adapter = adapter
+        self._shared_adapter = adapter
 
     def get_reasoning(self) -> "IncrementalRenderer | None":
-        with self._lock:
-            if self.reasoning_state == _ReasoningState.CLOSED:
-                return None
-            if self.reasoning is None:
-                assert self.reasoning_state.can_transition_to(_ReasoningState.ACTIVE), (
-                    f"非法状态转换: {self.reasoning_state} -> ACTIVE"
-                )
-                from ..api.renderer import IncrementalRenderer  # 保留运行时惰性 import（避免循环）
-                self.reasoning = IncrementalRenderer(
-                    style="dim", _file=sys.__stdout__,
-                    typing_speed=1000, show_indicator=False,
-                )
-                self.reasoning_state = _ReasoningState.ACTIVE
-            return self.reasoning
+        if self.reasoning_state == _ReasoningState.CLOSED:
+            return None
+        if self.reasoning is None:
+            assert self.reasoning_state.can_transition_to(_ReasoningState.ACTIVE), (
+                f"非法状态转换: {self.reasoning_state} -> ACTIVE"
+            )
+            from ..api.renderer import IncrementalRenderer  # 保留运行时惰性 import（避免循环）
+            self.reasoning = IncrementalRenderer(
+                style="dim", _file=sys.__stdout__,
+                typing_speed=1000, show_indicator=False,
+            )
+            self.reasoning_state = _ReasoningState.ACTIVE
+        return self.reasoning
 
     def get_content(self) -> "IncrementalRenderer":
-        with self._lock:
-            if self.content is None:
-                if self._shared_adapter is None:
-                    _logger.warning("get_content: _shared_adapter 未设置")
-                from ..api.renderer import IncrementalRenderer  # 保留运行时惰性 import（避免循环）
-                self.content = IncrementalRenderer(
-                    style="", _file=sys.__stdout__,
-                    typing_speed=1000, show_indicator=False,
-                    output_adapter=self._shared_adapter,
-                )
-            return self.content
+        if self.content is None:
+            if self._shared_adapter is None:
+                _logger.warning("get_content: _shared_adapter 未设置")
+            from ..api.renderer import IncrementalRenderer  # 保留运行时惰性 import（避免循环）
+            self.content = IncrementalRenderer(
+                style="", _file=sys.__stdout__,
+                typing_speed=1000, show_indicator=False,
+                output_adapter=self._shared_adapter,
+            )
+        return self.content
 
     def close_reasoning(self) -> None:
-        with self._lock:
-            if self.reasoning_state == _ReasoningState.CLOSED:
-                return
-            assert self.reasoning_state.can_transition_to(_ReasoningState.CLOSED), (
-                f"非法状态转换: {self.reasoning_state} -> CLOSED"
-            )
-            rr = self.reasoning
-            if rr is not None:
-                rr.write(_THINKING_SEPARATOR)
-                rr.close()
-                self.reasoning = None
-            self.reasoning_state = _ReasoningState.CLOSED
+        if self.reasoning_state == _ReasoningState.CLOSED:
+            return
+        assert self.reasoning_state.can_transition_to(_ReasoningState.CLOSED), (
+            f"非法状态转换: {self.reasoning_state} -> CLOSED"
+        )
+        rr = self.reasoning
+        if rr is not None:
+            rr.write(_THINKING_SEPARATOR)
+            rr.close()
+            self.reasoning = None
+        self.reasoning_state = _ReasoningState.CLOSED
 
     def reopen_reasoning(self) -> None:
-        with self._lock:
-            if self.reasoning_state != _ReasoningState.CLOSED:
-                return
-            assert self.reasoning_state.can_transition_to(_ReasoningState.INACTIVE), (
-                f"非法状态转换: {self.reasoning_state} -> INACTIVE"
-            )
-            self.reasoning = None
-            self.reasoning_state = _ReasoningState.INACTIVE
+        if self.reasoning_state != _ReasoningState.CLOSED:
+            return
+        assert self.reasoning_state.can_transition_to(_ReasoningState.INACTIVE), (
+            f"非法状态转换: {self.reasoning_state} -> INACTIVE"
+        )
+        self.reasoning = None
+        self.reasoning_state = _ReasoningState.INACTIVE
 
     def close_content(self) -> None:
-        with self._lock:
-            cr = self.content
-            if cr is not None:
-                cr.close()
-                self.content = None
+        cr = self.content
+        if cr is not None:
+            cr.close()
+            self.content = None
 
     def close_all(self) -> None:
-        with self._lock:
-            try:
-                self.close_reasoning()
-            except Exception:
-                _logger.debug("close_reasoning 异常", exc_info=True)
-            try:
-                self.close_content()
-            except Exception:
-                _logger.debug("close_content 异常", exc_info=True)
+        try:
+            self.close_reasoning()
+        except Exception:
+            _logger.debug("close_reasoning 异常", exc_info=True)
+        try:
+            self.close_content()
+        except Exception:
+            _logger.debug("close_content 异常", exc_info=True)

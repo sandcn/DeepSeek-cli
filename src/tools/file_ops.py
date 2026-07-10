@@ -192,12 +192,7 @@ def _sync_read_file(path: str, encoding: str = 'utf-8', errors: str = 'replace')
     try:
         with open(path, 'r', encoding=encoding, errors=errors) as f:
             return f.read()
-    except FileNotFoundError:
-        # 文件不存在，返回 None 是正常行为
-        return None
-    except Exception as e:
-        # ★ B101 修复：记录非预期的异常（如权限错误），帮助调试
-        _logger.warning("_sync_read_file 读取异常: %s — %s: %s", path, type(e).__name__, e)
+    except Exception:
         return None
 
 

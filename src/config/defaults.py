@@ -47,5 +47,4 @@ DEFAULTS = {
     "models": [],
     "token_prices": {},
     "theme": "dark",
-    "max_concurrent_tools": 20,
 }

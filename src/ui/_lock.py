@@ -48,18 +48,12 @@ _locked_print_reentrant = threading.local()
 # held_stack 是一个 list[str]，记录当前线程获取的锁名称。
 # 在 _try_acquire_output_lock 中维护。
 _lock_debug = threading.local()
+_lock_debug.held_stack = []  # type: list[str]
 
 # 终端写锁超时阈值（秒）— PTY 缓冲区满时防止锁被长期持有
 OUTPUT_LOCK_TIMEOUT = 1.0
 
 _logger = logging.getLogger(__name__)
-
-
-def _get_held_stack() -> list:
-    """获取当前线程的锁持有栈（自动初始化）。"""
-    if not hasattr(_lock_debug, 'held_stack'):
-        _lock_debug.held_stack = []
-    return _lock_debug.held_stack
 
 
 @contextmanager
@@ -80,16 +74,18 @@ def _try_acquire_output_lock(
     Yields:
         bool - True 表示成功获取锁，False 表示超时
     """
-    _get_held_stack().append("output_lock")
+    if not hasattr(_lock_debug, 'held_stack'):
+        _lock_debug.held_stack = []
+    _lock_debug.held_stack.append("output_lock")
     acquired = output_lock.acquire(timeout=timeout)
     if acquired:
         try:
             yield True
         finally:
-            _get_held_stack().pop()
+            _lock_debug.held_stack.pop()
             output_lock.release()
     else:
-        _get_held_stack().pop()
+        _lock_debug.held_stack.pop()
         _logger.warning("output_lock 超时（%s, %.1fs），降级为直写", name, timeout)
         yield False
 
@@ -143,8 +139,6 @@ def locked_print(*args, sep: str = " ", end: str = "\n", **kwargs):
                 finally:
                     _locked_print_reentrant.is_active = False
             return
-    except (SystemExit, KeyboardInterrupt, GeneratorExit):
-        raise
     except Exception:
         pass
 

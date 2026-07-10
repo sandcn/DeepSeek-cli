@@ -20,62 +20,6 @@ from .file_change_record import FileChangeRecord
 
 _logger = logging.getLogger(__name__)
 
-# ── 沙盒根目录 ─────────────────────────────────────────
-# 所有文件操作的工作目录，作为路径白名单校验的基准
-_SANDBOX_ROOT: str = os.getcwd()
-
-
-def _validate_sandbox_path(
-    file_path: str,
-    sandbox_root: str | None = _SANDBOX_ROOT,
-) -> str:
-    """验证文件路径是否在沙盒范围内，防止路径穿越。
-
-    使用 os.path.realpath() 解析符号链接，然后进行双重穿越检测：
-    1. 基础检测：归一化后以 ``..`` 开头或为绝对路径 → 拦截
-    2. 符号链接解析后，若提供了 sandbox_root，验证真实路径在沙盒根目录下
-
-    ⚠ TOCTOU 声明：此函数校验与后续文件 I/O 之间存在 TOCTOU 窗口
-       （校验→操作期间，恶意进程可将普通文件替换为指向沙盒外的符号链接）。
-       此为单人本地 CLI 场景，风险极低，当前不做 TOCTOU 消除处理。
-
-    Args:
-        file_path: 待验证的文件路径
-        sandbox_root: 沙盒根目录（默认当前工作目录）。
-                      为 None 时不进行沙盒白名单校验（仅做基础穿越检测）。
-
-    Returns:
-        验证通过的安全路径（已解析符号链接，若文件不存在则返回 normpath 结果）。
-
-    Raises:
-        ValueError: 路径校验失败时抛出。
-    """
-    # 基础归一化 + 穿越检测
-    normalized = os.path.normpath(file_path)
-    if normalized.startswith("..") or os.path.isabs(normalized):
-        raise ValueError(
-            f"路径穿越已拦截: {file_path!r} (归一化后: {normalized!r})"
-        )
-
-    # 尝试解析符号链接（路径不存在时回退到 normpath 结果）
-    try:
-        real_path = os.path.realpath(file_path)
-    except (FileNotFoundError, OSError):
-        # 路径不存在，不可能是符号链接穿越，回退到 normpath 结果
-        return normalized
-
-    # 沙盒根目录白名单校验
-    if sandbox_root is not None:
-        sandbox_real = os.path.realpath(sandbox_root)
-        common = os.path.commonpath([real_path, sandbox_real])
-        if common != sandbox_real:
-            raise ValueError(
-                f"路径不在沙盒范围内: {file_path!r} "
-                f"(realpath: {real_path!r}, sandbox: {sandbox_real!r})"
-            )
-
-    return real_path
-
 
 @dataclass(slots=True)
 class FileSnapshot:
@@ -115,16 +59,7 @@ class _FileHistory:
         tool_name: str = "write_file",
         record_type: str = "file",
     ) -> FileChangeRecord:
-        """记录文件修改（仅写入 file_history，不涉及 message_history）。
-
-        记录前验证路径安全性，拒绝穿越路径。
-
-        Raises:
-            ValueError: 路径校验失败（穿越沙盒范围）。
-        """
-        # 路径安全校验：记录时就拒绝穿越路径
-        _validate_sandbox_path(file_path)
-
+        """记录文件修改（仅写入 file_history，不涉及 message_history）。"""
         with self._lock:
             record = FileChangeRecord(
                 file_path=file_path,
@@ -137,40 +72,6 @@ class _FileHistory:
             self.file_history.setdefault(file_path, []).append(record)
             self._cleanup_old_records(file_path)
             return record
-
-    def shift_indices(self, insert_at: int) -> None:
-        """当消息列表中插入消息后，将所有 >= insert_at 的索引 +1。"""
-        with self._lock:
-            for records in self.file_history.values():
-                for r in records:
-                    if r.message_index >= insert_at:
-                        r.message_index += 1
-
-    def remap_indices(self, removed_indices: List[int]) -> None:
-        """当消息列表删除消息后，重新映射所有记录的 message_index。
-
-        Args:
-            removed_indices: 被删除的消息索引列表（删除前的原始索引）
-        """
-        if not removed_indices:
-            return
-        with self._lock:
-            removed_set = set(removed_indices)
-            def new_idx(old):
-                if old in removed_set:
-                    return -1
-                return old - sum(1 for r in removed_set if r < old)
-            for path, records in list(self.file_history.items()):
-                new_records = []
-                for r in records:
-                    ni = new_idx(r.message_index)
-                    if ni >= 0:
-                        r.message_index = ni
-                        new_records.append(r)
-                if new_records:
-                    self.file_history[path] = new_records
-                else:
-                    del self.file_history[path]
 
     def _cleanup_old_records(self, file_path: str) -> None:
         """清理旧记录，保持历史大小在限制内。"""
@@ -231,14 +132,14 @@ class _FileHistory:
         """恢复到指定消息索引的文件状态。
 
         三阶段：
-        - Phase 1：持锁收集快照数据 + 清理记录
+        - Phase 1：持锁收集快照数据
         - Phase 2：释放锁后执行文件 I/O
-        - Phase 3：重新持锁（清理已在 Phase 1 完成）
+        - Phase 3：重新持锁清理记录
 
         Returns:
             {file_path: success} 字典。
         """
-        # Phase 1: 持锁收集快照 + 清理记录
+        # Phase 1: 持锁收集快照
         with self._lock:
             affected_files_set: set[str] = set()
             for records in self.file_history.values():
@@ -257,31 +158,10 @@ class _FileHistory:
             # 按路径深度降序排列（深层优先），确保子路径先于父路径处理
             snapshots.sort(key=lambda s: s.file_path.count(os.sep), reverse=True)
 
-            # 【TOCTOU 修复】在持锁状态下清理记录，防止 Phase 2→3 之间
-            # 另一线程 record() 写入的新记录被错误移除
-            self.remove_after_index(target_message_index)
-
         # Phase 2: 释放锁后执行文件 I/O
         results: Dict[str, bool] = {}
-
-        # ── 路径安全校验（防止路径穿越 + 符号链接遍历） ──
-        # 使用 _validate_sandbox_path() 解析符号链接并验证沙盒白名单
-        validated_snapshots: list[FileSnapshot] = []
-        for snap in snapshots:
-            try:
-                safe_path = _validate_sandbox_path(snap.file_path)
-                if snap.file_path != safe_path:
-                    _logger.warning("路径安全归一化: %s → %s", snap.file_path, safe_path)
-                    snap.file_path = safe_path
-                validated_snapshots.append(snap)
-            except ValueError as e:
-                _logger.warning("路径安全校验失败，已跳过: %s — %s", snap.file_path, e)
-                results[snap.file_path] = False
-        snapshots = validated_snapshots
-
         for snap in snapshots:
             backup_path = None
-            tmp_path = None
             try:
                 if snap.target_content is None:
                     # 路径不应存在
@@ -326,7 +206,7 @@ class _FileHistory:
                         ) as f:
                             f.write(snap.target_content)
                         os.replace(tmp_path, snap.file_path)
-                        tmp_path = None  # 标记已成功替换，阻止 finally 中清理
+                        tmp_path = None  # type: ignore[assignment]
                     finally:
                         if tmp_path is not None:
                             try:
@@ -334,11 +214,10 @@ class _FileHistory:
                             except OSError:
                                 pass
 
-                    # 清理备份（仅当原子写入成功后清理）
+                    # 清理备份
                     if backup_path is not None:
                         try:
                             os.unlink(backup_path)
-                            backup_path = None  # 标记已清理
                         except OSError:
                             pass
 
@@ -349,22 +228,24 @@ class _FileHistory:
                 )
                 results[snap.file_path] = False
                 # 异常路径：尝试从备份恢复
-                if backup_path is not None and os.path.exists(backup_path):
-                    try:
-                        if os.path.isfile(backup_path):
-                            shutil.copy2(backup_path, snap.file_path)
-                    except Exception:
-                        _logger.debug("沙盒还原 shutil.copy2 失败: %s", snap.file_path)
-                # 清理残留的备份文件
-                if backup_path is not None and os.path.exists(backup_path):
-                    try:
-                        os.unlink(backup_path)
-                    except OSError:
-                        pass
+                try:
+                    if backup_path is not None and os.path.exists(backup_path):
+                        try:
+                            if os.path.isfile(backup_path):
+                                shutil.copy2(backup_path, snap.file_path)
+                        except Exception:
+                            _logger.debug(
+                                "沙盒还原 shutil.copy2 失败: %s", snap.file_path,
+                            )
+                    for _p in [backup_path]:
+                        if _p and os.path.exists(_p):
+                            os.unlink(_p)
+                except OSError:
+                    pass
 
-        # Phase 3: 重新持锁（清理已在 Phase 1 持锁时完成）
+        # Phase 3: 重新持锁清理记录
         with self._lock:
-            pass  # 保持锁层次一致性，清理已在 Phase 1 完成
+            self.remove_after_index(target_message_index)
 
         return results
 

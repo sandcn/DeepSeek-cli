@@ -135,7 +135,7 @@ class Tracer:
         """结束栈顶 Span，返回该 Span"""
         with self._lock:
             if not self._stack:
-                # 空栈时静默返回，由调用方自行判断是否需要关心
+                _logger.warning("end_span 调用时栈为空")
                 return None
             span = self._stack.pop()
             span.finish()

@@ -8,7 +8,6 @@ page_fetcher — 网页内容获取与正文提取模块
 from __future__ import annotations
 
 import copy
-import ipaddress
 import re
 from datetime import datetime
 from typing import Optional
@@ -33,6 +32,16 @@ MAX_PREVIEW_CHARS = 200
 
 # 请求超时（秒）
 REQUEST_TIMEOUT = 15
+
+# 禁止请求的私有IP网段（SSRF防护）
+PRIVATE_PREFIXES = (
+    "10.", "172.16.", "172.17.", "172.18.", "172.19.",
+    "172.20.", "172.21.", "172.22.", "172.23.",
+    "172.24.", "172.25.", "172.26.", "172.27.",
+    "172.28.", "172.29.", "172.30.", "172.31.",
+    "192.168.", "127.", "0.", "169.254.",
+    "::1", "fc00:", "fe80:", "localhost",
+)
 
 # 内容提取时排除的标签（导航/脚本/样式等非内容元素）
 REMOVE_TAGS = {
@@ -74,31 +83,41 @@ DATE_META_PATTERNS = [
 # ═══════════════════════════════════════════════════════════
 
 def _is_private_url(url: str) -> bool:
-    """检查 URL 是否指向私有/内网地址（SSRF防护）
-
-    使用 ipaddress 标准库进行 IP 地址检测，支持：
-    - IPv4: ``10.0.0.1``, ``192.168.1.1``, ``127.0.0.1``
-    - IPv6: ``::1``, ``fe80::1``
-    - IPv4-mapped IPv6: ``::ffff:10.0.0.1``（原手动前缀匹配无法覆盖）
-    - IPv6 带方括号: ``[::1]``（自动剥离方括号）
-    - 主机名: ``example.com``（非 IP，返回 False）
-    """
+    """检查 URL 是否指向私有/内网地址（SSRF防护）"""
     parsed = urlparse(url)
     hostname = parsed.hostname or ""
 
-    # localhost/环回地址显式检查（localhost 非 IP；0.0.0.0 的 is_private 为 False）
-    if hostname in ("localhost", "0.0.0.0"):
+    # 检查 localhost 别名
+    if hostname in ("localhost", "127.0.0.1", "0.0.0.0", "[::1]"):
         return True
 
-    # 剥离 IPv6 地址的外层方括号，如 "[::1]" → "::1"
-    clean_hostname = hostname.strip("[]")
+    # 检查是否包含字母（区分 IP 地址和主机名）
+    # 私网前缀匹配仅对纯 IP 地址生效，避免误拦截如 127.example.com 等合法域名
+    is_numeric_ip = not re.search(r'[a-zA-Z]', hostname)
 
-    try:
-        addr = ipaddress.ip_address(clean_hostname)
-        return addr.is_private
-    except ValueError:
-        # 既非 IP 也非已知 localhost 别名，视为主机名，不拦截
-        return False
+    # 检查私有 IP 前缀（仅对纯 IP 地址生效）
+    if is_numeric_ip:
+        for prefix in PRIVATE_PREFIXES:
+            if hostname.startswith(prefix):
+                return True
+
+    # 检查是否为纯 IP（不包含字母）
+    if is_numeric_ip:
+        parts = hostname.split(".")
+        if len(parts) == 4:
+            try:
+                first = int(parts[0])
+                # 仅拦截真正的私有/保留网段
+                if first == 10 or first == 127 or first == 0:
+                    return True
+                if first == 172 and len(parts) > 2:
+                    second = int(parts[1])
+                    if 16 <= second <= 31:
+                        return True
+            except ValueError:
+                pass
+
+    return False
 
 
 def _validate_fetch_url(url: str) -> Optional[str]:

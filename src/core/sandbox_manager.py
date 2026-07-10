@@ -77,16 +77,11 @@ class SandboxManager:
 
         消除 shift_indices/remap_indices 中重复的 message_history 重建逻辑。
         从 _fh.file_history 遍历所有记录并按 message_index 重新分组。
-
-        线程安全：遍历 _fh.file_history 前获取 _fh._lock，
-        与 _fh.record() (也持 _fh._lock) 形成互斥，防止并发记录操作导致
-        message_history 出现重复记录或遗漏记录。
         """
         new_mh: dict[int, list[FileChangeRecord]] = {}
-        with self._fh._lock:
-            for records in self._fh.file_history.values():
-                for r in records:
-                    new_mh.setdefault(r.message_index, []).append(r)
+        for records in self._fh.file_history.values():
+            for r in records:
+                new_mh.setdefault(r.message_index, []).append(r)
         self.message_history = new_mh
 
     def record_file_change(self, file_path: str, content_before: Optional[str],
@@ -110,13 +105,14 @@ class SandboxManager:
         注意：同一消息索引多次修改同一文件时，每条记录独立追加，不会合并。
         确保回滚时可以精确恢复每个中间状态。
         """
-        # 先持 self.lock，再持 _fh._lock（统一锁顺序，防止 ABBA 死锁）
-        # 锁层次：SandboxManager.lock → _FileHistory._lock
+        # 委托给 _FileHistory 记录文件历史
+        record = self._fh.record(
+            file_path, content_before, content_after, message_index,
+            tool_name, record_type,
+        )
+
+        # 管理消息索引映射
         with self.lock:
-            record = self._fh.record(
-                file_path, content_before, content_after, message_index,
-                tool_name, record_type,
-            )
             if message_index not in self.message_history:
                 self.message_history[message_index] = []
             self.message_history[message_index].append(record)
@@ -267,7 +263,10 @@ class SandboxManager:
     def shift_indices(self, insert_at: int):
         """当在消息列表中插入一条消息后，将 >= insert_at 的索引全部 +1。"""
         with self.lock:
-            self._fh.shift_indices(insert_at)
+            for records in self._fh.file_history.values():
+                for r in records:
+                    if r.message_index >= insert_at:
+                        r.message_index += 1
             self._rebuild_message_history()
             if self.current_message_index >= insert_at:
                 self._update_current_index(self.current_message_index + 1)
@@ -288,8 +287,18 @@ class SandboxManager:
                     return -1
                 return old - sum(1 for r in removed_set if r < old)
 
-            # 委托 _FileHistory 处理 file_history 的索引重映射
-            self._fh.remap_indices(removed_indices)
+            # 通过 file_history 更新所有记录的 message_index
+            for path, records in list(self._fh.file_history.items()):
+                new_records = []
+                for r in records:
+                    ni = new_idx(r.message_index)
+                    if ni >= 0:
+                        r.message_index = ni
+                        new_records.append(r)
+                if new_records:
+                    self._fh.file_history[path] = new_records
+                else:
+                    del self._fh.file_history[path]
 
             # ★ 收集 orphan 记录：仅在 message_history 中存在但在 file_history
             #   中被移除的记录

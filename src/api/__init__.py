@@ -5,7 +5,7 @@
 - model_async.py  —— call_model_async / call_model_sync_async 公开接口 + 重试逻辑
 - stream/         —— 流式输出处理、可中断异步迭代器
 - tokens.py      —— Token 启发式估算
-- interrupt_async.py —— 全局中断信号（threading.Event，跨事件循环安全）
+- interrupt_async.py —— 全局中断信号（asyncio.Event）
 - stats.py       —— 会话级 token 统计
 - renderer/         —— 流式输出 Markdown 渲染（策略模式）
 - json_repair.py    —— JSON 格式自动修复

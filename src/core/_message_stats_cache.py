@@ -10,9 +10,7 @@ MessageStatsCache 维护与 messages 列表对应的每消息字符/token 数缓
 
 from dataclasses import field
 from src._compat import dataclass
-from ..core.ports.tokens import DefaultTokensAdapter
-
-_tokens_port = DefaultTokensAdapter()
+from ..api.tokens import estimate_tokens
 
 
 @dataclass(slots=True)
@@ -48,7 +46,7 @@ class MessageStatsCache:
         for m in messages:
             text = message_to_text(m)
             c = len(text)
-            t = _tokens_port.estimate_tokens(text)
+            t = estimate_tokens(text)
             total_chars += c
             total_tokens += t
             per_msg.append((c, t))
@@ -68,7 +66,7 @@ class MessageStatsCache:
         from .context_selector import message_to_text  # noqa: PLC0415 — 懒加载避免循环导入
 
         text = message_to_text(msg)
-        c, t = len(text), _tokens_port.estimate_tokens(text)
+        c, t = len(text), estimate_tokens(text)
         self._chars += c
         self._tokens += t
         self._per_msg.append((c, t))
@@ -78,7 +76,7 @@ class MessageStatsCache:
         from .context_selector import message_to_text  # noqa: PLC0415 — 懒加载避免循环导入
 
         text = message_to_text(msg)
-        c, t = len(text), _tokens_port.estimate_tokens(text)
+        c, t = len(text), estimate_tokens(text)
         self._per_msg.insert(idx, (c, t))
         self._chars += c
         self._tokens += t
@@ -102,7 +100,7 @@ class MessageStatsCache:
         from .context_selector import message_to_text  # noqa: PLC0415 — 懒加载避免循环导入
 
         text = message_to_text(msg)
-        c, t = len(text), _tokens_port.estimate_tokens(text)
+        c, t = len(text), estimate_tokens(text)
         old_c, old_t = self._per_msg[idx]
         self._per_msg[idx] = (c, t)
         self._chars += c - old_c

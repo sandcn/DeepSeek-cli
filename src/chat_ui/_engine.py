@@ -62,12 +62,12 @@ class TuiEngine:
         self._cmd_queue: queue.Queue = queue.Queue(maxsize=10000)
         self._cmd_event = threading.Event()
         self._render_thread: threading.Thread | None = None
+        self._render_running = False
         self._consecutive_full = 0
         self._bottom_redraw_requested = threading.Event()
         self._panel_refresh_cb: Callable[[], None] | None = None
         self._cmd_queue_dropped: int = 0
         self._render_crashed: threading.Event = threading.Event()
-        self._render_running = threading.Event()
 
     def push_cmd(self, cmd: tuple) -> None:
         """入队渲染命令到命令队列。
@@ -88,20 +88,13 @@ class TuiEngine:
             _logger.warning("渲染命令队列已满（%s 条），丢弃命令: %s", self._cmd_queue.qsize(), _cmd_name(cmd[0]))
             if self._consecutive_full >= self._CONSECUTIVE_FULL_THRESHOLD:
                 _logger.error("渲染输出管线持续拥堵（%d 次连续满队列）", self._consecutive_full)
-                _emergency_write(
-                    f"{_ANSI_RED}[ChatUI] 渲染输出持续拥堵，命令可能无法及时显示{_ANSI_RESET}\n",
-                    stream="stderr",
-                )
             if self._cmd_queue_dropped > 0 and self._cmd_queue_dropped % 100 == 0:
                 try:
                     self._cmd_queue.put_nowait(
                         (RenderCommand.NOTIFICATION, f"渲染队列已丢弃 {self._cmd_queue_dropped} 条命令")
                     )
                 except queue.Full:
-                    _emergency_write(
-                        f"{_ANSI_RED}[ChatUI] 已丢弃 {self._cmd_queue_dropped} 条渲染命令{_ANSI_RESET}\n",
-                        stream="stderr",
-                    )
+                    pass
 
     @property
     def render_crashed(self) -> bool:
@@ -120,16 +113,19 @@ class TuiEngine:
                 _logger.warning("start() 被重复调用，render 线程仍在运行，跳过")
                 return
             self._render_thread.join()
-        self._render_running.set()
+        self._render_running = True
         self._render_thread = threading.Thread(target=self._render, daemon=True)
         self._render_thread.start()
 
     def stop(self) -> None:
-        self._render_running.clear()
+        self._render_running = False
         if self._render_thread is not None:
             self._render_thread.join(timeout=2.0)
             if self._render_thread.is_alive():
-                _logger.warning("render 线程在 2s 内未退出，放弃等待")
+                for _ in range(3):
+                    self._render_thread.join(timeout=0.5)
+                    if not self._render_thread.is_alive():
+                        break
         self._drain_queue_safe()
 
     def flush(self, timeout: float | None = 5.0) -> None:
@@ -260,7 +256,7 @@ class TuiEngine:
         """
         idle_count = 0
         try:
-            while self._render_running.is_set():
+            while self._render_running:
                 try:
                     has_content = self._drain_queue()
                     if has_content:
@@ -294,7 +290,7 @@ class TuiEngine:
                         # 不能因此跳过关键清理
                         pass
                     self._cmd_event.set()
-                    self._render_running.clear()
+                    self._render_running = False
                     break
         finally:
             # 统计并报告丢弃的待处理命令

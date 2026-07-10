@@ -4,14 +4,13 @@ import os
 from .constants import GREEN, YELLOW, RED, DIM, RESET, CYAN, filter_system, filter_non_system
 from ..core.ports.output import get_default_output_port
 from ..config import MODEL
-from ..core.ports.model import DefaultAsyncModelAdapter
+from ..api.model_async import call_model_sync
 from ..prompt_builder.project_summary import generate_summary_prompt
 from ..chat_msgs import save_session as _save_direct, load_session as _load_direct, list_sessions as _list_direct
 from ..core.sandbox_manager import get_sandbox_manager
 from ._command_core import register_command
 
 _out = get_default_output_port()
-_model_port = DefaultAsyncModelAdapter()
 
 _SUMMARY_MAX_CHARS = 50000    # 摘要文件最大字符数，超出截断
 _SESSION_ID_TRUNCATE = 12     # 会话ID显示截断长度
@@ -31,15 +30,15 @@ def _cmd_init(ctx):
         if not prompt:
             _out.write(f"{RED}  x 未读取到项目文件，无法生成摘要{RESET}", level="raw", source="cmd")
             return True
-        summary = _model_port.call_sync_blocking(
+        summary = call_model_sync(
             [{"role": "user", "content": prompt}],
             model=model,
         )
         # 校验模型输出安全性和有效性
-        if not summary.content:
+        if summary is None or (isinstance(summary, tuple) and not summary[1]):
             _out.write(f"{RED}  x 生成项目摘要失败（模型无返回）{RESET}", level="raw", source="cmd")
             return True
-        summary_text = summary.content
+        summary_text = summary[1] if isinstance(summary, tuple) else str(summary)
         # 限制输出大小，防止写出超大文件
         if len(summary_text) > _SUMMARY_MAX_CHARS:
             _out.write(f"{YELLOW}  ! 摘要过长({len(summary_text)}字符)，已截断至{_SUMMARY_MAX_CHARS}字符{RESET}", level="raw", source="cmd")

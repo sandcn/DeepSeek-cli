@@ -19,7 +19,7 @@ import httpx
 
 from .client_async import chat_completions_async, RateLimitError, APIError, _CONNECTION_ERRORS
 from .tokens import estimate_tokens
-from .interrupt_async import is_interrupted_async, wait_for_interrupt_async, request_interrupt_async
+from .interrupt_async import is_interrupted_async, wait_for_interrupt_async
 from .stream.pipeline_async import stream_call_async
 from .stats import (
     accumulate_usage, set_tool_parse_elapsed, set_stream_speed,
@@ -94,7 +94,6 @@ async def _retry_api_call_async(
             return await api_func(*api_args)
         except KeyboardInterrupt:
             await _report("已中断生成（保留部分内容）")
-            request_interrupt_async()
             return empty
         except _CONNECTION_ERRORS as e:
             _logger.warning(
@@ -130,14 +129,11 @@ async def _retry_api_call_async(
                 await _report(f"API 调用失败 (已重试{MAX_RETRIES}次): {e}")
                 return ("", f"抱歉，API 调用出错: {str(e)}", {"input": 0, "output": 0}, [])
         except asyncio.CancelledError:
-            _logger.warning(
-                "API 调用被取消 (尝试 %d/%d)", attempt, MAX_RETRIES, exc_info=False,
-            )
             await _report("已中断生成（保留部分内容）")
-            return empty
+            raise
         except Exception as e:
             _logger.warning("API 调用出现非重试异常: %s", e, exc_info=True)
-            return ("", f"模型调用出错: {e}", {"input": 0, "output": 0, "error": str(type(e).__name__)}, [])
+            raise
 
     return ("", "", {"input": 0, "output": 0}, [])
 

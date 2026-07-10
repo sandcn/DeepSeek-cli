@@ -8,7 +8,6 @@ from .pipeline import Pipeline, PipelineContext
 from .tool_executor_async import AsyncToolExecutor
 from ..tools.registry import ToolRegistry
 from ..core.ports import ConfigPort
-from ..core.ports.interrupt import DefaultInterruptAdapter
 from ..core.ports.tool_registry import ToolRegistryPort
 from ..core.ports.prompt_builder import PromptBuilderPort, DefaultPromptBuilderAdapter
 from .middleware.observability import _AsyncObservabilityMiddleware  # noqa: F401 — re-exported
@@ -28,8 +27,7 @@ class Agent(BaseAgent):
     def __init__(self, model=None, registry=None, sandbox=None,
                  display_port=None, event_port=None, output_port=None,
                  config_port=None, async_model_port=None,
-                 prompt_builder_port=None,
-                 interrupt_port=None):
+                 prompt_builder_port=None):
         """初始化 Agent。
 
         Args:
@@ -44,7 +42,6 @@ class Agent(BaseAgent):
                               默认 DefaultAsyncModelAdapter()（异步优先）
                               传入 None 禁用异步路径
             prompt_builder_port: PromptBuilderPort 实例
-            interrupt_port: InterruptPort 实例
         """
         super().__init__()
         # CaptureManager — 统一的 stdout 捕获管理器
@@ -84,31 +81,22 @@ class Agent(BaseAgent):
 
         self._async_tool_executor = AsyncToolExecutor(self._registry)
 
-        # ── InterruptPort 中断端口 ─────────────────────────
-        if interrupt_port is not None:
-            self._interrupt_port = interrupt_port
-        else:
-            from ..core.ports.interrupt import DefaultInterruptAdapter
-            self._interrupt_port = DefaultInterruptAdapter()
-
-        # Port 注入：每个端口独立判断，传入的端口不会被静默忽略
-        if display_port is not None:
+        # Port 注入：允许外部传入 null 实现（ChatSession），
+        # 不传时使用默认 UI 实现（保持向后兼容）。
+        if display_port is not None and event_port is not None and output_port is not None:
             self._display_port = display_port
-        else:
-            from ..ui.adapters import UIDisplayAdapter
-            from ..ui.events.adapters import EventBusDisplayProxy
-            self._display_port = UIDisplayAdapter(EventBusDisplayProxy(source="agent"))
-
-        if event_port is not None:
             self._event_port = event_port
-        else:
-            from ..ui.adapters import UIEventAdapter
-            self._event_port = UIEventAdapter()
-
-        if output_port is not None:
             self._output_port = output_port
         else:
-            from ..ui.adapters import UIOutputAdapter
+            from ..ui.adapters import UIDisplayAdapter, UIEventAdapter, UIOutputAdapter
+            from ..ui.events.adapters import EventBusDisplayProxy
+            # ★ ChatUI 统一处理终端输出（工具/思考/回答），
+            #   不再需要 ToolExecutionDisplay + DisplayEventAdapter。
+            #   EventBusDisplayProxy 仅发布事件到 EventBus，
+            #   ChatUIConsumer 在 app_loop 中订阅并渲染。
+            _real_display = EventBusDisplayProxy(source="agent")
+            self._display_port = UIDisplayAdapter(_real_display)
+            self._event_port = UIEventAdapter()
             self._output_port = UIOutputAdapter()
         self.display = self._display_port
         self.context_manager = None
@@ -129,8 +117,6 @@ class Agent(BaseAgent):
         self._pipeline.use_async(_InterruptCheckMiddleware())
         self._pipeline.use_async(_AsyncObservabilityMiddleware())
         self._pipeline.use_async(_AuditLogMiddleware())
-        # ★ Bug1 修复：跨轮次 checkpoint_requested 防残留
-        self._last_checkpoint_requested = False
 
     # ── stdout 捕获（CaptureManager） ─────────────────
     # 调用方通过 agent._capture_mgr.xxx() 直接访问：
@@ -212,34 +198,16 @@ class Agent(BaseAgent):
 
     async def run(self):
         """纯异步执行对话（用于已有事件循环的上下文）"""
-        self._interrupt_port.reset_interrupt()
-        # ★ 步骤 1 修复：跨轮次不残留上一轮的 checkpoint_requested 状态
-        self._last_checkpoint_requested = False
+        from ..api.interrupt_async import reset_interrupt_async
+        reset_interrupt_async()
 
         ctx = PipelineContext(self)
         # 将会话状态机引用从 agent 临时属性转移到 PipelineContext
         sm = getattr(self, '_session_state_machine', None)
         if sm is not None:
             ctx.session_state_machine = sm
-        # ★ P1 修复：try/except/else 精确区分 CancelledError 路径和其他路径
-        #   - CancelledError 路径：pipeline 已将 ctx.checkpoint_requested 设为 True，
-        #     必须在透传前提取保存，否则标记丢失。
-        #   - 其他异常路径：重置 checkpoint 状态防跨轮次残留。
-        #   - 正常路径：保存 checkpoint_requested 标记。
-        try:
-            interrupted, checkpoint_requested = await self._pipeline.run_round_async(ctx)
-        except asyncio.CancelledError:
-            # ★ P1 修复：CancelledError 透传前从 ctx 提取 checkpoint_requested 标记
-            self._last_checkpoint_requested = ctx.checkpoint_requested
-            raise
-        except Exception:
-            # 其他异常路径：重置 checkpoint 标记防跨轮次残留
-            self._last_checkpoint_requested = False
-            raise
-        else:
-            # 正常路径：保存 checkpoint_requested 标记
-            self._last_checkpoint_requested = checkpoint_requested
-            return interrupted
+        interrupted = await self._pipeline.run_round_async(ctx)
+        return interrupted
 
     # ── 兼容旧版直接调用（某些测试可能直接使用） ──────────
 

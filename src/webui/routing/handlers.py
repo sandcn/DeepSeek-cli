@@ -232,10 +232,6 @@ async def _handle_user_message(data: dict, ctx: ConnectionContext) -> None:
         await _handle_exit_command(ctx)
         return
 
-    # Bug 5 (P1) 修复: exit后消息不入僵尸队列
-    if ctx.process_task is None or ctx.process_task.done():
-        # 消费者已停止，丢弃消息
-        return
     await ctx.message_queue.put(content)
 
 
@@ -334,7 +330,7 @@ async def _run_web_chat(content: str, ctx: ConnectionContext, session, ws_send) 
     except asyncio.CancelledError:
         _logger.info("对话轮次被取消")
         if ctx.proc_state.current_task is not None and not ctx.proc_state.current_task.done():
-            session._state.orphaned_task = ctx.proc_state.current_task
+            session._orphaned_task = ctx.proc_state.current_task
             _logger.info("LLM 生成任务已转移到后台继续执行 (task=%s)",
                          hex(id(ctx.proc_state.current_task)))
         return
@@ -349,14 +345,11 @@ async def _run_web_chat(content: str, ctx: ConnectionContext, session, ws_send) 
             await tok_poll_task
         except asyncio.CancelledError:
             pass
-        except Exception:
-            # ★ Bug 6 修复：tok_poll_task 非 CancelledError 异常记录日志
-            _logger.exception("tok_poll_task 异常")
         await ws_send({
             "type": "status_popup",
             "action": "hide",
         })
-        _orphaned = session._state.orphaned_task
+        _orphaned = session._orphaned_task
         if (_orphaned is not None
                 and not _orphaned.done()
                 and _orphaned is ctx.proc_state.current_task):
@@ -494,12 +487,15 @@ async def _handle_load_session(data: dict, ctx: ConnectionContext) -> None:
     session_id = data.get("session_id", "")
     if not session_id:
         return
-    # Bug 8 (P2) 修复: 不再临时篡改 session_id 为 None，避免竞态
     if len(filter_non_system(ctx.session.messages)) > 0:
         if ctx.session.session_id:
             saved_sid = ctx.session.session_id
-            # ★ P0 修复: 同步文件 I/O 移至线程池，避免阻塞事件循环
-            await asyncio.to_thread(ctx.session.save)
+            ctx.session.session_id = None
+            try:
+                # ★ P0 修复: 同步文件 I/O 移至线程池，避免阻塞事件循环
+                await asyncio.to_thread(ctx.session.save)
+            finally:
+                ctx.session.session_id = saved_sid
         else:
             ctx.session.save()
     result = ctx.session.load(session_id)

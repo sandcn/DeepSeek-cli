@@ -13,17 +13,13 @@ import subprocess
 import sys
 import tempfile
 from src._compat import dataclass
-from typing import TYPE_CHECKING, Any
-
-if TYPE_CHECKING:
-    from .core.commands.handler_base import CommandHandler
+from typing import Any
 
 from .config import MODEL
 from .core.session import ChatSession
 from .core.agent import Agent
 from .core.commands import handle_command
 from .core.message_queue import MessageQueue
-from .core._special_key_handler import _SpecialKeyHandler
 
 from .ui.colors import CYAN, DIM, RESET, GREEN, YELLOW
 from .ui.msg_list import edit_current_messages
@@ -72,14 +68,11 @@ _RETRY_SENTINEL = object()
 _MSG_DONE_TIMEOUT = 30.0
 
 
-async def _put_and_wait(queue: MessageQueue, msg: object, msg_done: asyncio.Event, force_exit: asyncio.Event | None = None) -> None:
+async def _put_and_wait(queue: MessageQueue, msg: object, msg_done: asyncio.Event) -> None:
     """将消息放入队列并等待消费者处理完成。
 
     封装了 queue.put() + msg_done.wait() + msg_done.clear() 三步操作，
     消除 _handle_round 中的重复代码。
-
-    Args:
-        force_exit: 可选，超时时设置此事件，防止死锁（P2-3）
     """
     await queue.put(msg)
     if not msg_done.is_set():
@@ -87,8 +80,6 @@ async def _put_and_wait(queue: MessageQueue, msg: object, msg_done: asyncio.Even
             await asyncio.wait_for(msg_done.wait(), timeout=_MSG_DONE_TIMEOUT)
         except asyncio.TimeoutError:
             _logger.warning("msg_done.wait() 超时 (%ss)，强制继续", _MSG_DONE_TIMEOUT)
-            if force_exit is not None:
-                force_exit.set()
     msg_done.clear()
 
 
@@ -155,19 +146,6 @@ def _make_round_callbacks(
 
         # ★ 排出流式输入：queued（Enter提交）优先 → 跳过下轮输入提示
         #   buffer_text（未提交）→ 作为 prefill
-        #
-        # ★ P0 Bug2 时序保护说明：
-        #   drain_stream_input() -> monitor.drain_all() 内部使用 threading.Lock
-        #   保护 _submitted_text/_buffer 等共享状态，数据安全无竞态。
-        #
-        #   逻辑时序窗口说明：
-        #   在 drain_all() 释放锁后、下一轮 _handle_round 轮询 get_queued_input()
-        #   之前，monitor 线程可能处理用户新的 Enter 提交。该场景下新输入会通过
-        #   wait_for_user_input() 的轮询路径在下轮正常获取，不会丢失。
-        #   唯一影响是极少量字符可能在流式输出结束到提示符显示之间被"暂时吞掉"
-        #   （视觉上出现短暂的空输入提示符后再显示完整输入）。
-        #   这是设计可接受的行为——流式结束时 50ms 轮询间隔内键入的少量字符
-        #   最终会被正常获取，不会永久丢失。
         queued, buffer_text = monitor.drain_stream_input()
         if queued:
             loop_state["queued_input"] = queued
@@ -210,9 +188,7 @@ def _merge_prefill(state: SessionState, session: "ChatSession") -> str:
         captured = ''.join(c for c in captured if c.isprintable() or c in ('\n', '\t'))
         if captured:
             prefill = (captured + " " + prefill).strip() if prefill else captured
-    # ★ Bug4 修复: 无论 captured 是否可打印，每次调用都重置 captured_prefill，
-    #   确保非打印字符残留不会在下一轮被错误复用。
-    session.captured_prefill = ''
+        session.captured_prefill = ''
     return prefill
 
 
@@ -235,17 +211,17 @@ async def _handle_editmsg_cmd(session: "ChatSession", state: SessionState) -> No
     monitor = get_active_monitor()
     if chat_ui is not None:
         chat_ui.suspend()
+    if monitor is not None:
+        # ★ stop 在 try 外（非 finally）：必须在进入编辑交互前确认终端
+        #   已恢复 cooked 模式（EditMsg Picker 需要 raw I/O 处理 ↑↓/Enter），
+        #   若放入 finally，edit 过程中终端仍处于 cbreak 模式，Picker 将无法正常工作。
+        #   start 在 finally 中确保编辑完成后始终恢复监听，无竞态风险。
+        monitor.stop()
     needs_rerender = False
     try:
-        if monitor is not None:
-            # ★ stop 移入 try 块：确保 try 块内的代码抛异常时，
-            #   finally 中的 start() 仍可恢复监听。
-            monitor.stop()
         edit_state = {"model": state.model, "retry": False, "prefill": ""}
-        # ★ P3-1: 添加超时保护（600秒），防止编辑器挂起阻塞主线
-        await asyncio.wait_for(
-            asyncio.to_thread(edit_current_messages, session.agent, edit_state),
-            timeout=600,
+        await asyncio.to_thread(
+            edit_current_messages, session.agent, edit_state,
         )
         state.prefill = edit_state.get("prefill", "")
         state.retry = edit_state.get("retry", False)
@@ -284,11 +260,13 @@ async def _handle_model_cmd(
     monitor = get_active_monitor()
     if chat_ui is not None:
         chat_ui.suspend()
+    if monitor is not None:
+        # ★ stop 在 try 外（非 finally）：必须在进入模型选择 Picker 交互前
+        #   确认终端已恢复 cooked 模式（Picker 需要 raw I/O 处理 ↑↓/Enter），
+        #   若放入 finally，Picker 过程中终端仍处于 cbreak 模式，无法正常交互。
+        #   start 在 finally 中确保选择完成后始终恢复监听，无竞态风险。
+        monitor.stop()
     try:
-        if monitor is not None:
-            # ★ stop 移入 try 块：确保 try 块内的代码抛异常时，
-            #   finally 中的 start() 仍可恢复监听。
-            monitor.stop()
         state_dict = {"model": state.model, "retry": False, "prefill": ""}
 
         # ★ 流式输入闭包：此路径不会调用 get_user_input，仅做安全兜底
@@ -322,9 +300,6 @@ async def _save_loop_snapshot(session: "ChatSession", chat_ui: "ChatUIConsumer |
     non_system = _non_system_messages(session)
     if non_system:
         sid = await asyncio.to_thread(save_session, session.messages, session.model)
-        if sid is None:
-            _logger.warning("_save_loop_snapshot: save_session 返回 None，跳过文件路径显示")
-            return
         filepath = CHAT_MSGS_DIR / f"{sid}.json"
         if chat_ui is not None:
             chat_ui.write_line(f"  {filepath.name}")
@@ -340,7 +315,6 @@ class InteractiveLoop:
     def __init__(self, loaded_data=None):
         self._loaded_data = loaded_data
         self._force_exit = asyncio.Event()
-        self._event_loop: asyncio.AbstractEventLoop | None = None
         self._term_width_cache = TTLCache(
             fetcher=lambda: shutil.get_terminal_size().columns,
             ttl=2.0,
@@ -350,25 +324,8 @@ class InteractiveLoop:
         self._chat_ui: ChatUIConsumer | None = None
         # ★ EscapeMonitor — 始终开启，捕获所有键盘输入
         self._monitor: EscapeMonitor | None = None
-        # ★ 命令注册表：命令名 → CommandHandler 实例
-        self._command_handlers: dict[str, CommandHandler] = {}
         # ★ 流式输入状态共享：round_end 回调与 _handle_round 之间传递
         self._loop_state: dict = {}
-        self._register_default_handlers()
-
-    def _register_default_handlers(self) -> None:
-        """注册默认命令处理器
-
-        将 /editmsg、/model、/loop 等命令注册到 _command_handlers 字典。
-        新命令只需添加新的 handler 文件 + 在此注册即可，无需修改 if/elif 链。
-        """
-        from .core.commands.editmsg_handler import EditMsgHandler
-        from .core.commands.model_handler import ModelHandler
-        from .core.commands.loop_handler import LoopHandler
-
-        self._command_handlers['/editmsg'] = EditMsgHandler()
-        self._command_handlers['/model'] = ModelHandler()
-        self._command_handlers['/loop'] = LoopHandler()
 
     def _get_term_width(self) -> int:
         return self._term_width_cache.get()
@@ -406,6 +363,8 @@ class InteractiveLoop:
         所有用户输入通过 MessageQueue 投递，与 WebUI 共用同一消息处理机制。
         """
         try:
+            # ★ Bug 7: 确保 msg_done 为 cleared 状态，避免异常路径遗留 set 状态导致逻辑混乱
+            msg_done.clear()
             # ★ 同步当前模型名到底部栏状态行（覆盖所有可能修改模型的路径）
             self._chat_ui.bottom_bar.set_model_name(state.model)
 
@@ -413,13 +372,13 @@ class InteractiveLoop:
             if state.retry or session.retry_pending:
                 state.retry = False
                 reset_interrupt_async()
-                await _put_and_wait(queue, _RETRY_SENTINEL, msg_done, self._force_exit)
+                await _put_and_wait(queue, _RETRY_SENTINEL, msg_done)
                 return _RoundResult(should_exit=False)
 
             # ★ 流式期间用户按了 Enter → 跳过输入提示，直接处理排队输入
             queued = self._loop_state.pop("queued_input", None)
             if queued:
-                await _put_and_wait(queue, queued, msg_done, self._force_exit)
+                await _put_and_wait(queue, queued, msg_done)
                 return _RoundResult(should_exit=False)
 
             _tw = self._get_term_width()
@@ -447,7 +406,7 @@ class InteractiveLoop:
                 return _RoundResult(should_exit=False)
 
             # ── 所有用户输入（包括 / 命令）统一通过 MessageQueue ──
-            await _put_and_wait(queue, user_input, msg_done, self._force_exit)
+            await _put_and_wait(queue, user_input, msg_done)
             return _RoundResult(should_exit=False)
 
         except asyncio.CancelledError:
@@ -487,15 +446,13 @@ class InteractiveLoop:
             self._chat_ui.write_line(f"  {GREEN}+ 开始循环 {count} 次: \"{prompt[:60]}{'...' if len(prompt) > 60 else ''}\"{RESET}")
             for i in range(count):
                 self._chat_ui.write_line(f"  {DIM}  ─ 第 {i+1}/{count} 轮 · 第1次 ─{RESET}")
-                # 第1次运行（不清空消息，防止中断后丢失上下文）
+                # 清空对话（每轮开始前清空）
                 reset_interrupt_async()
+                session.clear_messages()
+                # 第1次运行
                 result = await session.run_round(prompt)
                 if result.get("interrupted", False):
                     self._chat_ui.write_line(f"  {YELLOW}+ ESC 中断，提前结束循环（已执行 {i+1}/{count} 轮）{RESET}")
-                    break
-                # ★ P2-1: pending=True 时中断循环并发出警告
-                if result.get("pending", False):
-                    self._chat_ui.write_line(f"  {YELLOW}+ 系统繁忙（pending），提前结束循环（已执行 {i+1}/{count} 轮）{RESET}")
                     break
 
                 # 第2次运行（固定提词"继续完成所有"）
@@ -505,16 +462,6 @@ class InteractiveLoop:
                 if result2.get("interrupted", False):
                     self._chat_ui.write_line(f"  {YELLOW}+ ESC 中断，提前结束循环（已执行 {i+1}/{count} 轮）{RESET}")
                     break
-                # ★ P2-1: pending=True 时中断循环并发出警告
-                if result2.get("pending", False):
-                    self._chat_ui.write_line(f"  {YELLOW}+ 系统繁忙（pending），提前结束循环（已执行 {i+1}/{count} 轮）{RESET}")
-                    break
-
-                # 两轮都成功完成
-                # ★ P2 预存问题修复：最后一轮不清空消息（保留给 finally 块中的 save），
-                #   非最后一轮则清空消息准备下一轮
-                if i < count - 1:
-                    session.clear_messages()
             else:
                 self._chat_ui.write_line(f"  {GREEN}+ 循环 {count} 次执行完毕{RESET}")
         finally:
@@ -524,12 +471,6 @@ class InteractiveLoop:
                 self._chat_ui.bottom_bar.disable_status()
                 self._chat_ui.bottom_bar.reset_tool_count()
             reset_token_speed()
-            # ★ Bug 12 修复：save 失败时不 clear_messages，防止数据丢失
-            saved = await asyncio.to_thread(session.save)
-            if saved is not None:
-                session.clear_messages()
-            else:
-                _logger.warning("/loop: session.save 返回 None（保存失败），跳过 clear_messages 防止数据丢失")
         # ── 自动保存循环后的对话 ────────────────────────────
         await _save_loop_snapshot(session, self._chat_ui)
 
@@ -545,7 +486,7 @@ class InteractiveLoop:
         await session.run_round(content)
         # ★ Bug3 修复：首轮消息完成后保存 checkpoint，确保异常时已成功处理的消息不丢失
         try:
-            await session.save_checkpoint()
+            session.save_checkpoint()
         except Exception:
             _logger.exception("_handle_regular_msg: save_checkpoint 异常，不阻断消息处理")
         state.model = session.model
@@ -554,37 +495,31 @@ class InteractiveLoop:
         breached, _ = await session.run_pending_loop(max_iter=10)
         if breached:
             self._chat_ui.write_line(f"\n  [错误] 系统繁忙，部分消息未能处理，请重新发送")
-            session.force_state_recovery()
+            session._force_state_recovery()
         # ★ 等待 ChatUI 渲染完所有待处理命令（工具输出/汇总等）
         #   确保输入提示符出现在完整渲染内容之后，不重叠。
         if self._chat_ui is not None:
             await asyncio.to_thread(self._chat_ui.flush)
 
     async def _handle_command_msg(self, content: str, session: "ChatSession", state: SessionState) -> None:
-        """处理 / 命令分发（命令注册表模式）
-
-        通过 ``_command_handlers`` 字典分发到各 ``CommandHandler`` 实现，
-        遵循开闭原则（对扩展开放，对修改关闭）。未注册的命令回退到
-        ``handle_command`` 通用路径（含 /model 有参数场景）。
-
-        当前注册的命令:
-            /editmsg → EditMsgHandler
-            /model   → ModelHandler（无参数交互选择）
-            /loop    → LoopHandler
-        """
+        """处理 / 命令分发"""
         reset_interrupt_async()
         cmd_name = content.split()[0].lower()
-
-        # 通过命令注册表分发（对扩展开放，对修改关闭）
-        handler = self._command_handlers.get(cmd_name)
-        if handler is not None:
-            handled = await handler.handle(
-                content, session, state, self, self._chat_ui, self._monitor,
-            )
-            if handled:
+        if cmd_name == '/editmsg':
+            await _handle_editmsg_cmd(session, state)
+            self._chat_ui.bottom_bar.set_model_name(state.model)
+            return
+        if cmd_name == '/model':
+            # 无参数时使用 Picker 交互选择 → 需 suspend ChatUI + EscapeMonitor
+            parts = content.split(maxsplit=1)
+            if len(parts) < 2 or not parts[1].strip():
+                await _handle_model_cmd(content, session, state)
+                self._chat_ui.bottom_bar.set_model_name(state.model)
                 return
-            # handler 返回 False → 回退通用路径
-
+            # 有参数时直接切换，走通用路径（无需 suspend）
+        if cmd_name == '/loop':
+            await self._handle_loop_cmd(content, session, state)
+            return
         state_dict = {"model": state.model, "retry": False, "prefill": ""}
 
         # ★ 流式输入闭包：供 handle_command 中的交互式命令使用
@@ -620,7 +555,6 @@ class InteractiveLoop:
             msg_done: 完成事件，每次处理前 clear，完成后 set
         """
         # 消息消费开始
-        _consumer_has_exception = False
         try:
             content = msg.content
 
@@ -639,14 +573,10 @@ class InteractiveLoop:
         except asyncio.CancelledError:
             _logger.info("CLI 消息消费者被取消")
             raise
-        except Exception as e:
-            _logger.exception("CLI 消息消费者异常: %s", e)
+        except Exception:
+            _logger.exception("CLI 消息消费者异常")
             self._force_exit.set()
-            _consumer_has_exception = True
         finally:
-            if _consumer_has_exception:
-                _logger.warning("CLI 消息消费者异常后执行恢复，设置强制退出标记")
-                self._force_exit.set()
             if not msg_done.is_set():
                 msg_done.set()
 
@@ -679,13 +609,100 @@ class InteractiveLoop:
         # ── 初始化 EscapeMonitor（始终开启，捕获所有键盘输入） ──
         self._monitor = EscapeMonitor()
 
-        # ★ P1-1: 存储事件循环引用，供 _SpecialKeyHandler 中的 run_coroutine_threadsafe 使用
-        self._event_loop = asyncio.get_running_loop()
-
         # ★ 注册特殊按键回调：Ctrl+G (vim编辑) / Ctrl+O (/editmsg) / Ctrl+N/Ctrl+R (模型切换，Cygwin 中用 Ctrl+R)
-        # ★ 架构-1: 提取到 src/core/_special_key_handler.py
-        special_key_handler = _SpecialKeyHandler(self, session, state)
-        self._monitor.set_special_key_callback(special_key_handler)
+
+        def _edit_in_vim_sync(initial_text: str) -> str | None:
+            """同步版 vim 编辑 — 在 monitor 线程中直接调用 subprocess.call。
+
+            ``_on_special_key`` 是同步回调（在 monitor 线程中执行），
+            不能使用 ``asyncio.create_subprocess_exec``（需要事件循环）。
+            改用同步 ``subprocess.call`` 打开编辑器，等待用户编辑完成后返回。
+            """
+            tmpfile: str | None = None
+            try:
+                with tempfile.NamedTemporaryFile(mode='w', suffix='.md', delete=False, encoding='utf-8') as f:
+                    f.write(initial_text)
+                    tmpfile = f.name
+                editor = os.environ.get('EDITOR', 'vim')
+                editor_path = shutil.which(editor)
+                if not editor_path:
+                    _logger.warning("vim 编辑器未找到: %s", editor)
+                    return None
+                ret = subprocess.call([editor_path, tmpfile])
+                if ret != 0:
+                    _logger.warning("vim 退出码: %d", ret)
+                with open(tmpfile, 'r', encoding='utf-8') as f:
+                    result = f.read()
+                return result
+            except FileNotFoundError:
+                _logger.warning("vim 未安装，请先安装 vim")
+                return None
+            except OSError as e:
+                _logger.error("vim 编辑失败: %s", e)
+                return None
+            finally:
+                if tmpfile is not None:
+                    try:
+                        os.unlink(tmpfile)
+                    except OSError:
+                        pass
+
+        def _on_special_key(action: str, text: str) -> str | None:
+            if action == 'vim':
+                # ★ 暂停 ChatUI（render 线程 + 底部栏），恢复后 vim 可独占终端
+                if self._chat_ui is not None:
+                    self._chat_ui.suspend()
+                try:
+                    return _edit_in_vim_sync(text)
+                finally:
+                    if self._chat_ui is not None:
+                        self._chat_ui.resume()
+            elif action == 'editmsg':
+                # 注入 /editmsg 命令到输入缓冲区
+                return '/editmsg'
+            elif action == 'switch_model':
+                _models: list[str] = []
+                try:
+                    from .config import MODELS as _MODELS
+                    _models = _MODELS
+                except Exception:
+                    pass
+                # 用户配置中无模型列表 → 从所有 PROVIDERS 聚合
+                if not _models:
+                    try:
+                        from .config.defaults import PROVIDERS as _PROVIDERS
+                        _seen: set[str] = set()
+                        for _p in _PROVIDERS.values():
+                            for _m in _p.get("models", []):
+                                if _m not in _seen:
+                                    _seen.add(_m)
+                                    _models.append(_m)
+                    except Exception:
+                        _models = []
+                if not _models:
+                    return None
+                current = state.model
+                if not current:
+                    return None
+                # 当前模型不在列表中 → 切到列表第一个
+                if current not in _models:
+                    next_model = _models[0]
+                else:
+                    try:
+                        idx = _models.index(current)
+                        next_model = _models[(idx + 1) % len(_models)]
+                    except (ValueError, IndexError):
+                        return None
+                session.model = next_model
+                state.model = next_model
+                if self._chat_ui is not None:
+                    self._chat_ui.bottom_bar.set_model_name(next_model)
+                    self._chat_ui.on_notification(f"+ 已切换到 {next_model}")
+                # 保留当前输入文本（不清空缓冲区）
+                return text
+            return None
+
+        self._monitor.set_special_key_callback(_on_special_key)
         self._monitor.start()
 
         # ★ 始终注册回显回调：非流式期间用户键入也实时显示在底部栏
@@ -714,32 +731,32 @@ class InteractiveLoop:
         consume_task = asyncio.create_task(queue.async_consume(lambda msg: self._cli_msg_consumer(msg, session, state, msg_done)))
         consume_task.add_done_callback(self._check_consumer_exception)
 
-        # ★ P2-28 修复：统一退出路径，所有退出路径都经过 finally 中的 _exit_save_and_stop
+        # ★ Bug2 修复：顶层异常保护，确保异常时保存会话 + 停止 monitor
         try:
             while True:
                 if self._force_exit.is_set():
+                    _exit_save_and_stop(session, self._chat_ui)
                     break
                 result = await self._handle_round(session, state, queue, msg_done)
                 if result.should_exit:
+                    _exit_save_and_stop(session, self._chat_ui)
                     break
         except BaseException as exc:
-            # ★ SystemExit（由 exit() 抛出）：finally 中会执行保存，直接放行
+            # ★ SystemExit（由 exit() 抛出）：_handle_round 中 exit 前已保存会话，直接放行
             if isinstance(exc, SystemExit):
                 raise
-            # 捕获任何未处理异常，在 finally 中保存会话后安全退出
+            # 捕获任何未处理异常，保存会话后安全退出
             if isinstance(exc, (KeyboardInterrupt, asyncio.CancelledError)):
                 _logger.info("交互模式被用户中断")
             else:
                 _logger.critical("交互模式未捕获异常", exc_info=True)
-            _logger.info("异常路径：终端设置已恢复")
-            raise  # 重新抛出，由 main() 中的 except 处理
-        finally:
-            # ★ P2-28: 统一退出路径——所有退出路径都经过 _exit_save_and_stop
             try:
                 _exit_save_and_stop(session, self._chat_ui)
             except Exception:
-                _logger.exception("退出路径保存会话失败")
-
+                _logger.exception("异常路径保存会话失败")
+            _logger.info("异常路径：终端设置已恢复")
+            raise  # 重新抛出，由 main() 中的 except 处理
+        finally:
             # ★ P0 修复：清理 msg_done 引用
             self._msg_done_ref = None
 
@@ -769,10 +786,6 @@ class InteractiveLoop:
                 await consume_task
             except asyncio.CancelledError:
                 pass
-
-            # ★ P0 Bug1 修复：HTTP 连接泄漏 — 延迟导入避免循环依赖
-            from src.api.client_async import close_all_clients
-            await close_all_clients()
 
 
 # ── 退出保存辅助 ──

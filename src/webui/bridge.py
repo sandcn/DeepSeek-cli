@@ -13,7 +13,6 @@ from __future__ import annotations
 import logging
 from typing import Callable
 
-from ..chat_ui._const import _MAIN_LABEL
 from ..ui.events.event_bus import DisplayEventBus
 from ..ui.events.event_types import (
     AgentAddedEvent,
@@ -132,14 +131,8 @@ class WebEventBridge(BaseWebSocketSender):
 
     def _on_content_chunk(self, event: DisplayEvent) -> None:
         # 跳过 subagent 的内容块 — subagent 的 thinking/answer 不单独创建气泡
-        # ★ P0 竞态修复：SubAgent 的 ContentChunkEvent 可能在 AgentAddedEvent 之前到达，
-        #   导致 label 未注册而被误判为主 Agent 内容。使用 _MAIN_LABEL 精确识别主 Agent。
-        if isinstance(event, ContentChunkEvent) and event.text:
-            if event.label == _MAIN_LABEL:
-                self.send_json(msg_content_chunk(event.text, event.label))
-            elif event.label not in self._agent_labels:
-                # 非主 Agent 且未注册 → 竞态到达的 SubAgent 内容，丢弃
-                return
+        if isinstance(event, ContentChunkEvent) and event.text and event.label not in self._agent_labels:
+            self.send_json(msg_content_chunk(event.text, event.label))
 
     def _on_reasoning_chunk(self, event: DisplayEvent) -> None:
         # 跳过 subagent 的推理块 — subagent 的 thinking/answer 不单独创建气泡

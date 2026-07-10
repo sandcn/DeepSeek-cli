@@ -94,14 +94,14 @@ async def run_web_server(host: str = "0.0.0.0", port: int = 8080,
         port: 监听端口
         loaded_data: 从 --load 恢复的会话数据，可选
     """
-    # ── 创建主会话（仅用于初始化配置，每个 WebSocket 连接使用独立会话） ──
-    master_session = WEBChatSession()
-    master_session.web_initialize()
+    # ── 创建会话（使用 WEBChatSession，复用 ChatSession 全部功能） ──
+    session = WEBChatSession()
+    session.web_initialize()
 
     if loaded_data:
         sid = loaded_data.get("id")
         if sid:
-            data = master_session.load(sid)
+            data = session.load(sid)
             if data:
                 _logger.info("已恢复会话: %s", sid)
 
@@ -110,10 +110,7 @@ async def run_web_server(host: str = "0.0.0.0", port: int = 8080,
 
     # ── 创建 aiohttp 应用 ──────────────────────────────────
     app = web.Application()
-    app["master_session"] = master_session
-    # ★ 孤儿任务全局注册表：页面刷新时保留后台 LLM 生成任务，
-    #   新连接可通过此注册表发现并接管完成结果
-    app["orphaned_task_registry"] = {"task": None, "messages": None, "model": None}
+    app["session"] = session
     app["shutdown_event"] = shutdown_event
 
     @web.middleware
