@@ -270,9 +270,11 @@ class SearchFunc(Func):
         try:
             # 仅在首次调用时检测引擎（后续复用实例缓存）
             if self._has_rg is None:
-                has_rg, has_grep = await asyncio.gather(_check_rg(), _check_grep())
-                self._has_rg = has_rg
-                self._has_grep = has_grep
+                results = await asyncio.gather(_check_rg(), _check_grep(), return_exceptions=True)
+                self._has_rg = results[0] if not isinstance(results[0], Exception) else False
+                self._has_grep = results[1] if not isinstance(results[1], Exception) else False
+                has_rg = self._has_rg
+                has_grep = self._has_grep
             else:
                 has_rg = self._has_rg
                 has_grep = self._has_grep
@@ -568,9 +570,11 @@ class SearchFunc(Func):
     async def _resolve_engine(self) -> str:
         """解析并缓存搜索引擎名称（"rg" / "grep" / "Python"）。"""
         if self._has_rg is None:
-            self._has_rg, self._has_grep = await asyncio.gather(
-                _check_rg(), _check_grep()
+            results = await asyncio.gather(
+                _check_rg(), _check_grep(), return_exceptions=True
             )
+            self._has_rg = results[0] if not isinstance(results[0], Exception) else False
+            self._has_grep = results[1] if not isinstance(results[1], Exception) else False
         return "rg" if self._has_rg else ("grep" if self._has_grep else "Python")
 
     async def display(self) -> str:

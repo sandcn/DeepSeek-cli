@@ -38,6 +38,7 @@ GREP_EXCLUDE_FILES: tuple[str, ...] = tuple(
 DANGEROUS_DEVICE_FILES: frozenset[str] = frozenset({
     "/dev/null", "/dev/zero", "/dev/random", "/dev/urandom",
     "/dev/stdin", "/dev/stdout", "/dev/stderr",
+    "/dev/fd/0", "/dev/fd/1", "/dev/fd/2",
 })
 
 SYSTEM_CRITICAL_PATHS: frozenset[str] = frozenset({

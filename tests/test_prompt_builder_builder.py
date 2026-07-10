@@ -610,28 +610,28 @@ class TestIncludeInitMdParam:
         self.cwd = str(tmp_path)
 
     def test_include_init_md_true_includes_summary(self):
-        """include_init_md=True 时输出应包含「项目摘要」"""
+        """include_init_md=True 时输出应包含「项目概述」"""
         result = _build_prompt(
             "test_export", "fallback", cwd=self.cwd, include_init_md=True
         )
         full = "\n".join(result)
-        assert "项目摘要" in full, "include_init_md=True 时应包含项目摘要"
+        assert "项目概述" in full, "include_init_md=True 时应包含项目概述"
         assert "功能A" in full, "摘要应包含核心功能项"
 
     def test_include_init_md_false_excludes_summary(self):
-        """include_init_md=False 时输出不应包含「项目摘要」"""
+        """include_init_md=False 时输出不应包含「项目概述」"""
         result = _build_prompt(
             "test_export", "fallback", cwd=self.cwd, include_init_md=False
         )
         full = "\n".join(result)
-        assert "项目摘要" not in full, "include_init_md=False 时不应包含项目摘要"
+        assert "项目概述" not in full, "include_init_md=False 时不应包含项目概述"
         assert "功能A" not in full, "include_init_md=False 时不应包含核心功能项"
 
     def test_include_init_md_default_is_true(self):
         """include_init_md 默认值为 True"""
         result = _build_prompt("test_export", "fallback", cwd=self.cwd)
         full = "\n".join(result)
-        assert "项目摘要" in full, "include_init_md 默认值应为 True"
+        assert "项目概述" in full, "include_init_md 默认值应为 True"
 
 
 # ═══════════════════════════════════════════════════════════
@@ -639,7 +639,7 @@ class TestIncludeInitMdParam:
 # ═══════════════════════════════════════════════════════════
 
 class TestSubAgentExcludesInitMd:
-    """验证所有 7 种 SubAgent 类型的 system prompt 不包含 init.md 项目摘要"""
+    """验证所有 7 种 SubAgent 类型的 system prompt 不包含 init.md 项目概述"""
 
     MOCK_INIT_MD = (
         "# 测试项目\n"
@@ -668,52 +668,52 @@ class TestSubAgentExcludesInitMd:
         self.cwd = str(tmp_path)
 
     def test_sub_agent_excludes_init_md(self):
-        """sub 类型不应包含项目摘要"""
+        """sub 类型不应包含项目概述"""
         result = build_subagent_system_prompt(cwd=self.cwd)
         full = "\n".join(result)
-        assert "项目摘要" not in full
+        assert "项目概述" not in full
 
     def test_map_agent_excludes_init_md(self):
-        """map 类型不应包含项目摘要"""
+        """map 类型不应包含项目概述"""
         result = build_map_agent_system_prompt(cwd=self.cwd)
         full = "\n".join(result)
-        assert "项目摘要" not in full
+        assert "项目概述" not in full
 
     def test_review_agent_excludes_init_md(self):
-        """review 类型不应包含项目摘要"""
+        """review 类型不应包含项目概述"""
         result = build_review_agent_system_prompt(cwd=self.cwd)
         full = "\n".join(result)
-        assert "项目摘要" not in full
+        assert "项目概述" not in full
 
     def test_think_agent_excludes_init_md(self):
-        """think 类型不应包含项目摘要"""
+        """think 类型不应包含项目概述"""
         result = build_think_agent_system_prompt(cwd=self.cwd)
         full = "\n".join(result)
-        assert "项目摘要" not in full
+        assert "项目概述" not in full
 
     def test_plan_agent_excludes_init_md(self):
-        """plan 类型不应包含项目摘要"""
+        """plan 类型不应包含项目概述"""
         result = build_plan_agent_system_prompt(cwd=self.cwd)
         full = "\n".join(result)
-        assert "项目摘要" not in full
+        assert "项目概述" not in full
 
     def test_read_memory_agent_excludes_init_md(self):
-        """read_memory 类型不应包含项目摘要"""
+        """read_memory 类型不应包含项目概述"""
         result = build_read_memory_agent_system_prompt(cwd=self.cwd)
         full = "\n".join(result)
-        assert "项目摘要" not in full
+        assert "项目概述" not in full
 
     def test_write_memory_agent_excludes_init_md(self):
-        """write_memory 类型不应包含项目摘要"""
+        """write_memory 类型不应包含项目概述"""
         result = build_write_memory_agent_system_prompt(cwd=self.cwd)
         full = "\n".join(result)
-        assert "项目摘要" not in full
+        assert "项目概述" not in full
 
     def test_execute_agent_excludes_init_md(self):
-        """execute 类型不应包含项目摘要"""
+        """execute 类型不应包含项目概述"""
         result = build_execute_agent_system_prompt(cwd=self.cwd)
         full = "\n".join(result)
-        assert "项目摘要" not in full
+        assert "项目概述" not in full
 
 
 # ═══════════════════════════════════════════════════════════
@@ -721,7 +721,7 @@ class TestSubAgentExcludesInitMd:
 # ═══════════════════════════════════════════════════════════
 
 class TestMainAgentIncludesInitMd:
-    """验证 Main Agent 的 system prompt 包含 init.md 项目摘要"""
+    """验证 Main Agent 的 system prompt 包含 init.md 项目概述"""
 
     MOCK_INIT_MD = (
         "# 测试项目\n"
@@ -750,10 +750,10 @@ class TestMainAgentIncludesInitMd:
         self.cwd = str(tmp_path)
 
     def test_main_agent_includes_init_md(self):
-        """Main Agent 应包含项目摘要（include_init_md 默认 True）"""
+        """Main Agent 应包含项目概述（include_init_md 默认 True）"""
         result = build_system_prompt(cwd=self.cwd)
         full = "\n".join(result)
-        assert "项目摘要" in full, "Main Agent 应包含项目摘要"
+        assert "项目概述" in full, "Main Agent 应包含项目概述"
         assert "功能A" in full, "摘要应包含核心功能项"
 
 

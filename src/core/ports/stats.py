@@ -69,7 +69,7 @@ class DefaultStatsAdapter(StatsPort):
 
     def accumulate_usage(self, input_tokens: int, output_tokens: int) -> None:
         from ...api.stats import accumulate_usage
-        accumulate_usage(input_tokens, output_tokens)
+        accumulate_usage({"input": input_tokens, "output": output_tokens})
 
     def set_tool_parse_elapsed(self, elapsed: float) -> None:
         from ...api.stats import set_tool_parse_elapsed

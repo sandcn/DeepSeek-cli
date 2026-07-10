@@ -39,6 +39,7 @@ class SignalManager:
     """信号处理管理器 — 封装 SIGINT/SIGTERM 处理和降级路径"""
 
     def __init__(self):
+        self._registered: bool = False
         self._shutdown_requested = asyncio.Event()
         self._sigint_lock = threading.Lock()
 
@@ -97,6 +98,8 @@ class SignalManager:
         降级到 signal.signal + loop.call_soon_threadsafe。
         在 Termux 下 SIGTERM 设为忽略（Android 进程管理发来的非用户信号）。
         """
+        if self._registered:
+            return
         if loop is None:
             loop = asyncio.get_event_loop()
         _sigint_ok = False
@@ -135,6 +138,8 @@ class SignalManager:
                     ))
             except (ValueError, RuntimeError):
                 pass
+
+        self._registered = True
 
 
 # ── 参数解析 ──

@@ -407,8 +407,12 @@ class BashFunc(Func):
                 results = await asyncio.gather(
                     _read_pipe_stream(process.stdout, stdout_lines, False),
                     _read_pipe_stream(process.stderr, stderr_lines, True),
+                    return_exceptions=True,
                 )
-                _interrupted = any(results)
+                _interrupted = any(r for r in results if not isinstance(r, Exception))
+                for r in results:
+                    if isinstance(r, Exception):
+                        logger.warning("_read_pipe_stream 异常: %s", r)
             finally:
                 await process.wait()
 

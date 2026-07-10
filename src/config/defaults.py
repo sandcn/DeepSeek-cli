@@ -76,6 +76,12 @@ CONFIG_KEYS = {
         "default": [],
         "cacheable": True,
     },
+    "THEME": {
+        "rc_path": ("theme",),
+        "type": str,
+        "default": "dark",
+        "cacheable": True,
+    },
     # ---- 数值配置 ----
     "MAX_CONTEXT_CHARS": {
         "rc_path": ("max_context_chars",),
