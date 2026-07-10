@@ -54,6 +54,11 @@ class StatsPort(ABC):
         ...
 
     @abstractmethod
+    def get_session_start_time(self) -> float:
+        """获取会话开始时间"""
+        ...
+
+    @abstractmethod
     def snapshot(self) -> dict:
         """获取统计快照"""
         ...
@@ -98,6 +103,10 @@ class DefaultStatsAdapter(StatsPort):
     def get_short_window_speed(self) -> float:
         from ...api.stats import get_short_window_speed
         return get_short_window_speed()
+
+    def get_session_start_time(self) -> float:
+        from ...api.stats import get_session_start_time
+        return get_session_start_time()
 
     def snapshot(self) -> dict:
         from ...api.stats import get_token_stats
@@ -149,6 +158,9 @@ class MockStatsAdapter(StatsPort):
         if not window:
             return 0.0
         return sum(window) / len(window)
+
+    def get_session_start_time(self) -> float:
+        return 0.0
 
     def snapshot(self) -> dict:
         return {

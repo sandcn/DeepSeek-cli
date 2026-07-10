@@ -239,11 +239,20 @@ class SearchFunc(Func):
         self._pattern: re.Pattern | None = None
         self._regex_error: str | None = None
 
-        # 防止灾难性回溯：检测复杂正则模式，过度复杂时降级为纯字面量搜索
+        # 防止灾难性回溯：检测嵌套/相邻量词模式，过度复杂时降级为纯字面量搜索
+        # 相邻量词：*+、+*、++、**、.*.*、.*+ 等
+        # 嵌套量词：(a+)+、(a*)*、(a+)* 等
+        has_catastrophic = bool(
+            re.search(r'[*+][*+]', self.query)                     # 相邻量词
+            or re.search(r'\.\*[*+?]', self.query)                 # .* 后紧跟量词
+            or re.search(r'\.\+[*+?]', self.query)                 # .+ 后紧跟量词
+            or re.search(r'\([^)]*[*+][^)]*\)[*+?]', self.query)   # 嵌套量词
+        )
+
         if (
             self.query.count("+") > 3
             or self.query.count("*") > 3
-            or ".*" in self.query
+            or has_catastrophic
         ):
             search_pattern = re.escape(self.query)
         else:

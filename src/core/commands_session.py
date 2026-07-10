@@ -155,49 +155,23 @@ def _cmd_edit(ctx):
     return True
 
 
-def _cmd_loop(ctx):
-    """循环命令：在 consumer 中被拦截执行，此处仅做校验和展示（使 /help 可见）。"""
-    parts = ctx.arg.split(maxsplit=1)
-    if not parts or not parts[0].isdigit() or int(parts[0]) < 1:
-        _out.write(f"{YELLOW}  ! 用法: /loop <次数> <提词>{RESET}", level="raw", source="cmd")
-        _out.write(f"{YELLOW}    ⚠  次数必须是正整数{RESET}", level="raw", source="cmd")
-        return True
-    count = int(parts[0])
-    if len(parts) < 2 or not parts[1].strip():
-        _out.write(f"{YELLOW}  ! 用法: /loop <次数> <提词>{RESET}", level="raw", source="cmd")
-        _out.write(f"{YELLOW}    ⚠  提词不能为空{RESET}", level="raw", source="cmd")
-        return True
-    prompt = parts[1].strip()
-    _out.write(f"{GREEN}  + 准备循环 {count} 次: \"{prompt[:60]}{'...' if len(prompt) > 60 else ''}\"{RESET}", level="raw", source="cmd")
-    _out.write(f"{DIM}  ⚠  循环由异步 consumer 实际执行，请稍候…{RESET}", level="raw", source="cmd")
-    return True
 
-
-def _cmd_editmsg(ctx):
-    """编辑当前会话消息（由 app.py 异步执行实际的编辑操作）
-
-    设置 edit_msg 联络信号，让 app.py 执行异步编辑流程。
-    """
-    from ..ui.msg_list import edit_current_messages
-    ctx.edit_msg = {
-        "handler": edit_current_messages,
-        "model": ctx.state.get("model", ""),
-        "retry": ctx.state.get("retry", False),
-        "prefill": ctx.state.get("prefill", ""),
-    }
-    return True
+# _cmd_editmsg 已移除（ARCH: 旧路径死代码 — 仅设置无人读取的 edit_msg 信号，
+# 由 commands/editmsg_handler.py 的 EditMsgHandler 替代）
 
 
 # ── 注册会话命令 ──────────────────────────────────────
 register_command("/clear", _cmd_clear, "清空对话")
-register_command("/loop", _cmd_loop, "循环执行 N 次指定提词（每轮第1次用用户提词，第2次用固定提词\"继续完成所有\"）")
 register_command("/compress", _cmd_compress, "手动压缩上下文")
 register_command("/pin", _cmd_pin, "标记重要消息")
 register_command("/undo", _cmd_undo, "撤销上一轮对话")
 register_command("/retry", _cmd_retry, "重新生成上一条回答")
 register_command("/r", _cmd_retry, "重新生成上一条回答（/retry 的快捷方式）")
 register_command("/edit", _cmd_edit, "编辑并重新发送上一条输入")
-register_command("/editmsg", _cmd_editmsg, "编辑当前会话消息 (Ctrl+O)")
+# /loop 注册已移除（ARCH: 旧路径存根 — 仅校验不执行，
+# 由 commands/loop_handler.py 的 LoopHandler 替代）
+# /editmsg 注册已移除（ARCH: 旧路径死代码 — 仅设置无人读取的信号，
+# 由 commands/editmsg_handler.py 的 EditMsgHandler 替代）
 
 
 # ── /changes 沙盒命令 ───────────────────────────────────

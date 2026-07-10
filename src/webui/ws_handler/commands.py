@@ -46,10 +46,15 @@ async def _run_web_command(content: str, cmd_name: str, session, ws_send, msg_id
         })
         return True
 
-    if not cmd_handled:
+    # ★ P0 修复: WebUI 本地处理的命令（/loop, /clear, /retry 等）
+    #   不依赖旧注册表 _commands 的预注册。如果已从旧注册表中移除
+    #   （如 /loop），_handle_cmd 返回 False，但 WebUI 本地处理代码
+    #   仍需执行。只有非 WebUI 本地命令且 _handle_cmd 未处理时才返回 False。
+    webui_own_commands = {"/clear", "/loop", "/retry"}
+    if cmd_name not in webui_own_commands and not cmd_handled:
         return False
 
-    # 同步 model
+    # 同步 model（_handle_cmd 可能修改了 ctx.state["model"]）
     new_model = ctx.state.get("model")
     if new_model and new_model != session.model:
         session.model = new_model
@@ -60,6 +65,51 @@ async def _run_web_command(content: str, cmd_name: str, session, ws_send, msg_id
             "type": "clear_messages",
         })
 
+    # ── /loop 命令：在 WebUI 中实际执行循环对话 ──────────
+    if cmd_name == "/loop" and ctx.arg:
+        parts = ctx.arg.split(maxsplit=1)
+        if parts and parts[0].isdigit() and int(parts[0]) >= 1:
+            count = int(parts[0])
+            prompt = parts[1].strip() if len(parts) > 1 else ""
+            if prompt:
+                _logger.info("WebUI /loop: 开始循环 %d 次: %s", count, prompt[:60])
+                await ws_send({
+                    "type": "system_message",
+                    "content": f"+ 开始循环 {count} 次: \"{prompt[:60]}{'...' if len(prompt) > 60 else ''}\"",
+                })
+                for i in range(count):
+                    reset_interrupt_async()
+                    try:
+                        result = await session.run_round(prompt)
+                        if result.get("interrupted", False):
+                            await ws_send({
+                                "type": "system_message",
+                                "content": f"+ ESC 中断，提前结束循环（已执行 {i+1}/{count} 轮）",
+                            })
+                            break
+                        # 第二轮固定提词
+                        result2 = await session.run_round("继续完成所有")
+                        if result2.get("interrupted", False):
+                            await ws_send({
+                                "type": "system_message",
+                                "content": f"+ ESC 中断，提前结束循环（已执行 {i+1}/{count} 轮）",
+                            })
+                            break
+                        session.clear_messages()
+                    except Exception:
+                        _logger.exception("WebUI /loop 第 %d 轮异常", i + 1)
+                        await ws_send({
+                            "type": "system_message",
+                            "content": f"! 第 {i+1}/{count} 轮异常，终止循环",
+                        })
+                        break
+                else:
+                    await ws_send({
+                        "type": "system_message",
+                        "content": f"+ 循环 {count} 次执行完毕",
+                    })
+                return True
+
     # retry 信号
     if ctx.state.get("retry"):
         ctx.state["retry"] = False
@@ -67,12 +117,13 @@ async def _run_web_command(content: str, cmd_name: str, session, ws_send, msg_id
         try:
             retry_result: dict | None = None
             proc_state.current_task = asyncio.create_task(session.retry())
+            proc_state.task_ready.set()
             retry_result = await proc_state.current_task
         except asyncio.CancelledError:
             _logger.info("对话轮次被取消")
             # ★ 页面刷新保护：将运行中的 LLM 任务转移到 session 持久引用
             if proc_state.current_task is not None and not proc_state.current_task.done():
-                session._orphaned_task = proc_state.current_task
+                session._state.orphaned_task = proc_state.current_task
                 _logger.info("LLM 生成任务已转移到后台继续执行 (task=%s)",
                              hex(id(proc_state.current_task)))
             # ★ 直接 return，不通过 finally 中的 DesktopNotifier 路径
@@ -83,7 +134,7 @@ async def _run_web_command(content: str, cmd_name: str, session, ws_send, msg_id
         finally:
             # ★ 仅在没有后台孤儿任务时才清空引用
             # 先将 orphaned_task 取到本地，减少跨协程属性访问
-            orphaned = session._orphaned_task
+            orphaned = session._state.orphaned_task
             current = proc_state.current_task
             if not (orphaned is not None and current is not None
                     and orphaned is current and not current.done()):

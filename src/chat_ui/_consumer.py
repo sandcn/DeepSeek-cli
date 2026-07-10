@@ -87,6 +87,7 @@ class ChatUIConsumer:
         self._bound_handlers: dict[type, Any] | None = None
         self._state_lock = threading.Lock()
         self._started = False
+        self._stopping = False  # ★ 锁逆序防护：标记 stop() 正在执行，防止 start() 误启动
         self._handlers_bound = False
 
     # ── 生命周期 ──────────────────────────────────
@@ -94,13 +95,25 @@ class ChatUIConsumer:
     def start(self) -> None:
         """启动 ChatUI 消费者。
 
-        订阅 11 种 DisplayEvent。首次启动时跳过防御性 unsubscribe
-        （从未订阅过任何事件）；后续重新启动时先 subscribe 新 handler
-        再 unsubscribe 旧 handler，消除事件丢失的时序窗口。
-        启动渲染线程、注册为活跃消费者。幂等操作——重复调用安全返回。
+        首次启动时创建 handler 映射并订阅 11 种 DisplayEvent；
+        后续重新启动时，handler 引用不变（stop() 已注销旧订阅），
+        直接 subscribe 即可。启动渲染线程、注册为活跃消费者。
+        幂等操作——重复调用安全返回。
 
         Thread safety: _started 读写由 _state_lock 保护。
         """
+        with self._state_lock:
+            if self._started:
+                return
+            # ★ 锁逆序防护：stop() 可能正在锁外执行 engine.stop()，等待其完成
+            #   在锁内轮询检查 _stopping，锁外 sleep 退避；重新获取锁后
+            #   再次验证 _started（stop() 可能在等待期间被调用并修改了状态）
+            while self._stopping:
+                self._state_lock.release()
+                time.sleep(0.01)
+                self._state_lock.acquire()
+                if self._started:
+                    return
         with self._state_lock:
             if self._started:
                 return
@@ -130,11 +143,9 @@ class ChatUIConsumer:
                     handler = getattr(self._disp, handler_name)
                     self._bound_handlers[event_type] = handler
             if self._handlers_bound:
-                for event_type in self._bound_handlers:
-                    try:
-                        self._bus.unsubscribe(self._bound_handlers[event_type], event_type=event_type)
-                    except Exception:
-                        _logger.debug("start: unsubscribe %s 失败", event_type.__name__, exc_info=True)
+                # ★ 重新启动时，handler 引用不变，stop() 已注销旧订阅，
+                # 直接 subscribe 即可，不需要先 unsubscribe
+                pass
             for event_type in self._bound_handlers:
                 self._bus.subscribe(self._bound_handlers[event_type], event_type=event_type)
             self._handlers_bound = True
@@ -148,24 +159,33 @@ class ChatUIConsumer:
         取消所有事件订阅、排空命令队列、停止渲染引擎、
         注销活跃消费者、清理渲染状态和底部栏。
 
-        Thread safety: _started 读写由 _state_lock 保护。
+        Thread safety: _started 读写由 _state_lock 保护；
+        engine.flush()/stop() 在锁外执行，避免与 resume()
+        （_state_lock → output_lock）形成锁逆序死锁。
         """
         with self._state_lock:
             if not self._started:
                 return
+            self._stopping = True
             if self._bound_handlers is not None:
                 for event_type in self._bound_handlers:
                     try:
                         self._bus.unsubscribe(self._bound_handlers[event_type], event_type=event_type)
                     except Exception:
                         _logger.debug("stop: unsubscribe %s 失败", event_type.__name__, exc_info=True)
+            self._started = False
+        try:
+            # ★ 锁外：engine.stop() 可能等待 render 线程/涉及 output_lock
+            #   移出 _state_lock 避免与 resume() 锁逆序死锁
             self._engine.flush()
             self._engine.stop()
             _unregister_consumer()
             with output_lock:
                 self._rs.close_all()
                 self._bottom_bar.teardown()
-            self._started = False
+        finally:
+            with self._state_lock:
+                self._stopping = False
 
     def suspend(self) -> None:
         """暂停渲染引擎，供交互式工具独占终端。
@@ -173,15 +193,23 @@ class ChatUIConsumer:
         停止 render 线程并拆除底部栏，释放终端控制权。
         必须已启动（_started = True）才有效。
 
-        Thread safety: _started 检查由 _state_lock 保护。
+        Thread safety: _started 检查由 _state_lock 保护；
+        engine.flush()/stop() 在锁外执行，避免锁逆序死锁。
         """
         with self._state_lock:
             if not self._started:
                 return
+            self._stopping = True
+        try:
+            # ★ 锁外：engine.stop() 可能等待 render 线程/涉及 output_lock
+            #   移出 _state_lock 避免与 resume() 锁逆序死锁
             self._engine.flush()
             self._engine.stop()
             with output_lock:
                 self._bottom_bar.teardown()
+        finally:
+            with self._state_lock:
+                self._stopping = False
 
     def resume(self) -> None:
         """恢复渲染引擎，重建底部栏。
@@ -194,7 +222,7 @@ class ChatUIConsumer:
         with self._state_lock:
             if not self._started:
                 return
-            if self._engine._render_running:
+            if self._engine._render_running.is_set():
                 return
             with output_lock:
                 try:

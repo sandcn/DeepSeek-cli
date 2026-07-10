@@ -61,6 +61,20 @@ class AsyncModelPort(ABC):
         """异步非流式调用模型，返回 ModelResult。"""
         ...
 
+    @abstractmethod
+    def call_sync_blocking(
+        self,
+        messages: list[dict],
+        model: str,
+        tools: list[dict] | None = None,
+    ) -> ModelResult:
+        """同步（阻塞）调用模型，返回 ModelResult。
+
+        在已有事件循环的上下文中使用 loop.run_until_complete()，
+        否则使用 asyncio.run()。
+        """
+        ...
+
 
 class DefaultAsyncModelAdapter(AsyncModelPort):
     """异步默认适配器 — 包装 src/api/model_async.py 中的 async 函数。"""
@@ -115,6 +129,26 @@ class DefaultAsyncModelAdapter(AsyncModelPort):
             tool_calls=tool_calls,
         )
 
+    def call_sync_blocking(
+        self,
+        messages: list[dict],
+        model: str,
+        tools: list[dict] | None = None,
+    ) -> ModelResult:
+        from ...api.model_async import call_model_sync
+
+        result = call_model_sync(messages, model=model, tools=tools)
+        if result is None:
+            return ModelResult()
+        if isinstance(result, tuple):
+            # call_model_sync 返回 (content, tool_calls) 或 (reasoning, content, usage, tool_calls)
+            # 根据长度判断
+            if len(result) == 2:
+                return ModelResult(content=result[0], tool_calls=result[1] or [])
+            elif len(result) == 4:
+                return ModelResult(reasoning=result[0], content=result[1], usage=result[2], tool_calls=result[3] or [])
+        return ModelResult(content=str(result))
+
 
 class MockAsyncModelAdapter(AsyncModelPort):
     """异步 Mock 适配器 — 返回预设的 ModelResult。"""
@@ -146,6 +180,17 @@ class MockAsyncModelAdapter(AsyncModelPort):
         tools: list[dict] | None = None,
         display: Any = None,
         label: str | None = None,
+    ) -> ModelResult:
+        self.call_count += 1
+        self.last_messages = messages
+        self.last_model = model
+        return self._result
+
+    def call_sync_blocking(
+        self,
+        messages: list[dict],
+        model: str,
+        tools: list[dict] | None = None,
     ) -> ModelResult:
         self.call_count += 1
         self.last_messages = messages

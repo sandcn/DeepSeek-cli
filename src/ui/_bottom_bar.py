@@ -35,7 +35,7 @@ from __future__ import annotations
 import logging
 import sys
 import time
-from typing import Optional
+from typing import Any, Optional
 
 from wcwidth import wcswidth
 

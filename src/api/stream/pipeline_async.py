@@ -18,7 +18,9 @@ from typing import AsyncIterator
 from src._compat import aclosing
 
 from ..events import publish_event
-from ..client_async import chat_completions_async
+import httpx
+
+from ..client_async import chat_completions_async, RateLimitError, APIError
 from ..tokens import estimate_tokens
 from ..interrupt_async import is_interrupted_async
 from ..stats import (
@@ -94,14 +96,19 @@ async def _interruptible_iter_async(
         # CancelledError 处理仍能正确感知中断状态。
         _logger.debug("_interruptible_iter_async caught CancelledError, exiting stream gracefully")
         ctx.task_cancelled = True  # 标记 task 被取消
-        # ★ 保护：退出 async with aclosing(response_iter) 时，aclose()
-        # 可能再次抛出 CancelledError。此处显式关闭迭代器并用
-        # try/except 消化该异常，防止透出到 process() 上层。
-        try:
-            await response_iter.aclose()
-        except (asyncio.CancelledError, StopAsyncIteration):
-            pass
         return
+    except (RateLimitError, APIError):
+        # API 层面的预期错误（限流、错误响应等），异常消息已自描述，
+        # 不需要记录完整调用栈。
+        raise
+    except httpx.HTTPError:
+        # httpx 传输层错误（连接、协议、解码等），在 _stream_iter_async
+        # 中已经过重试和日志记录，此处不再重复转储调用栈。
+        raise
+    except TimeoutError:
+        # StreamIdleTimeoutError 等超时类异常直接向上传播，
+        # 由上游重试机制统一处理，此处不记录为意外错误。
+        raise
     except Exception:
         _logger.exception("Async stream iteration error")
         raise
@@ -337,14 +344,11 @@ class AsyncStreamPipeline:
             # (tool_calls.py 已发布过 content done, 此处跳过)
             publish_event("PhaseDoneEvent", label=ctx.label or "", phase="content")
 
-        # 🔥 中断标记：向前端发送 (已中断) 标记
+        # 🔥 中断标记：通知 content 阶段结束
+        #   _build_result() 已追加中断文本到 content，此处仅发布
+        #   PhaseDoneEvent 通知前端 content 阶段结束，不再发送
+        #   含文本的 ContentChunkEvent，避免前端收到重复中断内容
         if ctx.esc_interrupted:
-            if ctx.content_full:
-                publish_event("ContentChunkEvent", text=f" ({_INTERRUPTED_MSG_TEXT})",
-                              label=ctx.label or "")
-            else:
-                publish_event("ContentChunkEvent", text=_INTERRUPTED_MSG_TEXT,
-                              label=ctx.label or "")
             publish_event("PhaseDoneEvent", label=ctx.label or "", phase="content")
 
         # 🔥 有工具调用时，先闭合 content 气泡，再发送 segment_end 信号。

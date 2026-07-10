@@ -56,7 +56,7 @@ def format_token_k(n: int) -> str:
 # ── 文件大小格式化工具 ──────────────────────────────
 
 
-def human_size(size: int) -> str:
+def human_size(size: int | float) -> str:
     """将字节数转换为人类可读格式（如 1.5K、3.2M、1.8G）。
 
     从 src/tools/ls.py 提取为共享工具函数。

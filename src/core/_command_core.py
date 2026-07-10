@@ -6,11 +6,13 @@ import time as _time
 from src._compat import dataclass
 from ..config import TOKEN_PRICES
 from .constants import DIM, RESET, TEAL
-from ..api.stats import get_token_stats, get_session_start_time
 from .constants import format_token_k
+from .ports.stats import DefaultStatsAdapter
 
 
 from ..core.ports.output import get_default_output_port as _get_out  # noqa: E402
+
+_stats_port = DefaultStatsAdapter()
 
 # ── 命令注册表 ────────────────────────────────────────
 _commands = {}
@@ -60,7 +62,6 @@ class CommandContext:
     session: object | None = None  # ChatSession 引用，供 compress 等需要 session 方法的命令使用
     persistence_port: object | None = None  # PersistencePort，供数据命令走端口而非直连 chat_msgs
     config_port: object | None = None  # ConfigPort，供 show_cost 等走端口读配置而非直连 config 模块
-    edit_msg: dict | None = None  # /editmsg 联络信号: dict 或 None
 
 
 # ── 帮助文本 ──────────────────────────────────────────
@@ -123,11 +124,11 @@ def show_cost(ctx):
             prices = next(iter(TOKEN_PRICES.values()))
         else:
             prices = {"input": 0.01, "output": 0.03}
-    current = get_token_stats()
+    current = _stats_port.snapshot()
     input_cost = current["input"] / 1_000_000 * prices["input"]
     output_cost = current["output"] / 1_000_000 * prices["output"]
     total = input_cost + output_cost
-    elapsed = _time.time() - get_session_start_time()
+    elapsed = _time.time() - _stats_port.get_session_start_time()
     duration = _format_cost_duration(elapsed)
     _get_out().write(f"\n{DIM}  \u2500 费用统计{RESET}", level="raw", source="cmd")
     _get_out().write(f"  {DIM}\u2502{RESET} 模型  {model}", level="raw", source="cmd")

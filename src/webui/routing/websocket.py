@@ -22,15 +22,25 @@ _logger = logging.getLogger(__name__)
 async def async_timeout_iter(ws: web.WebSocketResponse, timeout: float = 30.0):
     """异步迭代 WebSocket 消息，每次迭代有超时保护。
 
-    替代手动 ws.__aiter__() + __anext__() 模式，
-    通过 asyncio.wait_for 对每次 __anext__ 调用设置超时。
+    使用 asyncio.ensure_future + asyncio.wait_for 模式：
+    将 __anext__() 包装为可取消的 Task，超时时主动 cancel 并 await，
+    确保底层协程被正确取消，防止协程泄漏。
     """
     aiter_ = ws.__aiter__()
     while True:
+        next_task = asyncio.ensure_future(aiter_.__anext__())
         try:
-            yield await asyncio.wait_for(aiter_.__anext__(), timeout=timeout)
+            yield await asyncio.wait_for(next_task, timeout=timeout)
         except asyncio.TimeoutError:
+            if not next_task.done():
+                next_task.cancel()
+                try:
+                    await next_task
+                except (asyncio.CancelledError, StopAsyncIteration):
+                    pass
             continue
+        except StopAsyncIteration:
+            break
 
 
 async def handle_websocket(request: web.Request) -> web.WebSocketResponse:

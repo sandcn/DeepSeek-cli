@@ -5,6 +5,7 @@
 负责构建摘要 prompt 并调用模型生成结构化摘要。
 """
 
+import asyncio
 import random
 import time as _time
 
@@ -128,6 +129,15 @@ def summarize(messages_to_compress, has_prior_summary, summarize_fn, model):
                 backoff = min(0.5 * (2 ** attempt), 4.0)
                 jitter = random.uniform(0, backoff * 0.3)  # 30% 随机抖动
                 sleep_time = backoff + jitter
+                # 检测是否在 asyncio 事件循环中运行，记录阻塞警告
+                try:
+                    asyncio.get_running_loop()
+                    _summary_logger.warning(
+                        "在 asyncio 事件循环中调用阻塞式 time.sleep(%ss)，可能导致事件循环阻塞",
+                        round(sleep_time, 3),
+                    )
+                except RuntimeError:
+                    pass
                 _time.sleep(sleep_time)
             continue
     raise last_exception or ValueError("摘要生成失败")

@@ -36,6 +36,8 @@ except ImportError:
     _json_loads = json.loads
     _JSON_DECODE_ERRORS = (json.JSONDecodeError, ValueError)
 
+# SSE buffer 上限保护（5MB，防止恶意服务端 OOM）
+_MAX_SSE_BUFFER = 5 * 1024 * 1024
 
 # HTTP/2 可用性缓存（模块级单次检查）
 _HTTP2_AVAILABLE: bool | None = None
@@ -146,6 +148,13 @@ _CONNECTION_ERRORS = (
     httpx.RemoteProtocolError,
     httpx.ReadError,
     httpx.WriteError,
+    # 以下为缺失的 httpx 错误类型，可能在实际流式场景中触发：
+    httpx.CloseError,          # 连接被关闭（服务端或中间代理断开）
+    httpx.LocalProtocolError,  # 本地协议违规（HTTP/2 竞态等）
+    httpx.ProtocolError,       # 协议层错误基类
+    httpx.StreamClosed,        # 流被对端关闭（网络中断导致）
+    httpx.DecodingError,       # 内容解码失败
+    httpx.TransportError,      # 传输层错误
 )
 
 
@@ -181,11 +190,19 @@ def _headers() -> dict[str, str]:
 
 # ── 响应检查 ────────────────────────────────────────────────
 
-def _check_response(resp: httpx.Response) -> None:
+async def _check_response(resp: httpx.Response) -> None:
+    try:
+        text = await asyncio.wait_for(
+            asyncio.get_event_loop().run_in_executor(None, lambda: resp.text[:500]),
+            timeout=5.0,
+        )
+    except asyncio.TimeoutError:
+        text = "（响应超时）"
+
     if resp.status_code == 429:
-        raise RateLimitError(f"Rate limited: {resp.text[:500]}")
+        raise RateLimitError(f"Rate limited: {text}")
     if resp.status_code != 200:
-        raise APIError(resp.status_code, resp.text[:500])
+        raise APIError(resp.status_code, text)
 
 
 # ── 公开接口 ────────────────────────────────────────────────
@@ -220,7 +237,7 @@ async def chat_completions_async(
 
     if not stream:
         resp = await _call_with_recovery("post", url, headers=headers, json=payload)
-        _check_response(resp)
+        await _check_response(resp)
         return resp.json()
 
     return _stream_iter_async(url, headers, payload, model)
@@ -257,7 +274,7 @@ async def _stream_iter_async(
             async with client.stream("POST", url, headers=headers, json=payload) as resp:
                 if resp.status_code != 200:
                     await resp.aread()
-                _check_response(resp)
+                    await _check_response(resp)
 
                 buffer = b""
                 consecutive_failures = 0
@@ -267,6 +284,8 @@ async def _stream_iter_async(
                     if done:
                         break
                     buffer += chunk
+                    if len(buffer) > _MAX_SSE_BUFFER:
+                        raise RuntimeError("SSE buffer overflow")
                     while b"\n" in buffer:
                         line_bytes, buffer = buffer.split(b"\n", 1)
                         if not line_bytes:
@@ -277,7 +296,11 @@ async def _stream_iter_async(
                                 done = True
                                 break
                             try:
-                                parsed = _json_loads(data_bytes.decode("utf-8"))
+                                try:
+                                    data_str = data_bytes.decode("utf-8")
+                                except UnicodeDecodeError:
+                                    data_str = data_bytes.decode("utf-8", errors="replace")
+                                parsed = _json_loads(data_str)
                                 consecutive_failures = 0
                                 yield parsed
                             except _JSON_DECODE_ERRORS:
@@ -309,8 +332,13 @@ async def _stream_iter_async(
         except (asyncio.CancelledError, KeyboardInterrupt):
             raise
         except RuntimeError as e:
+            msg = str(e)
             # 事件循环关闭时的连接清理错误（非致命，可忽略）
-            if "Event loop is closed" in str(e):
+            if "Event loop is closed" in msg:
                 _logger.debug("流式连接清理时事件循环已关闭: %s", e)
+                return
+            # SSE buffer 溢出保护（防恶意服务端 OOM）
+            if "SSE buffer overflow" in msg:
+                _logger.warning("SSE buffer 溢出（上限 %d 字节），流式数据被截断", _MAX_SSE_BUFFER)
                 return
             raise

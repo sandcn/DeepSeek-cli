@@ -16,7 +16,9 @@ import json
 import logging
 from .parallel_executor import ParallelExecutor
 from .telemetry import get_default_collector
-from ..api.tokens import estimate_tokens
+from ..core.ports.tokens import DefaultTokensAdapter
+
+_tokens_port = DefaultTokensAdapter()
 from ..tools.base import Func
 from ..tools.registry import get_tool_display_name
 from ..config import audit_logger
@@ -56,11 +58,6 @@ async def _run_file_display(func, display=None):
     if display is not None and hasattr(display, 'capture_and_print_async'):
         return await display.capture_and_print_async(func.display)
     return await func.display()
-
-
-def _spinner_refresher(display, tool_label: str):
-    """（废弃）Spinner 刷新已迁移至 ChatUIConsumer（chat_ui.py）。"""
-    return None
 
 
 class ToolCallbackChain:
@@ -143,7 +140,7 @@ class ToolCallbackChain:
         finally:
             # 确保取消/异常时释放 barrier
             if agent._shared_executor is not None:
-                agent._shared_executor._all_done.set()
+                agent._shared_executor.signal_all_done()
             agent._shared_executor = None
 
         # 按原始 tool_calls 顺序重建结果列表
@@ -228,7 +225,7 @@ class ToolCallbackChain:
         tool_label, tool_name = tc["id"], tc["name"]
         arg_str = _safe_json_dumps(tc.get("arguments", ""))
 
-        metadata = {"参数": f"{estimate_tokens(arg_str)}t"}
+        metadata = {"参数": f"{_tokens_port.estimate_tokens(arg_str)}t"}
         if parse_elapsed > 0:
             metadata["解析"] = f"{parse_elapsed:.1f}s"
 
@@ -243,8 +240,8 @@ class ToolCallbackChain:
         if success:
             diff_data, preview = self._detect_webdiff(output)
             metadata: dict = {
-                "参数": f"{estimate_tokens(_safe_json_dumps(tc.get('arguments', '')))}t",
-                "输出": f"{estimate_tokens(output)}t",
+                "参数": f"{_tokens_port.estimate_tokens(_safe_json_dumps(tc.get('arguments', '')))}t",
+                "输出": f"{_tokens_port.estimate_tokens(output)}t",
                 "行数": output.count('\n') + 1,
                 "output_preview": preview,
                 "tool_name": tc["name"],
@@ -308,30 +305,22 @@ class ToolCallbackChain:
                 chat_ui.resume()
 
     async def _run_with_capture(self, func, tool_label: str, is_web: bool):
-        """执行通用工具，带 stdout 捕获和 spinner 刷新。
+        """执行通用工具，带 stdout 捕获。
 
         工具执行期间的 stdout 输出会被实时捕获为 ToolOutputChunkEvent
         → EventBus → WebToolBridge → SSE → 前端。
         """
         agent = self._agent
         if tool_label:
-            agent._capture_mgr.start_capture(tool_label)
-
-        refresh_task = _spinner_refresher(agent.display, tool_label) if tool_label else None
+            await agent._capture_mgr.start_capture(tool_label)
 
         try:
             if is_web and func.__class__.web_display is not Func.web_display:
                 return await func.web_display()
             return await func.display()
         finally:
-            if refresh_task:
-                refresh_task.cancel()
-                try:
-                    await refresh_task
-                except asyncio.CancelledError:
-                    pass
             if tool_label:
-                agent._capture_mgr.stop_capture(tool_label)
+                await agent._capture_mgr.stop_capture(tool_label)
 
     def _show_tool_execution_summary(self, successful_tools, failed_tools):
         """通过 EventPort 发布工具执行汇总事件。"""

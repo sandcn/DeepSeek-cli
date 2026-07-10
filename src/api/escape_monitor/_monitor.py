@@ -49,7 +49,6 @@ class EscapeMonitor:
         # 供 user_select 等调用方精确同步（替代不可靠的 asyncio.sleep）。
         # 初始 set：未启动时视为 ready（无需等待）。
         self._monitor_ready = threading.Event()
-        self._monitor_ready.set()
         self._initial_flush_done = False
         self._thread = None
         self._old_settings = None
@@ -72,25 +71,34 @@ class EscapeMonitor:
     def start(self):
         """开始监听（非阻塞），在执行前调用。"""
         global _active_monitor, _active_monitor_lock
-        # 防止重复启动线程
+        # 防止重复启动线程：尝试等待旧线程退出，超时则重建
         if self._thread is not None and self._thread.is_alive():
-            return
-        # 确保全局中断信号已清除
-        from ..interrupt_async import reset_interrupt_async
-        reset_interrupt_async()
-        self._interrupted.clear()
-        self._stop.clear()
-        self._active.set()
-        # 清除流式输入状态
-        self._input_handler.reset()
-        # 加载历史并重置导航状态
-        self._input_handler.load_history()
-        self._input_handler._echo(self._input_handler.get_current_text())
-        self._monitor_ready.clear()  # 重置：等待线程完成 cbreak 设置
-        self._thread = threading.Thread(target=self._monitor, daemon=True)
-        self._thread.start()
-        with _active_monitor_lock:
-            _active_monitor = self
+            self._thread.join(timeout=1.0)
+            if self._thread.is_alive():
+                _logger.warning(
+                    "EscapeMonitor.start(): 旧线程仍在运行（可能卡在阻塞 I/O），"
+                    "创建新线程替代"
+                )
+            else:
+                # 旧线程已退出，无需重建
+                pass
+        if self._thread is None or not self._thread.is_alive():
+            # 确保全局中断信号已清除
+            from ..interrupt_async import reset_interrupt_async
+            reset_interrupt_async()
+            self._interrupted.clear()
+            self._stop.clear()
+            self._active.set()
+            # 清除流式输入状态
+            self._input_handler.reset()
+            # 加载历史并重置导航状态
+            self._input_handler.load_history()
+            self._input_handler._echo(self._input_handler.get_current_text())
+            self._monitor_ready.clear()  # 重置：等待线程完成 cbreak 设置
+            self._thread = threading.Thread(target=self._monitor, daemon=True)
+            self._thread.start()
+            with _active_monitor_lock:
+                _active_monitor = self
 
     def stop(self):
         """停止监听，恢复终端设置。"""
@@ -581,7 +589,6 @@ class EscapeMonitor:
         elif ch == '\x0e':          # Ctrl+N → 切换模型
             self._handle_special_key('switch_model')
         elif ch == '\x12':          # Ctrl+R → 切换模型（备用，Cygwin 终端会拦截 Ctrl+N）
-            self._handle_special_key('switch_model')
             self._handle_special_key('switch_model')
         elif ch == '\x09':          # Tab → 补全
             self._handle_tab()

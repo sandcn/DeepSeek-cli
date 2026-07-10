@@ -22,6 +22,8 @@ from dataclasses import field
 from src._compat import dataclass
 from typing import TYPE_CHECKING, Any
 
+from ..core.ports.interrupt import DefaultInterruptAdapter
+
 if TYPE_CHECKING:
     from .agent import Agent
 
@@ -129,11 +131,13 @@ class Pipeline:
         interrupted = await pipeline.run_round_async(ctx)
     """
 
-    def __init__(self):
+    def __init__(self, interrupt_port=None):
+        if interrupt_port is None:
+            from ..core.ports.interrupt import DefaultInterruptAdapter
+            self._interrupt_port = DefaultInterruptAdapter()
+        else:
+            self._interrupt_port = interrupt_port
         self._async_middlewares: list[AsyncMiddleware] = []
-        # ★ Bug4: 最近一次 run_round_async 的 PipelineContext 引用，
-        #   供 session._emit_round_events 检查 checkpoint_requested 标记
-        self._last_ctx: PipelineContext | None = None
 
     # ── 中间件管理（异步） ───────────────────────────────
 
@@ -158,106 +162,109 @@ class Pipeline:
     # 异步执行路径
     # ═════════════════════════════════════════════════════════
 
-    async def run_round_async(self, ctx: PipelineContext) -> bool:
-        """异步执行一轮对话，返回是否被中断
+    async def run_round_async(self, ctx: PipelineContext) -> tuple[bool, bool]:
+        """异步执行一轮对话，返回 (是否被中断, 是否请求了 checkpoint)
 
+        返回二元组，第二分量供 session._emit_round_events 检查。
         驱动模型调用-工具执行循环，在每次迭代中触发中间件钩子：
             before_model_call → [async 模型调用] → after_model_call
             → 若有工具: before_tool → [async 工具执行] → after_tool
             → 若继续: 下一轮
             → 否则: round_complete
         """
-        from ..api.interrupt_async import is_interrupted_async
-
         ctx.interrupted = False
         ctx.round_complete = False
 
-        while not ctx.round_complete and not ctx.interrupted:
-            # ── before_model_call ──────────────────────────
-            await self._fire_hooks_async('before_model_call', ctx)
-
-            if ctx.interrupted:
-                break
-
-            # ── 核心：异步模型调用 ────────────────────────
-            try:
-                await self._execute_model_call_async(ctx)
-            except asyncio.CancelledError:
-                _logger.warning("Pipeline._execute_model_call_async 被取消，round 以 interrupted 结束")
-                ctx.interrupted = True
-                ctx.round_complete = True
-                ctx.error = asyncio.CancelledError("Pipeline 模型调用被取消")
-                # ★ Bug4: 标记 checkpoint 请求，让 session 在 _emit_round_events 中保存 checkpoint
-                ctx.checkpoint_requested = True
-                # 不 raise：让 round 以 interrupted 状态正常完成
-                # 后续 session._execute_round 仍会执行上下文压缩、保存、状态转换
-            except Exception as e:
-                _logger.exception("Pipeline._execute_model_call_async 异常")
-                ctx.error = e
-                ctx.interrupted = True
-                await self._fire_on_exception_async(ctx, e)
-
-            if ctx.interrupted:
-                break
-
-            # ── after_model_call ───────────────────────────
-            await self._fire_hooks_async('after_model_call', ctx)
-
-            if ctx.interrupted:
-                break
-
-            # ── 工具处理 ──────────────────────────────────
-            if ctx.tool_calls:
-                await self._fire_hooks_async('before_tool_execution', ctx)
+        try:
+            while not ctx.round_complete and not ctx.interrupted:
+                # ── before_model_call ──────────────────────────
+                await self._fire_hooks_async('before_model_call', ctx)
 
                 if ctx.interrupted:
                     break
 
-                # 执行工具（代理给 agent._handle_tool_calls）
-                # 确保中间件的 before_tool_execution 与 after_tool_execution
-                # 之间确实有真正的工具执行逻辑
-                agent = ctx.agent
-                if ctx.tool_calls and hasattr(agent, '_handle_tool_calls'):
-                    try:
-                        await agent._handle_tool_calls(
-                            ctx.content, ctx.tool_calls, ctx.reasoning, ctx.usage,
-                        )
-                    except asyncio.CancelledError:
-                        _logger.warning("工具执行期间被取消，round 以 interrupted 结束")
-                        ctx.interrupted = True
-                    except Exception as e:
-                        _logger.exception("工具执行异常，round 以 interrupted 结束: %s", e)
-                        ctx.error = e
-                        ctx.interrupted = True
-                    finally:
-                        # P0-6: 确保工具执行后 stdout 捕获被清理，防止 sys.stdout 永久劫持
-                        cm = getattr(agent, '_capture_mgr', None)
-                        if cm is not None:
-                            try:
-                                cm.cleanup()
-                            except Exception:
-                                _logger.debug("_capture_mgr.cleanup() 失败（非关键）")
+                # ── 核心：异步模型调用 ────────────────────────
+                try:
+                    await self._execute_model_call_async(ctx)
+                except asyncio.CancelledError:
+                    self._interrupt_port.request_interrupt()
+                    _logger.warning("Pipeline._execute_model_call_async 被取消，round 以 interrupted 结束")
+                    ctx.interrupted = True
+                    ctx.round_complete = True
+                    ctx.error = asyncio.CancelledError("Pipeline 模型调用被取消")
+                    # ★ Bug4: 标记 checkpoint 请求，让 session 在 _emit_round_events 中保存 checkpoint
+                    ctx.checkpoint_requested = True
+                    # ★ Bug #5 修复：CancelledError 路径触发 after_model_call，确保 token 指标被记录
+                    await self._fire_hooks_async('after_model_call', ctx)
+                    # ★ P0-1 修复：触发 on_round_complete 钩子确保状态机完成 RUNNING→COMPLETED/INTERRUPTED 转换
+                    await self._fire_hooks_async('on_round_complete', ctx)
+                    raise
+                except Exception as e:
+                    _logger.exception("Pipeline._execute_model_call_async 异常")
+                    ctx.error = e
+                    ctx.interrupted = True
+                    await self._fire_on_exception_async(ctx, e)
 
-                await self._fire_hooks_async('after_tool_execution', ctx)
+                if ctx.interrupted:
+                    break
 
-                # 工具执行后检查中断信号，减少中断响应延迟
-                if not ctx.interrupted:
-                    from ..api.interrupt_async import is_interrupted_async
-                    try:
-                        if await is_interrupted_async():
+                # ── after_model_call ───────────────────────────
+                await self._fire_hooks_async('after_model_call', ctx)
+
+                if ctx.interrupted:
+                    break
+
+                # ── 工具处理 ──────────────────────────────────
+                if ctx.tool_calls:
+                    await self._fire_hooks_async('before_tool_execution', ctx)
+
+                    if ctx.interrupted:
+                        break
+
+                    # 执行工具（代理给 agent._handle_tool_calls）
+                    # 确保中间件的 before_tool_execution 与 after_tool_execution
+                    # 之间确实有真正的工具执行逻辑
+                    agent = ctx.agent
+                    if ctx.tool_calls and getattr(agent, '_handle_tool_calls', None) is not None:
+                        try:
+                            await agent._handle_tool_calls(
+                                ctx.content, ctx.tool_calls, ctx.reasoning, ctx.usage,
+                            )
+                        except asyncio.CancelledError:
+                            self._interrupt_port.request_interrupt()
+                            _logger.warning("工具执行期间被取消，round 以 interrupted 结束")
                             ctx.interrupted = True
-                    except Exception:
-                        _logger.debug("is_interrupted_async 检查失败（非关键）")
-            else:
-                ctx.round_complete = True
+                        except Exception as e:
+                            _logger.exception("工具执行异常，round 以 interrupted 结束: %s", e)
+                            ctx.error = e
+                            ctx.interrupted = True
+                        # ★ P2: 工具执行后 cleanup 已由顶层 finally 统一处理
 
-        # ── on_round_complete ─────────────────────────────
-        await self._fire_hooks_async('on_round_complete', ctx)
+                    await self._fire_hooks_async('after_tool_execution', ctx)
 
-        # ★ Bug4: 保存 ctx 引用供 session 检查 checkpoint_requested 标记
-        self._last_ctx = ctx
+                    # 工具执行后检查中断信号，减少中断响应延迟
+                    if not ctx.interrupted:
+                        try:
+                            if await self._interrupt_port.is_interrupted():
+                                ctx.interrupted = True
+                        except Exception:
+                            _logger.debug("is_interrupted_async 检查失败（非关键）")
+                else:
+                    ctx.round_complete = True
 
-        return ctx.interrupted
+            # ── on_round_complete ─────────────────────────────
+            await self._fire_hooks_async('on_round_complete', ctx)
+        finally:
+            # ★ P2 修复：确保任何路径下 stdout 都被恢复，防止泄漏
+            agent = ctx.agent
+            cm = getattr(agent, '_capture_mgr', None)
+            if cm is not None:
+                try:
+                    await cm.cleanup()
+                except Exception:
+                    _logger.debug("_capture_mgr.cleanup() 在顶层 finally 中失败（非关键）")
+
+        return (ctx.interrupted, ctx.checkpoint_requested)
 
     async def _execute_model_call_async(self, ctx: PipelineContext) -> None:
         """异步版核心模型调用（不含工具执行）
@@ -267,8 +274,6 @@ class Pipeline:
         - 有工具调用 → 仅设置 ctx.tool_calls，工具执行由 run_round_async 中的中间件钩子处理
         - 无工具调用 → 追加 assistant 消息
         """
-        from ..api.interrupt_async import is_interrupted_async
-
         agent = ctx.agent
 
         # 异步模型调用
@@ -301,8 +306,9 @@ class Pipeline:
         ctx.tool_calls = tool_calls
 
         # 中断检查
-        if await is_interrupted_async():
-            agent._append_assistant_msg(_INTERRUPTED_MSG, reasoning)
+        if await self._interrupt_port.is_interrupted():
+            # ★ P1-2 修复：中断时不向 assistant 消息写入 tool_calls 字段，避免混淆 LLM
+            agent._append_assistant_msg(content or _INTERRUPTED_MSG, reasoning)
             ctx.interrupted = True
             return
         # 工具调用 → 由 run_round_async 中的中间件钩子处理
@@ -340,6 +346,11 @@ class Pipeline:
             if hook is not None:
                 try:
                     await hook(ctx)
+                except asyncio.CancelledError:
+                    _logger.warning("中间件 %s 钩子 %s 被取消", mw.name, hook_name)
+                    if not ctx.interrupted:
+                        ctx.interrupted = True
+                    raise
                 except Exception as e:
                     _logger.error("中间件 %s 钩子 %s 异常: %s", mw.name, hook_name, e)
                     if not ctx.interrupted:

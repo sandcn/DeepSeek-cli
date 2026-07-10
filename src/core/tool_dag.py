@@ -22,6 +22,26 @@ from typing import Any, Optional
 
 _logger = logging.getLogger(__name__)
 
+# ── 白名单：允许的路径前缀（防符号链接穿越） ──────────────
+_ALLOWED_PATH_PREFIXES: list[str] | None = None
+
+
+def _get_allowed_path_prefixes() -> list[str]:
+    """获取白名单路径前缀列表（惰性初始化）
+
+    白名单包含项目根目录（当前工作目录的 realpath），
+    拒绝解析路径不在白名单内的路径穿越攻击。
+    """
+    global _ALLOWED_PATH_PREFIXES
+    if _ALLOWED_PATH_PREFIXES is None:
+        cwd = os.getcwd()
+        _ALLOWED_PATH_PREFIXES = [
+            os.path.realpath(cwd),
+            os.path.abspath(cwd),
+        ]
+    return _ALLOWED_PATH_PREFIXES
+
+
 # ── 正则：匹配参数值中的 $tool_call_id 引用 ──────────────
 # 匹配形如 "$call_xxx" 或 "${call_xxx}" 的引用
 _TC_ID_REF_RE = None  # 延迟导入 re
@@ -45,6 +65,7 @@ class ToolCallNode:
         arguments: 参数 dict
         parallel_safe: 是否并行安全（缓存 metadata）
         requires_terminal: 是否需要独占终端
+        metadata_missing: metadata 查询是否失败（区别于已知 parallel_safe=False）
         dependencies: 本节点依赖的 tc_id 集合（入边）
         dependents: 依赖本节点的 tc_id 集合（出边）
         layer: 拓扑层编号（-1 表示未分配）
@@ -54,6 +75,7 @@ class ToolCallNode:
     arguments: dict[str, Any]
     parallel_safe: bool
     requires_terminal: bool
+    metadata_missing: bool = False
     dependencies: set[str] = field(default_factory=set)
     dependents: set[str] = field(default_factory=set)
     layer: int = -1
@@ -84,6 +106,7 @@ class ToolDAG:
         """
         self._nodes: dict[str, ToolCallNode] = {}
         self._original_order: list[str] = [tc["id"] for tc in tool_calls]
+        self._registry = registry
 
         if tool_calls:
             self._build(tool_calls, registry)
@@ -114,13 +137,17 @@ class ToolDAG:
             # 查询 metadata
             parallel_safe = False
             requires_terminal = False
+            metadata_missing = False
             try:
                 meta = registry.get_metadata(name)
                 if meta is not None:
                     parallel_safe = meta.parallel_safe
                     requires_terminal = meta.requires_terminal
+                else:
+                    metadata_missing = True  # 工具存在但无 metadata → 未知并行安全性
             except Exception:
                 _logger.debug("ToolDAG: metadata 查询失败 '%s', 使用默认值", name, exc_info=True)
+                metadata_missing = True  # 查询异常 → 未知并行安全性
 
             node = ToolCallNode(
                 tc_id=tc_id,
@@ -128,6 +155,7 @@ class ToolDAG:
                 arguments=arguments,
                 parallel_safe=parallel_safe,
                 requires_terminal=requires_terminal,
+                metadata_missing=metadata_missing,
             )
             node_map[tc_id] = node
 
@@ -189,14 +217,29 @@ class ToolDAG:
         - ``{"path": "..."}``
         - ``{"file_path": "..."}``（部分工具的替代参数名）
         - 返回 ``os.path.realpath`` 归一化后的绝对路径
+        - 包含白名单检查：拒绝符号链接穿越到项目根目录以外的路径
         """
         path_val = arguments.get("path") or arguments.get("file_path")
         if path_val is None or not isinstance(path_val, str) or not path_val.strip():
             return None
         try:
-            return os.path.realpath(os.path.abspath(path_val.strip()))
+            abs_path = os.path.realpath(os.path.abspath(path_val.strip()))
         except (OSError, ValueError):
-            return os.path.abspath(path_val.strip())
+            abs_path = os.path.abspath(path_val.strip())
+
+        # ── 白名单检查：拒绝路径穿越 ──────────────────────────
+        # 同时检查 realpath 和 abspath，兼容项目目录自身包含符号链接的场景
+        allowed_prefixes = _get_allowed_path_prefixes()
+        if not any(abs_path.startswith(prefix) for prefix in allowed_prefixes):
+            alt_path = os.path.abspath(path_val.strip())
+            if any(alt_path.startswith(prefix) for prefix in allowed_prefixes):
+                abs_path = alt_path
+            else:
+                _logger.warning("ToolDAG: 路径 '%s' 不在白名单内（前缀: %s），已拒绝",
+                               abs_path, allowed_prefixes)
+                return None
+
+        return abs_path
 
     def _detect_path_overlap(self) -> None:
         """检测文件路径重叠导致的隐式依赖
@@ -207,8 +250,9 @@ class ToolDAG:
         - read/read 同文件路径：无依赖（并行安全）
         - 不同路径：无依赖
 
-        只有 ``parallel_safe=False`` 的写入工具（write_file/update_file/bash/mv/cp/rm）
-        才作为被依赖方（前置写入者）。
+        只有 ``parallel_safe=False`` 的写入工具才作为被依赖方（前置写入者）。
+        写入工具集从 registry metadata 动态推断：遍历 ``self._nodes``，
+        收集所有 ``parallel_safe=False`` 的工具名。
         """
         # 先收集所有有 path 参数的节点
         path_nodes: dict[str, list[ToolCallNode]] = {}
@@ -217,8 +261,26 @@ class ToolDAG:
             if path:
                 path_nodes.setdefault(path, []).append(node)
 
-        # 对每个路径下的节点检测依赖
-        WRITE_TOOLS = {"write_file", "update_file", "bash", "mv", "cp", "rm", "mk"}
+        # ── 动态推断写入工具集合 ────────────────────────────────
+        # 从 registry metadata 中收集所有 parallel_safe=False 的工具名
+        # 这些工具（write_file/update_file/bash 等）会修改文件，同路径需串行
+        # 排除 metadata_missing=True 的节点：元数据缺失时无法确认是否为写入工具，
+        # 保守处理——不将其视为写入工具（避免只读工具被误判产生不必要的串行依赖）。
+        _WRITE_TOOLS: set[str] = set()
+        _inference_succeeded = False
+        try:
+            if self._registry is not None:
+                for node in self._nodes.values():
+                    if not node.parallel_safe and not node.metadata_missing:
+                        _WRITE_TOOLS.add(node.name)
+                _inference_succeeded = True
+        except Exception:
+            _logger.debug("ToolDAG: 动态推断写入工具集合失败，回退到硬编码集合", exc_info=True)
+
+        # 兜底：仅推断失败时使用硬编码集合
+        # 推断成功但集合为空（本次调用确实无写入工具）→ 不回退
+        if not _inference_succeeded:
+            _WRITE_TOOLS = {"write_file", "update_file", "bash", "mv", "cp", "rm", "mk"}
 
         for path, nodes in path_nodes.items():
             if len(nodes) <= 1:
@@ -229,8 +291,8 @@ class ToolDAG:
                     if i >= j:
                         continue  # 只处理 i<j，避免重复边 且 不处理自环
 
-                    a_is_write = node_a.name in WRITE_TOOLS
-                    b_is_write = node_b.name in WRITE_TOOLS
+                    a_is_write = node_a.name in _WRITE_TOOLS
+                    b_is_write = node_b.name in _WRITE_TOOLS
 
                     # 读依赖同一路径的写入（先写后读）
                     if a_is_write and not b_is_write:

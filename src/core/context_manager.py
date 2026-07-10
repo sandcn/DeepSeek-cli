@@ -24,6 +24,9 @@ from .compression import CompressionResult, CompressionStrategy, SummarizeStrate
 
 
 from ..core.ports.output import get_default_output_port as _get_out  # noqa: E402
+from ..core.ports.model import DefaultAsyncModelAdapter
+
+_model_port = DefaultAsyncModelAdapter()
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -60,8 +63,10 @@ class ContextManager:
         self.model = model
         self._on_changed = on_messages_changed
         if summarize_fn is None:
-            from ..api.model_async import call_model_sync
-            summarize_fn = call_model_sync
+            def _summarize_adapter(messages, _model=model):
+                result = _model_port.call_sync_blocking(messages, model=_model)
+                return result.reasoning, result.content, result.usage, result.tool_calls
+            summarize_fn = _summarize_adapter
         self._summarize_fn = summarize_fn
         self._lock = threading.RLock()
 

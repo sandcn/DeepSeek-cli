@@ -212,7 +212,17 @@ class SessionStateMachine:
     def reset(self) -> None:
         """重置到 INIT 状态"""
         with self._lock:
-            self._state = SessionState.INIT
+            old_state = self._state
+            new_state = SessionState.INIT
+            enter_callbacks = list(self._enter_handlers.get(new_state, []))
+            self._state = new_state
+
+        # 释放锁后执行回调（与 transition() 模式一致）
+        for cb in enter_callbacks:
+            try:
+                cb(old_state, new_state, action="reset")
+            except Exception:
+                _logger.exception("状态机 reset on_enter 回调异常")
 
     # ── 字符串表示 ────────────────────────────────────────
 

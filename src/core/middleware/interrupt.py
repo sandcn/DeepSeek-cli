@@ -6,18 +6,17 @@ from ..pipeline import AsyncMiddleware, PipelineContext
 class _InterruptCheckMiddleware(AsyncMiddleware):
     """中断检查中间件 — 在每次模型调用前检查中断信号"""
 
-    def __init__(self, is_interrupted_check=None):
-        self._is_interrupted_check = is_interrupted_check
+    def __init__(self, interrupt_port=None):
+        if interrupt_port is None:
+            from ...core.ports.interrupt import DefaultInterruptAdapter
+            self._interrupt_port = DefaultInterruptAdapter()
+        else:
+            self._interrupt_port = interrupt_port
 
     @property
     def name(self) -> str:
         return "InterruptCheck"
 
     async def before_model_call(self, ctx: PipelineContext) -> None:
-        if self._is_interrupted_check is None:
-            from ...api.interrupt_async import is_interrupted_async
-            check_fn = is_interrupted_async
-        else:
-            check_fn = self._is_interrupted_check
-        if await check_fn():
+        if await self._interrupt_port.is_interrupted():
             ctx.interrupted = True

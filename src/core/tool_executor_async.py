@@ -22,7 +22,12 @@ from ..ui.display import extract_key_params
 _logger = logging.getLogger(__name__)
 
 
-_MAX_CONCURRENT_TOOLS = 20  # 最大并发工具数，防止资源耗尽
+try:
+    from ..config import MAX_CONCURRENT_TOOLS as _CONFIG_MAX_CONCURRENT_TOOLS
+    _MAX_CONCURRENT_TOOLS = int(_CONFIG_MAX_CONCURRENT_TOOLS) if _CONFIG_MAX_CONCURRENT_TOOLS is not None else 20
+except (ImportError, AttributeError, ValueError, TypeError):
+    _logger.warning("读取 MAX_CONCURRENT_TOOLS 配置失败，回退到默认值 20", exc_info=True)
+    _MAX_CONCURRENT_TOOLS = 20  # 回退默认值，防止资源耗尽
 
 
 class AsyncToolExecutor:

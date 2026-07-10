@@ -33,18 +33,20 @@ def save_session(session) -> str | None:
     Returns:
         session_id，无可保存内容时返回 None
     """
-    non_system = [m for m in session._agent.messages if m.get(_ROLE_KEY) != _SYSTEM_ROLE]
+    # 使用 list() 快照保护，防止并发修改导致 RuntimeError
+    messages_snapshot = list(session.messages)
+    non_system = [m for m in messages_snapshot if m.get(_ROLE_KEY) != _SYSTEM_ROLE]
     if not non_system:
         # ★ 修复：空消息时也执行状态转换，防止状态机残留在 COMPLETED 或 INTERRUPTED
         safe_save_state(session)
-        return session._session_id
+        return session.session_id
 
     sid = session._persistence_port.save_session(
         messages=non_system,
-        model=session._model,
-        session_id=session._session_id,
+        model=session.model,
+        session_id=session.session_id,
     )
-    session._session_id = sid
+    session.session_id = sid
 
     # 状态转换：COMPLETED/INTERRUPTED → IDLE
     safe_save_state(session)
@@ -75,22 +77,21 @@ def load_session_data(session, session_id: str) -> dict | None:
         return None
 
     # 保留 system 消息，替换其余消息
-    system_msgs = [m for m in session._agent.messages if m.get(_ROLE_KEY) == _SYSTEM_ROLE]
-    session._agent.messages[:] = system_msgs
+    system_msgs = [m for m in session.messages if m.get(_ROLE_KEY) == _SYSTEM_ROLE]
+    session.messages[:] = system_msgs
     for msg in loaded_msgs:
-        session._agent.messages.append(msg)
+        session.messages.append(msg)
 
-    session._model = data.get("model", session._model)
-    session._agent.model = session._model
-    session._session_id = session_id
+    session.model = data.get("model", session.model)
+    session.session_id = session_id
 
     # 最后一条是 user 消息 → 标记 retry_pending
-    if session._agent.messages and session._agent.messages[-1].get(_ROLE_KEY) == "user":
-        session._retry_pending = True
+    if session.messages and session.messages[-1].get(_ROLE_KEY) == "user":
+        session._state.retry_pending = True
     else:
-        session._retry_pending = False
+        session._state.retry_pending = False
 
-    session._metrics.gauge("session.messages", len(session._agent.messages))
+    session._metrics.gauge("session.messages", len(session.messages))
 
     session._emit("loaded", data=data)
     return data
@@ -110,26 +111,32 @@ def get_session_ids_fn(session) -> list[str]:
 # 断点管理
 # ═══════════════════════════════════════════════════════════════
 
-def save_checkpoint_session(session) -> None:
-    """保存断点（任务中断时调用）。"""
-    session._checkpoint_port.save(session._agent.messages, session._model)
+async def save_checkpoint_session(session) -> None:
+    """保存断点（任务中断时调用）- 异步版本。"""
+    # 在主线程中提取数据快照（利用 GIL 字节码原子性保护）
+    messages_snapshot = list(session.messages)
+    model_snapshot = session.model
+    await session._checkpoint_port.async_save(
+        messages_snapshot,
+        model_snapshot,
+    )
     session._emit("checkpoint_saved")
 
 
-def clear_checkpoint_session(session) -> None:
-    """清除断点（任务成功完成时调用）。"""
-    session._checkpoint_port.clear()
+async def clear_checkpoint_session(session) -> None:
+    """清除断点（任务成功完成时调用）- 异步版本。"""
+    await session._checkpoint_port.async_clear()
     session._emit("checkpoint_cleared")
 
 
-def load_checkpoint_data(session) -> dict | None:
-    """加载断点数据。"""
-    return session._checkpoint_port.load()
+async def load_checkpoint_data(session) -> dict | None:
+    """加载断点数据 - 异步版本。"""
+    return await session._checkpoint_port.async_load()
 
 
-def has_checkpoint_session(session) -> bool:
-    """检查是否存在有效断点。"""
-    return session._checkpoint_port.exists()
+async def has_checkpoint_session(session) -> bool:
+    """检查是否存在有效断点 - 异步版本。"""
+    return await session._checkpoint_port.async_exists()
 
 
 def resume_from_checkpoint_session(session) -> bool:
@@ -156,12 +163,12 @@ def resume_from_checkpoint_session(session) -> bool:
         return False
 
     # 保留 system 消息，替换为非 system 消息
-    system_msgs = [m for m in session._agent.messages if m.get(_ROLE_KEY) == _SYSTEM_ROLE]
-    session._agent.messages[:] = system_msgs
+    system_msgs = [m for m in session.messages if m.get(_ROLE_KEY) == _SYSTEM_ROLE]
+    session.messages[:] = system_msgs
     for msg in checkpoint_msgs:
         if msg.get(_ROLE_KEY) == _SYSTEM_ROLE:
             continue
-        session._agent.messages.append(dict(msg))
+        session.messages.append(dict(msg))
 
     # 注入恢复指令
     resume_prompt = (
@@ -170,18 +177,17 @@ def resume_from_checkpoint_session(session) -> bool:
         f"请先回顾以上对话历史，了解当前进度和已完成的工作，\n"
         f"然后继续完成剩余任务。不要重复已完成的步骤。"
     )
-    session._agent.messages.append({_ROLE_KEY: _SYSTEM_ROLE, "content": resume_prompt})
+    session.messages.append({_ROLE_KEY: _SYSTEM_ROLE, "content": resume_prompt})
 
-    checkpoint_model = data.get("model", session._model)
+    checkpoint_model = data.get("model", session.model)
     if checkpoint_model:
-        session._model = checkpoint_model
-        session._agent.model = checkpoint_model
+        session.model = checkpoint_model
 
     session._checkpoint_port.clear()
     session._emit("checkpoint_cleared")
 
     # 触发状态机：允许 retry
-    session._metrics.gauge("session.messages", len(session._agent.messages))
+    session._metrics.gauge("session.messages", len(session.messages))
 
     session._emit("checkpoint_restored", info=info)
     return True

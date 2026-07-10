@@ -188,8 +188,12 @@ class FileToolBase(Func):
             return await asyncio.to_thread(self._sync_read_file)
         except asyncio.CancelledError:
             raise
-        except Exception:
-            _logger.warning("读取原始文件失败: %s", self.path)
+        except FileNotFoundError:
+            # ★ B101 修复：文件在检查后可能被删除（TOCTOU 竞争条件），正常返回 None
+            return None
+        except Exception as e:
+            # ★ B101 修复：记录非预期的异常（如权限错误），帮助调试
+            _logger.warning("_read_original 读取异常: %s — %s: %s", self.path, type(e).__name__, e)
             return None
 
     def _sync_read_file(self) -> str | None:

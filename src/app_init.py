@@ -41,6 +41,8 @@ class SignalManager:
     def __init__(self):
         self._shutdown_requested = asyncio.Event()
         self._sigint_lock = threading.Lock()
+        self._sigint_task: asyncio.Task | None = None
+        self._shutdown_task: asyncio.Task | None = None
 
     @property
     def is_shutdown_requested(self) -> bool:
@@ -90,6 +92,14 @@ class SignalManager:
             t.cancel()
         # 不 await gather，不 stop loop
 
+    def _on_sigint(self) -> None:
+        """SIGINT 回调 — 创建任务并保存引用防止 GC 回收。"""
+        self._sigint_task = asyncio.create_task(self.handle_sigint())
+
+    def _on_shutdown(self) -> None:
+        """SIGTERM 回调 — 创建任务并保存引用防止 GC 回收。"""
+        self._shutdown_task = asyncio.create_task(self.shutdown())
+
     def register_handlers(self, loop=None) -> None:
         """注册 SIGINT/SIGTERM 回调
 
@@ -103,13 +113,13 @@ class SignalManager:
         _sigterm_ok = False
 
         try:
-            loop.add_signal_handler(signal.SIGINT, lambda: asyncio.create_task(self.handle_sigint()))
+            loop.add_signal_handler(signal.SIGINT, self._on_sigint)
             _sigint_ok = True
         except NotImplementedError:
             pass
 
         try:
-            loop.add_signal_handler(signal.SIGTERM, lambda: asyncio.create_task(self.shutdown()))
+            loop.add_signal_handler(signal.SIGTERM, self._on_shutdown)
             _sigterm_ok = True
         except NotImplementedError:
             pass
@@ -118,7 +128,7 @@ class SignalManager:
         if not _sigint_ok:
             try:
                 signal.signal(signal.SIGINT, lambda s, f: loop.call_soon_threadsafe(
-                    lambda: asyncio.create_task(self.handle_sigint())
+                    self._on_sigint
                 ))
             except (ValueError, RuntimeError):
                 pass
@@ -131,7 +141,7 @@ class SignalManager:
                     signal.signal(signal.SIGTERM, signal.SIG_IGN)
                 else:
                     signal.signal(signal.SIGTERM, lambda s, f: loop.call_soon_threadsafe(
-                        lambda: asyncio.create_task(self.shutdown())
+                        self._on_shutdown
                     ))
             except (ValueError, RuntimeError):
                 pass

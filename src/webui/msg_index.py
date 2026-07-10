@@ -7,6 +7,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import Awaitable, Callable
 
@@ -234,7 +235,7 @@ async def assign_msg_index(
         msg: 要发送的消息 dict（会被就地修改添加 msg_index）
         state: 当前连接的 MsgIndexState
         messages: session.messages
-        ws_send: 异步发送函数（消息分配下标后立即发送）
+        ws_send: 异步发送函数（消息分配下标后异步发送，不阻塞当前协程）
     """
     mt = msg.get("type", "")
     nsl = non_system_len(messages)
@@ -245,4 +246,8 @@ async def assign_msg_index(
         except Exception:
             _logger.exception("assign_msg_index: handler 异常, type=%s, label=%s",
                               mt, msg.get("label", ""))
-    await ws_send(msg)
+    # Bug 6 (P1) 修复: 异步发送，不等待 ws_send 完成，避免串行队列阻塞
+    _send_task = asyncio.create_task(ws_send(msg))
+    # ★ Bug 5 修复：追踪 fire-and-forget task 异常
+    _send_task.add_done_callback(lambda t: _logger.exception("assign_msg_index: ws_send 异常: %s", t.exception())
+                                 if t.done() and not t.cancelled() and t.exception() else None)

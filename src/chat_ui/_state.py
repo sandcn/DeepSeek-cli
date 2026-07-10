@@ -63,7 +63,9 @@ def _unregister_consumer() -> None:
     """
     with _state_global_lock:
         global _active_consumer, _active_consumer_refcount
-        _active_consumer_refcount -= 1
+        # ★ P0 防引用计数降至负数：连续两次 stop() 时跳过递减
+        if _active_consumer_refcount > 0:
+            _active_consumer_refcount -= 1
         _weak_consumer_registry.pop(threading.get_ident(), None)
         try:
             if _active_consumer_refcount <= 0:

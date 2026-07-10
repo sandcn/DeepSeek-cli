@@ -15,9 +15,14 @@ from __future__ import annotations
 import io
 import logging
 import sys
-import threading
+import weakref
 
 _logger = logging.getLogger(__name__)
+
+
+# 模块级注册表：追踪所有活跃的 SharedCapture 实例
+# 用于 _detect_leak 中的泄漏检测，替代 gc.get_objects() 全堆扫描
+_capture_registry: weakref.WeakSet = weakref.WeakSet()
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -36,6 +41,7 @@ class SharedCapture(io.StringIO):
         self._tool_labels = tool_labels
         self._real_stdout = real_stdout
         self._bus = bus
+        _capture_registry.add(self)
 
     def write(self, s: str) -> int:
         if s and s.strip():
@@ -51,7 +57,8 @@ class SharedCapture(io.StringIO):
                     _logger.warning("发布工具输出事件异常", exc_info=True)
         # ChatUI 通过 EventBus 消费 ToolOutputChunkEvent 统一终端输出，
         # 不再需要 _real_stdout 直写（避免与 ChatUI 重复打印）。
-        return len(s) if s else 0
+        # 调用父类 StringIO.write() 确保内部缓冲区正确更新（getvalue() 可用）
+        return super().write(s) if s else 0
 
     def flush(self) -> None:
         if self._real_stdout:
@@ -66,6 +73,11 @@ class SharedCapture(io.StringIO):
     def active_labels(self) -> list:
         """当前活跃的工具 label 列表（外部可读引用）"""
         return self._tool_labels
+
+    def close(self) -> None:
+        """关闭捕获并从注册表中注销。"""
+        _capture_registry.discard(self)
+        super().close()
 
 
 # 必须延迟导入 asyncio（模块级 import 在 Python 3.13+ 某些上下文中会失败）
@@ -89,7 +101,7 @@ class CaptureManager:
 
     def __init__(self, event_bus=None):
         self._state: dict | None = None
-        self._init_lock = threading.Lock()
+        self._init_lock = asyncio.Lock()
 
         if event_bus is not None:
             self._event_bus = event_bus
@@ -113,10 +125,10 @@ class CaptureManager:
 
     # ── 状态管理 ──────────────────────────────────────────
 
-    def _ensure_state(self) -> dict | None:
+    async def _ensure_state(self) -> dict | None:
         """初始化/检查捕获状态，返回 _state 字典。
 
-        线程安全：使用 _init_lock 保护 _state 的首次创建，
+        协程安全：使用 asyncio.Lock 保护 _state 的首次创建，
         防止多个协程同时进入时检查-设置模式的竞态条件。
 
         自动修复：检测到孤立 SharedCapture 劫持 sys.stdout 时，
@@ -136,8 +148,8 @@ class CaptureManager:
                 self._state['real_stdout'] = sys.__stdout__
             return self._state
 
-        # 首次初始化（阻塞式获取锁，消除 TOCTOU 竞态）
-        with self._init_lock:
+        # 首次初始化（异步获取锁，消除 TOCTOU 竞态）
+        async with self._init_lock:
             if self._state is not None:
                 return self._state
             self._state = self._build_state()
@@ -159,7 +171,7 @@ class CaptureManager:
 
     # ── 核心 API ─────────────────────────────────────────
 
-    def start_capture(self, tool_label: str) -> None:
+    async def start_capture(self, tool_label: str) -> None:
         """为一个工具 label 启动 stdout 捕获。
 
         重定向 sys.stdout → SharedCapture，将工具 print 输出：
@@ -169,17 +181,20 @@ class CaptureManager:
         多个工具可共享同一个 SharedCapture 实例（并发捕获）。
         """
         try:
-            state = self._ensure_state()
+            state = await self._ensure_state()
             if state is None:
                 return
-            state['active_labels'].append(tool_label)
-            if state['capture'] is None:
-                state['capture'] = SharedCapture(
-                    tool_labels=state['active_labels'],
-                    real_stdout=state['real_stdout'],
-                    bus=self._event_bus,
-                )
-                sys.stdout = state['capture']
+            # 锁保护检查-设置区间，防止并发创建多个 SharedCapture
+            # 同时保护 state['active_labels'] 的修改原子性
+            async with self._init_lock:
+                state['active_labels'].append(tool_label)
+                if state['capture'] is None:
+                    state['capture'] = SharedCapture(
+                        tool_labels=state['active_labels'],
+                        real_stdout=state['real_stdout'],
+                        bus=self._event_bus,
+                    )
+                    sys.stdout = state['capture']
         except Exception:
             _logger.warning("启动工具输出捕获异常", exc_info=True)
             state = self._state
@@ -189,9 +204,9 @@ class CaptureManager:
                 except ValueError:
                     pass
             if state and not state.get('active_labels'):
-                self.cleanup()
+                await self.cleanup()
 
-    def stop_capture(self, tool_label: str) -> None:
+    async def stop_capture(self, tool_label: str) -> None:
         """停止一个工具 label 的捕获。
 
         最后一个 label 移除时自动恢复 sys.stdout 并清理资源。
@@ -205,13 +220,16 @@ class CaptureManager:
             except ValueError:
                 pass
         if not state['active_labels']:
-            self.cleanup()
+            await self.cleanup()
 
-    def cleanup(self) -> None:
+    async def cleanup(self) -> None:
         """恢复 sys.stdout 并清理所有捕获资源。
 
         使用 None 哨兵而非 del 属性语义——CaptureManager 管理自己的 _state，
         不存在 Agent 中 hasattr 对 None 值返回 True 的边界问题。
+
+        协程安全：使用 asyncio.Lock 保护 state 读取与 sys.stdout 恢复操作，
+        消除 TOCTOU 窗口——防止与 start_capture 并发时竞态覆盖 sys.stdout。
         """
         state = self._state
         if state is None:
@@ -223,11 +241,21 @@ class CaptureManager:
                 )
             return
 
-        real_stdout = state.get('real_stdout')
-        capture = state.get('capture')
-        self._state = None  # 清空状态（等价于 del）
+        # 锁保护：state 读取、清空与 sys.stdout 恢复的原子性
+        async with self._init_lock:
+            # 重新获取 state（可能在等待锁时已被其他协程修改）
+            state = self._state
+            if state is None:
+                return
 
-        # 清理 SharedCapture 实例：先 flush 再 close
+            real_stdout = state.get('real_stdout')
+            capture = state.get('capture')
+            self._state = None  # 清空状态（等价于 del）
+
+            if real_stdout is not None:
+                sys.stdout = real_stdout
+
+        # 锁外执行 I/O 操作（不阻塞其他协程的 start_capture）
         if capture is not None:
             try:
                 capture.flush()
@@ -237,9 +265,6 @@ class CaptureManager:
                 capture.close()
             except Exception:
                 _logger.warning("清理捕获 close 异常", exc_info=True)
-
-        if real_stdout is not None:
-            sys.stdout = real_stdout
 
         # 防捕获级联泄漏：恢复后的 sys.stdout 如果仍是 SharedCapture
         if is_shared_capture_inst(sys.stdout) and _detect_leak():
@@ -262,34 +287,22 @@ class CaptureManager:
 
 def is_shared_capture_inst(obj) -> bool:
     """判断对象是否为 SharedCapture 实例。"""
-    return isinstance(obj, io.StringIO) and type(obj).__name__ in ('SharedCapture', '_SharedCapture')
+    return isinstance(obj, SharedCapture)
 
 
 def _detect_leak() -> bool:
     """检测 sys.stdout 是否被孤立 SharedCapture 劫持（泄漏）。
 
-    扫描全堆中所有宿主对象的 _capture_mgr / _capture_state，
-    确认当前 sys.stdout 指向的 SharedCapture 是否仍有活跃 label 监听。
+    检查 _capture_registry（weakref.WeakSet）中是否有活跃的 SharedCapture 实例
+    且其 active_labels 非空且 capture 指向 sys.stdout。
+    若找到则说明并非泄漏（仍有正被使用的捕获），否则判定为泄漏。
     """
-    import gc
     if not is_shared_capture_inst(sys.stdout):
         return False
 
-    for obj in gc.get_objects():
-        name = type(obj).__name__
-        # 新版：CaptureManager 宿主
-        capture_mgr = getattr(obj, '_capture_mgr', None)
-        if capture_mgr is not None and capture_mgr.is_active:
-            if capture_mgr._state and capture_mgr._state.get('capture') is sys.stdout:
-                if capture_mgr._state.get('active_labels'):
-                    return False
-        # 旧版兼容：Agent/SubAgent 直接持有 _capture_state
-        if name in ('Agent', 'SubAgent'):
-            cs = getattr(obj, '_capture_state', None)
-            if (cs is not None and
-                cs.get('capture') is sys.stdout and
-                cs.get('active_labels')):
-                return False
+    for sc in _capture_registry:
+        if sc is sys.stdout and sc.active_labels:
+            return False
     return True
 
 

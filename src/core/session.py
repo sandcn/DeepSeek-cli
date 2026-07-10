@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import copy
 import time
 import logging
 from typing import AsyncIterator, Callable
@@ -31,7 +32,7 @@ from .state_machine import SessionStateMachine, SessionState, InvalidTransitionE
 from .telemetry import get_default_collector, get_default_tracer
 from .sandbox_manager import create_sandbox_manager, get_sandbox_manager
 from .middleware.state_machine import StateMachineMiddleware
-from ..api.stats import get_token_stats, get_session_start_time  # noqa: F401 — kept for backward compat
+from ..core.ports.stats import DefaultStatsAdapter
 from ..core.ports import (
     PersistencePort, CheckpointPort, ConfigPort,
     JsonFilePersistence, JsonFileCheckpoint, DefaultConfigAdapter,
@@ -44,6 +45,7 @@ from ._session_persistence import (
 )
 from ._session_messages import add_message, non_system_messages, system_messages
 from ._session_state import SessionState as _SessionData
+from ._round_engine import _RoundEngine
 
 _logger = logging.getLogger(__name__)
 
@@ -76,11 +78,19 @@ class ChatSession:
                  sandbox=None,
                  persistence_port: PersistencePort | None = None,
                  checkpoint_port: CheckpointPort | None = None,
-                 config_port: ConfigPort | None = None):
+                 config_port: ConfigPort | None = None,
+                 stats_port=None):
         # ── 端口注入（默认适配器保持向后兼容） ──────────
         self._persistence_port = persistence_port or JsonFilePersistence()
         self._checkpoint_port = checkpoint_port or JsonFileCheckpoint()
         self._config_port = config_port or DefaultConfigAdapter()
+
+        # ── 统计端口 ─────────────────────────────────────
+        if stats_port is not None:
+            self._stats_port = stats_port
+        else:
+            from ..core.ports.stats import DefaultStatsAdapter
+            self._stats_port = DefaultStatsAdapter()
 
         # ── 核心对象 ──────────────────────────────────────
         self._model: str = model or self._config_port.get_model()
@@ -110,6 +120,11 @@ class ChatSession:
         # ── 可观测性 ──────────────────────────────────────
         self._metrics = get_default_collector()
         self._tracer = get_default_tracer()
+        # ★ P2 修复：显式初始化 _session_id_newly_allocated
+        self._session_id_newly_allocated = False
+
+        # ── 轮次执行引擎（从 session.py 提取的 round 生命周期） ──
+        self._round_engine = _RoundEngine(self)
 
 
     def _setup_state_machine_hooks(self) -> None:
@@ -132,8 +147,8 @@ class ChatSession:
 
     @property
     def messages(self) -> list[dict]:
-        """当前消息列表（直连 Agent.messages，就地修改）。"""
-        return self._agent.messages
+        """当前消息列表的只读副本（防止外部就地修改）。"""
+        return list(self._agent.messages)
 
     @property
     def model(self) -> str:
@@ -284,12 +299,14 @@ class ChatSession:
             elif event["type"] == "remove":
                 sm.remap_indices(event["indices"])
 
-        self._ctx_mgr = ContextManager(
-            messages=self._agent.messages,
-            model=self._model,
-            on_messages_changed=_sandbox_callback,
-        )
-        self._agent.context_manager = self._ctx_mgr
+        # ★ Bug I 修复：避免重复 initialize 覆盖已有的 ContextManager
+        if self._ctx_mgr is None:
+            self._ctx_mgr = ContextManager(
+                messages=self._agent.messages,
+                model=self._model,
+                on_messages_changed=_sandbox_callback,
+            )
+            self._agent.context_manager = self._ctx_mgr
 
         # 加载历史消息
         if loaded_messages:
@@ -316,6 +333,7 @@ class ChatSession:
         if not any(mw.__class__.__name__ == 'StateMachineMiddleware'
                    for mw in self._agent.pipeline.async_middlewares):
             self._agent.pipeline.use_async(StateMachineMiddleware())
+        self._agent._session_state_machine = self._state_machine
 
     # ── 核心对话方法 ──────────────────────────────────────
 
@@ -360,27 +378,19 @@ class ChatSession:
         self._state_machine.reset()
         self._emit("state_recovered", old_state=current_state)
 
+    def force_state_recovery(self) -> None:
+        """公开的强制状态恢复方法（供 app_loop.py 等外部模块使用）。
+
+        委托给 _force_state_recovery()，将内部实现暴露为公开接口。
+        仅供异常恢复场景使用，正常流程不应调用。
+        """
+        self._force_state_recovery()
+
     @contextlib.asynccontextmanager
     async def _handle_round_error(self, label: str) -> AsyncIterator[None]:
-        """统一处理 _execute_round 异常的上下文管理器。
-
-        提取 run_round / retry / run_single 中重复的异常处理模式：
-        - 记录异常日志
-        - 强制恢复状态机
-
-        各方法的个性化清理在 yield 返回后的 except 块中完成。
-        """
-        try:
+        """统一处理 _execute_round 异常的上下文管理器。委托给 _RoundEngine。"""
+        async with self._round_engine.handle_round_error(label):
             yield
-        except (KeyboardInterrupt, asyncio.CancelledError):
-            raise
-        except Exception:
-            _logger.exception("%s: _execute_round 异常", label)
-            try:
-                self._force_state_recovery()
-            except Exception as recovery_exc:
-                _logger.exception("_force_state_recovery 在异常处理中再次失败: %s", recovery_exc)
-            raise
 
     async def run_round(self, user_input: str) -> dict:
         """添加用户消息并执行一轮对话。
@@ -422,6 +432,7 @@ class ChatSession:
                 raise
             # ── AI 回复前提前分配 session_id ──────────────────
             # 标题生成在后台并行执行，需要 session_id 已就绪才能保存标题。
+            self._session_id_newly_allocated = not self._state.session_id
             if not self._state.session_id:
                 self._state.session_id = self._persistence_port.generate_id()
             try:
@@ -435,46 +446,8 @@ class ChatSession:
                 raise
 
     def _rollback_round_on_error(self) -> None:
-        """run_round 异常回滚的统一清理逻辑。
-
-        提取自 run_round 的 except Exception 块（Bug 2 + Bug 6 修复），
-        在 _handle_round_error 已记录日志并恢复状态机后执行个性化的消息和缓存清理。
-        """
-        # 回滚 orphan ID
-        self._state.session_id = None
-
-        # ★ Bug2：异常回滚时保护 AI 已生成的内容
-        #   检查最后一条消息的角色——若为 assistant 说明 _execute_round
-        #   已部分执行（AI 已生成回复），此时保留 AI 内容和对应的 user 消息；
-        #   若仍为 user 说明 _execute_round 未开始，回滚该 user 消息。
-        last_role = self._agent.messages[-1].get(_ROLE_KEY) if self._agent.messages else None
-        if last_role == "assistant":
-            # _execute_round 已部分执行，AI 已生成回复
-            # 跳过 pop user 消息，保留 AI 已生成的内容供 retry 机制恢复
-            _logger.warning(
-                "run_round 异常，_execute_round 已部分执行（最后消息为 assistant），"
-                "保留 AI 内容，待 retry 机制恢复"
-            )
-            # ★ Bug6：assistant 分支虽然没有 pop，但消息已变更，
-            # 缓存可能不准确，也 invalidate 确保下次访问时重建
-            if self._ctx_mgr is not None:
-                self._ctx_mgr.invalidate_cache()
-        elif last_role == "user":
-            # _execute_round 未开始，回滚已添加的 user 消息
-            pop_index = len(self._agent.messages) - 1
-            self._agent.messages.pop()
-            _logger.warning("run_round 异常，已回滚最后一条 user 消息")
-            # ★ Bug6：回滚后同步 context_manager 状态
-            if self._ctx_mgr is not None:
-                self._ctx_mgr.invalidate_cache()
-                self._ctx_mgr.notify_messages_removed([pop_index])
-        else:
-            # 其他情况（消息列表为空等），也 invalidate 缓存确保一致性
-            if self._ctx_mgr is not None:
-                self._ctx_mgr.invalidate_cache()
-
-        # 清理已排队的消息，防止异常后残留无效数据
-        self._state.pending_messages.clear()
+        """run_round 异常回滚的统一清理逻辑。委托给 _RoundEngine。"""
+        self._round_engine.rollback_round_on_error()
 
     async def run_pending_loop(self, max_iter: int = _MAX_PENDING_LOOP_ITER) -> tuple[bool, list[str]]:
         """处理 run_round 执行期间产生的所有排队消息。
@@ -487,6 +460,8 @@ class ChatSession:
         变更行为：
         - 增量 checkpoint（Bug 3）：每成功处理一条排队消息后立即调用 save_checkpoint()
           保存增量 checkpoint，确保中途异常时不丢失已成功处理的消息。
+        - P2 修复：在 pop_pending_messages 和 _state.pending_messages 访问处添加
+          round_lock 保护，确保与 run_round 的并发安全。
 
         Args:
             max_iter: 最大轮次阈值，防止无限循环（默认 10）
@@ -496,38 +471,43 @@ class ChatSession:
             - breached: 是否触发熔断（True 表示超过 max_iter 轮仍未处理完毕）
             - unprocessed: 熔断时残留的未处理消息列表（已重新放回 _pending_messages）
         """
-        pending = self.pop_pending_messages()
+        async with self._state.round_lock:
+            pending = self.pop_pending_messages()
         if not pending:
             return False, []
 
-        total_count = 0
-        while pending and total_count < max_iter:
-            total_count += len(pending)
+        round_count = 0
+        while pending and round_count < max_iter:
             for i, msg in enumerate(pending):
                 try:
                     await self.run_round(msg)
                 except (KeyboardInterrupt, asyncio.CancelledError):
                     raise
                 except Exception:
-                    remaining = pending[i + 1:]
-                    if remaining:
-                        self._state.pending_messages = remaining + self._state.pending_messages
-                        _logger.error("排队消息处理异常，剩余 %d 条已重新入队", len(remaining))
+                    async with self._state.round_lock:
+                        remaining = pending[i + 1:]
+                        if remaining:
+                            self._state.pending_messages = remaining + self._state.pending_messages
+                            _logger.error("排队消息处理异常，剩余 %d 条已重新入队", len(remaining))
                     raise
                 else:
                     # ★ Bug3 修复：每成功处理一条排队消息，立即保存增量 checkpoint
                     try:
-                        self.save_checkpoint()
+                        await self.save_checkpoint()
                     except Exception:
                         _logger.exception("run_pending_loop: save_checkpoint 异常，不阻断消息处理")
-            pending = self.pop_pending_messages()
+            async with self._state.round_lock:
+                pending = self.pop_pending_messages()
+            round_count += 1
 
-        if total_count >= max_iter:
+        if round_count >= max_iter:
             _logger.error("排队消息处理超过熔断阈值 (%d)，终止循环", max_iter)
-            remaining = self.pop_pending_messages()
-            if remaining:
-                self._state.pending_messages = remaining + self._state.pending_messages
-            return True, list(self._state.pending_messages)
+            async with self._state.round_lock:
+                remaining = self.pop_pending_messages()
+                if remaining:
+                    self._state.pending_messages = remaining + self._state.pending_messages
+                remaining_snapshot = list(self._state.pending_messages)
+            return True, remaining_snapshot
 
         return False, []
 
@@ -535,6 +515,12 @@ class ChatSession:
         """重新执行上一轮对话。
         """
         async with self._state.round_lock:
+            # ★ Bug H 修复：验证 retry_pending，无待重试消息时拒绝
+            if not self._state.retry_pending:
+                _logger.warning("retry() 被调用但 retry_pending 为 False，跳过")
+                return {"interrupted": False, "session_id": None,
+                        "delta": {"input": 0, "output": 0, "calls": 0},
+                        "pending": False}
             self._state.retry_pending = False
             if self._state_machine.is_(SessionState.INIT):
                 self._ensure_idle()
@@ -551,187 +537,82 @@ class ChatSession:
 
     async def run_single(self, prompt: str) -> dict:
         """单次对话模式。
+
+        与 run_round 共享 _execute_round 执行逻辑，
+        但省略了 pending_messages 排队和 checkpoint 保存等交互式功能。
         """
         async with self._state.round_lock:
             self._ensure_idle()
-            self._agent.add_user_message(prompt)
+            # ★ P1-2 修复: 开始轮次前先转换状态机 IDLE → RUNNING，
+            #   与 run_round 的行为一致，确保 StateMachineMiddleware 能正确完成
+            #   RUNNING → COMPLETED 的自动转换。
+            self._state_machine.start_round()
+            try:
+                self._agent.add_user_message(prompt)
+            except (KeyboardInterrupt, asyncio.CancelledError):
+                raise
+            except Exception:
+                _logger.exception("run_single: add_user_message 异常")
+                self._force_state_recovery()
+                raise
             # ── AI 回复前提前分配 session_id ──────────────────
+            self._session_id_newly_allocated = not self._state.session_id
             if not self._state.session_id:
                 self._state.session_id = self._persistence_port.generate_id()
-            async with self._handle_round_error("run_single"):
-                result = await self._execute_round()
-            self.save()
+            try:
+                async with self._handle_round_error("run_single"):
+                    result = await self._execute_round()
+            except (KeyboardInterrupt, asyncio.CancelledError):
+                raise
+            except Exception:
+                # ★ P2 修复：_execute_round 异常后的消息回滚，
+                #   与 run_round 的 _rollback_round_on_error 等效，
+                #   清理已添加的 user 消息和 session_id，保持消息列表一致性。
+                if self._agent.messages and self._agent.messages[-1].get(_ROLE_KEY) == "user":
+                    self._agent.messages.pop()
+                    _logger.warning("run_single 异常，已回滚最后一条 user 消息")
+                # 回滚 orphan ID（仅限新分配的 session_id，已从持久化加载的保留）
+                if getattr(self, '_session_id_newly_allocated', False):
+                    self._state.session_id = None
+                if self._ctx_mgr is not None:
+                    self._ctx_mgr.invalidate_cache()
+                raise
             return result
 
-    # ── _execute_round 子方法 ───────────────────────────
+    # ── _execute_round 子方法（委托给 _RoundEngine） ───────
 
     def _prepare_round(self) -> None:
-        """更新 agent 和 context_manager 的模型配置。"""
-        self._agent.model = self._model
-        if self._ctx_mgr:
-            self._ctx_mgr.update_model(self._model)
+        """更新 agent 和 context_manager 的模型配置。委托给 _RoundEngine。"""
+        self._round_engine._prepare_round()
 
     def _snapshot_token_stats(self) -> tuple[int, int, int]:
-        """获取前置 token 统计快照，返回 (prev_input, prev_output, prev_calls)。"""
-        current = get_token_stats()
-        return current["input"], current["output"], current["calls"]
+        """获取前置 token 统计快照。委托给 _RoundEngine。"""
+        return self._round_engine._snapshot_token_stats()
 
     async def _finalize_round(self, interrupted: bool,
-                              prev_stats: tuple[int, int, int]) -> dict:
-        """后置处理: enforce_message_limit → 计算 delta → 状态转换 → 自动保存 → 发射事件。
-
-        Args:
-            interrupted: agent.run() 是否被中断
-            prev_stats: _snapshot_token_stats() 返回的前置快照
-
-        Returns:
-            结果字典（含 interrupted/session_id/delta/elapsed）
-        """
-        prev_input, prev_output, prev_calls = prev_stats
-
-        # 消息限制（用 try 保护，确保即使异常也能执行后续状态转换）
-        try:
-            if self._ctx_mgr:
-                self._ctx_mgr.enforce_message_limit()
-        except Exception as exc:
-            _logger.exception("enforce_message_limit 异常: %s", exc)
-
-        # 计算本轮消耗
-        delta, current = self._compute_token_delta(prev_input, prev_output, prev_calls)
-
-        # 状态转换（由 StateMachineMiddleware 自动完成，此处为兜底）
-        if self._state_machine.is_(SessionState.RUNNING):
-            try:
-                if interrupted:
-                    self._state_machine.interrupt()
-                else:
-                    self._state_machine.complete_round()
-            except InvalidTransitionError:
-                _logger.warning("异步状态转换失败: %s → %s，执行强制恢复",
-                                self._state_machine.name,
-                                "interrupt" if interrupted else "complete")
-                self._force_state_recovery()
-            except Exception as exc:
-                _logger.exception("状态转换异常，执行强制恢复: %s", exc)
-                self._force_state_recovery()
-
-        # 自动保存
-        session_id = await self._auto_save()
-
-        # 发射事件并返回
-        return self._emit_round_events(interrupted, session_id, delta, current)
+                              prev_stats: tuple[int, int, int],
+                              checkpoint_requested: bool = False) -> dict:
+        """后置处理。委托给 _RoundEngine。"""
+        return await self._round_engine._finalize_round(interrupted, prev_stats, checkpoint_requested)
 
     async def _execute_round(self) -> dict:
-        """执行一轮对话的公共逻辑（编排方法）。"""
-        self._prepare_round()
-        prev_stats = self._snapshot_token_stats()
-        self._emit("round_start")
-        interrupted: bool = await self._agent.run()
-        return await self._finalize_round(interrupted, prev_stats)
+        """执行一轮对话的公共逻辑（编排方法）。委托给 _RoundEngine。"""
+        return await self._round_engine.execute_round()
 
     def _compute_token_delta(self, prev_input: int, prev_output: int, prev_calls: int) -> tuple[dict, dict]:
-        """计算本轮 token 消耗增量，返回 (delta, current_stats)。"""
-        current = get_token_stats()
-        delta = {
-            "input": current["input"] - prev_input,
-            "output": current["output"] - prev_output,
-            "calls": current["calls"] - prev_calls,
-        }
-        return delta, current
+        """计算本轮 token 消耗增量。委托给 _RoundEngine。"""
+        return self._round_engine._compute_token_delta(prev_input, prev_output, prev_calls)
 
     async def _auto_save(self) -> str | None:
-        """自动保存会话，返回 session_id（无可保存内容时返回 None）。
+        """自动保存会话。委托给 _RoundEngine。"""
+        return await self._round_engine._auto_save()
 
-        变更行为（Bug 1 修复）：
-        - 三字段（messages/model/session_id）原子打包利用 GIL 字节码原子性消除竞态窗口，
-          避免 /model 命令在快照读取间隙修改 model 导致的数据不一致。
-        """
-        try:
-            # 在主线程中提取消息快照，避免子线程访问 messages 的竞态
-            # ★ Bug1 修复: 三字段原子打包（利用 GIL 字节码原子性消除竞态窗口）
-            # TODO: 若未来迁移到无 GIL 的 Python（PEP 703），此处的字节码原子性不再保证，
-            #       需改用 threading.Lock 或 copy-on-write 机制保护三字段的一致性。
-            (snapshot, snapshot_model, snapshot_sid) = (
-                list(self._agent.messages),
-                self._model,
-                self._state.session_id,
-            )
-
-            non_system = [m for m in snapshot if m.get(_ROLE_KEY) != _SYSTEM_ROLE]
-            if not non_system:
-                # 无可保存内容，在主线程中执行状态转换即可
-                self._safe_save_state()
-                return snapshot_sid
-
-            # 在子线程中只做文件 IO
-            session_id = await asyncio.to_thread(
-                self._persistence_port.save_session,
-                non_system,
-                snapshot_model,
-                snapshot_sid,
-            )
-            self._state.session_id = session_id
-            self._safe_save_state()
-            self._emit("saved", session_id=session_id)
-            return session_id
-        except Exception as exc:
-            _logger.exception("自动保存会话失败: %s", exc)
-            # ★ P0 修复：save 异常后强制恢复状态机，防止残留在 COMPLETED/INTERRUPTED
-            #   导致下次 run_round() 触发 InvalidTransitionError
-            self._force_state_recovery()
-            # ★ Bug3 修复：save 失败时返回 None 表示保存失败
-            #   避免 _session_id 残留无效值被下游使用
-            return None
-
-    def _emit_round_events(self, interrupted: bool, session_id: str | None,
-                           delta: dict, current: dict) -> dict:
-        """发射 round 事件，返回结果字典。
-
-        变更行为：
-        - Pipeline CancelledError 时额外保存 checkpoint（Bug 4）：检查 pipeline
-          的 ctx.checkpoint_requested 标记，若为 True 则在已有 save_checkpoint()
-          之后再次调用 save_checkpoint()，确保被取消的模型调用状态也被持久化。
-        """
-        elapsed = time.time() - get_session_start_time()
-        if delta["input"] > 0 or delta["output"] > 0:
-            prices = self._config_port.get_token_prices()
-            self._emit("cost_update",
-                       delta=delta,
-                       total=current,
-                       model=self._model,
-                       prices=prices,
-                       session_elapsed=elapsed,
-                       messages=self._agent.messages)
-
-        if interrupted:
-            # ★ Bug4: 检查 Pipeline 的 checkpoint_requested 标记
-            #   （CancelledError 路径设置的），避免重复调用 save_checkpoint()
-            # TODO: 通过 pipeline._last_ctx（私有属性）跨模块访问 checkpoin_requested
-            #       是设计上的耦合。后续应考虑通过 Event/Callback 机制通知 session，
-            #       或将 checkpoint_requested 合并到 round_end 事件的参数中传递。
-            pipe_ctx = getattr(self._agent.pipeline, '_last_ctx', None)
-            if pipe_ctx is not None and pipe_ctx.checkpoint_requested:
-                _logger.warning("Pipeline CancelledError 标记已检测，保存 checkpoint")
-                self.save_checkpoint()
-            else:
-                self.save_checkpoint()
-            self._emit("interrupted")
-
-        self._emit("round_end",
-                   interrupted=interrupted,
-                   session_id=session_id,
-                   delta=delta,
-                   elapsed=elapsed)
-
-        # ★ 修复：每轮执行完成后复位 retry_pending，避免应用层误判需要自动续接
-        self._state.retry_pending = False
-
-        return {
-            "interrupted": interrupted,
-            "session_id": session_id,
-            "delta": delta,
-            "elapsed": elapsed,
-        }
+    async def _emit_round_events(self, interrupted: bool, session_id: str | None,
+                                  delta: dict, current: dict,
+                                  checkpoint_requested: bool = False) -> dict:
+        """发射 round 事件。委托给 _RoundEngine。"""
+        return await self._round_engine._emit_round_events(
+            interrupted, session_id, delta, current, checkpoint_requested)
 
     # ── 消息管理 ──────────────────────────────────────────
 
@@ -754,7 +635,11 @@ class ChatSession:
         try:
             self._state_machine.clear()
         except InvalidTransitionError:
-            pass
+            _logger.warning(
+                "clear_messages 被跳过：状态机当前为 %s，不允许 clear 转换",
+                self._state_machine.name,
+            )
+            return 0
 
         system_msgs = self._system_messages
         removed = len(self._agent.messages) - len(system_msgs)
@@ -768,6 +653,8 @@ class ChatSession:
 
         # 更新仪表盘
         self._metrics.gauge("session.messages", 0)
+        # ★ P2-2 修复：清空 captured_prefill，确保重新开始时不残留之前捕获的文本
+        self.captured_prefill = ''
         return removed
 
     def undo_last_round(self) -> int:
@@ -785,6 +672,8 @@ class ChatSession:
             removed += 1
         self._emit("messages_changed", action="undo", removed=removed)
         self._metrics.gauge("session.messages", len(self._agent.messages))
+        # ★ Bug E 修复：undo 后同步 retry_pending
+        self.sync_retry_pending()
         return removed
 
     def add_system_message(self, content: str) -> None:
@@ -804,10 +693,11 @@ class ChatSession:
         if self._ctx_mgr is None:
             _logger.warning("ContextManager 未初始化，无法压缩")
             return
+        # ★ Bug J 修复：排除 [对话摘要] 标记的 system 消息
         non_system_count = sum(
             1 for m in self._agent.messages
             if m.get(_ROLE_KEY) != _SYSTEM_ROLE
-            or (m.get("content") or "").startswith("[对话摘要]")
+            and not (m.get("content") or "").startswith("[对话摘要]")
         )
         if non_system_count <= _MIN_NON_SYSTEM_FOR_COMPRESS:
             _logger.info("非系统消息太少（≤%d），无需压缩", _MIN_NON_SYSTEM_FOR_COMPRESS)
@@ -826,10 +716,11 @@ class ChatSession:
         if self._ctx_mgr is None:
             _logger.warning("ContextManager 未初始化，无法压缩")
             return
+        # ★ Bug J 修复：排除 [对话摘要] 标记的 system 消息
         non_system_count = sum(
             1 for m in self._agent.messages
             if m.get(_ROLE_KEY) != _SYSTEM_ROLE
-            or (m.get("content") or "").startswith("[对话摘要]")
+            and not (m.get("content") or "").startswith("[对话摘要]")
         )
         if non_system_count <= _MIN_NON_SYSTEM_FOR_COMPRESS:
             _logger.info("非系统消息太少（≤%d），无需压缩", _MIN_NON_SYSTEM_FOR_COMPRESS)
@@ -872,21 +763,24 @@ class ChatSession:
 
     # ── 断点管理 ──────────────────────────────────────────
 
-    def save_checkpoint(self) -> None:
-        """保存断点（任务中断时调用）。"""
-        return save_checkpoint_session(self)
+    async def save_checkpoint(self) -> None:
+        """保存断点（任务中断时调用）- 异步版本。"""
+        from ._session_persistence import save_checkpoint_session as _save_cp
+        await _save_cp(self)
 
-    def clear_checkpoint(self) -> None:
-        """清除断点（任务成功完成时调用）。"""
-        return clear_checkpoint_session(self)
+    async def clear_checkpoint(self) -> None:
+        """清除断点（任务成功完成时调用）- 异步版本。"""
+        from ._session_persistence import clear_checkpoint_session as _clear_cp
+        await _clear_cp(self)
 
-    def load_checkpoint(self) -> dict | None:
-        """加载断点数据。"""
-        return load_checkpoint_data(self)
+    async def load_checkpoint(self) -> dict | None:
+        """加载断点数据 - 异步版本。"""
+        from ._session_persistence import load_checkpoint_data as _load_cp
+        return await _load_cp(self)
 
-    def has_checkpoint(self) -> bool:
-        """检查是否存在有效断点。"""
-        return has_checkpoint_session(self)
+    async def has_checkpoint(self) -> bool:
+        """检查是否存在有效断点 - 异步版本。"""
+        return await has_checkpoint_session(self)
 
     def resume_from_checkpoint(self) -> bool:
         """从断点恢复任务。

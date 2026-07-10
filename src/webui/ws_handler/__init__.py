@@ -14,4 +14,4 @@
 from __future__ import annotations
 
 # ── 共享常量（从 types.py 导入，保持向后兼容） ──
-from ..types import _ORPHANED_ATTR, _MESSAGE_PREVIEW_LENGTH
+from ..types import _MESSAGE_PREVIEW_LENGTH

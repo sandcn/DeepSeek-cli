@@ -144,3 +144,30 @@ class JsonFileCheckpoint(CheckpointPort):
     def get_info(self) -> dict | None:
         from ...checkpoint import get_checkpoint_info
         return get_checkpoint_info()
+
+    # ── 异步包装方法 ─────────────────────────────────
+
+    async def async_save(
+        self,
+        messages: list[dict],
+        model: str,
+        task_description: str = "",
+    ) -> None:
+        """异步保存断点，使用 to_thread 避免阻塞事件循环。"""
+        import asyncio
+        await asyncio.to_thread(self.save, messages, model, task_description)
+
+    async def async_load(self) -> dict | None:
+        """异步加载断点数据。"""
+        import asyncio
+        return await asyncio.to_thread(self.load)
+
+    async def async_clear(self) -> None:
+        """异步清除断点。"""
+        import asyncio
+        await asyncio.to_thread(self.clear)
+
+    async def async_exists(self) -> bool:
+        """异步检查断点是否存在。"""
+        import asyncio
+        return await asyncio.to_thread(self.exists)

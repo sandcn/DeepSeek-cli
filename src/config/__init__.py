@@ -64,6 +64,7 @@ _RC_KEY_MAP: dict[str, tuple[tuple[str, ...], Any]] = {
     "HTTP_KEEP_ALIVE_TIMEOUT":           (("performance", "http_client", "keep_alive_timeout"),        15),
     "HTTP_ENABLE_POOL":                  (("performance", "http_client", "enable_pool"),              True),
     "HTTP_ENABLE_HTTP2":                 (("performance", "http_client", "enable_http2"),             True),
+    "MAX_CONCURRENT_TOOLS":              (("performance", "tool_executor", "max_concurrent_tools"),   DEFAULTS["max_concurrent_tools"]),
 }
 
 
@@ -103,8 +104,8 @@ def __getattr__(name):
         return _lazy_map[name]()
 
     # RC 键：惰性单键获取 + 单键缓存
-    rc = get_rc()
     with _value_cache_lock:
         if name not in _value_cache:
+            rc = get_rc()
             _value_cache[name] = _resolve_rc_key(name, rc)
         return _value_cache[name]

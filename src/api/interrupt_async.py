@@ -1,7 +1,9 @@
-"""Async 全局中断信号 — 基于 asyncio.Event
+"""Async 全局中断信号 — 基于 threading.Event
 
-与同步版 interrupt.py 接口对等，但使用 asyncio.Event 替代 threading.Event，
-避免在 async 代码中阻塞事件循环。
+跨事件循环安全。使用 threading.Event 替代 asyncio.Event，
+避免模块级 Event 绑定到特定事件循环后，
+在独立事件循环（如 _model_loops.py 每线程独立循环）中访问时
+抛出 RuntimeError（Task got Future attached to a different loop）。
 """
 
 from __future__ import annotations
@@ -10,6 +12,8 @@ import asyncio
 import logging
 import select
 import sys
+import threading
+import time
 
 _logger = logging.getLogger(__name__)
 
@@ -23,8 +27,8 @@ __all__ = [
     "_flush_stdin",  # 向后兼容别名
 ]
 
-# 全局 asyncio Event — 只应在 async 上下文中使用
-_interrupted_async = asyncio.Event()
+# 全局 threading Event — 不绑定任何事件循环，跨事件循环安全
+_interrupted_async = threading.Event()
 
 
 async def is_interrupted_async() -> bool:
@@ -33,7 +37,7 @@ async def is_interrupted_async() -> bool:
 
 
 def request_interrupt_async() -> None:
-    """请求中断所有异步任务。线程安全（asyncio.Event.set() 是线程安全的）。"""
+    """请求中断所有异步任务。线程安全（threading.Event.set() 是线程安全的）。"""
     _interrupted_async.set()
 
 
@@ -94,10 +98,10 @@ def reset_interrupt_async() -> None:
 # ── 同步桥接（用于 sync 代码调用 async 中断） ──────────────
 
 def is_interrupted() -> bool:
-    """兼容同步检查 — 读取 asyncio Event 状态。
+    """兼容同步检查 — 读取 threading.Event 状态。
 
     适用于 sync 代码（如 tool 执行）中需要检查中断的场景。
-    asyncio.Event.is_set() 不涉及锁，线程安全。
+    threading.Event.is_set() 不涉及锁，线程安全。
     """
     return _interrupted_async.is_set()
 
@@ -105,9 +109,9 @@ def is_interrupted() -> bool:
 async def wait_for_interrupt_async(timeout: float) -> bool:
     """等待中断信号或超时，返回是否被中断。
 
-    替代 busy-poll 模式（while + asyncio.sleep），
-    通过 asyncio.Event.wait() 实现零轮询的事件驱动等待。
-    中断响应延迟仅为事件循环调度的延迟（通常 <1ms）。
+    使用轮询模式检查 threading.Event 状态，
+    避免 threading.Event.wait() 阻塞事件循环。
+    每 50ms 轮询一次，中断响应延迟 < 50ms + 事件循环调度延迟。
 
     Args:
         timeout: 最长等待秒数
@@ -116,14 +120,12 @@ async def wait_for_interrupt_async(timeout: float) -> bool:
         True — 在超时前收到中断信号
         False — 超时（未收到中断信号）
     """
-    interrupt_task = asyncio.create_task(_interrupted_async.wait())
-    try:
-        await asyncio.wait_for(interrupt_task, timeout=timeout)
-        return True
-    except asyncio.TimeoutError:
-        return False
-    finally:
-        interrupt_task.cancel()
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if _interrupted_async.is_set():
+            return True
+        await asyncio.sleep(0.05)
+    return False
 
 
 # 向后兼容别名

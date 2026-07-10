@@ -60,7 +60,9 @@ class _AsyncObservabilityMiddleware(AsyncMiddleware):
     async def on_exception(self, ctx: PipelineContext, exc: Exception) -> None:
         try:
             # 清理 before_model_call 中 start_span 推入的 span，防止泄漏
-            self._tracer.end_span()
+            # 仅在 span 栈非空时调用 end_span，避免空栈时触发 tracer 的 warning
+            if self._tracer.active_count > 0:
+                self._tracer.end_span()
         except Exception:
             _logger.exception("AsyncObservability.on_exception 异常")
 

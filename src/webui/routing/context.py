@@ -75,7 +75,12 @@ class ConnectionContext:
         """
         ws = web.WebSocketResponse()
         await ws.prepare(request)
-        session: ChatSession = request.app["session"]
+        master_session: ChatSession = request.app["master_session"]
+
+        # ★ P1-4 修复：每个 WebSocket 连接创建独立的 ChatSession
+        #   避免多标签页共享同一会话导致消息交叉污染
+        session = ChatSession(model=master_session.model)
+        session.initialize()
 
         # ── 异步发送函数 ──
         async def ws_send(msg: dict) -> None:
@@ -92,9 +97,12 @@ class ConnectionContext:
             ws, session, ws_send,
         )
 
+        # ── 孤儿任务注册表（页面刷新时跨会话传递后台 LLM 任务） ──
+        orphaned_task_registry = request.app.get("orphaned_task_registry")
+
         # ── 发送初始状态 + 处理后台孤儿任务 ──
         await cls._send_initial_state(ws_send, session)
-        await cls._handle_orphaned_task(ws_send, session)
+        await cls._handle_orphaned_task(ws_send, session, orphaned_task_registry)
 
         # ── 构建上下文 ──
         ctx = cls()
@@ -110,6 +118,7 @@ class ConnectionContext:
         bridge.select_id_tracker = ctx.my_select_ids
         ctx._cost_handler = cost_handler
         ctx.shutdown_event = request.app.get("shutdown_event")
+        ctx.orphaned_task_registry = orphaned_task_registry
 
         class _ProcState:
             def __init__(self):
@@ -156,25 +165,45 @@ class ConnectionContext:
         await ws_send(build_sandbox_updated())
 
     @staticmethod
-    async def _handle_orphaned_task(ws_send, session: ChatSession) -> None:
-        """检查后台孤儿任务是否已结束，若已完成则推送最终消息。"""
-        orphaned = getattr(session, "_orphaned_task", None)
-        if orphaned is not None and orphaned.done():
-            if not orphaned.cancelled():
+    async def _handle_orphaned_task(ws_send, session: ChatSession,
+                                    orphaned_task_registry: dict | None = None) -> None:
+        """检查后台孤儿任务是否已结束，若已完成则推送最终消息。
+
+        优先使用 orphaned_task_registry（页面刷新时跨会话传递），
+        降级至 session._state.orphaned_task（向后兼容）。
+        """
+        # 检查注册表（优先级高）：页面刷新时旧连接的任务存在于此
+        task = None
+        messages = session.messages
+        model = session.model
+        if orphaned_task_registry is not None:
+            task = orphaned_task_registry.get("task")
+            if task is not None:
+                registry_msgs = orphaned_task_registry.get("messages")
+                registry_model = orphaned_task_registry.get("model")
+                if registry_msgs is not None:
+                    messages = registry_msgs
+                if registry_model is not None:
+                    model = registry_model
+        # 降级：检查会话自身的孤儿任务（向后兼容）
+        if task is None:
+            task = session._state.orphaned_task
+        if task is not None and task.done():
+            if not task.cancelled():
                 _logger.info("后台 LLM 生成任务已完成，推送最终消息")
-                rebuilt = _rebuild_message_indices(session.messages)
+                rebuilt = _rebuild_message_indices(messages)
                 await ws_send({
                     "type": "messages_updated",
                     "messages": rebuilt,
-                    "model": session.model,
+                    "model": model,
                 })
                 await ws_send(build_sandbox_updated())
 
     async def cleanup(self) -> None:
         """清理连接全部资源。
 
-        ★ 页面刷新保护：传入 session 使 cleanup_connection 保留
-           正在运行的 LLM 生成任务，而不是取消它。
+        ★ 页面刷新保护：传入 session + orphaned_task_registry 使 cleanup_connection 保留
+           正在运行的 LLM 生成任务到全局注册表，新连接可接管其结果。
         """
         # 先移除本连接的 cost_update handler（每个连接独立注册，必须各自移除）
         if self.session is not None and self._cost_handler is not None:
@@ -197,6 +226,7 @@ class ConnectionContext:
             process_task=self.process_task,
             proc_state=self.proc_state,
             session=self.session,
+            orphaned_task_registry=getattr(self, 'orphaned_task_registry', None),
         )
 
 

@@ -123,6 +123,8 @@ class RenderEngine:
         TokenType.PARAGRAPH, TokenType.LIST_ITEM,
         TokenType.BLOCKQUOTE_OPEN, TokenType.HEADING,
         TokenType.TABLE, TokenType.HTML_BLOCK_OPEN,
+        TokenType.ADMONITION_OPEN, TokenType.DETAILS_OPEN,
+        TokenType.MERMAID_BLOCK_OPEN, TokenType.CODE_FENCE_OPEN,
     })
 
     # 代码块关闭类型（只需 frozenset 检查一次）
@@ -237,8 +239,13 @@ class RenderEngine:
         return self._ctx
 
     def set_render_context(self, ctx: RenderContext) -> None:
-        """设置渲染上下文（用于外部同步引用链接/脚注等状态）。"""
+        """设置渲染上下文（用于外部同步引用链接/脚注等状态）。
+
+        同时重置跨请求的渲染器状态（math_renderer / mermaid_renderer），
+        防止 P2-21 跨请求残留问题。
+        """
         self._ctx = ctx
+        self._reset_request_local_state()
 
     @property
     def math_renderer(self) -> "MathRenderer":
@@ -346,6 +353,20 @@ class RenderEngine:
         self._todo.active = False
         self._last_todo_progress = None
         self._todo_emitted = False
+
+    def _reset_request_local_state(self) -> None:
+        """重置跨请求的渲染器状态，防止跨轮次残留。
+
+        在渲染新请求前调用，确保 math_renderer 和 mermaid_renderer
+        不携带上一轮次的内部状态（如 math_parser 的 _is_block 切换、
+        _bigop_stack 残留等）。
+        """
+        if self._math_renderer is not None:
+            from .math_renderer import MathRenderer
+            self._math_renderer = MathRenderer()
+        if self._mermaid_renderer is not None:
+            from .mermaid_renderer import MermaidRenderer
+            self._mermaid_renderer = MermaidRenderer()
 
     def _emit_todo_progress(self) -> None:
         """在流式场景中实时输出 Todo 进度条，并在全部完成时输出最终统计。

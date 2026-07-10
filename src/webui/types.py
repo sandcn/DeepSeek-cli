@@ -16,7 +16,6 @@ from typing import Any
 # ═══════════════════════════════════════════════════════════════
 
 # ── 共享常量 ──
-_ORPHANED_ATTR = "_orphaned_task"
 _MESSAGE_PREVIEW_LENGTH = 200  # 消息预览截断长度（字符）
 _MAX_MSG_LENGTH = 100_000      # 单条消息最大长度（100KB）
 

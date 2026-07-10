@@ -51,13 +51,48 @@ class SessionState:
     # ── WebUI 页面刷新保护 ────────────────────────────────
     orphaned_task: asyncio.Task | None = None
 
-    # ── run_round 并发锁 ──────────────────────────────────
-    round_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+    # ── run_round 并发锁（延迟初始化，避免绑定特定事件循环） ──
+    _round_lock: asyncio.Lock | None = field(default=None, repr=False)
+
+    @property
+    def round_lock(self) -> asyncio.Lock:
+        lock = getattr(self, '_round_lock', None)
+        if lock is None:
+            lock = asyncio.Lock()
+            self._round_lock = lock
+        return lock
+
+    @round_lock.setter
+    def round_lock(self, value: asyncio.Lock) -> None:
+        self._round_lock = value
+
+    # ── 序列化支持 ──────────────────────────────────────
+
+    def __getstate__(self):
+        """移除不可序列化字段后返回状态字典。"""
+        state = self.__dict__.copy()
+        state.pop('_round_lock', None)
+        state.pop('orphaned_task', None)
+        state.pop('hooks', None)
+        return state
+
+    def __setstate__(self, state):
+        """恢复状态并重新创建不可序列化字段。"""
+        self.__dict__.update(state)
+        # round_lock 不再在此创建 — 由 round_lock property 首次访问时按需延迟初始化
+        self.orphaned_task = None
+        self.hooks = defaultdict(list)
 
     # ── 排队消息操作 ──────────────────────────────────────
 
     def pop_pending_messages(self) -> list[str]:
-        """弹出并返回所有排队的用户消息。"""
+        """弹出并返回所有排队的用户消息。
+
+        注意：此方法本身不是线程安全的。
+        - pending_messages 的 append 在 run_round（持 round_lock）中执行
+        - 调用方应在持有 round_lock 的上下文中调用此方法
+        - 返回的列表是独立副本，修改不影响内部状态
+        """
         msgs = list(self.pending_messages)
         self.pending_messages.clear()
         return msgs

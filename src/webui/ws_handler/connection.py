@@ -53,6 +53,8 @@ def _setup_connection(ws, session, ws_send, select_id_tracker=None):
           get() 可能已取出消息（消息已出队但 task_done() 未调用）。
           必须确保 task_done() 被调用，防止 Queue.join() 永久挂起。
         """
+        _retry_count = 0
+        _max_retries = 3
         while send_queue_active:
             try:
                 _got_msg = False
@@ -73,13 +75,19 @@ def _setup_connection(ws, session, ws_send, select_id_tracker=None):
                 finally:
                     if _got_msg:
                         send_queue.task_done()
+                # 正常处理完一条消息后重置重试计数
+                _retry_count = 0
             except asyncio.CancelledError:
                 # Worker 被显式取消（如 _drain_send_queue 中的 cancel()）
                 # 直接重新抛出，让 task 退出
                 raise
             except Exception as e:
+                _retry_count += 1
+                if _retry_count > _max_retries:
+                    _logger.critical("发送 worker 连续 %d 次异常，停止自动恢复", _max_retries)
+                    raise
                 # Worker 自动恢复：捕获顶层异常，防止 worker 永久停摆
-                _logger.error("发送 worker 顶层异常，自动恢复: %s", e)
+                _logger.error("发送 worker 顶层异常 (第 %d 次)，自动恢复: %s", _retry_count, e)
                 await asyncio.sleep(0.5)
 
     def _tracked_send(msg):
