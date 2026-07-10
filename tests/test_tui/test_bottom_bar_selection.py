@@ -7,6 +7,7 @@
   - Mock Blessed Terminal.inkey() 返回模拟 Keystroke 对象
   - Mock src.chat_ui.get_active_chat_ui、_BottomBar、sys.stdin、os.isatty
   - 验证 KEY_ENTER(343)、'\\r'、'\\n' 三种 Enter 形式均返回 confirmed
+  - 验证 _completion_idx 越界时 Enter 自动 clamp 到 0 后确认
 """
 
 from __future__ import annotations
@@ -277,6 +278,38 @@ class TestRunBottomBarSelectionEnter(unittest.TestCase):
         self.assertEqual(result["action"], "cancel")
         self.assertIsNone(result["index"])
 
+    def test_sequence_key_enter_clamps_when_idx_out_of_range(self):
+        """KEY_ENTER 在 _completion_idx 越界时 clamp 到 0 后 confirmed。"""
+        mock_chat_ui = self._make_mock_chat_ui()
+        mock_chat_ui._bottom_bar._completion_idx = 99
+        enter_key = _MockKeystroke(is_sequence=True, code=_KEY_ENTER)
+        mock_term = self._make_mock_terminal([enter_key])
+
+        result = self._run_with_mocks(
+            mock_chat_ui, mock_term,
+            items=["a", "b"],
+            display_items=["A", "B"],
+        )
+
+        self.assertEqual(result["action"], "confirmed")
+        self.assertEqual(result["index"], 0)
+
+    def test_carriage_return_clamps_when_idx_out_of_range(self):
+        """\\r 在 _completion_idx 越界时 clamp 到 0 后 confirmed。"""
+        mock_chat_ui = self._make_mock_chat_ui()
+        mock_chat_ui._bottom_bar._completion_idx = 99
+        enter_key = _MockKeystroke(key='\r', is_sequence=False)
+        mock_term = self._make_mock_terminal([enter_key])
+
+        result = self._run_with_mocks(
+            mock_chat_ui, mock_term,
+            items=["a", "b"],
+            display_items=["A", "B"],
+        )
+
+        self.assertEqual(result["action"], "confirmed")
+        self.assertEqual(result["index"], 0)
+
 
 class TestRunSelectionRaw(unittest.TestCase):
     """测试 _run_selection_raw() 原始 I/O 选择循环（Cygwin 降级路径）。
@@ -460,11 +493,11 @@ class TestRunSelectionRaw(unittest.TestCase):
 
     # ── 边界：_completion_idx 越界时 Enter 不确认 ──
 
-    def test_enter_ignored_when_completion_idx_out_of_range(self):
-        """_completion_idx 越界时 Enter 应被忽略，循环继续。
+    def test_enter_clamps_when_completion_idx_out_of_range(self):
+        """_completion_idx 越界时 Enter 应 clamp 到 0 后确认选择。
 
-        当 idx >= len(items) 时，\\r 不返回 confirmed，
-        select 继续等待，直到超时耗尽返回空结果。
+        idx(99) >= len(items)(3) 时，Enter 触发 clamp 到 0，
+        返回 confirmed + index=0，而非进入无限循环。
         """
         result = self._run_with_raw_mocks(
             select_ready_flags=[True],
@@ -472,10 +505,8 @@ class TestRunSelectionRaw(unittest.TestCase):
             completion_idx=99,  # 远超 items 长度
         )
 
-        # 循环继续直至 select 耗尽 → 函数不返回（通过 StopIteration 退出 mock）
-        # 最终 select 返回 ([], [], [])，循环永远 continue
-        # 实际测试中 side_effect 耗尽后返回空 → while 循环无限等待
-        # 这里验证 cycle_completion 未被调用（idx 越界不会触发确认）
+        self.assertEqual(result["action"], "confirmed")
+        self.assertEqual(result["index"], 0)
         self.mock_bb.cycle_completion.assert_not_called()
 
 

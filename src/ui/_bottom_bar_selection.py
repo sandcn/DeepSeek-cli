@@ -94,8 +94,14 @@ def _run_selection_raw(
     import tty
     import termios as _termios
 
+    if not items:
+        return {"action": "error", "index": None}
+
     fd = sys.stdin.fileno()
-    settings = _save_terminal_settings(fd)
+    try:
+        settings = _save_terminal_settings(fd)
+    except Exception:
+        return {"action": "error", "index": None}
     try:
         tty.setcbreak(fd)
         while True:
@@ -118,9 +124,10 @@ def _run_selection_raw(
             # ── Enter → 确认选择 ──
             if ch in ('\r', '\n'):
                 idx = bb._completion_idx
-                if 0 <= idx < len(items):
-                    return {"action": "confirmed", "index": idx}
-                continue
+                if not (0 <= idx < len(items)):
+                    idx = 0
+                    bb._completion_idx = 0
+                return {"action": "confirmed", "index": idx}
 
             # ── Esc 序列处理 ──
             if ch == '\x1b':
@@ -210,6 +217,9 @@ def run_bottom_bar_selection(
     if not os.isatty(fd):
         return {"action": "error", "index": None}
 
+    if not items:
+        return {"action": "error", "index": None}
+
     bb = bottom_bar
     if bb is None:
         from ..chat_ui import get_active_chat_ui  # fallback — 让 ui/tui 调用方传入 bottom_bar
@@ -259,8 +269,10 @@ def run_bottom_bar_selection(
                     elif code == _KEY_ENTER:
                         # ★ Android/Termux 终端可能以 KEY_ENTER(343) 序列发送 Enter
                         idx = bb._completion_idx
-                        if 0 <= idx < len(items):
-                            return {"action": "confirmed", "index": idx}
+                        if not (0 <= idx < len(items)):
+                            idx = 0
+                            bb._completion_idx = 0
+                        return {"action": "confirmed", "index": idx}
                     elif code == _KEY_ESCAPE:
                         return {"action": "cancel", "index": None}
                     # 其他序列键忽略
@@ -269,8 +281,10 @@ def run_bottom_bar_selection(
                 # ── Enter → 确认 ──
                 if key in ('\r', '\n'):
                     idx = bb._completion_idx
-                    if 0 <= idx < len(items):
-                        return {"action": "confirmed", "index": idx}
+                    if not (0 <= idx < len(items)):
+                        idx = 0
+                        bb._completion_idx = 0
+                    return {"action": "confirmed", "index": idx}
 
                 # ── Esc（单独收到）─
                 if key == '\x1b':

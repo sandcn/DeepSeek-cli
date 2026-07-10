@@ -120,11 +120,13 @@ class TestToolSummaryErrorHandling:
         stream = io.StringIO()
         chat_ui = ChatUIConsumer(event_bus=bus)
         chat_ui.start()
-
-        bus.publish(ToolSummaryEvent(
-            successful_tools=(),
-            failed_tools=(("tool_a", None),),
-        ))
+        try:
+            bus.publish(ToolSummaryEvent(
+                successful_tools=(),
+                failed_tools=(("tool_a", None),),
+            ))
+        finally:
+            chat_ui.stop()
         # 不抛异常即通过
 
     def test_error_is_empty_string(self):
@@ -133,11 +135,13 @@ class TestToolSummaryErrorHandling:
         stream = io.StringIO()
         chat_ui = ChatUIConsumer(event_bus=bus)
         chat_ui.start()
-
-        bus.publish(ToolSummaryEvent(
-            successful_tools=(),
-            failed_tools=(("tool_b", ""),),
-        ))
+        try:
+            bus.publish(ToolSummaryEvent(
+                successful_tools=(),
+                failed_tools=(("tool_b", ""),),
+            ))
+        finally:
+            chat_ui.stop()
         # 不抛异常即通过
 
     def test_error_normal_string(self):
@@ -146,11 +150,13 @@ class TestToolSummaryErrorHandling:
         stream = io.StringIO()
         chat_ui = ChatUIConsumer(event_bus=bus)
         chat_ui.start()
-
-        bus.publish(ToolSummaryEvent(
-            successful_tools=(),
-            failed_tools=(("tool_c", "权限不足: 拒绝访问"),),
-        ))
+        try:
+            bus.publish(ToolSummaryEvent(
+                successful_tools=(),
+                failed_tools=(("tool_c", "权限不足: 拒绝访问"),),
+            ))
+        finally:
+            chat_ui.stop()
         # 不抛异常即通过
 
     def test_error_multiline(self):
@@ -159,11 +165,13 @@ class TestToolSummaryErrorHandling:
         stream = io.StringIO()
         chat_ui = ChatUIConsumer(event_bus=bus)
         chat_ui.start()
-
-        bus.publish(ToolSummaryEvent(
-            successful_tools=(),
-            failed_tools=(("tool_d", "第一行错误\n第二行错误\n第三行错误"),),
-        ))
+        try:
+            bus.publish(ToolSummaryEvent(
+                successful_tools=(),
+                failed_tools=(("tool_d", "第一行错误\n第二行错误\n第三行错误"),),
+            ))
+        finally:
+            chat_ui.stop()
         # 不抛异常即通过
 
 
@@ -179,11 +187,13 @@ class TestSingleToolSuccess:
         bus = DisplayEventBus()
         chat_ui = ChatUIConsumer(event_bus=bus)
         chat_ui.start()
-
-        bus.publish(ToolSummaryEvent(
-            successful_tools=("search",),
-            failed_tools=(),
-        ))
+        try:
+            bus.publish(ToolSummaryEvent(
+                successful_tools=("search",),
+                failed_tools=(),
+            ))
+        finally:
+            chat_ui.stop()
         # 不抛异常即通过
 
     def test_multiple_tools_success_output(self):
@@ -191,11 +201,13 @@ class TestSingleToolSuccess:
         bus = DisplayEventBus()
         chat_ui = ChatUIConsumer(event_bus=bus)
         chat_ui.start()
-
-        bus.publish(ToolSummaryEvent(
-            successful_tools=("search", "read", "write"),
-            failed_tools=(),
-        ))
+        try:
+            bus.publish(ToolSummaryEvent(
+                successful_tools=("search", "read", "write"),
+                failed_tools=(),
+            ))
+        finally:
+            chat_ui.stop()
         # 不抛异常即通过
 
     def test_zero_tools_no_output(self):
@@ -203,11 +215,13 @@ class TestSingleToolSuccess:
         bus = DisplayEventBus()
         chat_ui = ChatUIConsumer(event_bus=bus)
         chat_ui.start()
-
-        bus.publish(ToolSummaryEvent(
-            successful_tools=(),
-            failed_tools=(),
-        ))
+        try:
+            bus.publish(ToolSummaryEvent(
+                successful_tools=(),
+                failed_tools=(),
+            ))
+        finally:
+            chat_ui.stop()
         # 不抛异常即通过
 
     def test_tools_with_failures_no_success_output(self):
@@ -215,11 +229,13 @@ class TestSingleToolSuccess:
         bus = DisplayEventBus()
         chat_ui = ChatUIConsumer(event_bus=bus)
         chat_ui.start()
-
-        bus.publish(ToolSummaryEvent(
-            successful_tools=("search",),
-            failed_tools=(("write", "写入失败"),),
-        ))
+        try:
+            bus.publish(ToolSummaryEvent(
+                successful_tools=("search",),
+                failed_tools=(("write", "写入失败"),),
+            ))
+        finally:
+            chat_ui.stop()
         # 不抛异常即通过
 
 
@@ -236,10 +252,13 @@ class TestWriteOnClosedStream:
         stream = io.StringIO()
         consumer = OutputConsumer(event_bus=bus, stream=stream)
         consumer.start()
-        stream.close()
+        try:
+            stream.close()
 
-        # 发布事件触发 _write，不应抛出异常
-        bus.publish(OutputEvent(text="关闭后输出", level="info"))
+            # 发布事件触发 _write，不应抛出异常
+            bus.publish(OutputEvent(text="关闭后输出", level="info"))
+        finally:
+            consumer.stop()
         # 通过测试即表示没有异常
 
     def test_write_on_closed_stream_stop_no_error(self):
@@ -258,12 +277,15 @@ class TestWriteOnClosedStream:
         stream = io.StringIO()
         chat_ui = ChatUIConsumer(event_bus=bus)
         chat_ui.start()
-        stream.close()
+        try:
+            stream.close()
 
-        bus.publish(ToolSummaryEvent(
-            successful_tools=("search",),
-            failed_tools=(("write", "失败"),),
-        ))
+            bus.publish(ToolSummaryEvent(
+                successful_tools=("search",),
+                failed_tools=(("write", "失败"),),
+            ))
+        finally:
+            chat_ui.stop()
         # 通过测试即表示没有异常
 
     def test_normal_write_after_close_no_error(self):
@@ -272,10 +294,13 @@ class TestWriteOnClosedStream:
         stream = io.StringIO()
         consumer = OutputConsumer(event_bus=bus, stream=stream)
         consumer.start()
-        stream.close()
+        try:
+            stream.close()
 
-        # 此操作应被 try-except 安全兜住
-        bus.publish(OutputEvent(text="测试用例", level="info"))
+            # 此操作应被 try-except 安全兜住
+            bus.publish(OutputEvent(text="测试用例", level="info"))
+        finally:
+            consumer.stop()
         # 通过测试即表示没有异常
 
 
@@ -293,10 +318,12 @@ class TestOutputConsumerWithChatUI:
         stream = io.StringIO()
         consumer = OutputConsumer(event_bus=bus, stream=stream)
         consumer.start()
-
-        bus.publish(OutputEvent(text="ChatUI 活跃时的输出", level="info"))
-        output = stream.getvalue()
-        assert "ChatUI 活跃时的输出" not in output
+        try:
+            bus.publish(OutputEvent(text="ChatUI 活跃时的输出", level="info"))
+            output = stream.getvalue()
+            assert "ChatUI 活跃时的输出" not in output
+        finally:
+            consumer.stop()
 
     def test_writes_when_chatui_inactive(self, monkeypatch):
         """ChatUI 不活跃时，非 cmd OutputEvent 正常直写（stream 有输出）"""
@@ -305,10 +332,12 @@ class TestOutputConsumerWithChatUI:
         stream = io.StringIO()
         consumer = OutputConsumer(event_bus=bus, stream=stream)
         consumer.start()
-
-        bus.publish(OutputEvent(text="ChatUI 不活跃时的输出", level="info"))
-        output = stream.getvalue()
-        assert "ChatUI 不活跃时的输出" in output
+        try:
+            bus.publish(OutputEvent(text="ChatUI 不活跃时的输出", level="info"))
+            output = stream.getvalue()
+            assert "ChatUI 不活跃时的输出" in output
+        finally:
+            consumer.stop()
 
     def test_cmd_skipped_when_chatui_active(self, monkeypatch):
         """ChatUI 活跃时，cmd OutputEvent 被 OutputConsumer 跳过（由 ChatUIConsumer 处理）"""
@@ -317,9 +346,11 @@ class TestOutputConsumerWithChatUI:
         stream = io.StringIO()
         consumer = OutputConsumer(event_bus=bus, stream=stream)
         consumer.start()
-
-        bus.publish(OutputEvent(text="cmd输出", level="info", source="cmd"))
-        assert stream.getvalue() == ""
+        try:
+            bus.publish(OutputEvent(text="cmd输出", level="info", source="cmd"))
+            assert stream.getvalue() == ""
+        finally:
+            consumer.stop()
 
     def test_cmd_skipped_when_chatui_inactive(self, monkeypatch):
         """ChatUI 不活跃时，cmd OutputEvent 也被 OutputConsumer 跳过（预存行为，非本次修改引入）"""
@@ -328,9 +359,11 @@ class TestOutputConsumerWithChatUI:
         stream = io.StringIO()
         consumer = OutputConsumer(event_bus=bus, stream=stream)
         consumer.start()
-
-        bus.publish(OutputEvent(text="cmd输出", level="info", source="cmd"))
-        assert stream.getvalue() == ""
+        try:
+            bus.publish(OutputEvent(text="cmd输出", level="info", source="cmd"))
+            assert stream.getvalue() == ""
+        finally:
+            consumer.stop()
 
 # ===============================================================
 # refresh_bottom_bar() flush 验证 + bottom_bar 属性访问
@@ -350,6 +383,7 @@ class TestCursorPositioningFlush:
         assert chat_ui._bottom_bar._last_text == "test_text"
         assert chat_ui._bottom_bar._input_cursor_pos == 9  # len("test_text")
         mock_redraw.assert_called_once()
+        chat_ui.stop()
 
     def test_ensure_cursor_lower_flushes_stdout(self):
         """ensure_cursor_in_lower() 通过 bottom_bar 属性访问，不自动 flush。"""
@@ -364,6 +398,7 @@ class TestCursorPositioningFlush:
             # bottom_bar 直接访问底层方法，不自动 flush
             # flush 由调用方（如 refresh_bottom_bar）负责
             chat_ui._bottom_bar.ensure_cursor_in_lower.assert_called_once()
+        chat_ui.stop()
 
     def test_refresh_bottom_bar_flush_called_after_reposition(self):
         """refresh_bottom_bar 更新状态后请求重绘"""
@@ -375,3 +410,4 @@ class TestCursorPositioningFlush:
             assert chat_ui._bottom_bar._last_text == "test"
             assert chat_ui._bottom_bar._input_cursor_pos == 4  # len("test")
             mock_redraw.assert_called_once()
+        chat_ui.stop()
