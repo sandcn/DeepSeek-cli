@@ -7,7 +7,7 @@ from ...config import MODEL
 from ...api.model_async import call_model_sync
 from ...prompt_builder.project_summary import generate_summary_prompt
 from ..sandbox_manager import get_sandbox_manager
-from ..internal._command_core import register_command
+from ..internal._command_core import register_command, CommandContext
 
 _out = get_default_output_port()
 
@@ -141,3 +141,52 @@ def _cmd_sessions(ctx):
 register_command("/init", _cmd_init, "生成项目摘要文件")
 register_command("/load", _cmd_load, "加载保存的对话")
 register_command("/sessions", _cmd_sessions, "列出所有保存的对话")
+
+
+# ── CommandPlugin 子类 ──────────────────────────────
+
+from .base import CommandPlugin, CommandMeta, get_plugin_registry
+
+
+class InitCommand(CommandPlugin):
+    """初始化新对话"""
+    def __init__(self):
+        self.meta = CommandMeta(name="init", description="生成项目摘要文件")
+
+    def execute(self, ctx: CommandContext) -> bool:
+        return _cmd_init(ctx)
+
+
+class LoadCommand(CommandPlugin):
+    """加载历史对话"""
+    def __init__(self):
+        self.meta = CommandMeta(name="load", description="加载保存的对话")
+
+    def execute(self, ctx: CommandContext) -> bool:
+        return _cmd_load(ctx)
+
+
+class SessionsCommand(CommandPlugin):
+    """列出所有对话"""
+    def __init__(self):
+        self.meta = CommandMeta(name="sessions", description="列出所有保存的对话")
+
+    def execute(self, ctx: CommandContext) -> bool:
+        return _cmd_sessions(ctx)
+
+
+class HelpCommand(CommandPlugin):
+    """显示帮助"""
+    def __init__(self):
+        self.meta = CommandMeta(name="help", description="显示帮助")
+
+    def execute(self, ctx: CommandContext) -> bool:
+        from ..internal._command_core import _cmd_help
+        return _cmd_help(ctx)
+
+
+# ── 自动注册插件 ────────────────────────────────────
+get_plugin_registry().register(InitCommand())
+get_plugin_registry().register(LoadCommand())
+get_plugin_registry().register(SessionsCommand())
+get_plugin_registry().register(HelpCommand())

@@ -443,8 +443,8 @@ async def stream_call_async(
     model = model or default_model
 
     # 通过适配器构建请求参数（含 thinking 参数注入等适配逻辑）
-    from ..model_async import _get_adapter
-    adapter = _get_adapter(model)
+    from .._adapter_manager import get_adapter
+    adapter = get_adapter(model)
     kwargs = adapter.build_request_kwargs(
         messages=messages,
         model=model,

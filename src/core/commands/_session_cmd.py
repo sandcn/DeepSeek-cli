@@ -6,7 +6,7 @@ from ..ports.output import get_default_output_port
 from ..constants import GREEN, YELLOW, DIM, RESET, CYAN
 from ..context_selector import total_chars
 from ..sandbox_manager import get_sandbox_manager
-from ..internal._command_core import register_command, _pop_assistant_tool_messages
+from ..internal._command_core import register_command, CommandContext, _pop_assistant_tool_messages
 
 _out = get_default_output_port()
 
@@ -272,3 +272,89 @@ def _cmd_changes(ctx):
 
 
 register_command("/changes", _cmd_changes, "显示文件沙盒中被改变文件的 diff（可加文件名过滤）")
+
+
+# ── CommandPlugin 子类 ──────────────────────────────
+
+from .base import CommandPlugin, CommandMeta, get_plugin_registry
+
+
+class ClearCommand(CommandPlugin):
+    """清空当前对话"""
+    def __init__(self):
+        self.meta = CommandMeta(name="clear", description="清空对话")
+
+    def execute(self, ctx: CommandContext) -> bool:
+        return _cmd_clear(ctx)
+
+
+class CompressCommand(CommandPlugin):
+    """压缩对话上下文"""
+    def __init__(self):
+        self.meta = CommandMeta(name="compress", description="手动压缩上下文")
+
+    async def async_execute(self, ctx) -> bool:
+        if ctx.context_manager:
+            await ctx.context_manager.compress_async()
+            return True
+        return False
+
+    def execute(self, ctx) -> bool:
+        """同步版本（不会执行异步压缩）"""
+        return _cmd_compress(ctx)
+
+
+class PinCommand(CommandPlugin):
+    """固定/取消固定消息"""
+    def __init__(self):
+        self.meta = CommandMeta(name="pin", description="标记重要消息")
+
+    def execute(self, ctx: CommandContext) -> bool:
+        return _cmd_pin(ctx)
+
+
+class UndoCommand(CommandPlugin):
+    """撤销上一条助手消息"""
+    def __init__(self):
+        self.meta = CommandMeta(name="undo", description="撤销上一轮对话")
+
+    def execute(self, ctx: CommandContext) -> bool:
+        return _cmd_undo(ctx)
+
+
+class RetryCommand(CommandPlugin):
+    """重试上一轮"""
+    def __init__(self):
+        self.meta = CommandMeta(name="retry", description="重新生成上一条回答")
+
+    def execute(self, ctx: CommandContext) -> bool:
+        ctx.state["retry"] = True
+        return True
+
+
+class EditCommand(CommandPlugin):
+    """编辑上一条用户消息"""
+    def __init__(self):
+        self.meta = CommandMeta(name="edit", description="编辑并重新发送上一条输入")
+
+    def execute(self, ctx: CommandContext) -> bool:
+        return _cmd_edit(ctx)
+
+
+class ChangesCommand(CommandPlugin):
+    """显示变更记录"""
+    def __init__(self):
+        self.meta = CommandMeta(name="changes", description="显示文件沙盒中被改变文件的 diff")
+
+    def execute(self, ctx: CommandContext) -> bool:
+        return _cmd_changes(ctx)
+
+
+# ── 自动注册插件 ────────────────────────────────────
+get_plugin_registry().register(ClearCommand())
+get_plugin_registry().register(CompressCommand())
+get_plugin_registry().register(PinCommand())
+get_plugin_registry().register(UndoCommand())
+get_plugin_registry().register(RetryCommand())
+get_plugin_registry().register(EditCommand())
+get_plugin_registry().register(ChangesCommand())

@@ -8,17 +8,15 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import os
 import shutil
-import subprocess
 import sys
-import tempfile
 
 from ._utils import (
     _non_system_messages, _put_and_wait, _merge_prefill,
     _exit_save_and_stop, _save_loop_snapshot,
     _RETRY_SENTINEL,
 )
+from ._special_keys import make_special_key_callback
 from ._session_setup import (
     SessionState, _RoundResult,
     _setup_session, _make_round_callbacks, _register_session_handlers,
@@ -30,7 +28,7 @@ from ._single import _make_event_agent
 
 from ..config import MODEL
 from ..core.session import ChatSession
-from ..core.commands import handle_command, CommandContext
+from ..core.commands import CommandContext
 from ..core.commands.plugins import get_interactive_registry
 from ..core.message_queue import MessageQueue
 from ..ui.colors import CYAN, DIM, RESET, GREEN, YELLOW
@@ -118,6 +116,10 @@ class InteractiveLoop:
 
             _tw = self._get_term_width()
             self._chat_ui.write_line(f"{DIM}{'─' * max(min(_tw - 2, 40), 1)}{RESET}")
+            # ★ 等待 render 线程处理完分隔线
+            self._chat_ui.flush()
+            # ★ 显式将光标定位到输入行（flush 返回时 render 线程可能尚未执行 _position_cursor）
+            self._chat_ui.bottom_bar.ensure_cursor_in_lower()
             prefill = _merge_prefill(state, session)
 
             # ★ 获取输入前清除残留中断信号
@@ -237,11 +239,11 @@ class InteractiveLoop:
             await asyncio.to_thread(self._chat_ui.flush)
 
     async def _handle_command_msg(self, content: str, session, state: SessionState) -> None:
-        """处理 / 命令分发 — 优先走交互命令插件注册表"""
+        """处理 / 命令分发 — 统一走插件路径"""
         reset_interrupt_async()
         cmd_name = content.split()[0].lower()
 
-        # 交互命令插件分发
+        # 插件命令分发（统一路径）
         registry = get_interactive_registry()
         plugin = registry.get(cmd_name)
         if plugin is not None:
@@ -265,31 +267,6 @@ class InteractiveLoop:
                 state.prefill = state_dict.get("prefill", "")
             else:
                 self._chat_ui.write_line(f"  {YELLOW}未知命令: {content}，输入 /help 查看可用命令{RESET}")
-            return
-
-        # 通用命令分发
-        state_dict = {"model": state.model, "retry": False, "prefill": ""}
-
-        # ★ 流式输入闭包：供 handle_command 中的交互式命令使用
-        def _stream_input(default: str = "", show_prompt: bool = True) -> str:
-            return self._chat_ui.wait_for_user_input(self._monitor, prefill=default)
-
-        cmd_handled = await asyncio.to_thread(
-            handle_command,
-            content, session.messages, state_dict,
-            session.agent.build_system_prompt,
-            _stream_input,
-            session.context_manager,
-            session,
-        )
-        if cmd_handled:
-            new_model = state_dict.get("model")
-            if new_model and new_model != session.model:
-                session.model = new_model
-            state.model = state_dict.get("model", state.model)
-            self._chat_ui.bottom_bar.set_model_name(state.model)
-            state.retry = state_dict.get("retry", False)
-            state.prefill = state_dict.get("prefill", "")
         else:
             self._chat_ui.write_line(f"  {YELLOW}未知命令: {content}，输入 /help 查看可用命令{RESET}")
 
@@ -348,89 +325,10 @@ class InteractiveLoop:
         # ── 初始化 EscapeMonitor ──
         self._monitor = EscapeMonitor()
 
-        # ★ 注册特殊按键回调
-        def _edit_in_vim_sync(initial_text: str) -> str | None:
-            """同步版 vim 编辑 — 在 monitor 线程中直接调用 subprocess.call。"""
-            tmpfile: str | None = None
-            try:
-                with tempfile.NamedTemporaryFile(mode='w', suffix='.md', delete=False, encoding='utf-8') as f:
-                    f.write(initial_text)
-                    tmpfile = f.name
-                editor = os.environ.get('EDITOR', 'vim')
-                editor_path = shutil.which(editor)
-                if not editor_path:
-                    _logger.warning("vim 编辑器未找到: %s", editor)
-                    return None
-                ret = subprocess.call([editor_path, tmpfile])
-                if ret != 0:
-                    _logger.warning("vim 退出码: %d", ret)
-                with open(tmpfile, 'r', encoding='utf-8') as f:
-                    result = f.read()
-                return result
-            except FileNotFoundError:
-                _logger.warning("vim 未安装，请先安装 vim")
-                return None
-            except OSError as e:
-                _logger.error("vim 编辑失败: %s", e)
-                return None
-            finally:
-                if tmpfile is not None:
-                    try:
-                        os.unlink(tmpfile)
-                    except OSError:
-                        pass
-
-        def _on_special_key(action: str, text: str) -> str | None:
-            if action == 'vim':
-                if self._chat_ui is not None:
-                    self._chat_ui.suspend()
-                try:
-                    return _edit_in_vim_sync(text)
-                finally:
-                    if self._chat_ui is not None:
-                        self._chat_ui.resume()
-            elif action == 'editmsg':
-                return '/editmsg'
-            elif action == 'switch_model':
-                _models: list[str] = []
-                try:
-                    from ..config import MODELS as _MODELS
-                    _models = _MODELS
-                except Exception:
-                    pass
-                if not _models:
-                    try:
-                        from ..config.defaults import PROVIDERS as _PROVIDERS
-                        _seen: set[str] = set()
-                        for _p in _PROVIDERS.values():
-                            for _m in _p.get("models", []):
-                                if _m not in _seen:
-                                    _seen.add(_m)
-                                    _models.append(_m)
-                    except Exception:
-                        _models = []
-                if not _models:
-                    return None
-                current = state.model
-                if not current:
-                    return None
-                if current not in _models:
-                    next_model = _models[0]
-                else:
-                    try:
-                        idx = _models.index(current)
-                        next_model = _models[(idx + 1) % len(_models)]
-                    except (ValueError, IndexError):
-                        return None
-                session.model = next_model
-                state.model = next_model
-                if self._chat_ui is not None:
-                    self._chat_ui.bottom_bar.set_model_name(next_model)
-                    self._chat_ui.on_notification(f"+ 已切换到 {next_model}")
-                return text
-            return None
-
-        self._monitor.set_special_key_callback(_on_special_key)
+        # ★ 通过独立模块注册特殊按键回调（提取到 _editor/_special_keys）
+        self._monitor.set_special_key_callback(
+            make_special_key_callback(self, session, state, self._chat_ui)
+        )
         self._monitor.start()
 
         # ★ 始终注册回显回调

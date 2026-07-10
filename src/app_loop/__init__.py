@@ -6,6 +6,8 @@
 - _utils.py — 工具函数（_non_system_messages / _put_and_wait / _merge_prefill / etc.）
 - _session_setup.py — 会话设置（SessionState / _RoundResult / _setup_session / etc.）
 - _handlers.py — 命令处理器（_handle_retry_sentinel / _handle_editmsg_cmd / _handle_model_cmd）
+- _editor.py — 编辑器集成（edit_in_vim_sync / vim 编辑功能）
+- _special_keys.py — 特殊按键回调工厂（make_special_key_callback / vim/editmsg/switch_model）
 """
 
 from __future__ import annotations
@@ -22,6 +24,8 @@ from ._session_setup import (
     SessionState, _RoundResult, _setup_session,
     _make_round_callbacks, _register_session_handlers,
 )
+from ._editor import edit_in_vim_sync
+from ._special_keys import make_special_key_callback
 from ._handlers import (
     _handle_retry_sentinel, _handle_editmsg_cmd, _handle_model_cmd,
 )
@@ -35,4 +39,5 @@ __all__ = [
     "SessionState", "_RoundResult", "_setup_session",
     "_make_round_callbacks", "_register_session_handlers",
     "_handle_retry_sentinel", "_handle_editmsg_cmd", "_handle_model_cmd",
+    "edit_in_vim_sync", "make_special_key_callback",
 ]

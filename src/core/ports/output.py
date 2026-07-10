@@ -1,5 +1,6 @@
 """输出端口 — 核心层控制台输出接口"""
 from __future__ import annotations
+import warnings
 from abc import ABC, abstractmethod
 from contextlib import contextmanager
 from typing import Any
@@ -40,17 +41,29 @@ class OutputPort(ABC):
 
 def get_default_output_port() -> OutputPort:
     """获取全局默认输出端口（委派到 adapters/output）"""
+    warnings.warn(
+        "get_default_output_port() 已废弃，请从 src.core.adapters.output 导入",
+        DeprecationWarning, stacklevel=2,
+    )
     from ..adapters.output import get_default_output_port as _impl
     return _impl()
 
 
 def set_default_output_port(port: OutputPort) -> None:
     """设置全局默认输出端口（委派到 adapters/output）"""
+    warnings.warn(
+        "set_default_output_port() 已废弃，请从 src.core.adapters.output 导入",
+        DeprecationWarning, stacklevel=2,
+    )
     from ..adapters.output import set_default_output_port as _impl
     _impl(port)
 
 
 def reset_default_output_port() -> None:
     """重置全局默认输出端口（委派到 adapters/output）"""
+    warnings.warn(
+        "reset_default_output_port() 已废弃，请从 src.core.adapters.output 导入",
+        DeprecationWarning, stacklevel=2,
+    )
     from ..adapters.output import reset_default_output_port as _impl
     _impl()

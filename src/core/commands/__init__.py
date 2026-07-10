@@ -26,6 +26,14 @@ from ._session_cmd import (
     _cmd_edit,
     _cmd_editmsg,
     _cmd_changes,
+    # 插件子类
+    ClearCommand,
+    CompressCommand,
+    PinCommand,
+    UndoCommand,
+    RetryCommand,
+    EditCommand,
+    ChangesCommand,
 )
 
 from ._config_cmd import (
@@ -33,12 +41,21 @@ from ._config_cmd import (
     _cmd_system,
     _cmd_cost,
     _cmd_theme,
+    # 插件子类
+    SystemCommand,
+    CostCommand,
+    ThemeCommand,
 )
 
 from ._data_cmd import (
     _cmd_init,
     _cmd_load,
     _cmd_sessions,
+    # 插件子类
+    InitCommand,
+    LoadCommand,
+    SessionsCommand,
+    HelpCommand,
 )
 
 from .base import (

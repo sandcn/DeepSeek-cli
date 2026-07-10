@@ -78,6 +78,20 @@ for mod_name, mod in _MOCK_MODULES.items():
 
 _SCRIPT_DIR = '/home/DeepSeek-cli/src/api'
 
+# ── 前置加载 _retry.py 和 _adapter_manager.py ───────────────────────
+# model_async.py 现在从 ._retry 和 ._adapter_manager 导入，
+# 需先加载这两个模块到 sys.modules 中供 model_async.py 使用。
+for _dep_name, _dep_file in [
+    ('src.api._retry', '_retry.py'),
+    ('src.api._adapter_manager', '_adapter_manager.py'),
+]:
+    _dep_spec = importlib.util.spec_from_file_location(
+        _dep_name, f'{_SCRIPT_DIR}/{_dep_file}',
+    )
+    _dep_mod = importlib.util.module_from_spec(_dep_spec)
+    sys.modules[_dep_name] = _dep_mod
+    _dep_spec.loader.exec_module(_dep_mod)
+
 # ── 直接加载 model_async.py ────────────────────────────────────────────
 _model_async_spec = importlib.util.spec_from_file_location(
     'src.api.model_async', f'{_SCRIPT_DIR}/model_async.py',
@@ -94,6 +108,8 @@ for mod_name in list(_MOCK_MODULES.keys()):
     else:
         sys.modules.pop(mod_name, None)
 sys.modules.pop('src.api.model_async', None)
+sys.modules.pop('src.api._retry', None)
+sys.modules.pop('src.api._adapter_manager', None)
 # ★ 确保 src.api.json_repair 从正确路径加载：如果缓存中的模块来自
 #   旧路径（如 editable install 的 /home/simple/chat/src），强制清除
 #   以让 Python 从当前 CWD 重新导入。

@@ -180,3 +180,41 @@ register_command("/model", _cmd_model, "切换模型")
 register_command("/system", _cmd_system, "修改系统提示词")
 register_command("/cost", _cmd_cost, "查看 token 用量和费用")
 register_command("/theme", _cmd_theme, "切换配色主题: /theme <dark|light|high-contrast>")
+
+
+# ── CommandPlugin 子类 ──────────────────────────────
+
+from .base import CommandPlugin, CommandMeta, get_plugin_registry
+
+
+class SystemCommand(CommandPlugin):
+    """设置系统提示"""
+    def __init__(self):
+        self.meta = CommandMeta(name="system", description="修改系统提示词")
+
+    def execute(self, ctx: CommandContext) -> bool:
+        return _cmd_system(ctx)
+
+
+class CostCommand(CommandPlugin):
+    """显示费用统计"""
+    def __init__(self):
+        self.meta = CommandMeta(name="cost", description="查看 token 用量和费用")
+
+    def execute(self, ctx: CommandContext) -> bool:
+        return _cmd_cost(ctx)
+
+
+class ThemeCommand(CommandPlugin):
+    """切换主题"""
+    def __init__(self):
+        self.meta = CommandMeta(name="theme", description="切换配色主题")
+
+    def execute(self, ctx: CommandContext) -> bool:
+        return _cmd_theme(ctx)
+
+
+# ── 自动注册插件 ────────────────────────────────────
+get_plugin_registry().register(SystemCommand())
+get_plugin_registry().register(CostCommand())
+get_plugin_registry().register(ThemeCommand())
