@@ -31,6 +31,8 @@ def _rebuild_message_indices(messages: list[dict]) -> list[dict]:
         m_copy = dict(m)
         if m_copy.get("role") == "user":
             m_copy["msg_index"] = i
+        elif m_copy.get("role") == "tool":
+            m_copy["msg_index"] = i
         elif m_copy.get("role") == "assistant":
             # 始终设置两个索引，解决前端 msg.content_msg_index || msg.reasoning_msg_index
             # 在 content=None 或 reasoning_content="" 时 idx 变为 undefined 的问题

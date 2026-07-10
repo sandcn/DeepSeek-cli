@@ -89,7 +89,14 @@ class CpFunc(FileSystemToolBase):
         self.recursive = recursive
 
     def _build_dest_path(self, source_root: str, file_path: str) -> str:
-        rel_path = Path(file_path).relative_to(Path(source_root))
+        try:
+            rel_path = Path(file_path).relative_to(Path(source_root))
+        except ValueError:
+            # source_root 不是 file_path 的前缀（如跨驱动器、符号链接等）
+            try:
+                rel_path = Path(os.path.relpath(file_path, source_root))
+            except ValueError:
+                rel_path = Path(os.path.basename(file_path))
         return str(Path(self.destination) / rel_path)
 
     def _get_operation_desc(self) -> str:

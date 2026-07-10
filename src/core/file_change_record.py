@@ -46,7 +46,7 @@ class FileChangeRecord:
         self.tool_name = tool_name
         self.record_type = record_type  # "file" | "directory"
 
-        # ─── 锁层次（三锁简化→两锁设计）──────────────────────────
+        # ─── 锁层次（两锁设计）──────────────────────────────────────
         # 本实例使用两个锁，锁获取顺序固定，禁止调换：
         #
         #   同步路径（apply/revert）:  _cross_lock               （唯一锁）
@@ -60,16 +60,13 @@ class FileChangeRecord:
         # 2. _async_lock (asyncio.Lock) — 协程间互斥锁
         #    - 只用于异步方法，轻量级保护协程间串行
         #    - 始终在 _cross_lock 之前获取（异步路径固定锁顺序）
+        #    - 在 __init__ 中直接创建，消除懒初始化的 check-then-act 竞态条件
         #
         # 死锁预防：同步路径只有单个锁（无嵌套），异步路径固定 from outside in
         # 的顺序（inner _async_lock → outer _cross_lock），不会出现循环等待。
         # ──────────────────────────────────────────────────────────
-        self._cross_lock = threading.Lock()  # 跨执行上下文互斥锁（替代原 _file_lock + _cross_lock 角色）
-        # _async_lock 懒初始化：不在 __init__ 中创建 asyncio.Lock()，
-        # 避免在 asyncio.to_thread 的工人线程（asyncio_1）中调用
-        # asyncio.get_event_loop() 时抛出 RuntimeError（Python 3.9）。
-        # 推迟到 _do_apply_async 中创建，该方法是 async 的，总在事件循环线程中运行。
-        self._async_lock: Optional[asyncio.Lock] = None  # 协程间互斥锁（懒初始化）
+        self._cross_lock = threading.Lock()  # 跨执行上下文互斥锁
+        self._async_lock = asyncio.Lock()    # 协程间互斥锁（直接初始化，无竞态）
 
     def __repr__(self):
         return (f"FileChangeRecord(file_path={self.file_path!r}, "
@@ -127,10 +124,6 @@ class FileChangeRecord:
 
     async def _do_apply_async(self, content: Optional[str]) -> bool:
         """异步核心写入逻辑：将文件设置为 content 指定的状态。"""
-        # 懒初始化：_async_lock 在事件循环线程中创建（__init__ 中设为 None），
-        # 避免在线程池工人线程中调用 asyncio.get_event_loop() 失败（Python 3.9）
-        if self._async_lock is None:
-            self._async_lock = asyncio.Lock()
         async with self._async_lock:
             async with self._cross_lock_async():
                 try:

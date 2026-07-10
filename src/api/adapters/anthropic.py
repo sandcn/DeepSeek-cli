@@ -18,6 +18,7 @@ class AnthropicAdapter(BaseLLMAdapter):
     """Anthropic API 适配器"""
 
     provider_name = "anthropic"
+    _protocol: str = "anthropic"
 
     @staticmethod
     def _safe_json_loads(s: str | dict) -> dict:
@@ -51,21 +52,16 @@ class AnthropicAdapter(BaseLLMAdapter):
         每次新请求开始前清理流式累积状态，防止缓存适配器实例
         跨请求复用导致的 _stream_tool_acc 残留污染。
 
-        注意：当前 chat_completions_async 硬编码为 OpenAI 格式
-        （Authorization: Bearer、choices[0].delta 等），Anthropic
-        适配器的 build_request_kwargs 返回的格式与客户端不兼容。
-        真正的 Anthropic 支持需要扩展 chat_completions_async 为
-        多协议客户端或创建独立请求路径。
+        通过 _protocol 标记路由到 chat_completions_async_anthropic，
+        使用 x-api-key 头和 /v1/messages 端点。
+
+        Args:
+            stream_options: 被忽略。Anthropic API 通过 message_delta
+                事件自动返回 usage，无需通过 stream_options 显式请求。
         """
         # ★ 每次新请求开始时创建新的流式累积状态实例，而非 clear() 复用，
         #    彻底避免缓存适配器实例跨请求复用导致的残留污染。
         self._stream_tool_acc = {}
-
-        _logger.warning(
-            "Anthropic 适配器尚未完全集成（chat_completions_async "
-            "硬编码为 OpenAI 格式），API 调用将以 OpenAI 兼容格式发送，"
-            "可能导致请求失败。"
-        )
 
         system, anthro_messages = self._convert_messages(messages)
         kwargs: dict = {

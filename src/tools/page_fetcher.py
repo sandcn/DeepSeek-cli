@@ -8,6 +8,8 @@ page_fetcher — 网页内容获取与正文提取模块
 from __future__ import annotations
 
 import copy
+import ipaddress
+import logging
 import re
 from datetime import datetime
 from typing import Optional
@@ -18,6 +20,8 @@ from bs4 import BeautifulSoup, Tag
 
 # 编码检测（复用 tools.encoding 模块，含二次质量校验）
 from .encoding import detect_encoding
+
+_logger = logging.getLogger(__name__)
 
 # ── 常量 ──────────────────────────────────────────────
 
@@ -40,7 +44,7 @@ PRIVATE_PREFIXES = (
     "172.24.", "172.25.", "172.26.", "172.27.",
     "172.28.", "172.29.", "172.30.", "172.31.",
     "192.168.", "127.", "0.", "169.254.",
-    "::1", "fc00:", "fe80:", "localhost",
+    "::1", "fc00:", "localhost",
 )
 
 # 内容提取时排除的标签（导航/脚本/样式等非内容元素）
@@ -90,6 +94,15 @@ def _is_private_url(url: str) -> bool:
     # 检查 localhost 别名
     if hostname in ("localhost", "127.0.0.1", "0.0.0.0", "[::1]"):
         return True
+
+    # 检查 IPv6 link-local 地址 (fe80::/10: 首 hextet 范围 0xFE80-0xFEBF)
+    try:
+        ipv6 = ipaddress.IPv6Address(hostname)
+        first_hextet = ipv6.packed[0] * 256 + ipv6.packed[1]
+        if 0xFE80 <= first_hextet <= 0xFEBF:
+            return True
+    except ValueError:
+        _logger.debug("IPv6 地址解析失败（非 IPv6 主机名，安全跳过）: %s", hostname)
 
     # 检查是否包含字母（区分 IP 地址和主机名）
     # 私网前缀匹配仅对纯 IP 地址生效，避免误拦截如 127.example.com 等合法域名

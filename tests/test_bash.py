@@ -743,3 +743,104 @@ class TestTruncateOutput:
         assert result_lines[999] == ""          # 第 1000 行是空行
         assert "输出已截断" in result_lines[1000]  # 第 1001 行是截断标记
         assert len(result_lines) == 1001
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# 16. _has_dangerous_command — 危险命令拦截
+# ═══════════════════════════════════════════════════════════════════════════
+
+from src.tools.bash import _has_dangerous_command
+
+
+class TestDangerousCommands:
+    """_has_dangerous_command 危险命令运行时拦截测试
+
+    覆盖以下新增模式（步骤 1 P0 安全修复）：
+      - rm -rf /* 通配符根路径
+      - su/doas/pkexec 提权
+      - chmod 777 权限开放
+    """
+
+    def test_rm_rf_slash(self):
+        """rm -rf / 被拦截"""
+        assert _has_dangerous_command("rm -rf /") is not None
+
+    def test_rm_rf_slash_star(self):
+        """rm -rf /* 被拦截"""
+        result = _has_dangerous_command("rm -rf /*")
+        assert result is not None
+        assert "通配符" in result or "根目录" in result
+
+    def test_rm_recursive_slash_star(self):
+        """rm --recursive /* 被拦截"""
+        assert _has_dangerous_command("rm --recursive /*") is not None
+
+    def test_rm_rf_home_star(self):
+        """rm -rf /home/* 不匹配（不是根目录通配符，但 rm -rf / 模式匹配 /home）"""
+        # rm -rf /home/x 中的 / 会被 \brm\s+(-rf|--recursive)\s+/ 匹配
+        result = _has_dangerous_command("rm -rf /home/user")
+        assert result is not None  # 包含 / 的路径被拦截
+
+    def test_su_command_blocked(self):
+        """su 提权命令被拦截"""
+        assert _has_dangerous_command("su root") is not None
+
+    def test_su_standalone_blocked(self):
+        """单独 su 命令被拦截"""
+        assert _has_dangerous_command("su") is not None
+
+    def test_doas_blocked(self):
+        """doas 提权命令被拦截"""
+        assert _has_dangerous_command("doas apt install vim") is not None
+
+    def test_pkexec_blocked(self):
+        """pkexec 提权命令被拦截"""
+        assert _has_dangerous_command("pkexec nano /etc/hosts") is not None
+
+    def test_chmod_777_blocked(self):
+        """chmod 777 权限开放被拦截"""
+        assert _has_dangerous_command("chmod 777 /tmp/script.sh") is not None
+
+    def test_chmod_777_directory_blocked(self):
+        """chmod -R 777 目录被拦截"""
+        assert _has_dangerous_command("chmod -R 777 /var/www") is not None
+
+    def test_chmod_644_allowed(self):
+        """chmod 644 不被拦截（非 777）"""
+        assert _has_dangerous_command("chmod 644 file.txt") is None
+
+    def test_sudo_blocked(self):
+        """sudo 被拦截"""
+        assert _has_dangerous_command("sudo rm /tmp/test") is not None
+
+    def test_mkfs_blocked(self):
+        """mkfs 被拦截"""
+        assert _has_dangerous_command("mkfs.ext4 /dev/sda1") is not None
+
+    def test_dd_blocked(self):
+        """dd 被拦截"""
+        assert _has_dangerous_command("dd if=/dev/zero of=/dev/sda") is not None
+
+    def test_chown_blocked(self):
+        """chown 被拦截"""
+        assert _has_dangerous_command("chown root:root /etc/passwd") is not None
+
+    def test_normal_command_allowed(self):
+        """正常命令不被拦截"""
+        assert _has_dangerous_command("echo hello") is None
+        assert _has_dangerous_command("ls -la") is None
+        assert _has_dangerous_command("rm file.txt") is None  # 非递归删除单个文件
+        assert _has_dangerous_command("git status") is None
+
+    def test_sudo_not_false_positive_in_words(self):
+        """含 'sudo' 字符串的正常命令不应被误拦截
+
+        例如 'pseudo' 不应被拦截，因为 \\bsudo\\b 使用单词边界。
+        """
+        assert _has_dangerous_command("echo pseudo") is None
+        assert _has_dangerous_command("echo sudon't") is None
+
+    def test_chmod_not_false_positive_without_777(self):
+        """不含 777 的 chmod 命令不被拦截"""
+        assert _has_dangerous_command("chmod +x script.sh") is None
+        assert _has_dangerous_command("chmod 755 file.txt") is None

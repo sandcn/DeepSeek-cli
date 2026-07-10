@@ -235,6 +235,24 @@ class TestRmFuncExecuteDirectory:
         assert "0个文件" in result
         assert not d.exists()
 
+    @patch("src.tools.rm.async_record_sandbox", new_callable=AsyncMock)
+    async def test_empty_dir_without_recursive(self, mock_record, tmp_path):
+        """空目录 recursive=False 直接删除（步骤 10 P2 修复）
+
+        修复背景: 原先 recursive=False 对目录统一返回"目录非空"错误，
+        但未检查目录是否实际为空。修复后空目录应可直接删除。
+        """
+        d = tmp_path / "empty_dir"
+        d.mkdir()
+
+        rm = RmFunc(path=str(d), recursive=False)
+        result = await rm.execute()
+
+        assert result.startswith("删除成功")
+        assert not d.exists()
+        # 沙盒记录了目录本身
+        mock_record.assert_awaited_once()
+
     async def test_dir_path_not_exists(self, tmp_path):
         """目录路径不存在返回提示"""
         d = tmp_path / "nonexistent_dir"

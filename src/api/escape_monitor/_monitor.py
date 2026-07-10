@@ -582,7 +582,6 @@ class EscapeMonitor:
             self._handle_special_key('switch_model')
         elif ch == '\x12':          # Ctrl+R → 切换模型（备用，Cygwin 终端会拦截 Ctrl+N）
             self._handle_special_key('switch_model')
-            self._handle_special_key('switch_model')
         elif ch == '\x09':          # Tab → 补全
             self._handle_tab()
         elif ch in ('\r', '\n'):  # Enter → 提交

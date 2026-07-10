@@ -97,6 +97,14 @@ def _matches_any(text: str, patterns: tuple[str, ...]) -> bool:
     return False
 
 
+# ── 预分离 EXCLUDED_DIRS 通配符模式 ─────────────────
+
+# 含通配符字符（* ? [ ]）的排除模式需要 fnmatch 匹配
+_EXCLUDED_DIR_PATTERNS: tuple[str, ...] = tuple(
+    d for d in EXCLUDED_DIRS if any(c in d for c in "*?[]")
+)
+
+
 # ── 工具类 ────────────────────────────────────────────
 
 
@@ -328,26 +336,31 @@ class SearchFunc(Func):
     # ═══════════════════════════════════════════════════
 
     async def _search_with_grep(self) -> str:
-        """使用 grep 搜索（rg 不可用时的回退方案）"""
-        flags = "-rnaHE"
+        """使用 grep 搜索（rg 不可用时的回退方案）
 
-        exclude_args = " ".join(f'--exclude-dir="{d}"' for d in GREP_EXCLUDE_DIRS)
+        使用 create_subprocess_exec + 参数列表替代 create_subprocess_shell，
+        消除 shell 解析层，从根本上防止命令注入。
+        """
+        cmd = ["grep", "-r", "-n", "-a", "-H", "-E"]
+
+        for d in GREP_EXCLUDE_DIRS:
+            cmd.extend(["--exclude-dir", d])
+
         if GREP_EXCLUDE_FILES:
-            exclude_args += " " + " ".join(f'--exclude="{d}"' for d in GREP_EXCLUDE_FILES)
+            for d in GREP_EXCLUDE_FILES:
+                cmd.extend(["--exclude", d])
 
-        include_args = ""
         if self.include:
-            include_args = " " + " ".join(
-                f'--include="{pat.strip()}"' for pat in self.include.split() if pat.strip()
-            )
+            for pat in self.include.split():
+                pat = pat.strip()
+                if pat:
+                    cmd.extend(["--include", pat])
 
-        shell_cmd = (
-            f'grep {flags} {exclude_args}{include_args}'
-            f' {shlex.quote(self.query)} {shlex.quote(self.path)}'
-        )
+        cmd.append(self.query)
+        cmd.append(self.path)
 
-        proc = await asyncio.create_subprocess_shell(
-            shell_cmd,
+        proc = await asyncio.create_subprocess_exec(
+            *cmd,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
@@ -369,8 +382,19 @@ class SearchFunc(Func):
     # ═══════════════════════════════════════════════════
 
     def _should_exclude_dir(self, dirname: str) -> bool:
-        """判断目录名是否应被排除"""
-        return dirname in EXCLUDED_DIRS
+        """判断目录名是否应被排除
+
+        分两阶段匹配：
+        1. set 精确查找（不含通配符的模式，O(1) 性能）
+        2. fnmatch 模式匹配（含通配符的模式，如 *.egg-info）
+        """
+        if dirname in EXCLUDED_DIRS:
+            return True
+        # fnmatch 分支：对含通配符的排除模式做模式匹配
+        for pat in _EXCLUDED_DIR_PATTERNS:
+            if fnmatch.fnmatch(dirname, pat):
+                return True
+        return False
 
     def _should_exclude_by_pattern(self, filename: str) -> bool:
         """判断文件名是否应被排除（如 *.egg-info）"""

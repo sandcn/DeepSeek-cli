@@ -20,10 +20,19 @@ def _ensure_config_dir():
 
 
 def _safe_merge(defaults: dict, overrides: dict) -> dict:
-    """安全合并，只合并 defaults 中已有的键，忽略未知键。"""
+    """安全合并，保留 defaults 中已有的键并合并 overrides 值。
+
+    同时保留 overrides 中 defaults 不存在的顶层键（如 "performance"），
+    信任 _validate_rc 做校验和回退。
+    """
     result = dict(defaults)
     for key in result:
         if key in overrides:
+            result[key] = overrides[key]
+    # 保留 overrides 中 defaults 不存在的顶层键（如 "performance"），
+    # 由 _validate_rc 做校验和回退
+    for key in overrides:
+        if key not in result:
             result[key] = overrides[key]
     return result
 
@@ -60,6 +69,9 @@ def update_config(key: str, value) -> None:
         )
     except OSError as e:
         locked_print(f"警告: 无法写入配置文件 {RC_FILE}: {e}", file=sys.stderr)
+    else:
+        from . import _clear_value_cache
+        _clear_value_cache()
 
 
 def get_base_url(provider=None):

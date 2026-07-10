@@ -4,7 +4,7 @@ import os
 import threading
 from typing import Any
 
-from .defaults import CONFIG_DIR, LOG_FILE, RC_FILE, INPUT_HISTORY_FILE, PROVIDERS, DEFAULTS
+from .defaults import CONFIG_DIR, LOG_FILE, RC_FILE, INPUT_HISTORY_FILE, PROVIDERS, DEFAULTS, CONFIG_KEYS
 
 from .loader import (
     _ensure_config_dir, _load_rc, get_rc, update_config,
@@ -39,31 +39,27 @@ _lazy_map = {
 _value_cache: dict[str, Any] = {}
 _value_cache_lock = threading.Lock()
 
+
+def _clear_value_cache():
+    """清除 _value_cache 中所有缓存条目（线程安全）。
+
+    在 update_config() 写入 RC 文件成功后调用，
+    确保后续通过 __getattr__ 读取配置属性时获取最新值。
+    """
+    with _value_cache_lock:
+        _value_cache.clear()
+
+
 # ---- 声明式 RC 键映射：键名 → (嵌套路径, 默认值) ----
-# 路径为空元组表示直接返回 rc 字典本身。
+# 从 CONFIG_KEYS 元数据自动派生，新增配置键无需手动维护此映射。
+# "config" 为特殊条目：路径为空元组表示直接返回 rc 字典本身。
 # 带特殊逻辑的键（如 MODEL 检查环境变量）在 _resolve_rc_key 内处理。
 _RC_KEY_MAP: dict[str, tuple[tuple[str, ...], Any]] = {
-    "config":                            ((),                            None),
-    "MODELS":                            (("models",),                   []),
-    "MODEL":                             (("model",),                    "deepseek-v4-flash"),
-    "MAX_CONTEXT_CHARS":                 (("max_context_chars",),        None),
-    "MAX_OUTPUT_CHARS":                  (("max_output_chars",),         None),
-    "MAX_RETRIES":                       (("max_retries",),              None),
-    "RETRY_BASE_SEC":                    (("retry_base_sec",),           None),
-    "MAX_SESSION_MESSAGES":              (("max_session_messages",),     None),
-    "KEEP_RECENT_MESSAGES":              (("keep_recent_messages",),     None),
-    "MAX_CONTEXT_TOKENS":                (("max_context_tokens",),       DEFAULTS["max_context_tokens"]),
-    "SUMMARY_TOKEN_BUDGET":              (("summary_token_budget",),     DEFAULTS["summary_token_budget"]),
-    "AUTO_FORCE_COMPRESS_THRESHOLD":     (("auto_force_compress_threshold",), DEFAULTS["auto_force_compress_threshold"]),
-    "TOKEN_PRICES":                      (("token_prices",),             {}),
-    "HTTP_CONNECT_TIMEOUT":              (("performance", "http_client", "connect_timeout"),           30),
-    "HTTP_READ_TIMEOUT":                 (("performance", "http_client", "read_timeout"),             120),
-    "HTTP_WRITE_TIMEOUT":                (("performance", "http_client", "write_timeout"),            120),
-    "HTTP_MAX_CONNECTIONS":              (("performance", "http_client", "max_connections"),          100),
-    "HTTP_MAX_CONNECTIONS_PER_HOST":     (("performance", "http_client", "max_connections_per_host"),  20),
-    "HTTP_KEEP_ALIVE_TIMEOUT":           (("performance", "http_client", "keep_alive_timeout"),        15),
-    "HTTP_ENABLE_POOL":                  (("performance", "http_client", "enable_pool"),              True),
-    "HTTP_ENABLE_HTTP2":                 (("performance", "http_client", "enable_http2"),             True),
+    "config": ((), None),
+    **{
+        name: (entry["rc_path"], entry["default"])
+        for name, entry in CONFIG_KEYS.items()
+    },
 }
 
 

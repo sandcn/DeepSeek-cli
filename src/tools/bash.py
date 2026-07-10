@@ -22,17 +22,29 @@ except ImportError:
 # ★ P0 安全防护：运行时检查命令内容，防止 LLM 忽略 schema 指令
 # 执行系统破坏操作。schema 侧和运行时侧双保险。
 _DANGEROUS_PATTERNS: list[tuple[str, str]] = [
+    (r'\brm\s+(-rf|--recursive)\s+/\*', '递归删除根目录（通配符 /*）'),
     (r'\brm\s+(-rf|--recursive)\s+/', '递归删除根目录 /'),
     (r'\bmkfs\.', '格式化文件系统'),
     (r'\bdd\s+if=', '磁盘直接写入（dd）'),
     (r'\bsudo\b', 'sudo 提权'),
+    (r'\bsu\b', 'su 提权'),
+    (r'\bdoas\b', 'doas 提权'),
+    (r'\bpkexec\b', 'pkexec 提权'),
     (r'\bchown\b', '修改文件所有者'),
+    (r'\bchmod\s+.*777\b', 'chmod 777 权限开放'),
 ]
 """危险命令模式列表：每个条目为 (正则, 描述)。匹配时拒绝执行。"""
 
 
 def _has_dangerous_command(command: str) -> str | None:
-    """检查命令是否包含危险模式，返回描述或 None。"""
+    """检查命令是否包含危险模式，返回描述或 None。
+
+    覆盖的危险模式：
+      - rm -rf / 及其通配符变体 rm -rf /*
+      - 文件系统破坏：mkfs、dd
+      - 权限提升：sudo、su、doas、pkexec
+      - 权限开放：chmod 777、chown
+    """
     for pattern, desc in _DANGEROUS_PATTERNS:
         if _re.search(pattern, command):
             return desc

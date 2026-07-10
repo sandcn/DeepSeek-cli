@@ -153,3 +153,137 @@ async def test_to_tool_schema_no_mode():
     assert "query" in props
     assert "path" in props
     assert "include" in props
+
+
+# ═══════════════════════════════════════════════════════════════
+# grep 引擎参数拆分测试（步骤 8 P2 修复）
+# ═══════════════════════════════════════════════════════════════
+
+@pytest.mark.asyncio
+async def test_grep_exclude_dir_params(tmp_path):
+    """grep 引擎使用 --exclude-dir 参数拆分（不再使用 shell 拼接）"""
+    sub = tmp_path / "proj"
+    sub.mkdir()
+    (sub / "main.py").write_text("def foo():\n    pass\n")
+    excluded = sub / "node_modules"
+    excluded.mkdir()
+    (excluded / "lib.py").write_text("def foo():\n    pass\n")
+
+    sf = SearchFunc(query="def foo", path=str(sub))
+    # 手动设置引擎为 grep
+    sf._has_rg = False
+    sf._has_grep = True
+    result = await sf.execute()
+
+    assert "共找到" in result
+    assert "main.py" in result
+
+
+@pytest.mark.asyncio
+async def test_grep_include_params(tmp_path):
+    """grep 引擎 --include 参数正确拆分
+
+    注意：Android (Termux) 的 grep 可能不支持 --include 参数。
+    若 grep 不可用，测试跳过。
+    """
+    import asyncio as _asyncio
+
+    sub = tmp_path / "proj"
+    sub.mkdir()
+    (sub / "a.py").write_text("hello = 'world'\n")
+    (sub / "b.txt").write_text("hello = 'world'\n")
+
+    sf = SearchFunc(query="hello", path=str(sub), include="*.py")
+    sf._has_rg = False
+    sf._has_grep = True
+    result = await sf.execute()
+
+    # 确认搜索成功执行（即使 grep 不支持 --include，结果也应有内容）
+    assert "共找到" in result
+    # a.py 应出现在结果中
+    assert "a.py" in result
+
+
+# ═══════════════════════════════════════════════════════════════
+# 纯 Python 搜索排除模式测试（步骤 13 P2 修复）
+# ═══════════════════════════════════════════════════════════════
+
+class TestPythonSearchExcludeDirs:
+    """纯 Python 搜索的目录排除逻辑测试"""
+
+    @pytest.mark.asyncio
+    async def test_wildcard_pattern_excluded(self, tmp_path):
+        """* 通配符模式（如 *.egg-info）通过 fnmatch 正确排除目录"""
+        proj = tmp_path / "proj"
+        proj.mkdir()
+        (proj / "main.py").write_text("test\n")
+
+        egg = proj / "my_package.egg-info"
+        egg.mkdir()
+        (egg / "SOURCES.txt").write_text("main.py\ntest\n")
+
+        sf = SearchFunc(query="test", path=str(proj))
+        sf._has_rg = False
+        sf._has_grep = False
+        result = await sf.execute()
+
+        # main.py 应被搜索到
+        assert "main.py" in result
+        # *.egg-info 目录下的文件不应被搜索
+        assert "SOURCES.txt" not in result
+
+    @pytest.mark.asyncio
+    async def test_standard_excluded_dir(self, tmp_path):
+        """标准排除目录（如 __pycache__）通过 set 查找排除"""
+        proj = tmp_path / "proj"
+        proj.mkdir()
+        (proj / "main.py").write_text("hello world\n")
+
+        cache = proj / "__pycache__"
+        cache.mkdir()
+        (cache / "cached.pyc").write_text("hello world\n")
+
+        sf = SearchFunc(query="hello world", path=str(proj))
+        sf._has_rg = False
+        sf._has_grep = False
+        result = await sf.execute()
+
+        assert "main.py" in result
+        assert "cached.pyc" not in result
+
+    @pytest.mark.asyncio
+    async def test_nested_excluded_dir(self, tmp_path):
+        """嵌套的排除目录也被正确排除"""
+        proj = tmp_path / "proj"
+        proj.mkdir()
+        nested = proj / "src" / "__pycache__"
+        nested.mkdir(parents=True)
+        (nested / "module.pyc").write_text("target\n")
+        (proj / "src" / "module.py").write_text("target\n")
+
+        sf = SearchFunc(query="target", path=str(proj))
+        sf._has_rg = False
+        sf._has_grep = False
+        result = await sf.execute()
+
+        assert "module.py" in result
+        assert "module.pyc" not in result
+
+    def test_should_exclude_dir_wildcard(self):
+        """_should_exclude_dir 对通配符模式返回 True"""
+        sf = SearchFunc(query="test", path=".")
+
+        # *.egg-info 应被 fnmatch 匹配
+        assert sf._should_exclude_dir("my_package.egg-info") is True
+        # 不含通配符的模式仍通过 set 查找
+        assert sf._should_exclude_dir("__pycache__") is True
+        # 普通目录不被排除
+        assert sf._should_exclude_dir("src") is False
+
+    def test_should_exclude_dir_set_lookup(self):
+        """_should_exclude_dir 对标准目录名通过 set 查找排除"""
+        sf = SearchFunc(query="test", path=".")
+        assert sf._should_exclude_dir("node_modules") is True
+        assert sf._should_exclude_dir(".git") is True
+        assert sf._should_exclude_dir("venv") is True
+        assert sf._should_exclude_dir("dist") is True

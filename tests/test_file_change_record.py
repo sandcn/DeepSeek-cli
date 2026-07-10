@@ -360,65 +360,69 @@ class TestInit:
 
 
 # ═══════════════════════════════════════════════════════════════
-# 回归测试: asyncio.Lock 懒初始化
+# 回归测试: asyncio.Lock 直接初始化
 # ═══════════════════════════════════════════════════════════════
 
 class TestAsyncLockLazyInit:
-    """回归测试：_async_lock 不在 __init__ 中创建（Python 3.9 兼容）
+    """回归测试：_async_lock 在 __init__ 中直接创建
 
-    修复背景: FileChangeRecord.__init__ 可能在 asyncio.to_thread 的工人线程
-    （asyncio_1）中被调用（通过 async_record_file_change_from_context 路径），
-    而 Python 3.9 中 asyncio.Lock() 构造时会调用 asyncio.get_event_loop()，
-    在无事件循环的子线程中抛出 RuntimeError。
+    修复背景: 原懒初始化（check-then-act）存在竞态条件——两个并发协程可能同时
+    通过 is None 检查，各自创建 asyncio.Lock()，导致一个锁被丢弃、同步失效。
 
-    修复方案: 将 _async_lock 设置为 None（懒初始化），
-    在 _do_apply_async 中首次使用时创建 asyncio.Lock()。
+    修复方案: 在 __init__ 中直接创建 asyncio.Lock()，消除竞态条件。
+    注意: Python 3.10+ 中 asyncio.Lock() 构造不再需要运行中的事件循环，
+    因此即使在 asyncio.to_thread 工人线程中构造也是安全的。
     """
 
     def test_async_lock_is_none_after_init(self):
-        """__init__ 后 _async_lock 为 None（不在构造时创建）"""
+        """__init__ 后 _async_lock 已创建（消除懒初始化竞态）"""
         record = FileChangeRecord("/tmp/regression_test.txt", None, "content", 0)
-        assert record._async_lock is None, (
-            f"预期 _async_lock 为 None，实际为 {record._async_lock!r}"
+        assert record._async_lock is not None, (
+            f"预期 _async_lock 不为 None，实际为 {record._async_lock!r}"
         )
-
-    @pytest.mark.asyncio
-    async def test_async_lock_created_in_apply_async(self, tmp_path):
-        """apply_async 中自动创建 asyncio.Lock"""
-        f = tmp_path / "lazy_async_lock.txt"
-        record = FileChangeRecord(str(f), None, "懒初始化锁", 0)
-        assert record._async_lock is None  # 构造时未创建
-
-        result = await record.apply_async()
-        assert result is True
-
-        # 调用 apply_async 后 _async_lock 应为 asyncio.Lock 对象
-        assert record._async_lock is not None, "apply_async 后应创建 _async_lock"
         assert isinstance(record._async_lock, asyncio.Lock), (
             f"预期 asyncio.Lock，实际为 {type(record._async_lock)}"
         )
 
     @pytest.mark.asyncio
+    async def test_async_lock_created_in_apply_async(self, tmp_path):
+        """apply_async 中使用的锁在 __init__ 中已创建"""
+        f = tmp_path / "lazy_async_lock.txt"
+        record = FileChangeRecord(str(f), None, "懒初始化锁", 0)
+        assert record._async_lock is not None  # 构造时已创建
+        assert isinstance(record._async_lock, asyncio.Lock)
+
+        result = await record.apply_async()
+        assert result is True
+
+        # _async_lock 应保持不变
+        assert record._async_lock is not None
+        assert isinstance(record._async_lock, asyncio.Lock)
+
+    @pytest.mark.asyncio
     async def test_async_lock_created_in_revert_async(self, tmp_path):
-        """revert_async 中自动创建 asyncio.Lock"""
+        """revert_async 中使用的锁在 __init__ 中已创建"""
         f = tmp_path / "lazy_async_revert.txt"
         f.write_text("原内容", encoding="utf-8")
         record = FileChangeRecord(str(f), "原内容", "新内容", 0)
-        assert record._async_lock is None  # 构造时未创建
+        assert record._async_lock is not None  # 构造时已创建
+        assert isinstance(record._async_lock, asyncio.Lock)
 
         result = await record.revert_async()
         assert result is True
 
-        assert record._async_lock is not None, "revert_async 后应创建 _async_lock"
+        assert record._async_lock is not None
         assert isinstance(record._async_lock, asyncio.Lock)
 
     @pytest.mark.asyncio
     async def test_async_lock_reused_across_calls(self, tmp_path):
-        """多次调用 apply_async/revert_async 复用同一个锁"""
+        """多次调用 apply_async/revert_async 复用同一个锁（__init__ 中创建）"""
         f = tmp_path / "lazy_async_reuse.txt"
         f.write_text("初始", encoding="utf-8")
         record = FileChangeRecord(str(f), "初始", "修改", 0)
-        assert record._async_lock is None
+        assert record._async_lock is not None
+
+        lock_id_0 = id(record._async_lock)
 
         await record.apply_async()
         lock_id_1 = id(record._async_lock)
@@ -426,7 +430,84 @@ class TestAsyncLockLazyInit:
         await record.revert_async()
         lock_id_2 = id(record._async_lock)
 
-        assert lock_id_1 == lock_id_2, "应复用同一个 asyncio.Lock 实例"
+        assert lock_id_0 == lock_id_1 == lock_id_2, "应复用同一个 asyncio.Lock 实例"
+
+    @pytest.mark.asyncio
+    async def test_concurrent_async_apply_revert(self, tmp_path):
+        """并发 apply_async 和 revert_async 不产生竞态
+
+        修复背景: 原懒初始化（check-then-act）存在竞态条件——两个并发协程可能同时
+        通过 is None 检查，各自创建 asyncio.Lock()，导致一个锁被丢弃、同步失效。
+        修复后在 __init__ 中直接创建 asyncio.Lock()。
+
+        本测试验证多个并发协程同时调用 apply_async/revert_async 时，
+        文件状态始终一致，不会出现因锁失效导致的内容交错。
+        """
+        f = tmp_path / "concurrent_async.txt"
+        f.write_text("初始内容", encoding="utf-8")
+
+        record = FileChangeRecord(str(f), "初始内容", "并发修改", 0)
+
+        # 并发执行 apply_async
+        async def concurrent_apply():
+            results = await asyncio.gather(
+                record.apply_async(),
+                record.apply_async(),
+                record.apply_async(),
+            )
+            return results
+
+        results = await concurrent_apply()
+        assert all(r is True for r in results)
+        assert f.read_text(encoding="utf-8") == "并发修改"
+
+    @pytest.mark.asyncio
+    async def test_concurrent_async_mixed_apply_revert(self, tmp_path):
+        """并发混合 apply_async 和 revert_async 文件最终状态一致"""
+        f = tmp_path / "mixed_async.txt"
+        f.write_text("初始", encoding="utf-8")
+
+        record_apply = FileChangeRecord(str(f), "初始", "修改后", 0)
+        record_revert = FileChangeRecord(str(f), "初始", "修改后", 0)
+
+        async def apply_then_revert():
+            await record_apply.apply_async()
+            await asyncio.sleep(0.05)
+            await record_revert.revert_async()
+
+        async def revert_then_apply():
+            await asyncio.sleep(0.02)
+            await record_apply.revert_async()
+            await asyncio.sleep(0.05)
+            await record_revert.apply_async()
+
+        # 两个协程并发，最终应有一个一致的状态
+        await asyncio.gather(apply_then_revert(), revert_then_apply())
+
+        # 文件应存在且内容为两者之一
+        assert f.exists()
+        content = f.read_text(encoding="utf-8")
+        assert content in ("初始", "修改后"), f"意外内容: {content}"
+
+    @pytest.mark.asyncio
+    async def test_async_lock_not_recreated_on_each_call(self, tmp_path):
+        """_async_lock 不会在每次调用时重新创建（消除懒初始化竞态的根本验证）"""
+        f = tmp_path / "lock_stability.txt"
+        f.write_text("test", encoding="utf-8")
+
+        record = FileChangeRecord(str(f), "test", "modified", 0)
+        lock_before = record._async_lock
+
+        # 多次调用 apply_async / revert_async
+        for _ in range(5):
+            await record.apply_async()
+            assert record._async_lock is lock_before, (
+                "_async_lock 在 apply_async 调用中被重新创建！"
+            )
+            await record.revert_async()
+            assert record._async_lock is lock_before, (
+                "_async_lock 在 revert_async 调用中被重新创建！"
+            )
 
 
 # ═══════════════════════════════════════════════════════════════

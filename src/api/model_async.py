@@ -17,7 +17,10 @@ from typing import Any
 
 import httpx
 
-from .client_async import chat_completions_async, RateLimitError, APIError, _CONNECTION_ERRORS
+from .client_async import (
+    chat_completions_async, chat_completions_async_anthropic,
+    RateLimitError, APIError, _CONNECTION_ERRORS,
+)
 from .tokens import estimate_tokens
 from .interrupt_async import is_interrupted_async, wait_for_interrupt_async
 from .stream.pipeline_async import stream_call_async
@@ -302,7 +305,11 @@ async def _call_sync_async(
     )
 
     start_time = time.time()
-    response = await chat_completions_async(**kwargs)
+    if getattr(adapter, '_protocol', '') == 'anthropic':
+        response = await chat_completions_async_anthropic(
+            base_url=adapter._base_url, **kwargs)
+    else:
+        response = await chat_completions_async(**kwargs)
     api_duration = time.time() - start_time
 
     if await is_interrupted_async():

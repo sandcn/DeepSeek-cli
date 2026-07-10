@@ -108,7 +108,14 @@ class RmFunc(FileSystemToolBase):
             elif await asyncio.to_thread(os.path.isdir, self.path):
                 # ── 删除目录 ──
                 if not self.recursive:
-                    return f"(目录非空，如需删除目录请设置 recursive=True: {self.path})"
+                    entries = await asyncio.to_thread(os.listdir, self.path)
+                    if not entries:
+                        # 空目录：直接删除
+                        await async_record_sandbox(self.path, "", None, self.name, record_type="directory")
+                        await asyncio.to_thread(os.rmdir, self.path)
+                        return f"删除成功: {self.path}"
+                    else:
+                        return f"(目录非空，如需删除目录请设置 recursive=True: {self.path})"
 
                 files = await async_collect_files(self.path)
                 contents = {}

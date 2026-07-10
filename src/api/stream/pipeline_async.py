@@ -15,10 +15,8 @@ import sys
 import time
 from typing import AsyncIterator
 
-from src._compat import aclosing
-
 from ..events import publish_event
-from ..client_async import chat_completions_async
+from ..client_async import chat_completions_async, chat_completions_async_anthropic
 from ..tokens import estimate_tokens
 from ..interrupt_async import is_interrupted_async
 from ..stats import (
@@ -52,8 +50,10 @@ async def _interruptible_iter_async(
     - 通过 asyncio.sleep(0) 让出控制权给 Event Loop
     - 每次迭代后检查中断标志
 
-    使用 aclosing() 确保 response_iter 在提前退出时被正确关闭，
-    避免 "Task was destroyed but it is pending" / "aclose was never awaited" 警告。
+    try/finally 显式清理 response_iter（而非 aclosing()），从而在
+    finally 块中消化清理期间的异常，防止它们与传播中的 GeneratorExit
+    组合成 BaseExceptionGroup（Python 3.11+），确保 async for 的
+    aclose() 能正确识别生成器已关闭。
 
     使用 while 循环 + 手动 __anext__() 替代 async for，从而可以给每次
     迭代设置 asyncio.wait_for 超时。当 SSE 流因网络问题卡住时，
@@ -61,27 +61,26 @@ async def _interruptible_iter_async(
     _retry_api_call_async 重试机制自动捕获并重试。
     """
     try:
-        async with aclosing(response_iter):
-            while True:
-                try:
-                    chunk = await asyncio.wait_for(
-                        response_iter.__anext__(),
-                        timeout=_STREAM_IDLE_TIMEOUT,
-                    )
-                except asyncio.TimeoutError:
-                    # asyncio.TimeoutError 在 Python 3.11+ 等价于内置 TimeoutError，
-                    # StreamIdleTimeoutError 继承自 TimeoutError，会被上游重试机制捕获
-                    raise StreamIdleTimeoutError(
-                        f"流空闲超时: {_STREAM_IDLE_TIMEOUT:.0f}秒内未收到新数据"
-                    )
-                except StopAsyncIteration:
-                    return  # 流正常结束
+        while True:
+            try:
+                chunk = await asyncio.wait_for(
+                    response_iter.__anext__(),
+                    timeout=_STREAM_IDLE_TIMEOUT,
+                )
+            except asyncio.TimeoutError:
+                # asyncio.TimeoutError 在 Python 3.11+ 等价于内置 TimeoutError，
+                # StreamIdleTimeoutError 继承自 TimeoutError，会被上游重试机制捕获
+                raise StreamIdleTimeoutError(
+                    f"流空闲超时: {_STREAM_IDLE_TIMEOUT:.0f}秒内未收到新数据"
+                )
+            except StopAsyncIteration:
+                return  # 流正常结束
 
-                if await is_interrupted_async():
-                    return
-                yield chunk
-                # 每次 yield 后让出事件循环，给中断信号处理机会
-                await asyncio.sleep(0)
+            if await is_interrupted_async():
+                return
+            yield chunk
+            # 每次 yield 后让出事件循环，给中断信号处理机会
+            await asyncio.sleep(0)
     except asyncio.CancelledError:
         # CancelledError 降级为 StopAsyncIteration 安全退出。
         # 中断信号已通过 is_interrupted_async() 设置，
@@ -105,6 +104,28 @@ async def _interruptible_iter_async(
     except Exception:
         _logger.exception("Async stream iteration error")
         raise
+    finally:
+        # 替代 aclosing()：显式清理 response_iter。
+        # 消化清理期间的 CancelledError / StopAsyncIteration / Exception，
+        # 防止它们与传播中的 GeneratorExit（由 async for 的 aclose() 注入）
+        # 组合成 BaseExceptionGroup（Python 3.11+），
+        # 导致 GeneratorExit 无法被 asyncio 识别为该生成器已正常关闭。
+        try:
+            await response_iter.aclose()
+        except (asyncio.CancelledError, StopAsyncIteration, Exception):
+            pass
+
+
+def _extract_cancelled(exc: BaseException | None):
+    """检查异常是否自身为 CancelledError 或 ExceptionGroup 中包含 CancelledError。"""
+    if exc is None:
+        return False
+    if isinstance(exc, asyncio.CancelledError):
+        return True
+    subgroup = getattr(exc, "subgroup", None)
+    if subgroup is not None:
+        return subgroup(asyncio.CancelledError) is not None
+    return False
 
 
 class StreamIdleTimeoutError(TimeoutError):
@@ -316,6 +337,11 @@ class AsyncStreamPipeline:
             # 有意吞掉：确保渲染器清理不跳过。后续清理代码均为同步操作，
             # 不会再次触发 CancelledError。
             _logger.debug("_cleanup_display: 被取消，继续执行同步清理")
+        except BaseException:
+            if _extract_cancelled(sys.exc_info()[1]):
+                _logger.debug("_cleanup_display: 被取消 (in group)，继续执行同步清理")
+            else:
+                raise
 
         # ── 第 2a 步：清除 tracker 显示行（仅在非 silent 模式，ChatUI 活跃时跳过） ─
         if not ctx.silent and ctx.tracker.started:
@@ -365,6 +391,14 @@ class AsyncStreamPipeline:
             if ctx.tracker._task is not None:
                 ctx.tracker._task.cancel()
             ctx.tracker._task = None
+        except BaseException:
+            if _extract_cancelled(sys.exc_info()[1]):
+                _logger.warning("_cleanup_display: tracker.finalize 被取消 (in group)，强制清理")
+                if ctx.tracker._task is not None:
+                    ctx.tracker._task.cancel()
+                ctx.tracker._task = None
+            else:
+                raise
 
         if not ctx.silent and (ctx.content_full or ctx.reasoning_full):
             from ...chat_ui import get_active_chat_ui  # noqa: PLC0415
@@ -429,8 +463,18 @@ async def stream_call_async(
 
     try:
         _notify_stream_started()
-        response_iter = await chat_completions_async(**kwargs)
-        # response_iter 是 AsyncIterator[dict]
+        if getattr(adapter, '_protocol', '') == 'anthropic':
+            raw_iter = await chat_completions_async_anthropic(
+                base_url=adapter._base_url, **kwargs)
+            # ★ 转换层：将 Anthropic SSE chunks 转换为统一格式（OpenAI 兼容），
+            #    使 AsyncStreamPipeline.process() 能按 choices[0].delta.content 路径解析。
+            async def _anthropic_to_unified(raw):
+                async for chunk in raw:
+                    yield adapter.parse_stream_chunk(chunk)
+            response_iter = _anthropic_to_unified(raw_iter)
+        else:
+            response_iter = await chat_completions_async(**kwargs)
+        # response_iter 是 AsyncIterator[dict]（统一格式）
         return await pipeline.process(ctx, response_iter, silent)
     except asyncio.CancelledError:
         # DEBUG 级别而非 WARNING：取消是正常流程（中断关闭），非错误事件
@@ -447,8 +491,31 @@ async def stream_call_async(
                 await pipeline._cleanup_display(ctx)
             except asyncio.CancelledError:
                 pass
+            except BaseException:
+                if _extract_cancelled(sys.exc_info()[1]):
+                    pass
+                else:
+                    raise
         return result
     except KeyboardInterrupt:
+        raise
+    except BaseException as e:
+        # Python 3.11+: BaseExceptionGroup 包装的 CancelledError（例如
+        # 清理期间 aclose() 被取消）不会匹配 except CancelledError。
+        if _extract_cancelled(e):
+            _logger.debug("stream_call_async 被取消 (in group)，返回已累积内容")
+            result = pipeline._build_result(ctx)
+            if not ctx._cleaned_up:
+                try:
+                    await pipeline._cleanup_display(ctx)
+                except asyncio.CancelledError:
+                    pass
+                except BaseException:
+                    if _extract_cancelled(sys.exc_info()[1]):
+                        pass
+                    else:
+                        raise
+            return result
         raise
     finally:
         _notify_stream_ended()

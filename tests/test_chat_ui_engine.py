@@ -395,39 +395,41 @@ class TestRenderEngineFlush:
         assert engine._cmd_queue.qsize() == 0
 
     def test_flush_empty_queue_returns_quickly(self, engine):
-        """空队列时 flush 快速返回。"""
+        """空队列时 flush 快速返回（非 daemon 线程 join 队列）。"""
         mock_t = MagicMock()
         mock_t.is_alive.return_value = True
         engine._render_thread = mock_t
 
         with patch("threading.Thread") as mt:
             task_done_t = MagicMock()
+            task_done_t.is_alive.return_value = False  # 线程已完成，不触发 drain
             mt.return_value = task_done_t
 
             engine.flush(timeout=1.0)
 
-            mt.assert_called_once_with(target=engine._cmd_queue.join, daemon=True)
+            mt.assert_called_once_with(target=engine._cmd_queue.join, daemon=False)
             task_done_t.start.assert_called_once()
             task_done_t.join.assert_called_once_with(timeout=1.0)
 
     def test_flush_with_render_alive_uses_queue_join(self, engine):
-        """render 线程存活时通过 queue.join() 等待消费完毕。"""
+        """render 线程存活时通过非 daemon 线程 queue.join() 等待消费完毕。"""
         mock_t = MagicMock()
         mock_t.is_alive.return_value = True
         engine._render_thread = mock_t
 
         with patch("threading.Thread") as mt:
             task_done_t = MagicMock()
+            task_done_t.is_alive.return_value = False  # 线程已完成
             mt.return_value = task_done_t
 
             engine.flush(timeout=5.0)
 
-            mt.assert_called_once_with(target=engine._cmd_queue.join, daemon=True)
+            mt.assert_called_once_with(target=engine._cmd_queue.join, daemon=False)
             task_done_t.start.assert_called_once()
             task_done_t.join.assert_called_once_with(timeout=5.0)
 
     def test_flush_timeout_returns_early(self, engine):
-        """flush 超时后返回（不阻塞永久）。"""
+        """flush 超时后 drain 队列并重新 join（非 daemon 线程安全退出）。"""
         mock_t = MagicMock()
         mock_t.is_alive.return_value = True
         engine._render_thread = mock_t
@@ -435,12 +437,17 @@ class TestRenderEngineFlush:
         with patch("threading.Thread") as mt:
             task_done_t = MagicMock()
             task_done_t.join.side_effect = lambda timeout=None: None  # 超时
+            # 第一次 join(0.1) 超时后 is_alive 返回 True → 触发 drain + 第二次 join(1.0)
+            task_done_t.is_alive.return_value = True
             mt.return_value = task_done_t
 
             # 不应阻塞
             engine.flush(timeout=0.1)
 
-            task_done_t.join.assert_called_once_with(timeout=0.1)
+            # 第一次 join 带原始 timeout，超时后 drain 再 join(1.0)
+            assert task_done_t.join.call_count == 2
+            task_done_t.join.assert_any_call(timeout=0.1)
+            task_done_t.join.assert_any_call(timeout=1.0)
 
     def test_flush_does_not_set_cmd_event(self, engine):
         """flush 不主动设置 cmd_event，线程靠 10Hz 心跳自唤醒消费。"""
@@ -457,18 +464,23 @@ class TestRenderEngineFlush:
         assert not engine._cmd_event.is_set()
 
     def test_flush_infinite_wait(self, engine):
-        """flush(timeout=None) 无限等待。"""
+        """flush(timeout=None) 无限等待（非 daemon 线程，超时后 drain 兜底）。"""
         mock_t = MagicMock()
         mock_t.is_alive.return_value = True
         engine._render_thread = mock_t
 
         with patch("threading.Thread") as mt:
             task_done_t = MagicMock()
+            # timeout=None 时 join(None) 不超时直接返回（mock 行为），
+            # is_alive 为 True 触发 drain 路径 → 第二次 join(1.0)
+            task_done_t.is_alive.return_value = True
             mt.return_value = task_done_t
 
             engine.flush(timeout=None)
 
-            task_done_t.join.assert_called_once_with(timeout=None)
+            assert task_done_t.join.call_count == 2
+            task_done_t.join.assert_any_call(timeout=None)
+            task_done_t.join.assert_any_call(timeout=1.0)
 
 
 # ══════════════════════════════════════════════════════

@@ -102,10 +102,14 @@ class UpdateFileFunc(FileToolBase):
         # 追加模式
         if not self.old_string:
             if not original:
-                return self.new_string
-            if original.endswith('\n'):
-                return original + self.new_string
-            return original + '\n' + self.new_string
+                new_content = self.new_string
+            elif original.endswith('\n'):
+                new_content = original + self.new_string
+            else:
+                new_content = original + '\n' + self.new_string
+            # 对追加模式最终内容进行大小校验：original + new_string 可能远超 100MB 限制
+            self._check_content_size(new_content)
+            return new_content
 
         if not original:
             raise StringNotFoundError(
@@ -129,8 +133,12 @@ class UpdateFileFunc(FileToolBase):
             )
 
         if self.replace_all:
-            return original.replace(self.old_string, self.new_string)
-        return original.replace(self.old_string, self.new_string, 1)
+            new_content = original.replace(self.old_string, self.new_string)
+        else:
+            new_content = original.replace(self.old_string, self.new_string, 1)
+        # 对替换后最终内容进行大小校验：replace_all 多次替换或单次替换后内容可能膨胀超过限制
+        self._check_content_size(new_content)
+        return new_content
 
     def _success_verb(self) -> str:
         return "更新成功"

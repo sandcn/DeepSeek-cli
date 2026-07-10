@@ -179,6 +179,20 @@ def _headers() -> dict[str, str]:
     }
 
 
+def _headers_anthropic() -> dict[str, str]:
+    """构建 Anthropic API 请求头（x-api-key 认证 + anthropic-version）。"""
+    if not API_KEY:
+        with _api_key_warned_lock:
+            if not _api_key_warned:
+                _api_key_warned = True
+                _logger.warning("未设置 API 密钥。请设置环境变量 CHAT_API_KEY（参考 .env.example）。")
+    return {
+        "x-api-key": API_KEY,
+        "anthropic-version": "2023-06-01",
+        "Content-Type": "application/json",
+    }
+
+
 # ── 响应检查 ────────────────────────────────────────────────
 
 def _check_response(resp: httpx.Response) -> None:
@@ -217,6 +231,45 @@ async def chat_completions_async(
 
     url = BASE_URL
     headers = _headers()
+
+    if not stream:
+        resp = await _call_with_recovery("post", url, headers=headers, json=payload)
+        _check_response(resp)
+        return resp.json()
+
+    return _stream_iter_async(url, headers, payload, model)
+
+
+async def chat_completions_async_anthropic(
+    *,
+    model: str,
+    messages: list,
+    tools: list | None = None,
+    stream: bool = False,
+    stream_options: dict | None = None,
+    base_url: str | None = None,
+    **extra: Any,
+) -> dict | AsyncIterator[dict]:
+    """异步调用 Anthropic /v1/messages 接口。
+
+    使用 x-api-key 头和 /v1/messages 端点，区别于 OpenAI 的
+    Bearer token + /v1/chat/completions 格式。
+
+    非流式返回解析后的 JSON dict；
+    流式返回 async generator，逐个 yield 解析后的 chunk dict。
+    """
+    payload: dict = {"model": model, "messages": messages}
+    if tools:
+        payload["tools"] = tools
+    if stream:
+        payload["stream"] = True
+    # Anthropic 的 extra 参数（max_tokens, system 等）直接作为请求体字段
+    payload.update({k: v for k, v in extra.items()
+                    if k not in ("model", "messages", "stream", "tools")})
+
+    api_base = (base_url or BASE_URL).rstrip("/")
+    url = f"{api_base}/messages"
+    headers = _headers_anthropic()
 
     if not stream:
         resp = await _call_with_recovery("post", url, headers=headers, json=payload)

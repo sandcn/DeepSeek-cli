@@ -11,8 +11,8 @@ import aiofiles.os
 from rich.syntax import Syntax
 from .base import Func, tool_metadata
 from .file_ops import validate_path_security
-from .encoding import async_detect_encoding
-from ._constants import LARGE_FILE_THRESHOLD, CATCHALL_ENCODINGS as _CATCHALL_ENCODINGS
+from .encoding import async_detect_encoding, pick_best_decoding, FALLBACK_ENCODINGS
+from ._constants import LARGE_FILE_THRESHOLD
 from ..core.constants import CYAN, DIM, RESET, RED
 from ..ui.colors import console
 from ..ui._lock import locked_print, _try_acquire_output_lock
@@ -184,56 +184,6 @@ class ReadFileFunc(Func):
             _SUCCESS_KEY: True,
         }
 
-    def _try_decode(self, raw_bytes: bytes, candidates: list[str]) -> tuple[str, str]:
-        """尝试用候选编码列表解码字节，返回 (encoding, content)。
-
-        依次尝试每个编码，优先选零替代字符、strict 模式成功的编码。
-        如果所有编码都失败，回退到第一个编码的 replace 模式。
-
-        注意：latin-1 / iso-8859-* / cp125x 等「通吃编码」能解码任意字
-        节且无 \ufffd，所以遇到它们时不立即返回——须遍历全部候选再择优。
-        通吃编码评分大幅降低，防止它们因零替代字符的固有属性覆盖真实编码。
-        """
-        from .encoding import FALLBACK_ENCODINGS
-
-        fallback = candidates + [e for e in FALLBACK_ENCODINGS if e not in candidates]
-        best_enc = fallback[0]
-        best_content = ""
-        best_score = -1
-
-        for enc in fallback:
-            try:
-                decoded = raw_bytes.decode(enc, errors='strict')
-                repl_count = decoded.count('\ufffd')
-                if repl_count == 0 and enc.lower() not in _CATCHALL_ENCODINGS:
-                    return enc, decoded  # 完美解码且非通吃编码，立即返回
-                if enc.lower() in _CATCHALL_ENCODINGS:
-                    score = 60  # 通吃编码降分——解码任意字节是无意义的"成功"
-                elif repl_count == 0:
-                    score = 100  # 非通吃编码完美解码（理论上不会走到这里）
-                else:
-                    score = 100 - repl_count * 2  # 非通吃编码有少量损坏字节
-            except UnicodeDecodeError:
-                try:
-                    decoded = raw_bytes.decode(enc, errors='replace')
-                    repl_count = decoded.count('\ufffd')
-                    # replace 模式评分基础 70——高于通吃编码的 60，确保非通吃编码
-                    # 即使 strict 失败且有少量损坏字节，仍优于通吃编码（如 latin-1
-                    # 虽然 0 替代字符但内容完全错误）。仅当损坏较多时才让通吃编码胜出。
-                    score = 70 - repl_count
-                except Exception:
-                    continue
-
-            if score > best_score:
-                best_score = score
-                best_enc = enc
-                best_content = decoded
-
-        if best_content:
-            return best_enc, best_content
-        # 终极降级：用第一个编码的 replace 模式
-        return candidates[0], raw_bytes.decode(candidates[0], errors='replace')
-
     def _slice_lines(self, content: str) -> dict:
         """对已解码的完整 content 按行号范围切片，返回 _file_result 字典。
 
@@ -293,10 +243,11 @@ class ReadFileFunc(Func):
                 # 先读全文件字节确保编码检测准确（对于大文件中后段才出现
                 # 中文的场景，仅读头部 64KB 可能检测不到正确编码）
                 actual_encoding, raw_bytes = await self._determine_encoding(file_path)
-                # 多编码回退：_try_decode 用全量 raw_bytes 择优，返回完整解码内容
+                # 多编码回退：pick_best_decoding 用全量 raw_bytes 择优，返回完整解码内容
                 decode_candidates = [actual_encoding]
+                full_candidates = decode_candidates + [e for e in FALLBACK_ENCODINGS if e not in decode_candidates]
                 final_encoding, content = await asyncio.to_thread(
-                    self._try_decode, raw_bytes, decode_candidates,
+                    pick_best_decoding, raw_bytes, full_candidates,
                 )
                 if final_encoding != actual_encoding:
                     logger = logging.getLogger(__name__)
@@ -304,15 +255,16 @@ class ReadFileFunc(Func):
                         "编码回退(行范围): %s → %s (文件 %s)",
                         actual_encoding, final_encoding, file_path,
                     )
-                # 内存行切片：_try_decode 已返回完整解码内容，切片消除第2次文件 IO
+                # 内存行切片：pick_best_decoding 已返回完整解码内容，切片消除第2次文件 IO
                 self._file_result = self._slice_lines(content)
             else:
                 # ===== 无行号范围：原逻辑（全量读取 + 多编码回退） =====
                 actual_encoding, raw_bytes = await self._determine_encoding(file_path)
                 # 多编码回退解码：检测到的编码排首位，备选编码兜底
                 decode_candidates = [actual_encoding]
+                full_candidates = decode_candidates + [e for e in FALLBACK_ENCODINGS if e not in decode_candidates]
                 final_encoding, content = await asyncio.to_thread(
-                    self._try_decode, raw_bytes, decode_candidates
+                    pick_best_decoding, raw_bytes, full_candidates,
                 )
                 if final_encoding != actual_encoding:
                     logger = logging.getLogger(__name__)

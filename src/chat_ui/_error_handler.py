@@ -19,7 +19,8 @@ from ._utils import _truncate_msg
 # 线程本地重入保护（防止 emit → logger → emit 递归）
 _handler_reentrant = threading.local()
 # 跨线程锁（threading.local 重入保护不能防止跨线程并发）
-_emit_lock = threading.Lock()
+# 使用 RLock 防止 consumer.on_error 内部触发 logging → emit 重入时的死锁
+_emit_lock = threading.RLock()
 
 
 class ChatUIErrorHandler(logging.Handler):

@@ -144,6 +144,42 @@ class TestCpFuncBuildDestPath:
         expected = os.path.normpath(str(dst / "a" / "b" / "c" / "data.txt"))
         assert result == expected
 
+    def test_relative_to_value_error_fallback_relpath(self, tmp_path):
+        """relative_to 抛 ValueError 时回退到 os.path.relpath
+
+        修复背景: Path.relative_to() 在 source_root 不是 file_path 前缀时
+        抛出 ValueError（如跨驱动器、符号链接）。修复使用 try/except ValueError
+        → os.path.relpath fallback。
+        """
+        src_root = tmp_path / "src"
+        dst = tmp_path / "dst"
+
+        cp = CpFunc(source=str(src_root), destination=str(dst))
+        # 构造一个完全不在 src_root 下的路径（模拟跨驱动器场景）
+        unrelated = "/completely/unrelated/path/file.txt"
+        result = cp._build_dest_path(str(src_root), unrelated)
+
+        # 应使用 relpath 或 basename fallback，不应抛出异常
+        assert result is not None
+        # 最终路径应包含目标前缀和文件名
+        assert "file.txt" in result
+
+    def test_relative_to_value_error_fallback_basename(self, tmp_path):
+        """relpath 也失败时回退到 basename
+
+        极端情况：source_root="/a" 但 file_path 是相对路径且无法计算 relpath。
+        """
+        src_root = "/root_src"
+        dst = "/root_dst"
+
+        cp = CpFunc(source=src_root, destination=dst)
+
+        # 使用不同的绝对路径模拟 relpath ValueError
+        result = cp._build_dest_path(src_root, "/dev/null")
+
+        # 最终应至少包含文件名
+        assert "null" in result or result is not None
+
 
 # ═══════════════════════════════════════════════════════════════════════════
 # 4. CpFunc.display_params

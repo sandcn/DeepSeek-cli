@@ -1,14 +1,30 @@
 """配置包 — 配置校验逻辑"""
 
-from .defaults import DEFAULTS, PROVIDERS
+from .defaults import CONFIG_KEYS, DEFAULTS, PROVIDERS
+
+
+def _derive_rc_fields(key_type):
+    """从 CONFIG_KEYS 元数据中派生指定类型的扁平 RC 字段名列表。
+
+    仅返回 rc_path 长度为 1（即 RC 文件顶层键）的条目，
+    嵌套路径（如 HTTP 性能配置）由各自模块自行处理。
+    """
+    return sorted(
+        entry["rc_path"][0]
+        for entry in CONFIG_KEYS.values()
+        if entry["type"] == key_type and len(entry["rc_path"]) == 1
+    )
+
+
+# 模块级派生常量（单次计算，避免 _validate_rc 每次调用重建列表）
+_INT_FIELDS = _derive_rc_fields(int)
+_FLOAT_FIELDS = _derive_rc_fields(float)
+_BOOL_FIELDS = _derive_rc_fields(bool)
 
 
 def _validate_rc(rc):
     """校验配置值类型，无效值回退到默认值"""
-    int_fields = ["max_context_chars", "max_output_chars", "max_retries",
-                  "max_session_messages",
-                  "keep_recent_messages", "max_context_tokens", "summary_token_budget",
-                  "auto_force_compress_threshold"]
+    int_fields = _INT_FIELDS
     for field in int_fields:
         if field in rc:
             if isinstance(rc[field], bool):
@@ -19,7 +35,7 @@ def _validate_rc(rc):
                 except (ValueError, TypeError):
                     rc[field] = DEFAULTS.get(field, 0)
 
-    float_fields = ["retry_base_sec"]
+    float_fields = _FLOAT_FIELDS
     for field in float_fields:
         if field in rc:
             if not isinstance(rc[field], (int, float)):
@@ -28,7 +44,7 @@ def _validate_rc(rc):
                 except (ValueError, TypeError):
                     rc[field] = DEFAULTS.get(field, 1.0)
 
-    bool_fields = ["enable_notifications", "notify_on_chat_completion"]
+    bool_fields = _BOOL_FIELDS
     for field in bool_fields:
         if field in rc:
             if isinstance(rc[field], bool):

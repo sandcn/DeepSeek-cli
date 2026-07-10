@@ -35,11 +35,11 @@ def _read_bytes(file_path: str, max_bytes: int = MAX_DETECT_BYTES) -> bytes:
         return f.read(max_bytes)
 
 
-def _pick_best_decoding(
+def pick_best_decoding(
     raw_bytes: bytes,
     candidate_encodings: list[str],
-) -> str:
-    """从候选编码列表中选解码质量最好的编码。
+) -> tuple[str, str]:
+    """从候选编码列表中选解码质量最好的编码，返回 (encoding, content) 元组。
 
     质量评分规则（降序）：
       1. 零错误解码且无 \ufffd 替代字符（非通吃编码）→ 首选，立即返回
@@ -51,9 +51,11 @@ def _pick_best_decoding(
     因此「零替代字符」是其固有属性而非真实质量信号。必须大幅降低其评分，
     防止通吃编码因得分虚高而覆盖真实编码（如 UTF-8 文件有少量损坏字节时）。
 
-    返回评分最高的编码，同分时返回列表中靠前的。
+    返回评分最高的 (编码名, 解码后文本)，同分时返回列表中靠前的。
+    若所有候选均无法解码出任何内容，用首个候选的 replace 模式兜底。
     """
     best_enc = candidate_encodings[0]
+    best_content = ""
     best_score = -1  # 越大越好
 
     for enc in candidate_encodings:
@@ -66,7 +68,7 @@ def _pick_best_decoding(
                 if enc.lower() in CATCHALL_ENCODINGS:
                     score = 60  # 通吃编码降分——解码任意字节是无意义的"成功"
                 else:
-                    return enc  # 完美解码且非通吃编码，直接返回
+                    return enc, decoded  # 完美解码且非通吃编码，直接返回
             else:
                 # 非通吃编码有少量损坏字节：仍可能优于通吃编码
                 score = 100 - replacement_count * 2  # 替代字符越少越好
@@ -85,8 +87,12 @@ def _pick_best_decoding(
         if score > best_score:
             best_score = score
             best_enc = enc
+            best_content = decoded
 
-    return best_enc
+    if best_content:
+        return best_enc, best_content
+    # 终极降级：用第一个候选编码的 replace 模式
+    return candidate_encodings[0], raw_bytes.decode(candidate_encodings[0], errors='replace')
 
 
 def _validate_decoding_quality(raw_bytes: bytes, detected_encoding: str) -> str:
@@ -115,7 +121,7 @@ def _validate_decoding_quality(raw_bytes: bytes, detected_encoding: str) -> str:
         if enc not in candidates:
             candidates.append(enc)
 
-    best = _pick_best_decoding(raw_bytes, candidates)
+    best, _ = pick_best_decoding(raw_bytes, candidates)
     if best != detected_encoding:
         _logger.info(
             "编码质量验证: %s 解码质量差，改用 %s (raw_bytes=%d)",

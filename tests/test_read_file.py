@@ -4,7 +4,7 @@
 --------
 - 使用 tmp_path 隔离文件系统操作
 - 对编码检测（async_detect_encoding）做 mock，确保行为确定性
-- _try_decode 是实例方法但不依赖 self，直接在实例上调用
+- pick_best_decoding 是 encoding 模块的公开函数，参数化调用
 - 遵循 Arrange/Act/Assert 模式
 - 每个测试类关注一个概念，每个方法覆盖单一场景
 """
@@ -16,6 +16,7 @@ import pytest
 
 from src.tools.read_file import ReadFileFunc, _resolve_lexer_name, LARGE_FILE_THRESHOLD
 from src.tools.file_base import FileToolError
+from src.tools.encoding import pick_best_decoding, FALLBACK_ENCODINGS
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -160,119 +161,108 @@ class TestFromArgs:
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# 5. _try_decode
+# 5. pick_best_decoding
 # ═══════════════════════════════════════════════════════════════════════════
 
-class TestTryDecode:
-    """_try_decode 编码回退解码"""
+class TestPickBestDecoding:
+    """pick_best_decoding 编码择优解码（encoding 模块公开函数）"""
 
-    def _make_rf(self, tmp_path):
-        """创建 ReadFileFunc 实例（路径在白名单内的 tmp_path）"""
-        return ReadFileFunc(str(tmp_path / "_dummy_.txt"))
+    @staticmethod
+    def _full_candidates(candidates):
+        """构造包含 FALLBACK_ENCODINGS 的完整候选列表，匹配原 _try_decode 行为"""
+        return candidates + [e for e in FALLBACK_ENCODINGS if e not in candidates]
 
-    def test_perfect_utf8_decode(self, tmp_path):
+    def test_perfect_utf8_decode(self):
         """UTF-8 字节完美解码"""
-        rf = self._make_rf(tmp_path)
         raw = "hello world".encode("utf-8")
-        enc, content = rf._try_decode(raw, ["utf-8"])
+        enc, content = pick_best_decoding(raw, ["utf-8"])
         assert enc == "utf-8"
         assert content == "hello world"
 
-    def test_perfect_gbk_decode(self, tmp_path):
+    def test_perfect_gbk_decode(self):
         """GBK 编码字节完美解码"""
-        rf = self._make_rf(tmp_path)
         raw = "中文测试".encode("gbk")
-        enc, content = rf._try_decode(raw, ["gbk"])
+        enc, content = pick_best_decoding(raw, ["gbk"])
         assert enc == "gbk"
         assert content == "中文测试"
 
-    def test_fallback_to_second_candidate(self, tmp_path):
+    def test_fallback_to_second_candidate(self):
         """首候选编码失败时回退到下一候选"""
-        rf = self._make_rf(tmp_path)
         # GBK 字节用 utf-8 解码会报错或出现替代字符
         raw = "中文".encode("gbk")
-        enc, content = rf._try_decode(raw, ["utf-8", "gbk"])
+        enc, content = pick_best_decoding(raw, ["utf-8", "gbk"])
         assert enc == "gbk"
         assert content == "中文"
 
-    def test_replace_mode_fallback(self, tmp_path):
+    def test_replace_mode_fallback(self):
         """所有候选 strict 解码失败时降级为 replace，非通吃编码优先"""
-        rf = self._make_rf(tmp_path)
         # 随机二进制字节
         raw = b"\xff\xfe\x00\x01\x02\x03"
-        # 只用 latin-1 确保能解码（不会抛异常）
-        enc, content = rf._try_decode(raw, ["utf-8", "gbk", "latin-1"])
-        # 通吃编码评分 60，非通吃编码 utf-8/gbk 各有 2 替代字符评分 68
-        # utf-8 （列表中靠前）胜出
+        enc, content = pick_best_decoding(raw, ["utf-8", "gbk", "latin-1"])
+        # 通吃编码评分 60，非通吃编码 utf-8/gbk 各有替代字符评分更高
         assert enc in ("utf-8", "gbk"), f"预期非通吃编码, 实际 {enc}"
         assert isinstance(content, str)
 
-    def test_empty_bytes(self, tmp_path):
+    def test_empty_bytes(self):
         """空字节"""
-        rf = self._make_rf(tmp_path)
         raw = b""
-        enc, content = rf._try_decode(raw, ["utf-8"])
+        enc, content = pick_best_decoding(raw, ["utf-8"])
         assert enc == "utf-8"
         assert content == ""
 
-    def test_utf8_with_replacement_char(self, tmp_path):
-        """UTF-8 字节中有 \ufffd 时选择替代字符少的非通吃编码"""
-        rf = self._make_rf(tmp_path)
+    def test_utf8_with_replacement_char(self):
+        """UTF-8 字节中有 \\ufffd 时选择替代字符少的非通吃编码"""
         # 创建一个在 gbk 下比 utf-8 下替代字符少的数据
-        # GBK 能解码的混合字节
         raw = "ABC\x80\x81test".encode("latin-1")
-        enc, content = rf._try_decode(raw, ["utf-8", "gbk", "latin-1"])
+        enc, content = pick_best_decoding(raw, ["utf-8", "gbk", "latin-1"])
         # 通吃编码评分 60，非通吃编码 gbk(1替代=69) > utf-8(2替代=68)
-        # gbk 胜出——满足「替代字符最少的非通吃编码优先」
         assert enc in ("gbk", "utf-8"), f"预期非通吃编码, 实际 {enc}"
         assert "ABC" in content
 
     # ── 乱码回归测试 ────────────────────────────────────────────
 
-    def test_catchall_encoding_does_not_override_gbk_regression(self, tmp_path):
+    def test_catchall_encoding_does_not_override_gbk_regression(self):
         """通吃编码 ISO-8859-9 不会压制正确的 GBK 解码
 
         chardet 对短 GBK 文本可能误检测为 ISO-8859-9/TIS-620 等
-        通吃编码，_try_decode 必须继续尝试 FALLBACK 中的 GBK。
+        通吃编码，pick_best_decoding 必须继续尝试 FALLBACK 中的 GBK。
         """
-        rf = self._make_rf(tmp_path)
         raw = "你好".encode("gbk")
         # chardet 报告 ISO-8859-9 (置信度低)
-        enc, content = rf._try_decode(raw, ["ISO-8859-9"])
+        candidates = self._full_candidates(["ISO-8859-9"])
+        enc, content = pick_best_decoding(raw, candidates)
         assert enc == "gbk", f"期望 gbk, 实际 {enc}"
         assert content == "你好"
 
-    def test_catchall_encoding_does_not_override_gbk_mixed_regression(self, tmp_path):
+    def test_catchall_encoding_does_not_override_gbk_mixed_regression(self):
         """通吃编码 TIS-620 不会压制混合 GBK 正确解码"""
-        rf = self._make_rf(tmp_path)
         raw = "abc你好123".encode("gbk")
         # chardet 报告 TIS-620 (置信度低)
-        enc, content = rf._try_decode(raw, ["TIS-620"])
+        candidates = self._full_candidates(["TIS-620"])
+        enc, content = pick_best_decoding(raw, candidates)
         assert enc == "gbk", f"期望 gbk, 实际 {enc}"
         assert content == "abc你好123"
 
-    def test_utf8_remains_unchanged_regression(self, tmp_path):
+    def test_utf8_remains_unchanged_regression(self):
         """纯 UTF-8/ASCII 文本不受影响"""
-        rf = self._make_rf(tmp_path)
         raw = "Hello World!".encode("utf-8")
-        enc, content = rf._try_decode(raw, ["ascii"])
+        enc, content = pick_best_decoding(raw, ["ascii"])
         assert enc == "ascii"
         assert content == "Hello World!"
 
-    def test_utf8_chinese_remains_unchanged_regression(self, tmp_path):
+    def test_utf8_chinese_remains_unchanged_regression(self):
         """UTF-8 中文不受影响"""
-        rf = self._make_rf(tmp_path)
         raw = "中文测试".encode("utf-8")
-        enc, content = rf._try_decode(raw, ["utf-8"])
+        enc, content = pick_best_decoding(raw, ["utf-8"])
         assert enc == "utf-8"
         assert content == "中文测试"
 
-    def test_catchall_lowercase_check_regression(self, tmp_path):
-        """验证大写编码名也能正确匹配 _CATCHALL_ENCODINGS"""
-        rf = self._make_rf(tmp_path)
+    def test_catchall_lowercase_check_regression(self):
+        """验证大写编码名也能正确匹配 CATCHALL_ENCODINGS"""
         raw = "你好世界".encode("gbk")
         # ISO-8859-9 大写，需 lower() 后匹配
-        enc, content = rf._try_decode(raw, ["ISO-8859-9"])
+        candidates = self._full_candidates(["ISO-8859-9"])
+        enc, content = pick_best_decoding(raw, candidates)
         assert enc == "gbk", f"期望 gbk, 实际 {enc}"
 
 

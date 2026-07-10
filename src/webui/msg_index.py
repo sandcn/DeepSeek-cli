@@ -245,4 +245,7 @@ async def assign_msg_index(
         except Exception:
             _logger.exception("assign_msg_index: handler 异常, type=%s, label=%s",
                               mt, msg.get("label", ""))
+            msg["msg_index"] = nsl
+    else:
+        msg["msg_index"] = nsl
     await ws_send(msg)

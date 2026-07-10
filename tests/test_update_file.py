@@ -482,8 +482,86 @@ class TestDisplayParams:
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# 10. _success_verb / _mode_desc
+# 11. _get_new_content — 超大内容二次校验
 # ═══════════════════════════════════════════════════════════════════════════
+
+class TestOversizedContent:
+    """_get_new_content 对最终写入内容进行二次大小校验
+
+    修复背景: P0 Bug — _get_new_content 返回的完整内容（追加/替换后）
+    未经过 _check_content_size 二次校验。构造阶段的 _check_content_size
+    仅检查 new_string 参数，追加模式 original + new_string 或 replace_all
+    多次替换后的内容可能远超 100MB 限制。
+    """
+
+    @pytest.mark.asyncio
+    async def test_append_oversized_raises(self, tmp_path):
+        """追加模式：original + new_string 超过 100MB 应抛出 FileSizeError"""
+        from src.tools.file_base import FileSizeError
+
+        f = tmp_path / "base.txt"
+        # 创建一个约 90MB 的文件内容作为 original
+        original_content = "x" * (90 * 1024 * 1024)
+        f.write_text(original_content)
+
+        # new_string 约 20MB，最终内容约 110MB > 100MB 限制
+        large_append = "y" * (20 * 1024 * 1024)
+        uf = UpdateFileFunc(str(f), "", large_append)
+        with pytest.raises(FileSizeError, match="超过最大限制"):
+            await uf._get_new_content()
+
+    @pytest.mark.asyncio
+    async def test_replace_all_oversized_raises(self, tmp_path):
+        """replace_all 多次替换后内容膨胀超过限制应抛出 FileSizeError"""
+        from src.tools.file_base import FileSizeError
+
+        f = tmp_path / "base.txt"
+        # 每行有一个 "X" 标记，替换后膨胀
+        lines = ["X" + "a" * 999 for _ in range(105_000)]
+        # 每行约 1KB，共约 105MB
+        f.write_text("\n".join(lines))
+
+        # 替换 "X" 为 "YYYYYYYYYY"（10 个字符），每行增加 9 字节
+        # 最终约 105MB + 105000*9 ≈ 106MB > 100MB
+        uf = UpdateFileFunc(str(f), "X", "YYYYYYYYYY", replace_all=True)
+        with pytest.raises(FileSizeError, match="超过最大限制"):
+            await uf._get_new_content()
+
+    @pytest.mark.asyncio
+    async def test_single_replace_oversized_raises(self, tmp_path):
+        """单次替换后内容膨胀超过限制应抛出 FileSizeError"""
+        from src.tools.file_base import FileSizeError
+
+        f = tmp_path / "base.txt"
+        # 创建一个接近 100MB 的文件，替换后膨胀超过限制
+        near_limit = "a" * (99 * 1024 * 1024)
+        f.write_text(near_limit + "MARKER" + near_limit[:100])
+
+        # 替换 MARKER 为大量内容，超过限制
+        huge_replacement = "b" * (3 * 1024 * 1024)
+        uf = UpdateFileFunc(str(f), "MARKER", huge_replacement)
+        with pytest.raises(FileSizeError, match="超过最大限制"):
+            await uf._get_new_content()
+
+    @pytest.mark.asyncio
+    async def test_content_within_limit_succeeds(self, tmp_path):
+        """内容在限制内应正常返回"""
+        f = tmp_path / "small.txt"
+        f.write_text("hello world")
+
+        uf = UpdateFileFunc(str(f), "hello", "hi")
+        result = await uf._get_new_content()
+        assert result == "hi world"
+
+    @pytest.mark.asyncio
+    async def test_append_within_limit_succeeds(self, tmp_path):
+        """追加模式下内容在限制内应正常"""
+        f = tmp_path / "small.txt"
+        f.write_text("hello\n")
+
+        uf = UpdateFileFunc(str(f), "", "world\n")
+        result = await uf._get_new_content()
+        assert result == "hello\nworld\n"
 
 class TestMeta:
     """工具元数据方法"""

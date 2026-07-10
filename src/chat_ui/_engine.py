@@ -137,9 +137,12 @@ class TuiEngine:
                 except queue.Empty:
                     break
             return
-        task_done = threading.Thread(target=self._cmd_queue.join, daemon=True)
+        task_done = threading.Thread(target=self._cmd_queue.join, daemon=False)
         task_done.start()
         task_done.join(timeout=timeout)
+        if task_done.is_alive():
+            self._drain_queue_safe()
+            task_done.join(timeout=1.0)
 
     def ensure_cursor_upper(self) -> None:
         try:

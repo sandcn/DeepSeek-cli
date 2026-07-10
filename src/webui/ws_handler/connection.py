@@ -54,8 +54,9 @@ def _setup_connection(ws, session, ws_send, select_id_tracker=None):
           必须确保 task_done() 被调用，防止 Queue.join() 永久挂起。
         """
         while send_queue_active:
+            _got_msg = False
+            _task_done_called = False
             try:
-                _got_msg = False
                 try:
                     msg = await asyncio.wait_for(send_queue.get(), timeout=1.0)
                     _got_msg = True
@@ -71,14 +72,21 @@ def _setup_connection(ws, session, ws_send, select_id_tracker=None):
                     except Exception:
                         _logger.debug("fallback ws_send 失败")
                 finally:
-                    if _got_msg:
+                    if _got_msg and not _task_done_called:
                         send_queue.task_done()
+                        _task_done_called = True
             except asyncio.CancelledError:
                 # Worker 被显式取消（如 _drain_send_queue 中的 cancel()）
-                # 直接重新抛出，让 task 退出
+                # ★ 确保 task_done() 配对：CancelledError 在 get() 取到消息后、
+                #   try 2 的 finally 执行前抛出时，task_done() 可能未及调用，
+                #   导致 Queue.join() 永久挂起。此处补调保证配对完整性。
+                if _got_msg and not _task_done_called:
+                    send_queue.task_done()
                 raise
             except Exception as e:
                 # Worker 自动恢复：捕获顶层异常，防止 worker 永久停摆
+                if _got_msg and not _task_done_called:
+                    send_queue.task_done()
                 _logger.error("发送 worker 顶层异常，自动恢复: %s", e)
                 await asyncio.sleep(0.5)
 

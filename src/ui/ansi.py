@@ -6,19 +6,17 @@ ANSI 颜色常量（纯色值，无 Console）
 from __future__ import annotations
 
 import re
-from typing import TYPE_CHECKING
 
-# ── ANSI 颜色常量 ─────────────────────────────────────────
-# 所有颜色/样式变量名列表
-_COLOR_NAMES = [
-    "GRAY", "WHITE", "CYAN", "GREEN", "YELLOW", "RED", "BLUE", "MAGENTA",
-    "BOLD", "DIM", "RESET", "ITALIC", "UNDERLINE",
-    "BRIGHT_CYAN", "BRIGHT_GREEN", "BRIGHT_YELLOW", "BRIGHT_BLUE",
-    "BRIGHT_MAGENTA", "BRIGHT_WHITE",
-    "BG_BLUE", "BG_CYAN", "BG_GREEN", "BG_YELLOW",
-    "ORANGE", "TEAL", "PINK", "LAVENDER",
-    "SOFT_GREEN", "SOFT_BLUE", "SOFT_YELLOW", "DARK_GRAY",
-]
+# ── ANSI 颜色常量（从 core.constants 导入，消除重复定义） ──
+from ..core.constants import (
+    GRAY, WHITE, CYAN, GREEN, YELLOW, RED, BLUE, MAGENTA,
+    BOLD, DIM, RESET, ITALIC, UNDERLINE,
+    BRIGHT_CYAN, BRIGHT_GREEN, BRIGHT_YELLOW, BRIGHT_BLUE,
+    BRIGHT_MAGENTA, BRIGHT_RED, BRIGHT_WHITE, BRIGHT_BLACK,
+    BG_BLUE, BG_CYAN, BG_GREEN, BG_YELLOW,
+    ORANGE, TEAL, PINK, LAVENDER,
+    SOFT_GREEN, SOFT_BLUE, SOFT_YELLOW, DARK_GRAY,
+)
 
 # ── ANSI 转义序列清洗 ───────────────────────────────────
 # 完整版：覆盖 CSI/OSC/DCS/APC 全部 ANSI 序列
@@ -148,72 +146,6 @@ def truncate_ansi_sgr(text: str, max_width: int, *, from_end: bool = False) -> s
     return text[:i] + "\033[0m"
 
 
-GRAY: str = "\033[90m"
-WHITE: str = "\033[37m"
-CYAN: str = "\033[36m"
-GREEN: str = "\033[32m"
-YELLOW: str = "\033[33m"
-RED: str = "\033[31m"
-BLUE: str = "\033[34m"
-MAGENTA: str = "\033[35m"
-BOLD: str = "\033[1m"
-DIM: str = "\033[2m"
-RESET: str = "\033[0m"
-ITALIC: str = "\033[3m"
-UNDERLINE: str = "\033[4m"
-BRIGHT_CYAN: str = "\033[96m"
-BRIGHT_GREEN: str = "\033[92m"
-BRIGHT_YELLOW: str = "\033[93m"
-BRIGHT_BLUE: str = "\033[94m"
-BRIGHT_MAGENTA: str = "\033[95m"
-BRIGHT_WHITE: str = "\033[97m"
-BG_BLUE: str = "\033[44m"
-BG_CYAN: str = "\033[46m"
-BG_GREEN: str = "\033[42m"
-BG_YELLOW: str = "\033[43m"
-ORANGE: str = YELLOW
-TEAL: str = CYAN
-PINK: str = MAGENTA
-LAVENDER: str = BRIGHT_MAGENTA
-SOFT_GREEN: str = "\033[92m"
-SOFT_BLUE: str = "\033[94m"
-SOFT_YELLOW: str = "\033[93m"
-DARK_GRAY: str = GRAY
-
-# 静态分析辅助：为 globals() 动态赋值的变量提供类型声明，消除静态分析盲区
-if TYPE_CHECKING:
-    GRAY: str = ""
-    WHITE: str = ""
-    CYAN: str = ""
-    GREEN: str = ""
-    YELLOW: str = ""
-    RED: str = ""
-    BLUE: str = ""
-    MAGENTA: str = ""
-    BOLD: str = ""
-    DIM: str = ""
-    RESET: str = ""
-    ITALIC: str = ""
-    UNDERLINE: str = ""
-    BRIGHT_CYAN: str = ""
-    BRIGHT_GREEN: str = ""
-    BRIGHT_YELLOW: str = ""
-    BRIGHT_BLUE: str = ""
-    BRIGHT_MAGENTA: str = ""
-    BRIGHT_WHITE: str = ""
-    BG_BLUE: str = ""
-    BG_CYAN: str = ""
-    BG_GREEN: str = ""
-    BG_YELLOW: str = ""
-    ORANGE: str = ""
-    TEAL: str = ""
-    PINK: str = ""
-    LAVENDER: str = ""
-    SOFT_GREEN: str = ""
-    SOFT_BLUE: str = ""
-    SOFT_YELLOW: str = ""
-    DARK_GRAY: str = ""
-
 # ── ANSI-aware 行截断（终端宽度自适应） ─────────────────
 
 
@@ -254,7 +186,16 @@ def truncate_ansi_line(text: str, max_width: int) -> str:
     return ''.join(result)
 
 
-__all__: list[str] = list(_COLOR_NAMES) + [
+__all__: list[str] = [
+    # 颜色常量（从 core.constants re-export，向后兼容）
+    "GRAY", "WHITE", "CYAN", "GREEN", "YELLOW", "RED", "BLUE", "MAGENTA",
+    "BOLD", "DIM", "RESET", "ITALIC", "UNDERLINE",
+    "BRIGHT_CYAN", "BRIGHT_GREEN", "BRIGHT_YELLOW", "BRIGHT_BLUE",
+    "BRIGHT_MAGENTA", "BRIGHT_RED", "BRIGHT_WHITE", "BRIGHT_BLACK",
+    "BG_BLUE", "BG_CYAN", "BG_GREEN", "BG_YELLOW",
+    "ORANGE", "TEAL", "PINK", "LAVENDER",
+    "SOFT_GREEN", "SOFT_BLUE", "SOFT_YELLOW", "DARK_GRAY",
+    # 工具函数
     "strip_ansi", "visual_width", "truncate_ansi_visual",
     "skip_ansi_sgr", "truncate_ansi_sgr",
     "truncate_ansi_line",

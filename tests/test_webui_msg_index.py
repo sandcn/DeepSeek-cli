@@ -488,7 +488,7 @@ class TestAssignMsgIndex:
         assert sent_msg.get("msg_index") == 0
 
     async def test_unknown_type_passes_through(self):
-        """未知类型没有 handler，但 ws_send 仍被调用。"""
+        """未知类型没有 handler，但 ws_send 仍被调用，且 msg_index 被设为默认值 nsl。"""
         msg = {"type": "unknown_type", "data": "test"}
         state = MsgIndexState()
         sent = []
@@ -497,8 +497,8 @@ class TestAssignMsgIndex:
             sent.append(m)
 
         await assign_msg_index(msg, state, [], fake_send)
-        # 没有 handler，msg_index 不会被设置
-        assert "msg_index" not in msg
+        # 没有 handler，msg_index 设为 nsl（当前非系统消息数量）作为默认值
+        assert msg["msg_index"] == 0
         assert len(sent) == 1
 
     async def test_handler_exception_logged_and_msg_sent(self):
@@ -535,3 +535,99 @@ class TestAssignMsgIndex:
         await assign_msg_index(msg, state, messages, fake_send)
         # non_system_len = 2 (user + assistant)
         assert msg["msg_index"] == 2
+
+
+# ═══════════════════════════════════════════════════════════════
+# _rebuild_message_indices — tool 角色支持
+# ═══════════════════════════════════════════════════════════════
+
+from src.webui.ws_handler.utils import _rebuild_message_indices
+
+
+class TestRebuildMessageIndices:
+    """_rebuild_message_indices 对 tool 角色的 msg_index 分配
+
+    修复背景: P2 Bug — _rebuild_message_indices 只处理 user/assistant 角色，
+    遗漏 tool 角色。 /clear /editmsg 后 tool 消息缺少 msg_index，
+    前端无法正确渲染。
+    """
+
+    def test_tool_message_gets_msg_index(self):
+        """tool 角色消息获得 msg_index"""
+        messages = [
+            {"role": "system", "content": "sys"},
+            {"role": "user", "content": "hello"},
+            {"role": "assistant", "content": "hi"},
+            {"role": "tool", "content": "result", "tool_call_id": "call_1"},
+        ]
+        rebuilt = _rebuild_message_indices(messages)
+        # 第 4 条（索引 3 的非 system 消息中 tool 是第 3 条）
+        tool_msg = rebuilt[2]  # non_system 过滤后：user(0), assistant(1), tool(2)
+        assert tool_msg["role"] == "tool"
+        assert "msg_index" in tool_msg
+        assert tool_msg["msg_index"] == 2
+        # tool_call_id 应保留
+        assert tool_msg.get("tool_call_id") == "call_1"
+
+    def test_multiple_tool_messages(self):
+        """多个 tool 消息各自获得正确的 msg_index"""
+        messages = [
+            {"role": "user", "content": "q1"},
+            {"role": "assistant", "content": "a1"},
+            {"role": "tool", "content": "t1", "tool_call_id": "c1"},
+            {"role": "tool", "content": "t2", "tool_call_id": "c2"},
+        ]
+        rebuilt = _rebuild_message_indices(messages)
+        assert rebuilt[2]["msg_index"] == 2  # 第 1 个 tool
+        assert rebuilt[3]["msg_index"] == 3  # 第 2 个 tool
+
+    def test_user_message_gets_msg_index(self):
+        """user 角色消息获得 msg_index"""
+        messages = [
+            {"role": "user", "content": "hello"},
+        ]
+        rebuilt = _rebuild_message_indices(messages)
+        assert rebuilt[0]["msg_index"] == 0
+
+    def test_assistant_message_gets_indexes(self):
+        """assistant 角色消息获得 content_msg_index 和 reasoning_msg_index"""
+        messages = [
+            {"role": "assistant", "content": "reply"},
+        ]
+        rebuilt = _rebuild_message_indices(messages)
+        assert rebuilt[0]["content_msg_index"] == 0
+        assert rebuilt[0]["reasoning_msg_index"] == 0
+
+    def test_assistant_with_tool_calls(self):
+        """assistant 的 tool_calls 中各条目也获得 msg_index"""
+        messages = [
+            {"role": "assistant", "content": None, "tool_calls": [
+                {"id": "call_1", "type": "function", "function": {"name": "search"}},
+            ]},
+        ]
+        rebuilt = _rebuild_message_indices(messages)
+        assert rebuilt[0]["tool_calls"][0]["msg_index"] == 0
+
+    def test_system_messages_filtered(self):
+        """system 消息被过滤，不影响索引"""
+        messages = [
+            {"role": "system", "content": "sys"},
+            {"role": "user", "content": "hello"},
+            {"role": "system", "content": "sys2"},
+            {"role": "assistant", "content": "reply"},
+        ]
+        rebuilt = _rebuild_message_indices(messages)
+        assert len(rebuilt) == 2  # 只有 user 和 assistant
+        assert rebuilt[0]["msg_index"] == 0
+        assert rebuilt[1]["content_msg_index"] == 1
+
+    def test_shallow_copy_preserves_fields(self):
+        """浅拷贝保留原始消息的所有字段"""
+        messages = [
+            {"role": "tool", "content": "result", "tool_call_id": "call_1",
+             "extra_field": "should_be_preserved"},
+        ]
+        rebuilt = _rebuild_message_indices(messages)
+        assert rebuilt[0]["extra_field"] == "should_be_preserved"
+        assert rebuilt[0]["tool_call_id"] == "call_1"
+        assert "msg_index" in rebuilt[0]
