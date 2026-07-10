@@ -3,3 +3,7 @@ from __future__ import annotations
 
 from ._message_stats_cache import *
 from ._sandbox_history import *
+
+__all__ = [
+    "MessageStatsCache", "FileSnapshot",
+]

@@ -56,14 +56,17 @@ _PRIOR_HINT_MERGE = (
 )
 
 
-def build_summary_prompt(messages_to_compress, has_prior_summary):
+def build_summary_prompt(messages_to_compress, has_prior_summary,
+                         summary_token_budget=None):
     """构建结构化摘要 prompt。"""
     n = len(messages_to_compress)
     if n == 0:
         return ""
 
-    from ..config import SUMMARY_TOKEN_BUDGET  # 配置常量 — 函数体内延迟导入
-    budget_chars = int(SUMMARY_TOKEN_BUDGET * 1.5)
+    if summary_token_budget is None:
+        from ..config import SUMMARY_TOKEN_BUDGET  # 兼容回退
+        summary_token_budget = SUMMARY_TOKEN_BUDGET
+    budget_chars = int(summary_token_budget * 1.5)
     per_msg = max(200, budget_chars // n)
 
     lines = []

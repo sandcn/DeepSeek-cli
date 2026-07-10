@@ -20,8 +20,8 @@ from .constants import YELLOW, RESET, audit_log as _log
 from . import context_selector as selector
 from .context_selector import MessageStatsCache
 from .compression import CompressionResult, CompressionStrategy, SummarizeStrategy, DropStrategy  # noqa: F401 — re-exported for backward compat
-
-
+from ..core.ports.config import ConfigPort
+from ..core.adapters.config import DefaultConfigAdapter
 from ..core.ports.output import get_default_output_port as _get_out  # noqa: E402
 
 
@@ -54,7 +54,8 @@ class ContextManager:
 
     def __init__(self, messages, model, summarize_fn=None,
                  on_messages_changed=None,
-                 strategies: Optional[list[CompressionStrategy]] = None):
+                 strategies: Optional[list[CompressionStrategy]] = None,
+                 config_port: Optional[ConfigPort] = None):
         self.messages = messages
         self.model = model
         self._on_changed = on_messages_changed
@@ -63,6 +64,7 @@ class ContextManager:
             summarize_fn = call_model_sync
         self._summarize_fn = summarize_fn
         self._lock = threading.RLock()
+        self._config_port = config_port or DefaultConfigAdapter()
 
         # 增量统计缓存（惰性同步）
         self._cache = MessageStatsCache()
@@ -139,9 +141,20 @@ class ContextManager:
 
     def _should_compress(self, force, total_chars_val, total_tokens_val):
         """判断是否应该执行压缩，返回 (force, 是否压缩)。"""
-        if not force and selector.should_auto_force_values(total_chars_val, total_tokens_val):
+        max_context_chars = self._config_port.get_max_context_chars()
+        max_context_tokens = self._config_port.get_max_context_tokens()
+        auto_force_threshold = self._config_port.get_auto_force_compress_threshold()
+        if not force and selector.should_auto_force_values(
+            total_chars_val, total_tokens_val,
+            auto_force_threshold=auto_force_threshold,
+            max_context_tokens=max_context_tokens,
+        ):
             force = True
-        if force or selector.exceeds_limit_values(total_chars_val, total_tokens_val):
+        if force or selector.exceeds_limit_values(
+            total_chars_val, total_tokens_val,
+            max_context_chars=max_context_chars,
+            max_context_tokens=max_context_tokens,
+        ):
             return force, True
         return force, False
 
@@ -167,13 +180,13 @@ class ContextManager:
         Returns:
             删除的消息数，0 表示未执行删除
         """
-        from ..config import MAX_SESSION_MESSAGES  # 配置常量 — 函数体内延迟导入
+        max_session_messages = self._config_port.get_max_session_messages()
         with self._lock:
             messages = self.messages
-            if MAX_SESSION_MESSAGES <= 0 or len(messages) <= MAX_SESSION_MESSAGES:
+            if max_session_messages <= 0 or len(messages) <= max_session_messages:
                 return 0
 
-            need = len(messages) - MAX_SESSION_MESSAGES
+            need = len(messages) - max_session_messages
             unpinned_indices = []
             for i in range(1, len(messages)):
                 if len(unpinned_indices) >= need:
@@ -200,9 +213,9 @@ class ContextManager:
 
             self._notify_changed({"type": "remove", "indices": unpinned_indices})
 
-            _log("SESSION_LIMIT", f"删除 {removed} 条消息以保持限制 ({MAX_SESSION_MESSAGES})")
+            _log("SESSION_LIMIT", f"删除 {removed} 条消息以保持限制 ({max_session_messages})")
             _get_out().write(
-                f"{YELLOW}消息数达到限制 ({MAX_SESSION_MESSAGES})，已删除 {removed} 条{RESET}",
+                f"{YELLOW}消息数达到限制 ({max_session_messages})，已删除 {removed} 条{RESET}",
                 level="raw",
                 source="context",
             )
@@ -216,15 +229,15 @@ class ContextManager:
 
         无锁读取缓存值，适合 UI 渲染调用。
         """
-        from ..config import MAX_CONTEXT_CHARS  # 配置常量 — 函数体内延迟导入
-        if not self.messages or MAX_CONTEXT_CHARS <= 0:
+        max_context_chars = self._config_port.get_max_context_chars()
+        if not self.messages or max_context_chars <= 0:
             return ""
 
         chars = self._hint_chars
         if chars <= 0:
             return ""
 
-        pct = chars / MAX_CONTEXT_CHARS * 100
+        pct = chars / max_context_chars * 100
         if pct >= 90:
             return f"上下文 {pct:.0f}% /compress"
         elif pct >= 80:

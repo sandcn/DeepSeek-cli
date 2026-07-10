@@ -29,46 +29,66 @@ def compute_message_stats(messages):
     return total_chars_val, total_tokens_val
 
 
-def exceeds_limit_values(total_chars_val, total_tokens_val):
+def exceeds_limit_values(total_chars_val, total_tokens_val,
+                         max_context_chars=None, max_context_tokens=None):
     """使用预计算的值检查是否超出限制。"""
-    from ..config import MAX_CONTEXT_CHARS, MAX_CONTEXT_TOKENS  # 配置常量 — 函数体内延迟导入
-    if MAX_CONTEXT_CHARS > 0 and total_chars_val > MAX_CONTEXT_CHARS:
+    if max_context_chars is None:
+        from ..config import MAX_CONTEXT_CHARS  # 兼容回退
+        max_context_chars = MAX_CONTEXT_CHARS
+    if max_context_tokens is None:
+        from ..config import MAX_CONTEXT_TOKENS  # 兼容回退
+        max_context_tokens = MAX_CONTEXT_TOKENS
+    if max_context_chars > 0 and total_chars_val > max_context_chars:
         return True
-    if MAX_CONTEXT_TOKENS > 0 and total_tokens_val > MAX_CONTEXT_TOKENS:
+    if max_context_tokens > 0 and total_tokens_val > max_context_tokens:
         return True
     return False
 
 
-def should_auto_force_values(total_chars_val, total_tokens_val):
+def should_auto_force_values(total_chars_val, total_tokens_val,
+                              auto_force_threshold=None, max_context_tokens=None):
     """使用预计算的值检查是否应自动全量压缩。"""
-    from ..config import AUTO_FORCE_COMPRESS_THRESHOLD, MAX_CONTEXT_TOKENS  # 配置常量 — 函数体内延迟导入
-    if AUTO_FORCE_COMPRESS_THRESHOLD > 0:
-        if total_chars_val > AUTO_FORCE_COMPRESS_THRESHOLD:
+    if auto_force_threshold is None:
+        from ..config import AUTO_FORCE_COMPRESS_THRESHOLD  # 兼容回退
+        auto_force_threshold = AUTO_FORCE_COMPRESS_THRESHOLD
+    if max_context_tokens is None:
+        from ..config import MAX_CONTEXT_TOKENS  # 兼容回退
+        max_context_tokens = MAX_CONTEXT_TOKENS
+    if auto_force_threshold > 0:
+        if total_chars_val > auto_force_threshold:
             return True
         # token 使用独立阈值估算（按 1 token ≈ 2 字符折算）
-        TOKEN_FORCE_THRESHOLD = AUTO_FORCE_COMPRESS_THRESHOLD // 2
-        if MAX_CONTEXT_TOKENS > 0 and total_tokens_val > TOKEN_FORCE_THRESHOLD:
+        TOKEN_FORCE_THRESHOLD = auto_force_threshold // 2
+        if max_context_tokens > 0 and total_tokens_val > TOKEN_FORCE_THRESHOLD:
             return True
     return False
 
 
-def calc_excess_chars_values(total_chars_val, total_tokens_val):
+def calc_excess_chars_values(total_chars_val, total_tokens_val,
+                              max_context_chars=None, max_context_tokens=None):
     """使用预计算的值计算需要释放的字符数。"""
-    from ..config import MAX_CONTEXT_CHARS, MAX_CONTEXT_TOKENS  # 配置常量 — 函数体内延迟导入
-    char_excess = max(0, total_chars_val - MAX_CONTEXT_CHARS) if MAX_CONTEXT_CHARS > 0 else 0
+    if max_context_chars is None:
+        from ..config import MAX_CONTEXT_CHARS  # 兼容回退
+        max_context_chars = MAX_CONTEXT_CHARS
+    if max_context_tokens is None:
+        from ..config import MAX_CONTEXT_TOKENS  # 兼容回退
+        max_context_tokens = MAX_CONTEXT_TOKENS
+    char_excess = max(0, total_chars_val - max_context_chars) if max_context_chars > 0 else 0
     tok_excess_chars = 0
-    if MAX_CONTEXT_TOKENS > 0:
-        tok_excess = total_tokens_val - MAX_CONTEXT_TOKENS
+    if max_context_tokens > 0:
+        tok_excess = total_tokens_val - max_context_tokens
         tok_excess_chars = int(tok_excess * 1.5) if tok_excess > 0 else 0
     return max(char_excess, tok_excess_chars)
 
 
-def calc_usage_percent_values(total_chars_val):
+def calc_usage_percent_values(total_chars_val, max_context_chars=None):
     """使用预计算的值计算上下文使用百分比。"""
-    from ..config import MAX_CONTEXT_CHARS  # 配置常量 — 函数体内延迟导入
-    if MAX_CONTEXT_CHARS <= 0:
+    if max_context_chars is None:
+        from ..config import MAX_CONTEXT_CHARS  # 兼容回退
+        max_context_chars = MAX_CONTEXT_CHARS
+    if max_context_chars <= 0:
         return 0.0
-    return total_chars_val / MAX_CONTEXT_CHARS * 100
+    return total_chars_val / max_context_chars * 100
 
 
 # ── 消息文本提取 ──────────────────────────────────────────

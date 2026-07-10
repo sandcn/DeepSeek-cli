@@ -35,7 +35,6 @@ from .middleware.state_machine import StateMachineMiddleware
 # from ..api.stats import get_token_stats, get_session_start_time
 from ..core.ports import PersistencePort, CheckpointPort, ConfigPort
 from ..core.ports.observability import ObservabilityPort
-from ..core.adapters.persistence import JsonFilePersistence, JsonFileCheckpoint
 from ..core.adapters.config import DefaultConfigAdapter
 from ..core.adapters.observability import DefaultObservabilityAdapter
 from ..core.ports.null import _NullPort, _NullOutputPort  # noqa: F401 — re-exported
@@ -91,8 +90,16 @@ class ChatSession:
             self._observability_port = DefaultObservabilityAdapter()
 
         # ── 端口注入（默认适配器保持向后兼容） ──────────
-        self._persistence_port = persistence_port or JsonFilePersistence()
-        self._checkpoint_port = checkpoint_port or JsonFileCheckpoint()
+        if persistence_port is not None:
+            self._persistence_port = persistence_port
+        else:
+            from ..core.adapters.persistence import JsonFilePersistence
+            self._persistence_port = JsonFilePersistence()
+        if checkpoint_port is not None:
+            self._checkpoint_port = checkpoint_port
+        else:
+            from ..core.adapters.persistence import JsonFileCheckpoint
+            self._checkpoint_port = JsonFileCheckpoint()
         self._config_port = config_port or DefaultConfigAdapter()
 
         # ── 核心对象 ──────────────────────────────────────
@@ -344,6 +351,7 @@ class ChatSession:
             messages=self._agent.messages,
             model=self._model,
             on_messages_changed=_sandbox_callback,
+            config_port=self._config_port,
         )
         self._agent.context_manager = self._ctx_mgr
 

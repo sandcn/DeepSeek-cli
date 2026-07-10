@@ -63,6 +63,34 @@ class ConfigProxy(ConfigPort):
         from src.config.schema import _parse_config_value
         return bool(_parse_config_value(key, self.get(key, default)))
 
+    # ── 上下文压缩配置 ──────────────────────────────────
+
+    def get_max_context_chars(self) -> int:
+        return _config.MAX_CONTEXT_CHARS
+
+    def get_max_context_tokens(self) -> int:
+        return _config.MAX_CONTEXT_TOKENS
+
+    def get_max_session_messages(self) -> int:
+        return _config.MAX_SESSION_MESSAGES
+
+    def get_keep_recent_messages(self) -> int:
+        return _config.KEEP_RECENT_MESSAGES
+
+    def get_auto_force_compress_threshold(self) -> int:
+        return _config.AUTO_FORCE_COMPRESS_THRESHOLD
+
+    def get_summary_token_budget(self) -> int:
+        return _config.SUMMARY_TOKEN_BUDGET
+
+    # ── 并行执行配置 ──────────────────────────────────
+
+    def get_stagger_min_delay(self) -> float:
+        return _config.STAGGER_MIN_DELAY
+
+    def get_stagger_max_delay(self) -> float:
+        return _config.STAGGER_MAX_DELAY
+
     # ── @property 属性（向后兼容） ──────────────────────
 
     @property

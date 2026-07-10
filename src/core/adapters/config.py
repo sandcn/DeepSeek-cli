@@ -51,6 +51,42 @@ class DefaultConfigAdapter(ConfigPort):
             return value.lower() in ("true", "1", "yes", "on")
         return bool(value)
 
+    # ── 上下文压缩配置 ──────────────────────────────────
+
+    def get_max_context_chars(self) -> int:
+        from ...config import MAX_CONTEXT_CHARS
+        return MAX_CONTEXT_CHARS
+
+    def get_max_context_tokens(self) -> int:
+        from ...config import MAX_CONTEXT_TOKENS
+        return MAX_CONTEXT_TOKENS
+
+    def get_max_session_messages(self) -> int:
+        from ...config import MAX_SESSION_MESSAGES
+        return MAX_SESSION_MESSAGES
+
+    def get_keep_recent_messages(self) -> int:
+        from ...config import KEEP_RECENT_MESSAGES
+        return KEEP_RECENT_MESSAGES
+
+    def get_auto_force_compress_threshold(self) -> int:
+        from ...config import AUTO_FORCE_COMPRESS_THRESHOLD
+        return AUTO_FORCE_COMPRESS_THRESHOLD
+
+    def get_summary_token_budget(self) -> int:
+        from ...config import SUMMARY_TOKEN_BUDGET
+        return SUMMARY_TOKEN_BUDGET
+
+    # ── 并行执行配置 ──────────────────────────────────
+
+    def get_stagger_min_delay(self) -> float:
+        from ...config import STAGGER_MIN_DELAY
+        return STAGGER_MIN_DELAY
+
+    def get_stagger_max_delay(self) -> float:
+        from ...config import STAGGER_MAX_DELAY
+        return STAGGER_MAX_DELAY
+
 
 class MockConfigAdapter(ConfigPort):
     """模拟配置适配器 — 用于测试
@@ -101,3 +137,31 @@ class MockConfigAdapter(ConfigPort):
         if isinstance(value, str):
             return value.lower() in ("true", "1", "yes", "on")
         return bool(value)
+
+    # ── 上下文压缩配置 ──────────────────────────────────
+
+    def get_max_context_chars(self) -> int:
+        return int(self._data.get("max_context_chars", 60000))
+
+    def get_max_context_tokens(self) -> int:
+        return int(self._data.get("max_context_tokens", 60000))
+
+    def get_max_session_messages(self) -> int:
+        return int(self._data.get("max_session_messages", 0))
+
+    def get_keep_recent_messages(self) -> int:
+        return int(self._data.get("keep_recent_messages", 0))
+
+    def get_auto_force_compress_threshold(self) -> int:
+        return int(self._data.get("auto_force_compress_threshold", 60000))
+
+    def get_summary_token_budget(self) -> int:
+        return int(self._data.get("summary_token_budget", 2000))
+
+    # ── 并行执行配置 ──────────────────────────────────
+
+    def get_stagger_min_delay(self) -> float:
+        return float(self._data.get("stagger_min_delay", 0.1))
+
+    def get_stagger_max_delay(self) -> float:
+        return float(self._data.get("stagger_max_delay", 0.5))

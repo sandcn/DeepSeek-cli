@@ -11,6 +11,9 @@ from src.config.defaults import (
     DEFAULTS,
 )
 
+from src.core.ports.config import ConfigPort
+from src.core.adapters.config import DefaultConfigAdapter, MockConfigAdapter
+
 
 # ═══════════════════════════════════════════════════════════════
 # CONFIG_DIR 路径测试
@@ -331,3 +334,83 @@ class TestTypes:
     def test_model_key_is_string(self):
         """DEFAULTS.model 是 str"""
         assert isinstance(DEFAULTS["model"], str)
+
+
+# ═══════════════════════════════════════════════════════════════
+# ConfigPort 适配器测试
+# ═══════════════════════════════════════════════════════════════
+
+class TestConfigPortNewMethods:
+    """ConfigPort 新增方法验证 — DefaultConfigAdapter & MockConfigAdapter"""
+
+    def setup_method(self):
+        self.dca = DefaultConfigAdapter()
+        self.mca = MockConfigAdapter()
+
+    # ── DefaultConfigAdapter ─────────────────────────────────
+
+    def test_default_adapter_get_max_context_chars(self):
+        """DefaultConfigAdapter.get_max_context_chars() > 0"""
+        assert self.dca.get_max_context_chars() > 0
+
+    def test_default_adapter_get_max_context_tokens(self):
+        """DefaultConfigAdapter.get_max_context_tokens() > 0"""
+        assert self.dca.get_max_context_tokens() > 0
+
+    def test_default_adapter_get_max_session_messages(self):
+        """DefaultConfigAdapter.get_max_session_messages() >= 0"""
+        assert self.dca.get_max_session_messages() >= 0
+
+    def test_default_adapter_get_summary_token_budget(self):
+        """DefaultConfigAdapter.get_summary_token_budget() > 0"""
+        assert self.dca.get_summary_token_budget() > 0
+
+    def test_default_adapter_get_stagger_delays(self):
+        """DefaultConfigAdapter.get_stagger_*_delay() > 0"""
+        assert self.dca.get_stagger_min_delay() > 0
+        assert self.dca.get_stagger_max_delay() > 0
+        assert self.dca.get_stagger_max_delay() >= self.dca.get_stagger_min_delay()
+
+    # ── MockConfigAdapter 默认值 ────────────────────────────
+
+    def test_mock_adapter_default_values(self):
+        """MockConfigAdapter 新方法返回合理的默认值"""
+        assert self.mca.get_max_context_chars() == 60000
+        assert self.mca.get_max_context_tokens() == 60000
+        assert self.mca.get_max_session_messages() == 0
+        assert self.mca.get_keep_recent_messages() == 0
+        assert self.mca.get_auto_force_compress_threshold() == 60000
+        assert self.mca.get_summary_token_budget() == 2000
+        assert self.mca.get_stagger_min_delay() == 0.1
+        assert self.mca.get_stagger_max_delay() == 0.5
+
+    # ── MockConfigAdapter 自定义值 ──────────────────────────
+
+    def test_mock_adapter_custom_values(self):
+        """MockConfigAdapter(initial={...}) 返回自定义值"""
+        mca = MockConfigAdapter({
+            "max_context_chars": 100000,
+            "max_context_tokens": 80000,
+            "max_session_messages": 100,
+            "keep_recent_messages": 20,
+            "auto_force_compress_threshold": 80000,
+            "summary_token_budget": 4000,
+            "stagger_min_delay": 0.05,
+            "stagger_max_delay": 0.3,
+        })
+        assert mca.get_max_context_chars() == 100000
+        assert mca.get_max_context_tokens() == 80000
+        assert mca.get_max_session_messages() == 100
+        assert mca.get_keep_recent_messages() == 20
+        assert mca.get_auto_force_compress_threshold() == 80000
+        assert mca.get_summary_token_budget() == 4000
+        assert mca.get_stagger_min_delay() == 0.05
+        assert mca.get_stagger_max_delay() == 0.3
+
+    # ── 抽象方法强制验证 ────────────────────────────────────
+
+    def test_config_port_is_abstract(self):
+        """ConfigPort 是 ABC，无法直接实例化"""
+        import inspect
+        assert inspect.isabstract(ConfigPort)
+

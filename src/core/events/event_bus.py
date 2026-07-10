@@ -11,6 +11,8 @@ import time
 from collections import defaultdict
 from typing import Any, Callable
 
+from functools import wraps
+
 from .event_types import CoreEvent, EventPriority
 
 _logger = logging.getLogger(__name__)
@@ -107,6 +109,36 @@ class CoreEventBus:
             timestamp=time.time(),
         )
         return self._dispatch(event)
+
+    # ── CoreHooks 兼容接口 ──────────────────────────────
+
+    def on(self, event_type: str, callback: Callable) -> None:
+        """注册事件回调（CoreHooks 兼容接口）。
+
+        将 CoreHooks 风格的 `cb(**data)` 包装为 `handler(event)`。
+        """
+        from functools import wraps
+
+        @wraps(callback)
+        def _handler(event: CoreEvent) -> None:
+            callback(**event.data)
+
+        # 存储包装引用，供 off() 移除时使用
+        if not hasattr(self, '_on_compat_map'):
+            self._on_compat_map: dict[Callable, Callable] = {}
+        self._on_compat_map[callback] = _handler
+        self.subscribe(event_type, _handler, EventPriority.NORMAL)
+
+    def off(self, event_type: str, callback: Callable) -> None:
+        """移除事件回调（CoreHooks 兼容接口）。"""
+        compat_map = getattr(self, '_on_compat_map', {})
+        wrapped = compat_map.pop(callback, callback)
+        self.unsubscribe(event_type, wrapped)
+
+    def _emit(self, event_type: str, **data) -> bool:
+        """触发事件（CoreHooks 兼容接口）。"""
+        self.publish(event_type, data)
+        return True
 
     def _dispatch(self, event: CoreEvent) -> int:
         """将事件分发给所有匹配的处理器"""

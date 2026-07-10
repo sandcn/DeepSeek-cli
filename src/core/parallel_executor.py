@@ -72,11 +72,13 @@ class ParallelExecutor:
     - 最后一个注册的协程触发执行
     """
 
-    def __init__(self, parent_agent, max_history: int = 3, agent_factory=None, is_web: bool = False):
+    def __init__(self, parent_agent, max_history: int = 3, agent_factory=None,
+                 is_web: bool = False, config_port=None):
         self.parent = parent_agent
         self.max_history = max_history
         self._agent_factory = agent_factory or SubAgent
         self._is_web = is_web
+        self._config_port = config_port
 
         # SubAgent 创建 + 显示委托
         self._spawner = SubAgentSpawner(parent_agent, self._agent_factory, is_web)
@@ -530,11 +532,15 @@ class ParallelExecutor:
 
     async def _run_one(self, sa: SubAgent, display: ParallelDisplay, stagger: int = 0) -> Dict[str, Any]:
         if stagger > 0:
-            # 配置常量 — 函数体内延迟导入
-            from ..config import STAGGER_MIN_DELAY, STAGGER_MAX_DELAY
+            if self._config_port is not None:
+                stagger_min = self._config_port.get_stagger_min_delay()
+                stagger_max = self._config_port.get_stagger_max_delay()
+            else:
+                from ..config import STAGGER_MIN_DELAY, STAGGER_MAX_DELAY  # 兼容回退
+                stagger_min, stagger_max = STAGGER_MIN_DELAY, STAGGER_MAX_DELAY
             # 限制最大总延迟不超过 STAGGER_MAX_DELAY，避免大量并发时线性累积
-            base = random.uniform(STAGGER_MIN_DELAY, STAGGER_MAX_DELAY)
-            delay = min(stagger * base, STAGGER_MAX_DELAY * 3)
+            base = random.uniform(stagger_min, stagger_max)
+            delay = min(stagger * base, stagger_max * 3)
             await asyncio.sleep(delay)
         try:
             from ..ui.events import DisplayEventBus as _DisplayEventBus

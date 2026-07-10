@@ -59,3 +59,47 @@ class ConfigPort(ABC):
     def get_bool(self, key: str, default: bool = False) -> bool:
         """读取布尔配置项"""
         ...
+
+    # ── 上下文压缩配置 ──────────────────────────────────
+
+    @abstractmethod
+    def get_max_context_chars(self) -> int:
+        """获取 max_context_chars 配置值"""
+        ...
+
+    @abstractmethod
+    def get_max_context_tokens(self) -> int:
+        """获取 max_context_tokens 配置值"""
+        ...
+
+    @abstractmethod
+    def get_max_session_messages(self) -> int:
+        """获取 max_session_messages 配置值（0=无限制）"""
+        ...
+
+    @abstractmethod
+    def get_keep_recent_messages(self) -> int:
+        """获取 keep_recent_messages 配置值"""
+        ...
+
+    @abstractmethod
+    def get_auto_force_compress_threshold(self) -> int:
+        """获取 auto_force_compress_threshold 配置值"""
+        ...
+
+    @abstractmethod
+    def get_summary_token_budget(self) -> int:
+        """获取 summary_token_budget 配置值"""
+        ...
+
+    # ── 并行执行配置 ──────────────────────────────────
+
+    @abstractmethod
+    def get_stagger_min_delay(self) -> float:
+        """获取 stagger_min_delay 配置值（秒）"""
+        ...
+
+    @abstractmethod
+    def get_stagger_max_delay(self) -> float:
+        """获取 stagger_max_delay 配置值（秒）"""
+        ...
