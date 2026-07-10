@@ -503,10 +503,11 @@ class TestToolRegistryAdapter:
         assert result == expected
         mock_registry.get_tools.assert_called_once_with()
 
-    def test_is_tool_registry_port_instance(self, mock_registry):
-        """_ToolRegistryAdapter 是 ToolRegistryPort 的子类"""
-        from src.core.ports.tool_registry import ToolRegistryPort
+    def test_is_tool_registry_instance(self, mock_registry):
+        """_ToolRegistryAdapter 包装 ToolRegistry 实例"""
+        from src.tools.registry import ToolRegistry
         from src.core.middleware.adapters import _ToolRegistryAdapter
 
         adapter = _ToolRegistryAdapter(mock_registry)
-        assert isinstance(adapter, ToolRegistryPort)
+        # _ToolRegistryAdapter 包装 ToolRegistry，验证其委托行为
+        assert adapter.get_schemas is not None

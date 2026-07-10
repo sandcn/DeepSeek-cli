@@ -46,6 +46,10 @@ _MOCK_MODULES = {
     ),
     'src.core': MagicMock(),
     'src.core.ports': MagicMock(),
+    'src.core.adapters': MagicMock(),
+    'src.core.adapters.output': MagicMock(
+        get_default_output_port=MagicMock(return_value=_output_port_mock),
+    ),
     'src.core.ports.output': MagicMock(
         get_default_output_port=MagicMock(return_value=_output_port_mock),
     ),

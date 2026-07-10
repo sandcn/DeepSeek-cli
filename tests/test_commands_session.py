@@ -48,6 +48,7 @@ def _make_mock_module(name, is_package=False, **attrs):
 _make_mock_module('src', is_package=True)
 _make_mock_module('src.core', is_package=True)
 _make_mock_module('src.core.ports', is_package=True)
+_make_mock_module('src.core.adapters', is_package=True)
 _make_mock_module('src.ui', is_package=True)
 _make_mock_module('src.ui.msg_list',
     edit_current_messages=MagicMock(),
@@ -68,6 +69,14 @@ _make_mock_module('src.ui.diff_renderer',
 # ── src.config ────────────────────────────────────────────
 # 通过 __getattr__ 懒加载的配置包也可能导入，仅需暴露 MAX_CONTEXT_CHARS
 _make_mock_module('src.config', MAX_CONTEXT_CHARS=60000, MODEL='deepseek-v4-flash')
+
+# ── src.core.adapters.output ─────────────────────────────────
+_make_mock_module('src.core.adapters.output',
+    get_default_output_port=lambda: _mock_output_instance,
+    DefaultOutputAdapter=type('DefaultOutputAdapter', (), {}),
+    set_default_output_port=lambda p: None,
+    reset_default_output_port=lambda: None,
+)
 
 # ── src.core.ports.output ─────────────────────────────────
 
@@ -265,6 +274,7 @@ def _setup_mocks():
     _make_mock_module('src', is_package=True)
     _make_mock_module('src.core', is_package=True)
     _make_mock_module('src.core.ports', is_package=True)
+    _make_mock_module('src.core.adapters', is_package=True)
     _make_mock_module('src.ui', is_package=True)
     _make_mock_module('src.ui.msg_list',
         edit_current_messages=MagicMock(),
@@ -278,6 +288,12 @@ def _setup_mocks():
         render_diff_to_ansi=lambda path, before, after: f"--- {path}\n+++ {path}\n@@ -1 +1 @@\n-diff",
     )
     _make_mock_module('src.config', MAX_CONTEXT_CHARS=60000, MODEL='deepseek-v4-flash')
+    _make_mock_module('src.core.adapters.output',
+        get_default_output_port=lambda: _mock_output_instance,
+        DefaultOutputAdapter=type('DefaultOutputAdapter', (), {}),
+        set_default_output_port=lambda p: None,
+        reset_default_output_port=lambda: None,
+    )
     _make_mock_module('src.core.ports.output',
         get_default_output_port=lambda: _mock_output_instance,
         OutputPort=type('OutputPort', (), {}),
@@ -894,10 +910,10 @@ class TestModuleRegistration:
 # ── 清理 sys.modules 中的 mock，恢复原始模块 ───────────────
 # 移除被 mock 污染的模块条目，恢复原始模块避免影响其他测试文件的导入
 _MOCKED_MODULE_NAMES = [
-    'src', 'src.core', 'src.core.ports', 'src.ui',
+    'src', 'src.core', 'src.core.ports', 'src.core.adapters', 'src.ui',
     'src.ui.msg_list', 'src.ui.colors', 'src.ui.diff_renderer',
     'src.config',
-    'src.core.ports.output', 'src.core.context_selector',
+    'src.core.adapters.output', 'src.core.ports.output', 'src.core.context_selector',
     'src.core.sandbox_manager', 'src.core.internal._command_core',
     'src.core.message_edit', 'src.core.context_manager',
     'src.core.commands._session_cmd',

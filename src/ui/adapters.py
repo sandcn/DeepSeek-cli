@@ -8,23 +8,18 @@ from __future__ import annotations
 from contextlib import contextmanager
 from typing import Optional
 
-from ..core.ports.display import DisplayPort
 from ..core.ports.events import EventPort
-from ..core.ports.output import OutputPort
 from .events import publish_output
 
 
 class UIDisplayAdapter:
-    """实现 DisplayPort 接口，全部委托给 self._wrapped。
+    """实现显示端口接口，全部委托给 self._wrapped。
 
     有真实逻辑的方法（tool_start/tool_done）保留显式定义，
     其余方法通过 __getattr__ 动态转发到 self._wrapped。
-
-    通过 DisplayPort.register 注册为虚拟子类以绕过 ABC 抽象方法
-    检查（动态转发在类定义时不可见）。
     """
 
-    def __init__(self, wrapped_display: Optional[DisplayPort] = None):
+    def __init__(self, wrapped_display=None):
         self._wrapped = wrapped_display
         self._tool_names: dict[str, str] = {}
 
@@ -46,7 +41,7 @@ class UIDisplayAdapter:
     def __getattr__(self, name: str):
         """动态转发到 self._wrapped。
 
-        捕获 DisplayPort 接口中除显式定义方法外的所有抽象方法调用。
+        捕获显示端口接口中除显式定义方法外的所有方法调用。
         """
         # 防止递归：__getattr__ 在 __init__ 中访问 self._wrapped 时被调用
         if name == '_wrapped':
@@ -58,8 +53,6 @@ class UIDisplayAdapter:
                 return attr
         raise AttributeError(f"'UIDisplayAdapter' has no attribute '{name}'")
 
-
-DisplayPort.register(UIDisplayAdapter)
 
 
 class UIEventAdapter(EventPort):
@@ -114,8 +107,8 @@ class UIEventAdapter(EventPort):
         self._bus.unsubscribe(handler, event_type=event_type)
 
 
-class UIOutputAdapter(OutputPort):
-    """实现 OutputPort 接口，委托给 ui.events.publish_output"""
+class UIOutputAdapter:
+    """默认输出适配器（UI 端），委托给 ui.events.publish_output"""
 
     def __init__(self):
         self._lock = None

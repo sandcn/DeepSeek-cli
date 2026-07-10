@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from ..ports.output import get_default_output_port
+from ..adapters.output import get_default_output_port
 from ..constants import GREEN, YELLOW, DIM, RESET, CYAN
 from ..context_selector import total_chars
 from ..sandbox_manager import get_sandbox_manager

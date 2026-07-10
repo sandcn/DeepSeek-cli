@@ -2,7 +2,7 @@
 
 import os
 from ..constants import GREEN, YELLOW, RED, DIM, RESET, CYAN, filter_system, filter_non_system
-from ..ports.output import get_default_output_port
+from ..adapters.output import get_default_output_port
 from ...config import MODEL
 from ...api.model_async import call_model_sync
 from ...prompt_builder.project_summary import generate_summary_prompt

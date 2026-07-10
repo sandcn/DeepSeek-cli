@@ -22,7 +22,7 @@ from . import context_summarizer as summarizer
 from .constants import format_token_k, audit_log as _log
 
 
-from ..core.ports.output import get_default_output_port as _get_out  # noqa: E402
+from ..core.adapters.output import get_default_output_port as _get_out  # noqa: E402
 
 
 # ═══════════════════════════════════════════════════════════════

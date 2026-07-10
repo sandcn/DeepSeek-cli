@@ -71,6 +71,8 @@ _MOCK_MODULES = {
     'src': MagicMock(),
     'src.core': MagicMock(),
     'src.core.ports': MagicMock(),
+    'src.core.adapters': MagicMock(),
+    'src.core.adapters.output': MagicMock(get_default_output_port=mock_get_default_output_port),
     'src.core.ports.output': MagicMock(get_default_output_port=mock_get_default_output_port),
     'src.core.internal._command_core': _mock_cmd_core,
     'src.config': _mock_config,
@@ -92,7 +94,7 @@ _MOCK_MODULES = {
 # 重要：这些包不在 _MOCK_MODULES 中，以避免被下方的循环用 MagicMock 覆盖
 import types as _types
 _PACKAGE_MODULES: dict[str, object] = {}
-for _pkg in ('src', 'src.core', 'src.core.ports', 'src.core.commands', 'src.core.internal'):
+for _pkg in ('src', 'src.core', 'src.core.ports', 'src.core.adapters', 'src.core.commands', 'src.core.internal'):
     _pm = _types.ModuleType(_pkg)
     _pm.__path__ = []
     _pm.__package__ = _pkg

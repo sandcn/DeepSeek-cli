@@ -233,7 +233,7 @@ class EventBusDisplayProxy(_BaseDisplay):
         ))
 
     def update_agent_status(self, label: str, status: str) -> None:
-        """发布代理状态变更事件（DisplayPort 抽象方法实现）。"""
+        """发布代理状态变更事件（显示抽象方法实现）。"""
         self._bus.publish(AgentStatusChanged(
             label=label, status=status, source=self._source,
         ))

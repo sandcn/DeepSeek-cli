@@ -1,9 +1,9 @@
 """renderer 归档 — 未使用的渲染路径
 
-此目录包含两条未被主渲染路径使用的备选渲染子系统：
+此目录原包含两条备选渲染子系统：
 
-- ast/ — AST 中间表示层（ASTBuilder, ASTOptimizer, ASTRenderer 等）
-- vnode/ — VNode 虚拟渲染节点 + 增量 Diff 引擎（VNodeBuilder, VNodeDiffer, VNodePatcher 等）
+- vnode/ — 已删除（虚拟渲染节点 + 增量 Diff 引擎，零外部引用，2026-07-11）
+- ast/  — 已迁移至 src/renderer/ast/（由 recursive_parser.py 活跃引用，2026-07-11）
 
 主渲染路径使用 IncrementalRenderer → RecursiveDescentParser → TokenPipeline → RenderEngine → OutputAdapter。
 

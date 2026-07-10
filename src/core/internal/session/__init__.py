@@ -1,4 +1,14 @@
-"""会话内部实现 — 消息管理、状态管理、持久化、压缩"""
+"""会话内部实现 — 消息管理、状态管理、持久化、压缩、生命周期编排
+
+子模块:
+- _session_lifecycle       — 生命周期编排（run_round/retry/run_single 等，从 session.py 提取）
+- _session_messages        — 消息操作函数
+- _session_state           — 会话可变状态容器与 CoreHooks
+- _session_compression     — 压缩前置条件验证
+- _session_persistence     — 旧持久化存根（已迁移至 _session_persistence_manager）
+- _session_persistence_manager — 会话持久化管理器
+- _session_messaging_manager   — 消息管理器
+"""
 from __future__ import annotations
 
 from ._session_messages import *
@@ -16,12 +26,6 @@ __all__ = [
     "CoreHooks", "SessionState",
     # _session_compression
     "_validate_compress_preconditions",
-    # _session_persistence
-    "save_session", "load_session_data",
-    "save_checkpoint_session", "clear_checkpoint_session",
-    "has_checkpoint_session", "resume_from_checkpoint_session",
-    "load_checkpoint_data", "safe_save_state",
-    "get_session_ids_fn", "list_sessions_fn",
     # _session_persistence_manager
     "SessionPersistenceManager",
     # _session_messaging_manager

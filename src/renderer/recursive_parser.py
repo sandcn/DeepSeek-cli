@@ -39,8 +39,8 @@ from typing import Optional
 _logger = logging.getLogger(__name__)
 
 from ._block_parser import RegexFreeBlockParser
-from ._archive.ast.builder import ASTBuilder
-from ._archive.ast.types import ASTNode, NodeType
+from .ast.builder import ASTBuilder
+from .ast.types import ASTNode, NodeType
 from .types import RenderContext
 
 

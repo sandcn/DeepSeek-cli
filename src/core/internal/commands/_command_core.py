@@ -9,7 +9,7 @@ from ....api.stats import get_token_stats, get_session_start_time
 from ...constants import format_token_k
 
 
-from ....core.ports.output import get_default_output_port as _get_out  # noqa: E402
+from ....core.adapters.output import get_default_output_port as _get_out  # noqa: E402
 
 # ── 命令注册表 ────────────────────────────────────────
 _commands = {}

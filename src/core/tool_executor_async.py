@@ -13,7 +13,7 @@ import asyncio
 import logging
 from typing import List, Tuple, Optional, Callable
 
-from ..core.ports.tool_registry import ToolRegistryPort
+from ..tools.registry import ToolRegistry
 
 # 延迟导入 ToolDAG（避免循环依赖）
 # from .tool_dag import ToolDAG  — 在方法内延迟导入
@@ -27,7 +27,7 @@ _MAX_CONCURRENT_TOOLS = 20  # 最大并发工具数，防止资源耗尽
 class AsyncToolExecutor:
     """异步工具调用执行器，负责分派和执行工具调用。"""
 
-    def __init__(self, registry: ToolRegistryPort):
+    def __init__(self, registry: ToolRegistry):
         self.registry = registry
         self._semaphore = asyncio.Semaphore(_MAX_CONCURRENT_TOOLS)
 

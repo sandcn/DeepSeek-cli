@@ -14,7 +14,6 @@ import logging
 from typing import Dict, Type, Any, List, Optional
 
 from .base import Func, ToolMetadata, get_tool_metadata
-from ..core.ports.tool_registry import ToolRegistryPort
 from ._constants import TOOL_ABBR
 
 logger = logging.getLogger(__name__)
@@ -29,7 +28,7 @@ _default_registry: Optional['ToolRegistry'] = None
 #   ToolRegistry 类 — 实例化注册表
 # ============================================================
 
-class ToolRegistry(ToolRegistryPort):
+class ToolRegistry:
     """工具注册表 — 实例化管理，不再共享模块级全局状态。"""
 
     def __init__(self, initial_tools: Optional[Dict[str, Type[Func]]] = None):

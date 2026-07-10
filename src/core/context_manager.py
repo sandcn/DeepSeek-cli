@@ -22,7 +22,7 @@ from .context_selector import MessageStatsCache
 from .compression import CompressionResult, CompressionStrategy, SummarizeStrategy, DropStrategy  # noqa: F401 — re-exported for backward compat
 from ..core.ports.config import ConfigPort
 from ..core.adapters.config import DefaultConfigAdapter
-from ..core.ports.output import get_default_output_port as _get_out  # noqa: E402
+from ..core.adapters.output import get_default_output_port as _get_out  # noqa: E402
 
 
 # ═══════════════════════════════════════════════════════════════

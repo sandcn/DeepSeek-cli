@@ -10,8 +10,7 @@ from .pipeline import Pipeline, PipelineContext
 from .tool_executor_async import AsyncToolExecutor
 from ..tools.registry import ToolRegistry
 from ..core.ports import ConfigPort
-from ..core.ports.tool_registry import ToolRegistryPort
-from ..core.ports.prompt_builder import PromptBuilderPort
+from ..core.adapters.prompt_builder import DefaultPromptBuilderAdapter
 from ..core.ports.observability import ObservabilityPort
 from ..core.adapters.interrupt import DefaultInterruptAdapter
 from .middleware.observability import _AsyncObservabilityMiddleware  # noqa: F401 — re-exported
@@ -20,35 +19,7 @@ from .middleware.interrupt import _InterruptCheckMiddleware  # noqa: F401 — re
 from .middleware.adapters import _ToolRegistryAdapter  # noqa: F401 — re-exported
 _logger = logging.getLogger(__name__)
 
-
-# ── 默认适配器工厂 ────────────────────────────────────────
-# 将 __init__ 中重复的 "if X is None: from ... import DefaultX; self._x = DefaultX()" 模式
-# 提取为工厂函数，延迟导入各适配器类以减少模块加载副作用。
-
-def _create_default_ports():
-    """创建默认端口适配器字典（方法体内延迟导入）。"""
-    from ..core.adapters.model import DefaultAsyncModelAdapter
-    from ..core.adapters.config import DefaultConfigAdapter
-    from ..core.adapters.observability import DefaultObservabilityAdapter
-    from ..core.adapters.prompt_builder import DefaultPromptBuilderAdapter
-    from ..core.adapters.display import DefaultDisplayAdapter
-    from ..core.adapters.events import DisplayEventBusAdapter
-    from ..core.adapters.output import DefaultOutputAdapter
-    return {
-        "async_model": DefaultAsyncModelAdapter(),
-        "config": DefaultConfigAdapter(),
-        "observability": DefaultObservabilityAdapter(),
-        "prompt_builder": DefaultPromptBuilderAdapter(),
-        "display": DefaultDisplayAdapter(source="agent"),
-        "events": DisplayEventBusAdapter(source="agent"),
-        "output": DefaultOutputAdapter(),
-        "interrupt": DefaultInterruptAdapter(),
-    }
-
-
-def _resolve_port(value, defaults_dict, key):
-    """辅助：value 不为 None 则返回 value，否则返回 defaults_dict[key]"""
-    return value if value is not None else defaults_dict[key]
+from .agent_di import _create_default_ports, _resolve_port
 
 
 class Agent(BaseAgent):
@@ -76,7 +47,7 @@ class Agent(BaseAgent):
             async_model_port: 异步 AsyncModelPort
                               默认 DefaultAsyncModelAdapter()（异步优先）
                               传入 None 禁用异步路径
-            prompt_builder_port: PromptBuilderPort 实例
+            prompt_builder_port: DefaultPromptBuilderAdapter 实例
             observability_port: ObservabilityPort 实例（可观测性）
                                 默认 DefaultObservabilityAdapter()
         """
@@ -108,8 +79,8 @@ class Agent(BaseAgent):
         # ── ObservabilityPort（可观测性） ────────────────
         self._observability_port = _resolve_port(observability_port, _defaults, "observability")
 
-        # ── ToolRegistryPort 包装 ─────────────────────────
-        self._tool_registry_port: ToolRegistryPort = _ToolRegistryAdapter(self._registry)
+        # ── ToolRegistry 包装 ─────────────────────────
+        self._tool_registry_port: ToolRegistry = _ToolRegistryAdapter(self._registry)
 
         self._async_tool_executor = AsyncToolExecutor(self._registry)
 
@@ -201,12 +172,12 @@ class Agent(BaseAgent):
         """返回当前 AsyncModelPort 实例（供 AsyncSubAgent 等使用）"""
         return self._async_model_port
 
-    def get_tool_registry_port(self) -> ToolRegistryPort:
-        """返回 ToolRegistryPort 实例"""
+    def get_tool_registry_port(self) -> ToolRegistry:
+        """返回 ToolRegistry 实例"""
         return self._tool_registry_port
 
-    def get_prompt_builder_port(self) -> PromptBuilderPort:
-        """返回 PromptBuilderPort 实例"""
+    def get_prompt_builder_port(self) -> DefaultPromptBuilderAdapter:
+        """返回 DefaultPromptBuilderAdapter 实例"""
         return self._prompt_builder_port
 
     def get_config_port(self) -> ConfigPort:

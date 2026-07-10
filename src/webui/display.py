@@ -114,7 +114,7 @@ class WebDisplay(BaseDisplay, BaseWebSocketSender):
         self.send_json(msg_usage_update(label, usage, replace))
 
     # ═══════════════════════════════════════════════════════
-    # 实时指标 — DisplayPort 接口（update_speed / update_live_*）
+    # 实时指标（update_speed / update_live_*）
     # ═══════════════════════════════════════════════════════
 
     def update_speed(self, label: str, speed: float) -> None:

@@ -3,9 +3,9 @@
 
 设计意图：
 ---------
-BaseDisplay 是所有显示层的抽象基类，继承 core/ports/display.py 的 DisplayPort，
-统一核心层端口接口与显示层实现接口。所有具体的显示实现（如终端 TUI、Web UI、
-日志输出等）都必须继承该类并实现全部抽象方法。
+BaseDisplay 是所有显示层的抽象基类，统一核心层与显示层实现接口。
+所有具体的显示实现（如终端 TUI、Web UI、日志输出等）都必须继承该类
+并实现全部抽象方法。
 
 方法分类：
 1. 生命周期控制：start() / stop()        — 显示器的启动与关闭
@@ -16,20 +16,17 @@ BaseDisplay 是所有显示层的抽象基类，继承 core/ports/display.py 的
 6. 代理管理：add_agent / update_agent_status             — 多 Agent 生命周期管理
 """
 
-from abc import abstractmethod
+from abc import ABC, abstractmethod
 from typing import Optional, TYPE_CHECKING
-
-from ..core.ports.display import DisplayPort
 
 if TYPE_CHECKING:
     from .output_target import IOutputTarget
 
 
-class BaseDisplay(DisplayPort):
-    """显示抽象基类 — 同时满足核心层 DisplayPort 契约。
+class BaseDisplay(ABC):
+    """显示抽象基类 — 定义核心层显示契约。
 
     所有显示终端（TUI/Web/日志等）必须继承此类并实现全部抽象方法。
-    继承自 DisplayPort，因此所有子类自动满足核心层端口接口。
     """
 
     def __init__(self, output_target: Optional["IOutputTarget"] = None):
@@ -46,7 +43,7 @@ class BaseDisplay(DisplayPort):
         return self._output_target
 
     # ═══════════════════════════════════════════════════════════
-    # 以下方法继承自 DisplayPort，由子类实现
+    # 以下方法由子类实现
     # ═══════════════════════════════════════════════════════════
     #
     # start() / stop()
@@ -59,7 +56,7 @@ class BaseDisplay(DisplayPort):
     #
     # ═══════════════════════════════════════════════════════════
 
-    # ── BaseDisplay 特有方法（DisplayPort 之外） ─────────────
+    # ── BaseDisplay 特有方法 ──────────────────────────────────
 
     @abstractmethod
     def update_status(self, label: str, status: str) -> None:

@@ -1,7 +1,7 @@
 """配置命令 — 模型/系统提示词/费用/主题相关命令处理函数"""
 
 from ..constants import GREEN, YELLOW, DIM, RESET, CYAN
-from ..ports.output import get_default_output_port
+from ..adapters.output import get_default_output_port
 from ..internal.commands._command_core import register_command, CommandContext, show_cost
 
 _out = get_default_output_port()

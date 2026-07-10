@@ -114,7 +114,7 @@ class SubAgent(BaseAgent):
         self.tools = [t for t in self._registry.get_schemas()
                       if t.get("function", {}).get("name") not in excluded]
 
-        # 通过 parent_agent 的 PromptBuilderPort 构建 system prompt，
+        # 通过 parent_agent 的 DefaultPromptBuilderAdapter 构建 system prompt，
         # 确保与 MainAgent 使用一致的 cwd 和环境信息（修复 Bug#4）
         prompt_port = parent_agent.get_prompt_builder_port()
         if agent_type == "map":

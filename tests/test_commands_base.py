@@ -15,7 +15,7 @@ from src.core.commands.base import (
 @pytest.fixture(autouse=True)
 def _mock_output_port():
     """自动将全局输出端口替换为 Mock，防止测试中触发 UI 层导入"""
-    from src.core.ports.output import set_default_output_port, reset_default_output_port
+    from src.core.adapters.output import set_default_output_port, reset_default_output_port
 
     class _MockPort:
         def write(self, text: str, level: str = "info", source: str = "core") -> None:

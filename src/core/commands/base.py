@@ -78,7 +78,7 @@ class CommandPlugin(ABC):
 
     def output(self, text: str) -> None:
         """便捷输出方法"""
-        from ...core.ports.output import get_default_output_port
+        from ...core.adapters.output import get_default_output_port
         port = get_default_output_port()
         port.write(text)
 

@@ -411,7 +411,7 @@ class ParallelDisplay(BaseDisplay):
     # ── 停止 ────────────────────────────────────────────
 
     def stop(self, final: bool = False) -> None:
-        """停止显示（实现 DisplayPort 接口）。
+        """停止显示。
 
         清除终端上的并行面板。
 

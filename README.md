@@ -604,7 +604,6 @@ ChatUIConsumer
 | `CheckpointPort` | `ports/persistence.py` | 任务断点保存与恢复 |
 | `DisplayPort` | `ports/display.py` | 用户显示输出 |
 | `EventPort` | `ports/events.py` | 事件总线发布/订阅 |
-| `OutputPort` | `ports/output.py` | 文本输出（含级别标记） |
 | `InterruptPort` | `ports/interrupt.py` | 中断信号检查 |
 | `ToolRegistryPort` | `ports/tool_registry.py` | 工具注册表访问 |
 | `PromptBuilderPort` | `ports/prompt_builder.py` | 系统提示词构建 |

@@ -14,7 +14,7 @@ import aiofiles.os
 import asyncio
 from typing import Optional
 
-from ..core.ports.output import get_default_output_port
+from ..core.adapters.output import get_default_output_port
 
 _out = get_default_output_port()
 

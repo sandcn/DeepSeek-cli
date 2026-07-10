@@ -1,17 +1,16 @@
-"""ToolRegistryPort 适配器 — 包装 ToolRegistry 实例"""
+"""ToolRegistry 适配器 — 包装 ToolRegistry 实例"""
 from __future__ import annotations
 
 from typing import TYPE_CHECKING, Optional, Type
 
-from ..ports.tool_registry import ToolRegistryPort
 from ...tools.registry import ToolRegistry
 
 if TYPE_CHECKING:
     from ...tools.base import ToolMetadata
 
 
-class _ToolRegistryAdapter(ToolRegistryPort):
-    """ToolRegistryPort 适配器 — 包装 ToolRegistry 实例"""
+class _ToolRegistryAdapter:
+    """ToolRegistry 适配器 — 包装 ToolRegistry 实例，提供与 ToolRegistry 兼容的接口"""
 
     def __init__(self, registry: ToolRegistry):
         self._registry = registry
