@@ -63,7 +63,7 @@ class AsyncToolExecutor:
         dispatch_agent 内部使用 asyncio.Event 纯异步等待 barrier，
         不消耗任何线程池工人。
         """
-        from ..ui.display import extract_key_params as _extract_key_params
+        from ..ui.display import extract_key_params as _extract_key_params  # 适配器层 — 纯工具函数
         detail = _extract_key_params(tc["name"], tc["arguments"], show_all=True)
 
         if on_before:

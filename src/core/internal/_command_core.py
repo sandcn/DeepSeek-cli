@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import time as _time
 from src._compat import dataclass
-from ...config import TOKEN_PRICES
 from ..constants import DIM, RESET, TEAL
 from ...api.stats import get_token_stats, get_session_start_time
 from ..constants import format_token_k
@@ -110,6 +109,7 @@ def show_cost(ctx):
     优先通过 ctx.config_port（ConfigPort）获取价格配置，
     若不可用则回退到直接 import TOKEN_PRICES（向后兼容）。
     """
+    from ...config import TOKEN_PRICES  # 配置常量 — 函数体内延迟导入（回退）
     model = ctx.state.get("model", TOKEN_PRICES and next(iter(TOKEN_PRICES), ""))
     if ctx.config_port is not None:
         prices = ctx.config_port.get_token_prices().get(model)

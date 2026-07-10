@@ -32,7 +32,7 @@ from rich.style import Style
 from rich.syntax import Syntax
 from rich.text import Text
 
-from .._rendering import (
+from ..._rendering import (
     is_todo,
     render_code_title_bar,
     render_code_fence_open,
@@ -374,7 +374,7 @@ class _RenderHandlersMixin:
         消除每行代码渲染时 hasattr 的性能开销。
         """
         if self._cached_theme is None:
-            from .._utils import get_code_style
+            from ..._utils import get_code_style
             self._cached_theme = Syntax.get_theme(get_code_style(self._code_theme))
         return self._cached_theme
 
@@ -394,7 +394,7 @@ class _RenderHandlersMixin:
             return
 
         try:
-            from .._rendering import get_lexer as _get_lexer_shared
+            from ..._rendering import get_lexer as _get_lexer_shared
             lexer = _get_lexer_shared(lang)
             # 【Bug1 修复】lexer 为 None 时提前降级
             if lexer is None:

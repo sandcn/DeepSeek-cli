@@ -14,8 +14,7 @@ import logging
 from typing import Any
 
 from .base import InteractiveCommandPlugin
-from ..base import CommandMeta
-from .registry import get_interactive_registry
+from ..base import CommandMeta, get_plugin_registry
 
 _logger = logging.getLogger(__name__)
 
@@ -45,7 +44,7 @@ class LoopPlugin(InteractiveCommandPlugin):
             return False
 
         # 延迟导入避免模块加载时级联依赖（app_loop → plugins → app_loop 循环导入）
-        from ....ui.colors import DIM, RESET, GREEN, YELLOW
+        from ..constants import DIM, RESET, GREEN, YELLOW
         from ....app_loop import _save_loop_snapshot
         from ....api.interrupt_async import reset_interrupt_async
         from ....api.stats import reset_token_speed
@@ -127,4 +126,4 @@ class LoopPlugin(InteractiveCommandPlugin):
 
 
 # 模块级自注册
-get_interactive_registry().register(LoopPlugin())
+get_plugin_registry().register(LoopPlugin())

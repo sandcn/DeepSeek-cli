@@ -29,6 +29,7 @@ class SessionPersistenceManager:
 
     封装 ChatSession 的持久化逻辑，通过端口接口访问底层存储。
     不直接访问 ChatSession 的私有属性，通过公共方法/属性操作。
+    合规：通过 self._persistence 访问持久化（端口模式）
     """
 
     def __init__(

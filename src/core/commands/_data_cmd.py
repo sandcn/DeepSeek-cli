@@ -6,7 +6,6 @@ from ..ports.output import get_default_output_port
 from ...config import MODEL
 from ...api.model_async import call_model_sync
 from ...prompt_builder.project_summary import generate_summary_prompt
-from ...chat_msgs import save_session as _save_direct, load_session as _load_direct, list_sessions as _list_direct
 from ..sandbox_manager import get_sandbox_manager
 from ..internal._command_core import register_command
 
@@ -62,11 +61,12 @@ def _cmd_load(ctx):
 
     # ── 第1步：自动保存当前会话（如有非 system 消息） ──────────
     non_system_current = filter_non_system(ctx.messages)
-    _save_fn = ctx.persistence_port.save_session if ctx.persistence_port else _save_direct
+    from ..adapters.persistence import JsonFilePersistence
+    _p = ctx.persistence_port if ctx.persistence_port is not None else JsonFilePersistence()
     if non_system_current:
         current_model = ctx.state.get("model", MODEL)
         try:
-            saved_id = _save_fn(non_system_current, model=current_model)
+            saved_id = _p.save_session(non_system_current, model=current_model)
             _out.write(f"{DIM}  + 已自动保存当前会话: {saved_id[:_SESSION_ID_TRUNCATE]}{RESET}", level="raw", source="cmd")
         except Exception as e:
             _out.write(f"{YELLOW}  ! 自动保存当前会话失败: {e}{RESET}", level="raw", source="cmd")
@@ -78,8 +78,7 @@ def _cmd_load(ctx):
         _out.write(f"{DIM}  + 文件沙盒已清空{RESET}", level="raw", source="cmd")
 
     # ── 第3步：加载目标会话 ──────────────────────────────────
-    _load_fn = ctx.persistence_port.load_session if ctx.persistence_port else _load_direct
-    data = _load_fn(arg)
+    data = _p.load_session(arg)
     if data is None:
         _out.write(f"{YELLOW}  ! 未找到会话 '{arg}'{RESET}", level="raw", source="cmd")
         return True
@@ -118,8 +117,9 @@ def _cmd_load(ctx):
 
 def _cmd_sessions(ctx):
     """列出所有保存的对话"""
-    _list_fn = ctx.persistence_port.list_sessions if ctx.persistence_port else _list_direct
-    sessions = _list_fn()
+    from ..adapters.persistence import JsonFilePersistence
+    _p = ctx.persistence_port if ctx.persistence_port is not None else JsonFilePersistence()
+    sessions = _p.list_sessions()
     if not sessions:
         _out.write(f"{YELLOW}  ! 没有保存的对话{RESET}", level="raw", source="cmd")
         return True

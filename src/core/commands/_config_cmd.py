@@ -1,9 +1,7 @@
 """配置命令 — 模型/系统提示词/费用/主题相关命令处理函数"""
 
 from ..constants import GREEN, YELLOW, DIM, RESET, CYAN
-from ...config import MODELS, MODEL
 from ..ports.output import get_default_output_port
-from ...config import update_config
 from ..internal._command_core import register_command, CommandContext, show_cost
 
 _out = get_default_output_port()
@@ -12,7 +10,13 @@ _out = get_default_output_port()
 # ── /model 命令 ─────────────────────────────────────────
 
 def _cmd_model(ctx):
-    current = ctx.state.get("model", MODEL)
+    # 通过 ConfigPort 获取模型列表和当前模型
+    if ctx.config_port is not None:
+        models = ctx.config_port.get_models()
+        default_model = ctx.config_port.get_model()
+    else:
+        from ...config import MODELS as models, MODEL as default_model  # 配置常量 — 函数体内延迟导入（回退）
+    current = ctx.state.get("model", default_model)
     arg = ctx.arg.strip()
 
     # ── 优先处理直接参数：按序号或名称切换 ──────────────
@@ -20,15 +24,15 @@ def _cmd_model(ctx):
         # 按序号：/model 2
         if arg.isdigit():
             idx = int(arg)
-            if 1 <= idx <= len(MODELS):
-                selected = MODELS[idx - 1]
+            if 1 <= idx <= len(models):
+                selected = models[idx - 1]
                 ctx.state["model"] = selected
                 _out.write(f"{GREEN}  + 已切换到 {selected}{RESET}", level="raw", source="cmd")
                 return True
-            _out.write(f"{YELLOW}  ! 无效序号，范围 1-{len(MODELS)}{RESET}", level="raw", source="cmd")
+            _out.write(f"{YELLOW}  ! 无效序号，范围 1-{len(models)}{RESET}", level="raw", source="cmd")
             return True
         # 按名称（模糊匹配）：/model deepseek-v4-pro
-        matched = [m for m in MODELS if arg.lower() in m.lower()]
+        matched = [m for m in models if arg.lower() in m.lower()]
         if len(matched) == 1:
             ctx.state["model"] = matched[0]
             _out.write(f"{GREEN}  + 已切换到 {matched[0]}{RESET}", level="raw", source="cmd")
@@ -39,32 +43,32 @@ def _cmd_model(ctx):
             return True
         else:
             _out.write(f"{YELLOW}  ! 未找到匹配的模型: {arg}{RESET}", level="raw", source="cmd")
-            _out.write(f"  {DIM}  可用模型: {', '.join(MODELS)}{RESET}", level="raw", source="cmd")
+            _out.write(f"  {DIM}  可用模型: {', '.join(models)}{RESET}", level="raw", source="cmd")
             return True
 
     # ── 无参数：底部栏补全弹窗交互式选择 ──────────────
-    if not MODELS:
+    if not models:
         _out.write(f"{YELLOW}  ! 没有可用的模型，请在配置文件中添加{RESET}", level="raw", source="cmd")
         return True
 
     # 光标定位到当前模型
     current_idx = 0
-    for i, m in enumerate(MODELS):
+    for i, m in enumerate(models):
         if m == current:
             current_idx = i
             break
 
     # 构建显示项（纯文本，不含 ANSI 码 → 避免弹窗截断问题）
     display_items = []
-    for m in MODELS:
+    for m in models:
         marker = "  <-当前" if m == current else ""
         display_items.append(f"{m}{marker}")
 
     from ...ui._bottom_bar import run_bottom_bar_selection as _bottom_bar_select
-    result = _bottom_bar_select(MODELS, display_items, current_idx, title="模型选择")
+    result = _bottom_bar_select(models, display_items, current_idx, title="模型选择")
 
     if result["action"] == "confirmed" and result["index"] is not None:
-        selected = MODELS[result["index"]]
+        selected = models[result["index"]]
         if selected != current:
             ctx.state["model"] = selected
             _out.write(f"{GREEN}  + 已切换到 {selected}{RESET}", level="raw", source="cmd")
@@ -74,7 +78,7 @@ def _cmd_model(ctx):
         _out.write(f"{YELLOW}  ! 已取消{RESET}", level="raw", source="cmd")
     elif result["action"] == "error":
         _out.write(f"{YELLOW}  ! 底部栏不可用，请直接指定模型名称{RESET}", level="raw", source="cmd")
-        _out.write(f"  {DIM}  可用模型: {', '.join(MODELS)}{RESET}", level="raw", source="cmd")
+        _out.write(f"  {DIM}  可用模型: {', '.join(models)}{RESET}", level="raw", source="cmd")
     return True
 
 
@@ -147,7 +151,11 @@ def _cmd_theme(ctx):
         for name, desc in themes:
             if arg == name:
                 _set_theme(name)
-                update_config("theme", name)
+                if ctx.config_port is not None:
+                    ctx.config_port.set("theme", name)
+                else:
+                    from ...config import update_config  # 配置常量 — 函数体内延迟导入（回退）
+                    update_config("theme", name)
                 _out.write(f"{GREEN}  + 已切换到主题「{name}」({desc}){RESET}", level="raw", source="cmd")
                 return True
         _out.write(f"{YELLOW}  ! 未知主题: {arg}{RESET}", level="raw", source="cmd")

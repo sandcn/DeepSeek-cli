@@ -16,11 +16,11 @@ import pytest
 from rich.style import Style
 from rich.text import Text
 
-from src.renderer.vnode._patcher_mixins import (
+from src.renderer._archive.vnode._patcher_mixins import (
     _PatchDispatchMixin,
     _RenderHandlersMixin,
 )
-from src.renderer.vnode.types import (
+from src.renderer._archive.vnode.types import (
     VNode, VNodeType, VPatch, PatchType,
 )
 

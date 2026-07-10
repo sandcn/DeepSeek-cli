@@ -12,8 +12,7 @@ import logging
 from typing import Any
 
 from .base import InteractiveCommandPlugin
-from ..base import CommandMeta
-from .registry import get_interactive_registry
+from ..base import CommandMeta, get_plugin_registry
 
 _logger = logging.getLogger(__name__)
 
@@ -97,4 +96,4 @@ class EditmsgPlugin(InteractiveCommandPlugin):
 
 
 # 模块级自注册
-get_interactive_registry().register(EditmsgPlugin())
+get_plugin_registry().register(EditmsgPlugin())

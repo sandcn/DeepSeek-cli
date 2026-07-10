@@ -35,6 +35,15 @@ class _NullPort:
     def unsubscribe(self, event_type: str, handler) -> None:
         pass
 
+    def publish_event(self, event, source: str = "core") -> None:
+        pass
+
+    def subscribe_type(self, event_type: type, handler) -> None:
+        pass
+
+    def unsubscribe_type(self, event_type: type, handler) -> None:
+        pass
+
     # ── DisplayPort 接口 ──────────────────────────────
     def start(self) -> None:
         pass

@@ -8,7 +8,6 @@
 import random
 import time as _time
 
-from ..config import SUMMARY_TOKEN_BUDGET
 from .context_selector import message_to_text
 
 _SUMMARY_SYSTEM = """\
@@ -63,6 +62,7 @@ def build_summary_prompt(messages_to_compress, has_prior_summary):
     if n == 0:
         return ""
 
+    from ..config import SUMMARY_TOKEN_BUDGET  # 配置常量 — 函数体内延迟导入
     budget_chars = int(SUMMARY_TOKEN_BUDGET * 1.5)
     per_msg = max(200, budget_chars // n)
 

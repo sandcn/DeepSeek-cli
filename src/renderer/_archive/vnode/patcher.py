@@ -22,17 +22,17 @@ from __future__ import annotations
 
 import logging
 from rich.text import Text
-from ..output import OutputAdapter
-from ..math_renderer import MathRenderer
-from ..mermaid_renderer import MermaidRenderer
+from ...output import OutputAdapter
+from ...math_renderer import MathRenderer
+from ...mermaid_renderer import MermaidRenderer
 
-from .._rendering import (
+from ..._rendering import (
     render_code_fence_open, render_code_fence_close, style_heading,
     render_blockquote_prefix,
     render_html_block_open, render_html_block_close,
 )
 
-from ..targets.base import RenderTarget
+from ...targets.base import RenderTarget
 from .types import VNode, VNodeType, VPatch, PatchType, VNodeDiffResult
 from ._patcher_mixins import (
     _PatchDispatchMixin, _RenderHandlersMixin,
@@ -83,7 +83,7 @@ class VNodePatcher(_PatchDispatchMixin, _RenderHandlersMixin):
         self._cached_theme = None
 
         # 从 ASTRenderer 复用内联渲染能力
-        from ..ast.renderer import ASTRenderer
+        from ..._archive.ast.renderer import ASTRenderer
         self._inline_engine = ASTRenderer(
             output, typing_speed=typing_speed, code_theme=code_theme,
         )

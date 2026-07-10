@@ -22,11 +22,11 @@ from .types import VNode, VNodeType, VNodeDiffResult
 from .builder import VNodeBuilder
 from .differ import VNodeDiffer
 from .patcher import VNodePatcher
-from ..output import OutputAdapter
-from ..types import RenderContext
-from ..ast.types import ASTNode
-from ..targets.base import RenderTarget
-from ..targets.terminal import TerminalRenderTarget
+from ...output import OutputAdapter
+from ...types import RenderContext
+from ..._archive.ast.types import ASTNode
+from ...targets.base import RenderTarget
+from ...targets.terminal import TerminalRenderTarget
 
 
 class IncrementalVNodeRenderer:

@@ -26,7 +26,7 @@ from rich.table import Table, box
 from rich.text import Text
 from pygments.lexers import get_lexer_by_name
 
-from .._rendering import (
+from ..._rendering import (
     render_heading as _render_heading_shared,
     render_blockquote as _render_blockquote_shared,
     render_list_item as _render_list_item_shared,
@@ -44,7 +44,7 @@ from .._rendering import (
     split_by_br, render_code_title_bar,
     render_html_block_open, render_html_block_close,
 )
-from .._utils import cjk_display_width, parse_highlight_lines
+from ..._utils import cjk_display_width, parse_highlight_lines
 
 from .types import ASTNode, NodeType
 

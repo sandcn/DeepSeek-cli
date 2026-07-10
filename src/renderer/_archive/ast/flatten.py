@@ -12,7 +12,7 @@
 from __future__ import annotations
 
 from .types import ASTNode, NodeType
-from ..types import Token, TokenType
+from ...types import Token, TokenType
 
 
 class ASTFlattener:

@@ -102,16 +102,12 @@ class Agent(BaseAgent):
             self._event_port = event_port
             self._output_port = output_port
         else:
-            from ..ui.adapters import UIDisplayAdapter, UIEventAdapter, UIOutputAdapter
-            from ..ui.events.adapters import EventBusDisplayProxy
-            # ★ ChatUI 统一处理终端输出（工具/思考/回答），
-            #   不再需要 ToolExecutionDisplay + DisplayEventAdapter。
-            #   EventBusDisplayProxy 仅发布事件到 EventBus，
-            #   ChatUIConsumer 在 app_loop 中订阅并渲染。
-            _real_display = EventBusDisplayProxy(source="agent")
-            self._display_port = UIDisplayAdapter(_real_display)
-            self._event_port = UIEventAdapter()
-            self._output_port = UIOutputAdapter()
+            from ..core.adapters.display import DefaultDisplayAdapter
+            from ..core.adapters.events import DisplayEventBusAdapter
+            from ..core.adapters.output import DefaultOutputAdapter
+            self._display_port = DefaultDisplayAdapter(source="agent")
+            self._event_port = DisplayEventBusAdapter(source="agent")
+            self._output_port = DefaultOutputAdapter()
         self.display = self._display_port
         self.context_manager = None
         self._shared_executor = None

@@ -25,10 +25,16 @@ _RESULT_KEY = "result"
 class SubAgentSpawner:
     """创建 SubAgent 实例、渲染终端显示、发布结果事件"""
 
-    def __init__(self, parent_agent, agent_factory, is_web: bool = False):
+    def __init__(self, parent_agent, agent_factory, is_web: bool = False,
+                 event_port=None):
         self.parent = parent_agent
         self._agent_factory = agent_factory
         self._is_web = is_web
+        if event_port is not None:
+            self._event_port = event_port
+        else:
+            from ..adapters.events import DisplayEventBusAdapter
+            self._event_port = DisplayEventBusAdapter.get_default()
 
     # -- 公开 API --
 
@@ -151,10 +157,9 @@ class SubAgentSpawner:
 
     def _publish_tool_summary(self, results: List[Dict[str, Any]]) -> None:
         """批量发布所有 subagent 的 AgentResultEvent（全部完成后统一发送）。"""
-        from ...ui.events import DisplayEventBus as _DisplayEventBus
         from ...ui.events.event_types import AgentResultEvent as _AgentResultEvent
         for r in results:
-            _DisplayEventBus.get_default().publish(_AgentResultEvent(
+            self._event_port.publish_event(_AgentResultEvent(
                 label=r.get(_LABEL_KEY, "?"),
                 description=r.get(_DESCRIPTION_KEY, "?"),
                 result=r.get(_RESULT_KEY, ""),

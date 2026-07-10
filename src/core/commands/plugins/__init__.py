@@ -5,20 +5,21 @@
 - EditmsgPlugin（editmsg_plugin.py）
 - ModelPlugin（model_plugin.py）
 - LoopPlugin（loop_plugin.py）
-- InteractiveCommandRegistry（registry.py）
+
+InteractiveCommandRegistry 已合并到 CommandPluginRegistry（commands/base.py），
+registry.py 保留 get_interactive_registry() 作为向后兼容导出。
 """
 
 from .base import InteractiveCommandPlugin
 from .editmsg_plugin import EditmsgPlugin
 from .model_plugin import ModelPlugin
 from .loop_plugin import LoopPlugin
-from .registry import InteractiveCommandRegistry, get_interactive_registry
+from .registry import get_interactive_registry
 
 __all__ = [
     "InteractiveCommandPlugin",
     "EditmsgPlugin",
     "ModelPlugin",
     "LoopPlugin",
-    "InteractiveCommandRegistry",
     "get_interactive_registry",
 ]

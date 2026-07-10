@@ -23,13 +23,13 @@ from rich.table import Table
 from rich.text import Text
 
 from .types import ASTNode, NodeType
-from ..output import OutputAdapter
-from ..types import RenderContext
-from ..math_renderer import MathRenderer
-from ..mermaid_renderer import MermaidRenderer
-from ..inline_renderer import InlineRenderer
+from ...output import OutputAdapter
+from ...types import RenderContext
+from ...math_renderer import MathRenderer
+from ...mermaid_renderer import MermaidRenderer
+from ...inline_renderer import InlineRenderer
 
-from .._rendering import (
+from ..._rendering import (
     render_code_title_bar, render_code_fence_open, render_code_fence_close,
     render_code_block_syntax, style_heading,
 )

@@ -10,10 +10,6 @@
 
 import json
 from functools import lru_cache
-from ..config import (
-    MAX_CONTEXT_CHARS, MAX_CONTEXT_TOKENS,
-    KEEP_RECENT_MESSAGES, AUTO_FORCE_COMPRESS_THRESHOLD,
-)
 from ..api.tokens import estimate_tokens
 from .internal._message_stats_cache import MessageStatsCache  # noqa: F401 — re-exported for backward compat
 
@@ -35,6 +31,7 @@ def compute_message_stats(messages):
 
 def exceeds_limit_values(total_chars_val, total_tokens_val):
     """使用预计算的值检查是否超出限制。"""
+    from ..config import MAX_CONTEXT_CHARS, MAX_CONTEXT_TOKENS  # 配置常量 — 函数体内延迟导入
     if MAX_CONTEXT_CHARS > 0 and total_chars_val > MAX_CONTEXT_CHARS:
         return True
     if MAX_CONTEXT_TOKENS > 0 and total_tokens_val > MAX_CONTEXT_TOKENS:
@@ -44,6 +41,7 @@ def exceeds_limit_values(total_chars_val, total_tokens_val):
 
 def should_auto_force_values(total_chars_val, total_tokens_val):
     """使用预计算的值检查是否应自动全量压缩。"""
+    from ..config import AUTO_FORCE_COMPRESS_THRESHOLD  # 配置常量 — 函数体内延迟导入
     if AUTO_FORCE_COMPRESS_THRESHOLD > 0:
         if total_chars_val > AUTO_FORCE_COMPRESS_THRESHOLD:
             return True
@@ -56,6 +54,7 @@ def should_auto_force_values(total_chars_val, total_tokens_val):
 
 def calc_excess_chars_values(total_chars_val, total_tokens_val):
     """使用预计算的值计算需要释放的字符数。"""
+    from ..config import MAX_CONTEXT_CHARS, MAX_CONTEXT_TOKENS  # 配置常量 — 函数体内延迟导入
     char_excess = max(0, total_chars_val - MAX_CONTEXT_CHARS) if MAX_CONTEXT_CHARS > 0 else 0
     tok_excess_chars = 0
     if MAX_CONTEXT_TOKENS > 0:
@@ -66,6 +65,7 @@ def calc_excess_chars_values(total_chars_val, total_tokens_val):
 
 def calc_usage_percent_values(total_chars_val):
     """使用预计算的值计算上下文使用百分比。"""
+    from ..config import MAX_CONTEXT_CHARS  # 配置常量 — 函数体内延迟导入
     if MAX_CONTEXT_CHARS <= 0:
         return 0.0
     return total_chars_val / MAX_CONTEXT_CHARS * 100
@@ -147,6 +147,7 @@ def find_tool_groups(messages):
 def adjust_keep_for_tool_groups(messages, keep_recent=None):
     """如果工具调用组被 keep_recent 切分，扩大保留范围。"""
     if keep_recent is None:
+        from ..config import KEEP_RECENT_MESSAGES  # 配置常量 — 函数体内延迟导入
         keep_recent = KEEP_RECENT_MESSAGES
     for start, end in find_tool_groups(messages):
         boundary = len(messages) - keep_recent

@@ -6,7 +6,7 @@ VNode 专注于渲染属性和增量更新追踪。
 
 from __future__ import annotations
 
-from ..ast.types import ASTNode, NodeType
+from ..._archive.ast.types import ASTNode, NodeType
 from .types import VNode, VNodeType
 
 

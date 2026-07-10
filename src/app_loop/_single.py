@@ -22,12 +22,13 @@ _logger = logging.getLogger(__name__)
 
 def _make_event_agent():
     """创建通过 EventBus 发布事件的 Agent 实例。"""
-    from ..ui.events.adapters import EventBusDisplayProxy
-    from ..ui.adapters import UIDisplayAdapter, UIEventAdapter, UIOutputAdapter
+    from ..core.adapters.display import DefaultDisplayAdapter
+    from ..core.adapters.events import DisplayEventBusAdapter
+    from ..core.adapters.output import DefaultOutputAdapter
     return Agent(
-        display_port=UIDisplayAdapter(EventBusDisplayProxy(source="agent")),
-        event_port=UIEventAdapter(),
-        output_port=UIOutputAdapter(),
+        display_port=DefaultDisplayAdapter(source="agent"),
+        event_port=DisplayEventBusAdapter(source="agent"),
+        output_port=DefaultOutputAdapter(),
     )
 
 

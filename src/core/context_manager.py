@@ -16,7 +16,6 @@ import threading
 from typing import Optional
 
 _logger = logging.getLogger(__name__)
-from ..config import MAX_CONTEXT_CHARS, MAX_SESSION_MESSAGES
 from .constants import YELLOW, RESET, audit_log as _log
 from . import context_selector as selector
 from .context_selector import MessageStatsCache
@@ -168,6 +167,7 @@ class ContextManager:
         Returns:
             删除的消息数，0 表示未执行删除
         """
+        from ..config import MAX_SESSION_MESSAGES  # 配置常量 — 函数体内延迟导入
         with self._lock:
             messages = self.messages
             if MAX_SESSION_MESSAGES <= 0 or len(messages) <= MAX_SESSION_MESSAGES:
@@ -216,6 +216,7 @@ class ContextManager:
 
         无锁读取缓存值，适合 UI 渲染调用。
         """
+        from ..config import MAX_CONTEXT_CHARS  # 配置常量 — 函数体内延迟导入
         if not self.messages or MAX_CONTEXT_CHARS <= 0:
             return ""
 

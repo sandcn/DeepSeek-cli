@@ -105,6 +105,7 @@ class SubAgent(BaseAgent):
         self.description = description
         self.prompt = prompt
         self.parent = parent_agent
+        self._event_port = getattr(parent_agent, '_event_port', None)
         self.agent_type = agent_type
 
         self._registry = parent_agent.get_tool_registry()
@@ -224,20 +225,19 @@ class SubAgent(BaseAgent):
     def _update_display(self, usage):
         """更新显示状态（累加每次模型调用的 token 到显示层）"""
         if self.display:
-            from ..ui.events import DisplayEventBus
             from ..ui.events.event_types import UsageUpdatedEvent, ModelPhaseEvent
 
             if usage is not None:
                 self.display.update_usage(self.label, usage, replace=False)
                 # 累加到全局统计
                 accumulate_usage(usage)
-                # 同步发布到 DisplayEventBus（Web 前端通过此事件更新用量显示）
-                DisplayEventBus.get_default().publish(UsageUpdatedEvent(
+                # 同步发布到 EventPort（Web 前端通过此事件更新用量显示）
+                self._event_port.publish_event(UsageUpdatedEvent(
                     label=self.label, usage=usage, replace=False, source=self.label,
                 ))
             self.display.update_model_phase(self.label, "")
-            # 同步发布到 DisplayEventBus（Web 前端通过此事件更新阶段显示）
-            DisplayEventBus.get_default().publish(ModelPhaseEvent(
+            # 同步发布到 EventPort（Web 前端通过此事件更新阶段显示）
+            self._event_port.publish_event(ModelPhaseEvent(
                 label=self.label, phase="", info="", source=self.label,
             ))
 
@@ -252,7 +252,7 @@ class SubAgent(BaseAgent):
         on_before, on_after, run_method = self._build_tool_callbacks(tool_calls)
 
         async def _execute_one(tc: dict) -> tuple:
-            from ..ui.formatters.param_formatter import extract_key_params as _extract_key_params
+            from ..ui.formatters.param_formatter import extract_key_params as _extract_key_params  # 纯工具函数 — 适配器层延迟导入
             detail = _extract_key_params(tc["name"], tc["arguments"], show_all=True)
             try:
                 if on_before:
@@ -307,19 +307,17 @@ class SubAgent(BaseAgent):
         self, tool_calls: list,
     ) -> Tuple[Optional[Callable], Optional[Callable], Optional[Callable]]:
         """构建工具执行回调三元组 (on_before, on_after, run_method)"""
-        from ..ui.events import DisplayEventBus
         from ..ui.events.event_types import ToolStartedEvent, ToolDoneEvent
         from .internal._tool_callbacks import _run_file_display
 
         display = self.display
-        bus = DisplayEventBus.get_default()  # 发布到总线供subagent面板显示
 
         def on_before(tc, detail):
             tool_name = tc["name"]
             if display:
                 display.tool_parsing(self.label, tool_name, detail)
                 display.tool_start(self.label, tool_name, detail)
-            bus.publish(ToolStartedEvent(
+            self._event_port.publish_event(ToolStartedEvent(
                 label=self.label, tool_name=tool_name, detail=detail, source=self.label,
                 tool_id=tc["id"],
             ))
@@ -333,7 +331,7 @@ class SubAgent(BaseAgent):
                     self.tool_calls_count += 1
             if display:
                 display.tool_done(self.label, tool_name, success=success)
-            bus.publish(ToolDoneEvent(
+            self._event_port.publish_event(ToolDoneEvent(
                 label=self.label, tool_name=tool_name, success=success, source=self.label,
                 tool_id=tc["id"],
             ))
@@ -347,8 +345,7 @@ class SubAgent(BaseAgent):
 
 
 # ── 端口依赖边界说明 ─────────────────────────────────
-# SubAgent 直接使用 DisplayEventBus 发送事件到前端，而非通过 EventPort：
-# 1. EventBus 是发布-订阅的事件基础设施，不属于 UI 层具体实现
-# 2. SubAgent 运行在独立上下文中，通过 EventBus 推状态给 ParallelDisplay 和 WebUI
-# 3. extract_key_params 是工具参数格式化函数，无 UI 副作用
-# 未来演进：考虑将 EventBus 引用抽象为轻量级 SubAgentEventPort
+# SubAgent 通过 self._event_port（EventPort）发送事件到前端：
+# 1. _event_port 从父 Agent 继承，父 Agent 在 __init__ 中注入 EventPort 实现
+# 2. 事件发布路径：SubAgent → self._event_port.publish_event() → EventPort 适配器 → DisplayEventBus
+# 3. extract_key_params 是工具参数格式化函数，无 UI 副作用，作为纯工具函数延迟导入

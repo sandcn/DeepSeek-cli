@@ -12,7 +12,7 @@ from __future__ import annotations
 from typing import Optional
 
 from .types import ASTNode, NodeType, SourceRange
-from ..types import Token, TokenType, RenderContext
+from ...types import Token, TokenType, RenderContext
 from ._builder_mixins import (
     _TextBuildingMixin, _ListBuildingMixin, _BlockBuildingMixin,
 )

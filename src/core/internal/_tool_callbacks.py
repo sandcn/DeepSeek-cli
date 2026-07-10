@@ -19,7 +19,6 @@ from ..telemetry import get_default_collector
 from ...api.tokens import estimate_tokens
 from ...tools.base import Func
 from ...tools.registry import get_tool_display_name
-from ...config import audit_logger
 
 _logger = logging.getLogger(__name__)
 
@@ -223,6 +222,7 @@ class ToolCallbackChain:
     def _on_before_tool(self, tc: dict, detail: str, parse_elapsed: float) -> None:
         """工具执行前回调：审计日志 + display 进度展示。"""
         agent = self._agent
+        from ...config import audit_logger  # audit_logger — 函数体内延迟导入
         audit_logger.info(f"{tc['name']} | {self._sanitize_args_for_log(tc.get('arguments', {}))}")
 
         tool_label, tool_name = tc["id"], tc["name"]

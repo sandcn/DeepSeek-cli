@@ -12,7 +12,10 @@ from __future__ import annotations
 import logging
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from typing import Any, Optional
+from typing import TYPE_CHECKING, Any, Optional
+
+if TYPE_CHECKING:
+    from .plugins.base import InteractiveCommandPlugin
 
 _logger = logging.getLogger(__name__)
 
@@ -104,6 +107,7 @@ class CommandPluginRegistry:
         self._plugins: dict[str, CommandPlugin] = {}  # name → plugin
         self._alias_map: dict[str, str] = {}  # alias → name
         self._groups: dict[str, list[str]] = {}  # group → [names]
+        self._interactive_plugins: dict[str, InteractiveCommandPlugin] = {}  # InteractiveCommandPlugin: name → plugin
 
     def register(self, plugin: CommandPlugin) -> None:
         """注册一个命令插件"""
@@ -141,7 +145,24 @@ class CommandPluginRegistry:
             )
 
         plugin.on_register()
+
+        # 检测是否为 InteractiveCommandPlugin 子类，若是则额外存入交互式插件字典
+        if hasattr(plugin, 'bind_loop'):
+            self._interactive_plugins[name] = plugin
+
         _logger.debug("命令插件已注册: %s", name)
+
+    def register_interactive(self, plugin: InteractiveCommandPlugin) -> None:
+        """注册交互式命令插件（委托 register 处理）"""
+        self.register(plugin)
+
+    def bind_loop(self, loop: Any) -> None:
+        """遍历所有已注册的 interactive plugin 调用 plugin.bind_loop(loop)
+
+        在 InteractiveLoop 初始化完成后调用，为所有交互式插件注入 loop 引用。
+        """
+        for plugin in self._interactive_plugins.values():
+            plugin.bind_loop(loop)
 
     def unregister(self, name: str) -> bool:
         """注销一个命令插件
@@ -168,7 +189,8 @@ class CommandPluginRegistry:
         return True
 
     def get(self, name: str) -> Optional[CommandPlugin]:
-        """通过名称或别名获取插件"""
+        """通过名称或别名获取插件（自动去除 / 前缀）"""
+        name = name.lstrip("/")
         real_name = self._alias_map.get(name)
         if real_name is None:
             return None

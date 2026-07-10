@@ -18,7 +18,6 @@ from typing import List, Dict, Any
 from .internal._capture_manager import _safe_restore as safe_restore_stdout
 from .internal._subagent_spawner import SubAgentSpawner
 from .subagent import SubAgent
-from ..config import STAGGER_MIN_DELAY, STAGGER_MAX_DELAY
 from .constants import RED, RESET
 
 _logger = logging.getLogger(__name__)
@@ -531,6 +530,8 @@ class ParallelExecutor:
 
     async def _run_one(self, sa: SubAgent, display: ParallelDisplay, stagger: int = 0) -> Dict[str, Any]:
         if stagger > 0:
+            # 配置常量 — 函数体内延迟导入
+            from ..config import STAGGER_MIN_DELAY, STAGGER_MAX_DELAY
             # 限制最大总延迟不超过 STAGGER_MAX_DELAY，避免大量并发时线性累积
             base = random.uniform(STAGGER_MIN_DELAY, STAGGER_MAX_DELAY)
             delay = min(stagger * base, STAGGER_MAX_DELAY * 3)

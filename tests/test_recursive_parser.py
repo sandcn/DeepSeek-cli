@@ -1587,7 +1587,7 @@ class TestBlockquoteAllSyntax:
     def test_blockquote_ast_nesting(self):
         """AST 后处理 → 嵌套引用树形结构。"""
         from src.renderer.recursive_parser import MarkdownRecursiveParser
-        from src.renderer.ast.types import NodeType
+        from src.renderer._archive.ast.types import NodeType
 
         text = "> Outer\n>> Inner\n"
         parser = MarkdownRecursiveParser()
@@ -1613,7 +1613,7 @@ class TestBlockquoteAllSyntax:
     def test_blockquote_ast_3_level_nesting(self):
         """AST 3层嵌套 → _nest_blockquotes 后树形正确。"""
         from src.renderer.recursive_parser import MarkdownRecursiveParser
-        from src.renderer.ast.types import NodeType
+        from src.renderer._archive.ast.types import NodeType
 
         text = "> A\n>> B\n>>> C\n"
         parser = MarkdownRecursiveParser()

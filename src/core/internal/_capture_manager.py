@@ -31,18 +31,19 @@ class SharedCapture(io.StringIO):
     分发到对应气泡，同时写入 real_stdout 确保终端直接可见。
     """
 
-    def __init__(self, tool_labels: list, real_stdout, bus):
+    def __init__(self, tool_labels: list, real_stdout, bus, event_port=None):
         super().__init__()
         self._tool_labels = tool_labels
         self._real_stdout = real_stdout
-        self._bus = bus
+        self._bus = bus  # 保留兼容，不直接用于事件发布
+        self._event_port = event_port if event_port is not None else bus
 
     def write(self, s: str) -> int:
         if s and s.strip():
             from ...ui.events.event_types import ToolOutputChunkEvent
             for lbl in list(self._tool_labels):
                 try:
-                    self._bus.publish(ToolOutputChunkEvent(
+                    self._event_port.publish_event(ToolOutputChunkEvent(
                         label=lbl, text=s, source="agent",
                     ))
                 except asyncio.CancelledError:
@@ -73,6 +74,28 @@ import asyncio  # noqa: E402 — 延迟导入，位于 SharedCapture 之后
 
 
 # ═══════════════════════════════════════════════════════════════
+# _LegacyBusAdapter — 将旧式 DisplayEventBus 包装为 EventPort 接口
+# ═══════════════════════════════════════════════════════════════
+
+class _LegacyBusAdapter:
+    """将旧式 DisplayEventBus 适配为具有 publish_event 接口的简单包装器。
+
+    当 CaptureManager 只收到 event_bus 参数（旧 API）时，
+    将其包装为此适配器，使 SharedCapture 可统一通过
+    publish_event(event) 发布类型化事件。
+    """
+
+    __slots__ = ('_bus',)
+
+    def __init__(self, bus):
+        self._bus = bus
+
+    def publish_event(self, event, source: str = "core") -> None:
+        """发布类型化事件，委托给底层 DisplayEventBus.publish()"""
+        self._bus.publish(event)
+
+
+# ═══════════════════════════════════════════════════════════════
 # CaptureManager — 捕获周期管理器
 # ═══════════════════════════════════════════════════════════════
 
@@ -87,15 +110,18 @@ class CaptureManager:
     使用，不再各自维护 _capture_state 属性和 7 个分散方法。
     """
 
-    def __init__(self, event_bus=None):
+    def __init__(self, event_bus=None, event_port=None):
         self._state: dict | None = None
         self._init_lock = threading.Lock()
 
-        if event_bus is not None:
-            self._event_bus = event_bus
+        if event_port is not None:
+            self._event_port = event_port
+        elif event_bus is not None:
+            # 将旧式 DisplayEventBus 包装为具有 publish_event 接口
+            self._event_port = _LegacyBusAdapter(event_bus)
         else:
-            from ...ui.events.event_bus import DisplayEventBus
-            self._event_bus = DisplayEventBus.get_default()
+            from ..adapters.events import DisplayEventBusAdapter
+            self._event_port = DisplayEventBusAdapter.get_default()
 
     # ── 属性 ──────────────────────────────────────────────
 
@@ -177,7 +203,7 @@ class CaptureManager:
                 state['capture'] = SharedCapture(
                     tool_labels=state['active_labels'],
                     real_stdout=state['real_stdout'],
-                    bus=self._event_bus,
+                    bus=self._event_port,
                 )
                 sys.stdout = state['capture']
         except Exception:

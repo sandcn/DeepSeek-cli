@@ -100,6 +100,19 @@ class UIEventAdapter(EventPort):
         if handler in handlers:
             handlers.remove(handler)
 
+    def publish_event(self, event, source="core"):
+        """发布类型化事件对象 — 直接委托给 DisplayEventBus"""
+        if event is not None:
+            self._bus.publish(event)
+
+    def subscribe_type(self, event_type, handler):
+        """按事件类型订阅"""
+        self._bus.subscribe(handler, event_type=event_type)
+
+    def unsubscribe_type(self, event_type, handler):
+        """取消按事件类型的订阅"""
+        self._bus.unsubscribe(handler, event_type=event_type)
+
 
 class UIOutputAdapter(OutputPort):
     """实现 OutputPort 接口，委托给 ui.events.publish_output"""
