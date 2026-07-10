@@ -54,7 +54,7 @@ def ctx_with_usage(mock_agent):
 
 
 class TestAsyncObservabilityMiddleware:
-    """_AsyncObservabilityMiddleware 测试"""
+    """_AsyncObservabilityMiddleware 测试（端口模式）"""
 
     def test_name(self):
         """name 属性应返回 'AsyncObservability'"""
@@ -65,236 +65,149 @@ class TestAsyncObservabilityMiddleware:
         mw = _AsyncObservabilityMiddleware()
         assert mw.name == "AsyncObservability"
 
-    async def test_before_model_call_starts_span_and_increments_counter(
-        self, mock_ctx
-    ):
-        """before_model_call: 启动追踪 Span + 增加模型调用计数器"""
-        with (
-            patch("src.core.middleware.observability.get_default_collector") as mock_gc,
-            patch("src.core.middleware.observability.get_default_tracer") as mock_gt,
-        ):
-            mock_metrics = MagicMock()
-            mock_tracer = MagicMock()
-            mock_gc.return_value = mock_metrics
-            mock_gt.return_value = mock_tracer
+    async def test_before_model_call_increments_counter(self, mock_ctx):
+        """before_model_call: 通过端口增加模型调用计数器"""
+        mock_port = MagicMock()
+        mock_ctx.agent.get_observability_port.return_value = mock_port
 
-            from src.core.middleware.observability import (
-                _AsyncObservabilityMiddleware,
-            )
+        from src.core.middleware.observability import (
+            _AsyncObservabilityMiddleware,
+        )
 
-            mw = _AsyncObservabilityMiddleware()
-            await mw.before_model_call(mock_ctx)
+        mw = _AsyncObservabilityMiddleware()
+        await mw.before_model_call(mock_ctx)
 
-            mock_tracer.start_span.assert_called_once_with("model.call_async")
-            mock_metrics.counter.assert_called_once_with("model.calls", 1)
+        mock_port.counter.assert_called_once_with("model.calls", 1)
 
-    async def test_after_model_call_with_span_and_usage(self, ctx_with_usage):
-        """after_model_call: Span 属性设置 + 指标记录（有 usage）"""
-        with (
-            patch("src.core.middleware.observability.get_default_collector") as mock_gc,
-            patch("src.core.middleware.observability.get_default_tracer") as mock_gt,
-        ):
-            mock_metrics = MagicMock()
-            mock_span = MagicMock()
-            mock_tracer = MagicMock()
-            mock_tracer.end_span.return_value = mock_span
-            mock_gc.return_value = mock_metrics
-            mock_gt.return_value = mock_tracer
+    async def test_after_model_call_with_usage(self, ctx_with_usage):
+        """after_model_call: 通过端口记录 token 指标 + gauge"""
+        mock_port = MagicMock()
+        ctx_with_usage.agent.get_observability_port.return_value = mock_port
 
-            from src.core.middleware.observability import (
-                _AsyncObservabilityMiddleware,
-            )
+        from src.core.middleware.observability import (
+            _AsyncObservabilityMiddleware,
+        )
 
-            mw = _AsyncObservabilityMiddleware()
-            await mw.after_model_call(ctx_with_usage)
+        mw = _AsyncObservabilityMiddleware()
+        await mw.after_model_call(ctx_with_usage)
 
-            # Span 属性
-            mock_tracer.end_span.assert_called_once()
-            mock_span.set_attribute.assert_any_call("model", "test-model")
-            mock_span.set_attribute.assert_any_call("tool_calls", 1)
-            mock_span.set_attribute.assert_any_call("input_tokens", 50)
-            mock_span.set_attribute.assert_any_call("output_tokens", 100)
+        # token 计数器
+        mock_port.counter.assert_any_call("tokens.input", 50)
+        mock_port.counter.assert_any_call("tokens.output", 100)
+        # latency 直方图
+        mock_port.histogram.assert_called_once_with(
+            "model.latency_ms", 350.0
+        )
+        # context.chars gauge
+        mock_port.gauge.assert_called_once_with("context.chars", 11)
 
-            # token 计数器
-            mock_metrics.counter.assert_any_call("tokens.input", 50)
-            mock_metrics.counter.assert_any_call("tokens.output", 100)
-            # latency 直方图
-            mock_metrics.histogram.assert_called_once_with(
-                "model.latency_ms", 350.0
-            )
-            # context.chars gauge
-            mock_metrics.gauge.assert_called_once_with("context.chars", 11)
+    async def test_after_model_call_no_port(self, mock_ctx):
+        """after_model_call: port 返回 None 时静默跳过"""
+        mock_ctx.agent.get_observability_port.return_value = None
 
-    async def test_after_model_call_no_span(self, mock_ctx):
-        """after_model_call: end_span 返回 None 时 span 相关操作不执行"""
-        with (
-            patch("src.core.middleware.observability.get_default_collector") as mock_gc,
-            patch("src.core.middleware.observability.get_default_tracer") as mock_gt,
-        ):
-            mock_metrics = MagicMock()
-            mock_tracer = MagicMock()
-            mock_tracer.end_span.return_value = None  # 无活跃 Span
-            mock_gc.return_value = mock_metrics
-            mock_gt.return_value = mock_tracer
+        from src.core.middleware.observability import (
+            _AsyncObservabilityMiddleware,
+        )
 
-            from src.core.middleware.observability import (
-                _AsyncObservabilityMiddleware,
-            )
+        mw = _AsyncObservabilityMiddleware()
+        # 不应抛出异常
+        await mw.after_model_call(mock_ctx)
 
-            mw = _AsyncObservabilityMiddleware()
-            await mw.after_model_call(mock_ctx)
+    async def test_after_model_call_empty_usage(self, mock_ctx):
+        """after_model_call: usage 为空字典时不记录 token 指标（gauge 仍记录）"""
+        mock_port = MagicMock()
+        mock_ctx.agent.get_observability_port.return_value = mock_port
 
-            mock_tracer.end_span.assert_called_once()
-            # span 为 None 时不调用 set_attribute
-            # （MagicMock 不会意外调用，但 assert 确认方法未被调用）
-            # usage 为空字典 {}（falsy），因此 token 指标也不记录
-            mock_metrics.counter.assert_not_called()
-            mock_metrics.histogram.assert_not_called()
-            # gauge 仍然记录上下文大小
-            mock_metrics.gauge.assert_called_once()
+        from src.core.middleware.observability import (
+            _AsyncObservabilityMiddleware,
+        )
 
-    async def test_after_model_call_with_empty_usage(self, mock_ctx):
-        """after_model_call: usage 为空字典时不记录 token 指标"""
-        with (
-            patch("src.core.middleware.observability.get_default_collector") as mock_gc,
-            patch("src.core.middleware.observability.get_default_tracer") as mock_gt,
-        ):
-            mock_metrics = MagicMock()
-            mock_span = MagicMock()
-            mock_tracer = MagicMock()
-            mock_tracer.end_span.return_value = mock_span
-            mock_gc.return_value = mock_metrics
-            mock_gt.return_value = mock_tracer
+        mw = _AsyncObservabilityMiddleware()
+        await mw.after_model_call(mock_ctx)
 
-            # usage 初始为空字典
-            from src.core.middleware.observability import (
-                _AsyncObservabilityMiddleware,
-            )
+        # usage 是空字典（falsy），不记录 token 指标
+        mock_port.counter.assert_not_called()
+        mock_port.histogram.assert_not_called()
+        # gauge 仍被调用
+        mock_port.gauge.assert_called_once()
 
-            mw = _AsyncObservabilityMiddleware()
-            await mw.after_model_call(mock_ctx)
-
-            # usage 是空字典（falsy），不记录 token 指标
-            mock_metrics.counter.assert_not_called()
-            mock_metrics.histogram.assert_not_called()
-            # gauge 仍被调用
-            mock_metrics.gauge.assert_called_once()
-
-    async def test_after_model_call_usage_zero_tokens(self, ctx_with_usage):
+    async def test_after_model_call_zero_tokens(self, ctx_with_usage):
         """after_model_call: input=0 且 output=0 时不记录 histogram"""
-        with (
-            patch("src.core.middleware.observability.get_default_collector") as mock_gc,
-            patch("src.core.middleware.observability.get_default_tracer") as mock_gt,
-        ):
-            mock_metrics = MagicMock()
-            mock_span = MagicMock()
-            mock_tracer = MagicMock()
-            mock_tracer.end_span.return_value = mock_span
-            mock_gc.return_value = mock_metrics
-            mock_gt.return_value = mock_tracer
+        mock_port = MagicMock()
+        ctx_with_usage.agent.get_observability_port.return_value = mock_port
+        ctx_with_usage.usage = {"input": 0, "output": 0, "latency_ms": 100.0}
 
-            # usage 有值但 input/output 为 0
-            ctx_with_usage.usage = {"input": 0, "output": 0, "latency_ms": 100.0}
+        from src.core.middleware.observability import (
+            _AsyncObservabilityMiddleware,
+        )
 
-            from src.core.middleware.observability import (
-                _AsyncObservabilityMiddleware,
-            )
+        mw = _AsyncObservabilityMiddleware()
+        await mw.after_model_call(ctx_with_usage)
 
-            mw = _AsyncObservabilityMiddleware()
-            await mw.after_model_call(ctx_with_usage)
-
-            # input=0 且 output=0 → histogram 不应记录
-            mock_metrics.histogram.assert_not_called()
-            # counter 仍然记录 0 值
-            mock_metrics.counter.assert_any_call("tokens.input", 0)
-            mock_metrics.counter.assert_any_call("tokens.output", 0)
+        # input=0 且 output=0 → histogram 不应记录
+        mock_port.histogram.assert_not_called()
+        # counter 仍然记录 0 值
+        mock_port.counter.assert_any_call("tokens.input", 0)
+        mock_port.counter.assert_any_call("tokens.output", 0)
 
     async def test_on_round_complete(self, mock_ctx):
-        """on_round_complete: 递增 rounds + 记录 messages gauge"""
-        with (
-            patch("src.core.middleware.observability.get_default_collector") as mock_gc,
-            patch("src.core.middleware.observability.get_default_tracer") as mock_gt,
-        ):
-            mock_metrics = MagicMock()
-            mock_tracer = MagicMock()
-            mock_gc.return_value = mock_metrics
-            mock_gt.return_value = mock_tracer
+        """on_round_complete: 通过端口递增 rounds"""
+        mock_port = MagicMock()
+        mock_ctx.agent.get_observability_port.return_value = mock_port
 
-            from src.core.middleware.observability import (
-                _AsyncObservabilityMiddleware,
-            )
+        from src.core.middleware.observability import (
+            _AsyncObservabilityMiddleware,
+        )
 
-            mw = _AsyncObservabilityMiddleware()
-            await mw.on_round_complete(mock_ctx)
+        mw = _AsyncObservabilityMiddleware()
+        await mw.on_round_complete(mock_ctx)
 
-            mock_metrics.counter.assert_called_once_with("rounds", 1)
-            mock_metrics.gauge.assert_called_once_with(
-                "context.messages", 1
-            )
+        mock_port.counter.assert_called_once_with("rounds", 1)
 
     async def test_on_round_complete_with_interrupt(self, mock_ctx):
         """on_round_complete: interrupted=True 时增加 interrupts 计数器"""
-        with (
-            patch("src.core.middleware.observability.get_default_collector") as mock_gc,
-            patch("src.core.middleware.observability.get_default_tracer") as mock_gt,
-        ):
-            mock_metrics = MagicMock()
-            mock_tracer = MagicMock()
-            mock_gc.return_value = mock_metrics
-            mock_gt.return_value = mock_tracer
+        mock_port = MagicMock()
+        mock_ctx.agent.get_observability_port.return_value = mock_port
+        mock_ctx.interrupted = True
 
-            mock_ctx.interrupted = True
+        from src.core.middleware.observability import (
+            _AsyncObservabilityMiddleware,
+        )
 
-            from src.core.middleware.observability import (
-                _AsyncObservabilityMiddleware,
-            )
+        mw = _AsyncObservabilityMiddleware()
+        await mw.on_round_complete(mock_ctx)
 
-            mw = _AsyncObservabilityMiddleware()
-            await mw.on_round_complete(mock_ctx)
-
-            mock_metrics.counter.assert_any_call("rounds", 1)
-            mock_metrics.counter.assert_any_call("interrupts", 1)
+        mock_port.counter.assert_any_call("rounds", 1)
+        mock_port.counter.assert_any_call("interrupts", 1)
 
     async def test_on_exception_passthrough(self, mock_ctx):
         """on_exception: 基类默认实现，不抛出异常"""
-        with (
-            patch("src.core.middleware.observability.get_default_collector"),
-            patch("src.core.middleware.observability.get_default_tracer"),
-        ):
-            from src.core.middleware.observability import (
-                _AsyncObservabilityMiddleware,
-            )
+        from src.core.middleware.observability import (
+            _AsyncObservabilityMiddleware,
+        )
 
-            mw = _AsyncObservabilityMiddleware()
-            exc = RuntimeError("test error")
-            # 基类默认 on_exception 为空实现，不应抛出异常
-            await mw.on_exception(mock_ctx, exc)
+        mw = _AsyncObservabilityMiddleware()
+        exc = RuntimeError("test error")
+        # 基类默认 on_exception 为空实现，不应抛出异常
+        await mw.on_exception(mock_ctx, exc)
 
     async def test_before_tool_execution_passthrough(self, mock_ctx):
         """before_tool_execution: 基类默认实现，不抛出异常"""
-        with (
-            patch("src.core.middleware.observability.get_default_collector"),
-            patch("src.core.middleware.observability.get_default_tracer"),
-        ):
-            from src.core.middleware.observability import (
-                _AsyncObservabilityMiddleware,
-            )
+        from src.core.middleware.observability import (
+            _AsyncObservabilityMiddleware,
+        )
 
-            mw = _AsyncObservabilityMiddleware()
-            await mw.before_tool_execution(mock_ctx)
+        mw = _AsyncObservabilityMiddleware()
+        await mw.before_tool_execution(mock_ctx)
 
     async def test_after_tool_execution_passthrough(self, mock_ctx):
         """after_tool_execution: 基类默认实现，不抛出异常"""
-        with (
-            patch("src.core.middleware.observability.get_default_collector"),
-            patch("src.core.middleware.observability.get_default_tracer"),
-        ):
-            from src.core.middleware.observability import (
-                _AsyncObservabilityMiddleware,
-            )
+        from src.core.middleware.observability import (
+            _AsyncObservabilityMiddleware,
+        )
 
-            mw = _AsyncObservabilityMiddleware()
-            await mw.after_tool_execution(mock_ctx)
+        mw = _AsyncObservabilityMiddleware()
+        await mw.after_tool_execution(mock_ctx)
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -443,40 +356,40 @@ class TestInterruptCheckMiddleware:
     async def test_before_model_call_interrupts_when_check_returns_true(
         self, mock_ctx
     ):
-        """before_model_call: check 返回 True 时设置 ctx.interrupted"""
+        """before_model_call: port.is_interrupted 返回 True 时设置 ctx.interrupted"""
         from src.core.middleware.interrupt import _InterruptCheckMiddleware
+        from src.core.adapters.interrupt import MockInterruptAdapter
 
-        check_fn = AsyncMock(return_value=True)
-        mw = _InterruptCheckMiddleware(is_interrupted_check=check_fn)
+        port = MockInterruptAdapter()
+        port.set_interrupted(True)
+        mw = _InterruptCheckMiddleware(interrupt_port=port)
 
         assert mock_ctx.interrupted is False
         await mw.before_model_call(mock_ctx)
         assert mock_ctx.interrupted is True
-        check_fn.assert_awaited_once()
 
     async def test_before_model_call_no_interrupt_when_check_returns_false(
         self, mock_ctx
     ):
-        """before_model_call: check 返回 False 时不中断"""
+        """before_model_call: port.is_interrupted 返回 False 时不中断"""
         from src.core.middleware.interrupt import _InterruptCheckMiddleware
+        from src.core.adapters.interrupt import MockInterruptAdapter
 
-        check_fn = AsyncMock(return_value=False)
-        mw = _InterruptCheckMiddleware(is_interrupted_check=check_fn)
+        port = MockInterruptAdapter()
+        port.set_interrupted(False)
+        mw = _InterruptCheckMiddleware(interrupt_port=port)
 
         await mw.before_model_call(mock_ctx)
         assert mock_ctx.interrupted is False
-        check_fn.assert_awaited_once()
 
-    async def test_before_model_call_with_async_check_fn(self, mock_ctx):
-        """before_model_call: 传入的 async check 函数被正确调用"""
+    async def test_before_model_call_with_default_port(self, mock_ctx):
+        """before_model_call: 不传参数时使用 DefaultInterruptAdapter，不抛出异常"""
         from src.core.middleware.interrupt import _InterruptCheckMiddleware
 
-        async def async_check():
-            return True
-
-        mw = _InterruptCheckMiddleware(is_interrupted_check=async_check)
+        mw = _InterruptCheckMiddleware()
         await mw.before_model_call(mock_ctx)
-        assert mock_ctx.interrupted is True
+        # DefaultInterruptAdapter 默认不中断
+        assert mock_ctx.interrupted is False
 
     async def test_on_round_complete_passthrough(self, mock_ctx):
         """on_round_complete: 基类默认实现"""

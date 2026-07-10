@@ -11,7 +11,7 @@ import os
 import threading
 from typing import Any, Dict, List, Optional
 
-from .internal._sandbox_history import _FileHistory
+from .internal.shared._sandbox_history import _FileHistory
 from .file_change_record import FileChangeRecord  # noqa: F401 — re-exported for backward compat
 
 

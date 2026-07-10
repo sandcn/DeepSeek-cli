@@ -31,24 +31,25 @@ from .state_machine import SessionStateMachine, SessionState, InvalidTransitionE
 from .telemetry import get_default_collector, get_default_tracer
 from .sandbox_manager import create_sandbox_manager, get_sandbox_manager
 from .middleware.state_machine import StateMachineMiddleware
-from ..api.stats import get_token_stats, get_session_start_time  # noqa: F401 — kept for backward compat
+# 向后兼容保留 — 实际使用已改为方法体内延迟导入
+# from ..api.stats import get_token_stats, get_session_start_time
 from ..core.ports import PersistencePort, CheckpointPort, ConfigPort
 from ..core.ports.observability import ObservabilityPort
 from ..core.adapters.persistence import JsonFilePersistence, JsonFileCheckpoint
 from ..core.adapters.config import DefaultConfigAdapter
 from ..core.adapters.observability import DefaultObservabilityAdapter
 from ..core.ports.null import _NullPort, _NullOutputPort  # noqa: F401 — re-exported
-from .internal._session_persistence import (
+from .internal.session._session_persistence import (
     save_session as _save_session_legacy,
     load_session_data as _load_session_data_legacy,
     save_checkpoint_session, clear_checkpoint_session, load_checkpoint_data,
     has_checkpoint_session, resume_from_checkpoint_session, safe_save_state,
 )
-from .internal._session_messages import add_message, non_system_messages, system_messages
-from .internal._session_state import SessionState as _SessionData
-from .internal._session_compression import _validate_compress_preconditions
-from .internal._session_persistence_manager import SessionPersistenceManager
-from .internal._session_messaging_manager import SessionMessagingManager
+from .internal.session._session_messages import add_message, non_system_messages, system_messages
+from .internal.session._session_state import SessionState as _SessionData
+from .internal.session._session_compression import _validate_compress_preconditions
+from .internal.session._session_persistence_manager import SessionPersistenceManager
+from .internal.session._session_messaging_manager import SessionMessagingManager
 
 _logger = logging.getLogger(__name__)
 
@@ -619,6 +620,7 @@ class ChatSession:
 
     def _snapshot_token_stats(self) -> tuple[int, int, int]:
         """获取前置 token 统计快照，返回 (prev_input, prev_output, prev_calls)。"""
+        from ..api.stats import get_token_stats
         current = get_token_stats()
         return current["input"], current["output"], current["calls"]
 
@@ -677,6 +679,7 @@ class ChatSession:
 
     def _compute_token_delta(self, prev_input: int, prev_output: int, prev_calls: int) -> tuple[dict, dict]:
         """计算本轮 token 消耗增量，返回 (delta, current_stats)。"""
+        from ..api.stats import get_token_stats
         current = get_token_stats()
         delta = {
             "input": current["input"] - prev_input,
@@ -705,6 +708,7 @@ class ChatSession:
           的 ctx.checkpoint_requested 标记，若为 True 则在已有 save_checkpoint()
           之后再次调用 save_checkpoint()，确保被取消的模型调用状态也被持久化。
         """
+        from ..api.stats import get_session_start_time
         elapsed = time.time() - get_session_start_time()
         if delta["input"] > 0 or delta["output"] > 0:
             prices = self._config_port.get_token_prices()

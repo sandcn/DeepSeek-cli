@@ -6,7 +6,7 @@ from ..ports.output import get_default_output_port
 from ..constants import GREEN, YELLOW, DIM, RESET, CYAN
 from ..context_selector import total_chars
 from ..sandbox_manager import get_sandbox_manager
-from ..internal._command_core import register_command, CommandContext, _pop_assistant_tool_messages
+from ..internal.commands._command_core import register_command, CommandContext, _pop_assistant_tool_messages
 
 _out = get_default_output_port()
 

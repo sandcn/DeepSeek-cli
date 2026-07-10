@@ -19,10 +19,10 @@ from ._utils import (
 from ._special_keys import make_special_key_callback
 from ._session_setup import (
     SessionState, _RoundResult,
-    _setup_session, _make_round_callbacks, _register_session_handlers,
+    _setup_session, _register_session_handlers,
 )
 from ._handlers import (
-    _handle_retry_sentinel, _handle_editmsg_cmd, _handle_model_cmd,
+    _handle_retry_sentinel,
 )
 from ._single import _make_event_agent
 
@@ -305,11 +305,10 @@ class InteractiveLoop:
             if not msg_done.is_set():
                 msg_done.set()
 
-    async def run(self) -> None:
-        """执行交互模式主循环"""
-        self._force_exit.clear()
+    # ── UI 生命周期管理 ──────────────────────────────────
 
-        # ── 初始化 ChatUI 消费者 ──
+    def _setup_chat_ui(self):
+        """初始化 ChatUI 消费者并显示启动信息"""
         self._chat_ui = ChatUIConsumer()
         self._chat_ui.start()
 
@@ -322,33 +321,69 @@ class InteractiveLoop:
         else:
             self._chat_ui.write_line(f"{DIM}  /help   Esc中断   / 输前缀按 Tab 补全{RESET}\n")
 
-        session, state = _setup_session(self._loaded_data, self._chat_ui)
+    def _teardown_chat_ui(self):
+        """停止 ChatUI 消费者"""
+        if self._chat_ui is not None:
+            self._chat_ui.stop()
+            self._chat_ui = None
 
-        # ★ 同步初始模型名到底部栏状态行
-        self._chat_ui.bottom_bar.set_model_name(state.model)
+    # ── EscapeMonitor 生命周期管理 ───────────────────────
 
-        # ★ 启用底部栏
-        self._chat_ui.setup_bottom_bar()
+    def _create_monitor(self):
+        """创建 EscapeMonitor 实例（仅创建，不绑定回调，不启动）。
 
-        # ── 初始化 EscapeMonitor ──
+        必须在 _register_session_handlers 之前调用，确保 _setup_session_and_handlers
+        中 _register_session_handlers 传入的 self._monitor 为非 None 的 EscapeMonitor。
+        """
         self._monitor = EscapeMonitor()
 
-        # ★ 通过独立模块注册特殊按键回调（提取到 _editor/_special_keys）
+    def _setup_monitor(self, session, state):
+        """初始化 EscapeMonitor 并注册回调（假设 self._monitor 已由 _create_monitor 创建）"""
+        if self._monitor is None:
+            self._monitor = EscapeMonitor()
         self._monitor.set_special_key_callback(
             make_special_key_callback(self, session, state, self._chat_ui)
         )
-        self._monitor.start()
-
-        # ★ 始终注册回显回调
         self._monitor.set_echo_callback(
             lambda text, cursor_pos=-1: self._chat_ui.refresh_bottom_bar(text, cursor_pos)
         )
-
-        # ★ 注册 Tab 补全回调
         if self._chat_ui is not None:
             self._chat_ui.setup_completion(self._monitor)
+        self._monitor.start()
 
+    def _teardown_monitor(self):
+        """停止 EscapeMonitor 并恢复终端设置"""
+        if self._monitor is not None:
+            self._monitor.stop()
+            self._monitor._restore_terminal_settings()
+            self._monitor = None
+
+    # ── 会话生命周期辅助 ──────────────────────────────────
+
+    def _setup_session_and_handlers(self, loaded_data):
+        """初始化会话并注册事件处理器"""
+        session, state = _setup_session(loaded_data, self._chat_ui)
+        self._chat_ui.bottom_bar.set_model_name(state.model)
+        self._chat_ui.setup_bottom_bar()
         _register_session_handlers(session, self._monitor, self._loop_state, self._chat_ui)
+        return session, state
+
+    async def run(self) -> None:
+        """执行交互模式主循环"""
+        self._force_exit.clear()
+
+        # ── 初始化 ChatUI ──
+        self._setup_chat_ui()
+
+        # ── 创建 EscapeMonitor 实例（需在 _setup_session_and_handlers 之前，
+        #    确保 _register_session_handlers 传递的 monitor 非 None） ──
+        self._create_monitor()
+
+        # ── 初始化会话 ──
+        session, state = self._setup_session_and_handlers(self._loaded_data)
+
+        # ── 初始化 EscapeMonitor 回调并启动 ──
+        self._setup_monitor(session, state)
 
         # ── 创建 MessageQueue + 消费者 ──
         queue = MessageQueue()
@@ -382,16 +417,8 @@ class InteractiveLoop:
             raise
         finally:
             self._msg_done_ref = None
-
-            if self._monitor is not None:
-                self._monitor.stop()
-                self._monitor._restore_terminal_settings()
-                self._monitor = None
-
-            if self._chat_ui is not None:
-                self._chat_ui.stop()
-                self._chat_ui = None
-
+            self._teardown_monitor()
+            self._teardown_chat_ui()
             consume_task.cancel()
             try:
                 await consume_task

@@ -13,7 +13,7 @@ from unittest.mock import MagicMock, AsyncMock, PropertyMock, patch
 
 import pytest
 
-from src.core.internal._tool_callbacks import ToolCallbackChain, _is_parallel_safe
+from src.core.internal.agent._tool_callbacks import ToolCallbackChain, _is_parallel_safe
 
 
 def _meta(parallel_safe=False, requires_terminal=False):

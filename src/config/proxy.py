@@ -2,6 +2,8 @@
 
 使 IDE 和静态类型检查器可获得准确的类型提示。
 运行时行为完全依赖 config/__init__.py 的 __getattr__ 机制。
+
+实现 ConfigPort 接口，提供方法式访问（get/set/get_model/get_base_url 等）。
 """
 
 from __future__ import annotations
@@ -11,16 +13,57 @@ from pathlib import Path
 from typing import Any
 
 import src.config as _config
+from ..core.ports.config import ConfigPort
 
 
-class ConfigProxy:
+class ConfigProxy(ConfigPort):
     """配置代理 — 所有属性通过 @property 委托到 config/__init__.py 的 __getattr__
+
+    同时实现 ConfigPort 接口，提供方法式配置访问。
     
     使用方式:
         from src.config.proxy import config
         print(config.MODEL)
         print(config.TOKEN_PRICES)
+        config.set("MODEL", "deepseek-r1")
     """
+
+    # ── ConfigPort 方法实现 ─────────────────────────────
+
+    def get(self, key: str, default: Any = None) -> Any:
+        """字典式访问 — 委托到 RC 字典"""
+        from src.config.loader import get_rc
+        from src.config import _resolve_rc_key
+        return _resolve_rc_key("config", get_rc()).get(key, default)
+
+    def set(self, key: str, value: Any) -> None:
+        """设置配置项并保存"""
+        from src.config.loader import update_config
+        update_config(key, value)
+
+    def get_model(self) -> str:
+        return _config.MODEL
+
+    def get_base_url(self) -> str:
+        return _config.BASE_URL
+
+    def get_token_prices(self) -> dict:
+        return _config.TOKEN_PRICES
+
+    def get_models(self) -> list[str]:
+        return _config.MODELS
+
+    def get_int(self, key: str, default: int = 0) -> int:
+        return int(self.get(key, default))
+
+    def get_float(self, key: str, default: float = 0.0) -> float:
+        return float(self.get(key, default))
+
+    def get_bool(self, key: str, default: bool = False) -> bool:
+        from src.config.schema import _parse_config_value
+        return bool(_parse_config_value(key, self.get(key, default)))
+
+    # ── @property 属性（向后兼容） ──────────────────────
 
     @property
     def MODEL(self) -> str:

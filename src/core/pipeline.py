@@ -20,7 +20,7 @@ import asyncio
 import logging
 from dataclasses import field
 from src._compat import dataclass
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Optional
 
 if TYPE_CHECKING:
     from .agent import Agent
@@ -68,6 +68,10 @@ class PipelineContext:
 
     # session_state_machine 由外部设置（agent.py），init=False 使 __init__ 不要求传参
     session_state_machine: Any = field(default=None, init=False)
+
+    # interrupt_port 由外部设置（agent.py 在构造 PipelineContext 时传入），
+    # init=False 使 __init__ 不要求传参，保持向后兼容
+    interrupt_port: Any = field(default=None, init=False)
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -158,6 +162,17 @@ class Pipeline:
     # 异步执行路径
     # ═════════════════════════════════════════════════════════
 
+    async def _get_interrupt_port(self, ctx: PipelineContext):
+        """获取中断端口 — 优先使用 ctx.interrupt_port，回退到 agent._interrupt_port，最后使用默认适配器"""
+        port = ctx.interrupt_port
+        if port is None:
+            agent = ctx.agent
+            port = getattr(agent, '_interrupt_port', None)
+        if port is None:
+            from .adapters.interrupt import DefaultInterruptAdapter
+            port = DefaultInterruptAdapter()
+        return port
+
     async def run_round_async(self, ctx: PipelineContext) -> bool:
         """异步执行一轮对话，返回是否被中断
 
@@ -167,8 +182,6 @@ class Pipeline:
             → 若继续: 下一轮
             → 否则: round_complete
         """
-        from ..api.interrupt_async import is_interrupted_async
-
         ctx.interrupted = False
         ctx.round_complete = False
 
@@ -242,12 +255,12 @@ class Pipeline:
 
                 # 工具执行后检查中断信号，减少中断响应延迟
                 if not ctx.interrupted:
-                    from ..api.interrupt_async import is_interrupted_async
                     try:
-                        if await is_interrupted_async():
+                        interrupt_port = await self._get_interrupt_port(ctx)
+                        if await interrupt_port.is_interrupted():
                             ctx.interrupted = True
                     except Exception:
-                        _logger.debug("is_interrupted_async 检查失败（非关键）")
+                        _logger.debug("中断检查失败（非关键）")
             else:
                 ctx.round_complete = True
 
@@ -267,8 +280,6 @@ class Pipeline:
         - 有工具调用 → 仅设置 ctx.tool_calls，工具执行由 run_round_async 中的中间件钩子处理
         - 无工具调用 → 追加 assistant 消息
         """
-        from ..api.interrupt_async import is_interrupted_async
-
         agent = ctx.agent
 
         # 异步模型调用
@@ -301,7 +312,8 @@ class Pipeline:
         ctx.tool_calls = tool_calls
 
         # 中断检查
-        if await is_interrupted_async():
+        interrupt_port = await self._get_interrupt_port(ctx)
+        if await interrupt_port.is_interrupted():
             agent._append_assistant_msg(_INTERRUPTED_MSG, reasoning)
             ctx.interrupted = True
             return

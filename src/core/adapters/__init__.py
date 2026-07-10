@@ -7,11 +7,13 @@
 - DefaultOutputAdapter / get_default_output_port — OutputPort 默认实现
 - DisplayEventBusAdapter — EventPort 默认实现
 - DefaultDisplayAdapter — DisplayPort 默认实现
+- DefaultInterruptAdapter / MockInterruptAdapter — InterruptPort 默认实现
 """
 
 from .output import DefaultOutputAdapter, get_default_output_port
 from .events import DisplayEventBusAdapter
 from .display import DefaultDisplayAdapter
+from .interrupt import DefaultInterruptAdapter, MockInterruptAdapter
 
 
 __all__ = [
@@ -19,4 +21,6 @@ __all__ = [
     "get_default_output_port",
     "DisplayEventBusAdapter",
     "DefaultDisplayAdapter",
+    "DefaultInterruptAdapter",
+    "MockInterruptAdapter",
 ]

@@ -15,8 +15,8 @@ import random
 import logging
 from typing import List, Dict, Any
 
-from .internal._capture_manager import _safe_restore as safe_restore_stdout
-from .internal._subagent_spawner import SubAgentSpawner
+from .internal.agent._capture_manager import _safe_restore as safe_restore_stdout
+from .internal.agent._subagent_spawner import SubAgentSpawner
 from .subagent import SubAgent
 from .constants import RED, RESET
 

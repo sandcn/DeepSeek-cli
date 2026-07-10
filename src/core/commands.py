@@ -5,7 +5,7 @@
 """
 
 # 各子模块的 import 副作用会执行 register_command() 调用
-from .internal._command_core import (  # noqa: F401, F811
+from .internal.commands._command_core import (  # noqa: F401, F811
     register_command,
     handle_command,
     CommandContext,

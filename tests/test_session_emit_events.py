@@ -162,7 +162,7 @@ class TestSessionPersistenceManagerCheckpoint:
 
     def test_save_checkpoint_io_exception_logged_and_reraised(self):
         """IO异常时记录 WARNING 日志并重新抛出"""
-        from src.core.internal._session_persistence_manager import SessionPersistenceManager
+        from src.core.internal.session._session_persistence_manager import SessionPersistenceManager
 
         # 准备
         mock_checkpoint = MagicMock()
@@ -190,7 +190,7 @@ class TestSessionPersistenceManagerCheckpoint:
 
     def test_save_checkpoint_success_emits_event(self):
         """保存成功时发射 checkpoint_saved 事件"""
-        from src.core.internal._session_persistence_manager import SessionPersistenceManager
+        from src.core.internal.session._session_persistence_manager import SessionPersistenceManager
 
         # 准备
         mock_checkpoint = MagicMock()

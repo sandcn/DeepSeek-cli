@@ -7,7 +7,7 @@ from ...config import MODEL
 from ...api.model_async import call_model_sync
 from ...prompt_builder.project_summary import generate_summary_prompt
 from ..sandbox_manager import get_sandbox_manager
-from ..internal._command_core import register_command, CommandContext
+from ..internal.commands._command_core import register_command, CommandContext
 
 _out = get_default_output_port()
 
@@ -181,7 +181,7 @@ class HelpCommand(CommandPlugin):
         self.meta = CommandMeta(name="help", description="显示帮助")
 
     def execute(self, ctx: CommandContext) -> bool:
-        from ..internal._command_core import _cmd_help
+        from ..internal.commands._command_core import _cmd_help
         return _cmd_help(ctx)
 
 

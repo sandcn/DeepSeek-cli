@@ -10,8 +10,7 @@
 
 import json
 from functools import lru_cache
-from ..api.tokens import estimate_tokens
-from .internal._message_stats_cache import MessageStatsCache  # noqa: F401 — re-exported for backward compat
+from .internal.shared._message_stats_cache import MessageStatsCache  # noqa: F401 — re-exported for backward compat
 
 _EXCESS_BUFFER = 1.3  # 30% 超额释放缓冲，避免频繁触发压缩
 
@@ -25,6 +24,7 @@ def compute_message_stats(messages):
     for m in messages:
         text = message_to_text(m)
         total_chars_val += len(text)
+        from ..api.tokens import estimate_tokens
         total_tokens_val += estimate_tokens(text)
     return total_chars_val, total_tokens_val
 
@@ -41,7 +41,7 @@ def exceeds_limit_values(total_chars_val, total_tokens_val):
 
 def should_auto_force_values(total_chars_val, total_tokens_val):
     """使用预计算的值检查是否应自动全量压缩。"""
-    from ..config import AUTO_FORCE_COMPRESS_THRESHOLD  # 配置常量 — 函数体内延迟导入
+    from ..config import AUTO_FORCE_COMPRESS_THRESHOLD, MAX_CONTEXT_TOKENS  # 配置常量 — 函数体内延迟导入
     if AUTO_FORCE_COMPRESS_THRESHOLD > 0:
         if total_chars_val > AUTO_FORCE_COMPRESS_THRESHOLD:
             return True

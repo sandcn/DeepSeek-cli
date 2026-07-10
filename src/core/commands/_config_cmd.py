@@ -2,7 +2,7 @@
 
 from ..constants import GREEN, YELLOW, DIM, RESET, CYAN
 from ..ports.output import get_default_output_port
-from ..internal._command_core import register_command, CommandContext, show_cost
+from ..internal.commands._command_core import register_command, CommandContext, show_cost
 
 _out = get_default_output_port()
 

@@ -14,7 +14,7 @@ from typing import Any
 
 from .base import InteractiveCommandPlugin
 from ..base import CommandMeta, get_plugin_registry
-from ...internal._command_core import handle_command
+from ...internal.commands._command_core import handle_command
 
 _logger = logging.getLogger(__name__)
 

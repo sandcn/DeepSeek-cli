@@ -15,8 +15,6 @@ from typing import List, Dict, Any, Optional, Tuple, Callable
 
 from .base_agent import BaseAgent
 
-from ..api.stats import accumulate_usage
-
 _logger = logging.getLogger(__name__)
 
 # ── 类型策略：agent_type → 排除的工具集合 ─────────────
@@ -229,7 +227,8 @@ class SubAgent(BaseAgent):
 
             if usage is not None:
                 self.display.update_usage(self.label, usage, replace=False)
-                # 累加到全局统计
+                # 累加到全局统计（方法体内延迟导入）
+                from ..api.stats import accumulate_usage
                 accumulate_usage(usage)
                 # 同步发布到 EventPort（Web 前端通过此事件更新用量显示）
                 self._event_port.publish_event(UsageUpdatedEvent(
@@ -308,7 +307,7 @@ class SubAgent(BaseAgent):
     ) -> Tuple[Optional[Callable], Optional[Callable], Optional[Callable]]:
         """构建工具执行回调三元组 (on_before, on_after, run_method)"""
         from ..ui.events.event_types import ToolStartedEvent, ToolDoneEvent
-        from .internal._tool_callbacks import _run_file_display
+        from .internal.agent._tool_callbacks import _run_file_display
 
         display = self.display
 

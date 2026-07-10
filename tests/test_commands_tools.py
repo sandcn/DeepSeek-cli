@@ -21,10 +21,10 @@ class TestCmdHelp:
     
     def test_writes_help_and_returns_true(self):
         """写入帮助文本，返回 True。"""
-        from src.core.internal._command_core import _cmd_help, get_dynamic_help_text
+        from src.core.internal.commands._command_core import _cmd_help, get_dynamic_help_text
         
         mock_out = MagicMock()
-        with patch('src.core.internal._command_core._get_out', return_value=mock_out):
+        with patch('src.core.internal.commands._command_core._get_out', return_value=mock_out):
             ctx = MagicMock()
             ctx.arg = ""
             result = _cmd_help(ctx)
@@ -37,7 +37,7 @@ class TestCmdHelp:
     
     def test_get_dynamic_help_text_content(self):
         """帮助文本包含基本命令和退出提示。"""
-        from src.core.internal._command_core import get_dynamic_help_text
+        from src.core.internal.commands._command_core import get_dynamic_help_text
         
         text = get_dynamic_help_text()
         assert text

@@ -12,7 +12,7 @@ import pytest
 from unittest.mock import MagicMock
 
 from src.core.hooks import CoreHooks
-from src.core.internal._session_state import SessionState
+from src.core.internal.session._session_state import SessionState
 
 
 # ===============================================================

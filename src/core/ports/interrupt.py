@@ -18,3 +18,13 @@ class InterruptPort(ABC):
             True 表示已收到中断信号，应停止当前操作
         """
         ...
+
+    @abstractmethod
+    async def reset(self) -> None:
+        """清除中断信号。"""
+        ...
+
+    @abstractmethod
+    async def request_interrupt(self) -> None:
+        """请求中断。"""
+        ...

@@ -14,7 +14,6 @@ from src._compat import dataclass
 from ._utils import _non_system_messages
 
 from ..core.session import ChatSession
-from ..core.agent import Agent
 from ..ui.colors import DIM, RESET
 from ..api.stats import reset_token_speed
 from ..api.escape_monitor import EscapeMonitor
@@ -89,6 +88,13 @@ def _make_round_callbacks(
             chat_ui.bottom_bar.enable_status()
 
     def _on_round_end(interrupted=False, delta=None, **kw):
+        # ★ 防御性检查：monitor 为 None 时跳过 drain 操作
+        #   主路径中 monitor 由 _create_monitor 在 _register_session_handlers 之前创建，
+        #   此检查作为兜底防御（异常路径/初始化顺序错误）
+        if monitor is None:
+            _logger.warning("_on_round_end: monitor 为 None，跳过 drain 操作")
+            return
+
         # /loop 模式下不冻结状态行、不发桌面通知，保持状态行活跃
         if not loop_state.get("_loop_mode"):
             # ★ 冻结底部栏状态行（定格最终数值），同时获取耗时供通知复用

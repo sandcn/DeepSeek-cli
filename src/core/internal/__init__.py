@@ -6,11 +6,10 @@
 - commands/ — 命令注册表
 - shared/ — 缓存、沙盒历史
 
-⚠️ 旧导入路径兼容：所有 from src.core.internal._xxx import yyy 仍然有效
+【架构】此目录为纯实现细节。外部代码统一通过 src.core.internal 子包入口导入。
 """
 from __future__ import annotations
 
-# 向后兼容：保持旧导入路径有效
 from .session import *
 from .agent import *
 from .commands import *

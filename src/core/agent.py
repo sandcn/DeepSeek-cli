@@ -3,9 +3,9 @@ from __future__ import annotations
 import logging
 from typing import Optional
 
-from .internal._capture_manager import CaptureManager
+from .internal.agent._capture_manager import CaptureManager
 from .base_agent import BaseAgent
-from .internal._tool_callbacks import ToolCallbackChain
+from .internal.agent._tool_callbacks import ToolCallbackChain
 from .pipeline import Pipeline, PipelineContext
 from .tool_executor_async import AsyncToolExecutor
 from ..tools.registry import ToolRegistry
@@ -13,13 +13,42 @@ from ..core.ports import ConfigPort
 from ..core.ports.tool_registry import ToolRegistryPort
 from ..core.ports.prompt_builder import PromptBuilderPort
 from ..core.ports.observability import ObservabilityPort
-from ..core.adapters.observability import DefaultObservabilityAdapter
-from ..core.adapters.prompt_builder import DefaultPromptBuilderAdapter
+from ..core.adapters.interrupt import DefaultInterruptAdapter
 from .middleware.observability import _AsyncObservabilityMiddleware  # noqa: F401 — re-exported
 from .middleware.audit import _AuditLogMiddleware  # noqa: F401 — re-exported
 from .middleware.interrupt import _InterruptCheckMiddleware  # noqa: F401 — re-exported
 from .middleware.adapters import _ToolRegistryAdapter  # noqa: F401 — re-exported
 _logger = logging.getLogger(__name__)
+
+
+# ── 默认适配器工厂 ────────────────────────────────────────
+# 将 __init__ 中重复的 "if X is None: from ... import DefaultX; self._x = DefaultX()" 模式
+# 提取为工厂函数，延迟导入各适配器类以减少模块加载副作用。
+
+def _create_default_ports():
+    """创建默认端口适配器字典（方法体内延迟导入）。"""
+    from ..core.adapters.model import DefaultAsyncModelAdapter
+    from ..core.adapters.config import DefaultConfigAdapter
+    from ..core.adapters.observability import DefaultObservabilityAdapter
+    from ..core.adapters.prompt_builder import DefaultPromptBuilderAdapter
+    from ..core.adapters.display import DefaultDisplayAdapter
+    from ..core.adapters.events import DisplayEventBusAdapter
+    from ..core.adapters.output import DefaultOutputAdapter
+    return {
+        "async_model": DefaultAsyncModelAdapter(),
+        "config": DefaultConfigAdapter(),
+        "observability": DefaultObservabilityAdapter(),
+        "prompt_builder": DefaultPromptBuilderAdapter(),
+        "display": DefaultDisplayAdapter(source="agent"),
+        "events": DisplayEventBusAdapter(source="agent"),
+        "output": DefaultOutputAdapter(),
+        "interrupt": DefaultInterruptAdapter(),
+    }
+
+
+def _resolve_port(value, defaults_dict, key):
+    """辅助：value 不为 None 则返回 value，否则返回 defaults_dict[key]"""
+    return value if value is not None else defaults_dict[key]
 
 
 class Agent(BaseAgent):
@@ -59,58 +88,46 @@ class Agent(BaseAgent):
 
         self._registry = registry or ToolRegistry.default()
 
+        # ── 默认端口工厂（延迟导入） ────────────────────
+        _defaults = _create_default_ports()
+
         # ── PromptBuilderPort ────────────────────────────
-        if prompt_builder_port is not None:
-            self._prompt_builder_port = prompt_builder_port
-        else:
-            self._prompt_builder_port = DefaultPromptBuilderAdapter()
+        self._prompt_builder_port = _resolve_port(prompt_builder_port, _defaults, "prompt_builder")
 
         # ── 异步 ModelPort（默认启用） ────────────────────
-        if async_model_port is not None:
-            self._async_model_port = async_model_port
-        else:
-            from ..core.adapters.model import DefaultAsyncModelAdapter
-            self._async_model_port = DefaultAsyncModelAdapter()
+        self._async_model_port = _resolve_port(async_model_port, _defaults, "async_model")
         self._call_model_async = self._wrap_async_model_port(self._async_model_port)
 
         self.messages = [{"role": "system", "content": part} for part in self._registry.build_system_prompt()]
 
         # ── ConfigPort 注入 ───────────────────────────────
-        if config_port is not None:
-            self._config_port = config_port
-        else:
-            from ..core.adapters.config import DefaultConfigAdapter
-            self._config_port = DefaultConfigAdapter()
+        self._config_port = _resolve_port(config_port, _defaults, "config")
         self.model = model or self._config_port.get_model()
         self.tools = self._registry.get_schemas()
 
         # ── ObservabilityPort（可观测性） ────────────────
-        if observability_port is not None:
-            self._observability_port = observability_port
-        else:
-            self._observability_port = DefaultObservabilityAdapter()
+        self._observability_port = _resolve_port(observability_port, _defaults, "observability")
 
         # ── ToolRegistryPort 包装 ─────────────────────────
         self._tool_registry_port: ToolRegistryPort = _ToolRegistryAdapter(self._registry)
 
         self._async_tool_executor = AsyncToolExecutor(self._registry)
 
-        # Port 注入：允许外部传入 null 实现（ChatSession），
-        # 不传时使用默认 UI 实现（保持向后兼容）。
+        # ── UI Ports（display/events/output） ────────────
         if display_port is not None and event_port is not None and output_port is not None:
             self._display_port = display_port
             self._event_port = event_port
             self._output_port = output_port
         else:
-            from ..core.adapters.display import DefaultDisplayAdapter
-            from ..core.adapters.events import DisplayEventBusAdapter
-            from ..core.adapters.output import DefaultOutputAdapter
-            self._display_port = DefaultDisplayAdapter(source="agent")
-            self._event_port = DisplayEventBusAdapter(source="agent")
-            self._output_port = DefaultOutputAdapter()
+            self._display_port = _defaults["display"]
+            self._event_port = _defaults["events"]
+            self._output_port = _defaults["output"]
         self.display = self._display_port
         self.context_manager = None
         self._shared_executor = None
+        # ── InterruptPort（中断检查） ────────────────────
+        self._interrupt_port = DefaultInterruptAdapter()
+
         # ── 工具完成回调列表（TUI 刷新等外部监听） ────────
         self._on_tool_completed_callbacks: list = []
 
@@ -122,8 +139,6 @@ class Agent(BaseAgent):
 
         # ── Pipeline（中间件管道） ─────────────────────────
         self._pipeline = Pipeline()
-        # 异步中间件（默认启用，由 run() 驱动）
-        # ★ P1-4 修复：中断检查中间件放在第一位，确保模型调用前优先检查中断
         self._pipeline.use_async(_InterruptCheckMiddleware())
         self._pipeline.use_async(_AsyncObservabilityMiddleware())
         self._pipeline.use_async(_AuditLogMiddleware())
@@ -212,14 +227,15 @@ class Agent(BaseAgent):
 
     async def run(self):
         """纯异步执行对话（用于已有事件循环的上下文）"""
-        from ..api.interrupt_async import reset_interrupt_async
-        reset_interrupt_async()
+        await self._interrupt_port.reset()
 
         ctx = PipelineContext(self)
         # 将会话状态机引用从 agent 临时属性转移到 PipelineContext
         sm = getattr(self, '_session_state_machine', None)
         if sm is not None:
             ctx.session_state_machine = sm
+        # 将 interrupt_port 传递给 PipelineContext，供 pipeline 直接使用
+        ctx.interrupt_port = self._interrupt_port
         interrupted = await self._pipeline.run_round_async(ctx)
         return interrupted
 
