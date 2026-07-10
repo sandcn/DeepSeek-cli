@@ -5,8 +5,8 @@
 
 from __future__ import annotations
 
-from .._const import _THINKING_HEADER
-from .._render_state import _ReasoningState
+from ..const import _THINKING_HEADER
+from ..render_state import _ReasoningState
 from ._base import TuiComponent, _estimate_content_lines
 
 

@@ -30,7 +30,7 @@ def _reset_error_handler():
     若 handler 不存在（模块未加载），跳过。
     """
     root = logging.getLogger()
-    from src.chat_ui._error_handler import ChatUIErrorHandler
+    from src.chat_ui.error_handler import ChatUIErrorHandler
     handler = None
     for h in root.handlers:
         if isinstance(h, ChatUIErrorHandler):
@@ -58,7 +58,7 @@ class TestChatUIErrorHandlerEmit:
         )
 
         mock_ui = MagicMock()
-        with patch.object(chat_ui._state, 'get_active_chat_ui', return_value=mock_ui):
+        with patch.object(chat_ui.state, 'get_active_chat_ui', return_value=mock_ui):
             handler.emit(record)
 
         mock_ui.on_error.assert_called_once()
@@ -77,7 +77,7 @@ class TestChatUIErrorHandlerEmit:
         )
 
         mock_ui = MagicMock()
-        with patch.object(chat_ui._state, 'get_active_chat_ui', return_value=mock_ui):
+        with patch.object(chat_ui.state, 'get_active_chat_ui', return_value=mock_ui):
             handler.emit(record)
 
         mock_ui.on_error.assert_called_once()
@@ -93,7 +93,7 @@ class TestChatUIErrorHandlerEmit:
         )
 
         mock_ui = MagicMock()
-        with patch.object(chat_ui._state, 'get_active_chat_ui', return_value=mock_ui):
+        with patch.object(chat_ui.state, 'get_active_chat_ui', return_value=mock_ui):
             handler.emit(record)
 
         mock_ui.on_error.assert_not_called()
@@ -109,7 +109,7 @@ class TestChatUIErrorHandlerEmit:
         )
 
         mock_ui = MagicMock()
-        with patch.object(chat_ui._state, 'get_active_chat_ui', return_value=mock_ui):
+        with patch.object(chat_ui.state, 'get_active_chat_ui', return_value=mock_ui):
             handler.emit(record)
 
         called_msg = mock_ui.on_error.call_args[0][0]
@@ -132,7 +132,7 @@ class TestChatUIErrorHandlerInactive:
         )
 
         mock_ui = MagicMock()
-        with patch.object(chat_ui._state, 'get_active_chat_ui', return_value=None):
+        with patch.object(chat_ui.state, 'get_active_chat_ui', return_value=None):
             # 不应抛出任何异常
             handler.emit(record)
 
@@ -160,7 +160,7 @@ class TestChatUIErrorHandlerLevelFilter:
         )
 
         mock_ui = MagicMock()
-        with patch.object(chat_ui._state, 'get_active_chat_ui', return_value=mock_ui):
+        with patch.object(chat_ui.state, 'get_active_chat_ui', return_value=mock_ui):
             handler.emit(record)
 
         if should_emit:
@@ -186,7 +186,7 @@ class TestChatUIErrorHandlerSelfRef:
         record._chatui_reported = True
 
         mock_ui = MagicMock()
-        with patch.object(chat_ui._state, 'get_active_chat_ui', return_value=mock_ui):
+        with patch.object(chat_ui.state, 'get_active_chat_ui', return_value=mock_ui):
             handler.emit(record)
 
         mock_ui.on_error.assert_not_called()
@@ -201,7 +201,7 @@ class TestChatUIErrorHandlerSelfRef:
         )
 
         mock_ui = MagicMock()
-        with patch.object(chat_ui._state, 'get_active_chat_ui', return_value=mock_ui):
+        with patch.object(chat_ui.state, 'get_active_chat_ui', return_value=mock_ui):
             handler.emit(record)
 
         # emit 后 record 必须被标记
@@ -213,7 +213,7 @@ class TestChatUIErrorHandlerSelfRef:
         验证 thread-local _handler_reentrant.is_active 能阻断
         on_error 路径中意外产生的二次 emit。
         """
-        from src.chat_ui._error_handler import _handler_reentrant
+        from src.chat_ui.error_handler import _handler_reentrant
         # 确保测试开始时重入标记为 False
         _handler_reentrant.is_active = False
 
@@ -238,7 +238,7 @@ class TestChatUIErrorHandlerSelfRef:
         mock_ui = MagicMock()
         mock_ui.on_error.side_effect = _on_error_side_effect
 
-        with patch.object(chat_ui._state, 'get_active_chat_ui', return_value=mock_ui):
+        with patch.object(chat_ui.state, 'get_active_chat_ui', return_value=mock_ui):
             handler.emit(
                 logging.LogRecord(
                     name="test", level=logging.ERROR,
@@ -266,7 +266,7 @@ class TestRenderCommandError:
 
     def test_error_in_dispatch(self):
         """_RENDER_DISPATCH 包含 ERROR 条目"""
-        from src.chat_ui._renderer import _RENDER_DISPATCH
+        from src.chat_ui.renderer import _RENDER_DISPATCH
         dispatch = _RENDER_DISPATCH
         assert 16 in dispatch
         method_name, arg_indices = dispatch[16]
@@ -378,28 +378,28 @@ class TestIsAgentSource:
 
     def test_none_source_returns_false(self):
         """source=None → 返回 False，不抛异常"""
-        from src.chat_ui._dispatcher import EventDispatcher
+        from src.chat_ui.dispatcher import EventDispatcher
         assert EventDispatcher._is_agent_source(None) is False
 
     def test_main_source_returns_true(self):
         """source='agent' → 返回 True"""
-        from src.chat_ui._dispatcher import EventDispatcher
-        from src.chat_ui._const import _MAIN_SOURCE
+        from src.chat_ui.dispatcher import EventDispatcher
+        from src.chat_ui.const import _MAIN_SOURCE
         assert EventDispatcher._is_agent_source(_MAIN_SOURCE) is True
 
     def test_agent_prefix_returns_true(self):
         """source='agent-1' → 返回 True"""
-        from src.chat_ui._dispatcher import EventDispatcher
+        from src.chat_ui.dispatcher import EventDispatcher
         assert EventDispatcher._is_agent_source("agent-1") is True
 
     def test_other_source_returns_false(self):
         """source='user' → 返回 False"""
-        from src.chat_ui._dispatcher import EventDispatcher
+        from src.chat_ui.dispatcher import EventDispatcher
         assert EventDispatcher._is_agent_source("user") is False
 
     def test_empty_string_returns_false(self):
         """source='' → 返回 False"""
-        from src.chat_ui._dispatcher import EventDispatcher
+        from src.chat_ui.dispatcher import EventDispatcher
         assert EventDispatcher._is_agent_source("") is False
 
 
@@ -426,7 +426,7 @@ class TestEmitGetMessageTypeError:
         )
 
         mock_ui = MagicMock()
-        with patch.object(chat_ui._state, 'get_active_chat_ui', return_value=mock_ui):
+        with patch.object(chat_ui.state, 'get_active_chat_ui', return_value=mock_ui):
             # 不应抛出任何异常
             handler.emit(record)
 

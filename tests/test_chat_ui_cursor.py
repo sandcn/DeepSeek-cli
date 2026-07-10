@@ -46,14 +46,14 @@ def mock_term():
 @pytest.fixture
 def cursor(mock_bb, mock_term):
     """CursorController 实例，注入 mock get_terminal。"""
-    from src.chat_ui._cursor import CursorController
+    from src.chat_ui.cursor import CursorController
     return CursorController(mock_bb, get_terminal=lambda: mock_term)
 
 
 @pytest.fixture
 def cursor_default_import(mock_bb):
     """CursorController 实例，使用默认模块级 import（get_terminal=None）。"""
-    from src.chat_ui._cursor import CursorController
+    from src.chat_ui.cursor import CursorController
     return CursorController(mock_bb, get_terminal=None)
 
 

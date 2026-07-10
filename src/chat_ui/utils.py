@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import sys
 
-from ._const import RenderCommand
+from .const import RenderCommand
 
 
 def _truncate_msg(msg: str, max_len: int) -> str:

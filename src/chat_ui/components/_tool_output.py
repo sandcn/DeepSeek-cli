@@ -13,7 +13,7 @@ if TYPE_CHECKING:
 
 from rich.text import Text
 
-from .._const import _STYLE_DIM, _MAX_OUTPUT_LEN
+from ..const import _STYLE_DIM, _MAX_OUTPUT_LEN
 from ._base import TuiComponent, _estimate_content_lines
 
 _logger = logging.getLogger(__name__)

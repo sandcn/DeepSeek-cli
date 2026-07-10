@@ -127,7 +127,7 @@ class CommandPluginRegistry:
             self._groups[group].append(name)
 
         # 同时注册到旧的命令系统（保持向后兼容）
-        from .._command_core import register_command
+        from ..internal._command_core import register_command
         register_command(
             f"/{name}",
             lambda ctx, p=plugin: p.execute(ctx),

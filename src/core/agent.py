@@ -1,15 +1,16 @@
 from __future__ import annotations
 
 import logging
-from ._capture_manager import CaptureManager
+from .internal._capture_manager import CaptureManager
 from .base_agent import BaseAgent
-from ._tool_callbacks import ToolCallbackChain
+from .internal._tool_callbacks import ToolCallbackChain
 from .pipeline import Pipeline, PipelineContext
 from .tool_executor_async import AsyncToolExecutor
 from ..tools.registry import ToolRegistry
 from ..core.ports import ConfigPort
 from ..core.ports.tool_registry import ToolRegistryPort
-from ..core.ports.prompt_builder import PromptBuilderPort, DefaultPromptBuilderAdapter
+from ..core.ports.prompt_builder import PromptBuilderPort
+from ..core.adapters.prompt_builder import DefaultPromptBuilderAdapter
 from .middleware.observability import _AsyncObservabilityMiddleware  # noqa: F401 — re-exported
 from .middleware.audit import _AuditLogMiddleware  # noqa: F401 — re-exported
 from .middleware.interrupt import _InterruptCheckMiddleware  # noqa: F401 — re-exported
@@ -61,7 +62,7 @@ class Agent(BaseAgent):
         if async_model_port is not None:
             self._async_model_port = async_model_port
         else:
-            from ..core.ports.model import DefaultAsyncModelAdapter
+            from ..core.adapters.model import DefaultAsyncModelAdapter
             self._async_model_port = DefaultAsyncModelAdapter()
         self._call_model_async = self._wrap_async_model_port(self._async_model_port)
 
@@ -71,7 +72,7 @@ class Agent(BaseAgent):
         if config_port is not None:
             self._config_port = config_port
         else:
-            from ..core.ports import DefaultConfigAdapter
+            from ..core.adapters.config import DefaultConfigAdapter
             self._config_port = DefaultConfigAdapter()
         self.model = model or self._config_port.get_model()
         self.tools = self._registry.get_schemas()

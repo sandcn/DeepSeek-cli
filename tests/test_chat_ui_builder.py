@@ -35,7 +35,7 @@ def mock_event_bus():
 def builder():
     """ChatUIBuilder 实例。"""
     try:
-        from src.chat_ui._builder import ChatUIBuilder
+        from src.chat_ui.builder import ChatUIBuilder
     except ImportError:
         pytest.skip("_builder 模块不存在")
     return ChatUIBuilder()
@@ -51,7 +51,7 @@ class TestDefaultBuild:
     def test_build_with_event_bus(self, builder, mock_event_bus):
         """传入自定义 event_bus → 使用传入的实例。"""
         try:
-            from src.chat_ui._builder import ChatUIComponents
+            from src.chat_ui.builder import ChatUIComponents
         except ImportError:
             pytest.skip("_builder 模块不存在")
 
@@ -62,7 +62,7 @@ class TestDefaultBuild:
 
     def test_build_without_event_bus(self, builder):
         """不传 event_bus → 使用 DisplayEventBus.get_default()。"""
-        with patch("src.chat_ui._builder.DisplayEventBus") as MockBus:
+        with patch("src.chat_ui.builder.DisplayEventBus") as MockBus:
             mock_bus = MagicMock()
             MockBus.get_default.return_value = mock_bus
             components = builder.build()
@@ -85,7 +85,7 @@ class TestDefaultBuild:
     def test_build_components_types(self, builder, mock_event_bus):
         """build() 返回的字段具有正确的类型。"""
         try:
-            from src.chat_ui._protocols import (
+            from src.chat_ui.protocols import (
                 BottomBarProtocol,
                 ContentRendererProtocol,
                 EventDispatcherProtocol,
@@ -189,7 +189,7 @@ class TestChatUIComponents:
     def test_namedtuple_field_access(self, builder, mock_event_bus):
         """ChatUIComponents 字段可通过属性名和索引访问。"""
         try:
-            from src.chat_ui._builder import ChatUIComponents
+            from src.chat_ui.builder import ChatUIComponents
         except ImportError:
             pytest.skip("_builder 模块不存在")
 
@@ -290,7 +290,7 @@ class TestRobustness:
             # 没有 adapter property
 
         builder.set_renderer(BadRenderer())
-        with patch("src.chat_ui._builder.DisplayEventBus") as MockBus:
+        with patch("src.chat_ui.builder.DisplayEventBus") as MockBus:
             MockBus.get_default.return_value = MagicMock()
             # build() 本身不校验 adapter，不应抛出异常
             components = builder.build()
@@ -307,7 +307,7 @@ class TestConstructor:
     def test_all_fields_none(self):
         """初始状态下所有注入字段均为 None。"""
         try:
-            from src.chat_ui._builder import ChatUIBuilder
+            from src.chat_ui.builder import ChatUIBuilder
         except ImportError:
             pytest.skip("_builder 模块不存在")
         b = ChatUIBuilder()

@@ -453,7 +453,7 @@ class TestDrainQueueSyncBottomLines(unittest.TestCase):
     """验证 _drain_queue() Stage 1 非 resize 时调用 sync_bottom_lines()。"""
 
     def setUp(self):
-        from src.chat_ui._engine import RenderEngine
+        from src.chat_ui.engine import RenderEngine
         self.mock_renderer = MagicMock()
         self.mock_bb = MagicMock()
         self.mock_bb.is_status_active = False
@@ -473,7 +473,7 @@ class TestDrainQueueSyncBottomLines(unittest.TestCase):
         sys.__stdout__ = self._stdout
 
     def _enqueue_cmd(self):
-        from src.chat_ui._const import RenderCommand
+        from src.chat_ui.const import RenderCommand
         self.engine.push_cmd((RenderCommand.NOTIFICATION, "test"))
 
     def test_not_resized_calls_sync_bottom_lines(self):

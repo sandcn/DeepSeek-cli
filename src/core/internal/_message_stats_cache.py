@@ -10,7 +10,7 @@ MessageStatsCache 维护与 messages 列表对应的每消息字符/token 数缓
 
 from dataclasses import field
 from src._compat import dataclass
-from ..api.tokens import estimate_tokens
+from ...api.tokens import estimate_tokens
 
 
 @dataclass(slots=True)
@@ -38,7 +38,7 @@ class MessageStatsCache:
 
     def resync(self, messages):
         """全量同步：遍历所有消息重建缓存。"""
-        from .context_selector import message_to_text  # noqa: PLC0415 — 懒加载避免循环导入
+        from ..context_selector import message_to_text  # noqa: PLC0415 — 懒加载避免循环导入
 
         total_chars = 0
         total_tokens = 0
@@ -63,7 +63,7 @@ class MessageStatsCache:
 
     def on_append(self, msg):
         """追加一条消息的统计。"""
-        from .context_selector import message_to_text  # noqa: PLC0415 — 懒加载避免循环导入
+        from ..context_selector import message_to_text  # noqa: PLC0415 — 懒加载避免循环导入
 
         text = message_to_text(msg)
         c, t = len(text), estimate_tokens(text)
@@ -73,7 +73,7 @@ class MessageStatsCache:
 
     def on_insert(self, idx, msg):
         """在指定索引插入一条消息的统计。"""
-        from .context_selector import message_to_text  # noqa: PLC0415 — 懒加载避免循环导入
+        from ..context_selector import message_to_text  # noqa: PLC0415 — 懒加载避免循环导入
 
         text = message_to_text(msg)
         c, t = len(text), estimate_tokens(text)
@@ -97,7 +97,7 @@ class MessageStatsCache:
 
     def on_replace(self, idx, msg):
         """替换指定索引的消息统计（保留位置，更新值）。"""
-        from .context_selector import message_to_text  # noqa: PLC0415 — 懒加载避免循环导入
+        from ..context_selector import message_to_text  # noqa: PLC0415 — 懒加载避免循环导入
 
         text = message_to_text(msg)
         c, t = len(text), estimate_tokens(text)

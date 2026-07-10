@@ -46,19 +46,19 @@ _error_handler_registered: bool = False
 _error_handler_lock = threading.Lock()
 
 # ── 常量导出 ──────────────────────────────────────
-from ._const import (
+from .const import (
     RenderCommand,
     _MAIN_LABEL,
 )
 
 # ── 全局状态导出 ──────────────────────────────────
-from ._state import (
+from .state import (
     _active_consumer,
     get_active_chat_ui,
 )
 
 # ── 错误处理 ──────────────────────────────────────
-from ._error_handler import ChatUIErrorHandler
+from .error_handler import ChatUIErrorHandler
 
 
 def setup_chat_ui_error_handler() -> None:
@@ -75,10 +75,10 @@ def setup_chat_ui_error_handler() -> None:
         _error_handler_registered = True
 
 # ── 补全纯函数 ────────────────────────────────────
-from ._completion import _apply_completion
+from .completion import _apply_completion
 
 # ── 核心 TUI（组件化架构） ─────────────────────────
-from ._consumer import ChatUIConsumer
+from .consumer import ChatUIConsumer
 
 __all__ = [
     "ChatUIConsumer",

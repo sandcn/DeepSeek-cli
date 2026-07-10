@@ -16,7 +16,7 @@ if TYPE_CHECKING:
     from ..renderer import IncrementalRenderer
     from ..renderer.output import OutputAdapter
 
-from ._const import _THINKING_SEPARATOR
+from .const import _THINKING_SEPARATOR
 
 _logger = logging.getLogger(__name__)
 

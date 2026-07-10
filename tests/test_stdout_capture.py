@@ -17,7 +17,7 @@ _SharedCapture = type('_SharedCapture', (io.StringIO,), {})
 
 
 from src.core.agent import Agent
-from src.core._capture_manager import CaptureManager
+from src.core.internal._capture_manager import CaptureManager
 
 
 def _make_minimal_agent():

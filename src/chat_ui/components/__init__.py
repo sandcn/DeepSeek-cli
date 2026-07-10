@@ -35,7 +35,7 @@ from ._notification import NotificationBlock
 from ._write_line import WriteLineBlock
 
 # 兼容 re-export（定义已移至 _protocols.py）
-from .._protocols import BottomBarProtocol
+from ..protocols import BottomBarProtocol
 
 __all__ = [
     "TuiComponent",

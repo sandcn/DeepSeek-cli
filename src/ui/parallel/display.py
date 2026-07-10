@@ -35,7 +35,7 @@ from ..terminal_adapter import (
     register_sigwinch_callback,
     unregister_sigwinch_callback,
 )
-from ...chat_ui._const import RenderCommand
+from ...chat_ui.const import RenderCommand
 
 # ── 常量 ────────────────────────────────────────────────
 

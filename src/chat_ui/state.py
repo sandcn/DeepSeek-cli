@@ -11,7 +11,7 @@ from typing import TYPE_CHECKING
 from weakref import WeakValueDictionary
 
 if TYPE_CHECKING:
-    from ._consumer import ChatUIConsumer
+    from .consumer import ChatUIConsumer
 
 # ── 活跃实例引用（供交互式工具暂停/恢复，引用计数防竞态） ──
 # 多实例场景下，start() 递增计数并设置引用，stop() 递减计数，

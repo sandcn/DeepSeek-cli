@@ -32,18 +32,18 @@ from .telemetry import get_default_collector, get_default_tracer
 from .sandbox_manager import create_sandbox_manager, get_sandbox_manager
 from .middleware.state_machine import StateMachineMiddleware
 from ..api.stats import get_token_stats, get_session_start_time  # noqa: F401 — kept for backward compat
-from ..core.ports import (
-    PersistencePort, CheckpointPort, ConfigPort,
-    JsonFilePersistence, JsonFileCheckpoint, DefaultConfigAdapter,
-)
+from ..core.ports import PersistencePort, CheckpointPort, ConfigPort
+from ..core.adapters.persistence import JsonFilePersistence, JsonFileCheckpoint
+from ..core.adapters.config import DefaultConfigAdapter
 from ..core.ports.null import _NullPort, _NullOutputPort  # noqa: F401 — re-exported
-from ._session_persistence import (
+from .internal._session_persistence import (
     save_session, load_session_data, list_sessions_fn, get_session_ids_fn,
     save_checkpoint_session, clear_checkpoint_session, load_checkpoint_data,
     has_checkpoint_session, resume_from_checkpoint_session, safe_save_state,
 )
-from ._session_messages import add_message, non_system_messages, system_messages
-from ._session_state import SessionState as _SessionData
+from .internal._session_messages import add_message, non_system_messages, system_messages
+from .internal._session_state import SessionState as _SessionData
+from .internal._session_compression import _validate_compress_preconditions
 
 _logger = logging.getLogger(__name__)
 
@@ -793,46 +793,18 @@ class ChatSession:
         self._emit("messages_changed", action="add_system")
 
     def compress(self, force: bool = True) -> None:
-        """手动执行上下文压缩（同步版本，会阻塞事件循环）。
-
-        注意：此方法同步调用 LLM 生成摘要，会在 asyncio 上下文中
-        阻塞事件循环。建议优先使用 async_compress()。
-
-        Args:
-            force: 是否强制全量压缩
-        """
-        if self._ctx_mgr is None:
-            _logger.warning("ContextManager 未初始化，无法压缩")
-            return
-        non_system_count = sum(
-            1 for m in self._agent.messages
-            if m.get(_ROLE_KEY) != _SYSTEM_ROLE
-            or (m.get("content") or "").startswith("[对话摘要]")
-        )
-        if non_system_count <= _MIN_NON_SYSTEM_FOR_COMPRESS:
-            _logger.info("非系统消息太少（≤%d），无需压缩", _MIN_NON_SYSTEM_FOR_COMPRESS)
+        """手动执行上下文压缩（同步版本，会阻塞事件循环）。"""
+        if not _validate_compress_preconditions(
+            self._ctx_mgr, self._agent.messages, _MIN_NON_SYSTEM_FOR_COMPRESS
+        ):
             return
         self._ctx_mgr.check_and_compress(force=force)
 
     async def async_compress(self, force: bool = True) -> None:
-        """异步执行上下文压缩（推荐使用）。
-
-        将同步的 check_and_compress 移到线程池执行，
-        避免在 asyncio 上下文中阻塞事件循环 5-30 秒。
-
-        Args:
-            force: 是否强制全量压缩
-        """
-        if self._ctx_mgr is None:
-            _logger.warning("ContextManager 未初始化，无法压缩")
-            return
-        non_system_count = sum(
-            1 for m in self._agent.messages
-            if m.get(_ROLE_KEY) != _SYSTEM_ROLE
-            or (m.get("content") or "").startswith("[对话摘要]")
-        )
-        if non_system_count <= _MIN_NON_SYSTEM_FOR_COMPRESS:
-            _logger.info("非系统消息太少（≤%d），无需压缩", _MIN_NON_SYSTEM_FOR_COMPRESS)
+        """异步执行上下文压缩（推荐使用）。"""
+        if not _validate_compress_preconditions(
+            self._ctx_mgr, self._agent.messages, _MIN_NON_SYSTEM_FOR_COMPRESS
+        ):
             return
         await asyncio.to_thread(self._ctx_mgr.check_and_compress, force=force)
 

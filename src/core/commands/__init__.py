@@ -5,7 +5,7 @@
 
 # 为了保持向后兼容（mock.patch 等测试工具依赖这些名称）,
 # 从各子模块直接导入
-from .._command_core import (
+from ..internal._command_core import (
     register_command,
     handle_command,
     CommandContext,

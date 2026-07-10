@@ -193,7 +193,7 @@ def resume_from_checkpoint_session(session) -> bool:
 
 def safe_save_state(session) -> None:
     """安全执行状态机 save 转换（忽略无效转换）。"""
-    from .state_machine import InvalidTransitionError
+    from ..state_machine import InvalidTransitionError
 
     if session._state_machine.can("save"):
         try:

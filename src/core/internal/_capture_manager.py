@@ -39,7 +39,7 @@ class SharedCapture(io.StringIO):
 
     def write(self, s: str) -> int:
         if s and s.strip():
-            from ..ui.events.event_types import ToolOutputChunkEvent
+            from ...ui.events.event_types import ToolOutputChunkEvent
             for lbl in list(self._tool_labels):
                 try:
                     self._bus.publish(ToolOutputChunkEvent(
@@ -94,7 +94,7 @@ class CaptureManager:
         if event_bus is not None:
             self._event_bus = event_bus
         else:
-            from ..ui.events.event_bus import DisplayEventBus
+            from ...ui.events.event_bus import DisplayEventBus
             self._event_bus = DisplayEventBus.get_default()
 
     # ── 属性 ──────────────────────────────────────────────

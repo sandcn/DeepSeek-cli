@@ -12,20 +12,20 @@ import threading
 from typing import TYPE_CHECKING, Any, Callable
 
 if TYPE_CHECKING:
-    from ._protocols import BottomBarProtocol, RenderEngine
+    from .protocols import BottomBarProtocol, RenderEngine
 
-from ._renderer import TuiRenderer
+from .renderer import TuiRenderer
 
-from ._const import (
+from .const import (
     RenderCommand,
     _RENDER_INTERVAL,
     _DRAIN_LOCK_TIMEOUT,
     _ANSI_RED, _ANSI_RESET,
 )
 
-from ._utils import _cmd_name, _emergency_write
+from .utils import _cmd_name, _emergency_write
 
-from ._lock import _try_acquire_output_lock
+from .lock import _try_acquire_output_lock
 
 _logger = logging.getLogger(__name__)
 

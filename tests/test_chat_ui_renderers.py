@@ -16,10 +16,10 @@ from unittest.mock import MagicMock, patch
 import pytest
 from rich.text import Text
 
-from src.chat_ui._renderer import TuiRenderer as ContentRenderer
-from src.chat_ui._const import _CLEAR_PARSE_LINE, RenderCommand
-from src.chat_ui._renderer import _RenderState
-from src.chat_ui._render_state import _ReasoningState
+from src.chat_ui.renderer import TuiRenderer as ContentRenderer
+from src.chat_ui.const import _CLEAR_PARSE_LINE, RenderCommand
+from src.chat_ui.renderer import _RenderState
+from src.chat_ui.render_state import _ReasoningState
 
 
 # ── Fixtures ────────────────────────────────────────────
@@ -101,32 +101,32 @@ class TestTruncateMsg:
 
     def test_short_msg_unchanged(self):
         """短消息不截断"""
-        from src.chat_ui._utils import _truncate_msg
+        from src.chat_ui.utils import _truncate_msg
         result = _truncate_msg("hello", 10)
         assert result == "hello"
 
     def test_exact_length_unchanged(self):
         """长度刚好等于 max_len → 不截断"""
-        from src.chat_ui._utils import _truncate_msg
+        from src.chat_ui.utils import _truncate_msg
         result = _truncate_msg("12345", 5)
         assert result == "12345"
 
     def test_long_msg_truncated(self):
         """超长消息截断并追加 ..."""
-        from src.chat_ui._utils import _truncate_msg
+        from src.chat_ui.utils import _truncate_msg
         result = _truncate_msg("x" * 100, 10)
         assert result == "x" * 10 + "..."
         assert len(result) == 13
 
     def test_empty_msg_empty_result(self):
         """空消息 → 空字符串"""
-        from src.chat_ui._utils import _truncate_msg
+        from src.chat_ui.utils import _truncate_msg
         result = _truncate_msg("", 10)
         assert result == ""
 
     def test_max_len_zero(self):
         """max_len=0 → 全部截断"""
-        from src.chat_ui._utils import _truncate_msg
+        from src.chat_ui.utils import _truncate_msg
         result = _truncate_msg("hello", 0)
         assert result == "..."
 
@@ -401,7 +401,7 @@ class TestDoError:
 
     def test_error_truncated(self, renderer, mock_ta):
         """超长消息 → 截断后输出"""
-        from src.chat_ui._const import _MAX_ERROR_LENGTH
+        from src.chat_ui.const import _MAX_ERROR_LENGTH
         long_msg = "x" * (_MAX_ERROR_LENGTH + 50)
         renderer._do_error(long_msg)
         mock_ta.write.assert_called_once()
@@ -472,7 +472,7 @@ class TestRender:
 
     def test_render_dispatch_has_15_entries(self):
         """_RENDER_DISPATCH 应包含全部 15 种命令类型"""
-        from src.chat_ui._renderer import _RENDER_DISPATCH
+        from src.chat_ui.renderer import _RENDER_DISPATCH
         assert len(_RENDER_DISPATCH) == 15, (
             f"期望 15 种渲染命令，实际 {len(_RENDER_DISPATCH)} 种"
         )
@@ -493,7 +493,7 @@ class TestRender:
 
     def test_render_unknown_command_logs_error(self, renderer, mock_ta):
         """未知命令 ID → 记录日志（不崩溃）"""
-        with patch('src.chat_ui._renderer._logger.error') as m_log:
+        with patch('src.chat_ui.renderer._logger.error') as m_log:
             renderer.render((255,))
             m_log.assert_called_once()
 

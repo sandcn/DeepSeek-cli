@@ -7,14 +7,14 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Callable
 
-from ._const import (
+from .const import (
     RenderCommand,
     _MAIN_LABEL, _MAIN_SOURCE,
     _CLEAR_PARSE_LINE,
     _MAX_ERROR_LENGTH,
 )
 
-from ._utils import _truncate_msg
+from .utils import _truncate_msg
 
 if TYPE_CHECKING:
     from ..ui.events.event_types import (

@@ -14,12 +14,12 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-from .parallel_executor import ParallelExecutor
-from .telemetry import get_default_collector
-from ..api.tokens import estimate_tokens
-from ..tools.base import Func
-from ..tools.registry import get_tool_display_name
-from ..config import audit_logger
+from ..parallel_executor import ParallelExecutor
+from ..telemetry import get_default_collector
+from ...api.tokens import estimate_tokens
+from ...tools.base import Func
+from ...tools.registry import get_tool_display_name
+from ...config import audit_logger
 
 _logger = logging.getLogger(__name__)
 
@@ -106,7 +106,7 @@ class ToolCallbackChain:
 
         # ── DAG 调度执行 ───────────────────────────────
         try:
-            from .tool_dag import ToolDAG
+            from ..tool_dag import ToolDAG
 
             dag = ToolDAG(tool_calls, agent._async_tool_executor.registry)
             results_map: dict[str, tuple] = {}  # tool_call_id → (id, output, success)
@@ -297,7 +297,7 @@ class ToolCallbackChain:
         if is_web and func.__class__.web_display is not Func.web_display:
             return await func.web_display()
 
-        from ..chat_ui import get_active_chat_ui
+        from ...chat_ui import get_active_chat_ui
         chat_ui = get_active_chat_ui()
         if chat_ui is not None:
             chat_ui.suspend()

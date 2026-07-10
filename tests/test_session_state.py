@@ -11,7 +11,7 @@ import asyncio
 import pytest
 from unittest.mock import MagicMock
 
-from src.core._session_state import SessionState
+from src.core.internal._session_state import SessionState
 
 
 # ===============================================================

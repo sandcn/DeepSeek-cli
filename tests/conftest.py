@@ -17,7 +17,7 @@ def _cleanup_command_core_commands():
 
 def _do_cleanup_commands():
     """清理 _command_core._commands 字典。"""
-    mod = sys.modules.get('src.core._command_core')
+    mod = sys.modules.get('src.core.internal._command_core')
     if mod is not None and hasattr(mod, '_commands'):
         mod._commands.clear()
 
@@ -31,7 +31,7 @@ def _cleanup_module_caches():
     2. _clients — src.api.client_async（httpx.AsyncClient 连接池）
     3. _model_loop_registry — src.api._model_loops（持久化事件循环注册表）
     4. _default_cache — src.core.cache（全局 LRU 缓存单例）
-    5. _active_consumer/_active_consumer_refcount — src.chat_ui._state（消费者全局引用）
+    5. _active_consumer/_active_consumer_refcount — src.chat_ui.state（消费者全局引用）
     6. _active_monitor — src.api.escape_monitor（活跃 EscapeMonitor 实例）
     """
     _do_cleanup_module_caches()
@@ -78,9 +78,9 @@ def _do_cleanup_module_caches():
     except Exception:
         pass
 
-    # 5. 清理 _active_consumer / _active_consumer_refcount — src.chat_ui._state
+    # 5. 清理 _active_consumer / _active_consumer_refcount — src.chat_ui.state
     try:
-        mod = sys.modules.get('src.chat_ui._state')
+        mod = sys.modules.get('src.chat_ui.state')
         if mod is not None:
             lock = mod._state_global_lock
             with lock:

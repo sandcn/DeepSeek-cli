@@ -8,7 +8,7 @@ from ..api.model_async import call_model_sync
 from ..prompt_builder.project_summary import generate_summary_prompt
 from ..chat_msgs import save_session as _save_direct, load_session as _load_direct, list_sessions as _list_direct
 from ..core.sandbox_manager import get_sandbox_manager
-from ._command_core import register_command
+from .internal._command_core import register_command
 
 _out = get_default_output_port()
 

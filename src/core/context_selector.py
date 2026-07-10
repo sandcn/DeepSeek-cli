@@ -15,7 +15,7 @@ from ..config import (
     KEEP_RECENT_MESSAGES, AUTO_FORCE_COMPRESS_THRESHOLD,
 )
 from ..api.tokens import estimate_tokens
-from ._message_stats_cache import MessageStatsCache  # noqa: F401 — re-exported for backward compat
+from .internal._message_stats_cache import MessageStatsCache  # noqa: F401 — re-exported for backward compat
 
 _EXCESS_BUFFER = 1.3  # 30% 超额释放缓冲，避免频繁触发压缩
 

@@ -22,9 +22,9 @@ import pytest
 
 sys.path.insert(0, "/home/DeepSeek-cli")
 
-from src.chat_ui._const import RenderCommand
-from src.chat_ui._utils import _cmd_name
-from src.chat_ui._engine import TuiEngine as RenderEngine, _ACTIVE_RENDER_INTERVAL
+from src.chat_ui.const import RenderCommand
+from src.chat_ui.utils import _cmd_name
+from src.chat_ui.engine import TuiEngine as RenderEngine, _ACTIVE_RENDER_INTERVAL
 
 
 # ══════════════════════════════════════════════════════
@@ -500,7 +500,7 @@ class TestRenderEngineDrainQueue:
             engine._cmd_queue.task_done()
 
         with (
-            patch("src.chat_ui._engine._try_acquire_output_lock") as m_lock,
+            patch("src.chat_ui.engine._try_acquire_output_lock") as m_lock,
         ):
             m_lock.return_value.__enter__.return_value = True
 
@@ -519,7 +519,7 @@ class TestRenderEngineDrainQueue:
         engine._cmd_queue = queue.Queue()
 
         with (
-            patch("src.chat_ui._engine._try_acquire_output_lock") as m_lock,
+            patch("src.chat_ui.engine._try_acquire_output_lock") as m_lock,
             patch.object(engine, "_position_cursor") as m_pos,
         ):
             m_lock.return_value.__enter__.return_value = True
@@ -539,7 +539,7 @@ class TestRenderEngineDrainQueue:
         engine._cmd_queue.put((RenderCommand.CONTENT, "world"))
 
         with (
-            patch("src.chat_ui._engine._try_acquire_output_lock") as m_lock,
+            patch("src.chat_ui.engine._try_acquire_output_lock") as m_lock,
         ):
             m_lock.return_value.__enter__.return_value = True
 
@@ -561,7 +561,7 @@ class TestRenderEngineDrainQueue:
         engine._cmd_queue.put((RenderCommand.CONTENT, "test"))
 
         with (
-            patch("src.chat_ui._engine._try_acquire_output_lock") as m_lock,
+            patch("src.chat_ui.engine._try_acquire_output_lock") as m_lock,
         ):
             m_lock.return_value.__enter__.return_value = True
 
@@ -584,7 +584,7 @@ class TestRenderEngineDrainQueue:
         engine._cmd_queue.put((RenderCommand.CONTENT, "坏数据"))
 
         with (
-            patch("src.chat_ui._engine._try_acquire_output_lock") as m_lock,
+            patch("src.chat_ui.engine._try_acquire_output_lock") as m_lock,
         ):
             m_lock.return_value.__enter__.return_value = True
 
@@ -604,7 +604,7 @@ class TestRenderEngineDrainQueue:
         engine._cmd_queue.put((RenderCommand.CONTENT, "数据"))
 
         with (
-            patch("src.chat_ui._engine._try_acquire_output_lock") as m_lock,
+            patch("src.chat_ui.engine._try_acquire_output_lock") as m_lock,
         ):
             m_lock.return_value.__enter__.return_value = True
 
@@ -617,7 +617,7 @@ class TestRenderEngineDrainQueue:
         engine._bb.is_status_active = True
 
         with (
-            patch("src.chat_ui._engine._try_acquire_output_lock") as m_lock,
+            patch("src.chat_ui.engine._try_acquire_output_lock") as m_lock,
         ):
             m_lock.return_value.__enter__.return_value = True
 
@@ -632,7 +632,7 @@ class TestRenderEngineDrainQueue:
         engine._bb.is_status_active = False
 
         with (
-            patch("src.chat_ui._engine._try_acquire_output_lock") as m_lock,
+            patch("src.chat_ui.engine._try_acquire_output_lock") as m_lock,
         ):
             m_lock.return_value.__enter__.return_value = True
 
@@ -645,7 +645,7 @@ class TestRenderEngineDrainQueue:
         engine._bb.is_status_active = True  # 否则会跳过
 
         with (
-            patch("src.chat_ui._engine._try_acquire_output_lock") as m_lock,
+            patch("src.chat_ui.engine._try_acquire_output_lock") as m_lock,
         ):
             m_lock.return_value.__enter__.return_value = False  # 锁未获取
 
@@ -674,7 +674,7 @@ class TestRenderEngineDrainQueue:
         engine.set_panel_refresh_callback(panel_cb)
 
         with (
-            patch("src.chat_ui._engine._try_acquire_output_lock") as m_lock,
+            patch("src.chat_ui.engine._try_acquire_output_lock") as m_lock,
         ):
             m_lock.return_value.__enter__.return_value = False  # 锁超时
 
@@ -716,7 +716,7 @@ class TestRenderEngineDrainQueue:
             def __exit__(self, *args):
                 call_order.append("lock_exit")
 
-        with patch("src.chat_ui._engine._try_acquire_output_lock",
+        with patch("src.chat_ui.engine._try_acquire_output_lock",
                    return_value=_CallTracker()):
             engine._drain_queue()
 
@@ -738,7 +738,7 @@ class TestRenderEngineDrainQueue:
         engine._cmd_queue.put((RenderCommand.CONTENT, "数据"))
 
         with (
-            patch("src.chat_ui._engine._try_acquire_output_lock") as m_lock,
+            patch("src.chat_ui.engine._try_acquire_output_lock") as m_lock,
         ):
             m_lock.return_value.__enter__.return_value = True
 
@@ -753,7 +753,7 @@ class TestRenderEngineDrainQueue:
         engine._bb.force_redraw.side_effect = RuntimeError("redraw 异常")
 
         with (
-            patch("src.chat_ui._engine._try_acquire_output_lock") as m_lock,
+            patch("src.chat_ui.engine._try_acquire_output_lock") as m_lock,
             patch.object(engine, "_position_cursor") as m_pos,
         ):
             m_lock.return_value.__enter__.return_value = True
@@ -771,7 +771,7 @@ class TestRenderEngineDrainQueue:
         engine._position_cursor.side_effect = RuntimeError("光标异常")
 
         with (
-            patch("src.chat_ui._engine._try_acquire_output_lock") as m_lock,
+            patch("src.chat_ui.engine._try_acquire_output_lock") as m_lock,
         ):
             m_lock.return_value.__enter__.return_value = True
 
@@ -995,8 +995,8 @@ class TestRenderEngineEdgeCases:
 
     def test_render_uses_exponential_backoff(self, engine):
         """_render 中自适应轮询间隔：空闲时指数退避平滑过渡。"""
-        from src.chat_ui._const import _RENDER_INTERVAL
-        from src.chat_ui._engine import _ACTIVE_RENDER_INTERVAL
+        from src.chat_ui.const import _RENDER_INTERVAL
+        from src.chat_ui.engine import _ACTIVE_RENDER_INTERVAL
 
         engine._render_running = True
 
@@ -1043,7 +1043,7 @@ class TestRenderEngineEdgeCases:
 
     def test_render_resets_backoff_on_content(self, engine):
         """有内容时 idle_count 重置为 0，退避重新从 5ms 开始。"""
-        from src.chat_ui._engine import _ACTIVE_RENDER_INTERVAL
+        from src.chat_ui.engine import _ACTIVE_RENDER_INTERVAL
 
         engine._render_running = True
 
@@ -1083,7 +1083,7 @@ class TestRenderEngineEdgeCases:
         engine._bb.is_status_active = True
 
         with patch(
-            "src.chat_ui._engine._try_acquire_output_lock",
+            "src.chat_ui.engine._try_acquire_output_lock",
             return_value=MagicMock(
                 __enter__=MagicMock(return_value=True),
                 __exit__=MagicMock(),
@@ -1116,7 +1116,7 @@ class TestRenderEngineEdgeCases:
 
         all_calls = engine._cmd_event.wait.call_args_list
         # idle_count ≥5 后恒为 _RENDER_INTERVAL(0.1s)
-        from src.chat_ui._const import _RENDER_INTERVAL
+        from src.chat_ui.const import _RENDER_INTERVAL
         for idx, call_args in enumerate(all_calls):
             if idx >= 5:
                 assert call_args == call(timeout=_RENDER_INTERVAL), (

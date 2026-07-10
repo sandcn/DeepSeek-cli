@@ -13,13 +13,13 @@ from typing import TYPE_CHECKING, Any, Callable
 if TYPE_CHECKING:
     from ..renderer import IncrementalRenderer
     from ..renderer.output import OutputAdapter
-    from ._protocols import BottomBarProtocol
+    from .protocols import BottomBarProtocol
 
-from ._const import (
+from .const import (
     RenderCommand,
     _CLEAR_PARSE_LINE,
 )
-from ._render_state import _RenderState
+from .render_state import _RenderState
 
 from .components import (
     ThinkingBlock,
@@ -33,7 +33,7 @@ from .components import (
     _estimate_content_lines,
 )
 
-from ._utils import _cmd_name, _emergency_write
+from .utils import _cmd_name, _emergency_write
 
 _logger = logging.getLogger(__name__)
 

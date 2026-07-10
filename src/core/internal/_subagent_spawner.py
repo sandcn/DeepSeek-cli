@@ -10,11 +10,11 @@ SubAgentSpawner — SubAgent 创建、终端显示渲染、结果事件发布
 import logging
 from typing import List, Dict, Any
 
-from .subagent import SubAgent
-from ..ui.events import DisplayEventBus
-from ..ui.events.event_types import AgentResultEvent
-from ..ui.parallel._tool_icons import AGENT_TYPE_ABBREV
-from .constants import RED, RESET
+from ..subagent import SubAgent
+from ...ui.events import DisplayEventBus
+from ...ui.events.event_types import AgentResultEvent
+from ...ui.parallel._tool_icons import AGENT_TYPE_ABBREV
+from ..constants import RED, RESET
 
 _logger = logging.getLogger(__name__)
 

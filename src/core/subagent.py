@@ -309,7 +309,7 @@ class SubAgent(BaseAgent):
         """构建工具执行回调三元组 (on_before, on_after, run_method)"""
         from ..ui.events import DisplayEventBus
         from ..ui.events.event_types import ToolStartedEvent, ToolDoneEvent
-        from ._tool_callbacks import _run_file_display
+        from .internal._tool_callbacks import _run_file_display
 
         display = self.display
         bus = DisplayEventBus.get_default()  # 发布到总线供subagent面板显示

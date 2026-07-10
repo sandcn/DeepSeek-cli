@@ -7,7 +7,7 @@ from ..ui.colors import GREEN, YELLOW, DIM, RESET, CYAN
 from ..ui.diff_renderer import render_diff_to_ansi
 from .context_selector import total_chars
 from .sandbox_manager import get_sandbox_manager
-from ._command_core import register_command, _pop_assistant_tool_messages
+from .internal._command_core import register_command, _pop_assistant_tool_messages
 
 _out = get_default_output_port()
 

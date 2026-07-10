@@ -4,13 +4,13 @@ from __future__ import annotations
 
 import time as _time
 from src._compat import dataclass
-from ..config import TOKEN_PRICES
-from .constants import DIM, RESET, TEAL
-from ..api.stats import get_token_stats, get_session_start_time
-from .constants import format_token_k
+from ...config import TOKEN_PRICES
+from ..constants import DIM, RESET, TEAL
+from ...api.stats import get_token_stats, get_session_start_time
+from ..constants import format_token_k
 
 
-from ..core.ports.output import get_default_output_port as _get_out  # noqa: E402
+from ...core.ports.output import get_default_output_port as _get_out  # noqa: E402
 
 # ── 命令注册表 ────────────────────────────────────────
 _commands = {}
@@ -158,7 +158,7 @@ def get_registered_command_names() -> list[str]:
 
 def get_dynamic_help_text() -> str:
     """从命令注册表实时构建帮助文本"""
-    from .constants import DIM, RESET, TEAL
+    from ..constants import DIM, RESET, TEAL
     lines = [f"{DIM}  ─ 可用命令{RESET}"]
     for name, info in sorted(_commands.items(), key=lambda x: (x[0] != "/help", x[0])):
         help_text = info.get("help", "")

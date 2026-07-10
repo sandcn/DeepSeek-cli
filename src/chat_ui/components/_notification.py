@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from rich.text import Text
 
-from .._const import _STYLE_SUCCESS
+from ..const import _STYLE_SUCCESS
 from ._base import TuiComponent
 
 

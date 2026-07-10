@@ -6,7 +6,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from src.core._command_core import (
+from src.core.internal._command_core import (
     register_command,
     handle_command,
     CommandContext,
@@ -25,7 +25,7 @@ from src.core._command_core import (
 @pytest.fixture(autouse=True)
 def cleanup_commands():
     """每个测试前后清理全局 _commands 字典，确保测试隔离"""
-    from src.core import _command_core
+    from src.core.internal import _command_core
     _command_core._commands.clear()
     yield
     _command_core._commands.clear()
@@ -733,7 +733,7 @@ class TestShowCost:
 
     def test_uses_token_prices(self, monkeypatch):
         """使用 TOKEN_PRICES 计算费用（config_port=None，回退到 direct import）"""
-        from src.core import _command_core
+        from src.core.internal import _command_core
 
         # Mock 外部依赖
         monkeypatch.setattr(_command_core, "TOKEN_PRICES", {
@@ -751,7 +751,7 @@ class TestShowCost:
 
     def test_unknown_model_fallback(self, monkeypatch):
         """未知模型回退到第一个可用价格"""
-        from src.core import _command_core
+        from src.core.internal import _command_core
 
         monkeypatch.setattr(_command_core, "TOKEN_PRICES", {
             "gpt-4": {"input": 0.03, "output": 0.06},
@@ -769,7 +769,7 @@ class TestShowCost:
 
     def test_empty_token_prices_fallback_default(self, monkeypatch):
         """TOKEN_PRICES 为空时使用默认价格"""
-        from src.core import _command_core
+        from src.core.internal import _command_core
 
         monkeypatch.setattr(_command_core, "TOKEN_PRICES", {})
         monkeypatch.setattr(_command_core, "get_token_stats", lambda: {
@@ -783,7 +783,7 @@ class TestShowCost:
 
     def test_zero_tokens(self, monkeypatch):
         """零 token 时费用为 0"""
-        from src.core import _command_core
+        from src.core.internal import _command_core
         outputs = []
 
         class Port:
@@ -806,7 +806,7 @@ class TestShowCost:
 
     def test_output_port_write_called(self, monkeypatch):
         """show_cost 调用 _out.write 输出结果"""
-        from src.core import _command_core
+        from src.core.internal import _command_core
         outputs = []
 
         class Port:
@@ -832,7 +832,7 @@ class TestShowCost:
 
     def test_config_port_fallback(self, monkeypatch):
         """config_port 为 None 时回退到 TOKEN_PRICES（向后兼容）"""
-        from src.core import _command_core
+        from src.core.internal import _command_core
 
         monkeypatch.setattr(_command_core, "TOKEN_PRICES", {
             "gpt-4": {"input": 0.03, "output": 0.06},
@@ -848,7 +848,7 @@ class TestShowCost:
 
     def test_config_port_used(self, monkeypatch):
         """config_port 存在时优先通过端口获取价格"""
-        from src.core import _command_core
+        from src.core.internal import _command_core
 
         # 通过 config_port 返回不同价格，确保它不是来自 TOKEN_PRICES
         mock_cp = MagicMock()

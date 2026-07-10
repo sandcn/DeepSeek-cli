@@ -26,22 +26,22 @@ if TYPE_CHECKING:
         ModelPhaseEvent,
     )
 
-from ._const import (
+from .const import (
     RenderCommand,
     _ANSI_CURSOR_BOTTOM,
 )
 
-from ._state import (
+from .state import (
     _register_consumer,
     _unregister_consumer,
     _active_consumer,
     get_active_chat_ui,
 )
 
-from ._lock import output_lock
+from .lock import output_lock
 from ..ui._blessed import get_terminal
 
-from ._dispatcher import _HANDLER_MAP
+from .dispatcher import _HANDLER_MAP
 
 _logger = logging.getLogger(__name__)
 
@@ -73,7 +73,7 @@ class ChatUIConsumer:
             event_bus = DisplayEventBus.get_default()
         self._bus = event_bus
 
-        from ._factory import _create_chat_ui_components
+        from .factory import _create_chat_ui_components
         components = _create_chat_ui_components(event_bus)
 
         self._rs = components.rs

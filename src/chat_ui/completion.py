@@ -16,7 +16,7 @@ import os
 
 if TYPE_CHECKING:
     from ..ui._completion import CompletionEngine
-    from ._protocols import BottomBarProtocol
+    from .protocols import BottomBarProtocol
 
 
 def _get_match_prefix(items: list, last_word: str) -> str:

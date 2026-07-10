@@ -13,7 +13,7 @@ if TYPE_CHECKING:
 
 from rich.text import Text
 
-from .._const import _STYLE_SUCCESS, _STYLE_FAIL, _STYLE_WARN, _STYLE_DIM
+from ..const import _STYLE_SUCCESS, _STYLE_FAIL, _STYLE_WARN, _STYLE_DIM
 from ._base import TuiComponent
 
 

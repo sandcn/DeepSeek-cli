@@ -56,7 +56,7 @@ _MOCK_MODULES = {
     'src.prompt_builder.project_summary': MagicMock(),
     'src.chat_msgs': MagicMock(),
     'src.core.sandbox_manager': MagicMock(),
-    'src.core._command_core': MagicMock(),
+    'src.core.internal._command_core': MagicMock(),
     'src.tools': MagicMock(),
     'src.tools.utils': MagicMock(),
     'src.ui.tui': MagicMock(),

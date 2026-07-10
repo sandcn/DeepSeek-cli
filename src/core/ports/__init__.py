@@ -16,18 +16,25 @@
 - OutputPort        — 文本输出
 """
 
-from .http import HttpClientPort, DefaultHttpClientAdapter
-from .config import ConfigPort, DefaultConfigAdapter, MockConfigAdapter
+from .http import HttpClientPort
+from ..adapters.http import DefaultHttpClientAdapter
+from .config import ConfigPort
+from ..adapters.config import DefaultConfigAdapter, MockConfigAdapter
 from .display import DisplayPort
 from .events import EventPort
 from .interrupt import InterruptPort
-from .model import AsyncModelPort, DefaultAsyncModelAdapter, MockAsyncModelAdapter, ModelResult
+from .model import AsyncModelPort, ModelResult
+from ..adapters.model import DefaultAsyncModelAdapter, MockAsyncModelAdapter
 from .output import OutputPort
-from .persistence import PersistencePort, CheckpointPort, JsonFilePersistence, JsonFileCheckpoint
+from .persistence import PersistencePort, CheckpointPort
+from ..adapters.persistence import JsonFilePersistence, JsonFileCheckpoint
 from .tool_registry import ToolRegistryPort
-from .prompt_builder import PromptBuilderPort, DefaultPromptBuilderAdapter
-from .render import RenderPort, DefaultRenderAdapter, NullRenderAdapter
-from .stats import StatsPort, DefaultStatsAdapter, MockStatsAdapter
+from .prompt_builder import PromptBuilderPort
+from ..adapters.prompt_builder import DefaultPromptBuilderAdapter
+from .render import RenderPort
+from ..adapters.render import DefaultRenderAdapter, NullRenderAdapter
+from .stats import StatsPort
+from ..adapters.stats import DefaultStatsAdapter, MockStatsAdapter
 from ..cache import CachePort, LRUCache, NullCache
 
 __all__ = [

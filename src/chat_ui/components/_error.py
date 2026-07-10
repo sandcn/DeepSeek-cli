@@ -7,8 +7,8 @@ from __future__ import annotations
 
 from rich.text import Text
 
-from .._const import _STYLE_ERROR, _MAX_ERROR_LENGTH
-from .._utils import _truncate_msg
+from ..const import _STYLE_ERROR, _MAX_ERROR_LENGTH
+from ..utils import _truncate_msg
 from ._base import TuiComponent
 
 

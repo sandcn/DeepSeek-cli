@@ -123,7 +123,7 @@ _make_mock_module('src.core.sandbox_manager',
     SandboxManager=_MockSandboxManager,
 )
 
-# ── src.core._command_core ───────────────────────────────
+# ── src.core.internal._command_core ───────────────────────────────
 # 提供 register_command、CommandContext、_pop_assistant_tool_messages
 # 三个 commands_session.py 顶层导入的符号
 
@@ -160,7 +160,7 @@ def _mock_pop_assistant_tool_messages(messages):
     return removed
 
 
-_make_mock_module('src.core._command_core',
+_make_mock_module('src.core.internal._command_core',
     register_command=_mock_register_command,
     CommandContext=_MockCommandContext,
     _pop_assistant_tool_messages=_mock_pop_assistant_tool_messages,
@@ -290,7 +290,7 @@ def _setup_mocks():
         get_sandbox_manager=lambda: _mock_sandbox,
         SandboxManager=_MockSandboxManager,
     )
-    _make_mock_module('src.core._command_core',
+    _make_mock_module('src.core.internal._command_core',
         register_command=_mock_register_command,
         CommandContext=_MockCommandContext,
         _pop_assistant_tool_messages=_mock_pop_assistant_tool_messages,
@@ -330,7 +330,7 @@ def reset_mocks():
         elif _name in sys.modules:
             del sys.modules[_name]
     # 确保关键模块可被后续测试正常导入
-    for _name in ('src.core.sandbox_manager', 'src.core._command_core'):
+    for _name in ('src.core.sandbox_manager', 'src.core.internal._command_core'):
         if _name not in sys.modules:
             try:
                 import importlib
@@ -898,7 +898,7 @@ _MOCKED_MODULE_NAMES = [
     'src.ui.msg_list', 'src.ui.colors', 'src.ui.diff_renderer',
     'src.config',
     'src.core.ports.output', 'src.core.context_selector',
-    'src.core.sandbox_manager', 'src.core._command_core',
+    'src.core.sandbox_manager', 'src.core.internal._command_core',
     'src.core.message_edit', 'src.core.context_manager',
     'src.core.commands_session',
 ]

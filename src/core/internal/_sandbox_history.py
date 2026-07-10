@@ -16,7 +16,7 @@ import threading
 from src._compat import dataclass
 from typing import Any, Dict, List, Optional
 
-from .file_change_record import FileChangeRecord
+from ..file_change_record import FileChangeRecord
 
 _logger = logging.getLogger(__name__)
 

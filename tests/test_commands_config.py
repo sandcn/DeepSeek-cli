@@ -71,7 +71,7 @@ _MOCK_MODULES = {
     'src.core': MagicMock(),
     'src.core.ports': MagicMock(),
     'src.core.ports.output': MagicMock(get_default_output_port=mock_get_default_output_port),
-    'src.core._command_core': _mock_cmd_core,
+    'src.core.internal._command_core': _mock_cmd_core,
     'src.config': _mock_config,
     'src.ui': MagicMock(),
     'src.ui.colors': _mock_colors,

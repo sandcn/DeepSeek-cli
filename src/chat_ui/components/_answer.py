@@ -5,7 +5,7 @@
 
 from __future__ import annotations
 
-from .._render_state import _ReasoningState
+from ..render_state import _ReasoningState
 from ._base import TuiComponent, _estimate_content_lines
 
 

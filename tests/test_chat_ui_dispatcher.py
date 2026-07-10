@@ -16,12 +16,12 @@ from unittest.mock import MagicMock
 # ── 将项目根目录加入 sys.path（Termux 环境需要）───
 sys.path.insert(0, "/home/DeepSeek-cli")
 
-from src.chat_ui._const import (
+from src.chat_ui.const import (
     _CLEAR_PARSE_LINE, _MAIN_LABEL, _MAIN_SOURCE,
     _MAX_ERROR_LENGTH, RenderCommand,
 )
-from src.chat_ui._utils import _truncate_msg
-from src.chat_ui._dispatcher import EventDispatcher, _HANDLER_MAP
+from src.chat_ui.utils import _truncate_msg
+from src.chat_ui.dispatcher import EventDispatcher, _HANDLER_MAP
 from src.ui.events.event_types import (
     ReasoningChunkEvent, ContentChunkEvent, PhaseDoneEvent,
     ToolStartedEvent, ToolDoneEvent, ToolOutputChunkEvent,
@@ -395,7 +395,7 @@ class TestEventDispatcherEdgeCases:
 
     def test_handler_not_registered_does_nothing(self, dispatcher, push_cmd):
         """_HANDLER_MAP 包含全部 11 个事件处理器。"""
-        from src.chat_ui._dispatcher import _HANDLER_MAP
+        from src.chat_ui.dispatcher import _HANDLER_MAP
         registered_handlers = {name for name, (_, _) in _HANDLER_MAP.items()}
         assert len(registered_handlers) == 11
         assert "ReasoningChunkEvent" in registered_handlers

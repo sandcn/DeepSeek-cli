@@ -8,7 +8,7 @@ from __future__ import annotations
 from rich.text import Text
 
 from ._base import TuiComponent
-from .._const import _STYLE_BOLD
+from ..const import _STYLE_BOLD
 
 
 class UserMsgBlock(TuiComponent):

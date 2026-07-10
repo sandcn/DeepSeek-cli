@@ -39,7 +39,7 @@ def _reset_error_handler():
     而非依赖模块级 _error_handler 变量（P1-1 后已移除）。
     """
     root = logging.getLogger()
-    from src.chat_ui._error_handler import ChatUIErrorHandler
+    from src.chat_ui.error_handler import ChatUIErrorHandler
     handler = None
     for h in root.handlers:
         if isinstance(h, ChatUIErrorHandler):
@@ -55,10 +55,10 @@ def _reset_error_handler():
 @pytest.fixture(autouse=True)
 def _reset_active_consumer():
     """每个测试恢复 _state._active_consumer 避免测试间污染。"""
-    from src.chat_ui import _state
-    original = _state._active_consumer
+    from src.chat_ui import state
+    original = state._active_consumer
     yield
-    _state._active_consumer = original
+    state._active_consumer = original
 
 
 @pytest.fixture
@@ -118,7 +118,7 @@ class TestChatUIConsumerInit:
 
     def test_init_event_handler_names_present(self, consumer):
         """_HANDLER_MAP 包含 11 个事件处理器"""
-        from src.chat_ui._dispatcher import _HANDLER_MAP
+        from src.chat_ui.dispatcher import _HANDLER_MAP
         assert len(_HANDLER_MAP) == 11
 
     def test_init_event_bus_fallback(self):
@@ -140,14 +140,14 @@ class TestChatUIConsumerStart:
     def test_start_sets_started_true(self, consumer, mock_bus):
         """start() 后 _started=True"""
         with patch.object(consumer._engine, 'start'):
-            with patch('src.chat_ui._state') as mock_state:
+            with patch('src.chat_ui.state') as mock_state:
                 consumer.start()
                 assert consumer._started is True
 
     def test_start_subscribes_events(self, consumer, mock_bus):
         """start() 为每个事件处理器调用 subscribe"""
         with patch.object(consumer._engine, 'start'):
-            with patch('src.chat_ui._state'):
+            with patch('src.chat_ui.state'):
                 consumer.start()
                 # 11 个事件处理器
                 assert mock_bus.subscribe.call_count == 11
@@ -155,27 +155,27 @@ class TestChatUIConsumerStart:
     def test_start_sets_active_consumer(self, consumer, mock_bus):
         """start() 调用 _state._register_consumer(self) 注册活跃实例"""
         with patch.object(consumer._engine, 'start'):
-            with patch('src.chat_ui._consumer._register_consumer') as mock_register:
+            with patch('src.chat_ui.consumer._register_consumer') as mock_register:
                 consumer.start()
                 mock_register.assert_called_once_with(consumer)
 
     def test_start_calls_engine_start(self, consumer, mock_bus):
         """start() 调用 _engine.start()"""
         with patch.object(consumer._engine, 'start') as mock_engine_start:
-            with patch('src.chat_ui._state'):
+            with patch('src.chat_ui.state'):
                 consumer.start()
                 mock_engine_start.assert_called_once()
 
     def test_start_is_idempotent(self, consumer, mock_bus):
         """重复 start() 幂等——第二次不重复订阅"""
         with patch.object(consumer._engine, 'start'):
-            with patch('src.chat_ui._state'):
+            with patch('src.chat_ui.state'):
                 consumer.start()
                 first_count = mock_bus.subscribe.call_count
 
         # 第二次 start
         with patch.object(consumer._engine, 'start') as mock_engine_start:
-            with patch('src.chat_ui._state'):
+            with patch('src.chat_ui.state'):
                 consumer.start()
                 # subscribe 不应再被调用
                 assert mock_bus.subscribe.call_count == first_count
@@ -185,7 +185,7 @@ class TestChatUIConsumerStart:
     def test_start_lazy_binds_handlers(self, consumer, mock_bus):
         """首次 start() 后 _bound_handlers 已创建"""
         with patch.object(consumer._engine, 'start'):
-            with patch('src.chat_ui._state'):
+            with patch('src.chat_ui.state'):
                 consumer.start()
                 assert consumer._bound_handlers is not None
                 assert len(consumer._bound_handlers) == 11
@@ -198,7 +198,7 @@ class TestChatUIConsumerStart:
         后续重新启动（stop→start）时，先 subscribe 再 unsubscribe 旧 handler。
         """
         with patch.object(consumer._engine, 'start'):
-            with patch('src.chat_ui._state'):
+            with patch('src.chat_ui.state'):
                 consumer.start()
 
         # 首次 start：跳过防御性 unsubscribe（从未订阅过）
@@ -212,7 +212,7 @@ class TestChatUIConsumerStart:
         mock_bus.unsubscribe.side_effect = Exception("not subscribed")
 
         with patch.object(consumer._engine, 'start'):
-            with patch('src.chat_ui._state'):
+            with patch('src.chat_ui.state'):
                 # 不应传播异常
                 consumer.start()
 
@@ -225,7 +225,7 @@ class TestChatUIConsumerStart:
         我们通过检查 subscribe call_count 来确认订阅已完成。
         """
         with patch.object(consumer._engine, 'start'):
-            with patch('src.chat_ui._state'):
+            with patch('src.chat_ui.state'):
                 consumer.start()
 
         # 11 个事件已全部订阅
@@ -238,13 +238,13 @@ class TestChatUIConsumerStart:
 
         引擎线程为 daemon 线程，测试结束时自动清理。
         """
-        with patch('src.chat_ui._state'):
+        with patch('src.chat_ui.state'):
             consumer.start()
             assert consumer._started is True
             assert consumer._engine._render_running is True
             assert consumer._engine._render_thread is not None
             # 停止以清理
-        with patch('src.chat_ui._state'):
+        with patch('src.chat_ui.state'):
             consumer.stop()
 
 
@@ -263,7 +263,7 @@ class TestChatUIConsumerStop:
 
         with patch.object(consumer._engine, 'stop'):
             with patch.object(consumer._engine, 'flush'):
-                with patch('src.chat_ui._state'):
+                with patch('src.chat_ui.state'):
                     consumer.stop()
                     assert consumer._started is False
 
@@ -274,7 +274,7 @@ class TestChatUIConsumerStop:
 
         with patch.object(consumer._engine, 'stop') as mock_stop:
             with patch.object(consumer._engine, 'flush'):
-                with patch('src.chat_ui._state'):
+                with patch('src.chat_ui.state'):
                     consumer.stop()
                     mock_stop.assert_called_once()
 
@@ -285,7 +285,7 @@ class TestChatUIConsumerStop:
 
         with patch.object(consumer._engine, 'stop'):
             with patch.object(consumer._engine, 'flush') as mock_flush:
-                with patch('src.chat_ui._state'):
+                with patch('src.chat_ui.state'):
                     consumer.stop()
                     mock_flush.assert_called_once()
 
@@ -297,7 +297,7 @@ class TestChatUIConsumerStop:
 
         with patch.object(consumer._engine, 'stop'):
             with patch.object(consumer._engine, 'flush'):
-                with patch('src.chat_ui._state'):
+                with patch('src.chat_ui.state'):
                     consumer.stop()
                     assert mock_bus.unsubscribe.call_count >= n_handlers
 
@@ -308,7 +308,7 @@ class TestChatUIConsumerStop:
 
         with patch.object(consumer._engine, 'stop'):
             with patch.object(consumer._engine, 'flush'):
-                with patch('src.chat_ui._consumer._unregister_consumer') as mock_unregister:
+                with patch('src.chat_ui.consumer._unregister_consumer') as mock_unregister:
                     consumer.stop()
                     mock_unregister.assert_called_once()
 
@@ -319,7 +319,7 @@ class TestChatUIConsumerStop:
 
         with patch.object(consumer._engine, 'stop'):
             with patch.object(consumer._engine, 'flush'):
-                with patch('src.chat_ui._state'):
+                with patch('src.chat_ui.state'):
                     with patch.object(consumer._bottom_bar, 'teardown') as mock_teardown:
                         consumer.stop()
                         mock_teardown.assert_called_once()
@@ -331,7 +331,7 @@ class TestChatUIConsumerStop:
 
         with patch.object(consumer._engine, 'stop'):
             with patch.object(consumer._engine, 'flush'):
-                with patch('src.chat_ui._state'):
+                with patch('src.chat_ui.state'):
                     with patch.object(consumer._rs, 'close_all') as mock_close:
                         consumer.stop()
                         mock_close.assert_called_once()
@@ -342,7 +342,7 @@ class TestChatUIConsumerStop:
 
         with patch.object(consumer._engine, 'stop') as mock_stop:
             with patch.object(consumer._engine, 'flush') as mock_flush:
-                with patch('src.chat_ui._state'):
+                with patch('src.chat_ui.state'):
                     with patch.object(consumer._bottom_bar, 'teardown') as mock_teardown:
                         consumer.stop()
                         mock_stop.assert_not_called()
@@ -360,7 +360,7 @@ class TestChatUIConsumerStop:
 
         with patch.object(consumer._engine, 'stop'):
             with patch.object(consumer._engine, 'flush'):
-                with patch('src.chat_ui._state'):
+                with patch('src.chat_ui.state'):
                     # 不应抛出异常
                     consumer.stop()
 
@@ -369,27 +369,27 @@ class TestChatUIConsumerStop:
     def test_stop_resets_after_start_stop_start(self, consumer, mock_bus):
         """start→stop→start→stop 完整周期可正常执行"""
         with patch.object(consumer._engine, 'start'):
-            with patch('src.chat_ui._state'):
+            with patch('src.chat_ui.state'):
                 consumer.start()
                 assert consumer._started is True
 
         with patch.object(consumer._engine, 'stop'):
             with patch.object(consumer._engine, 'flush'):
-                with patch('src.chat_ui._state'):
+                with patch('src.chat_ui.state'):
                     with patch.object(consumer._bottom_bar, 'teardown'):
                         consumer.stop()
                         assert consumer._started is False
 
         # 第二次 start
         with patch.object(consumer._engine, 'start'):
-            with patch('src.chat_ui._state'):
+            with patch('src.chat_ui.state'):
                 consumer.start()
                 assert consumer._started is True
 
         # 第二次 stop
         with patch.object(consumer._engine, 'stop'):
             with patch.object(consumer._engine, 'flush'):
-                with patch('src.chat_ui._state'):
+                with patch('src.chat_ui.state'):
                     with patch.object(consumer._bottom_bar, 'teardown'):
                         consumer.stop()
                         assert consumer._started is False
@@ -556,13 +556,13 @@ class TestChatUIConsumerLifecycle:
     def test_lifecycle_start_stop(self, consumer, mock_bus):
         """start → stop 基础生命周期"""
         with patch.object(consumer._engine, 'start'):
-            with patch('src.chat_ui._state'):
+            with patch('src.chat_ui.state'):
                 consumer.start()
                 assert consumer._started is True
 
         with patch.object(consumer._engine, 'stop'):
             with patch.object(consumer._engine, 'flush'):
-                with patch('src.chat_ui._state'):
+                with patch('src.chat_ui.state'):
                     with patch.object(consumer._bottom_bar, 'teardown'):
                         consumer.stop()
                         assert consumer._started is False
@@ -571,7 +571,7 @@ class TestChatUIConsumerLifecycle:
         """start → suspend → resume → stop 完整串行"""
         # start
         with patch.object(consumer._engine, 'start'):
-            with patch('src.chat_ui._state'):
+            with patch('src.chat_ui.state'):
                 consumer.start()
                 assert consumer._started is True
 
@@ -592,7 +592,7 @@ class TestChatUIConsumerLifecycle:
         # stop
         with patch.object(consumer._engine, 'stop'):
             with patch.object(consumer._engine, 'flush'):
-                with patch('src.chat_ui._state'):
+                with patch('src.chat_ui.state'):
                     with patch.object(consumer._bottom_bar, 'teardown'):
                         consumer.stop()
                         assert consumer._started is False
@@ -601,13 +601,13 @@ class TestChatUIConsumerLifecycle:
         """start → stop → start → stop 双周期"""
         for _ in range(2):
             with patch.object(consumer._engine, 'start'):
-                with patch('src.chat_ui._state'):
+                with patch('src.chat_ui.state'):
                     consumer.start()
                     assert consumer._started is True
 
             with patch.object(consumer._engine, 'stop'):
                 with patch.object(consumer._engine, 'flush'):
-                    with patch('src.chat_ui._state'):
+                    with patch('src.chat_ui.state'):
                         with patch.object(consumer._bottom_bar, 'teardown'):
                             consumer.stop()
                             assert consumer._started is False
@@ -627,7 +627,7 @@ class TestChatUIConsumerLifecycle:
     def test_lifecycle_start_then_suspend_twice(self, consumer, mock_bus):
         """start → suspend → suspend（第二次幂等）"""
         with patch.object(consumer._engine, 'start'):
-            with patch('src.chat_ui._state'):
+            with patch('src.chat_ui.state'):
                 consumer.start()
 
         with patch.object(consumer._engine, 'stop'):
@@ -641,13 +641,13 @@ class TestChatUIConsumerLifecycle:
     def test_lifecycle_no_unexpected_events(self, consumer, mock_bus):
         """完整周期中不产生意外副作用"""
         with patch.object(consumer._engine, 'start'):
-            with patch('src.chat_ui._state'):
+            with patch('src.chat_ui.state'):
                 consumer.start()
                 assert mock_bus.subscribe.call_count == 11
 
         with patch.object(consumer._engine, 'stop'):
             with patch.object(consumer._engine, 'flush'):
-                with patch('src.chat_ui._state'):
+                with patch('src.chat_ui.state'):
                     with patch.object(consumer._bottom_bar, 'teardown'):
                         consumer.stop()
                         # unsubscribe 至少调用了 11 次
