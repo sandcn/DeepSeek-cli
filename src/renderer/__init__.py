@@ -137,11 +137,24 @@ class IncrementalRenderer:
         # 刷出解析器缓冲区
         tokens = self._parser.flush()
         tokens = self._pipeline.process(tokens, self._ctx)
-        for token in tokens:
-            if not self._has_content and token.type is not TokenType.EMPTY_LINE:
-                self._indicator.on_first_content()
-                self._has_content = True
-            self._engine.render(token)
+
+        # ★ 关闭时 flush 的内容是完整的段落/代码块，不需要逐字符打字效果。
+        #   临时使用 typing_speed=0 即时渲染所有 flush token，确保最后
+        #   几个 token 在 close() 返回前已完全写入输出缓冲区。
+        _logger.debug("close: 临时设置 typing_speed=0（原值=%s），flush token 即时渲染",
+                      self._engine._typing_speed)
+        _saved_speed = self._engine._typing_speed
+        self._engine._typing_speed = 0
+        try:
+            for token in tokens:
+                # ★ close 阶段指示器已 stop，无需再检查 _indicator.on_first_content()
+                self._engine.render(token)
+        finally:
+            self._engine._typing_speed = _saved_speed
+            _logger.debug("close: 恢复 typing_speed=%s", _saved_speed)
+
+        # ★ 确保 flush token 已物理写入 stdout（阶段结束时强制刷出）
+        self._output.flush()
 
         # ★ 最终刷出 Todo 进度条（防止 flush 最后 token 是 LIST_ITEM 时进度条丢失）
         self._engine.emit_todo_progress()

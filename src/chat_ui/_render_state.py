@@ -104,6 +104,13 @@ class _RenderState:
         if rr is not None:
             rr.write(_THINKING_SEPARATOR)
             rr.close()
+            # ★ 防御性刷出：确保 close() 中即时渲染的 flush token
+            #   已物理写入 stdout（即使 close() 内已有 flush，此处
+            #   作为兜底保障，尤其适用于共享 OutputAdapter 的场景）
+            try:
+                rr._output.flush()
+            except Exception:
+                _logger.debug("close_reasoning: flush 异常", exc_info=True)
             self.reasoning = None
         self.reasoning_state = _ReasoningState.CLOSED
 
@@ -120,6 +127,13 @@ class _RenderState:
         cr = self.content
         if cr is not None:
             cr.close()
+            # ★ 防御性刷出：确保 close() 中即时渲染的 flush token
+            #   已物理写入 stdout（即使 close() 内已有 flush，此处
+            #   作为兜底保障，尤其适用于共享 OutputAdapter 的场景）
+            try:
+                cr._output.flush()
+            except Exception:
+                _logger.debug("close_content: flush 异常", exc_info=True)
             self.content = None
 
     def close_all(self) -> None:
