@@ -13,8 +13,8 @@ from enum import Enum
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from ..api.renderer import IncrementalRenderer
-    from ..api.renderer.output import OutputAdapter
+    from ..renderer import IncrementalRenderer
+    from ..renderer.output import OutputAdapter
 
 from ._const import _THINKING_SEPARATOR
 
@@ -74,7 +74,7 @@ class _RenderState:
             assert self.reasoning_state.can_transition_to(_ReasoningState.ACTIVE), (
                 f"非法状态转换: {self.reasoning_state} -> ACTIVE"
             )
-            from ..api.renderer import IncrementalRenderer  # 保留运行时惰性 import（避免循环）
+            from ..renderer import IncrementalRenderer  # 保留运行时惰性 import（避免循环）
             self.reasoning = IncrementalRenderer(
                 style="dim", _file=sys.__stdout__,
                 typing_speed=1000, show_indicator=False,
@@ -86,7 +86,7 @@ class _RenderState:
         if self.content is None:
             if self._shared_adapter is None:
                 _logger.warning("get_content: _shared_adapter 未设置")
-            from ..api.renderer import IncrementalRenderer  # 保留运行时惰性 import（避免循环）
+            from ..renderer import IncrementalRenderer  # 保留运行时惰性 import（避免循环）
             self.content = IncrementalRenderer(
                 style="", _file=sys.__stdout__,
                 typing_speed=1000, show_indicator=False,

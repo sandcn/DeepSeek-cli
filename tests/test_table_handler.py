@@ -11,9 +11,9 @@ from __future__ import annotations
 import pytest
 from rich.text import Text
 
-from src.api.renderer.types import Token, TokenType
-from src.api.renderer.handlers.table import TableHandler
-from src.api.renderer._table_utils import (
+from src.renderer.types import Token, TokenType
+from src.renderer.handlers.table import TableHandler
+from src.renderer._table_utils import (
     _has_only_chars,
     _is_table_row,
     _is_table_separator,
@@ -134,7 +134,7 @@ class TestTableHandlerBehavior:
 
     def test_cjk_width_calculation(self):
         """中文字符宽度计算：cjk_display_width 对 CJK 字符返回 2，ASCII 返回 1。"""
-        from src.api.renderer._utils import cjk_display_width
+        from src.renderer._utils import cjk_display_width
 
         # 纯 CJK
         assert cjk_display_width("你好") == 4      # 2 + 2

@@ -11,7 +11,7 @@
 
 import pytest
 
-from src.api.renderer.inline_nodes import (
+from src.renderer.inline_nodes import (
     InlineNode,
     TextNode,
     BoldNode,

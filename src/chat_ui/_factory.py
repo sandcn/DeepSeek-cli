@@ -14,7 +14,7 @@ if TYPE_CHECKING:
     from ..ui._cursor_tracker import CursorTracker
     from ..ui._bottom_bar import _BottomBar
     from ..ui.events.event_bus import DisplayEventBus
-    from ..api.renderer.output import OutputAdapter
+    from ..renderer.output import OutputAdapter
     from ._renderer import TuiRenderer, _RenderState
     from ._engine import TuiEngine
     from ._dispatcher import EventDispatcher
@@ -63,7 +63,7 @@ def _create_chat_ui_components(event_bus=None) -> _ChatUIComponents:
     from ..ui._bottom_bar import _BottomBar
     from ..ui._completion import CompletionEngine
     from rich.console import Console
-    from ..api.renderer.output import OutputAdapter
+    from ..renderer.output import OutputAdapter
     from ..terminal import get_safe_console_config
 
     from ._renderer import TuiRenderer, _RenderState

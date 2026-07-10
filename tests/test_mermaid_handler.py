@@ -8,8 +8,8 @@ from rich.text import Text
 from rich.style import Style
 import pytest
 
-from src.api.renderer.handlers.mermaid import MermaidHandler
-from src.api.renderer.types import Token, TokenType
+from src.renderer.handlers.mermaid import MermaidHandler
+from src.renderer.types import Token, TokenType
 
 
 def _make_mock_engine(typing_speed: int = 1):

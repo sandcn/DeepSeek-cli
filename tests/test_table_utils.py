@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from src.api.renderer._table_utils import (
+from src.renderer._table_utils import (
     _has_only_chars,
     _is_table_row,
     _is_table_separator,

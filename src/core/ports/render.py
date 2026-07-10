@@ -1,6 +1,6 @@
 """渲染端口 — 核心层与 Markdown 渲染引擎的接口
 
-将 src/api/renderer 的渲染能力抽象为端口，
+将 src.renderer 的渲染能力抽象为端口，
 核心层不直接依赖具体渲染实现。
 """
 from __future__ import annotations
@@ -46,7 +46,7 @@ class DefaultRenderAdapter(RenderPort):
 
     def _ensure(self):
         if self._renderer is None:
-            from ...api.renderer import IncrementalRenderer
+            from ...renderer import IncrementalRenderer
             self._renderer = IncrementalRenderer(**self._kwargs)
 
     def write(self, text: str) -> None:

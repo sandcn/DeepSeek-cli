@@ -2,7 +2,7 @@
 from rich.text import Text
 from rich.style import Style
 
-from src.api.renderer._rendering import (
+from src.renderer._rendering import (
     render_blockquote_prefix,
     _build_highlight_style,
     render_diff_line,

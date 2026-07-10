@@ -64,7 +64,7 @@ class TestRenderStateGetReasoning:
         assert rs.reasoning_state == _ReasoningState.INACTIVE
         assert rs.reasoning is None
 
-    @patch("src.api.renderer.IncrementalRenderer")
+    @patch("src.renderer.IncrementalRenderer")
     def test_get_reasoning_creates_and_switches_to_active(self, MockRenderer):
         """首次 get_reasoning() → 创建 IncrementalRenderer + 切换到 ACTIVE。"""
         mock_rr = _make_mock_incremental_renderer()
@@ -106,7 +106,7 @@ class TestRenderStateGetReasoning:
         result = rs.get_reasoning()
         assert result is None
 
-    @patch("src.api.renderer.IncrementalRenderer")
+    @patch("src.renderer.IncrementalRenderer")
     def test_get_reasoning_closed_does_not_create(self, MockRenderer):
         """CLOSED 状态即使 reasoning=None 也不创建渲染器。"""
         from src.chat_ui._render_state import _ReasoningState
@@ -125,7 +125,7 @@ class TestRenderStateGetReasoning:
 class TestRenderStateGetContent:
     """_RenderState.get_content() 惰性创建 & 重复调用同实例测试。"""
 
-    @patch("src.api.renderer.IncrementalRenderer")
+    @patch("src.renderer.IncrementalRenderer")
     def test_get_content_creates_on_first_call(self, MockRenderer):
         """首次 get_content() → 创建 IncrementalRenderer。"""
         mock_cr = _make_mock_incremental_renderer()
@@ -260,7 +260,7 @@ class TestRenderStateReopenReasoning:
         assert rs.reasoning_state == _ReasoningState.INACTIVE
         assert rs.reasoning is None
 
-    @patch("src.api.renderer.IncrementalRenderer")
+    @patch("src.renderer.IncrementalRenderer")
     def test_reopen_reasoning_full_cycle(self, MockRenderer):
         """close → reopen → get_reasoning 完整路径：CLOSED→INACTIVE→重新创建→ACTIVE。"""
         from src.chat_ui._render_state import _ReasoningState
@@ -445,7 +445,7 @@ class TestReasoningStateTransitions:
         """get_reasoning() 中 INACTIVE→ACTIVE 断言通过。"""
         from src.chat_ui._render_state import _ReasoningState
         rs = _make_render_state(reasoning_state=_ReasoningState.INACTIVE, reasoning=None)
-        with patch("src.api.renderer.IncrementalRenderer") as MockRenderer:
+        with patch("src.renderer.IncrementalRenderer") as MockRenderer:
             mock_rr = _make_mock_incremental_renderer()
             MockRenderer.return_value = mock_rr
             result = rs.get_reasoning()

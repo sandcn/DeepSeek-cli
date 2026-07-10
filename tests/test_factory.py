@@ -12,7 +12,7 @@
 from io import StringIO
 import pytest
 
-from src.api.renderer.factory import create_stream_renderers
+from src.renderer.factory import create_stream_renderers
 
 
 # ═══════════════════════════════════════════════════════════════

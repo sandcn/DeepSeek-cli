@@ -10,7 +10,7 @@ from rich.console import Console
 from rich.style import Style
 from rich.text import Text
 
-from src.api.renderer.output_strategies import CharByCharStrategy
+from src.renderer.output_strategies import CharByCharStrategy
 
 
 class FakeFile:

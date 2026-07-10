@@ -6,8 +6,8 @@ from unittest.mock import MagicMock, patch
 
 from rich.text import Text
 
-from src.api.renderer.handlers.code import CodeHandler
-from src.api.renderer.handlers.base import TokenHandler
+from src.renderer.handlers.code import CodeHandler
+from src.renderer.handlers.base import TokenHandler
 
 
 def _make_mock_engine(typing_speed: int = 1):

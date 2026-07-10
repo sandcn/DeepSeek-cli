@@ -19,7 +19,7 @@ from rich.text import Text
 
 import time
 
-from src.api.renderer.output import OutputAdapter
+from src.renderer.output import OutputAdapter
 
 
 class TestOutputAdapterWrite:

@@ -10,7 +10,7 @@ from abc import abstractmethod
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from ..api.renderer.output import OutputAdapter
+    from ..renderer.output import OutputAdapter
 
 from rich.text import Text
 

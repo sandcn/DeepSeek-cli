@@ -9,8 +9,8 @@
 
 from __future__ import annotations
 
-from src.api.renderer.recursive_parser import RegexFreeBlockParser
-from src.api.renderer.types import TokenType
+from src.renderer.recursive_parser import RegexFreeBlockParser
+from src.renderer.types import TokenType
 
 
 def _collect_tokens(text: str) -> list:
@@ -741,8 +741,8 @@ class TestHeadingParsing:
 
     def test_heading_auto_id_toc_filter_passes_id(self):
         """验证 HeadingAnchorFilter 正确传递 id 到 TOC 条目。"""
-        from src.api.renderer.pipeline_filters.heading_anchor import HeadingAnchorFilter
-        from src.api.renderer.types import RenderContext
+        from src.renderer.pipeline_filters.heading_anchor import HeadingAnchorFilter
+        from src.renderer.types import RenderContext
 
         parser = RegexFreeBlockParser()
         tokens = parser.feed("# Hello World\n## Test\n")
@@ -771,7 +771,7 @@ class TestBugF_LinkNodeHandler:
 
     def test_basic_link_rendering(self):
         """[text](url) 链接应渲染为带 cyan+underline 样式的 Text。"""
-        from src.api.renderer.inline_renderer import InlineRenderer
+        from src.renderer.inline_renderer import InlineRenderer
         renderer = InlineRenderer()
         result = renderer.render("访问 [GitHub](https://github.com) 查看")
 
@@ -793,7 +793,7 @@ class TestBugF_LinkNodeHandler:
 
     def test_link_with_children(self):
         """链接含粗体等子节点时样式正确。"""
-        from src.api.renderer.inline_renderer import InlineRenderer
+        from src.renderer.inline_renderer import InlineRenderer
         renderer = InlineRenderer()
         result = renderer.render("**[bold link](https://example.com)**")
 
@@ -808,7 +808,7 @@ class TestBugF_LinkNodeHandler:
         """通过 IncrementalRenderer 完整管线渲染链接。"""
         from io import StringIO
         from rich.console import Console
-        from src.api.renderer import IncrementalRenderer
+        from src.renderer import IncrementalRenderer
 
         buf = StringIO()
         renderer = IncrementalRenderer(_file=buf, typing_speed=0)
@@ -821,7 +821,7 @@ class TestBugF_LinkNodeHandler:
 
     def test_link_title_rendering(self):
         """[text](url "title") 链接应渲染链接文本并显示 title 提示。"""
-        from src.api.renderer.inline_renderer import InlineRenderer
+        from src.renderer.inline_renderer import InlineRenderer
         renderer = InlineRenderer()
         result = renderer.render('查看 [GitHub](https://github.com "开源社区") 项目')
 
@@ -851,7 +851,7 @@ class TestBugF_LinkNodeHandler:
 
     def test_image_title_rendering(self):
         """![alt](url "title") 图片应显示 alt、url 和 title。"""
-        from src.api.renderer.inline_renderer import InlineRenderer
+        from src.renderer.inline_renderer import InlineRenderer
         renderer = InlineRenderer()
         result = renderer.render('示例图片 ![Logo](https://example.com/logo.png "网站Logo") 展示')
 
@@ -874,13 +874,13 @@ class TestBugG_CodeBlockBatcherMissingClose:
     """
 
     def _make_token(self, ttype, content="", meta=None):
-        from src.api.renderer.types import Token
+        from src.renderer.types import Token
         return Token(ttype, content, meta or {})
 
     def test_cross_feed_overlap_emits_close(self):
         """跨 feed：前一 chunk 代码块未闭合 + 后一 chunk 新代码块 → 应有 CLOSE。"""
-        from src.api.renderer.pipeline import CodeBlockBatcher
-        from src.api.renderer.types import RenderContext
+        from src.renderer.pipeline import CodeBlockBatcher
+        from src.renderer.types import RenderContext
 
         batcher = CodeBlockBatcher()
         ctx = RenderContext()
@@ -918,8 +918,8 @@ class TestBugG_CodeBlockBatcherMissingClose:
 
     def test_cross_feed_code_block_content(self):
         """跨 feed 代码块的内容行在刷出时被保留。"""
-        from src.api.renderer.pipeline import CodeBlockBatcher
-        from src.api.renderer.types import RenderContext
+        from src.renderer.pipeline import CodeBlockBatcher
+        from src.renderer.types import RenderContext
 
         batcher = CodeBlockBatcher()
         ctx = RenderContext()
@@ -1586,8 +1586,8 @@ class TestBlockquoteAllSyntax:
 
     def test_blockquote_ast_nesting(self):
         """AST 后处理 → 嵌套引用树形结构。"""
-        from src.api.renderer.recursive_parser import MarkdownRecursiveParser
-        from src.api.renderer.ast.types import NodeType
+        from src.renderer.recursive_parser import MarkdownRecursiveParser
+        from src.renderer.ast.types import NodeType
 
         text = "> Outer\n>> Inner\n"
         parser = MarkdownRecursiveParser()
@@ -1612,8 +1612,8 @@ class TestBlockquoteAllSyntax:
 
     def test_blockquote_ast_3_level_nesting(self):
         """AST 3层嵌套 → _nest_blockquotes 后树形正确。"""
-        from src.api.renderer.recursive_parser import MarkdownRecursiveParser
-        from src.api.renderer.ast.types import NodeType
+        from src.renderer.recursive_parser import MarkdownRecursiveParser
+        from src.renderer.ast.types import NodeType
 
         text = "> A\n>> B\n>>> C\n"
         parser = MarkdownRecursiveParser()

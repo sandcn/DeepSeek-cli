@@ -10,7 +10,7 @@
 import unicodedata
 import pytest
 
-from src.api.renderer.emoji_map import (
+from src.renderer.emoji_map import (
     EMOJI_MAP,
     resolve_emoji,
 )

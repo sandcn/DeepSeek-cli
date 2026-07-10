@@ -10,7 +10,7 @@
 
 import pytest
 
-from src.api.renderer.states import (
+from src.renderer.states import (
     _CodeBlockState,
     _DetailsState,
     _TodoState,

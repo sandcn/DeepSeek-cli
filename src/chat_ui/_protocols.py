@@ -9,7 +9,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Callable, Protocol, runtime_checkable
 
 if TYPE_CHECKING:
-    from ..api.renderer.output import OutputAdapter
+    from ..renderer.output import OutputAdapter
 
 
 @runtime_checkable

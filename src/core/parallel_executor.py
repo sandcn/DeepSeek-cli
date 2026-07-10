@@ -205,7 +205,7 @@ class ParallelExecutor:
         仅在 ChatUIConsumer 未激活（无底部栏分屏）时使用。
         """
         import sys as _sys
-        from src.api.renderer import IncrementalRenderer
+        from src.renderer import IncrementalRenderer
 
         renderer = IncrementalRenderer(typing_speed=0, show_indicator=False,
                                        _file=_sys.__stdout__)
@@ -244,7 +244,7 @@ class ParallelExecutor:
         Parser/Engine 无实例锁（单线程专用，不与其他渲染器共享）。
         """
         import io
-        from src.api.renderer import IncrementalRenderer
+        from src.renderer import IncrementalRenderer
 
         chat_ui = get_active_chat_ui()
         if chat_ui is None:

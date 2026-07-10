@@ -11,7 +11,7 @@
 from collections import Counter
 import pytest
 
-from src.api.renderer.types import (
+from src.renderer.types import (
     TokenType,
     Token,
     RenderContext,

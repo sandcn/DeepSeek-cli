@@ -7,7 +7,6 @@
 - tokens.py      —— Token 启发式估算
 - interrupt_async.py —— 全局中断信号（asyncio.Event）
 - stats.py       —— 会话级 token 统计
-- renderer/         —— 流式输出 Markdown 渲染（策略模式）
 - json_repair.py    —— JSON 格式自动修复
 - stream_parse.py   —— 流式工具调用解析
 - escape_monitor/ —— Esc 键中断监听（包，原 escape_monitor.py 拆分）

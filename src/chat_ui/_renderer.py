@@ -11,8 +11,8 @@ import sys
 from typing import TYPE_CHECKING, Any, Callable
 
 if TYPE_CHECKING:
-    from ..api.renderer import IncrementalRenderer
-    from ..api.renderer.output import OutputAdapter
+    from ..renderer import IncrementalRenderer
+    from ..renderer.output import OutputAdapter
     from ._protocols import BottomBarProtocol
 
 from ._const import (

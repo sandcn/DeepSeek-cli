@@ -109,7 +109,7 @@ class SubAgentSpawner:
             # （与 parallel_executor._stream_results_via_chatui 模式一致）
             import io
             import os
-            from src.api.renderer import IncrementalRenderer
+            from src.renderer import IncrementalRenderer
 
             try:
                 term_width = os.get_terminal_size().columns
@@ -133,7 +133,7 @@ class SubAgentSpawner:
         else:
             # ChatUI 未激活 → 直接写 __stdout__（原逻辑）
             import sys as _sys
-            from src.api.renderer import IncrementalRenderer
+            from src.renderer import IncrementalRenderer
 
             renderer = IncrementalRenderer(
                 typing_speed=0, show_indicator=False, _file=_sys.__stdout__,

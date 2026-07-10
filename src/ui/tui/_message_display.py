@@ -15,7 +15,7 @@ from src._compat import dataclass
 from typing import Any
 import os
 
-from ...api.renderer import IncrementalRenderer
+from ...renderer import IncrementalRenderer
 from ...core.sandbox_manager import get_sandbox_manager as _get_sandbox_manager
 from ._terminal import (get_terminal_width, NARROW_THRESHOLD,
                         is_narrow, narrow_truncate, narrow_indent,

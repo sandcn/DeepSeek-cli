@@ -12,7 +12,7 @@
 
 from __future__ import annotations
 
-from src.api.renderer.inline_renderer import InlineRenderer
+from src.renderer.inline_renderer import InlineRenderer
 
 
 def _render(text: str) -> str:
@@ -375,8 +375,8 @@ class TestAbbreviationDefinition:
 
     def test_abbreviation_definition_stored(self):
         """*[HTML]: Full Text → 存储在 abbr_map 中。"""
-        from src.api.renderer.types import RenderContext
-        from src.api.renderer.recursive_parser import RegexFreeBlockParser
+        from src.renderer.types import RenderContext
+        from src.renderer.recursive_parser import RegexFreeBlockParser
         ctx = RenderContext()
         parser = RegexFreeBlockParser(ctx=ctx)
         tokens = parser.feed("*[HTML]: HyperText Markup Language\n")
@@ -388,8 +388,8 @@ class TestAbbreviationDefinition:
 
     def test_abbreviation_case_insensitive(self):
         """缩写名转大写存储。"""
-        from src.api.renderer.types import RenderContext
-        from src.api.renderer.recursive_parser import RegexFreeBlockParser
+        from src.renderer.types import RenderContext
+        from src.renderer.recursive_parser import RegexFreeBlockParser
         ctx = RenderContext()
         parser = RegexFreeBlockParser(ctx=ctx)
         parser.feed("*[css]: Cascading Style Sheets\n")
@@ -399,8 +399,8 @@ class TestAbbreviationDefinition:
 
     def test_abbreviation_multiple_definitions(self):
         """多个缩写定义都正确存储。"""
-        from src.api.renderer.types import RenderContext
-        from src.api.renderer.recursive_parser import RegexFreeBlockParser
+        from src.renderer.types import RenderContext
+        from src.renderer.recursive_parser import RegexFreeBlockParser
         ctx = RenderContext()
         parser = RegexFreeBlockParser(ctx=ctx)
         parser.feed("*[HTML]: HyperText Markup Language\n*[CSS]: Cascading Style Sheets\n")
@@ -410,7 +410,7 @@ class TestAbbreviationDefinition:
 
     def test_abbreviation_does_not_interfere_with_list(self):
         """* 缩写定义不应干扰 * item 无序列表。"""
-        from src.api.renderer.recursive_parser import RegexFreeBlockParser
+        from src.renderer.recursive_parser import RegexFreeBlockParser
         parser = RegexFreeBlockParser()
         tokens = parser.feed("* list item\n")
         tokens += parser.flush()
@@ -423,7 +423,7 @@ class TestAbbreviationRendering:
 
     def _ctx_with_abbr(self, abbr_map: dict[str, str]):
         """创建带 abbr_map 的 RenderContext。"""
-        from src.api.renderer.types import RenderContext
+        from src.renderer.types import RenderContext
         ctx = RenderContext()
         ctx.abbr_map.update(abbr_map)
         return ctx
@@ -454,7 +454,7 @@ class TestAbbreviationRendering:
 
     def test_no_abbr_map_leaves_text_unchanged(self):
         """ctx 没有 abbr_map 时文本不变。"""
-        from src.api.renderer.types import RenderContext
+        from src.renderer.types import RenderContext
         ctx = RenderContext()  # 默认 abbr_map 为 {}
         result = InlineRenderer().render("Learn HTML and CSS", ctx)
         assert result.plain == "Learn HTML and CSS"
@@ -531,7 +531,7 @@ class TestInlineHtmlTags:
 
     def test_kbd_tag_renders(self):
         """<kbd>Ctrl+C</kbd> → 键盘样式渲染。"""
-        from src.api.renderer.inline_renderer import InlineRenderer
+        from src.renderer.inline_renderer import InlineRenderer
         result = InlineRenderer().render("Press <kbd>Ctrl+C</kbd>")
         plain = result.plain
         assert "Press" in plain
@@ -539,7 +539,7 @@ class TestInlineHtmlTags:
 
     def test_abbr_tag_renders(self):
         """<abbr title=\"...\">HTML</abbr> → 缩写样式渲染。"""
-        from src.api.renderer.inline_renderer import InlineRenderer
+        from src.renderer.inline_renderer import InlineRenderer
         result = InlineRenderer().render(
             '<abbr title="HyperText Markup Language">HTML</abbr>'
         )
@@ -547,25 +547,25 @@ class TestInlineHtmlTags:
 
     def test_bold_tag(self):
         """<b>bold</b> → 粗体。"""
-        from src.api.renderer.inline_renderer import InlineRenderer
+        from src.renderer.inline_renderer import InlineRenderer
         result = InlineRenderer().render("<b>bold text</b>")
         assert "bold text" in result.plain
 
     def test_italic_tag(self):
         """<i>italic</i> → 斜体。"""
-        from src.api.renderer.inline_renderer import InlineRenderer
+        from src.renderer.inline_renderer import InlineRenderer
         result = InlineRenderer().render("<i>italic text</i>")
         assert "italic text" in result.plain
 
     def test_mark_tag(self):
         """<mark>highlighted</mark> → 高亮。"""
-        from src.api.renderer.inline_renderer import InlineRenderer
+        from src.renderer.inline_renderer import InlineRenderer
         result = InlineRenderer().render("<mark>highlighted text</mark>")
         assert "highlighted text" in result.plain
 
     def test_nested_html_tags(self):
         """<b><i>nested</i></b> → 嵌套标签。"""
-        from src.api.renderer.inline_renderer import InlineRenderer
+        from src.renderer.inline_renderer import InlineRenderer
         result = InlineRenderer().render("<b><i>nested</i></b>")
         assert "nested" in result.plain
 
@@ -579,7 +579,7 @@ class TestHighlightSyntax:
 
     def test_basic_highlight(self):
         """==text== → 高亮样式。"""
-        from src.api.renderer.inline_renderer import InlineRenderer
+        from src.renderer.inline_renderer import InlineRenderer
         result = InlineRenderer().render("this is ==highlighted== text")
         plain = result.plain
         assert "highlighted" in plain, f"高亮内容应在输出中: {plain!r}"
@@ -594,14 +594,14 @@ class TestHighlightSyntax:
 
     def test_highlight_empty(self):
         """==== → 空高亮降级。"""
-        from src.api.renderer.inline_renderer import InlineRenderer
+        from src.renderer.inline_renderer import InlineRenderer
         result = InlineRenderer().render("hello ==== world")
         assert "hello" in result.plain
         assert "world" in result.plain
 
     def test_highlight_unclosed(self):
         """==text 未闭合 → 降级。"""
-        from src.api.renderer.inline_renderer import InlineRenderer
+        from src.renderer.inline_renderer import InlineRenderer
         result = InlineRenderer().render("==unclosed highlight")
         assert "unclosed highlight" in result.plain or "==unclosed" in result.plain
 
@@ -615,16 +615,16 @@ class TestHeadingNumbering:
 
     def test_heading_numbering_disabled_by_default(self):
         """默认不启用编号。"""
-        from src.api.renderer._rendering import _get_heading_number
-        from src.api.renderer.types import RenderContext
+        from src.renderer._rendering import _get_heading_number
+        from src.renderer.types import RenderContext
         ctx = RenderContext()
         result = _get_heading_number(ctx, 1)
         assert result == "", f"默认不应编号: {result!r}"
 
     def test_heading_numbering_enabled(self):
         """启用后编号递增。"""
-        from src.api.renderer._rendering import _get_heading_number
-        from src.api.renderer.types import RenderContext
+        from src.renderer._rendering import _get_heading_number
+        from src.renderer.types import RenderContext
         ctx = RenderContext()
         ctx.heading_numbering = True
         assert _get_heading_number(ctx, 1) == "1  "
@@ -633,8 +633,8 @@ class TestHeadingNumbering:
 
     def test_heading_numbering_nested(self):
         """嵌套标题编号正确。"""
-        from src.api.renderer._rendering import _get_heading_number
-        from src.api.renderer.types import RenderContext
+        from src.renderer._rendering import _get_heading_number
+        from src.renderer.types import RenderContext
         ctx = RenderContext()
         ctx.heading_numbering = True
         _get_heading_number(ctx, 1)  # 1
@@ -644,8 +644,8 @@ class TestHeadingNumbering:
 
     def test_heading_numbering_h1_resets(self):
         """H1 重置所有下级计数器。"""
-        from src.api.renderer._rendering import _get_heading_number
-        from src.api.renderer.types import RenderContext
+        from src.renderer._rendering import _get_heading_number
+        from src.renderer.types import RenderContext
         ctx = RenderContext()
         ctx.heading_numbering = True
         _get_heading_number(ctx, 1)    # 1
@@ -663,11 +663,11 @@ class TestImageDimensionSyntax:
 
     def test_image_with_dimension(self):
         """![alt](img.png =200x100) → 尺寸信息在 meta 中。"""
-        from src.api.renderer.inline_parser import _InlineParser
+        from src.renderer.inline_parser import _InlineParser
         p = _InlineParser("![alt](img.png =200x100)")
         nodes = p.parse()
         assert len(nodes) == 1
-        from src.api.renderer.inline_nodes import ImageNode
+        from src.renderer.inline_nodes import ImageNode
         assert isinstance(nodes[0], ImageNode)
         assert nodes[0].meta.get("width") == 200
         assert nodes[0].meta.get("height") == 100
@@ -675,19 +675,19 @@ class TestImageDimensionSyntax:
 
     def test_image_without_dimension(self):
         """![alt](img.png) → 无尺寸信息。"""
-        from src.api.renderer.inline_parser import _InlineParser
+        from src.renderer.inline_parser import _InlineParser
         p = _InlineParser("![alt](img.png)")
         nodes = p.parse()
-        from src.api.renderer.inline_nodes import ImageNode
+        from src.renderer.inline_nodes import ImageNode
         assert isinstance(nodes[0], ImageNode)
         assert nodes[0].meta.get("width", 0) == 0
 
     def test_image_with_dimension_and_title(self):
         """![alt](img.png =50x50 "title") → 尺寸+标题共存。"""
-        from src.api.renderer.inline_parser import _InlineParser
+        from src.renderer.inline_parser import _InlineParser
         p = _InlineParser('![alt](img.png =50x50 "Photo")')
         nodes = p.parse()
-        from src.api.renderer.inline_nodes import ImageNode
+        from src.renderer.inline_nodes import ImageNode
         assert isinstance(nodes[0], ImageNode)
         assert nodes[0].meta.get("width") == 50
         assert nodes[0].meta.get("height") == 50
@@ -695,27 +695,27 @@ class TestImageDimensionSyntax:
 
     def test_image_with_title_only(self):
         """![alt](img.png "title") → 标题语法不受影响。"""
-        from src.api.renderer.inline_parser import _InlineParser
+        from src.renderer.inline_parser import _InlineParser
         p = _InlineParser('![alt](img.png "Photo")')
         nodes = p.parse()
-        from src.api.renderer.inline_nodes import ImageNode
+        from src.renderer.inline_nodes import ImageNode
         assert isinstance(nodes[0], ImageNode)
         assert nodes[0].title == "Photo"
         assert nodes[0].meta.get("width", 0) == 0
 
     def test_image_dimension_rendered_in_output(self):
         """尺寸信息出现在渲染输出中。"""
-        from src.api.renderer.inline_renderer import InlineRenderer
+        from src.renderer.inline_renderer import InlineRenderer
         result = InlineRenderer().render("![Logo](logo.png =120x60)")
         assert "120x60" in result.plain, f"尺寸应在输出中: {result.plain}"
         assert "logo.png" in result.plain
 
     def test_image_dimension_with_ref_link(self):
         """参考式链接图片不受影响。"""
-        from src.api.renderer.inline_parser import _InlineParser
+        from src.renderer.inline_parser import _InlineParser
         p = _InlineParser("![alt][ref]")
         nodes = p.parse()
-        from src.api.renderer.inline_nodes import ImageNode
+        from src.renderer.inline_nodes import ImageNode
         assert isinstance(nodes[0], ImageNode)
 
 
@@ -1336,33 +1336,33 @@ class TestHtmlCommentSmartTypographyRegression:
 
     def test_html_comment_opening_not_corrupted(self):
         """<!-- comment --> 中的 --- 不应被 _preprocess_text 转换为 em-dash。"""
-        from src.api.renderer._inline_preprocess import _preprocess_text
+        from src.renderer._inline_preprocess import _preprocess_text
         result = _preprocess_text("<!-- comment -->")
         assert "<!--" in result, f"<!-- 不应被破坏: {result!r}"
         assert "—" not in result, f"不应出现 em-dash: {result!r}"
 
     def test_html_comment_closing_arrow_converted(self):
         """text --> 结尾的 --> 中的 -> 被转换为箭头（箭头部匹配优先）。"""
-        from src.api.renderer._inline_preprocess import _preprocess_text
+        from src.renderer._inline_preprocess import _preprocess_text
         result = _preprocess_text("text -->")
         assert "→" in result, f"--> 中的 -> 被转换为箭头: {result!r}"
 
     def test_html_comment_full_not_corrupted(self):
         """完整 HTML 注释 <!-- a note --> 在预处理层完整保留边界。"""
-        from src.api.renderer._inline_preprocess import _preprocess_text
+        from src.renderer._inline_preprocess import _preprocess_text
         result = _preprocess_text("<!-- a note -->")
         assert "<!--" in result, f"<!-- 应保留: {result!r}"
         assert "-->" in result, f"--> 应保留: {result!r}"
 
     def test_html_comment_with_extra_dashes(self):
         """<!--- multi dash ---> 多连字符在预处理层不破坏内容。"""
-        from src.api.renderer._inline_preprocess import _preprocess_text
+        from src.renderer._inline_preprocess import _preprocess_text
         result = _preprocess_text("<!--- multi dash --->")
         assert "dash" in result, f"注释内容应保留: {result!r}"
 
     def test_em_dash_still_works_outside_comment(self):
         """非注释的 --- 仍然正常转换为 em-dash。"""
-        from src.api.renderer._inline_preprocess import _preprocess_text
+        from src.renderer._inline_preprocess import _preprocess_text
         result = _preprocess_text("text --- more")
         assert "—" in result, f"普通 --- 应转换: {result!r}"
 
@@ -1554,21 +1554,21 @@ class TestHtmlCommentDashProtection:
 
     def test_comment_body_triple_dash_preserved(self):
         """<!-- --- note --> 中的 --- 不应被转换。"""
-        from src.api.renderer._inline_preprocess import _preprocess_text
+        from src.renderer._inline_preprocess import _preprocess_text
         result = _preprocess_text("<!-- --- note -->")
         assert "—" not in result  # em-dash
         assert "---" in result
 
     def test_comment_body_double_dash_preserved(self):
         """<!-- -- note --> 中的 -- 不应被转换。"""
-        from src.api.renderer._inline_preprocess import _preprocess_text
+        from src.renderer._inline_preprocess import _preprocess_text
         result = _preprocess_text("<!-- -- note -->")
         assert "–" not in result  # en-dash
         assert "--" in result
 
     def test_comment_opening_still_protected(self):
         """现有 <!--（开头---）保护仍生效。"""
-        from src.api.renderer._inline_preprocess import _preprocess_text
+        from src.renderer._inline_preprocess import _preprocess_text
         result = _preprocess_text("<!-- comment -->")
         assert "<!--" in result  # 不被 em-dash 破坏
 
@@ -1578,13 +1578,13 @@ class TestNumericEntitySafety:
 
     def test_surrogate_pair_rejected(self):
         """&#xD800; 应原样输出而非生成代理对字符。"""
-        from src.api.renderer._inline_preprocess import _preprocess_text
+        from src.renderer._inline_preprocess import _preprocess_text
         result = _preprocess_text("&#xD800;")
         assert "&#xD800;" in result
 
     def test_null_char_rejected(self):
         """&#0; 应原样输出而非生成 null 字符。"""
-        from src.api.renderer._inline_preprocess import _preprocess_text
+        from src.renderer._inline_preprocess import _preprocess_text
         result = _preprocess_text("&#0;")
         assert '\x00' not in result
 
@@ -1705,7 +1705,7 @@ class TestAbbreviationStylePreservation:
 
     def _ctx_with_abbr(self, abbr_map: dict[str, str]):
         """创建带 abbr_map 的 RenderContext。"""
-        from src.api.renderer.types import RenderContext
+        from src.renderer.types import RenderContext
         ctx = RenderContext()
         ctx.abbr_map.update(abbr_map)
         return ctx
@@ -1804,10 +1804,10 @@ class TestFootnoteRefCR:
 
     def test_footnote_ref_with_cr(self):
         """脚注引用 [^1] 后跟 \\r 应正确解析（\\r 不再被误吞入 ref_id）。"""
-        from src.api.renderer.inline_parser import _InlineParser
+        from src.renderer.inline_parser import _InlineParser
         p = _InlineParser("[^1]\r")
         nodes = p.parse()
-        from src.api.renderer.inline_nodes import FootnoteRefNode, TextNode
+        from src.renderer.inline_nodes import FootnoteRefNode, TextNode
         assert len(nodes) == 2, f"应有 FootnoteRefNode + TextNode, got {len(nodes)}: {nodes}"
         assert isinstance(nodes[0], FootnoteRefNode)
         assert nodes[0].ref_id == "1"
