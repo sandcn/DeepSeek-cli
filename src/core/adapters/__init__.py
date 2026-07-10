@@ -4,9 +4,9 @@
 此层允许导入 ui/、config/ 等基础设施模块（这是适配器层的职责）。
 
 导出清单:
-- DefaultOutputAdapter / get_default_output_port — OutputPort 默认实现
+- DefaultOutputAdapter / get_default_output_port — 默认输出实现
 - DisplayEventBusAdapter — EventPort 默认实现
-- DefaultDisplayAdapter — DisplayPort 默认实现
+- DefaultDisplayAdapter — 显示默认实现
 - DefaultInterruptAdapter / MockInterruptAdapter — InterruptPort 默认实现
 """
 

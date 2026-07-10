@@ -1,12 +1,10 @@
-"""统计端口适配器 — DefaultStatsAdapter、MockStatsAdapter"""
+"""统计适配器 — DefaultStatsAdapter、MockStatsAdapter"""
 from __future__ import annotations
 
 from typing import Any
 
-from ..ports.stats import StatsPort
 
-
-class DefaultStatsAdapter(StatsPort):
+class DefaultStatsAdapter:
     """默认统计适配器 — 包装 src/api/stats"""
 
     def accumulate_usage(self, input_tokens: int, output_tokens: int) -> None:
@@ -51,7 +49,7 @@ class DefaultStatsAdapter(StatsPort):
         reset_stats()
 
 
-class MockStatsAdapter(StatsPort):
+class MockStatsAdapter:
     """Mock 统计适配器 — 用于测试"""
 
     def __init__(self):

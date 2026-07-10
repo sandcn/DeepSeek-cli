@@ -1,16 +1,14 @@
-"""显示适配器 — DisplayPort 的默认实现
+"""显示适配器 — 核心层与 UI 显示的默认适配器
 
-职责：桥接核心层 DisplayPort 抽象与基础设施层显示实现。
+职责：桥接核心层与基础设施层显示实现。
 适配器层允许导入 ui/ 模块（桥接职责）。
 """
 from __future__ import annotations
 
 from typing import Optional
 
-from ..ports.display import DisplayPort
 
-
-class DefaultDisplayAdapter(DisplayPort):
+class DefaultDisplayAdapter:
     """默认显示适配器 — 包装 EventBusDisplayProxy
 
     作为全局默认显示端口，供核心模块在没有依赖注入时使用。

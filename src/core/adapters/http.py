@@ -1,12 +1,10 @@
-"""HTTP 客户端端口适配器 — DefaultHttpClientAdapter"""
+"""HTTP 客户端适配器 — DefaultHttpClientAdapter"""
 from __future__ import annotations
 
 from typing import Any, AsyncIterator
 
-from ..ports.http import HttpClientPort
 
-
-class DefaultHttpClientAdapter(HttpClientPort):
+class DefaultHttpClientAdapter:
     """默认 HTTP 客户端适配器 — 包装 src/api/client_async.py
 
     通过延迟导入避免模块加载时触发配置读取。

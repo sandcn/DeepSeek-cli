@@ -1,12 +1,10 @@
-"""提示词构建端口适配器 — DefaultPromptBuilderAdapter"""
+"""提示词构建适配器 — DefaultPromptBuilderAdapter"""
 from __future__ import annotations
 
 from typing import Optional
 
-from ..ports.prompt_builder import PromptBuilderPort
 
-
-class DefaultPromptBuilderAdapter(PromptBuilderPort):
+class DefaultPromptBuilderAdapter:
     def build_system_prompt(self) -> list[str]:
         from ...prompt_builder import build_system_prompt
         return build_system_prompt()

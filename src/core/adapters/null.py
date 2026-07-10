@@ -43,7 +43,7 @@ class _NullPort:
     def unsubscribe_type(self, event_type: type, handler) -> None:
         pass
 
-    # ── DisplayPort 接口 ──────────────────────────────
+    # ── 显示接口 ──────────────────────────────────────
     def start(self) -> None:
         pass
 
