@@ -183,6 +183,35 @@ class TestRenderEnginePushCmd:
         engine.push_cmd((RenderCommand.NOTIFICATION, "测试"))
         assert engine._cmd_event.is_set()
 
+    def test_request_bottom_redraw_sets_cmd_event(self, engine):
+        """修复 B: request_bottom_redraw 同时设置 _cmd_event 以立即唤醒 render 线程。
+
+        验证：
+        - _cmd_event.is_set() 为 True
+        - _bottom_redraw_requested.is_set() 同时为 True
+        - 此行为在 engine 初始化后的默认状态（event 初始为 clear）下正确工作
+        """
+        engine._cmd_event.clear()
+        engine._bottom_redraw_requested.clear()
+
+        engine.request_bottom_redraw()
+
+        assert engine._bottom_redraw_requested.is_set(), (
+            "_bottom_redraw_requested 应在 request_bottom_redraw 后被设置"
+        )
+        assert engine._cmd_event.is_set(), (
+            "_cmd_event 应在 request_bottom_redraw 后被设置以立即唤醒 render 线程"
+        )
+
+    def test_request_bottom_redraw_cmd_event_idempotent(self, engine):
+        """request_bottom_redraw 的 _cmd_event.set() 为幂等操作（threading.Event 天然幂等）。"""
+        # 连续两次调用不应抛出异常或产生副作用
+        engine.request_bottom_redraw()
+        engine.request_bottom_redraw()
+
+        assert engine._bottom_redraw_requested.is_set()
+        assert engine._cmd_event.is_set()
+
 
 # ══════════════════════════════════════════════════════
 # TestRenderEngineStartStop

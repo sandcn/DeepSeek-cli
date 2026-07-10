@@ -106,6 +106,7 @@ class TuiEngine:
 
     def request_bottom_redraw(self) -> None:
         self._bottom_redraw_requested.set()
+        self._cmd_event.set()
 
     def start(self) -> None:
         if self._render_thread is not None:

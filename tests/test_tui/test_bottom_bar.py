@@ -204,6 +204,191 @@ class TestBottomBarCursorPos(unittest.TestCase):
                          "增量重绘后 _last_cursor_pos 应与 _input_cursor_pos 同步")
 
 
+class TestComputeCursorPosition(unittest.TestCase):
+    """验证 compute_cursor_position() 和 _compute_bottom_lines_for() 的数据源一致性修复。
+
+    核心场景：
+      1. _compute_bottom_lines_for — 空文本→最小底部行数（5）
+      2. _compute_bottom_lines_for — 单行短文本→最小底部行数
+      3. _compute_bottom_lines_for — 多行长文本→底部行数正确扩展
+      4. compute_cursor_position — text 与 _last_text 不同时 total_bottom 基于 text
+      5. _compute_bottom_lines_for — 补全弹窗可见时包含弹窗高度
+      6. _compute_bottom_lines_for — 纯计算不产生副作用（幂等性）
+    """
+
+    def setUp(self):
+        self.bb = _BottomBar()
+        self.bb._active = True
+        self.bb._subagent_lines = []
+        # 补全弹窗初始不可见
+        self.bb._completion._visible = False
+        self.bb._completion._popup_height = 0
+
+    # ── 场景 1：空文本→最小底部行数 ──────────────────────
+
+    def test_compute_bottom_lines_for_empty_text(self):
+        """空文本应返回最小底部行数 = 2 + 0 + _MIN_INPUT_ROWS(3) + 0 = 5。"""
+        result = self.bb._compute_bottom_lines_for("", 80)
+        self.assertEqual(result, 5,
+                         "空文本应返回最小底部行数 5")
+
+    # ── 场景 2：单行短文本→最小底部行数 ──────────────────
+
+    def test_compute_bottom_lines_for_short_text(self):
+        """单行短文本（不触发拆行）→ 底部行数仍为最小值 5。"""
+        result = self.bb._compute_bottom_lines_for("hello", 80)
+        # max_input = 76, expanded = "hello", wrapped = ["hello"], base = max(3, 1) = 3
+        # return 2 + 0 + 3 + 0 = 5
+        self.assertEqual(result, 5,
+                         "单行短文本不触发拆行时应返回 5")
+
+    # ── 场景 3：多行长文本→底部行数正确扩展 ─────────────
+
+    def test_compute_bottom_lines_for_long_text(self):
+        """多行长文本触发拆行 → 底部行数应正确扩展。"""
+        # 500 个 'A' 在宽度 80（max_input=76）下拆为多行
+        long_text = "A" * 500
+        result = self.bb._compute_bottom_lines_for(long_text, 80)
+        # 500 'A' 在 max_input=76 下：ceil(500/76) = 7 行
+        # base = max(3, 7) = 7, return 2 + 0 + 7 + 0 = 9
+        expected_lines = (500 + 75) // 76  # ceil(500/76)
+        expected_base = max(3, expected_lines)
+        expected = 2 + expected_base
+        self.assertEqual(result, expected,
+                         f"长文本底部行数应为 {expected}")
+
+        # 在更窄终端宽度下应有更多行
+        result_narrow = self.bb._compute_bottom_lines_for(long_text, 40)
+        # max_input = 36，500/36 ≈ 13.89 → 14 行
+        narrow_lines = (500 + 35) // 36
+        narrow_base = max(3, narrow_lines)
+        narrow_expected = 2 + narrow_base
+        self.assertEqual(result_narrow, narrow_expected,
+                         f"窄终端下底部行数应为 {narrow_expected}")
+        self.assertGreater(result_narrow, result,
+                           "窄终端宽度应产生更多拆行")
+
+    # ── 场景 4：text 与 _last_text 不同时 total_bottom 基于 text ─
+
+    def test_compute_cursor_position_uses_text_not_last_text(self):
+        """核心场景：text 参数与 _last_text 不同时，
+        compute_cursor_position 的 total_bottom 应基于 text 而非 _last_text。"""
+        # 模拟：_last_text（EscapeMonitor 线程最新值）比 text（渲染快照）长很多
+        self.bb._last_text = "A" * 500  # EscapeMonitor 已更新为长文本
+        text_snapshot = "hello"          # 渲染时使用的短文本快照
+
+        # Mock _cursor_visual_pos_from_cache 返回 (0, 0)
+        with patch.object(self.bb, '_cursor_visual_pos_from_cache', return_value=(0, 0)):
+            r_cursor, _ = self.bb.compute_cursor_position(
+                text_snapshot, cursor_pos=5, h=30, w=80,
+            )
+
+        # text_snapshot 为短文本，total_bottom = max(5, 5) = 5
+        # r_cursor = max(1, 30 - 5 + 3 + 0 + 0 + 0) = 28
+        self.assertEqual(r_cursor, 28,
+                         "短文本快照下 r_cursor 应为 28（基于 text 参数）")
+
+        # 验证：如果错误地使用 _last_text（长文本），r_cursor 会不同
+        # total_bottom 基于 _last_text="A"*500 → 9 行
+        # r_cursor_wrong = max(1, 30 - 9 + 3 + 0 + 0 + 0) = 24
+        # 28 ≠ 24，证明修复有效
+        self.assertNotEqual(r_cursor, 24,
+                            "r_cursor 不应基于 _last_text 计算（28 ≠ 24）")
+
+    def test_compute_cursor_position_text_equals_last_text(self):
+        """text 参数与 _last_text 相同时 → 计算结果不变（向后兼容）。"""
+        same_text = "hello world"
+        self.bb._last_text = same_text
+
+        with patch.object(self.bb, '_cursor_visual_pos_from_cache', return_value=(0, 5)):
+            r_cursor, cursor_col = self.bb.compute_cursor_position(
+                same_text, cursor_pos=5, h=30, w=80,
+            )
+
+        self.assertEqual(r_cursor, 28,
+                         "text == _last_text 时应返回正确位置")
+        self.assertEqual(cursor_col, 8,
+                         "光标列 = 3 + vis_col(5) = 8")
+
+    # ── 场景 5：补全弹窗可见时底部行数包含弹窗高度 ────────
+
+    def test_compute_bottom_lines_for_with_completion_popup(self):
+        """补全弹窗可见时 _compute_bottom_lines_for 应包含弹窗高度。"""
+        # 模拟补全弹窗占 6 行
+        self.bb._completion._visible = True
+        self.bb._completion._popup_height = 6
+
+        result = self.bb._compute_bottom_lines_for("test", 80)
+        # base = 3, return 2 + 0 + 3 + 6 = 11
+        self.assertEqual(result, 11,
+                         "补全弹窗 6 行时底部行数应为 11")
+
+    def test_compute_cursor_position_with_completion_popup(self):
+        """compute_cursor_position 在补全弹窗可见时应正确偏移光标行。"""
+        self.bb._completion._visible = True
+        self.bb._completion._popup_height = 4
+
+        with patch.object(self.bb, '_cursor_visual_pos_from_cache', return_value=(0, 0)):
+            r_cursor, _ = self.bb.compute_cursor_position(
+                "test", cursor_pos=0, h=30, w=80,
+            )
+
+        # total_bottom = max(5, 2 + 0 + 3 + 4) = 9
+        # r_cursor = max(1, 30 - 9 + 3 + 0 + 4 + 0) = 28
+        self.assertEqual(r_cursor, 28,
+                         "补全弹窗 4 行时 r_cursor 应正确偏移")
+
+    # ── 场景 6：_compute_bottom_lines_for 不产生副作用 ──────
+
+    def test_compute_bottom_lines_for_is_pure(self):
+        """_compute_bottom_lines_for 不修改实例状态（幂等性）。"""
+        # 记录调用前的关键状态
+        last_text_before = self.bb._last_text
+        subagent_before = list(self.bb._subagent_lines)
+        completion_height_before = self.bb._completion.height
+
+        # 多次调用
+        result1 = self.bb._compute_bottom_lines_for("hello", 80)
+        result2 = self.bb._compute_bottom_lines_for("world", 80)
+        result3 = self.bb._compute_bottom_lines_for("hello", 80)
+
+        # 验证返回值一致
+        self.assertEqual(result1, result3,
+                         "相同输入应返回相同结果（幂等）")
+        self.assertEqual(result1, 5)
+        self.assertEqual(result2, 5)
+
+        # 验证实例状态未被修改
+        self.assertEqual(self.bb._last_text, last_text_before,
+                         "_last_text 不应被修改")
+        self.assertEqual(list(self.bb._subagent_lines), subagent_before,
+                         "_subagent_lines 不应被修改")
+        self.assertEqual(self.bb._completion.height, completion_height_before,
+                         "_completion.height 不应被修改")
+
+    # ── 场景 7：subagent 面板行计入底部行数 ──────────────────
+
+    def test_compute_bottom_lines_for_with_subagent_lines(self):
+        """subagent 面板行应计入 _compute_bottom_lines_for 返回值。"""
+        self.bb._subagent_lines = ["line1", "line2", "line3"]
+
+        result = self.bb._compute_bottom_lines_for("test", 80)
+        # 2 + 3 + 3 + 0 = 8
+        self.assertEqual(result, 8,
+                         "3 行 subagent 面板时底部行数应为 8")
+
+    # ── 场景 8：极端终端宽度 ──────────────────────────────
+
+    def test_compute_bottom_lines_for_extreme_width(self):
+        """极端终端宽度（width=1）下 _compute_bottom_lines_for 应正常计算。"""
+        # term_width=1 → max_input = max(1, 1-4) = 1
+        # 每个字符一行
+        result = self.bb._compute_bottom_lines_for("abc", 1)
+        # expanded = "abc", wrapped in width=1 → ["a","b","c"], len=3
+        # base = max(3, 3) = 3, return 2 + 0 + 3 + 0 = 5
+        self.assertEqual(result, 5,
+                         "width=1 时应正常计算（每个字符一行，base=3）")
+
 
 class TestBottomBarFormatStatus(unittest.TestCase):
     """验证 _format_status() 在流式/非流式下的返回值。

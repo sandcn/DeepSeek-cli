@@ -63,6 +63,7 @@ from .theme import (
 from .cursor import (
     _compute_cursor_visual_pos,
     _expand_tabs,
+    _tab_pos_to_expanded,
     _wrap_by_width,
 )
 from .._cursor_tracker import CursorTracker
@@ -218,6 +219,30 @@ class _BottomBar(_StatusMixin):
             base = max(_MIN_INPUT_ROWS, len(wrapped))
         return base + self._completion.height
 
+    def _compute_bottom_lines_for(self, text: str, term_width: int) -> int:
+        """计算给定文本对应的底部栏总行数（纯计算方法）。
+
+        与 _compute_input_rows() 不同，本方法接受 text 参数而非访问 self._last_text，
+        用于 compute_cursor_position() 中确保 total_bottom 与视觉位置计算
+        （_cursor_visual_pos_from_cache）使用同一份数据源（传入的 text 参数），
+        避免 EscapeMonitor 线程并发更新 _last_text 导致的数据源不一致。
+
+        Args:
+            text: 输入文本（通常为 _last_rendered_text 渲染快照）
+            term_width: 终端宽度
+
+        Returns:
+            底部栏总行数（分隔线 + subagent面板 + 状态行 + 输入行 + 补全弹窗）
+        """
+        if not text:
+            base = _MIN_INPUT_ROWS
+        else:
+            max_input = max(1, term_width - 4)
+            expanded = _expand_tabs(text)
+            wrapped = _wrap_by_width(expanded, max_input)
+            base = max(_MIN_INPUT_ROWS, len(wrapped))
+        return 2 + len(self._subagent_lines) + base + self._completion.height
+
     # ── 终端尺寸查询（缓存版本，避免高频 ioctl） ──────────
 
     def _refresh_dimensions(self) -> None:
@@ -312,7 +337,7 @@ class _BottomBar(_StatusMixin):
 
         封装以下私有访问：
           - _cursor_visual_pos_from_cache(text, cursor_pos, max_width)
-          - _bottom_lines property（间接通过 _compute_input_rows 计算）
+          - _compute_bottom_lines_for(text, w)（基于传入 text 参数，确保与 visual_pos 数据源一致）
           - _completion_popup_height property
 
         供 RenderEngine.position_cursor() 使用。
@@ -329,7 +354,7 @@ class _BottomBar(_StatusMixin):
         """
         max_input = max(1, w - 4)
         vis_row, vis_col = self._cursor_visual_pos_from_cache(text, cursor_pos, max_input)
-        total_bottom = max(5, self._bottom_lines)  # 至少 2 分隔线+状态行 + 3 最少输入行
+        total_bottom = max(5, self._compute_bottom_lines_for(text, w))
         popup_offset = self._completion.height
         # ★ +3 跳过 分隔线(1) + 状态行(1) + 输入区起始偏移(1)，
         #   +len(_subagent_lines) 补偿分隔线与状态行之间的 subagent 面板行
