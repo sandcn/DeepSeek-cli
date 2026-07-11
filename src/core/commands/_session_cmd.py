@@ -6,7 +6,7 @@ from ..adapters.output import get_default_output_port
 from ..constants import GREEN, YELLOW, DIM, RESET, CYAN
 from ..context_selector import total_chars
 from ..sandbox_manager import get_sandbox_manager
-from ..internal.commands._command_core import register_command, CommandContext, _pop_assistant_tool_messages
+from ..internal.commands._command_core import CommandContext, _pop_assistant_tool_messages
 
 _out = get_default_output_port()
 
@@ -177,7 +177,10 @@ def _cmd_editmsg(ctx):
 
     设置 edit_msg 联络信号，让 app.py 执行异步编辑流程。
     """
-    from ...ui.msg_list import edit_current_messages as _edit_msgs
+    if ctx.ui_adapter is not None:
+        _edit_msgs = ctx.ui_adapter.edit_current_messages
+    else:
+        _edit_msgs = None
     ctx.edit_msg = {
         "handler": _edit_msgs,
         "model": ctx.state.get("model", ""),
@@ -186,17 +189,6 @@ def _cmd_editmsg(ctx):
     }
     return True
 
-
-# ── 注册会话命令 ──────────────────────────────────────
-register_command("/clear", _cmd_clear, "清空对话")
-register_command("/loop", _cmd_loop, "循环执行 N 次指定提词（每轮第1次用用户提词，第2次用固定提词\"继续完成所有\"）")
-register_command("/compress", _cmd_compress, "手动压缩上下文")
-register_command("/pin", _cmd_pin, "标记重要消息")
-register_command("/undo", _cmd_undo, "撤销上一轮对话")
-register_command("/retry", _cmd_retry, "重新生成上一条回答")
-register_command("/r", _cmd_retry, "重新生成上一条回答（/retry 的快捷方式）")
-register_command("/edit", _cmd_edit, "编辑并重新发送上一条输入")
-register_command("/editmsg", _cmd_editmsg, "编辑当前会话消息 (Ctrl+O)")
 
 
 # ── /changes 沙盒命令 ───────────────────────────────────
@@ -259,8 +251,10 @@ def _cmd_changes(ctx):
         if before == after:
             continue
 
-        from ...ui.diff_renderer import render_diff_to_ansi as _render_diff
-        diff_text = _render_diff(file_path, before or "", after or "")
+        if ctx.ui_adapter is not None:
+            diff_text = ctx.ui_adapter.render_diff_to_ansi(file_path, before or "", after or "")
+        else:
+            diff_text = None
         if not diff_text:
             _out.write(f"  {DIM}  (无差异内容){RESET}", level="raw", source="cmd")
         else:
@@ -271,10 +265,9 @@ def _cmd_changes(ctx):
     return True
 
 
-register_command("/changes", _cmd_changes, "显示文件沙盒中被改变文件的 diff（可加文件名过滤）")
-
-
 # ── CommandPlugin 子类 ──────────────────────────────
+# 命令通过 get_plugin_registry().register() 注册，不再使用 register_command()。
+# CommandPluginRegistry.register() 内部自动调用 register_command() 确保向后兼容。
 
 from .base import CommandPlugin, CommandMeta, get_plugin_registry
 

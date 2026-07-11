@@ -1,8 +1,12 @@
-"""测试 src/core/ports/null.py — Null Object 模式的空端口实现。"""
+"""测试 src/core/ports/null 空端口实现。
+
+注意：ports/null.py 已移除（僵尸端口清理），
+空端口实现在 adapters/null.py 中。
+"""
 
 from contextlib import nullcontext
 
-from src.core.ports.null import _NullOutputPort, _NullPort
+from src.core.adapters.null import _NullOutputPort, _NullPort
 
 
 # ── _NullPort ─────────────────────────────────────

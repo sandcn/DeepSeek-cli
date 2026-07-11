@@ -93,6 +93,7 @@ async def _handle_model_cmd(
         def _stream_input(default: str = "", show_prompt: bool = True) -> str:
             return default
 
+        from ..core.commands import CommandUiAdapter
         cmd_handled = await asyncio.to_thread(
             handle_command,
             content, session.messages, state_dict,
@@ -100,6 +101,7 @@ async def _handle_model_cmd(
             _stream_input,
             session.context_manager,
             session,
+            CommandUiAdapter(),
         )
         if cmd_handled:
             new_model = state_dict.get("model")

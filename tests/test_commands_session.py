@@ -140,7 +140,8 @@ _make_mock_module('src.core.sandbox_manager',
 class _MockCommandContext:
     """模拟 CommandContext，与真实实现保持相同 __slots__"""
     __slots__ = ('messages', 'state', 'arg', 'build_system_prompt',
-                 'get_user_input', 'context_manager', 'edit_msg', 'session')
+                 'get_user_input', 'context_manager', 'edit_msg', 'session',
+                 'ui_adapter')
 
     def __init__(self, messages, state, arg='',
                  build_system_prompt=None, get_user_input=None,
@@ -153,6 +154,7 @@ class _MockCommandContext:
         self.context_manager = context_manager
         self.edit_msg = None
         self.session = None
+        self.ui_adapter = None
 
 
 def _mock_register_command(name, handler, help_text=''):

@@ -62,19 +62,32 @@ _mock_stats.get_session_start_time = MagicMock()
 
 # -- core._command_core --
 _mock_cmd_core = MagicMock()
-_mock_cmd_core.register_command = MagicMock()
 _mock_cmd_core.CommandContext = MagicMock()
 _mock_cmd_core.show_cost = MagicMock()
 
 # -- 构建 mock 模块注册表 --
 _MOCK_MODULES = {
-    'src': MagicMock(),
-    'src.core': MagicMock(),
+    'src': types.ModuleType('src'),  # ModuleType 而非 MagicMock，使子包可解析
+    'src.core': types.ModuleType('src.core'),  # ModuleType 而非 MagicMock
     'src.core.ports': MagicMock(),
+    'src.core.ports.config': MagicMock(ConfigPort=MagicMock),
     'src.core.adapters': MagicMock(),
     'src.core.adapters.output': MagicMock(get_default_output_port=mock_get_default_output_port),
     'src.core.ports.output': MagicMock(get_default_output_port=mock_get_default_output_port),
-    'src.core.internal._command_core': _mock_cmd_core,
+    'src.core.constants': MagicMock(
+        GREEN='\x1b[32m', YELLOW='\x1b[33m', RED='\x1b[31m',
+        DIM='\x1b[2m', RESET='\x1b[0m', CYAN='\x1b[36m', TEAL='\x1b[36m',
+    ),
+    'src.core.internal.commands._command_core': _mock_cmd_core,
+    'src.config': _mock_config,
+    'src.core.commands.base': MagicMock(
+        CommandPlugin=type('CommandPlugin', (), {}),
+        CommandMeta=MagicMock(return_value=MagicMock(spec=['name', 'description'])),
+        get_plugin_registry=MagicMock(return_value=MagicMock(
+            register=MagicMock(),
+        )),
+        CommandPluginRegistry=MagicMock,
+    ),
     'src.config': _mock_config,
     'src.ui': MagicMock(),
     'src.ui.colors': _mock_colors,
@@ -94,7 +107,8 @@ _MOCK_MODULES = {
 # 重要：这些包不在 _MOCK_MODULES 中，以避免被下方的循环用 MagicMock 覆盖
 import types as _types
 _PACKAGE_MODULES: dict[str, object] = {}
-for _pkg in ('src', 'src.core', 'src.core.ports', 'src.core.adapters', 'src.core.commands', 'src.core.internal'):
+for _pkg in ('src', 'src.core', 'src.core.ports', 'src.core.adapters', 'src.core.commands', 'src.core.internal',
+             'src.core.internal.commands'):
     _pm = _types.ModuleType(_pkg)
     _pm.__path__ = []
     _pm.__package__ = _pkg
@@ -157,6 +171,8 @@ def _make_ctx(**kwargs):
     ctx.messages = kwargs.get('messages', None)
     ctx.get_user_input = kwargs.get('get_user_input', MagicMock(return_value=''))
     ctx.build_system_prompt = kwargs.get('build_system_prompt', MagicMock())
+    ctx.config_port = kwargs.get('config_port', None)
+    ctx.ui_adapter = kwargs.get('ui_adapter', None)
     return ctx
 
 
@@ -182,24 +198,24 @@ def reset_mocks():
 class TestCmdModel:
     """模型选择命令。"""
 
-    def _mock_bottom_bar(self, monkeypatch, action="confirmed", index=1):
-        """Mock run_bottom_bar_selection 返回指定结果。
+    def _make_adapter(self, action="confirmed", index=1):
+        """创建带有 mock run_bottom_bar_selection 的适配器。"""
+        adapter = MagicMock()
+        adapter.run_bottom_bar_selection.return_value = {"action": action, "index": index}
+        return adapter
 
-        通过 monkeypatch.setattr 直接修改模块对象的属性，
-        sys.modules 清理后仍有效（_cmd_model.__globals__ 持有模块 dict 引用）。
-        注：commands_config 中 run_bottom_bar_selection 是从 _bottom_bar 导入的，
-        monkeypatch 修改 _mod 的属性即可拦截 _cmd_model 中的调用。
-        """
-        from unittest.mock import MagicMock
-        mock_select = MagicMock(return_value={"action": action, "index": index})
-        monkeypatch.setattr(_mod, 'run_bottom_bar_selection', mock_select)
-        return mock_select
+    def _config_port(self):
+        """创建带测试模型的 ConfigPort mock。"""
+        cp = MagicMock()
+        cp.get_models.return_value = ['gpt-4o', 'gpt-4o-mini', 'claude-3.5-sonnet']
+        cp.get_model.return_value = 'gpt-4o'
+        return cp
 
-    def test_select_valid_model(self, monkeypatch):
+    def test_select_valid_model(self):
         """底部栏选择 #1 (gpt-4o-mini) 时更新 state['model']。"""
-        self._mock_bottom_bar(monkeypatch, action="confirmed", index=1)
+        adapter = self._make_adapter(action="confirmed", index=1)
         state = {"model": "gpt-4o"}
-        ctx = _make_ctx(state=state)
+        ctx = _make_ctx(state=state, ui_adapter=adapter, config_port=self._config_port())
 
         result = _cmd_model(ctx)
 
@@ -210,33 +226,33 @@ class TestCmdModel:
             level="raw", source="cmd",
         )
 
-    def test_select_last_model(self, monkeypatch):
+    def test_select_last_model(self):
         """选择最后一个模型 (index=2 → claude-3.5-sonnet)。"""
-        self._mock_bottom_bar(monkeypatch, action="confirmed", index=2)
+        adapter = self._make_adapter(action="confirmed", index=2)
         state = {"model": "gpt-4o"}
-        ctx = _make_ctx(state=state)
+        ctx = _make_ctx(state=state, ui_adapter=adapter, config_port=self._config_port())
 
         result = _cmd_model(ctx)
 
         assert result is True
         assert ctx.state["model"] == "claude-3.5-sonnet"
 
-    def test_select_first_model(self, monkeypatch):
+    def test_select_first_model(self):
         """选择第一个模型 (index=0 → gpt-4o)。"""
-        self._mock_bottom_bar(monkeypatch, action="confirmed", index=0)
+        adapter = self._make_adapter(action="confirmed", index=0)
         state = {"model": "claude-3.5-sonnet"}
-        ctx = _make_ctx(state=state)
+        ctx = _make_ctx(state=state, ui_adapter=adapter, config_port=self._config_port())
 
         result = _cmd_model(ctx)
 
         assert result is True
         assert ctx.state["model"] == "gpt-4o"
 
-    def test_select_same_model(self, monkeypatch):
+    def test_select_same_model(self):
         """选择当前模型时提示不变。"""
-        self._mock_bottom_bar(monkeypatch, action="confirmed", index=0)
+        adapter = self._make_adapter(action="confirmed", index=0)
         state = {"model": "gpt-4o"}
-        ctx = _make_ctx(state=state)
+        ctx = _make_ctx(state=state, ui_adapter=adapter, config_port=self._config_port())
 
         result = _cmd_model(ctx)
 
@@ -247,11 +263,11 @@ class TestCmdModel:
             level="raw", source="cmd",
         )
 
-    def test_select_cancel(self, monkeypatch):
+    def test_select_cancel(self):
         """取消时不切换。"""
-        self._mock_bottom_bar(monkeypatch, action="cancel", index=None)
+        adapter = self._make_adapter(action="cancel", index=None)
         state = {"model": "gpt-4o"}
-        ctx = _make_ctx(state=state)
+        ctx = _make_ctx(state=state, ui_adapter=adapter, config_port=self._config_port())
 
         result = _cmd_model(ctx)
 
@@ -262,11 +278,11 @@ class TestCmdModel:
             level="raw", source="cmd",
         )
 
-    def test_select_error_fallback(self, monkeypatch):
+    def test_select_error_fallback(self):
         """底部栏不可用时回退到文本提示。"""
-        self._mock_bottom_bar(monkeypatch, action="error", index=None)
+        adapter = self._make_adapter(action="error", index=None)
         state = {"model": "gpt-4o"}
-        ctx = _make_ctx(state=state)
+        ctx = _make_ctx(state=state, ui_adapter=adapter, config_port=self._config_port())
 
         result = _cmd_model(ctx)
 
@@ -277,11 +293,25 @@ class TestCmdModel:
             level="raw", source="cmd",
         )
 
-    def test_no_state_model_fallback_default(self, monkeypatch):
-        """state 中没有 model 键时使用 config.MODEL 作为当前模型。"""
-        self._mock_bottom_bar(monkeypatch, action="confirmed", index=1)
+    def test_select_no_adapter_fallback(self):
+        """无适配器时回退到文本提示。"""
+        state = {"model": "gpt-4o"}
+        ctx = _make_ctx(state=state, ui_adapter=None, config_port=self._config_port())
+
+        result = _cmd_model(ctx)
+
+        assert result is True
+        assert ctx.state["model"] == "gpt-4o"  # 不变
+        mock_out.write.assert_any_call(
+            '\x1b[33m  ! 底部栏不可用，请直接指定模型名称\x1b[0m',
+            level="raw", source="cmd",
+        )
+
+    def test_no_state_model_fallback_default(self):
+        """state 中没有 model 键时使用 config_port 的默认模型。"""
+        adapter = self._make_adapter(action="confirmed", index=1)
         state = {}
-        ctx = _make_ctx(state=state)
+        ctx = _make_ctx(state=state, ui_adapter=adapter, config_port=self._config_port())
 
         result = _cmd_model(ctx)
 
@@ -290,8 +320,11 @@ class TestCmdModel:
 
     def test_direct_param_by_number(self):
         """直接参数 /model 2 按序号切换。"""
+        config_port = MagicMock()
+        config_port.get_models.return_value = ['gpt-4o', 'gpt-4o-mini', 'claude-3.5-sonnet']
+        config_port.get_model.return_value = 'gpt-4o'
         state = {"model": "gpt-4o"}
-        ctx = _make_ctx(state=state, arg="2")
+        ctx = _make_ctx(state=state, arg="2", config_port=config_port)
 
         result = _cmd_model(ctx)
 
@@ -300,8 +333,11 @@ class TestCmdModel:
 
     def test_direct_param_by_name(self):
         """直接参数 /model gpt-4o-mini 按名称切换。"""
+        config_port = MagicMock()
+        config_port.get_models.return_value = ['gpt-4o', 'gpt-4o-mini', 'claude-3.5-sonnet']
+        config_port.get_model.return_value = 'gpt-4o'
         state = {"model": "gpt-4o"}
-        ctx = _make_ctx(state=state, arg="gpt-4o-mini")
+        ctx = _make_ctx(state=state, arg="gpt-4o-mini", config_port=config_port)
 
         result = _cmd_model(ctx)
 
@@ -310,8 +346,11 @@ class TestCmdModel:
 
     def test_direct_param_invalid_number(self):
         """直接参数无效序号显示错误。"""
+        config_port = MagicMock()
+        config_port.get_models.return_value = ['gpt-4o', 'gpt-4o-mini', 'claude-3.5-sonnet']
+        config_port.get_model.return_value = 'gpt-4o'
         state = {"model": "gpt-4o"}
-        ctx = _make_ctx(state=state, arg="99")
+        ctx = _make_ctx(state=state, arg="99", config_port=config_port)
 
         result = _cmd_model(ctx)
 
@@ -324,8 +363,11 @@ class TestCmdModel:
 
     def test_direct_param_not_found(self):
         """直接参数未知模型名显示错误。"""
+        config_port = MagicMock()
+        config_port.get_models.return_value = ['gpt-4o', 'gpt-4o-mini', 'claude-3.5-sonnet']
+        config_port.get_model.return_value = 'gpt-4o'
         state = {"model": "gpt-4o"}
-        ctx = _make_ctx(state=state, arg="unknown-model")
+        ctx = _make_ctx(state=state, arg="unknown-model", config_port=config_port)
 
         result = _cmd_model(ctx)
 
@@ -583,16 +625,25 @@ class TestCmdTheme:
         ("high-contrast", "高对比度主题"),
     ]
 
+    def _make_adapter(self, themes=None, active="dark"):
+        """创建带有 mock 主题方法的适配器。"""
+        adapter = MagicMock()
+        adapter.get_theme_names_with_desc.return_value = themes or self._THEMES
+        adapter.get_active_theme.return_value = active
+        adapter.set_theme = MagicMock()
+        return adapter
+
     def test_switch_valid_theme(self):
         """有效主题名称时切换并保存配置。"""
-        _mock_theme.get_theme_names_with_desc.return_value = self._THEMES
-        ctx = _make_ctx(arg="light")
+        adapter = self._make_adapter()
+        config_port = MagicMock()
+        ctx = _make_ctx(arg="light", ui_adapter=adapter, config_port=config_port)
 
         result = _cmd_theme(ctx)
 
         assert result is True
-        _mock_theme.set_theme.assert_called_once_with("light")
-        _mock_config.update_config.assert_called_once_with("theme", "light")
+        adapter.set_theme.assert_called_once_with("light")
+        config_port.set.assert_called_once_with("theme", "light")
         # 验证输出切换确认消息
         mock_out.write.assert_any_call(
             '\x1b[32m  + 已切换到主题「light」(浅色主题)\x1b[0m',
@@ -601,36 +652,37 @@ class TestCmdTheme:
 
     def test_switch_dark_theme(self):
         """切换到 dark 主题。"""
-        _mock_theme.get_theme_names_with_desc.return_value = self._THEMES
-        ctx = _make_ctx(arg="dark")
+        adapter = self._make_adapter()
+        config_port = MagicMock()
+        ctx = _make_ctx(arg="dark", ui_adapter=adapter, config_port=config_port)
 
         result = _cmd_theme(ctx)
 
         assert result is True
-        _mock_theme.set_theme.assert_called_once_with("dark")
-        _mock_config.update_config.assert_called_once_with("theme", "dark")
+        adapter.set_theme.assert_called_once_with("dark")
+        config_port.set.assert_called_once_with("theme", "dark")
 
     def test_switch_high_contrast_theme(self):
         """切换到 high-contrast 主题。"""
-        _mock_theme.get_theme_names_with_desc.return_value = self._THEMES
-        ctx = _make_ctx(arg="high-contrast")
+        adapter = self._make_adapter()
+        config_port = MagicMock()
+        ctx = _make_ctx(arg="high-contrast", ui_adapter=adapter, config_port=config_port)
 
         result = _cmd_theme(ctx)
 
         assert result is True
-        _mock_theme.set_theme.assert_called_once_with("high-contrast")
-        _mock_config.update_config.assert_called_once_with("theme", "high-contrast")
+        adapter.set_theme.assert_called_once_with("high-contrast")
+        config_port.set.assert_called_once_with("theme", "high-contrast")
 
     def test_switch_unknown_theme(self):
         """未知主题名称时显示错误和可用主题列表。"""
-        _mock_theme.get_theme_names_with_desc.return_value = self._THEMES
-        ctx = _make_ctx(arg="unknown_theme")
+        adapter = self._make_adapter()
+        ctx = _make_ctx(arg="unknown_theme", ui_adapter=adapter)
 
         result = _cmd_theme(ctx)
 
         assert result is True
-        _mock_theme.set_theme.assert_not_called()
-        _mock_config.update_config.assert_not_called()
+        adapter.set_theme.assert_not_called()
         # 应输出错误信息
         mock_out.write.assert_any_call(
             '\x1b[33m  ! 未知主题: unknown_theme\x1b[0m',
@@ -645,15 +697,13 @@ class TestCmdTheme:
 
     def test_no_arg_shows_current_theme(self):
         """无参数时显示当前主题和可用主题列表。"""
-        _mock_theme.get_theme_names_with_desc.return_value = self._THEMES
-        _mock_theme.get_active_theme.return_value = "dark"
-        ctx = _make_ctx(arg="")
+        adapter = self._make_adapter(active="dark")
+        ctx = _make_ctx(arg="", ui_adapter=adapter)
 
         result = _cmd_theme(ctx)
 
         assert result is True
-        _mock_theme.set_theme.assert_not_called()
-        _mock_config.update_config.assert_not_called()
+        adapter.set_theme.assert_not_called()
         # 应输出当前主题
         mock_out.write.assert_any_call(
             '  \x1b[2m\u2502\x1b[0m 当前: \x1b[36mdark\x1b[0m',
@@ -667,9 +717,8 @@ class TestCmdTheme:
 
     def test_no_arg_current_theme_marked(self):
         """无参数时当前主题在列表中带 <- 标记。"""
-        _mock_theme.get_theme_names_with_desc.return_value = self._THEMES
-        _mock_theme.get_active_theme.return_value = "dark"
-        ctx = _make_ctx(arg="")
+        adapter = self._make_adapter(active="dark")
+        ctx = _make_ctx(arg="", ui_adapter=adapter)
 
         _cmd_theme(ctx)
 
@@ -682,25 +731,37 @@ class TestCmdTheme:
 
     def test_switch_theme_with_trailing_spaces(self):
         """arg 带有前后空格时仍能匹配（arg.strip() 处理）。"""
-        _mock_theme.get_theme_names_with_desc.return_value = self._THEMES
-        ctx = _make_ctx(arg="  light  ")
+        adapter = self._make_adapter()
+        config_port = MagicMock()
+        ctx = _make_ctx(arg="  light  ", ui_adapter=adapter, config_port=config_port)
 
         result = _cmd_theme(ctx)
 
         assert result is True
-        _mock_theme.set_theme.assert_called_once_with("light")
-        _mock_config.update_config.assert_called_once_with("theme", "light")
+        adapter.set_theme.assert_called_once_with("light")
+        config_port.set.assert_called_once_with("theme", "light")
 
     def test_switch_theme_case_sensitive(self):
         """主题名称大小写敏感：'Dark' 不同于 'dark'。"""
-        _mock_theme.get_theme_names_with_desc.return_value = self._THEMES
-        ctx = _make_ctx(arg="Dark")
+        adapter = self._make_adapter()
+        ctx = _make_ctx(arg="Dark", ui_adapter=adapter)
 
         result = _cmd_theme(ctx)
 
         assert result is True
-        _mock_theme.set_theme.assert_not_called()
-        _mock_config.update_config.assert_not_called()
+        adapter.set_theme.assert_not_called()
+
+    def test_no_adapter_fallback(self):
+        """无适配器时显示主题管理不可用。"""
+        ctx = _make_ctx(arg="", ui_adapter=None)
+
+        result = _cmd_theme(ctx)
+
+        assert result is True
+        mock_out.write.assert_any_call(
+            '\x1b[33m  ! 主题管理不可用（无 UI 上下文）\x1b[0m',
+            level="raw", source="cmd",
+        )
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -708,53 +769,16 @@ class TestCmdTheme:
 # ═══════════════════════════════════════════════════════════════════════════
 
 class TestCommandRegistration:
-    """验证模块加载时注册了正确的命令。"""
+    """验证命令注册方式。
 
-    def test_all_commands_registered(self):
-        """模块加载时调用了 register_command 注册所有四个命令。"""
-        # 在模块加载时 register_command 被调用了 4 次
-        assert _mock_cmd_core.register_command.call_count == 4
+    注意：命令现在通过 get_plugin_registry().register(CommandPlugin())
+    注册，不再直接调用 register_command()。CommandPluginRegistry.register()
+    内部会自动调用 register_command() 做向后兼容，但此测试中
+    _mock_cmd_core.register_command 是 MagicMock 且不在插件注册路径中，
+    因此 call_count 为 0。
+    """
 
-    def test_model_command_registered(self):
-        """注册了 /model 命令。"""
-        calls = _mock_cmd_core.register_command.call_args_list
-        found = any(
-            args[0] == '/model'
-            for args, _ in calls
-        )
-        assert found
-
-    def test_system_command_registered(self):
-        """注册了 /system 命令。"""
-        calls = _mock_cmd_core.register_command.call_args_list
-        found = any(
-            args[0] == '/system'
-            for args, _ in calls
-        )
-        assert found
-
-    def test_cost_command_registered(self):
-        """注册了 /cost 命令。"""
-        calls = _mock_cmd_core.register_command.call_args_list
-        found = any(
-            args[0] == '/cost'
-            for args, _ in calls
-        )
-        assert found
-
-    def test_theme_command_registered(self):
-        """注册了 /theme 命令。"""
-        calls = _mock_cmd_core.register_command.call_args_list
-        found = any(
-            args[0] == '/theme'
-            for args, _ in calls
-        )
-        assert found
-
-    def test_registration_has_handler_and_help(self):
-        """每个注册项包含 handler 和 help_text。"""
-        calls = _mock_cmd_core.register_command.call_args_list
-        for args, _ in calls:
-            assert len(args) == 3  # (name, handler, help_text)
-            assert callable(args[1])    # handler 是可调用的
-            assert isinstance(args[2], str)  # help_text 是字符串
+    def test_register_command_not_called_from_module(self):
+        """模块加载时不再直接调用 register_command。"""
+        # 注册由 CommandPluginRegistry 内部完成，模块级不直接调用
+        assert _mock_cmd_core.register_command.call_count == 0

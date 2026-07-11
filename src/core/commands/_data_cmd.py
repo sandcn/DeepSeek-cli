@@ -7,7 +7,7 @@ from ...config import MODEL
 from ...api.model_async import call_model_sync
 from ...prompt_builder.project_summary import generate_summary_prompt
 from ..sandbox_manager import get_sandbox_manager
-from ..internal.commands._command_core import register_command, CommandContext
+from ..internal.commands._command_core import CommandContext
 
 _out = get_default_output_port()
 
@@ -102,9 +102,9 @@ def _cmd_load(ctx):
     _out.write(f"{GREEN}  + 已加载会话 {title_info}{arg} ({len(loaded_msgs)} 条消息, 模型: {model}){RESET}", level="raw", source="cmd")
 
     # 显示恢复的消息摘要（用项目流式渲染器回放）
-    from ...ui.tui._message_display import _display_messages
     non_system = filter_non_system(ctx.messages)
-    _display_messages(non_system, speed=1000)
+    if ctx.ui_adapter is not None:
+        ctx.ui_adapter.display_messages(non_system, speed=1000)
 
     # 检查最后一条消息角色
     if ctx.messages and ctx.messages[-1].get("role") in ("assistant", "tool"):
@@ -137,13 +137,9 @@ def _cmd_sessions(ctx):
     return True
 
 
-# ── 注册数据命令 ──────────────────────────────────────
-register_command("/init", _cmd_init, "生成项目摘要文件")
-register_command("/load", _cmd_load, "加载保存的对话")
-register_command("/sessions", _cmd_sessions, "列出所有保存的对话")
-
-
 # ── CommandPlugin 子类 ──────────────────────────────
+# 命令通过 get_plugin_registry().register() 注册，不再使用 register_command()。
+# CommandPluginRegistry.register() 内部自动调用 register_command() 确保向后兼容。
 
 from .base import CommandPlugin, CommandMeta, get_plugin_registry
 

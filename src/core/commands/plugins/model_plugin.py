@@ -66,6 +66,8 @@ class ModelPlugin(InteractiveCommandPlugin):
                 def _stream_input(default: str = "", show_prompt: bool = True) -> str:
                     return default
 
+                from ...commands import CommandUiAdapter
+                _ui_adapter = CommandUiAdapter()
                 cmd_handled = await asyncio.to_thread(
                     handle_command,
                     "/model", session.messages, state,
@@ -73,6 +75,7 @@ class ModelPlugin(InteractiveCommandPlugin):
                     _stream_input,
                     session.context_manager,
                     session,
+                    _ui_adapter,
                 )
                 if cmd_handled:
                     new_model = state.get("model")
@@ -88,6 +91,8 @@ class ModelPlugin(InteractiveCommandPlugin):
             def _stream_input(default: str = "", show_prompt: bool = True) -> str:
                 return chat_ui.wait_for_user_input(monitor, prefill=default) if chat_ui else default
 
+            from ...commands import CommandUiAdapter
+            _ui_adapter = CommandUiAdapter()
             cmd_handled = await asyncio.to_thread(
                 handle_command,
                 f"/model {ctx.arg}", session.messages, state,
@@ -95,6 +100,7 @@ class ModelPlugin(InteractiveCommandPlugin):
                 _stream_input,
                 session.context_manager,
                 session,
+                _ui_adapter,
             )
             if cmd_handled:
                 new_model = state.get("model")

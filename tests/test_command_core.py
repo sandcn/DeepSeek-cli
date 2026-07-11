@@ -418,7 +418,8 @@ class TestCommandContext:
         """所有 __slots__ 中定义的属性都可访问"""
         ctx = CommandContext(**ctx_kwargs)
         for attr in ("messages", "state", "arg", "build_system_prompt",
-                     "get_user_input", "context_manager", "edit_msg"):
+                     "get_user_input", "context_manager", "edit_msg",
+                     "ui_adapter"):
             assert hasattr(ctx, attr)
 
     def test_context_manager_none(self):

@@ -2,7 +2,7 @@
 
 from ..constants import GREEN, YELLOW, DIM, RESET, CYAN
 from ..adapters.output import get_default_output_port
-from ..internal.commands._command_core import register_command, CommandContext, show_cost
+from ..internal.commands._command_core import CommandContext, show_cost
 
 _out = get_default_output_port()
 
@@ -64,8 +64,12 @@ def _cmd_model(ctx):
         marker = "  <-当前" if m == current else ""
         display_items.append(f"{m}{marker}")
 
-    from ...ui._bottom_bar import run_bottom_bar_selection as _bottom_bar_select
-    result = _bottom_bar_select(models, display_items, current_idx, title="模型选择")
+    if ctx.ui_adapter is not None:
+        result = ctx.ui_adapter.run_bottom_bar_selection(
+            models, display_items, current_idx, title="模型选择",
+        )
+    else:
+        result = {"action": "error", "index": None}
 
     if result["action"] == "confirmed" and result["index"] is not None:
         selected = models[result["index"]]
@@ -142,20 +146,20 @@ def _cmd_theme(ctx):
     """切换 UI 配色主题"""
     arg = ctx.arg.strip()
 
-    from ...ui.theme import get_theme_names_with_desc, get_active_theme, set_theme as _set_theme
-
-    themes = get_theme_names_with_desc()
+    if ctx.ui_adapter is not None:
+        themes = ctx.ui_adapter.get_theme_names_with_desc()
+        current = ctx.ui_adapter.get_active_theme()
+    else:
+        _out.write(f"{YELLOW}  ! 主题管理不可用（无 UI 上下文）{RESET}", level="raw", source="cmd")
+        return True
 
     if arg:
         # 直接参数切换：/theme dark
         for name, desc in themes:
             if arg == name:
-                _set_theme(name)
+                ctx.ui_adapter.set_theme(name)
                 if ctx.config_port is not None:
                     ctx.config_port.set("theme", name)
-                else:
-                    from ...config import update_config  # 配置常量 — 函数体内延迟导入（回退）
-                    update_config("theme", name)
                 _out.write(f"{GREEN}  + 已切换到主题「{name}」({desc}){RESET}", level="raw", source="cmd")
                 return True
         _out.write(f"{YELLOW}  ! 未知主题: {arg}{RESET}", level="raw", source="cmd")
@@ -163,7 +167,6 @@ def _cmd_theme(ctx):
         return True
 
     # 无参数：显示当前主题 + 可选列表
-    current = get_active_theme()
     _out.write(f"\n{DIM}  \u2500 配色主题{RESET}", level="raw", source="cmd")
     _out.write(f"  {DIM}\u2502{RESET} 当前: {CYAN}{current}{RESET}", level="raw", source="cmd")
     _out.write(f"  {DIM}\u2502{RESET} 可用:", level="raw", source="cmd")
@@ -175,14 +178,9 @@ def _cmd_theme(ctx):
     return True
 
 
-# ── 注册配置命令 ──────────────────────────────────────
-register_command("/model", _cmd_model, "切换模型")
-register_command("/system", _cmd_system, "修改系统提示词")
-register_command("/cost", _cmd_cost, "查看 token 用量和费用")
-register_command("/theme", _cmd_theme, "切换配色主题: /theme <dark|light|high-contrast>")
-
-
 # ── CommandPlugin 子类 ──────────────────────────────
+# 命令通过 get_plugin_registry().register() 注册，不再使用 register_command()。
+# CommandPluginRegistry.register() 内部自动调用 register_command() 确保向后兼容。
 
 from .base import CommandPlugin, CommandMeta, get_plugin_registry
 

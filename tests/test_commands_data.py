@@ -130,7 +130,7 @@ def reset_mocks():
             del sys.modules[mod_name]
 
 
-def _make_ctx(messages=None, state=None, arg='', get_user_input=None):
+def _make_ctx(messages=None, state=None, arg='', get_user_input=None, ui_adapter=None):
     """工厂方法：创建 CommandContext 的简易替代品"""
     ctx = MagicMock()
     ctx.messages = messages or []
@@ -138,6 +138,8 @@ def _make_ctx(messages=None, state=None, arg='', get_user_input=None):
     ctx.arg = arg
     ctx.get_user_input = get_user_input or (lambda prompt: '')
     ctx.persistence_port = None  # 无端口注入时回退到直接导入
+    ctx.config_port = None
+    ctx.ui_adapter = ui_adapter
     return ctx
 
 

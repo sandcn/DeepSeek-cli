@@ -607,7 +607,6 @@ ChatUIConsumer
 | `InterruptPort` | `ports/interrupt.py` | 中断信号检查 |
 | `ToolRegistryPort` | `ports/tool_registry.py` | 工具注册表访问 |
 | `PromptBuilderPort` | `ports/prompt_builder.py` | 系统提示词构建 |
-| `RenderPort` | `ports/render.py` | 增量 Markdown 渲染引擎 |
 | `HttpClientPort` | `ports/http.py` | HTTP 客户端 |
 
 **设计原则**：所有端口均为 Protocol 或抽象基类，核心层仅依赖端口接口，不感知具体实现。测试时可通过 Mock 适配器替换基础设施，实现核心逻辑的独立单元测试。

@@ -257,12 +257,15 @@ class InteractiveLoop:
                 plugin.bind_loop(self)
             state_dict = {"model": state.model, "retry": False, "prefill": ""}
             arg = content.split(maxsplit=1)[1] if len(content.split(maxsplit=1)) > 1 else ""
+            from ..core.commands import CommandUiAdapter
+            _ui_adapter = CommandUiAdapter()
             ctx = CommandContext(
                 messages=session.messages, state=state_dict, arg=arg,
                 build_system_prompt=session.agent.build_system_prompt,
                 get_user_input=lambda prompt="": self._chat_ui.wait_for_user_input(self._monitor, prefill=prompt),
                 context_manager=session.context_manager,
                 session=session,
+                ui_adapter=_ui_adapter,
             )
             handled = await plugin.async_execute(ctx)
             if handled:

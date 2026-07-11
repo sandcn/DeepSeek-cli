@@ -58,6 +58,8 @@ from ._data_cmd import (
     HelpCommand,
 )
 
+from ._ui_adapter import CommandUiAdapter
+
 from .base import (
     CommandPlugin,
     CommandMeta,
@@ -73,6 +75,8 @@ __all__ = [
     "CommandContext",
     "get_registered_command_names",
     "COMMANDS_HELP",
+    # UI 适配器
+    "CommandUiAdapter",
     # 插件化新增
     "CommandPlugin",
     "CommandMeta",

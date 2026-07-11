@@ -20,8 +20,20 @@ def register_command(name, handler, help_text=""):
     _commands[name] = {"handler": handler, "help": help_text}
 
 
-def handle_command(cmd, messages, state, build_system_prompt, get_user_input, context_manager=None, session=None, config_port=None):
-    """处理 / 开头的指令，返回 True 表示已处理。"""
+def handle_command(cmd, messages, state, build_system_prompt, get_user_input, context_manager=None, session=None, config_port=None, ui_adapter=None):
+    """处理 / 开头的指令，返回 True 表示已处理。
+
+    Args:
+        cmd: 命令字符串（含 /）
+        messages: 消息列表
+        state: 状态字典
+        build_system_prompt: 构建系统提示词的函数
+        get_user_input: 获取用户输入的函数
+        context_manager: 上下文管理器
+        session: ChatSession 实例
+        config_port: ConfigPort 实例
+        ui_adapter: CommandUiAdapter 实例（用于 UI 交互操作）
+    """
     parts = cmd.split(maxsplit=1)
     command = parts[0].lower()
     arg = parts[1].strip() if len(parts) > 1 else ""
@@ -41,6 +53,7 @@ def handle_command(cmd, messages, state, build_system_prompt, get_user_input, co
             session=session,
             persistence_port=persistence_port,
             config_port=config_port,
+            ui_adapter=ui_adapter,
         )
         return _commands[command]["handler"](ctx)
 
@@ -60,6 +73,7 @@ class CommandContext:
     persistence_port: object | None = None  # PersistencePort，供数据命令走端口而非直连 chat_msgs
     config_port: object | None = None  # ConfigPort，供 show_cost 等走端口读配置而非直连 config 模块
     edit_msg: dict | None = None  # /editmsg 联络信号: dict 或 None
+    ui_adapter: object | None = None  # CommandUiAdapter 实例，供 UI 交互操作（底部栏/主题/diff 渲染等）
 
 
 # ── 帮助文本 ──────────────────────────────────────────
@@ -174,4 +188,4 @@ def _cmd_help(ctx):
     return True
 
 
-register_command("/help", _cmd_help, "显示帮助")
+# /help 命令通过 HelpCommand 插件注册（在 _data_cmd.py 中），此处不再重复注册。

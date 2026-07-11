@@ -41,7 +41,7 @@ from ..core.ports import PersistencePort, CheckpointPort, ConfigPort
 from ..core.ports.observability import ObservabilityPort
 from ..core.adapters.config import DefaultConfigAdapter
 from ..core.adapters.observability import DefaultObservabilityAdapter
-from ..core.ports.null import _NullPort, _NullOutputPort  # noqa: F401 — re-exported
+from ..core.adapters.null import _NullPort, _NullOutputPort  # noqa: F401 — re-exported
 from .internal.session._session_messages import add_message, non_system_messages, system_messages
 from .internal.session._session_state import SessionState as _SessionData
 from .internal.session._session_compression import _validate_compress_preconditions
