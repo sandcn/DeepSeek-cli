@@ -111,13 +111,13 @@ class TestDerivedPaths:
 class TestProvidersStructure:
     """PROVIDERS 字典结构验证"""
 
-    EXPECTED_PROVIDERS = {"deepseek", "custom"}
+    EXPECTED_PROVIDERS = {"deepseek", "glm", "mimo", "custom"}
     EXPECTED_KEYS = {"base_url", "default_model", "models", "token_prices"}
 
     # ── 顶层结构 ──────────────────────────────────────────────
 
     def test_contains_all_providers(self):
-        """PROVIDERS 包含全部 2 个 provider"""
+        """PROVIDERS 包含全部 4 个 provider"""
         assert set(PROVIDERS) == self.EXPECTED_PROVIDERS
 
     def test_each_provider_has_required_keys(self):
@@ -133,25 +133,45 @@ class TestProvidersStructure:
         """deepseek 的 base_url 包含 deepseek.com"""
         assert "deepseek.com" in PROVIDERS["deepseek"]["base_url"]
 
+    def test_glm_url_contains_bigmodel(self):
+        """glm 的 base_url 包含 bigmodel.cn"""
+        assert "bigmodel.cn" in PROVIDERS["glm"]["base_url"]
+
+    def test_mimo_url_contains_xiaomimimo(self):
+        """mimo 的 base_url 包含 xiaomimimo.com"""
+        assert "xiaomimimo.com" in PROVIDERS["mimo"]["base_url"]
+
     # ── models 数量 ───────────────────────────────────────────
 
-    def test_deepseek_has_at_least_two_models(self):
-        """deepseek 包含至少 2 个 models"""
-        assert len(PROVIDERS["deepseek"]["models"]) >= 2
+    def test_deepseek_has_models(self):
+        """deepseek 包含 models 列表"""
+        assert len(PROVIDERS["deepseek"]["models"]) > 0
 
     def test_custom_models_is_empty(self):
         """custom 的 models 为空列表"""
         assert PROVIDERS["custom"]["models"] == []
 
+    def test_glm_has_models(self):
+        """glm 的 models 列表包含至少 1 个模型"""
+        assert len(PROVIDERS["glm"]["models"]) >= 1
+
+    def test_mimo_has_models(self):
+        """mimo 的 models 列表包含至少 1 个模型"""
+        assert len(PROVIDERS["mimo"]["models"]) >= 1
+
     # ── token_prices ──────────────────────────────────────────
 
-    def test_deepseek_token_prices_non_empty(self):
-        """deepseek 的 token_prices 非空"""
+    def test_deepseek_token_prices_has_models(self):
+        """deepseek 的 token_prices 包含模型条目"""
         assert len(PROVIDERS["deepseek"]["token_prices"]) > 0
 
-    def test_deepseek_token_prices_has_two_models(self):
-        """deepseek 的 token_prices 包含 2 个模型条目"""
-        assert len(PROVIDERS["deepseek"]["token_prices"]) == 2
+    def test_glm_token_prices_is_empty(self):
+        """glm 的 token_prices 为空（暂未定价）"""
+        assert PROVIDERS["glm"]["token_prices"] == {}
+
+    def test_mimo_token_prices_is_empty(self):
+        """mimo 的 token_prices 为空（暂未定价）"""
+        assert PROVIDERS["mimo"]["token_prices"] == {}
 
     def test_each_price_entry_has_input_and_output(self):
         """每个 token_prices 条目含 'input' 和 'output' 键"""

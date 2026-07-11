@@ -25,6 +25,24 @@ PROVIDERS = {
         "default_model": "",
         "models": [],
         "token_prices": {}
+    },
+    "glm": {
+        "base_url": "https://open.bigmodel.cn/api/paas/v4/chat/completions",
+        "default_model": "glm-4-flash",
+        "models": [
+            "glm-4-plus", "glm-4", "glm-4-flash",
+            "glm-4v-plus", "glm-4v", "glm-4v-flash",
+            "glm-4-air", "glm-4-airx", "glm-4-long",
+        ],
+        "token_prices": {}
+    },
+    "mimo": {
+        "base_url": "https://token-plan-cn.xiaomimimo.com/v1/chat/completions",
+        "default_model": "mimo-v2.5-pro",
+        "models": [
+            "mimo-v2.5-pro", "mimo-v2.5",
+        ],
+        "token_prices": {}
     }
 }
 
