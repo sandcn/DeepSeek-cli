@@ -7,7 +7,7 @@ from .internal.agent._capture_manager import CaptureManager
 from .base_agent import BaseAgent
 from .internal.agent._tool_callbacks import ToolCallbackChain
 from .pipeline import Pipeline, PipelineContext
-from .tool_executor_async import AsyncToolExecutor
+from .tool_executor_async import ToolScheduler
 from ..tools.registry import ToolRegistry
 from ..core.ports import ConfigPort
 from ..core.adapters.prompt_builder import DefaultPromptBuilderAdapter
@@ -82,7 +82,8 @@ class Agent(BaseAgent):
         # ── ToolRegistry 包装 ─────────────────────────
         self._tool_registry_port: ToolRegistry = _ToolRegistryAdapter(self._registry)
 
-        self._async_tool_executor = AsyncToolExecutor(self._registry)
+        # _async_tool_executor: 向后兼容别名，实际指向 ToolScheduler 全局单例
+        self._async_tool_executor = ToolScheduler.default()
 
         # ── UI Ports（display/events/output） ────────────
         if display_port is not None and event_port is not None and output_port is not None:

@@ -100,6 +100,11 @@ class ToolDAG:
         """节点数量"""
         return len(self._nodes)
 
+    @property
+    def original_order(self) -> list[str]:
+        """原始 tool_calls 顺序（tc_id 列表），只读"""
+        return list(self._original_order)
+
     # ── 构建 ────────────────────────────────────────────────
 
     def _build(self, tool_calls: list[dict], registry) -> None:

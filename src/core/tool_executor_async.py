@@ -1,10 +1,16 @@
-"""AsyncToolExecutor — 异步工具调用执行器
+"""ToolScheduler — 全局工具调用调度器
 
-与同步版 ToolExecutor 接口对等，但：
+统一调度入口，内聚 ToolDAG 构建 + 调度 + 并发控制，为 Main Agent 和所有 SubAgent
+提供同一全局单例。
+
+设计要点：
 - 工具执行使用 asyncio 原生 async/await（无额外线程池）
 - dispatch_agent 使用 asyncio.Event 纯异步等待，不消耗线程池工人
 - 不支持超时（所有工具等待到底，避免误杀长时间任务）
-- 支持 asyncio.gather 实现真正的并发，**无并发数上限**（无限并发）
+- 支持 asyncio.gather 实现真正的并发
+- Semaphore 为类级全局单例，跨 Agent 实例共享限流
+- module-level `_default_scheduler` 单例 + `ToolScheduler.default()` 获取
+- `schedule()` 为统一入口：空列表/单工具/多工具（含 ToolDAG 拓扑排序）
 """
 
 from __future__ import annotations
@@ -14,24 +20,58 @@ import logging
 from typing import List, Tuple, Optional, Callable
 
 from ..tools.registry import ToolRegistry
-
-# 延迟导入 ToolDAG（避免循环依赖）
-# from .tool_dag import ToolDAG  — 在方法内延迟导入
+from ..ui import display as _display  # 适配器层模块引用，支持 patch
+from .tool_dag import ToolDAG
 
 _logger = logging.getLogger(__name__)
 
+# ------------------------------------------------------------
+#  全局单例引用（懒初始化）
+# ------------------------------------------------------------
+_default_scheduler: Optional[ToolScheduler] = None
 
 _MAX_CONCURRENT_TOOLS = 20  # 最大并发工具数，防止资源耗尽
 
 
-class AsyncToolExecutor:
-    """异步工具调用执行器，负责分派和执行工具调用。"""
+class ToolScheduler:
+    """全局工具调用调度器，负责构建 ToolDAG、调度和执行工具调用。
 
-    def __init__(self, registry: ToolRegistry):
-        self.registry = registry
-        self._semaphore = asyncio.Semaphore(_MAX_CONCURRENT_TOOLS)
+    通过 ToolScheduler.default() 获取模块级单例，所有 Agent/SubAgent
+    共享同一实例和 Semaphore 限流器。
+    """
 
-    async def _run_tool_func(self, func, tc, run_method) -> tuple:
+    # 类级 Semaphore（所有实例共享）
+    _semaphore: Optional[asyncio.Semaphore] = None
+
+    def __init__(self, registry: Optional[ToolRegistry] = None):
+        """初始化调度器。
+
+        Args:
+            registry: 工具注册表，None 时使用 ToolRegistry.default()。
+                      保留可选参数用于测试注入 mock registry。
+        """
+        self._registry = registry or ToolRegistry.default()
+
+        # 类级 Semaphore 懒初始化（跨所有实例共享）
+        if ToolScheduler._semaphore is None:
+            ToolScheduler._semaphore = asyncio.Semaphore(_MAX_CONCURRENT_TOOLS)
+
+    @classmethod
+    def default(cls) -> ToolScheduler:
+        """返回模块级默认 ToolScheduler 实例（单例模式）"""
+        global _default_scheduler
+        if _default_scheduler is None:
+            _default_scheduler = cls()
+        return _default_scheduler
+
+    @classmethod
+    def reset_default(cls) -> None:
+        """重置默认单例（仅用于测试清理）"""
+        global _default_scheduler
+        _default_scheduler = None
+        cls._semaphore = None
+
+    async def _run_tool_func(self, func, tc, run_method) -> Tuple[str, bool]:
         """统一执行工具调用，处理 run_method 和直接执行两种路径
 
         Returns:
@@ -63,14 +103,16 @@ class AsyncToolExecutor:
         dispatch_agent 内部使用 asyncio.Event 纯异步等待 barrier，
         不消耗任何线程池工人。
         """
-        from ..ui.display import extract_key_params as _extract_key_params  # 适配器层 — 纯工具函数
-        detail = _extract_key_params(tc["name"], tc["arguments"], show_all=True)
+        detail = _display.extract_key_params(tc["name"], tc["arguments"], show_all=True)
 
         if on_before:
             on_before(tc, detail)
 
         try:
-            func = self.registry.dispatch(tc["name"], tc["arguments"], agent=agent_ref)
+            func = self._registry.dispatch(tc["name"], tc["arguments"], agent=agent_ref)
+            # 注入 agent_type（SubAgent 通过此属性限制 plan/write_memory 的写入路径）
+            if hasattr(agent_ref, 'agent_type') and agent_ref.agent_type is not None:
+                func.agent_type = agent_ref.agent_type
             output, success = await self._run_tool_func(func, tc, run_method)
             if on_after:
                 on_after(tc, output, success)
@@ -130,7 +172,7 @@ class AsyncToolExecutor:
         for tc in tool_calls:
             is_safe = False
             try:
-                meta = self.registry.get_metadata(tc["name"])
+                meta = self._registry.get_metadata(tc["name"])
                 if meta is not None:
                     is_safe = meta.parallel_safe
             except Exception:
@@ -142,7 +184,7 @@ class AsyncToolExecutor:
             else:
                 serial_calls.append(tc)
 
-        results_map = {}
+        results_map: dict[str, tuple[str, str, bool]] = {}
 
         # 先串行执行非 parallel_safe 工具
         if serial_calls:
@@ -195,11 +237,17 @@ class AsyncToolExecutor:
         if dag.has_cycle():
             _logger.warning("DAG cycle detected, falling back to serial execution")
             # 重建原始 tool_calls 列表
-            all_calls = [{
-                "id": tc_id,
-                "name": dag.get_node(tc_id).name,
-                "arguments": dag.get_node(tc_id).arguments,
-            } for tc_id in dag._original_order]
+            all_calls: list[dict] = []
+            for tc_id in dag.original_order:
+                node = dag.get_node(tc_id)
+                if node is None:
+                    _logger.warning("execute_dag_async (cycle fallback): get_node(%s) 返回 None，跳过", tc_id)
+                    continue
+                all_calls.append({
+                    "id": tc_id,
+                    "name": node.name,
+                    "arguments": node.arguments,
+                })
             return await self._execute_serial(
                 all_calls, agent_ref=agent_ref,
                 on_before=on_before, on_after=on_after, run_method=run_method,
@@ -209,11 +257,17 @@ class AsyncToolExecutor:
         layers = dag.topological_sort()
         if layers is None:
             # 拓扑排序失败（理论上 has_cycle 已检测，兜底回退串行）
-            all_calls = [{
-                "id": tc_id,
-                "name": dag.get_node(tc_id).name,
-                "arguments": dag.get_node(tc_id).arguments,
-            } for tc_id in dag._original_order]
+            all_calls: list[dict] = []
+            for tc_id in dag.original_order:
+                node = dag.get_node(tc_id)
+                if node is None:
+                    _logger.warning("execute_dag_async (topo fallback): get_node(%s) 返回 None，跳过", tc_id)
+                    continue
+                all_calls.append({
+                    "id": tc_id,
+                    "name": node.name,
+                    "arguments": node.arguments,
+                })
             return await self._execute_serial(
                 all_calls, agent_ref=agent_ref,
                 on_before=on_before, on_after=on_after, run_method=run_method,
@@ -252,8 +306,71 @@ class AsyncToolExecutor:
                 results_map[r[0]] = r
 
         # 按原始顺序返回
-        return [results_map[tc_id] for tc_id in dag._original_order
+        return [results_map[tc_id] for tc_id in dag.original_order
                 if tc_id in results_map]
+
+    async def schedule(
+        self,
+        tool_calls: list,
+        *,
+        agent_ref,
+        on_before: Optional[Callable] = None,
+        on_after: Optional[Callable] = None,
+        run_method: Optional[Callable] = None,
+    ) -> List[Tuple[str, str, bool]]:
+        """统一调度入口：根据 tool_calls 数量和依赖关系自动选择执行策略。
+
+        - 空列表 → 返回 []
+        - 单工具 → execute_async(parallel=False) 直接执行
+        - 多工具 → 构建 ToolDAG → execute_dag_async 拓扑分层调度
+          - ToolDAG 构建失败时回退到全串行
+
+        Args:
+            tool_calls: 工具调用列表 [{"id", "name", "arguments"}]
+            agent_ref: 传给 registry.dispatch() 的 agent 引用
+            on_before: (tc, detail) -> None  执行前回调
+            on_after: (tc, output, success) -> None  执行后回调
+            run_method: (func, tc) -> str  自定义执行方式
+
+        Returns:
+            [(tool_call_id, output, success)] 列表
+        """
+        # 提取 agent 来源标识（用于可观测性日志）
+        agent_label = getattr(agent_ref, 'label', None) or type(agent_ref).__name__
+
+        if not tool_calls:
+            _logger.debug("schedule[%s]: 空列表，返回 []", agent_label)
+            return []
+
+        if len(tool_calls) == 1:
+            _logger.debug("schedule[%s]: 单工具 '%s' → 直接执行",
+                          agent_label, tool_calls[0].get("name", "?"))
+            return await self.execute_async(
+                tool_calls, agent_ref=agent_ref,
+                on_before=on_before, on_after=on_after,
+                run_method=run_method, parallel=False,
+            )
+
+        # 多工具：构建 ToolDAG 进行拓扑调度
+        _logger.debug("schedule[%s]: %d 个工具 → 构建 ToolDAG",
+                      agent_label, len(tool_calls))
+        try:
+            dag = ToolDAG(tool_calls, self._registry)
+            return await self.execute_dag_async(
+                dag, agent_ref=agent_ref,
+                on_before=on_before, on_after=on_after,
+                run_method=run_method,
+            )
+        except Exception:
+            _logger.warning(
+                "schedule: ToolDAG 构建失败，回退到全串行执行 (%d 个工具)",
+                len(tool_calls), exc_info=True,
+            )
+            return await self._execute_serial(
+                tool_calls, agent_ref=agent_ref,
+                on_before=on_before, on_after=on_after,
+                run_method=run_method,
+            )
 
     async def _execute_serial(
         self, tool_calls: list, *,
@@ -261,7 +378,7 @@ class AsyncToolExecutor:
         on_after: Optional[Callable] = None,
         run_method: Optional[Callable] = None,
     ) -> List[Tuple[str, str, bool]]:
-        """串行执行工具调用列表，保持原始顺序，遇到取消则停止后续。"""
+        """串行执行工具调用列表，保持原始顺序，遇到取消则停止后续并 re-raise。"""
         results = []
         for tc in tool_calls:
             try:
@@ -272,7 +389,7 @@ class AsyncToolExecutor:
             except asyncio.CancelledError:
                 _logger.warning("Serial async tool %s cancelled, 停止后续工具", tc["name"])
                 results.append((tc["id"], f"工具执行被取消: {tc['name']}", False))
-                break
+                raise
             except Exception as e:
                 _logger.error("Serial async tool %s failed: %s", tc["name"], e)
                 result = (tc["id"], f"工具执行失败: {e}", False)
@@ -287,8 +404,8 @@ class AsyncToolExecutor:
         on_after: Optional[Callable] = None,
         run_method: Optional[Callable] = None,
     ) -> List[Tuple[str, str, bool]]:
-        """并发执行工具调用列表，使用 Semaphore 限流 + FIRST_EXCEPTION 级联取消。"""
-        sem = self._semaphore
+        """并发执行工具调用列表，使用类级 Semaphore 限流 + FIRST_EXCEPTION 级联取消。"""
+        sem = ToolScheduler._semaphore
 
         async def _run_with_semaphore(tc):
             async with sem:
@@ -348,9 +465,10 @@ class AsyncToolExecutor:
                     task.cancel()
             # 等待所有任务完成（含被取消的），return_exceptions=True 不传播异常
             await asyncio.gather(*tasks.keys(), return_exceptions=True)
+            tasks.clear()
             raise
         finally:
-            # 兜底：确保没有任务残留（正常退出时 tasks 已为空）
+            # 兜底：确保没有任务残留（正常退出时 tasks 已为空，此分支仅在非取消异常时触发）
             if tasks:
                 for task in list(tasks.keys()):
                     if not task.done():

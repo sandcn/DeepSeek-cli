@@ -1,11 +1,10 @@
 """Tests for src/core/_tool_callbacks.py — ToolCallbackChain
 
 覆盖内容：
-  1. _is_parallel_safe() metadata 驱动查询正确性
-  2. handle_tool_calls DAG 调度正确性（通过 mock execute_dag_async 验证层顺序）
-  3. 结果按原始 tool_calls 顺序重建
-  4. results_map 缺失键的降级处理
-  5. dispatch_agent ParallelExecutor barrier 设置
+  1. handle_tool_calls 通过 ToolScheduler.schedule() 统一调度
+  2. 结果按 schedule() 返回顺序消费
+  3. dispatch_agent ParallelExecutor barrier 设置
+  4. on_before / on_after 回调工厂正确性
 """
 
 import asyncio
@@ -13,7 +12,7 @@ from unittest.mock import MagicMock, AsyncMock, PropertyMock, patch
 
 import pytest
 
-from src.core.internal.agent._tool_callbacks import ToolCallbackChain, _is_parallel_safe
+from src.core.internal.agent._tool_callbacks import ToolCallbackChain
 
 
 def _meta(parallel_safe=False, requires_terminal=False):
@@ -29,27 +28,24 @@ def _meta(parallel_safe=False, requires_terminal=False):
 # ═══════════════════════════════════════════════════════════════
 
 @pytest.fixture
+def mock_schedule():
+    """Mock ToolScheduler.default().schedule()，yield schedule AsyncMock 供测试配置"""
+    with patch('src.core.internal.agent._tool_callbacks.ToolScheduler') as mock_cls:
+        mock_instance = MagicMock()
+        mock_instance.schedule = AsyncMock(return_value=[])
+        mock_cls.default.return_value = mock_instance
+        yield mock_instance.schedule
+
+
+@pytest.fixture
 def mock_agent():
-    """创建一个 mock Agent，包含 display/registry/async_tool_executor 等必要属性"""
+    """创建一个 mock Agent，包含 display/display_port/capture_mgr 等必要属性"""
     agent = MagicMock()
     agent.display = MagicMock()
     agent._display_port = MagicMock()
     type(agent._display_port).is_web = PropertyMock(return_value=False)
+    # 保留 _async_tool_executor 用于向后兼容，但 handle_tool_calls 不再直接使用
     agent._async_tool_executor = MagicMock()
-    agent._async_tool_executor.execute_async = AsyncMock(return_value=[])
-    agent._async_tool_executor.execute_dag_async = AsyncMock(return_value=[])
-    # 配置 registry.get_metadata
-    _registry = MagicMock()
-
-    def _get_metadata(tool_name):
-        if tool_name in {"read_file", "search", "find", "ls", "web_search"}:
-            return _meta(parallel_safe=True)
-        if tool_name in {"write_file", "update_file", "bash", "cp", "mv", "rm", "mk",
-                         "dispatch_agent", "user_select"}:
-            return _meta(parallel_safe=False)
-        return None
-    _registry.get_metadata = MagicMock(side_effect=_get_metadata)
-    agent._async_tool_executor.registry = _registry
     agent._capture_mgr = MagicMock()
     agent._event_port = MagicMock()
     agent._on_tool_completed_callbacks = []
@@ -66,7 +62,7 @@ def chain(mock_agent):
 
 @pytest.fixture
 def tool_calls_mixed():
-    """混合工具调用 — 覆盖全部四类工具"""
+    """混合工具调用 — 覆盖全部工具类型"""
     return [
         {"id": "tc_0", "name": "read_file", "arguments": {"path": "a.txt"}},
         {"id": "tc_1", "name": "search", "arguments": {"query": "hello"}},
@@ -84,109 +80,54 @@ def tool_calls_mixed():
 
 
 # ═══════════════════════════════════════════════════════════════
-# _is_parallel_safe() metadata 驱动查询
+# ToolScheduler.schedule() 统一调度验证
 # ═══════════════════════════════════════════════════════════════
 
-class TestIsParallelSafe:
-    """测试 _is_parallel_safe() metadata 驱动查询。"""
-
-    def test_parallel_safe_true_tools(self):
-        """parallel_safe=True 的工具返回 True — read_file, search, find, ls, web_search"""
-        registry = MagicMock()
-
-        def get_metadata(name):
-            if name in {"read_file", "search", "find", "ls", "web_search"}:
-                return _meta(parallel_safe=True)
-            return None
-        registry.get_metadata = MagicMock(side_effect=get_metadata)
-
-        for name in ("read_file", "search", "find", "ls", "web_search"):
-            assert _is_parallel_safe(registry, name) is True
-
-    def test_parallel_safe_false_tools(self):
-        """parallel_safe=False 的工具返回 False — write_file, update_file, bash, cp, mv, rm, mk"""
-        registry = MagicMock()
-
-        def get_metadata(name):
-            if name in {"write_file", "update_file", "bash", "cp", "mv", "rm", "mk"}:
-                return _meta(parallel_safe=False)
-            return None
-        registry.get_metadata = MagicMock(side_effect=get_metadata)
-
-        for name in ("write_file", "update_file", "bash", "cp", "mv", "rm", "mk"):
-            assert _is_parallel_safe(registry, name) is False
-
-    def test_unregistered_tool_returns_false(self):
-        """未注册工具返回 False（metadata 查询返回 None → 安全优先）"""
-        registry = MagicMock()
-        registry.get_metadata = MagicMock(return_value=None)
-
-        assert _is_parallel_safe(registry, "nonexistent_tool") is False
-
-    def test_user_select_not_parallel_safe(self):
-        """user_select 返回 False（交互式终端工具不可并行）"""
-        registry = MagicMock()
-        registry.get_metadata = MagicMock(return_value=_meta(parallel_safe=False))
-
-        assert _is_parallel_safe(registry, "user_select") is False
-
-    def test_dispatch_agent_not_parallel_safe(self):
-        """dispatch_agent 返回 False（SubAgent 需独立一波）"""
-        registry = MagicMock()
-        registry.get_metadata = MagicMock(return_value=_meta(parallel_safe=False))
-
-        assert _is_parallel_safe(registry, "dispatch_agent") is False
-
-
-# ═══════════════════════════════════════════════════════════════
-# DAG 调度执行验证
-# ═══════════════════════════════════════════════════════════════
-
-class TestDAGExecution:
-    """handle_tool_calls DAG 调度验证"""
+class TestSchedule:
+    """handle_tool_calls 通过 ToolScheduler.schedule() 统一调度"""
 
     @pytest.mark.asyncio
-    async def test_single_tool_uses_execute_async(self, chain, mock_agent):
-        """单工具 → 使用 execute_async (非 DAG)"""
+    async def test_single_tool_calls_schedule(self, chain, mock_agent, mock_schedule):
+        """单工具 → ToolScheduler.default().schedule() 被调用"""
         calls = [
             {"id": "tc_0", "name": "read_file", "arguments": {"path": "a.txt"}},
         ]
+        mock_schedule.return_value = [("tc_0", "ok", True)]
 
         await chain.handle_tool_calls("content", calls)
 
-        mock_agent._async_tool_executor.execute_async.assert_awaited_once()
-        mock_agent._async_tool_executor.execute_dag_async.assert_not_awaited()
+        mock_schedule.assert_awaited_once()
 
     @pytest.mark.asyncio
-    async def test_multi_tool_uses_execute_dag_async(self, chain, mock_agent, tool_calls_mixed):
-        """多工具 → 使用 execute_dag_async"""
+    async def test_multi_tool_calls_schedule(self, chain, mock_agent, mock_schedule, tool_calls_mixed):
+        """多工具 → ToolScheduler.default().schedule() 被调用"""
+        mock_schedule.return_value = [
+            (tc["id"], f"result_{tc['name']}", True) for tc in tool_calls_mixed
+        ]
+
         await chain.handle_tool_calls("content", tool_calls_mixed)
 
-        mock_agent._async_tool_executor.execute_dag_async.assert_awaited_once()
-        mock_agent._async_tool_executor.execute_async.assert_not_awaited()
+        mock_schedule.assert_awaited_once()
 
     @pytest.mark.asyncio
-    async def test_empty_tool_calls(self, chain, mock_agent):
-        """空工具列表 → 无执行器调用"""
+    async def test_empty_tool_calls(self, chain, mock_agent, mock_schedule):
+        """空工具列表 → schedule() 仍被调用（内部返回 []）"""
+        mock_schedule.return_value = []
+
         await chain.handle_tool_calls("content", [])
 
-        mock_agent._async_tool_executor.execute_async.assert_not_awaited()
-        mock_agent._async_tool_executor.execute_dag_async.assert_not_awaited()
+        mock_schedule.assert_awaited_once()
 
     @pytest.mark.asyncio
-    async def test_dag_passes_correct_agent_ref(self, chain, mock_agent, tool_calls_mixed):
-        """execute_dag_async 接收正确的 agent_ref"""
+    async def test_schedule_passes_correct_kwargs(self, chain, mock_agent, mock_schedule, tool_calls_mixed):
+        """schedule() 接收正确的 agent_ref / on_before / on_after / run_method"""
         captured_kwargs = {}
 
-        async def capture_dag(dag, **kwargs):
+        async def capture_schedule(tool_calls, **kwargs):
             captured_kwargs.update(kwargs)
-            # 为每个工具返回结果
-            return [(tc["id"], f"result_{tc['name']}", True)
-                    for tc in tool_calls_mixed]
+            return [(tc["id"], f"result_{tc['name']}", True) for tc in tool_calls]
 
-        mock_agent._async_tool_executor.execute_dag_async = AsyncMock(
-            side_effect=capture_dag
-        )
+        mock_schedule.side_effect = capture_schedule
 
         await chain.handle_tool_calls("content", tool_calls_mixed)
 
@@ -196,29 +137,41 @@ class TestDAGExecution:
         assert run_method.__self__ is chain
         assert run_method.__name__ == "_run_tool_method"
 
-
-# ═══════════════════════════════════════════════════════════════
-# 结果顺序重建
-# ═══════════════════════════════════════════════════════════════
-
-class TestResultOrdering:
-    """结果按原始 tool_calls 顺序重建"""
-
     @pytest.mark.asyncio
-    async def test_results_preserve_original_order(self, chain, mock_agent, tool_calls_mixed):
-        """执行完成后的 results 列表与原始 tool_calls 顺序一致"""
-        async def execute_dag(dag, **kwargs):
-            # 用 DAG 的原始顺序返回
-            return [(tc_id, f"result_{dag.get_node(tc_id).name}", True)
-                    for tc_id in dag._original_order]
+    async def test_schedule_passes_tool_calls_as_first_arg(self, chain, mock_agent, mock_schedule, tool_calls_mixed):
+        """schedule() 的第一个位置参数是 tool_calls 列表"""
+        captured_tool_calls = None
 
-        mock_agent._async_tool_executor.execute_dag_async = AsyncMock(
-            side_effect=execute_dag
-        )
+        async def capture_schedule(tool_calls, **kwargs):
+            nonlocal captured_tool_calls
+            captured_tool_calls = tool_calls
+            return [(tc["id"], "ok", True) for tc in tool_calls]
+
+        mock_schedule.side_effect = capture_schedule
 
         await chain.handle_tool_calls("content", tool_calls_mixed)
 
-        # 验证 _append_tool_result 按原始顺序调用
+        assert captured_tool_calls == tool_calls_mixed
+
+
+# ═══════════════════════════════════════════════════════════════
+# 结果顺序验证
+# ═══════════════════════════════════════════════════════════════
+
+class TestResultOrdering:
+    """结果按 schedule() 返回顺序消费"""
+
+    @pytest.mark.asyncio
+    async def test_results_preserve_schedule_order(self, chain, mock_agent, mock_schedule, tool_calls_mixed):
+        """schedule() 返回的结果列表按序被 _append_tool_result 消费"""
+        # schedule 按原始 tool_calls 顺序返回结果
+        mock_schedule.return_value = [
+            (tc["id"], f"result_{tc['name']}", True) for tc in tool_calls_mixed
+        ]
+
+        await chain.handle_tool_calls("content", tool_calls_mixed)
+
+        # 验证 _append_tool_result 按返回顺序调用
         appended_ids = [
             call_args[0][0] for call_args in
             mock_agent._append_tool_result.call_args_list
@@ -227,35 +180,24 @@ class TestResultOrdering:
         assert appended_ids == expected_ids
 
     @pytest.mark.asyncio
-    async def test_results_missing_key_logs_warning(self, chain, mock_agent, caplog):
-        """execute_dag_async 未返回某工具的结果时，记录 warning 并生成降级结果"""
+    async def test_failed_tools_recorded_correctly(self, chain, mock_agent, mock_schedule):
+        """失败的 tool_call 被正确记录到 failed_tools"""
         calls = [
             {"id": "tc_0", "name": "read_file", "arguments": {"path": "a.txt"}},
             {"id": "tc_1", "name": "search", "arguments": {"query": "x"}},
         ]
+        mock_schedule.return_value = [
+            ("tc_0", "ok", True),
+            ("tc_1", "error occurred", False),
+        ]
 
-        # DAG 只返回一个结果（丢失 tc_0）
-        async def execute_dag_missing(dag, **kwargs):
-            return [("tc_1", "result_search", True)]
-
-        mock_agent._async_tool_executor.execute_dag_async = AsyncMock(
-            side_effect=execute_dag_missing
-        )
-
-        import logging
-        with caplog.at_level(logging.WARNING):
-            await chain.handle_tool_calls("content", calls)
-
-        # 应有 warning 日志
-        assert any("工具结果丢失" in r.message for r in caplog.records)
+        await chain.handle_tool_calls("content", calls)
 
         # 两个工具都应被 append
         assert mock_agent._append_tool_result.call_count == 2
-
-        # tc_0 的降级结果应为失败
-        first_call = mock_agent._append_tool_result.call_args_list[0]
-        assert first_call[0][0] == "tc_0"
-        assert first_call[0][1] == "错误：工具 'read_file' 结果丢失"
+        # tc_0 成功，tc_1 失败
+        assert mock_agent._append_tool_result.call_args_list[0][0] == ("tc_0", "ok")
+        assert mock_agent._append_tool_result.call_args_list[1][0] == ("tc_1", "error occurred")
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -266,9 +208,9 @@ class TestDispatchAgentBarrier:
     """dispatch_agent 的 ParallelExecutor barrier 设置"""
 
     @pytest.mark.asyncio
-    async def test_barrier_setup_when_dispatch_agent_present(self, chain, mock_agent):
+    async def test_barrier_setup_when_dispatch_agent_present(self, chain, mock_agent, mock_schedule):
         """有 dispatch_agent 时创建 ParallelExecutor，setup_barrier 被调用，
-        且在 DAG 执行期间 _shared_executor 非 None"""
+        且在 schedule 执行期间 _shared_executor 非 None"""
         executor_states = []  # 记录各阶段 _shared_executor 状态
 
         calls = [
@@ -277,31 +219,26 @@ class TestDispatchAgentBarrier:
              "arguments": {"description": "a", "prompt": "p", "type": "execute"}},
         ]
 
-        async def execute_dag_spy(dag, **kwargs):
+        async def schedule_spy(tool_calls, **kwargs):
             executor_states.append(mock_agent._shared_executor is not None)
-            return [(tc["id"], "ok", True) for tc in calls]
+            return [(tc["id"], "ok", True) for tc in tool_calls]
 
-        mock_agent._async_tool_executor.execute_dag_async = AsyncMock(
-            side_effect=execute_dag_spy
-        )
+        mock_schedule.side_effect = schedule_spy
 
         await chain.handle_tool_calls("content", calls)
 
-        # DAG 执行期间 _shared_executor 应非 None
+        # schedule 执行期间 _shared_executor 应非 None
         assert executor_states[0] is True
         # finally 后 _shared_executor 应被清理
         assert mock_agent._shared_executor is None
 
     @pytest.mark.asyncio
-    async def test_no_barrier_when_no_dispatch_agent(self, chain, mock_agent):
+    async def test_no_barrier_when_no_dispatch_agent(self, chain, mock_agent, mock_schedule):
         """没有 dispatch_agent 时不创建 ParallelExecutor"""
         calls = [
             {"id": "tc_0", "name": "read_file", "arguments": {"path": "a.txt"}},
         ]
-
-        mock_agent._async_tool_executor.execute_async = AsyncMock(
-            return_value=[("tc_0", "ok", True)]
-        )
+        mock_schedule.return_value = [("tc_0", "ok", True)]
 
         await chain.handle_tool_calls("content", calls)
 
@@ -309,7 +246,7 @@ class TestDispatchAgentBarrier:
         assert mock_agent._shared_executor is None
 
     @pytest.mark.asyncio
-    async def test_barrier_cleaned_on_exception(self, chain, mock_agent):
+    async def test_barrier_cleaned_on_exception(self, chain, mock_agent, mock_schedule):
         """异常时 finally 清理 _shared_executor 并释放 _all_done"""
         calls = [
             {"id": "tc_0", "name": "dispatch_agent",
@@ -317,13 +254,8 @@ class TestDispatchAgentBarrier:
             {"id": "tc_1", "name": "read_file", "arguments": {"path": "a.txt"}},
         ]
 
-        # DAG 执行时让 execute_dag_async 抛出异常
-        async def execute_dag_error(dag, **kwargs):
-            raise RuntimeError("boom")
-
-        mock_agent._async_tool_executor.execute_dag_async = AsyncMock(
-            side_effect=execute_dag_error
-        )
+        # schedule() 抛出异常
+        mock_schedule.side_effect = RuntimeError("boom")
 
         with pytest.raises(RuntimeError, match="boom"):
             await chain.handle_tool_calls("content", calls)
@@ -332,10 +264,8 @@ class TestDispatchAgentBarrier:
         assert mock_agent._shared_executor is None
 
     @pytest.mark.asyncio
-    async def test_all_done_released_on_early_failure(self, chain, mock_agent):
-        """DAG 异常时 _all_done.set() 被调用，防止 dispatch_agent 协程永久挂起"""
-        from unittest.mock import patch
-
+    async def test_all_done_released_on_early_failure(self, chain, mock_agent, mock_schedule):
+        """schedule 异常时 _all_done.set() 被调用，防止 dispatch_agent 协程永久挂起"""
         calls = [
             {"id": "tc_0", "name": "dispatch_agent",
              "arguments": {"description": "a", "prompt": "p", "type": "execute"}},
@@ -344,16 +274,14 @@ class TestDispatchAgentBarrier:
 
         _all_done_spy = None
 
-        async def execute_dag_error(dag, **kwargs):
+        async def schedule_error(tool_calls, **kwargs):
             nonlocal _all_done_spy
             if mock_agent._shared_executor is not None:
                 _all_done_spy = MagicMock(wraps=mock_agent._shared_executor._all_done)
                 mock_agent._shared_executor._all_done = _all_done_spy
             raise RuntimeError("boom")
 
-        mock_agent._async_tool_executor.execute_dag_async = AsyncMock(
-            side_effect=execute_dag_error
-        )
+        mock_schedule.side_effect = schedule_error
 
         with pytest.raises(RuntimeError, match="boom"):
             await chain.handle_tool_calls("content", calls)
@@ -371,7 +299,7 @@ class TestCallbackFactory:
     """_on_before / _on_after 回调工厂"""
 
     @pytest.mark.asyncio
-    async def test_on_before_delegates_to_method(self, chain, mock_agent):
+    async def test_on_before_delegates_to_method(self, chain, mock_agent, mock_schedule):
         """_on_before / _on_after 正确委托到 _on_before_tool / _on_after_tool"""
         chain._on_before_tool = MagicMock()
         chain._on_after_tool = MagicMock()
@@ -381,16 +309,16 @@ class TestCallbackFactory:
         ]
         usage = {"tool_parse_elapsed": 1.5}
 
-        async def execute_async(calls, **kwargs):
+        async def schedule_with_callbacks(tool_calls, **kwargs):
             on_before = kwargs.get("on_before")
             on_after = kwargs.get("on_after")
             if on_before:
-                on_before(calls[0], "detail_str")
+                on_before(tool_calls[0], "detail_str")
             if on_after:
-                on_after(calls[0], "output", True)
-            return [(tc["id"], "ok", True) for tc in calls]
+                on_after(tool_calls[0], "output", True)
+            return [(tc["id"], "ok", True) for tc in tool_calls]
 
-        mock_agent._async_tool_executor.execute_async = AsyncMock(side_effect=execute_async)
+        mock_schedule.side_effect = schedule_with_callbacks
 
         await chain.handle_tool_calls("content", calls, usage=usage)
 

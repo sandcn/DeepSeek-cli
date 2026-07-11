@@ -14,6 +14,7 @@ import threading
 from typing import List, Dict, Any, Optional, Tuple, Callable
 
 from .base_agent import BaseAgent
+from .tool_executor_async import ToolScheduler
 
 _logger = logging.getLogger(__name__)
 
@@ -241,69 +242,31 @@ class SubAgent(BaseAgent):
             ))
 
     async def _handle_tool_calls(self, content: str, tool_calls: list, reasoning_content: str = None):
-        """处理工具调用（内联执行，使用 asyncio.gather 并发执行独立工具调用）
+        """处理工具调用（委托给全局 ToolScheduler 单例统一调度）
 
-        SubAgent 运行在独立线程中，使用线程局部存储记录自己的消息索引，
-        与父 Agent 的 current_message_index 互不干扰。
+        ToolScheduler 自动根据工具数量和依赖关系选择执行策略：
+        - 空列表 → 直接返回
+        - 单工具 → 直接执行
+        - 多工具 → 构建 ToolDAG 拓扑分层调度
         """
         self._append_assistant_message(content, tool_calls, reasoning_content)
 
-        on_before, on_after, run_method = self._build_tool_callbacks(tool_calls)
+        on_before, on_after, run_method = self._build_tool_callbacks()
 
-        async def _execute_one(tc: dict) -> tuple:
-            from ..ui.formatters.param_formatter import extract_key_params as _extract_key_params  # 纯工具函数 — 适配器层延迟导入
-            detail = _extract_key_params(tc["name"], tc["arguments"], show_all=True)
-            try:
-                if on_before:
-                    # on_before 是同步回调，用 run_in_executor 避免阻塞事件循环
-                    await asyncio.get_running_loop().run_in_executor(None, on_before, tc, detail)
-                func = self._registry.dispatch(tc["name"], tc["arguments"], agent=self.parent)
-                func.agent_type = self.agent_type  # 注入 agent_type，供工具运行时判断权限
-                if run_method:
-                    output = await run_method(func, tc)
-                else:
-                    output = await func.execute()
-                success = True
-            except asyncio.CancelledError:
-                output = f"工具执行被取消: {tc.get('name', '?')}"
-                _logger.warning("SubAgent tool %s cancelled", tc["name"])
-                success = False
-            except Exception as e:
-                output = f"工具执行失败: {e}"
-                _logger.error("SubAgent tool %s failed: %s", tc["name"], e)
-                success = False
-            # ★ P0 修复: on_after 移入 try 块，确保异常不会传播到 asyncio.gather
-            #   导致 results 列表混入 Exception 对象、后续解包崩溃。
-            if on_after:
-                try:
-                    # on_after 是同步回调，用 run_in_executor 避免阻塞事件循环
-                    await asyncio.get_running_loop().run_in_executor(None, on_after, tc, output, success)
-                except Exception:
-                    _logger.exception("SubAgent on_after 回调异常")
-            return (tc["id"], output, success)
-
-        results = await asyncio.gather(
-            *[_execute_one(tc) for tc in tool_calls],
-            return_exceptions=True,
+        results = await ToolScheduler.default().schedule(
+            tool_calls,
+            agent_ref=self,
+            on_before=on_before,
+            on_after=on_after,
+            run_method=run_method,
         )
 
-        # 收集所有工具结果（含被取消/失败的），确保 messages 序列完整，
-        # 与 Agent._handle_tool_calls 行为一致：所有工具的 result 始终追加。
-        for item in results:
-            # ★ return_exceptions=True 时，CancelledError/KeyboardInterrupt
-            #   等 BaseException 也会出现在 results 中，跳过而非解包。
-            if isinstance(item, BaseException):
-                _logger.error("SubAgent 工具执行异常: %s", item)
-                continue
-            tool_call_id, output, success = item
-            self.messages.append({
-                "role": "tool",
-                "tool_call_id": tool_call_id,
-                "content": output,
-            })
+        # 收集所有工具结果，确保 messages 序列完整
+        for tool_call_id, output, _ in results:
+            self._append_tool_result(tool_call_id, output)
 
     def _build_tool_callbacks(
-        self, tool_calls: list,
+        self,
     ) -> Tuple[Optional[Callable], Optional[Callable], Optional[Callable]]:
         """构建工具执行回调三元组 (on_before, on_after, run_method)"""
         from ..ui.events.event_types import ToolStartedEvent, ToolDoneEvent
@@ -324,8 +287,7 @@ class SubAgent(BaseAgent):
         def on_after(tc, output, success):
             tool_name = tc["name"]
             if success:
-                # on_after 通过 run_in_executor 在线程池中执行，
-                # 使用 threading.Lock 保护自增操作。
+                # ToolScheduler 同步调用 on_after，在线程锁保护下自增计数器
                 with self._tool_calls_count_lock:
                     self.tool_calls_count += 1
             if display:

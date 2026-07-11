@@ -1,4 +1,4 @@
-"""Tests for src/core/tool_executor_async.py — AsyncToolExecutor
+"""Tests for src/core/tool_executor_async.py — ToolScheduler
 
 覆盖内容（按执行路径）：
   1. 构造函数与属性
@@ -14,7 +14,7 @@ from unittest.mock import MagicMock, AsyncMock, patch, call
 
 import pytest
 
-from src.core.tool_executor_async import AsyncToolExecutor, _MAX_CONCURRENT_TOOLS
+from src.core.tool_executor_async import ToolScheduler, _MAX_CONCURRENT_TOOLS
 from src.tools.registry import ToolRegistry
 from src.tools.base import ToolMetadata
 
@@ -41,8 +41,8 @@ def registry(mock_func):
 
 @pytest.fixture
 def executor(registry):
-    """返回 AsyncToolExecutor 实例"""
-    return AsyncToolExecutor(registry)
+    """返回 ToolScheduler 实例"""
+    return ToolScheduler(registry)
 
 
 @pytest.fixture
@@ -78,18 +78,36 @@ class TestInit:
 
     def test_stores_registry(self, registry):
         """registry 参数正确存储"""
-        executor = AsyncToolExecutor(registry)
-        assert executor.registry is registry
+        executor = ToolScheduler(registry)
+        assert executor._registry is registry
 
     def test_semaphore_created(self):
         """创建 Semaphore(20)"""
-        executor = AsyncToolExecutor(MagicMock(spec=ToolRegistry))
-        assert isinstance(executor._semaphore, asyncio.Semaphore)
-        assert executor._semaphore._value == _MAX_CONCURRENT_TOOLS
+        executor = ToolScheduler(MagicMock(spec=ToolRegistry))
+        assert isinstance(ToolScheduler._semaphore, asyncio.Semaphore)
+        assert ToolScheduler._semaphore._value == _MAX_CONCURRENT_TOOLS
 
     def test_semaphore_value_matches_constant(self):
         """Semaphore 的值与 _MAX_CONCURRENT_TOOLS 一致"""
         assert _MAX_CONCURRENT_TOOLS == 20
+
+    def test_default_singleton(self):
+        """ToolScheduler.default() 返回同一实例"""
+        ToolScheduler.reset_default()
+        s1 = ToolScheduler.default()
+        s2 = ToolScheduler.default()
+        assert s1 is s2
+        ToolScheduler.reset_default()
+
+    def test_class_level_semaphore(self):
+        """多个 ToolScheduler 实例共享同一 Semaphore"""
+        ToolScheduler.reset_default()
+        reg = MagicMock(spec=ToolRegistry)
+        s1 = ToolScheduler(reg)
+        s2 = ToolScheduler(reg)
+        assert ToolScheduler._semaphore is not None
+        assert s1._semaphore is s2._semaphore  # 通过类访问同一实例
+        ToolScheduler.reset_default()
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -312,7 +330,7 @@ class TestExecuteSerial:
             return results_map[tc["id"]]
 
         call_count = 0
-        executor.registry.dispatch.return_value.execute = AsyncMock(side_effect=side_effect)
+        executor._registry.dispatch.return_value.execute = AsyncMock(side_effect=side_effect)
 
         results = await executor.execute_async(
             tool_calls, agent_ref=None, parallel=False,
@@ -388,21 +406,17 @@ class TestExecuteSerial:
 
     @pytest.mark.asyncio
     async def test_serial_cancelled_break(self, executor, mock_func, tool_calls):
-        """串行时工具抛出 CancelledError → 停止后续工具，返回已执行结果（含取消标记）"""
+        """串行时工具抛出 CancelledError → re-raise 到上层"""
         mock_func.execute.side_effect = [
             "ok_1",
             asyncio.CancelledError(),
             "ok_3",
         ]
 
-        results = await executor.execute_async(
-            tool_calls, agent_ref=None, parallel=False,
-        )
-
-        assert len(results) == 2
-        assert results[0][2] is True
-        assert results[1][2] is False
-        assert "取消" in results[1][1]
+        with pytest.raises(asyncio.CancelledError):
+            await executor.execute_async(
+                tool_calls, agent_ref=None, parallel=False,
+            )
 
     @pytest.mark.asyncio
     async def test_serial_generic_exception_suppressed(self, executor, mock_func, tool_calls):
@@ -453,7 +467,7 @@ class TestExecuteParallel:
             executed.add(tc_id)
             return results_map[tc_id][1]
 
-        executor.registry.dispatch.return_value.execute = AsyncMock(side_effect=side_effect)
+        executor._registry.dispatch.return_value.execute = AsyncMock(side_effect=side_effect)
 
         results = await executor.execute_async(
             tool_calls, agent_ref=None, parallel=True,
@@ -549,7 +563,7 @@ class TestExecuteParallel:
 
             return "slow_ok"
 
-        executor.registry.dispatch.return_value.execute = AsyncMock(side_effect=slow_execute)
+        executor._registry.dispatch.return_value.execute = AsyncMock(side_effect=slow_execute)
 
         async def run():
             # 先启动所有 task，等它们进入 slow_execute 后设置 barrier
@@ -690,7 +704,7 @@ class TestExecuteParallel:
             await block.wait()
             return "ok"
 
-        executor.registry.dispatch.return_value.execute = AsyncMock(
+        executor._registry.dispatch.return_value.execute = AsyncMock(
             side_effect=blocked_execute
         )
 
@@ -729,7 +743,7 @@ class TestCancellationCleanup:
 
     @pytest.mark.asyncio
     async def test_serial_cancelled_swallowed(self, executor, tool_calls):
-        """串行模式中被取消 → CancelledError 被捕获，返回取消结果"""
+        """串行模式中被取消 → CancelledError 被 re-raise 到上层"""
         call_count = 0
         hang_event = asyncio.Event()
 
@@ -742,7 +756,7 @@ class TestCancellationCleanup:
             await hang_event.wait()
             return "never"
 
-        executor.registry.dispatch.return_value.execute = AsyncMock(
+        executor._registry.dispatch.return_value.execute = AsyncMock(
             side_effect=execute_side_effect,
         )
 
@@ -753,12 +767,9 @@ class TestCancellationCleanup:
         await asyncio.sleep(0.05)
         task.cancel()
 
-        # 串行模式中 CancelledError 被内部捕获，返回正常结果而非抛出
-        results = await task
-        assert len(results) == 2
-        assert results[0] == ("call_1", "ok_1", True)
-        assert results[1][2] is False
-        assert "取消" in results[1][1]
+        # 串行模式中 CancelledError 被 re-raise，与并发模式行为一致
+        with pytest.raises(asyncio.CancelledError):
+            await task
 
     @pytest.mark.asyncio
     async def test_parallel_cancel_monitor_cleanup(self, executor, tool_calls):
@@ -837,8 +848,8 @@ class TestParallelSafeAutoSplit:
         return reg
 
     def _make_executor(self, registry):
-        """创建 AsyncToolExecutor 实例。"""
-        return AsyncToolExecutor(registry)
+        """创建 ToolScheduler 实例。"""
+        return ToolScheduler(registry)
 
     # ── 全并发 ──────────────────────────────────────────────
 
@@ -1159,7 +1170,7 @@ class TestExecuteDAG:
         return reg
 
     def _make_executor(self, registry):
-        return AsyncToolExecutor(registry)
+        return ToolScheduler(registry)
 
     @pytest.mark.asyncio
     async def test_empty_dag(self):
@@ -1370,3 +1381,73 @@ class TestExecuteDAG:
         assert len(after_calls) == 2
         assert set(before_calls) == {"read_file", "search"}
         assert all(success for _, success in after_calls)
+
+
+# ═══════════════════════════════════════════════════════════════
+# schedule() — 统一调度入口
+# ═══════════════════════════════════════════════════════════════
+
+class TestSchedule:
+    """schedule() 统一调度入口测试"""
+
+    @pytest.mark.asyncio
+    async def test_schedule_empty(self, executor):
+        """空列表 → 返回 []"""
+        results = await executor.schedule([], agent_ref=None)
+        assert results == []
+
+    @pytest.mark.asyncio
+    async def test_schedule_single(self, executor, mock_func, tool_call):
+        """单工具 → 走 execute_async(parallel=False)"""
+        results = await executor.schedule([tool_call], agent_ref=None)
+        assert len(results) == 1
+        assert results[0] == ("call_1", "ok", True)
+        mock_func.execute.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_schedule_multi(self, executor, mock_func, tool_calls):
+        """多工具 → 构建 ToolDAG → execute_dag_async"""
+        results = await executor.schedule(tool_calls, agent_ref=None)
+        assert len(results) == 3
+        assert results[0][2] is True
+        assert results[1][2] is True
+        assert results[2][2] is True
+
+    @pytest.mark.asyncio
+    async def test_schedule_multi_returns_original_order(self, executor, tool_calls):
+        """多工具 schedule() 结果按原始 tool_calls 顺序返回"""
+        # 不同工具返回不同结果，验证最终顺序
+        name_to_result = {
+            "read_file": "result_a",
+            "bash": "result_b",
+            "write_file": "result_c",
+        }
+
+        def dispatch_side(name, arguments, agent=None):
+            f = MagicMock()
+            f.execute = AsyncMock(return_value=name_to_result.get(name, "unknown"))
+            return f
+
+        executor._registry.dispatch.side_effect = dispatch_side
+
+        results = await executor.schedule(tool_calls, agent_ref=None)
+        assert len(results) == 3
+        # 验证顺序与原 tool_calls 一致
+        assert [r[0] for r in results] == ["call_1", "call_2", "call_3"]
+        assert results[0][1] == "result_a"
+        assert results[1][1] == "result_b"
+        assert results[2][1] == "result_c"
+
+    @pytest.mark.asyncio
+    async def test_schedule_with_callbacks(self, executor, mock_func, tool_calls):
+        """schedule() 正确传递 on_before/on_after 回调"""
+        on_before = MagicMock()
+        on_after = MagicMock()
+
+        await executor.schedule(
+            tool_calls, agent_ref=None,
+            on_before=on_before, on_after=on_after,
+        )
+
+        assert on_before.call_count == 3
+        assert on_after.call_count == 3

@@ -3,10 +3,8 @@
 从 agent.py 提取，封装工具执行的完整生命周期：
   handle_tool_calls → _run_tool_method → _on_before_tool / _on_after_tool
 
-工具执行使用 DAG 引擎：
-  1. ToolDAG 构建依赖图（显式引用 + 隐式路径重叠 + user_select 独占约束）
-  2. Kahn 拓扑排序 → 分层
-  3. 逐层并发执行（同层无依赖工具并行，层间串行等待）
+工具执行通过 ToolScheduler.schedule() 统一调度（DAG 依赖分析 + 拓扑排序 + 分层并发），
+ToolScheduler 为全局单例，内聚 ToolDAG 构建 + 调度 + 并发控制。
 """
 
 from __future__ import annotations
@@ -15,24 +13,13 @@ import asyncio
 import json
 import logging
 from ...parallel_executor import ParallelExecutor
+from ...tool_executor_async import ToolScheduler
 from ...telemetry import get_default_collector
 from ....api.tokens import estimate_tokens
 from ....tools.base import Func
 from ....tools.registry import get_tool_display_name
 
 _logger = logging.getLogger(__name__)
-
-def _is_parallel_safe(registry, tool_name: str) -> bool:
-    """通过 metadata 动态查询工具是否并行安全。
-
-    metadata 查询失败时默认返回 False（安全优先）。
-    """
-    try:
-        meta = registry.get_metadata(tool_name)
-        return meta is not None and meta.parallel_safe
-    except Exception:
-        _logger.debug("_is_parallel_safe 查询失败，工具 '%s' 默认返回 False", tool_name, exc_info=True)
-        return False
 
 
 def _safe_json_dumps(obj) -> str:
@@ -76,11 +63,12 @@ class ToolCallbackChain:
     # ── 工具调用主入口 ──────────────────────────────────
 
     async def handle_tool_calls(self, content, tool_calls, reasoning_content=None, usage=None):
-        """处理工具调用，按四波排序执行：
-        Wave 0: user_select 串行（独占终端）
-        Wave 1: 并行安全工具并发（metadata 驱动，parallel_safe=True）
-        Wave 2: 非并行安全工具串行（metadata 驱动，parallel_safe=False）
-        Wave 3: dispatch_agent 并发（SubAgent，前三波完成后执行）
+        """处理工具调用，通过 ToolScheduler.default().schedule() 统一调度。
+
+        ToolScheduler 根据工具数量和依赖关系自动选择执行策略：
+        - 空列表 → 直接返回
+        - 单工具 → execute_async(parallel=False) 直接执行
+        - 多工具 → 构建 ToolDAG 拓扑分层调度，构建失败回退串行
         """
         agent = self._agent
         parse_elapsed = (usage or {}).get("tool_parse_elapsed", 0.0)
@@ -103,58 +91,21 @@ class ToolCallbackChain:
         def _on_after(tc, output, success):
             return self._on_after_tool(tc, output, success)
 
-        # ── DAG 调度执行 ───────────────────────────────
+        # ── ToolScheduler 统一调度 ──────────────────────
+        results: list[tuple[str, str, bool]] = []
         try:
-            from ...tool_dag import ToolDAG
-
-            dag = ToolDAG(tool_calls, agent._async_tool_executor.registry)
-            results_map: dict[str, tuple] = {}  # tool_call_id → (id, output, success)
-
-            if dag.size == 0:
-                pass  # 无工具调用
-            elif dag.size == 1:
-                # 单工具：直接串行执行
-                node = next(iter(dag.nodes.values()))
-                single_call = [{"id": node.tc_id, "name": node.name,
-                                "arguments": node.arguments}]
-                single_result = await agent._async_tool_executor.execute_async(
-                    single_call,
-                    agent_ref=agent,
-                    on_before=_on_before,
-                    on_after=_on_after,
-                    run_method=self._run_tool_method,
-                    parallel=False,
-                )
-                for r in single_result:
-                    results_map[r[0]] = r
-            else:
-                # 多工具：使用 DAG 引擎调度
-                dag_results = await agent._async_tool_executor.execute_dag_async(
-                    dag,
-                    agent_ref=agent,
-                    on_before=_on_before,
-                    on_after=_on_after,
-                    run_method=self._run_tool_method,
-                )
-                for r in dag_results:
-                    results_map[r[0]] = r
-
+            results = await ToolScheduler.default().schedule(
+                tool_calls,
+                agent_ref=agent,
+                on_before=_on_before,
+                on_after=_on_after,
+                run_method=self._run_tool_method,
+            )
         finally:
             # 确保取消/异常时释放 barrier
             if agent._shared_executor is not None:
                 agent._shared_executor._all_done.set()
             agent._shared_executor = None
-
-        # 按原始 tool_calls 顺序重建结果列表
-        results = []
-        for tc in tool_calls:
-            tc_id = tc["id"]
-            if tc_id in results_map:
-                results.append(results_map[tc_id])
-            else:
-                # 极端异常路径：execute_async 未返回某工具的结果
-                _logger.warning("工具结果丢失: %s (id=%s)", tc.get("name", "?"), tc_id)
-                results.append((tc_id, f"错误：工具 '{tc.get('name', '?')}' 结果丢失", False))
 
         successful_tools = []
         failed_tools = []
@@ -254,7 +205,7 @@ class ToolCallbackChain:
             agent.display.tool_done(tool_label, tc["name"], success=True, metadata=metadata)
         else:
             err_preview = (output[:300] + '…') if len(output) > 300 else output
-            agent.display.tool_done(tool_label, tc.get("name", ""), success=False,
+            agent.display.tool_done(tool_label, tc["name"], success=False,
                                     metadata={"output_preview": err_preview})
 
         for _cb in agent._on_tool_completed_callbacks:
