@@ -111,7 +111,7 @@ def _make_round_callbacks(
         # ★ 排出流式输入：queued（Enter提交）优先 → 跳过下轮输入提示
         #   buffer_text（未提交）→ 作为 prefill
         queued, buffer_text = monitor.drain_stream_input()
-        if queued:
+        if queued is not None:
             loop_state["queued_input"] = queued
         elif buffer_text:
             clean = ''.join(c for c in buffer_text

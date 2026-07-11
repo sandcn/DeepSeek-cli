@@ -555,5 +555,176 @@ class TestRunSelectionRaw(unittest.TestCase):
         self.mock_bb.cycle_completion.assert_not_called()
 
 
+class TestPostCbreakDrain(unittest.TestCase):
+    """测试 run_bottom_bar_selection 的 post-cbreak drain 逻辑。
+
+    post-cbreak drain 在 term.cbreak() 上下文进入后、首次 term.inkey()
+    之前执行，使用 select.select（10ms 超时）+ os.read 非阻塞清空
+    cbreak 模式切换后残留的 stdin 字节。
+    """
+
+    def setUp(self):
+        self._stdout = sys.__stdout__
+
+    def tearDown(self):
+        sys.__stdout__ = self._stdout
+
+    def _make_mock_chat_ui(self):
+        """创建模拟 ChatUI，包含活跃的 _BottomBar。"""
+        mock_bb = MagicMock()
+        mock_bb._active = True
+        mock_bb._completion_idx = 0
+        mock_bb.show_completions.return_value = None
+        mock_chat_ui = MagicMock()
+        mock_chat_ui._bottom_bar = mock_bb
+        return mock_chat_ui
+
+    def _make_mock_terminal(self, keys):
+        """创建模拟 Blessed Terminal，按顺序返回 key 列表。"""
+        mock_term = MagicMock()
+        mock_term.__enter__ = MagicMock(return_value=mock_term)
+        mock_term.__exit__ = MagicMock(return_value=False)
+        mock_term.inkey.side_effect = keys
+        return mock_term
+
+    # ── 调用顺序验证 ─────────────────────────────
+
+    def test_drain_called_after_cbreak_before_inkey(self):
+        """验证 select 在 cbreak 后、inkey 前被调用。"""
+        mock_chat_ui = self._make_mock_chat_ui()
+        enter_key = _MockKeystroke(key='\r', is_sequence=False)
+        mock_term = self._make_mock_terminal([enter_key])
+
+        call_order = []
+
+        def _mock_select(rlist, wlist, xlist, timeout=None):
+            call_order.append("select")
+            return ([], [], [])
+
+        # 包装 cbreak 以记录 __enter__ 调用时刻
+        def _record_cbreak(*args, **kwargs):
+            ctx = MagicMock()
+
+            def _enter():
+                call_order.append("cbreak")
+                return mock_term
+
+            ctx.__enter__ = MagicMock(side_effect=_enter)
+            ctx.__exit__ = MagicMock(return_value=False)
+            return ctx
+
+        mock_term.cbreak = MagicMock(side_effect=_record_cbreak)
+
+        # 包装 inkey 以记录首次调用时刻
+        original_inkey = mock_term.inkey
+        def _record_inkey(*args, **kwargs):
+            call_order.append("inkey")
+            return original_inkey(*args, **kwargs)
+
+        mock_term.inkey = MagicMock(side_effect=_record_inkey)
+
+        mock_stdin = MagicMock()
+        mock_stdin.fileno.return_value = 0
+
+        with patch(_CHAT_UI_PATCH, return_value=mock_chat_ui), \
+             patch(_TERMINAL_PATCH, return_value=mock_term), \
+             patch("sys.stdin", mock_stdin), \
+             patch("os.isatty", return_value=True), \
+             patch("select.select", side_effect=_mock_select), \
+             patch("termios.tcflush"), \
+             patch.object(sys, '__stdout__', MagicMock()):
+            result = run_bottom_bar_selection(
+                items=["a", "b"],
+                display_items=["A", "B"],
+            )
+
+        self.assertEqual(result["action"], "confirmed")
+        # 验证调用顺序: cbreak → select → inkey
+        cbreak_idx = call_order.index("cbreak")
+        select_idx = call_order.index("select")
+        inkey_idx = call_order.index("inkey")
+        self.assertLess(cbreak_idx, select_idx,
+                        "select 必须在 cbreak 之后调用")
+        self.assertLess(select_idx, inkey_idx,
+                        "select 必须在 inkey 之前调用")
+
+    # ── 无残余字节 ─────────────────────────────────
+
+    def test_drain_no_residual_bytes_enter_confirms(self):
+        """无残余字节时 drain 立即退出，Enter 确认正常。"""
+        mock_chat_ui = self._make_mock_chat_ui()
+        enter_key = _MockKeystroke(key='\r', is_sequence=False)
+        mock_term = self._make_mock_terminal([enter_key])
+
+        mock_stdin = MagicMock()
+        mock_stdin.fileno.return_value = 0
+
+        # select 返回空 → drain 立即退出
+        def _mock_select(rlist, wlist, xlist, timeout=None):
+            return ([], [], [])
+
+        with patch(_CHAT_UI_PATCH, return_value=mock_chat_ui), \
+             patch(_TERMINAL_PATCH, return_value=mock_term), \
+             patch("sys.stdin", mock_stdin), \
+             patch("os.isatty", return_value=True), \
+             patch("select.select", side_effect=_mock_select), \
+             patch("termios.tcflush"), \
+             patch.object(sys, '__stdout__', MagicMock()):
+            result = run_bottom_bar_selection(
+                items=["a", "b"],
+                display_items=["A", "B"],
+            )
+
+        self.assertEqual(result["action"], "confirmed")
+        self.assertEqual(result["index"], 0)
+
+    # ── 有残余字节 ─────────────────────────────────
+
+    def test_drain_with_residual_bytes_enter_confirms(self):
+        """有残余字节时 drain 消费它们，Enter 确认正常。"""
+        mock_chat_ui = self._make_mock_chat_ui()
+        enter_key = _MockKeystroke(key='\r', is_sequence=False)
+        mock_term = self._make_mock_terminal([enter_key])
+
+        mock_stdin = MagicMock()
+        mock_stdin.fileno.return_value = 0
+
+        # select 第一次返回就绪（残余字节 \n），第二次返回空
+        select_calls = [([0], [], []), ([], [], [])]
+        select_iter = iter(select_calls)
+
+        def _mock_select(rlist, wlist, xlist, timeout=None):
+            try:
+                return next(select_iter)
+            except StopIteration:
+                return ([], [], [])
+
+        # os.read 返回残余 \n 字节
+        os_read_bytes = [b"\n"]
+        os_read_iter = iter(os_read_bytes)
+
+        def _mock_os_read(fd, n):
+            try:
+                return next(os_read_iter)
+            except StopIteration:
+                return b""
+
+        with patch(_CHAT_UI_PATCH, return_value=mock_chat_ui), \
+             patch(_TERMINAL_PATCH, return_value=mock_term), \
+             patch("sys.stdin", mock_stdin), \
+             patch("os.isatty", return_value=True), \
+             patch("select.select", side_effect=_mock_select), \
+             patch("os.read", side_effect=_mock_os_read), \
+             patch("termios.tcflush"), \
+             patch.object(sys, '__stdout__', MagicMock()):
+            result = run_bottom_bar_selection(
+                items=["a", "b"],
+                display_items=["A", "B"],
+            )
+
+        self.assertEqual(result["action"], "confirmed")
+        self.assertEqual(result["index"], 0)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -288,8 +288,14 @@ class StreamInputHandler:
         self._echo(text)
 
     def _enter(self) -> None:
-        """处理流式输入 Enter：保存提交文本、标记就绪、清空缓冲区。"""
+        """处理流式输入 Enter：保存提交文本、标记就绪、清空缓冲区。
+
+        幂等：若 _input_ready 已 set（前一次 Enter 尚未被消费），
+        静默返回，不覆盖 _submitted_text、不重复回显、不重复写历史。
+        """
         with self._lock:
+            if self._input_ready.is_set():
+                return
             text = self._buffer
             self._submitted_text = text
             self._buffer = ""

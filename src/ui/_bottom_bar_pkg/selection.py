@@ -280,6 +280,24 @@ def run_bottom_bar_selection(
     try:
         term = get_terminal()
         with term.cbreak():  # 替代 tty.setcbreak + termios
+            # ── Post-cbreak drain：清空 cbreak 模式切换后残留的 stdin 字节 ──
+            # Android/Termux 环境下，cbreak 模式切换可能导致终端驱动重新产生字节。
+            # 此 drain 作为 tcflush（cbreak 前）的补充防御层——tcflush 清空内核 tty
+            # 缓冲区，而 cbreak 模式切换后可能有新字节到达。
+            try:
+                import select
+                drained = 0
+                while drained < 4096:
+                    ready, _, _ = select.select([fd], [], [], 0.01)
+                    if not ready:
+                        break
+                    chunk = os.read(fd, 4096 - drained)
+                    if not chunk:
+                        break
+                    drained += len(chunk)
+            except Exception:
+                pass
+
             while True:
                 try:
                     key = term.inkey(timeout=None)

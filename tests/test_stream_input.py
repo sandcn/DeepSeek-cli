@@ -737,3 +737,226 @@ class TestSetBufferClearsSubmissionState:
         assert monitor.has_queued_input() is False
         assert monitor.get_queued_input() is None
         assert monitor.get_current_stream_input() == "hello"
+
+
+class TestEnterReentrancy:
+    """_enter() 重入保护测试。
+
+    验证 Fix A：Android/Termux 下 Enter 键发送 \\r\\n 双字节时，
+    _enter() 被调用两次，第二次调用被重入保护跳过，
+    _submitted_text 保持为首次提交的文本。
+    """
+
+    def test_double_enter_second_skipped(self):
+        """\\r+\\n 双字节场景：第二次 _enter() 被跳过，首次提交不被覆盖。
+
+        模拟路径：
+        1. 用户输入 "/editmsg" → buffer
+        2. \\r 到达 → _enter() 被调用 → _submitted_text="/editmsg"
+        3. \\n 到达 → _enter() 再次被调用 → 重入保护跳过
+        4. get_queued_input() 应返回 "/editmsg"
+        """
+        monitor = EscapeMonitor()
+        handler = monitor._input_handler
+
+        # 模拟用户输入 "/editmsg"
+        handler.handle_chars("/editmsg")
+        assert handler.get_current_text() == "/editmsg"
+
+        # 第一次 _enter()（\\r 触发）
+        handler._enter()
+        assert monitor.has_queued_input() is True
+
+        # 第二次 _enter()（\\n 触发）—— 应被重入保护跳过
+        handler._enter()
+
+        # 验证：提交文本仍为首次的 "/editmsg"
+        result = monitor.get_queued_input()
+        assert result == "/editmsg", \
+            f"第二次 _enter() 不应覆盖首次提交，预期 '/editmsg'，实际 {result!r}"
+
+        # 第二次 _enter() 被跳过后不应产生新的排队输入
+        assert monitor.has_queued_input() is False
+
+    def test_double_enter_no_new_queued_input(self):
+        """第二次 _enter() 被跳过后，get_queued_input() 消费首次后返回 None。"""
+        monitor = EscapeMonitor()
+        handler = monitor._input_handler
+
+        handler.handle_chars("hello")
+        handler._enter()          # \\r
+        handler._enter()          # \\n → 跳过
+
+        first = monitor.get_queued_input()
+        assert first == "hello"
+
+        second = monitor.get_queued_input()
+        assert second is None, \
+            f"第二次 _enter() 被跳过，不应产生新排队输入，实际 {second!r}"
+
+    def test_single_enter_normal(self):
+        """正常单次 _enter() 行为不变（回归）。"""
+        monitor = EscapeMonitor()
+        handler = monitor._input_handler
+
+        handler.handle_chars("normal input")
+        handler._enter()
+
+        assert monitor.has_queued_input() is True
+        result = monitor.get_queued_input()
+        assert result == "normal input"
+        assert monitor.has_queued_input() is False
+
+    def test_empty_enter_double_second_skipped(self):
+        """空缓冲区 double _enter()：第二次被跳过，首次空提交保留。"""
+        monitor = EscapeMonitor()
+        handler = monitor._input_handler
+
+        # 空缓冲区连续两次 _enter()
+        handler._enter()          # 首次：提交空字符串
+        handler._enter()          # 第二次：跳过
+
+        result = monitor.get_queued_input()
+        assert result == "", \
+            f"空缓冲区首次 _enter() 应产生空提交，实际 {result!r}"
+
+        # 第二次被跳过，不应再有排队输入
+        assert monitor.get_queued_input() is None
+
+    def test_double_enter_history_written_once(self, tmp_path):
+        """双次 _enter() 仅写入一次历史记录。
+
+        使用隔离的临时历史文件，避免污染全局历史。
+        """
+        import pathlib
+
+        monitor = EscapeMonitor()
+        handler = monitor._input_handler
+
+        # 隔离历史文件
+        history_path = pathlib.Path(tmp_path) / "input_history"
+
+        import src.api.escape_monitor._input_handler as em_input
+        import src.api.escape_monitor._history as em_history
+        import src.api.escape_monitor as em
+        saved_input = em_input.INPUT_HISTORY_FILE
+        saved_history = em_history.INPUT_HISTORY_FILE
+        saved_em = em.INPUT_HISTORY_FILE
+        try:
+            em_input.INPUT_HISTORY_FILE = history_path
+            em_history.INPUT_HISTORY_FILE = history_path
+            em.INPUT_HISTORY_FILE = history_path
+
+            handler._history = []
+            handler.handle_chars("dedup_test")
+            handler._enter()          # \\r → 写入历史
+            handler._enter()          # \\n → 跳过，不写入
+
+            # 验证内存历史仅一条
+            assert handler._history.count("dedup_test") == 1, \
+                f"历史应仅写入一次，实际出现 {handler._history.count('dedup_test')} 次"
+
+            # 验证文件内容仅一条
+            content = history_path.read_text(encoding="utf-8")
+            assert content.count("dedup_test") == 1, \
+                f"历史文件应仅写入一次，实际出现 {content.count('dedup_test')} 次"
+        finally:
+            em_input.INPUT_HISTORY_FILE = saved_input
+            em_history.INPUT_HISTORY_FILE = saved_history
+            em.INPUT_HISTORY_FILE = saved_em
+
+
+class TestDrainAllSemantics:
+    """drain_all() 返回值 None vs "" 语义测试。
+
+    验证 Fix B 的数据流基础：drain_all() 在 _enter() 后返回非 None
+    （即便提交的是空字符串），在无 _enter() 时返回 None。
+    消费端据此区分「空 Enter 提交」与「无 Enter 提交」。
+    """
+
+    def test_drain_all_after_empty_enter_returns_empty_string(self):
+        """空缓冲区 _enter() 后 drain_all() 返回 ("", "") 而非 (None, "")。
+
+        场景：用户按 Enter 但未输入任何内容（空提交）。
+        消费端应能区分空提交（""）与未提交（None）。
+        """
+        monitor = EscapeMonitor()
+        handler = monitor._input_handler
+
+        # 空缓冲区 Enter
+        handler._enter()
+
+        submitted, buffer_text = handler.drain_all()
+        assert submitted == "", \
+            f"空 Enter 后 submitted 应为 ''（空提交），而非 {submitted!r}"
+        assert buffer_text == ""
+        assert submitted is not None, \
+            "空 Enter 后 submitted 不应为 None（None 表示未提交）"
+
+    def test_drain_all_without_enter_returns_none(self):
+        """无 _enter() 时 drain_all() 返回 (None, buffer_text)。
+
+        场景：LLM 生成完成时用户未按 Enter。
+        消费端收到 None → 跳过 queued_input 路径。
+        """
+        monitor = EscapeMonitor()
+        handler = monitor._input_handler
+
+        # 输入字符但未按 Enter
+        handler.handle_chars("typing in progress")
+
+        submitted, buffer_text = handler.drain_all()
+        assert submitted is None, \
+            f"无 Enter 时 submitted 应为 None，而非 {submitted!r}"
+        assert buffer_text == "typing in progress"
+
+    def test_drain_all_after_non_empty_enter_returns_text(self):
+        """非空缓冲区 _enter() 后 drain_all() 返回提交文本。"""
+        monitor = EscapeMonitor()
+        handler = monitor._input_handler
+
+        handler.handle_chars("/editmsg")
+        handler._enter()
+
+        submitted, buffer_text = handler.drain_all()
+        assert submitted == "/editmsg"
+        assert buffer_text == ""
+        assert submitted is not None
+
+    def test_drain_all_after_double_enter_returns_first_submission(self):
+        """Double _enter()（\\r\\n 场景）后 drain_all() 返回首次提交。
+
+        配合 Fix A（_enter() 重入保护），第二次 _enter() 被跳过，
+        drain_all() 返回首次的 _submitted_text，不被覆盖为 ""。
+        """
+        monitor = EscapeMonitor()
+        handler = monitor._input_handler
+
+        handler.handle_chars("/editmsg")
+        handler._enter()          # \\r
+        handler._enter()          # \\n → 重入保护跳过
+
+        submitted, buffer_text = handler.drain_all()
+        assert submitted == "/editmsg", \
+            f"double _enter() 后 submitted 应为首次提交，而非 {submitted!r}"
+
+    def test_drain_all_consumes_submission_once(self):
+        """drain_all() 消费提交文本，后续 get_queued_input() 返回空字符串。
+
+        drain_all() 消费 _submitted_text 后 _input_ready 仍保留，
+        后续 get_queued_input() 返回 ""（空提交），不是 None。
+        这是 drain_all() 的现有契约——仅消费一次提交文本。
+        """
+        monitor = EscapeMonitor()
+        handler = monitor._input_handler
+
+        handler.handle_chars("test")
+        handler._enter()
+        submitted, _ = handler.drain_all()
+        assert submitted == "test"
+
+        # drain_all() 后 buffer 已清空
+        assert handler.get_current_text() == ""
+        # _input_ready 未被 drain_all() 清除（现有契约），
+        # 但 _submitted_text 已被消费，get_queued_input() 返回 ""
+        assert monitor.get_queued_input() == ""
