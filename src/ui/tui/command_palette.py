@@ -31,7 +31,6 @@ _COMMAND_DESC: dict[str, str] = {
     '/retry': '重试上一轮',
     '/edit': '编辑上条输入并重发',
     '/changes': '查看文件变更',
-    '/r': '重新生成回复',
 }
 
 

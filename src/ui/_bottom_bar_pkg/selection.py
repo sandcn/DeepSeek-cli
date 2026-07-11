@@ -46,6 +46,15 @@ def _save_terminal_settings(fd: int):
     return termios.tcgetattr(fd)
 
 
+def _safe_completion_idx(bb, items: list) -> int:
+    """安全获取 completion_idx，越界时回退到 0 并更新 bb。"""
+    idx = bb._completion_idx
+    if not (0 <= idx < len(items)):
+        idx = 0
+        bb._completion_idx = 0
+    return idx
+
+
 def _restore_terminal_settings(fd: int, settings) -> None:
     """恢复终端设置，异常静默。
 
@@ -73,10 +82,13 @@ def _run_selection_raw(
     读取按键输入，手动解析 ANSI CSI 序列。参考 EscapeMonitor._handle_escape()
     的 ANSI 解析风格。
 
-    仅处理以下按键：
+    处理以下按键：
     - 上箭头（\\x1b[A / CSI A）→ bb.cycle_completion(-1)
     - 下箭头（\\x1b[B / CSI B）→ bb.cycle_completion(1)
     - Enter（\\r / \\n）→ 确认选择
+    - r → resume（从此恢复，保留当前消息）
+    - d → delete（从此删除）
+    - R → resume_all（恢复全部）
     - Esc（单独 \\x1b）→ 取消选择
 
     Args:
@@ -87,7 +99,7 @@ def _run_selection_raw(
         bb: _BottomBar 实例。
 
     Returns:
-        {"action": "confirmed"|"cancel"|"error",
+        {"action": "confirmed"|"cancel"|"error"|"resume"|"delete"|"resume_all",
          "index": int | None}
     """
     import select
@@ -121,13 +133,21 @@ def _run_selection_raw(
 
             ch = raw.decode("utf-8", errors="replace")
 
+            # ── r → resume ──
+            if ch == 'r':
+                return {"action": "resume", "index": _safe_completion_idx(bb, items)}
+
+            # ── d → delete ──
+            if ch == 'd':
+                return {"action": "delete", "index": _safe_completion_idx(bb, items)}
+
+            # ── R → resume_all ──
+            if ch == 'R':
+                return {"action": "resume_all", "index": None}
+
             # ── Enter → 确认选择 ──
             if ch in ('\r', '\n'):
-                idx = bb._completion_idx
-                if not (0 <= idx < len(items)):
-                    idx = 0
-                    bb._completion_idx = 0
-                return {"action": "confirmed", "index": idx}
+                return {"action": "confirmed", "index": _safe_completion_idx(bb, items)}
 
             # ── Esc 序列处理 ──
             if ch == '\x1b':
@@ -210,7 +230,7 @@ def run_bottom_bar_selection(
         bottom_bar: _BottomBar 实例（可选）。传入后避免反向依赖 chat_ui 获取底部栏。
 
     Returns:
-        {"action": "confirmed"|"cancel"|"error",
+        {"action": "confirmed"|"cancel"|"error"|"resume"|"delete"|"resume_all",
          "index": int | None}
     """
     fd = sys.stdin.fileno()
@@ -277,23 +297,28 @@ def run_bottom_bar_selection(
                         bb.cycle_completion(1)
                     elif code == _KEY_ENTER:
                         # ★ Android/Termux 终端可能以 KEY_ENTER(343) 序列发送 Enter
-                        idx = bb._completion_idx
-                        if not (0 <= idx < len(items)):
-                            idx = 0
-                            bb._completion_idx = 0
-                        return {"action": "confirmed", "index": idx}
+                        return {"action": "confirmed", "index": _safe_completion_idx(bb, items)}
                     elif code == _KEY_ESCAPE:
                         return {"action": "cancel", "index": None}
                     # 其他序列键忽略
                     continue
 
+                # ── r → resume（从此恢复）──
+                if key == 'r':
+                    return {"action": "resume", "index": _safe_completion_idx(bb, items)}
+
+                # ── d → delete（从此删除）──
+                if key == 'd':
+                    return {"action": "delete", "index": _safe_completion_idx(bb, items)}
+
+                # ── R → resume_all（恢复全部）──
+                # 注意：必须放在 key in ('\r', '\n') 之前，因为 ASCII 中 'R'(82) 与 '\r'(13) 不同
+                if key == 'R':
+                    return {"action": "resume_all", "index": None}
+
                 # ── Enter → 确认 ──
                 if key in ('\r', '\n'):
-                    idx = bb._completion_idx
-                    if not (0 <= idx < len(items)):
-                        idx = 0
-                        bb._completion_idx = 0
-                    return {"action": "confirmed", "index": idx}
+                    return {"action": "confirmed", "index": _safe_completion_idx(bb, items)}
 
                 # ── Esc（单独收到）─
                 if key == '\x1b':

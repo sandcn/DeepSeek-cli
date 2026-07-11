@@ -49,7 +49,7 @@ class OutputManager:
     """
 
     def __init__(self, target: IOutputTarget | None = None) -> None:
-        self._target: IOutputTarget = target or TerminalTarget()
+        self._target: IOutputTarget = target if target is not None else TerminalTarget()
 
     @property
     def target(self) -> IOutputTarget:
@@ -57,7 +57,7 @@ class OutputManager:
 
     @target.setter
     def target(self, new_target: IOutputTarget | None) -> None:
-        self._target = new_target or TerminalTarget()
+        self._target = new_target if new_target is not None else TerminalTarget()
 
     def write(self, text: str) -> None:
         self._target.write(text)

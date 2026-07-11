@@ -121,12 +121,10 @@ class BaseBottomBarSelector(Generic[T, R]):
             return None
 
         display = self._format_display(items)
-        # display 同时传入 items 和 display_items 两个位置参数：
-        # BaseBottomBarSelector 场景仅依赖返回的 index 在本地 items 中查找，
-        # 不依赖 _completion_texts 取值，因此传同一 list 安全。
-        # 若未来 run_bottom_bar_selection 对 items 做字符串操作则需改用独立副本。
+        # items 参数传纯文本（不含 ANSI 码），用 str(item) 转换；
+        # display 保留 ANSI 彩色文本用于显示，与 items 等长确保索引对应。
         result = run_bottom_bar_selection(
-            display, display,
+            [str(item) for item in items], display,
             title=self._get_title(),
             initial_idx=self._get_initial_idx(items),
             bottom_bar=bottom_bar,

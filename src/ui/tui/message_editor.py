@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import logging
 from typing import Any, Callable
+from abc import ABC, abstractmethod
 
 from ..colors import CYAN, DIM, GREEN, RESET, YELLOW, BRIGHT_CYAN, \
     BRIGHT_GREEN, DARK_GRAY, BOLD, BLUE
@@ -119,6 +120,200 @@ def _build_message_items(data: list[dict]) -> list[str]:
 
 
 # ═══════════════════════════════════════════════════════════
+# 命令模式 — MessageCommand 抽象基类
+# ═══════════════════════════════════════════════════════════
+
+
+class MessageCommand(ABC):
+    """消息编辑命令 — 封装对消息列表的编辑操作。
+
+    命令模式 (Command Pattern)：将请求封装为对象，支持参数化、
+    可测试和可扩展的操作。通过 _COMMANDS 注册表按快捷键名查找。
+
+    共享上下文通过构造函数注入，execute() 接收 state dict。
+    """
+
+    def __init__(self, agent: Any, idx_map: list[int], cursor: int = -1) -> None:
+        self.agent = agent
+        self.idx_map = idx_map
+        self.cursor = cursor
+        self.real_idx = idx_map[cursor] if 0 <= cursor < len(idx_map) else -1
+
+    @abstractmethod
+    def execute(self, state: dict) -> bool:
+        """执行命令。
+
+        Args:
+            state: 编辑状态字典（可设置 prefill/retry 等标记）。
+
+        Returns:
+            True 表示有修改，False 表示无操作或取消。
+        """
+        ...
+
+
+class EditCommand(MessageCommand):
+    """编辑命令：截断到光标消息之前，预填旧内容。"""
+
+    def execute(self, state: dict) -> bool:
+        _logger.debug("Executing %s, cursor=%d, real_idx=%d",
+                       self.__class__.__name__, self.cursor, self.real_idx)
+        agent = self.agent
+        if self.real_idx < 0 or not agent.messages:
+            return False
+        old_content = agent.messages[self.real_idx].get("content") or ""
+        target_index = self.real_idx - 1 if self.real_idx > 0 else 0
+        restore_text = _restore_sandbox_to(agent, target_index)
+        if restore_text:
+            publish_output(
+                f"  {BRIGHT_GREEN}\u2714{RESET} {restore_text}",
+                level="raw", source="cmd",
+            )
+        del agent.messages[self.real_idx:]
+        ctx = _disp.MessageDisplayContext.from_agent(agent)
+        publish_output(
+            f"  {BRIGHT_GREEN}\u2714{RESET} \u5df2\u622a\u65ad\u5230\u6d88\u606f #{self.cursor} \uff08\u4fdd\u7559 {BRIGHT_CYAN}{len(ctx.data)}{RESET} \u6761\uff09",
+            level="raw", source="cmd",
+        )
+        # 截断后 data 长度恒等于 cursor（数据流恒等式），仅调试日志验证
+        if self.cursor > len(ctx.data):
+            _logger.debug("EditCommand invariant: cursor=%d > len(ctx.data)=%d (unexpected, see data flow)",
+                           self.cursor, len(ctx.data))
+        _disp.display_messages(ctx.data, ctx.agent, ctx.idx_map, speed=0)
+        state["prefill"] = old_content
+        return True
+
+
+class DeleteCommand(MessageCommand):
+    """删除命令：确认后删除光标消息及之后所有消息。"""
+
+    def execute(self, state: dict) -> bool:
+        _logger.debug("Executing %s, cursor=%d, real_idx=%d",
+                       self.__class__.__name__, self.cursor, self.real_idx)
+        agent = self.agent
+        if self.real_idx < 0 or not agent.messages:
+            return False
+        try:
+            msg_preview = truncate(
+                agent.messages[self.real_idx].get("content", "").strip()
+                or agent.messages[self.real_idx].get("role", ""),
+                30,
+            )
+            locked_print(
+                f"  {THEME['warning']}\u786e\u8ba4\u5220\u9664\u300c{msg_preview}\u300d\u53ca\u4e4b\u540e\u6240\u6709\u6d88\u606f\uff1f(y/N): {RESET}"
+            )
+            confirm = input().strip()
+        except Exception as exc:
+            _logger.debug("DeleteCommand input error: %s", exc)
+            publish_output(
+                f"  {YELLOW}\u26a0{RESET} \u5220\u9664\u64cd\u4f5c\u5f02\u5e38: {exc}",
+                level="raw", source="cmd",
+            )
+            confirm = ""
+        if confirm.lower() != 'y':
+            return False
+        target_index = self.real_idx - 1 if self.real_idx > 0 else 0
+        restore_text = _restore_sandbox_to(agent, target_index)
+        if restore_text:
+            publish_output(
+                f"  {BRIGHT_GREEN}\u2714{RESET} {restore_text}",
+                level="raw", source="cmd",
+            )
+        removed = len(agent.messages) - self.real_idx
+        del agent.messages[self.real_idx:]
+        publish_output(
+            f"  {YELLOW}\u2716{RESET} \u5df2\u5220\u9664 {BRIGHT_CYAN}{removed}{RESET} \u6761\u6d88\u606f",
+            level="raw", source="cmd",
+        )
+        publish_output(
+            f"  {DIM}\u2514 \u7ee7\u7eed\u8f93\u5165\u5f00\u59cb\u5bf9\u8bdd{RESET}",
+            level="raw", source="cmd",
+        )
+        return True
+
+
+class ResumeCommand(MessageCommand):
+    """恢复命令：截断到光标消息之后，保留当前消息。"""
+
+    def execute(self, state: dict) -> bool:
+        _logger.debug("Executing %s, cursor=%d, real_idx=%d",
+                       self.__class__.__name__, self.cursor, self.real_idx)
+        agent = self.agent
+        if self.real_idx < 0 or not agent.messages:
+            return False
+        restore_text = _restore_sandbox_to(agent, self.real_idx)
+        if restore_text:
+            publish_output(
+                f"  {BRIGHT_GREEN}\u2714{RESET} {restore_text}",
+                level="raw", source="cmd",
+            )
+        del agent.messages[self.real_idx + 1:]
+        ctx = _disp.MessageDisplayContext.from_agent(agent)
+        remaining = len(ctx.data)
+        publish_output(
+            f"  {BRIGHT_GREEN}\u2714{RESET} \u5df2\u622a\u65ad\u5230\u6d88\u606f #{self.cursor} \uff08\u4fdd\u7559 {BRIGHT_CYAN}{remaining}{RESET} \u6761\uff09",
+            level="raw", source="cmd",
+        )
+        _disp.display_messages(ctx.data, ctx.agent, ctx.idx_map, speed=0)
+        _check_last_message_role(agent, state)
+        return True
+
+
+class ResumeAllCommand(MessageCommand):
+    """全部恢复命令：恢复全部消息，不做截断。"""
+
+    def __init__(self, agent: Any, idx_map: list[int], **kwargs: object) -> None:
+        # ResumeAllCommand 不需要 cursor，通过 **kwargs 吸收统一 dispatch 传入的 cursor 参数
+        super().__init__(agent, idx_map, cursor=-1)
+
+    def execute(self, state: dict) -> bool:
+        _logger.debug("Executing %s", self.__class__.__name__)
+        agent = self.agent
+        if not agent.messages:
+            return False
+        ctx = _disp.MessageDisplayContext.from_agent(agent)
+        publish_output(
+            f"  {BRIGHT_GREEN}\u2714{RESET} \u5df2\u6062\u590d\u5168\u90e8\u6d88\u606f\uff08\u5171 {BRIGHT_CYAN}{len(ctx.data)}{RESET} \u6761\uff09",
+            level="raw", source="cmd",
+        )
+        _disp.display_messages(ctx.data, ctx.agent, ctx.idx_map, speed=0)
+        _check_last_message_role(agent, state)
+        return True
+
+
+# 命令注册表：action 名 → 命令类映射
+# 由 _interactive_message_select 返回的 action 字符串匹配
+_COMMANDS: dict[str, type[MessageCommand]] = {
+    "edit": EditCommand,
+    "delete": DeleteCommand,
+    "resume": ResumeCommand,
+    "resume_all": ResumeAllCommand,
+}
+
+
+def _check_last_message_role(agent: Any, state: dict) -> None:
+    """检查最后一条消息角色，设置重试提示。"""
+    if not agent.messages:
+        publish_output(
+            f"  {DIM}\u2514 \u7ee7\u7eed\u8f93\u5165\u5f00\u59cb\u5bf9\u8bdd{RESET}",
+            level="raw", source="cmd",
+        )
+        return
+    last_role = agent.messages[-1].get("role", "?")
+    if last_role == "user":
+        publish_output(
+            f"  {BRIGHT_CYAN}\u25b6{RESET} \u6700\u540e\u4e00\u6761\u662f\u7528\u6237\u6d88\u606f\uff0c\u5c06\u81ea\u52a8\u7ee7\u7eed\u751f\u6210\u56de\u590d\u2026",
+            level="raw", source="cmd",
+        )
+        state["retry"] = True
+    else:
+        publish_output(
+            f"  {DIM}\u2514 \u7ee7\u7eed\u8f93\u5165\u5f00\u59cb\u5bf9\u8bdd{RESET}",
+            level="raw", source="cmd",
+        )
+
+
+# ═══════════════════════════════════════════════════════════
 # MessageEditor 类
 # ═══════════════════════════════════════════════════════════
 
@@ -207,142 +402,20 @@ class MessageEditor:
             return ("quit", 0)
 
         real_idx = selectable[result["index"]]
-        return ("edit", real_idx)
 
-    # ── 动作处理 ────────────────────────────────────────
+        # ── 根据 action 类型 dispatch ──
+        if result["action"] == "confirmed":
+            # Enter 键 → 编辑模式
+            return ("edit", real_idx)
+        elif result["action"] == "delete":
+            return ("delete", real_idx)
+        elif result["action"] == "resume":
+            return ("resume", real_idx)
+        elif result["action"] == "resume_all":
+            return ("resume_all", 0)
 
-    def _handle_edit_action(
-        self, agent: Any, state: dict, cursor: int, idx_map: list[int],
-    ) -> bool:
-        """处理 edit action：截断到光标消息之前，预填旧内容。"""
-        real_idx = idx_map[cursor]
-        old_content = agent.messages[real_idx].get("content") or ""
-        target_index = real_idx - 1 if real_idx > 0 else 0
-        restore_text = _restore_sandbox_to(agent, target_index)
-        if restore_text:
-            publish_output(
-                f"  {BRIGHT_GREEN}\u2714{RESET} {restore_text}",
-                level="raw", source="cmd",
-            )
-        del agent.messages[real_idx:]
-        ctx = _disp.MessageDisplayContext.from_agent(agent)
-        publish_output(
-            f"  {BRIGHT_GREEN}\u2714{RESET} \u5df2\u622a\u65ad\u5230\u6d88\u606f #{cursor} \uff08\u4fdd\u7559 {BRIGHT_CYAN}{len(ctx.data)}{RESET} \u6761\uff09",
-            level="raw", source="cmd",
-        )
-        if cursor > len(ctx.data):
-            _logger.warning("cursor=%d \u8d85\u51fa data \u8303\u56f4(%d)\uff0c\u56de\u9000", cursor, len(ctx.data))
-            publish_output(
-                f"  {YELLOW}\u26a0{RESET} \u5185\u90e8\u9519\u8bef: cursor={cursor} \u8d85\u51fa data \u8303\u56f4({len(ctx.data)})",
-                level="raw", source="cmd",
-            )
-            return False
-        _disp.display_messages(ctx.data, ctx.agent, ctx.idx_map, speed=0)
-        state["prefill"] = old_content
-        return True
-
-    def _handle_delete_action(
-        self, agent: Any, cursor: int, idx_map: list[int],
-    ) -> bool:
-        """处理 delete action：确认后删除光标消息及之后所有消息。"""
-        real_idx = idx_map[cursor]
-        try:
-            msg_preview = truncate(
-                agent.messages[real_idx].get("content", "").strip()
-                or agent.messages[real_idx].get("role", ""),
-                30,
-            )
-            locked_print(
-                f"  {THEME['warning']}\u786e\u8ba4\u5220\u9664\u300c{msg_preview}\u300d\u53ca\u4e4b\u540e\u6240\u6709\u6d88\u606f\uff1f(y/N): {RESET}"
-            )
-            confirm = input().strip()
-        except (OSError, ValueError, Exception) as exc:
-            import traceback
-            publish_output(
-                f"  {YELLOW}\u26a0{RESET} \u5220\u9664\u64cd\u4f5c\u5f02\u5e38: {exc}",
-                level="raw", source="cmd",
-            )
-            publish_output(
-                f"  {DIM}{traceback.format_exc()}{RESET}",
-                level="raw", source="cmd",
-            )
-            confirm = ""
-        if confirm.lower() != 'y':
-            return False
-        target_index = real_idx - 1 if real_idx > 0 else 0
-        restore_text = _restore_sandbox_to(agent, target_index)
-        if restore_text:
-            publish_output(
-                f"  {BRIGHT_GREEN}\u2714{RESET} {restore_text}",
-                level="raw", source="cmd",
-            )
-        removed = len(agent.messages) - real_idx
-        del agent.messages[real_idx:]
-        publish_output(
-            f"  {YELLOW}\u2716{RESET} \u5df2\u5220\u9664 {BRIGHT_CYAN}{removed}{RESET} \u6761\u6d88\u606f",
-            level="raw", source="cmd",
-        )
-        publish_output(
-            f"  {DIM}\u2514 \u7ee7\u7eed\u8f93\u5165\u5f00\u59cb\u5bf9\u8bdd{RESET}",
-            level="raw", source="cmd",
-        )
-        return True
-
-    def _check_last_message_role(self, agent: Any, state: dict) -> None:
-        """检查最后一条消息角色，设置重试提示。"""
-        if not agent.messages:
-            publish_output(
-                f"  {DIM}\u2514 \u7ee7\u7eed\u8f93\u5165\u5f00\u59cb\u5bf9\u8bdd{RESET}",
-                level="raw", source="cmd",
-            )
-            return
-        last_role = agent.messages[-1].get("role", "?")
-        if last_role == "user":
-            publish_output(
-                f"  {BRIGHT_CYAN}\u25b6{RESET} \u6700\u540e\u4e00\u6761\u662f\u7528\u6237\u6d88\u606f\uff0c\u5c06\u81ea\u52a8\u7ee7\u7eed\u751f\u6210\u56de\u590d\u2026",
-                level="raw", source="cmd",
-            )
-            state["retry"] = True
-        else:
-            publish_output(
-                f"  {DIM}\u2514 \u7ee7\u7eed\u8f93\u5165\u5f00\u59cb\u5bf9\u8bdd{RESET}",
-                level="raw", source="cmd",
-            )
-
-    def _handle_resume_action(
-        self, agent: Any, state: dict, cursor: int, idx_map: list[int],
-    ) -> bool:
-        """处理 resume action：截断到光标消息之后，保留当前消息。"""
-        real_idx = idx_map[cursor]
-        restore_text = _restore_sandbox_to(agent, real_idx)
-        if restore_text:
-            publish_output(
-                f"  {BRIGHT_GREEN}\u2714{RESET} {restore_text}",
-                level="raw", source="cmd",
-            )
-        del agent.messages[real_idx + 1:]
-        ctx = _disp.MessageDisplayContext.from_agent(agent)
-        remaining = len(ctx.data)
-        publish_output(
-            f"  {BRIGHT_GREEN}\u2714{RESET} \u5df2\u622a\u65ad\u5230\u6d88\u606f #{cursor} \uff08\u4fdd\u7559 {BRIGHT_CYAN}{remaining}{RESET} \u6761\uff09",
-            level="raw", source="cmd",
-        )
-        _disp.display_messages(ctx.data, ctx.agent, ctx.idx_map, speed=0)
-        self._check_last_message_role(agent, state)
-        return True
-
-    def _handle_resume_all_action(self, agent: Any, state: dict) -> bool:
-        """处理 resume_all action：恢复全部消息，不做截断。"""
-        ctx = _disp.MessageDisplayContext.from_agent(agent)
-        publish_output(
-            f"  {BRIGHT_GREEN}\u2714{RESET} \u5df2\u6062\u590d\u5168\u90e8\u6d88\u606f\uff08\u5171 {BRIGHT_CYAN}{len(ctx.data)}{RESET} \u6761\uff09",
-            level="raw", source="cmd",
-        )
-        _disp.display_messages(ctx.data, ctx.agent, ctx.idx_map, speed=0)
-        self._check_last_message_role(agent, state)
-        return True
-
-    # ── 会话管理 ────────────────────────────────────────
+        # 兜底：未识别的 action → quit
+        return ("quit", 0)
 
     # ── 公开入口 ────────────────────────────────────────
 
@@ -367,7 +440,7 @@ class MessageEditor:
         return self._current_session_detail(agent, state)
 
     def _current_session_detail(self, agent: Any, state: dict) -> bool:
-        """选择消息并编辑。"""
+        """选择消息并通过命令模式 dispatch 编辑操作。"""
         ctx = _disp.MessageDisplayContext.from_agent(agent)
         if not ctx.data:
             publish_output(
@@ -379,9 +452,18 @@ class MessageEditor:
         action, cursor = self._interactive_message_select(
             ctx, "\u5f53\u524d\u4f1a\u8bdd", is_current=True,
         )
-        if action == "edit":
-            return self._handle_edit_action(agent, state, cursor, ctx.idx_map)
-        return False
+
+        if action == "quit":
+            return False
+
+        # 通过命令注册表 dispatch
+        cmd_cls = _COMMANDS.get(action)
+        if cmd_cls is None:
+            _logger.warning("_current_session_detail: 未知 action=%s", action)
+            return False
+
+        cmd = cmd_cls(agent, ctx.idx_map, cursor=cursor)
+        return cmd.execute(state)
 
 
 # ═══════════════════════════════════════════════════════════
