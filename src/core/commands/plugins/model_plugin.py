@@ -62,21 +62,22 @@ class ModelPlugin(InteractiveCommandPlugin):
                 #   start 在 finally 中确保选择完成后始终恢复监听，无竞态风险。
                 monitor.stop()
             try:
-                # ★ 流式输入闭包：此路径不会调用 get_user_input，仅做安全兜底
-                def _stream_input(default: str = "", show_prompt: bool = True) -> str:
-                    return default
-
+                from ...commands._config_cmd import _cmd_model
+                from ...internal.commands._command_core import CommandContext
                 from ...commands import CommandUiAdapter
                 _ui_adapter = CommandUiAdapter()
-                cmd_handled = await asyncio.to_thread(
-                    handle_command,
-                    "/model", session.messages, state,
-                    session.agent.build_system_prompt,
-                    _stream_input,
-                    session.context_manager,
-                    session,
-                    _ui_adapter,
+                _cmd_ctx = CommandContext(
+                    messages=session.messages,
+                    state=state,
+                    arg="",
+                    build_system_prompt=session.agent.build_system_prompt,
+                    get_user_input=lambda prompt="": "",
+                    context_manager=session.context_manager,
+                    session=session,
+                    config_port=getattr(session, '_config_port', None),
+                    ui_adapter=_ui_adapter,
                 )
+                cmd_handled = await asyncio.to_thread(_cmd_model, _cmd_ctx)
                 if cmd_handled:
                     new_model = state.get("model")
                     if new_model and new_model != session.model:

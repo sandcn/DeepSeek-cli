@@ -16,6 +16,22 @@ def _cmd_model(ctx):
         default_model = ctx.config_port.get_model()
     else:
         from ...config import MODELS as models, MODEL as default_model  # 配置常量 — 函数体内延迟导入（回退）
+
+    # ── PROVIDERS fallback：MODELS 为空时从所有 PROVIDERS 聚合 ──
+    if not models:
+        try:
+            from ...config.defaults import PROVIDERS
+            _seen: set[str] = set()
+            fallback_models: list[str] = []
+            for _p in PROVIDERS.values():
+                for _m in _p.get("models", []):
+                    if _m not in _seen:
+                        _seen.add(_m)
+                        fallback_models.append(_m)
+            models = fallback_models
+        except Exception:
+            pass
+
     current = ctx.state.get("model", default_model)
     arg = ctx.arg.strip()
 

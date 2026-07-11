@@ -80,7 +80,18 @@ class CompletionEngine:
     def _fetch_models() -> list[str]:
         try:
             from ..config import MODELS
-            return list(MODELS) if MODELS else []
+            if MODELS:
+                return list(MODELS)
+            # MODELS 为空时从所有 PROVIDERS 聚合模型（去重）
+            from ..config.defaults import PROVIDERS
+            _seen: set[str] = set()
+            result: list[str] = []
+            for _p in PROVIDERS.values():
+                for _m in _p.get("models", []):
+                    if _m not in _seen:
+                        _seen.add(_m)
+                        result.append(_m)
+            return result
         except Exception:
             return []
 
