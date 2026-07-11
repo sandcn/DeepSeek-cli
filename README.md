@@ -268,7 +268,7 @@ AI 代理在对话中可调用以下工具完成各类操作。共 **14 个内�
 | `mk` | mk | IO | ✅ | 创建目录，支持递归创建父目录 |
 | `web_search` | ws | 网络 | ❌ | 搜索引擎搜索 + 网页全文抓取（百度/必应/GitHub） |
 | `user_select` | us | 交互 | ❌ | 向用户显示交互式选择界面（单选/多选/超时回退/非交互回退） |
-| `dispatch_agent` | da | Agent | ❌ | 并行派发子 Agent 执行独立任务（支持类型：map/review/plan/read_memory/write_memory/execute） |
+| `dispatch_agent` | da | Agent | ❌ | 并行派发子 Agent 执行独立任务（支持类型：map/think/review/plan/read_memory/write_memory/execute） |
 
 ### 工具分类
 
@@ -347,25 +347,25 @@ ChatUIConsumer
 ```
 ┌──────────────────────────────────────────────────────────────────┐
 │                         Main Agent                               │
-│                   主控 Agent，负责任务调度（7 步工作流）                 │
+│                   主控 Agent，负责任务调度（8 步工作流）                 │
 │                                                                  │
-│  ① 规划 ─→ ② 探底分析 ─→ ③ 记忆检索 ─→ ④ 修改执行 ─→ ⑤ 审查 ─→ ⑥ 验证 ─→ ⑦ 记忆更新（完成）│
-└───────┬───────┬───────┬───────┬───────┬───────┘
-        │       │       │       │       │       │
-        │dispatch│dispatch│dispatch│dispatch│dispatch│dispatch
+│  ① 规划 ─→ ② 探底分析 ─→ ③ 推理 ─→ ④ 记忆检索 ─→ ⑤ 修改执行 ─→ ⑥ 审查 ─→ ⑦ 验证 ─→ ⑧ 记忆更新（完成）│
+└───────┬───────┬───────┬───────┬───────┬───────┬───────┘
+        │       │       │       │       │       │       │
+        │dispatch│dispatch│dispatch│dispatch│dispatch│dispatch│dispatch
         ▼       ▼       ▼       ▼       ▼       ▼
-┌─────────────┐ ┌────────────┐ ┌────────────┐ ┌──────────────┐ ┌─────────────────┐ ┌──────────────────┐
-│ plan        │ │ map        │ │ review     │ │ execute     │ │ read_memory     │ │ write_memory     │
-│ SubAgent    │ │ SubAgent   │ │ SubAgent   │ │ SubAgent    │ │ SubAgent        │ │ SubAgent         │
-│             │ │            │ │            │ │             │ │                 │ │                  │
-│ 计划型      │ │ 只读分析型  │ │ 代码审查型  │ │ 执行型      │ │ 只读记忆型      │ │ 读写记忆型       │
-│             │ │            │ │            │ │             │ │                 │ │                  │
-│ • 任务拆解  │ │ • 项目探底 │ │ • P0-P3    │ │ • 读/写文件 │ │ • 检索记忆索引  │ │ • 新增/更新记忆  │
-│ • 依赖分析  │ │ • 模块地图 │ │   分级审查  │ │ • 修改代码  │ │ • 读取记忆条目  │ │ • 合并记忆条目   │
-│ • 资源估算  │ │ • 调用链   │ │ • 循环审查  │ │ • 创建文件  │ │ • 关键词搜索    │ │ • 写入 .chat/    │
-│ • 风险识别  │ │ • 引用关系 │ │ • 阻断策略  │ │ • 测试运行  │ │                 │ │   memory/        │
-│ • 动态重规划│ │            │ │            │ │ • 执行验证  │ │                 │ │                  │
-└─────────────┘ └────────────┘ └────────────┘ └──────────────┘ └─────────────────┘ └──────────────────┘
+┌─────────────┐ ┌────────────┐ ┌─────────────┐ ┌────────────┐ ┌──────────────┐ ┌─────────────────┐ ┌──────────────────┐
+│ plan        │ │ map        │ │ think       │ │ review     │ │ execute     │ │ read_memory     │ │ write_memory     │
+│ SubAgent    │ │ SubAgent   │ │ SubAgent    │ │ SubAgent   │ │ SubAgent    │ │ SubAgent        │ │ SubAgent         │
+│             │ │            │ │             │ │            │ │             │ │                 │ │                  │
+│ 计划型      │ │ 只读分析型  │ │ 深度推理型  │ │ 代码审查型  │ │ 执行型      │ │ 只读记忆型      │ │ 读写记忆型       │
+│             │ │            │ │             │ │            │ │             │ │                 │ │                  │
+│ • 任务拆解  │ │ • 项目探底 │ │ • 根因分析 │ │ • P0-P3    │ │ • 读/写文件 │ │ • 检索记忆索引  │ │ • 新增/更新记忆  │
+│ • 依赖分析  │ │ • 模块地图 │ │ • 方案对比 │ │   分级审查  │ │ • 修改代码  │ │ • 读取记忆条目  │ │ • 合并记忆条目   │
+│ • 资源估算  │ │ • 调用链   │ │ • 风险评估 │ │ • 循环审查  │ │ • 创建文件  │ │ • 关键词搜索    │ │ • 写入 .chat/    │
+│ • 风险识别  │ │ • 引用关系 │ │ • 架构决策 │ │ • 阻断策略  │ │ • 测试运行  │ │                 │ │   memory/        │
+│ • 动态重规划│ │            │ │ • 假设验证 │ │            │ │ • 执行验证  │ │                 │ │                  │
+└─────────────┘ └────────────┘ └─────────────┘ └────────────┘ └──────────────┘ └─────────────────┘ └──────────────────┘
 ```
 
 ### 工作流说明
@@ -376,19 +376,22 @@ ChatUIConsumer
 2. 探底 ──→  委派 map SubAgent 获取模块地图 + 调用链分析
      │         （只读分析，不修改代码）
      │
-3. 记忆 ──→  委派 read_memory SubAgent 检索相关记忆
+3. 推理 ──→  委派 think SubAgent 深度推理分析（根因分析、方案对比、风险评估）
+     │         基于 map 结果在独立上下文中深度思考
+     │
+4. 记忆 ──→  委派 read_memory SubAgent 检索相关记忆
      │         关键词搜索 .chat/memory/ 目录
      │
-4. 修改 ──→  基于探底结果执行代码修改
+5. 修改 ──→  基于探底+推理结果执行代码修改
      │         多个独立目标可并发派发 execute SubAgent
      │
-5. 审查 ──→  委派 review SubAgent 逐文件审查
+6. 审查 ──→  委派 review SubAgent 逐文件审查
      │         P0/P1/P2 阻断修复，P3 纳入记录
      │         最多三轮循环审查
      │
-6. 验证 ──→  语法检查 → 构建/编译 → 加测试 → 运行测试 → 运行验证
+7. 验证 ──→  语法检查 → 构建/编译 → 加测试 → 运行测试 → 运行验证
      │
-7. 完成 ──→  输出变更总结，委派 write_memory SubAgent 更新跨对话记忆
+8. 完成 ──→  输出变更总结，委派 write_memory SubAgent 更新跨对话记忆
 ```
 
 ### SubAgent 类型
@@ -399,12 +402,13 @@ ChatUIConsumer
 |---|---|---|
 | **plan** | 只读分析 + write_file/update_file（仅限 `.chat/plan/` 目录） | 任务拆解、依赖分析、生成计划文件到 `.chat/plan/` |
 | **map** | 只读（read_file/search/find/ls） | 项目探底、模块地图、调用链追踪、引用关系分析 |
+| **think** | 只读（read_file/search/find/ls） | 深度推理、根因分析、方案对比、架构决策 |
 | **review** | 只读 + web_search | Code Review、P0-P3 分级审查、跨文件一致性验证 |
 | **execute** | 全工具（不含 user_select/dispatch_agent） | 读/写/改代码、执行测试、通用任务 |
 | **read_memory** | 只读（read_file/search/find/ls） | 检索 `.chat/memory/` 目录下的记忆文件 |
 | **write_memory** | 只读 + write_file/update_file/mk（仅限 `.chat/memory/` 目录） | 维护记忆文件（新增/更新/合并条目） |
 
-> **工具排除策略**：execute 排除 `dispatch_agent/user_select`；map 排除 `bash/write_file/update_file/rm/mv/cp/mk/web_search/dispatch_agent/user_select`；review 排除 `bash/write_file/update_file/rm/mv/cp/mk/dispatch_agent/user_select`（保留 web_search）；plan 排除 `bash/rm/mv/cp/mk/dispatch_agent/user_select`，write_file/update_file 仅限 `.chat/plan/` 目录；read_memory 与 map 策略一致（排除所有写入类+web_search+dispatch_agent+user_select）；write_memory 排除 `bash/rm/mv/cp/web_search/dispatch_agent/user_select`，write_file/update_file/mk 仅限 `.chat/memory/` 目录。SubAgent 在 `_handle_tool_calls()` 中注入 `agent_type` 到 Func 实例，`Func.can_use()` 进行统一检查。`FileToolBase._validate_path_and_size()` 额外实施 plan/write_memory Agent 路径白名单校验。
+> **工具排除策略**：execute 排除 `dispatch_agent/user_select`；map 排除 `bash/write_file/update_file/rm/mv/cp/mk/web_search/dispatch_agent/user_select`；think 与 map 策略一致（排除所有写入类+web_search+dispatch_agent+user_select）；review 排除 `bash/write_file/update_file/rm/mv/cp/mk/dispatch_agent/user_select`（保留 web_search）；plan 排除 `bash/rm/mv/cp/mk/dispatch_agent/user_select`，write_file/update_file 仅限 `.chat/plan/` 目录；read_memory 与 map 策略一致（排除所有写入类+web_search+dispatch_agent+user_select）；write_memory 排除 `bash/rm/mv/cp/web_search/dispatch_agent/user_select`，write_file/update_file/mk 仅限 `.chat/memory/` 目录。SubAgent 在 `_handle_tool_calls()` 中注入 `agent_type` 到 Func 实例，`Func.can_use()` 进行统一检查。`FileToolBase._validate_path_and_size()` 额外实施 plan/write_memory Agent 路径白名单校验。
 
 ### 并发调度策略
 
@@ -417,7 +421,7 @@ ChatUIConsumer
 ```
 ├── chat.py                # 入口脚本（asyncio.run(main())）
 ├── pyproject.toml         # 项目配置与依赖
-├── prompts/               # 系统提示词（8 个文件）
+├── prompts/               # 系统提示词（9 个文件）
 │   ├── prompts_export_main.md    # 主 Agent 系统提示词
 │   ├── prompts_export_sub.md     # SubAgent 通用提示词
 │   ├── prompts_export_map.md     # map SubAgent 探底提示词
@@ -425,17 +429,18 @@ ChatUIConsumer
 │   ├── prompts_export_execute.md  # execute SubAgent 提示词
 │   ├── prompts_export_review.md  # review SubAgent 审查提示词
 │   ├── prompts_export_read_memory.md   # read_memory SubAgent 提示词
+│   ├── prompts_export_think.md         # think SubAgent 提示词
 │   └── prompts_export_write_memory.md  # write_memory SubAgent 提示词
-├── tests/                 # 测试（112 个测试文件）
-├── .chat/                 # 运行时数据目录
+├── tests/                 # 测试（128 个测试文件）
+├── .chat/                 # 运行时数据目录（首次运行自动创建）
 │   ├── memory/            # 跨对话记忆系统（索引 + 详情）
 │   ├── plan/              # Plan Agent 计划文件
 │   └── msg_list/          # 会话消息存储（JSON 格式）
 │
 ├── src/                   # 核心源码
 │   ├── app.py             # 入口 re-export
-│   ├── app_init.py        # 应用初始化（参数解析、模式选择）
-│   ├── app_loop.py        # 交互式/单次模式主循环
+│   ├── app_init/          # 应用初始化（参数解析、模式选择）
+│   ├── app_loop/          # 交互式/单次模式主循环
 │   ├── application.py     # 应用层编排（Application、AppMode）
 │   ├── chat_msgs.py       # 对话消息存/取/列/导出
 │   ├── checkpoint.py      # 任务断点保存与恢复
@@ -458,13 +463,7 @@ ChatUIConsumer
 │   │   ├── events.py           # API 事件定义
 │   │   ├── _model_loops.py / _stats_core.py / _stream_lifecycle.py / _token_speed.py / _tool_parse_utils.py  # 内部辅助模块
 │   │   ├── adapters/          # 多模型适配器（DeepSeek/OpenAI/Anthropic/Ollama）
-│   │   └── renderer/          # 增量流式 Markdown 渲染引擎（~99 文件）
-│   │       ├── ast/               # AST 构建→扁平化→优化→渲染
-│   │       ├── vnode/             # VNode 虚拟节点 + Differ 差异计算 + Patcher 补丁应用
-│   │       ├── handlers/          # 块级元素处理器（code/table/mermaid/math/admonition 等）
-│   │       ├── pipeline.py / pipeline_filters/  # 渲染流水线 + 流式优化过滤器
-│   │       └── targets/           # 多目标渲染适配（terminal/web）
-│   │       （另有 `_rendering/`、`_utils/`、`math_symbols/` 等内部辅助子目录）
+│   │   └── _adapter_manager.py   # 适配器管理
 │   │
 │   ├── config/            # 配置系统
 │   │   ├── loader.py          # 配置加载/持久化（~/.chat_config/chatrc.json）
@@ -472,53 +471,73 @@ ChatUIConsumer
 │   │   └── schema.py          # 配置校验
 │   │
 │   ├── core/               # 核心业务逻辑
-│   │   ├── agent.py           # 对话代理（Pipeline 中间件管道）
+│   │   ├── agent.py           # Agent 对话代理（Pipeline 驱动）
 │   │   ├── base_agent.py      # Agent 基类（消息管理、沙盒上下文）
-│   │   ├── session.py         # ChatSession 会话（状态机驱动）
-│   │   ├── _session_persistence.py # 会话持久化辅助（保存/加载/断点管理）
-│   │   ├── _session_messages.py    # 会话消息管理（添加/过滤/属性）
+│   │   ├── agent_di.py        # Agent 依赖注入工厂
+│   │   ├── agent_builder.py   # Agent 构建器
+│   │   ├── session.py         # ChatSession 纯领域会话对象（状态机驱动）
 │   │   ├── state_machine.py   # 会话状态机（INIT→IDLE→RUNNING→COMPLETED/INTERRUPTED）
-│   │   ├── subagent.py        # SubAgent 子代理（含 _TOOL_EXCLUSION_MAP 工具排除策略 + agent_type 注入）
-│   │   ├── _subagent_spawner.py # SubAgentSpawner — 创建/渲染/事件发布
-│   │   ├── _tool_callbacks.py   # ToolCallbackChain — 工具生命周期回调（before/after/run）
-│   │   ├── _command_core.py     # 命令核心 — 调度基础设施、注册表、帮助文本
-│   │   ├── _capture_manager.py  # stdout 捕获管理器（工具输出捕获）
-│   │   ├── message_queue.py     # MessageQueue — 异步消息队列（asyncio.Queue）
-│   │   ├── message_edit.py      # 消息编辑功能
-│   │   ├── file_change_record.py # 文件变更记录
-│   │   ├── pipeline.py        # 中间件处理管道（Pipeline.run_round_async）
+│   │   ├── subagent.py        # SubAgent 子代理（含 _TOOL_EXCLUSION_MAP 工具权限策略）
+│   │   ├── pipeline.py        # Pipeline 中间件管道（Model-Execute 循环编排）
 │   │   ├── compression.py     # 上下文压缩（策略模式）
 │   │   ├── context_manager.py # 上下文管理器 + 消息上限控制
 │   │   ├── context_selector.py / context_summarizer.py
+│   │   ├── message_queue.py   # MessageQueue 异步消息队列
+│   │   ├── message_edit.py    # 消息编辑功能
+│   │   ├── file_change_record.py # 文件变更记录
 │   │   ├── sandbox_manager.py # 文件沙盒管理器
-│   │   ├── _sandbox_history.py   # 文件历史记录管理器（按消息索引查询/恢复）
-│   │   ├── parallel_executor.py # ParallelExecutor — 并行 SubAgent 调度（批量模式）
-│   │   ├── tool_executor_async.py # AsyncToolExecutor — 异步工具执行器
-│   │   ├── cache.py             # 增量统计缓存
-│   │   ├── _message_stats_cache.py # 消息统计缓存（每消息字符/token 增量维护）
-│   │   ├── constants.py          # 主题常量
-│   │   ├── commands.py           # 命令系统入口
-│   │   ├── commands/              # 命令插件子模块
-│   │   ├── commands_config.py / commands_data.py / commands_session.py
+│   │   ├── parallel_executor.py # ParallelExecutor 并行 SubAgent 调度
+│   │   ├── tool_executor_async.py # AsyncToolExecutor 异步工具执行器
+│   │   ├── tool_dag.py        # 工具 DAG 调度
+│   │   ├── cache.py           # 增量统计缓存
+│   │   ├── constants.py       # 主题常量
+│   │   ├── commands.py        # 命令系统入口
+│   │   ├── commands/          # 命令插件子模块（含 base / _ui_adapter / plugins/）
+│   │   ├── exceptions.py      # 异常定义
+│   │   ├── hooks.py           # Hook 系统
+│   │   ├── internal/          # 内部实现子模块
+│   │   │   ├── agent/         # Agent 内部（spawner / callbacks / capture）
+│   │   │   ├── shared/        # 共享工具（sandbox_history / stats_cache）
+│   │   │   ├── session/       # 会话内部（persistence / messages）
+│   │   │   └── commands/      # 命令内部（_command_core / _config_cmd / _data_cmd / _session_cmd）
 │   │   ├── events/            # 核心事件总线 + 事件类型
 │   │   ├── middleware/        # Pipeline 中间件（审计/中断/状态机/可观测性/工具适配器）
-│   │   ├── ports/             # 六边形架构端口定义（14 个端口）
+│   │   ├── ports/             # 六边形架构端口定义（8 个端口）
 │   │   └── telemetry/         # 可观测性（指标/追踪/上下文传播）
 │   │
 │   ├── chat_ui/            # 终端聊天渲染引擎
-│   │   ├── _consumer.py       # 事件消费者（队列 → 增量渲染），持有 CursorTracker 实例注入所有子系统
-│   │   ├── _engine.py         # 增量渲染引擎（render 线程 10Hz），集成 CursorTracker 坐标同步
-│   │   ├── _dispatcher.py     # 事件分发（11 种事件类型 → 渲染命令）
-│   │   ├── _renderer.py       # 渲染器集合（15 种 _do_* 方法，集成 CursorTracker 行数追踪）
-│   │   ├── _render_state.py   # 渲染状态管理
-│   │   ├── _completion.py     # Tab 命令/会话 ID 自动补全
-│   │   ├── _components.py     # 组件层（TuiComponent 基类 + 12 个子类）
-│   │   ├── _const.py          # 渲染相关常量定义
-│   │   ├── _protocols.py      # 渲染协议定义
-│   │   ├── _state.py          # 渲染状态追踪
-│   │   ├── _utils.py          # 渲染工具函数
-│   │   ├── _error_handler.py  # 日志→上屏（日志显示在底部栏上方）
-│   │   └── _lock.py           # 渲染锁（re-export ui._lock 全局锁对象）
+│   │   ├── consumer.py        # 事件消费者（队列 → 增量渲染），持有 CursorTracker 实例注入所有子系统
+│   │   ├── engine.py          # 增量渲染引擎（render 线程 10Hz），集成 CursorTracker 坐标同步
+│   │   ├── dispatcher.py      # 事件分发（11 种事件类型 → 渲染命令）
+│   │   ├── renderer.py        # 渲染器集合（15 种 _do_* 方法，集成 CursorTracker 行数追踪）
+│   │   ├── render_state.py    # 渲染状态管理
+│   │   ├── completion.py      # Tab 命令/会话 ID 自动补全
+│   │   ├── components/        # 组件层（TuiComponent 基类 + 12 个子类）
+│   │   ├── const.py           # 渲染相关常量定义
+│   │   ├── protocols.py       # 渲染协议定义
+│   │   ├── state.py           # 渲染状态追踪
+│   │   ├── utils.py           # 渲染工具函数
+│   │   ├── error_handler.py   # 日志→上屏（日志显示在底部栏上方）
+│   │   ├── factory.py         # 渲染器工厂
+│   │   ├── lock.py            # 渲染锁（re-export ui._lock 全局锁对象）
+│   │
+│   ├── renderer/           # 增量流式 Markdown 渲染引擎
+│   │   ├── engine.py          # RenderEngine 渲染引擎
+│   │   ├── pipeline.py        # TokenPipeline 过滤器链
+│   │   ├── recursive_parser.py # 递归下降解析器
+│   │   ├── types.py           # Token/TokenType/RenderContext 类型
+│   │   ├── states.py          # 渲染状态
+│   │   ├── factory.py         # 渲染器工厂
+│   │   ├── protocols.py       # 渲染协议
+│   │   ├── output.py          # OutputAdapter 输出适配器
+│   │   ├── indicator.py       # 流式指示器
+│   │   ├── ast/               # AST 构建→扁平化→优化→渲染
+│   │   ├── handlers/          # 块级元素处理器（code/table/mermaid/math/admonition 等）
+│   │   ├── targets/           # 多目标渲染适配（terminal/web）
+│   │   ├── pipeline_filters/  # 流式优化过滤器
+│   │   ├── math_symbols/      # 数学符号定义
+│   │   ├── _rendering/        # 内部渲染辅助
+│   │   └── _utils/            # 内部工具函数
 │   │
 │   ├── tools/              # 工具调用系统（14 个内置工具）
 │   │   ├── base.py            # Func 基类 + 元数据系统（含 can_use 工具可用性检查 / agent_type）
@@ -539,12 +558,7 @@ ChatUIConsumer
 │   │   ├── display.py         # 显示系统（含 ANSI 输出、ParallelDisplay）
 │   │   ├── theme.py           # 主题（dark/light/high-contrast）
 │   │   ├── _cursor_tracker.py # ★ 全局光标坐标追踪系统（1-based row/col，save/restore 检查点）
-│   │   ├── _bottom_bar.py     # 底部固定输入栏（3 行），集成 CursorTracker 坐标同步
-│   │   ├── _bottom_bar_completion.py # 底部补全弹窗，集成 CursorTracker
-│   │   ├── _bottom_bar_status.py     # 底部栏状态行格式化
-│   │   ├── _bottom_bar_theme.py      # 底部栏主题颜色常量
-│   │   ├── _bottom_bar_selection.py  # 底部栏交互选择
-│   │   ├── _bottom_cursor.py         # 光标视觉位置计算
+│   │   ├── _bottom_bar_pkg/   # 底部栏组件包（bar / completion / cursor / draw / selection / status / theme / blessed）
 │   │   ├── _completion.py     # Tab 命令/路径自动补全
 │   │   ├── _lock.py           # 输出锁机制（render 线程独占）
 │   │   ├── _stdout_tracker.py # stdout 行追踪器
@@ -592,22 +606,18 @@ ChatUIConsumer
 
 ## 六边形架构（Ports & Adapters）
 
-核心层通过 **14 个端口接口** 访问基础设施，实现依赖倒置——核心层不直接依赖 `api`、`ui`、`chat_msgs` 等具体实现模块，基础设施层通过适配器模式实现这些端口。
+核心层通过 **8 个端口接口** 访问基础设施，实现依赖倒置——核心层不直接依赖 `api`、`ui`、`chat_msgs` 等具体实现模块，基础设施层通过适配器模式实现这些端口。
 
 | 端口 | 文件 | 说明 |
 |------|------|------|
 | `ConfigPort` | `ports/config.py` | 配置管理（读取/写入/默认值） |
-| `AsyncModelPort` | `ports/model.py` | 异步模型调用（LLM API） |
-| `CachePort` | `cache.py` | 通用缓存（LRU / Null 实现） |
-| `StatsPort` | `ports/stats.py` | 统计收集（Token 用量等） |
+| `AsyncModelPort` | `ports/model.py` | 异步模型调用（LLM API）+ ModelResult |
 | `PersistencePort` | `ports/persistence.py` | 会话持久化（JSON 文件存储） |
 | `CheckpointPort` | `ports/persistence.py` | 任务断点保存与恢复 |
-| `DisplayPort` | `ports/display.py` | 用户显示输出 |
 | `EventPort` | `ports/events.py` | 事件总线发布/订阅 |
 | `InterruptPort` | `ports/interrupt.py` | 中断信号检查 |
-| `ToolRegistryPort` | `ports/tool_registry.py` | 工具注册表访问 |
-| `PromptBuilderPort` | `ports/prompt_builder.py` | 系统提示词构建 |
-| `HttpClientPort` | `ports/http.py` | HTTP 客户端 |
+| `ObservabilityPort` | `ports/observability.py` | 可观测性（指标/追踪） |
+| `ModelResult` | `ports/model.py` | 模型调用结果数据类（input/output tokens / tool_calls） |
 
 **设计原则**：所有端口均为 Protocol 或抽象基类，核心层仅依赖端口接口，不感知具体实现。测试时可通过 Mock 适配器替换基础设施，实现核心逻辑的独立单元测试。
 
