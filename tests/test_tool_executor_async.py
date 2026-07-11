@@ -81,15 +81,15 @@ class TestInit:
         executor = ToolScheduler(registry)
         assert executor._registry is registry
 
-    def test_semaphore_created(self):
-        """创建 Semaphore(20)"""
+    def test_semaphore_not_created_when_unlimited(self):
+        """_MAX_CONCURRENT_TOOLS=0 时不创建 Semaphore（无限制）"""
+        ToolScheduler._semaphore = None  # 重置
         executor = ToolScheduler(MagicMock(spec=ToolRegistry))
-        assert isinstance(ToolScheduler._semaphore, asyncio.Semaphore)
-        assert ToolScheduler._semaphore._value == _MAX_CONCURRENT_TOOLS
+        assert ToolScheduler._semaphore is None
 
-    def test_semaphore_value_matches_constant(self):
-        """Semaphore 的值与 _MAX_CONCURRENT_TOOLS 一致"""
-        assert _MAX_CONCURRENT_TOOLS == 20
+    def test_max_concurrent_tools_is_zero(self):
+        """_MAX_CONCURRENT_TOOLS == 0 表示无限制"""
+        assert _MAX_CONCURRENT_TOOLS == 0
 
     def test_default_singleton(self):
         """ToolScheduler.default() 返回同一实例"""
@@ -102,11 +102,16 @@ class TestInit:
     def test_class_level_semaphore(self):
         """多个 ToolScheduler 实例共享同一 Semaphore"""
         ToolScheduler.reset_default()
+        ToolScheduler._semaphore = None  # 重置类级状态
         reg = MagicMock(spec=ToolRegistry)
         s1 = ToolScheduler(reg)
         s2 = ToolScheduler(reg)
-        assert ToolScheduler._semaphore is not None
-        assert s1._semaphore is s2._semaphore  # 通过类访问同一实例
+        if _MAX_CONCURRENT_TOOLS > 0:
+            assert ToolScheduler._semaphore is not None
+            assert s1._semaphore is s2._semaphore
+        else:
+            # 无限制模式下不创建 Semaphore
+            assert ToolScheduler._semaphore is None
         ToolScheduler.reset_default()
 
 
@@ -537,7 +542,9 @@ class TestExecuteParallel:
 
     @pytest.mark.asyncio
     async def test_semaphore_limits_concurrency(self, executor):
-        """验证 Semaphore 限制并发数不超过 _MAX_CONCURRENT_TOOLS"""
+        """验证 Semaphore 限制并发数不超过 _MAX_CONCURRENT_TOOLS（无限制模式下跳过）"""
+        if _MAX_CONCURRENT_TOOLS == 0:
+            pytest.skip("_MAX_CONCURRENT_TOOLS=0 表示无限制，跳过并发限制测试")
         N = _MAX_CONCURRENT_TOOLS * 2  # 40 个工具
         concurrent_max = 0
         current_concurrent = 0
@@ -628,7 +635,9 @@ class TestExecuteParallel:
 
     @pytest.mark.asyncio
     async def test_first_error_cancel_semaphore_scenario(self, executor, registry):
-        """首错取消 + semaphore 混合场景"""
+        """首错取消 + semaphore 混合场景（无限制模式下跳过）"""
+        if _MAX_CONCURRENT_TOOLS == 0:
+            pytest.skip("_MAX_CONCURRENT_TOOLS=0 表示无限制，跳过 semaphore 混合场景测试")
         N = _MAX_CONCURRENT_TOOLS + 5
         tool_calls = [
             {"id": f"call_{i}", "name": "tool", "arguments": {}}

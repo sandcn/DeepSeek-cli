@@ -30,7 +30,7 @@ _logger = logging.getLogger(__name__)
 # ------------------------------------------------------------
 _default_scheduler: Optional[ToolScheduler] = None
 
-_MAX_CONCURRENT_TOOLS = 20  # 最大并发工具数，防止资源耗尽
+_MAX_CONCURRENT_TOOLS = 0  # 最大并发工具数，0 表示无限制
 
 
 class ToolScheduler:
@@ -52,8 +52,8 @@ class ToolScheduler:
         """
         self._registry = registry or ToolRegistry.default()
 
-        # 类级 Semaphore 懒初始化（跨所有实例共享）
-        if ToolScheduler._semaphore is None:
+        # 类级 Semaphore 懒初始化（跨所有实例共享，0 表示无限制）
+        if ToolScheduler._semaphore is None and _MAX_CONCURRENT_TOOLS > 0:
             ToolScheduler._semaphore = asyncio.Semaphore(_MAX_CONCURRENT_TOOLS)
 
     @classmethod
@@ -404,20 +404,24 @@ class ToolScheduler:
         on_after: Optional[Callable] = None,
         run_method: Optional[Callable] = None,
     ) -> List[Tuple[str, str, bool]]:
-        """并发执行工具调用列表，使用类级 Semaphore 限流 + FIRST_EXCEPTION 级联取消。"""
+        """并发执行工具调用列表，使用类级 Semaphore 限流（0 表示无限制）+ FIRST_EXCEPTION 级联取消。"""
         sem = ToolScheduler._semaphore
 
-        async def _run_with_semaphore(tc):
-            async with sem:
-                return await self._execute_one_async(
-                    tc,
-                    agent_ref=agent_ref,
-                    on_before=on_before,
-                    on_after=on_after,
-                    run_method=run_method,
-                )
+        async def _run_one(tc):
+            if sem is not None:
+                async with sem:
+                    return await self._execute_one_async(
+                        tc, agent_ref=agent_ref,
+                        on_before=on_before, on_after=on_after,
+                        run_method=run_method,
+                    )
+            return await self._execute_one_async(
+                tc, agent_ref=agent_ref,
+                on_before=on_before, on_after=on_after,
+                run_method=run_method,
+            )
 
-        tasks = {asyncio.ensure_future(_run_with_semaphore(tc)): tc for tc in tool_calls}
+        tasks = {asyncio.ensure_future(_run_one(tc)): tc for tc in tool_calls}
         results_map: dict[str, tuple[str, str, bool]] = {}
 
         try:
