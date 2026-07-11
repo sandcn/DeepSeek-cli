@@ -159,11 +159,18 @@ class StreamInputHandler:
         self._echo_callback = callback
 
     def set_buffer(self, text: str) -> None:
-        """设置缓冲区文本（用于预填），光标移到末尾。线程安全。"""
+        """设置缓冲区文本（用于预填），光标移到末尾。线程安全。
+
+        同时清除残留的提交状态（_submitted_text / _input_ready），
+        防止在 set_prefill 路径中残留的空提交覆盖预填内容。
+        清理逻辑与 reset() 一致。
+        """
         with self._lock:
             self._buffer = text
             self._cursor_pos = len(text)
             self._history_idx = -1
+            self._submitted_text = ""
+            self._input_ready.clear()
 
     @staticmethod
     def _unescape(line: str) -> str:

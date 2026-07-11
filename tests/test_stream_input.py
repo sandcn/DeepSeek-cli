@@ -687,3 +687,53 @@ class TestMultiProcessHistory:
         # 锁释放后，验证文件未被追加
         content = self._test_path.read_text(encoding="utf-8")
         assert "should_fail" not in content
+
+
+class TestSetBufferClearsSubmissionState:
+    """set_buffer() 清除残留提交状态回归测试。
+
+    验证 /editmsg prefill 丢失 Bug 的修复：set_buffer() 在设置
+    缓冲区文本时清除残留的 _input_ready / _submitted_text，
+    防止 spurious Enter 产生的空提交覆盖预填内容。
+    """
+
+    def test_set_buffer_clears_input_ready_after_enter(self):
+        """spurious Enter 后 set_buffer 清除残留的空提交状态。
+
+        模拟 Bug 触发路径：消息选择弹窗中残留的 \\r/\\n 字节触发 _enter()，
+        设置 _input_ready=True、_submitted_text=""。随后 set_buffer()
+        应清除该残留状态，使 get_queued_input() 返回 None 而非 ""。
+        """
+        monitor = EscapeMonitor()
+        # 模拟 spurious Enter（空缓冲区提交）
+        monitor._input_handler._enter()
+        assert monitor.has_queued_input() is True  # 确认残留状态存在
+
+        # set_buffer 清除残留提交状态
+        monitor._input_handler.set_buffer("prefill text")
+
+        assert monitor.has_queued_input() is False
+        assert monitor.get_queued_input() is None
+
+    def test_set_buffer_clears_non_empty_submitted_text(self):
+        """非空提交文本被 set_buffer 清除，不被 get_queued_input 返回。"""
+        monitor = EscapeMonitor()
+        # 输入字符后按 Enter，产生非空提交
+        monitor._input_handler.handle_chars("some text")
+        monitor._input_handler._enter()
+        assert monitor.has_queued_input() is True
+
+        # set_buffer 清除残留的非空提交
+        monitor._input_handler.set_buffer("new content")
+
+        assert monitor.get_queued_input() is None  # 而非 "some text"
+        assert monitor.get_current_stream_input() == "new content"
+
+    def test_set_buffer_without_prior_enter_returns_none(self):
+        """无 prior Enter 时 set_buffer 正常工作（回归基准）。"""
+        monitor = EscapeMonitor()
+        monitor._input_handler.set_buffer("hello")
+
+        assert monitor.has_queued_input() is False
+        assert monitor.get_queued_input() is None
+        assert monitor.get_current_stream_input() == "hello"
