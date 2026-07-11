@@ -65,7 +65,10 @@ class EditmsgPlugin(InteractiveCommandPlugin):
                 chat_ui.write_line(
                     f"  {YELLOW}\u26a0{RESET} \u5f53\u524d\u4f1a\u8bdd\u65e0\u7528\u6237\u6d88\u606f\uff0c\u8bf7\u5148\u53d1\u9001\u6d88\u606f\u540e\u518d\u4f7f\u7528 /editmsg"
                 )
-            return False
+            # ★ 返回 True：命令已被识别并处理（输出了提示信息），阻止调用方输出"未知命令"。
+            #   其他插件（LoopPlugin/ModelPlugin）在参数校验失败路径也返回 True，
+            #   editmsg 只有返回 True 才能避免 _handle_command_msg 的 else 分支误报。
+            return True
 
         if chat_ui is not None:
             chat_ui.suspend()

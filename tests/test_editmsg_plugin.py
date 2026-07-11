@@ -136,15 +136,19 @@ async def test_no_prefill_keeps_retry_pending(EditmsgPlugin, mock_loop, mock_ctx
 
 
 @pytest.mark.asyncio
-async def test_no_user_msg_returns_false(EditmsgPlugin, mock_loop, mock_ctx, mock_session):
-    """会话无 user 消息时，提前返回 False 且不调用 suspend/stop"""
+async def test_no_user_msg_returns_true(EditmsgPlugin, mock_loop, mock_ctx, mock_session):
+    """会话无 user 消息时，提前返回 True（命令已被识别并处理）且不调用 suspend/stop
+
+    返回 True 阻止 _handle_command_msg 的 else 分支输出"未知命令"误导提示。
+    其他插件（LoopPlugin/ModelPlugin）在参数校验失败路径也返回 True。
+    """
     plugin = EditmsgPlugin()
     plugin.bind_loop(mock_loop)
     mock_session.messages = [{"role": "assistant", "content": "hi"}]
 
     result = await plugin.async_execute(mock_ctx)
 
-    assert result is False
+    assert result is True
     # 不应进入编辑交互（无 user 消息）
     mock_session.sync_retry_pending.assert_not_called()
     mock_session.reset_retry_pending.assert_not_called()
