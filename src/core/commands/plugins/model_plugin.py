@@ -3,7 +3,7 @@
 无参数时：暂停 ChatUIConsumer + 停止 EscapeMonitor，
 让底部栏补全弹窗交互选择模型，选择完成后恢复两者。
 
-有参数时：直接切换模型（走通用 handle_command 路径，无需 suspend）。
+有参数时：直接调用 _cmd_model 切换模型（无需 suspend）。
 """
 
 from __future__ import annotations
@@ -14,7 +14,6 @@ from typing import Any
 
 from .base import InteractiveCommandPlugin
 from ..base import CommandMeta, get_plugin_registry
-from ...internal.commands._command_core import handle_command
 
 _logger = logging.getLogger(__name__)
 
@@ -23,7 +22,7 @@ class ModelPlugin(InteractiveCommandPlugin):
     """切换模型 (/model)
 
     无参数时使用底部栏补全弹窗交互选择模型（需 suspend/resume）；
-    有参数时直接切换（走通用 handle_command 路径）。
+    有参数时直接调用 _cmd_model 切换模型。
     """
 
     def __init__(self):
@@ -36,8 +35,8 @@ class ModelPlugin(InteractiveCommandPlugin):
     async def async_execute(self, ctx: Any) -> bool:
         """异步执行 /model 命令
 
-        无参数 → Picker 交互（suspend/stop → handle_command → resume/start）
-        有参数 → 直接切换（走通用 handle_command 路径）
+        无参数 → Picker 交互（suspend/stop → _cmd_model → resume/start）
+        有参数 → 直接切换（调用 _cmd_model）
         """
         loop = self._loop
         if loop is None:
@@ -89,20 +88,22 @@ class ModelPlugin(InteractiveCommandPlugin):
                     chat_ui.resume()
         else:
             # ★ 有参数 → 直接切换（无需 suspend）
-            def _stream_input(default: str = "", show_prompt: bool = True) -> str:
-                return chat_ui.wait_for_user_input(monitor, prefill=default) if chat_ui else default
-
+            from ...commands._config_cmd import _cmd_model
+            from ...internal.commands._command_core import CommandContext
             from ...commands import CommandUiAdapter
             _ui_adapter = CommandUiAdapter()
-            cmd_handled = await asyncio.to_thread(
-                handle_command,
-                f"/model {ctx.arg}", session.messages, state,
-                session.agent.build_system_prompt,
-                _stream_input,
-                session.context_manager,
-                session,
-                _ui_adapter,
+            _cmd_ctx = CommandContext(
+                messages=session.messages,
+                state=state,
+                arg=ctx.arg,
+                build_system_prompt=session.agent.build_system_prompt,
+                get_user_input=lambda prompt="": "",
+                context_manager=session.context_manager,
+                session=session,
+                config_port=getattr(session, '_config_port', None),
+                ui_adapter=_ui_adapter,
             )
+            cmd_handled = await asyncio.to_thread(_cmd_model, _cmd_ctx)
             if cmd_handled:
                 new_model = state.get("model")
                 if new_model and new_model != session.model:

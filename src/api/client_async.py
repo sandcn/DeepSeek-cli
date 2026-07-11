@@ -22,7 +22,7 @@ import httpx
 from ..config import (
     HTTP_CONNECT_TIMEOUT, HTTP_READ_TIMEOUT, HTTP_WRITE_TIMEOUT,
     HTTP_MAX_CONNECTIONS, HTTP_MAX_CONNECTIONS_PER_HOST, HTTP_KEEP_ALIVE_TIMEOUT,
-    HTTP_ENABLE_POOL, HTTP_ENABLE_HTTP2, API_KEY, BASE_URL,
+    HTTP_ENABLE_POOL, HTTP_ENABLE_HTTP2, API_KEY,
 )
 
 _logger = logging.getLogger(__name__)
@@ -229,7 +229,8 @@ async def chat_completions_async(
     payload.update({k: v for k, v in extra.items()
                     if k not in ("model", "messages", "stream", "stream_options", "tools")})
 
-    url = BASE_URL
+    from .. import config as _cfg
+    url = _cfg.BASE_URL
     headers = _headers()
 
     if not stream:
@@ -267,7 +268,8 @@ async def chat_completions_async_anthropic(
     payload.update({k: v for k, v in extra.items()
                     if k not in ("model", "messages", "stream", "tools")})
 
-    api_base = (base_url or BASE_URL).rstrip("/")
+    from .. import config as _cfg
+    api_base = (base_url or _cfg.BASE_URL).rstrip("/")
     url = f"{api_base}/messages"
     headers = _headers_anthropic()
 

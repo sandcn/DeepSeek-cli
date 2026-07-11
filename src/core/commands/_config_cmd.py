@@ -7,6 +7,22 @@ from ..internal.commands._command_core import CommandContext, show_cost
 _out = get_default_output_port()
 
 
+# ── 辅助函数：根据模型名推断 provider ─────────────────
+def _infer_model_provider(model_name: str) -> str | None:
+    """遍历 PROVIDERS，返回模型名对应的 provider 名称，未找到返回 None。
+
+    模块级函数，可供 _special_keys.py 等外部模块导入使用。
+    """
+    try:
+        from ...config.defaults import PROVIDERS as _providers
+        for _p_name, _p_cfg in _providers.items():
+            if model_name in _p_cfg.get("models", []):
+                return _p_name
+    except (ImportError, KeyError):
+        pass
+    return None
+
+
 # ── /model 命令 ─────────────────────────────────────────
 
 def _cmd_model(ctx):
@@ -32,6 +48,25 @@ def _cmd_model(ctx):
         except Exception:
             pass
 
+    # ── 辅助函数：根据模型名同步 provider ──────────────
+    def _sync_provider(model_name: str) -> None:
+        """若模型对应的 provider 与当前不一致，更新 RC（通过闭包使用外层 ctx）"""
+        inferred = _infer_model_provider(model_name)
+        if inferred is None:
+            return  # 自定义模型，不修改 provider
+        # 获取当前 provider
+        if ctx.config_port is not None:
+            current_provider = ctx.config_port.get("provider", "")
+        else:
+            try:
+                from ...config.loader import get_rc as _get_rc
+                current_provider = _get_rc().get("provider", "")
+            except (ImportError, KeyError):
+                current_provider = ""
+        if inferred != current_provider:
+            from ...config.loader import update_config as _upd
+            _upd("provider", inferred)
+
     current = ctx.state.get("model", default_model)
     arg = ctx.arg.strip()
 
@@ -43,6 +78,7 @@ def _cmd_model(ctx):
             if 1 <= idx <= len(models):
                 selected = models[idx - 1]
                 ctx.state["model"] = selected
+                _sync_provider(selected)
                 _out.write(f"{GREEN}  + 已切换到 {selected}{RESET}", level="raw", source="cmd")
                 return True
             _out.write(f"{YELLOW}  ! 无效序号，范围 1-{len(models)}{RESET}", level="raw", source="cmd")
@@ -51,6 +87,7 @@ def _cmd_model(ctx):
         matched = [m for m in models if arg.lower() in m.lower()]
         if len(matched) == 1:
             ctx.state["model"] = matched[0]
+            _sync_provider(matched[0])
             _out.write(f"{GREEN}  + 已切换到 {matched[0]}{RESET}", level="raw", source="cmd")
             return True
         elif len(matched) > 1:
@@ -91,6 +128,7 @@ def _cmd_model(ctx):
         selected = models[result["index"]]
         if selected != current:
             ctx.state["model"] = selected
+            _sync_provider(selected)
             _out.write(f"{GREEN}  + 已切换到 {selected}{RESET}", level="raw", source="cmd")
         else:
             _out.write(f"{DIM}  当前已是 {selected}{RESET}", level="raw", source="cmd")

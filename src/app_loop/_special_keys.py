@@ -61,6 +61,18 @@ def make_special_key_callback(loop, session, state, chat_ui):
                     return None
             session.model = next_model
             state.model = next_model
+            # ── 同步 provider（与 /model 命令逻辑一致） ─────
+            try:
+                from ..core.commands._config_cmd import _infer_model_provider
+                from ..config.loader import get_rc, update_config
+                _inferred = _infer_model_provider(next_model)
+                if _inferred is not None:
+                    _current_provider = get_rc().get("provider", "")
+                    if _inferred != _current_provider:
+                        update_config("provider", _inferred)
+            except (ImportError, KeyError):
+                pass
+            # ────────────────────────────────────────────────
             if chat_ui is not None:
                 chat_ui.bottom_bar.set_model_name(next_model)
                 chat_ui.on_notification(f"+ 已切换到 {next_model}")
