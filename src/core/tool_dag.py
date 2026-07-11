@@ -187,77 +187,174 @@ class ToolDAG:
     # ── 隐式依赖检测（path 重叠） ──────────────────────────
 
     @staticmethod
-    def _extract_path(arguments: dict) -> str | None:
-        """统一提取工具参数中的 'path' 参数，归一化后返回
+    def _extract_tool_paths(name: str, arguments: dict) -> tuple[set[str], set[str]]:
+        """提取工具调用涉及的所有路径，按读/写分类并归一化
 
-        支持：
-        - ``{"path": "..."}``
-        - ``{"file_path": "..."}``（部分工具的替代参数名）
-        - 返回 ``os.path.realpath`` 归一化后的绝对路径
+        Args:
+            name: 工具名
+            arguments: 工具参数字典
+
+        Returns:
+            (write_paths, read_paths): 写入路径集合（含创建/删除/移动），读取路径集合
+
+        各工具的路径提取规则：
+        - write_file/update_file/rm/mk → path 为写入路径
+        - cp → destination 为写入路径，source 为读取路径
+        - mv → destination 为写入路径，source 也为写入路径（源被删除）
+        - read_file/search/find/ls → path 为读取路径
+        - bash → 无法静态分析，不提取
         """
-        path_val = arguments.get("path") or arguments.get("file_path")
-        if path_val is None or not isinstance(path_val, str) or not path_val.strip():
-            return None
-        try:
-            return os.path.realpath(os.path.abspath(path_val.strip()))
-        except (OSError, ValueError):
-            return os.path.abspath(path_val.strip())
+        write_paths: set[str] = set()
+        read_paths: set[str] = set()
+
+        def _normalize(p: str) -> str | None:
+            if not isinstance(p, str) or not p.strip():
+                return None
+            try:
+                return os.path.realpath(os.path.abspath(p.strip()))
+            except (OSError, ValueError):
+                return os.path.abspath(p.strip())
+
+        # ── path 参数 ──
+        # write_file/update_file → 写入；rm → 删除；mk → 创建
+        # read_file/search/find/ls → 读取
+        path_val = arguments.get("path")
+        np = _normalize(path_val) if path_val else None
+        if np:
+            if name in ("read_file", "search", "find", "ls"):
+                read_paths.add(np)
+            else:
+                write_paths.add(np)
+
+        # ── file_path 参数别名（防御性：当前无工具使用此参数名） ──
+        fp_val = arguments.get("file_path")
+        nfp = _normalize(fp_val) if fp_val else None
+        if nfp:
+            _logger.debug("_extract_tool_paths: 工具 '%s' 使用了 file_path 参数: '%s'", name, nfp)
+            if name in ("read_file", "search", "find", "ls"):
+                read_paths.add(nfp)
+            else:
+                write_paths.add(nfp)
+
+        # ── destination 参数 (cp/mv) → 写入目标 ──
+        dest_val = arguments.get("destination")
+        nd = _normalize(dest_val) if dest_val else None
+        if nd:
+            write_paths.add(nd)
+
+        # ── source 参数 (cp/mv) ──
+        src_val = arguments.get("source")
+        ns = _normalize(src_val) if src_val else None
+        if ns:
+            if name == "mv":
+                # mv 会删除 source → 写入操作（路径被修改）
+                write_paths.add(ns)
+            else:
+                # cp 仅读取 source
+                read_paths.add(ns)
+
+        return write_paths, read_paths
 
     def _detect_path_overlap(self) -> None:
-        """检测文件路径重叠导致的隐式依赖
+        """检测文件路径重叠导致的隐式依赖（支持多路径工具如 cp/mv）
 
         规则：
-        - read/write 同文件路径：read 依赖 write（读最新内容）
-        - write/write 同文件路径：后者依赖前者（写顺序保证）
-        - read/read 同文件路径：无依赖（并行安全）
+        - 读依赖写（读最新内容）：节点 A 读路径 P，节点 B 写路径 P → A 依赖 B
+        - 写依赖写（写顺序保证）：节点 A 写路径 P，节点 B 写路径 P → 后者依赖前者
+        - 读依赖读：无依赖（并行安全）
         - 不同路径：无依赖
-
-        只有 ``parallel_safe=False`` 的写入工具（write_file/update_file/bash/mv/cp/rm）
-        才作为被依赖方（前置写入者）。
+        - 多路径工具（cp/mv）：每个路径分别参与上述规则判定
         """
-        # 先收集所有有 path 参数的节点
-        path_nodes: dict[str, list[ToolCallNode]] = {}
+        # 第一步：收集每个节点的写入路径和读取路径
+        node_write_paths: dict[str, set[str]] = {}
+        node_read_paths: dict[str, set[str]] = {}
+        has_any_path: set[str] = set()  # 有路径信息的节点
+
         for tc_id, node in self._nodes.items():
-            path = self._extract_path(node.arguments)
-            if path:
-                path_nodes.setdefault(path, []).append(node)
+            write_paths, read_paths = self._extract_tool_paths(node.name, node.arguments)
+            if write_paths or read_paths:
+                node_write_paths[tc_id] = write_paths
+                node_read_paths[tc_id] = read_paths
+                has_any_path.add(tc_id)
 
-        # 对每个路径下的节点检测依赖
-        WRITE_TOOLS = {"write_file", "update_file", "bash", "mv", "cp", "rm", "mk"}
+        if not has_any_path:
+            return
 
-        for path, nodes in path_nodes.items():
-            if len(nodes) <= 1:
-                continue
+        # 第二步：构建路径→节点索引，区分写入者和读取者
+        # write_index: path → [(tc_id, original_order_index), ...]
+        # read_index:  path → [tc_id, ...]
+        write_index: dict[str, list[tuple[str, int]]] = {}
+        read_index: dict[str, list[str]] = {}
 
-            for i, node_a in enumerate(nodes):
-                for j, node_b in enumerate(nodes):
-                    if i >= j:
-                        continue  # 只处理 i<j，避免重复边 且 不处理自环
+        for tc_id in has_any_path:
+            order = self._original_order.index(tc_id) if tc_id in self._original_order else -1
 
-                    a_is_write = node_a.name in WRITE_TOOLS
-                    b_is_write = node_b.name in WRITE_TOOLS
+            for wp in node_write_paths.get(tc_id, set()):
+                write_index.setdefault(wp, []).append((tc_id, order))
 
-                    # 读依赖同一路径的写入（先写后读）
-                    if a_is_write and not b_is_write:
-                        # node_b (read) 依赖 node_a (write)
-                        node_b.dependencies.add(node_a.tc_id)
-                        node_a.dependents.add(node_b.tc_id)
-                    elif b_is_write and not a_is_write:
-                        # node_a (read) 依赖 node_b (write)
-                        node_a.dependencies.add(node_b.tc_id)
-                        node_b.dependents.add(node_a.tc_id)
-                    elif a_is_write and b_is_write:
-                        # 同路径写入：后者依赖前者（按 creation 时间）
-                        # 如果 write 路径相同，按原始顺序决定
-                        order_a = self._original_order.index(node_a.tc_id) if node_a.tc_id in self._original_order else -1
-                        order_b = self._original_order.index(node_b.tc_id) if node_b.tc_id in self._original_order else -1
-                        if order_a < order_b:
-                            node_b.dependencies.add(node_a.tc_id)
-                            node_a.dependents.add(node_b.tc_id)
-                        elif order_b < order_a:
-                            node_a.dependencies.add(node_b.tc_id)
-                            node_b.dependents.add(node_a.tc_id)
-                    # read/read → 无依赖（并行安全）
+            for rp in node_read_paths.get(tc_id, set()):
+                read_index.setdefault(rp, []).append(tc_id)
+
+        all_paths = set(write_index.keys()) | set(read_index.keys())
+
+        # 第三步：对每个路径检测依赖
+        for path in all_paths:
+            writers = write_index.get(path, [])
+            readers = read_index.get(path, [])
+
+            # —— 写依赖写：同路径写入者按原始顺序串行化 ——
+            if len(writers) >= 2:
+                # 按原始顺序排序
+                writers_sorted = sorted(writers, key=lambda x: x[1])
+                for k in range(len(writers_sorted) - 1):
+                    earlier_id = writers_sorted[k][0]
+                    later_id = writers_sorted[k + 1][0]
+                    self._nodes[later_id].dependencies.add(earlier_id)
+                    self._nodes[earlier_id].dependents.add(later_id)
+
+            # —— 读依赖写：每个读取者依赖所有写入者 ——
+            if writers and readers:
+                for writer_id, _ in writers:
+                    for reader_id in readers:
+                        if reader_id != writer_id:
+                            self._nodes[reader_id].dependencies.add(writer_id)
+                            self._nodes[writer_id].dependents.add(reader_id)
+
+            # read/read → 无依赖（并行安全）
+
+        # —— 第四步：父子路径依赖（父目录创建先于子路径写入/读取） ——
+        # 当工具 A 写入路径 P，工具 B 写入/读取路径 Q，
+        # 且 P 是 Q 的父目录（Q 路径以 P 为前缀）时，B 依赖 A
+        # 确保父目录先创建完毕，子路径操作才能正常执行
+        write_path_list = list(write_index.keys())
+        for i in range(len(write_path_list)):
+            p_parent = write_path_list[i]
+            p_parent_with_sep = p_parent + os.sep
+            for j in range(len(write_path_list)):
+                if i == j:
+                    continue
+                p_child = write_path_list[j]
+                # 检查 p_parent 是否是 p_child 的父目录
+                # 使用 p_parent + os.sep 前缀匹配，避免将自身误判为子路径
+                if p_child.startswith(p_parent_with_sep):
+                    # p_parent 中的写入者是 p_child 中写入者/读取者的前置依赖
+                    parent_writers = write_index[p_parent]
+                    child_writers = write_index.get(p_child, [])
+                    child_readers = read_index.get(p_child, [])
+
+                    # 子路径写入者依赖父路径写入者
+                    for cw_id, _ in child_writers:
+                        for pw_id, _ in parent_writers:
+                            if cw_id != pw_id:
+                                self._nodes[cw_id].dependencies.add(pw_id)
+                                self._nodes[pw_id].dependents.add(cw_id)
+
+                    # 子路径读取者依赖父路径写入者
+                    for cr_id in child_readers:
+                        for pw_id, _ in parent_writers:
+                            if cr_id != pw_id:
+                                self._nodes[cr_id].dependencies.add(pw_id)
+                                self._nodes[pw_id].dependents.add(cr_id)
 
     # ── user_select 独占层约束 ──────────────────────────────
 

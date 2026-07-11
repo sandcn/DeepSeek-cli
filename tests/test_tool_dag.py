@@ -267,6 +267,208 @@ class TestImplicitDependencies:
         assert len(dag.get_node("call_A").dependencies) == 0
         assert len(dag.get_node("call_B").dependencies) == 0
 
+    # ── cp/mv 多路径依赖检测 ───────────────────────────────
+
+    def test_cp_destination_overlap_with_mk(self):
+        """cp(dst=X) + mk(path=X) → cp 依赖 mk（写同一目标路径）"""
+        tool_calls = [
+            {"id": "call_A", "name": "mk",
+             "arguments": {"path": "/tmp/outdir", "parents": True}},
+            {"id": "call_B", "name": "cp",
+             "arguments": {"source": "/tmp/a.txt", "destination": "/tmp/outdir"}},
+        ]
+        dag = ToolDAG(tool_calls, _make_registry())
+        assert "call_A" in dag.get_node("call_B").dependencies
+
+    def test_cp_destination_overlap_with_rm(self):
+        """cp(dst=X) + rm(path=X) → 后者依赖前者（写同一目标路径）"""
+        tool_calls = [
+            {"id": "call_A", "name": "cp",
+             "arguments": {"source": "/tmp/a.txt", "destination": "/tmp/out.txt"}},
+            {"id": "call_B", "name": "rm",
+             "arguments": {"path": "/tmp/out.txt"}},
+        ]
+        dag = ToolDAG(tool_calls, _make_registry())
+        assert "call_A" in dag.get_node("call_B").dependencies
+
+    def test_cp_destination_overlap_with_cp(self):
+        """cp(dst=X) + cp(dst=X) → 后者依赖前者（写同一目标路径）"""
+        tool_calls = [
+            {"id": "call_A", "name": "cp",
+             "arguments": {"source": "/tmp/a.txt", "destination": "/tmp/out.txt"}},
+            {"id": "call_B", "name": "cp",
+             "arguments": {"source": "/tmp/b.txt", "destination": "/tmp/out.txt"}},
+        ]
+        dag = ToolDAG(tool_calls, _make_registry())
+        assert "call_A" in dag.get_node("call_B").dependencies
+
+    def test_cp_source_is_read_only(self):
+        """cp(source=X) 只读 source，不写 source → 不对 source 产生写冲突"""
+        tool_calls = [
+            {"id": "call_A", "name": "cp",
+             "arguments": {"source": "/tmp/a.txt", "destination": "/tmp/b.txt"}},
+            {"id": "call_B", "name": "cp",
+             "arguments": {"source": "/tmp/a.txt", "destination": "/tmp/c.txt"}},
+        ]
+        dag = ToolDAG(tool_calls, _make_registry())
+        # 两个 cp 都读 source "/tmp/a.txt"，不写它 → 无依赖
+        assert len(dag.get_node("call_A").dependencies) == 0
+        assert len(dag.get_node("call_B").dependencies) == 0
+
+    def test_cp_read_source_depends_on_write(self):
+        """cp(source=X) 读 X + write_file(path=X) 写 X → cp 依赖 write_file"""
+        tool_calls = [
+            {"id": "call_A", "name": "write_file",
+             "arguments": {"path": "/tmp/a.txt", "content": "hello"}},
+            {"id": "call_B", "name": "cp",
+             "arguments": {"source": "/tmp/a.txt", "destination": "/tmp/b.txt"}},
+        ]
+        dag = ToolDAG(tool_calls, _make_registry())
+        assert "call_A" in dag.get_node("call_B").dependencies
+
+    def test_cp_destination_overlap_with_write_file(self):
+        """cp(dst=X) + write_file(path=X) → 按原始顺序串行化"""
+        tool_calls = [
+            {"id": "call_A", "name": "cp",
+             "arguments": {"source": "/tmp/a.txt", "destination": "/tmp/out.txt"}},
+            {"id": "call_B", "name": "write_file",
+             "arguments": {"path": "/tmp/out.txt", "content": "data"}},
+        ]
+        dag = ToolDAG(tool_calls, _make_registry())
+        assert "call_A" in dag.get_node("call_B").dependencies
+
+    def test_mv_destination_overlap_with_cp(self):
+        """mv(dst=X) + cp(dst=X) → 后者依赖前者"""
+        tool_calls = [
+            {"id": "call_A", "name": "mv",
+             "arguments": {"source": "/tmp/a.txt", "destination": "/tmp/out.txt"}},
+            {"id": "call_B", "name": "cp",
+             "arguments": {"source": "/tmp/b.txt", "destination": "/tmp/out.txt"}},
+        ]
+        dag = ToolDAG(tool_calls, _make_registry())
+        assert "call_A" in dag.get_node("call_B").dependencies
+
+    def test_mv_source_is_write(self):
+        """mv(source=X) 删除 source → read_file(path=X) 依赖 mv"""
+        tool_calls = [
+            {"id": "call_A", "name": "mv",
+             "arguments": {"source": "/tmp/a.txt", "destination": "/tmp/b.txt"}},
+            {"id": "call_B", "name": "read_file",
+             "arguments": {"path": "/tmp/a.txt"}},
+        ]
+        dag = ToolDAG(tool_calls, _make_registry())
+        assert "call_A" in dag.get_node("call_B").dependencies
+
+    def test_mk_cp_rm_same_target_serialized(self):
+        """mk(path=DIR) + cp(src, dst=DIR/sub/) + rm(path=DIR/sub/)
+        mk 创建父目录 → cp 写子路径（父子路径依赖）→ rm 同子路径（精确匹配）
+        完全串行化三层"""
+        tool_calls = [
+            {"id": "call_A", "name": "mk",
+             "arguments": {"path": "/tmp/mydir", "parents": True}},
+            {"id": "call_B", "name": "cp",
+             "arguments": {"source": "/tmp/x.txt",
+                           "destination": "/tmp/mydir/sub/"}},
+            {"id": "call_C", "name": "rm",
+             "arguments": {"path": "/tmp/mydir/sub/", "recursive": True}},
+        ]
+        dag = ToolDAG(tool_calls, _make_registry())
+        layers = dag.topological_sort()
+        assert layers is not None
+        # call_A (mk /tmp/mydir) 是父目录 → call_B (cp → /tmp/mydir/sub/) 依赖 call_A
+        # call_C (rm /tmp/mydir/sub/) 与 call_B 同精确路径 → 依赖 call_B
+        # 并且 call_C 也因父子路径依赖 call_A
+        assert len(layers) == 3
+        assert layers[0] == ["call_A"]
+        assert layers[1] == ["call_B"]
+        assert layers[2] == ["call_C"]
+
+    def test_cp_and_mk_different_paths_parallel(self):
+        """cp(dst=X) + mk(path=Y) → 不同路径，可并行"""
+        tool_calls = [
+            {"id": "call_A", "name": "cp",
+             "arguments": {"source": "/tmp/a.txt", "destination": "/tmp/out1.txt"}},
+            {"id": "call_B", "name": "mk",
+             "arguments": {"path": "/tmp/otherdir"}},
+        ]
+        dag = ToolDAG(tool_calls, _make_registry())
+        layers = dag.topological_sort()
+        assert layers is not None
+        assert len(layers) == 1
+        assert set(layers[0]) == {"call_A", "call_B"}
+
+    def test_cp_read_write_with_write_same_path(self):
+        """write(path=X) + cp(src=X, dst=Y) + read(path=Y)
+        写 X → cp 读 X 写 Y → 读 Y，三层全串行"""
+        tool_calls = [
+            {"id": "call_A", "name": "write_file",
+             "arguments": {"path": "/tmp/data.txt", "content": "hello"}},
+            {"id": "call_B", "name": "cp",
+             "arguments": {"source": "/tmp/data.txt",
+                           "destination": "/tmp/copy.txt"}},
+            {"id": "call_C", "name": "read_file",
+             "arguments": {"path": "/tmp/copy.txt"}},
+        ]
+        dag = ToolDAG(tool_calls, _make_registry())
+        layers = dag.topological_sort()
+        assert layers is not None
+        assert len(layers) == 3
+        # call_A 写 data.txt → call_B 读 data.txt（依赖 call_A），写 copy.txt → call_C 读 copy.txt（依赖 call_B）
+        assert layers[0] == ["call_A"]
+        assert layers[1] == ["call_B"]
+        assert layers[2] == ["call_C"]
+
+    # ── 父子路径依赖检测 ───────────────────────────────────
+
+    def test_parent_dir_mk_before_child_cp(self):
+        """mk(path=DIR) + cp(dst=DIR/file) → cp 依赖 mk（父子路径，父目录先创建）"""
+        tool_calls = [
+            {"id": "call_A", "name": "mk",
+             "arguments": {"path": "/tmp/mydir", "parents": True}},
+            {"id": "call_B", "name": "cp",
+             "arguments": {"source": "/tmp/x.txt",
+                           "destination": "/tmp/mydir/file.txt"}},
+        ]
+        dag = ToolDAG(tool_calls, _make_registry())
+        assert "call_A" in dag.get_node("call_B").dependencies
+
+    def test_parent_dir_mk_before_child_write(self):
+        """mk(path=DIR) + write_file(path=DIR/sub/a.txt) → write_file 依赖 mk"""
+        tool_calls = [
+            {"id": "call_A", "name": "mk",
+             "arguments": {"path": "/tmp/mydir", "parents": True}},
+            {"id": "call_B", "name": "write_file",
+             "arguments": {"path": "/tmp/mydir/sub/a.txt", "content": "data"}},
+        ]
+        dag = ToolDAG(tool_calls, _make_registry())
+        assert "call_A" in dag.get_node("call_B").dependencies
+
+    def test_parent_dir_read_after_child_write(self):
+        """write_file(path=DIR/sub/x) + read_file(path=DIR) → read_file 不依赖 write_file
+        （读父目录不需要子目录文件已写入；父子路径只处理 child→parent 方向）"""
+        tool_calls = [
+            {"id": "call_A", "name": "write_file",
+             "arguments": {"path": "/tmp/mydir/sub/x.txt", "content": "data"}},
+            {"id": "call_B", "name": "read_file",
+             "arguments": {"path": "/tmp/mydir"}},
+        ]
+        dag = ToolDAG(tool_calls, _make_registry())
+        # 父子路径检测只处理"child 的写入/读取依赖 parent 的写入"，不支持 parent→child 反向
+        assert "call_A" not in dag.get_node("call_B").dependencies
+
+    def test_sibling_paths_no_parent_child_dep(self):
+        """同一父目录下的兄弟路径 → 无父子路径依赖"""
+        tool_calls = [
+            {"id": "call_A", "name": "write_file",
+             "arguments": {"path": "/tmp/mydir/a.txt", "content": "hello"}},
+            {"id": "call_B", "name": "write_file",
+             "arguments": {"path": "/tmp/mydir/b.txt", "content": "world"}},
+        ]
+        dag = ToolDAG(tool_calls, _make_registry())
+        # 兄弟路径，无父子关系，写不同文件可并行
+        assert len(dag.get_node("call_A").dependencies) == 0
+        assert len(dag.get_node("call_B").dependencies) == 0
+
 
 # ═══════════════════════════════════════════════════════════════
 # user_select 独占层约束
