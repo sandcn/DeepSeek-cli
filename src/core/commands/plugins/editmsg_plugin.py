@@ -13,6 +13,7 @@ from typing import Any
 
 from .base import InteractiveCommandPlugin
 from ..base import CommandMeta, get_plugin_registry
+from ....ui.colors import YELLOW, RESET
 
 _logger = logging.getLogger(__name__)
 
@@ -52,6 +53,20 @@ class EditmsgPlugin(InteractiveCommandPlugin):
         session = ctx.session
         state = ctx.state  # dict: {"model": ..., "retry": ..., "prefill": ...}
 
+        # ── 预检查：会话中是否有 user 消息可编辑 ──
+        # 必须在 suspend/stop 之前检查，避免无编辑可做时仍进行不必要的终端模式切换。
+        # 没有 user 消息时直接提示返回，不进入编辑交互。
+        has_user_msg = any(
+            m.get("role") == "user"
+            for m in getattr(session, 'messages', []) or []
+        )
+        if not has_user_msg:
+            if chat_ui is not None:
+                chat_ui.write_line(
+                    f"  {YELLOW}\u26a0{RESET} \u5f53\u524d\u4f1a\u8bdd\u65e0\u7528\u6237\u6d88\u606f\uff0c\u8bf7\u5148\u53d1\u9001\u6d88\u606f\u540e\u518d\u4f7f\u7528 /editmsg"
+                )
+            return False
+
         if chat_ui is not None:
             chat_ui.suspend()
         if monitor is not None:
@@ -88,7 +103,13 @@ class EditmsgPlugin(InteractiveCommandPlugin):
             if chat_ui is not None:
                 chat_ui.resume()
 
-        # ★ 编辑后重新渲染剩余消息到上屏（scroll 区域内）
+        # ★ 编辑后反馈：编辑失败（未产生 prefill/retry）时给用户明确提示
+        if not needs_rerender and chat_ui is not None:
+            chat_ui.write_line(
+                f"  {YELLOW}\u26a0{RESET} \u672a\u7f16\u8f91\u4efb\u4f55\u6d88\u606f\uff0c\u5df2\u53d6\u6d88"
+            )
+
+        # ★ 编辑生效后重新渲染剩余消息到上屏（scroll 区域内）
         # 通过 ChatUI 的 command queue 统一渲染，避免直接 stdout 写入
         # 与 render 线程（_drain_queue → force_redraw）的并发竞态。
         if needs_rerender and chat_ui is not None:

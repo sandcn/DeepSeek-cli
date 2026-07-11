@@ -24,12 +24,17 @@ from unittest.mock import MagicMock, PropertyMock, patch
 
 @pytest.fixture
 def mock_session():
-    """创建 mock ChatSession，支持 sync_retry_pending / reset_retry_pending"""
+    """创建 mock ChatSession，支持 sync_retry_pending / reset_retry_pending
+
+    默认包含一条 user 消息，使 /editmsg 预检查通过（有可编辑的用户消息）。
+    测试需模拟"无 user 消息"场景时单独设置 session.messages = []。
+    """
     session = MagicMock()
     session.sync_retry_pending = MagicMock()
     session.reset_retry_pending = MagicMock()
     session.agent = MagicMock()
     session.agent.messages = []
+    session.messages = [{"role": "user", "content": "hello"}]
     return session
 
 
@@ -128,6 +133,24 @@ async def test_no_prefill_keeps_retry_pending(EditmsgPlugin, mock_loop, mock_ctx
     mock_session.sync_retry_pending.assert_called_once()
     # 无 prefill → 不调用 reset_retry_pending
     mock_session.reset_retry_pending.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_no_user_msg_returns_false(EditmsgPlugin, mock_loop, mock_ctx, mock_session):
+    """会话无 user 消息时，提前返回 False 且不调用 suspend/stop"""
+    plugin = EditmsgPlugin()
+    plugin.bind_loop(mock_loop)
+    mock_session.messages = [{"role": "assistant", "content": "hi"}]
+
+    result = await plugin.async_execute(mock_ctx)
+
+    assert result is False
+    # 不应进入编辑交互（无 user 消息）
+    mock_session.sync_retry_pending.assert_not_called()
+    mock_session.reset_retry_pending.assert_not_called()
+    # 不应调用 suspend/stop（预检查在之前返回）
+    mock_loop._chat_ui.suspend.assert_not_called()
+    mock_loop._monitor.stop.assert_not_called()
 
 
 @pytest.mark.asyncio
