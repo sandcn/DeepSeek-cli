@@ -222,3 +222,53 @@ class TestRenderNormalNarrow:
         assert isinstance(result, str)
         assert "\033[0m" in result  # 确保有样式重置
 
+
+class TestCompactThreshold:
+    """P2-8: 验证 _STATUS_BAR_COMPACT_THRESHOLD = 50 的边界行为。"""
+
+    def test_threshold_is_50(self):
+        """阈值应为 50（与 EXTRA_NARROW_THRESHOLD 对齐）。"""
+        from src.ui.tui.status_bar import _STATUS_BAR_COMPACT_THRESHOLD
+        assert _STATUS_BAR_COMPACT_THRESHOLD == 50
+
+    def test_compact_mode_at_49(self, monkeypatch):
+        """宽度 < 50 时进入精简模式（仅模型名+消息数）。"""
+        monkeypatch.setattr("src.ui.tui.status_bar.is_narrow", lambda: True)
+        monkeypatch.setattr("src.ui.tui.status_bar.get_terminal_width", lambda: 49)
+        state = UISessionState(
+            model="gpt-4", message_count=3,
+            input_tokens=100, output_tokens=200,
+            status_text="running",
+        )
+        parts = build_normal_parts(state, narrow=True)
+        # 精简模式：只应包含模型名和消息数，不含 token/状态文本
+        joined = " ".join(parts)
+        assert "gpt-4" in joined
+        assert "3m" in joined
+        assert "100" not in joined  # token 不显示
+        assert "running" not in joined  # 状态文本不显示
+
+    def test_full_mode_at_50(self, monkeypatch):
+        """宽度 = 50 时不进入精简模式（含详细信息）。"""
+        monkeypatch.setattr("src.ui.tui.status_bar.is_narrow", lambda: True)
+        monkeypatch.setattr("src.ui.tui.status_bar.get_terminal_width", lambda: 50)
+        state = UISessionState(
+            model="gpt-4", message_count=3,
+            input_tokens=100, output_tokens=200,
+        )
+        parts = build_normal_parts(state, narrow=True)
+        joined = " ".join(parts)
+        assert "gpt-4" in joined
+        # 宽度=50 不满足 < 50，应包含详细信息
+        assert "100" in joined  # token 显示
+
+    def test_compact_mode_at_45(self, monkeypatch):
+        """宽度 45（<50）进入精简模式。"""
+        monkeypatch.setattr("src.ui.tui.status_bar.is_narrow", lambda: True)
+        monkeypatch.setattr("src.ui.tui.status_bar.get_terminal_width", lambda: 45)
+        state = UISessionState(model="gpt-4", message_count=5)
+        parts = build_normal_parts(state, narrow=True)
+        joined = " ".join(parts)
+        assert "gpt-4" in joined
+        assert "5m" in joined
+

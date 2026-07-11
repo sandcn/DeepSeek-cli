@@ -32,7 +32,8 @@ from ._state import TUIStateTree, UISessionState, StreamingState
 _SP = " "  # 单一空格，视觉平衡
 
 # 状态栏极窄屏阈值：窄于此宽度仅显示模型名+消息数
-_STATUS_BAR_COMPACT_THRESHOLD = 60
+# 与 _terminal.py 的 EXTRA_NARROW_THRESHOLD (50) 对齐，统一窄屏三级阈值为 80/50
+_STATUS_BAR_COMPACT_THRESHOLD = 50
 
 
 class StatusBar:

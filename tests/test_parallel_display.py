@@ -264,3 +264,140 @@ class TestClearFrameLinesBottomBar:
 
         # get_active_chat_ui 不应被调用（因为 _last_lines=0 提前返回）
         mock_get.assert_not_called()
+
+
+# ═══════════════════════════════════════════════════════
+# _push_frame_cmd push 失败恢复测试
+# ═══════════════════════════════════════════════════════
+
+class TestPushFrameCmdFailureRecovery:
+    """_push_frame_cmd push 失败时重置 _last_rendered_version，强制下帧重建。
+
+    回归 [P2-9]：_push_cmd 抛异常时，帧未实际推送到命令队列。
+    若不重置版本号，_build_frame 的版本号检查（current_version ==
+    _last_rendered_version 且 80ms 内）会跳过重建，导致失败帧永不被重试。
+    """
+
+    def test_push_failure_resets_last_rendered_version(self):
+        """_push_cmd 抛异常时，_last_rendered_version 重置为 0。"""
+        from unittest.mock import MagicMock
+        pd = ParallelDisplay(max_history=3)
+        pd._adapter = MagicMock()
+        pd._adapter.width = 120
+
+        # 模拟 _build_frame 成功构建帧并更新版本号
+        def mock_build_frame(final=False):
+            pd._last_rendered_version = 42
+            return (["line1", "line2"], 24, 0, "\033[K]")
+        pd._build_frame = mock_build_frame
+
+        def failing_push_cmd(_cmd):
+            raise RuntimeError("command queue closed")
+        pd._push_cmd = failing_push_cmd
+
+        pd._push_frame_cmd()
+
+        assert pd._last_rendered_version == 0, (
+            "push 失败后应重置 _last_rendered_version 为 0，"
+            f"实际为 {pd._last_rendered_version}"
+        )
+
+    def test_push_failure_then_success_rebuilds_frame(self):
+        """push 失败后，下次调用能重建帧并成功推送（版本号已重置）。"""
+        from unittest.mock import MagicMock
+        pd = ParallelDisplay(max_history=3)
+        pd._adapter = MagicMock()
+        pd._adapter.width = 120
+
+        build_count = 0
+
+        def mock_build_frame(final=False):
+            nonlocal build_count
+            build_count += 1
+            pd._last_rendered_version = 42
+            return ([f"line{build_count}"], 24, 0, "\033[K]")
+        pd._build_frame = mock_build_frame
+
+        # 第一次调用：push 失败
+        def failing_push(cmd):
+            raise RuntimeError("queue closed")
+        pd._push_cmd = failing_push
+        pd._push_frame_cmd()
+        assert pd._last_rendered_version == 0, "失败后版本号应已重置为 0"
+
+        # 第二次调用：push 成功
+        success_push = MagicMock()
+        pd._push_cmd = success_push
+        pd._push_frame_cmd()
+
+        # 验证第二次 push 成功（帧被重建并推送）
+        success_push.assert_called_once()
+        assert build_count == 2, (
+            f"_build_frame 应被调用 2 次（两次都重建帧），实际 {build_count} 次"
+        )
+
+    def test_push_failure_no_exception_propagation(self):
+        """_push_cmd 抛异常时不应向上传播，_push_frame_cmd 静默处理。"""
+        from unittest.mock import MagicMock
+        pd = ParallelDisplay(max_history=3)
+        pd._adapter = MagicMock()
+        pd._adapter.width = 120
+
+        def mock_build_frame(final=False):
+            pd._last_rendered_version = 42
+            return (["line1"], 24, 0, "\033[K]")
+        pd._build_frame = mock_build_frame
+
+        def failing_push(cmd):
+            raise RuntimeError("critical queue failure")
+        pd._push_cmd = failing_push
+
+        try:
+            pd._push_frame_cmd()
+        except Exception as e:
+            pytest.fail(f"_push_frame_cmd 不应抛异常: {e}")
+
+    def test_push_success_does_not_reset_version(self):
+        """push 成功时不应重置 _last_rendered_version。"""
+        from unittest.mock import MagicMock
+        pd = ParallelDisplay(max_history=3)
+        pd._adapter = MagicMock()
+        pd._adapter.width = 120
+
+        def mock_build_frame(final=False):
+            pd._last_rendered_version = 99
+            return (["line1"], 24, 0, "\033[K]")
+        pd._build_frame = mock_build_frame
+
+        success_push = MagicMock()
+        pd._push_cmd = success_push
+
+        pd._push_frame_cmd()
+
+        assert pd._last_rendered_version == 99, (
+            "push 成功后不应重置 _last_rendered_version，"
+            f"实际为 {pd._last_rendered_version}"
+        )
+
+    def test_push_failure_updates_last_lines_before_push(self):
+        """push 失败前 _last_lines 已更新（供下次 SU/SD delta 计算）。"""
+        from unittest.mock import MagicMock
+        pd = ParallelDisplay(max_history=3)
+        pd._adapter = MagicMock()
+        pd._adapter.width = 120
+
+        def mock_build_frame(final=False):
+            pd._last_rendered_version = 42
+            return (["line1", "line2", "line3"], 24, 0, "\x1b[K")
+        pd._build_frame = mock_build_frame
+
+        def failing_push(cmd):
+            raise RuntimeError("queue closed")
+        pd._push_cmd = failing_push
+
+        pd._push_frame_cmd()
+
+        assert pd._last_lines == 3, (
+            "_last_lines 应在 push 前更新为帧行数 3，"
+            f"实际为 {pd._last_lines}"
+        )

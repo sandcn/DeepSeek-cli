@@ -501,25 +501,37 @@ class _BottomBar(_StatusMixin):
         制表符按内部默认宽度展开为空格。
         终端高度过小时将光标放在最后一行。
 
+        ★ P1-5 修复：使用 _last_rendered_text 而非 _last_text 作为定位基准，
+        确保光标位置与屏幕上实际渲染的文本布局一致。EscapeMonitor 线程
+        可能在 force_redraw 和 ensure_cursor_in_lower 之间更新 _last_text，
+        导致拆行数不一致。_last_rendered_text 由 _draw_input_lines_locked
+        在渲染时设置，反映屏幕真实状态。
+        ★ P1-5 修复：加锁保护，防止与 force_redraw 并发写入 stdout 产生
+        ANSI 序列交错。
+
         坐标追踪：定位后同步 tracker 到精确光标位置。
         """
         if not self._active:
             return
-        height = self._term_height()
-        term_w = self._term_width()
-        text = self._last_text or ""
-        cursor_pos = self._input_cursor_pos
-        max_input = max(1, term_w - 4)
-        vis_row, vis_col = _compute_cursor_visual_pos(text, cursor_pos, max_input)
-        total = max(_BOTTOM_MIN_LINES, self._last_bottom_lines)
-        # ★ +3 跳过 分隔线(1) + 状态行(1) + 输入区起始偏移(1)，
-        #   +len(_subagent_lines) 补偿分隔线与状态行之间的 subagent 面板行
-        subagent_offset = len(self._subagent_lines)
-        r_cursor = height - total + 3 + subagent_offset + self._completion.height + vis_row
-        r_cursor = max(1, min(r_cursor, height))
-        col = min(3 + vis_col, term_w)
-        sys.__stdout__.write(_blessed_cursor_goto(r_cursor, col))
-        self._cursor_tracker.set(r_cursor, col)
+        with _try_acquire_output_lock(name="bottom_bar.ensure_cursor_in_lower", timeout=0.3) as locked:
+            if not locked:
+                return
+            height = self._term_height()
+            term_w = self._term_width()
+            text = self._last_rendered_text if self._last_rendered_text else self._last_text
+            cursor_pos = min(self._input_cursor_pos, len(text))
+            max_input = max(1, term_w - 4)
+            vis_row, vis_col = _compute_cursor_visual_pos(text, cursor_pos, max_input)
+            total = max(_BOTTOM_MIN_LINES, self._last_bottom_lines)
+            # ★ +3 跳过 分隔线(1) + 状态行(1) + 输入区起始偏移(1)，
+            #   +len(_subagent_lines) 补偿分隔线与状态行之间的 subagent 面板行
+            subagent_offset = len(self._subagent_lines)
+            r_cursor = height - total + 3 + subagent_offset + self._completion.height + vis_row
+            r_cursor = max(1, min(r_cursor, height))
+            col = min(3 + vis_col, term_w)
+            sys.__stdout__.write(_blessed_cursor_goto(r_cursor, col))
+            sys.__stdout__.flush()
+            self._cursor_tracker.set(r_cursor, col)
 
     # ── 生命周期 ──────────────────────────────────────────
 
@@ -737,9 +749,21 @@ class _BottomBar(_StatusMixin):
                 self._cursor_tracker.set(height, 1)
                 self._last_cursor_pos = self._input_cursor_pos
                 self._last_height = height
+                # ★ DECSTBM 已在上方重置为全屏，同步 _last_scroll_end 和 tracker（P1-3）。
+                #    scroll_end < 1 时终端过小无法容纳底部栏，scroll_end 设为 height
+                #    （全屏滚动），确保后续 ensure_cursor_in_upper() 定位正确。
+                self._last_scroll_end = height
+                if self._tracker is not None:
+                    self._tracker.set_scroll_end(height)
                 return
 
-            clear_start = max(old_scroll_end, scroll_end) + 1
+            # ★ full_repaint 模式下清除整个新底部栏区域（scroll_end+1 ~ height），
+            #    消除 resize 后旧底部栏内容的鬼影残留（P0-1）。
+            #    不清除上屏内容区（1 ~ scroll_end），保护 resize 后的上屏内容。
+            if full_repaint:
+                clear_start = scroll_end + 1
+            else:
+                clear_start = max(old_scroll_end, scroll_end) + 1
             clear_end = height
             for r in range(clear_start, clear_end + 1):
                 _buf.append(_blessed_move_clear(r))

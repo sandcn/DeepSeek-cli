@@ -172,13 +172,6 @@ class CodeBlockBatcher(TokenFilter):
         """跨 feed 强制刷出标记：刷出后后续 CODE_LINE 失去上下文，需自动补 fence 对。"""
 
     def process(self, tokens: list[Token], ctx: RenderContext) -> list[Token]:
-        # 保存当前状态快照，异常时恢复
-        saved_buffer = list(self._buffer)
-        saved_meta = self._block_meta
-        saved_chars = self._buffer_chars
-        saved_feed = self._feed_count
-        saved_flushed = self._flushed_in_feed
-
         self._had_force_flush_this_call = False
         result: list[Token] = []
 
@@ -208,10 +201,6 @@ class CodeBlockBatcher(TokenFilter):
                     self._feed_count = 0
                     self._flushed_in_feed = True  # 标记刷出状态，后续 CODE_LINE 需自动补 fence 对
                     self._had_force_flush_this_call = True
-                    # ★ P0 修复：强制刷出后同步更新快照，防止异常恢复时还原已发射的内容
-                    saved_buffer = []
-                    saved_chars = 0
-                    saved_meta = None
                     local_buffer: list[str] = []
                     local_buffer_chars: int = 0
                     local_meta: dict | None = None  # 强制刷出后重新初始化局部变量
@@ -377,16 +366,16 @@ class CodeBlockBatcher(TokenFilter):
                     self._flushed_in_feed = False
 
             return result
-        # 异常恢复：回滚到 process() 调用前的状态。
-        # 注意：当前 feed 中已累积但未完成的代码行（local_buffer）将丢失，
-        # 这是设计选择——宁可丢一行也不保持不一致状态。
         except Exception:
-            # 异常时恢复状态，避免数据丢失
-            self._buffer = saved_buffer
-            self._buffer_chars = saved_chars
-            self._block_meta = saved_meta
-            self._feed_count = saved_feed
-            self._flushed_in_feed = saved_flushed
+            # 异常恢复：不回滚已发射 Token，仅清理缓冲状态。
+            # 当前 feed 中已发射到 result 的 Token 随异常丢失（不可恢复），
+            # 但不恢复 saved 快照——否则下次调用会重新发射相同内容造成重复。
+            # 仅清理缓冲状态，让下次调用从干净状态开始。
+            self._buffer = []
+            self._buffer_chars = 0
+            self._block_meta = None
+            self._feed_count = 0
+            self._flushed_in_feed = False
             raise
 
 

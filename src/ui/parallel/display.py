@@ -335,6 +335,10 @@ class ParallelDisplay(BaseDisplay):
 
         仅由 _panel_refresh_callback() (10Hz 定时) 调用。
         帧数据在消费侧（ContentRenderer._do_subagent_frame）写入终端。
+
+        若 push 失败（命令队列异常），重置 _last_rendered_version 为 0，
+        强制下一帧重建，避免帧丢失（_build_frame 版本号检查会因版本
+        未变 + 80ms 内而跳过重建，导致失败帧永不被重试）。
         """
         packed = self._build_frame()
         if packed is None:
@@ -343,7 +347,13 @@ class ParallelDisplay(BaseDisplay):
         lines = packed[0]
         self._last_lines = len(lines)
         if self._push_cmd is not None:
-            self._push_cmd((RenderCommand.SUBAGENT_FRAME, packed))
+            try:
+                self._push_cmd((RenderCommand.SUBAGENT_FRAME, packed))
+            except Exception:
+                _logger.debug("_push_cmd 推送 SUBAGENT_FRAME 失败（非关键路径）",
+                              exc_info=True)
+                # 重置版本号，强制下帧重建并重试
+                self._last_rendered_version = 0
 
     def _clear_frame_lines(self) -> None:
         """清除 subagent 面板（通过 bottom_bar 清除下屏面板数据）。

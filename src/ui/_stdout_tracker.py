@@ -6,8 +6,9 @@ complete lines (detected by \n) in a ring buffer.
 机制：
   - 所有 write/flush 原封不动穿透到真实 stdout
   - 检测 \n 将内容按行拆分存入环形缓冲区（最大 300 行）
-  - 检测 \\033[{r};{c}H 绝对光标定位：若 r > scroll_end 则过滤底部栏内容
-  - 检测 \\0338 / \\033[u 光标恢复 → 退出底部栏模式
+  - 使用统一正则按数据流顺序处理光标控制序列：
+    \\033[{r};{c}H 绝对光标定位（r > scroll_end → 过滤底部栏内容）
+    \\0338 / \\033[u 光标恢复 → 退出底部栏模式
 """
 
 from __future__ import annotations
@@ -16,7 +17,18 @@ import re
 from collections import deque
 from typing import IO, Any
 
-_CURSOR_POS_RE = re.compile(r'\x1b\[(\d+);(\d+)H')
+# Unified regex matching cursor positioning (CUP) and cursor restore (DECRC/SCRC)
+# sequences. Processed in data-stream order so that a restore between two
+# cursor-positioning sequences takes effect at its actual position.
+#
+#   \033[{r};{c}H  — CUP (cursor absolute positioning)
+#   \0338          — DECRC (restore cursor)
+#   \033[u         — SCRC (restore cursor, ANSI.SYS variant)
+_CONTROL_SEQ_RE = re.compile(
+    r'\x1b\[(?P<row>\d+);(?P<col>\d+)H'  # CUP
+    r'|\x1b8'                              # DECRC
+    r'|\x1b\[u'                            # SCRC
+)
 
 
 class _StdoutLineTracker:
@@ -85,35 +97,39 @@ class _StdoutLineTracker:
     def _track(self, data: str) -> None:
         """Process data for line tracking.
 
-        Strips cursor positioning sequences (\\033[{r};{c}H) from tracked
-        content and uses them to detect bottom bar mode. Handles cursor
-        restore sequences (\\0338, \\033[u) to exit bottom bar mode.
-        Only tracks complete lines (ending with \\n) when scroll_end >= 1.
+        Uses a unified regex to match cursor positioning sequences
+        (\\033[{r};{c}H) and cursor restore sequences (\\0338, \\033[u)
+        in data-stream order.  Cursor positioning to a row > scroll_end
+        enters bottom bar mode (content not tracked); cursor restore exits
+        bottom bar mode.  All matched control sequences are stripped from
+        tracked text.  Only tracks complete lines (ending with \\n) when
+        scroll_end >= 1.
         """
         if self._scroll_end < 1:
             return
 
-        # Handle cursor restore: \0338 or \033[u
-        if '\x1b8' in data or '\x1b[u' in data:
-            self._in_bottom_bar = False
-            self._partial_line = ""
-
-        # Process cursor positioning sequences: \033[{r};{c}H
         prev_end = 0
-        for m in _CURSOR_POS_RE.finditer(data):
-            # Text before this cursor position sequence
+        for m in _CONTROL_SEQ_RE.finditer(data):
+            # Text before this control sequence
             if m.start() > prev_end:
                 self._add_text(data[prev_end:m.start()])
 
-            row = int(m.group(1))
-            was_in_bottom_bar = self._in_bottom_bar
-            self._in_bottom_bar = (row > self._scroll_end)
-            if self._in_bottom_bar != was_in_bottom_bar:
-                self._partial_line = ""
+            if m.group('row') is not None:
+                # Cursor positioning: \033[{r};{c}H
+                row = int(m.group('row'))
+                was_in_bottom_bar = self._in_bottom_bar
+                self._in_bottom_bar = (row > self._scroll_end)
+                if self._in_bottom_bar != was_in_bottom_bar:
+                    self._partial_line = ""
+            else:
+                # Cursor restore: \0338 or \033[u → exit bottom bar mode
+                if self._in_bottom_bar:
+                    self._in_bottom_bar = False
+                    self._partial_line = ""
 
             prev_end = m.end()
 
-        # Remaining text after last cursor position sequence
+        # Remaining text after last control sequence
         if prev_end < len(data):
             self._add_text(data[prev_end:])
 

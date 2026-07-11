@@ -1178,5 +1178,248 @@ class TestCompletionShowHideWithTracker(unittest.TestCase):
         output = buf.getvalue()
         self.assertEqual(output, "", "幂等调用不应有终端 I/O（弹窗未显示）")
 
+class TestForceRedrawFullRepaintGhosting(unittest.TestCase):
+    """★ P0-1: full_repaint 模式下清除整个底部栏区域，消除 resize 后鬼影。
+
+    修复前：clear_start = max(old_scroll_end, scroll_end) + 1，
+    当 old_scroll_end > scroll_end 时（底部栏扩大），clear_start 过大，
+    导致底部栏区域未被显式清除，旧内容残留形成鬼影。
+    修复后：full_repaint 模式下 clear_start = scroll_end + 1，
+    清除整个新底部栏区域（scroll_end+1 ~ height），不触及上屏内容区。
+    """
+
+    def setUp(self):
+        self.bb = _BottomBar()
+        self.bb._active = True
+        self.bb._last_text = "A" * 500  # 长文本，total 增大
+        self.bb._last_bottom_lines = 5  # 旧底部行数（较小）
+        self.bb._last_rendered_text = "old"
+        self.bb._last_height = 30
+        self.bb._last_status = ""
+        self.bb._subagent_lines = []
+        self._stdout = sys.__stdout__
+
+    def tearDown(self):
+        sys.__stdout__ = self._stdout
+
+    def test_full_repaint_clears_entire_bottom_bar(self):
+        """full_repaint 模式下清除 scroll_end+1 到 height 的所有行。
+
+        场景：old_scroll_end=25 > scroll_end=21（底部栏扩大导致 scroll_end 减小）。
+        修复前 clear_start=max(25,21)+1=26，仅清除 26-30。
+        修复后 clear_start=21+1=22，清除 22-30（含 22-25 的旧内容区残留）。
+
+        验证方式：行 22（scroll_end+1，也是 separator 所在行）在修复后
+        被 clear block 显式清除一次，然后又被 separator draw 清除一次，
+        共 2 次。修复前仅 1 次（仅 separator draw）。
+        """
+        self.bb._needs_full_repaint = True
+
+        buf = io.StringIO()
+        with patch.object(sys, '__stdout__', buf), \
+             patch.object(self.bb, '_term_height', return_value=30), \
+             patch.object(self.bb, '_term_width', return_value=80), \
+             patch.object(self.bb, '_format_status', return_value=""):
+            self.bb.force_redraw()
+
+        output = buf.getvalue()
+        # total = 2 + 0 + 7 + 0 = 9, scroll_end = 30 - 9 = 21
+        # old_scroll_end = 30 - 5 = 25
+        # r1 (separator) = 22
+        # 行 22 应被 clear block + separator draw 共清除 2 次
+        count_22 = output.count("\033[22;1H\033[K")
+        self.assertGreaterEqual(count_22, 2,
+            "full_repaint 模式下行 22 应被显式清除（clear block + separator draw ≥ 2次）")
+
+    def test_full_repaint_does_not_clear_upper_content(self):
+        """full_repaint 模式下不清除上屏内容区（1 ~ scroll_end）。"""
+        self.bb._needs_full_repaint = True
+
+        buf = io.StringIO()
+        with patch.object(sys, '__stdout__', buf), \
+             patch.object(self.bb, '_term_height', return_value=30), \
+             patch.object(self.bb, '_term_width', return_value=80), \
+             patch.object(self.bb, '_format_status', return_value=""):
+            self.bb.force_redraw()
+
+        output = buf.getvalue()
+        # scroll_end = 21, 上屏内容区为 1-21
+        for r in range(1, 22):
+            self.assertNotIn(f"\033[{r};1H\033[K", output,
+                f"full_repaint 模式下不应清除上屏内容区行 {r}")
+
+
+class TestScrollEndEarlyReturnDecstbm(unittest.TestCase):
+    """★ P1-3: scroll_end < 1 早退路径同步 _last_scroll_end 和 tracker。
+
+    修复前：scroll_end < 1 早退路径不更新 _last_scroll_end，
+    后续 ensure_cursor_in_upper() 使用过期的 _last_scroll_end 定位光标。
+    修复后：早退路径设置 _last_scroll_end = height 并同步 tracker。
+    """
+
+    def setUp(self):
+        self.bb = _BottomBar()
+        self.bb._active = True
+        self.bb._last_text = "A" * 1000  # 长文本使 total >> height
+        self.bb._last_bottom_lines = 5
+        self.bb._last_rendered_text = "old"
+        self.bb._last_height = 30
+        self.bb._last_scroll_end = 25  # 旧值
+        self.bb._last_status = ""
+        self._stdout = sys.__stdout__
+
+    def tearDown(self):
+        sys.__stdout__ = self._stdout
+
+    def test_early_return_updates_last_scroll_end(self):
+        """scroll_end < 1 早退时 _last_scroll_end 应更新为 height。"""
+        # height=10, total=16 → scroll_end = -6 < 1
+        mock_tracker = MagicMock()
+        self.bb._tracker = mock_tracker
+
+        buf = io.StringIO()
+        with patch.object(sys, '__stdout__', buf), \
+             patch.object(self.bb, '_term_height', return_value=10), \
+             patch.object(self.bb, '_term_width', return_value=80), \
+             patch.object(self.bb, '_format_status', return_value=""):
+            self.bb.force_redraw()
+
+        self.assertEqual(self.bb._last_scroll_end, 10,
+            "scroll_end < 1 早退时 _last_scroll_end 应更新为 height(10)")
+
+    def test_early_return_updates_tracker(self):
+        """scroll_end < 1 早退时 tracker.set_scroll_end(height) 应被调用。"""
+        mock_tracker = MagicMock()
+        self.bb._tracker = mock_tracker
+
+        buf = io.StringIO()
+        with patch.object(sys, '__stdout__', buf), \
+             patch.object(self.bb, '_term_height', return_value=10), \
+             patch.object(self.bb, '_term_width', return_value=80), \
+             patch.object(self.bb, '_format_status', return_value=""):
+            self.bb.force_redraw()
+
+        mock_tracker.set_scroll_end.assert_called_once_with(10)
+
+    def test_early_return_without_tracker(self):
+        """tracker 为 None 时早退路径不抛异常。"""
+        self.bb._tracker = None
+
+        buf = io.StringIO()
+        with patch.object(sys, '__stdout__', buf), \
+             patch.object(self.bb, '_term_height', return_value=10), \
+             patch.object(self.bb, '_term_width', return_value=80), \
+             patch.object(self.bb, '_format_status', return_value=""):
+            self.bb.force_redraw()
+
+        self.assertEqual(self.bb._last_scroll_end, 10,
+            "tracker=None 时早退路径仍应更新 _last_scroll_end")
+
+
+class TestEnsureCursorInLowerLocking(unittest.TestCase):
+    """★ P1-5: ensure_cursor_in_lower 加锁 + 使用 _last_rendered_text。
+
+    修复前：无锁直写 stdout，且使用 _last_text（可能与屏幕渲染不一致）。
+    修复后：通过 _try_acquire_output_lock 加锁，使用 _last_rendered_text
+    确保光标定位与屏幕显示的文本布局一致。
+    """
+
+    def setUp(self):
+        self.bb = _BottomBar()
+        self.bb._active = True
+        self.bb._last_text = "A" * 500  # EscapeMonitor 最新值（长文本）
+        self.bb._last_rendered_text = "hello"  # 屏幕实际渲染的文本（短文本）
+        self.bb._input_cursor_pos = 3
+        self.bb._last_bottom_lines = 5
+        self.bb._subagent_lines = []
+        self._stdout = sys.__stdout__
+
+    def tearDown(self):
+        sys.__stdout__ = self._stdout
+
+    def test_uses_last_rendered_text(self):
+        """ensure_cursor_in_lower 应使用 _last_rendered_text 而非 _last_text。"""
+        captured_text = []
+
+        def capture_compute(text, cursor_pos, max_width):
+            captured_text.append(text)
+            return (0, 0)
+
+        with patch.object(sys, '__stdout__', io.StringIO()), \
+             patch("src.ui._bottom_bar_pkg.bar._compute_cursor_visual_pos",
+                   side_effect=capture_compute), \
+             patch.object(self.bb, '_term_height', return_value=30), \
+             patch.object(self.bb, '_term_width', return_value=80):
+            self.bb.ensure_cursor_in_lower()
+
+        self.assertEqual(len(captured_text), 1,
+            "应调用一次 _compute_cursor_visual_pos")
+        self.assertEqual(captured_text[0], "hello",
+            "应使用 _last_rendered_text('hello') 而非 _last_text('A'*500)")
+
+    def test_falls_back_to_last_text_when_rendered_empty(self):
+        """_last_rendered_text 为空时降级使用 _last_text。"""
+        self.bb._last_rendered_text = ""
+        self.bb._last_text = "fallback"
+        captured_text = []
+
+        def capture_compute(text, cursor_pos, max_width):
+            captured_text.append(text)
+            return (0, 0)
+
+        with patch.object(sys, '__stdout__', io.StringIO()), \
+             patch("src.ui._bottom_bar_pkg.bar._compute_cursor_visual_pos",
+                   side_effect=capture_compute), \
+             patch.object(self.bb, '_term_height', return_value=30), \
+             patch.object(self.bb, '_term_width', return_value=80):
+            self.bb.ensure_cursor_in_lower()
+
+        self.assertEqual(captured_text[0], "fallback",
+            "_last_rendered_text 为空时应降级使用 _last_text")
+
+    def test_lock_timeout_skips_output(self):
+        """锁超时时 ensure_cursor_in_lower 不应输出任何 ANSI 序列。"""
+        buf = io.StringIO()
+        with patch.object(sys, '__stdout__', buf), \
+             patch("src.ui._bottom_bar_pkg.bar._try_acquire_output_lock",
+                   return_value=MagicMock(__enter__=MagicMock(return_value=False),
+                                         __exit__=MagicMock(return_value=False))), \
+             patch.object(self.bb, '_term_height', return_value=30), \
+             patch.object(self.bb, '_term_width', return_value=80):
+            self.bb.ensure_cursor_in_lower()
+
+        self.assertEqual(buf.getvalue(), "",
+            "锁超时时不应输出任何 ANSI 序列")
+
+    def test_cursor_pos_clamped_to_text_length(self):
+        """cursor_pos 应被 clamp 到文本长度，防止越界。"""
+        self.bb._last_rendered_text = "hi"  # len=2
+        self.bb._input_cursor_pos = 100  # 超出文本长度
+        captured_pos = []
+
+        def capture_compute(text, cursor_pos, max_width):
+            captured_pos.append(cursor_pos)
+            return (0, 0)
+
+        with patch.object(sys, '__stdout__', io.StringIO()), \
+             patch("src.ui._bottom_bar_pkg.bar._compute_cursor_visual_pos",
+                   side_effect=capture_compute), \
+             patch.object(self.bb, '_term_height', return_value=30), \
+             patch.object(self.bb, '_term_width', return_value=80):
+            self.bb.ensure_cursor_in_lower()
+
+        self.assertEqual(captured_pos[0], 2,
+            "cursor_pos 应被 clamp 到 len('hi')=2")
+
+    def test_inactive_skips(self):
+        """_active=False 时直接返回，不获取锁。"""
+        self.bb._active = False
+        buf = io.StringIO()
+        with patch.object(sys, '__stdout__', buf):
+            self.bb.ensure_cursor_in_lower()
+        self.assertEqual(buf.getvalue(), "",
+            "_active=False 时不应有输出")
+
+
 if __name__ == "__main__":
     unittest.main()
