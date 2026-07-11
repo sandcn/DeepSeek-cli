@@ -248,6 +248,15 @@ def run_bottom_bar_selection(
 
     bb.show_completions(display_items, initial_idx, texts=items, title=title)
 
+    # 防御性清空 stdin：作为方案 B 防御层，即使调用方（monitor.stop() 中
+    # 方案 A 的 tcflush）未正确清空内核缓冲区，也能在进入 cbreak 前兜底清空，
+    # 防止终端模式切换残留的 \n 字节被 term.inkey() 误消费为 Enter 键。
+    try:
+        import termios as _termios
+        _termios.tcflush(sys.stdin.fileno(), _termios.TCIFLUSH)
+    except Exception:
+        pass
+
     try:
         term = get_terminal()
         with term.cbreak():  # 替代 tty.setcbreak + termios
@@ -301,6 +310,6 @@ def run_bottom_bar_selection(
         try:
             # 清空 stdin 缓冲
             import termios as _termios
-            _termios.tcflush(sys.stdin, _termios.TCIFLUSH)
+            _termios.tcflush(sys.stdin.fileno(), _termios.TCIFLUSH)
         except Exception:
             pass

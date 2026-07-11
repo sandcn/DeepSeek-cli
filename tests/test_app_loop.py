@@ -947,6 +947,47 @@ class TestMonitorFinallyGuard:
         monitor._restore_terminal_settings()
         # 无异常即为通过
 
+    def test_restore_terminal_settings_impl_calls_tcflush(self):
+        """_restore_terminal_settings_impl 调用 tcflush(fd, TCIFLUSH) 清空 stdin 内核缓冲区"""
+        from src.api.escape_monitor._monitor import EscapeMonitor as RealEscapeMonitor
+
+        monitor = RealEscapeMonitor()
+        # 设置 old_settings，确保进入 tcsetattr 分支
+        monitor._old_settings = MagicMock()
+        mock_settings = monitor._old_settings  # 保存引用，因为方法执行后会置 None
+
+        with patch("sys.stdin.fileno", return_value=42), \
+             patch("termios.tcsetattr") as mock_tcsetattr, \
+             patch("termios.tcflush") as mock_tcflush, \
+             patch("termios.TCIFLUSH", 1), \
+             patch("termios.TCSADRAIN", 2):
+            monitor._restore_terminal_settings_impl()
+
+        # 验证 tcflush 被调用，参数为 (fd, TCIFLUSH)
+        mock_tcflush.assert_called_once_with(42, 1)
+        # 验证 tcsetattr 也在 tcflush 之前被调用
+        mock_tcsetattr.assert_called_once_with(42, 2, mock_settings)
+        # 验证 old_settings 已被清空（方法正常完成）
+        assert monitor._old_settings is None
+
+    def test_restore_terminal_settings_impl_tcflush_failure_is_silent(self):
+        """tcflush 抛出异常时不影响终端恢复流程，异常被静默吞掉"""
+        from src.api.escape_monitor._monitor import EscapeMonitor as RealEscapeMonitor
+
+        monitor = RealEscapeMonitor()
+        monitor._old_settings = MagicMock()
+
+        with patch("sys.stdin.fileno", return_value=42), \
+             patch("termios.tcsetattr"), \
+             patch("termios.tcflush", side_effect=OSError("tcflush 失败")), \
+             patch("termios.TCIFLUSH", 1), \
+             patch("termios.TCSADRAIN", 2):
+            # 不应抛出异常
+            monitor._restore_terminal_settings_impl()
+
+        # 即使 tcflush 失败，old_settings 仍被清空（方法正常完成）
+        assert monitor._old_settings is None
+
     def test_exit_save_and_stop_calls_stop_active_monitor(self):
         """_exit_save_and_stop 调用 stop_active_monitor"""
         from src.app_loop import _exit_save_and_stop

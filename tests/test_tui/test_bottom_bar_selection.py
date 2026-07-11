@@ -310,6 +310,51 @@ class TestRunBottomBarSelectionEnter(unittest.TestCase):
         self.assertEqual(result["action"], "confirmed")
         self.assertEqual(result["index"], 0)
 
+    def test_tcflush_called_before_cbreak(self):
+        """cbreak 进入前应调用 tcflush 清空 stdin（防御性 flush）。"""
+        mock_chat_ui = self._make_mock_chat_ui()
+        enter_key = _MockKeystroke(is_sequence=True, code=_KEY_ENTER)
+        mock_term = self._make_mock_terminal([enter_key])
+
+        call_order = []
+
+        def _record_tcflush(*args, **kwargs):
+            call_order.append("tcflush")
+
+        cbreak_ctx = MagicMock()
+        cbreak_ctx.__enter__ = MagicMock(return_value=mock_term)
+        cbreak_ctx.__exit__ = MagicMock(return_value=False)
+
+        def _record_cbreak(*args, **kwargs):
+            call_order.append("cbreak")
+            return cbreak_ctx
+
+        mock_term.cbreak = MagicMock(side_effect=_record_cbreak)
+
+        mock_stdin = MagicMock()
+        mock_stdin.fileno.return_value = 0
+
+        with patch(_CHAT_UI_PATCH, return_value=mock_chat_ui), \
+             patch(_TERMINAL_PATCH, return_value=mock_term), \
+             patch("sys.stdin", mock_stdin), \
+             patch("os.isatty", return_value=True), \
+             patch("termios.tcflush", side_effect=_record_tcflush) as mock_tcflush, \
+             patch.object(sys, '__stdout__', MagicMock()):
+            result = run_bottom_bar_selection(
+                items=["item_a", "item_b"],
+                display_items=["A", "B"],
+            )
+
+        self.assertEqual(result["action"], "confirmed")
+        # 验证 tcflush 在 cbreak 之前调用（call_order 中第一个 tcflush 在 cbreak 之前）
+        self.assertGreater(call_order.index("cbreak"), call_order.index("tcflush"),
+                           msg="tcflush 必须在 cbreak 之前调用")
+        mock_tcflush.assert_called()
+        # 验证第一次 tcflush 调用参数：第一个参数应为 stdin fileno
+        first_call_args = mock_tcflush.call_args_list[0][0]
+        self.assertEqual(first_call_args[0], mock_stdin.fileno(),
+                         msg="tcflush 第一个参数应为 stdin 文件描述符")
+
 
 class TestRunSelectionRaw(unittest.TestCase):
     """测试 _run_selection_raw() 原始 I/O 选择循环（Cygwin 降级路径）。

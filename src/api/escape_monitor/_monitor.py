@@ -354,6 +354,11 @@ class EscapeMonitor:
         """实际终端设置恢复逻辑（无锁，由调用方保证线程安全）。
 
         Windows 上 termios 不可用，直接跳过恢复（无需恢复）。
+
+        tcsetattr 之后调用 tcflush(fd, TCIFLUSH) 清空 stdin 内核缓冲区：
+        防止 cbreak→cooked 模式切换时终端驱动产生的 \\r\\n 残留字节（尤其在
+        Android/Termux 环境下）干扰后续 stdin 读取，如底部栏选择弹窗的 inkey()
+        误消费残留 \\n 为 Enter 键导致弹窗瞬间消失。
         """
         try:
             import termios
@@ -364,7 +369,12 @@ class EscapeMonitor:
             settings = self._saved_original_settings
         if settings is not None:
             try:
-                termios.tcsetattr(sys.stdin.fileno(), termios.TCSADRAIN, settings)
+                fd = sys.stdin.fileno()
+                termios.tcsetattr(fd, termios.TCSADRAIN, settings)
+                try:
+                    termios.tcflush(fd, termios.TCIFLUSH)
+                except Exception:
+                    pass  # tcflush 是尽力而为，失败不影响终端恢复
                 self._old_settings = None
             except Exception as e:
                 _logger.warning("终端设置恢复失败: %s", e)
