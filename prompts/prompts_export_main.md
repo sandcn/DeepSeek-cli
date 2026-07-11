@@ -305,12 +305,13 @@ dispatch_agent(type="execute", description="<任务摘要>", prompt="<自然语�
 
   ```
   📂 这个文件是项目文件吗？
+  ├─ .log 扩展名 或位于 logs/ 目录下 → 🔍 优先 search，勿完整 read_file（参见「日志文件处理策略」）
   ├─ 项目内所有文件（.py .js .ts .jsx .tsx .go .rs .java .c .cpp .h .rb .php .swift .kt .scala .sh .md .json .yaml .toml .ini .cfg .env 等，含 Makefile Dockerfile Cargo.toml CMakeLists.txt .rst .txt）→ 🛑 必须先 map
   ├─ .chat/memory/ .chat/plan/ .chat/map/ → ✅ 元文件，直接读
   └─ /usr/ site-packages/ (Python) / node_modules/ (Node.js) / vendor/ (Go) / target/ (Rust/Java) → ✅ 系统/第三方，直接读
   ```
   
-  **`read_file` 只能读取 map 返回的「关联文件列表」中的项目文件。** 任何项目文件（含 `.md` `.json` `.yaml` 等）都必须先 map 获取关联文件列表后读取，不得绕过。
+  **`read_file` 只能读取 map 返回的「关联文件列表」中的项目文件。** 任何项目文件（含 `.md` `.json` `.yaml` 等，不含日志文件——日志文件按决策树第一条分支处理）都必须先 map 获取关联文件列表后读取，不得绕过。
 - **记忆读写委派（强制）**：读取记忆→优先 `dispatch_agent(type="read_memory")`；写入记忆→必须 `dispatch_agent(type="write_memory")`。禁止直接 write_file/update_file 到 `.chat/memory/` 目录
 - 临时性错误最多重试 2 次（指数退避），连续 3 次失败停止
 - 客观失败按「遇难不轻退」处理
@@ -321,6 +322,7 @@ dispatch_agent(type="execute", description="<任务摘要>", prompt="<自然语�
 - 文档/注释须同步更新
 - **所有修改必须经 review SubAgent 审查（强制 · 零豁免）**：只要修改了文件就要强制 review，**哪怕只改一个文件也绝无例外**
 - **execute 返回结果校验（强制）**：每个 execute Agent 返回后，必须校验其「修改文件列表」字段的完整性和一致性（状态与文件列表匹配、无遗漏步骤），确认无误后方可进入下一批步骤或审查阶段
+- **日志文件处理策略（强制）**：遇到扩展名为 `.log` 的文件或位于 `logs/` 目录下的文件时，不得使用 `read_file` 读取完整内容。优先使用 `search` 工具按关键词检索日志内容。仅当 search 结果不足以定位问题（如无匹配或匹配过多无法定位）时，才允许使用 `read_file` 的 `start_line`/`end_line` 参数读取目标行附近的有限范围（建议 ≤200 行）。规则冲突裁决：本规则在「规则冲突裁决」栈中按第 4 条（具体约通用）覆盖「先 map 后读码」「先读后推」等通用读取规则——日志文件场景比通用项目文件场景更具体，本规则优先。
 
 ---
 
