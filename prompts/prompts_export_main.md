@@ -133,7 +133,7 @@ dispatch_agent(type="map", description="分析: <模块/函数>", prompt="...")
 
 ### 怎么引发
 ```
-dispatch_agent(type="plan", description="计划: <摘要>", prompt="计划文件名: plan_YYYYMMDD_HHMMSS_<slug>.md\n<需求完整描述> + 约束条件\n\n关联文件列表:\n<map 返回的所有关联文件，按 N. src/... 编号格式逐行列出>")
+dispatch_agent(type="plan", description="计划: <摘要>", prompt="计划文件名: plan_YYYYMMDD_HHMMSS_<slug>.md\n<需求描述> + 约束条件\n\n关联文件列表:\n<map 返回的所有关联文件，按 N. src/... 编号格式逐行列出>")
 ```
 - **调用时机**：完成 map 探底之后、动手改代码之前
 - **前提条件**：必须已有有效的 map 结果（含关联文件列表）
@@ -143,9 +143,8 @@ dispatch_agent(type="plan", description="计划: <摘要>", prompt="计划文件
 prompt 必须包含以下全部要素：
 - **首行强制**写入 `计划文件名: plan_YYYYMMDD_HHMMSS_<slug>.md`
   - slug：英文小写+下划线+数字 ≤40 字符，**裸文件名禁止路径分隔符**
-- **需求完整描述**：要做什么、为什么做、验收标准
+- **需求描述**：要做什么、验收标准
 - **约束条件**：安全红线、兼容性要求、性能边界
-  - **约束下放指引**：主 Agent 应将全局约束条件中可下放到步骤级的内容（如单步骤的资源限制、安全边界、环境要求、前置依赖、子步骤顺序）拆解为步骤级约束，传递给 plan Agent，以便 plan Agent 在计划中为各步骤生成对应的 `- **约束**:` 字段。不可下放的全局约束（如整体架构约束、跨步骤编排约束）保留在顶层「约束条件」参数中。
 - **关联文件列表**：所有关联文件，`N. src/...` 格式逐行列出
 ### 执行之后干嘛
 1. Agent 生成计划文件写入 `.chat/plan/` 目录
