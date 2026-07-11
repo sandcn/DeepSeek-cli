@@ -26,6 +26,20 @@ PROVIDERS = {
         "models": [],
         "token_prices": {}
     },
+    "anthropic": {
+        "base_url": "https://api.anthropic.com/v1",
+        "default_model": "claude-sonnet-4-6",
+        "models": [
+            "claude-sonnet-4-6",
+            "claude-opus-4-6",
+            "claude-haiku-4-5-20251001",
+        ],
+        "token_prices": {
+            "claude-sonnet-4-6": {"input": 3.0, "output": 15.0},
+            "claude-opus-4-6": {"input": 15.0, "output": 75.0},
+            "claude-haiku-4-5-20251001": {"input": 0.80, "output": 4.0},
+        }
+    },
     "glm": {
         "base_url": "https://open.bigmodel.cn/api/paas/v4/chat/completions",
         "default_model": "glm-5.2",

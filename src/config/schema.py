@@ -1,6 +1,23 @@
 """配置包 — 配置校验逻辑"""
 
+import os
+
 from .defaults import CONFIG_KEYS, DEFAULTS, PROVIDERS
+
+
+def _detect_provider_from_api_key(api_key: str) -> tuple[str | None, str | None]:
+    """从 API Key 前缀推断 provider 和默认模型。
+
+    Returns:
+        (provider_name, default_model) 或 (None, None) 表示无法推断。
+    """
+    if not api_key:
+        return None, None
+    # Anthropic: sk-ant-api03-...
+    if api_key.startswith("sk-ant-"):
+        return "anthropic", "claude-sonnet-4-6"
+    # 可在此扩展更多 key 前缀检测
+    return None, None
 
 
 def _derive_rc_fields(key_type):
@@ -105,5 +122,36 @@ def _validate_rc(rc):
     current_model = rc.get("model")
     if current_model and current_model not in rc.get("models", []):
         rc.setdefault("models", []).append(current_model)
+
+    # ── API Key 自动探测 provider ─────────────────
+    # 当 CHAT_API_KEY 已设置且 CHAT_MODEL / CHAT_BASE_URL 未被用户显式覆盖时：
+    #   1. 尝试从 Key 前缀推断 provider，若与当前不同则完整切换
+    #   2. 若无法推断但 RC 中存在残留的异 provider 配置（如 base_url 不匹配），
+    #      则同步当前 provider 的内置 base_url/models/token_prices
+    _api_key = os.getenv("CHAT_API_KEY", "")
+    _env_model = os.getenv("CHAT_MODEL", "")
+    _env_base_url = os.getenv("CHAT_BASE_URL", "")
+    if _api_key and not _env_model:
+        detected_provider, detected_model = _detect_provider_from_api_key(_api_key)
+        current_provider = rc.get("provider", DEFAULTS["provider"])
+        if detected_provider and detected_provider != current_provider:
+            # 检测到不同 provider → 完整切换
+            provider_config = PROVIDERS.get(detected_provider, {})
+            rc["provider"] = detected_provider
+            rc["model"] = detected_model
+            rc["base_url"] = provider_config.get("base_url", "")
+            rc["models"] = list(provider_config.get("models", []))
+            rc["token_prices"] = provider_config.get("token_prices", {})
+        elif not _env_base_url and current_provider in PROVIDERS:
+            # 无法从 Key 推断不同 provider，但确保 RC 中的 provider 配置一致
+            # 修复残留的异 provider 配置（如 base_url 指向其他服务）
+            provider_config = PROVIDERS[current_provider]
+            provider_base_url = provider_config.get("base_url", "")
+            if provider_base_url and rc.get("base_url") != provider_base_url:
+                rc["base_url"] = provider_base_url
+                if not rc.get("models"):
+                    rc["models"] = list(provider_config.get("models", []))
+                if not rc.get("token_prices"):
+                    rc["token_prices"] = provider_config.get("token_prices", {})
 
     return rc
