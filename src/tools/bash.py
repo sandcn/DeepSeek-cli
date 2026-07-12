@@ -135,6 +135,81 @@ def _strip_ansi(text: str) -> str:
     return result
 
 
+# ── 进程树杀死 ─────────────────────────────────────
+import signal as _signal
+
+
+def _collect_descendants(root_pid: int, result: list[int], max_depth: int = 10) -> None:
+    """递归收集所有后代进程 PID（通过 /proc/<pid>/status 的 PPid 字段）。
+
+    仅 Linux 系统有效（含 Android Termux），非 Linux 系统静默跳过。
+    max_depth 防止内核故障导致的死循环。
+
+    实现策略（单次扫描 + DFS 查表）：
+      1. 一次遍历 /proc，构建 PPid → [child_pids] 映射表
+      2. DFS（栈实现）查表收集所有后代，复杂度 O(N)（N=系统进程数）
+      相比逐层遍历 O(N×D) 减少 ~10x 的 /proc 文件读取。
+
+    注意：此函数执行同步 /proc I/O，仅在 ESC 中断路径调用，不影响正常执行路径。
+    """
+    if not sys.platform.startswith('linux'):
+        return
+    if max_depth <= 0:
+        return
+    # 单次扫描: 构建 PPid → [child_pids] 映射
+    parent_map: dict[int, list[int]] = {}
+    try:
+        for entry in os.listdir('/proc'):
+            if not entry.isdigit():
+                continue
+            try:
+                with open(f'/proc/{entry}/status') as f:
+                    for line in f:
+                        if line.startswith('PPid:'):
+                            child = int(entry)
+                            p = int(line.split()[1])
+                            parent_map.setdefault(p, []).append(child)
+                            break
+            except (IOError, ValueError, OSError):
+                continue
+    except OSError:
+        return
+    # DFS 查表收集后代（栈实现）
+    stack: list[tuple[int, int]] = [(root_pid, 0)]
+    while stack:
+        pid, depth = stack.pop()
+        if depth >= max_depth:
+            continue
+        for child in parent_map.get(pid, []):
+            result.append(child)
+            stack.append((child, depth + 1))
+
+
+def _kill_process_tree(pid: int) -> None:
+    """杀死进程及其所有后代。
+
+    策略（两阶段）：
+      1. killpg：先杀死进程组（shell + 前台子进程），快路径覆盖
+      2. /proc 递归：剩余后代（后台作业、管道独立 PGID 进程）逐个补杀
+
+    非 Linux 系统：仅 killpg（安全降级）。
+    """
+    # 阶段 1：killpg 杀进程组
+    try:
+        os.killpg(pid, _signal.SIGKILL)
+    except OSError:
+        pass
+
+    # 阶段 2：/proc 递归补杀剩余后代（仅 Linux）
+    if sys.platform.startswith('linux'):
+        descendants: list[int] = []
+        _collect_descendants(pid, descendants)
+        for child_pid in descendants:
+            try:
+                os.kill(child_pid, _signal.SIGKILL)
+            except OSError:
+                pass  # 进程已死或无权限
+
 
 @tool_metadata(
     parallel_safe=False,
@@ -308,7 +383,8 @@ class BashFunc(Func):
 
     @staticmethod
     async def _read_loop(reader, process, lines, publish_line_fn,
-                         show_output=False, is_stderr=False):
+                         show_output=False, is_stderr=False,
+                         kill_fn=None):
         """共享读取循环，消除 _run_pipe 和 _run_pty 中的重复代码（~80行×2）。
 
         从 reader 逐行读取字节，处理中断检测、超时/PTY EIO/超长行、
@@ -316,18 +392,23 @@ class BashFunc(Func):
 
         Args:
             reader: asyncio.StreamReader（PIPE stdout/stderr 或 PTY master）
-            process: asyncio.subprocess.Process，用于中断时 kill
+            process: asyncio.subprocess.Process，用于中断时 kill（kill_fn 为 None 时回退）
             lines: list[str]，收集到的行追加到此列表
             publish_line_fn: 可选的 async (text, is_stderr) -> None 回调
             show_output: 是否实时打印 ANSI 剥离后的输出到终端
             is_stderr: 是否 stderr 流，控制终端输出的颜色
+            kill_fn: 可选的无参回调，替代 process.kill() 用于进程树终止。
+                    传入时使用自定义杀死逻辑；为 None 时回退到 process.kill()。
 
         Returns:
             bool: True 表示被 ESC 中断信号打断，False 表示正常读到 EOF
         """
         while True:
             if is_interrupted():
-                process.kill()
+                if kill_fn is not None:
+                    kill_fn()
+                else:
+                    process.kill()
                 return True
             try:
                 line = await asyncio.wait_for(
@@ -391,16 +472,27 @@ class BashFunc(Func):
                 stderr=asyncio.subprocess.PIPE,
                 shell=True,
                 close_fds=True,
+                preexec_fn=lambda: os.setpgid(0, 0),
                 env=self._get_subprocess_env(),
             )
 
             stdout_lines = []
             stderr_lines = []
 
+            # 使用闭包确保 kill 只执行一次（双流并发时避免冗余 /proc 扫描）
+            _kill_once = False
+
+            def _kill_tree_once():
+                nonlocal _kill_once
+                if not _kill_once:
+                    _kill_once = True
+                    _kill_process_tree(process.pid)
+
             async def _read_pipe_stream(stream, lines_list, is_stderr):
                 return await BashFunc._read_loop(
                     stream, process, lines_list, publish_line_fn,
                     show_output=show_output, is_stderr=is_stderr,
+                    kill_fn=_kill_tree_once,
                 )
 
             try:
@@ -413,6 +505,9 @@ class BashFunc(Func):
                 for r in results:
                     if isinstance(r, Exception):
                         logger.warning("_read_pipe_stream 异常: %s", r)
+            except asyncio.CancelledError:
+                _kill_tree_once()
+                raise
             finally:
                 await process.wait()
 
@@ -484,6 +579,7 @@ class BashFunc(Func):
                     stderr=slave_fd,
                     env=env,
                     pass_fds=(slave_fd,),
+                    preexec_fn=lambda: os.setpgid(0, 0),
                 )
             except Exception:
                 os.close(master_fd)
@@ -513,6 +609,7 @@ class BashFunc(Func):
                 _interrupted = await BashFunc._read_loop(
                     reader, process, lines, publish_line_fn,
                     show_output=show_output, is_stderr=False,
+                    kill_fn=lambda: _kill_process_tree(process.pid),
                 )
             except OSError as e:
                 if e.errno == _errno.EIO:
@@ -520,7 +617,7 @@ class BashFunc(Func):
                 else:
                     raise
             except asyncio.CancelledError:
-                process.kill()
+                _kill_process_tree(process.pid)
                 raise
             finally:
                 try:

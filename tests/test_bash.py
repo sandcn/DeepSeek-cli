@@ -844,3 +844,85 @@ class TestDangerousCommands:
         """不含 777 的 chmod 命令不被拦截"""
         assert _has_dangerous_command("chmod +x script.sh") is None
         assert _has_dangerous_command("chmod 755 file.txt") is None
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# 17. _kill_process_tree / _collect_descendants — 进程树杀死
+# ═══════════════════════════════════════════════════════════════════════════
+
+from src.tools.bash import _kill_process_tree, _collect_descendants
+
+
+class TestKillProcessTree:
+    """_kill_process_tree 和 _collect_descendants 进程树杀死测试。
+
+    测试策略
+    --------
+    - 使用 unittest.mock.patch 模拟 os.kill / os.killpg / os.listdir
+    - 非 Linux 平台：验证仅调用 killpg，跳过 /proc 扫描
+    - Linux 平台：验证 killpg + /proc 扫描补杀后代
+    - 异常路径：OSError 被捕获不崩溃
+    """
+
+    @patch("src.tools.bash.os.killpg")
+    @patch("src.tools.bash.sys.platform", "android")
+    def test_non_linux_skip_proc(self, mock_killpg):
+        """非 Linux 平台（非 'linux' 前缀）跳过 /proc 扫描，仅调用 killpg。"""
+        _kill_process_tree(12345)
+        mock_killpg.assert_called_once_with(12345, 9)  # SIGKILL = 9
+
+    @patch("src.tools.bash.os.killpg")
+    @patch("src.tools.bash.sys.platform", "linux")
+    def test_linux_killpg_and_descendants(self, mock_killpg):
+        """Linux 平台先 killpg 再补杀后代。"""
+        # 让 _collect_descendants 往 result 列表填充 2 个后代PID
+        with (
+            patch("src.tools.bash._collect_descendants") as mock_desc,
+            patch("src.tools.bash.os.kill") as mock_kill,
+        ):
+            mock_desc.side_effect = lambda _pid, result: result.extend([100, 101])
+
+            _kill_process_tree(12345)
+
+            # killpg 应被调用（杀进程组）
+            mock_killpg.assert_called_once_with(12345, 9)
+            # 后代补杀：两个后代各被 kill 一次
+            assert mock_kill.call_count == 2
+            mock_kill.assert_any_call(100, 9)
+            mock_kill.assert_any_call(101, 9)
+
+    @patch("src.tools.bash.os.killpg", side_effect=OSError("ESRCH"))
+    @patch("src.tools.bash.sys.platform", "android")
+    def test_killpg_oserror_caught(self, mock_killpg):
+        """killpg 抛出 OSError 时被捕获，不崩溃。"""
+        _kill_process_tree(99999)  # 不应抛出异常
+
+    @patch("src.tools.bash.os.kill", side_effect=OSError("EPERM"))
+    @patch("src.tools.bash.os.killpg")
+    @patch("src.tools.bash.sys.platform", "linux")
+    def test_descendant_kill_oserror_caught(self, mock_killpg, mock_kill):
+        """/proc 后代补杀时 OSError 被捕获，不崩溃。"""
+        # mock _collect_descendants 确保触发 os.kill 分支
+        with patch("src.tools.bash._collect_descendants") as mock_desc:
+            mock_desc.side_effect = lambda _pid, result: result.extend([200])
+            _kill_process_tree(12345)
+            # os.kill 应被调用（mocked side_effect=OSError，不应崩溃）
+            assert mock_kill.call_count >= 1
+
+    @patch("src.tools.bash.os.listdir", return_value=["1", "2", "3"])
+    @patch("src.tools.bash.sys.platform", "linux")
+    def test_collect_descendants_proc_error_caught(self, mock_listdir):
+        """/proc 读取因 OSError 失败时不崩溃。"""
+        # mock open 来模拟 /proc/1/status 等读取异常
+        import builtins
+        original_open = builtins.open
+
+        def mock_open_side_effect(*args, **kwargs):
+            if '/proc/' in args[0]:
+                raise IOError("Permission denied")
+            return original_open(*args, **kwargs)
+
+        with patch("builtins.open", side_effect=mock_open_side_effect):
+            result: list[int] = []
+            _collect_descendants(1, result)
+            assert result == []  # 异常被捕获，结果为空列表
