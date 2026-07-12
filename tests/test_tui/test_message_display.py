@@ -288,6 +288,20 @@ class TestRoleTag256:
             tag = _role_tag(role)
             assert tag.endswith("\033[0m"), f"{role} tag missing reset"
 
+    def test_role_tag_breath_border_wide(self):
+        """宽屏呼吸角色标签含左侧呼吸边框字符 ┃ (U+2503)。"""
+        for role in ("user", "assistant", "tool"):
+            tag = _role_tag(role, breath_frame=1)
+            assert "\u2503" in tag, f"{role} breath tag missing border"
+            assert "38;5;" in tag  # 含 ANSI 色码
+
+    def test_role_tag_breath_narrow_no_border(self, monkeypatch):
+        """窄屏时呼吸角色标签不含边框字符。"""
+        monkeypatch.setattr("src.ui.tui._message_display.is_narrow", lambda: True)
+        for role in ("user", "assistant", "tool"):
+            tag = _role_tag(role, breath_frame=1)
+            assert "\u2503" not in tag, f"{role} narrow tag should have no border"
+
 
 class TestSeparator256:
     """分隔线函数 256 色渐变测试。"""

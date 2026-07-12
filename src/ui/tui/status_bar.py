@@ -273,12 +273,20 @@ def render_streaming_line(state: UISessionState, streaming: StreamingState) -> s
 
     parts: list[str] = []
     if state.model:
-        # ── 模型名呼吸色（基于 pulse_phase，窄屏降级到固定色） ──
+        # ── 模型名呼吸色（基于 THEME['title'] 主题色，窄屏降级到静态色） ──
         if is_narrow():
             model_color = THEME['title']
         else:
-            model_color_num = _sine_ctx.sine_color(32, 45, 4, frame=streaming.pulse_phase)
-            model_color = f"\033[38;5;{model_color_num}m"
+            import re
+            title_color = THEME['title']
+            title_match = re.search(r"38;5;(\d+)", title_color)
+            if title_match:
+                base = int(title_match.group(1))
+                peak = min(255, base + 20)
+                model_color_num = _sine_ctx.sine_color(base, peak, 6, frame=streaming.pulse_phase)
+                model_color = f"\033[38;5;{model_color_num}m"
+            else:
+                model_color = THEME['title']  # 解析失败降级到静态
         
         parts.append(f"{CYAN_256}\u25c9{RESET} {BOLD}{model_color}{state.model}{RESET}"
                      f" \033[38;5;{pulse_color}m{pulse_char}{RESET}")

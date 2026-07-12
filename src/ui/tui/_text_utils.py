@@ -274,6 +274,52 @@ def build_glow_ansi(frame: int, base_color: int = 45, period: int = 12) -> str:
     return build_glow_ansi(frame, base_color, period)
 
 
+def build_left_border_ansi(frame: int, base_color: int = 23, period: int = 24) -> str:
+    """构建左边缘呼吸边框 ANSI 序列。
+
+    返回带呼吸辉光颜色的边框字符 │（U+2502），
+    封装 build_glow_ansi + 边框字符 + RESET 的通用模式，
+    供 WriteLineBlock / ErrorBlock / NotificationBlock 统一调用。
+
+    Args:
+        frame: 当前帧号（AnimatorContext.frame）。
+        base_color: 呼吸基准色号，默认 23（暗青）。
+        period: 呼吸周期帧数，默认 24。
+
+    Returns:
+        完整的 ANSI 边框序列（含 RESET），格式：
+        ``\033[38;5;{color}m│\033[0m``
+    """
+    glow = build_glow_ansi(frame, base_color, period)
+    return f"{glow}\u2502\033[0m"
+
+
+def parse_theme_color(theme_key: str) -> int | None:
+    """从 THEME 语义键中提取 256 色号。
+
+    解析格式如 ``\033[38;5;45m`` 的 ANSI 前景色码，
+    返回色号整数。解析失败返回 None。
+
+    用途：组件需要从 THEME 键值中提取色号用于动效构建时，
+    统一使用此函数避免各组件重复实现 regex 解析逻辑。
+
+    Args:
+        theme_key: THEME 字典中的语义键名（如 "border_breath" / "user" / "title"）。
+
+    Returns:
+        色号整数（0-255），解析失败或键不存在时返回 None。
+    """
+    import re
+    from ..theme import THEME
+    color_str = THEME.get(theme_key, "")
+    if not color_str:
+        return None
+    match = re.search(r"38;5;(\d+)", color_str)
+    if match:
+        return int(match.group(1))
+    return None
+
+
 def make_sep_gradient_enhanced(
     width: int,
     start_color: int = 45,
@@ -313,5 +359,7 @@ __all__ = [
     "build_fade_in_ansi", "build_warning_pulse_ansi", "make_sep_gradient",
     # 增强动效（2026-07-12）
     "build_bounce_ansi", "build_sep_wave", "build_sep_shimmer",
-    "build_sparkle_ansi", "build_glow_ansi", "make_sep_gradient_enhanced",
+    "build_sparkle_ansi", "build_glow_ansi", "build_left_border_ansi",
+    "parse_theme_color",
+    "make_sep_gradient_enhanced",
 ]

@@ -108,14 +108,28 @@ def _draw_input_lines_locked(
                 buf.append(_blessed_move_clear(r)
                            + prompt_prefix + segment)
             else:
+                # ★ 占位符呼吸效果：宽屏使用主题色联动 glow，窄屏保持静态
+                if _is_narrow_fn():
+                    placeholder_color = _COLOR_DIM
+                else:
+                    import re
+                    from ..tui._text_utils import build_glow_ansi  # type: ignore[import-untyped]
+                    from ..theme import THEME as _BOTTOM_THEME       # type: ignore[import-untyped]
+                    glow_str = _BOTTOM_THEME.get('placeholder_glow', '')
+                    m = re.search(r"38;5;(\d+)", glow_str)
+                    if m:
+                        base = int(m.group(1))
+                        placeholder_color = build_glow_ansi(breath_frame, base, 12)
+                    else:
+                        placeholder_color = _COLOR_DIM
                 if bar._status_active:
                     ph = _PLACEHOLDER_STREAMING
                     buf.append(_blessed_move_clear(r)
-                               + prompt_prefix + f"{_COLOR_DIM}{ph}{_COLOR_RESET}")
+                               + prompt_prefix + f"{placeholder_color}{ph}\033[0m")
                 else:
                     ph = _PLACEHOLDER_COMPACT if bar._completion.is_visible else _PLACEHOLDER_TEXT
                     buf.append(_blessed_move_clear(r)
-                               + prompt_prefix + f"{_COLOR_DIM}{ph}{_COLOR_RESET}")
+                               + prompt_prefix + f"{placeholder_color}{ph}\033[0m")
         else:
             buf.append(_blessed_move_clear(r)
                        + f"{_COLOR_DIM}\u00b7{_COLOR_RESET} {segment}")

@@ -497,3 +497,103 @@ class TestPulseColorBreathing:
         assert "\033[38;5;45m" in result or "\033[38;5;41m" in result or "\033[38;5;36m" in result
         assert "\033[0m" in result  # ANSI 序列完整性
 
+
+class TestModelNameBreathing:
+    """步骤 6 美化：模型名使用 THEME['title'] 主题色做正弦波呼吸。"""
+
+    def test_model_name_breathing_wide(self):
+        """宽屏模型名使用 THEME['title'] 基色做呼吸。
+
+        dark 主题 THEME['title'] = \033[38;5;45m（色号 45），
+        呼吸范围 [45, 65]（base=45, peak=min(255, 45+20)=65），
+        周期 6 帧，不同相位输出不同色号。
+        """
+        import re
+        state = UISessionState(model="gpt-4")
+        # Phase 0: sine_color(45, 65, 6, frame=0) → 45
+        streaming = StreamingState(
+            active=True, start_time=time.monotonic(),
+            pulse_phase=0,
+        )
+        result = render_streaming_line(state, streaming)
+        # 提取模型名 "gpt-4" 前的色号
+        idx = result.find("gpt-4")
+        assert idx >= 0, "模型名应出现在结果中"
+        prefix = result[:idx]
+        matches = re.findall(r"\x1b\[38;5;(\d+)m", prefix)
+        assert matches, "模型名前应有 256 色 ANSI 序列"
+        color_at_phase0 = int(matches[-1])
+        # Phase 0 应为 base=45
+        assert color_at_phase0 == 45, \
+            f"Phase 0 模型名色号应为 45(baseline)，实际: {color_at_phase0}"
+
+        # Phase 3: sine_color(45, 65, 6, frame=3) → 65 (peak)
+        streaming3 = StreamingState(
+            active=True, start_time=time.monotonic(),
+            pulse_phase=3,
+        )
+        result3 = render_streaming_line(state, streaming3)
+        idx3 = result3.find("gpt-4")
+        prefix3 = result3[:idx3]
+        matches3 = re.findall(r"\x1b\[38;5;(\d+)m", prefix3)
+        assert matches3, "模型名前应有 256 色 ANSI 序列"
+        color_at_phase3 = int(matches3[-1])
+        # Phase 3 应为 peak=65
+        assert color_at_phase3 == 65, \
+            f"Phase 3 模型名色号应为 65(peak)，实际: {color_at_phase3}"
+
+        # 两相位色号不同，验证呼吸效果
+        assert color_at_phase0 != color_at_phase3, \
+            f"不同相位应产生不同色号: phase0={color_at_phase0}, phase3={color_at_phase3}"
+
+    def test_model_name_static_narrow(self, monkeypatch):
+        """窄屏使用 THEME['title'] 静态色（不做呼吸）。"""
+        monkeypatch.setattr("src.ui.tui.status_bar.is_narrow", lambda: True)
+        monkeypatch.setattr("src.ui.tui.status_bar.get_terminal_width", lambda: 30)
+        state = UISessionState(model="gpt-4")
+        streaming = StreamingState(active=True, start_time=time.monotonic(), pulse_phase=0)
+        result = render_streaming_line(state, streaming)
+        # 窄屏时模型名应使用 THEME['title'] 静态色 \033[38;5;45m
+        from src.ui.theme import THEME
+        assert THEME['title'] in result, \
+            f"窄屏模型名应包含 THEME['title'](\033[38;5;45m) 静态色"
+
+    def test_model_name_color_in_title_range(self):
+        """模型名呼吸色在 [base, base+20] 范围内。"""
+        import re
+        state = UISessionState(model="gpt-4")
+        from src.ui.theme import THEME
+        title_color = THEME['title']
+        title_match = re.search(r"38;5;(\d+)", title_color)
+        assert title_match, f"THEME['title'] 格式异常: {title_color!r}"
+        base = int(title_match.group(1))
+        peak = min(255, base + 20)
+
+        colors_seen = set()
+        for phase in range(4):
+            streaming = StreamingState(
+                active=True, start_time=time.monotonic(),
+                pulse_phase=phase,
+            )
+            result = render_streaming_line(state, streaming)
+            idx = result.find("gpt-4")
+            prefix = result[:idx]
+            matches = re.findall(r"\x1b\[38;5;(\d+)m", prefix)
+            if matches:
+                colors_seen.add(int(matches[-1]))
+
+        for c in colors_seen:
+            assert base <= c <= peak, \
+                f"模型名色号 {c} 超出范围 [{base}, {peak}]"
+
+    def test_model_name_color_256_format(self):
+        """模型名呼吸色使用 256 色 ANSI 格式。"""
+        state = UISessionState(model="gpt-4")
+        streaming = StreamingState(active=True, start_time=time.monotonic(), pulse_phase=0)
+        result = render_streaming_line(state, streaming)
+        # 验证模型名前有 256 色序列
+        idx = result.find("gpt-4")
+        prefix = result[:idx]
+        assert "\033[38;5;" in prefix, \
+            f"模型名前应有 256 色 ANSI 序列，prefix: {prefix!r}"
+

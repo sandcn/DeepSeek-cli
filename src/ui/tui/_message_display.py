@@ -12,6 +12,7 @@
 from __future__ import annotations
 
 import logging
+import re
 from src._compat import dataclass
 from typing import Any
 import os
@@ -24,7 +25,7 @@ from ._terminal import (get_terminal_width, NARROW_THRESHOLD,
 from ._text_utils import (truncate, build_gradient_ansi, build_fade_in_ansi,
                           build_warning_pulse_ansi, make_sep_gradient,
                           build_bounce_ansi, make_sep_gradient_enhanced,
-                          build_sparkle_ansi)
+                          build_sparkle_ansi, build_glow_ansi)
 from ._animator import AnimatorContext, BreathPalette
 from ..output_target import IOutputTarget, TerminalTarget
 
@@ -143,6 +144,7 @@ from ...core.constants import (
     BOLD as _BD, BRIGHT_GREEN_256 as _BG,
 )
 from ..colors import gradient_range
+from ..theme import THEME
 
 # 角色标签 sparkle 静态基准色（与动态呼吸色解耦，避免双重调制噪音）
 _SPARKLE_BASE_USER = 45    # 青色
@@ -323,10 +325,20 @@ def _role_tag(role: str, breath_frame: int = 0) -> str:
         }.get(role, _D + "\u00b7" + _R)
 
     if breath_frame > 0:
+        # 从 THEME['tag_breath'] 提取呼吸基准色号，构建左侧呼吸边框
+        _tag_breath_match = re.search(r"38;5;(\d+)", THEME['tag_breath'])
+        if _tag_breath_match:
+            _border_base = int(_tag_breath_match.group(1))
+            _border_ansi = build_glow_ansi(breath_frame, _border_base, 12)
+            _border_prefix = f"{_border_ansi}\u2503\033[0m "  # ┃ 呼吸边框
+        else:
+            _border_prefix = ""
+
         if role == "user":
             bc = BreathPalette.get_color("role_user", breath_frame)
             # 图标使用 sparkle 闪烁（静态基准色，与呼吸色解耦），文字保持呼吸色
             return (
+                f"{_border_prefix}"
                 f"\033[48;5;235m{build_sparkle_ansi(breath_frame, _SPARKLE_BASE_USER, 6)}\u25cf {_R}"
                 f"\033[48;5;235m\033[38;5;{bc}mUSER{_R}"
                 f"\033[0m"
@@ -335,6 +347,7 @@ def _role_tag(role: str, breath_frame: int = 0) -> str:
             bc = BreathPalette.get_color("role_asst", breath_frame)
             # 图标使用 sparkle 闪烁（静态基准色，与呼吸色解耦），文字保持呼吸色
             return (
+                f"{_border_prefix}"
                 f"\033[48;5;22m{build_sparkle_ansi(breath_frame, _SPARKLE_BASE_ASST, 6)}\u25c6 {_R}"
                 f"\033[48;5;22m\033[38;5;{bc}mASSISTANT{_R}"
                 f"\033[0m"
@@ -343,6 +356,7 @@ def _role_tag(role: str, breath_frame: int = 0) -> str:
             bc = BreathPalette.get_color("role_tool", breath_frame)
             # 图标使用 sparkle 闪烁（静态基准色，与呼吸色解耦），文字保持呼吸色
             return (
+                f"{_border_prefix}"
                 f"\033[48;5;94m{build_sparkle_ansi(breath_frame, _SPARKLE_BASE_TOOL, 6)}\u2699 {_R}"
                 f"\033[48;5;94m\033[38;5;{bc}mTOOL{_R}"
                 f"\033[0m"

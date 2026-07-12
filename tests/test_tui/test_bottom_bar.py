@@ -1506,5 +1506,55 @@ class TestBottomBarColorAlignment(unittest.TestCase):
                       "_format_status 应含 GREEN_256(41) 色")
 
 
+class TestPlaceholderGlow(unittest.TestCase):
+    """验证底部栏占位符呼吸效果（步骤 5：主题色联动 glow 呼吸）。
+
+    核心场景：
+      1. 宽屏：占位符使用 build_glow_ansi 产生呼吸 ANSI（38;5;xxm）
+      2. 窄屏：占位符使用静态 _COLOR_DIM（\033[38;5;242m）
+    """
+
+    def setUp(self):
+        self.bb = _BottomBar()
+        self.bb._active = True
+        self.bb._last_text = ""           # 空文本 → 占位符路径
+        self.bb._input_cursor_pos = 0
+        self.bb._last_cursor_pos = 0
+        self.bb._last_rendered_text = ""
+        self.bb._status_active = False
+        self.bb._model_name = "test-model"
+        self.bb._subagent_lines = []
+        self._stdout = sys.__stdout__
+
+    def tearDown(self):
+        sys.__stdout__ = self._stdout
+
+    def test_placeholder_glow_wide(self):
+        """宽屏时占位符应包含呼吸 ANSI 256 色序列（38;5;）。"""
+        self.bb._last_text = ""
+        buf = io.StringIO()
+        with patch.object(sys, '__stdout__', buf), \
+             patch("src.ui.tui._terminal.is_narrow", return_value=False), \
+             patch.object(self.bb, '_format_status', return_value=""):
+            self.bb.force_redraw()
+        output = buf.getvalue()
+        # 宽屏占位符路径应产生 256 色 ANSI 序列（build_glow_ansi）
+        self.assertIn("38;5;", output,
+                      "宽屏占位符应含 256 色 ANSI 呼吸序列")
+
+    def test_placeholder_static_narrow(self):
+        """窄屏时占位符使用静态 _COLOR_DIM（\033[38;5;242m）。"""
+        self.bb._last_text = ""
+        buf = io.StringIO()
+        with patch.object(sys, '__stdout__', buf), \
+             patch("src.ui.tui._terminal.is_narrow", return_value=True), \
+             patch.object(self.bb, '_format_status', return_value=""):
+            self.bb.force_redraw()
+        output = buf.getvalue()
+        # 窄屏占位符应使用 _COLOR_DIM = \033[38;5;242m
+        self.assertIn("\033[38;5;242m", output,
+                      "窄屏占位符应使用 _COLOR_DIM(242)")
+
+
 if __name__ == "__main__":
     unittest.main()
