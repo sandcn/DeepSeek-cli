@@ -1,5 +1,7 @@
 """配置命令 — 模型/系统提示词/费用/主题相关命令处理函数"""
 
+from __future__ import annotations
+
 from ..constants import GREEN, YELLOW, DIM, RESET, CYAN
 from ..adapters.output import get_default_output_port
 from ..internal.commands._command_core import CommandContext, show_cost

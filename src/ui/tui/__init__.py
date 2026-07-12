@@ -81,6 +81,8 @@
   移除 tests/test_completer.py，pyproject.toml 移除 prompt-toolkit 依赖
 """
 
+from __future__ import annotations
+
 # ── 模块导入（公开模块） ─────────────────────────────────
 from . import message_editor
 from . import status_bar

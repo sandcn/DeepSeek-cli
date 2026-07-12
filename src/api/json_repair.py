@@ -4,6 +4,8 @@
 含线程安全的统计计数器。
 """
 
+from __future__ import annotations
+
 import json
 import re
 import threading
