@@ -10,6 +10,8 @@ Spinner 动画集（通过 get_spinner_frames() 按名称获取）：
   - heart:     爱心跳动动画（8 帧，心跳式 ♡→♥，速度 0.12s）
   - bounce:    弹跳球动画（8 帧，Braille 垂直弹跳，速度 0.10s）
   - clock:     时钟旋转动画（12 帧，Braille 旋转扫描，速度 0.08s）
+  - matrix:    矩阵雨动画（10 帧，Braille 模拟数字雨下落，速度 0.08s）
+  - glow:      发光脉冲动画（12 帧，Braille 点从少到多再到少，速度 0.10s）
 """
 
 from __future__ import annotations
@@ -100,6 +102,16 @@ SPINNER_CLOCK = [
     "⢀", "⡀", "⠄", "⠂", "⠁", "⠈", "⠐", "⠠", "⢀", "⡀", "⠄", "⠂",
 ]
 
+# 矩阵雨动画 — 10 帧 braille（模拟数字雨下落效果）
+SPINNER_MATRIX = [
+    "⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏",
+]
+
+# 发光脉冲动画 — 12 帧（Braille 点从少到多再到少，模拟发光扩散）
+SPINNER_GLOW = [
+    "⣀", "⣠", "⣤", "⣦", "⣶", "⣷", "⣿", "⣷", "⣶", "⣦", "⣤", "⣠",
+]
+
 # ── Spinner 集合字典 ────────────────────────────────
 SPINNER_SETS: dict[str, list[str]] = {
     "braille": SPINNER_BRAILLE,
@@ -111,6 +123,8 @@ SPINNER_SETS: dict[str, list[str]] = {
     "heart": SPINNER_HEART,
     "bounce": SPINNER_BOUNCE,
     "clock": SPINNER_CLOCK,
+    "matrix": SPINNER_MATRIX,
+    "glow": SPINNER_GLOW,
 }
 
 # 保留原 SPINNER_FRAMES 兼容别名（指向 SPINNER_BRAILLE 前 8 帧）
@@ -132,6 +146,8 @@ SPINNER_SPEED: dict[str, float] = {
     "heart": 0.12,
     "bounce": 0.10,
     "clock": 0.08,
+    "matrix": 0.08,
+    "glow": 0.10,
 }
 
 
@@ -141,7 +157,7 @@ def get_spinner_frames(name: str = "braille") -> tuple[list[str], float]:
     Args:
         name: spinner 名称
               （"braille" | "pulse" | "circle" | "dots" | "wave" | "typing"
-               | "heart" | "bounce" | "clock"）
+               | "heart" | "bounce" | "clock" | "matrix" | "glow"）
 
     Returns:
         (帧列表, 帧间隔秒数)

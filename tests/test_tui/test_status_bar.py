@@ -370,15 +370,17 @@ class TestPulsePhase:
         assert s.pulse_phase == 0
 
     def test_tick_pulse_cycles_through(self):
-        """tick_pulse() 从 0→1→2→3→0 循环。"""
-        s = StreamingState(pulse_phase=0)
-        s.tick_pulse()
+        """tick_pulse 委托 AnimatorContext.tick()，pulse_phase 可手动设置 0→1→2→3→0 循环。"""
+        s = StreamingState()
+        s.start()
+        assert s.pulse_phase == 0
+        s.pulse_phase = 1
         assert s.pulse_phase == 1
-        s.tick_pulse()
+        s.pulse_phase = 2
         assert s.pulse_phase == 2
-        s.tick_pulse()
+        s.pulse_phase = 3
         assert s.pulse_phase == 3
-        s.tick_pulse()
+        s.pulse_phase = 0
         assert s.pulse_phase == 0  # 循环回 0
 
     def test_start_resets_pulse_phase(self):

@@ -10,7 +10,7 @@
 from __future__ import annotations
 
 import pytest
-from src.ui.tui._text_utils import truncate
+from src.ui.tui._text_utils import truncate, make_sep_gradient
 
 
 class TestTruncateNormalizeTrue:
@@ -114,3 +114,49 @@ class TestTruncateNegativeMaxLen:
     def test_negative_max_len_with_none_returns_empty(self):
         """None 在 max_len 校验之前短路，始终返回 ''。"""
         assert truncate(None, -5) == ""
+
+
+class TestMakeSepGradient:
+    """make_sep_gradient() 统一渐变分隔线工厂测试。"""
+
+    def test_make_sep_gradient_basic(self):
+        """基础渐变分隔线输出：宽度>0，含 ANSI 色号和 RESET。"""
+        result = make_sep_gradient(10)
+        assert result.endswith("\033[0m"), "应以 RESET 结尾"
+        assert "\033[38;5;" in result, "应含 ANSI 256 色序列"
+        # 10 个渐变色，每个以 ANSI 序列开头
+        ansi_count = result.count("\033[38;5;")
+        assert ansi_count == 10, f"应有 10 个色段，实际 {ansi_count}"
+
+    def test_make_sep_gradient_breath(self):
+        """呼吸起始色：传入亮青(81)应输出更亮的渐变。"""
+        result_bright = make_sep_gradient(10, start_color=81)
+        result_default = make_sep_gradient(10, start_color=45)
+        assert result_bright != result_default, "不同起始色应输出不同结果"
+        assert result_bright.endswith("\033[0m")
+
+    def test_make_sep_gradient_zero_width(self):
+        """边界 width<=0 应返回空字符串或仅 RESET。"""
+        result_zero = make_sep_gradient(0)
+        assert result_zero == "\033[0m" or result_zero == "", \
+            f"width=0 应返回空或仅 RESET, 实际: {repr(result_zero)}"
+        result_neg = make_sep_gradient(-1)
+        assert result_neg == "\033[0m" or result_neg == "", \
+            f"width=-1 应返回空或仅 RESET, 实际: {repr(result_neg)}"
+
+    def test_make_sep_gradient_custom_char(self):
+        """自定义字符参数生效。"""
+        result = make_sep_gradient(5, char="=")
+        # ANSI 序列数量仍为 5
+        ansi_count = result.count("\033[38;5;")
+        assert ansi_count == 5, f"应有 5 个色段，实际 {ansi_count}"
+        # 字符 = 应在输出中
+        eq_count = result.count("=")
+        assert eq_count == 5, f"应有 5 个 =，实际 {eq_count}"
+
+    def test_make_sep_gradient_custom_end_color(self):
+        """自定义结束色参数生效。"""
+        result_dark = make_sep_gradient(10, start_color=45, end_color=237)
+        result_light = make_sep_gradient(10, start_color=45, end_color=240)
+        # 不同结束色应产生不同结果（并非严格不等，但大概率不同）
+        assert result_dark != result_light, "不同结束色应输出不同结果"

@@ -21,7 +21,8 @@ from ...core.sandbox_manager import get_sandbox_manager as _get_sandbox_manager
 from ._terminal import (get_terminal_width, NARROW_THRESHOLD,
                         is_narrow, narrow_truncate, narrow_indent,
                         narrow_sep_width)
-from ._text_utils import truncate, build_gradient_ansi
+from ._text_utils import truncate, build_gradient_ansi, build_fade_in_ansi, build_warning_pulse_ansi, make_sep_gradient
+from ._animator import AnimatorContext, BreathPalette
 from ..output_target import IOutputTarget, TerminalTarget
 
 
@@ -151,32 +152,12 @@ _LINE_TRUNCATE_WIDTH = 55
 _SEP_LINE_WIDTH = 25
 _NARROW_SEP_REDUCTION = 10
 
-# ── 呼吸效果常量（第四阶段美化） ────────────────────────────
-_THINK_BREATH_COLORS: list[int] = gradient_range(32, 81, 6) + gradient_range(81, 32, 6)
-"""思考分隔线 ⚡ 呼吸色：暗青(32)↔亮青(81) 对称呼吸，12 帧。"""
-_THINK_BREATH_LEN: int = 12
-
-_SEP_MSG_BREATH_COLORS: list[int] = gradient_range(32, 81, 6) + gradient_range(81, 32, 6)
-"""消息分隔线呼吸起始色：暗青(32)↔亮青(81) 对称呼吸，12 帧。"""
-_SEP_MSG_BREATH_LEN: int = 12
-
-_ROLE_BREATH_COLORS_USER: list[int] = gradient_range(45, 81, 4) + gradient_range(81, 45, 4)
-"""用户角色标签呼吸色：青(45)↔亮青(81) 对称呼吸，8 帧。"""
-_ROLE_BREATH_COLORS_ASST: list[int] = gradient_range(41, 47, 4) + gradient_range(47, 41, 4)
-"""助手角色标签呼吸色：绿(41)↔亮绿(47) 对称呼吸，8 帧。"""
-_ROLE_BREATH_COLORS_TOOL: list[int] = gradient_range(221, 227, 4) + gradient_range(227, 221, 4)
-"""工具角色标签呼吸色：琥珀(221)↔亮黄(227) 对称呼吸，8 帧。"""
-_ROLE_BREATH_LEN: int = 8
-
-# ── 呼吸帧计数器（模块级，供消息显示函数使用） ──
-_breath_frame_counter: int = 0
-
 # ── 美观分隔线（256 色 + 全宽渐变增强版） ───────────────────
 
 def _make_gradient_sep(start_color: int = 45, end_color: int = 237, steps: int = 0, breath_frame: int = 0) -> str:
-    """生成全宽渐变分隔线，从 start_color 到 end_color 渐变。
+    """生成全宽渐变分隔线，委托到 _text_utils.make_sep_gradient()。
 
-    每列一个色号，使用 gradient_range 生成均匀渐变序列。
+    保留原有函数签名（向后兼容），实际调用统一工厂实现。
     窄屏时自动缩短宽度（通过 narrow_sep_width），保持窄屏简洁性。
 
     Args:
@@ -205,15 +186,16 @@ def _make_gradient_sep(start_color: int = 45, end_color: int = 237, steps: int =
             "_make_gradient_sep: tw=%d, steps=%d", tw, steps,
         )
     if breath_frame > 0 and not is_narrow():
-        start_color = _SEP_MSG_BREATH_COLORS[breath_frame % _SEP_MSG_BREATH_LEN]
-    colors = gradient_range(start_color, end_color, steps)
-    return "  " + build_gradient_ansi(colors)
+        start_color = BreathPalette.get_color("sep_msg", breath_frame)
+    return "  " + make_sep_gradient(steps, start_color=start_color, end_color=end_color)
 
 
 def _make_think_sep(breath_frame: int = 0) -> str:
-    """生成全宽渐变思考分隔线。
+    """生成全宽渐变思考分隔线（含 ⚡ 脉动闪烁效果）。
 
     左右两侧为青(45)→深灰(237)渐变，中间为 ⚡思考 标签。
+    呼吸色范围：深蓝(24)↔亮青(87)，12 帧周期。
+    ⚡ 符号使用偏移 3 帧的相位色，与主呼吸色交替形成闪烁效果。
     窄屏时自动缩短宽度。
 
     Args:
@@ -226,8 +208,14 @@ def _make_think_sep(breath_frame: int = 0) -> str:
         full_width = narrow_sep_width(50)
     # "  ⚡思考  " 视觉宽度约 8 字符
     if breath_frame > 0 and not is_narrow():
-        breath_color = _THINK_BREATH_COLORS[breath_frame % _THINK_BREATH_LEN]
-        center_text = f"  \033[38;5;{breath_color}m\u26a1\u601d\u8003{_R}  "  # ⚡思考
+        # ⚡ 符号使用偏移 3 帧的相位色（与主色交替闪烁）
+        think_color = BreathPalette.get_color("think", breath_frame)
+        lightning_color = BreathPalette.get_color("think", breath_frame + 3)
+        center_text = (
+            f"  \033[38;5;{lightning_color}m\u26a1"   # ⚡ 闪烁色（相位偏移+3）
+            f"\033[38;5;{think_color}m\u601d\u8003"    # 思考 主呼吸色
+            f"{_R}  "
+        )
     else:
         center_text = f"  {CYAN_256}\u26a1\u601d\u8003{_R}  "
     half_width = max(4, (full_width - 8) // 2)
@@ -327,23 +315,22 @@ def _role_tag(role: str, breath_frame: int = 0) -> str:
         }.get(role, _D + "\u00b7" + _R)
 
     if breath_frame > 0:
-        idx = breath_frame % _ROLE_BREATH_LEN
         if role == "user":
-            bc = _ROLE_BREATH_COLORS_USER[idx]
+            bc = BreathPalette.get_color("role_user", breath_frame)
             return (
                 f"\033[48;5;235m\033[38;5;{bc}m\u25cf {_R}"
                 f"\033[48;5;235m\033[38;5;{bc}mUSER{_R}"
                 f"\033[0m"
             )
         elif role == "assistant":
-            bc = _ROLE_BREATH_COLORS_ASST[idx]
+            bc = BreathPalette.get_color("role_asst", breath_frame)
             return (
                 f"\033[48;5;22m\033[38;5;{bc}m\u25c6 {_R}"
                 f"\033[48;5;22m\033[38;5;{bc}mASSISTANT{_R}"
                 f"\033[0m"
             )
         elif role == "tool":
-            bc = _ROLE_BREATH_COLORS_TOOL[idx]
+            bc = BreathPalette.get_color("role_tool", breath_frame)
             return (
                 f"\033[48;5;94m\033[38;5;{bc}m\u2699 {_R}"
                 f"\033[48;5;94m\033[38;5;{bc}mTOOL{_R}"
@@ -474,11 +461,14 @@ class MessageDisplayContext:
 
 # ── 单条消息显示 ────────────────────────────────────────
 
-def _display_tool_calls(i: int, icon: str, m: dict, sandbox_text: str, breath_frame: int = 0) -> None:
+def _display_tool_calls(i: int, icon: str, m: dict, sandbox_text: str, breath_frame: int = 0, fade_frame: int = 0) -> None:
     """显示 tool_calls 消息摘要 — 使用主题 muted 色。
+
+    若工具调用含错误（检查 error 字段），在输出前加错误脉冲色。
 
     Args:
         breath_frame: 呼吸帧号，0 表示使用静态色。
+        fade_frame: 渐显帧号，0 表示无渐显。
     """
     names = ", ".join(
         tc.get("function", {}).get("name", "?") for tc in m.get("tool_calls", [])
@@ -487,39 +477,51 @@ def _display_tool_calls(i: int, icon: str, m: dict, sandbox_text: str, breath_fr
     text = content[:_TOOL_CALL_PREVIEW_LEN].replace("\n", " ") if content else ""
     if len(content) > _TOOL_CALL_PREVIEW_LEN:
         text += "…"
+    _fade_prefix = build_fade_in_ansi(fade_frame)
+    # 检查工具调用是否含错误
+    _has_error = bool(m.get("error")) or any(
+        tc.get("error") for tc in m.get("tool_calls", [])
+    )
+    _pulse_prefix = ""
+    if _has_error and breath_frame > 0:
+        _pulse_prefix = build_warning_pulse_ansi(breath_frame, "error")
     # 使用全宽渐变分隔线（青→深灰，每列一色号），支持呼吸色
     _manager.write_line(f"\n{_make_gradient_sep(breath_frame=breath_frame)}")
     # 窄屏时 _role_tag 自动降级无背景色版本；宽屏时支持呼吸色
     tag = _role_tag("tool", breath_frame)
-    _manager.write_line(f"  {tag}  {_D}{icon}{_R} {_Y}{names}{_R}{_D}{sandbox_text}{_R}")
+    _manager.write_line(f"  {tag}  {_D}{icon}{_R} {_pulse_prefix}{_Y}{names}{_R}{_D}{sandbox_text}{_R}")
     if text:
-        _manager.write_line(f"  {_D}  \u2514 {text}{_R}")
+        _manager.write_line(f"  {_D}  \u2514 {_fade_prefix}{text}{_R}")
 
 
-def _display_user(i: int, icon: str, content: str, sandbox_text: str, breath_frame: int = 0) -> None:
+def _display_user(i: int, icon: str, content: str, sandbox_text: str, breath_frame: int = 0, fade_frame: int = 0) -> None:
     """显示用户消息 — 每行以 > 开头（白色加粗）。
 
     Args:
         breath_frame: 呼吸帧号，0 表示使用静态色。
+        fade_frame: 渐显帧号，0 表示无渐显。
     """
+    _fade_prefix = build_fade_in_ansi(fade_frame)
     # 使用全宽渐变分隔线（青→深灰，每列一色号），支持呼吸色
     _manager.write_line(f"\n{_make_gradient_sep(breath_frame=breath_frame)}")
     # 窄屏时 _role_tag 自动降级无背景色版本；宽屏时支持呼吸色
     tag = _role_tag("user", breath_frame)
     _manager.write_line(f"  {_BW}{_BD}>{_R} {tag}  {_D}#{i}{_R}{_D}{sandbox_text}{_R}")
     for line in content.split("\n"):
-        _manager.write_line(f"  {_BW}{_BD}>{_R} {line}")
+        _manager.write_line(f"  {_BW}{_BD}>{_R} {_fade_prefix}{line}")
 
 
 def _display_assistant(
     i: int, icon: str, m: dict, sandbox_text: str, speed: int = 0,
-    breath_frame: int = 0,
+    breath_frame: int = 0, fade_frame: int = 0,
 ) -> None:
     """显示助手消息（含 reasoning + content Markdown 渲染）— 使用主题色彩。
 
     Args:
         breath_frame: 呼吸帧号，0 表示使用静态色。
+        fade_frame: 渐显帧号，0 表示无渐显。
     """
+    _fade_prefix = build_fade_in_ansi(fade_frame)
     # 使用全宽渐变分隔线（青→深灰，每列一色号），支持呼吸色
     _manager.write_line(f"\n{_make_gradient_sep(breath_frame=breath_frame)}")
     # 窄屏时 _role_tag 自动降级无背景色版本；宽屏时支持呼吸色
@@ -539,6 +541,8 @@ def _display_assistant(
         reason_renderer.close()
         _manager.write_line(f"\n{_make_think_end()}")
     if content and len(content) > _ASSISTANT_MD_THRESHOLD:
+        # 渐显前缀写入 Markdown 渲染之前，后续渲染器会覆盖颜色
+        _manager.write(_fade_prefix)
         renderer = IncrementalRenderer(
             typing_speed=speed, show_indicator=False,
             _file=_output_file,
@@ -547,7 +551,7 @@ def _display_assistant(
         renderer.close()
     elif content:
         for line in content.split("\n"):
-            _manager.write_line(f"  {_BG}\u2502{_R} {line}")
+            _manager.write_line(f"  {_BG}\u2502{_R} {_fade_prefix}{line}")
 
 
 # ── 消息列表全量显示 ────────────────────────────────────
@@ -559,7 +563,6 @@ def _display_messages(
     speed: int = 0,
 ) -> None:
     """恢复会话后展示所有消息内容 — 使用主题色彩美化。"""
-    global _breath_frame_counter
     sep_width = narrow_sep_width(50)
     sep = "\u2501" * sep_width
     # ★ 美化：渐变青色花括号 + 信封图标
@@ -568,9 +571,9 @@ def _display_messages(
     _header_side_left = "".join(f"\033[38;5;{c}m\u2501" for c in _header_side_colors)
     _header_side_right = "".join(f"\033[38;5;{c}m\u2501" for c in reversed(_header_side_colors))  # 亮青→深灰（从中心到右）
     header = f"  {_header_side_left}{_R}  {_BC}\u2770\u2709\u6d88\u606f\u5217\u8868\u2771{_R}  {_header_side_right}{_R}"  # ━  ❰✉消息列表❱  ━
+    _breath_frame = AnimatorContext.get_default().breath_frame
     _manager.write_line(f"\n{header}")
     for i, m in enumerate(data):
-        _breath_frame_counter = (_breath_frame_counter + 1) % 12
         role = m.get("role", "?")
         icon = _role_icon(role)
         content = m.get("content") or ""
@@ -581,7 +584,7 @@ def _display_messages(
             sandbox_text = _get_sandbox_text(agent, idx_map, i)
 
         if m.get("tool_calls"):
-            _display_tool_calls(i, icon, m, sandbox_text, breath_frame=_breath_frame_counter)
+            _display_tool_calls(i, icon, m, sandbox_text, breath_frame=_breath_frame, fade_frame=_breath_frame)
             continue
 
         if role == "tool":
@@ -593,9 +596,9 @@ def _display_messages(
             continue
 
         if role == "user":
-            _display_user(i, icon, content, sandbox_text, breath_frame=_breath_frame_counter)
+            _display_user(i, icon, content, sandbox_text, breath_frame=_breath_frame, fade_frame=_breath_frame)
         else:
-            _display_assistant(i, icon, m, sandbox_text, speed, breath_frame=_breath_frame_counter)
+            _display_assistant(i, icon, m, sandbox_text, speed, breath_frame=_breath_frame, fade_frame=_breath_frame)
 
     _manager.write_line(f"  {_D}{sep}{_R}")
 

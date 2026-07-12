@@ -86,6 +86,7 @@ from . import message_editor
 from . import status_bar
 from . import command_palette
 from . import session_switcher
+from . import _animator
 from . import _text_utils
 from . import _selector_base
 

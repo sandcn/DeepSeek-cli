@@ -44,6 +44,7 @@ from typing import Any, Optional
 from wcwidth import wcswidth
 
 from .._blessed import get_terminal
+from ..tui._animator import AnimatorContext, BreathPalette
 from .completion import _CompletionPopup
 from .selection import run_bottom_bar_selection  # noqa: F401 — 重导出保持兼容
 from .status import _StatusMixin, _get_snapshot, _TOKEN_SPEED_SNAPSHOT  # noqa: F401 — 重导出供测试 patch
@@ -60,7 +61,6 @@ from .theme import (
     _PLACEHOLDER_COMPACT,
     _PLACEHOLDER_STREAMING,
     _PLACEHOLDER_TEXT,
-    _SEP_BREATH_COLORS,
     get_prompt_breath_color,
     make_sep_gradient,
 )
@@ -146,8 +146,8 @@ class _BottomBar(_StatusMixin):
         self._tracker: _StdoutLineTracker | None = None
         # ── 光标坐标追踪器（全局共享实例） ──
         self._cursor_tracker = cursor_tracker or CursorTracker()
-        # ── 呼吸动画帧计数器（第四阶段美化） ──
-        self._breath_frame: int = 0
+        # ── 统一动画时钟（AnimatorContext 单例） ──
+        self._animator = AnimatorContext.get_default()
         # ── 终端尺寸缓存（性能优化，避免高频 ioctl） ──
         self._cached_height: int = 0
         self._cached_width: int = 0
@@ -671,8 +671,8 @@ class _BottomBar(_StatusMixin):
         if not self._active:
             return
 
-        # 推进呼吸动画帧
-        self._breath_frame = (self._breath_frame + 1) % 12
+        # 推进统一动画时钟
+        self._animator.tick()
 
         height = self._term_height()
 
@@ -810,9 +810,8 @@ class _BottomBar(_StatusMixin):
                 sep = f"{_COLOR_SEP}\u2501{_COLOR_RESET}" * sep_len
             else:
                 sep_start = 45  # 默认青色
-                if self._breath_frame > 0:
-                    from .theme import _SEP_BREATH_COLORS, _SEP_BREATH_LEN
-                    sep_start = _SEP_BREATH_COLORS[self._breath_frame % _SEP_BREATH_LEN]
+                if self._animator.breath_frame > 0:
+                    sep_start = BreathPalette.get_color("sep_bar", self._animator.breath_frame)
                 sep = make_sep_gradient(tw - 2, start_color=sep_start)
             _buf.append(_blessed_move_clear(r1) + "  " + sep)
             # ★ force_redraw 中的 tracker.set 是近似值，仅记录当前绘制行号。
@@ -828,7 +827,7 @@ class _BottomBar(_StatusMixin):
             # 写入收集好的全部 ANSI 序列（分隔线+subagent+状态行）
             out.write(''.join(_buf))
 
-            self._draw_input_lines_locked(out, text, r2 + 1, tw, self._breath_frame)
+            self._draw_input_lines_locked(out, text, r2 + 1, tw, self._animator.breath_frame)
             input_rows = self._cached_input_rows
             # ★ 清多余行：也批量收集
             _buf2: list[str] = []

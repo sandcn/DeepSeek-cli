@@ -11,6 +11,8 @@ from __future__ import annotations
 import logging
 from typing import Optional
 
+from ..tui._animator import AnimatorContext, BreathPalette
+
 from .theme import (
     _COLOR_ACCENT,
     _COLOR_DIM,
@@ -127,10 +129,22 @@ class _StatusMixin:
         工具计数值得高亮区分成功/失败（成功绿/失败红）。
         """
         # ── 模型名字（始终显示，带 ◉ 图标） ──
-        model_part = (
-            f"{_COLOR_ACCENT}\u25c9{_COLOR_RESET} {_COLOR_ACCENT}{self._model_name}{_COLOR_RESET}"
-            if self._model_name else ""
-        )
+        if self._model_name:
+            if self._status_active:
+                # 流式输出期间：◉ 图标使用呼吸脉动色
+                _pulse_frame = AnimatorContext.get_default().breath_frame
+                _pulse_color = BreathPalette.get_color("status_pulse", _pulse_frame)
+                model_part = (
+                    f"\033[38;5;{_pulse_color}m\u25c9\033[0m"
+                    f" {_COLOR_ACCENT}{self._model_name}{_COLOR_RESET}"
+                )
+            else:
+                model_part = (
+                    f"{_COLOR_ACCENT}\u25c9{_COLOR_RESET}"
+                    f" {_COLOR_ACCENT}{self._model_name}{_COLOR_RESET}"
+                )
+        else:
+            model_part = ""
 
         # ★ 非流式活跃时仅显示模型名
         if not self._status_active:

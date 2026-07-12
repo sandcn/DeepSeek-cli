@@ -12,8 +12,8 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from .._blessed import get_terminal
+from ..tui._animator import AnimatorContext, BreathPalette
 from .theme import (
-    _COLOR_BREATH_BG,
     _COLOR_COMPLETE_CMD_PREFIX,
     _COLOR_COMPLETE_DIR,
     _COLOR_COMPLETE_MATCH,
@@ -57,7 +57,7 @@ class _CompletionPopup:
         self._is_selection: bool = False  # 是否为选择模式
         self._idx: int = 0               # 当前选中索引
         self._popup_height: int = 0      # 弹窗所占行数
-        self._breath_phase: int = 0      # 呼吸效果相位（0-9 循环）
+        self._animator = AnimatorContext.get_default()
         self._tracker = cursor_tracker
 
     @staticmethod
@@ -154,14 +154,10 @@ class _CompletionPopup:
 
     # ── 呼吸效果 ──────────────────────────────────────────
 
-    def tick_breath(self) -> None:
-        """推进呼吸相位，在 [0, len(_COLOR_BREATH_BG)-1] 循环。"""
-        self._breath_phase = (self._breath_phase + 1) % len(_COLOR_BREATH_BG)
-
     @property
     def _breath_bg_color(self) -> int:
         """当前呼吸相位对应的背景色号。"""
-        return _COLOR_BREATH_BG[self._breath_phase]
+        return BreathPalette.get_color("breath_bg", self._animator.breath_frame)
 
     def get_selected(self) -> tuple[str, int, str]:
         """获取当前选中补全项的数据。
@@ -295,8 +291,8 @@ class _CompletionPopup:
         if not self._visible or not self._items:
             return
 
-        # 推进呼吸相位，使选中项背景色脉动
-        self.tick_breath()
+        # 推进全局帧号，使选中项背景色脉动
+        self._animator.tick()
 
         try:
             term = get_terminal()

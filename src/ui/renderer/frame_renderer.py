@@ -45,6 +45,8 @@ from ...core.constants import (
 )
 from ...tools.registry import get_tool_display_name
 
+from ..tui._animator import BreathPalette
+
 # ── 常量 ────────────────────────────────────────────────
 
 _ANSI_RE = re.compile(r'\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])')
@@ -52,23 +54,8 @@ _TRUNC_MARGIN = 2
 _TRUNC_ELLIPSIS_SPACE = 3
 _TRUNC_MIN_WIDTH = 10
 
-# ── 进度条渐变调色板 ────────────────────────────────────
-# 琥珀(214)→绿(41) 8阶渐变，用于进度条完成部分多色渲染
-_PROGRESS_AMBER_GREEN: list[int] = _gradient_range(214, 41, 8)
-
-# ── 进度条呼吸偏移（第四阶段美化） ──
-_PROGRESS_BREATH_PERIOD: int = 8
-"""进度条呼吸周期（帧数）：每 _PROGRESS_BREATH_PERIOD 帧完成一个颜色漂移周期。"""
-
-# ── Agent 标题呼吸偏移（第四阶段美化） ──
-_AGENT_BREATH_PERIOD: int = 12
-"""Agent 标题呼吸周期：每 12 帧完成一个颜色漂移周期。"""
-_AGENT_BREATH_OFFSETS: list[int] = [0, 1, 2, 3, 2, 1] * 2
-"""6 帧重复的微量色号偏移（0→1→2→3→2→1 循环），使颜色柔和脉动。"""
-
-# ── 工具图标脉动色（运行中：琥珀214↔亮黄220，8帧对称，第四阶段美化） ──
-_TOOL_PULSE_COLORS: list[int] = [214, 216, 218, 220, 218, 216] * 2
-"""工具图标脉动色：琥珀(214)→亮黄(220)→琥珀(214)，12 帧。"""
+# ── 进度条渐变 & 呼吸调色板（从 BreathPalette 注册表读取） ──
+# 所有颜色数据已由 BreathPalette 管理，此处不再定义局部常量。
 
 # ── 树形缩进常量 ────────────────────────────────────────
 _INDENT = "  "  # 子行统一缩进（2 空格），用于 phase/tool/result 行
@@ -314,15 +301,29 @@ class FrameRenderer:
             filled = int(bar_width * done_count / total_agents) if total_agents else 0
             if filled > 0:
                 # 琥珀→绿渐变：每个 ▰ 使用不同色号，含呼吸颜色漂移
-                _gradient = _PROGRESS_AMBER_GREEN
-                _breath_offset = self._frame % _PROGRESS_BREATH_PERIOD
+                _gradient = BreathPalette.get("progress_amber_green")
+                _breath_offset = self._frame % len(_gradient)
                 _parts: list[str] = []
                 for _i in range(filled):
                     _ci = (_i + _breath_offset) % len(_gradient)
                     _parts.append(f"\033[38;5;{_gradient[_ci]}m▰\033[0m")
-                bar = "".join(_parts) + _C_DIMMEST + "▱" * (bar_width - filled) + _C_RESET
+                # 空位部分：深灰↔浅灰渐变，与填充色形成对比
+                empty_count = bar_width - filled
+                if empty_count > 0:
+                    _empty_grad = _gradient_range(235, 245, max(empty_count, 2))
+                    for _j in range(empty_count):
+                        _ej = (_j + _breath_offset) % len(_empty_grad)
+                        _parts.append(f"\033[38;5;{_empty_grad[_ej]}m▱\033[0m")
+                bar = "".join(_parts) + _C_RESET
             else:
-                bar = _C_DIMMEST + "▱" * bar_width + _C_RESET
+                # 全空：深灰→浅灰渐变呼吸
+                _empty_grad = _gradient_range(235, 245, max(bar_width, 2))
+                _breath_offset = self._frame % len(_empty_grad)
+                _empty_parts: list[str] = []
+                for _j in range(bar_width):
+                    _ej = (_j + _breath_offset) % len(_empty_grad)
+                    _empty_parts.append(f"\033[38;5;{_empty_grad[_ej]}m▱\033[0m")
+                bar = "".join(_empty_parts) + _C_RESET
             icon = f"{_C_RUNNING}{self._summary_icon_running}{_C_RESET}"
             summary = (
                 f"{icon} {_C_SUMMARY_DIM}{total_agents} agents{_C_RESET}"
@@ -401,8 +402,8 @@ class FrameRenderer:
         type_color = AGENT_TYPE_COLORS.get(slot.agent_type, _C_DIMMER)
         if slot.status == "running" and not final:
             # 运行中：微量色号偏移产生柔和呼吸
-            breath_idx = (self._frame // 2) % len(_AGENT_BREATH_OFFSETS)
-            offset = _AGENT_BREATH_OFFSETS[breath_idx]
+            breath_idx = (self._frame // 2) % len(BreathPalette.get("agent_breath"))
+            offset = BreathPalette.get("agent_breath")[breath_idx]
             # 从 ANSI 序列中提取色号并偏移
             # 格式 \033[38;5;Nm → 提取 N
             import re as _re_breath
@@ -512,8 +513,8 @@ class FrameRenderer:
             line = f"{prefix}{_C_PARSING}◌{_C_RESET} {tool_abbr}{detail_display}"
         elif rec.phase == "running":
             # 运行中工具图标脉动
-            pulse_idx = (self._frame // 2) % len(_TOOL_PULSE_COLORS)
-            pulse_color = _TOOL_PULSE_COLORS[pulse_idx]
+            pulse_idx = (self._frame // 2) % len(BreathPalette.get("tool_pulse"))
+            pulse_color = BreathPalette.get("tool_pulse")[pulse_idx]
             line = f"{prefix}\033[38;5;{pulse_color}m●\033[0m {tool_abbr}{detail_display}  {_C_DIMMER}{time_str}{_C_RESET}"
         elif rec.phase == "done":
             line = f"{prefix}{_C_DONE}✔{_C_RESET} {tool_abbr}{detail_display}  {_C_DIMMER}{time_str}{_C_RESET}"

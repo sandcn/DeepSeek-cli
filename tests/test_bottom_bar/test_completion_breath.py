@@ -13,45 +13,49 @@ import unittest
 
 from src.ui._bottom_bar_pkg.completion import _CompletionPopup
 from src.ui._bottom_bar_pkg.theme import _COLOR_BREATH_BG, _COLOR_SELECT_FG, _COLOR_RESET
+from src.ui.tui._animator import AnimatorContext, BreathPalette
 
 
 class TestCompletionBreathPhase(unittest.TestCase):
-    """验证呼吸相位初始值和循环推进。"""
+    """验证呼吸相位初始值和循环推进（适配 AnimatorContext 架构）。"""
 
     def setUp(self):
+        AnimatorContext.reset_default()
         self.popup = _CompletionPopup()
 
     def test_initial_phase_zero(self):
-        """初始呼吸相位应为 0。"""
-        self.assertEqual(self.popup._breath_phase, 0)
+        """初始呼吸帧应为 0。"""
+        self.assertEqual(self.popup._animator.breath_frame, 0)
 
     def test_tick_breath_advances_phase(self):
-        """tick_breath() 应循环推进相位。"""
+        """tick() 推进后呼吸帧前进。"""
         for expected in range(1, len(_COLOR_BREATH_BG)):
-            self.popup.tick_breath()
-            self.assertEqual(self.popup._breath_phase, expected,
-                             f"Phase should be {expected} after {expected} ticks")
+            self.popup._animator.tick()
+            self.assertEqual(self.popup._animator.breath_frame, expected,
+                             f"Breath frame should be {expected} after {expected} ticks")
 
     def test_tick_breath_cycles_back_to_zero(self):
-        """相位达到最大值后应回绕到 0。"""
-        n = len(_COLOR_BREATH_BG)
+        """推进 breath_cycle_len=12 次后回到 0。"""
+        n = self.popup._animator.breath_cycle_len
         for _ in range(n):
-            self.popup.tick_breath()
-        self.assertEqual(self.popup._breath_phase, 0,
-                         "Phase should wrap to 0 after full cycle")
+            self.popup._animator.tick()
+        self.assertEqual(self.popup._animator.breath_frame, 0,
+                         "Breath frame should wrap to 0 after full cycle")
 
     def test_breath_bg_color_returns_correct_color(self):
-        """_breath_bg_color 应返回当前相位对应的色号。"""
-        for phase, expected_color in enumerate(_COLOR_BREATH_BG):
-            self.popup._breath_phase = phase
-            self.assertEqual(self.popup._breath_bg_color, expected_color,
-                             f"Phase {phase} should map to color {expected_color}")
+        """_breath_bg_color 应返回当前呼吸帧对应的色号。"""
+        pal = BreathPalette.get("breath_bg")
+        for phase in range(len(pal)):
+            self.popup._animator.frame = phase
+            self.assertEqual(self.popup._breath_bg_color, pal[phase],
+                             f"Phase {phase} should map to color {pal[phase]}")
 
 
 class TestCompletionBreathRender(unittest.TestCase):
     """验证 _render_item_line 选中项渲染含呼吸背景色。"""
 
     def setUp(self):
+        AnimatorContext.reset_default()
         self.popup = _CompletionPopup()
         self.popup._items = ["hello"]
         self.popup._texts = ["hello"]
@@ -60,7 +64,7 @@ class TestCompletionBreathRender(unittest.TestCase):
 
     def _capture_selected_line(self, phase: int) -> str:
         """捕获指定相位下选中项的渲染输出。"""
-        self.popup._breath_phase = phase
+        self.popup._animator.frame = phase
         out = io.StringIO()
         self.popup._render_item_line(
             out, r=2, item="hello", item_type="",
@@ -79,11 +83,12 @@ class TestCompletionBreathRender(unittest.TestCase):
 
     def test_selected_contains_breath_bg_color(self):
         """选中项应包含呼吸背景色号对应的 ANSI 序列。"""
-        for phase in range(len(_COLOR_BREATH_BG)):
+        pal = BreathPalette.get("breath_bg")
+        for phase in range(len(pal)):
             output = self._capture_selected_line(phase)
-            expected_bg = f"48;5;{_COLOR_BREATH_BG[phase]}"
+            expected_bg = f"48;5;{pal[phase]}"
             self.assertIn(expected_bg, output,
-                          f"Phase {phase} should use bg color {_COLOR_BREATH_BG[phase]}")
+                          f"Phase {phase} should use bg color {pal[phase]}")
 
     def test_selected_contains_select_fg(self):
         """选中项应包含选中前景色 (_COLOR_SELECT_FG)。"""
@@ -95,10 +100,11 @@ class TestCompletionBreathRender(unittest.TestCase):
     def test_unselected_no_breath_bg(self):
         """非选中项不应包含呼吸背景色号。"""
         output = self._capture_unselected_line()
-        for phase in range(len(_COLOR_BREATH_BG)):
-            unexpected_bg = f"48;5;{_COLOR_BREATH_BG[phase]}"
+        pal = BreathPalette.get("breath_bg")
+        for phase in range(len(pal)):
+            unexpected_bg = f"48;5;{pal[phase]}"
             self.assertNotIn(unexpected_bg, output,
-                             f"Unselected item should not contain bg color {_COLOR_BREATH_BG[phase]}")
+                             f"Unselected item should not contain bg color {pal[phase]}")
 
     def test_unselected_no_arrow_indicator(self):
         """非选中项不应包含 ▶ 指示器。"""

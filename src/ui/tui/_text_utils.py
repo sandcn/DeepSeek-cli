@@ -92,4 +92,76 @@ def build_gradient_ansi_frame(colors: list[int], index: int, char: str = "\u2501
     return result
 
 
-__all__ = ["truncate", "build_gradient_ansi", "build_gradient_ansi_frame"]
+def build_fade_in_ansi(fade_frame: int, total_frames: int = 3) -> str:
+    """构建消息入场渐显 ANSI 序列。
+
+    3 帧渐显：帧 0 → 暗灰(238)，帧 1 → 中灰(244)，帧 2+ → RESET（全亮）。
+    总耗时约 300ms（3 帧 × ~100ms）。
+    窄屏时跳过渐显（返回空字符串）。
+
+    Args:
+        fade_frame: 当前渐显帧号（0-based），≥ total_frames 时返回空字符串。
+        total_frames: 渐显总帧数，默认 3。
+
+    Returns:
+        ANSI 颜色序列，≥ total_frames 时返回空字符串。
+    """
+    from ._terminal import is_narrow
+    if is_narrow() or fade_frame >= total_frames:
+        return ""
+    # 238(DARK_GRAY_256) → 244(GRAY_256) → RESET 三帧渐亮
+    FADE_COLORS = [238, 244]
+    if fade_frame < len(FADE_COLORS):
+        return f"\033[38;5;{FADE_COLORS[fade_frame]}m"
+    return ""
+
+
+def build_warning_pulse_ansi(
+    frame: int,
+    pulse_type: str = "error",
+) -> str:
+    """构建错误/告警脉冲 ANSI 序列。
+
+    错误脉冲：红(196)↔亮红(9)，周期 6 帧
+    告警脉冲：黄(214)↔亮黄(11)，周期 6 帧
+
+    Args:
+        frame: 当前呼吸帧号（AnimatorContext.breath_frame）。
+        pulse_type: "error" 或 "warn"。
+
+    Returns:
+        ANSI 前景色序列，或空字符串（第 6 帧不使用额外脉冲色）。
+    """
+    from ._animator import BreathPalette
+    palette_name = "error_pulse" if pulse_type == "error" else "warn_pulse"
+    color = BreathPalette.get_color(palette_name, frame)
+    return f"\033[38;5;{color}m"
+
+
+def make_sep_gradient(
+    width: int,
+    start_color: int = 45,
+    end_color: int = 237,
+    char: str = "\u2501",
+) -> str:
+    """生成全宽渐变分隔线（统一工厂）。
+
+    封装 gradient_range() + build_gradient_ansi() 内部组合。
+    提供统一的渐变分隔线入口，消除 _message_display 和
+    _bottom_bar_pkg/theme 中的两套独立实现。
+
+    Args:
+        width: 分隔线字符数。
+        start_color: 起始 256 色号，默认 45（亮青）。
+        end_color: 结束 256 色号，默认 237（深灰）。
+        char: 字符，默认 ━ (U+2501)。
+
+    Returns:
+        带 ANSI 256 色渐变的完整分隔线字符串（含 RESET）。
+    """
+    from ..colors import gradient_range
+    colors = gradient_range(start_color, end_color, width)
+    return build_gradient_ansi(colors, char=char)
+
+
+__all__ = ["truncate", "build_gradient_ansi", "build_gradient_ansi_frame", "build_fade_in_ansi", "build_warning_pulse_ansi", "make_sep_gradient"]

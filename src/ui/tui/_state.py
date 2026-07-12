@@ -16,6 +16,8 @@ import time
 from dataclasses import field
 from src._compat import dataclass
 
+from ._animator import AnimatorContext
+
 
 # ═══════════════════════════════════════════════════════════
 # 常量
@@ -116,8 +118,8 @@ class StreamingState:
         return time.monotonic() - self.start_time
 
     def tick_pulse(self) -> None:
-        """推进脉动指示器相位（0→1→2→3→0→... 循环）。"""
-        self.pulse_phase = (self.pulse_phase + 1) % 4
+        """推进脉动指示器相位（委托到 AnimatorContext.tick()，保持 API 兼容）。"""
+        AnimatorContext.get_default().tick()
 
     def start(self) -> None:
         """进入流式状态。已在流式模式时不重置（工具间隙保持连续）。"""

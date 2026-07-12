@@ -106,19 +106,11 @@ _PLACEHOLDER_STREAMING = "AI 生成中..."   # 流式输出期间使用
 def make_sep_gradient(width: int, start_color: int = 45) -> str:
     """生成全宽渐变分隔线（青色→深灰）。
 
-    每个字符为 ━ (U+2501)，色号从 `start_color` 逐级渐变到深灰(237)。
-    窄屏降级由调用方通过 is_narrow() 控制，本函数不处理降级。
-
-    Args:
-        width: 分隔线字符数（通常为终端宽度 - 2）。
-        start_color: 起始色号（256 色），默认 45（亮青）。
-
-    Returns:
-        带 ANSI 256 色渐变的完整分隔线字符串（含 RESET）。
+    委托到 _text_utils.make_sep_gradient() 实现，
+    保持向后兼容。
     """
-    from ..tui._text_utils import build_gradient_ansi  # 延迟导入避免循环依赖
-    colors = gradient_range(start_color, 237, width)
-    return build_gradient_ansi(colors)
+    from ..tui._text_utils import make_sep_gradient as _impl
+    return _impl(width, start_color=start_color)
 
 
 # ── 提示符呼吸动画（第四阶段美化） ──────────────────────────

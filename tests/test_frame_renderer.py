@@ -169,13 +169,14 @@ class TestClaudeTreeStyle:
 
     def test_summary_bar_gradient_color_sequence(self):
         """渐变进度条色号序列正确：琥珀(214)开始，绿(41)结束。"""
-        from src.ui.renderer.frame_renderer import _PROGRESS_AMBER_GREEN
-        assert _PROGRESS_AMBER_GREEN[0] == 214, \
-            f"渐变色起始应为214(琥珀)，实际: {_PROGRESS_AMBER_GREEN[0]}"
-        assert _PROGRESS_AMBER_GREEN[-1] == 41, \
-            f"渐变色结束应为41(绿)，实际: {_PROGRESS_AMBER_GREEN[-1]}"
-        assert len(_PROGRESS_AMBER_GREEN) == 8, \
-            f"渐变色长度应为8，实际: {len(_PROGRESS_AMBER_GREEN)}"
+        from src.ui.tui._animator import BreathPalette
+        colors = BreathPalette.get("progress_amber_green")
+        assert colors[0] == 214, \
+            f"渐变色起始应为214(琥珀)，实际: {colors[0]}"
+        assert colors[-1] == 41, \
+            f"渐变色结束应为41(绿)，实际: {colors[-1]}"
+        assert len(colors) == 8, \
+            f"渐变色长度应为8，实际: {len(colors)}"
 
     def test_full_tree_output_snapshot(self):
         """3 Agent 完整树形输出快照比对。"""
