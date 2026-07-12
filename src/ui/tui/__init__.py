@@ -87,6 +87,7 @@ from . import status_bar
 from . import command_palette
 from . import session_switcher
 from . import _animator
+from . import _effects
 from . import _text_utils
 from . import _selector_base
 
@@ -111,7 +112,7 @@ from ._text_utils import truncate
 __all__ = [
     # 子模块（公开）
     "message_editor", "status_bar", "command_palette",
-    "session_switcher",
+    "session_switcher", "_effects",
     # ── narrow ──
     "is_narrow", "get_terminal_width",
     "narrow_truncate", "narrow_indent", "narrow_sep_width",

@@ -27,6 +27,8 @@ from ..parallel._text_formatter import TextFormatter
 from ._terminal import is_narrow, get_terminal_width
 from ._time_format import format_elapsed, format_speed
 from ._state import TUIStateTree, UISessionState, StreamingState
+from ._animator import AnimatorContext
+from ._text_utils import build_glow_ansi
 
 # ── 流式状态行空格常量（图标与数值间视觉间距） ──
 _SP = " "  # 单一空格，视觉平衡
@@ -141,7 +143,8 @@ def render_normal(state: UISessionState) -> str:
     narrow = is_narrow()
     parts = build_normal_parts(state, narrow=narrow)
     if not narrow:
-        sep = f" {DARK_GRAY_256}\u00b7{RESET} "
+        sep_color = AnimatorContext.get_default().sine_color(237, 242, 12)
+        sep = f" \033[38;5;{sep_color}m\u00b7{RESET} "
     else:
         sep = " "
     line = sep.join(parts)
@@ -264,16 +267,18 @@ def render_streaming_line(state: UISessionState, streaming: StreamingState) -> s
     _PULSE_FRAMES = ["\u25cc", "\u25cd", "\u25cf", "\u25cd"]  # ◌ ◍ ● ◍
     pulse_idx = streaming.pulse_phase % 4
     pulse_char = _PULSE_FRAMES[pulse_idx]
-    pulse_color = _PULSE_COLORS[pulse_idx]  # 脉动呼吸色号：暗青→亮青→暗青
+    # ── 正弦波脉动色号（基于 streaming.pulse_phase 而非全局帧） ──
+    _sine_ctx = AnimatorContext.get_default()
+    pulse_color = _sine_ctx.sine_color(36, 45, 4, frame=streaming.pulse_phase)
 
     parts: list[str] = []
     if state.model:
-        # ── 模型名呼吸色（复用 pulse_phase，窄屏降级到固定色） ──
+        # ── 模型名呼吸色（基于 pulse_phase，窄屏降级到固定色） ──
         if is_narrow():
             model_color = THEME['title']
         else:
-            breath_idx = streaming.pulse_phase % len(_MODEL_BREATH_COLORS)
-            model_color = f"\033[38;5;{_MODEL_BREATH_COLORS[breath_idx]}m"
+            model_color_num = _sine_ctx.sine_color(32, 45, 4, frame=streaming.pulse_phase)
+            model_color = f"\033[38;5;{model_color_num}m"
         
         parts.append(f"{CYAN_256}\u25c9{RESET} {BOLD}{model_color}{state.model}{RESET}"
                      f" \033[38;5;{pulse_color}m{pulse_char}{RESET}")
@@ -285,6 +290,10 @@ def render_streaming_line(state: UISessionState, streaming: StreamingState) -> s
     else:
         parts.append(f"{DARK_GRAY_256}\u26a1{RESET}{_SP}{format_speed(speed)}t/s")
     line = f" {DARK_GRAY_256}\u00b7{RESET} ".join(parts)
+    # 非窄屏时末尾添加装饰性呼吸点
+    if not is_narrow():
+        frame = AnimatorContext.get_default().frame
+        line += f" {build_glow_ansi(frame, 45, 12)}\u25c9{RESET}"
     # 窄屏截断（复用 _narrow_split_line 消除重复）
     if is_narrow():
         tw = get_terminal_width()

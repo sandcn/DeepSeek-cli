@@ -82,13 +82,14 @@ class TestCompletionBreathRender(unittest.TestCase):
         return out.getvalue()
 
     def test_selected_contains_breath_bg_color(self):
-        """选中项应包含呼吸背景色号对应的 ANSI 序列。"""
-        pal = BreathPalette.get("breath_bg")
-        for phase in range(len(pal)):
-            output = self._capture_selected_line(phase)
-            expected_bg = f"48;5;{pal[phase]}"
-            self.assertIn(expected_bg, output,
-                          f"Phase {phase} should use bg color {pal[phase]}")
+        """选中项应包含正弦波呼吸背景色号（235-240 范围）对应的 ANSI 序列。"""
+        output = self._capture_selected_line(0)
+        import re
+        bg_matches = re.findall(r"48;5;(\d+)", output)
+        self.assertTrue(
+            any(235 <= int(m) <= 240 for m in bg_matches),
+            f"Selected item should use breath bg color (235-240), got: {bg_matches}",
+        )
 
     def test_selected_contains_select_fg(self):
         """选中项应包含选中前景色 (_COLOR_SELECT_FG)。"""

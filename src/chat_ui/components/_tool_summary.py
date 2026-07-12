@@ -14,6 +14,8 @@ if TYPE_CHECKING:
 from rich.text import Text
 
 from ..const import _STYLE_SUCCESS, _STYLE_FAIL, _STYLE_WARN, _STYLE_DIM
+from ...ui.tui._animator import AnimatorContext
+from ...ui.tui._text_utils import build_warning_pulse_ansi
 from ._base import TuiComponent
 
 
@@ -52,16 +54,22 @@ class ToolSummaryBlock(TuiComponent):
 
     def _render_failure(self, failed: tuple, total: int, adapter: "OutputAdapter") -> int:
         names = ", ".join(n for n, _ in failed)
+        # 脉动错误图标（动态呼吸色）
+        try:
+            pulse_ansi = build_warning_pulse_ansi(
+                AnimatorContext.get_default().breath_frame, "error",
+            )
+        except Exception:
+            pulse_ansi = "\033[38;5;196m"  # 兜底红色
+        pulse_reset = "\033[0m"
         if len(failed) == total:
-            adapter.write(Text.assemble(
-                ("  ! ", _STYLE_FAIL),
-                (f"全部失败: {names}", _STYLE_FAIL),
-            ))
+            rich_text = Text.from_ansi(f"  {pulse_ansi}!\u2502{pulse_reset}")
+            rich_text.append(f"全部失败: {names}", _STYLE_FAIL)
+            adapter.write(rich_text)
         else:
-            adapter.write(Text.assemble(
-                ("  ! ", _STYLE_WARN),
-                (f"{len(failed)}/{total} 失败: {names}", _STYLE_WARN),
-            ))
+            rich_text = Text.from_ansi(f"  {pulse_ansi}!\u2502{pulse_reset}")
+            rich_text.append(f"{len(failed)}/{total} 失败: {names}", _STYLE_WARN)
+            adapter.write(rich_text)
         lines = 1
         detail = 0
         for name, error in failed[:3]:

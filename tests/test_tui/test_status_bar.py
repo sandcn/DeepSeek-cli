@@ -402,9 +402,11 @@ class TestPulsePhase:
 
 
 class TestPulseColorBreathing:
-    """脉动呼吸颜色测试：验证 `_PULSE_COLORS` 在渲染中的正确应用。"""
+    """脉动呼吸颜色测试：验证正弦波呼吸在渲染中的正确应用。
 
-    PULSE_COLORS = [36, 40, 45, 40]  # 暗青→中青→亮青→中青
+    正弦波呼吸使用 math.sin 计算平滑过渡：
+      Phase 0 → 暗青(36)，Phase 1 → 中亮青(41)，Phase 2 → 亮青(45)，Phase 3 → 中亮青(41)
+    """
 
     def test_phase_0_uses_dark_cyan(self):
         """Phase 0 使用暗青色(36)。"""
@@ -421,65 +423,69 @@ class TestPulseColorBreathing:
         assert "\033[38;5;45m" in result, f"Phase 2 应使用亮青(45)，结果: {result!r}"
 
     def test_phase_1_uses_mid_cyan(self):
-        """Phase 1 使用中青色(40)。"""
+        """Phase 1 使用中青色(40)（正弦波插值 round 结果）。"""
         state = UISessionState(model="gpt-4")
         streaming = StreamingState(active=True, start_time=time.monotonic(), pulse_phase=1)
         result = render_streaming_line(state, streaming)
         assert "\033[38;5;40m" in result, f"Phase 1 应使用中青(40)，结果: {result!r}"
 
     def test_phase_3_uses_mid_cyan(self):
-        """Phase 3 使用中青色(40)（对称呼吸，与 phase 1 相同色号）。"""
+        """Phase 3 使用中青色(40)（正弦波对称呼吸，浮点精度略低于0.5）。"""
         state = UISessionState(model="gpt-4")
         streaming = StreamingState(active=True, start_time=time.monotonic(), pulse_phase=3)
         result = render_streaming_line(state, streaming)
         assert "\033[38;5;40m" in result, f"Phase 3 应使用中青(40)，结果: {result!r}"
 
-    def test_different_phases_produce_different_colors(self):
-        """不同脉动相位产生不同的颜色输出。"""
+    def test_different_phases_produce_different_pulse_colors(self):
+        """不同脉动相位产生不同的脉动颜色输出（至少2种色号）。"""
         state = UISessionState(model="gpt-4")
-        colors_seen = set()
+        pulse_colors_seen = set()
+        pulse_chars = ["\u25cc", "\u25cd", "\u25cf", "\u25cd"]
+        import re
         for phase in range(4):
             streaming = StreamingState(
                 active=True, start_time=time.monotonic(),
                 pulse_phase=phase,
             )
             result = render_streaming_line(state, streaming)
-            # 提取脉动字符的色号
-            import re
-            matches = re.findall(r"\033\[38;5;(\d+)m", result)
-            for m in matches:
-                colors_seen.add(int(m))
-        # 脉动色号应包含 36 和 45（至少两种不同色号）
-        assert 36 in colors_seen, f"应包含暗青(36)，实际: {sorted(colors_seen)}"
-        assert 40 in colors_seen, f"应包含中青(40)，实际: {sorted(colors_seen)}"
-        assert 45 in colors_seen, f"应包含亮青(45)，实际: {sorted(colors_seen)}"
-
-    def test_breathing_cycle_completeness(self):
-        """呼吸周期色号序列完整：暗青→亮青→暗青。"""
-        state = UISessionState(model="gpt-4")
-        color_sequence = []
-        pulse_chars = ["\u25cc", "\u25cd", "\u25cf"]  # ◌ ◍ ●
-        for phase in range(4):
-            streaming = StreamingState(
-                active=True, start_time=time.monotonic(),
-                pulse_phase=phase,
-            )
-            result = render_streaming_line(state, streaming)
-            # 脉动字符前有 \033[38;5;{color}m 序列
             for pch in pulse_chars:
                 idx = result.find(pch)
                 if idx >= 0:
-                    # 在脉动字符前查找 \033[38;5;{color}m 模式
+                    prefix = result[:idx]
+                    matches = re.findall(r"\x1b\[38;5;(\d+)m", prefix)
+                    if matches:
+                        pulse_colors_seen.add(int(matches[-1]))
+                    break
+        # 正弦波脉动应产生暗青(36) 和 亮青(45) 两个极值
+        assert 36 in pulse_colors_seen, f"应包含暗青(36)，实际: {sorted(pulse_colors_seen)}"
+        assert 45 in pulse_colors_seen, f"应包含亮青(45)，实际: {sorted(pulse_colors_seen)}"
+
+    def test_breathing_cycle_completeness(self):
+        """正弦波呼吸周期：暗青(36)→中青(40)→亮青(45)→中青(40)。"""
+        state = UISessionState(model="gpt-4")
+        color_sequence = []
+        pulse_chars = ["\u25cc", "\u25cd", "\u25cf", "\u25cd"]  # ◌ ◍ ● ◍
+        for phase in range(4):
+            streaming = StreamingState(
+                active=True, start_time=time.monotonic(),
+                pulse_phase=phase,
+            )
+            result = render_streaming_line(state, streaming)
+            # 提取脉动字符前的色号
+            for pch in pulse_chars:
+                idx = result.find(pch)
+                if idx >= 0:
                     prefix = result[:idx]
                     import re
                     matches = re.findall(r"\x1b\[38;5;(\d+)m", prefix)
                     if matches:
                         val = int(matches[-1])
-                        if val in (36, 40, 45):
-                            color_sequence.append(val)
-                            break
-        assert color_sequence == [36, 40, 45, 40], \
-            f"呼吸周期应为 [36, 40, 45, 40]，实际: {color_sequence}"
+                        color_sequence.append(val)
+                        break
+        # 正弦波周期：4帧（phase=1和phase=3均为40，受floating point和banker's rounding影响）
+        expected = [36, 40, 45, 40]
+        assert color_sequence == expected, \
+            f"正弦波呼吸周期应为 {expected}，实际: {color_sequence}"
 
     def test_narrow_screen_still_has_pulse_color(self, monkeypatch):
         """窄屏下脉动颜色序列依然正确。"""
@@ -488,6 +494,6 @@ class TestPulseColorBreathing:
         state = UISessionState(model="test-model")
         streaming = StreamingState(active=True, start_time=time.monotonic(), pulse_phase=2)
         result = render_streaming_line(state, streaming)
-        assert "\033[38;5;45m" in result or "\033[38;5;40m" in result or "\033[38;5;36m" in result
+        assert "\033[38;5;45m" in result or "\033[38;5;41m" in result or "\033[38;5;36m" in result
         assert "\033[0m" in result  # ANSI 序列完整性
 

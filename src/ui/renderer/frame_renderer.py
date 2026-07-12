@@ -45,7 +45,8 @@ from ...core.constants import (
 )
 from ...tools.registry import get_tool_display_name
 
-from ..tui._animator import BreathPalette
+from ..tui._animator import AnimatorContext, BreathPalette
+from ..tui._effects import sine_color
 
 # ── 常量 ────────────────────────────────────────────────
 
@@ -302,7 +303,7 @@ class FrameRenderer:
             if filled > 0:
                 # 琥珀→绿渐变：每个 ▰ 使用不同色号，含呼吸颜色漂移
                 _gradient = BreathPalette.get("progress_amber_green")
-                _breath_offset = self._frame % len(_gradient)
+                _breath_offset = sine_color(self._frame, 0, len(_gradient) - 1, 8)
                 _parts: list[str] = []
                 for _i in range(filled):
                     _ci = (_i + _breath_offset) % len(_gradient)
@@ -318,7 +319,7 @@ class FrameRenderer:
             else:
                 # 全空：深灰→浅灰渐变呼吸
                 _empty_grad = _gradient_range(235, 245, max(bar_width, 2))
-                _breath_offset = self._frame % len(_empty_grad)
+                _breath_offset = sine_color(self._frame, 0, len(_empty_grad) - 1, 8)
                 _empty_parts: list[str] = []
                 for _j in range(bar_width):
                     _ej = (_j + _breath_offset) % len(_empty_grad)
@@ -401,8 +402,9 @@ class FrameRenderer:
         abbr = AGENT_TYPE_ABBREV.get(slot.agent_type, "??")
         type_color = AGENT_TYPE_COLORS.get(slot.agent_type, _C_DIMMER)
         if slot.status == "running" and not final:
-            # 运行中：微量色号偏移产生柔和呼吸
-            breath_idx = (self._frame // 2) % len(BreathPalette.get("agent_breath"))
+            # 运行中：微量色号偏移产生柔和呼吸（正弦波呼吸替代线性取模）
+            breath_palette = BreathPalette.get("agent_breath")
+            breath_idx = round(sine_color(self._frame, 0, len(breath_palette) - 1, 12)) if breath_palette else 0
             offset = BreathPalette.get("agent_breath")[breath_idx]
             # 从 ANSI 序列中提取色号并偏移
             # 格式 \033[38;5;Nm → 提取 N
@@ -512,8 +514,9 @@ class FrameRenderer:
         if rec.phase == "parsing":
             line = f"{prefix}{_C_PARSING}◌{_C_RESET} {tool_abbr}{detail_display}"
         elif rec.phase == "running":
-            # 运行中工具图标脉动
-            pulse_idx = (self._frame // 2) % len(BreathPalette.get("tool_pulse"))
+            # 运行中工具图标脉动（正弦波呼吸替代线性取模）
+            tool_pulse = BreathPalette.get("tool_pulse")
+            pulse_idx = round(sine_color(self._frame, 0, len(tool_pulse) - 1, 6)) if tool_pulse else 0
             pulse_color = BreathPalette.get("tool_pulse")[pulse_idx]
             line = f"{prefix}\033[38;5;{pulse_color}m●\033[0m {tool_abbr}{detail_display}  {_C_DIMMER}{time_str}{_C_RESET}"
         elif rec.phase == "done":

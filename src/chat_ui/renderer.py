@@ -33,6 +33,7 @@ from .components import (
     _estimate_content_lines,
 )
 
+from ..ui.tui._animator import AnimatorContext
 from .utils import _cmd_name, _emergency_write
 
 _logger = logging.getLogger(__name__)
@@ -120,7 +121,10 @@ class TuiRenderer:
 
     @register_render_command(RenderCommand.CONTENT, (1,))
     def _do_content(self, text: str) -> None:
+        # 从 AnimatorContext 获取当前帧号，使后续组件能够使用呼吸效果
+        _frame = AnimatorContext.get_default().frame
         block = AnswerBlock(self._rs)
+        block.anim_frame = _frame  # 供组件在呼吸/脉动动效中使用
         self._record_lines(block.write(text))
 
     @register_render_command(RenderCommand.PHASE_DONE, (1,))

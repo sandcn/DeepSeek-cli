@@ -33,8 +33,11 @@ from .theme import (
     _PLACEHOLDER_STREAMING,
     _PLACEHOLDER_TEXT,
     get_prompt_breath_color,
+    get_prompt_glow_color,
     make_sep_gradient,
 )
+from ..tui._animator import AnimatorContext
+from ..tui._text_utils import make_sep_gradient_enhanced
 from .cursor import (
     _expand_tabs,
     _wrap_by_width,
@@ -91,29 +94,28 @@ def _draw_input_lines_locked(
     for i, segment in enumerate(wrapped):
         r = text_start + i
         if i == 0:
-            if text:
-                if _is_narrow_fn():
-                    prompt_color = _COLOR_DEEP_CYAN
-                else:
-                    prompt_color = get_prompt_breath_color(breath_frame)
-                buf.append(_blessed_move_clear(r)
-                           + f"{prompt_color}>{_COLOR_RESET}"
-                           f" {segment}")
+            if _is_narrow_fn():
+                prompt_color = _COLOR_DEEP_CYAN
+                prompt_prefix = f"{prompt_color}>{_COLOR_RESET} "
             else:
-                if _is_narrow_fn():
-                    prompt_color = _COLOR_DEEP_CYAN
+                prompt_color = get_prompt_breath_color(breath_frame)
+                if breath_frame > 0:
+                    glow_color = get_prompt_glow_color(breath_frame)
+                    prompt_prefix = f"{prompt_color}>{_COLOR_RESET} {glow_color}\u25cf{_COLOR_RESET} "
                 else:
-                    prompt_color = get_prompt_breath_color(breath_frame)
+                    prompt_prefix = f"{prompt_color}>{_COLOR_RESET} "
+            if text:
+                buf.append(_blessed_move_clear(r)
+                           + prompt_prefix + segment)
+            else:
                 if bar._status_active:
                     ph = _PLACEHOLDER_STREAMING
                     buf.append(_blessed_move_clear(r)
-                               + f"{prompt_color}>{_COLOR_RESET}"
-                               f" {_COLOR_DIM}{ph}{_COLOR_RESET}")
+                               + prompt_prefix + f"{_COLOR_DIM}{ph}{_COLOR_RESET}")
                 else:
                     ph = _PLACEHOLDER_COMPACT if bar._completion.is_visible else _PLACEHOLDER_TEXT
                     buf.append(_blessed_move_clear(r)
-                               + f"{prompt_color}>{_COLOR_RESET}"
-                               f" {_COLOR_DIM}{ph}{_COLOR_RESET}")
+                               + prompt_prefix + f"{_COLOR_DIM}{ph}{_COLOR_RESET}")
         else:
             buf.append(_blessed_move_clear(r)
                        + f"{_COLOR_DIM}\u00b7{_COLOR_RESET} {segment}")
@@ -166,12 +168,13 @@ def _draw_all_locked(bar: _BottomBar, out, height: int, breath_frame: int = 0) -
         sep_len = min(tw - 2, 40)
         sep = f"{_COLOR_SEP}\u2501{_COLOR_RESET}" * sep_len
     else:
-        # 分隔线呼吸：breath_frame>0 时起始色随帧变化
+        # 分隔线增强：breath_frame>0 时使用波动效果 + 呼吸起始色
         sep_start = 45  # 默认青色
         if breath_frame > 0:
-            from .theme import _SEP_BREATH_COLORS, _SEP_BREATH_LEN
-            sep_start = _SEP_BREATH_COLORS[breath_frame % _SEP_BREATH_LEN]
-        sep = make_sep_gradient(tw - 2, start_color=sep_start)
+            sep_start = AnimatorContext.get_default().sine_color(40, 45, 10)
+            sep = make_sep_gradient_enhanced(tw - 2, start_color=sep_start, effect="wave", frame=breath_frame)
+        else:
+            sep = make_sep_gradient(tw - 2, start_color=sep_start)
     buf.append(_blessed_cursor_goto(r1, 1) + "  " + sep)
 
     # ── subagent 面板行（在分隔线与状态行之间） ──
@@ -182,7 +185,13 @@ def _draw_all_locked(bar: _BottomBar, out, height: int, breath_frame: int = 0) -
     status = bar._format_status()
     bar._last_status = status
     if status:
-        buf.append(_blessed_move_clear(r2) + status)
+        if breath_frame > 0 and not _is_narrow_fn():
+            ctx = AnimatorContext.get_default()
+            dot_color = ctx.sine_color(45, 81, 12)
+            dot_ansi = f"\033[38;5;{dot_color}m\u25c9{_COLOR_RESET}"
+            buf.append(_blessed_move_clear(r2) + status + " " + dot_ansi)
+        else:
+            buf.append(_blessed_move_clear(r2) + status)
 
     if buf:
         out.write(''.join(buf))

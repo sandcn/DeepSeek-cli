@@ -18,6 +18,9 @@ if TYPE_CHECKING:
 
 from .const import _THINKING_SEPARATOR
 
+from ..ui.tui._animator import AnimatorContext
+from ..ui.tui._text_utils import make_sep_gradient
+
 _logger = logging.getLogger(__name__)
 
 
@@ -94,6 +97,15 @@ class _RenderState:
             )
         return self.content
 
+    def _safe_flush(self, renderer_attr: str) -> None:
+        """防御性刷出渲染器缓冲内容。"""
+        rr = getattr(self, renderer_attr, None)
+        if rr is not None:
+            try:
+                rr._output.flush()
+            except Exception:
+                _logger.debug("%s 防御性 flush 异常", renderer_attr, exc_info=True)
+
     def close_reasoning(self) -> None:
         if self.reasoning_state == _ReasoningState.CLOSED:
             return
@@ -102,15 +114,19 @@ class _RenderState:
         )
         rr = self.reasoning
         if rr is not None:
-            rr.write(_THINKING_SEPARATOR)
-            rr.close()
-            # ★ 防御性刷出：确保 close() 中即时渲染的 flush token
-            #   已物理写入 stdout（即使 close() 内已有 flush，此处
-            #   作为兜底保障，尤其适用于共享 OutputAdapter 的场景）
+            # 动态呼吸分隔线（替代静态 _THINKING_SEPARATOR）
+            _term_width = 80
             try:
-                rr._output.flush()
+                from ..ui.tui._terminal import get_terminal_width
+                _term_width = get_terminal_width()
             except Exception:
-                _logger.debug("close_reasoning: flush 异常", exc_info=True)
+                pass
+            _sep_width = min(_term_width - 2, 60)
+            _bf = AnimatorContext.get_default().breath_frame
+            _sep = make_sep_gradient(_sep_width, start_color=45, end_color=237)
+            rr.write(f"\n  {_sep}")
+            rr.close()
+            self._safe_flush("reasoning")
             self.reasoning = None
         self.reasoning_state = _ReasoningState.CLOSED
 
@@ -127,13 +143,7 @@ class _RenderState:
         cr = self.content
         if cr is not None:
             cr.close()
-            # ★ 防御性刷出：确保 close() 中即时渲染的 flush token
-            #   已物理写入 stdout（即使 close() 内已有 flush，此处
-            #   作为兜底保障，尤其适用于共享 OutputAdapter 的场景）
-            try:
-                cr._output.flush()
-            except Exception:
-                _logger.debug("close_content: flush 异常", exc_info=True)
+            self._safe_flush("content")
             self.content = None
 
     def close_all(self) -> None:

@@ -811,7 +811,7 @@ class _BottomBar(_StatusMixin):
             else:
                 sep_start = 45  # 默认青色
                 if self._animator.breath_frame > 0:
-                    sep_start = BreathPalette.get_color("sep_bar", self._animator.breath_frame)
+                    sep_start = AnimatorContext.get_default().sine_color(40, 45, 10)
                 sep = make_sep_gradient(tw - 2, start_color=sep_start)
             _buf.append(_blessed_move_clear(r1) + "  " + sep)
             # ★ force_redraw 中的 tracker.set 是近似值，仅记录当前绘制行号。

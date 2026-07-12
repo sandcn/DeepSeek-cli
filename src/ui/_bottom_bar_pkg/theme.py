@@ -22,6 +22,8 @@
 from __future__ import annotations
 
 from ..colors import gradient_range
+from ..tui._animator import AnimatorContext
+from ..tui._effects import sine_color_range
 
 
 # ── 底部栏布局配置 ──────────────────────────────────────────
@@ -122,12 +124,21 @@ _PROMPT_BREATH_LEN: int = 12
 def get_prompt_breath_color(frame: int) -> str:
     """根据帧号返回当前提示符呼吸色的 ANSI 256 色序列。
 
+    使用 AnimatorContext.sine_color 做正弦波呼吸，
+    在深青(32)↔亮青(81)间平滑过渡。
+
     Args:
         frame: 呼吸帧号（自动取模 _PROMPT_BREATH_LEN）。
 
     Returns:
         ANSI 256 色前景色序列，格式 ``\\033[38;5;{color}m``。
     """
+    if frame > 0:
+        try:
+            color = AnimatorContext.get_default().sine_color(32, 81, 12)
+            return f"\033[38;5;{color}m"
+        except Exception:
+            pass
     if not _PROMPT_BREATH_COLORS:
         return _COLOR_DEEP_CYAN
     idx = frame % _PROMPT_BREATH_LEN
@@ -144,14 +155,63 @@ _SEP_BREATH_LEN: int = 10
 def get_sep_breath_color(frame: int) -> str:
     """根据帧号返回当前分隔线呼吸起始色的 ANSI 256 色序列。
 
+    使用 AnimatorContext.sine_color 做正弦波呼吸，
+    在中青(40)↔亮青(45)间平滑过渡。
+
     Args:
         frame: 呼吸帧号（自动取模 _SEP_BREATH_LEN）。
 
     Returns:
         ANSI 256 色前景色序列，格式 ``\\033[38;5;{color}m``。
     """
+    if frame > 0:
+        try:
+            color = AnimatorContext.get_default().sine_color(40, 45, 10)
+            return f"\033[38;5;{color}m"
+        except Exception:
+            pass
     if not _SEP_BREATH_COLORS:
         return _COLOR_SEP_START
     idx = frame % _SEP_BREATH_LEN
     color = _SEP_BREATH_COLORS[idx] if idx < len(_SEP_BREATH_COLORS) else 45
     return f"\033[38;5;{color}m"
+
+
+# ── 提示符辉光呼吸（Phase 3 增强） ──────────────────────────
+def get_prompt_glow_color(frame: int) -> str:
+    """返回当前提示符辉光色的 ANSI 256 色前景序列。
+
+    使用 AnimatorContext.sine_color 做正弦波呼吸，
+    在亮青(45)↔亮青高亮(81)间平滑过渡，产生辉光感。
+
+    Args:
+        frame: 呼吸帧号。
+
+    Returns:
+        ANSI 256 色前景色序列，格式 ``\\033[38;5;{color}m``。
+    """
+    try:
+        color = AnimatorContext.get_default().sine_color(45, 81, 12)
+    except Exception:
+        color = 45
+    return f"\033[38;5;{color}m"
+
+
+# ── 呼吸背景辅助（Phase 3 增强） ──────────────────────────
+def get_breath_bg_color(frame: int) -> str:
+    """返回当前呼吸背景色的 ANSI 256 色背景序列。
+
+    在 _COLOR_BREATH_BG 列表上使用 sine_color_range 做正弦波插值，
+    产生平滑的呼吸背景效果。
+
+    Args:
+        frame: 呼吸帧号。
+
+    Returns:
+        ANSI 256 色背景色序列，格式 ``\\033[48;5;{color}m``。
+    """
+    try:
+        color = sine_color_range(frame, _COLOR_BREATH_BG)
+    except Exception:
+        color = _COLOR_BREATH_BG[frame % len(_COLOR_BREATH_BG)] if _COLOR_BREATH_BG else 236
+    return f"\033[48;5;{color}m"

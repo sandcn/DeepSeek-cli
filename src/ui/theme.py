@@ -55,6 +55,12 @@ THEMES: Dict[str, Dict[str, str]] = {
         "pulse_highlight": "\033[38;5;81m",   # 亮青 — 脉冲高亮
         "separator_glow": "\033[38;5;45m",    # 青色 — 分隔线发光
         "tag_glow": "\033[38;5;45m",          # 青色 — 标签发光
+        # ── 动效语义键（Phase 5） ──
+        "effect_bounce": "\033[38;5;45m",     # 弹入动效主题色（青色）
+        "effect_wave": "\033[38;5;44m",       # 波动动效主题色（中青）
+        "effect_sparkle": "\033[38;5;81m",    # 闪烁高亮色（亮青）
+        "effect_glow": "\033[38;5;221m",      # 辉光色（琥珀黄）
+        "effect_shimmer": "\033[38;5;195m",   # 流光色（亮白青）
     },
 
     # ── 亮色主题（浅色背景用）──────────────────────────
@@ -96,6 +102,12 @@ THEMES: Dict[str, Dict[str, str]] = {
         "pulse_highlight": "\033[38;5;75m",   # 亮蓝
         "separator_glow": "\033[38;5;33m",    # 蓝色
         "tag_glow": "\033[38;5;33m",          # 蓝色
+        # ── 动效语义键（Phase 5） ──
+        "effect_bounce": "\033[38;5;33m",     # 蓝色
+        "effect_wave": "\033[38;5;32m",       # 中蓝
+        "effect_sparkle": "\033[38;5;75m",    # 亮蓝
+        "effect_glow": "\033[38;5;220m",      # 金色
+        "effect_shimmer": "\033[38;5;117m",   # 亮天蓝
     },
 
     # ── 高对比主题（高可读性）──────────────────────────
@@ -137,6 +149,12 @@ THEMES: Dict[str, Dict[str, str]] = {
         "pulse_highlight": "\033[38;5;81m",   # 亮青
         "separator_glow": "\033[38;5;81m",    # 亮青
         "tag_glow": "\033[38;5;81m",          # 亮青
+        # ── 动效语义键（Phase 5） ──
+        "effect_bounce": "\033[38;5;81m",     # 亮青
+        "effect_wave": "\033[38;5;75m",       # 中亮蓝
+        "effect_sparkle": "\033[38;5;51m",    # 最亮青
+        "effect_glow": "\033[38;5;227m",      # 亮黄
+        "effect_shimmer": "\033[38;5;255m",   # 亮白
     },
 }
 

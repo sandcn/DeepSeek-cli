@@ -13,6 +13,7 @@ from typing import TYPE_CHECKING
 
 from .._blessed import get_terminal
 from ..tui._animator import AnimatorContext, BreathPalette
+from ..tui._terminal import is_narrow
 from .theme import (
     _COLOR_COMPLETE_CMD_PREFIX,
     _COLOR_COMPLETE_DIR,
@@ -202,9 +203,12 @@ class _CompletionPopup:
         pad = " " * max(0, cell_w - _visual_len(truncated_raw))
 
         if is_selected:
-            # 选中项使用呼吸背景色（动态脉动），降级回退 _COLOR_SELECT_BG
-            bg_color = self._breath_bg_color
-            bg_ansi = f"\033[48;5;{bg_color}m"
+            # 选中项使用呼吸背景色（非窄屏正弦波呼吸，窄屏静态背景）
+            if not is_narrow():
+                bg_color = self._animator.sine_color(235, 240, 10)
+                bg_ansi = f"\033[48;5;{bg_color}m"
+            else:
+                bg_ansi = _COLOR_SELECT_BG
             out.write(move_clear(r)
                       + f" {bg_ansi}{_COLOR_SELECT_FG}\u25b6{_COLOR_RESET}"
                       f"{bg_ansi}{_COLOR_SELECT_FG} {display}{pad}{_COLOR_RESET}")
@@ -242,7 +246,12 @@ class _CompletionPopup:
 
         # ── 标题行 ──
         total_items = len(self._texts)
-        header = f" {_COLOR_COMPLETE_TITLE}{self._title}{_COLOR_RESET} {_COLOR_DIM}({total_items}项){_COLOR_RESET}"
+        if not is_narrow():
+            title_color = self._animator.sine_color(45, 81, 12)
+            title_ansi = f"\033[1;38;5;{title_color}m"
+        else:
+            title_ansi = _COLOR_COMPLETE_TITLE
+        header = f" {title_ansi}{self._title}{_COLOR_RESET} {_COLOR_DIM}({total_items}项){_COLOR_RESET}"
         out.write(move_clear(r_start) + header)
         if self._tracker:
             self._tracker.set(r_start, 1)
@@ -272,7 +281,13 @@ class _CompletionPopup:
             hint = f" {_COLOR_TIME}{self._idx + 1}/{n}{_COLOR_RESET} {_COLOR_DIM}(\u524d{n}/{total_items}){_COLOR_RESET}  {hint_prefix} "
         else:
             hint = f" {hint_prefix} "
-        out.write(move_clear(footer_r) + f"{_COLOR_DIM}{hint}{_COLOR_RESET}")
+        # 非窄屏时在提示行末尾添加呼吸装饰点
+        if not is_narrow():
+            dot_color = self._animator.sine_color(45, 81, 12)
+            hint_dot = f" \033[38;5;{dot_color}m\u25c9{_COLOR_RESET}"
+        else:
+            hint_dot = ""
+        out.write(move_clear(footer_r) + f"{_COLOR_DIM}{hint}{_COLOR_RESET}{hint_dot}")
         if self._tracker:
             self._tracker.set(footer_r, 1)
 
@@ -326,7 +341,13 @@ class _CompletionPopup:
                     f" {_COLOR_DIM}(\u524d{n}/{total_items}){_COLOR_RESET}  {hint_prefix} ")
         else:
             hint = f" {hint_prefix} "
-        out.write(move_clear(footer_r) + f"{_COLOR_DIM}{hint}{_COLOR_RESET}")
+        # 非窄屏时在提示行末尾添加呼吸装饰点
+        if not is_narrow():
+            dot_color = self._animator.sine_color(45, 81, 12)
+            hint_dot = f" \033[38;5;{dot_color}m\u25c9{_COLOR_RESET}"
+        else:
+            hint_dot = ""
+        out.write(move_clear(footer_r) + f"{_COLOR_DIM}{hint}{_COLOR_RESET}{hint_dot}")
         if self._tracker:
             self._tracker.set(footer_r, 1)
 

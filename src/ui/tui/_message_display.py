@@ -21,7 +21,10 @@ from ...core.sandbox_manager import get_sandbox_manager as _get_sandbox_manager
 from ._terminal import (get_terminal_width, NARROW_THRESHOLD,
                         is_narrow, narrow_truncate, narrow_indent,
                         narrow_sep_width)
-from ._text_utils import truncate, build_gradient_ansi, build_fade_in_ansi, build_warning_pulse_ansi, make_sep_gradient
+from ._text_utils import (truncate, build_gradient_ansi, build_fade_in_ansi,
+                          build_warning_pulse_ansi, make_sep_gradient,
+                          build_bounce_ansi, make_sep_gradient_enhanced,
+                          build_sparkle_ansi)
 from ._animator import AnimatorContext, BreathPalette
 from ..output_target import IOutputTarget, TerminalTarget
 
@@ -141,6 +144,11 @@ from ...core.constants import (
 )
 from ..colors import gradient_range
 
+# 角色标签 sparkle 静态基准色（与动态呼吸色解耦，避免双重调制噪音）
+_SPARKLE_BASE_USER = 45    # 青色
+_SPARKLE_BASE_ASST = 41    # 绿色
+_SPARKLE_BASE_TOOL = 221   # 琥珀黄
+
 _logger = logging.getLogger(__name__)
 
 # ── 常量 ─────────────────────────────────────────────────
@@ -187,6 +195,7 @@ def _make_gradient_sep(start_color: int = 45, end_color: int = 237, steps: int =
         )
     if breath_frame > 0 and not is_narrow():
         start_color = BreathPalette.get_color("sep_msg", breath_frame)
+        return "  " + make_sep_gradient_enhanced(steps, start_color=start_color, end_color=end_color, effect="wave", frame=breath_frame)
     return "  " + make_sep_gradient(steps, start_color=start_color, end_color=end_color)
 
 
@@ -208,12 +217,11 @@ def _make_think_sep(breath_frame: int = 0) -> str:
         full_width = narrow_sep_width(50)
     # "  ⚡思考  " 视觉宽度约 8 字符
     if breath_frame > 0 and not is_narrow():
-        # ⚡ 符号使用偏移 3 帧的相位色（与主色交替闪烁）
+        # ⚡ 符号使用 build_sparkle_ansi 闪烁更生动
         think_color = BreathPalette.get_color("think", breath_frame)
-        lightning_color = BreathPalette.get_color("think", breath_frame + 3)
         center_text = (
-            f"  \033[38;5;{lightning_color}m\u26a1"   # ⚡ 闪烁色（相位偏移+3）
-            f"\033[38;5;{think_color}m\u601d\u8003"    # 思考 主呼吸色
+            f"  {build_sparkle_ansi(breath_frame, 45, 6)}\u26a1"  # ⚡ 闪烁更生动
+            f"\033[38;5;{think_color}m\u601d\u8003"                # 思考 主呼吸色
             f"{_R}  "
         )
     else:
@@ -317,22 +325,25 @@ def _role_tag(role: str, breath_frame: int = 0) -> str:
     if breath_frame > 0:
         if role == "user":
             bc = BreathPalette.get_color("role_user", breath_frame)
+            # 图标使用 sparkle 闪烁（静态基准色，与呼吸色解耦），文字保持呼吸色
             return (
-                f"\033[48;5;235m\033[38;5;{bc}m\u25cf {_R}"
+                f"\033[48;5;235m{build_sparkle_ansi(breath_frame, _SPARKLE_BASE_USER, 6)}\u25cf {_R}"
                 f"\033[48;5;235m\033[38;5;{bc}mUSER{_R}"
                 f"\033[0m"
             )
         elif role == "assistant":
             bc = BreathPalette.get_color("role_asst", breath_frame)
+            # 图标使用 sparkle 闪烁（静态基准色，与呼吸色解耦），文字保持呼吸色
             return (
-                f"\033[48;5;22m\033[38;5;{bc}m\u25c6 {_R}"
+                f"\033[48;5;22m{build_sparkle_ansi(breath_frame, _SPARKLE_BASE_ASST, 6)}\u25c6 {_R}"
                 f"\033[48;5;22m\033[38;5;{bc}mASSISTANT{_R}"
                 f"\033[0m"
             )
         elif role == "tool":
             bc = BreathPalette.get_color("role_tool", breath_frame)
+            # 图标使用 sparkle 闪烁（静态基准色，与呼吸色解耦），文字保持呼吸色
             return (
-                f"\033[48;5;94m\033[38;5;{bc}m\u2699 {_R}"
+                f"\033[48;5;94m{build_sparkle_ansi(breath_frame, _SPARKLE_BASE_TOOL, 6)}\u2699 {_R}"
                 f"\033[48;5;94m\033[38;5;{bc}mTOOL{_R}"
                 f"\033[0m"
             )
@@ -477,7 +488,10 @@ def _display_tool_calls(i: int, icon: str, m: dict, sandbox_text: str, breath_fr
     text = content[:_TOOL_CALL_PREVIEW_LEN].replace("\n", " ") if content else ""
     if len(content) > _TOOL_CALL_PREVIEW_LEN:
         text += "…"
-    _fade_prefix = build_fade_in_ansi(fade_frame)
+    if breath_frame > 0 and fade_frame > 0:
+        _fade_prefix = build_bounce_ansi(fade_frame, 6)
+    else:
+        _fade_prefix = build_fade_in_ansi(fade_frame)
     # 检查工具调用是否含错误
     _has_error = bool(m.get("error")) or any(
         tc.get("error") for tc in m.get("tool_calls", [])
@@ -501,7 +515,10 @@ def _display_user(i: int, icon: str, content: str, sandbox_text: str, breath_fra
         breath_frame: 呼吸帧号，0 表示使用静态色。
         fade_frame: 渐显帧号，0 表示无渐显。
     """
-    _fade_prefix = build_fade_in_ansi(fade_frame)
+    if breath_frame > 0 and fade_frame > 0:
+        _fade_prefix = build_bounce_ansi(fade_frame, 6)
+    else:
+        _fade_prefix = build_fade_in_ansi(fade_frame)
     # 使用全宽渐变分隔线（青→深灰，每列一色号），支持呼吸色
     _manager.write_line(f"\n{_make_gradient_sep(breath_frame=breath_frame)}")
     # 窄屏时 _role_tag 自动降级无背景色版本；宽屏时支持呼吸色
@@ -521,7 +538,10 @@ def _display_assistant(
         breath_frame: 呼吸帧号，0 表示使用静态色。
         fade_frame: 渐显帧号，0 表示无渐显。
     """
-    _fade_prefix = build_fade_in_ansi(fade_frame)
+    if breath_frame > 0 and fade_frame > 0:
+        _fade_prefix = build_bounce_ansi(fade_frame, 6)
+    else:
+        _fade_prefix = build_fade_in_ansi(fade_frame)
     # 使用全宽渐变分隔线（青→深灰，每列一色号），支持呼吸色
     _manager.write_line(f"\n{_make_gradient_sep(breath_frame=breath_frame)}")
     # 窄屏时 _role_tag 自动降级无背景色版本；宽屏时支持呼吸色
@@ -567,13 +587,19 @@ def _display_messages(
     sep = "\u2501" * sep_width
     # ★ 美化：渐变青色花括号 + 信封图标
     # 左右装饰 ━ 从中心向外渐变：中心亮青(45)→边缘深灰(237)
-    _header_side_colors = gradient_range(237, 45, 4)  # 深灰→亮青（从左到中心）
+    _header_side_colors = gradient_range(237, 45, 8)  # 深灰→亮青（从左到中心，更丰富渐变）
     _header_side_left = "".join(f"\033[38;5;{c}m\u2501" for c in _header_side_colors)
     _header_side_right = "".join(f"\033[38;5;{c}m\u2501" for c in reversed(_header_side_colors))  # 亮青→深灰（从中心到右）
-    header = f"  {_header_side_left}{_R}  {_BC}\u2770\u2709\u6d88\u606f\u5217\u8868\u2771{_R}  {_header_side_right}{_R}"  # ━  ❰✉消息列表❱  ━
-    _breath_frame = AnimatorContext.get_default().breath_frame
+    _header_bf = AnimatorContext.get_default().breath_frame
+    # 标题区域使用呼吸色（窄屏或呼吸帧为0时退化为静态亮青）
+    if _header_bf > 0 and not is_narrow():
+        _title_color = BreathPalette.get_color("sep_msg", _header_bf)
+        header = f"  {_header_side_left}{_R}  \033[38;5;{_title_color}m\u2770\u2709\u6d88\u606f\u5217\u8868\u2771{_R}  {_header_side_right}{_R}"
+    else:
+        header = f"  {_header_side_left}{_R}  {_BC}\u2770\u2709\u6d88\u606f\u5217\u8868\u2771{_R}  {_header_side_right}{_R}"
     _manager.write_line(f"\n{header}")
     for i, m in enumerate(data):
+        _breath_frame = AnimatorContext.get_default().breath_frame
         role = m.get("role", "?")
         icon = _role_icon(role)
         content = m.get("content") or ""

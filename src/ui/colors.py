@@ -81,6 +81,12 @@ __all__: list[str] = [
     "GRADIENT_AURORA", "GRADIENT_CORAL", "GRADIENT_MINT", "GRADIENT_TWILIGHT",
     "GRADIENT_SUNRISE", "GRADIENT_PURPLE", "GRADIENT_ICE",
     "GRADIENT_SOFT", "GRADIENT_EMERALD",
+    # ── 第五阶段新增 ──
+    "GRADIENT_ROSE", "GRADIENT_LAVA", "GRADIENT_GLACIER",
+    "GRADIENT_SUNSET2", "GRADIENT_NEON_GREEN", "GRADIENT_NEON_PINK",
+    "GRADIENT_GOLD", "GRADIENT_SKY", "GRADIENT_MAGMA", "GRADIENT_OCEAN_DEEP",
+    # ── 双向呼吸调色板 ──
+    "BREATH_CYAN", "BREATH_GREEN", "BREATH_PURPLE", "BREATH_GOLD", "BREATH_ROSE",
 ]
 
 # ════════════════════════════════════════════════════════
@@ -237,3 +243,50 @@ GRADIENT_SOFT: list[int] = gradient_range(175, 218, 8)
 
 GRADIENT_EMERALD: list[int] = gradient_range(22, 47, 8)
 """翡翠渐变：深绿(22)→亮绿(47)，8 阶。"""
+
+# ── 新增调色板（第五阶段美化 — 更丰富的色彩体系） ────────
+GRADIENT_ROSE: list[int] = gradient_range(161, 218, 8)
+"""玫瑰渐变：玫红(161)→亮粉(218)，8 阶。"""
+
+GRADIENT_LAVA: list[int] = gradient_range(52, 220, 10)
+"""熔岩渐变：深红(52)→亮黄(220)，10 阶。"""
+
+GRADIENT_GLACIER: list[int] = gradient_range(32, 195, 8)
+"""冰河渐变：深蓝(32)→亮青(195)，8 阶。"""
+
+GRADIENT_SUNSET2: list[int] = gradient_range(53, 224, 10)
+"""日落强化渐变：深紫(53)→琥珀(224)，10 阶。"""
+
+GRADIENT_NEON_GREEN: list[int] = gradient_range(40, 83, 8)
+"""霓虹绿渐变：中绿(40)→亮青绿(83)，8 阶。"""
+
+GRADIENT_NEON_PINK: list[int] = gradient_range(125, 213, 8)
+"""霓虹粉渐变：暗粉(125)→亮粉(213)，8 阶。"""
+
+GRADIENT_GOLD: list[int] = gradient_range(94, 220, 8)
+"""金色渐变：暗金(94)→亮金(220)，8 阶。"""
+
+GRADIENT_SKY: list[int] = gradient_range(25, 117, 8)
+"""天空渐变：深蓝(25)→天蓝(117)，8 阶。"""
+
+GRADIENT_MAGMA: list[int] = gradient_range(88, 202, 10)
+"""岩浆渐变：深红褐(88)→亮橙(202)，10 阶。"""
+
+GRADIENT_OCEAN_DEEP: list[int] = gradient_range(17, 44, 8)
+"""深海渐变：深蓝(17)→海青(44)，8 阶。"""
+
+# ── 精选双向呼吸调色板（对称上升+下降） ──────────────────
+BREATH_CYAN: list[int] = gradient_range(24, 87, 6) + gradient_range(87, 24, 6)
+"""青呼吸：深蓝(24)→亮青(87)→深蓝(24)，12阶对称。"""
+
+BREATH_GREEN: list[int] = gradient_range(22, 47, 6) + gradient_range(47, 22, 6)
+"""绿呼吸：深绿(22)→亮绿(47)→深绿(22)，12阶对称。"""
+
+BREATH_PURPLE: list[int] = gradient_range(55, 177, 6) + gradient_range(177, 55, 6)
+"""紫呼吸：深紫(55)→亮紫(177)→深紫(55)，12阶对称。"""
+
+BREATH_GOLD: list[int] = gradient_range(94, 220, 6) + gradient_range(220, 94, 6)
+"""金呼吸：暗金(94)→亮金(220)→暗金(94)，12阶对称。"""
+
+BREATH_ROSE: list[int] = gradient_range(161, 218, 6) + gradient_range(218, 161, 6)
+"""玫瑰呼吸：玫红(161)→亮粉(218)→玫红(161)，12阶对称。"""

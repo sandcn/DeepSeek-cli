@@ -5,6 +5,13 @@
 
 渐变分隔线工具 — 供 _message_display 和 _bottom_bar_pkg 共享使用，
 避免渐变分隔线 ANSI 构建逻辑在两处重复实现。
+
+动效增强（2026-07-12）：
+  - build_bounce_ansi(): 弹入动效（替代线性渐显）
+  - build_enhanced_sep(): 增强版渐变分隔线（支持波动/流光）
+  - build_sparkle_ansi(): 闪烁高亮
+  - build_glow_ansi(): 辉光呼吸效果
+  新增函数委托至 _effects.py 实现核心计算，本层只做 ANSI 构建。
 """
 
 from __future__ import annotations
@@ -164,4 +171,147 @@ def make_sep_gradient(
     return build_gradient_ansi(colors, char=char)
 
 
-__all__ = ["truncate", "build_gradient_ansi", "build_gradient_ansi_frame", "build_fade_in_ansi", "build_warning_pulse_ansi", "make_sep_gradient"]
+# ═══════════════════════════════════════════════════════════
+# 增强动效函数（2026-07-12）
+# ═══════════════════════════════════════════════════════════
+
+
+def build_bounce_ansi(frame: int, total_frames: int = 6) -> str:
+    """构建弹入动效 ANSI 序列（带弹跳超调）。
+
+    比 build_fade_in_ansi 更生动：亮度变化带弹跳超调，
+    模拟物体落地反弹的视觉效果。
+
+    Args:
+        frame: 当前渐显帧号（0-based）。
+        total_frames: 弹入总帧数。
+
+    Returns:
+        ANSI 颜色序列，≥ total_frames 时返回空字符串。
+    """
+    from ._terminal import is_narrow
+    if is_narrow() or frame >= total_frames:
+        return ""
+    from ._effects import bounce_frame_color
+    color = bounce_frame_color(frame, total_frames)
+    return f"\033[38;5;{color}m"
+
+
+def build_sep_wave(
+    colors: list[int], frame: int, char: str = "\u2501",
+) -> str:
+    """构建波动分隔线 ANSI 字符串。
+
+    在渐变基础上叠加正弦波动，使分隔线看起来像"流动的水波"。
+    帧号推进时波动沿分隔线方向传播。
+
+    Args:
+        colors: 基础渐变色号列表。
+        frame: 当前帧号。
+        char: 显示的字符。
+
+    Returns:
+        ANSI 格式的波动渐变分隔线（含 RESET）。
+    """
+    from ._effects import build_wave_sep_ansi
+    return build_wave_sep_ansi(colors, frame, char)
+
+
+def build_sep_shimmer(
+    colors: list[int], frame: int, char: str = "\u2501",
+) -> str:
+    """构建流光扫光分隔线 ANSI 字符串。
+
+    一条亮带沿分隔线方向周期性移动，产生"扫光"效果。
+    视觉效果比静态渐变更引人注目。
+
+    Args:
+        colors: 基础渐变色号列表。
+        frame: 当前帧号。
+        char: 显示的字符。
+
+    Returns:
+        ANSI 格式的流光分隔线（含 RESET）。
+    """
+    from ._effects import build_shimmer_sep_ansi
+    return build_shimmer_sep_ansi(colors, frame, char)
+
+
+def build_sparkle_ansi(frame: int, base_color: int = 45, period: int = 6) -> str:
+    """构建闪烁高亮 ANSI 序列。
+
+    在 base_color 和 base_color+bright 间闪烁，
+    适合用于需要吸引注意力的元素（新消息标记、完成提示等）。
+
+    Args:
+        frame: 当前帧号。
+        base_color: 基准色号。
+        period: 闪烁周期帧数。
+
+    Returns:
+        ANSI 前景色序列。
+    """
+    from ._effects import sparkle_color
+    c = sparkle_color(frame, base_color, period=period)
+    return f"\033[38;5;{c}m"
+
+
+def build_glow_ansi(frame: int, base_color: int = 45, period: int = 12) -> str:
+    """构建辉光呼吸 ANSI 序列。
+
+    色号在 base_color 和 base_color+20 间正弦呼吸，
+    产生"柔光呼吸"的视觉效果。适合标签、图标等元素。
+
+    Args:
+        frame: 当前帧号。
+        base_color: 基准色号。
+        period: 呼吸周期帧数。
+
+    Returns:
+        ANSI 前景色序列。
+    """
+    from ._effects import build_glow_ansi
+    return build_glow_ansi(frame, base_color, period)
+
+
+def make_sep_gradient_enhanced(
+    width: int,
+    start_color: int = 45,
+    end_color: int = 237,
+    char: str = "\u2501",
+    *,
+    effect: str = "none",
+    frame: int = 0,
+) -> str:
+    """增强版渐变分隔线工厂（支持动效）。
+
+    在 make_sep_gradient 基础上增加波动/流光等动效，
+    统一管理所有分隔线效果的创建。
+
+    Args:
+        width: 分隔线字符数。
+        start_color: 起始 256 色号。
+        end_color: 结束 256 色号。
+        char: 显示的字符。
+        effect: 动效类型 "none"|"wave"|"shimmer"。
+        frame: 当前帧号（effect 非 none 时使用）。
+
+    Returns:
+        带 ANSI 渐变的完整分隔线字符串（含 RESET）。
+    """
+    from ..colors import gradient_range
+    colors = gradient_range(start_color, end_color, width)
+    if effect == "wave" and frame > 0:
+        return build_sep_wave(colors, frame, char)
+    elif effect == "shimmer" and frame > 0:
+        return build_sep_shimmer(colors, frame, char)
+    return build_gradient_ansi(colors, char)
+
+
+__all__ = [
+    "truncate", "build_gradient_ansi", "build_gradient_ansi_frame",
+    "build_fade_in_ansi", "build_warning_pulse_ansi", "make_sep_gradient",
+    # 增强动效（2026-07-12）
+    "build_bounce_ansi", "build_sep_wave", "build_sep_shimmer",
+    "build_sparkle_ansi", "build_glow_ansi", "make_sep_gradient_enhanced",
+]

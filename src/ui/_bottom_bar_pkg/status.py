@@ -12,6 +12,8 @@ import logging
 from typing import Optional
 
 from ..tui._animator import AnimatorContext, BreathPalette
+from ..tui._text_utils import build_glow_ansi
+from ..tui._terminal import is_narrow
 
 from .theme import (
     _COLOR_ACCENT,
@@ -131,9 +133,13 @@ class _StatusMixin:
         # ── 模型名字（始终显示，带 ◉ 图标） ──
         if self._model_name:
             if self._status_active:
-                # 流式输出期间：◉ 图标使用呼吸脉动色
-                _pulse_frame = AnimatorContext.get_default().breath_frame
-                _pulse_color = BreathPalette.get_color("status_pulse", _pulse_frame)
+                # 流式输出期间：◉ 图标使用正弦波呼吸脉动色
+                ctx = AnimatorContext.get_default()
+                _pulse_frame = ctx.breath_frame
+                if _pulse_frame > 0:
+                    _pulse_color = ctx.sine_color(36, 45, 4)
+                else:
+                    _pulse_color = BreathPalette.get_color("status_pulse", _pulse_frame)
                 model_part = (
                     f"\033[38;5;{_pulse_color}m\u25c9\033[0m"
                     f" {_COLOR_ACCENT}{self._model_name}{_COLOR_RESET}"
@@ -170,15 +176,22 @@ class _StatusMixin:
 
         # 工具调用计数（带 ⚙ 图标，成功/失败分色）
         if self._tool_total > 0:
+            # 非窄屏时添加呼吸齿轮图标前缀
+            if not is_narrow():
+                _gear_frame = AnimatorContext.get_default().frame
+                glow_gear = f"{build_glow_ansi(_gear_frame, 45, 12)}\u2699\033[0m "
+            else:
+                glow_gear = ""
             done = self._tool_total - self._tool_fail_count
             if self._tool_fail_count > 0:
                 parts.append(
+                    f"{glow_gear}"
                     f"{_COLOR_TOOL_OK}{done}{_COLOR_RESET}"
                     f"{_COLOR_DIM}/{_COLOR_RESET}"
                     f"{_COLOR_TOOL_FAIL}{self._tool_total}{_COLOR_RESET}"
                 )
             else:
-                parts.append(f"{_COLOR_TOOL_OK}{self._tool_total}{_COLOR_RESET}")
+                parts.append(f"{glow_gear}{_COLOR_TOOL_OK}{self._tool_total}{_COLOR_RESET}")
 
         # 耗时（蓝灰高亮）
         if elapsed > 0:
@@ -205,6 +218,11 @@ class _StatusMixin:
 
         sep = f" {_COLOR_DIM}\u00b7{_COLOR_RESET} "
         status = sep.join(parts) if parts else ""
+        # 流式输出期间，非窄屏时在末尾添加呼吸脉动装饰点
+        if status and not is_narrow():
+            _deco_frame = AnimatorContext.get_default().frame
+            glow_dot = f"{build_glow_ansi(_deco_frame, 45, 12)}\u25c9\033[0m"
+            status = f"{status}  {glow_dot}"
         if model_part and status:
             return f"{model_part}  {status}"
         return model_part or status
