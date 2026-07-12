@@ -185,7 +185,7 @@ def _make_gradient_sep(start_color: int = 45, end_color: int = 237, steps: int =
         if tw <= 0:
             # 极窄兜底：单色分隔线，避免 gradient_range 空列表
             _logger.debug("_make_gradient_sep: tw=%d <= 0, fallback to mono sep", tw)
-            return f"  {'\u2501' * 8}{_R}"
+            return f"  {chr(0x2501) * 8}{_R}"
         if tw >= NARROW_THRESHOLD:
             steps = min(tw - 4, 80)  # 宽屏全宽
         else:
