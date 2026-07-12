@@ -7,6 +7,8 @@
   - _scroll_window 可见窗口计算
   - _msg_line 单行摘要生成
   - _make_message_lines 消息选择器行渲染
+  - _role_tag 角色标签（256 色 + 窄屏降级）
+  - 分隔线和角色标签的 256 色 ANSI 序列
 """
 
 from __future__ import annotations
@@ -15,7 +17,10 @@ from src.ui.tui._message_display import (
     _scroll_window,
     _role_icon, _truncate, _format_sandbox_text,
     _msg_line, _make_message_lines, MessageDisplayContext,
+    _role_tag, _MSG_SEP, _THINK_SEP, _THINK_END,
+    _USER_TAG, _ASST_TAG, _TOOL_TAG,
 )
+from src.ui.tui._terminal import is_narrow
 
 
 def _make_msg(role: str, content: str = "",
@@ -248,3 +253,82 @@ class TestMakeMessageLines:
         )
         text = "".join(str(line) for _, line in lines)
         assert "Messages" in text
+
+
+class TestRoleTag256:
+    """_role_tag 角色标签 256 色升级测试。"""
+
+    def test_user_tag_contains_256color(self):
+        """宽屏时 USER 标签含 256 色背景和前景 ANSI 码。"""
+        tag = _role_tag("user")
+        assert "48;5;" in tag       # 背景色 ANSI
+        assert "38;5;81" in tag     # 亮青前景色 (BRIGHT_CYAN_256)
+
+    def test_assistant_tag_contains_256color(self):
+        """宽屏时 ASSISTANT 标签含 256 色背景和前景 ANSI 码。"""
+        tag = _role_tag("assistant")
+        assert "48;5;" in tag       # 背景色 ANSI
+        assert "38;5;47" in tag     # 亮绿前景色 (BRIGHT_GREEN_256)
+
+    def test_tool_tag_contains_256color(self):
+        """宽屏时 TOOL 标签含 256 色背景和前景 ANSI 码。"""
+        tag = _role_tag("tool")
+        assert "48;5;" in tag       # 背景色 ANSI
+        assert "38;5;227" in tag    # 亮黄前景色
+
+    def test_unknown_role_fallback(self):
+        """未知角色返回无背景中性标签。"""
+        tag = _role_tag("unknown")
+        assert "48;5;" not in tag
+        assert "\u00b7" in tag
+
+    def test_all_tags_have_reset(self):
+        """所有角色标签末尾含重置序列，确保背景色不溢出。"""
+        for role in ("user", "assistant", "tool"):
+            tag = _role_tag(role)
+            assert tag.endswith("\033[0m"), f"{role} tag missing reset"
+
+
+class TestSeparator256:
+    """分隔线常量 256 色升级测试。"""
+
+    def test_msg_sep_contains_256color(self):
+        """_MSG_SEP 含 256 色前景码（38;5;）。"""
+        assert "38;5;237" in _MSG_SEP
+        assert "38;5;238" in _MSG_SEP or "38;5;239" in _MSG_SEP
+        assert "\u2501" in _MSG_SEP  # 厚分隔线 ═
+
+    def test_think_sep_contains_256color(self):
+        """_THINK_SEP 含青色(45)和多段 256 色码。"""
+        assert "38;5;45" in _THINK_SEP    # 青色
+        assert "38;5;237" in _THINK_SEP   # 深灰思考标签
+        assert "\u26a1" in _THINK_SEP     # ⚡ 闪电图标
+
+    def test_think_end_contains_256color(self):
+        """_THINK_END 含青色略淡(39)。"""
+        assert "38;5;39" in _THINK_END
+        assert "\u2501" in _THINK_END
+
+    def test_separators_have_reset(self):
+        """所有分隔线常量含重置序列。"""
+        for sep in (_MSG_SEP, _THINK_SEP, _THINK_END):
+            assert "\033[0m" in sep
+
+
+class TestMessageDisplayColors:
+    """消息显示模块 256 色完整性测试。"""
+
+    def test_user_tag_constant_has_background(self):
+        """_USER_TAG 常量含背景色码。"""
+        assert "48;5;235" in _USER_TAG   # 暗灰背景
+        assert "38;5;81" in _USER_TAG    # 亮青文字
+
+    def test_asst_tag_constant_has_background(self):
+        """_ASST_TAG 常量含背景色码。"""
+        assert "48;5;22" in _ASST_TAG    # 暗绿背景
+        assert "38;5;47" in _ASST_TAG    # 亮绿文字
+
+    def test_tool_tag_constant_has_background(self):
+        """_TOOL_TAG 常量含背景色码。"""
+        assert "48;5;94" in _TOOL_TAG    # 暗黄背景
+        assert "38;5;227" in _TOOL_TAG   # 亮黄文字

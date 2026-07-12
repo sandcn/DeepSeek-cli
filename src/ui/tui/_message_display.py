@@ -130,11 +130,13 @@ class _OutputFileAdapter:
         return hasattr(self._target, 'isatty') and self._target.isatty()
 
 
-# ── 颜色快捷引用 ──────────────────────────────────────────
+# ── 颜色快捷引用（256 色） ─────────────────────────────────
 
-from ..colors import CYAN as _C, DIM as _D, RESET as _R, GREEN as _G, \
-    YELLOW as _Y, BLUE as _B, BRIGHT_CYAN as _BC, BRIGHT_WHITE as _BW, \
-    BOLD as _BD, DARK_GRAY as _DG, BRIGHT_GREEN as _BG
+from ...core.constants import (
+    CYAN_256, GRAY_256 as _D, RESET as _R,
+    YELLOW_256 as _Y, BRIGHT_CYAN_256 as _BC, BRIGHT_WHITE_256 as _BW,
+    BOLD as _BD, DARK_GRAY_256 as _DG, BRIGHT_GREEN_256 as _BG,
+)
 
 # ── 常量 ─────────────────────────────────────────────────
 
@@ -145,19 +147,39 @@ _LINE_TRUNCATE_WIDTH = 55
 _SEP_LINE_WIDTH = 25
 _NARROW_SEP_REDUCTION = 10
 
-# ── 美观分隔线（增强版） ────────────────────────────────────
+# ── 美观分隔线（256 色 + 渐变增强版） ─────────────────────
 
-_MSG_SEP = f"  {_DG}\u2500{_R}{_DG}\u2500{_R}{_DG}\u2500{_R}"  # ───
-_THINK_SEP = (f"  {_BC}\u2501\u2501{_R}"          # ━━
-              f"  {_BC}\u26a1{_R}"                #  ⚡
-              f"{_DG}\u601d\u8003{_R}"            # 思考
-              f"  {_D}\u2501\u2501{_R}")          #  ━━
-_THINK_END = f"  {_D}\u2501\u2501{_R}"            # ━━
+# _MSG_SEP: 渐变双线 ═══，左半 237→238→239 形成渐变效果
+_MSG_SEP = (
+    f"  \033[38;5;237m\u2501\033[38;5;238m\u2501\033[38;5;239m\u2501\033[0m"
+)
+# _THINK_SEP: 青色(45) ━━ + ⚡ 闪电图标 + 灰色"思考"标签
+_THINK_SEP = (
+    f"  {CYAN_256}\u2501\u2501{_R}"                   # ━━ (CYAN_256=45)
+    f"  {CYAN_256}\u26a1{_R}"                         #  ⚡ (CYAN_256=45)
+    f"{_DG}\u601d\u8003{_R}"                          # 思考 (DARK_GRAY_256=237)
+    f"  {_D}\u2501\u2501{_R}"                         # ━━ (GRAY_256=242)
+)
+# _THINK_END: 青色略淡(39) ━━
+_THINK_END = f"  \033[38;5;39m\u2501\u2501{_R}"
 
-# ── 美观角色标签（带颜色背景感） ──────────────────────────
-_USER_TAG = f"{_BC}\u25cf {_R}{_BC}USER{_R}"        # ● USER
-_ASST_TAG = f"{_BG}\u25c6 {_R}{_BG}ASSISTANT{_R}"   # ◆ ASSISTANT
-_TOOL_TAG = f"{_Y}\u2699 {_R}{_Y}TOOL{_R}"          # ⚙ TOOL
+# ── 美观角色标签（256 色背景增强版） ──────────────────────
+# 窄屏时通过 _role_tag() 函数降级为无背景色（仅保留文字色）
+_USER_TAG = (
+    f"\033[48;5;235m{_BC}\u25cf {_R}"               # 暗灰背景(235) + ●(亮青81)
+    f"\033[48;5;235m{_BC}USER{_R}"                  # 暗灰背景(235) + USER(亮青81)
+    f"\033[0m"                                       # 全重置，背景色不溢出
+)
+_ASST_TAG = (
+    f"\033[48;5;22m{_BG}\u25c6 {_R}"                # 暗绿背景(22) + ◆(亮绿47)
+    f"\033[48;5;22m{_BG}ASSISTANT{_R}"               # 暗绿背景(22) + ASSISTANT(亮绿47)
+    f"\033[0m"                                       # 全重置，背景色不溢出
+)
+_TOOL_TAG = (
+    f"\033[48;5;94m\033[38;5;227m\u2699 {_R}"       # 暗黄背景(94) + ⚙(亮黄227)
+    f"\033[48;5;94m\033[38;5;227mTOOL{_R}"           # 暗黄背景(94) + TOOL(亮黄227)
+    f"\033[0m"                                       # 全重置，背景色不溢出
+)
 
 # ── 消息选择器提示文本 — 按窄屏/宽屏分两组 ────────────────
 _HINT_NARROW = "  \u2191\u2193\u9009  Enter\u91cd\u5199  r\u6062\u590d  d\u622a\u65ad"     # ↑↓选 Enter重写 r恢复 d截断
@@ -197,8 +219,23 @@ def _role_icon(role: str) -> str:
 
 
 def _role_tag(role: str) -> str:
-    """角色标签：将 role 映射为美观的彩色标签。"""
-    return {"user": _USER_TAG, "assistant": _ASST_TAG, "tool": _TOOL_TAG}.get(role, _D + "·" + _R)
+    """角色标签：将 role 映射为美观的彩色标签。
+
+    宽屏模式（≥80列）：返回带背景色的增强标签。
+    窄屏模式（<80列）：降级为无背景色，仅保留文字色，确保可读性。
+    """
+    if is_narrow():
+        # 窄屏降级：无背景色，仅保留图标和文字色
+        return {
+            "user": f"{_BC}\u25cf {_BC}USER{_R}",
+            "assistant": f"{_BG}\u25c6 {_BG}ASSISTANT{_R}",
+            "tool": f"\033[38;5;227m\u2699 \033[38;5;227mTOOL{_R}",
+        }.get(role, _D + "\u00b7" + _R)
+    return {
+        "user": _USER_TAG,
+        "assistant": _ASST_TAG,
+        "tool": _TOOL_TAG,
+    }.get(role, _D + "\u00b7" + _R)
 
 
 # _truncate 已迁移到 _text_utils.truncate（向后兼容：width → max_len）
@@ -327,18 +364,22 @@ def _display_tool_calls(i: int, icon: str, m: dict, sandbox_text: str) -> None:
     text = content[:_TOOL_CALL_PREVIEW_LEN].replace("\n", " ") if content else ""
     if len(content) > _TOOL_CALL_PREVIEW_LEN:
         text += "…"
-    sep = narrow_sep_width(20)
-    _manager.write_line(f"\n  {_DG}\u2500{_R}" * min(sep, 10))
-    _manager.write_line(f"  {_TOOL_TAG}  {_D}{icon}{_R} {_Y}{names}{_R}{_D}{sandbox_text}{_R}")
+    # 使用渐变分隔线 _MSG_SEP（P2 修复：替换内联单色分隔线为渐变分隔线）
+    _manager.write_line(f"\n  {_MSG_SEP}")
+    # 窄屏时使用 _role_tag() 降级无背景色版本（P2 修复：避免直接使用带背景色的常量）
+    tag = _role_tag("tool") if is_narrow() else _TOOL_TAG
+    _manager.write_line(f"  {tag}  {_D}{icon}{_R} {_Y}{names}{_R}{_D}{sandbox_text}{_R}")
     if text:
         _manager.write_line(f"  {_D}  \u2514 {text}{_R}")
 
 
 def _display_user(i: int, icon: str, content: str, sandbox_text: str) -> None:
     """显示用户消息 — 每行以 > 开头（白色加粗）。"""
-    sep = narrow_sep_width(20)
-    _manager.write_line(f"\n  {_DG}\u2500{_R}" * min(sep, 10))
-    _manager.write_line(f"  {_BW}{_BD}>{_R} {_USER_TAG}  {_D}#{i}{_R}{_D}{sandbox_text}{_R}")
+    # 使用渐变分隔线 _MSG_SEP（P2 修复：替换内联单色分隔线为渐变分隔线）
+    _manager.write_line(f"\n  {_MSG_SEP}")
+    # 窄屏时使用 _role_tag() 降级无背景色版本（P2 修复：避免直接使用带背景色的常量）
+    tag = _role_tag("user") if is_narrow() else _USER_TAG
+    _manager.write_line(f"  {_BW}{_BD}>{_R} {tag}  {_D}#{i}{_R}{_D}{sandbox_text}{_R}")
     for line in content.split("\n"):
         _manager.write_line(f"  {_BW}{_BD}>{_R} {line}")
 
@@ -347,9 +388,11 @@ def _display_assistant(
     i: int, icon: str, m: dict, sandbox_text: str, speed: int = 0,
 ) -> None:
     """显示助手消息（含 reasoning + content Markdown 渲染）— 使用主题色彩。"""
-    sep = narrow_sep_width(20)
-    _manager.write_line(f"\n  {_DG}\u2500{_R}" * min(sep, 10))
-    _manager.write_line(f"  {_ASST_TAG}  {_D}#{i}{_R}{_D}{sandbox_text}{_R}")
+    # 使用渐变分隔线 _MSG_SEP（P2 修复：替换内联单色分隔线为渐变分隔线）
+    _manager.write_line(f"\n  {_MSG_SEP}")
+    # 窄屏时使用 _role_tag() 降级无背景色版本（P2 修复：避免直接使用带背景色的常量）
+    tag = _role_tag("assistant") if is_narrow() else _ASST_TAG
+    _manager.write_line(f"  {tag}  {_D}#{i}{_R}{_D}{sandbox_text}{_R}")
     content = m.get("content") or ""
     reasoning = m.get("reasoning_content") or ""
     _output_file = _OutputFileAdapter(_manager.target)
@@ -407,7 +450,7 @@ def _display_messages(
             text = content[:_TOOL_CONTENT_PREVIEW_LEN].replace("\n", " ")
             if len(content) > _TOOL_CONTENT_PREVIEW_LEN:
                 text += "…"
-            _manager.write_line(f"\n  {_D}\u2500{_R}" * min(narrow_sep_width(20), 10))
+            _manager.write_line(f"\n  {_D}\u2501{_R}" * min(narrow_sep_width(20), 10))
             _manager.write_line(f"  {_TOOL_TAG}  {_D}\u2514 {text}{_R}")
             continue
 

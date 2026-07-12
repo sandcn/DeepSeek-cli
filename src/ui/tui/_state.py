@@ -89,6 +89,7 @@ class StreamingState:
     active: bool = False
     start_time: float = 0.0
     output_tokens: int = 0
+    pulse_phase: int = 0  # 流式脉动指示器相位（0-3 循环）
     _speed_override: float = 0.0  # 可选手动覆盖（外部不调用时保持 0.0）
 
     @property
@@ -114,6 +115,10 @@ class StreamingState:
             return 0.0
         return time.monotonic() - self.start_time
 
+    def tick_pulse(self) -> None:
+        """推进脉动指示器相位（0→1→2→3→0→... 循环）。"""
+        self.pulse_phase = (self.pulse_phase + 1) % 4
+
     def start(self) -> None:
         """进入流式状态。已在流式模式时不重置（工具间隙保持连续）。"""
         if self.active:
@@ -121,12 +126,14 @@ class StreamingState:
         self.active = True
         self.start_time = time.monotonic()
         self.output_tokens = 0
+        self.pulse_phase = 0
         self._speed_override = 0.0
 
     def stop(self) -> None:
-        """退出流式状态，同时重置 token 计数和速率。"""
+        """退出流式状态，同时重置 token 计数、速率和脉动相位。"""
         self.active = False
         self.output_tokens = 0
+        self.pulse_phase = 0
         self._speed_override = 0.0
 
 

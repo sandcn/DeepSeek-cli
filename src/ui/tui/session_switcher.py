@@ -32,13 +32,17 @@ class SessionSwitcher(BaseBottomBarSelector[dict, Optional[dict[str, object]]]):
         return list_sessions()
 
     def _format_display(self, items: list[dict]) -> list[str]:
-        """格式化会话字典列表为显示标签 — 美化展示。"""
-        from ..colors import CYAN, RESET, DARK_GRAY, GREEN, BRIGHT_CYAN, DIM
+        """格式化会话字典列表为显示标签 — 美化展示。
+
+        使用 256 色体系增强视觉层次。
+        """
+        from ..colors import RESET
+        from ..colors import CYAN_256, DARK_GRAY_256, GREEN_256, BRIGHT_CYAN_256, DIM_256
         labels: list[str] = []
         now = time.time()
         for s in items:
             title = s.get("title", "")
-            title_info = f"\u300c{title}\u300d" if title else f"{DIM}(\u65e0\u6807\u9898){RESET}"  # (无标题)
+            title_info = f"\u300c{title}\u300d" if title else f"{DIM_256}(\u65e0\u6807\u9898){RESET}"  # (无标题)
             sid = s.get("id", "")
             sid_short = sid[:min(8, len(sid))] if sid else "?"
             model = s.get("model", "?")
@@ -52,18 +56,19 @@ class SessionSwitcher(BaseBottomBarSelector[dict, Optional[dict[str, object]]]):
                     created_ts = datetime.fromisoformat(saved_at_str).timestamp()
                     age = max(0, now - created_ts)
                     if age < 60:
-                        time_info = f"{DIM}\u521a\u521a{RESET}"               # 刚刚
+                        time_info = f"{DIM_256}\u521a\u521a{RESET}"               # 刚刚
                     elif age < 3600:
-                        time_info = f"{DIM}{int(age // 60)}\u5206\u949f\u524d{RESET}"  # N分钟前
+                        time_info = f"{DIM_256}{int(age // 60)}\u5206\u949f\u524d{RESET}"  # N分钟前
                     elif age < 86400:
-                        time_info = f"{DIM}{int(age // 3600)}\u5c0f\u65f6\u524d{RESET}"  # N小时前
+                        time_info = f"{DIM_256}{int(age // 3600)}\u5c0f\u65f6\u524d{RESET}"  # N小时前
                     else:
-                        time_info = f"{DIM}{time.strftime('%m-%d', time.localtime(created_ts))}{RESET}"  # 月-日
+                        time_info = f"{DIM_256}{time.strftime('%m-%d', time.localtime(created_ts))}{RESET}"  # 月-日
                 except (ValueError, TypeError, OSError):
                     pass
 
             # ★ 美化：增加视觉层次，图标对齐
-            label = f"{DARK_GRAY}{sid_short}{RESET} {time_info}  {BRIGHT_CYAN}{title_info}{RESET}  {CYAN}\u25c9 {model}{RESET}  {GREEN}\u25c6 {count}m{RESET}"
+            # 会话ID短摘要(暗灰) + 时间戳(暗灰) + 标题(亮青) + 模型名(青+◉) + 消息数(绿+◆)
+            label = f"{DARK_GRAY_256}{sid_short}{RESET} {time_info}  {BRIGHT_CYAN_256}{title_info}{RESET}  {CYAN_256}\u25c9 {model}{RESET}  {GREEN_256}\u25c6 {count}m{RESET}"
             labels.append(label)
         return labels
 

@@ -1421,5 +1421,90 @@ class TestEnsureCursorInLowerLocking(unittest.TestCase):
             "_active=False 时不应有输出")
 
 
+class TestBottomBarColorAlignment(unittest.TestCase):
+    """验证底部栏 _COLOR_* 常量与统一 256 色体系对齐。
+
+    步骤 8 颜色对齐要点：
+      1. _COLOR_ACCENT → 45 (CYAN_256)
+      2. _COLOR_DIM → 242 (GRAY_256)
+      3. _COLOR_TOOL_OK → 41 (GREEN_256)
+      4. _COLOR_TOOL_FAIL → 196 (RED_256)
+      5. _COLOR_COMPLETE_MATCH → 221 (YELLOW_256)
+      6. _COLOR_SELECT_BG → 236
+      7. _format_status 输出含 256 色码
+    """
+
+    def test_color_accent_is_45(self):
+        """_COLOR_ACCENT 应为 CYAN_256(45)。"""
+        from src.ui._bottom_bar_pkg.theme import _COLOR_ACCENT
+        self.assertIn("38;5;45", _COLOR_ACCENT,
+                      "_COLOR_ACCENT 应对齐 CYAN_256(45)")
+
+    def test_color_dim_is_242(self):
+        """_COLOR_DIM 应为 GRAY_256(242)。"""
+        from src.ui._bottom_bar_pkg.theme import _COLOR_DIM
+        self.assertIn("38;5;242", _COLOR_DIM,
+                      "_COLOR_DIM 应对齐 GRAY_256(242)")
+
+    def test_color_tool_ok_is_41(self):
+        """_COLOR_TOOL_OK 应为 GREEN_256(41)。"""
+        from src.ui._bottom_bar_pkg.theme import _COLOR_TOOL_OK
+        self.assertIn("38;5;41", _COLOR_TOOL_OK,
+                      "_COLOR_TOOL_OK 应对齐 GREEN_256(41)")
+
+    def test_color_tool_fail_is_196(self):
+        """_COLOR_TOOL_FAIL 应为 RED_256(196)。"""
+        from src.ui._bottom_bar_pkg.theme import _COLOR_TOOL_FAIL
+        self.assertIn("38;5;196", _COLOR_TOOL_FAIL,
+                      "_COLOR_TOOL_FAIL 应对齐 RED_256(196)")
+
+    def test_color_complete_match_is_221(self):
+        """_COLOR_COMPLETE_MATCH 应为 YELLOW_256(221)。"""
+        from src.ui._bottom_bar_pkg.theme import _COLOR_COMPLETE_MATCH
+        self.assertIn("38;5;221", _COLOR_COMPLETE_MATCH,
+                      "_COLOR_COMPLETE_MATCH 应对齐 YELLOW_256(221)")
+
+    def test_color_select_bg_is_236(self):
+        """_COLOR_SELECT_BG 应为 236。"""
+        from src.ui._bottom_bar_pkg.theme import _COLOR_SELECT_BG
+        self.assertIn("48;5;236", _COLOR_SELECT_BG,
+                      "_COLOR_SELECT_BG 应为 236")
+
+    def test_color_deep_cyan_is_32(self):
+        """_COLOR_DEEP_CYAN 应为 32。"""
+        from src.ui._bottom_bar_pkg.theme import _COLOR_DEEP_CYAN
+        self.assertIn("38;5;32", _COLOR_DEEP_CYAN,
+                      "_COLOR_DEEP_CYAN 应为 32")
+
+    def test_format_status_contains_256_color(self):
+        """_format_status 输出应含 256 色码。"""
+        bb = _BottomBar()
+        bb._active = True
+        bb._status_active = True
+        bb._model_name = "test-model"
+        bb._tool_count = 2
+        bb._tool_fail_count = 0
+        bb._tool_total = 2
+
+        mock_snap = {
+            "total_tokens": 500,
+            "elapsed_seconds": 5.0,
+            "per_second_speed": 10.0,
+        }
+
+        with patch("src.ui._bottom_bar_pkg.status._get_snapshot", return_value=lambda: mock_snap):
+            result = bb._format_status()
+
+        # 应包含 256 色 ANSI 码（38;5;）
+        self.assertIn("38;5;", result,
+                      "_format_status 应含 256 色序列")
+        # 应包含 CYAN_256(45) 色用于模型名
+        self.assertIn("[38;5;45m", result,
+                      "_format_status 应含 CYAN_256(45) 色")
+        # 应包含 GREEN_256(41) 色用于工具计数
+        self.assertIn("[38;5;41m", result,
+                      "_format_status 应含 GREEN_256(41) 色")
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -272,3 +272,129 @@ class TestCompactThreshold:
         assert "gpt-4" in joined
         assert "5m" in joined
 
+
+class TestBeautification256:
+    """步骤 5 美化：256 色 + 流式指示器 + 视觉层次增强测试。"""
+
+    def test_render_normal_contains_256_color(self):
+        """普通模式渲染结果含 256 色序列（\033[38;5;）。"""
+        state = UISessionState(
+            model="gpt-4", message_count=3,
+            input_tokens=100, output_tokens=200,
+        )
+        result = render_normal(state)
+        assert "\033[38;5;" in result
+
+    def test_render_streaming_contains_256_color(self):
+        """流式模式渲染结果含 256 色序列。"""
+        state = UISessionState(model="gpt-4")
+        streaming = StreamingState(active=True, start_time=time.monotonic() - 2.0)
+        result = render_streaming_line(state, streaming)
+        assert "\033[38;5;" in result
+
+    def test_streaming_line_contains_pulse_char(self):
+        """流式状态行含脉动指示器字符（◌ ◍ ● 之一）。"""
+        state = UISessionState(model="gpt-4")
+        streaming = StreamingState(active=True, start_time=time.monotonic())
+        result = render_streaming_line(state, streaming)
+        # 脉动指示器帧字符
+        for ch in ("\u25cc", "\u25cd", "\u25cf"):
+            if ch in result:
+                return
+        assert False, f"流式状态行未含脉动指示器字符: {result!r}"
+
+    def test_streaming_line_pulse_phase_cycles(self):
+        """不同脉动相位输出不同指示器字符（因相位不同而不同）。"""
+        state = UISessionState(model="gpt-4")
+        chars = set()
+        for phase in range(4):
+            streaming = StreamingState(
+                active=True, start_time=time.monotonic(),
+                pulse_phase=phase,
+            )
+            result = render_streaming_line(state, streaming)
+            for ch in ("\u25cc", "\u25cd", "\u25cf"):
+                if ch in result:
+                    chars.add(ch)
+        # 至少出现 2 种不同的脉动字符
+        assert len(chars) >= 2, f"脉动相位循环应产生不同字符: {chars}"
+
+    def test_streaming_no_model_no_pulse(self):
+        """无模型时不显示脉动指示器。"""
+        state = UISessionState(model="")
+        streaming = StreamingState(active=True, start_time=time.monotonic())
+        result = render_streaming_line(state, streaming)
+        # 无模型时，脉动字符不应出现在结果中
+        # 注意：无模型时 first part 不添加，但脉动在 model 块内
+        for ch in ("\u25cc", "\u25cd", "\u25cf"):
+            assert ch not in result, f"无模型时不应含脉动字符: {ch} 出现在 {result!r}"
+
+    def test_streaming_amber_speed_color(self):
+        """速率 > 0 时使用琥珀色(214)。"""
+        state = UISessionState(model="gpt-4")
+        streaming = StreamingState(
+            active=True, start_time=time.monotonic() - 2.0,
+            output_tokens=50,
+        )
+        result = render_streaming_line(state, streaming)
+        assert "38;5;214m" in result
+
+    def test_streaming_dual_color_token(self):
+        """Token 显示使用双色：输入青色(45)，输出绿色(41)。"""
+        state = UISessionState(model="gpt-4")
+        streaming = StreamingState(
+            active=True, start_time=time.monotonic() - 2.0,
+            output_tokens=100,
+        )
+        result = render_streaming_line(state, streaming)
+        # ⬡ 图标使用 CYAN_256(45)
+        assert "\033[38;5;45m" in result
+
+    def test_render_streaming_narrow_no_crash(self, monkeypatch):
+        """窄屏流式渲染不崩溃。"""
+        monkeypatch.setattr("src.ui.tui.status_bar.is_narrow", lambda: True)
+        monkeypatch.setattr("src.ui.tui.status_bar.get_terminal_width", lambda: 30)
+        state = UISessionState(model="test-model")
+        streaming = StreamingState(active=True, start_time=time.monotonic())
+        result = render_streaming_line(state, streaming)
+        assert isinstance(result, str)
+        assert "\033[0m" in result
+
+
+class TestPulsePhase:
+    """StreamingState.pulse_phase 与 tick_pulse 测试。"""
+
+    def test_pulse_phase_initially_zero(self):
+        """脉动相位初始为 0。"""
+        s = StreamingState()
+        assert s.pulse_phase == 0
+
+    def test_tick_pulse_cycles_through(self):
+        """tick_pulse() 从 0→1→2→3→0 循环。"""
+        s = StreamingState(pulse_phase=0)
+        s.tick_pulse()
+        assert s.pulse_phase == 1
+        s.tick_pulse()
+        assert s.pulse_phase == 2
+        s.tick_pulse()
+        assert s.pulse_phase == 3
+        s.tick_pulse()
+        assert s.pulse_phase == 0  # 循环回 0
+
+    def test_start_resets_pulse_phase(self):
+        """start() 将脉动相位重置为 0。"""
+        s = StreamingState(pulse_phase=3)
+        s.active = True
+        s.start()  # 已在 active，不重置
+        assert s.pulse_phase == 3  # 已激活时不重置
+        # 新建一个未激活的
+        s2 = StreamingState(pulse_phase=2)
+        s2.start()
+        assert s2.pulse_phase == 0  # 新启动时重置
+
+    def test_stop_resets_pulse_phase(self):
+        """stop() 将脉动相位重置为 0。"""
+        s = StreamingState(pulse_phase=2)
+        s.stop()
+        assert s.pulse_phase == 0
+

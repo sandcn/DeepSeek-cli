@@ -20,8 +20,8 @@ from __future__ import annotations
 import time
 
 from ..ansi import strip_ansi, truncate_ansi_sgr
-from ..colors import DIM, RESET, CYAN, BOLD, DARK_GRAY, \
-    BRIGHT_CYAN, GREEN, YELLOW
+from ..colors import RESET, BOLD, CYAN_256, GREEN_256, \
+    DARK_GRAY_256, GRAY_256
 from ..theme import THEME
 from ..parallel._text_formatter import TextFormatter
 from ._terminal import is_narrow, get_terminal_width
@@ -91,13 +91,15 @@ class StatusBar:
     def render(self) -> str:
         """渲染状态栏文本（返回 ANSI 格式字符串）。
 
-        流式模式 → 实时耗时 + token（委托 render_streaming_line）
+        流式模式 → 推进脉动指示器动画 + 实时耗时/token（委托 render_streaming_line）
         普通模式 → 拼装各信息段（委托 render_normal）
         自动根据终端宽度精简显示。
 
         数据从 TUIStateTree 直接读取，无本地缓存。
         """
         if self._tree.streaming.active:
+            # ★ 推进脉动指示器动画（P1 修复：确保 tick_pulse() 在每次渲染前调用）
+            self._tree.streaming.tick_pulse()
             return render_streaming_line(self._tree.session, self._tree.streaming)
         return render_normal(self._tree.session)
 
@@ -124,7 +126,7 @@ def _narrow_split_line(line: str, max_w: int, half: int) -> str:
         return line
     left = truncate_ansi_sgr(line, half)
     right = truncate_ansi_sgr(line, half, from_end=True)
-    return f"{left}{DIM}\u00b7\u00b7\u00b7{RESET}{right}"
+    return f"{left}{GRAY_256}\u00b7\u00b7\u00b7{RESET}{right}"
 
 
 def render_normal(state: UISessionState) -> str:
@@ -139,7 +141,7 @@ def render_normal(state: UISessionState) -> str:
     narrow = is_narrow()
     parts = build_normal_parts(state, narrow=narrow)
     if not narrow:
-        sep = f" {DARK_GRAY}\u00b7{RESET} "
+        sep = f" {DARK_GRAY_256}\u00b7{RESET} "
     else:
         sep = " "
     line = sep.join(parts)
@@ -155,10 +157,10 @@ def render_normal(state: UISessionState) -> str:
 
 
 def _model_label(state: UISessionState) -> str:
-    """模型名标签 — 使用主题高亮色，带 ◉ 图标前缀。"""
+    """模型名标签 — 使用 256 色青色图标 + 主题高亮色模型名。"""
     if state.model:
-        return f"{BRIGHT_CYAN}\u25c9{RESET} {BOLD}{THEME['title']}{state.model}{RESET}"
-    return f"{DIM}\u25c9 no model{RESET}"
+        return f"{CYAN_256}\u25c9{RESET} {BOLD}{THEME['title']}{state.model}{RESET}"
+    return f"{GRAY_256}\u25c9 no model{RESET}"
 
 
 def _build_detail_parts(state: UISessionState, narrow: bool) -> list[str]:
@@ -176,32 +178,32 @@ def _build_detail_parts(state: UISessionState, narrow: bool) -> list[str]:
     # 消息数（带 ◆ 图标 — 亮色）
     if state.message_count > 0:
         count_str = f"{state.message_count}m"
-        parts.append(f"{GREEN}\u25c6{RESET} {count_str}")
+        parts.append(f"{GREEN_256}\u25c6{RESET} {count_str}")
 
     # 会话标题
     if state.session_title and not narrow:
         title_trunc = state.session_title[:20]
-        parts.append(f"{DARK_GRAY}\u300c{title_trunc}\u300d{RESET}")
+        parts.append(f"{DARK_GRAY_256}\u300c{title_trunc}\u300d{RESET}")
 
-    # Token 用量（带 ⬡ 图标 — 双色）
+    # Token 用量（带 ⬡ 图标 — 双色：输入↑青色，输出↓绿色）
     if state.show_tokens and (state.input_tokens > 0 or state.output_tokens > 0):
         in_str = TextFormatter.format_token_count(state.input_tokens)
         out_str = TextFormatter.format_token_count(state.output_tokens)
-        parts.append(f"{CYAN}\u2b21{RESET}{in_str}\u2191{out_str}\u2193")
+        parts.append(f"{CYAN_256}\u2b21{RESET}{CYAN_256}{in_str}\u2191{RESET}{GREEN_256}{out_str}\u2193{RESET}")
 
     # 状态文本
     if state.status_text:
         parts.append(f"{THEME['success']}{state.status_text}{RESET}")
 
-    # 会话持续时间（带 ⏱ 图标）
+    # 会话持续时间（带 ⏱ 图标 — 琥珀色）
     if state.show_duration and state.session_duration > 0:
         dur_str = format_elapsed(state.session_duration)
-        parts.append(f"{DARK_GRAY}\u23f1{dur_str}{RESET}")
+        parts.append(f"\033[38;5;214m\u23f1{RESET}{dur_str}")
 
     # 当前时间
     if state.show_time and not narrow:
         t = time.strftime("%H:%M")
-        parts.append(f"{DARK_GRAY}{t}{RESET}")
+        parts.append(f"{DARK_GRAY_256}{t}{RESET}")
 
     return parts
 
@@ -226,7 +228,7 @@ def build_normal_parts(state: UISessionState, narrow: bool | None = None) -> lis
     # 极窄屏：只显示模型名 + 消息数，提前返回
     if narrow and tw < _STATUS_BAR_COMPACT_THRESHOLD:
         if state.message_count > 0:
-            parts.append(f"{DIM}{state.message_count}m{RESET}")
+            parts.append(f"{GRAY_256}{state.message_count}m{RESET}")
         return parts
 
     parts.extend(_build_detail_parts(state, narrow))
@@ -236,30 +238,36 @@ def build_normal_parts(state: UISessionState, narrow: bool | None = None) -> lis
 def render_streaming_line(state: UISessionState, streaming: StreamingState) -> str:
     """渲染流式输出状态行。
 
-    格式：◉ gpt-4 · ⏱ 3.2s · ⬡ 450t · ⚡ 120t/s
+    格式：◉ gpt-4 ◍ · ⏱ 3.2s · ⬡ 450t · ⚡ 120t/s
 
     Args:
         state: 会话级状态快照（主要用于获取模型名）。
         streaming: 流式输出状态（计时/Token/速率）。
 
     Returns:
-        ANSI 格式的流式状态行文本。
+        ANSI 格式的流式状态行文本（含脉动指示器）。
     """
     elapsed = streaming.elapsed
     tokens = streaming.output_tokens
     speed = streaming.speed
 
+    # ── 脉动指示器帧 ──
+    _PULSE_FRAMES = ["\u25cc", "\u25cd", "\u25cf", "\u25cd"]  # ◌ ◍ ● ◍
+    pulse_idx = streaming.pulse_phase % 4
+    pulse_char = _PULSE_FRAMES[pulse_idx]
+
     parts: list[str] = []
     if state.model:
-        parts.append(f"{BRIGHT_CYAN}\u25c9{RESET} {BOLD}{THEME['title']}{state.model}{RESET}")
-    parts.append(f"{GREEN}\u23f1{_SP}{format_elapsed(elapsed)}{RESET}")
+        parts.append(f"{CYAN_256}\u25c9{RESET} {BOLD}{THEME['title']}{state.model}{RESET}"
+                     f" {GREEN_256}{pulse_char}{RESET}")
+    parts.append(f"\033[38;5;214m\u23f1{RESET}{_SP}{format_elapsed(elapsed)}")
     tok_str = TextFormatter.format_token_count(tokens)
-    parts.append(f"{CYAN}\u2b21{_SP}{tok_str}t{RESET}")
+    parts.append(f"{CYAN_256}\u2b21{RESET}{_SP}{CYAN_256}{tok_str}t{RESET}")
     if speed > 0:
-        parts.append(f"{YELLOW}\u26a1{_SP}{format_speed(speed)}t/s{RESET}")
+        parts.append(f"\033[38;5;214m\u26a1{RESET}{_SP}{format_speed(speed)}t/s")
     else:
-        parts.append(f"{DARK_GRAY}\u26a1{_SP}{format_speed(speed)}t/s{RESET}")
-    line = f" {DARK_GRAY}\u00b7{RESET} ".join(parts)
+        parts.append(f"{DARK_GRAY_256}\u26a1{RESET}{_SP}{format_speed(speed)}t/s")
+    line = f" {DARK_GRAY_256}\u00b7{RESET} ".join(parts)
     # 窄屏截断（复用 _narrow_split_line 消除重复）
     if is_narrow():
         tw = get_terminal_width()

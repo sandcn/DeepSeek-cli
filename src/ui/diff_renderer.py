@@ -13,18 +13,22 @@ import difflib
 from functools import lru_cache
 from typing import Optional, TYPE_CHECKING
 
+from ..core.constants import (
+    RED_256, GREEN_256, BRIGHT_RED_256, BRIGHT_GREEN_256,
+    BRIGHT_BLACK_256, DARK_GRAY_256, CYAN_256, BOLD, RESET,
+)
 from ._lock import diff_active, _try_acquire_output_lock, locked_print
-from .colors import DIM, RED, GREEN, RESET, BRIGHT_RED, BRIGHT_GREEN, BRIGHT_BLACK, BRIGHT_CYAN, BOLD
+from .colors import DIM
 
 _logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from .output_target import IOutputTarget
 
-# 行内差异背景色
-_BG_RED = '\033[41m'
-_BG_GREEN = '\033[42m'
-_BG_OFF = '\033[49m'
+# 行内差异背景色（256 色）
+_BG_RED = '\033[48;5;124m'    # 256色暗红背景
+_BG_GREEN = '\033[48;5;28m'   # 256色柔和绿背景
+_BG_OFF = '\033[49m'          # 重置为默认背景色
 
 
 @lru_cache(maxsize=None)
@@ -199,12 +203,12 @@ def _render_chunk(item, w, lexer_name, output_target):
         _write_diff_line(f"  {DIM}└─ {path}{RESET}", output_target)
         return
     if typ == 'hunk':
-        _write_diff_line(f"  {BOLD}{BRIGHT_CYAN}{item[1]}{RESET}", output_target)
+        _write_diff_line(f"  {BOLD}{CYAN_256}{item[1]}{RESET}", output_target)
         return
     if typ == 'fold':
         hidden = item[1]
         _write_diff_line(
-            f"  {DIM}{BRIGHT_BLACK}│ {'':>{w}} │{RESET} {DIM}┄ {hidden} lines ┄{RESET}",
+            f"  {DARK_GRAY_256}│ {'':>{w}} │{RESET} {DIM}┄ {hidden} lines ┄{RESET}",
             output_target,
         )
         return
@@ -212,7 +216,7 @@ def _render_chunk(item, w, lexer_name, output_target):
     ctx_text = item[1][1:] if item[1].startswith(' ') else item[1]
     hl_text = _syntax_hl(ctx_text, lexer_name) if lexer_name else ctx_text
     _write_diff_line(
-        f"  {DIM}{BRIGHT_BLACK}│ {item[2]:>{w}} │{RESET} {hl_text}{RESET}",
+        f"  {DARK_GRAY_256}│ {item[2]:>{w}} │{RESET} {hl_text}{RESET}",
         output_target,
     )
 
@@ -242,11 +246,11 @@ def _render_diff_summary(diff_list, output_target=None):
 
     parts = []
     if adds:
-        parts.append(f"{GREEN}🟢 +{adds}{RESET}")
+        parts.append(f"{GREEN_256}🟢 +{adds}{RESET}")
     if dels:
-        parts.append(f"{RED}🔴 -{dels}{RESET}")
+        parts.append(f"{RED_256}🔴 -{dels}{RESET}")
     if ctx:
-        parts.append(f"{BRIGHT_BLACK}⚪ {ctx} unchanged{RESET}")
+        parts.append(f"{BRIGHT_BLACK_256}⚪ {ctx} unchanged{RESET}")
     _write_diff_line(f"  {'  '.join(parts)}", output_target)
 
 
@@ -277,23 +281,23 @@ def render_diff(diff_list, w, line_offset=0, lexer_name='', output_target: Optio
                 _, a_line, _, a_nln = add_buf[i]
                 h_old, h_new = _inline_highlight(d_line[1:], a_line[1:])
                 _write_diff_line(
-                    f"  {RED}▐ {DIM}{RED}{d_oln:>{w}} │{RESET} {BRIGHT_RED}-{RESET}{h_old}{RESET}",
+                    f"  {RED_256}▐ {DARK_GRAY_256}{RED_256}{d_oln:>{w}} │{RESET} {BRIGHT_RED_256}-{RESET}{h_old}{RESET}",
                     output_target,
                 )
                 _write_diff_line(
-                    f"  {GREEN}▐ {DIM}{GREEN}{a_nln:>{w}} │{RESET} {BRIGHT_GREEN}+{RESET}{h_new}{RESET}",
+                    f"  {GREEN_256}▐ {DARK_GRAY_256}{GREEN_256}{a_nln:>{w}} │{RESET} {BRIGHT_GREEN_256}+{RESET}{h_new}{RESET}",
                     output_target,
                 )
             elif i < len(del_buf):
                 _, d_line, d_oln, _ = del_buf[i]
                 _write_diff_line(
-                    f"  {RED}▐ {DIM}{RED}{d_oln:>{w}} │{RESET} {BRIGHT_RED}-{RESET}{_hl(d_line[1:])}{RESET}",
+                    f"  {RED_256}▐ {DARK_GRAY_256}{RED_256}{d_oln:>{w}} │{RESET} {BRIGHT_RED_256}-{RESET}{_hl(d_line[1:])}{RESET}",
                     output_target,
                 )
             else:
                 _, a_line, _, a_nln = add_buf[i]
                 _write_diff_line(
-                    f"  {GREEN}▐ {DIM}{GREEN}{a_nln:>{w}} │{RESET} {BRIGHT_GREEN}+{RESET}{_hl(a_line[1:])}{RESET}",
+                    f"  {GREEN_256}▐ {DARK_GRAY_256}{GREEN_256}{a_nln:>{w}} │{RESET} {BRIGHT_GREEN_256}+{RESET}{_hl(a_line[1:])}{RESET}",
                     output_target,
                 )
 

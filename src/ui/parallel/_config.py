@@ -1,5 +1,9 @@
 """并行显示常量与自适应配置 — Claude Code 风格"""
 
+from __future__ import annotations
+
+from ..colors import gradient_range
+
 # ── 刷新率常量 ──────────────────────────────────────
 
 # 并行面板刷新率（每秒25次，高帧率响应）
@@ -34,8 +38,111 @@ SUMMARY_SEPARATOR = "·"
 SUMMARY_ICON_RUNNING = "⬡"
 SUMMARY_ICON_DONE = "✔"
 
-# ── Spinner 动画帧（braille 点阵，8 帧循环） ────────────
-SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧"]
+# ── Spinner 动画帧集（多套动画） ──────────────────────
+
+# Braille 点阵动画 — 12 帧（完整序列化）
+SPINNER_BRAILLE = [
+    "⡉", "⡊", "⡌", "⡆", "⡇", "⡕",
+    "⡑", "⡋", "⡓", "⡒", "⡐", "⡄",
+]
+
+# 脉冲动画 — 14 帧（▁→█→▁ 呼吸式脉冲）
+SPINNER_PULSE = [
+    "▁", "▂", "▃", "▄", "▅", "▆", "▇",
+    "█",
+    "▇", "▆", "▅", "▄", "▃", "▂",
+]
+
+# 圆周旋转动画 — 8 帧
+SPINNER_CIRCLE = [
+    "⢀", "⡀", "⠄", "⠂", "⠁", "⠈", "⠐", "⠠",
+]
+
+# 点阵呼吸动画 — 15 帧（⡀→⣿→⡀ 脉动）
+SPINNER_DOTS = [
+    "⡀", "⣀", "⣄", "⣤", "⣦", "⣶", "⣾", "⣿",
+    "⣾", "⣶", "⣦", "⣤", "⣄", "⣀", "⡀",
+]
+
+# ── Spinner 集合字典 ────────────────────────────────
+SPINNER_SETS: dict[str, list[str]] = {
+    "braille": SPINNER_BRAILLE,
+    "pulse": SPINNER_PULSE,
+    "circle": SPINNER_CIRCLE,
+    "dots": SPINNER_DOTS,
+}
+
+# 保留原 SPINNER_FRAMES 兼容别名（指向 SPINNER_BRAILLE 前 8 帧）
+SPINNER_FRAMES: list[str] = SPINNER_BRAILLE[:8]
+
+# 默认 spinner 名称
+DEFAULT_SPINNER: str = "braille"
+
+# 各 spinner 的帧间隔（秒/帧）
+DEFAULT_SPINNER_SPEED: float = 0.08  # braille 帧间隔（基准速度）
+
+SPINNER_SPEED: dict[str, float] = {
+    "braille": DEFAULT_SPINNER_SPEED,
+    "pulse": 0.05,
+    "circle": 0.10,
+    "dots": 0.06,
+}
+
+
+def get_spinner_frames(name: str = "braille") -> tuple[list[str], float]:
+    """获取指定名称的 spinner 帧列表和帧间隔。
+
+    Args:
+        name: spinner 名称（"braille" | "pulse" | "circle" | "dots"）
+
+    Returns:
+        (帧列表, 帧间隔秒数)
+        未知名称时兜底返回 braille 集。
+    """
+    frames = SPINNER_SETS.get(name, SPINNER_BRAILLE)
+    speed = SPINNER_SPEED.get(name, DEFAULT_SPINNER_SPEED)
+    return (frames, speed)
+
+
+def breathing_animation(
+    color_start: int,
+    color_end: int,
+    steps: int = 8,
+) -> list[str]:
+    """生成颜色在 start↔end 间呼吸的 ANSI 字符串列表。
+
+    每个元素为带颜色条的方块字符 ``▊``，从起始色渐变到结束色再返回，
+    形成完整的呼吸周期（对称版：start→end→start）。
+
+    Args:
+        color_start: 起始 256 色号（0-255）
+        color_end: 结束 256 色号（0-255）
+        steps: 渐变步数（单程），呼吸周期总长度 = 2 * steps
+
+    Returns:
+        ANSI 字符串列表，每格式：``\\033[38;5;{color}m▊\\033[0m``
+    """
+    if steps < 2:
+        # P3 修复：当 color_start == color_end 时仍产生 2 帧避免平坦感知
+        if color_start == color_end:
+            return [
+                f"\033[38;5;{color_start}m▊\033[0m",
+                f"\033[38;5;{color_end}m▊\033[0m",
+            ]
+        mid = (color_start + color_end) // 2
+        return [
+            f"\033[38;5;{color_start}m▊\033[0m",
+            f"\033[38;5;{mid}m▊\033[0m",
+            f"\033[38;5;{color_end}m▊\033[0m",
+            f"\033[38;5;{mid}m▊\033[0m",
+        ]
+
+    # 单程渐变：start → end
+    forward = gradient_range(color_start, color_end, steps)
+    # 对称反向完整排列（start→end→start），峰值出现两次形成对称呼吸周期
+    cycle = forward + list(reversed(forward))  # 2*steps 对称版
+
+    return [f"\033[38;5;{c}m▊\033[0m" for c in cycle]
 
 
 # ── 显示配置类 ──────────────────────────────────────

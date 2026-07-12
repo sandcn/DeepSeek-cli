@@ -3,15 +3,13 @@
 
 每个主题预设为 {语义键: ANSI颜色码} 映射。
 通过 set_theme(name) 动态切换，THEME 始终保持为当前活动主题的引用。
+
+所有颜色值已升级为 256 色 ANSI 码（格式 \033[38;5;Nm 或 \033[48;5;Nm），
+保持与 src/core/constants.py 中 _256 后缀常量一致。
 """
 from __future__ import annotations
 
 from typing import Dict, List
-from .ansi import (
-    CYAN, DIM, GREEN, YELLOW, RED, DARK_GRAY,
-    BLUE, BRIGHT_CYAN, BRIGHT_GREEN,
-    BRIGHT_YELLOW, BRIGHT_WHITE, WHITE, GRAY,
-)
 
 # ══════════════════════════════════════════════════════════
 # 主题预设
@@ -20,74 +18,104 @@ from .ansi import (
 THEMES: Dict[str, Dict[str, str]] = {
     # ── 深色主题（默认）────────────────────────────────
     "dark": {
-        "title": CYAN,
-        "subtitle": DIM,
-        "prompt": CYAN,
-        "user": CYAN,
-        "assistant": GREEN,
-        "thinking": DIM,
-        "tool": DIM,
-        "success": GREEN,
-        "warning": YELLOW,
-        "error": RED,
-        "info": DIM,
-        "cost": DIM,
-        "separator": DIM,
-        "meta": DIM,
-        "accent": YELLOW,
-        "border": DIM,
-        "highlight": CYAN,
-        "muted": DARK_GRAY,
-        "code": DIM,
-        "divider": DIM,
+        "title": "\033[38;5;45m",          # 青色
+        "subtitle": "\033[38;5;242m",      # 中灰
+        "prompt": "\033[38;5;45m",         # 青色
+        "user": "\033[38;5;45m",           # 青色
+        "assistant": "\033[38;5;41m",      # 绿色
+        "thinking": "\033[38;5;242m",      # 中灰
+        "tool": "\033[38;5;242m",          # 中灰
+        "success": "\033[38;5;41m",        # 绿色
+        "warning": "\033[38;5;221m",       # 琥珀黄
+        "error": "\033[38;5;196m",         # 红色
+        "info": "\033[38;5;242m",          # 中灰
+        "cost": "\033[38;5;242m",          # 中灰
+        "separator": "\033[38;5;239m",     # 暗灰
+        "meta": "\033[38;5;242m",          # 中灰
+        "accent": "\033[38;5;221m",        # 琥珀黄
+        "border": "\033[38;5;239m",        # 暗灰
+        "highlight": "\033[38;5;45m",      # 青色
+        "muted": "\033[38;5;237m",         # 深灰
+        "code": "\033[38;5;242m",          # 中灰
+        "divider": "\033[38;5;239m",       # 暗灰
+        # ── 新增语义键（步骤 3） ──
+        "progress_filled": "\033[38;5;41m",   # 绿色
+        "progress_empty": "\033[38;5;236m",   # 深灰
+        "diff_add": "\033[38;5;41m",          # 绿色
+        "diff_del": "\033[38;5;196m",         # 红色
+        "diff_ctx": "\033[38;5;242m",         # 中灰
+        "border_active": "\033[38;5;45m",     # 青色
+        "border_inactive": "\033[38;5;237m",  # 深灰
+        "overlay_bg": "\033[48;5;235m",       # 暗色背景
+        "tag_code": "\033[38;5;221m",         # 琥珀黄
     },
 
-    # ── 亮色主题 ───────────────────────────────────────
+    # ── 亮色主题（浅色背景用）──────────────────────────
     "light": {
-        "title": BLUE,
-        "subtitle": DIM,
-        "prompt": BLUE,
-        "user": BLUE,
-        "assistant": GREEN,
-        "thinking": DIM,
-        "tool": DIM,
-        "success": GREEN,
-        "warning": "\033[33;1m",       # BOLD + YELLOW，亮背景下更醒目
-        "error": RED,
-        "info": DIM,
-        "cost": DIM,
-        "separator": DIM,
-        "meta": DIM,
-        "accent": "\033[33;1m",
-        "border": DIM,
-        "highlight": BLUE,
-        "muted": GRAY,
-        "code": DIM,
-        "divider": DIM,
+        "title": "\033[38;5;33m",          # 蓝色
+        "subtitle": "\033[38;5;242m",      # 中灰
+        "prompt": "\033[38;5;33m",         # 蓝色
+        "user": "\033[38;5;33m",           # 蓝色
+        "assistant": "\033[38;5;41m",      # 绿色
+        "thinking": "\033[38;5;242m",      # 中灰
+        "tool": "\033[38;5;242m",          # 中灰
+        "success": "\033[38;5;41m",        # 绿色
+        "warning": "\033[1;38;5;221m",     # BOLD + 琥珀黄
+        "error": "\033[38;5;196m",         # 红色
+        "info": "\033[38;5;242m",          # 中灰
+        "cost": "\033[38;5;242m",          # 中灰
+        "separator": "\033[38;5;239m",     # 暗灰
+        "meta": "\033[38;5;242m",          # 中灰
+        "accent": "\033[1;38;5;221m",      # BOLD + 琥珀黄
+        "border": "\033[38;5;239m",        # 暗灰
+        "highlight": "\033[38;5;33m",      # 蓝色
+        "muted": "\033[38;5;242m",         # 中灰
+        "code": "\033[38;5;242m",          # 中灰
+        "divider": "\033[38;5;239m",       # 暗灰
+        # ── 新增语义键（步骤 3） ──
+        "progress_filled": "\033[38;5;41m",
+        "progress_empty": "\033[38;5;236m",
+        "diff_add": "\033[38;5;41m",
+        "diff_del": "\033[38;5;196m",
+        "diff_ctx": "\033[38;5;242m",
+        "border_active": "\033[38;5;33m",
+        "border_inactive": "\033[38;5;237m",
+        "overlay_bg": "\033[48;5;235m",
+        "tag_code": "\033[38;5;221m",
     },
 
-    # ── 高对比主题 ─────────────────────────────────────
+    # ── 高对比主题（高可读性）──────────────────────────
     "high-contrast": {
-        "title": BRIGHT_CYAN,
-        "subtitle": DIM,
-        "prompt": BRIGHT_CYAN,
-        "user": BRIGHT_CYAN,
-        "assistant": BRIGHT_GREEN,
-        "thinking": WHITE,
-        "tool": WHITE,
-        "success": BRIGHT_GREEN,
-        "warning": BRIGHT_YELLOW,
-        "error": "\033[31;1m",         # BOLD + RED
-        "info": BRIGHT_WHITE,
-        "cost": BRIGHT_WHITE,
-        "separator": DIM,
-        "meta": BRIGHT_WHITE,
-        "accent": BRIGHT_YELLOW,
-        "border": BRIGHT_WHITE,
-        "highlight": BRIGHT_CYAN,
-        "muted": GRAY,
-        "code": BRIGHT_WHITE,
-        "divider": DIM,
+        "title": "\033[38;5;81m",          # 亮青
+        "subtitle": "\033[38;5;242m",      # 中灰
+        "prompt": "\033[38;5;81m",         # 亮青
+        "user": "\033[38;5;81m",           # 亮青
+        "assistant": "\033[38;5;47m",      # 亮绿
+        "thinking": "\033[38;5;15m",       # 白
+        "tool": "\033[38;5;15m",           # 白
+        "success": "\033[38;5;47m",        # 亮绿
+        "warning": "\033[38;5;227m",       # 亮黄
+        "error": "\033[1;38;5;196m",       # BOLD + 红
+        "info": "\033[38;5;255m",          # 亮白
+        "cost": "\033[38;5;255m",          # 亮白
+        "separator": "\033[38;5;242m",     # 中灰
+        "meta": "\033[38;5;255m",          # 亮白
+        "accent": "\033[38;5;227m",        # 亮黄
+        "border": "\033[38;5;255m",        # 亮白
+        "highlight": "\033[38;5;81m",      # 亮青
+        "muted": "\033[38;5;250m",         # 浅灰
+        "code": "\033[38;5;255m",          # 亮白
+        "divider": "\033[38;5;242m",       # 中灰
+        # ── 新增语义键（步骤 3） ──
+        "progress_filled": "\033[38;5;47m",
+        "progress_empty": "\033[38;5;236m",
+        "diff_add": "\033[38;5;47m",
+        "diff_del": "\033[1;38;5;196m",
+        "diff_ctx": "\033[38;5;255m",
+        "border_active": "\033[38;5;81m",
+        "border_inactive": "\033[38;5;242m",
+        "overlay_bg": "\033[48;5;235m",
+        "tag_code": "\033[38;5;227m",
     },
 }
 

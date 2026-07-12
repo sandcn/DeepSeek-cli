@@ -5,6 +5,12 @@ import sys
 
 import pytest
 
+from src.ui.parallel._config import (
+    SPINNER_BRAILLE, SPINNER_PULSE, SPINNER_CIRCLE, SPINNER_DOTS,
+    SPINNER_SETS, SPINNER_FRAMES, SPINNER_SPEED,
+    get_spinner_frames, breathing_animation,
+    DEFAULT_SPINNER, DEFAULT_SPINNER_SPEED,
+)
 from src.ui.parallel.display import ParallelDisplay
 
 
@@ -401,3 +407,228 @@ class TestPushFrameCmdFailureRecovery:
             "_last_lines 应在 push 前更新为帧行数 3，"
             f"实际为 {pd._last_lines}"
         )
+
+
+# ═══════════════════════════════════════════════════════
+# Spinner 增强测试
+# ═══════════════════════════════════════════════════════
+
+class TestSpinnerSets:
+    """验证多套 spinner 动画帧集定义正确。"""
+
+    def test_spinner_braille_12_frames(self):
+        """SPINNER_BRAILLE 有 12 帧。"""
+        assert len(SPINNER_BRAILLE) == 12, (
+            f"SPINNER_BRAILLE 应为 12 帧，实际 {len(SPINNER_BRAILLE)}"
+        )
+
+    def test_spinner_pulse_14_frames(self):
+        """SPINNER_PULSE 有 14 帧。"""
+        assert len(SPINNER_PULSE) == 14, (
+            f"SPINNER_PULSE 应为 14 帧，实际 {len(SPINNER_PULSE)}"
+        )
+
+    def test_spinner_circle_8_frames(self):
+        """SPINNER_CIRCLE 有 8 帧。"""
+        assert len(SPINNER_CIRCLE) == 8, (
+            f"SPINNER_CIRCLE 应为 8 帧，实际 {len(SPINNER_CIRCLE)}"
+        )
+
+    def test_spinner_dots_15_frames(self):
+        """SPINNER_DOTS 有 15 帧。"""
+        assert len(SPINNER_DOTS) == 15, (
+            f"SPINNER_DOTS 应为 15 帧，实际 {len(SPINNER_DOTS)}"
+        )
+
+    def test_spinner_sets_contains_all(self):
+        """SPINNER_SETS 包含全部 4 套帧集。"""
+        assert set(SPINNER_SETS.keys()) == {"braille", "pulse", "circle", "dots"}, (
+            f"SPINNER_SETS 键不完整: {list(SPINNER_SETS.keys())}"
+        )
+
+    def test_spinner_frames_backward_compat(self):
+        """SPINNER_FRAMES 是 SPINNER_BRAILLE 前 8 帧（向后兼容）。"""
+        assert SPINNER_FRAMES == SPINNER_BRAILLE[:8], (
+            f"SPINNER_FRAMES 应等于 SPINNER_BRAILLE[:8]，"
+            f"实际长度 {len(SPINNER_FRAMES)}"
+        )
+
+    def test_spinner_speed_values_positive(self):
+        """SPINNER_SPEED 所有值 > 0。"""
+        for name, speed in SPINNER_SPEED.items():
+            assert speed > 0, (
+                f"{name} 的帧间隔应为正数，实际 {speed}"
+            )
+
+    def test_spinner_speed_keys_match_sets(self):
+        """SPINNER_SPEED 的键与 SPINNER_SETS 一致。"""
+        assert set(SPINNER_SPEED.keys()) == set(SPINNER_SETS.keys()), (
+            f"键不匹配: SPEED={set(SPINNER_SPEED.keys())} vs "
+            f"SETS={set(SPINNER_SETS.keys())}"
+        )
+
+
+class TestGetSpinnerFrames:
+    """验证 get_spinner_frames 函数。"""
+
+    def test_returns_tuple(self):
+        """get_spinner_frames 返回 (list[str], float) 元组。"""
+        result = get_spinner_frames()
+        assert isinstance(result, tuple), f"应返回 tuple，实际 {type(result)}"
+        assert len(result) == 2, f"应返回 2 元素，实际 {len(result)}"
+        frames, speed = result
+        assert isinstance(frames, list), f"帧应返回 list，实际 {type(frames)}"
+        assert isinstance(speed, float), f"速度应返回 float，实际 {type(speed)}"
+        assert len(frames) >= 4, f"帧列表至少 4 帧，实际 {len(frames)}"
+
+    def test_default_is_braille(self):
+        """默认返回 braille 帧集。"""
+        frames, speed = get_spinner_frames()
+        assert frames == SPINNER_BRAILLE, "默认应返回 braille 帧集"
+        assert speed == DEFAULT_SPINNER_SPEED, f"默认速度应 {DEFAULT_SPINNER_SPEED}"
+
+    def test_braille_frames(self):
+        """指定 braille 返回正确。"""
+        frames, speed = get_spinner_frames("braille")
+        assert frames == SPINNER_BRAILLE
+        assert speed == SPINNER_SPEED["braille"]
+
+    def test_pulse_frames(self):
+        """指定 pulse 返回正确。"""
+        frames, speed = get_spinner_frames("pulse")
+        assert frames == SPINNER_PULSE
+        assert speed == SPINNER_SPEED["pulse"]
+
+    def test_circle_frames(self):
+        """指定 circle 返回正确。"""
+        frames, speed = get_spinner_frames("circle")
+        assert frames == SPINNER_CIRCLE
+        assert speed == SPINNER_SPEED["circle"]
+
+    def test_dots_frames(self):
+        """指定 dots 返回正确。"""
+        frames, speed = get_spinner_frames("dots")
+        assert frames == SPINNER_DOTS
+        assert speed == SPINNER_SPEED["dots"]
+
+    def test_unknown_name_fallback(self):
+        """未知名称兜底返回 braille 帧集。"""
+        frames, speed = get_spinner_frames("unknown")
+        assert frames == SPINNER_BRAILLE, "未知名称应兜底返回 braille"
+        assert speed == DEFAULT_SPINNER_SPEED, "未知名称速度应兜底返回默认速度"
+
+
+class TestBreathingAnimation:
+    """验证 breathing_animation 函数。"""
+
+    def test_returns_list(self):
+        """breathing_animation 返回 list[str]。"""
+        result = breathing_animation(22, 47)
+        assert isinstance(result, list), f"应返回 list，实际 {type(result)}"
+        assert len(result) > 0, "返回列表不应为空"
+
+    def test_length_symmetric(self):
+        """对称呼吸周期长度 = 2 * steps。"""
+        for steps in (4, 6, 8, 10):
+            result = breathing_animation(22, 47, steps=steps)
+            expected = 2 * steps
+            assert len(result) == expected, (
+                f"steps={steps} 时应返回 {expected} 帧，实际 {len(result)}"
+            )
+
+    def test_color_range(self):
+        """颜色值在 [0, 255] 范围内。"""
+        result = breathing_animation(22, 47, steps=6)
+        for frame in result:
+            # 提取颜色号 \033[38;5;{N}m
+            import re
+            m = re.search(r'38;5;(\d+)', frame)
+            assert m is not None, f"帧缺少 256 色码: {frame!r}"
+            color = int(m.group(1))
+            assert 0 <= color <= 255, (
+                f"颜色号越界: {color}"
+            )
+
+    def test_ansi_format(self):
+        """每帧格式为 \\033[38;5;{color}m▊\\033[0m。"""
+        result = breathing_animation(196, 221, steps=4)
+        for frame in result:
+            assert frame.startswith("\033[38;5;"), (
+                f"帧应以 256 色前景开始: {frame[:20]!r}"
+            )
+            assert "▊" in frame, f"帧应含方块字符: {frame!r}"
+            assert frame.endswith("\033[0m"), (
+                f"帧应以重置序列结束: {frame[-10:]!r}"
+            )
+
+    def test_steps_less_than_2(self):
+        """steps < 2 时返回 4 帧的兜底呼吸。"""
+        result = breathing_animation(22, 47, steps=1)
+        assert len(result) == 4, (
+            f"steps=1 时应返回 4 帧兜底，实际 {len(result)}"
+        )
+
+    def test_start_end_cycle_symmetry(self):
+        """呼吸周期首尾颜色相同（start→end→start 对称）。"""
+        result = breathing_animation(22, 47, steps=6)
+        # 第一个和最后一个应颜色相同（都是起始色）
+        first_color = result[0]
+        last_color = result[-1]
+        assert first_color == last_color, (
+            f"首尾帧应颜色相同（起始色），实际: "
+            f"第一帧={first_color!r}, 最后一帧={last_color!r}"
+        )
+
+    def test_midpoint_color(self):
+        """中间帧应为结束色（end 颜色）。"""
+        result = breathing_animation(22, 47, steps=6)
+        # 中间索引 = steps - 1（因为从 0 开始）
+        mid_idx = 6 - 1  # steps=6, 索引 5 是 end
+        mid_frame = result[mid_idx]
+        assert "38;5;47" in mid_frame or "38;5;46" in mid_frame or "38;5;45" in mid_frame, (
+            f"中间帧应接近结束色 47: {mid_frame!r}"
+        )
+
+    def test_called_independently(self):
+        """函数可独立调用不抛异常。"""
+        try:
+            result = breathing_animation(0, 255, steps=8)
+            assert len(result) == 16  # 2 * steps = 16 (对称版)
+        except Exception as e:
+            pytest.fail(f"breathing_animation 独立调用抛异常: {e}")
+
+
+class TestFrameRendererSpinnerIntegration:
+    """验证 FrameRenderer 与新 spinner 接口的集成。"""
+
+    def test_default_constructor_backward_compat(self):
+        """不传 spinner_name 时使用默认 8 帧 braille（向后兼容）。"""
+        from src.ui.renderer.frame_renderer import FrameRenderer
+        r = FrameRenderer(terminal_width=120, frame=0)
+        assert len(r._spinner_frames) == 8, (
+            f"默认 spinner 应为 8 帧，实际 {len(r._spinner_frames)}"
+        )
+        assert r._spinner_speed == DEFAULT_SPINNER_SPEED
+
+    def test_spinner_name_braille(self):
+        """传入 spinner_name='braille' 使用 12 帧集。"""
+        from src.ui.renderer.frame_renderer import FrameRenderer
+        r = FrameRenderer(terminal_width=120, frame=0, spinner_name="braille")
+        assert len(r._spinner_frames) == 12, (
+            f"braille 应为 12 帧，实际 {len(r._spinner_frames)}"
+        )
+
+    def test_spinner_name_pulse(self):
+        """传入 spinner_name='pulse' 使用脉冲帧集。"""
+        from src.ui.renderer.frame_renderer import FrameRenderer
+        r = FrameRenderer(terminal_width=120, frame=0, spinner_name="pulse")
+        assert r._spinner_frames == SPINNER_PULSE
+        assert r._spinner_speed == SPINNER_SPEED["pulse"]
+
+    def test_spinner_frames_param_still_works(self):
+        """旧的 spinner_frames 参数仍然有效。"""
+        from src.ui.renderer.frame_renderer import FrameRenderer
+        custom = ["◐", "◓", "◑", "◒"]
+        r = FrameRenderer(terminal_width=120, frame=0, spinner_frames=custom)
+        assert r._spinner_frames == custom
+        assert r._spinner_speed == DEFAULT_SPINNER_SPEED

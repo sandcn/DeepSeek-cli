@@ -8,7 +8,9 @@ from __future__ import annotations
 from typing import Optional
 
 from ...core.commands import get_registered_command_names
-from ..colors import DIM, RESET
+from ..colors import RESET
+from ..colors import CYAN_256, DIM_256
+from ..colors import BRIGHT_CYAN_256, BRIGHT_GREEN_256
 from ._selector_base import BaseBottomBarSelector
 
 
@@ -52,16 +54,17 @@ class CommandPalette(BaseBottomBarSelector[str, Optional[str]]):
         """格式化命令列表为带描述的显示文本 — 美化展示。
 
         对已知命令附加描述信息，未知命令保持原样。
+        颜色使用 256 色体系增强视觉效果。
         """
-        from ..colors import BRIGHT_CYAN, BRIGHT_GREEN
         labels: list[str] = []
         for cmd in items:
             desc = _COMMAND_DESC.get(cmd, '')
             if desc:
-                # ★ 美化：命令加粗 + 描述带箭头装饰
-                label = f"{BRIGHT_GREEN}{cmd}{RESET}  {DIM}\u279c{RESET} {DIM}{desc}{RESET}"
+                # ★ 美化：已注册命令用亮绿色 + 描述带 DIM_256 箭头装饰
+                label = f"{BRIGHT_GREEN_256}{cmd}{RESET}  {DIM_256}\u279c{RESET} {DIM_256}{desc}{RESET}"
             else:
-                label = f"{BRIGHT_CYAN}{cmd}{RESET}  {DIM}\u279c{RESET}"
+                # 未知命令使用 CYAN_256 替代 BRIGHT_CYAN
+                label = f"{CYAN_256}{cmd}{RESET}  {DIM_256}\u279c{RESET}"
             labels.append(label)
         return labels
 

@@ -2,10 +2,21 @@
 
 从 _bottom_bar.py 提取，供 _BottomBar 及其子模块共享。
 
-颜色策略（双轨制）：
-  - 现有 _COLOR_* 常量保持原始 ANSI 字符串不变（向后兼容，零开销）
+颜色策略（单轨制）：
+  - 所有 _COLOR_* 常量使用 256 色 ANSI 序列（xterm-256color 标准）
+  - 颜色编号与 `src/core/constants.py` 中 `_256` 后缀常量一致
+  - 常量为纯字符串，可直接与 Blessed 的 move_xy/clear_eol 混合使用
   - _blessed_* 辅助函数供需要动态颜色的新代码使用
-  - 颜色常量为纯字符串，可直接与 Blessed 的 move_xy/clear_eol 混合使用
+
+颜色编号对齐参考（与 core.constants _256 体系一致）：
+  - ACCENT(45)      ← CYAN_256
+  - DEEP_CYAN(32)   ← 深青，区别于 CYAN_256(45)
+  - DIM(242)        ← GRAY_256
+  - SELECT_BG(236)  ← 选中项背景色（较 DARK_GRAY_256 暗一级）
+  - SEP(237)        ← DARK_GRAY_256
+  - COMPLETE_MATCH(221) ← YELLOW_256
+  - TOOL_OK(41)     ← GREEN_256
+  - TOOL_FAIL(196)  ← RED_256
 """
 
 from __future__ import annotations
@@ -17,26 +28,26 @@ _BOTTOM_REFRESH_MS = 0.05   # 底部栏刷新节流（50ms）
 _MIN_INPUT_ROWS = 3         # 输入区最小行数（空输入时至少显示 3 行）
 _BOTTOM_MIN_LINES = 5       # setup() 中最小底部栏总行数（2 分隔线+状态行 + 3 最小输入行）
 
-# ── ANSI 颜色常量（优雅视觉风，保留原始 ANSI 字符串） ──
-_COLOR_ACCENT = "\033[38;5;39m"       # 青色强调（提示符/模型名/状态）
-_COLOR_DEEP_CYAN = "\033[38;5;30m"    # 深青（输入提示符最暗色）
-_COLOR_DIM = "\033[38;5;245m"         # 灰色次要（分隔线/占位/统计）
+# ── ANSI 颜色常量（256 色体系，与 core.constants _256 后缀常量对齐） ──
+_COLOR_ACCENT = "\033[38;5;45m"       # 青色强调（提示符/模型名/状态）——对齐 CYAN_256(45)
+_COLOR_DEEP_CYAN = "\033[38;5;32m"    # 深青（输入提示符最暗色）——深青 32，区别于 CYAN_256(45)
+_COLOR_DIM = "\033[38;5;242m"         # 灰色次要（分隔线/占位/统计）——对齐 GRAY_256(242)
 _COLOR_RESET = "\033[0m"              # 重置
-_COLOR_SELECT_BG = "\033[48;5;238m"   # 选中项高亮背景（深灰背景，#238 比 #236 略亮，改善 light 主题可见性）
-_COLOR_SELECT_FG = "\033[38;5;15m"    # 选中项前景色（亮白，确保反显高对比度）
-_COLOR_SEP = "\033[38;5;237m"         # 分隔线深灰
-_COLOR_COMPLETE_TITLE = "\033[1;38;5;45m"   # 补全弹窗标题色（亮青加粗）
+_COLOR_SELECT_BG = "\033[48;5;236m"   # 选中项高亮背景（深灰背景 236，较 DARK_GRAY_256 暗一级）
+_COLOR_SELECT_FG = "\033[38;5;15m"    # 选中项前景色（亮白 15，确保反显高对比度）
+_COLOR_SEP = "\033[38;5;237m"         # 分隔线深灰——对齐 DARK_GRAY_256(237)
+_COLOR_COMPLETE_TITLE = "\033[1;38;5;45m"   # 补全弹窗标题色（亮青加粗）——对齐 CYAN_256(45)
 
 # ── 补全弹窗视觉增强 ──────────────────────────────────────
-_COLOR_COMPLETE_CMD_PREFIX = "\033[1;38;5;45m"  # 命令补全 / 前缀色（亮青加粗，复用标题色）
-_COLOR_COMPLETE_DIR = "\033[38;5;110m"           # 路径补全目录色（蓝灰，复用 _COLOR_TIME 色系）
-_COLOR_COMPLETE_MATCH = "\033[38;5;228m"         # 匹配前缀高亮色（浅黄色，与默认文字形成对比）
+_COLOR_COMPLETE_CMD_PREFIX = "\033[1;38;5;45m"  # 命令补全 / 前缀色（亮青加粗，复用标题色）——对齐 CYAN_256(45)
+_COLOR_COMPLETE_DIR = "\033[38;5;110m"           # 路径补全目录色（蓝灰 110，与 _COLOR_TIME 色系一致）
+_COLOR_COMPLETE_MATCH = "\033[38;5;221m"         # 匹配前缀高亮色（浅黄 221）——对齐 YELLOW_256(221)
 
-_COLOR_TOOL_OK = "\033[38;5;40m"      # 工具成功计数
-_COLOR_TOOL_FAIL = "\033[38;5;9m"     # 工具失败计数
+_COLOR_TOOL_OK = "\033[38;5;41m"      # 工具成功计数——对齐 GREEN_256(41)
+_COLOR_TOOL_FAIL = "\033[38;5;196m"   # 工具失败计数——对齐 RED_256(196)
 _COLOR_TIME = "\033[38;5;110m"        # 蓝灰（耗时/时间戳）
 _COLOR_TOKEN = "\033[38;5;68m"        # 靛蓝（Token 计数）
-_COLOR_SPEED = "\033[38;5;214m"       # 琥珀色（速率）
+_COLOR_SPEED = "\033[38;5;214m"       # 琥珀色（速率）——与统一体系一致
 
 # ── በBlessed 颜色辅助函数 ─────────────────────────────────────
 # 供需要动态颜色的新代码使用，与现有 _COLOR_* 常量共存

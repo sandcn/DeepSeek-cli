@@ -19,6 +19,8 @@ from ..parallel._config import (
     SUMMARY_ICON_RUNNING as _DEFAULT_SUMMARY_ICON_RUNNING,
     SUMMARY_ICON_DONE as _DEFAULT_SUMMARY_ICON_DONE,
     SPINNER_FRAMES as _DEFAULT_SPINNER_FRAMES,
+    get_spinner_frames as _get_spinner_frames,
+    DEFAULT_SPINNER_SPEED as _DEFAULT_SPINNER_SPEED,
 )
 from ..parallel._text_formatter import TextFormatter as _DefaultTextFormatter
 from ..parallel._tool_icons import (
@@ -28,6 +30,19 @@ from ..parallel._tool_icons import (
     get_tool_color,
 )
 from ..state.agent_state import AgentSlot, ToolRecord
+from ...core.constants import (
+    RUNNING_256 as _C_RUNNING,
+    DONE_256 as _C_DONE,
+    FAIL_256 as _C_FAIL,
+    ANSWERING_256 as _C_ANSWERING,
+    PARSING_256 as _C_PARSING,
+    BATCH_256 as _C_BATCH,
+    DIMMER_256 as _C_DIMMER,
+    DIMMEST_256 as _C_DIMMEST,
+    SUMMARY_DIM_256 as _C_SUMMARY_DIM,
+    BRANCH_256 as _C_BRANCH,
+    SPINNER_COLOR_256 as _C_SPINNER,
+)
 from ...tools.registry import get_tool_display_name
 
 # ── 常量 ────────────────────────────────────────────────
@@ -36,20 +51,6 @@ _ANSI_RE = re.compile(r'\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])')
 _TRUNC_MARGIN = 2
 _TRUNC_ELLIPSIS_SPACE = 3
 _TRUNC_MIN_WIDTH = 10
-
-# ── 256色 ANSI 主题色（subagent 面板专用） ──────────────
-# 颜色编号选自 xterm-256color 调色板，所有终端均兼容
-_C_RUNNING   = "\033[38;5;214m"  # 琥珀色 — 运行中
-_C_DONE      = "\033[38;5;40m"   # 亮绿 — 完成
-_C_FAIL      = "\033[38;5;196m"  # 红 — 失败
-_C_ANSWERING = "\033[38;5;75m"   # 浅蓝 — 回答中
-_C_PARSING   = "\033[38;5;178m"  # 金色 — 解析工具调用
-_C_BATCH     = "\033[38;5;140m"  # 淡紫 — 批量工具调用
-_C_DIMMER    = "\033[38;5;240m"  # 暗灰 — 辅助信息
-_C_DIMMEST   = "\033[38;5;238m"  # 更深灰 — 分隔线/边框
-_C_SUMMARY_DIM = "\033[38;5;245m"  # 中灰 — 摘要行次要信息
-_C_BRANCH    = "\033[38;5;239m"  # 灰 — 树状连接线
-_C_SPINNER   = "\033[38;5;221m"  # 金色 — spinner 动画
 
 # ── 树形缩进常量 ────────────────────────────────────────
 _INDENT = "  "  # 子行统一缩进（2 空格），用于 phase/tool/result 行
@@ -78,6 +79,8 @@ class FrameRenderer:
         summary_icon_done: str = _DEFAULT_SUMMARY_ICON_DONE,
         tool_icons: dict | None = None,
         text_formatter=None,
+        spinner_name: str | None = None,
+        spinner_speed: float | None = None,
         spinner_frames: list[str] | None = None,
     ):
         self._terminal_width = terminal_width
@@ -88,7 +91,15 @@ class FrameRenderer:
         self._summary_icon_done = summary_icon_done
         self._tool_icons = tool_icons or _DEFAULT_TOOL_ICONS
         self._text_formatter = text_formatter or _DefaultTextFormatter
-        self._spinner_frames = spinner_frames or _DEFAULT_SPINNER_FRAMES
+
+        # Spinner 配置：spinner_name 优先，其次 spinner_frames，最后默认值
+        if spinner_name is not None:
+            frames, speed = _get_spinner_frames(spinner_name)
+            self._spinner_frames = frames
+            self._spinner_speed = speed
+        else:
+            self._spinner_frames = spinner_frames or _DEFAULT_SPINNER_FRAMES
+            self._spinner_speed = spinner_speed or _DEFAULT_SPINNER_SPEED
 
     def sync_terminal_state(self, width: int, frame: int) -> None:
         """同步终端状态（由外部每帧渲染前调用）。
@@ -378,9 +389,10 @@ class FrameRenderer:
             suffix = f"  {_C_DIMMER}{elapsed_str}{_C_RESET}"
             title = f"{_C_BRANCH}{branch}{_C_RESET} {icon} {type_tag} {slot.description}{suffix}"
         else:
-            # 运行中 — braille spinner 动画（8 帧循环）
+            # 运行中 — spinner 动画（按速度配置调整帧索引）
             if not final:
-                spinner_idx = self._frame % len(self._spinner_frames)
+                speed_ratio = _DEFAULT_SPINNER_SPEED / self._spinner_speed
+                spinner_idx = int(self._frame * speed_ratio) % len(self._spinner_frames)
                 spinner_char = self._spinner_frames[spinner_idx]
                 dot = f"{_C_SPINNER}{spinner_char}{_C_RESET}"
             else:
