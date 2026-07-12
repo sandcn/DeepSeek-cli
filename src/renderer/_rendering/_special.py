@@ -139,7 +139,7 @@ def render_toc(toc: list[dict], output_width: int) -> Text:
     result = Text()
     result.append("\n")
 
-    prefix = "┌─ 📑 目录 ─"
+    prefix = "┌─ 目录 o ─"
     remaining = output_width - cjk_display_width(prefix) - 1
     if remaining < 3:
         remaining = 3
