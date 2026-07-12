@@ -268,6 +268,13 @@ def run_bottom_bar_selection(
 
     bb.show_completions(display_items, initial_idx, texts=items, title=title)
 
+    # ── 选择模式切换为竖线光标，提示用户进入交互模式 ──
+    try:
+        from ..tui._terminal import set_cursor_style
+        set_cursor_style("steady_bar")
+    except Exception:
+        pass
+
     # 防御性清空 stdin：作为方案 B 防御层，即使调用方（monitor.stop() 中
     # 方案 A 的 tcflush）未正确清空内核缓冲区，也能在进入 cbreak 前兜底清空，
     # 防止终端模式切换残留的 \n 字节被 term.inkey() 误消费为 Enter 键。
@@ -315,8 +322,18 @@ def run_bottom_bar_selection(
                         bb.cycle_completion(1)
                     elif code == _KEY_ENTER:
                         # ★ Android/Termux 终端可能以 KEY_ENTER(343) 序列发送 Enter
+                        try:
+                            from ..tui._terminal import reset_cursor_style
+                            reset_cursor_style()
+                        except Exception:
+                            pass
                         return {"action": "confirmed", "index": _safe_completion_idx(bb, items)}
                     elif code == _KEY_ESCAPE:
+                        try:
+                            from ..tui._terminal import reset_cursor_style
+                            reset_cursor_style()
+                        except Exception:
+                            pass
                         return {"action": "cancel", "index": None}
                     # 其他序列键忽略
                     continue
@@ -336,6 +353,12 @@ def run_bottom_bar_selection(
 
                 # ── Enter → 确认 ──
                 if key in ('\r', '\n'):
+                    # ── 恢复光标形状 ──
+                    try:
+                        from ..tui._terminal import reset_cursor_style
+                        reset_cursor_style()
+                    except Exception:
+                        pass
                     return {"action": "confirmed", "index": _safe_completion_idx(bb, items)}
 
                 # ── Esc（单独收到）─
@@ -348,6 +371,12 @@ def run_bottom_bar_selection(
     finally:
         try:
             bb.hide_completions()
+        except Exception:
+            pass
+        # ── 恢复默认光标形状 ──
+        try:
+            from ..tui._terminal import reset_cursor_style
+            reset_cursor_style()
         except Exception:
             pass
         try:

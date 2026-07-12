@@ -217,20 +217,60 @@ def _make_think_sep(breath_frame: int = 0) -> str:
         full_width = narrow_sep_width(50)
     # "  ⚡思考  " 视觉宽度约 8 字符
     if breath_frame > 0 and not is_narrow():
-        # ⚡ 符号使用 build_sparkle_ansi 闪烁更生动
-        think_color = BreathPalette.get_color("think", breath_frame)
-        center_text = (
-            f"  {build_sparkle_ansi(breath_frame, 45, 6)}\u26a1"  # ⚡ 闪烁更生动
-            f"\033[38;5;{think_color}m\u601d\u8003"                # 思考 主呼吸色
-            f"{_R}  "
+        # ⚡ 符号多样化效果：每 24 帧交替闪烁/辉光/弹入
+        from ._text_utils import build_glow_ansi, build_bounce_ansi
+        from ._effects import morph_color
+        # 获取全局帧号用于 morph_color 计算
+        _frame = AnimatorContext.get_default().frame
+        # morph_color：蓝紫系([24,33,42]) ↔ 青绿系([41,82,122])
+        morph_think_color = morph_color(_frame, [24,33,42], [41,82,122], morph_period=60, breath_period=12)
+        # ⚡ 图标色号：更快过渡 morph_period=30
+        morph_bolt_color = morph_color(_frame, [24,33,42], [41,82,122], morph_period=30, breath_period=12)
+        # 分隔线起始色：随 morph_color 在蓝紫系↔青绿系间变化
+        morph_sep_color = morph_color(_frame, [33,42], [82,122], morph_period=60, breath_period=12)
+        _logger.debug(
+            "_make_think_sep morph_color: frame=%d, think=%d, bolt=%d, sep=%d, "
+            "morph_period=(60,30,60), breath_period=12",
+            _frame, morph_think_color, morph_bolt_color, morph_sep_color,
         )
+        effect_sub = (breath_frame // 24) % 3
+        if effect_sub == 0:
+            # 闪烁 ⚡ + morph_color 过渡
+            sparkle = build_sparkle_ansi(breath_frame, morph_bolt_color, 6)
+            center_text = (
+                f"  {sparkle}\u26a1"
+                f"\033[38;5;{morph_think_color}m\u601d\u8003"
+                f"{_R}  "
+            )
+        elif effect_sub == 1:
+            # 辉光 ⚡ + morph_color 过渡
+            glow = build_glow_ansi(breath_frame, morph_bolt_color, 12)
+            center_text = (
+                f"  {glow}\u26a1"
+                f"\033[38;5;{morph_think_color}m\u601d\u8003"
+                f"{_R}  "
+            )
+        else:
+            # 弹入 ⚡ + morph_color 过渡
+            bounce = build_bounce_ansi(breath_frame % 6, 6)
+            center_text = (
+                f"  {bounce}\u26a1"
+                f"\033[38;5;{morph_think_color}m\u601d\u8003"
+                f"{_R}  "
+            )
+        # 分隔线使用 morph_color 动态起始色
+        half_width = max(4, (full_width - 8) // 2)
+        left_colors = gradient_range(morph_sep_color, 237, half_width)
+        right_colors = gradient_range(morph_sep_color, 237, half_width)
+        left = "".join(f"\033[38;5;{c}m\u2501" for c in left_colors)
+        right = "".join(f"\033[38;5;{c}m\u2501" for c in right_colors)
     else:
         center_text = f"  {CYAN_256}\u26a1\u601d\u8003{_R}  "
-    half_width = max(4, (full_width - 8) // 2)
-    left_colors = gradient_range(45, 237, half_width)
-    right_colors = gradient_range(45, 237, half_width)
-    left = "".join(f"\033[38;5;{c}m\u2501" for c in left_colors)
-    right = "".join(f"\033[38;5;{c}m\u2501" for c in right_colors)
+        half_width = max(4, (full_width - 8) // 2)
+        left_colors = gradient_range(45, 237, half_width)
+        right_colors = gradient_range(45, 237, half_width)
+        left = "".join(f"\033[38;5;{c}m\u2501" for c in left_colors)
+        right = "".join(f"\033[38;5;{c}m\u2501" for c in right_colors)
     return f"  {left}{_R}{center_text}{right}{_R}"
 
 

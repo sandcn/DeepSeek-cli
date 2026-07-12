@@ -95,6 +95,8 @@ from . import _selector_base
 from ._terminal import (
     is_narrow, get_terminal_width,
     narrow_truncate, narrow_indent, narrow_sep_width,
+    set_cursor_style, reset_cursor_style,
+    set_title, flash_title,
 )
 from .message_editor import MessageEditor, edit_current_messages, display_messages
 from .status_bar import StatusBar
@@ -116,6 +118,10 @@ __all__ = [
     # ── narrow ──
     "is_narrow", "get_terminal_width",
     "narrow_truncate", "narrow_indent", "narrow_sep_width",
+    # ── 光标样式 ──
+    "set_cursor_style", "reset_cursor_style",
+    # ── 终端标题 ──
+    "set_title", "flash_title",
     # ── message_editor ──
     "MessageEditor", "edit_current_messages", "display_messages",
     # ── status_bar ──

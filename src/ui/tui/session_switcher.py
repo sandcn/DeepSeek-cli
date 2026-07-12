@@ -10,6 +10,9 @@ from typing import Optional
 
 from ...chat_msgs import list_sessions, load_session
 from ._selector_base import BaseBottomBarSelector
+from ._animator import AnimatorContext, BreathPalette
+from ._terminal import is_narrow
+from ._text_utils import build_scan_highlight_ansi
 
 _logger = logging.getLogger(__name__)
 
@@ -34,15 +37,24 @@ class SessionSwitcher(BaseBottomBarSelector[dict, Optional[dict[str, object]]]):
     def _format_display(self, items: list[dict]) -> list[str]:
         """格式化会话字典列表为显示标签 — 美化展示。
 
-        使用 256 色体系增强视觉层次。
+        使用 256 色体系增强视觉层次，标题使用呼吸色。
         """
         from ..colors import RESET
         from ..colors import CYAN_256, DARK_GRAY_256, GREEN_256, BRIGHT_CYAN_256, DIM_256
+        frame = AnimatorContext.get_default().breath_frame
         labels: list[str] = []
         now = time.time()
-        for s in items:
+        for idx, s in enumerate(items):
             title = s.get("title", "")
-            title_info = f"\u300c{title}\u300d" if title else f"{DIM_256}(\u65e0\u6807\u9898){RESET}"  # (无标题)
+            # ★ 标题使用呼吸色
+            if title and frame > 0:
+                title_color_num = BreathPalette.get_color("role_user", frame)
+                title_color = f"\033[38;5;{title_color_num}m"
+                title_info = f"{title_color}\u300c{title}\u300d{RESET}"
+            elif title:
+                title_info = f"{BRIGHT_CYAN_256}\u300c{title}\u300d{RESET}"
+            else:
+                title_info = f"{DIM_256}(\u65e0\u6807\u9898){RESET}"  # (无标题)
             sid = s.get("id", "")
             sid_short = sid[:min(8, len(sid))] if sid else "?"
             model = s.get("model", "?")
@@ -67,8 +79,17 @@ class SessionSwitcher(BaseBottomBarSelector[dict, Optional[dict[str, object]]]):
                     pass
 
             # ★ 美化：增加视觉层次，图标对齐
-            # 会话ID短摘要(暗灰) + 时间戳(暗灰) + 标题(亮青) + 模型名(青+◉) + 消息数(绿+◆)
-            label = f"{DARK_GRAY_256}{sid_short}{RESET} {time_info}  {BRIGHT_CYAN_256}{title_info}{RESET}  {CYAN_256}\u25c9 {model}{RESET}  {GREEN_256}\u25c6 {count}m{RESET}"
+            # 模型名使用呼吸色（非窄屏）
+            if frame > 0:
+                model_color_num = BreathPalette.get_color("model", frame)
+                model_color = f"\033[38;5;{model_color_num}m"
+                model_part = f"{model_color}\u25c9 {model}{RESET}"
+            else:
+                model_part = f"{CYAN_256}\u25c9 {model}{RESET}"
+            label = f"{DARK_GRAY_256}{sid_short}{RESET} {time_info}  {title_info}  {model_part}  {GREEN_256}\u25c6 {count}m{RESET}"
+            # ★ 扫描高亮：宽屏时对选中行添加周期性扫描高亮背景
+            if not is_narrow() and frame > 0:
+                label = build_scan_highlight_ansi(idx, frame, len(items), label, scan_period=20)
             labels.append(label)
         return labels
 

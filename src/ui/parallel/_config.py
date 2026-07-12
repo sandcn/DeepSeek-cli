@@ -17,6 +17,7 @@ Spinner 动画集（通过 get_spinner_frames() 按名称获取）：
 from __future__ import annotations
 
 from ..colors import gradient_range
+from ..tui._effects import rainbow_rotation
 
 # ── 刷新率常量 ──────────────────────────────────────
 
@@ -112,6 +113,41 @@ SPINNER_GLOW = [
     "⣀", "⣠", "⣤", "⣦", "⣶", "⣷", "⣿", "⣷", "⣶", "⣦", "⣤", "⣠",
 ]
 
+# ── 新增动画集（2026-07-12 第二阶段美化） ──────────────────
+
+# Twinkle（闪烁星光）— 12 帧，小点聚散闪烁
+SPINNER_TWINKLE = [
+    "⣀", "⡀", "⢀", "⣀", "⣈", "⣰", "⣾", "⣰", "⣈", "⣀", "⢀", "⡀",
+]
+
+# Breath Bounce（呼吸弹跳）— 10 帧，Braille 点在呼吸中弹跳
+SPINNER_BREATH_BOUNCE = [
+    "⢠", "⢰", "⢸", "⢻", "⢿", "⡿", "⣟", "⣻", "⣽", "⣾",
+]
+
+# Rainbow Spin（彩虹旋转）— 16 帧，使用 rainbow_rotation 生成彩虹色序列附加到 Braille 帧
+_RAINBOW_BRAILLE_BASE = [
+    "⠁", "⠂", "⠄", "⠈", "⠐", "⠠", "⢀", "⡀",
+    "⡄", "⡆", "⡇", "⡕", "⡑", "⡋", "⡓", "⡒",
+]
+
+
+def _build_rainbow_frames() -> list[str]:
+    """使用 rainbow_rotation 生成彩虹色 Braille 帧。
+
+    每帧取一个彩虹色号，帧间色相偏移 15 度，
+    形成完整的彩虹旋转效果。
+    """
+    result: list[str] = []
+    for i, char in enumerate(_RAINBOW_BRAILLE_BASE):
+        colors = rainbow_rotation(i, 1)
+        color = colors[0] if colors else 45
+        result.append(f"\033[38;5;{color}m{char}\033[0m")
+    return result
+
+
+SPINNER_RAINBOW = _build_rainbow_frames()
+
 # ── Spinner 集合字典 ────────────────────────────────
 SPINNER_SETS: dict[str, list[str]] = {
     "braille": SPINNER_BRAILLE,
@@ -125,6 +161,10 @@ SPINNER_SETS: dict[str, list[str]] = {
     "clock": SPINNER_CLOCK,
     "matrix": SPINNER_MATRIX,
     "glow": SPINNER_GLOW,
+    # 新增（2026-07-12）
+    "twinkle": SPINNER_TWINKLE,
+    "breath_bounce": SPINNER_BREATH_BOUNCE,
+    "rainbow": SPINNER_RAINBOW,
 }
 
 # 保留原 SPINNER_FRAMES 兼容别名（指向 SPINNER_BRAILLE 前 8 帧）
@@ -148,6 +188,10 @@ SPINNER_SPEED: dict[str, float] = {
     "clock": 0.08,
     "matrix": 0.08,
     "glow": 0.10,
+    # 新增（2026-07-12）
+    "twinkle": 0.08,
+    "breath_bounce": 0.10,
+    "rainbow": 0.06,
 }
 
 
@@ -157,7 +201,8 @@ def get_spinner_frames(name: str = "braille") -> tuple[list[str], float]:
     Args:
         name: spinner 名称
               （"braille" | "pulse" | "circle" | "dots" | "wave" | "typing"
-               | "heart" | "bounce" | "clock" | "matrix" | "glow"）
+               | "heart" | "bounce" | "clock" | "matrix" | "glow"
+               | "twinkle" | "breath_bounce" | "rainbow"）
 
     Returns:
         (帧列表, 帧间隔秒数)

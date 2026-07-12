@@ -27,26 +27,42 @@ class ToolOutputBlock(TuiComponent):
     def render_to_adapter(self, adapter: "OutputAdapter") -> int:
         """渲染到 OutputAdapter，返回行数。"""
         text = self.text
+        if not text:
+            adapter.write_raw("\n")
+            return 1
         if len(text) > _MAX_OUTPUT_LEN:
             text = text[:_MAX_OUTPUT_LEN] + "...(truncated)"
+        bounce = self._get_bounce_prefix()
         has_carriage = '\r' in text
         if has_carriage:
             if '\033[' in text:
                 clean = text.replace('\r', '')
                 try:
-                    adapter.write(Text.from_ansi(clean))
+                    if bounce:
+                        adapter.write(Text.from_ansi(f"{bounce}{clean}\033[0m"))
+                    else:
+                        adapter.write(Text.from_ansi(clean))
                 except Exception:
                     _logger.debug("tool_output ANSI 解析失败, 回退 raw 输出", exc_info=True)
-                    adapter.write_raw(clean)
+                    if bounce:
+                        adapter.write_raw(f"{bounce}{clean}\033[0m")
+                    else:
+                        adapter.write_raw(clean)
             else:
                 clean = text.split('\r')[-1]
-                adapter.write_raw(clean)
+                if bounce:
+                    adapter.write_raw(f"{bounce}{clean}\033[0m")
+                else:
+                    adapter.write_raw(clean)
             if not text.endswith('\r'):
                 adapter.write_raw('\n')
                 return _estimate_content_lines(clean)
             return 0
         else:
-            adapter.write(Text.assemble(("   ", _STYLE_DIM), (text, _STYLE_DIM)))
+            if bounce:
+                adapter.write_raw(f"{bounce}   {text}\033[0m\n")
+            else:
+                adapter.write(Text.assemble(("   ", _STYLE_DIM), (text, _STYLE_DIM)))
             return _estimate_content_lines(text)
 
     def render(self) -> str:

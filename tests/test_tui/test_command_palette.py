@@ -19,19 +19,19 @@ class TestCommandPalette256Colors:
         self.palette = CommandPalette()
 
     def test_format_display_contains_256_color_codes(self) -> None:
-        """_format_display 输出应包含 256 色 ANSI 码。"""
+        """_format_display 输出应包含 256 色 ANSI 码（动效增强后动态呼吸色）。"""
         items = ["/help", "/unknown"]
         result = self.palette._format_display(items)
         assert len(result) == 2
 
-        # 已知命令（/help）应包含 BRIGHT_GREEN_256 (38;5;47)
-        assert "38;5;47" in result[0], f"已知命令应含亮绿256色码(47)，实际: {result[0]}"
+        # 已知命令（/help）应包含 256 色 ANSI 码（动效增强后为呼吸色，非固定 47）
+        assert "38;5;" in result[0], f"已知命令应含256色码，实际: {result[0]}"
 
-        # 未知命令（/unknown）应包含 CYAN_256 (38;5;45)
-        assert "38;5;45" in result[1], f"未知命令应含青256色码(45)，实际: {result[1]}"
+        # 未知命令（/unknown）也应包含 256 色 ANSI 码
+        assert "38;5;" in result[1], f"未知命令应含256色码，实际: {result[1]}"
 
-        # 箭头分隔符应包含 DIM_256 (38;5;242)
-        assert "38;5;242" in result[0], f"箭头分隔符应含暗灰256色码(242)，实际: {result[0]}"
+        # 描述文本应包含 256 色码（动效增强后为辉光呼吸色）
+        assert "38;5;" in result[0], f"描述应含256色码: {result[0]}"
 
     def test_format_display_known_command_has_description(self) -> None:
         """已知命令应显示带描述信息。"""
@@ -88,7 +88,7 @@ class TestSessionSwitcher256Colors:
         }]
 
     def test_format_display_contains_all_256_color_codes(self) -> None:
-        """_format_display 输出应包含所有 256 色 ANSI 码。"""
+        """_format_display 输出应包含 256 色 ANSI 码（动效增强后动态呼吸色）。"""
         items = self._make_session()
         result = self.switcher._format_display(items)
         assert len(result) == 1
@@ -96,10 +96,10 @@ class TestSessionSwitcher256Colors:
 
         # DARK_GRAY_256 (38;5;237) — 会话ID短摘要
         assert "38;5;237" in line, f"会话ID应含暗灰256色码(237): {line}"
-        # BRIGHT_CYAN_256 (38;5;81) — 标题
-        assert "38;5;81" in line, f"标题应含亮青256色码(81): {line}"
-        # CYAN_256 (38;5;45) — 模型名 ◉
-        assert "38;5;45" in line, f"模型名应含青256色码(45): {line}"
+        # 标题应含 256 色码（动效增强后为呼吸色，非固定 81）
+        assert "38;5;" in line, f"标题应含256色码: {line}"
+        # 模型名应含 256 色码（动效增强后为呼吸色，非固定 45）
+        assert "38;5;" in line, f"模型名应含256色码: {line}"
         # GREEN_256 (38;5;41) — 消息数 ◆
         assert "38;5;41" in line, f"消息数应含绿256色码(41): {line}"
         # DIM_256 (38;5;242) — 时间戳

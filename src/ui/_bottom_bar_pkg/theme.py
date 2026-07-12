@@ -2,11 +2,11 @@
 
 从 _bottom_bar.py 提取，供 _BottomBar 及其子模块共享。
 
-颜色策略（单轨制）：
-  - 所有 _COLOR_* 常量使用 256 色 ANSI 序列（xterm-256color 标准）
-  - 颜色编号与 `src/core/constants.py` 中 `_256` 后缀常量一致
-  - 常量为纯字符串，可直接与 Blessed 的 move_xy/clear_eol 混合使用
-  - _blessed_* 辅助函数供需要动态颜色的新代码使用
+颜色策略（单轨制 — 统一引用 core/constants.py）：
+  - 所有 _COLOR_* ANSI 字符串由 core/constants.py 的 256 色常量构建
+  - core/constants.py 是 256 色号的权威源，theme.py 仅构建 ANSI 序列
+  - 动效呼吸逻辑委托 _effects.py 实现（sine_color/sine_color_range）
+  - 消除与 core/constants.py 和 ui/colors.py 的颜色编号漂移
 
 颜色编号对齐参考（与 core.constants _256 体系一致）：
   - ACCENT(45)      ← CYAN_256
@@ -24,6 +24,22 @@ from __future__ import annotations
 from ..colors import gradient_range
 from ..tui._animator import AnimatorContext
 from ..tui._effects import sine_color_range
+from ..tui._effects import sine_color as _sine_color_fx
+from ...core.constants import (
+    CYAN_256, GRAY_256, DARK_GRAY_256, GREEN_256, RED_256,
+    BRIGHT_YELLOW_256, YELLOW_256, WHITE_256, BRIGHT_CYAN_256,
+)
+
+
+# ── ANSI 序列辅助 ─────────────────────────────────────
+def _fg(n: int) -> str:
+    """构建 ANSI 256 色前景序列。"""
+    return f"\033[38;5;{n}m"
+
+
+def _bg(n: int) -> str:
+    """构建 ANSI 256 色背景序列。"""
+    return f"\033[48;5;{n}m"
 
 
 # ── 底部栏布局配置 ──────────────────────────────────────────
@@ -32,31 +48,28 @@ _BOTTOM_REFRESH_MS = 0.05   # 底部栏刷新节流（50ms）
 _MIN_INPUT_ROWS = 3         # 输入区最小行数（空输入时至少显示 3 行）
 _BOTTOM_MIN_LINES = 5       # setup() 中最小底部栏总行数（2 分隔线+状态行 + 3 最小输入行）
 
-# ── ANSI 颜色常量（256 色体系，与 core.constants _256 后缀常量对齐） ──
-_COLOR_ACCENT = "\033[38;5;45m"       # 青色强调（提示符/模型名/状态）——对齐 CYAN_256(45)
-_COLOR_DEEP_CYAN = "\033[38;5;32m"    # 深青（输入提示符最暗色）——深青 32，区别于 CYAN_256(45)
-_COLOR_DIM = "\033[38;5;242m"         # 灰色次要（分隔线/占位/统计）——对齐 GRAY_256(242)
-_COLOR_RESET = "\033[0m"              # 重置
-_COLOR_SELECT_BG = "\033[48;5;236m"   # 选中项高亮背景（深灰背景 236，较 DARK_GRAY_256 暗一级）
-_COLOR_SELECT_FG = "\033[38;5;15m"    # 选中项前景色（亮白 15，确保反显高对比度）
+# ── ANSI 颜色常量（统一由 core/constants.py 的 256 色常量构建） ──
+_COLOR_ACCENT = _fg(CYAN_256)          # 青色强调（提示符/模型名/状态）——CYAN_256=45
+_COLOR_DEEP_CYAN = _fg(32)  # 深青（输入提示符最暗色）——32 深青
+_COLOR_DIM = _fg(GRAY_256)             # 灰色次要（分隔线/占位/统计）——GRAY_256=242
+_COLOR_RESET = "\033[0m"               # 重置（无需统一）
+_COLOR_SELECT_BG = _bg(236)            # 选中项高亮背景（深灰背景 236）
+_COLOR_SELECT_FG = _fg(WHITE_256)      # 选中项前景色（亮白 15）
 _COLOR_BREATH_BG: list[int] = [235, 236, 237, 238, 239, 240, 239, 238, 237, 236]
-"""呼吸背景色号序列（10帧对称周期：暗灰→较亮暗灰→暗灰）。
-使用 gradient_range(235, 240, 6) 生成基色后手动构建对称呼吸周期。
-供 _CompletionPopup 选中项呼吸效果使用，与 _COLOR_SELECT_BG 静态色共存。"""
-_COLOR_SEP = "\033[38;5;237m"         # 分隔线深灰——对齐 DARK_GRAY_256(237)
-_COLOR_SEP_START = "\033[38;5;45m"    # 分隔线起始青色——对齐 CYAN_256(45)
-_COLOR_COMPLETE_TITLE = "\033[1;38;5;45m"   # 补全弹窗标题色（亮青加粗）——对齐 CYAN_256(45)
+"""呼吸背景色号序列（10帧对称周期）。"""
+_COLOR_SEP = _fg(DARK_GRAY_256)        # 分隔线深灰——DARK_GRAY_256=237
+_COLOR_SEP_START = _fg(CYAN_256)       # 分隔线起始青色——CYAN_256=45
+_COLOR_COMPLETE_TITLE = f"\033[1;{_fg(CYAN_256)[1:]}"   # 补全弹窗标题色（亮青加粗）
 
 # ── 补全弹窗视觉增强 ──────────────────────────────────────
-_COLOR_COMPLETE_CMD_PREFIX = "\033[1;38;5;45m"  # 命令补全 / 前缀色（亮青加粗，复用标题色）——对齐 CYAN_256(45)
-_COLOR_COMPLETE_DIR = "\033[38;5;110m"           # 路径补全目录色（蓝灰 110，与 _COLOR_TIME 色系一致）
-_COLOR_COMPLETE_MATCH = "\033[38;5;221m"         # 匹配前缀高亮色（浅黄 221）——对齐 YELLOW_256(221)
-
-_COLOR_TOOL_OK = "\033[38;5;41m"      # 工具成功计数——对齐 GREEN_256(41)
-_COLOR_TOOL_FAIL = "\033[38;5;196m"   # 工具失败计数——对齐 RED_256(196)
-_COLOR_TIME = "\033[38;5;110m"        # 蓝灰（耗时/时间戳）
-_COLOR_TOKEN = "\033[38;5;68m"        # 靛蓝（Token 计数）
-_COLOR_SPEED = "\033[38;5;214m"       # 琥珀色（速率）——与统一体系一致
+_COLOR_COMPLETE_CMD_PREFIX = f"\033[1;{_fg(CYAN_256)[1:]}"  # 命令 / 前缀色（亮青加粗）
+_COLOR_COMPLETE_DIR = _fg(110)                              # 路径补全目录色（蓝灰 110）
+_COLOR_COMPLETE_MATCH = _fg(YELLOW_256)                     # 匹配前缀高亮色——YELLOW_256=221
+_COLOR_TOOL_OK = _fg(GREEN_256)          # 工具成功计数——GREEN_256=41
+_COLOR_TOOL_FAIL = _fg(RED_256)          # 工具失败计数——RED_256=196
+_COLOR_TIME = _fg(110)                   # 蓝灰（耗时/时间戳）
+_COLOR_TOKEN = _fg(68)                   # 靛蓝（Token 计数）
+_COLOR_SPEED = _fg(BRIGHT_YELLOW_256)    # 琥珀色（速率）——BRIGHT_YELLOW_256=221
 
 # ── በBlessed 颜色辅助函数 ─────────────────────────────────────
 # 供需要动态颜色的新代码使用，与现有 _COLOR_* 常量共存

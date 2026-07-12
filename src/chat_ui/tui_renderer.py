@@ -125,6 +125,7 @@ class TuiRenderer:
         _frame = AnimatorContext.get_default().frame
         block = AnswerBlock(self._rs)
         block.anim_frame = _frame  # 供组件在呼吸/脉动动效中使用
+        block.set_entry_frame(_frame)  # 级联入场动效：6 帧弹入渐显
         self._record_lines(block.write(text))
 
     @register_render_command(RenderCommand.PHASE_DONE, (1,))
@@ -151,6 +152,7 @@ class TuiRenderer:
     @register_render_command(RenderCommand.TOOL_OUTPUT, (1,))
     def _do_tool_output(self, text: str) -> None:
         block = ToolOutputBlock(text)
+        block.set_entry_frame(AnimatorContext.get_default().frame)  # 级联入场动效
         self._record_lines(block.render_to_adapter(self._adapter))
 
     @register_render_command(RenderCommand.TOOL_SUMMARY, (1, 2))
@@ -193,6 +195,7 @@ class TuiRenderer:
     @register_render_command(RenderCommand.WRITE_LINE, (1,))
     def _do_write_line(self, text: str) -> None:
         block = WriteLineBlock(text)
+        block.set_entry_frame(AnimatorContext.get_default().frame)  # 级联入场动效
         self._record_lines(block.render_to_adapter(self._adapter))
 
     @register_render_command(RenderCommand.DISPLAY_MSGS, (1, 2))

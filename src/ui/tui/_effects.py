@@ -16,6 +16,12 @@ BreathPalette，直接接受帧号作为参数，可独立测试。
   - wave_*：波动渐变效果
   - sparkle_*：闪烁高亮效果
   - shimmer_*：流光扫光效果
+  - rainbow_rotation：HSL 色相环彩虹旋转颜色序列生成
+  - morph_color：跨调色板颜色变形插值（情绪渐变）
+  - pulse_chain：沿时间轴传播的脉冲链
+  - equalizer_frame：均衡器跳动高度生成
+  - breath_border_offset：呼吸边框颜色偏移计算
+  - scan_line_index：扫描高亮行索引计算
 """
 
 from __future__ import annotations
@@ -428,6 +434,320 @@ def build_bg_breath_ansi(frame: int, color_low: int, color_high: int, period: in
 
 
 # ═══════════════════════════════════════════════════════════
+# 呼吸边框偏移（Breath Border）
+# ═══════════════════════════════════════════════════════════
+
+
+@lru_cache(maxsize=128)
+def breath_border_offset(
+    index: int, total_width: int, frame: int,
+    amplitude: float = 8.0, period: int = 12,
+) -> float:
+    """计算呼吸边框位置的颜色偏移量。
+
+    从边框两端向中心传播颜色偏移，形成"呼吸光晕"效果。
+    边缘偏移最大，中心偏移最小，产生类似"呼吸"的脉动感。
+
+    Args:
+        index: 在边框中的位置索引（0-based）。
+        total_width: 边框总宽度。
+        frame: 当前帧号。
+        amplitude: 最大偏移幅度（色号偏移量）。
+        period: 呼吸周期帧数。
+
+    Returns:
+        偏移量（浮点数），两端大中心小。
+    """
+    center = total_width / 2.0
+    dist_from_center = abs(index - center)
+    max_dist = max(center, 1.0)
+    t = sine_breath_t(frame, period)
+    return t * amplitude * (1.0 - dist_from_center / max_dist)
+
+
+# ═══════════════════════════════════════════════════════════
+# 扫描高亮（Scan Highlight）
+# ═══════════════════════════════════════════════════════════
+
+
+def scan_line_index(
+    frame: int, total_lines: int,
+    period: int = 20, scan_width: int = 1,
+) -> int | None:
+    """计算当前帧下被扫描高亮的行索引。
+
+    一个高亮行沿行列表从上到下周期性扫描，到达底部后回到顶部。
+    模拟"雷达扫描"效果，适用于流式输出中的活动指示。
+
+    Args:
+        frame: 当前帧号。
+        total_lines: 总行数。
+        period: 扫描周期帧数。
+        scan_width: 高亮行宽度（同时高亮的行数）。
+
+    Returns:
+        高亮行起始索引（0-based），扫描间隙返回 None。
+    """
+    if total_lines <= 0:
+        return None
+    # 确保扫描覆盖所有行：周期取 max(total_lines, period)
+    scan_cycle = max(total_lines, period)
+    cycle_pos = frame % scan_cycle
+    # 扫描间隙：帧在周期末尾时无高亮
+    if cycle_pos >= total_lines:
+        return None
+    return cycle_pos % total_lines
+
+
+# ═══════════════════════════════════════════════════════════
+# 均衡器跳动（Equalizer）
+# ═══════════════════════════════════════════════════════════
+
+
+@lru_cache(maxsize=128)
+def equalizer_frame(
+    frame: int, bar_count: int = 5, seed: int = 42,
+) -> list[float]:
+    """生成均衡器各条的高度值 [0.0, 1.0]。
+
+    模拟音频均衡器的跳动效果，每条独立变化。
+    使用确定性伪随机序列保证帧间连续性。
+
+    Args:
+        frame: 当前帧号。
+        bar_count: 均衡器条数。
+        seed: 伪随机种子。
+
+    Returns:
+        len=bar_count 的浮点数列表，每元素 [0.0, 1.0]。
+    """
+    result: list[float] = []
+    # 使用正弦波+相位偏移模拟各条独立跳动
+    for i in range(bar_count):
+        phase_offset = i * 1.256  # 黄金角近似，避免相位对齐
+        t = sine_breath_t(frame + round(phase_offset * 10), 8 + i * 3)
+        # 添加低频调制使跳动更有随机感
+        slow_mod = sine_breath_t(frame // 2, 24 + i * 7)
+        height = t * 0.6 + slow_mod * 0.4
+        result.append(max(0.0, min(1.0, height)))
+    return result
+
+
+BAR_CHARS = ["\u2581", "\u2582", "\u2583", "\u2584", "\u2585", "\u2586", "\u2587", "\u2588"]
+"""均衡器条字符集，从低到高 8 级（▁▂▃▄▅▆▇█）。"""
+
+
+# ═══════════════════════════════════════════════════════════
+# 平滑阶跃函数（Smooth Step）
+# ═══════════════════════════════════════════════════════════
+
+
+@lru_cache(maxsize=32)
+def smooth_step(t: float, edges: str = "both") -> float:
+    """平滑阶跃函数（Hermite 插值），使动画过渡更自然。
+
+    替代线性插值，在过渡起点和终点有自然的加速/减速。
+
+    Args:
+        t: 输入值 [0.0, 1.0]。
+        edges: "both"（两端平滑）| "left"（仅起始）| "right"（仅结束）。
+
+    Returns:
+        [0.0, 1.0] 范围的平滑值。
+    """
+    t = max(0.0, min(1.0, t))
+    if edges == "left":
+        return t * t * (3.0 - 2.0 * t)  # 仅起始平滑
+    elif edges == "right":
+        # 仅结束平滑：反向 Hermite
+        return 1.0 - (1.0 - t) * (1.0 - t) * (1.0 + 2.0 * t)
+    # both: Hermite 插值
+    return t * t * (3.0 - 2.0 * t)
+
+
+# ═══════════════════════════════════════════════════════════
+# 脉冲链（Pulse Chain）
+# ═══════════════════════════════════════════════════════════
+
+
+@lru_cache(maxsize=128)
+def pulse_chain(
+    frame: int, total_pulses: int = 3,
+    pulse_spacing: int = 8, period: int = 12,
+) -> list[float]:
+    """生成脉冲链中各脉冲的强度值 [0.0, 1.0]。
+
+    多个脉冲沿时间轴串行传播，类似"声波扩散"或"涟漪"。
+    适合用于工具调用链、消息发送等序列事件的视觉反馈。
+
+    Args:
+        frame: 当前帧号。
+        total_pulses: 脉冲总数。
+        pulse_spacing: 脉冲间距帧数。
+        period: 单个脉冲周期。
+
+    Returns:
+        len=total_pulses 的强度值列表。
+    """
+    result: list[float] = []
+    for i in range(total_pulses):
+        offset = i * pulse_spacing
+        local_frame = max(0, frame - offset)
+        if local_frame >= period:
+            result.append(0.0)
+        else:
+            t = local_frame / max(period - 1, 1)
+            # 使用 smooth_step 使脉冲有缓入缓出
+            result.append(1.0 - smooth_step(t))
+    return result
+
+
+# ═══════════════════════════════════════════════════════════
+# 跨调色板颜色变形（Morph Color）
+# ═══════════════════════════════════════════════════════════
+
+
+@lru_cache(maxsize=128)
+def _morph_color_cached(
+    frame: int,
+    palette_a: tuple[int, ...],
+    palette_b: tuple[int, ...],
+    morph_period: int,
+    breath_period: int,
+) -> int:
+    """morph_color 的内部缓存版本（使用 tuple 确保可哈希）。"""
+    if not palette_a or not palette_b:
+        return 45
+    morph_t = sine_breath_t(frame, morph_period)
+    breath_t = sine_breath_t(frame, breath_period)
+
+    def _sample(colors: tuple[int, ...], t: float) -> float:
+        n = len(colors)
+        if n == 1:
+            return float(colors[0])
+        idx_f = t * (n - 1)
+        idx_low = int(idx_f)
+        idx_high = min(idx_low + 1, n - 1)
+        frac = idx_f - idx_low
+        return colors[idx_low] + frac * (colors[idx_high] - colors[idx_low])
+
+    a_val = _sample(palette_a, breath_t)
+    b_val = _sample(palette_b, breath_t)
+    return round(a_val + morph_t * (b_val - a_val))
+
+
+def morph_color(
+    frame: int,
+    palette_a: list[int],
+    palette_b: list[int],
+    morph_period: int = 60,
+    breath_period: int = 12,
+) -> int:
+    """跨调色板颜色变形插值。
+
+    在 palette_a 和 palette_b 之间随时间平滑过渡（morph），
+    同时叠加正弦波呼吸。适合"情绪渐变"场景。
+
+    Args:
+        frame: 当前帧号。
+        palette_a: 调色板 A（起点）。
+        palette_b: 调色板 B（终点）。
+        morph_period: 变形周期帧数（完全过渡到 B 再回到 A）。
+        breath_period: 呼吸周期帧数。
+
+    Returns:
+        插值后的色号。
+    """
+    return _morph_color_cached(
+        frame,
+        tuple(palette_a),
+        tuple(palette_b),
+        morph_period,
+        breath_period,
+    )
+
+
+# ═══════════════════════════════════════════════════════════
+# 彩虹旋转（Rainbow Rotation）
+# ═══════════════════════════════════════════════════════════
+
+
+def _hsl_to_256color(h: float, s: int, l: int) -> int:
+    """将 HSL 值转换为最接近的 256 色号。
+
+    Args:
+        h: 色相角度 [0, 360)。
+        s: 饱和度 [0, 255]。
+        l: 亮度 [0, 255]。
+
+    Returns:
+        256 色号 [0, 255]。
+    """
+    # HSL → RGB
+    s_norm = s / 255.0
+    l_norm = l / 255.0
+    c = (1.0 - abs(2.0 * l_norm - 1.0)) * s_norm
+    x = c * (1.0 - abs((h / 60.0) % 2.0 - 1.0))
+    m = l_norm - c / 2.0
+
+    if h < 60:
+        r, g, b = c, x, 0.0
+    elif h < 120:
+        r, g, b = x, c, 0.0
+    elif h < 180:
+        r, g, b = 0.0, c, x
+    elif h < 240:
+        r, g, b = 0.0, x, c
+    elif h < 300:
+        r, g, b = x, 0.0, c
+    else:
+        r, g, b = c, 0.0, x
+
+    r8 = max(0, min(255, round((r + m) * 255.0)))
+    g8 = max(0, min(255, round((g + m) * 255.0)))
+    b8 = max(0, min(255, round((b + m) * 255.0)))
+
+    # 灰度检查：RGB 三通道接近时使用灰度色号
+    if abs(r8 - g8) < 8 and abs(g8 - b8) < 8 and abs(r8 - b8) < 8:
+        gray = round((r8 / 255.0) * 23.0) + 232
+        return max(232, min(255, gray))
+
+    # 6x6x6 色彩立方体 (色号 16-231)
+    r_idx = round(r8 / 255.0 * 5.0)
+    g_idx = round(g8 / 255.0 * 5.0)
+    b_idx = round(b8 / 255.0 * 5.0)
+    return 16 + r_idx * 36 + g_idx * 6 + b_idx
+
+
+@lru_cache(maxsize=64)
+def rainbow_rotation(frame: int, count: int, hue_offset: float = 0.0) -> list[int]:
+    """生成彩虹旋转颜色序列。
+
+    从 HSL 色相环均匀取 count 个颜色，每帧色相偏移 15 度，
+    形成完整的彩虹旋转效果（360/24 帧 ≈ 1.5 秒完成一圈旋转）。
+
+    设计模式: 策略模式 — 与 ``sine_color``/``sparkle_color`` 同级，
+    作为颜色生成策略使用。
+
+    Args:
+        frame: 当前帧号（单调递增）。
+        count: 生成的颜色数量（>= 1）。count < 1 时返回空列表。
+        hue_offset: 初始色相偏移量（度），用于微调起始色相。
+
+    Returns:
+        len=count 的 256 色号列表，帧间连续性有保证。
+        count=1 时返回单元素列表。
+    """
+    if count < 1:
+        return []
+    result: list[int] = []
+    for i in range(count):
+        h = (frame * 15.0 + i * 360.0 / count + hue_offset) % 360.0
+        result.append(_hsl_to_256color(h, 255, 180))
+    return result
+
+
+# ═══════════════════════════════════════════════════════════
 # 主题动效色消费者（effect_* 键）
 # ═══════════════════════════════════════════════════════════
 
@@ -480,6 +800,20 @@ __all__ = [
     "sparkle_brightness", "sparkle_color",
     # 流光
     "shimmer_position", "shimmer_apply",
+    # 呼吸边框
+    "breath_border_offset",
+    # 扫描高亮
+    "scan_line_index",
+    # 均衡器
+    "equalizer_frame", "BAR_CHARS",
+    # 平滑阶跃
+    "smooth_step",
+    # 脉冲链
+    "pulse_chain",
+    # 跨调色板变形
+    "morph_color",
+    # 彩虹旋转
+    "rainbow_rotation",
     # ANSI 生成器
     "build_fade_in_ansi_enhanced",
     "build_wave_sep_ansi",

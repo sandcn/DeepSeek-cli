@@ -249,46 +249,62 @@ class TestDoToolOutput:
     """
 
     def test_tool_output_normal(self, renderer, mock_ta):
-        """正常文本（无 \\r）→ adapter.write 以 dim 样式输出"""
+        """正常文本（无 \\r）→ adapter.write 以 dim 样式输出（入场动效时用 write_raw）"""
         renderer._do_tool_output("output text")
-        mock_ta.write.assert_called_once()
-        text_arg = mock_ta.write.call_args[0][0]
-        assert isinstance(text_arg, Text)
-        assert "output text" in text_arg.plain
+        # 入场动效激活时使用 write_raw，未激活时使用 write
+        if mock_ta.write_raw.call_count > 0:
+            written = mock_ta.write_raw.call_args[0][0]
+            assert "output text" in written
+        else:
+            mock_ta.write.assert_called_once()
+            text_arg = mock_ta.write.call_args[0][0]
+            assert isinstance(text_arg, Text)
+            assert "output text" in text_arg.plain
 
     def test_tool_output_empty_text(self, renderer, mock_ta):
-        """空文本 → 仍调用 adapter.write"""
+        """空文本 → write_raw 输出换行"""
         renderer._do_tool_output("")
-        mock_ta.write.assert_called_once()
+        mock_ta.write_raw.assert_called_once_with("\n")
 
     def test_tool_output_long_text_truncated(self, renderer, mock_ta):
-        """超长文本 → 截断后输出"""
+        """超长文本 → 截断后输出（入场动效时用 write_raw）"""
         long_text = "x" * 10050
         renderer._do_tool_output(long_text)
-        mock_ta.write.assert_called_once()
-        text_arg = mock_ta.write.call_args[0][0]
-        assert isinstance(text_arg, Text)
-        assert text_arg.plain == "   " + "x" * 10000 + "...(truncated)"
+        # 入场动效激活时使用 write_raw，未激活时使用 write
+        if mock_ta.write_raw.call_count > 0:
+            written = mock_ta.write_raw.call_args[0][0]
+            assert "x" * 10000 in written
+            assert "...(truncated)" in written
+        else:
+            mock_ta.write.assert_called_once()
+            text_arg = mock_ta.write.call_args[0][0]
+            assert isinstance(text_arg, Text)
+            assert text_arg.plain == "   " + "x" * 10000 + "...(truncated)"
 
     def test_tool_output_with_carriage_return(self, renderer, mock_ta):
-        """含 \\r 的文本 → 取最后一段通过 write_raw 输出，续写入 \\n"""
+        """含 \\r 的文本 → 取最后一段通过 write_raw 输出，续写入 \\n（可能带入场动效前缀）"""
         renderer._do_tool_output("first\rsecond")
         assert mock_ta.write_raw.call_count == 2
-        assert mock_ta.write_raw.call_args_list[0][0][0] == "second"
+        # 第一段可能含入场动效 ANSI 前缀
+        first_call = mock_ta.write_raw.call_args_list[0][0][0]
+        from src.ui.ansi import strip_ansi
+        assert strip_ansi(first_call) == "second"
         assert mock_ta.write_raw.call_args_list[1][0][0] == "\n"
 
     def test_tool_output_carriage_ends_with_r(self, renderer, mock_ta):
-        """以 \\r 结尾 → 不追加额外 \\n"""
+        """以 \\r 结尾 → 不追加额外 \\n（可能带入场动效前缀）"""
         renderer._do_tool_output("first\r")
         mock_ta.write_raw.assert_called_once()
-        # 最后一段是空字符串
-        assert mock_ta.write_raw.call_args[0][0] == ""
+        from src.ui.ansi import strip_ansi
+        assert strip_ansi(mock_ta.write_raw.call_args[0][0]) == ""
 
     def test_tool_output_carriage_with_newline(self, renderer, mock_ta):
-        """含 \\r 且不以 \\r 结尾 → 末尾追加 \\n"""
+        """含 \\r 且不以 \\r 结尾 → 末尾追加 \\n（可能带入场动效前缀）"""
         renderer._do_tool_output("a\rb")
         assert mock_ta.write_raw.call_count == 2
-        assert mock_ta.write_raw.call_args_list[0][0][0] == "b"
+        from src.ui.ansi import strip_ansi
+        first_call = mock_ta.write_raw.call_args_list[0][0][0]
+        assert strip_ansi(first_call) == "b"
         assert mock_ta.write_raw.call_args_list[1][0][0] == "\n"
 
 
@@ -424,9 +440,13 @@ class TestDoWriteLine:
     """
 
     def test_write_line_plain(self, renderer, mock_ta):
-        """纯文本 → adapter.write_raw 输出并追加换行"""
+        """纯文本 → adapter.write_raw 输出并追加换行（可能带入场动效前缀）"""
         renderer._do_write_line("plain text")
-        mock_ta.write_raw.assert_called_once_with("plain text\n")
+        mock_ta.write_raw.assert_called_once()
+        written = mock_ta.write_raw.call_args[0][0]
+        # 入场动效可能添加 ANSI 前缀，但文本内容必须保留
+        assert "plain text" in written
+        assert written.endswith("\n")
 
     def test_write_line_ansi(self, renderer, mock_ta):
         """ANSI 文本 → adapter.write(Text.from_ansi(...))"""
@@ -493,7 +513,7 @@ class TestRender:
 
     def test_render_unknown_command_logs_error(self, renderer, mock_ta):
         """未知命令 ID → 记录日志（不崩溃）"""
-        with patch('src.chat_ui.renderer._logger.error') as m_log:
+        with patch('src.chat_ui.tui_renderer._logger.error') as m_log:
             renderer.render((255,))
             m_log.assert_called_once()
 

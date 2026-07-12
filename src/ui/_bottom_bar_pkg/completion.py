@@ -60,6 +60,7 @@ class _CompletionPopup:
         self._popup_height: int = 0      # 弹窗所占行数
         self._animator = AnimatorContext.get_default()
         self._tracker = cursor_tracker
+        self._render_cycle_local_frame: int = 0  # 局部帧计数器，替代全局 _animator.tick()
 
     @staticmethod
     def _calc_popup_width(items: list[str], term_width: int) -> int:
@@ -178,6 +179,7 @@ class _CompletionPopup:
     def _render_item_line(
         self, out, r: int, item: str, item_type: str,
         match_prefix: str, cell_w: int, is_selected: bool,
+        cycle_frame: int | None = None,
     ) -> None:
         """渲染单行候选项（含类型颜色和匹配高亮）。
 
@@ -189,6 +191,8 @@ class _CompletionPopup:
             match_prefix: 匹配前缀（用于高亮，空字符串时不高亮）。
             cell_w: 单元格宽度（列数）。
             is_selected: 是否为当前选中项。
+            cycle_frame: 局部帧号（render_cycle_update 传入），
+                         None 时使用全局 AnimatorContext.frame。
         """
         try:
             term = get_terminal()
@@ -203,15 +207,24 @@ class _CompletionPopup:
         pad = " " * max(0, cell_w - _visual_len(truncated_raw))
 
         if is_selected:
-            # 选中项使用呼吸背景色（非窄屏正弦波呼吸，窄屏静态背景）
+            # 选中项使用呼吸背景色 + 前景色（非窄屏正弦波呼吸，窄屏静态背景）
             if not is_narrow():
-                bg_color = self._animator.sine_color(235, 240, 10)
+                if cycle_frame is not None:
+                    # render_cycle_update 使用局部帧号避免推进全局帧
+                    bg_frame = cycle_frame
+                else:
+                    bg_frame = self._animator.breath_frame
+                bg_color = BreathPalette.get_color("breath_bg", bg_frame)
                 bg_ansi = f"\033[48;5;{bg_color}m"
+                # 前景色使用正弦波呼吸（与背景同步）
+                fg_color = BreathPalette.get_sine_color("breath_bg", bg_frame)
+                fg_ansi = f"\033[38;5;{fg_color}m"
             else:
                 bg_ansi = _COLOR_SELECT_BG
+                fg_ansi = _COLOR_SELECT_FG
             out.write(move_clear(r)
-                      + f" {bg_ansi}{_COLOR_SELECT_FG}\u25b6{_COLOR_RESET}"
-                      f"{bg_ansi}{_COLOR_SELECT_FG} {display}{pad}{_COLOR_RESET}")
+                      + f" {bg_ansi}{fg_ansi}\u25b6{_COLOR_RESET}"
+                      f"{bg_ansi}{fg_ansi} {display}{pad}{_COLOR_RESET}")
         else:
             out.write(move_clear(r)
                       + f"  {display}{pad}")
@@ -247,11 +260,26 @@ class _CompletionPopup:
         # ── 标题行 ──
         total_items = len(self._texts)
         if not is_narrow():
-            title_color = self._animator.sine_color(45, 81, 12)
-            title_ansi = f"\033[1;38;5;{title_color}m"
+            try:
+                term = get_terminal()
+                title_color = self._animator.sine_color(45, 81, 12)
+                title_ansi = f"\033[1;38;5;{title_color}m"
+                # 标题呼吸装饰点
+                dot_color = self._animator.sine_color(81, 45, 12)
+                dot_ansi = f"\033[38;5;{dot_color}m"
+                # 呼吸边框装饰（左右各 2 字符）
+                from ..tui._text_utils import build_breath_border_ansi
+                breath_border = build_breath_border_ansi(2, self._animator.breath_frame, 45)
+                header = (f"{breath_border} {dot_ansi}\u25c9{_COLOR_RESET}"
+                          f" {title_ansi}{self._title}{_COLOR_RESET}"
+                          f" {_COLOR_DIM}({total_items}项){_COLOR_RESET}"
+                          f" {breath_border}")
+            except Exception:
+                title_ansi = _COLOR_COMPLETE_TITLE
+                header = f" {title_ansi}{self._title}{_COLOR_RESET} {_COLOR_DIM}({total_items}项){_COLOR_RESET}"
         else:
             title_ansi = _COLOR_COMPLETE_TITLE
-        header = f" {title_ansi}{self._title}{_COLOR_RESET} {_COLOR_DIM}({total_items}项){_COLOR_RESET}"
+            header = f" {title_ansi}{self._title}{_COLOR_RESET} {_COLOR_DIM}({total_items}项){_COLOR_RESET}"
         out.write(move_clear(r_start) + header)
         if self._tracker:
             self._tracker.set(r_start, 1)
@@ -281,10 +309,14 @@ class _CompletionPopup:
             hint = f" {_COLOR_TIME}{self._idx + 1}/{n}{_COLOR_RESET} {_COLOR_DIM}(\u524d{n}/{total_items}){_COLOR_RESET}  {hint_prefix} "
         else:
             hint = f" {hint_prefix} "
-        # 非窄屏时在提示行末尾添加呼吸装饰点
+        # 非窄屏时在提示行末尾添加呼吸脉动装饰点
         if not is_narrow():
+            from ..tui._text_utils import build_pulse_chain_ansi
             dot_color = self._animator.sine_color(45, 81, 12)
             hint_dot = f" \033[38;5;{dot_color}m\u25c9{_COLOR_RESET}"
+            # 添加脉冲链装饰
+            pulse = build_pulse_chain_ansi(self._animator.breath_frame, 2, 45, 12)
+            hint_dot += f" {pulse}"
         else:
             hint_dot = ""
         out.write(move_clear(footer_r) + f"{_COLOR_DIM}{hint}{_COLOR_RESET}{hint_dot}")
@@ -296,7 +328,8 @@ class _CompletionPopup:
     def render_cycle_update(self, out, popup_r_start: int, term_width: int) -> None:
         """增量更新选项行和底部快捷键提示（cycle 时使用，仅重绘弹窗行）。
 
-        每次调用自动推进呼吸相位，使选中项背景色脉动变化。
+        每次调用自动推进局部呼吸相位，使选中项背景色脉动变化。
+        使用局部帧计数器而非 _animator.tick()，避免多路推进全局帧号。
 
         Args:
             out: stdout 文件对象。
@@ -306,8 +339,8 @@ class _CompletionPopup:
         if not self._visible or not self._items:
             return
 
-        # 推进全局帧号，使选中项背景色脉动
-        self._animator.tick()
+        # 推进局部帧计数器，使选中项背景色脉动（不推进全局帧号）
+        self._render_cycle_local_frame += 1
 
         try:
             term = get_terminal()
@@ -320,12 +353,15 @@ class _CompletionPopup:
         cell_w = popup_w - 3
         types = self._types if len(self._types) == n else [""] * n
 
+        local_frame = self._render_cycle_local_frame
+
         for i, item in enumerate(self._items):
             r = popup_r_start + 1 + i
             self._render_item_line(
                 out, r, item, types[i],
                 self._match_prefix, cell_w,
                 is_selected=(i == self._idx),
+                cycle_frame=local_frame,
             )
             if self._tracker:
                 self._tracker.set(r, 1)
@@ -341,10 +377,14 @@ class _CompletionPopup:
                     f" {_COLOR_DIM}(\u524d{n}/{total_items}){_COLOR_RESET}  {hint_prefix} ")
         else:
             hint = f" {hint_prefix} "
-        # 非窄屏时在提示行末尾添加呼吸装饰点
+        # 非窄屏时在提示行末尾添加呼吸装饰点 + 脉冲链效果
         if not is_narrow():
+            from ..tui._text_utils import build_pulse_chain_ansi
             dot_color = self._animator.sine_color(45, 81, 12)
             hint_dot = f" \033[38;5;{dot_color}m\u25c9{_COLOR_RESET}"
+            # 添加脉冲链装饰（使用局部帧避免与全局帧不同步）
+            pulse = build_pulse_chain_ansi(self._render_cycle_local_frame, 2, 45, 12)
+            hint_dot += f" {pulse}"
         else:
             hint_dot = ""
         out.write(move_clear(footer_r) + f"{_COLOR_DIM}{hint}{_COLOR_RESET}{hint_dot}")

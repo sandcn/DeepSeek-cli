@@ -168,11 +168,13 @@ def _draw_all_locked(bar: _BottomBar, out, height: int, breath_frame: int = 0) -
         sep_len = min(tw - 2, 40)
         sep = f"{_COLOR_SEP}\u2501{_COLOR_RESET}" * sep_len
     else:
-        # 分隔线增强：breath_frame>0 时使用波动效果 + 呼吸起始色
+        # 分隔线增强：breath_frame>0 时交替使用 wave/shimmer 效果
         sep_start = 45  # 默认青色
         if breath_frame > 0:
             sep_start = AnimatorContext.get_default().sine_color(40, 45, 10)
-            sep = make_sep_gradient_enhanced(tw - 2, start_color=sep_start, effect="wave", frame=breath_frame)
+            # 每 12 帧轮换 wave/shimmer
+            sep_effect = "shimmer" if (breath_frame // 12) % 2 == 0 else "wave"
+            sep = make_sep_gradient_enhanced(tw - 2, start_color=sep_start, effect=sep_effect, frame=breath_frame)
         else:
             sep = make_sep_gradient(tw - 2, start_color=sep_start)
     buf.append(_blessed_cursor_goto(r1, 1) + "  " + sep)
