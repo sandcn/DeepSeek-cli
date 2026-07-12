@@ -100,7 +100,20 @@ class DispatchAgents(Func):
         if shared is not None and shared.is_batch_mode:
             # 传递 tool_label，用于前端将 subagent 路由到对应的 dispatch 工具容器
             tool_label = getattr(self, 'tool_label', '')
-            idx = shared.add_agent(self.description, self.prompt, agent_type=self.target_agent_type, model=getattr(self.agent, 'model', None), tool_label=tool_label)
+
+            # 模型选择：对指定类型的 subagent 检查是否应使用低优先级模型
+            model = getattr(self.agent, 'model', None)
+            low_model_types = {"map", "execute", "read_memory", "write_memory"}
+            if self.target_agent_type in low_model_types:
+                try:
+                    config_port = self.agent.get_config_port()
+                    low_model = config_port.get_low_model()
+                    if low_model:  # 非空字符串表示已设置
+                        model = low_model
+                except Exception:
+                    pass  # 安全降级：继续使用父模型
+
+            idx = shared.add_agent(self.description, self.prompt, agent_type=self.target_agent_type, model=model, tool_label=tool_label)
             await shared.register_and_wait()
             r = shared.get_result(idx)
             return self._format_single(r)

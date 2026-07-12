@@ -33,6 +33,7 @@ _lazy_map = {
     "audit_logger": lambda: get_audit_logger(),
     "STAGGER_MIN_DELAY": lambda: float(os.getenv("CHAT_STAGGER_MIN_DELAY", "0.1")),
     "STAGGER_MAX_DELAY": lambda: float(os.getenv("CHAT_STAGGER_MAX_DELAY", "0.5")),
+    "LOW_MODEL": lambda: os.getenv("CHAT_LOW_MODEL", ""),
 }
 
 # ---- 缓存容器 ----

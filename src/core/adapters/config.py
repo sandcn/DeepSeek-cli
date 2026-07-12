@@ -25,6 +25,10 @@ class DefaultConfigAdapter(ConfigPort):
         from ...config import MODEL
         return MODEL
 
+    def get_low_model(self) -> str:
+        from ...config import LOW_MODEL
+        return LOW_MODEL
+
     def get_base_url(self) -> str:
         from ...config import get_base_url
         return get_base_url()
@@ -112,6 +116,13 @@ class MockConfigAdapter(ConfigPort):
 
     def get_model(self) -> str:
         return str(self._data.get("model", ""))
+
+    def get_low_model(self) -> str:
+        """获取低优先级模型名称（由 CHAT_LOW_MODEL 环境变量设置）
+
+        返回空字符串表示未设置低模型，此时应使用 get_model() 的返回值。
+        """
+        return str(self._data.get("low_model", ""))
 
     def get_base_url(self) -> str:
         return str(self._data.get("base_url", ""))

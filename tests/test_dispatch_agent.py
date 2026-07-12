@@ -263,9 +263,10 @@ class TestDispatchAgentsExecute:
             "result": "分析完成：user.py 包含 3 个函数",
         }
 
-        # 准备 mock agent
+        # 准备 mock agent（get_low_model 返回空字符串避免低模型路由干扰）
         mock_agent = MagicMock()
         mock_agent._shared_executor = mock_executor
+        mock_agent.get_config_port.return_value.get_low_model.return_value = ""
 
         da = DispatchAgents(description="分析 user.py", prompt="读取 user.py")
         da.set_agent(mock_agent)
@@ -291,6 +292,7 @@ class TestDispatchAgentsExecute:
 
         mock_agent = MagicMock()
         mock_agent._shared_executor = mock_executor
+        mock_agent.get_config_port.return_value.get_low_model.return_value = ""
 
         da = DispatchAgents(description="项目地图", prompt="分析项目", target_agent_type="map")
         da.set_agent(mock_agent)
@@ -342,6 +344,7 @@ class TestDispatchAgentsExecute:
         agent = Mock()
         agent._shared_executor = shared
         agent.model = "gpt-4"
+        agent.get_config_port.return_value.get_low_model.return_value = ""
 
         da = DispatchAgents(description="执行计划", prompt="执行步骤", target_agent_type="execute")
         da.agent = agent
@@ -364,6 +367,7 @@ class TestDispatchAgentsExecute:
 
         mock_agent = MagicMock()
         mock_agent._shared_executor = mock_executor
+        mock_agent.get_config_port.return_value.get_low_model.return_value = ""
 
         da = DispatchAgents(description="task", prompt="do it")
         da.tool_label = "web_search"
@@ -374,6 +378,66 @@ class TestDispatchAgentsExecute:
         mock_executor.add_agent.assert_called_once_with(
             "task", "do it", agent_type="execute",
             model=mock_agent.model, tool_label="web_search",
+        )
+
+    async def test_shared_executor_low_model_enabled(self):
+        """CHAT_LOW_MODEL 设置且目标类型 → 使用低模型覆盖父模型"""
+        mock_executor = MagicMock()
+        mock_executor.is_batch_mode = True
+        mock_executor.add_agent.return_value = 0
+        mock_executor.register_and_wait = AsyncMock()
+        mock_executor.get_result.return_value = {
+            "description": "分析模块",
+            "result": "分析完成",
+        }
+
+        mock_agent = MagicMock()
+        mock_agent._shared_executor = mock_executor
+        mock_agent.model = "gpt-4"
+        mock_agent.get_config_port.return_value.get_low_model.return_value = "claude-haiku"
+
+        da = DispatchAgents(
+            description="分析模块", prompt="分析代码",
+            target_agent_type="map",
+        )
+        da.set_agent(mock_agent)
+
+        await da.execute()
+
+        # 验证低模型替换了父模型
+        mock_executor.add_agent.assert_called_once_with(
+            "分析模块", "分析代码", agent_type="map",
+            model="claude-haiku", tool_label="",
+        )
+
+    async def test_shared_executor_low_model_non_target_type(self):
+        """CHAT_LOW_MODEL 设置但非目标类型 → 仍使用父模型"""
+        mock_executor = MagicMock()
+        mock_executor.is_batch_mode = True
+        mock_executor.add_agent.return_value = 0
+        mock_executor.register_and_wait = AsyncMock()
+        mock_executor.get_result.return_value = {
+            "description": "代码审查",
+            "result": "审查结论",
+        }
+
+        mock_agent = MagicMock()
+        mock_agent._shared_executor = mock_executor
+        mock_agent.model = "gpt-4"
+        mock_agent.get_config_port.return_value.get_low_model.return_value = "claude-haiku"
+
+        da = DispatchAgents(
+            description="代码审查", prompt="审查代码",
+            target_agent_type="review",
+        )
+        da.set_agent(mock_agent)
+
+        await da.execute()
+
+        # review 不是低模型目标类型，应使用父模型
+        mock_executor.add_agent.assert_called_once_with(
+            "代码审查", "审查代码", agent_type="review",
+            model="gpt-4", tool_label="",
         )
 
     async def test_shared_executor_multiple_results(self):

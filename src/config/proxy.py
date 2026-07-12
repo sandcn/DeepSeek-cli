@@ -44,6 +44,9 @@ class ConfigProxy(ConfigPort):
     def get_model(self) -> str:
         return _config.MODEL
 
+    def get_low_model(self) -> str:
+        return _config.LOW_MODEL
+
     def get_base_url(self) -> str:
         return _config.BASE_URL
 
@@ -96,6 +99,10 @@ class ConfigProxy(ConfigPort):
     @property
     def MODEL(self) -> str:
         return _config.MODEL
+
+    @property
+    def LOW_MODEL(self) -> str:
+        return _config.LOW_MODEL
 
     @property
     def API_KEY(self) -> str:
