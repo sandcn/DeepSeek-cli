@@ -33,7 +33,6 @@ from .theme import (
     _PLACEHOLDER_STREAMING,
     _PLACEHOLDER_TEXT,
     get_prompt_breath_color,
-    get_prompt_glow_color,
     make_sep_gradient,
 )
 from ..tui._animator import AnimatorContext
@@ -99,11 +98,7 @@ def _draw_input_lines_locked(
                 prompt_prefix = f"{prompt_color}>{_COLOR_RESET} "
             else:
                 prompt_color = get_prompt_breath_color(breath_frame)
-                if breath_frame > 0:
-                    glow_color = get_prompt_glow_color(breath_frame)
-                    prompt_prefix = f"{prompt_color}>{_COLOR_RESET} {glow_color}\u25cf{_COLOR_RESET} "
-                else:
-                    prompt_prefix = f"{prompt_color}>{_COLOR_RESET} "
+                prompt_prefix = f"{prompt_color}>{_COLOR_RESET} "
             if text:
                 buf.append(_blessed_move_clear(r)
                            + prompt_prefix + segment)
