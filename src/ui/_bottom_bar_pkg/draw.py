@@ -197,7 +197,7 @@ def _draw_all_locked(bar: _BottomBar, out, height: int, breath_frame: int = 0) -
         if breath_frame > 0 and not _is_narrow_fn():
             ctx = AnimatorContext.get_default()
             dot_color = ctx.sine_color(45, 81, 12)
-            dot_ansi = f"\033[38;5;{dot_color}m\u25c9{_COLOR_RESET}"
+            dot_ansi = f"\033[38;5;{dot_color}m\u00b7{_COLOR_RESET}"
             buf.append(_blessed_move_clear(r2) + status + " " + dot_ansi)
         else:
             buf.append(_blessed_move_clear(r2) + status)

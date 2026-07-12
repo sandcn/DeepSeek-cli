@@ -18,12 +18,12 @@ from .builder import (
     build_subagent_system_prompt,
     reset_prompts_cache,
 )
-from .env_info import build_init_md_summary
+from .env_info import build_work_md
 from .vcs_info import check_version_control
 
 __all__ = [
     "build_environment_info",
-    "build_init_md_summary",
+    "build_work_md",
     "build_execute_agent_system_prompt",
     "build_map_agent_system_prompt",
     "build_plan_agent_system_prompt",

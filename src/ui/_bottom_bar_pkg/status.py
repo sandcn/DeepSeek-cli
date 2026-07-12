@@ -126,14 +126,14 @@ class _StatusMixin:
         """构建状态行文本（优雅信息风）。
 
         流式输出期间显示全量统计：模型名 · 耗时 · 令牌数 · 实时速率 · 工具计数。
-        非流式空闲时仅显示模型名字（带 ◉ 图标），不显示任何统计信息。
-        使用多色分层：模型名高亮（带 ◉）、耗时蓝灰色、令牌数灰色。
+        非流式空闲时仅显示模型名字（带 · 图标），不显示任何统计信息。
+        使用多色分层：模型名高亮（带 ·）、耗时蓝灰色、令牌数灰色。
         工具计数值得高亮区分成功/失败（成功绿/失败红）。
         """
-        # ── 模型名字（始终显示，带 ◉ 图标） ──
+        # ── 模型名字（始终显示，带 · 图标） ──
         if self._model_name:
             if self._status_active:
-                # 流式输出期间：◉ 图标使用正弦波呼吸脉动色
+                # 流式输出期间：· 图标使用正弦波呼吸脉动色
                 ctx = AnimatorContext.get_default()
                 _pulse_frame = ctx.breath_frame
                 if _pulse_frame > 0:
@@ -141,12 +141,12 @@ class _StatusMixin:
                 else:
                     _pulse_color = BreathPalette.get_color("status_pulse", _pulse_frame)
                 model_part = (
-                    f"\033[38;5;{_pulse_color}m\u25c9\033[0m"
+                    f"\033[38;5;{_pulse_color}m\u00b7\033[0m"
                     f" {_COLOR_ACCENT}{self._model_name}{_COLOR_RESET}"
                 )
             else:
                 model_part = (
-                    f"{_COLOR_ACCENT}\u25c9{_COLOR_RESET}"
+                    f"{_COLOR_ACCENT}\u00b7{_COLOR_RESET}"
                     f" {_COLOR_ACCENT}{self._model_name}{_COLOR_RESET}"
                 )
         else:
@@ -221,7 +221,7 @@ class _StatusMixin:
         # 流式输出期间，非窄屏时在末尾添加呼吸脉动装饰点
         if status and not is_narrow():
             _deco_frame = AnimatorContext.get_default().frame
-            glow_dot = f"{build_glow_ansi(_deco_frame, 45, 12)}\u25c9\033[0m"
+            glow_dot = f"{build_glow_ansi(_deco_frame, 45, 12)}\u00b7\033[0m"
             status = f"{status}  {glow_dot}"
         if model_part and status:
             return f"{model_part}  {status}"

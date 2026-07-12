@@ -67,8 +67,8 @@ class SessionSwitcher(BaseBottomBarSelector[dict, Optional[dict[str, object]]]):
                     pass
 
             # ★ 美化：增加视觉层次，图标对齐
-            # 会话ID短摘要(暗灰) + 时间戳(暗灰) + 标题(亮青) + 模型名(青+◉) + 消息数(绿+◆)
-            label = f"{DARK_GRAY_256}{sid_short}{RESET} {time_info}  {BRIGHT_CYAN_256}{title_info}{RESET}  {CYAN_256}\u25c9 {model}{RESET}  {GREEN_256}\u25c6 {count}m{RESET}"
+            # 会话ID短摘要(暗灰) + 时间戳(暗灰) + 标题(亮青) + 模型名(青+·) + 消息数(绿+◆)
+            label = f"{DARK_GRAY_256}{sid_short}{RESET} {time_info}  {BRIGHT_CYAN_256}{title_info}{RESET}  {CYAN_256}\u00b7 {model}{RESET}  {GREEN_256}\u25c6 {count}m{RESET}"
             labels.append(label)
         return labels
 

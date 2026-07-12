@@ -162,8 +162,8 @@ def render_normal(state: UISessionState) -> str:
 def _model_label(state: UISessionState) -> str:
     """模型名标签 — 使用 256 色青色图标 + 主题高亮色模型名。"""
     if state.model:
-        return f"{CYAN_256}\u25c9{RESET} {BOLD}{THEME['title']}{state.model}{RESET}"
-    return f"{GRAY_256}\u25c9 no model{RESET}"
+        return f"{CYAN_256}\u00b7{RESET} {BOLD}{THEME['title']}{state.model}{RESET}"
+    return f"{GRAY_256}\u00b7 no model{RESET}"
 
 
 def _build_detail_parts(state: UISessionState, narrow: bool) -> list[str]:
@@ -250,7 +250,7 @@ _MODEL_BREATH_COLORS: list[int] = [32, 45, 40, 45]
 def render_streaming_line(state: UISessionState, streaming: StreamingState) -> str:
     """渲染流式输出状态行。
 
-    格式：◉ gpt-4 ◍ · ⏱ 3.2s · ⬡ 450t · ⚡ 120t/s
+    格式：· gpt-4 ◍ · ⏱ 3.2s · ⬡ 450t · ⚡ 120t/s
 
     Args:
         state: 会话级状态快照（主要用于获取模型名）。
@@ -288,7 +288,7 @@ def render_streaming_line(state: UISessionState, streaming: StreamingState) -> s
             else:
                 model_color = THEME['title']  # 解析失败降级到静态
         
-        parts.append(f"{CYAN_256}\u25c9{RESET} {BOLD}{model_color}{state.model}{RESET}"
+        parts.append(f"{CYAN_256}\u00b7{RESET} {BOLD}{model_color}{state.model}{RESET}"
                      f" \033[38;5;{pulse_color}m{pulse_char}{RESET}")
     parts.append(f"\033[38;5;214m\u23f1{RESET}{_SP}{format_elapsed(elapsed)}")
     tok_str = TextFormatter.format_token_count(tokens)
@@ -301,7 +301,7 @@ def render_streaming_line(state: UISessionState, streaming: StreamingState) -> s
     # 非窄屏时末尾添加装饰性呼吸点
     if not is_narrow():
         frame = AnimatorContext.get_default().frame
-        line += f" {build_glow_ansi(frame, 45, 12)}\u25c9{RESET}"
+        line += f" {build_glow_ansi(frame, 45, 12)}\u00b7{RESET}"
     # 窄屏截断（复用 _narrow_split_line 消除重复）
     if is_narrow():
         tw = get_terminal_width()

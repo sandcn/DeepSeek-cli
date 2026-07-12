@@ -98,7 +98,7 @@ class TestSessionSwitcher256Colors:
         assert "38;5;237" in line, f"会话ID应含暗灰256色码(237): {line}"
         # BRIGHT_CYAN_256 (38;5;81) — 标题
         assert "38;5;81" in line, f"标题应含亮青256色码(81): {line}"
-        # CYAN_256 (38;5;45) — 模型名 ◉
+        # CYAN_256 (38;5;45) — 模型名 ·
         assert "38;5;45" in line, f"模型名应含青256色码(45): {line}"
         # GREEN_256 (38;5;41) — 消息数 ◆
         assert "38;5;41" in line, f"消息数应含绿256色码(41): {line}"
@@ -127,10 +127,10 @@ class TestSessionSwitcher256Colors:
         assert "刚刚" in result[0]
 
     def test_format_display_model_icon_present(self) -> None:
-        """模型名前应显示 ◉ 图标。"""
+        """模型名前应显示 · 图标。"""
         items = self._make_session()
         result = self.switcher._format_display(items)
-        assert "\u25c9" in result[0]  # ◉
+        assert "\u00b7" in result[0]  # ·
 
     def test_format_display_message_icon_present(self) -> None:
         """消息数前应显示 ◆ 图标。"""

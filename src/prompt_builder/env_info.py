@@ -95,23 +95,22 @@ def _extract_section_items(lines: list, section_names: list, max_items: int = 4,
     return items
 
 
-def build_init_md_summary(summary_mode: str = "concise", cwd: str | None = None) -> str:
-    cwd = _resolve_cwd(cwd)
-    init_md_path = os.path.join(cwd, "init.md")
+def build_work_md(name="global.md",summary_mode: str = "concise", cwd: str | None = None) -> str:
+    path = os.path.join(cwd, name)
     try:
-        with open(init_md_path, 'r', encoding='utf-8') as f:
-            project_summary = f.read().strip()
+        with open(path, 'r', encoding='utf-8') as f:
+            mdstr = f.read().strip()
     except FileNotFoundError:
         return ""
     except (IOError, OSError, PermissionError) as e:
-        _logger.warning("读取 init.md 失败: %s", e)
+        _logger.warning("读取 %s 失败: %s",name, e)
         return ""
-    if not project_summary:
+    if not mdstr:
         return ""
     if summary_mode == "concise":
         return (
-            f"{generate_concise_summary(project_summary)}\n"
+            f"{generate_concise_summary(mdstr)}\n"
         )
     return (
-        f"{project_summary}\n"
+        f"{mdstr}\n"
     )
