@@ -57,7 +57,7 @@
    - `search`：禁止搜索项目文件内容（含符号搜索、正则匹配、关键词检索）
    - `bash`：禁止通过 shell 命令（如 `cat`/`grep`/`head`/`tail`/`sed`/`awk`）获取项目文件内容
    - `find`/`ls`：不受此限（仅获取目录结构与文件名，不涉及文件内容；优先使用 `find` 获取完整目录结构，`ls` 仅用于浅层浏览）
-2. **`read_file` 只能读取 map 返回的「关联文件列表」中的文件** — 列表是后续所有 read_file 的唯一合法来源。例外：map Agent 的输出结果不受此限制。（`search`/`bash` 在 map 后不受此条约束；若命中了列表外文件且需基于其内容做决策，仍须按规则 4 先重新 map）
+2. **`read_file` 只能读取 map 返回的「关联文件列表」中的文件** — 列表是后续所有 read_file 的唯一合法来源。（`search`/`bash` 在 map 后不受此条约束；若命中了列表外文件且需基于其内容做决策，仍须按规则 4 先重新 map）map 返回后、think 完成前，主 Agent 禁止通过 read_file 读取任何项目文件（含 .chat/map/ 下的 map 输出文件），必须直接从 dispatch_agent 返回值提取信息构造 think prompt。
 3. **不得为判定「是否零逻辑」而绕过 map 读取项目文件** — 判定本身就需要读文件，属于循环违规。
 4. **需读取列表外项目文件 → 必须重新派发 map。**
 5. **修改任何项目文件前，必须通过 map 获取全量信息** — 包括 CFG、DFG、关联文件列表、重要文件列表。全量不满足不得动手修改。
@@ -116,7 +116,7 @@ dispatch_agent(type="map", description="分析: <模块/函数>", prompt="...")
 ```
 - **调用时机**：只要有信息缺口就调用，不限于首次——工作流任何阶段，只要现有信息不足以做出可靠决策（含读/改任何项目文件前），立即派发 map。典型触发：首次接触项目、接手新模块、跨模块修改、Bug 追踪、执行中遇到未预期的依赖/调用关系/副作用
 - **并发上限**：同批 ≤8 个 map Agent。有多个独立模块/文件须分析时**强制并发派发**，禁止逐个串行
-- **核心约束**：map 能且仅能使用 read_file/search/find/ls（只读工具）。返回的「关联文件列表」是后续 read_file 的唯一合法来源（map Agent 的输出结果不受此限制）
+- **核心约束**：map 能且仅能使用 read_file/search/find/ls（只读工具）。返回的「关联文件列表」是后续 read_file 的唯一合法来源（map Agent 的输出结果不受此限制，但 map→think 间隙期间主 Agent 禁止读取——参见「先 map 后读码」规则 #2）
 
 ### 怎么给提词
 
@@ -132,6 +132,7 @@ dispatch_agent(type="map", description="分析: <模块/函数>", prompt="...")
 
 ### 执行之后干嘛
 1. **进入下一步**：得到有效 map 结果后 → 强制委派 think Agent 深度推理 → 进入规划阶段（派发 plan Agent）
+2. **map 返回后禁止主 Agent 读取任何文件（强制）**：map 返回后、think 完成前，主 Agent 禁止通过 read_file 读取任何项目文件（含 .chat/map/ 下的 map 输出文件）。必须直接从 dispatch_agent 返回值提取信息构造 think prompt，不读取文件。
 
 
 # plan — 计划生成
@@ -169,6 +170,9 @@ prompt 必须包含以下全部要素：
 ```
 dispatch_agent(type="think", description="推理: <主题>", prompt="问题: <问题描述>\n\n关联文件列表:\n<map 返回的所有关联文件，按 N. src/... 编号格式逐行列出>")
 ```
+
+> **从 dispatch_agent 返回值直接提取信息**：map 返回的关联文件列表及其他结构化信息（CFG/DFG/关联文件列表/重要文件列表）由 dispatch_agent 返回值直接提供。主 Agent 从中提取信息构造 think prompt，**不读取文件**（含 map 输出文件）。
+
 - **调用时机**：map 探底完成后、plan 规划之前，**强制调用**。不可跳过，不可延期。典型触发：完成全量/单模块 map 分析后，需要对 map 返回的结构化信息进行深度推理——根因分析、方案对比、风险评估、架构决策等
 - **前提条件**：必须已有有效的 map 结果（含 CFG + DFG + 关联文件列表）
 - **核心约束**：think 能且仅能使用 read_file/search/find/ls（只读工具）。禁止写入、执行、修改任何文件
@@ -292,7 +296,6 @@ dispatch_agent(type="execute", description="<任务摘要>", prompt="<自然语�
 | 并行限制 | `dispatch_agent` 不能与普通工具（read_file/write_file/bash等）同轮并行 |
 | 同轮多次 | 同轮可多次 `dispatch_agent`，自动共享执行器实现真正并行 |
 | 只读并行例外 | `read_memory` Agent 可与 `find`/`ls` 同轮并行（皆只读） |
-| map 输出例外 | map 输出文件 `read_file` 可与后续 think 或 plan 的 `dispatch_agent` 同轮 |
 | 写后隔离 | 同一文件所有修改必须在单次 Agent 调用内完成 |
 | execute 并发 | 无依赖步骤强制并发派发多个 execute，各实例独立上下文，同批 ≤8 个 |
 | review 并发 | 多文件审查强制并发派发多个 review Agent |
@@ -302,14 +305,15 @@ dispatch_agent(type="execute", description="<任务摘要>", prompt="<自然语�
 
 ## 操作纪律
 - **工具调用原因说明（强制）**：每次调用工具前，必须用自然语言简短说明调用原因（格式：「因为需要确认 XXX，所以调用 <工具名> 搜索/读取文件」）。例外：连续多个同类型工具调用（如多个 `read_file` 并发）时，可在第一批前统一说明原因。
-- `dispatch_agent` 不能与普通工具同轮并行；同轮多次 dispatch 合法。例外：map 输出文件 `read_file` 可与后续 think 或 plan 的 `dispatch_agent` 同轮；`read_memory` Agent 可与 `find`/`ls` 同轮并行（皆只读）
+- `dispatch_agent` 不能与普通工具同轮并行；同轮多次 dispatch 合法。例外：`read_memory` Agent 可与 `find`/`ls` 同轮并行（皆只读）
 - **`read_file` 项目文件前置检查（强制）**：每次 `read_file` 前按以下决策树**机械判定**（禁止主观裁决）——
 
   ```
   📂 这个文件是项目文件吗？
   ├─ .log 扩展名 或位于 logs/ 目录下 → 🔍 优先 search，勿完整 read_file（参见「日志文件处理策略」）
   ├─ 项目内所有文件（.py .js .ts .jsx .tsx .go .rs .java .c .cpp .h .rb .php .swift .kt .scala .sh .md .json .yaml .toml .ini .cfg .env 等，含 Makefile Dockerfile Cargo.toml CMakeLists.txt .rst .txt）→ 🛑 必须先 map
-  ├─ .chat/memory/ .chat/plan/ .chat/map/ → ✅ 元文件，直接读
+  ├─ .chat/memory/ .chat/plan/ → ✅ 元文件，直接读
+  ├─ .chat/map/ → ✅ 元文件，直接读（例外：map→think 间隙期间禁止读取——参见「先 map 后读码」规则 #2）
   └─ /usr/ site-packages/ (Python) / node_modules/ (Node.js) / vendor/ (Go) / target/ (Rust/Java) → ✅ 系统/第三方，直接读
   ```
   
