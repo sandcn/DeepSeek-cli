@@ -1,11 +1,12 @@
 """配置包 — 配置校验逻辑"""
 
 import os
+from typing import Optional
 
 from .defaults import CONFIG_KEYS, DEFAULTS, PROVIDERS
 
 
-def _detect_provider_from_api_key(api_key: str) -> tuple[str | None, str | None]:
+def _detect_provider_from_api_key(api_key: str) -> tuple[Optional[str], Optional[str]]:
     """从 API Key 前缀推断 provider 和默认模型。
 
     Returns:
