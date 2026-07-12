@@ -252,9 +252,10 @@ class InteractiveLoop:
         registry = get_interactive_registry()
         plugin = registry.get(cmd_name)
         if plugin is not None:
-            # 确保插件绑定了当前 loop 实例
-            if plugin.loop is None or plugin.loop is not self:
-                plugin.bind_loop(self)
+            # 确保插件绑定了当前 loop 实例（仅 InteractiveCommandPlugin 子类有此属性）
+            if hasattr(plugin, 'loop') and hasattr(plugin, 'bind_loop'):
+                if plugin.loop is None or plugin.loop is not self:
+                    plugin.bind_loop(self)
             state_dict = {"model": state.model, "retry": False, "prefill": ""}
             arg = content.split(maxsplit=1)[1] if len(content.split(maxsplit=1)) > 1 else ""
             from ..core.commands import CommandUiAdapter
@@ -267,7 +268,12 @@ class InteractiveLoop:
                 session=session,
                 ui_adapter=_ui_adapter,
             )
-            handled = await plugin.async_execute(ctx)
+            # 优先 async_execute（InteractiveCommandPlugin 子类/CompressCommand 有），
+            # 否则回退到同步 execute（纯 CommandPlugin 子类）
+            if hasattr(plugin, 'async_execute'):
+                handled = await plugin.async_execute(ctx)
+            else:
+                handled = await asyncio.to_thread(plugin.execute, ctx)
             if handled:
                 state.model = state_dict.get("model", state.model)
                 self._chat_ui.bottom_bar.set_model_name(state.model)
