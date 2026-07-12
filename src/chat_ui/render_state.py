@@ -2,6 +2,10 @@
 
 Layer 0 — 被 Layer 1 (_components) 和 Layer 2 (_renderer) 平等引用，
 消除 _components 依赖 _renderer 的分层违规。
+
+动效（2026-07-12）：
+  - close_reasoning() 分隔线：宽屏时使用 make_sep_gradient_enhanced 叠加 wave 波动效果
+  - 窄屏时降级为静态 make_sep_gradient 渐变分隔线
 """
 
 from __future__ import annotations
@@ -19,7 +23,8 @@ if TYPE_CHECKING:
 from .const import _THINKING_SEPARATOR
 
 from ..ui.tui._animator import AnimatorContext
-from ..ui.tui._text_utils import make_sep_gradient
+from ..ui.tui._terminal import is_narrow
+from ..ui.tui._text_utils import make_sep_gradient, make_sep_gradient_enhanced
 
 _logger = logging.getLogger(__name__)
 
@@ -123,7 +128,10 @@ class _RenderState:
                 pass
             _sep_width = min(_term_width - 2, 60)
             _bf = AnimatorContext.get_default().breath_frame
-            _sep = make_sep_gradient(_sep_width, start_color=45, end_color=237)
+            if is_narrow():
+                _sep = make_sep_gradient(_sep_width, start_color=45, end_color=237)
+            else:
+                _sep = make_sep_gradient_enhanced(_sep_width, start_color=45, end_color=237, effect="wave", frame=_bf)
             rr.write(f"\n  {_sep}")
             rr.close()
             self._safe_flush("reasoning")

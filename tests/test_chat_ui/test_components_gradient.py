@@ -24,10 +24,11 @@ from src.chat_ui.const import (
 
 
 class TestErrorBlockGradient:
-    """ErrorBlock 渐变色增强测试"""
+    """ErrorBlock 渐变色/动效增强测试"""
 
-    def test_render_uses_bright_red_style(self):
-        """ErrorBlock.render() 输出使用亮红加粗样式"""
+    def test_render_narrow_uses_gradient_style(self, monkeypatch):
+        """窄屏时 ErrorBlock.render() 输出使用静态 _STYLE_ERROR_GRADIENT"""
+        monkeypatch.setattr("src.chat_ui.components._error.is_narrow", lambda: True)
         block = ErrorBlock("test error")
         result = block.render()
         assert isinstance(result, Text)
@@ -37,8 +38,16 @@ class TestErrorBlockGradient:
                 f"预期 Style(bright_red, bold=True)，实际 {span.style}"
             )
 
+    def test_render_wide_uses_ansi_effect(self):
+        """宽屏时 ErrorBlock.render() 输出使用 ANSI 脉动+呼吸效果"""
+        block = ErrorBlock("test error")
+        result = block.render()
+        assert isinstance(result, Text)
+        assert "! " in result.plain
+        assert "test error" in result.plain
+
     def test_render_message_content_preserved(self):
-        """消息文本内容不受样式变更影响"""
+        """消息文本内容不受样式变更影响（宽屏/窄屏均适用）"""
         msg = "磁盘空间不足"
         block = ErrorBlock(msg)
         result = block.render()
@@ -88,15 +97,24 @@ class TestUserMsgBlockGradient:
 class TestNotificationBlockGradient:
     """NotificationBlock 渐变色增强测试"""
 
-    def test_render_uses_bright_green_style(self):
-        """NotificationBlock.render() 输出使用亮绿加粗样式"""
+    def test_render_narrow_uses_static_style(self, monkeypatch):
+        """窄屏时 render() 使用静态 _STYLE_NOTIFICATION_GRADIENT"""
+        monkeypatch.setattr("src.chat_ui.components._notification.is_narrow", lambda: True)
         block = NotificationBlock("task completed")
         result = block.render()
         assert isinstance(result, Text)
         for span in result.spans:
             assert span.style == _STYLE_NOTIFICATION_GRADIENT, (
-                f"预期 Style(bright_green, bold=True)，实际 {span.style}"
+                f"窄屏预期 Style(bright_green, bold=True)，实际 {span.style}"
             )
+
+    def test_render_wide_contains_content(self):
+        """宽屏时 render() 输出包含 · 前缀和消息文本"""
+        block = NotificationBlock("task completed")
+        result = block.render()
+        assert isinstance(result, Text)
+        assert "· " in result.plain
+        assert "task completed" in result.plain
 
     def test_render_message_content_preserved(self):
         """消息文本内容不受样式变更影响"""
