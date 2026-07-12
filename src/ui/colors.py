@@ -14,7 +14,9 @@
   - hex_to_256("#FF8800") → int: 将十六进制颜色转为最接近的 xterm-256 色号
   - gradient_step(start, end, steps, index) → int: 线性插值单步色号
   - gradient_range(start, end, steps) → list[int]: 生成均匀分布的色号列表
-  - 预定义调色板：GRADIENT_SUNSET、GRADIENT_OCEAN、GRADIENT_FOREST、GRADIENT_FIRE、GRADIENT_NEON
+  - 预定义调色板：GRADIENT_SUNSET、GRADIENT_OCEAN、GRADIENT_FOREST、GRADIENT_FIRE、GRADIENT_NEON、
+    GRADIENT_AURORA（极光渐变）、GRADIENT_CORAL（珊瑚渐变）、GRADIENT_MINT（薄荷渐变）、
+    GRADIENT_TWILIGHT（暮光渐变）
 
 渐变工具为纯函数（无 I/O 副作用），使用 @lru_cache 避免重复计算热点渐变，
 可直接在单元测试中独立验证。
@@ -76,6 +78,7 @@ __all__: list[str] = [
     # ── 预定义渐变调色板 ──
     "GRADIENT_SUNSET", "GRADIENT_OCEAN", "GRADIENT_FOREST",
     "GRADIENT_FIRE", "GRADIENT_NEON",
+    "GRADIENT_AURORA", "GRADIENT_CORAL", "GRADIENT_MINT", "GRADIENT_TWILIGHT",
 ]
 
 # ════════════════════════════════════════════════════════
@@ -204,3 +207,15 @@ GRADIENT_NEON: list[int] = [
     57, 93, 129, 165, 171, 177, 183, 189, 195, 87
 ]
 """霓虹渐变：紫(57)→粉→青(87)，10 阶（非均匀插值，手工精选）。"""
+
+GRADIENT_AURORA: list[int] = gradient_range(57, 47, 8)
+"""极光渐变：紫蓝(57)→亮绿(47)，8 阶。"""
+
+GRADIENT_CORAL: list[int] = gradient_range(203, 224, 6)
+"""珊瑚渐变：珊瑚红(203)→米白(224)，6 阶。"""
+
+GRADIENT_MINT: list[int] = gradient_range(29, 114, 6)
+"""薄荷渐变：深青绿(29)→柔和绿(114)，6 阶。"""
+
+GRADIENT_TWILIGHT: list[int] = gradient_range(53, 195, 8)
+"""暮光渐变：深紫(53)→亮青(195)，8 阶。"""

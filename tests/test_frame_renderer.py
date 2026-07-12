@@ -119,6 +119,64 @@ class TestClaudeTreeStyle:
         result_lines = [FrameRenderer.strip_ansi(l) for l in lines if "line 1" in FrameRenderer.strip_ansi(l)]
         assert len(result_lines) >= 1, "应存在 result 预览行"
 
+    def test_summary_bar_gradient_filled_0(self):
+        """进度条 filled=0 时仅含暗灰▱，不含▰。"""
+        r = self._make_renderer(width=120)
+        slots = {
+            "a": self._make_slot("a", "agent a", status="running"),
+            "b": self._make_slot("b", "agent b", status="running"),
+            "c": self._make_slot("c", "agent c", status="running"),
+        }
+        lines = r.render(slots, ["a", "b", "c"], now=time.time(), final=False)
+        raw_summary = lines[0]
+        # 应含▱但不含▰
+        assert "▱" in raw_summary, "filled=0 时应含暗灰▱"
+        assert "▰" not in raw_summary, "filled=0 时不应含▰"
+
+    def test_summary_bar_gradient_filled_partial(self):
+        """进度条部分填充时，▰ 使用琥珀→绿渐变色号。"""
+        r = self._make_renderer(width=120)
+        # 3 agents, 1 done → bar_width=12, filled=4
+        slots = {
+            "a": self._make_slot("a", "agent a", status="done"),
+            "b": self._make_slot("b", "agent b", status="running"),
+            "c": self._make_slot("c", "agent c", status="running"),
+        }
+        lines = r.render(slots, ["a", "b", "c"], now=time.time(), final=False)
+        raw_summary = lines[0]
+        # 第一个▰应使用琥珀色(214)
+        assert "\033[38;5;214m▰" in raw_summary, \
+            f"第一个▰应为琥珀色(214)，实际: {raw_summary!r}"
+        # 应有▱（未完成部分）
+        assert "▱" in raw_summary, "未完成部分应含▱"
+        # 应有▰（完成部分）
+        assert "▰" in raw_summary, "完成部分应含▰"
+
+    def test_summary_bar_gradient_all_done_final(self):
+        """final=True + done=total 时，进度条全绿。"""
+        r = self._make_renderer(width=120)
+        now = time.time()
+        slots = {
+            "a": self._make_slot("a", "agent a", status="done"),
+            "b": self._make_slot("b", "agent b", status="done"),
+            "c": self._make_slot("c", "agent c", status="done"),
+        }
+        lines = r.render(slots, ["a", "b", "c"], now=now, final=True)
+        raw_summary = lines[0]
+        # 完成状态使用 _C_DONE（全绿），不含▱
+        assert "▰" in raw_summary, "完成状态应含▰"
+        assert "▱" not in raw_summary, "完成状态不应含未完成▱"
+
+    def test_summary_bar_gradient_color_sequence(self):
+        """渐变进度条色号序列正确：琥珀(214)开始，绿(41)结束。"""
+        from src.ui.renderer.frame_renderer import _PROGRESS_AMBER_GREEN
+        assert _PROGRESS_AMBER_GREEN[0] == 214, \
+            f"渐变色起始应为214(琥珀)，实际: {_PROGRESS_AMBER_GREEN[0]}"
+        assert _PROGRESS_AMBER_GREEN[-1] == 41, \
+            f"渐变色结束应为41(绿)，实际: {_PROGRESS_AMBER_GREEN[-1]}"
+        assert len(_PROGRESS_AMBER_GREEN) == 8, \
+            f"渐变色长度应为8，实际: {len(_PROGRESS_AMBER_GREEN)}"
+
     def test_full_tree_output_snapshot(self):
         """3 Agent 完整树形输出快照比对。"""
         r = self._make_renderer(width=90)

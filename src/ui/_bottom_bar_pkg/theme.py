@@ -21,6 +21,8 @@
 
 from __future__ import annotations
 
+from ..colors import gradient_range
+
 
 # ── 底部栏布局配置 ──────────────────────────────────────────
 _BOTTOM_MIN_HEIGHT = 10     # 终端太小时跳过底部栏
@@ -35,7 +37,12 @@ _COLOR_DIM = "\033[38;5;242m"         # 灰色次要（分隔线/占位/统计�
 _COLOR_RESET = "\033[0m"              # 重置
 _COLOR_SELECT_BG = "\033[48;5;236m"   # 选中项高亮背景（深灰背景 236，较 DARK_GRAY_256 暗一级）
 _COLOR_SELECT_FG = "\033[38;5;15m"    # 选中项前景色（亮白 15，确保反显高对比度）
+_COLOR_BREATH_BG: list[int] = [235, 236, 237, 238, 239, 240, 239, 238, 237, 236]
+"""呼吸背景色号序列（10帧对称周期：暗灰→较亮暗灰→暗灰）。
+使用 gradient_range(235, 240, 6) 生成基色后手动构建对称呼吸周期。
+供 _CompletionPopup 选中项呼吸效果使用，与 _COLOR_SELECT_BG 静态色共存。"""
 _COLOR_SEP = "\033[38;5;237m"         # 分隔线深灰——对齐 DARK_GRAY_256(237)
+_COLOR_SEP_START = "\033[38;5;45m"    # 分隔线起始青色——对齐 CYAN_256(45)
 _COLOR_COMPLETE_TITLE = "\033[1;38;5;45m"   # 补全弹窗标题色（亮青加粗）——对齐 CYAN_256(45)
 
 # ── 补全弹窗视觉增强 ──────────────────────────────────────
@@ -93,3 +100,21 @@ def _blessed_bg(color_num: int) -> str:
 _PLACEHOLDER_TEXT = "输入消息 · /help 查看命令 · Ctrl+N 切换模型 · Tab 补全"
 _PLACEHOLDER_COMPACT = "/help · Ctrl+N · Tab"  # 补全弹窗可见时使用
 _PLACEHOLDER_STREAMING = "AI 生成中..."   # 流式输出期间使用
+
+
+# ── 全宽渐变分隔线 ─────────────────────────────────
+def make_sep_gradient(width: int) -> str:
+    """生成全宽渐变分隔线（青色→深灰）。
+
+    每个字符为 ━ (U+2501)，色号从青色(45)逐级渐变到深灰(237)。
+    窄屏降级由调用方通过 is_narrow() 控制，本函数不处理降级。
+
+    Args:
+        width: 分隔线字符数（通常为终端宽度 - 2）。
+
+    Returns:
+        带 ANSI 256 色渐变的完整分隔线字符串（含 RESET）。
+    """
+    from ..tui._text_utils import build_gradient_ansi  # 延迟导入避免循环依赖
+    colors = gradient_range(45, 237, width)
+    return build_gradient_ansi(colors)

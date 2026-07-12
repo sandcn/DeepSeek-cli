@@ -32,6 +32,7 @@ from .theme import (
     _PLACEHOLDER_COMPACT,
     _PLACEHOLDER_STREAMING,
     _PLACEHOLDER_TEXT,
+    make_sep_gradient,
 )
 from .cursor import (
     _expand_tabs,
@@ -140,8 +141,13 @@ def _draw_all_locked(bar: _BottomBar, out, height: int) -> None:
         buf.append(_blessed_move_clear(r))
 
     tw = bar._term_width()
-    sep_len = min(tw - 2, 40)
-    sep = f"{_COLOR_SEP}\u2501{_COLOR_RESET}" * sep_len
+    # 延迟导入避免循环依赖（tui → _bottom_bar → draw → tui）
+    from ..tui._terminal import is_narrow
+    if is_narrow():
+        sep_len = min(tw - 2, 40)
+        sep = f"{_COLOR_SEP}\u2501{_COLOR_RESET}" * sep_len
+    else:
+        sep = make_sep_gradient(tw - 2)
     buf.append(_blessed_cursor_goto(r1, 1) + "  " + sep)
 
     # ── subagent 面板行（在分隔线与状态行之间） ──

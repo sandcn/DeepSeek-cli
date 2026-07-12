@@ -13,7 +13,7 @@ import re
 import unicodedata
 from typing import Dict, List
 
-from ..colors import RESET as _C_RESET
+from ..colors import RESET as _C_RESET, gradient_range as _gradient_range
 from ..parallel._config import (
     SUMMARY_SEPARATOR as _DEFAULT_SUMMARY_SEPARATOR,
     SUMMARY_ICON_RUNNING as _DEFAULT_SUMMARY_ICON_RUNNING,
@@ -51,6 +51,10 @@ _ANSI_RE = re.compile(r'\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])')
 _TRUNC_MARGIN = 2
 _TRUNC_ELLIPSIS_SPACE = 3
 _TRUNC_MIN_WIDTH = 10
+
+# ── 进度条渐变调色板 ────────────────────────────────────
+# 琥珀(214)→绿(41) 8阶渐变，用于进度条完成部分多色渲染
+_PROGRESS_AMBER_GREEN: list[int] = _gradient_range(214, 41, 8)
 
 # ── 树形缩进常量 ────────────────────────────────────────
 _INDENT = "  "  # 子行统一缩进（2 空格），用于 phase/tool/result 行
@@ -294,13 +298,16 @@ class FrameRenderer:
             # ── 运行中：进度条 + 统计 ──
             bar_width = min(12, total_agents * 4)
             filled = int(bar_width * done_count / total_agents) if total_agents else 0
-            bar = (
-                _C_RUNNING + "▰" * filled
-                + _C_DIMMEST + "▱" * (bar_width - filled)
-                + _C_RESET
-            ) if filled > 0 else (
-                _C_DIMMEST + "▱" * bar_width + _C_RESET
-            )
+            if filled > 0:
+                # 琥珀→绿渐变：每个 ▰ 使用不同色号
+                _gradient = _PROGRESS_AMBER_GREEN
+                _parts: list[str] = []
+                for _i in range(filled):
+                    _ci = _i if _i < len(_gradient) else len(_gradient) - 1
+                    _parts.append(f"\033[38;5;{_gradient[_ci]}m▰\033[0m")
+                bar = "".join(_parts) + _C_DIMMEST + "▱" * (bar_width - filled) + _C_RESET
+            else:
+                bar = _C_DIMMEST + "▱" * bar_width + _C_RESET
             icon = f"{_C_RUNNING}{self._summary_icon_running}{_C_RESET}"
             summary = (
                 f"{icon} {_C_SUMMARY_DIM}{total_agents} agents{_C_RESET}"

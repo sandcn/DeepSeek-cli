@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from rich.text import Text
 
-from ..const import _STYLE_SUCCESS
+from ..const import _STYLE_NOTIFICATION_GRADIENT
 from ._base import TuiComponent
 
 
@@ -17,4 +17,4 @@ class NotificationBlock(TuiComponent):
         self.text = text
 
     def render(self) -> Text:
-        return Text.assemble(("\n  · ", _STYLE_SUCCESS), (self.text, _STYLE_SUCCESS))
+        return Text.assemble(("\n  · ", _STYLE_NOTIFICATION_GRADIENT), (self.text, _STYLE_NOTIFICATION_GRADIENT))

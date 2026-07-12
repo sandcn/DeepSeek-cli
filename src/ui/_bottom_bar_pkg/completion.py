@@ -13,6 +13,7 @@ from typing import TYPE_CHECKING
 
 from .._blessed import get_terminal
 from .theme import (
+    _COLOR_BREATH_BG,
     _COLOR_COMPLETE_CMD_PREFIX,
     _COLOR_COMPLETE_DIR,
     _COLOR_COMPLETE_MATCH,
@@ -56,6 +57,7 @@ class _CompletionPopup:
         self._is_selection: bool = False  # 是否为选择模式
         self._idx: int = 0               # 当前选中索引
         self._popup_height: int = 0      # 弹窗所占行数
+        self._breath_phase: int = 0      # 呼吸效果相位（0-9 循环）
         self._tracker = cursor_tracker
 
     @staticmethod
@@ -150,6 +152,17 @@ class _CompletionPopup:
         self._idx = (self._idx + delta) % n
         return self._idx
 
+    # ── 呼吸效果 ──────────────────────────────────────────
+
+    def tick_breath(self) -> None:
+        """推进呼吸相位，在 [0, len(_COLOR_BREATH_BG)-1] 循环。"""
+        self._breath_phase = (self._breath_phase + 1) % len(_COLOR_BREATH_BG)
+
+    @property
+    def _breath_bg_color(self) -> int:
+        """当前呼吸相位对应的背景色号。"""
+        return _COLOR_BREATH_BG[self._breath_phase]
+
     def get_selected(self) -> tuple[str, int, str]:
         """获取当前选中补全项的数据。
 
@@ -165,9 +178,8 @@ class _CompletionPopup:
             self._orig_prefix,
         )
 
-    @staticmethod
     def _render_item_line(
-        out, r: int, item: str, item_type: str,
+        self, out, r: int, item: str, item_type: str,
         match_prefix: str, cell_w: int, is_selected: bool,
     ) -> None:
         """渲染单行候选项（含类型颜色和匹配高亮）。
@@ -194,9 +206,12 @@ class _CompletionPopup:
         pad = " " * max(0, cell_w - _visual_len(truncated_raw))
 
         if is_selected:
+            # 选中项使用呼吸背景色（动态脉动），降级回退 _COLOR_SELECT_BG
+            bg_color = self._breath_bg_color
+            bg_ansi = f"\033[48;5;{bg_color}m"
             out.write(move_clear(r)
-                      + f" {_COLOR_SELECT_BG}{_COLOR_SELECT_FG}\u25b6{_COLOR_RESET}"
-                      f"{_COLOR_SELECT_BG}{_COLOR_SELECT_FG} {display}{pad}{_COLOR_RESET}")
+                      + f" {bg_ansi}{_COLOR_SELECT_FG}\u25b6{_COLOR_RESET}"
+                      f"{bg_ansi}{_COLOR_SELECT_FG} {display}{pad}{_COLOR_RESET}")
         else:
             out.write(move_clear(r)
                       + f"  {display}{pad}")
@@ -270,6 +285,8 @@ class _CompletionPopup:
     def render_cycle_update(self, out, popup_r_start: int, term_width: int) -> None:
         """增量更新选项行和底部快捷键提示（cycle 时使用，仅重绘弹窗行）。
 
+        每次调用自动推进呼吸相位，使选中项背景色脉动变化。
+
         Args:
             out: stdout 文件对象。
             popup_r_start: 弹窗第一行（标题行）的行号。
@@ -277,6 +294,9 @@ class _CompletionPopup:
         """
         if not self._visible or not self._items:
             return
+
+        # 推进呼吸相位，使选中项背景色脉动
+        self.tick_breath()
 
         try:
             term = get_terminal()

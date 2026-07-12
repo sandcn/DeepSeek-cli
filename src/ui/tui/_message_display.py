@@ -11,6 +11,7 @@
 
 from __future__ import annotations
 
+import logging
 from src._compat import dataclass
 from typing import Any
 import os
@@ -20,7 +21,7 @@ from ...core.sandbox_manager import get_sandbox_manager as _get_sandbox_manager
 from ._terminal import (get_terminal_width, NARROW_THRESHOLD,
                         is_narrow, narrow_truncate, narrow_indent,
                         narrow_sep_width)
-from ._text_utils import truncate
+from ._text_utils import truncate, build_gradient_ansi
 from ..output_target import IOutputTarget, TerminalTarget
 
 
@@ -135,8 +136,11 @@ class _OutputFileAdapter:
 from ...core.constants import (
     CYAN_256, GRAY_256 as _D, RESET as _R,
     YELLOW_256 as _Y, BRIGHT_CYAN_256 as _BC, BRIGHT_WHITE_256 as _BW,
-    BOLD as _BD, DARK_GRAY_256 as _DG, BRIGHT_GREEN_256 as _BG,
+    BOLD as _BD, BRIGHT_GREEN_256 as _BG,
 )
+from ..colors import gradient_range
+
+_logger = logging.getLogger(__name__)
 
 # ── 常量 ─────────────────────────────────────────────────
 
@@ -147,21 +151,77 @@ _LINE_TRUNCATE_WIDTH = 55
 _SEP_LINE_WIDTH = 25
 _NARROW_SEP_REDUCTION = 10
 
-# ── 美观分隔线（256 色 + 渐变增强版） ─────────────────────
+# ── 美观分隔线（256 色 + 全宽渐变增强版） ───────────────────
 
-# _MSG_SEP: 渐变双线 ═══，左半 237→238→239 形成渐变效果
-_MSG_SEP = (
-    f"  \033[38;5;237m\u2501\033[38;5;238m\u2501\033[38;5;239m\u2501\033[0m"
-)
-# _THINK_SEP: 青色(45) ━━ + ⚡ 闪电图标 + 灰色"思考"标签
-_THINK_SEP = (
-    f"  {CYAN_256}\u2501\u2501{_R}"                   # ━━ (CYAN_256=45)
-    f"  {CYAN_256}\u26a1{_R}"                         #  ⚡ (CYAN_256=45)
-    f"{_DG}\u601d\u8003{_R}"                          # 思考 (DARK_GRAY_256=237)
-    f"  {_D}\u2501\u2501{_R}"                         # ━━ (GRAY_256=242)
-)
-# _THINK_END: 青色略淡(39) ━━
-_THINK_END = f"  \033[38;5;39m\u2501\u2501{_R}"
+def _make_gradient_sep(start_color: int = 45, end_color: int = 237, steps: int = 0) -> str:
+    """生成全宽渐变分隔线，从 start_color 到 end_color 渐变。
+
+    每列一个色号，使用 gradient_range 生成均匀渐变序列。
+    窄屏时自动缩短宽度（通过 narrow_sep_width），保持窄屏简洁性。
+
+    Args:
+        start_color: 起始 256 色号（默认 45/青色）
+        end_color: 结束 256 色号（默认 237/深灰）
+        steps: 渐变步数（= 字符数）。0 表示根据终端宽度自适应。
+
+    Returns:
+        含 ANSI 256 色号的渐变分隔线字符串，前缀两个空格缩进。
+        极窄终端（宽度 ≤ 4）时降级为单色分隔线。
+    """
+    if steps <= 0:
+        tw = get_terminal_width()
+        if tw <= 0:
+            # 极窄兜底：单色分隔线，避免 gradient_range 空列表
+            _logger.debug("_make_gradient_sep: tw=%d <= 0, fallback to mono sep", tw)
+            return f"  {'\u2501' * 8}{_R}"
+        if tw >= NARROW_THRESHOLD:
+            steps = min(tw - 4, 80)  # 宽屏全宽
+        else:
+            steps = narrow_sep_width(50)  # 窄屏自适应缩短
+        if steps < 2:
+            steps = 2  # 自动检测时最少 2 步确保起止色号都可见
+        _logger.debug(
+            "_make_gradient_sep: tw=%d, steps=%d", tw, steps,
+        )
+    colors = gradient_range(start_color, end_color, steps)
+    return "  " + build_gradient_ansi(colors)
+
+
+def _make_think_sep() -> str:
+    """生成全宽渐变思考分隔线。
+
+    左右两侧为青(45)→深灰(237)渐变，中间为 ⚡思考 标签。
+    窄屏时自动缩短宽度。
+    """
+    tw = get_terminal_width()
+    if tw >= NARROW_THRESHOLD:
+        full_width = min(tw - 4, 80)
+    else:
+        full_width = narrow_sep_width(50)
+    # "  ⚡思考  " 视觉宽度约 8 字符
+    center_text = f"  {CYAN_256}\u26a1\u601d\u8003{_R}  "
+    half_width = max(4, (full_width - 8) // 2)
+    left_colors = gradient_range(45, 237, half_width)
+    right_colors = gradient_range(45, 237, half_width)
+    left = "".join(f"\033[38;5;{c}m\u2501" for c in left_colors)
+    right = "".join(f"\033[38;5;{c}m\u2501" for c in right_colors)
+    return f"  {left}{_R}{center_text}{right}{_R}"
+
+
+def _make_think_end() -> str:
+    """生成全宽渐变思考结束标记。
+
+    使用青(45)→深灰(237)渐变，宽度为思考分隔线的一半。
+    """
+    tw = get_terminal_width()
+    if tw >= NARROW_THRESHOLD:
+        full_width = min(tw - 4, 80)
+    else:
+        full_width = narrow_sep_width(50)
+    width = max(4, full_width // 2)
+    colors = gradient_range(45, 237, width)
+    line = "".join(f"\033[38;5;{c}m\u2501" for c in colors)
+    return f"  {line}{_R}"
 
 # ── 美观角色标签（256 色背景增强版） ──────────────────────
 # 窄屏时通过 _role_tag() 函数降级为无背景色（仅保留文字色）
@@ -364,8 +424,8 @@ def _display_tool_calls(i: int, icon: str, m: dict, sandbox_text: str) -> None:
     text = content[:_TOOL_CALL_PREVIEW_LEN].replace("\n", " ") if content else ""
     if len(content) > _TOOL_CALL_PREVIEW_LEN:
         text += "…"
-    # 使用渐变分隔线 _MSG_SEP（P2 修复：替换内联单色分隔线为渐变分隔线）
-    _manager.write_line(f"\n  {_MSG_SEP}")
+    # 使用全宽渐变分隔线（青→深灰，每列一色号）
+    _manager.write_line(f"\n{_make_gradient_sep()}")
     # 窄屏时使用 _role_tag() 降级无背景色版本（P2 修复：避免直接使用带背景色的常量）
     tag = _role_tag("tool") if is_narrow() else _TOOL_TAG
     _manager.write_line(f"  {tag}  {_D}{icon}{_R} {_Y}{names}{_R}{_D}{sandbox_text}{_R}")
@@ -375,8 +435,8 @@ def _display_tool_calls(i: int, icon: str, m: dict, sandbox_text: str) -> None:
 
 def _display_user(i: int, icon: str, content: str, sandbox_text: str) -> None:
     """显示用户消息 — 每行以 > 开头（白色加粗）。"""
-    # 使用渐变分隔线 _MSG_SEP（P2 修复：替换内联单色分隔线为渐变分隔线）
-    _manager.write_line(f"\n  {_MSG_SEP}")
+    # 使用全宽渐变分隔线（青→深灰，每列一色号）
+    _manager.write_line(f"\n{_make_gradient_sep()}")
     # 窄屏时使用 _role_tag() 降级无背景色版本（P2 修复：避免直接使用带背景色的常量）
     tag = _role_tag("user") if is_narrow() else _USER_TAG
     _manager.write_line(f"  {_BW}{_BD}>{_R} {tag}  {_D}#{i}{_R}{_D}{sandbox_text}{_R}")
@@ -388,8 +448,8 @@ def _display_assistant(
     i: int, icon: str, m: dict, sandbox_text: str, speed: int = 0,
 ) -> None:
     """显示助手消息（含 reasoning + content Markdown 渲染）— 使用主题色彩。"""
-    # 使用渐变分隔线 _MSG_SEP（P2 修复：替换内联单色分隔线为渐变分隔线）
-    _manager.write_line(f"\n  {_MSG_SEP}")
+    # 使用全宽渐变分隔线（青→深灰，每列一色号）
+    _manager.write_line(f"\n{_make_gradient_sep()}")
     # 窄屏时使用 _role_tag() 降级无背景色版本（P2 修复：避免直接使用带背景色的常量）
     tag = _role_tag("assistant") if is_narrow() else _ASST_TAG
     _manager.write_line(f"  {tag}  {_D}#{i}{_R}{_D}{sandbox_text}{_R}")
@@ -397,7 +457,7 @@ def _display_assistant(
     reasoning = m.get("reasoning_content") or ""
     _output_file = _OutputFileAdapter(_manager.target)
     if reasoning:
-        _manager.write_line(f"\n  {_THINK_SEP}")
+        _manager.write_line(f"\n{_make_think_sep()}")
         _manager.write_line("")
         reason_renderer = IncrementalRenderer(
             typing_speed=speed, show_indicator=False, style="dim",
@@ -405,7 +465,7 @@ def _display_assistant(
         )
         reason_renderer.write(reasoning)
         reason_renderer.close()
-        _manager.write_line(f"\n  {_THINK_END}")
+        _manager.write_line(f"\n{_make_think_end()}")
     if content and len(content) > _ASSISTANT_MD_THRESHOLD:
         renderer = IncrementalRenderer(
             typing_speed=speed, show_indicator=False,
@@ -429,8 +489,12 @@ def _display_messages(
     """恢复会话后展示所有消息内容 — 使用主题色彩美化。"""
     sep_width = narrow_sep_width(50)
     sep = "\u2501" * sep_width
-    # ★ 美化：亮青色花括号 + 信封图标
-    header = f"  {_BC}\u2501{_R}  {_BC}\u2770\u2709\u6d88\u606f\u5217\u8868\u2771{_R}  {_BC}\u2501{_R}"  # ━  ❰✉消息列表❱  ━
+    # ★ 美化：渐变青色花括号 + 信封图标
+    # 左右装饰 ━ 从中心向外渐变：中心亮青(45)→边缘深灰(237)
+    _header_side_colors = gradient_range(237, 45, 4)  # 深灰→亮青（从左到中心）
+    _header_side_left = "".join(f"\033[38;5;{c}m\u2501" for c in _header_side_colors)
+    _header_side_right = "".join(f"\033[38;5;{c}m\u2501" for c in reversed(_header_side_colors))  # 亮青→深灰（从中心到右）
+    header = f"  {_header_side_left}{_R}  {_BC}\u2770\u2709\u6d88\u606f\u5217\u8868\u2771{_R}  {_header_side_right}{_R}"  # ━  ❰✉消息列表❱  ━
     _manager.write_line(f"\n{header}")
     for i, m in enumerate(data):
         role = m.get("role", "?")

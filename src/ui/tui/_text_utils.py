@@ -2,6 +2,9 @@
 
 消除 _message_display._truncate() 和 message_editor._truncate_text()
 两个语义相同但签名不同的重复定义，统一为单一 truncate() 函数。
+
+渐变分隔线工具 — 供 _message_display 和 _bottom_bar_pkg 共享使用，
+避免渐变分隔线 ANSI 构建逻辑在两处重复实现。
 """
 
 from __future__ import annotations
@@ -40,4 +43,29 @@ def truncate(
     return text[:max_len] + suffix
 
 
-__all__ = ["truncate"]
+# ── 渐变 ANSI 构建工具（共享模块，避免重复实现） ────────────
+
+def build_gradient_ansi(colors: list[int], char: str = "\u2501", suffix_reset: bool = True) -> str:
+    """从 256 色号列表构建渐变 ANSI 字符串。
+
+    每个字符使用对应色号，适用于分隔线/进度条等场景。
+    色号列表可通过 src.ui.colors.gradient_range() 生成。
+
+    Args:
+        colors: 256 色号列表（0-255）。
+        char: 显示的字符，默认 ━ (U+2501)。
+        suffix_reset: 是否在末尾追加 RESET 序列，默认 True。
+
+    Returns:
+        带 ANSI 256 色号的渐变字符串。
+    """
+    parts: list[str] = []
+    for c in colors:
+        parts.append(f"\033[38;5;{c}m{char}")
+    result = "".join(parts)
+    if suffix_reset:
+        result += "\033[0m"
+    return result
+
+
+__all__ = ["truncate", "build_gradient_ansi"]

@@ -1,4 +1,13 @@
-"""并行显示常量与自适应配置 — Claude Code 风格"""
+"""并行显示常量与自适应配置 — Claude Code 风格
+
+Spinner 动画集（通过 get_spinner_frames() 按名称获取）：
+  - braille:   Braille 点阵动画（12 帧，基准速度 0.08s）
+  - pulse:     脉冲动画（14 帧，▁→█→▁ 呼吸式脉冲，速度 0.05s）
+  - circle:    圆周旋转动画（8 帧，速度 0.10s）
+  - dots:      点阵呼吸动画（15 帧，⡀→⣿→⡀ 脉动，速度 0.06s）
+  - wave:      波浪动画（12 帧，⢀→⢠→⢸→⢻ 波浪起伏，速度 0.08s）
+  - typing:    打字点动画（8 帧，⠁→⠈→⠐→⠠→⢀→⡀→⠄→⠂ 逐位点亮旋转，速度 0.12s）
+"""
 
 from __future__ import annotations
 
@@ -64,12 +73,25 @@ SPINNER_DOTS = [
     "⣾", "⣶", "⣦", "⣤", "⣄", "⣀", "⡀",
 ]
 
+# 波浪动画 — 12 帧（⢀→⢠→⢸→⢻ 波浪起伏）
+SPINNER_WAVE = [
+    "⢀", "⢠", "⢰", "⢸", "⢹", "⢺",
+    "⢻", "⢺", "⢹", "⢸", "⢰", "⢠",
+]
+
+# 打字点动画 — 8 帧（⠁→⠈→⠐→⠠→⢀→⡀→⠄→⠂ 逐位点亮旋转）
+SPINNER_TYPING = [
+    "⠁", "⠈", "⠐", "⠠", "⢀", "⡀", "⠄", "⠂",
+]
+
 # ── Spinner 集合字典 ────────────────────────────────
 SPINNER_SETS: dict[str, list[str]] = {
     "braille": SPINNER_BRAILLE,
     "pulse": SPINNER_PULSE,
     "circle": SPINNER_CIRCLE,
     "dots": SPINNER_DOTS,
+    "wave": SPINNER_WAVE,
+    "typing": SPINNER_TYPING,
 }
 
 # 保留原 SPINNER_FRAMES 兼容别名（指向 SPINNER_BRAILLE 前 8 帧）
@@ -86,6 +108,8 @@ SPINNER_SPEED: dict[str, float] = {
     "pulse": 0.05,
     "circle": 0.10,
     "dots": 0.06,
+    "wave": 0.08,
+    "typing": 0.12,
 }
 
 
@@ -93,7 +117,8 @@ def get_spinner_frames(name: str = "braille") -> tuple[list[str], float]:
     """获取指定名称的 spinner 帧列表和帧间隔。
 
     Args:
-        name: spinner 名称（"braille" | "pulse" | "circle" | "dots"）
+        name: spinner 名称
+              （"braille" | "pulse" | "circle" | "dots" | "wave" | "typing"）
 
     Returns:
         (帧列表, 帧间隔秒数)

@@ -21,6 +21,11 @@ _STYLE_SUCCESS = Style(color="green")
 _STYLE_ERROR = Style(color="red", bold=True)
 _STYLE_BOLD = Style(bold=True)
 
+# ── 渐变色增强 Style（ChatUI 第三阶段美化，步骤 7） ──
+_STYLE_ERROR_GRADIENT = Style(color="bright_red", bold=True)        # 亮红增强
+_STYLE_USER_GRADIENT = Style(color="cyan", bold=True)               # 青色渐变
+_STYLE_NOTIFICATION_GRADIENT = Style(color="bright_green", bold=True)  # 亮绿增强
+
 _THINKING_HEADER = "\n  ─ 思考 ─\n"
 
 # ── 解析进度清除哨兵 ───────────────────────────────────

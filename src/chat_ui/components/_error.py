@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from rich.text import Text
 
-from ..const import _STYLE_ERROR, _MAX_ERROR_LENGTH
+from ..const import _STYLE_ERROR_GRADIENT, _MAX_ERROR_LENGTH
 from ..utils import _truncate_msg
 from ._base import TuiComponent
 
@@ -18,4 +18,4 @@ class ErrorBlock(TuiComponent):
         self.message = _truncate_msg(message, _MAX_ERROR_LENGTH)
 
     def render(self) -> Text:
-        return Text.assemble(("\n  ! ", _STYLE_ERROR), (self.message, _STYLE_ERROR))
+        return Text.assemble(("\n  ! ", _STYLE_ERROR_GRADIENT), (self.message, _STYLE_ERROR_GRADIENT))

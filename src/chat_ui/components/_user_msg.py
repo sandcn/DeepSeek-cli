@@ -8,7 +8,7 @@ from __future__ import annotations
 from rich.text import Text
 
 from ._base import TuiComponent
-from ..const import _STYLE_BOLD
+from ..const import _STYLE_USER_GRADIENT
 
 
 class UserMsgBlock(TuiComponent):
@@ -17,4 +17,4 @@ class UserMsgBlock(TuiComponent):
         self.text = text
 
     def render(self) -> Text:
-        return Text.assemble(("\n  > ", _STYLE_BOLD), (self.text, _STYLE_BOLD))
+        return Text.assemble(("\n  > ", _STYLE_USER_GRADIENT), (self.text, _STYLE_USER_GRADIENT))

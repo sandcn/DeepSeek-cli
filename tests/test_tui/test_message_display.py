@@ -17,7 +17,7 @@ from src.ui.tui._message_display import (
     _scroll_window,
     _role_icon, _truncate, _format_sandbox_text,
     _msg_line, _make_message_lines, MessageDisplayContext,
-    _role_tag, _MSG_SEP, _THINK_SEP, _THINK_END,
+    _role_tag, _make_gradient_sep, _make_think_sep, _make_think_end,
     _USER_TAG, _ASST_TAG, _TOOL_TAG,
 )
 from src.ui.tui._terminal import is_narrow
@@ -290,29 +290,52 @@ class TestRoleTag256:
 
 
 class TestSeparator256:
-    """分隔线常量 256 色升级测试。"""
+    """分隔线函数 256 色渐变测试。"""
 
-    def test_msg_sep_contains_256color(self):
-        """_MSG_SEP 含 256 色前景码（38;5;）。"""
-        assert "38;5;237" in _MSG_SEP
-        assert "38;5;238" in _MSG_SEP or "38;5;239" in _MSG_SEP
-        assert "\u2501" in _MSG_SEP  # 厚分隔线 ═
+    def test_gradient_sep_contains_256color(self):
+        """_make_gradient_sep() 返回值含 256 色前景码（38;5;）和 ━ 字符。"""
+        sep = _make_gradient_sep(steps=6)
+        assert "38;5;" in sep
+        assert "\u2501" in sep  # 厚分隔线 ━
+        assert "\033[0m" in sep  # 重置序列
+
+    def test_gradient_sep_starts_cyan_ends_darkgray(self):
+        """渐变分隔线起始色为青色(45)，结束色为深灰(237)。"""
+        sep = _make_gradient_sep(steps=6)
+        assert "38;5;45" in sep    # 青色起始
+        assert "38;5;237" in sep   # 深灰结束
+
+    def test_gradient_sep_custom_colors(self):
+        """指定起始结束色的渐变分隔线正确生成。"""
+        sep = _make_gradient_sep(start_color=29, end_color=114, steps=4)
+        assert "38;5;29" in sep    # 薄荷起始
+        assert "38;5;114" in sep   # 薄荷结束
+
+    def test_gradient_sep_step_count(self):
+        """指定 steps 的渐变分隔线字符数正确。"""
+        sep = _make_gradient_sep(steps=10)
+        # 10个颜色 + "  "前缀 + 重置序列，每个颜色由 38;5;NNNm 控制
+        count = sep.count("\u2501")
+        assert count == 10, f"expected 10 ━ chars, got {count}"
 
     def test_think_sep_contains_256color(self):
-        """_THINK_SEP 含青色(45)和多段 256 色码。"""
-        assert "38;5;45" in _THINK_SEP    # 青色
-        assert "38;5;237" in _THINK_SEP   # 深灰思考标签
-        assert "\u26a1" in _THINK_SEP     # ⚡ 闪电图标
+        """_make_think_sep() 含青色(45)和多段 256 色码。"""
+        sep = _make_think_sep()
+        assert "38;5;45" in sep    # 青色
+        assert "38;5;237" in sep   # 深灰
+        assert "\u26a1" in sep     # ⚡ 闪电图标
 
     def test_think_end_contains_256color(self):
-        """_THINK_END 含青色略淡(39)。"""
-        assert "38;5;39" in _THINK_END
-        assert "\u2501" in _THINK_END
+        """_make_think_end() 含 256 色码和 ━ 字符。"""
+        end = _make_think_end()
+        assert "38;5;" in end
+        assert "\u2501" in end
 
     def test_separators_have_reset(self):
-        """所有分隔线常量含重置序列。"""
-        for sep in (_MSG_SEP, _THINK_SEP, _THINK_END):
-            assert "\033[0m" in sep
+        """所有分隔线函数返回值含重置序列。"""
+        for make_fn in (_make_gradient_sep, _make_think_sep, _make_think_end):
+            result = make_fn() if make_fn != _make_gradient_sep else _make_gradient_sep(steps=6)
+            assert "\033[0m" in result, f"{make_fn.__name__} missing reset"
 
 
 class TestMessageDisplayColors:
