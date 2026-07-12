@@ -32,6 +32,7 @@ from .theme import (
     _PLACEHOLDER_COMPACT,
     _PLACEHOLDER_STREAMING,
     _PLACEHOLDER_TEXT,
+    get_prompt_breath_color,
     make_sep_gradient,
 )
 from .cursor import (
@@ -52,6 +53,7 @@ __all__ = [
 
 def _draw_input_lines_locked(
     bar: _BottomBar, out, text: str, r_start: int, term_width: int,
+    breath_frame: int = 0,
 ) -> None:
     """绘制输入行（需持有 output_lock），超长文本自动拆行。
 
@@ -64,8 +66,11 @@ def _draw_input_lines_locked(
         text: 输入文本（空字符串显示占位提示）。
         r_start: 第一行输入区的行号（分隔线+状态行之后）。
         term_width: 当前终端宽度（由调用方传入，避免重复系统调用）。
+        breath_frame: 呼吸动画帧号（用于提示符颜色变化）。
     """
     max_input = max(1, term_width - 4)
+    # 延迟导入避免循环依赖（tui → _bottom_bar → draw → tui）
+    from ..tui._terminal import is_narrow as _is_narrow_fn
     expanded = _expand_tabs(text)
     wrapped = _wrap_by_width(expanded, max_input)
     bar._cached_wrapped_for = text
@@ -87,19 +92,27 @@ def _draw_input_lines_locked(
         r = text_start + i
         if i == 0:
             if text:
+                if _is_narrow_fn():
+                    prompt_color = _COLOR_DEEP_CYAN
+                else:
+                    prompt_color = get_prompt_breath_color(breath_frame)
                 buf.append(_blessed_move_clear(r)
-                           + f"{_COLOR_DEEP_CYAN}>{_COLOR_RESET}"
+                           + f"{prompt_color}>{_COLOR_RESET}"
                            f" {segment}")
             else:
+                if _is_narrow_fn():
+                    prompt_color = _COLOR_DEEP_CYAN
+                else:
+                    prompt_color = get_prompt_breath_color(breath_frame)
                 if bar._status_active:
                     ph = _PLACEHOLDER_STREAMING
                     buf.append(_blessed_move_clear(r)
-                               + f"{_COLOR_DEEP_CYAN}>{_COLOR_RESET}"
+                               + f"{prompt_color}>{_COLOR_RESET}"
                                f" {_COLOR_DIM}{ph}{_COLOR_RESET}")
                 else:
                     ph = _PLACEHOLDER_COMPACT if bar._completion.is_visible else _PLACEHOLDER_TEXT
                     buf.append(_blessed_move_clear(r)
-                               + f"{_COLOR_DEEP_CYAN}>{_COLOR_RESET}"
+                               + f"{prompt_color}>{_COLOR_RESET}"
                                f" {_COLOR_DIM}{ph}{_COLOR_RESET}")
         else:
             buf.append(_blessed_move_clear(r)
@@ -113,7 +126,7 @@ def _draw_input_lines_locked(
         out.write(''.join(buf))
 
 
-def _draw_all_locked(bar: _BottomBar, out, height: int) -> None:
+def _draw_all_locked(bar: _BottomBar, out, height: int, breath_frame: int = 0) -> None:
     """绘制全部底部行（需持有 output_lock），超长文本自动拆行。
 
     布局（简约风）：
@@ -126,6 +139,12 @@ def _draw_all_locked(bar: _BottomBar, out, height: int) -> None:
     终端高度不足以容纳底部栏时跳过绘制。
 
     性能优化：批量收集 ANSI 序列后一次写入，减少独立 write() 次数。
+
+    Args:
+        bar: _BottomBar 实例。
+        out: stdout 文件对象。
+        height: 终端高度。
+        breath_frame: 呼吸动画帧号（用于提示符颜色变化）。
     """
     total = bar._bottom_lines
     if height - total < 1:
@@ -141,13 +160,18 @@ def _draw_all_locked(bar: _BottomBar, out, height: int) -> None:
         buf.append(_blessed_move_clear(r))
 
     tw = bar._term_width()
-    # 延迟导入避免循环依赖（tui → _bottom_bar → draw → tui）
-    from ..tui._terminal import is_narrow
-    if is_narrow():
+    # 延迟导入避免循环依赖
+    from ..tui._terminal import is_narrow as _is_narrow_fn
+    if _is_narrow_fn():
         sep_len = min(tw - 2, 40)
         sep = f"{_COLOR_SEP}\u2501{_COLOR_RESET}" * sep_len
     else:
-        sep = make_sep_gradient(tw - 2)
+        # 分隔线呼吸：breath_frame>0 时起始色随帧变化
+        sep_start = 45  # 默认青色
+        if breath_frame > 0:
+            from .theme import _SEP_BREATH_COLORS, _SEP_BREATH_LEN
+            sep_start = _SEP_BREATH_COLORS[breath_frame % _SEP_BREATH_LEN]
+        sep = make_sep_gradient(tw - 2, start_color=sep_start)
     buf.append(_blessed_cursor_goto(r1, 1) + "  " + sep)
 
     # ── subagent 面板行（在分隔线与状态行之间） ──
@@ -164,7 +188,7 @@ def _draw_all_locked(bar: _BottomBar, out, height: int) -> None:
         out.write(''.join(buf))
 
     text = bar._last_text or ""
-    _draw_input_lines_locked(bar, out, text, r2 + 1, tw)
+    _draw_input_lines_locked(bar, out, text, r2 + 1, tw, breath_frame)
 
 
 def _redraw_cycle_only(bar: _BottomBar) -> None:

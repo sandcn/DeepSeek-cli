@@ -239,6 +239,10 @@ def build_normal_parts(state: UISessionState, narrow: bool | None = None) -> lis
 _PULSE_COLORS: list[int] = gradient_range(36, 45, 3) + [40]
 """脉动呼吸色号：[36(暗青), 40(中青), 45(亮青), 40(中青)]，对称呼吸周期。"""
 
+# ── 模型名呼吸色序（暗青32→亮青45→中青40→亮青45，4帧柔和呼吸） ──
+_MODEL_BREATH_COLORS: list[int] = [32, 45, 40, 45]
+"""模型名呼吸色号：暗青(32)↔亮青(45)↔中青(40)↔亮青(45)，4 帧柔和呼吸。"""
+
 
 def render_streaming_line(state: UISessionState, streaming: StreamingState) -> str:
     """渲染流式输出状态行。
@@ -264,7 +268,14 @@ def render_streaming_line(state: UISessionState, streaming: StreamingState) -> s
 
     parts: list[str] = []
     if state.model:
-        parts.append(f"{CYAN_256}\u25c9{RESET} {BOLD}{THEME['title']}{state.model}{RESET}"
+        # ── 模型名呼吸色（复用 pulse_phase，窄屏降级到固定色） ──
+        if is_narrow():
+            model_color = THEME['title']
+        else:
+            breath_idx = streaming.pulse_phase % len(_MODEL_BREATH_COLORS)
+            model_color = f"\033[38;5;{_MODEL_BREATH_COLORS[breath_idx]}m"
+        
+        parts.append(f"{CYAN_256}\u25c9{RESET} {BOLD}{model_color}{state.model}{RESET}"
                      f" \033[38;5;{pulse_color}m{pulse_char}{RESET}")
     parts.append(f"\033[38;5;214m\u23f1{RESET}{_SP}{format_elapsed(elapsed)}")
     tok_str = TextFormatter.format_token_count(tokens)

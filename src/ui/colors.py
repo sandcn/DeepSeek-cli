@@ -79,6 +79,8 @@ __all__: list[str] = [
     "GRADIENT_SUNSET", "GRADIENT_OCEAN", "GRADIENT_FOREST",
     "GRADIENT_FIRE", "GRADIENT_NEON",
     "GRADIENT_AURORA", "GRADIENT_CORAL", "GRADIENT_MINT", "GRADIENT_TWILIGHT",
+    "GRADIENT_SUNRISE", "GRADIENT_PURPLE", "GRADIENT_ICE",
+    "GRADIENT_SOFT", "GRADIENT_EMERALD",
 ]
 
 # ════════════════════════════════════════════════════════
@@ -219,3 +221,19 @@ GRADIENT_MINT: list[int] = gradient_range(29, 114, 6)
 
 GRADIENT_TWILIGHT: list[int] = gradient_range(53, 195, 8)
 """暮光渐变：深紫(53)→亮青(195)，8 阶。"""
+
+# ── 新增调色板（第四阶段美化） ───────────────────────────
+GRADIENT_SUNRISE: list[int] = gradient_range(208, 220, 8)
+"""日出渐变：暖橙(208)→亮黄(220)，8 阶。"""
+
+GRADIENT_PURPLE: list[int] = gradient_range(55, 177, 8)
+"""紫渐变：深紫(55)→亮紫(177)，8 阶。"""
+
+GRADIENT_ICE: list[int] = gradient_range(24, 87, 8)
+"""冰蓝渐变：深蓝(24)→亮青(87)，8 阶。"""
+
+GRADIENT_SOFT: list[int] = gradient_range(175, 218, 8)
+"""柔和粉渐变：粉红(175)→亮粉(218)，8 阶。"""
+
+GRADIENT_EMERALD: list[int] = gradient_range(22, 47, 8)
+"""翡翠渐变：深绿(22)→亮绿(47)，8 阶。"""

@@ -103,18 +103,63 @@ _PLACEHOLDER_STREAMING = "AI 生成中..."   # 流式输出期间使用
 
 
 # ── 全宽渐变分隔线 ─────────────────────────────────
-def make_sep_gradient(width: int) -> str:
+def make_sep_gradient(width: int, start_color: int = 45) -> str:
     """生成全宽渐变分隔线（青色→深灰）。
 
-    每个字符为 ━ (U+2501)，色号从青色(45)逐级渐变到深灰(237)。
+    每个字符为 ━ (U+2501)，色号从 `start_color` 逐级渐变到深灰(237)。
     窄屏降级由调用方通过 is_narrow() 控制，本函数不处理降级。
 
     Args:
         width: 分隔线字符数（通常为终端宽度 - 2）。
+        start_color: 起始色号（256 色），默认 45（亮青）。
 
     Returns:
         带 ANSI 256 色渐变的完整分隔线字符串（含 RESET）。
     """
     from ..tui._text_utils import build_gradient_ansi  # 延迟导入避免循环依赖
-    colors = gradient_range(45, 237, width)
+    colors = gradient_range(start_color, 237, width)
     return build_gradient_ansi(colors)
+
+
+# ── 提示符呼吸动画（第四阶段美化） ──────────────────────────
+_PROMPT_BREATH_COLORS: list[int] = gradient_range(32, 81, 6) + gradient_range(81, 32, 6)
+"""提示符呼吸色号：暗青(32)↔亮青(81) 对称呼吸，12 帧。"""
+_PROMPT_BREATH_LEN: int = 12
+
+
+def get_prompt_breath_color(frame: int) -> str:
+    """根据帧号返回当前提示符呼吸色的 ANSI 256 色序列。
+
+    Args:
+        frame: 呼吸帧号（自动取模 _PROMPT_BREATH_LEN）。
+
+    Returns:
+        ANSI 256 色前景色序列，格式 ``\\033[38;5;{color}m``。
+    """
+    if not _PROMPT_BREATH_COLORS:
+        return _COLOR_DEEP_CYAN
+    idx = frame % _PROMPT_BREATH_LEN
+    color = _PROMPT_BREATH_COLORS[idx] if idx < len(_PROMPT_BREATH_COLORS) else 32
+    return f"\033[38;5;{color}m"
+
+
+# ── 分隔线呼吸色序（第四阶段美化） ──
+_SEP_BREATH_COLORS: list[int] = [45, 44, 43, 42, 41, 40, 41, 42, 43, 44]
+"""分隔线呼吸起始色：亮青(45)↔中青(40)↔亮青(45)，10 帧对称。"""
+_SEP_BREATH_LEN: int = 10
+
+
+def get_sep_breath_color(frame: int) -> str:
+    """根据帧号返回当前分隔线呼吸起始色的 ANSI 256 色序列。
+
+    Args:
+        frame: 呼吸帧号（自动取模 _SEP_BREATH_LEN）。
+
+    Returns:
+        ANSI 256 色前景色序列，格式 ``\\033[38;5;{color}m``。
+    """
+    if not _SEP_BREATH_COLORS:
+        return _COLOR_SEP_START
+    idx = frame % _SEP_BREATH_LEN
+    color = _SEP_BREATH_COLORS[idx] if idx < len(_SEP_BREATH_COLORS) else 45
+    return f"\033[38;5;{color}m"

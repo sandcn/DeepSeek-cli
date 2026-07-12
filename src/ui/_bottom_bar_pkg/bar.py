@@ -55,10 +55,14 @@ from .theme import (
     _COLOR_DIM,
     _COLOR_RESET,
     _COLOR_SEP,
+    _COLOR_SEP_START,
     _MIN_INPUT_ROWS,
     _PLACEHOLDER_COMPACT,
     _PLACEHOLDER_STREAMING,
     _PLACEHOLDER_TEXT,
+    _SEP_BREATH_COLORS,
+    get_prompt_breath_color,
+    make_sep_gradient,
 )
 from .cursor import (
     _compute_cursor_visual_pos,
@@ -142,6 +146,8 @@ class _BottomBar(_StatusMixin):
         self._tracker: _StdoutLineTracker | None = None
         # ── 光标坐标追踪器（全局共享实例） ──
         self._cursor_tracker = cursor_tracker or CursorTracker()
+        # ── 呼吸动画帧计数器（第四阶段美化） ──
+        self._breath_frame: int = 0
         # ── 终端尺寸缓存（性能优化，避免高频 ioctl） ──
         self._cached_height: int = 0
         self._cached_width: int = 0
@@ -665,6 +671,9 @@ class _BottomBar(_StatusMixin):
         if not self._active:
             return
 
+        # 推进呼吸动画帧
+        self._breath_frame = (self._breath_frame + 1) % 12
+
         height = self._term_height()
 
         with _try_acquire_output_lock(name="bottom_bar.force_redraw", timeout=1.0) as locked:
@@ -795,8 +804,16 @@ class _BottomBar(_StatusMixin):
             r2 = subagent_start + len(self._subagent_lines)
 
             tw = self._term_width()
-            sep_len = min(tw - 2, 40)
-            sep = f"{_COLOR_SEP}\u2501{_COLOR_RESET}" * sep_len
+            from ..tui._terminal import is_narrow as _is_narrow_bar
+            if _is_narrow_bar():
+                sep_len = min(tw - 2, 40)
+                sep = f"{_COLOR_SEP}\u2501{_COLOR_RESET}" * sep_len
+            else:
+                sep_start = 45  # 默认青色
+                if self._breath_frame > 0:
+                    from .theme import _SEP_BREATH_COLORS, _SEP_BREATH_LEN
+                    sep_start = _SEP_BREATH_COLORS[self._breath_frame % _SEP_BREATH_LEN]
+                sep = make_sep_gradient(tw - 2, start_color=sep_start)
             _buf.append(_blessed_move_clear(r1) + "  " + sep)
             # ★ force_redraw 中的 tracker.set 是近似值，仅记录当前绘制行号。
             #    最终光标位置在方法末尾 set(scroll_end, 1) 处修正。
@@ -811,7 +828,7 @@ class _BottomBar(_StatusMixin):
             # 写入收集好的全部 ANSI 序列（分隔线+subagent+状态行）
             out.write(''.join(_buf))
 
-            self._draw_input_lines_locked(out, text, r2 + 1, tw)
+            self._draw_input_lines_locked(out, text, r2 + 1, tw, self._breath_frame)
             input_rows = self._cached_input_rows
             # ★ 清多余行：也批量收集
             _buf2: list[str] = []
@@ -845,7 +862,7 @@ class _BottomBar(_StatusMixin):
 
 
 
-    def _draw_input_lines_locked(self, out, text: str, r_start: int, term_width: int) -> None:
+    def _draw_input_lines_locked(self, out, text: str, r_start: int, term_width: int, breath_frame: int = 0) -> None:
         """绘制输入行（需持有 output_lock），超长文本自动拆行。
 
         Args:
@@ -853,10 +870,11 @@ class _BottomBar(_StatusMixin):
             text: 输入文本（空字符串显示占位提示）。
             r_start: 第一行输入区的行号（分隔线+状态行之后）。
             term_width: 当前终端宽度（由调用方传入，避免重复系统调用）。
+            breath_frame: 呼吸动画帧号（用于提示符颜色变化）。
         """
-        _draw_impl_input_lines(self, out, text, r_start, term_width)
+        _draw_impl_input_lines(self, out, text, r_start, term_width, breath_frame)
 
-    def _draw_all_locked(self, out, height: int) -> None:
+    def _draw_all_locked(self, out, height: int, breath_frame: int = 0) -> None:
         """绘制全部底部行（需持有 output_lock），超长文本自动拆行。
 
         布局（简约风）：
@@ -868,7 +886,7 @@ class _BottomBar(_StatusMixin):
 
         终端高度不足以容纳底部栏时跳过绘制。
         """
-        _draw_impl_all(self, out, height)
+        _draw_impl_all(self, out, height, breath_frame)
 
     # ── 补全弹窗（委托 _CompletionPopup） ──────────────────
 

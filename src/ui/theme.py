@@ -48,6 +48,13 @@ THEMES: Dict[str, Dict[str, str]] = {
         "border_inactive": "\033[38;5;237m",  # 深灰
         "overlay_bg": "\033[48;5;235m",       # 暗色背景
         "tag_code": "\033[38;5;221m",         # 琥珀黄
+        "prompt_glow": "\033[38;5;45m",       # 青色 — 提示符发光
+        "border_glow": "\033[38;5;40m",       # 中青 — 边框发光
+        "status_pulse": "\033[38;5;214m",     # 琥珀 — 状态脉动
+        "breathing_base": "\033[38;5;32m",    # 暗青 — 呼吸基准
+        "pulse_highlight": "\033[38;5;81m",   # 亮青 — 脉冲高亮
+        "separator_glow": "\033[38;5;45m",    # 青色 — 分隔线发光
+        "tag_glow": "\033[38;5;45m",          # 青色 — 标签发光
     },
 
     # ── 亮色主题（浅色背景用）──────────────────────────
@@ -82,6 +89,13 @@ THEMES: Dict[str, Dict[str, str]] = {
         "border_inactive": "\033[38;5;237m",
         "overlay_bg": "\033[48;5;235m",
         "tag_code": "\033[38;5;221m",
+        "prompt_glow": "\033[38;5;33m",       # 蓝色
+        "border_glow": "\033[38;5;32m",       # 中蓝
+        "status_pulse": "\033[38;5;220m",     # 黄
+        "breathing_base": "\033[38;5;26m",    # 暗蓝
+        "pulse_highlight": "\033[38;5;75m",   # 亮蓝
+        "separator_glow": "\033[38;5;33m",    # 蓝色
+        "tag_glow": "\033[38;5;33m",          # 蓝色
     },
 
     # ── 高对比主题（高可读性）──────────────────────────
@@ -116,6 +130,13 @@ THEMES: Dict[str, Dict[str, str]] = {
         "border_inactive": "\033[38;5;242m",
         "overlay_bg": "\033[48;5;235m",
         "tag_code": "\033[38;5;227m",
+        "prompt_glow": "\033[38;5;81m",       # 亮青
+        "border_glow": "\033[38;5;81m",       # 亮青
+        "status_pulse": "\033[38;5;227m",     # 亮黄
+        "breathing_base": "\033[38;5;32m",    # 暗青
+        "pulse_highlight": "\033[38;5;81m",   # 亮青
+        "separator_glow": "\033[38;5;81m",    # 亮青
+        "tag_glow": "\033[38;5;81m",          # 亮青
     },
 }
 

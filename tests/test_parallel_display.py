@@ -441,8 +441,11 @@ class TestSpinnerSets:
         )
 
     def test_spinner_sets_contains_all(self):
-        """SPINNER_SETS 包含全部 4 套帧集。"""
-        assert set(SPINNER_SETS.keys()) == {"braille", "pulse", "circle", "dots"}, (
+        """SPINNER_SETS 包含全部 9 套帧集（含新增 heart/bounce/clock）。"""
+        assert set(SPINNER_SETS.keys()) == {
+            "braille", "pulse", "circle", "dots",
+            "wave", "typing", "heart", "bounce", "clock",
+        }, (
             f"SPINNER_SETS 键不完整: {list(SPINNER_SETS.keys())}"
         )
 

@@ -68,4 +68,28 @@ def build_gradient_ansi(colors: list[int], char: str = "\u2501", suffix_reset: b
     return result
 
 
-__all__ = ["truncate", "build_gradient_ansi"]
+def build_gradient_ansi_frame(colors: list[int], index: int, char: str = "\u2501", suffix_reset: bool = True) -> str:
+    """从颜色列表中取第 index 帧的颜色，构建单色 ANSI 字符串。
+
+    适用于呼吸/脉动效果中需要逐帧输出单色字符的场景。
+    index 超出范围时取模循环。
+
+    Args:
+        colors: 256 色号列表（0-255）。
+        index: 帧索引，自动取模循环。
+        char: 显示的字符，默认 ━ (U+2501)。
+        suffix_reset: 是否在末尾追加 RESET 序列，默认 True。
+
+    Returns:
+        带 ANSI 256 色号的单色字符串。
+    """
+    if not colors:
+        return ""
+    color = colors[index % len(colors)]
+    result = f"\033[38;5;{color}m{char}"
+    if suffix_reset:
+        result += "\033[0m"
+    return result
+
+
+__all__ = ["truncate", "build_gradient_ansi", "build_gradient_ansi_frame"]
