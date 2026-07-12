@@ -60,18 +60,26 @@ class FileChangeRecord:
         # 2. _async_lock (asyncio.Lock) — 协程间互斥锁
         #    - 只用于异步方法，轻量级保护协程间串行
         #    - 始终在 _cross_lock 之前获取（异步路径固定锁顺序）
-        #    - 在 __init__ 中直接创建，消除懒初始化的 check-then-act 竞态条件
+        #    - 懒初始化：asyncio.Lock() 依赖 event loop，在 asyncio.to_thread
+        #      子线程中创建会抛出 RuntimeError，因此延迟到首次异步调用时
         #
         # 死锁预防：同步路径只有单个锁（无嵌套），异步路径固定 from outside in
         # 的顺序（inner _async_lock → outer _cross_lock），不会出现循环等待。
         # ──────────────────────────────────────────────────────────
         self._cross_lock = threading.Lock()  # 跨执行上下文互斥锁
-        self._async_lock = asyncio.Lock()    # 协程间互斥锁（直接初始化，无竞态）
+        self._async_lock = None              # 懒初始化，见 _get_async_lock()
 
     def __repr__(self):
         return (f"FileChangeRecord(file_path={self.file_path!r}, "
                 f"message_index={self.message_index}, "
                 f"tool_name={self.tool_name!r})")
+
+    def _get_async_lock(self) -> asyncio.Lock:
+        """懒初始化 _async_lock，避免在 asyncio.to_thread 子线程中创建时抛出
+        RuntimeError: There is no current event loop in thread 'asyncio_0'."""
+        if self._async_lock is None:
+            self._async_lock = asyncio.Lock()
+        return self._async_lock
 
     @contextlib.asynccontextmanager
     async def _cross_lock_async(self):
@@ -124,7 +132,7 @@ class FileChangeRecord:
 
     async def _do_apply_async(self, content: Optional[str]) -> bool:
         """异步核心写入逻辑：将文件设置为 content 指定的状态。"""
-        async with self._async_lock:
+        async with self._get_async_lock():
             async with self._cross_lock_async():
                 try:
                     if content is None:
