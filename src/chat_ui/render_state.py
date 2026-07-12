@@ -123,14 +123,7 @@ class _RenderState:
                 pass
             _sep_width = min(_term_width - 2, 60)
             _bf = AnimatorContext.get_default().breath_frame
-            # 思考结束分隔线使用 morph_color 过渡色（蓝紫系↔青绿系）
-            if _bf > 0:
-                from ..ui.tui._effects import morph_color
-                _frame = AnimatorContext.get_default().frame
-                _morph_sep_color = morph_color(_frame, [33,42], [82,122], morph_period=60, breath_period=12)
-            else:
-                _morph_sep_color = 45
-            _sep = make_sep_gradient(_sep_width, start_color=_morph_sep_color, end_color=237)
+            _sep = make_sep_gradient(_sep_width, start_color=45, end_color=237)
             rr.write(f"\n  {_sep}")
             rr.close()
             self._safe_flush("reasoning")

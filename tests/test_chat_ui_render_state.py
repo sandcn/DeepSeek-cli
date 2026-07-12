@@ -171,7 +171,8 @@ class TestRenderStateCloseReasoning:
     """
 
     def test_close_reasoning_writes_separator_and_closes(self):
-        """关闭时写入分隔线（渐变/静态）、close、状态→CLOSED。"""
+        """关闭时写入分隔线、close、状态→CLOSED。"""
+        from src.chat_ui.const import _THINKING_SEPARATOR
         from src.chat_ui.render_state import _ReasoningState
         rs = _make_render_state(reasoning_state=_ReasoningState.ACTIVE)
         mock_rr = _make_mock_incremental_renderer()
@@ -179,12 +180,7 @@ class TestRenderStateCloseReasoning:
 
         rs.close_reasoning()
 
-        # 分隔线可能是渐变 ANSI 序列（动效增强后），断言至少被调用一次即可
-        mock_rr.write.assert_called_once()
-        # 验证写入内容以换行+缩进开头，以 RESET 结尾（动效增强后分隔线的共同特征）
-        written = mock_rr.write.call_args[0][0]
-        assert written.startswith("\n  ")
-        assert written.endswith("\033[0m") or written.endswith("\n")
+        mock_rr.write.assert_called_once_with(_THINKING_SEPARATOR)
         mock_rr.close.assert_called_once()
         assert rs.reasoning is None
         assert rs.reasoning_state == _ReasoningState.CLOSED

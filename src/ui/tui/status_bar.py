@@ -24,14 +24,11 @@ from ..colors import RESET, BOLD, CYAN_256, GREEN_256, \
     DARK_GRAY_256, GRAY_256, gradient_range
 from ..theme import THEME
 from ..parallel._text_formatter import TextFormatter
-from ._terminal import (
-    is_narrow, get_terminal_width,
-    update_title_with_progress, restore_default_title,
-)
+from ._terminal import is_narrow, get_terminal_width
 from ._time_format import format_elapsed, format_speed
 from ._state import TUIStateTree, UISessionState, StreamingState
 from ._animator import AnimatorContext
-from ._text_utils import build_glow_ansi, build_equalizer_ansi, build_pulse_chain_ansi
+from ._text_utils import build_glow_ansi
 
 # ── 流式状态行空格常量（图标与数值间视觉间距） ──
 _SP = " "  # 单一空格，视觉平衡
@@ -105,17 +102,7 @@ class StatusBar:
         if self._tree.streaming.active:
             # ★ 推进脉动指示器动画（P1 修复：确保 tick_pulse() 在每次渲染前调用）
             self._tree.streaming.tick_pulse()
-            line = render_streaming_line(self._tree.session, self._tree.streaming)
-            # ★ 流式输出期间更新终端标题（进度信息）
-            update_title_with_progress(
-                model=self._tree.session.model,
-                tokens=self._tree.streaming.output_tokens,
-                speed=self._tree.streaming.speed,
-                elapsed=self._tree.streaming.elapsed,
-            )
-            return line
-        # 非流式时恢复默认终端标题
-        restore_default_title()
+            return render_streaming_line(self._tree.session, self._tree.streaming)
         return render_normal(self._tree.session)
 
 
@@ -161,12 +148,9 @@ def render_normal(state: UISessionState) -> str:
     else:
         sep = " "
     line = sep.join(parts)
-    # 非窄屏时末尾添加呼吸装饰点
-    if not narrow and parts:
-        frame = AnimatorContext.get_default().frame
-        dot_color = AnimatorContext.get_default().sine_color(45, 81, 12)
-        line += f" \033[38;5;{dot_color}m\u25c9{RESET}"
-    # 窄屏截断
+    # 窄屏判定分工：
+    # - build_normal_parts(): 极窄屏(≤60)提前返回精简部件
+    # - render_normal(): 一般窄屏(<80)左右分栏截断
     if narrow:
         tw = get_terminal_width()
         max_w = max(tw - 2, 20)
@@ -263,154 +247,54 @@ _MODEL_BREATH_COLORS: list[int] = [32, 45, 40, 45]
 """模型名呼吸色号：暗青(32)↔亮青(45)↔中青(40)↔亮青(45)，4 帧柔和呼吸。"""
 
 
-def _build_streaming_pulse_indicator(streaming: StreamingState) -> tuple[str, int]:
-    """构建流式输出脉动指示器字符和色号。
-
-    Args:
-        streaming: 流式输出状态。
-
-    Returns:
-        (pulse_char, pulse_color) 脉动字符和色号。
-    """
-    _PULSE_FRAMES = ["\u25cc", "\u25cd", "\u25cf", "\u25cd"]  # ◌ ◍ ● ◍
-    pulse_idx = streaming.pulse_phase % 4
-    pulse_char = _PULSE_FRAMES[pulse_idx]
-    _sine_ctx = AnimatorContext.get_default()
-    pulse_color = _sine_ctx.sine_color(36, 45, 4, frame=streaming.pulse_phase)
-    return pulse_char, pulse_color
-
-
-def _build_streaming_model_part(state: UISessionState, streaming: StreamingState) -> str | None:
-    """构建流式输出模型名+脉动指示器部件。
-
-    Args:
-        state: 会话级状态快照。
-        streaming: 流式输出状态。
-
-    Returns:
-        ANSI 格式的模型名部件字符串，无模型名时返回 None。
-    """
-    if not state.model:
-        return None
-    _sine_ctx = AnimatorContext.get_default()
-    if is_narrow():
-        model_color = THEME['title']
-    else:
-        model_color_num = _sine_ctx.sine_color(32, 45, 4, frame=streaming.pulse_phase)
-        model_color = f"\033[38;5;{model_color_num}m"
-    pulse_char, pulse_color = _build_streaming_pulse_indicator(streaming)
-    return (f"{CYAN_256}\u25c9{RESET} {BOLD}{model_color}{state.model}{RESET}"
-            f" \033[38;5;{pulse_color}m{pulse_char}{RESET}")
-
-
-def _build_streaming_stats_parts(state: UISessionState, streaming: StreamingState) -> list[str]:
-    """构建流式输出统计信息部件列表（耗时/Token/速率）。
-
-    Args:
-        state: 会话级状态快照。
-        streaming: 流式输出状态。
-
-    Returns:
-        统计信息段字符串列表。
-    """
-    elapsed = streaming.elapsed
-    tokens = streaming.output_tokens
-    speed = streaming.speed
-    parts: list[str] = []
-
-    parts.append(f"\033[38;5;214m\u23f1{RESET}{_SP}{format_elapsed(elapsed)}")
-    tok_str = TextFormatter.format_token_count(tokens)
-    parts.append(f"{CYAN_256}\u2b21{RESET}{_SP}{CYAN_256}{tok_str}t{RESET}")
-
-    if speed > 0:
-        speed_color_num = min(81, round(45 + speed * 2))
-        speed_color = f"\033[38;5;{speed_color_num}m"
-        parts.append(f"{speed_color}\u26a1{RESET}{_SP}{format_speed(speed)}t/s")
-    else:
-        parts.append(f"{DARK_GRAY_256}\u26a1{RESET}{_SP}{format_speed(speed)}t/s")
-
-    return parts
-
-
-def _build_streaming_progress_bar(state: UISessionState, streaming: StreamingState) -> str | None:
-    """构建流式输出 Token 迷你进度条（含脉冲链装饰）。
-
-    Args:
-        state: 会话级状态快照。
-        streaming: 流式输出状态。
-
-    Returns:
-        ANSI 格式的进度条字符串，窄屏或无 Token 时返回 None。
-    """
-    if is_narrow() or state.output_tokens <= 0:
-        return None
-    _sine_ctx = AnimatorContext.get_default()
-    tokens = streaming.output_tokens
-    bar_w = 6
-    fill = min(bar_w, max(1, round(bar_w * tokens / max(tokens + 100, 1))))
-    bar_parts: list[str] = []
-    for i in range(bar_w):
-        if i < fill:
-            bar_color = _sine_ctx.sine_color(36, 45, bar_w, frame=streaming.pulse_phase + i)
-            bar_parts.append(f"\033[38;5;{bar_color}m\u2588{RESET}")
-        else:
-            bar_parts.append(f"{DARK_GRAY_256}\u2581{RESET}")
-    bar_str = "".join(bar_parts)
-    frame = AnimatorContext.get_default().frame
-    pulse_str = build_pulse_chain_ansi(frame, total_pulses=2, base_color=45, period=8)
-    return f"{bar_str} {pulse_str}"
-
-
-def _build_streaming_equalizer() -> str | None:
-    """构建流式输出均衡器跳动部件。
-
-    Returns:
-        ANSI 格式的均衡器字符串，窄屏时返回 None。
-    """
-    if is_narrow():
-        return None
-    frame = AnimatorContext.get_default().frame
-    return build_equalizer_ansi(frame, bar_count=3, period=8)
-
-
 def render_streaming_line(state: UISessionState, streaming: StreamingState) -> str:
     """渲染流式输出状态行。
 
-    格式：◉ gpt-4 ◍ · ⏱ 3.2s · ⬡ 450t · ⚡ 120t/s · ▰▰▱▱ 进度
+    格式：◉ gpt-4 ◍ · ⏱ 3.2s · ⬡ 450t · ⚡ 120t/s
 
     Args:
         state: 会话级状态快照（主要用于获取模型名）。
         streaming: 流式输出状态（计时/Token/速率）。
 
     Returns:
-        ANSI 格式的流式状态行文本（含脉动指示器 + 动态颜色）。
+        ANSI 格式的流式状态行文本（含脉动指示器）。
     """
+    elapsed = streaming.elapsed
+    tokens = streaming.output_tokens
+    speed = streaming.speed
+
+    # ── 脉动指示器帧 ──
+    _PULSE_FRAMES = ["\u25cc", "\u25cd", "\u25cf", "\u25cd"]  # ◌ ◍ ● ◍
+    pulse_idx = streaming.pulse_phase % 4
+    pulse_char = _PULSE_FRAMES[pulse_idx]
+    # ── 正弦波脉动色号（基于 streaming.pulse_phase 而非全局帧） ──
+    _sine_ctx = AnimatorContext.get_default()
+    pulse_color = _sine_ctx.sine_color(36, 45, 4, frame=streaming.pulse_phase)
+
     parts: list[str] = []
-
-    # 模型名 + 脉动指示器
-    model_part = _build_streaming_model_part(state, streaming)
-    if model_part:
-        parts.append(model_part)
-
-    # 统计信息（耗时/Token/速率）
-    parts.extend(_build_streaming_stats_parts(state, streaming))
-
-    # Token 迷你进度条（含脉冲链装饰）
-    bar_part = _build_streaming_progress_bar(state, streaming)
-    if bar_part:
-        parts.append(bar_part)
-
-    # 均衡器跳动
-    eq_part = _build_streaming_equalizer()
-    if eq_part:
-        parts.append(eq_part)
-
+    if state.model:
+        # ── 模型名呼吸色（基于 pulse_phase，窄屏降级到固定色） ──
+        if is_narrow():
+            model_color = THEME['title']
+        else:
+            model_color_num = _sine_ctx.sine_color(32, 45, 4, frame=streaming.pulse_phase)
+            model_color = f"\033[38;5;{model_color_num}m"
+        
+        parts.append(f"{CYAN_256}\u25c9{RESET} {BOLD}{model_color}{state.model}{RESET}"
+                     f" \033[38;5;{pulse_color}m{pulse_char}{RESET}")
+    parts.append(f"\033[38;5;214m\u23f1{RESET}{_SP}{format_elapsed(elapsed)}")
+    tok_str = TextFormatter.format_token_count(tokens)
+    parts.append(f"{CYAN_256}\u2b21{RESET}{_SP}{CYAN_256}{tok_str}t{RESET}")
+    if speed > 0:
+        parts.append(f"\033[38;5;214m\u26a1{RESET}{_SP}{format_speed(speed)}t/s")
+    else:
+        parts.append(f"{DARK_GRAY_256}\u26a1{RESET}{_SP}{format_speed(speed)}t/s")
     line = f" {DARK_GRAY_256}\u00b7{RESET} ".join(parts)
     # 非窄屏时末尾添加装饰性呼吸点
     if not is_narrow():
         frame = AnimatorContext.get_default().frame
         line += f" {build_glow_ansi(frame, 45, 12)}\u25c9{RESET}"
-    # 窄屏截断
+    # 窄屏截断（复用 _narrow_split_line 消除重复）
     if is_narrow():
         tw = get_terminal_width()
         max_w = max(tw - 2, 30)

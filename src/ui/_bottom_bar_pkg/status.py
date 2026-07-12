@@ -12,7 +12,7 @@ import logging
 from typing import Optional
 
 from ..tui._animator import AnimatorContext, BreathPalette
-from ..tui._text_utils import build_glow_ansi, build_equalizer_ansi
+from ..tui._text_utils import build_glow_ansi
 from ..tui._terminal import is_narrow
 
 from .theme import (
@@ -192,10 +192,6 @@ class _StatusMixin:
                 )
             else:
                 parts.append(f"{glow_gear}{_COLOR_TOOL_OK}{self._tool_total}{_COLOR_RESET}")
-            # 步骤 5.2: 工具计数后添加均衡器跳动（非窄屏时激活）
-            if not is_narrow():
-                _eq_frame = AnimatorContext.get_default().frame
-                parts.append(build_equalizer_ansi(_eq_frame, bar_count=3, period=8))
 
         # 耗时（蓝灰高亮）
         if elapsed > 0:
@@ -207,21 +203,10 @@ class _StatusMixin:
                 dur = f"{elapsed:.1f}s"
             parts.append(f"{_COLOR_TIME}{dur}{_COLOR_RESET}")
 
-        # 令牌数（靛蓝色，更醒目）+ Token 迷你进度条
+        # 令牌数（靛蓝色，更醒目）
         if total > 0:
             tok_str = f"{total / 1000:.1f}k" if total >= 1000 else str(total)
             parts.append(f"{_COLOR_TOKEN}{tok_str}t{_COLOR_RESET}")
-            # 非窄屏时添加迷你进度条
-            if not is_narrow():
-                ctx = AnimatorContext.get_default()
-                bar_w = 4
-                fill = min(bar_w, max(1, round(bar_w * total / max(total + 500, 1))))
-                bar_parts = []
-                for i in range(bar_w):
-                    bar_color = ctx.sine_color(68, 45, bar_w, frame=ctx.breath_frame + i)
-                    ch = "\u2588" if i < fill else "\u2581"
-                    bar_parts.append(f"\033[38;5;{bar_color}m{ch}\033[0m")
-                parts.append("".join(bar_parts))
 
         # 实时 token 速度（tok/s，琥珀色高亮）
         if per_second_speed > 0:

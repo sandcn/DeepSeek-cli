@@ -131,16 +131,13 @@ class MessageCommand(ABC):
     可测试和可扩展的操作。通过 _COMMANDS 注册表按快捷键名查找。
 
     共享上下文通过构造函数注入，execute() 接收 state dict。
-
-    新增 output_manager 参数支持依赖注入，消除对模块级 _manager 的依赖。
     """
 
-    def __init__(self, agent: Any, idx_map: list[int], cursor: int = -1, output_manager: _disp.OutputManager | None = None) -> None:
+    def __init__(self, agent: Any, idx_map: list[int], cursor: int = -1) -> None:
         self.agent = agent
         self.idx_map = idx_map
         self.cursor = cursor
         self.real_idx = idx_map[cursor] if 0 <= cursor < len(idx_map) else -1
-        self.output_manager = output_manager
 
     @abstractmethod
     def execute(self, state: dict) -> bool:
@@ -173,7 +170,7 @@ class EditCommand(MessageCommand):
                 level="raw", source="cmd",
             )
         del agent.messages[self.real_idx:]
-        ctx = _disp.MessageDisplayContext.from_agent(agent, output_manager=self.output_manager)
+        ctx = _disp.MessageDisplayContext.from_agent(agent)
         publish_output(
             f"  {BRIGHT_GREEN}\u2714{RESET} \u5df2\u622a\u65ad\u5230\u6d88\u606f #{self.cursor} \uff08\u4fdd\u7559 {BRIGHT_CYAN}{len(ctx.data)}{RESET} \u6761\uff09",
             level="raw", source="cmd",
@@ -182,7 +179,7 @@ class EditCommand(MessageCommand):
         if self.cursor > len(ctx.data):
             _logger.debug("EditCommand invariant: cursor=%d > len(ctx.data)=%d (unexpected, see data flow)",
                            self.cursor, len(ctx.data))
-        _disp.display_messages(ctx.data, ctx.agent, ctx.idx_map, speed=0, ctx=ctx)
+        _disp.display_messages(ctx.data, ctx.agent, ctx.idx_map, speed=0)
         state["prefill"] = old_content
         return True
 
@@ -251,13 +248,13 @@ class ResumeCommand(MessageCommand):
                 level="raw", source="cmd",
             )
         del agent.messages[self.real_idx + 1:]
-        ctx = _disp.MessageDisplayContext.from_agent(agent, output_manager=self.output_manager)
+        ctx = _disp.MessageDisplayContext.from_agent(agent)
         remaining = len(ctx.data)
         publish_output(
             f"  {BRIGHT_GREEN}\u2714{RESET} \u5df2\u622a\u65ad\u5230\u6d88\u606f #{self.cursor} \uff08\u4fdd\u7559 {BRIGHT_CYAN}{remaining}{RESET} \u6761\uff09",
             level="raw", source="cmd",
         )
-        _disp.display_messages(ctx.data, ctx.agent, ctx.idx_map, speed=0, ctx=ctx)
+        _disp.display_messages(ctx.data, ctx.agent, ctx.idx_map, speed=0)
         _check_last_message_role(agent, state)
         return True
 
@@ -267,21 +264,19 @@ class ResumeAllCommand(MessageCommand):
 
     def __init__(self, agent: Any, idx_map: list[int], **kwargs: object) -> None:
         # ResumeAllCommand 不需要 cursor，通过 **kwargs 吸收统一 dispatch 传入的 cursor 参数
-        # 从 kwargs 中提取 output_manager 传递给基类
-        output_manager = kwargs.pop("output_manager", None)
-        super().__init__(agent, idx_map, cursor=-1, output_manager=output_manager)
+        super().__init__(agent, idx_map, cursor=-1)
 
     def execute(self, state: dict) -> bool:
         _logger.debug("Executing %s", self.__class__.__name__)
         agent = self.agent
         if not agent.messages:
             return False
-        ctx = _disp.MessageDisplayContext.from_agent(agent, output_manager=self.output_manager)
+        ctx = _disp.MessageDisplayContext.from_agent(agent)
         publish_output(
             f"  {BRIGHT_GREEN}\u2714{RESET} \u5df2\u6062\u590d\u5168\u90e8\u6d88\u606f\uff08\u5171 {BRIGHT_CYAN}{len(ctx.data)}{RESET} \u6761\uff09",
             level="raw", source="cmd",
         )
-        _disp.display_messages(ctx.data, ctx.agent, ctx.idx_map, speed=0, ctx=ctx)
+        _disp.display_messages(ctx.data, ctx.agent, ctx.idx_map, speed=0)
         _check_last_message_role(agent, state)
         return True
 
@@ -326,19 +321,7 @@ class MessageEditor:
     """交互式消息编辑器 — 在底部栏补全弹窗中选择消息，回车编辑，Esc 取消。
 
     edit_current_messages() 作为公开入口点。
-
-    支持依赖注入：构造函数可传入 output_manager 实例，
-    消除对模块级 _manager 的耦合，实现可测试性。
     """
-
-    def __init__(self, output_manager: _disp.OutputManager | None = None) -> None:
-        """初始化 MessageEditor。
-
-        Args:
-            output_manager: 可选的 OutputManager 实例（用于依赖注入）。
-                            None 时使用模块级 _manager（向后兼容）。
-        """
-        self._output_manager = output_manager
 
     # ── 消息选择交互 ────────────────────────────────────
 
@@ -446,7 +429,7 @@ class MessageEditor:
         Returns:
             True 表示有修改（调用方应重新发送/继续），False 表示无操作。
         """
-        ctx = _disp.MessageDisplayContext.from_messages(agent.messages, output_manager=self._output_manager)
+        ctx = _disp.MessageDisplayContext.from_messages(agent.messages)
         if not ctx.data:
             publish_output(
                 f"  {YELLOW}\u26a0{RESET} \u5f53\u524d\u4f1a\u8bdd\u4e3a\u7a7a\uff0c\u65e0\u6d88\u606f\u53ef\u7f16\u8f91",
@@ -458,7 +441,7 @@ class MessageEditor:
 
     def _current_session_detail(self, agent: Any, state: dict) -> bool:
         """选择消息并通过命令模式 dispatch 编辑操作。"""
-        ctx = _disp.MessageDisplayContext.from_agent(agent, output_manager=self._output_manager)
+        ctx = _disp.MessageDisplayContext.from_agent(agent)
         if not ctx.data:
             publish_output(
                 f"  {YELLOW}\u26a0{RESET} \u5f53\u524d\u4f1a\u8bdd\u4e3a\u7a7a",
@@ -479,7 +462,7 @@ class MessageEditor:
             _logger.warning("_current_session_detail: 未知 action=%s", action)
             return False
 
-        cmd = cmd_cls(agent, ctx.idx_map, cursor=cursor, output_manager=self._output_manager)
+        cmd = cmd_cls(agent, ctx.idx_map, cursor=cursor)
         return cmd.execute(state)
 
 

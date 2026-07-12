@@ -22,9 +22,6 @@ from __future__ import annotations
 from typing import Generic, TypeVar
 
 from .._bottom_bar import run_bottom_bar_selection
-from ._animator import AnimatorContext
-from ._terminal import is_narrow
-from ._text_utils import build_breath_border_ansi
 from ._ttl_cache import TTLCache
 
 T = TypeVar("T")
@@ -126,18 +123,9 @@ class BaseBottomBarSelector(Generic[T, R]):
         display = self._format_display(items)
         # items 参数传纯文本（不含 ANSI 码），用 str(item) 转换；
         # display 保留 ANSI 彩色文本用于显示，与 items 等长确保索引对应。
-
-        # ★ 呼吸边框装饰标题行
-        title = self._get_title()
-        if title:
-            frame = AnimatorContext.get_default().breath_frame
-            if not is_narrow() and frame > 0:
-                border = build_breath_border_ansi(width=2, frame=frame, base_color=45)
-                title = f"{border} {title} {border}"
-
         result = run_bottom_bar_selection(
             [str(item) for item in items], display,
-            title=title,
+            title=self._get_title(),
             initial_idx=self._get_initial_idx(items),
             bottom_bar=bottom_bar,
         )

@@ -46,8 +46,7 @@ from ...core.constants import (
 from ...tools.registry import get_tool_display_name
 
 from ..tui._animator import AnimatorContext, BreathPalette
-from ..tui._effects import sine_color, pulse_chain
-from ..tui._text_utils import build_equalizer_ansi, build_pulse_chain_ansi, build_glow_ansi
+from ..tui._effects import sine_color
 
 # ── 常量 ────────────────────────────────────────────────
 
@@ -304,7 +303,7 @@ class FrameRenderer:
             if filled > 0:
                 # 琥珀→绿渐变：每个 ▰ 使用不同色号，含呼吸颜色漂移
                 _gradient = BreathPalette.get("progress_amber_green")
-                _breath_offset = round(sine_color(self._frame, 0, len(_gradient) - 1, 8))
+                _breath_offset = sine_color(self._frame, 0, len(_gradient) - 1, 8)
                 _parts: list[str] = []
                 for _i in range(filled):
                     _ci = (_i + _breath_offset) % len(_gradient)
@@ -318,7 +317,7 @@ class FrameRenderer:
                         _parts.append(f"\033[38;5;{_empty_grad[_ej]}m▱\033[0m")
                 bar = "".join(_parts) + _C_RESET
             else:
-                # 全空：深灰→浅灰渐变呼吸，含脉冲链装饰
+                # 全空：深灰→浅灰渐变呼吸
                 _empty_grad = _gradient_range(235, 245, max(bar_width, 2))
                 _breath_offset = sine_color(self._frame, 0, len(_empty_grad) - 1, 8)
                 _empty_parts: list[str] = []
@@ -327,8 +326,6 @@ class FrameRenderer:
                     _empty_parts.append(f"\033[38;5;{_empty_grad[_ej]}m▱\033[0m")
                 bar = "".join(_empty_parts) + _C_RESET
             icon = f"{_C_RUNNING}{self._summary_icon_running}{_C_RESET}"
-            # 运行中摘要行：添加辉光脉冲装饰
-            glow_deco = build_pulse_chain_ansi(self._frame, 2, 214, 8)
             summary = (
                 f"{icon} {_C_SUMMARY_DIM}{total_agents} agents{_C_RESET}"
                 f" {bar}"
@@ -336,7 +333,6 @@ class FrameRenderer:
                 f"{sep}{_C_SUMMARY_DIM}{speed_str}{_C_RESET}"
                 f"{sep}{_C_SUMMARY_DIM}{elapsed_str}{_C_RESET}"
                 f"{sep}{_C_RUNNING}{done_count}/{total_agents} done{_C_RESET}"
-                f" {glow_deco}"
             )
         else:
             # ── 完成：全绿进度条 ──
@@ -359,26 +355,20 @@ class FrameRenderer:
         cont: str,
         final: bool,
     ) -> List[str]:
-        """构建阶段指示行 — 彩色分类 + 动效增强。返回行列表（可能为空）。"""
+        """构建阶段指示行 — 彩色分类。返回行列表（可能为空）。"""
         phase_lines: list[str] = []
         if slot.status == "running" and slot.model_phase and not final:
             phase_elapsed = now - slot.model_phase_start if slot.model_phase_start else 0
             phase_time = f"{phase_elapsed:.1f}s"
             if slot.model_phase == "thinking":
-                # 思考阶段添加辉光呼吸效果
-                glow = build_glow_ansi(self._frame, 110, 12)
                 phase_lines.append(self.truncate_to_width(
-                    f"{_C_DIMMER}{cont}{_INDENT}{glow}…thinking{_C_RESET}  {_C_DIMMER}{phase_time}{_C_RESET}"))
+                    f"{_C_DIMMER}{cont}{_INDENT}…thinking  {phase_time}{_C_RESET}"))
             elif slot.model_phase == "answering":
-                # 回答阶段添加均衡器装饰
-                eq = build_equalizer_ansi(self._frame, 3, 8)
                 phase_lines.append(self.truncate_to_width(
-                    f"{_C_DIMMER}{cont}{_INDENT}{_C_ANSWERING}…answering{_C_DIMMER}  {phase_time}{_C_RESET}  {eq}"))
+                    f"{_C_DIMMER}{cont}{_INDENT}{_C_ANSWERING}…answering{_C_DIMMER}  {phase_time}{_C_RESET}"))
             elif slot.model_phase == "parsing":
-                # 解析阶段添加脉冲链
-                pulse = build_pulse_chain_ansi(self._frame, 2, 178, 8)
                 phase_lines.append(self.truncate_to_width(
-                    f"{_C_DIMMER}{cont}{_INDENT}{_C_PARSING}…parsing{_C_DIMMER}  {slot.model_info}{_C_RESET}  {pulse}"))
+                    f"{_C_DIMMER}{cont}{_INDENT}{_C_PARSING}…parsing{_C_DIMMER}  {slot.model_info}{_C_RESET}"))
             elif slot.model_phase == "batch":
                 phase_lines.append(self.truncate_to_width(
                     f"{_C_DIMMER}{cont}{_INDENT}{_C_BATCH}…batch{_C_DIMMER}  {slot.model_info}  {phase_time}{_C_RESET}"))

@@ -118,12 +118,8 @@ class StreamingState:
         return time.monotonic() - self.start_time
 
     def tick_pulse(self) -> None:
-        """推进脉动指示器相位（仅更新局部相位，不再推进全局帧号）。
-
-        全局帧号由 _BottomBar.force_redraw() 单一路径推进，
-        消除多路 tick 导致的帧号推进不均问题。
-        """
-        self.pulse_phase = (self.pulse_phase + 1) % 4
+        """推进脉动指示器相位（委托到 AnimatorContext.tick()，保持 API 兼容）。"""
+        AnimatorContext.get_default().tick()
 
     def start(self) -> None:
         """进入流式状态。已在流式模式时不重置（工具间隙保持连续）。"""

@@ -8,17 +8,10 @@
 
 动效增强（2026-07-12）：
   - build_bounce_ansi(): 弹入动效（替代线性渐显）
-  - make_sep_gradient_enhanced(): 增强版渐变分隔线（支持波动/流光/sparkle）
+  - build_enhanced_sep(): 增强版渐变分隔线（支持波动/流光）
   - build_sparkle_ansi(): 闪烁高亮
   - build_glow_ansi(): 辉光呼吸效果
   新增函数委托至 _effects.py 实现核心计算，本层只做 ANSI 构建。
-
-新增动效包装器（2026-07-12 第二阶段美化）：
-  - build_breath_border_ansi(): 呼吸边框装饰
-  - build_scan_highlight_ansi(): 扫描高亮行
-  - build_equalizer_ansi(): 均衡器跳动
-  - build_pulse_chain_ansi(): 脉冲链装饰
-  各包装器委托 _effects.py 核心计算，本层封装 ANSI 序列构建。
 """
 
 from __future__ import annotations
@@ -300,7 +293,7 @@ def make_sep_gradient_enhanced(
         start_color: 起始 256 色号。
         end_color: 结束 256 色号。
         char: 显示的字符。
-        effect: 动效类型 "none"|"wave"|"shimmer"|"sparkle"。
+        effect: 动效类型 "none"|"wave"|"shimmer"。
         frame: 当前帧号（effect 非 none 时使用）。
 
     Returns:
@@ -312,130 +305,7 @@ def make_sep_gradient_enhanced(
         return build_sep_wave(colors, frame, char)
     elif effect == "shimmer" and frame > 0:
         return build_sep_shimmer(colors, frame, char)
-    elif effect == "sparkle" and frame > 0:
-        # sparkle 效果：每个字符独立闪烁
-        from ._effects import sparkle_color
-        parts = []
-        for i in range(len(colors)):
-            sc = sparkle_color(frame + i, start_color, period=6)
-            parts.append(f"\033[38;5;{sc}m{char}")
-        return "".join(parts) + "\033[0m"
     return build_gradient_ansi(colors, char)
-
-
-# ═══════════════════════════════════════════════════════════
-# 新增动效 ANSI 包装（2026-07-12 第二阶段美化）
-# ═══════════════════════════════════════════════════════════
-
-
-def build_breath_border_ansi(
-    width: int, frame: int,
-    base_color: int = 45, char: str = "\u2501",
-    amplitude: float = 8.0, period: int = 12,
-) -> str:
-    """构建呼吸边框 ANSI 字符串。
-
-    从边框两端向中心正弦呼吸，边缘最亮中心最暗，
-    形成"呼吸光晕"边框效果。
-
-    Args:
-        width: 边框宽度。
-        frame: 当前帧号。
-        base_color: 基准色号。
-        char: 显示的字符。
-        amplitude: 颜色偏移幅度。
-        period: 呼吸周期。
-
-    Returns:
-        ANSI 格式的呼吸边框字符串（含 RESET）。
-    """
-    from ._effects import breath_border_offset
-    parts: list[str] = []
-    for i in range(width):
-        offset = breath_border_offset(i, width, frame, amplitude, period)
-        c = max(0, min(255, round(base_color + offset)))
-        parts.append(f"\033[38;5;{c}m{char}")
-    return "".join(parts) + "\033[0m"
-
-
-def build_scan_highlight_ansi(
-    line_idx: int, frame: int, total_lines: int,
-    text: str, scan_period: int = 20,
-) -> str:
-    """构建扫描高亮行 ANSI 字符串。
-
-    按帧号周期性扫描高亮某一行，适合流式输出活动指示。
-
-    Args:
-        line_idx: 当前行索引。
-        frame: 当前帧号。
-        total_lines: 总行数。
-        text: 行文本。
-        scan_period: 扫描周期。
-
-    Returns:
-        高亮后的 ANSI 字符串，非扫描行返回原文本。
-    """
-    from ._effects import scan_line_index
-    hl = scan_line_index(frame, total_lines, scan_period)
-    if hl is not None and line_idx == hl:
-        return f"\033[48;5;236m\033[38;5;255m{text}\033[0m"
-    return text
-
-
-def build_equalizer_ansi(frame: int, bar_count: int = 5, period: int = 12) -> str:
-    """构建均衡器跳动 ANSI 字符串。
-
-    多个竖条独立跳动，模拟音频均衡器视觉效果。
-
-    Args:
-        frame: 当前帧号。
-        bar_count: 均衡器条数。
-        period: 呼吸周期。
-
-    Returns:
-        ANSI 格式的均衡器字符串（含 RESET）。
-    """
-    from ._effects import equalizer_frame, BAR_CHARS, sine_color
-    heights = equalizer_frame(frame, bar_count)
-    parts: list[str] = []
-    for i, h in enumerate(heights):
-        bar_idx = min(len(BAR_CHARS) - 1, round(h * (len(BAR_CHARS) - 1)))
-        char = BAR_CHARS[bar_idx]
-        # 不同条使用不同的呼吸色
-        color = sine_color(frame + i * 5, 45, 81, period)
-        parts.append(f"\033[38;5;{color}m{char}")
-    return "".join(parts) + "\033[0m"
-
-
-def build_pulse_chain_ansi(
-    frame: int, total_pulses: int = 3,
-    base_color: int = 45, period: int = 12,
-) -> str:
-    """构建脉冲链 ANSI 字符串。
-
-    多个脉冲沿时间轴传播，适合工具调用/消息序列的视觉反馈。
-
-    Args:
-        frame: 当前帧号。
-        total_pulses: 脉冲数量。
-        base_color: 基准色号。
-        period: 单个脉冲周期。
-
-    Returns:
-        ANSI 格式的脉冲链字符串（含 RESET）。
-    """
-    from ._effects import pulse_chain, sine_color
-    intensities = pulse_chain(frame, total_pulses, pulse_spacing=8, period=period)
-    parts: list[str] = []
-    for i, intensity in enumerate(intensities):
-        if intensity > 0.01:
-            color = sine_color(frame + i * 8, base_color, min(255, base_color + 30), period)
-            c = round(color * intensity + base_color * (1.0 - intensity))
-            parts.append(f"\033[38;5;{max(0, min(255, c))}m\u25cf")
-    if not parts:
-        parts.append("\u00b7")  # 无脉冲时用点占位
-    return "".join(parts) + "\033[0m"
 
 
 __all__ = [
@@ -444,9 +314,4 @@ __all__ = [
     # 增强动效（2026-07-12）
     "build_bounce_ansi", "build_sep_wave", "build_sep_shimmer",
     "build_sparkle_ansi", "build_glow_ansi", "make_sep_gradient_enhanced",
-    # 新增动效（2026-07-12 第二阶段）
-    "build_breath_border_ansi",
-    "build_scan_highlight_ansi",
-    "build_equalizer_ansi",
-    "build_pulse_chain_ansi",
 ]

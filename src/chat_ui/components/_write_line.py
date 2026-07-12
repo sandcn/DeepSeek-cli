@@ -28,29 +28,16 @@ class WriteLineBlock(TuiComponent):
 
     def render_to_adapter(self, adapter: "OutputAdapter") -> int:
         text = self.text
-        if not text:
-            adapter.write_raw("\n")
-            return 1
-        bounce = self._get_bounce_prefix()
         if '\033[' in text:
             try:
-                if bounce:
-                    adapter.write(Text.from_ansi(f"{bounce}{text}\033[0m"))
-                else:
-                    adapter.write(Text.from_ansi(text))
+                adapter.write(Text.from_ansi(text))
             except Exception:
                 _logger.debug("write_line ANSI 解析失败, 回退 raw 输出", exc_info=True)
-                if bounce:
-                    adapter.write_raw(f"{bounce}{text}\033[0m\n")
-                else:
-                    adapter.write_raw(text + "\n")
+                adapter.write_raw(text + "\n")
                 return _estimate_content_lines(text)
             return _estimate_content_lines(text)
         else:
-            if bounce:
-                adapter.write_raw(f"{bounce}{text}\033[0m\n")
-            else:
-                adapter.write_raw(text + "\n")
+            adapter.write_raw(text + "\n")
             return _estimate_content_lines(text)
 
     def render(self) -> str:
