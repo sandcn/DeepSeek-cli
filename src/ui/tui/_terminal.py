@@ -218,8 +218,7 @@ def narrow_sep_width(max_width: int = 40) -> int:
 
 def _try_set_raw(fd: int) -> dict | None:
     """尝试在指定 fd 上设置 raw mode，返回 guard 或 None。"""
-    import termios as _tio
-    import tty as _tty
+    from src._compat_termios import termios as _tio, tty as _tty
     try:
         old = _tio.tcgetattr(fd)
         _tty.setraw(fd)
@@ -309,7 +308,7 @@ def leave_raw_mode(guard: dict | None) -> None:
     if guard is None:
         return
     try:
-        import termios as _termios
+        from src._compat_termios import termios as _termios
         _termios.tcsetattr(
             guard["fd"], _termios.TCSADRAIN, guard["old"],
         )

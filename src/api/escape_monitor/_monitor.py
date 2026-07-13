@@ -357,17 +357,15 @@ class EscapeMonitor:
     def _restore_terminal_settings_impl(self):
         """实际终端设置恢复逻辑（无锁，由调用方保证线程安全）。
 
-        Windows 上 termios 不可用，直接跳过恢复（无需恢复）。
+        使用兼容模块 termios（src._compat_termios），Windows 上 stub 操作
+        抛出 ImportError 由内层 except 处理，自动跳过恢复。
 
         tcsetattr 之后调用 tcflush(fd, TCIFLUSH) 清空 stdin 内核缓冲区：
         防止 cbreak→cooked 模式切换时终端驱动产生的 \\r\\n 残留字节（尤其在
         Android/Termux 环境下）干扰后续 stdin 读取，如底部栏选择弹窗的 inkey()
         误消费残留 \\n 为 Enter 键导致弹窗瞬间消失。
         """
-        try:
-            import termios
-        except ImportError:
-            return  # Windows: termios 不可用，无需恢复终端设置
+        from src._compat_termios import termios
         settings = self._old_settings
         if settings is None:
             settings = self._saved_original_settings
@@ -414,8 +412,7 @@ class EscapeMonitor:
 
     def _apply_monitor_settings(self) -> None:
         """获取当前终端设置并设置为 cbreak 模式（线程安全）。"""
-        import termios
-        import tty
+        from src._compat_termios import termios, tty
         with self._lock:
             try:
                 fd = sys.stdin.fileno()
@@ -489,8 +486,13 @@ class EscapeMonitor:
 
     def _monitor_unix(self):
         """Unix/Cygwin: 用 termios + select 读取原始按键。"""
-        import termios
+        from src._compat_termios import HAS_TERMIOS, termios
         import select
+
+        # Windows 上 termios 不可用，让 _monitor() 回退到 _monitor_win()
+        if not HAS_TERMIOS:
+            self._monitor_ready.set()
+            raise ImportError("termios 在当前平台（Windows）不可用，回退到 msvcrt 路径")
 
         fd = sys.stdin.fileno()
         try:

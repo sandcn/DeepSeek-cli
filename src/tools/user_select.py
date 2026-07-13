@@ -7,10 +7,9 @@ import os
 import select
 from shutil import get_terminal_size
 import sys
-import termios
 import time
-import tty
 
+from src._compat_termios import HAS_TERMIOS, termios, tty
 from .base import Func, tool_metadata
 from ..core.constants import GREEN, YELLOW, RED, DIM, RESET
 from ..ui._lock import locked_print
@@ -105,7 +104,6 @@ class UserSelectFunc(Func):
         while select.select([sys.stdin], [], [], 0)[0]:
             await loop.run_in_executor(None, sys.stdin.read, 1)
         try:
-            import termios
             termios.tcflush(sys.stdin, termios.TCIFLUSH)
         except (ImportError, OSError, AttributeError):
             pass
@@ -161,6 +159,18 @@ class UserSelectFunc(Func):
         """
         monitor = get_active_monitor()
         self._stop_monitor(monitor)
+
+        # Windows 回退：termios 不可用时降级为 non-interactive
+        if not HAS_TERMIOS:
+            _logger.warning(
+                "user_select Windows 回退 non-interactive: title=%s",
+                self.title,
+            )
+            self._start_monitor(monitor)
+            return json.dumps({
+                "selected": list(self.default_options or []),
+                "action": "non_interactive",
+            }, ensure_ascii=False)
 
         # 非交互环境检测
         if not os.isatty(sys.stdin.fileno()):

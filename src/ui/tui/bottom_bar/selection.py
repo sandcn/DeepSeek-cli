@@ -42,7 +42,7 @@ def _save_terminal_settings(fd: int):
     Returns:
         termios 设置列表，可传给 _restore_terminal_settings 恢复。
     """
-    import termios
+    from src._compat_termios import termios
     return termios.tcgetattr(fd)
 
 
@@ -63,7 +63,7 @@ def _restore_terminal_settings(fd: int, settings) -> None:
         settings: _save_terminal_settings 返回的 termios 设置。
     """
     try:
-        import termios
+        from src._compat_termios import termios
         termios.tcsetattr(fd, termios.TCSADRAIN, settings)
     except Exception:
         pass
@@ -103,8 +103,7 @@ def _run_selection_raw(
          "index": int | None}
     """
     import select
-    import tty
-    import termios as _termios
+    from src._compat_termios import termios as _termios, tty
 
     if not items:
         return {"action": "error", "index": None}
@@ -272,7 +271,7 @@ def run_bottom_bar_selection(
     # 方案 A 的 tcflush）未正确清空内核缓冲区，也能在进入 cbreak 前兜底清空，
     # 防止终端模式切换残留的 \n 字节被 term.inkey() 误消费为 Enter 键。
     try:
-        import termios as _termios
+        from src._compat_termios import termios as _termios
         _termios.tcflush(sys.stdin.fileno(), _termios.TCIFLUSH)
     except Exception:
         pass
@@ -352,7 +351,7 @@ def run_bottom_bar_selection(
             pass
         try:
             # 清空 stdin 缓冲
-            import termios as _termios
+            from src._compat_termios import termios as _termios
             _termios.tcflush(sys.stdin.fileno(), _termios.TCIFLUSH)
         except Exception:
             pass
