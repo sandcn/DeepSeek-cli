@@ -79,8 +79,8 @@ class TerminalTarget:
             locked_write: 持锁后执行的回调（无参数）。
             fallback_text: 锁超时时直写到 sys.__stdout__ 的文本。
         """
-        from ._lock import output_lock, OUTPUT_LOCK_TIMEOUT
-        acquired = output_lock.acquire(timeout=OUTPUT_LOCK_TIMEOUT)
+        from ._lock import render_lock, OUTPUT_LOCK_TIMEOUT
+        acquired = render_lock.acquire(timeout=OUTPUT_LOCK_TIMEOUT)
         try:
             if acquired:
                 locked_write()
@@ -91,7 +91,7 @@ class TerminalTarget:
                 _sys.__stdout__.flush()
         finally:
             if acquired:
-                output_lock.release()
+                render_lock.release()
 
     def write(self, text: str) -> None:
         self._with_lock_or_fallback(
@@ -104,7 +104,7 @@ class TerminalTarget:
         )
 
     def render_frame(self, lines: List[str], last_lines: int) -> int:
-        """增量渲染帧 — 持 output_lock 串行化终端 I/O。
+        """增量渲染帧 — 持 render_lock 串行化终端 I/O。
 
         ★ 串行化保证：\033[s/\033[u（SCOSC，render_frame 使用）与
           \0337/\0338（DECSC，_BottomBar 使用）在绝大多数终端中是

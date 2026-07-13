@@ -11,9 +11,9 @@ from __future__ import annotations
 import logging
 from typing import Optional
 
-from ..tui._animator import AnimatorContext, BreathPalette
-from ..tui._text_utils import build_glow_ansi
-from ..tui._terminal import is_narrow
+from .._animator import AnimatorContext, BreathPalette
+from .._text_utils import build_glow_ansi
+from .._terminal import is_narrow
 
 from .theme import (
     _COLOR_ACCENT,

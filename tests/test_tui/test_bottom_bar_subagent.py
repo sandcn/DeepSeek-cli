@@ -7,7 +7,7 @@ import sys
 import unittest
 from unittest.mock import MagicMock, patch
 
-from src.ui._bottom_bar import _BottomBar
+from src.ui.tui.bottom_bar import _BottomBar
 
 
 def _mock_terminal(width=80, height=30):
@@ -98,7 +98,7 @@ class TestBottomBarSubagentPanel(unittest.TestCase):
 
         out = io.StringIO()
         with patch.object(sys, '__stdout__', out), \
-             patch("src.ui._bottom_bar_pkg.bar.get_terminal", return_value=mock_term), \
+             patch("src.ui.tui.bottom_bar.bar.get_terminal", return_value=mock_term), \
              patch.object(self.bb, '_format_status', return_value="STATUS"):
             self.bb.force_redraw()
 
@@ -117,7 +117,7 @@ class TestBottomBarSubagentPanel(unittest.TestCase):
 
         out = io.StringIO()
         with patch.object(sys, '__stdout__', out), \
-             patch("src.ui._bottom_bar_pkg.bar.get_terminal", return_value=mock_term), \
+             patch("src.ui.tui.bottom_bar.bar.get_terminal", return_value=mock_term), \
              patch.object(self.bb, '_format_status', return_value="STATUS"):
             self.bb.force_redraw()
 
@@ -147,7 +147,7 @@ class TestBottomBarSubagentPanel(unittest.TestCase):
 
         out = io.StringIO()
         with patch.object(sys, '__stdout__', out), \
-             patch("src.ui._bottom_bar_pkg.bar.get_terminal", return_value=mock_term), \
+             patch("src.ui.tui.bottom_bar.bar.get_terminal", return_value=mock_term), \
              patch.object(self.bb, '_format_status', return_value="STATUS"):
             # 不应抛出异常
             self.bb.force_redraw()
@@ -179,7 +179,7 @@ class TestBottomBarSubagentPanel(unittest.TestCase):
 
         out = io.StringIO()
         with patch.object(sys, '__stdout__', out), \
-             patch("src.ui._bottom_bar_pkg.bar.get_terminal", return_value=mock_term), \
+             patch("src.ui.tui.bottom_bar.bar.get_terminal", return_value=mock_term), \
              patch.object(self.bb, '_format_status', return_value="STATUS"):
             self.bb.force_redraw()
 

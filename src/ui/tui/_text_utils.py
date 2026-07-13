@@ -3,7 +3,7 @@
 消除 _message_display._truncate() 和 message_editor._truncate_text()
 两个语义相同但签名不同的重复定义，统一为单一 truncate() 函数。
 
-渐变分隔线工具 — 供 _message_display 和 _bottom_bar_pkg 共享使用，
+渐变分隔线工具 — 供 _message_display 和 bottom_bar 子包共享使用，
 避免渐变分隔线 ANSI 构建逻辑在两处重复实现。
 
 动效增强（2026-07-12）：
@@ -24,16 +24,20 @@ def truncate(
     suffix: str = "\u2026",  # "…"
     normalize: bool = True,
 ) -> str:
-    """截断文本到指定长度。
+    """截断文本到指定长度（ANSI 安全）。
 
     超长时在 max_len 位置截断并追加 suffix（默认 "…"）。
     normalize=True 时先规范化空白（替换换行为空格、去首尾空白），
     与 _message_display._truncate 行为一致。
 
+    若文本包含 ANSI 转义序列，自动降级到视觉宽度截断
+    （委托 ansi.truncate_ansi_visual），确保 ANSI 颜色样式保留。
+
     Args:
-        text: 要截断的文本，None 视为空字符串。
-        max_len: 最大字符数（不含 suffix）。
-        suffix: 超长时追加的后缀。
+        text: 要截断的文本（可含 ANSI 转义码），None 视为空字符串。
+        max_len: 最大字符数（不含 suffix）；对 ANSI 文本视为视觉宽度
+                 （终端列数，CJK=2，ASCII=1）。
+        suffix: 超长时追加的后缀（ANSI 文本始终使用 "…" + RESET）。
         normalize: 是否先规范化空白。
 
     Returns:
@@ -45,6 +49,10 @@ def truncate(
         raise ValueError(f"max_len must be >= 0, got {max_len}")
     if normalize:
         text = text.replace("\n", " ").strip()
+    # ANSI 安全：含转义序列时使用 visual width 截断，保留颜色样式
+    if "\033" in text:
+        from ..ansi import truncate_ansi_visual
+        return truncate_ansi_visual(text, max_len)
     if len(text) <= max_len:
         return text
     return text[:max_len] + suffix
@@ -155,7 +163,7 @@ def make_sep_gradient(
 
     封装 gradient_range() + build_gradient_ansi() 内部组合。
     提供统一的渐变分隔线入口，消除 _message_display 和
-    _bottom_bar_pkg/theme 中的两套独立实现。
+    bottom_bar 子包/theme 中的两套独立实现。
 
     Args:
         width: 分隔线字符数。

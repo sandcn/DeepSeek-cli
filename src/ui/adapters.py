@@ -115,8 +115,8 @@ class UIOutputAdapter:
 
     def _get_lock(self):
         if self._lock is None:
-            from ._lock import output_lock
-            self._lock = output_lock
+            from ._lock import render_lock
+            self._lock = render_lock
         return self._lock
 
     def write(self, text, level="info", source="core"):

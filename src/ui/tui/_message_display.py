@@ -27,6 +27,7 @@ from ._text_utils import (truncate, build_gradient_ansi, build_fade_in_ansi,
                           build_bounce_ansi, make_sep_gradient_enhanced,
                           build_sparkle_ansi, build_glow_ansi)
 from ._animator import AnimatorContext, BreathPalette
+from ._effects import sine_color_range
 from ..output_target import IOutputTarget, TerminalTarget
 
 
@@ -369,14 +370,6 @@ def _role_tag(role: str, breath_frame: int = 0) -> str:
     }.get(role, _D + "\u00b7" + _R)
 
 
-# _truncate 已迁移到 _text_utils.truncate（向后兼容：width → max_len）
-def _truncate(text: str | None, width: int, *, suffix: str = "\u2026") -> str:
-    """截断文本（向后兼容包装器，委托 _text_utils.truncate）。
-
-    width 参数映射到 truncate() 的 max_len 参数。
-    """
-    return truncate(text, max_len=width, suffix=suffix, normalize=True)
-
 
 def _format_sandbox_text(sandbox_info: dict | None) -> str:
     """格式化沙盒信息为显示文本。"""
@@ -672,37 +665,47 @@ def _msg_line(
 
     line_truncate = narrow_truncate(_LINE_TRUNCATE_WIDTH, 30, 18)
     if is_narrow() and sandbox_text:
-        sandbox_text = _truncate(sandbox_text, 12)
+        sandbox_text = truncate(sandbox_text, max_len=12, normalize=True)
 
     if m.get("tool_calls"):
         names = ", ".join(
             tc.get("function", {}).get("name", "?") for tc in m["tool_calls"]
         )
-        text = _truncate(names, line_truncate) + sandbox_text
+        text = truncate(names, max_len=line_truncate, normalize=True) + sandbox_text
         return icon, role, text
 
-    text = _truncate(content, line_truncate) + sandbox_text
+    text = truncate(content, max_len=line_truncate, normalize=True) + sandbox_text
     return icon, role, text
 
 
-def _msg_label(m: dict, i: int, ctx: MessageDisplayContext, breath_frame: int = 0) -> str:
+def _msg_label(m: dict, i: int, ctx: MessageDisplayContext, breath_frame: int = 0, selected: bool = False) -> str:
     """生成消息的彩色标签行（用于消息选择器显示）。
 
     Args:
         breath_frame: 呼吸帧号，0 表示使用静态色。
+        selected: 是否为选中消息。为 True 且 breath_frame > 0 时应用呼吸色。
     """
     role = m.get("role", "?")
     icon = _role_icon(role)
     tag = _role_tag(role, breath_frame)
     content = m.get("content") or ""
+    # 当 breath_frame > 0 且 selected=True 时，为标签添加呼吸色
+    if breath_frame > 0 and selected:
+        breath_color = sine_color_range(breath_frame, [44, 45, 46, 47, 46, 45, 44])
+        # 呼吸色应用于 #i 索引和截断文本部分（tag 有独立颜色不受影响）
+        breath_mark = f"\033[38;5;{breath_color}m"
+        breath_reset = _R
+    else:
+        breath_mark = ""
+        breath_reset = ""
     if m.get("tool_calls"):
         names = ", ".join(
             tc.get("function", {}).get("name", "?") for tc in m["tool_calls"]
         )
-        return f"{tag}  {_D}#{i}{_R}  {_Y}{_truncate(names, 35)}{_R}"
+        return f"{tag}  {breath_mark}{_D}#{i}{_R}  {_Y}{truncate(names, max_len=35, normalize=True)}{_R}{breath_reset}"
     text = content.replace("\n", " ").strip()
-    truncated = _truncate(text, 40)
-    return f"{tag}  {_D}#{i}{_R}  {truncated}"
+    truncated = truncate(text, max_len=40, normalize=True)
+    return f"{tag}  {breath_mark}{_D}#{i}{_R}  {truncated}{breath_reset}"
 
 
 # ── 消息选择器行渲染 ────────────────────────────────────
@@ -711,6 +714,8 @@ def _make_message_lines(
     items: list[int], cursor: int, state: dict,
     ctx: MessageDisplayContext, title: str, tag: str,
     is_current: bool,
+    selected_index: int = -1,
+    breath_frame: int = 0,
 ) -> list[tuple[str, str]]:
     """生成消息选择器的显示行列表。
 
@@ -722,6 +727,8 @@ def _make_message_lines(
         title: 标题文本。
         tag: 标题后缀标签。
         is_current: 是否为当前会话。
+        selected_index: 选中消息在 ctx.data 中的索引，-1 表示无选中。
+        breath_frame: 呼吸帧号，0 表示使用静态色。
 
     Returns:
         (样式类, 文本) 行列表。
@@ -751,10 +758,16 @@ def _make_message_lines(
             label = f" {j:2d}{icon} {text}"
         else:
             label = f" {j:3d} {icon} {text}"
-        if j == cursor:
-            lines.append(("class:selected", f"{ind}\u25b6 {label}\n"))
+        # 脉动指示符：选中消息显示 ▸（呼吸色），未选中显示两个空格占位
+        if selected_index >= 0 and i == selected_index:
+            pulse_color = sine_color_range(breath_frame, [45, 81])
+            prefix = f"\033[38;5;{pulse_color}m\u25b8{_R} "
         else:
-            lines.append(("class:role.user", f"{ind}  {label}\n"))
+            prefix = "  "
+        if j == cursor:
+            lines.append(("class:selected", f"{ind}{prefix}{label}\n"))
+        else:
+            lines.append(("class:role.user", f"{ind}{prefix}{label}\n"))
     if e < len(items):
         lines.append(("class:dim", f"  {ind}\u2193 更多...\n"))
     lines.append(("class:sep", sep_line + "\n"))

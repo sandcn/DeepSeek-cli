@@ -1,5 +1,5 @@
 """
-MessageQueue — 异步消息队列
+AsyncMessageQueue — 异步消息队列（MessageQueuePort 实现）
 
 生产者（用户输入）将消息放入队列，
 消费者（大模型 Agent）从队列取出消息并处理。
@@ -8,39 +8,32 @@ MessageQueue — 异步消息队列
 
 基于 asyncio.Queue 实现，所有操作均为异步，
 无需 run_in_executor 桥接，适用于纯 asyncio 环境。
+
+MessageQueuePort 抽象接口定义于 src.core.ports.message_queue。
+
+注意：模块末尾定义的 ``MessageQueue = AsyncMessageQueue`` 是向后兼容别名。
+新代码应直接使用 ``AsyncMessageQueue`` 或通过 ``MessageQueuePort`` 接口引用。
+别名仅用于减少旧代码迁移成本，非稳定公开 API。
 """
 from __future__ import annotations
 
 import asyncio
 import logging
-import time
-import itertools
-from dataclasses import dataclass, field
 from typing import Optional, Callable, Awaitable
+
+from .ports.message_queue import MessageQueuePort, Message, _STOP_SENTINEL
 
 # 模块级日志器
 _logger = logging.getLogger(__name__)
 
-# 全局消息 ID 生成器（线程安全无需锁，全在事件循环中）
-_message_counter = itertools.count(1)
 
-
-@dataclass
-class Message:
-    """队列中的消息单元"""
-    content: str | object
-    timestamp: float = field(default_factory=time.time)
-    id: int = field(default_factory=lambda: next(_message_counter))
-    taken: bool = False  # 标记消息是否已被 callback 取出处理（双阶段确认防重复）
-
-
-class MessageQueue:
-    """基于 asyncio.Queue 的 FIFO 消息队列（纯异步实现）。
+class AsyncMessageQueue(MessageQueuePort):
+    """基于 asyncio.Queue 的 FIFO 消息队列（纯异步实现，MessageQueuePort 实现）。
 
     所有 put / get / stop 操作均为 async，需在事件循环中调用。
     """
 
-    _STOP_SENTINEL = object()  # 哨兵标记值，用于停止消费循环
+    _STOP_SENTINEL = _STOP_SENTINEL  # 哨兵标记值，用于停止消费循环
 
     def __init__(self):
         self._queue: asyncio.Queue[Message] = asyncio.Queue()
@@ -142,3 +135,9 @@ class MessageQueue:
         except asyncio.CancelledError:
             _logger.info("async_consume 被取消")
             raise
+
+
+# ── 向后兼容别名 ─────────────────────────────────────────────
+# MessageQueue 现为 AsyncMessageQueue 的别名。
+# 新代码应直接使用 AsyncMessageQueue 或通过 MessageQueuePort 接口引用。
+MessageQueue = AsyncMessageQueue

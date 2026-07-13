@@ -1,6 +1,6 @@
 """核心层端口接口 — 定义核心层与基础设施之间的抽象协议（纯抽象层）
 
-核心层通过此模块访问模型调用、UI 显示、配置、持久化等功能，
+核心层通过此模块访问模型调用、UI 显示、配置、持久化、缓存等功能，
 不直接依赖 api、ui、chat_msgs、checkpoint 等具体实现模块。
 基础设施层实现这些协议（适配器模式），实现依赖倒置。
 
@@ -18,24 +18,33 @@ src.core.adapters 包导入，确保依赖方向为：高层→抽象←实现�
 - InterruptPort     — 中断检查
 - ObservabilityPort — 可观测性（定义于 observability.py）
 - OutputPort        — 文本输出（新增）
+- CachePort         — 缓存抽象（新增）
+- MessageQueuePort  — 消息队列（新增）
 """
 
+from .cache import CachePort
 from .config import ConfigPort
 from .display import DisplayPort
 from .events import EventPort
 from .interrupt import InterruptPort
+from .message_queue import MessageQueuePort, Message
 from .model import AsyncModelPort, ModelResult
 from .observability import ObservabilityPort
 from .output import OutputPort
 from .persistence import PersistencePort, CheckpointPort
+
 
 __all__ = [
     # 配置
     "ConfigPort",
     # 模型
     "AsyncModelPort", "ModelResult",
+    # 消息队列
+    "MessageQueuePort", "Message",
     # 持久化
     "PersistencePort", "CheckpointPort",
+    # 缓存
+    "CachePort",
     # UI
     "DisplayPort", "EventPort", "OutputPort",
     # 中断检查

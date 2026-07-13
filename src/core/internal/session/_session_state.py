@@ -2,7 +2,7 @@
 
 职责：
 - 作为单个真相源（Single Source of Truth）持有会话可变状态
-- 持有 CoreHooks 实例作为 Hook 注册表
+- 持有 CoreEventBus 实例作为事件总线
 - 提供 pending_messages 弹出方法
 
 减少 ChatSession 中直接定义的状态字段数量，将其收拢到此数据容器中。
@@ -13,7 +13,7 @@ from __future__ import annotations
 import asyncio
 from dataclasses import dataclass, field
 
-from ...hooks import CoreHooks
+from ...events import CoreEventBus
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -38,7 +38,7 @@ class SessionState:
     pending_messages: list[str] = field(default_factory=list)
 
     # ── Hook 系统 ─────────────────────────────────────────
-    hooks: CoreHooks = field(default_factory=CoreHooks)
+    hooks: CoreEventBus = field(default_factory=CoreEventBus)
 
     # ── LLM 生成期间捕获文本 ──────────────────────────────
     captured_prefill: str = ""

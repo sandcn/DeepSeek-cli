@@ -4,7 +4,7 @@
 所有输出走 Rich Console，确保色彩一致、终端宽度自适应。
 
 ★ 锁设计（单锁简化）：
-  所有 I/O 操作统一使用全局 output_lock。
+  所有 I/O 操作统一使用全局 render_lock。
   width 属性为无锁读取（GIL 保护简单属性），消除所有「锁前锁」链。
 """
 
@@ -16,7 +16,7 @@ from rich.style import Style
 
 import logging
 import time
-from ..ui._lock import output_lock, _try_acquire_output_lock
+from ..ui._lock import render_lock, _try_acquire_output_lock
 
 _logger = logging.getLogger(__name__)
 from .output_strategies import get_strategy
@@ -26,7 +26,7 @@ class OutputAdapter:
     """统一终端输出适配器 — 单锁线程安全，简化缓冲。
 
     所有 write(Text) 直接输出到 Rich Console，不做中间缓冲。
-    线程安全由全局 output_lock 保证。
+    线程安全由全局 render_lock 保证。
     """
 
     def __init__(self, console: Console):
@@ -55,7 +55,7 @@ class OutputAdapter:
 
         供 resize 检测路径调用——当终端大小变化时立即更新宽度，
         无需等待下一次 _refresh_width() 的 TTL 自然过期。
-        调用方可能已持有 output_lock，本方法不重复获取锁。
+        调用方可能已持有 render_lock，本方法不重复获取锁。
         直接读写 self._width / self._last_width_refresh，在
         CPython GIL 下对简单属性是原子操作。
         """
@@ -178,7 +178,7 @@ class OutputAdapter:
         self._refresh_width()
         strategy = get_strategy(speed, mode)
         strategy.write(text, self._console, speed, end, fill_style,
-                       output_lock, self.width)
+                       render_lock, self.width)
 
     def clear_line(self) -> None:
         """清除当前行（用于光标/进度覆盖）。"""

@@ -11,7 +11,7 @@ import asyncio
 import pytest
 from unittest.mock import MagicMock
 
-from src.core.hooks import CoreHooks
+from src.core.events import CoreEventBus
 from src.core.internal.session._session_state import SessionState
 
 
@@ -36,7 +36,7 @@ class TestDefaultValues:
 
     def test_hooks_default(self):
         state = SessionState()
-        assert isinstance(state.hooks, CoreHooks)
+        assert isinstance(state.hooks, CoreEventBus)
         # 验证通过 __getitem__ 委托，访问不存在的键返回空列表
         assert state.hooks["nonexistent"] == []
 

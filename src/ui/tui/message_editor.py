@@ -24,7 +24,7 @@ from ..theme import THEME
 from ...core.sandbox_manager import get_sandbox_manager as _get_sandbox_manager
 from ...api.interrupt_async import flush_stdin, reset_interrupt_async
 from .._lock import locked_print
-from .._bottom_bar import run_bottom_bar_selection
+from .bottom_bar.selection import run_bottom_bar_selection
 from ..events import publish_output
 from . import _message_display as _disp
 from ._text_utils import truncate

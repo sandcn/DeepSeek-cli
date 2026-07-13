@@ -12,7 +12,7 @@ from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from ..ui._cursor_tracker import CursorTracker
-    from ..ui._bottom_bar import _BottomBar
+    from ..ui.tui.bottom_bar import _BottomBar
     from ..ui.events.event_bus import DisplayEventBus
     from ..renderer.output import OutputAdapter
     from .renderer import TuiRenderer, _RenderState
@@ -60,7 +60,7 @@ def _create_chat_ui_components(event_bus=None) -> _ChatUIComponents:
         event_bus = DisplayEventBus.get_default()
 
     from ..ui._cursor_tracker import CursorTracker
-    from ..ui._bottom_bar import _BottomBar
+    from ..ui.tui.bottom_bar import _BottomBar
     from ..ui._completion import CompletionEngine
     from rich.console import Console
     from ..renderer.output import OutputAdapter

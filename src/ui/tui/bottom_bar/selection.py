@@ -10,7 +10,7 @@ import os
 import sys
 import logging
 
-from .._blessed import get_terminal
+from ..._blessed import get_terminal
 
 _logger = logging.getLogger(__name__)
 
@@ -242,7 +242,7 @@ def run_bottom_bar_selection(
 
     bb = bottom_bar
     if bb is None:
-        from ...chat_ui import get_active_chat_ui  # fallback — 让 ui/tui 调用方传入 bottom_bar
+        from ....chat_ui import get_active_chat_ui  # fallback — 让 ui/tui 调用方传入 bottom_bar
         chat_ui = get_active_chat_ui()
         if chat_ui is None:
             return {"action": "error", "index": None}

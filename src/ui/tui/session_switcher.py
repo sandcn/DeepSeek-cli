@@ -10,6 +10,8 @@ from typing import Optional
 
 from ...chat_msgs import list_sessions, load_session
 from ._selector_base import BaseBottomBarSelector
+from ._terminal import is_narrow, get_terminal_width
+from ._text_utils import truncate
 
 _logger = logging.getLogger(__name__)
 
@@ -70,6 +72,10 @@ class SessionSwitcher(BaseBottomBarSelector[dict, Optional[dict[str, object]]]):
             # 会话ID短摘要(暗灰) + 时间戳(暗灰) + 标题(亮青) + 模型名(青+·) + 消息数(绿+◆)
             label = f"{DARK_GRAY_256}{sid_short}{RESET} {time_info}  {BRIGHT_CYAN_256}{title_info}{RESET}  {CYAN_256}\u00b7 {model}{RESET}  {GREEN_256}\u25c6 {count}m{RESET}"
             labels.append(label)
+        # ── 窄屏适配：截断超长标签 ───────────────────────
+        if is_narrow():
+            max_width = max(get_terminal_width() - 4, 30)
+            labels = [truncate(label, max_width) for label in labels]
         return labels
 
     def _on_selected(self, item: dict) -> dict[str, object] | None:

@@ -16,13 +16,13 @@ import threading
 from typing import Optional
 
 _logger = logging.getLogger(__name__)
-from .constants import YELLOW, RESET, audit_log as _log
+from .constants import YELLOW, DIM, RESET, audit_log as _log
 from . import context_selector as selector
 from .context_selector import MessageStatsCache
 from .compression import CompressionResult, CompressionStrategy, SummarizeStrategy, DropStrategy  # noqa: F401 — re-exported for backward compat
-from ..core.ports.config import ConfigPort
-from ..core.adapters.config import DefaultConfigAdapter
-from ..core.adapters.output import get_default_output_port as _get_out  # noqa: E402
+from .ports.config import ConfigPort
+from .ports.output import OutputPort
+from .adapters.config import DefaultConfigAdapter
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -55,7 +55,8 @@ class ContextManager:
     def __init__(self, messages, model, summarize_fn=None,
                  on_messages_changed=None,
                  strategies: Optional[list[CompressionStrategy]] = None,
-                 config_port: Optional[ConfigPort] = None):
+                 config_port: Optional[ConfigPort] = None,
+                 output_port: Optional[OutputPort] = None):
         self.messages = messages
         self.model = model
         self._on_changed = on_messages_changed
@@ -65,6 +66,7 @@ class ContextManager:
         self._summarize_fn = summarize_fn
         self._lock = threading.RLock()
         self._config_port = config_port or DefaultConfigAdapter()
+        self._output_port = output_port
 
         # 增量统计缓存（惰性同步）
         self._cache = MessageStatsCache()
@@ -160,10 +162,16 @@ class ContextManager:
 
     def _do_compress(self, force):
         """执行压缩：按策略链依次尝试，第一个成功即停止。"""
+        on_info = None
+        if self._output_port:
+            on_info = lambda text: self._output_port.write(
+                f"{DIM}{text}{RESET}", level="raw", source="context",
+            )
         for strategy in self._strategies:
             result = strategy.compress(
                 self.messages, self.model, self._summarize_fn,
                 self._on_changed, self._cache, force,
+                on_info=on_info,
             )
             if result.success:
                 # 同步提示缓存
@@ -214,11 +222,12 @@ class ContextManager:
             self._notify_changed({"type": "remove", "indices": unpinned_indices})
 
             _log("SESSION_LIMIT", f"删除 {removed} 条消息以保持限制 ({max_session_messages})")
-            _get_out().write(
-                f"{YELLOW}消息数达到限制 ({max_session_messages})，已删除 {removed} 条{RESET}",
-                level="raw",
-                source="context",
-            )
+            if self._output_port:
+                self._output_port.write(
+                    f"{YELLOW}消息数达到限制 ({max_session_messages})，已删除 {removed} 条{RESET}",
+                    level="raw",
+                    source="context",
+                )
 
             return removed
 

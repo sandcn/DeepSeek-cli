@@ -65,12 +65,52 @@ class DisplayEventBusAdapter(EventPort):
             self.publish_event(data, source=actual_source)
 
     def subscribe(self, event_type: str, handler: Callable) -> None:
-        """订阅事件（通过字符串类型名）"""
-        self._bus.subscribe(handler, event_type=None)  # 订阅所有
+        """订阅事件（通过字符串类型名）
+
+        当 event_type 为具体字符串时，仅接收匹配该类型的事件；
+        当 event_type 为 None 或空字符串时，接收所有事件（向后兼容）。
+
+        Args:
+            event_type: 事件类型字符串（如 "OutputEvent", "ToolSummaryEvent"）。
+                       None 或空表示订阅所有。
+            handler: 事件处理函数
+        """
+        if event_type:
+            # 创建带类型过滤的包装器
+            # 存储包装器引用以便后续 unsubscribe
+            if not hasattr(self, '_subscribe_wrappers'):
+                self._subscribe_wrappers: dict[int, list] = {}
+
+            def _make_filtered_wrapper(et: str, h: Callable):
+                """创建过滤包装器 - 仅当事件类型匹配时调用 handler"""
+                def wrapper(event):
+                    # 检查事件对象的 event_type 属性或类型名
+                    event_type_name = getattr(event, 'event_type', None)
+                    if event_type_name == et:
+                        h(event)
+                    elif type(event).__name__ == et:
+                        h(event)
+                return wrapper
+
+            wrapper = _make_filtered_wrapper(event_type, handler)
+            self._subscribe_wrappers.setdefault(id(handler), []).append(wrapper)
+            self._bus.subscribe(wrapper, event_type=None)
+        else:
+            self._bus.subscribe(handler, event_type=None)
 
     def unsubscribe(self, event_type: str, handler: Callable) -> None:
-        """取消订阅"""
-        self._bus.unsubscribe(handler, event_type=None)
+        """取消订阅
+
+        优先取消带过滤的包装器订阅；无包装器时直接取消原始 handler。
+        """
+        wrappers_dict = getattr(self, '_subscribe_wrappers', None)
+        handler_id = id(handler)
+        if wrappers_dict and handler_id in wrappers_dict:
+            wrappers = wrappers_dict.pop(handler_id)
+            for wrapper in wrappers:
+                self._bus.unsubscribe(wrapper, event_type=None)
+        else:
+            self._bus.unsubscribe(handler, event_type=None)
 
     def publish_event(self, event: Any, source: str = "core") -> None:
         """发布类型化事件对象

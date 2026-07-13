@@ -3,7 +3,7 @@
 从 _bottom_bar.py 提取，_BottomBar 通过组合使用。
 提供 show/hide/cycle/get_selected + render() 绘制方法。
 
-依赖 _bottom_bar_theme 中的颜色常量和 _bottom_cursor 中的纯函数。
+依赖 bottom_bar/theme 中的颜色常量和 bottom_bar/cursor 中的纯函数。
 使用 Blessed Terminal.move_xy / Terminal.clear_eol 替代原始 ANSI 序列。
 """
 
@@ -11,9 +11,9 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from .._blessed import get_terminal
-from ..tui._animator import AnimatorContext, BreathPalette
-from ..tui._terminal import is_narrow
+from ..._blessed import get_terminal
+from .._animator import AnimatorContext, BreathPalette
+from .._terminal import is_narrow
 from .theme import (
     _COLOR_COMPLETE_CMD_PREFIX,
     _COLOR_COMPLETE_DIR,
@@ -28,7 +28,7 @@ from .theme import (
 from .cursor import _truncate_by_width, _visual_len
 
 if TYPE_CHECKING:
-    from .._cursor_tracker import CursorTracker
+    from ..._cursor_tracker import CursorTracker
 
 
 class _CompletionPopup:

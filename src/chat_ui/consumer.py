@@ -38,7 +38,7 @@ from .state import (
     get_active_chat_ui,
 )
 
-from .lock import output_lock
+from .lock import render_lock
 from ..ui._blessed import get_terminal
 
 from .dispatcher import _HANDLER_MAP
@@ -162,7 +162,7 @@ class ChatUIConsumer:
             self._engine.flush()
             self._engine.stop()
             _unregister_consumer()
-            with output_lock:
+            with render_lock:
                 self._rs.close_all()
                 self._bottom_bar.teardown()
             self._started = False
@@ -180,7 +180,7 @@ class ChatUIConsumer:
                 return
             self._engine.flush()
             self._engine.stop()
-            with output_lock:
+            with render_lock:
                 self._bottom_bar.teardown()
 
     def resume(self) -> None:
@@ -196,7 +196,7 @@ class ChatUIConsumer:
                 return
             if self._engine._render_running:
                 return
-            with output_lock:
+            with render_lock:
                 try:
                     term = get_terminal()
                     sys.__stdout__.write(term.move_xy(0, term.height - 1))
@@ -272,7 +272,7 @@ class ChatUIConsumer:
         self._engine.set_panel_refresh_callback(callback)
 
     def setup_bottom_bar(self) -> None:
-        with output_lock:
+        with render_lock:
             self._bottom_bar.setup()
 
     def teardown_bottom_bar(self) -> None:

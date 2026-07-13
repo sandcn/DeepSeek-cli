@@ -12,7 +12,7 @@
 
 from __future__ import annotations
 
-from .._blessed import get_terminal
+from ..._blessed import get_terminal
 
 
 __all__ = [

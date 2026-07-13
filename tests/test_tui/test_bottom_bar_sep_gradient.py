@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import unittest
 
-from src.ui._bottom_bar_pkg.theme import (
+from src.ui.tui.bottom_bar.theme import (
     _COLOR_RESET,
     _COLOR_SEP,
     _COLOR_SEP_START,
@@ -132,9 +132,15 @@ class TestSepGradientNarrowFallback(unittest.TestCase):
         self.assertEqual(colors_narrow[-1], 237)
 
     def test_narrow_fallback_sep_constant_available(self):
-        """窄屏降级使用的 _COLOR_SEP 常量和 _COLOR_SEP_START 可用。"""
-        self.assertIn("38;5;237", _COLOR_SEP, "_COLOR_SEP 应含深灰 237 色号")
-        self.assertIn("38;5;45", _COLOR_SEP_START, "_COLOR_SEP_START 应含青色 45 色号")
+        """窄屏降级使用的 _COLOR_SEP 常量和 _COLOR_SEP_START 可用（值跟随当前主题）。"""
+        from src.ui.theme import THEME
+        # THEME 中的值是完整的 ANSI 字符串（如 "\033[38;5;239m"）
+        expected_sep = THEME.get("separator", "\033[38;5;237m")
+        expected_start = THEME.get("title", "\033[38;5;45m")
+        self.assertEqual(_COLOR_SEP, expected_sep,
+                         f"_COLOR_SEP 应与当前主题的 separator 一致")
+        self.assertIn("38;5;45", _COLOR_SEP_START,
+                      "_COLOR_SEP_START 应含青色 45 色号")
 
     def _extract_colors(self, gradient_str: str) -> list[int]:
         """从渐变 ANSI 字符串中提取色号列表。"""

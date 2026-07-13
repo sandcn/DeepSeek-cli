@@ -1,8 +1,8 @@
 """底部栏子包 — _BottomBar 主类 + 状态行/补全弹窗/选择器/绘图
 
 使用方法：
-    from src.ui._bottom_bar_pkg import _BottomBar
-    from src.ui._bottom_bar_pkg.bar import _BottomBar
+    from src.ui.tui.bottom_bar import _BottomBar
+    from src.ui.tui.bottom_bar.bar import _BottomBar
 """
 from __future__ import annotations
 

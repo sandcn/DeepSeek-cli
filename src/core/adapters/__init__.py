@@ -8,13 +8,15 @@
 - DisplayEventBusAdapter — EventPort 默认实现
 - DefaultDisplayAdapter — DisplayPort 默认实现
 - DefaultInterruptAdapter / MockInterruptAdapter — InterruptPort 默认实现
+- LRUCache / NullCache — CachePort 内置实现（重导出）
 """
 
+from .cache import LRUCache, NullCache
 from .output import DefaultOutputAdapter, get_default_output_port
 from .events import DisplayEventBusAdapter
 from .display import DefaultDisplayAdapter
 from .interrupt import DefaultInterruptAdapter, MockInterruptAdapter
-
+from .message_queue import NullMessageQueue
 
 __all__ = [
     "DefaultOutputAdapter",
@@ -23,4 +25,8 @@ __all__ = [
     "DefaultDisplayAdapter",
     "DefaultInterruptAdapter",
     "MockInterruptAdapter",
+    # 缓存
+    "LRUCache",
+    "NullCache",
+    "NullMessageQueue",
 ]

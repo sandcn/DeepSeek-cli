@@ -40,7 +40,9 @@ class MetricsCollector:
     """
 
     def __init__(self):
-        self._lock = threading.RLock()
+        self._counter_lock = threading.Lock()
+        self._gauge_lock = threading.Lock()
+        self._histogram_lock = threading.Lock()
         self._counters: dict[str, int] = defaultdict(int)
         self._gauges: dict[str, float] = {}
         self._histograms: dict[str, list[float]] = defaultdict(list)
@@ -55,12 +57,12 @@ class MetricsCollector:
             name: 指标名称（如 "model.calls"）
             value: 增量值，默认 1
         """
-        with self._lock:
+        with self._counter_lock:
             self._counters[name] += value
 
     def get_counter(self, name: str) -> int:
         """读取计数器当前值"""
-        with self._lock:
+        with self._counter_lock:
             return self._counters.get(name, 0)
 
     # ── 仪表盘 ──────────────────────────────────────────
@@ -72,7 +74,7 @@ class MetricsCollector:
             name: 指标名称（如 "context.chars"）
             value: 当前值
         """
-        with self._lock:
+        with self._gauge_lock:
             self._gauges[name] = value
 
     def gauge_add(self, name: str, delta: float) -> None:
@@ -82,12 +84,12 @@ class MetricsCollector:
             name: 指标名称
             delta: 变化量（可正可负）
         """
-        with self._lock:
+        with self._gauge_lock:
             self._gauges[name] = self._gauges.get(name, 0.0) + delta
 
     def get_gauge(self, name: str) -> float | None:
         """读取仪表盘当前值"""
-        with self._lock:
+        with self._gauge_lock:
             return self._gauges.get(name)
 
     # ── 直方图 ──────────────────────────────────────────
@@ -99,7 +101,7 @@ class MetricsCollector:
             name: 指标名称（如 "model.latency_ms"）
             value: 观测值
         """
-        with self._lock:
+        with self._histogram_lock:
             self._histograms[name].append(value)
             # 滑动窗口：超过上限时丢弃最早的一半采样
             samples = self._histograms[name]
@@ -122,7 +124,7 @@ class MetricsCollector:
             无数据时返回 None
         """
         pcts = percentiles or _DEFAULT_PERCENTILES
-        with self._lock:
+        with self._histogram_lock:
             values = self._histograms.get(name)
             if not values:
                 return None
@@ -142,7 +144,7 @@ class MetricsCollector:
 
     def reset_histogram(self, name: str) -> None:
         """重置指定直方图"""
-        with self._lock:
+        with self._histogram_lock:
             self._histograms[name] = []
 
     # ── 快照 ────────────────────────────────────────────
@@ -161,20 +163,38 @@ class MetricsCollector:
                 "histograms": dict[str, dict],  # 每个指标返回统计摘要
             }
         """
-        with self._lock:
-            counters = dict(self._counters)
-            gauges = dict(self._gauges)
-            hist_names = list(self._histograms.keys())
+        # 按固定顺序加锁：counter → gauge → histogram，避免 ABBA 死锁
+        with self._counter_lock:
+            with self._gauge_lock:
+                with self._histogram_lock:
+                    counters = dict(self._counters)
+                    gauges = dict(self._gauges)
+                    # 深拷贝直方图数据，确保快照一致性
+                    hist_data = {name: list(vals)
+                                 for name, vals in self._histograms.items()}
 
+        # 在锁外计算直方图统计（O(n log n) 排序不阻塞其他指标操作）
+        pcts = _DEFAULT_PERCENTILES
         histograms = {}
-        for name in hist_names:
-            stats = self.get_histogram_stats(name)
-            if stats:
-                histograms[name] = stats
+        for name, values in hist_data.items():
+            if not values:
+                continue
+            sorted_vals = sorted(values)
+            n = len(sorted_vals)
+            stats = {
+                "count": n,
+                "min": sorted_vals[0],
+                "max": sorted_vals[-1],
+                "avg": sum(sorted_vals) / n,
+            }
+            for p in pcts:
+                idx = max(0, min(n - 1, int(math.ceil(p / 100.0 * n) - 1)))
+                stats[f"p{p}"] = sorted_vals[idx]
+            histograms[name] = stats
 
         if reset_histograms:
-            for name in hist_names:
-                self.reset_histogram(name)
+            with self._histogram_lock:
+                self._histograms.clear()
 
         return {
             "uptime_seconds": time.time() - self._start_time,

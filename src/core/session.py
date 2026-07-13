@@ -41,7 +41,7 @@ from ..core.ports import PersistencePort, CheckpointPort, ConfigPort
 from ..core.ports.observability import ObservabilityPort
 from ..core.adapters.config import DefaultConfigAdapter
 from ..core.adapters.observability import DefaultObservabilityAdapter
-from ..core.adapters.null import _NullPort, _NullOutputPort  # noqa: F401 — re-exported
+from ..core.adapters.null import _NullDisplayPort, _NullEventPort, _NullOutputPort  # noqa: F401 — re-exported
 from .internal.session._session_messages import add_message, non_system_messages, system_messages
 from .internal.session._session_state import SessionState as _SessionData
 from .internal.session._session_compression import _validate_compress_preconditions
@@ -104,8 +104,8 @@ class ChatSession:
         self._model: str = model or self._config_port.get_model()
 
         # 创建 Agent（注入 NullPort 避免 UI 依赖，传递 observability_port）
-        null_display = _NullPort()
-        null_event = _NullPort()
+        null_display = _NullDisplayPort()
+        null_event = _NullEventPort()
         null_output = _NullOutputPort()
         self._agent = agent or Agent(
             model=self._model,

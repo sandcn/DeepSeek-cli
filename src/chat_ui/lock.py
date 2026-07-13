@@ -9,11 +9,13 @@
   - output_lock: @deprecated render_lock 的兼容别名，v1.3+ 将移除
 """
 from ..ui._lock import (
-    output_lock,
     render_lock,
     io_lock,
     _try_acquire_output_lock,
 )
+
+# @deprecated — 使用 render_lock 替代，v1.3+ 将移除
+output_lock = render_lock
 
 __all__ = [
     "output_lock",

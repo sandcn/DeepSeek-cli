@@ -30,7 +30,7 @@ from ..events.event_bus import DisplayEventBus
 from ..events.event_types import LiveOutputEvent
 from ._config import DisplayConfig
 from ..base_display import BaseDisplay
-from ..common.state_store import AgentStateStore
+from ..state.agent_state import AgentStateStore
 from ..terminal_adapter import (
     register_sigwinch_callback,
     unregister_sigwinch_callback,

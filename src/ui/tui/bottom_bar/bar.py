@@ -7,7 +7,7 @@
   - 内容变更全量重绘（文本/状态/尺寸变化）→ output_lock 串行化
   - 纯光标移动轻量路径 → 无锁直写 ANSI 序列（GIL + 幂等性保证安全）
 
-重组为 _bottom_bar_pkg 子包后的主类文件：
+重组为 bottom_bar 子包后的主类文件：
   - bar.py     — _BottomBar 主类（本文件）
   - theme      — ANSI 颜色常量 + 占位符 + 布局配置
   - status     — 状态行格式化 + 工具计数（_StatusMixin）
@@ -43,12 +43,11 @@ from typing import Any, Optional
 
 from wcwidth import wcswidth
 
-from .._blessed import get_terminal
-from ..tui._animator import AnimatorContext, BreathPalette
+from ..._blessed import get_terminal
+from .._animator import AnimatorContext, BreathPalette
 from .completion import _CompletionPopup
-from .selection import run_bottom_bar_selection  # noqa: F401 — 重导出保持兼容
-from .status import _StatusMixin, _get_snapshot, _TOKEN_SPEED_SNAPSHOT  # noqa: F401 — 重导出供测试 patch
-from .._stdout_tracker import _StdoutLineTracker
+from .status import _StatusMixin
+from ..._stdout_tracker import _StdoutLineTracker
 from .theme import (
     _BOTTOM_MIN_HEIGHT,
     _BOTTOM_MIN_LINES,
@@ -70,9 +69,9 @@ from .cursor import (
     _tab_pos_to_expanded,
     _wrap_by_width,
 )
-from .._cursor_tracker import CursorTracker
-from .._lock import _try_acquire_output_lock
-from ..terminal_adapter import register_sigwinch_callback, unregister_sigwinch_callback
+from ..._cursor_tracker import CursorTracker
+from ..._lock import _try_acquire_output_lock
+from ...terminal_adapter import register_sigwinch_callback, unregister_sigwinch_callback
 from .blessed import (
     _blessed_move_clear,
     _blessed_cursor_goto,
@@ -156,6 +155,10 @@ class _BottomBar(_StatusMixin):
         self._sigwinch_cb: Any = None  # SIGWINCH 回调引用，teardown 时注销
         # ── resize 保护状态 ──
         self._needs_full_repaint: bool = False  # resize 后标记，force_redraw 中消费并重建
+        # ── 防抖状态（force_redraw 16ms 防抖合并） ──
+        self._debounce_timer: float = 0.0
+        self._DEBOUNCE_MS: float = 0.016
+        self._redraw_pending: bool = False
 
     # ── 活跃状态 property ──────────────────────────────────
 
@@ -519,6 +522,8 @@ class _BottomBar(_StatusMixin):
         """
         if not self._active:
             return
+        # 先 flush 防抖合并中待处理的 force_redraw，确保屏幕状态最终一致
+        self.flush_redraw()
         with _try_acquire_output_lock(name="bottom_bar.ensure_cursor_in_lower", timeout=0.3) as locked:
             if not locked:
                 return
@@ -649,6 +654,187 @@ class _BottomBar(_StatusMixin):
 
     # ── 刷新 ──────────────────────────────────────────────
 
+    def _try_debounce_check(self) -> bool:
+        """防抖检查：在 16ms 窗口内跳过重绘。
+
+        Returns:
+            True 表示被防抖跳过，调用方应直接 return。
+        """
+        now = time.monotonic()
+        if now - self._debounce_timer < self._DEBOUNCE_MS:
+            self._redraw_pending = True
+            return True
+        self._redraw_pending = False
+        return False
+
+    def _try_incremental_redraw(
+        self, text: str, total: int, height: int,
+    ) -> bool:
+        """尝试增量重绘路径（仅状态行变化时，避免全量重绘）。
+
+        Args:
+            text: 当前输入文本
+            total: 底部栏总行数
+            height: 终端高度
+
+        Returns:
+            True 表示增量重绘已完成，调用方应直接 return。
+            否则表示布局已变化，需执行全量重绘。
+        """
+        layout_unchanged = (
+            text == self._last_rendered_text
+            and total == self._last_bottom_lines
+            and height == self._last_height
+            and self._subagent_lines == self._last_subagent_lines
+        )
+        if not layout_unchanged:
+            return False
+
+        new_status = self._format_status()
+        if new_status == self._last_status:
+            self._last_refresh = time.monotonic()
+            self._last_cursor_pos = self._input_cursor_pos
+            return True  # 状态也未变，零 I/O
+
+        # ★ 增量重绘：布局未变仅状态行变化时，只重绘状态行那一行
+        r2 = height - total + 2 + len(self._subagent_lines)
+        r2 = max(1, min(r2, height))
+        out = sys.__stdout__
+        out.write(_blessed_save_cursor())
+        out.write(_blessed_move_clear(r2))
+        out.write(new_status)
+        out.write(_blessed_restore_cursor())
+        out.flush()
+        self._last_status = new_status
+        self._last_refresh = time.monotonic()
+        self._last_cursor_pos = self._input_cursor_pos
+        self._debounce_timer = time.monotonic()
+        return True
+
+    def _do_scroll_up_for_expansion(
+        self, out, delta: int, old_scroll_end: int, full_repaint: bool,
+    ) -> None:
+        """底部栏扩大时在内容区做 SU 上滚腾出空间。"""
+        if delta > 0 and old_scroll_end > 0 and not full_repaint:
+            out.write(f"{_blessed_set_scroll_region(1, old_scroll_end)}")
+            out.write(_blessed_cursor_goto(old_scroll_end, 1))
+            out.write(f"{_blessed_scroll_up(delta)}")
+            out.write(_blessed_reset_scroll_region())
+
+    def _handle_too_small_terminal(
+        self, out, height: int, scroll_end: int,
+    ) -> bool:
+        """终端高度过小无法容纳底部栏时，清屏并返回 True。"""
+        if scroll_end >= 1:
+            return False
+        _buf: list[str] = []
+        for r in range(1, height + 1):
+            _buf.append(_blessed_move_clear(r))
+        _buf.append(_blessed_restore_cursor())
+        _buf.append(_blessed_cursor_goto(height, 1) + _blessed_save_cursor())
+        out.write(''.join(_buf))
+        out.flush()
+        self._debounce_timer = time.monotonic()
+        self._cursor_tracker.set(height, 1)
+        self._last_cursor_pos = self._input_cursor_pos
+        self._last_height = height
+        self._last_scroll_end = height
+        if self._tracker is not None:
+            self._tracker.set_scroll_end(height)
+        return True
+
+    def _collect_clear_commands(
+        self, scroll_end: int, old_scroll_end: int, height: int,
+        full_repaint: bool, old_bottom_lines: int,
+    ) -> list[str]:
+        """收集清除旧底部栏区域的 ANSI 序列（批量缓冲）。
+
+        Returns:
+            待写入的 ANSI 序列列表。
+        """
+        _buf: list[str] = []
+
+        # 清除旧底部栏区域
+        if full_repaint:
+            clear_start = scroll_end + 1
+        else:
+            clear_start = max(old_scroll_end, scroll_end) + 1
+        clear_end = height
+        for r in range(clear_start, clear_end + 1):
+            _buf.append(_blessed_move_clear(r))
+        self._cursor_tracker.set(clear_end, 1)
+
+        # 终端高度缩小时额外清理
+        if not full_repaint and self._last_height > 0 and height < self._last_height:
+            for r in range(max(scroll_end + 1, 1), min(old_scroll_end, height) + 1):
+                _buf.append(_blessed_move_clear(r))
+            self._cursor_tracker.set(min(old_scroll_end, height), 1)
+
+        # 终端高度扩大时清理旧底部栏残留
+        elif not full_repaint and self._last_height > 0 and height > self._last_height:
+            for r in range(old_scroll_end + 1, scroll_end + 1):
+                _buf.append(_blessed_move_clear(r))
+            self._cursor_tracker.set(scroll_end, 1)
+
+        return _buf
+
+    def _draw_separator_and_status(
+        self, out, _buf: list[str],
+        r1: int, subagent_start: int, r2: int, tw: int,
+    ) -> None:
+        """绘制分隔线、subagent 面板行和状态行。"""
+        from .._terminal import is_narrow as _is_narrow_bar
+        if _is_narrow_bar():
+            sep_len = min(tw - 2, 40)
+            sep = f"{_COLOR_SEP}\u2501{_COLOR_RESET}" * sep_len
+        else:
+            sep_start = 45
+            if self._animator.breath_frame > 0:
+                sep_start = AnimatorContext.get_default().sine_color(40, 45, 10)
+            sep = make_sep_gradient(tw - 2, start_color=sep_start)
+        _buf.append(_blessed_move_clear(r1) + "  " + sep)
+        self._cursor_tracker.set(r1, 3)
+        for i, line in enumerate(self._subagent_lines):
+            _buf.append(_blessed_move_clear(subagent_start + i) + line)
+        _buf.append(_blessed_move_clear(r2) + self._last_status)
+        self._cursor_tracker.set(r2, 1)
+        out.write(''.join(_buf))
+
+    def _finalize_full_redraw(
+        self, out, text: str, r2: int, tw: int,
+        height: int, scroll_end: int, old_scroll_end: int,
+        delta: int,
+    ) -> None:
+        """完成全量重绘：输入行、DECSTBM、光标定位和状态更新。"""
+        self._draw_input_lines_locked(out, text, r2 + 1, tw, self._animator.breath_frame)
+        input_rows = self._cached_input_rows
+        _buf2: list[str] = []
+        for r in range(r2 + 1 + input_rows, height + 1):
+            _buf2.append(_blessed_move_clear(r))
+        if _buf2:
+            out.write(''.join(_buf2))
+        self._cursor_tracker.set(height, 1)
+
+        self._last_scroll_end = scroll_end
+        if self._tracker is not None:
+            self._tracker.set_scroll_end(scroll_end)
+        out.write(f"{_blessed_set_scroll_region(1, scroll_end)}")
+
+        if delta < 0 and old_scroll_end > 0:
+            _buf3: list[str] = []
+            for r in range(old_scroll_end + 1, scroll_end + 1):
+                _buf3.append(_blessed_move_clear(r))
+            out.write(''.join(_buf3))
+            self._cursor_tracker.set(scroll_end, 1)
+
+        out.write(_blessed_restore_cursor())
+        out.write(_blessed_cursor_goto(scroll_end, 1) + _blessed_save_cursor())
+        self._cursor_tracker.set(scroll_end, 1)
+        out.flush()
+        self._debounce_timer = time.monotonic()
+        self._last_cursor_pos = self._input_cursor_pos
+        self._last_height = height
+
     def force_redraw(self) -> None:
         """无条件重绘全部底部栏（绕过节流和变更检测），超长文本自动拆行。
 
@@ -666,13 +852,16 @@ class _BottomBar(_StatusMixin):
 
         ★ 性能优化：先检查文本和布局是否变化，确认需要重绘后再
         调用 _format_status()（含 shutil 系统调用），避免不必要开销。
-
         """
         if not self._active:
             return
 
         # 推进统一动画时钟
         self._animator.tick()
+
+        # 16ms 防抖合并：高频调用跳过中间帧
+        if self._try_debounce_check():
+            return
 
         height = self._term_height()
 
@@ -682,180 +871,68 @@ class _BottomBar(_StatusMixin):
             text = self._last_text
             total = self._bottom_lines
 
-            layout_unchanged = (text == self._last_rendered_text
-                                and total == self._last_bottom_lines
-                                and height == self._last_height
-                                and self._subagent_lines == self._last_subagent_lines)
-            if layout_unchanged:
-                new_status = self._format_status()
-                if new_status == self._last_status:
-                    self._last_refresh = time.monotonic()
-                    self._last_cursor_pos = self._input_cursor_pos
-                    return
-                # ★ 增量重绘：布局未变仅状态行变化时，只重绘状态行那一行
-                #   避免全量重绘（分隔线→subagent→状态行→输入行→DECSTBM）
-                r2 = height - total + 2 + len(self._subagent_lines)
-                r2 = max(1, min(r2, height))  # 防御性裁剪，确保在终端范围内
-                out = sys.__stdout__
-                out.write(_blessed_save_cursor())
-                out.write(_blessed_move_clear(r2))
-                out.write(new_status)
-                out.write(_blessed_restore_cursor())
-                out.flush()
-                self._last_status = new_status
-                self._last_refresh = time.monotonic()
-                self._last_cursor_pos = self._input_cursor_pos
+            # 增量重绘路径（布局未变仅状态变化）
+            if self._try_incremental_redraw(text, total, height):
                 return
-            else:
-                new_status = self._format_status()
 
+            # ── 全量重绘路径（布局变化） ──
+            new_status = self._format_status()
             old_bottom_lines = self._last_bottom_lines
             scroll_end = height - total
             delta = total - old_bottom_lines
-            # ★ 使用 _last_height 计算 old_scroll_end，否则终端高度变化时
-            #    会错用当前 height 算出错误的 old_scroll_end，导致无法正确
-            #    清理旧内容区域中现在属于底部栏的行。
-            old_scroll_end = (self._last_height if self._last_height > 0 else height) - old_bottom_lines
+            old_scroll_end = (
+                (self._last_height if self._last_height > 0 else height)
+                - old_bottom_lines
+            )
             self._last_refresh = time.monotonic()
             self._last_status = new_status
             self._last_subagent_lines = list(self._subagent_lines)
 
             out = sys.__stdout__
             out.write(_blessed_save_cursor())
-
             out.write(_blessed_reset_scroll_region())
-
             self._last_bottom_lines = total
 
-            # 是否为全屏重建模式（resize 后保护上屏内容不被删除）
             full_repaint = self._needs_full_repaint
             self._needs_full_repaint = False
 
-            # ★ 底部栏扩大时（delta > 0），在内容区做 SU 上滚以腾出空间。
-            #    先临时将 DECSTBM 设为仅内容区 [1, old_scroll_end]，
-            #    再 SU(delta) 将内容整体上移，底部留出空白行供底部栏使用。
-            #    顶部滚出的行从终端显示消失（DECSTBM 内 SU 无 scrollback），
-            #    但消息/状态在内存中保留，需要时可通过 display_messages 重显。
-            # ★ resize 保护：全屏重建模式下跳过 SU 上滚（避免顶部内容丢失）。
-            if delta > 0 and old_scroll_end > 0 and not full_repaint:
-                out.write(f"{_blessed_set_scroll_region(1, old_scroll_end)}")
-                out.write(_blessed_cursor_goto(old_scroll_end, 1))
-                out.write(f"{_blessed_scroll_up(delta)}")
-                out.write(_blessed_reset_scroll_region())
+            # 底部栏扩大时 SU 上滚
+            self._do_scroll_up_for_expansion(out, delta, old_scroll_end, full_repaint)
 
-
-
-            # ★ 性能优化：批量收集写入缓冲区，减少独立 write() 调用
-            _buf: list[str] = []
-
-            if scroll_end < 1:
-                for r in range(1, height + 1):
-                    _buf.append(_blessed_move_clear(r))
-                _buf.append(_blessed_restore_cursor())
-                _buf.append(_blessed_cursor_goto(height, 1) + _blessed_save_cursor())
-                out.write(''.join(_buf))
-                out.flush()
-                self._cursor_tracker.set(height, 1)
-                self._last_cursor_pos = self._input_cursor_pos
-                self._last_height = height
-                # ★ DECSTBM 已在上方重置为全屏，同步 _last_scroll_end 和 tracker（P1-3）。
-                #    scroll_end < 1 时终端过小无法容纳底部栏，scroll_end 设为 height
-                #    （全屏滚动），确保后续 ensure_cursor_in_upper() 定位正确。
-                self._last_scroll_end = height
-                if self._tracker is not None:
-                    self._tracker.set_scroll_end(height)
+            # 终端过小处理
+            if self._handle_too_small_terminal(out, height, scroll_end):
                 return
 
-            # ★ full_repaint 模式下清除整个新底部栏区域（scroll_end+1 ~ height），
-            #    消除 resize 后旧底部栏内容的鬼影残留（P0-1）。
-            #    不清除上屏内容区（1 ~ scroll_end），保护 resize 后的上屏内容。
-            if full_repaint:
-                clear_start = scroll_end + 1
-            else:
-                clear_start = max(old_scroll_end, scroll_end) + 1
-            clear_end = height
-            for r in range(clear_start, clear_end + 1):
-                _buf.append(_blessed_move_clear(r))
-            self._cursor_tracker.set(clear_end, 1)
-
-            # ★ 终端高度缩小时，额外清理旧内容区中现在属于新底部栏区域的行
-            #    （与 delta 符号无关），必须在画分隔线/状态行之前执行，
-            #    避免擦除已绘制内容。
-            # ★ resize 保护：全屏重建模式下跳过清理——底部栏直接绘制覆盖即可，
-            #    不清除上屏内容行。
-            if not full_repaint and self._last_height > 0 and height < self._last_height:
-                for r in range(max(scroll_end + 1, 1), min(old_scroll_end, height) + 1):
-                    _buf.append(_blessed_move_clear(r))
-                self._cursor_tracker.set(min(old_scroll_end, height), 1)
-
-            # ★ 终端高度扩大时，清除旧底部栏区域残留
-            #    旧底部栏占行 (old_scroll_end+1) ~ height（旧终端高度），
-            #    扩大后这些行成为新内容区的一部分，必须清除旧底部栏的
-            #    边框绘制元素（━ 分隔线、状态行文本等）残留。
-            #    使用 elif 保证与缩小时互斥，增强抗误改能力（与 sync_bottom_lines 风格一致）。
-            # ★ resize 保护：全屏重建模式下跳过清理。
-            elif not full_repaint and self._last_height > 0 and height > self._last_height:
-                for r in range(old_scroll_end + 1, scroll_end + 1):
-                    _buf.append(_blessed_move_clear(r))
-                self._cursor_tracker.set(scroll_end, 1)
+            # 清除旧底部栏区域
+            clear_buf = self._collect_clear_commands(
+                scroll_end, old_scroll_end, height, full_repaint, old_bottom_lines,
+            )
 
             r1 = height - total + 1
             subagent_start = r1 + 1
             r2 = subagent_start + len(self._subagent_lines)
-
             tw = self._term_width()
-            from ..tui._terminal import is_narrow as _is_narrow_bar
-            if _is_narrow_bar():
-                sep_len = min(tw - 2, 40)
-                sep = f"{_COLOR_SEP}\u2501{_COLOR_RESET}" * sep_len
-            else:
-                sep_start = 45  # 默认青色
-                if self._animator.breath_frame > 0:
-                    sep_start = AnimatorContext.get_default().sine_color(40, 45, 10)
-                sep = make_sep_gradient(tw - 2, start_color=sep_start)
-            _buf.append(_blessed_move_clear(r1) + "  " + sep)
-            # ★ force_redraw 中的 tracker.set 是近似值，仅记录当前绘制行号。
-            #    最终光标位置在方法末尾 set(scroll_end, 1) 处修正。
-            self._cursor_tracker.set(r1, 3)  # 分隔线从第3列开始
-            # ── subagent 面板行（在分隔线与状态行之间） ──
-            for i, line in enumerate(self._subagent_lines):
-                sr = subagent_start + i
-                _buf.append(_blessed_move_clear(sr) + line)
-            _buf.append(_blessed_move_clear(r2) + self._last_status)
-            self._cursor_tracker.set(r2, 1)
 
-            # 写入收集好的全部 ANSI 序列（分隔线+subagent+状态行）
-            out.write(''.join(_buf))
+            # 绘制分隔线 + subagent + 状态行
+            self._draw_separator_and_status(out, clear_buf, r1, subagent_start, r2, tw)
 
-            self._draw_input_lines_locked(out, text, r2 + 1, tw, self._animator.breath_frame)
-            input_rows = self._cached_input_rows
-            # ★ 清多余行：也批量收集
-            _buf2: list[str] = []
-            for r in range(r2 + 1 + input_rows, height + 1):
-                _buf2.append(_blessed_move_clear(r))
-            if _buf2:
-                out.write(''.join(_buf2))
-            self._cursor_tracker.set(height, 1)
+            # 完成全量重绘：输入行 + DECSTBM + 光标
+            self._finalize_full_redraw(
+                out, text, r2, tw, height, scroll_end, old_scroll_end, delta,
+            )
 
-            self._last_scroll_end = scroll_end
-            if self._tracker is not None:
-                self._tracker.set_scroll_end(scroll_end)
-            out.write(f"{_blessed_set_scroll_region(1, scroll_end)}")
-            # ★ 底部栏缩小时（delta < 0），清除释放的上屏内容区域（原先
-            #    被底部栏覆盖的行），后续内容渲染会自然填充该区域。
-            if delta < 0 and old_scroll_end > 0:
-                # 批量收集
-                _buf3: list[str] = []
-                for r in range(old_scroll_end + 1, scroll_end + 1):
-                    _buf3.append(_blessed_move_clear(r))
-                out.write(''.join(_buf3))
-                self._cursor_tracker.set(scroll_end, 1)
-            out.write(_blessed_restore_cursor())
-            out.write(_blessed_cursor_goto(scroll_end, 1) + _blessed_save_cursor())
-            self._cursor_tracker.set(scroll_end, 1)
-            out.flush()
-            self._last_cursor_pos = self._input_cursor_pos
-            self._last_height = height
+    def flush_redraw(self) -> None:
+        """强制刷新防抖合并中待处理的 force_redraw。
+
+        当 _redraw_pending 为 True 时跳过防抖检查执行完整 force_redraw，
+        确保最终状态刷新到屏幕。
+
+        由 ensure_cursor_in_lower 等需要确保最终视觉状态一致的路径调用。
+        """
+        if self._redraw_pending:
+            self._redraw_pending = False
+            self._debounce_timer = 0.0  # 重置定时器使 force_redraw 可立即执行
+            self.force_redraw()
 
     # ── 内部绘制 ──────────────────────────────────────────
 
@@ -967,6 +1044,8 @@ class _BottomBar(_StatusMixin):
         self._completion._types = []
         self._completion._match_prefix = ""
 
+        # 重置防抖定时器，确保状态变更（弹窗隐藏）不被防抖合并跳过
+        self._debounce_timer = 0.0
         self.force_redraw()
 
     def cycle_completion(self, delta: int = 1) -> int:

@@ -1,5 +1,5 @@
 """
-UI 层输出同步锁 — output_lock 细粒度化（render_lock + io_lock）
+UI 层输出同步锁 — render_lock（渲染）+ io_lock（I/O）
 
 细粒度拆分方案（步骤 6）：
   render_lock — 保护渲染管线（_drain_queue → _phase_render → _phase_redraw_bottom）
@@ -11,7 +11,7 @@ UI 层输出同步锁 — output_lock 细粒度化（render_lock + io_lock）
   实现 render_diff 与帧刷新的互斥。
 
 输出锁死防护：
-  OUTPUT_LOCK_TIMEOUT: 获取锁的超时阈值（1.0s）。
+  OUTPUT_LOCK_TIMEOUT: render_lock/io_lock 获取的超时阈值（1.0s）。
   防止 PTY 缓冲区满时锁被永久持有，冻结整个输出管线。
 
 ★ 锁设计原则（防死锁，必须遵守）：

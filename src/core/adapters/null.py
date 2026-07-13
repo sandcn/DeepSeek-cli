@@ -7,11 +7,11 @@ from __future__ import annotations
 
 from contextlib import nullcontext
 
-from ..ports import DisplayPort, OutputPort
+from ..ports import DisplayPort, EventPort, OutputPort
 
 
-class _NullPort(DisplayPort):
-    """通用空端口 — 为已知方法提供显式空实现。
+class _NullDisplayPort(DisplayPort):
+    """空显示端口 — 为 DisplayPort 已知方法提供显式空实现。
 
     不覆盖 __getattr__，避免 hasattr 误报。
     """
@@ -26,24 +26,6 @@ class _NullPort(DisplayPort):
 
     def locked(self):
         return nullcontext()
-
-    def publish(self, event_type: str, data: dict | None = None, source: str = "core") -> None:
-        pass
-
-    def subscribe(self, event_type: str, handler) -> None:
-        pass
-
-    def unsubscribe(self, event_type: str, handler) -> None:
-        pass
-
-    def publish_event(self, event, source: str = "core") -> None:
-        pass
-
-    def subscribe_type(self, event_type: type, handler) -> None:
-        pass
-
-    def unsubscribe_type(self, event_type: type, handler) -> None:
-        pass
 
     # ── 显示接口 ──────────────────────────────────────
     def start(self) -> None:
@@ -104,6 +86,28 @@ class _NullPort(DisplayPort):
         pass
 
 
+class _NullEventPort(EventPort):
+    """空事件端口 — 为 EventPort 已知方法提供显式空实现。"""
+
+    def publish(self, event_type: str, data: dict | None = None, source: str = "core") -> None:
+        pass
+
+    def subscribe(self, event_type: str, handler) -> None:
+        pass
+
+    def unsubscribe(self, event_type: str, handler) -> None:
+        pass
+
+    def publish_event(self, event, source: str = "core") -> None:
+        pass
+
+    def subscribe_type(self, event_type: type, handler) -> None:
+        pass
+
+    def unsubscribe_type(self, event_type: type, handler) -> None:
+        pass
+
+
 class _NullOutputPort(OutputPort):
     """空输出端口 — 提供 locked() 上下文管理器。"""
 
@@ -115,3 +119,7 @@ class _NullOutputPort(OutputPort):
 
     def locked(self):
         return nullcontext()
+
+
+# ── 兼容别名 ──────────────────────────────────────
+_NullPort = _NullDisplayPort  # @deprecated: 使用 _NullDisplayPort 替代

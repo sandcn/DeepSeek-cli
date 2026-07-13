@@ -1325,3 +1325,178 @@ class TestEventPool:
         assert pool.qsize(ContentChunkEvent) <= pool.maxsize
         assert pool.qsize(ReasoningChunkEvent) <= pool.maxsize
         assert pool.qsize(ToolOutputChunkEvent) <= pool.maxsize
+
+
+# ===============================================================
+# 14. DisplayEventBusAdapter.subscribe() 修复
+# ===============================================================
+
+class TestDisplayEventBusAdapterSubscribe:
+    """DisplayEventBusAdapter.subscribe() 按 event_type 字符串过滤事件"""
+
+    def setup_method(self):
+        """每个测试前重置默认 DisplayEventBus，避免测试间干扰"""
+        from src.ui.events.event_bus import DisplayEventBus
+        DisplayEventBus.reset_default()
+
+    def teardown_method(self):
+        """每个测试后清理"""
+        from src.ui.events.event_bus import DisplayEventBus
+        DisplayEventBus.reset_default()
+
+    def test_subscribe_with_event_type_filters_by_class_name(self):
+        """subscribe("OutputEvent", handler) 仅接收 OutputEvent 事件"""
+        from src.core.adapters.events import DisplayEventBusAdapter
+
+        adapter = DisplayEventBusAdapter(source="test")
+        results = []
+
+        def handler(event):
+            results.append(type(event).__name__)
+
+        # 订阅 OutputEvent 类型
+        adapter.subscribe("OutputEvent", handler)
+
+        # 发布 OutputEvent → 应触发 handler
+        adapter.publish("output", {"text": "hello", "level": "info", "source": "test"})
+        assert len(results) == 1
+        assert results[0] == "OutputEvent"
+
+    def test_subscribe_with_event_type_excludes_other_types(self):
+        """subscribe("OutputEvent", handler) 不接收 ToolSummaryEvent"""
+        from src.core.adapters.events import DisplayEventBusAdapter
+
+        adapter = DisplayEventBusAdapter(source="test")
+        results = []
+
+        def handler(event):
+            results.append(type(event).__name__)
+
+        # 订阅 OutputEvent 类型
+        adapter.subscribe("OutputEvent", handler)
+
+        # 发布 ToolSummaryEvent → 不应触发 handler
+        adapter.publish("tool_summary", data={
+            "successful_tools": ["read_file"],
+            "failed_tools": [],
+        })
+        assert len(results) == 0
+
+    def test_subscribe_with_none_receives_all_events(self):
+        """subscribe(None, handler) 接收所有事件（向后兼容）"""
+        from src.core.adapters.events import DisplayEventBusAdapter
+
+        adapter = DisplayEventBusAdapter(source="test")
+        results = []
+
+        def handler(event):
+            results.append(type(event).__name__)
+
+        # 订阅所有事件
+        adapter.subscribe(None, handler)
+
+        # 发布两种事件
+        adapter.publish("output", {"text": "hello", "level": "info", "source": "test"})
+        adapter.publish("tool_summary", data={
+            "successful_tools": ["read_file"],
+            "failed_tools": [],
+        })
+
+        assert len(results) == 2
+
+    def test_subscribe_with_empty_string_receives_all_events(self):
+        """subscribe("", handler) 接收所有事件（向后兼容）"""
+        from src.core.adapters.events import DisplayEventBusAdapter
+
+        adapter = DisplayEventBusAdapter(source="test")
+        results = []
+
+        def handler(event):
+            results.append(type(event).__name__)
+
+        adapter.subscribe("", handler)
+
+        adapter.publish("output", {"text": "hello", "level": "info", "source": "test"})
+        adapter.publish("tool_summary", data={
+            "successful_tools": ["read_file"],
+            "failed_tools": [],
+        })
+
+        assert len(results) == 2
+
+    def test_unsubscribe_removes_filtered_subscription(self):
+        """unsubscribe 取消过滤订阅后事件不再触发"""
+        from src.core.adapters.events import DisplayEventBusAdapter
+
+        adapter = DisplayEventBusAdapter(source="test")
+        results = []
+
+        def handler(event):
+            results.append(type(event).__name__)
+
+        adapter.subscribe("OutputEvent", handler)
+        adapter.publish("output", {"text": "a", "level": "info", "source": "test"})
+        assert len(results) == 1
+
+        adapter.unsubscribe("OutputEvent", handler)
+        adapter.publish("output", {"text": "b", "level": "info", "source": "test"})
+        # 取消订阅后不应再触发
+        assert len(results) == 1
+
+    def test_unsubscribe_preserves_other_handlers(self):
+        """取消一个 handler 的过滤订阅不影响其他 handler"""
+        from src.core.adapters.events import DisplayEventBusAdapter
+
+        adapter = DisplayEventBusAdapter(source="test")
+        results1 = []
+        results2 = []
+
+        def handler1(event):
+            results1.append(type(event).__name__)
+
+        def handler2(event):
+            results2.append(type(event).__name__)
+
+        adapter.subscribe("OutputEvent", handler1)
+        adapter.subscribe("OutputEvent", handler2)
+
+        adapter.publish("output", {"text": "a", "level": "info", "source": "test"})
+        assert len(results1) == 1
+        assert len(results2) == 1
+
+        # 取消 handler1
+        adapter.unsubscribe("OutputEvent", handler1)
+
+        adapter.publish("output", {"text": "b", "level": "info", "source": "test"})
+        assert len(results1) == 1  # handler1 不再触发
+        assert len(results2) == 2  # handler2 继续触发
+
+    def test_multiple_event_types_independent(self):
+        """多个不同 event_type 的订阅互不干扰"""
+        from src.core.adapters.events import DisplayEventBusAdapter
+
+        adapter = DisplayEventBusAdapter(source="test")
+        output_results = []
+        summary_results = []
+
+        def output_handler(event):
+            output_results.append(type(event).__name__)
+
+        def summary_handler(event):
+            summary_results.append(type(event).__name__)
+
+        adapter.subscribe("OutputEvent", output_handler)
+        adapter.subscribe("ToolSummaryEvent", summary_handler)
+
+        # 发布 OutputEvent
+        adapter.publish("output", {"text": "hello", "level": "info", "source": "test"})
+        assert len(output_results) == 1
+        assert len(summary_results) == 0
+
+        # 发布 ToolSummaryEvent
+        adapter.publish("tool_summary", data={
+            "successful_tools": ["search"],
+            "failed_tools": [],
+        })
+        assert len(output_results) == 1
+        assert len(summary_results) == 1

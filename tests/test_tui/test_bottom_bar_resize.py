@@ -16,7 +16,7 @@ import sys
 import unittest
 from unittest.mock import MagicMock, patch, PropertyMock
 
-from src.ui._bottom_bar import _BottomBar
+from src.ui.tui.bottom_bar import _BottomBar
 
 
 class TestBug4IoctlUnpack(unittest.TestCase):

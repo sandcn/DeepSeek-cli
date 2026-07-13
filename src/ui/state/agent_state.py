@@ -70,6 +70,7 @@ class AgentStateStore:
         self._order: List[str] = []
         self._lock = threading.Lock()
         self._version: int = 0  # 状态版本号，每次变化递增
+        self._dirty: set[str] = set()  # 已修改的 agent label 集合
 
     # ── 注册 ──
 
@@ -81,13 +82,17 @@ class AgentStateStore:
             self._slots[label] = slot
             self._order.append(label)
             self._version += 1
+            self._dirty.add(label)
 
     def remove_agent(self, label: str) -> None:
         with self._lock:
+            existed = label in self._slots
             self._slots.pop(label, None)
             if label in self._order:
                 self._order.remove(label)
             self._version += 1
+            if existed:
+                self._dirty.add(label)
 
     # ── 状态更新 ──
 
@@ -104,6 +109,7 @@ class AgentStateStore:
                         rec.phase = "done" if status == "done" else "fail"
                         rec.end_time = time.time()
             self._version += 1
+            self._dirty.add(label)
 
     def update_model_phase(self, label: str, phase: str, info: str = "") -> None:
         with self._lock:
@@ -114,6 +120,7 @@ class AgentStateStore:
                 slot.model_phase = phase
                 slot.model_info = info
                 self._version += 1
+                self._dirty.add(label)
 
     def tool_parsing(self, label: str, tool_name: str, arguments: str = "") -> None:
         with self._lock:
@@ -127,6 +134,7 @@ class AgentStateStore:
                 if last.tool_name == tool_name and last.phase == "parsing":
                     last.detail = arguments
                     self._version += 1
+                    self._dirty.add(label)
                     return
             rec = ToolRecord(
                 tool_name=tool_name,
@@ -137,6 +145,7 @@ class AgentStateStore:
             slot.tool_history.append(rec)
             slot.total_calls += 1
             self._version += 1
+            self._dirty.add(label)
 
     def tool_batch_start(self, label: str, tool_names: list) -> None:
         with self._lock:
@@ -148,6 +157,7 @@ class AgentStateStore:
             slot.model_phase_start = time.time()
             slot.model_info = f"{len(tool_names)}x parallel: {names_str}"
             self._version += 1
+            self._dirty.add(label)
 
     def tool_start(self, label: str, tool_name: str, detail: str = "") -> None:
         with self._lock:
@@ -159,6 +169,7 @@ class AgentStateStore:
                     rec.detail = detail
                     rec.phase = "running"
                     self._version += 1
+                    self._dirty.add(label)
                     return
             rec = ToolRecord(
                 tool_name=tool_name,
@@ -168,6 +179,7 @@ class AgentStateStore:
             )
             slot.tool_history.append(rec)
             self._version += 1
+            self._dirty.add(label)
 
     def tool_done(self, label: str, tool_name: str = "", success: bool = True) -> None:
         with self._lock:
@@ -187,12 +199,14 @@ class AgentStateStore:
                             rec.phase = "done" if success else "fail"
                             rec.end_time = time.time()
                             self._version += 1
+                            self._dirty.add(label)
                             break
                     else:
                         # 无 tool_name 时自动匹配最后一个活跃记录
                         rec.phase = "done" if success else "fail"
                         rec.end_time = time.time()
                         self._version += 1
+                        self._dirty.add(label)
                         break
 
     def update_usage(self, label: str, usage: dict, replace: bool = False) -> None:
@@ -214,6 +228,7 @@ class AgentStateStore:
             if speed and speed > 0:
                 slot.last_speed = speed
             self._version += 1
+            self._dirty.add(label)
 
     def update_tokens(self, label: str, tokens: int) -> None:
         self.update_usage(label, {"output": tokens})
@@ -224,6 +239,7 @@ class AgentStateStore:
             if slot:
                 slot.live_output_tokens += tokens
                 self._version += 1
+                self._dirty.add(label)
 
     def update_live_input(self, label: str, tokens: int) -> None:
         with self._lock:
@@ -231,6 +247,7 @@ class AgentStateStore:
             if slot and slot.input_tokens == 0:
                 slot.live_input_tokens = tokens
                 self._version += 1
+                self._dirty.add(label)
 
     def update_speed(self, label: str, speed: float) -> None:
         with self._lock:
@@ -238,6 +255,7 @@ class AgentStateStore:
             if slot and speed > 0:
                 slot.last_speed = speed
                 self._version += 1
+                self._dirty.add(label)
 
     def update_parse_info(self, label: str, tool_names: str, tokens: int, elapsed: float) -> None:
         with self._lock:
@@ -246,6 +264,7 @@ class AgentStateStore:
                 slot.model_phase = "parsing"
                 slot.model_info = f"{tool_names} {tokens}t {elapsed:.1f}s"
                 self._version += 1
+                self._dirty.add(label)
 
     def set_result(self, label: str, result_text: str = "", error: str = "") -> None:
         """存储 SubAgent 的执行结果"""
@@ -255,6 +274,7 @@ class AgentStateStore:
                 slot.result_text = result_text
                 slot.result_error = error
                 self._version += 1
+                self._dirty.add(label)
 
     # ── 快照与查询 ──
 
@@ -277,6 +297,40 @@ class AgentStateStore:
                 k: v.deep_copy()
                 for k, v in self._slots.items()
             }
+
+    def snapshot_dirty(self) -> tuple[dict[str, AgentSlot], set[str], int]:
+        """获取所有脏 slot 的快照 + 当前脏集合副本 + 当前版本号。
+
+        返回 (dirty_snapshots, dirty_labels, version)
+        - dirty_snapshots: {label: deep_copy(slot)}
+        - dirty_labels: 当前脏标签的副本
+        - version: 当前版本号
+        调用方用 dirty_labels 了解哪些变了，用 version 判断是否需要重新渲染
+        """
+        with self._lock:
+            snap = {
+                label: self._slots[label].deep_copy()
+                for label in self._dirty
+                if label in self._slots
+            }
+            dirty_copy = set(self._dirty)
+            ver = self._version
+            return snap, dirty_copy, ver
+
+    def mark_clean(self, version: int) -> bool:
+        """如果版本号匹配则清除脏标记（防止并发覆盖）。
+
+        Args:
+            version: 消费者已处理的版本号
+
+        Returns:
+            清除成功返回 True，版本不匹配返回 False
+        """
+        with self._lock:
+            if self._version == version:
+                self._dirty.clear()
+                return True
+            return False
 
     @property
     def agent_count(self) -> int:

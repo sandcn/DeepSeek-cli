@@ -21,7 +21,7 @@ from __future__ import annotations
 
 from typing import Generic, TypeVar
 
-from .._bottom_bar import run_bottom_bar_selection
+from .bottom_bar.selection import run_bottom_bar_selection
 from ._ttl_cache import TTLCache
 
 T = TypeVar("T")
@@ -95,23 +95,52 @@ class BaseBottomBarSelector(Generic[T, R]):
         """获取初始选中索引（默认 0，即第一项）。"""
         return 0
 
+    # ── 增量过滤与匹配高亮钩子 ──────────────────────────
+
+    def filter_items(self, items: list[T], query: str) -> list[T]:
+        """根据查询字符串过滤候选项（默认不过滤，子类可选覆写）。
+
+        Args:
+            items: 原始候选项列表。
+            query: 用户输入的查询字符串。
+
+        Returns:
+            过滤后的候选项列表。
+        """
+        return items
+
+    def highlight_match(self, display_text: str, query: str) -> str:
+        """在显示文本中高亮匹配部分（默认不高亮，子类可选覆写）。
+
+        Args:
+            display_text: 格式化后的显示文本（可能含 ANSI 颜色码）。
+            query: 用户输入的查询字符串。
+
+        Returns:
+            高亮后的显示文本。
+        """
+        return display_text
+
     # ── 公开方法 ───────────────────────────────────────
 
     def refresh(self) -> None:
         """强制刷新缓存（线程安全）。"""
         self._cache.refresh()
 
-    def show(self, bottom_bar=None) -> R | None:
+    def show(self, bottom_bar=None, query: str = "") -> R | None:
         """在底部栏补全弹窗中打开选择器。
 
         完整流程：
           1. 从 TTLCache 获取候选项
-          2. 格式化显示文本
-          3. 调用 run_bottom_bar_selection 交互
-          4. 用户确认后调用 _on_selected 处理结果
+          2. 根据 query 过滤候选项（filter_items）
+          3. 格式化显示文本
+          4. 对显示文本应用匹配高亮（highlight_match）
+          5. 调用 run_bottom_bar_selection 交互
+          6. 用户确认后调用 _on_selected 处理结果
 
         Args:
             bottom_bar: _BottomBar 实例（可选），传递给 run_bottom_bar_selection。
+            query: 用于增量过滤和匹配高亮的查询字符串（可选）。
 
         Returns:
             _on_selected 的返回值；候选项为空或用户取消时返回 None。
@@ -120,20 +149,31 @@ class BaseBottomBarSelector(Generic[T, R]):
         if not items:
             return None
 
-        display = self._format_display(items)
+        # 增量过滤
+        filtered = self.filter_items(items, query)
+        if not filtered:
+            return None
+
+        # 格式化显示文本
+        display = self._format_display(filtered)
+
+        # 匹配高亮
+        if query:
+            display = [self.highlight_match(d, query) for d in display]
+
         # items 参数传纯文本（不含 ANSI 码），用 str(item) 转换；
         # display 保留 ANSI 彩色文本用于显示，与 items 等长确保索引对应。
         result = run_bottom_bar_selection(
-            [str(item) for item in items], display,
+            [str(item) for item in filtered], display,
             title=self._get_title(),
-            initial_idx=self._get_initial_idx(items),
+            initial_idx=self._get_initial_idx(filtered),
             bottom_bar=bottom_bar,
         )
 
         if result["action"] == "confirmed" and result["index"] is not None:
             idx = result["index"]
-            if 0 <= idx < len(items):
-                return self._on_selected(items[idx])
+            if 0 <= idx < len(filtered):
+                return self._on_selected(filtered[idx])
 
         return None
 

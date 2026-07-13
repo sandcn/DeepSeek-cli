@@ -24,8 +24,8 @@ class DefaultOutputAdapter(OutputPort):
 
     def _get_lock(self):
         if self._lock is None:
-            from ...ui._lock import output_lock
-            self._lock = output_lock
+            from ...ui._lock import render_lock
+            self._lock = render_lock
         return self._lock
 
     def write(self, text: str, level: str = "info", source: str = "core") -> None:

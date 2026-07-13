@@ -16,13 +16,9 @@ from src._compat import dataclass
 
 
 _logger = logging.getLogger(__name__)
-from .constants import GREEN, YELLOW, DIM, RESET
 from . import context_selector as selector
 from . import context_summarizer as summarizer
 from .constants import format_token_k, audit_log as _log
-
-
-from ..core.adapters.output import get_default_output_port as _get_out  # noqa: E402
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -64,7 +60,8 @@ class CompressionStrategy(ABC):
 
     @abstractmethod
     def compress(self, messages, model, summarize_fn,
-                 on_changed, cache, force) -> CompressionResult:
+                 on_changed, cache, force,
+                 on_info=None) -> CompressionResult:
         """执行压缩。
 
         Args:
@@ -74,6 +71,7 @@ class CompressionStrategy(ABC):
             on_changed: 消息变更回调
             cache: 增量统计缓存（操作后须更新）
             force: 是否强制全量压缩
+            on_info: 纯文本通知回调，用于输出压缩进度/结果信息（不含 ANSI 颜色码）
 
         Returns:
             CompressionResult
@@ -101,7 +99,8 @@ class SummarizeStrategy(CompressionStrategy):
     """
 
     def compress(self, messages, model, summarize_fn,
-                 on_changed, cache, force) -> CompressionResult:
+                 on_changed, cache, force,
+                 on_info=None) -> CompressionResult:
         keep_recent = selector.adjust_keep_for_tool_groups(messages)
         # cache 可能为 None（单元测试直接调用时）或未同步
         if cache is not None and cache.is_valid:
@@ -124,7 +123,8 @@ class SummarizeStrategy(CompressionStrategy):
         has_prior_summary, to_compress = self._detect_prior_summary(messages, to_compress, keep_recent)
 
         msgs_to_compress = [messages[i] for i in to_compress]
-        _get_out().write(f"{DIM}正在压缩 {len(to_compress)} 条消息...{RESET}", level="raw", source="context")
+        if on_info:
+            on_info(f"正在压缩 {len(to_compress)} 条消息...")
 
         try:
             start_time = time.time()
@@ -135,7 +135,7 @@ class SummarizeStrategy(CompressionStrategy):
             elapsed = time.time() - start_time
 
             self._apply_summary(messages, to_compress, summary, on_changed, cache)
-            self._report_success(to_compress, chars_before, cache, usage, elapsed, messages)
+            self._report_success(to_compress, chars_before, cache, usage, elapsed, messages, on_info)
 
             return CompressionResult(
                 success=True,
@@ -148,12 +148,14 @@ class SummarizeStrategy(CompressionStrategy):
 
         except (KeyError, ValueError, IndexError) as e:
             _log("CONTEXT_TRIM_FAIL", f"摘要压缩失败: {e}")
-            _get_out().write(f"{YELLOW}摘要压缩失败，执行降级: {e}{RESET}", level="raw", source="context")
+            if on_info:
+                on_info(f"摘要压缩失败，执行降级: {e}")
             return CompressionResult(success=False, stats={"error": str(e)})
 
         except Exception as e:
             _log("CONTEXT_TRIM_FAIL", f"摘要压缩异常: {e}")
-            _get_out().write(f"{YELLOW}摘要压缩异常，执行降级: {e}{RESET}", level="raw", source="context")
+            if on_info:
+                on_info(f"摘要压缩异常，执行降级: {e}")
             return CompressionResult(success=False, stats={"error": str(e)})
 
     # ── 内部方法 ──────────────────────────────────────────
@@ -215,7 +217,7 @@ class SummarizeStrategy(CompressionStrategy):
         SummarizeStrategy._safe_notify(on_changed, {"type": "insert", "index": system_end})
 
     @staticmethod
-    def _report_success(to_compress, chars_before, cache, usage, elapsed, messages):
+    def _report_success(to_compress, chars_before, cache, usage, elapsed, messages, on_info=None):
         """输出压缩成功日志。"""
         chars_after = cache.total_chars if cache.is_valid else selector.total_chars(messages)
         saved = chars_before - chars_after
@@ -233,13 +235,12 @@ class SummarizeStrategy(CompressionStrategy):
             return format_token_k(n)
 
         pin_info = f" {pinned} pinned" if pinned else ""
-        _get_out().write(
-            f"{GREEN}+ 压缩 {len(to_compress)} 条 "
-            f"{_kc(chars_before)}→{_kc(chars_after)} 节省 {_kc(saved)}"
-            f"{token_info}{pin_info}{RESET}",
-            level="raw",
-            source="context",
-        )
+        if on_info:
+            on_info(
+                f"+ 压缩 {len(to_compress)} 条 "
+                f"{_kc(chars_before)}→{_kc(chars_after)} 节省 {_kc(saved)}"
+                f"{token_info}{pin_info}",
+            )
         _log("CONTEXT_TRIM", f"压缩 {len(to_compress)} 条消息, 节省 {saved} 字符")
 
 
@@ -256,7 +257,8 @@ class DropStrategy(CompressionStrategy):
     """
 
     def compress(self, messages, model, summarize_fn,
-                 on_changed, cache, force) -> CompressionResult:
+                 on_changed, cache, force,
+                 on_info=None) -> CompressionResult:
         unpinned_indices = self._collect_unpinned(messages)
         if not unpinned_indices:
             return CompressionResult(success=False, stats={"reason": "no_unpinned"})

@@ -11,8 +11,8 @@ from __future__ import annotations
 import io
 import unittest
 
-from src.ui._bottom_bar_pkg.completion import _CompletionPopup
-from src.ui._bottom_bar_pkg.theme import _COLOR_BREATH_BG, _COLOR_SELECT_FG, _COLOR_RESET
+from src.ui.tui.bottom_bar.completion import _CompletionPopup
+from src.ui.tui.bottom_bar.theme import _COLOR_BREATH_BG, _COLOR_SELECT_FG, _COLOR_RESET
 from src.ui.tui._animator import AnimatorContext, BreathPalette
 
 

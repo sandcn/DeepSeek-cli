@@ -30,7 +30,24 @@ class EventPort(ABC):
 
     @abstractmethod
     def subscribe(self, event_type: str, handler: Callable) -> None:
-        """订阅事件"""
+        """订阅事件（通过字符串类型名）
+
+        当 event_type 为具体字符串时，仅接收匹配该类型的事件；
+        当 event_type 为 None 或空字符串时，接收所有事件（向后兼容）。
+
+        匹配规则：先检查事件对象的 event_type 属性，若匹配则触发；
+                 否则按事件对象的类名匹配。
+
+        与 subscribe_type() 行为差异：
+        - subscribe("OutputEvent", handler) — 按字符串名过滤，接收 OutputEvent 类事件
+        - subscribe_type(OutputEvent, handler) — 按类型对象订阅，接收 OutputEvent 类事件
+        两者使用不同的过滤维度，结果可能相同但机制不同。
+
+        Args:
+            event_type: 事件类型字符串（如 "OutputEvent", "ToolSummaryEvent"）。
+                       None 或空表示订阅所有事件。
+            handler: 事件处理函数
+        """
         ...
 
     @abstractmethod

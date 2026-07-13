@@ -35,8 +35,8 @@ from .theme import (
     get_prompt_breath_color,
     make_sep_gradient,
 )
-from ..tui._animator import AnimatorContext
-from ..tui._text_utils import make_sep_gradient_enhanced
+from .._animator import AnimatorContext
+from .._text_utils import make_sep_gradient_enhanced
 from .cursor import (
     _expand_tabs,
     _wrap_by_width,
@@ -72,7 +72,7 @@ def _draw_input_lines_locked(
     """
     max_input = max(1, term_width - 4)
     # 延迟导入避免循环依赖（tui → _bottom_bar → draw → tui）
-    from ..tui._terminal import is_narrow as _is_narrow_fn
+    from .._terminal import is_narrow as _is_narrow_fn
     expanded = _expand_tabs(text)
     wrapped = _wrap_by_width(expanded, max_input)
     bar._cached_wrapped_for = text
@@ -108,8 +108,8 @@ def _draw_input_lines_locked(
                     placeholder_color = _COLOR_DIM
                 else:
                     import re
-                    from ..tui._text_utils import build_glow_ansi  # type: ignore[import-untyped]
-                    from ..theme import THEME as _BOTTOM_THEME       # type: ignore[import-untyped]
+                    from .._text_utils import build_glow_ansi  # type: ignore[import-untyped]
+                    from ...theme import THEME as _BOTTOM_THEME       # type: ignore[import-untyped]
                     glow_str = _BOTTOM_THEME.get('placeholder_glow', '')
                     m = re.search(r"38;5;(\d+)", glow_str)
                     if m:
@@ -172,7 +172,7 @@ def _draw_all_locked(bar: _BottomBar, out, height: int, breath_frame: int = 0) -
 
     tw = bar._term_width()
     # 延迟导入避免循环依赖
-    from ..tui._terminal import is_narrow as _is_narrow_fn
+    from .._terminal import is_narrow as _is_narrow_fn
     if _is_narrow_fn():
         sep_len = min(tw - 2, 40)
         sep = f"{_COLOR_SEP}\u2501{_COLOR_RESET}" * sep_len

@@ -141,12 +141,39 @@ class DisplayEventBus:
             event: 要发布的事件对象
         """
         # 将 DisplayEvent 包装为 CoreEvent 发布
+        # batch 参数省略 → CoreEventBus 自动判断（_batched_events 注册的走批处理）
+        # 高频事件如 ContentChunkEvent 已注册批处理，自动走 ~33ms 窗口
         event_type_name = type(event).__name__
         self._bus.publish(
             event_type=event_type_name,
             data={'_display_event': event},
             source=event.source or self._source,
         )
+
+    # ── 时间窗口批处理 ──────────────────────────────────
+
+    def register_batched_event(self, event_type: type[DisplayEvent]) -> None:
+        """注册需要时间窗口批处理的 UI 事件类型
+
+        高频 UI 事件（如 ContentChunkEvent、ReasoningChunkEvent）
+        走 ~33ms 窗口批处理，降低渲染压力。
+
+        Args:
+            event_type: DisplayEvent 的子类
+        """
+        if not issubclass(event_type, DisplayEvent):
+            raise TypeError(
+                f"event_type 必须是 DisplayEvent 的子类，收到: {event_type}"
+            )
+        self._bus.register_batched_event(event_type.__name__)
+
+    def unregister_batched_event(self, event_type: type[DisplayEvent]) -> None:
+        """取消 UI 事件类型的批处理注册"""
+        if not issubclass(event_type, DisplayEvent):
+            raise TypeError(
+                f"event_type 必须是 DisplayEvent 的子类，收到: {event_type}"
+            )
+        self._bus.unregister_batched_event(event_type.__name__)
 
     # ── 内部方法 ────────────────────────────────────────
 

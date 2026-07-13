@@ -7,10 +7,27 @@ import pytest
 from src.core.cache import (
     LRUCache,
     NullCache,
+    CachePort,
     get_default_cache,
     reset_default_cache,
     set_default_cache,
 )
+
+
+# ═══════════════════════════════════════════════════════════════
+# CachePort 端口接口导入测试
+# ═══════════════════════════════════════════════════════════════
+
+class TestCachePortFromPorts:
+    """验证 CachePort 可从 ports 包正确导入（步骤 3 迁移验证）"""
+
+    def test_cache_port_from_ports_cache(self):
+        from src.core.ports.cache import CachePort as PortCachePort
+        assert PortCachePort is CachePort
+
+    def test_cache_port_from_ports_init(self):
+        from src.core.ports import CachePort as PortCachePort
+        assert PortCachePort is CachePort
 
 
 # ═══════════════════════════════════════════════════════════════

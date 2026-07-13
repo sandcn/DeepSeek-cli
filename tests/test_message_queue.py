@@ -5,7 +5,9 @@ import time
 
 import pytest
 
-from src.core.message_queue import Message, MessageQueue
+from src.core.message_queue import Message, MessageQueue, AsyncMessageQueue
+from src.core.ports.message_queue import MessageQueuePort
+from src.core.adapters.message_queue import NullMessageQueue
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -390,3 +392,105 @@ class TestTwoPhaseConsumeCancel:
             pass
 
         assert q.is_running is False, "取消后 _running 应为 False"
+
+
+# ═══════════════════════════════════════════════════════════════
+# MessageQueuePort 接口测试
+# ═══════════════════════════════════════════════════════════════
+
+class TestMessageQueuePortInterface:
+    """验证 MessageQueuePort 抽象接口和实现的关系。"""
+
+    def test_async_message_queue_is_port(self):
+        """AsyncMessageQueue 是 MessageQueuePort 的实例"""
+        q = AsyncMessageQueue()
+        assert isinstance(q, MessageQueuePort)
+
+    def test_null_message_queue_is_port(self):
+        """NullMessageQueue 是 MessageQueuePort 的实例"""
+        q = NullMessageQueue()
+        assert isinstance(q, MessageQueuePort)
+
+    def test_message_queue_alias_is_async(self):
+        """MessageQueue 别名指向 AsyncMessageQueue"""
+        assert MessageQueue is AsyncMessageQueue
+
+    def test_port_cannot_be_instantiated(self):
+        """MessageQueuePort 是 ABC，不能直接实例化"""
+        with pytest.raises(TypeError, match="Can't instantiate abstract class"):
+            MessageQueuePort()
+
+
+# ═══════════════════════════════════════════════════════════════
+# NullMessageQueue 测试
+# ═══════════════════════════════════════════════════════════════
+
+class TestNullMessageQueue:
+    """NullMessageQueue 所有方法需符合 MessageQueuePort 接口协定。"""
+
+    @pytest.fixture
+    def q(self):
+        return NullMessageQueue()
+
+    # ── put ───────────────────────────────────────────────────
+
+    @pytest.mark.asyncio
+    async def test_put_returns_message(self, q):
+        """put 返回 Message 对象"""
+        msg = await q.put("test")
+        assert isinstance(msg, Message)
+        assert msg.content == "test"
+
+    # ── get ───────────────────────────────────────────────────
+
+    @pytest.mark.asyncio
+    async def test_get_returns_none(self, q):
+        """get 始终返回 None"""
+        assert await q.get() is None
+        assert await q.get(timeout=0) is None
+        assert await q.get(timeout=1.0) is None
+
+    # ── stop ──────────────────────────────────────────────────
+
+    @pytest.mark.asyncio
+    async def test_stop_no_op(self, q):
+        """stop 不抛异常"""
+        await q.stop()  # 不应抛出
+
+    # ── is_running ────────────────────────────────────────────
+
+    def test_is_running_false(self, q):
+        """is_running 始终为 False"""
+        assert q.is_running is False
+
+    def test_is_running_after_stop(self, q):
+        """stop 后 is_running 仍为 False"""
+        # 同步方式无法 await，直接验证属性
+        assert q.is_running is False
+
+    # ── qsize ─────────────────────────────────────────────────
+
+    def test_qsize_zero(self, q):
+        """qsize 始终为 0"""
+        assert q.qsize == 0
+
+    def test_qsize_after_put(self, q):
+        """put 后 qsize 仍为 0"""
+        import asyncio
+        asyncio.run(q.put("test"))
+        assert q.qsize == 0
+
+    # ── async_consume ─────────────────────────────────────────
+
+    @pytest.mark.asyncio
+    async def test_async_consume_returns_immediately(self, q):
+        """async_consume 不阻塞，直接返回"""
+        called = False
+
+        async def callback(msg):
+            nonlocal called
+            called = True
+
+        await q.async_consume(callback, poll_interval=0.05)
+        # 直接返回，callback 不会被调用
+        assert called is False

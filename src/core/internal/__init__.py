@@ -12,7 +12,7 @@ from __future__ import annotations
 
 from .session import (
     add_message, non_system_messages, system_messages,
-    CoreHooks, SessionState,
+    CoreEventBus, SessionState,
     _validate_compress_preconditions,
     SessionPersistenceManager, SessionMessagingManager,
 )
@@ -34,7 +34,7 @@ from .shared import (
 __all__ = [
     # session 子包
     "add_message", "non_system_messages", "system_messages",
-    "CoreHooks", "SessionState",
+    "CoreEventBus", "SessionState",
     "_validate_compress_preconditions",
     "SessionPersistenceManager", "SessionMessagingManager",
     # agent 子包

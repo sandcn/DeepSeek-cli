@@ -52,7 +52,7 @@ class CommandUiAdapter:
 
         返回值: {"action": "confirmed"|"cancel"|"error", "index": int | None}
         """
-        from ...ui._bottom_bar_pkg.selection import run_bottom_bar_selection as _select
+        from ...ui.tui.bottom_bar.selection import run_bottom_bar_selection as _select
         return _select(items, display_items, initial_idx, title, bottom_bar)
 
     def get_theme_names_with_desc(self) -> list[tuple[str, str]]:
