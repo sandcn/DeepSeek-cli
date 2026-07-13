@@ -476,8 +476,8 @@ dispatch_agent(type="execute", description="<任务摘要>", prompt="<自然语�
 - **操作内容**：执行以下验证操作，对应「验证方案」步骤的执行规范：
 - **语法检查**：对修改的代码文件执行对应语言的语法检查（如 C `gcc -fsyntax-only` / C++ `g++ -fsyntax-only` / Go `go vet` / Java `javac -Xlint` / Kotlin `kotlinc` / Node.js `node --check` / PHP `php -l` / Python `python -m py_compile` / Ruby `ruby -c` / Rust `cargo check` / Swift `swift -typecheck` / TypeScript `tsc --noEmit`），确保无语法错误。
 - **构建/编译**：检测项目是否包含构建系统文件（如 Makefile / CMakeLists.txt / Cargo.toml / package.json / go.mod / pyproject.toml / pom.xml / build.gradle / Gemfile / composer.json / Package.swift / build.sbt 等），若有则执行对应的构建命令（如 make / cmake --build / cargo build / npm run build / go build / pip install -e . / mvn compile / gradle build / swift build / sbt compile 等），确保修改后代码可成功编译生成目标程序。
-- **加测试**：新增功能→单元测试；Bug 修复→回归测试（命名遵循语言惯例，如 Python `test_<场景>_regression` / JS `test('<场景> regression')` / Go `Test<场景>Regression`，Arrange/Act/Assert，边界 +1/-1）。
-- **运行测试**：执行项目对应的测试框架（如 Python pytest / Node.js Jest/Mocha / Go `go test` / Rust `cargo test` / Java JUnit），确保全部通过。
+- **加测试**：新增功能→单元测试；Bug 修复→回归测试（测试文件统一放到当前项目 `tests/` 目录下，目录结构与源码模块对应，如 Python `src/foo/bar.py` → `tests/test_foo/test_bar.py` / Node.js `src/foo/bar.js` → `tests/foo/bar.test.js` / Go `foo/bar.go` → `foo/bar_test.go` / Rust `src/foo/bar.rs` → `tests/foo/bar_test.rs`；命名遵循语言惯例，如 Python `test_<场景>_regression` / JS `test('<场景> regression')` / Go `Test<场景>Regression`，Arrange/Act/Assert，边界 +1/-1）。
+- **运行测试**：使用并发模式执行项目对应的测试框架（如 Python `pytest -xvs --numprocesses=auto` / Node.js `jest --maxWorkers=50%` / Go `go test -parallel=4 ./...` / Rust `cargo test -- --test-threads=4` / Java `mvn test -T 4`），确保全部通过。若无并发选项，至少确保测试用例可独立并行运行（无共享状态污染）。
 - **运行验证**：有 CLI/服务入口则启动验证。后台服务等待 30s，未异常退出即通过。外部依赖缺失可标注跳过。
 
 > **说明**：该章节描述的完整验证流程由「验证方案」步骤的 execute Agent 执行。验证通过后步骤状态为「成功」，失败则为「失败」并按计划中的风险应对处理。
