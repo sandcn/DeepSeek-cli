@@ -3,12 +3,20 @@
 暂停 ChatUIConsumer + 停止 EscapeMonitor，
 让底部栏补全弹窗 + raw I/O 处理 ↑↓/Enter/Esc 交互，
 选择完成后恢复两者。
+
+prefill 数据流（5 个传递节点）:
+  1. editmsg_plugin.py:async_execute — state_dict["prefill"] 赋值
+  2. _loop.py:_handle_command_msg — 从 state_dict 同步到 state.prefill
+  3. _loop.py:_handle_round — _merge_prefill() 合并 prefill
+  4. consumer.py:wait_for_user_input — 从参数接收 prefill 并调用 set_prefill
+  5. _monitor.py:EscapeMonitor.set_prefill — 设置缓冲区并触发回显
 """
 
 from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from typing import Any
 
 from .base import InteractiveCommandPlugin
@@ -85,6 +93,7 @@ class EditmsgPlugin(InteractiveCommandPlugin):
                 _edit_msgs, session.agent, edit_state,
             )
             state["prefill"] = edit_state.get("prefill", "")
+            _logger.debug("editmsg_plugin: state['prefill'] set, len=%d", len(state["prefill"]))
             state["retry"] = edit_state.get("retry", False)
             state["model"] = edit_state.get("model", state.get("model", ""))
             session.sync_retry_pending()
@@ -103,8 +112,11 @@ class EditmsgPlugin(InteractiveCommandPlugin):
         finally:
             if monitor is not None:
                 monitor.start()
+                time.sleep(0.05)
             if chat_ui is not None:
                 chat_ui.resume()
+                chat_ui.flush()
+                _logger.debug("editmsg_plugin: bottom bar flushed after resume")
 
         # ★ 编辑后反馈：编辑失败（未产生 prefill/retry）时给用户明确提示
         if not needs_rerender and chat_ui is not None:

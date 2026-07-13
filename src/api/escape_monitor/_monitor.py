@@ -242,8 +242,12 @@ class EscapeMonitor:
 
     def set_prefill(self, text: str) -> None:
         """设置预填文本到流式输入缓冲区。线程安全。"""
+        _logger.debug("EscapeMonitor.set_prefill: len=%d, echo_callback=%s",
+                      len(text), self._input_handler._echo_callback is not None)
         self._input_handler.set_buffer(text)
         self._input_handler._echo(text)
+        _logger.debug("EscapeMonitor.set_prefill: buffer set + echo triggered, current_text='%s'",
+                      self._input_handler.get_current_text()[:80])
 
     def _pause_for_callback(self) -> None:
         """在 monitor 线程内部暂停监听（不等待 _paused_ack）。

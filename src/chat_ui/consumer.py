@@ -243,7 +243,9 @@ class ChatUIConsumer:
             用户输入文本；超时时返回空字符串 ""
         """
         if prefill:
+            _logger.debug("wait_for_user_input: about to set_prefill, len=%d, prefill[:50]='%s'", len(prefill), prefill[:50])
             monitor.set_prefill(prefill)
+            _logger.debug("wait_for_user_input: set_prefill done, entering poll loop")
         deadline = None if timeout is None else time.monotonic() + timeout
         while True:
             text = monitor.get_queued_input()

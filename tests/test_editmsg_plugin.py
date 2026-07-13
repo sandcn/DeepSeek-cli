@@ -226,3 +226,53 @@ async def test_no_rerender_without_prefill(EditmsgPlugin, mock_loop, mock_ctx, m
 
     # chat_ui.display_messages 不应该被调用（needs_rerender=False）
     mock_loop._chat_ui.display_messages.assert_not_called()
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+#  测试：finally 块 flush 调用 + 调用顺序
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+@pytest.mark.asyncio
+async def test_finally_block_flush_called(EditmsgPlugin, mock_loop, mock_ctx):
+    """async_execute 后 mock_loop._chat_ui.flush 被调用
+
+    finally 块中 resume() 后应显式调用 flush() 刷新底部栏。
+    """
+    plugin = EditmsgPlugin()
+    plugin.bind_loop(mock_loop)
+
+    with patch(
+        "src.ui.msg_list.edit_current_messages",
+        new=lambda agent, state: state.update({"prefill": "content", "retry": False}),
+    ):
+        await plugin.async_execute(mock_ctx)
+
+    # finally 块中 resume 后应调用 flush
+    mock_loop._chat_ui.flush.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_finally_block_monitor_started_before_flush(EditmsgPlugin, mock_loop, mock_ctx):
+    """验证 finally 块调用顺序: monitor.start → chat_ui.resume → chat_ui.flush
+
+    使用 assert_has_calls 确保时序正确：
+    1. monitor.start() 最先（确保 cbreak 就绪）
+    2. chat_ui.resume() 其次（恢复渲染线程）
+    3. chat_ui.flush() 最后（刷新底部栏）
+    """
+    from unittest.mock import call
+
+    plugin = EditmsgPlugin()
+    plugin.bind_loop(mock_loop)
+
+    with patch(
+        "src.ui.msg_list.edit_current_messages",
+        new=lambda agent, state: state.update({"prefill": "content", "retry": False}),
+    ):
+        await plugin.async_execute(mock_ctx)
+
+    # 验证 monitor.start 在 finally 最先被调用
+    mock_loop._monitor.assert_has_calls([call.start()])
+    # 验证 chat_ui.resume 在 chat_ui.flush 之前
+    mock_loop._chat_ui.assert_has_calls([call.resume(), call.flush()])

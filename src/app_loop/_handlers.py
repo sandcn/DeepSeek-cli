@@ -22,9 +22,16 @@ async def _handle_retry_sentinel(session) -> None:
 
 
 async def _handle_editmsg_cmd(session, state) -> None:
-    """处理 /editmsg 命令
+    """DEPRECATED: 处理 /editmsg 命令
 
-    暂停 ChatUIConsumer + 停止 EscapeMonitor（join 线程、恢复 cooked 终端），
+    ★ 已废弃，保留仅用于向后兼容和测试引用。
+    ★ 请使用 EditmsgPlugin（editmsg_plugin.py:async_execute）替代。
+    ★ 新代码不应再调用此函数。
+    ★ 注意：此函数缺少 Cygwin 时序修复（finally 块中无 time.sleep(0.05)
+      延迟和 chat_ui.flush() 调用），若绕过插件系统直接调用此函数，
+      prefill 竞态问题将复现。生产路径请始终使用 EditmsgPlugin。
+
+    原实现：暂停 ChatUIConsumer + 停止 EscapeMonitor（join 线程、恢复 cooked 终端），
     让底部栏补全弹窗 + raw I/O 处理 ↑↓/Enter/Esc 交互，
     选择完成后恢复两者。与 /model 命令保持一致。
     """

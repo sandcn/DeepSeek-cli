@@ -125,7 +125,10 @@ class InteractiveLoop:
             self._chat_ui.flush()
             # ★ 显式将光标定位到输入行（flush 返回时 render 线程可能尚未执行 _position_cursor）
             self._chat_ui.bottom_bar.ensure_cursor_in_lower()
+            _logger.debug("_handle_round: before _merge_prefill, state.prefill='%s', len=%d", state.prefill[:80] if state.prefill else '', len(state.prefill))
+            _cp_len_before = len(session.captured_prefill) if hasattr(session, 'captured_prefill') else 0
             prefill = _merge_prefill(state, session)
+            _logger.debug("_handle_round: after _merge_prefill, merged prefill len=%d, captured_prefill len was=%d", len(prefill) if prefill else 0, _cp_len_before)
 
             # ★ 获取输入前清除残留中断信号
             reset_interrupt_async()
@@ -136,6 +139,8 @@ class InteractiveLoop:
                 )
             except (EOFError, KeyboardInterrupt):
                 return _RoundResult(should_exit=True)
+
+            _logger.debug("_handle_round: wait_for_user_input returned, len=%d", len(user_input) if user_input else 0)
 
             if user_input.strip().lower() == 'exit':
                 pending = session.pending_messages
@@ -279,6 +284,7 @@ class InteractiveLoop:
                 self._chat_ui.bottom_bar.set_model_name(state.model)
                 state.retry = state_dict.get("retry", False)
                 state.prefill = state_dict.get("prefill", "")
+                _logger.debug("_handle_command_msg: state.prefill set, len=%d, retry=%s", len(state.prefill), state.retry)
             else:
                 self._chat_ui.write_line(f"  {YELLOW}未知命令: {content}，输入 /help 查看可用命令{RESET}")
         else:
