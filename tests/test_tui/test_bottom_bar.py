@@ -1556,5 +1556,32 @@ class TestPlaceholderGlow(unittest.TestCase):
                       "窄屏占位符应使用 _COLOR_DIM(242)")
 
 
+class TestGetSnapshot(unittest.TestCase):
+    """验证 _get_snapshot() 真实导入路径正确性。
+
+    核心场景：
+      1. 直接调用 _get_snapshot()（不 mock），验证返回值是 callable 而非 None
+      2. 验证修复后 ....api.stats 路径能正确加载 get_token_speed_snapshot
+    """
+
+    def setUp(self):
+        # 强制重置模块级缓存变量，确保 _get_snapshot() 走真实导入路径
+        import src.ui.tui.bottom_bar.status as status_mod
+        status_mod._TOKEN_SPEED_SNAPSHOT = None
+
+    def test_get_snapshot_imports_correctly(self):
+        """_get_snapshot() 应返回 callable 而非 None（验证真实导入路径正确）。"""
+        from src.ui.tui.bottom_bar import status
+
+        # 强制重置缓存，使 _get_snapshot 走 try 导入路径
+        status._TOKEN_SPEED_SNAPSHOT = None
+
+        result = status._get_snapshot()
+
+        self.assertTrue(callable(result),
+                        "_get_snapshot() 应返回 callable 函数引用，而非 None；"
+                        "若返回 None 说明导入路径仍不正确或 api.stats 模块缺失")
+
+
 if __name__ == "__main__":
     unittest.main()
