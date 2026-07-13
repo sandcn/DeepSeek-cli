@@ -16,6 +16,7 @@ class AmbiguousMatchError(FileToolError):
     timeout_estimate=0,
     category="io",
     priority=10,
+    tool_category="write",
     description="更新文件内容",
 )
 class UpdateFileFunc(FileToolBase):

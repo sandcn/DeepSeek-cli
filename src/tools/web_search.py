@@ -29,6 +29,7 @@ from ..ui._lock import locked_print
     timeout_estimate=15,
     category="general",
     priority=40,
+    tool_category="read",
     description="网页搜索和内容获取",
 )
 class WebSearchFunc(Func):

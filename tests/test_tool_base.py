@@ -84,6 +84,26 @@ class _InteractiveTool(Func):
         return "interactive"
 
 
+@tool_metadata(
+    parallel_safe=False,
+    requires_network=False,
+    requires_terminal=False,
+    category="io",
+    tool_category="read",
+    description="读取类测试工具",
+)
+class _ReadTool(Func):
+    """使用 tool_metadata 设置 tool_category="read" 的 Func 子类。"""
+    name = "read_tool"
+
+    @classmethod
+    def to_tool_schema(cls):
+        return {"name": cls.name, "parameters": {"type": "object", "properties": {}}}
+
+    async def execute(self) -> str:
+        return "read"
+
+
 # ═══════════════════════════════════════════════════════════════════════════
 # 1. Func 基类 — 实例化限制
 # ═══════════════════════════════════════════════════════════════════════════
@@ -262,6 +282,7 @@ class TestToolMetadata:
         assert meta.timeout_estimate == 0
         assert meta.category == "general"
         assert meta.priority == 100
+        assert meta.tool_category == "general"
         assert meta.description == ""
 
     def test_custom_values(self):
@@ -272,6 +293,7 @@ class TestToolMetadata:
             timeout_estimate=60.0,
             category="io",
             priority=5,
+            tool_category="read",
             description="自定义描述",
         )
         assert meta.parallel_safe is True
@@ -280,6 +302,7 @@ class TestToolMetadata:
         assert meta.timeout_estimate == 60.0
         assert meta.category == "io"
         assert meta.priority == 5
+        assert meta.tool_category == "read"
         assert meta.description == "自定义描述"
 
     def test_partial_custom_values(self):
@@ -288,6 +311,7 @@ class TestToolMetadata:
         assert meta.parallel_safe is True
         assert meta.requires_network is False  # 保持默认
         assert meta.category == "general"      # 保持默认
+        assert meta.tool_category == "general"  # 保持默认
         assert meta.description == "仅设置部分字段"
 
     def test_is_dataclass(self):
@@ -312,6 +336,7 @@ class TestToolMetadataDecorator:
         assert meta.requires_network is True
         assert meta.category == "io"
         assert meta.priority == 50
+        assert meta.tool_category == "general"  # 默认值
         assert meta.description == "测试工具"
 
     def test_decorated_class_get_metadata_method(self):
@@ -339,6 +364,19 @@ class TestToolMetadataDecorator:
         """未装饰的类实例 get_metadata 返回 None。"""
         tool = _ConcreteTool()
         assert tool.get_metadata() is None
+
+    def test_tool_category_default_via_decorator(self):
+        """未设置 tool_category 时默认为 'general'。"""
+        meta = get_tool_metadata(_DecoratedTool)
+        assert meta.tool_category == "general"
+
+    def test_tool_category_custom_via_decorator(self):
+        """通过装饰器设置 tool_category='read'。"""
+        meta = get_tool_metadata(_ReadTool)
+        assert isinstance(meta, ToolMetadata)
+        assert meta.tool_category == "read"
+        assert meta.category == "io"
+        assert meta.parallel_safe is False
 
 
 # ═══════════════════════════════════════════════════════════════════════════

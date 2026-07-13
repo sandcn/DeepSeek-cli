@@ -32,6 +32,7 @@ RECENT_MODIFY_DAYS = 180      # 最近修改天数阈值
     timeout_estimate=0,
     category="code",
     priority=20,
+    tool_category="read",
     description="列出目录内容",
 )
 class LsFunc(Func):

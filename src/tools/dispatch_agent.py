@@ -15,6 +15,7 @@ from .base import Func, tool_metadata
     timeout_estimate=0,
     category="general",
     priority=50,
+    tool_category="general",
     description="并行子Agent调度",
 )
 class DispatchAgents(Func):

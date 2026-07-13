@@ -3,10 +3,11 @@
 替代硬编码的四波串行模型（Wave 0-3），实现真正的依赖驱动并行调度：
 
 1. 构建 DAG 节点（每个工具调用一个节点）
-2. 三层依赖检测：
+2. 四层依赖检测：
    - 显式依赖：参数值中的 ``$tool_call_id`` 引用
    - 隐式依赖：path 参数重叠（读依赖写、写依赖写同文件）
    - 元数据约束：user_select 独占层
+   - 工具类别约束：bash 隔离/read→write/bash 链式
 3. Kahn 算法拓扑排序 → 分层输出
 4. 每层内工具可并发执行，层间串行等待
 
@@ -45,6 +46,7 @@ class ToolCallNode:
         arguments: 参数 dict
         parallel_safe: 是否并行安全（缓存 metadata）
         requires_terminal: 是否需要独占终端
+        tool_category: 调度约束分类（"read"/"write"/"bash"/"interactive"/"general"），默认 "general"
         dependencies: 本节点依赖的 tc_id 集合（入边）
         dependents: 依赖本节点的 tc_id 集合（出边）
         layer: 拓扑层编号（-1 表示未分配）
@@ -54,6 +56,7 @@ class ToolCallNode:
     arguments: dict[str, Any]
     parallel_safe: bool
     requires_terminal: bool
+    tool_category: str = "general"
     dependencies: set[str] = field(default_factory=set)
     dependents: set[str] = field(default_factory=set)
     layer: int = -1
@@ -108,7 +111,7 @@ class ToolDAG:
     # ── 构建 ────────────────────────────────────────────────
 
     def _build(self, tool_calls: list[dict], registry) -> None:
-        """构建 DAG：创建节点 + 三层依赖检测"""
+        """构建 DAG：创建节点 + 四层依赖检测"""
         # 第一遍：创建所有节点
         node_map: dict[str, ToolCallNode] = {}
         for tc in tool_calls:
@@ -119,11 +122,13 @@ class ToolDAG:
             # 查询 metadata
             parallel_safe = False
             requires_terminal = False
+            tool_category = "general"
             try:
                 meta = registry.get_metadata(name)
                 if meta is not None:
                     parallel_safe = meta.parallel_safe
                     requires_terminal = meta.requires_terminal
+                    tool_category = getattr(meta, 'tool_category', 'general')
             except Exception:
                 _logger.debug("ToolDAG: metadata 查询失败 '%s', 使用默认值", name, exc_info=True)
 
@@ -133,6 +138,7 @@ class ToolDAG:
                 arguments=arguments,
                 parallel_safe=parallel_safe,
                 requires_terminal=requires_terminal,
+                tool_category=tool_category,
             )
             node_map[tc_id] = node
 
@@ -147,6 +153,9 @@ class ToolDAG:
 
         # 层 C：元数据约束（user_select 独占层）
         self._add_user_select_constraints()
+
+        # 层 D：工具类别约束（bash 隔离 / read→write / bash 链式）
+        self._detect_tool_category_constraints()
 
     # ── 显式依赖检测 ───────────────────────────────────────
 
@@ -379,6 +388,125 @@ class ToolDAG:
                 # 其他所有节点依赖 user_select（user_select 先独占终端执行）
                 self._nodes[other_id].dependencies.add(us_id)
                 us_node.dependents.add(other_id)
+
+    # ── 工具类别约束检测 ───────────────────────────────────
+
+    def _path_exists(self, from_id: str, to_id: str) -> bool:
+        """BFS 可达性检测：判断从 from_id 出发能否到达 to_id
+
+        沿出边 (dependents) 遍历 DAG。若存在路径（含直接边和间接路径）返回 True。
+        节点不存在或不可达返回 False。
+
+        Args:
+            from_id: 起始节点 tc_id
+            to_id: 目标节点 tc_id
+        """
+        if from_id not in self._nodes or to_id not in self._nodes:
+            return False
+        if from_id == to_id:
+            return True
+
+        visited: set[str] = set()
+        queue: list[str] = [from_id]
+        visited.add(from_id)
+
+        while queue:
+            current = queue.pop(0)
+            for dep_id in self._nodes[current].dependents:
+                if dep_id == to_id:
+                    return True
+                if dep_id not in visited:
+                    visited.add(dep_id)
+                    queue.append(dep_id)
+
+        return False
+
+    def _detect_tool_category_constraints(self) -> None:
+        """检测工具类别调度约束（层 D）
+
+        在显式依赖、路径重叠、user_select 约束之后执行，新增第四层依赖约束：
+
+        规则 a — bash ↔ non-bash 双向隔断：
+            non-bash（read/write/interactive）在 bash 之前执行
+            若已有 non-bash→bash 路径（防环）或 bash→non-bash 路径（已有依赖），跳过
+        规则 b — bash → bash 链式串行：
+            多个 bash 按原始顺序链式依赖，一次只运行一个 bash
+        规则 c — read → write 默认边：
+            read 类工具在 write 类工具之前执行
+            若已有 write→read 路径（防环），跳过
+        规则 d — 防环保护：
+            所有新边添加前均经 _path_exists 反方向检查，避免形成环
+
+        general 类别不参与任何类别约束。
+        """
+        if not self._nodes:
+            return
+
+        # ── 第一步：节点分类 ──
+        # non_bash_nodes = read + write + interactive（不含 general）
+        read_nodes: list[str] = []
+        write_nodes: list[str] = []
+        bash_nodes: list[str] = []
+        non_bash_nodes: list[str] = []
+
+        for tc_id in self._original_order:
+            node = self._nodes.get(tc_id)
+            if node is None:
+                continue
+            cat = node.tool_category
+            if cat == "read":
+                read_nodes.append(tc_id)
+                non_bash_nodes.append(tc_id)
+            elif cat == "write":
+                write_nodes.append(tc_id)
+                non_bash_nodes.append(tc_id)
+            elif cat == "bash":
+                bash_nodes.append(tc_id)
+            elif cat == "interactive":
+                non_bash_nodes.append(tc_id)
+            # cat == "general": 不加入任何分类列表，不参与约束
+
+        _logger.debug(
+            "ToolDAG: 类别约束分类 — read=%d, write=%d, bash=%d, interactive=%d",
+            len(read_nodes), len(write_nodes), len(bash_nodes),
+            len(non_bash_nodes) - len(read_nodes) - len(write_nodes),
+        )
+
+        # ── 规则 a：bash ↔ non-bash 双向隔断（non-bash → bash） ──
+        if bash_nodes and non_bash_nodes:
+            for bash_id in bash_nodes:
+                for non_bash_id in non_bash_nodes:
+                    # 防环：已有 non-bash→bash 或 bash→non-bash 路径时跳过
+                    if self._path_exists(non_bash_id, bash_id):
+                        continue
+                    if self._path_exists(bash_id, non_bash_id):
+                        continue
+                    # 添加 non-bash → bash 边（bash 在所有 non-bash 之后执行）
+                    self._nodes[bash_id].dependencies.add(non_bash_id)
+                    self._nodes[non_bash_id].dependents.add(bash_id)
+
+        # ── 规则 b：bash → bash 链式串行（按原始顺序） ──
+        if len(bash_nodes) >= 2:
+            # bash_nodes 已按 self._original_order 顺序排列
+            for i in range(len(bash_nodes) - 1):
+                earlier_id = bash_nodes[i]
+                later_id = bash_nodes[i + 1]
+                self._nodes[later_id].dependencies.add(earlier_id)
+                self._nodes[earlier_id].dependents.add(later_id)
+
+        # ── 规则 c：read → write 默认边 ──
+        if read_nodes and write_nodes:
+            for read_id in read_nodes:
+                for write_id in write_nodes:
+                    # 防环：已有 write→read 路径时跳过
+                    if self._path_exists(write_id, read_id):
+                        continue
+                    # 已有 read→write 路径时跳过
+                    if self._path_exists(read_id, write_id):
+                        continue
+                    # 添加 read → write 边（read 优先于 write）
+                    self._nodes[write_id].dependencies.add(read_id)
+                    self._nodes[read_id].dependents.add(write_id)
 
     # ── 环检测 ──────────────────────────────────────────────
 

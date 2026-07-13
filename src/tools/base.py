@@ -269,6 +269,7 @@ class ToolMetadata:
         timeout_estimate: 预计最大执行时间（秒），0 表示不确定
         category: 工具分类标签（"io", "code", "search", "interactive", "general"）
         priority: 执行优先级（越小越优先），默认 100
+        tool_category: 调度约束分类（"read"/"write"/"bash"/"interactive"/"general"），默认 "general"
         description: 工具描述
     """
     parallel_safe: bool = False
@@ -277,6 +278,7 @@ class ToolMetadata:
     timeout_estimate: float = 0
     category: str = "general"
     priority: int = 100
+    tool_category: str = "general"
     description: str = ""
 
 
@@ -292,6 +294,7 @@ def tool_metadata(
     timeout_estimate: float = 0,
     category: str = "general",
     priority: int = 100,
+    tool_category: str = "general",
     description: str = "",
 ):
     """装饰器：为工具类附加元数据
@@ -310,6 +313,7 @@ def tool_metadata(
             timeout_estimate=timeout_estimate,
             category=category,
             priority=priority,
+            tool_category=tool_category,
             description=description,
         )
         setattr(cls, _METADATA_ATTR, meta)

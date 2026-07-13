@@ -92,6 +92,7 @@ class FileSizeError(FileToolError):
     timeout_estimate=0,
     category="io",
     priority=10,
+    tool_category="write",
     description="文件操作工具基类",
 )
 class FileToolBase(Func):

@@ -41,6 +41,7 @@ def _resolve_lexer_name(ext: str) -> str:
     timeout_estimate=0,
     category="io",
     priority=10,
+    tool_category="read",
     description="读取文件内容",
 )
 class ReadFileFunc(Func):

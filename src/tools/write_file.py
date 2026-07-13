@@ -9,6 +9,7 @@ from .base import tool_metadata
     timeout_estimate=0,
     category="io",
     priority=10,
+    tool_category="write",
     description="写入文件",
 )
 class WriteFileFunc(FileToolBase):

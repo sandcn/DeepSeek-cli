@@ -218,6 +218,7 @@ def _kill_process_tree(pid: int) -> None:
     timeout_estimate=0,
     category="general",
     priority=30,
+    tool_category="bash",
     description="执行shell命令",
 )
 class BashFunc(Func):

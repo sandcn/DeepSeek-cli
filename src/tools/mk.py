@@ -14,6 +14,7 @@ from .file_ops import validate_path_security, async_file_exists
     timeout_estimate=0,
     category="io",
     priority=10,
+    tool_category="write",
     description="创建目录",
 )
 class MkFunc(FileSystemToolBase):

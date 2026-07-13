@@ -28,6 +28,7 @@ _logger = logging.getLogger(__name__)
     timeout_estimate=120,
     category="interactive",
     priority=5,
+    tool_category="interactive",
     description="用户交互选择",
 )
 class UserSelectFunc(Func):

@@ -40,6 +40,7 @@ def _should_exclude_dir(dirname: str) -> bool:
     timeout_estimate=0,
     category="code",
     priority=20,
+    tool_category="read",
     description="在项目中查找文件和目录",
 )
 class FindFunc(Func):

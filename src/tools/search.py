@@ -115,6 +115,7 @@ _EXCLUDED_DIR_PATTERNS: tuple[str, ...] = tuple(
     timeout_estimate=0,
     category="code",
     priority=20,
+    tool_category="read",
     description="在项目源码中搜索正则模式",
 )
 class SearchFunc(Func):

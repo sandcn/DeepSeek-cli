@@ -20,27 +20,35 @@ from src.core.tool_dag import ToolDAG, ToolCallNode
 # 辅助函数
 # ═══════════════════════════════════════════════════════════════
 
-def _meta(parallel_safe=False, requires_terminal=False):
+def _meta(parallel_safe=False, requires_terminal=False, tool_category="general"):
     """创建 mock metadata 对象"""
     m = MagicMock()
     m.parallel_safe = parallel_safe
     m.requires_terminal = requires_terminal
+    m.tool_category = tool_category
     return m
 
 
-def _make_registry(metadata_map: dict[str, tuple[bool, bool]] | None = None):
+def _make_registry(metadata_map: dict[str, tuple] | None = None):
     """创建 mock registry
 
     Args:
-        metadata_map: 工具名 → (parallel_safe, requires_terminal) 映射
+        metadata_map: 工具名 → 元组映射，支持两种格式：
+            - tuple[bool, bool]: (parallel_safe, requires_terminal) 旧格式
+            - tuple[bool, bool, str]: (parallel_safe, requires_terminal, tool_category) 新格式
     """
     registry = MagicMock()
 
     def get_metadata(name):
         if metadata_map and name in metadata_map:
-            ps, rt = metadata_map[name]
-            return _meta(parallel_safe=ps, requires_terminal=rt)
-        # 默认
+            entry = metadata_map[name]
+            if len(entry) == 3:
+                ps, rt, tc = entry
+                return _meta(parallel_safe=ps, requires_terminal=rt, tool_category=tc)
+            else:
+                ps, rt = entry
+                return _meta(parallel_safe=ps, requires_terminal=rt)
+        # 默认（旧格式，tool_category 使用 _meta 默认值 "general"）
         defaults = {
             "read_file": (True, False),
             "search": (True, False),
@@ -812,3 +820,433 @@ class TestEdgeCases:
         assert layers is not None
         assert len(layers) == 1
         assert len(layers[0]) == 100
+
+
+# ═══════════════════════════════════════════════════════════════
+# 工具类别约束
+# ═══════════════════════════════════════════════════════════════
+
+class TestToolCategoryConstraints:
+    """工具类别调度约束（层 D）
+
+    覆盖 4 条规则：
+    - 规则 a：bash ↔ non-bash 双向隔断（non-bash 在前）
+    - 规则 b：bash → bash 链式串行（按原始顺序）
+    - 规则 c：read → write 默认边
+    - 规则 d：防环保护（已有反向路径时跳过）
+    """
+
+    # ── 规则 a：bash ↔ non-bash 双向隔断 ─────────────────────
+
+    def test_bash_isolated_from_reads(self):
+        """bash + read_file → bash 在单独层"""
+        tool_calls = [
+            {"id": "call_A", "name": "read_file",
+             "arguments": {"path": "/tmp/a.txt"}},
+            {"id": "call_B", "name": "bash",
+             "arguments": {"command": "cat /tmp/a.txt"}},
+        ]
+        meta = {
+            "read_file": (True, False, "read"),
+            "bash": (False, False, "bash"),
+        }
+        dag = ToolDAG(tool_calls, _make_registry(meta))
+        layers = dag.topological_sort()
+        assert layers is not None
+        assert len(layers) == 2
+        assert layers[0] == ["call_A"]   # read_file 在前层
+        assert layers[1] == ["call_B"]   # bash 在单独后层
+
+    def test_bash_isolated_from_writes(self):
+        """bash + write_file → bash 在单独层"""
+        tool_calls = [
+            {"id": "call_A", "name": "write_file",
+             "arguments": {"path": "/tmp/out.txt", "content": "data"}},
+            {"id": "call_B", "name": "bash",
+             "arguments": {"command": "cat /tmp/out.txt"}},
+        ]
+        meta = {
+            "write_file": (False, False, "write"),
+            "bash": (False, False, "bash"),
+        }
+        dag = ToolDAG(tool_calls, _make_registry(meta))
+        layers = dag.topological_sort()
+        assert layers is not None
+        assert len(layers) == 2
+        assert layers[0] == ["call_A"]   # write_file 在前层
+        assert layers[1] == ["call_B"]   # bash 在单独后层
+
+    def test_bash_isolated_from_interactive(self):
+        """user_select (interactive) + bash → 不同层"""
+        tool_calls = [
+            {"id": "call_A", "name": "user_select",
+             "arguments": {"title": "pick", "options": ["a"]}},
+            {"id": "call_B", "name": "bash",
+             "arguments": {"command": "echo done"}},
+        ]
+        meta = {
+            "user_select": (False, True, "interactive"),
+            "bash": (False, False, "bash"),
+        }
+        dag = ToolDAG(tool_calls, _make_registry(meta))
+        layers = dag.topological_sort()
+        assert layers is not None
+        # user_select 独占终端 + interactive 类别约束 → bash 在后层
+        assert layers[0] == ["call_A"]
+        assert layers[1] == ["call_B"]
+
+    # ── 规则 b：bash → bash 链式串行 ───────────────────────
+
+    def test_bash_chain_serial(self):
+        """3 个 bash → 三层逐层串行"""
+        tool_calls = [
+            {"id": "call_A", "name": "bash",
+             "arguments": {"command": "echo 1"}},
+            {"id": "call_B", "name": "bash",
+             "arguments": {"command": "echo 2"}},
+            {"id": "call_C", "name": "bash",
+             "arguments": {"command": "echo 3"}},
+        ]
+        meta = {
+            "bash": (False, False, "bash"),
+        }
+        dag = ToolDAG(tool_calls, _make_registry(meta))
+        layers = dag.topological_sort()
+        assert layers is not None
+        assert len(layers) == 3
+        assert layers[0] == ["call_A"]
+        assert layers[1] == ["call_B"]
+        assert layers[2] == ["call_C"]
+
+    def test_bash_single_per_layer(self):
+        """每个层最多一个 bash（链式串行）"""
+        tool_calls = [
+            {"id": "call_A", "name": "bash",
+             "arguments": {"command": "echo 1"}},
+            {"id": "call_B", "name": "bash",
+             "arguments": {"command": "echo 2"}},
+        ]
+        meta = {
+            "bash": (False, False, "bash"),
+        }
+        dag = ToolDAG(tool_calls, _make_registry(meta))
+        layers = dag.topological_sort()
+        assert layers is not None
+        assert len(layers) == 2
+        # 各层恰好一个 bash
+        for layer in layers:
+            assert len(layer) == 1
+
+    def test_single_bash_no_chain(self):
+        """单独一个 bash 不产生链式边"""
+        tool_calls = [
+            {"id": "call_A", "name": "bash",
+             "arguments": {"command": "echo hi"}},
+        ]
+        meta = {
+            "bash": (False, False, "bash"),
+        }
+        dag = ToolDAG(tool_calls, _make_registry(meta))
+        layers = dag.topological_sort()
+        assert layers is not None
+        assert len(layers) == 1
+        assert layers[0] == ["call_A"]
+
+    # ── 规则 c：read → write 默认边 ─────────────────────────
+
+    def test_read_before_write(self):
+        """read_file + write_file → read 在前层，write 在后层"""
+        tool_calls = [
+            {"id": "call_A", "name": "read_file",
+             "arguments": {"path": "/tmp/a.txt"}},
+            {"id": "call_B", "name": "write_file",
+             "arguments": {"path": "/tmp/b.txt", "content": "data"}},
+        ]
+        meta = {
+            "read_file": (True, False, "read"),
+            "write_file": (False, False, "write"),
+        }
+        dag = ToolDAG(tool_calls, _make_registry(meta))
+        layers = dag.topological_sort()
+        assert layers is not None
+        # read_file (read) → write_file (write) 由类别约束添加
+        # 同时路径不同，无路径重叠干扰
+        assert len(layers) == 2
+        assert layers[0] == ["call_A"]   # read 在前
+        assert layers[1] == ["call_B"]   # write 在后
+
+    def test_reads_concurrent_same_layer(self):
+        """两个无路径重叠的 read → 同层并发"""
+        tool_calls = [
+            {"id": "call_A", "name": "read_file",
+             "arguments": {"path": "/tmp/a.txt"}},
+            {"id": "call_B", "name": "read_file",
+             "arguments": {"path": "/tmp/b.txt"}},
+        ]
+        meta = {
+            "read_file": (True, False, "read"),
+        }
+        dag = ToolDAG(tool_calls, _make_registry(meta))
+        layers = dag.topological_sort()
+        assert layers is not None
+        assert len(layers) == 1
+        assert set(layers[0]) == {"call_A", "call_B"}
+
+    def test_writes_serial_by_path_overlap_with_category(self):
+        """两个 write_file 同路径 → 路径重叠约束串行（不因类别约束冲突）"""
+        tool_calls = [
+            {"id": "call_A", "name": "write_file",
+             "arguments": {"path": "/tmp/out.txt", "content": "first"}},
+            {"id": "call_B", "name": "write_file",
+             "arguments": {"path": "/tmp/out.txt", "content": "second"}},
+        ]
+        meta = {
+            "write_file": (False, False, "write"),
+        }
+        dag = ToolDAG(tool_calls, _make_registry(meta))
+        layers = dag.topological_sort()
+        assert layers is not None
+        assert len(layers) == 2
+        assert layers[0] == ["call_A"]
+        assert layers[1] == ["call_B"]
+
+    # ── 规则 d：防环保护 ──────────────────────────────────
+
+    def test_read_write_no_cycle(self):
+        """已有 write→read 显式依赖时，类别约束不添加反向 read→write 边"""
+        tool_calls = [
+            {"id": "call_A", "name": "write_file",
+             "arguments": {"path": "/tmp/out.txt",
+                           "content": "result: $call_B"}},
+            {"id": "call_B", "name": "read_file",
+             "arguments": {"path": "/tmp/in.txt"}},
+        ]
+        meta = {
+            "read_file": (True, False, "read"),
+            "write_file": (False, False, "write"),
+        }
+        dag = ToolDAG(tool_calls, _make_registry(meta))
+        # write_file 显式依赖 read_file（$call_B）
+        # 类别约束想加 read → write，但 _path_exists(write, read)=True → 跳过
+        assert dag.has_cycle() is False
+        layers = dag.topological_sort()
+        assert layers is not None
+        # read_file 在前层（入度 0），write_file 在后层
+        assert layers[0] == ["call_B"]
+        assert layers[1] == ["call_A"]
+
+    def test_bash_explicit_dep_preserved(self):
+        """已有 bash→read 显式依赖时，non-bash→bash 防环跳过"""
+        tool_calls = [
+            {"id": "call_A", "name": "read_file",
+             "arguments": {"path": "/tmp/in.txt"}},
+            {"id": "call_B", "name": "bash",
+             "arguments": {"command": "cat $call_A"}},
+        ]
+        meta = {
+            "read_file": (True, False, "read"),
+            "bash": (False, False, "bash"),
+        }
+        dag = ToolDAG(tool_calls, _make_registry(meta))
+        # bash 显式依赖 read_file（$call_A）
+        # 类别约束想加 read→bash，但 _path_exists(read, bash)=True（显式边）→ 跳过
+        assert dag.has_cycle() is False
+        # bash 仍因显式依赖在 read 之后
+        layers = dag.topological_sort()
+        assert layers is not None
+        assert len(layers) == 2
+        assert layers[0] == ["call_A"]
+        assert layers[1] == ["call_B"]
+
+    # ── general 不参与约束 ─────────────────────────────────
+
+    def test_general_ignored(self):
+        """general 类别不参与任何类别约束，可与 read 同层"""
+        tool_calls = [
+            {"id": "call_A", "name": "dispatch_agent",
+             "arguments": {"prompt": "hello"}},
+            {"id": "call_B", "name": "read_file",
+             "arguments": {"path": "/tmp/a.txt"}},
+        ]
+        meta = {
+            "dispatch_agent": (False, False, "general"),
+            "read_file": (True, False, "read"),
+        }
+        dag = ToolDAG(tool_calls, _make_registry(meta))
+        layers = dag.topological_sort()
+        assert layers is not None
+        # general 不参与约束，无 read→dispatch 边
+        # 两者无显式/隐式依赖，应在同一层
+        assert len(layers) == 1
+        assert set(layers[0]) == {"call_A", "call_B"}
+
+    def test_general_with_bash_no_constraint(self):
+        """general + bash → general 不参与 non-bash→bash 约束"""
+        tool_calls = [
+            {"id": "call_A", "name": "dispatch_agent",
+             "arguments": {"prompt": "hello"}},
+            {"id": "call_B", "name": "bash",
+             "arguments": {"command": "echo hi"}},
+        ]
+        meta = {
+            "dispatch_agent": (False, False, "general"),
+            "bash": (False, False, "bash"),
+        }
+        dag = ToolDAG(tool_calls, _make_registry(meta))
+        # general 不加入 non_bash_nodes，所以无 non_bash→bash 边
+        # bash 是唯一 bash 节点，无链式边
+        # 两者无依赖，同层并发
+        layers = dag.topological_sort()
+        assert layers is not None
+        assert len(layers) == 1
+        assert set(layers[0]) == {"call_A", "call_B"}
+
+    # ── 综合场景 ──────────────────────────────────────────
+
+    def test_mixed_all_categories(self):
+        """read + write + bash + general + interactive 综合场景"""
+        tool_calls = [
+            {"id": "call_US", "name": "user_select",
+             "arguments": {"title": "pick", "options": ["a", "b"]}},
+            {"id": "call_S", "name": "search",
+             "arguments": {"query": "find_me"}},
+            {"id": "call_R", "name": "read_file",
+             "arguments": {"path": "$call_S"}},
+            {"id": "call_G", "name": "dispatch_agent",
+             "arguments": {"prompt": "summarize"}},
+            {"id": "call_W", "name": "write_file",
+             "arguments": {"path": "/tmp/out.txt", "content": "$call_R"}},
+            {"id": "call_B", "name": "bash",
+             "arguments": {"command": "cat /tmp/out.txt"}},
+        ]
+        meta = {
+            "user_select": (False, True, "interactive"),
+            "search": (True, False, "read"),
+            "read_file": (True, False, "read"),
+            "dispatch_agent": (False, False, "general"),
+            "write_file": (False, False, "write"),
+            "bash": (False, False, "bash"),
+        }
+        dag = ToolDAG(tool_calls, _make_registry(meta))
+        layers = dag.topological_sort()
+        assert layers is not None
+
+        # 约束分析：
+        # ─ 显式依赖：read_file → search, write_file → read_file
+        # ─ user_select 约束：所有非 user_select → user_select
+        # ─ 类别约束：
+        #   · non_bash（search/read_file/write_file/user_select）→ bash
+        #   · read（search/read_file）→ write（write_file）
+        #   · general（dispatch_agent）不参与
+        #
+        # 最终依赖链：
+        #   user_select(interactive)
+        #     ├→ search(read)
+        #     │    ├→ read_file(read)
+        #     │    │    ├→ write_file(write)
+        #     │    │    │    └→ bash(bash)
+        #     │    └→ bash (non_bash→bash)
+        #     └→ dispatch_agent(general) — 仅依赖 user_select
+        #
+        # 拓扑分层：
+        #   层 0: user_select
+        #   层 1: search, dispatch_agent（search 仅依赖 user_select）
+        #   层 2: read_file（依赖 user_select + search）
+        #   层 3: write_file（依赖 user_select + read_file）
+        #   层 4: bash（依赖 user_select + search + read_file + write_file）
+
+        assert len(layers) >= 4  # 至少 4 层
+        # user_select 独占首层
+        assert layers[0] == ["call_US"]
+        # search 在第 1 层或之后
+        assert "call_S" in layers[1]
+        # dispatch_agent（general）只依赖 user_select → 也在层 1
+        assert "call_G" in layers[1]
+        # bash 必须在所有 non-bash 之后
+        bash_layer = next(i for i, layer in enumerate(layers) if "call_B" in layer)
+        us_layer = 0
+        s_layer = next(i for i, layer in enumerate(layers) if "call_S" in layer)
+        r_layer = next(i for i, layer in enumerate(layers) if "call_R" in layer)
+        w_layer = next(i for i, layer in enumerate(layers) if "call_W" in layer)
+        assert bash_layer > us_layer
+        assert bash_layer >= s_layer
+        assert bash_layer >= r_layer
+        assert bash_layer >= w_layer
+        # read_file 在 search 之后或同层
+        assert r_layer >= s_layer
+        # write_file 在 read_file 之后
+        assert w_layer >= r_layer
+
+    # ── 边界与防御 ─────────────────────────────────────────
+
+    def test_empty_nodes_no_error(self):
+        """空 _nodes 时 _detect_tool_category_constraints 不抛异常"""
+        dag = ToolDAG([], _make_registry())
+        # 直接调用内部方法验证防御
+        dag._detect_tool_category_constraints()  # 不应抛异常
+        assert dag.size == 0
+
+    def test_no_category_tools_graceful(self):
+        """所有工具均为 general（无类别）时，类别约束不产生额外边"""
+        tool_calls = [
+            {"id": "call_A", "name": "dispatch_agent",
+             "arguments": {"prompt": "hello"}},
+            {"id": "call_B", "name": "dispatch_agent",
+             "arguments": {"prompt": "world"}},
+        ]
+        meta = {
+            "dispatch_agent": (False, False, "general"),
+        }
+        dag = ToolDAG(tool_calls, _make_registry(meta))
+        layers = dag.topological_sort()
+        assert layers is not None
+        assert len(layers) == 1
+        assert set(layers[0]) == {"call_A", "call_B"}
+
+    def test_bash_chain_respects_original_order(self):
+        """bash 链式边按原始顺序（非乱序）"""
+        tool_calls = [
+            {"id": "call_C", "name": "bash",
+             "arguments": {"command": "echo 3"}},
+            {"id": "call_A", "name": "bash",
+             "arguments": {"command": "echo 1"}},
+            {"id": "call_B", "name": "bash",
+             "arguments": {"command": "echo 2"}},
+        ]
+        meta = {
+            "bash": (False, False, "bash"),
+        }
+        dag = ToolDAG(tool_calls, _make_registry(meta))
+        layers = dag.topological_sort()
+        assert layers is not None
+        assert len(layers) == 3
+        # 链式边按原始顺序：call_C → call_A → call_B
+        assert layers[0] == ["call_C"]
+        assert layers[1] == ["call_A"]
+        assert layers[2] == ["call_B"]
+
+    def test_category_constraint_no_cycle_with_path_overlap(self):
+        """类别约束不与路径重叠约束形成环"""
+        # write_file(path=X) + read_file(path=X) → 路径重叠导致 read 依赖 write
+        # 类别约束想加 read→write 边
+        # 但 _path_exists(write, read)=True（路径重叠的 read 依赖 write）
+        # 防环：跳过 read→write（已有的 write→read 方向会形成环）
+        tool_calls = [
+            {"id": "call_A", "name": "write_file",
+             "arguments": {"path": "/tmp/data.txt", "content": "hello"}},
+            {"id": "call_B", "name": "read_file",
+             "arguments": {"path": "/tmp/data.txt"}},
+        ]
+        meta = {
+            "write_file": (False, False, "write"),
+            "read_file": (True, False, "read"),
+        }
+        dag = ToolDAG(tool_calls, _make_registry(meta))
+        # 路径重叠：read 依赖 write（call_B 依赖 call_A）
+        # 类别约束想加 read(call_B) → write(call_A)，但 _path_exists(write, read)=True → 跳过
+        assert dag.has_cycle() is False
+        layers = dag.topological_sort()
+        assert layers is not None
+        assert len(layers) == 2
+        assert layers[0] == ["call_A"]  # write 先
+        assert layers[1] == ["call_B"]  # read 后

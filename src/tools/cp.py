@@ -21,6 +21,7 @@ from .file_ops import (
     timeout_estimate=0,
     category="io",
     priority=10,
+    tool_category="write",
     description="复制文件或目录",
 )
 class CpFunc(FileSystemToolBase):
