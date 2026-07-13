@@ -22,7 +22,7 @@ import pytest
 
 sys.path.insert(0, "/home/DeepSeek-cli")
 
-from src.chat_ui.const import RenderCommand
+from src.chat_ui.const import RenderCommand, _MAX_BATCH_SIZE
 from src.chat_ui.utils import _cmd_name
 from src.chat_ui.engine import TuiEngine as RenderEngine, _ACTIVE_RENDER_INTERVAL
 
@@ -807,6 +807,88 @@ class TestRenderEngineDrainQueue:
             # 不应抛出异常
             engine._drain_queue()
 
+    # ── 批量命令处理测试（步骤 4 性能优化） ────────────
+
+    def test_drain_batch_size_limit(self, engine):
+        """入队 _MAX_BATCH_SIZE + 10 条命令 → drain_queue 只处理 _MAX_BATCH_SIZE 条。"""
+        engine._bb.is_status_active = False
+
+        # 清空队列
+        while not engine._cmd_queue.empty():
+            engine._cmd_queue.get_nowait()
+            engine._cmd_queue.task_done()
+
+        total = _MAX_BATCH_SIZE + 10
+        for i in range(total):
+            engine._cmd_queue.put((RenderCommand.CONTENT, f"cmd{i}"))
+
+        assert engine._cmd_queue.qsize() == total
+
+        with (
+            patch("src.chat_ui.engine._try_acquire_output_lock") as m_lock,
+        ):
+            m_lock.return_value.__enter__.return_value = True
+
+            engine._drain_queue()
+
+        # 只处理了 _MAX_BATCH_SIZE 条
+        assert engine._renderer.render.call_count == _MAX_BATCH_SIZE
+        # 队列中剩余 10 条命令
+        assert engine._cmd_queue.qsize() == 10
+
+    def test_drain_batch_size_under_limit(self, engine):
+        """入队 _MAX_BATCH_SIZE - 1 条命令 → drain_queue 全部处理。"""
+        engine._bb.is_status_active = False
+
+        # 清空队列
+        while not engine._cmd_queue.empty():
+            engine._cmd_queue.get_nowait()
+            engine._cmd_queue.task_done()
+
+        total = _MAX_BATCH_SIZE - 1
+        for i in range(total):
+            engine._cmd_queue.put((RenderCommand.CONTENT, f"cmd{i}"))
+
+        assert engine._cmd_queue.qsize() == total
+
+        with (
+            patch("src.chat_ui.engine._try_acquire_output_lock") as m_lock,
+        ):
+            m_lock.return_value.__enter__.return_value = True
+
+            engine._drain_queue()
+
+        # 全部处理完毕
+        assert engine._renderer.render.call_count == total
+        # 队列为空
+        assert engine._cmd_queue.empty()
+
+    def test_drain_batch_size_exact(self, engine):
+        """入队正好 _MAX_BATCH_SIZE 条命令 → drain_queue 全部处理。"""
+        engine._bb.is_status_active = False
+
+        # 清空队列
+        while not engine._cmd_queue.empty():
+            engine._cmd_queue.get_nowait()
+            engine._cmd_queue.task_done()
+
+        total = _MAX_BATCH_SIZE
+        for i in range(total):
+            engine._cmd_queue.put((RenderCommand.CONTENT, f"cmd{i}"))
+
+        assert engine._cmd_queue.qsize() == total
+
+        with (
+            patch("src.chat_ui.engine._try_acquire_output_lock") as m_lock,
+        ):
+            m_lock.return_value.__enter__.return_value = True
+
+            engine._drain_queue()
+
+        # 全部处理完毕（刚好等于钳位值）
+        assert engine._renderer.render.call_count == total
+        assert engine._cmd_queue.empty()
+
 
 # ══════════════════════════════════════════════════════
 # TestRenderEngineRender
@@ -1182,4 +1264,86 @@ class TestRenderEngineEdgeCases:
         ]
         assert all(t >= 0 for t in all_timeouts), "timeout 不能为负数"
         assert all(t <= 0.1 for t in all_timeouts), "timeout 不能超过 0.1"
+
+
+# ══════════════════════════════════════════════════════
+# TestLockGranularity — 步骤 6：锁细粒度化测试
+# ══════════════════════════════════════════════════════
+
+class TestLockGranularity:
+    """render_lock 与 io_lock 独立互不阻塞验证。
+
+    验证锁拆分后，渲染管线锁与终端 I/O 锁互不竞争。
+
+    注意：_mock_threading_thread (autouse=True) 会 patch threading.Thread，
+    因此使用 _thread.start_new_thread 启动真实线程来持有锁。
+    """
+
+    def test_render_lock_independent(self):
+        """io_lock 被持有时 render_lock 仍可正常获取。
+
+        验证两锁为独立实例：
+        - io_lock 被另一个线程持有
+        - render_lock 可立即获取（无等待）
+        """
+        import _thread as _real_thread
+        from src.ui._lock import render_lock, io_lock
+
+        acquired_io = threading.Event()
+        done = threading.Event()
+
+        def hold_io():
+            io_lock.acquire()
+            acquired_io.set()
+            done.wait()  # 保持持有直到测试结束
+            io_lock.release()
+
+        # 使用 _thread.start_new_thread 绕过 autouse fixture 对 threading.Thread 的 patch
+        _real_thread.start_new_thread(hold_io, ())
+        acquired_io.wait(timeout=2)  # 确保 io_lock 已被持有
+        assert acquired_io.is_set(), "后台线程未能获取 io_lock"
+
+        # render_lock 应可立即获取（io_lock 独立）
+        got = render_lock.acquire(timeout=0.5)
+        assert got, "io_lock 被持有时 render_lock 应可获取"
+        render_lock.release()
+
+        done.set()
+        # 等后台线程释放 io_lock
+        import time
+        time.sleep(0.1)
+
+    def test_io_lock_independent(self):
+        """render_lock 被持有时 io_lock 仍可正常获取。
+
+        验证两锁为独立实例：
+        - render_lock 被另一个线程持有
+        - io_lock 可立即获取（无等待）
+        """
+        import _thread as _real_thread
+        from src.ui._lock import render_lock, io_lock
+
+        acquired_render = threading.Event()
+        done = threading.Event()
+
+        def hold_render():
+            render_lock.acquire()
+            acquired_render.set()
+            done.wait()  # 保持持有直到测试结束
+            render_lock.release()
+
+        # 使用 _thread.start_new_thread 绕过 autouse fixture 对 threading.Thread 的 patch
+        _real_thread.start_new_thread(hold_render, ())
+        acquired_render.wait(timeout=2)  # 确保 render_lock 已被持有
+        assert acquired_render.is_set(), "后台线程未能获取 render_lock"
+
+        # io_lock 应可立即获取（render_lock 独立）
+        got = io_lock.acquire(timeout=0.5)
+        assert got, "render_lock 被持有时 io_lock 应可获取"
+        io_lock.release()
+
+        done.set()
+        # 等后台线程释放 render_lock
+        import time
+        time.sleep(0.1)
 

@@ -19,7 +19,7 @@ from rich.text import Text
 
 from ...ui.tui._animator import AnimatorContext
 from ...ui.tui._terminal import is_narrow
-from ...ui.tui._text_utils import build_glow_ansi
+from ...ui.tui._text_utils import build_left_border_ansi
 from ._base import TuiComponent, _estimate_content_lines
 
 _logger = logging.getLogger(__name__)
@@ -41,8 +41,8 @@ class WriteLineBlock(TuiComponent):
                     adapter.write(Text.from_ansi(text))
                 else:
                     frame = AnimatorContext.get_default().frame
-                    edge_ansi = build_glow_ansi(frame, 23, 24)
-                    adapter.write(Text.from_ansi(f"  {edge_ansi}\u2502\033[0m {text}"))
+                    edge_ansi = build_left_border_ansi(frame, 23, 24)
+                    adapter.write(Text.from_ansi(f"  {edge_ansi} {text}"))
             except Exception:
                 _logger.debug("write_line ANSI 解析失败, 回退 raw 输出", exc_info=True)
                 adapter.write_raw(text + "\n")
@@ -53,8 +53,8 @@ class WriteLineBlock(TuiComponent):
                 adapter.write_raw(text + "\n")
             else:
                 frame = AnimatorContext.get_default().frame
-                edge_ansi = build_glow_ansi(frame, 23, 24)
-                adapter.write_raw(f"  {edge_ansi}\u2502\033[0m {text}\n")
+                edge_ansi = build_left_border_ansi(frame, 23, 24)
+                adapter.write_raw(f"  {edge_ansi} {text}\n")
             return _estimate_content_lines(text)
 
     def render(self) -> str:

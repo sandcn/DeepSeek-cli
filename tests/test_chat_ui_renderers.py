@@ -519,6 +519,149 @@ class TestContentRendererRefreshWidth:
 
 
 # ═══════════════════════════════════════════════════════
+# 组件动效装饰（左边缘呼吸边框）测试
+# ═══════════════════════════════════════════════════════
+
+class TestGlowBorder:
+    """组件左边缘呼吸边框装饰 — 宽屏/窄屏降级行为测试
+
+    验证各组件在宽屏时有呼吸边框字符 │，窄屏时降级为无边框。
+    """
+
+    # ── WriteLineBlock ──
+
+    @patch('src.chat_ui.components._write_line.is_narrow')
+    def test_write_line_widescreen_has_border(self, mock_narrow):
+        """WriteLineBlock 宽屏 → 输出含 │ 边框字符（纯文本走 write_raw）"""
+        from src.chat_ui.components._write_line import WriteLineBlock
+        mock_narrow.return_value = False
+        mock_adapter = MagicMock()
+        block = WriteLineBlock("test text")
+        block.render_to_adapter(mock_adapter)
+        # 纯文本 + 宽屏 → adapter.write_raw(f"  {edge_ansi} {text}\n")
+        written = mock_adapter.write_raw.call_args
+        assert written is not None, "应调用 adapter.write_raw"
+        text_arg = written[0][0]
+        assert "\u2502" in text_arg
+
+    @patch('src.chat_ui.components._write_line.is_narrow')
+    def test_write_line_narrow_no_border(self, mock_narrow):
+        """WriteLineBlock 窄屏 → 输出无 │ 边框字符"""
+        from src.chat_ui.components._write_line import WriteLineBlock
+        mock_narrow.return_value = True
+        mock_adapter = MagicMock()
+        block = WriteLineBlock("test text")
+        block.render_to_adapter(mock_adapter)
+        # 纯文本 + is_narrow() → adapter.write_raw(text + "\n")
+        written = mock_adapter.write_raw.call_args
+        assert written is not None, "应调用 adapter.write_raw"
+        text_arg = written[0][0]
+        assert "\u2502" not in text_arg
+
+    @patch('src.chat_ui.components._write_line.is_narrow')
+    def test_write_line_widescreen_ansi_border(self, mock_narrow):
+        """WriteLineBlock 宽屏+ANSI文本 → 输出含 │ 边框字符"""
+        from src.chat_ui.components._write_line import WriteLineBlock
+        mock_narrow.return_value = False
+        mock_adapter = MagicMock()
+        block = WriteLineBlock("\033[31mred\033[0m")
+        block.render_to_adapter(mock_adapter)
+        written = mock_adapter.write.call_args
+        assert written is not None, "应调用 adapter.write"
+        text_arg = written[0][0]
+        assert isinstance(text_arg, Text)
+        assert "\u2502" in text_arg.plain
+
+    @patch('src.chat_ui.components._write_line.is_narrow')
+    def test_write_line_narrow_ansi_no_border(self, mock_narrow):
+        """WriteLineBlock 窄屏+ANSI文本 → 输出无 │ 边框字符"""
+        from src.chat_ui.components._write_line import WriteLineBlock
+        mock_narrow.return_value = True
+        mock_adapter = MagicMock()
+        block = WriteLineBlock("\033[31mred\033[0m")
+        block.render_to_adapter(mock_adapter)
+        written = mock_adapter.write.call_args
+        assert written is not None, "应调用 adapter.write"
+        text_arg = written[0][0]
+        assert isinstance(text_arg, Text)
+        assert "\u2502" not in text_arg.plain
+
+    # ── ToolOutputBlock ──
+
+    @patch('src.chat_ui.components._tool_output.is_narrow')
+    def test_tool_output_widescreen_has_border(self, mock_narrow):
+        """ToolOutputBlock 宽屏 → 输出含 │ 边框字符"""
+        from src.chat_ui.components._tool_output import ToolOutputBlock
+        mock_narrow.return_value = False
+        mock_adapter = MagicMock()
+        block = ToolOutputBlock("tool output")
+        block.render_to_adapter(mock_adapter)
+        written = mock_adapter.write.call_args
+        assert written is not None, "应调用 adapter.write"
+        text_arg = written[0][0]
+        assert isinstance(text_arg, Text)
+        assert "\u2502" in text_arg.plain
+
+    @patch('src.chat_ui.components._tool_output.is_narrow')
+    def test_tool_output_narrow_no_border(self, mock_narrow):
+        """ToolOutputBlock 窄屏 → 输出无 │ 边框字符"""
+        from src.chat_ui.components._tool_output import ToolOutputBlock
+        mock_narrow.return_value = True
+        mock_adapter = MagicMock()
+        block = ToolOutputBlock("tool output")
+        block.render_to_adapter(mock_adapter)
+        written = mock_adapter.write.call_args
+        assert written is not None, "应调用 adapter.write"
+        text_arg = written[0][0]
+        assert isinstance(text_arg, Text)
+        assert "\u2502" not in text_arg.plain
+
+    # ── ErrorBlock ──
+
+    @patch('src.chat_ui.components._error.is_narrow')
+    def test_error_widescreen_has_border(self, mock_narrow):
+        """ErrorBlock 宽屏 → 输出含 │ 边框字符"""
+        from src.chat_ui.components._error import ErrorBlock
+        mock_narrow.return_value = False
+        block = ErrorBlock("error message")
+        text = block.render()
+        assert isinstance(text, Text)
+        assert "\u2502" in text.plain
+
+    @patch('src.chat_ui.components._error.is_narrow')
+    def test_error_narrow_no_border(self, mock_narrow):
+        """ErrorBlock 窄屏 → 输出无 │ 边框字符"""
+        from src.chat_ui.components._error import ErrorBlock
+        mock_narrow.return_value = True
+        block = ErrorBlock("error message")
+        text = block.render()
+        assert isinstance(text, Text)
+        assert "\u2502" not in text.plain
+
+    # ── NotificationBlock ──
+
+    @patch('src.chat_ui.components._notification.is_narrow')
+    def test_notification_widescreen_has_border(self, mock_narrow):
+        """NotificationBlock 宽屏 → 输出含 │ 边框字符"""
+        from src.chat_ui.components._notification import NotificationBlock
+        mock_narrow.return_value = False
+        block = NotificationBlock("notification")
+        text = block.render()
+        assert isinstance(text, Text)
+        assert "\u2502" in text.plain
+
+    @patch('src.chat_ui.components._notification.is_narrow')
+    def test_notification_narrow_no_border(self, mock_narrow):
+        """NotificationBlock 窄屏 → 输出无 │ 边框字符"""
+        from src.chat_ui.components._notification import NotificationBlock
+        mock_narrow.return_value = True
+        block = NotificationBlock("notification")
+        text = block.render()
+        assert isinstance(text, Text)
+        assert "\u2502" not in text.plain
+
+
+# ═══════════════════════════════════════════════════════
 # _do_subagent_frame 测试（委托给 BottomBar）
 # ═══════════════════════════════════════════════════════
 

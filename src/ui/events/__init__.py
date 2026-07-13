@@ -27,6 +27,7 @@ from .event_types import (
     ALL_EVENT_TYPES,
 )
 from .event_bus import DisplayEventBus, EventHandler
+from .event_pool import EventPool
 from .consumers import (
     OutputConsumer,
     publish_output,
@@ -47,6 +48,7 @@ __all__ = [
     # 基础设施
     "DisplayEventBus",
     "EventHandler",
+    "EventPool",
     # 消费者
     "OutputConsumer",
     # 便捷函数

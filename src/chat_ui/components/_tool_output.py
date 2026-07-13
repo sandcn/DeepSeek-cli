@@ -21,8 +21,7 @@ from rich.text import Text
 from ..const import _STYLE_DIM, _MAX_OUTPUT_LEN
 from ...ui.tui._animator import AnimatorContext
 from ...ui.tui._terminal import is_narrow
-from ...ui.tui._text_utils import build_glow_ansi
-from ...ui.tui._effects import build_fg_breath_ansi
+from ...ui.tui._text_utils import build_left_border_ansi
 from ...ui.colors import DARK_GRAY_256
 from ._base import TuiComponent, _estimate_content_lines
 
@@ -60,8 +59,8 @@ class ToolOutputBlock(TuiComponent):
             if is_narrow():
                 adapter.write(Text.assemble(("   ", _STYLE_DIM), (text, _STYLE_DIM)))
             else:
-                edge_ansi = build_glow_ansi(frame, 23, 24)
-                adapter.write(Text.from_ansi(f"  {edge_ansi}\u2502\033[0m   {text}"))
+                edge_ansi = build_left_border_ansi(frame, 23, 24)
+                adapter.write(Text.from_ansi(f"  {edge_ansi}   {text}"))
             return _estimate_content_lines(text)
 
     def render(self) -> str:

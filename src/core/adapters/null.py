@@ -7,8 +7,10 @@ from __future__ import annotations
 
 from contextlib import nullcontext
 
+from ..ports import DisplayPort, OutputPort
 
-class _NullPort:
+
+class _NullPort(DisplayPort):
     """通用空端口 — 为已知方法提供显式空实现。
 
     不覆盖 __getattr__，避免 hasattr 误报。
@@ -102,7 +104,7 @@ class _NullPort:
         pass
 
 
-class _NullOutputPort:
+class _NullOutputPort(OutputPort):
     """空输出端口 — 提供 locked() 上下文管理器。"""
 
     def write(self, text: str = "", level: str = "info", source: str = "core") -> None:

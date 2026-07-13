@@ -21,7 +21,7 @@ if TYPE_CHECKING:
     from typing import Self
 
 from ..terminal_adapter import TerminalAdapter
-from .._lock import output_lock, OUTPUT_LOCK_TIMEOUT
+from .._lock import io_lock, OUTPUT_LOCK_TIMEOUT
 from .._blessed import get_terminal
 from ._ttl_cache import TTLCache
 
@@ -60,7 +60,7 @@ def get_terminal_width() -> int:
 
 @runtime_checkable
 class ILockedTerminal(Protocol):
-    """带 output_lock 保护的终端写入上下文管理器。"""
+    """带 io_lock 保护的终端写入上下文管理器。"""
     def __enter__(self) -> "ILockedTerminal": ...
     def __exit__(self, *args: object) -> None: ...
     def __bool__(self) -> bool: ...
@@ -74,15 +74,18 @@ class ILockedTerminal(Protocol):
 
 
 class LockedTerminal(ILockedTerminal):
-    """带 output_lock 保护的终端写入上下文管理器。
+    """带 io_lock 保护的终端写入上下文管理器。
 
     特性：
-    - 自动获取/释放 output_lock（超时时降级跳过）
+    - 自动获取/释放 io_lock（超时时降级跳过）
     - 可选光标保存/恢复（save_cursor=True，默认）
     - 退出时自动 flush，消除中间闪烁
     - 提供 write() / writelines() 便捷方法
 
     设计为上下文管理器（__enter__/__exit__），布尔求值反映锁获取状态。
+
+    注：LockedTerminal 使用 io_lock（终端 I/O 专用锁），与 render_lock
+    （渲染管线锁）独立，两锁互不阻塞，提升并发吞吐。
     """
 
     def __init__(
@@ -97,7 +100,7 @@ class LockedTerminal(ILockedTerminal):
         self._acquired: bool = False
 
     def __enter__(self) -> Self:
-        self._acquired = output_lock.acquire(timeout=self._timeout)
+        self._acquired = io_lock.acquire(timeout=self._timeout)
         if self._acquired:
             if self._save_cursor:
                 try:
@@ -109,7 +112,7 @@ class LockedTerminal(ILockedTerminal):
                     self._terminal.write_raw("\033[s")
         else:
             _logger.debug(
-                "LockedTerminal output_lock 超时（%.1fs），降级跳过",
+                "LockedTerminal io_lock 超时（%.1fs），降级跳过",
                 self._timeout,
             )
         return self
@@ -133,7 +136,7 @@ class LockedTerminal(ILockedTerminal):
                     self._terminal.write_raw("\033[u")
             self._terminal.flush()
         finally:
-            output_lock.release()
+            io_lock.release()
 
     def __bool__(self) -> bool:
         return self._acquired

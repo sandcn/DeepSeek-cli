@@ -7,8 +7,10 @@ from __future__ import annotations
 
 from typing import Optional
 
+from ..ports import DisplayPort
 
-class DefaultDisplayAdapter:
+
+class DefaultDisplayAdapter(DisplayPort):
     """默认显示适配器 — 包装 EventBusDisplayProxy
 
     作为全局默认显示端口，供核心模块在没有依赖注入时使用。

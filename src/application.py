@@ -21,7 +21,7 @@ from dataclasses import dataclass, field
 from typing import Any, Optional
 
 from .core.session import ChatSession
-from .core.ports import PersistencePort, CheckpointPort, ConfigPort
+from .core.ports import PersistencePort, CheckpointPort, ConfigPort, OutputPort
 from .core.adapters.output import DefaultOutputAdapter, get_default_output_port
 from .core.telemetry.trace_context import TraceContext, get_current_trace_id
 from .paths import CHAT_MSGS_DIR
@@ -40,7 +40,7 @@ class AppContext:
 
     通过依赖注入方式提供所有外部依赖，便于测试和替换。
     """
-    output_port: DefaultOutputAdapter = field(default_factory=get_default_output_port)
+    output_port: OutputPort = field(default_factory=get_default_output_port)
     persistence_port: Optional[PersistencePort] = None
     checkpoint_port: Optional[CheckpointPort] = None
     config_port: Optional[ConfigPort] = None
@@ -96,7 +96,7 @@ class SessionManager:
         """列出所有保存的会话"""
         return list_sessions()
 
-    def save_and_show_recover(self, session: ChatSession, output: DefaultOutputAdapter) -> Optional[str]:
+    def save_and_show_recover(self, session: ChatSession, output: OutputPort) -> Optional[str]:
         """保存会话并显示恢复命令
 
         Args:

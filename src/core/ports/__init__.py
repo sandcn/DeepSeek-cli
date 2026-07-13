@@ -13,17 +13,21 @@ src.core.adapters 包导入，确保依赖方向为：高层→抽象←实现�
 - ConfigPort        — 配置管理
 - PersistencePort   — 会话持久化
 - CheckpointPort    — 任务断点
+- DisplayPort       — 显示状态与工具进度（新增）
 - EventPort         — 事件总线
 - InterruptPort     — 中断检查
 - ObservabilityPort — 可观测性（定义于 observability.py）
+- OutputPort        — 文本输出（新增）
 """
 
 from .config import ConfigPort
+from .display import DisplayPort
 from .events import EventPort
 from .interrupt import InterruptPort
 from .model import AsyncModelPort, ModelResult
-from .persistence import PersistencePort, CheckpointPort
 from .observability import ObservabilityPort
+from .output import OutputPort
+from .persistence import PersistencePort, CheckpointPort
 
 __all__ = [
     # 配置
@@ -33,7 +37,7 @@ __all__ = [
     # 持久化
     "PersistencePort", "CheckpointPort",
     # UI
-    "EventPort",
+    "DisplayPort", "EventPort", "OutputPort",
     # 中断检查
     "InterruptPort",
     # 可观测性

@@ -21,6 +21,7 @@ from .const import (
     _RENDER_INTERVAL,
     _DRAIN_LOCK_TIMEOUT,
     _ANSI_RED, _ANSI_RESET,
+    _MAX_BATCH_SIZE,
 )
 
 from .utils import _cmd_name, _emergency_write
@@ -333,7 +334,9 @@ class TuiEngine:
         with _try_acquire_output_lock(name="drain_queue", timeout=_DRAIN_LOCK_TIMEOUT) as locked:
             if not locked:
                 return False
-            while True:
+            # 容量钳位：单帧最多处理 _MAX_BATCH_SIZE 条命令，
+            # 超出部分留待下一周期，防止 UI 冻结
+            while len(commands) < _MAX_BATCH_SIZE:
                 try:
                     commands.append(self._cmd_queue.get_nowait())
                     self._cmd_queue.task_done()

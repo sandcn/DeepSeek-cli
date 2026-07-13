@@ -21,7 +21,7 @@ from ..const import _STYLE_NOTIFICATION_GRADIENT
 from ...ui.theme import THEME
 from ...ui.tui._animator import AnimatorContext
 from ...ui.tui._terminal import is_narrow
-from ...ui.tui._text_utils import build_glow_ansi
+from ...ui.tui._text_utils import build_glow_ansi, build_left_border_ansi
 from ._base import TuiComponent
 
 
@@ -37,6 +37,6 @@ class NotificationBlock(TuiComponent):
         glow_ansi = build_glow_ansi(frame, 47, 12)
         border_match = re.search(r"38;5;(\d+)", THEME['border_breath'])
         border_base = int(border_match.group(1)) if border_match else 23
-        edge_ansi = build_glow_ansi(frame, border_base, 24)
-        ansi_str = f"\n  {edge_ansi}\u2502\033[0m {glow_ansi}· \033[0m{glow_ansi}{self.text}\033[0m"
+        edge_ansi = build_left_border_ansi(frame, border_base, 24)
+        ansi_str = f"\n  {edge_ansi} {glow_ansi}· \033[0m{glow_ansi}{self.text}\033[0m"
         return Text.from_ansi(ansi_str)
