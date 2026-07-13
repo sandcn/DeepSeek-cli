@@ -63,6 +63,8 @@
 5. **修改任何项目文件前，必须通过 map 获取全量信息** — 包括 CFG、DFG、关联文件列表、重要文件列表。全量不满足不得动手修改。
 6. **子 Agent（plan/execute）同样受本规则约束** — plan/execute Agent 在各自上下文中读取项目文件时，只能读取 map 返回的「关联文件列表」中的文件。主 Agent 派发 plan/execute 前必须确保 map 已完成且结果有效（含完整的关联文件列表和重要文件列表）；若子 Agent 执行中需读取列表外项目文件，须由主 Agent 重新派发 map 补充分析后方可继续。
 
+> **例外：用户指定读取特定文件（强制）** — 当用户明确指定要读取某个特定文件（如"帮我看看 src/main.py""读一下 config.json"），且意图仅为读取/查阅而非分析/修改时，豁免上述全部规则，优先直接 `read_file` 读取该文件。读完后再根据内容判断是否需要进一步派发 map 补充分析。判定标准：用户明确提及「读/看/打开/查看/显示」等指向性动作 + 明确了具体文件路径或文件名。若用户请求含糊（如"看看这个项目"）或意图明显是分析/修改，仍须先 map。
+
 > 详细执行规则见：「怎么触发 → 步骤 3」和「分析阶段 → map 前置规则」。冲突时本铁律优先（参见「规则冲突裁决」第 6 条）。
 
 ---
@@ -310,6 +312,7 @@ dispatch_agent(type="execute", description="<任务摘要>", prompt="<自然语�
 
   ```
   📂 这个文件是项目文件吗？
+  ├─ 用户明确指定要读取该文件（含「读/看/打开/查看/显示」等指向性动词+文件路径/文件名）→ ✅ 直接 read_file，读完再判断是否需 map（参见「先 map 后读码」例外规则）
   ├─ .log 扩展名 或位于 logs/ 目录下 → 🔍 优先 search，勿完整 read_file（参见「日志文件处理策略」）
   ├─ 项目内所有文件（.py .js .ts .jsx .tsx .go .rs .java .c .cpp .h .rb .php .swift .kt .scala .sh .md .json .yaml .toml .ini .cfg .env 等，含 Makefile Dockerfile Cargo.toml CMakeLists.txt .rst .txt）→ 🛑 必须先 map
   ├─ .chat/memory/ .chat/plan/ → ✅ 元文件，直接读
@@ -362,10 +365,11 @@ dispatch_agent(type="execute", description="<任务摘要>", prompt="<自然语�
 
 | 任务涉及文件类型 | 行动 |
 |------|------|
+| **用户指定读取（强制）**：用户明确使用「读/看/打开/查看/显示」等指向性动词 + 指明了具体文件路径/文件名 | ✅ 直接 `read_file` 读该文件，读完再根据内容判断是否需要派发 map 补充分析。此例外优先级高于下方项目文件规则。<br>⚠ 注意：用户请求含糊（如"看看这个项目""分析一下代码"）或意图明显是分析/修改/调试时，仍按项目文件规则走 map。 |
 | **项目文件**：`.py` `.js` `.ts` `.jsx` `.tsx` `.go` `.rs` `.java` `.c` `.cpp` `.h` `.rb` `.php` `.swift` `.kt` `.scala` `.sh` `Makefile` `Dockerfile` `Cargo.toml` `CMakeLists.txt` `.md` `.rst` `.txt` `.json` `.yaml` `.toml` `.ini` `.cfg` `.env` 等 | 🛑 列出的计划中，第一个步骤必须是 `dispatch_agent(type="map")`。**哪怕只涉及一个文件也必须先 map**，项目的所有信息都必须先通过 map Agent 获取全貌后，方可进行后续分析和 `read_file`。 |
 | **元文件**：`.chat/memory/` `.chat/plan/` `.chat/map/`；系统/第三方库（`/usr/`、`site-packages/` (Python) / `node_modules/` (Node.js) / `vendor/` (Go) / `target/` (Rust/Java)） | ✅ 直接进入列计划，无需 map。 |
 
-> **判定规则**：只要任务涉及 ≥1 个项目文件，就必须先 map——哪怕只有一个文件也绝无例外。不允许 LLM 自行判断「是否需要」，按文件类型机械判定。任何项目文件（含 `.md` `.json` `.yaml` 等配置文件）都必须先 map 获取全量信息后方可读取和分析。
+> **判定规则**：只要任务涉及 ≥1 个项目文件，就必须先 map——哪怕只有一个文件也绝无例外（用户指定读取场景除外，见上方「用户指定读取（强制）」行）。不允许 LLM 自行判断「是否需要」，按文件类型机械判定。任何项目文件（含 `.md` `.json` `.yaml` 等配置文件）都必须先 map 获取全量信息后方可读取和分析，除非用户明确指示读取该文件。
 
 ### 3. 做事前先列计划
 任何操作前先列计划，格式 `1. <动作> 2. <动作> ...`，只说「做什么」：
