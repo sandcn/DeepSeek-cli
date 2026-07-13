@@ -23,22 +23,17 @@ def _resolve_cwd(cwd: str | None = None) -> str:
 
 def build_environment_info(
     cwd: str | None = None,
-    include_hostname: bool = False,
-    include_cwd: bool = False,
 ) -> str:
-    cwd_resolved = _resolve_cwd(cwd)
     today = datetime.date.today()
 
     lines = [
         f"# 当前执行环境",
         f"- 操作系统: {platform.system()} {platform.release()} ({platform.machine()})",
     ]
-    if include_hostname:
-        lines.append(f"- 主机名: {platform.node()}")
+    lines.append(f"- 主机名: {platform.node()}")
     lines.append(f"- 日期: {today.year}年{today.month:02d}月{today.day:02d}日")
     lines.append(f"- Python: {platform.python_version()}")
-    if include_cwd:
-        lines.append(f"- 工作目录: {cwd_resolved}")
+    lines.append(f"- 工作目录: {os.getcwd()}")
     lines.append("")
 
     return "\n".join(lines) + "\n"
