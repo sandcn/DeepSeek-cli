@@ -72,6 +72,7 @@ from .cursor import (
 from ..._cursor_tracker import CursorTracker
 from ..._lock import _try_acquire_output_lock
 from ...terminal_adapter import register_sigwinch_callback, unregister_sigwinch_callback
+from .._system_monitor import _SystemMonitor
 from .blessed import (
     _blessed_move_clear,
     _blessed_cursor_goto,
@@ -118,7 +119,6 @@ class _BottomBar(_StatusMixin):
         self._active = False
         self._last_text = ""
         self._last_status = ""
-        self._last_refresh = 0.0
         # ── _StatusMixin 依赖字段 ──
         self._status_active: bool = False
         self._model_name: str = ""
@@ -155,10 +155,12 @@ class _BottomBar(_StatusMixin):
         self._sigwinch_cb: Any = None  # SIGWINCH 回调引用，teardown 时注销
         # ── resize 保护状态 ──
         self._needs_full_repaint: bool = False  # resize 后标记，force_redraw 中消费并重建
-        # ── 防抖状态（force_redraw 16ms 防抖合并） ──
-        self._debounce_timer: float = 0.0
-        self._DEBOUNCE_MS: float = 0.016
-        self._redraw_pending: bool = False
+        # ── 系统监控（CPU/内存） ──
+        self._system_monitor: _SystemMonitor | None = None
+        self._cached_cpu_percent: float = 0.0
+        self._cached_mem_percent: float = 0.0
+        self._last_system_stats_time: float = 0.0
+        self._SYSTEM_STATS_INTERVAL: float = 1.0
 
     # ── 活跃状态 property ──────────────────────────────────
 
@@ -251,6 +253,31 @@ class _BottomBar(_StatusMixin):
             wrapped = _wrap_by_width(expanded, max_input)
             base = max(_MIN_INPUT_ROWS, len(wrapped))
         return 2 + len(self._subagent_lines) + base + self._completion.height
+
+    # ── 系统监控（CPU/内存） ─────────────────────────────
+
+    def _update_system_stats(self) -> None:
+        """更新 CPU 和内存使用率缓存（1 秒间隔消峰）。
+
+        惰性初始化 SystemMonitor，仅在首次调用时创建。
+        由 force_redraw() 在每次重绘前调用。
+        """
+        now = time.monotonic()
+        if now - self._last_system_stats_time < self._SYSTEM_STATS_INTERVAL:
+            return
+        self._last_system_stats_time = now
+
+        # 惰性创建
+        if self._system_monitor is None:
+            self._system_monitor = _SystemMonitor()
+
+        try:
+            cpu_pct, mem_pct = self._system_monitor.get_cpu_and_mem()
+            self._cached_cpu_percent = cpu_pct
+            self._cached_mem_percent = mem_pct
+        except Exception:
+            # 异常时保持旧缓存值
+            pass
 
     # ── 终端尺寸查询（缓存版本，避免高频 ioctl） ──────────
 
@@ -522,8 +549,6 @@ class _BottomBar(_StatusMixin):
         """
         if not self._active:
             return
-        # 先 flush 防抖合并中待处理的 force_redraw，确保屏幕状态最终一致
-        self.flush_redraw()
         with _try_acquire_output_lock(name="bottom_bar.ensure_cursor_in_lower", timeout=0.3) as locked:
             if not locked:
                 return
@@ -654,63 +679,6 @@ class _BottomBar(_StatusMixin):
 
     # ── 刷新 ──────────────────────────────────────────────
 
-    def _try_debounce_check(self) -> bool:
-        """防抖检查：在 16ms 窗口内跳过重绘。
-
-        Returns:
-            True 表示被防抖跳过，调用方应直接 return。
-        """
-        now = time.monotonic()
-        if now - self._debounce_timer < self._DEBOUNCE_MS:
-            self._redraw_pending = True
-            return True
-        self._redraw_pending = False
-        return False
-
-    def _try_incremental_redraw(
-        self, text: str, total: int, height: int,
-    ) -> bool:
-        """尝试增量重绘路径（仅状态行变化时，避免全量重绘）。
-
-        Args:
-            text: 当前输入文本
-            total: 底部栏总行数
-            height: 终端高度
-
-        Returns:
-            True 表示增量重绘已完成，调用方应直接 return。
-            否则表示布局已变化，需执行全量重绘。
-        """
-        layout_unchanged = (
-            text == self._last_rendered_text
-            and total == self._last_bottom_lines
-            and height == self._last_height
-            and self._subagent_lines == self._last_subagent_lines
-        )
-        if not layout_unchanged:
-            return False
-
-        new_status = self._format_status()
-        if new_status == self._last_status:
-            self._last_refresh = time.monotonic()
-            self._last_cursor_pos = self._input_cursor_pos
-            return True  # 状态也未变，零 I/O
-
-        # ★ 增量重绘：布局未变仅状态行变化时，只重绘状态行那一行
-        r2 = height - total + 2 + len(self._subagent_lines)
-        r2 = max(1, min(r2, height))
-        out = sys.__stdout__
-        out.write(_blessed_save_cursor())
-        out.write(_blessed_move_clear(r2))
-        out.write(new_status)
-        out.write(_blessed_restore_cursor())
-        out.flush()
-        self._last_status = new_status
-        self._last_refresh = time.monotonic()
-        self._last_cursor_pos = self._input_cursor_pos
-        self._debounce_timer = time.monotonic()
-        return True
-
     def _do_scroll_up_for_expansion(
         self, out, delta: int, old_scroll_end: int, full_repaint: bool,
     ) -> None:
@@ -734,7 +702,6 @@ class _BottomBar(_StatusMixin):
         _buf.append(_blessed_cursor_goto(height, 1) + _blessed_save_cursor())
         out.write(''.join(_buf))
         out.flush()
-        self._debounce_timer = time.monotonic()
         self._cursor_tracker.set(height, 1)
         self._last_cursor_pos = self._input_cursor_pos
         self._last_height = height
@@ -784,15 +751,21 @@ class _BottomBar(_StatusMixin):
     ) -> None:
         """绘制分隔线、subagent 面板行和状态行。"""
         from .._terminal import is_narrow as _is_narrow_bar
+        sep_start = 45
         if _is_narrow_bar():
             sep_len = min(tw - 2, 40)
             sep = f"{_COLOR_SEP}\u2501{_COLOR_RESET}" * sep_len
+            _buf.append(_blessed_move_clear(r1) + "  " + sep)
         else:
-            sep_start = 45
             if self._animator.breath_frame > 0:
                 sep_start = AnimatorContext.get_default().sine_color(40, 45, 10)
-            sep = make_sep_gradient(tw - 2, start_color=sep_start)
-        _buf.append(_blessed_move_clear(r1) + "  " + sep)
+            from .draw import _build_sep_with_system_stats
+            sep = _build_sep_with_system_stats(
+                tw, sep_start,
+                self._cached_cpu_percent,
+                self._cached_mem_percent,
+            )
+            _buf.append(_blessed_move_clear(r1) + sep)
         self._cursor_tracker.set(r1, 3)
         for i, line in enumerate(self._subagent_lines):
             _buf.append(_blessed_move_clear(subagent_start + i) + line)
@@ -831,27 +804,25 @@ class _BottomBar(_StatusMixin):
         out.write(_blessed_cursor_goto(scroll_end, 1) + _blessed_save_cursor())
         self._cursor_tracker.set(scroll_end, 1)
         out.flush()
-        self._debounce_timer = time.monotonic()
         self._last_cursor_pos = self._input_cursor_pos
         self._last_height = height
 
     def force_redraw(self) -> None:
-        """无条件重绘全部底部栏（绕过节流和变更检测），超长文本自动拆行。
+        """无条件全量重绘全部底部栏内容（10Hz 调度，由渲染线程调用），超长文本自动拆行。
 
         所有共享可变状态在 output_lock 保护下更新。
         可被任何线程安全调用。
 
-        三级路径（按开销升序）：
-        1. 快速路径：布局不变且状态不变 → 仅更新时间戳，零 I/O
-        2. 增量重绘：布局不变仅状态行变化 → 仅重绘状态行那一行
-           （save_cursor → move_clear → write status → restore_cursor → flush）
-        3. 全量重绘：布局变化 → 重绘分隔线+subagent+状态行+输入行+DECSTBM
+        ★ 10Hz 重构后：始终执行全量重绘（分隔线+subagent+状态行+输入行+DECSTBM），
+        不再有快速路径（零 I/O）或增量路径（仅状态行）。
+        10Hz（100ms 间隔）由渲染线程 _render() 循环中的定时器保证。
 
-        快速路径/增量重绘避免流式输出期间高频 CONTENT chunk 触发
-        的冗余终端 I/O（全量 ~5+ 行写入 → 增量 1 行或 0 行）。
-
-        ★ 性能优化：先检查文本和布局是否变化，确认需要重绘后再
-        调用 _format_status()（含 shutil 系统调用），避免不必要开销。
+        功能序列：
+          1. 推进统一动画时钟（_animator.tick()）
+          2. 更新系统统计（_update_system_stats()），1 秒间隔消峰
+          3. 获取终端高度
+          4. output_lock 保护下全量重绘：SU 上滚 → 终端过小保护 → 清除旧区域 →
+             绘制分隔线+subagent+状态行 → 绘制输入行 → 设置 DECSTBM → 光标定位
         """
         if not self._active:
             return
@@ -859,9 +830,8 @@ class _BottomBar(_StatusMixin):
         # 推进统一动画时钟
         self._animator.tick()
 
-        # 16ms 防抖合并：高频调用跳过中间帧
-        if self._try_debounce_check():
-            return
+        # 更新系统统计（CPU/内存），1秒间隔消峰
+        self._update_system_stats()
 
         height = self._term_height()
 
@@ -871,11 +841,7 @@ class _BottomBar(_StatusMixin):
             text = self._last_text
             total = self._bottom_lines
 
-            # 增量重绘路径（布局未变仅状态变化）
-            if self._try_incremental_redraw(text, total, height):
-                return
-
-            # ── 全量重绘路径（布局变化） ──
+            # ── 全量重绘路径 ──
             new_status = self._format_status()
             old_bottom_lines = self._last_bottom_lines
             scroll_end = height - total
@@ -884,7 +850,6 @@ class _BottomBar(_StatusMixin):
                 (self._last_height if self._last_height > 0 else height)
                 - old_bottom_lines
             )
-            self._last_refresh = time.monotonic()
             self._last_status = new_status
             self._last_subagent_lines = list(self._subagent_lines)
 
@@ -920,19 +885,6 @@ class _BottomBar(_StatusMixin):
             self._finalize_full_redraw(
                 out, text, r2, tw, height, scroll_end, old_scroll_end, delta,
             )
-
-    def flush_redraw(self) -> None:
-        """强制刷新防抖合并中待处理的 force_redraw。
-
-        当 _redraw_pending 为 True 时跳过防抖检查执行完整 force_redraw，
-        确保最终状态刷新到屏幕。
-
-        由 ensure_cursor_in_lower 等需要确保最终视觉状态一致的路径调用。
-        """
-        if self._redraw_pending:
-            self._redraw_pending = False
-            self._debounce_timer = 0.0  # 重置定时器使 force_redraw 可立即执行
-            self.force_redraw()
 
     # ── 内部绘制 ──────────────────────────────────────────
 
@@ -1044,8 +996,6 @@ class _BottomBar(_StatusMixin):
         self._completion._types = []
         self._completion._match_prefix = ""
 
-        # 重置防抖定时器，确保状态变更（弹窗隐藏）不被防抖合并跳过
-        self._debounce_timer = 0.0
         self.force_redraw()
 
     def cycle_completion(self, delta: int = 1) -> int:

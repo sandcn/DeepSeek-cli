@@ -9,6 +9,7 @@ import logging
 import queue
 import sys
 import threading
+import time
 from typing import TYPE_CHECKING, Any, Callable
 
 if TYPE_CHECKING:
@@ -69,6 +70,9 @@ class TuiEngine:
         self._panel_refresh_cb: Callable[[], None] | None = None
         self._cmd_queue_dropped: int = 0
         self._render_crashed: threading.Event = threading.Event()
+        # ── 10Hz 底部栏重绘定时器 ──
+        self._last_bottom_redraw: float = 0.0
+        self._BOTTOM_REDRAW_INTERVAL: float = 0.1  # 10Hz 底部栏重绘间隔
 
     def push_cmd(self, cmd: tuple) -> None:
         """入队渲染命令到命令队列。
@@ -226,20 +230,20 @@ class TuiEngine:
                 _logger.debug("渲染命令 %s 失败", cmd, exc_info=True)
                 self.push_cmd((RenderCommand.ERROR, f"渲染命令 {_cmd_name(cmd[0])} 失败"))
 
-    def _phase_redraw_bottom(self, has_commands: bool) -> None:
-        """阶段 3：重绘底部栏。
+    def _phase_redraw_bottom(self) -> None:
+        """阶段 3：10Hz 定时重绘底部栏。
 
-        在以下任一条件满足时触发强制重绘：
-        - 本轮有渲染命令被处理
-        - 外部请求了底部栏重绘（_bottom_redraw_requested）
-        - 状态栏处于活跃状态
+        使用 _last_bottom_redraw 定时器确保每秒最多重绘 10 次。
+        _bottom_redraw_requested 事件可作为「强制立即重绘」信号
+        （由 request_bottom_redraw() 设置），在下一周期触发重绘。
 
-        Args:
-            has_commands: 本轮 _drain_queue 是否处理了至少一条命令
+        ★ 10Hz 重构：始终全量重绘，不再有条件判断。
         """
-        redraw = has_commands or self._bottom_redraw_requested.is_set() or self._bb.is_status_active
+        now = time.monotonic()
+        force = self._bottom_redraw_requested.is_set()
         self._bottom_redraw_requested.clear()
-        if redraw:
+        if force or now - self._last_bottom_redraw >= self._BOTTOM_REDRAW_INTERVAL:
+            self._last_bottom_redraw = now
             try:
                 self._bb.force_redraw()
             except Exception:
@@ -345,7 +349,7 @@ class TuiEngine:
             has_content = bool(commands)
             if commands:
                 self._phase_render(commands)
-            self._phase_redraw_bottom(has_content)
+            self._phase_redraw_bottom()
             return has_content
 
     def _drain_queue_safe(self) -> None:

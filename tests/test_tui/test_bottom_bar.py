@@ -136,31 +136,35 @@ class TestBottomBarCursorPos(unittest.TestCase):
         self.assertEqual(self.bb._input_cursor_pos, 12,
                          "文本变化+末尾光标应正确保持")
 
-    # ── 场景 6：force_redraw 布局未变时快速跳过 ─────
+    # ── 场景 6：force_redraw 始终全量重绘 ─────
 
-    def test_force_redraw_skips_when_unchanged(self):
-        """布局和状态均未变时 force_redraw 应跳过全量重绘。"""
+    def test_force_redraw_always_full_redraw(self):
+        """布局和状态均未变时 force_redraw 仍应全量重绘（10Hz 重构后无快速路径）。"""
         self.bb._last_status = "test-model ·"
         self.bb._last_rendered_text = "hello world"
         self.bb._last_text = "hello world"
         self.bb._last_bottom_lines = self.bb._bottom_lines
-        self.bb._last_height = self.bb._term_height()  # 需同步终端高度才能命中快速路径
+        self.bb._last_height = self.bb._term_height()  # 需同步终端高度
 
         out = io.StringIO()
         with patch.object(sys, '__stdout__', out), \
              patch.object(self.bb, '_format_status', return_value="test-model ·"):
             self.bb.force_redraw()
 
-        self.assertEqual(out.getvalue(), "",
-                         "布局和状态未变时 force_redraw 不应输出 ANSI 序列")
+        output = out.getvalue()
+        # 即使布局和状态未变，也应输出全量重绘 ANSI 序列
+        self.assertNotEqual(output, "",
+                            "布局和状态未变时 force_redraw 仍应输出全量重绘内容")
+        # 应包含全量重绘特有内容：分隔线、DECSTBM
+        self.assertIn("\u2501", output, "应包含分隔线字符 (━)")
+        self.assertIn("\033[1;", output, "应包含 DECSTBM 设置序列")
 
-    def test_incremental_redraw_status_change_only(self):
-        """★ 布局不变仅状态变化时，仅重绘状态行（增量重绘路径）。
+    def test_force_redraw_full_redraw_when_status_changes(self):
+        """★ 10Hz 重构后：布局不变仅状态变化时，仍执行全量重绘（不再有增量路径）。
 
-        验证 force_redraw() 增量重绘路径：
-        - layout_unchanged=True 且 new_status != _last_status 时
-        - 仅输出 save_cursor → move_clear(r2) → new_status → restore_cursor
-        - 不输出分隔线、subagent 面板行、输入行、DECSTBM 等全量重绘内容
+        验证 force_redraw() 始终走全量重绘路径：
+        - 即使 layout_unchanged=True 且 new_status != _last_status
+        - 也输出分隔线、DECSTBM、输入行等全量重绘内容
         """
         # 设置 layout_unchanged=True 的条件
         self.bb._last_rendered_text = "hello world"
@@ -180,28 +184,23 @@ class TestBottomBarCursorPos(unittest.TestCase):
 
         output = out.getvalue()
 
-        # 应有输出（非零 I/O 快速路径）
+        # 应有输出（始终全量重绘）
         self.assertNotEqual(output, "",
-                            "仅状态变化时应产生增量重绘输出")
+                            "状态变化时应产生全量重绘输出")
 
-        # 应包含 save_cursor + move_clear + new_status + restore_cursor
-        self.assertIn("\0337", output, "应包含 save_cursor (\\0337)")
+        # 应包含全量重绘特有内容
+        self.assertIn("\u2501", output, "应包含分隔线字符 (━)")
+        self.assertIn("\033[1;", output, "应包含 DECSTBM 设置序列")
+        self.assertIn("\033[r", output, "应包含 DECSTBM 重置序列")
+
+        # 应包含新状态文本
         self.assertIn(new_status, output, f"应包含新状态文本: {new_status}")
-        self.assertIn("\0338", output, "应包含 restore_cursor (\\0338)")
-        self.assertIn("\033[K", output, "应包含 clear_eol (\\033[K)")
 
-        # 不应包含全量重绘特有的内容
-        self.assertNotIn("\u2501", output, "不应包含分隔线字符 (━)")
-        self.assertNotIn("\033[r", output, "不应包含 DECSTBM 重置序列 (\\033[r)")
-        # DECSTBM 设置序列以 \033[1; 开头（scroll region top=1）
-        self.assertNotIn("\033[1;", output,
-                         "不应包含 DECSTBM 设置序列")
-
-        # 验证增量重绘后状态正确更新
+        # 验证重绘后状态正确更新
         self.assertEqual(self.bb._last_status, new_status,
-                         "增量重绘后 _last_status 应更新为新状态")
+                         "全量重绘后 _last_status 应更新为新状态")
         self.assertEqual(self.bb._last_cursor_pos, self.bb._input_cursor_pos,
-                         "增量重绘后 _last_cursor_pos 应与 _input_cursor_pos 同步")
+                         "全量重绘后 _last_cursor_pos 应与 _input_cursor_pos 同步")
 
 
 class TestComputeCursorPosition(unittest.TestCase):

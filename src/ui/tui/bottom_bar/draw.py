@@ -24,10 +24,12 @@ from .blessed import (
 )
 from .theme import (
     _BOTTOM_MIN_LINES,
+    _COLOR_ACCENT,
     _COLOR_DEEP_CYAN,
     _COLOR_DIM,
     _COLOR_RESET,
     _COLOR_SEP,
+    _COLOR_SPEED,
     _MIN_INPUT_ROWS,
     _PLACEHOLDER_COMPACT,
     _PLACEHOLDER_STREAMING,
@@ -36,7 +38,8 @@ from .theme import (
     make_sep_gradient,
 )
 from .._animator import AnimatorContext
-from .._text_utils import make_sep_gradient_enhanced
+from .._text_utils import build_gradient_ansi, make_sep_gradient_enhanced
+from ...colors import gradient_range
 from .cursor import (
     _expand_tabs,
     _wrap_by_width,
@@ -50,6 +53,7 @@ __all__ = [
     "_draw_input_lines_locked",
     "_draw_all_locked",
     "_redraw_cycle_only",
+    "_build_sep_with_system_stats",
 ]
 
 
@@ -137,6 +141,75 @@ def _draw_input_lines_locked(
         out.write(''.join(buf))
 
 
+def _build_sep_with_system_stats(
+    tw: int,
+    sep_start: int,
+    cpu_percent: float,
+    mem_percent: float,
+    *,
+    char: str = "\u2501",
+    narrow: bool = False,
+) -> str:
+    """构建带 CPU/内存使用率信息的分隔线。
+
+    在渐变分隔线中间嵌入 CPU 和内存使用率数据，
+    格式：``  ━━━━━━━━━━ CPU: 23% · MEM: 45% ━━━━━━━━━━━━━━━━━━``
+
+    窄屏时回退到纯渐变分隔线（不嵌入信息）。
+
+    Args:
+        tw: 终端宽度（列数）。
+        sep_start: 分隔线起始 256 色号。
+        cpu_percent: CPU 使用率（0.0 ~ 100.0）。
+        mem_percent: 内存使用率（0.0 ~ 100.0）。
+        char: 分隔线字符，默认 ━ (U+2501)。
+        narrow: 是否为窄屏模式，窄屏时跳过信息嵌入。
+
+    Returns:
+        完整的带 ANSI 颜色的分隔线字符串（含前导 ``  `` 缩进和尾部 RESET）。
+    """
+    available = max(1, tw - 2)  # 去除前导 2 空格
+
+    # 窄屏或空间不足时回退到纯分隔线
+    cpu_int = max(0, min(100, round(cpu_percent)))
+    mem_int = max(0, min(100, round(mem_percent)))
+    cpu_str = str(cpu_int)
+    mem_str = str(mem_int)
+
+    # 纯文本宽度（不含 ANSI 码）
+    plain_info = f" CPU: {cpu_str}% · MEM: {mem_str}% "
+    info_width = len(plain_info)
+
+    if narrow or info_width >= available - 4:
+        # 空间不足，回退到纯分隔线
+        from .._text_utils import make_sep_gradient
+        fallback_sep = make_sep_gradient(available, start_color=sep_start, char=char)
+        return f"  {fallback_sep}"
+
+    # 拆分渐变：左段约 1/3，右段占剩余
+    left_len = max(2, (available - info_width) // 3)
+    right_len = available - left_len - info_width
+
+    # 构建全宽渐变色号列表，再拆分
+    colors = gradient_range(sep_start, 237, available)
+    left_colors = colors[:left_len]
+    right_colors = colors[left_len + info_width:]
+
+    left_sep = build_gradient_ansi(left_colors, char=char, suffix_reset=False)
+    right_sep = build_gradient_ansi(right_colors, char=char, suffix_reset=True)
+
+    # 信息文本（多色分层）
+    info_ansi = (
+        f" {_COLOR_ACCENT}CPU:{_COLOR_RESET}"
+        f" {_COLOR_SPEED}{cpu_str}{_COLOR_ACCENT}%{_COLOR_RESET}"
+        f" {_COLOR_DIM}\u00b7{_COLOR_RESET} "
+        f"{_COLOR_ACCENT}MEM:{_COLOR_RESET}"
+        f" {_COLOR_SPEED}{mem_str}{_COLOR_ACCENT}%{_COLOR_RESET} "
+    )
+
+    return f"  {left_sep}{info_ansi}{right_sep}"
+
+
 def _draw_all_locked(bar: _BottomBar, out, height: int, breath_frame: int = 0) -> None:
     """绘制全部底部行（需持有 output_lock），超长文本自动拆行。
 
@@ -173,18 +246,23 @@ def _draw_all_locked(bar: _BottomBar, out, height: int, breath_frame: int = 0) -
     tw = bar._term_width()
     # 延迟导入避免循环依赖
     from .._terminal import is_narrow as _is_narrow_fn
+    sep_start = 45  # 默认青色
     if _is_narrow_fn():
         sep_len = min(tw - 2, 40)
         sep = f"{_COLOR_SEP}\u2501{_COLOR_RESET}" * sep_len
+        buf.append(_blessed_cursor_goto(r1, 1) + "  " + sep)
     else:
         # 分隔线增强：breath_frame>0 时使用波动效果 + 呼吸起始色
-        sep_start = 45  # 默认青色
         if breath_frame > 0:
             sep_start = AnimatorContext.get_default().sine_color(40, 45, 10)
-            sep = make_sep_gradient_enhanced(tw - 2, start_color=sep_start, effect="wave", frame=breath_frame)
-        else:
-            sep = make_sep_gradient(tw - 2, start_color=sep_start)
-    buf.append(_blessed_cursor_goto(r1, 1) + "  " + sep)
+
+        # 嵌入 CPU/内存使用率信息
+        cpu_pct = getattr(bar, '_cached_cpu_percent', 0.0)
+        mem_pct = getattr(bar, '_cached_mem_percent', 0.0)
+        sep = _build_sep_with_system_stats(
+            tw, sep_start, cpu_pct, mem_pct,
+        )
+        buf.append(_blessed_cursor_goto(r1, 1) + sep)
 
     # ── subagent 面板行（在分隔线与状态行之间） ──
     for i, line in enumerate(bar._subagent_lines):

@@ -519,8 +519,8 @@ class TestRenderEngineFlush:
 class TestRenderEngineDrainQueue:
     """_drain_queue 三阶段流水线 / 容错 / 底部栏重绘。"""
 
-    def test_drain_empty_queue_no_skip(self, engine):
-        """空队列 + 状态不活跃 → 执行锁内流水线，不渲染命令。"""
+    def test_drain_empty_queue_triggers_redraw_by_timer(self, engine):
+        """空队列 + 状态不活跃 → 10Hz 定时器触发 force_redraw（首次调用时定时器已过期）。"""
         engine._bb.is_status_active = False
 
         # 确保空队列
@@ -537,8 +537,8 @@ class TestRenderEngineDrainQueue:
 
         # 队列空时不渲染任何命令
         engine._renderer.render.assert_not_called()
-        # 阶段 3：is_status_active=False → force_redraw 不被调用
-        engine._bb.force_redraw.assert_not_called()
+        # 阶段 3：10Hz 定时器初始值为 0.0，首次调用必定触发 force_redraw
+        engine._bb.force_redraw.assert_called_once()
 
     def test_drain_empty_queue_with_status_active_triggers_redraw(
         self, engine,
@@ -657,7 +657,7 @@ class TestRenderEngineDrainQueue:
     def test_drain_no_force_redraw_when_no_commands_and_no_status(
         self, engine,
     ):
-        """无命令且 is_status_active=False → 不触发 force_redraw。"""
+        """无命令且 is_status_active=False → 10Hz 定时器仍触发 force_redraw（首次调用）。"""
         engine._bb.is_status_active = False
 
         with (
@@ -667,7 +667,8 @@ class TestRenderEngineDrainQueue:
 
             engine._drain_queue()
 
-        engine._bb.force_redraw.assert_not_called()
+        # ★ 10Hz 重构后：定时器初始值 0.0，首次调用时定时器已过期，强制触发
+        engine._bb.force_redraw.assert_called_once()
 
     def test_drain_lock_timeout_returns(self, engine):
         """output_lock 超时 → 方法直接返回，不执行渲染。"""
