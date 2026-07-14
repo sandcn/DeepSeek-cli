@@ -1,9 +1,11 @@
 """提示词构建器 — 简化版，从预合并的 prompts_export_*.md 加载系统提示词
 
 设计说明：
-- MainAgent/SubAgent 各自的完整系统提示词已预合并为两个独立文件：
-  prompts/prompts_export_main.md 和 prompts/prompts_export_sub.md
-- 这两个文件包含全部静态规则内容（角色设定、行为规范、代码理解、工具使用等），
+- MainAgent 的完整系统提示词预合并为 prompts/prompts_export_main.md
+- 各类型 SubAgent（map/review/think/plan/read_memory/write_memory/execute）各自从
+  prompts_export_*.md 加载静态规则；通用 SubAgent（build_subagent_system_prompt）
+  直接使用 fallback 兜底提示词
+- 这些文件包含全部静态规则内容（角色设定、行为规范、代码理解、工具使用等），
   不含运行时动态信息（环境信息、Git 状态、跨对话记忆索引）
 - builder.py 只负责加载静态文件 + 追加运行时动态信息
 - 额外模块（security/performance 等）已清理，不再支持 extra_modules 按需注入
@@ -114,7 +116,7 @@ def _build_prompt(
     fallback: str,
     include_version_control: bool = True,
     cwd: str | None = None,
-    include_globa_md: bool = True,
+    include_global_md: bool = True,
 ) -> list[str]:
     """构建提示词的公共逻辑。
 
@@ -125,24 +127,27 @@ def _build_prompt(
         fallback: 文件丢失时的兜底提示词
         include_version_control: 是否包含版本控制信息
         cwd: 工作目录
-        include_globa_md: 是否从 init.md 加载项目摘要信息
+        include_global_md: 是否从 global.md 加载项目摘要信息
     """
     cwd = _resolve_cwd(cwd)
     parts: list[str] = []
 
     # 加载预合并的系统提词（文件丢失时用兜底版本）
-    export_content = _load_prompt(export_name)
+    if export_name:
+        export_content = _load_prompt(export_name)
+    else:
+        export_content = ""
     if not export_content:
         _logger.warning("提示词文件 %s 未找到或读取失败，使用 fallback 兜底提示词", export_name)
     parts.append(export_content if export_content else fallback)
 
     # 运行时：从 init.md 动态加载项目摘要（放在环境信息前）
-    if include_globa_md:
-        global_summary = build_work_md("global.md",cwd=os.getcwd())
+    if include_global_md:
+        global_summary = build_work_md("global.md",cwd=cwd)
         if global_summary:
             parts.append(global_summary)
 
-    agent_summary = build_work_md(agent_name + ".md",cwd=os.getcwd())
+    agent_summary = build_work_md(agent_name + ".md",cwd=cwd)
     if agent_summary:
             parts.append(agent_summary)
 
@@ -166,9 +171,10 @@ def build_subagent_system_prompt(
 ) -> list[str]:
     """构建子代理系统提示词。
 
-    从 prompts_export_sub.md 加载静态规则，追加运行时动态信息。
+    prompts_export_sub.md 不存在，直接使用 fallback 兜底提示词，
+    追加运行时动态信息。
     """
-    return _build_prompt("sub","prompts_export_sub", _FALLBACK_SUB_PROMPT, include_version_control, cwd, include_globa_md=True)
+    return _build_prompt("sub","", _FALLBACK_SUB_PROMPT, include_version_control, cwd, include_global_md=True)
 
 
 def build_map_agent_system_prompt(
@@ -180,7 +186,7 @@ def build_map_agent_system_prompt(
     从 prompts_export_map.md 加载静态规则，追加运行时动态信息。
     Map 类型专用于项目代码分析，只读工具集。
     """
-    return _build_prompt("map","prompts_export_map", _FALLBACK_SUB_PROMPT, include_version_control, cwd, include_globa_md=True)
+    return _build_prompt("map","prompts_export_map", _FALLBACK_SUB_PROMPT, include_version_control, cwd, include_global_md=True)
 
 
 def build_review_agent_system_prompt(
@@ -192,7 +198,7 @@ def build_review_agent_system_prompt(
     从 prompts_export_review.md 加载静态规则，追加运行时动态信息。
     Review 类型专用于代码审查（Code Review），只读工具集，P0-P3 分级输出。
     """
-    return _build_prompt("review","prompts_export_review", _FALLBACK_SUB_PROMPT, include_version_control, cwd, include_globa_md=True)
+    return _build_prompt("review","prompts_export_review", _FALLBACK_SUB_PROMPT, include_version_control, cwd, include_global_md=True)
 
 
 def build_think_agent_system_prompt(
@@ -205,7 +211,7 @@ def build_think_agent_system_prompt(
     Think 类型专用于深度推理分析，只读工具集（read_file/search/find/ls），
     在 map 分析完成后强制调用，将结论返回主 Agent。
     """
-    return _build_prompt("think","prompts_export_think", _FALLBACK_SUB_PROMPT, include_version_control, cwd, include_globa_md=True)
+    return _build_prompt("think","prompts_export_think", _FALLBACK_SUB_PROMPT, include_version_control, cwd, include_global_md=True)
 
 
 def build_plan_agent_system_prompt(
@@ -218,7 +224,7 @@ def build_plan_agent_system_prompt(
     Plan 类型专用于制定可执行计划并写入 .chat/plan/ 目录，
     只读分析工具 + write_file/update_file。
     """
-    return _build_prompt("plan","prompts_export_plan", _FALLBACK_SUB_PROMPT, include_version_control, cwd, include_globa_md=True)
+    return _build_prompt("plan","prompts_export_plan", _FALLBACK_SUB_PROMPT, include_version_control, cwd, include_global_md=True)
 
 
 def build_read_memory_agent_system_prompt(
@@ -231,7 +237,7 @@ def build_read_memory_agent_system_prompt(
     read_memory 类型仅保留 read_file/search/find/ls 只读工具，
     专用于搜索和读取 .chat/memory/ 目录下的记忆文件。
     """
-    return _build_prompt("read_memory","prompts_export_read_memory", _FALLBACK_SUB_PROMPT, include_version_control, cwd, include_globa_md=True)
+    return _build_prompt("read_memory","prompts_export_read_memory", _FALLBACK_SUB_PROMPT, include_version_control, cwd, include_global_md=True)
 
 
 def build_write_memory_agent_system_prompt(
@@ -244,7 +250,7 @@ def build_write_memory_agent_system_prompt(
     write_memory 类型保留读工具 + write_file/update_file/mk，
     写入仅限 .chat/memory/ 目录，专用于创建和更新记忆文件。
     """
-    return _build_prompt("write_memory","prompts_export_write_memory", _FALLBACK_SUB_PROMPT, include_version_control, cwd, include_globa_md=True)
+    return _build_prompt("write_memory","prompts_export_write_memory", _FALLBACK_SUB_PROMPT, include_version_control, cwd, include_global_md=True)
 
 
 def build_execute_agent_system_prompt(
@@ -257,7 +263,7 @@ def build_execute_agent_system_prompt(
     execute 类型拥有完整读写+bash 工具集，独立上下文，
     用于执行计划文件中的具体步骤，完成后返回修改的文件列表。
     """
-    return _build_prompt("ececute","prompts_export_execute", _FALLBACK_SUB_PROMPT, include_version_control, cwd, include_globa_md=True)
+    return _build_prompt("execute","prompts_export_execute", _FALLBACK_SUB_PROMPT, include_version_control, cwd, include_global_md=True)
 
 
 # =================== 主代理提示词 ===================

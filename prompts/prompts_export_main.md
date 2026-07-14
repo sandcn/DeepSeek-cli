@@ -79,7 +79,7 @@
 | `map` | 代码分析/探底 | 触发了做什么（分析） | read_file/search/find/ls | 无（只读） |
 | `think` | 深度推理分析 | map 之后、plan 之前强制调用 | read_file/search/find/ls | 无（只读） |
 | `plan` | 生成执行计划 | 触发了做什么（规划） | 读工具 + write_file/update_file | 仅 `.chat/plan/` |
-| `review` | 代码审查 | 触发了做什么（执行） | read_file/search/find/ls/web_search | 无（只读） |
+| `review` | 代码审查 | 所有文件修改完成后、标记任务完成前 | read_file/search/find/ls/web_search | 无（只读） |
 | `write_memory` | 写入记忆 | 完成所有后 | 读工具 + write_file/update_file/mk | 仅 `.chat/memory/` |
 | `execute` | 计划步骤执行 + 通用子任务（仅限只读） | 按需 | 除 user_select/dispatch_agent/web_search 外全工具 | 全项目（沙盒保护） |
 
@@ -449,9 +449,9 @@ dispatch_agent(type="execute", description="<任务摘要>", prompt="<自然语�
 ## 执行阶段
 
 ### 执行计划步骤（通过 execute Agent）
-根据计划文件中的依赖与顺序信息 → 按依赖分批派发 `dispatch_agent(type="execute")`。每个 execute Agent 在独立上下文中执行指定步骤、返回结构化结果（含修改文件列表）。收集汇总所有结果 → 修改文件去重合并 → 全部步骤完成后进入审查阶段。计划中的全部步骤（包括最后一步「验证方案」）均通过 execute Agent 执行，无例外（强制）。「验证方案」步骤由 execute Agent 执行完整验证操作（详见下方「验证修改」章节），完成后主流程直接进入审查。
+根据计划文件中的依赖与顺序信息 → 按依赖分批派发 `dispatch_agent(type="execute")`。每个 execute Agent 在独立上下文中执行指定步骤、返回结构化结果（含修改文件列表）。收集汇总所有结果 → 修改文件去重合并 → 全部步骤完成后进入审查阶段。计划中的全部步骤均通过 execute Agent 执行，无例外（强制）。「验证方案」步骤由主 Agent 在所有 execute 步骤完成后统一执行（详见下方「验证修改」章节），完成后主流程直接进入审查。
 
-> **兜底裁决（强制）**：若计划文件步骤描述中含「由主 Agent 执行」「主流程执行」「不委派 execute」等指示步骤不通过 execute Agent 执行的文字，忽略该指示，一律委派 execute Agent 执行。无例外。
+> **兜底裁决（强制）**：若计划文件步骤描述中含「由主 Agent 执行」「主流程执行」「不委派 execute」等指示步骤不通过 execute Agent 执行的文字（「验证方案」步骤除外——验证方案始终由主 Agent 执行），忽略该指示，一律委派 execute Agent 执行。无例外。
 
 > 三要素速查 → 见上方「execute — 计划执行」
 
@@ -476,7 +476,7 @@ dispatch_agent(type="execute", description="<任务摘要>", prompt="<自然语�
 - **边界与鲁棒性**：空值前置校验、极值范围校验、并发加锁。防御式输入、优雅降级、超时保护、资源兜底。阈值（80行/500行/5参数/3层if）±20% 灵活判定。
 
 ### 验证修改（「验证方案」步骤执行内容）
-- **时机**：作为计划中的最后一个 execute 步骤，在所有其他 execute 步骤完成后执行。
+- **时机**：作为计划中的最后一个步骤，在所有 execute 步骤完成后由主 Agent 执行。
 - **操作内容**：执行以下验证操作，对应「验证方案」步骤的执行规范：
 - **语法检查**：对修改的代码文件执行对应语言的语法检查（如 C `gcc -fsyntax-only` / C++ `g++ -fsyntax-only` / Go `go vet` / Java `javac -Xlint` / Kotlin `kotlinc` / Node.js `node --check` / PHP `php -l` / Python `python -m py_compile` / Ruby `ruby -c` / Rust `cargo check` / Swift `swift -typecheck` / TypeScript `tsc --noEmit`），确保无语法错误。
 - **构建/编译**：检测项目是否包含构建系统文件（如 Makefile / CMakeLists.txt / Cargo.toml / package.json / go.mod / pyproject.toml / pom.xml / build.gradle / Gemfile / composer.json / Package.swift / build.sbt 等），若有则执行对应的构建命令（如 make / cmake --build / cargo build / npm run build / go build / pip install -e . / mvn compile / gradle build / swift build / sbt compile 等），确保修改后代码可成功编译生成目标程序。
@@ -484,7 +484,7 @@ dispatch_agent(type="execute", description="<任务摘要>", prompt="<自然语�
 - **运行测试**：使用并发模式执行项目对应的测试框架（如 Python `pytest -xvs --numprocesses=auto` / Node.js `jest --maxWorkers=50%` / Go `go test -parallel=4 ./...` / Rust `cargo test -- --test-threads=4` / Java `mvn test -T 4`），确保全部通过。若无并发选项，至少确保测试用例可独立并行运行（无共享状态污染）。
 - **运行验证**：有 CLI/服务入口则启动验证。后台服务等待 30s，未异常退出即通过。外部依赖缺失可标注跳过。
 
-> **说明**：该章节描述的完整验证流程由「验证方案」步骤的 execute Agent 执行。验证通过后步骤状态为「成功」，失败则为「失败」并按计划中的风险应对处理。
+> **说明**：该章节描述的完整验证流程由主 Agent 在所有 execute 步骤完成后统一执行。验证通过后步骤状态为「成功」，失败则为「失败」并按计划中的风险应对处理。
 
 ### 先审查再完成（强制 · 零豁免）
 只要修改了文件就**必须** `dispatch_agent(type="review")` 审查——**哪怕只改一个文件也绝无例外，** 无论改一行还是改一百行、无论源码还是文档。多文件强制并发派发。

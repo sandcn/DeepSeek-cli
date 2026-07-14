@@ -36,11 +36,6 @@ class TestLoadPrompt:
         assert len(content) > 0
         assert "核心目标" in content
 
-    def test_load_existing_sub_export(self):
-        content = _load_prompt("prompts_export_sub")
-        assert len(content) > 0
-        assert "安全规范" in content
-
     def test_load_nonexistent_file(self):
         content = _load_prompt("non_existent_file_xyz")
         assert content == ""
@@ -49,7 +44,6 @@ class TestLoadPrompt:
         """当前所有存在的 prompts 文件均可正常加载"""
         existing_prompts = [
             "prompts_export_main",
-            "prompts_export_sub",
             "prompts_export_map",
             "prompts_export_think",
             "prompts_export_review",
@@ -162,8 +156,7 @@ class TestBuildSubagentSystemPrompt:
         result = build_subagent_system_prompt()
         full = "\n".join(result)
         sections = [
-            "安全规范",
-            "大模型幻觉防止规范",
+            "安全红线",
             "当前执行环境",
         ]
         for section in sections:
@@ -173,9 +166,8 @@ class TestBuildSubagentSystemPrompt:
         """SubAgent 应包含工具使用相关的章节"""
         result = build_subagent_system_prompt()
         full = "\n".join(result)
-        # 工具相关规则已迁移至各工具 schema（如 bash「禁止替代专用工具」），
-        # 此处验证幻觉防止规范存在（工具误用核心防线）
-        assert "先读后写" in full
+        # SubAgent fallback 提示词包含「操作前先输出完整计划」规范
+        assert "操作前先输出完整计划" in full
 
     def test_no_residual_cut_markers(self):
         """SubAgent 输出不应残留 HTML 裁剪标记"""
@@ -198,22 +190,20 @@ class TestBuildSubagentSystemPrompt:
         assert "版本控制" not in last_part, "include_version_control=False 时不应包含版本控制信息"
 
     def test_has_security_section(self):
-        """验证子代理系统提示词包含「安全规范」核心章节"""
+        """验证子代理系统提示词包含「安全红线」核心章节"""
         result = build_subagent_system_prompt()
         full = "\n".join(result)
-        assert "安全规范" in full
+        assert "安全红线" in full
 
     def test_essential_security_present(self):
-        """验证精简后 sub.md 仍包含核心安全内容（红线 + 路径安全 + 幻觉防止）"""
+        """验证 fallback 提示词仍包含核心安全内容（红线 + 路径安全）"""
         result = build_subagent_system_prompt()
         full = "\n".join(result)
         # 安全红线核心条目
-        assert "禁止读写传密钥" in full
+        assert "禁止读写密钥/密码/token/PII" in full
         assert "禁止 rm -rf" in full
         # 通用安全规范核心条目
         assert "路径安全" in full
-        # 大模型幻觉防止黄金三原则
-        assert "先读后写" in full
 
 
 # ═══════════════════════════════════════════════════════════
@@ -574,11 +564,11 @@ class TestFallbackPrompt:
         assert len(result) >= 2
 
 # ═══════════════════════════════════════════════════════════
-# include_init_md 参数行为测试
+# include_global_md 参数行为测试
 # ═══════════════════════════════════════════════════════════
 
-class TestIncludeInitMdParam:
-    """验证 _build_prompt() 的 include_init_md 参数控制 init.md 加载行为"""
+class TestIncludeGlobalMdParam:
+    """验证 _build_prompt() 的 include_global_md 参数控制 global.md 加载行为"""
 
     MOCK_INIT_MD = (
         "# 测试项目\n"
@@ -596,42 +586,49 @@ class TestIncludeInitMdParam:
         """在每个测试前：
         1. 在 tmp_path 创建 init.md
         2. mock _load_prompt 返回固定假内容，避免依赖 prompts/ 目录
+        3. mock build_work_md 返回项目摘要
         """
-        # 创建 init.md 供 build_init_md_summary 读取
-        init_path = tmp_path / "init.md"
-        init_path.write_text(self.MOCK_INIT_MD, encoding="utf-8")
-
         # mock _load_prompt 返回固定内容
         monkeypatch.setattr(
             "src.prompt_builder.builder._load_prompt",
             lambda name: "MOCKED_PROMPT_CONTENT",
         )
+        # mock build_work_md: global.md 返回项目摘要，其他返回空
+        def mock_build_work_md(name, cwd=None):
+            if name == "global.md":
+                return "## 项目概述\n- 功能A：自动化测试\n- 功能B：代码生成\n"
+            return ""
+
+        monkeypatch.setattr(
+            "src.prompt_builder.builder.build_work_md",
+            mock_build_work_md,
+        )
 
         self.cwd = str(tmp_path)
 
-    def test_include_init_md_true_includes_summary(self):
-        """include_init_md=True 时输出应包含「项目概述」"""
+    def test_include_global_md_true_includes_summary(self):
+        """include_global_md=True 时输出应包含「项目概述」"""
         result = _build_prompt(
-            "test_export", "fallback", cwd=self.cwd, include_init_md=True
+            "test_agent", "test_export", "FALLBACK", cwd=self.cwd, include_global_md=True
         )
         full = "\n".join(result)
-        assert "项目概述" in full, "include_init_md=True 时应包含项目概述"
+        assert "项目概述" in full, "include_global_md=True 时应包含项目概述"
         assert "功能A" in full, "摘要应包含核心功能项"
 
-    def test_include_init_md_false_excludes_summary(self):
-        """include_init_md=False 时输出不应包含「项目概述」"""
+    def test_include_global_md_false_excludes_summary(self):
+        """include_global_md=False 时输出不应包含「项目概述」"""
         result = _build_prompt(
-            "test_export", "fallback", cwd=self.cwd, include_init_md=False
+            "test_agent", "test_export", "FALLBACK", cwd=self.cwd, include_global_md=False
         )
         full = "\n".join(result)
-        assert "项目概述" not in full, "include_init_md=False 时不应包含项目概述"
-        assert "功能A" not in full, "include_init_md=False 时不应包含核心功能项"
+        assert "项目概述" not in full, "include_global_md=False 时不应包含项目概述"
+        assert "功能A" not in full, "include_global_md=False 时不应包含核心功能项"
 
-    def test_include_init_md_default_is_true(self):
-        """include_init_md 默认值为 True"""
-        result = _build_prompt("test_export", "fallback", cwd=self.cwd)
+    def test_include_global_md_default_is_true(self):
+        """include_global_md 默认值为 True"""
+        result = _build_prompt("test_agent", "test_export", "FALLBACK", cwd=self.cwd)
         full = "\n".join(result)
-        assert "项目概述" in full, "include_init_md 默认值应为 True"
+        assert "项目概述" in full, "include_global_md 默认值应为 True"
 
 
 # ═══════════════════════════════════════════════════════════
@@ -736,21 +733,27 @@ class TestMainAgentIncludesInitMd:
 
     @pytest.fixture(autouse=True)
     def setup(self, tmp_path, monkeypatch):
-        """在 tmp_path 创建 init.md，mock _load_prompt 隔离 prompts 文件依赖"""
-        init_path = tmp_path / "init.md"
-        init_path.write_text(self.MOCK_INIT_MD, encoding="utf-8")
-        assert init_path.exists(), "init.md 应已创建"
-
+        """在 tmp_path 创建 init.md，mock _load_prompt 和 build_work_md 隔离 prompts 文件依赖"""
         # mock _load_prompt 返回固定内容，避免依赖真实 prompts/ 目录
         monkeypatch.setattr(
             "src.prompt_builder.builder._load_prompt",
             lambda name: "MOCKED_PROMPT_CONTENT",
         )
 
+        # mock build_work_md: global.md 返回项目摘要
+        def mock_build_work_md(name, cwd=None):
+            if name == "global.md":
+                return "## 项目概述\n- 功能A：自动化测试\n- 功能B：代码生成\n"
+            return ""
+        monkeypatch.setattr(
+            "src.prompt_builder.builder.build_work_md",
+            mock_build_work_md,
+        )
+
         self.cwd = str(tmp_path)
 
     def test_main_agent_includes_init_md(self):
-        """Main Agent 应包含项目概述（include_init_md 默认 True）"""
+        """Main Agent 应包含项目概述（include_global_md 默认 True）"""
         result = build_system_prompt(cwd=self.cwd)
         full = "\n".join(result)
         assert "项目概述" in full, "Main Agent 应包含项目概述"

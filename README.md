@@ -421,9 +421,8 @@ ChatUIConsumer
 ```
 ├── chat.py                # 入口脚本（asyncio.run(main())）
 ├── pyproject.toml         # 项目配置与依赖
-├── prompts/               # 系统提示词（9 个文件）
+├── prompts/               # 系统提示词（8 个文件）
 │   ├── prompts_export_main.md    # 主 Agent 系统提示词
-│   ├── prompts_export_sub.md     # SubAgent 通用提示词
 │   ├── prompts_export_map.md     # map SubAgent 探底提示词
 │   ├── prompts_export_plan.md    # plan SubAgent 计划提示词
 │   ├── prompts_export_execute.md  # execute SubAgent 提示词
