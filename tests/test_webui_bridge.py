@@ -4,8 +4,8 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock, patch
 
-from src.ui.events.event_bus import DisplayEventBus
-from src.ui.events.event_types import (
+from src.tui.events.event_bus import DisplayEventBus
+from src.tui.events.event_types import (
     AgentAddedEvent,
     AgentResultEvent,
     AgentStatusChanged,

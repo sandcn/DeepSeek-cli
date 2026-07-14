@@ -35,7 +35,7 @@ from ..ws_handler.sandbox import build_sandbox_updated
 from ..ws_handler.edit import _handle_get_messages, _handle_edit_messages_action
 from ..ws_handler.utils import _rebuild_message_indices
 from ..types import msg_sessions_list, msg_session_deleted, msg_session_loaded
-from ...ui._lock import locked_print
+from ...tui.widgets.lock import locked_print
 
 if TYPE_CHECKING:
     from .context import ConnectionContext

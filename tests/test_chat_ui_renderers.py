@@ -16,10 +16,10 @@ from unittest.mock import MagicMock, patch
 import pytest
 from rich.text import Text
 
-from src.chat_ui.renderer import TuiRenderer as ContentRenderer
-from src.chat_ui.const import _CLEAR_PARSE_LINE, RenderCommand
-from src.chat_ui.renderer import _RenderState
-from src.chat_ui.render_state import _ReasoningState
+from src.tui.consumer.renderer import TuiRenderer as ContentRenderer
+from src.tui.consumer.const import _CLEAR_PARSE_LINE, RenderCommand
+from src.tui.consumer.renderer import _RenderState
+from src.tui.consumer.render_state import _ReasoningState
 
 
 # ── Fixtures ────────────────────────────────────────────
@@ -101,32 +101,32 @@ class TestTruncateMsg:
 
     def test_short_msg_unchanged(self):
         """短消息不截断"""
-        from src.chat_ui.utils import _truncate_msg
+        from src.tui.consumer.utils import _truncate_msg
         result = _truncate_msg("hello", 10)
         assert result == "hello"
 
     def test_exact_length_unchanged(self):
         """长度刚好等于 max_len → 不截断"""
-        from src.chat_ui.utils import _truncate_msg
+        from src.tui.consumer.utils import _truncate_msg
         result = _truncate_msg("12345", 5)
         assert result == "12345"
 
     def test_long_msg_truncated(self):
         """超长消息截断并追加 ..."""
-        from src.chat_ui.utils import _truncate_msg
+        from src.tui.consumer.utils import _truncate_msg
         result = _truncate_msg("x" * 100, 10)
         assert result == "x" * 10 + "..."
         assert len(result) == 13
 
     def test_empty_msg_empty_result(self):
         """空消息 → 空字符串"""
-        from src.chat_ui.utils import _truncate_msg
+        from src.tui.consumer.utils import _truncate_msg
         result = _truncate_msg("", 10)
         assert result == ""
 
     def test_max_len_zero(self):
         """max_len=0 → 全部截断"""
-        from src.chat_ui.utils import _truncate_msg
+        from src.tui.consumer.utils import _truncate_msg
         result = _truncate_msg("hello", 0)
         assert result == "..."
 
@@ -404,7 +404,7 @@ class TestDoError:
 
     def test_error_truncated(self, renderer, mock_ta):
         """超长消息 → 截断后输出"""
-        from src.chat_ui.const import _MAX_ERROR_LENGTH
+        from src.tui.consumer.const import _MAX_ERROR_LENGTH
         long_msg = "x" * (_MAX_ERROR_LENGTH + 50)
         renderer._do_error(long_msg)
         mock_ta.write.assert_called_once()
@@ -475,7 +475,7 @@ class TestRender:
 
     def test_render_dispatch_has_15_entries(self):
         """_RENDER_DISPATCH 应包含全部 15 种命令类型"""
-        from src.chat_ui.renderer import _RENDER_DISPATCH
+        from src.tui.consumer.renderer import _RENDER_DISPATCH
         assert len(_RENDER_DISPATCH) == 15, (
             f"期望 15 种渲染命令，实际 {len(_RENDER_DISPATCH)} 种"
         )
@@ -496,7 +496,7 @@ class TestRender:
 
     def test_render_unknown_command_logs_error(self, renderer, mock_ta):
         """未知命令 ID → 记录日志（不崩溃）"""
-        with patch('src.chat_ui.renderer._logger.error') as m_log:
+        with patch('src.tui.consumer.renderer._logger.error') as m_log:
             renderer.render((255,))
             m_log.assert_called_once()
 
@@ -530,10 +530,10 @@ class TestGlowBorder:
 
     # ── WriteLineBlock ──
 
-    @patch('src.chat_ui.components._write_line.is_narrow')
+    @patch('src.tui.components._write_line.is_narrow')
     def test_write_line_widescreen_has_border(self, mock_narrow):
         """WriteLineBlock 宽屏 → 输出含 │ 边框字符（纯文本走 write_raw）"""
-        from src.chat_ui.components._write_line import WriteLineBlock
+        from src.tui.components._write_line import WriteLineBlock
         mock_narrow.return_value = False
         mock_adapter = MagicMock()
         block = WriteLineBlock("test text")
@@ -544,10 +544,10 @@ class TestGlowBorder:
         text_arg = written[0][0]
         assert "\u2502" in text_arg
 
-    @patch('src.chat_ui.components._write_line.is_narrow')
+    @patch('src.tui.components._write_line.is_narrow')
     def test_write_line_narrow_no_border(self, mock_narrow):
         """WriteLineBlock 窄屏 → 输出无 │ 边框字符"""
-        from src.chat_ui.components._write_line import WriteLineBlock
+        from src.tui.components._write_line import WriteLineBlock
         mock_narrow.return_value = True
         mock_adapter = MagicMock()
         block = WriteLineBlock("test text")
@@ -558,10 +558,10 @@ class TestGlowBorder:
         text_arg = written[0][0]
         assert "\u2502" not in text_arg
 
-    @patch('src.chat_ui.components._write_line.is_narrow')
+    @patch('src.tui.components._write_line.is_narrow')
     def test_write_line_widescreen_ansi_border(self, mock_narrow):
         """WriteLineBlock 宽屏+ANSI文本 → 输出含 │ 边框字符"""
-        from src.chat_ui.components._write_line import WriteLineBlock
+        from src.tui.components._write_line import WriteLineBlock
         mock_narrow.return_value = False
         mock_adapter = MagicMock()
         block = WriteLineBlock("\033[31mred\033[0m")
@@ -572,10 +572,10 @@ class TestGlowBorder:
         assert isinstance(text_arg, Text)
         assert "\u2502" in text_arg.plain
 
-    @patch('src.chat_ui.components._write_line.is_narrow')
+    @patch('src.tui.components._write_line.is_narrow')
     def test_write_line_narrow_ansi_no_border(self, mock_narrow):
         """WriteLineBlock 窄屏+ANSI文本 → 输出无 │ 边框字符"""
-        from src.chat_ui.components._write_line import WriteLineBlock
+        from src.tui.components._write_line import WriteLineBlock
         mock_narrow.return_value = True
         mock_adapter = MagicMock()
         block = WriteLineBlock("\033[31mred\033[0m")
@@ -588,10 +588,10 @@ class TestGlowBorder:
 
     # ── ToolOutputBlock ──
 
-    @patch('src.chat_ui.components._tool_output.is_narrow')
+    @patch('src.tui.components._tool_output.is_narrow')
     def test_tool_output_widescreen_has_border(self, mock_narrow):
         """ToolOutputBlock 宽屏 → 输出含 │ 边框字符"""
-        from src.chat_ui.components._tool_output import ToolOutputBlock
+        from src.tui.components._tool_output import ToolOutputBlock
         mock_narrow.return_value = False
         mock_adapter = MagicMock()
         block = ToolOutputBlock("tool output")
@@ -602,10 +602,10 @@ class TestGlowBorder:
         assert isinstance(text_arg, Text)
         assert "\u2502" in text_arg.plain
 
-    @patch('src.chat_ui.components._tool_output.is_narrow')
+    @patch('src.tui.components._tool_output.is_narrow')
     def test_tool_output_narrow_no_border(self, mock_narrow):
         """ToolOutputBlock 窄屏 → 输出无 │ 边框字符"""
-        from src.chat_ui.components._tool_output import ToolOutputBlock
+        from src.tui.components._tool_output import ToolOutputBlock
         mock_narrow.return_value = True
         mock_adapter = MagicMock()
         block = ToolOutputBlock("tool output")
@@ -618,20 +618,20 @@ class TestGlowBorder:
 
     # ── ErrorBlock ──
 
-    @patch('src.chat_ui.components._error.is_narrow')
+    @patch('src.tui.components._error.is_narrow')
     def test_error_widescreen_has_border(self, mock_narrow):
         """ErrorBlock 宽屏 → 输出含 │ 边框字符"""
-        from src.chat_ui.components._error import ErrorBlock
+        from src.tui.components._error import ErrorBlock
         mock_narrow.return_value = False
         block = ErrorBlock("error message")
         text = block.render()
         assert isinstance(text, Text)
         assert "\u2502" in text.plain
 
-    @patch('src.chat_ui.components._error.is_narrow')
+    @patch('src.tui.components._error.is_narrow')
     def test_error_narrow_no_border(self, mock_narrow):
         """ErrorBlock 窄屏 → 输出无 │ 边框字符"""
-        from src.chat_ui.components._error import ErrorBlock
+        from src.tui.components._error import ErrorBlock
         mock_narrow.return_value = True
         block = ErrorBlock("error message")
         text = block.render()
@@ -640,20 +640,20 @@ class TestGlowBorder:
 
     # ── NotificationBlock ──
 
-    @patch('src.chat_ui.components._notification.is_narrow')
+    @patch('src.tui.components._notification.is_narrow')
     def test_notification_widescreen_has_border(self, mock_narrow):
         """NotificationBlock 宽屏 → 输出含 │ 边框字符"""
-        from src.chat_ui.components._notification import NotificationBlock
+        from src.tui.components._notification import NotificationBlock
         mock_narrow.return_value = False
         block = NotificationBlock("notification")
         text = block.render()
         assert isinstance(text, Text)
         assert "\u2502" in text.plain
 
-    @patch('src.chat_ui.components._notification.is_narrow')
+    @patch('src.tui.components._notification.is_narrow')
     def test_notification_narrow_no_border(self, mock_narrow):
         """NotificationBlock 窄屏 → 输出无 │ 边框字符"""
-        from src.chat_ui.components._notification import NotificationBlock
+        from src.tui.components._notification import NotificationBlock
         mock_narrow.return_value = True
         block = NotificationBlock("notification")
         text = block.render()

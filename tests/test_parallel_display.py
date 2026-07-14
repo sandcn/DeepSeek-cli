@@ -5,13 +5,13 @@ import sys
 
 import pytest
 
-from src.ui.parallel._config import (
+from src.tui.parallel._config import (
     SPINNER_BRAILLE, SPINNER_PULSE, SPINNER_CIRCLE, SPINNER_DOTS,
     SPINNER_SETS, SPINNER_FRAMES, SPINNER_SPEED,
     get_spinner_frames, breathing_animation,
     DEFAULT_SPINNER, DEFAULT_SPINNER_SPEED,
 )
-from src.ui.parallel.display import ParallelDisplay
+from src.tui.parallel.display import ParallelDisplay
 
 
 @pytest.fixture
@@ -112,7 +112,7 @@ class TestParallelDisplayLifecycle:
         mock_chat_ui = MagicMock()
         mock_chat_ui.output_adapter = MagicMock()
         mock_chat_ui.output_adapter.width = 120
-        with patch('src.chat_ui.get_active_chat_ui', return_value=mock_chat_ui):
+        with patch('src.tui.consumer.state.get_active_chat_ui', return_value=mock_chat_ui):
             display.start()
         assert display._adapter is not None, (
             "start() 应设置 _adapter 为 ChatUI 的 output_adapter"
@@ -126,7 +126,7 @@ class TestParallelDisplayLifecycle:
         mock_chat_ui = MagicMock()
         mock_chat_ui.output_adapter = MagicMock()
         mock_chat_ui.output_adapter.width = 120
-        with patch('src.chat_ui.get_active_chat_ui', return_value=mock_chat_ui):
+        with patch('src.tui.consumer.state.get_active_chat_ui', return_value=mock_chat_ui):
             display.start()
         assert display._adapter is not None
         display.stop()
@@ -145,7 +145,7 @@ class TestParallelDisplayLifecycle:
         mock_chat_ui = MagicMock()
         mock_chat_ui.output_adapter = MagicMock()
         mock_chat_ui.output_adapter.width = 120
-        with patch('src.chat_ui.get_active_chat_ui', return_value=mock_chat_ui):
+        with patch('src.tui.consumer.state.get_active_chat_ui', return_value=mock_chat_ui):
             d.start()
         assert d._adapter is not None, "start() 后应持有 adapter"
         assert d._started is True, "start() 后 _started 应为 True"
@@ -160,7 +160,7 @@ class TestParallelDisplayLifecycle:
         mock_chat_ui = MagicMock()
         mock_chat_ui.output_adapter = MagicMock()
         mock_chat_ui.output_adapter.width = 120
-        with patch('src.chat_ui.get_active_chat_ui', return_value=mock_chat_ui):
+        with patch('src.tui.consumer.state.get_active_chat_ui', return_value=mock_chat_ui):
             display.start()
         display.stop()
         display.refresh()  # 不应抛异常
@@ -208,7 +208,7 @@ class TestClearFrameLinesBottomBar:
     def test_clear_frame_lines_calls_set_subagent_frame(self):
         """_clear_frame_lines → 调用 bottom_bar.set_subagent_frame([])"""
         from unittest.mock import MagicMock, patch
-        from src.ui.parallel.display import ParallelDisplay
+        from src.tui.parallel.display import ParallelDisplay
 
         pd = ParallelDisplay(max_history=3)
         pd._last_lines = 5  # 模拟有面板行
@@ -219,7 +219,7 @@ class TestClearFrameLinesBottomBar:
         mock_chat_ui = MagicMock()
         mock_chat_ui.bottom_bar = mock_bb
 
-        with patch('src.chat_ui.get_active_chat_ui', return_value=mock_chat_ui):
+        with patch('src.tui.consumer.state.get_active_chat_ui', return_value=mock_chat_ui):
             pd._clear_frame_lines()
 
         mock_bb.set_subagent_frame.assert_called_once_with([])
@@ -228,12 +228,12 @@ class TestClearFrameLinesBottomBar:
     def test_clear_frame_lines_no_chat_ui_no_crash(self):
         """无活跃 ChatUI 时 _clear_frame_lines 静默跳过不崩溃"""
         from unittest.mock import patch
-        from src.ui.parallel.display import ParallelDisplay
+        from src.tui.parallel.display import ParallelDisplay
 
         pd = ParallelDisplay(max_history=3)
         pd._last_lines = 5
 
-        with patch('src.chat_ui.get_active_chat_ui', return_value=None):
+        with patch('src.tui.consumer.state.get_active_chat_ui', return_value=None):
             try:
                 pd._clear_frame_lines()
             except Exception as e:
@@ -242,7 +242,7 @@ class TestClearFrameLinesBottomBar:
     def test_clear_frame_lines_no_set_subagent_method(self):
         """bottom_bar 无 set_subagent_frame 方法 → 静默跳过"""
         from unittest.mock import MagicMock, patch
-        from src.ui.parallel.display import ParallelDisplay
+        from src.tui.parallel.display import ParallelDisplay
 
         pd = ParallelDisplay(max_history=3)
         pd._last_lines = 5
@@ -251,7 +251,7 @@ class TestClearFrameLinesBottomBar:
         mock_chat_ui = MagicMock()
         mock_chat_ui.bottom_bar = mock_bb
 
-        with patch('src.chat_ui.get_active_chat_ui', return_value=mock_chat_ui):
+        with patch('src.tui.consumer.state.get_active_chat_ui', return_value=mock_chat_ui):
             try:
                 pd._clear_frame_lines()
             except Exception as e:
@@ -260,12 +260,12 @@ class TestClearFrameLinesBottomBar:
     def test_clear_zero_lines_skipped(self):
         """_last_lines=0 时 _clear_frame_lines 应直接返回"""
         from unittest.mock import MagicMock, patch
-        from src.ui.parallel.display import ParallelDisplay
+        from src.tui.parallel.display import ParallelDisplay
 
         pd = ParallelDisplay(max_history=3)
         pd._last_lines = 0  # 无面板行
 
-        with patch('src.chat_ui.get_active_chat_ui') as mock_get:
+        with patch('src.tui.consumer.state.get_active_chat_ui') as mock_get:
             pd._clear_frame_lines()
 
         # get_active_chat_ui 不应被调用（因为 _last_lines=0 提前返回）
@@ -607,7 +607,7 @@ class TestFrameRendererSpinnerIntegration:
 
     def test_default_constructor_backward_compat(self):
         """不传 spinner_name 时使用默认 8 帧 braille（向后兼容）。"""
-        from src.ui.renderer.frame_renderer import FrameRenderer
+        from src.tui.frame.frame_renderer import FrameRenderer
         r = FrameRenderer(terminal_width=120, frame=0)
         assert len(r._spinner_frames) == 8, (
             f"默认 spinner 应为 8 帧，实际 {len(r._spinner_frames)}"
@@ -616,7 +616,7 @@ class TestFrameRendererSpinnerIntegration:
 
     def test_spinner_name_braille(self):
         """传入 spinner_name='braille' 使用 12 帧集。"""
-        from src.ui.renderer.frame_renderer import FrameRenderer
+        from src.tui.frame.frame_renderer import FrameRenderer
         r = FrameRenderer(terminal_width=120, frame=0, spinner_name="braille")
         assert len(r._spinner_frames) == 12, (
             f"braille 应为 12 帧，实际 {len(r._spinner_frames)}"
@@ -624,14 +624,14 @@ class TestFrameRendererSpinnerIntegration:
 
     def test_spinner_name_pulse(self):
         """传入 spinner_name='pulse' 使用脉冲帧集。"""
-        from src.ui.renderer.frame_renderer import FrameRenderer
+        from src.tui.frame.frame_renderer import FrameRenderer
         r = FrameRenderer(terminal_width=120, frame=0, spinner_name="pulse")
         assert r._spinner_frames == SPINNER_PULSE
         assert r._spinner_speed == SPINNER_SPEED["pulse"]
 
     def test_spinner_frames_param_still_works(self):
         """旧的 spinner_frames 参数仍然有效。"""
-        from src.ui.renderer.frame_renderer import FrameRenderer
+        from src.tui.frame.frame_renderer import FrameRenderer
         custom = ["◐", "◓", "◑", "◒"]
         r = FrameRenderer(terminal_width=120, frame=0, spinner_frames=custom)
         assert r._spinner_frames == custom

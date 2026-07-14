@@ -164,9 +164,9 @@ class ParallelExecutor:
         """所有 agent 注册完毕后，统一创建 SubAgent 并并发执行。"""
         self._spawner.render_display(self._pending_specs)
 
-        from ..ui.parallel import ParallelDisplay as _ParallelDisplay
-        from ..ui.events import DisplayEventBus as _DisplayEventBus
-        from ..ui.events.event_types import AgentAddedEvent as _AgentAddedEvent
+        from ..tui.parallel import ParallelDisplay as _ParallelDisplay
+        from ..tui.events import DisplayEventBus as _DisplayEventBus
+        from ..tui.events.event_types import AgentAddedEvent as _AgentAddedEvent
 
         display = _ParallelDisplay(max_history=self.max_history)
 
@@ -203,7 +203,7 @@ class ParallelExecutor:
         import sys as _sys
         from src.renderer import IncrementalRenderer
 
-        from ..ui.parallel._tool_icons import AGENT_TYPE_ABBREV as _AGENT_TYPE_ABBREV
+        from ..tui.parallel._tool_icons import AGENT_TYPE_ABBREV as _AGENT_TYPE_ABBREV
 
         renderer = IncrementalRenderer(typing_speed=0, show_indicator=False,
                                        _file=_sys.__stdout__)
@@ -244,7 +244,7 @@ class ParallelExecutor:
         import io
         from src.renderer import IncrementalRenderer
 
-        from ..chat_ui import get_active_chat_ui as _get_active_chat_ui
+        from ..tui.consumer import get_active_chat_ui as _get_active_chat_ui
         chat_ui = _get_active_chat_ui()
         if chat_ui is None:
             return
@@ -254,7 +254,7 @@ class ParallelExecutor:
         for i, r in enumerate(results, 1):
             desc = r.get(_DESCRIPTION_KEY, f"子任务 {i}")
             agent_type = r.get(_AGENT_TYPE_KEY, "execute")
-            from ..ui.parallel._tool_icons import AGENT_TYPE_ABBREV as _AGENT_TYPE_ABBREV
+            from ..tui.parallel._tool_icons import AGENT_TYPE_ABBREV as _AGENT_TYPE_ABBREV
             abbr = _AGENT_TYPE_ABBREV.get(agent_type, "??")
             result_text = r.get(_RESULT_KEY, "")
             error = r.get(_ERROR_KEY, "")
@@ -315,7 +315,7 @@ class ParallelExecutor:
         ChatUI 激活时无需光标修复：write_line 内部自动处理输出位置
         （render 线程持 output_lock，渲染后底部栏 force_redraw 刷新光标）。
         """
-        from ..chat_ui import get_active_chat_ui as _get_active_chat_ui
+        from ..tui.consumer import get_active_chat_ui as _get_active_chat_ui
         chat_ui = _get_active_chat_ui()
         if chat_ui is not None:
             # ChatUI 激活 → 走统一渲染管线
@@ -342,7 +342,7 @@ class ParallelExecutor:
         #
         #   全部使用 __stdout__（真实终端），而非 sys.stdout（可能被并发工具
         #   的 _SharedCapture 劫持），消除竞态窗口。
-        from ..ui._lock import _try_acquire_output_lock
+        from ..tui.widgets.lock import _try_acquire_output_lock
         with _try_acquire_output_lock(name="parallel_executor.cursor_fix", timeout=1.0):
             _sys.__stdout__.write('\r\n')
             _sys.__stdout__.flush()
@@ -454,8 +454,8 @@ class ParallelExecutor:
                                 _logger.warning("dispatch_agent tool_done 异常", exc_info=True)
                 # 换行，确保后续 markdown 内容从新行开始
                 # ChatUI 激活时 write_line 自带换行，无需写 __stdout__ 破坏分屏布局
-                from ..chat_ui import get_active_chat_ui as _get_active_chat_ui
-                from ..ui._lock import locked_print as _locked_print
+                from ..tui.consumer import get_active_chat_ui as _get_active_chat_ui
+                from ..tui.widgets.lock import locked_print as _locked_print
                 if _get_active_chat_ui() is None:
                     _locked_print(file=_sys.__stdout__)
 
@@ -489,7 +489,7 @@ class ParallelExecutor:
         if not self._is_web:
             self._spawner.render_display(agent_specs)
 
-        from ..ui.parallel import ParallelDisplay as _ParallelDisplay
+        from ..tui.parallel import ParallelDisplay as _ParallelDisplay
         display = _ParallelDisplay(max_history=self.max_history)
         coro = self._run_agents(agent_specs, display)
         return await self._execute_with_error_handling(
@@ -543,8 +543,8 @@ class ParallelExecutor:
             delay = min(stagger * base, stagger_max * 3)
             await asyncio.sleep(delay)
         try:
-            from ..ui.events import DisplayEventBus as _DisplayEventBus
-            from ..ui.events.event_types import AgentStatusChanged as _AgentStatusChanged
+            from ..tui.events import DisplayEventBus as _DisplayEventBus
+            from ..tui.events.event_types import AgentStatusChanged as _AgentStatusChanged
 
             result = await sa.run()
             display.update_agent_status(sa.label, "done")
@@ -561,8 +561,8 @@ class ParallelExecutor:
             display.update_model_phase(sa.label, "error", "cancelled")
             display.update_agent_status(sa.label, "fail")
             display.set_result(sa.label, error="cancelled")
-            from ..ui.events import DisplayEventBus as _DisplayEventBus
-            from ..ui.events.event_types import AgentStatusChanged as _AgentStatusChanged
+            from ..tui.events import DisplayEventBus as _DisplayEventBus
+            from ..tui.events.event_types import AgentStatusChanged as _AgentStatusChanged
             _DisplayEventBus.get_default().publish(_AgentStatusChanged(
                 label=sa.label, status="fail", source="parallel",
             ))
@@ -571,8 +571,8 @@ class ParallelExecutor:
                     _RESULT_KEY: "", _ERROR_KEY: "cancelled",
                     _AGENT_TYPE_KEY: sa.agent_type}
         except Exception as e:
-            from ..ui.events import DisplayEventBus as _DisplayEventBus
-            from ..ui.events.event_types import AgentStatusChanged as _AgentStatusChanged
+            from ..tui.events import DisplayEventBus as _DisplayEventBus
+            from ..tui.events.event_types import AgentStatusChanged as _AgentStatusChanged
 
             _logger.error("SubAgent %s failed: %s", sa.label, e)
             display.update_model_phase(sa.label, "error", str(e))

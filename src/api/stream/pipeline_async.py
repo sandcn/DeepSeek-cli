@@ -30,7 +30,7 @@ from ..stream_parse import convert_tool_calls_map_with_status
 from .context import StreamContext
 from .handlers import ReasoningHandler, ContentHandler, ToolCallsHandler, SpeedHandler
 from ...core.constants import YELLOW, RESET
-from ...ui._lock import locked_print
+from ...tui.widgets.lock import locked_print
 
 _logger = logging.getLogger(__name__)
 
@@ -345,7 +345,7 @@ class AsyncStreamPipeline:
 
         # ── 第 2a 步：清除 tracker 显示行（仅在非 silent 模式，ChatUI 活跃时跳过） ─
         if not ctx.silent and ctx.tracker.started:
-            from ...chat_ui import get_active_chat_ui  # noqa: PLC0415
+            from ...tui.consumer import get_active_chat_ui  # noqa: PLC0415
             if get_active_chat_ui() is None:
                 locked_print("\r\033[K", end="", flush=True, file=sys.__stdout__)
 
@@ -401,7 +401,7 @@ class AsyncStreamPipeline:
                 raise
 
         if not ctx.silent and (ctx.content_full or ctx.reasoning_full):
-            from ...chat_ui import get_active_chat_ui  # noqa: PLC0415
+            from ...tui.consumer import get_active_chat_ui  # noqa: PLC0415
             if get_active_chat_ui() is None:
                 locked_print(flush=True, file=sys.__stdout__)
 

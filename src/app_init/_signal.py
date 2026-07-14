@@ -12,7 +12,7 @@ import os
 import signal
 import threading
 
-from ..ui._lock import locked_print
+from ..tui.widgets.lock import locked_print
 from ..api.escape_monitor import get_active_monitor, stop_active_monitor
 
 _logger = logging.getLogger(__name__)

@@ -12,8 +12,8 @@ import time
 from src._compat_termios import HAS_TERMIOS, termios, tty
 from .base import Func, tool_metadata
 from ..core.constants import GREEN, YELLOW, RED, DIM, RESET
-from ..ui._lock import locked_print
-from ..chat_ui import get_active_chat_ui
+from ..tui.widgets.lock import locked_print
+from ..tui.consumer import get_active_chat_ui
 from ..api.escape_monitor import get_active_monitor
 from ..api.events import publish_event
 

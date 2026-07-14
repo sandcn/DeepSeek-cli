@@ -30,7 +30,7 @@ def _make_render_state(**overrides):
         rs = _make_render_state()
         rs = _make_render_state(reasoning_state=_ReasoningState.CLOSED)
     """
-    from src.chat_ui.renderer import _RenderState
+    from src.tui.consumer.render_state import _RenderState
     return _RenderState(**overrides)
 
 
@@ -59,7 +59,7 @@ class TestRenderStateGetReasoning:
     def test_initial_state_inactive(self):
         """初始状态为 INACTIVE，reasoning 为 None。"""
         rs = _make_render_state()
-        from src.chat_ui.render_state import _ReasoningState
+        from src.tui.consumer.render_state import _ReasoningState
 
         assert rs.reasoning_state == _ReasoningState.INACTIVE
         assert rs.reasoning is None
@@ -75,7 +75,7 @@ class TestRenderStateGetReasoning:
 
         assert result is mock_rr
         assert rs.reasoning is mock_rr
-        from src.chat_ui.render_state import _ReasoningState
+        from src.tui.consumer.render_state import _ReasoningState
         assert rs.reasoning_state == _ReasoningState.ACTIVE
         MockRenderer.assert_called_once_with(
             style="dim",
@@ -89,7 +89,7 @@ class TestRenderStateGetReasoning:
         rs = _make_render_state()
         mock_rr = _make_mock_incremental_renderer()
         rs.reasoning = mock_rr
-        from src.chat_ui.render_state import _ReasoningState
+        from src.tui.consumer.render_state import _ReasoningState
         rs.reasoning_state = _ReasoningState.ACTIVE
 
         first = rs.get_reasoning()
@@ -100,7 +100,7 @@ class TestRenderStateGetReasoning:
 
     def test_get_reasoning_closed_returns_none(self):
         """CLOSED 状态 → 返回 None。"""
-        from src.chat_ui.render_state import _ReasoningState
+        from src.tui.consumer.render_state import _ReasoningState
         rs = _make_render_state(reasoning_state=_ReasoningState.CLOSED)
 
         result = rs.get_reasoning()
@@ -109,7 +109,7 @@ class TestRenderStateGetReasoning:
     @patch("src.renderer.IncrementalRenderer")
     def test_get_reasoning_closed_does_not_create(self, MockRenderer):
         """CLOSED 状态即使 reasoning=None 也不创建渲染器。"""
-        from src.chat_ui.render_state import _ReasoningState
+        from src.tui.consumer.render_state import _ReasoningState
         rs = _make_render_state(reasoning_state=_ReasoningState.CLOSED, reasoning=None)
 
         result = rs.get_reasoning()
@@ -172,8 +172,8 @@ class TestRenderStateCloseReasoning:
 
     def test_close_reasoning_writes_separator_and_closes(self):
         """关闭时写入分隔线、close、状态→CLOSED。"""
-        from src.chat_ui.const import _THINKING_SEPARATOR
-        from src.chat_ui.render_state import _ReasoningState
+        from src.tui.consumer.const import _THINKING_SEPARATOR
+        from src.tui.consumer.render_state import _ReasoningState
         rs = _make_render_state(reasoning_state=_ReasoningState.ACTIVE)
         mock_rr = _make_mock_incremental_renderer()
         rs.reasoning = mock_rr
@@ -187,7 +187,7 @@ class TestRenderStateCloseReasoning:
 
     def test_close_reasoning_from_inactive(self):
         """从 INACTIVE 状态关闭 → CLOSED，reasoning=None 时不写分隔线。"""
-        from src.chat_ui.render_state import _ReasoningState
+        from src.tui.consumer.render_state import _ReasoningState
         rs = _make_render_state(reasoning_state=_ReasoningState.INACTIVE, reasoning=None)
 
         rs.close_reasoning()
@@ -198,7 +198,7 @@ class TestRenderStateCloseReasoning:
 
     def test_close_reasoning_idempotent(self):
         """CLOSED 状态重复关闭——幂等（无副作用）。"""
-        from src.chat_ui.render_state import _ReasoningState
+        from src.tui.consumer.render_state import _ReasoningState
         rs = _make_render_state(reasoning_state=_ReasoningState.CLOSED, reasoning=None)
 
         rs.close_reasoning()
@@ -221,7 +221,7 @@ class TestRenderStateReopenReasoning:
 
     def test_reopen_reasoning_from_closed(self):
         """CLOSED → INACTIVE，reasoning 置为 None。"""
-        from src.chat_ui.render_state import _ReasoningState
+        from src.tui.consumer.render_state import _ReasoningState
         mock_rr = _make_mock_incremental_renderer()
         rs = _make_render_state(
             reasoning_state=_ReasoningState.CLOSED,
@@ -235,7 +235,7 @@ class TestRenderStateReopenReasoning:
 
     def test_reopen_reasoning_from_active_no_op(self):
         """ACTIVE 状态调用 reopen — 无操作，保持 ACTIVE。"""
-        from src.chat_ui.render_state import _ReasoningState
+        from src.tui.consumer.render_state import _ReasoningState
         mock_rr = _make_mock_incremental_renderer()
         rs = _make_render_state(
             reasoning_state=_ReasoningState.ACTIVE,
@@ -249,7 +249,7 @@ class TestRenderStateReopenReasoning:
 
     def test_reopen_reasoning_from_inactive_no_op(self):
         """INACTIVE 状态调用 reopen — 无操作，保持 INACTIVE。"""
-        from src.chat_ui.render_state import _ReasoningState
+        from src.tui.consumer.render_state import _ReasoningState
         rs = _make_render_state(
             reasoning_state=_ReasoningState.INACTIVE,
             reasoning=None,
@@ -263,7 +263,7 @@ class TestRenderStateReopenReasoning:
     @patch("src.renderer.IncrementalRenderer")
     def test_reopen_reasoning_full_cycle(self, MockRenderer):
         """close → reopen → get_reasoning 完整路径：CLOSED→INACTIVE→重新创建→ACTIVE。"""
-        from src.chat_ui.render_state import _ReasoningState
+        from src.tui.consumer.render_state import _ReasoningState
         mock_rr_new = _make_mock_incremental_renderer()
         MockRenderer.return_value = mock_rr_new
         rs = _make_render_state(
@@ -329,7 +329,7 @@ class TestRenderStateCloseAll:
 
     def test_close_all_closes_everything(self):
         """关闭推理、内容，全部置为 None。"""
-        from src.chat_ui.render_state import _ReasoningState
+        from src.tui.consumer.render_state import _ReasoningState
         mock_reasoning = _make_mock_incremental_renderer()
         mock_content = _make_mock_incremental_renderer()
         rs = _make_render_state(
@@ -394,56 +394,56 @@ class TestReasoningStateTransitions:
 
     def test_inactive_to_active_is_legal(self):
         """INACTIVE → ACTIVE 是合法转换。"""
-        from src.chat_ui.render_state import _ReasoningState
+        from src.tui.consumer.render_state import _ReasoningState
         assert _ReasoningState.INACTIVE.can_transition_to(_ReasoningState.ACTIVE) is True
 
     def test_active_to_closed_is_legal(self):
         """ACTIVE → CLOSED 是合法转换。"""
-        from src.chat_ui.render_state import _ReasoningState
+        from src.tui.consumer.render_state import _ReasoningState
         assert _ReasoningState.ACTIVE.can_transition_to(_ReasoningState.CLOSED) is True
 
     def test_inactive_to_closed_is_legal(self):
         """INACTIVE → CLOSED 是合法转换。"""
-        from src.chat_ui.render_state import _ReasoningState
+        from src.tui.consumer.render_state import _ReasoningState
         assert _ReasoningState.INACTIVE.can_transition_to(_ReasoningState.CLOSED) is True
 
     def test_closed_to_inactive_is_legal(self):
         """CLOSED → INACTIVE 是合法转换。"""
-        from src.chat_ui.render_state import _ReasoningState
+        from src.tui.consumer.render_state import _ReasoningState
         assert _ReasoningState.CLOSED.can_transition_to(_ReasoningState.INACTIVE) is True
 
     # ── 非法转换（5 种）──
 
     def test_inactive_to_inactive_is_illegal(self):
         """INACTIVE → INACTIVE 是非法转换（自环）。"""
-        from src.chat_ui.render_state import _ReasoningState
+        from src.tui.consumer.render_state import _ReasoningState
         assert _ReasoningState.INACTIVE.can_transition_to(_ReasoningState.INACTIVE) is False
 
     def test_active_to_active_is_illegal(self):
         """ACTIVE → ACTIVE 是非法转换（自环）。"""
-        from src.chat_ui.render_state import _ReasoningState
+        from src.tui.consumer.render_state import _ReasoningState
         assert _ReasoningState.ACTIVE.can_transition_to(_ReasoningState.ACTIVE) is False
 
     def test_active_to_inactive_is_illegal(self):
         """ACTIVE → INACTIVE 是非法转换（跳过 CLOSED）。"""
-        from src.chat_ui.render_state import _ReasoningState
+        from src.tui.consumer.render_state import _ReasoningState
         assert _ReasoningState.ACTIVE.can_transition_to(_ReasoningState.INACTIVE) is False
 
     def test_closed_to_active_is_illegal(self):
         """CLOSED → ACTIVE 是非法转换（跳过 INACTIVE）。"""
-        from src.chat_ui.render_state import _ReasoningState
+        from src.tui.consumer.render_state import _ReasoningState
         assert _ReasoningState.CLOSED.can_transition_to(_ReasoningState.ACTIVE) is False
 
     def test_closed_to_closed_is_illegal(self):
         """CLOSED → CLOSED 是非法转换（自环）。"""
-        from src.chat_ui.render_state import _ReasoningState
+        from src.tui.consumer.render_state import _ReasoningState
         assert _ReasoningState.CLOSED.can_transition_to(_ReasoningState.CLOSED) is False
 
     # ── 集成测试：高層方法中的断言不破坏合法转换 ──
 
     def test_get_reasoning_assertion_passes(self):
         """get_reasoning() 中 INACTIVE→ACTIVE 断言通过。"""
-        from src.chat_ui.render_state import _ReasoningState
+        from src.tui.consumer.render_state import _ReasoningState
         rs = _make_render_state(reasoning_state=_ReasoningState.INACTIVE, reasoning=None)
         with patch("src.renderer.IncrementalRenderer") as MockRenderer:
             mock_rr = _make_mock_incremental_renderer()
@@ -454,14 +454,14 @@ class TestReasoningStateTransitions:
 
     def test_close_reasoning_assertion_passes_from_inactive(self):
         """close_reasoning() 中 INACTIVE→CLOSED 断言通过。"""
-        from src.chat_ui.render_state import _ReasoningState
+        from src.tui.consumer.render_state import _ReasoningState
         rs = _make_render_state(reasoning_state=_ReasoningState.INACTIVE)
         rs.close_reasoning()
         assert rs.reasoning_state == _ReasoningState.CLOSED
 
     def test_close_reasoning_assertion_passes_from_active(self):
         """close_reasoning() 中 ACTIVE→CLOSED 断言通过。"""
-        from src.chat_ui.render_state import _ReasoningState
+        from src.tui.consumer.render_state import _ReasoningState
         rs = _make_render_state(reasoning_state=_ReasoningState.ACTIVE,
                                 reasoning=_make_mock_incremental_renderer())
         rs.close_reasoning()
@@ -469,7 +469,7 @@ class TestReasoningStateTransitions:
 
     def test_reopen_reasoning_assertion_passes(self):
         """reopen_reasoning() 中 CLOSED→INACTIVE 断言通过。"""
-        from src.chat_ui.render_state import _ReasoningState
+        from src.tui.consumer.render_state import _ReasoningState
         rs = _make_render_state(reasoning_state=_ReasoningState.CLOSED)
         rs.reopen_reasoning()
         assert rs.reasoning_state == _ReasoningState.INACTIVE

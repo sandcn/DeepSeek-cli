@@ -22,7 +22,7 @@ class DisplayEventBusAdapter(EventPort):
     _default_lock = threading.RLock()
 
     def __init__(self, source: str = "core"):
-        from ...ui.events.event_bus import DisplayEventBus
+        from ...tui.events.event_bus import DisplayEventBus
         self._bus = DisplayEventBus.get_default()
         self._source = source
 
@@ -132,12 +132,12 @@ class DisplayEventBusAdapter(EventPort):
 
     def _publish_output(self, text: str, level: str = "info", source: str = "core") -> None:
         """发布输出事件"""
-        from ...ui.events import publish_output
+        from ...tui.events import publish_output
         publish_output(text, level=level, source=source)
 
     def _publish_tool_summary(self, data: dict, source: str = "core") -> None:
         """发布工具摘要事件"""
-        from ...ui.events.event_types import ToolSummaryEvent
+        from ...tui.events.event_types import ToolSummaryEvent
         event = ToolSummaryEvent(
             successful_tools=tuple(data.get("successful_tools", [])),
             failed_tools=tuple(data.get("failed_tools", [])),

@@ -40,7 +40,7 @@ class SharedCapture(io.StringIO):
 
     def write(self, s: str) -> int:
         if s and s.strip():
-            from ....ui.events.event_types import ToolOutputChunkEvent
+            from ....tui.events.event_types import ToolOutputChunkEvent
             for lbl in list(self._tool_labels):
                 try:
                     self._event_port.publish_event(ToolOutputChunkEvent(

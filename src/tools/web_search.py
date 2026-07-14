@@ -19,7 +19,7 @@ from .base import Func, tool_metadata
 from ._constants import WEB_USER_AGENTS as _USER_AGENTS
 from .page_fetcher import fetch_page, format_fetch_result
 from ..core.constants import GREEN, YELLOW, DIM, RESET
-from ..ui._lock import locked_print
+from ..tui.widgets.lock import locked_print
 
 
 @tool_metadata(

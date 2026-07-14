@@ -13,7 +13,7 @@ from .client_async import (
 )
 from .interrupt_async import is_interrupted_async, wait_for_interrupt_async
 from ..config import MAX_RETRIES, RETRY_BASE_SEC
-from ..ui._lock import locked_print
+from ..tui.widgets.lock import locked_print
 
 _logger = logging.getLogger(__name__)
 

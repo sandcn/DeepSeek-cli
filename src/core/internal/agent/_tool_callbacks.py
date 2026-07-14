@@ -248,7 +248,7 @@ class ToolCallbackChain:
         if is_web and func.__class__.web_display is not Func.web_display:
             return await func.web_display()
 
-        from ....chat_ui import get_active_chat_ui
+        from ....tui.consumer import get_active_chat_ui
         chat_ui = get_active_chat_ui()
         if chat_ui is not None:
             chat_ui.suspend()

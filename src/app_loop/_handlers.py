@@ -45,7 +45,7 @@ async def _handle_editmsg_cmd(session, state) -> None:
         monitor.stop()
     needs_rerender = False
     try:
-        from ..ui.msg_list import edit_current_messages
+        from ..tui.pipeline.message_editor import edit_current_messages
         edit_state = {"model": state.model, "retry": False, "prefill": ""}
         await asyncio.to_thread(
             edit_current_messages, session.agent, edit_state,

@@ -224,7 +224,7 @@ class SubAgent(BaseAgent):
     def _update_display(self, usage):
         """更新显示状态（累加每次模型调用的 token 到显示层）"""
         if self.display:
-            from ..ui.events.event_types import UsageUpdatedEvent, ModelPhaseEvent
+            from ..tui.events.event_types import UsageUpdatedEvent, ModelPhaseEvent
 
             if usage is not None:
                 self.display.update_usage(self.label, usage, replace=False)
@@ -269,7 +269,7 @@ class SubAgent(BaseAgent):
         self,
     ) -> Tuple[Optional[Callable], Optional[Callable], Optional[Callable]]:
         """构建工具执行回调三元组 (on_before, on_after, run_method)"""
-        from ..ui.events.event_types import ToolStartedEvent, ToolDoneEvent
+        from ..tui.events.event_types import ToolStartedEvent, ToolDoneEvent
         from .internal.agent._tool_callbacks import _run_file_display
 
         display = self.display

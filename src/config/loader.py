@@ -5,7 +5,7 @@ import logging
 import os
 import sys
 
-from ..ui._lock import locked_print
+from ..tui.widgets.lock import locked_print
 
 from .defaults import CONFIG_DIR, LOG_FILE, RC_FILE, DEFAULTS, PROVIDERS
 from .schema import _validate_rc

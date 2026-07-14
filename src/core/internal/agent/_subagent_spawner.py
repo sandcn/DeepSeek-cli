@@ -89,14 +89,14 @@ class SubAgentSpawner:
         2. ChatUIConsumer 未激活 → IncrementalRenderer 直接写 sys.__stdout__
            （适用于非分屏模式，原逻辑不变）
         """
-        from src.chat_ui import get_active_chat_ui
+        from src.tui.consumer import get_active_chat_ui
 
         # ── 构造完整的 markdown 文本 ──────────────────────────────────
         md_parts: list[str] = []
         for i, spec in enumerate(specs, 1):
             desc = spec.get(_DESCRIPTION_KEY, f"子任务 {i}")
             agent_type = spec.get("agent_type", "execute")
-            from ....ui.parallel._tool_icons import AGENT_TYPE_ABBREV as _AGENT_TYPE_ABBREV
+            from ....tui.parallel._tool_icons import AGENT_TYPE_ABBREV as _AGENT_TYPE_ABBREV
             abbr = _AGENT_TYPE_ABBREV.get(agent_type, "??")
             prompt = spec.get("prompt", "")
             if prompt:
@@ -146,7 +146,7 @@ class SubAgentSpawner:
                 for i, spec in enumerate(specs, 1):
                     desc = spec.get(_DESCRIPTION_KEY, f"子任务 {i}")
                     agent_type = spec.get("agent_type", "execute")
-                    from ....ui.parallel._tool_icons import AGENT_TYPE_ABBREV as _AGENT_TYPE_ABBREV
+                    from ....tui.parallel._tool_icons import AGENT_TYPE_ABBREV as _AGENT_TYPE_ABBREV
                     abbr = _AGENT_TYPE_ABBREV.get(agent_type, "??")
                     prompt = spec.get("prompt", "")
                     if prompt:

@@ -15,7 +15,7 @@ from .encoding import async_detect_encoding, pick_best_decoding, FALLBACK_ENCODI
 from ._constants import LARGE_FILE_THRESHOLD
 from ..core.constants import CYAN, DIM, RESET, RED
 from ..ui.colors import console
-from ..ui._lock import locked_print, _try_acquire_output_lock
+from ..tui.widgets.lock import locked_print, _try_acquire_output_lock
 
 _UNSUPPORTED_EXTENSIONS = frozenset({"txt", "text"})
 
@@ -388,7 +388,7 @@ class ReadFileFunc(Func):
     def _get_chat_ui():
         """获取活跃 ChatUI 实例，不可用时返回 None。"""
         try:
-            from ..chat_ui import get_active_chat_ui  # noqa: PLC0415
+            from ..tui.consumer import get_active_chat_ui  # noqa: PLC0415
             return get_active_chat_ui()
         except Exception:
             return None

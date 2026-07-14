@@ -16,7 +16,7 @@ from unittest.mock import patch, MagicMock
 
 import pytest
 
-from src import chat_ui
+from src.tui import consumer as chat_ui
 
 
 # ── Fixture: ChatUIErrorHandler 实例 ───────────────────
@@ -30,7 +30,7 @@ def _reset_error_handler():
     若 handler 不存在（模块未加载），跳过。
     """
     root = logging.getLogger()
-    from src.chat_ui.error_handler import ChatUIErrorHandler
+    from src.tui.consumer.error_handler import ChatUIErrorHandler
     handler = None
     for h in root.handlers:
         if isinstance(h, ChatUIErrorHandler):
@@ -213,7 +213,7 @@ class TestChatUIErrorHandlerSelfRef:
         验证 thread-local _handler_reentrant.is_active 能阻断
         on_error 路径中意外产生的二次 emit。
         """
-        from src.chat_ui.error_handler import _handler_reentrant
+        from src.tui.consumer.error_handler import _handler_reentrant
         # 确保测试开始时重入标记为 False
         _handler_reentrant.is_active = False
 
@@ -260,13 +260,13 @@ class TestRenderCommandError:
 
     def test_error_enum_value(self):
         """ERROR = 16"""
-        from src.chat_ui import RenderCommand
+        from src.tui.consumer import RenderCommand
         assert RenderCommand.ERROR == 16
         assert isinstance(RenderCommand.ERROR, RenderCommand)
 
     def test_error_in_dispatch(self):
         """_RENDER_DISPATCH 包含 ERROR 条目"""
-        from src.chat_ui.renderer import _RENDER_DISPATCH
+        from src.tui.consumer.renderer import _RENDER_DISPATCH
         dispatch = _RENDER_DISPATCH
         assert 16 in dispatch
         method_name, arg_indices = dispatch[16]
@@ -275,7 +275,7 @@ class TestRenderCommandError:
 
     def test_error_instance_creation(self):
         """ERROR 枚举值可实例化命令元组"""
-        from src.chat_ui import RenderCommand
+        from src.tui.consumer import RenderCommand
         cmd = (RenderCommand.ERROR, "test error message")
         assert cmd[0] == 16
         assert cmd[1] == "test error message"
@@ -289,7 +289,7 @@ class TestOnModelPhase:
     @pytest.fixture
     def consumer(self):
         """返回一个 ChatUIConsumer 实例，cmd_queue 清空。"""
-        from src.chat_ui import ChatUIConsumer
+        from src.tui.consumer import ChatUIConsumer
         c = ChatUIConsumer()
         # 清空可能残留的消息
         while not c._engine._cmd_queue.empty():
@@ -298,8 +298,8 @@ class TestOnModelPhase:
 
     def test_error_phase_dispatches_error(self, consumer):
         """phase="error" + label="_MAIN_LABEL" + 非空 info → push ERROR 命令"""
-        from src.chat_ui import _MAIN_LABEL, RenderCommand
-        from src.ui.events.event_types import ModelPhaseEvent
+        from src.tui.consumer import _MAIN_LABEL, RenderCommand
+        from src.tui.events.event_types import ModelPhaseEvent
         event = ModelPhaseEvent(
             label=_MAIN_LABEL, phase="error", info="test timeout error",
         )
@@ -310,8 +310,8 @@ class TestOnModelPhase:
 
     def test_subagent_label_skipped(self, consumer):
         """SubAgent label（!= _MAIN_LABEL）→ 不 push 任何命令"""
-        from src.chat_ui import RenderCommand
-        from src.ui.events.event_types import ModelPhaseEvent
+        from src.tui.consumer import RenderCommand
+        from src.tui.events.event_types import ModelPhaseEvent
         event = ModelPhaseEvent(
             label="subagent", phase="error", info="subagent error",
         )
@@ -320,8 +320,8 @@ class TestOnModelPhase:
 
     def test_non_error_phase_skipped(self, consumer):
         """非 error phase（如 "thinking"）→ 不 push 任何命令"""
-        from src.chat_ui import _MAIN_LABEL
-        from src.ui.events.event_types import ModelPhaseEvent
+        from src.tui.consumer import _MAIN_LABEL
+        from src.tui.events.event_types import ModelPhaseEvent
         event = ModelPhaseEvent(
             label=_MAIN_LABEL, phase="thinking", info="thinking...",
         )
@@ -330,8 +330,8 @@ class TestOnModelPhase:
 
     def test_empty_info_skipped(self, consumer):
         """空 info → 不 push 任何命令"""
-        from src.chat_ui import _MAIN_LABEL
-        from src.ui.events.event_types import ModelPhaseEvent
+        from src.tui.consumer import _MAIN_LABEL
+        from src.tui.events.event_types import ModelPhaseEvent
         event = ModelPhaseEvent(
             label=_MAIN_LABEL, phase="error", info="",
         )
@@ -340,8 +340,8 @@ class TestOnModelPhase:
 
     def test_long_info_truncated(self, consumer):
         """超长 info（>200 字符）→ 截断并追加"..." """
-        from src.chat_ui import _MAIN_LABEL, RenderCommand
-        from src.ui.events.event_types import ModelPhaseEvent
+        from src.tui.consumer import _MAIN_LABEL, RenderCommand
+        from src.tui.events.event_types import ModelPhaseEvent
         long_info = "x" * 300
         event = ModelPhaseEvent(
             label=_MAIN_LABEL, phase="error", info=long_info,
@@ -357,8 +357,8 @@ class TestOnModelPhase:
 
     def test_short_info_not_truncated(self, consumer):
         """短 info（<=200 字符）→ 原样传递"""
-        from src.chat_ui import _MAIN_LABEL, RenderCommand
-        from src.ui.events.event_types import ModelPhaseEvent
+        from src.tui.consumer import _MAIN_LABEL, RenderCommand
+        from src.tui.events.event_types import ModelPhaseEvent
         info = "short error message"
         event = ModelPhaseEvent(
             label=_MAIN_LABEL, phase="error", info=info,
@@ -378,28 +378,28 @@ class TestIsAgentSource:
 
     def test_none_source_returns_false(self):
         """source=None → 返回 False，不抛异常"""
-        from src.chat_ui.dispatcher import EventDispatcher
+        from src.tui.consumer.dispatcher import EventDispatcher
         assert EventDispatcher._is_agent_source(None) is False
 
     def test_main_source_returns_true(self):
         """source='agent' → 返回 True"""
-        from src.chat_ui.dispatcher import EventDispatcher
-        from src.chat_ui.const import _MAIN_SOURCE
+        from src.tui.consumer.dispatcher import EventDispatcher
+        from src.tui.consumer.const import _MAIN_SOURCE
         assert EventDispatcher._is_agent_source(_MAIN_SOURCE) is True
 
     def test_agent_prefix_returns_true(self):
         """source='agent-1' → 返回 True"""
-        from src.chat_ui.dispatcher import EventDispatcher
+        from src.tui.consumer.dispatcher import EventDispatcher
         assert EventDispatcher._is_agent_source("agent-1") is True
 
     def test_other_source_returns_false(self):
         """source='user' → 返回 False"""
-        from src.chat_ui.dispatcher import EventDispatcher
+        from src.tui.consumer.dispatcher import EventDispatcher
         assert EventDispatcher._is_agent_source("user") is False
 
     def test_empty_string_returns_false(self):
         """source='' → 返回 False"""
-        from src.chat_ui.dispatcher import EventDispatcher
+        from src.tui.consumer.dispatcher import EventDispatcher
         assert EventDispatcher._is_agent_source("") is False
 
 
@@ -414,7 +414,7 @@ class TestEmitGetMessageTypeError:
         """getMessage() 抛出 TypeError → emit 静默跳过，不崩溃"""
         import logging
         from unittest.mock import MagicMock, patch
-        from src import chat_ui
+        from src.tui import consumer as chat_ui
 
         handler = chat_ui.ChatUIErrorHandler()
 
@@ -444,7 +444,7 @@ class TestStopUnsubscribeSafe:
     def test_stop_unsubscribe_safe(self):
         """unsubscribe 抛出异常 → stop() 不传播异常"""
         from unittest.mock import MagicMock, patch
-        from src.chat_ui import ChatUIConsumer
+        from src.tui.consumer import ChatUIConsumer
 
         consumer = ChatUIConsumer()
 
@@ -478,7 +478,7 @@ class TestWaitForUserInput:
     def test_empty_string_returns_immediately(self):
         """get_queued_input() 返回 "" → 直接返回空字符串（不再继续等待）"""
         from unittest.mock import MagicMock
-        from src.chat_ui import ChatUIConsumer
+        from src.tui.consumer import ChatUIConsumer
 
         consumer = ChatUIConsumer()
 
@@ -496,7 +496,7 @@ class TestWaitForUserInput:
     def test_none_keeps_waiting(self):
         """get_queued_input() 返回 None → 继续等待"""
         from unittest.mock import MagicMock
-        from src.chat_ui import ChatUIConsumer
+        from src.tui.consumer import ChatUIConsumer
 
         consumer = ChatUIConsumer()
 
@@ -511,7 +511,7 @@ class TestWaitForUserInput:
     def test_timeout_returns_empty(self):
         """超时 → 返回空字符串"""
         from unittest.mock import MagicMock
-        from src.chat_ui import ChatUIConsumer
+        from src.tui.consumer import ChatUIConsumer
 
         consumer = ChatUIConsumer()
 

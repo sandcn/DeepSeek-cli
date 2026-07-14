@@ -17,7 +17,7 @@ from .file_ops import (
 )
 from ..core.constants import GREEN, RED, DIM, RESET
 from ..ui.diff_renderer import show_file_diff
-from ..ui._lock import (
+from ..tui.widgets.lock import (
     diff_active,
 )
 from ..core.sandbox_manager import async_record_file_change_from_context

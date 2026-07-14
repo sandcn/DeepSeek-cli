@@ -23,7 +23,7 @@ from pathlib import Path
 import logging
 
 from .api.stats import get_token_stats
-from .ui._lock import locked_print
+from .tui.widgets.lock import locked_print
 from .paths import CHAT_MSGS_DIR, ensure_chat_msgs_dir
 
 _logger = logging.getLogger(__name__)

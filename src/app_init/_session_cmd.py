@@ -10,7 +10,7 @@ import logging
 
 from ..chat_msgs import list_sessions, delete_session, export_session
 from ..ui.colors import CYAN, DIM, RESET, YELLOW, GREEN
-from ..ui._lock import locked_print
+from ..tui.widgets.lock import locked_print
 
 _logger = logging.getLogger(__name__)
 

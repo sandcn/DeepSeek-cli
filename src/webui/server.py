@@ -17,7 +17,7 @@ from aiohttp import web
 from ._termux import auto_open_browser
 from .session import WEBChatSession
 from .routing import handle_websocket
-from ..ui._lock import locked_print
+from ..tui.widgets.lock import locked_print
 
 _logger = logging.getLogger(__name__)
 

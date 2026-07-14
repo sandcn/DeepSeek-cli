@@ -16,7 +16,7 @@ from rich.style import Style
 
 import logging
 import time
-from ..ui._lock import render_lock, _try_acquire_output_lock
+from ..tui.widgets.lock import render_lock, _try_acquire_output_lock
 
 _logger = logging.getLogger(__name__)
 from .output_strategies import get_strategy

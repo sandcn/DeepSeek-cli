@@ -25,7 +25,7 @@ import time
 from typing import Any
 
 from ...ui.output_target import IOutputTarget, TerminalTarget
-from ...ui.renderer import FrameRenderer
+from ...tui.frame import FrameRenderer
 from ..events.event_bus import DisplayEventBus
 from ..events.event_types import LiveOutputEvent
 from ._config import DisplayConfig

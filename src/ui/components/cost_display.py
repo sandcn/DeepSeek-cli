@@ -6,8 +6,8 @@ from ..colors import RESET, DARK_GRAY
 from ..ansi import strip_ansi, truncate_ansi_line
 from ...config import MAX_CONTEXT_CHARS
 from ...core.context_selector import calc_usage_percent_values, total_chars
-from .._lock import _try_acquire_output_lock
-from ..parallel._text_formatter import TextFormatter
+from ...tui.widgets.lock import _try_acquire_output_lock
+from ...tui.parallel._text_formatter import TextFormatter
 
 _COMPRESS_WARN_PCT = 90
 _COMPRESS_HINT_PCT = 80
@@ -95,7 +95,7 @@ def show_round_cost(delta_in, delta_out, delta_calls, model, prices, total_stats
     with _try_acquire_output_lock(name="cost_display", timeout=1.0):
         chat_ui = None
         try:
-            from ...chat_ui import get_active_chat_ui
+            from ...tui.consumer import get_active_chat_ui
             chat_ui = get_active_chat_ui()
         except Exception:
             pass

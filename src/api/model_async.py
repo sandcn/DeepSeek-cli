@@ -23,7 +23,7 @@ from .stats import (
     add_token_size,
 )
 from ..config import MODEL
-from ..ui._lock import locked_print
+from ..tui.widgets.lock import locked_print
 from ._retry import retry_api_call_async, retry_on_parse_failure_async
 from ._adapter_manager import get_adapter
 

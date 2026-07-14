@@ -24,18 +24,18 @@ class DefaultOutputAdapter(OutputPort):
 
     def _get_lock(self):
         if self._lock is None:
-            from ...ui._lock import render_lock
+            from ...tui.widgets.lock import render_lock
             self._lock = render_lock
         return self._lock
 
     def write(self, text: str, level: str = "info", source: str = "core") -> None:
-        from ...ui.events import publish_output
+        from ...tui.events import publish_output
         publish_output(text, level=level, source=source)
 
     def write_with_lock(self, text: str, level: str = "info", source: str = "core") -> None:
         lock = self._get_lock()
         with lock:
-            from ...ui.events import publish_output
+            from ...tui.events import publish_output
             publish_output(text, level=level, source=source)
 
     @contextmanager

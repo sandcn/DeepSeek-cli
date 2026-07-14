@@ -52,7 +52,7 @@ class CommandUiAdapter:
 
         返回值: {"action": "confirmed"|"cancel"|"error", "index": int | None}
         """
-        from ...ui.tui.bottom_bar.selection import run_bottom_bar_selection as _select
+        from ...tui.widgets.bottom_bar.selection import run_bottom_bar_selection as _select
         return _select(items, display_items, initial_idx, title, bottom_bar)
 
     def get_theme_names_with_desc(self) -> list[tuple[str, str]]:
@@ -83,12 +83,12 @@ class CommandUiAdapter:
         speed: int = 0,
     ) -> None:
         """恢复会话后展示所有消息内容。"""
-        from ...ui.tui._message_display import _display_messages as _fn
+        from ...tui.pipeline.message_display import _display_messages as _fn
         _fn(data, agent, idx_map, speed)
 
     def edit_current_messages(self, agent: Any, state: dict) -> bool:
         """编辑当前消息列表，返回是否成功。"""
-        from ...ui.tui.message_editor import edit_current_messages as _fn
+        from ...tui.pipeline.message_editor import edit_current_messages as _fn
         return _fn(agent, state)
 
 

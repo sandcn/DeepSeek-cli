@@ -74,7 +74,7 @@ class OutputConsumer:
         # ChatUI 活跃时，所有 OutputEvent 由 ChatUIConsumer 渲染管线处理，
         # OutputConsumer 跳过直写避免重复和绕过 ChatUI
         try:
-            from ...chat_ui import get_active_chat_ui
+            from ...tui.consumer import get_active_chat_ui
             if get_active_chat_ui() is not None:
                 return
         except ImportError:

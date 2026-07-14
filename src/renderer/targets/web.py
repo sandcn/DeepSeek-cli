@@ -18,7 +18,7 @@ import html as html_mod
 import logging
 from typing import Any
 
-from ...ui._lock import locked_print
+from ...tui.widgets.lock import locked_print
 from .base import RenderTarget
 from ._web_inline import _InlineHtmlMixin
 

@@ -48,7 +48,7 @@ class EditmsgPlugin(InteractiveCommandPlugin):
         suspend/stop → edit → resume/start 时序。
         """
         # 延迟导入避免模块加载时级联依赖
-        from ....ui.msg_list import edit_current_messages as _edit_msgs
+        from ....tui.pipeline.message_editor import edit_current_messages as _edit_msgs
         from ....app_loop import _non_system_messages
 
         loop = self._loop

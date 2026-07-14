@@ -24,7 +24,7 @@ class DefaultDisplayAdapter(DisplayPort):
 
     def _get_proxy(self):
         if self._proxy is None:
-            from ...ui.events.adapters import EventBusDisplayProxy
+            from ...tui.events.adapters import EventBusDisplayProxy
             self._proxy = EventBusDisplayProxy(source=self._source)
         return self._proxy
 

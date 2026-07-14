@@ -7,7 +7,7 @@
 """
 
 import pytest
-from src.chat_ui import _apply_completion
+from src.tui.consumer import _apply_completion
 
 
 class TestApplyCompletionRfind:
@@ -135,7 +135,7 @@ class TestCmplHandlerOnAuto:
     def _make_handler(bb, engine):
         """创建 _CmplHandler 并注入 mock request_redraw。"""
         from unittest.mock import MagicMock
-        from src.chat_ui.completion import _CmplHandler
+        from src.tui.consumer.completion import _CmplHandler
         request_redraw = MagicMock()
         return _CmplHandler(bb, engine, request_redraw=request_redraw), request_redraw
 
@@ -168,7 +168,7 @@ class TestCmplHandlerOnAuto:
     def test_single_forward_slash_triggers_completion(self):
         """/ 单字符 → 应触发补全（命令前缀）。"""
         from unittest.mock import MagicMock
-        from src.ui._completion import CompletionItem
+        from src.tui.widgets.completion import CompletionItem
 
         bb = MagicMock()
         bb.is_completion_visible = False
@@ -205,7 +205,7 @@ class TestCmplHandlerOnAuto:
     def test_two_char_non_command_triggers_completion(self):
         """普通文本 ≥ 2 字符 → 触发补全。"""
         from unittest.mock import MagicMock
-        from src.ui._completion import CompletionItem
+        from src.tui.widgets.completion import CompletionItem
 
         bb = MagicMock()
         bb.is_completion_visible = False
@@ -226,7 +226,7 @@ class TestCmplHandlerOnAuto:
     def test_command_with_param_uses_last_word(self):
         """命令+参数 → orig_prefix 取最后一个词。"""
         from unittest.mock import MagicMock
-        from src.ui._completion import CompletionItem
+        from src.tui.widgets.completion import CompletionItem
 
         bb = MagicMock()
         bb.is_completion_visible = False
@@ -246,7 +246,7 @@ class TestCmplHandlerOnAuto:
     def test_updates_existing_completion(self):
         """已有弹窗可见 → 重新计算并更新。"""
         from unittest.mock import MagicMock
-        from src.ui._completion import CompletionItem
+        from src.tui.widgets.completion import CompletionItem
 
         bb = MagicMock()
         bb.is_completion_visible = True
@@ -272,7 +272,7 @@ class TestCmplHandlerTab:
 
     @staticmethod
     def _make_handler(bb, engine):
-        from src.chat_ui.completion import _CmplHandler
+        from src.tui.consumer.completion import _CmplHandler
         from unittest.mock import MagicMock
         request_redraw = MagicMock()
         return _CmplHandler(bb, engine, request_redraw=request_redraw), request_redraw
@@ -313,7 +313,7 @@ class TestCmplHandlerTab:
     def test_tab_when_not_visible_shows_and_applies_first(self):
         """弹窗不可见时按 Tab → 计算候选项，显示弹窗，返回首个匹配。"""
         from unittest.mock import MagicMock
-        from src.ui._completion import CompletionItem
+        from src.tui.widgets.completion import CompletionItem
 
         bb = MagicMock()
         bb.is_completion_visible = False
@@ -358,7 +358,7 @@ class TestCmplHandlerNavigate:
 
     @staticmethod
     def _make_handler(bb, engine):
-        from src.chat_ui.completion import _CmplHandler
+        from src.tui.consumer.completion import _CmplHandler
         from unittest.mock import MagicMock
         request_redraw = MagicMock()
         return _CmplHandler(bb, engine, request_redraw=request_redraw), request_redraw

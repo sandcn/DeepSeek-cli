@@ -14,8 +14,8 @@ from ._signal import SignalManager
 from ._session_cmd import _handle_session_command
 
 from ..chat_msgs import load_session, list_sessions
-from ..ui.events import OutputConsumer
-from ..ui._lock import locked_print
+from ..tui.events import OutputConsumer
+from ..tui.widgets.lock import locked_print
 from ..ui.colors import CYAN, DIM, RESET, YELLOW
 from ..core.telemetry.trace_context import generate_trace_id, get_current_trace_id, set_current_trace_id
 from ..observability import get_default_facade
@@ -35,7 +35,7 @@ async def main():
         return
 
     # ── 注册 ChatUI 错误处理器 ──
-    from src.chat_ui import setup_chat_ui_error_handler
+    from src.tui.consumer import setup_chat_ui_error_handler
     setup_chat_ui_error_handler()
 
     # ── 设置日志级别 ──
