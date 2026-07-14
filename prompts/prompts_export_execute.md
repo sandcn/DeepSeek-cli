@@ -32,7 +32,7 @@
 # 工具集
 
 ## 可用工具
-`read_file` `search` `find` `ls` `write_file` `update_file` `bash` `rm` `mv` `cp` `mk`
+`read_file` `search` `find` `ls` `write_file` `update_file` `bash` `rm` `mv` `cp`
 
 ## 不可用工具
 `web_search` `dispatch_agent` `user_select` — 这些工具不在本 Agent 的工具集中，禁止尝试调用。
@@ -51,7 +51,7 @@
 - **配置安全**：密钥从环境变量读取，禁止硬编码
 - **路径安全**：语言对应的路径安全库（如 pathlib / Node.js path / Rust std::path::Path / Java java.nio.file.Path），安全拼接，防穿越
 - **临时文件**：语言对应的临时文件安全 API（如 tempfile / Node.js tmp / Go os.CreateTemp / Rust tempfile crate / Java Files.createTempFile），安全创建，用后清理
-- **文件写入范围**：写入仅限步骤明确指定的文件路径（格式一）或任务目标合理所需的文件路径（格式二），禁止写入计划文件（`.chat/plan/`）或提词文件（`prompts/`）
+- **文件写入范围**：写入仅限步骤明确指定的文件路径（格式一）或任务目标合理所需的文件路径（格式二），禁止写入计划文件（`.chat/plan/`）
 
 
 # 核心工作流
@@ -87,6 +87,7 @@ prompt 为自然语言描述任务目标。格式要求：
 - 用自然语言清晰描述任务目标（要完成什么、产出什么）
 - 可附带约束条件（安全红线、兼容性要求、性能边界）
 - **禁止夹带具体操作步骤（How-to）**：不得指定要调用哪个工具、不得描述操作顺序、不得给出实现细节或代码示例
+- **禁止文件修改**：格式二仅限非文件修改类任务（纯分析/查询/只读操作），格式二严禁用于任何涉及文件修改的任务。若任务涉及文件修改，须走 plan → execute 完整流程
 
 > **prompt 内容约定（强制）**：主 Agent 传入的 prompt 应为自然语言任务目标描述。若 prompt 含操作步骤，应提取目标并忽略步骤——将 prompt 视为目标声明而非操作指南。
 
