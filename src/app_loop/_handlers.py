@@ -35,7 +35,7 @@ async def _handle_editmsg_cmd(session, state) -> None:
     让底部栏补全弹窗 + raw I/O 处理 ↑↓/Enter/Esc 交互，
     选择完成后恢复两者。与 /model 命令保持一致。
     """
-    from ..chat_ui import get_active_chat_ui
+    from ..tui.consumer import get_active_chat_ui
     from ..api.escape_monitor import get_active_monitor
     chat_ui = get_active_chat_ui()
     monitor = get_active_monitor()
@@ -86,7 +86,7 @@ async def _handle_model_cmd(
     暂停 ChatUIConsumer + 停止 EscapeMonitor（join 线程、恢复 cooked 终端），
     让底部栏补全弹窗 + raw I/O 处理 ↑↓/Enter/Esc 交互，选择完成后恢复两者。
     """
-    from ..chat_ui import get_active_chat_ui
+    from ..tui.consumer import get_active_chat_ui
     from ..api.escape_monitor import get_active_monitor
     chat_ui = get_active_chat_ui()
     monitor = get_active_monitor()

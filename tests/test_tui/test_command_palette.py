@@ -8,8 +8,8 @@
 
 from __future__ import annotations
 
-from src.ui.tui.command_palette import CommandPalette
-from src.ui.tui.session_switcher import SessionSwitcher
+from src.tui.widgets.command_palette import CommandPalette
+from src.tui.widgets.session_switcher import SessionSwitcher
 
 
 class TestCommandPalette256Colors:

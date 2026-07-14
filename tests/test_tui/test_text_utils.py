@@ -10,7 +10,7 @@
 from __future__ import annotations
 
 import pytest
-from src.ui.tui._text_utils import truncate, make_sep_gradient
+from src.tui.core.text_utils import truncate, make_sep_gradient
 
 
 class TestTruncateNormalizeTrue:

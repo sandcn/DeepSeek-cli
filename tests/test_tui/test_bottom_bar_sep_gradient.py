@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import unittest
 
-from src.ui.tui.bottom_bar.theme import (
+from src.tui.widgets.bottom_bar.theme import (
     _COLOR_RESET,
     _COLOR_SEP,
     _COLOR_SEP_START,

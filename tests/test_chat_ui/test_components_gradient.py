@@ -13,11 +13,11 @@ import pytest
 from rich.style import Style
 from rich.text import Text
 
-from src.chat_ui.components._error import ErrorBlock
-from src.chat_ui.components._user_msg import UserMsgBlock
-from src.chat_ui.components._notification import NotificationBlock
-from src.chat_ui.components._write_line import WriteLineBlock
-from src.chat_ui.const import (
+from src.tui.components._error import ErrorBlock
+from src.tui.components._user_msg import UserMsgBlock
+from src.tui.components._notification import NotificationBlock
+from src.tui.components._write_line import WriteLineBlock
+from src.tui.consumer.const import (
     _STYLE_ERROR_GRADIENT,
     _STYLE_USER_GRADIENT,
     _STYLE_NOTIFICATION_GRADIENT,
@@ -29,7 +29,7 @@ class TestErrorBlockGradient:
 
     def test_render_narrow_uses_gradient_style(self, monkeypatch):
         """窄屏时 ErrorBlock.render() 输出使用静态 _STYLE_ERROR_GRADIENT"""
-        monkeypatch.setattr("src.chat_ui.components._error.is_narrow", lambda: True)
+        monkeypatch.setattr("src.tui.components._error.is_narrow", lambda: True)
         block = ErrorBlock("test error")
         result = block.render()
         assert isinstance(result, Text)
@@ -57,7 +57,7 @@ class TestErrorBlockGradient:
 
     def test_render_long_message_truncated(self):
         """超长消息仍正常截断"""
-        from src.chat_ui.const import _MAX_ERROR_LENGTH
+        from src.tui.consumer.const import _MAX_ERROR_LENGTH
         long_msg = "x" * (_MAX_ERROR_LENGTH + 100)
         block = ErrorBlock(long_msg)
         result = block.render()
@@ -81,7 +81,7 @@ class TestErrorBlockGradient:
 
     def test_render_narrow_no_border(self, monkeypatch):
         """窄屏时 ErrorBlock.render() 输出不含边框字符"""
-        monkeypatch.setattr("src.chat_ui.components._error.is_narrow", lambda: True)
+        monkeypatch.setattr("src.tui.components._error.is_narrow", lambda: True)
         block = ErrorBlock("no border")
         result = block.render()
         ansi_str = str(result)
@@ -93,7 +93,7 @@ class TestUserMsgBlockGradient:
 
     def test_render_uses_cyan_style(self, monkeypatch):
         """窄屏时 UserMsgBlock.render() 输出使用青色加粗样式"""
-        monkeypatch.setattr("src.chat_ui.components._user_msg.is_narrow", lambda: True)
+        monkeypatch.setattr("src.tui.components._user_msg.is_narrow", lambda: True)
         block = UserMsgBlock("hello world")
         result = block.render()
         assert isinstance(result, Text)
@@ -135,7 +135,7 @@ class TestUserMsgBlockBeautify:
 
     def test_render_narrow_static(self, monkeypatch):
         """窄屏时 UserMsgBlock.render() 使用 Rich Text 静态样式"""
-        monkeypatch.setattr("src.chat_ui.components._user_msg.is_narrow", lambda: True)
+        monkeypatch.setattr("src.tui.components._user_msg.is_narrow", lambda: True)
         block = UserMsgBlock("narrow msg")
         result = block.render()
         assert isinstance(result, Text)
@@ -176,7 +176,7 @@ class TestNotificationBlockGradient:
 
     def test_render_narrow_uses_static_style(self, monkeypatch):
         """窄屏时 render() 使用静态 _STYLE_NOTIFICATION_GRADIENT"""
-        monkeypatch.setattr("src.chat_ui.components._notification.is_narrow", lambda: True)
+        monkeypatch.setattr("src.tui.components._notification.is_narrow", lambda: True)
         block = NotificationBlock("task completed")
         result = block.render()
         assert isinstance(result, Text)
@@ -232,7 +232,7 @@ class TestWriteLineBlockBeautify:
 
     def test_render_wide_has_border(self, monkeypatch):
         """宽屏时 render_to_adapter 含边框字符"""
-        monkeypatch.setattr("src.chat_ui.components._write_line.is_narrow", lambda: False)
+        monkeypatch.setattr("src.tui.components._write_line.is_narrow", lambda: False)
         block = WriteLineBlock("hello")
         adapter = _MockAdapter()
         block.render_to_adapter(adapter)
@@ -242,7 +242,7 @@ class TestWriteLineBlockBeautify:
 
     def test_render_narrow_no_border(self, monkeypatch):
         """窄屏时 render_to_adapter 无边框"""
-        monkeypatch.setattr("src.chat_ui.components._write_line.is_narrow", lambda: True)
+        monkeypatch.setattr("src.tui.components._write_line.is_narrow", lambda: True)
         block = WriteLineBlock("hello")
         adapter = _MockAdapter()
         block.render_to_adapter(adapter)
@@ -251,7 +251,7 @@ class TestWriteLineBlockBeautify:
 
     def test_render_ansi_preserved(self, monkeypatch):
         """ANSI 文本内容完整（宽屏）"""
-        monkeypatch.setattr("src.chat_ui.components._write_line.is_narrow", lambda: False)
+        monkeypatch.setattr("src.tui.components._write_line.is_narrow", lambda: False)
         ansi_text = "\033[38;5;41mhello\033[0m"
         block = WriteLineBlock(ansi_text)
         adapter = _MockAdapter()
@@ -262,7 +262,7 @@ class TestWriteLineBlockBeautify:
 
     def test_render_fallback_ansi_error(self, monkeypatch):
         """ANSI 解析失败回退不崩溃"""
-        monkeypatch.setattr("src.chat_ui.components._write_line.is_narrow", lambda: False)
+        monkeypatch.setattr("src.tui.components._write_line.is_narrow", lambda: False)
         # 构造一个含 ANSI 但无法解析的文本（空 \033[ 序列）
         bad_ansi = "test\033["
         block = WriteLineBlock(bad_ansi)
@@ -280,7 +280,7 @@ class TestWriteLineBlockBeautify:
 
     def test_render_narrow_no_border(self, monkeypatch):
         """窄屏时 NotificationBlock.render() 输出不含边框字符"""
-        monkeypatch.setattr("src.chat_ui.components._notification.is_narrow", lambda: True)
+        monkeypatch.setattr("src.tui.components._notification.is_narrow", lambda: True)
         block = NotificationBlock("no border")
         result = block.render()
         ansi_str = str(result)

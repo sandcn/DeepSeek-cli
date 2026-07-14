@@ -29,8 +29,8 @@ from src.core.events import (
     set_default_bus,
     reset_default_bus,
 )
-from src.ui.events import EventPool
-from src.ui.events.event_types import (
+from src.tui.events import EventPool
+from src.tui.events.event_types import (
     ContentChunkEvent,
     ReasoningChunkEvent,
     ToolOutputChunkEvent,
@@ -1336,12 +1336,12 @@ class TestDisplayEventBusAdapterSubscribe:
 
     def setup_method(self):
         """每个测试前重置默认 DisplayEventBus，避免测试间干扰"""
-        from src.ui.events.event_bus import DisplayEventBus
+        from src.tui.events.event_bus import DisplayEventBus
         DisplayEventBus.reset_default()
 
     def teardown_method(self):
         """每个测试后清理"""
-        from src.ui.events.event_bus import DisplayEventBus
+        from src.tui.events.event_bus import DisplayEventBus
         DisplayEventBus.reset_default()
 
     def test_subscribe_with_event_type_filters_by_class_name(self):

@@ -8,7 +8,7 @@ from __future__ import annotations
 import io
 import unittest
 
-from src.ui._stdout_tracker import _StdoutLineTracker
+from src.tui.widgets.stdout_tracker import _StdoutLineTracker
 
 
 def _make_tracker(scroll_end: int = 5) -> _StdoutLineTracker:

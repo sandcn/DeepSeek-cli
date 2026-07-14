@@ -2,7 +2,7 @@
 
 覆盖：
   - _role_icon 角色图标映射
-  - _truncate 文本截断
+  - truncate 文本截断
   - _format_sandbox_text 沙盒信息格式化
   - _scroll_window 可见窗口计算
   - _msg_line 单行摘要生成
@@ -13,14 +13,15 @@
 
 from __future__ import annotations
 
-from src.ui.tui._message_display import (
+from src.tui.core.text_utils import truncate
+from src.tui.pipeline.message_display import (
     _scroll_window,
-    _role_icon, _truncate, _format_sandbox_text,
+    _role_icon, _format_sandbox_text,
     _msg_line, _make_message_lines, MessageDisplayContext,
     _role_tag, _make_gradient_sep, _make_think_sep, _make_think_end,
     _USER_TAG, _ASST_TAG, _TOOL_TAG,
 )
-from src.ui.tui._terminal import is_narrow
+from src.tui.terminal.terminal import is_narrow
 
 
 def _make_msg(role: str, content: str = "",
@@ -55,41 +56,41 @@ class TestRoleIcon:
 
 
 class TestTruncate:
-    """_truncate 文本截断测试。"""
+    """truncate 文本截断测试。"""
 
     def test_short_text_not_truncated(self):
-        result = _truncate("hello", width=20)
+        result = truncate("hello", max_len=20)
         assert result == "hello"
         assert "…" not in result
 
     def test_long_text_truncated(self):
         text = "a" * 100
-        result = _truncate(text, width=10)
+        result = truncate(text, max_len=10)
         assert len(result) == 11  # 10 chars + "…"
         assert result.endswith("…")
 
     def test_newlines_replaced(self):
-        result = _truncate("hello\nworld", width=60)
+        result = truncate("hello\nworld", max_len=60)
         assert "\n" not in result
         assert "hello world" in result
 
     def test_none_input(self):
-        result = _truncate(None, width=20)
+        result = truncate(None, max_len=20)
         assert result == ""
 
     def test_empty_string(self):
-        result = _truncate("", width=20)
+        result = truncate("", max_len=20)
         assert result == ""
 
     def test_boundary_exact_width(self):
         text = "a" * 20
-        result = _truncate(text, width=20)
+        result = truncate(text, max_len=20)
         assert result == text
         assert "…" not in result
 
     def test_boundary_one_over(self):
         text = "a" * 21
-        result = _truncate(text, width=20)
+        result = truncate(text, max_len=20)
         assert len(result) == 21  # 20 + "…"
         assert result.endswith("…")
 
@@ -297,7 +298,7 @@ class TestRoleTag256:
 
     def test_role_tag_breath_narrow_no_border(self, monkeypatch):
         """窄屏时呼吸角色标签不含边框字符。"""
-        monkeypatch.setattr("src.ui.tui._message_display.is_narrow", lambda: True)
+        monkeypatch.setattr("src.tui.pipeline.message_display.is_narrow", lambda: True)
         for role in ("user", "assistant", "tool"):
             tag = _role_tag(role, breath_frame=1)
             assert "\u2503" not in tag, f"{role} narrow tag should have no border"

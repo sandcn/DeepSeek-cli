@@ -17,7 +17,7 @@ import sys
 import unittest
 from unittest.mock import MagicMock, patch
 
-from src.ui.tui.bottom_bar.selection import (
+from src.tui.widgets.bottom_bar.selection import (
     run_bottom_bar_selection,
     _run_selection_raw,
     _is_cygwin,
@@ -28,8 +28,8 @@ from src.ui.tui.bottom_bar.selection import (
 )
 
 # 统一的 patch 目标
-_CHAT_UI_PATCH = "src.chat_ui.get_active_chat_ui"
-_TERMINAL_PATCH = "src.ui.tui.bottom_bar.selection.get_terminal"
+_CHAT_UI_PATCH = "src.tui.consumer.state.get_active_chat_ui"
+_TERMINAL_PATCH = "src.tui.widgets.bottom_bar.selection.get_terminal"
 
 
 class _MockKeystroke:
@@ -420,11 +420,11 @@ class TestRunSelectionRaw(unittest.TestCase):
              patch("os.read", side_effect=_mock_os_read), \
              patch("tty.setcbreak", setcbreak_mock), \
              patch(
-                 "src.ui.tui.bottom_bar.selection._save_terminal_settings",
+                 "src.tui.widgets.bottom_bar.selection._save_terminal_settings",
                  return_value={},
              ), \
              patch(
-                 "src.ui.tui.bottom_bar.selection._restore_terminal_settings"
+                 "src.tui.widgets.bottom_bar.selection._restore_terminal_settings"
              ), \
              patch("sys.stdin") as mock_stdin, \
              patch("termios.tcflush"):

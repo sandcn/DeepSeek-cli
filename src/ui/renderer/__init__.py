@@ -1,4 +1,5 @@
-"""渲染引擎 — 纯函数渲染器"""
-from .frame_renderer import FrameRenderer
+"""兼容存根 — 重导出到 src.tui.frame"""
 
-__all__ = ["FrameRenderer"]
+from __future__ import annotations
+
+from src.tui.frame import *  # noqa: F401, F403

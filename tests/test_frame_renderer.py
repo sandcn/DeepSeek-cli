@@ -1,6 +1,6 @@
 """FrameRenderer Claude Code 树风格渲染测试。"""
-from src.ui.renderer.frame_renderer import FrameRenderer
-from src.ui.state.agent_state import AgentSlot, ToolRecord
+from src.tui.frame.frame_renderer import FrameRenderer
+from src.tui.state.agent_state import AgentSlot, ToolRecord
 import time
 
 
@@ -169,7 +169,7 @@ class TestClaudeTreeStyle:
 
     def test_summary_bar_gradient_color_sequence(self):
         """渐变进度条色号序列正确：琥珀(214)开始，绿(41)结束。"""
-        from src.ui.tui._animator import BreathPalette
+        from src.tui.core.animator import BreathPalette
         colors = BreathPalette.get("progress_amber_green")
         assert colors[0] == 214, \
             f"渐变色起始应为214(琥珀)，实际: {colors[0]}"

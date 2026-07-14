@@ -14,7 +14,7 @@ from __future__ import annotations
 import time
 import dataclasses
 
-from src.ui.tui._state import (
+from src.tui.core.state import (
     TUIStateTree,
     UISessionState,
     InputState,

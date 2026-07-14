@@ -15,7 +15,7 @@ from ..core.session import ChatSession
 from ..core.agent import Agent
 from ..ui.colors import CYAN, DIM, RESET
 from ..api.escape_monitor import EscapeMonitor, stop_active_monitor
-from ..chat_ui import ChatUIConsumer
+from ..tui.consumer import ChatUIConsumer
 
 _logger = logging.getLogger(__name__)
 
@@ -36,7 +36,7 @@ async def run_single_mode_async(prompt_text):
     """单次对话模式（异步版）：输入一句话，回答后退出"""
     chat_ui = ChatUIConsumer()
     chat_ui.start()
-    from ..ui.tui._terminal import narrow_sep_width
+    from ..tui.terminal.narrow import narrow_sep_width
     _sep_w = narrow_sep_width(30)
     chat_ui.write_line(f"{CYAN}  > Chat{RESET} {DIM}· 单次模式{RESET}")
     chat_ui.write_line(f"{DIM}  {'─' * _sep_w}{RESET}")

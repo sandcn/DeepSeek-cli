@@ -1,6 +1,6 @@
 """窄屏自适应模块测试"""
 
-from src.ui.narrow import (
+from src.tui.terminal.narrow import (
     is_narrow,
     narrow_truncate,
     narrow_indent,

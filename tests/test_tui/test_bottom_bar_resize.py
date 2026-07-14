@@ -16,7 +16,7 @@ import sys
 import unittest
 from unittest.mock import MagicMock, patch, PropertyMock
 
-from src.ui.tui.bottom_bar import _BottomBar
+from src.tui.widgets.bottom_bar import _BottomBar
 
 
 class TestBug4IoctlUnpack(unittest.TestCase):
@@ -374,7 +374,7 @@ class TestBug9PositionCursorUnderLock(unittest.TestCase):
     """
 
     def setUp(self):
-        from src.chat_ui.engine import RenderEngine
+        from src.tui.consumer.engine import RenderEngine
         self.mock_renderer = MagicMock()
         self.mock_bb = MagicMock()
         self.engine = RenderEngine(self.mock_renderer, self.mock_bb, MagicMock())
@@ -404,7 +404,7 @@ class TestBug9PositionCursorUnderLock(unittest.TestCase):
         self.engine.position_cursor = track_cursor
 
         with \
-             patch("src.ui._lock._try_acquire_output_lock",
+             patch("src.tui.widgets.lock._try_acquire_output_lock",
                    return_value=MagicMock(__enter__=MagicMock(return_value=True),
                                          __exit__=MagicMock(return_value=False))):
             self.engine._drain_queue()
@@ -420,7 +420,7 @@ class TestResizeDrainSkip(unittest.TestCase):
     """Bug 修复：无流式输出时终端 resize 被 _drain_queue() 快速空闲跳过阻塞。"""
 
     def setUp(self):
-        from src.chat_ui.engine import RenderEngine
+        from src.tui.consumer.engine import RenderEngine
         self.mock_renderer = MagicMock()
         self.mock_bb = MagicMock()
         self.mock_bb.is_status_active = False
@@ -437,7 +437,7 @@ class TestResizeDrainSkip(unittest.TestCase):
         self.mock_bb.is_resize_pending = False
 
         with \
-             patch("src.ui._lock._try_acquire_output_lock",
+             patch("src.tui.widgets.lock._try_acquire_output_lock",
                    return_value=MagicMock(__enter__=MagicMock(return_value=True),
                                          __exit__=MagicMock(return_value=False))):
             self.engine._drain_queue()
@@ -451,7 +451,7 @@ class TestResizeDrainSkip(unittest.TestCase):
         self.mock_bb.check_resize.return_value = False
 
         with \
-             patch("src.ui._lock._try_acquire_output_lock",
+             patch("src.tui.widgets.lock._try_acquire_output_lock",
                    return_value=MagicMock(__enter__=MagicMock(return_value=True),
                                          __exit__=MagicMock(return_value=False))):
             self.engine._drain_queue()
@@ -471,7 +471,7 @@ class TestResizeDrainSkip(unittest.TestCase):
         self.mock_bb._completion_popup_height = 0
 
         with \
-             patch("src.ui._lock._try_acquire_output_lock",
+             patch("src.tui.widgets.lock._try_acquire_output_lock",
                    return_value=MagicMock(__enter__=MagicMock(return_value=True),
                                          __exit__=MagicMock(return_value=False))):
             self.engine._drain_queue()
@@ -652,7 +652,7 @@ class TestResizeCursorOverride(unittest.TestCase):
     """
 
     def setUp(self):
-        from src.chat_ui.engine import RenderEngine
+        from src.tui.consumer.engine import RenderEngine
         self.mock_renderer = MagicMock()
         self.mock_bb = MagicMock()
         self.mock_bb.is_status_active = False
@@ -673,7 +673,7 @@ class TestResizeCursorOverride(unittest.TestCase):
 
     def _enqueue_cmd(self):
         """将一个 dummy 命令入队以触发 Stage 1 渲染分支。"""
-        from src.chat_ui.const import RenderCommand
+        from src.tui.consumer.const import RenderCommand
         self.engine.push_cmd((RenderCommand.NOTIFICATION, "test"))
 
     def test_resized_skips_ensure_cursor_upper(self):
@@ -687,7 +687,7 @@ class TestResizeCursorOverride(unittest.TestCase):
         self.mock_bb._term_height.return_value = 35
 
         with \
-             patch("src.ui._lock._try_acquire_output_lock",
+             patch("src.tui.widgets.lock._try_acquire_output_lock",
                    return_value=MagicMock(__enter__=MagicMock(return_value=True),
                                          __exit__=MagicMock(return_value=False))), \
              patch.object(sys, '__stdout__', MagicMock()):
@@ -704,7 +704,7 @@ class TestResizeCursorOverride(unittest.TestCase):
         self.mock_bb.check_resize.return_value = False
 
         with \
-             patch("src.ui._lock._try_acquire_output_lock",
+             patch("src.tui.widgets.lock._try_acquire_output_lock",
                    return_value=MagicMock(__enter__=MagicMock(return_value=True),
                                          __exit__=MagicMock(return_value=False))), \
              patch.object(sys, '__stdout__', MagicMock()):
@@ -723,7 +723,7 @@ class TestResizeCursorOverride(unittest.TestCase):
         self.mock_bb._term_height.return_value = 40
 
         with \
-             patch("src.ui._lock._try_acquire_output_lock",
+             patch("src.tui.widgets.lock._try_acquire_output_lock",
                    return_value=MagicMock(__enter__=MagicMock(return_value=True),
                                          __exit__=MagicMock(return_value=False))), \
              patch.object(sys, '__stdout__', MagicMock()):
@@ -743,7 +743,7 @@ class TestResizeCursorOverride(unittest.TestCase):
         self.mock_bb._term_height.return_value = 25
 
         with \
-             patch("src.ui._lock._try_acquire_output_lock",
+             patch("src.tui.widgets.lock._try_acquire_output_lock",
                    return_value=MagicMock(__enter__=MagicMock(return_value=True),
                                          __exit__=MagicMock(return_value=False))), \
              patch.object(sys, '__stdout__', MagicMock()):
@@ -763,7 +763,7 @@ class TestResizeCursorOverride(unittest.TestCase):
         self.mock_bb._term_height.return_value = 35
 
         with \
-             patch("src.ui._lock._try_acquire_output_lock",
+             patch("src.tui.widgets.lock._try_acquire_output_lock",
                    return_value=MagicMock(__enter__=MagicMock(return_value=True),
                                          __exit__=MagicMock(return_value=False))), \
              patch.object(sys, '__stdout__', MagicMock()):

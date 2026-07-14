@@ -11,9 +11,9 @@ from __future__ import annotations
 import time
 from unittest.mock import patch
 
-from src.ui.parallel._text_formatter import TextFormatter
-from src.ui.tui._state import UISessionState, StreamingState, TUIStateTree
-from src.ui.tui.status_bar import (
+from src.tui.parallel._text_formatter import TextFormatter
+from src.tui.core.state import UISessionState, StreamingState, TUIStateTree
+from src.tui.widgets.status_bar import (
     render_normal,
     render_streaming_line,
     build_normal_parts,
@@ -212,10 +212,10 @@ class TestRenderNormalNarrow:
 
         注：使用 monkeypatch 模拟窄屏环境，CI 慢速环境可能 flaky。
         """
-        from src.ui.tui.status_bar import render_normal
-        monkeypatch.setattr("src.ui.tui.status_bar.is_narrow", lambda: True)
+        from src.tui.widgets.status_bar import render_normal
+        monkeypatch.setattr("src.tui.widgets.status_bar.is_narrow", lambda: True)
         monkeypatch.setattr(
-            "src.ui.tui.status_bar.get_terminal_width", lambda: 30,
+            "src.tui.widgets.status_bar.get_terminal_width", lambda: 30,
         )
         state = UISessionState(model="test-model", message_count=10, status_text="processing")
         result = render_normal(state)
@@ -228,13 +228,13 @@ class TestCompactThreshold:
 
     def test_threshold_is_50(self):
         """阈值应为 50（与 EXTRA_NARROW_THRESHOLD 对齐）。"""
-        from src.ui.tui.status_bar import _STATUS_BAR_COMPACT_THRESHOLD
+        from src.tui.widgets.status_bar import _STATUS_BAR_COMPACT_THRESHOLD
         assert _STATUS_BAR_COMPACT_THRESHOLD == 50
 
     def test_compact_mode_at_49(self, monkeypatch):
         """宽度 < 50 时进入精简模式（仅模型名+消息数）。"""
-        monkeypatch.setattr("src.ui.tui.status_bar.is_narrow", lambda: True)
-        monkeypatch.setattr("src.ui.tui.status_bar.get_terminal_width", lambda: 49)
+        monkeypatch.setattr("src.tui.widgets.status_bar.is_narrow", lambda: True)
+        monkeypatch.setattr("src.tui.widgets.status_bar.get_terminal_width", lambda: 49)
         state = UISessionState(
             model="gpt-4", message_count=3,
             input_tokens=100, output_tokens=200,
@@ -250,8 +250,8 @@ class TestCompactThreshold:
 
     def test_full_mode_at_50(self, monkeypatch):
         """宽度 = 50 时不进入精简模式（含详细信息）。"""
-        monkeypatch.setattr("src.ui.tui.status_bar.is_narrow", lambda: True)
-        monkeypatch.setattr("src.ui.tui.status_bar.get_terminal_width", lambda: 50)
+        monkeypatch.setattr("src.tui.widgets.status_bar.is_narrow", lambda: True)
+        monkeypatch.setattr("src.tui.widgets.status_bar.get_terminal_width", lambda: 50)
         state = UISessionState(
             model="gpt-4", message_count=3,
             input_tokens=100, output_tokens=200,
@@ -264,8 +264,8 @@ class TestCompactThreshold:
 
     def test_compact_mode_at_45(self, monkeypatch):
         """宽度 45（<50）进入精简模式。"""
-        monkeypatch.setattr("src.ui.tui.status_bar.is_narrow", lambda: True)
-        monkeypatch.setattr("src.ui.tui.status_bar.get_terminal_width", lambda: 45)
+        monkeypatch.setattr("src.tui.widgets.status_bar.is_narrow", lambda: True)
+        monkeypatch.setattr("src.tui.widgets.status_bar.get_terminal_width", lambda: 45)
         state = UISessionState(model="gpt-4", message_count=5)
         parts = build_normal_parts(state, narrow=True)
         joined = " ".join(parts)
@@ -352,8 +352,8 @@ class TestBeautification256:
 
     def test_render_streaming_narrow_no_crash(self, monkeypatch):
         """窄屏流式渲染不崩溃。"""
-        monkeypatch.setattr("src.ui.tui.status_bar.is_narrow", lambda: True)
-        monkeypatch.setattr("src.ui.tui.status_bar.get_terminal_width", lambda: 30)
+        monkeypatch.setattr("src.tui.widgets.status_bar.is_narrow", lambda: True)
+        monkeypatch.setattr("src.tui.widgets.status_bar.get_terminal_width", lambda: 30)
         state = UISessionState(model="test-model")
         streaming = StreamingState(active=True, start_time=time.monotonic())
         result = render_streaming_line(state, streaming)
@@ -489,8 +489,8 @@ class TestPulseColorBreathing:
 
     def test_narrow_screen_still_has_pulse_color(self, monkeypatch):
         """窄屏下脉动颜色序列依然正确。"""
-        monkeypatch.setattr("src.ui.tui.status_bar.is_narrow", lambda: True)
-        monkeypatch.setattr("src.ui.tui.status_bar.get_terminal_width", lambda: 30)
+        monkeypatch.setattr("src.tui.widgets.status_bar.is_narrow", lambda: True)
+        monkeypatch.setattr("src.tui.widgets.status_bar.get_terminal_width", lambda: 30)
         state = UISessionState(model="test-model")
         streaming = StreamingState(active=True, start_time=time.monotonic(), pulse_phase=2)
         result = render_streaming_line(state, streaming)
@@ -548,8 +548,8 @@ class TestModelNameBreathing:
 
     def test_model_name_static_narrow(self, monkeypatch):
         """窄屏使用 THEME['title'] 静态色（不做呼吸）。"""
-        monkeypatch.setattr("src.ui.tui.status_bar.is_narrow", lambda: True)
-        monkeypatch.setattr("src.ui.tui.status_bar.get_terminal_width", lambda: 30)
+        monkeypatch.setattr("src.tui.widgets.status_bar.is_narrow", lambda: True)
+        monkeypatch.setattr("src.tui.widgets.status_bar.get_terminal_width", lambda: 30)
         state = UISessionState(model="gpt-4")
         streaming = StreamingState(active=True, start_time=time.monotonic(), pulse_phase=0)
         result = render_streaming_line(state, streaming)

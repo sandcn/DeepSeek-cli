@@ -12,7 +12,7 @@ from __future__ import annotations
 
 from unittest.mock import patch
 
-from src.ui.tui._message_display import (
+from src.tui.pipeline.message_display import (
     _make_gradient_sep,
     _make_think_sep,
     _make_think_end,
@@ -68,7 +68,7 @@ class TestMakeGradientSep:
 
     def test_wide_screen_length(self):
         """宽屏（>=80列）时分隔线长度 >= 40。"""
-        with patch("src.ui.tui._message_display.get_terminal_width", return_value=100):
+        with patch("src.tui.pipeline.message_display.get_terminal_width", return_value=100):
             sep = _make_gradient_sep()  # steps=0, auto
             count = sep.count("\u2501")
             assert count >= 40, f"wide screen sep too short: {count}"
@@ -78,14 +78,14 @@ class TestMakeGradientSep:
         # 宽屏使用 steps=40 的固定长度
         wide_sep = _make_gradient_sep(steps=40)
         # 窄屏模拟：patch 终端宽度 + narrow_sep_width
-        with patch("src.ui.tui._message_display.get_terminal_width", return_value=70):
-            with patch("src.ui.tui._message_display.narrow_sep_width", return_value=20):
+        with patch("src.tui.pipeline.message_display.get_terminal_width", return_value=70):
+            with patch("src.tui.pipeline.message_display.narrow_sep_width", return_value=20):
                 narrow_sep = _make_gradient_sep()  # steps=0, auto
                 assert narrow_sep.count("\u2501") <= wide_sep.count("\u2501")
 
     def test_extra_narrow_screen(self):
         """极窄屏（<50列）时不报错，仍生成合理长度分隔线。"""
-        with patch("src.ui.tui._message_display.narrow_sep_width", return_value=10):
+        with patch("src.tui.pipeline.message_display.narrow_sep_width", return_value=10):
             sep = _make_gradient_sep()
             count = sep.count("\u2501")
             assert count >= 4, f"extra narrow sep too short: {count}"
@@ -134,7 +134,7 @@ class TestMakeThinkSep:
 
     def test_narrow_screen(self):
         """窄屏下思考分隔线仍正常生成。"""
-        with patch("src.ui.tui._message_display.get_terminal_width", return_value=60):
+        with patch("src.tui.pipeline.message_display.get_terminal_width", return_value=60):
             sep = _make_think_sep()
             assert "\u26a1" in sep
             assert sep.endswith("\033[0m")
@@ -152,7 +152,7 @@ class TestMakeThinkEnd:
 
     def test_narrow_screen(self):
         """窄屏下思考结束标记仍正常生成。"""
-        with patch("src.ui.tui._message_display.get_terminal_width", return_value=60):
+        with patch("src.tui.pipeline.message_display.get_terminal_width", return_value=60):
             end = _make_think_end()
             assert "38;5;" in end
             assert "\u2501" in end
@@ -163,9 +163,9 @@ class TestNarrowScreenDegradation:
 
     def test_all_separators_work_on_narrow(self):
         """所有分隔线函数在窄屏（60列）下均不报错。"""
-        with patch("src.ui.tui._message_display.get_terminal_width", return_value=60):
+        with patch("src.tui.pipeline.message_display.get_terminal_width", return_value=60):
             # _make_gradient_sep 使用 narrow_sep_width 计算宽度
-            with patch("src.ui.tui._message_display.narrow_sep_width", return_value=20):
+            with patch("src.tui.pipeline.message_display.narrow_sep_width", return_value=20):
                 result = _make_gradient_sep()
                 assert isinstance(result, str)
                 assert len(result) > 0
@@ -176,8 +176,8 @@ class TestNarrowScreenDegradation:
 
     def test_all_separators_work_on_extra_narrow(self):
         """所有分隔线函数在极窄屏（35列）下均不报错。"""
-        with patch("src.ui.tui._message_display.get_terminal_width", return_value=35):
-            with patch("src.ui.tui._message_display.narrow_sep_width", return_value=10):
+        with patch("src.tui.pipeline.message_display.get_terminal_width", return_value=35):
+            with patch("src.tui.pipeline.message_display.narrow_sep_width", return_value=10):
                 result = _make_gradient_sep()
                 assert isinstance(result, str)
                 assert len(result) > 0

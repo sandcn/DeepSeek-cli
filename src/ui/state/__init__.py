@@ -1,4 +1,5 @@
-"""显示状态管理模块"""
-from .agent_state import ToolRecord, AgentSlot, AgentStateStore
+"""兼容存根 — 重导出到 src.tui.state"""
 
-__all__ = ["ToolRecord", "AgentSlot", "AgentStateStore"]
+from __future__ import annotations
+
+from src.tui.state import *  # noqa: F401, F403

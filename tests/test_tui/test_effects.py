@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import math
 import pytest
-from src.ui.tui._effects import (
+from src.tui.core.effects import (
     sine_breath_t, sine_color, sine_color_range,
     bounce_easing, bounce_frame_color,
     wave_offset, apply_wave,

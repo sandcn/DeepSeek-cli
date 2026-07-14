@@ -12,9 +12,9 @@
 
 from unittest.mock import MagicMock, patch
 
-from src.ui.tui import message_editor as _me
-from src.ui.tui.message_editor import MessageEditor
-from src.ui.tui._message_display import MessageDisplayContext
+from src.tui.pipeline import message_editor as _me
+from src.tui.pipeline.message_editor import MessageEditor
+from src.tui.pipeline.message_display import MessageDisplayContext
 
 
 # ═══════════════════════════════════════════════════════════
@@ -46,7 +46,7 @@ class TestInteractiveMessageSelect:
         editor = MessageEditor()
         ctx = self._make_ctx([])
 
-        with patch("src.ui.tui.message_editor.publish_output") as mock_pub:
+        with patch("src.tui.pipeline.message_editor.publish_output") as mock_pub:
             action, idx = editor._interactive_message_select(ctx, "测试")
 
         assert action == "quit"
@@ -60,7 +60,7 @@ class TestInteractiveMessageSelect:
         editor = MessageEditor()
         ctx = self._make_ctx([])
 
-        with patch("src.ui.tui.message_editor.publish_output"):
+        with patch("src.tui.pipeline.message_editor.publish_output"):
             action, idx = editor._interactive_message_select(ctx, "测试")
 
         assert action == "quit"
@@ -76,7 +76,7 @@ class TestInteractiveMessageSelect:
             {"role": "tool", "content": "result", "name": "func"},
         ])
 
-        with patch("src.ui.tui.message_editor.publish_output") as mock_pub:
+        with patch("src.tui.pipeline.message_editor.publish_output") as mock_pub:
             action, idx = editor._interactive_message_select(ctx, "测试")
 
         assert action == "quit"
@@ -92,7 +92,7 @@ class TestInteractiveMessageSelect:
         # 但直接构造 ctx 时可以传入
         ctx = self._make_ctx([{"role": "system", "content": "system prompt"}])
 
-        with patch("src.ui.tui.message_editor.publish_output") as mock_pub:
+        with patch("src.tui.pipeline.message_editor.publish_output") as mock_pub:
             action, idx = editor._interactive_message_select(ctx, "测试")
 
         assert action == "quit"
@@ -110,8 +110,8 @@ class TestInteractiveMessageSelect:
             {"role": "user", "content": "hello"},
         ])
 
-        with patch("src.ui.tui.message_editor.publish_output") as mock_pub, \
-             patch("src.ui.tui.message_editor.run_bottom_bar_selection",
+        with patch("src.tui.pipeline.message_editor.publish_output") as mock_pub, \
+             patch("src.tui.pipeline.message_editor.run_bottom_bar_selection",
                    return_value={"action": "error", "index": None}):
             action, idx = editor._interactive_message_select(ctx, "测试")
 
@@ -136,8 +136,8 @@ class TestInteractiveMessageSelect:
             {"role": "user", "content": "hello"},
         ])
 
-        with patch("src.ui.tui.message_editor.publish_output") as mock_pub, \
-             patch("src.ui.tui.message_editor.run_bottom_bar_selection",
+        with patch("src.tui.pipeline.message_editor.publish_output") as mock_pub, \
+             patch("src.tui.pipeline.message_editor.run_bottom_bar_selection",
                    return_value={"action": "cancel", "index": None}):
             action, idx = editor._interactive_message_select(ctx, "测试")
 
@@ -160,8 +160,8 @@ class TestInteractiveMessageSelect:
             {"role": "user", "content": "hello"},
         ])
 
-        with patch("src.ui.tui.message_editor.publish_output") as mock_pub, \
-             patch("src.ui.tui.message_editor.run_bottom_bar_selection",
+        with patch("src.tui.pipeline.message_editor.publish_output") as mock_pub, \
+             patch("src.tui.pipeline.message_editor.run_bottom_bar_selection",
                    return_value={"action": "confirmed", "index": None}):
             action, idx = editor._interactive_message_select(ctx, "测试")
 
@@ -182,8 +182,8 @@ class TestInteractiveMessageSelect:
             {"role": "user", "content": "hello"},
         ])
 
-        with patch("src.ui.tui.message_editor.publish_output") as mock_pub, \
-             patch("src.ui.tui.message_editor.run_bottom_bar_selection",
+        with patch("src.tui.pipeline.message_editor.publish_output") as mock_pub, \
+             patch("src.tui.pipeline.message_editor.run_bottom_bar_selection",
                    return_value={"action": "confirmed", "index": 5}):  # 超出范围
             action, idx = editor._interactive_message_select(ctx, "测试")
 
@@ -211,8 +211,8 @@ class TestInteractiveMessageSelect:
         ctx = self._make_ctx(data)
 
         # 选择 selectable 中的第 2 条（index 1 in selectable → real_idx 3）
-        with patch("src.ui.tui.message_editor.publish_output"), \
-             patch("src.ui.tui.message_editor.run_bottom_bar_selection",
+        with patch("src.tui.pipeline.message_editor.publish_output"), \
+             patch("src.tui.pipeline.message_editor.run_bottom_bar_selection",
                    return_value={"action": "confirmed", "index": 1}):
             action, idx = editor._interactive_message_select(ctx, "测试")
 
@@ -230,8 +230,8 @@ class TestInteractiveMessageSelect:
         ctx = self._make_ctx(data)
 
         # 选择 selectable 中的第 0 条 → real_idx 0
-        with patch("src.ui.tui.message_editor.publish_output"), \
-             patch("src.ui.tui.message_editor.run_bottom_bar_selection",
+        with patch("src.tui.pipeline.message_editor.publish_output"), \
+             patch("src.tui.pipeline.message_editor.run_bottom_bar_selection",
                    return_value={"action": "confirmed", "index": 0}):
             action, idx = editor._interactive_message_select(ctx, "测试")
 
@@ -245,7 +245,7 @@ class TestInteractiveMessageSelect:
         editor = MessageEditor()
         ctx = self._make_ctx([])
 
-        with patch("src.ui.tui.message_editor.publish_output") as mock_pub:
+        with patch("src.tui.pipeline.message_editor.publish_output") as mock_pub:
             editor._interactive_message_select(ctx, "测试")
 
         _, kwargs = mock_pub.call_args
@@ -270,35 +270,35 @@ class TestGetEditorMsgMaxWidth:
     - 异常回退 → 80
     """
 
-    @patch("src.ui.tui.message_editor.get_terminal_width")
+    @patch("src.tui.pipeline.message_editor.get_terminal_width")
     def test_wide_terminal_capped_at_80(self, mock_get_width):
         """宽屏终端（200 列）返回上限 80。"""
         mock_get_width.return_value = 200
         result = _me._get_editor_msg_max_width()
         assert result == 80
 
-    @patch("src.ui.tui.message_editor.get_terminal_width")
+    @patch("src.tui.pipeline.message_editor.get_terminal_width")
     def test_standard_terminal_returns_68(self, mock_get_width):
         """标准终端（80 列）返回 68（80-12）。"""
         mock_get_width.return_value = 80
         result = _me._get_editor_msg_max_width()
         assert result == 68
 
-    @patch("src.ui.tui.message_editor.get_terminal_width")
+    @patch("src.tui.pipeline.message_editor.get_terminal_width")
     def test_narrow_terminal_clamped_to_25(self, mock_get_width):
         """窄屏终端（30 列）返回下限 25。"""
         mock_get_width.return_value = 30
         result = _me._get_editor_msg_max_width()
         assert result == 25
 
-    @patch("src.ui.tui.message_editor.get_terminal_width")
+    @patch("src.tui.pipeline.message_editor.get_terminal_width")
     def test_boundary_92_returns_80(self, mock_get_width):
         """边界值：92 列 → 92-12=80 → 80。"""
         mock_get_width.return_value = 92
         result = _me._get_editor_msg_max_width()
         assert result == 80
 
-    @patch("src.ui.tui.message_editor.get_terminal_width")
+    @patch("src.tui.pipeline.message_editor.get_terminal_width")
     def test_boundary_37_returns_25(self, mock_get_width):
         """边界值：37 列 → 37-12=25 → 25。"""
         mock_get_width.return_value = 37
@@ -317,7 +317,7 @@ class TestGetEditorMsgMaxWidth:
         """80 列终端返回 68（无需 mock，实际回退到 80）。"""
         # 使用真实 get_terminal_width（测试环境可能返回不同值），
         # 但通过 patch 确保结果正确
-        with patch("src.ui.tui.message_editor.get_terminal_width",
+        with patch("src.tui.pipeline.message_editor.get_terminal_width",
                    return_value=80):
             result = _me._get_editor_msg_max_width()
             assert result == 68
@@ -342,7 +342,7 @@ class TestMsgShortSummaryDynamicWidth:
             msg["name"] = name
         return msg
 
-    @patch("src.ui.tui.message_editor.get_terminal_width")
+    @patch("src.tui.pipeline.message_editor.get_terminal_width")
     def test_user_message_uses_dynamic_width(self, mock_get_width):
         """用户消息使用动态宽度（68），长文本被截断。"""
         mock_get_width.return_value = 80
@@ -354,7 +354,7 @@ class TestMsgShortSummaryDynamicWidth:
         assert "…" in result
         assert len(result) > 35  # 比旧版 35 字符更长
 
-    @patch("src.ui.tui.message_editor.get_terminal_width")
+    @patch("src.tui.pipeline.message_editor.get_terminal_width")
     def test_assistant_message_uses_dynamic_width(self, mock_get_width):
         """助手消息使用动态宽度。"""
         mock_get_width.return_value = 80
@@ -364,7 +364,7 @@ class TestMsgShortSummaryDynamicWidth:
         ))
         assert "…" in result
 
-    @patch("src.ui.tui.message_editor.get_terminal_width")
+    @patch("src.tui.pipeline.message_editor.get_terminal_width")
     def test_tool_message_uses_min_width(self, mock_get_width):
         """工具消息使用 min(动态宽度, 60)。"""
         mock_get_width.return_value = 80
@@ -376,7 +376,7 @@ class TestMsgShortSummaryDynamicWidth:
         # 工具消息上限 60，但 ANSI 前缀占位，确认比旧版 30 更长
         assert len(result) > 35
 
-    @patch("src.ui.tui.message_editor.get_terminal_width")
+    @patch("src.tui.pipeline.message_editor.get_terminal_width")
     def test_tool_calls_name_uses_min_width(self, mock_get_width):
         """tool_calls 名称使用 min(动态宽度, 45)。"""
         mock_get_width.return_value = 80
@@ -391,7 +391,7 @@ class TestMsgShortSummaryDynamicWidth:
         # tool_calls 名称上限 45，确保比旧版 30 更长
         assert len(result) > 35
 
-    @patch("src.ui.tui.message_editor.get_terminal_width")
+    @patch("src.tui.pipeline.message_editor.get_terminal_width")
     def test_short_content_not_truncated(self, mock_get_width):
         """短内容不会被截断（保持原有返回）。"""
         mock_get_width.return_value = 80
@@ -402,7 +402,7 @@ class TestMsgShortSummaryDynamicWidth:
         assert "你好" in result
         assert "…" not in result
 
-    @patch("src.ui.tui.message_editor.get_terminal_width")
+    @patch("src.tui.pipeline.message_editor.get_terminal_width")
     def test_narrow_terminal_shorter_truncation(self, mock_get_width):
         """窄屏终端使用更短的截断值（25）。"""
         mock_get_width.return_value = 30

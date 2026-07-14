@@ -33,12 +33,12 @@ from ..core.commands.plugins import get_interactive_registry
 from ..core.message_queue import MessageQueue
 from ..core.exceptions import is_fatal_exception
 from ..ui.colors import CYAN, DIM, RESET, GREEN, YELLOW
-from ..ui.tui._ttl_cache import TTLCache
-from ..ui.narrow import is_narrow, narrow_sep_width
+from ..tui.core.ttl_cache import TTLCache
+from ..tui.terminal.narrow import is_narrow, narrow_sep_width
 from ..api.escape_monitor import EscapeMonitor
 from ..api.interrupt_async import reset_interrupt_async
 from ..api.stats import reset_token_speed
-from ..chat_ui import ChatUIConsumer
+from ..tui.consumer import ChatUIConsumer
 
 _logger = logging.getLogger(__name__)
 

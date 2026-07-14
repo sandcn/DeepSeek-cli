@@ -79,7 +79,7 @@ class TerminalTarget:
             locked_write: 持锁后执行的回调（无参数）。
             fallback_text: 锁超时时直写到 sys.__stdout__ 的文本。
         """
-        from ._lock import render_lock, OUTPUT_LOCK_TIMEOUT
+        from ..tui.widgets.lock import render_lock, OUTPUT_LOCK_TIMEOUT
         acquired = render_lock.acquire(timeout=OUTPUT_LOCK_TIMEOUT)
         try:
             if acquired:
@@ -115,7 +115,7 @@ class TerminalTarget:
         ★ 防死锁：使用非阻塞 try-lock（超时 0.1s），不可获取时跳过
           本帧（返回 last_lines），由定时器在下一跳（100ms 后）重试。
         """
-        from ._lock import _try_acquire_output_lock
+        from ..tui.widgets.lock import _try_acquire_output_lock
         with _try_acquire_output_lock(name="terminal.render_frame", timeout=0.1) as locked:
             if locked:
                 return self._adapter.render_frame(lines, last_lines)

@@ -26,7 +26,7 @@ import signal as _signal
 import weakref
 from typing import Callable, List, Optional
 
-from ._blessed import get_terminal
+from ..tui.terminal.blessed import get_terminal
 
 _logger = logging.getLogger(__name__)
 

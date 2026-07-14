@@ -12,8 +12,8 @@ import sys
 import unittest
 from unittest.mock import MagicMock, PropertyMock, patch
 
-from src.ui.tui.bottom_bar import _BottomBar
-from src.ui._stdout_tracker import _StdoutLineTracker
+from src.tui.widgets.bottom_bar import _BottomBar
+from src.tui.widgets.stdout_tracker import _StdoutLineTracker
 
 
 def _mock_terminal(width=80, height=30):
@@ -416,7 +416,7 @@ class TestBottomBarFormatStatus(unittest.TestCase):
             "per_second_speed": 25.3,
         }
 
-        with patch("src.ui.tui.bottom_bar.status._get_snapshot", return_value=lambda: mock_snap):
+        with patch("src.tui.widgets.bottom_bar.status._get_snapshot", return_value=lambda: mock_snap):
             result = self.bb._format_status()
 
         # 应包含模型名 + 统计信息
@@ -432,7 +432,7 @@ class TestBottomBarFormatStatus(unittest.TestCase):
         self.bb._tool_fail_count = 1
 
         # mock snapshot 有数据，但 _status_active=False 时应跳过
-        with patch("src.ui.tui.bottom_bar.status._get_snapshot", return_value=None):
+        with patch("src.tui.widgets.bottom_bar.status._get_snapshot", return_value=None):
             result = self.bb._format_status()
 
         # 应包含模型名（含 ANSI 颜色码）
@@ -446,7 +446,7 @@ class TestBottomBarFormatStatus(unittest.TestCase):
         self.bb._tool_count = 0
         self.bb._tool_fail_count = 0
 
-        with patch("src.ui.tui.bottom_bar.status._get_snapshot", return_value=None):
+        with patch("src.tui.widgets.bottom_bar.status._get_snapshot", return_value=None):
             result = self.bb._format_status()
 
         # 应包含模型名（含 ANSI 颜色码），不含统计信息
@@ -465,7 +465,7 @@ class TestBottomBarFormatStatus(unittest.TestCase):
             "per_second_speed": 10.0,
         }
 
-        with patch("src.ui.tui.bottom_bar.status._get_snapshot", return_value=lambda: mock_snap):
+        with patch("src.tui.widgets.bottom_bar.status._get_snapshot", return_value=lambda: mock_snap):
             result = self.bb._format_status()
 
         # 应包含模型名 + 统计
@@ -487,7 +487,7 @@ class TestBottomBarFormatStatus(unittest.TestCase):
             "per_second_speed": 0.0,
         }
 
-        with patch("src.ui.tui.bottom_bar.status._get_snapshot", return_value=lambda: mock_snap):
+        with patch("src.tui.widgets.bottom_bar.status._get_snapshot", return_value=lambda: mock_snap):
             result = self.bb._format_status()
 
         self.assertIn("test-model", result)
@@ -522,7 +522,7 @@ class TestBottomBarLastScrollEnd(unittest.TestCase):
 
         mock_term = _mock_terminal(width=80, height=30)
         with patch.object(sys, '__stdout__', io.StringIO()), \
-             patch("src.ui.tui.bottom_bar.bar.get_terminal", return_value=mock_term):
+             patch("src.tui.widgets.bottom_bar.bar.get_terminal", return_value=mock_term):
             self.bb.setup()
 
         expected = 30 - (2 + max(3, 0))  # height - (_BOTTOM_LINES + 0 = 5) = 25
@@ -537,7 +537,7 @@ class TestBottomBarLastScrollEnd(unittest.TestCase):
 
         # Blessed 在非 TTY 环境下返回空字符串，需 patch get_terminal
         mock_term = _mock_terminal(width=80, height=30)
-        with patch("src.ui.tui.bottom_bar.bar.get_terminal", return_value=mock_term):
+        with patch("src.tui.widgets.bottom_bar.bar.get_terminal", return_value=mock_term):
             out = io.StringIO()
             old = sys.__stdout__
             sys.__stdout__ = out
@@ -557,7 +557,7 @@ class TestBottomBarLastScrollEnd(unittest.TestCase):
         self.bb._last_scroll_end = 0  # 未初始化
 
         mock_term = _mock_terminal(width=80, height=30)
-        with patch("src.ui.tui.bottom_bar.bar.get_terminal", return_value=mock_term):
+        with patch("src.tui.widgets.bottom_bar.bar.get_terminal", return_value=mock_term):
             out = io.StringIO()
             with patch.object(sys, '__stdout__', out):
                 self.bb.ensure_cursor_in_upper()
@@ -576,7 +576,7 @@ class TestBottomBarLastScrollEnd(unittest.TestCase):
         mock_term = _mock_terminal(width=80, height=30)
         out = io.StringIO()
         with patch.object(sys, '__stdout__', out), \
-             patch("src.ui.tui.bottom_bar.bar.get_terminal", return_value=mock_term):
+             patch("src.tui.widgets.bottom_bar.bar.get_terminal", return_value=mock_term):
             self.bb.sync_bottom_lines()
 
         # _bottom_lines = 2 + max(3, 0) + 6 = 11
@@ -596,7 +596,7 @@ class TestBottomBarLastScrollEnd(unittest.TestCase):
         mock_term = _mock_terminal(width=80, height=30)
         out = io.StringIO()
         with patch.object(sys, '__stdout__', out), \
-             patch("src.ui.tui.bottom_bar.bar.get_terminal", return_value=mock_term):
+             patch("src.tui.widgets.bottom_bar.bar.get_terminal", return_value=mock_term):
             self.bb.sync_bottom_lines()
 
         output = out.getvalue()
@@ -619,7 +619,7 @@ class TestBottomBarLastScrollEnd(unittest.TestCase):
         mock_term = _mock_terminal(width=80, height=25)
         out = io.StringIO()
         with patch.object(sys, '__stdout__', out), \
-             patch("src.ui.tui.bottom_bar.bar.get_terminal", return_value=mock_term):
+             patch("src.tui.widgets.bottom_bar.bar.get_terminal", return_value=mock_term):
             self.bb.sync_bottom_lines()
 
         output = out.getvalue()
@@ -637,7 +637,7 @@ class TestDrainQueueSyncBottomLines(unittest.TestCase):
     """验证 _drain_queue() Stage 1 非 resize 时调用 sync_bottom_lines()。"""
 
     def setUp(self):
-        from src.chat_ui.engine import RenderEngine
+        from src.tui.consumer.engine import RenderEngine
         self.mock_renderer = MagicMock()
         self.mock_bb = MagicMock()
         self.mock_bb.is_status_active = False
@@ -657,7 +657,7 @@ class TestDrainQueueSyncBottomLines(unittest.TestCase):
         sys.__stdout__ = self._stdout
 
     def _enqueue_cmd(self):
-        from src.chat_ui.const import RenderCommand
+        from src.tui.consumer.const import RenderCommand
         self.engine.push_cmd((RenderCommand.NOTIFICATION, "test"))
 
     def test_not_resized_calls_sync_bottom_lines(self):
@@ -666,7 +666,7 @@ class TestDrainQueueSyncBottomLines(unittest.TestCase):
         self.mock_bb.check_resize.return_value = False
 
         with \
-             patch("src.ui._lock._try_acquire_output_lock",
+             patch("src.tui.widgets.lock._try_acquire_output_lock",
                    return_value=MagicMock(__enter__=MagicMock(return_value=True),
                                          __exit__=MagicMock(return_value=False))), \
              patch.object(sys, '__stdout__', MagicMock()):
@@ -698,7 +698,7 @@ class TestDrainQueueSyncBottomLines(unittest.TestCase):
         self.mock_bb._term_height.return_value = 35
 
         with \
-             patch("src.ui._lock._try_acquire_output_lock",
+             patch("src.tui.widgets.lock._try_acquire_output_lock",
                    return_value=MagicMock(__enter__=MagicMock(return_value=True),
                                          __exit__=MagicMock(return_value=False))), \
              patch.object(sys, '__stdout__', MagicMock()):
@@ -746,7 +746,7 @@ class TestApplyScrollDeltaOrdering(unittest.TestCase):
             # move_xy 生成原始 ANSI（确保测试可重复，不依赖 blessed 实现）
             mock_term.move_xy = lambda x, y: f"\033[{y + 1};{x + 1}H"
             mock_term.clear_eol = "\033[K"
-            with patch("src.ui.tui.bottom_bar.bar.get_terminal", return_value=mock_term):
+            with patch("src.tui.widgets.bottom_bar.bar.get_terminal", return_value=mock_term):
                 method_call()
         return buf.getvalue()
 
@@ -1345,7 +1345,7 @@ class TestEnsureCursorInLowerLocking(unittest.TestCase):
             return (0, 0)
 
         with patch.object(sys, '__stdout__', io.StringIO()), \
-             patch("src.ui.tui.bottom_bar.bar._compute_cursor_visual_pos",
+             patch("src.tui.widgets.bottom_bar.bar._compute_cursor_visual_pos",
                    side_effect=capture_compute), \
              patch.object(self.bb, '_term_height', return_value=30), \
              patch.object(self.bb, '_term_width', return_value=80):
@@ -1367,7 +1367,7 @@ class TestEnsureCursorInLowerLocking(unittest.TestCase):
             return (0, 0)
 
         with patch.object(sys, '__stdout__', io.StringIO()), \
-             patch("src.ui.tui.bottom_bar.bar._compute_cursor_visual_pos",
+             patch("src.tui.widgets.bottom_bar.bar._compute_cursor_visual_pos",
                    side_effect=capture_compute), \
              patch.object(self.bb, '_term_height', return_value=30), \
              patch.object(self.bb, '_term_width', return_value=80):
@@ -1380,7 +1380,7 @@ class TestEnsureCursorInLowerLocking(unittest.TestCase):
         """锁超时时 ensure_cursor_in_lower 不应输出任何 ANSI 序列。"""
         buf = io.StringIO()
         with patch.object(sys, '__stdout__', buf), \
-             patch("src.ui.tui.bottom_bar.bar._try_acquire_output_lock",
+             patch("src.tui.widgets.bottom_bar.bar._try_acquire_output_lock",
                    return_value=MagicMock(__enter__=MagicMock(return_value=False),
                                          __exit__=MagicMock(return_value=False))), \
              patch.object(self.bb, '_term_height', return_value=30), \
@@ -1401,7 +1401,7 @@ class TestEnsureCursorInLowerLocking(unittest.TestCase):
             return (0, 0)
 
         with patch.object(sys, '__stdout__', io.StringIO()), \
-             patch("src.ui.tui.bottom_bar.bar._compute_cursor_visual_pos",
+             patch("src.tui.widgets.bottom_bar.bar._compute_cursor_visual_pos",
                    side_effect=capture_compute), \
              patch.object(self.bb, '_term_height', return_value=30), \
              patch.object(self.bb, '_term_width', return_value=80):
@@ -1435,43 +1435,43 @@ class TestBottomBarColorAlignment(unittest.TestCase):
 
     def test_color_accent_is_45(self):
         """_COLOR_ACCENT 应为 CYAN_256(45)。"""
-        from src.ui.tui.bottom_bar.theme import _COLOR_ACCENT
+        from src.tui.widgets.bottom_bar.theme import _COLOR_ACCENT
         self.assertIn("38;5;45", _COLOR_ACCENT,
                       "_COLOR_ACCENT 应对齐 CYAN_256(45)")
 
     def test_color_dim_is_242(self):
         """_COLOR_DIM 应为 GRAY_256(242)。"""
-        from src.ui.tui.bottom_bar.theme import _COLOR_DIM
+        from src.tui.widgets.bottom_bar.theme import _COLOR_DIM
         self.assertIn("38;5;242", _COLOR_DIM,
                       "_COLOR_DIM 应对齐 GRAY_256(242)")
 
     def test_color_tool_ok_is_41(self):
         """_COLOR_TOOL_OK 应为 GREEN_256(41)。"""
-        from src.ui.tui.bottom_bar.theme import _COLOR_TOOL_OK
+        from src.tui.widgets.bottom_bar.theme import _COLOR_TOOL_OK
         self.assertIn("38;5;41", _COLOR_TOOL_OK,
                       "_COLOR_TOOL_OK 应对齐 GREEN_256(41)")
 
     def test_color_tool_fail_is_196(self):
         """_COLOR_TOOL_FAIL 应为 RED_256(196)。"""
-        from src.ui.tui.bottom_bar.theme import _COLOR_TOOL_FAIL
+        from src.tui.widgets.bottom_bar.theme import _COLOR_TOOL_FAIL
         self.assertIn("38;5;196", _COLOR_TOOL_FAIL,
                       "_COLOR_TOOL_FAIL 应对齐 RED_256(196)")
 
     def test_color_complete_match_is_221(self):
         """_COLOR_COMPLETE_MATCH 应为 YELLOW_256(221)。"""
-        from src.ui.tui.bottom_bar.theme import _COLOR_COMPLETE_MATCH
+        from src.tui.widgets.bottom_bar.theme import _COLOR_COMPLETE_MATCH
         self.assertIn("38;5;221", _COLOR_COMPLETE_MATCH,
                       "_COLOR_COMPLETE_MATCH 应对齐 YELLOW_256(221)")
 
     def test_color_select_bg_is_236(self):
         """_COLOR_SELECT_BG 应为 236。"""
-        from src.ui.tui.bottom_bar.theme import _COLOR_SELECT_BG
+        from src.tui.widgets.bottom_bar.theme import _COLOR_SELECT_BG
         self.assertIn("48;5;236", _COLOR_SELECT_BG,
                       "_COLOR_SELECT_BG 应为 236")
 
     def test_color_deep_cyan_is_32(self):
         """_COLOR_DEEP_CYAN 应为 32。"""
-        from src.ui.tui.bottom_bar.theme import _COLOR_DEEP_CYAN
+        from src.tui.widgets.bottom_bar.theme import _COLOR_DEEP_CYAN
         self.assertIn("38;5;32", _COLOR_DEEP_CYAN,
                       "_COLOR_DEEP_CYAN 应为 32")
 
@@ -1491,7 +1491,7 @@ class TestBottomBarColorAlignment(unittest.TestCase):
             "per_second_speed": 10.0,
         }
 
-        with patch("src.ui.tui.bottom_bar.status._get_snapshot", return_value=lambda: mock_snap):
+        with patch("src.tui.widgets.bottom_bar.status._get_snapshot", return_value=lambda: mock_snap):
             result = bb._format_status()
 
         # 应包含 256 色 ANSI 码（38;5;）
@@ -1533,7 +1533,7 @@ class TestPlaceholderGlow(unittest.TestCase):
         self.bb._last_text = ""
         buf = io.StringIO()
         with patch.object(sys, '__stdout__', buf), \
-             patch("src.ui.tui._terminal.is_narrow", return_value=False), \
+             patch("src.tui.terminal.terminal.is_narrow", return_value=False), \
              patch.object(self.bb, '_format_status', return_value=""):
             self.bb.force_redraw()
         output = buf.getvalue()
@@ -1546,7 +1546,7 @@ class TestPlaceholderGlow(unittest.TestCase):
         self.bb._last_text = ""
         buf = io.StringIO()
         with patch.object(sys, '__stdout__', buf), \
-             patch("src.ui.tui._terminal.is_narrow", return_value=True), \
+             patch("src.tui.terminal.terminal.is_narrow", return_value=True), \
              patch.object(self.bb, '_format_status', return_value=""):
             self.bb.force_redraw()
         output = buf.getvalue()
@@ -1565,12 +1565,12 @@ class TestGetSnapshot(unittest.TestCase):
 
     def setUp(self):
         # 强制重置模块级缓存变量，确保 _get_snapshot() 走真实导入路径
-        import src.ui.tui.bottom_bar.status as status_mod
+        import src.tui.widgets.bottom_bar.status as status_mod
         status_mod._TOKEN_SPEED_SNAPSHOT = None
 
     def test_get_snapshot_imports_correctly(self):
         """_get_snapshot() 应返回 callable 而非 None（验证真实导入路径正确）。"""
-        from src.ui.tui.bottom_bar import status
+        from src.tui.widgets.bottom_bar import status
 
         # 强制重置缓存，使 _get_snapshot 走 try 导入路径
         status._TOKEN_SPEED_SNAPSHOT = None

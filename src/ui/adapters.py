@@ -9,7 +9,7 @@ from contextlib import contextmanager
 from typing import Optional
 
 from ..core.ports.events import EventPort
-from .events import publish_output
+from ..tui.events import publish_output
 
 
 class UIDisplayAdapter:
@@ -59,12 +59,12 @@ class UIEventAdapter(EventPort):
     """实现 EventPort 接口，委托给 ui.events 模块"""
 
     def __init__(self):
-        from .events.event_bus import DisplayEventBus
+        from ..tui.events.event_bus import DisplayEventBus
         self._bus = DisplayEventBus.get_default()
         self._handlers: dict[str, list] = {}
 
     def publish(self, event_type, data=None, source="core"):
-        from .events.event_types import OutputEvent, ToolSummaryEvent
+        from ..tui.events.event_types import OutputEvent, ToolSummaryEvent
 
         if event_type == "tool_summary" and isinstance(data, dict):
             event = ToolSummaryEvent(
@@ -115,7 +115,7 @@ class UIOutputAdapter:
 
     def _get_lock(self):
         if self._lock is None:
-            from ._lock import render_lock
+            from ..tui.widgets.lock import render_lock
             self._lock = render_lock
         return self._lock
 

@@ -17,7 +17,7 @@ from ..core.constants import (
     RED_256, GREEN_256, BRIGHT_RED_256, BRIGHT_GREEN_256,
     BRIGHT_BLACK_256, DARK_GRAY_256, CYAN_256, BOLD, RESET,
 )
-from ._lock import diff_active, _try_acquire_output_lock, locked_print
+from ..tui.widgets.lock import diff_active, _try_acquire_output_lock, locked_print
 from .colors import DIM
 
 _logger = logging.getLogger(__name__)
