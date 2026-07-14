@@ -169,8 +169,8 @@ class ParallelDisplay(BaseDisplay):
             reset_last_lines = True
 
         try:
-            import src.chat_ui as _chat_ui_mod  # noqa: PLC0415
-            _chat_ui = _chat_ui_mod.get_active_chat_ui()
+            from src.tui.consumer import get_active_chat_ui  # noqa: PLC0415
+            _chat_ui = get_active_chat_ui()
             if _chat_ui is not None:
                 se = _chat_ui.bottom_bar.get_scroll_end()
                 if se is not None and se > 0:
@@ -365,8 +365,8 @@ class ParallelDisplay(BaseDisplay):
 
         self._last_lines = 0
         try:
-            import src.chat_ui as _chat_ui_mod  # noqa: PLC0415
-            _chat_ui = _chat_ui_mod.get_active_chat_ui()
+            from src.tui.consumer import get_active_chat_ui  # noqa: PLC0415
+            _chat_ui = get_active_chat_ui()
             if _chat_ui is not None:
                 bb = _chat_ui.bottom_bar
                 if hasattr(bb, 'set_subagent_frame'):
@@ -382,8 +382,8 @@ class ParallelDisplay(BaseDisplay):
         self._started = True
         self._stopped = False
 
-        import src.chat_ui as _chat_ui_mod  # noqa: PLC0415
-        _chat_ui = _chat_ui_mod.get_active_chat_ui()
+        from src.tui.consumer import get_active_chat_ui  # noqa: PLC0415
+        _chat_ui = get_active_chat_ui()
         if _chat_ui is not None:
             self._adapter = _chat_ui.output_adapter
             # ★ 获取 push_cmd 回调（向命令队列推送 SUBAGENT_FRAME 命令）
@@ -436,8 +436,8 @@ class ParallelDisplay(BaseDisplay):
         # 获取 chat_ui 引用（供后续注销回调和请求重绘使用）
         _chat_ui = None
         try:
-            import src.chat_ui as _chat_ui_mod  # noqa: PLC0415
-            _chat_ui = _chat_ui_mod.get_active_chat_ui()
+            from src.tui.consumer import get_active_chat_ui  # noqa: PLC0415
+            _chat_ui = get_active_chat_ui()
         except Exception:
             pass
 

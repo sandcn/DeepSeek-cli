@@ -157,7 +157,7 @@ class SubAgentSpawner:
 
     def _publish_tool_summary(self, results: List[Dict[str, Any]]) -> None:
         """批量发布所有 subagent 的 AgentResultEvent（全部完成后统一发送）。"""
-        from ....ui.events.event_types import AgentResultEvent as _AgentResultEvent
+        from ....tui.events.event_types import AgentResultEvent as _AgentResultEvent
         for r in results:
             self._event_port.publish_event(_AgentResultEvent(
                 label=r.get(_LABEL_KEY, "?"),
