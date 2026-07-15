@@ -27,10 +27,10 @@ from ...core.effects import sine_color_range
 
 
 # ── 底部栏布局配置 ──────────────────────────────────────────
-_BOTTOM_MIN_HEIGHT = 10     # 终端太小时跳过底部栏
+_BOTTOM_MIN_HEIGHT = 12     # 终端太小时跳过底部栏（+2 新增输入区分割线）
 _BOTTOM_REFRESH_MS = 0.05   # 底部栏刷新节流（50ms）
-_MIN_INPUT_ROWS = 3         # 输入区最小行数（空输入时至少显示 3 行）
-_BOTTOM_MIN_LINES = 5       # setup() 中最小底部栏总行数（2 分隔线+状态行 + 3 最小输入行）
+_MIN_INPUT_ROWS = 1         # 输入区最小行数（空输入时至少显示 1 行）
+_BOTTOM_MIN_LINES = 5       # setup() 中最小底部栏总行数（2 分隔线+状态行 + 1 最小输入行 + 2 输入区域分割线）
 
 # ── 动态颜色获取函数 ──────────────────────────────────────
 

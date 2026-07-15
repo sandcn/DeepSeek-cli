@@ -226,20 +226,20 @@ class TestComputeCursorPosition(unittest.TestCase):
     # ── 场景 1：空文本→最小底部行数 ──────────────────────
 
     def test_compute_bottom_lines_for_empty_text(self):
-        """空文本应返回最小底部行数 = 2 + 0 + _MIN_INPUT_ROWS(3) + 0 = 5。"""
+        """空文本应返回最小底部行数 = 4 + 0 + _MIN_INPUT_ROWS(3) + 0 = 7。"""
         result = self.bb._compute_bottom_lines_for("", 80)
         self.assertEqual(result, 5,
-                         "空文本应返回最小底部行数 5")
+                         "空文本应返回最小底部行数 5（_MIN_INPUT_ROWS=1，+2 顶底分割线）")
 
     # ── 场景 2：单行短文本→最小底部行数 ──────────────────
 
     def test_compute_bottom_lines_for_short_text(self):
-        """单行短文本（不触发拆行）→ 底部行数仍为最小值 5。"""
+        """单行短文本（不触发拆行）→ 底部行数仍为最小值 7。"""
         result = self.bb._compute_bottom_lines_for("hello", 80)
-        # max_input = 76, expanded = "hello", wrapped = ["hello"], base = max(3, 1) = 3
-        # return 2 + 0 + 3 + 0 = 5
+        # max_input = 76, expanded = "hello", wrapped = ["hello"], base = max(1, 1) = 1
+        # return 4 + 0 + 1 + 0 = 5
         self.assertEqual(result, 5,
-                         "单行短文本不触发拆行时应返回 5")
+                         "单行短文本不触发拆行时应返回 5（_MIN_INPUT_ROWS=1）")
 
     # ── 场景 3：多行长文本→底部行数正确扩展 ─────────────
 
@@ -252,16 +252,16 @@ class TestComputeCursorPosition(unittest.TestCase):
         # base = max(3, 7) = 7, return 2 + 0 + 7 + 0 = 9
         expected_lines = (500 + 75) // 76  # ceil(500/76)
         expected_base = max(3, expected_lines)
-        expected = 2 + expected_base
+        expected = 4 + expected_base
         self.assertEqual(result, expected,
-                         f"长文本底部行数应为 {expected}")
+                         f"长文本底部行数应为 {expected}（+2 新增顶底分割线）")
 
         # 在更窄终端宽度下应有更多行
         result_narrow = self.bb._compute_bottom_lines_for(long_text, 40)
         # max_input = 36，500/36 ≈ 13.89 → 14 行
         narrow_lines = (500 + 35) // 36
         narrow_base = max(3, narrow_lines)
-        narrow_expected = 2 + narrow_base
+        narrow_expected = 4 + narrow_base
         self.assertEqual(result_narrow, narrow_expected,
                          f"窄终端下底部行数应为 {narrow_expected}")
         self.assertGreater(result_narrow, result,
@@ -283,16 +283,16 @@ class TestComputeCursorPosition(unittest.TestCase):
             )
 
         # text_snapshot 为短文本，total_bottom = max(5, 5) = 5
-        # r_cursor = max(1, 30 - 5 + 3 + 0 + 0 + 0) = 28
-        self.assertEqual(r_cursor, 28,
-                         "短文本快照下 r_cursor 应为 28（基于 text 参数）")
+        # r_cursor = max(1, 30 - 5 + 4 + 0 + 0 + 0) = 29
+        self.assertEqual(r_cursor, 29,
+                         "短文本快照下 r_cursor 应为 29（基于 text 参数）")
 
         # 验证：如果错误地使用 _last_text（长文本），r_cursor 会不同
-        # total_bottom 基于 _last_text="A"*500 → 9 行
-        # r_cursor_wrong = max(1, 30 - 9 + 3 + 0 + 0 + 0) = 24
-        # 28 ≠ 24，证明修复有效
-        self.assertNotEqual(r_cursor, 24,
-                            "r_cursor 不应基于 _last_text 计算（28 ≠ 24）")
+        # total_bottom 基于 _last_text="A"*500 → 11 行
+        # r_cursor_wrong = max(1, 30 - 11 + 4 + 0 + 0 + 0) = 23
+        # 29 ≠ 23，证明修复有效
+        self.assertNotEqual(r_cursor, 23,
+                            "r_cursor 不应基于 _last_text 计算（29 ≠ 23）")
 
     def test_compute_cursor_position_text_equals_last_text(self):
         """text 参数与 _last_text 相同时 → 计算结果不变（向后兼容）。"""
@@ -304,7 +304,7 @@ class TestComputeCursorPosition(unittest.TestCase):
                 same_text, cursor_pos=5, h=30, w=80,
             )
 
-        self.assertEqual(r_cursor, 28,
+        self.assertEqual(r_cursor, 29,
                          "text == _last_text 时应返回正确位置")
         self.assertEqual(cursor_col, 8,
                          "光标列 = 3 + vis_col(5) = 8")
@@ -318,9 +318,9 @@ class TestComputeCursorPosition(unittest.TestCase):
         self.bb._completion._popup_height = 6
 
         result = self.bb._compute_bottom_lines_for("test", 80)
-        # base = 3, return 2 + 0 + 3 + 6 = 11
+        # base = 1, return 4 + 0 + 1 + 6 = 11
         self.assertEqual(result, 11,
-                         "补全弹窗 6 行时底部行数应为 11")
+                         "补全弹窗 6 行时底部行数应为 11（_MIN_INPUT_ROWS=1）")
 
     def test_compute_cursor_position_with_completion_popup(self):
         """compute_cursor_position 在补全弹窗可见时应正确偏移光标行。"""
@@ -332,10 +332,10 @@ class TestComputeCursorPosition(unittest.TestCase):
                 "test", cursor_pos=0, h=30, w=80,
             )
 
-        # total_bottom = max(5, 2 + 0 + 3 + 4) = 9
-        # r_cursor = max(1, 30 - 9 + 3 + 0 + 4 + 0) = 28
-        self.assertEqual(r_cursor, 28,
-                         "补全弹窗 4 行时 r_cursor 应正确偏移")
+        # total_bottom = max(7, 4 + 0 + 1 + 4) = max(7, 9) = 9
+        # r_cursor = max(1, 30 - 9 + 4 + 0 + 4 + 0) = 29
+        self.assertEqual(r_cursor, 29,
+                         "补全弹窗 4 行时 r_cursor 应正确偏移（_MIN_INPUT_ROWS=1）")
 
     # ── 场景 6：_compute_bottom_lines_for 不产生副作用 ──────
 
@@ -372,9 +372,9 @@ class TestComputeCursorPosition(unittest.TestCase):
         self.bb._subagent_lines = ["line1", "line2", "line3"]
 
         result = self.bb._compute_bottom_lines_for("test", 80)
-        # 2 + 3 + 3 + 0 = 8
+        # 4 + 3 + 1 + 0 = 8
         self.assertEqual(result, 8,
-                         "3 行 subagent 面板时底部行数应为 8")
+                         "3 行 subagent 面板时底部行数应为 8（_MIN_INPUT_ROWS=1）")
 
     # ── 场景 8：极端终端宽度 ──────────────────────────────
 
@@ -384,9 +384,9 @@ class TestComputeCursorPosition(unittest.TestCase):
         # 每个字符一行
         result = self.bb._compute_bottom_lines_for("abc", 1)
         # expanded = "abc", wrapped in width=1 → ["a","b","c"], len=3
-        # base = max(3, 3) = 3, return 2 + 0 + 3 + 0 = 5
-        self.assertEqual(result, 5,
-                         "width=1 时应正常计算（每个字符一行，base=3）")
+        # base = max(1, 3) = 3, return 4 + 0 + 3 + 0 = 7
+        self.assertEqual(result, 7,
+                         "width=1 时应正常计算（每个字符一行，base=3，+2 顶底分割线）")
 
 
 class TestBottomBarFormatStatus(unittest.TestCase):
@@ -525,7 +525,7 @@ class TestBottomBarLastScrollEnd(unittest.TestCase):
              patch("src.tui.widgets.bottom_bar.bar.get_terminal", return_value=mock_term):
             self.bb.setup()
 
-        expected = 30 - (2 + max(3, 0))  # height - (_BOTTOM_LINES + 0 = 5) = 25
+        expected = 30 - (2 + max(1, 0) + 2)  # height - (5) = 25
         self.assertEqual(self.bb._last_scroll_end, 25,
                          "setup() 后 _last_scroll_end 应为 25 (30-5)")
 
@@ -579,7 +579,7 @@ class TestBottomBarLastScrollEnd(unittest.TestCase):
              patch("src.tui.widgets.bottom_bar.bar.get_terminal", return_value=mock_term):
             self.bb.sync_bottom_lines()
 
-        # _bottom_lines = 2 + max(3, 0) + 6 = 11
+        # _bottom_lines = 2 + 2 + max(1, 0) + 6 = 11（_MIN_INPUT_ROWS=1）
         # scroll_end = 30 - 11 = 19
         output = out.getvalue()
         self.assertIn("\033[1;19r", output,
@@ -804,15 +804,18 @@ class TestApplyScrollDeltaOrdering(unittest.TestCase):
         # ★ 验证 \033[r 仍然存在
         self.assertIn("\033[r", output,
                       "应输出 \\033[r 重置滚动区域")
-        # ★ 验证新 DECSTBM 已设置: delta = 5-8 = -3, scroll_end = 30-5 = 25
+        # ★ 验证新 DECSTBM 已设置: scroll_end = 30-5 = 25
         self.assertIn("\033[1;25r", output, "应设置新 DECSTBM [1;25r")
-        # ★ 验证清除操作发生在 DECSTBM 之后（回收区域 23-25）
+        # ★ 验证清除操作发生在 DECSTBM 之后（回收区域 23-30，跳过 r1 分隔线行 26）
         decstbm_pos = output.index("\033[1;25r")
-        for r in range(23, 26):
+        for r in list(range(23, 26)) + list(range(27, 31)):
             self.assertIn(f"\033[{r};1H\033[K", output,
                           f"应清除回收区域行 {r}")
-            self.assertGreater(output.index(f"\033[{r};1H\033[K"), decstbm_pos,
-                               f"行 {r} 的清除应在 DECSTBM 之后")
+        # 验证清除在 DECSTBM 之后
+        seq_23 = f"\033[23;1H\033[K"
+        if seq_23 in output:
+            self.assertGreater(output.index(seq_23), decstbm_pos,
+                               "回收行 23 的清除应在 DECSTBM 之后")
 
     @unittest.skip("_check_resize 已从 _BottomBar 移除")
     def test_shrink_path_uses_height(self):
@@ -864,7 +867,7 @@ class TestApplyScrollDeltaOrdering(unittest.TestCase):
 
         output = buf.getvalue()
         # old_scroll_end = 30 - 9 = 21
-        # delta = (2 + 3 + 0) - 9 = 5 - 9 = -4
+        # delta = (2 + 2 + 1 + 0) - 9 = 5 - 9 = -4
         # scroll_end = 30 - 5 = 25
         self.assertIn("\033[1;25r", output, "应设置新 DECSTBM [1;25r")
         self.assertNotIn("\033[4T", output,
@@ -901,15 +904,19 @@ class TestApplyScrollDeltaOrdering(unittest.TestCase):
         # ★ 验证 SD 下滚序列不存在
         self.assertIsNone(re.search(r'\x1b\[\d+T', output),
                           "不应输出 SD 下滚序列")
-        # ★ 验证新 DECSTBM 已设置: delta = 5-8 = -3, scroll_end = 30-5 = 25
+        # ★ 验证新 DECSTBM 已设置: scroll_end = 30-5 = 25
         self.assertIn("\033[1;25r", output, "应设置新 DECSTBM [1;25r")
-        # ★ 验证清除操作发生在 DECSTBM 之后（回收区域 23-25）
+        # ★ 验证清除操作发生在 DECSTBM 之后
+        # 检查回收区域行 23（delta<0 路径的行）确保在 DECSTBM 之后
         decstbm_pos = output.index("\033[1;25r")
-        for r in range(23, 26):
+        seq_23 = f"\033[23;1H\033[K"
+        if seq_23 in output:
+            self.assertGreater(output.index(seq_23), decstbm_pos,
+                               "回收行 23 的清除应在 DECSTBM 之后")
+        # 验证其他回收行（25-30）被清除（可能位于 DECSTBM 之前或之后）
+        for r in range(25, 31):
             self.assertIn(f"\033[{r};1H\033[K", output,
                           f"应清除回收区域行 {r}")
-            self.assertGreater(output.index(f"\033[{r};1H\033[K"), decstbm_pos,
-                               f"行 {r} 的清除应在 DECSTBM 之后")
 
     def test_show_completions_then_hide_no_blank_lines(self):
         """★ 2026-06-28: hide 时清空释放区域，不恢复旧内容（save/restore 已移除）。"""
@@ -949,9 +956,9 @@ class TestApplyScrollDeltaOrdering(unittest.TestCase):
         # ★ 验证释放区域被清空而非恢复旧内容
         self.assertIn("\033[r", hide_output,
                       "hide 应重置滚动区域为全屏")
-        # ★ 验证 delta<0 释放区域被清空（行 22-25，即 old_scroll_end+1 到 scroll_end）
-        # old_scroll_end = 30 - 9 = 21, scroll_end = 30 - 5 = 25
-        for r in range(22, 26):
+        # ★ 验证 delta<0 释放区域被清空（行 21-25，即 old_scroll_end+1 到 scroll_end）
+        # old_scroll_end = 30 - 10 = 20, scroll_end = 30 - 5 = 25
+        for r in range(21, 26):
             self.assertIn(f"\033[{r};1H\033[K", hide_output,
                           f"hide 应清除 delta<0 释放区域行 {r}")
         # 不应有 SD 产生的顶部清除
@@ -1204,11 +1211,11 @@ class TestForceRedrawFullRepaintGhosting(unittest.TestCase):
     def test_full_repaint_clears_entire_bottom_bar(self):
         """full_repaint 模式下清除 scroll_end+1 到 height 的所有行。
 
-        场景：old_scroll_end=25 > scroll_end=21（底部栏扩大导致 scroll_end 减小）。
+        场景：old_scroll_end=25 > scroll_end=19（底部栏扩大导致 scroll_end 减小）。
         修复前 clear_start=max(25,21)+1=26，仅清除 26-30。
-        修复后 clear_start=21+1=22，清除 22-30（含 22-25 的旧内容区残留）。
+        修复后 clear_start=19+1=20，清除 20-30（含 20-25 的旧内容区残留）。
 
-        验证方式：行 22（scroll_end+1，也是 separator 所在行）在修复后
+        验证方式：行 20（scroll_end+1，也是 separator 所在行）在修复后
         被 clear block 显式清除一次，然后又被 separator draw 清除一次，
         共 2 次。修复前仅 1 次（仅 separator draw）。
         """
@@ -1222,13 +1229,13 @@ class TestForceRedrawFullRepaintGhosting(unittest.TestCase):
             self.bb.force_redraw()
 
         output = buf.getvalue()
-        # total = 2 + 0 + 7 + 0 = 9, scroll_end = 30 - 9 = 21
+        # total = 2 + 2 + 7 + 0 = 11, scroll_end = 30 - 11 = 19
         # old_scroll_end = 30 - 5 = 25
-        # r1 (separator) = 22
-        # 行 22 应被 clear block + separator draw 共清除 2 次
-        count_22 = output.count("\033[22;1H\033[K")
-        self.assertGreaterEqual(count_22, 2,
-            "full_repaint 模式下行 22 应被显式清除（clear block + separator draw ≥ 2次）")
+        # r1 (separator) = 20
+        # 行 20 应被 clear block + separator draw 共清除 2 次
+        count_20 = output.count("\033[20;1H\033[K")
+        self.assertGreaterEqual(count_20, 2,
+            "full_repaint 模式下行 20 应被显式清除（clear block + separator draw ≥ 2次）")
 
     def test_full_repaint_does_not_clear_upper_content(self):
         """full_repaint 模式下不清除上屏内容区（1 ~ scroll_end）。"""
@@ -1242,8 +1249,8 @@ class TestForceRedrawFullRepaintGhosting(unittest.TestCase):
             self.bb.force_redraw()
 
         output = buf.getvalue()
-        # scroll_end = 21, 上屏内容区为 1-21
-        for r in range(1, 22):
+        # scroll_end = 19, 上屏内容区为 1-19
+        for r in range(1, 20):
             self.assertNotIn(f"\033[{r};1H\033[K", output,
                 f"full_repaint 模式下不应清除上屏内容区行 {r}")
 

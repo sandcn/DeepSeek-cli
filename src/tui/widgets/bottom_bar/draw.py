@@ -71,6 +71,12 @@ def _draw_input_lines_locked(
     性能优化：将所有 ANSI 序列收集到缓冲区后一次写入，
     减少高频循环中的独立 write() 系统调用次数。
 
+    布局（被上下分割线包裹的输入区域）：
+      上分割线（━，深灰237，占满终端宽度）
+      > 输入文本...（或占位提示符）
+      · 续行...
+      下分割线（━，深灰237，占满终端宽度）
+
     Args:
         bar: _BottomBar 实例。
         out: stdout 文件对象。
@@ -88,19 +94,37 @@ def _draw_input_lines_locked(
     bar._cached_wrapped_width = max_input
     bar._cached_wrapped_lines = wrapped
     base_rows = max(_MIN_INPUT_ROWS, len(wrapped))
-    bar._cached_input_rows = base_rows + bar._completion.height
+    bar._cached_input_rows = base_rows + bar._completion.height + 2  # +2 顶底分割线
     bar._last_rendered_text = text
 
     # ── 补全弹窗（委托 _CompletionPopup.render） ──
     bar._completion.render(out, r_start, term_width)
     popup_height = bar._completion.height
 
-    # ── 输入文本行（在弹窗下方） ──
-    text_start = r_start + popup_height
     # ★ 性能优化：批量收集 ANSI 序列，一次 write
     buf: list[str] = []
+
+    # ── 输入区域（被上下两条分割线包裹） ──
+    text_start = r_start + popup_height
+
+    # ★ 上分割线（行尾带 CPU · MEM 信息）
+    cpu_int = max(0, min(100, round(getattr(bar, '_cached_cpu_percent', 0.0))))
+    mem_int = max(0, min(100, round(getattr(bar, '_cached_mem_percent', 0.0))))
+    cpu_mem_info = (
+        f" {_COLOR_ACCENT}CPU:{_COLOR_RESET}"
+        f" {_COLOR_SPEED}{cpu_int}{_COLOR_ACCENT}%{_COLOR_RESET}"
+        f" {_COLOR_DIM}\u00b7{_COLOR_RESET} "
+        f"{_COLOR_ACCENT}MEM:{_COLOR_RESET}"
+        f" {_COLOR_SPEED}{mem_int}{_COLOR_ACCENT}%{_COLOR_RESET}"
+    )
+    cpu_mem_w = _visible_width(cpu_mem_info)
+    top_sep = f"{_COLOR_SEP}\u2501{_COLOR_RESET}" * max(1, term_width - cpu_mem_w) + cpu_mem_info
+    buf.append(_blessed_move_clear(text_start) + top_sep)
+    bar._cursor_tracker.set(text_start, 1)
+
+    # ── 输入文本行（在上分割线下方） ──
     for i, segment in enumerate(wrapped):
-        r = text_start + i
+        r = text_start + 1 + i  # +1 跳过上分割线
         if i == 0:
             if _is_narrow_fn():
                 prompt_color = _COLOR_DEEP_CYAN
@@ -138,8 +162,23 @@ def _draw_input_lines_locked(
             buf.append(_blessed_move_clear(r)
                        + f"{_COLOR_DIM}\u00b7{_COLOR_RESET} {segment}")
         bar._cursor_tracker.set(r, 3)  # 提示符从第3列开始
-    # ★ 填充剩余空白行，确保输入区至少 3 行
-    for r in range(text_start + len(wrapped), text_start + 3):
+    # ★ 下分割线（行尾带时间信息）
+    import time as _time
+    now_local = _time.localtime()
+    ts = (
+        f"{now_local.tm_year}-{now_local.tm_mon}-"
+        f"{now_local.tm_mday} {now_local.tm_hour:02d}:"
+        f"{now_local.tm_min:02d}:{now_local.tm_sec:02d}"
+    )
+    time_info = f" {_COLOR_DIM}{ts}{_COLOR_RESET}"
+    time_w = _visible_width(time_info)
+    bottom_sep = f"{_COLOR_SEP}\u2501{_COLOR_RESET}" * max(1, term_width - time_w) + time_info
+    bottom_sep_row = text_start + 1 + base_rows
+    buf.append(_blessed_move_clear(bottom_sep_row) + bottom_sep)
+    bar._cursor_tracker.set(bottom_sep_row, 1)
+
+    # ★ 填充剩余空白行（在底部分割线下方），确保总行数至少 base_rows + 2
+    for r in range(text_start + 1 + len(wrapped), text_start + 1 + base_rows):
         buf.append(_blessed_move_clear(r) + "  ")
         bar._cursor_tracker.set(r, 1)
     if buf:
@@ -161,130 +200,23 @@ def _build_sep_with_system_stats(
     bar: _BottomBar | None = None,
     breath_frame: int = 0,
 ) -> str:
-    """构建带主Agent状态、CPU/MEM 系统信息和当前时间的分隔线。
-
-    ── 布局策略（始终存在的信息） ──
-      行尾：CPU 使用率 + MEM 使用率 + 当前时间（始终显示）
-
-    ── 流式输出期间（bar._status_active=True 或工具有运行） ──
-      行首优先级：工具调用中（工具有运行） > 主Agent阶段（思考/回答/接收工具参数）
-      布局：``  工具调用中 2.10s  ━━(渐变)━━  CPU: 23% · MEM: 45%  2027-1-1 00:00:01  ``
-
-    ── 非流式 / 空闲期间 ──
-      行首：纯渐变分隔线
-      布局：``  ━━(渐变)━━  CPU: 23% · MEM: 45%  2027-1-1 00:00:01  ``
-
-    空间不足时（窄屏 / 宽度 < 60 列）：回退到纯渐变分隔线，跳过所有信息。
+    """构建纯渐变分隔线（CPU/MEM/时间信息已移至输入区分割线）。
 
     Args:
         tw: 终端宽度（列数）。
         sep_start: 分隔线起始 256 色号。
-        cpu_percent: CPU 使用率（0.0 ~ 100.0）。
-        mem_percent: 内存使用率（0.0 ~ 100.0）。
+        cpu_percent: CPU 使用率（保留参数，已不使用）。
+        mem_percent: 内存使用率（保留参数，已不使用）。
         char: 分隔线字符，默认 ━ (U+2501)。
-        narrow: 是否为窄屏模式，窄屏时跳过信息嵌入。
-        bar: _BottomBar 实例，用于读取主Agent阶段和流式状态。
+        narrow: 是否为窄屏模式。
+        bar: _BottomBar 实例（保留参数，已不使用）。
 
     Returns:
-        完整的带 ANSI 颜色的分隔线字符串（含前导 ``  `` 缩进和尾部 RESET）。
+        纯渐变分隔线字符串（含前导 2 空格）。
     """
-    import time as _time
-
     available = max(1, tw - 2)  # 去除前导 2 空格
-
-    # ── 构建行尾信息：CPU/MEM + 当前时间（始终存在） ──
-    now_local = _time.localtime()
-    time_str = (
-        f"{now_local.tm_year}-{now_local.tm_mon}-"
-        f"{now_local.tm_mday} {now_local.tm_hour:02d}:"
-        f"{now_local.tm_min:02d}:{now_local.tm_sec:02d}"
-    )
-    time_info = f" {_COLOR_DIM}{time_str}{_COLOR_RESET} "
-
-    cpu_int = max(0, min(100, round(cpu_percent)))
-    mem_int = max(0, min(100, round(mem_percent)))
-    cpu_str = str(cpu_int)
-    mem_str = str(mem_int)
-
-    cpu_mem_info = (
-        f" {_COLOR_ACCENT}CPU:{_COLOR_RESET}"
-        f" {_COLOR_SPEED}{cpu_str}{_COLOR_ACCENT}%{_COLOR_RESET}"
-        f" {_COLOR_DIM}\u00b7{_COLOR_RESET} "
-        f"{_COLOR_ACCENT}MEM:{_COLOR_RESET}"
-        f" {_COLOR_SPEED}{mem_str}{_COLOR_ACCENT}%{_COLOR_RESET}"
-    )
-    right_info = cpu_mem_info + time_info
-    right_w = _visible_width(right_info)
-
-    # ── 窄屏 / 空间不足 → 纯渐变分隔线 ──
-    if narrow or right_w >= available - 6:
-        fallback_sep = make_sep_gradient(available, start_color=sep_start, char=char)
-        return f"  {fallback_sep}"
-
-    # ── 判断是否显示阶段状态（行首） ──
-    # 流式期间或工具有运行时，在行首显示阶段状态 + 耗时
-    is_streaming = bar is not None and bar._status_active
-    has_tools = bar is not None and bar._tool_count > 0
-    show_status = is_streaming or has_tools
-
-    if show_status:
-        # ── 构建行首：阶段状态 + 实时耗时 ──
-        phase = bar._main_phase if bar else ""
-        phase_start = bar._main_phase_start if bar else 0.0
-        tool_count = bar._tool_count if bar else 0
-
-        # 阶段名 → 中文映射
-        phase_map = {
-            "thinking":  "思考",
-            "answering": "回答",
-            "parsing":   "接收工具参数",
-        }
-        now = _time.monotonic()
-
-        # ★ 工具有运行时优先显示"工具调用中"（无论当前 phase 是什么）
-        if tool_count > 0:
-            tool_elapsed = (
-                now - bar._tool_phase_start
-                if bar and bar._tool_phase_start > 0
-                else 0.0
-            )
-            left_info = (
-                f" {_COLOR_ACCENT}工具调用中{_COLOR_RESET}"
-                f" {_COLOR_TIME}{tool_elapsed:.2f}s{_COLOR_RESET} "
-            )
-        elif phase in phase_map:
-            phase_label = phase_map[phase]
-            phase_elapsed = now - phase_start if phase_start > 0 else 0.0
-            left_info = (
-                f" {_COLOR_SPEED}{phase_label}{_COLOR_RESET}"
-                f" {_COLOR_TIME}{phase_elapsed:.2f}s{_COLOR_RESET} "
-            )
-        else:
-            left_info = ""
-
-        # ── 有阶段信息 → 布局：左信息 + 渐变线 + 右侧 CPU/MEM + 时间 ──
-        if left_info:
-            left_w = _visible_width(left_info)
-            sep_w = available - left_w - right_w
-            if sep_w >= 4:
-                sep_str = _build_sep_gradient_or_compose(
-                    sep_start, sep_w, breath_frame, char, suffix_reset=True
-                )
-                return f"  {left_info}{sep_str}{right_info}"
-            # 空间不足时回退到右侧信息 + 纯分隔线
-            # 不单独 return，让 fallthrough 到下方通用路径
-
-    # ── 非流式 / 无阶段 / 空间不足：渐变线 + 右侧 CPU/MEM + 时间 ──
-    # 布局：渐变分隔线 + CPU/MEM 信息 + 时间
-    sep_w = available - right_w
-    if sep_w < 4:
-        fallback_sep = make_sep_gradient(available, start_color=sep_start, char=char)
-        return f"  {fallback_sep}"
-
-    sep_str = _build_sep_gradient_or_compose(
-        sep_start, sep_w, breath_frame, char, suffix_reset=False
-    )
-    return f"  {sep_str}{right_info}"
+    sep = make_sep_gradient(available, start_color=sep_start, char=char)
+    return f"  {sep}"
 
 
 def _build_sep_gradient_or_compose(
@@ -416,7 +348,7 @@ def _redraw_cycle_only(bar: _BottomBar) -> None:
     out.write(_blessed_save_cursor())
     height = bar._term_height()
     total = bar._bottom_lines
-    popup_start = height - total + 3
+    popup_start = height - total + 4  # +4 跳过 分隔线(1)+子Agent面板行(1)+状态行(1)+上分割线(1)
     tw = bar._term_width()
     bar._completion.render_cycle_update(out, popup_start, tw)
     out.write(_blessed_restore_cursor())

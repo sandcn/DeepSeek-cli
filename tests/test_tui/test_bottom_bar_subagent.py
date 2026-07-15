@@ -54,10 +54,10 @@ class TestBottomBarSubagentPanel(unittest.TestCase):
     def test_set_subagent_frame_increases_bottom_lines(self):
         """设置 5 行 subagent 面板后 _bottom_lines 应增加 5。"""
         initial = self.bb._bottom_lines
-        # 空输入时 _compute_input_rows() = _MIN_INPUT_ROWS = 3
+        # 空输入时 _compute_input_rows() = 2 + _MIN_INPUT_ROWS = 2 + 1 = 3
         # _bottom_lines = 2 + 0 + 3 = 5
         self.assertEqual(initial, 5,
-                         "初始 _bottom_lines 应为 5（2 分隔线+状态行 + 3 最小输入行）")
+                         "初始 _bottom_lines 应为 5（2 分隔线+状态行 + 1 最小输入行 + 2 顶底分割线）")
 
         self.bb.set_subagent_frame(["line1", "line2", "line3", "line4", "line5"])
         new_total = self.bb._bottom_lines
