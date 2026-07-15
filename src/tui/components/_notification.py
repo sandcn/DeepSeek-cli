@@ -2,26 +2,22 @@
 
 绿色 · 前缀，用于显示系统通知消息。
 
-动效（2026-07-12）：
-  - 宽屏："·" 前缀和消息文本使用绿色 glow 呼吸（深绿↔亮绿正弦呼吸）
-  - 窄屏：降级为静态 _STYLE_NOTIFICATION_GRADIENT
-
-动效（2026-07-12 美化）：
-  - 宽屏：左边缘添加呼吸边框字符 │，使用 THEME['border_breath'] 色号
-  - 窄屏：降级为无边框
+动效（2026-07-15 重构）：
+  - 使用 Color256 / Style 替代 raw ANSI 拼接
+  - 使用 StyleSheet 注册的语义色
+  - 保持窄屏降级行为不变
 """
 
 from __future__ import annotations
 
-import re
-
 from rich.text import Text
 
-from ..consumer.const import _STYLE_NOTIFICATION_GRADIENT
-from ...ui.theme import THEME
+from ..consumer.const import _STYLE_NOTIFICATION_GRADIENT, _STYLE_DIM
 from ..core.animator import AnimatorContext
+from ..core.style import Style, StyleSheet
+from ..core.color import Color256
 from ..terminal.terminal import is_narrow
-from ..core.text_utils import build_glow_ansi, build_left_border_ansi
+from ..core.effects import sine_color
 from ._base import TuiComponent
 
 
@@ -34,9 +30,17 @@ class NotificationBlock(TuiComponent):
         if is_narrow():
             return Text.assemble(("\n  · ", _STYLE_NOTIFICATION_GRADIENT), (self.text, _STYLE_NOTIFICATION_GRADIENT))
         frame = AnimatorContext.get_default().frame
-        glow_ansi = build_glow_ansi(frame, 47, 12)
-        border_match = re.search(r"38;5;(\d+)", THEME['border_breath'])
-        border_base = int(border_match.group(1)) if border_match else 23
-        edge_ansi = build_left_border_ansi(frame, border_base, 24)
-        ansi_str = f"\n  {edge_ansi} {glow_ansi}· \033[0m{glow_ansi}{self.text}\033[0m"
+        # 使用 Color256 + sine_color 构建辉光呼吸（替代 build_glow_ansi）
+        glow_color = sine_color(frame, 47, min(255, 47 + 15), 12)
+        glow_style = Style(fg=glow_color)
+        # 左边缘呼吸边框（替代 build_left_border_ansi）
+        border_breath = StyleSheet.resolve("border_breath", Style(fg=23))
+        border_color = sine_color(frame, border_breath.fg if border_breath.fg is not None else 23,
+                                   min(255, (border_breath.fg if border_breath.fg is not None else 23) + 2), 24)
+        border_style = Style(fg=border_color)
+        ansi_str = (
+            f"\n  {border_style.to_ansi()}\u2502\033[0m"
+            f" {glow_style.to_ansi()}· \033[0m"
+            f"{glow_style.to_ansi()}{self.text}\033[0m"
+        )
         return Text.from_ansi(ansi_str)

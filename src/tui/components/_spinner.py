@@ -1,0 +1,99 @@
+"""独立转轮控件 — Spinner。
+
+提供预定义多帧集的旋转动画转轮，支持多种样式（dots/line/arrow/bounce/clock），
+可设置颜色、当前帧号和附加文本。
+
+设计模式: 状态 (State) — style 参数选择不同帧集状态，
+Spinner 在不同帧集间切换。
+"""
+
+from __future__ import annotations
+
+from ..terminal.narrow import is_narrow
+from ._base import TuiComponent
+
+__all__ = [
+    "Spinner",
+]
+
+# ═══════════════════════════════════════════════════════════
+# 预定义多帧集
+# ═══════════════════════════════════════════════════════════
+
+_SPINNER_FRAMES: dict[str, list[str]] = {
+    "dots": [
+        "⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏",
+    ],
+    "line": [
+        "─", "╱", "╲", "│", "╱", "╲",
+    ],
+    "arrow": [
+        "←", "↖", "↑", "↗", "→", "↘", "↓", "↙",
+    ],
+    "bounce": [
+        "⠁", "⠃", "⠇", "⠧", "⠿", "⠧", "⠇", "⠃",
+    ],
+    "clock": [
+        "🕐", "🕑", "🕒", "🕓", "🕔", "🕕",
+        "🕖", "🕗", "🕘", "🕙", "🕚", "🕛",
+    ],
+}
+
+# ═══════════════════════════════════════════════════════════
+# Spinner 组件
+# ═══════════════════════════════════════════════════════════
+
+_RESET = "\033[0m"
+
+
+class Spinner(TuiComponent):
+    """独立转轮控件 — 旋转动画指示器。
+
+    根据 style 参数选择预定义帧集，结合 frame 索引推进动画，
+    可选附加文本显示在转轮字符之后。
+
+    Attributes:
+        style: 帧集名称（"dots"/"line"/"arrow"/"bounce"/"clock"）。
+        color: 转轮字符的 256 色号，默认 45（亮青色）。
+        frame: 当前帧号（单调递增），用于推进动画。
+        text: 附加文本（可选），显示在转轮字符之后。
+    """
+
+    def __init__(
+        self,
+        style: str = "dots",
+        color: int = 45,
+        frame: int = 0,
+        text: str = "",
+    ) -> None:
+        self.style = style
+        self.color = color
+        self.frame = frame
+        self.text = text
+
+    def render(self) -> str:
+        """渲染当前帧的转轮字符及附加文本。
+
+        窄屏降级：移除 ANSI 颜色，仅返回帧字符 + 文本。
+        未知 style 兜底：返回 "?" 标记。
+
+        Returns:
+            str: 渲染后的文本（含 ANSI 颜色序列或纯文本）。
+        """
+        frames = _SPINNER_FRAMES.get(self.style)
+        if not frames:
+            frame_char = "?"
+        else:
+            frame_char = frames[self.frame % len(frames)]
+
+        if is_narrow():
+            # 窄屏：纯文本，不加颜色
+            if self.text:
+                return f"{frame_char} {self.text}"
+            return frame_char
+
+        # 宽屏：带颜色的转轮字符
+        ansi_color = f"\033[38;5;{self.color}m"
+        if self.text:
+            return f"{ansi_color}{frame_char}{_RESET} {self.text}"
+        return f"{ansi_color}{frame_char}{_RESET}"

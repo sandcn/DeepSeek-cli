@@ -26,6 +26,30 @@ _STYLE_ERROR_GRADIENT = Style(color="bright_red", bold=True)        # 亮红增�
 _STYLE_USER_GRADIENT = Style(color="cyan", bold=True)               # 青色渐变
 _STYLE_NOTIFICATION_GRADIENT = Style(color="bright_green", bold=True)  # 亮绿增强
 
+# ── 桥接：注册 tui.core.Style 等效样式到 StyleSheet（供新组件使用） ──
+# 使用 __all__ 约定 + 模块加载时自动注册，确保新旧两套样式系统共存。
+# 旧代码继续使用 rich.style.Style 常量，新代码使用 StyleSheet.get() 获取 tui.core.Style。
+def _register_tui_styles() -> None:
+    """将常用样式注册到 tui.core.StyleSheet。（延迟导入避免模块加载循环）"""
+    from ..core.style import StyleSheet as _SS, Style as _TS
+    _SS.register_many({
+        "dim": _TS(dim=True),
+        "bold": _TS(bold=True),
+        "italic": _TS(italic=True),
+        "underline": _TS(underline=True),
+        "bold_italic": _TS(bold=True, italic=True),
+        "dim_italic": _TS(dim=True, italic=True),
+        # 语义色（从 THEME 读取色号，兜底硬编码）
+        "error": _TS(fg=196, bold=True),
+        "success": _TS(fg=47),
+        "warn": _TS(fg=220),
+        "info": _TS(fg=45),
+        "muted": _TS(fg=244),
+        "border_breath": _TS(fg=23),
+    })
+
+_register_tui_styles()
+
 _THINKING_HEADER = "\n  ─ 思考 ─\n"
 
 # ── 解析进度清除哨兵 ───────────────────────────────────

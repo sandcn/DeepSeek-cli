@@ -34,6 +34,15 @@ from ._error import ErrorBlock
 from ._notification import NotificationBlock
 from ._write_line import WriteLineBlock
 
+# ── 通用 UI 组件 ──
+from ._box import BoxStyle, Box, RoundedBox, DoubleBox
+from ._panel import Panel
+from ._separator import Separator
+from ._spinner import Spinner
+from ._progress import ProgressBar
+from ._table import Table
+from ._markup import parse_markup, render_markup
+
 # 兼容 re-export（定义已移至 _protocols.py）
 from ..consumer.protocols import BottomBarProtocol
 
@@ -49,4 +58,18 @@ __all__ = [
     "NotificationBlock",
     "WriteLineBlock",
     "BottomBarProtocol",
+    # _box
+    "BoxStyle", "Box", "RoundedBox", "DoubleBox",
+    # _panel
+    "Panel",
+    # _separator
+    "Separator",
+    # _spinner
+    "Spinner",
+    # _progress
+    "ProgressBar",
+    # _table
+    "Table",
+    # _markup
+    "parse_markup", "render_markup",
 ]

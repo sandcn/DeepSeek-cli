@@ -20,11 +20,9 @@ if TYPE_CHECKING:
     from ...renderer import IncrementalRenderer
     from ...renderer.output import OutputAdapter
 
-from .const import _THINKING_SEPARATOR
-
+from ..components._separator import Separator
 from ..core.animator import AnimatorContext
 from ..terminal.terminal import is_narrow
-from ..core.text_utils import make_sep_gradient, make_sep_gradient_enhanced
 
 _logger = logging.getLogger(__name__)
 
@@ -119,19 +117,11 @@ class _RenderState:
         )
         rr = self.reasoning
         if rr is not None:
-            # 动态呼吸分隔线（替代静态 _THINKING_SEPARATOR）
-            _term_width = 80
-            try:
-                from ..terminal.terminal import get_terminal_width
-                _term_width = get_terminal_width()
-            except Exception:
-                pass
-            _sep_width = min(_term_width - 2, 60)
+            # 动态呼吸分隔线（使用 Separator 组件替代手写）
             _bf = AnimatorContext.get_default().breath_frame
-            if is_narrow():
-                _sep = make_sep_gradient(_sep_width, start_color=45, end_color=237)
-            else:
-                _sep = make_sep_gradient_enhanced(_sep_width, start_color=45, end_color=237, effect="wave", frame=_bf)
+            _style = "wave" if not is_narrow() else "static"
+            _sep_renderer = Separator(style=_style, width=None, start_color=45, end_color=237, frame=_bf)
+            _sep = _sep_renderer.render()
             rr.write(f"\n  {_sep}")
             rr.close()
             self._safe_flush("reasoning")

@@ -3,6 +3,8 @@
 流式追加写入 IncrementalRenderer，管理推理状态转换。
 动效：宽屏时首次写入 sparkle⚡ 闪烁 + 呼吸色渐变标题；
 窄屏时降级为静态 _THINKING_HEADER。
+
+2026-07-15 重构：使用 Color256/Style 替代 raw ANSI。
 """
 
 from __future__ import annotations
@@ -10,6 +12,7 @@ from __future__ import annotations
 from ..consumer.const import _THINKING_HEADER
 from ..consumer.render_state import _ReasoningState
 from ..core.animator import AnimatorContext, BreathPalette
+from ..core.style import Style
 from ..terminal.terminal import is_narrow
 from ..core.text_utils import build_sparkle_ansi
 from ._base import TuiComponent, _estimate_content_lines
@@ -37,7 +40,9 @@ class ThinkingBlock(TuiComponent):
                 frame = AnimatorContext.get_default().frame
                 sparkle = build_sparkle_ansi(frame, 45, 6)
                 think_color = BreathPalette.get_sine_color("think", frame)
-                header = f"\n  {'─' * 4} {sparkle}⚡\033[38;5;{think_color}m思考\033[0m {'─' * 4}\n"
+                # 使用 Style.apply 构建「思考」标签（替代 raw ANSI）
+                think_style = Style(fg=think_color)
+                header = f"\n  {'─' * 4} {sparkle}⚡{think_style.apply('思考')} {'─' * 4}\n"
                 rr.write(header)
                 lines += _estimate_content_lines(header)
         rr.write(text)

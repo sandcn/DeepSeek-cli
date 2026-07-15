@@ -2,27 +2,23 @@
 
 红色 ! 前缀，用于显示系统错误信息。
 
-动效（2026-07-12）：
-  - 宽屏："!" 使用 error_pulse 脉动（红↔亮红），消息文本使用红色 glow 呼吸
-  - 窄屏：降级为静态 _STYLE_ERROR_GRADIENT
-
-动效（2026-07-12 美化）：
-  - 宽屏：左边缘添加呼吸边框字符 │，使用 THEME['border_breath'] 色号
-  - 窄屏：降级为无边框
+动效（2026-07-15 重构）：
+  - 使用 Color256 / Style / BreathPalette 替代 raw ANSI 拼接
+  - 使用 BreathPalette 脉动 + sine_color 辉光呼吸
+  - 保持窄屏降级行为不变
 """
 
 from __future__ import annotations
-
-import re
 
 from rich.text import Text
 
 from ..consumer.const import _STYLE_ERROR_GRADIENT, _MAX_ERROR_LENGTH
 from ..consumer.utils import _truncate_msg
-from ...ui.theme import THEME
-from ..core.animator import AnimatorContext
+from ..core.animator import AnimatorContext, BreathPalette
+from ..core.style import Style, StyleSheet
+from ..core.color import Color256
+from ..core.effects import sine_color
 from ..terminal.terminal import is_narrow
-from ..core.text_utils import build_glow_ansi, build_left_border_ansi, build_warning_pulse_ansi
 from ._base import TuiComponent
 
 
@@ -39,10 +35,20 @@ class ErrorBlock(TuiComponent):
             )
         # 宽屏：! 前缀脉动 + 消息文本红色 glow 呼吸
         frame = AnimatorContext.get_default().frame
-        pulse_ansi = build_warning_pulse_ansi(frame, "error")
-        glow_ansi = build_glow_ansi(frame, 196, 12)
-        border_match = re.search(r"38;5;(\d+)", THEME['border_breath'])
-        border_base = int(border_match.group(1)) if border_match else 23
-        edge_ansi = build_left_border_ansi(frame, border_base, 24)
-        ansi_str = f"\n  {edge_ansi} {pulse_ansi}! \033[0m{glow_ansi}{self.message}\033[0m"
+        # 使用 BreathPalette 构建脉动色（替代 build_warning_pulse_ansi）
+        pulse_color = BreathPalette.get_color("error_pulse", AnimatorContext.get_default().breath_frame)
+        pulse_style = Style(fg=pulse_color)
+        # 红色 glow 呼吸（替代 build_glow_ansi）
+        glow_color = sine_color(frame, 196, min(255, 196 + 15), 12)
+        glow_style = Style(fg=glow_color)
+        # 左边缘呼吸边框（替代 build_left_border_ansi）
+        border_breath = StyleSheet.resolve("border_breath", Style(fg=23))
+        border_color = sine_color(frame, border_breath.fg if border_breath.fg is not None else 23,
+                                   min(255, (border_breath.fg if border_breath.fg is not None else 23) + 2), 24)
+        border_style = Style(fg=border_color)
+        ansi_str = (
+            f"\n  {border_style.to_ansi()}\u2502\033[0m"
+            f" {pulse_style.to_ansi()}! \033[0m"
+            f"{glow_style.to_ansi()}{self.message}\033[0m"
+        )
         return Text.from_ansi(ansi_str)

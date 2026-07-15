@@ -43,6 +43,12 @@ from .text_utils import (
     parse_theme_color, make_sep_gradient_enhanced,
 )
 
+# ── 颜色值对象 ──
+from .color import Color256, RGB, GradientDescriptor
+
+# ── 样式描述器 ──
+from .style import Style, StyledText, StyleSheet
+
 # ── 系统监控（私有类，按需导入） ──
 # _SystemMonitor 以下划线开头，不自动导出
 
@@ -74,4 +80,8 @@ __all__ = [
     "build_bounce_ansi", "build_sep_wave", "build_sep_shimmer",
     "build_sparkle_ansi", "build_glow_ansi", "build_left_border_ansi",
     "parse_theme_color", "make_sep_gradient_enhanced",
+    # color
+    "Color256", "RGB", "GradientDescriptor",
+    # style
+    "Style", "StyledText", "StyleSheet",
 ]

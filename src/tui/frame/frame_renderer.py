@@ -5,6 +5,8 @@ FrameRenderer — 纯函数渲染器
 不依赖任何 I/O，可独立测试。
 
 职责：AgentSlot/ToolRecord → list[str]（终端行）
+
+2026-07-15 重构：使用 Color256 / Style / ProgressBar / Spinner 替代 ad-hoc 实现。
 """
 
 from __future__ import annotations
@@ -14,6 +16,10 @@ import unicodedata
 from typing import Dict, List
 
 from ...ui.colors import RESET as _C_RESET, gradient_range as _gradient_range
+from ..components._progress import ProgressBar
+from ..components._spinner import Spinner
+from ..core.color import Color256
+from ..core.style import Style, StyleSheet
 from ..parallel._config import (
     SUMMARY_SEPARATOR as _DEFAULT_SUMMARY_SEPARATOR,
     SUMMARY_ICON_RUNNING as _DEFAULT_SUMMARY_ICON_RUNNING,
@@ -51,6 +57,7 @@ from ..core.effects import sine_color
 # ── 常量 ────────────────────────────────────────────────
 
 _ANSI_RE = re.compile(r'\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])')
+_ANSI_COLOR_RE = re.compile(r'\033\[(\d+;)?38;5;(\d+)m')
 _TRUNC_MARGIN = 2
 _TRUNC_ELLIPSIS_SPACE = 3
 _TRUNC_MIN_WIDTH = 10
@@ -282,10 +289,7 @@ class FrameRenderer:
         has_running: bool,
         final: bool,
     ) -> str:
-        """构建增强摘要行 — 彩色进度条 + 分层信息。
-
-        从 render() 中提取，负责速度计算和摘要文本组装。
-        """
+        """构建增强摘要行 — 使用 ProgressBar 组件 + Color256/Style 样式化。"""
         if done_count == total_agents:
             speed_value = 0.0
         elif has_running:
@@ -295,36 +299,22 @@ class FrameRenderer:
         speed_str = self._text_formatter.format_compact_speed(speed_value)
 
         sep = f" {_C_DIMMER}·{_C_RESET} "
+        bar_width = min(12, total_agents * 4)
 
         if done_count < total_agents and not final:
-            # ── 运行中：进度条 + 统计 ──
-            bar_width = min(12, total_agents * 4)
-            filled = int(bar_width * done_count / total_agents) if total_agents else 0
-            if filled > 0:
-                # 琥珀→绿渐变：每个 ▰ 使用不同色号，含呼吸颜色漂移
-                _gradient = BreathPalette.get("progress_amber_green")
-                _breath_offset = sine_color(self._frame, 0, len(_gradient) - 1, 8)
-                _parts: list[str] = []
-                for _i in range(filled):
-                    _ci = (_i + _breath_offset) % len(_gradient)
-                    _parts.append(f"\033[38;5;{_gradient[_ci]}m▰\033[0m")
-                # 空位部分：深灰↔浅灰渐变，与填充色形成对比
-                empty_count = bar_width - filled
-                if empty_count > 0:
-                    _empty_grad = _gradient_range(235, 245, max(empty_count, 2))
-                    for _j in range(empty_count):
-                        _ej = (_j + _breath_offset) % len(_empty_grad)
-                        _parts.append(f"\033[38;5;{_empty_grad[_ej]}m▱\033[0m")
-                bar = "".join(_parts) + _C_RESET
-            else:
-                # 全空：深灰→浅灰渐变呼吸
-                _empty_grad = _gradient_range(235, 245, max(bar_width, 2))
-                _breath_offset = sine_color(self._frame, 0, len(_empty_grad) - 1, 8)
-                _empty_parts: list[str] = []
-                for _j in range(bar_width):
-                    _ej = (_j + _breath_offset) % len(_empty_grad)
-                    _empty_parts.append(f"\033[38;5;{_empty_grad[_ej]}m▱\033[0m")
-                bar = "".join(_empty_parts) + _C_RESET
+            # ── 运行中：使用 ProgressBar 组件 ──
+            progress = done_count / total_agents if total_agents else 0.0
+            # ProgressBar 设置为不显示百分比，窄宽度，带呼吸脉动
+            pb = ProgressBar(
+                progress=progress,
+                width=bar_width,
+                gradient_start=214,
+                gradient_end=41,
+                show_percent=False,
+                frame=self._frame,
+                animated=True,
+            )
+            bar = pb.render()
             icon = f"{_C_RUNNING}{self._summary_icon_running}{_C_RESET}"
             summary = (
                 f"{icon} {_C_SUMMARY_DIM}{total_agents} agents{_C_RESET}"
@@ -335,9 +325,17 @@ class FrameRenderer:
                 f"{sep}{_C_RUNNING}{done_count}/{total_agents} done{_C_RESET}"
             )
         else:
-            # ── 完成：全绿进度条 ──
-            bar_width = min(12, total_agents * 4)
-            bar = _C_DONE + "▰" * bar_width + _C_RESET
+            # ── 完成：使用 ProgressBar 全满 ──
+            pb = ProgressBar(
+                progress=1.0,
+                width=bar_width,
+                gradient_start=47,
+                gradient_end=47,
+                show_percent=False,
+                frame=self._frame,
+                animated=False,
+            )
+            bar = pb.render()
             icon = f"{_C_DONE}{self._summary_icon_done}{_C_RESET}"
             summary = (
                 f"{icon} {_C_DONE}{total_agents} agents{_C_RESET}"
@@ -398,26 +396,29 @@ class FrameRenderer:
         speed_value = slot.last_speed if slot.status == "running" else 0.0
         speed_str = self._text_formatter.format_compact_speed(speed_value)
 
-        # ── 类型标签（256 色背景，运行中呼吸） ──
+        # ── 类型标签（256 色背景，运行中呼吸 — 使用 Color256/Style 替代 raw ANSI） ──
         abbr = AGENT_TYPE_ABBREV.get(slot.agent_type, "??")
-        type_color = AGENT_TYPE_COLORS.get(slot.agent_type, _C_DIMMER)
+        type_color_str = AGENT_TYPE_COLORS.get(slot.agent_type, _C_DIMMER)
         if slot.status == "running" and not final:
-            # 运行中：微量色号偏移产生柔和呼吸（正弦波呼吸替代线性取模）
+            # 运行中：微量色号偏移产生柔和呼吸
             breath_palette = BreathPalette.get("agent_breath")
             breath_idx = round(sine_color(self._frame, 0, len(breath_palette) - 1, 12)) if breath_palette else 0
             offset = BreathPalette.get("agent_breath")[breath_idx]
             # 从 ANSI 序列中提取色号并偏移
-            # 格式 \033[38;5;Nm → 提取 N
-            import re as _re_breath
-            m = _re_breath.search(r'\033\[(\d+;)?38;5;(\d+)m', type_color)
+            m = _ANSI_COLOR_RE.search(type_color_str)
             if m:
                 base_color = int(m.group(2))
                 new_color = max(0, min(255, base_color + offset))
-                type_tag = f"\033[38;5;{new_color}m[{abbr}]{_C_RESET}"
+                type_tag = Style(fg=new_color).apply(f"[{abbr}]")
             else:
-                type_tag = f"{type_color}[{abbr}]{_C_RESET}"
+                type_tag = type_color_str + f"[{abbr}]" + _C_RESET
         else:
-            type_tag = f"{type_color}[{abbr}]{_C_RESET}"
+            m = _ANSI_COLOR_RE.search(type_color_str)
+            if m:
+                base_color = int(m.group(2))
+                type_tag = Style(fg=base_color).apply(f"[{abbr}]")
+            else:
+                type_tag = type_color_str + f"[{abbr}]" + _C_RESET
 
         # ── 标题行 ──
         if slot.status == "done":
@@ -429,12 +430,11 @@ class FrameRenderer:
             suffix = f"  {_C_DIMMER}{elapsed_str}{_C_RESET}"
             title = f"{_C_BRANCH}{branch}{_C_RESET} {icon} {type_tag} {slot.description}{suffix}"
         else:
-            # 运行中 — spinner 动画（按速度配置调整帧索引）
+            # 运行中 — 使用 Spinner 组件（替代 ad-hoc spinner 帧索引计算）
             if not final:
-                speed_ratio = _DEFAULT_SPINNER_SPEED / self._spinner_speed
-                spinner_idx = int(self._frame * speed_ratio) % len(self._spinner_frames)
-                spinner_char = self._spinner_frames[spinner_idx]
-                dot = f"{_C_SPINNER}{spinner_char}{_C_RESET}"
+                spinner_style = "dots"  # 与原有的 braille 一致
+                spinner = Spinner(style=spinner_style, color=45, frame=self._frame)
+                dot = spinner.render()
             else:
                 dot = f"{_C_DIMMER}●{_C_RESET}"
             suffix = (
@@ -502,11 +502,17 @@ class FrameRenderer:
         display_name = get_tool_display_name(rec.tool_name)
         tool_color = get_tool_color(rec.tool_name)
 
-        # 彩色工具名（图标 + 名称）
-        if tool_icon:
-            tool_abbr = f"{tool_icon} {tool_color}{display_name}{_C_RESET}"
+        # 彩色工具名（使用 Style 替代 raw ANSI）
+        _tc_str = get_tool_color(rec.tool_name)
+        _tc_match = _ANSI_COLOR_RE.search(_tc_str)
+        if _tc_match:
+            tool_color_style = Style(fg=int(_tc_match.group(2)))
         else:
-            tool_abbr = f"{tool_color}{display_name}{_C_RESET}"
+            tool_color_style = Style(fg=244)  # 兜底灰色
+        if tool_icon:
+            tool_abbr = f"{tool_icon} {tool_color_style.apply(display_name)}"
+        else:
+            tool_abbr = tool_color_style.apply(display_name)
 
         detail_display = f" {_C_DIMMER}{detail}{_C_RESET}" if detail else ""
         prefix = f"{_C_BRANCH}{cont}{_C_RESET}{_INDENT}"
@@ -514,11 +520,12 @@ class FrameRenderer:
         if rec.phase == "parsing":
             line = f"{prefix}{_C_PARSING}◌{_C_RESET} {tool_abbr}{detail_display}"
         elif rec.phase == "running":
-            # 运行中工具图标脉动（正弦波呼吸替代线性取模）
+            # 运行中工具图标脉动（使用 Style 替代 raw ANSI）
             tool_pulse = BreathPalette.get("tool_pulse")
             pulse_idx = round(sine_color(self._frame, 0, len(tool_pulse) - 1, 6)) if tool_pulse else 0
             pulse_color = BreathPalette.get("tool_pulse")[pulse_idx]
-            line = f"{prefix}\033[38;5;{pulse_color}m●\033[0m {tool_abbr}{detail_display}  {_C_DIMMER}{time_str}{_C_RESET}"
+            pulse_style = Style(fg=pulse_color)
+            line = f"{prefix}{pulse_style.apply('●')} {tool_abbr}{detail_display}  {_C_DIMMER}{time_str}{_C_RESET}"
         elif rec.phase == "done":
             line = f"{prefix}{_C_DONE}✔{_C_RESET} {tool_abbr}{detail_display}  {_C_DIMMER}{time_str}{_C_RESET}"
         else:
