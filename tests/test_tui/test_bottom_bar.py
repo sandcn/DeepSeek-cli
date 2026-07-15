@@ -530,7 +530,10 @@ class TestBottomBarLastScrollEnd(unittest.TestCase):
                          "setup() 后 _last_scroll_end 应为 25 (30-5)")
 
     def test_ensure_cursor_upper_uses_cached_value(self):
-        """ensure_cursor_in_upper() 使用 _last_scroll_end 而非动态计算。"""
+        """ensure_cursor_in_upper() 使用 _last_scroll_end 而非动态计算。
+
+        ★ 终端缩小保护：光标定位到 scroll_end-1=24 行，预留 1 行缓冲空间。
+        """
         self.bb._active = True
         self.bb._last_scroll_end = 25  # 模拟 setup 后的值
         self.bb._last_text = "x" * 300  # 长文本使 _bottom_lines 很大
@@ -546,13 +549,13 @@ class TestBottomBarLastScrollEnd(unittest.TestCase):
             finally:
                 sys.__stdout__ = old
 
-        # 应输出 \033[25;1H（用缓存值 25），而非动态计算的更小值
+        # 应输出 \033[24;1H（用缓存值 25-1=24），预留 1 行缓冲空间
         output = out.getvalue()
-        self.assertIn("\033[25;1H", output,
-                      "ensure_cursor_in_upper 应使用 _last_scroll_end=25 而非动态值")
+        self.assertIn("\033[24;1H", output,
+                      "ensure_cursor_in_upper 应使用 _last_scroll_end-1=24 行")
 
     def test_ensure_cursor_upper_fallback_when_zero(self):
-        """_last_scroll_end=0 时降级到 terminal height。"""
+        """_last_scroll_end=0 时降级到 terminal height-1。"""
         self.bb._active = True
         self.bb._last_scroll_end = 0  # 未初始化
 
@@ -563,8 +566,8 @@ class TestBottomBarLastScrollEnd(unittest.TestCase):
                 self.bb.ensure_cursor_in_upper()
 
         output = out.getvalue()
-        self.assertIn("\033[30;1H", output,
-                      "_last_scroll_end=0 时应降级到 height=30")
+        self.assertIn("\033[29;1H", output,
+                      "_last_scroll_end=0 时应降级到 height-1=29")
 
     def test_sync_bottom_lines_updates_decstbm(self):
         """sync_bottom_lines() 在 _bottom_lines 变化时同步 DECSTBM。"""
@@ -1587,6 +1590,147 @@ class TestGetSnapshot(unittest.TestCase):
         self.assertTrue(callable(result),
                         "_get_snapshot() 应返回 callable 函数引用，而非 None；"
                         "若返回 None 说明导入路径仍不正确或 api.stats 模块缺失")
+
+
+class TestEnsureCursorInUpperBufferLine(unittest.TestCase):
+    """验证 ensure_cursor_in_upper() 的 scroll_end-1 缓冲行修复。
+
+    Bug：终端高度缩小时，DECSTBM 滚动区最后一行 scroll_end 被用作光标定位点，
+    后续 console.print() 末尾的 \n 触发终端自动上滚，吞掉上屏内容区第一行。
+
+    修复：光标定位到 max(1, scroll_end - 1) 而非 scroll_end，
+    预留 1 行缓冲空间使首个 \n 不会触发终端滚动。
+
+    核心场景：
+      1. scroll_end=20（正常）→ 光标定位到行 19
+      2. scroll_end=1（边界）→ 光标定位到行 1
+      3. scroll_end=2（边界）→ 光标定位到行 1
+      4. _last_scroll_end=0 → 降级到 term_height，再执行 scroll_end-1
+    """
+
+    def setUp(self):
+        self.bb = _BottomBar()
+        self.bb._active = True
+        self._stdout = sys.__stdout__
+
+    def tearDown(self):
+        sys.__stdout__ = self._stdout
+
+    def _capture_ensure_cursor_upper(self, last_scroll_end: int, term_height: int) -> str:
+        """调用 ensure_cursor_in_upper() 并捕获 ANSI 输出。"""
+        self.bb._last_scroll_end = last_scroll_end
+        buf = io.StringIO()
+        mock_term = _mock_terminal(width=80, height=term_height)
+        with patch.object(sys, '__stdout__', buf), \
+             patch("src.tui.widgets.bottom_bar.bar.get_terminal", return_value=mock_term):
+            self.bb.ensure_cursor_in_upper()
+        return buf.getvalue()
+
+    # ── 场景 1：正常场景 ──────────────────────────
+
+    def test_normal_scroll_end_20(self):
+        """scroll_end=20 → 光标定位到行 19（scroll_end-1）。"""
+        output = self._capture_ensure_cursor_upper(last_scroll_end=20, term_height=30)
+        # 光标应定位到行 19 列 1
+        self.assertIn("\033[19;1H", output,
+                      "scroll_end=20 时应定位光标到行 19(20-1)")
+
+    def test_normal_scroll_end_13(self):
+        """scroll_end=13（典型缩小场景）→ 光标定位到行 12。"""
+        output = self._capture_ensure_cursor_upper(last_scroll_end=13, term_height=20)
+        self.assertIn("\033[12;1H", output,
+                      "scroll_end=13 时应定位光标到行 12(13-1)")
+
+    # ── 场景 2：边界 scroll_end=1 ──────────────────
+
+    def test_boundary_scroll_end_1(self):
+        """scroll_end=1 → 光标定位到行 1（max(1, 1-1) = max(1, 0) = 1）。"""
+        output = self._capture_ensure_cursor_upper(last_scroll_end=1, term_height=10)
+        self.assertIn("\033[1;1H", output,
+                      "scroll_end=1 时应定位光标到行 1")
+
+    # ── 场景 3：边界 scroll_end=2 ──────────────────
+
+    def test_boundary_scroll_end_2(self):
+        """scroll_end=2 → 光标定位到行 1（max(1, 2-1) = max(1, 1) = 1）。"""
+        output = self._capture_ensure_cursor_upper(last_scroll_end=2, term_height=10)
+        self.assertIn("\033[1;1H", output,
+                      "scroll_end=2 时应定位光标到行 1(max(1,2-1)=1)")
+
+    # ── 场景 4：_last_scroll_end=0 降级 ────────────
+
+    def test_scroll_end_zero_fallback(self):
+        """_last_scroll_end=0 时降级到 term_height=30 → 光标定位到行 29（30-1）。"""
+        output = self._capture_ensure_cursor_upper(last_scroll_end=0, term_height=30)
+        # 先降级到 height=30，再执行 max(1, 30-1) = max(1, 29) = 29
+        self.assertIn("\033[29;1H", output,
+                      "_last_scroll_end=0 时应降级到 term_height(30)-1=29")
+
+    # ── 场景 5：光标追踪器同步 ────────────────────
+
+    def test_tracker_synced_to_scroll_end_minus_1(self):
+        """_cursor_tracker 应同步到 target_row = scroll_end-1。"""
+        self.bb._last_scroll_end = 20
+        with patch.object(sys, '__stdout__', io.StringIO()), \
+             patch("src.tui.widgets.bottom_bar.bar.get_terminal",
+                   return_value=_mock_terminal(width=80, height=30)):
+            self.bb.ensure_cursor_in_upper()
+        pos = self.bb._cursor_tracker.pos
+        self.assertEqual(pos.row, 19,
+                         "_cursor_tracker 应同步到 row=19(20-1)")
+        self.assertEqual(pos.col, 1,
+                         "_cursor_tracker 列应保持 1")
+
+    def test_tracker_synced_scroll_end_1(self):
+        """scroll_end=1 时 _cursor_tracker 同步到 row=1。"""
+        self.bb._last_scroll_end = 1
+        with patch.object(sys, '__stdout__', io.StringIO()), \
+             patch("src.tui.widgets.bottom_bar.bar.get_terminal",
+                   return_value=_mock_terminal(width=80, height=10)):
+            self.bb.ensure_cursor_in_upper()
+        pos = self.bb._cursor_tracker.pos
+        self.assertEqual(pos.row, 1,
+                         "scroll_end=1 时 _cursor_tracker row 应为 1")
+
+    # ── 场景 6：非活跃时跳过 ──────────────────────
+
+    def test_inactive_skips(self):
+        """_active=False 时 ensure_cursor_in_upper 不应输出。"""
+        self.bb._active = False
+        self.bb._last_scroll_end = 20
+        buf = io.StringIO()
+        with patch.object(sys, '__stdout__', buf):
+            self.bb.ensure_cursor_in_upper()
+        self.assertEqual(buf.getvalue(), "",
+                         "_active=False 时不应输出任何 ANSI 序列")
+
+    # ── 场景 7：scroll_end=1 退化验证（回归） ────
+
+    def test_regression_scroll_end_1_no_zero_row(self):
+        """scroll_end=1 时不应出现 row=0（max(1,0)=1 保证退化安全）。"""
+        self.bb._last_scroll_end = 1
+        buf = io.StringIO()
+        mock_term = _mock_terminal(width=80, height=5)
+        with patch.object(sys, '__stdout__', buf), \
+             patch("src.tui.widgets.bottom_bar.bar.get_terminal", return_value=mock_term):
+            self.bb.ensure_cursor_in_upper()
+        output = buf.getvalue()
+        self.assertNotIn("\033[0;", output,
+                         "scroll_end=1 时不应出现 row=0")
+        self.assertIn("\033[1;1H", output,
+                      "scroll_end=1 时应定位到 row=1")
+
+    # ── 场景 8：scroll_end 超大（异常值保护） ──
+
+    def test_large_scroll_end(self):
+        """scroll_end=9999（异常大值）仍正确减 1 定位。"""
+        self.bb._last_scroll_end = 9999
+        buf = io.StringIO()
+        with patch.object(sys, '__stdout__', buf):
+            self.bb.ensure_cursor_in_upper()
+        output = buf.getvalue()
+        self.assertIn("\033[9998;1H", output,
+                      "scroll_end=9999 时应定位到行 9998")
 
 
 if __name__ == "__main__":

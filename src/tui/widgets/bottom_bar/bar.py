@@ -526,17 +526,24 @@ class _BottomBar(_StatusMixin):
         避免内容误写入底部固定栏（下屏）。
         使用 _last_scroll_end 缓存值，保证光标定位与当前 DECSTBM 一致，
         避免底部行数变化（补全弹窗/输入文本变化）时光标位置偏移导致覆盖旧内容。
-        终端高度过小时将光标放在最后一行。
+        终端高度过小时将光标放在最后一行附近（预留 1 行缓冲）。
 
-        坐标追踪：定位后同步 tracker 到 scroll_end。
+        ★ 终端缩小保护：定位到 scroll_end - 1 行（而非 scroll_end），
+        预留 1 行缓冲空间，防止 console.print() 末尾的 \n 触发
+        终端自动上滚吞掉上屏内容区第一行。
+
+        坐标追踪：定位后同步 tracker 到 target_row。
         """
         if not self._active:
             return
         scroll_end = self._last_scroll_end
         if scroll_end < 1:
             scroll_end = self._term_height()
-        sys.__stdout__.write(_blessed_cursor_goto(scroll_end, 1))
-        self._cursor_tracker.set(scroll_end, 1)
+        # ★ 终端缩小保护：定位到 scroll_end - 1，预留 1 行缓冲空间
+        #   使首个 \n 不会触发 DECSTBM 自动上滚吞掉上屏第一行。
+        target_row = max(1, scroll_end - 1)
+        sys.__stdout__.write(_blessed_cursor_goto(target_row, 1))
+        self._cursor_tracker.set(target_row, 1)
 
     def ensure_cursor_in_lower(self) -> None:
         """渲染完成后将光标移回下屏输入行末尾（含动态拆行，最少3行输入区）。
