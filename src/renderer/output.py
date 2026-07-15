@@ -75,12 +75,19 @@ class OutputAdapter:
 
         锁超时降级：renderable 为 Text 时输出纯文本至文件，
         否则尝试 str() 直写，不调用 console.print（无法获取锁时）。
+
+        ANSI 安全：纯字符串中的 \\x1b ANSI 转义序列自动转换为 Rich Text
+        对象，确保 console.print() 正确渲染而非按 markup 解析。
         """
         if not renderable:
             return
         self._refresh_width()
         with _try_acquire_output_lock(name="output_adapter.write", timeout=1.0) as locked:
             if locked:
+                # 纯字符串含 ANSI 转义序列 → 转换为 Rich Text 对象
+                # 避免 console.print() 将 [38;5;... 解析为 markup 标签
+                if isinstance(renderable, str) and "\x1b" in renderable:
+                    renderable = Text.from_ansi(renderable)
                 self._console.print(renderable)
             else:
                 # 锁超时降级：直写终端，不静默丢弃数据

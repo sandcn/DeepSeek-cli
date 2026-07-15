@@ -10,6 +10,7 @@ Spinner 在不同帧集间切换。
 from __future__ import annotations
 
 from ..terminal.narrow import is_narrow
+from ..core.style import Style
 from ._base import TuiComponent
 
 __all__ = [
@@ -43,7 +44,7 @@ _SPINNER_FRAMES: dict[str, list[str]] = {
 # Spinner 组件
 # ═══════════════════════════════════════════════════════════
 
-_RESET = "\033[0m"
+# _RESET 已移除 — 使用 Style.apply() 自动管理 RESET
 
 
 class Spinner(TuiComponent):
@@ -92,8 +93,8 @@ class Spinner(TuiComponent):
                 return f"{frame_char} {self.text}"
             return frame_char
 
-        # 宽屏：带颜色的转轮字符
-        ansi_color = f"\033[38;5;{self.color}m"
+        # 宽屏：带颜色的转轮字符（使用 Style）
+        styled_char = Style(fg=self.color).apply(frame_char)
         if self.text:
-            return f"{ansi_color}{frame_char}{_RESET} {self.text}"
-        return f"{ansi_color}{frame_char}{_RESET}"
+            return f"{styled_char} {self.text}"
+        return styled_char

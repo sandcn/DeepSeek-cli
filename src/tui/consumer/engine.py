@@ -175,6 +175,7 @@ class TuiEngine:
         RenderCommand.WRITE_LINE,
         RenderCommand.NOTIFICATION,
         RenderCommand.DISPLAY_MSGS,
+        RenderCommand.SPLASH,
     })
 
     @staticmethod

@@ -14,7 +14,7 @@ from ..display import WebDisplay
 from ..bridge import WebEventBridge
 from ...ui.adapters import UIDisplayAdapter
 from ..types import msg_round_cost
-from ...ui.components.cost_display import compute_round_cost_data
+from ...tui.core.cost import compute_round_cost_data
 
 _logger = logging.getLogger(__name__)
 

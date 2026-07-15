@@ -1,4 +1,4 @@
-"""TUI 终端 I/O 层 — 终端写入、宽度检测、窄屏自适应、Blessed 单例
+"""TUI 终端 I/O 层 — 终端写入、宽度检测、窄屏自适应、Blessed 单例、终端能力检测
 
 统一管理：
   1. 终端宽度检测（TTL 缓存，减少 syscall）— 使用 Blessed Terminal
@@ -7,6 +7,7 @@
   4. Blessed Terminal 单例管理
   5. 端口接口定义（ILockedTerminal）
   6. Raw Mode 保护
+  7. 终端能力检测（TrueColor / UTF-8 / Emoji / 256色）
 
 分层引用约定：
   - 本层依赖：src.tui.core（TTLCache）
@@ -34,6 +35,13 @@ from .narrow import (
     is_narrow as _is_narrow,
     narrow_truncate as _narrow_truncate,
 )
+from .capabilities import (
+    supports_truecolor,
+    supports_256color,
+    supports_utf8,
+    supports_emoji,
+    get_capabilities_summary,
+)
 
 __all__ = [
     "ILockedTerminal",
@@ -47,4 +55,10 @@ __all__ = [
     "EXTRA_NARROW_THRESHOLD",
     "enter_raw_mode",
     "leave_raw_mode",
+    # 终端能力检测
+    "supports_truecolor",
+    "supports_256color",
+    "supports_utf8",
+    "supports_emoji",
+    "get_capabilities_summary",
 ]

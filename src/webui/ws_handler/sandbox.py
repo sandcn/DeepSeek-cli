@@ -15,7 +15,7 @@ from collections import defaultdict
 
 from ...core.constants import filter_non_system_indices
 from ...core.sandbox_manager import get_sandbox_manager as _get_sandbox
-from ...ui.diff_renderer import render_diff_to_ansi
+from ...tui.consumer.diff_renderer import render_diff_to_ansi
 from . import _MESSAGE_PREVIEW_LENGTH
 
 _logger = logging.getLogger(__name__)

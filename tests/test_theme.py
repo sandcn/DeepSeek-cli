@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import pytest
 
-from src.ui.theme import THEMES, THEME, set_theme, list_themes
+from src.tui.core.theme import THEMES, THEME, set_theme, list_themes
 
 
 # ── 辅助函数 ─────────────────────────────────────────────

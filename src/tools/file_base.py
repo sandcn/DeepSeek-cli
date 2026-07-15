@@ -16,7 +16,7 @@ from .file_ops import (
     async_file_exists,
 )
 from ..core.constants import GREEN, RED, DIM, RESET
-from ..ui.diff_renderer import show_file_diff
+from ..tui.consumer.diff_renderer import show_file_diff
 from ..tui.widgets.lock import (
     diff_active,
 )
@@ -360,7 +360,7 @@ class FileToolBase(Func):
     async def web_display(self) -> str:
         """Web 模式：返回 JSON 格式的 diff 数据"""
         import json
-        from ..ui.diff_renderer import render_diff_to_ansi
+        from ..tui.consumer.diff_renderer import render_diff_to_ansi
 
         mode_desc = self._mode_desc()
         old_content, new_content, exists = await self._prepare_diff_content()

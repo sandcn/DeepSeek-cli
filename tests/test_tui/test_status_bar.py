@@ -554,7 +554,7 @@ class TestModelNameBreathing:
         streaming = StreamingState(active=True, start_time=time.monotonic(), pulse_phase=0)
         result = render_streaming_line(state, streaming)
         # 窄屏时模型名应使用 THEME['title'] 静态色 \033[38;5;45m
-        from src.ui.theme import THEME
+        from src.tui.core.theme import THEME
         assert THEME['title'] in result, \
             f"窄屏模型名应包含 THEME['title'](\033[38;5;45m) 静态色"
 
@@ -562,7 +562,7 @@ class TestModelNameBreathing:
         """模型名呼吸色在 [base, base+20] 范围内。"""
         import re
         state = UISessionState(model="gpt-4")
-        from src.ui.theme import THEME
+        from src.tui.core.theme import THEME
         title_color = THEME['title']
         title_match = re.search(r"38;5;(\d+)", title_color)
         assert title_match, f"THEME['title'] 格式异常: {title_color!r}"

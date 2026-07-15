@@ -6,7 +6,7 @@ from typing import Any, List
 import pytest
 
 from src.webui.output_target import WebSocketTarget
-from src.ui.output_target import IOutputTarget, BufferTarget, NullTarget
+from src.tui.core.output_target import IOutputTarget, BufferTarget, NullTarget
 
 
 # ═══════════════════════════════════════════════════════════════

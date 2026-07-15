@@ -35,18 +35,12 @@ __all__ = [
 # ═══════════════════════════════════════════════════════════
 
 
-def _easing_smooth(t: float) -> float:
-    """正弦平滑缓动 [0,1] → [0,1]，两端减速。"""
-    return (math.sin(t * math.pi - math.pi / 2.0) + 1.0) / 2.0
+# sine_easing 已在 src.tui.core.effects 中定义，此处引用统一入口
+from ..core.effects import sine_easing as _easing_smooth
 
 
-def _easing_bounce(t: float) -> float:
-    """弹入缓动 [0,1] → [0,~1.1]，超调后稳定在 1.0。"""
-    if t <= 0.0:
-        return 0.0
-    if t >= 1.0:
-        return 1.0
-    return 1.0 - (1.0 - t) ** 2 + 0.12 * math.sin(t * math.pi * 5.0) * (1.0 - t)
+# bounce_easing 已在 src.tui.core.effects 中定义，此处引用统一入口
+from ..core.effects import bounce_easing as _easing_bounce
 
 
 def _easing_linear(t: float) -> float:

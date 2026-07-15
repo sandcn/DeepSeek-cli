@@ -17,7 +17,7 @@ from src.tui.widgets.bottom_bar.theme import (
     _COLOR_SEP_START,
     make_sep_gradient,
 )
-from src.ui.colors import gradient_range
+from src.tui.core.gradient import gradient_range
 
 
 class TestMakeSepGradient(unittest.TestCase):
@@ -133,7 +133,7 @@ class TestSepGradientNarrowFallback(unittest.TestCase):
 
     def test_narrow_fallback_sep_constant_available(self):
         """窄屏降级使用的 _COLOR_SEP 常量和 _COLOR_SEP_START 可用（值跟随当前主题）。"""
-        from src.ui.theme import THEME
+        from src.tui.core.theme import THEME
         # THEME 中的值是完整的 ANSI 字符串（如 "\033[38;5;239m"）
         expected_sep = THEME.get("separator", "\033[38;5;237m")
         expected_start = THEME.get("title", "\033[38;5;45m")

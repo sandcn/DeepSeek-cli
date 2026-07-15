@@ -337,12 +337,6 @@ class InteractiveLoop:
 
         _term_width = self._get_term_width()
         _sep_width = narrow_sep_width(40)
-        self._chat_ui.write_line(f"\n{CYAN}  > {MODEL} Chat{RESET}")
-        self._chat_ui.write_line(f"{DIM}  {'─' * _sep_width}{RESET}")
-        if is_narrow():
-            self._chat_ui.write_line(f"{DIM}  /help  Esc中断  /r重试  /edit重写{RESET}\n")
-        else:
-            self._chat_ui.write_line(f"{DIM}  /help   Esc中断   / 输前缀按 Tab 补全{RESET}\n")
 
     def _teardown_chat_ui(self):
         """停止 ChatUI 消费者"""

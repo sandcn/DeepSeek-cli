@@ -34,6 +34,12 @@ from ._error import ErrorBlock
 from ._notification import NotificationBlock
 from ._write_line import WriteLineBlock
 
+# ── 费用显示组件 ──
+from ._cost import CostDisplayComponent
+
+# ── 启动品牌屏 ──
+from ._splash import SplashScreen
+
 # ── 通用 UI 组件 ──
 from ._box import BoxStyle, Box, RoundedBox, DoubleBox
 from ._panel import Panel
@@ -58,6 +64,10 @@ __all__ = [
     "NotificationBlock",
     "WriteLineBlock",
     "BottomBarProtocol",
+    # _splash
+    "SplashScreen",
+    # _cost
+    "CostDisplayComponent",
     # _box
     "BoxStyle", "Box", "RoundedBox", "DoubleBox",
     # _panel

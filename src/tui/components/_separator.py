@@ -1,6 +1,6 @@
 """装饰分隔线组件 — Separator。
 
-提供静态渐变和多种动效（波动/流光/闪烁/辉光呼吸）风格的分隔线渲染。
+提供静态渐变和多种动效（波动/流光/闪烁/辉光呼吸/极光/彩虹/脉冲）风格的分隔线渲染。
 动效依赖 frame 参数推进，每帧调用一次 render() 获得不同视觉效果。
 继承 TuiComponent 基类，可通过 render_to_adapter() 输出到 OutputAdapter。
 """
@@ -13,21 +13,26 @@ from ._base import TuiComponent
 class Separator(TuiComponent):
     """装饰分隔线组件。
 
-    支持五种动效风格：
+    支持八种动效风格：
       - ``"static"``：静态渐变分隔线
       - ``"wave"``：正弦波动效果（如水波沿分隔线流动）
       - ``"shimmer"``：流光扫光效果（亮带沿分隔线方向移动）
       - ``"sparkle"``：闪烁效果（每字符独立闪烁，如星光）
       - ``"glow"``：辉光呼吸效果（整线均匀呼吸脉动）
+      - ``"aurora"``：极光飘动效果（多层正弦波叠加，模拟极光流动）
+      - ``"rainbow"``：彩虹旋转效果（色环滚动，每字符独立颜色）
+      - ``"pulse"``：脉冲列车效果（高斯脉冲沿分隔线传播）
 
     Args:
         char: 分隔线字符，默认 ━ (U+2501)。
         width: 分隔线宽度（字符数）。``None`` 时自动根据终端宽度计算。
         style: 动效风格，可选 ``"wave"`` / ``"shimmer"`` / ``"sparkle"`` /
-               ``"glow"`` / ``"static"``。
+               ``"glow"`` / ``"static"`` / ``"aurora"`` / ``"rainbow"`` /
+               ``"pulse"``。
         start_color: 起始 256 色号，默认 45（亮青）。
         end_color: 结束 256 色号，默认 237（深灰）。
         frame: 当前帧号，动效推进用。每帧调用 ``render()`` 时递增。
+        num_pulses: 脉冲列车效果中的脉冲数量（仅 style="pulse" 时有效），默认 2。
     """
 
     def __init__(
@@ -38,6 +43,7 @@ class Separator(TuiComponent):
         start_color: int = 45,
         end_color: int = 237,
         frame: int = 0,
+        num_pulses: int = 2,
     ) -> None:
         self._char = char
         self._width = width
@@ -45,6 +51,7 @@ class Separator(TuiComponent):
         self._start_color = start_color
         self._end_color = end_color
         self._frame = frame
+        self._num_pulses = num_pulses
 
     # ── 公共 API ────────────────────────────────────────────────────────
 
@@ -69,6 +76,12 @@ class Separator(TuiComponent):
             return self._render_sparkle(colors)
         elif style == "glow":
             return self._render_glow(colors)
+        elif style == "aurora":
+            return self._render_aurora()
+        elif style == "rainbow":
+            return self._render_rainbow()
+        elif style == "pulse":
+            return self._render_pulse()
         else:
             return self._render_static(colors)
 
@@ -150,6 +163,47 @@ class Separator(TuiComponent):
             period=12,
         )
         return f"\033[38;5;{breath_color}m{self._char * len(colors)}\033[0m"
+
+    def _render_aurora(self) -> str:
+        """极光飘动分隔线（多层正弦波叠加）。
+
+        模拟极光在天空中缓慢飘动的效果，
+        多层正弦波在时空维度交错移动。
+        """
+        width = self._resolve_width()
+        if width <= 0:
+            return ""
+        from ..core.effects import build_aurora_ansi
+        return build_aurora_ansi(width, self._frame, char=self._char)
+
+    def _render_rainbow(self) -> str:
+        """彩虹旋转分隔线（色环滚动）。
+
+        每个字符在彩虹色环上取色，frame 控制整体旋转，
+        产生彩虹滚动视觉效果。
+        """
+        width = self._resolve_width()
+        if width <= 0:
+            return ""
+        from ..core.effects import build_rainbow_ansi
+        return build_rainbow_ansi(self._char * width, self._frame)
+
+    def _render_pulse(self) -> str:
+        """脉冲列车分隔线（高斯脉冲传播）。
+
+        多个高斯形状脉冲沿分隔线方向传播，
+        模拟心跳脉冲列的视觉效果。
+        """
+        width = self._resolve_width()
+        if width <= 0:
+            return ""
+        from ..core.effects import build_pulse_train_ansi
+        return build_pulse_train_ansi(
+            width, self._frame,
+            color_low=self._end_color,
+            color_high=self._start_color,
+            char=self._char,
+        )
 
 
 __all__ = [

@@ -13,6 +13,7 @@ from .animator import AnimatorContext, BreathPalette
 from .effects import (
     sine_breath_t, sine_color, sine_color_range,
     bounce_easing, bounce_frame_color,
+    sine_easing,
     wave_offset, apply_wave,
     sparkle_brightness, sparkle_color,
     shimmer_position, shimmer_apply,
@@ -29,6 +30,8 @@ from .effects import (
     matrix_rain_color, build_matrix_rain_ansi,
     heat_wave_offset, apply_heat_wave, build_heat_wave_ansi,
     aurora_color, build_aurora_gradient, build_aurora_ansi,
+    # 效果注册表
+    EffectRegistry,
 )
 
 # ── 状态容器 ──
@@ -80,6 +83,9 @@ from .theme import THEME, THEMES, set_theme, get_active_theme, list_themes, get_
 # ── ANSI 工具 ──
 from .ansi_utils import strip_ansi, visual_width, truncate_ansi_visual, skip_ansi_sgr, truncate_ansi_sgr, truncate_ansi_line
 
+# ── 费用计算 ──
+from .cost import compute_round_cost_data
+
 # ── 输出目标 ──
 from .output_target import IOutputTarget, TerminalTarget, BufferTarget, NullTarget
 
@@ -105,6 +111,10 @@ __all__ = [
     "matrix_rain_color", "build_matrix_rain_ansi",
     "heat_wave_offset", "apply_heat_wave", "build_heat_wave_ansi",
     "aurora_color", "build_aurora_gradient", "build_aurora_ansi",
+    # 缓动（统一入口，2026-07-15）
+    "sine_easing",
+    # 效果注册表（2026-07-15）
+    "EffectRegistry",
     # state
     "UISessionState", "InputState", "StreamingState", "TUIStateTree",
     # ttl_cache
@@ -139,4 +149,6 @@ __all__ = [
     "strip_ansi", "visual_width", "truncate_ansi_visual", "skip_ansi_sgr", "truncate_ansi_sgr", "truncate_ansi_line",
     # output_target
     "IOutputTarget", "TerminalTarget", "BufferTarget", "NullTarget",
+    # cost
+    "compute_round_cost_data",
 ]

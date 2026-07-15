@@ -9,6 +9,7 @@
 
 from __future__ import annotations
 
+from ..animation.transitions import FadeIn
 from ..consumer.const import _THINKING_HEADER
 from ..consumer.render_state import _ReasoningState
 from ..core.animator import AnimatorContext, BreathPalette
@@ -45,6 +46,13 @@ class ThinkingBlock(TuiComponent):
                 header = f"\n  {'─' * 4} {sparkle}⚡{think_style.apply('思考')} {'─' * 4}\n"
                 rr.write(header)
                 lines += _estimate_content_lines(header)
+        # 首次内容写入：集成 FadeIn 入场动效
+        if is_first and not is_narrow():
+            frame = AnimatorContext.get_default().frame
+            fade = FadeIn(easing="smooth", total_frames=6, start_color=240, end_color=253)
+            fade_prefix = fade.render(frame)
+            if fade_prefix:
+                text = f"{fade_prefix}{text}\033[0m"
         rr.write(text)
         lines += _estimate_content_lines(text)
         return lines

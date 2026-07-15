@@ -72,7 +72,7 @@ class CommandUiAdapter:
 
     def render_diff_to_ansi(self, path: str, old_content: str, new_content: str) -> str:
         """将文件差异渲染为带 ANSI 颜色的纯文本字符串。"""
-        from ...ui.diff_renderer import render_diff_to_ansi as _fn
+        from ...tui.consumer.diff_renderer import render_diff_to_ansi as _fn
         return _fn(path, old_content, new_content)
 
     def display_messages(

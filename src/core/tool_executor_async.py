@@ -20,7 +20,7 @@ import logging
 from typing import List, Tuple, Optional, Callable
 
 from ..tools.registry import ToolRegistry
-from ..ui import display as _display  # 适配器层模块引用，支持 patch
+from ..tui.core.param_formatter import extract_key_params
 from .tool_dag import ToolDAG
 
 _logger = logging.getLogger(__name__)
@@ -103,7 +103,7 @@ class ToolScheduler:
         dispatch_agent 内部使用 asyncio.Event 纯异步等待 barrier，
         不消耗任何线程池工人。
         """
-        detail = _display.extract_key_params(tc["name"], tc["arguments"], show_all=True)
+        detail = extract_key_params(tc["name"], tc["arguments"], show_all=True)
 
         if on_before:
             on_before(tc, detail)

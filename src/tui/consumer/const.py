@@ -46,6 +46,21 @@ def _register_tui_styles() -> None:
         "info": _TS(fg=45),
         "muted": _TS(fg=244),
         "border_breath": _TS(fg=23),
+        # 差异渲染语义色
+        "diff_add": _TS(fg=41),
+        "diff_del": _TS(fg=196),
+        "diff_ctx": _TS(fg=244),
+        # 消息角色图标色
+        "user_icon": _TS(fg=81),
+        "asst_icon": _TS(fg=47),
+        "tool_icon": _TS(fg=220),
+        # 工具输出文本色
+        "tool_txt": _TS(fg=242),
+        # 装饰色
+        "separator": _TS(fg=239),
+        "highlight": _TS(fg=45),
+        "accent": _TS(fg=221),
+        "deco": _TS(fg=242),
     })
 
 _register_tui_styles()
@@ -101,6 +116,7 @@ class RenderCommand(IntEnum):
     ERROR          = 16  # (16, message: str) — 系统错误（红色 ! 样式）
     TOOL_COUNT_DEC     = 17  # (17,) — 工具计数-1
     SUBAGENT_FRAME     = 18  # (18, frame_lines: tuple[str]) — SubAgent 面板帧
+    SPLASH             = 19  # (19,) — 启动品牌屏
 
 
 # ── drain 锁超时 ─────────────────────────────────────

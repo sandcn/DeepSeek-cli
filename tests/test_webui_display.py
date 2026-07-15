@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock
 
-from src.ui.base_display import BaseDisplay
+from src.tui.consumer.base_display import BaseDisplay
 from src.webui._base_sender import BaseWebSocketSender
 from src.webui.display import WebDisplay, pending_selects
 

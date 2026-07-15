@@ -30,7 +30,7 @@ __all__ = [
 # 内部辅助
 # ═══════════════════════════════════════════════════════════
 
-_RESET = "\033[0m"
+# _RESET 已移除 — 使用 Style.apply() 统一管理 RESET
 
 
 def _is_numeric(text: str) -> bool:
@@ -85,10 +85,12 @@ def _ansi_wrap(color: int | None) -> tuple[str, str]:
         color: 256 色号，None 时返回空字符串对。
 
     Returns:
-        (prefix, suffix) 元组。
+        (prefix, suffix) 元组。已迁移使用 Style，保留为兼容包装。
     """
     if color is not None:
-        return (f"\033[38;5;{color}m", _RESET)
+        style = Style(fg=color)
+        ansi = style.to_ansi()
+        return (ansi, "\033[0m")
     return ("", "")
 
 

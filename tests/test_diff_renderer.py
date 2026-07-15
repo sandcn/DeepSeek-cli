@@ -11,7 +11,7 @@ import os
 
 import pytest
 
-from src.ui.diff_renderer import (
+from src.tui.consumer.diff_renderer import (
     _BG_RED,
     _BG_GREEN,
     _BG_OFF,

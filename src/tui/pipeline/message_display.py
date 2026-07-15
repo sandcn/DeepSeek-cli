@@ -146,6 +146,7 @@ from ...core.constants import (
 )
 from ..core.gradient import gradient_range
 from ..core.theme import THEME
+from ..core.style import Style, StyleSheet
 
 # 角色标签 sparkle 静态基准色（与动态呼吸色解耦，避免双重调制噪音）
 _SPARKLE_BASE_USER = 45    # 青色

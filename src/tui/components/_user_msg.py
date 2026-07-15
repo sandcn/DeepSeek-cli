@@ -13,6 +13,7 @@ import re
 
 from rich.text import Text
 
+from ..animation.transitions import FadeIn
 from ._base import TuiComponent
 from ..consumer.const import _STYLE_USER_GRADIENT
 from ..core.theme import THEME
@@ -49,4 +50,9 @@ class UserMsgBlock(TuiComponent):
         sparkle_ansi = build_sparkle_ansi(frame, sparkle_base, 6)
         breath_ansi = build_fg_breath_ansi(frame, breath_base, min(255, breath_base + 20), 12)
         ansi_str = f"\n  {sparkle_ansi}>\033[0m {breath_ansi}{self.text}\033[0m"
+        # 弹入动效：使用 FadeIn(bounce) 包裹，产生颜色弹入效果
+        fade = FadeIn(easing="bounce", total_frames=6, start_color=240, end_color=255)
+        fade_prefix = fade.render(frame)
+        if fade_prefix:
+            ansi_str = f"{fade_prefix}{ansi_str}\033[0m"
         return Text.from_ansi(ansi_str)

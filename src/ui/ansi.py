@@ -1,36 +1,17 @@
-"""ANSI 颜色常量与工具函数 — 向后兼容存根（从 src.tui.core.ansi_utils 重新导出）
+"""ANSI 工具（已废弃） — 所有功能已迁移到 src.tui.core.ansi_utils。
 
-变更说明：ANSI 工具已迁移到 src/tui/core/ansi_utils.py，颜色常量保留在 src/core/constants.py。
-          此文件保留为向后兼容存根。
+请使用以下替代路径：
+  - src.tui.core.ansi_utils
+  - src.tui.core.text_utils
+  - src.tui.core.style.Style
+
+详细迁移指南见 src/tui/__init__.py 注释。
 """
+
 from __future__ import annotations
 
-from ..core.constants import (
-    GRAY, WHITE, CYAN, GREEN, YELLOW, RED, BLUE, MAGENTA,
-    BOLD, DIM, RESET, ITALIC, UNDERLINE,
-    BRIGHT_CYAN, BRIGHT_GREEN, BRIGHT_YELLOW, BRIGHT_BLUE,
-    BRIGHT_MAGENTA, BRIGHT_RED, BRIGHT_WHITE, BRIGHT_BLACK,
-    BG_BLUE, BG_CYAN, BG_GREEN, BG_YELLOW,
-    ORANGE, TEAL, PINK, LAVENDER,
-    SOFT_GREEN, SOFT_BLUE, SOFT_YELLOW, DARK_GRAY,
+raise ImportError(
+    "src.ui 已废弃，所有功能已迁移到 src.tui 包。"
+    "请使用 src.tui.core.ansi_utils / src.tui.core.text_utils / src.tui.core.style 替代。"
+    "详细迁移指南见 src/tui/__init__.py 注释。"
 )
-from ..tui.core.ansi_utils import (
-    _ANSI_CLEAN_RE, _ANSI_SEQ_RE,
-    strip_ansi, visual_width, truncate_ansi_visual,
-    skip_ansi_sgr, truncate_ansi_sgr,
-    truncate_ansi_line,
-)
-
-__all__ = [
-    "GRAY", "WHITE", "CYAN", "GREEN", "YELLOW", "RED", "BLUE", "MAGENTA",
-    "BOLD", "DIM", "RESET", "ITALIC", "UNDERLINE",
-    "BRIGHT_CYAN", "BRIGHT_GREEN", "BRIGHT_YELLOW", "BRIGHT_BLUE",
-    "BRIGHT_MAGENTA", "BRIGHT_RED", "BRIGHT_WHITE", "BRIGHT_BLACK",
-    "BG_BLUE", "BG_CYAN", "BG_GREEN", "BG_YELLOW",
-    "ORANGE", "TEAL", "PINK", "LAVENDER",
-    "SOFT_GREEN", "SOFT_BLUE", "SOFT_YELLOW", "DARK_GRAY",
-    "strip_ansi", "visual_width", "truncate_ansi_visual",
-    "skip_ansi_sgr", "truncate_ansi_sgr",
-    "truncate_ansi_line",
-    "_ANSI_CLEAN_RE", "_ANSI_SEQ_RE",
-]

@@ -3,10 +3,12 @@ from __future__ import annotations
 
 import pytest
 
-from src.ui.colors import (
+from src.tui.core.gradient import (
     hex_to_256,
     gradient_step,
     gradient_range,
+)
+from src.tui.core.palettes import (
     GRADIENT_SUNSET,
     GRADIENT_OCEAN,
     GRADIENT_FOREST,

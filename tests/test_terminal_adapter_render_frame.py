@@ -6,7 +6,7 @@
 
 import io
 import pytest
-from src.ui.terminal_adapter import TerminalAdapter
+from src.tui.terminal.adapter import TerminalAdapter
 
 
 @pytest.fixture

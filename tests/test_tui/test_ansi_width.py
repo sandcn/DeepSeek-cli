@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import unittest
 
-from src.ui.ansi import (
+from src.tui.core.ansi_utils import (
     visual_width,
     truncate_ansi_visual,
     truncate_ansi_sgr,

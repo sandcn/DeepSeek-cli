@@ -5,20 +5,39 @@
 
 from __future__ import annotations
 
+from ..animation.transitions import FadeIn
 from ..consumer.render_state import _ReasoningState
+from ..core.animator import AnimatorContext
+from ..terminal.terminal import is_narrow
 from ._base import TuiComponent, _estimate_content_lines
 
 
 class AnswerBlock(TuiComponent):
-    """助手回答块 — 流式 Markdown 渲染。"""
+    """助手回答块 — 流式 Markdown 渲染。
+
+    入场动效（2026-07-15）：
+      - 首次 write() 触发 FadeIn 渐显效果
+      - 后续 chunk 不做过渡（避免与流式渲染冲突）
+    """
     def __init__(self, rs: "_RenderState"):
         self._rs = rs
+        self._first_write: bool = True
 
     def write(self, text: str) -> int:
         """写入内容，返回估计行数。"""
         if self._rs.reasoning_state not in (_ReasoningState.CLOSED, _ReasoningState.INACTIVE):
             self._rs.close_reasoning()
-        self._rs.get_content().write(text)
+        content = self._rs.get_content()
+        # 首次写入：集成 FadeIn 入场动效
+        if self._first_write:
+            self._first_write = False
+            if not is_narrow():
+                frame = AnimatorContext.get_default().frame
+                fade = FadeIn(easing="smooth", total_frames=6, start_color=240, end_color=253)
+                fade_prefix = fade.render(frame)
+                if fade_prefix:
+                    text = f"{fade_prefix}{text}\033[0m"
+        content.write(text)
         return _estimate_content_lines(text)
 
     def close(self) -> None:

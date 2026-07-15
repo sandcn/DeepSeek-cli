@@ -10,6 +10,8 @@ import math
 import sys
 from typing import TYPE_CHECKING, Any, Callable
 
+from rich.text import Text
+
 if TYPE_CHECKING:
     from ...renderer import IncrementalRenderer
     from ...renderer.output import OutputAdapter
@@ -30,10 +32,12 @@ from ..components import (
     ErrorBlock,
     NotificationBlock,
     WriteLineBlock,
+    SplashScreen,
     _estimate_content_lines,
 )
 
 from ..core.animator import AnimatorContext
+from ..core.text_utils import build_glow_ansi
 from .utils import _cmd_name, _emergency_write
 
 _logger = logging.getLogger(__name__)
@@ -81,6 +85,7 @@ class TuiRenderer:
         self._on_display_messages = on_display_messages
         self._adapter = output_adapter
         self._tracker = cursor_tracker
+        self._in_tool_group = False
 
     @property
     def output_adapter(self) -> "OutputAdapter":
@@ -150,6 +155,15 @@ class TuiRenderer:
 
     @register_render_command(RenderCommand.TOOL_OUTPUT, (1,))
     def _do_tool_output(self, text: str) -> None:
+        if not self._in_tool_group:
+            self._in_tool_group = True
+            # 打开 Panel 顶部边框（带呼吸辉光的圆角框）
+            _frame = AnimatorContext.get_default().frame
+            glow = build_glow_ansi(_frame, 23, 24)
+            # 固定 Panel 宽度：╭ + 10内宽 + ╮ = 12 字符
+            top_line = f"  {glow}╭── 工具调用 ──╮\033[0m"
+            self._adapter.write(Text.from_ansi(top_line))
+            self._record_lines(1)
         block = ToolOutputBlock(text)
         self._record_lines(block.render_to_adapter(self._adapter))
 
@@ -157,6 +171,15 @@ class TuiRenderer:
     def _do_tool_summary(self, successful: tuple, failed: tuple) -> None:
         block = ToolSummaryBlock(successful, failed)
         self._record_lines(block.render_to_adapter(self._adapter))
+        if self._in_tool_group:
+            self._in_tool_group = False
+            # 关闭 Panel 底部边框（带呼吸辉光的圆角框）
+            _frame = AnimatorContext.get_default().frame
+            glow = build_glow_ansi(_frame, 23, 24)
+            # ★ 底部边框宽度与顶部一致：╰ + 10横线 + ╯ = 12 字符
+            bottom_line = f"  {glow}╰{'─' * 10}╯\033[0m"
+            self._adapter.write(Text.from_ansi(bottom_line))
+            self._record_lines(1)
 
     # ── 解析进度 ──────────────────────────────────
 
@@ -200,6 +223,16 @@ class TuiRenderer:
         if self._on_display_messages is not None:
             self._on_display_messages(messages, speed=speed)
         self._record_lines(1)
+
+    # ── 启动品牌屏 ─────────────────────────────────
+
+    @register_render_command(RenderCommand.SPLASH, ())
+    def _do_splash(self) -> None:
+        """渲染启动品牌屏（仅首次展示一次）。"""
+        # 从 bottom_bar 获取已设置的模型名（若有），否则 SplashScreen 自行从 config 读取
+        model_name = getattr(self._bb, '_model_name', '')
+        splash = SplashScreen(model_name=model_name)
+        self._record_lines(splash.render_to_adapter(self._adapter))
 
     # ── SubAgent 面板 ─────────────────────────────
 

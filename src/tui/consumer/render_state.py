@@ -20,7 +20,6 @@ if TYPE_CHECKING:
     from ...renderer import IncrementalRenderer
     from ...renderer.output import OutputAdapter
 
-from ..components._separator import Separator
 from ..core.animator import AnimatorContext
 from ..terminal.terminal import is_narrow
 
@@ -118,6 +117,8 @@ class _RenderState:
         rr = self.reasoning
         if rr is not None:
             # 动态呼吸分隔线（使用 Separator 组件替代手写）
+            # 运行时惰性 import 避免循环依赖：render_state → components → ... → render_state
+            from ..components._separator import Separator
             _bf = AnimatorContext.get_default().breath_frame
             _style = "wave" if not is_narrow() else "static"
             _sep_renderer = Separator(style=_style, width=None, start_color=45, end_color=237, frame=_bf)

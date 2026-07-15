@@ -1,97 +1,54 @@
-"""费用显示组件 — 显示每轮对话的 Token 消耗和费用"""
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""费用显示组件 — 向后兼容存根
+
+变更说明：核心逻辑已迁移到 src/tui/core/cost.py 和 src/tui/components/_cost.py。
+          此文件保留为向后兼容存根，从新位置重新导出。
+
+导出内容：
+  - compute_round_cost_data() — 纯函数，从 src.tui.core.cost 重新导出
+  - show_round_cost() — 保持原接口的向后兼容包装函数
+"""
 from __future__ import annotations
 
+import logging
 import shutil
-from ..colors import RESET, DARK_GRAY
-from ..ansi import strip_ansi, truncate_ansi_line
-from ...config import MAX_CONTEXT_CHARS
-from ...core.context_selector import calc_usage_percent_values, total_chars
-from ...tui.widgets.lock import _try_acquire_output_lock
+
+from ...tui.core.cost import compute_round_cost_data  # noqa: F401
+from ...tui.core.ansi_utils import truncate_ansi_line
+from ...core.constants import DARK_GRAY, RESET
 from ...tui.parallel._text_formatter import TextFormatter
+from ...tui.widgets.lock import _try_acquire_output_lock
 
-_COMPRESS_WARN_PCT = 90
-_COMPRESS_HINT_PCT = 80
-_MILLION = 1_000_000
-
-
-def _get_content_length(content):
-    """计算消息content的字符长度，支持字符串和多模态列表格式"""
-    if isinstance(content, str):
-        return len(content)
-    if isinstance(content, list):
-        # 多模态消息：提取text部分的长度
-        total = 0
-        for part in content:
-            if isinstance(part, dict) and part.get("type") == "text":
-                total += len(part.get("text", ""))
-            elif isinstance(part, str):
-                total += len(part)
-        return total
-    return 0
+_logger = logging.getLogger(__name__)
 
 
-def compute_round_cost_data(
-    delta_in: int,
-    delta_out: int,
-    delta_calls: int,
-    model: str,
-    prices: dict,
-    total_stats: dict,
-    session_elapsed: float = 0,
-    messages: list | None = None,
-) -> dict:
-    round_cost = delta_in / _MILLION * prices.get("input", 0) + delta_out / _MILLION * prices.get("output", 0)
-    total_cost = total_stats['input'] / _MILLION * prices.get("input", 0) + total_stats['output'] / _MILLION * prices.get("output", 0)
-    calls_str = f" ×{delta_calls}" if delta_calls > 1 else ""
-    duration_str = f" {TextFormatter.format_duration(session_elapsed)}" if session_elapsed > 0 else ""
+def show_round_cost(
+    delta_in, delta_out, delta_calls, model, prices, total_stats,
+    session_elapsed=0, messages=None,
+):
+    """显示每轮对话的 Token 消耗和费用（向后兼容包装）。
 
-    ctx_pct = 0.0
-    compress_hint = ""
-    if messages and MAX_CONTEXT_CHARS > 0:
-        total_chars_val = total_chars(messages)
-        pct = calc_usage_percent_values(total_chars_val)
-        ctx_pct = pct
-        if pct >= _COMPRESS_WARN_PCT:
-            compress_hint = " ⚠ compress!"
-        elif pct >= _COMPRESS_HINT_PCT:
-            compress_hint = " compress"
+    保留原接口签名。内部委托给 CostDisplayComponent 的渲染逻辑，
+    输出路径（ChatUIConsumer/print）与原行为一致。
 
-    return {
-        "delta_in": delta_in,
-        "delta_out": delta_out,
-        "delta_calls": delta_calls,
-        "model": model,
-        "round_cost": round_cost,
-        "total_cost": total_cost,
-        "total_input": total_stats['input'],
-        "total_output": total_stats['output'],
-        "duration_str": duration_str,
-        "calls_str": calls_str,
-        "ctx_pct": ctx_pct,
-        "compress_hint": compress_hint,
-    }
+    .. deprecated::
+        请改用 CostDisplayComponent 组件（TUI 框架渲染路径）。
+    """
+    # 委托给 CostDisplayComponent 渲染（避免存根重复渲染逻辑）
+    from ...tui.components._cost import CostDisplayComponent  # noqa: C0415
 
+    comp = CostDisplayComponent(
+        delta_in=delta_in,
+        delta_out=delta_out,
+        delta_calls=delta_calls,
+        model=model,
+        prices=prices,
+        total_stats=total_stats,
+        session_elapsed=session_elapsed,
+        messages=messages,
+    )
 
-def show_round_cost(delta_in, delta_out, delta_calls, model, prices, total_stats, session_elapsed=0, messages=None):
-    data = compute_round_cost_data(delta_in, delta_out, delta_calls, model, prices, total_stats, session_elapsed, messages)
-
-    ctx_str = ""
-    if data["ctx_pct"] > 0:
-        ctx_str = f" ctx:{data['ctx_pct']:.0f}%{data['compress_hint']}"
-
-    line = (f"{DARK_GRAY}  {data['model']}{data['calls_str']}  {TextFormatter.format_token_count(delta_in)}↑/"
-            f"{TextFormatter.format_token_count(delta_out)}↓"
-            f"  ${data['round_cost']:.4f}  "
-            f"∑{TextFormatter.format_token_count(data['total_input'])}/"
-            f"{TextFormatter.format_token_count(data['total_output'])}t"
-            f"  ${data['total_cost']:.4f}{ctx_str}{data['duration_str']}{RESET}")
-    # ★ 自适应终端宽度 — ANSI-aware 截断
-    try:
-        max_w = shutil.get_terminal_size().columns - 1
-    except Exception:
-        max_w = 80
-    if max_w > 10:
-        line = truncate_ansi_line(line, max_w)
     with _try_acquire_output_lock(name="cost_display", timeout=1.0):
         chat_ui = None
         try:
@@ -100,6 +57,6 @@ def show_round_cost(delta_in, delta_out, delta_calls, model, prices, total_stats
         except Exception:
             pass
         if chat_ui is not None:
-            chat_ui.write_line(line)
+            comp.render_to_adapter(chat_ui.output_adapter)
         else:
-            print(line)
+            print(comp.render())

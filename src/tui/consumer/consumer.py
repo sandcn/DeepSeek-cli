@@ -97,7 +97,7 @@ class ChatUIConsumer:
         订阅 11 种 DisplayEvent。首次启动时跳过防御性 unsubscribe
         （从未订阅过任何事件）；后续重新启动时先 subscribe 新 handler
         再 unsubscribe 旧 handler，消除事件丢失的时序窗口。
-        启动渲染线程、注册为活跃消费者。幂等操作——重复调用安全返回。
+        启动渲染线程、展示品牌屏、注册为活跃消费者。幂等操作——重复调用安全返回。
 
         Thread safety: _started 读写由 _state_lock 保护。
         """
@@ -140,6 +140,8 @@ class ChatUIConsumer:
             self._handlers_bound = True
             _register_consumer(self)
             self._engine.start()
+            # ── 展示启动品牌屏 ──
+            self._engine.push_cmd((RenderCommand.SPLASH,))
             self._started = True
 
     def stop(self) -> None:
