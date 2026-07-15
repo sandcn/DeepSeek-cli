@@ -189,6 +189,26 @@ class TestCliMsgConsumerExceptionHandling:
         assert msg_done.is_set()
 
     @pytest.mark.asyncio
+    async def test_nonfatal_exception_writes_error_message(self, loop, session, state, msg_done):
+        """非致命异常时 chat_ui.write_line 应被调用，包含错误消息。"""
+        session.run_round.side_effect = ValueError("invalid value")
+        loop._chat_ui = MagicMock()
+
+        msg = self._make_msg("test message")
+
+        await loop._cli_msg_consumer(msg, session, state, msg_done)
+
+        # 验证 write_line 被调用且包含 ⚠ 字符
+        loop._chat_ui.write_line.assert_called_once()
+        call_args = loop._chat_ui.write_line.call_args[0][0]
+        assert "\u26a0" in call_args, f"错误消息应包含 ⚠ 字符，实际: {call_args}"
+        assert "invalid value" in call_args, f"错误消息应包含异常描述，实际: {call_args}"
+        # 验证 _force_exit 未被设置
+        assert not loop._force_exit.is_set()
+        # 验证 msg_done 被设置
+        assert msg_done.is_set()
+
+    @pytest.mark.asyncio
     async def test_cancelled_error_propagates(self, loop, session, state, msg_done):
         """CancelledError 应重新抛出，不设置 _force_exit。"""
         session.run_round.side_effect = asyncio.CancelledError()

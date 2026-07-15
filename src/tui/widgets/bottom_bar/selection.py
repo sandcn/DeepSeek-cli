@@ -241,7 +241,7 @@ def run_bottom_bar_selection(
 
     bb = bottom_bar
     if bb is None:
-        from ....consumer.state import get_active_chat_ui  # fallback — 让 ui/tui 调用方传入 bottom_bar
+        from ....tui.consumer.state import get_active_chat_ui  # fallback — 让 ui/tui 调用方传入 bottom_bar
         chat_ui = get_active_chat_ui()
         if chat_ui is None:
             return {"action": "error", "index": None}
@@ -256,7 +256,23 @@ def run_bottom_bar_selection(
             return {"action": "error", "index": None}
 
     if _is_cygwin():
-        bb.show_completions(display_items, initial_idx, texts=items, title=title)
+        try:
+            bb.show_completions(display_items, initial_idx, texts=items, title=title)
+        except Exception as exc:
+            _logger.warning("Cygwin show_completions 异常: %s", exc, exc_info=True)
+            return {"action": "error", "index": None}
+        # ★ 防御性清空 stdin：与下方 Blessed 路径一致。monitor.stop() 恢复终端
+        #    cooked 模式后，Cygwin PTY 可能在模式切换时产生残留控制序列字节
+        #    （如 ESC 字节），若不清空，_run_selection_raw 一进入就会读到残留
+        #    的 ESC 字节而立即返回 cancel，导致选择界面"闪一下"就消失。
+        #    放在 show_completions 之后、_run_selection_raw 之前，与 Blessed 路径
+        #    （show_completions → tcflush → cbreak → drain → inkey）顺序对齐，
+        #    统一防御 show_completions 终端写入回显残留 + monitor.stop 残留。
+        try:
+            from src._compat_termios import termios as _termios
+            _termios.tcflush(sys.stdin.fileno(), _termios.TCIFLUSH)
+        except Exception:
+            pass
         try:
             return _run_selection_raw(items, display_items, initial_idx, title, bb)
         finally:

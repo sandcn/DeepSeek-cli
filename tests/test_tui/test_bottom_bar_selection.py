@@ -726,5 +726,122 @@ class TestPostCbreakDrain(unittest.TestCase):
         self.assertEqual(result["index"], 0)
 
 
+class TestCygwinShowCompletionsException(unittest.TestCase):
+    """测试 Cygwin 路径下 show_completions 异常时返回 error action。
+
+    验证策略：
+      - 通过 bottom_bar 参数直接传入 mock _BottomBar，绕过 get_active_chat_ui 导入
+      - Mock _is_cygwin() 返回 True 触发 Cygwin 分支
+      - 设置 bb.show_completions.side_effect = RuntimeError 模拟异常
+      - 验证返回 {"action": "error", "index": None}
+      - 验证 _logger.warning 被调用记录异常
+      - 验证不进入 _run_selection_raw
+    """
+
+    def setUp(self):
+        self._stdout = sys.__stdout__
+
+    def tearDown(self):
+        sys.__stdout__ = self._stdout
+
+    def _make_mock_bb(self, show_completions_side_effect=None):
+        """创建模拟 _BottomBar。
+
+        Args:
+            show_completions_side_effect: show_completions 的 side_effect
+                                          （None=正常返回，Exception=模拟异常）
+        """
+        mock_bb = MagicMock()
+        mock_bb._active = True
+        mock_bb._completion_idx = 0
+        if show_completions_side_effect is not None:
+            mock_bb.show_completions.side_effect = show_completions_side_effect
+        else:
+            mock_bb.show_completions.return_value = None
+        return mock_bb
+
+    # ── 异常返回 error action ───────────────────────
+
+    def test_cygwin_show_completions_exception_returns_error(self):
+        """Cygwin 路径 show_completions 异常应返回 error action。"""
+        mock_bb = self._make_mock_bb(
+            show_completions_side_effect=RuntimeError("Cygwin terminal error")
+        )
+
+        mock_stdin = MagicMock()
+        mock_stdin.fileno.return_value = 0
+
+        with patch("src.tui.widgets.bottom_bar.selection._is_cygwin",
+                   return_value=True), \
+             patch("sys.stdin", mock_stdin), \
+             patch("os.isatty", return_value=True), \
+             patch.object(sys, '__stdout__', MagicMock()), \
+             patch("src.tui.widgets.bottom_bar.selection._logger") as mock_logger:
+            result = run_bottom_bar_selection(
+                items=["item_a", "item_b", "item_c"],
+                display_items=["A", "B", "C"],
+                bottom_bar=mock_bb,
+            )
+
+        self.assertEqual(result["action"], "error")
+        self.assertIsNone(result["index"])
+        # 验证 _logger.warning 被调用（记录异常）
+        mock_logger.warning.assert_called_once()
+        call_args = mock_logger.warning.call_args[0]
+        self.assertIn("Cygwin", str(call_args))
+
+    # ── 不进入 _run_selection_raw ────────────────────
+
+    def test_cygwin_show_completions_exception_skips_run_selection_raw(self):
+        """show_completions 异常时不应进入 _run_selection_raw。"""
+        mock_bb = self._make_mock_bb(
+            show_completions_side_effect=RuntimeError("Cygwin terminal error")
+        )
+
+        mock_stdin = MagicMock()
+        mock_stdin.fileno.return_value = 0
+
+        with patch("src.tui.widgets.bottom_bar.selection._is_cygwin",
+                   return_value=True), \
+             patch("sys.stdin", mock_stdin), \
+             patch("os.isatty", return_value=True), \
+             patch.object(sys, '__stdout__', MagicMock()), \
+             patch("src.tui.widgets.bottom_bar.selection._run_selection_raw") as mock_raw:
+            result = run_bottom_bar_selection(
+                items=["item_a", "item_b", "item_c"],
+                display_items=["A", "B", "C"],
+                bottom_bar=mock_bb,
+            )
+
+        self.assertEqual(result["action"], "error")
+        mock_raw.assert_not_called()
+
+    # ── 正常 Cygwin 路径不受影响 ────────────────────
+
+    def test_cygwin_normal_path_unaffected(self):
+        """Cygwin 路径 show_completions 正常时不应进入异常分支。"""
+        mock_bb = self._make_mock_bb()  # show_completions 正常返回
+
+        mock_stdin = MagicMock()
+        mock_stdin.fileno.return_value = 0
+
+        with patch("src.tui.widgets.bottom_bar.selection._is_cygwin",
+                   return_value=True), \
+             patch("sys.stdin", mock_stdin), \
+             patch("os.isatty", return_value=True), \
+             patch.object(sys, '__stdout__', MagicMock()), \
+             patch("src.tui.widgets.bottom_bar.selection._run_selection_raw",
+                   return_value={"action": "confirmed", "index": 0}) as mock_raw:
+            result = run_bottom_bar_selection(
+                items=["item_a", "item_b", "item_c"],
+                display_items=["A", "B", "C"],
+                bottom_bar=mock_bb,
+            )
+
+        self.assertEqual(result["action"], "confirmed")
+        self.assertEqual(result["index"], 0)
+        mock_raw.assert_called_once()
+
+
 if __name__ == "__main__":
     unittest.main()

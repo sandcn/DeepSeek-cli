@@ -78,16 +78,14 @@ class EditmsgPlugin(InteractiveCommandPlugin):
             #   editmsg 只有返回 True 才能避免 _handle_command_msg 的 else 分支误报。
             return True
 
-        if chat_ui is not None:
-            chat_ui.suspend()
-        if monitor is not None:
-            # ★ stop 在 try 外（非 finally）：必须在进入编辑交互前确认终端
-            #   已恢复 cooked 模式（EditMsg Picker 需要 raw I/O 处理 ↑↓/Enter），
-            #   若放入 finally，edit 过程中终端仍处于 cbreak 模式，Picker 将无法正常工作。
-            #   start 在 finally 中确保编辑完成后始终恢复监听，无竞态风险。
-            monitor.stop()
         needs_rerender = False
         try:
+            # ★ suspend/stop 移入 try 内：确保 finally 总能恢复终端，即使 suspend/stop 自身异常
+            if chat_ui is not None:
+                chat_ui.suspend()
+            if monitor is not None:
+                monitor.stop()
+
             edit_state = {"model": state.get("model", ""), "retry": False, "prefill": ""}
             await asyncio.to_thread(
                 _edit_msgs, session.agent, edit_state,
@@ -109,10 +107,20 @@ class EditmsgPlugin(InteractiveCommandPlugin):
 
             # ★ 编辑生效（retry=True）后，标记需重新渲染剩余消息到上屏
             needs_rerender = bool(state["retry"] or state["prefill"])
+        except Exception as exc:
+            _logger.warning("EditmsgPlugin 编辑异常: %s", exc, exc_info=True)
+            if chat_ui is not None:
+                chat_ui.write_line(
+                    f"  {YELLOW}\u26a0{RESET} \u7f16\u8f91\u5931\u8d25: {exc}"
+                )
+            needs_rerender = False
         finally:
             if monitor is not None:
-                monitor.start()
-                time.sleep(0.05)
+                try:
+                    monitor.start()
+                    time.sleep(0.05)
+                except Exception:
+                    _logger.warning("monitor.start() 在 finally 中异常", exc_info=True)
             if chat_ui is not None:
                 chat_ui.resume()
                 chat_ui.flush()

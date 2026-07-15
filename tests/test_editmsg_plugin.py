@@ -276,3 +276,54 @@ async def test_finally_block_monitor_started_before_flush(EditmsgPlugin, mock_lo
     mock_loop._monitor.assert_has_calls([call.start()])
     # 验证 chat_ui.resume 在 chat_ui.flush 之前
     mock_loop._chat_ui.assert_has_calls([call.resume(), call.flush()])
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+#  测试：async_execute 异常路径处理
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+class TestEditmsgPluginExceptionHandling:
+    """测试 async_execute 在编辑过程中抛出异常时的行为
+
+    验证三层防护中的 Layer 2：editmsg_plugin 的 except 子句
+    恢复终端 + 给用户可见错误消息。
+    """
+
+    @pytest.mark.asyncio
+    async def test_exception_writes_error_and_restores_terminal(
+        self, EditmsgPlugin, mock_loop, mock_ctx, mock_session
+    ):
+        """编辑异常时：write_line 输出错误消息 + finally 恢复终端 + 返回 True"""
+        plugin = EditmsgPlugin()
+        plugin.bind_loop(mock_loop)
+
+        with patch(
+            "src.tui.pipeline.message_editor.edit_current_messages",
+            side_effect=RuntimeError("terminal error"),
+        ):
+            result = await plugin.async_execute(mock_ctx)
+
+        # ⑥ 返回 True：命令已被识别并处理（输出了错误提示）
+        assert result is True
+
+        # ① chat_ui.write_line 被调用 2 次（异常消息 + 取消提示）
+        assert mock_loop._chat_ui.write_line.call_count == 2
+        first_call_arg = mock_loop._chat_ui.write_line.call_args_list[0][0][0]
+        assert "\u26a0" in first_call_arg  # ⚠ 字符
+        assert "terminal error" in first_call_arg
+        second_call_arg = mock_loop._chat_ui.write_line.call_args_list[1][0][0]
+        assert "\u672a\u7f16\u8f91" in second_call_arg  # "未编辑"
+
+        # ② monitor.start() 在 finally 中被调用（终端恢复）
+        mock_loop._monitor.start.assert_called_once()
+
+        # ③ chat_ui.resume() 在 finally 中被调用
+        mock_loop._chat_ui.resume.assert_called_once()
+
+        # ④ session.sync_retry_pending 未被调用（异常路径不执行编辑后逻辑）
+        mock_session.sync_retry_pending.assert_not_called()
+        mock_session.reset_retry_pending.assert_not_called()
+
+        # ⑤ + ⑦ chat_ui.display_messages 未被调用（needs_rerender=False）
+        mock_loop._chat_ui.display_messages.assert_not_called()

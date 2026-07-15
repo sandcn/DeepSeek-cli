@@ -38,7 +38,7 @@ def _get_snapshot():
     global _TOKEN_SPEED_SNAPSHOT
     if _TOKEN_SPEED_SNAPSHOT is None:
         try:
-            from .....api.stats import get_token_speed_snapshot
+            from ....api.stats import get_token_speed_snapshot
             _TOKEN_SPEED_SNAPSHOT = get_token_speed_snapshot
         except ImportError:
             _TOKEN_SPEED_SNAPSHOT = False  # 标记不可用

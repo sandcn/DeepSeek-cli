@@ -316,6 +316,14 @@ class InteractiveLoop:
                 self._force_exit.set()
             else:
                 _logger.warning("CLI 消息消费者非致命异常 [non-fatal]: %s", exc, exc_info=exc)
+                # ★ 给用户可见错误消息，终结"静默无响应"问题
+                if self._chat_ui is not None:
+                    try:
+                        self._chat_ui.write_line(
+                            f"  {YELLOW}\u26a0{RESET} \u5904\u7406\u6d88\u606f\u65f6\u51fa\u9519: {exc}"
+                        )
+                    except Exception:
+                        _logger.warning("非致命异常用户反馈写入失败", exc_info=True)
         finally:
             if not msg_done.is_set():
                 msg_done.set()
