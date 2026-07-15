@@ -122,6 +122,7 @@ class RenderCommand(IntEnum):
     TOOL_COUNT_DEC     = 17  # (17,) — 工具计数-1
     SUBAGENT_FRAME     = 18  # (18, frame_lines: tuple[str]) — SubAgent 面板帧
     SPLASH             = 19  # (19,) — 启动品牌屏
+    MAIN_PHASE         = 20  # (20, phase: str) — 主Agent模型阶段变更
 
 
 # ── drain 锁超时 ─────────────────────────────────────
