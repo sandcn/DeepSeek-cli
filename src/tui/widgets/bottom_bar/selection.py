@@ -313,6 +313,18 @@ def run_bottom_bar_selection(
             except Exception:
                 pass
 
+            # ★ 方案 C: cbreak 模式切换后 tcflush — 作为 post-cbreak drain 的确定性能防御层。
+            #   Android/Termux PTY 在 tty.setcbreak(TCSANOW)（即 term.cbreak() 内部）时，
+            #   线路规程可能释放残留字节到输入队列。此 tcflush 在 drain 之后执行，确保
+            #   即使 drain 的 select 轮询错过延迟到达的字节，也能被确定性清空。
+            #   方案 B（cbreak 前 tcflush）时序过早（在 tty.setcbreak 之前），无法清空
+            #   线路规程释放的字节；此方案 C（cbreak 后 tcflush）弥补此时序缺口。
+            try:
+                from src._compat_termios import termios as _termios
+                _termios.tcflush(fd, _termios.TCIFLUSH)
+            except Exception:
+                pass
+
             while True:
                 try:
                     key = term.inkey(timeout=None)
