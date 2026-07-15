@@ -54,6 +54,21 @@ def get_terminal_width() -> int:
     return _term_width_cache.get()
 
 
+def set_narrow_threshold(normal: int, extra: int) -> None:
+    """允许用户按需调整窄屏阈值（全局生效）。
+
+    修改后所有窄屏检测函数（is_narrow / narrow_truncate 等）
+    立即使用新阈值。建议在应用初始化阶段调用一次。
+
+    Args:
+        normal: 普通窄屏阈值（列数），< 此值视为窄屏，默认 80。
+        extra: 超窄屏阈值（列数），< 此值视为超窄屏，默认 50。
+    """
+    global NARROW_THRESHOLD, EXTRA_NARROW_THRESHOLD
+    NARROW_THRESHOLD = normal
+    EXTRA_NARROW_THRESHOLD = extra
+
+
 # ═══════════════════════════════════════════════════════════
 # ILockedTerminal — 终端写入端口（Protocol）
 # ═══════════════════════════════════════════════════════════
@@ -331,6 +346,7 @@ __all__ = [
     "narrow_truncate", "narrow_indent",
     "narrow_sep_width",
     # 常量（供 narrow.py 兼容导出）
+    "set_narrow_threshold",
     "NARROW_THRESHOLD",
     "EXTRA_NARROW_THRESHOLD",
     # raw mode 保护

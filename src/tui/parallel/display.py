@@ -28,7 +28,7 @@ from ..core.output_target import IOutputTarget, TerminalTarget
 from ..frame import FrameRenderer
 from ..events.event_bus import DisplayEventBus
 from ..events.event_types import LiveOutputEvent
-from ._config import DisplayConfig
+from ..core.parallel_config import DisplayConfig
 from ..consumer.base_display import BaseDisplay
 from ..state.agent_state import AgentStateStore
 from ..terminal.adapter import (

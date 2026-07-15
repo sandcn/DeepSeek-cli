@@ -11,6 +11,7 @@
   _error.py           — ErrorBlock
   _notification.py    — NotificationBlock
   _write_line.py      — WriteLineBlock
+  _tree.py            — TreeView（层级结构展示） + TreeNode
   （已移除 4 个死组件：StatusLine / InputLine / CompletionPopup / SelectionMenu）
 
 兼容 re-export：BottomBarProtocol（定义在 _protocols.py）
@@ -49,6 +50,9 @@ from ._progress import ProgressBar
 from ._table import Table
 from ._markup import parse_markup, render_markup
 
+# ── TreeView 层级组件 ──
+from ._tree import TreeView, TreeNode
+
 # 兼容 re-export（定义已移至 _protocols.py）
 from ..consumer.protocols import BottomBarProtocol
 
@@ -82,4 +86,6 @@ __all__ = [
     "Table",
     # _markup
     "parse_markup", "render_markup",
+    # _tree
+    "TreeView", "TreeNode",
 ]

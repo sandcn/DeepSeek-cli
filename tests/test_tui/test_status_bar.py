@@ -11,7 +11,7 @@ from __future__ import annotations
 import time
 from unittest.mock import patch
 
-from src.tui.parallel._text_formatter import TextFormatter
+from src.tui.core.text_formatter import TextFormatter
 from src.tui.core.state import UISessionState, StreamingState, TUIStateTree
 from src.tui.widgets.status_bar import (
     render_normal,

@@ -759,6 +759,150 @@ def build_aurora_ansi(width: int, frame: int,
 
 
 # ═══════════════════════════════════════════════════════════
+# 霓虹边框效果（neon_border）
+# ═══════════════════════════════════════════════════════════
+
+
+def neon_color(frame: int, base_color: int = 51, spread: int = 3) -> int:
+    """霓虹灯管色号摆动 — 模拟霓虹灯管的不稳定发光。
+
+    使用正弦波在 base_color ± spread 范围内漂移，
+    每帧颜色微调产生"闪烁"感。
+
+    Args:
+        frame: 当前帧号。
+        base_color: 基准色号（默认 51=霓虹青色）。
+        spread: 摆动幅度（色号范围 ±spread）。
+
+    Returns:
+        xterm-256 色号（0-255）。
+    """
+    offset = round((math.sin(frame * 0.8) + math.sin(frame * 1.3) * 0.5) / 1.5 * spread)
+    return max(0, min(255, base_color + offset))
+
+
+def build_neon_border_ansi(
+    text: str, frame: int, base_color: int = 51, width: int | None = None,
+) -> str:
+    """构建霓虹边框 ANSI 字符串。
+
+    对文本四边包裹霓虹色边框，每帧颜色微调产生"闪烁"感。
+    窄屏时降级为单色边框（使用现有呼吸效果替代）。
+
+    边框格式::
+
+        ┌──────────┐
+        │  text    │
+        └──────────┘
+
+    Args:
+        text: 要包裹的文本内容（支持多行）。
+        frame: 当前帧号。
+        base_color: 霓虹基准色号（默认 51=青色）。
+        width: 边框宽度，None 时自动取最长行宽。
+
+    Returns:
+        带霓虹边框的 ANSI 字符串。
+    """
+    from ..terminal.terminal import is_narrow
+    from .ansi_utils import visual_width as _vw
+
+    lines = text.split("\n")
+    if width is None:
+        width = max((_vw(line) for line in lines), default=0)
+    width = max(width, 1)
+
+    # 窄屏降级：使用呼吸前景色替代霓虹闪烁
+    if is_narrow():
+        color = sine_color(frame, base_color, min(255, base_color + 10), 12)
+        color_ansi = f"\033[38;5;{color}m"
+        reset = "\033[0m"
+        h_line = "\u2500" * width
+        top = f"{color_ansi}\u250c{h_line}\u2510{reset}"
+        body = "\n".join(
+            f"{color_ansi}\u2502{line}{' ' * (width - _vw(line))}\u2502{reset}"
+            for line in lines
+        )
+        bottom = f"{color_ansi}\u2514{h_line}\u2518{reset}"
+        return f"{top}\n{body}\n{bottom}"
+
+    # 全功能霓虹边框：每帧颜色微调
+    top_color = neon_color(frame, base_color, spread=3)
+    mid_color = neon_color(frame + 2, base_color, spread=2)
+    bottom_color = neon_color(frame + 4, base_color, spread=3)
+
+    top_ansi = f"\033[38;5;{top_color}m"
+    mid_ansi = f"\033[38;5;{mid_color}m"
+    bottom_ansi = f"\033[38;5;{bottom_color}m"
+    reset = "\033[0m"
+
+    h_line = "\u2500" * width
+    top = f"{top_ansi}\u250c{h_line}\u2510{reset}"
+    body = "\n".join(
+        f"{mid_ansi}\u2502{line}{' ' * (width - _vw(line))}\u2502{reset}"
+        for line in lines
+    )
+    bottom = f"{bottom_ansi}\u2514{h_line}\u2518{reset}"
+    return f"{top}\n{body}\n{bottom}"
+
+
+# ═══════════════════════════════════════════════════════════
+# 打字机光标闪烁效果（typewriter_cursor）
+# ═══════════════════════════════════════════════════════════
+
+
+def typewriter_cursor(frame: int, period: int = 2) -> str:
+    """打字机光标闪烁 — 返回可见光标或空白，交替闪烁。
+
+    偶帧返回 ``▌``（左半块），奇帧返回空格，
+    模拟打字机/终端输入光标的闪烁效果。
+
+    Args:
+        frame: 当前帧号。
+        period: 闪烁周期帧数（默认 2 帧：显示/隐藏各 1 帧）。
+
+    Returns:
+        ``"▌"`` 或 ``" "``。
+    """
+    return "\u258c" if (frame // (period // 2)) % 2 == 0 else " "
+
+
+def build_typewriter_ansi(
+    text: str,
+    reveal_count: int,
+    frame: int,
+    style: str | None = None,
+) -> str:
+    """构建打字机效果 ANSI 字符串 — 已揭示文本 + 闪烁光标。
+
+    逐字符揭示文本内容，末尾追加闪烁光标，
+    模拟打字机逐字输出的视觉效果。
+
+    格式::
+
+        {styled revealed_text}{cursor_char}
+
+    Args:
+        text: 完整文本内容。
+        reveal_count: 已揭示的字符数（0 到 len(text)）。
+        frame: 当前帧号（控制光标闪烁）。
+        style: 可选样式，``"dim"`` 表示未揭示部分灰色显示。
+
+    Returns:
+        带打字机效果的 ANSI 字符串。
+    """
+    revealed = text[:reveal_count]
+    cursor = typewriter_cursor(frame)
+
+    if style == "dim" and reveal_count < len(text):
+        # 已揭示部分 + 闪烁光标 + 未揭示部分（灰色）
+        hidden = text[reveal_count:]
+        return f"{revealed}{cursor}\033[2m{hidden}\033[0m"
+    else:
+        return f"{revealed}{cursor}"
+
+
+# ═══════════════════════════════════════════════════════════
 # 缓动函数（统一入口）
 # ═══════════════════════════════════════════════════════════
 
@@ -985,6 +1129,33 @@ def _register_default_effects() -> None:
                             params={"base_color": "基准色号", "period": "呼吸周期"},
                             category="ansi")
 
+    # neon: 返回霓虹色号列表（供渐变/分隔线使用）
+    def _neon_effect(frame: int, **kwargs: Any) -> list[int]:
+        length = kwargs.get("length", 12)
+        base_color = kwargs.get("base_color", 51)
+        spread = kwargs.get("spread", 3)
+        return [neon_color(frame + i, base_color, spread) for i in range(length)]
+
+    EffectRegistry.register("neon", _neon_effect,
+                            description="霓虹边框效果",
+                            params={"length": "色号数量", "base_color": "霓虹基准色号", "spread": "摆动幅度"},
+                            category="gradient")
+
+    # typewriter: 返回色号列表（单色 + 光标节奏，供 compose 使用）
+    def _typewriter_effect(frame: int, **kwargs: Any) -> list[int]:
+        length = kwargs.get("length", 8)
+        base_color = kwargs.get("base_color", 45)
+        period = kwargs.get("period", 2)
+        # 偶帧亮色、奇帧暗色，模拟光标闪烁
+        visible = (frame // (period // 2)) % 2 == 0
+        fill = base_color if visible else 237
+        return [fill] * length
+
+    EffectRegistry.register("typewriter", _typewriter_effect,
+                            description="打字机光标闪烁效果",
+                            params={"length": "色号数量", "base_color": "基准色号", "period": "闪烁周期"},
+                            category="gradient")
+
 
 _register_default_effects()
 
@@ -1017,6 +1188,9 @@ __all__ = [
     "matrix_rain_color", "build_matrix_rain_ansi",
     "heat_wave_offset", "apply_heat_wave", "build_heat_wave_ansi",
     "aurora_color", "build_aurora_gradient", "build_aurora_ansi",
+    # 霓虹 + 打字机效果（2026-07-15）
+    "neon_color", "build_neon_border_ansi",
+    "typewriter_cursor", "build_typewriter_ansi",
     # 效果注册表
     "EffectRegistry",
 ]

@@ -5,21 +5,23 @@
   │             gradient(渐变工具), palettes(预定义调色板), theme(主题系统),
   │             ansi_utils(ANSI工具), output_target(输出目标),
   │             formatter(文本格式化零依赖层), cost(费用计算纯函数),
-  │             param_formatter(工具参数格式化)
+  │             param_formatter(工具参数格式化), parallel_config / tool_icons /
+  │             text_formatter（从 parallel 下沉）, TrueColor / ColorValue（颜色值对象）,
+  │             theme_loader（YAML主题加载）
   terminal/   — 终端 I/O 层：blessed适配, LockedTerminal, 窄屏检测, adapter(终端适配器),
   │             capabilities(终端能力检测: TrueColor/256色/UTF-8/Emoji)
-  animation/  — 动画基础设施层：AnimatorContext, BreathPalette, composer, transitions
+  animation/  — 动画基础设施层：AnimatorContext / BreathPalette 从 core 重导出, composer, transitions
   events/     — 事件系统：DisplayEventBus, event_types, event_pool
   state/      — Agent 状态管理：AgentStateStore, AgentSlot, ToolRecord
   components/ — 组件库：TuiComponent基类, 消息组件, 通用组件(Box/Panel/Separator/Spinner/
-  │             ProgressBar/Table/Markup), CostDisplayComponent(费用显示),
+  │             ProgressBar/Table/Markup), CostDisplayComponent(费用显示), TreeView（层级结构展示）,
   │             SplashScreen(启动品牌屏)
   consumer/   — 渲染消费端：TuiRenderer, RenderState, dispatcher, engine, base_display,
   │             diff_renderer(差异渲染, 从 ui/diff_renderer 迁移)
   pipeline/   — 消息显示/编辑管线：message_display, message_editor
   widgets/    — 交互控件：bottom_bar, command_palette, completion, cursor_tracker,
   │             selector_base, help_panel(快捷键帮助浮层) 等
-  parallel/   — 并行 Agent 显示管理：ParallelDisplay, FrameRenderer
+  parallel/   — 并行 Agent 显示管理：ParallelDisplay, FrameRenderer；基础模块已下沉至 core/，本层保留重导出
   frame/      — 纯函数帧渲染器：FrameRenderer
 
 已迁移模块（从 src/ui/）：

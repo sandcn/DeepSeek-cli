@@ -23,7 +23,7 @@ from ..core.ansi_utils import strip_ansi, truncate_ansi_sgr
 from ...core.constants import RESET, BOLD, CYAN_256, GREEN_256, DARK_GRAY_256, GRAY_256
 from ..core.gradient import gradient_range
 from ..core.theme import THEME
-from ..parallel._text_formatter import TextFormatter
+from ..core.text_formatter import TextFormatter
 from ..terminal.terminal import is_narrow, get_terminal_width
 from ..core.time_format import format_elapsed, format_speed
 from ..core.state import TUIStateTree, UISessionState, StreamingState
@@ -236,15 +236,6 @@ def build_normal_parts(state: UISessionState, narrow: bool | None = None) -> lis
 
     parts.extend(_build_detail_parts(state, narrow))
     return parts
-
-
-# ── 脉动呼吸色号序列（暗青→亮青→暗青） ──
-_PULSE_COLORS: list[int] = gradient_range(36, 45, 3) + [40]
-"""脉动呼吸色号：[36(暗青), 40(中青), 45(亮青), 40(中青)]，对称呼吸周期。"""
-
-# ── 模型名呼吸色序（暗青32→亮青45→中青40→亮青45，4帧柔和呼吸） ──
-_MODEL_BREATH_COLORS: list[int] = [32, 45, 40, 45]
-"""模型名呼吸色号：暗青(32)↔亮青(45)↔中青(40)↔亮青(45)，4 帧柔和呼吸。"""
 
 
 def render_streaming_line(state: UISessionState, streaming: StreamingState) -> str:

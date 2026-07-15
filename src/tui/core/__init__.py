@@ -2,6 +2,13 @@
 
 提供动画基础设施、动效原语、状态容器、TTL 缓存、时间格式化、
 文本工具和系统监控等基础功能。
+
+新增模块（2026-07-15 框架增强）:
+  - parallel_config: 并行显示常量与自适应配置（从 parallel 下沉）
+  - tool_icons: 工具颜色和图标主题定义（从 parallel 下沉）
+  - text_formatter: 文本格式化门面（从 parallel 下沉）
+  - TrueColor / ColorValue: 24-bit 真彩色值对象与联合类型（颜色体系扩展）
+  - theme_loader: 轻量级 YAML 用户主题加载器
 """
 
 from __future__ import annotations
@@ -30,6 +37,9 @@ from .effects import (
     matrix_rain_color, build_matrix_rain_ansi,
     heat_wave_offset, apply_heat_wave, build_heat_wave_ansi,
     aurora_color, build_aurora_gradient, build_aurora_ansi,
+    # 霓虹 + 打字机效果（2026-07-15 步骤7）
+    neon_color, build_neon_border_ansi,
+    typewriter_cursor, build_typewriter_ansi,
     # 效果注册表
     EffectRegistry,
 )
@@ -53,7 +63,10 @@ from .text_utils import (
 )
 
 # ── 颜色值对象 ──
-from .color import Color256, RGB, GradientDescriptor
+from .color import (
+    Color256, RGB, TrueColor, GradientDescriptor,
+    ColorValue, to_ansi_fg, to_ansi_bg, to_256, auto_color,
+)
 
 # ── 样式描述器 ──
 from .style import Style, StyledText, StyleSheet
@@ -78,7 +91,10 @@ from .palettes import (
 )
 
 # ── 主题系统 ──
-from .theme import THEME, THEMES, set_theme, get_active_theme, list_themes, get_theme_names_with_desc
+from .theme import THEME, THEMES, set_theme, get_active_theme, list_themes, get_theme_names_with_desc, load_user_themes, load_user_themes as load_user_themes_into_themes, reload_themes
+
+# ── YAML 主题加载器 ──
+from .theme_loader import load_user_themes_from_dir, parse_simple_yaml
 
 # ── ANSI 工具 ──
 from .ansi_utils import strip_ansi, visual_width, truncate_ansi_visual, skip_ansi_sgr, truncate_ansi_sgr, truncate_ansi_line
@@ -111,6 +127,9 @@ __all__ = [
     "matrix_rain_color", "build_matrix_rain_ansi",
     "heat_wave_offset", "apply_heat_wave", "build_heat_wave_ansi",
     "aurora_color", "build_aurora_gradient", "build_aurora_ansi",
+    # 霓虹 + 打字机效果（2026-07-15 步骤7）
+    "neon_color", "build_neon_border_ansi",
+    "typewriter_cursor", "build_typewriter_ansi",
     # 缓动（统一入口，2026-07-15）
     "sine_easing",
     # 效果注册表（2026-07-15）
@@ -128,7 +147,8 @@ __all__ = [
     "build_sparkle_ansi", "build_glow_ansi", "build_left_border_ansi",
     "parse_theme_color", "make_sep_gradient_enhanced",
     # color
-    "Color256", "RGB", "GradientDescriptor",
+    "Color256", "RGB", "TrueColor", "GradientDescriptor",
+    "ColorValue", "to_ansi_fg", "to_ansi_bg", "to_256", "auto_color",
     # style
     "Style", "StyledText", "StyleSheet",
     # gradient
@@ -145,6 +165,9 @@ __all__ = [
     "BREATH_CYAN", "BREATH_GREEN", "BREATH_PURPLE", "BREATH_GOLD", "BREATH_ROSE",
     # theme
     "THEME", "THEMES", "set_theme", "get_active_theme", "list_themes", "get_theme_names_with_desc",
+    "load_user_themes", "load_user_themes_into_themes", "reload_themes",
+    # theme_loader
+    "load_user_themes_from_dir", "parse_simple_yaml",
     # ansi_utils
     "strip_ansi", "visual_width", "truncate_ansi_visual", "skip_ansi_sgr", "truncate_ansi_sgr", "truncate_ansi_line",
     # output_target

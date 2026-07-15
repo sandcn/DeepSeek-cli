@@ -96,7 +96,7 @@ class SubAgentSpawner:
         for i, spec in enumerate(specs, 1):
             desc = spec.get(_DESCRIPTION_KEY, f"子任务 {i}")
             agent_type = spec.get("agent_type", "execute")
-            from ....tui.parallel._tool_icons import AGENT_TYPE_ABBREV as _AGENT_TYPE_ABBREV
+            from ....tui.core.tool_icons import AGENT_TYPE_ABBREV as _AGENT_TYPE_ABBREV
             abbr = _AGENT_TYPE_ABBREV.get(agent_type, "??")
             prompt = spec.get("prompt", "")
             if prompt:
@@ -146,7 +146,7 @@ class SubAgentSpawner:
                 for i, spec in enumerate(specs, 1):
                     desc = spec.get(_DESCRIPTION_KEY, f"子任务 {i}")
                     agent_type = spec.get("agent_type", "execute")
-                    from ....tui.parallel._tool_icons import AGENT_TYPE_ABBREV as _AGENT_TYPE_ABBREV
+                    from ....tui.core.tool_icons import AGENT_TYPE_ABBREV as _AGENT_TYPE_ABBREV
                     abbr = _AGENT_TYPE_ABBREV.get(agent_type, "??")
                     prompt = spec.get("prompt", "")
                     if prompt:

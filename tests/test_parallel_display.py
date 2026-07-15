@@ -5,7 +5,7 @@ import sys
 
 import pytest
 
-from src.tui.parallel._config import (
+from src.tui.core.parallel_config import (
     SPINNER_BRAILLE, SPINNER_PULSE, SPINNER_CIRCLE, SPINNER_DOTS,
     SPINNER_SETS, SPINNER_FRAMES, SPINNER_SPEED,
     get_spinner_frames, breathing_animation,

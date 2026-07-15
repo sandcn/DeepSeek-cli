@@ -21,7 +21,7 @@ from ..components._progress import ProgressBar
 from ..components._spinner import Spinner
 from ..core.color import Color256
 from ..core.style import Style, StyleSheet
-from ..parallel._config import (
+from ..core.parallel_config import (
     SUMMARY_SEPARATOR as _DEFAULT_SUMMARY_SEPARATOR,
     SUMMARY_ICON_RUNNING as _DEFAULT_SUMMARY_ICON_RUNNING,
     SUMMARY_ICON_DONE as _DEFAULT_SUMMARY_ICON_DONE,
@@ -29,8 +29,8 @@ from ..parallel._config import (
     get_spinner_frames as _get_spinner_frames,
     DEFAULT_SPINNER_SPEED as _DEFAULT_SPINNER_SPEED,
 )
-from ..parallel._text_formatter import TextFormatter as _DefaultTextFormatter
-from ..parallel._tool_icons import (
+from ..core.text_formatter import TextFormatter as _DefaultTextFormatter
+from ..core.tool_icons import (
     TOOL_ICONS as _DEFAULT_TOOL_ICONS,
     AGENT_TYPE_ABBREV,
     AGENT_TYPE_COLORS,

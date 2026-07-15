@@ -15,9 +15,13 @@
 
 from __future__ import annotations
 
+import logging
 import math
 from functools import lru_cache
+from typing import Union
 from src._compat import dataclass
+
+logger = logging.getLogger(__name__)
 
 
 # ── xterm 调色板（从 gradient 共享模块导入） ──
@@ -47,12 +51,7 @@ class RGB:
 
     def __post_init__(self) -> None:
         """校验分量范围，超出时抛 ValueError。"""
-        if not (0 <= self.r <= 255):
-            raise ValueError(f"r must be in [0, 255], got {self.r}")
-        if not (0 <= self.g <= 255):
-            raise ValueError(f"g must be in [0, 255], got {self.g}")
-        if not (0 <= self.b <= 255):
-            raise ValueError(f"b must be in [0, 255], got {self.b}")
+        _validate_rgb(self.r, self.g, self.b)
 
     @property
     def brightness(self) -> float:
@@ -61,6 +60,135 @@ class RGB:
 
     def __str__(self) -> str:
         return f"RGB({self.r}, {self.g}, {self.b})"
+
+
+# ═══════════════════════════════════════════════════════════
+# TrueColor 值对象
+# ═══════════════════════════════════════════════════════════
+
+
+@dataclass(frozen=True, slots=True)
+class TrueColor:
+    """TrueColor 24-bit 真彩色值对象。
+
+    直接生成 ANSI 24-bit 转义序列（38;2 / 48;2），
+    并支持降级到 256 色。
+
+    Attributes:
+        r: 红色分量（0-255）。
+        g: 绿色分量（0-255）。
+        b: 蓝色分量（0-255）。
+    """
+    r: int
+    g: int
+    b: int
+
+    def __post_init__(self) -> None:
+        """校验分量范围，超出时抛 ValueError。"""
+        _validate_rgb(self.r, self.g, self.b)
+
+    # ── ANSI 序列 ──
+
+    def to_ansi_fg(self) -> str:
+        """生成 TrueColor 前景色 ANSI 序列 ``\\033[38;2;{r};{g};{b}m``。
+
+        Returns:
+            ANSI 转义序列字符串。
+        """
+        return f"\033[38;2;{self.r};{self.g};{self.b}m"
+
+    def to_ansi_bg(self) -> str:
+        """生成 TrueColor 背景色 ANSI 序列 ``\\033[48;2;{r};{g};{b}m``。
+
+        Returns:
+            ANSI 转义序列字符串。
+        """
+        return f"\033[48;2;{self.r};{self.g};{self.b}m"
+
+    # ── 降级 ──
+
+    def to_256(self) -> int:
+        """降级为最接近的 256 色号。
+
+        使用欧氏距离在 xterm-256 调色板中查找最接近的颜色。
+
+        Returns:
+            最接近的 xterm-256 色号（0-255）。
+        """
+        return _find_closest_256(self.r, self.g, self.b)
+
+    def to_256_color(self) -> Color256:
+        """降级为 Color256 值对象。
+
+        Returns:
+            最接近的 Color256 实例。
+        """
+        return Color256(self.to_256())
+
+    # ── 工厂方法 ──
+
+    @classmethod
+    def from_hex(cls, hex_color: str) -> TrueColor:
+        """从十六进制颜色字符串创建 TrueColor。
+
+        支持 ``#FF8800`` 和 ``ff8800`` 两种格式。
+
+        Args:
+            hex_color: 十六进制颜色字符串（6 位十六进制，可选 # 前缀）。
+
+        Returns:
+            TrueColor 实例。
+
+        Raises:
+            ValueError: 格式非法。
+        """
+        rgb = hex_to_rgb(hex_color)
+        return cls(rgb.r, rgb.g, rgb.b)
+
+    @classmethod
+    def best_effort(cls, r: int, g: int, b: int) -> ColorValue:
+        """根据终端能力自动选择最佳颜色类型。
+
+        TrueColor 可用时返回 TrueColor，否则返回降级的 Color256。
+        内部调用 ``supports_truecolor()`` 进行终端能力检测。
+
+        注意: 此方法通过跨包延迟导入 ``..terminal.capabilities`` 进行能力检测。
+        这是有意为之，以避免将终端检测逻辑合并到 core/color.py（保持关注点分离）。
+        core/color.py 仅负责颜色值对象，不直接依赖终端检测。
+
+        Args:
+            r: 红色分量（0-255）。
+            g: 绿色分量（0-255）。
+            b: 蓝色分量（0-255）。
+
+        Returns:
+            TrueColor 或 Color256，取决于终端能力。
+        """
+        # 延迟导入避免模块加载循环
+        from ..terminal.capabilities import supports_truecolor as _detect_tc
+        if _detect_tc():
+            return cls(r, g, b)
+        logger.debug(
+            "TrueColor not supported, falling back to Color256 for "
+            "RGB(%d, %d, %d)", r, g, b
+        )
+        return Color256.from_rgb(r, g, b)
+
+    # ── 属性 ──
+
+    @property
+    def brightness(self) -> float:
+        """感知亮度 [0.0, 1.0]（ITU-R BT.601 加权）。"""
+        return (0.299 * self.r + 0.587 * self.g + 0.114 * self.b) / 255.0
+
+    # ── 显示 ──
+
+    def __str__(self) -> str:
+        """返回 ANSI 前景色序列。"""
+        return self.to_ansi_fg()
+
+    def __repr__(self) -> str:
+        return f"TrueColor({self.r}, {self.g}, {self.b})"
 
 
 # ═══════════════════════════════════════════════════════════
@@ -158,6 +286,25 @@ class Color256:
 # ═══════════════════════════════════════════════════════════
 # 内部工具函数
 # ═══════════════════════════════════════════════════════════
+
+
+def _validate_rgb(r: int, g: int, b: int) -> None:
+    """校验 RGB 分量范围 [0, 255]，超出时抛 ValueError。
+
+    Args:
+        r: 红色分量。
+        g: 绿色分量。
+        b: 蓝色分量。
+
+    Raises:
+        ValueError: 任一分量不在 [0, 255] 范围内。
+    """
+    if not (0 <= r <= 255):
+        raise ValueError(f"r must be in [0, 255], got {r}")
+    if not (0 <= g <= 255):
+        raise ValueError(f"g must be in [0, 255], got {g}")
+    if not (0 <= b <= 255):
+        raise ValueError(f"b must be in [0, 255], got {b}")
 
 
 def _find_closest_256(r: int, g: int, b: int) -> int:
@@ -360,6 +507,94 @@ class GradientDescriptor:
 
 
 # ═══════════════════════════════════════════════════════════
+# ColorValue 联合类型与转换函数
+# ═══════════════════════════════════════════════════════════
+
+#: 颜色值联合类型，统一 Color256 / TrueColor / int（256 色号，向后兼容）。
+ColorValue = Union[Color256, TrueColor, int]
+
+
+def to_ansi_fg(color: ColorValue) -> str:
+    """统一生成前景色 ANSI 转义序列。
+
+    - Color256 → ``\\033[38;5;{value}m``
+    - TrueColor → ``\\033[38;2;{r};{g};{b}m``
+    - int → ``\\033[38;5;{value}m``
+
+    Args:
+        color: 颜色值（Color256 / TrueColor / int）。
+
+    Returns:
+        ANSI 前景色转义序列。
+    """
+    if isinstance(color, TrueColor):
+        return color.to_ansi_fg()
+    if isinstance(color, Color256):
+        return f"\033[38;5;{color.value}m"
+    # int: 256 色号
+    return f"\033[38;5;{color}m"
+
+
+def to_ansi_bg(color: ColorValue) -> str:
+    """统一生成背景色 ANSI 转义序列。
+
+    - Color256 → ``\\033[48;5;{value}m``
+    - TrueColor → ``\\033[48;2;{r};{g};{b}m``
+    - int → ``\\033[48;5;{value}m``
+
+    Args:
+        color: 颜色值（Color256 / TrueColor / int）。
+
+    Returns:
+        ANSI 背景色转义序列。
+    """
+    if isinstance(color, TrueColor):
+        return color.to_ansi_bg()
+    if isinstance(color, Color256):
+        return f"\033[48;5;{color.value}m"
+    # int: 256 色号
+    return f"\033[48;5;{color}m"
+
+
+def to_256(color: ColorValue) -> int:
+    """统一降级为 256 色号。
+
+    - Color256 → 直接返回 value
+    - TrueColor → 查找最接近的 256 色号
+    - int → 原样返回
+
+    Args:
+        color: 颜色值（Color256 / TrueColor / int）。
+
+    Returns:
+        256 色号（0-255）。
+    """
+    if isinstance(color, TrueColor):
+        return color.to_256()
+    if isinstance(color, Color256):
+        return color.value
+    # int: 原样返回
+    return color
+
+
+def auto_color(r: int, g: int, b: int) -> ColorValue:
+    """根据终端能力自动选择最佳颜色类型。
+
+    TrueColor 可用时返回 TrueColor，否则返回 Color256。
+    内部调用 ``supports_truecolor()`` 进行终端能力检测。
+
+    Args:
+        r: 红色分量（0-255）。
+        g: 绿色分量（0-255）。
+        b: 蓝色分量（0-255）。
+
+    Returns:
+        TrueColor 或 Color256，取决于终端能力。
+    """
+    return TrueColor.best_effort(r, g, b)
+
+
+# ═══════════════════════════════════════════════════════════
 # 模块导出
 # ═══════════════════════════════════════════════════════════
 
@@ -367,9 +602,16 @@ __all__ = [
     # 值对象
     "Color256",
     "RGB",
+    "TrueColor",
     "GradientDescriptor",
+    # 联合类型
+    "ColorValue",
     # 转换函数
     "hex_to_rgb",
     "rgb_to_256",
     "lerp_color",
+    "to_ansi_fg",
+    "to_ansi_bg",
+    "to_256",
+    "auto_color",
 ]

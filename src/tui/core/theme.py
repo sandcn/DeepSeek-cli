@@ -427,6 +427,13 @@ THEMES: Dict[str, Dict[str, str]] = {
 }
 
 # ══════════════════════════════════════════════════════════
+# 内置主题备份（用户主题加载后可恢复）
+# ══════════════════════════════════════════════════════════
+
+_BUILTIN_THEMES: Dict[str, Dict[str, str]] = {k: dict(v) for k, v in THEMES.items()}
+
+
+# ══════════════════════════════════════════════════════════
 # 当前活动主题
 # ══════════════════════════════════════════════════════════
 
@@ -474,8 +481,52 @@ def get_theme_names_with_desc() -> List[tuple[str, str]]:
     ]
 
 
+def load_user_themes() -> None:
+    """从 ``~/.deepseek/themes/*.yaml`` 加载用户自定义主题。
+
+    加载后合并到 ``THEMES`` 字典中。
+    用户主题与内置主题同名时，用户主题覆盖内置主题。
+    目录不存在时静默跳过（不报错）。
+
+    若当前活动主题被用户主题覆盖，``THEME`` 副本自动更新。
+    """
+    from . import theme_loader
+    user_themes = theme_loader.load_user_themes_from_dir()
+    if user_themes:
+        THEMES.update(user_themes)
+        # 若当前活动主题被用户主题覆盖，刷新 THEME 副本
+        if _ACTIVE_NAME in user_themes:
+            THEME.clear()
+            THEME.update(THEMES[_ACTIVE_NAME])
+
+
+def reload_themes() -> None:
+    """重置为基础内置主题并重新加载用户主题。
+
+    适用场景：用户在运行时修改了 ``~/.deepseek/themes/``
+    下的 YAML 文件，调用此函数刷新主题列表。
+
+    重置后若当前活动主题不存在（如已被删除的用户主题），
+    自动回退为 ``"dark"``。
+    """
+    global THEMES, _ACTIVE_NAME
+    THEMES.clear()
+    THEMES.update(_BUILTIN_THEMES)
+    load_user_themes()
+    # 确保当前活动主题在重置后仍有效
+    if _ACTIVE_NAME not in THEMES:
+        _ACTIVE_NAME = "dark"
+    THEME.clear()
+    THEME.update(THEMES[_ACTIVE_NAME])
+
+
+# ── 模块加载时自动加载用户主题 ──
+load_user_themes()
+
+
 __all__ = [
     "THEME", "THEMES",
     "set_theme", "get_active_theme", "list_themes",
     "get_theme_names_with_desc",
+    "load_user_themes", "reload_themes",
 ]

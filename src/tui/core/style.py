@@ -46,8 +46,8 @@ class Style:
         underline: 是否下划线。
     """
 
-    fg: int | None = None
-    bg: int | None = None
+    fg: int | TrueColor | None = None
+    bg: int | TrueColor | None = None
     bold: bool = False
     italic: bool = False
     dim: bool = False
@@ -59,9 +59,14 @@ class Style:
         按 ``bold → dim → italic → underline → fg → bg`` 顺序组装，
         RESET 由调用方（apply）统一追加。
 
+        fg/bg 为 TrueColor 时使用 24-bit ANSI 序列（38;2 / 48;2），
+        为 int 时使用 256 色序列（38;5 / 48;5），保持向后兼容。
+
         Returns:
             ANSI 转义序列，不含 RESET。所有属性均为默认值时返回空字符串。
         """
+        # 延迟导入避免模块加载循环（仅导入一次）
+        from .color import TrueColor as _TC
         parts: list[str] = []
         if self.bold:
             parts.append("\033[1m")
@@ -72,9 +77,15 @@ class Style:
         if self.underline:
             parts.append("\033[4m")
         if self.fg is not None:
-            parts.append(f"\033[38;5;{self.fg}m")
+            if isinstance(self.fg, _TC):
+                parts.append(self.fg.to_ansi_fg())
+            else:
+                parts.append(f"\033[38;5;{self.fg}m")
         if self.bg is not None:
-            parts.append(f"\033[48;5;{self.bg}m")
+            if isinstance(self.bg, _TC):
+                parts.append(self.bg.to_ansi_bg())
+            else:
+                parts.append(f"\033[48;5;{self.bg}m")
         return "".join(parts)
 
     def apply(self, text: str) -> str:
@@ -149,7 +160,10 @@ class Style:
             bg = int(bg_match.group(1))
 
         # 检测粗体/暗淡等 SGR 参数
-        bold = "1m" in color_str and "38;5" not in color_str[:color_str.index("1m") - 2] if "1m" in color_str else False
+        # 使用正则精确匹配独立 SGR 参数 1（加粗），
+        # 匹配 ``1m`` 和 ``1;`` 两种 ANSI SGR 格式，
+        # 避免误匹配 21m(双下划线)、31m(红色) 等含"1"的序列。
+        bold = bool(re.search(r'(?<!\d)1[;m]', color_str))
         dim = "2m" in color_str
         italic = "3m" in color_str
         underline = "4m" in color_str
@@ -307,4 +321,6 @@ StyleSheet.register_many({
     "underline": Style(underline=True),
     "bold_dim":  Style(bold=True, dim=True),
     "dim_italic": Style(dim=True, italic=True),
+    "tree_branch": Style(fg=239),   # 树分支灰色
+    "tree_leaf":   Style(fg=45),    # 树叶青色
 })

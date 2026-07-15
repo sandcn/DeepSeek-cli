@@ -33,6 +33,8 @@ class Separator(TuiComponent):
         end_color: 结束 256 色号，默认 237（深灰）。
         frame: 当前帧号，动效推进用。每帧调用 ``render()`` 时递增。
         num_pulses: 脉冲列车效果中的脉冲数量（仅 style="pulse" 时有效），默认 2。
+        animated: 是否启用动效，默认 True。设为 False 时忽略 style，
+                  始终使用静态渐变渲染（窄屏/低频动画场景）。
     """
 
     def __init__(
@@ -44,6 +46,7 @@ class Separator(TuiComponent):
         end_color: int = 237,
         frame: int = 0,
         num_pulses: int = 2,
+        animated: bool = True,
     ) -> None:
         self._char = char
         self._width = width
@@ -52,11 +55,15 @@ class Separator(TuiComponent):
         self._end_color = end_color
         self._frame = frame
         self._num_pulses = num_pulses
+        self._animated = animated
 
     # ── 公共 API ────────────────────────────────────────────────────────
 
     def render(self) -> str:
         """渲染分隔线。
+
+        当 ``animated=False`` 或窄屏时降级为静态渐变渲染，
+        避免不必要的动效消耗。
 
         Returns:
             带 ANSI 颜色和动效的分隔线字符串，空宽度时返回空字符串。
@@ -64,6 +71,10 @@ class Separator(TuiComponent):
         colors = self._build_colors()
         if not colors:
             return ""
+
+        # 非动画模式：跳过所有动效，使用静态渐变
+        if not self._animated:
+            return self._render_static(colors)
 
         style = self._style
         if style == "static":

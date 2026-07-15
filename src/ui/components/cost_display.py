@@ -17,7 +17,7 @@ import shutil
 from ...tui.core.cost import compute_round_cost_data  # noqa: F401
 from ...tui.core.ansi_utils import truncate_ansi_line
 from ...core.constants import DARK_GRAY, RESET
-from ...tui.parallel._text_formatter import TextFormatter
+from ...tui.core.text_formatter import TextFormatter
 from ...tui.widgets.lock import _try_acquire_output_lock
 
 _logger = logging.getLogger(__name__)

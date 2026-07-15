@@ -278,6 +278,8 @@ class BashFunc(Func):
                     "【安全红线】"
                     "\n- 禁止执行系统破坏操作：rm -rf、mkfs、dd、chmod 777、sudo、chown"
                     "\n- 不可以从根目录find / 东西"
+                    "\n- 有大量输入的时候多用 cmd | grep * 或 cmd | tail 100 等"
+                    "\n- 不会停的命令 要用 timeout "
                     "\n- 此红线约束直接 shell 执行和通过脚本的间接执行路径"
                     "\n\n"
                 ),

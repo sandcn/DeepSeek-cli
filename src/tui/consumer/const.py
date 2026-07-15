@@ -61,6 +61,11 @@ def _register_tui_styles() -> None:
         "highlight": _TS(fg=45),
         "accent": _TS(fg=221),
         "deco": _TS(fg=242),
+        # 渲染效果语义色
+        "neon": _TS(fg=51),
+        # TreeView 组件语义色
+        "tree_branch": _TS(fg=239),
+        "tree_leaf": _TS(fg=45),
     })
 
 _register_tui_styles()
