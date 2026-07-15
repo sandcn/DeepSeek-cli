@@ -94,6 +94,12 @@ _ANSI_YELLOW = "\033[33m"
 _ANSI_RESET = "\033[0m"
 _ANSI_CURSOR_BOTTOM = "\033[9999;1H"
 
+# ── inline 模式 ANSI 序列 ────────────────────────────
+# 用于底部栏 inline 渲染（非全屏逐行覆盖模式），
+# 替代 DECSTBM/SCOSC/DECRC/SU/SD 等全屏序列。
+_ANSI_UP = "\033[A"            # 光标上移 1 行
+_ANSI_CLEAR_LINE = "\r\033[K"  # 移至行首 + 清除当前行
+
 
 # ═══════════════════════════════════════════════════════════
 # RenderCommand — 渲染命令枚举（IntEnum，类型安全 + 自文档化）

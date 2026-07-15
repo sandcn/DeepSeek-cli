@@ -1,20 +1,22 @@
 """渲染器 — _RenderState + TuiRenderer + _RENDER_DISPATCH。
 
 从 _tui.py 拆分，管理推理/内容 IncrementalRenderer 生命周期和渲染命令分发。
+
+【inline 模式 · 2026-07-16 重构】
+新增 output_target 参数（IOutputTarget），支持 inline 模式直写 ANSI 到终端。
+output_target 为 None 时回退到原有 OutputAdapter（向后兼容）。
 """
 
 from __future__ import annotations
 
 import logging
 import math
-import sys
 from typing import TYPE_CHECKING, Any, Callable
-
-from rich.text import Text
 
 if TYPE_CHECKING:
     from ...renderer import IncrementalRenderer
     from ...renderer.output import OutputAdapter
+    from ...tui_framework.terminal.output_target import IOutputTarget
     from .protocols import BottomBarProtocol
 
 from .const import (
@@ -63,13 +65,14 @@ _RENDER_DISPATCH: dict[int, tuple[str, tuple[int, ...]]] = {}
 
 
 # ═══════════════════════════════════════════════════════════
-# TuiRenderer — 组件化内容渲染器
+# TuiRenderer — 组件化内容渲染器（inline 模式）
 # ═══════════════════════════════════════════════════════════
 
 class TuiRenderer:
     """组件化内容渲染器 — 执行 RenderCommand 并直接输出。
 
-    将每个渲染命令映射到对应的组件，通过 OutputAdapter 输出。
+    将每个渲染命令映射到对应的组件，通过 IOutputTarget（inline 模式）
+    或 OutputAdapter（回退模式）输出。
     """
 
     def __init__(
@@ -79,18 +82,40 @@ class TuiRenderer:
         bottom_bar: "BottomBarProtocol",
         on_display_messages: Callable[..., None] | None = None,
         cursor_tracker: Any = None,
+        output_target: "IOutputTarget | None" = None,
     ):
         self._rs = rs
         self._bb = bottom_bar
         self._on_display_messages = on_display_messages
         self._adapter = output_adapter
         self._tracker = cursor_tracker
+        self._output_target = output_target
         self._in_tool_group = False
 
     @property
     def output_adapter(self) -> "OutputAdapter":
         """获取当前 OutputAdapter 实例。"""
         return self._adapter
+
+    @property
+    def output_target(self) -> "IOutputTarget | None":
+        """获取当前 IOutputTarget 实例（inline 模式），None 表示全屏模式。"""
+        return self._output_target
+
+    def _write_line(self, text: str) -> None:
+        """写入一行 ANSI 文本到输出目标。
+
+        inline 模式：直写 IOutputTarget.write_line()（绕过 Rich Console）。
+        回退模式：通过 OutputAdapter.write()（Rich Console 管线）。
+
+        Args:
+            text: ANSI 格式的纯文本字符串。
+        """
+        if self._output_target is not None:
+            self._output_target.write_line(text)
+        else:
+            from rich.text import Text
+            self._adapter.write(Text.from_ansi(text))
 
     def render(self, cmd: tuple) -> None:
         """分发渲染命令到对应的 _do_* 方法。
@@ -116,6 +141,23 @@ class TuiRenderer:
     def _record_lines(self, n: int) -> None:
         if self._tracker is not None:
             self._tracker.record_newlines(n)
+
+    def _render_component(self, component) -> int:
+        """渲染组件到输出目标，返回估计行数。
+
+        inline 模式：走 render_to_target(IOutputTarget)。
+        回退模式：走 render_to_adapter(OutputAdapter)。
+
+        Args:
+            component: TuiComponent 子类实例。
+
+        Returns:
+            int: 渲染内容的估计行数。
+        """
+        if self._output_target is not None:
+            return component.render_to_target(self._output_target)
+        else:
+            return component.render_to_adapter(self._adapter)
 
     # ── 内容渲染 ──────────────────────────────────
 
@@ -166,15 +208,15 @@ class TuiRenderer:
             glow = build_glow_ansi(_frame, 23, 24)
             # 固定 Panel 宽度：╭ + 10内宽 + ╮ = 12 字符
             top_line = f"  {glow}╭── 工具调用 ──╮\033[0m"
-            self._adapter.write(Text.from_ansi(top_line))
+            self._write_line(top_line)
             self._record_lines(1)
         block = ToolOutputBlock(text)
-        self._record_lines(block.render_to_adapter(self._adapter))
+        self._record_lines(self._render_component(block))
 
     @register_render_command(RenderCommand.TOOL_SUMMARY, (1, 2))
     def _do_tool_summary(self, successful: tuple, failed: tuple) -> None:
         block = ToolSummaryBlock(successful, failed)
-        self._record_lines(block.render_to_adapter(self._adapter))
+        self._record_lines(self._render_component(block))
         if self._in_tool_group:
             self._in_tool_group = False
             # 关闭 Panel 底部边框（带呼吸辉光的圆角框）
@@ -182,7 +224,7 @@ class TuiRenderer:
             glow = build_glow_ansi(_frame, 23, 24)
             # ★ 底部边框宽度与顶部一致：╰ + 10横线 + ╯ = 12 字符
             bottom_line = f"  {glow}╰{'─' * 10}╯\033[0m"
-            self._adapter.write(Text.from_ansi(bottom_line))
+            self._write_line(bottom_line)
             self._record_lines(1)
 
     # ── 解析进度 ──────────────────────────────────
@@ -205,22 +247,22 @@ class TuiRenderer:
     @register_render_command(RenderCommand.USER_MSG, (1,))
     def _do_user_message(self, text: str) -> None:
         block = UserMsgBlock(text)
-        self._record_lines(block.render_to_adapter(self._adapter))
+        self._record_lines(self._render_component(block))
 
     @register_render_command(RenderCommand.NOTIFICATION, (1,))
     def _do_notification(self, text: str) -> None:
         block = NotificationBlock(text)
-        self._record_lines(block.render_to_adapter(self._adapter))
+        self._record_lines(self._render_component(block))
 
     @register_render_command(RenderCommand.ERROR, (1,))
     def _do_error(self, message: str) -> None:
         block = ErrorBlock(message)
-        self._record_lines(block.render_to_adapter(self._adapter))
+        self._record_lines(self._render_component(block))
 
     @register_render_command(RenderCommand.WRITE_LINE, (1,))
     def _do_write_line(self, text: str) -> None:
         block = WriteLineBlock(text)
-        self._record_lines(block.render_to_adapter(self._adapter))
+        self._record_lines(self._render_component(block))
 
     @register_render_command(RenderCommand.DISPLAY_MSGS, (1, 2))
     def _do_display_messages(self, messages: list[dict], speed: int) -> None:
@@ -236,7 +278,7 @@ class TuiRenderer:
         # 从 bottom_bar 获取已设置的模型名（若有），否则 SplashScreen 自行从 config 读取
         model_name = getattr(self._bb, '_model_name', '')
         splash = SplashScreen(model_name=model_name)
-        self._record_lines(splash.render_to_adapter(self._adapter))
+        self._record_lines(self._render_component(splash))
 
     # ── SubAgent 面板 ─────────────────────────────
 

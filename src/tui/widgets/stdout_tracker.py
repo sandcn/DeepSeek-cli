@@ -1,5 +1,10 @@
 """_StdoutLineTracker — transparent stdout line tracker.
 
+[DEPRECATED · inline 模式 · 2026-07-16]
+
+inline 模式下不再安装此 tracker——sys.__stdout__ 直接输出，无需包装追踪。
+保留此模块供向后兼容和测试使用。set_scroll_end() 在 inline 模式下为 NOP。
+
 Wraps sys.__stdout__ transparently, passing all writes through while tracking
 complete lines (detected by \n) in a ring buffer.
 

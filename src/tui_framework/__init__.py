@@ -22,6 +22,7 @@ from .core.theme import Theme, THEME, THEMES, set_theme, get_active_theme, list_
 from .core.animator import AnimatorContext
 from .core.effects import EffectRegistry
 from .core.color import Color256, TrueColor, RGB
+from .terminal.output_target import IOutputTarget, InlineOutputTarget
 from .widgets.base import Widget, TuiComponent
 from .widgets.animated import AnimatedWidget
 from .layout import VBox, HBox, Flex, LayoutContainer
@@ -35,6 +36,7 @@ __all__ = [
     "AnimatorContext",
     "EffectRegistry",
     "Color256", "TrueColor", "RGB",
+    "IOutputTarget", "InlineOutputTarget",
     "Widget", "TuiComponent",
     "AnimatedWidget",
     "VBox", "HBox", "Flex", "LayoutContainer",

@@ -6,7 +6,6 @@
 from __future__ import annotations
 
 import logging
-import sys
 import threading
 import time
 from typing import TYPE_CHECKING, Any, Callable
@@ -29,7 +28,6 @@ if TYPE_CHECKING:
 
 from .const import (
     RenderCommand,
-    _ANSI_CURSOR_BOTTOM,
 )
 
 from .state import (
@@ -40,7 +38,6 @@ from .state import (
 )
 
 from .lock import render_lock
-from ..terminal.blessed import get_terminal
 
 from .dispatcher import _HANDLER_MAP
 
@@ -172,10 +169,12 @@ class ChatUIConsumer:
             self._started = False
 
     def suspend(self) -> None:
-        """暂停渲染引擎，供交互式工具独占终端。
+        """暂停渲染引擎，供交互式工具独占终端（inline 模式）。
 
         停止 render 线程并拆除底部栏，释放终端控制权。
         必须已启动（_started = True）才有效。
+
+        inline 模式无需 DECSTBM 恢复，仅 flush+stop 引擎 + teardown 底部栏。
 
         Thread safety: _started 检查由 _state_lock 保护。
         """
@@ -188,10 +187,13 @@ class ChatUIConsumer:
                 self._bottom_bar.teardown()
 
     def resume(self) -> None:
-        """恢复渲染引擎，重建底部栏。
+        """恢复渲染引擎，重建底部栏（inline 模式）。
 
-        重新获取终端尺寸、重绘底部栏并启动 render 线程。
+        重新设置底部栏并启动 render 线程。
         必须已启动（_started = True）且引擎未运行。
+
+        inline 模式无需 DECSTBM 光标定位（使用 CUP 绝对定位），
+        直接 setup bottom_bar + start engine。
 
         Thread safety: _started 检查由 _state_lock 保护。
         """
@@ -201,13 +203,6 @@ class ChatUIConsumer:
             if self._engine._render_running:
                 return
             with render_lock:
-                try:
-                    term = get_terminal()
-                    sys.__stdout__.write(term.move_xy(0, term.height - 1))
-                except Exception:
-                    _logger.debug("resume 光标定位失败, 使用 ANSI 回退", exc_info=True)
-                    sys.__stdout__.write(_ANSI_CURSOR_BOTTOM)
-                sys.__stdout__.flush()
                 self._bottom_bar.setup()
                 self._engine.start()
 

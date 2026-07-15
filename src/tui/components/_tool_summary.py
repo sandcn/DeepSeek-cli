@@ -1,6 +1,9 @@
 """工具完成汇总块 — ToolSummaryBlock。
 
 在工具调用完成后显示汇总信息，包括成功/失败的工具及其错误详情。
+
+【inline 模式 · 2026-07-16】
+新增 render_to_target() 直写 ANSI 到 IOutputTarget，绕过 Rich Console。
 """
 
 from __future__ import annotations
@@ -10,6 +13,7 @@ from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from ...renderer.output import OutputAdapter
+    from ...tui_framework.terminal.output_target import IOutputTarget
 
 from rich.text import Text
 
@@ -17,7 +21,7 @@ from ..consumer.const import _STYLE_SUCCESS, _STYLE_FAIL, _STYLE_WARN, _STYLE_DI
 from ..core.animator import AnimatorContext
 from ..core.style import Style
 from ..core.text_utils import build_left_border_ansi, build_warning_pulse_ansi
-from ._base import TuiComponent
+from ._base import TuiComponent, _rich_text_to_ansi
 
 
 class ToolSummaryBlock(TuiComponent):
@@ -29,15 +33,26 @@ class ToolSummaryBlock(TuiComponent):
     def render_to_adapter(self, adapter: "OutputAdapter") -> int:
         """渲染到 OutputAdapter，返回行数。"""
         failed = self._normalize_failed()
-        total = len(self.successful) + len(failed)
         if failed:
-            return self._render_failure(failed, total, adapter)
+            return self._render_failure(failed, len(self.successful) + len(failed), adapter)
         elif self.successful:
             _frame = AnimatorContext.get_default().frame
             edge_ansi = build_left_border_ansi(_frame, 23, 24)
             t = Text.from_ansi(f"  {edge_ansi}   ")
             t.append(f"· {len(self.successful)}工具完成", _STYLE_SUCCESS)
             adapter.write(t)
+            return 1
+        return 0
+
+    def render_to_target(self, target: "IOutputTarget") -> int:
+        """渲染到 IOutputTarget（inline 模式），返回行数。"""
+        failed = self._normalize_failed()
+        if failed:
+            return self._render_failure_target(failed, len(self.successful) + len(failed), target)
+        elif self.successful:
+            _frame = AnimatorContext.get_default().frame
+            edge_ansi = build_left_border_ansi(_frame, 23, 24)
+            target.write_line(f"  {edge_ansi}   · {len(self.successful)}工具完成")
             return 1
         return 0
 
@@ -106,6 +121,51 @@ class ToolSummaryBlock(TuiComponent):
             adapter.write(t)
             detail += 1
         return lines + detail
+
+    def _render_failure_target(self, failed: tuple, total: int,
+                                target: "IOutputTarget") -> int:
+        """inline 模式：渲染失败汇总到 IOutputTarget。"""
+        _frame = AnimatorContext.get_default().frame
+        edge_ansi = build_left_border_ansi(_frame, 23, 24)
+        names = ", ".join(n for n, _ in failed)
+        try:
+            pulse_ansi = build_warning_pulse_ansi(
+                AnimatorContext.get_default().breath_frame, "error",
+            )
+        except Exception:
+            pulse_ansi = Style(fg=196).to_ansi()
+        pulse_wrap = pulse_ansi + "!\u2502\033[0m"
+        if len(failed) == total:
+            target.write_line(f"  {edge_ansi}   {pulse_wrap}全部失败: {names}")
+        else:
+            target.write_line(f"  {edge_ansi}   {pulse_wrap}{len(failed)}/{total} 失败: {names}")
+        lines = 1
+        for name, error in failed[:3]:
+            short = ""
+            if error:
+                short = error.split("\n")[0].strip()
+                if short:
+                    max_w = 80
+                    s = short
+                    w = 0
+                    cut = len(s)
+                    for i, ch in enumerate(s):
+                        cw = 2 if unicodedata.east_asian_width(ch) in 'WF' else 1
+                        if w + cw > max_w - 3:
+                            cut = i
+                            break
+                        w += cw
+                    if cut < len(s):
+                        short = s[:cut] + "..."
+            line = f"  {edge_ansi}     {name}"
+            if short:
+                line += f"  {short}"
+            target.write_line(line)
+            lines += 1
+        if len(failed) > 3:
+            target.write_line(f"  {edge_ansi}   ... 及其他 {len(failed) - 3} 个")
+            lines += 1
+        return lines
 
     def render(self) -> str:
         return f"ToolSummary(success={len(self.successful)}, fail={len(self.failed)})"

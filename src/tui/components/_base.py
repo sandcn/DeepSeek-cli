@@ -1,6 +1,10 @@
 """组件基类 — TuiComponent + _estimate_content_lines。
 
 从 _components.py 拆分，包含所有组件共用的基类和辅助函数。
+
+【inline 模式 · 2026-07-16 重构】
+新增 render_to_target() 方法（IOutputTarget），支持 inline 模式直写 ANSI。
+render_to_adapter() 保持向后兼容（全屏 Rich Console 模式）。
 """
 
 # ⚠ 本文件保留独立实现，不可替换为 tui_framework.components.widget
@@ -9,22 +13,50 @@
 
 from __future__ import annotations
 
+import io
 import logging
 from abc import abstractmethod
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from ...renderer.output import OutputAdapter
+    from ...tui_framework.terminal.output_target import IOutputTarget
 
 from rich.text import Text
+from rich.console import Console as RichConsole
 
 _logger = logging.getLogger(__name__)
+
+
+# ═══════════════════════════════════════════════════════════
+# Rich Text → ANSI 转换辅助（inline 模式用）
+# ═══════════════════════════════════════════════════════════
+
+def _rich_text_to_ansi(text: Text) -> str:
+    """将 Rich Text 对象转换为 ANSI 字符串。
+
+    使用临时 Rich Console 捕获输出，将 Rich 标记转换为终端 ANSI 转义序列。
+    用于 inline 模式下将组件输出写入 IOutputTarget。
+
+    Args:
+        text: Rich Text 对象。
+
+    Returns:
+        含 ANSI 转义序列的纯文本字符串。
+    """
+    buf = io.StringIO()
+    console = RichConsole(
+        file=buf, force_terminal=True,
+        color_system="truecolor", width=9999,
+    )
+    console.print(text, end="")
+    return buf.getvalue()
 
 
 class TuiComponent:
     """React Ink-like 渲染组件基类。
 
-    所有子类必须实现 render() 方法，可选重写 render_to_adapter()。
+    所有子类必须实现 render() 方法，可选重写 render_to_adapter() / render_to_target()。
 
     ## 生命周期
 
@@ -36,24 +68,21 @@ class TuiComponent:
 
     所有生命周期方法默认空实现，子类可按需重写。
 
-    ## 两种渲染路径
+    ## 三种渲染路径
 
     路径 A（默认——适用于大部分组件）：
         子类仅实现 render() → str | Text。
         基类 render_to_adapter() 自动调用 render() 获取输出，
         再将结果通过 adapter.write() 写入 OutputAdapter。
 
-        适用场景：UserMsgBlock、ErrorBlock、NotificationBlock 等
-        输出格式固定、无需直接操作 adapter 的组件。
-
     路径 B（高级——需要直接操作 OutputAdapter）：
         子类重写 render_to_adapter()，完全绕过 render()，
         直接对 OutputAdapter 进行操作（如分段写入、ANSI 处理等）。
 
-        适用场景：ToolOutputBlock（需要处理 \\r 回车/ANSI 转义）、
-        ToolSummaryBlock（需要根据成功/失败组合多次写入）等
-        输出逻辑复杂的组件。重写 render_to_adapter() 时仍应实现
-        render() 作为降级/调试用途。
+    路径 C（inline 模式——IOutputTarget）：
+        子类可重写 render_to_target() 直接操作 IOutputTarget。
+        默认实现：调用 render() → Rich Text → ANSI → target.write_line()。
+        重写 render_to_target() 时仍应实现 render() 作为降级/调试用途。
     """
 
     def __init__(self) -> None:
@@ -126,6 +155,38 @@ class TuiComponent:
         output = self.render()
         if isinstance(output, (str, Text)):
             adapter.write(output)
+            return _estimate_content_lines(str(output))
+        return 0
+
+    def render_to_target(self, target: "IOutputTarget") -> int:
+        """通过 IOutputTarget 渲染组件（inline 模式），返回估计行数。
+
+        默认实现（路径 C）：
+            调用 self.render() 获取输出（str 或 Rich Text），
+            转换为 ANSI 字符串后通过 target.write_line() 写入。
+
+        重写场景：
+            子类可重写此方法以绕过 render() 直接操作 IOutputTarget，
+            实现分段写入等高级渲染逻辑。重写时仍建议实现
+            render() 作为降级/调试用途。
+
+        Args:
+            target: IOutputTarget 实例，用于将 ANSI 内容写入终端。
+
+        Returns:
+            int: 渲染内容的估计行数。
+        """
+        if not self.should_update():
+            return 0
+        output = self.render()
+        if not output:
+            return 0
+        if isinstance(output, str):
+            target.write_line(output)
+            return _estimate_content_lines(output)
+        if isinstance(output, Text):
+            ansi_str = _rich_text_to_ansi(output)
+            target.write_line(ansi_str)
             return _estimate_content_lines(str(output))
         return 0
 

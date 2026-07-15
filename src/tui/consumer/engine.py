@@ -1,13 +1,16 @@
 """渲染引擎 — TuiEngine + render 线程 + 命令队列。
 
 从 _tui.py 拆分，管理三阶段渲染流水线（预更新面板→获取输出锁→渲染命令→重绘底部栏）。
+
+【inline 模式 · 2026-07-16 重构】
+移除 DECSTBM 相关调用（sync_bottom_lines / ensure_cursor_upper / position_cursor），
+底部栏 inline 模式下 force_redraw() 自行处理全部光标定位。
 """
 
 from __future__ import annotations
 
 import logging
 import queue
-import sys
 import threading
 import time
 from typing import TYPE_CHECKING, Any, Callable
@@ -38,7 +41,7 @@ _CONSECUTIVE_FULL_THRESHOLD = 10
 
 
 # ═══════════════════════════════════════════════════════════
-# TuiEngine — 渲染引擎
+# TuiEngine — 渲染引擎（inline 模式）
 # ═══════════════════════════════════════════════════════════
 
 class TuiEngine:
@@ -46,6 +49,9 @@ class TuiEngine:
 
     实现 RenderEngine 协议。
     组件化架构：所有内容通过 TuiRenderer 渲染，底部栏由 BottomBarProtocol 管理。
+
+    inline 模式（2026-07-16）：移除 DECSTBM 依赖，底部栏 force_redraw()
+    自行处理全部光标定位，引擎不再调用 sync_bottom_lines / ensure_cursor_upper。
     """
 
     # 类级常量（从模块常量复制，允许测试通过实例属性覆盖）
@@ -151,43 +157,11 @@ class TuiEngine:
             task_done.join(timeout=1.0)
 
     def ensure_cursor_upper(self) -> None:
-        try:
-            self._bb.ensure_cursor_in_upper()
-        except Exception:
-            _logger.debug("ensure_cursor_in_upper 异常", exc_info=True)
+        """inline 模式下内容直接输出到终端，无需光标定位。
 
-    # ── 三阶段流水线 ──────────────────────────────
-
-    # ★ 内容区域命令集合 — 需要光标定位到上屏的命令类型
-    #   PARSE_INFO 使用 \r\033[K 直接写终端（_do_parse_info），
-    #   若不在本集合中，批处理唯此命令时 cursor 留在输入区域，
-    #   \r\033[K 会视觉覆盖输入框内容。必须加入以确保光标先
-    #   ensure_cursor_upper() 定位到上屏内容区再写入。
-    _CONTENT_COMMANDS = frozenset({
-        RenderCommand.REASONING,
-        RenderCommand.CONTENT,
-        RenderCommand.PHASE_DONE,
-        RenderCommand.TOOL_OUTPUT,
-        RenderCommand.TOOL_SUMMARY,
-        RenderCommand.PARSE_INFO,
-        RenderCommand.USER_MSG,
-        RenderCommand.ERROR,
-        RenderCommand.WRITE_LINE,
-        RenderCommand.NOTIFICATION,
-        RenderCommand.DISPLAY_MSGS,
-        RenderCommand.SPLASH,
-    })
-
-    @staticmethod
-    def _has_content_command(commands: list[tuple]) -> bool:
-        """检查命令批次中是否包含需要上屏渲染的内容命令。
-
-        用于跳过非内容命令（如工具计数增减）时的光标定位开销。
+        保持公开接口兼容性，空操作。
         """
-        for cmd in commands:
-            if cmd and cmd[0] in TuiEngine._CONTENT_COMMANDS:
-                return True
-        return False
+        pass
 
     def _phase_pre_update_panels(self) -> None:
         """阶段 1：预更新面板回调。
@@ -202,28 +176,15 @@ class TuiEngine:
                 _logger.warning("panel_refresh_cb 异常", exc_info=True)
 
     def _phase_render(self, commands: list[tuple]) -> None:
-        """阶段 2：执行渲染命令。
+        """阶段 2：执行渲染命令（inline 模式）。
 
-        同步底部栏行数后，遍历命令列表逐条分发给 TuiRenderer。
+        inline 模式下内容直接输出到终端，无需 DECSTBM 同步或光标定位。
+        遍历命令列表逐条分发给 TuiRenderer。
         单条命令失败时记录调试日志并入队错误提示，不中断循环。
-
-        性能优化：仅当命令批次包含内容命令时（REASONING/CONTENT等）
-        才调用 ensure_cursor_upper() 定位光标。纯工具计数命令
-        （TOOL_COUNT_INC/DEC/FAIL_INC）不需要移动光标位置。
 
         Args:
             commands: 一批待渲染的命令元组列表，每项格式为 (command_id, *args)
         """
-        try:
-            self._bb.sync_bottom_lines()
-        except Exception:
-            _logger.debug("sync_bottom_lines 异常", exc_info=True)
-        # ★ 性能优化：仅当有内容命令时才定位光标到上屏
-        if self._has_content_command(commands):
-            try:
-                self.ensure_cursor_upper()
-            except Exception:
-                _logger.debug("phase_render ensure_cursor_upper 异常", exc_info=True)
         for cmd in commands:
             try:
                 self._renderer.render(cmd)
@@ -232,27 +193,28 @@ class TuiEngine:
                 self.push_cmd((RenderCommand.ERROR, f"渲染命令 {_cmd_name(cmd[0])} 失败"))
 
     def _phase_redraw_bottom(self) -> None:
-        """阶段 3：10Hz 定时重绘底部栏。
+        """阶段 3：30Hz 定时重绘底部栏（inline 模式）。
 
-        使用 _last_bottom_redraw 定时器确保每秒最多重绘 10 次。
+        使用 _last_bottom_redraw 定时器确保每秒最多重绘 30 次。
+        例外：prepare_for_content 已清除旧底栏时（_bar_cleared），
+        强制立即重绘，防止出现空白栏。
+
         _bottom_redraw_requested 事件可作为「强制立即重绘」信号
-        （由 request_bottom_redraw() 设置），在下一周期触发重绘。
+        （由 request_bottom_redraw() 设置）。
 
-        ★ 10Hz 重构：始终全量重绘，不再有条件判断。
+        inline 模式下 force_redraw() 自行处理全部渲染+光标定位。
         """
         now = time.monotonic()
         force = self._bottom_redraw_requested.is_set()
         self._bottom_redraw_requested.clear()
-        if force or now - self._last_bottom_redraw >= self._BOTTOM_REDRAW_INTERVAL:
+        # prepare_for_content 已清除旧栏 → 必须立即重绘
+        must_redraw = getattr(self._bb, '_bar_cleared', False)
+        if force or must_redraw or now - self._last_bottom_redraw >= self._BOTTOM_REDRAW_INTERVAL:
             self._last_bottom_redraw = now
             try:
                 self._bb.force_redraw()
             except Exception:
                 _logger.debug("force_redraw 异常", exc_info=True)
-            try:
-                self._position_cursor()
-            except Exception:
-                _logger.debug("position_cursor 异常", exc_info=True)
 
     # ── render 线程 ────────────────────────────────
 
@@ -320,12 +282,14 @@ class TuiEngine:
                 )
 
     def _drain_queue(self) -> bool:
-        """三阶段流水线：预处理面板→获取输出锁→渲染命令→重绘底部栏。
+        """三阶段流水线：预处理面板→清除旧底栏→获取输出锁→渲染命令→重绘底部栏。
 
+        阶段 0: 清除旧底部栏 — prepare_for_content() 上行清除
         阶段 1: _phase_pre_update_panels() — 刷新面板回调（锁外执行）
         阶段 2: 获取输出锁，批量取出队列中所有命令
         阶段 3: _phase_render() 执行渲染命令，_phase_redraw_bottom() 重绘底部栏
 
+        inline 模式：阶段 0 在锁外清除旧底部栏，确保内容从正确位置开始输出。
         性能优化：
         - 仅在面板回调注册时执行阶段 1（默认 None，跳过空调用）
         - 面板回调（CPU 渲染 + Queue.put）在锁外执行，减少 output_lock 持锁时间
@@ -333,7 +297,10 @@ class TuiEngine:
         Returns:
             是否处理了至少一条渲染命令
         """
+        t_start = time.monotonic()
         commands: list[tuple] = []
+        # ★ 阶段 0：锁外清除旧底部栏（inline 模式）
+        self._bb.prepare_for_content()
         # ★ 阶段 1：锁外执行面板刷新，减少持锁时间
         self._phase_pre_update_panels()
         with _try_acquire_output_lock(name="drain_queue", timeout=_DRAIN_LOCK_TIMEOUT) as locked:
@@ -351,6 +318,16 @@ class TuiEngine:
             if commands:
                 self._phase_render(commands)
             self._phase_redraw_bottom()
+
+            # ── DEBUG 性能日志（队列深度 / 批处理大小 / 耗时） ──
+            elapsed = (time.monotonic() - t_start) * 1000
+            qdepth = self._cmd_queue.qsize()
+            if has_content or elapsed > 5.0:
+                _logger.debug(
+                    "drain_queue: batch=%d depth=%d elapsed=%.2fms",
+                    len(commands), qdepth, elapsed,
+                )
+
             return has_content
 
     def _drain_queue_safe(self) -> None:
@@ -364,20 +341,11 @@ class TuiEngine:
             _logger.info("render 线程终止，共丢弃 %d 条命令", self._cmd_queue_dropped)
 
     def _position_cursor(self) -> None:
-        if not self._bb.is_active:
-            return
-        text, cursor_pos, h, w = self._bb.get_cursor_info()
-        r_cursor, cursor_col = self._bb.compute_cursor_position(text, cursor_pos, h, w)
-        try:
-            from ..terminal.blessed import get_terminal
-            term = get_terminal()
-            sys.__stdout__.write(term.move_xy(cursor_col - 1, r_cursor - 1))
-        except Exception:
-            _logger.debug("position_cursor Blessed 不可用, 使用 ANSI 回退", exc_info=True)
-            sys.__stdout__.write(f"\033[{r_cursor};{cursor_col}H")
-        sys.__stdout__.flush()
-        if self._cursor_tracker is not None:
-            self._cursor_tracker.set(r_cursor, cursor_col)
+        """inline 模式下 force_redraw() 已处理光标定位，空操作。
+
+        保持方法签名兼容性，供 _phase_redraw_bottom 调用链使用。
+        """
+        pass
 
 
 # @deprecated — 使用 TuiEngine/TuiRenderer 替代，v1.3+ 将移除

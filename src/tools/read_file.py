@@ -14,8 +14,25 @@ from .file_ops import validate_path_security
 from .encoding import async_detect_encoding, pick_best_decoding, FALLBACK_ENCODINGS
 from ._constants import LARGE_FILE_THRESHOLD
 from ..core.constants import CYAN, DIM, RESET, RED
-from ..ui.colors import console
 from ..tui.widgets.lock import locked_print, _try_acquire_output_lock
+
+# ── Rich Console 惰性初始化（内联自 src/ui/console.py，因 src/ui/ 已废弃） ──
+import threading as _threading
+_console = None
+_console_lock = _threading.Lock()
+
+
+def _get_console():
+    """惰性创建 Rich Console 实例（线程安全）。"""
+    global _console
+    if _console is None:
+        with _console_lock:
+            if _console is None:  # 双重检查
+                from rich.console import Console  # noqa: PLC0415
+                from ..terminal import get_safe_console_config  # noqa: PLC0415
+                _config = get_safe_console_config()
+                _console = Console(**_config)
+    return _console
 
 _UNSUPPORTED_EXTENSIONS = frozenset({"txt", "text"})
 
@@ -438,7 +455,7 @@ class ReadFileFunc(Func):
 
         # ChatUI 不可用 → console.print() 直写终端（持 output_lock）
         with _try_acquire_output_lock(name=lock_name):
-            console.print(syntax)
+            _get_console().print(syntax)
 
     async def display(self):
         """异步显示文件内容并返回给大模型"""

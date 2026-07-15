@@ -2,7 +2,7 @@
 
 设计模式：适配器（Adapter）
 - ChatUIConsumer（被适配者）→ Application（目标接口）
-- 全屏模式默认使用终端输出，显式注入 InlineOutputTarget 时切换为 inline 模式
+- 【inline 模式 · 2026-07-16】默认使用 InlineOutputTarget（非全屏 inline 模式）
 
 使用方式：
     from tui.consumer.consumer import ChatUIConsumer
@@ -22,7 +22,7 @@ from typing import TYPE_CHECKING, Any
 from src.tui_framework.application import Application
 from src.tui_framework.widgets.base import Widget
 from src.tui_framework.events.event_types import DisplayEvent
-from src.tui_framework.terminal.output_target import IOutputTarget
+from src.tui_framework.terminal.output_target import IOutputTarget, InlineOutputTarget
 
 if TYPE_CHECKING:
     from .consumer import ChatUIConsumer
@@ -30,69 +30,18 @@ if TYPE_CHECKING:
 _logger = logging.getLogger(__name__)
 
 
-class _OutputAdapterBridge:
-    """内部桥接：将 src/renderer/output.py 的 OutputAdapter 包装为 IOutputTarget。
-
-    用于 ChatUIAdapter 默认全屏模式下，将现有 OutputAdapter
-    （Rich Console 包装）暴露为 IOutputTarget 接口。
-
-    ## 全屏模式帧管理
-
-    全屏模式下帧渲染由 TerminalTarget 负责（DECSTBM + SCOSC/DECRC），
-    此桥接不参与帧管理——render_frame/clear_last_lines 均为空操作。
-    ChatUIConsumer 的渲染线程通过 TerminalTarget 直接操作终端帧缓冲，
-    桥接仅提供基础的 write/write_line/terminal_width 能力供框架 Widget 使用。
-
-    注意：此桥接仅提供 terminal_width + write/write_line 基础能力，
-    render_frame/clear_last_lines 为空操作（全屏模式不使用 inline 语义）。
-    """
-
-    def __init__(self, output_adapter: Any) -> None:
-        self._adapter = output_adapter
-
-    @property
-    def terminal_width(self) -> int:
-        return self._adapter.width
-
-    @property
-    def supports_inline(self) -> bool:
-        return False
-
-    def write(self, text: str) -> None:
-        from rich.text import Text
-        self._adapter.write(Text.from_ansi(text))
-
-    def write_line(self, text: str = "") -> None:
-        from rich.text import Text
-        self._adapter.write(Text.from_ansi(text + "\n"))
-
-    def render_frame(self, lines: list[str], last_lines: int) -> int:
-        """全屏模式：render_frame 为空操作。
-
-        ChatUI 的帧渲染由 TerminalTarget 处理，此桥接不参与帧管理。
-        """
-        return 0
-
-    def clear_last_lines(self, n: int) -> None:
-        """全屏模式：clear_last_lines 为空操作。"""
-        pass
-
-    def flush(self) -> None:
-        pass
-
-
 class ChatUIAdapter:
-    """ChatUIConsumer → Application 适配器。
+    """ChatUIConsumer → Application 适配器（inline 模式）。
 
-    将现有的全屏 ChatUIConsumer 包装为标准化 Application 接口，
+    将现有的 ChatUIConsumer 包装为标准化 Application 接口，
     支持渐进式迁移：
     - 新框架 Widget 可通过 register_widget() 注入到渲染管线
     - on_event() 将 DisplayEvent 路由到 ChatUI 的渲染线程
-    - output_target 默认桥接现有 OutputAdapter，可注入 InlineOutputTarget
+    - output_target 默认为 InlineOutputTarget（inline 模式）
 
     ## 约束
     - [安全] 不得破坏现有 ChatUI 功能
-    - 默认全屏模式，仅显式注入 InlineOutputTarget 时切换为 inline 模式
+    - 默认 inline 模式，可注入其他 IOutputTarget 实现（如 BufferTarget 用于测试）
     """
 
     def __init__(
@@ -105,17 +54,17 @@ class ChatUIAdapter:
         Args:
             consumer: ChatUIConsumer 实例（被适配者）。
             output_target: 可选的 IOutputTarget 实现。
-                           为 None 时默认桥接 consumer.output_adapter（全屏模式）。
-                           传入 InlineOutputTarget 时切换为 inline 模式。
+                           为 None 时默认创建 InlineOutputTarget（inline 模式）。
+                           可注入 BufferTarget 等用于测试。
         """
         self._consumer = consumer
         self._widgets: list[Widget] = []
 
-        # 设置 output_target：优先使用显式注入，否则桥接 OutputAdapter
+        # 设置 output_target：默认 InlineOutputTarget（inline 模式）
         if output_target is not None:
             self._output_target = output_target
         else:
-            self._output_target = _OutputAdapterBridge(consumer.output_adapter)
+            self._output_target = InlineOutputTarget()
 
     @property
     def output_target(self) -> IOutputTarget:
@@ -253,4 +202,4 @@ class ChatUIAdapter:
         return NotImplemented
 
 
-__all__ = ["ChatUIAdapter", "_OutputAdapterBridge"]
+__all__ = ["ChatUIAdapter"]

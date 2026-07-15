@@ -10,7 +10,7 @@ import logging
 
 from ..chat_msgs import save_session, get_recover_cmd
 from ..paths import CHAT_MSGS_DIR
-from ..ui.colors import DIM, RESET
+from ..core.constants import DIM, RESET
 
 _logger = logging.getLogger(__name__)
 

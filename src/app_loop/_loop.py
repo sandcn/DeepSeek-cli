@@ -32,7 +32,7 @@ from ..core.commands import CommandContext
 from ..core.commands.plugins import get_interactive_registry
 from ..core.message_queue import MessageQueue
 from ..core.exceptions import is_fatal_exception
-from ..ui.colors import CYAN, DIM, RESET, GREEN, YELLOW
+from ..core.constants import CYAN, DIM, RESET, GREEN, YELLOW
 from ..tui.core.ttl_cache import TTLCache
 from ..tui.terminal.narrow import is_narrow, narrow_sep_width
 from ..api.escape_monitor import EscapeMonitor
@@ -121,10 +121,9 @@ class InteractiveLoop:
 
             _tw = self._get_term_width()
             self._chat_ui.write_line(f"{DIM}{'─' * max(min(_tw - 2, 40), 1)}{RESET}")
-            # ★ 等待 render 线程处理完分隔线
+            # ★ 等待 render 线程处理完分隔线 + 底部栏重绘（含光标定位）
             self._chat_ui.flush()
-            # ★ 显式将光标定位到输入行（flush 返回时 render 线程可能尚未执行 _position_cursor）
-            self._chat_ui.bottom_bar.ensure_cursor_in_lower()
+            # ★ inline 模式：force_redraw() 已处理光标定位，无需额外 ensure_cursor_in_lower()
             _logger.debug("_handle_round: before _merge_prefill, state.prefill='%s', len=%d", state.prefill[:80] if state.prefill else '', len(state.prefill))
             _cp_len_before = len(session.captured_prefill) if hasattr(session, 'captured_prefill') else 0
             prefill = _merge_prefill(state, session)
