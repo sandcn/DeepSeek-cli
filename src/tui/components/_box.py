@@ -10,7 +10,7 @@ from enum import Enum
 from typing import ClassVar
 
 from ._base import TuiComponent
-from ..terminal.narrow import is_narrow
+from tui_framework.terminal.narrow import is_narrow
 from ..core.style import Style
 
 __all__ = [

@@ -13,13 +13,26 @@
     避免模块加载循环（core 层不依赖 src/tui/ 上层模块）
 """
 
+# ⚠ 本文件保留独立实现，不可替换为 tui_framework.core.color
+# 原因: TrueColor.best_effort() 使用延迟导入终端能力检测，
+# 与 framework 版本的参数注入接口不兼容。
+
 from __future__ import annotations
 
 import logging
 import math
+import sys
 from functools import lru_cache
 from typing import Union
-from src._compat import dataclass
+from dataclasses import dataclass as _dataclass
+
+# ── Python < 3.10 兼容：移除不支持的 slots 参数 ──
+if sys.version_info >= (3, 10):
+    dataclass = _dataclass
+else:
+    def dataclass(*args, **kwargs):  # type: ignore[no-redef]
+        kwargs.pop('slots', None)
+        return _dataclass(*args, **kwargs)
 
 logger = logging.getLogger(__name__)
 

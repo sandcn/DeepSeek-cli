@@ -908,3 +908,337 @@ class TestChatUIConsumerEdgeCases:
             assert consumer._bottom_bar._input_cursor_pos == 5
             assert consumer._bottom_bar._last_text == "hello"
             mock_redraw.assert_called_once()
+
+
+# ═══════════════════════════════════════════════════════
+# TestChatUIAdapter — Adapter 模式测试（步骤 9）
+# ═══════════════════════════════════════════════════════
+
+class TestChatUIAdapter:
+    """ChatUIAdapter 适配器——将 ChatUIConsumer 适配为 Application 接口"""
+
+    # ── Fixtures ──────────────────────────────────
+
+    @pytest.fixture
+    def adapter(self, consumer):
+        """返回 ChatUIAdapter 实例（默认全屏模式）。"""
+        from src.tui.consumer.adapter import ChatUIAdapter
+        return ChatUIAdapter(consumer)
+
+    @pytest.fixture
+    def inline_adapter(self, consumer):
+        """返回使用 InlineOutputTarget 的 ChatUIAdapter 实例。"""
+        from src.tui.consumer.adapter import ChatUIAdapter
+        from src.tui_framework.terminal.output_target import BufferTarget
+        # 使用 BufferTarget 模拟 InlineOutputTarget 行为（测试中避免真实 stdout）
+        target = BufferTarget(width=80)
+        return ChatUIAdapter(consumer, output_target=target)
+
+    # ── Application Protocol ──────────────────────
+
+    def test_adapter_is_application(self, adapter):
+        """ChatUIAdapter 满足 Application Protocol"""
+        from src.tui_framework.application import Application
+        assert isinstance(adapter, Application)
+
+    def test_adapter_has_output_target(self, adapter):
+        """output_target 属性存在且非 None"""
+        assert adapter.output_target is not None
+
+    def test_adapter_has_run(self, adapter):
+        """run() 方法存在且可调用"""
+        assert callable(adapter.run)
+
+    def test_adapter_has_stop(self, adapter):
+        """stop() 方法存在且可调用"""
+        assert callable(adapter.stop)
+
+    def test_adapter_has_on_event(self, adapter):
+        """on_event() 方法存在且可调用"""
+        assert callable(adapter.on_event)
+
+    def test_adapter_has_register_widget(self, adapter):
+        """register_widget() 方法存在且可调用"""
+        assert callable(adapter.register_widget)
+
+    # ── run / stop 委托 ───────────────────────────
+
+    def test_run_delegates_to_consumer_start(self, adapter, mock_bus):
+        """adapter.run() → consumer.start()"""
+        with patch.object(adapter._consumer, 'start') as mock_start:
+            adapter.run()
+            mock_start.assert_called_once()
+
+    def test_stop_delegates_to_consumer_stop(self, adapter, mock_bus):
+        """adapter.stop() → consumer.stop()"""
+        with patch.object(adapter._consumer, 'stop') as mock_stop:
+            adapter.stop()
+            mock_stop.assert_called_once()
+
+    # ── on_event 委托 ─────────────────────────────
+
+    def test_on_event_publishes_to_event_bus(self, adapter, mock_bus):
+        """on_event() 将事件发布到 EventBus"""
+        from src.tui_framework.events.event_types import OutputEvent
+        event = OutputEvent(text="test", level="info")
+
+        adapter.on_event(event)
+        mock_bus.publish.assert_called_once_with(event)
+
+    def test_on_event_with_keypress(self, adapter, mock_bus):
+        """on_event() 支持 KeyPressEvent"""
+        from src.tui_framework.events.event_types import KeyPressEvent
+        event = KeyPressEvent(key="enter")
+
+        adapter.on_event(event)
+        mock_bus.publish.assert_called_once_with(event)
+
+    def test_on_event_with_mouse(self, adapter, mock_bus):
+        """on_event() 支持 MouseEvent"""
+        from src.tui_framework.events.event_types import MouseEvent
+        event = MouseEvent(x=10, y=5, button="left", action="click")
+
+        adapter.on_event(event)
+        mock_bus.publish.assert_called_once_with(event)
+
+    # ── register_widget 注入 ──────────────────────
+
+    def test_register_widget_appends_to_list(self, adapter):
+        """register_widget() 将 Widget 添加到内部列表"""
+        from src.tui_framework.widgets.base import Widget
+        widget = Widget()
+        adapter.register_widget(widget)
+        assert widget in adapter.widgets
+
+    def test_register_widget_multiple(self, adapter):
+        """多次 register_widget() 累积 Widget"""
+        from src.tui_framework.widgets.base import Widget
+        w1, w2, w3 = Widget(), Widget(), Widget()
+        adapter.register_widget(w1)
+        adapter.register_widget(w2)
+        adapter.register_widget(w3)
+        assert len(adapter.widgets) == 3
+        assert w1 in adapter.widgets
+        assert w2 in adapter.widgets
+        assert w3 in adapter.widgets
+
+    def test_register_widget_type_error(self, adapter):
+        """非 Widget 实例注册时报 TypeError"""
+        with pytest.raises(TypeError, match="Widget 实例"):
+            adapter.register_widget("not_a_widget")
+
+    def test_register_widget_none_type_error(self, adapter):
+        """None 注册时报 TypeError"""
+        with pytest.raises(TypeError, match="Widget 实例"):
+            adapter.register_widget(None)
+
+    def test_unregister_widget_removes_from_list(self, adapter):
+        """unregister_widget() 从列表中移除 Widget"""
+        from src.tui_framework.widgets.base import Widget
+        w1, w2 = Widget(), Widget()
+        adapter.register_widget(w1)
+        adapter.register_widget(w2)
+        adapter.unregister_widget(w1)
+        assert w1 not in adapter.widgets
+        assert w2 in adapter.widgets
+        assert len(adapter.widgets) == 1
+
+    def test_unregister_widget_not_registered_no_error(self, adapter):
+        """注销未注册的 Widget 不报错"""
+        from src.tui_framework.widgets.base import Widget
+        w = Widget()
+        # 不应抛出异常
+        adapter.unregister_widget(w)
+
+    def test_widgets_returns_copy(self, adapter):
+        """widgets 属性返回副本（不可变外部访问）"""
+        from src.tui_framework.widgets.base import Widget
+        w = Widget()
+        adapter.register_widget(w)
+        widgets = adapter.widgets
+        widgets.append(Widget())  # 修改副本不影响内部
+        assert len(adapter.widgets) == 1
+
+    # ── consumer 属性 ─────────────────────────────
+
+    def test_consumer_property(self, adapter, consumer):
+        """consumer 属性返回原始 ChatUIConsumer"""
+        assert adapter.consumer is consumer
+
+    # ── output_target 模式 ────────────────────────
+
+    def test_default_output_target_is_bridge(self, adapter):
+        """默认模式下 output_target 为 _OutputAdapterBridge"""
+        from src.tui.consumer.adapter import _OutputAdapterBridge
+        assert isinstance(adapter.output_target, _OutputAdapterBridge)
+
+    def test_default_output_target_supports_inline_false(self, adapter):
+        """默认全屏模式下 supports_inline=False"""
+        assert adapter.output_target.supports_inline is False
+
+    def test_inline_output_target_supports_inline_true(self, inline_adapter):
+        """InlineOutputTarget 模式下 supports_inline=True"""
+        assert inline_adapter.output_target.supports_inline is True
+
+    def test_inline_output_target_buffer(self, inline_adapter):
+        """BufferTarget 模拟 inline 输出，render_frame 无 ANSI 光标序列"""
+        target = inline_adapter.output_target
+        target.render_frame(["line1", "line2"], 0)
+        output = target.get_output()
+        # inline 模式不应包含 SCOSC/DECRC 序列
+        assert "\033[s" not in output
+        assert "\033[u" not in output
+
+    def test_inline_output_target_write(self, inline_adapter):
+        """BufferTarget write() 正确追加"""
+        target = inline_adapter.output_target
+        target.write("hello")
+        target.write(" world")
+        assert "hello world" in target.get_output()
+
+    # ── 边界条件 ───────────────────────────────────
+
+    def test_register_widget_after_stop(self, adapter, mock_bus):
+        """stop() 后仍可注册 Widget（不依赖运行时状态）"""
+        with patch.object(adapter._consumer, 'stop'):
+            adapter.stop()
+
+        from src.tui_framework.widgets.base import Widget
+        w = Widget()
+        adapter.register_widget(w)
+        assert w in adapter.widgets
+
+    def test_adapter_initial_widgets_empty(self, adapter):
+        """新适配器 widgets 列表为空"""
+        assert adapter.widgets == []
+
+    def test_inline_adapter_output_target_is_buffer(self, inline_adapter):
+        """注入 BufferTarget 后 output_target 正确返回"""
+        from src.tui_framework.terminal.output_target import BufferTarget
+        assert isinstance(inline_adapter.output_target, BufferTarget)
+
+
+# ═══════════════════════════════════════════════════════
+# TestChatUIAdapterFactory — 工厂注入测试（步骤 9）
+# ═══════════════════════════════════════════════════════
+
+class TestChatUIAdapterFactory:
+    """_create_chat_ui_components 的 output_target / extra_widgets 参数"""
+
+    def test_factory_default_no_output_target(self):
+        """默认调用 output_target=None"""
+        from src.tui.consumer.factory import _create_chat_ui_components
+        components = _create_chat_ui_components()
+        assert components.output_target is None
+
+    def test_factory_default_extra_widgets_empty(self):
+        """默认调用 extra_widgets=[]"""
+        from src.tui.consumer.factory import _create_chat_ui_components
+        components = _create_chat_ui_components()
+        assert components.extra_widgets == []
+
+    def test_factory_with_output_target(self):
+        """传入 output_target 后正确存储"""
+        from src.tui.consumer.factory import _create_chat_ui_components
+        from src.tui_framework.terminal.output_target import BufferTarget
+        target = BufferTarget(width=80)
+        components = _create_chat_ui_components(output_target=target)
+        assert components.output_target is target
+
+    def test_factory_with_extra_widgets(self):
+        """传入 extra_widgets 后正确存储"""
+        from src.tui.consumer.factory import _create_chat_ui_components
+        from src.tui_framework.widgets.base import Widget
+        w1, w2 = Widget(), Widget()
+        components = _create_chat_ui_components(extra_widgets=[w1, w2])
+        assert components.extra_widgets == [w1, w2]
+
+    def test_factory_with_extra_widgets_none(self):
+        """extra_widgets=None 时返回空列表"""
+        from src.tui.consumer.factory import _create_chat_ui_components
+        components = _create_chat_ui_components(extra_widgets=None)
+        assert components.extra_widgets == []
+
+    def test_factory_backward_compatible(self):
+        """无参数调用行为不变（向后兼容）"""
+        from src.tui.consumer.factory import _create_chat_ui_components
+        components = _create_chat_ui_components()
+        # 所有原有字段存在
+        assert components.rs is not None
+        assert components.cursor_tracker is not None
+        assert components.bottom_bar is not None
+        assert components.output_adapter is not None
+        assert components.tui_renderer is not None
+        assert components.engine is not None
+        assert components.dispatcher is not None
+        assert components.cmpl_handler is not None
+
+    def test_factory_create_chat_ui_consumer_with_adapter(self, mock_bus):
+        """通过 ChatUIAdapter + factory 创建完整链路可正常工作"""
+        from src.tui.consumer import ChatUIConsumer
+        from src.tui.consumer.adapter import ChatUIAdapter
+        from src.tui_framework.terminal.output_target import BufferTarget
+
+        consumer = ChatUIConsumer(event_bus=mock_bus)
+        target = BufferTarget(width=100)
+        adapter = ChatUIAdapter(consumer, output_target=target)
+
+        # 验证 adapter 满足 Application 接口
+        from src.tui_framework.application import Application
+        assert isinstance(adapter, Application)
+
+        # 验证 output_target 正确
+        assert adapter.output_target is target
+        assert adapter.output_target.supports_inline is True
+
+
+# ═══════════════════════════════════════════════════════
+# TestInlineOutputTargetNoAnsiCursor — inline 模式不含光标序列（步骤 9）
+# ═══════════════════════════════════════════════════════
+
+class TestInlineOutputTargetNoAnsiCursor:
+    """验证 InlineOutputTarget / BufferTarget 输出无 ANSI 光标保存序列"""
+
+    def test_buffer_target_no_scosc(self):
+        """BufferTarget render_frame 无 SCOSC 序列"""
+        from src.tui_framework.terminal.output_target import BufferTarget
+        target = BufferTarget(width=80)
+        target.render_frame(["a", "b", "c"], 0)
+        output = target.get_output()
+        assert "\033[s" not in output
+
+    def test_buffer_target_no_decrc(self):
+        """BufferTarget render_frame 无 DECRC 序列"""
+        from src.tui_framework.terminal.output_target import BufferTarget
+        target = BufferTarget(width=80)
+        target.render_frame(["a", "b", "c"], 2)
+        output = target.get_output()
+        assert "\033[u" not in output
+
+    def test_inline_output_target_no_scosc(self):
+        """InlineOutputTarget render_frame 无 SCOSC 序列"""
+        from src.tui_framework.terminal.output_target import InlineOutputTarget
+        import io
+        buf = io.StringIO()
+        target = InlineOutputTarget(stdout=buf)
+        target.render_frame(["line1", "line2"], 0)
+        output = buf.getvalue()
+        assert "\033[s" not in output
+
+    def test_inline_output_target_no_decrc(self):
+        """InlineOutputTarget render_frame 无 DECRC 序列"""
+        from src.tui_framework.terminal.output_target import InlineOutputTarget
+        import io
+        buf = io.StringIO()
+        target = InlineOutputTarget(stdout=buf)
+        target.render_frame(["line1", "line2"], 2)
+        output = buf.getvalue()
+        assert "\033[u" not in output
+
+    def test_inline_output_target_supports_inline(self):
+        """InlineOutputTarget supports_inline=True"""
+        from src.tui_framework.terminal.output_target import InlineOutputTarget
+        import io
+        target = InlineOutputTarget(stdout=io.StringIO())
+        assert target.supports_inline is True
+

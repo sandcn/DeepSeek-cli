@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import sys
 import dataclasses
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, Optional
 
 if TYPE_CHECKING:
     from ..widgets.cursor_tracker import CursorTracker
@@ -35,6 +35,20 @@ class _ChatUIComponents:
         engine: render 线程 + 命令队列
         dispatcher: 事件过滤+入队
         cmpl_handler: Tab 补全交互
+        output_target: 可选的框架 IOutputTarget（InlineOutputTarget 等）
+        extra_widgets: 可选的新框架 Widget 列表
+
+    ## output_target 参数说明
+
+    ``output_target`` 用于控制渲染模式：
+    - 为 None（默认）：使用 Rich Console OutputAdapter（全屏模式），
+      帧渲染由 TerminalTarget 负责（DECSTBM + SCOSC/DECRC）。
+    - 为 InlineOutputTarget 实例：切换为非全屏 inline 模式，
+      输出为纯文本流，无 ANSI 光标保存/恢复序列。
+
+    当前 output_target 参数仅存储用于外部查询（通过 get_mode() 方法），
+    尚未注入到 TuiRenderer（TuiRenderer 构造函数暂不接受此参数）。
+    后续版本将实现完整的模式切换管线。
     """
     rs: _RenderState
     cursor_tracker: CursorTracker
@@ -44,13 +58,38 @@ class _ChatUIComponents:
     engine: RenderEngine
     dispatcher: EventDispatcher
     cmpl_handler: _CmplHandler
+    output_target: Any = None
+    extra_widgets: list[Any] = dataclasses.field(default_factory=list)
+
+    def get_mode(self) -> str:
+        """获取当前渲染模式。
+
+        根据 output_target 类型判断：
+        - output_target 为 None：返回 ``"fullscreen"``（全屏模式，默认）
+        - output_target 支持 inline：返回 ``"inline"``（非全屏 inline 模式）
+
+        Returns:
+            ``"inline"`` 或 ``"fullscreen"``。
+        """
+        if self.output_target is not None:
+            if hasattr(self.output_target, 'supports_inline') and self.output_target.supports_inline:
+                return "inline"
+        return "fullscreen"
 
 
-def _create_chat_ui_components(event_bus=None) -> _ChatUIComponents:
+def _create_chat_ui_components(
+    event_bus=None,
+    output_target: Any = None,
+    extra_widgets: list[Any] | None = None,
+) -> _ChatUIComponents:
     """创建并装配 ChatUIConsumer 所需的全部子系统。
 
     Args:
         event_bus: DisplayEventBus 实例。为 None 时获取默认实例。
+        output_target: 可选的框架 IOutputTarget 实现（如 InlineOutputTarget）。
+                       为 None 时使用默认 Rich Console OutputAdapter（全屏模式）。
+                       注入 InlineOutputTarget 时可用于切换为非全屏 inline 渲染模式。
+        extra_widgets: 可选的新框架 Widget 列表（如 Input/Button/Select 等）。
 
     Returns:
         包含全部子系统的 _ChatUIComponents 实例。
@@ -104,4 +143,6 @@ def _create_chat_ui_components(event_bus=None) -> _ChatUIComponents:
         engine=engine,
         dispatcher=dispatcher,
         cmpl_handler=cmpl_handler,
+        output_target=output_target,
+        extra_widgets=extra_widgets if extra_widgets is not None else [],
     )

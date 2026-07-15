@@ -14,6 +14,10 @@
     DisplayEventBus.get_default().subscribe(my_handler)
 """
 
+# ⚠ 本文件保留独立实现，不可替换为 tui_framework.events
+# 原因: 导出 25 种应用特化事件类型（ToolStartedEvent 等），
+# framework 的事件系统为通用框架事件（KeyPressEvent 等）。
+
 from .event_types import (
     DisplayEvent,
     SessionStarted, SessionStopped,

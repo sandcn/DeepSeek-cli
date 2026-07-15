@@ -15,7 +15,7 @@
 
 from __future__ import annotations
 
-from ..terminal.narrow import is_narrow
+from tui_framework.terminal.narrow import is_narrow
 from ..core.style import Style
 from ..core.ansi_utils import visual_width
 from ._base import TuiComponent

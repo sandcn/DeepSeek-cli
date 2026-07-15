@@ -49,4 +49,15 @@
   - 组件动效升级：ErrorBlock / NotificationBlock 新增 FadeIn 入场过渡；
     SplashScreen 接入 build_rainbow_ansi 彩虹效果；
     ProgressBar 支持 pulse_mode 脉冲列车动效
+
+独立框架提取（2026-07-16）：
+  以下零业务依赖模块已提取至 src/tui_framework/ 独立框架包：
+    - core/ 下的 effects(_wave/_sparkle/_train/_compose), animator, color, style, gradient,
+      palettes, ansi_utils, text_utils, formatter, ttl_cache, state, theme, theme_loader, time_format
+    - terminal/ 下的 adapter, blessed, capabilities, narrow, output_target, terminal
+    - events/ 下的 event_bus, event_types, event_pool
+    - animation/ 下的 composer, transitions
+    - framework.py（Framework 单例）
+  src/tui/ 保留完整代码不变（向后兼容），通过 adapter 模式渐进迁移。
+  新代码应优先从 tui_framework 导入零业务依赖模块。
 """

@@ -353,7 +353,7 @@ class TreeView(TuiComponent):
     def _is_narrow_mode() -> bool:
         """检测当前是否为窄屏模式。"""
         try:
-            from ..terminal.narrow import is_narrow
+            from tui_framework.terminal.narrow import is_narrow
             return is_narrow()
         except (ImportError, ModuleNotFoundError):
             return False

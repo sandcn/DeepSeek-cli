@@ -8,10 +8,24 @@
 保持与 src/core/constants.py 中 _256 后缀常量一致。
 
 从 src/ui/theme.py 提取 — TUI 核心主题系统。
+
+.. note::
+   tui_framework.core.theme 提供了层次化 Theme 类（支持链式继承、覆盖、
+   字典协议等），本模块保留原有的 dict-based 实现以维持向后兼容。
+   新代码可通过 ``from tui_framework.core.theme import Theme`` 使用层次化版本。
 """
+
+# ⚠ 本文件保留独立实现，不可替换为 tui_framework.core.theme
+# 原因: THEME 为可变 dict（支持 .clear()/.update()），
+# framework 的 Theme 对象接口不兼容原地修改操作。
+# 额外导出了 tui_framework.core.theme.Theme 供新代码使用。
+
 from __future__ import annotations
 
 from typing import Dict, List
+
+# ── 从 framework 重导出层次化 Theme 类 ──
+from tui_framework.core.theme import Theme  # noqa: F401  # 重导出供外部使用
 
 # ══════════════════════════════════════════════════════════
 # 主题预设
@@ -525,6 +539,7 @@ load_user_themes()
 
 
 __all__ = [
+    "Theme",
     "THEME", "THEMES",
     "set_theme", "get_active_theme", "list_themes",
     "get_theme_names_with_desc",

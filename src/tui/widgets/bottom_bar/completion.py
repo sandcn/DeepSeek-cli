@@ -284,7 +284,7 @@ class _CompletionPopup:
         # 非窄屏时在提示行末尾添加呼吸装饰点
         if not is_narrow():
             dot_color = self._animator.sine_color(45, 81, 12)
-            hint_dot = f" \033[38;5;{dot_color}m\u25c9{_COLOR_RESET}"
+            hint_dot = f" \033[38;5;{dot_color}m\u00b7{_COLOR_RESET}"
         else:
             hint_dot = ""
         out.write(move_clear(footer_r) + f"{_COLOR_DIM}{hint}{_COLOR_RESET}{hint_dot}")
@@ -344,7 +344,7 @@ class _CompletionPopup:
         # 非窄屏时在提示行末尾添加呼吸装饰点
         if not is_narrow():
             dot_color = self._animator.sine_color(45, 81, 12)
-            hint_dot = f" \033[38;5;{dot_color}m\u25c9{_COLOR_RESET}"
+            hint_dot = f" \033[38;5;{dot_color}m\u00b7{_COLOR_RESET}"
         else:
             hint_dot = ""
         out.write(move_clear(footer_r) + f"{_COLOR_DIM}{hint}{_COLOR_RESET}{hint_dot}")

@@ -3,6 +3,10 @@
 从 _components.py 拆分，包含所有组件共用的基类和辅助函数。
 """
 
+# ⚠ 本文件保留独立实现，不可替换为 tui_framework.components.widget
+# 原因: TuiComponent 依赖 OutputAdapter（应用渲染器层）和 rich.text.Text，
+# framework 的 Widget 是交互式控件基类，接口完全不同。
+
 from __future__ import annotations
 
 import logging

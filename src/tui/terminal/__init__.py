@@ -1,5 +1,8 @@
 """TUI 终端 I/O 层 — 终端写入、宽度检测、窄屏自适应、Blessed 单例、终端能力检测
 
+注意：narrow.py、blessed.py、capabilities.py 等模块已委托到 tui_framework.terminal，
+本层保留 __init__.py 作为统一导出入口以维持向后兼容。
+
 统一管理：
   1. 终端宽度检测（TTL 缓存，减少 syscall）— 使用 Blessed Terminal
   2. output_lock 保护的终端写入上下文管理器 LockedTerminal
