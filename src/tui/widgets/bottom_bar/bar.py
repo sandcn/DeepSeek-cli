@@ -93,6 +93,8 @@ from .draw import (
     _draw_input_lines_locked as _draw_impl_input_lines,
     _draw_all_locked as _draw_impl_all,
     _redraw_cycle_only as _draw_impl_redraw_cycle,
+    _build_sep_with_system_stats,
+    _build_status_text,
 )
 
 
@@ -773,7 +775,14 @@ class _BottomBar(_StatusMixin):
         self, out, _buf: list[str],
         r1: int, subagent_start: int, r2: int, tw: int,
     ) -> None:
-        """绘制分隔线、subagent 面板行和状态行。"""
+        """绘制分隔线、subagent 面板行和状态行。
+
+        分隔线策略（通过 _build_sep_with_system_stats 内部策略模式）：
+          - 宽屏 + 流式输出活跃（_status_active=True）→ 左侧显示状态文本
+            （如 "· 思考 0.32s"），右侧填充渐变分隔线
+          - 窄屏 / 非流式输出（_status_active=False）→ 纯渐变分隔线
+          - 状态文本由 _build_status_text(self) 生成，含当前阶段和耗时
+        """
         from ...terminal.terminal import is_narrow as _is_narrow_bar
         sep_start = 45
         if _is_narrow_bar():
@@ -783,13 +792,16 @@ class _BottomBar(_StatusMixin):
         else:
             if self._animator.breath_frame > 0:
                 sep_start = self._animator.sine_color(40, 45, 10)
-            from .draw import _build_sep_with_system_stats
+            status_text = _build_status_text(self) if self._status_active else ""
             sep = _build_sep_with_system_stats(
                 tw, sep_start,
                 self._cached_cpu_percent,
                 self._cached_mem_percent,
                 bar=self,
                 breath_frame=self._animator.breath_frame,
+                status_text=status_text,
+                status_active=self._status_active,
+                narrow=_is_narrow_bar(),
             )
             _buf.append(_blessed_move_clear(r1) + sep)
         self._cursor_tracker.set(r1, 3)

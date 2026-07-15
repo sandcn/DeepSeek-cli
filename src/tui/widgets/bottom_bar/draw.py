@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import logging
 import sys
+import time
 from typing import TYPE_CHECKING
 
 from wcwidth import wcswidth
@@ -59,6 +60,8 @@ __all__ = [
     "_draw_all_locked",
     "_redraw_cycle_only",
     "_build_sep_with_system_stats",
+    "_build_status_text",
+    "_visible_width",
 ]
 
 
@@ -185,10 +188,51 @@ def _draw_input_lines_locked(
         out.write(''.join(buf))
 
 
-# 【技术债】_build_sep_with_system_stats() 约 150 行，复杂度合理但体量偏大。
-# 当前不拆分，后续若增加更多效果类型可考虑按效果路径拆分为子函数：
-#   - _build_sep_static() — 静态渐变分隔线
-#   - _build_sep_composed() — EffectRegistry 组合效果分隔线
+# ── 状态分隔线 ──────────────────────────────────────────────
+
+# 主Agent阶段 → 显示文本映射
+_PHASE_DISPLAY: dict[str, str] = {
+    "thinking": "思考",
+    "answering": "回答",
+    "parsing": "接收工具参数",
+}
+
+
+def _build_status_text(bar: _BottomBar) -> str:
+    """根据 bar 的状态构建分隔线状态文本（纯文本，不含 ANSI 颜色）。
+
+    优先级（从高到低）：
+      1. 工具调用中（_tool_count > 0）→ "工具调用中"
+      2. 主Agent阶段（_main_phase in _PHASE_DISPLAY）→ 映射文本
+      3. 其他情况 → 返回空字符串（不显示状态）
+
+    Args:
+        bar: _BottomBar 实例。
+
+    Returns:
+        纯文本状态字符串（如 "· 思考 0.32s"），或空字符串。
+    """
+    # 工具调用中优先级最高
+    if bar._tool_count > 0:
+        status = "工具调用中"
+        start_time = bar._tool_phase_start
+    elif bar._main_phase in _PHASE_DISPLAY:
+        status = _PHASE_DISPLAY[bar._main_phase]
+        start_time = bar._main_phase_start
+    else:
+        return ""
+
+    # 保护：start_time 未初始化时返回空
+    if start_time <= 0.0:
+        return ""
+
+    elapsed = time.monotonic() - start_time
+    return f"\u00b7 {status} {elapsed:.2f}s"
+
+
+# 【技术债】_build_sep_with_system_stats() 约 55 行，参数数量偏多（10 个）。
+# 后续可考虑：① 移除 cpu_percent/mem_percent/bar 等已废弃参数；
+# ② 参数超过 12 个时引入配置对象。当前暂不拆分。
 def _build_sep_with_system_stats(
     tw: int,
     sep_start: int,
@@ -199,8 +243,16 @@ def _build_sep_with_system_stats(
     narrow: bool = False,
     bar: _BottomBar | None = None,
     breath_frame: int = 0,
+    status_text: str = "",
+    status_active: bool = False,
 ) -> str:
-    """构建纯渐变分隔线（CPU/MEM/时间信息已移至输入区分割线）。
+    """构建分隔线（支持状态文本前缀模式）。
+
+    两种构建策略（策略模式）：
+      - 状态分隔线：status_active=True 且 status_text 非空且非窄屏
+        → 左侧显示状态文本（_COLOR_ACCENT 着色），右侧填充渐变分隔线
+      - 纯渐变分隔线：其余情况
+        → 保持原有行为（全宽渐变）
 
     Args:
         tw: 终端宽度（列数）。
@@ -210,12 +262,26 @@ def _build_sep_with_system_stats(
         char: 分隔线字符，默认 ━ (U+2501)。
         narrow: 是否为窄屏模式。
         bar: _BottomBar 实例（保留参数，已不使用）。
+        breath_frame: 呼吸动画帧号。
+        status_text: 状态文本（纯文本，不含 ANSI 颜色），默认空字符串。
+        status_active: 是否处于流式输出活跃状态，默认 False。
 
     Returns:
-        纯渐变分隔线字符串（含前导 2 空格）。
+        分隔线字符串（含前导 2 空格）。
     """
     available = max(1, tw - 2)  # 去除前导 2 空格
-    sep = make_sep_gradient(available, start_color=sep_start, char=char)
+
+    # 状态分隔线策略：流式输出 + 有状态文本 + 非窄屏
+    if status_active and status_text and not narrow:
+        status_colored = f"{_COLOR_ACCENT}{status_text}{_COLOR_RESET}"
+        status_visual_width = _visible_width(status_text)
+        # -1 为状态文本与渐变之间的空格分隔符
+        remaining = max(1, available - status_visual_width - 1)
+        sep = make_sep_gradient(remaining, start_color=sep_start, char=char)
+        return f"  {status_colored} {sep}"
+
+    # 纯渐变分隔线策略（原有行为，向后兼容）
+    sep = _build_sep_gradient_or_compose(sep_start, available, breath_frame, char)
     return f"  {sep}"
 
 
@@ -303,9 +369,15 @@ def _draw_all_locked(bar: _BottomBar, out, height: int, breath_frame: int = 0) -
         # 嵌入 CPU/内存使用率信息
         cpu_pct = getattr(bar, '_cached_cpu_percent', 0.0)
         mem_pct = getattr(bar, '_cached_mem_percent', 0.0)
+        # 状态分隔线：读取 bar 的状态信息
+        status_active = getattr(bar, '_status_active', False)
+        status_text = _build_status_text(bar) if status_active else ""
         sep = _build_sep_with_system_stats(
             tw, sep_start, cpu_pct, mem_pct, bar=bar,
             breath_frame=breath_frame,
+            status_text=status_text,
+            status_active=status_active,
+            narrow=_is_narrow_fn(),
         )
         buf.append(_blessed_cursor_goto(r1, 1) + sep)
 
