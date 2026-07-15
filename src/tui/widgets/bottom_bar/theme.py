@@ -21,7 +21,7 @@
 
 from __future__ import annotations
 
-from ....ui.colors import gradient_range
+from ...core.gradient import gradient_range
 from ...core.animator import AnimatorContext
 from ...core.effects import sine_color_range
 
@@ -49,7 +49,7 @@ def _get_theme_color(color_key: str, fallback_ansi: str) -> str:
         ANSI 颜色序列字符串。
     """
     try:
-        from ....ui.theme import THEME as _THEME
+        from ...core.theme import THEME as _THEME
         return _THEME.get(color_key, fallback_ansi)
     except Exception:
         return fallback_ansi

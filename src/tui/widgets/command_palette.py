@@ -10,11 +10,8 @@ import re
 from typing import Optional
 
 from ...core.commands import get_registered_command_names
-from ...ui.colors import RESET
-from ...ui.colors import BOLD
-from ...ui.colors import CYAN_256, DIM_256
-from ...ui.colors import BRIGHT_CYAN_256, BRIGHT_GREEN_256
-from ...ui.ansi import strip_ansi
+from ...core.constants import RESET, BOLD, CYAN_256, DIM_256, BRIGHT_CYAN_256, BRIGHT_GREEN_256
+from ..core.ansi_utils import strip_ansi
 from .selector_base import BaseBottomBarSelector
 from ..core.text_utils import truncate
 from ..terminal.terminal import is_narrow, get_terminal_width

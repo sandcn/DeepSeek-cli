@@ -23,6 +23,12 @@ from .effects import (
     build_fg_breath_ansi,
     build_bg_breath_ansi,
     get_theme_effect_color,
+    # 新增渲染效果（2026-07-15）
+    rainbow_color, build_rainbow_ansi,
+    pulse_train, build_pulse_train_ansi,
+    matrix_rain_color, build_matrix_rain_ansi,
+    heat_wave_offset, apply_heat_wave, build_heat_wave_ansi,
+    aurora_color, build_aurora_gradient, build_aurora_ansi,
 )
 
 # ── 状态容器 ──
@@ -52,6 +58,31 @@ from .style import Style, StyledText, StyleSheet
 # ── 系统监控（私有类，按需导入） ──
 # _SystemMonitor 以下划线开头，不自动导出
 
+# ── 渐变工具 ──
+from .gradient import hex_to_256, gradient_step, gradient_range
+
+# ── 预定义调色板 ──
+from .palettes import (
+    GRADIENT_SUNSET, GRADIENT_OCEAN, GRADIENT_FOREST,
+    GRADIENT_FIRE, GRADIENT_NEON,
+    GRADIENT_AURORA, GRADIENT_CORAL, GRADIENT_MINT, GRADIENT_TWILIGHT,
+    GRADIENT_SUNRISE, GRADIENT_PURPLE, GRADIENT_ICE,
+    GRADIENT_SOFT, GRADIENT_EMERALD,
+    GRADIENT_ROSE, GRADIENT_LAVA, GRADIENT_GLACIER,
+    GRADIENT_SUNSET2, GRADIENT_NEON_GREEN, GRADIENT_NEON_PINK,
+    GRADIENT_GOLD, GRADIENT_SKY, GRADIENT_MAGMA, GRADIENT_OCEAN_DEEP,
+    BREATH_CYAN, BREATH_GREEN, BREATH_PURPLE, BREATH_GOLD, BREATH_ROSE,
+)
+
+# ── 主题系统 ──
+from .theme import THEME, THEMES, set_theme, get_active_theme, list_themes, get_theme_names_with_desc
+
+# ── ANSI 工具 ──
+from .ansi_utils import strip_ansi, visual_width, truncate_ansi_visual, skip_ansi_sgr, truncate_ansi_sgr, truncate_ansi_line
+
+# ── 输出目标 ──
+from .output_target import IOutputTarget, TerminalTarget, BufferTarget, NullTarget
+
 __all__ = [
     # animator
     "AnimatorContext", "BreathPalette",
@@ -68,6 +99,12 @@ __all__ = [
     "build_fg_breath_ansi",
     "build_bg_breath_ansi",
     "get_theme_effect_color",
+    # 新增渲染效果（2026-07-15）
+    "rainbow_color", "build_rainbow_ansi",
+    "pulse_train", "build_pulse_train_ansi",
+    "matrix_rain_color", "build_matrix_rain_ansi",
+    "heat_wave_offset", "apply_heat_wave", "build_heat_wave_ansi",
+    "aurora_color", "build_aurora_gradient", "build_aurora_ansi",
     # state
     "UISessionState", "InputState", "StreamingState", "TUIStateTree",
     # ttl_cache
@@ -84,4 +121,22 @@ __all__ = [
     "Color256", "RGB", "GradientDescriptor",
     # style
     "Style", "StyledText", "StyleSheet",
+    # gradient
+    "hex_to_256", "gradient_step", "gradient_range",
+    # palettes
+    "GRADIENT_SUNSET", "GRADIENT_OCEAN", "GRADIENT_FOREST",
+    "GRADIENT_FIRE", "GRADIENT_NEON",
+    "GRADIENT_AURORA", "GRADIENT_CORAL", "GRADIENT_MINT", "GRADIENT_TWILIGHT",
+    "GRADIENT_SUNRISE", "GRADIENT_PURPLE", "GRADIENT_ICE",
+    "GRADIENT_SOFT", "GRADIENT_EMERALD",
+    "GRADIENT_ROSE", "GRADIENT_LAVA", "GRADIENT_GLACIER",
+    "GRADIENT_SUNSET2", "GRADIENT_NEON_GREEN", "GRADIENT_NEON_PINK",
+    "GRADIENT_GOLD", "GRADIENT_SKY", "GRADIENT_MAGMA", "GRADIENT_OCEAN_DEEP",
+    "BREATH_CYAN", "BREATH_GREEN", "BREATH_PURPLE", "BREATH_GOLD", "BREATH_ROSE",
+    # theme
+    "THEME", "THEMES", "set_theme", "get_active_theme", "list_themes", "get_theme_names_with_desc",
+    # ansi_utils
+    "strip_ansi", "visual_width", "truncate_ansi_visual", "skip_ansi_sgr", "truncate_ansi_sgr", "truncate_ansi_line",
+    # output_target
+    "IOutputTarget", "TerminalTarget", "BufferTarget", "NullTarget",
 ]

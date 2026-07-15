@@ -19,10 +19,10 @@ from __future__ import annotations
 
 import time
 
-from ...ui.ansi import strip_ansi, truncate_ansi_sgr
-from ...ui.colors import RESET, BOLD, CYAN_256, GREEN_256, \
-    DARK_GRAY_256, GRAY_256, gradient_range
-from ...ui.theme import THEME
+from ..core.ansi_utils import strip_ansi, truncate_ansi_sgr
+from ...core.constants import RESET, BOLD, CYAN_256, GREEN_256, DARK_GRAY_256, GRAY_256
+from ..core.gradient import gradient_range
+from ..core.theme import THEME
 from ..parallel._text_formatter import TextFormatter
 from ..terminal.terminal import is_narrow, get_terminal_width
 from ..core.time_format import format_elapsed, format_speed

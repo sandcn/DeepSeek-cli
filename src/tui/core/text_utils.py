@@ -51,7 +51,7 @@ def truncate(
         text = text.replace("\n", " ").strip()
     # ANSI 安全：含转义序列时使用 visual width 截断，保留颜色样式
     if "\033" in text:
-        from ...ui.ansi import truncate_ansi_visual
+        from .ansi_utils import truncate_ansi_visual
         return truncate_ansi_visual(text, max_len)
     if len(text) <= max_len:
         return text
@@ -174,7 +174,7 @@ def make_sep_gradient(
     Returns:
         带 ANSI 256 色渐变的完整分隔线字符串（含 RESET）。
     """
-    from ...ui.colors import gradient_range
+    from .gradient import gradient_range
     colors = gradient_range(start_color, end_color, width)
     return build_gradient_ansi(colors, char=char)
 
@@ -318,7 +318,7 @@ def parse_theme_color(theme_key: str) -> int | None:
         色号整数（0-255），解析失败或键不存在时返回 None。
     """
     import re
-    from ...ui.theme import THEME
+    from .theme import THEME
     color_str = THEME.get(theme_key, "")
     if not color_str:
         return None
@@ -326,6 +326,11 @@ def parse_theme_color(theme_key: str) -> int | None:
     if match:
         return int(match.group(1))
     return None
+
+
+# ═══════════════════════════════════════════════════════════
+# 新增渲染效果 ANSI 构建器（2026-07-15 框架整合）
+# ═══════════════════════════════════════════════════════════
 
 
 def make_sep_gradient_enhanced(
@@ -353,7 +358,7 @@ def make_sep_gradient_enhanced(
     Returns:
         带 ANSI 渐变的完整分隔线字符串（含 RESET）。
     """
-    from ...ui.colors import gradient_range
+    from .gradient import gradient_range
     colors = gradient_range(start_color, end_color, width)
     if effect == "wave" and frame > 0:
         return build_sep_wave(colors, frame, char)

@@ -22,7 +22,7 @@ from ..consumer.const import _STYLE_DIM, _MAX_OUTPUT_LEN
 from ..core.animator import AnimatorContext
 from ..terminal.terminal import is_narrow
 from ..core.text_utils import build_left_border_ansi
-from ...ui.colors import DARK_GRAY_256
+from ...core.constants import DARK_GRAY_256
 from ._base import TuiComponent, _estimate_content_lines
 
 _logger = logging.getLogger(__name__)

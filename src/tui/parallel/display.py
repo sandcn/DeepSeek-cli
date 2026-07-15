@@ -24,14 +24,14 @@ import logging
 import time
 from typing import Any
 
-from ...ui.output_target import IOutputTarget, TerminalTarget
-from ...tui.frame import FrameRenderer
+from ..core.output_target import IOutputTarget, TerminalTarget
+from ..frame import FrameRenderer
 from ..events.event_bus import DisplayEventBus
 from ..events.event_types import LiveOutputEvent
 from ._config import DisplayConfig
-from ...ui.base_display import BaseDisplay
+from ..consumer.base_display import BaseDisplay
 from ..state.agent_state import AgentStateStore
-from ...ui.terminal_adapter import (
+from ..terminal.adapter import (
     register_sigwinch_callback,
     unregister_sigwinch_callback,
 )

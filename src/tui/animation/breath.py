@@ -15,10 +15,10 @@ from __future__ import annotations
 
 from typing import Optional
 
-from ...ui.colors import (
+from ..core.palettes import (
     BREATH_CYAN, BREATH_GREEN, BREATH_PURPLE, BREATH_GOLD, BREATH_ROSE,
-    gradient_range,
 )
+from ..core.gradient import gradient_range
 
 __all__ = [
     "BreathPalette",

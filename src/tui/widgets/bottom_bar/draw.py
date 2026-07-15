@@ -39,7 +39,7 @@ from .theme import (
 )
 from ...core.animator import AnimatorContext
 from ...core.text_utils import build_gradient_ansi, make_sep_gradient_enhanced
-from ....ui.colors import gradient_range
+from ...core.gradient import gradient_range
 from .cursor import (
     _expand_tabs,
     _wrap_by_width,
@@ -113,7 +113,7 @@ def _draw_input_lines_locked(
                 else:
                     import re
                     from ...core.text_utils import build_glow_ansi  # type: ignore[import-untyped]
-                    from ....ui.theme import THEME as _BOTTOM_THEME       # type: ignore[import-untyped]
+                    from ...core.theme import THEME as _BOTTOM_THEME       # type: ignore[import-untyped]
                     glow_str = _BOTTOM_THEME.get('placeholder_glow', '')
                     m = re.search(r"38;5;(\d+)", glow_str)
                     if m:

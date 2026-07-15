@@ -93,7 +93,7 @@ class Separator(TuiComponent):
         width = self._resolve_width()
         if width <= 0:
             return []
-        from ...ui.colors import gradient_range
+        from ..core.gradient import gradient_range
         return gradient_range(self._start_color, self._end_color, width)
 
     # ── 动效策略 ────────────────────────────────────────────────────────

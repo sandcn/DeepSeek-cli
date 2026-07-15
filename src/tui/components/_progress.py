@@ -122,7 +122,7 @@ class ProgressBar(TuiComponent):
         if filled_width <= 0:
             return ""
 
-        from ...ui.colors import gradient_range
+        from ..core.gradient import gradient_range
         colors = gradient_range(self._gradient_start, self._gradient_end, filled_width)
 
         if self._animated and self._frame > 0 and filled_width > 0:

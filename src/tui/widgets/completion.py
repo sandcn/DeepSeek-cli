@@ -98,7 +98,7 @@ class CompletionEngine:
     @staticmethod
     def _fetch_themes() -> list[tuple[str, str]]:
         try:
-            from ..ui.theme import get_theme_names_with_desc
+            from ..core.theme import get_theme_names_with_desc
             return list(get_theme_names_with_desc())
         except Exception:
             return []

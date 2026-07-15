@@ -17,7 +17,7 @@ from __future__ import annotations
 
 from ..terminal.narrow import is_narrow
 from ..core.style import Style
-from ...ui.ansi import visual_width
+from ..core.ansi_utils import visual_width
 from ._base import TuiComponent
 from ._box import BoxStyle, _BOX_CHARS
 

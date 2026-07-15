@@ -28,7 +28,7 @@ from ..core.text_utils import (truncate, build_gradient_ansi, build_fade_in_ansi
                                build_sparkle_ansi, build_glow_ansi)
 from ..core.animator import AnimatorContext, BreathPalette
 from ..core.effects import sine_color_range
-from ...ui.output_target import IOutputTarget, TerminalTarget
+from ..core.output_target import IOutputTarget, TerminalTarget
 
 
 def _scroll_window(cursor: int, state: dict, total: int) -> tuple[int, int]:
@@ -144,8 +144,8 @@ from ...core.constants import (
     YELLOW_256 as _Y, BRIGHT_CYAN_256 as _BC, BRIGHT_WHITE_256 as _BW,
     BOLD as _BD, BRIGHT_GREEN_256 as _BG,
 )
-from ...ui.colors import gradient_range
-from ...ui.theme import THEME
+from ..core.gradient import gradient_range
+from ..core.theme import THEME
 
 # 角色标签 sparkle 静态基准色（与动态呼吸色解耦，避免双重调制噪音）
 _SPARKLE_BASE_USER = 45    # 青色

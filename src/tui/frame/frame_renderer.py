@@ -15,7 +15,8 @@ import re
 import unicodedata
 from typing import Dict, List
 
-from ...ui.colors import RESET as _C_RESET, gradient_range as _gradient_range
+from ...core.constants import RESET as _C_RESET
+from ..core.gradient import gradient_range as _gradient_range
 from ..components._progress import ProgressBar
 from ..components._spinner import Spinner
 from ..core.color import Color256
@@ -130,7 +131,7 @@ class FrameRenderer:
     def strip_ansi(text: str) -> str:
         if '\x1b' not in text:
             return text
-        from ...ui.ansi import strip_ansi as _strip_ansi
+        from ..core.ansi_utils import strip_ansi as _strip_ansi
         return _strip_ansi(text)
 
     @staticmethod

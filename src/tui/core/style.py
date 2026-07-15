@@ -131,7 +131,7 @@ class Style:
         """
         import re
         # 方法体内延迟导入，避免模块加载循环
-        from ...ui.theme import THEME
+        from .theme import THEME
 
         color_str = THEME.get(key, "")
         if not color_str:

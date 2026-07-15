@@ -19,7 +19,7 @@ if TYPE_CHECKING:
 
 from ..terminal.narrow import is_narrow
 from ..core.text_utils import truncate
-from ...ui.ansi import visual_width
+from ..core.ansi_utils import visual_width
 from ._base import TuiComponent, _estimate_content_lines
 from ._box import BoxStyle, _BOX_CHARS
 

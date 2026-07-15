@@ -71,7 +71,7 @@ from .cursor import (
 )
 from ..cursor_tracker import CursorTracker
 from ..lock import _try_acquire_output_lock
-from ....ui.terminal_adapter import register_sigwinch_callback, unregister_sigwinch_callback
+from ...terminal.adapter import register_sigwinch_callback, unregister_sigwinch_callback
 from ...core.system_monitor import _SystemMonitor
 from .blessed import (
     _blessed_move_clear,

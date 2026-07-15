@@ -79,7 +79,7 @@ def _wrap_ansi(color: int, text: str) -> str:
 class Box(TuiComponent):
     """边框渲染器 — 将文本包裹在指定样式的边框中。
 
-    支持多行文本、自定义边框样式、显式宽度和内边距。
+    支持多行文本、自定义边框样式、显式宽度、内边距和渐变边框。
 
     Args:
         text: 要包裹的文本内容（支持多行，以 \\n 分隔）。
@@ -88,6 +88,9 @@ class Box(TuiComponent):
                为 None 时根据文本最大行长度 + 内边距自动计算。
         padding: 文本与左右边框之间的内边距字符数。
         fg_color: 边框字符的前景色 256 色号。为 None 时使用终端默认色。
+        border_gradient_start: 水平边框渐变起始色号（可选）。
+        border_gradient_end: 水平边框渐变结束色号（可选）。
+                              同时设置 start 和 end 时启用渐变边框。
 
     Example:
         >>> box = Box("Hello", style=BoxStyle.ROUNDED)
@@ -95,6 +98,10 @@ class Box(TuiComponent):
         ╭───────╮
         │ Hello │
         ╰───────╯
+
+        >>> # 渐变边框
+        >>> box = Box("Gradient", border_gradient_start=45, border_gradient_end=237)
+        >>> print(box.render())
     """
 
     def __init__(
@@ -104,12 +111,16 @@ class Box(TuiComponent):
         width: int | None = None,
         padding: int = 1,
         fg_color: int | None = None,
+        border_gradient_start: int | None = None,
+        border_gradient_end: int | None = None,
     ) -> None:
         self.text = text
         self.style = style
         self.width = width
         self.padding = padding
         self.fg_color = fg_color
+        self.border_gradient_start = border_gradient_start
+        self.border_gradient_end = border_gradient_end
 
     def render(self) -> str:
         """渲染带边框的文本。
@@ -133,10 +144,19 @@ class Box(TuiComponent):
         # 每行文本可用的实际显示宽度（扣除左右内边距后）
         text_width = max(content_width - 2 * pad, 0)
 
-        # 构建边框线
-        h_line = chars["h"] * content_width
-        top_border = f"{chars['tl']}{h_line}{chars['tr']}"
-        bottom_border = f"{chars['bl']}{h_line}{chars['br']}"
+        # 构建边框线（支持渐变）
+        if self.border_gradient_start is not None and self.border_gradient_end is not None:
+            from ..core.gradient import gradient_range
+            grad_colors = gradient_range(self.border_gradient_start, self.border_gradient_end, content_width)
+            h_gradient = "".join(
+                f"\033[38;5;{c}m{chars['h']}" for c in grad_colors
+            ) + "\033[0m"
+            top_border = f"{_wrap_ansi(grad_colors[0], chars['tl'])}{h_gradient}{_wrap_ansi(grad_colors[-1], chars['tr'])}"
+            bottom_border = f"{_wrap_ansi(grad_colors[0], chars['bl'])}{h_gradient}{_wrap_ansi(grad_colors[-1], chars['br'])}"
+        else:
+            h_line = chars["h"] * content_width
+            top_border = f"{chars['tl']}{h_line}{chars['tr']}"
+            bottom_border = f"{chars['bl']}{h_line}{chars['br']}"
 
         # 构建主体行
         body: list[str] = []

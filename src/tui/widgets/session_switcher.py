@@ -38,8 +38,7 @@ class SessionSwitcher(BaseBottomBarSelector[dict, Optional[dict[str, object]]]):
 
         使用 256 色体系增强视觉层次。
         """
-        from ...ui.colors import RESET
-        from ...ui.colors import CYAN_256, DARK_GRAY_256, GREEN_256, BRIGHT_CYAN_256, DIM_256
+        from ...core.constants import RESET, CYAN_256, DARK_GRAY_256, GREEN_256, BRIGHT_CYAN_256, DIM_256
         labels: list[str] = []
         now = time.time()
         for s in items:

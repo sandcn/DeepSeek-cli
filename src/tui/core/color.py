@@ -20,49 +20,8 @@ from functools import lru_cache
 from src._compat import dataclass
 
 
-# ═══════════════════════════════════════════════════════════
-# xterm-256 调色板查找表
-# ═══════════════════════════════════════════════════════════
-
-
-def _build_xterm_palette() -> list[tuple[int, int, int]]:
-    """构建 xterm-256 调色板的 RGB 颜色查找表（索引 0-255）。
-
-    一次预计算，后续只读查找。
-
-    Returns:
-        len=256 的 RGB 元组列表，索引对应 256 色号。
-    """
-    palette: list[tuple[int, int, int]] = [(0, 0, 0)] * 256
-
-    # ── 标准 16 色（0-15）──
-    system: list[tuple[int, int, int]] = [
-        (0, 0, 0), (128, 0, 0), (0, 128, 0), (128, 128, 0),
-        (0, 0, 128), (128, 0, 128), (0, 128, 128), (192, 192, 192),
-        (128, 128, 128), (255, 0, 0), (0, 255, 0), (255, 255, 0),
-        (0, 0, 255), (255, 0, 255), (0, 255, 255), (255, 255, 255),
-    ]
-    for i, rgb in enumerate(system):
-        palette[i] = rgb
-
-    # ── 6×6×6 色彩立方体（16-231）──
-    levels: list[int] = [0, 95, 135, 175, 215, 255]
-    for r in range(6):
-        for g in range(6):
-            for b in range(6):
-                idx: int = 16 + r * 36 + g * 6 + b
-                palette[idx] = (levels[r], levels[g], levels[b])
-
-    # ── 24 级灰度梯度（232-255）──
-    for i in range(24):
-        val: int = 8 + i * 10
-        palette[232 + i] = (val, val, val)
-
-    return palette
-
-
-_XTERM_PALETTE: list[tuple[int, int, int]] = _build_xterm_palette()
-"""xterm-256 全色表（0-255 索引 → RGB 元组），模块加载时预计算一次。"""
+# ── xterm 调色板（从 gradient 共享模块导入） ──
+from .gradient import _build_xterm_palette, _XTERM_PALETTE
 
 
 # ═══════════════════════════════════════════════════════════
@@ -360,14 +319,14 @@ class GradientDescriptor:
     def resolve(self) -> list[int]:
         """生成色号列表。
 
-        调用 ``src/ui/colors.gradient_range()`` 生成 steps 个均匀分布的色号。
+        调用 ``src.tui.core.gradient.gradient_range()`` 生成 steps 个均匀分布的色号。
         延迟导入避免模块加载循环。
 
         Returns:
             steps 个色号的列表（steps=1 时返回 [start_color]）。
         """
-        # 延迟导入：src/ui/colors.gradient_range 位于 core 层之外
-        from ...ui.colors import gradient_range  # type: ignore[import-untyped]
+        # 延迟导入：gradient_range 在同层 gradient 模块
+        from .gradient import gradient_range
         return gradient_range(self.start_color, self.end_color, self.steps)
 
     def resolve_with_effect(self, frame: int) -> list[int]:

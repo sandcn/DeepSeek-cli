@@ -17,10 +17,8 @@ from __future__ import annotations
 import math
 from typing import Optional
 
-from ...ui.colors import (
-    BREATH_CYAN, BREATH_GREEN, BREATH_PURPLE, BREATH_GOLD, BREATH_ROSE,
-    gradient_range,
-)
+from .palettes import BREATH_CYAN, BREATH_GREEN, BREATH_PURPLE, BREATH_GOLD, BREATH_ROSE
+from .gradient import gradient_range
 
 __all__ = [
     "AnimatorContext",

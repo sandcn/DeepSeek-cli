@@ -16,7 +16,7 @@ Spinner 动画集（通过 get_spinner_frames() 按名称获取）：
 
 from __future__ import annotations
 
-from ...ui.colors import gradient_range
+from ..core.gradient import gradient_range
 
 # ── 刷新率常量 ──────────────────────────────────────
 
