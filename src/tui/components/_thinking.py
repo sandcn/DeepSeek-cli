@@ -47,6 +47,9 @@ class ThinkingBlock(TuiComponent):
                 rr.write(header)
                 lines += _estimate_content_lines(header)
         # 首次内容写入：集成 FadeIn 入场动效
+        # 【技术债】此 FadeIn 入场逻辑与 AnswerBlock.write() 中的
+        # FadeIn 首次写入逻辑重复（FadeIn(smooth, 6f, 240→253) + fade_prefix 包裹）。
+        # 后续可提取为公共 mixin 或工具函数（如 _apply_fade_in_first_write）。
         if is_first and not is_narrow():
             frame = AnimatorContext.get_default().frame
             fade = FadeIn(easing="smooth", total_frames=6, start_color=240, end_color=253)

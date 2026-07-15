@@ -87,6 +87,101 @@ class TestErrorBlockGradient:
         ansi_str = str(result)
         assert "\u2502" not in ansi_str, "窄屏 ErrorBlock 不应含边框字符"
 
+    # ── FadeIn 入场过渡测试 ──
+    # FadeIn 不再通过 ANSI 前缀包裹（会被后续显式色号覆盖），
+    # 而是将缓动因子融入边框/辉光色号计算——frame 0 时色号从暗灰起步，
+    # 随帧递增渐亮至目标色。因此 span 数量不变，但颜色值随帧变化。
+
+    def test_render_wide_fadein_frame_gt_0(self, monkeypatch):
+        """frame>0 + 宽屏 → FadeIn 使色号渐亮（256 色 span 数量不变）"""
+        from rich.color import ColorType
+        from src.tui.core.animator import AnimatorContext
+        from src.tui.framework import Framework
+
+        AnimatorContext.reset_default()
+        Framework.reset_default()
+        Framework.get_default().get_animator().tick()  # frame=1
+
+        monkeypatch.setattr("src.tui.components._error.is_narrow", lambda: False)
+        monkeypatch.setattr("src.tui.terminal.narrow.is_narrow", lambda: False)
+
+        block = ErrorBlock("fadein test")
+        result = block.render()
+
+        assert "! " in result.plain
+        assert "fadein test" in result.plain
+
+        eight_bit = [s for s in result.spans if s.style.color and s.style.color.type == ColorType.EIGHT_BIT]
+        # FadeIn 融入现有颜色，不增加额外 span
+        assert len(eight_bit) == 3, f"FadeIn 融入色号计算，span 数应保持 3，实际 {len(eight_bit)}: {result.spans}"
+
+    def test_render_wide_fadein_frame_0(self, monkeypatch):
+        """frame=0 → FadeIn 因子为 0，色号从暗灰起步"""
+        from rich.color import ColorType
+        from src.tui.core.animator import AnimatorContext
+        from src.tui.framework import Framework
+
+        AnimatorContext.reset_default()
+        Framework.reset_default()
+
+        monkeypatch.setattr("src.tui.components._error.is_narrow", lambda: False)
+        monkeypatch.setattr("src.tui.terminal.narrow.is_narrow", lambda: False)
+
+        block = ErrorBlock("no fadein")
+        result = block.render()
+
+        eight_bit = [s for s in result.spans if s.style.color and s.style.color.type == ColorType.EIGHT_BIT]
+        assert len(eight_bit) == 3, f"frame=0 span 数应为 3，实际 {len(eight_bit)}: {result.spans}"
+
+    def test_render_fadein_colors_brighten(self, monkeypatch):
+        """FadeIn 帧 1 的色号应不同于帧 0（渐显过渡中）"""
+        from rich.color import ColorType
+        from src.tui.core.animator import AnimatorContext
+        from src.tui.framework import Framework
+
+        monkeypatch.setattr("src.tui.components._error.is_narrow", lambda: False)
+        monkeypatch.setattr("src.tui.terminal.narrow.is_narrow", lambda: False)
+
+        # frame=0: FadeIn 因子=0，所有色号=起始色 238
+        AnimatorContext.reset_default()
+        Framework.reset_default()
+        block0 = ErrorBlock("brightness")
+        r0 = block0.render()
+        colors0 = [s.style.color.number for s in r0.spans
+                   if s.style.color and s.style.color.type == ColorType.EIGHT_BIT]
+
+        # frame=1: FadeIn 因子>0，色号从 238 向目标色过渡
+        AnimatorContext.reset_default()
+        Framework.reset_default()
+        Framework.get_default().get_animator().tick()
+        block1 = ErrorBlock("brightness")
+        r1 = block1.render()
+        colors1 = [s.style.color.number for s in r1.spans
+                   if s.style.color and s.style.color.type == ColorType.EIGHT_BIT]
+
+        assert len(colors0) == len(colors1) == 3
+        # FadeIn 正在过渡：色号从 238 向目标色靠近，不应全等于 238
+        assert colors1 != colors0, f"FadeIn 应使色号变化: frame0={colors0}, frame1={colors1}"
+
+    def test_render_narrow_no_fadein(self, monkeypatch):
+        """窄屏 → 即使 frame>0 也不触发 FadeIn"""
+        from src.tui.core.animator import AnimatorContext
+        from src.tui.framework import Framework
+
+        AnimatorContext.reset_default()
+        Framework.reset_default()
+        Framework.get_default().get_animator().tick()  # frame=1
+
+        monkeypatch.setattr("src.tui.components._error.is_narrow", lambda: True)
+
+        block = ErrorBlock("narrow fadein")
+        result = block.render()
+
+        for span in result.spans:
+            assert span.style == _STYLE_ERROR_GRADIENT, (
+                f"窄屏预期 {_STYLE_ERROR_GRADIENT}，实际 {span.style}"
+            )
+
 
 class TestUserMsgBlockGradient:
     """UserMsgBlock 渐变色增强测试"""
@@ -208,6 +303,97 @@ class TestNotificationBlockGradient:
         assert isinstance(result, Text)
         assert "· " in result.plain
 
+    # ── FadeIn 入场过渡测试 ──
+    # FadeIn 融入色号计算，不增加额外 span。验证颜色随帧渐亮。
+
+    def test_render_wide_fadein_frame_gt_0(self, monkeypatch):
+        """frame>0 + 宽屏 → FadeIn 使色号渐亮（span 数量不变）"""
+        from rich.color import ColorType
+        from src.tui.core.animator import AnimatorContext
+        from src.tui.framework import Framework
+
+        AnimatorContext.reset_default()
+        Framework.reset_default()
+        Framework.get_default().get_animator().tick()  # frame=1
+
+        monkeypatch.setattr("src.tui.components._notification.is_narrow", lambda: False)
+        monkeypatch.setattr("src.tui.terminal.narrow.is_narrow", lambda: False)
+
+        block = NotificationBlock("fadein note")
+        result = block.render()
+
+        assert "· " in result.plain
+        assert "fadein note" in result.plain
+
+        eight_bit = [s for s in result.spans if s.style.color and s.style.color.type == ColorType.EIGHT_BIT]
+        assert len(eight_bit) == 3, f"FadeIn 融入色号，span 数应保持 3，实际 {len(eight_bit)}"
+
+    def test_render_wide_fadein_frame_0(self, monkeypatch):
+        """frame=0 → FadeIn 因子为 0，色号从暗灰起步"""
+        from rich.color import ColorType
+        from src.tui.core.animator import AnimatorContext
+        from src.tui.framework import Framework
+
+        AnimatorContext.reset_default()
+        Framework.reset_default()
+
+        monkeypatch.setattr("src.tui.components._notification.is_narrow", lambda: False)
+        monkeypatch.setattr("src.tui.terminal.narrow.is_narrow", lambda: False)
+
+        block = NotificationBlock("no fade note")
+        result = block.render()
+
+        eight_bit = [s for s in result.spans if s.style.color and s.style.color.type == ColorType.EIGHT_BIT]
+        assert len(eight_bit) == 3, f"frame=0 span 数应为 3，实际 {len(eight_bit)}"
+
+    def test_render_fadein_colors_brighten(self, monkeypatch):
+        """FadeIn 帧 1 的色号应不同于帧 0（渐显过渡中）"""
+        from rich.color import ColorType
+        from src.tui.core.animator import AnimatorContext
+        from src.tui.framework import Framework
+
+        monkeypatch.setattr("src.tui.components._notification.is_narrow", lambda: False)
+        monkeypatch.setattr("src.tui.terminal.narrow.is_narrow", lambda: False)
+
+        # frame=0
+        AnimatorContext.reset_default()
+        Framework.reset_default()
+        block0 = NotificationBlock("fade bright")
+        r0 = block0.render()
+        colors0 = [s.style.color.number for s in r0.spans
+                   if s.style.color and s.style.color.type == ColorType.EIGHT_BIT]
+
+        # frame=1 (FadeIn active)
+        AnimatorContext.reset_default()
+        Framework.reset_default()
+        Framework.get_default().get_animator().tick()
+        block1 = NotificationBlock("fade bright")
+        r1 = block1.render()
+        colors1 = [s.style.color.number for s in r1.spans
+                   if s.style.color and s.style.color.type == ColorType.EIGHT_BIT]
+
+        assert len(colors0) == len(colors1) == 3
+        assert colors1 != colors0, f"FadeIn 应使色号变化: frame0={colors0}, frame1={colors1}"
+
+    def test_render_narrow_no_fadein(self, monkeypatch):
+        """窄屏 → 即使 frame>0 也不触发 FadeIn"""
+        from src.tui.core.animator import AnimatorContext
+        from src.tui.framework import Framework
+
+        AnimatorContext.reset_default()
+        Framework.reset_default()
+        Framework.get_default().get_animator().tick()  # frame=1
+
+        monkeypatch.setattr("src.tui.components._notification.is_narrow", lambda: True)
+
+        block = NotificationBlock("narrow fade")
+        result = block.render()
+
+        for span in result.spans:
+            assert span.style == _STYLE_NOTIFICATION_GRADIENT, (
+                f"窄屏预期 {_STYLE_NOTIFICATION_GRADIENT}，实际 {span.style}"
+            )
+
 
 # ── Mock OutputAdapter for WriteLineBlock tests ──────────
 
@@ -285,3 +471,71 @@ class TestWriteLineBlockBeautify:
         result = block.render()
         ansi_str = str(result)
         assert "\u2502" not in ansi_str, "窄屏 NotificationBlock 不应含边框字符"
+
+
+# ── ProgressBar 脉冲列车测试 ──────────────────────────────
+
+class TestProgressBarPulseMode:
+    """ProgressBar 脉冲列车动效测试"""
+
+    def test_default_mode_no_pulse(self):
+        """默认 pulse_mode=False 时行为与原先一致（含呼吸动效）"""
+        from src.tui.components._progress import ProgressBar
+        bar = ProgressBar(progress=0.5, width=20, frame=5, animated=True, pulse_mode=False)
+        result = bar.render()
+        # 默认模式应含静态渐变 ANSI 序列（非脉冲列车）
+        assert "\033[38;5;" in result
+        assert "50%" in result
+
+    def test_pulse_mode_emits_pulse_train_ansi(self):
+        """pulse_mode=True + animated=True + frame>0 时输出含脉冲列车色号"""
+        from src.tui.components._progress import ProgressBar
+        bar = ProgressBar(progress=0.5, width=30, frame=5, animated=True, pulse_mode=True)
+        result = bar.render()
+        # 脉冲列车输出含多个 \033[38;5;{n}m 序列（前 2/3 静态 + 后 1/3 脉冲）
+        assert "\033[38;5;" in result
+        assert "50%" in result
+        # 确认输出非空且格式正确
+        assert len(result) > 0
+
+    def test_pulse_mode_static_when_frame_zero(self):
+        """pulse_mode=True 但 frame=0 时回退到静态渐变"""
+        from src.tui.components._progress import ProgressBar
+        bar = ProgressBar(progress=0.5, width=30, frame=0, animated=True, pulse_mode=True)
+        result = bar.render()
+        assert "\033[38;5;" in result
+        assert "50%" in result
+
+    def test_pulse_mode_static_when_not_animated(self):
+        """pulse_mode=True 但 animated=False 时仍为静态渐变"""
+        from src.tui.components._progress import ProgressBar
+        bar = ProgressBar(progress=0.5, width=30, frame=5, animated=False, pulse_mode=True)
+        result = bar.render()
+        assert "\033[38;5;" in result
+        assert "50%" in result
+
+    def test_pulse_mode_narrow_screen(self, monkeypatch):
+        """窄屏时 pulse_mode 也正常降级"""
+        from src.tui.components._progress import ProgressBar
+        monkeypatch.setattr("src.tui.components._progress.ProgressBar._is_narrow", lambda self: True)
+        bar = ProgressBar(progress=0.5, width=30, frame=5, animated=True, pulse_mode=True)
+        result = bar.render()
+        # 窄屏应不含百分比文本
+        assert "%" not in result
+
+    def test_default_mode_unchanged(self):
+        """验证默认模式（无 pulse_mode 参数）行为不变"""
+        from src.tui.components._progress import ProgressBar
+        bar = ProgressBar(progress=0.7, width=20, frame=3, animated=True)
+        result = bar.render()
+        assert "70%" in result
+        assert "\033[38;5;" in result
+        assert "\033[0m" in result
+
+    def test_pulse_mode_full_progress(self):
+        """pulse_mode=True 且进度=1.0 时正常渲染"""
+        from src.tui.components._progress import ProgressBar
+        bar = ProgressBar(progress=1.0, width=30, frame=5, animated=True, pulse_mode=True)
+        result = bar.render()
+        assert "100%" in result
+        assert "\033[38;5;" in result

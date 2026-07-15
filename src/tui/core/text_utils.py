@@ -270,6 +270,14 @@ def build_glow_ansi(frame: int, base_color: int = 45, period: int = 12) -> str:
     色号在 base_color 和 base_color+20 间正弦呼吸，
     产生"柔光呼吸"的视觉效果。适合标签、图标等元素。
 
+    .. deprecated::
+        此函数是 ``effects.build_glow_ansi`` 的薄包装。
+        统一入口为 ``src.tui.core.effects.build_glow_ansi``，
+        本包装保留以维持向后兼容，新代码应直接从 effects 导入。
+        【技术债】双重定义待后续清理：text_utils 与 effects 各有一份
+        build_glow_ansi，text_utils 版本仅做委托，建议在下一个大版本中
+        将 text_utils.build_glow_ansi 标记为正式废弃并移除。
+
     Args:
         frame: 当前帧号。
         base_color: 基准色号。

@@ -84,6 +84,11 @@ def _get_bash_semaphore() -> 'asyncio.Semaphore':
 # （is_interrupted）。200ms 平衡响应速度与 CPU 开销。
 _INTERRUPT_CHECK_INTERVAL = 0.2
 
+# ── 命令执行超时 ─────────────────────────────────
+# 所有 bash 命令最长执行时间（秒），超时后强制 kill 进程树
+# 并返回超时错误信息，防止命令无限挂起阻塞后续工具调用。
+_BASH_TIMEOUT: int = 5 * 60
+
 # ── PTY slave 关闭 errno ───────────────────────
 import errno as _errno
 
@@ -233,7 +238,7 @@ class BashFunc(Func):
                 "description": (
                     "执行shell命令。用途：编译构建、git操作、包管理、进程管理、系统信息查询。"
                     "禁止替代专用工具——搜索代码用search，查找文件用find，文件读写用read_file/write_file/update_file。"
-                    "命令无超时限制，等待直到执行完成。"
+                    "命令有{_BASH_TIMEOUT}秒超时限制，超时后强制终止并返回超时错误。"
                     "返回stdout+stderr合并输出。"
                     "\n\n"
                     "参数说明："
@@ -652,18 +657,26 @@ class BashFunc(Func):
 
         try:
             if _HAS_PTY:
-                result = await self._run_pty(
-                    show_command=False,
-                    show_output=show_output,
-                    publish_line_fn=None,
+                result = await asyncio.wait_for(
+                    self._run_pty(
+                        show_command=False,
+                        show_output=show_output,
+                        publish_line_fn=None,
+                    ),
+                    timeout=_BASH_TIMEOUT,
                 )
             else:
-                result = await self._run_pipe(
-                    show_command=False,
-                    show_output=show_output,
-                    publish_line_fn=None,
+                result = await asyncio.wait_for(
+                    self._run_pipe(
+                        show_command=False,
+                        show_output=show_output,
+                        publish_line_fn=None,
+                    ),
+                    timeout=_BASH_TIMEOUT,
                 )
             return self._truncate_output(result)
+        except asyncio.TimeoutError:
+            return "(命令执行超时，已强制终止)"
         except asyncio.CancelledError:
             return "(命令已被取消)"
         except Exception as e:
@@ -700,16 +713,24 @@ class BashFunc(Func):
 
         try:
             if _HAS_PTY:
-                result = await self._run_pty(
-                    show_command=False, show_output=False,
-                    publish_line_fn=on_line, pty_ready_fn=None,
+                result = await asyncio.wait_for(
+                    self._run_pty(
+                        show_command=False, show_output=False,
+                        publish_line_fn=on_line, pty_ready_fn=None,
+                    ),
+                    timeout=_BASH_TIMEOUT,
                 )
             else:
-                result = await self._run_pipe(
-                    show_command=False, show_output=False,
-                    publish_line_fn=on_line,
+                result = await asyncio.wait_for(
+                    self._run_pipe(
+                        show_command=False, show_output=False,
+                        publish_line_fn=on_line,
+                    ),
+                    timeout=_BASH_TIMEOUT,
                 )
             return self._truncate_output(result)
+        except asyncio.TimeoutError:
+            return "(命令执行超时，已强制终止)"
         except asyncio.CancelledError:
             return "(命令已被取消)"
         except Exception as e:

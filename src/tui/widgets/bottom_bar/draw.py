@@ -11,10 +11,13 @@
 
 from __future__ import annotations
 
+import logging
 import sys
 from typing import TYPE_CHECKING
 
 from wcwidth import wcswidth
+
+_logger = logging.getLogger(__name__)
 
 from .blessed import (
     _blessed_cursor_goto,
@@ -40,7 +43,6 @@ from .theme import (
     get_prompt_breath_color,
     make_sep_gradient,
 )
-from ...core.animator import AnimatorContext
 from ...core.text_utils import build_gradient_ansi
 from ...core.gradient import gradient_range
 from .cursor import (
@@ -144,6 +146,10 @@ def _draw_input_lines_locked(
         out.write(''.join(buf))
 
 
+# 【技术债】_build_sep_with_system_stats() 约 150 行，复杂度合理但体量偏大。
+# 当前不拆分，后续若增加更多效果类型可考虑按效果路径拆分为子函数：
+#   - _build_sep_static() — 静态渐变分隔线
+#   - _build_sep_composed() — EffectRegistry 组合效果分隔线
 def _build_sep_with_system_stats(
     tw: int,
     sep_start: int,
@@ -153,6 +159,7 @@ def _build_sep_with_system_stats(
     char: str = "\u2501",
     narrow: bool = False,
     bar: _BottomBar | None = None,
+    breath_frame: int = 0,
 ) -> str:
     """构建带主Agent状态、CPU/MEM 系统信息和当前时间的分隔线。
 
@@ -260,8 +267,9 @@ def _build_sep_with_system_stats(
             left_w = _visible_width(left_info)
             sep_w = available - left_w - right_w
             if sep_w >= 4:
-                colors = gradient_range(sep_start, 237, sep_w)
-                sep_str = build_gradient_ansi(colors, char=char, suffix_reset=True)
+                sep_str = _build_sep_gradient_or_compose(
+                    sep_start, sep_w, breath_frame, char, suffix_reset=True
+                )
                 return f"  {left_info}{sep_str}{right_info}"
             # 空间不足时回退到右侧信息 + 纯分隔线
             # 不单独 return，让 fallthrough 到下方通用路径
@@ -273,10 +281,37 @@ def _build_sep_with_system_stats(
         fallback_sep = make_sep_gradient(available, start_color=sep_start, char=char)
         return f"  {fallback_sep}"
 
-    colors = gradient_range(sep_start, 237, sep_w)
-    sep_str = build_gradient_ansi(colors, char=char, suffix_reset=False)
-
+    sep_str = _build_sep_gradient_or_compose(
+        sep_start, sep_w, breath_frame, char, suffix_reset=False
+    )
     return f"  {sep_str}{right_info}"
+
+
+def _build_sep_gradient_or_compose(
+    sep_start: int,
+    sep_w: int,
+    breath_frame: int,
+    char: str,
+    suffix_reset: bool = False,
+) -> str:
+    """构建分隔线渐变或组合效果（消除重复代码）。
+
+    当 breath_frame > 0 时使用 EffectRegistry 组合效果（aurora+shimmer），
+    否则回退到静态 gradient_range 渐变。
+    """
+    if breath_frame > 0:
+        from ...core.effects import EffectRegistry
+        try:
+            composed = EffectRegistry.compose(
+                ["aurora", "shimmer"], frame=breath_frame, length=sep_w
+            )
+            return build_gradient_ansi(composed, char=char, suffix_reset=suffix_reset)
+        except Exception:
+            _logger.warning(
+                "EffectRegistry.compose() 失败，回退到静态渐变", exc_info=True
+            )
+    colors = gradient_range(sep_start, 237, sep_w)
+    return build_gradient_ansi(colors, char=char, suffix_reset=suffix_reset)
 
 
 def _visible_width(text: str) -> int:
@@ -331,13 +366,14 @@ def _draw_all_locked(bar: _BottomBar, out, height: int, breath_frame: int = 0) -
     else:
         # 分隔线增强：breath_frame>0 时使用波动效果 + 呼吸起始色
         if breath_frame > 0:
-            sep_start = AnimatorContext.get_default().sine_color(40, 45, 10)
+            sep_start = bar._animator.sine_color(40, 45, 10) if bar else 40
 
         # 嵌入 CPU/内存使用率信息
         cpu_pct = getattr(bar, '_cached_cpu_percent', 0.0)
         mem_pct = getattr(bar, '_cached_mem_percent', 0.0)
         sep = _build_sep_with_system_stats(
             tw, sep_start, cpu_pct, mem_pct, bar=bar,
+            breath_frame=breath_frame,
         )
         buf.append(_blessed_cursor_goto(r1, 1) + sep)
 
@@ -350,8 +386,7 @@ def _draw_all_locked(bar: _BottomBar, out, height: int, breath_frame: int = 0) -
     bar._last_status = status
     if status:
         if breath_frame > 0 and not _is_narrow_fn():
-            ctx = AnimatorContext.get_default()
-            dot_color = ctx.sine_color(45, 81, 12)
+            dot_color = bar._animator.sine_color(45, 81, 12) if bar else 45
             dot_ansi = f"\033[38;5;{dot_color}m\u00b7{_COLOR_RESET}"
             buf.append(_blessed_move_clear(r2) + status + " " + dot_ansi)
         else:

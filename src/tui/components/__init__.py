@@ -42,6 +42,10 @@ from ._cost import CostDisplayComponent
 from ._splash import SplashScreen
 
 # ── 通用 UI 组件 ──
+# 技术债（2026-07-15 步骤7审查）：以下组件当前无外部调用方，按保守策略保留。
+# BoxStyle / Box / RoundedBox / DoubleBox — 仅在 components 层内部使用（_panel.py, _table.py）
+# Panel / Separator / Spinner / Table / TreeView / TreeNode — 无外部调用方
+# parse_markup / render_markup — 无外部调用方
 from ._box import BoxStyle, Box, RoundedBox, DoubleBox
 from ._panel import Panel
 from ._separator import Separator

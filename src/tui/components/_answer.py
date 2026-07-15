@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from ..animation.transitions import FadeIn
 from ..consumer.render_state import _ReasoningState
-from ..core.animator import AnimatorContext
+from ..framework import Framework
 from ..terminal.terminal import is_narrow
 from ._base import TuiComponent, _estimate_content_lines
 
@@ -29,10 +29,13 @@ class AnswerBlock(TuiComponent):
             self._rs.close_reasoning()
         content = self._rs.get_content()
         # 首次写入：集成 FadeIn 入场动效
+        # 【技术债】此 FadeIn 首次写入逻辑与 ThinkingBlock.write() 中的
+        # FadeIn 入场逻辑重复（FadeIn(smooth, 6f, 240→253) + fade_prefix 包裹）。
+        # 后续可提取为公共 mixin 或工具函数（如 _apply_fade_in_first_write）。
         if self._first_write:
             self._first_write = False
             if not is_narrow():
-                frame = AnimatorContext.get_default().frame
+                frame = Framework.get_default().get_animator().frame
                 fade = FadeIn(easing="smooth", total_frames=6, start_color=240, end_color=253)
                 fade_prefix = fade.render(frame)
                 if fade_prefix:

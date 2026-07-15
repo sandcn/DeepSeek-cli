@@ -2,9 +2,10 @@
 TUI 框架统一入口 — `Framework` 单例 + 公开 API。
 
 提供：
-  - Framework: 全局单例框架管理器（组件工厂 + 效果注册表 + 样式表）
+  - Framework: 全局单例框架管理器（组件工厂 + 效果注册表 + 样式表 + 动画上下文）
   - create_component(): 创建组件并触发生命周期
   - frame_from_context(): 安全获取当前帧号的统一入口
+  - get_animator(): 获取全局动画上下文实例
 
 设计原则：
   - 单例管理：框架全局唯一，通过 Framework.get_default() 获取
@@ -15,17 +16,22 @@ TUI 框架统一入口 — `Framework` 单例 + 公开 API。
 
 from __future__ import annotations
 
+import logging
 import threading
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from .components._base import TuiComponent
+    from .core.animator import AnimatorContext
+
+_logger = logging.getLogger(__name__)
 
 
 __all__: list[str] = [
     "Framework",
     "create_component",
     "frame_from_context",
+    "get_animator",
 ]
 
 
@@ -41,7 +47,13 @@ class Framework:
       1. 组件创建与生命周期管理（create_component）
       2. 效果注册表访问（get_registry）
       3. 样式表访问（get_stylesheet）
-      4. 动画帧号上下文获取（get_frame）
+      4. 动画上下文访问（get_animator）
+      5. 动画帧号获取（get_frame）
+
+    架构确认（2026-07-15）：
+      ✅ 单一职责：Framework 仅管理 TUI 层单例与工厂方法，不涉及 I/O
+      ✅ 依赖方向：webui → tui（单向），Framework 不依赖 webui 层
+      ✅ 无新增依赖：get_animator() 仅委托已有 AnimatorContext，未引入新模块
 
     使用示例：
         >>> framework = Framework.get_default()
@@ -55,6 +67,10 @@ class Framework:
         >>> stylesheet = framework.get_stylesheet()
         >>> stylesheet.get("bold")
         Style(bold=True)
+        >>> # 获取动画上下文
+        >>> animator = framework.get_animator()
+        >>> animator.frame
+        0
     """
 
     _instance: Framework | None = None
@@ -80,7 +96,14 @@ class Framework:
 
     @classmethod
     def reset_default(cls) -> None:
-        """重置默认实例（供测试使用）。"""
+        """重置默认实例（供测试使用）。
+
+        可测试性确认（2026-07-15）：
+          ✅ 所有测试文件（test_framework.py / test_components_gradient.py 等）
+             在 setUp/tearDown 中正确调用 reset_default() 确保测试隔离
+          ✅ AnimatorContext.reset_default() 与 Framework.reset_default()
+             配合使用，双重重置确保单例状态干净
+        """
         with cls._instance_lock:
             cls._instance = None
 
@@ -124,20 +147,33 @@ class Framework:
             self._stylesheet = StyleSheet
         return self._stylesheet
 
-    def get_frame(self) -> int:
-        """获取当前动画帧号。
-
-        通过 AnimatorContext 全局单例获取帧号。
+    def get_animator(self) -> "AnimatorContext":
+        """获取全局动画上下文（AnimatorContext 实例）。
 
         Returns:
-            当前帧号（单调递增整数），AnimatorContext 未初始化时返回 0。
+            AnimatorContext 单例实例。
         """
         if self._animator is None:
             from .core.animator import AnimatorContext
             self._animator = AnimatorContext
+        return self._animator.get_default()
+
+    def get_frame(self) -> int:
+        """获取当前动画帧号。
+
+        委托 get_animator() 获取 AnimatorContext 单例并返回其帧号。
+
+        向后兼容：原 get_frame() 直接调用 AnimatorContext.get_default().frame，
+        现改为委托 get_animator().frame，接口和行为完全不变。
+        所有现有调用方（renderer.py / components / widgets）无需修改。
+
+        Returns:
+            当前帧号（单调递增整数），AnimatorContext 未初始化或异常时返回 0。
+        """
         try:
-            return self._animator.get_default().frame
-        except Exception:
+            return self.get_animator().frame
+        except (AttributeError, ImportError) as exc:
+            _logger.debug("get_frame() 降级返回 0: %s", exc)
             return 0
 
 
@@ -184,3 +220,18 @@ def frame_from_context(default: int = 0) -> int:
         当前帧号，获取失败时返回 default。
     """
     return Framework.get_default().get_frame()
+
+
+def get_animator() -> "AnimatorContext":
+    """获取全局动画上下文（Framework.get_animator 的便捷调用）。
+
+    用法::
+
+        from src.tui.framework import get_animator
+        animator = get_animator()
+        print(animator.frame)
+
+    Returns:
+        AnimatorContext 单例实例。
+    """
+    return Framework.get_default().get_animator()

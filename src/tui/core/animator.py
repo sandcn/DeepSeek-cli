@@ -15,7 +15,7 @@
 from __future__ import annotations
 
 import math
-from typing import Optional
+from typing import Any, ClassVar, Optional
 
 from .palettes import BREATH_CYAN, BREATH_GREEN, BREATH_PURPLE, BREATH_GOLD, BREATH_ROSE
 from .gradient import gradient_range
@@ -140,12 +140,25 @@ class AnimatorContext:
         frac = idx_f - idx_low
         return round(colors[idx_low] + frac * (colors[idx_high] - colors[idx_low]))
 
+    _default_lock: ClassVar[Any] = None  # 类级锁，惰性初始化
+
     @classmethod
     def get_default(cls) -> "AnimatorContext":
-        """获取全局默认实例（单例）。"""
-        if cls._default_instance is None:
-            cls._default_instance = cls()
-        return cls._default_instance
+        """获取全局默认实例（单例 · 双重检查锁）。
+
+        线程安全：首次创建时使用 DCL 模式与 Framework.get_default()
+        保持一致，避免多线程并发初始化时产生多个实例。
+        """
+        if cls._default_instance is not None:
+            return cls._default_instance
+        # 惰性创建锁（避免模块导入时的 threading 开销）
+        if cls._default_lock is None:
+            import threading
+            cls._default_lock = threading.Lock()
+        with cls._default_lock:
+            if cls._default_instance is None:
+                cls._default_instance = cls()
+            return cls._default_instance
 
     @classmethod
     def reset_default(cls) -> None:

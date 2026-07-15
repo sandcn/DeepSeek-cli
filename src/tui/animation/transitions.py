@@ -129,6 +129,14 @@ def _slice_by_visual_width(text: str, target_vw: int, from_left: bool = True) ->
 # ═══════════════════════════════════════════════════════════
 # FadeIn / FadeOut — 渐显/渐隐过渡
 # ═══════════════════════════════════════════════════════════
+#
+# 【技术债】_is_narrow() 在 FadeIn / FadeOut / SlideIn / SlideOut /
+# Typewriter 五个类中各有一份重复定义（共 5 处）。由于这些类均为
+# frozen dataclass，无法通过继承基类消除重复。后续可考虑：
+#   1. 提取模块级私有函数 _check_narrow() 供所有类共用
+#   2. 或在非 frozen 前提下引入 TransitionBase 基类
+# 当前设计保持静态方法模式以维持 dataclass freeze 约束。
+# 参考：transitions.py L177,L224,L283,L336,L414
 
 
 @dataclass(frozen=True)

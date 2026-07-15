@@ -3,6 +3,12 @@
 在终端底部使用 ANSI DECSTBM 滚动区域创建固定区域：
 上方内容区正常滚动，底部固定显示（分隔线 + 状态行 + 输入区）。
 
+【技术债】bar.py 约 1050 行，体量偏大。部分职责已拆分到 draw.py /
+theme.py / cursor.py / completion.py，但 bar.py 中仍保留较多状态管理
+和绘制协调逻辑。后续可考虑进一步拆分：
+  - 状态管理模块（_BottomBarState）—— 分离 _status_active/_cached 等状态
+  - 生命周期模块（_BottomBarLifecycle）—— 分离 __enter__/__exit__ 等上下文管理
+  当前不在本次重构范围内，标记为后续优化候选项。
 线程安全（分两级）：
   - 内容变更全量重绘（文本/状态/尺寸变化）→ output_lock 串行化
   - 纯光标移动轻量路径 → 无锁直写 ANSI 序列（GIL + 幂等性保证安全）
@@ -776,13 +782,14 @@ class _BottomBar(_StatusMixin):
             _buf.append(_blessed_move_clear(r1) + "  " + sep)
         else:
             if self._animator.breath_frame > 0:
-                sep_start = AnimatorContext.get_default().sine_color(40, 45, 10)
+                sep_start = self._animator.sine_color(40, 45, 10)
             from .draw import _build_sep_with_system_stats
             sep = _build_sep_with_system_stats(
                 tw, sep_start,
                 self._cached_cpu_percent,
                 self._cached_mem_percent,
                 bar=self,
+                breath_frame=self._animator.breath_frame,
             )
             _buf.append(_blessed_move_clear(r1) + sep)
         self._cursor_tracker.set(r1, 3)

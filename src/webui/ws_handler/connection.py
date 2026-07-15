@@ -12,7 +12,7 @@ import logging
 from ..msg_index import MsgIndexState, assign_msg_index
 from ..display import WebDisplay
 from ..bridge import WebEventBridge
-from ...ui.adapters import UIDisplayAdapter
+from ..adapter import UIDisplayAdapter
 from ..types import msg_round_cost
 from ...tui.core.cost import compute_round_cost_data
 

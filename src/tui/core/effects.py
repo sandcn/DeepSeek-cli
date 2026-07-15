@@ -4,6 +4,13 @@
 的重复实现。所有函数为纯计算，不依赖 AnimatorContext/
 BreathPalette，直接接受帧号作为参数，可独立测试。
 
+【技术债】effects.py 约 1200 行，体量偏大。后续可按效果类别拆分为子模块：
+  - _wave.py — 呼吸/正弦/波动效果（sine_color, build_glow_ansi 等）
+  - _sparkle.py — 闪烁/脉冲/高亮效果（sparkle_color, build_sparkle_ansi 等）
+  - _train.py — 列车/扫光/流动效果（build_pulse_train_ansi, build_shimmer_sep_ansi 等）
+  - _compose.py — EffectRegistry 合成器与效果包装
+  effects.py 保留为统一重导出入口，保持向后兼容。
+
 设计原则：
   - 纯函数：输入帧号 → 输出值/ANSI字符串，无副作用
   - 可缓存：热点动效使用 @lru_cache 减少重复计算

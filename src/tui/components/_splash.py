@@ -14,6 +14,7 @@ from __future__ import annotations
 from typing import ClassVar
 
 from ..core.style import Style
+from ..terminal.terminal import is_narrow
 from ._base import TuiComponent
 
 
@@ -68,15 +69,24 @@ class SplashScreen(TuiComponent):
             from ...config import MODEL
             model = MODEL
 
-        # 青色模型名 + Chat
-        line1 = f"  {Style(fg=45).apply(f'> {model} Chat')}"
-        # 分隔线（用青色边框字符 │ + 横线）
-        sep = f"{Style(fg=45).apply('─' * 50)}"
+        # 窄屏：保持现有静态渲染（青色样式）
+        if is_narrow():
+            line1 = f"  {Style(fg=45).apply(f'> {model} Chat')}"
+            sep = f"{Style(fg=45).apply('─' * 50)}"
+            line2 = f"  {Style(fg=45).apply('│')}   {sep}"
+            help_text = "/help   Esc中断   / 输前缀按 Tab 补全"
+            line3 = f"  {Style(fg=45).apply('│')}   {Style(fg=242).apply(help_text)}"
+            return f"{line1}\n{line2}\n{line3}"
+
+        # 宽屏：彩虹模型名 + 彩虹分隔线 + 灰色帮助信息
+        # ✅ 窄屏降级已确认：上方 is_narrow() 分支处理窄屏静态渲染，
+        #    build_rainbow_ansi 仅在宽屏路径调用，无窄屏兼容问题。
+        from ..core.effects import build_rainbow_ansi
+        line1 = f"  {build_rainbow_ansi(f'> {model} Chat', frame=0)}"
+        sep = build_rainbow_ansi('─' * 50, frame=0)
         line2 = f"  {Style(fg=45).apply('│')}   {sep}"
-        # 帮助信息
         help_text = "/help   Esc中断   / 输前缀按 Tab 补全"
         line3 = f"  {Style(fg=45).apply('│')}   {Style(fg=242).apply(help_text)}"
-
         return f"{line1}\n{line2}\n{line3}"
 
     def render_to_adapter(self, adapter) -> int:

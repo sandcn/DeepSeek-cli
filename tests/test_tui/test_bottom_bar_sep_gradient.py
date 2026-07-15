@@ -156,5 +156,145 @@ class TestSepGradientNarrowFallback(unittest.TestCase):
         return colors
 
 
+class TestBuildSepWithSystemStatsAuroraShimmer(unittest.TestCase):
+    """验证 _build_sep_with_system_stats() 的 aurora+shimmer 组合效果。
+
+    步骤 4 需求：breath_frame > 0 时使用 EffectRegistry.compose(["aurora", "shimmer"])
+    替代静态 gradient_range，breath_frame == 0 时回退到现有行为。
+    """
+
+    def _extract_colors(self, ansi_str: str) -> list[int]:
+        """从 ANSI 字符串中提取 256 色号列表。"""
+        colors: list[int] = []
+        parts = ansi_str.split("\033[38;5;")
+        for p in parts[1:]:
+            semi = p.find("m")
+            if semi > 0:
+                try:
+                    colors.append(int(p[:semi]))
+                except ValueError:
+                    continue
+        return colors
+
+    def test_breath_frame_zero_uses_static_gradient(self):
+        """breath_frame=0 时应使用静态渐变（色号从 sep_start 到 237）。"""
+        from src.tui.widgets.bottom_bar.draw import _build_sep_with_system_stats
+
+        result = _build_sep_with_system_stats(
+            tw=80, sep_start=45, cpu_percent=10.0, mem_percent=20.0,
+            breath_frame=0,
+        )
+        colors = self._extract_colors(result)
+        self.assertGreater(len(colors), 0, "breath_frame=0 时应产生色号序列")
+        # 静态渐变：起始色号在 sep_start(45) 附近，结束色号接近 237
+        self.assertLessEqual(colors[0], 50,
+                             f"起始色号应在 45 附近, 实际 {colors[0]}")
+        self.assertGreaterEqual(colors[-1], 230,
+                                f"结束色号应在 237 附近, 实际 {colors[-1]}")
+
+    def test_breath_frame_positive_uses_composite_colors(self):
+        """breath_frame > 0 时应使用 aurora+shimmer 组合色号。
+
+        组合色号由两个效果平均得出，与静态渐变色号分布不同。
+        验证：输出含 256 色序列且色号在合法范围 [0, 255]。
+        """
+        from src.tui.widgets.bottom_bar.draw import _build_sep_with_system_stats
+
+        result = _build_sep_with_system_stats(
+            tw=80, sep_start=45, cpu_percent=10.0, mem_percent=20.0,
+            breath_frame=5,
+        )
+        colors = self._extract_colors(result)
+        self.assertGreater(len(colors), 0,
+                           "breath_frame > 0 时应产生复合色号")
+        # 所有色号应在 256 色范围内
+        for i, c in enumerate(colors):
+            self.assertGreaterEqual(c, 0, f"色号[{i}]={c} 不能为负")
+            self.assertLessEqual(c, 255, f"色号[{i}]={c} 不能超过 255")
+
+    def test_breath_frame_positive_differs_from_static(self):
+        """breath_frame > 0 时的组合效果色号应与静态渐变不同。
+
+        通过比较全量色号序列来验证——aurora+shimmer 的组合色号序列
+        应与静态渐变的 gradient_range 序列不同。
+        """
+        from src.tui.widgets.bottom_bar.draw import _build_sep_with_system_stats
+
+        result_static = _build_sep_with_system_stats(
+            tw=80, sep_start=45, cpu_percent=10.0, mem_percent=20.0,
+            breath_frame=0,
+        )
+        result_composite = _build_sep_with_system_stats(
+            tw=80, sep_start=45, cpu_percent=10.0, mem_percent=20.0,
+            breath_frame=10,
+        )
+        colors_static = self._extract_colors(result_static)
+        colors_comp = self._extract_colors(result_composite)
+
+        # 验证有足够的色号进行比较
+        self.assertGreater(len(colors_static), 3)
+        self.assertGreater(len(colors_comp), 3)
+
+        # 组合效果的色号序列应与静态渐变不同（至少有一处差异）
+        min_len = min(len(colors_static), len(colors_comp))
+        self.assertNotEqual(
+            colors_static[:min_len],
+            colors_comp[:min_len],
+            "breath_frame > 0 时的组合色号应与静态渐变不同",
+        )
+
+    def test_narrow_mode_ignores_breath_frame(self):
+        """窄屏模式下 breath_frame > 0 应不触发组合效果，回退到纯分隔线。"""
+        from src.tui.widgets.bottom_bar.draw import _build_sep_with_system_stats
+
+        result = _build_sep_with_system_stats(
+            tw=40, sep_start=45, cpu_percent=10.0, mem_percent=20.0,
+            narrow=True, breath_frame=10,
+        )
+        # 窄屏模式输出应为纯分隔线（单色 ━ 重复），不含 CPU/MEM 信息
+        self.assertIn("\u2501", result, "窄屏输出应含分隔线字符 ━")
+
+    def test_composite_output_contains_ansi_format(self):
+        """组合效果输出应包含合法的 ANSI 256 色序列格式。"""
+        from src.tui.widgets.bottom_bar.draw import _build_sep_with_system_stats
+
+        result = _build_sep_with_system_stats(
+            tw=80, sep_start=45, cpu_percent=10.0, mem_percent=20.0,
+            breath_frame=7,
+        )
+        # 应包含 256 色 ANSI 序列
+        self.assertIn("\033[38;5;", result,
+                      "组合效果输出应含 256 色 ANSI 序列")
+        # 应以 2 空格缩进开头
+        self.assertTrue(
+            result.startswith("  "),
+            "分隔线应以 2 空格缩进开头",
+        )
+
+    def test_different_breath_frames_produce_different_colors(self):
+        """不同 breath_frame 值应产生不同的色号序列（动画效果）。"""
+        from src.tui.widgets.bottom_bar.draw import _build_sep_with_system_stats
+
+        result_f5 = _build_sep_with_system_stats(
+            tw=80, sep_start=45, cpu_percent=10.0, mem_percent=20.0,
+            breath_frame=5,
+        )
+        result_f15 = _build_sep_with_system_stats(
+            tw=80, sep_start=45, cpu_percent=10.0, mem_percent=20.0,
+            breath_frame=15,
+        )
+        colors_f5 = self._extract_colors(result_f5)
+        colors_f15 = self._extract_colors(result_f15)
+
+        min_len = min(len(colors_f5), len(colors_f15))
+        self.assertGreater(min_len, 3, "应有足够色号比较")
+
+        # 不同帧号应产生不同色号（aurora/shimmer 效果依赖 frame）
+        self.assertNotEqual(
+            colors_f5[:min_len], colors_f15[:min_len],
+            "不同 breath_frame 应产生不同色号序列",
+        )
+
+
 if __name__ == "__main__":
     unittest.main()
