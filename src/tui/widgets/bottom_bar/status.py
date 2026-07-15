@@ -4,6 +4,7 @@
 
 依赖 _BottomBar.__init__ 中初始化以下字段：
   - _status_active, _model_name, _tool_count, _tool_fail_count, _tool_total
+  - _main_phase, _main_phase_start, _tool_phase_start（分隔线阶段状态）
 """
 
 from __future__ import annotations
@@ -90,7 +91,14 @@ class _StatusMixin:
             return 0.0
 
     def increment_tool(self) -> None:
-        """递增工具调用计数。"""
+        """递增工具调用计数。
+
+        当 tool_count 从 0→1 时记录 _tool_phase_start，
+        供分隔线"工具调用"状态计算耗时使用。
+        """
+        if self._tool_count == 0:
+            import time
+            self._tool_phase_start = time.monotonic()
         self._tool_count += 1
         self._tool_total += 1
 
@@ -111,6 +119,7 @@ class _StatusMixin:
         self._tool_count = 0
         self._tool_fail_count = 0
         self._tool_total = 0
+        self._tool_phase_start = 0.0
 
     def set_model_name(self, name: str) -> None:
         """设置当前模型名字，状态行实时更新。

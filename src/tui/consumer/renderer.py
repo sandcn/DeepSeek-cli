@@ -153,6 +153,10 @@ class TuiRenderer:
     def _do_tool_fail_inc(self) -> None:
         self._bb.increment_tool_fail()
 
+    @register_render_command(RenderCommand.MAIN_PHASE, (1,))
+    def _do_main_phase(self, phase: str) -> None:
+        self._bb.set_main_phase(phase)
+
     @register_render_command(RenderCommand.TOOL_OUTPUT, (1,))
     def _do_tool_output(self, text: str) -> None:
         if not self._in_tool_group:

@@ -336,11 +336,18 @@ class TestEventDispatcherModelPhase:
         dispatcher._on_model_phase(event)
         push_cmd.assert_called_once_with((RenderCommand.ERROR, "Connection failed"))
 
-    def test_non_error_phase_skipped(self, dispatcher, push_cmd):
-        """非 error phase 跳过。"""
+    def test_non_error_phase_pushes_main_phase(self, dispatcher, push_cmd):
+        """非 error phase 推送 MAIN_PHASE 命令。"""
         event = ModelPhaseEvent(label=_MAIN_LABEL, phase="thinking", info="thinking...")
         dispatcher._on_model_phase(event)
-        push_cmd.assert_not_called()
+        push_cmd.assert_called_once_with((RenderCommand.MAIN_PHASE, "thinking"))
+
+    @pytest.mark.parametrize("phase", ["answering", "parsing", ""])
+    def test_all_non_error_phases(self, dispatcher, push_cmd, phase):
+        """所有非 error 阶段均推送 MAIN_PHASE。"""
+        event = ModelPhaseEvent(label=_MAIN_LABEL, phase=phase, info="")
+        dispatcher._on_model_phase(event)
+        push_cmd.assert_called_once_with((RenderCommand.MAIN_PHASE, phase))
 
     def test_empty_info_skipped(self, dispatcher, push_cmd):
         """空 info 跳过。"""

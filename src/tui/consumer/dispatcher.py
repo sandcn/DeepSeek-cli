@@ -161,7 +161,9 @@ class EventDispatcher:
     def _on_model_phase(self, event) -> None:
         if not self._pre_filter(event, _EVENT_TYPES.ModelPhaseEvent, require_label=True):
             return
+        # 非 error 阶段转发给底部栏显示状态（思考/回答/接收工具参数）
         if event.phase != "error":
+            self._push_cmd((RenderCommand.MAIN_PHASE, event.phase))
             return
         if not event.info:
             return

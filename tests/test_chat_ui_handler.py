@@ -318,15 +318,29 @@ class TestOnModelPhase:
         consumer._disp._on_model_phase(event)
         assert consumer._engine._cmd_queue.empty()
 
-    def test_non_error_phase_skipped(self, consumer):
-        """非 error phase（如 "thinking"）→ 不 push 任何命令"""
-        from src.tui.consumer import _MAIN_LABEL
+    def test_non_error_phase_pushes_main_phase(self, consumer):
+        """非 error phase（如 "thinking"）→ push MAIN_PHASE 命令"""
+        from src.tui.consumer import _MAIN_LABEL, RenderCommand
         from src.tui.events.event_types import ModelPhaseEvent
         event = ModelPhaseEvent(
             label=_MAIN_LABEL, phase="thinking", info="thinking...",
         )
         consumer._disp._on_model_phase(event)
-        assert consumer._engine._cmd_queue.empty()
+        cmd = consumer._engine._cmd_queue.get_nowait()
+        assert cmd[0] == RenderCommand.MAIN_PHASE
+        assert cmd[1] == "thinking"
+
+    def test_empty_phase_pushes_main_phase(self, consumer):
+        """空 phase 也推送 MAIN_PHASE（用于清除状态）"""
+        from src.tui.consumer import _MAIN_LABEL, RenderCommand
+        from src.tui.events.event_types import ModelPhaseEvent
+        event = ModelPhaseEvent(
+            label=_MAIN_LABEL, phase="", info="",
+        )
+        consumer._disp._on_model_phase(event)
+        cmd = consumer._engine._cmd_queue.get_nowait()
+        assert cmd[0] == RenderCommand.MAIN_PHASE
+        assert cmd[1] == ""
 
     def test_empty_info_skipped(self, consumer):
         """空 info → 不 push 任何命令"""

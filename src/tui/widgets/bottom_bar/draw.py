@@ -30,6 +30,7 @@ from .theme import (
     _COLOR_RESET,
     _COLOR_SEP,
     _COLOR_SPEED,
+    _COLOR_TIME,
     _MIN_INPUT_ROWS,
     _PLACEHOLDER_COMPACT,
     _PLACEHOLDER_STREAMING,
@@ -38,7 +39,7 @@ from .theme import (
     make_sep_gradient,
 )
 from ...core.animator import AnimatorContext
-from ...core.text_utils import build_gradient_ansi, make_sep_gradient_enhanced
+from ...core.text_utils import build_gradient_ansi
 from ...core.gradient import gradient_range
 from .cursor import (
     _expand_tabs,
@@ -149,13 +150,22 @@ def _build_sep_with_system_stats(
     *,
     char: str = "\u2501",
     narrow: bool = False,
+    bar: _BottomBar | None = None,
 ) -> str:
-    """构建带 CPU/内存使用率信息的分隔线。
+    """构建带主Agent状态、CPU/MEM 系统信息和当前时间的分隔线。
 
-    在渐变分隔线中间嵌入 CPU 和内存使用率数据，
-    格式：``  ━━━━━━━━━━ CPU: 23% · MEM: 45% ━━━━━━━━━━━━━━━━━━``
+    ── 布局策略（始终存在的信息） ──
+      行尾：CPU 使用率 + MEM 使用率 + 当前时间（始终显示）
 
-    窄屏时回退到纯渐变分隔线（不嵌入信息）。
+    ── 流式输出期间（bar._status_active=True 或工具有运行） ──
+      行首优先级：工具调用中（工具有运行） > 主Agent阶段（思考/回答/接收工具参数）
+      布局：``  工具调用中 2.10s  ━━(渐变)━━  CPU: 23% · MEM: 45%  2027-1-1 00:00:01  ``
+
+    ── 非流式 / 空闲期间 ──
+      行首：纯渐变分隔线
+      布局：``  ━━(渐变)━━  CPU: 23% · MEM: 45%  2027-1-1 00:00:01  ``
+
+    空间不足时（窄屏 / 宽度 < 60 列）：回退到纯渐变分隔线，跳过所有信息。
 
     Args:
         tw: 终端宽度（列数）。
@@ -164,50 +174,113 @@ def _build_sep_with_system_stats(
         mem_percent: 内存使用率（0.0 ~ 100.0）。
         char: 分隔线字符，默认 ━ (U+2501)。
         narrow: 是否为窄屏模式，窄屏时跳过信息嵌入。
+        bar: _BottomBar 实例，用于读取主Agent阶段和流式状态。
 
     Returns:
         完整的带 ANSI 颜色的分隔线字符串（含前导 ``  `` 缩进和尾部 RESET）。
     """
+    import time as _time
+
     available = max(1, tw - 2)  # 去除前导 2 空格
 
-    # 窄屏或空间不足时回退到纯分隔线
+    # ── 构建行尾信息：CPU/MEM + 当前时间（始终存在） ──
+    now_local = _time.localtime()
+    time_str = (
+        f"{now_local.tm_year}-{now_local.tm_mon}-"
+        f"{now_local.tm_mday} {now_local.tm_hour:02d}:"
+        f"{now_local.tm_min:02d}:{now_local.tm_sec:02d}"
+    )
+    time_info = f" {_COLOR_DIM}{time_str}{_COLOR_RESET} "
+
     cpu_int = max(0, min(100, round(cpu_percent)))
     mem_int = max(0, min(100, round(mem_percent)))
     cpu_str = str(cpu_int)
     mem_str = str(mem_int)
 
-    # 纯文本宽度（不含 ANSI 码）
-    plain_info = f" CPU: {cpu_str}% · MEM: {mem_str}% "
-    info_width = len(plain_info)
-
-    if narrow or info_width >= available - 4:
-        # 空间不足，回退到纯分隔线
-        from ...core.text_utils import make_sep_gradient
-        fallback_sep = make_sep_gradient(available, start_color=sep_start, char=char)
-        return f"  {fallback_sep}"
-
-    # 拆分渐变：左段约 1/3，右段占剩余
-    left_len = max(2, (available - info_width) // 3)
-    right_len = available - left_len - info_width
-
-    # 构建全宽渐变色号列表，再拆分
-    colors = gradient_range(sep_start, 237, available)
-    left_colors = colors[:left_len]
-    right_colors = colors[left_len + info_width:]
-
-    left_sep = build_gradient_ansi(left_colors, char=char, suffix_reset=False)
-    right_sep = build_gradient_ansi(right_colors, char=char, suffix_reset=True)
-
-    # 信息文本（多色分层）
-    info_ansi = (
+    cpu_mem_info = (
         f" {_COLOR_ACCENT}CPU:{_COLOR_RESET}"
         f" {_COLOR_SPEED}{cpu_str}{_COLOR_ACCENT}%{_COLOR_RESET}"
         f" {_COLOR_DIM}\u00b7{_COLOR_RESET} "
         f"{_COLOR_ACCENT}MEM:{_COLOR_RESET}"
-        f" {_COLOR_SPEED}{mem_str}{_COLOR_ACCENT}%{_COLOR_RESET} "
+        f" {_COLOR_SPEED}{mem_str}{_COLOR_ACCENT}%{_COLOR_RESET}"
     )
+    right_info = cpu_mem_info + time_info
+    right_w = _visible_width(right_info)
 
-    return f"  {left_sep}{info_ansi}{right_sep}"
+    # ── 窄屏 / 空间不足 → 纯渐变分隔线 ──
+    if narrow or right_w >= available - 6:
+        fallback_sep = make_sep_gradient(available, start_color=sep_start, char=char)
+        return f"  {fallback_sep}"
+
+    # ── 判断是否显示阶段状态（行首） ──
+    # 流式期间或工具有运行时，在行首显示阶段状态 + 耗时
+    is_streaming = bar is not None and bar._status_active
+    has_tools = bar is not None and bar._tool_count > 0
+    show_status = is_streaming or has_tools
+
+    if show_status:
+        # ── 构建行首：阶段状态 + 实时耗时 ──
+        phase = bar._main_phase if bar else ""
+        phase_start = bar._main_phase_start if bar else 0.0
+        tool_count = bar._tool_count if bar else 0
+
+        # 阶段名 → 中文映射
+        phase_map = {
+            "thinking":  "思考",
+            "answering": "回答",
+            "parsing":   "接收工具参数",
+        }
+        now = _time.monotonic()
+
+        # ★ 工具有运行时优先显示"工具调用中"（无论当前 phase 是什么）
+        if tool_count > 0:
+            tool_elapsed = (
+                now - bar._tool_phase_start
+                if bar and bar._tool_phase_start > 0
+                else 0.0
+            )
+            left_info = (
+                f" {_COLOR_ACCENT}工具调用中{_COLOR_RESET}"
+                f" {_COLOR_TIME}{tool_elapsed:.2f}s{_COLOR_RESET} "
+            )
+        elif phase in phase_map:
+            phase_label = phase_map[phase]
+            phase_elapsed = now - phase_start if phase_start > 0 else 0.0
+            left_info = (
+                f" {_COLOR_SPEED}{phase_label}{_COLOR_RESET}"
+                f" {_COLOR_TIME}{phase_elapsed:.2f}s{_COLOR_RESET} "
+            )
+        else:
+            left_info = ""
+
+        # ── 有阶段信息 → 布局：左信息 + 渐变线 + 右侧 CPU/MEM + 时间 ──
+        if left_info:
+            left_w = _visible_width(left_info)
+            sep_w = available - left_w - right_w
+            if sep_w >= 4:
+                colors = gradient_range(sep_start, 237, sep_w)
+                sep_str = build_gradient_ansi(colors, char=char, suffix_reset=True)
+                return f"  {left_info}{sep_str}{right_info}"
+            # 空间不足时回退到右侧信息 + 纯分隔线
+            # 不单独 return，让 fallthrough 到下方通用路径
+
+    # ── 非流式 / 无阶段 / 空间不足：渐变线 + 右侧 CPU/MEM + 时间 ──
+    # 布局：渐变分隔线 + CPU/MEM 信息 + 时间
+    sep_w = available - right_w
+    if sep_w < 4:
+        fallback_sep = make_sep_gradient(available, start_color=sep_start, char=char)
+        return f"  {fallback_sep}"
+
+    colors = gradient_range(sep_start, 237, sep_w)
+    sep_str = build_gradient_ansi(colors, char=char, suffix_reset=False)
+
+    return f"  {sep_str}{right_info}"
+
+
+def _visible_width(text: str) -> int:
+    """计算字符串的可视宽度（去除 ANSI 转义序列）。"""
+    import re
+    return len(re.sub(r'\033\[[0-9;]*m', '', text))
 
 
 def _draw_all_locked(bar: _BottomBar, out, height: int, breath_frame: int = 0) -> None:
@@ -260,7 +333,7 @@ def _draw_all_locked(bar: _BottomBar, out, height: int, breath_frame: int = 0) -
         cpu_pct = getattr(bar, '_cached_cpu_percent', 0.0)
         mem_pct = getattr(bar, '_cached_mem_percent', 0.0)
         sep = _build_sep_with_system_stats(
-            tw, sep_start, cpu_pct, mem_pct,
+            tw, sep_start, cpu_pct, mem_pct, bar=bar,
         )
         buf.append(_blessed_cursor_goto(r1, 1) + sep)
 

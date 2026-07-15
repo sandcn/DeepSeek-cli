@@ -127,6 +127,11 @@ class _BottomBar(_StatusMixin):
         self._tool_total: int = 0
         self._subagent_lines: list[str] = []
         self._last_subagent_lines: list[str] = []
+        # ── 主Agent阶段状态（通过 RenderCommand.MAIN_PHASE 更新） ──
+        self._main_phase: str = ""
+        self._main_phase_start: float = 0.0
+        # ── 工具调用阶段开始时间（tool_count 从0→1时设置） ──
+        self._tool_phase_start: float = 0.0
         # ── 布局/光标 ──
         self._last_bottom_lines = _BOTTOM_MIN_LINES
         self._input_cursor_pos: int = -1
@@ -580,6 +585,19 @@ class _BottomBar(_StatusMixin):
         self._last_text = text
         self._input_cursor_pos = cursor_pos
 
+    def set_main_phase(self, phase: str) -> None:
+        """设置主Agent的模型阶段（由 render 线程通过 RenderCommand 调用）。
+
+        记录阶段名和阶段开始时间戳（monotonic），
+        供 force_redraw() 在绘制分隔线时计算耗时。
+
+        Args:
+            phase: 阶段名，"thinking"/"answering"/"parsing"/"" 等
+        """
+        if phase != self._main_phase:
+            self._main_phase_start = time.monotonic()
+        self._main_phase = phase
+
     def setup(self) -> None:
         """启用底部栏：设置滚动区域 + 状态初始化（不绘制）。
 
@@ -764,6 +782,7 @@ class _BottomBar(_StatusMixin):
                 tw, sep_start,
                 self._cached_cpu_percent,
                 self._cached_mem_percent,
+                bar=self,
             )
             _buf.append(_blessed_move_clear(r1) + sep)
         self._cursor_tracker.set(r1, 3)
