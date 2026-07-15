@@ -24,6 +24,7 @@ from src.tui.consumer.utils import _truncate_msg
 from src.tui.consumer.dispatcher import EventDispatcher, _HANDLER_MAP
 from src.tui.events.event_types import (
     ReasoningChunkEvent, ContentChunkEvent, PhaseDoneEvent,
+    ToolParsingEvent,
     ToolStartedEvent, ToolDoneEvent, ToolOutputChunkEvent,
     ToolSummaryEvent, ParseInfoEvent, ParseInfoDoneEvent,
     OutputEvent, ModelPhaseEvent,
@@ -122,6 +123,38 @@ class TestEventDispatcherPhaseDone:
         """label != _MAIN_LABEL 跳过。"""
         event = PhaseDoneEvent(label="subagent-1", phase="reasoning")
         dispatcher._on_phase_done(event)
+        push_cmd.assert_not_called()
+
+
+# ═══════════════════════════════════════════════════════════
+# TestEventDispatcherToolParsing
+# ═══════════════════════════════════════════════════════════
+
+class TestEventDispatcherToolParsing:
+    """ToolParsingEvent 处理器测试。"""
+
+    def test_agent_source(self, dispatcher, push_cmd):
+        """source='agent' → push_cmd 收到 (MAIN_PHASE, 'parsing')。"""
+        event = ToolParsingEvent(source=_MAIN_SOURCE, label="tool_call_1")
+        dispatcher._on_tool_parsing(event)
+        push_cmd.assert_called_once_with((RenderCommand.MAIN_PHASE, "parsing"))
+
+    def test_subagent_source(self, dispatcher, push_cmd):
+        """source='agent-1' → 同样推送（SubAgent 兼容）。"""
+        event = ToolParsingEvent(source="agent-1", label="tool_call_2")
+        dispatcher._on_tool_parsing(event)
+        push_cmd.assert_called_once_with((RenderCommand.MAIN_PHASE, "parsing"))
+
+    def test_user_source_skipped(self, dispatcher, push_cmd):
+        """source='user' 跳过。"""
+        event = ToolParsingEvent(source="user", label="tool_call_3")
+        dispatcher._on_tool_parsing(event)
+        push_cmd.assert_not_called()
+
+    def test_empty_source_skipped(self, dispatcher, push_cmd):
+        """source=''（默认值）跳过。"""
+        event = ToolParsingEvent(source="", label="tool_call_4")
+        dispatcher._on_tool_parsing(event)
         push_cmd.assert_not_called()
 
 
@@ -390,6 +423,7 @@ class TestEventDispatcherEdgeCases:
         dispatcher._on_reasoning_chunk("not an event")        # type: ignore[arg-type]
         dispatcher._on_content_chunk(42)                      # type: ignore[arg-type]
         dispatcher._on_phase_done(None)                       # type: ignore[arg-type]
+        dispatcher._on_tool_parsing({"source": "agent"})     # type: ignore[arg-type]
         dispatcher._on_tool_started([1, 2, 3])                # type: ignore[arg-type]
         dispatcher._on_tool_done({"source": "agent"})         # type: ignore[arg-type]
         dispatcher._on_tool_output(True)                      # type: ignore[arg-type]
@@ -401,13 +435,14 @@ class TestEventDispatcherEdgeCases:
         push_cmd.assert_not_called()
 
     def test_handler_not_registered_does_nothing(self, dispatcher, push_cmd):
-        """_HANDLER_MAP 包含全部 11 个事件处理器。"""
+        """_HANDLER_MAP 包含全部 12 个事件处理器。"""
         from src.tui.consumer.dispatcher import _HANDLER_MAP
         registered_handlers = {name for name, (_, _) in _HANDLER_MAP.items()}
-        assert len(registered_handlers) == 11
+        assert len(registered_handlers) == 12
         assert "ReasoningChunkEvent" in registered_handlers
         assert "ContentChunkEvent" in registered_handlers
         assert "PhaseDoneEvent" in registered_handlers
+        assert "ToolParsingEvent" in registered_handlers
         assert "ToolStartedEvent" in registered_handlers
         assert "ToolDoneEvent" in registered_handlers
         assert "ToolOutputChunkEvent" in registered_handlers

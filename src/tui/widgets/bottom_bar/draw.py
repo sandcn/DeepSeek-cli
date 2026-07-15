@@ -14,6 +14,8 @@ from __future__ import annotations
 import sys
 from typing import TYPE_CHECKING
 
+from wcwidth import wcswidth
+
 from .blessed import (
     _blessed_cursor_goto,
     _blessed_move_clear,
@@ -280,7 +282,9 @@ def _build_sep_with_system_stats(
 def _visible_width(text: str) -> int:
     """计算字符串的可视宽度（去除 ANSI 转义序列）。"""
     import re
-    return len(re.sub(r'\033\[[0-9;]*m', '', text))
+    clean = re.sub(r'\033\[[0-9;]*m', '', text)
+    w = wcswidth(clean)
+    return w if w >= 0 else len(clean)
 
 
 def _draw_all_locked(bar: _BottomBar, out, height: int, breath_frame: int = 0) -> None:

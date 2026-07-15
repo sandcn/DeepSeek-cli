@@ -1,6 +1,6 @@
 """事件分发器 — DisplayEvent → RenderCommand 过滤+入队。
 
-从 _tui.py 拆分，11 种事件类型映射到对应 RenderCommand。
+从 _tui.py 拆分，12 种事件类型映射到对应 RenderCommand。
 """
 
 from __future__ import annotations
@@ -22,6 +22,7 @@ if TYPE_CHECKING:
         ContentChunkEvent,
         PhaseDoneEvent,
         ToolDoneEvent,
+        ToolParsingEvent,
         ToolOutputChunkEvent,
         ToolStartedEvent,
         ToolSummaryEvent,
@@ -42,6 +43,7 @@ _HANDLER_MAP: dict[str, tuple[str, str]] = {
     "ReasoningChunkEvent":  ("ReasoningChunkEvent",  "_on_reasoning_chunk"),
     "ContentChunkEvent":    ("ContentChunkEvent",    "_on_content_chunk"),
     "PhaseDoneEvent":       ("PhaseDoneEvent",       "_on_phase_done"),
+    "ToolParsingEvent":     ("ToolParsingEvent",     "_on_tool_parsing"),
     "ToolStartedEvent":     ("ToolStartedEvent",     "_on_tool_started"),
     "ToolDoneEvent":        ("ToolDoneEvent",        "_on_tool_done"),
     "ToolOutputChunkEvent": ("ToolOutputChunkEvent", "_on_tool_output"),
@@ -60,11 +62,12 @@ _HANDLER_MAP: dict[str, tuple[str, str]] = {
 class EventDispatcher:
     """DisplayEvent → RenderCommand 过滤+入队。
 
-    将 11 种 DisplayEvent 类型映射到对应的 RenderCommand 并推入命令队列：
+    将 12 种 DisplayEvent 类型映射到对应的 RenderCommand 并推入命令队列：
 
     - ReasoningChunkEvent  → REASONING       (推理内容块)
     - ContentChunkEvent    → CONTENT         (助手回答块)
     - PhaseDoneEvent       → PHASE_DONE      (推理/内容阶段完成)
+    - ToolParsingEvent     → MAIN_PHASE      (工具参数解析中)
     - ToolStartedEvent     → TOOL_COUNT_INC  (工具开始计数+1)
     - ToolDoneEvent        → TOOL_COUNT_DEC / TOOL_FAIL_INC (工具完成/失败)
     - ToolOutputChunkEvent → TOOL_OUTPUT     (工具输出内容)
@@ -114,6 +117,11 @@ class EventDispatcher:
         if not event.text:
             return
         self._push_cmd((RenderCommand.CONTENT, event.text))
+
+    def _on_tool_parsing(self, event) -> None:
+        if not self._pre_filter(event, _EVENT_TYPES.ToolParsingEvent, require_source=True):
+            return
+        self._push_cmd((RenderCommand.MAIN_PHASE, "parsing"))
 
     def _on_phase_done(self, event) -> None:
         if not self._pre_filter(event, _EVENT_TYPES.PhaseDoneEvent, require_label=True):

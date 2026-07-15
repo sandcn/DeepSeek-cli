@@ -17,6 +17,7 @@ if TYPE_CHECKING:
         ContentChunkEvent,
         PhaseDoneEvent,
         ToolDoneEvent,
+        ToolParsingEvent,
         ToolOutputChunkEvent,
         ToolStartedEvent,
         ToolSummaryEvent,
@@ -94,7 +95,7 @@ class ChatUIConsumer:
     def start(self) -> None:
         """启动 ChatUI 消费者。
 
-        订阅 11 种 DisplayEvent。首次启动时跳过防御性 unsubscribe
+        订阅 12 种 DisplayEvent。首次启动时跳过防御性 unsubscribe
         （从未订阅过任何事件）；后续重新启动时先 subscribe 新 handler
         再 unsubscribe 旧 handler，消除事件丢失的时序窗口。
         启动渲染线程、展示品牌屏、注册为活跃消费者。幂等操作——重复调用安全返回。
@@ -110,12 +111,13 @@ class ChatUIConsumer:
                     ReasoningChunkEvent, ContentChunkEvent, PhaseDoneEvent,
                     ToolStartedEvent, ToolDoneEvent, ToolOutputChunkEvent,
                     ToolSummaryEvent, ParseInfoEvent, ParseInfoDoneEvent,
-                    OutputEvent, ModelPhaseEvent,
+                    OutputEvent, ModelPhaseEvent, ToolParsingEvent,
                 )
                 _event_type_map = {
                     "ReasoningChunkEvent": ReasoningChunkEvent,
                     "ContentChunkEvent": ContentChunkEvent,
                     "PhaseDoneEvent": PhaseDoneEvent,
+                    "ToolParsingEvent": ToolParsingEvent,
                     "ToolStartedEvent": ToolStartedEvent,
                     "ToolDoneEvent": ToolDoneEvent,
                     "ToolOutputChunkEvent": ToolOutputChunkEvent,

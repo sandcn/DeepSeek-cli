@@ -117,9 +117,9 @@ class TestChatUIConsumerInit:
         assert consumer._engine._cmd_queue.empty()
 
     def test_init_event_handler_names_present(self, consumer):
-        """_HANDLER_MAP 包含 11 个事件处理器"""
+        """_HANDLER_MAP 包含 12 个事件处理器"""
         from src.tui.consumer.dispatcher import _HANDLER_MAP
-        assert len(_HANDLER_MAP) == 11
+        assert len(_HANDLER_MAP) == 12
 
     def test_init_event_bus_fallback(self):
         """未传入 event_bus 时使用 DisplayEventBus.get_default()"""
@@ -149,8 +149,8 @@ class TestChatUIConsumerStart:
         with patch.object(consumer._engine, 'start'):
             with patch('src.tui.consumer.state'):
                 consumer.start()
-                # 11 个事件处理器
-                assert mock_bus.subscribe.call_count == 11
+                # 12 个事件处理器
+                assert mock_bus.subscribe.call_count == 12
 
     def test_start_sets_active_consumer(self, consumer, mock_bus):
         """start() 调用 _state._register_consumer(self) 注册活跃实例"""
@@ -188,7 +188,7 @@ class TestChatUIConsumerStart:
             with patch('src.tui.consumer.state'):
                 consumer.start()
                 assert consumer._bound_handlers is not None
-                assert len(consumer._bound_handlers) == 11
+                assert len(consumer._bound_handlers) == 12
 
     def test_start_defensive_unsubscribe(self, consumer, mock_bus):
         """首次 start() 跳过防御性 unsubscribe（从未订阅过）
@@ -204,7 +204,7 @@ class TestChatUIConsumerStart:
         # 首次 start：跳过防御性 unsubscribe（从未订阅过）
         assert mock_bus.unsubscribe.call_count == 0
         # subscribe 仍正常执行
-        assert mock_bus.subscribe.call_count == 11
+        assert mock_bus.subscribe.call_count == 12
 
     def test_start_defensive_unsubscribe_ignored(self, consumer, mock_bus):
         """防御性 unsubscribe 抛出异常时静默跳过（未订阅时）"""
@@ -228,8 +228,8 @@ class TestChatUIConsumerStart:
             with patch('src.tui.consumer.state'):
                 consumer.start()
 
-        # 11 个事件已全部订阅
-        assert mock_bus.subscribe.call_count == 11
+        # 12 个事件已全部订阅
+        assert mock_bus.subscribe.call_count == 12
         # _started 为 True 表示整个 start() 已执行完毕
         assert consumer._started is True
 
@@ -292,7 +292,7 @@ class TestChatUIConsumerStop:
     def test_stop_unsubscribes_events(self, consumer, mock_bus):
         """stop() 为每个事件处理器调用 unsubscribe"""
         consumer._started = True
-        n_handlers = 11
+        n_handlers = 12
         consumer._bound_handlers = {MagicMock(): MagicMock() for _ in range(n_handlers)}
 
         with patch.object(consumer._engine, 'stop'):
@@ -643,15 +643,15 @@ class TestChatUIConsumerLifecycle:
         with patch.object(consumer._engine, 'start'):
             with patch('src.tui.consumer.state'):
                 consumer.start()
-                assert mock_bus.subscribe.call_count == 11
+                assert mock_bus.subscribe.call_count == 12
 
         with patch.object(consumer._engine, 'stop'):
             with patch.object(consumer._engine, 'flush'):
                 with patch('src.tui.consumer.state'):
                     with patch.object(consumer._bottom_bar, 'teardown'):
                         consumer.stop()
-                        # unsubscribe 至少调用了 11 次
-                        assert mock_bus.unsubscribe.call_count >= 11
+                        # unsubscribe 至少调用了 12 次
+                        assert mock_bus.unsubscribe.call_count >= 12
 
 
 # ═══════════════════════════════════════════════════════
