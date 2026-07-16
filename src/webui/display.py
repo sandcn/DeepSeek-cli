@@ -15,7 +15,7 @@ import asyncio
 import logging
 from typing import Callable
 
-from ..tui.consumer.base_display import BaseDisplay
+from ..ui.base_display import BaseDisplay
 from ._base_sender import BaseWebSocketSender
 from ._pending_selects import pending_selects
 from .ws_handler.sandbox import FILE_MODIFY_TOOLS, build_sandbox_updated

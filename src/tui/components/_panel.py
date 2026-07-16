@@ -21,7 +21,7 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from ...renderer.output import OutputAdapter
 
-from tui_framework.terminal.narrow import is_narrow
+from ..terminal.narrow import is_narrow
 from ..core.text_utils import truncate
 from ..core.ansi_utils import visual_width
 from ._base import TuiComponent, _estimate_content_lines
@@ -40,10 +40,6 @@ class Panel(TuiComponent):
     在 content 外部装饰边框和标题，不修改 content 本身的渲染逻辑。
     支持窄屏降级：is_narrow() 时简化为无边框的标题行 + 内容。
 
-    辉光动效（2026-07-16）：
-      当 ``animated=True`` 时，边框颜色使用 ``build_glow_ansi`` 呼吸辉光，
-      每帧颜色微调产生柔和脉动。圆角框保持 ``╭──╮`` / ``╰──╯`` 样式。
-
     Attributes:
         title: 标题文本。
         content: 内容（str 或 TuiComponent 实例）。
@@ -53,8 +49,6 @@ class Panel(TuiComponent):
         border_color: 边框字符色号，None 时使用终端默认色。
         title_color: 标题色号，None 时使用终端默认色。
         padding: 内容与边框之间的填充空格数。
-        frame: 动效帧号，启用 animated 时用于呼吸辉光。
-        animated: 是否启用边框辉光呼吸动效。
     """
 
     def __init__(
@@ -67,8 +61,6 @@ class Panel(TuiComponent):
         border_color: int | None = None,
         title_color: int | None = None,
         padding: int = 1,
-        frame: int = 0,
-        animated: bool = False,
     ) -> None:
         self.title = title
         self.content = content
@@ -78,8 +70,6 @@ class Panel(TuiComponent):
         self.border_color = border_color
         self.title_color = title_color
         self.padding = padding
-        self.frame = frame
-        self.animated = animated
 
     # ── 核心渲染接口 ────────────────────────────────────
 
@@ -145,14 +135,7 @@ class Panel(TuiComponent):
             inner_width = max(1, box_width - 2)
 
         # ── ANSI 颜色前缀/后缀 ──
-        if self.animated and self.frame > 0:
-            from ..core.effects import build_glow_ansi
-            # 辉光呼吸边框：每帧颜色微调产生柔和脉动
-            glow_base = self.border_color if self.border_color is not None else 51
-            border_pre = build_glow_ansi(self.frame, glow_base, period=12)
-            border_suf = "\033[0m"
-        else:
-            border_pre, border_suf = self._ansi_wrap(self.border_color)
+        border_pre, border_suf = self._ansi_wrap(self.border_color)
         title_pre, title_suf = self._ansi_wrap(self.title_color)
 
         # ── 展开边框字符 ──

@@ -14,7 +14,7 @@ from src._compat import dataclass
 from ._utils import _non_system_messages
 
 from ..core.session import ChatSession
-from ..core.constants import DIM, RESET
+from ..ui.colors import DIM, RESET
 from ..api.stats import reset_token_speed
 from ..api.escape_monitor import EscapeMonitor
 from ..notifications import notify_chat_completed

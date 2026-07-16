@@ -9,7 +9,7 @@ import argparse
 import logging
 
 from ..chat_msgs import list_sessions, delete_session, export_session
-from ..core.constants import CYAN, DIM, RESET, YELLOW, GREEN
+from ..ui.colors import CYAN, DIM, RESET, YELLOW, GREEN
 from ..tui.widgets.lock import locked_print
 
 _logger = logging.getLogger(__name__)

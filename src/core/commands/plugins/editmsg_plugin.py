@@ -21,7 +21,7 @@ from typing import Any
 
 from .base import InteractiveCommandPlugin
 from ..base import CommandMeta, get_plugin_registry
-from ....core.constants import YELLOW, RESET
+from ....ui.colors import YELLOW, RESET
 
 _logger = logging.getLogger(__name__)
 

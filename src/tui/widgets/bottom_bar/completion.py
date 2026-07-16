@@ -175,37 +175,6 @@ class _CompletionPopup:
             self._orig_prefix,
         )
 
-    def _render_item_line_str(
-        self, item: str, item_type: str,
-        match_prefix: str, cell_w: int, is_selected: bool,
-    ) -> str:
-        """渲染单行候选项为字符串（inline 模式，返回文本而非写 stdout）。
-
-        Args:
-            item: 显示文本。
-            item_type: 候选项类型（command/dir/file/param/session/""）。
-            match_prefix: 匹配前缀（用于高亮，空字符串时不高亮）。
-            cell_w: 单元格宽度（列数）。
-            is_selected: 是否为当前选中项。
-
-        Returns:
-            带 ANSI 样式的行字符串。
-        """
-        truncated_raw = _truncate_by_width(item, cell_w)
-        display = _render_display_text(truncated_raw, item_type, match_prefix, cell_w)
-        pad = " " * max(0, cell_w - _visual_len(truncated_raw))
-
-        if is_selected:
-            if not is_narrow():
-                bg_color = self._animator.sine_color(235, 240, 10)
-                bg_ansi = f"\033[48;5;{bg_color}m"
-            else:
-                bg_ansi = _COLOR_SELECT_BG
-            return (f" {bg_ansi}{_COLOR_SELECT_FG}\u25b6{_COLOR_RESET}"
-                    f"{bg_ansi}{_COLOR_SELECT_FG} {display}{pad}{_COLOR_RESET}")
-        else:
-            return f"  {display}{pad}"
-
     def _render_item_line(
         self, out, r: int, item: str, item_type: str,
         match_prefix: str, cell_w: int, is_selected: bool,
@@ -324,129 +293,64 @@ class _CompletionPopup:
 
         return popup_height
 
-    def render_to_lines(self, term_width: int) -> list[str]:
-        """渲染补全弹窗为行列表（inline 模式，不直接写 stdout）。
+    def render_cycle_update(self, out, popup_r_start: int, term_width: int) -> None:
+        """增量更新选项行和底部快捷键提示（cycle 时使用，仅重绘弹窗行）。
 
-        供 _BottomBar._build_input_area_lines() 使用，与底部栏其他行
-        统一收集后批量写入。
-
-        Args:
-            term_width: 终端宽度。
-
-        Returns:
-            弹窗行列表（弹窗不可见时返回空列表）。
-        """
-        popup_height = self._popup_height
-        if popup_height <= 0 or not self._items:
-            return []
-
-        lines: list[str] = []
-        popup_w = self._calc_popup_width(self._items, term_width)
-        n = len(self._items)
-
-        # ── 标题行 ──
-        total_items = len(self._texts)
-        if not is_narrow():
-            title_color = self._animator.sine_color(45, 81, 12)
-            title_ansi = f"\033[1;38;5;{title_color}m"
-        else:
-            title_ansi = _COLOR_COMPLETE_TITLE
-        header = f" {title_ansi}{self._title}{_COLOR_RESET} {_COLOR_DIM}({total_items}项){_COLOR_RESET}"
-        lines.append(header)
-
-        # ── 选项行 ──
-        cell_w = popup_w - 3
-        types = self._types if len(self._types) == n else [""] * n
-        for i, item in enumerate(self._items):
-            line = self._render_item_line_str(
-                item, types[i], self._match_prefix, cell_w,
-                is_selected=(i == self._idx),
-            )
-            lines.append(line)
-
-        # ── 快捷键提示行 ──
-        truncated = total_items > n
-        is_selection = self._is_selection
-        if is_selection:
-            hint_prefix = "\u2191\u2193 Enter Esc"
-        else:
-            hint_prefix = "Tab \u2191\u2193 Esc"
-        if truncated:
-            hint = f" {_COLOR_TIME}{self._idx + 1}/{n}{_COLOR_RESET} {_COLOR_DIM}(\u524d{n}/{total_items}){_COLOR_RESET}  {hint_prefix} "
-        else:
-            hint = f" {hint_prefix} "
-        if not is_narrow():
-            dot_color = self._animator.sine_color(45, 81, 12)
-            hint_dot = f" \033[38;5;{dot_color}m\u00b7{_COLOR_RESET}"
-        else:
-            hint_dot = ""
-        lines.append(f"{_COLOR_DIM}{hint}{_COLOR_RESET}{hint_dot}")
-
-        return lines
-
-    def render_cycle_update_inline(self, out, popup_r_start: int, term_width: int) -> None:
-        """增量更新选项行和底部快捷键提示（inline CUP 模式）。
-
-        不使用 SCOSC/DECRC，使用 CUP 绝对定位跳转到弹窗区域。
-        每次调用自动推进呼吸相位。
+        每次调用自动推进呼吸相位，使选中项背景色脉动变化。
 
         Args:
             out: stdout 文件对象。
-            popup_r_start: 弹窗第一行（标题行）在终端中的行号（1-based）。
+            popup_r_start: 弹窗第一行（标题行）的行号。
             term_width: 终端宽度。
         """
         if not self._visible or not self._items:
             return
 
+        # 推进全局帧号，使选中项背景色脉动
         self._animator.tick()
+
+        try:
+            term = get_terminal()
+            move_clear = lambda r: term.move_xy(0, r - 1) + term.clear_eol()
+        except Exception:
+            move_clear = lambda r: f"\033[{r};1H\033[K"
 
         n = len(self._items)
         popup_w = self._calc_popup_width(self._items, term_width)
         cell_w = popup_w - 3
         types = self._types if len(self._types) == n else [""] * n
-        total_items = len(self._texts)
 
-        buf: list[str] = []
-
-        # 标题行
-        if not is_narrow():
-            title_color = self._animator.sine_color(45, 81, 12)
-            title_ansi = f"\033[1;38;5;{title_color}m"
-        else:
-            title_ansi = _COLOR_COMPLETE_TITLE
-        header = f" {title_ansi}{self._title}{_COLOR_RESET} {_COLOR_DIM}({total_items}项){_COLOR_RESET}"
-        buf.append(f"\033[{popup_r_start};1H\r\033[K{header}")
-
-        # 选项行
         for i, item in enumerate(self._items):
             r = popup_r_start + 1 + i
-            line_str = self._render_item_line_str(
-                item, types[i], self._match_prefix, cell_w,
+            self._render_item_line(
+                out, r, item, types[i],
+                self._match_prefix, cell_w,
                 is_selected=(i == self._idx),
             )
-            buf.append(f"\033[{r};1H\r\033[K{line_str}")
+            if self._tracker:
+                self._tracker.set(r, 1)
 
-        # 快捷键提示行
+        # ── 快捷键提示行 ──
+        total_items = len(self._texts)
         footer_r = popup_r_start + 1 + n
         truncated = total_items > n
         is_selection = self._is_selection
-        if is_selection:
-            hint_prefix = "\u2191\u2193 Enter Esc"
-        else:
-            hint_prefix = "Tab \u2191\u2193 Esc"
+        hint_prefix = "\u2191\u2193 Enter Esc" if is_selection else "Tab \u2191\u2193 Esc"
         if truncated:
             hint = (f" {_COLOR_TIME}{self._idx + 1}/{n}{_COLOR_RESET}"
                     f" {_COLOR_DIM}(\u524d{n}/{total_items}){_COLOR_RESET}  {hint_prefix} ")
         else:
             hint = f" {hint_prefix} "
+        # 非窄屏时在提示行末尾添加呼吸装饰点
         if not is_narrow():
             dot_color = self._animator.sine_color(45, 81, 12)
             hint_dot = f" \033[38;5;{dot_color}m\u00b7{_COLOR_RESET}"
         else:
             hint_dot = ""
-        buf.append(f"\033[{footer_r};1H\r\033[K{_COLOR_DIM}{hint}{_COLOR_RESET}{hint_dot}")
+        out.write(move_clear(footer_r) + f"{_COLOR_DIM}{hint}{_COLOR_RESET}{hint_dot}")
+        if self._tracker:
+            self._tracker.set(footer_r, 1)
 
-        out.write(''.join(buf))
 
 def _render_display_text(text: str, item_type: str, match_prefix: str, cell_w: int) -> str:
     """将候选项显示文本渲染为带类型颜色和匹配高亮的 ANSI 字符串。

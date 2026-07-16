@@ -11,7 +11,7 @@ import os
 import sys
 
 from ..config import config
-from ..tui.core.theme import set_theme
+from ..ui.theme import set_theme
 
 _logger = logging.getLogger(__name__)
 

@@ -24,9 +24,9 @@ from typing import TYPE_CHECKING, Protocol, runtime_checkable
 if TYPE_CHECKING:
     from typing import Self
 
-from tui_framework.terminal.adapter import TerminalAdapter
+from .adapter import TerminalAdapter
 from ..widgets.lock import io_lock, OUTPUT_LOCK_TIMEOUT
-from tui_framework.terminal.blessed import get_terminal
+from .blessed import get_terminal
 from ..core.ttl_cache import TTLCache
 
 _logger = logging.getLogger(__name__)

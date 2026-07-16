@@ -16,7 +16,7 @@ from ._session_cmd import _handle_session_command
 from ..chat_msgs import load_session, list_sessions
 from ..tui.events import OutputConsumer
 from ..tui.widgets.lock import locked_print
-from ..core.constants import CYAN, DIM, RESET, YELLOW
+from ..ui.colors import CYAN, DIM, RESET, YELLOW
 from ..core.telemetry.trace_context import generate_trace_id, get_current_trace_id, set_current_trace_id
 from ..observability import get_default_facade
 from ..api.escape_monitor import stop_active_monitor

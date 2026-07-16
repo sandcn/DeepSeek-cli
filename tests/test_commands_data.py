@@ -5,7 +5,7 @@
 - 使用 importlib 直接加载模块文件，避免触发 src/__init__.py 的级联导入
 - 预先在 sys.modules 中 mock 所有外部依赖
 - 模块内部有延迟导入（_cmd_init 中 from ..tools.utils import atomic_write_file，
-  _cmd_load 中从 tui.pipeline 导入 _display_messages），因此 mocks
+  _cmd_load 中 from ..ui.tui._message_display import _display_messages），因此 mocks
   在测试执行期间保留在 sys.modules 中
 - 使用 pytest fixture 管理共享的 mock 状态和测试隔离
 - 每个测试类对应一个命令函数，每个测试方法覆盖一个场景

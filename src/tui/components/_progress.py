@@ -16,15 +16,14 @@ class ProgressBar(TuiComponent):
     空部分使用占位字符显示。支持选择是否显示百分比文本。
     当 ``animated=True`` 时，填充尾部叠加正弦呼吸/脉动效果。
     当 ``pulse_mode=True`` 时，尾部 1/3 使用脉冲列车动效替代呼吸效果。
-    颜色从红→黄→绿随进度自然过渡。
 
     Args:
         progress: 进度值 [0.0, 1.0]，超出范围自动 clamp。
         width: 进度条总宽度（字符数），默认 30。
         fill_char: 填充字符，默认 █ (U+2588)。
         empty_char: 空部分字符，默认 ░ (U+2591)。
-        gradient_start: 渐变起始 256 色号，默认 196（红色）。
-        gradient_end: 渐变结束 256 色号，默认 46（绿色）。
+        gradient_start: 渐变起始 256 色号，默认 214（亮橙）。
+        gradient_end: 渐变结束 256 色号，默认 41（亮绿）。
         show_percent: 是否在末尾显示百分比文本，默认 ``True``。
         frame: 当前帧号，动效推进用。
         animated: 是否启用填充尾部呼吸/脉动动效，默认 ``True``。
@@ -38,8 +37,8 @@ class ProgressBar(TuiComponent):
         width: int = 30,
         fill_char: str = "\u2588",
         empty_char: str = "\u2591",
-        gradient_start: int = 196,
-        gradient_end: int = 46,
+        gradient_start: int = 214,
+        gradient_end: int = 41,
         show_percent: bool = True,
         frame: int = 0,
         animated: bool = True,

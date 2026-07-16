@@ -26,7 +26,7 @@ def _make_mock_module(name, is_package=False, **attrs):
     """创建 mock 模块并注册到 sys.modules（保存原始模块以便恢复）。
 
     is_package=True 时设置 __path__ 和 __package__，使 mock 被识别为包，
-    确保相对导入（如 from ..tui.pipeline import ...）可正确解析。
+    确保相对导入（如 from ..ui.msg_list import ...）可正确解析。
     """
     if name not in _ORIGINAL_MODULES_SESSION:
         _ORIGINAL_MODULES_SESSION[name] = sys.modules.get(name)

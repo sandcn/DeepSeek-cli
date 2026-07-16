@@ -57,17 +57,17 @@ class CommandUiAdapter:
 
     def get_theme_names_with_desc(self) -> list[tuple[str, str]]:
         """获取所有主题名称和描述。"""
-        from ...tui.core.theme import get_theme_names_with_desc as _fn
+        from ...ui.theme import get_theme_names_with_desc as _fn
         return _fn()
 
     def get_active_theme(self) -> str:
         """获取当前主题名称。"""
-        from ...tui.core.theme import get_active_theme as _fn
+        from ...ui.theme import get_active_theme as _fn
         return _fn()
 
     def set_theme(self, name: str) -> None:
         """设置活动主题。"""
-        from ...tui.core.theme import set_theme as _fn
+        from ...ui.theme import set_theme as _fn
         _fn(name)
 
     def render_diff_to_ansi(self, path: str, old_content: str, new_content: str) -> str:
