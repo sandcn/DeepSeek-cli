@@ -100,13 +100,13 @@ class ProgressBar(TuiComponent):
     @staticmethod
     def _is_narrow() -> bool:
         """检测当前是否为窄屏。"""
-        from tui_framework.terminal.narrow import is_narrow
+        from ..terminal.narrow import is_narrow
         return is_narrow()
 
     @staticmethod
     def _narrow_width() -> int:
         """获取窄屏下的进度条宽度。"""
-        from tui_framework.terminal.narrow import narrow_truncate
+        from ..terminal.narrow import narrow_truncate
         return narrow_truncate(30)
 
     # ── 填充构建 ────────────────────────────────────────────────────────
@@ -127,7 +127,7 @@ class ProgressBar(TuiComponent):
         if filled_width <= 0:
             return ""
 
-        from tui_framework.core.gradient import gradient_range
+        from ..core.gradient import gradient_range
         colors = gradient_range(self._gradient_start, self._gradient_end, filled_width)
 
         if self._animated and self._frame > 0 and filled_width > 0:

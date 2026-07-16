@@ -55,12 +55,8 @@ from .completion import _apply_completion
 # ── 核心 TUI（组件化架构） ─────────────────────────
 from .consumer import ChatUIConsumer
 
-# ── Adapter 模式 ──────────────────────────────────
-from .adapter import ChatUIAdapter
-
 __all__ = [
     "ChatUIConsumer",
-    "ChatUIAdapter",
     "get_active_chat_ui",
     "RenderCommand",
     "ChatUIErrorHandler",

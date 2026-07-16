@@ -77,9 +77,6 @@ from .style import Style, StyledText, StyleSheet
 # ── 渐变工具 ──
 from .gradient import hex_to_256, gradient_step, gradient_range
 
-# ── 格式化工具 ──
-from .formatter import format_duration, format_token_count, format_compact_speed
-
 # ── 预定义调色板 ──
 from .palettes import (
     GRADIENT_SUNSET, GRADIENT_OCEAN, GRADIENT_FOREST,
@@ -94,7 +91,7 @@ from .palettes import (
 )
 
 # ── 主题系统 ──
-from .theme import Theme, THEME, THEMES, set_theme, get_active_theme, list_themes, get_theme_names_with_desc, load_user_themes, load_user_themes as load_user_themes_into_themes, reload_themes
+from .theme import THEME, THEMES, set_theme, get_active_theme, list_themes, get_theme_names_with_desc, load_user_themes, load_user_themes as load_user_themes_into_themes, reload_themes
 
 # ── YAML 主题加载器 ──
 from .theme_loader import load_user_themes_from_dir, parse_simple_yaml
@@ -103,10 +100,7 @@ from .theme_loader import load_user_themes_from_dir, parse_simple_yaml
 from .ansi_utils import strip_ansi, visual_width, truncate_ansi_visual, skip_ansi_sgr, truncate_ansi_sgr, truncate_ansi_line
 
 # ── 费用计算 ──
-try:
-    from .cost import compute_round_cost_data
-except ImportError:
-    compute_round_cost_data = None  # type: ignore[assignment]
+from .cost import compute_round_cost_data
 
 # ── 输出目标 ──
 from .output_target import IOutputTarget, TerminalTarget, BufferTarget, NullTarget
@@ -160,8 +154,6 @@ __all__ = [
     "Style", "StyledText", "StyleSheet",
     # gradient
     "hex_to_256", "gradient_step", "gradient_range",
-    # formatter
-    "format_duration", "format_token_count", "format_compact_speed",
     # palettes
     "GRADIENT_SUNSET", "GRADIENT_OCEAN", "GRADIENT_FOREST",
     "GRADIENT_FIRE", "GRADIENT_NEON",
@@ -173,7 +165,6 @@ __all__ = [
     "GRADIENT_GOLD", "GRADIENT_SKY", "GRADIENT_MAGMA", "GRADIENT_OCEAN_DEEP",
     "BREATH_CYAN", "BREATH_GREEN", "BREATH_PURPLE", "BREATH_GOLD", "BREATH_ROSE",
     # theme
-    "Theme",
     "THEME", "THEMES", "set_theme", "get_active_theme", "list_themes", "get_theme_names_with_desc",
     "load_user_themes", "load_user_themes_into_themes", "reload_themes",
     # theme_loader

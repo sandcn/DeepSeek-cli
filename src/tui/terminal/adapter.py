@@ -2,11 +2,6 @@
 TerminalAdapter — 终端 I/O 抽象层
 
 封装终端写入、ANSI 控制、尺寸获取等操作。
-
-注意：tui_framework.terminal.adapter.py 提供了精简版 TerminalAdapter（基础 I/O +
-终端尺寸查询），本文件保留 SIGWINCH 信号处理、render_frame 帧渲染、全屏控制等
-TUI 业务独有功能，保持不变。
-
 职责单一：仅处理「如何输出到终端」，不关心输出什么内容。
 
 可替换性：
@@ -22,11 +17,6 @@ Blessed 替换说明：
   - 上/下滚动 → Terminal.indn()/Terminal.rin()
   - 窗口标题保留原始 ANSI（Blessed window_title 为 context manager 不适合简单序列）
 """
-
-# ⚠ 本文件保留独立实现，不可替换为 tui_framework.terminal.adapter
-# 原因: 包含 SIGWINCH 信号处理、render_frame() 全屏帧渲染、
-# DECSTBM/SCOSC/DECRC 终端控制等业务独有功能。
-# framework 版本为精简版（仅基础查询+写入）。
 
 from __future__ import annotations
 

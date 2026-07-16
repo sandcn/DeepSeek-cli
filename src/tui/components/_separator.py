@@ -105,7 +105,7 @@ class Separator(TuiComponent):
         """
         if self._width is not None:
             return max(0, self._width)
-        from tui_framework.terminal.narrow import narrow_sep_width
+        from ..terminal.narrow import narrow_sep_width
         return narrow_sep_width(max_width=40)
 
     def _build_colors(self) -> list[int]:
@@ -117,7 +117,7 @@ class Separator(TuiComponent):
         width = self._resolve_width()
         if width <= 0:
             return []
-        from tui_framework.core.gradient import gradient_range
+        from ..core.gradient import gradient_range
         return gradient_range(self._start_color, self._end_color, width)
 
     # ── 动效策略 ────────────────────────────────────────────────────────
@@ -127,7 +127,7 @@ class Separator(TuiComponent):
 
         每个字符使用渐变色号中的对应值，无动效。
         """
-        from tui_framework.core.text_utils import build_gradient_ansi
+        from ..core.text_utils import build_gradient_ansi
         return build_gradient_ansi(colors, char=self._char)
 
     def _render_wave(self, colors: list[int]) -> str:
@@ -135,7 +135,7 @@ class Separator(TuiComponent):
 
         在渐变基础上叠加正弦波动，帧号推进时波浪沿分隔线方向传播。
         """
-        from tui_framework.core.text_utils import build_sep_wave
+        from ..core.text_utils import build_sep_wave
         return build_sep_wave(colors, self._frame, char=self._char)
 
     def _render_shimmer(self, colors: list[int]) -> str:
@@ -143,7 +143,7 @@ class Separator(TuiComponent):
 
         一条亮带沿分隔线方向周期性移动，产生扫光视觉效果。
         """
-        from tui_framework.core.text_utils import build_sep_shimmer
+        from ..core.text_utils import build_sep_shimmer
         return build_sep_shimmer(colors, self._frame, char=self._char)
 
     def _render_sparkle(self, colors: list[int]) -> str:
@@ -151,7 +151,7 @@ class Separator(TuiComponent):
 
         每个字符的亮度独立闪烁，相邻字符带相位偏移，产生星点闪烁效果。
         """
-        from tui_framework.core.effects import sparkle_brightness
+        from ..core.effects import sparkle_brightness
         parts: list[str] = []
         for i, c in enumerate(colors):
             # 每字符带相位偏移（i），产生独立闪烁效果
@@ -166,7 +166,7 @@ class Separator(TuiComponent):
         整条分隔线使用同一呼吸色号，在 start_color 和 end_color+30 间
         正弦呼吸，产生柔光脉动视觉效果。
         """
-        from tui_framework.core.effects import sine_color
+        from ..core.effects import sine_color
         breath_color = sine_color(
             self._frame,
             self._start_color,
@@ -184,7 +184,7 @@ class Separator(TuiComponent):
         width = self._resolve_width()
         if width <= 0:
             return ""
-        from tui_framework.core.effects import build_aurora_ansi
+        from ..core.effects import build_aurora_ansi
         return build_aurora_ansi(width, self._frame, char=self._char)
 
     def _render_rainbow(self) -> str:
@@ -196,7 +196,7 @@ class Separator(TuiComponent):
         width = self._resolve_width()
         if width <= 0:
             return ""
-        from tui_framework.core.effects import build_rainbow_ansi
+        from ..core.effects import build_rainbow_ansi
         return build_rainbow_ansi(self._char * width, self._frame)
 
     def _render_pulse(self) -> str:
@@ -208,7 +208,7 @@ class Separator(TuiComponent):
         width = self._resolve_width()
         if width <= 0:
             return ""
-        from tui_framework.core.effects import build_pulse_train_ansi
+        from ..core.effects import build_pulse_train_ansi
         return build_pulse_train_ansi(
             width, self._frame,
             color_low=self._end_color,

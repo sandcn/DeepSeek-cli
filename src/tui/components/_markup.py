@@ -22,7 +22,7 @@
 
 from __future__ import annotations
 
-from tui_framework.core.style import Style, StyledText
+from ..core.style import Style, StyledText
 
 
 __all__: list[str] = [

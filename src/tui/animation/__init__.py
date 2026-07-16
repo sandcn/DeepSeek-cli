@@ -14,8 +14,17 @@
     ``from src.tui.core import AnimatorContext, BreathPalette``
     （2026-07-15 步骤7精简：原重导出无外部调用方）
 """
-from tui_framework.animation.composer import *
-from tui_framework.animation.transitions import *
+
+from __future__ import annotations
+
+# ── 动画合成器 ──
+from .composer import (
+    AnimationEffect, CompositeEffect, EffectChain, InterleaveEffect,
+    anim_parallel, anim_sequence, anim_loop,
+)
+
+# ── 过渡效果 ──
+from .transitions import FadeIn, FadeOut, SlideIn, SlideOut, Typewriter
 
 __all__ = [
     # composer

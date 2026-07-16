@@ -9,10 +9,6 @@
 窄屏降级：is_narrow() 时简化为无边框的标题行 + 内容。
 """
 
-# ⚠ 本文件保留独立实现，不可替换为 tui_framework.components.panel
-# 原因: render_to_adapter() 依赖 OutputAdapter 应用渲染器层，
-# 与 framework 的组件渲染接口不兼容。
-
 from __future__ import annotations
 
 import logging

@@ -11,10 +11,6 @@
   - SCOSC/SCRC（光标保存/恢复）保留原始 ANSI（性能路径无需 Blessed）
 """
 
-# ⚠ 本文件保留独立实现，不可替换为 tui_framework.terminal.terminal
-# 原因: LockedTerminal + enter_raw_mode/leave_raw_mode 为业务独有功能，
-# framework 终端模块无对应实现。
-
 from __future__ import annotations
 
 import logging
