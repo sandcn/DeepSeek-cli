@@ -103,3 +103,78 @@ def is_fatal_exception(exc: BaseException) -> bool:
 
     # Conservative default: assume non-fatal to avoid unnecessary exits.
     return False
+
+
+# ---------------------------------------------------------------------------
+# Network error detection
+# ---------------------------------------------------------------------------
+
+# 网络错误内容关键词 — 从 retry_api_call_async 的错误消息模式提取
+# API 层重试用尽后返回包含这些关键词的错误字符串
+# 所有关键词均为小写，在与 content.lower() 匹配时使用
+_NETWORK_ERROR_KEYWORDS: tuple[str, ...] = (
+    # 来自 _CONNECTION_ERRORS 重试用尽: f"连接错误: {str(e)}"
+    "连接错误",
+    # 来自 httpx.HTTPStatusError/RequestError/JSONDecodeError/TimeoutError/RateLimitError 重试用尽: f"抱歉，API 调用出错: {str(e)}"
+    "api 调用出错",
+    # 来自 StreamIdleTimeoutError: "流空闲超时: ..."
+    "流空闲超时",
+    "stream idle timeout",
+    # 英文网络错误消息
+    "connection error",
+    "connection refused",
+    "connection reset",
+    # 超时类错误（含 "请求超时"、"timed out" 等变体）
+    "请求超时",
+    "timed out",
+)
+
+
+def is_network_error(content: str | None, exc: BaseException | None = None) -> bool:
+    """检测是否为网络错误。
+
+    支持两种检测策略（OR 组合）：
+    1. 内容关键词匹配：在 content 字符串中搜索网络错误关键词
+    2. 异常类型匹配：检查 exc 是否为网络相关异常类型
+
+    此为纯函数：无副作用、无 IO、无可变全局状态修改。
+
+    Args:
+        content: 模型返回的文本内容（可能包含 API 层重试用尽后的错误消息）
+        exc: 捕获的异常对象（可选）
+
+    Returns:
+        True 如果检测到网络错误，否则 False
+    """
+    # ── 策略 1：内容关键词匹配 ──
+    if content:
+        content_lower = content.lower()
+        for keyword in _NETWORK_ERROR_KEYWORDS:
+            if keyword in content_lower:
+                return True
+
+    # ── 策略 2：异常类型匹配 ──
+    if exc is not None:
+        if isinstance(exc, (ConnectionError, TimeoutError, asyncio.TimeoutError)):
+            return True
+        # httpx 连接/传输错误（延迟导入避免模块级依赖）
+        try:
+            import httpx
+        except ImportError:
+            _logger.debug("httpx not available, cannot check httpx-specific network errors")
+        else:
+            if isinstance(exc, (
+                httpx.ConnectError,
+                httpx.ConnectTimeout,
+                httpx.ReadTimeout,
+                httpx.WriteTimeout,
+                httpx.PoolTimeout,
+                httpx.RemoteProtocolError,
+                httpx.ReadError,
+                httpx.WriteError,
+                httpx.RequestError,
+                httpx.HTTPStatusError,
+            )):
+                return True
+
+    return False

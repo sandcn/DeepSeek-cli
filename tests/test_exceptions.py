@@ -11,6 +11,7 @@ from src.core.exceptions import (
     NonFatalError,
     TransientError,
     is_fatal_exception,
+    is_network_error,
 )
 
 
@@ -132,3 +133,91 @@ class TestHierarchy:
         """FatalError and NonFatalError are separate branches."""
         assert not issubclass(FatalError, NonFatalError)
         assert not issubclass(NonFatalError, FatalError)
+
+
+# ---------------------------------------------------------------------------
+# Network error detection
+# ---------------------------------------------------------------------------
+
+class TestIsNetworkError:
+    """Verify is_network_error() detection strategies."""
+
+    # ── 内容关键词匹配 ──────────────────────────────────
+
+    def test_content_connection_error(self) -> None:
+        """中文'连接错误'关键词应被检测"""
+        assert is_network_error("连接错误: 网络不可达", None) is True
+
+    def test_content_api_call_error(self) -> None:
+        """中文'API 调用出错'关键词应被检测"""
+        assert is_network_error("抱歉，API 调用出错: 超时", None) is True
+
+    def test_content_stream_idle_timeout(self) -> None:
+        """中文'流空闲超时'关键词应被检测"""
+        assert is_network_error("流空闲超时: 连接已断开", None) is True
+
+    def test_content_normal_text(self) -> None:
+        """正常回复内容不应被检测为网络错误"""
+        assert is_network_error("这是正常的回复内容", None) is False
+
+    def test_content_empty_string(self) -> None:
+        """空字符串不应被检测为网络错误"""
+        assert is_network_error("", None) is False
+
+    def test_content_none(self) -> None:
+        """None 内容不应被检测为网络错误"""
+        assert is_network_error(None, None) is False
+
+    def test_content_keyword_in_long_string(self) -> None:
+        """关键词在长字符串中间也能匹配"""
+        assert is_network_error(
+            "前面有内容连接错误中间还有内容", None
+        ) is True
+
+    def test_content_partial_match(self) -> None:
+        """部分匹配不应误判——'超时'关键词应匹配各种超时场景"""
+        assert is_network_error("请求超时，请稍后重试", None) is True
+
+    # ── 异常类型匹配 ────────────────────────────────────
+
+    def test_exception_connection_error(self) -> None:
+        """ConnectionError 应被检测"""
+        assert is_network_error("", ConnectionError("连接被拒绝")) is True
+
+    def test_exception_timeout_error(self) -> None:
+        """TimeoutError 应被检测"""
+        assert is_network_error("", TimeoutError("timed out")) is True
+
+    def test_exception_asyncio_timeout(self) -> None:
+        """asyncio.TimeoutError 应被检测"""
+        assert is_network_error("", asyncio.TimeoutError()) is True
+
+    def test_exception_value_error(self) -> None:
+        """ValueError 不应被检测为网络错误"""
+        assert is_network_error("", ValueError("参数错误")) is False
+
+    def test_exception_key_error(self) -> None:
+        """KeyError 不应被检测为网络错误"""
+        assert is_network_error("", KeyError("missing")) is False
+
+    def test_exception_runtime_error(self) -> None:
+        """RuntimeError 不应被检测为网络错误"""
+        assert is_network_error("", RuntimeError("未知错误")) is False
+
+    # ── 组合场景 ────────────────────────────────────────
+
+    def test_both_content_and_exception_match(self) -> None:
+        """内容和异常同时匹配"""
+        assert is_network_error("连接错误", ConnectionError()) is True
+
+    def test_content_match_exception_not(self) -> None:
+        """内容匹配但异常不匹配也返回 True（OR 逻辑）"""
+        assert is_network_error("连接错误", ValueError("参数错误")) is True
+
+    def test_neither_matches(self) -> None:
+        """内容和异常都不匹配"""
+        assert is_network_error("正常回复", ValueError("参数错误")) is False
+
+    def test_empty_both(self) -> None:
+        """空内容和无异常"""
+        assert is_network_error("", None) is False

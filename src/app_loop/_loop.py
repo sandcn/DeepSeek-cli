@@ -31,7 +31,7 @@ from ..core.session import ChatSession
 from ..core.commands import CommandContext
 from ..core.commands.plugins import get_interactive_registry
 from ..core.message_queue import MessageQueue
-from ..core.exceptions import is_fatal_exception
+from ..core.exceptions import is_fatal_exception, is_network_error
 from ..ui.colors import CYAN, DIM, RESET, GREEN, YELLOW
 from ..tui.core.ttl_cache import TTLCache
 from ..tui.terminal.narrow import is_narrow, narrow_sep_width
@@ -196,16 +196,16 @@ class InteractiveLoop:
                 # 清空对话（每轮开始前清空）
                 reset_interrupt_async()
                 session.clear_messages()
-                # 第1次运行
-                result = await session.run_round(prompt)
+                # 第1次运行（含网络错误重试）
+                result = await self._run_round_with_retry(session, prompt)
                 if result.get("interrupted", False):
                     self._chat_ui.write_line(f"  {YELLOW}+ ESC 中断，提前结束循环（已执行 {i+1}/{count} 轮）{RESET}")
                     break
 
-                # 第2次运行（固定提词"继续完成所有"）
+                # 第2次运行（固定提词"继续完成所有"，含网络错误重试）
                 self._chat_ui.write_line(f"  {DIM}  ─ 第 {i+1}/{count} 轮 · 第2次 ─{RESET}")
                 reset_interrupt_async()
-                result2 = await session.run_round("继续完成所有")
+                result2 = await self._run_round_with_retry(session, "继续完成所有")
                 if result2.get("interrupted", False):
                     self._chat_ui.write_line(f"  {YELLOW}+ ESC 中断，提前结束循环（已执行 {i+1}/{count} 轮）{RESET}")
                     break
@@ -220,6 +220,79 @@ class InteractiveLoop:
             reset_token_speed()
         # ── 自动保存循环后的对话 ────────────────────────────
         await _save_loop_snapshot(session, self._chat_ui)
+
+    async def _run_round_with_retry(
+        self, session, prompt: str, max_attempts: int = 3,
+    ) -> dict:
+        """运行 session.run_round()，检测网络错误并自动重试。
+
+        Args:
+            session: ChatSession 实例
+            prompt: 用户输入文本
+            max_attempts: 最大尝试次数（含首次，默认 3）
+
+        Returns:
+            run_round 返回的结果字典
+        """
+        for attempt in range(1, max_attempts + 1):
+            # 每轮重试前确保 interrupt 信号已清除
+            reset_interrupt_async()
+
+            try:
+                result = await session.run_round(prompt)
+            except (KeyboardInterrupt, asyncio.CancelledError):
+                raise
+            except Exception as e:
+                if attempt < max_attempts and is_network_error("", e):
+                    _logger.warning(
+                        "/loop run_round 网络错误 (第%d次重试): %s", attempt, e,
+                    )
+                    self._chat_ui.write_line(
+                        f"  {YELLOW}+ 检测到网络错误，正在重试 ({attempt}/{max_attempts})...{RESET}"
+                    )
+                    # 追加"[继续]"消息通知模型重试
+                    try:
+                        session.add_user_message("【继续】网络错误已恢复，请重试")
+                    except Exception:
+                        _logger.exception("追加重试消息失败")
+                    continue
+                raise  # 非网络错误直接抛出
+
+            # ── 检查最后一条 assistant 消息是否包含网络错误 ──
+            interrupted = result.get("interrupted", False)
+            if not interrupted and session.messages:
+                last_msg = session.messages[-1] or {}
+                if last_msg.get("role") == "assistant":
+                    last_content = last_msg.get("content", "") or ""
+                    if is_network_error(last_content, None):
+                        if attempt < max_attempts:
+                            _logger.warning(
+                                "/loop 返回内容含网络错误 (第%d次重试): %s",
+                                attempt, last_content[:100],
+                            )
+                            self._chat_ui.write_line(
+                                f"  {YELLOW}+ 检测到网络错误，正在重试 ({attempt}/{max_attempts})...{RESET}"
+                            )
+                            try:
+                                session.add_user_message("【继续】网络错误已恢复，请重试")
+                            except Exception:
+                                _logger.exception("追加重试消息失败")
+                            continue
+                        else:
+                            _logger.error(
+                                "/loop 网络错误重试 %d 次仍失败，跳过本轮: %s",
+                                max_attempts, last_content[:200],
+                            )
+                            self._chat_ui.write_line(
+                                f"  {YELLOW}+ 网络错误重试 {max_attempts} 次仍失败，跳过本轮{RESET}"
+                            )
+                            return {"interrupted": True, "session_id": None,
+                                    "delta": {"input": 0, "output": 0, "calls": 0}}
+
+            return result
+
+        # 不会执行到这里（return result 在循环内），类型占位
+        return {"interrupted": True}
 
     async def _handle_regular_msg(self, content: str, session, state: SessionState) -> None:
         """处理普通用户消息"""

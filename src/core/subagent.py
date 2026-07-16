@@ -15,8 +15,13 @@ from typing import List, Dict, Any, Optional, Tuple, Callable
 
 from .base_agent import BaseAgent
 from .tool_executor_async import ToolScheduler
+from .exceptions import is_network_error
 
 _logger = logging.getLogger(__name__)
+
+# ── 网络错误重试上限 ────────────────────────────────────
+# SubAgent.run() 中每次独立模型调用最多重试 3 次（含首次）
+_NETWORK_RETRY_MAX = 3
 
 # ── 类型策略：agent_type → 排除的工具集合 ─────────────
 # 每种类型映射一个不可用工具集，便于未来扩展。
@@ -139,22 +144,70 @@ class SubAgent(BaseAgent):
         3. SubAgent 内的文件操作通过 record_file_change_from_context fallback
            到 sandbox_manager.get_current_message_index_safe()，该值保持为
            MainAgent 最后一次设置的正确索引，不受 SubAgent 影响
+
+        网络错误重试：
+        - 模型调用异常或返回内容包含网络错误关键词时，最多重试3次
+        - 每次重试前向 messages 追加"【继续】"消息通知模型
+        - 非网络错误直接返回，不重试
         """
         content = ""
+        # 日志截断长度
+        _LOG_TRUNCATE_LEN = 100
+
         while True:
-            try:
-                reasoning, content, usage, tool_calls = await self._call_model_impl(
-                    self.messages,
-                    model=self.model,
-                    tools=self.tools,
-                    display=self.display,
-                    label=self.label,
-                    silent=True,
-                )
-            except asyncio.CancelledError:
-                raise  # 透传取消信号到外层统一处理
-            except Exception as e:
-                return self._handle_model_error(e)
+            # ── 模型调用（含网络错误重试） ──────────────
+            retry_count = 0
+            while retry_count < _NETWORK_RETRY_MAX:
+                try:
+                    reasoning, content, usage, tool_calls = await self._call_model_impl(
+                        self.messages,
+                        model=self.model,
+                        tools=self.tools,
+                        display=self.display,
+                        label=self.label,
+                        silent=True,
+                    )
+                except asyncio.CancelledError:
+                    raise  # 透传取消信号到外层统一处理
+                except Exception as e:
+                    if retry_count < _NETWORK_RETRY_MAX - 1 and is_network_error("", e):
+                        retry_count += 1
+                        _logger.warning(
+                            "SubAgent %s 模型调用网络错误 (第%d次重试): %s",
+                            self.label, retry_count, e,
+                        )
+                        self.messages.append({
+                            "role": "user",
+                            "content": "【继续】网络错误已恢复，请重试",
+                        })
+                        continue  # 重新调用模型
+                    return self._handle_model_error(e)
+
+                # ── 模型调用成功，检查返回内容是否含网络错误 ──
+                # API 层重试用尽后返回错误字符串（不抛异常），需在此检测
+                if not tool_calls and is_network_error(content, None):
+                    if retry_count < _NETWORK_RETRY_MAX - 1:
+                        retry_count += 1
+                        _logger.warning(
+                            "SubAgent %s 返回内容含网络错误 (第%d次重试): %s",
+                            self.label, retry_count, content[:100],
+                        )
+                        self.messages.append({
+                            "role": "user",
+                            "content": "【继续】网络错误已恢复，请重试",
+                        })
+                        continue  # 重新调用模型
+                    # 重试用尽，返回错误
+                    err_msg = content or "网络错误重试失败"
+                    _logger.error(
+                        "SubAgent %s 网络错误重试 %d 次仍失败: %s",
+                        self.label, _NETWORK_RETRY_MAX, err_msg[:200],
+                    )
+                    self.error = err_msg
+                    return f"错误: {err_msg}"
+
+                # 模型调用正常，跳出重试循环
+                break
 
             self._update_display(usage)
 
