@@ -26,11 +26,6 @@ _logger = logging.getLogger(__name__)
 # - review: 代码审查，排除所有写入类工具，保留 web_search（可查文档）
 # - plan: 计划生成，保留 write_file/update_file，但在 FileToolBase
 #   ._validate_path_and_size() 中有额外的路径白名单校验（仅限 .chat/plan/）
-# - read_memory: 只读记忆，排除所有写入类工具 + web_search + dispatch_agent + user_select
-#   （当前与 map 策略一致，独立维护以备未来分化）
-# - write_memory: 读写记忆，保留 write_file/update_file/mk，但在 FileToolBase
-#   ._validate_path_and_size() 中有额外的路径白名单校验（仅限 .chat/memory/）
-#   （保留 mk 以便在 .chat/memory/ 目录不存在时自行创建，与 plan 不含 mk 的策略不同）
 # - execute: 计划执行型（默认），保留读写工具 + bash，排除 web_search + dispatch_agent + user_select，
 #   无路径白名单限制，用于执行计划文件步骤并返回修改文件列表
 _TOOL_EXCLUSION_MAP = {
@@ -55,20 +50,6 @@ _TOOL_EXCLUSION_MAP = {
         "mv",
         "cp",
         "mk",
-        "dispatch_agent",
-        "user_select",
-    },
-    "read_memory": {
-        "bash", "write_file", "update_file", "rm", "mv", "cp", "mk",
-        "web_search",
-        "dispatch_agent", "user_select",
-    },
-    "write_memory": {
-        "bash",
-        "rm",
-        "mv",
-        "cp",
-        "web_search",
         "dispatch_agent",
         "user_select",
     },
@@ -126,10 +107,6 @@ class SubAgent(BaseAgent):
             system_parts = prompt_port.build_review_agent_prompt()
         elif agent_type == "plan":
             system_parts = prompt_port.build_plan_agent_prompt()
-        elif agent_type == "read_memory":
-            system_parts = prompt_port.build_read_memory_agent_system_prompt()
-        elif agent_type == "write_memory":
-            system_parts = prompt_port.build_write_memory_agent_system_prompt()
         elif agent_type == "execute":
             system_parts = prompt_port.build_execute_agent_system_prompt()
         else:

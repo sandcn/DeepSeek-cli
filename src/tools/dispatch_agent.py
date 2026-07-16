@@ -46,7 +46,7 @@ class DispatchAgents(Func):
                     "【参数行为说明】"
                     "\n- **description**：UI标题，用作子任务在界面中的显示标签"
                     "\n- **prompt**：完整任务指令，子Agent据此独立执行全部工作"
-                    "\n- **type**：子Agent类型。execute（默认，通用型，读写+bash，无路径限制）/ map（只读分析）/ review（代码审查）/ plan（计划生成，write_file/update_file 仅限 .chat/plan/ 目录）/ read_memory（只读记忆检索）/ write_memory（读写记忆更新，仅限 .chat/memory/ 目录）"
+                    "\n- **type**：子Agent类型。execute（默认，通用型，读写+bash，无路径限制）/ map（只读分析）/ review（代码审查）/ plan（计划生成，write_file/update_file 仅限 .chat/plan/ 目录）"
                     "\n\n"
                     "【使用限制】"
                     "\n- 单次调用执行单个子Agent任务（独立执行），同一轮多次调用自动共享执行器实现真正并行"
@@ -73,8 +73,8 @@ class DispatchAgents(Func):
                         },
                         "type": {
                             "type": "string",
-                            "enum": ["map", "think", "review", "plan", "read_memory", "write_memory", "execute"],
-                            "description": "子Agent类型。execute（默认）：排除 dispatch_agent、user_select 和 web_search，保留所有读写工具+bash，无路径限制，用于执行计划文件步骤并返回修改文件列表。map：只读分析型，仅保留 read_file/search/find/ls 等读取工具，专用于项目代码分析和地图生成。think：深度推理型，只读工具集（read_file/search/find/ls），在 map 分析完成后强制调用，专用于在独立上下文中深度思考/推理/分析问题，将结论返回主 Agent。review：代码审查型，只读工具集（含 read_file/search/find/ls/web_search），专用于文件列表的 Code Review（P0-P3 分级输出）。plan：计划型，只读分析工具 + write_file/update_file（仅限写入 .chat/plan/ 目录），根据指令生成计划。read_memory：只读记忆型，仅保留 read_file/search/find/ls，专用于读取 .chat/memory/ 目录下的记忆文件。write_memory：读写记忆型，保留读工具 + write_file/update_file/mk（写入仅限 .chat/memory/ 目录），专用于维护记忆文件。",
+                            "enum": ["map", "think", "review", "plan", "execute"],
+                            "description": "子Agent类型。execute（默认）：排除 dispatch_agent、user_select 和 web_search，保留所有读写工具+bash，无路径限制，用于执行计划文件步骤并返回修改文件列表。map：只读分析型，仅保留 read_file/search/find/ls 等读取工具，专用于项目代码分析和地图生成。think：深度推理型，只读工具集（read_file/search/find/ls），在 map 分析完成后强制调用，专用于在独立上下文中深度思考/推理/分析问题，将结论返回主 Agent。review：代码审查型，只读工具集（含 read_file/search/find/ls/web_search），专用于文件列表的 Code Review（P0-P3 分级输出）。plan：计划型，只读分析工具 + write_file/update_file（仅限写入 .chat/plan/ 目录），根据指令生成计划。",
                         },
                     },
                     "required": ["description", "prompt"],
@@ -104,7 +104,7 @@ class DispatchAgents(Func):
 
             # 模型选择：对指定类型的 subagent 检查是否应使用低优先级模型
             model = getattr(self.agent, 'model', None)
-            low_model_types = {"map", "execute", "read_memory", "write_memory"}
+            low_model_types = {"map", "execute"}
             if self.target_agent_type in low_model_types:
                 try:
                     config_port = self.agent.get_config_port()

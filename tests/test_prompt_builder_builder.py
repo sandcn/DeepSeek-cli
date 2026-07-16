@@ -19,8 +19,7 @@ from src.prompt_builder.builder import (
     build_review_agent_system_prompt,
     build_think_agent_system_prompt,
     build_plan_agent_system_prompt,
-    build_read_memory_agent_system_prompt,
-    build_write_memory_agent_system_prompt,
+
     build_execute_agent_system_prompt,
     _load_prompt,
 )
@@ -49,8 +48,6 @@ class TestLoadPrompt:
             "prompts_export_review",
             "prompts_export_plan",
             "prompts_export_execute",
-            "prompts_export_read_memory",
-            "prompts_export_write_memory",
         ]
         for name in existing_prompts:
             content = _load_prompt(name)
@@ -636,7 +633,7 @@ class TestIncludeGlobalMdParam:
 # ═══════════════════════════════════════════════════════════
 
 class TestSubAgentExcludesInitMd:
-    """验证所有 7 种 SubAgent 类型的 system prompt 不包含 init.md 项目概述"""
+    """验证所有 SubAgent 类型的 system prompt 不包含 init.md 项目概述"""
 
     MOCK_INIT_MD = (
         "# 测试项目\n"
@@ -691,18 +688,6 @@ class TestSubAgentExcludesInitMd:
     def test_plan_agent_excludes_init_md(self):
         """plan 类型不应包含项目概述"""
         result = build_plan_agent_system_prompt(cwd=self.cwd)
-        full = "\n".join(result)
-        assert "项目概述" not in full
-
-    def test_read_memory_agent_excludes_init_md(self):
-        """read_memory 类型不应包含项目概述"""
-        result = build_read_memory_agent_system_prompt(cwd=self.cwd)
-        full = "\n".join(result)
-        assert "项目概述" not in full
-
-    def test_write_memory_agent_excludes_init_md(self):
-        """write_memory 类型不应包含项目概述"""
-        result = build_write_memory_agent_system_prompt(cwd=self.cwd)
         full = "\n".join(result)
         assert "项目概述" not in full
 
@@ -797,88 +782,6 @@ class TestBuildPlanAgentSystemPrompt:
     def test_can_exclude_version_control(self):
         """Plan 提示词支持 include_version_control=False"""
         result = build_plan_agent_system_prompt(include_version_control=False)
-        last_part = result[-1]
-        assert "版本控制" not in last_part
-
-
-# ═══════════════════════════════════════════════════════════
-# ReadMemory Agent 系统提示词构建测试
-# ═══════════════════════════════════════════════════════════
-
-class TestBuildReadMemoryAgentSystemPrompt:
-    def test_returns_list_of_strings(self):
-        result = build_read_memory_agent_system_prompt()
-        assert isinstance(result, list)
-        assert all(isinstance(p, str) for p in result)
-
-    def test_has_read_only_constraint(self):
-        """ReadMemory 提示词应包含只读约束说明"""
-        result = build_read_memory_agent_system_prompt()
-        full = "\n".join(result)
-        assert "只读" in full
-
-    def test_has_memory_directory_focus(self):
-        """ReadMemory 提示词应聚焦 .chat/memory/ 目录"""
-        result = build_read_memory_agent_system_prompt()
-        full = "\n".join(result)
-        assert ".chat/memory/" in full
-
-    def test_has_environment_info(self):
-        """ReadMemory 提示词应包含运行时环境信息"""
-        result = build_read_memory_agent_system_prompt()
-        full = "\n".join(result)
-        assert "当前执行环境" in full
-
-    def test_content_non_empty(self):
-        """ReadMemory 提示词应非空"""
-        result = build_read_memory_agent_system_prompt()
-        assert len(result) > 0
-        assert any(len(p.strip()) > 0 for p in result)
-
-    def test_can_exclude_version_control(self):
-        """ReadMemory 提示词支持 include_version_control=False"""
-        result = build_read_memory_agent_system_prompt(include_version_control=False)
-        last_part = result[-1]
-        assert "版本控制" not in last_part
-
-
-# ═══════════════════════════════════════════════════════════
-# WriteMemory Agent 系统提示词构建测试
-# ═══════════════════════════════════════════════════════════
-
-class TestBuildWriteMemoryAgentSystemPrompt:
-    def test_returns_list_of_strings(self):
-        result = build_write_memory_agent_system_prompt()
-        assert isinstance(result, list)
-        assert all(isinstance(p, str) for p in result)
-
-    def test_has_security_rules(self):
-        """WriteMemory 提示词应包含安全红线"""
-        result = build_write_memory_agent_system_prompt()
-        full = "\n".join(result)
-        assert "禁止读写传密钥" in full
-
-    def test_has_hallucination_prevention(self):
-        """WriteMemory 提示词应包含幻觉防止规范"""
-        result = build_write_memory_agent_system_prompt()
-        full = "\n".join(result)
-        assert "大模型幻觉防止" in full
-
-    def test_has_environment_info(self):
-        """WriteMemory 提示词应包含运行时环境信息"""
-        result = build_write_memory_agent_system_prompt()
-        full = "\n".join(result)
-        assert "当前执行环境" in full
-
-    def test_content_non_empty(self):
-        """WriteMemory 提示词应非空"""
-        result = build_write_memory_agent_system_prompt()
-        assert len(result) > 0
-        assert any(len(p.strip()) > 0 for p in result)
-
-    def test_can_exclude_version_control(self):
-        """WriteMemory 提示词支持 include_version_control=False"""
-        result = build_write_memory_agent_system_prompt(include_version_control=False)
         last_part = result[-1]
         assert "版本控制" not in last_part
 

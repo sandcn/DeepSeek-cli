@@ -134,21 +134,15 @@ class FileToolBase(Func):
         except ValueError as e:
             raise PathSecurityError(str(e))
 
-        # plan / write_memory agent 路径白名单校验
-        # 设计说明：仅当 agent_type 显式为 "plan" 或 "write_memory" 时触发，默认值 None 不触发。
+        # plan agent 路径白名单校验
+        # 设计说明：仅当 agent_type 显式为 "plan" 时触发，默认值 None 不触发。
         # agent_type 由 SubAgent._handle_tool_calls 注入，保证子代理的所有
         # 工具调用都会被正确标记。若未注入（直接 ToolRegistry.dispatch），无 agent
         # 上下文即无语义，不限制是正确行为。
-        # execute agent 无路径白名单限制，
-        # 因其需要修改项目源码文件来执行计划步骤。
         agent_type_val = getattr(self, 'agent_type', None)
-        if agent_type_val in ('plan', 'write_memory'):
-            if agent_type_val == 'plan':
-                allowed_dir = os.path.realpath(os.path.abspath(os.path.join(os.getcwd(), '.chat', 'plan')))
-                agent_label = "plan agent"
-            else:  # write_memory
-                allowed_dir = os.path.realpath(os.path.abspath(os.path.join(os.getcwd(), '.chat', 'memory')))
-                agent_label = "write_memory agent"
+        if agent_type_val == 'plan':
+            allowed_dir = os.path.realpath(os.path.abspath(os.path.join(os.getcwd(), '.chat', 'plan')))
+            agent_label = "plan agent"
             # 使用 os.path.realpath 解析目标目录的所有符号链接中间目录，
             # 防止 allowed_dir 本身是符号链接指向外部目录时被绕过
             abs_path = os.path.abspath(self.path)

@@ -76,42 +76,15 @@
 
 # Agent 类型总览
 
-本工作流程涉及 7 种 SubAgent 类型（通过 `dispatch_agent(type="...")` 调用）。以下按 **「怎么引发」→「怎么给提词」→「执行之后干嘛」** 三个维度逐一说明。
+本工作流程涉及 5 种 SubAgent 类型（通过 `dispatch_agent(type="...")` 调用）。以下按 **「怎么引发」→「怎么给提词」→「执行之后干嘛」** 三个维度逐一说明。
 
 | 类型 | 用途 | 调用时机 | 工具集 | 写入权限 |
 |------|------|----------|--------|----------|
-| `read_memory` | 读取记忆 | 怎么触发 | read_file/search/find/ls | 无（只读） |
 | `map` | 代码分析/探底 | 触发了做什么（分析） | read_file/search/find/ls | 无（只读） |
 | `think` | 深度推理分析 | map 之后、plan 之前强制调用 | read_file/search/find/ls | 无（只读） — 裁决栈差异：第5条「深度约效率」替代其他 Agent 的「保护约精简」 |
 | `plan` | 生成执行计划 | 触发了做什么（规划） | 读工具 + write_file/update_file | 仅 `.chat/plan/` |
 | `review` | 代码审查 | 所有文件修改完成后、标记任务完成前 | read_file/search/find/ls/web_search | 无（只读） |
-| `write_memory` | 写入记忆 | 完成所有后 | 读工具 + write_file/update_file/mk | 仅 `.chat/memory/` |
 | `execute` | 计划步骤执行 / 通用子任务（后者仅限只读） | 按需 | 除 user_select/dispatch_agent/web_search 外全工具 | 全项目（沙盒保护） |
-
----
-
-# read_memory — 记忆读取
-
-### 怎么引发
-```
-dispatch_agent(type="read_memory", description="读记忆: <目标>", prompt="...")
-```
-- **调用时机**：每次对话开始（强制），以及需要回顾历史决策/模块约定时
-- **并行规则**：可与 `find`/`ls` 同轮并行（皆只读）
-
-### 怎么给提词
-```
-读取并返回以下相关记忆：
-1. 搜索关键词 <关键词> 相关的记忆条目
-2. 读取 memory.md 索引获取全貌
-3. 返回找到的条目摘要及置信度
-```
-> **为何委派**：记忆文件（`.chat/memory/`）内容可能很大，委派给专门的 read_memory Agent 可隔离上下文、避免污染当前对话的 token 预算。Agent 仅保留 read_file/search/find/ls 工具，专注于高效检索。
-
-### 执行之后干嘛
-- Agent 返回记忆检索结果（含置信度），**不会修改任何文件**
-- 根据返回的记忆内容判断是否需要进一步查阅详情文件（`.chat/memory/mem_XXXX.md`）
-- 极简查询可降级为直接 `read_file .chat/memory/memory.md`，但仍推荐优先委派 Agent
 
 ---
 
@@ -228,32 +201,6 @@ prompt 必须包含：
 
 ---
 
-# write_memory — 记忆写入
-
-### 怎么引发
-```
-dispatch_agent(type="write_memory", description="更新记忆: <摘要>", prompt="记录以下变更到 .chat/memory/：\n- 变更类型：<新增/更新/合并>\n- 涉及模块：<模块名>\n- 变更摘要：<描述>\n- 详情内容：<完整内容>\n\n请先 read_file .chat/memory/memory.md 获取索引，判断是新增还是合并，然后执行对应操作。")
-```
-- **调用时机**：所有验证通过后、有逻辑影响的变更完成时
-- **安全隔离**：Agent 的 write_file/update_file 被系统限制为仅可写入 `.chat/memory/` 目录
-- **禁止直接写**：不可直接 write_file/update_file 到 `.chat/memory/`
-
-### 怎么给提词
-prompt 必须包含：
-- 变更类型：新增 / 更新 / 合并（三选一）
-- 涉及模块：模块名称
-- 变更摘要：一句话描述
-- 详情内容：完整的变更记录（做了什么、为什么这样做、关键决策）
-
-> **为何委派**：Agent 自带记忆系统操作知识（合并规则、保护等级、归档规则），无需重复编码。
-
-### 执行之后干嘛
-1. Agent 写入/更新 `.chat/memory/` 下的 `mem_XXXX.md` 详情文件
-2. Agent 同步更新 `memory.md` 索引文件
-3. 确认写入成功后 → 输出最终结果（变更总结）
-
----
-
 # execute — 计划执行
 
 ### 怎么引发
@@ -291,7 +238,7 @@ dispatch_agent(type="execute", description="<任务摘要>", prompt="<自然语�
 1. **收集结构化结果**：每个 execute 返回结构化「执行结果」——含步骤编号、状态（成功/失败/部分完成）、修改文件列表、验证结果。其中，非「验证方案」步骤的验证结果固定为「略」，「验证方案」步骤的验证结果包含实际验证状态（语法检查/构建/测试/运行验证各项通过情况）。逐条校验返回的「修改文件列表」字段完整性。
 2. **（场景一）判定步骤间依赖**：根据计划文件中的依赖与顺序信息，将本轮已完成的步骤标记为完成，判定下一批可执行步骤（依赖全部满足的步骤可并发）。
 3. **失败处理**：步骤失败时按计划文件中的「风险应对」处理；客观失败 ≥2 次暂停审视、调整方案；连续 3 次失败停止并报告。
-4. **修改文件列表聚合**：将所有 execute 返回的修改文件去重合并，作为后续 review 和 write_memory 的输入。
+4. **修改文件列表聚合**：将所有 execute 返回的修改文件去重合并，作为后续 review 的输入。
 5. **全部步骤完成后**：进入审查阶段——派发 review Agent，审查须覆盖所有 execute 累计修改的全部文件。场景二（通用子任务，仅限只读）：每个通用子任务返回后，确认未产生文件修改（修改文件列表须为「无」），无需执行验证和审查。若场景二任务意外产生了文件修改，视为规则违规，须立即标记并回溯。
 
 ---
@@ -304,7 +251,6 @@ dispatch_agent(type="execute", description="<任务摘要>", prompt="<自然语�
 | think 强制插入 | map 完成后必须强制委派 think Agent 深度推理，think 完成后方可委派 plan，不可跳过 |
 | 并行限制 | `dispatch_agent` 不能与普通工具（read_file/write_file/bash等）同轮并行 |
 | 同轮多次 | 同轮可多次 `dispatch_agent`，自动共享执行器实现真正并行 |
-| 只读并行例外 | `read_memory` Agent 可与 `find`/`ls` 同轮并行（皆只读） |
 | 写后隔离 | 同一文件所有修改必须在单次 Agent 调用内完成 |
 | execute 并发 | 无依赖步骤强制并发派发多个 execute，各实例独立上下文，同批 ≤8 个 |
 | review 并发 | 多文件审查强制并发派发多个 review Agent |
@@ -314,7 +260,7 @@ dispatch_agent(type="execute", description="<任务摘要>", prompt="<自然语�
 
 ## 操作纪律
 - **工具调用原因说明（强制）**：每次调用工具前，必须用自然语言简短说明调用原因（格式：「因为需要确认 XXX，所以调用 <工具名> 搜索/读取文件」）。例外：连续多个同类型工具调用（如多个 `read_file` 并发）时，可在第一批前统一说明原因。
-- `dispatch_agent` 不能与普通工具同轮并行；同轮多次 dispatch 合法。例外：`read_memory` Agent 可与 `find`/`ls` 同轮并行（皆只读）
+- `dispatch_agent` 不能与普通工具同轮并行；同轮多次 dispatch 合法。
 - **`read_file` 项目文件前置检查（强制）**：每次 `read_file` 前按以下决策树**机械判定**（禁止主观裁决）——
 
   ```
@@ -328,7 +274,6 @@ dispatch_agent(type="execute", description="<任务摘要>", prompt="<自然语�
   ```
   
   **`read_file` 只能读取 map 返回的「关联文件列表」中的项目文件。** 任何项目文件（含 `.md` `.json` `.yaml` 等，不含日志文件——日志文件按决策树第一条分支处理）都必须先 map 获取关联文件列表后读取，不得绕过。
-- **记忆读写委派（强制）**：读取记忆→优先 `dispatch_agent(type="read_memory")`；写入记忆→必须 `dispatch_agent(type="write_memory")`。禁止直接 write_file/update_file 到 `.chat/memory/` 目录
 - 临时性错误最多重试 2 次（指数退避），连续 3 次失败停止
 - 客观失败按「遇难不轻退」处理
 - 禁止吞异常（例外：finally 清理+日志、非关键降级，不得裸异常捕获（如 Python `except:` / Java `catch (Exception e) {}` 无处理 / JS `catch(e) {}` 空块））
@@ -346,19 +291,13 @@ dispatch_agent(type="execute", description="<任务摘要>", prompt="<自然语�
 
 用户发出任何请求/任务即触发本流程。对话开始→自动进入。
 
-## 用户请求 → 先读记忆（强制 · 零豁免）
-用户提出任何请求，**第一步永远是委派 `read_memory` Agent 读取记忆**，无论请求内容是什么——分析、修改、新增、删除、查询，无例外。本规则不可跳过、不可绕过、不可延期。
-
 ## 任务范围
 - 范围默认当前项目，出界须指明路径
 - 搜索/修改默认锁定在当前项目范围
 
 ## 触发时执行清单（强制）
 
-### 1. 读相关记忆（强制）
-> 详见上方「用户请求 → 先读记忆（强制 · 零豁免）」。三要素速查 → 见「read_memory — 记忆读取」。
-
-### 1.5 目录信息前置检查（强制）
+### 1. 目录信息前置检查（强制）
 
 如果当前上下文中尚未获取过项目目录结构信息，**必须先使用 `find` 获取完整目录信息**（如 `find(pattern="*", path=".", type="dir")`，depth 不传则无限制递归），建立对项目全貌的认知，**没有例外**。
 
@@ -505,14 +444,7 @@ dispatch_agent(type="execute", description="<任务摘要>", prompt="<自然语�
 
 # 完成所有后做什么
 
-## 1. 更新记忆（强制）
-有逻辑影响的变更完成后必须记录。**强制委派 write_memory Agent 执行记忆写入**，禁止直接 write_file/update_file 到 `.chat/memory/` 目录。
-
-> 三要素速查 → 见上方「write_memory — 记忆写入」
-
-**操作流程**：判定需记录 → 构造 prompt → `dispatch_agent(type="write_memory", ...)` → 等待完成。
-
-## 2. 输出最终结果
+## 1. 输出最终结果
 
 ### 变更总结格式
 ```
@@ -534,7 +466,7 @@ dispatch_agent(type="execute", description="<任务摘要>", prompt="<自然语�
 - 破坏性变更提示范围；检查接口一致性及无硬编码
 - 大任务分步交付，每步输出可验证中间结果
 
-## 3. 下轮对话重复本流程
+## 2. 下轮对话重复本流程
 下一轮对话从头执行「怎么触发 → 触发了做什么 → 完成所有后做什么」，确保跨对话一致性和可追溯性。
 
 ---

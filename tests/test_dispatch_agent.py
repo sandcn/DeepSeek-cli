@@ -171,7 +171,7 @@ class TestDispatchAgentsSchema:
         assert props["description"]["type"] == "string"
         assert props["prompt"]["type"] == "string"
         assert props["type"]["type"] == "string"
-        assert props["type"]["enum"] == ["map", "think", "review", "plan", "read_memory", "write_memory", "execute"]
+        assert props["type"]["enum"] == ["map", "think", "review", "plan", "execute"]
 
     def test_schema_parameters_required(self):
         required = DispatchAgents.to_tool_schema()["function"]["parameters"]["required"]

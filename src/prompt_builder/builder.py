@@ -2,7 +2,7 @@
 
 设计说明：
 - MainAgent 的完整系统提示词预合并为 prompts/prompts_export_main.md
-- 各类型 SubAgent（map/review/think/plan/read_memory/write_memory/execute）各自从
+- 各类型 SubAgent（map/review/think/plan/execute）各自从
   prompts_export_*.md 加载静态规则；通用 SubAgent（build_subagent_system_prompt）
   直接使用 fallback 兜底提示词
 - 这些文件包含全部静态规则内容（角色设定、行为规范、代码理解、工具使用等），
@@ -227,32 +227,6 @@ def build_plan_agent_system_prompt(
     return _build_prompt("plan","prompts_export_plan", _FALLBACK_SUB_PROMPT, include_version_control, cwd, include_global_md=True)
 
 
-def build_read_memory_agent_system_prompt(
-    include_version_control: bool = True,
-    cwd: str | None = None,
-) -> list[str]:
-    """构建 read_memory 类型子代理系统提示词。
-
-    从 prompts_export_read_memory.md 加载静态规则，追加运行时动态信息。
-    read_memory 类型仅保留 read_file/search/find/ls 只读工具，
-    专用于搜索和读取 .chat/memory/ 目录下的记忆文件。
-    """
-    return _build_prompt("read_memory","prompts_export_read_memory", _FALLBACK_SUB_PROMPT, include_version_control, cwd, include_global_md=True)
-
-
-def build_write_memory_agent_system_prompt(
-    include_version_control: bool = True,
-    cwd: str | None = None,
-) -> list[str]:
-    """构建 write_memory 类型子代理系统提示词。
-
-    从 prompts_export_write_memory.md 加载静态规则，追加运行时动态信息。
-    write_memory 类型保留读工具 + write_file/update_file/mk，
-    写入仅限 .chat/memory/ 目录，专用于创建和更新记忆文件。
-    """
-    return _build_prompt("write_memory","prompts_export_write_memory", _FALLBACK_SUB_PROMPT, include_version_control, cwd, include_global_md=True)
-
-
 def build_execute_agent_system_prompt(
     include_version_control: bool = True,
     cwd: str | None = None,
@@ -287,8 +261,6 @@ __all__ = [
     "build_map_agent_system_prompt",
     "build_review_agent_system_prompt",
     "build_plan_agent_system_prompt",
-    "build_read_memory_agent_system_prompt",
-    "build_write_memory_agent_system_prompt",
     "build_execute_agent_system_prompt",
     "build_think_agent_system_prompt",
     "reset_prompts_cache",

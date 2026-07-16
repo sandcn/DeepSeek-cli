@@ -27,20 +27,16 @@ AGENT_TYPE_ABBREV = {
     "review": "rv",
     "think": "th",
     "plan": "pl",
-    "read_memory": "rm",
-    "write_memory": "wm",
     "execute": "ex",
 }
 
 # ── SubAgent 类型 → 256色 ANSI 前景色 ──────────────────
-# 使用 256 色调色板：mp=蓝色(33) rv=紫色(129) pl=琥珀色(214) rm=青色(45) wm=黄色(226)
+# 使用 256 色调色板：mp=蓝色(33) rv=紫色(129) pl=琥珀色(214) ex=橙色(208)
 AGENT_TYPE_COLORS = {
     "map": "\033[38;5;33m",        # 深蓝
     "review": "\033[38;5;129m",    # 紫
     "think": "\033[38;5;49m",      # 薄荷绿/亮青
     "plan": "\033[38;5;214m",      # 琥珀
-    "read_memory": "\033[38;5;45m",   # 青色
-    "write_memory": "\033[38;5;226m", # 黄色
     "execute": "\033[38;5;208m",   # 橙色
 }
 

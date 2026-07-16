@@ -268,7 +268,7 @@ AI 代理在对话中可调用以下工具完成各类操作。共 **14 个内�
 | `mk` | mk | IO | ✅ | 创建目录，支持递归创建父目录 |
 | `web_search` | ws | 网络 | ❌ | 搜索引擎搜索 + 网页全文抓取（百度/必应/GitHub） |
 | `user_select` | us | 交互 | ❌ | 向用户显示交互式选择界面（单选/多选/超时回退/非交互回退） |
-| `dispatch_agent` | da | Agent | ❌ | 并行派发子 Agent 执行独立任务（支持类型：map/think/review/plan/read_memory/write_memory/execute） |
+| `dispatch_agent` | da | Agent | ❌ | 并行派发子 Agent 执行独立任务（支持类型：map/think/review/plan/execute） |
 
 ### 工具分类
 
@@ -300,7 +300,7 @@ def can_use(cls, tool_name: str, agent_type: str = "execute") -> tuple[bool, str
 
 - **agent_type 注入** — SubAgent 在 `_handle_tool_calls()` 中自动注入 `func.agent_type = self.agent_type`
 - **排除规则** — 定义在 `src/core/subagent.py` 的 `_TOOL_EXCLUSION_MAP`（详见下方 SubAgent 类型表）
-- **路径白名单** — `FileToolBase._validate_path_and_size()` 对 plan/write_memory Agent 实施路径限制，分别仅允许写入 `.chat/plan/` 和 `.chat/memory/` 目录，防止误写项目源码
+- **路径白名单** — `FileToolBase._validate_path_and_size()` 对 plan Agent 实施路径限制，仅允许写入 `.chat/plan/` 目录，防止误写项目源码
 
 ---
 
@@ -347,25 +347,25 @@ ChatUIConsumer
 ```
 ┌──────────────────────────────────────────────────────────────────┐
 │                         Main Agent                               │
-│                   主控 Agent，负责任务调度（8 步工作流）                 │
+│                   主控 Agent，负责任务调度（6 步工作流）                 │
 │                                                                  │
-│  ① 规划 ─→ ② 探底分析 ─→ ③ 推理 ─→ ④ 记忆检索 ─→ ⑤ 修改执行 ─→ ⑥ 审查 ─→ ⑦ 验证 ─→ ⑧ 记忆更新（完成）│
-└───────┬───────┬───────┬───────┬───────┬───────┬───────┘
-        │       │       │       │       │       │       │
-        │dispatch│dispatch│dispatch│dispatch│dispatch│dispatch│dispatch
-        ▼       ▼       ▼       ▼       ▼       ▼
-┌─────────────┐ ┌────────────┐ ┌─────────────┐ ┌────────────┐ ┌──────────────┐ ┌─────────────────┐ ┌──────────────────┐
-│ plan        │ │ map        │ │ think       │ │ review     │ │ execute     │ │ read_memory     │ │ write_memory     │
-│ SubAgent    │ │ SubAgent   │ │ SubAgent    │ │ SubAgent   │ │ SubAgent    │ │ SubAgent        │ │ SubAgent         │
-│             │ │            │ │             │ │            │ │             │ │                 │ │                  │
-│ 计划型      │ │ 只读分析型  │ │ 深度推理型  │ │ 代码审查型  │ │ 执行型      │ │ 只读记忆型      │ │ 读写记忆型       │
-│             │ │            │ │             │ │            │ │             │ │                 │ │                  │
-│ • 任务拆解  │ │ • 项目探底 │ │ • 根因分析 │ │ • P0-P3    │ │ • 读/写文件 │ │ • 检索记忆索引  │ │ • 新增/更新记忆  │
-│ • 依赖分析  │ │ • 模块地图 │ │ • 方案对比 │ │   分级审查  │ │ • 修改代码  │ │ • 读取记忆条目  │ │ • 合并记忆条目   │
-│ • 资源估算  │ │ • 调用链   │ │ • 风险评估 │ │ • 循环审查  │ │ • 创建文件  │ │ • 关键词搜索    │ │ • 写入 .chat/    │
-│ • 风险识别  │ │ • 引用关系 │ │ • 架构决策 │ │ • 阻断策略  │ │ • 测试运行  │ │                 │ │   memory/        │
-│ • 动态重规划│ │            │ │ • 假设验证 │ │            │ │ • 执行验证  │ │                 │ │                  │
-└─────────────┘ └────────────┘ └─────────────┘ └────────────┘ └──────────────┘ └─────────────────┘ └──────────────────┘
+│  ① 规划 ─→ ② 探底分析 ─→ ③ 推理 ─→ ④ 修改执行 ─→ ⑤ 审查 ─→ ⑥ 验证（完成）│
+└───────┬───────┬───────┬───────┬───────┬───────┘
+        │       │       │       │       │
+        │dispatch│dispatch│dispatch│dispatch│dispatch
+        ▼       ▼       ▼       ▼       ▼
+┌─────────────┐ ┌────────────┐ ┌─────────────┐ ┌────────────┐ ┌──────────────┐
+│ plan        │ │ map        │ │ think       │ │ review     │ │ execute      │
+│ SubAgent    │ │ SubAgent   │ │ SubAgent    │ │ SubAgent   │ │ SubAgent     │
+│             │ │            │ │             │ │            │ │              │
+│ 计划型      │ │ 只读分析型  │ │ 深度推理型  │ │ 代码审查型  │ │ 执行型       │
+│             │ │            │ │             │ │            │ │              │
+│ • 任务拆解  │ │ • 项目探底 │ │ • 根因分析 │ │ • P0-P3    │ │ • 读/写文件  │
+│ • 依赖分析  │ │ • 模块地图 │ │ • 方案对比 │ │   分级审查  │ │ • 修改代码   │
+│ • 资源估算  │ │ • 调用链   │ │ • 风险评估 │ │ • 循环审查  │ │ • 创建文件   │
+│ • 风险识别  │ │ • 引用关系 │ │ • 架构决策 │ │ • 阻断策略  │ │ • 测试运行   │
+│ • 动态重规划│ │            │ │ • 假设验证 │ │            │ │ • 执行验证   │
+└─────────────┘ └────────────┘ └─────────────┘ └────────────┘ └──────────────┘
 ```
 
 ### 工作流说明
@@ -379,19 +379,14 @@ ChatUIConsumer
 3. 推理 ──→  委派 think SubAgent 深度推理分析（根因分析、方案对比、风险评估）
      │         基于 map 结果在独立上下文中深度思考
      │
-4. 记忆 ──→  委派 read_memory SubAgent 检索相关记忆
-     │         关键词搜索 .chat/memory/ 目录
-     │
-5. 修改 ──→  基于探底+推理结果执行代码修改
+4. 修改 ──→  基于探底+推理结果执行代码修改
      │         多个独立目标可并发派发 execute SubAgent
      │
-6. 审查 ──→  委派 review SubAgent 逐文件审查
+5. 审查 ──→  委派 review SubAgent 逐文件审查
      │         P0/P1/P2 阻断修复，P3 纳入记录
      │         最多三轮循环审查
      │
-7. 验证 ──→  语法检查 → 构建/编译 → 加测试 → 运行测试 → 运行验证
-     │
-8. 完成 ──→  输出变更总结，委派 write_memory SubAgent 更新跨对话记忆
+6. 验证 ──→  语法检查 → 构建/编译 → 加测试 → 运行测试 → 运行验证
 ```
 
 ### SubAgent 类型
@@ -405,10 +400,8 @@ ChatUIConsumer
 | **think** | 只读（read_file/search/find/ls） | 深度推理、根因分析、方案对比、架构决策 |
 | **review** | 只读 + web_search | Code Review、P0-P3 分级审查、跨文件一致性验证 |
 | **execute** | 全工具（不含 user_select/dispatch_agent） | 读/写/改代码、执行测试、通用任务 |
-| **read_memory** | 只读（read_file/search/find/ls） | 检索 `.chat/memory/` 目录下的记忆文件 |
-| **write_memory** | 只读 + write_file/update_file/mk（仅限 `.chat/memory/` 目录） | 维护记忆文件（新增/更新/合并条目） |
 
-> **工具排除策略**：execute 排除 `dispatch_agent/user_select`；map 排除 `bash/write_file/update_file/rm/mv/cp/mk/web_search/dispatch_agent/user_select`；think 与 map 策略一致（排除所有写入类+web_search+dispatch_agent+user_select）；review 排除 `bash/write_file/update_file/rm/mv/cp/mk/dispatch_agent/user_select`（保留 web_search）；plan 排除 `bash/rm/mv/cp/mk/dispatch_agent/user_select`，write_file/update_file 仅限 `.chat/plan/` 目录；read_memory 与 map 策略一致（排除所有写入类+web_search+dispatch_agent+user_select）；write_memory 排除 `bash/rm/mv/cp/web_search/dispatch_agent/user_select`，write_file/update_file/mk 仅限 `.chat/memory/` 目录。SubAgent 在 `_handle_tool_calls()` 中注入 `agent_type` 到 Func 实例，`Func.can_use()` 进行统一检查。`FileToolBase._validate_path_and_size()` 额外实施 plan/write_memory Agent 路径白名单校验。
+> **工具排除策略**：execute 排除 `dispatch_agent/user_select`；map 排除 `bash/write_file/update_file/rm/mv/cp/mk/web_search/dispatch_agent/user_select`；think 与 map 策略一致（排除所有写入类+web_search+dispatch_agent+user_select）；review 排除 `bash/write_file/update_file/rm/mv/cp/mk/dispatch_agent/user_select`（保留 web_search）；plan 排除 `bash/rm/mv/cp/mk/dispatch_agent/user_select`，write_file/update_file 仅限 `.chat/plan/` 目录。SubAgent 在 `_handle_tool_calls()` 中注入 `agent_type` 到 Func 实例，`Func.can_use()` 进行统一检查。`FileToolBase._validate_path_and_size()` 额外实施 plan Agent 路径白名单校验。
 
 ### 并发调度策略
 
@@ -421,15 +414,14 @@ ChatUIConsumer
 ```
 ├── chat.py                # 入口脚本（asyncio.run(main())）
 ├── pyproject.toml         # 项目配置与依赖
-├── prompts/               # 系统提示词（8 个文件）
+├── prompts/               # 系统提示词（6 个文件）
 │   ├── prompts_export_main.md    # 主 Agent 系统提示词
 │   ├── prompts_export_map.md     # map SubAgent 探底提示词
 │   ├── prompts_export_plan.md    # plan SubAgent 计划提示词
 │   ├── prompts_export_execute.md  # execute SubAgent 提示词
 │   ├── prompts_export_review.md  # review SubAgent 审查提示词
-│   ├── prompts_export_read_memory.md   # read_memory SubAgent 提示词
 │   ├── prompts_export_think.md         # think SubAgent 提示词
-│   └── prompts_export_write_memory.md  # write_memory SubAgent 提示词
+
 ├── tests/                 # 测试（128 个测试文件）
 ├── .chat/                 # 运行时数据目录（首次运行自动创建）
 │   ├── memory/            # 跨对话记忆系统（索引 + 详情）
@@ -540,7 +532,7 @@ ChatUIConsumer
 │   │
 │   ├── tools/              # 工具调用系统（14 个内置工具）
 │   │   ├── base.py            # Func 基类 + 元数据系统（含 can_use 工具可用性检查 / agent_type）
-│   │   ├── file_base.py       # FileToolBase 文件操作基类（含 plan/write_memory agent 路径白名单）
+│   │   ├── file_base.py       # FileToolBase 文件操作基类（含 plan agent 路径白名单）
 │   │   ├── registry.py        # 工具注册表（自动发现 + 调度 + 元数据索引）
 │   │   ├── read_file.py / write_file.py / update_file.py
 │   │   ├── search.py / find.py / ls.py
@@ -708,7 +700,7 @@ Pipeline 将 Agent 对话循环编排为可插拔中间件链。中间件按注�
 
 ### 2. ✅ 🧠 Plan Agent 架构 — 已完成
 
-独立的 **Plan Agent** 层已实现并投入使用。任何文件修改或新需求前，必须先通过 `dispatch_agent(type="plan")` 委派 plan SubAgent 生成结构化计划文件（`.chat/plan/`），主 Agent 读取后逐条执行，形成「规划 → 探底 → 记忆检索 → 执行 → 审查 → 验证 → 记忆更新」七阶段流水线。详见上方 🔄 [Agent 工作流程](#agent-工作流程)。
+独立的 **Plan Agent** 层已实现并投入使用。任何文件修改或新需求前，必须先通过 `dispatch_agent(type="plan")` 委派 plan SubAgent 生成结构化计划文件（`.chat/plan/`），主 Agent 读取后逐条执行，形成「规划 → 探底 → 推理 → 执行 → 审查 → 验证」六阶段流水线。详见上方 🔄 [Agent 工作流程](#agent-工作流程)。
 
 ---
 

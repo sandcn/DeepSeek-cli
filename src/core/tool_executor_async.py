@@ -110,7 +110,7 @@ class ToolScheduler:
 
         try:
             func = self._registry.dispatch(tc["name"], tc["arguments"], agent=agent_ref)
-            # 注入 agent_type（SubAgent 通过此属性限制 plan/write_memory 的写入路径）
+            # 注入 agent_type（SubAgent 通过此属性限制 plan 的写入路径）
             if hasattr(agent_ref, 'agent_type') and agent_ref.agent_type is not None:
                 func.agent_type = agent_ref.agent_type
             output, success = await self._run_tool_func(func, tc, run_method)

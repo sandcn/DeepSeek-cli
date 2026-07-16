@@ -29,14 +29,6 @@ class DefaultPromptBuilderAdapter:
         from ...prompt_builder import build_plan_agent_system_prompt
         return build_plan_agent_system_prompt(cwd=cwd)
 
-    def build_read_memory_agent_system_prompt(self, cwd: Optional[str] = None) -> list[str]:
-        from ...prompt_builder import build_read_memory_agent_system_prompt
-        return build_read_memory_agent_system_prompt(cwd=cwd)
-
-    def build_write_memory_agent_system_prompt(self, cwd: Optional[str] = None) -> list[str]:
-        from ...prompt_builder import build_write_memory_agent_system_prompt
-        return build_write_memory_agent_system_prompt(cwd=cwd)
-
     def build_execute_agent_system_prompt(self, cwd: Optional[str] = None) -> list[str]:
         from ...prompt_builder import build_execute_agent_system_prompt
         return build_execute_agent_system_prompt(cwd=cwd)
