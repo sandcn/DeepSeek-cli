@@ -36,7 +36,7 @@ _logger = logging.getLogger(__name__)
 
 # ── 引擎常量 ──────────────────────────────────────
 
-_ACTIVE_RENDER_INTERVAL = 0.005
+_ACTIVE_RENDER_INTERVAL = 0.1
 _CONSECUTIVE_FULL_THRESHOLD = 10
 
 
