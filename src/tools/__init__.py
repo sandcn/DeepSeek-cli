@@ -17,7 +17,7 @@ from .find import FindFunc as Find
 from .ls import LsFunc as Ls
 from .web_search import WebSearchFunc as WebSearch
 from .dispatch_agent import DispatchAgents as DispatchAgent
-from .mk import MkFunc as Mk
+from .mkdir import MkdirFunc as Mk
 from .registry import get_tools, register_tool
 
 __all__ = [

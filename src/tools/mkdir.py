@@ -17,8 +17,8 @@ from .file_ops import validate_path_security, async_file_exists
     tool_category="write",
     description="创建目录",
 )
-class MkFunc(FileSystemToolBase):
-    name = "mk"
+class MkdirFunc(FileSystemToolBase):
+    name = "mkdir"
     _action_verb = "创建"
 
     @classmethod
@@ -26,7 +26,7 @@ class MkFunc(FileSystemToolBase):
         return {
             "type": "function",
             "function": {
-                "name": "mk",
+                "name": "mkdir",
                 "description": (
                     "创建目录。支持文件沙盒撤回（创建的目录可通过沙盒机制恢复）。"
                     "默认只创建单层目录，设置 parents=True 可递归创建父目录（类似 mkdir -p）。"
@@ -108,4 +108,4 @@ class MkFunc(FileSystemToolBase):
         return await self._run_with_error_handling(_do_mkdir)
 
     def _get_operation_desc(self) -> str:
-        return f"mk: {self.path}{' -p' if self.parents else ''}"
+        return f"mkdir: {self.path}{' -p' if self.parents else ''}"

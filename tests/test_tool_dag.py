@@ -61,7 +61,7 @@ def _make_registry(metadata_map: dict[str, tuple] | None = None):
             "cp": (False, False),
             "mv": (False, False),
             "rm": (False, False),
-            "mk": (False, False),
+            "mkdir": (False, False),
             "dispatch_agent": (False, False),
             "user_select": (False, True),
         }
@@ -277,10 +277,10 @@ class TestImplicitDependencies:
 
     # ── cp/mv 多路径依赖检测 ───────────────────────────────
 
-    def test_cp_destination_overlap_with_mk(self):
-        """cp(dst=X) + mk(path=X) → cp 依赖 mk（写同一目标路径）"""
+    def test_cp_destination_overlap_with_mkdir(self):
+        """cp(dst=X) + mkdir(path=X) → cp 依赖 mkdir（写同一目标路径）"""
         tool_calls = [
-            {"id": "call_A", "name": "mk",
+            {"id": "call_A", "name": "mkdir",
              "arguments": {"path": "/tmp/outdir", "parents": True}},
             {"id": "call_B", "name": "cp",
              "arguments": {"source": "/tmp/a.txt", "destination": "/tmp/outdir"}},
@@ -367,12 +367,12 @@ class TestImplicitDependencies:
         dag = ToolDAG(tool_calls, _make_registry())
         assert "call_A" in dag.get_node("call_B").dependencies
 
-    def test_mk_cp_rm_same_target_serialized(self):
-        """mk(path=DIR) + cp(src, dst=DIR/sub/) + rm(path=DIR/sub/)
-        mk 创建父目录 → cp 写子路径（父子路径依赖）→ rm 同子路径（精确匹配）
+    def test_mkdir_cp_rm_same_target_serialized(self):
+        """mkdir(path=DIR) + cp(src, dst=DIR/sub/) + rm(path=DIR/sub/)
+        mkdir 创建父目录 → cp 写子路径（父子路径依赖）→ rm 同子路径（精确匹配）
         完全串行化三层"""
         tool_calls = [
-            {"id": "call_A", "name": "mk",
+            {"id": "call_A", "name": "mkdir",
              "arguments": {"path": "/tmp/mydir", "parents": True}},
             {"id": "call_B", "name": "cp",
              "arguments": {"source": "/tmp/x.txt",
@@ -396,7 +396,7 @@ class TestImplicitDependencies:
         tool_calls = [
             {"id": "call_A", "name": "cp",
              "arguments": {"source": "/tmp/a.txt", "destination": "/tmp/out1.txt"}},
-            {"id": "call_B", "name": "mk",
+            {"id": "call_B", "name": "mkdir",
              "arguments": {"path": "/tmp/otherdir"}},
         ]
         dag = ToolDAG(tool_calls, _make_registry())
@@ -428,10 +428,10 @@ class TestImplicitDependencies:
 
     # ── 父子路径依赖检测 ───────────────────────────────────
 
-    def test_parent_dir_mk_before_child_cp(self):
-        """mk(path=DIR) + cp(dst=DIR/file) → cp 依赖 mk（父子路径，父目录先创建）"""
+    def test_parent_dir_mkdir_before_child_cp(self):
+        """mkdir(path=DIR) + cp(dst=DIR/file) → cp 依赖 mkdir（父子路径，父目录先创建）"""
         tool_calls = [
-            {"id": "call_A", "name": "mk",
+            {"id": "call_A", "name": "mkdir",
              "arguments": {"path": "/tmp/mydir", "parents": True}},
             {"id": "call_B", "name": "cp",
              "arguments": {"source": "/tmp/x.txt",
@@ -440,10 +440,10 @@ class TestImplicitDependencies:
         dag = ToolDAG(tool_calls, _make_registry())
         assert "call_A" in dag.get_node("call_B").dependencies
 
-    def test_parent_dir_mk_before_child_write(self):
-        """mk(path=DIR) + write_file(path=DIR/sub/a.txt) → write_file 依赖 mk"""
+    def test_parent_dir_mkdir_before_child_write(self):
+        """mkdir(path=DIR) + write_file(path=DIR/sub/a.txt) → write_file 依赖 mkdir"""
         tool_calls = [
-            {"id": "call_A", "name": "mk",
+            {"id": "call_A", "name": "mkdir",
              "arguments": {"path": "/tmp/mydir", "parents": True}},
             {"id": "call_B", "name": "write_file",
              "arguments": {"path": "/tmp/mydir/sub/a.txt", "content": "data"}},

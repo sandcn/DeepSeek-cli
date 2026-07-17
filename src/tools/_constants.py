@@ -137,7 +137,7 @@ TOOL_ABBR: dict[str, str] = {
     "cp": "cp",
     "mv": "mv",
     "rm": "rm",
-    "mk": "mk",
+    "mkdir": "mkdir",
     "user_select": "us",
     "web_search": "ws",
     "search": "sr",

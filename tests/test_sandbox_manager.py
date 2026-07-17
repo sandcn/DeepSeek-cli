@@ -1098,12 +1098,12 @@ class TestDirectoryApplyRevert:
 class TestDirectoryRestore:
     """SandboxManager 目录恢复"""
 
-    def test_mk_restore_forward(self, tmp_path):
+    def test_mkdir_restore_forward(self, tmp_path):
         """mkdir(idx=1) + file_write(idx=2)，恢复到 idx=1：目录应存在且文件为原始状态"""
         dir_path = str(tmp_path / "mk_forward")
         file_path = os.path.join(dir_path, "data.txt")
         sm = SandboxManager()
-        sm.record_file_change(dir_path, None, "", 1, tool_name="mk", record_type="directory")
+        sm.record_file_change(dir_path, None, "", 1, tool_name="mkdir", record_type="directory")
         sm.record_file_change(file_path, "old", "new", 2)
 
         # 创建目录和文件以模拟已发生的操作
@@ -1117,12 +1117,12 @@ class TestDirectoryRestore:
         with open(file_path) as f:
             assert f.read() == "old"
 
-    def test_mk_restore_backward(self, tmp_path):
+    def test_mkdir_restore_backward(self, tmp_path):
         """mkdir(idx=1)，恢复到 idx=0：目录应被删除"""
         dir_path = str(tmp_path / "mk_backward")
         os.makedirs(dir_path)  # 目录已存在（模拟 mk 已执行）
         sm = SandboxManager()
-        sm.record_file_change(dir_path, None, "", 1, tool_name="mk", record_type="directory")
+        sm.record_file_change(dir_path, None, "", 1, tool_name="mkdir", record_type="directory")
 
         results = sm.restore_to_message(0)
         assert results[dir_path] is True
@@ -1132,7 +1132,7 @@ class TestDirectoryRestore:
         """rm -r(idx=2) 在 mk(idx=1) 之后，恢复到 idx=1：目录应被恢复"""
         dir_path = str(tmp_path / "rm_backward")
         sm = SandboxManager()
-        sm.record_file_change(dir_path, None, "", 1, tool_name="mk", record_type="directory")
+        sm.record_file_change(dir_path, None, "", 1, tool_name="mkdir", record_type="directory")
         sm.record_file_change(dir_path, "", None, 2, tool_name="rm", record_type="directory")
 
         results = sm.restore_to_message(1)
@@ -1149,11 +1149,11 @@ class TestDirectoryRestore:
         assert results[dir_path] is True
         assert os.path.isdir(dir_path)
 
-    def test_mk_then_rm_restore_to_zero(self, tmp_path):
+    def test_mkdir_then_rm_restore_to_zero(self, tmp_path):
         """mkdir(idx=1) → rm -r(idx=2)，恢复到 idx=0：目录应不存在"""
         dir_path = str(tmp_path / "mk_rm_zero")
         sm = SandboxManager()
-        sm.record_file_change(dir_path, None, "", 1, tool_name="mk", record_type="directory")
+        sm.record_file_change(dir_path, None, "", 1, tool_name="mkdir", record_type="directory")
         sm.record_file_change(dir_path, "", None, 2, tool_name="rm", record_type="directory")
 
         results = sm.restore_to_message(0)
@@ -1166,7 +1166,7 @@ class TestDirectoryRestore:
         dir_path = str(tmp_path / "data_dir")
         sm = SandboxManager()
         sm.record_file_change(file_path, None, "hello", 1, record_type="file")
-        sm.record_file_change(dir_path, None, "", 1, tool_name="mk", record_type="directory")
+        sm.record_file_change(dir_path, None, "", 1, tool_name="mkdir", record_type="directory")
         # 添加 idx=2 的修改使 idx=1 的状态成为恢复目标
         sm.record_file_change(file_path, "hello", "world", 2)
         sm.record_file_change(dir_path, "", None, 2, tool_name="rm", record_type="directory")
@@ -1190,7 +1190,7 @@ class TestDirectoryRestore:
         dir_path = str(tmp_path / "type_test")
         sm = SandboxManager()
         record = sm.record_file_change(
-            dir_path, None, "", 1, tool_name="mk", record_type="directory"
+            dir_path, None, "", 1, tool_name="mkdir", record_type="directory"
         )
         assert record.record_type == "directory"
         assert sm._get_record_type_at_message(dir_path, 1) == "directory"
@@ -1214,7 +1214,7 @@ class TestDirectoryRestore:
         # idx=0：文件创建
         sm.record_file_change(path, None, "file_content", 0, tool_name="write_file", record_type="file")
         # idx=1：目录创建（含内部文件）
-        sm.record_file_change(path, "file_content", "", 1, tool_name="mk", record_type="directory")
+        sm.record_file_change(path, "file_content", "", 1, tool_name="mkdir", record_type="directory")
         sm.record_file_change(inner, None, "inner_data", 1, tool_name="write_file")
 
         # 模拟 idx=1 操作后的磁盘状态：/tmp/x 是目录，里面有 data.txt
@@ -1251,7 +1251,7 @@ class TestDirectoryRestore:
         # idx=0：文件
         sm.record_file_change(path, None, "file_content", 0, tool_name="write_file")
         # idx=1：目录
-        sm.record_file_change(path, "file_content", "", 1, tool_name="mk", record_type="directory")
+        sm.record_file_change(path, "file_content", "", 1, tool_name="mkdir", record_type="directory")
         sm.record_file_change(inner, None, "inner_data", 1, tool_name="write_file")
         # idx=2：修改内部文件（使 idx=1 成为恢复目标，inner.txt 进入 affected_files_set）
         sm.record_file_change(inner, "inner_data", "modified", 2, tool_name="write_file")
@@ -1284,7 +1284,7 @@ class TestDirectoryRestore:
         sm = SandboxManager()
         sm.record_file_change(file_a, None, "content_a", 1)
         sm.record_file_change(file_b, None, "content_b", 1)
-        sm.record_file_change(dir_c, None, "", 1, tool_name="mk", record_type="directory")
+        sm.record_file_change(dir_c, None, "", 1, tool_name="mkdir", record_type="directory")
         # 在 idx=2 修改三者，使 idx=1 成为恢复目标
         sm.record_file_change(file_a, "content_a", "modified_a", 2)
         sm.record_file_change(file_b, "content_b", "modified_b", 2)
@@ -1326,7 +1326,7 @@ class TestDirectoryRestore:
 
         sm = SandboxManager()
         # idx=0：目录 + f1
-        sm.record_file_change(sub, None, "", 0, tool_name="mk", record_type="directory")
+        sm.record_file_change(sub, None, "", 0, tool_name="mkdir", record_type="directory")
         sm.record_file_change(f1, None, "f1_v1", 0)
         # idx=1：写 f2，删 f1
         sm.record_file_change(f2, None, "f2_v1", 1)
@@ -1363,7 +1363,7 @@ class TestDirectoryRestore:
 
         sm = SandboxManager()
         sm.record_file_change(file_a, None, "a", 0)
-        sm.record_file_change(sub, None, "", 1, tool_name="mk", record_type="directory")
+        sm.record_file_change(sub, None, "", 1, tool_name="mkdir", record_type="directory")
         sm.record_file_change(file_b, None, "b", 2)
 
         # 创建磁盘状态

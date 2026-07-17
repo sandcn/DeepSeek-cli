@@ -197,12 +197,12 @@ class TestSandboxDirectoryRestore:
         assert os.path.isfile(old_file)
         assert os.path.isdir(subdir)
 
-    def test_mk_with_parents_records_all_intermediate_dirs(
+    def test_mkdir_with_parents_records_all_intermediate_dirs(
         self, sandbox, workdir,
     ):
-        """mk -p 创建多层目录时，每层都被记录
+        """mkdir -p 创建多层目录时，每层都被记录
 
-        场景：mk -p /workdir/x/y/z
+        场景：mkdir -p /workdir/x/y/z
          — 沙盒记录 x/、x/y/、x/y/z/（directory 类型）
          — 回滚 → 全部消失
         """
@@ -216,17 +216,17 @@ class TestSandboxDirectoryRestore:
         # 模拟 async_makedirs_and_record 逐级记录
         sandbox.record_file_change(
             x, content_before=None, content_after="",
-            message_index=msg_idx, tool_name="mk",
+            message_index=msg_idx, tool_name="mkdir",
             record_type="directory",
         )
         sandbox.record_file_change(
             xy, content_before=None, content_after="",
-            message_index=msg_idx, tool_name="mk",
+            message_index=msg_idx, tool_name="mkdir",
             record_type="directory",
         )
         sandbox.record_file_change(
             xyz, content_before=None, content_after="",
-            message_index=msg_idx, tool_name="mk",
+            message_index=msg_idx, tool_name="mkdir",
             record_type="directory",
         )
         os.makedirs(xyz)

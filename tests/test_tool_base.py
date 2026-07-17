@@ -474,13 +474,13 @@ class TestCanUse:
 
     def test_map_excludes_write_tools(self):
         """map agent 不能使用写入类工具。"""
-        for tool in ("write_file", "update_file", "bash", "rm", "mv", "cp", "mk"):
+        for tool in ("write_file", "update_file", "bash", "rm", "mv", "cp", "mkdir"):
             allowed, err = Func.can_use(tool, "map")
             assert allowed is False, f"map agent 不应能使用 {tool}"
 
     def test_review_excludes_write_tools(self):
         """review agent 不能使用写入类工具。"""
-        for tool in ("write_file", "update_file", "bash", "rm", "mv", "cp", "mk"):
+        for tool in ("write_file", "update_file", "bash", "rm", "mv", "cp", "mkdir"):
             allowed, err = Func.can_use(tool, "review")
             assert allowed is False, f"review agent 不应能使用 {tool}"
 
@@ -526,8 +526,8 @@ class TestCanUse:
         assert err is None
 
     def test_execute_allows_file_ops(self):
-        """execute agent 可以使用 rm/mv/cp/mk。"""
-        for tool in ("rm", "mv", "cp", "mk"):
+        """execute agent 可以使用 rm/mv/cp/mkdir。"""
+        for tool in ("rm", "mv", "cp", "mkdir"):
             allowed, err = Func.can_use(tool, "execute")
             assert allowed is True, f"execute agent 应能使用 {tool}"
 
