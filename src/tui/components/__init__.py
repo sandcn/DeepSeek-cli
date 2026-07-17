@@ -15,50 +15,99 @@
   （已移除 4 个死组件：StatusLine / InputLine / CompletionPopup / SelectionMenu）
 
 兼容 re-export：BottomBarProtocol（定义在 _protocols.py）
+
+模块采用懒加载模式（LazyLoader），首次属性访问时才执行实际 import，
+降低应用启动时的模块加载开销。
 """
 
 from __future__ import annotations
 
-# 辅助函数
-from ._base import _estimate_content_lines
+from .._lazy import LazyLoader
 
-# 基类
-from ._base import TuiComponent
+# ═══════════════════════════════════════════════════════════
+# 懒加载模块代理
+# ═══════════════════════════════════════════════════════════
 
-# 消息流组件
-from ._user_msg import UserMsgBlock
-from ._thinking import ThinkingBlock
-from ._answer import AnswerBlock
-from ._tool_output import ToolOutputBlock
-from ._tool_summary import ToolSummaryBlock
-from ._error import ErrorBlock
-from ._notification import NotificationBlock
-from ._write_line import WriteLineBlock
+_base_mod = LazyLoader("src.tui.components._base")
+_user_msg_mod = LazyLoader("src.tui.components._user_msg")
+_thinking_mod = LazyLoader("src.tui.components._thinking")
+_answer_mod = LazyLoader("src.tui.components._answer")
+_tool_output_mod = LazyLoader("src.tui.components._tool_output")
+_tool_summary_mod = LazyLoader("src.tui.components._tool_summary")
+_error_mod = LazyLoader("src.tui.components._error")
+_notification_mod = LazyLoader("src.tui.components._notification")
+_write_line_mod = LazyLoader("src.tui.components._write_line")
+_cost_mod = LazyLoader("src.tui.components._cost")
+_splash_mod = LazyLoader("src.tui.components._splash")
+_box_mod = LazyLoader("src.tui.components._box")
+_panel_mod = LazyLoader("src.tui.components._panel")
+_separator_mod = LazyLoader("src.tui.components._separator")
+_spinner_mod = LazyLoader("src.tui.components._spinner")
+_progress_mod = LazyLoader("src.tui.components._progress")
+_table_mod = LazyLoader("src.tui.components._table")
+_markup_mod = LazyLoader("src.tui.components._markup")
+_tree_mod = LazyLoader("src.tui.components._tree")
+_protocols_mod = LazyLoader("src.tui.consumer.protocols")
 
-# ── 费用显示组件 ──
-from ._cost import CostDisplayComponent
 
-# ── 启动品牌屏 ──
-from ._splash import SplashScreen
+# ═══════════════════════════════════════════════════════════
+# 符号到懒加载模块的映射（供 __getattr__ 使用）
+# ═══════════════════════════════════════════════════════════
 
-# ── 通用 UI 组件 ──
-# 技术债（2026-07-15 步骤7审查）：以下组件当前无外部调用方，按保守策略保留。
-# BoxStyle / Box / RoundedBox / DoubleBox — 仅在 components 层内部使用（_panel.py, _table.py）
-# Panel / Separator / Spinner / Table / TreeView / TreeNode — 无外部调用方
-# parse_markup / render_markup — 无外部调用方
-from ._box import BoxStyle, Box, RoundedBox, DoubleBox
-from ._panel import Panel
-from ._separator import Separator
-from ._spinner import Spinner
-from ._progress import ProgressBar
-from ._table import Table
-from ._markup import parse_markup, render_markup
+_SYMBOL_MAP: dict[str, LazyLoader] = {
+    "_estimate_content_lines": _base_mod,
+    "TuiComponent": _base_mod,
+    "UserMsgBlock": _user_msg_mod,
+    "ThinkingBlock": _thinking_mod,
+    "AnswerBlock": _answer_mod,
+    "ToolOutputBlock": _tool_output_mod,
+    "ToolSummaryBlock": _tool_summary_mod,
+    "ErrorBlock": _error_mod,
+    "NotificationBlock": _notification_mod,
+    "WriteLineBlock": _write_line_mod,
+    "CostDisplayComponent": _cost_mod,
+    "SplashScreen": _splash_mod,
+    "BoxStyle": _box_mod,
+    "Box": _box_mod,
+    "RoundedBox": _box_mod,
+    "DoubleBox": _box_mod,
+    "Panel": _panel_mod,
+    "Separator": _separator_mod,
+    "Spinner": _spinner_mod,
+    "ProgressBar": _progress_mod,
+    "Table": _table_mod,
+    "parse_markup": _markup_mod,
+    "render_markup": _markup_mod,
+    "TreeView": _tree_mod,
+    "TreeNode": _tree_mod,
+    "BottomBarProtocol": _protocols_mod,
+}
 
-# ── TreeView 层级组件 ──
-from ._tree import TreeView, TreeNode
 
-# 兼容 re-export（定义已移至 _protocols.py）
-from ..consumer.protocols import BottomBarProtocol
+def __getattr__(name: str):
+    """模块级 __getattr__ — 从对应懒加载模块延迟解析符号。
+
+    当 ``from src.tui.components import XXX`` 执行时，如果 XXX 不是模块的
+    直接属性，Python 会调用此函数，从 _SYMBOL_MAP 中查找对应的
+    LazyLoader 并执行延迟导入。
+
+    Raises:
+        AttributeError: 符号不在 __all__ 中时抛出。
+    """
+    loader = _SYMBOL_MAP.get(name)
+    if loader is not None:
+        return getattr(loader, name)
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
+
+def __dir__() -> list[str]:
+    """支持 dir() 列出所有导出符号。"""
+    return sorted(__all__)
+
+
+# ═══════════════════════════════════════════════════════════
+# __all__ — 公开 API 清单
+# ═══════════════════════════════════════════════════════════
 
 __all__ = [
     "TuiComponent",

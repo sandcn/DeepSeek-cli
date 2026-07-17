@@ -228,8 +228,7 @@ class TuiEngine:
             try:
                 self._renderer.render(cmd)
             except Exception:
-                _logger.debug("渲染命令 %s 失败", cmd, exc_info=True)
-                self.push_cmd((RenderCommand.ERROR, f"渲染命令 {_cmd_name(cmd[0])} 失败"))
+                _logger.warning("渲染命令 %s 失败: %s", _cmd_name(cmd[0]) if cmd else '?', exc_info=True)
 
     def _phase_redraw_bottom(self) -> None:
         """阶段 3：10Hz 定时重绘底部栏。

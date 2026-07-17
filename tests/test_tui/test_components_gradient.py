@@ -16,6 +16,7 @@ from rich.text import Text
 from src.tui.components._error import ErrorBlock
 from src.tui.components._user_msg import UserMsgBlock
 from src.tui.components._notification import NotificationBlock
+from src.tui.components._base import TuiComponent
 from src.tui.components._write_line import WriteLineBlock
 from src.tui.engine.const import (
     _STYLE_ERROR_GRADIENT,
@@ -539,3 +540,50 @@ class TestProgressBarPulseMode:
         result = bar.render()
         assert "100%" in result
         assert "\033[38;5;" in result
+
+
+# ═══════════════════════════════════════════════════════════
+# 错误边界测试
+# ═══════════════════════════════════════════════════════════
+
+
+class _MockAdapterEB:
+    """模拟 OutputAdapter，捕获输出文本（错误边界测试专用）。"""
+    def __init__(self):
+        self.lines: list[str] = []
+
+    def write(self, renderable) -> None:
+        if hasattr(renderable, 'plain'):
+            self.lines.append(renderable.plain)
+        else:
+            self.lines.append(str(renderable))
+
+
+class _BrokenComponent(TuiComponent):
+    """渲染时抛异常的测试组件。"""
+    def render(self) -> str:
+        raise RuntimeError("模拟渲染失败")
+
+
+class TestErrorBoundary:
+    """测试 TuiComponent.render_to_adapter() 的错误边界。"""
+
+    def test_render_error_does_not_propagate(self):
+        """渲染失败时异常不传播到外部。"""
+        adapter = _MockAdapterEB()
+        component = _BrokenComponent()
+        try:
+            result = component.render_to_adapter(adapter)
+            # 不应抛出异常，返回 1（降级行数）
+            assert result == 1
+        except Exception:
+            assert False, "错误边界未捕获异常"
+
+    def test_render_error_shows_fallback(self):
+        """渲染失败时输出降级提示。"""
+        adapter = _MockAdapterEB()
+        component = _BrokenComponent()
+        component.render_to_adapter(adapter)
+        # 降级输出应包含组件类名
+        assert any("BrokenComponent" in line for line in adapter.lines), \
+            f"降级输出应包含组件类名, got: {adapter.lines}"

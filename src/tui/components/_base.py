@@ -119,7 +119,12 @@ class TuiComponent:
         """
         if not self.should_update():
             return 0
-        output = self.render()
+        try:
+            output = self.render()
+        except Exception as exc:
+            _logger.warning("组件 %s.render() 失败: %s", type(self).__name__, exc)
+            adapter.write(f"\033[33m[渲染降级: {type(self).__name__}]\033[0m")
+            return 1
         if isinstance(output, (str, Text)):
             adapter.write(output)
             return _estimate_content_lines(str(output))

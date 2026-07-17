@@ -16,6 +16,9 @@ TUI 框架统一入口 — `Framework` 单例 + 公开 API。
 
 from __future__ import annotations
 
+import functools
+import warnings
+
 import logging
 import threading
 from typing import TYPE_CHECKING, Any
@@ -33,6 +36,31 @@ __all__: list[str] = [
     "frame_from_context",
     "get_animator",
 ]
+
+
+# ═══════════════════════════════════════════════════════════
+# deprecated — 废弃标记装饰器
+# ═══════════════════════════════════════════════════════════
+
+
+def deprecated(replacement: str = "") -> callable:
+    """标记函数为已废弃，建议使用 replacement 替代。
+
+    使用方式：
+        @deprecated("new_function")
+        def old_function():
+            ...
+    """
+    def decorator(func):
+        @functools.wraps(func)
+        def wrapper(*args, **kwargs):
+            msg = f"{func.__name__}() 已废弃"
+            if replacement:
+                msg += f"，请使用 {replacement} 替代"
+            warnings.warn(msg, DeprecationWarning, stacklevel=2)
+            return func(*args, **kwargs)
+        return wrapper
+    return decorator
 
 
 # ═══════════════════════════════════════════════════════════
@@ -109,6 +137,7 @@ class Framework:
 
     # ── 公开 API ──────────────────────────────────────
 
+    @deprecated("create_component() 模块级函数")
     def create_component(self, component_cls: type, *args: Any,
                          **kwargs: Any) -> TuiComponent:
         """创建组件实例并触发生命周期。
@@ -125,6 +154,7 @@ class Framework:
         instance.did_mount()
         return instance
 
+    @deprecated("EffectRegistry 类直接访问")
     def get_registry(self) -> Any:
         """获取全局效果注册表（EffectRegistry）。
 
@@ -136,6 +166,7 @@ class Framework:
             self._registry = EffectRegistry
         return self._registry
 
+    @deprecated("StyleSheet 类直接访问")
     def get_stylesheet(self) -> Any:
         """获取全局样式表（StyleSheet）。
 
@@ -147,6 +178,7 @@ class Framework:
             self._stylesheet = StyleSheet
         return self._stylesheet
 
+    @deprecated("get_animator() 模块级函数")
     def get_animator(self) -> "AnimatorContext":
         """获取全局动画上下文（AnimatorContext 实例）。
 
@@ -158,6 +190,7 @@ class Framework:
             self._animator = AnimatorContext
         return self._animator.get_default()
 
+    @deprecated("frame_from_context() 模块级函数")
     def get_frame(self) -> int:
         """获取当前动画帧号。
 

@@ -55,6 +55,8 @@ def register_render_command(command_id: int, arg_indices: tuple[int, ...] = ()) 
     """
     def decorator(method: Callable) -> Callable:
         _RENDER_DISPATCH[command_id] = (method.__name__, arg_indices)
+        from ..core.component_registry import ComponentRegistry
+        ComponentRegistry.get_default().register(command_id, method.__name__, arg_indices)
         return method
     return decorator
 
