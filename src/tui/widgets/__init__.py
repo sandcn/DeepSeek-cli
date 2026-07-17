@@ -38,6 +38,7 @@ def __getattr__(name: str):
         'Padding': ('src.tui.layout', 'Padding'),
         'Border': ('src.tui.layout', 'Border'),
         'BaseBottomBarSelector': ('.selector_base', 'BaseBottomBarSelector'),
+        "StatusBarWidget": ('.status_bar_widget', 'StatusBarWidget'),
         'StatusBar': ('.status_bar', 'StatusBar'),
         'render_normal': ('.status_bar', 'render_normal'),
         'build_normal_parts': ('.status_bar', 'build_normal_parts'),
@@ -73,7 +74,7 @@ __all__ = [
     # selector_base
     "BaseBottomBarSelector",
     # status_bar
-    "StatusBar", "render_normal", "build_normal_parts", "render_streaming_line",
+    "StatusBar", "StatusBarWidget", "render_normal", "build_normal_parts", "render_streaming_line",
     # command_palette
     "CommandPalette",
     # session_switcher

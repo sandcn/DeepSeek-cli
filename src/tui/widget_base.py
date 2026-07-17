@@ -63,11 +63,13 @@ class Widget:
         props: 外部传入的不可变属性字典，默认 {}。
     """
 
-    def __init__(self, props: dict | None = None) -> None:
+    def __init__(self, props: dict | None = None, key: str | None = None) -> None:
         """初始化控件。
 
         Args:
             props: 外部传入的不可变属性字典，默认 {}。
+            key: 可选的身份标识键，用于 WidgetTree 中的查找和标识。
+                 类似 React 的 ``key`` prop，在控件树中保持身份一致性。
         """
         self._props: dict[str, Any] = dict(props) if props else {}
         self._state: dict[str, Any] = {}
@@ -75,8 +77,26 @@ class Widget:
         self._mounted: bool = False
         self._dirty: bool = True
         self._parent: Widget | None = None
+        self._key: str | None = key
+        # 布局控件标记：如果为 True，WidgetTree 不递归渲染子控件
+        #（由父控件 render() 自行处理子控件布局和渲染）
+        self._renders_children: bool = False
 
     # ── 属性 ──────────────────────────────────────────────
+
+    @property
+    def key(self) -> str | None:
+        """控件的唯一标识键。
+
+        用于 WidgetTree 中按 key 查找控件。
+        类似 React 的 ``key`` prop。
+        """
+        return self._key
+
+    @property
+    def parent(self) -> Optional[Widget]:
+        """父控件引用。"""
+        return self._parent
 
     @property
     def props(self) -> dict[str, Any]:
@@ -423,7 +443,11 @@ class WidgetTree:
                     "%s.render() 异常: %s", type(widget).__name__, exc
                 )
 
-        # 递归渲染子控件（安全守卫：跳过 self 引用防无限递归）
+        # 递归渲染子控件（安全守卫）
+        # 如果控件标记了 _renders_children=True（如布局控件），
+        # 其 render() 已自行处理子控件渲染，跳过递归避免双重渲染。
+        if widget._renders_children:
+            return
         for child in widget._children:
             if child is widget:
                 _logger.warning("跳过自我引用的子控件: %s", type(widget).__name__)
@@ -458,6 +482,48 @@ class WidgetTree:
         if self._root is None:
             return []
         return self._root.walk()
+
+    def find(self, key: str) -> Optional[Widget]:
+        """按 key 查找控件（递归，返回第一个匹配项）。
+
+        Args:
+            key: 要查找的控件 key。
+
+        Returns:
+            匹配的 Widget 实例，未找到时返回 None。
+        """
+        if self._root is None:
+            return None
+        for widget in self._root.walk():
+            if widget.key == key:
+                return widget
+        return None
+
+    def find_all(self, key: str) -> list[Widget]:
+        """按 key 查找所有匹配控件（递归）。
+
+        Args:
+            key: 要查找的控件 key。
+
+        Returns:
+            匹配的 Widget 实例列表。
+        """
+        if self._root is None:
+            return []
+        return [w for w in self._root.walk() if w.key == key]
+
+    def find_by_type(self, cls: type) -> list[Widget]:
+        """按类型查找所有匹配控件（递归）。
+
+        Args:
+            cls: 目标控件类型。
+
+        Returns:
+            匹配的 Widget 实例列表。
+        """
+        if self._root is None:
+            return []
+        return [w for w in self._root.walk() if isinstance(w, cls)]
 
     def clear(self) -> None:
         """清空控件树（卸载根节点）。"""

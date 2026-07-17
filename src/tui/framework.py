@@ -90,6 +90,7 @@ class Framework:
         self._config: Any = None
         self._running: bool = False
         self._lifecycle_lock = threading.Lock()
+        self._widget_tree: Any = None  # WidgetTree 实例（延迟创建）
 
     # ── 单例访问 ──────────────────────────────────────
 
@@ -139,37 +140,70 @@ class Framework:
 
     # ── WidgetTree 管理 ─────────────────────────────
 
+    def _ensure_widget_tree(self) -> None:
+        """确保内部 WidgetTree 实例存在（延迟创建）。"""
+        if self._widget_tree is None:
+            from .widget_base import WidgetTree
+            self._widget_tree = WidgetTree()
+
     def mount_widget(self, widget):
-        """挂载控件到 Widget 树（先卸载旧根再挂载新根）。"""
+        """挂载控件到 Widget 树（先卸载旧根再挂载新根）。
+
+        Args:
+            widget: 要挂载的 Widget 实例。
+        """
+        self._ensure_widget_tree()
         if self.has_widget_tree():
-            if hasattr(self, '_widget_root') and self._widget_root is not None:
-                old_root = self._widget_root
+            old_root = self._widget_tree.root
+            if old_root is not None:
                 old_root.unmount()
         widget.mount()
-        self._widget_root = widget
+        self._widget_tree.set_root(widget)
 
     def unmount_widget(self, widget):
-        """从 Widget 树卸载控件。"""
-        if hasattr(self, '_widget_root') and self._widget_root is widget:
-            self._widget_root = None
+        """从 Widget 树卸载控件。
+
+        Args:
+            widget: 要卸载的 Widget 实例。
+        """
+        if self._widget_tree is not None and self._widget_tree.root is widget:
+            self._widget_tree.set_root(None)
         widget.unmount()
 
     def get_widget_root(self):
-        """获取当前 Widget 树根节点。"""
-        return getattr(self, '_widget_root', None)
+        """获取当前 Widget 树根节点。
+
+        Returns:
+            Widget 实例，无树时返回 None。
+        """
+        if self._widget_tree is None:
+            return None
+        return self._widget_tree.root
+
+    def get_widget_tree(self):
+        """获取当前 WidgetTree 实例。
+
+        返回内部 WidgetTree 实例，可直接进行 find/find_all/find_by_type 等操作。
+
+        Returns:
+            WidgetTree 实例，未初始化时创建并返回新实例。
+        """
+        self._ensure_widget_tree()
+        return self._widget_tree
 
     def has_widget_tree(self) -> bool:
         """是否已有挂载的 Widget 树。"""
-        return getattr(self, '_widget_root', None) is not None
+        return (self._widget_tree is not None
+                and self._widget_tree.root is not None)
 
     def render_widget_tree(self, buffer):
-        """渲染整棵 Widget 树到 RenderBuffer。"""
-        root = self.get_widget_root()
-        if root is None:
-            return
-        from .widget_base import WidgetTree
-        tree = WidgetTree(root)
-        tree.render(buffer)
+        """渲染整棵 Widget 树到 RenderBuffer。
+
+        Args:
+            buffer: 目标 RenderBuffer 实例。
+        """
+        if self._widget_tree is not None:
+            self._widget_tree.render(buffer)
 
     # ── 公开 API ──────────────────────────────────────
 
