@@ -44,7 +44,7 @@ class _CompletionPopup:
     触发全量重绘。
     """
 
-    _COMPLETION_MAX_ITEMS = 10      # 单屏最多显示多少条
+    _COMPLETION_MAX_ITEMS = 999    # 安全兜底上限，单屏实际可见条数由终端高度动态限制接管
 
     def __init__(self, cursor_tracker: "CursorTracker | None" = None):
         self._visible = False
