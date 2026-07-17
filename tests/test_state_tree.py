@@ -14,12 +14,10 @@ from __future__ import annotations
 import time
 import dataclasses
 
-from src.tui.core.state import (
-    TUIStateTree,
-    UISessionState,
-    InputState,
-    StreamingState,
-)
+from src.tui.state.session_state import UISessionState
+from src.tui.state.input_state import InputState
+from src.tui.state.streaming_state import StreamingState
+from src.tui.state.tui_state_tree import TUIStateTree
 
 
 class TestTUIStateTreeDefaults:

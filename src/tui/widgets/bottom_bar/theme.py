@@ -22,7 +22,7 @@
 from __future__ import annotations
 
 from ...core.gradient import gradient_range
-from ...core.animator import AnimatorContext
+from ...animation.animator import AnimatorContext
 from ...core.effects import sine_color_range
 
 

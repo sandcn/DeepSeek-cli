@@ -21,13 +21,13 @@ _error_handler_registered: bool = False
 _error_handler_lock = threading.Lock()
 
 # ── 常量导出 ──────────────────────────────────────
-from .const import (
+from ..engine.const import (
     RenderCommand,
     _MAIN_LABEL,
 )
 
 # ── 全局状态导出 ──────────────────────────────────
-from .state import (
+from ..state.consumer_registry import (
     _active_consumer,
     get_active_chat_ui,
 )

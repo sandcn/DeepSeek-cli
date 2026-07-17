@@ -62,7 +62,6 @@ _MOCK_MODULES = {
         DeepSeekAdapter=MagicMock,
     ),
     'src.api._model_loops': MagicMock(),
-    'src.ui.colors': MagicMock(DIM='\x1b[2m', RESET='\x1b[0m', YELLOW='\x1b[33m'),
     'src.ui._lock': MagicMock(locked_print=MagicMock()),
     'src.config': MagicMock(MODEL='test-model', MAX_RETRIES=1, RETRY_BASE_SEC=1),
     'src.core.constants': MagicMock(YELLOW='\x1b[33m', RESET='\x1b[0m'),

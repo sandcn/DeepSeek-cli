@@ -8,7 +8,7 @@ from src.tui.core.gradient import (
     gradient_step,
     gradient_range,
 )
-from src.tui.core.palettes import (
+from src.tui.animation.palettes import (
     GRADIENT_SUNSET,
     GRADIENT_OCEAN,
     GRADIENT_FOREST,

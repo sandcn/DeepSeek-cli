@@ -17,7 +17,7 @@ from src.tui.components._error import ErrorBlock
 from src.tui.components._user_msg import UserMsgBlock
 from src.tui.components._notification import NotificationBlock
 from src.tui.components._write_line import WriteLineBlock
-from src.tui.consumer.const import (
+from src.tui.engine.const import (
     _STYLE_ERROR_GRADIENT,
     _STYLE_USER_GRADIENT,
     _STYLE_NOTIFICATION_GRADIENT,
@@ -57,7 +57,7 @@ class TestErrorBlockGradient:
 
     def test_render_long_message_truncated(self):
         """超长消息仍正常截断"""
-        from src.tui.consumer.const import _MAX_ERROR_LENGTH
+        from src.tui.engine.const import _MAX_ERROR_LENGTH
         long_msg = "x" * (_MAX_ERROR_LENGTH + 100)
         block = ErrorBlock(long_msg)
         result = block.render()
@@ -95,7 +95,7 @@ class TestErrorBlockGradient:
     def test_render_wide_fadein_frame_gt_0(self, monkeypatch):
         """frame>0 + 宽屏 → FadeIn 使色号渐亮（256 色 span 数量不变）"""
         from rich.color import ColorType
-        from src.tui.core.animator import AnimatorContext
+        from src.tui.animation.animator import AnimatorContext
         from src.tui.framework import Framework
 
         AnimatorContext.reset_default()
@@ -118,7 +118,7 @@ class TestErrorBlockGradient:
     def test_render_wide_fadein_frame_0(self, monkeypatch):
         """frame=0 → FadeIn 因子为 0，色号从暗灰起步"""
         from rich.color import ColorType
-        from src.tui.core.animator import AnimatorContext
+        from src.tui.animation.animator import AnimatorContext
         from src.tui.framework import Framework
 
         AnimatorContext.reset_default()
@@ -136,7 +136,7 @@ class TestErrorBlockGradient:
     def test_render_fadein_colors_brighten(self, monkeypatch):
         """FadeIn 帧 1 的色号应不同于帧 0（渐显过渡中）"""
         from rich.color import ColorType
-        from src.tui.core.animator import AnimatorContext
+        from src.tui.animation.animator import AnimatorContext
         from src.tui.framework import Framework
 
         monkeypatch.setattr("src.tui.components._error.is_narrow", lambda: False)
@@ -165,7 +165,7 @@ class TestErrorBlockGradient:
 
     def test_render_narrow_no_fadein(self, monkeypatch):
         """窄屏 → 即使 frame>0 也不触发 FadeIn"""
-        from src.tui.core.animator import AnimatorContext
+        from src.tui.animation.animator import AnimatorContext
         from src.tui.framework import Framework
 
         AnimatorContext.reset_default()
@@ -309,7 +309,7 @@ class TestNotificationBlockGradient:
     def test_render_wide_fadein_frame_gt_0(self, monkeypatch):
         """frame>0 + 宽屏 → FadeIn 使色号渐亮（span 数量不变）"""
         from rich.color import ColorType
-        from src.tui.core.animator import AnimatorContext
+        from src.tui.animation.animator import AnimatorContext
         from src.tui.framework import Framework
 
         AnimatorContext.reset_default()
@@ -331,7 +331,7 @@ class TestNotificationBlockGradient:
     def test_render_wide_fadein_frame_0(self, monkeypatch):
         """frame=0 → FadeIn 因子为 0，色号从暗灰起步"""
         from rich.color import ColorType
-        from src.tui.core.animator import AnimatorContext
+        from src.tui.animation.animator import AnimatorContext
         from src.tui.framework import Framework
 
         AnimatorContext.reset_default()
@@ -349,7 +349,7 @@ class TestNotificationBlockGradient:
     def test_render_fadein_colors_brighten(self, monkeypatch):
         """FadeIn 帧 1 的色号应不同于帧 0（渐显过渡中）"""
         from rich.color import ColorType
-        from src.tui.core.animator import AnimatorContext
+        from src.tui.animation.animator import AnimatorContext
         from src.tui.framework import Framework
 
         monkeypatch.setattr("src.tui.components._notification.is_narrow", lambda: False)
@@ -377,7 +377,7 @@ class TestNotificationBlockGradient:
 
     def test_render_narrow_no_fadein(self, monkeypatch):
         """窄屏 → 即使 frame>0 也不触发 FadeIn"""
-        from src.tui.core.animator import AnimatorContext
+        from src.tui.animation.animator import AnimatorContext
         from src.tui.framework import Framework
 
         AnimatorContext.reset_default()

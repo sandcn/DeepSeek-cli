@@ -16,7 +16,7 @@ def get_console():
         with _console_lock:
             if _console is None:  # 双重检查
                 from rich.console import Console
-                from ..terminal import get_safe_console_config
+                from ...terminal import get_safe_console_config
                 config: Dict[str, Any] = get_safe_console_config()
                 _console = Console(**config)
     return _console

@@ -185,7 +185,7 @@ def locked_print(*args, sep: str = " ", end: str = "\n", **kwargs):
 
     # 尝试路由到 ChatUI 上屏
     try:
-        from ..consumer.state import get_active_chat_ui  # noqa: PLC0415
+        from ..state.consumer_registry import get_active_chat_ui  # noqa: PLC0415
         chat_ui = get_active_chat_ui()
         if chat_ui is not None:
             text = sep.join(str(a) for a in args)

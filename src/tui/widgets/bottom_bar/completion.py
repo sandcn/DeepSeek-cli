@@ -12,7 +12,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from ...terminal.blessed import get_terminal
-from ...core.animator import AnimatorContext, BreathPalette
+from ...animation.animator import AnimatorContext, BreathPalette
 from ...terminal.terminal import is_narrow
 from .theme import (
     _COLOR_COMPLETE_CMD_PREFIX,

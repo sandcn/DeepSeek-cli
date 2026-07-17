@@ -22,7 +22,7 @@ from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from .components._base import TuiComponent
-    from .core.animator import AnimatorContext
+    from .animation.animator import AnimatorContext
 
 _logger = logging.getLogger(__name__)
 
@@ -154,7 +154,7 @@ class Framework:
             AnimatorContext 单例实例。
         """
         if self._animator is None:
-            from .core.animator import AnimatorContext
+            from .animation.animator import AnimatorContext
             self._animator = AnimatorContext
         return self._animator.get_default()
 

@@ -58,7 +58,7 @@ class TestChatUIErrorHandlerEmit:
         )
 
         mock_ui = MagicMock()
-        with patch.object(chat_ui.state, 'get_active_chat_ui', return_value=mock_ui):
+        with patch("src.tui.state.consumer_registry.get_active_chat_ui", return_value=mock_ui):
             handler.emit(record)
 
         mock_ui.on_error.assert_called_once()
@@ -77,7 +77,7 @@ class TestChatUIErrorHandlerEmit:
         )
 
         mock_ui = MagicMock()
-        with patch.object(chat_ui.state, 'get_active_chat_ui', return_value=mock_ui):
+        with patch("src.tui.state.consumer_registry.get_active_chat_ui", return_value=mock_ui):
             handler.emit(record)
 
         mock_ui.on_error.assert_called_once()
@@ -93,7 +93,7 @@ class TestChatUIErrorHandlerEmit:
         )
 
         mock_ui = MagicMock()
-        with patch.object(chat_ui.state, 'get_active_chat_ui', return_value=mock_ui):
+        with patch("src.tui.state.consumer_registry.get_active_chat_ui", return_value=mock_ui):
             handler.emit(record)
 
         mock_ui.on_error.assert_not_called()
@@ -109,7 +109,7 @@ class TestChatUIErrorHandlerEmit:
         )
 
         mock_ui = MagicMock()
-        with patch.object(chat_ui.state, 'get_active_chat_ui', return_value=mock_ui):
+        with patch("src.tui.state.consumer_registry.get_active_chat_ui", return_value=mock_ui):
             handler.emit(record)
 
         called_msg = mock_ui.on_error.call_args[0][0]
@@ -132,7 +132,7 @@ class TestChatUIErrorHandlerInactive:
         )
 
         mock_ui = MagicMock()
-        with patch.object(chat_ui.state, 'get_active_chat_ui', return_value=None):
+        with patch("src.tui.state.consumer_registry.get_active_chat_ui", return_value=None):
             # 不应抛出任何异常
             handler.emit(record)
 
@@ -160,7 +160,7 @@ class TestChatUIErrorHandlerLevelFilter:
         )
 
         mock_ui = MagicMock()
-        with patch.object(chat_ui.state, 'get_active_chat_ui', return_value=mock_ui):
+        with patch("src.tui.state.consumer_registry.get_active_chat_ui", return_value=mock_ui):
             handler.emit(record)
 
         if should_emit:
@@ -186,7 +186,7 @@ class TestChatUIErrorHandlerSelfRef:
         record._chatui_reported = True
 
         mock_ui = MagicMock()
-        with patch.object(chat_ui.state, 'get_active_chat_ui', return_value=mock_ui):
+        with patch("src.tui.state.consumer_registry.get_active_chat_ui", return_value=mock_ui):
             handler.emit(record)
 
         mock_ui.on_error.assert_not_called()
@@ -201,7 +201,7 @@ class TestChatUIErrorHandlerSelfRef:
         )
 
         mock_ui = MagicMock()
-        with patch.object(chat_ui.state, 'get_active_chat_ui', return_value=mock_ui):
+        with patch("src.tui.state.consumer_registry.get_active_chat_ui", return_value=mock_ui):
             handler.emit(record)
 
         # emit 后 record 必须被标记
@@ -238,7 +238,7 @@ class TestChatUIErrorHandlerSelfRef:
         mock_ui = MagicMock()
         mock_ui.on_error.side_effect = _on_error_side_effect
 
-        with patch.object(chat_ui.state, 'get_active_chat_ui', return_value=mock_ui):
+        with patch("src.tui.state.consumer_registry.get_active_chat_ui", return_value=mock_ui):
             handler.emit(
                 logging.LogRecord(
                     name="test", level=logging.ERROR,
@@ -266,7 +266,7 @@ class TestRenderCommandError:
 
     def test_error_in_dispatch(self):
         """_RENDER_DISPATCH 包含 ERROR 条目"""
-        from src.tui.consumer.renderer import _RENDER_DISPATCH
+        from src.tui.engine.renderer import _RENDER_DISPATCH
         dispatch = _RENDER_DISPATCH
         assert 16 in dispatch
         method_name, arg_indices = dispatch[16]
@@ -392,28 +392,28 @@ class TestIsAgentSource:
 
     def test_none_source_returns_false(self):
         """source=None → 返回 False，不抛异常"""
-        from src.tui.consumer.dispatcher import EventDispatcher
+        from src.tui.engine.dispatcher import EventDispatcher
         assert EventDispatcher._is_agent_source(None) is False
 
     def test_main_source_returns_true(self):
         """source='agent' → 返回 True"""
-        from src.tui.consumer.dispatcher import EventDispatcher
-        from src.tui.consumer.const import _MAIN_SOURCE
+        from src.tui.engine.dispatcher import EventDispatcher
+        from src.tui.engine.const import _MAIN_SOURCE
         assert EventDispatcher._is_agent_source(_MAIN_SOURCE) is True
 
     def test_agent_prefix_returns_true(self):
         """source='agent-1' → 返回 True"""
-        from src.tui.consumer.dispatcher import EventDispatcher
+        from src.tui.engine.dispatcher import EventDispatcher
         assert EventDispatcher._is_agent_source("agent-1") is True
 
     def test_other_source_returns_false(self):
         """source='user' → 返回 False"""
-        from src.tui.consumer.dispatcher import EventDispatcher
+        from src.tui.engine.dispatcher import EventDispatcher
         assert EventDispatcher._is_agent_source("user") is False
 
     def test_empty_string_returns_false(self):
         """source='' → 返回 False"""
-        from src.tui.consumer.dispatcher import EventDispatcher
+        from src.tui.engine.dispatcher import EventDispatcher
         assert EventDispatcher._is_agent_source("") is False
 
 
@@ -440,7 +440,7 @@ class TestEmitGetMessageTypeError:
         )
 
         mock_ui = MagicMock()
-        with patch.object(chat_ui.state, 'get_active_chat_ui', return_value=mock_ui):
+        with patch("src.tui.state.consumer_registry.get_active_chat_ui", return_value=mock_ui):
             # 不应抛出任何异常
             handler.emit(record)
 

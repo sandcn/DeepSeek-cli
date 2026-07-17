@@ -15,9 +15,9 @@ import math
 
 from rich.text import Text
 
-from ..consumer.const import _STYLE_ERROR_GRADIENT, _MAX_ERROR_LENGTH
-from ..consumer.utils import _truncate_msg
-from ..core.animator import BreathPalette
+from ..engine.const import _STYLE_ERROR_GRADIENT, _MAX_ERROR_LENGTH
+from ..engine.utils import _truncate_msg
+from ..animation.animator import BreathPalette
 from ..core.style import Style, StyleSheet
 from ..core.effects import sine_color
 from ..framework import Framework

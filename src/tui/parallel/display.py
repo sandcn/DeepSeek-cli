@@ -35,7 +35,7 @@ from ..terminal.adapter import (
     register_sigwinch_callback,
     unregister_sigwinch_callback,
 )
-from ..consumer.const import RenderCommand
+from ..engine.const import RenderCommand
 
 # ── 常量 ────────────────────────────────────────────────
 

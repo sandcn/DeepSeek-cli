@@ -13,7 +13,7 @@ from ._session_setup import _register_session_handlers
 
 from ..core.session import ChatSession
 from ..core.agent import Agent
-from ..ui.colors import CYAN, DIM, RESET
+from ..core.constants import CYAN, DIM, RESET
 from ..api.escape_monitor import EscapeMonitor, stop_active_monitor
 from ..tui.consumer import ChatUIConsumer
 

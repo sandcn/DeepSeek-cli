@@ -16,8 +16,8 @@
   animation/  — 动画基础设施层：AnimatorContext(动画时钟管理器), BreathPalette(呼吸调色板),
   │             composer(动画合成器), transitions(过渡效果:FadeIn/FadeOut/Slide/Typewriter)
   │
-  bus/        — 事件总线层：DisplayEventBus(显示层事件总线), event_types(21种事件类型),
-  │             adapters(事件适配器), event_pool(事件对象池)
+  events/     — 事件总线层：DisplayEventBus(显示层事件总线), event_types(21种事件类型),
+  │             adapters(事件适配器), event_pool(事件对象池), consumers(事件消费者)
   │
   state/      — 统一状态管理：UISessionState(会话状态), InputState(输入状态),
   │             StreamingState(流式状态), TUIStateTree(聚合容器),
@@ -51,15 +51,11 @@
   - framework — TUI 框架统一入口，提供 Framework 单例、create_component、
     EffectRegistry、frame_from_context、get_animator 等公开 API
 
-2026-07-17 框架重构摘要：
-  - engine/ 目录新建：consumer/engine, renderer, dispatcher, const, utils, lock
-    迁入 engine/，consumer/ 保留向后兼容重导出存根
-  - bus/ 目录新建：events/event_bus, event_types, adapters, consumers, event_pool
-    迁入 bus/，events/ 保留向后兼容重导出存根
-  - state/ 统一收敛：core/state.py 拆分为 session_state/input_state/streaming_state/
-    tui_state_tree；consumer/render_state 迁入 state/render_state；
-    consumer/state 迁入 state/consumer_registry
-  - animation/ 增强：core/animator + core/palettes 迁入 animation/，
-    core/ 保留向后兼容重导出存根
-  - 所有旧导入路径保留兼容存根，测试无需修改
+2026-07-17 框架优化：
+  - 清理 consumer/ 下 8 个向后兼容重导出存根，consumer/__init__.py 直接引用 engine/ 和 state/
+  - 清理 parallel/ 下 3 个向后兼容重导出存根（_config, _text_formatter, _tool_icons）
+  - 清理 core/ 下 3 个向后兼容重导出存根（animator, palettes, state），core/__init__.py 直接引用 animation/ 和 state/
+  - 合并 bus/ → events/：bus/ 目录删除，events/ 成为事件总线的真实实现
+  - ui/ 清理：console.py 迁移到 tui/core/rich_console.py，ui/ 目录删除（保留 __init__.py 作为 deprecation 标记）
+  - 所有外部引用从 ui.xxx 更新为 tui.xxx 或 core.constants
 """

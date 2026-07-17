@@ -17,7 +17,7 @@ if TYPE_CHECKING:
 
 from rich.text import Text
 
-from ..core.animator import AnimatorContext
+from ..animation.animator import AnimatorContext
 from ..core.style import Style, StyleSheet
 from ..core.effects import sine_color
 from ..terminal.terminal import is_narrow

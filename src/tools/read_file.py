@@ -14,7 +14,8 @@ from .file_ops import validate_path_security
 from .encoding import async_detect_encoding, pick_best_decoding, FALLBACK_ENCODINGS
 from ._constants import LARGE_FILE_THRESHOLD
 from ..core.constants import CYAN, DIM, RESET, RED
-from ..ui.colors import console
+from ..tui.core.rich_console import get_console as _get_console
+console = _get_console()
 from ..tui.widgets.lock import locked_print, _try_acquire_output_lock
 
 _UNSUPPORTED_EXTENSIONS = frozenset({"txt", "text"})

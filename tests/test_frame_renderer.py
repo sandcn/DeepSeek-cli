@@ -169,7 +169,7 @@ class TestClaudeTreeStyle:
 
     def test_summary_bar_gradient_color_sequence(self):
         """渐变进度条色号序列正确：琥珀(214)开始，绿(41)结束。"""
-        from src.tui.core.animator import BreathPalette
+        from src.tui.animation.animator import BreathPalette
         colors = BreathPalette.get("progress_amber_green")
         assert colors[0] == 214, \
             f"渐变色起始应为214(琥珀)，实际: {colors[0]}"

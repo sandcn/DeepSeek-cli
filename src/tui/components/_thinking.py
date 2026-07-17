@@ -10,9 +10,9 @@
 from __future__ import annotations
 
 from ..animation.transitions import FadeIn
-from ..consumer.const import _THINKING_HEADER
-from ..consumer.render_state import _ReasoningState
-from ..core.animator import AnimatorContext, BreathPalette
+from ..engine.const import _THINKING_HEADER
+from ..state.render_state import _ReasoningState
+from ..animation.animator import AnimatorContext, BreathPalette
 from ..core.style import Style
 from ..terminal.terminal import is_narrow
 from ..core.text_utils import build_sparkle_ansi

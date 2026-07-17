@@ -739,7 +739,7 @@ def build_aurora_gradient(width: int, frame: int,
         色号列表
     """
     if colors is None:
-        from .palettes import GRADIENT_AURORA
+        from ..animation.palettes import GRADIENT_AURORA
         colors = GRADIENT_AURORA
     return [aurora_color(frame, i, colors) for i in range(width)]
 

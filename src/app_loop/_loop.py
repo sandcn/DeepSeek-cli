@@ -32,7 +32,7 @@ from ..core.commands import CommandContext
 from ..core.commands.plugins import get_interactive_registry
 from ..core.message_queue import MessageQueue
 from ..core.exceptions import is_fatal_exception, is_network_error
-from ..ui.colors import CYAN, DIM, RESET, GREEN, YELLOW
+from ..core.constants import CYAN, DIM, RESET, GREEN, YELLOW
 from ..tui.core.ttl_cache import TTLCache
 from ..tui.terminal.narrow import is_narrow, narrow_sep_width
 from ..api.escape_monitor import EscapeMonitor

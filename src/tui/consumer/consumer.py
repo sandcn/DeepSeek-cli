@@ -27,22 +27,22 @@ if TYPE_CHECKING:
         ModelPhaseEvent,
     )
 
-from .const import (
+from ..engine.const import (
     RenderCommand,
     _ANSI_CURSOR_BOTTOM,
 )
 
-from .state import (
+from ..state.consumer_registry import (
     _register_consumer,
     _unregister_consumer,
     _active_consumer,
     get_active_chat_ui,
 )
 
-from .lock import render_lock
+from ..engine.lock import render_lock
 from ..terminal.blessed import get_terminal
 
-from .dispatcher import _HANDLER_MAP
+from ..engine.dispatcher import _HANDLER_MAP
 
 _logger = logging.getLogger(__name__)
 

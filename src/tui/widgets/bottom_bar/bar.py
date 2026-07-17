@@ -50,7 +50,7 @@ from typing import Any, Optional
 from wcwidth import wcswidth
 
 from ...terminal.blessed import get_terminal
-from ...core.animator import AnimatorContext, BreathPalette
+from ...animation.animator import AnimatorContext, BreathPalette
 from .completion import _CompletionPopup
 from .status import _StatusMixin
 from ..stdout_tracker import _StdoutLineTracker

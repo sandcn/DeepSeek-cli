@@ -28,7 +28,7 @@ from src.tui.widgets.bottom_bar.selection import (
 )
 
 # 统一的 patch 目标
-_CHAT_UI_PATCH = "src.tui.consumer.state.get_active_chat_ui"
+_CHAT_UI_PATCH = "src.tui.state.consumer_registry.get_active_chat_ui"
 _TERMINAL_PATCH = "src.tui.widgets.bottom_bar.selection.get_terminal"
 
 

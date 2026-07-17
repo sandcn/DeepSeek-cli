@@ -26,7 +26,7 @@ from ..core.text_utils import (truncate, build_gradient_ansi, build_fade_in_ansi
                                build_warning_pulse_ansi, make_sep_gradient,
                                build_bounce_ansi, make_sep_gradient_enhanced,
                                build_sparkle_ansi, build_glow_ansi)
-from ..core.animator import AnimatorContext, BreathPalette
+from ..animation.animator import AnimatorContext, BreathPalette
 from ..core.effects import sine_color_range
 from ..core.output_target import IOutputTarget, TerminalTarget
 

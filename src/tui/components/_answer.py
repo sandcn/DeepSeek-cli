@@ -6,7 +6,7 @@
 from __future__ import annotations
 
 from ..animation.transitions import FadeIn
-from ..consumer.render_state import _ReasoningState
+from ..state.render_state import _ReasoningState
 from ..framework import Framework
 from ..terminal.terminal import is_narrow
 from ._base import TuiComponent, _estimate_content_lines

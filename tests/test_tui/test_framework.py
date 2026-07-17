@@ -15,7 +15,7 @@ from __future__ import annotations
 import pytest
 
 from src.tui.framework import Framework, get_animator
-from src.tui.core.animator import AnimatorContext
+from src.tui.animation.animator import AnimatorContext
 
 
 # ════════════════════════════════════════════════════════
@@ -150,7 +150,7 @@ class TestResetDefault:
         assert framework._animator is None
         animator = framework.get_animator()
         # 访问后 _animator 应为 AnimatorContext 类
-        from src.tui.core.animator import AnimatorContext as AC
+        from src.tui.animation.animator import AnimatorContext as AC
         assert framework._animator is AC
         assert isinstance(animator, AnimatorContext)
 

@@ -15,9 +15,10 @@ if TYPE_CHECKING:
     from ..widgets.bottom_bar import _BottomBar
     from ..events.event_bus import DisplayEventBus
     from ...renderer.output import OutputAdapter
-    from .renderer import TuiRenderer, _RenderState
-    from .engine import TuiEngine
-    from .dispatcher import EventDispatcher
+    from ..engine.renderer import TuiRenderer
+    from ..state.render_state import _RenderState
+    from ..engine.engine import TuiEngine
+    from ..engine.dispatcher import EventDispatcher
     from .completion import _CmplHandler
     from .protocols import RenderEngine
 
@@ -66,9 +67,10 @@ def _create_chat_ui_components(event_bus=None) -> _ChatUIComponents:
     from ...renderer.output import OutputAdapter
     from ...terminal import get_safe_console_config
 
-    from .renderer import TuiRenderer, _RenderState
-    from .engine import TuiEngine
-    from .dispatcher import EventDispatcher
+    from ..engine.renderer import TuiRenderer
+    from ..state.render_state import _RenderState
+    from ..engine.engine import TuiEngine
+    from ..engine.dispatcher import EventDispatcher
     from .completion import _CmplHandler
     from ..pipeline.message_display import _display_messages
 

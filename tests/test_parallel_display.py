@@ -112,7 +112,7 @@ class TestParallelDisplayLifecycle:
         mock_chat_ui = MagicMock()
         mock_chat_ui.output_adapter = MagicMock()
         mock_chat_ui.output_adapter.width = 120
-        with patch('src.tui.consumer.state.get_active_chat_ui', return_value=mock_chat_ui):
+        with patch('src.tui.state.consumer_registry.get_active_chat_ui', return_value=mock_chat_ui):
             display.start()
         assert display._adapter is not None, (
             "start() 应设置 _adapter 为 ChatUI 的 output_adapter"
@@ -126,7 +126,7 @@ class TestParallelDisplayLifecycle:
         mock_chat_ui = MagicMock()
         mock_chat_ui.output_adapter = MagicMock()
         mock_chat_ui.output_adapter.width = 120
-        with patch('src.tui.consumer.state.get_active_chat_ui', return_value=mock_chat_ui):
+        with patch('src.tui.state.consumer_registry.get_active_chat_ui', return_value=mock_chat_ui):
             display.start()
         assert display._adapter is not None
         display.stop()
@@ -145,7 +145,7 @@ class TestParallelDisplayLifecycle:
         mock_chat_ui = MagicMock()
         mock_chat_ui.output_adapter = MagicMock()
         mock_chat_ui.output_adapter.width = 120
-        with patch('src.tui.consumer.state.get_active_chat_ui', return_value=mock_chat_ui):
+        with patch('src.tui.state.consumer_registry.get_active_chat_ui', return_value=mock_chat_ui):
             d.start()
         assert d._adapter is not None, "start() 后应持有 adapter"
         assert d._started is True, "start() 后 _started 应为 True"
@@ -160,7 +160,7 @@ class TestParallelDisplayLifecycle:
         mock_chat_ui = MagicMock()
         mock_chat_ui.output_adapter = MagicMock()
         mock_chat_ui.output_adapter.width = 120
-        with patch('src.tui.consumer.state.get_active_chat_ui', return_value=mock_chat_ui):
+        with patch('src.tui.state.consumer_registry.get_active_chat_ui', return_value=mock_chat_ui):
             display.start()
         display.stop()
         display.refresh()  # 不应抛异常
@@ -219,7 +219,7 @@ class TestClearFrameLinesBottomBar:
         mock_chat_ui = MagicMock()
         mock_chat_ui.bottom_bar = mock_bb
 
-        with patch('src.tui.consumer.state.get_active_chat_ui', return_value=mock_chat_ui):
+        with patch('src.tui.state.consumer_registry.get_active_chat_ui', return_value=mock_chat_ui):
             pd._clear_frame_lines()
 
         mock_bb.set_subagent_frame.assert_called_once_with([])
@@ -233,7 +233,7 @@ class TestClearFrameLinesBottomBar:
         pd = ParallelDisplay(max_history=3)
         pd._last_lines = 5
 
-        with patch('src.tui.consumer.state.get_active_chat_ui', return_value=None):
+        with patch('src.tui.state.consumer_registry.get_active_chat_ui', return_value=None):
             try:
                 pd._clear_frame_lines()
             except Exception as e:
@@ -251,7 +251,7 @@ class TestClearFrameLinesBottomBar:
         mock_chat_ui = MagicMock()
         mock_chat_ui.bottom_bar = mock_bb
 
-        with patch('src.tui.consumer.state.get_active_chat_ui', return_value=mock_chat_ui):
+        with patch('src.tui.state.consumer_registry.get_active_chat_ui', return_value=mock_chat_ui):
             try:
                 pd._clear_frame_lines()
             except Exception as e:
@@ -265,7 +265,7 @@ class TestClearFrameLinesBottomBar:
         pd = ParallelDisplay(max_history=3)
         pd._last_lines = 0  # 无面板行
 
-        with patch('src.tui.consumer.state.get_active_chat_ui') as mock_get:
+        with patch('src.tui.state.consumer_registry.get_active_chat_ui') as mock_get:
             pd._clear_frame_lines()
 
         # get_active_chat_ui 不应被调用（因为 _last_lines=0 提前返回）

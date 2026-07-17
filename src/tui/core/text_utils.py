@@ -147,7 +147,7 @@ def build_warning_pulse_ansi(
     Returns:
         ANSI 前景色序列，或空字符串（第 6 帧不使用额外脉冲色）。
     """
-    from .animator import BreathPalette
+    from ..animation.animator import BreathPalette
     palette_name = "error_pulse" if pulse_type == "error" else "warn_pulse"
     color = BreathPalette.get_color(palette_name, frame)
     return f"\033[38;5;{color}m"

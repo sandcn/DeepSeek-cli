@@ -20,7 +20,7 @@ from __future__ import annotations
 
 import pytest
 
-from src.tui.core.animator import AnimatorContext, BreathPalette
+from src.tui.animation.animator import AnimatorContext, BreathPalette
 
 
 # ════════════════════════════════════════════════════════

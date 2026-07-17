@@ -313,7 +313,7 @@ class TestOutputConsumerWithChatUI:
 
     def test_skips_when_chatui_active(self, monkeypatch):
         """ChatUI 活跃时，非 cmd OutputEvent 被跳过（stream 无输出）"""
-        monkeypatch.setattr("src.tui.consumer.state.get_active_chat_ui", lambda: object())
+        monkeypatch.setattr("src.tui.state.consumer_registry.get_active_chat_ui", lambda: object())
         bus = DisplayEventBus()
         stream = io.StringIO()
         consumer = OutputConsumer(event_bus=bus, stream=stream)
@@ -341,7 +341,7 @@ class TestOutputConsumerWithChatUI:
 
     def test_cmd_skipped_when_chatui_active(self, monkeypatch):
         """ChatUI 活跃时，cmd OutputEvent 被 OutputConsumer 跳过（由 ChatUIConsumer 处理）"""
-        monkeypatch.setattr("src.tui.consumer.state.get_active_chat_ui", lambda: object())
+        monkeypatch.setattr("src.tui.state.consumer_registry.get_active_chat_ui", lambda: object())
         bus = DisplayEventBus()
         stream = io.StringIO()
         consumer = OutputConsumer(event_bus=bus, stream=stream)

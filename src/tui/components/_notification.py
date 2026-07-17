@@ -15,7 +15,7 @@ import math
 
 from rich.text import Text
 
-from ..consumer.const import _STYLE_NOTIFICATION_GRADIENT, _STYLE_DIM
+from ..engine.const import _STYLE_NOTIFICATION_GRADIENT, _STYLE_DIM
 from ..core.style import Style, StyleSheet
 from ..terminal.terminal import is_narrow
 from ..core.effects import sine_color

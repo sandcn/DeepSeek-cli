@@ -18,8 +18,8 @@ if TYPE_CHECKING:
 
 from rich.text import Text
 
-from ..consumer.const import _STYLE_DIM, _MAX_OUTPUT_LEN
-from ..core.animator import AnimatorContext
+from ..engine.const import _STYLE_DIM, _MAX_OUTPUT_LEN
+from ..animation.animator import AnimatorContext
 from ..terminal.terminal import is_narrow
 from ..core.text_utils import build_left_border_ansi
 from ...core.constants import DARK_GRAY_256

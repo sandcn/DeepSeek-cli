@@ -17,7 +17,7 @@ from src.tui.components._error import ErrorBlock
 from src.tui.components._user_msg import UserMsgBlock
 from src.tui.components._notification import NotificationBlock
 from src.tui.components._write_line import WriteLineBlock
-from src.tui.consumer.const import (
+from src.tui.engine.const import (
     _STYLE_ERROR_GRADIENT,
     _STYLE_USER_GRADIENT,
     _STYLE_NOTIFICATION_GRADIENT,
@@ -57,7 +57,7 @@ class TestErrorBlockGradient:
 
     def test_render_long_message_truncated(self):
         """超长消息仍正常截断"""
-        from src.tui.consumer.const import _MAX_ERROR_LENGTH
+        from src.tui.engine.const import _MAX_ERROR_LENGTH
         long_msg = "x" * (_MAX_ERROR_LENGTH + 100)
         block = ErrorBlock(long_msg)
         result = block.render()
@@ -93,7 +93,7 @@ class TestErrorBlockGradient:
     def test_render_wide_fadein_frame_gt_0(self, monkeypatch):
         """frame>0 + 宽屏 → FadeIn 使边框/辉光色号渐亮"""
         from rich.color import ColorType
-        from src.tui.core.animator import AnimatorContext
+        from src.tui.animation.animator import AnimatorContext
         from src.tui.framework import Framework
 
         AnimatorContext.reset_default()
@@ -115,7 +115,7 @@ class TestErrorBlockGradient:
     def test_render_wide_fadein_frame_0(self, monkeypatch):
         """frame=0 → FadeIn 因子为 0"""
         from rich.color import ColorType
-        from src.tui.core.animator import AnimatorContext
+        from src.tui.animation.animator import AnimatorContext
         from src.tui.framework import Framework
 
         AnimatorContext.reset_default()
@@ -133,7 +133,7 @@ class TestErrorBlockGradient:
 
     def test_render_narrow_no_fadein(self, monkeypatch):
         """窄屏 → 即使 frame>0 也不触发 FadeIn"""
-        from src.tui.core.animator import AnimatorContext
+        from src.tui.animation.animator import AnimatorContext
         from src.tui.framework import Framework
 
         AnimatorContext.reset_default()
@@ -278,7 +278,7 @@ class TestNotificationBlockGradient:
     def test_render_wide_fadein_frame_gt_0(self, monkeypatch):
         """frame>0 + 宽屏 → FadeIn 使边框/辉光色号渐亮"""
         from rich.color import ColorType
-        from src.tui.core.animator import AnimatorContext
+        from src.tui.animation.animator import AnimatorContext
         from src.tui.framework import Framework
 
         AnimatorContext.reset_default()
@@ -300,7 +300,7 @@ class TestNotificationBlockGradient:
     def test_render_wide_fadein_frame_0(self, monkeypatch):
         """frame=0 → FadeIn 因子为 0"""
         from rich.color import ColorType
-        from src.tui.core.animator import AnimatorContext
+        from src.tui.animation.animator import AnimatorContext
         from src.tui.framework import Framework
 
         AnimatorContext.reset_default()
@@ -317,7 +317,7 @@ class TestNotificationBlockGradient:
 
     def test_render_narrow_no_fadein(self, monkeypatch):
         """窄屏 → 即使 frame>0 也不触发 FadeIn"""
-        from src.tui.core.animator import AnimatorContext
+        from src.tui.animation.animator import AnimatorContext
         from src.tui.framework import Framework
 
         AnimatorContext.reset_default()

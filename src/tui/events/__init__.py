@@ -33,6 +33,11 @@ from .consumers import (
     publish_output,
     publish_tool_summary,
 )
+from .adapters import (
+    DisplayEventAdapter,
+    EventBusDisplayProxy,
+    wire_event_bus,
+)
 
 __all__ = [
     # 事件类型
@@ -51,6 +56,10 @@ __all__ = [
     "EventPool",
     # 消费者
     "OutputConsumer",
+    # 适配器
+    "DisplayEventAdapter",
+    "EventBusDisplayProxy",
+    "wire_event_bus",
     # 便捷函数
     "publish_output",
     "publish_tool_summary",

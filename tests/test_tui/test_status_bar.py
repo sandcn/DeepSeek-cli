@@ -12,7 +12,9 @@ import time
 from unittest.mock import patch
 
 from src.tui.core.text_formatter import TextFormatter
-from src.tui.core.state import UISessionState, StreamingState, TUIStateTree
+from src.tui.state.session_state import UISessionState
+from src.tui.state.streaming_state import StreamingState
+from src.tui.state.tui_state_tree import TUIStateTree
 from src.tui.widgets.status_bar import (
     render_normal,
     render_streaming_line,

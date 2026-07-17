@@ -26,8 +26,10 @@ from ..core.theme import THEME
 from ..core.text_formatter import TextFormatter
 from ..terminal.terminal import is_narrow, get_terminal_width
 from ..core.time_format import format_elapsed, format_speed
-from ..core.state import TUIStateTree, UISessionState, StreamingState
-from ..core.animator import AnimatorContext
+from ..state.tui_state_tree import TUIStateTree
+from ..state.session_state import UISessionState
+from ..state.streaming_state import StreamingState
+from ..animation.animator import AnimatorContext
 from ..core.text_utils import build_glow_ansi
 
 # ── 流式状态行空格常量（图标与数值间视觉间距） ──

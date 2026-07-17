@@ -15,9 +15,9 @@ from rich.text import Text
 
 from ..animation.transitions import FadeIn
 from ._base import TuiComponent
-from ..consumer.const import _STYLE_USER_GRADIENT
+from ..engine.const import _STYLE_USER_GRADIENT
 from ..core.theme import THEME
-from ..core.animator import AnimatorContext
+from ..animation.animator import AnimatorContext
 from ..core.effects import build_fg_breath_ansi
 from ..terminal.terminal import is_narrow
 from ..core.text_utils import build_sparkle_ansi

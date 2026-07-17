@@ -12,9 +12,9 @@ import threading
 
 _logger = logging.getLogger(__name__)
 
-from . import state
-from .const import _MAX_ERROR_LENGTH
-from .utils import _truncate_msg
+from ..state import consumer_registry as _consumer_registry
+from ..engine.const import _MAX_ERROR_LENGTH
+from ..engine.utils import _truncate_msg
 
 # 线程本地重入保护（防止 emit → logger → emit 递归）
 _handler_reentrant = threading.local()
@@ -61,7 +61,7 @@ class ChatUIErrorHandler(logging.Handler):
         with _emit_lock:
             _handler_reentrant.is_active = True
             try:
-                consumer = state.get_active_chat_ui()
+                consumer = _consumer_registry.get_active_chat_ui()
                 if consumer is not None:
                     consumer.on_error(msg)
             finally:

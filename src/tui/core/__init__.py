@@ -14,7 +14,7 @@
 from __future__ import annotations
 
 # ── 动画基础设施 ──
-from .animator import AnimatorContext, BreathPalette
+from ..animation.animator import AnimatorContext, BreathPalette
 
 # ── 动效原语 ──
 from .effects import (
@@ -45,7 +45,10 @@ from .effects import (
 )
 
 # ── 状态容器 ──
-from .state import UISessionState, InputState, StreamingState, TUIStateTree
+from ..state.session_state import UISessionState
+from ..state.input_state import InputState
+from ..state.streaming_state import StreamingState
+from ..state.tui_state_tree import TUIStateTree
 
 # ── TTL 缓存 ──
 from .ttl_cache import TTLCache
@@ -78,7 +81,7 @@ from .style import Style, StyledText, StyleSheet
 from .gradient import hex_to_256, gradient_step, gradient_range
 
 # ── 预定义调色板 ──
-from .palettes import (
+from ..animation.palettes import (
     GRADIENT_SUNSET, GRADIENT_OCEAN, GRADIENT_FOREST,
     GRADIENT_FIRE, GRADIENT_NEON,
     GRADIENT_AURORA, GRADIENT_CORAL, GRADIENT_MINT, GRADIENT_TWILIGHT,
@@ -101,6 +104,9 @@ from .ansi_utils import strip_ansi, visual_width, truncate_ansi_visual, skip_ans
 
 # ── 费用计算 ──
 from .cost import compute_round_cost_data
+
+# ── rich.Console 惰性初始化 ──
+from .rich_console import get_console
 
 # ── 输出目标 ──
 from .output_target import IOutputTarget, TerminalTarget, BufferTarget, NullTarget
@@ -173,6 +179,8 @@ __all__ = [
     "strip_ansi", "visual_width", "truncate_ansi_visual", "skip_ansi_sgr", "truncate_ansi_sgr", "truncate_ansi_line",
     # output_target
     "IOutputTarget", "TerminalTarget", "BufferTarget", "NullTarget",
+    # rich_console
+    "get_console",
     # cost
     "compute_round_cost_data",
 ]

@@ -52,7 +52,7 @@ from ...core.constants import (
 )
 from ...tools.registry import get_tool_display_name
 
-from ..core.animator import AnimatorContext, BreathPalette
+from ..animation.animator import AnimatorContext, BreathPalette
 from ..core.effects import sine_color
 
 # ── 常量 ────────────────────────────────────────────────

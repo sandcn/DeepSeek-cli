@@ -53,7 +53,6 @@ _MOCK_MODULES = {
     'src.api.json_repair': MagicMock(),   # placeholder, overwritten below
     'src.api._tool_parse_utils': MagicMock(),  # placeholder, overwritten below
     'src.api.stream_parse': MagicMock(),  # placeholder, overwritten below
-    'src.ui.colors': MagicMock(DIM='\x1b[2m', RESET='\x1b[0m', YELLOW='\x1b[33m'),
     'src.ui._lock': MagicMock(),
     'src.tools.registry': MagicMock(),
 }
