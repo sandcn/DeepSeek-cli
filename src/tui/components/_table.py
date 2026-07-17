@@ -15,6 +15,7 @@
 
 from __future__ import annotations
 
+from ..render_buffer import RenderBuffer
 from ..terminal.narrow import is_narrow
 from ..core.style import Style
 from ..core.ansi_utils import visual_width
@@ -123,7 +124,10 @@ class Table(TuiComponent):
         row_styles: list[Style | None] | None = None,
         border_style: BoxStyle = BoxStyle.ASCII,
         separator: str = " \u2502 ",
+        *,
+        props: dict | None = None,
     ) -> None:
+        super().__init__(props=props)
         self.headers = headers
         self.rows = rows
         self.column_widths = column_widths
@@ -134,14 +138,26 @@ class Table(TuiComponent):
 
     # ── 公共 API ────────────────────────────────────────────────────────
 
-    def render(self) -> str:
+    def render(self, buffer: RenderBuffer | None = None) -> str | None:
         """渲染完整表格。
 
         窄屏降级：移除边框，减少列间距，仅返回表头 + 行数据。
+
+        Args:
+            buffer: 可选的 RenderBuffer 实例。传入时直接写入 buffer。
+
+        Returns:
+            str | None: 无 buffer 时返回渲染字符串；有 buffer 时返回 None。
         """
         if is_narrow():
-            return self._render_narrow()
-        return self._render_normal()
+            result = self._render_narrow()
+        else:
+            result = self._render_normal()
+        if buffer is not None:
+            if result:
+                buffer.write(0, 0, result)
+            return None
+        return result
 
     # ── 列宽计算 ────────────────────────────────────────────────────────
 

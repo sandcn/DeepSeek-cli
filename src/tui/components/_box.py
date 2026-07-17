@@ -10,6 +10,7 @@ from enum import Enum
 from typing import ClassVar
 
 from ._base import TuiComponent
+from ..render_buffer import RenderBuffer
 from ..terminal.narrow import is_narrow
 from ..core.style import Style
 
@@ -137,7 +138,10 @@ class Box(TuiComponent):
         border_gradient: tuple[int, int] | None = None,
         aurora_gradient: bool = False,
         frame: int = 0,
+        *,
+        props: dict | None = None,
     ) -> None:
+        super().__init__(props=props)
         self.text = text
         self.style = style
         self.width = width
@@ -150,14 +154,30 @@ class Box(TuiComponent):
         self.aurora_gradient = aurora_gradient
         self.frame = frame
 
-    def render(self) -> str:
+    def render(self, buffer: RenderBuffer | None = None) -> str | None:
         """渲染带边框的文本。
 
         窄屏时降级为仅缩进无边框（调用 is_narrow() 检测）。
+
+        Args:
+            buffer: 可选的 RenderBuffer 实例。传入时直接写入 buffer。
+
+        Returns:
+            str | None: 无 buffer 时返回渲染字符串；有 buffer 时返回 None。
         """
         if is_narrow():
-            return self._render_narrow()
+            result = self._render_narrow()
+        else:
+            result = self._build_box()
 
+        if buffer is not None:
+            if result:
+                buffer.write(0, 0, result)
+            return None
+        return result
+
+    def _build_box(self) -> str:
+        """构建带边框的文本（核心渲染逻辑）。"""
         lines = self.text.split("\n")
         max_line_len = max((len(line) for line in lines), default=0)
         chars = _BOX_CHARS[self.style]
@@ -205,7 +225,7 @@ class Box(TuiComponent):
                 f"\033[38;5;{c}m{chars['h']}" for c in h_grad
             ) + "\033[0m"
 
-            # 四角色号（优先匹配水平边框：角与水平渐变端点对齐）
+            # 四角色号（优先匹配水平渐变：角与水平渐变端点对齐）
             tl_color = h_grad[0]
             tr_color = h_grad[-1]
             bl_color = h_grad[0]    # 与底部水平渐变左端对齐
@@ -313,12 +333,12 @@ class Box(TuiComponent):
 class RoundedBox(Box):
     """圆角边框组件 — Box(style=BoxStyle.ROUNDED) 的便捷别名。"""
 
-    def __init__(self, text: str, **kwargs) -> None:
-        super().__init__(text, style=BoxStyle.ROUNDED, **kwargs)
+    def __init__(self, text: str, *, props: dict | None = None, **kwargs) -> None:
+        super().__init__(text, style=BoxStyle.ROUNDED, props=props, **kwargs)
 
 
 class DoubleBox(Box):
     """双线边框组件 — Box(style=BoxStyle.DOUBLE) 的便捷别名。"""
 
-    def __init__(self, text: str, **kwargs) -> None:
-        super().__init__(text, style=BoxStyle.DOUBLE, **kwargs)
+    def __init__(self, text: str, *, props: dict | None = None, **kwargs) -> None:
+        super().__init__(text, style=BoxStyle.DOUBLE, props=props, **kwargs)

@@ -9,6 +9,7 @@ Spinner 在不同帧集间切换。
 
 from __future__ import annotations
 
+from ..render_buffer import RenderBuffer
 from ..terminal.narrow import is_narrow
 from ..core.style import Style
 from ._base import TuiComponent
@@ -66,21 +67,36 @@ class Spinner(TuiComponent):
         color: int = 45,
         frame: int = 0,
         text: str = "",
+        *,
+        props: dict | None = None,
     ) -> None:
+        super().__init__(props=props)
         self.style = style
         self.color = color
         self.frame = frame
         self.text = text
 
-    def render(self) -> str:
+    def render(self, buffer: RenderBuffer | None = None) -> str | None:
         """渲染当前帧的转轮字符及附加文本。
 
         窄屏降级：移除 ANSI 颜色，仅返回帧字符 + 文本。
         未知 style 兜底：返回 "?" 标记。
 
+        Args:
+            buffer: 可选的 RenderBuffer 实例。传入时直接写入 buffer。
+
         Returns:
-            str: 渲染后的文本（含 ANSI 颜色序列或纯文本）。
+            str | None: 无 buffer 时返回渲染字符串；有 buffer 时返回 None。
         """
+        result = self._build_spinner()
+        if buffer is not None:
+            if result:
+                buffer.write(0, 0, result)
+            return None
+        return result
+
+    def _build_spinner(self) -> str:
+        """构建转轮字符串（核心渲染逻辑）。"""
         frames = _SPINNER_FRAMES.get(self.style)
         if not frames:
             frame_char = "?"

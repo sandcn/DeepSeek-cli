@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 from ._base import TuiComponent
+from ..render_buffer import RenderBuffer
 
 
 class ProgressBar(TuiComponent):
@@ -43,7 +44,10 @@ class ProgressBar(TuiComponent):
         frame: int = 0,
         animated: bool = True,
         pulse_mode: bool = False,
+        *,
+        props: dict | None = None,
     ) -> None:
+        super().__init__(props=props)
         self._progress = progress
         self._width = width
         self._fill_char = fill_char
@@ -57,8 +61,24 @@ class ProgressBar(TuiComponent):
 
     # ── 公共 API ────────────────────────────────────────────────────────
 
-    def render(self) -> str:
+    def render(self, buffer: RenderBuffer | None = None) -> str | None:
         """渲染进度条。
+
+        Args:
+            buffer: 可选的 RenderBuffer 实例。传入时直接写入 buffer。
+
+        Returns:
+            str | None: 无 buffer 时返回渲染字符串；有 buffer 时返回 None。
+        """
+        result = self._build_progress()
+        if buffer is not None:
+            if result:
+                buffer.write(0, 0, result)
+            return None
+        return result
+
+    def _build_progress(self) -> str:
+        """构建进度条字符串（核心渲染逻辑）。
 
         Returns:
             带 ANSI 颜色和渐变的进度条字符串。

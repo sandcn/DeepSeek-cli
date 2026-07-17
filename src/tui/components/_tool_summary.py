@@ -17,29 +17,89 @@ from ..engine.const import _STYLE_SUCCESS, _STYLE_FAIL, _STYLE_WARN, _STYLE_DIM
 from ..animation.animator import AnimatorContext
 from ..core.style import Style
 from ..core.text_utils import build_left_border_ansi, build_warning_pulse_ansi
+from ..render_buffer import RenderBuffer
 from ._base import TuiComponent
 
 
 class ToolSummaryBlock(TuiComponent):
     """工具完成汇总块。"""
-    def __init__(self, successful: tuple, failed: tuple):
+    def __init__(self, successful: tuple = (), failed: tuple = (), *, props: dict | None = None) -> None:
+        super().__init__(props=props)
         self.successful = successful or ()
         self.failed = failed or ()
 
-    def render_to_adapter(self, adapter: "OutputAdapter") -> int:
-        """渲染到 OutputAdapter，返回行数。"""
+    def render(self, buffer: RenderBuffer | None = None) -> str | None:
+        """渲染工具完成汇总内容为纯文本字符串。
+
+        支持 buffer 参数：传入 buffer 时写入并返回 None；否则返回字符串。
+        """
         failed = self._normalize_failed()
         total = len(self.successful) + len(failed)
+        lines: list[str] = []
+
         if failed:
-            return self._render_failure(failed, total, adapter)
+            frame = AnimatorContext.get_default().frame
+            edge_ansi = build_left_border_ansi(frame, 23, 24)
+            names = ", ".join(n for n, _ in failed)
+            pulse_ansi = build_warning_pulse_ansi(
+                AnimatorContext.get_default().breath_frame, "error",
+            )
+            pulse_wrap = pulse_ansi + "!\u2502\033[0m"
+
+            if len(failed) == total:
+                line = f"  {edge_ansi}   {pulse_wrap}全部失败: {names}"
+            else:
+                line = f"  {edge_ansi}   {pulse_wrap}{len(failed)}/{total} 失败: {names}"
+            lines.append(line)
+
+            for name, error in failed[:3]:
+                short = ""
+                if error:
+                    short = error.split("\n")[0].strip()
+                    if short and len(short) > 80:
+                        short = short[:77] + "..."
+                line = f"  {edge_ansi}    {name}"
+                if short:
+                    line += f"  {short}"
+                lines.append(line)
+
+            if len(failed) > 3:
+                lines.append(f"  {edge_ansi}   ... 及其他 {len(failed) - 3} 个")
         elif self.successful:
-            _frame = AnimatorContext.get_default().frame
-            edge_ansi = build_left_border_ansi(_frame, 23, 24)
-            t = Text.from_ansi(f"  {edge_ansi}   ")
-            t.append(f"· {len(self.successful)}工具完成", _STYLE_SUCCESS)
-            adapter.write(t)
-            return 1
-        return 0
+            frame = AnimatorContext.get_default().frame
+            edge_ansi = build_left_border_ansi(frame, 23, 24)
+            lines.append(f"  {edge_ansi}   · {len(self.successful)}工具完成")
+
+        result = "\n".join(lines)
+        if buffer is not None:
+            if result:
+                buffer.write(0, 0, result)
+            return None
+        return result
+
+    def render_to_adapter(self, adapter: "OutputAdapter") -> int:
+        """渲染到 OutputAdapter，返回行数。
+
+        委托 render(buffer) 获取渲染内容，再通过 Text.from_ansi() 转换为 Rich Text 输出。
+        保持与原有 Rich 样式化输出的行为一致。
+        """
+        try:
+            import shutil
+            term_w = shutil.get_terminal_size().columns
+        except Exception:
+            term_w = 80
+        buf = RenderBuffer(max(term_w, 80), 100)
+        # 委托 render(buffer) 获取渲染内容
+        self.render(buf)
+        output = buf.render()
+        if not output:
+            return 0
+        # 通过 Text.from_ansi 转换为 Rich Text 输出（保持向后兼容）
+        try:
+            adapter.write(Text.from_ansi(output))
+        except Exception:
+            adapter.write(output)
+        return max(1, output.count('\n') + 1)
 
     def _normalize_failed(self) -> tuple:
         safe = []
@@ -53,59 +113,3 @@ class ToolSummaryBlock(TuiComponent):
             else:
                 safe.append((str(item), ""))
         return tuple(safe)
-
-    def _render_failure(self, failed: tuple, total: int, adapter: "OutputAdapter") -> int:
-        _frame = AnimatorContext.get_default().frame
-        edge_ansi = build_left_border_ansi(_frame, 23, 24)
-        names = ", ".join(n for n, _ in failed)
-        # 脉动错误图标（动态呼吸色）
-        try:
-            pulse_ansi = build_warning_pulse_ansi(
-                AnimatorContext.get_default().breath_frame, "error",
-            )
-        except Exception:
-            pulse_ansi = Style(fg=196).to_ansi()  # 兜底红色
-        # 首行：左边缘 + 脉动错误图标 + 状态描述
-        pulse_wrap = pulse_ansi + "!\u2502\033[0m"
-        if len(failed) == total:
-            rich_text = Text.from_ansi(f"  {edge_ansi}   {pulse_wrap}")
-            rich_text.append(f"全部失败: {names}", _STYLE_FAIL)
-        else:
-            rich_text = Text.from_ansi(f"  {edge_ansi}   {pulse_wrap}")
-            rich_text.append(f"{len(failed)}/{total} 失败: {names}", _STYLE_WARN)
-        adapter.write(rich_text)
-        lines = 1
-        detail = 0
-        for name, error in failed[:3]:
-            short = ""
-            if error:
-                short = error.split("\n")[0].strip()
-                if short:
-                    max_w = 80
-                    s = short
-                    w = 0
-                    cut = len(s)
-                    for i, ch in enumerate(s):
-                        cw = 2 if unicodedata.east_asian_width(ch) in 'WF' else 1
-                        if w + cw > max_w - 3:
-                            cut = i
-                            break
-                        w += cw
-                    if cut < len(s):
-                        short = s[:cut] + "..."
-            # 详细行：左边缘 + 工具名 + 错误摘要
-            t = Text.from_ansi(f"  {edge_ansi}   ")
-            t.append(f"  {name}", _STYLE_DIM)
-            if short:
-                t.append(f"  {short}", _STYLE_DIM)
-            adapter.write(t)
-            detail += 1
-        if len(failed) > 3:
-            t = Text.from_ansi(f"  {edge_ansi}   ")
-            t.append(f"... 及其他 {len(failed) - 3} 个", _STYLE_DIM)
-            adapter.write(t)
-            detail += 1
-        return lines + detail
-
-    def render(self) -> str:
-        return f"ToolSummary(success={len(self.successful)}, fail={len(self.failed)})"

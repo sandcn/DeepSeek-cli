@@ -12,15 +12,12 @@
 from __future__ import annotations
 
 import logging
-from typing import TYPE_CHECKING
 
-if TYPE_CHECKING:
-    from ...renderer.output import OutputAdapter
-
+from ..render_buffer import RenderBuffer
 from ..terminal.narrow import is_narrow
 from ..core.text_utils import truncate
 from ..core.ansi_utils import visual_width
-from ._base import TuiComponent, _estimate_content_lines
+from ._base import TuiComponent
 from ._box import BoxStyle, _BOX_CHARS
 
 _logger = logging.getLogger(__name__)
@@ -57,7 +54,10 @@ class Panel(TuiComponent):
         border_color: int | None = None,
         title_color: int | None = None,
         padding: int = 1,
+        *,
+        props: dict | None = None,
     ) -> None:
+        super().__init__(props=props)
         self.title = title
         self.content = content
         self.style = style
@@ -69,28 +69,27 @@ class Panel(TuiComponent):
 
     # ── 核心渲染接口 ────────────────────────────────────
 
-    def render(self) -> str:
+    def render(self, buffer: RenderBuffer | None = None) -> str | None:
         """渲染面板组件。
 
         窄屏时调用 _render_narrow() 降级输出；
         宽屏时调用 _render_normal() 输出带标题的边框容器。
-        """
-        if is_narrow():
-            return self._render_narrow()
-        return self._render_normal()
-
-    def render_to_adapter(self, adapter: "OutputAdapter") -> int:
-        """通过 OutputAdapter 渲染面板。
 
         Args:
-            adapter: OutputAdapter 实例。
+            buffer: 可选的 RenderBuffer 实例。传入时直接写入 buffer。
 
         Returns:
-            int: 渲染内容的估计行数。
+            str | None: 无 buffer 时返回渲染字符串；有 buffer 时返回 None。
         """
-        output = self.render()
-        adapter.write(output)
-        return _estimate_content_lines(output)
+        if is_narrow():
+            result = self._render_narrow()
+        else:
+            result = self._render_normal()
+        if buffer is not None:
+            if result:
+                buffer.write(0, 0, result)
+            return None
+        return result
 
     # ── 窄屏降级 ────────────────────────────────────────
 

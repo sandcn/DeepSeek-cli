@@ -16,16 +16,20 @@ from ..animation.animator import AnimatorContext, BreathPalette
 from ..core.style import Style
 from ..terminal.terminal import is_narrow
 from ..core.text_utils import build_sparkle_ansi
-from ._base import TuiComponent, _estimate_content_lines
+from ..render_buffer import RenderBuffer
+from ._base import TuiComponent, _estimate_content_lines, apply_fade_in
 
 
 class ThinkingBlock(TuiComponent):
     """思考/推理内容块 — 流式追加写入 IncrementalRenderer。"""
-    def __init__(self, rs: "_RenderState"):
+    def __init__(self, rs, *, props: dict | None = None) -> None:
+        super().__init__(props=props)
         self._rs = rs
+        self._cumulative_content: list[str] = []
 
     def write(self, text: str) -> int:
         """写入推理内容，返回估计行数。"""
+        self._cumulative_content.append(text)
         if self._rs.reasoning_state == _ReasoningState.CLOSED:
             self._rs.reopen_reasoning()
         is_first = self._rs.reasoning_state == _ReasoningState.INACTIVE
@@ -46,16 +50,10 @@ class ThinkingBlock(TuiComponent):
                 header = f"\n  {'─' * 4} {sparkle}⚡{think_style.apply('思考')} {'─' * 4}\n"
                 rr.write(header)
                 lines += _estimate_content_lines(header)
-        # 首次内容写入：集成 FadeIn 入场动效
-        # 【技术债】此 FadeIn 入场逻辑与 AnswerBlock.write() 中的
-        # FadeIn 首次写入逻辑重复（FadeIn(smooth, 6f, 240→253) + fade_prefix 包裹）。
-        # 后续可提取为公共 mixin 或工具函数（如 _apply_fade_in_first_write）。
+        # 首次内容写入：集成 FadeIn 入场动效（使用共享的 apply_fade_in 函数）
         if is_first and not is_narrow():
             frame = AnimatorContext.get_default().frame
-            fade = FadeIn(easing="smooth", total_frames=6, start_color=240, end_color=253)
-            fade_prefix = fade.render(frame)
-            if fade_prefix:
-                text = f"{fade_prefix}{text}\033[0m"
+            text = apply_fade_in(text, frame)
         rr.write(text)
         lines += _estimate_content_lines(text)
         return lines
@@ -63,5 +61,11 @@ class ThinkingBlock(TuiComponent):
     def close(self) -> None:
         self._rs.close_reasoning()
 
-    def render(self) -> str:
-        return ""
+    def render(self, buffer: RenderBuffer | None = None) -> str | None:
+        """渲染累积的思考内容。"""
+        full_content = "".join(self._cumulative_content)
+        if buffer is not None:
+            if full_content:
+                buffer.write(0, 0, full_content)
+            return None
+        return full_content

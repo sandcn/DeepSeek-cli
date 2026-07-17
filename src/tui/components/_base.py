@@ -14,7 +14,8 @@ from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from ...renderer.output import OutputAdapter
-    from ..render_buffer import RenderBuffer
+
+from ..render_buffer import RenderBuffer
 
 from rich.text import Text
 
@@ -59,13 +60,14 @@ class TuiComponent(Widget):
         render() 作为降级/调试用途。
     """
 
-    def __init__(self, props: dict | None = None) -> None:
-        """初始化组件，标记为未挂载。
+    def __init__(self, props: dict | None = None, key: str | None = None) -> None:
+        """初始化组件。
 
         Args:
-            props: 外部传入的属性字典（可选）。
+            props: 外部传入的不可变属性字典（只读），默认 {}。
+            key: 可选的身份标识键，用于 WidgetTree 中的查找。
         """
-        super().__init__(props=props)
+        super().__init__(props=props, key=key)
 
     def did_mount(self) -> None:
         """组件挂载后调用 — 执行初始化逻辑。
@@ -101,18 +103,17 @@ class TuiComponent(Widget):
         return True
 
     @abstractmethod
-    def render(self, buffer: RenderBuffer | None = None) -> str | Text:
+    def render(self, buffer: RenderBuffer | None = None) -> str | Text | None:
         """渲染组件内容。
 
-        子类必须实现此方法，返回 str 或 rich.text.Text 对象。
+        子类必须实现此方法。当传入 buffer 参数时，应将渲染内容写入 buffer
+        并返回 None；未传入 buffer 时返回 str/Text（保持向后兼容）。
 
         Args:
-            buffer: 可选的 RenderBuffer 实例（用于 Widget 树渲染）。
-                    当传入 buffer 时，应将内容写入 buffer 后返回空字符串。
-                    未传入时保持原行为返回 str/Text。
+            buffer: 可选的 RenderBuffer 实例。传入时，渲染内容直接写入 buffer。
 
         Returns:
-            str | Text: 渲染后的文本内容，供 adapter.write() 输出。
+            str | Text | None: 未传入 buffer 时返回渲染文本；传入时返回 None。
         """
 
     # ── Widget 兼容 render ─────────────────────────
@@ -135,14 +136,12 @@ class TuiComponent(Widget):
     def render_to_adapter(self, adapter: "OutputAdapter") -> int:
         """通过 OutputAdapter 渲染组件，返回估计行数。
 
-        默认实现（路径 A）：
-            调用 self.render() 获取输出，通过 adapter.write() 写入
-            OutputAdapter，最后调用 _estimate_content_lines() 返回行数。
+        默认实现：创建临时 RenderBuffer，委托 render(buffer) 写入，
+        然后将 buffer 内容通过 adapter.write() 输出。
+        输出会通过 Text.from_ansi() 还原为 Rich Text 对象，
+        保持与原有 `render() -> str | Text` 路径的向后兼容。
 
-        重写场景（路径 B）：
-            子类可重写此方法以绕过 render() 直接操作 adapter，
-            实现分段写入、ANSI 转义处理等高级渲染逻辑。
-            重写时仍建议实现 render() 作为降级/调试用途。
+        子类可重写此方法以直接操作 adapter，实现高级渲染逻辑。
 
         Args:
             adapter: OutputAdapter 实例，用于将内容写入终端。
@@ -153,14 +152,26 @@ class TuiComponent(Widget):
         if not self.should_update():
             return 0
         try:
-            output = self.render()
+            # 获取终端宽度确定 buffer 尺寸
+            try:
+                import shutil
+                term_w = shutil.get_terminal_size().columns
+            except Exception:
+                term_w = 80
+            buf = RenderBuffer(max(term_w, 80), 1000)
+            self.render(buf)
+            output = buf.render()
         except Exception as exc:
             _logger.warning("组件 %s.render() 失败: %s", type(self).__name__, exc)
             adapter.write(f"\033[33m[渲染降级: {type(self).__name__}]\033[0m")
             return 1
-        if isinstance(output, (str, Text)):
-            adapter.write(output)
-            return _estimate_content_lines(str(output))
+        if output:
+            # 将输出包装回 Text 对象以保持向后兼容（原 render()→Text 路径）
+            try:
+                adapter.write(Text.from_ansi(output))
+            except Exception:
+                adapter.write(output)
+            return _estimate_content_lines(output)
         return 0
 
     # ── Widget 兼容 ──────────────────────────────────────
@@ -180,6 +191,24 @@ class TuiComponent(Widget):
         """
         if self.should_update(new_props):
             self._dirty = True
+
+    # ── 辅助 ──────────────────────────────────────────────
+
+    def _estimate_lines(self, text: str = "") -> int:
+        """估算文本内容的终端行数。
+
+        按文本中的换行符数量 + 1 计算行数。
+        不处理终端换行（word wrapping），仅适用于粗略估计。
+
+        Args:
+            text: 要估算的文本。省略时使用空字符串。
+
+        Returns:
+            int: 估算的行数，至少为 1。
+        """
+        if not text:
+            return 1
+        return text.count('\n') + 1
 
 
 # ═══════════════════════════════════════════════════════════
@@ -201,3 +230,35 @@ def _estimate_content_lines(text: str) -> int:
     if not text:
         return 1
     return text.count('\n') + 1
+
+
+def apply_fade_in(text: str, frame: int,
+                  easing: str = "smooth",
+                  total_frames: int = 6,
+                  start_color: int = 240,
+                  end_color: int = 253) -> str:
+    """对文本应用 FadeIn 入场渐显动效。
+
+    使用 FadeIn 过渡效果生成渐显前缀，包裹文本使其从暗灰渐变至目标色。
+    无动效效果时（frame 为 0 或 FadeIn 返回空前缀）返回原文本。
+
+    Args:
+        text: 要应用动效的文本。
+        frame: 当前帧号。
+        easing: 缓动函数，默认 "smooth"。
+        total_frames: 渐显总帧数，默认 6。
+        start_color: 起始 256 色号，默认 240（暗灰）。
+        end_color: 结束 256 色号，默认 253（亮白）。
+
+    Returns:
+        带 FadeIn 渐显包裹的文本。无动效时返回原文本。
+    """
+    if not text or frame <= 0:
+        return text
+    from .animation.transitions import FadeIn  # noqa: C0415
+    fade = FadeIn(easing=easing, total_frames=total_frames,
+                  start_color=start_color, end_color=end_color)
+    fade_prefix = fade.render(frame)
+    if fade_prefix:
+        return f"{fade_prefix}{text}\033[0m"
+    return text

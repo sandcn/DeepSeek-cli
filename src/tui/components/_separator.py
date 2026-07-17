@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 from ._base import TuiComponent
+from ..render_buffer import RenderBuffer
 
 
 class Separator(TuiComponent):
@@ -47,7 +48,10 @@ class Separator(TuiComponent):
         frame: int = 0,
         num_pulses: int = 2,
         animated: bool = True,
+        *,
+        props: dict | None = None,
     ) -> None:
+        super().__init__(props=props)
         self._char = char
         self._width = width
         self._style = style
@@ -59,15 +63,27 @@ class Separator(TuiComponent):
 
     # ── 公共 API ────────────────────────────────────────────────────────
 
-    def render(self) -> str:
+    def render(self, buffer: RenderBuffer | None = None) -> str | None:
         """渲染分隔线。
 
         当 ``animated=False`` 或窄屏时降级为静态渐变渲染，
         避免不必要的动效消耗。
 
+        Args:
+            buffer: 可选的 RenderBuffer 实例。传入时直接写入 buffer。
+
         Returns:
-            带 ANSI 颜色和动效的分隔线字符串，空宽度时返回空字符串。
+            str | None: 无 buffer 时返回渲染字符串；有 buffer 时返回 None。
         """
+        result = self._build_separator()
+        if buffer is not None:
+            if result:
+                buffer.write(0, 0, result)
+            return None
+        return result
+
+    def _build_separator(self) -> str:
+        """构建分隔线字符串（核心渲染逻辑）。"""
         colors = self._build_colors()
         if not colors:
             return ""

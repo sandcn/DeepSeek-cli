@@ -11,6 +11,7 @@
 from __future__ import annotations
 
 import logging
+import shutil
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -18,11 +19,11 @@ if TYPE_CHECKING:
 
 from rich.text import Text
 
-from ..engine.const import _STYLE_DIM, _MAX_OUTPUT_LEN
+from ..engine.const import _MAX_OUTPUT_LEN
 from ..animation.animator import AnimatorContext
 from ..terminal.terminal import is_narrow
 from ..core.text_utils import build_left_border_ansi
-from ...core.constants import DARK_GRAY_256
+from ..render_buffer import RenderBuffer
 from ._base import TuiComponent, _estimate_content_lines
 
 _logger = logging.getLogger(__name__)
@@ -30,15 +31,51 @@ _logger = logging.getLogger(__name__)
 
 class ToolOutputBlock(TuiComponent):
     """工具执行输出块。"""
-    def __init__(self, text: str):
+    def __init__(self, text: str = "", *, props: dict | None = None) -> None:
+        super().__init__(props=props)
         self.text = text
 
-    def render_to_adapter(self, adapter: "OutputAdapter") -> int:
-        """渲染到 OutputAdapter，返回行数。"""
+    def render(self, buffer: RenderBuffer | None = None) -> str | None:
+        """渲染工具输出内容。
+
+        支持 buffer 参数：传入 buffer 时写入并返回 None；否则返回字符串。
+        """
         text = self.text
         if len(text) > _MAX_OUTPUT_LEN:
             text = text[:_MAX_OUTPUT_LEN] + "...(truncated)"
         has_carriage = '\r' in text
+
+        if has_carriage:
+            if '\033[' in text:
+                clean = text.replace('\r', '')
+            else:
+                clean = text.split('\r')[-1]
+            result = clean
+        else:
+            frame = AnimatorContext.get_default().frame
+            if is_narrow():
+                result = f"\033[2m   {text}\033[0m"
+            else:
+                edge_ansi = build_left_border_ansi(frame, 23, 24)
+                result = f"  {edge_ansi}   {text}"
+
+        if buffer is not None:
+            if result:
+                buffer.write(0, 0, result)
+            return None
+        return result
+
+    def render_to_adapter(self, adapter: "OutputAdapter") -> int:
+        """渲染到 OutputAdapter，返回行数。
+
+        \\r 实时输出流保留原处理逻辑（无换行等待后续覆盖）；
+        非 \\r 路径委托 render(buffer) 获取内容再通过 adapter 输出。
+        """
+        text = self.text
+        if len(text) > _MAX_OUTPUT_LEN:
+            text = text[:_MAX_OUTPUT_LEN] + "...(truncated)"
+        has_carriage = '\r' in text
+
         if has_carriage:
             if '\033[' in text:
                 clean = text.replace('\r', '')
@@ -55,13 +92,16 @@ class ToolOutputBlock(TuiComponent):
                 return _estimate_content_lines(clean)
             return 0
         else:
-            frame = AnimatorContext.get_default().frame
-            if is_narrow():
-                adapter.write(Text.assemble(("   ", _STYLE_DIM), (text, _STYLE_DIM)))
-            else:
-                edge_ansi = build_left_border_ansi(frame, 23, 24)
-                adapter.write(Text.from_ansi(f"  {edge_ansi}   {text}"))
-            return _estimate_content_lines(text)
-
-    def render(self) -> str:
-        return self.text
+            # 非 \\r 路径：委托 render(buffer) 获取内容，通过 Text.from_ansi 输出
+            # 以保持向后兼容（调用方期望 Text 对象而非裸字符串）
+            try:
+                term_w = shutil.get_terminal_size().columns
+            except Exception:
+                term_w = 80
+            buf = RenderBuffer(term_w, 1)
+            self.render(buf)
+            output = buf.render()
+            if output:
+                adapter.write(Text.from_ansi(output))
+                return _estimate_content_lines(output)
+            return 0

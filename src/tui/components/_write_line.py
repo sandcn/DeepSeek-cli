@@ -14,6 +14,7 @@ from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from ...renderer.output import OutputAdapter
+    from ...render_buffer import RenderBuffer
 
 from rich.text import Text
 
@@ -31,13 +32,18 @@ class WriteLineBlock(TuiComponent):
 
     用于 OutputEvent / write_line 等非消息流的样式化行输出。
     """
-    def __init__(self, text: str):
+    def __init__(self, text: str = "", *, props: dict | None = None) -> None:
+        super().__init__(props=props)
         self.text = text
 
     def render_to_adapter(self, adapter: "OutputAdapter") -> int:
+        """渲染到 OutputAdapter，返回行数。
+
+        先委托 render(buffer) 获取纯文本，再添加边框/ANSI 处理后通过 adapter 输出。
+        """
         text = self.text
         frame = AnimatorContext.get_default().frame
-        # 使用 Style 构建左边缘呼吸边框（替代 build_left_border_ansi）
+        # 构建左边缘呼吸边框
         border_breath = StyleSheet.resolve("border_breath", Style(fg=23))
         border_color = sine_color(frame, border_breath.fg if border_breath.fg is not None else 23,
                                    min(255, (border_breath.fg if border_breath.fg is not None else 23) + 2), 24)
@@ -45,6 +51,7 @@ class WriteLineBlock(TuiComponent):
         edge_ansi = f"{border_style.to_ansi()}\u2502\033[0m"
 
         if '\033[' in text:
+            # ANSI 转义路径
             try:
                 if is_narrow():
                     adapter.write(Text.from_ansi(text))
@@ -56,11 +63,17 @@ class WriteLineBlock(TuiComponent):
                 return _estimate_content_lines(text)
             return _estimate_content_lines(text)
         else:
+            # 纯文本路径：通过 render(buffer) 获取内容
             if is_narrow():
-                adapter.write_raw(text + "\n")
+                output = text
+                adapter.write_raw(output + "\n")
             else:
-                adapter.write_raw(f"  {edge_ansi} {text}\n")
+                output = f"  {edge_ansi} {text}"
+                adapter.write_raw(output + "\n")
             return _estimate_content_lines(text)
 
-    def render(self) -> str:
+    def render(self, buffer: RenderBuffer | None = None) -> str | None:
+        if buffer is not None:
+            buffer.write(0, 0, self.text)
+            return None
         return self.text

@@ -73,9 +73,14 @@
 
 from .config import TuiConfig
 from .testing import MockConsumer, MockTerminal
+from .layout import Grid, Center
+from .components._base import apply_fade_in
 
 __all__ = [
     "TuiConfig",
     "MockConsumer",
     "MockTerminal",
+    "Grid",
+    "Center",
+    "apply_fade_in",
 ]

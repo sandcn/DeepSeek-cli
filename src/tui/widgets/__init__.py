@@ -51,6 +51,8 @@ def __getattr__(name: str):
         '_TOKEN_SPEED_SNAPSHOT': ('.bottom_bar', '_TOKEN_SPEED_SNAPSHOT'),
         'run_bottom_bar_selection': ('.bottom_bar', 'run_bottom_bar_selection'),
         '_CompletionPopup': ('.bottom_bar', '_CompletionPopup'),
+        'Grid': ('src.tui.layout', 'Grid'),
+        'Center': ('src.tui.layout', 'Center'),
     }
     if name in _LAZY:
         mod_path, attr = _LAZY[name]

@@ -33,6 +33,7 @@ if TYPE_CHECKING:
     pass
 
 from ._base import TuiComponent
+from ..render_buffer import RenderBuffer
 
 
 # ═══════════════════════════════════════════════════════════
@@ -192,8 +193,10 @@ class TreeView(TuiComponent):
         indent_width: int = 3,
         line_style: str = "light",
         max_depth: int | None = None,
+        *,
+        props: dict | None = None,
     ) -> None:
-        super().__init__()
+        super().__init__(props=props)
         self._root = root
         self._show_lines = show_lines
         self._indent_width = indent_width
@@ -202,8 +205,24 @@ class TreeView(TuiComponent):
 
     # ── 公共 API ────────────────────────────────────────────────────────
 
-    def render(self) -> str:
+    def render(self, buffer: RenderBuffer | None = None) -> str | None:
         """渲染树结构为文本。
+
+        Args:
+            buffer: 可选的 RenderBuffer 实例。传入时直接写入 buffer。
+
+        Returns:
+            str | None: 无 buffer 时返回渲染字符串；有 buffer 时返回 None。
+        """
+        result = self._build_tree()
+        if buffer is not None:
+            if result:
+                buffer.write(0, 0, result)
+            return None
+        return result
+
+    def _build_tree(self) -> str:
+        """构建树结构字符串（核心渲染逻辑）。
 
         Returns:
             带缩进线和分支符号的树形文本，每行以换行符分隔。

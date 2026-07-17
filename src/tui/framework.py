@@ -4,8 +4,21 @@ TUI 框架统一入口 — `Framework` 单例 + 公开 API。
 提供：
   - Framework: 全局单例框架管理器（组件工厂 + 效果注册表 + 样式表 + 动画上下文）
   - create_component(): 创建组件并触发生命周期
+  - create_widget(): 创建 Widget 并挂载到 WidgetTree
   - frame_from_context(): 安全获取当前帧号的统一入口
   - get_animator(): 获取全局动画上下文实例
+
+Widget 树管理：
+  - mount_widget() / unmount_widget(): 挂载/卸载控件树根节点
+  - create_widget(): 创建 Widget 并自动挂载
+  - update_props(): 安全更新 Widget props 并触发重渲染
+  - render_tree_to_buffer(): 渲染整棵控件树到指定尺寸 buffer
+  - batch_update(): 批量更新多个 Widget 的 props
+  - find_widget() / find_widgets_by_type(): 控件查找
+  - widget_context(): 上下文管理器，用于测试/原型渲染
+
+事件集成：
+  - subscribe() / unsubscribe(): 订阅/取消 DisplayEventBus 事件
 
 设计原则：
   - 单例管理：框架全局唯一，通过 Framework.get_default() 获取
@@ -18,7 +31,8 @@ from __future__ import annotations
 
 import logging
 import threading
-from typing import TYPE_CHECKING, Any, Optional
+from contextlib import contextmanager
+from typing import TYPE_CHECKING, Any, Iterator, Optional
 
 if TYPE_CHECKING:
     from .components._base import TuiComponent
@@ -34,6 +48,7 @@ _logger = logging.getLogger(__name__)
 __all__: list[str] = [
     "Framework",
     "create_component",
+    "create_widget",
     "frame_from_context",
     "get_animator",
 ]
@@ -196,6 +211,62 @@ class Framework:
         return (self._widget_tree is not None
                 and self._widget_tree.root is not None)
 
+    def create_widget(self, widget_cls: type, *args, key: str | None = None, **kwargs) -> "Widget":
+        """创建 Widget 实例，挂载到 WidgetTree 并触发生命周期。
+
+        Args:
+            widget_cls: Widget 子类。
+            *args: 传递给构造器的位置参数。
+            key: 控件的身份标识键（可选）。
+            **kwargs: 传递给构造器的关键字参数。
+
+        Returns:
+            已挂载的 Widget 实例（_mounted=True）。
+        """
+        if key is not None:
+            kwargs['key'] = key
+        instance = widget_cls(*args, **kwargs)
+        self._ensure_widget_tree()
+        instance.mount()
+        return instance
+
+    def update_props(self, widget, new_props: dict) -> None:
+        """安全更新 Widget 的 props 并触发重渲染。
+
+        将 new_props 逐个通过 set_prop() 应用到 widget 的 _props 字典，
+        然后调用 widget.update() 触发 compose 和重渲染判定。
+
+        Args:
+            widget: 要更新 props 的 Widget 实例。
+            new_props: 新的 props 字典。
+        """
+        if widget is None or not isinstance(new_props, dict):
+            return
+        for key, value in new_props.items():
+            widget.set_prop(key, value)
+        widget.update()
+
+    @contextmanager
+    def widget_context(self, width: int = 80, height: int = 100) -> Iterator["RenderBuffer"]:
+        """创建临时 Widget 渲染上下文的上下文管理器。
+
+        用于测试或快速原型：创建 RenderBuffer，yield 给调用方，
+        使用后自动清理。
+
+        Args:
+            width: 缓冲区宽度（列数），默认 80。
+            height: 缓冲区高度（行数），默认 100。
+
+        Yields:
+            RenderBuffer 实例，用于接收 Widget 渲染输出。
+        """
+        from .render_buffer import RenderBuffer
+        buf = RenderBuffer(width, height)
+        try:
+            yield buf
+        finally:
+            pass
+
     def render_widget_tree(self, buffer):
         """渲染整棵 Widget 树到 RenderBuffer。
 
@@ -204,6 +275,108 @@ class Framework:
         """
         if self._widget_tree is not None:
             self._widget_tree.render(buffer)
+
+    def render_tree_to_buffer(self, width: int, height: int) -> str:
+        """渲染 Widget 树到指定尺寸的 RenderBuffer，返回渲染字符串。
+
+        创建指定尺寸的 RenderBuffer，委托 WidgetTree.render() 渲染整棵树，
+        然后返回 buffer.render() 的结果。
+
+        若 WidgetTree 未初始化或无根节点，返回空字符串。
+
+        Args:
+            width: 缓冲区宽度（列数）。
+            height: 缓冲区高度（行数）。
+
+        Returns:
+            渲染后的字符串。树为空时返回空字符串。
+        """
+        self._ensure_widget_tree()
+        if self._widget_tree is None or self._widget_tree.root is None:
+            return ""
+        from .render_buffer import RenderBuffer
+        buf = RenderBuffer(width, height)
+        try:
+            self._widget_tree.render(buf)
+        except Exception as exc:
+            _logger.warning("render_tree_to_buffer 异常: %s", exc)
+            return ""
+        return buf.render()
+
+    def batch_update(self, updates: list[tuple]) -> None:
+        """批量更新多个 Widget 的 props 并触发整树重渲染。
+
+        支持两种更新格式：
+          - (widget_key: str, new_props: dict) — 按 key 查找控件后更新
+          - (widget_instance: Widget, new_props: dict) — 直接更新控件实例
+
+        更新所有控件后，调用 WidgetTree.update_tree() 触发整树重渲染。
+
+        Args:
+            updates: 更新列表，每项为 (target, new_props) 元组。
+        """
+        self._ensure_widget_tree()
+        if self._widget_tree is None or self._widget_tree.root is None:
+            return
+
+        for item in updates:
+            if not isinstance(item, (list, tuple)) or len(item) != 2:
+                continue
+            target, new_props = item
+            widget = None
+            if isinstance(target, str):
+                # 按 key 查找
+                widget = self._widget_tree.find(target)
+            elif isinstance(target, Widget):
+                widget = target
+
+            if widget is not None and isinstance(new_props, dict):
+                widget.update(new_props)
+
+        # 触发整树重渲染
+        self._widget_tree.update_tree()
+
+    def find_widget(self, key: str) -> Optional["Widget"]:
+        """按 key 查找 Widget 树中的控件。
+
+        Args:
+            key: 要查找的控件 key。
+
+        Returns:
+            Widget 实例，未找到时返回 None。
+        """
+        self._ensure_widget_tree()
+        if self._widget_tree is None:
+            return None
+        return self._widget_tree.find(key)
+
+    def find_widgets(self, key: str) -> list["Widget"]:
+        """按 key 查找所有匹配的控件。
+
+        Args:
+            key: 要查找的控件 key。
+
+        Returns:
+            匹配的 Widget 实例列表。
+        """
+        self._ensure_widget_tree()
+        if self._widget_tree is None:
+            return []
+        return self._widget_tree.find_all(key)
+
+    def find_widgets_by_type(self, cls: type) -> list["Widget"]:
+        """按类型查找所有匹配的控件。
+
+        Args:
+            cls: 目标控件类型。
+
+        Returns:
+            匹配的 Widget 实例列表。
+        """
+        self._ensure_widget_tree()
+        if self._widget_tree is None:
+            return []
+        return self._widget_tree.find_by_type(cls)
 
     # ── 公开 API ──────────────────────────────────────
 
@@ -288,6 +461,36 @@ class Framework:
             self._config = TuiConfig.defaults()
         return self._config
 
+    def subscribe(self, event_type: type, callback) -> None:
+        """订阅事件总线事件。
+
+        委托 DisplayEventBus.get_default().subscribe() 注册事件监听。
+
+        Args:
+            event_type: 事件类型类。
+            callback: 回调函数。
+        """
+        try:
+            from .events.event_bus import DisplayEventBus
+            DisplayEventBus.get_default().subscribe(callback, event_type=event_type)
+        except ImportError as exc:
+            _logger.warning("subscribe 失败（DisplayEventBus 未就绪）: %s", exc)
+
+    def unsubscribe(self, event_type: type, callback) -> None:
+        """取消订阅事件总线事件。
+
+        委托 DisplayEventBus.get_default().unsubscribe() 取消监听。
+
+        Args:
+            event_type: 事件类型类。
+            callback: 之前注册的回调函数。
+        """
+        try:
+            from .events.event_bus import DisplayEventBus
+            DisplayEventBus.get_default().unsubscribe(callback, event_type=event_type)
+        except ImportError as exc:
+            _logger.warning("unsubscribe 失败（DisplayEventBus 未就绪）: %s", exc)
+
 
 # ═══════════════════════════════════════════════════════════
 # 便捷函数（降低使用成本）
@@ -312,6 +515,29 @@ def create_component(component_cls: type, *args: Any,
         已调用 did_mount() 的组件实例。
     """
     return Framework.get_default().create_component(component_cls, *args, **kwargs)
+
+
+def create_widget(widget_cls: type, *args, key: str | None = None, **kwargs) -> "Widget":
+    """创建 Widget 实例并挂载到框架的 WidgetTree。
+
+    便捷函数，等效于 Framework.get_default().create_widget(...)。
+
+    用法::
+
+        from src.tui.framework import create_widget
+        from src.tui.components._separator import Separator
+        widget = create_widget(Separator, style="aurora", frame=5)
+
+    Args:
+        widget_cls: Widget 子类。
+        *args: 位置参数。
+        key: 控件的身份标识键（可选）。
+        **kwargs: 关键字参数。
+
+    Returns:
+        已挂载的 Widget 实例（_mounted=True）。
+    """
+    return Framework.get_default().create_widget(widget_cls, *args, key=key, **kwargs)
 
 
 def frame_from_context(default: int = 0) -> int:

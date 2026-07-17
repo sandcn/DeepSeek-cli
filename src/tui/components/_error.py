@@ -22,6 +22,7 @@ from ..core.style import Style, StyleSheet
 from ..core.effects import sine_color
 from ..framework import get_animator
 from ..terminal.terminal import is_narrow
+from ..render_buffer import RenderBuffer
 from ._base import TuiComponent
 
 
@@ -67,38 +68,47 @@ def _fade_color(target: int, fade: float,
 
 class ErrorBlock(TuiComponent):
     """错误提示块 — 红色 ! 前缀。"""
-    def __init__(self, message: str):
+    def __init__(self, message: str = "", *, props: dict | None = None) -> None:
+        super().__init__(props=props)
         self.message = _truncate_msg(message, _MAX_ERROR_LENGTH)
 
-    def render(self) -> Text:
+    def render(self, buffer: RenderBuffer | None = None) -> str | Text | None:
         if is_narrow():
-            return Text.assemble(
+            result = Text.assemble(
                 ("\n  ! ", _STYLE_ERROR_GRADIENT),
                 (self.message, _STYLE_ERROR_GRADIENT),
             )
-        # 宽屏：! 前缀脉动 + 消息文本红色 glow 呼吸 + FadeIn 入场
-        animator = get_animator()
-        frame = animator.frame
-        fade = _fade_factor(frame)
-        # 脉动色号（BreathPalette），FadeIn 时从暗灰渐变
-        pulse_raw = BreathPalette.get_color("error_pulse", animator.breath_frame)
-        pulse_color = _fade_color(pulse_raw, fade)
-        pulse_style = Style(fg=pulse_color)
-        # 红色 glow 呼吸，FadeIn 期间色号范围从暗灰起步
-        glow_lo = _fade_color(196, fade)
-        glow_hi = _fade_color(min(255, 196 + 15), fade)
-        glow_color = sine_color(frame, glow_lo, glow_hi, 12)
-        glow_style = Style(fg=glow_color)
-        # 左边缘呼吸边框，FadeIn 期间从暗灰色渐变至目标色
-        border_breath = StyleSheet.resolve("border_breath", Style(fg=23))
-        border_target = border_breath.fg if border_breath.fg is not None else 23
-        border_lo = _fade_color(border_target, fade)
-        border_hi = _fade_color(min(255, border_target + 2), fade)
-        border_color = sine_color(frame, border_lo, border_hi, 24)
-        border_style = Style(fg=border_color)
-        ansi_str = (
-            f"\n  {border_style.to_ansi()}\u2502\033[0m"
-            f" {pulse_style.to_ansi()}! \033[0m"
-            f"{glow_style.to_ansi()}{self.message}\033[0m"
-        )
-        return Text.from_ansi(ansi_str)
+        else:
+            # 宽屏：! 前缀脉动 + 消息文本红色 glow 呼吸 + FadeIn 入场
+            animator = get_animator()
+            frame = animator.frame
+            fade = _fade_factor(frame)
+            # 脉动色号（BreathPalette），FadeIn 时从暗灰渐变
+            pulse_raw = BreathPalette.get_color("error_pulse", animator.breath_frame)
+            pulse_color = _fade_color(pulse_raw, fade)
+            pulse_style = Style(fg=pulse_color)
+            # 红色 glow 呼吸，FadeIn 期间色号范围从暗灰起步
+            glow_lo = _fade_color(196, fade)
+            glow_hi = _fade_color(min(255, 196 + 15), fade)
+            glow_color = sine_color(frame, glow_lo, glow_hi, 12)
+            glow_style = Style(fg=glow_color)
+            # 左边缘呼吸边框，FadeIn 期间从暗灰色渐变至目标色
+            border_breath = StyleSheet.resolve("border_breath", Style(fg=23))
+            border_target = border_breath.fg if border_breath.fg is not None else 23
+            border_lo = _fade_color(border_target, fade)
+            border_hi = _fade_color(min(255, border_target + 2), fade)
+            border_color = sine_color(frame, border_lo, border_hi, 24)
+            border_style = Style(fg=border_color)
+            ansi_str = (
+                f"\n  {border_style.to_ansi()}\u2502\033[0m"
+                f" {pulse_style.to_ansi()}! \033[0m"
+                f"{glow_style.to_ansi()}{self.message}\033[0m"
+            )
+            result = Text.from_ansi(ansi_str)
+
+        if buffer is not None:
+            text = result.plain if isinstance(result, Text) else str(result)
+            if text:
+                buffer.write(0, 0, text)
+            return None
+        return result
