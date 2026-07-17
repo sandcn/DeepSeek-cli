@@ -15,11 +15,11 @@ import math
 
 from rich.text import Text
 
-from ..engine.const import _STYLE_NOTIFICATION_GRADIENT, _STYLE_DIM
+from ..engine.const import _STYLE_NOTIFICATION_GRADIENT
 from ..core.style import Style, StyleSheet
 from ..terminal.terminal import is_narrow
 from ..core.effects import sine_color
-from ..framework import Framework
+from ..framework import get_animator
 from ._base import TuiComponent
 
 
@@ -54,7 +54,7 @@ class NotificationBlock(TuiComponent):
     def render(self) -> Text:
         if is_narrow():
             return Text.assemble(("\n  · ", _STYLE_NOTIFICATION_GRADIENT), (self.text, _STYLE_NOTIFICATION_GRADIENT))
-        animator = Framework.get_default().get_animator()
+        animator = get_animator()
         frame = animator.frame
         fade = _fade_factor(frame)
         # 绿色辉光呼吸，FadeIn 期间从暗灰渐亮

@@ -1,6 +1,7 @@
-"""渲染器 — _RenderState + TuiRenderer + _RENDER_DISPATCH。
+"""渲染器 — _RenderState + TuiRenderer + ComponentRegistry 分发。
 
 从 _tui.py 拆分，管理推理/内容 IncrementalRenderer 生命周期和渲染命令分发。
+由 ComponentRegistry 管理命令-组件映射关系。
 """
 
 from __future__ import annotations
@@ -38,30 +39,26 @@ from ..components import (
 
 from ..animation.animator import AnimatorContext
 from ..core.text_utils import build_glow_ansi
+from ..core.component_registry import ComponentRegistry
 from .utils import _cmd_name, _emergency_write
 
 _logger = logging.getLogger(__name__)
 
 
 # ═══════════════════════════════════════════════════════════
-# 渲染分发表 — 由 @register_render_command 装饰器自动注册
+# 渲染命令注册 — 由 @register_render_command 装饰器自动注册到 ComponentRegistry
 # ═══════════════════════════════════════════════════════════
 
 def register_render_command(command_id: int, arg_indices: tuple[int, ...] = ()) -> Callable:
-    """装饰器工厂：将 _do_* 方法自动注册到 _RENDER_DISPATCH。
+    """装饰器工厂：将 _do_* 方法自动注册到 ComponentRegistry。
 
     用法: 在 _do_* 方法上使用 @register_render_command(RenderCommand.XXX, (i,))，
-    方法定义时自动将 command_id → (method_name, arg_indices) 写入 _RENDER_DISPATCH。
+    方法定义时自动将 command_id → (method_name, arg_indices) 注册到 ComponentRegistry。
     """
     def decorator(method: Callable) -> Callable:
-        _RENDER_DISPATCH[command_id] = (method.__name__, arg_indices)
-        from ..core.component_registry import ComponentRegistry
         ComponentRegistry.get_default().register(command_id, method.__name__, arg_indices)
         return method
     return decorator
-
-
-_RENDER_DISPATCH: dict[int, tuple[str, tuple[int, ...]]] = {}
 
 
 # ═══════════════════════════════════════════════════════════
@@ -97,7 +94,7 @@ class TuiRenderer:
     def render(self, cmd: tuple) -> None:
         """分发渲染命令到对应的 _do_* 方法。
 
-        通过 _RENDER_DISPATCH 表将命令 ID 映射到方法名和参数索引，
+        通过 ComponentRegistry.resolve() 将命令 ID 映射到方法名和参数索引，
         提取参数后调用对应处理方法。
 
         Args:
@@ -106,7 +103,7 @@ class TuiRenderer:
         if not cmd:
             return
         cid = cmd[0]
-        entry = _RENDER_DISPATCH.get(cid)
+        entry = ComponentRegistry.get_default().resolve(cid)
         if entry is None:
             _logger.error("未知渲染命令: %s", _cmd_name(cid))
             return

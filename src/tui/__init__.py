@@ -58,4 +58,24 @@
   - 合并 bus/ → events/：bus/ 目录删除，events/ 成为事件总线的真实实现
   - ui/ 清理：console.py 迁移到 tui/core/rich_console.py，ui/ 目录删除（保留 __init__.py 作为 deprecation 标记）
   - 所有外部引用从 ui.xxx 更新为 tui.xxx 或 core.constants
+
+2026-07-17 框架重构：
+  - config — TuiConfig 统一配置 dataclass，集中管理所有可调参数
+  - Framework 强化：移除 @deprecated 废弃标记，添加 start()/stop()/is_running
+    生命周期管理，集成 ComponentRegistry（get_component_registry()），
+    添加配置入口（get_config()）
+  - ComponentRegistry 激活：TuiRenderer.render() 改用 resolve() 分发，
+    替代本地 _RENDER_DISPATCH 字典
+  - 崩溃自动恢复：render 线程异常退出后自动重建（最多 3 次）
+  - 组件引用修复：_answer/_error/_notification 改用模块级 get_animator()
+  - testing 增强：新增 MockConsumer 和 MockTerminal 测试辅助工具
 """
+
+from .config import TuiConfig
+from .testing import MockConsumer, MockTerminal
+
+__all__ = [
+    "TuiConfig",
+    "MockConsumer",
+    "MockTerminal",
+]

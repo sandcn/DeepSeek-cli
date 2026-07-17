@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from ..animation.transitions import FadeIn
 from ..state.render_state import _ReasoningState
-from ..framework import Framework
+from ..framework import get_animator
 from ..terminal.terminal import is_narrow
 from ._base import TuiComponent, _estimate_content_lines
 
@@ -35,7 +35,7 @@ class AnswerBlock(TuiComponent):
         if self._first_write:
             self._first_write = False
             if not is_narrow():
-                frame = Framework.get_default().get_animator().frame
+                frame = get_animator().frame
                 fade = FadeIn(easing="smooth", total_frames=6, start_color=240, end_color=253)
                 fade_prefix = fade.render(frame)
                 if fade_prefix:

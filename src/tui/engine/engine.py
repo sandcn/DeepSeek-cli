@@ -46,11 +46,18 @@ class TuiEngine:
 
     实现 RenderEngine 协议。
     组件化架构：所有内容通过 TuiRenderer 渲染，底部栏由 BottomBarProtocol 管理。
+
+    崩溃自动恢复（2026-07-17）：
+      - render 线程异常崩溃时自动重建（最多 3 次）
+      - 重建前等待 500ms 避让、排空旧队列
+      - 可通过 ``render_crashed`` / ``is_recovering`` 属性查询状态
     """
 
-    # 类级常量（从模块常量复制，允许测试通过实例属性覆盖）
-    _ACTIVE_RENDER_INTERVAL = _ACTIVE_RENDER_INTERVAL
-    _CONSECUTIVE_FULL_THRESHOLD = _CONSECUTIVE_FULL_THRESHOLD
+    # 类级常量（测试可通过实例属性覆盖）
+    _ACTIVE_RENDER_INTERVAL = 0.005
+    _CONSECUTIVE_FULL_THRESHOLD = 10
+    _MAX_RECOVER_ATTEMPTS = 3
+    _RECOVER_DELAY = 0.5  # 崩溃后重建等待（秒）
 
     def __init__(
         self,
@@ -72,6 +79,8 @@ class TuiEngine:
         self._render_crashed: threading.Event = threading.Event()
         # ── 10Hz 底部栏重绘定时器 ──
         self._last_bottom_redraw: float = 0.0
+        self._recover_attempts: int = 0
+        self._recovering: bool = False  # 崩溃恢复中标志，防止 finally 排空与新线程竞态
         self._BOTTOM_REDRAW_INTERVAL: float = 0.1  # 10Hz 底部栏重绘间隔
 
     def push_cmd(self, cmd: tuple) -> None:
@@ -105,6 +114,11 @@ class TuiEngine:
     def render_crashed(self) -> bool:
         """Render 线程是否已崩溃。"""
         return self._render_crashed.is_set()
+
+    @property
+    def is_recovering(self) -> bool:
+        """render 线程是否正在恢复中。"""
+        return 0 < self._recover_attempts <= self._MAX_RECOVER_ATTEMPTS
 
     def set_panel_refresh_callback(self, callback: Callable[[], None] | None) -> None:
         self._panel_refresh_cb = callback
@@ -259,7 +273,12 @@ class TuiEngine:
         """Render 线程主循环。
 
         在 daemon 线程中持续运行，循环执行三阶段流水线：
-        drain_queue → 自适应等待 → 重复。异常时记录 critical 日志并终止循环。
+        drain_queue → 自适应等待 → 重复。
+
+        异常恢复（2026-07-17）：
+          - 异常时尝试自动重建线程（最多 ``_MAX_RECOVER_ATTEMPTS`` 次）
+          - 可恢复路径：重建新线程后 ``return`` 退出当前线程
+          - 不可恢复路径：``break`` 退出循环，由 ``finally`` 排空队列
 
         退出时（finally）安全排空命令队列。
         """
@@ -295,13 +314,32 @@ class TuiEngine:
                             stream="stderr",
                         )
                     except Exception:
-                        # 终端可能已完全不可用（如 PTY 断开），
-                        # 不能因此跳过关键清理
                         pass
-                    self._cmd_event.set()
-                    self._render_running = False
-                    break
+                    # ★ 崩溃自动恢复：尝试重建 render 线程
+                    self._recover_attempts += 1
+                    if self._render_running and self._recover_attempts <= self._MAX_RECOVER_ATTEMPTS:
+                        _logger.info("render 线程将在 %.1f 秒后自动恢复 (第 %d/%d 次)",
+                                     self._RECOVER_DELAY, self._recover_attempts, self._MAX_RECOVER_ATTEMPTS)
+                        time.sleep(self._RECOVER_DELAY)
+                        # 排空旧队列（新线程启动前，只排此刻已入队的命令）
+                        self._drain_queue_safe()
+                        # 标记恢复中，防止 finally 排空与新线程竞态
+                        self._recovering = True
+                        # 重建线程
+                        self._render_thread = threading.Thread(target=self._render, daemon=True)
+                        self._render_thread.start()
+                        _logger.info("render 线程已自动恢复 (第 %d/%d 次)",
+                                     self._recover_attempts, self._MAX_RECOVER_ATTEMPTS)
+                        return  # 当前线程退出，新线程已启动
+                    else:
+                        self._render_running = False
+                        self._cmd_event.set()
+                        break
         finally:
+            # ★ 恢复路径：新线程已接管队列，跳过排空避免竞态
+            if self._recovering:
+                self._recovering = False
+                return
             # 统计并报告丢弃的待处理命令
             dropped = 0
             while not self._cmd_queue.empty():

@@ -16,9 +16,6 @@ TUI 框架统一入口 — `Framework` 单例 + 公开 API。
 
 from __future__ import annotations
 
-import functools
-import warnings
-
 import logging
 import threading
 from typing import TYPE_CHECKING, Any
@@ -26,6 +23,8 @@ from typing import TYPE_CHECKING, Any
 if TYPE_CHECKING:
     from .components._base import TuiComponent
     from .animation.animator import AnimatorContext
+    from .core.component_registry import ComponentRegistry
+    from .config import TuiConfig
 
 _logger = logging.getLogger(__name__)
 
@@ -36,31 +35,6 @@ __all__: list[str] = [
     "frame_from_context",
     "get_animator",
 ]
-
-
-# ═══════════════════════════════════════════════════════════
-# deprecated — 废弃标记装饰器
-# ═══════════════════════════════════════════════════════════
-
-
-def deprecated(replacement: str = "") -> callable:
-    """标记函数为已废弃，建议使用 replacement 替代。
-
-    使用方式：
-        @deprecated("new_function")
-        def old_function():
-            ...
-    """
-    def decorator(func):
-        @functools.wraps(func)
-        def wrapper(*args, **kwargs):
-            msg = f"{func.__name__}() 已废弃"
-            if replacement:
-                msg += f"，请使用 {replacement} 替代"
-            warnings.warn(msg, DeprecationWarning, stacklevel=2)
-            return func(*args, **kwargs)
-        return wrapper
-    return decorator
 
 
 # ═══════════════════════════════════════════════════════════
@@ -110,6 +84,10 @@ class Framework:
         self._registry: Any = None  # EffectRegistry 引用（延迟导入）
         self._stylesheet: Any = None  # StyleSheet 引用（延迟导入）
         self._animator: Any = None  # AnimatorContext（延迟导入）
+        self._component_registry: Any = None
+        self._config: Any = None
+        self._running: bool = False
+        self._lifecycle_lock = threading.Lock()
 
     # ── 单例访问 ──────────────────────────────────────
 
@@ -135,9 +113,30 @@ class Framework:
         with cls._instance_lock:
             cls._instance = None
 
+    # ── 生命周期 ──────────────────────────────────────
+
+    @property
+    def is_running(self) -> bool:
+        return self._running
+
+    def start(self) -> None:
+        """启动框架——预热子系统。幂等操作。"""
+        with self._lifecycle_lock:
+            if self._running:
+                return
+            _ = self.get_component_registry()
+            _ = self.get_animator()
+            self._running = True
+
+    def stop(self) -> None:
+        """停止框架。幂等操作。"""
+        with self._lifecycle_lock:
+            if not self._running:
+                return
+            self._running = False
+
     # ── 公开 API ──────────────────────────────────────
 
-    @deprecated("create_component() 模块级函数")
     def create_component(self, component_cls: type, *args: Any,
                          **kwargs: Any) -> TuiComponent:
         """创建组件实例并触发生命周期。
@@ -154,7 +153,6 @@ class Framework:
         instance.did_mount()
         return instance
 
-    @deprecated("EffectRegistry 类直接访问")
     def get_registry(self) -> Any:
         """获取全局效果注册表（EffectRegistry）。
 
@@ -166,7 +164,6 @@ class Framework:
             self._registry = EffectRegistry
         return self._registry
 
-    @deprecated("StyleSheet 类直接访问")
     def get_stylesheet(self) -> Any:
         """获取全局样式表（StyleSheet）。
 
@@ -178,7 +175,6 @@ class Framework:
             self._stylesheet = StyleSheet
         return self._stylesheet
 
-    @deprecated("get_animator() 模块级函数")
     def get_animator(self) -> "AnimatorContext":
         """获取全局动画上下文（AnimatorContext 实例）。
 
@@ -190,7 +186,6 @@ class Framework:
             self._animator = AnimatorContext
         return self._animator.get_default()
 
-    @deprecated("frame_from_context() 模块级函数")
     def get_frame(self) -> int:
         """获取当前动画帧号。
 
@@ -208,6 +203,20 @@ class Framework:
         except (AttributeError, ImportError) as exc:
             _logger.debug("get_frame() 降级返回 0: %s", exc)
             return 0
+
+    def get_component_registry(self) -> "ComponentRegistry":
+        """获取全局组件注册表。"""
+        if self._component_registry is None:
+            from .core.component_registry import ComponentRegistry
+            self._component_registry = ComponentRegistry
+        return self._component_registry.get_default()
+
+    def get_config(self) -> "TuiConfig":
+        """获取全局 TUI 配置。"""
+        if self._config is None:
+            from .config import TuiConfig
+            self._config = TuiConfig.defaults()
+        return self._config
 
 
 # ═══════════════════════════════════════════════════════════

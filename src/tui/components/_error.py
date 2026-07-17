@@ -20,7 +20,7 @@ from ..engine.utils import _truncate_msg
 from ..animation.animator import BreathPalette
 from ..core.style import Style, StyleSheet
 from ..core.effects import sine_color
-from ..framework import Framework
+from ..framework import get_animator
 from ..terminal.terminal import is_narrow
 from ._base import TuiComponent
 
@@ -77,7 +77,7 @@ class ErrorBlock(TuiComponent):
                 (self.message, _STYLE_ERROR_GRADIENT),
             )
         # 宽屏：! 前缀脉动 + 消息文本红色 glow 呼吸 + FadeIn 入场
-        animator = Framework.get_default().get_animator()
+        animator = get_animator()
         frame = animator.frame
         fade = _fade_factor(frame)
         # 脉动色号（BreathPalette），FadeIn 时从暗灰渐变
