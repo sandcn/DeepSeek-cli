@@ -1,4 +1,7 @@
-"""组件基类 — TuiComponent + _estimate_content_lines。
+"""组件基类 — TuiComponent + Widget 统一体系。
+
+TuiComponent 继承自 Widget（src.tui.widget_base 中的统一控件基类），
+保持现有组件的完全向后兼容性。
 
 从 _components.py 拆分，包含所有组件共用的基类和辅助函数。
 """
@@ -7,20 +10,24 @@ from __future__ import annotations
 
 import logging
 from abc import abstractmethod
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from ...renderer.output import OutputAdapter
+    from ..render_buffer import RenderBuffer
 
 from rich.text import Text
+
+from ..widget_base import Widget
 
 _logger = logging.getLogger(__name__)
 
 
-class TuiComponent:
+class TuiComponent(Widget):
     """React Ink-like 渲染组件基类。
 
-    所有子类必须实现 render() 方法，可选重写 render_to_adapter()。
+    继承自 ``Widget``（统一控件基类），
+    保持现有 ``render()`` 和 ``render_to_adapter()`` 接口完全兼容。
 
     ## 生命周期
 
@@ -52,9 +59,13 @@ class TuiComponent:
         render() 作为降级/调试用途。
     """
 
-    def __init__(self) -> None:
-        """初始化组件，标记为未挂载。"""
-        self._mounted: bool = False
+    def __init__(self, props: dict | None = None) -> None:
+        """初始化组件，标记为未挂载。
+
+        Args:
+            props: 外部传入的属性字典（可选）。
+        """
+        super().__init__(props=props)
 
     def did_mount(self) -> None:
         """组件挂载后调用 — 执行初始化逻辑。
@@ -62,7 +73,7 @@ class TuiComponent:
         由 ``Framework.create_component()`` 在组件创建后自动调用。
         子类可重写此方法执行初始化操作（如预计算渐变色号、注册事件等）。
 
-        默认实现为空操作。
+        默认实现设置挂载标志。
         """
         self._mounted = True
 
@@ -71,7 +82,7 @@ class TuiComponent:
 
         子类可重写此方法执行清理操作（如取消事件订阅、释放资源等）。
 
-        默认实现为空操作。
+        默认实现清除挂载标志。
         """
         self._mounted = False
 
@@ -90,14 +101,36 @@ class TuiComponent:
         return True
 
     @abstractmethod
-    def render(self) -> str | Text:
+    def render(self, buffer: RenderBuffer | None = None) -> str | Text:
         """渲染组件内容。
 
         子类必须实现此方法，返回 str 或 rich.text.Text 对象。
 
+        Args:
+            buffer: 可选的 RenderBuffer 实例（用于 Widget 树渲染）。
+                    当传入 buffer 时，应将内容写入 buffer 后返回空字符串。
+                    未传入时保持原行为返回 str/Text。
+
         Returns:
             str | Text: 渲染后的文本内容，供 adapter.write() 输出。
         """
+
+    # ── Widget 兼容 render ─────────────────────────
+
+    def _render_to_buffer(self, buffer: RenderBuffer) -> None:
+        """将渲染结果写入 RenderBuffer（WidgetTree 兼容方法）。
+
+        默认实现通过 self.render() 获取输出字符串并写入 buffer。
+        子类可重写此方法实现更高效的 Widget 树渲染。
+
+        Args:
+            buffer: 目标 RenderBuffer 实例。
+        """
+        output = self.render()
+        if isinstance(output, Text):
+            output = output.plain
+        if isinstance(output, str) and output:
+            buffer.write(0, 0, output)
 
     def render_to_adapter(self, adapter: "OutputAdapter") -> int:
         """通过 OutputAdapter 渲染组件，返回估计行数。
@@ -129,6 +162,24 @@ class TuiComponent:
             adapter.write(output)
             return _estimate_content_lines(str(output))
         return 0
+
+    # ── Widget 兼容 ──────────────────────────────────────
+
+    def compose(self) -> "Widget | list[Widget]":
+        """声明子控件组合。
+
+        TuiComponent 默认是叶子控件，无子节点。
+        返回空列表以支持 WidgetTree 递归渲染。
+        """
+        return []
+
+    def update(self, new_props: dict | None = None) -> None:
+        """更新组件状态并触发重渲染（Widget 兼容方法）。
+
+        委托给 should_update() 判定是否需要重渲染。
+        """
+        if self.should_update(new_props):
+            self._dirty = True
 
 
 # ═══════════════════════════════════════════════════════════

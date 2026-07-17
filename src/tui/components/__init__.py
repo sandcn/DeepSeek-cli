@@ -55,6 +55,7 @@ _protocols_mod = LazyLoader("src.tui.consumer.protocols")
 # ═══════════════════════════════════════════════════════════
 
 _SYMBOL_MAP: dict[str, LazyLoader] = {
+    "Widget": _base_mod,
     "_estimate_content_lines": _base_mod,
     "TuiComponent": _base_mod,
     "UserMsgBlock": _user_msg_mod,
@@ -110,6 +111,7 @@ def __dir__() -> list[str]:
 # ═══════════════════════════════════════════════════════════
 
 __all__ = [
+    "Widget",
     "TuiComponent",
     "_estimate_content_lines",
     "UserMsgBlock",

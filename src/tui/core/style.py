@@ -170,6 +170,72 @@ class Style:
 
         return cls(fg=fg, bg=bg, bold=bold, italic=italic, dim=dim, underline=underline)
 
+    @classmethod
+    def with_props(cls, fg=None, bg=None, bold=None, italic=None, dim=None, underline=None):
+        """仅设置非 None 参数创建新 Style。
+
+        Args:
+            fg: 前景色（可选）。
+            bg: 背景色（可选）。
+            bold: 是否加粗（可选）。
+            italic: 是否斜体（可选）。
+            dim: 是否暗淡（可选）。
+            underline: 是否下划线（可选）。
+
+        Returns:
+            新的 Style 实例。
+        """
+        return cls(
+            fg=fg if fg is not None else None,
+            bg=bg if bg is not None else None,
+            bold=bold if bold is not None else False,
+            italic=italic if italic is not None else False,
+            dim=dim if dim is not None else False,
+            underline=underline if underline is not None else False,
+        )
+
+    @classmethod
+    def from_dict(cls, d: dict) -> Style:
+        """从字典创建 Style。
+
+        支持的键: fg, bg, bold, italic, dim, underline。
+        忽略字典中不存在的键。
+
+        Args:
+            d: 属性字典。
+
+        Returns:
+            新的 Style 实例。
+        """
+        return cls(
+            fg=d.get('fg'),
+            bg=d.get('bg'),
+            bold=d.get('bold', False),
+            italic=d.get('italic', False),
+            dim=d.get('dim', False),
+            underline=d.get('underline', False),
+        )
+
+    def extend(self, **overrides) -> Style:
+        """扩展样式，返回新实例。
+
+        类似 merge() 但使用命名参数风格。
+
+        Args:
+            **overrides: 要覆盖的样式属性（fg/bg/bold/italic/dim/underline）。
+
+        Returns:
+            新的 Style 实例。
+        """
+        return Style(
+            fg=overrides.get('fg', self.fg),
+            bg=overrides.get('bg', self.bg),
+            bold=overrides.get('bold', self.bold),
+            italic=overrides.get('italic', self.italic),
+            dim=overrides.get('dim', self.dim),
+            underline=overrides.get('underline', self.underline),
+        )
+
     def __bool__(self) -> bool:
         """判断样式是否非空（至少有一个属性被设置）。"""
         return (

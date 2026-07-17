@@ -18,13 +18,15 @@ from __future__ import annotations
 
 import logging
 import threading
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Optional
 
 if TYPE_CHECKING:
     from .components._base import TuiComponent
     from .animation.animator import AnimatorContext
     from .core.component_registry import ComponentRegistry
     from .config import TuiConfig
+    from .widget_base import Widget, WidgetTree
+    from .render_buffer import RenderBuffer
 
 _logger = logging.getLogger(__name__)
 
@@ -134,6 +136,40 @@ class Framework:
             if not self._running:
                 return
             self._running = False
+
+    # ── WidgetTree 管理 ─────────────────────────────
+
+    def mount_widget(self, widget):
+        """挂载控件到 Widget 树（先卸载旧根再挂载新根）。"""
+        if self.has_widget_tree():
+            if hasattr(self, '_widget_root') and self._widget_root is not None:
+                old_root = self._widget_root
+                old_root.unmount()
+        widget.mount()
+        self._widget_root = widget
+
+    def unmount_widget(self, widget):
+        """从 Widget 树卸载控件。"""
+        if hasattr(self, '_widget_root') and self._widget_root is widget:
+            self._widget_root = None
+        widget.unmount()
+
+    def get_widget_root(self):
+        """获取当前 Widget 树根节点。"""
+        return getattr(self, '_widget_root', None)
+
+    def has_widget_tree(self) -> bool:
+        """是否已有挂载的 Widget 树。"""
+        return getattr(self, '_widget_root', None) is not None
+
+    def render_widget_tree(self, buffer):
+        """渲染整棵 Widget 树到 RenderBuffer。"""
+        root = self.get_widget_root()
+        if root is None:
+            return
+        from .widget_base import WidgetTree
+        tree = WidgetTree(root)
+        tree.render(buffer)
 
     # ── 公开 API ──────────────────────────────────────
 

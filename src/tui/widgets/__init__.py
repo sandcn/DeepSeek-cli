@@ -23,11 +23,20 @@ from .completion import CompletionEngine, CompletionItem
 def _lazy_import(mod_path: str):
     """导入并缓存到模块命名空间。"""
     import importlib  # noqa: PLC0415
+    # 绝对路径（含点）视为完整模块路径
+    if '.' in mod_path and not mod_path.startswith('.'):
+        return importlib.import_module(mod_path)
     return importlib.import_module(mod_path, __package__)
 
 
 def __getattr__(name: str):
     _LAZY = {
+        'Widget': ('src.tui.widget_base', 'Widget'),
+        'RenderBuffer': ('src.tui.render_buffer', 'RenderBuffer'),
+        'Vertical': ('src.tui.layout', 'Vertical'),
+        'Horizontal': ('src.tui.layout', 'Horizontal'),
+        'Padding': ('src.tui.layout', 'Padding'),
+        'Border': ('src.tui.layout', 'Border'),
         'BaseBottomBarSelector': ('.selector_base', 'BaseBottomBarSelector'),
         'StatusBar': ('.status_bar', 'StatusBar'),
         'render_normal': ('.status_bar', 'render_normal'),
@@ -73,4 +82,7 @@ __all__ = [
     "_BottomBar", "_StatusMixin",
     "_get_snapshot", "_TOKEN_SPEED_SNAPSHOT",
     "run_bottom_bar_selection", "_CompletionPopup",
+    # widget framework
+    "Widget", "RenderBuffer", "Vertical",
+    "Horizontal", "Padding", "Border",
 ]
