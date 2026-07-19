@@ -156,6 +156,7 @@ prompt 为自然语言描述任务目标。格式要求：
 - **精确 old_string**：old_string 必须从 read_file 输出中逐字符精确复制，禁止凭记忆构造
 - **修改后自审**：修改后必须重新 read_file 逐行审查，确认无误后再继续
 - **注释同步（强制）**：修改代码后，对应的注释必须同步更新。注释过时视为修改不完整
+- **测试文件规则（强制）**：创建测试文件时，统一放到当前项目 `tests/` 目录下，目录结构与源码模块对应（如 Python `src/foo/bar.py` → `tests/test_foo/test_bar.py` / Node.js `src/foo/bar.js` → `tests/foo/bar.test.js` / Go `foo/bar.go` → `foo/bar_test.go` / Rust `src/foo/bar.rs` → `tests/foo/bar_test.rs`；命名遵循语言惯例）
 - **CFG/DFG 先于修改（强制）**：修改任何代码前，CFG（控制流图）和 DFG（数据流图）必须在思考分析中完整获取。CFG 覆盖基本块与路径（含异常路径），DFG 覆盖变量/数据的产生/消失/作用/更新四维度行号标注。CFG/DFG 缺一则不可修改代码。
 
 
