@@ -354,7 +354,7 @@ class BashFunc(Func):
     async def _show_command_to_terminal(cls, command, cwd=None):
         """将命令打印到终端（绿色高亮，含 cwd 信息）。"""
         cwd_info = f" {DIM}(在 {cwd}){RESET}" if cwd else ""
-        await print_to_terminal(f"\n{GREEN}$ {command}{cwd_info}{RESET}\n")
+        await print_to_terminal(f"{GREEN}$ {command}{cwd_info}{RESET}")
 
     @classmethod
     def _check_cwd_or_return(cls, cwd):
@@ -688,13 +688,19 @@ class BashFunc(Func):
     # display() → 负责 UI 展示（实时输出到终端）
     # web_display() → WebUI 实时流式输出到前端
 
-    async def execute(self):
-        """异步执行命令并返回结果（无 UI 副作用），使用 asyncio.create_subprocess_shell 避免阻塞事件循环"""
+    async def execute(self) -> str:
+        """异步执行命令并返回结果。
+
+        有 UI 副作用（通过 _run_async(show_command=True) 将 cmd 输出到工具调用面板）。
+        危险命令时在终端输出红色警告。
+        使用 asyncio.create_subprocess_shell 避免阻塞事件循环。
+        """
         # ★ P0 安全防护：运行时检查危险命令（schema 侧 + 运行时侧双保险）
         danger = _has_dangerous_command(self.command)
         if danger:
+            await print_to_terminal(f"{RED}$ {self.command}{RESET}\n{RED}(拒绝执行危险命令: {danger}){RESET}\n")
             return f"(拒绝执行危险命令: {danger})"
-        return await self._run_async(show_command=False, show_output=False)
+        return await self._run_async(show_command=True, show_output=False)
 
     async def _run_with_line_callback(self, on_line) -> str:
         """共享的 UI 执行框架：检查 cwd、显示命令、执行 PTY/PIPE、异常处理。

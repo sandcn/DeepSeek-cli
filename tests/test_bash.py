@@ -393,6 +393,22 @@ class TestExecutePipeMode:
         assert "line1" in result
         assert "line2" in result
 
+    @patch("src.tools.bash.print_to_terminal")
+    @patch("src.tools.bash._HAS_PTY", False)
+    async def test_execute_prints_command_to_terminal(self, mock_print):
+        """execute() 调用时应在终端输出命令（$ cmd 格式）。"""
+        b = BashFunc(command="echo hello")
+        result = await b.execute()
+        # 返回值正常
+        assert result == "hello"
+        # print_to_terminal 被调用，且参数包含命令内容
+        mock_print.assert_awaited()
+        call_args = mock_print.await_args_list
+        any_match = any(
+            "echo hello" in str(args) for args in call_args
+        )
+        assert any_match, f"print_to_terminal 应包含命令 'echo hello'，实际调用: {call_args}"
+
 
 # ═══════════════════════════════════════════════════════════════════════════
 # 8. execute — PTY 模式（_HAS_PTY=True）
@@ -426,6 +442,20 @@ class TestExecutePtyMode:
         b = BashFunc(command="true")
         result = await b.execute()
         assert result == "(无输出)"
+
+    @patch("src.tools.bash.print_to_terminal")
+    @patch("src.tools.bash._HAS_PTY", True)
+    async def test_execute_prints_command_to_terminal(self, mock_print):
+        """execute() 调用时应在终端输出命令（$ cmd 格式）— PTY 模式。"""
+        b = BashFunc(command="echo hello")
+        result = await b.execute()
+        assert result == "hello"
+        mock_print.assert_awaited()
+        call_args = mock_print.await_args_list
+        any_match = any(
+            "echo hello" in str(args) for args in call_args
+        )
+        assert any_match, f"print_to_terminal 应包含命令 'echo hello'，实际调用: {call_args}"
 
 
 # ═══════════════════════════════════════════════════════════════════════════

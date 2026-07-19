@@ -215,7 +215,7 @@ class Func(abc.ABC):
 
     @abc.abstractmethod
     async def execute(self) -> str:
-        """异步执行工具逻辑，返回结果字符串（无 UI 副作用）。"""
+        """异步执行工具逻辑，返回结果字符串（默认无 UI 副作用，子类覆盖时须在 docstring 中注明）。"""
         ...
 
     async def display(self) -> str:
