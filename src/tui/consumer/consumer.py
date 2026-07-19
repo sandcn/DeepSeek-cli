@@ -77,18 +77,44 @@ class ChatUIConsumer:
         from .factory import _create_chat_ui_components
         components = _create_chat_ui_components(event_bus)
 
-        self._rs = components.rs
-        self._cursor_tracker = components.cursor_tracker
-        self._bottom_bar = components.bottom_bar
-        self._tui_renderer = components.tui_renderer
-        self._engine = components.engine
-        self._disp = components.dispatcher
-        self._cmpl = components.cmpl_handler
+        self._components = components
 
         self._bound_handlers: dict[type, Any] | None = None
         self._state_lock = threading.Lock()
         self._started = False
         self._handlers_bound = False
+
+    # ── 向后兼容属性代理（门面模式） ──────────────
+    # 以下 @property 通过 self._components 容器访问子系统，
+    # 确保外部代码（含测试）通过 self._xxx 的访问路径保持不变。
+
+    @property
+    def _rs(self):
+        return self._components.rs
+
+    @property
+    def _cursor_tracker(self):
+        return self._components.cursor_tracker
+
+    @property
+    def _bottom_bar(self):
+        return self._components.bottom_bar
+
+    @property
+    def _tui_renderer(self):
+        return self._components.tui_renderer
+
+    @property
+    def _engine(self):
+        return self._components.engine
+
+    @property
+    def _disp(self):
+        return self._components.dispatcher
+
+    @property
+    def _cmpl(self):
+        return self._components.cmpl_handler
 
     # ── 生命周期 ──────────────────────────────────
 
@@ -107,28 +133,7 @@ class ChatUIConsumer:
                 return
             if self._bound_handlers is None:
                 self._bound_handlers = {}
-                from ..events.event_types import (
-                    ReasoningChunkEvent, ContentChunkEvent, PhaseDoneEvent,
-                    ToolStartedEvent, ToolDoneEvent, ToolOutputChunkEvent,
-                    ToolSummaryEvent, ParseInfoEvent, ParseInfoDoneEvent,
-                    OutputEvent, ModelPhaseEvent, ToolParsingEvent,
-                )
-                _event_type_map = {
-                    "ReasoningChunkEvent": ReasoningChunkEvent,
-                    "ContentChunkEvent": ContentChunkEvent,
-                    "PhaseDoneEvent": PhaseDoneEvent,
-                    "ToolParsingEvent": ToolParsingEvent,
-                    "ToolStartedEvent": ToolStartedEvent,
-                    "ToolDoneEvent": ToolDoneEvent,
-                    "ToolOutputChunkEvent": ToolOutputChunkEvent,
-                    "ParseInfoEvent": ParseInfoEvent,
-                    "ParseInfoDoneEvent": ParseInfoDoneEvent,
-                    "OutputEvent": OutputEvent,
-                    "ModelPhaseEvent": ModelPhaseEvent,
-                    "ToolSummaryEvent": ToolSummaryEvent,
-                }
-                for key, (_, handler_name) in _HANDLER_MAP.items():
-                    event_type = _event_type_map[key]
+                for _, (event_type, handler_name) in _HANDLER_MAP.items():
                     handler = getattr(self._disp, handler_name)
                     self._bound_handlers[event_type] = handler
             if self._handlers_bound:
@@ -167,8 +172,8 @@ class ChatUIConsumer:
             self._engine.stop()
             _unregister_consumer()
             with render_lock:
-                self._rs.close_all()
-                self._bottom_bar.teardown()
+                self._components.rs.close_all()
+                self._components.bottom_bar.teardown()
             self._started = False
 
     def suspend(self) -> None:
@@ -272,7 +277,7 @@ class ChatUIConsumer:
     @property
     def output_adapter(self):
         """获取当前 OutputAdapter 实例。"""
-        return self._tui_renderer.output_adapter
+        return self._components.tui_renderer.output_adapter
 
     def set_panel_refresh_callback(self, callback: Callable[[], None] | None) -> None:
         self._engine.set_panel_refresh_callback(callback)

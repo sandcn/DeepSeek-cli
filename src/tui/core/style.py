@@ -236,6 +236,95 @@ class Style:
             underline=overrides.get('underline', self.underline),
         )
 
+    # ── Rich 桥接方法 ──
+
+    def to_rich(self) -> "rich.style.Style":
+        """将 tui.core.Style 转换为 rich.style.Style（桥接方法）。
+
+        桥接方法 — 用于需要 ``rich.style.Style`` 的旧代码路径。
+        延迟导入 rich 和 TrueColor，避免模块级 third-party 依赖。
+
+        Returns:
+            等效的 ``rich.style.Style`` 实例。
+        """
+        # 方法体内延迟导入，避免模块级 third-party 依赖
+        from rich.style import Style as RichStyle
+        from rich.color import Color as RichColor
+        from .color import TrueColor as _TC
+
+        kwargs: dict = {}
+
+        # fg: int(256色号) / TrueColor(r,g,b) / None
+        if self.fg is not None:
+            if isinstance(self.fg, _TC):
+                kwargs["color"] = RichColor.from_rgb(self.fg.r, self.fg.g, self.fg.b)
+            else:
+                # int 256 色号 → 使用 Rich Color.from_ansi
+                kwargs["color"] = RichColor.from_ansi(self.fg)
+
+        # bg: 同上
+        if self.bg is not None:
+            if isinstance(self.bg, _TC):
+                kwargs["bgcolor"] = RichColor.from_rgb(self.bg.r, self.bg.g, self.bg.b)
+            else:
+                kwargs["bgcolor"] = RichColor.from_ansi(self.bg)
+
+        # 布尔属性直接映射
+        if self.bold:
+            kwargs["bold"] = True
+        if self.dim:
+            kwargs["dim"] = True
+        if self.italic:
+            kwargs["italic"] = True
+        if self.underline:
+            kwargs["underline"] = True
+
+        return RichStyle(**kwargs)
+
+    @classmethod
+    def from_rich(cls, style: "rich.style.Style") -> Style:
+        """从 rich.style.Style 创建 tui.core.Style（桥接方法）。
+
+        桥接方法 — 从 ``rich.style.Style`` 创建 tui.core.Style。
+        延迟导入，避免模块级 third-party 依赖。
+
+        Args:
+            style: ``rich.style.Style`` 实例。
+
+        Returns:
+            等效的 ``tui.core.Style`` 实例。
+        """
+        # 方法体内延迟导入
+        from .color import TrueColor as _TC
+
+        # ── 前景色 ──
+        fg = None
+        if style.color is not None:
+            if style.color.triplet is not None:
+                # TrueColor
+                fg = _TC(style.color.triplet.red, style.color.triplet.green, style.color.triplet.blue)
+            elif style.color.number is not None:
+                # 256 色号
+                fg = style.color.number
+
+        # ── 背景色 ──
+        bg = None
+        if style.bgcolor is not None:
+            if style.bgcolor.triplet is not None:
+                bg = _TC(style.bgcolor.triplet.red, style.bgcolor.triplet.green, style.bgcolor.triplet.blue)
+            elif style.bgcolor.number is not None:
+                bg = style.bgcolor.number
+
+        # ── 布尔属性（rich 的布尔属性可能为 None，bool(None) → False） ──
+        return cls(
+            fg=fg,
+            bg=bg,
+            bold=bool(style.bold),
+            italic=bool(style.italic),
+            dim=bool(style.dim),
+            underline=bool(style.underline),
+        )
+
     def __bool__(self) -> bool:
         """判断样式是否非空（至少有一个属性被设置）。"""
         return (

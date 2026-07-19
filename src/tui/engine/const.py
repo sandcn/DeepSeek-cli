@@ -14,16 +14,34 @@ _MAIN_LABEL = "assistant"
 _MAIN_SOURCE = "agent"
 
 # ── Rich Style 常量（供 OutputAdapter + Rich 渲染管线使用） ──
+# @deprecated — 使用 StyleSheet.get("dim") 替代，v1.3+ 移除
+# 详情参见 src/tui/core/style.py StyleSheet 注册表
 _STYLE_DIM = Style(dim=True)
+# @deprecated — 使用 StyleSheet.get("error") 近似替代（tui.core.Style fg=196），v1.3+ 移除
+# 详情参见 src/tui/core/style.py StyleSheet 注册表
 _STYLE_FAIL = Style(color="red")
+# @deprecated — 使用 StyleSheet.get("warn") 替代（tui.core.Style fg=220），v1.3+ 移除
+# 详情参见 src/tui/core/style.py StyleSheet 注册表
 _STYLE_WARN = Style(color="orange1")
+# @deprecated — 使用 StyleSheet.get("success") 替代（tui.core.Style fg=47），v1.3+ 移除
+# 详情参见 src/tui/core/style.py StyleSheet 注册表
 _STYLE_SUCCESS = Style(color="green")
+# @deprecated — 使用 StyleSheet.get("error") 替代（tui.core.Style fg=196, bold=True），v1.3+ 移除
+# 详情参见 src/tui/core/style.py StyleSheet 注册表
 _STYLE_ERROR = Style(color="red", bold=True)
+# @deprecated — 使用 StyleSheet.get("bold") 替代，v1.3+ 移除
+# 详情参见 src/tui/core/style.py StyleSheet 注册表
 _STYLE_BOLD = Style(bold=True)
 
 # ── 渐变色增强 Style（ChatUI 第三阶段美化，步骤 7） ──
+# @deprecated — 使用 tui.core.Style(fg=196, bold=True) 替代，v1.3+ 移除
+# 详情参见 src/tui/core/style.py StyleSheet 注册表
 _STYLE_ERROR_GRADIENT = Style(color="bright_red", bold=True)        # 亮红增强
+# @deprecated — 使用 StyleSheet.get("user_icon") 替代（tui.core.Style fg=81），v1.3+ 移除
+# 详情参见 src/tui/core/style.py StyleSheet 注册表
 _STYLE_USER_GRADIENT = Style(color="cyan", bold=True)               # 青色渐变
+# @deprecated — 使用 StyleSheet.get("neon") 替代（tui.core.Style fg=51），v1.3+ 移除
+# 详情参见 src/tui/core/style.py StyleSheet 注册表
 _STYLE_NOTIFICATION_GRADIENT = Style(color="bright_green", bold=True)  # 亮绿增强
 
 # ── 桥接：注册 tui.core.Style 等效样式到 StyleSheet（供新组件使用） ──

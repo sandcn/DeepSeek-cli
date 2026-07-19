@@ -7,10 +7,18 @@
 设计模式：
   - 模板方法 (Template Method):
     mount()/unmount() 定义骨架流程，did_mount()/will_unmount() 为钩子
+    render() 成功后调用 did_update() 渲染后回调钩子
   - 组合 (Composite):
     compose() 声明子控件列表，render() 递归渲染整棵树
   - 状态 (State):
     props 为外部传入的不可变属性，state 为内部可变状态
+  - 错误隔离 (Error Boundary):
+    error_boundary() 静态方法捕获子控件渲染异常，输出占位符代替崩溃内容
+    _render_node() 中子控件递归用独立 try/except 包裹
+
+渲染优化：
+  - 渲染短路：_render_node() 入口处校验 should_update() + _dirty，
+    props 未变时跳过子树全量渲染（由子类重写 should_update() 控制）
 
 使用示例:
     class Greeting(Widget):
@@ -244,6 +252,32 @@ class Widget:
         """标记为已渲染（清除 dirty 标志）。"""
         self._dirty = False
 
+    @staticmethod
+    def error_boundary(cls: type, exc: Exception, buffer: RenderBuffer) -> None:
+        """组件级 Error Boundary — 渲染崩溃时写入错误占位符。
+
+        不吞异常，记录错误日志并输出友好的占位符代替崩溃内容。
+
+        Args:
+            cls: 崩溃组件的类型。
+            exc: 捕获到的异常对象。
+            buffer: 当前渲染缓冲区。
+        """
+        _logger.error("组件 %s 渲染崩溃: %s", cls.__name__, exc)
+        buffer.write(0, 0, f"\033[31m[组件 {cls.__name__} 渲染异常]\033[0m")
+
+    def did_update(self, new_props: dict | None = None) -> None:
+        """渲染后的回调钩子 —— render() 成功后调用。
+
+        子类可重写此方法执行渲染后的操作（如更新缓存、触发事件等）。
+        默认实现为空操作。
+
+        Args:
+            new_props: 可选的新的 props 字典。当通过批量更新触发渲染时，
+                      此处传入可能导致更新的新 props 值。
+        """
+        pass
+
     # ── 组合与渲染 ────────────────────────────────────────
 
     def compose(self) -> Widget | list[Widget]:
@@ -409,28 +443,38 @@ class WidgetTree:
     def _render_node(self, widget: Widget, buffer: RenderBuffer) -> None:
         """递归渲染单个控件及其子控件。
 
-        1. 调用 widget.compose() 获取/更新子控件列表
-        2. 调用 widget.render(buffer) 渲染自身
-        3. 递归渲染每个子控件
+        1. 渲染短路检测 — props 未变且未标记 dirty 时跳过子树
+        2. 调用 widget.compose() 获取/更新子控件列表
+        3. 调用 widget.render(buffer) 渲染自身
+        4. render() 成功后调用 did_update() 回调
+        5. 递归渲染每个子控件（独立 try/except 隔离错误）
 
         Args:
             widget: 要渲染的控件。
             buffer: 目标 RenderBuffer 实例。
         """
+        # 渲染短路：props 未变且未标记 dirty 时跳过子树渲染
+        if not widget.should_update() and not widget.dirty:
+            _logger.debug(
+                "WidgetTree 跳过 %s 渲染 (props 未变)", type(widget).__name__
+            )
+            return
+
         # 更新子控件树
         composed = widget.compose()
         if isinstance(composed, Widget):
             composed = [composed]
         widget._children = list(composed)
 
-        # 标记已渲染
-        widget.mark_clean()
-
         # 渲染自身
         # 优先使用 _render_to_buffer（TuiComponent 兼容方法）
         if hasattr(widget, '_render_to_buffer'):
             try:
                 widget._render_to_buffer(buffer)
+                # 标记已渲染 — 放 try 内确保 render 成功后清除 dirty
+                widget.mark_clean()
+                # 渲染成功回调
+                widget.did_update()
             except Exception as exc:
                 _logger.warning(
                     "%s._render_to_buffer() 异常: %s", type(widget).__name__, exc
@@ -438,6 +482,10 @@ class WidgetTree:
         else:
             try:
                 widget.render(buffer)
+                # 标记已渲染 — 放 try 内确保 render 成功后清除 dirty
+                widget.mark_clean()
+                # 渲染成功回调
+                widget.did_update()
             except Exception as exc:
                 _logger.warning(
                     "%s.render() 异常: %s", type(widget).__name__, exc
@@ -452,7 +500,10 @@ class WidgetTree:
             if child is widget:
                 _logger.warning("跳过自我引用的子控件: %s", type(widget).__name__)
                 continue
-            self._render_node(child, buffer)
+            try:
+                self._render_node(child, buffer)
+            except Exception as exc:
+                Widget.error_boundary(type(child), exc, buffer)
 
     def update_tree(self) -> None:
         """更新整棵控件树（重新 compose 所有节点）。

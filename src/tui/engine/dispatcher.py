@@ -39,20 +39,23 @@ from ..events import event_types as _EVENT_TYPES
 # 事件处理映射表
 # ═══════════════════════════════════════════════════════════
 
-_HANDLER_MAP: dict[str, tuple[str, str]] = {
-    "ReasoningChunkEvent":  ("ReasoningChunkEvent",  "_on_reasoning_chunk"),
-    "ContentChunkEvent":    ("ContentChunkEvent",    "_on_content_chunk"),
-    "PhaseDoneEvent":       ("PhaseDoneEvent",       "_on_phase_done"),
-    "ToolParsingEvent":     ("ToolParsingEvent",     "_on_tool_parsing"),
-    "ToolStartedEvent":     ("ToolStartedEvent",     "_on_tool_started"),
-    "ToolDoneEvent":        ("ToolDoneEvent",        "_on_tool_done"),
-    "ToolOutputChunkEvent": ("ToolOutputChunkEvent", "_on_tool_output"),
-    "ParseInfoEvent":       ("ParseInfoEvent",       "_on_parse_info"),
-    "ParseInfoDoneEvent":   ("ParseInfoDoneEvent",   "_on_parse_info_done"),
-    "OutputEvent":          ("OutputEvent",          "_on_output"),
-    "ModelPhaseEvent":      ("ModelPhaseEvent",      "_on_model_phase"),
-    "ToolSummaryEvent":     ("ToolSummaryEvent",     "_on_tool_summary"),
+_HANDLER_MAP: dict[str, tuple[type, str]] = {
+    "ReasoningChunkEvent":  (_EVENT_TYPES.ReasoningChunkEvent,  "_on_reasoning_chunk"),
+    "ContentChunkEvent":    (_EVENT_TYPES.ContentChunkEvent,    "_on_content_chunk"),
+    "PhaseDoneEvent":       (_EVENT_TYPES.PhaseDoneEvent,       "_on_phase_done"),
+    "ToolParsingEvent":     (_EVENT_TYPES.ToolParsingEvent,     "_on_tool_parsing"),
+    "ToolStartedEvent":     (_EVENT_TYPES.ToolStartedEvent,     "_on_tool_started"),
+    "ToolDoneEvent":        (_EVENT_TYPES.ToolDoneEvent,        "_on_tool_done"),
+    "ToolOutputChunkEvent": (_EVENT_TYPES.ToolOutputChunkEvent, "_on_tool_output"),
+    "ParseInfoEvent":       (_EVENT_TYPES.ParseInfoEvent,       "_on_parse_info"),
+    "ParseInfoDoneEvent":   (_EVENT_TYPES.ParseInfoDoneEvent,   "_on_parse_info_done"),
+    "OutputEvent":          (_EVENT_TYPES.OutputEvent,          "_on_output"),
+    "ModelPhaseEvent":      (_EVENT_TYPES.ModelPhaseEvent,      "_on_model_phase"),
+    "ToolSummaryEvent":     (_EVENT_TYPES.ToolSummaryEvent,     "_on_tool_summary"),
 }
+
+# 导出的事件类型映射（consumer 订阅使用）
+_HANDLER_TYPE_MAP: dict[str, type] = {k: v[0] for k, v in _HANDLER_MAP.items()}
 
 
 # ═══════════════════════════════════════════════════════════

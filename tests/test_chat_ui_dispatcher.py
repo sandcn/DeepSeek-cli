@@ -23,6 +23,7 @@ from src.tui.engine.const import (
 from src.tui.engine.utils import _truncate_msg
 from src.tui.engine.dispatcher import EventDispatcher, _HANDLER_MAP
 from src.tui.events.event_types import (
+    DisplayEvent,
     ReasoningChunkEvent, ContentChunkEvent, PhaseDoneEvent,
     ToolParsingEvent,
     ToolStartedEvent, ToolDoneEvent, ToolOutputChunkEvent,
@@ -451,6 +452,23 @@ class TestEventDispatcherEdgeCases:
         assert "ParseInfoDoneEvent" in registered_handlers
         assert "ModelPhaseEvent" in registered_handlers
         assert "OutputEvent" in registered_handlers
+
+    def test_handler_map_value_is_type(self, dispatcher, push_cmd):
+        """_HANDLER_MAP 值的第一元素是 type[DisplayEvent] 而非 str。"""
+        from src.tui.engine.dispatcher import _HANDLER_MAP
+        for key, (event_type, handler_name) in _HANDLER_MAP.items():
+            assert isinstance(event_type, type), (
+                f"{key} 的事件类型应为 type，实际为 {type(event_type).__name__}"
+            )
+            assert issubclass(event_type, DisplayEvent), (
+                f"{key} 的事件类型 {event_type.__name__} 应为 DisplayEvent 子类"
+            )
+            assert isinstance(handler_name, str), (
+                f"{key} 的 handler 名应为 str，实际为 {type(handler_name).__name__}"
+            )
+            assert handler_name.startswith("_on_"), (
+                f"{key} 的 handler 名 '{handler_name}' 应以 '_on_' 开头"
+           )
 
 
 # ═══════════════════════════════════════════════════════════
