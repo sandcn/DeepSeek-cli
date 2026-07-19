@@ -369,3 +369,77 @@ class TestMkdirFuncIntegration:
 
         assert result.startswith("创建成功")
         assert d.is_dir()
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# 7. plan agent 路径白名单校验
+# ═══════════════════════════════════════════════════════════════════════════
+
+class TestMkdirFuncPlanAgentPathWhitelist:
+    """plan agent 使用 mkdir 时限制在 .chat/plan/ 目录下"""
+
+    async def test_plan_agent_mkdir_chat_plan_succeeds(self, tmp_path, monkeypatch):
+        """plan agent 在 .chat/plan/ 下创建目录 → 允许"""
+        monkeypatch.chdir(tmp_path)
+        plan_dir = tmp_path / ".chat" / "plan"
+
+        mk = MkdirFunc(path=str(plan_dir), parents=True)
+        mk.agent_type = "plan"
+        result = await mk.execute()
+
+        assert result.startswith("创建成功")
+        assert plan_dir.is_dir()
+
+    async def test_plan_agent_mkdir_subdir_succeeds(self, tmp_path, monkeypatch):
+        """plan agent 在 .chat/plan/subdir/ 下创建目录 → 允许"""
+        monkeypatch.chdir(tmp_path)
+        plan_dir = tmp_path / ".chat" / "plan"
+        plan_dir.mkdir(parents=True)
+        subdir = plan_dir / "archive"
+
+        mk = MkdirFunc(path=str(subdir))
+        mk.agent_type = "plan"
+        result = await mk.execute()
+
+        assert result.startswith("创建成功")
+        assert subdir.is_dir()
+
+    async def test_plan_agent_mkdir_outside_fails(self, tmp_path, monkeypatch):
+        """plan agent 在 .chat/plan/ 外创建目录 → 拒绝"""
+        monkeypatch.chdir(tmp_path)
+        plan_dir = tmp_path / ".chat" / "plan"
+        plan_dir.mkdir(parents=True)
+        outside = tmp_path / "outside_dir"
+
+        mk = MkdirFunc(path=str(outside))
+        mk.agent_type = "plan"
+        result = await mk.execute()
+
+        assert "创建失败" in result
+        assert "plan agent" in result
+        assert not outside.exists()
+
+    async def test_plan_agent_mkdir_traversal_blocked(self, tmp_path, monkeypatch):
+        """plan agent mkdir 路径穿越 → 拒绝"""
+        monkeypatch.chdir(tmp_path)
+        plan_dir = tmp_path / ".chat" / "plan"
+        plan_dir.mkdir(parents=True)
+
+        traversal_path = str(plan_dir / ".." / ".." / "outside")
+        mk = MkdirFunc(path=traversal_path)
+        mk.agent_type = "plan"
+        result = await mk.execute()
+
+        assert "创建失败" in result
+
+    async def test_non_plan_agent_no_restriction(self, tmp_path, monkeypatch):
+        """非 plan agent 使用 mkdir 无路径限制"""
+        monkeypatch.chdir(tmp_path)
+
+        outside = tmp_path / "outside_dir"
+        mk = MkdirFunc(path=str(outside))
+        mk.agent_type = "execute"
+        result = await mk.execute()
+
+        assert result.startswith("创建成功")
+        assert outside.is_dir()

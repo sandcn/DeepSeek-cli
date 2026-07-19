@@ -54,7 +54,6 @@ _TOOL_EXCLUSION_MAP = {
         "rm",
         "mv",
         "cp",
-        "mkdir",
         "dispatch_agent",
         "user_select",
     },

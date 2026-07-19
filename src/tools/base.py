@@ -58,8 +58,8 @@ class Func(abc.ABC):
         if tool_name in excluded:
             return (False, f"工具 '{tool_name}' 不可用于 '{agent_type}' 类型 agent，"
                     f"该 agent 类型的工具白名单已排除此工具")
-        # 路径白名单校验：plan agent 使用 write_file / update_file 时限制写入目录
-        if path is not None and agent_type == 'plan' and tool_name in ('write_file', 'update_file'):
+        # 路径白名单校验：plan agent 使用 write_file / update_file / mkdir 时限制写入目录
+        if path is not None and agent_type == 'plan' and tool_name in ('write_file', 'update_file', 'mkdir'):
             allowed_dir = os.path.realpath(os.path.abspath(os.path.join(os.getcwd(), '.chat', 'plan')))
             agent_label = "plan agent"
             try:

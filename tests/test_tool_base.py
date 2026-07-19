@@ -635,3 +635,31 @@ class TestCanUse:
         allowed, err = Func.can_use("read_file", "map", path="../outside.md")
         assert allowed is True
         assert err is None
+
+    # ——— mkdir 路径白名单校验（plan agent） ———
+
+    def test_plan_mkdir_in_allowed_dir(self):
+        """plan agent mkdir .chat/plan/ 下目录 → 允许。"""
+        allowed, err = Func.can_use("mkdir", "plan", path=".chat/plan/subdir")
+        assert allowed is True
+        assert err is None
+
+    def test_plan_mkdir_outside_allowed_dir(self):
+        """plan agent mkdir 外部路径 → 拒绝。"""
+        allowed, err = Func.can_use("mkdir", "plan", path="src/temp")
+        assert allowed is False
+        assert err is not None
+        assert "只能在" in err
+
+    def test_plan_mkdir_traversal_blocked(self):
+        """plan agent mkdir 路径穿越 → 拒绝。"""
+        allowed, err = Func.can_use("mkdir", "plan", path=".chat/plan/../../outside")
+        assert allowed is False
+        assert err is not None
+        assert "只能在" in err
+
+    def test_execute_mkdir_no_restriction(self):
+        """execute agent mkdir 无路径白名单限制。"""
+        allowed, err = Func.can_use("mkdir", "execute", path="../outside_dir")
+        assert allowed is True
+        assert err is None
