@@ -700,7 +700,7 @@ class BashFunc(Func):
         if danger:
             await print_to_terminal(f"{RED}$ {self.command}{RESET}\n{RED}(拒绝执行危险命令: {danger}){RESET}\n")
             return f"(拒绝执行危险命令: {danger})"
-        return await self._run_async(show_command=True, show_output=False)
+        return await self._run_async(show_command=False, show_output=False)
 
     async def _run_with_line_callback(self, on_line) -> str:
         """共享的 UI 执行框架：检查 cwd、显示命令、执行 PTY/PIPE、异常处理。
