@@ -85,6 +85,10 @@ class TuiRenderer:
         self._adapter = output_adapter
         self._tracker = cursor_tracker
         self._in_tool_group = False
+        # AnswerBlock 实例缓存：同一轮回答的所有 CONTENT 命令复用同一实例，
+        # 确保 _first_write 仅首次为 True（FadeIn 不重复），
+        # _cumulative_content 持续累积（render() 可返回完整内容）。
+        self._content_block: AnswerBlock | None = None
 
     @property
     def output_adapter(self) -> "OutputAdapter":
@@ -127,9 +131,12 @@ class TuiRenderer:
     def _do_content(self, text: str) -> None:
         # 从 AnimatorContext 获取当前帧号，使后续组件能够使用呼吸效果
         _frame = AnimatorContext.get_default().frame
-        block = AnswerBlock(self._rs)
-        block.anim_frame = _frame  # 供组件在呼吸/脉动动效中使用
-        self._record_lines(block.write(text))
+        # ★ 复用 AnswerBlock 实例（而非每次创建新实例），确保：
+        #   - _first_write 仅首次为 True（FadeIn 正确作用于首个 chunk）
+        #   - _cumulative_content 持续累积（render() 可返回完整内容）
+        if self._content_block is None:
+            self._content_block = AnswerBlock(self._rs)
+        self._record_lines(self._content_block.write(text))
 
     @register_render_command(RenderCommand.PHASE_DONE, (1,))
     def _do_phase_done(self, phase: str) -> None:
@@ -137,6 +144,8 @@ class TuiRenderer:
             self._rs.close_reasoning()
         elif phase == "content":
             self._rs.close_content()
+            # ★ 重置 AnswerBlock 缓存，为下一轮回答的首个 CONTENT 创建新实例
+            self._content_block = None
 
     # ── 工具渲染 ──────────────────────────────────
 
