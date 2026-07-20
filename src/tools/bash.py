@@ -51,43 +51,10 @@ def _has_dangerous_command(command: str) -> str | None:
     return None
 
 
-# ── 并发控制 ─────────────────────────────────────
-# 全局信号量，限制同时执行的子进程数量，防止在资源受限环境（如 Android）
-# 中因并发创建过多子进程导致 OOM（Out-Of-Memory Killer）杀死主进程。
-# 设为 2 兼顾并发吞吐与内存安全（PTY 模式每个子进程额外消耗一对 FD）。
-#
-# ★ Python 3.9 兼容：asyncio.Semaphore 通过 _LoopBoundMixin 绑定到创建时
-#   的事件循环。如果模块加载时的事件循环与运行时不一致（如嵌套 asyncio.run
-#   或 PTY connect_read_pipe 场景），会抛出 "Future attached to a different
-#   loop" 的 RuntimeError。_get_bash_semaphore() 延迟创建并在检测到循环
-#   变化时重新创建信号量，从根本上消除此问题。
-_BASH_SEMAPHORE: 'asyncio.Semaphore | None' = None
-_BASH_SEMAPHORE_LOOP_ID: int = 0
-
-
-def _get_bash_semaphore() -> 'asyncio.Semaphore':
-    """获取（或按需重建）bash 并发控制信号量。
-
-    Python 3.9 的 _LoopBoundMixin 将 asyncio.Semaphore 绑定到创建时的
-    事件循环。本函数检测当前运行循环是否与缓存信号量的循环一致，不一致时
-    自动重建，确保信号量始终绑定到正确的循环上。
-    """
-    global _BASH_SEMAPHORE, _BASH_SEMAPHORE_LOOP_ID
-    loop_id = id(asyncio.get_running_loop())
-    if _BASH_SEMAPHORE is None or _BASH_SEMAPHORE_LOOP_ID != loop_id:
-        _BASH_SEMAPHORE = asyncio.Semaphore(2)
-        _BASH_SEMAPHORE_LOOP_ID = loop_id
-    return _BASH_SEMAPHORE
-
 # ── 中断检查间隔 ─────────────────────────────────
 # _run_pty / _run_pipe 读取循环中每隔 N 秒检查一次 ESC 中断信号
 # （is_interrupted）。200ms 平衡响应速度与 CPU 开销。
 _INTERRUPT_CHECK_INTERVAL = 0.2
-
-# ── 命令执行超时 ─────────────────────────────────
-# 所有 bash 命令最长执行时间（秒），超时后强制 kill 进程树
-# 并返回超时错误信息，防止命令无限挂起阻塞后续工具调用。
-_BASH_TIMEOUT: int = 5 * 60
 
 # ── PTY slave 关闭 errno ───────────────────────
 import errno as _errno
@@ -228,6 +195,7 @@ def _kill_process_tree(pid: int) -> None:
 )
 class BashFunc(Func):
     name = "bash"
+    _DEFAULT_TIMEOUT: int = 300
 
     @classmethod
     def to_tool_schema(cls):
@@ -238,7 +206,7 @@ class BashFunc(Func):
                 "description": (
                     "执行shell命令。用途：编译构建、git操作、包管理、进程管理、系统信息查询。"
                     "禁止替代专用工具——搜索代码用search，查找文件用find，文件读写用read_file/write_file/update_file。"
-                    "命令有{_BASH_TIMEOUT}秒超时限制，超时后强制终止并返回超时错误。"
+                    f"命令有{cls._DEFAULT_TIMEOUT}秒超时限制，超时后强制终止并返回超时错误。"
                     "返回stdout+stderr合并输出。"
                     "\n\n"
                     "参数说明："
@@ -345,10 +313,11 @@ class BashFunc(Func):
         """检查 PTY 是否可用（用于子进程实时行缓冲输出）。"""
         return _HAS_PTY
 
-    def __init__(self, command, cwd=None):
+    def __init__(self, command, cwd=None, timeout=None):
         super().__init__()
         self.command = command
         self.cwd = cwd
+        self.timeout = timeout if timeout is not None else self._DEFAULT_TIMEOUT
 
     @classmethod
     async def _show_command_to_terminal(cls, command, cwd=None):
@@ -470,64 +439,63 @@ class BashFunc(Func):
             cwd_info = f" {DIM}(在 {self.cwd}){RESET}" if self.cwd else ""
             await print_to_terminal(f"\n{GREEN}$ {self.command}{cwd_info}{RESET}\n")
 
-        async with _get_bash_semaphore():
-            process = await asyncio.create_subprocess_shell(
-                self.command,
-                cwd=self.cwd,
-                stdin=asyncio.subprocess.DEVNULL,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-                shell=True,
-                close_fds=True,
-                preexec_fn=lambda: os.setpgid(0, 0),
-                env=self._get_subprocess_env(),
+        process = await asyncio.create_subprocess_shell(
+            self.command,
+            cwd=self.cwd,
+            stdin=asyncio.subprocess.DEVNULL,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            shell=True,
+            close_fds=True,
+            preexec_fn=lambda: os.setpgid(0, 0),
+            env=self._get_subprocess_env(),
+        )
+
+        stdout_lines = []
+        stderr_lines = []
+
+        # 使用闭包确保 kill 只执行一次（双流并发时避免冗余 /proc 扫描）
+        _kill_once = False
+
+        def _kill_tree_once():
+            nonlocal _kill_once
+            if not _kill_once:
+                _kill_once = True
+                _kill_process_tree(process.pid)
+
+        async def _read_pipe_stream(stream, lines_list, is_stderr):
+            return await BashFunc._read_loop(
+                stream, process, lines_list, publish_line_fn,
+                show_output=show_output, is_stderr=is_stderr,
+                kill_fn=_kill_tree_once,
             )
 
-            stdout_lines = []
-            stderr_lines = []
+        try:
+            results = await asyncio.gather(
+                _read_pipe_stream(process.stdout, stdout_lines, False),
+                _read_pipe_stream(process.stderr, stderr_lines, True),
+                return_exceptions=True,
+            )
+            _interrupted = any(r for r in results if not isinstance(r, Exception))
+            for r in results:
+                if isinstance(r, Exception):
+                    logger.warning("_read_pipe_stream 异常: %s", r)
+        except asyncio.CancelledError:
+            _kill_tree_once()
+            raise
+        finally:
+            await process.wait()
 
-            # 使用闭包确保 kill 只执行一次（双流并发时避免冗余 /proc 扫描）
-            _kill_once = False
-
-            def _kill_tree_once():
-                nonlocal _kill_once
-                if not _kill_once:
-                    _kill_once = True
-                    _kill_process_tree(process.pid)
-
-            async def _read_pipe_stream(stream, lines_list, is_stderr):
-                return await BashFunc._read_loop(
-                    stream, process, lines_list, publish_line_fn,
-                    show_output=show_output, is_stderr=is_stderr,
-                    kill_fn=_kill_tree_once,
-                )
-
-            try:
-                results = await asyncio.gather(
-                    _read_pipe_stream(process.stdout, stdout_lines, False),
-                    _read_pipe_stream(process.stderr, stderr_lines, True),
-                    return_exceptions=True,
-                )
-                _interrupted = any(r for r in results if not isinstance(r, Exception))
-                for r in results:
-                    if isinstance(r, Exception):
-                        logger.warning("_read_pipe_stream 异常: %s", r)
-            except asyncio.CancelledError:
-                _kill_tree_once()
-                raise
-            finally:
-                await process.wait()
-
-            if _interrupted:
-                return "(命令已被中断)"
-            output = ''.join(stdout_lines)
-            if stderr_lines:
-                stderr_output = ''.join(stderr_lines)
-                if output:
-                    output = output.rstrip('\n') + '\n' + stderr_output
-                else:
-                    output = stderr_output
-            return output.strip() or "(无输出)"
+        if _interrupted:
+            return "(命令已被中断)"
+        output = ''.join(stdout_lines)
+        if stderr_lines:
+            stderr_output = ''.join(stderr_lines)
+            if output:
+                output = output.rstrip('\n') + '\n' + stderr_output
+            else:
+                output = stderr_output
+        return output.strip() or "(无输出)"
 
     async def _run_pty(self, show_command=False, show_output=False,
                        publish_line_fn=None, pty_ready_fn=None):
@@ -549,94 +517,93 @@ class BashFunc(Func):
         Returns:
             命令完整输出字符串
         """
-        async with _get_bash_semaphore():
-            import fcntl
-            import pty
-            import struct
-            import termios
+        import fcntl
+        import pty
+        import struct
+        import termios
 
-            master_fd, slave_fd = pty.openpty()
+        master_fd, slave_fd = pty.openpty()
 
-            # 设置 PTY 终端大小（避免某些程序因 COLUMNS=0 而异常）
+        # 设置 PTY 终端大小（避免某些程序因 COLUMNS=0 而异常）
+        try:
+            fcntl.ioctl(slave_fd, termios.TIOCSWINSZ,
+                        struct.pack('HHHH', 24, 120, 0, 0))
+        except Exception:
+            logger.debug("PTY TIOCSWINSZ 设置失败")
+
+        # ★ pty_ready_fn 回调：通知外层 PTY master fd，
+        #   用于终端 resize 时同步更新 PTY winsize。
+        if pty_ready_fn is not None:
             try:
-                fcntl.ioctl(slave_fd, termios.TIOCSWINSZ,
-                            struct.pack('HHHH', 24, 120, 0, 0))
+                pty_ready_fn(master_fd)
             except Exception:
-                logger.debug("PTY TIOCSWINSZ 设置失败")
+                logger.debug("pty_ready_fn 回调异常")
 
-            # ★ pty_ready_fn 回调：通知外层 PTY master fd，
-            #   用于终端 resize 时同步更新 PTY winsize。
-            if pty_ready_fn is not None:
-                try:
-                    pty_ready_fn(master_fd)
-                except Exception:
-                    logger.debug("pty_ready_fn 回调异常")
+        env = self._get_subprocess_env()
+        env['TERM'] = 'xterm-256color'  # 告诉子进程这是终端
 
-            env = self._get_subprocess_env()
-            env['TERM'] = 'xterm-256color'  # 告诉子进程这是终端
+        _shell = 'bash' if sys.platform.startswith('linux') else 'sh'
 
-            _shell = 'bash' if sys.platform.startswith('linux') else 'sh'
-
-            try:
-                process = await asyncio.create_subprocess_exec(
-                    _shell, '-c', self.command,
-                    cwd=self.cwd,
-                    stdin=asyncio.subprocess.DEVNULL,
-                    stdout=slave_fd,
-                    stderr=slave_fd,
-                    env=env,
-                    pass_fds=(slave_fd,),
-                    preexec_fn=lambda: os.setpgid(0, 0),
-                )
-            except Exception:
-                os.close(master_fd)
-                os.close(slave_fd)
-                raise
-
-            # 关闭父进程中的 slave 端，确保子进程退出后
-            # master 端能收到 EOF
+        try:
+            process = await asyncio.create_subprocess_exec(
+                _shell, '-c', self.command,
+                cwd=self.cwd,
+                stdin=asyncio.subprocess.DEVNULL,
+                stdout=slave_fd,
+                stderr=slave_fd,
+                env=env,
+                pass_fds=(slave_fd,),
+                preexec_fn=lambda: os.setpgid(0, 0),
+            )
+        except Exception:
+            os.close(master_fd)
             os.close(slave_fd)
+            raise
 
-            # 将 master FD 包装为 asyncio StreamReader
-            loop = asyncio.get_event_loop()
-            reader = asyncio.StreamReader()
-            protocol = asyncio.StreamReaderProtocol(reader)
+        # 关闭父进程中的 slave 端，确保子进程退出后
+        # master 端能收到 EOF
+        os.close(slave_fd)
 
-            try:
-                transport, _ = await loop.connect_read_pipe(
-                    lambda: protocol,
-                    os.fdopen(master_fd, 'rb', buffering=0),
-                )
-            except Exception:
-                os.close(master_fd)
+        # 将 master FD 包装为 asyncio StreamReader
+        loop = asyncio.get_event_loop()
+        reader = asyncio.StreamReader()
+        protocol = asyncio.StreamReaderProtocol(reader)
+
+        try:
+            transport, _ = await loop.connect_read_pipe(
+                lambda: protocol,
+                os.fdopen(master_fd, 'rb', buffering=0),
+            )
+        except Exception:
+            os.close(master_fd)
+            raise
+
+        lines = []
+        try:
+            _interrupted = await BashFunc._read_loop(
+                reader, process, lines, publish_line_fn,
+                show_output=show_output, is_stderr=False,
+                kill_fn=lambda: _kill_process_tree(process.pid),
+            )
+        except OSError as e:
+            if e.errno == _errno.EIO:
+                pass  # treat as EOF, fall through to finally
+            else:
                 raise
-
-            lines = []
+        except asyncio.CancelledError:
+            _kill_process_tree(process.pid)
+            raise
+        finally:
             try:
-                _interrupted = await BashFunc._read_loop(
-                    reader, process, lines, publish_line_fn,
-                    show_output=show_output, is_stderr=False,
-                    kill_fn=lambda: _kill_process_tree(process.pid),
-                )
-            except OSError as e:
-                if e.errno == _errno.EIO:
-                    pass  # treat as EOF, fall through to finally
-                else:
-                    raise
-            except asyncio.CancelledError:
-                _kill_process_tree(process.pid)
-                raise
-            finally:
-                try:
-                    transport.close()
-                except OSError:
-                    pass
-                await process.wait()
+                transport.close()
+            except OSError:
+                pass
+            await process.wait()
 
-            if _interrupted:
-                return "(命令已被中断)"
-            output = ''.join(lines)
-            return output.strip() or "(无输出)"
+        if _interrupted:
+            return "(命令已被中断)"
+        output = ''.join(lines)
+        return output.strip() or "(无输出)"
 
     async def _run_async(self, show_command=False, show_output=False):
         """异步执行命令，使用 asyncio.create_subprocess_shell（不阻塞事件循环）
@@ -663,7 +630,7 @@ class BashFunc(Func):
                         show_output=show_output,
                         publish_line_fn=None,
                     ),
-                    timeout=_BASH_TIMEOUT,
+                    timeout=self.timeout,
                 )
             else:
                 result = await asyncio.wait_for(
@@ -672,7 +639,7 @@ class BashFunc(Func):
                         show_output=show_output,
                         publish_line_fn=None,
                     ),
-                    timeout=_BASH_TIMEOUT,
+                    timeout=self.timeout,
                 )
             return self._truncate_output(result)
         except asyncio.TimeoutError:
@@ -724,7 +691,7 @@ class BashFunc(Func):
                         show_command=False, show_output=False,
                         publish_line_fn=on_line, pty_ready_fn=None,
                     ),
-                    timeout=_BASH_TIMEOUT,
+                    timeout=self.timeout,
                 )
             else:
                 result = await asyncio.wait_for(
@@ -732,7 +699,7 @@ class BashFunc(Func):
                         show_command=False, show_output=False,
                         publish_line_fn=on_line,
                     ),
-                    timeout=_BASH_TIMEOUT,
+                    timeout=self.timeout,
                 )
             return self._truncate_output(result)
         except asyncio.TimeoutError:

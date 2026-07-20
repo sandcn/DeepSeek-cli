@@ -35,6 +35,16 @@ class TestInit:
         assert b.command == "pwd"
         assert b.cwd == "/tmp"
 
+    def test_command_timeout_default(self):
+        b = BashFunc(command="echo hello")
+        assert b.timeout == 300
+
+    def test_command_timeout_custom(self):
+        b = BashFunc(command="echo hello", timeout=600)
+        assert b.timeout == 600
+        b2 = BashFunc(command="echo hello", timeout=120)
+        assert b2.timeout == 120
+
 
 # ═══════════════════════════════════════════════════════════════════════════
 # 2. from_args
