@@ -33,6 +33,7 @@
 ## 通用安全规范
 - **路径安全**：语言对应的路径安全库（如 pathlib / Node.js path / Rust std::path::Path / Java java.nio.file.Path），安全拼接，防穿越
 - **文件安全**：写入仅限 `.chat/plan/` 目录，**禁止修改/写入任何计划文件之外的文件**（包括但不限于项目源码、配置、文档、测试、提词文件等一切文件）。写入/创建操作前须确认目标路径在 `.chat/plan/` 下。如需创建 `.chat/plan/` 目录本身，使用 `mkdir` 工具（自动限制在 `.chat/plan/` 范围内）
+- **元文件保护**：在未获得用户明确指定时，**禁止修改**以下 7 个运行时元文件：`global.md`、`main.md`、`plan.md`、`think.md`、`map.md`、`review.md`、`execute.md`
 
 
 # 工具集
