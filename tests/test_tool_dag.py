@@ -13,6 +13,8 @@
 import pytest
 from unittest.mock import MagicMock
 
+from typing import Optional
+
 from src.core.tool_dag import ToolDAG, ToolCallNode
 
 
@@ -29,7 +31,7 @@ def _meta(parallel_safe=False, requires_terminal=False, tool_category="general")
     return m
 
 
-def _make_registry(metadata_map: dict[str, tuple] | None = None):
+def _make_registry(metadata_map: "Optional[dict[str, tuple]]" = None):
     """创建 mock registry
 
     Args:

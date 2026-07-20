@@ -56,6 +56,16 @@ class ToolScheduler:
         if ToolScheduler._semaphore is None and _MAX_CONCURRENT_TOOLS > 0:
             ToolScheduler._semaphore = asyncio.Semaphore(_MAX_CONCURRENT_TOOLS)
 
+        # ── 全局 DAG 状态（跨多批调度持久化） ──────────────
+        self._global_dag: Optional[ToolDAG] = None
+        self._global_tool_calls: list[dict] = []
+        self._batch_boundaries: list[int] = []
+        self._prev_non_dispatch_ids: set[str] = set()
+        self._results_map: dict[str, tuple[str, str, bool]] = {}
+        self._completed_tc_ids: set[str] = set()
+        self._pending_tc_ids: set[str] = set()
+        self._execution_depth: int = 0  # _execute_global_dag_async 嵌套深度
+
     @classmethod
     def default(cls) -> ToolScheduler:
         """返回模块级默认 ToolScheduler 实例（单例模式）"""
@@ -64,10 +74,23 @@ class ToolScheduler:
             _default_scheduler = cls()
         return _default_scheduler
 
+    def _reset_global_state(self) -> None:
+        """重置全局 DAG 状态（供测试清理使用）"""
+        self._global_dag = None
+        self._global_tool_calls.clear()
+        self._batch_boundaries.clear()
+        self._prev_non_dispatch_ids.clear()
+        self._results_map.clear()
+        self._completed_tc_ids.clear()
+        self._pending_tc_ids.clear()
+        self._execution_depth = 0
+
     @classmethod
     def reset_default(cls) -> None:
         """重置默认单例（仅用于测试清理）"""
         global _default_scheduler
+        if _default_scheduler is not None:
+            _default_scheduler._reset_global_state()
         _default_scheduler = None
         cls._semaphore = None
 
@@ -273,15 +296,62 @@ class ToolScheduler:
                 on_before=on_before, on_after=on_after, run_method=run_method,
             )
 
-        # 逐层执行
+        # 逐层执行（提取为公共方法 _execute_layers）
         results_map: dict[str, tuple[str, str, bool]] = {}
+        await self._execute_layers(
+            dag, layers,
+            agent_ref=agent_ref, on_before=on_before,
+            on_after=on_after, run_method=run_method,
+            results_map=results_map,
+        )
+
+        # 按原始顺序返回
+        return [results_map[tc_id] for tc_id in dag.original_order
+                if tc_id in results_map]
+
+    async def _execute_layers(
+        self,
+        dag,
+        layers: list[list[str]],
+        *,
+        agent_ref,
+        on_before: Optional[Callable] = None,
+        on_after: Optional[Callable] = None,
+        run_method: Optional[Callable] = None,
+        results_map: dict[str, tuple[str, str, bool]],
+        skip_tc_ids: set[str] | None = None,
+    ) -> None:
+        """逐层执行 DAG 拓扑层，将结果写入 results_map。
+
+        跳过已在 results_map 中或 skip_tc_ids 中的 tc_id。
+        同层工具并发执行（asyncio.gather + Semaphore 限流），层间串行。
+
+        Args:
+            dag: ToolDAG 实例
+            layers: 拓扑排序后的层列表 [[tc_id, ...], ...]
+            agent_ref: 传给 registry.dispatch() 的 agent 引用
+            on_before: (tc, detail) -> None  执行前回调
+            on_after: (tc, output, success) -> None  执行后回调
+            run_method: (func, tc) -> str  自定义执行方式
+            results_map: 结果累加字典（可变），方法执行后包含本层结果
+            skip_tc_ids: 要跳过的 tc_id 集合（如正在执行的 dispatch_agent）
+        """
         for layer in layers:
             if not layer:
                 continue
 
+            # 过滤：跳过已有结果 / 已跳过节点
+            layer_ids = [
+                tc_id for tc_id in layer
+                if tc_id not in results_map
+                and (skip_tc_ids is None or tc_id not in skip_tc_ids)
+            ]
+            if not layer_ids:
+                continue
+
             # 构建当前层的 tool_call dict 列表
             layer_calls = []
-            for tc_id in layer:
+            for tc_id in layer_ids:
                 node = dag.get_node(tc_id)
                 if node is None:
                     continue
@@ -305,9 +375,118 @@ class ToolScheduler:
             for r in layer_results:
                 results_map[r[0]] = r
 
-        # 按原始顺序返回
-        return [results_map[tc_id] for tc_id in dag.original_order
-                if tc_id in results_map]
+    async def _execute_global_dag_async(
+        self,
+        dag,
+        *,
+        agent_ref,
+        on_before: Optional[Callable] = None,
+        on_after: Optional[Callable] = None,
+        run_method: Optional[Callable] = None,
+        current_batch_ids: set[str],
+    ) -> List[Tuple[str, str, bool]]:
+        """在全局 DAG 上执行，仅返回当前批次工具的结果。
+
+        dispatch_agent 也通过 _execute_layers 正常执行（在其所在层内并发执行），
+        不拆分为后台任务，保证 dispatch_agent 的 _shared_executor 生命周期正确。
+
+        有环时回退到串行。
+
+        Args:
+            dag: ToolDAG 实例（全局 DAG）
+            agent_ref: 传给 registry.dispatch() 的 agent 引用
+            on_before: (tc, detail) -> None  执行前回调
+            on_after: (tc, output, success) -> None  执行后回调
+            run_method: (func, tc) -> str  自定义执行方式
+            current_batch_ids: 当前批次的 tc_id 集合，用于过滤返回结果
+
+        Returns:
+            当前批次的 [(tool_call_id, output, success)] 列表
+        """
+        if dag.size == 0:
+            return []
+
+        def _build_pending_calls(check_ids: set[str]) -> list[dict]:
+            calls = []
+            for tc_id in check_ids:
+                node = dag.get_node(tc_id)
+                if node is not None:
+                    calls.append({
+                        "id": node.tc_id,
+                        "name": node.name,
+                        "arguments": node.arguments,
+                    })
+            return calls
+
+        if dag.has_cycle():
+            _logger.warning("_execute_global_dag_async: DAG 存在环，回退到串行")
+            pending_calls = _build_pending_calls(current_batch_ids)
+            if pending_calls:
+                serial_results = await self._execute_serial(
+                    pending_calls, agent_ref=agent_ref,
+                    on_before=on_before, on_after=on_after,
+                    run_method=run_method,
+                )
+                for r in serial_results:
+                    self._results_map[r[0]] = r
+                    self._completed_tc_ids.add(r[0])
+            return [self._results_map[tc_id] for tc_id in current_batch_ids
+                    if tc_id in self._results_map]
+
+        layers = dag.topological_sort()
+        if layers is None:
+            _logger.warning("_execute_global_dag_async: 拓扑排序失败，回退到串行")
+            pending_calls = _build_pending_calls(current_batch_ids)
+            if pending_calls:
+                serial_results = await self._execute_serial(
+                    pending_calls, agent_ref=agent_ref,
+                    on_before=on_before, on_after=on_after,
+                    run_method=run_method,
+                )
+                for r in serial_results:
+                    self._results_map[r[0]] = r
+                    self._completed_tc_ids.add(r[0])
+            return [self._results_map[tc_id] for tc_id in current_batch_ids
+                    if tc_id in self._results_map]
+
+        # ── 逐层执行（dispatch_agent 在层内正常并发执行） ──
+        # 在开始执行前，将所有待执行节点标记为 pending，防止嵌套调用
+        # （SubAgent 递归 schedule()）重复执行同一节点。
+        self._execution_depth += 1
+        is_outermost = (self._execution_depth == 1)
+
+        if is_outermost:
+            # 最外层：收集所有待执行节点标记为 pending
+            all_layer_ids: set[str] = set()
+            for layer in layers:
+                for tc_id in layer:
+                    if tc_id not in self._results_map:
+                        all_layer_ids.add(tc_id)
+                        self._pending_tc_ids.add(tc_id)
+
+        try:
+            # 外层执行所有层；嵌套调用跳过 _pending_tc_ids 中的节点
+            await self._execute_layers(
+                dag, layers,
+                agent_ref=agent_ref, on_before=on_before,
+                on_after=on_after, run_method=run_method,
+                results_map=self._results_map,
+                skip_tc_ids=self._pending_tc_ids if not is_outermost else None,
+            )
+        finally:
+            self._execution_depth -= 1
+            if is_outermost:
+                for tc_id in all_layer_ids:
+                    self._pending_tc_ids.discard(tc_id)
+
+        # 标记当前批次中已完成的工具
+        for tc_id in current_batch_ids:
+            if tc_id in self._results_map:
+                self._completed_tc_ids.add(tc_id)
+
+        # 返回当前批次的结果
+        return [self._results_map[tc_id] for tc_id in dag.original_order
+                if tc_id in current_batch_ids and tc_id in self._results_map]
 
     async def schedule(
         self,
@@ -318,12 +497,17 @@ class ToolScheduler:
         on_after: Optional[Callable] = None,
         run_method: Optional[Callable] = None,
     ) -> List[Tuple[str, str, bool]]:
-        """统一调度入口：根据 tool_calls 数量和依赖关系自动选择执行策略。
+        """统一调度入口：通过全局 DAG 进行多批拓扑调度。
 
         - 空列表 → 返回 []
         - 单工具 → execute_async(parallel=False) 直接执行
-        - 多工具 → 构建 ToolDAG → execute_dag_async 拓扑分层调度
-          - ToolDAG 构建失败时回退到全串行
+        - 多工具 → 全局 DAG 调度（累积工具到全局 DAG + 拓扑分层并发）
+          - DAG 构建失败时回退到全串行
+
+        SubAgent 也使用全局 DAG，嵌套调用时与主 Agent 共享同一全局 DAG：
+        - 子 Agent 的工具调用被正确累积到全局 DAG
+        - _prev_non_dispatch_ids 在外层 schedule() 返回前被外层批次覆盖
+        - _results_map 确保已执行节点被跳过
 
         Args:
             tool_calls: 工具调用列表 [{"id", "name", "arguments"}]
@@ -351,19 +535,54 @@ class ToolScheduler:
                 run_method=run_method, parallel=False,
             )
 
-        # 多工具：构建 ToolDAG 进行拓扑调度
-        _logger.debug("schedule[%s]: %d 个工具 → 构建 ToolDAG",
+        # ── 全局 DAG 路径 ───────────────────────────────────
+        _logger.debug("schedule[%s]: %d 个工具 → 全局 DAG 调度",
                       agent_label, len(tool_calls))
+
+        current_batch_ids = {tc["id"] for tc in tool_calls}
+
         try:
-            dag = ToolDAG(tool_calls, self._registry)
-            return await self.execute_dag_async(
-                dag, agent_ref=agent_ref,
-                on_before=on_before, on_after=on_after,
+            if self._global_dag is None:
+                # 首批：创建全局 DAG
+                _logger.debug("schedule[%s]: 首批 %d 个工具 → 创建全局 DAG",
+                              agent_label, len(tool_calls))
+                self._global_dag = ToolDAG(tool_calls, self._registry)
+                self._global_tool_calls = list(tool_calls)
+            else:
+                # 后续批：扩展全局 DAG
+                _logger.debug("schedule[%s]: 扩展批次 %d 个工具 → add_batch",
+                              agent_label, len(tool_calls))
+                self._global_dag.add_batch(
+                    tool_calls, self._registry,
+                    prev_non_dispatch_ids=self._prev_non_dispatch_ids,
+                )
+                self._global_tool_calls.extend(tool_calls)
+
+            self._batch_boundaries.append(len(self._global_tool_calls))
+
+            # 执行全局 DAG，仅返回当前批次结果
+            results = await self._execute_global_dag_async(
+                self._global_dag,
+                agent_ref=agent_ref,
+                on_before=on_before,
+                on_after=on_after,
                 run_method=run_method,
+                current_batch_ids=current_batch_ids,
             )
+
+            # 更新 prev_non_dispatch_ids（供下一批使用）
+            # 嵌套调用（SubAgent 内）时，此值会被外层批次覆盖，
+            # 不会被 SubAgent 的工具污染
+            self._prev_non_dispatch_ids = {
+                tc["id"] for tc in tool_calls
+                if tc.get("name") != "dispatch_agent"
+            }
+
+            return results
+
         except Exception:
             _logger.warning(
-                "schedule: ToolDAG 构建失败，回退到全串行执行 (%d 个工具)",
+                "schedule: 全局 DAG 调度失败，回退到全串行执行 (%d 个工具)",
                 len(tool_calls), exc_info=True,
             )
             return await self._execute_serial(

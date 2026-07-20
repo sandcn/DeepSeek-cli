@@ -113,7 +113,36 @@ class ToolDAG:
     def _build(self, tool_calls: list[dict], registry) -> None:
         """构建 DAG：创建节点 + 四层依赖检测"""
         # 第一遍：创建所有节点
-        node_map: dict[str, ToolCallNode] = {}
+        self._build_create_nodes(tool_calls, registry)
+
+        # 第二遍：四层依赖检测
+        # 层 A：显式依赖（$tool_call_id 引用）
+        self._detect_explicit_deps()
+
+        # 层 B：隐式依赖（path 重叠）
+        self._detect_path_overlap()
+
+        # 层 C：元数据约束（user_select 独占层）
+        self._add_user_select_constraints()
+
+        # 层 D：工具类别约束（bash 隔离 / read→write / bash 链式）
+        self._detect_tool_category_constraints()
+
+    def _build_create_nodes(self, tool_calls: list[dict], registry) -> dict[str, ToolCallNode]:
+        """创建 DAG 节点（不执行依赖检测）
+
+        遍历 tool_calls 列表，为每个工具调用创建 ToolCallNode，
+        查询 metadata 并存入 self._nodes。
+
+        Args:
+            tool_calls: 工具调用列表
+                [{"id": str, "name": str, "arguments": dict}, ...]
+            registry: ToolRegistry 实例（用于查询 metadata）
+
+        Returns:
+            新创建的节点映射 {tc_id: ToolCallNode}
+        """
+        created: dict[str, ToolCallNode] = {}
         for tc in tool_calls:
             tc_id = tc["id"]
             name = tc.get("name", "")
@@ -140,22 +169,51 @@ class ToolDAG:
                 requires_terminal=requires_terminal,
                 tool_category=tool_category,
             )
-            node_map[tc_id] = node
+            self._nodes[tc_id] = node
+            created[tc_id] = node
 
-        self._nodes = node_map
+        return created
 
-        # 第二遍：三层依赖检测
-        # 层 A：显式依赖（$tool_call_id 引用）
+    def add_batch(self, new_tool_calls: list[dict], registry,
+                  prev_non_dispatch_ids: set[str] | None = None) -> None:
+        """扩展 DAG：添加一批新的 tool_calls，建立跨批依赖
+
+        将新一批工具调用追加到当前 DAG 中：
+        1. 为新工具创建节点
+        2. 重跑全部四层依赖检测（set 天然去重，重复边无副作用）
+        3. 添加批间依赖边：prev_non_dispatch_ids → 所有新节点
+
+        Args:
+            new_tool_calls: 新批次的工具调用列表
+                [{"id": str, "name": str, "arguments": dict}, ...]
+            registry: ToolRegistry 实例（用于查询 metadata）
+            prev_non_dispatch_ids: 上一批中非 dispatch_agent 的 tc_id 集合。
+                None 表示不添加批间依赖边。
+        """
+        if not new_tool_calls:
+            return
+
+        # 第 1 步：创建新节点
+        new_nodes = self._build_create_nodes(new_tool_calls, registry)
+
+        # 第 2 步：扩展 original_order
+        self._original_order.extend(tc["id"] for tc in new_tool_calls)
+
+        # 第 3 步：重跑全部四层依赖检测
+        # set 天然去重，现有边被再次添加是无操作的（无副作用）
         self._detect_explicit_deps()
-
-        # 层 B：隐式依赖（path 重叠）
         self._detect_path_overlap()
-
-        # 层 C：元数据约束（user_select 独占层）
         self._add_user_select_constraints()
-
-        # 层 D：工具类别约束（bash 隔离 / read→write / bash 链式）
         self._detect_tool_category_constraints()
+
+        # 第 4 步：添加批间依赖边
+        if prev_non_dispatch_ids:
+            new_ids = set(new_nodes.keys())
+            for new_id in new_ids:
+                for prev_id in prev_non_dispatch_ids:
+                    if prev_id in self._nodes and prev_id != new_id:
+                        self._nodes[new_id].dependencies.add(prev_id)
+                        self._nodes[prev_id].dependents.add(new_id)
 
     # ── 显式依赖检测 ───────────────────────────────────────
 
