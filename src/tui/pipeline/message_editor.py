@@ -387,7 +387,11 @@ class MessageEditor:
         if result["action"] == "error":
             _logger.warning("消息选择失败: run_bottom_bar_selection 返回 error action")
             publish_output(
-                f"  {THEME['warning']}消息选择失败，终端输入解析异常（如为 Cygwin/Mintty 环境，请确认终端支持 ANSI escape 序列）{RESET}",
+                f"  {THEME['warning']}消息选择失败，终端输入解析异常{RESET}",
+                level="raw", source="cmd",
+            )
+            publish_output(
+                f"  {THEME['dim']}提示：如为 Cygwin/Mintty/WSL 环境，请确认终端支持 ANSI escape 序列。也可尝试在非 WSL 终端（如 Windows Terminal）中运行。{RESET}",
                 level="raw", source="cmd",
             )
             return ("quit", 0)

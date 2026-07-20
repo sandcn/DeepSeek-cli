@@ -20,7 +20,7 @@ from unittest.mock import MagicMock, patch
 from src.tui.widgets.bottom_bar.selection import (
     run_bottom_bar_selection,
     _run_selection_raw,
-    _is_cygwin,
+    _is_cygwin_or_wsl,
     _KEY_ENTER,
     _KEY_UP,
     _KEY_DOWN,
@@ -94,12 +94,18 @@ class TestRunBottomBarSelectionEnter(unittest.TestCase):
 
     def _run_with_mocks(self, mock_chat_ui, mock_term, items, display_items,
                         initial_idx=0, title="测试"):
-        """在完整 mock 环境下运行 run_bottom_bar_selection。"""
+        """在完整 mock 环境下运行 run_bottom_bar_selection。
+
+        注意：需要 patch _is_cygwin_or_wsl 返回 False，
+        强制走 Blessed 路径（而非 Raw I/O 路径），
+        否则在 WSL/Cygwin 环境下测试会走 Raw I/O 路径导致 Blessed mock 失效。
+        """
         mock_stdin = MagicMock()
         mock_stdin.fileno.return_value = 0
 
         with patch(_CHAT_UI_PATCH, return_value=mock_chat_ui), \
              patch(_TERMINAL_PATCH, return_value=mock_term), \
+             patch("src.tui.widgets.bottom_bar.selection._is_cygwin_or_wsl", return_value=False), \
              patch("sys.stdin", mock_stdin), \
              patch("os.isatty", return_value=True), \
              patch.object(sys, '__stdout__', MagicMock()):
@@ -336,6 +342,7 @@ class TestRunBottomBarSelectionEnter(unittest.TestCase):
 
         with patch(_CHAT_UI_PATCH, return_value=mock_chat_ui), \
              patch(_TERMINAL_PATCH, return_value=mock_term), \
+             patch("src.tui.widgets.bottom_bar.selection._is_cygwin_or_wsl", return_value=False), \
              patch("sys.stdin", mock_stdin), \
              patch("os.isatty", return_value=True), \
              patch("termios.tcflush", side_effect=_record_tcflush) as mock_tcflush, \
@@ -357,7 +364,7 @@ class TestRunBottomBarSelectionEnter(unittest.TestCase):
 
 
 class TestRunSelectionRaw(unittest.TestCase):
-    """测试 _run_selection_raw() 原始 I/O 选择循环（Cygwin 降级路径）。
+    """测试 _run_selection_raw() 原始 I/O 选择循环（Cygwin/WSL 降级路径）。
 
     使用 mock os.read + select.select + tty.setcbreak 模拟按键输入，
     避免实际终端操作。Mock 策略与 EscapeMonitor 测试风格一致。
@@ -628,6 +635,7 @@ class TestPostCbreakDrain(unittest.TestCase):
 
         with patch(_CHAT_UI_PATCH, return_value=mock_chat_ui), \
              patch(_TERMINAL_PATCH, return_value=mock_term), \
+             patch("src.tui.widgets.bottom_bar.selection._is_cygwin_or_wsl", return_value=False), \
              patch("sys.stdin", mock_stdin), \
              patch("os.isatty", return_value=True), \
              patch("select.select", side_effect=_mock_select), \
@@ -665,6 +673,7 @@ class TestPostCbreakDrain(unittest.TestCase):
 
         with patch(_CHAT_UI_PATCH, return_value=mock_chat_ui), \
              patch(_TERMINAL_PATCH, return_value=mock_term), \
+             patch("src.tui.widgets.bottom_bar.selection._is_cygwin_or_wsl", return_value=False), \
              patch("sys.stdin", mock_stdin), \
              patch("os.isatty", return_value=True), \
              patch("select.select", side_effect=_mock_select), \
@@ -711,6 +720,7 @@ class TestPostCbreakDrain(unittest.TestCase):
 
         with patch(_CHAT_UI_PATCH, return_value=mock_chat_ui), \
              patch(_TERMINAL_PATCH, return_value=mock_term), \
+             patch("src.tui.widgets.bottom_bar.selection._is_cygwin_or_wsl", return_value=False), \
              patch("sys.stdin", mock_stdin), \
              patch("os.isatty", return_value=True), \
              patch("select.select", side_effect=_mock_select), \
@@ -727,11 +737,13 @@ class TestPostCbreakDrain(unittest.TestCase):
 
 
 class TestCygwinShowCompletionsException(unittest.TestCase):
-    """测试 Cygwin 路径下 show_completions 异常时返回 error action。
+    """测试 Cygwin/WSL 路径下 show_completions 异常时返回 error action。
+
+    （函数已更名为 _is_cygwin_or_wsl，同时支持 Cygwin 和 WSL 环境。）
 
     验证策略：
       - 通过 bottom_bar 参数直接传入 mock _BottomBar，绕过 get_active_chat_ui 导入
-      - Mock _is_cygwin() 返回 True 触发 Cygwin 分支
+      - Mock _is_cygwin_or_wsl() 返回 True 触发 Cygwin/WSL 分支
       - 设置 bb.show_completions.side_effect = RuntimeError 模拟异常
       - 验证返回 {"action": "error", "index": None}
       - 验证 _logger.warning 被调用记录异常
@@ -763,15 +775,15 @@ class TestCygwinShowCompletionsException(unittest.TestCase):
     # ── 异常返回 error action ───────────────────────
 
     def test_cygwin_show_completions_exception_returns_error(self):
-        """Cygwin 路径 show_completions 异常应返回 error action。"""
+        """Cygwin/WSL 路径 show_completions 异常应返回 error action。"""
         mock_bb = self._make_mock_bb(
-            show_completions_side_effect=RuntimeError("Cygwin terminal error")
+            show_completions_side_effect=RuntimeError("Cygwin/WSL terminal error")
         )
 
         mock_stdin = MagicMock()
         mock_stdin.fileno.return_value = 0
 
-        with patch("src.tui.widgets.bottom_bar.selection._is_cygwin",
+        with patch("src.tui.widgets.bottom_bar.selection._is_cygwin_or_wsl",
                    return_value=True), \
              patch("sys.stdin", mock_stdin), \
              patch("os.isatty", return_value=True), \
@@ -793,15 +805,15 @@ class TestCygwinShowCompletionsException(unittest.TestCase):
     # ── 不进入 _run_selection_raw ────────────────────
 
     def test_cygwin_show_completions_exception_skips_run_selection_raw(self):
-        """show_completions 异常时不应进入 _run_selection_raw。"""
+        """show_completions 异常时不应进入 _run_selection_raw（Cygwin/WSL 路径）。"""
         mock_bb = self._make_mock_bb(
-            show_completions_side_effect=RuntimeError("Cygwin terminal error")
+            show_completions_side_effect=RuntimeError("Cygwin/WSL terminal error")
         )
 
         mock_stdin = MagicMock()
         mock_stdin.fileno.return_value = 0
 
-        with patch("src.tui.widgets.bottom_bar.selection._is_cygwin",
+        with patch("src.tui.widgets.bottom_bar.selection._is_cygwin_or_wsl",
                    return_value=True), \
              patch("sys.stdin", mock_stdin), \
              patch("os.isatty", return_value=True), \
@@ -816,16 +828,16 @@ class TestCygwinShowCompletionsException(unittest.TestCase):
         self.assertEqual(result["action"], "error")
         mock_raw.assert_not_called()
 
-    # ── 正常 Cygwin 路径不受影响 ────────────────────
+    # ── 正常 Cygwin/WSL 路径不受影响 ────────────────
 
     def test_cygwin_normal_path_unaffected(self):
-        """Cygwin 路径 show_completions 正常时不应进入异常分支。"""
+        """Cygwin/WSL 路径 show_completions 正常时不应进入异常分支。"""
         mock_bb = self._make_mock_bb()  # show_completions 正常返回
 
         mock_stdin = MagicMock()
         mock_stdin.fileno.return_value = 0
 
-        with patch("src.tui.widgets.bottom_bar.selection._is_cygwin",
+        with patch("src.tui.widgets.bottom_bar.selection._is_cygwin_or_wsl",
                    return_value=True), \
              patch("sys.stdin", mock_stdin), \
              patch("os.isatty", return_value=True), \
@@ -841,6 +853,123 @@ class TestCygwinShowCompletionsException(unittest.TestCase):
         self.assertEqual(result["action"], "confirmed")
         self.assertEqual(result["index"], 0)
         mock_raw.assert_called_once()
+
+
+class TestIsCygwinOrWsl(unittest.TestCase):
+    """测试 _is_cygwin_or_wsl() 的 WSL 检测逻辑。
+
+    验证策略：
+      - 模拟 /proc/version 文件内容
+      - 模拟 WSL_DISTRO_NAME 环境变量
+      - 验证 Cygwin 环境（sys.platform == 'cygwin'）仍被正确识别
+      - 验证非 Cygwin/非 WSL 环境返回 False
+    """
+
+    def setUp(self):
+        """创建 mock stdin（避免 pytest 的 DontReadFromInput 导致 fileno() 失败）。"""
+        self.mock_stdin = MagicMock()
+        self.mock_stdin.fileno.return_value = 0
+
+    # ── Cygwin 检测 ─────────────────────────────────
+
+    @patch("src.tui.widgets.bottom_bar.selection.os.isatty", return_value=True)
+    @patch("sys.stdin")
+    def test_cygwin_platform_detected(self, mock_stdin, mock_isatty):
+        """sys.platform == 'cygwin' 时应返回 True。"""
+        mock_stdin.fileno.return_value = 0
+        with patch.object(sys, 'platform', 'cygwin'):
+            from src.tui.widgets.bottom_bar.selection import _is_cygwin_or_wsl
+            self.assertTrue(_is_cygwin_or_wsl())
+
+    # ── /proc/version WSL 检测 ──────────────────────
+
+    @patch("src.tui.widgets.bottom_bar.selection.os.isatty", return_value=True)
+    @patch("sys.stdin")
+    @patch("builtins.open")
+    def test_wsl_detected_via_proc_version(self, mock_open, mock_stdin, mock_isatty):
+        """/proc/version 包含 'Microsoft'（不区分大小写）时应返回 True。"""
+        mock_stdin.fileno.return_value = 0
+        mock_file = MagicMock()
+        mock_file.__enter__.return_value.read.return_value = "Linux version 5.15.167.4-microsoft-standard-WSL2"
+        mock_open.return_value = mock_file
+
+        from src.tui.widgets.bottom_bar.selection import _is_cygwin_or_wsl
+        self.assertTrue(_is_cygwin_or_wsl())
+        mock_open.assert_called_with("/proc/version", "r")
+
+    # ── WSL_DISTRO_NAME 环境变量检测 ────────────────
+
+    @patch("src.tui.widgets.bottom_bar.selection.os.isatty", return_value=True)
+    @patch("sys.stdin")
+    @patch("builtins.open")
+    def test_wsl_detected_via_env_var(self, mock_open, mock_stdin, mock_isatty):
+        """WSL_DISTRO_NAME 环境变量存在时应返回 True（当 /proc/version 不可读时）。"""
+        mock_stdin.fileno.return_value = 0
+        mock_open.side_effect = FileNotFoundError()
+
+        with patch.dict(os.environ, {"WSL_DISTRO_NAME": "Ubuntu"}, clear=False):
+            from src.tui.widgets.bottom_bar.selection import _is_cygwin_or_wsl
+            self.assertTrue(_is_cygwin_or_wsl())
+
+    # ── 非 WSL 环境 ─────────────────────────────────
+
+    @patch("src.tui.widgets.bottom_bar.selection.os.isatty", return_value=True)
+    @patch("sys.stdin")
+    @patch("builtins.open")
+    def test_non_wsl_returns_false(self, mock_open, mock_stdin, mock_isatty):
+        """非 Cygwin/非 WSL 环境应返回 False。"""
+        mock_stdin.fileno.return_value = 0
+        mock_file = MagicMock()
+        mock_file.__enter__.return_value.read.return_value = "Linux version 6.2.0-26-generic"
+        mock_open.return_value = mock_file
+
+        with patch.object(sys, 'platform', 'linux'), \
+             patch.dict(os.environ, {}, clear=True):
+            from src.tui.widgets.bottom_bar.selection import _is_cygwin_or_wsl
+            self.assertFalse(_is_cygwin_or_wsl())
+
+    # ── 读取异常处理 ────────────────────────────────
+
+    @patch("src.tui.widgets.bottom_bar.selection.os.isatty", return_value=True)
+    @patch("sys.stdin")
+    @patch("builtins.open")
+    def test_proc_version_read_exception_handled_gracefully(self, mock_open, mock_stdin, mock_isatty):
+        """/proc/version 读取异常时应静默忽略，不抛异常。"""
+        mock_stdin.fileno.return_value = 0
+        import os as os_module
+        mock_open.side_effect = PermissionError()
+
+        with patch.dict(os_module.environ, {}, clear=True):
+            from src.tui.widgets.bottom_bar.selection import _is_cygwin_or_wsl
+            # 无 WSL_DISTRO_NAME、/proc/version 不可读 → 返回 False
+            self.assertFalse(_is_cygwin_or_wsl())
+
+    # ── 非 tty 前置检测 ─────────────────────────────
+
+    @patch("src.tui.widgets.bottom_bar.selection.os.isatty", return_value=True)
+    @patch("sys.stdin")
+    def test_not_a_tty_returns_false(self, mock_stdin, mock_isatty):
+        """非 tty 环境直接返回 False（前置检测）。"""
+        mock_stdin.fileno.return_value = 0
+        mock_isatty.return_value = False
+
+        from src.tui.widgets.bottom_bar.selection import _is_cygwin_or_wsl
+        self.assertFalse(_is_cygwin_or_wsl())
+
+    # ── 大小写不敏感检测 ────────────────────────────
+
+    @patch("src.tui.widgets.bottom_bar.selection.os.isatty", return_value=True)
+    @patch("sys.stdin")
+    @patch("builtins.open")
+    def test_wsl_detected_case_insensitive(self, mock_open, mock_stdin, mock_isatty):
+        """/proc/version 包含 'microsoft'（全小写）也应被识别。"""
+        mock_stdin.fileno.return_value = 0
+        mock_file = MagicMock()
+        mock_file.__enter__.return_value.read.return_value = "Linux version 5.10.16.3-microsoft-standard-WSL2"
+        mock_open.return_value = mock_file
+
+        from src.tui.widgets.bottom_bar.selection import _is_cygwin_or_wsl
+        self.assertTrue(_is_cygwin_or_wsl())
 
 
 if __name__ == "__main__":

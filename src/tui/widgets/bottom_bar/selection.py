@@ -21,16 +21,49 @@ _KEY_ENTER = 343
 _KEY_ESCAPE = 361
 
 
-def _is_cygwin() -> bool:
-    """检测当前环境是否为 Cygwin 且标准输入为 tty。
+def _is_cygwin_or_wsl() -> bool:
+    """检测当前环境是否为 Cygwin 或 WSL，且标准输入为 tty。
 
-    Cygwin 下 Blessed term.inkey() 无法正确解析 ANSI escape 序列，
+    Cygwin 和 WSL 下 Blessed term.inkey() 可能无法正确解析 ANSI escape 序列，
     需要绕过 Blessed 路径改用原始 I/O 读取。
 
+    WSL 检测分两步，按优先级依次尝试（任一满足即判定为 WSL）：
+    1. 读取 /proc/version，若内容（不区分大小写）包含 "microsoft" 则判定为 WSL
+       — 覆盖 WSL1 和 WSL2，也覆盖无 WSL_DISTRO_NAME 环境变量的场景
+    2. 检查 WSL_DISTRO_NAME 环境变量是否存在（WSL2 下默认存在）
+       — 作为 /proc/version 读取失败的兜底（权限不足、文件不存在等）
+    两步均失败时判定为非 WSL。
+
+    设计决策：
+    - 两步检测互为备灾：/proc/version 覆盖 WSL1（无 WSL_DISTRO_NAME），
+      WSL_DISTRO_NAME 覆盖 /proc/version 不可读的场景
+    - 异常静默：所有文件读取和 env 检查均用 bare except 包裹，
+      确保函数在任何异常场景下都不会抛异常，只返回 False
+    - 前置 tty 检查：先检查 os.isatty()，非 tty 环境直接返回 False，
+      避免无终端时不必要的文件读取
+
     Returns:
-        True 若 sys.platform == 'cygwin' 且 stdin 是 tty。
+        True 若环境为 Cygwin 或 WSL 且 stdin 是 tty。
     """
-    return sys.platform == 'cygwin' and os.isatty(sys.stdin.fileno())
+    if not os.isatty(sys.stdin.fileno()):
+        return False
+    # ── Cygwin 检测 ──
+    if sys.platform == 'cygwin':
+        return True
+    # ── WSL 检测 ──
+    try:
+        with open("/proc/version", "r") as f:
+            content = f.read()
+        if "microsoft" in content.lower():
+            return True
+    except Exception:
+        pass
+    try:
+        if 'WSL_DISTRO_NAME' in os.environ:
+            return True
+    except Exception:
+        pass
+    return False
 
 
 def _save_terminal_settings(fd: int):
@@ -199,7 +232,7 @@ def _run_selection_raw(
                     # 其他 ESC 组合 → 取消
                     return {"action": "cancel", "index": None}
     except Exception:
-        _logger.debug("_run_selection_raw 异常", exc_info=True)
+        _logger.warning("_run_selection_raw 异常", exc_info=True)
         return {"action": "error", "index": None}
     finally:
         _restore_terminal_settings(fd, settings)
@@ -255,7 +288,7 @@ def run_bottom_bar_selection(
         except Exception:
             return {"action": "error", "index": None}
 
-    if _is_cygwin():
+    if _is_cygwin_or_wsl():
         try:
             bb.show_completions(display_items, initial_idx, texts=items, title=title)
         except Exception as exc:
@@ -370,8 +403,30 @@ def run_bottom_bar_selection(
                     return {"action": "cancel", "index": None}
 
     except Exception as exc:
-        _logger.debug("run_bottom_bar_selection 异常: %s", exc)
-        return {"action": "error", "index": None}
+        _logger.warning("run_bottom_bar_selection Blessed 路径异常，降级到 Raw I/O: %s", exc, exc_info=True)
+        # ── 万能降级兜底 ──
+        # Blessed term.inkey() 在某些终端环境（如 WSL 中未走 _is_cygwin_or_wsl()
+        # 前置检测的场景、Termux 特定版本、或其他非标准 PTY）可能抛出异常。
+        # 此降级路径与 _is_cygwin_or_wsl() 前置检测互补：
+        #   - _is_cygwin_or_wsl() 在进入 Blessed 路径前就切换到 Raw I/O
+        #   - 此降级路径在 Blessed 路径运行时才出异常时触发，作为万能兜底
+        # 降级前清理终端状态（hide_completions + tcflush），确保 _run_selection_raw
+        # 不会读到残留的控制序列字节。
+        try:
+            bb.hide_completions()
+        except Exception:
+            pass
+        try:
+            from src._compat_termios import termios as _termios
+            _termios.tcflush(sys.stdin.fileno(), _termios.TCIFLUSH)
+        except Exception:
+            pass
+        # 降级到 Raw I/O 路径
+        try:
+            return _run_selection_raw(items, display_items, initial_idx, title, bb)
+        except Exception as raw_exc:
+            _logger.warning("run_bottom_bar_selection Raw I/O 降级路径异常: %s", raw_exc, exc_info=True)
+            return {"action": "error", "index": None}
     finally:
         try:
             bb.hide_completions()
