@@ -581,6 +581,12 @@ class ToolScheduler:
             return results
 
         except Exception:
+            # 异常路径也必须更新 _prev_non_dispatch_ids，
+            # 防止 SubAgent 嵌套 schedule() 的污染残留到下一批
+            self._prev_non_dispatch_ids = {
+                tc["id"] for tc in tool_calls
+                if tc.get("name") != "dispatch_agent"
+            }
             _logger.warning(
                 "schedule: 全局 DAG 调度失败，回退到全串行执行 (%d 个工具)",
                 len(tool_calls), exc_info=True,

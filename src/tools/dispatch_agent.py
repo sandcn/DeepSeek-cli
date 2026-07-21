@@ -5,6 +5,7 @@ dispatch_agent — 并行子 Agent 调度工具
 当同一轮有多个 dispatch_agent 调用时，共享一个 ParallelExecutor 实现真正的并行。
 """
 
+import asyncio
 from .base import Func, tool_metadata
 
 
@@ -115,7 +116,15 @@ class DispatchAgents(Func):
                     pass  # 安全降级：继续使用父模型
 
             idx = shared.add_agent(self.description, self.prompt, agent_type=self.target_agent_type, model=model, tool_label=tool_label)
-            await shared.register_and_wait()
+            try:
+                await shared.register_and_wait()
+            except asyncio.CancelledError:
+                # 被级联取消时（如同层工具异常触发 FIRST_EXCEPTION），
+                # 若自己是最后一个已注册 agent，则唤醒其他等待者防止死锁
+                async with shared._agents_lock:
+                    if shared._registered_count >= shared._expected_count:
+                        shared._all_done.set()
+                raise
             r = shared.get_result(idx)
             return self._format_single(r)
 

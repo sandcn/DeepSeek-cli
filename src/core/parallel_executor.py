@@ -24,6 +24,7 @@ _logger = logging.getLogger(__name__)
 
 # ── 常量 ──────────────────────────────────────────────
 _TIMEOUT = 3.0  # 显示停止等超时（秒）
+_BARRIER_TIMEOUT = 600.0  # barrier 等待超时（秒），10分钟—足够 SubAgent 正常执行
 
 # ── 结果字典键常量 ─────────────────────────────────
 _DESCRIPTION_KEY = "description"
@@ -90,6 +91,7 @@ class ParallelExecutor:
         self._registered_count = 0
         self._agents_lock = asyncio.Lock()
         self._all_done = asyncio.Event()
+        self._executing = False  # _execute_all 正在执行标志（防止超时重复触发）
 
     # -- 批量模式 API --
 
@@ -116,6 +118,8 @@ class ParallelExecutor:
         设计要点：
         - 最后一个注册的协程自动触发 _execute_all()
         - 其他协程通过 asyncio.Event.wait() 纯异步等待，不消耗线程池工人
+        - 超时保护：如果 barrier 因异常（如 FIRST_EXCEPTION 取消）无法释放，
+          超时后尝试自动恢复
         """
         if self._expected_count <= 0:
             return
@@ -125,7 +129,50 @@ class ParallelExecutor:
         if all_registered:
             await self._execute_all()
         else:
-            await self._all_done.wait()
+            try:
+                await asyncio.wait_for(self._all_done.wait(), timeout=_BARRIER_TIMEOUT)
+            except asyncio.TimeoutError:
+                # 超时保护：检查是否能自我修复
+                async with self._agents_lock:
+                    if self._registered_count >= self._expected_count:
+                        if self._executing:
+                            # _execute_all 仍在运行但超时了（SubAgent 执行超长）
+                            _logger.warning(
+                                "register_and_wait 超时但 _execute_all 正在运行 "
+                                "(registered=%d/%d)，继续等待",
+                                self._registered_count, self._expected_count,
+                            )
+                            # 重试等待（_execute_all 完成后会 set _all_done）
+                            # 此处也加超时，防止 _execute_all 异常泄漏导致无限等待
+                            try:
+                                await asyncio.wait_for(
+                                    self._all_done.wait(),
+                                    timeout=_BARRIER_TIMEOUT,
+                                )
+                            except asyncio.TimeoutError:
+                                _logger.error(
+                                    "register_and_wait 二次超时：_execute_all 仍未完成 "
+                                    "(registered=%d/%d)，不可恢复",
+                                    self._registered_count, self._expected_count,
+                                )
+                                raise
+                        else:
+                            # 所有 agent 已注册但 _execute_all 从未被触发
+                            # （最后注册的 agent 被取消或异常）
+                            _logger.warning(
+                                "Barrier 超时：所有 agent 已注册但 _execute_all 未触发，"
+                                "接手执行 (registered=%d/%d)",
+                                self._registered_count, self._expected_count,
+                            )
+                            await self._execute_all()
+                    else:
+                        # 仍有 agent 未注册（被级联取消后无法恢复）
+                        _logger.error(
+                            "Barrier 超时：未能注册所有 agent "
+                            "(registered=%d, expected=%d)，放弃等待",
+                            self._registered_count, self._expected_count,
+                        )
+                        raise
 
     def add_agent(self, description: str, prompt: str, agent_type: str = "execute",
                   model: str = None, tool_label: str = None) -> int:
@@ -161,35 +208,48 @@ class ParallelExecutor:
         }
 
     async def _execute_all(self):
-        """所有 agent 注册完毕后，统一创建 SubAgent 并并发执行。"""
-        self._spawner.render_display(self._pending_specs)
+        """所有 agent 注册完毕后，统一创建 SubAgent 并并发执行。
 
-        from ..tui.parallel import ParallelDisplay as _ParallelDisplay
-        from ..tui.events import DisplayEventBus as _DisplayEventBus
-        from ..tui.events.event_types import AgentAddedEvent as _AgentAddedEvent
-
-        display = _ParallelDisplay(max_history=self.max_history)
-
-        # ★ 先发布 AgentAddedEvent，让前端提前创建 agent DOM 和 activeAgents 条目
-        #   这样后续统一批量发布的 AgentResultEvent 才能被前端正确处理
-        #   （handleAgentResult 依赖 activeAgents[label] 存在，否则丢弃结果）
-        for i, spec in enumerate(self._pending_specs):
-            label = f"agent-{i + 1}"
-            desc = spec.get(_DESCRIPTION_KEY, label)
-            dispatch_label = spec.get("tool_label", "")
-            _DisplayEventBus.get_default().publish(_AgentAddedEvent(
-                label=label, description=desc, status="running", source="parallel",
-                dispatch_label=dispatch_label,
-            ))
-
+        异常安全保证：
+        - self._executing = True → False 由最外层 finally 保证
+        - self._all_done.set() 由最外层 finally 保证（防 pre-try 异常泄漏）
+        - 核心逻辑（_run_agents）由内层 try-finally 保护
+        """
+        self._executing = True
         try:
-            coro = self._run_agents(self._pending_specs, display)
-            self._results = await self._execute_with_error_handling(
-                coro, self._pending_specs, display, is_batch=True,
-            )
+            self._spawner.render_display(self._pending_specs)
+
+            from ..tui.parallel import ParallelDisplay as _ParallelDisplay
+            from ..tui.events import DisplayEventBus as _DisplayEventBus
+            from ..tui.events.event_types import AgentAddedEvent as _AgentAddedEvent
+
+            display = _ParallelDisplay(max_history=self.max_history)
+
+            # ★ 先发布 AgentAddedEvent，让前端提前创建 agent DOM 和 activeAgents 条目
+            #   这样后续统一批量发布的 AgentResultEvent 才能被前端正确处理
+            #   （handleAgentResult 依赖 activeAgents[label] 存在，否则丢弃结果）
+            for i, spec in enumerate(self._pending_specs):
+                label = f"agent-{i + 1}"
+                desc = spec.get(_DESCRIPTION_KEY, label)
+                dispatch_label = spec.get("tool_label", "")
+                _DisplayEventBus.get_default().publish(_AgentAddedEvent(
+                    label=label, description=desc, status="running", source="parallel",
+                    dispatch_label=dispatch_label,
+                ))
+
+            try:
+                coro = self._run_agents(self._pending_specs, display)
+                self._results = await self._execute_with_error_handling(
+                    coro, self._pending_specs, display, is_batch=True,
+                )
+            finally:
+                # 内层 finally：核心逻辑完成后立即释放 barrier
+                self._all_done.set()
         finally:
-            # 确保 barrier 释放（防止 pre-try 步骤失败导致其他协程永久等待）
+            # 最外层 finally：无论 render_display / AgentAddedEvent / _run_agents
+            # 哪个阶段抛出异常，都确保 barrier 释放 + _executing 标志复位
             self._all_done.set()
+            self._executing = False
 
     # -- 独立模式 --
 
