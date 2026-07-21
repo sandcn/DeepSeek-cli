@@ -51,11 +51,6 @@ class StreamContext:
         self.token_estimate: int = 0
         self._live_total_dirty = False
 
-        # 终端渲染器已移至 ChatUIConsumer（chat_ui.py），由事件系统驱动。
-        # 此处保留字段占位，供向后兼容（旧代码可能检查 hasattr 或直接赋值）。
-        self._reasoning_renderer = None
-        self._content_renderer = None
-
         # 状态标记（显式初始化，消除 getattr 防御式访问）
         self.final_usage_received = False
         self._cleaned_up = False
@@ -65,9 +60,6 @@ class StreamContext:
         """当前时间戳缓存（被 SpeedHandler 等高频调用时避免系统调用开销）。"""
         now = self._now
         return now if now > 0 else time.perf_counter()
-
-    def update_time_cache(self):
-        self._now = time.perf_counter()
 
     # ═══════════════════════════════════════════════════════════
     # 渲染器属性（已迁移到 ChatUIConsumer，此处保留向后兼容占位）
@@ -82,7 +74,7 @@ class StreamContext:
         return None
 
     @reasoning_renderer.setter
-    def reasoning_renderer(self, value):
+    def reasoning_renderer(self, _value):
         pass  # 接受赋值但不存储（向后兼容）
 
     @property
@@ -94,19 +86,5 @@ class StreamContext:
         return None
 
     @content_renderer.setter
-    def content_renderer(self, value):
+    def content_renderer(self, _value):
         pass  # 接受赋值但不存储（向后兼容）
-
-    @property
-    def has_reasoning_renderer(self):
-        """是否已创建推理渲染器（始终返回 False）。"""
-        return False
-
-    @property
-    def has_content_renderer(self):
-        """是否已创建内容渲染器（始终返回 False）。"""
-        return False
-
-    def close_reasoning_renderer(self) -> None:
-        """关闭推理渲染器（空操作，ChatUIConsumer 通过事件处理）。"""
-        pass

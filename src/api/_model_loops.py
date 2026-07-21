@@ -56,7 +56,7 @@ def cleanup_model_loops() -> None:
     在各持久化事件循环中安全停止所有任务再关闭。
     """
     with _model_loop_registry_lock:
-        for tid, loop in list(_model_loop_registry.items()):
+        for _, loop in list(_model_loop_registry.items()):
             try:
                 if loop.is_closed():
                     continue

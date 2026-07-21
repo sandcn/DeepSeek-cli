@@ -27,17 +27,6 @@ def _is_empty_line(line: str) -> bool:
     return True
 
 
-def _count_leading(line: str, ch: str) -> int:
-    """计算字符串开头的 ch 字符个数。"""
-    count = 0
-    for c in line:
-        if c == ch:
-            count += 1
-        else:
-            break
-    return count
-
-
 def _strip_left(line: str) -> str:
     """去掉前导空白（无正则）。"""
     i = 0
@@ -60,11 +49,6 @@ def _is_only_chars(line: str, ch: str) -> bool:
         if c not in (' ', '\t', ch):
             return False
     return True
-
-
-def _starts_with(s: str, prefix: str) -> bool:
-    """字符串是否以指定前缀开头。"""
-    return len(s) >= len(prefix) and s[:len(prefix)] == prefix
 
 
 def _has_only_chars(s: str, chars: str) -> bool:

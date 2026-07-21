@@ -114,24 +114,7 @@ async def reset_async_client() -> None:
                 _logger.debug("关闭 AsyncClient 异常（事件循环可能已关闭）", exc_info=True)
 
 
-async def close_all_clients() -> None:
-    """关闭所有事件循环的 AsyncClient（程序退出时清理）。"""
-    async with _clients_lock:
-        ids = list(_clients.keys())
-        clients_to_close = []
-        for loop_id in ids:
-            client = _clients.pop(loop_id, None)
-            if client is not None:
-                clients_to_close.append(client)
-    # 锁释放后并发关闭所有 client
-    if clients_to_close:
-        results = await asyncio.gather(
-            *[c.aclose() for c in clients_to_close],
-            return_exceptions=True,
-        )
-        for res in results:
-            if isinstance(res, Exception):
-                _logger.debug("关闭 AsyncClient 异常", exc_info=True)
+
 
 
 # ── 连接错误类型 ────────────────────────────────────────────

@@ -99,10 +99,6 @@ class TerminalRenderTarget(RenderTarget):
     def width(self) -> int:
         return self._output.width
 
-    def get_output_adapter(self) -> "OutputAdapter":
-        """返回内部 OutputAdapter，供 VNodePatcher 等消费者获取。"""
-        return self._output
-
     def flush(self) -> None:
         pass  # Rich Console 实时输出，无需 flush
 
@@ -131,72 +127,6 @@ class TerminalRenderTarget(RenderTarget):
     # ═══════════════════════════════════════════════════════
     # 代码块语法高亮
     # ═══════════════════════════════════════════════════════
-
-    def render_code(self, source: str, lang: str = "text",
-                    highlight_lines: list[int] | None = None) -> Syntax | Text:
-        """渲染代码块为 Rich Syntax。
-
-        Args:
-            source: 源码
-            lang: 语言标识
-            highlight_lines: 要高亮的行号列表
-
-        Returns:
-            Syntax 或 Text（降级时）
-        """
-        return render_code_block_syntax(source, lang, self._code_theme, highlight_lines)
-
-    def render_code_line(self, line: str, lang: str = "text") -> Text:
-        """渲染单行代码（语法高亮）。
-
-        用于 VNodePatcher 的 CODE_LINE 增量渲染。
-
-        Args:
-            line: 单行代码文本
-            lang: 语言标识
-
-        Returns:
-            带语法高亮样式的 Rich Text
-        """
-        if not line:
-            return Text()
-
-        self._ensure_theme()
-        from .._rendering import get_lexer as _shared_get_lexer
-        from .._rendering import highlight_line
-        lexer = _shared_get_lexer(lang)
-        if lexer is None:
-            return Text(line)
-        return highlight_line(line, lexer, self._theme)
-
-    # ═══════════════════════════════════════════════════════
-    # 表格渲染
-    # ═══════════════════════════════════════════════════════
-
-    def render_table(self, rows: list[list[str]],
-                     alignments: list[str] | None = None) -> Table:
-        """渲染表格为 Rich Table。
-
-        Args:
-            rows: 行数据（第一行为表头）
-            alignments: 各列对齐方式
-
-        Returns:
-            Rich Table 对象
-        """
-        return build_rich_table(rows, alignments, self.render_inline, self._output.width)
-
-    # ═══════════════════════════════════════════════════════
-    # 特殊渲染器委托
-    # ═══════════════════════════════════════════════════════
-
-    def render_math(self, source: str) -> Panel:
-        """渲染数学公式（使用 Rich Panel 美化）。"""
-        return self._math_renderer.render_block(source.strip())
-
-    def render_mermaid(self, source: str) -> Any:
-        """渲染 Mermaid 图表。"""
-        return self._mermaid_renderer.render(source)
 
     # ═══════════════════════════════════════════════════════
     # 内部方法

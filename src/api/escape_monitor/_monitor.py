@@ -10,8 +10,6 @@ import sys
 import time
 import threading
 import logging
-from pathlib import Path
-
 from ._history import (
     MONITOR_JOIN_TIMEOUT,
     UNIX_SELECT_TIMEOUT,
@@ -50,7 +48,6 @@ class EscapeMonitor:
         # 初始 set：未启动时视为 ready（无需等待）。
         self._monitor_ready = threading.Event()
         self._monitor_ready.set()
-        self._initial_flush_done = False
         self._thread = None
         self._old_settings = None
         self._saved_original_settings = None  # 永久保存的终端设置副本
@@ -116,22 +113,6 @@ class EscapeMonitor:
         with _active_monitor_lock:
             if _active_monitor is self:
                 _active_monitor = None
-
-    def pause(self):
-        """暂停监听（停止读 stdin 并恢复终端设置），用于让出终端控制权。
-
-        调用方（如 user_select）需要独占 stdin 时先 pause，操作完成后 resume。
-        pause/resume 配对使用，不可嵌套。
-
-        注意：pause 期间按键未被监听，在此期间按下 Esc 不会触发中断。
-        """
-        # 设置暂停标志，monitor 线程会在下次循环检测到并进入等待
-        self._active.clear()
-
-        # 恢复终端设置，让其他组件（如 prompt_toolkit）接管 stdin
-        # ★ 不持 _lock 调用：_restore_terminal_settings 内部已持锁，
-        #   避免与 monitor 线程的锁顺序依赖。
-        self._restore_terminal_settings()
 
     def resume(self):
         """恢复监听。
@@ -514,7 +495,6 @@ class EscapeMonitor:
         # 首次应用设置后（仅在初始启动时）清空 stdin 缓冲区，
         # 避免 tcflush 丢失暂停恢复路径中用户键入的合法字符
         termios.tcflush(fd, termios.TCIFLUSH)
-        self._initial_flush_done = True
 
         try:
             while not self._stop.is_set():

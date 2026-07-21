@@ -18,7 +18,7 @@
 import json
 import logging
 import threading
-from datetime import datetime, timedelta, date
+from datetime import datetime
 
 from ..paths import CHAT_DIR
 
@@ -122,57 +122,3 @@ def record_call(
                 f.write(json.dumps(record, ensure_ascii=False) + "\n")
         except OSError:
             _logger.warning("遥测日志写入失败: %s", log_path, exc_info=True)
-
-
-def get_telemetry_stats(period_days=7):
-    """返回指定日期范围内的聚合统计。
-
-    Args:
-        period_days: 统计天数（含当天），默认 7 天。
-
-    Returns:
-        {
-            "total_calls": int,
-            "total_input_tokens": int,
-            "total_output_tokens": int,
-            "total_cost_usd": float,
-            "days": int,
-            "period_days": int,
-        }
-    """
-    stats = {
-        "total_calls": 0,
-        "total_input_tokens": 0,
-        "total_output_tokens": 0,
-        "total_cost_usd": 0.0,
-        "days": 0,
-        "period_days": period_days,
-    }
-
-    today = date.today()
-    for i in range(period_days):
-        day = today - timedelta(days=i)
-        log_path = _TELEMETRY_DIR / f"{day.strftime('%Y-%m-%d')}.jsonl"
-        if not log_path.exists():
-            continue
-
-        try:
-            with open(log_path, "r", encoding="utf-8") as f:
-                for line in f:
-                    line = line.strip()
-                    if not line:
-                        continue
-                    try:
-                        rec = json.loads(line)
-                        stats["total_calls"] += 1
-                        stats["total_input_tokens"] += rec.get("input_tokens", 0)
-                        stats["total_output_tokens"] += rec.get("output_tokens", 0)
-                        stats["total_cost_usd"] += rec.get("cost_usd", 0.0)
-                    except (json.JSONDecodeError, KeyError):
-                        continue
-            stats["days"] += 1
-        except OSError:
-            continue
-
-    stats["total_cost_usd"] = round(stats["total_cost_usd"], 6)
-    return stats

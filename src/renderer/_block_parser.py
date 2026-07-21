@@ -21,7 +21,7 @@ from .inline_nodes import (
     UnderlineNode, InlineCodeNode, LinkNode, ImageNode,
     StrikethroughNode, HighlightNode, SubscriptNode, SuperscriptNode,
     InlineMathNode, FootnoteRefNode, AutoLinkNode, AutoLinkEmailNode,
-    LineBreakNode, _NESTABLE_TYPES, _HTML_TAG_MAP, InlineRecursionError,
+    LineBreakNode, _HTML_TAG_MAP,
 )
 from .inline_parser import (
     _InlineParser, render_inline_to_text,
@@ -32,11 +32,10 @@ from ._table_utils import (
     _SAFE_SENTINEL,
 )
 from ._block_helpers import (
-    _is_empty_line, _count_leading, _strip_left, _rstrip_line,
-    _is_only_chars, _starts_with, _has_only_chars,
+    _is_empty_line, _strip_left, _rstrip_line,
+    _is_only_chars, _has_only_chars,
     _LANG_BLACKLIST, _BLOCK_HTML_TAGS, _VOID_HTML_TAGS,
-    _INDENT_SPACES, _INDENT_PREFIX,
-    _INLINE_MAX_DEPTH, _MAX_PRESCAN_BUFFER,
+    _INDENT_SPACES,
     _is_blockquote_line, _get_blockquote_text,
     _is_code_fence_line, _strip_blockquote_prefix,
     _get_fence_lang, _rstrip_trailing_hashes,

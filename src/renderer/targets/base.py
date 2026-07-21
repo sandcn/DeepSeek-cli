@@ -116,24 +116,12 @@ class RenderTarget(ABC):
     def close(self) -> None:
         """关闭渲染目标（可选覆写）。释放资源。"""
 
-    def get_output_adapter(self) -> Optional["OutputAdapter"]:
-        """获取内部 OutputAdapter（可选覆写）。
-
-        默认返回 None。如果渲染目标内部包装了 OutputAdapter（如
-        TerminalRenderTarget），应覆写此方法返回它，避免 VNodePatcher
-        等消费者使用 hasattr 探测私有属性破坏 LSP。
-
-        Returns:
-            OutputAdapter 实例，或 None（如果目标没有 OutputAdapter）
-        """
-        return None
-
     # ── 辅助方法 ────────────────────────────────────────
 
     def __enter__(self):
         return self
 
-    def __exit__(self, exc_type, exc_val, exc_tb):
+    def __exit__(self, *args):
         self.close()
 
 
@@ -153,10 +141,6 @@ class CompositeRenderTarget(RenderTarget):
 
     def __init__(self, targets: list[RenderTarget]):
         self._targets = list(targets)
-
-    def add_target(self, target: RenderTarget) -> None:
-        """动态添加渲染目标。"""
-        self._targets.append(target)
 
     def write(self, renderable: Any) -> None:
         for t in self._targets:

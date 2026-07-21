@@ -16,7 +16,6 @@ from ._history import (
     _HISTORY_MAX_ENTRIES,
     _HISTORY_COMPACT_RATIO,
     INPUT_HISTORY_FILE,
-    _logger as _history_logger,
 )
 
 _logger = logging.getLogger(__name__)

@@ -18,10 +18,7 @@ Windows 原生 Python (sys.platform == 'win32'): 提供 stub 实现，
 
 from __future__ import annotations
 
-import logging
 import sys
-
-_logger = logging.getLogger(__name__)
 
 _IS_NATIVE_WIN = sys.platform == 'win32'
 
@@ -32,11 +29,8 @@ if _IS_NATIVE_WIN:
         """Windows stub — 操作抛出 ImportError，常量保持真实值。"""
 
         # ── 常量（类属性，访问不抛异常） ──
-        TCSANOW: int = 0
         TCSADRAIN: int = 1
         TCIFLUSH: int = 0
-        TCOFLUSH: int = 1
-        TCIOFLUSH: int = 2
         ECHO: int = 0x0008
         # TIOCGWINSZ / TIOCSWINSZ — 平台相关，提供常见值
         TIOCGWINSZ: int = 0x5413
@@ -45,17 +39,10 @@ if _IS_NATIVE_WIN:
         def tcgetattr(self, fd: int) -> list:
             raise ImportError("termios 在当前平台（Windows）不可用")
 
-        def tcsetattr(self, fd: int, when: int, attrs: object) -> None:
+        def tcsetattr(self, fd: int, _when: int, attrs: object) -> None:
             raise ImportError("termios 在当前平台（Windows）不可用")
 
         def tcflush(self, fd: int, queue: int) -> None:
-            raise ImportError("termios 在当前平台（Windows）不可用")
-
-        # ── 不太常用但也提供 ──
-        def tcsendbreak(self, fd: int, duration: int) -> None:
-            raise ImportError("termios 在当前平台（Windows）不可用")
-
-        def tcflow(self, fd: int, action: int) -> None:
             raise ImportError("termios 在当前平台（Windows）不可用")
 
     class _SimTty:

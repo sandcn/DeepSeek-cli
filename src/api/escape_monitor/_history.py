@@ -11,7 +11,6 @@ import sys
 import time
 import threading
 import logging
-from pathlib import Path
 from ...config.defaults import INPUT_HISTORY_FILE
 
 _logger = logging.getLogger(__name__)
@@ -172,7 +171,6 @@ def _compact_history_file() -> bool:
         return False  # 无需压缩
 
     # 使用临时文件原子替换（crash 安全：原文件在 rename 前始终完整）
-    import tempfile
     try:
         tmp_path = INPUT_HISTORY_FILE.with_suffix(".tmp")
         with open(tmp_path, "w", encoding="utf-8") as tmp:

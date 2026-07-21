@@ -25,7 +25,6 @@ from .output import OutputAdapter
 from .types import Token, TokenType, RenderContext
 from .inline_renderer import InlineRenderer
 from ._utils import get_code_style, parse_highlight_lines
-from .protocols import RenderEngineAPI
 from .handlers import HandlerRegistry, InlineHandler, CodeHandler, MathHandler, \
     MermaidHandler, DetailsHandler, AdmonitionHandler, HtmlBlockHandler, TableHandler, \
     FencedDivHandler
@@ -151,9 +150,6 @@ class RenderEngine:
     def code_typing_speed(self) -> int:
         return self._typing_speed
 
-    def get_highlight_lines(self, attrs: str) -> list[int]:
-        return parse_highlight_lines(attrs)
-
     def write(self, renderable) -> None:
         self._output.write(renderable)
 
@@ -235,10 +231,6 @@ class RenderEngine:
     @property
     def render_context(self) -> RenderContext:
         return self._ctx
-
-    def set_render_context(self, ctx: RenderContext) -> None:
-        """设置渲染上下文（用于外部同步引用链接/脚注等状态）。"""
-        self._ctx = ctx
 
     @property
     def math_renderer(self) -> "MathRenderer":

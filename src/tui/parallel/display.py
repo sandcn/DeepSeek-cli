@@ -510,9 +510,4 @@ class ParallelDisplay(BaseDisplay):
         with self._diff_active_guard(capture_frame=True):
             return func()
 
-    def print_output(self, text: str):
-        """输出文本到终端，清除当前帧并替换。"""
-        if not text:
-            return
-        self._clear_frame_lines()
-        self._terminal.write_line(text)
+

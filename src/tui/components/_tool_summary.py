@@ -13,7 +13,6 @@ if TYPE_CHECKING:
 
 from rich.text import Text
 
-from ..engine.const import _STYLE_SUCCESS, _STYLE_FAIL, _STYLE_WARN, _STYLE_DIM
 from ..animation.animator import AnimatorContext
 from ..core.style import Style
 from ..core.text_utils import build_left_border_ansi, build_warning_pulse_ansi

@@ -24,7 +24,7 @@ from .inline_nodes import (
     AutoLinkNode, AutoLinkEmailNode,
     LineBreakNode, FootnoteRefNode,
     SubscriptNode, SuperscriptNode,
-    _NESTABLE_TYPES, _HTML_TAG_MAP,
+    _HTML_TAG_MAP,
     render_inline_to_text,
 )
 from .emoji_map import EMOJI_MAP
@@ -331,17 +331,6 @@ for ch, entries in _InlineParser._FORMAT_DISPATCH.items():
         resolved.append((getattr(_InlineParser, method_name), needs_depth))
     _InlineParser._METHOD_CACHE[ch] = resolved
 
-
-# ═══════════════════════════════════════════════════════════
-# 内联解析函数
-# ═══════════════════════════════════════════════════════════
-
-def parse_inline(text: str) -> list[InlineNode]:
-    """递归下降解析内联 Markdown 格式（无正则）。"""
-    if not text:
-        return []
-    parser = _InlineParser(text)
-    return parser.parse()
 
 
 

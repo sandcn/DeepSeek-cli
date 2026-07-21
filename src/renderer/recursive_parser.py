@@ -193,45 +193,9 @@ def _merge_list_continuations(root: ASTNode):
 
 
 # ═══════════════════════════════════════════════════════════
-# 便捷函数
-# ═══════════════════════════════════════════════════════════
-
-def parse_markdown(text: str,
-                   parser: MarkdownRecursiveParser | None = None) -> ASTNode:
-    """一次性完整解析 Markdown 文本。
-
-    纯字符级递归下降解析，无正则表达式。
-
-    Args:
-        text: Markdown 源文本
-        parser: 可选的复用解析器实例。对大量小文本重复调用时，
-                传入同一 parser 可避免重复创建，提升性能。
-
-    Returns:
-        ASTNode：类型为 DOCUMENT 的根节点
-    """
-    p = parser if parser is not None else MarkdownRecursiveParser()
-    return p.parse(text)
-
-
-# ═══════════════════════════════════════════════════════════
 # 向后兼容别名
 # ═══════════════════════════════════════════════════════════
 
 # RecursiveDescentParser = RegexFreeBlockParser
 # 使旧代码 from .recursive_parser import RecursiveDescentParser 仍能工作
 RecursiveDescentParser = RegexFreeBlockParser
-
-
-class ParseState:
-    """向后兼容的 ParseState 枚举替代（旧代码引用用）。"""
-    NORMAL = 0
-    CODE_FENCE = 1
-    MATH_BLOCK = 2
-    DISPLAY_MATH_BLOCK = 3
-    MERMAID_BLOCK = 4
-    DETAILS_BLOCK = 5
-    INDENTED_CODE = 6
-    HTML_BLOCK = 7
-    FENCED_DIV = 8
-    TABLE_ACTIVE = 10

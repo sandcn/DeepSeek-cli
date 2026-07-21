@@ -34,8 +34,3 @@ def get_adapter(model: str) -> Any:
             _adapter_cache[model] = OpenAICompatAdapter()
     return _adapter_cache[model]
 
-
-def clear_adapter_cache() -> None:
-    """清空适配器缓存（用于测试）"""
-    with _adapter_cache_lock:
-        _adapter_cache.clear()

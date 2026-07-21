@@ -126,22 +126,6 @@ class OutputAdapter:
                 self._console.file.write(text)
                 self._console.file.flush()
 
-    def write_raw_buffered(self, text: str) -> None:
-        """纯文本写入（跳过 Rich 处理），不执行 flush。
-
-        与 write_raw 的唯一区别：省略末尾的 .flush() 调用。
-        适用于高频面板帧输出——多行 ANSI 只需末尾一次 flush。
-
-        锁获取逻辑与 write_raw 一致，锁超时时亦直接写入。
-        """
-        if not text:
-            return
-        with _try_acquire_output_lock(name="output_adapter.write_raw_buffered", timeout=1.0) as locked:
-            if locked:
-                self._console.file.write(text)
-            else:
-                self._console.file.write(text)
-
     def write_line(self, text: str = "") -> None:
         """输出纯文本行。
 

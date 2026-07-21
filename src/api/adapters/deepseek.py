@@ -76,26 +76,6 @@ class DeepSeekAdapter(BaseLLMAdapter):
         """
         return model.startswith(_V4_PREFIX)
 
-    @staticmethod
-    def is_classic_model(model: str) -> bool:
-        """判断是否为经典模型（无 thinking 参数）"""
-        return model in _CLASSIC_MODELS
-
-    @staticmethod
-    def get_model_family(model: str) -> str:
-        """获取模型家族分类
-
-        Returns:
-            "v4" | "reasoner" | "classic" | "unknown"
-        """
-        if model.startswith(_V4_PREFIX):
-            return "v4"
-        if DeepSeekAdapter.is_reasoner_model(model):
-            return "reasoner"
-        if model in _CLASSIC_MODELS:
-            return "classic"
-        return "unknown"
-
     # ── 消息预处理 ─────────────────────────────────────────
 
     def prepare_messages(self, messages: list, model: str) -> list:

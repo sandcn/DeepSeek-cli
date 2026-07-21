@@ -110,11 +110,6 @@ class ASTRenderer(_TextRenderingMixin, _ListRenderingMixin, _BlockRenderingMixin
         if handler:
             handler(node)
 
-    def render_all(self, nodes: list[ASTNode]) -> None:
-        """渲染 ASTNode 列表。"""
-        for node in nodes:
-            self.render(node)
-
     # ── 辅助方法 ────────────────────────────────────────
 
     def _output_assembled(self, assembled: Text):

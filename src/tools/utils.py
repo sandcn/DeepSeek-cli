@@ -5,10 +5,7 @@ import os
 import subprocess
 
 # re-export 编码检测
-from .encoding import (
-    detect_encoding,
-    async_detect_encoding,
-)
+from .encoding import detect_encoding
 
 # re-export 文件操作
 from .file_ops import (

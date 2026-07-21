@@ -45,20 +45,6 @@ class ASTOptimizer:
     # 公开接口
     # ═══════════════════════════════════════════════════════
 
-    def optimize(self, node: ASTNode) -> ASTNode:
-        """优化 AST 树，返回优化后的根节点。
-
-        Args:
-            node: 原始 AST 根节点。
-
-        Returns:
-            优化后的新 AST 根节点（默认原地修改，inplace=False 时不修改原始输入）。
-        """
-        if not self._options.get("inplace", True):
-            node = self._deep_copy(node)
-        node = self._optimize_recursive(node)
-        return node
-
     # ═══════════════════════════════════════════════════════
     # 内部递归
     # ═══════════════════════════════════════════════════════

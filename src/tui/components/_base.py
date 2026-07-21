@@ -192,25 +192,6 @@ class TuiComponent(Widget):
         if self.should_update(new_props):
             self._dirty = True
 
-    # ── 辅助 ──────────────────────────────────────────────
-
-    def _estimate_lines(self, text: str = "") -> int:
-        """估算文本内容的终端行数。
-
-        按文本中的换行符数量 + 1 计算行数。
-        不处理终端换行（word wrapping），仅适用于粗略估计。
-
-        Args:
-            text: 要估算的文本。省略时使用空字符串。
-
-        Returns:
-            int: 估算的行数，至少为 1。
-        """
-        if not text:
-            return 1
-        return text.count('\n') + 1
-
-
 # ═══════════════════════════════════════════════════════════
 # 行数估算辅助（内部使用）
 # ═══════════════════════════════════════════════════════════

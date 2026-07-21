@@ -11,11 +11,6 @@ TUI 框架统一入口 — `Framework` 单例 + 公开 API。
 Widget 树管理：
   - mount_widget() / unmount_widget(): 挂载/卸载控件树根节点
   - create_widget(): 创建 Widget 并自动挂载
-  - update_props(): 安全更新 Widget props 并触发重渲染
-  - render_tree_to_buffer(): 渲染整棵控件树到指定尺寸 buffer
-  - batch_update(): 批量更新多个 Widget 的 props
-  - find_widget() / find_widgets_by_type(): 控件查找
-  - widget_context(): 上下文管理器，用于测试/原型渲染
 
 事件集成：
   - subscribe() / unsubscribe(): 订阅/取消 DisplayEventBus 事件
@@ -31,8 +26,7 @@ from __future__ import annotations
 
 import logging
 import threading
-from contextlib import contextmanager
-from typing import TYPE_CHECKING, Any, Iterator, Optional
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from .components._base import TuiComponent
@@ -133,10 +127,6 @@ class Framework:
 
     # ── 生命周期 ──────────────────────────────────────
 
-    @property
-    def is_running(self) -> bool:
-        return self._running
-
     def start(self) -> None:
         """启动框架——预热子系统。幂等操作。"""
         with self._lifecycle_lock:
@@ -195,17 +185,6 @@ class Framework:
             return None
         return self._widget_tree.root
 
-    def get_widget_tree(self):
-        """获取当前 WidgetTree 实例。
-
-        返回内部 WidgetTree 实例，可直接进行 find/find_all/find_by_type 等操作。
-
-        Returns:
-            WidgetTree 实例，未初始化时创建并返回新实例。
-        """
-        self._ensure_widget_tree()
-        return self._widget_tree
-
     def has_widget_tree(self) -> bool:
         """是否已有挂载的 Widget 树。"""
         return (self._widget_tree is not None
@@ -230,43 +209,6 @@ class Framework:
         instance.mount()
         return instance
 
-    def update_props(self, widget, new_props: dict) -> None:
-        """安全更新 Widget 的 props 并触发重渲染。
-
-        将 new_props 逐个通过 set_prop() 应用到 widget 的 _props 字典，
-        然后调用 widget.update() 触发 compose 和重渲染判定。
-
-        Args:
-            widget: 要更新 props 的 Widget 实例。
-            new_props: 新的 props 字典。
-        """
-        if widget is None or not isinstance(new_props, dict):
-            return
-        for key, value in new_props.items():
-            widget.set_prop(key, value)
-        widget.update()
-
-    @contextmanager
-    def widget_context(self, width: int = 80, height: int = 100) -> Iterator["RenderBuffer"]:
-        """创建临时 Widget 渲染上下文的上下文管理器。
-
-        用于测试或快速原型：创建 RenderBuffer，yield 给调用方，
-        使用后自动清理。
-
-        Args:
-            width: 缓冲区宽度（列数），默认 80。
-            height: 缓冲区高度（行数），默认 100。
-
-        Yields:
-            RenderBuffer 实例，用于接收 Widget 渲染输出。
-        """
-        from .render_buffer import RenderBuffer
-        buf = RenderBuffer(width, height)
-        try:
-            yield buf
-        finally:
-            pass
-
     def render_widget_tree(self, buffer):
         """渲染整棵 Widget 树到 RenderBuffer。
 
@@ -275,108 +217,6 @@ class Framework:
         """
         if self._widget_tree is not None:
             self._widget_tree.render(buffer)
-
-    def render_tree_to_buffer(self, width: int, height: int) -> str:
-        """渲染 Widget 树到指定尺寸的 RenderBuffer，返回渲染字符串。
-
-        创建指定尺寸的 RenderBuffer，委托 WidgetTree.render() 渲染整棵树，
-        然后返回 buffer.render() 的结果。
-
-        若 WidgetTree 未初始化或无根节点，返回空字符串。
-
-        Args:
-            width: 缓冲区宽度（列数）。
-            height: 缓冲区高度（行数）。
-
-        Returns:
-            渲染后的字符串。树为空时返回空字符串。
-        """
-        self._ensure_widget_tree()
-        if self._widget_tree is None or self._widget_tree.root is None:
-            return ""
-        from .render_buffer import RenderBuffer
-        buf = RenderBuffer(width, height)
-        try:
-            self._widget_tree.render(buf)
-        except Exception as exc:
-            _logger.warning("render_tree_to_buffer 异常: %s", exc)
-            return ""
-        return buf.render()
-
-    def batch_update(self, updates: list[tuple]) -> None:
-        """批量更新多个 Widget 的 props 并触发整树重渲染。
-
-        支持两种更新格式：
-          - (widget_key: str, new_props: dict) — 按 key 查找控件后更新
-          - (widget_instance: Widget, new_props: dict) — 直接更新控件实例
-
-        更新所有控件后，调用 WidgetTree.update_tree() 触发整树重渲染。
-
-        Args:
-            updates: 更新列表，每项为 (target, new_props) 元组。
-        """
-        self._ensure_widget_tree()
-        if self._widget_tree is None or self._widget_tree.root is None:
-            return
-
-        for item in updates:
-            if not isinstance(item, (list, tuple)) or len(item) != 2:
-                continue
-            target, new_props = item
-            widget = None
-            if isinstance(target, str):
-                # 按 key 查找
-                widget = self._widget_tree.find(target)
-            elif isinstance(target, Widget):
-                widget = target
-
-            if widget is not None and isinstance(new_props, dict):
-                widget.update(new_props)
-
-        # 触发整树重渲染
-        self._widget_tree.update_tree()
-
-    def find_widget(self, key: str) -> Optional["Widget"]:
-        """按 key 查找 Widget 树中的控件。
-
-        Args:
-            key: 要查找的控件 key。
-
-        Returns:
-            Widget 实例，未找到时返回 None。
-        """
-        self._ensure_widget_tree()
-        if self._widget_tree is None:
-            return None
-        return self._widget_tree.find(key)
-
-    def find_widgets(self, key: str) -> list["Widget"]:
-        """按 key 查找所有匹配的控件。
-
-        Args:
-            key: 要查找的控件 key。
-
-        Returns:
-            匹配的 Widget 实例列表。
-        """
-        self._ensure_widget_tree()
-        if self._widget_tree is None:
-            return []
-        return self._widget_tree.find_all(key)
-
-    def find_widgets_by_type(self, cls: type) -> list["Widget"]:
-        """按类型查找所有匹配的控件。
-
-        Args:
-            cls: 目标控件类型。
-
-        Returns:
-            匹配的 Widget 实例列表。
-        """
-        self._ensure_widget_tree()
-        if self._widget_tree is None:
-            return []
-        return self._widget_tree.find_by_type(cls)
 
     # ── 公开 API ──────────────────────────────────────
 
@@ -395,28 +235,6 @@ class Framework:
         instance = component_cls(*args, **kwargs)
         instance.did_mount()
         return instance
-
-    def get_registry(self) -> Any:
-        """获取全局效果注册表（EffectRegistry）。
-
-        Returns:
-            EffectRegistry 类（本身即注册表，无需实例化）。
-        """
-        if self._registry is None:
-            from .core.effects import EffectRegistry
-            self._registry = EffectRegistry
-        return self._registry
-
-    def get_stylesheet(self) -> Any:
-        """获取全局样式表（StyleSheet）。
-
-        Returns:
-            StyleSheet 类（本身即注册表，无需实例化）。
-        """
-        if self._stylesheet is None:
-            from .core.style import StyleSheet
-            self._stylesheet = StyleSheet
-        return self._stylesheet
 
     def get_animator(self) -> "AnimatorContext":
         """获取全局动画上下文（AnimatorContext 实例）。
@@ -453,13 +271,6 @@ class Framework:
             from .core.component_registry import ComponentRegistry
             self._component_registry = ComponentRegistry
         return self._component_registry.get_default()
-
-    def get_config(self) -> "TuiConfig":
-        """获取全局 TUI 配置。"""
-        if self._config is None:
-            from .config import TuiConfig
-            self._config = TuiConfig.defaults()
-        return self._config
 
     def subscribe(self, event_type: type, callback) -> None:
         """订阅事件总线事件。

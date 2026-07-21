@@ -72,6 +72,3 @@ class HandlerRegistry:
     def get(self, token_type: TokenType) -> TokenHandler | None:
         """获取处理指定 TokenType 的 handler"""
         return self._handlers.get(token_type)
-
-    def get_all(self) -> dict[TokenType, TokenHandler]:
-        return dict(self._handlers)

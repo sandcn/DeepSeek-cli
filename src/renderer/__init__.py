@@ -206,7 +206,3 @@ class IncrementalRenderer:
                 _logger.debug("渲染统计摘要异常", exc_info=True)
 
         self._output.flush()
-
-    @property
-    def pipeline(self):
-        return self._pipeline

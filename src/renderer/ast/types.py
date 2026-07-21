@@ -164,35 +164,11 @@ class ASTNode:
     meta: dict = field(default_factory=dict)
     range: SourceRange | None = None
 
-    # ── 便捷属性 ────────────────────────────────────────
-
-    @property
-    def is_leaf(self) -> bool:
-        """是否为叶子节点（无子节点）。"""
-        return len(self.children) == 0
-
-    @property
-    def is_branch(self) -> bool:
-        """是否为分支节点（有子节点）。"""
-        return len(self.children) > 0
-
     # ── 树操作 ──────────────────────────────────────────
 
     def add_child(self, child: ASTNode) -> None:
         """添加子节点到末尾。"""
         self.children.append(child)
-
-    def insert_child(self, index: int, child: ASTNode) -> None:
-        """在指定位置插入子节点。"""
-        self.children.insert(index, child)
-
-    def remove_child(self, child: ASTNode) -> None:
-        """移除指定子节点。"""
-        self.children.remove(child)
-
-    def clear_children(self) -> None:
-        """清空所有子节点。"""
-        self.children.clear()
 
     def find(self, node_type: NodeType) -> list[ASTNode]:
         """递归查找所有指定类型的子节点（DFS）。"""

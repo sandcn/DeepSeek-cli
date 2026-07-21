@@ -83,11 +83,6 @@ class RenderBuffer:
         """缓冲区高度（行数）。"""
         return self._height
 
-    @property
-    def size(self) -> tuple[int, int]:
-        """缓冲区尺寸 (width, height)。"""
-        return (self._width, self._height)
-
     def is_empty(self) -> bool:
         """缓冲区是否为空（width=0 或 height=0）。"""
         return self._width == 0 or self._height == 0

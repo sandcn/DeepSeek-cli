@@ -74,15 +74,6 @@ class TokenPipeline:
         """在链尾添加一个过滤器。"""
         self._filters.append(filter_obj)
 
-    def remove_filter(self, filter_obj: TokenFilter) -> None:
-        """从链中移除一个过滤器。"""
-        self._filters.remove(filter_obj)
-
-    @property
-    def filters(self) -> list[TokenFilter]:
-        """只读的过滤器列表。"""
-        return list(self._filters)
-
     def process(self, tokens: list[Token], ctx: RenderContext) -> list[Token]:
         """依次经过所有过滤器处理 Token 流。
 
@@ -108,36 +99,6 @@ class TokenPipeline:
 # ═══════════════════════════════════════════════════════════
 # 内置过滤器
 # ═══════════════════════════════════════════════════════════
-
-class MetricsCollector(TokenFilter):
-    """Token 类型统计收集器。
-
-    统计本轮 feed() 中各类型 Token 的数量，存入 ctx 的 metrics 字段。
-    可用于诊断和性能分析。
-    """
-
-    def process(self, tokens: list[Token], ctx: RenderContext) -> list[Token]:
-        if not hasattr(ctx, 'metrics'):
-            ctx.metrics = Counter()
-        for t in tokens:
-            # ★ 优化：用枚举成员做键（省去 .name 的 str 构造）
-            ctx.metrics[t.type] += 1
-        return tokens
-
-    def get_report(self, ctx: RenderContext) -> str:
-        """获取可读的统计报告。"""
-        if not hasattr(ctx, 'metrics') or not ctx.metrics:
-            return "(no metrics)"
-        total = sum(ctx.metrics.values())
-        sorted_items = sorted(ctx.metrics.items(), key=lambda x: -x[1])
-        lines = [f"  Token 统计: 总计 {total} 个"]
-        for ttype, count in sorted_items[:10]:
-            pct = count / total * 100
-            lines.append(f"    {ttype.name:<20} {count:>4} ({pct:.1f}%)")
-        if len(sorted_items) > 10:
-            lines.append(f"    ... 及其他 {len(sorted_items) - 10} 种")
-        return "\n".join(lines)
-
 
 class CodeBlockBatcher(TokenFilter):
     """代码块批处理过滤器——将逐行的 CODE_LINE 合并为整块 CODE_BLOCK。
@@ -378,17 +339,3 @@ class CodeBlockBatcher(TokenFilter):
             self._flushed_in_feed = False
             raise
 
-
-class DebugPrinter(TokenFilter):
-    """调试用过滤器——打印每个经过的 Token。"""
-
-    def __init__(self, stream=None):
-        import sys
-        self._stream = stream or sys.stderr
-
-    def process(self, tokens: list[Token], ctx: RenderContext) -> list[Token]:
-        for t in tokens:
-            content_preview = t.content[:50].replace('\n', '\\n')
-            locked_print(f"  [PIPE] {t.type.name:<22} {content_preview}",
-                  file=self._stream)
-        return tokens

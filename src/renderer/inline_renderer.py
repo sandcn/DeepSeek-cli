@@ -340,8 +340,3 @@ _DEFAULT_RENDERER = InlineRenderer()
 def render_inline(text: str, ctx=None) -> Text:
     """便捷函数——使用默认 InlineRenderer 渲染内联 Markdown。"""
     return _DEFAULT_RENDERER.render(text, ctx)
-
-
-def get_inline_renderer() -> InlineRenderer:
-    """获取默认 InlineRenderer 实例。"""
-    return _DEFAULT_RENDERER

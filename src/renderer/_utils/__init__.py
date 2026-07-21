@@ -17,7 +17,6 @@ from ._html_entities import (
 
 # ── 自动链接化 ──
 from ._linkify import (
-    auto_linkify,
     _auto_linkify_emails,
 )
 
@@ -25,7 +24,6 @@ from ._linkify import (
 from ._display import (
     _ZERO_WIDTH_CHARS,
     cjk_display_width,
-    strip_escape_markers,
 )
 
 # ── 代码高亮 ──
@@ -48,7 +46,3 @@ from ._delay import (
     _precise_delay,
 )
 
-# ── CSS 颜色映射 ──
-from ._css_colors import (
-    CSS_COLOR_MAP,
-)
