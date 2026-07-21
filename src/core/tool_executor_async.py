@@ -10,8 +10,9 @@
 - 支持 asyncio.gather 实现真正的并发
 - Semaphore 为类级全局单例，跨 Agent 实例共享限流
 - module-level `_default_scheduler` 单例 + `ToolScheduler.default()` 获取
-- `schedule()` 为统一入口：所有工具都走全局 DAG 路径（单工具/多工具统一）
-- 多批并发：批间默认串行，dispatch_agent 层执行时不阻塞下一批加入
+- `schedule()` 为统一且唯一的入口：所有工具都走全局 DAG 路径
+- 多批并发：批间串行执行，上一批只剩 dispatch_agent 时下一批可并行
+- SubAgent 工具调用同样走全局 DAG 路径
 """
 
 from __future__ import annotations
@@ -167,10 +168,6 @@ class ToolScheduler:
 
             return (tc["id"], output, False)
 
-    # execute_async 和 execute_dag_async 已删除，
-    # 所有调度统一走 schedule() → 全局 DAG 路径。
-    # _execute_layers 已内联到 _execute_global_dag_async 的层间重拓扑循环中。
-
     async def _execute_global_dag_async(
         self,
         dag,
@@ -216,17 +213,19 @@ class ToolScheduler:
             return calls
 
         if dag.has_cycle():
-            _logger.warning("_execute_global_dag_async: DAG 存在环，回退到串行")
-            pending_calls = _build_pending_calls(current_batch_ids)
-            if pending_calls:
-                serial_results = await self._execute_serial(
-                    pending_calls, agent_ref=agent_ref,
-                    on_before=on_before, on_after=on_after,
-                    run_method=run_method,
-                )
-                for r in serial_results:
-                    self._results_map[r[0]] = r
-                    self._completed_tc_ids.add(r[0])
+            _logger.warning("_execute_global_dag_async: DAG 存在环，并发执行剩余工具")
+            pending = current_batch_ids - set(self._results_map.keys()) - self._pending_tc_ids
+            if pending:
+                pending_calls = _build_pending_calls(pending)
+                if pending_calls:
+                    results = await self._execute_concurrent(
+                        pending_calls, agent_ref=agent_ref,
+                        on_before=on_before, on_after=on_after,
+                        run_method=run_method,
+                    )
+                    for r in results:
+                        self._results_map[r[0]] = r
+                        self._completed_tc_ids.add(r[0])
             return [self._results_map[tc_id] for tc_id in current_batch_ids
                     if tc_id in self._results_map]
 
@@ -249,28 +248,30 @@ class ToolScheduler:
                 layers = dag.topological_sort()
                 if layers is None:
                     _logger.warning(
-                        "_execute_global_dag_async: 拓扑排序失败，回退到串行"
+                        "_execute_global_dag_async: 拓扑排序失败，并发执行剩余工具"
                     )
-                    # 只执行当前批次尚未完成的节点
-                    pending = current_batch_ids - set(self._results_map.keys())
+                    pending = current_batch_ids - set(self._results_map.keys()) - self._pending_tc_ids
                     if pending:
                         pending_calls = _build_pending_calls(pending)
                         if pending_calls:
-                            serial_results = await self._execute_serial(
+                            results = await self._execute_concurrent(
                                 pending_calls, agent_ref=agent_ref,
                                 on_before=on_before, on_after=on_after,
                                 run_method=run_method,
                             )
-                            for r in serial_results:
+                            for r in results:
                                 self._results_map[r[0]] = r
                     break
 
                 # 找到第一个含未执行节点的层
+                # ★ 排除 _pending_tc_ids 中的节点（正在被外层调用执行），
+                #   防止嵌套 _execute_global_dag_async 重复执行外层正在处理的节点
                 target_layer: list[str] | None = None
                 for layer in layers:
                     unexecuted = [
                         tc_id for tc_id in layer
                         if tc_id not in self._results_map
+                        and tc_id not in self._pending_tc_ids
                     ]
                     if unexecuted:
                         target_layer = unexecuted
@@ -337,30 +338,19 @@ class ToolScheduler:
         on_after: Optional[Callable] = None,
         run_method: Optional[Callable] = None,
     ) -> List[Tuple[str, str, bool]]:
-        """统一调度入口：通过全局 DAG 进行多批拓扑调度。
+        """统一调度入口：通过全局 DAG 进行多批拓扑调度（唯一工具执行路径）。
 
         - 空列表 → 返回 []
         - 所有工具（单工具/多工具）→ 全局 DAG 调度（累积工具到全局 DAG + 拓扑分层并发）
-          - DAG 构建失败时回退到全串行
 
         多批并发策略：
-        - 批间默认串行：上一批非 dispatch_agent 工具执行完之前，下一批等待
-        - dispatch_agent 放行：如果当前批剩余未执行节点全部是 dispatch_agent，
-          下一批可提前与 dispatch_agent 并行执行（SubAgent 通过 add_batch 新增的
-          节点被当前执行流程捕获并执行）
+        - 批间串行：上一批非 dispatch_agent 工具执行完之前，下一批等待
+        - dispatch_agent 放行：上一批只剩 dispatch_agent 时，下一批可并行执行
 
-        SubAgent 也使用全局 DAG，嵌套调用时与主 Agent 共享同一全局 DAG：
+        SubAgent 也使用全局 DAG：
         - 子 Agent 的工具调用被正确累积到全局 DAG
         - _prev_non_dispatch_ids 在外层 schedule() 返回前被外层批次覆盖
         - _results_map 确保已执行节点被跳过
-
-        双重保护机制：
-        - _schedule_lock（asyncio.Lock）：保护共享状态（_global_dag /
-          _prev_non_dispatch_ids / _batch_boundaries）的并发修改，防止
-          多 SubAgent 通过 asyncio.gather 并发调用 schedule() 时产生竞态。
-          锁仅覆盖状态修改（<1ms），不覆盖工具执行 await（避免嵌套死锁）。
-        - _schedule_depth：防止 SubAgent 嵌套调用污染 _prev_non_dispatch_ids
-          （只有最外层 MainAgent 的调用才更新该字段，SubAgent 路径跳过）。
 
         Args:
             tool_calls: 工具调用列表 [{"id", "name", "arguments"}]
@@ -454,45 +444,14 @@ class ToolScheduler:
             except Exception:
                 async with self._schedule_lock:
                     _update_prev_ids()
-                _logger.warning(
-                    "schedule[%s]: 全局 DAG 调度失败，回退到全串行执行 (%d 个工具)",
+                _logger.error(
+                    "schedule[%s]: 全局 DAG 调度失败 (%d 个工具)",
                     agent_label, len(tool_calls), exc_info=True,
                 )
-                # 锁外执行回退串行路径，避免嵌套死锁
-                return await self._execute_serial(
-                    tool_calls, agent_ref=agent_ref,
-                    on_before=on_before, on_after=on_after,
-                    run_method=run_method,
-                )
+                raise
 
         finally:
             self._schedule_depth -= 1
-
-    async def _execute_serial(
-        self, tool_calls: list, *,
-        agent_ref, on_before: Optional[Callable] = None,
-        on_after: Optional[Callable] = None,
-        run_method: Optional[Callable] = None,
-    ) -> List[Tuple[str, str, bool]]:
-        """串行执行工具调用列表，保持原始顺序，遇到取消则停止后续并 re-raise。"""
-        results = []
-        for tc in tool_calls:
-            try:
-                result = await self._execute_one_async(
-                    tc, agent_ref=agent_ref, on_before=on_before,
-                    on_after=on_after, run_method=run_method,
-                )
-            except asyncio.CancelledError:
-                _logger.warning("Serial async tool %s cancelled, 停止后续工具", tc["name"])
-                results.append((tc["id"], f"工具执行被取消: {tc['name']}", False))
-                raise
-            except Exception as e:
-                _logger.error("Serial async tool %s failed: %s", tc["name"], e)
-                result = (tc["id"], f"工具执行失败: {e}", False)
-                results.append(result)
-                continue
-            results.append(result)
-        return results
 
     async def _execute_concurrent(
         self, tool_calls: list, *,

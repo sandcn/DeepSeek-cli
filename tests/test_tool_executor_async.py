@@ -288,7 +288,7 @@ class TestExecuteOneAsync:
 
 
 # ═══════════════════════════════════════════════════════════════
-# execute_async — 并发模式
+# _execute_concurrent — 并发模式
 # ═══════════════════════════════════════════════════════════════
 
 # ═══════════════════════════════════════════════════════════════
@@ -299,7 +299,7 @@ class TestCancellationCleanup:
     """取消后的 task 清理验证"""
 
     @pytest.mark.asyncio
-    async def test_serial_cancelled_swallowed(self, executor, tool_calls):
+    async def test_schedule_cancelled(self, executor, tool_calls):
         """schedule() 中被取消 → CancelledError 被 re-raise 到上层"""
         call_count = 0
         hang_event = asyncio.Event()

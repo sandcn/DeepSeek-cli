@@ -11,7 +11,7 @@
 3. Kahn 算法拓扑排序 → 分层输出
 4. 每层内工具可并发执行，层间串行等待
 
-安全回退：检测到环时返回 ``None``，调用方回退到全串行。
+检测到环时 ``topological_sort()`` 返回 ``None``，调用方并发执行剩余工具。
 """
 
 from __future__ import annotations
@@ -74,7 +74,7 @@ class ToolDAG:
                 # level_nodes 中的工具可并发执行
                 ...
         else:
-            # 存在环，回退到全串行
+            # 存在环，并发执行
     """
 
     def __init__(self, tool_calls: list[dict], registry) -> None:
