@@ -281,8 +281,7 @@ class SubAgent(BaseAgent):
 
         ToolScheduler 自动根据工具数量和依赖关系选择执行策略：
         - 空列表 → 直接返回
-        - 单工具 → 直接执行
-        - 多工具 → 构建 ToolDAG 拓扑分层调度
+        - 全部工具 → 通过全局 DAG 拓扑分层调度（单工具/多工具统一）
         """
         # 检测 dispatch_agent 调用，创建共享 ParallelExecutor
         dispatch_count = sum(1 for tc in tool_calls if tc.get("name") == "dispatch_agent")

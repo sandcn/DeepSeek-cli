@@ -67,8 +67,7 @@ class ToolCallbackChain:
 
         ToolScheduler 根据工具数量和依赖关系自动选择执行策略：
         - 空列表 → 直接返回
-        - 单工具 → execute_async(parallel=False) 直接执行
-        - 多工具 → 构建 ToolDAG 拓扑分层调度，构建失败回退串行
+        - 全部工具 → 通过全局 DAG 拓扑分层调度（单工具/多工具统一）
         """
         agent = self._agent
         parse_elapsed = (usage or {}).get("tool_parse_elapsed", 0.0)
