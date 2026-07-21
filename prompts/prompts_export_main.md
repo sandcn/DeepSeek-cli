@@ -220,6 +220,8 @@ dispatch_agent(type="execute", description="<任务摘要>", prompt="<自然语�
 
 ## Agent 调度规则速查
 
+> **map / review / execute：能并行强制并行，无例外。**
+
 | 规则 | 说明 |
 |------|------|
 | 串行依赖 | map → think → plan → execute（执行）→ review 必须串行，不可跳跃 |
@@ -227,9 +229,9 @@ dispatch_agent(type="execute", description="<任务摘要>", prompt="<自然语�
 | 并行限制 | `dispatch_agent` 不能与普通工具（read_file/write_file/bash等）同轮并行 |
 | 同轮多次 | 同轮可多次 `dispatch_agent`，自动共享执行器实现真正并行 |
 | 写后隔离 | 同一文件所有修改必须在单次 Agent 调用内完成 |
-| execute 并发 | 无依赖步骤强制并发派发多个 execute，各实例独立上下文，同批 ≤8 个 |
-| review 并发 | 多文件审查强制并发派发多个 review Agent |
-| 并发上限 | 同批 map / execute 并发 ≤8 个 |
+| **map 并发（强制）** | 有多个独立模块/文件须分析时**强制并发派发**，禁止逐个串行；同批 ≤8 个 |
+| **execute 并发（强制）** | 无依赖步骤**强制并发派发多个** execute Agent，各实例独立上下文；同批 ≤8 个 |
+| **review 并发（强制）** | 多文件审查**强制并发派发**多个 review Agent |
 
 ---
 
