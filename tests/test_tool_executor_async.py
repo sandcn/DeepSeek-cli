@@ -64,7 +64,7 @@ def tool_calls():
 @pytest.fixture(autouse=True)
 def _patch_extract_key_params():
     """所有测试统一 patch extract_key_params，避免 UI 模块依赖"""
-    with patch("src.ui.display.extract_key_params",
+    with patch("src.core.tool_executor_async.extract_key_params",
                return_value="(mock detail)"):
         yield
 
@@ -1460,3 +1460,202 @@ class TestSchedule:
 
         assert on_before.call_count == 3
         assert on_after.call_count == 3
+
+
+# ═══════════════════════════════════════════════════════════════
+# schedule() — asyncio.Lock 行为测试
+# ═══════════════════════════════════════════════════════════════
+
+class TestScheduleLock:
+    """测试 schedule() 中 _schedule_lock 的并发保护行为。
+
+    验证要点：
+    - 锁在 DAG 状态修改时被持有
+    - 锁在工具执行期间被释放（避免嵌套死锁）
+    - 并发调用被串行化，共享状态一致
+    - _prev_non_dispatch_ids 不被交叉覆盖
+    """
+
+    @staticmethod
+    def _make_registry(execute_map=None):
+        """创建 mock registry。
+
+        Args:
+            execute_map: {tool_name: async callable} 可选，自定义 execute 行为
+        """
+        from src.tools.base import ToolMetadata
+
+        reg = MagicMock(spec=ToolRegistry)
+
+        def get_meta(name):
+            return ToolMetadata(parallel_safe=False)
+
+        reg.get_metadata.side_effect = get_meta
+
+        def dispatch(name, arguments, agent=None):
+            f = MagicMock()
+            if execute_map and name in execute_map:
+                f.execute = AsyncMock(side_effect=execute_map[name])
+            else:
+                f.execute = AsyncMock(return_value="ok")
+            return f
+
+        reg.dispatch.side_effect = dispatch
+        return reg
+
+    @pytest.mark.asyncio
+    async def test_lock_serializes_concurrent_schedules(self):
+        """两个并发 schedule() 调用被锁串行化，_global_dag 状态一致。
+
+        验证策略：两个并发 schedule 各自携带 2 个工具。由于锁保护 DAG 创建/扩展，
+        最终 _global_tool_calls 应包含全部 4 个工具，且 _batch_boundaries 正确。
+        """
+        reg = self._make_registry()
+        executor = ToolScheduler(reg)
+
+        async def schedule_batch(prefix):
+            tcs = [
+                {"id": f"{prefix}_1", "name": "tool_a", "arguments": {}},
+                {"id": f"{prefix}_2", "name": "tool_b", "arguments": {}},
+            ]
+            return await executor.schedule(tcs, agent_ref=None)
+
+        # 并发调度两批
+        results_a, results_b = await asyncio.gather(
+            schedule_batch("a"),
+            schedule_batch("b"),
+        )
+
+        # 两批工具的结果都应正确返回
+        assert len(results_a) == 2
+        assert len(results_b) == 2
+
+        # DAG 状态应一致：4 个工具 + 2 个批次边界
+        assert executor._global_dag is not None
+        assert len(executor._global_tool_calls) == 4
+        assert len(executor._batch_boundaries) == 2
+
+        # 每个批次边界递增
+        assert executor._batch_boundaries[0] < executor._batch_boundaries[1]
+
+        # 清理
+        executor._reset_global_state()
+
+    @pytest.mark.asyncio
+    async def test_lock_released_during_execution(self):
+        """锁在工具执行期间被释放，另一个协程可在此期间获取锁。
+
+        验证策略：schedule() 调用中使用阻塞工具（asyncio.Event）。在工具阻塞期间，
+        另一个协程应能直接获取 _schedule_lock（证明锁已释放）。
+        """
+        # 使用阻塞工具，让 schedule 的执行阶段挂起
+        tool_block = asyncio.Event()
+
+        async def blocked_execute():
+            await tool_block.wait()
+            return "done"
+
+        reg = self._make_registry({"tool_a": blocked_execute, "tool_b": blocked_execute})
+        executor = ToolScheduler(reg)
+
+        # 启动一个多工具 schedule（会进入 DAG 路径，在执行阶段阻塞）
+        tcs = [
+            {"id": "block_1", "name": "tool_a", "arguments": {}},
+            {"id": "block_2", "name": "tool_b", "arguments": {}},
+        ]
+        schedule_task = asyncio.ensure_future(
+            executor.schedule(tcs, agent_ref=None)
+        )
+
+        # 等待 schedule 进入执行阶段（锁应已释放）
+        await asyncio.sleep(0.15)
+
+        # 另一个协程应能直接获取锁（不会阻塞/死锁）
+        lock_acquired = False
+        try:
+            await asyncio.wait_for(
+                executor._schedule_lock.acquire(), timeout=1.0
+            )
+            lock_acquired = True
+            executor._schedule_lock.release()
+        except asyncio.TimeoutError:
+            pass
+
+        assert lock_acquired, (
+            "锁在工具执行期间应已释放，但另一个协程无法在 1 秒内获取锁 → 可能死锁"
+        )
+
+        # 释放阻塞，让 schedule 完成
+        tool_block.set()
+        results = await schedule_task
+        assert len(results) == 2
+
+        # 清理
+        executor._reset_global_state()
+
+    @pytest.mark.asyncio
+    async def test_lock_protects_prev_non_dispatch_ids(self):
+        """并发 schedule 时 _prev_non_dispatch_ids 不被交叉覆盖。
+
+        验证策略：两个并发 schedule，一个携带 dispatch_agent，
+        另一个不携带。验证最终 _prev_non_dispatch_ids 只包含最外层
+        （最后一个完成的）的非 dispatch_agent ID。
+        """
+        reg = self._make_registry()
+        executor = ToolScheduler(reg)
+
+        async def schedule_a():
+            tcs = [
+                {"id": "a_read", "name": "read_file", "arguments": {}},
+                {"id": "a_dispatch", "name": "dispatch_agent", "arguments": {}},
+            ]
+            return await executor.schedule(tcs, agent_ref=None)
+
+        async def schedule_b():
+            # 等待 A 进入 DAG 创建阶段后再开始
+            await asyncio.sleep(0.05)
+            tcs = [
+                {"id": "b_write", "name": "write_file", "arguments": {}},
+            ]
+            return await executor.schedule(tcs, agent_ref=None)
+
+        results_a, results_b = await asyncio.gather(
+            schedule_a(), schedule_b(),
+        )
+
+        assert len(results_a) == 2
+        assert len(results_b) == 1
+
+        # _prev_non_dispatch_ids 应只包含非 dispatch_agent 的 ID
+        # 且不包含 dispatch_agent 自身
+        assert "a_dispatch" not in executor._prev_non_dispatch_ids, (
+            "dispatch_agent ID 不应出现在 _prev_non_dispatch_ids 中"
+        )
+
+        # 清理
+        executor._reset_global_state()
+
+    @pytest.mark.asyncio
+    async def test_schedule_lock_initialized(self):
+        """验证 ToolScheduler 初始化后 _schedule_lock 存在且为 asyncio.Lock 实例"""
+        executor = ToolScheduler(MagicMock(spec=ToolRegistry))
+        assert hasattr(executor, '_schedule_lock'), (
+            "ToolScheduler 应具有 _schedule_lock 属性"
+        )
+        assert isinstance(executor._schedule_lock, asyncio.Lock), (
+            "_schedule_lock 应为 asyncio.Lock 实例"
+        )
+
+    def test_schedule_lock_reset(self):
+        """_reset_global_state 应创建新的 _schedule_lock 实例"""
+        executor = ToolScheduler(MagicMock(spec=ToolRegistry))
+        old_lock = executor._schedule_lock
+        executor._reset_global_state()
+        new_lock = executor._schedule_lock
+
+        assert isinstance(new_lock, asyncio.Lock), (
+            "重置后 _schedule_lock 应仍为 asyncio.Lock 实例"
+        )
+        assert new_lock is not old_lock, (
+            "重置后应为新的 Lock 实例（旧锁被 GC 回收）"
+        )

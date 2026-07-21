@@ -126,10 +126,16 @@ class SubAgent(BaseAgent):
         self._skip_sandbox_update = True
 
         self.display = None
+        self._shared_executor = None
+        self._display_port = None
         self.result: str = ""
         self.error: str = ""
         self.tool_calls_count = 0
         self._tool_calls_count_lock = threading.Lock()
+
+    def get_config_port(self):
+        """返回 ConfigPort 实例（委托给 parent Agent）"""
+        return self.parent.get_config_port()
 
     # =================== 主循环 ===================
 
@@ -278,17 +284,32 @@ class SubAgent(BaseAgent):
         - 单工具 → 直接执行
         - 多工具 → 构建 ToolDAG 拓扑分层调度
         """
+        # 检测 dispatch_agent 调用，创建共享 ParallelExecutor
+        dispatch_count = sum(1 for tc in tool_calls if tc.get("name") == "dispatch_agent")
+        if dispatch_count > 0:
+            from .parallel_executor import ParallelExecutor
+            self._shared_executor = ParallelExecutor(self, is_web=False)
+            self._shared_executor.setup_barrier(dispatch_count)
+        else:
+            self._shared_executor = None
+
         self._append_assistant_message(content, tool_calls, reasoning_content)
 
         on_before, on_after, run_method = self._build_tool_callbacks()
 
-        results = await ToolScheduler.default().schedule(
-            tool_calls,
-            agent_ref=self,
-            on_before=on_before,
-            on_after=on_after,
-            run_method=run_method,
-        )
+        try:
+            results = await ToolScheduler.default().schedule(
+                tool_calls,
+                agent_ref=self,
+                on_before=on_before,
+                on_after=on_after,
+                run_method=run_method,
+            )
+        finally:
+            # 确保取消/异常时释放 barrier，防止死锁
+            if self._shared_executor is not None:
+                self._shared_executor._all_done.set()
+            self._shared_executor = None
 
         # 收集所有工具结果，确保 messages 序列完整
         for tool_call_id, output, _ in results:

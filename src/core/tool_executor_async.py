@@ -65,7 +65,13 @@ class ToolScheduler:
         self._completed_tc_ids: set[str] = set()
         self._pending_tc_ids: set[str] = set()
         self._execution_depth: int = 0  # _execute_global_dag_async 嵌套深度
-        self._schedule_depth: int = 0  # schedule() 嵌套深度（防止 SubAgent 污染 _prev_non_dispatch_ids）
+        # ── 双重保护机制（分工协作） ─────────────────────
+        # _schedule_lock：asyncio.Lock 防并发竞态 — 多 SubAgent 通过
+        #   asyncio.gather 并发调用 schedule() 时保护共享状态修改。
+        # _schedule_depth：int 防语义污染 — SubAgent 嵌套调用时只有
+        #   最外层 MainAgent 的调用才更新 _prev_non_dispatch_ids。
+        self._schedule_depth: int = 0
+        self._schedule_lock = asyncio.Lock()
 
     @classmethod
     def default(cls) -> ToolScheduler:
@@ -86,6 +92,7 @@ class ToolScheduler:
         self._pending_tc_ids.clear()
         self._execution_depth = 0
         self._schedule_depth = 0
+        self._schedule_lock = asyncio.Lock()
 
     @classmethod
     def reset_default(cls) -> None:
@@ -511,6 +518,14 @@ class ToolScheduler:
         - _prev_non_dispatch_ids 在外层 schedule() 返回前被外层批次覆盖
         - _results_map 确保已执行节点被跳过
 
+        双重保护机制：
+        - _schedule_lock（asyncio.Lock）：保护共享状态（_global_dag /
+          _prev_non_dispatch_ids / _batch_boundaries）的并发修改，防止
+          多 SubAgent 通过 asyncio.gather 并发调用 schedule() 时产生竞态。
+          锁仅覆盖状态修改（<1ms），不覆盖工具执行 await（避免嵌套死锁）。
+        - _schedule_depth：防止 SubAgent 嵌套调用污染 _prev_non_dispatch_ids
+          （只有最外层 MainAgent 的调用才更新该字段，SubAgent 路径跳过）。
+
         Args:
             tool_calls: 工具调用列表 [{"id", "name", "arguments"}]
             agent_ref: 传给 registry.dispatch() 的 agent 引用
@@ -546,6 +561,7 @@ class ToolScheduler:
             if len(tool_calls) == 1:
                 _logger.debug("schedule[%s]: 单工具 '%s' → 直接执行",
                               agent_label, tool_calls[0].get("name", "?"))
+                # 锁不覆盖 execute_async（避免嵌套死锁）
                 result = await self.execute_async(
                     tool_calls, agent_ref=agent_ref,
                     on_before=on_before, on_after=on_after,
@@ -553,7 +569,8 @@ class ToolScheduler:
                 )
                 # 单工具路径也需要更新 _prev_non_dispatch_ids，
                 # 否则下一批 add_batch 会遗漏本批的非 dispatch_agent 工具
-                _update_prev_ids()
+                async with self._schedule_lock:
+                    _update_prev_ids()
                 return result
 
             # ── 全局 DAG 路径 ───────────────────────────────────
@@ -563,25 +580,30 @@ class ToolScheduler:
             current_batch_ids = {tc["id"] for tc in tool_calls}
 
             try:
-                if self._global_dag is None:
-                    # 首批：创建全局 DAG
-                    _logger.debug("schedule[%s]: 首批 %d 个工具 → 创建全局 DAG",
-                                  agent_label, len(tool_calls))
-                    self._global_dag = ToolDAG(tool_calls, self._registry)
-                    self._global_tool_calls = list(tool_calls)
-                else:
-                    # 后续批：扩展全局 DAG
-                    _logger.debug("schedule[%s]: 扩展批次 %d 个工具 → add_batch",
-                                  agent_label, len(tool_calls))
-                    self._global_dag.add_batch(
-                        tool_calls, self._registry,
-                        prev_non_dispatch_ids=self._prev_non_dispatch_ids,
-                    )
-                    self._global_tool_calls.extend(tool_calls)
+                # ── 临界区：DAG 创建/扩展 + _batch_boundaries 更新 ──
+                # 锁保护 _global_dag / _global_tool_calls / _batch_boundaries
+                # 以及 add_batch 中对 _prev_non_dispatch_ids 的读取。
+                # 锁不覆盖 await 执行调用，避免嵌套 SubAgent schedule() 死锁。
+                async with self._schedule_lock:
+                    if self._global_dag is None:
+                        # 首批：创建全局 DAG
+                        _logger.debug("schedule[%s]: 首批 %d 个工具 → 创建全局 DAG",
+                                      agent_label, len(tool_calls))
+                        self._global_dag = ToolDAG(tool_calls, self._registry)
+                        self._global_tool_calls = list(tool_calls)
+                    else:
+                        # 后续批：扩展全局 DAG
+                        _logger.debug("schedule[%s]: 扩展批次 %d 个工具 → add_batch",
+                                      agent_label, len(tool_calls))
+                        self._global_dag.add_batch(
+                            tool_calls, self._registry,
+                            prev_non_dispatch_ids=self._prev_non_dispatch_ids,
+                        )
+                        self._global_tool_calls.extend(tool_calls)
 
-                self._batch_boundaries.append(len(self._global_tool_calls))
+                    self._batch_boundaries.append(len(self._global_tool_calls))
 
-                # 执行全局 DAG，仅返回当前批次结果
+                # ── 锁外：执行全局 DAG（不持锁，避免嵌套死锁） ──
                 results = await self._execute_global_dag_async(
                     self._global_dag,
                     agent_ref=agent_ref,
@@ -591,14 +613,17 @@ class ToolScheduler:
                     current_batch_ids=current_batch_ids,
                 )
 
-                _update_prev_ids()
+                # ── 临界区：更新 _prev_non_dispatch_ids ──
+                async with self._schedule_lock:
+                    _update_prev_ids()
                 return results
 
             except asyncio.CancelledError:
                 # Python 3.9+: CancelledError 继承自 BaseException 而非 Exception，
                 # 不会被 except Exception 捕获。此处单独处理以保证 _prev_non_dispatch_ids
                 # 更新，防止 SubAgent 残留 ID 泄漏到下一批。
-                _update_prev_ids()
+                async with self._schedule_lock:
+                    _update_prev_ids()
                 _logger.warning(
                     "schedule[%s]: 全局 DAG 调度被取消 (%d 个工具)",
                     agent_label, len(tool_calls),
@@ -606,11 +631,13 @@ class ToolScheduler:
                 raise
 
             except Exception:
-                _update_prev_ids()
+                async with self._schedule_lock:
+                    _update_prev_ids()
                 _logger.warning(
                     "schedule[%s]: 全局 DAG 调度失败，回退到全串行执行 (%d 个工具)",
                     agent_label, len(tool_calls), exc_info=True,
                 )
+                # 锁外执行回退串行路径，避免嵌套死锁
                 return await self._execute_serial(
                     tool_calls, agent_ref=agent_ref,
                     on_before=on_before, on_after=on_after,
