@@ -27,7 +27,7 @@ from typing import Any
 from .core.output_target import IOutputTarget, TerminalTarget
 from .frame import FrameRenderer
 from .events.event_bus import DisplayEventBus
-from .events.event_types import LiveOutputEvent
+from .events.event_types import MetricsUpdateEvent
 from .core.parallel_config import DisplayConfig
 from .consumer.base_display import BaseDisplay
 from .state.agent_state import AgentStateStore
@@ -259,11 +259,11 @@ class ParallelDisplay(BaseDisplay):
         if now - self._last_eventbus_time >= _EVENTBUS_THROTTLE:
             self._last_eventbus_time = now
             try:
-                DisplayEventBus.get_default().publish(LiveOutputEvent(
-                    label=label, tokens=tokens, source=label,
+                DisplayEventBus.get_default().publish(MetricsUpdateEvent(
+                    label=label, live_output_tokens=tokens, source=label,
                 ))
             except Exception:
-                _logger.debug("EventBus 发布 LiveOutputEvent 失败（非关键路径，忽略）")
+                _logger.debug("EventBus 发布 MetricsUpdateEvent 失败（非关键路径，忽略）")
 
     def update_live_input(self, label: str, tokens: int):
         self._store.update_live_input(label, tokens)

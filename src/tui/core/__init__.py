@@ -9,7 +9,7 @@
 新增模块（2026-07-15 框架增强）:
   - parallel_config: 并行显示常量与自适应配置（从 parallel 下沉）
   - tool_icons: 工具颜色和图标主题定义（从 parallel 下沉）
-  - text_formatter: 文本格式化门面（from parallel 下沉）
+  - formatter: 文本格式化工具函数
   - TrueColor / ColorValue: 24-bit 真彩色值对象与联合类型（颜色体系扩展）
   - theme_loader: 轻量级 YAML 用户主题加载器
 """
@@ -30,7 +30,7 @@ _state_input = LazyLoader("src.tui.state.input_state")
 _state_streaming = LazyLoader("src.tui.state.streaming_state")
 _state_tree = LazyLoader("src.tui.state.tui_state_tree")
 _ttl_cache_mod = LazyLoader("src.tui.core.ttl_cache")
-_time_format_mod = LazyLoader("src.tui.core.time_format")
+_formatter_mod = LazyLoader("src.tui.core.formatter")
 _text_utils_mod = LazyLoader("src.tui.core.text_utils")
 _color_mod = LazyLoader("src.tui.core.color")
 _style_mod = LazyLoader("src.tui.core.style")
@@ -96,9 +96,9 @@ _SYMBOL_MAP: dict[str, LazyLoader] = {
     "TUIStateTree": _state_tree,
     # ttl_cache
     "TTLCache": _ttl_cache_mod,
-    # time_format
-    "format_elapsed": _time_format_mod,
-    "format_speed": _time_format_mod,
+    # formatter
+    "format_elapsed": _formatter_mod,
+    "format_speed": _formatter_mod,
     # text_utils
     "truncate": _text_utils_mod,
     "build_gradient_ansi": _text_utils_mod,

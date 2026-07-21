@@ -34,7 +34,7 @@ from .event_types import (
     ToolParsingEvent, ToolStartedEvent, ToolDoneEvent, ToolBatchStartedEvent,
     AgentAddedEvent, AgentStatusChanged,
     ModelPhaseEvent, UsageUpdatedEvent,
-    ParseInfoEvent, ParseInfoDoneEvent, TokenEvent, LiveOutputEvent, LiveInputEvent, SpeedUpdatedEvent,
+    ParseInfoEvent, ParseInfoDoneEvent, MetricsUpdateEvent,
     OutputEvent, ToolSummaryEvent,
 )
 
@@ -277,22 +277,22 @@ class EventBusDisplayProxy(_BaseDisplay):
         ))
 
     def update_tokens(self, label: str, tokens: int) -> None:
-        self._bus.publish(TokenEvent(
-            label=label, tokens=tokens, source=self._source,
+        self._bus.publish(MetricsUpdateEvent(
+            label=label, output_tokens=tokens, source=self._source,
         ))
 
     def update_live_output(self, label: str, tokens: int) -> None:
-        self._bus.publish(LiveOutputEvent(
-            label=label, tokens=tokens, source=self._source,
+        self._bus.publish(MetricsUpdateEvent(
+            label=label, live_output_tokens=tokens, source=self._source,
         ))
 
     def update_live_input(self, label: str, tokens: int) -> None:
-        self._bus.publish(LiveInputEvent(
-            label=label, tokens=tokens, source=self._source,
+        self._bus.publish(MetricsUpdateEvent(
+            label=label, live_input_tokens=tokens, source=self._source,
         ))
 
     def update_speed(self, label: str, speed: float) -> None:
-        self._bus.publish(SpeedUpdatedEvent(
+        self._bus.publish(MetricsUpdateEvent(
             label=label, speed=speed, source=self._source,
         ))
 

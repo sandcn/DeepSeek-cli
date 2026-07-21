@@ -21,13 +21,12 @@ from .event_types import (
     AgentAddedEvent, AgentStatusChanged,
     ModelPhaseEvent, PhaseDoneEvent, UsageUpdatedEvent,
     ContentChunkEvent, ReasoningChunkEvent,
-    ParseInfoEvent, ParseInfoDoneEvent, TokenEvent, LiveOutputEvent, LiveInputEvent, SpeedUpdatedEvent,
+    ParseInfoEvent, ParseInfoDoneEvent, TokenEvent, LiveOutputEvent, LiveInputEvent, SpeedUpdatedEvent, MetricsUpdateEvent,
     OutputEvent, ToolSummaryEvent,
     UserSelectNeededEvent, AgentResultEvent,
     ALL_EVENT_TYPES,
 )
 from .event_bus import DisplayEventBus, EventHandler
-from .event_pool import EventPool
 from .consumers import (
     OutputConsumer,
     publish_output,
@@ -47,13 +46,12 @@ __all__ = [
     "AgentAddedEvent", "AgentStatusChanged", "AgentResultEvent",
     "ModelPhaseEvent", "PhaseDoneEvent", "UsageUpdatedEvent",
     "ContentChunkEvent", "ReasoningChunkEvent",
-    "ParseInfoEvent", "ParseInfoDoneEvent", "TokenEvent", "LiveOutputEvent", "LiveInputEvent", "SpeedUpdatedEvent",
+    "ParseInfoEvent", "ParseInfoDoneEvent", "TokenEvent", "LiveOutputEvent", "LiveInputEvent", "SpeedUpdatedEvent", "MetricsUpdateEvent",
     "OutputEvent", "ToolSummaryEvent", "UserSelectNeededEvent",
     "ALL_EVENT_TYPES",
     # 基础设施
     "DisplayEventBus",
     "EventHandler",
-    "EventPool",
     # 消费者
     "OutputConsumer",
     # 适配器

@@ -311,6 +311,27 @@ class SpeedUpdatedEvent(DisplayEvent):
     speed: float = 0.0
 
 
+@dataclass(frozen=True)
+class MetricsUpdateEvent(DisplayEvent):
+    """统一的指标更新事件 — 合并 TokenEvent/LiveOutputEvent/LiveInputEvent/SpeedUpdatedEvent。
+
+    将所有实时指标合并到一个事件类型中，减少事件类型数量。
+    发布时仅设置非默认值的字段，消费者按需读取。
+
+    Attributes:
+        label: Agent 标识
+        output_tokens: 输出 token 数量（0 表示未变更）
+        live_output_tokens: 实时输出 token 增量
+        live_input_tokens: 实时输入 token 增量
+        speed: 生成速度（tokens/s）
+    """
+    label: str = ""
+    output_tokens: int = 0
+    live_output_tokens: int = 0
+    live_input_tokens: int = 0
+    speed: float = 0.0
+
+
 # ── 通用输出 ────────────────────────────────────────────
 
 
@@ -383,7 +404,7 @@ ALL_EVENT_TYPES: tuple = (
     AgentAddedEvent, AgentStatusChanged,
     ModelPhaseEvent, PhaseDoneEvent, UsageUpdatedEvent,
     ContentChunkEvent, ReasoningChunkEvent,
-    ParseInfoEvent, ParseInfoDoneEvent, TokenEvent, LiveOutputEvent, LiveInputEvent, SpeedUpdatedEvent,
+    ParseInfoEvent, ParseInfoDoneEvent, TokenEvent, LiveOutputEvent, LiveInputEvent, SpeedUpdatedEvent, MetricsUpdateEvent,
     OutputEvent, ToolSummaryEvent,
     UserSelectNeededEvent,
     AgentResultEvent,

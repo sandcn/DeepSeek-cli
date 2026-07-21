@@ -17,7 +17,7 @@
   │             composer(动画合成器), transitions(过渡效果:FadeIn/FadeOut/Slide/Typewriter)
   │
   events/     — 事件总线层：DisplayEventBus(显示层事件总线), event_types(21种事件类型),
-  │             adapters(事件适配器), event_pool(事件对象池), consumers(事件消费者)
+  │             adapters(事件适配器), consumers(事件消费者)
   │
   state/      — 统一状态管理：UISessionState(会话状态), InputState(输入状态),
   │             StreamingState(流式状态), TUIStateTree(聚合容器),

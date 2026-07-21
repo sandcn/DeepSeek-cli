@@ -11,7 +11,7 @@ from __future__ import annotations
 import time
 from unittest.mock import patch
 
-from src.tui.core.text_formatter import TextFormatter
+from src.tui.core.formatter import format_token_count
 from src.tui.state.session_state import UISessionState
 from src.tui.state.streaming_state import StreamingState
 from src.tui.state.tui_state_tree import TUIStateTree
@@ -191,18 +191,18 @@ class TestStatusBarInstance:
 
 
 class TestFormatTokenCount:
-    """format_token_count 格式化函数测试（委托 TextFormatter）。"""
+    """format_token_count 格式化函数测试。"""
 
     def test_format_token_count_zero(self):
-        result = TextFormatter.format_token_count(0)
+        result = format_token_count(0)
         assert result == "0"
 
     def test_format_token_count_k(self):
-        result = TextFormatter.format_token_count(1500)
+        result = format_token_count(1500)
         assert "1.5k" in result
 
     def test_format_token_count_small(self):
-        result = TextFormatter.format_token_count(42)
+        result = format_token_count(42)
         assert result == "42"
 
 

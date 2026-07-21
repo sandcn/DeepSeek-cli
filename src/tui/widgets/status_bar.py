@@ -23,9 +23,8 @@ from ..core.ansi_utils import strip_ansi, truncate_ansi_sgr
 from ...core.constants import RESET, BOLD, CYAN_256, GREEN_256, DARK_GRAY_256, GRAY_256
 from ..core.gradient import gradient_range
 from ..core.theme import THEME
-from ..core.text_formatter import TextFormatter
+from ..core.formatter import format_token_count, format_elapsed, format_speed
 from ..terminal.terminal import is_narrow, get_terminal_width
-from ..core.time_format import format_elapsed, format_speed
 from ..state.tui_state_tree import TUIStateTree
 from ..state.session_state import UISessionState
 from ..state.streaming_state import StreamingState
@@ -192,8 +191,8 @@ def _build_detail_parts(state: UISessionState, narrow: bool) -> list[str]:
 
     # Token 用量（带 ⬡ 图标 — 双色：输入↑青色，输出↓绿色）
     if state.show_tokens and (state.input_tokens > 0 or state.output_tokens > 0):
-        in_str = TextFormatter.format_token_count(state.input_tokens)
-        out_str = TextFormatter.format_token_count(state.output_tokens)
+        in_str = format_token_count(state.input_tokens)
+        out_str = format_token_count(state.output_tokens)
         parts.append(f"{CYAN_256}\u2b21{RESET}{CYAN_256}{in_str}\u2191{RESET}{GREEN_256}{out_str}\u2193{RESET}")
 
     # 状态文本
@@ -284,7 +283,7 @@ def render_streaming_line(state: UISessionState, streaming: StreamingState) -> s
         parts.append(f"{CYAN_256}\u00b7{RESET} {BOLD}{model_color}{state.model}{RESET}"
                      f" \033[38;5;{pulse_color}m{pulse_char}{RESET}")
     parts.append(f"\033[38;5;214m\u23f1{RESET}{_SP}{format_elapsed(elapsed)}")
-    tok_str = TextFormatter.format_token_count(tokens)
+    tok_str = format_token_count(tokens)
     parts.append(f"{CYAN_256}\u2b21{RESET}{_SP}{CYAN_256}{tok_str}t{RESET}")
     if speed > 0:
         parts.append(f"\033[38;5;214m\u26a1{RESET}{_SP}{format_speed(speed)}t/s")

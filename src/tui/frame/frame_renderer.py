@@ -29,7 +29,7 @@ from ..core.parallel_config import (
     get_spinner_frames as _get_spinner_frames,
     DEFAULT_SPINNER_SPEED as _DEFAULT_SPINNER_SPEED,
 )
-from ..core.text_formatter import TextFormatter as _DefaultTextFormatter
+from ..core.formatter import format_duration, format_token_count, format_compact_speed
 from ..core.tool_icons import (
     TOOL_ICONS as _DEFAULT_TOOL_ICONS,
     AGENT_TYPE_ABBREV,
@@ -92,7 +92,6 @@ class FrameRenderer:
         summary_icon_running: str = _DEFAULT_SUMMARY_ICON_RUNNING,
         summary_icon_done: str = _DEFAULT_SUMMARY_ICON_DONE,
         tool_icons: dict | None = None,
-        text_formatter=None,
         spinner_name: str | None = None,
         spinner_speed: float | None = None,
         spinner_frames: list[str] | None = None,
@@ -104,7 +103,6 @@ class FrameRenderer:
         self._summary_icon_running = summary_icon_running
         self._summary_icon_done = summary_icon_done
         self._tool_icons = tool_icons or _DEFAULT_TOOL_ICONS
-        self._text_formatter = text_formatter or _DefaultTextFormatter
 
         # Spinner 配置：spinner_name 优先，其次 spinner_frames，最后默认值
         if spinner_name is not None:
@@ -212,8 +210,8 @@ class FrameRenderer:
         ) = self._compute_summary(slots_snapshot, order)
 
         overall_elapsed = (now - earliest_start) if earliest_start else 0
-        elapsed_str = self._text_formatter.format_duration(overall_elapsed)
-        output_str = self._text_formatter.format_token_count(total_output)
+        elapsed_str = format_duration(overall_elapsed)
+        output_str = format_token_count(total_output)
 
         lines.append(self._build_summary_line(
             total_agents, output_str, done_count,
@@ -297,7 +295,7 @@ class FrameRenderer:
             speed_value = latest_speed
         else:
             speed_value = 0.0
-        speed_str = self._text_formatter.format_compact_speed(speed_value)
+        speed_str = format_compact_speed(speed_value)
 
         sep = f" {_C_DIMMER}·{_C_RESET} "
         bar_width = min(12, total_agents * 4)
@@ -390,12 +388,12 @@ class FrameRenderer:
         cont   = "   " if is_last else " │ "
 
         elapsed = (slot.end_time or now) - slot.start_time
-        elapsed_str = self._text_formatter.format_duration(elapsed)
+        elapsed_str = format_duration(elapsed)
         # 与 _compute_summary 一致：使用加法汇总 output + live_output
         display_out = slot.output_tokens + slot.live_output_tokens
-        output_str = self._text_formatter.format_token_count(display_out)
+        output_str = format_token_count(display_out)
         speed_value = slot.last_speed if slot.status == "running" else 0.0
-        speed_str = self._text_formatter.format_compact_speed(speed_value)
+        speed_str = format_compact_speed(speed_value)
 
         # ── 类型标签（256 色背景，运行中呼吸 — 使用 Color256/Style 替代 raw ANSI） ──
         abbr = AGENT_TYPE_ABBREV.get(slot.agent_type, "??")

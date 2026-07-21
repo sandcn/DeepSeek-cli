@@ -71,8 +71,59 @@ def format_compact_speed(speed: float) -> str:
     return f"{value}/s"
 
 
+def format_elapsed(seconds: float) -> str:
+    """格式化运行时间（秒）为人类可读字符串。
+
+    < 60 秒 → "3.5s"（一位小数）
+    >= 60 秒 → "2:05"（分:秒，秒补零）
+    >= 3600 秒 → "1:02:34"（时:分:秒）
+
+    Args:
+        seconds: 运行时间（秒）。
+
+    Returns:
+        格式化后的时间字符串。
+    """
+    if seconds < 0:
+        return "0.0s"
+    if seconds < 60:
+        return f"{seconds:.1f}s"
+    mins = int(seconds // 60)
+    secs = int(seconds % 60)
+    if mins < 60:
+        return f"{mins}:{secs:02d}"
+    hours = mins // 60
+    mins %= 60
+    return f"{hours}:{mins:02d}:{secs:02d}"
+
+
+def format_speed(tok_per_sec: float) -> str:
+    """格式化 token 速率为人类可读字符串。
+
+    >= 10 → "120"（整数，无小数）
+    1 ~ 10 → "5.3"（一位小数）
+    < 1 → "0.75"（两位小数）
+    < 0 → "0.0"
+
+    Args:
+        tok_per_sec: token 速率（个/秒）。
+
+    Returns:
+        格式化后的速率字符串。
+    """
+    if tok_per_sec < 0:
+        return "0.0"
+    if tok_per_sec >= 10:
+        return f"{tok_per_sec:.0f}"
+    if tok_per_sec >= 1:
+        return f"{tok_per_sec:.1f}"
+    return f"{tok_per_sec:.2f}"
+
+
 __all__ = [
     "format_duration",
     "format_token_count",
     "format_compact_speed",
+    "format_elapsed",
+    "format_speed",
 ]
