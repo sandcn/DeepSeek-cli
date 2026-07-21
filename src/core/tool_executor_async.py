@@ -65,6 +65,7 @@ class ToolScheduler:
         self._completed_tc_ids: set[str] = set()
         self._pending_tc_ids: set[str] = set()
         self._execution_depth: int = 0  # _execute_global_dag_async 嵌套深度
+        self._schedule_depth: int = 0  # schedule() 嵌套深度（防止 SubAgent 污染 _prev_non_dispatch_ids）
 
     @classmethod
     def default(cls) -> ToolScheduler:
@@ -84,6 +85,7 @@ class ToolScheduler:
         self._completed_tc_ids.clear()
         self._pending_tc_ids.clear()
         self._execution_depth = 0
+        self._schedule_depth = 0
 
     @classmethod
     def reset_default(cls) -> None:
@@ -522,80 +524,101 @@ class ToolScheduler:
         # 提取 agent 来源标识（用于可观测性日志）
         agent_label = getattr(agent_ref, 'label', None) or type(agent_ref).__name__
 
-        if not tool_calls:
-            _logger.debug("schedule[%s]: 空列表，返回 []", agent_label)
-            return []
+        # ★ 跟踪 schedule 嵌套深度，防止 SubAgent 调用污染 _prev_non_dispatch_ids
+        # SubAgent 通过 asyncio.gather 并发执行时，各自的 schedule() 调用会相互
+        # 覆盖 _prev_non_dispatch_ids。只有最外层（MainAgent）的调用才应更新该字段。
+        is_outermost_schedule = (self._schedule_depth == 0)
+        self._schedule_depth += 1
 
-        if len(tool_calls) == 1:
-            _logger.debug("schedule[%s]: 单工具 '%s' → 直接执行",
-                          agent_label, tool_calls[0].get("name", "?"))
-            return await self.execute_async(
-                tool_calls, agent_ref=agent_ref,
-                on_before=on_before, on_after=on_after,
-                run_method=run_method, parallel=False,
-            )
-
-        # ── 全局 DAG 路径 ───────────────────────────────────
-        _logger.debug("schedule[%s]: %d 个工具 → 全局 DAG 调度",
-                      agent_label, len(tool_calls))
-
-        current_batch_ids = {tc["id"] for tc in tool_calls}
+        def _update_prev_ids():
+            """仅在非 SubAgent 路径更新 _prev_non_dispatch_ids"""
+            if is_outermost_schedule:
+                self._prev_non_dispatch_ids = {
+                    tc["id"] for tc in tool_calls
+                    if tc.get("name") != "dispatch_agent"
+                }
 
         try:
-            if self._global_dag is None:
-                # 首批：创建全局 DAG
-                _logger.debug("schedule[%s]: 首批 %d 个工具 → 创建全局 DAG",
-                              agent_label, len(tool_calls))
-                self._global_dag = ToolDAG(tool_calls, self._registry)
-                self._global_tool_calls = list(tool_calls)
-            else:
-                # 后续批：扩展全局 DAG
-                _logger.debug("schedule[%s]: 扩展批次 %d 个工具 → add_batch",
-                              agent_label, len(tool_calls))
-                self._global_dag.add_batch(
-                    tool_calls, self._registry,
-                    prev_non_dispatch_ids=self._prev_non_dispatch_ids,
+            if not tool_calls:
+                _logger.debug("schedule[%s]: 空列表，返回 []", agent_label)
+                return []
+
+            if len(tool_calls) == 1:
+                _logger.debug("schedule[%s]: 单工具 '%s' → 直接执行",
+                              agent_label, tool_calls[0].get("name", "?"))
+                result = await self.execute_async(
+                    tool_calls, agent_ref=agent_ref,
+                    on_before=on_before, on_after=on_after,
+                    run_method=run_method, parallel=False,
                 )
-                self._global_tool_calls.extend(tool_calls)
+                # 单工具路径也需要更新 _prev_non_dispatch_ids，
+                # 否则下一批 add_batch 会遗漏本批的非 dispatch_agent 工具
+                _update_prev_ids()
+                return result
 
-            self._batch_boundaries.append(len(self._global_tool_calls))
+            # ── 全局 DAG 路径 ───────────────────────────────────
+            _logger.debug("schedule[%s]: %d 个工具 → 全局 DAG 调度",
+                          agent_label, len(tool_calls))
 
-            # 执行全局 DAG，仅返回当前批次结果
-            results = await self._execute_global_dag_async(
-                self._global_dag,
-                agent_ref=agent_ref,
-                on_before=on_before,
-                on_after=on_after,
-                run_method=run_method,
-                current_batch_ids=current_batch_ids,
-            )
+            current_batch_ids = {tc["id"] for tc in tool_calls}
 
-            # 更新 prev_non_dispatch_ids（供下一批使用）
-            # 嵌套调用（SubAgent 内）时，此值会被外层批次覆盖，
-            # 不会被 SubAgent 的工具污染
-            self._prev_non_dispatch_ids = {
-                tc["id"] for tc in tool_calls
-                if tc.get("name") != "dispatch_agent"
-            }
+            try:
+                if self._global_dag is None:
+                    # 首批：创建全局 DAG
+                    _logger.debug("schedule[%s]: 首批 %d 个工具 → 创建全局 DAG",
+                                  agent_label, len(tool_calls))
+                    self._global_dag = ToolDAG(tool_calls, self._registry)
+                    self._global_tool_calls = list(tool_calls)
+                else:
+                    # 后续批：扩展全局 DAG
+                    _logger.debug("schedule[%s]: 扩展批次 %d 个工具 → add_batch",
+                                  agent_label, len(tool_calls))
+                    self._global_dag.add_batch(
+                        tool_calls, self._registry,
+                        prev_non_dispatch_ids=self._prev_non_dispatch_ids,
+                    )
+                    self._global_tool_calls.extend(tool_calls)
 
-            return results
+                self._batch_boundaries.append(len(self._global_tool_calls))
 
-        except Exception:
-            # 异常路径也必须更新 _prev_non_dispatch_ids，
-            # 防止 SubAgent 嵌套 schedule() 的污染残留到下一批
-            self._prev_non_dispatch_ids = {
-                tc["id"] for tc in tool_calls
-                if tc.get("name") != "dispatch_agent"
-            }
-            _logger.warning(
-                "schedule: 全局 DAG 调度失败，回退到全串行执行 (%d 个工具)",
-                len(tool_calls), exc_info=True,
-            )
-            return await self._execute_serial(
-                tool_calls, agent_ref=agent_ref,
-                on_before=on_before, on_after=on_after,
-                run_method=run_method,
-            )
+                # 执行全局 DAG，仅返回当前批次结果
+                results = await self._execute_global_dag_async(
+                    self._global_dag,
+                    agent_ref=agent_ref,
+                    on_before=on_before,
+                    on_after=on_after,
+                    run_method=run_method,
+                    current_batch_ids=current_batch_ids,
+                )
+
+                _update_prev_ids()
+                return results
+
+            except asyncio.CancelledError:
+                # Python 3.9+: CancelledError 继承自 BaseException 而非 Exception，
+                # 不会被 except Exception 捕获。此处单独处理以保证 _prev_non_dispatch_ids
+                # 更新，防止 SubAgent 残留 ID 泄漏到下一批。
+                _update_prev_ids()
+                _logger.warning(
+                    "schedule[%s]: 全局 DAG 调度被取消 (%d 个工具)",
+                    agent_label, len(tool_calls),
+                )
+                raise
+
+            except Exception:
+                _update_prev_ids()
+                _logger.warning(
+                    "schedule[%s]: 全局 DAG 调度失败，回退到全串行执行 (%d 个工具)",
+                    agent_label, len(tool_calls), exc_info=True,
+                )
+                return await self._execute_serial(
+                    tool_calls, agent_ref=agent_ref,
+                    on_before=on_before, on_after=on_after,
+                    run_method=run_method,
+                )
+
+        finally:
+            self._schedule_depth -= 1
 
     async def _execute_serial(
         self, tool_calls: list, *,
