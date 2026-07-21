@@ -24,18 +24,18 @@ import logging
 import time
 from typing import Any
 
-from ..core.output_target import IOutputTarget, TerminalTarget
-from ..frame import FrameRenderer
-from ..events.event_bus import DisplayEventBus
-from ..events.event_types import LiveOutputEvent
-from ..core.parallel_config import DisplayConfig
-from ..consumer.base_display import BaseDisplay
-from ..state.agent_state import AgentStateStore
-from ..terminal.adapter import (
+from .core.output_target import IOutputTarget, TerminalTarget
+from .frame import FrameRenderer
+from .events.event_bus import DisplayEventBus
+from .events.event_types import LiveOutputEvent
+from .core.parallel_config import DisplayConfig
+from .consumer.base_display import BaseDisplay
+from .state.agent_state import AgentStateStore
+from .terminal.adapter import (
     register_sigwinch_callback,
     unregister_sigwinch_callback,
 )
-from ..engine.const import RenderCommand
+from .engine.const import RenderCommand
 
 # ── 常量 ────────────────────────────────────────────────
 
@@ -322,7 +322,7 @@ class ParallelDisplay(BaseDisplay):
         )
 
         try:
-            from ..terminal.blessed import get_terminal
+            from .terminal.blessed import get_terminal
             term = get_terminal()
             clear_eol = term.clear_eol if term.clear_eol else "\033[K"
         except Exception:
@@ -511,3 +511,33 @@ class ParallelDisplay(BaseDisplay):
             return func()
 
 
+
+
+# ── 终端尺寸查询 ─────────────────────────────────────
+# 复用 TerminalAdapter 的 ioctl 策略获取真实终端宽度。
+# 不能依赖 shutil.get_terminal_size()（Android Termux 上返回
+# 陈旧环境变量值），必须通过 /dev/tty ioctl 查询。
+def _get_terminal_width() -> int:
+    """获取终端宽度（列数），优先通过 /dev/tty ioctl 查询。"""
+    import os
+    import fcntl
+    import termios
+    import struct
+
+    try:
+        fd = os.open("/dev/tty", os.O_RDONLY)
+        try:
+            data = fcntl.ioctl(fd, termios.TIOCGWINSZ,
+                               struct.pack("HHHH", 0, 0, 0, 0))
+            rows, cols, _, _ = struct.unpack("HHHH", data)
+            return cols if cols > 0 else 80
+        finally:
+            os.close(fd)
+    except Exception:
+        pass
+    # 回退
+    try:
+        import shutil
+        return shutil.get_terminal_size().columns
+    except Exception:
+        return 80

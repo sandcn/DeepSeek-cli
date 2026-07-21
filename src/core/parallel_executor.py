@@ -219,7 +219,7 @@ class ParallelExecutor:
         try:
             self._spawner.render_display(self._pending_specs)
 
-            from ..tui.parallel import ParallelDisplay as _ParallelDisplay
+            from ..tui.parallel_display import ParallelDisplay as _ParallelDisplay
             from ..tui.events import DisplayEventBus as _DisplayEventBus
             from ..tui.events.event_types import AgentAddedEvent as _AgentAddedEvent
 
@@ -549,7 +549,7 @@ class ParallelExecutor:
         if not self._is_web:
             self._spawner.render_display(agent_specs)
 
-        from ..tui.parallel import ParallelDisplay as _ParallelDisplay
+        from ..tui.parallel_display import ParallelDisplay as _ParallelDisplay
         display = _ParallelDisplay(max_history=self.max_history)
         coro = self._run_agents(agent_specs, display)
         return await self._execute_with_error_handling(

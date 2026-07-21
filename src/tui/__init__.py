@@ -42,7 +42,7 @@
   │             command_palette, completion, cursor_tracker,
   │             selector_base, help_panel(快捷键帮助浮层), status_bar
   │
-  parallel/   — 并行 Agent 显示管理：ParallelDisplay
+  parallel_display.py — 并行 Agent 显示管理：ParallelDisplay
   │
   frame/      — 纯函数帧渲染器：FrameRenderer(AgentSlot→终端行)
 

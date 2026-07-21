@@ -13,7 +13,7 @@ Spinner 动画集（通过 get_spinner_frames() 按名称获取）：
   - matrix:    矩阵雨动画（10 帧，Braille 模拟数字雨下落，速度 0.08s）
   - glow:      发光脉冲动画（12 帧，Braille 点从少到多再到少，速度 0.10s）
 
-本模块原位于 src.tui.parallel._config，已下沉至 core 层以消除跨层横向依赖。
+本模块已下沉至 core 层以消除跨层横向依赖。
 """
 
 from __future__ import annotations

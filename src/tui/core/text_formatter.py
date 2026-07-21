@@ -3,7 +3,7 @@
 实现已下沉至 src.tui.core.formatter 以打破循环依赖，
 此处保留 TextFormatter 类作为向后兼容的门面（Facade）。
 
-本模块原位于 src.tui.parallel._text_formatter，已下沉至 core 层以消除跨层横向依赖。
+本模块已下沉至 core 层以消除跨层横向依赖。
 """
 
 from __future__ import annotations

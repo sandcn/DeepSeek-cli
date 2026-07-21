@@ -96,6 +96,25 @@ class ToolScheduler:
         self._schedule_depth = 0
         self._schedule_lock = asyncio.Lock()
 
+    def _cleanup_batch_records(self) -> None:
+        """清除跨批累积记录（最外层 schedule() 返回后调用）
+
+        清理由前序批次累积的 DAG 节点、结果映射和边界记录，
+        防止跨轮次 DAG 膨胀和状态污染。
+
+        安全前提：
+        - 最外层 schedule() 已返回，无并发执行的工具
+        - 所有 SubAgent 已完成，无嵌套调用
+        - 无其他协程持有对旧 DAG 节点的引用
+        """
+        _logger.debug("ToolScheduler: 清除跨批记录")
+        self._batch_boundaries.clear()
+        self._results_map.clear()
+        self._completed_tc_ids.clear()
+        self._global_tool_calls.clear()
+        self._global_dag = None
+        self._prev_non_dispatch_ids.clear()
+
     @classmethod
     def reset_default(cls) -> None:
         """重置默认单例（仅用于测试清理）"""
@@ -452,6 +471,12 @@ class ToolScheduler:
 
         finally:
             self._schedule_depth -= 1
+            # ★ 最外层 schedule() 返回后清理跨批记录，防止 DAG 膨胀
+            # 条件：is_outermost_schedule 确保只有最外层调用触发清理
+            #       self._schedule_depth == 0 确认嵌套深度已归零
+            #       tool_calls 非空跳过空列表路径（current_batch_ids 未定义）
+            if is_outermost_schedule and self._schedule_depth == 0 and tool_calls:
+                self._cleanup_batch_records()
 
     async def _execute_concurrent(
         self, tool_calls: list, *,

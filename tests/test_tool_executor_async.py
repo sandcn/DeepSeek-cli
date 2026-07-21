@@ -429,8 +429,118 @@ class TestSchedule:
 
 
 # ═══════════════════════════════════════════════════════════════
-# schedule() — asyncio.Lock 行为测试
+# _cleanup_batch_records — 批记录清理测试
 # ═══════════════════════════════════════════════════════════════
+
+class TestCleanupBatchRecords:
+    """验证 _cleanup_batch_records 在最外层 schedule() 返回后自动触发
+
+    验证要点：
+    - 批执行完成后，DAG 节点、结果映射、边界记录均被清除
+    - 嵌套 SubAgent 调用不触发清理
+    - 空列表不触发清理
+    """
+
+    @staticmethod
+    def _make_registry():
+        from src.tools.base import ToolMetadata
+        reg = MagicMock(spec=ToolRegistry)
+
+        def get_meta(name):
+            return ToolMetadata(parallel_safe=False)
+        reg.get_metadata.side_effect = get_meta
+
+        def dispatch(name, arguments, agent=None):
+            f = MagicMock()
+            f.execute = AsyncMock(return_value=f"result_{name}")
+            return f
+        reg.dispatch.side_effect = dispatch
+        return reg
+
+    @pytest.mark.asyncio
+    async def test_cleanup_after_single_batch(self):
+        """单批 schedule() 返回后，所有跨批记录被清除"""
+        reg = self._make_registry()
+        executor = ToolScheduler(reg)
+
+        tcs = [
+            {"id": "call_1", "name": "tool_a", "arguments": {}},
+            {"id": "call_2", "name": "tool_b", "arguments": {}},
+        ]
+        results = await executor.schedule(tcs, agent_ref=None)
+
+        assert len(results) == 2
+        # 最外层 schedule() 返回后，跨批记录应已被清除
+        assert executor._global_dag is None, "DAG 应被清除"
+        assert len(executor._batch_boundaries) == 0, "批次边界应被清除"
+        assert len(executor._results_map) == 0, "结果映射应被清除"
+        assert len(executor._completed_tc_ids) == 0, "已完成 ID 集合应被清除"
+        assert len(executor._global_tool_calls) == 0, "全局工具列表应被清除"
+
+    @pytest.mark.asyncio
+    async def test_cleanup_after_two_batches(self):
+        """两批 schedule() 返回后，跨批记录被清除
+
+        分批调度验证：每批完成后清理，第二批重新创建 DAG。
+        """
+        reg = self._make_registry()
+        executor = ToolScheduler(reg)
+
+        # 第一批
+        batch1 = [
+            {"id": "b1_a", "name": "tool_x", "arguments": {}},
+        ]
+        r1 = await executor.schedule(batch1, agent_ref=None)
+        assert len(r1) == 1
+
+        # 第一批完成后记录应已被清除
+        assert executor._global_dag is None
+
+        # 第二批 — 重新创建 DAG（不再是 add_batch，而是创建新 DAG）
+        batch2 = [
+            {"id": "b2_a", "name": "tool_y", "arguments": {}},
+        ]
+        r2 = await executor.schedule(batch2, agent_ref=None)
+        assert len(r2) == 1
+
+        # 第二批完成后记录也应被清除
+        assert executor._global_dag is None
+        assert len(executor._batch_boundaries) == 0
+
+    @pytest.mark.asyncio
+    async def test_no_cleanup_on_nested_call(self):
+        """嵌套 SubAgent 调用不触发清理（schedule_depth > 0）"""
+        reg = self._make_registry()
+        executor = ToolScheduler(reg)
+
+        # 手动将 _schedule_depth 设为 1 模拟嵌套调用
+        executor._schedule_depth = 1
+
+        tcs = [
+            {"id": "call_nest", "name": "tool_n", "arguments": {}},
+        ]
+        results = await executor.schedule(tcs, agent_ref=None)
+        assert len(results) == 1
+
+        # 嵌套调用不应触发清理 → DAG 应仍存在
+        assert executor._global_dag is not None, "嵌套调用应保留 DAG"
+        assert len(executor._batch_boundaries) == 1, "嵌套调用应保留批次边界"
+
+        # 清理
+        executor._cleanup_batch_records()
+
+    @pytest.mark.asyncio
+    async def test_no_cleanup_on_empty_list(self):
+        """空列表 schedule() 不触发清理"""
+        reg = self._make_registry()
+        executor = ToolScheduler(reg)
+
+        results = await executor.schedule([], agent_ref=None)
+        assert results == []
+
+        # DAG 应仍为 None（空列表不创建也不清理）
+        assert executor._global_dag is None
+        assert len(executor._batch_boundaries) == 0
 
 class TestScheduleLock:
     """测试 schedule() 中 _schedule_lock 的并发保护行为。
@@ -496,16 +606,19 @@ class TestScheduleLock:
         assert len(results_a) == 2
         assert len(results_b) == 2
 
-        # DAG 状态应一致：4 个工具 + 2 个批次边界
-        assert executor._global_dag is not None
-        assert len(executor._global_tool_calls) == 4
-        assert len(executor._batch_boundaries) == 2
-
-        # 每个批次边界递增
-        assert executor._batch_boundaries[0] < executor._batch_boundaries[1]
-
-        # 清理
-        executor._reset_global_state()
+        # 最外层 schedule() 返回后跨批记录可能已被清理（_cleanup_batch_records）
+        # 也可能未被清理（取决于并发时序中最外层批次是否最后完成）。
+        # 两种状态都是正确的，验证不出现悬挂/不一致的数据即可。
+        if executor._global_dag is not None:
+            # 跨批记录尚未被清理 → 检查一致性后手动清理
+            assert len(executor._global_tool_calls) == 4
+            assert len(executor._batch_boundaries) == 2
+            assert executor._batch_boundaries[0] < executor._batch_boundaries[1]
+            executor._reset_global_state()
+        else:
+            # 已被清理 → 所有记录应已清空
+            assert len(executor._global_tool_calls) == 0
+            assert len(executor._batch_boundaries) == 0
 
     @pytest.mark.asyncio
     async def test_lock_released_during_execution(self):
