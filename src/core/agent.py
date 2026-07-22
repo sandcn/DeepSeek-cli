@@ -82,7 +82,8 @@ class Agent(BaseAgent):
         # ── ToolRegistry 包装 ─────────────────────────
         self._tool_registry_port: ToolRegistry = _ToolRegistryAdapter(self._registry)
 
-        # _async_tool_executor: 向后兼容别名，实际指向 ToolScheduler 全局单例
+        # _async_tool_executor: [DEPRECATED] 向后兼容别名，实际指向 ToolScheduler 全局单例。
+        # 新代码请直接使用 ToolScheduler.default()。无 `.` 调用方，仅作为属性引用存在。
         self._async_tool_executor = ToolScheduler.default()
 
         # ── UI Ports（display/events/output） ────────────

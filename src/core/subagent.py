@@ -296,6 +296,7 @@ class SubAgent(BaseAgent):
 
         on_before, on_after, run_method = self._build_tool_callbacks()
 
+        # UNIQUE_PATH: SubAgent 工具执行入口，项目唯二 schedule() 调用方之一
         try:
             results = await ToolScheduler.default().schedule(
                 tool_calls,

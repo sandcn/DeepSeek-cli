@@ -91,6 +91,7 @@ class ToolCallbackChain:
             return self._on_after_tool(tc, output, success)
 
         # ── ToolScheduler 统一调度 ──────────────────────
+        # UNIQUE_PATH: MainAgent 工具执行入口，项目唯二 schedule() 调用方之一
         results: list[tuple[str, str, bool]] = []
         try:
             results = await ToolScheduler.default().schedule(

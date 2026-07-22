@@ -15,15 +15,22 @@
 - SubAgent 工具调用同样走全局 DAG 路径
 """
 
+# UNIQUE_PATH: 以下两处是项目中仅有的调用方，无其他工具执行路径
+#   - _tool_callbacks.py:96（MainAgent）
+#   - subagent.py:300（SubAgent）
+
 from __future__ import annotations
 
 import asyncio
 import logging
-from typing import List, Tuple, Optional, Callable
+from typing import Any, List, Tuple, Optional, Callable, TYPE_CHECKING
 
 from ..tools.registry import ToolRegistry
 from ..tui.core.param_formatter import extract_key_params
 from .tool_dag import ToolDAG
+
+if TYPE_CHECKING:
+    from .tool_dag import ToolDAG  # noqa: F811 — 类型检查时重新导入以用于注解
 
 _logger = logging.getLogger(__name__)
 
@@ -33,6 +40,8 @@ _logger = logging.getLogger(__name__)
 _default_scheduler: Optional[ToolScheduler] = None
 
 _MAX_CONCURRENT_TOOLS = 0  # 最大并发工具数，0 表示无限制
+_MAX_DAG_ITERATIONS = 200    # DAG while 循环最大迭代次数（防死循环）
+_BASH_POLL_INTERVAL = 0.1   # bash 运行中无 dispatch_agent 时的轮询间隔（秒）
 
 
 class ToolScheduler:
@@ -66,6 +75,8 @@ class ToolScheduler:
         self._results_map: dict[str, tuple[str, str, bool]] = {}
         self._completed_tc_ids: set[str] = set()
         self._pending_tc_ids: set[str] = set()
+        self._running_bash_ids: set[str] = set()
+        self._background_dispatch_tasks: list[asyncio.Task] = []
         self._execution_depth: int = 0  # _execute_global_dag_async 嵌套深度
         # ── 双重保护机制（分工协作） ─────────────────────
         # _schedule_lock：asyncio.Lock 防并发竞态 — 多 SubAgent 通过
@@ -92,11 +103,13 @@ class ToolScheduler:
         self._results_map.clear()
         self._completed_tc_ids.clear()
         self._pending_tc_ids.clear()
+        self._running_bash_ids.clear()
+        self._background_dispatch_tasks.clear()
         self._execution_depth = 0
         self._schedule_depth = 0
         self._schedule_lock = asyncio.Lock()
 
-    def _cleanup_batch_records(self) -> None:
+    async def _cleanup_batch_records(self) -> None:
         """清除跨批累积记录（最外层 schedule() 返回后调用）
 
         清理由前序批次累积的 DAG 节点、结果映射和边界记录，
@@ -113,7 +126,102 @@ class ToolScheduler:
         self._completed_tc_ids.clear()
         self._global_tool_calls.clear()
         self._global_dag = None
+        self._pending_tc_ids.clear()
+        self._running_bash_ids.clear()
+        # 取消并清理后台 dispatch_agent 任务
+        # 先收集需要取消的未完成任务，统一 cancel 后 await 等待终止
+        tasks_to_cancel = [t for t in self._background_dispatch_tasks if not t.done()]
+        if tasks_to_cancel:
+            for task in tasks_to_cancel:
+                task.cancel()
+            # 等待所有被取消的任务终止，return_exceptions=True 吞掉 CancelledError
+            await asyncio.gather(*tasks_to_cancel, return_exceptions=True)
+        self._background_dispatch_tasks.clear()
         self._prev_non_dispatch_ids.clear()
+
+    def _only_dispatch_agent_remaining(self, dag: ToolDAG) -> list[dict[str, Any]] | None:
+        """检查 DAG 中所有未执行节点是否全部为 dispatch_agent。
+
+        遍历 DAG 中所有节点，过滤出不在 _results_map 且不在 _pending_tc_ids
+        中的节点。若全部为 dispatch_agent（tool_category="general"
+        且 name="dispatch_agent"），返回剩余 dispatch_agent 列表；
+        否则返回 None。
+
+        用于多批并发的提前返回检测：当仅剩 dispatch_agent 时，
+        可将其作为后台任务执行，不阻塞外层 schedule() 返回。
+        """
+        if not dag.nodes:
+            return None  # 空 DAG：无节点需要执行，不触发提前返回
+        remaining = []
+        for node in dag.nodes.values():
+            tc_id = node.tc_id
+            if tc_id not in self._results_map and tc_id not in self._pending_tc_ids:
+                if not (node.tool_category == "general" and node.name == "dispatch_agent"):
+                    return None
+                remaining.append({
+                    "id": node.tc_id,
+                    "name": node.name,
+                    "arguments": node.arguments,
+                })
+        if not remaining:
+            return None
+        return remaining
+
+    async def _bg_dispatch_agents(
+        self,
+        remaining_dispatch: list[dict[str, Any]],
+        *,
+        agent_ref,
+        on_before: Optional[Callable] = None,
+        on_after: Optional[Callable] = None,
+        run_method: Optional[Callable] = None,
+    ) -> None:
+        """后台执行剩余的 dispatch_agent 工具列表。
+
+        复用 _execute_concurrent 执行 dispatch_agent，完成后将结果写入
+        _results_map 和 _completed_tc_ids。此方法由 asyncio.ensure_future
+        调度为后台 Task，不阻塞外层 schedule() 返回。
+        """
+        results = await self._execute_concurrent(
+            remaining_dispatch, agent_ref=agent_ref,
+            on_before=on_before, on_after=on_after,
+            run_method=run_method,
+        )
+        for r in results:
+            self._results_map[r[0]] = r
+            self._completed_tc_ids.add(r[0])
+
+    def _on_bg_dispatch_done(
+        self,
+        task: asyncio.Task,
+        remaining_dispatch: list[dict[str, Any]],
+    ) -> None:
+        """后台 dispatch_agent 任务完成回调（含异常兜底）。
+
+        防御性检查：若 Task 已不在 _background_dispatch_tasks 中或
+        _global_dag 已为 None（表示 _cleanup_batch_records 已清理），
+        直接返回，避免操作已清空的状态。
+        """
+        # 防御：_cleanup_batch_records 已清理 → 不再操作
+        if task not in self._background_dispatch_tasks or self._global_dag is None:
+            return
+
+        try:
+            if task.cancelled():
+                return  # 已被取消，_pending_tc_ids 由 finally 统一清理
+            exc = task.exception()
+            if exc is not None:
+                for tc in remaining_dispatch:
+                    if tc["id"] not in self._results_map:
+                        self._results_map[tc["id"]] = (
+                            tc["id"],
+                            f"后台 dispatch_agent 执行失败: {exc}",
+                            False,
+                        )
+                        self._completed_tc_ids.add(tc["id"])
+        finally:
+            for tc in remaining_dispatch:
+                self._pending_tc_ids.discard(tc["id"])
 
     @classmethod
     def reset_default(cls) -> None:
@@ -257,7 +365,7 @@ class ToolScheduler:
         all_pending_ids: set[str] = set()
 
         try:
-            max_iterations = 200  # 防死循环安全上限
+            max_iterations = _MAX_DAG_ITERATIONS  # 防死循环安全上限
             iteration = 0
 
             while iteration < max_iterations:
@@ -299,6 +407,24 @@ class ToolScheduler:
                 if target_layer is None:
                     break  # 全部节点已执行
 
+                # ── bash 独占运行：bash 运行中仅 dispatch_agent 可并行 ──
+                # 若已有 bash 工具正在运行，当前层仅允许 dispatch_agent 通过，
+                # 其他工具（read/write/bash/interactive）须等待 bash 完成。
+                if self._running_bash_ids:
+                    filtered = []
+                    for tc_id in target_layer:
+                        node = dag.get_node(tc_id)
+                        if node is not None:
+                            if (node.tool_category == "general"
+                                    and node.name == "dispatch_agent"):
+                                filtered.append(tc_id)
+                    target_layer = filtered
+                    if not target_layer:
+                        # bash 运行中且无 dispatch_agent：让出控制权等待 bash 完成
+                        await asyncio.sleep(_BASH_POLL_INTERVAL)
+                        iteration -= 1  # bash 轮询不计入 _MAX_DAG_ITERATIONS
+                        continue
+
                 # 最外层：将本层节点标记为 pending（嵌套保护）
                 if is_outermost:
                     for tc_id in target_layer:
@@ -320,22 +446,64 @@ class ToolScheduler:
                 if not layer_calls:
                     continue
 
-                # 同层工具并发执行
-                layer_results = await self._execute_concurrent(
-                    layer_calls,
-                    agent_ref=agent_ref,
-                    on_before=on_before,
-                    on_after=on_after,
-                    run_method=run_method,
-                )
-                for r in layer_results:
-                    self._results_map[r[0]] = r
+                # ── 标记本层 bash 工具进入运行状态 ──
+                bash_ids_in_layer: set[str] = set()
+                if is_outermost:
+                    for tc_id in target_layer:
+                        node = dag.get_node(tc_id)
+                        if node is not None and node.tool_category == "bash":
+                            bash_ids_in_layer.add(tc_id)
+                            self._running_bash_ids.add(tc_id)
 
-                # 层执行完成 → 继续循环，重新拓扑捕获新增节点
+                try:
+                    # 同层工具并发执行
+                    layer_results = await self._execute_concurrent(
+                        layer_calls,
+                        agent_ref=agent_ref,
+                        on_before=on_before,
+                        on_after=on_after,
+                        run_method=run_method,
+                    )
+                    for r in layer_results:
+                        self._results_map[r[0]] = r
+                finally:
+                    # ── 层执行完成（含异常路径），清除本层 bash 运行标记 ──
+                    if is_outermost and bash_ids_in_layer:
+                        for bash_id in bash_ids_in_layer:
+                            self._running_bash_ids.discard(bash_id)
+
+                # ── 多批并发：仅剩 dispatch_agent 时提前返回 ──
+                # 检测 DAG 中所有未执行节点是否均为 dispatch_agent。
+                # 若是 → 将其作为后台任务异步执行，break 退出 while 循环，
+                # 不阻塞外层 schedule() 返回，实现 dispatch_agent 提前放行。
+                remaining_dispatch = self._only_dispatch_agent_remaining(dag)
+                if is_outermost and remaining_dispatch is not None:
+                    # 标记为 pending，防止嵌套 _execute_global_dag_async 重复处理
+                    for tc in remaining_dispatch:
+                        self._pending_tc_ids.add(tc["id"])
+
+                    # 创建后台协程：复用 _execute_concurrent 执行 dispatch_agent
+                    bg_task = asyncio.ensure_future(
+                        self._bg_dispatch_agents(
+                            remaining_dispatch, agent_ref=agent_ref,
+                            on_before=on_before, on_after=on_after,
+                            run_method=run_method,
+                        )
+                    )
+
+                    # 异常兜底回调：后台 Task 异常/取消时写入失败结果
+                    bg_task.add_done_callback(
+                        lambda task, rd=remaining_dispatch: self._on_bg_dispatch_done(task, rd)
+                    )
+                    self._background_dispatch_tasks.append(bg_task)
+                    break  # 退出 while 循环，提前返回
 
         finally:
             self._execution_depth -= 1
             if is_outermost:
+                # 注意：bg 任务通过 _on_bg_dispatch_done 注入的 _pending_tc_ids
+                # 条目由 _on_bg_dispatch_done 的 finally 块负责清理，而非由此处
+                # 的 all_pending_ids 遍历处理。
                 for tc_id in all_pending_ids:
                     self._pending_tc_ids.discard(tc_id)
 
@@ -348,6 +516,7 @@ class ToolScheduler:
         return [self._results_map[tc_id] for tc_id in dag.original_order
                 if tc_id in current_batch_ids and tc_id in self._results_map]
 
+    # 调用方：_tool_callbacks.py:96（MainAgent）、subagent.py:300（SubAgent）
     async def schedule(
         self,
         tool_calls: list,
@@ -357,7 +526,10 @@ class ToolScheduler:
         on_after: Optional[Callable] = None,
         run_method: Optional[Callable] = None,
     ) -> List[Tuple[str, str, bool]]:
-        """统一调度入口：通过全局 DAG 进行多批拓扑调度（唯一工具执行路径）。
+        """统一调度入口：通过全局 DAG 进行多批拓扑调度。
+
+        本方法是项目中唯一的工具执行路径，所有工具调用（MainAgent + SubAgent）
+        均通过此入口。
 
         - 空列表 → 返回 []
         - 所有工具（单工具/多工具）→ 全局 DAG 调度（累积工具到全局 DAG + 拓扑分层并发）
@@ -422,7 +594,11 @@ class ToolScheduler:
                         self._global_dag = ToolDAG(tool_calls, self._registry)
                         self._global_tool_calls = list(tool_calls)
                     else:
-                        # 后续批：扩展全局 DAG
+                        # 后续批：扩展全局 DAG。
+                        # 多批并发续接：若上一批 dispatch_agent 已转为后台任务，
+                        # 本批通过 add_batch 追加节点后，while 循环重新拓扑会捕获
+                        # 这些新节点。已完成的后台 dispatch_agent 结果已在
+                        # _results_map 中，不会被重复执行。
                         _logger.debug("schedule[%s]: 扩展批次 %d 个工具 → add_batch",
                                       agent_label, len(tool_calls))
                         self._global_dag.add_batch(
@@ -476,7 +652,7 @@ class ToolScheduler:
             #       self._schedule_depth == 0 确认嵌套深度已归零
             #       tool_calls 非空跳过空列表路径（current_batch_ids 未定义）
             if is_outermost_schedule and self._schedule_depth == 0 and tool_calls:
-                self._cleanup_batch_records()
+                await self._cleanup_batch_records()
 
     async def _execute_concurrent(
         self, tool_calls: list, *,
