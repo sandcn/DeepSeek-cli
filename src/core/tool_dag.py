@@ -77,6 +77,9 @@ class ToolDAG:
             # 存在环，并发执行
     """
 
+    # ── LRU 缓存常量 ─────────────────────────────────────────
+    _PATH_CACHE_MAX = 4096  # _path_exists 缓存最大条目数
+
     def __init__(self, tool_calls: list[dict], registry) -> None:
         """构建 DAG
 
@@ -87,6 +90,7 @@ class ToolDAG:
         """
         self._nodes: dict[str, ToolCallNode] = {}
         self._original_order: list[str] = [tc["id"] for tc in tool_calls]
+        self._path_cache: dict[tuple[str, str], bool] = {}
 
         if tool_calls:
             self._build(tool_calls, registry)
@@ -174,6 +178,17 @@ class ToolDAG:
 
         return created
 
+    # ── 缓存管理 ────────────────────────────────────────────
+
+    def _clear_path_cache(self) -> None:
+        """清除 _path_cache 全部条目
+
+        在 add_batch（新增节点）和 remove_nodes（删除节点）后调用，
+        确保缓存一致性——旧缓存条目可能不包含新节点的连通信息，
+        或引用了已被删除的节点。
+        """
+        self._path_cache.clear()
+
     def add_batch(self, new_tool_calls: list[dict], registry,
                   prev_non_dispatch_ids: set[str] | None = None) -> None:
         """扩展 DAG：添加一批新的 tool_calls，建立跨批依赖
@@ -214,6 +229,9 @@ class ToolDAG:
                     if prev_id in self._nodes and prev_id != new_id:
                         self._nodes[new_id].dependencies.add(prev_id)
                         self._nodes[prev_id].dependents.add(new_id)
+
+        # 第 5 步：清除缓存（新增节点后旧缓存可能不完整）
+        self._clear_path_cache()
 
     # ── 显式依赖检测 ───────────────────────────────────────
 
@@ -455,15 +473,28 @@ class ToolDAG:
         沿出边 (dependents) 遍历 DAG。若存在路径（含直接边和间接路径）返回 True。
         节点不存在或不可达返回 False。
 
+        使用 LRU 缓存（手动 dict）加速重复查询：
+        - 节点不存在 → 不缓存（节点状态可能变化）
+        - from_id == to_id → 不缓存（短路判断）
+        - 其他结果 → 写入 _path_cache（不超过 _PATH_CACHE_MAX 条目）
+
         Args:
             from_id: 起始节点 tc_id
             to_id: 目标节点 tc_id
         """
+        # 节点不存在：直接返回 False，不缓存（节点状态可能变化）
         if from_id not in self._nodes or to_id not in self._nodes:
             return False
+        # 自环：直接返回 True，不缓存（短路判断无需缓存）
         if from_id == to_id:
             return True
 
+        # ── 查缓存 ──
+        key = (from_id, to_id)
+        if key in self._path_cache:
+            return self._path_cache[key]
+
+        # ── BFS 遍历 ──
         visited: set[str] = set()
         queue: list[str] = [from_id]
         visited.add(from_id)
@@ -472,11 +503,17 @@ class ToolDAG:
             current = queue.pop(0)
             for dep_id in self._nodes[current].dependents:
                 if dep_id == to_id:
+                    # 写缓存后返回
+                    if len(self._path_cache) < self._PATH_CACHE_MAX:
+                        self._path_cache[key] = True
                     return True
                 if dep_id not in visited:
                     visited.add(dep_id)
                     queue.append(dep_id)
 
+        # 不可达：写缓存后返回
+        if len(self._path_cache) < self._PATH_CACHE_MAX:
+            self._path_cache[key] = False
         return False
 
     def _detect_tool_category_constraints(self) -> None:
@@ -666,6 +703,13 @@ class ToolDAG:
 
         Args:
             tc_ids: 要移除的 tc_id 集合。不存在的 ID 被静默跳过。
+
+        Note:
+            批清理场景（由 _execute_global_dag_async 在批执行完成后调用）：
+            已完成的节点从 DAG 中移除后，下一批 add_batch 的 prev_non_dispatch_ids
+            中若引用已删除节点，add_batch 第 4 步的 ``if prev_id in self._nodes``
+            守卫会跳过该边。语义正确——已完成节点不再需要等待。
+            未完成的节点仍保留在 _nodes 中，对应边正常创建。
         """
         if not tc_ids:
             return
@@ -696,6 +740,9 @@ class ToolDAG:
             "ToolDAG: removed %d nodes, remaining %d",
             len(to_remove), self.size,
         )
+
+        # 第 3 步：清除缓存（删除节点后旧缓存可能引用已删除节点）
+        self._clear_path_cache()
 
     # ── 工具方法 ────────────────────────────────────────────
 
