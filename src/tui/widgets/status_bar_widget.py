@@ -183,23 +183,37 @@ class StatusBarWidget(Widget):
 
         parts = []
 
-        # 工具调用计数（带 ⚙ 图标，成功/失败分色）
+        # 工具调用计数（带 · 图标，运行中/总数格式）
         if tool_total > 0:
             if not is_narrow():
                 _gear_frame = AnimatorContext.get_default().frame
-                glow_gear = f"{build_glow_ansi(_gear_frame, 45, 12)}\u2699\033[0m "
+                glow_gear = f"{build_glow_ansi(_gear_frame, 45, 12)}\u00b7\033[0m "
             else:
                 glow_gear = ""
-            done = tool_total - tool_fail_count
-            if tool_fail_count > 0:
+            if tool_count > 0:
+                # 运行中格式：· <运行中>→<总数>
+                if tool_fail_count > 0:
+                    total_colored = f"{_COLOR_TOOL_FAIL}{tool_total}{_COLOR_RESET}"
+                else:
+                    total_colored = f"{_COLOR_TOOL_OK}{tool_total}{_COLOR_RESET}"
                 parts.append(
                     f"{glow_gear}"
-                    f"{_COLOR_TOOL_OK}{done}{_COLOR_RESET}"
-                    f"{_COLOR_DIM}/{_COLOR_RESET}"
-                    f"{_COLOR_TOOL_FAIL}{tool_total}{_COLOR_RESET}"
+                    f"{_COLOR_ACCENT}{tool_count}{_COLOR_RESET}"
+                    f"{_COLOR_DIM}→{_COLOR_RESET}"
+                    f"{total_colored}"
                 )
             else:
-                parts.append(f"{glow_gear}{_COLOR_TOOL_OK}{tool_total}{_COLOR_RESET}")
+                # 无运行工具时保持原有逻辑
+                done = tool_total - tool_fail_count
+                if tool_fail_count > 0:
+                    parts.append(
+                        f"{glow_gear}"
+                        f"{_COLOR_TOOL_OK}{done}{_COLOR_RESET}"
+                        f"{_COLOR_DIM}/{_COLOR_RESET}"
+                        f"{_COLOR_TOOL_FAIL}{tool_total}{_COLOR_RESET}"
+                    )
+                else:
+                    parts.append(f"{glow_gear}{_COLOR_TOOL_OK}{tool_total}{_COLOR_RESET}")
 
         # 耗时（蓝灰高亮）
         if elapsed > 0:

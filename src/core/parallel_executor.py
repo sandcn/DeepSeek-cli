@@ -24,7 +24,7 @@ _logger = logging.getLogger(__name__)
 
 # ── 常量 ──────────────────────────────────────────────
 _TIMEOUT = 3.0  # 显示停止等超时（秒）
-_BARRIER_TIMEOUT = 600.0  # barrier 等待超时（秒），10分钟—足够 SubAgent 正常执行
+# barrier 等待不设超时 — dispatch_agent 等到底
 
 # ── 结果字典键常量 ─────────────────────────────────
 _DESCRIPTION_KEY = "description"
@@ -118,8 +118,7 @@ class ParallelExecutor:
         设计要点：
         - 最后一个注册的协程自动触发 _execute_all()
         - 其他协程通过 asyncio.Event.wait() 纯异步等待，不消耗线程池工人
-        - 超时保护：如果 barrier 因异常（如 FIRST_EXCEPTION 取消）无法释放，
-          超时后尝试自动恢复
+        - barrier 不设超时 — dispatch_agent 无限等待到底
         """
         if self._expected_count <= 0:
             return
@@ -129,50 +128,7 @@ class ParallelExecutor:
         if all_registered:
             await self._execute_all()
         else:
-            try:
-                await asyncio.wait_for(self._all_done.wait(), timeout=_BARRIER_TIMEOUT)
-            except asyncio.TimeoutError:
-                # 超时保护：检查是否能自我修复
-                async with self._agents_lock:
-                    if self._registered_count >= self._expected_count:
-                        if self._executing:
-                            # _execute_all 仍在运行但超时了（SubAgent 执行超长）
-                            _logger.warning(
-                                "register_and_wait 超时但 _execute_all 正在运行 "
-                                "(registered=%d/%d)，继续等待",
-                                self._registered_count, self._expected_count,
-                            )
-                            # 重试等待（_execute_all 完成后会 set _all_done）
-                            # 此处也加超时，防止 _execute_all 异常泄漏导致无限等待
-                            try:
-                                await asyncio.wait_for(
-                                    self._all_done.wait(),
-                                    timeout=_BARRIER_TIMEOUT,
-                                )
-                            except asyncio.TimeoutError:
-                                _logger.error(
-                                    "register_and_wait 二次超时：_execute_all 仍未完成 "
-                                    "(registered=%d/%d)，不可恢复",
-                                    self._registered_count, self._expected_count,
-                                )
-                                raise
-                        else:
-                            # 所有 agent 已注册但 _execute_all 从未被触发
-                            # （最后注册的 agent 被取消或异常）
-                            _logger.warning(
-                                "Barrier 超时：所有 agent 已注册但 _execute_all 未触发，"
-                                "接手执行 (registered=%d/%d)",
-                                self._registered_count, self._expected_count,
-                            )
-                            await self._execute_all()
-                    else:
-                        # 仍有 agent 未注册（被级联取消后无法恢复）
-                        _logger.error(
-                            "Barrier 超时：未能注册所有 agent "
-                            "(registered=%d, expected=%d)，放弃等待",
-                            self._registered_count, self._expected_count,
-                        )
-                        raise
+            await self._all_done.wait()
 
     def add_agent(self, description: str, prompt: str, agent_type: str = "execute",
                   model: str = None, tool_label: str = None) -> int:

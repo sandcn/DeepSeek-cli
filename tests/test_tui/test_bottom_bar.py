@@ -408,6 +408,7 @@ class TestBottomBarFormatStatus(unittest.TestCase):
         self.bb._status_active = True
         self.bb._tool_count = 3
         self.bb._tool_fail_count = 1
+        self.bb._tool_total = 5
 
         # mock _get_snapshot 返回模拟的统计数据
         mock_snap = {
@@ -424,6 +425,8 @@ class TestBottomBarFormatStatus(unittest.TestCase):
         self.assertIn("t", result)      # token 数
         self.assertIn("12.5s", result)  # 耗时
         self.assertIn("25.3t/s", result)  # 速率
+        # 应包含运行中工具计数格式（⚙ <运行中>→<总数>）
+        self.assertIn("\u2192", result,  "应包含运行中工具→总数分隔符")
 
     def test_streaming_inactive_hides_stats_even_with_tool_count(self):
         """非流式空闲 _status_active=False，即使 _tool_count>0 → 仅模型名。"""
@@ -492,6 +495,83 @@ class TestBottomBarFormatStatus(unittest.TestCase):
 
         self.assertIn("test-model", result)
         self.assertNotIn("t/s", result)
+
+    def test_tool_count_running_shows_arrow_format(self):
+        """_tool_count>0 且 _tool_fail_count=0 → ⚙ <运行中>→<总数> 格式（绿色总数）。"""
+        self.bb._status_active = True
+        self.bb._tool_count = 2
+        self.bb._tool_fail_count = 0
+        self.bb._tool_total = 5
+
+        mock_snap = {
+            "total_tokens": 500,
+            "elapsed_seconds": 5.0,
+            "per_second_speed": 10.0,
+        }
+
+        with patch("src.tui.widgets.bottom_bar.status._get_snapshot", return_value=lambda: mock_snap):
+            result = self.bb._format_status()
+
+        # 应包含青色运行中计数 [38;5;45m2
+        self.assertIn("[38;5;45m2", result,
+                      "运行中计数 2 应使用 CYAN_256(45)")
+        # 应包含 → 分隔符
+        self.assertIn("\u2192", result,
+                      "应包含运行中→总数分隔符")
+        # 应包含绿色总数 [38;5;41m5（无失败时）
+        self.assertIn("[38;5;41m5", result,
+                      "总数 5 无失败时应使用 GREEN_256(41)")
+
+    def test_tool_count_zero_keeps_original_format(self):
+        """_tool_count=0 且 _tool_fail_count>0 → 保持原有 done/total 格式（无→）。"""
+        self.bb._status_active = True
+        self.bb._tool_count = 0
+        self.bb._tool_fail_count = 2
+        self.bb._tool_total = 5
+
+        mock_snap = {
+            "total_tokens": 500,
+            "elapsed_seconds": 5.0,
+            "per_second_speed": 10.0,
+        }
+
+        with patch("src.tui.widgets.bottom_bar.status._get_snapshot", return_value=lambda: mock_snap):
+            result = self.bb._format_status()
+
+        # 应包含 done=3 绿色 + / 分隔 + total=5 红色（3/5 格式）
+        self.assertIn("[38;5;41m3", result,
+                      "done=3 应使用 GREEN_256(41)")
+        self.assertIn("[38;5;196m5", result,
+                      "total=5 有失败时应使用 TOOL_FAIL(196)")
+        # 不应包含 → 分隔符
+        self.assertNotIn("\u2192", result,
+                         "_tool_count=0 时不应包含→分隔符")
+
+    def test_tool_count_running_with_failures_shows_fail_total(self):
+        """_tool_count>0 且 _tool_fail_count>0 → ⚙ <运行中>→<总数>（红色总数）。"""
+        self.bb._status_active = True
+        self.bb._tool_count = 2
+        self.bb._tool_fail_count = 1
+        self.bb._tool_total = 5
+
+        mock_snap = {
+            "total_tokens": 500,
+            "elapsed_seconds": 5.0,
+            "per_second_speed": 10.0,
+        }
+
+        with patch("src.tui.widgets.bottom_bar.status._get_snapshot", return_value=lambda: mock_snap):
+            result = self.bb._format_status()
+
+        # 应包含青色运行中计数 [38;5;45m2
+        self.assertIn("[38;5;45m2", result,
+                      "运行中计数 2 应使用 CYAN_256(45)")
+        # 应包含 → 分隔符
+        self.assertIn("\u2192", result,
+                      "应包含运行中→总数分隔符")
+        # 应包含红色总数 [38;5;196m5（有失败时）
+        self.assertIn("[38;5;196m5", result,
+                      "总数 5 有失败时应使用 TOOL_FAIL(196)")
 
 
 class TestBottomBarLastScrollEnd(unittest.TestCase):
@@ -1507,7 +1587,13 @@ class TestBottomBarColorAlignment(unittest.TestCase):
         # 应包含 CYAN_256(45) 色用于模型名
         self.assertIn("[38;5;45m", result,
                       "_format_status 应含 CYAN_256(45) 色")
-        # 应包含 GREEN_256(41) 色用于工具计数
+        # 应包含 CYAN_256(45) 色用于运行中工具计数
+        self.assertIn("[38;5;45m2", result,
+                      "_format_status 应含 CYAN_256(45) 运行中计数 2")
+        # 应包含运行中→总数分隔符
+        self.assertIn("\u2192", result,
+                      "_format_status 应含运行中→总数分隔符")
+        # 应包含 GREEN_256(41) 色用于工具总数（无失败时）
         self.assertIn("[38;5;41m", result,
                       "_format_status 应含 GREEN_256(41) 色")
 
