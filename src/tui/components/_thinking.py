@@ -10,7 +10,7 @@
 from __future__ import annotations
 
 from ..animation.transitions import FadeIn
-from ..engine.const import _THINKING_HEADER
+from ..consumer.chat_config import ChatConfig
 from ..state.render_state import _ReasoningState
 from ..animation.animator import AnimatorContext, BreathPalette
 from ..core.style import Style
@@ -39,8 +39,9 @@ class ThinkingBlock(TuiComponent):
         lines = 0
         if is_first:
             if is_narrow():
-                rr.write(_THINKING_HEADER)
-                lines += _estimate_content_lines(_THINKING_HEADER)
+                thinking_header = ChatConfig.defaults().thinking_header
+                rr.write(thinking_header)
+                lines += _estimate_content_lines(thinking_header)
             else:
                 frame = AnimatorContext.get_default().frame
                 sparkle = build_sparkle_ansi(frame, 45, 6)

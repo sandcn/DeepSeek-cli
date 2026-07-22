@@ -10,6 +10,12 @@ ChatUI 消费者层，管理事件订阅、渲染管线和底部栏。
 - 完成提示 UI（CompletionPrompt）
 
 Layer 层次：位于 TUI 架构顶层，依赖 events/state/components/pipeline/widgets 层。
+
+配置与命令分层（v1.3+）：
+  - ChatConfig        — 聊天域配置（main_label/main_source/thinking_header/max_output_len）
+  - FrameworkCommand  — 框架通用命令（从 engine.commands 重导出）
+  - ChatCommand       — 聊天域命令（本模块定义）
+  - RenderCommand     — 向后兼容别名（全部 20 个命令）
 """
 
 from __future__ import annotations
@@ -20,11 +26,19 @@ import threading
 _error_handler_registered: bool = False
 _error_handler_lock = threading.Lock()
 
-# ── 常量导出 ──────────────────────────────────────
+# ── 命令枚举导出 ──────────────────────────────────
 from ..engine.const import (
     RenderCommand,
-    _MAIN_LABEL,
 )
+from ..engine.commands import FrameworkCommand  # noqa: F401 — 重导出供外部使用
+from .chat_commands import ChatCommand  # noqa: F401 — 聊天域命令枚举
+
+# ── 配置导出 ──────────────────────────────────────
+from .chat_config import ChatConfig
+
+# ── 向后兼容导出 ──────────────────────────────────
+# @deprecated — 使用 ChatConfig.defaults().main_label 替代
+_MAIN_LABEL: str = ChatConfig.defaults().main_label
 
 # ── 全局状态导出 ──────────────────────────────────
 from ..state.consumer_registry import (
@@ -59,9 +73,12 @@ __all__ = [
     "ChatUIConsumer",
     "get_active_chat_ui",
     "RenderCommand",
+    "FrameworkCommand",
+    "ChatCommand",
+    "ChatConfig",
     "ChatUIErrorHandler",
     "_apply_completion",
     "_active_consumer",
-    "_MAIN_LABEL",
+    "_MAIN_LABEL",  # @deprecated — 使用 ChatConfig.defaults().main_label
     "setup_chat_ui_error_handler",
 ]

@@ -15,12 +15,11 @@ import math
 
 from rich.text import Text
 
-from ..engine.const import _STYLE_ERROR_GRADIENT, _MAX_ERROR_LENGTH
 from ..engine.utils import _truncate_msg
 from ..animation.animator import BreathPalette
 from ..core.style import Style, StyleSheet
 from ..core.effects import sine_color
-from ..framework import get_animator
+from ..framework import get_animator, get_framework
 from ..terminal.terminal import is_narrow
 from ..render_buffer import RenderBuffer
 from ._base import TuiComponent
@@ -70,13 +69,16 @@ class ErrorBlock(TuiComponent):
     """错误提示块 — 红色 ! 前缀。"""
     def __init__(self, message: str = "", *, props: dict | None = None) -> None:
         super().__init__(props=props)
-        self.message = _truncate_msg(message, _MAX_ERROR_LENGTH)
+        _max_len = get_framework().get_config().max_error_length
+        self.message = _truncate_msg(message, _max_len)
 
     def render(self, buffer: RenderBuffer | None = None) -> str | Text | None:
         if is_narrow():
+            error_style = StyleSheet.get("error")
+            error_rich_style = error_style.to_rich() if error_style else None
             result = Text.assemble(
-                ("\n  ! ", _STYLE_ERROR_GRADIENT),
-                (self.message, _STYLE_ERROR_GRADIENT),
+                ("\n  ! ", error_rich_style),
+                (self.message, error_rich_style),
             )
         else:
             # 宽屏：! 前缀脉动 + 消息文本红色 glow 呼吸 + FadeIn 入场

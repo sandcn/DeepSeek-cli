@@ -1,16 +1,17 @@
-"""测试 IRenderState Protocol + 渲染器工厂函数。
+"""测试 IRenderState Protocol + 渲染状态基类。
 
 覆盖：
-  1. IRenderState Protocol 结构兼容性（isinstance + 运行时检查）
-  2. _create_reasoning_renderer / _create_content_renderer 默认参数正确性
+  1. IRenderState Protocol 结构兼容性（运行时属性检查）
+  2. ChatRenderState 通过 IRenderState 接口的行为正确性
+  3. _RenderState 向后兼容别名验证
 """
 
 from __future__ import annotations
 
-from typing import get_type_hints
-
 from src.tui.state.render_state import (
     _RenderState,
+    ChatRenderState,
+    RenderState,
     _ReasoningState,
     IRenderState,
 )
@@ -20,45 +21,37 @@ class TestIRenderStateProtocol:
     """IRenderState Protocol 兼容性测试。"""
 
     def test_render_state_satisfies_protocol(self):
-        """_RenderState 实例满足 IRenderState Protocol（isinstance 检查）。"""
+        """_RenderState 实例满足 IRenderState Protocol（运行时属性检查）。"""
         rs = _RenderState()
-        assert isinstance(rs, IRenderState), (
-            "_RenderState 应满足 IRenderState Protocol"
-        )
+        # 验证协议要求的全部方法存在
+        for method_name in ('set_output_adapter', 'get_reasoning', 'get_content',
+                            'close_reasoning', 'reopen_reasoning', 'close_content',
+                            'close_all'):
+            assert hasattr(rs, method_name), (
+                f"_RenderState 缺少方法: {method_name}"
+            )
 
     def test_protocol_has_all_public_methods(self):
         """IRenderState Protocol 声明了全部公共接口方法。"""
-        protocol_methods = {
-            name for name in dir(IRenderState)
-            if not name.startswith('_') or name in ('__call__',)
+        expected_methods = {
+            'set_output_adapter', 'get_reasoning', 'get_content',
+            'close_reasoning', 'reopen_reasoning', 'close_content', 'close_all',
         }
-        # Protocol 的运行时属性包括 __init_subclass__ 等 dunder，
-        # 因此以公开方法名（reasoning_state / set_output_adapter / ...）为准
-        expected = {
-            'reasoning_state',
-            'set_output_adapter',
-            'get_reasoning',
-            'get_content',
-            'close_reasoning',
-            'reopen_reasoning',
-            'close_content',
-            'close_all',
-        }
-        # Protocol 使用 ... (Ellipsis) 作为方法体，运行时以描述器形式存在
-        for name in expected:
+        expected_attrs = {'reasoning_state'}
+        # 方法通过 hasattr 检查
+        for name in expected_methods:
             assert hasattr(IRenderState, name), (
                 f"IRenderState 缺少方法: {name}"
+            )
+        # Protocol 属性在 __annotations__ 中声明
+        proto_ann = getattr(IRenderState, '__annotations__', {})
+        for name in expected_attrs:
+            assert name in proto_ann, (
+                f"IRenderState 缺少属性注解: {name}"
             )
 
     def test_protocol_method_signatures(self):
         """IRenderState 的方法签名与 _RenderState 对应方法兼容。"""
-        # get_reasoning() -> IncrementalRenderer | None
-        # get_content() -> IncrementalRenderer
-        # set_output_adapter(adapter) -> None
-        # close_reasoning() -> None
-        # reopen_reasoning() -> None
-        # close_content() -> None
-        # close_all() -> None
         for method_name in ('get_reasoning', 'get_content', 'close_reasoning',
                             'reopen_reasoning', 'close_content', 'close_all',
                             'set_output_adapter'):
@@ -67,14 +60,13 @@ class TestIRenderStateProtocol:
             )
 
     def test_reasoning_state_property(self):
-        """reasoning_state 作为只读属性可从 IRenderState 获取。"""
+        """reasoning_state 作为属性可从 IRenderState 获取。"""
         rs = _RenderState()
-        # 验证 reasoning_state 属性存在且返回正确类型
         assert rs.reasoning_state is _ReasoningState.INACTIVE
 
     def test_protocol_instance_methods_work(self):
         """通过 IRenderState 接口调用的方法行为正确。"""
-        rs: IRenderState = _RenderState()  # 类型兼容赋值
+        rs = _RenderState()
         assert rs.reasoning_state == _ReasoningState.INACTIVE
         # 关闭推理
         rs.close_reasoning()
@@ -84,24 +76,29 @@ class TestIRenderStateProtocol:
         assert rs.reasoning_state == _ReasoningState.INACTIVE
 
     def test_protocol_get_content_when_not_injected(self):
-        """get_content() 在未预注入渲染器时返回 None（非崩溃）。"""
-        rs: IRenderState = _RenderState()
+        """get_content() 在未设置 adapter 时仍返回渲染器（惰性创建）。"""
+        rs = _RenderState()
+        # ChatRenderState.get_content() 会惰性创建 IncrementalRenderer
+        # 即使 _shared_adapter 未设置也会创建（仅打印 warning）
         result = rs.get_content()
-        assert result is None, (
-            "未预注入时 get_content 应返回 None"
+        assert result is not None, (
+            "get_content 应当惰性创建渲染器"
         )
+        result.close()
 
     def test_protocol_get_reasoning_when_not_injected(self):
-        """get_reasoning() 在未预注入且 INACTIVE 状态时返回 None（非崩溃）。"""
-        rs: IRenderState = _RenderState()
+        """get_reasoning() 在 INACTIVE 状态且未预注入时惰性创建渲染器。"""
+        rs = _RenderState()
         result = rs.get_reasoning()
-        assert result is None, (
-            "未预注入时 get_reasoning 应返回 None"
+        # ChatRenderState.get_reasoning() 在 INACTIVE 状态会创建并转为 ACTIVE
+        assert result is not None, (
+            "INACTIVE 状态下 get_reasoning 应当惰性创建渲染器"
         )
+        result.close()
 
     def test_protocol_close_all_twice(self):
         """close_all() 通过 Protocol 接口调用两次，幂等。"""
-        rs: IRenderState = _RenderState()
+        rs = _RenderState()
         rs.close_all()
         assert rs.reasoning_state == _ReasoningState.CLOSED
         # 第二次调用
@@ -109,28 +106,35 @@ class TestIRenderStateProtocol:
         assert rs.reasoning_state == _ReasoningState.CLOSED
 
 
-class TestReasoningRendererFactory:
-    """_create_reasoning_renderer / _create_content_renderer 工厂函数测试。"""
+class TestRenderStateHierarchy:
+    """RenderState 基类 / ChatRenderState 子类 / _RenderState 别名测试。"""
 
-    def test_create_reasoning_renderer_returns_renderer(self):
-        """_create_reasoning_renderer 返回 IncrementalRenderer 实例。"""
-        from src.tui.engine.renderer import _create_reasoning_renderer
-        from src.renderer import IncrementalRenderer
-        renderer = _create_reasoning_renderer()
-        assert isinstance(renderer, IncrementalRenderer), (
-            "工厂函数应返回 IncrementalRenderer 实例"
+    def test_chat_render_state_extends_render_state(self):
+        """ChatRenderState 继承自 RenderState。"""
+        rs = ChatRenderState()
+        assert isinstance(rs, RenderState), (
+            "ChatRenderState 应继承自 RenderState"
         )
-        # 验证默认参数：show_indicator 为 False
-        assert renderer._show_indicator is False
-        renderer.close()
+        # 基类属性
+        assert rs._shared_adapter is None
 
-    def test_create_content_renderer_returns_renderer(self):
-        """_create_content_renderer 返回 IncrementalRenderer 实例。"""
-        from src.tui.engine.renderer import _create_content_renderer
-        from src.renderer import IncrementalRenderer
-        renderer = _create_content_renderer(adapter=None)
-        assert isinstance(renderer, IncrementalRenderer), (
-            "工厂函数应返回 IncrementalRenderer 实例"
+    def test_render_state_alias_is_chat_render_state(self):
+        """_RenderState 是 ChatRenderState 的别名。"""
+        assert _RenderState is ChatRenderState, (
+            "_RenderState 应是 ChatRenderState 的别名"
         )
-        assert renderer._show_indicator is False
-        renderer.close()
+
+    def test_backward_compat_instantiation(self):
+        """_RenderState() 创建 ChatRenderState 实例。"""
+        rs = _RenderState()
+        assert isinstance(rs, ChatRenderState)
+        assert rs.reasoning is None
+        assert rs.content is None
+        assert rs.reasoning_state is _ReasoningState.INACTIVE
+
+    def test_set_output_adapter(self):
+        """set_output_adapter 通过渲染状态基类设置适配器。"""
+        rs = _RenderState()
+        assert rs._shared_adapter is None
+        rs.set_output_adapter("mock_adapter")  # type: ignore
+        assert rs._shared_adapter == "mock_adapter"

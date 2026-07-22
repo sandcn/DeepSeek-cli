@@ -60,30 +60,40 @@ class TestComponentRegistry:
         assert not reg.has(0)
 
     def test_reset_default(self):
-        """reset_default 后 get_default 返回新实例。"""
+        """reset_default 后 get_default 返回新实例，且自动填充默认命令。"""
         a = ComponentRegistry.get_default()
         a.register(0, "test", ())
         ComponentRegistry.reset_default()
         b = ComponentRegistry.get_default()
         assert a is not b
-        assert not b.has(0)
+        # 新实例自动填充全部 17 个默认命令
+        assert b.has(0)
+        assert b.count() == 17
+        # 旧实例注册的 test 不在新实例中
+        result = b.resolve(0)
+        assert result is not None
+        assert result[0] != "test"
 
     def test_all_commands(self):
-        """返回所有已注册的命令 ID。"""
+        """返回所有已注册的命令 ID（含默认命令）。"""
         reg = ComponentRegistry.get_default()
-        reg.register(1, "a", ())
-        reg.register(2, "b", ())
         cmds = reg.all_commands()
-        assert 1 in cmds
-        assert 2 in cmds
+        # 默认 17 个命令
+        assert len(cmds) == 17
+        assert 0 in cmds  # REASONING
+        assert 11 in cmds  # NOTIFICATION
 
     def test_count(self):
-        """正确返回注册数量。"""
+        """正确返回注册数量（含自动填充的默认命令）。"""
         reg = ComponentRegistry.get_default()
-        assert reg.count() == 0
-        reg.register(1, "a", ())
-        assert reg.count() == 1
-        reg.register(2, "b", ())
-        assert reg.count() == 2
+        # 自动填充 17 个默认命令
+        default_count = reg.count()
+        assert default_count == 17
+        reg.register(99, "a", ())
+        assert reg.count() == default_count + 1
+        reg.register(98, "b", ())
+        assert reg.count() == default_count + 2
         reg.clear()
+        # clear() 后再次 get_default() 会重新填充默认命令
+        # 但当前实例的 _commands 已被清空，默认命令通过 _populate_defaults() 重建
         assert reg.count() == 0

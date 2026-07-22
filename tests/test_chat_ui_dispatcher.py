@@ -481,7 +481,7 @@ class TestEventDispatcherEdgeCases:
 # ═══════════════════════════════════════════════════════════
 
 class TestEventDispatcherIsAgentSource:
-    """_is_agent_source 静态方法测试（工具类 handler 过滤依赖此方法）。"""
+    """_is_agent_source 方法测试（工具类 handler 过滤依赖此方法）。"""
 
     @pytest.mark.parametrize("source,expected", [
         ("agent", True),
@@ -495,4 +495,5 @@ class TestEventDispatcherIsAgentSource:
     ])
     def test_is_agent_source(self, source, expected):
         """验证各种 source 值的判断结果。"""
-        assert EventDispatcher._is_agent_source(source) is expected
+        disp = EventDispatcher(push_cmd=lambda x: None)
+        assert disp._is_agent_source(source) is expected

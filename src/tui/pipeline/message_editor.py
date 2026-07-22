@@ -67,7 +67,7 @@ def _get_editor_msg_max_width() -> int:
     return max(25, min(term_width - 12, 80))
 
 
-def _msg_short_summary(msg: dict) -> str:
+def _msg_short_summary(msg: dict, role_map: dict[str, "_disp.RoleConfig"] | None = None) -> str:
     """生成消息的简短摘要（纯文本，适合弹窗显示）。
 
     截断宽度根据终端宽度动态计算（_get_editor_msg_max_width），
@@ -80,11 +80,22 @@ def _msg_short_summary(msg: dict) -> str:
           · 其他角色消息摘要... (动态宽度 [25-80])
 
     注意：输出纯文本（不含 ANSI 颜色转义码），颜色由弹窗自身渲染。
+
+    Args:
+        msg: 消息字典。
+        role_map: 可选的角色配置映射，不传时使用硬编码默认值。
     """
     role = msg.get("role", "?")
     content = msg.get("content", "") or ""
-    icon_map = {"user": "\u25cf", "assistant": "\u25c6", "tool": "\u2699"}
-    icon = icon_map.get(role, "\u00b7")
+    if role_map is not None:
+        cfg = role_map.get(role)
+        if cfg is not None:
+            icon = cfg.icon
+        else:
+            icon = "\u00b7"
+    else:
+        icon_map = {"user": "\u25cf", "assistant": "\u25c6", "tool": "\u2699"}
+        icon = icon_map.get(role, "\u00b7")
     max_w = _get_editor_msg_max_width()
     if role == "user":
         text = content.replace("\n", " ").strip()
@@ -106,14 +117,19 @@ def _msg_short_summary(msg: dict) -> str:
         return f"{icon} {prefix}{truncate(text, min(max_w, 60))}"
     else:
         text = content.replace("\n", " ").strip()
-        return f"\u00b7 {truncate(text, max_w)}"
+        return f"{icon} {truncate(text, max_w)}"
 
 
-def _build_message_items(data: list[dict]) -> list[str]:
-    """构建消息列表的显示文本，每条一行摘要。"""
+def _build_message_items(data: list[dict], role_map: dict[str, "_disp.RoleConfig"] | None = None) -> list[str]:
+    """构建消息列表的显示文本，每条一行摘要。
+
+    Args:
+        data: 消息列表。
+        role_map: 可选的角色配置映射，不传时使用硬编码默认值。
+    """
     items = []
     for i, m in enumerate(data):
-        summary = _msg_short_summary(m)
+        summary = _msg_short_summary(m, role_map)
         items.append(f"{i}. {summary}")
     return items
 
@@ -322,6 +338,9 @@ class MessageEditor:
     edit_current_messages() 作为公开入口点。
     """
 
+    def __init__(self, role_map: dict[str, "_disp.RoleConfig"] | None = None) -> None:
+        self.role_map = role_map
+
     # ── 消息选择交互 ────────────────────────────────────
 
     def _interactive_message_select(
@@ -329,6 +348,7 @@ class MessageEditor:
         ctx: _disp.MessageDisplayContext,
         title: str,
         is_current: bool = False,
+        role_map: dict[str, "_disp.RoleConfig"] | None = None,
     ) -> tuple[str, int]:
         """在底部栏补全弹窗中选择消息，回车编辑，Esc 取消。
 
@@ -336,6 +356,7 @@ class MessageEditor:
             ctx: 消息显示上下文。
             title: 显示标题。
             is_current: 是否为当前会话。
+            role_map: 可选的角色配置映射。
 
         Returns:
             (action, real_idx): action = "edit" 表示用户确认选择, real_idx 为实际消息索引；
@@ -365,7 +386,7 @@ class MessageEditor:
         sel_count = len(selectable)
 
         # 构建显示项：为每个可选消息生成摘要
-        display_items = _build_message_items(data)
+        display_items = _build_message_items(data, role_map)
         user_display = [display_items[i] for i in selectable]
 
         # ★ 消息选择弹窗：显示用户可选消息总数
@@ -422,12 +443,13 @@ class MessageEditor:
 
     # ── 公开入口 ────────────────────────────────────────
 
-    def edit_current_messages(self, agent: Any, state: dict) -> bool:
+    def edit_current_messages(self, agent: Any, state: dict, role_map: dict[str, "_disp.RoleConfig"] | None = None) -> bool:
         """进入当前会话消息编辑（Ctrl+O / /editmsg）。
 
         Args:
             agent: ChatAgent 实例（包含 messages 列表）。
             state: 编辑状态字典，用于传递重试/预填等标记。
+            role_map: 可选的角色配置映射。
 
         Returns:
             True 表示有修改（调用方应重新发送/继续），False 表示无操作。
@@ -440,9 +462,9 @@ class MessageEditor:
                 source="cmd",
             )
             return False
-        return self._current_session_detail(agent, state)
+        return self._current_session_detail(agent, state, role_map)
 
-    def _current_session_detail(self, agent: Any, state: dict) -> bool:
+    def _current_session_detail(self, agent: Any, state: dict, role_map: dict[str, "_disp.RoleConfig"] | None = None) -> bool:
         """选择消息并通过命令模式 dispatch 编辑操作。"""
         ctx = _disp.MessageDisplayContext.from_agent(agent)
         if not ctx.data:
@@ -454,6 +476,7 @@ class MessageEditor:
 
         action, cursor = self._interactive_message_select(
             ctx, "\u5f53\u524d\u4f1a\u8bdd", is_current=True,
+            role_map=role_map,
         )
 
         if action == "quit":
@@ -474,17 +497,18 @@ class MessageEditor:
 # ═══════════════════════════════════════════════════════════
 
 
-def edit_current_messages(agent: Any, state: dict) -> bool:
+def edit_current_messages(agent: Any, state: dict, role_map: dict[str, "_disp.RoleConfig"] | None = None) -> bool:
     """直接进入当前会话消息编辑（模块级入口，向后兼容）。
 
     Args:
         agent: ChatAgent 实例。
         state: 编辑状态字典。
+        role_map: 可选的角色配置映射。
 
     Returns:
         True 表示有修改，False 表示无操作。
     """
-    return MessageEditor().edit_current_messages(agent, state)
+    return MessageEditor(role_map=role_map).edit_current_messages(agent, state, role_map)
 
 
 # 保持 display_messages 向后兼容（从 message_display 重新导出）

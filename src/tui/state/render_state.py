@@ -1,7 +1,12 @@
-"""渲染状态管理 — _RenderState + _ReasoningState。
+"""渲染状态管理 — RenderState 基类 + ChatRenderState + _ReasoningState。
 
 Layer 0 — 被 Layer 1 (_components) 和 Layer 2 (_renderer) 平等引用，
 消除 _components 依赖 _renderer 的分层违规。
+
+架构分层（2026-07-22 泛化）：
+  RenderState          — 框架通用基类：output_adapter 管理 + _safe_flush 工具方法
+  ChatRenderState      — 聊天域子类：reasoning/content 双通道 + _ReasoningState 状态机
+  _RenderState         — 向后兼容别名 → ChatRenderState
 
 动效（2026-07-12）：
   - close_reasoning() 分隔线：宽屏时使用 make_sep_gradient_enhanced 叠加 wave 波动效果
@@ -14,7 +19,7 @@ import logging
 import sys
 from dataclasses import dataclass
 from enum import Enum
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
 if TYPE_CHECKING:
     from ...renderer import IncrementalRenderer
@@ -24,6 +29,29 @@ from ..animation.animator import AnimatorContext
 from ..terminal.terminal import is_narrow
 
 _logger = logging.getLogger(__name__)
+
+
+# ═══════════════════════════════════════════════════════════
+# IRenderState — 渲染状态接口协议
+# ═══════════════════════════════════════════════════════════
+
+@runtime_checkable
+class IRenderState(Protocol):
+    """渲染状态接口协议。
+
+    定义推理/内容渲染器生命周期管理的抽象契约。
+    ChatRenderState（及其别名 _RenderState）满足此协议。
+    """
+
+    reasoning_state: "_ReasoningState"
+
+    def set_output_adapter(self, adapter: "OutputAdapter") -> None: ...
+    def get_reasoning(self) -> "IncrementalRenderer | None": ...
+    def get_content(self) -> "IncrementalRenderer | None": ...
+    def close_reasoning(self) -> None: ...
+    def reopen_reasoning(self) -> None: ...
+    def close_content(self) -> None: ...
+    def close_all(self) -> None: ...
 
 
 class _ReasoningState(Enum):
@@ -61,16 +89,73 @@ _REASONING_STATE_TRANSITIONS: dict[tuple[_ReasoningState, _ReasoningState], bool
 }
 
 
+# ═══════════════════════════════════════════════════════════
+# RenderState — 框架通用渲染状态基类
+# ═══════════════════════════════════════════════════════════
+
+class RenderState:
+    """框架通用渲染状态基类。
+
+    提供 output_adapter 管理、_safe_flush 工具方法和 close_all 抽象接口。
+    应用层通过子类化添加领域特定的渲染器生命周期管理。
+
+    子类必须实现：
+      - close_all(): 关闭所有活跃的渲染器，释放资源
+    """
+
+    def __init__(self) -> None:
+        self._shared_adapter: "OutputAdapter | None" = None
+
+    def set_output_adapter(self, adapter: "OutputAdapter") -> None:
+        """设置共享的 OutputAdapter 实例。
+
+        供子类的渲染器创建方法使用，确保所有渲染器共用同一输出适配器。
+        """
+        self._shared_adapter = adapter
+
+    def close_all(self) -> None:
+        """关闭所有活跃的渲染器。
+
+        子类必须实现此方法，关闭该领域特有的渲染器实例。
+        基类默认抛出 NotImplementedError。
+        """
+        raise NotImplementedError("子类必须实现 close_all()")
+
+    def _safe_flush(self, renderer_attr: str) -> None:
+        """防御性刷出渲染器缓冲内容。
+
+        通用工具方法：通过属性名获取渲染器实例，安全调用其 flush 方法。
+        渲染器不存在或 flush 异常时静默处理。
+
+        Args:
+            renderer_attr: 渲染器在子类实例上的属性名（如 "reasoning"、"content"）。
+        """
+        rr = getattr(self, renderer_attr, None)
+        if rr is not None:
+            try:
+                rr._output.flush()
+            except Exception:
+                _logger.debug("%s 防御性 flush 异常", renderer_attr, exc_info=True)
+
+
+# ═══════════════════════════════════════════════════════════
+# ChatRenderState — 聊天域渲染状态（reasoning/content 双通道）
+# ═══════════════════════════════════════════════════════════
+
 @dataclass
-class _RenderState:
-    """推理/内容 IncrementalRenderer 生命周期管理。"""
+class ChatRenderState(RenderState):
+    """推理/内容 IncrementalRenderer 生命周期管理。
+
+    继承自 RenderState，添加聊天域特有的 reasoning/content 双通道管理和
+    _ReasoningState 状态机。
+    """
     reasoning: "IncrementalRenderer | None" = None
     content: "IncrementalRenderer | None" = None
     reasoning_state: _ReasoningState = _ReasoningState.INACTIVE
-    _shared_adapter: "OutputAdapter | None" = None
 
-    def set_output_adapter(self, adapter: "OutputAdapter") -> None:
-        self._shared_adapter = adapter
+    def __post_init__(self) -> None:
+        """初始化基类的 _shared_adapter 属性。"""
+        super().__init__()
 
     def get_reasoning(self) -> "IncrementalRenderer | None":
         if self.reasoning_state == _ReasoningState.CLOSED:
@@ -98,15 +183,6 @@ class _RenderState:
                 output_adapter=self._shared_adapter,
             )
         return self.content
-
-    def _safe_flush(self, renderer_attr: str) -> None:
-        """防御性刷出渲染器缓冲内容。"""
-        rr = getattr(self, renderer_attr, None)
-        if rr is not None:
-            try:
-                rr._output.flush()
-            except Exception:
-                _logger.debug("%s 防御性 flush 异常", renderer_attr, exc_info=True)
 
     def close_reasoning(self) -> None:
         if self.reasoning_state == _ReasoningState.CLOSED:
@@ -146,6 +222,10 @@ class _RenderState:
             self.content = None
 
     def close_all(self) -> None:
+        """关闭所有活跃的渲染器（实现基类抽象方法）。
+
+        按顺序关闭 reasoning → content，异常时静默继续。
+        """
         try:
             self.close_reasoning()
         except Exception:
@@ -154,3 +234,11 @@ class _RenderState:
             self.close_content()
         except Exception:
             _logger.debug("close_content 异常", exc_info=True)
+
+
+# ═══════════════════════════════════════════════════════════
+# 向后兼容别名
+# ═══════════════════════════════════════════════════════════
+
+# @deprecated — 使用 ChatRenderState 替代，_RenderState 保留为向后兼容别名
+_RenderState = ChatRenderState

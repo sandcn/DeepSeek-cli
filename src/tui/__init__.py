@@ -39,19 +39,24 @@
   ──────────────────────
   state/      — 统一状态管理：UISessionState(会话状态), InputState(输入状态),
   │             StreamingState(流式状态), TUIStateTree(聚合容器),
-  │             AgentStateStore(多Agent状态), _RenderState(渲染器生命周期),
-  │             consumer_registry(消费者注册表)
+  │             AgentStateStore(多Agent状态),
+  │             render_state.py(RenderState框架通用基类+ChatRenderState聊天域子类),
+  │             _RenderState(向后兼容别名), consumer_registry(消费者注册表)
   │
   components/ — 聊天域组件（业务相关）:
   │             ThinkingBlock, AnswerBlock, UserMsgBlock, ToolOutputBlock,
   │             ToolSummaryBlock, ErrorBlock, NotificationBlock, WriteLineBlock
   │
   engine/     — 渲染引擎层：TuiEngine(render线程+命令队列), TuiRenderer(命令分发),
-  │             EventDispatcher(事件→命令映射), RenderCommand(命令枚举)
+  │             EventDispatcher(事件→命令映射), RenderCommand(命令枚举),
+  │             commands.py(FrameworkCommand框架通用命令),
+  │             renderer_base.py(FrameworkRenderer框架通用渲染器基类)
   │
   consumer/   — 消费者 API 层：ChatUIConsumer(生命周期协调), 工厂装配,
   │             协议定义(RenderEngine/BottomBarProtocol), 补全处理器,
-  │             错误处理, base_display
+  │             错误处理, base_display,
+  │             chat_config.py(ChatConfig聊天域配置),
+  │             chat_commands.py(ChatCommand聊天域命令枚举)
   │
   pipeline/   — 消息显示/编辑管线：message_display, message_editor
   │
@@ -119,6 +124,25 @@ from .framework import (
 # ═══════════════════════════════════════════════════════════
 from .widget_base import Widget, WidgetTree
 from .render_buffer import RenderBuffer
+
+# ═══════════════════════════════════════════════════════════
+# 引擎层 — 渲染引擎与命令系统
+# ═══════════════════════════════════════════════════════════
+from .engine import (
+    FrameworkRenderer,
+    FrameworkCommand,
+)
+
+# ═══════════════════════════════════════════════════════════
+# 消费层 — 聊天域配置与命令
+# ═══════════════════════════════════════════════════════════
+from .consumer.chat_config import ChatConfig
+from .consumer.chat_commands import ChatCommand
+
+# ═══════════════════════════════════════════════════════════
+# 状态层 — 渲染状态基类与子类
+# ═══════════════════════════════════════════════════════════
+from .state.render_state import RenderState, ChatRenderState
 
 # ═══════════════════════════════════════════════════════════
 # 布局控件
@@ -203,6 +227,15 @@ __all__ = [
     "Widget",
     "WidgetTree",
     "RenderBuffer",
+    # 引擎层
+    "FrameworkRenderer",
+    "FrameworkCommand",
+    # 消费层
+    "ChatConfig",
+    "ChatCommand",
+    # 状态层
+    "RenderState",
+    "ChatRenderState",
     # 布局
     "Vertical",
     "Horizontal",

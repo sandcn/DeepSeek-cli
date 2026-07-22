@@ -294,8 +294,8 @@ def _build_hint_text(is_current: bool, narrow: bool) -> str:
 
 # ── 工具函数 ──────────────────────────────────────────────
 
-def _role_icon(role: str) -> str:
-    """角色图标映射：用户·助手·工具 · 系统空置。
+def _role_icon(role: str, role_map: dict[str, RoleConfig] | None = None) -> str:
+    """角色图标映射：优先从 role_map 获取，回退到 user/assistant/tool 硬编码。
 
     使用语义化的简约符号 + 视觉层级区分：
       - user（用户）      → ●  （实心圆，表示用户输入）
@@ -304,12 +304,23 @@ def _role_icon(role: str) -> str:
       - 其他             → ·   （中性占位符）
 
     所有符号均为标准 Unicode，无需 Nerd Font 即可正常显示。
+
+    Args:
+        role: 角色名。
+        role_map: 可选的角色配置映射，不传时使用硬编码默认值。
     """
+    if role_map is not None:
+        cfg = role_map.get(role)
+        if cfg is not None:
+            return cfg.icon
     return {"user": "\u25cf", "assistant": "\u25c6", "tool": "\u2699"}.get(role, "\u00b7")
 
 
-def _role_tag(role: str, breath_frame: int = 0) -> str:
+def _role_tag(role: str, breath_frame: int = 0, role_map: dict[str, RoleConfig] | None = None) -> str:
     """角色标签：将 role 映射为美观的彩色标签。
+
+    优先从 role_map 获取标签生成函数；未提供 role_map 或角色不在映射中时，
+    回退到 user/assistant/tool 硬编码逻辑（向后兼容）。
 
     宽屏模式（≥80列）：返回带背景色的增强标签。
     窄屏模式（<80列）：降级为无背景色，仅保留文字色，确保可读性。
@@ -317,7 +328,13 @@ def _role_tag(role: str, breath_frame: int = 0) -> str:
     Args:
         role: 角色名（user/assistant/tool）。
         breath_frame: 呼吸帧号，0 表示使用静态色。
+        role_map: 可选的角色配置映射，不传时使用硬编码默认值。
     """
+    if role_map is not None:
+        cfg = role_map.get(role)
+        if cfg is not None:
+            return cfg.tag_func(breath_frame)
+
     if is_narrow():
         # 窄屏降级：无背景色，仅保留图标和文字色
         return {
@@ -478,6 +495,123 @@ class MessageDisplayContext:
         return cls.from_messages(agent.messages, agent=agent)
 
 
+# ── 角色配置（泛化：从硬编码到可配置） ─────────────────
+
+@dataclass(slots=True)
+class RoleConfig:
+    """消息角色显示配置 — 封装图标、标签生成和自定义显示行为。
+
+    用于泛化 _role_icon / _role_tag 中硬编码的 user/assistant/tool 角色映射，
+    支持框架层通过 role_map 参数注入自定义角色。
+
+    属性:
+        icon: Unicode 角色图标字符（如 ● ◆ ⚙）。
+        tag_func: 标签生成函数，签名 (breath_frame: int) -> str，
+                  返回含完整 ANSI 转义码的标签字符串。
+        display_func: 可选的自定义消息显示函数，
+                      签名需与 _display_user / _display_assistant 兼容。
+    """
+    icon: str
+    tag_func: Callable[[int], str]
+    display_func: Callable[..., None] | None = None
+
+    @staticmethod
+    def defaults() -> dict[str, "RoleConfig"]:
+        """返回默认角色映射（user/assistant/tool），保持向后兼容。
+
+        通过模块级 _ROLE_DEFAULTS 获取，避免每次调用重新构建。
+        """
+        return dict(_ROLE_DEFAULTS)
+
+
+# ── 默认标签生成函数（提取自 _role_tag 的硬编码逻辑） ──
+
+def _make_default_user_tag(breath_frame: int = 0) -> str:
+    """生成 user 角色标签（提取自 _role_tag 的硬编码逻辑）。
+
+    窄屏降级为无背景色版本，宽屏支持呼吸动画。
+    """
+    if is_narrow():
+        return f"{_BC}\u25cf {_BC}USER{_R}"
+    if breath_frame > 0:
+        _tag_breath_match = re.search(r"38;5;(\d+)", THEME['tag_breath'])
+        _border_prefix = ""
+        if _tag_breath_match:
+            _border_base = int(_tag_breath_match.group(1))
+            _border_ansi = build_glow_ansi(breath_frame, _border_base, 12)
+            _border_prefix = f"{_border_ansi}\u2503\033[0m "
+        bc = BreathPalette.get_color("role_user", breath_frame)
+        return (
+            f"{_border_prefix}"
+            f"\033[48;5;235m{build_sparkle_ansi(breath_frame, _SPARKLE_BASE_USER, 6)}\u25cf {_R}"
+            f"\033[48;5;235m\033[38;5;{bc}mUSER{_R}"
+            f"\033[0m"
+        )
+    return _USER_TAG
+
+
+def _make_default_assistant_tag(breath_frame: int = 0) -> str:
+    """生成 assistant 角色标签（提取自 _role_tag 的硬编码逻辑）。"""
+    if is_narrow():
+        return f"{_BG}\u25c6 {_BG}ASSISTANT{_R}"
+    if breath_frame > 0:
+        _tag_breath_match = re.search(r"38;5;(\d+)", THEME['tag_breath'])
+        _border_prefix = ""
+        if _tag_breath_match:
+            _border_base = int(_tag_breath_match.group(1))
+            _border_ansi = build_glow_ansi(breath_frame, _border_base, 12)
+            _border_prefix = f"{_border_ansi}\u2503\033[0m "
+        bc = BreathPalette.get_color("role_asst", breath_frame)
+        return (
+            f"{_border_prefix}"
+            f"\033[48;5;22m{build_sparkle_ansi(breath_frame, _SPARKLE_BASE_ASST, 6)}\u25c6 {_R}"
+            f"\033[48;5;22m\033[38;5;{bc}mASSISTANT{_R}"
+            f"\033[0m"
+        )
+    return _ASST_TAG
+
+
+def _make_default_tool_tag(breath_frame: int = 0) -> str:
+    """生成 tool 角色标签（提取自 _role_tag 的硬编码逻辑）。"""
+    if is_narrow():
+        return f"\033[38;5;227m\u2699 \033[38;5;227mTOOL{_R}"
+    if breath_frame > 0:
+        _tag_breath_match = re.search(r"38;5;(\d+)", THEME['tag_breath'])
+        _border_prefix = ""
+        if _tag_breath_match:
+            _border_base = int(_tag_breath_match.group(1))
+            _border_ansi = build_glow_ansi(breath_frame, _border_base, 12)
+            _border_prefix = f"{_border_ansi}\u2503\033[0m "
+        bc = BreathPalette.get_color("role_tool", breath_frame)
+        return (
+            f"{_border_prefix}"
+            f"\033[48;5;94m{build_sparkle_ansi(breath_frame, _SPARKLE_BASE_TOOL, 6)}\u2699 {_R}"
+            f"\033[48;5;94m\033[38;5;{bc}mTOOL{_R}"
+            f"\033[0m"
+        )
+    return _TOOL_TAG
+
+
+# 模块级默认角色映射（供 _role_icon / _role_tag 回退使用）
+_ROLE_DEFAULTS: dict[str, RoleConfig] = {
+    "user": RoleConfig(
+        icon="\u25cf",
+        tag_func=_make_default_user_tag,
+        display_func=None,  # 使用默认 _display_user
+    ),
+    "assistant": RoleConfig(
+        icon="\u25c6",
+        tag_func=_make_default_assistant_tag,
+        display_func=None,  # 使用默认 _display_assistant
+    ),
+    "tool": RoleConfig(
+        icon="\u2699",
+        tag_func=_make_default_tool_tag,
+        display_func=None,  # 使用默认 _display_tool_calls
+    ),
+}
+
+
 # ── 单条消息显示 ────────────────────────────────────────
 
 def _display_tool_calls(i: int, icon: str, m: dict, sandbox_text: str, breath_frame: int = 0, fade_frame: int = 0) -> None:
@@ -589,8 +723,17 @@ def _display_messages(
     agent: Any = None,
     idx_map: list[int] | None = None,
     speed: int = 0,
+    role_map: dict[str, RoleConfig] | None = None,
 ) -> None:
-    """恢复会话后展示所有消息内容 — 使用主题色彩美化。"""
+    """恢复会话后展示所有消息内容 — 使用主题色彩美化。
+
+    Args:
+        data: 过滤 system 后的消息列表。
+        agent: 可选 agent 引用（用于沙盒查询）。
+        idx_map: data → messages 全量索引映射。
+        speed: 打字速度。
+        role_map: 可选的角色配置映射，不传时使用硬编码默认值。
+    """
     sep_width = narrow_sep_width(50)
     sep = "\u2501" * sep_width
     # ★ 美化：渐变青色花括号 + 信封图标
@@ -609,13 +752,21 @@ def _display_messages(
     for i, m in enumerate(data):
         _breath_frame = AnimatorContext.get_default().breath_frame
         role = m.get("role", "?")
-        icon = _role_icon(role)
+        icon = _role_icon(role, role_map)
         content = m.get("content") or ""
 
         if role == "user":
             sandbox_text = _get_user_sandbox_text(data, i, agent, idx_map)
         else:
             sandbox_text = _get_sandbox_text(agent, idx_map, i)
+
+        # 优先使用 role_map 中的自定义 display_func（角色动态分发）
+        if role_map is not None:
+            cfg = role_map.get(role)
+            if cfg is not None and cfg.display_func is not None:
+                cfg.display_func(i, icon, m, sandbox_text, speed=speed,
+                                 breath_frame=_breath_frame, fade_frame=_breath_frame)
+                continue
 
         if m.get("tool_calls"):
             _display_tool_calls(i, icon, m, sandbox_text, breath_frame=_breath_frame, fade_frame=_breath_frame)
@@ -644,6 +795,7 @@ display_messages = _display_messages  # 公开别名
 
 def _msg_line(
     m: dict, i: int, ctx: MessageDisplayContext,
+    role_map: dict[str, RoleConfig] | None = None,
 ) -> tuple[str, str, str]:
     """生成消息的一行摘要显示文本。
 
@@ -651,12 +803,13 @@ def _msg_line(
         m: 消息字典。
         i: 在 ctx.data 中的索引。
         ctx: 消息显示上下文（封装 agent / idx_map / data）。
+        role_map: 可选的角色配置映射，不传时使用硬编码默认值。
 
     Returns:
         (icon, role, text) 三元组。
     """
     role = m.get("role", "?")
-    icon = _role_icon(role)
+    icon = _role_icon(role, role_map)
     content = m.get("content") or ""
 
     if role == "user" and ctx.data:
@@ -679,16 +832,17 @@ def _msg_line(
     return icon, role, text
 
 
-def _msg_label(m: dict, i: int, ctx: MessageDisplayContext, breath_frame: int = 0, selected: bool = False) -> str:
+def _msg_label(m: dict, i: int, ctx: MessageDisplayContext, breath_frame: int = 0, selected: bool = False, role_map: dict[str, RoleConfig] | None = None) -> str:
     """生成消息的彩色标签行（用于消息选择器显示）。
 
     Args:
         breath_frame: 呼吸帧号，0 表示使用静态色。
         selected: 是否为选中消息。为 True 且 breath_frame > 0 时应用呼吸色。
+        role_map: 可选的角色配置映射，不传时使用硬编码默认值。
     """
     role = m.get("role", "?")
-    icon = _role_icon(role)
-    tag = _role_tag(role, breath_frame)
+    icon = _role_icon(role, role_map)
+    tag = _role_tag(role, breath_frame, role_map)
     content = m.get("content") or ""
     # 当 breath_frame > 0 且 selected=True 时，为标签添加呼吸色
     if breath_frame > 0 and selected:
@@ -717,6 +871,7 @@ def _make_message_lines(
     is_current: bool,
     selected_index: int = -1,
     breath_frame: int = 0,
+    role_map: dict[str, RoleConfig] | None = None,
 ) -> list[tuple[str, str]]:
     """生成消息选择器的显示行列表。
 
@@ -730,6 +885,7 @@ def _make_message_lines(
         is_current: 是否为当前会话。
         selected_index: 选中消息在 ctx.data 中的索引，-1 表示无选中。
         breath_frame: 呼吸帧号，0 表示使用静态色。
+        role_map: 可选的角色配置映射，不传时使用硬编码默认值。
 
     Returns:
         (样式类, 文本) 行列表。
@@ -754,7 +910,7 @@ def _make_message_lines(
         lines.append(("class:dim", f"  {ind}\u2191 更多...\n"))
     for j in range(s, e):
         i = items[j]
-        icon, role, text = _msg_line(ctx.data[i], i, ctx)
+        icon, role, text = _msg_line(ctx.data[i], i, ctx, role_map)
         if narrow:
             label = f" {j:2d}{icon} {text}"
         else:
@@ -781,6 +937,8 @@ __all__ = [
     "display_messages",
     "_make_message_lines",
     "_msg_line",
+    "RoleConfig",
+    "_ROLE_DEFAULTS",
     "OutputManager",
     "get_message_output",
     "set_message_output",

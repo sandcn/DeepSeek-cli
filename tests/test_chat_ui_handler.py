@@ -388,33 +388,38 @@ class TestOnModelPhase:
 # ═══════════════════════════════════════════════════════
 
 class TestIsAgentSource:
-    """EventDispatcher._is_agent_source None 保护测试"""
+    """EventDispatcher._is_agent_source 实例方法测试"""
+
+    @staticmethod
+    def _make_disp():
+        from src.tui.engine.dispatcher import EventDispatcher
+        return EventDispatcher(push_cmd=lambda x: None)
 
     def test_none_source_returns_false(self):
         """source=None → 返回 False，不抛异常"""
-        from src.tui.engine.dispatcher import EventDispatcher
-        assert EventDispatcher._is_agent_source(None) is False
+        disp = self._make_disp()
+        assert disp._is_agent_source(None) is False
 
     def test_main_source_returns_true(self):
         """source='agent' → 返回 True"""
-        from src.tui.engine.dispatcher import EventDispatcher
+        disp = self._make_disp()
         from src.tui.engine.const import _MAIN_SOURCE
-        assert EventDispatcher._is_agent_source(_MAIN_SOURCE) is True
+        assert disp._is_agent_source(_MAIN_SOURCE) is True
 
     def test_agent_prefix_returns_true(self):
         """source='agent-1' → 返回 True"""
-        from src.tui.engine.dispatcher import EventDispatcher
-        assert EventDispatcher._is_agent_source("agent-1") is True
+        disp = self._make_disp()
+        assert disp._is_agent_source("agent-1") is True
 
     def test_other_source_returns_false(self):
         """source='user' → 返回 False"""
-        from src.tui.engine.dispatcher import EventDispatcher
-        assert EventDispatcher._is_agent_source("user") is False
+        disp = self._make_disp()
+        assert disp._is_agent_source("user") is False
 
     def test_empty_string_returns_false(self):
         """source='' → 返回 False"""
-        from src.tui.engine.dispatcher import EventDispatcher
-        assert EventDispatcher._is_agent_source("") is False
+        disp = self._make_disp()
+        assert disp._is_agent_source("") is False
 
 
 # ═══════════════════════════════════════════════════════

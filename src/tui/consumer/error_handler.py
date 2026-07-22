@@ -13,8 +13,8 @@ import threading
 _logger = logging.getLogger(__name__)
 
 from ..state import consumer_registry as _consumer_registry
-from ..engine.const import _MAX_ERROR_LENGTH
 from ..engine.utils import _truncate_msg
+from ..framework import Framework
 
 # 线程本地重入保护（防止 emit → logger → emit 递归）
 _handler_reentrant = threading.local()
@@ -31,8 +31,11 @@ class ChatUIErrorHandler(logging.Handler):
       - ChatUI 未启动/已停止时 get_active_chat_ui() 返回 None → emit 静默跳过
     """
 
-    def __init__(self, max_length: int = _MAX_ERROR_LENGTH):
+    def __init__(self, max_length: int | None = None):
         super().__init__(level=logging.ERROR)
+        # ── 从 TuiConfig 读取 max_error_length（优先），调用方可显式覆盖 ──
+        if max_length is None:
+            max_length = Framework.get_default().get_config().max_error_length
         self._max_length = max_length
 
     def emit(self, record: logging.LogRecord) -> None:

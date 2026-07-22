@@ -16,7 +16,6 @@ import math
 from rich.text import Text
 
 from ..render_buffer import RenderBuffer
-from ..engine.const import _STYLE_NOTIFICATION_GRADIENT
 from ..core.style import Style, StyleSheet
 from ..terminal.terminal import is_narrow
 from ..core.effects import sine_color
@@ -55,7 +54,9 @@ class NotificationBlock(TuiComponent):
 
     def render(self, buffer: RenderBuffer | None = None) -> str | Text | None:
         if is_narrow():
-            result = Text.assemble(("\n  · ", _STYLE_NOTIFICATION_GRADIENT), (self.text, _STYLE_NOTIFICATION_GRADIENT))
+            neon_style = StyleSheet.get("neon")
+            neon_rich_style = neon_style.to_rich() if neon_style else None
+            result = Text.assemble(("\n  · ", neon_rich_style), (self.text, neon_rich_style))
         else:
             animator = get_animator()
             frame = animator.frame

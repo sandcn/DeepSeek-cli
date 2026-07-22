@@ -45,6 +45,53 @@ class ComponentRegistry:
         """初始化注册表（私有构造器，通过 get_default() 获取）。"""
         self._mapping: dict[int, tuple[str, tuple[int, ...]]] = {}
         self._lock = threading.Lock()
+        self._populate_defaults()
+
+    # ── 默认命令集 ────────────────────────────────────
+
+    @staticmethod
+    def _build_default_commands() -> dict[int, tuple[str, tuple[int, ...]]]:
+        """构建全部 17 个默认命令映射（5 框架 + 12 聊天域）。
+
+        命令 ID 对应 RenderCommand 枚举值，方法名对应 FrameworkRenderer
+        或 TuiRenderer 上的 _do_* 方法。
+
+        Returns:
+            command_id → (method_name, arg_indices) 映射字典。
+        """
+        # 延迟导入避免模块级循环依赖
+        from ..engine.const import RenderCommand  # noqa: PLC0415
+
+        return {
+            # ── 框架通用命令（5 个）── renderer_base.py
+            RenderCommand.NOTIFICATION:  ("_do_notification",   (1,)),
+            RenderCommand.WRITE_LINE:    ("_do_write_line",     (1,)),
+            RenderCommand.ERROR:         ("_do_error",          (1,)),
+            RenderCommand.SPLASH:        ("_do_splash",         ()),
+            RenderCommand.SUBAGENT_FRAME: ("_do_subagent_frame", (1,)),
+            # ── 聊天域命令（12 个）── renderer.py
+            RenderCommand.REASONING:     ("_do_reasoning",      (1,)),
+            RenderCommand.CONTENT:       ("_do_content",        (1,)),
+            RenderCommand.PHASE_DONE:    ("_do_phase_done",     (1,)),
+            RenderCommand.TOOL_COUNT_INC: ("_do_tool_count_inc", ()),
+            RenderCommand.TOOL_COUNT_DEC: ("_do_tool_count_dec", ()),
+            RenderCommand.TOOL_FAIL_INC: ("_do_tool_fail_inc",  ()),
+            RenderCommand.MAIN_PHASE:    ("_do_main_phase",     (1,)),
+            RenderCommand.TOOL_OUTPUT:   ("_do_tool_output",    (1,)),
+            RenderCommand.TOOL_SUMMARY:  ("_do_tool_summary",   (1, 2)),
+            RenderCommand.PARSE_INFO:    ("_do_parse_info",     (1, 2, 3)),
+            RenderCommand.USER_MSG:      ("_do_user_message",   (1,)),
+            RenderCommand.DISPLAY_MSGS:  ("_do_display_messages", (1, 2)),
+        }
+
+    def _populate_defaults(self) -> None:
+        """将 _build_default_commands() 返回的全部命令注册到当前实例。
+
+        在 __init__ 中自动调用，确保每次构造（含 reset_default() 后重建）
+        都自动恢复完整的命令映射。
+        """
+        for cid, (method_name, arg_indices) in self._build_default_commands().items():
+            self._mapping[cid] = (method_name, arg_indices)
 
     # ── 单例访问 ──────────────────────────────────────
 

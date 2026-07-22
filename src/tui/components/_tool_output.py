@@ -19,15 +19,14 @@ if TYPE_CHECKING:
 
 from rich.text import Text
 
-from ..engine.const import _MAX_OUTPUT_LEN
 from ..animation.animator import AnimatorContext
 from ..terminal.terminal import is_narrow
 from ..core.text_utils import build_left_border_ansi
 from ..render_buffer import RenderBuffer
+from ..consumer.chat_config import ChatConfig
 from ._base import TuiComponent, _estimate_content_lines
 
 _logger = logging.getLogger(__name__)
-
 
 class ToolOutputBlock(TuiComponent):
     """工具执行输出块。"""
@@ -41,8 +40,9 @@ class ToolOutputBlock(TuiComponent):
         支持 buffer 参数：传入 buffer 时写入并返回 None；否则返回字符串。
         """
         text = self.text
-        if len(text) > _MAX_OUTPUT_LEN:
-            text = text[:_MAX_OUTPUT_LEN] + "...(truncated)"
+        _max_len = ChatConfig.defaults().max_output_len
+        if len(text) > _max_len:
+            text = text[:_max_len] + "...(truncated)"
         has_carriage = '\r' in text
 
         if has_carriage:
@@ -72,8 +72,9 @@ class ToolOutputBlock(TuiComponent):
         非 \\r 路径委托 render(buffer) 获取内容再通过 adapter 输出。
         """
         text = self.text
-        if len(text) > _MAX_OUTPUT_LEN:
-            text = text[:_MAX_OUTPUT_LEN] + "...(truncated)"
+        _max_len = ChatConfig.defaults().max_output_len
+        if len(text) > _max_len:
+            text = text[:_max_len] + "...(truncated)"
         has_carriage = '\r' in text
 
         if has_carriage:

@@ -15,7 +15,7 @@ from rich.text import Text
 
 from ..animation.transitions import FadeIn
 from ._base import TuiComponent
-from ..engine.const import _STYLE_USER_GRADIENT
+from ..core.style import StyleSheet
 from ..core.theme import THEME
 from ..animation.animator import AnimatorContext
 from ..core.effects import build_fg_breath_ansi
@@ -32,9 +32,11 @@ class UserMsgBlock(TuiComponent):
 
     def render(self, buffer: RenderBuffer | None = None) -> str | Text | None:
         if is_narrow():
+            user_style = StyleSheet.get("user_icon")
+            user_rich_style = user_style.to_rich() if user_style else None
             result = Text.assemble(
-                ("\n  > ", _STYLE_USER_GRADIENT),
-                (self.text, _STYLE_USER_GRADIENT),
+                ("\n  > ", user_rich_style),
+                (self.text, user_rich_style),
             )
         else:
             # 宽屏："> " 前缀 sparkle 闪烁 + 消息文本呼吸色

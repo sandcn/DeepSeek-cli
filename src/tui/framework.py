@@ -32,6 +32,10 @@ Widget 树管理：
   - 自定义组件：继承 Widget 或 TuiComponent，通过 create_widget/create_component 创建
   - 自定义布局：继承 Widget，在 render() 中组合子控件
   - 事件驱动：通过 subscribe() 注册事件监听
+  - FrameworkRenderer 子类化：继承 FrameworkRenderer 并通过 @register_render_command
+    注册自定义渲染命令，实现应用特定的渲染逻辑
+  - RenderState 子类化：继承 RenderState 实现领域特定的渲染器生命周期管理，
+    通过 set_output_adapter() 注入共享输出适配器
 
 设计原则：
   - 单例管理：框架全局唯一，通过 Framework.get_default() 获取
@@ -146,6 +150,29 @@ class Framework:
         cfg = TuiConfig.defaults().with_overrides(render_interval=0.05)
         fw.set_config(cfg)
         print(fw.get_config().render_interval)  # 0.05
+
+    **自定义渲染器（子类化 FrameworkRenderer）**::
+
+        from src.tui.engine.renderer_base import FrameworkRenderer, register_render_command
+
+        class MyRenderer(FrameworkRenderer):
+            @register_render_command(100, (1,))
+            def _do_custom_cmd(self, text: str) -> None:
+                self._adapter.write(text)
+
+    **自定义渲染状态（子类化 RenderState）**::
+
+        from src.tui.state.render_state import RenderState
+
+        class MyRenderState(RenderState):
+            def __init__(self):
+                super().__init__()
+                self.my_renderer = None
+
+            def close_all(self):
+                if self.my_renderer:
+                    self.my_renderer.close()
+                    self.my_renderer = None
 
     使用示例：
         >>> framework = Framework.get_default()

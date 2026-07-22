@@ -2,6 +2,10 @@
 
 职责：创建 ChatUIConsumer 所需的全部子系统实例并装配。
 将工厂逻辑与消费者 API 分离，降低 ChatUIConsumer 的耦合度。
+
+架构分层（2026-07-22 泛化）：
+  _create_framework_components()  — 框架层：OutputAdapter + TuiRenderer + TuiEngine
+  _create_chat_ui_components()    — 应用层：_RenderState + _BottomBar + EventDispatcher + _CmplHandler
 """
 
 from __future__ import annotations
@@ -22,6 +26,25 @@ if TYPE_CHECKING:
     from .completion import _CmplHandler
     from .protocols import RenderEngine
 
+from .chat_config import ChatConfig
+
+from .chat_config import ChatConfig
+
+
+@dataclasses.dataclass
+class _FrameworkComponents:
+    """框架层子系统容器 — 独立于聊天域的渲染基础设施。
+
+    由 _create_framework_components() 创建，可被任意 TUI 应用复用。
+    属性：
+        output_adapter: 输出适配器（Rich Console 包装）
+        renderer: 组件化渲染分发（TuiRenderer 实例）
+        engine: render 线程 + 命令队列
+    """
+    output_adapter: "OutputAdapter"
+    renderer: "TuiRenderer"
+    engine: "RenderEngine"
+
 
 @dataclasses.dataclass
 class _ChatUIComponents:
@@ -37,18 +60,66 @@ class _ChatUIComponents:
         dispatcher: 事件过滤+入队
         cmpl_handler: Tab 补全交互
     """
-    rs: _RenderState
-    cursor_tracker: CursorTracker
-    bottom_bar: _BottomBar
-    output_adapter: OutputAdapter
-    tui_renderer: TuiRenderer
-    engine: RenderEngine
-    dispatcher: EventDispatcher
-    cmpl_handler: _CmplHandler
+    rs: "_RenderState"
+    cursor_tracker: "CursorTracker"
+    bottom_bar: "_BottomBar"
+    output_adapter: "OutputAdapter"
+    tui_renderer: "TuiRenderer"
+    engine: "RenderEngine"
+    dispatcher: "EventDispatcher"
+    cmpl_handler: "_CmplHandler"
+
+
+def _create_framework_components(
+    rs: "_RenderState",
+    output_adapter: "OutputAdapter",
+    bottom_bar: "_BottomBar",
+    cursor_tracker: "CursorTracker",
+    on_display_messages=None,
+) -> _FrameworkComponents:
+    """创建框架层子系统：TuiRenderer + TuiEngine。
+
+    仅依赖框架级模块（engine/renderer/renderer_base），不直接导入聊天域模块。
+    聊天域依赖（_RenderState / _BottomBar / _display_messages）通过参数注入。
+
+    Args:
+        rs: 渲染状态实例（聊天域依赖，通过参数注入）
+        output_adapter: 输出适配器
+        bottom_bar: 底部栏实例（聊天域依赖，通过参数注入）
+        cursor_tracker: 光标追踪器
+        on_display_messages: 消息展示回调（聊天域依赖，通过参数注入）
+
+    Returns:
+        包含 renderer 和 engine 的 _FrameworkComponents 实例。
+    """
+    from ..engine.renderer import TuiRenderer
+    from ..engine.engine import TuiEngine
+
+    renderer = TuiRenderer(
+        rs, output_adapter, bottom_bar,
+        on_display_messages=on_display_messages,
+        cursor_tracker=cursor_tracker,
+    )
+    engine: "RenderEngine" = TuiEngine(
+        renderer, bottom_bar,
+        cursor_tracker=cursor_tracker,
+    )
+
+    return _FrameworkComponents(
+        output_adapter=output_adapter,
+        renderer=renderer,
+        engine=engine,
+    )
 
 
 def _create_chat_ui_components(event_bus=None) -> _ChatUIComponents:
     """创建并装配 ChatUIConsumer 所需的全部子系统。
+
+    分两步：
+      1. _create_framework_components() — 框架层（OutputAdapter + TuiRenderer + TuiEngine）
+      2. 聊天域装配（_RenderState + _BottomBar + EventDispatcher + _CmplHandler）
+
+    两步可分别独立测试和替换。
 
     Args:
         event_bus: DisplayEventBus 实例。为 None 时获取默认实例。
@@ -67,43 +138,44 @@ def _create_chat_ui_components(event_bus=None) -> _ChatUIComponents:
     from ...renderer.output import OutputAdapter
     from ...terminal import get_safe_console_config
 
-    from ..engine.renderer import TuiRenderer
     from ..state.render_state import _RenderState
-    from ..engine.engine import TuiEngine
     from ..engine.dispatcher import EventDispatcher
     from .completion import _CmplHandler
     from ..pipeline.message_display import _display_messages
 
+    # ── 框架基础设施 ──
+    console = Console(**get_safe_console_config(), file=sys.__stdout__)
+    output_adapter = OutputAdapter(console)
+
+    # ── 聊天域子系统 ──
     rs = _RenderState()
     cursor_tracker = CursorTracker()
     bottom_bar = _BottomBar(cursor_tracker=cursor_tracker)
 
-    console = Console(**get_safe_console_config(), file=sys.__stdout__)
-    output_adapter = OutputAdapter(console)
-
-    tui_renderer = TuiRenderer(
-        rs, output_adapter, bottom_bar,
+    # ── 框架组件创建（传入聊天域依赖） ──
+    fw = _create_framework_components(
+        rs=rs,
+        output_adapter=output_adapter,
+        bottom_bar=bottom_bar,
+        cursor_tracker=cursor_tracker,
         on_display_messages=_display_messages,
-        cursor_tracker=cursor_tracker,
     )
-    engine: RenderEngine = TuiEngine(
-        tui_renderer, bottom_bar,
-        cursor_tracker=cursor_tracker,
-    )
-    dispatcher = EventDispatcher(push_cmd=engine.push_cmd)
+
+    # ── 聊天域装配 ──
+    dispatcher = EventDispatcher(push_cmd=fw.engine.push_cmd, config=ChatConfig.defaults())
     rs.set_output_adapter(output_adapter)
     cmpl_handler = _CmplHandler(
         bottom_bar, CompletionEngine(),
-        request_redraw=engine.request_bottom_redraw,
+        request_redraw=fw.engine.request_bottom_redraw,
     )
 
     return _ChatUIComponents(
         rs=rs,
         cursor_tracker=cursor_tracker,
         bottom_bar=bottom_bar,
-        output_adapter=output_adapter,
-        tui_renderer=tui_renderer,
-        engine=engine,
+        output_adapter=fw.output_adapter,
+        tui_renderer=fw.renderer,
+        engine=fw.engine,
         dispatcher=dispatcher,
         cmpl_handler=cmpl_handler,
     )

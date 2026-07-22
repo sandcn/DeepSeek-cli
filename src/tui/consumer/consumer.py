@@ -42,8 +42,6 @@ from ..state.consumer_registry import (
 from ..engine.lock import render_lock
 from ..terminal.blessed import get_terminal
 
-from ..engine.dispatcher import _HANDLER_MAP
-
 _logger = logging.getLogger(__name__)
 
 
@@ -68,18 +66,26 @@ class ChatUIConsumer:
       _cmpl     (_CmplHandler)    — Tab 补全交互
     """
 
-    def __init__(self, event_bus=None):
+    def __init__(self, event_bus=None, *, _components=None):
+        """初始化 ChatUIConsumer。
+
+        Args:
+            event_bus: DisplayEventBus 实例。为 None 时获取默认实例。
+            _components: 预创建的 _ChatUIComponents 实例（用于测试注入）。
+                         为 None 时通过工厂自动创建。
+        """
         if event_bus is None:
             from ..events.event_bus import DisplayEventBus
             event_bus = DisplayEventBus.get_default()
         self._bus = event_bus
 
-        from .factory import _create_chat_ui_components
-        components = _create_chat_ui_components(event_bus)
+        if _components is not None:
+            self._components = _components
+        else:
+            from .factory import _create_chat_ui_components
+            self._components = _create_chat_ui_components(event_bus)
 
-        self._components = components
-
-        self._bound_handlers: dict[type, Any] | None = None
+        self._bound_handlers: dict[type, Callable] | None = None
         self._state_lock = threading.Lock()
         self._started = False
         self._handlers_bound = False
@@ -133,8 +139,7 @@ class ChatUIConsumer:
                 return
             if self._bound_handlers is None:
                 self._bound_handlers = {}
-                for _, (event_type, handler_name) in _HANDLER_MAP.items():
-                    handler = getattr(self._disp, handler_name)
+                for event_type, handler in self._disp.list_handlers().items():
                     self._bound_handlers[event_type] = handler
             if self._handlers_bound:
                 for event_type in self._bound_handlers:
@@ -175,6 +180,7 @@ class ChatUIConsumer:
                 self._components.rs.close_all()
                 self._components.bottom_bar.teardown()
             self._started = False
+            self._bound_handlers = None
 
     def suspend(self) -> None:
         """暂停渲染引擎，供交互式工具独占终端。
@@ -228,6 +234,24 @@ class ChatUIConsumer:
         if not message:
             return
         self._engine.push_cmd((RenderCommand.ERROR, message))
+
+    def register_event_handler(self, event_type: type, handler_method: Callable) -> None:
+        """注册自定义事件处理器（委托给 EventDispatcher）。
+
+        允许外部代码在 ChatUIConsumer 启动前/后动态注册额外的事件映射。
+        注册的处理器会在 start() 订阅事件总线时自动包含。
+
+        Args:
+            event_type: DisplayEvent 子类
+            handler_method: 事件处理 callable，签名为 (event) -> None
+        """
+        self._disp.register_handler(event_type, handler_method)
+        # 如果已经启动且已绑定，立即订阅新处理器
+        with self._state_lock:
+            if self._started and self._handlers_bound:
+                self._bus.subscribe(handler_method, event_type=event_type)
+                if self._bound_handlers is not None:
+                    self._bound_handlers[event_type] = handler_method
 
     def request_bottom_redraw(self) -> None:
         self._engine.request_bottom_redraw()

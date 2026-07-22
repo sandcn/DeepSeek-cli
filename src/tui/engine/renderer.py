@@ -1,6 +1,7 @@
-"""渲染器 — _RenderState + TuiRenderer + ComponentRegistry 分发。
+"""渲染器 — TuiRenderer + 聊天域渲染命令。
 
 从 _tui.py 拆分，管理推理/内容 IncrementalRenderer 生命周期和渲染命令分发。
+继承 FrameworkRenderer（renderer_base.py）获得框架级命令处理能力。
 由 ComponentRegistry 管理命令-组件映射关系。
 """
 
@@ -30,43 +31,26 @@ from ..components import (
     UserMsgBlock,
     ToolOutputBlock,
     ToolSummaryBlock,
-    ErrorBlock,
-    NotificationBlock,
-    WriteLineBlock,
-    SplashScreen,
-    _estimate_content_lines,
 )
 
 from ..animation.animator import AnimatorContext
 from ..core.text_utils import build_glow_ansi
 from ..core.component_registry import ComponentRegistry
+from .renderer_base import FrameworkRenderer, register_render_command
 from .utils import _cmd_name, _emergency_write
 
 _logger = logging.getLogger(__name__)
 
 
 # ═══════════════════════════════════════════════════════════
-# 渲染命令注册 — 由 @register_render_command 装饰器自动注册到 ComponentRegistry
+# TuiRenderer — 聊天域内容渲染器（继承 FrameworkRenderer）
 # ═══════════════════════════════════════════════════════════
 
-def register_render_command(command_id: int, arg_indices: tuple[int, ...] = ()) -> Callable:
-    """装饰器工厂：将 _do_* 方法自动注册到 ComponentRegistry。
+class TuiRenderer(FrameworkRenderer):
+    """聊天域内容渲染器 — 执行 RenderCommand 并直接输出。
 
-    用法: 在 _do_* 方法上使用 @register_render_command(RenderCommand.XXX, (i,))，
-    方法定义时自动将 command_id → (method_name, arg_indices) 注册到 ComponentRegistry。
-    """
-    def decorator(method: Callable) -> Callable:
-        ComponentRegistry.get_default().register(command_id, method.__name__, arg_indices)
-        return method
-    return decorator
-
-
-# ═══════════════════════════════════════════════════════════
-# TuiRenderer — 组件化内容渲染器
-# ═══════════════════════════════════════════════════════════
-
-class TuiRenderer:
-    """组件化内容渲染器 — 执行 RenderCommand 并直接输出。
+    继承 FrameworkRenderer 获得框架级命令处理能力（NOTIFICATION/WRITE_LINE/
+    ERROR/SPLASH/SUBAGENT_FRAME），在此添加聊天域特有的渲染命令处理。
 
     将每个渲染命令映射到对应的组件，通过 OutputAdapter 输出。
     """
@@ -79,46 +63,18 @@ class TuiRenderer:
         on_display_messages: Callable[..., None] | None = None,
         cursor_tracker: Any = None,
     ):
+        super().__init__(
+            output_adapter=output_adapter,
+            cursor_tracker=cursor_tracker,
+            bottom_bar=bottom_bar,
+        )
         self._rs = rs
-        self._bb = bottom_bar
         self._on_display_messages = on_display_messages
-        self._adapter = output_adapter
-        self._tracker = cursor_tracker
         self._in_tool_group = False
         # AnswerBlock 实例缓存：同一轮回答的所有 CONTENT 命令复用同一实例，
         # 确保 _first_write 仅首次为 True（FadeIn 不重复），
         # _cumulative_content 持续累积（render() 可返回完整内容）。
         self._content_block: AnswerBlock | None = None
-
-    @property
-    def output_adapter(self) -> "OutputAdapter":
-        """获取当前 OutputAdapter 实例。"""
-        return self._adapter
-
-    def render(self, cmd: tuple) -> None:
-        """分发渲染命令到对应的 _do_* 方法。
-
-        通过 ComponentRegistry.resolve() 将命令 ID 映射到方法名和参数索引，
-        提取参数后调用对应处理方法。
-
-        Args:
-            cmd: 渲染命令元组，格式为 (command_id, *args)
-        """
-        if not cmd:
-            return
-        cid = cmd[0]
-        entry = ComponentRegistry.get_default().resolve(cid)
-        if entry is None:
-            _logger.error("未知渲染命令: %s", _cmd_name(cid))
-            return
-        method_name, arg_indices = entry
-        method = getattr(self, method_name)
-        args = tuple(cmd[i] for i in arg_indices)
-        method(*args)
-
-    def _record_lines(self, n: int) -> None:
-        if self._tracker is not None:
-            self._tracker.record_newlines(n)
 
     # ── 内容渲染 ──────────────────────────────────
 
@@ -215,52 +171,8 @@ class TuiRenderer:
         block = UserMsgBlock(text)
         self._record_lines(block.render_to_adapter(self._adapter))
 
-    @register_render_command(RenderCommand.NOTIFICATION, (1,))
-    def _do_notification(self, text: str) -> None:
-        block = NotificationBlock(text)
-        self._record_lines(block.render_to_adapter(self._adapter))
-
-    @register_render_command(RenderCommand.ERROR, (1,))
-    def _do_error(self, message: str) -> None:
-        block = ErrorBlock(message)
-        self._record_lines(block.render_to_adapter(self._adapter))
-
-    @register_render_command(RenderCommand.WRITE_LINE, (1,))
-    def _do_write_line(self, text: str) -> None:
-        block = WriteLineBlock(text)
-        self._record_lines(block.render_to_adapter(self._adapter))
-
     @register_render_command(RenderCommand.DISPLAY_MSGS, (1, 2))
     def _do_display_messages(self, messages: list[dict], speed: int) -> None:
         if self._on_display_messages is not None:
             self._on_display_messages(messages, speed=speed)
         self._record_lines(1)
-
-    # ── 启动品牌屏 ─────────────────────────────────
-
-    @register_render_command(RenderCommand.SPLASH, ())
-    def _do_splash(self) -> None:
-        """渲染启动品牌屏（仅首次展示一次）。"""
-        # 从 bottom_bar 获取已设置的模型名（若有），否则 SplashScreen 自行从 config 读取
-        model_name = getattr(self._bb, '_model_name', '')
-        splash = SplashScreen(model_name=model_name)
-        self._record_lines(splash.render_to_adapter(self._adapter))
-
-    # ── SubAgent 面板 ─────────────────────────────
-
-    @register_render_command(RenderCommand.SUBAGENT_FRAME, (1,))
-    def _do_subagent_frame(self, frame_lines: tuple) -> None:
-        """将 subagent 面板行数据传递给 BottomBar 渲染。
-
-        不再直接写 ANSI 到上屏，改为委托 BottomBar.force_redraw()
-        在固定下屏区域渲染。
-        """
-        if not frame_lines:
-            return
-        if len(frame_lines) < 4:
-            return
-        lines = frame_lines[0]
-        if not lines or not isinstance(lines, (list, tuple)):
-            return
-        if hasattr(self._bb, 'set_subagent_frame'):
-            self._bb.set_subagent_frame(list(lines))

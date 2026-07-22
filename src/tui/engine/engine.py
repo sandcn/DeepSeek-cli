@@ -15,14 +15,13 @@ from typing import TYPE_CHECKING, Any, Callable
 if TYPE_CHECKING:
     from ..consumer.protocols import BottomBarProtocol, RenderEngine
 
-from .renderer import TuiRenderer
+from .renderer_base import FrameworkRenderer
+
+from ..framework import Framework
 
 from .const import (
     RenderCommand,
-    _RENDER_INTERVAL,
-    _DRAIN_LOCK_TIMEOUT,
     _ANSI_RED, _ANSI_RESET,
-    _MAX_BATCH_SIZE,
 )
 
 from .utils import _cmd_name, _emergency_write
@@ -30,12 +29,6 @@ from .utils import _cmd_name, _emergency_write
 from .lock import _try_acquire_output_lock
 
 _logger = logging.getLogger(__name__)
-
-# ── 引擎常量 ──────────────────────────────────────
-
-_ACTIVE_RENDER_INTERVAL = 0.005
-_CONSECUTIVE_FULL_THRESHOLD = 10
-
 
 # ═══════════════════════════════════════════════════════════
 # TuiEngine — 渲染引擎
@@ -53,22 +46,17 @@ class TuiEngine:
       - 可通过 ``render_crashed`` / ``is_recovering`` 属性查询状态
     """
 
-    # 类级常量（测试可通过实例属性覆盖）
-    _ACTIVE_RENDER_INTERVAL = 0.005
-    _CONSECUTIVE_FULL_THRESHOLD = 10
-    _MAX_RECOVER_ATTEMPTS = 3
-    _RECOVER_DELAY = 0.5  # 崩溃后重建等待（秒）
-
     def __init__(
         self,
-        renderer: "TuiRenderer",
+        renderer: "FrameworkRenderer",
         bottom_bar: "BottomBarProtocol",
         cursor_tracker: Any = None,
     ):
         self._renderer = renderer
         self._bb = bottom_bar
         self._cursor_tracker = cursor_tracker
-        self._cmd_queue: queue.Queue = queue.Queue(maxsize=10000)
+        # ── 从 Framework 统一配置读取参数（优先），模块常量作为 fallback ──
+        self._cmd_queue: queue.Queue = queue.Queue(maxsize=self._config.cmd_queue_maxsize)
         self._cmd_event = threading.Event()
         self._render_thread: threading.Thread | None = None
         self._render_running = False
@@ -81,7 +69,15 @@ class TuiEngine:
         self._last_bottom_redraw: float = 0.0
         self._recover_attempts: int = 0
         self._recovering: bool = False  # 崩溃恢复中标志，防止 finally 排空与新线程竞态
-        self._BOTTOM_REDRAW_INTERVAL: float = 0.1  # 10Hz 底部栏重绘间隔
+
+    @property
+    def _config(self):
+        """实时获取 TuiConfig — 每次访问从 Framework 单例读取。
+
+        确保 Framework.set_config() 后已创建的 engine 也能感知配置变更。
+        高频调用路径（render 线程每帧读取），Framework.get_config() 为纯属性访问，无 I/O。
+        """
+        return Framework.get_default().get_config()
 
     def push_cmd(self, cmd: tuple) -> None:
         """入队渲染命令到命令队列。
@@ -100,7 +96,7 @@ class TuiEngine:
             self._consecutive_full += 1
             self._cmd_queue_dropped += 1
             _logger.warning("渲染命令队列已满（%s 条），丢弃命令: %s", self._cmd_queue.qsize(), _cmd_name(cmd[0]))
-            if self._consecutive_full >= self._CONSECUTIVE_FULL_THRESHOLD:
+            if self._consecutive_full >= self._config.consecutive_full_threshold:
                 _logger.error("渲染输出管线持续拥堵（%d 次连续满队列）", self._consecutive_full)
             if self._cmd_queue_dropped > 0 and self._cmd_queue_dropped % 100 == 0:
                 try:
@@ -118,7 +114,7 @@ class TuiEngine:
     @property
     def is_recovering(self) -> bool:
         """render 线程是否正在恢复中。"""
-        return 0 < self._recover_attempts <= self._MAX_RECOVER_ATTEMPTS
+        return 0 < self._recover_attempts <= self._config.max_recover_attempts
 
     def set_panel_refresh_callback(self, callback: Callable[[], None] | None) -> None:
         self._panel_refresh_cb = callback
@@ -256,7 +252,7 @@ class TuiEngine:
         now = time.monotonic()
         force = self._bottom_redraw_requested.is_set()
         self._bottom_redraw_requested.clear()
-        if force or now - self._last_bottom_redraw >= self._BOTTOM_REDRAW_INTERVAL:
+        if force or now - self._last_bottom_redraw >= self._config.bottom_redraw_interval:
             self._last_bottom_redraw = now
             try:
                 self._bb.force_redraw()
@@ -276,7 +272,7 @@ class TuiEngine:
         drain_queue → 自适应等待 → 重复。
 
         异常恢复（2026-07-17）：
-          - 异常时尝试自动重建线程（最多 ``_MAX_RECOVER_ATTEMPTS`` 次）
+          - 异常时尝试自动重建线程（最多 ``max_recover_attempts`` 次，从 TuiConfig 读取）
           - 可恢复路径：重建新线程后 ``return`` 退出当前线程
           - 不可恢复路径：``break`` 退出循环，由 ``finally`` 排空队列
 
@@ -289,12 +285,12 @@ class TuiEngine:
                     has_content = self._drain_queue()
                     if has_content:
                         idle_count = 0
-                        wait_timeout = self._ACTIVE_RENDER_INTERVAL
+                        wait_timeout = self._config.active_render_interval
                     else:
                         # 指数退避平滑过渡：5ms → 10ms → 20ms → 40ms → 80ms → 100ms（钳位）
                         wait_timeout = min(
-                            self._ACTIVE_RENDER_INTERVAL * (2 ** idle_count),
-                            _RENDER_INTERVAL,
+                            self._config.active_render_interval * (2 ** idle_count),
+                            self._config.render_interval,
                         )
                         idle_count += 1
                         if idle_count > 10:
@@ -317,10 +313,10 @@ class TuiEngine:
                         pass
                     # ★ 崩溃自动恢复：尝试重建 render 线程
                     self._recover_attempts += 1
-                    if self._render_running and self._recover_attempts <= self._MAX_RECOVER_ATTEMPTS:
+                    if self._render_running and self._recover_attempts <= self._config.max_recover_attempts:
                         _logger.info("render 线程将在 %.1f 秒后自动恢复 (第 %d/%d 次)",
-                                     self._RECOVER_DELAY, self._recover_attempts, self._MAX_RECOVER_ATTEMPTS)
-                        time.sleep(self._RECOVER_DELAY)
+                                     self._config.recover_delay, self._recover_attempts, self._config.max_recover_attempts)
+                        time.sleep(self._config.recover_delay)
                         # 排空旧队列（新线程启动前，只排此刻已入队的命令）
                         self._drain_queue_safe()
                         # 标记恢复中，防止 finally 排空与新线程竞态
@@ -329,7 +325,7 @@ class TuiEngine:
                         self._render_thread = threading.Thread(target=self._render, daemon=True)
                         self._render_thread.start()
                         _logger.info("render 线程已自动恢复 (第 %d/%d 次)",
-                                     self._recover_attempts, self._MAX_RECOVER_ATTEMPTS)
+                                     self._recover_attempts, self._config.max_recover_attempts)
                         return  # 当前线程退出，新线程已启动
                     else:
                         self._render_running = False
@@ -373,12 +369,12 @@ class TuiEngine:
         commands: list[tuple] = []
         # ★ 阶段 1：锁外执行面板刷新，减少持锁时间
         self._phase_pre_update_panels()
-        with _try_acquire_output_lock(name="drain_queue", timeout=_DRAIN_LOCK_TIMEOUT) as locked:
+        with _try_acquire_output_lock(name="drain_queue", timeout=self._config.drain_lock_timeout) as locked:
             if not locked:
                 return False
-            # 容量钳位：单帧最多处理 _MAX_BATCH_SIZE 条命令，
+            # 容量钳位：单帧最多处理 max_batch_size 条命令（从 TuiConfig 读取），
             # 超出部分留待下一周期，防止 UI 冻结
-            while len(commands) < _MAX_BATCH_SIZE:
+            while len(commands) < self._config.max_batch_size:
                 try:
                     commands.append(self._cmd_queue.get_nowait())
                     self._cmd_queue.task_done()
@@ -419,4 +415,7 @@ class TuiEngine:
 
 # @deprecated — 使用 TuiEngine/TuiRenderer 替代，v1.3+ 将移除
 RenderEngine = TuiEngine
-ContentRenderer = TuiRenderer
+
+# TuiRenderer 仅用于向后兼容别名 ContentRenderer，不参与引擎核心逻辑
+from .renderer import TuiRenderer as _TuiRenderer  # noqa: E402
+ContentRenderer = _TuiRenderer
