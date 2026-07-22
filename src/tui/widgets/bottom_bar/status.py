@@ -183,24 +183,38 @@ class _StatusMixin:
 
         parts = []
 
-        # 工具调用计数（带 ⚙ 图标，成功/失败分色）
+        # 工具调用计数（带 · 图标，运行中→总数 / 成功/失败分色）
         if self._tool_total > 0:
             # 非窄屏时添加呼吸齿轮图标前缀
             if not is_narrow():
                 _gear_frame = AnimatorContext.get_default().frame
-                glow_gear = f"{build_glow_ansi(_gear_frame, 45, 12)}\u2699\033[0m "
+                glow_gear = f"{build_glow_ansi(_gear_frame, 45, 12)}\u00b7\033[0m "
             else:
                 glow_gear = ""
-            done = self._tool_total - self._tool_fail_count
-            if self._tool_fail_count > 0:
+            if self._tool_count > 0:
+                # 有运行中的工具：显示 · <运行中>→<总数>
+                if self._tool_fail_count > 0:
+                    total_colored = f"{_COLOR_TOOL_FAIL}{self._tool_total}{_COLOR_RESET}"
+                else:
+                    total_colored = f"{_COLOR_TOOL_OK}{self._tool_total}{_COLOR_RESET}"
                 parts.append(
                     f"{glow_gear}"
-                    f"{_COLOR_TOOL_OK}{done}{_COLOR_RESET}"
-                    f"{_COLOR_DIM}/{_COLOR_RESET}"
-                    f"{_COLOR_TOOL_FAIL}{self._tool_total}{_COLOR_RESET}"
+                    f"{_COLOR_ACCENT}{self._tool_count}{_COLOR_RESET}"
+                    f"{_COLOR_DIM}→{_COLOR_RESET}"
+                    f"{total_colored}"
                 )
             else:
-                parts.append(f"{glow_gear}{_COLOR_TOOL_OK}{self._tool_total}{_COLOR_RESET}")
+                # 无运行中的工具：保持原有逻辑（done/total 或纯 total）
+                done = self._tool_total - self._tool_count - self._tool_fail_count
+                if self._tool_fail_count > 0:
+                    parts.append(
+                        f"{glow_gear}"
+                        f"{_COLOR_TOOL_OK}{done}{_COLOR_RESET}"
+                        f"{_COLOR_DIM}/{_COLOR_RESET}"
+                        f"{_COLOR_TOOL_FAIL}{self._tool_total}{_COLOR_RESET}"
+                    )
+                else:
+                    parts.append(f"{glow_gear}{_COLOR_TOOL_OK}{self._tool_total}{_COLOR_RESET}")
 
         # 耗时（蓝灰高亮）
         if elapsed > 0:
