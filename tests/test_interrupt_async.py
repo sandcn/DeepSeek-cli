@@ -19,11 +19,11 @@ class TestInterruptAsync:
     @pytest.fixture(autouse=True)
     def _reset_before_each(self):
         """每个测试前复位全局中断信号，保证测试隔离"""
-        from src.api.interrupt_async import _interrupted_async
+        from src.api.interrupt_async import _interrupted
 
-        _interrupted_async.clear()
+        _interrupted.clear()
         yield
-        _interrupted_async.clear()
+        _interrupted.clear()
 
     # ── 1. request → is_set ─────────────────────────────────
 
@@ -109,3 +109,27 @@ class TestInterruptAsync:
         request_interrupt_async()
 
         assert await is_interrupted_async() is True
+
+    # ── 6. wait_for_interrupt_async 触发 ─────────────────────
+
+    async def test_wait_for_interrupt_async_triggers(self):
+        """wait_for_interrupt_async 在中断信号置位后返回 True"""
+        from src.api.interrupt_async import (
+            request_interrupt_async,
+            wait_for_interrupt_async,
+        )
+
+        request_interrupt_async()
+        result = await wait_for_interrupt_async(timeout=5.0)
+
+        assert result is True
+
+    # ── 7. wait_for_interrupt_async 超时 ─────────────────────
+
+    async def test_wait_for_interrupt_async_timeout(self):
+        """wait_for_interrupt_async 在超时后返回 False"""
+        from src.api.interrupt_async import wait_for_interrupt_async
+
+        result = await wait_for_interrupt_async(timeout=0.1)
+
+        assert result is False

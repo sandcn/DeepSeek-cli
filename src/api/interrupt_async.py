@@ -1,7 +1,7 @@
-"""Async 全局中断信号 — 基于 asyncio.Event
+"""Async 全局中断信号 — 基于 threading.Event
 
-与同步版 interrupt.py 接口对等，但使用 asyncio.Event 替代 threading.Event，
-避免在 async 代码中阻塞事件循环。
+与同步版 interrupt.py 接口对等，但使用 threading.Event 替代 asyncio.Event，
+避免事件循环绑定问题。
 """
 
 from __future__ import annotations
@@ -10,6 +10,7 @@ import asyncio
 import logging
 import select
 import sys
+import threading
 
 _logger = logging.getLogger(__name__)
 
@@ -23,18 +24,18 @@ __all__ = [
     "_flush_stdin",  # 向后兼容别名
 ]
 
-# 全局 asyncio Event — 只应在 async 上下文中使用
-_interrupted_async = asyncio.Event()
+# 全局 threading Event — 不绑定任何事件循环，跨循环安全
+_interrupted = threading.Event()
 
 
 async def is_interrupted_async() -> bool:
-    """检查是否已请求中断。asyncio 安全。"""
-    return _interrupted_async.is_set()
+    """检查是否已请求中断。线程安全，跨事件循环安全。"""
+    return _interrupted.is_set()
 
 
 def request_interrupt_async() -> None:
-    """请求中断所有异步任务。线程安全（asyncio.Event.set() 是线程安全的）。"""
-    _interrupted_async.set()
+    """请求中断所有异步任务。线程安全（threading.Event.set() 是线程安全的）。"""
+    _interrupted.set()
 
 
 def flush_stdin() -> None:
@@ -87,27 +88,27 @@ def reset_interrupt_async() -> None:
     1. 中断信号已复位
     2. stdin 缓冲区的残留 ESC 字节已被排空
     """
-    _interrupted_async.clear()
+    _interrupted.clear()
     flush_stdin()
 
 
 # ── 同步桥接（用于 sync 代码调用 async 中断） ──────────────
 
 def is_interrupted() -> bool:
-    """兼容同步检查 — 读取 asyncio Event 状态。
+    """兼容同步检查 — 读取 threading.Event 状态。
 
     适用于 sync 代码（如 tool 执行）中需要检查中断的场景。
-    asyncio.Event.is_set() 不涉及锁，线程安全。
+    threading.Event.is_set() 不涉及锁，线程安全。
     """
-    return _interrupted_async.is_set()
+    return _interrupted.is_set()
 
 
 async def wait_for_interrupt_async(timeout: float) -> bool:
     """等待中断信号或超时，返回是否被中断。
 
-    替代 busy-poll 模式（while + asyncio.sleep），
-    通过 asyncio.Event.wait() 实现零轮询的事件驱动等待。
-    中断响应延迟仅为事件循环调度的延迟（通常 <1ms）。
+    通过 loop.run_in_executor() 将 blocking wait 调度到线程池执行，
+    不绑定当前事件循环，跨循环安全。
+    中断响应延迟 = executor 调度延迟 + 线程切换延迟（通常 <5ms）。
 
     Args:
         timeout: 最长等待秒数
@@ -116,15 +117,8 @@ async def wait_for_interrupt_async(timeout: float) -> bool:
         True — 在超时前收到中断信号
         False — 超时（未收到中断信号）
     """
-    interrupt_task = asyncio.create_task(_interrupted_async.wait())
-    try:
-        await asyncio.wait_for(interrupt_task, timeout=timeout)
-        return True
-    except asyncio.TimeoutError:
-        return False
-    finally:
-        interrupt_task.cancel()
-
+    loop = asyncio.get_running_loop()
+    return await loop.run_in_executor(None, _interrupted.wait, timeout)
 
 # 向后兼容别名
 _flush_stdin = flush_stdin

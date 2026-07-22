@@ -16,7 +16,7 @@ from .client_async import (
     chat_completions_async, chat_completions_async_anthropic,
 )
 from .tokens import estimate_tokens
-from .interrupt_async import is_interrupted_async, wait_for_interrupt_async
+from .interrupt_async import is_interrupted_async
 from .stream.pipeline_async import stream_call_async
 from .stats import (
     accumulate_usage, set_tool_parse_elapsed, set_stream_speed,
