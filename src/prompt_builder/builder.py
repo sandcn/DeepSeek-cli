@@ -2,7 +2,7 @@
 
 设计说明：
 - MainAgent 的完整系统提示词预合并为 prompts/prompts_export_main.md
-- 各类型 SubAgent（map/review/think/plan/execute）各自从
+- 各类型 SubAgent（map/review/plan/execute）各自从
   prompts_export_*.md 加载静态规则；通用 SubAgent（build_subagent_system_prompt）
   直接使用 fallback 兜底提示词
 - 这些文件包含全部静态规则内容（角色设定、行为规范、代码理解、工具使用等），
@@ -201,19 +201,6 @@ def build_review_agent_system_prompt(
     return _build_prompt("review","prompts_export_review", _FALLBACK_SUB_PROMPT, include_version_control, cwd, include_global_md=True)
 
 
-def build_think_agent_system_prompt(
-    include_version_control: bool = True,
-    cwd: str | None = None,
-) -> list[str]:
-    """构建 think 类型子代理系统提示词。
-
-    从 prompts_export_think.md 加载静态规则，追加运行时动态信息。
-    Think 类型专用于深度推理分析，只读工具集（read_file/search/find/ls），
-    在 map 分析完成后强制调用，将结论返回主 Agent。
-    """
-    return _build_prompt("think","prompts_export_think", _FALLBACK_SUB_PROMPT, include_version_control, cwd, include_global_md=True)
-
-
 def build_plan_agent_system_prompt(
     include_version_control: bool = True,
     cwd: str | None = None,
@@ -262,6 +249,5 @@ __all__ = [
     "build_review_agent_system_prompt",
     "build_plan_agent_system_prompt",
     "build_execute_agent_system_prompt",
-    "build_think_agent_system_prompt",
     "reset_prompts_cache",
 ]

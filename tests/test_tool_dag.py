@@ -825,6 +825,186 @@ class TestEdgeCases:
 
 
 # ═══════════════════════════════════════════════════════════════
+# remove_nodes — 多批次场景正确性验证
+# ═══════════════════════════════════════════════════════════════
+
+class TestRemoveNodes:
+    """remove_nodes 在多批次场景下的正确性验证
+
+    覆盖：
+    - 部分节点移除后，add_batch 正确跳过已删除节点的边
+    - 移除中间节点后，拓扑排序不受影响
+    """
+
+    def test_remove_nodes_multibatch(self):
+        """模拟两批场景：移除第一批的部分节点后，第二批 add_batch 正确处理跳过边
+
+        使用 general 类别工具避免类别约束形成跨批反向边。
+        场景：
+        - 批次 1：call_A(tool_x), call_B(tool_y), call_C(tool_z)
+        - 移除 call_A, call_B（模拟完成节点清理）
+        - 批次 2：call_D(tool_w)，prev_non_dispatch_ids={call_C}
+        - 验证：call_D 在 _nodes 中、call_C 在 call_D 的 dependencies 中、
+                call_A/call_B 不在 _nodes 中
+        """
+        # 使用 general 类别避免类别约束在跨批场景形成反向边
+        registry = _make_registry()
+
+        # 批次 1
+        batch1 = [
+            {"id": "call_A", "name": "search",
+             "arguments": {"query": "a"}},
+            {"id": "call_B", "name": "search",
+             "arguments": {"query": "b"}},
+            {"id": "call_C", "name": "bash",
+             "arguments": {"command": "echo hi"}},
+        ]
+        dag = ToolDAG(batch1, registry)
+        assert dag.size == 3
+
+        # 移除 call_A, call_B（模拟批次 1 部分节点完成后的清理）
+        dag.remove_nodes({"call_A", "call_B"})
+        assert dag.size == 1
+        assert "call_C" in dag._nodes
+        assert "call_A" not in dag._nodes
+        assert "call_B" not in dag._nodes
+
+        # 批次 2：添加 call_D，prev_non_dispatch_ids={call_C}
+        batch2 = [
+            {"id": "call_D", "name": "search",
+             "arguments": {"query": "d"}},
+        ]
+        dag.add_batch(batch2, registry, prev_non_dispatch_ids={"call_C"})
+        assert dag.size == 2
+        assert "call_D" in dag._nodes
+        assert "call_C" in dag._nodes
+
+        # 验证：call_D 依赖 call_C（批间依赖边）
+        node_d = dag.get_node("call_D")
+        assert "call_C" in node_d.dependencies, (
+            "call_D 应依赖 call_C（prev_non_dispatch_ids 中的未删除节点）"
+        )
+        # call_C 的 dependents 应包含 call_D
+        node_c = dag.get_node("call_C")
+        assert "call_D" in node_c.dependents
+
+        # 拓扑排序正常（无环）
+        layers = dag.topological_sort()
+        assert layers is not None
+        # call_C 在前层，call_D 在后层
+        assert layers[0] == ["call_C"]
+        assert layers[1] == ["call_D"]
+
+    def test_remove_nodes_multibatch_skipped_edge(self):
+        """已删除节点在 prev_non_dispatch_ids 中的边被跳过
+
+        场景：
+        - 批次 1：call_A(read), call_B(bash)
+        - 移除 call_A（模拟 call_A 已完成）
+        - 批次 2：call_C(read)，prev_non_dispatch_ids={call_A, call_B}
+        - 验证：call_A 的边被跳过（call_A 已不在 _nodes），
+                call_B 的边正常创建
+        """
+        meta = {
+            "read_file": (True, False, "read"),
+            "bash": (False, False, "bash"),
+        }
+        registry = _make_registry(meta)
+
+        batch1 = [
+            {"id": "call_A", "name": "read_file",
+             "arguments": {"path": "/tmp/a.txt"}},
+            {"id": "call_B", "name": "bash",
+             "arguments": {"command": "echo hi"}},
+        ]
+        dag = ToolDAG(batch1, registry)
+        assert dag.size == 2
+
+        # 移除 call_A（已完成）
+        dag.remove_nodes({"call_A"})
+        assert dag.size == 1
+        assert "call_B" in dag._nodes
+
+        # 批次 2：call_C，prev_non_dispatch_ids={call_A, call_B}
+        batch2 = [
+            {"id": "call_C", "name": "read_file",
+             "arguments": {"path": "/tmp/c.txt"}},
+        ]
+        dag.add_batch(batch2, registry, prev_non_dispatch_ids={"call_A", "call_B"})
+        assert dag.size == 2
+
+        node_c = dag.get_node("call_C")
+        # call_A 的边被跳过（call_A 已不在 _nodes）
+        assert "call_A" not in node_c.dependencies, (
+            "已删除节点 call_A 的边应被跳过"
+        )
+        # call_B 的边正常创建（call_B 仍在 _nodes）
+        assert "call_B" in node_c.dependencies, (
+            "call_B 的边应正常创建"
+        )
+
+    def test_remove_nodes_does_not_break_topological_sort(self):
+        """移除链式 DAG 中间节点后，topological_sort 返回正确分层"""
+        tool_calls = [
+            {"id": "call_A", "name": "bash",
+             "arguments": {"command": "echo 1"}},
+            {"id": "call_B", "name": "bash",
+             "arguments": {"command": "echo 2"}},
+            {"id": "call_C", "name": "bash",
+             "arguments": {"command": "echo 3"}},
+            {"id": "call_D", "name": "bash",
+             "arguments": {"command": "echo 4"}},
+            {"id": "call_E", "name": "bash",
+             "arguments": {"command": "echo 5"}},
+        ]
+        meta = {"bash": (False, False, "bash")}
+        dag = ToolDAG(tool_calls, _make_registry(meta))
+        dag.topological_sort()
+        assert dag.size == 5
+
+        # 移除中间 2 个节点（call_B, call_D）
+        dag.remove_nodes({"call_B", "call_D"})
+        assert dag.size == 3
+        assert set(dag._nodes.keys()) == {"call_A", "call_C", "call_E"}
+
+        # 拓扑排序应正常工作
+        layers = dag.topological_sort()
+        assert layers is not None
+        # bash 链式规则仍在，但被移除的节点不再影响排序
+        # call_A → call_C → call_E（中间节点 call_B, call_D 已移除）
+        # 但注意 bash 链式规则是基于原始顺序的：
+        # _detect_tool_category_constraints 中的 bash 链式边是：
+        # call_A → call_B → call_C → call_D → call_E
+        # 移除 call_B 后，call_A→call_B 边不存在了（call_B 节点已被移除）
+        # 但 call_C→call_D 边和 call_D→call_E 边也不存在了
+        # 所以剩余节点 A, C, E 之间没有 bash 链式边了
+        # 它们三个应都在同一层
+        assert len(layers) == 1, "移除中间节点后，剩余独立节点应在同一层"
+        assert set(layers[0]) == {"call_A", "call_C", "call_E"}
+
+    def test_remove_nodes_empty_set(self):
+        """空 set 调用 remove_nodes 不报错"""
+        tool_calls = [
+            {"id": "call_A", "name": "read_file",
+             "arguments": {"path": "/tmp/a.txt"}},
+        ]
+        dag = ToolDAG(tool_calls, _make_registry())
+        dag.remove_nodes(set())  # 不应抛异常
+        assert dag.size == 1
+
+    def test_remove_nodes_nonexistent_ids(self):
+        """移除不存在的 ID 静默跳过"""
+        tool_calls = [
+            {"id": "call_A", "name": "read_file",
+             "arguments": {"path": "/tmp/a.txt"}},
+        ]
+        dag = ToolDAG(tool_calls, _make_registry())
+        dag.remove_nodes({"nonexistent"})  # 不应抛异常
+        assert dag.size == 1
+        assert "call_A" in dag._nodes
+
+
+# ═══════════════════════════════════════════════════════════════
 # 工具类别约束
 # ═══════════════════════════════════════════════════════════════
 
@@ -1252,3 +1432,170 @@ class TestToolCategoryConstraints:
         assert len(layers) == 2
         assert layers[0] == ["call_A"]  # write 先
         assert layers[1] == ["call_B"]  # read 后
+
+
+# ═══════════════════════════════════════════════════════════════
+# _path_exists LRU 缓存测试
+# ═══════════════════════════════════════════════════════════════
+
+class TestPathExistsCache:
+    """_path_exists LRU 缓存正确性
+
+    覆盖：
+    - 缓存命中（相同 pair 重复调用）
+    - 不同 pair 独立缓存
+    - add_batch 后缓存失效
+    - 缓存满时不写入
+    - 多批语义等价（有缓存 vs 无缓存结果一致）
+    """
+
+    def _make_chain_dag(self, meta_map: Optional[dict] = None) -> ToolDAG:
+        """构造 A→B→C 链式 DAG（A 依赖 B，B 依赖 C）"""
+        tool_calls = [
+            {"id": "call_A", "name": "bash",
+             "arguments": {"command": "echo $call_B"}},
+            {"id": "call_B", "name": "bash",
+             "arguments": {"command": "echo $call_C"}},
+            {"id": "call_C", "name": "bash",
+             "arguments": {"command": "echo hello"}},
+        ]
+        if meta_map is None:
+            meta_map = {"bash": (False, False, "bash")}
+        return ToolDAG(tool_calls, _make_registry(meta_map))
+
+    def test_cache_hit(self):
+        """缓存命中：相同 pair 重复调用，第二次不执行 BFS（返回相同结果）"""
+        dag = self._make_chain_dag()
+        # 首次调用：需 BFS 遍历 A→B→C，结果为 True
+        result1 = dag._path_exists("call_A", "call_C")
+        assert result1 is True
+        # 缓存应有条目
+        assert ("call_A", "call_C") in dag._path_cache
+        assert dag._path_cache[("call_A", "call_C")] is True
+
+        # 第二次调用：应命中缓存（无需 BFS）
+        result2 = dag._path_exists("call_A", "call_C")
+        assert result2 is True
+        # 缓存条目数不变（未新增）
+        assert len(dag._path_cache) == 1
+
+    def test_cache_miss_different_pair(self):
+        """不同 pair 独立缓存（无反向路径）"""
+        # 构造扇出 DAG：A→B, A→C（B 和 C 均显式依赖 A，但 C 到 A 无路径）
+        tool_calls = [
+            {"id": "call_A", "name": "search",
+             "arguments": {"query": "hello"}},
+            {"id": "call_B", "name": "read_file",
+             "arguments": {"path": "$call_A"}},
+            {"id": "call_C", "name": "read_file",
+             "arguments": {"path": "$call_A"}},
+        ]
+        dag = ToolDAG(tool_calls, _make_registry())
+        # call_A → call_B: True（显式依赖）
+        r1 = dag._path_exists("call_A", "call_B")
+        assert r1 is True
+        # call_B → call_A: False（B 依赖 A，无反方向）
+        r2 = dag._path_exists("call_B", "call_A")
+        assert r2 is False
+        # 两个不同的缓存键
+        assert ("call_A", "call_B") in dag._path_cache
+        assert ("call_B", "call_A") in dag._path_cache
+        assert len(dag._path_cache) == 2
+
+    def test_cache_invalidated_on_add_batch(self):
+        """add_batch 后缓存被清除"""
+        # 构造初始 DAG：一个 write_file + 一个 read_file（同路径 → read 依赖 write）
+        tool_calls = [
+            {"id": "call_A", "name": "write_file",
+             "arguments": {"path": "/tmp/data.txt", "content": "hello"}},
+            {"id": "call_B", "name": "read_file",
+             "arguments": {"path": "/tmp/data.txt"}},
+        ]
+        meta = {
+            "write_file": (False, False, "write"),
+            "read_file": (True, False, "read"),
+        }
+        dag = ToolDAG(tool_calls, _make_registry(meta))
+        dag.topological_sort()
+
+        # 初次调用 _path_exists，填充缓存
+        dag._path_exists("call_B", "call_A")
+        assert len(dag._path_cache) > 0
+
+        # 添加第二批（新增节点 call_D）
+        new_tool_calls = [
+            {"id": "call_D", "name": "read_file",
+             "arguments": {"path": "/tmp/other.txt"}},
+        ]
+        dag.add_batch(new_tool_calls, _make_registry(meta))
+        # add_batch 调用 _clear_path_cache() → 缓存应被清除
+        assert dag._path_cache == {}
+
+    def test_cache_invalidated_on_remove_nodes(self):
+        """remove_nodes 后缓存被清除"""
+        dag = self._make_chain_dag()
+        # 填充缓存
+        dag._path_exists("call_A", "call_C")
+        dag._path_exists("call_A", "call_B")
+        assert len(dag._path_cache) == 2
+
+        # 移除 call_C
+        dag.remove_nodes({"call_C"})
+        # remove_nodes 调用 _clear_path_cache() → 缓存应被清除
+        assert dag._path_cache == {}
+
+    def test_cache_full_no_write(self):
+        """缓存满时不写入新条目（不超过 _PATH_CACHE_MAX）"""
+        dag = self._make_chain_dag()
+        # 临时设一个小的缓存上限
+        original_max = dag._PATH_CACHE_MAX
+        dag._PATH_CACHE_MAX = 2
+        try:
+            # 首次调用：填充缓存
+            dag._path_exists("call_A", "call_B")  # True
+            assert len(dag._path_cache) == 1
+
+            # 第二次不同 pair：填充缓存
+            dag._path_exists("call_A", "call_C")  # True
+            assert len(dag._path_cache) == 2
+
+            # 第三次不同 pair：缓存已满，不写入
+            dag._path_exists("call_B", "call_C")  # True（但缓存满，不写入）
+            assert len(dag._path_cache) == 2  # 仍为 2，未新增
+        finally:
+            dag._PATH_CACHE_MAX = original_max
+
+    def test_semantic_equivalence_multibatch(self):
+        """多批场景下，有缓存与无缓存的拓扑排序结果一致（仅用 read/write 避免 bash 链式干扰）"""
+        meta = {
+            "read_file": (True, False, "read"),
+            "write_file": (False, False, "write"),
+        }
+        registry = _make_registry(meta)
+
+        # 批次 1：2 个工具（read + write）
+        batch1 = [
+            {"id": "call_R1", "name": "read_file",
+             "arguments": {"path": "/tmp/a.txt"}},
+            {"id": "call_W1", "name": "write_file",
+             "arguments": {"path": "/tmp/b.txt", "content": "data"}},
+        ]
+        dag = ToolDAG(batch1, registry)
+        layers_before = dag.topological_sort()
+        assert layers_before is not None
+
+        # 批次 2-10：每批增加 read + write
+        for i in range(2, 12):
+            new_calls = [
+                {"id": f"call_R{i}", "name": "read_file",
+                 "arguments": {"path": f"/tmp/r{i}.txt"}},
+                {"id": f"call_W{i}", "name": "write_file",
+                 "arguments": {"path": f"/tmp/w{i}.txt", "content": f"data{i}"}},
+            ]
+            dag.add_batch(new_calls, registry)
+            # 缓存已在 add_batch 中清除
+            layers = dag.topological_sort()
+            assert layers is not None, f"批次 {i} 拓扑排序失败，存在环"
+            # 验证总节点数正确
+            total_nodes = 2 * i
+            assert dag.size == total_nodes

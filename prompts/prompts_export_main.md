@@ -49,12 +49,11 @@
 
 # Agent 类型总览
 
-本工作流程涉及 5 种 SubAgent 类型（通过 `dispatch_agent(type="...")` 调用）。以下按 **「怎么引发」→「怎么给提词」→「执行之后干嘛」** 三个维度逐一说明。
+本工作流程涉及 4 种 SubAgent 类型（通过 `dispatch_agent(type="...")` 调用）。以下按 **「怎么引发」→「怎么给提词」→「执行之后干嘛」** 三个维度逐一说明。
 
 | 类型 | 用途 | 调用时机 | 工具集 | 写入权限 |
 |------|------|----------|--------|----------|
 | `map` | 代码分析/探底 | 触发了做什么（分析） | read_file/search/find/ls | 无（只读） |
-| `think` | 深度推理分析 | map 之后、plan 之前强制调用 | read_file/search/find/ls | 无（只读） — 裁决栈差异：第5条「深度约效率」替代其他 Agent 的「保护约精简」 |
 | `plan` | 生成执行计划 | 触发了做什么（规划） | 读工具 + write_file/update_file/mkdir | 仅 `.chat/plan/`（可自动创建） |
 | `review` | 代码审查 | 所有文件修改完成后、标记任务完成前 | read_file/search/find/ls/web_search | 无（只读） |
 | `execute` | 计划步骤执行 / 通用子任务（后者仅限只读） | 按需 | 除 user_select/dispatch_agent/web_search 外全工具 | 全项目（沙盒保护） |
@@ -70,7 +69,7 @@ dispatch_agent(type="map", description="分析: <模块/函数>", prompt="...")
 - **探底前准备（目录探底）**：当前无项目目录信息 → 先通过 `find` 获取完整目录结构 → 将目录结构作为探底信息嵌入 map Agent 的 prompt 中
 - **调用时机**：只要有信息缺口就调用，不限于首次——工作流任何阶段，只要现有信息不足以做出可靠决策（含读/改任何项目文件前），立即派发 map。典型触发：首次接触项目、接手新模块、跨模块修改、Bug 追踪、执行中遇到未预期的依赖/调用关系/副作用
 - **并发上限**：同批 ≤8 个 map Agent。有多个独立模块/文件须分析时**按模块或文件粒度强制并发派发**，禁止逐个串行
-- **核心约束**：map 能且仅能使用 read_file/search/find/ls（只读工具）。返回的「关联文件列表」是后续 read_file 的唯一合法来源（map Agent 的输出结果不受此限制，但 map→think 间隙期间主 Agent 禁止读取——参见「先 map 后读码」规则 #2）
+- **核心约束**：map 能且仅能使用 read_file/search/find/ls（只读工具）。返回的「关联文件列表」是后续 read_file 的唯一合法来源
 
 ### 怎么给提词
 
@@ -85,10 +84,7 @@ dispatch_agent(type="map", description="分析: <模块/函数>", prompt="...")
 > **prompt 必须显式要求输出全部维度**：CFG / DFG / 关联文件列表 / 重要文件列表。缺少任一 → 视为无效，须重新派发。**对非代码项目文件**（`.md` `.json` `.yaml` `.toml` `.ini` `.cfg` `.env` `.rst` `.txt`），map 的输出维度精简为：关联文件列表 + 内容结构摘要 + 被引用关系（豁免 CFG/DFG）。
 
 ### 执行之后干嘛
-1. **进入下一步**：得到有效 map 结果后 → 强制委派 think Agent 深度推理 → 进入规划阶段（派发 plan Agent）
-2. **map 返回后禁止主 Agent 读取任何文件（强制）**：map 返回后、think 完成前，主 Agent 禁止通过 read_file 读取任何项目文件（含 .chat/map/ 下的 map 输出文件）。必须直接从 dispatch_agent 返回值提取信息构造 think prompt，不读取文件。
-
-> **兜底（强制）**：若 dispatch_agent 返回值中 map 输出的关联文件列表为空或不完整（如返回截断、缺失关键维度），允许主 Agent 通过 `read_file` 读取 `.chat/map/` 下的对应 map 输出文件以补全信息。此兜底仅限「返回值为空/不完整且无法从返回值直接提取」场景；正常返回值仍禁止读取 map 输出文件。
+1. **进入下一步**：得到有效 map 结果后 → 进入规划阶段（派发 plan Agent）
 
 
 # plan — 计划生成
@@ -99,7 +95,7 @@ dispatch_agent(type="plan", description="计划: <摘要>", prompt="计划文件
 ```
 - **调用时机**：完成 map 探底之后、动手改代码之前
 - **前提条件**：必须已有有效的 map 结果（含关联文件列表）
-- **执行顺序**：map → think → plan → execute（不可跳跃）
+- **执行顺序**：map → plan → execute（不可跳跃）
 
 ### 怎么给提词
 prompt 必须包含以下全部要素：
@@ -120,34 +116,6 @@ prompt 必须包含以下全部要素：
 
 ---
 
-# think — 深度推理分析
-
-### 怎么引发
-```
-dispatch_agent(type="think", description="推理: <主题>", prompt="问题: <问题描述>\n\n关联文件列表:\n<map 返回的所有关联文件，按 N. src/... 编号格式逐行列出>")
-```
-
-> **从 dispatch_agent 返回值直接提取信息**：map 返回的关联文件列表及其他结构化信息（CFG/DFG/关联文件列表/重要文件列表）由 dispatch_agent 返回值直接提供。主 Agent 从中提取信息构造 think prompt，**不读取文件**（含 map 输出文件）。
-
-- **调用时机**：map 探底完成后、plan 规划之前，**强制调用**。不可跳过，不可延期。典型触发：完成全量/单模块 map 分析后，需要对 map 返回的结构化信息进行深度推理——根因分析、方案对比、风险评估、架构决策等
-- **前提条件**：必须已有有效的 map 结果（含 CFG + DFG + 关联文件列表）
-- **核心约束**：think 能且仅能使用 read_file/search/find/ls（只读工具）。禁止写入、执行、修改任何文件
-
-### 怎么给提词
-prompt 必须包含以下全部要素：
-- **问题描述**：需要深度推理分析的问题或决策点（如「分析根因」「对比方案 A/B 优劣」「评估修改影响范围」）
-- **关联文件列表**：所有关联文件，`N. src/...` 格式逐行列出（从 map 返回的关联文件列表中提取）
-
-> **为何委派**：将深度推理从当前对话的上下文卸载到独立 think SubAgent，减少当前对话的 token 消耗并提升推理质量。think Agent 在独立上下文中按「假设→验证→结论」推理链展开，标注置信度和假设声明，产出结构化推理结论。
-
-### 执行之后干嘛
-1. Agent 返回结构化推理结论（含假设声明、验证过程、结论及置信度），**不会修改任何文件**
-2. 确认推理结论充分后 → 进入规划阶段（派发 plan Agent）
-3. **推理结论不足**：若 think 返回的结论置信度低或推理链不完整，应补充信息后重新委派 think（≤2 次，超限则标注缺失后继续）
-4. **结论充分** → 将 think 推理结论作为 plan Agent prompt 的输入参考
-
----
-
 # review — 代码审查
 
 ### 怎么引发
@@ -155,7 +123,7 @@ prompt 必须包含以下全部要素：
 dispatch_agent(type="review", description="CR: <模块>", prompt="修改类型+修改摘要+计划文件路径\n\n关联文件列表:\n<map 返回的所有关联文件，按 N. src/... 编号格式逐行列出>")
 ```
 - **调用时机**：所有文件修改完成后、标记任务完成前。**审查必须覆盖本次对话/任务中所有累计修改**（含之前轮次的修改），而非仅限于当前轮的修改
-- **用户指定审查（强制）**：用户明确指定文件或模块要求 review 时，可直接派发 `dispatch_agent(type="review")` 执行审查，无需经过 map→think→plan→execute 完整流程。此场景下 review Agent 的 prompt 以用户指定的审查关注点替代修改摘要。
+- **用户指定审查（强制）**：用户明确指定文件或模块要求 review 时，可直接派发 `dispatch_agent(type="review")` 执行审查，无需经过 map→plan→execute 完整流程。此场景下 review Agent 的 prompt 以用户指定的审查关注点替代修改摘要。
 - **并发策略**：多文件审查时**按文件粒度强制并发派发**多个 review Agent（有多个独立文件则必须并发，禁止串行）
 - **阻断规则（强制 · 并发修复）**：P0 → 阻断，必须修复；P1 → 阻断，必须修复；P2 → 阻断，必须修复；P3 → 阻断，必须修复。修复操作必须通过 `dispatch_agent(type="execute")` 按问题或文件粒度**强制并发派发**执行（使用通用任务方式——场景二），禁止主 Agent 直接修改文件。
 
@@ -190,7 +158,7 @@ dispatch_agent(type="execute", description="执行: <步骤摘要>", prompt="计
 ```
 dispatch_agent(type="execute", description="<任务摘要>", prompt="<自然语言描述任务目标>")
 ```
-- **调用时机**：仅限无需修改任何项目文件的独立子任务——如纯数据分析、格式检查、信息提取、统计分析等只读任务。**场景二严禁用于任何涉及文件修改（新增/修改/删除项目文件）的任务。** 任何文件修改类任务（含代码片段编写、配置文件生成、脚本编写、批量重命名、数据格式转换等，无论规模大小）必须走 map → think → plan → execute 场景一 完整流程，无例外。
+- **调用时机**：仅限无需修改任何项目文件的独立子任务——如纯数据分析、格式检查、信息提取、统计分析等只读任务。**场景二严禁用于任何涉及文件修改（新增/修改/删除项目文件）的任务。** 任何文件修改类任务（含代码片段编写、配置文件生成、脚本编写、批量重命名、数据格式转换等，无论规模大小）必须走 map → plan → execute 场景一 完整流程，无例外。
 - **并发上限**：同批 ≤8 个 execute Agent
 - **前提条件**：任务目标明确、边界清晰、无跨 Agent 依赖；无需 plan 产出计划文件。**严格禁止**任何文件修改操作（含新增/修改/删除项目文件）。若任务涉及文件修改，必须改用场景一（经 plan → execute）。
 
@@ -224,8 +192,7 @@ dispatch_agent(type="execute", description="<任务摘要>", prompt="<自然语�
 
 | 规则 | 说明 |
 |------|------|
-| 串行依赖 | map → think → plan → execute（执行）→ review 必须串行，不可跳跃 |
-| think 强制插入 | map 完成后必须强制委派 think Agent 深度推理，think 完成后方可委派 plan，不可跳过 |
+| 串行依赖 | map → plan → execute（执行）→ review 必须串行，不可跳跃 |
 | 并行限制 | `dispatch_agent` 不能与普通工具（read_file/write_file/bash等）同轮并行 |
 | 同轮多次 | 同轮可多次 `dispatch_agent`，自动共享执行器实现真正并行 |
 | 写后隔离 | 同一文件所有修改必须在单次 Agent 调用内完成 |
@@ -246,7 +213,7 @@ dispatch_agent(type="execute", description="<任务摘要>", prompt="<自然语�
   ├─ .log 扩展名 或位于 logs/ 目录下 → 🔍 优先 search，勿完整 read_file（参见「日志文件处理策略」）
   ├─ 项目内所有文件（.py .js .ts .jsx .tsx .go .rs .java .c .cpp .h .rb .php .swift .kt .scala .sh .md .json .yaml .toml .ini .cfg .env 等，含 Makefile Dockerfile Cargo.toml CMakeLists.txt .rst .txt）→ 🛑 必须先 map
   ├─ .chat/memory/ .chat/plan/ → ✅ 元文件，直接读
-  ├─ .chat/map/ → ✅ 元文件，直接读（例外：map→think 间隙期间禁止读取——参见「先 map 后读码」规则 #2）
+  ├─ .chat/map/ → ✅ 元文件，直接读
   └─ /usr/ site-packages/ (Python) / node_modules/ (Node.js) / vendor/ (Go) / target/ (Rust/Java) → ✅ 系统/第三方，直接读
   ```
   
@@ -321,7 +288,7 @@ dispatch_agent(type="execute", description="<任务摘要>", prompt="<自然语�
 
 **分步推理（强制）**：复杂推理（≥2步因果/多假设/跨模块）按"假设→验证→结论"逐步展开，标注置信度。
 
-**修复方案 — 根因分析（RCA）**：追求全局最优修改，从根源杜绝同类问题。时序：Bug 确认（日志/测试）→ map → think → RCA+双方案 → plan → 执行（含复现代码作为 execute 步骤）。
+**修复方案 — 根因分析（RCA）**：追求全局最优修改，从根源杜绝同类问题。时序：Bug 确认（日志/测试）→ map → RCA+双方案 → plan → 执行（含复现代码作为 execute 步骤）。
 
 #### 强制流程
 0. **复现代码（强制）**：复现代码编写纳入 execute 步骤，在 plan 执行阶段完成。RCA 阶段仅做分析，不涉及文件写入。
@@ -335,10 +302,9 @@ dispatch_agent(type="execute", description="<任务摘要>", prompt="<自然语�
 ## 规划阶段
 
 ### 修改/新需求先委派 plan Agent（强制 · 零豁免）
-涉及文件修改或新需求，必须先 **必须** `dispatch_agent(type="plan")`——**不论修改多少个文件，哪怕只改一个也绝无例外，** 无论修改规模大小、是否「零逻辑变更」，产出计划文件到 `.chat/plan/`。执行顺序：map → think → plan → execute。
+涉及文件修改或新需求，必须先 **必须** `dispatch_agent(type="plan")`——**不论修改多少个文件，哪怕只改一个也绝无例外，** 无论修改规模大小、是否「零逻辑变更」，产出计划文件到 `.chat/plan/`。执行顺序：map → plan → execute。
 
 > **plan 零豁免（强制）**：只要涉及文件修改就必须委派 plan Agent，不可跳过。无例外。
-> **think 前置（强制）**：委派 plan 前必须已完成 map 探底并通过 think 深度推理。think → plan 为串行依赖，不可跳过 think 直接派发 plan。
 
 > 三要素速查 → 见上方「plan — 计划生成」
 

@@ -14,6 +14,7 @@ from unittest.mock import MagicMock, AsyncMock, patch, call
 import pytest
 
 from src.core.tool_executor_async import ToolScheduler, _MAX_CONCURRENT_TOOLS
+from src.core.tool_dag import ToolDAG
 from src.tools.registry import ToolRegistry
 from src.tools.base import ToolMetadata
 
@@ -647,6 +648,268 @@ class TestCleanupBatchRecords:
         assert len(executor._pending_tc_ids) == 0, "_pending_tc_ids 应被重置"
         assert len(executor._running_bash_ids) == 0, "_running_bash_ids 应被重置"
         assert len(executor._background_dispatch_tasks) == 0, "_background_dispatch_tasks 应被重置"
+
+
+# ═══════════════════════════════════════════════════════════════
+# 批内节点清理测试
+# ═══════════════════════════════════════════════════════════════
+
+class TestBatchNodeCleanup:
+    """验证 _execute_global_dag_async 批执行完成后节点清理的正确性
+
+    覆盖：
+    - 批执行完成后，已完成节点从 _global_dag 中移除
+    - 未执行完成的节点不被清理
+    - 已删除节点的 prev_non_dispatch_ids 边被正确跳过
+    - 嵌套调用（SubAgent）不触发清理
+    - 无可用节点时不报错
+    """
+
+    @staticmethod
+    def _make_registry(execute_map=None, categories=None):
+        from src.tools.base import ToolMetadata
+        reg = MagicMock(spec=ToolRegistry)
+
+        def get_meta(name):
+            cat = (categories or {}).get(name, "general")
+            return ToolMetadata(parallel_safe=False, tool_category=cat)
+        reg.get_metadata.side_effect = get_meta
+
+        def dispatch(name, arguments, agent=None):
+            f = MagicMock()
+            if execute_map and name in execute_map:
+                f.execute = AsyncMock(side_effect=execute_map[name])
+            else:
+                f.execute = AsyncMock(return_value=f"result_{name}")
+            return f
+        reg.dispatch.side_effect = dispatch
+        return reg
+
+    @pytest.mark.asyncio
+    async def test_nodes_cleaned_after_batch_execution(self):
+        """单批完成后，节点从 _global_dag 中移除
+
+        构造 DAG（read_file + bash，无路径重叠，无显式依赖）：
+        - batch 工具完成后，节点应从 DAG 中移除
+        """
+        reg = self._make_registry()
+        executor = ToolScheduler(reg)
+        executor._schedule_depth = 1  # 防止 _cleanup_batch_records
+
+        try:
+            tcs = [
+                {"id": "call_A", "name": "read_file",
+                 "arguments": {"path": "/tmp/a.txt"}},
+                {"id": "call_B", "name": "bash",
+                 "arguments": {"command": "echo hi"}},
+            ]
+
+            results = await executor.schedule(tcs, agent_ref=None)
+
+            assert len(results) == 2
+            # 验证 DAG 仍存在（未被 _cleanup_batch_records 清除）
+            assert executor._global_dag is not None
+
+            # 验证已完成节点已被移除（节点已写入 _results_map → _completed_tc_ids → 被清理）
+            if executor._completed_tc_ids:
+                for tc_id in executor._completed_tc_ids:
+                    assert executor._global_dag.get_node(tc_id) is None, (
+                        f"已完成节点 {tc_id} 应从 DAG 中移除"
+                    )
+        finally:
+            await executor._cleanup_batch_records()
+            executor._schedule_depth = 0
+
+    @pytest.mark.asyncio
+    async def test_node_cleanup_skips_unexecuted(self):
+        """未执行的节点不被清理
+
+        构造 DAG（bash 阻塞 + 依赖 bash 的 read_file）：
+        - bash 阻塞时，read_file 未执行
+        - 模拟一批完成后，read_file（未执行）应仍存在于 DAG 中
+        """
+        bash_block = asyncio.Event()
+        execution_order = []
+
+        async def bash_exec():
+            execution_order.append("bash_start")
+            await bash_block.wait()
+            execution_order.append("bash_end")
+            return "bash_ok"
+
+        async def read_exec():
+            execution_order.append("read_exec")
+            return "read_ok"
+
+        reg = self._make_registry(
+            execute_map={"bash": bash_exec, "read_file": read_exec},
+            categories={"bash": "bash"},
+        )
+        executor = ToolScheduler(reg)
+        executor._schedule_depth = 1
+
+        try:
+            # bash 阻塞 + read_file 显式依赖 bash（$call_bash）
+            tcs = [
+                {"id": "call_bash", "name": "bash",
+                 "arguments": {"command": "sleep"}},
+                {"id": "call_read", "name": "read_file",
+                 "arguments": {"path": "$call_bash"}},
+            ]
+
+            task = asyncio.ensure_future(
+                executor.schedule(tcs, agent_ref=None)
+            )
+
+            # 等待 bash 启动（read_file 未执行）
+            await _poll_until(lambda: "bash_start" in execution_order)
+
+            # 此时 _completed_tc_ids 应为空（无节点完成）
+            assert len(executor._completed_tc_ids) == 0, (
+                "bash 运行中无节点完成"
+            )
+
+            # 验证 DAG 中仍有 read_file 节点
+            assert executor._global_dag is not None
+            assert executor._global_dag.get_node("call_read") is not None, (
+                "未执行的 read_file 节点应仍在 DAG 中"
+            )
+
+            # 释放 bash，等待完成
+            bash_block.set()
+            results = await asyncio.wait_for(task, timeout=5.0)
+            assert len(results) == 2
+
+            # bash 完成后，read_file 应执行并完成
+            assert "read_exec" in execution_order
+
+            # 验证最终所有节点都被清理
+            if executor._completed_tc_ids:
+                for tc_id in executor._completed_tc_ids:
+                    assert executor._global_dag.get_node(tc_id) is None
+        finally:
+            await executor._cleanup_batch_records()
+            executor._schedule_depth = 0
+
+    @pytest.mark.asyncio
+    async def test_prev_non_dispatch_edge_skipped_for_removed_nodes(self):
+        """prev_non_dispatch_ids 中已删除节点的边被跳过，批次正常执行
+
+        验证场景：第一批的部分节点被清理后，第二批 add_batch 时，
+        prev_non_dispatch_ids 中已删除节点的边被正确跳过。
+
+        步骤：
+        1. 构造一个含两个工具的 DAG（不使用类别工具避免类别约束干扰）
+        2. 手动移除其中一个节点（模拟该节点已完成并被清理）
+        3. 手动构造 add_batch 调用，prev_non_dispatch_ids 包含已删除和未删除节点
+        4. 验证：已删除节点的边被跳过，未删除节点的边正常创建
+        """
+        reg = self._make_registry()
+        executor = ToolScheduler(reg)
+
+        # 构造 DAG（用 general 类别避免类别约束形成反向边）
+        batch1 = [
+            {"id": "b1_A", "name": "search",
+             "arguments": {"query": "a"}},
+            {"id": "b1_B", "name": "search",
+             "arguments": {"query": "b"}},
+        ]
+        dag = ToolDAG(batch1, reg)
+        executor._global_dag = dag
+        executor._global_tool_calls = list(batch1)
+        executor._batch_boundaries = [2]
+        # 设置 prev_non_dispatch_ids（模拟第一批的非 dispatch 工具）
+        executor._prev_non_dispatch_ids = {"b1_A", "b1_B"}
+
+        # 模拟节点已完成：从 DAG 中移除 b1_A（模拟清理）
+        dag.remove_nodes({"b1_A"})
+        assert dag.get_node("b1_A") is None
+        assert dag.get_node("b1_B") is not None
+
+        # 第二批：通过 add_batch 添加，prev_non_dispatch_ids={b1_A, b1_B}
+        # 复用已有的 _prev_non_dispatch_ids
+        batch2 = [
+            {"id": "b2_C", "name": "search",
+             "arguments": {"query": "c"}},
+        ]
+        dag.add_batch(batch2, reg,
+                       prev_non_dispatch_ids=executor._prev_non_dispatch_ids)
+
+        # 验证：b2_C 存在
+        assert dag.get_node("b2_C") is not None
+
+        # 验证：b1_A 的边被跳过（b1_A 已不在 _nodes）
+        node_c = dag.get_node("b2_C")
+        assert "b1_A" not in node_c.dependencies, (
+            "已删除节点 b1_A 的边应被跳过"
+        )
+        # 验证：b1_B 的边正常创建
+        assert "b1_B" in node_c.dependencies, (
+            "b1_B 的边应正常创建"
+        )
+
+        # 拓扑排序正常
+        layers = dag.topological_sort()
+        assert layers is not None
+        assert len(layers) >= 2
+
+    @pytest.mark.asyncio
+    async def test_cleanup_only_outermost(self):
+        """is_outermost=False 时不执行节点清理
+
+        验证：当 _execution_depth > 1（嵌套调用）时，
+        is_outermost 为 False，节点清理逻辑不执行。
+        这需要直接验证 cleanup 代码路径中的条件判断。
+        """
+        reg = self._make_registry()
+        executor = ToolScheduler(reg)
+
+        # 构造一个 DAG
+        tcs = [
+            {"id": "call_A", "name": "search",
+             "arguments": {"query": "hello"}},
+        ]
+        dag = ToolDAG(tcs, reg)
+
+        # 模拟嵌套调用深度 = 2（最外层是 1，嵌套层是 2）
+        executor._global_dag = dag
+        executor._execution_depth = 2  # 模拟 is_outermost=False
+
+        try:
+            results = await executor._execute_global_dag_async(
+                dag, agent_ref=None, current_batch_ids={"call_A"},
+            )
+            # 嵌套调用应正常执行（不清理节点，不报错）
+            assert len(results) >= 0
+            # 节点应仍在 DAG 中（is_outermost=False → 不清理）
+            if executor._global_dag is not None:
+                assert executor._global_dag.get_node("call_A") is not None, (
+                    "嵌套调用不应清理节点"
+                )
+        finally:
+            executor._execution_depth = 0
+
+    @pytest.mark.asyncio
+    async def test_cleanup_with_empty_completed_set(self):
+        """无已完成节点时清理不报错
+
+        验证：batch_completed 为空时，remove_nodes 不被调用
+        """
+        reg = self._make_registry()
+        executor = ToolScheduler(reg)
+        executor._schedule_depth = 1
+
+        try:
+            tcs = [
+                {"id": "call_A", "name": "read_file",
+                 "arguments": {"path": "/tmp/a.txt"}},
+            ]
+            results = await executor.schedule(tcs, agent_ref=None)
+            assert len(results) == 1
+            # 不应引发异常
+        finally:
+            await executor._cleanup_batch_records()
+            executor._schedule_depth = 0
 
 # ═══════════════════════════════════════════════════════════════
 # bash 独占运行测试

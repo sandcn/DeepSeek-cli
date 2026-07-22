@@ -44,7 +44,7 @@ class Func(abc.ABC):
 
         Args:
             tool_name: 工具名称
-            agent_type: Agent 类型（map/think/review/plan/execute），默认 execute
+            agent_type: Agent 类型（map/review/plan/execute），默认 execute
             path: 目标文件路径（可选），用于 plan agent 写入文件时的路径白名单校验
 
         Returns:

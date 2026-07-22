@@ -512,6 +512,18 @@ class ToolScheduler:
             if tc_id in self._results_map:
                 self._completed_tc_ids.add(tc_id)
 
+        # ── 清理已完成节点（方案A） ──
+        # 当前批次中已执行完成的节点从 DAG 中移除，减少下一批的检测扫描量。
+        # 已完成的节点结果已写入 _results_map，后续 add_batch 的 prev_non_dispatch_ids
+        # 中若引用已删除节点，则 skip（语义等价——已完成节点不再需要等待）。
+        # 注意：仅清理当前批次的节点，不清理其他批次（prev_non_dispatch_ids
+        # 仅引用上一批的非 dispatch ID，非当前批）。
+        if is_outermost and self._global_dag is not None:
+            batch_completed = {tc_id for tc_id in current_batch_ids
+                               if tc_id in self._completed_tc_ids}
+            if batch_completed:
+                self._global_dag.remove_nodes(batch_completed)
+
         # 返回当前批次的结果
         return [self._results_map[tc_id] for tc_id in dag.original_order
                 if tc_id in current_batch_ids and tc_id in self._results_map]
