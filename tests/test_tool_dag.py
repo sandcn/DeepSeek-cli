@@ -359,7 +359,7 @@ class TestImplicitDependencies:
         assert "call_A" in dag.get_node("call_B").dependencies
 
     def test_mv_source_is_write(self):
-        """mv(source=X) 删除 source → read_file(path=X) 依赖 mv"""
+        """mv(source=X) 删除 source → mv 依赖 read_file（read_file 先读，mv 再移动）"""
         tool_calls = [
             {"id": "call_A", "name": "mv",
              "arguments": {"source": "/tmp/a.txt", "destination": "/tmp/b.txt"}},
@@ -367,7 +367,7 @@ class TestImplicitDependencies:
              "arguments": {"path": "/tmp/a.txt"}},
         ]
         dag = ToolDAG(tool_calls, _make_registry())
-        assert "call_A" in dag.get_node("call_B").dependencies
+        assert "call_B" in dag.get_node("call_A").dependencies
 
     def test_mkdir_cp_rm_same_target_serialized(self):
         """mkdir(path=DIR) + cp(src, dst=DIR/sub/) + rm(path=DIR/sub/)
@@ -1528,8 +1528,13 @@ class TestPathExistsCache:
              "arguments": {"path": "/tmp/other.txt"}},
         ]
         dag.add_batch(new_tool_calls, _make_registry(meta))
-        # add_batch 调用 _clear_path_cache() → 缓存应被清除
-        assert dag._path_cache == {}
+        # add_batch 在步骤 2.5 调用 _clear_path_cache() 清除缓存（防 stale），
+        # 然后在步骤 3 依赖检测中由 _detect_tool_category_constraints 重新填充
+        # 缓存现在包含当前 DAG 的有效条目（而非 stale 条目）
+        assert len(dag._path_cache) > 0  # 依赖检测重新填充了缓存
+        # 验证缓存内容正确（非 stale）：read 依赖 write（同路径 /tmp/data.txt），
+        # 所以从 write→read 可达（call_A.dependents 含 call_B）
+        assert dag._path_exists("call_A", "call_B") is True
 
     def test_cache_invalidated_on_remove_nodes(self):
         """remove_nodes 后缓存被清除"""

@@ -196,8 +196,10 @@ class ToolDAG:
 
         将新一批工具调用追加到当前 DAG 中：
         1. 为新工具创建节点
-        2. 重跑全部四层依赖检测（set 天然去重，重复边无副作用）
-        3. 添加批间依赖边：prev_non_dispatch_ids → 所有新节点
+        2. 扩展 original_order
+        2.5. 清除路径缓存（在依赖重检之前，确保 _path_exists 不命中 stale 条目）
+        3. 重跑全部四层依赖检测（set 天然去重，重复边无副作用）
+        4. 添加批间依赖边：prev_non_dispatch_ids → 所有新节点
 
         Args:
             new_tool_calls: 新批次的工具调用列表
@@ -215,6 +217,9 @@ class ToolDAG:
         # 第 2 步：扩展 original_order
         self._original_order.extend(tc["id"] for tc in new_tool_calls)
 
+        # 第 2.5 步：清除缓存（在依赖重检之前，确保 _path_exists 不命中 stale 条目）
+        self._clear_path_cache()
+
         # 第 3 步：重跑全部四层依赖检测
         # set 天然去重，现有边被再次添加是无操作的（无副作用）
         self._detect_explicit_deps()
@@ -230,9 +235,6 @@ class ToolDAG:
                     if prev_id in self._nodes and prev_id != new_id:
                         self._nodes[new_id].dependencies.add(prev_id)
                         self._nodes[prev_id].dependents.add(new_id)
-
-        # 第 5 步：清除缓存（新增节点后旧缓存可能不完整）
-        self._clear_path_cache()
 
     # ── 显式依赖检测 ───────────────────────────────────────
 
@@ -273,25 +275,27 @@ class ToolDAG:
     # ── 隐式依赖检测（path 重叠） ──────────────────────────
 
     @staticmethod
-    def _extract_tool_paths(name: str, arguments: dict) -> tuple[set[str], set[str]]:
-        """提取工具调用涉及的所有路径，按读/写分类并归一化
+    def _extract_tool_paths(name: str, arguments: dict) -> tuple[set[str], set[str], set[str]]:
+        """提取工具调用涉及的所有路径，按读/写/删分类并归一化
 
         Args:
             name: 工具名
             arguments: 工具参数字典
 
         Returns:
-            (write_paths, read_paths): 写入路径集合（含创建/删除/移动），读取路径集合
+            (write_paths, read_paths, delete_paths): 写入路径集合、读取路径集合、删除路径集合
 
         各工具的路径提取规则：
-        - write_file/update_file/rm/mk → path 为写入路径
+        - write_file/update_file/mk → path 为写入路径
+        - rm → path 为删除路径（文件被移除，非写入）
         - cp → destination 为写入路径，source 为读取路径
-        - mv → destination 为写入路径，source 也为写入路径（源被删除）
+        - mv → destination 为写入路径，source 为删除路径（源被移除）
         - read_file/search/find/ls → path 为读取路径
         - bash → 无法静态分析，不提取
         """
         write_paths: set[str] = set()
         read_paths: set[str] = set()
+        delete_paths: set[str] = set()
 
         def _normalize(p: str) -> str | None:
             if not isinstance(p, str) or not p.strip():
@@ -309,6 +313,8 @@ class ToolDAG:
         if np:
             if name in ("read_file", "search", "find", "ls"):
                 read_paths.add(np)
+            elif name == "rm":
+                delete_paths.add(np)
             else:
                 write_paths.add(np)
 
@@ -319,6 +325,8 @@ class ToolDAG:
             _logger.debug("_extract_tool_paths: 工具 '%s' 使用了 file_path 参数: '%s'", name, nfp)
             if name in ("read_file", "search", "find", "ls"):
                 read_paths.add(nfp)
+            elif name == "rm":
+                delete_paths.add(nfp)
             else:
                 write_paths.add(nfp)
 
@@ -333,13 +341,13 @@ class ToolDAG:
         ns = _normalize(src_val) if src_val else None
         if ns:
             if name == "mv":
-                # mv 会删除 source → 写入操作（路径被修改）
-                write_paths.add(ns)
+                # mv 会删除 source → 删除路径
+                delete_paths.add(ns)
             else:
                 # cp 仅读取 source
                 read_paths.add(ns)
 
-        return write_paths, read_paths
+        return write_paths, read_paths, delete_paths
 
     def _detect_path_overlap(self) -> None:
         """检测文件路径重叠导致的隐式依赖（支持多路径工具如 cp/mv）
@@ -347,30 +355,38 @@ class ToolDAG:
         规则：
         - 读依赖写（读最新内容）：节点 A 读路径 P，节点 B 写路径 P → A 依赖 B
         - 写依赖写（写顺序保证）：节点 A 写路径 P，节点 B 写路径 P → 后者依赖前者
+        - 删除依赖读（删除前确保读取完成）：节点 A 删路径 P，节点 B 读路径 P → A 依赖 B
+        - 写/删混合串行化：同路径的写入、删除按原始顺序串行
+        - 删除依赖删除：同路径的多次删除按原始顺序串行
         - 读依赖读：无依赖（并行安全）
         - 不同路径：无依赖
         - 多路径工具（cp/mv）：每个路径分别参与上述规则判定
+        - 父子路径：仅写入类路径作为父路径（删除类路径不含创建语义，不触发父子依赖）
         """
-        # 第一步：收集每个节点的写入路径和读取路径
+        # 第一步：收集每个节点的写入路径、读取路径和删除路径
         node_write_paths: dict[str, set[str]] = {}
         node_read_paths: dict[str, set[str]] = {}
+        node_delete_paths: dict[str, set[str]] = {}
         has_any_path: set[str] = set()  # 有路径信息的节点
 
         for tc_id, node in self._nodes.items():
-            write_paths, read_paths = self._extract_tool_paths(node.name, node.arguments)
-            if write_paths or read_paths:
+            write_paths, read_paths, delete_paths = self._extract_tool_paths(node.name, node.arguments)
+            if write_paths or read_paths or delete_paths:
                 node_write_paths[tc_id] = write_paths
                 node_read_paths[tc_id] = read_paths
+                node_delete_paths[tc_id] = delete_paths
                 has_any_path.add(tc_id)
 
         if not has_any_path:
             return
 
-        # 第二步：构建路径→节点索引，区分写入者和读取者
+        # 第二步：构建路径→节点索引，区分写入者、读取者和删除者
         # write_index: path → [(tc_id, original_order_index), ...]
         # read_index:  path → [tc_id, ...]
+        # delete_index: path → [(tc_id, original_order_index), ...]
         write_index: dict[str, list[tuple[str, int]]] = {}
         read_index: dict[str, list[str]] = {}
+        delete_index: dict[str, list[tuple[str, int]]] = {}
 
         for tc_id in has_any_path:
             order = self._original_order.index(tc_id) if tc_id in self._original_order else -1
@@ -381,22 +397,16 @@ class ToolDAG:
             for rp in node_read_paths.get(tc_id, set()):
                 read_index.setdefault(rp, []).append(tc_id)
 
-        all_paths = set(write_index.keys()) | set(read_index.keys())
+            for dp in node_delete_paths.get(tc_id, set()):
+                delete_index.setdefault(dp, []).append((tc_id, order))
+
+        all_paths = set(write_index.keys()) | set(read_index.keys()) | set(delete_index.keys())
 
         # 第三步：对每个路径检测依赖
         for path in all_paths:
             writers = write_index.get(path, [])
             readers = read_index.get(path, [])
-
-            # —— 写依赖写：同路径写入者按原始顺序串行化 ——
-            if len(writers) >= 2:
-                # 按原始顺序排序
-                writers_sorted = sorted(writers, key=lambda x: x[1])
-                for k in range(len(writers_sorted) - 1):
-                    earlier_id = writers_sorted[k][0]
-                    later_id = writers_sorted[k + 1][0]
-                    self._nodes[later_id].dependencies.add(earlier_id)
-                    self._nodes[earlier_id].dependents.add(later_id)
+            deleters = delete_index.get(path, [])
 
             # —— 读依赖写：每个读取者依赖所有写入者 ——
             if writers and readers:
@@ -406,16 +416,35 @@ class ToolDAG:
                             self._nodes[reader_id].dependencies.add(writer_id)
                             self._nodes[writer_id].dependents.add(reader_id)
 
+            # —— 删除依赖读：deleter 依赖 reader（reader 先读，deleter 再删除） ——
+            if deleters and readers:
+                for deleter_id, _ in deleters:
+                    for reader_id in readers:
+                        if reader_id != deleter_id:
+                            self._nodes[deleter_id].dependencies.add(reader_id)
+                            self._nodes[reader_id].dependents.add(deleter_id)
+
+            # —— 写/删混合串行化：同路径的写入者和删除者按原始顺序串行 ——
+            # 处理场景：write+write、delete+delete、delete+write（write+delete）
+            # 将 writers 和 deleters 合并，统一按 original_order 排序串行
+            mutators = writers + deleters
+            if len(mutators) >= 2:
+                mutators_sorted = sorted(mutators, key=lambda x: x[1])
+                for k in range(len(mutators_sorted) - 1):
+                    earlier_id = mutators_sorted[k][0]
+                    later_id = mutators_sorted[k + 1][0]
+                    self._nodes[later_id].dependencies.add(earlier_id)
+                    self._nodes[earlier_id].dependents.add(later_id)
+
             # read/read → 无依赖（并行安全）
 
-        # —— 第四步：父子路径依赖（父目录创建先于子路径写入/读取） ——
-        # 当工具 A 写入路径 P，工具 B 写入/读取路径 Q，
+        # —— 第四步：父子路径依赖（父目录创建先于子路径操作） ——
+        # 当工具 A 写入路径 P，工具 B 写入/读取/删除路径 Q，
         # 且 P 是 Q 的父目录（Q 路径以 P 为前缀）时，B 依赖 A
         # 确保父目录先创建完毕，子路径操作才能正常执行
+        # 注意：仅 write_index 中的路径作为父路径（delete 路径不产生创建语义）
         write_path_list = list(write_index.keys())
-        # Bug #1 修复：合并 write_index + read_index 作为子路径来源
-        # 原代码仅遍历 write_path_list，漏掉了 read_index 中的只读子路径
-        all_child_paths = list(set(write_path_list) | set(read_index.keys()))
+        all_child_paths = list(set(write_path_list) | set(read_index.keys()) | set(delete_index.keys()))
         for i in range(len(write_path_list)):
             p_parent = write_path_list[i]
             p_parent_with_sep = p_parent + os.sep
@@ -426,10 +455,11 @@ class ToolDAG:
                     continue
                 # 检查 p_parent 是否是 p_child 的父目录
                 if p_child.startswith(p_parent_with_sep):
-                    # p_parent 中的写入者是 p_child 中写入者/读取者的前置依赖
+                    # p_parent 中的写入者是 p_child 中写入者/读取者/删除者的前置依赖
                     parent_writers = write_index[p_parent]
                     child_writers = write_index.get(p_child, [])
                     child_readers = read_index.get(p_child, [])
+                    child_deleters = delete_index.get(p_child, [])
 
                     # 子路径写入者依赖父路径写入者
                     for cw_id, _ in child_writers:
@@ -444,6 +474,13 @@ class ToolDAG:
                             if cr_id != pw_id:
                                 self._nodes[cr_id].dependencies.add(pw_id)
                                 self._nodes[pw_id].dependents.add(cr_id)
+
+                    # 子路径删除者依赖父路径写入者（父目录先存在，才能删除其子文件）
+                    for cd_id, _ in child_deleters:
+                        for pw_id, _ in parent_writers:
+                            if cd_id != pw_id:
+                                self._nodes[cd_id].dependencies.add(pw_id)
+                                self._nodes[pw_id].dependents.add(cd_id)
 
     # ── user_select 独占层约束 ──────────────────────────────
 
@@ -695,7 +732,7 @@ class ToolDAG:
                     if dep_id in in_degree:
                         in_degree[dep_id] -= 1
                         if in_degree[dep_id] == 0:
-                            if dep_id not in queue and dep_id not in processed_set:
+                            if dep_id not in queue:
                                 queue.append(dep_id)
 
         # 检查是否所有节点都已处理
@@ -719,7 +756,8 @@ class ToolDAG:
 
         1. 双向清理出边/入边：从剩余节点的 dependencies/dependents 中移除已删除 ID
         2. 从 _nodes 字典中删除节点
-        3. 不修改 _original_order（按设计规格保留）
+        3. 从 _original_order 中移除已删除节点（防止无限增长）
+        4. 清除 _path_cache
 
         Args:
             tc_ids: 要移除的 tc_id 集合。不存在的 ID 被静默跳过。
@@ -756,12 +794,15 @@ class ToolDAG:
         for tid in to_remove:
             del self._nodes[tid]
 
+        # 第 3 步：从 _original_order 中移除已删除节点（防止无限增长）
+        self._original_order = [tid for tid in self._original_order if tid not in to_remove]
+
         _logger.debug(
             "ToolDAG: removed %d nodes, remaining %d",
             len(to_remove), self.size,
         )
 
-        # 第 3 步：清除缓存（删除节点后旧缓存可能引用已删除节点）
+        # 第 4 步：清除缓存（删除节点后旧缓存可能引用已删除节点）
         self._clear_path_cache()
 
     # ── 工具方法 ────────────────────────────────────────────
