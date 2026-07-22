@@ -69,6 +69,22 @@ def _patch_extract_key_params():
 
 
 # ═══════════════════════════════════════════════════════════════
+# 测试辅助函数
+# ═══════════════════════════════════════════════════════════════
+
+async def _poll_until(check_fn, timeout=5.0, interval=0.05):
+    """轮询等待 check_fn() 返回 True，超时则抛出 asyncio.TimeoutError。
+
+    用于替代固定 asyncio.sleep() 等待异步调度完成，避免慢速 CI 中的 flaky 测试。
+    """
+    async def _poll():
+        while not check_fn():
+            await asyncio.sleep(interval)
+
+    await asyncio.wait_for(_poll(), timeout=timeout)
+
+
+# ═══════════════════════════════════════════════════════════════
 # 构造函数
 # ═══════════════════════════════════════════════════════════════
 
@@ -515,19 +531,20 @@ class TestCleanupBatchRecords:
 
         # 手动将 _schedule_depth 设为 1 模拟嵌套调用
         executor._schedule_depth = 1
+        try:
+            tcs = [
+                {"id": "call_nest", "name": "tool_n", "arguments": {}},
+            ]
+            results = await executor.schedule(tcs, agent_ref=None)
+            assert len(results) == 1
 
-        tcs = [
-            {"id": "call_nest", "name": "tool_n", "arguments": {}},
-        ]
-        results = await executor.schedule(tcs, agent_ref=None)
-        assert len(results) == 1
-
-        # 嵌套调用不应触发清理 → DAG 应仍存在
-        assert executor._global_dag is not None, "嵌套调用应保留 DAG"
-        assert len(executor._batch_boundaries) == 1, "嵌套调用应保留批次边界"
-
-        # 清理
-        executor._cleanup_batch_records()
+            # 嵌套调用不应触发清理 → DAG 应仍存在
+            assert executor._global_dag is not None, "嵌套调用应保留 DAG"
+            assert len(executor._batch_boundaries) == 1, "嵌套调用应保留批次边界"
+        finally:
+            # 确保状态还原，防止泄漏到其他测试
+            await executor._cleanup_batch_records()
+            executor._schedule_depth = 0
 
     @pytest.mark.asyncio
     async def test_no_cleanup_on_empty_list(self):
@@ -541,6 +558,660 @@ class TestCleanupBatchRecords:
         # DAG 应仍为 None（空列表不创建也不清理）
         assert executor._global_dag is None
         assert len(executor._batch_boundaries) == 0
+
+    # ── 新增字段清理测试 ──
+
+    @pytest.mark.asyncio
+    async def test_cleanup_clears_pending_tc_ids(self):
+        """_cleanup_batch_records 清除 _pending_tc_ids"""
+        reg = self._make_registry()
+        executor = ToolScheduler(reg)
+
+        # 手动注入 pending ID（模拟未清理的状态）
+        executor._pending_tc_ids.add("tc_1")
+        executor._pending_tc_ids.add("tc_2")
+        assert len(executor._pending_tc_ids) == 2
+
+        await executor._cleanup_batch_records()
+
+        assert len(executor._pending_tc_ids) == 0, "_pending_tc_ids 应被清除"
+
+    @pytest.mark.asyncio
+    async def test_cleanup_clears_running_bash_ids(self):
+        """_cleanup_batch_records 清除 _running_bash_ids"""
+        reg = self._make_registry()
+        executor = ToolScheduler(reg)
+
+        # 手动注入 running bash ID
+        executor._running_bash_ids.add("bash_1")
+        executor._running_bash_ids.add("bash_2")
+        assert len(executor._running_bash_ids) == 2
+
+        await executor._cleanup_batch_records()
+
+        assert len(executor._running_bash_ids) == 0, "_running_bash_ids 应被清除"
+
+    @pytest.mark.asyncio
+    async def test_cleanup_cancels_background_tasks(self):
+        """_cleanup_batch_records 取消未完成的后台 Task 并清空列表
+
+        _cleanup_batch_records 内部 await asyncio.gather 等待取消完成，
+        因此调用后 task 已处于 cancelled 状态。
+        """
+        reg = self._make_registry()
+        executor = ToolScheduler(reg)
+
+        # 创建一个挂起的 Task（永远不会完成）
+        async def never_done():
+            await asyncio.Event().wait()
+
+        task = asyncio.ensure_future(never_done())
+        executor._background_dispatch_tasks.append(task)
+
+        assert not task.done(), "Task 应处于挂起状态"
+        assert len(executor._background_dispatch_tasks) == 1
+
+        await executor._cleanup_batch_records()
+
+        # _cleanup_batch_records 已调用 task.cancel() + await gather 等待完成
+        # 列表应已清空，task 应已 cancelled
+        assert len(executor._background_dispatch_tasks) == 0, "_background_dispatch_tasks 应被清空"
+        assert task.cancelled(), "Task 应已被取消"
+
+    @pytest.mark.asyncio
+    async def test_cleanup_background_tasks_empty_list(self):
+        """_cleanup_batch_records 空 _background_dispatch_tasks 列表不报错"""
+        reg = self._make_registry()
+        executor = ToolScheduler(reg)
+
+        # 空列表清理不应抛异常
+        assert len(executor._background_dispatch_tasks) == 0
+
+        await executor._cleanup_batch_records()
+
+        assert len(executor._background_dispatch_tasks) == 0
+
+    def test_reset_global_state_includes_new_fields(self):
+        """_reset_global_state 包含 _pending_tc_ids / _running_bash_ids / _background_dispatch_tasks 重置"""
+        reg = self._make_registry()
+        executor = ToolScheduler(reg)
+
+        # 注入脏数据
+        executor._pending_tc_ids.add("dirty_1")
+        executor._running_bash_ids.add("dirty_bash")
+        dirty_task = asyncio.ensure_future(asyncio.sleep(0))
+        executor._background_dispatch_tasks.append(dirty_task)
+
+        executor._reset_global_state()
+
+        assert len(executor._pending_tc_ids) == 0, "_pending_tc_ids 应被重置"
+        assert len(executor._running_bash_ids) == 0, "_running_bash_ids 应被重置"
+        assert len(executor._background_dispatch_tasks) == 0, "_background_dispatch_tasks 应被重置"
+
+# ═══════════════════════════════════════════════════════════════
+# bash 独占运行测试
+# ═══════════════════════════════════════════════════════════════
+
+class TestBashExclusive:
+    """bash 独占运行测试
+
+    验证：bash 工具运行期间，只有 dispatch_agent（tool_category="general"
+    且 name="dispatch_agent"）可并行执行，其他工具（含 read/write/bash/interactive
+    及其他 general 工具）必须等待 bash 完成。
+
+    调度机制要点：
+    - bash 运行标记 _running_bash_ids 非空时，调度层仅放行 dispatch_agent
+    - bash 完成后，标记清除，其余工具恢复执行
+    - 无 bash 运行时，正常并发不受影响
+    """
+
+    @staticmethod
+    def _make_registry(execute_map=None, categories=None):
+        """创建支持 tool_category 的 mock registry
+
+        Args:
+            execute_map: {tool_name: async callable}
+            categories: {tool_name: tool_category}，默认 "general"
+        """
+        from src.tools.base import ToolMetadata
+        reg = MagicMock(spec=ToolRegistry)
+
+        def get_meta(name):
+            cat = (categories or {}).get(name, "general")
+            return ToolMetadata(parallel_safe=False, tool_category=cat)
+        reg.get_metadata.side_effect = get_meta
+
+        def dispatch(name, arguments, agent=None):
+            f = MagicMock()
+            if execute_map and name in execute_map:
+                f.execute = AsyncMock(side_effect=execute_map[name])
+            else:
+                f.execute = AsyncMock(return_value="ok")
+            return f
+        reg.dispatch.side_effect = dispatch
+        return reg
+
+    # ── 场景 1：bash 运行中只有 dispatch_agent 可并行 ──
+
+    @pytest.mark.asyncio
+    async def test_bash_running_blocks_non_dispatch(self):
+        """bash 运行中阻塞非 dispatch_agent 工具（跨层阻塞）
+
+        构造 DAG：
+        - Layer 1: bash + dispatch_agent（并行）
+        - Layer 2: read_file (category="general"，通过 $call_bash 显式依赖 bash)
+
+        bash 阻塞执行 → dispatch_agent 在 Layer 1 并行完成 →
+        Layer 2 中 read_file 被 bash 独占过滤阻塞，直至 bash 完成后才执行。
+        """
+        bash_block = asyncio.Event()
+        execution_order = []
+
+        async def bash_exec():
+            execution_order.append("bash_start")
+            await bash_block.wait()
+            execution_order.append("bash_end")
+            return "bash_ok"
+
+        async def read_exec():
+            execution_order.append("read_exec")
+            return "read_ok"
+
+        async def dispatch_exec():
+            execution_order.append("dispatch_exec")
+            return "dispatch_ok"
+
+        reg = self._make_registry(
+            execute_map={"bash": bash_exec, "read_file": read_exec,
+                         "dispatch_agent": dispatch_exec},
+            categories={"bash": "bash"},
+        )
+        executor = ToolScheduler(reg)
+
+        tcs = [
+            {"id": "call_bash", "name": "bash", "arguments": {"command": "sleep"}},
+            {"id": "call_read", "name": "read_file",
+             "arguments": {"path": "$call_bash"}},  # 显式依赖 bash → Layer 2
+            {"id": "call_disp", "name": "dispatch_agent",
+             "arguments": {"prompt": "hi"}},  # general 类别，Layer 1
+        ]
+
+        task = asyncio.ensure_future(executor.schedule(tcs, agent_ref=None))
+
+        # 等待 dispatch_agent 执行完毕（证明 dispatch_agent 与 bash 并行）
+        await _poll_until(lambda: "dispatch_exec" in execution_order)
+
+        assert "dispatch_exec" in execution_order, (
+            "dispatch_agent 应与 bash 并行执行"
+        )
+        assert "read_exec" not in execution_order, (
+            "read_file（Layer 2）不应在 bash 运行期间执行"
+        )
+
+        # 释放 bash
+        bash_block.set()
+        results = await asyncio.wait_for(task, timeout=5.0)
+
+        assert len(results) == 3
+        assert "read_exec" in execution_order, "bash 完成后 read_file 应执行"
+        # 验证执行顺序：dispatch 在 bash 阻塞期间完成，read 在 bash 之后
+        assert execution_order.index("dispatch_exec") < execution_order.index("read_exec"), (
+            "dispatch_agent 应在 read_file 之前完成"
+        )
+
+    # ── 场景 2：bash 链式 + 独占组合 ──
+
+    @pytest.mark.asyncio
+    async def test_bash_chain_exclusive(self):
+        """bash 链式执行 + 独占：dispatch_agent 可与首 bash 并行，write 等待全部 bash 完成
+
+        构造 DAG（bash 链式依赖 rule b + 显式依赖）：
+        - Layer 1: call_bash1 + dispatch_agent（并行）
+        - Layer 2: call_bash2（依赖 call_bash1 via rule b）
+        - Layer 3: call_write（category="general"，依赖 call_bash2 via $call_bash2）
+
+        预期：call_bash1 运行期间 dispatch_agent 并行执行，call_bash2 和 call_write
+        被独占过滤阻塞；call_bash1 完成后 call_bash2 运行，call_write 在 call_bash2 完成后执行。
+        """
+        bash1_block = asyncio.Event()
+        bash2_block = asyncio.Event()
+        execution_order = []
+        bash_call_count = 0
+
+        async def bash_exec():
+            nonlocal bash_call_count
+            bash_call_count += 1
+            if bash_call_count == 1:
+                execution_order.append("bash1_start")
+                await bash1_block.wait()
+                execution_order.append("bash1_end")
+                return "bash1_ok"
+            else:
+                execution_order.append("bash2_start")
+                await bash2_block.wait()
+                execution_order.append("bash2_end")
+                return "bash2_ok"
+
+        async def write_exec():
+            execution_order.append("write_exec")
+            return "write_ok"
+
+        async def dispatch_exec():
+            execution_order.append("dispatch_exec")
+            return "dispatch_ok"
+
+        reg = self._make_registry(
+            execute_map={"bash": bash_exec, "write_file": write_exec,
+                         "dispatch_agent": dispatch_exec},
+            categories={"bash": "bash"},  # write_file 使用默认 "general"
+        )
+        executor = ToolScheduler(reg)
+
+        tcs = [
+            {"id": "call_bash1", "name": "bash", "arguments": {"command": "cmd1"}},
+            {"id": "call_bash2", "name": "bash", "arguments": {"command": "cmd2"}},
+            {"id": "call_write", "name": "write_file",
+             "arguments": {"path": "$call_bash2"}},
+            {"id": "call_disp", "name": "dispatch_agent",
+             "arguments": {"prompt": "hi"}},
+        ]
+
+        task = asyncio.ensure_future(executor.schedule(tcs, agent_ref=None))
+
+        # 等待 dispatch_agent 完成（应随 call_bash1 并行执行）
+        await _poll_until(lambda: "dispatch_exec" in execution_order)
+
+        assert "dispatch_exec" in execution_order, "dispatch_agent 应与 call_bash1 并行"
+        assert "bash2_start" not in execution_order, "call_bash2 不应在 call_bash1 运行期间启动"
+        assert "write_exec" not in execution_order, "call_write 不应在 call_bash1 运行期间执行"
+
+        # 释放 call_bash1，call_bash2 应开始执行
+        bash1_block.set()
+        await _poll_until(lambda: "bash1_end" in execution_order)
+
+        assert "bash1_end" in execution_order, "call_bash1 应已完成"
+        # bash2 需要下一轮拓扑后才能启动，用轮询等待
+        await _poll_until(lambda: "bash2_start" in execution_order)
+        assert "bash2_start" in execution_order, "call_bash2 应在 call_bash1 完成后启动"
+
+        # 释放 call_bash2，call_write 应执行
+        bash2_block.set()
+        results = await asyncio.wait_for(task, timeout=5.0)
+
+        assert len(results) == 4
+        assert "write_exec" in execution_order, "call_bash2 完成后 call_write 应执行"
+        assert execution_order.index("bash1_end") < execution_order.index("bash2_start"), (
+            "call_bash2 应在 call_bash1 完成后启动（链式串行）"
+        )
+        assert execution_order.index("bash2_end") < execution_order.index("write_exec"), (
+            "call_write 应在 call_bash2 完成后执行"
+        )
+
+    # ── 场景 3：无 bash 时正常并发 ──
+
+    @pytest.mark.asyncio
+    async def test_no_bash_normal_concurrency(self):
+        """无 bash 工具时正常并发，不受独占过滤影响"""
+        execution_order = []
+
+        async def read_exec():
+            execution_order.append("read_exec")
+            return "read_ok"
+
+        async def write_exec():
+            execution_order.append("write_exec")
+            return "write_ok"
+
+        async def dispatch_exec():
+            execution_order.append("dispatch_exec")
+            return "dispatch_ok"
+
+        reg = self._make_registry(
+            execute_map={"read_file": read_exec, "write_file": write_exec,
+                         "dispatch_agent": dispatch_exec},
+            categories={"read_file": "read", "write_file": "write"},
+        )
+        executor = ToolScheduler(reg)
+
+        tcs = [
+            {"id": "read_1", "name": "read_file", "arguments": {"path": "a.txt"}},
+            {"id": "write_1", "name": "write_file",
+             "arguments": {"path": "b.txt", "content": "hi"}},
+            {"id": "disp_1", "name": "dispatch_agent",
+             "arguments": {"prompt": "hi"}},
+        ]
+
+        results = await executor.schedule(tcs, agent_ref=None)
+
+        assert len(results) == 3
+        assert all(r[2] for r in results), "所有工具应成功执行"
+        assert "read_exec" in execution_order
+        assert "write_exec" in execution_order
+        assert "dispatch_exec" in execution_order
+
+    # ── 场景 4：bash 运行中无 dispatch_agent 时正确跳过层 ──
+
+    @pytest.mark.asyncio
+    async def test_bash_running_no_dispatch_skips_layer(self):
+        """bash 运行中无 dispatch_agent 时，调度正确等待（不空转）
+
+        构造 DAG：
+        - Layer 1: bash
+        - Layer 2: read_file (category="general"，依赖 bash via $call_bash)
+
+        预期：bash 运行期间 Layer 2 被独占过滤 → 层为空 → continue 让出控制权 →
+        不空转死循环；bash 完成后 read_file 正常执行。
+        """
+        bash_block = asyncio.Event()
+        execution_order = []
+
+        async def bash_exec():
+            execution_order.append("bash_start")
+            await bash_block.wait()
+            execution_order.append("bash_end")
+            return "bash_ok"
+
+        async def read_exec():
+            execution_order.append("read_exec")
+            return "read_ok"
+
+        reg = self._make_registry(
+            execute_map={"bash": bash_exec, "read_file": read_exec},
+            categories={"bash": "bash"},
+        )
+        executor = ToolScheduler(reg)
+
+        tcs = [
+            {"id": "call_bash", "name": "bash", "arguments": {"command": "sleep"}},
+            {"id": "call_read", "name": "read_file",
+             "arguments": {"path": "$call_bash"}},  # 依赖 bash → Layer 2
+        ]
+
+        task = asyncio.ensure_future(executor.schedule(tcs, agent_ref=None))
+
+        # 等待 bash 启动
+        await _poll_until(lambda: "bash_start" in execution_order)
+        assert "bash_start" in execution_order
+        assert "read_exec" not in execution_order, (
+            "read_file 不应在 bash 运行期间执行"
+        )
+
+        # 验证不空转：_running_bash_ids 应包含 call_bash
+        assert "call_bash" in executor._running_bash_ids, (
+            "_running_bash_ids 应包含正在运行的 bash ID"
+        )
+
+        # 释放 bash
+        bash_block.set()
+        results = await asyncio.wait_for(task, timeout=5.0)
+
+        assert len(results) == 2
+        assert "read_exec" in execution_order, "bash 完成后 read_file 应执行"
+        assert "call_bash" not in executor._running_bash_ids, (
+            "bash 完成后 _running_bash_ids 应被清除"
+        )
+
+
+class TestDispatchAgentEarlyReturn:
+    """dispatch_agent 提前放行测试
+
+    验证：当 DAG 中仅剩 dispatch_agent 节点未执行时，schedule() 将其转为
+    后台任务异步执行并提前返回，不阻塞外层调用。
+
+    场景覆盖：
+    - 仅剩 dispatch_agent 时提前返回
+    - 后台 dispatch_agent 结果正确写入 _results_map
+    - 非 dispatch_agent 仍存在时不提前返回
+    - 后台 Task 异常时写入失败结果
+    - 无剩余节点时正常退出（不创建后台任务）
+    """
+
+    @staticmethod
+    def _make_registry(execute_map=None, categories=None):
+        """创建支持 tool_category 的 mock registry"""
+        from src.tools.base import ToolMetadata
+        reg = MagicMock(spec=ToolRegistry)
+
+        def get_meta(name):
+            cat = (categories or {}).get(name, "general")
+            return ToolMetadata(parallel_safe=False, tool_category=cat)
+        reg.get_metadata.side_effect = get_meta
+
+        def dispatch(name, arguments, agent=None):
+            f = MagicMock()
+            if execute_map and name in execute_map:
+                f.execute = AsyncMock(side_effect=execute_map[name])
+            else:
+                f.execute = AsyncMock(return_value="ok")
+            return f
+        reg.dispatch.side_effect = dispatch
+        return reg
+
+    # ── 场景 1：仅剩 dispatch_agent 时提前返回 ──
+
+    @pytest.mark.asyncio
+    async def test_early_return_only_dispatch_remaining(self):
+        """仅剩 dispatch_agent 时 schedule 提前返回，不等待后台任务
+
+        构造 DAG：
+        - Layer 1: read_file（快速完成）
+        - Layer 2: dispatch_agent（阻塞，依赖 read_file 通过 $call_read）
+
+        预期：read_file 完成后 schedule() 返回（dispatch_agent 在后台运行），
+        返回结果仅含 read_file。
+        """
+        dispatch_block = asyncio.Event()
+        execution_order = []
+
+        async def read_exec():
+            execution_order.append("read_exec")
+            return "read_ok"
+
+        async def dispatch_exec():
+            execution_order.append("dispatch_start")
+            await dispatch_block.wait()
+            execution_order.append("dispatch_end")
+            return "dispatch_ok"
+
+        reg = self._make_registry(
+            execute_map={"read_file": read_exec, "dispatch_agent": dispatch_exec},
+        )
+        executor = ToolScheduler(reg)
+        # 防止 schedule() 自动调用 _cleanup_batch_records
+        executor._schedule_depth = 1
+
+        try:
+            # $call_read 显式依赖 → dispatch_agent 在 Layer 2
+            tcs = [
+                {"id": "call_read", "name": "read_file", "arguments": {}},
+                {"id": "call_disp", "name": "dispatch_agent",
+                 "arguments": {"prompt": "$call_read"}},
+            ]
+
+            results = await executor.schedule(tcs, agent_ref=None)
+
+            # 轮询等待后台 dispatch_agent 启动
+            await _poll_until(lambda: "dispatch_start" in execution_order)
+
+            # 验证提前返回：仅 read_file 结果在返回列表中
+            assert len(results) == 1, "应仅返回 read_file 结果"
+            assert results[0][0] == "call_read"
+            assert "read_exec" in execution_order
+            assert "dispatch_start" in execution_order, (
+                "后台 dispatch_agent 应已启动"
+            )
+            assert "dispatch_end" not in execution_order, (
+                "dispatch_agent 应仍在后台运行"
+            )
+
+            # 验证后台任务已创建
+            assert len(executor._background_dispatch_tasks) == 1, (
+                "应有一个后台 dispatch_agent 任务"
+            )
+
+            # 释放 dispatch_agent，等待后台任务完成
+            dispatch_block.set()
+            bg_task = executor._background_dispatch_tasks[0]
+            await asyncio.wait_for(bg_task, timeout=5.0)
+
+            assert "dispatch_end" in execution_order, "dispatch_agent 应已完成"
+            assert "call_disp" in executor._results_map, "后台结果应写入 _results_map"
+            assert executor._results_map["call_disp"][1] == "dispatch_ok"
+        finally:
+            await executor._cleanup_batch_records()
+            executor._schedule_depth = 0
+
+    # ── 场景 2：后台 dispatch_agent 结果正确写入 _results_map ──
+
+    @pytest.mark.asyncio
+    async def test_background_result_written_to_results_map(self):
+        """后台 dispatch_agent 完成后结果正确写入 _results_map 和 _completed_tc_ids"""
+        reg = self._make_registry(
+            execute_map={
+                "read_file": AsyncMock(return_value="read_ok"),
+                "dispatch_agent": AsyncMock(return_value="dispatch_ok"),
+            },
+        )
+        executor = ToolScheduler(reg)
+        executor._schedule_depth = 1
+
+        try:
+            # $call_read 显式依赖 → dispatch_agent 在 Layer 2
+            tcs = [
+                {"id": "call_read", "name": "read_file", "arguments": {}},
+                {"id": "call_disp", "name": "dispatch_agent",
+                 "arguments": {"prompt": "$call_read"}},
+            ]
+
+            await executor.schedule(tcs, agent_ref=None)
+
+            # 等待后台任务完成（快速 dispatch_agent）
+            if executor._background_dispatch_tasks:
+                bg_task = executor._background_dispatch_tasks[0]
+                await asyncio.wait_for(bg_task, timeout=5.0)
+
+            # 验证结果写入
+            assert "call_disp" in executor._results_map, (
+                "dispatch_agent 结果应写入 _results_map"
+            )
+            assert executor._results_map["call_disp"][1] == "dispatch_ok"
+            assert executor._results_map["call_disp"][2] is True
+            assert "call_disp" in executor._completed_tc_ids, (
+                "dispatch_agent ID 应在 _completed_tc_ids 中"
+            )
+        finally:
+            await executor._cleanup_batch_records()
+            executor._schedule_depth = 0
+
+    # ── 场景 3：非 dispatch_agent 仍存在时不提前返回 ──
+
+    @pytest.mark.asyncio
+    async def test_no_early_return_when_non_dispatch_exists(self):
+        """read_file + bash（均非 dispatch_agent）→ 正常等待全部完成"""
+        reg = self._make_registry(
+            execute_map={
+                "read_file": AsyncMock(return_value="read_ok"),
+                "bash": AsyncMock(return_value="bash_ok"),
+            },
+            categories={"bash": "bash"},
+        )
+        executor = ToolScheduler(reg)
+        executor._schedule_depth = 1
+
+        try:
+            tcs = [
+                {"id": "call_read", "name": "read_file", "arguments": {}},
+                {"id": "call_bash", "name": "bash", "arguments": {}},
+            ]
+
+            results = await executor.schedule(tcs, agent_ref=None)
+
+            # 验证正常完成：两个工具结果都在
+            assert len(results) == 2
+            assert all(r[2] for r in results), "所有工具应成功执行"
+            # 验证未触发提前返回
+            assert len(executor._background_dispatch_tasks) == 0, (
+                "无 dispatch_agent 时不应创建后台任务"
+            )
+        finally:
+            await executor._cleanup_batch_records()
+            executor._schedule_depth = 0
+
+    # ── 场景 4：后台 Task 异常时写入失败结果 ──
+
+    @pytest.mark.asyncio
+    async def test_background_task_exception_writes_failure(self):
+        """后台 dispatch_agent 抛异常 → 失败结果写入 _results_map"""
+        async def dispatch_fail():
+            raise ValueError("dispatch agent crash")
+
+        reg = self._make_registry(
+            execute_map={
+                "read_file": AsyncMock(return_value="read_ok"),
+                "dispatch_agent": dispatch_fail,
+            },
+        )
+        executor = ToolScheduler(reg)
+        executor._schedule_depth = 1
+
+        try:
+            # $call_read 显式依赖 → dispatch_agent 在 Layer 2
+            tcs = [
+                {"id": "call_read", "name": "read_file", "arguments": {}},
+                {"id": "call_disp", "name": "dispatch_agent",
+                 "arguments": {"prompt": "$call_read"}},
+            ]
+
+            await executor.schedule(tcs, agent_ref=None)
+
+            # 等待后台任务完成
+            if executor._background_dispatch_tasks:
+                bg_task = executor._background_dispatch_tasks[0]
+                await asyncio.wait_for(bg_task, timeout=5.0)
+
+            # 验证失败结果写入
+            assert "call_disp" in executor._results_map, (
+                "dispatch_agent 失败结果应写入 _results_map"
+            )
+            assert "dispatch agent crash" in executor._results_map["call_disp"][1], (
+                "失败消息应包含异常信息"
+            )
+            assert executor._results_map["call_disp"][2] is False, (
+                "失败时应 success=False"
+            )
+        finally:
+            await executor._cleanup_batch_records()
+            executor._schedule_depth = 0
+
+    # ── 场景 5：空 DAG / 无剩余节点时正常退出 ──
+
+    @pytest.mark.asyncio
+    async def test_no_remaining_nodes_normal_exit(self):
+        """所有节点已执行 → _only_dispatch_agent_remaining 无作用 → 正常退出"""
+        reg = self._make_registry(
+            execute_map={
+                "read_file": AsyncMock(return_value="read_ok"),
+            },
+        )
+        executor = ToolScheduler(reg)
+        executor._schedule_depth = 1
+
+        try:
+            tcs = [
+                {"id": "call_read", "name": "read_file", "arguments": {}},
+            ]
+
+            results = await executor.schedule(tcs, agent_ref=None)
+
+            assert len(results) == 1
+            assert results[0][2] is True
+            assert len(executor._background_dispatch_tasks) == 0, (
+                "无 dispatch_agent 时不应创建后台任务"
+            )
+        finally:
+            await executor._cleanup_batch_records()
+            executor._schedule_depth = 0
+
 
 class TestScheduleLock:
     """测试 schedule() 中 _schedule_lock 的并发保护行为。

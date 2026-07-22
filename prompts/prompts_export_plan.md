@@ -110,7 +110,7 @@
 按以下模板输出计划内容：
 
 > **测试强制规则（强制）**：若计划涉及代码文件修改（新增/修改/删除代码文件，如 .py / .js / .ts / .go / .rs / .java / .c / .cpp 等），步骤拆解中**必须**包含对应的测试文件或文档相关步骤：
-> 1. **新增/修改代码文件** → 必须计划创建或更新对应的测试文件（位于 `tests/` 目录，文件名与源码模块对应，如 Python `src/foo/bar.py` → `tests/test_foo/test_bar.py` / Node.js `src/foo/bar.js` → `tests/foo/bar.test.js` / Go `foo/bar.go` → `foo/bar_test.go` / Rust `src/foo/bar.rs` → `tests/foo/bar_test.rs` 等）或对应文档
+> 1. **新增/修改代码文件** → 必须计划创建或更新对应的测试文件（位于 `tests/` 目录，文件名与源码模块对应，如 Python `src/foo/bar.py` → `tests/test_foo/test_bar.py` / Node.js `src/foo/bar.js` → `tests/foo/bar.test.js` / Go `foo/bar.go` → `tests/foo/bar_test.go` / Rust `src/foo/bar.rs` → `tests/foo/bar_test.rs` 等）或对应文档
 > 2. **删除代码文件** → 必须计划同步清理或归档对应的测试文件或文档
 > 3. 测试文件须包含针对本次修改路径的测试用例，确保修改路径有测试覆盖
 > 4. 违反以上任一条 → 计划视为不完整
