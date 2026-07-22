@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import logging
 import os
+from collections import deque
 from dataclasses import dataclass, field
 from typing import Any, Optional
 
@@ -412,15 +413,18 @@ class ToolDAG:
         # 且 P 是 Q 的父目录（Q 路径以 P 为前缀）时，B 依赖 A
         # 确保父目录先创建完毕，子路径操作才能正常执行
         write_path_list = list(write_index.keys())
+        # Bug #1 修复：合并 write_index + read_index 作为子路径来源
+        # 原代码仅遍历 write_path_list，漏掉了 read_index 中的只读子路径
+        all_child_paths = list(set(write_path_list) | set(read_index.keys()))
         for i in range(len(write_path_list)):
             p_parent = write_path_list[i]
             p_parent_with_sep = p_parent + os.sep
-            for j in range(len(write_path_list)):
-                if i == j:
+            for j in range(len(all_child_paths)):
+                p_child = all_child_paths[j]
+                # 跳过父路径自身（防止将父路径自身误判为子路径）
+                if p_child == p_parent:
                     continue
-                p_child = write_path_list[j]
                 # 检查 p_parent 是否是 p_child 的父目录
-                # 使用 p_parent + os.sep 前缀匹配，避免将自身误判为子路径
                 if p_child.startswith(p_parent_with_sep):
                     # p_parent 中的写入者是 p_child 中写入者/读取者的前置依赖
                     parent_writers = write_index[p_parent]
@@ -448,6 +452,8 @@ class ToolDAG:
         因此与所有其他节点建立依赖关系（所有其他节点依赖 user_select）。
 
         这确保 user_select 独占一层。
+        多个 user_select 节点之间按原始顺序串行化（Bug #2 修复），
+        确保不会在同一层并发执行。
         """
         user_select_ids = [
             tc_id for tc_id, node in self._nodes.items()
@@ -457,6 +463,20 @@ class ToolDAG:
             tc_id for tc_id in self._nodes
             if tc_id not in user_select_ids
         ]
+
+        # —— 多个 user_select 节点串行化（按原始顺序） ——
+        # user_select[i] → user_select[i+1]，确保各占一层
+        if len(user_select_ids) >= 2:
+            # 按 _original_order 排序保证确定性的层顺序
+            us_sorted = sorted(
+                user_select_ids,
+                key=lambda tid: self._original_order.index(tid) if tid in self._original_order else -1,
+            )
+            for i in range(len(us_sorted) - 1):
+                earlier_id = us_sorted[i]
+                later_id = us_sorted[i + 1]
+                self._nodes[later_id].dependencies.add(earlier_id)
+                self._nodes[earlier_id].dependents.add(later_id)
 
         for us_id in user_select_ids:
             us_node = self._nodes[us_id]
@@ -496,11 +516,11 @@ class ToolDAG:
 
         # ── BFS 遍历 ──
         visited: set[str] = set()
-        queue: list[str] = [from_id]
+        queue: deque[str] = deque([from_id])
         visited.add(from_id)
 
         while queue:
-            current = queue.pop(0)
+            current = queue.popleft()
             for dep_id in self._nodes[current].dependents:
                 if dep_id == to_id:
                     # 写缓存后返回
@@ -659,6 +679,7 @@ class ToolDAG:
         ]
 
         layers: list[list[str]] = []
+        processed_set: set[str] = set()
         processed: int = 0
 
         while queue:
@@ -668,14 +689,13 @@ class ToolDAG:
 
             for tc_id in current_layer:
                 processed += 1
+                processed_set.add(tc_id)
                 # 更新入度：移除本节点，其所有后继入度 -1
                 for dep_id in self._nodes[tc_id].dependents:
                     if dep_id in in_degree:
                         in_degree[dep_id] -= 1
                         if in_degree[dep_id] == 0:
-                            if dep_id not in queue and dep_id not in [
-                                x for layer in layers for x in layer
-                            ]:
+                            if dep_id not in queue and dep_id not in processed_set:
                                 queue.append(dep_id)
 
         # 检查是否所有节点都已处理
