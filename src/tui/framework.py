@@ -1,19 +1,37 @@
 """
 TUI 框架统一入口 — `Framework` 单例 + 公开 API。
 
-提供：
-  - Framework: 全局单例框架管理器（组件工厂 + 效果注册表 + 样式表 + 动画上下文）
+Framework 是 TUI 框架的**统一协调者**，提供：
+  - Framework: 全局单例框架管理器
+    - 生命周期管理（start/stop/is_running）
+    - 配置管理（get_config/set_config）
+    - 组件工厂（create_component）
+    - Widget 树管理（create_widget/mount_widget/get_widget_tree）
+    - 事件总线访问（get_event_bus/publish_event/subscribe/unsubscribe）
+    - 动画上下文（get_animator/get_frame）
+    - RenderBuffer 工厂（create_render_buffer）
   - create_component(): 创建组件并触发生命周期
   - create_widget(): 创建 Widget 并挂载到 WidgetTree
   - frame_from_context(): 安全获取当前帧号的统一入口
   - get_animator(): 获取全局动画上下文实例
+  - get_framework(): Framework.get_default() 的语义别名
 
 Widget 树管理：
   - mount_widget() / unmount_widget(): 挂载/卸载控件树根节点
   - create_widget(): 创建 Widget 并自动挂载
+  - get_widget_tree(): 获取当前 WidgetTree 实例
+  - render_widget_tree(): 渲染整棵 Widget 树到 RenderBuffer
 
 事件集成：
   - subscribe() / unsubscribe(): 订阅/取消 DisplayEventBus 事件
+  - get_event_bus(): 获取 DisplayEventBus 实例
+  - publish_event(): 便捷发布事件
+
+扩展点：
+  - Widget 生命周期：mount → compose → render → unmount
+  - 自定义组件：继承 Widget 或 TuiComponent，通过 create_widget/create_component 创建
+  - 自定义布局：继承 Widget，在 render() 中组合子控件
+  - 事件驱动：通过 subscribe() 注册事件监听
 
 设计原则：
   - 单例管理：框架全局唯一，通过 Framework.get_default() 获取
@@ -45,6 +63,7 @@ __all__: list[str] = [
     "create_widget",
     "frame_from_context",
     "get_animator",
+    "get_framework",
 ]
 
 
@@ -58,32 +77,87 @@ class Framework:
 
     职责：
       1. 组件创建与生命周期管理（create_component）
-      2. 效果注册表访问（get_registry）
-      3. 样式表访问（get_stylesheet）
-      4. 动画上下文访问（get_animator）
-      5. 动画帧号获取（get_frame）
+      2. Widget 树管理（create_widget / mount_widget / get_widget_tree）
+      3. 配置管理（get_config / set_config）
+      4. 事件总线访问（get_event_bus / publish_event / subscribe / unsubscribe）
+      5. 动画上下文访问（get_animator / get_frame）
+      6. RenderBuffer 工厂（create_render_buffer）
+      7. 生命周期管理（start / stop / is_running）
 
     架构确认（2026-07-15）：
       ✅ 单一职责：Framework 仅管理 TUI 层单例与工厂方法，不涉及 I/O
       ✅ 依赖方向：webui → tui（单向），Framework 不依赖 webui 层
       ✅ 无新增依赖：get_animator() 仅委托已有 AnimatorContext，未引入新模块
 
+    **Widget 生命周期**（mount → compose → render → unmount）::
+
+        from src.tui import Framework, Widget, RenderBuffer
+
+        class MyWidget(Widget):
+            def compose(self):
+                # 返回子控件列表（可选）
+                return []
+
+            def render(self, buffer: RenderBuffer):
+                # 将自身渲染到 buffer
+                buffer.write(0, 0, "Hello")
+
+        # 方式一：通过 Framework 创建并自动挂载
+        fw = Framework.get_default()
+        widget = fw.create_widget(MyWidget)
+        fw.mount_widget(widget)
+
+        # 方式二：手动挂载到 WidgetTree
+        tree = fw.get_widget_tree()
+        widget.mount()
+        tree.set_root(widget)
+
+        # 渲染整棵 Widget 树
+        buf = fw.create_render_buffer(80, 24)
+        fw.render_widget_tree(buf)
+        print(buf.render())
+
+        # 卸载
+        widget.unmount()
+
+    **事件订阅**::
+
+        from src.tui.events.event_types import UserMessageEvent
+
+        def on_user_msg(event):
+            print(f"User: {event.text}")
+
+        fw.subscribe(UserMessageEvent, on_user_msg)
+        # 发布事件
+        fw.publish_event(UserMessageEvent(text="hello"))
+
+    **自定义组件创建**::
+
+        from src.tui import create_component
+        from src.tui.components import Separator
+
+        # create_component 自动调用 did_mount()
+        sep = create_component(Separator, style="aurora", frame=5)
+
+    **配置管理**::
+
+        from src.tui import TuiConfig
+
+        cfg = TuiConfig.defaults().with_overrides(render_interval=0.05)
+        fw.set_config(cfg)
+        print(fw.get_config().render_interval)  # 0.05
+
     使用示例：
         >>> framework = Framework.get_default()
         >>> # 创建组件（自动触发 did_mount）
         >>> component = framework.create_component(Separator, style="aurora", frame=5)
-        >>> # 获取效果注册表
-        >>> registry = framework.get_registry()
-        >>> registry.has("aurora")
-        True
-        >>> # 获取样式表
-        >>> stylesheet = framework.get_stylesheet()
-        >>> stylesheet.get("bold")
-        Style(bold=True)
         >>> # 获取动画上下文
         >>> animator = framework.get_animator()
         >>> animator.frame
         0
+        >>> # 检查运行状态
+        >>> framework.is_running()
+        False
     """
 
     _instance: Framework | None = None
@@ -143,6 +217,71 @@ class Framework:
                 return
             self._running = False
 
+    def is_running(self) -> bool:
+        """查询框架是否处于运行状态。
+
+        Returns:
+            True 如果 Framework 已调用 start() 且尚未 stop()。
+        """
+        return self._running
+
+    # ── 配置管理 ──────────────────────────────────────
+
+    def get_config(self) -> "TuiConfig":
+        """获取当前 TUI 配置。
+
+        返回 TuiConfig 默认配置。可通过 set_config() 覆盖。
+
+        Returns:
+            TuiConfig 实例（frozen=True，不可变）。
+        """
+        if self._config is None:
+            from .config import TuiConfig
+            self._config = TuiConfig.defaults()
+        return self._config
+
+    def set_config(self, config: "TuiConfig") -> None:
+        """设置 TUI 配置。
+
+        Args:
+            config: TuiConfig 实例。
+        """
+        self._config = config
+
+    # ── 事件总线访问 ──────────────────────────────────
+
+    def get_event_bus(self):
+        """获取全局 DisplayEventBus 实例。
+
+        Returns:
+            DisplayEventBus 单例实例。
+        """
+        from .events.event_bus import DisplayEventBus
+        return DisplayEventBus.get_default()
+
+    def publish_event(self, event) -> None:
+        """发布事件到 DisplayEventBus。
+
+        Args:
+            event: DisplayEvent 子类实例。
+        """
+        self.get_event_bus().publish(event)
+
+    # ── RenderBuffer 工厂 ────────────────────────────
+
+    def create_render_buffer(self, width: int, height: int) -> "RenderBuffer":
+        """创建 RenderBuffer 实例。
+
+        Args:
+            width: 缓冲区宽度（列数）。
+            height: 缓冲区高度（行数）。
+
+        Returns:
+            新的 RenderBuffer 实例。
+        """
+        from .render_buffer import RenderBuffer
+        return RenderBuffer(width, height)
+
     # ── WidgetTree 管理 ─────────────────────────────
 
     def _ensure_widget_tree(self) -> None:
@@ -189,6 +328,14 @@ class Framework:
         """是否已有挂载的 Widget 树。"""
         return (self._widget_tree is not None
                 and self._widget_tree.root is not None)
+
+    def get_widget_tree(self) -> "WidgetTree | None":
+        """获取当前 WidgetTree 实例。
+
+        Returns:
+            WidgetTree 实例，尚未创建时返回 None。
+        """
+        return self._widget_tree
 
     def create_widget(self, widget_cls: type, *args, key: str | None = None, **kwargs) -> "Widget":
         """创建 Widget 实例，挂载到 WidgetTree 并触发生命周期。
@@ -384,3 +531,18 @@ def get_animator() -> "AnimatorContext":
         AnimatorContext 单例实例。
     """
     return Framework.get_default().get_animator()
+
+
+def get_framework() -> Framework:
+    """获取全局框架实例（Framework.get_default 的语义别名）。
+
+    用法::
+
+        from src.tui.framework import get_framework
+        fw = get_framework()
+        print(fw.is_running())
+
+    Returns:
+        Framework 单例实例。
+    """
+    return Framework.get_default()

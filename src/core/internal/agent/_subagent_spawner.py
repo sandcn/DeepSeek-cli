@@ -89,7 +89,7 @@ class SubAgentSpawner:
         2. ChatUIConsumer 未激活 → IncrementalRenderer 直接写 sys.__stdout__
            （适用于非分屏模式，原逻辑不变）
         """
-        from src.tui.consumer import get_active_chat_ui
+        from src.core.display_target import get_display_target
 
         # ── 构造完整的 markdown 文本 ──────────────────────────────────
         md_parts: list[str] = []
@@ -107,7 +107,7 @@ class SubAgentSpawner:
         if not md_text.strip():
             return
 
-        chat_ui = get_active_chat_ui()
+        chat_ui = get_display_target()
         if chat_ui is not None:
             # ChatUI 激活 → StringIO 捕获 ANSI → chat_ui.write_line() 统一上屏
             # （与 parallel_executor._stream_results_via_chatui 模式一致）

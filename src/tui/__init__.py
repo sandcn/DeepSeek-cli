@@ -2,6 +2,8 @@
 
 分层架构（由底向上）：
 
+  框架层（通用，可独立复用）：
+  ─────────────────────────────
   core/       — 核心基础工具层：effects, color, style, ttl_cache, text_utils,
   │             gradient(渐变工具), theme(主题系统), ansi_utils(ANSI工具),
   │             output_target(输出目标), formatter(文本格式化零依赖层),
@@ -19,15 +21,30 @@
   events/     — 事件总线层：DisplayEventBus(显示层事件总线), event_types(21种事件类型),
   │             adapters(事件适配器), consumers(事件消费者)
   │
+  widget_base/ — 控件基类：Widget(控件抽象), WidgetTree(控件树)
+  │
+  render_buffer/ — 渲染缓冲区：RenderBuffer(二维字符网格，支持叠加合成)
+  │
+  layout/     — 声明式布局：Vertical/Horizontal/Padding/Border/Grid/Center
+  │
+  components/ — 通用框架组件（可独立复用）:
+  │             Box/RoundedBox/DoubleBox, Panel, Separator, Spinner, ProgressBar,
+  │             Table, TreeView/TreeNode, parse_markup/render_markup,
+  │             CostDisplayComponent, SplashScreen
+  │
+  framework   — 框架入口：Framework 单例、create_component/create_widget、
+  │             get_animator/get_framework/frame_from_context
+
+  应用层（聊天域特有）：
+  ──────────────────────
   state/      — 统一状态管理：UISessionState(会话状态), InputState(输入状态),
   │             StreamingState(流式状态), TUIStateTree(聚合容器),
   │             AgentStateStore(多Agent状态), _RenderState(渲染器生命周期),
   │             consumer_registry(消费者注册表)
   │
-  components/ — 组件库：TuiComponent基类, 消息组件(Thinking/Answer/UserMsg/ToolOutput/
-  │             ToolSummary/Error/Notification/WriteLine), 通用组件(Box/Panel/
-  │             Separator/Spinner/ProgressBar/Table/Markup/TreeView),
-  │             CostDisplayComponent, SplashScreen(启动品牌屏)
+  components/ — 聊天域组件（业务相关）:
+  │             ThinkingBlock, AnswerBlock, UserMsgBlock, ToolOutputBlock,
+  │             ToolSummaryBlock, ErrorBlock, NotificationBlock, WriteLineBlock
   │
   engine/     — 渲染引擎层：TuiEngine(render线程+命令队列), TuiRenderer(命令分发),
   │             EventDispatcher(事件→命令映射), RenderCommand(命令枚举)
@@ -50,6 +67,13 @@
 框架入口：
   - framework — TUI 框架统一入口，提供 Framework 单例、create_component、
     EffectRegistry、frame_from_context、get_animator 等公开 API
+  - consumer — ChatUIConsumer、get_active_chat_ui、RenderCommand 等聊天域 API
+
+2026-07-22 框架整理：
+  - 统一公共 API 表面：所有框架层符号集中在 __init__.py 导出
+  - 区分框架层 vs 应用层：通用控件提升到顶层，聊天域组件保留在 consumer/
+  - Framework 强化为统一入口：新增配置管理、事件总线、RenderBuffer 工厂等方法
+  - 修复跨层耦合：core/internal/agent/ 通过 DisplayTarget 协议访问显示层
 
 2026-07-17 框架优化：
   - 清理 consumer/ 下 8 个向后兼容重导出存根，consumer/__init__.py 直接引用 engine/ 和 state/
@@ -71,16 +95,140 @@
   - testing 增强：新增 MockConsumer 和 MockTerminal 测试辅助工具
 """
 
+from __future__ import annotations
+
+# ═══════════════════════════════════════════════════════════
+# 配置
+# ═══════════════════════════════════════════════════════════
 from .config import TuiConfig
-from .testing import MockConsumer, MockTerminal
-from .layout import Grid, Center
+
+# ═══════════════════════════════════════════════════════════
+# 框架入口
+# ═══════════════════════════════════════════════════════════
+from .framework import (
+    Framework,
+    create_component,
+    create_widget,
+    get_animator,
+    get_framework,
+    frame_from_context,
+)
+
+# ═══════════════════════════════════════════════════════════
+# 核心抽象
+# ═══════════════════════════════════════════════════════════
+from .widget_base import Widget, WidgetTree
+from .render_buffer import RenderBuffer
+
+# ═══════════════════════════════════════════════════════════
+# 布局控件
+# ═══════════════════════════════════════════════════════════
+from .layout import (
+    Vertical,
+    Horizontal,
+    Padding,
+    Border,
+    Grid,
+    Center,
+)
+
+# ═══════════════════════════════════════════════════════════
+# 通用框架组件 — 延迟导入（避免反向依赖 src.config → tui）
+# ═══════════════════════════════════════════════════════════
+from ._lazy import LazyLoader
+
+_components_mod = LazyLoader("src.tui.components")
+
+# ═══════════════════════════════════════════════════════════
+# 动画 — 直接从 _base 子模块导入（无循环依赖）
+# ═══════════════════════════════════════════════════════════
 from .components._base import apply_fade_in
 
+# ═══════════════════════════════════════════════════════════
+# 测试工具
+# ═══════════════════════════════════════════════════════════
+from .testing import MockConsumer, MockTerminal
+
+# ── 组件延迟导入映射 ────────────────────────────────────
+# 以下符号通过 __getattr__ 从懒加载模块获取，
+# 避免 eager import 触发循环依赖链
+# (src.tui.components._cost → src.tui.core.cost → src.config → src.tui)
+
+_COMPONENT_SYMBOLS: set[str] = {
+    "Box",
+    "BoxStyle",
+    "RoundedBox",
+    "DoubleBox",
+    "Panel",
+    "Separator",
+    "Spinner",
+    "ProgressBar",
+    "Table",
+    "TreeView",
+    "TreeNode",
+    "parse_markup",
+    "render_markup",
+    "CostDisplayComponent",
+    "SplashScreen",
+}
+
+
+def __getattr__(name: str):
+    """模块级 __getattr__ — 延迟解析组件符号。
+
+    当 ``from src.tui import Box`` 等语句访问组件符号时，
+    Python 调用此函数从 LazyLoader 中获取实际对象。
+    """
+    if name in _COMPONENT_SYMBOLS:
+        return getattr(_components_mod, name)
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
+
+def __dir__() -> list[str]:
+    """支持 dir() 列出所有导出符号。"""
+    return sorted(__all__)
+
+
 __all__ = [
+    # 配置
     "TuiConfig",
-    "MockConsumer",
-    "MockTerminal",
+    # 框架入口
+    "Framework",
+    "create_component",
+    "create_widget",
+    "get_animator",
+    "get_framework",
+    "frame_from_context",
+    # 核心抽象
+    "Widget",
+    "WidgetTree",
+    "RenderBuffer",
+    # 布局
+    "Vertical",
+    "Horizontal",
+    "Padding",
+    "Border",
     "Grid",
     "Center",
+    # 通用组件（框架层）
+    "Box",
+    "BoxStyle",
+    "RoundedBox",
+    "DoubleBox",
+    "Panel",
+    "Separator",
+    "Spinner",
+    "ProgressBar",
+    "Table",
+    "TreeView",
+    "TreeNode",
+    "parse_markup",
+    "render_markup",
+    "CostDisplayComponent",
+    "SplashScreen",
+    # 动画
     "apply_fade_in",
+    # 测试
+    "MockConsumer",
+    "MockTerminal",
 ]

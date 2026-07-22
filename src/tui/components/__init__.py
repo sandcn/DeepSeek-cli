@@ -55,9 +55,12 @@ _protocols_mod = LazyLoader("src.tui.consumer.protocols")
 # ═══════════════════════════════════════════════════════════
 
 _SYMBOL_MAP: dict[str, LazyLoader] = {
+    # ── 基类 ─────────────────────────────────────
     "Widget": _base_mod,
     "_estimate_content_lines": _base_mod,
     "TuiComponent": _base_mod,
+
+    # ── 聊天域组件（业务相关）────────────────────
     "UserMsgBlock": _user_msg_mod,
     "ThinkingBlock": _thinking_mod,
     "AnswerBlock": _answer_mod,
@@ -66,8 +69,8 @@ _SYMBOL_MAP: dict[str, LazyLoader] = {
     "ErrorBlock": _error_mod,
     "NotificationBlock": _notification_mod,
     "WriteLineBlock": _write_line_mod,
-    "CostDisplayComponent": _cost_mod,
-    "SplashScreen": _splash_mod,
+
+    # ── 通用框架组件（可独立复用）─────────────────
     "BoxStyle": _box_mod,
     "Box": _box_mod,
     "RoundedBox": _box_mod,
@@ -81,6 +84,10 @@ _SYMBOL_MAP: dict[str, LazyLoader] = {
     "render_markup": _markup_mod,
     "TreeView": _tree_mod,
     "TreeNode": _tree_mod,
+    "CostDisplayComponent": _cost_mod,
+    "SplashScreen": _splash_mod,
+
+    # ── 协议 ─────────────────────────────────────
     "BottomBarProtocol": _protocols_mod,
 }
 
@@ -111,9 +118,12 @@ def __dir__() -> list[str]:
 # ═══════════════════════════════════════════════════════════
 
 __all__ = [
+    # ── 基类 ─────────────────────────────────────
     "Widget",
     "TuiComponent",
     "_estimate_content_lines",
+
+    # ── 聊天域组件（业务相关）────────────────────
     "UserMsgBlock",
     "ThinkingBlock",
     "AnswerBlock",
@@ -122,25 +132,19 @@ __all__ = [
     "ErrorBlock",
     "NotificationBlock",
     "WriteLineBlock",
-    "BottomBarProtocol",
-    # _splash
-    "SplashScreen",
-    # _cost
-    "CostDisplayComponent",
-    # _box
+
+    # ── 通用框架组件（可独立复用）─────────────────
     "BoxStyle", "Box", "RoundedBox", "DoubleBox",
-    # _panel
     "Panel",
-    # _separator
     "Separator",
-    # _spinner
     "Spinner",
-    # _progress
     "ProgressBar",
-    # _table
     "Table",
-    # _markup
     "parse_markup", "render_markup",
-    # _tree
     "TreeView", "TreeNode",
+    "CostDisplayComponent",
+    "SplashScreen",
+
+    # ── 协议 ─────────────────────────────────────
+    "BottomBarProtocol",
 ]
