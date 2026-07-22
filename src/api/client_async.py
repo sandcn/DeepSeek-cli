@@ -352,3 +352,6 @@ async def _stream_iter_async(
                 _logger.debug("流式连接清理时事件循环已关闭: %s", e)
                 return
             raise
+        except Exception:
+            _logger.exception("SSE 流式迭代器异常")
+            raise

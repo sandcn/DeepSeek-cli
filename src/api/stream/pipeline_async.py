@@ -504,19 +504,23 @@ async def stream_call_async(
         # 清理期间 aclose() 被取消）不会匹配 except CancelledError。
         if _extract_cancelled(e):
             _logger.debug("stream_call_async 被取消 (in group)，返回已累积内容")
-            result = pipeline._build_result(ctx)
-            if not ctx._cleaned_up:
-                try:
-                    await pipeline._cleanup_display(ctx)
-                except asyncio.CancelledError:
+        else:
+            # ★ 非 CancelledError 异常也返回已累积内容，避免 stream 层异常
+            # 导致已接收的 tool_calls / content 丢失。原始异常已在
+            # _interruptible_iter_async 中 logging.exception 记录完整 traceback。
+            _logger.warning("stream_call_async 流式异常：%s，返回已累积内容", e)
+        result = pipeline._build_result(ctx)
+        if not ctx._cleaned_up:
+            try:
+                await pipeline._cleanup_display(ctx)
+            except asyncio.CancelledError:
+                pass
+            except BaseException:
+                if _extract_cancelled(sys.exc_info()[1]):
                     pass
-                except BaseException:
-                    if _extract_cancelled(sys.exc_info()[1]):
-                        pass
-                    else:
-                        raise
-            return result
-        raise
+                else:
+                    raise
+        return result
     finally:
         _notify_stream_ended()
 
