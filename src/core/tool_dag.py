@@ -655,6 +655,48 @@ class ToolDAG:
 
         return layers
 
+    # ── 节点移除 ────────────────────────────────────────────
+
+    def remove_nodes(self, tc_ids: set[str]) -> None:
+        """从 DAG 中移除指定 tc_id 集合对应的节点（含双向边清理）
+
+        1. 双向清理出边/入边：从剩余节点的 dependencies/dependents 中移除已删除 ID
+        2. 从 _nodes 字典中删除节点
+        3. 不修改 _original_order（按设计规格保留）
+
+        Args:
+            tc_ids: 要移除的 tc_id 集合。不存在的 ID 被静默跳过。
+        """
+        if not tc_ids:
+            return
+
+        to_remove = {tid for tid in tc_ids if tid in self._nodes}
+        if not to_remove:
+            return
+
+        # 第 1 步：双向清理边引用
+        for tid in to_remove:
+            node = self._nodes[tid]
+
+            # 清理入边：从依赖我的节点（dependents）中移除我
+            for dep_id in node.dependents:
+                if dep_id in self._nodes:
+                    self._nodes[dep_id].dependencies.discard(tid)
+
+            # 清理出边：从我依赖的节点（dependencies）中移除我
+            for dep_id in node.dependencies:
+                if dep_id in self._nodes:
+                    self._nodes[dep_id].dependents.discard(tid)
+
+        # 第 2 步：从 _nodes 移除节点
+        for tid in to_remove:
+            del self._nodes[tid]
+
+        _logger.debug(
+            "ToolDAG: removed %d nodes, remaining %d",
+            len(to_remove), self.size,
+        )
+
     # ── 工具方法 ────────────────────────────────────────────
 
     def get_node(self, tc_id: str) -> ToolCallNode | None:
