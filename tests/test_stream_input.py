@@ -422,6 +422,76 @@ class TestStreamInputHistory:
         monitor._input_handler._down()     # → 恢复原始（空）
         callback.assert_called_once_with("", 0)
 
+    # ── 命令过滤（/editmsg 等不影响历史） ────────────────
+
+    def test_command_not_saved_to_memory_history(self):
+        """以 / 开头的命令（/editmsg）不写入内存历史。"""
+        monitor = self._make_monitor_with_history(["existing"])
+        handler = monitor._input_handler
+        # 模拟输入 /editmsg + Enter
+        handler._buffer = "/editmsg"
+        handler._cursor_pos = 9
+        handler._enter()
+        # _submitted_text 仍能获取（命令执行不受影响）
+        assert handler._submitted_text == "/editmsg"
+        # 但历史中不应有 /editmsg
+        assert "/editmsg" not in handler._history
+        # 已有历史也不受影响
+        assert "existing" in handler._history
+
+    def test_multiple_commands_not_in_history(self):
+        """多种命令（/model、/help、/clear）均不写入历史。"""
+        monitor = EscapeMonitor()
+        handler = monitor._input_handler
+        for cmd in ["/model gpt-4", "/help", "/clear", "/editmsg"]:
+            handler._buffer = cmd
+            handler._cursor_pos = len(cmd)
+            handler._enter()
+            # 每次消费 submitted_text 以清除 _input_ready，让下一次 _enter 生效
+            handler.get_queued_input()
+        # 历史应为空（没有任何正常的输入）
+        assert len(handler._history) == 0
+
+    def test_command_with_leading_spaces_filtered(self):
+        """前导空格的命令（如 "  /editmsg"）也不写入历史。"""
+        monitor = self._make_monitor_with_history(["normal"])
+        handler = monitor._input_handler
+        handler._buffer = "  /editmsg"
+        handler._cursor_pos = 10
+        handler._enter()
+        assert "  /editmsg" not in handler._history
+        assert "/editmsg" not in handler._history
+        # 已有历史不受影响
+        assert "normal" in handler._history
+
+    def test_normal_text_still_saved_to_history(self):
+        """正常的非命令文本仍正常写入历史（回归测试）。"""
+        monitor = EscapeMonitor()
+        handler = monitor._input_handler
+        handler._buffer = "hello world"
+        handler._cursor_pos = 11
+        handler._enter()
+        assert "hello world" in handler._history
+
+    def test_normal_and_command_mixed(self):
+        """正常文本和命令混合输入时，只有正常文本进入历史。"""
+        monitor = EscapeMonitor()
+        handler = monitor._input_handler
+        handler._buffer = "第一条消息"
+        handler._cursor_pos = 6
+        handler._enter()
+        handler.get_queued_input()  # 消费 submitted_text，清除 _input_ready
+        handler._buffer = "/editmsg"
+        handler._cursor_pos = 9
+        handler._enter()
+        handler.get_queued_input()
+        handler._buffer = "第二条消息"
+        handler._cursor_pos = 6
+        handler._enter()
+        handler.get_queued_input()
+        # 历史只含正常文本（最近的在最前）
+        assert handler._history == ["第二条消息", "第一条消息"]
+
 
 class TestHistoryFileSerialization:
     """历史文件序列化（读写→转义→还原）测试。
@@ -558,6 +628,58 @@ class TestHistoryFileSerialization:
         handler._history = ["stale"]
         handler.load_history()
         assert handler._history == ["stale"]
+
+    # ── 命令过滤：文件级验证 ──────────────────────────
+
+    def test_command_not_written_to_history_file(self):
+        """以 / 开头的命令不写入历史文件。
+
+        验证 _append_history_locked 的过滤逻辑在文件持久化层同样生效。
+        """
+        monitor = EscapeMonitor()
+        handler = monitor._input_handler
+
+        # 先写入正常文本
+        handler._history = []
+        handler._buffer = "正常消息"
+        handler._cursor_pos = 4
+        handler._enter()
+
+        handler.get_queued_input()
+
+        # 再写入命令
+        handler._buffer = "/editmsg"
+        handler._cursor_pos = 9
+        handler._enter()
+        handler.get_queued_input()
+
+        # 验证文件：只有正常消息，没有命令
+        content = self._test_path.read_text(encoding="utf-8")
+        assert "正常消息" in content, f"正常消息应写入文件: {repr(content)}"
+        assert "/editmsg" not in content, f"命令不应写入文件: {repr(content)}"
+
+    def test_command_filter_does_not_affect_normal_text_file(self):
+        """命令过滤不影响后续普通文本的正常写文件。"""
+        monitor = EscapeMonitor()
+        handler = monitor._input_handler
+
+        # 写一个命令（被过滤）— 命令被过滤 _append_to_history_file 不会被调用
+        handler._history = []
+        handler._buffer = "/help"
+        handler._cursor_pos = 5
+        handler._enter()
+        handler.get_queued_input()
+
+        # 再写正常文本 — 首次写文件（文件原本不存在）
+        handler._buffer = "后续消息"
+        handler._cursor_pos = 4
+        handler._enter()
+
+        # 验证文件存在且内容正确
+        assert self._test_path.exists(), "写入正常文本后历史文件应被创建"
+        content = self._test_path.read_text(encoding="utf-8")
+        assert "后续消息" in content, f"正常文本应写入文件: {repr(content)}"
+        assert "/help" not in content, f"命令不应写入文件: {repr(content)}"
 
 
 class TestMultiProcessHistory:
