@@ -135,6 +135,12 @@ class EditmsgPlugin(InteractiveCommandPlugin):
                     prefill_text = state.get("prefill", "")
                     monitor.start(prefill=prefill_text)
                     state["prefill"] = ""  # 幂等清除：非空时标记已应用、空时保持空
+                    # ★ 清除 captured_prefill：prefill 已通过 monitor.start() 主路径注入到
+                    #   输入缓冲区。若不清理，下一轮 _merge_prefill（兜底路径）会读到
+                    #   上一轮 LLM 生成期间用户键入残留的 captured_prefill，传给
+                    #   wait_for_user_input → set_prefill 覆盖主路径刚设置好的预填内容。
+                    if prefill_text:
+                        session.captured_prefill = ''
                 except Exception:
                     _logger.warning("monitor.start() 在 finally 中异常", exc_info=True)
             if chat_ui is not None:
