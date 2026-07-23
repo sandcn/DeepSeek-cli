@@ -314,13 +314,8 @@ class StreamInputHandler:
         持久化文件每行一条记录，记录中的 \\n 转义为字面 \\n（反斜杠+n），
         兼容 prompt_toolkit FileHistory 的逐行读取格式。
 
-        命令（以 / 开头）不写入历史，防止 /editmsg /model 等命令
-        在历史导航（上下箭头）中重新出现在输入行。
         """
         if not text.strip():
-            return
-        # ★ 命令（以 / 开头）不写入历史（兼容前导空格场景）
-        if text.lstrip().startswith('/'):
             return
         # 去重：移除旧的出现
         if text in self._history:
