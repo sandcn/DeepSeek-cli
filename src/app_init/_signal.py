@@ -1,4 +1,4 @@
-"""信号处理管理器 — 封装 SIGINT/SIGTERM 处理和降级路径
+"""信号处理管理器 — 封装 SIGINT/SIGTERM/SIGHUP 处理和降级路径
 
 从 app_init.py 拆分而来，与 _args.py / _session_cmd.py / main.py 协同
 构成应用初始化包。
@@ -13,7 +13,7 @@ import signal
 import threading
 
 from ..tui.widgets.lock import locked_print
-from ..api.escape_monitor import get_active_monitor, stop_active_monitor
+from ..api.escape_monitor import stop_active_monitor
 
 _logger = logging.getLogger(__name__)
 
@@ -22,7 +22,7 @@ _SHUTDOWN_GRACE_PERIOD = 3.0
 
 
 class SignalManager:
-    """信号处理管理器 — 封装 SIGINT/SIGTERM 处理和降级路径"""
+    """信号处理管理器 — 封装 SIGINT/SIGTERM/SIGHUP 处理和降级路径"""
 
     def __init__(self):
         self._registered: bool = False
@@ -77,12 +77,31 @@ class SignalManager:
             t.cancel()
         # 不 await gather，不 stop loop
 
+    async def handle_sighup(self) -> None:
+        """处理 SIGHUP — 终端断开时优雅关闭
+        
+        pty 断开/Cygwin 会话变更/休眠恢复时触发，行为与 shutdown() 一致，
+        但使用独立的提示信息以区分用户主动 SIGTERM 与 pty 断开 SIGHUP。
+        """
+        locked_print("\n  ⚠ 检测到终端断开(SIGHUP)，正在关闭…", flush=True)
+        stop_active_monitor()
+        current = asyncio.current_task()
+        if current is None:
+            # current_task() 返回 None：取消所有任务触发优雅关闭
+            for t in asyncio.all_tasks():
+                t.cancel()
+            return
+        tasks = [t for t in asyncio.all_tasks() if t is not current]
+        for t in tasks:
+            t.cancel()
+
     def register_handlers(self, loop=None) -> None:
-        """注册 SIGINT/SIGTERM 回调
+        """注册 SIGINT/SIGTERM/SIGHUP 回调
 
         优先使用 asyncio 原生 add_signal_handler（与事件循环集成最佳），
         降级到 signal.signal + loop.call_soon_threadsafe。
         在 Termux 下 SIGTERM 设为忽略（Android 进程管理发来的非用户信号）。
+        SIGHUP 在所有平台（含 Termux/Cygwin）均注册处理器，实现终端断开时优雅关闭。
         """
         if self._registered:
             return
@@ -124,5 +143,29 @@ class SignalManager:
                     ))
             except (ValueError, RuntimeError):
                 pass
+
+        # ── SIGHUP 处理器：终端断开/Cygwin pty 断开/休眠恢复时优雅关闭 ──
+        if hasattr(signal, 'SIGHUP'):
+            _sighup_ok = False
+            try:
+                loop.add_signal_handler(
+                    signal.SIGHUP,
+                    lambda: asyncio.create_task(self.handle_sighup()),
+                )
+                _sighup_ok = True
+            except NotImplementedError:
+                pass
+
+            if not _sighup_ok:
+                try:
+                    # ★ SIGHUP 在任何平台都表示终端断开，Termux 也不忽略
+                    signal.signal(
+                        signal.SIGHUP,
+                        lambda s, f: loop.call_soon_threadsafe(
+                            lambda: asyncio.create_task(self.handle_sighup())
+                        ),
+                    )
+                except (ValueError, RuntimeError):
+                    pass
 
         self._registered = True

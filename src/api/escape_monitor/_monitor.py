@@ -14,6 +14,8 @@ from ._history import (
     MONITOR_JOIN_TIMEOUT,
     UNIX_SELECT_TIMEOUT,
     WINDOWS_POLL_INTERVAL,
+    _EOF_THRESHOLD,
+    _SELECT_ERROR_THRESHOLD,
     _POLL_INTERVAL,
     _active_monitor,
     _active_monitor_lock,
@@ -53,6 +55,9 @@ class EscapeMonitor:
         self._saved_original_settings = None  # 永久保存的终端设置副本
         self._captured_input = bytearray()
         self._captured_lock = threading.Lock()
+        # ── 故障检测计数器 ──
+        self._eof_count = 0           # stdin EOF 连续计数
+        self._select_error_count = 0  # select 错误连续计数
         # ── 流式输入处理器（组合模式） ──
         self._input_handler = StreamInputHandler(self._captured_input, self._captured_lock)
         # ── 特殊按键回调（Ctrl+G/O/N/R） ──
@@ -84,6 +89,8 @@ class EscapeMonitor:
         self._input_handler.load_history()
         self._input_handler._echo(self._input_handler.get_current_text())
         self._monitor_ready.clear()  # 重置：等待线程完成 cbreak 设置
+        self._eof_count = 0
+        self._select_error_count = 0
         self._thread = threading.Thread(target=self._monitor, daemon=True)
         self._thread.start()
         with _active_monitor_lock:
@@ -311,6 +318,18 @@ class EscapeMonitor:
     def interrupted(self):
         return self._interrupted.is_set()
 
+    @property
+    def is_alive(self) -> bool:
+        """EscapeMonitor 后台线程是否存活。
+
+        线程安全：CPython GIL 下读取 _thread 是原子的，无需额外锁。
+        stop() 中将 _thread 置 None 前线程已 join，返回 False 是正确的。
+
+        注意：返回 True 后线程可能在调用方下一次操作前退出（TOCTOU），
+        调用方应容忍一次额外的轮询迭代后才检测到死亡。
+        """
+        return self._thread is not None and self._thread.is_alive()
+
     # ── 内部实现 ──────────────────────────────────────────
 
     def _do_interrupt(self):
@@ -512,16 +531,36 @@ class EscapeMonitor:
                 try:
                     ready, _, _ = select.select([fd], [], [], UNIX_SELECT_TIMEOUT)
                 except (ValueError, OSError, TypeError, AttributeError):
+                    # select 错误计数熔断
+                    self._select_error_count += 1
+                    if self._select_error_count >= _SELECT_ERROR_THRESHOLD:
+                        _logger.warning(
+                            "select 错误连续 %d 次，判定 stdin 不可用，退出监听",
+                            self._select_error_count,
+                        )
+                        return
                     # stdin 可能已关闭或不可读，跳过本轮
                     time.sleep(UNIX_SELECT_TIMEOUT)
                     continue
+                # select 成功，重置错误计数器
+                self._select_error_count = 0
                 if not ready:
                     continue
 
                 try:
                     raw = os.read(fd, 1)
                     if not raw:
+                        # stdin EOF 连续检测（busy loop 熔断）
+                        self._eof_count += 1
+                        if self._eof_count >= _EOF_THRESHOLD:
+                            _logger.warning(
+                                "stdin EOF 连续 %d 次，判定 pty 已断开，退出监听",
+                                self._eof_count,
+                            )
+                            return
                         continue
+                    # 读到正常数据，重置 EOF 计数器
+                    self._eof_count = 0
                 except (ValueError, OSError, TypeError):
                     # stdin 读取失败，跳过本轮
                     continue

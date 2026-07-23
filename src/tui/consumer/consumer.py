@@ -276,11 +276,18 @@ class ChatUIConsumer:
             用户输入文本；超时时返回空字符串 ""
         """
         if prefill:
+            if hasattr(monitor, 'is_alive') and not monitor.is_alive:
+                raise RuntimeError("EscapeMonitor thread died")
             _logger.debug("wait_for_user_input: about to set_prefill, len=%d, prefill[:50]='%s'", len(prefill), prefill[:50])
             monitor.set_prefill(prefill)
             _logger.debug("wait_for_user_input: set_prefill done, entering poll loop")
         deadline = None if timeout is None else time.monotonic() + timeout
         while True:
+            # monitor 存活检测：EscapeMonitor 线程死后抛出 RuntimeError，
+            # 由 _handle_round 捕获并触发恢复逻辑（步骤 4）
+            if hasattr(monitor, 'is_alive') and not monitor.is_alive:
+                _logger.warning("EscapeMonitor 线程已死亡，退出等待")
+                raise RuntimeError("EscapeMonitor thread died")
             text = monitor.get_queued_input()
             if text is not None:
                 return text

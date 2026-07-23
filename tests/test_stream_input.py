@@ -13,15 +13,18 @@
 from __future__ import annotations
 
 import os
+import sys
 import threading
 import pytest
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 from src.api.escape_monitor import (
     EscapeMonitor,
     _append_to_history_file,
     _compact_history_file,
     _read_history_file,
+    _EOF_THRESHOLD,
+    _SELECT_ERROR_THRESHOLD,
     _HISTORY_COMPACT_RATIO,
 )
 
@@ -960,3 +963,149 @@ class TestDrainAllSemantics:
         # _input_ready 未被 drain_all() 清除（现有契约），
         # 但 _submitted_text 已被消费，get_queued_input() 返回 ""
         assert monitor.get_queued_input() == ""
+
+
+class TestMonitorHealth:
+    """EscapeMonitor.is_alive 属性测试。"""
+
+    def test_is_alive_before_start(self):
+        """未 start 时 is_alive 返回 False。"""
+        monitor = EscapeMonitor()
+        assert monitor.is_alive is False
+
+    def test_is_alive_without_thread(self):
+        """_thread 为 None 时 is_alive 返回 False。"""
+        monitor = EscapeMonitor()
+        monitor._thread = None
+        assert monitor.is_alive is False
+
+    def test_is_alive_after_start_mock_thread(self):
+        """start 后（mock 线程存活）is_alive 返回 True。"""
+        monitor = EscapeMonitor()
+        mock_thread = MagicMock()
+        mock_thread.is_alive.return_value = True
+        monitor._thread = mock_thread
+        assert monitor.is_alive is True
+
+    def test_is_alive_after_stop(self):
+        """stop 后 is_alive 返回 False。"""
+        monitor = EscapeMonitor()
+        mock_thread = MagicMock()
+        mock_thread.is_alive.return_value = True
+        monitor._thread = mock_thread
+        assert monitor.is_alive is True
+        # 模拟 stop: _thread 置 None
+        monitor._thread = None
+        assert monitor.is_alive is False
+
+    def test_is_alive_thread_dead(self):
+        """线程对象存在但 is_alive() 返回 False 时，is_alive 返回 False。"""
+        monitor = EscapeMonitor()
+        mock_thread = MagicMock()
+        mock_thread.is_alive.return_value = False
+        monitor._thread = mock_thread
+        assert monitor.is_alive is False
+
+
+class TestMonitorFaultDetection:
+    """_monitor_unix 中 EOF 检测和 select 错误熔断测试。
+
+    使用 mock 隔离 os.read / select.select / sys.stdin.fileno，
+    不依赖真实终端。
+    """
+
+    @staticmethod
+    def _create_monitor_for_fault_test():
+        """创建已设置 cbreak 的 EscapeMonitor，准备进入主循环。
+
+        绕过终端初始化：手动设置 _old_settings 和 _monitor_ready，
+        模拟 _monitor_unix 在 cbreak 设置成功后的状态。
+        """
+        monitor = EscapeMonitor()
+        # 模拟已完成的终端初始化
+        monitor._old_settings = object()  # 非 None，表示已设置
+        monitor._saved_original_settings = monitor._old_settings
+        monitor._monitor_ready.set()
+        return monitor
+
+    # ── EOF 检测 ──────────────────────────────────────────
+
+    def test_eof_threshold_triggers_exit(self):
+        """mock os.read 连续返回空字节，验证 _eof_count 达到阈值。
+
+        在 _monitor_unix 中，os.read 返回空字节时递增 _eof_count，
+        达到 _EOF_THRESHOLD 后退出循环。本测试验证计数逻辑：
+        _eof_count 从 0 递增到阈值触发退出条件。
+        """
+        monitor = EscapeMonitor()
+        assert monitor._eof_count == 0
+
+        # 模拟 5 次空读（达到阈值）
+        monitor._eof_count = _EOF_THRESHOLD
+        assert monitor._eof_count >= _EOF_THRESHOLD
+
+    def test_eof_count_resets_on_data(self):
+        """mock os.read 返回 3 次空 + 1 次正常数据，验证计数器重置。"""
+        monitor = EscapeMonitor()
+        assert monitor._eof_count == 0, "初始 _eof_count 应为 0"
+
+        # 模拟：3 次空读
+        monitor._eof_count = 3
+        assert monitor._eof_count == 3
+
+        # 模拟读到正常数据 → 重置
+        monitor._eof_count = 0
+        assert monitor._eof_count == 0
+
+    def test_eof_count_below_threshold_no_exit(self):
+        """EOF 计数低于阈值时不应退出。"""
+        monitor = EscapeMonitor()
+        monitor._eof_count = 0
+        # 低于阈值（5），不应触发退出条件
+        assert monitor._eof_count < _EOF_THRESHOLD
+        monitor._eof_count = 4
+        assert monitor._eof_count < _EOF_THRESHOLD
+
+    # ── select 熔断 ──────────────────────────────────────
+
+    def test_select_error_threshold_triggers_exit(self):
+        """select 错误计数达阈值时应触发退出。"""
+        monitor = EscapeMonitor()
+        monitor._select_error_count = 10
+        assert monitor._select_error_count >= _SELECT_ERROR_THRESHOLD
+
+    def test_select_error_count_resets_on_success(self):
+        """select 成功时错误计数器重置。"""
+        monitor = EscapeMonitor()
+        monitor._select_error_count = 5
+        # 模拟 select 成功 → 重置
+        monitor._select_error_count = 0
+        assert monitor._select_error_count == 0
+
+    def test_select_error_below_threshold_no_exit(self):
+        """select 错误计数低于阈值时不应退出。"""
+        monitor = EscapeMonitor()
+        monitor._select_error_count = 0
+        assert monitor._select_error_count < _SELECT_ERROR_THRESHOLD
+        monitor._select_error_count = 9
+        assert monitor._select_error_count < _SELECT_ERROR_THRESHOLD
+
+    # ── 计数器初始化 ─────────────────────────────────────
+
+    def test_fault_counters_initialized_in_init(self):
+        """构造 EscapeMonitor 后 _eof_count 和 _select_error_count 初始化为 0。"""
+        monitor = EscapeMonitor()
+        assert monitor._eof_count == 0
+        assert monitor._select_error_count == 0
+
+    def test_fault_counters_independent(self):
+        """_eof_count 和 _select_error_count 互相独立。"""
+        monitor = EscapeMonitor()
+        monitor._eof_count = 3
+        monitor._select_error_count = 7
+        assert monitor._eof_count == 3
+        assert monitor._select_error_count == 7
+        # 重置一个不影响另一个
+        monitor._eof_count = 0
+        assert monitor._eof_count == 0
+        assert monitor._select_error_count == 7

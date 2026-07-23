@@ -540,3 +540,47 @@ class TestWaitForUserInput:
         result = consumer.wait_for_user_input(mock_monitor, timeout=0.1)
 
         assert result == ""
+
+    # ── monitor 存活检测测试（步骤 3） ──────────────
+
+    def test_monitor_dead_raises_runtime_error(self):
+        """monitor.is_alive == False → 抛出 RuntimeError"""
+        from unittest.mock import MagicMock
+        from src.tui.consumer import ChatUIConsumer
+
+        consumer = ChatUIConsumer()
+
+        mock_monitor = MagicMock()
+        mock_monitor.is_alive = False
+        mock_monitor.get_queued_input.return_value = None
+
+        with pytest.raises(RuntimeError, match="EscapeMonitor thread died"):
+            consumer.wait_for_user_input(mock_monitor, timeout=10)
+
+    def test_monitor_without_is_alive_no_error(self):
+        """monitor 无 is_alive 属性 → 不抛异常（向后兼容）"""
+        from unittest.mock import MagicMock
+        from src.tui.consumer import ChatUIConsumer
+
+        consumer = ChatUIConsumer()
+
+        mock_monitor = MagicMock(spec=["get_queued_input", "set_prefill"])
+        # 不设置 is_alive，hasattr 应返回 False
+        mock_monitor.get_queued_input.return_value = "text"
+
+        result = consumer.wait_for_user_input(mock_monitor, timeout=10)
+        assert result == "text"
+
+    def test_monitor_alive_continues_polling(self):
+        """monitor.is_alive == True → 正常轮询并返回输入"""
+        from unittest.mock import MagicMock
+        from src.tui.consumer import ChatUIConsumer
+
+        consumer = ChatUIConsumer()
+
+        mock_monitor = MagicMock()
+        mock_monitor.is_alive = True
+        mock_monitor.get_queued_input.side_effect = [None, "text"]
+
+        result = consumer.wait_for_user_input(mock_monitor, timeout=10)
+        assert result == "text"

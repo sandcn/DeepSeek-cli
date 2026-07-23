@@ -137,6 +137,28 @@ class InteractiveLoop:
                 user_input = await asyncio.to_thread(
                     self._chat_ui.wait_for_user_input, self._monitor, prefill,
                 )
+            except RuntimeError as e:
+                if "EscapeMonitor" in str(e):
+                    _logger.warning("EscapeMonitor 线程死亡，尝试恢复: %s", e)
+                    self._chat_ui.write_line(
+                        "\n  ⚠ EscapeMonitor 线程异常退出，正在重启…"
+                    )
+                    try:
+                        self._teardown_monitor()
+                        self._setup_monitor(session, state)
+                        _register_session_handlers(session, self._monitor, self._loop_state, self._chat_ui)
+                        return _RoundResult(should_exit=False)
+                    except Exception as recovery_err:
+                        _logger.critical(
+                            "EscapeMonitor 恢复失败: %s", recovery_err,
+                            exc_info=recovery_err,
+                        )
+                        self._chat_ui.write_line(
+                            f"\n  [错误] 无法恢复输入监听: {recovery_err}"
+                        )
+                        return _RoundResult(should_exit=True)
+                # 非 monitor 死亡的 RuntimeError 重新抛出
+                raise
             except (EOFError, KeyboardInterrupt):
                 return _RoundResult(should_exit=True)
 
@@ -428,8 +450,23 @@ class InteractiveLoop:
         self._monitor = EscapeMonitor()
 
     def _setup_monitor(self, session, state):
-        """初始化 EscapeMonitor 并注册回调（假设 self._monitor 已由 _create_monitor 创建）"""
-        if self._monitor is None:
+        """初始化 EscapeMonitor 并注册回调（假设 self._monitor 已由 _create_monitor 创建）
+
+        防御性重建：若 monitor 为 None，或 monitor 曾启动后线程死亡，
+        先清理再创建新实例。首次调用时 _create_monitor 已创建的未启动
+        monitor（_thread=None）不会被误判为需要重建，确保
+        _register_session_handlers 闭包中持有的引用与最终启动的是同一实例。
+        """
+        if self._monitor is None or (self._monitor._thread is not None and not self._monitor.is_alive):
+            if self._monitor is not None:
+                # monitor 线程已死但实例还在：先安全清理
+                try:
+                    self._teardown_monitor()
+                except Exception:
+                    _logger.debug(
+                        "_setup_monitor: teardown 已死 monitor 时异常 (预期内)",
+                        exc_info=True,
+                    )
             self._monitor = EscapeMonitor()
         self._monitor.set_special_key_callback(
             make_special_key_callback(self, session, state, self._chat_ui)

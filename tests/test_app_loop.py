@@ -997,3 +997,294 @@ class TestMonitorFinallyGuard:
         with patch("src.app_loop.stop_active_monitor") as mock_stop:
             _exit_save_and_stop(session)
             mock_stop.assert_called_once()
+
+
+# ═══════════════════════════════════════════════════════════════
+# 步骤 4：monitor 恢复逻辑测试 — TestMonitorRecovery
+# ═══════════════════════════════════════════════════════════════
+
+
+class TestMonitorRecovery:
+    """测试 _handle_round 中 monitor 死亡异常的捕获与恢复逻辑。
+
+    核心断言：
+    - RuntimeError("EscapeMonitor thread died") 触发 _teardown_monitor + _setup_monitor
+    - 恢复成功后返回 should_exit=False
+    - _setup_monitor 失败时返回 should_exit=True
+    - 非 monitor 死亡的 RuntimeError 不触发恢复（向上传播）
+    """
+
+    # ── 公共夹具 ──────────────────────────────────────────
+
+    @staticmethod
+    def _make_loop_with_mocks():
+        """创建带 mock 的 InteractiveLoop 实例。"""
+        loop = InteractiveLoop.__new__(InteractiveLoop)
+        loop._chat_ui = MagicMock()
+        loop._chat_ui.write_line = MagicMock()
+        loop._chat_ui.flush = MagicMock()
+        loop._chat_ui.bottom_bar = MagicMock()
+        loop._chat_ui.bottom_bar.ensure_cursor_in_lower = MagicMock()
+        loop._chat_ui.bottom_bar.set_model_name = MagicMock()
+        loop._chat_ui.wait_for_user_input = MagicMock()
+        loop._monitor = MagicMock()
+        loop._monitor.is_alive = True
+        loop._force_exit = asyncio.Event()
+        loop._loop_state = {}
+        loop._msg_done_ref = None
+        loop._loaded_data = None
+        # ★ 补齐 _term_width_cache，避免 _get_term_width() 抛 AttributeError
+        loop._term_width_cache = MagicMock()
+        loop._term_width_cache.get.return_value = 80
+        return loop
+
+    # ── 场景 1：monitor 死亡 RuntimeError 触发恢复 ──
+
+    @pytest.mark.asyncio
+    async def test_runtime_error_from_dead_monitor_triggers_recovery(self):
+        """wait_for_user_input 抛出 RuntimeError("EscapeMonitor thread died")
+        时触发 _teardown_monitor + _setup_monitor，返回 should_exit=False。
+        """
+        loop = self._make_loop_with_mocks()
+        # mock wait_for_user_input 抛出 monitor 死亡异常
+        loop._chat_ui.wait_for_user_input.side_effect = RuntimeError(
+            "EscapeMonitor thread died"
+        )
+
+        session = MagicMock()
+        session.retry_pending = False
+        session.pending_messages = []
+        state = SessionState(model="test-model")
+        queue = MessageQueue()
+        msg_done = asyncio.Event()
+
+        # mock _teardown_monitor 和 _setup_monitor 为 spy
+        loop._teardown_monitor = MagicMock()
+        loop._setup_monitor = MagicMock()
+
+        with patch("src.app_loop._loop._merge_prefill", return_value=""):
+            result = await loop._handle_round(session, state, queue, msg_done)
+
+        # 验证恢复流程
+        loop._teardown_monitor.assert_called_once()
+        loop._setup_monitor.assert_called_once_with(session, state)
+        assert result.should_exit is False, (
+            f"恢复成功后应返回 should_exit=False，实际: {result.should_exit}"
+        )
+
+    # ── 场景 2：恢复失败时返回 should_exit=True ──
+
+    @pytest.mark.asyncio
+    async def test_recovery_failure_returns_should_exit_true(self):
+        """_setup_monitor 抛异常时返回 should_exit=True（优雅退出）。"""
+        loop = self._make_loop_with_mocks()
+        loop._chat_ui.wait_for_user_input.side_effect = RuntimeError(
+            "EscapeMonitor thread died"
+        )
+
+        session = MagicMock()
+        session.retry_pending = False
+        session.pending_messages = []
+        state = SessionState(model="test-model")
+        queue = MessageQueue()
+        msg_done = asyncio.Event()
+
+        # _teardown_monitor 正常，_setup_monitor 抛异常
+        loop._teardown_monitor = MagicMock()
+        loop._setup_monitor = MagicMock(
+            side_effect=RuntimeError("无法创建 EscapeMonitor")
+        )
+
+        with patch("src.app_loop._loop._merge_prefill", return_value=""):
+            result = await loop._handle_round(session, state, queue, msg_done)
+
+        loop._teardown_monitor.assert_called_once()
+        loop._setup_monitor.assert_called_once_with(session, state)
+        assert result.should_exit is True, (
+            f"恢复失败时应返回 should_exit=True，实际: {result.should_exit}"
+        )
+        # 验证错误消息已输出
+        loop._chat_ui.write_line.assert_any_call(
+            "\n  ⚠ EscapeMonitor 线程异常退出，正在重启…"
+        )
+
+    # ── 场景 3：非 monitor 死亡的 RuntimeError 不触发恢复 ──
+
+    @pytest.mark.asyncio
+    async def test_non_monitor_runtime_error_not_caught(self):
+        """RuntimeError 不包含 "EscapeMonitor" 时不触发恢复，
+        异常被外层 except Exception 捕获，返回 should_exit=False。
+        """
+        loop = self._make_loop_with_mocks()
+        loop._chat_ui.wait_for_user_input.side_effect = RuntimeError(
+            "some other error"
+        )
+
+        session = MagicMock()
+        session.retry_pending = False
+        session.pending_messages = []
+        state = SessionState(model="test-model")
+        queue = MessageQueue()
+        msg_done = asyncio.Event()
+
+        loop._teardown_monitor = MagicMock()
+        loop._setup_monitor = MagicMock()
+
+        with patch("src.app_loop._loop._merge_prefill", return_value=""):
+            result = await loop._handle_round(session, state, queue, msg_done)
+
+        # 恢复逻辑不应被触发
+        loop._teardown_monitor.assert_not_called()
+        loop._setup_monitor.assert_not_called()
+        # 外层 except Exception 捕获后返回 should_exit=False
+        assert result.should_exit is False, (
+            f"非 monitor 异常应被外层捕获，返回 should_exit=False，实际: {result.should_exit}"
+        )
+        # 验证错误消息已输出
+        loop._chat_ui.write_line.assert_any_call(
+            f"\n  [错误] some other error，可继续输入"
+        )
+
+    # ── 场景 4：集成验证 — 含消息队列的完整恢复 ──
+
+    @pytest.mark.asyncio
+    async def test_recovery_with_message_queue_continues(self):
+        """恢复后 _handle_round 返回 should_exit=False，不影响 msg_done。"""
+        loop = self._make_loop_with_mocks()
+        loop._chat_ui.wait_for_user_input.side_effect = RuntimeError(
+            "EscapeMonitor thread died"
+        )
+
+        session = MagicMock()
+        session.retry_pending = False
+        session.pending_messages = []
+        state = SessionState(model="test-model")
+        queue = MessageQueue()
+        msg_done = asyncio.Event()
+        msg_done.set()  # 预设为 set，验证 clear 被调用
+
+        loop._teardown_monitor = MagicMock()
+        loop._setup_monitor = MagicMock()
+
+        with patch("src.app_loop._loop._merge_prefill", return_value=""):
+            result = await loop._handle_round(session, state, queue, msg_done)
+
+        assert result.should_exit is False
+        # msg_done 在方法入口被 clear，恢复路径中不应被 set
+        # （msg_done 仅在通用 except Exception 中被 set）
+
+
+# ═══════════════════════════════════════════════════════════════
+# 步骤 4：_setup_monitor 防御性重建逻辑测试 — TestSetupMonitorRebuild
+# ═══════════════════════════════════════════════════════════════
+
+
+class TestSetupMonitorRebuild:
+    """测试 _setup_monitor 的防御性重建逻辑。
+
+    核心断言：
+    - _monitor=None → 创建新实例
+    - _monitor 线程已死 → 先清理再重建
+    - _monitor 健康 → 复用现有实例（不重复创建）
+    """
+
+    # ── 场景 1：_monitor=None → 创建新实例 ──
+
+    def test_monitor_none_creates_new_instance(self):
+        """_monitor=None 时创建新的 EscapeMonitor。"""
+        loop = InteractiveLoop.__new__(InteractiveLoop)
+        loop._monitor = None
+        loop._chat_ui = MagicMock()
+        loop._chat_ui.setup_completion = MagicMock()
+        loop._chat_ui.refresh_bottom_bar = MagicMock()
+
+        session = MagicMock()
+        state = SessionState(model="test-model")
+
+        with patch("src.app_loop._loop.EscapeMonitor") as MockMonitor:
+            mock_instance = MockMonitor.return_value
+            mock_instance.is_alive = True
+            loop._setup_monitor(session, state)
+
+        MockMonitor.assert_called_once()
+        # 新实例启动了
+        mock_instance.start.assert_called_once()
+
+    # ── 场景 2：monitor 线程已死 → 先清理再重建 ──
+
+    def test_monitor_dead_rebuilds(self):
+        """_monitor.is_alive=False 时先清理再创建新实例。"""
+        loop = InteractiveLoop.__new__(InteractiveLoop)
+        old_monitor = MagicMock()
+        old_monitor.is_alive = False
+        loop._monitor = old_monitor
+        loop._chat_ui = MagicMock()
+        loop._chat_ui.setup_completion = MagicMock()
+        loop._chat_ui.refresh_bottom_bar = MagicMock()
+
+        session = MagicMock()
+        state = SessionState(model="test-model")
+
+        with patch("src.app_loop._loop.EscapeMonitor") as MockMonitor:
+            mock_instance = MockMonitor.return_value
+            mock_instance.is_alive = True
+            loop._setup_monitor(session, state)
+
+        # 旧 monitor 被 stop + _restore_terminal_settings
+        old_monitor.stop.assert_called_once()
+        old_monitor._restore_terminal_settings.assert_called_once()
+        # 新 monitor 被创建
+        MockMonitor.assert_called_once()
+        mock_instance.start.assert_called_once()
+
+    # ── 场景 3：monitor 健康 → 复用 ──
+
+    def test_monitor_alive_reuses(self):
+        """_monitor.is_alive=True 时复用现有实例，不创建新 EscapeMonitor。"""
+        loop = InteractiveLoop.__new__(InteractiveLoop)
+        old_monitor = MagicMock()
+        old_monitor.is_alive = True
+        loop._monitor = old_monitor
+        loop._chat_ui = MagicMock()
+        loop._chat_ui.setup_completion = MagicMock()
+        loop._chat_ui.refresh_bottom_bar = MagicMock()
+
+        session = MagicMock()
+        state = SessionState(model="test-model")
+
+        with patch("src.app_loop._loop.EscapeMonitor") as MockMonitor:
+            loop._setup_monitor(session, state)
+
+        # 不应该创建新实例
+        MockMonitor.assert_not_called()
+        # 旧 monitor 不应被 stop
+        old_monitor.stop.assert_not_called()
+        # 但仍注册回调并 start
+        old_monitor.set_special_key_callback.assert_called_once()
+        old_monitor.start.assert_called_once()
+
+    # ── 场景 4：stop 已死 monitor 异常不影响重建 ──
+
+    def test_stop_dead_monitor_exception_does_not_block_rebuild(self):
+        """stop 已死 monitor 抛异常时仍完成重建。"""
+        loop = InteractiveLoop.__new__(InteractiveLoop)
+        old_monitor = MagicMock()
+        old_monitor.is_alive = False
+        old_monitor.stop.side_effect = RuntimeError("线程已死")
+        loop._monitor = old_monitor
+        loop._chat_ui = MagicMock()
+        loop._chat_ui.setup_completion = MagicMock()
+        loop._chat_ui.refresh_bottom_bar = MagicMock()
+
+        session = MagicMock()
+        state = SessionState(model="test-model")
+
+        with patch("src.app_loop._loop.EscapeMonitor") as MockMonitor:
+            mock_instance = MockMonitor.return_value
+            mock_instance.is_alive = True
+            # 不应抛出异常
+            loop._setup_monitor(session, state)
+
+        # 新实例已创建并启动
+        MockMonitor.assert_called_once()
+        mock_instance.start.assert_called_once()
