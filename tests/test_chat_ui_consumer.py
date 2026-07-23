@@ -545,6 +545,38 @@ class TestChatUIConsumerResume:
                     consumer.resume()
                     mock_start.assert_called_once()
 
+    def test_resume_forces_bottom_bar_active_false(self, consumer, mock_bus):
+        """resume() 强制重置 _bottom_bar._active=False，防止 setup() 被 early return 跳过。
+
+        模拟 run_bottom_bar_selection 泄漏 _active=True 状态，
+        验证 resume() 中 setup() 仍被调用且 _active 在调用前已重置。
+        """
+        consumer._started = True
+        consumer._engine._render_running = False
+
+        # 模拟 run_bottom_bar_selection 泄漏 _active=True
+        consumer._bottom_bar._active = True
+
+        call_order = []
+
+        def _record_setup():
+            # 记录调用时 _active 的实际值
+            call_order.append(("setup", consumer._bottom_bar._active))
+
+        with patch.object(consumer._engine, 'start'):
+            with patch.object(consumer._bottom_bar, 'setup', side_effect=_record_setup):
+                with patch('sys.__stdout__'):
+                    consumer.resume()
+
+        # 验证 setup() 被调用（未被 early return 跳过）
+        assert len(call_order) == 1, (
+            f"预期 setup() 被调用 1 次，实际: {len(call_order)}"
+        )
+        # 验证 setup() 被调用时 _active 已为 False
+        assert call_order[0] == ("setup", False), (
+            f"预期 setup 调用时 _active=False，实际: {call_order[0]}"
+        )
+
 
 # ═══════════════════════════════════════════════════════
 # TestChatUIConsumerLifecycle

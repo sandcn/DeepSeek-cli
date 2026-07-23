@@ -785,6 +785,57 @@ class TestHandleEditmsgCmd:
 
         # 无异常即为通过（没有 chat_ui.display_messages 可断言）
 
+    # ── 场景 7：Bug B 回归 — resume 强制重置 _active 状态 ──
+
+    async def test_resume_rebuilds_bottom_bar_after_active_leak(self, mock_session, mock_state):
+        """Bug B 回归：run_bottom_bar_selection 泄漏 _active=True 后，
+        _handle_editmsg_cmd finally 块中 resume() 仍调用 bottom_bar.setup()。
+
+        使用真实 ChatUIConsumer 实例（mock 引擎避免线程创建），
+        模拟 editmsg 弹窗执行后留下 _active=True，
+        验证 resume() 中 setup() 未被 early return 跳过。
+        """
+        from src.tui.consumer import ChatUIConsumer
+        from src.app_loop._handlers import _handle_editmsg_cmd
+
+        # 创建真实 ChatUIConsumer，mock 引擎避免真实线程创建
+        consumer = ChatUIConsumer(event_bus=MagicMock())
+        consumer._started = True
+        consumer._engine._render_running = False
+        consumer._engine.start = MagicMock()
+        consumer._engine.stop = MagicMock()
+        consumer._engine.flush = MagicMock()
+
+        # 模拟 run_bottom_bar_selection 泄漏 _active=True
+        consumer._bottom_bar._active = True
+
+        # spy on bottom_bar.setup 记录调用
+        original_setup = consumer._bottom_bar.setup
+        call_count = [0]
+
+        def _spy_setup():
+            call_count[0] += 1
+            return original_setup()
+
+        consumer._bottom_bar.setup = _spy_setup
+
+        mock_monitor = MagicMock()
+
+        with patch("src.tui.consumer.get_active_chat_ui", return_value=consumer), \
+             patch("src.api.escape_monitor.get_active_monitor", return_value=mock_monitor), \
+             patch("asyncio.to_thread", new_callable=AsyncMock), \
+             patch("sys.__stdout__"):
+            await _handle_editmsg_cmd(mock_session, mock_state)
+
+        # 验证 bottom_bar.setup() 在 resume() 中被调用（未被 early return 跳过）
+        assert call_count[0] == 1, (
+            f"预期 setup() 被调用 1 次，实际: {call_count[0]}"
+        )
+        # 验证 resume 后 _active 为 True（setup() 正常完成）
+        assert consumer._bottom_bar._active is True, (
+            f"resume 后 _active 应为 True，实际: {consumer._bottom_bar._active}"
+        )
+
 
 # ═══════════════════════════════════════════════════════════════
 # Bug 7 回归测试 — TestMsgDoneTimeout

@@ -67,7 +67,7 @@ def flush_stdin() -> None:
     # 所有未读数据，比 select+read 更彻底。
     try:
         import termios as _termios
-        _termios.tcflush(sys.stdin, _termios.TCIFLUSH)
+        _termios.tcflush(sys.stdin.fileno(), _termios.TCIFLUSH)
     except Exception:
         _logger.debug("termios.tcflush 失败（非关键）")
     # Windows 回退：使用 msvcrt 清空 stdin 缓冲区

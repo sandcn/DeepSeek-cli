@@ -219,6 +219,7 @@ class ChatUIConsumer:
                     _logger.debug("resume 光标定位失败, 使用 ANSI 回退", exc_info=True)
                     sys.__stdout__.write(_ANSI_CURSOR_BOTTOM)
                 sys.__stdout__.flush()
+                self._bottom_bar._active = False
                 self._bottom_bar.setup()
                 self._engine.start()
 

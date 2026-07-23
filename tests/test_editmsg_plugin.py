@@ -242,13 +242,14 @@ async def test_no_rerender_without_prefill(EditmsgPlugin, mock_loop, mock_ctx, m
 
 
 @pytest.mark.asyncio
-async def test_finally_block_monitor_started_before_flush(EditmsgPlugin, mock_loop, mock_ctx):
-    """验证 finally 块调用顺序: chat_ui.resume → monitor.start(prefill=...) → chat_ui.flush
+async def test_finally_block_flush_before_monitor_start(EditmsgPlugin, mock_loop, mock_ctx):
+    """验证 finally 块调用顺序: chat_ui.resume → chat_ui.flush → monitor.start(prefill=...) → chat_ui.flush
 
     使用 call_log 模式记录跨 mock 对象的调用时序：
-    1. chat_ui.resume() 最先（恢复渲染线程，确保 echo 回调能被处理）
-    2. monitor.start(prefill=...) 其次（启动监听并预填文本）
-    3. chat_ui.flush() 最后（刷新底部栏）
+    1. chat_ui.resume() 最先（恢复渲染线程）
+    2. chat_ui.flush() 其次（等待 render 线程就绪）
+    3. monitor.start(prefill=...) 再次（render 已就绪，安全设置 prefill）
+    4. chat_ui.flush() 最后（处理 monitor.start 产生的渲染命令）
     """
     plugin = EditmsgPlugin()
     plugin.bind_loop(mock_loop)
@@ -265,12 +266,14 @@ async def test_finally_block_monitor_started_before_flush(EditmsgPlugin, mock_lo
     ):
         await plugin.async_execute(mock_ctx)
 
-    # 验证调用顺序 + prefill 参数: resume → start:content → flush
-    assert call_log == ["resume", "start:content", "flush"], (
-        f"finally 块调用顺序或 prefill 参数异常，期望 ['resume', 'start:content', 'flush']，实际 {call_log}"
+    # 验证调用顺序 + prefill 参数: resume → flush → start:content → flush
+    assert call_log == ["resume", "flush", "start:content", "flush"], (
+        f"finally 块调用顺序或 prefill 参数异常，期望 ['resume', 'flush', 'start:content', 'flush']，实际 {call_log}"
     )
-    # flush 恰好被调用一次（call_log 中已验证存在，此处用 assert_called_once 加强约束）
-    mock_loop._chat_ui.flush.assert_called_once()
+    # flush 恰好被调用两次（resume 后一次等待 render 就绪，monitor.start 后一次处理渲染命令）
+    assert mock_loop._chat_ui.flush.call_count == 2, (
+        f"flush 调用次数异常，期望 2 次，实际 {mock_loop._chat_ui.flush.call_count}"
+    )
 
 
 # ═══════════════════════════════════════════════════════════════════════════

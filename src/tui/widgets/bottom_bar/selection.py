@@ -282,6 +282,7 @@ def run_bottom_bar_selection(
         if bb is None:
             return {"action": "error", "index": None}
 
+    was_active = bb._active
     if not bb._active:
         try:
             bb.setup()
@@ -293,6 +294,8 @@ def run_bottom_bar_selection(
             bb.show_completions(display_items, initial_idx, texts=items, title=title)
         except Exception as exc:
             _logger.warning("Cygwin show_completions 异常: %s", exc, exc_info=True)
+            if not was_active:
+                bb._active = False
             return {"action": "error", "index": None}
         # ★ 防御性清空 stdin：与下方 Blessed 路径一致。monitor.stop() 恢复终端
         #    cooked 模式后，Cygwin PTY 可能在模式切换时产生残留控制序列字节
@@ -313,6 +316,8 @@ def run_bottom_bar_selection(
                 bb.hide_completions()
             except Exception:
                 pass
+            if not was_active:
+                bb._active = False
 
     bb.show_completions(display_items, initial_idx, texts=items, title=title)
 
@@ -432,6 +437,8 @@ def run_bottom_bar_selection(
             bb.hide_completions()
         except Exception:
             pass
+        if not was_active:
+            bb._active = False
         try:
             # 清空 stdin 缓冲
             from src._compat_termios import termios as _termios

@@ -125,6 +125,11 @@ class EditmsgPlugin(InteractiveCommandPlugin):
                     chat_ui.resume()
                 except Exception:
                     _logger.warning("chat_ui.resume() 在 finally 中异常", exc_info=True)
+            if chat_ui is not None:
+                try:
+                    chat_ui.flush()
+                except Exception:
+                    _logger.warning("chat_ui.flush() (post-resume) 在 finally 中异常", exc_info=True)
             if monitor is not None:
                 try:
                     prefill_text = state.get("prefill", "")
@@ -136,7 +141,7 @@ class EditmsgPlugin(InteractiveCommandPlugin):
                 try:
                     chat_ui.flush()
                 except Exception:
-                    _logger.warning("chat_ui.flush() 在 finally 中异常", exc_info=True)
+                    _logger.warning("chat_ui.flush() (post-start) 在 finally 中异常", exc_info=True)
 
         # ★ 编辑后反馈：编辑失败（未产生 prefill/retry）时给用户明确提示
         if not needs_rerender and chat_ui is not None:

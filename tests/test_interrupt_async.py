@@ -133,3 +133,75 @@ class TestInterruptAsync:
         result = await wait_for_interrupt_async(timeout=0.1)
 
         assert result is False
+
+
+class TestFlushStdinTcflush:
+    """flush_stdin() tcflush 参数正确性测试。
+
+    验证 Bug C 修复：tcflush 第一个参数应为 sys.stdin.fileno() (int fd)
+    而非 sys.stdin (file object)。
+
+    使用 patch.object 而非 patch.dict 替换 sys.modules：
+    patch.dict 会替换整个 termios 模块对象，导致依赖 termios 的
+    其他模块（如 tty）无法导入真实的 TCSAFLUSH 等常量。
+    patch.object 仅替换 tcflush 函数，不影响 termios 模块其余部分。
+    """
+
+    @pytest.fixture(autouse=True)
+    def _ensure_termios(self):
+        """确保 termios 已导入 sys.modules，供 patch.object 使用。"""
+        try:
+            import termios as _termios  # noqa: F401
+        except ImportError:
+            pytest.skip("termios 在当前平台不可用")
+
+    def test_tcflush_uses_fileno(self):
+        """调用 flush_stdin() 时 tcflush 收到 int fd 参数而非 file object。
+
+        Mock 策略：
+        - patch.object(termios, 'tcflush') 仅替换 tcflush 函数
+        - patch select.select 返回空列表 → while 循环快速退出
+        - 调用 flush_stdin() 后验证 tcflush 被调用且第一个参数为 int
+        """
+        import termios as _real_termios
+        from unittest.mock import MagicMock, patch
+
+        mock_select = MagicMock()
+        mock_select.select = MagicMock(return_value=([], [], []))
+
+        with patch.object(_real_termios, 'tcflush') as mock_tcflush, \
+             patch('src.api.interrupt_async.select', mock_select):
+            from src.api.interrupt_async import flush_stdin
+            flush_stdin()
+
+        # 验证 tcflush 被调用
+        mock_tcflush.assert_called_once()
+        # 验证第一个参数为 int（sys.stdin.fileno() 的返回值）
+        call_args = mock_tcflush.call_args[0]
+        assert isinstance(call_args[0], int), \
+            f"tcflush 第一个参数应为 int fd，实际类型: {type(call_args[0])}"
+        # 验证第二个参数为 TCIFLUSH
+        assert call_args[1] == _real_termios.TCIFLUSH, \
+            f"tcflush 第二个参数应为 TCIFLUSH，实际: {call_args[1]}"
+
+    def test_tcflush_exception_is_swallowed(self):
+        """tcflush 抛异常时 flush_stdin() 不崩溃。
+
+        验证 try/except Exception 兜底：tcflush 失败时函数正常返回，
+        不会将异常传播到调用方。
+        """
+        import termios as _real_termios
+        from unittest.mock import MagicMock, patch
+
+        mock_select = MagicMock()
+        mock_select.select = MagicMock(return_value=([], [], []))
+
+        with patch.object(_real_termios, 'tcflush',
+                          side_effect=OSError("Bad fd")) as mock_tcflush, \
+             patch('src.api.interrupt_async.select', mock_select):
+            from src.api.interrupt_async import flush_stdin
+            # 不应抛出异常
+            flush_stdin()
+
+        # tcflush 仍被调用（只是抛了异常被吞掉）
+        mock_tcflush.assert_called_once()

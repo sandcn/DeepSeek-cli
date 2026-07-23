@@ -171,6 +171,84 @@ class TestStreamInputInterrupt:
         assert monitor.get_current_stream_input() == ""
         assert monitor.has_queued_input() is False
 
+    def test_interrupt_preserves_submitted_text(self):
+        """中断后保护已提交文本：用户按 Enter 提交 /editmsg 后 ESC 不清除。
+
+        模拟 Bug D 场景：
+        1. 用户输入 "/editmsg" 并按 Enter → _enter() 设置 _input_ready
+        2. 残留 ESC 字节触发 _do_interrupt()
+        3. 验证 _submitted_text="/editmsg" 未被清除
+        4. get_queued_input() 仍返回 "/editmsg"
+        """
+        monitor = EscapeMonitor()
+        # 模拟用户输入 "/editmsg" 并按 Enter
+        monitor._input_handler.handle_chars("/editmsg")
+        monitor._input_handler._enter()
+        assert monitor.has_queued_input() is True
+
+        # ESC 中断触发 _do_interrupt()
+        monitor._do_interrupt()
+
+        # 验证已提交文本未被清除
+        assert monitor.has_queued_input() is True, \
+            "中断后 has_queued_input() 应仍为 True（已提交文本被保护）"
+        result = monitor.get_queued_input()
+        assert result == "/editmsg", \
+            f"中断后 get_queued_input() 应返回已提交文本，实际: {result!r}"
+
+        # 验证中断信号已设置
+        assert monitor._interrupted.is_set(), \
+            "中断后 _interrupted 应被设置"
+
+        # 消费后不应再有排队输入
+        assert monitor.has_queued_input() is False
+
+    def test_interrupt_clears_buffer_when_no_submission(self):
+        """无已提交文本时 _do_interrupt() 仍然清除缓冲区（回归测试）。
+
+        场景：用户正在输入但未按 Enter（无 _input_ready），
+        _do_interrupt() 应保留原有清除行为。
+        """
+        monitor = EscapeMonitor()
+        # 用户正在输入字符（未按 Enter）
+        monitor._input_handler.handle_char('h')
+        monitor._input_handler.handle_char('e')
+        monitor._input_handler.handle_char('l')
+        monitor._input_handler.handle_char('l')
+        monitor._input_handler.handle_char('o')
+        assert monitor.has_queued_input() is False
+        assert monitor.get_current_stream_input() == "hello"
+
+        # ESC 中断
+        monitor._do_interrupt()
+
+        # 验证缓冲区被清空（原有行为不变）
+        assert monitor.get_current_stream_input() == "", \
+            "无已提交文本时中断应清空缓冲区"
+        assert monitor.has_queued_input() is False
+        # 验证中断信号已设置
+        assert monitor._interrupted.is_set()
+
+    def test_interrupt_always_sets_interrupted_flag(self):
+        """无论是否有已提交文本，_do_interrupt() 始终设置中断信号。
+
+        这是 _do_interrupt() 的核心语义——中断标志必须设置，
+        无论缓冲区状态如何。
+        """
+        monitor = EscapeMonitor()
+
+        # 场景 A: 无已提交文本
+        monitor._do_interrupt()
+        assert monitor._interrupted.is_set()
+        monitor._interrupted.clear()
+
+        # 场景 B: 有已提交文本
+        monitor._input_handler.handle_chars("test")
+        monitor._input_handler._enter()
+        monitor._do_interrupt()
+        assert monitor._interrupted.is_set(), \
+            "有已提交文本时中断信号仍应设置"
+
 
 class TestStreamInputStartReset:
     """start() 清空流式输入状态测试。"""
@@ -1109,3 +1187,99 @@ class TestMonitorFaultDetection:
         monitor._eof_count = 0
         assert monitor._eof_count == 0
         assert monitor._select_error_count == 7
+
+
+class TestResumeFromCallbackTcflush:
+    """_resume_from_callback() tcflush 调用验证。
+
+    验证 Bug A 修复：_resume_from_callback() 在 _apply_monitor_settings()
+    之后调用 termios.tcflush(fd, TCIFLUSH) 清空 stdin 内核缓冲区，
+    防止 cooked→cbreak 模式切换产生的残留字节（如 \\r\\n）混入后续输入。
+    """
+
+    def test_tcflush_called_after_apply_monitor_settings(self):
+        """验证 _resume_from_callback() 调用了 termios.tcflush(fd, TCIFLUSH)。
+
+        Mock 策略：
+        - src._compat_termios.termios → mock（含 tcflush / TCIFLUSH）
+        - src._compat_termios.tty → mock（_apply_monitor_settings 需要）
+        - sys.stdin.fileno → 返回固定 fd=0
+        - src.api.interrupt_async.reset_interrupt_async → mock
+        """
+        mock_termios = MagicMock()
+        mock_termios.TCIFLUSH = 2
+        mock_termios.TCSADRAIN = 1
+        mock_termios.tcgetattr = MagicMock()
+        mock_termios.tcsetattr = MagicMock()
+        mock_termios.tcflush = MagicMock()
+
+        mock_tty = MagicMock()
+        mock_tty.setcbreak = MagicMock()
+
+        with patch('src._compat_termios.termios', mock_termios), \
+             patch('src._compat_termios.tty', mock_tty), \
+             patch('sys.stdin.fileno', return_value=0), \
+             patch('src.api.interrupt_async.reset_interrupt_async'):
+            monitor = EscapeMonitor()
+            monitor._resume_from_callback()
+
+            # 验证 tcflush 被调用：参数为 (fd=0, TCIFLUSH=2)
+            mock_termios.tcflush.assert_called_once_with(0, 2)
+
+    def test_tcflush_exception_is_suppressed(self):
+        """tcflush 抛出异常时 _resume_from_callback() 不崩溃，静默吞掉。
+
+        验证 tcflush 是尽力而为——即使失败（如 fd 无效/平台不支持），
+        方法仍正常完成，且 _active 被正确设置为 True。
+        """
+        mock_termios = MagicMock()
+        mock_termios.TCIFLUSH = 2
+        mock_termios.TCSADRAIN = 1
+        mock_termios.tcgetattr = MagicMock()
+        mock_termios.tcsetattr = MagicMock()
+        mock_termios.tcflush = MagicMock(side_effect=OSError("Bad file descriptor"))
+
+        mock_tty = MagicMock()
+        mock_tty.setcbreak = MagicMock()
+
+        with patch('src._compat_termios.termios', mock_termios), \
+             patch('src._compat_termios.tty', mock_tty), \
+             patch('sys.stdin.fileno', return_value=0), \
+             patch('src.api.interrupt_async.reset_interrupt_async'):
+            monitor = EscapeMonitor()
+            # 不应抛出异常
+            monitor._resume_from_callback()
+
+            # 验证 tcflush 被尝试调用
+            mock_termios.tcflush.assert_called_once_with(0, 2)
+            # 验证 _active 仍被正确设置（方法正常完成）
+            assert monitor._active.is_set(), \
+                "tcflush 异常后 _active 仍应被设置为 True"
+
+    def test_public_resume_also_calls_tcflush(self):
+        """验证公有 resume() 方法也调用了 termios.tcflush(fd, TCIFLUSH)。
+
+        与 _resume_from_callback() 相同，公有 resume() 在
+        _apply_monitor_settings() 之后、_active.set() 之前也应
+        清空 stdin 内核缓冲区，防止 cooked→cbreak 模式切换产生
+        的残留字节（如 \\r\\n）污染后续输入。
+        """
+        mock_termios = MagicMock()
+        mock_termios.TCIFLUSH = 2
+        mock_termios.TCSADRAIN = 1
+        mock_termios.tcgetattr = MagicMock()
+        mock_termios.tcsetattr = MagicMock()
+        mock_termios.tcflush = MagicMock()
+
+        mock_tty = MagicMock()
+        mock_tty.setcbreak = MagicMock()
+
+        with patch('src._compat_termios.termios', mock_termios), \
+             patch('src._compat_termios.tty', mock_tty), \
+             patch('sys.stdin.fileno', return_value=0), \
+             patch('src.api.interrupt_async.reset_interrupt_async'):
+            monitor = EscapeMonitor()
+            monitor.resume()
+
+            # 验证 tcflush 被调用：参数为 (fd=0, TCIFLUSH=2)
+            mock_termios.tcflush.assert_called_once_with(0, 2)

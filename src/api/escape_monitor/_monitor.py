@@ -159,6 +159,14 @@ class EscapeMonitor:
         #   resume() 必须显式重新进入 cbreak，否则 monitor 循环检测到 _active 已 set
         #   跳过重设路径，终端停留在 cooked 模式导致输入不可用）
         self._apply_monitor_settings()
+        # 清空 stdin 内核缓冲区：cooked→cbreak 模式切换时终端驱动可能
+        # 产生残留字节（如 \r\n），尤其在 Android/Termux 环境下，混入
+        # 后续输入缓冲区导致 Enter 被误触发或预填内容被污染
+        from src._compat_termios import termios
+        try:
+            termios.tcflush(sys.stdin.fileno(), termios.TCIFLUSH)
+        except Exception:
+            pass  # tcflush 是尽力而为，失败不影响恢复
         # 恢复活跃标志，monitor 线程检测到后重新挂接终端
         self._active.set()
 
@@ -283,6 +291,14 @@ class EscapeMonitor:
         reset_interrupt_async()
         # 直接恢复 cbreak 模式
         self._apply_monitor_settings()
+        # 清空 stdin 内核缓冲区：cooked→cbreak 模式切换时终端驱动可能
+        # 产生残留字节（如 \r\n），尤其在 Android/Termux 环境下，混入
+        # 后续输入缓冲区导致 Enter 被误触发或预填内容被污染
+        from src._compat_termios import termios
+        try:
+            termios.tcflush(sys.stdin.fileno(), termios.TCIFLUSH)
+        except Exception:
+            pass  # tcflush 是尽力而为，失败不影响恢复
         self._active.set()
 
     def _handle_special_key(self, action: str) -> None:
@@ -353,9 +369,11 @@ class EscapeMonitor:
         if self._stop.is_set():
             return
         self._interrupted.set()
-        # 清除流式输入缓冲区（中断时丢弃未提交的输入）
-        self._input_handler.reset()
-        self._input_handler._echo("")  # ★ 刷新底部栏显示空输入
+        # 仅当无已提交文本时才清除流式输入缓冲区
+        # 防止刚按 Enter 提交的文本（如 /editmsg）被 ESC 中断清空
+        if not self._input_handler.has_queued_input():
+            self._input_handler.reset()
+            self._input_handler._echo("")  # ★ 刷新底部栏显示空输入
         request_interrupt_async()
 
     def _monitor(self):
