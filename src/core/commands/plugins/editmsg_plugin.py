@@ -9,7 +9,7 @@ prefill 数据流（主路径 + 兜底路径）:
   主路径（finally 块，提前注入）:
     1. editmsg_plugin.py:async_execute — state_dict["prefill"] 赋值
     2. editmsg_plugin.py:async_execute:finally — monitor.start(prefill=prefill_text)
-       → EscapeMonitor._start → set_buffer(prefill) 直接设置终端预填缓冲区
+       → EscapeMonitor.start() → self._input_handler.set_buffer(prefill) 直接设置终端预填缓冲区
     3. state["prefill"] = "" — 清空，防止兜底路径重复设置
 
   兜底路径（state["prefill"] 已空，返回空字符串）:

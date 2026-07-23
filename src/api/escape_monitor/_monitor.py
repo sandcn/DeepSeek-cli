@@ -100,9 +100,10 @@ class EscapeMonitor:
         self._input_handler.load_history()
         if prefill:
             self._input_handler.set_buffer(prefill)
-        self._monitor_ready.clear()  # 预置 cleared：在线程启动前和 _echo() 调用前 clear，防止
-        # 调用方在 cbreak 就绪前通过 _monitor_ready.wait() 穿透，同时
-        # 防止 _echo() 回调路径中误判 _monitor_ready 为已就绪。
+        # 预置 cleared：
+        #   ① 线程启动前：防止 start() 调用方在 cbreak 就绪前通过 wait() 穿透
+        #   ② _echo() 调用前：防止回调路径误判 ready
+        self._monitor_ready.clear()
         self._input_handler._echo(self._input_handler.get_current_text())
         self._eof_count = 0
         self._select_error_count = 0

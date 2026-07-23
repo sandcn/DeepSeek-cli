@@ -79,14 +79,16 @@ async def test_prefill_resets_retry_pending(EditmsgPlugin, mock_loop, mock_ctx, 
 
     # 模拟 edit_current_messages 修改 edit_state 设 prefill
     with patch(
-        "src.ui.msg_list.edit_current_messages",
+        "src.tui.pipeline.message_editor.edit_current_messages",
         new=lambda agent, state: state.update({"prefill": "old user content", "retry": False}),
     ):
         result = await plugin.async_execute(mock_ctx)
 
     assert result is True
-    assert mock_ctx.state["prefill"] == "old user content"
+    assert mock_ctx.state["prefill"] == ""  # 已被 finally 清空（monitor.start 已消费）
     assert mock_ctx.state["retry"] is False
+    # monitor.start 被调用，prefill 参数已被消费
+    mock_loop._monitor.start.assert_called_once_with(prefill="old user content")
     # sync_retry_pending 被调用过
     mock_session.sync_retry_pending.assert_called_once()
     # reset_retry_pending 被调用过（prefill 有值 && retry=False）
@@ -101,14 +103,16 @@ async def test_retry_mode_keeps_retry_pending(EditmsgPlugin, mock_loop, mock_ctx
 
     # 模拟 edit_state 中 retry=True
     with patch(
-        "src.ui.msg_list.edit_current_messages",
+        "src.tui.pipeline.message_editor.edit_current_messages",
         new=lambda agent, state: state.update({"prefill": "old content", "retry": True}),
     ):
         result = await plugin.async_execute(mock_ctx)
 
     assert result is True
-    assert mock_ctx.state["prefill"] == "old content"
+    assert mock_ctx.state["prefill"] == ""  # 已被 finally 清空
     assert mock_ctx.state["retry"] is True
+    # monitor.start 被调用，prefill 参数已被消费
+    mock_loop._monitor.start.assert_called_once_with(prefill="old content")
     mock_session.sync_retry_pending.assert_called_once()
     # retry=True → 不调用 reset_retry_pending
     mock_session.reset_retry_pending.assert_not_called()
@@ -122,7 +126,7 @@ async def test_no_prefill_keeps_retry_pending(EditmsgPlugin, mock_loop, mock_ctx
 
     # 模拟 edit_state 中 prefill 为空（无编辑动作）
     with patch(
-        "src.ui.msg_list.edit_current_messages",
+        "src.tui.pipeline.message_editor.edit_current_messages",
         new=lambda agent, state: state.update({"prefill": "", "retry": False}),
     ):
         result = await plugin.async_execute(mock_ctx)
@@ -130,6 +134,8 @@ async def test_no_prefill_keeps_retry_pending(EditmsgPlugin, mock_loop, mock_ctx
     assert result is True
     assert mock_ctx.state["prefill"] == ""
     assert mock_ctx.state["retry"] is False
+    # finally 块中 monitor.start 被调用（prefill 为空）
+    mock_loop._monitor.start.assert_called_once_with(prefill="")
     mock_session.sync_retry_pending.assert_called_once()
     # 无 prefill → 不调用 reset_retry_pending
     mock_session.reset_retry_pending.assert_not_called()
@@ -184,7 +190,7 @@ async def test_sync_retry_pending_called_after_edit(EditmsgPlugin, mock_loop, mo
     mock_session.reset_retry_pending.side_effect = lambda: call_log.append("reset_retry")
 
     with patch(
-        "src.ui.msg_list.edit_current_messages",
+        "src.tui.pipeline.message_editor.edit_current_messages",
         new=tracked_edit,
     ):
         result = await plugin.async_execute(mock_ctx)
@@ -194,6 +200,8 @@ async def test_sync_retry_pending_called_after_edit(EditmsgPlugin, mock_loop, mo
     assert call_log == ["edit", "sync_retry", "reset_retry"], (
         f"调用顺序异常: {call_log}"
     )
+    # finally 块中 monitor.start 被调用，prefill 已被消费
+    mock_loop._monitor.start.assert_called_once_with(prefill="content")
 
 
 @pytest.mark.asyncio
@@ -203,7 +211,7 @@ async def test_needs_rerender_with_prefill(EditmsgPlugin, mock_loop, mock_ctx, m
     plugin.bind_loop(mock_loop)
 
     with patch(
-        "src.ui.msg_list.edit_current_messages",
+        "src.tui.pipeline.message_editor.edit_current_messages",
         new=lambda agent, state: state.update({"prefill": "content", "retry": False}),
     ):
         await plugin.async_execute(mock_ctx)
@@ -219,7 +227,7 @@ async def test_no_rerender_without_prefill(EditmsgPlugin, mock_loop, mock_ctx, m
     plugin.bind_loop(mock_loop)
 
     with patch(
-        "src.ui.msg_list.edit_current_messages",
+        "src.tui.pipeline.message_editor.edit_current_messages",
         new=lambda agent, state: state.update({"prefill": "", "retry": False}),
     ):
         await plugin.async_execute(mock_ctx)
@@ -231,25 +239,6 @@ async def test_no_rerender_without_prefill(EditmsgPlugin, mock_loop, mock_ctx, m
 # ═══════════════════════════════════════════════════════════════════════════
 #  测试：finally 块 flush 调用 + 调用顺序
 # ═══════════════════════════════════════════════════════════════════════════
-
-
-@pytest.mark.asyncio
-async def test_finally_block_flush_called(EditmsgPlugin, mock_loop, mock_ctx):
-    """async_execute 后 mock_loop._chat_ui.flush 被调用
-
-    finally 块中 resume() 后应显式调用 flush() 刷新底部栏。
-    """
-    plugin = EditmsgPlugin()
-    plugin.bind_loop(mock_loop)
-
-    with patch(
-        "src.ui.msg_list.edit_current_messages",
-        new=lambda agent, state: state.update({"prefill": "content", "retry": False}),
-    ):
-        await plugin.async_execute(mock_ctx)
-
-    # finally 块中 resume 后应调用 flush
-    mock_loop._chat_ui.flush.assert_called_once()
 
 
 @pytest.mark.asyncio
@@ -267,11 +256,11 @@ async def test_finally_block_monitor_started_before_flush(EditmsgPlugin, mock_lo
     # 使用 call_log 记录跨 mock 的调用顺序
     call_log = []
     mock_loop._chat_ui.resume.side_effect = lambda: call_log.append("resume")
-    mock_loop._monitor.start.side_effect = lambda prefill="": call_log.append(f"start:{prefill}")
+    mock_loop._monitor.start.side_effect = lambda prefill: call_log.append(f"start:{prefill}")
     mock_loop._chat_ui.flush.side_effect = lambda: call_log.append("flush")
 
     with patch(
-        "src.ui.msg_list.edit_current_messages",
+        "src.tui.pipeline.message_editor.edit_current_messages",
         new=lambda agent, state: state.update({"prefill": "content", "retry": False}),
     ):
         await plugin.async_execute(mock_ctx)
@@ -280,6 +269,8 @@ async def test_finally_block_monitor_started_before_flush(EditmsgPlugin, mock_lo
     assert call_log == ["resume", "start:content", "flush"], (
         f"finally 块调用顺序或 prefill 参数异常，期望 ['resume', 'start:content', 'flush']，实际 {call_log}"
     )
+    # flush 恰好被调用一次（call_log 中已验证存在，此处用 assert_called_once 加强约束）
+    mock_loop._chat_ui.flush.assert_called_once()
 
 
 # ═══════════════════════════════════════════════════════════════════════════
