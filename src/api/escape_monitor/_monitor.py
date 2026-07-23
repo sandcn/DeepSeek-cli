@@ -104,11 +104,16 @@ class EscapeMonitor:
         #   ① 线程启动前：防止 start() 调用方在 cbreak 就绪前通过 wait() 穿透
         #   ② _echo() 调用前：防止回调路径误判 ready
         self._monitor_ready.clear()
-        self._input_handler._echo(self._input_handler.get_current_text())
         self._eof_count = 0
         self._select_error_count = 0
         self._thread = threading.Thread(target=self._monitor, daemon=True)
         self._thread.start()
+        # ★ Bug 修复：等待 monitor 线程就绪（cbreak + tcflush）后再回显预填文字。
+        #   若不等待，_echo 先于 monitor 就绪触发，用户看到预填文字后立即按 Enter
+        #   会被未就绪前或 tcflush 清空，导致首次 Enter 丢失。
+        #   超时 1.0s 作为安全兜底，防止 monitor 线程卡死时永久阻塞。
+        self._monitor_ready.wait(timeout=1.0)
+        self._input_handler._echo(self._input_handler.get_current_text())
         with _active_monitor_lock:
             _active_monitor = self
 
@@ -540,14 +545,20 @@ class EscapeMonitor:
 
         # 设置为 cbreak 模式并清空 stdin
         # ★ 使用 try/finally 确保 _monitor_ready 总是被设置，
-        #   即使 _apply_monitor_settings 失败。
+        #   即使 _apply_monitor_settings 或 tcflush 失败。
+        # ★ Bug 修复：tcflush 必须在 _monitor_ready.set() 之前执行，
+        #   确保 start() 调用方等待 _monitor_ready 后，输入缓冲区已清空、
+        #   cbreak 已就绪，此时再回显预填文字才能被 monitor 正确捕获。
+        #   之前 tcflush 在 finally 块外，_monitor_ready 先 set 后 tcflush
+        #   才执行，导致 start() 中的 _echo() 先于 monitor 就绪触发，
+        #   用户看到预填文字后立即按 Enter → 该 Enter 被 tcflush 清空。
         try:
             self._apply_monitor_settings()
+            # 首次应用设置后（仅在初始启动时）清空 stdin 缓冲区，
+            # 避免 tcflush 丢失暂停恢复路径中用户键入的合法字符
+            termios.tcflush(fd, termios.TCIFLUSH)
         finally:
             self._monitor_ready.set()
-        # 首次应用设置后（仅在初始启动时）清空 stdin 缓冲区，
-        # 避免 tcflush 丢失暂停恢复路径中用户键入的合法字符
-        termios.tcflush(fd, termios.TCIFLUSH)
 
         try:
             while not self._stop.is_set():
