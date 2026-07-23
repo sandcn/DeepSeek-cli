@@ -93,9 +93,10 @@ dispatch_agent(type="map", description="分析: <模块/函数>", prompt="...")
 ```
 dispatch_agent(type="plan", description="计划: <摘要>", prompt="计划文件名: plan_YYYYMMDD_HHMMSS_<slug>.md\n<需求描述> + 约束条件\n\n关联文件列表:\n<map 返回的所有关联文件，按 N. src/... 编号格式逐行列出>")
 ```
+- **前置操作（强强制）**：调用此 `dispatch_agent(type="plan")` **之前**，**必须先使用 `user_select` 工具让用户多选需要生成计划的方向**，`multi_select=True`，`default_options` 设为所有选项（默认全选）。用户确认选择后，方可进入 plan 调用阶段。
 - **调用时机**：完成 map 探底并用户选择计划方向之后、动手改代码之前
 - **前提条件**：必须已有有效的 map 结果（含关联文件列表）
-- **执行顺序**：map → 用户选择计划方向 → plan → execute（不可跳跃）
+- **执行顺序**：map → **用户选择计划方向（user_select → multi_select=True → default_options=全选）** → plan → execute（不可跳跃）
 
 ### 怎么给提词
 prompt 必须包含以下全部要素：
