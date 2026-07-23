@@ -16,7 +16,7 @@ from .file_ops import (
     async_file_exists,
 )
 from ..core.constants import GREEN, RED, DIM, RESET
-from ..tui.consumer.diff_renderer import show_file_diff
+from ..tui.consumer.diff_renderer import render_diff_to_ansi
 from ..tui.widgets.lock import (
     diff_active,
 )
@@ -207,8 +207,10 @@ class FileToolBase(Func):
         self.stats["lines_processed"] = lines_count
         return lines_count, size_bytes
 
-    def _show_diff(self, old: str, new: str):
-        show_file_diff(self.path, old, new)
+    def _show_diff(self, old: str, new: str) -> None:
+        diff_text = render_diff_to_ansi(self.path, old, new)
+        if diff_text:
+            Func._publish_tool_text(diff_text + "\n")
 
     # ── diff 预览 ──
 
@@ -225,9 +227,8 @@ class FileToolBase(Func):
         防止 PTY 缓冲区满时锁被永久持有导致输出管线冻结。
         超时（0.1s）后降级为直写 sys.__stdout__，保证工具执行不阻塞。
 
-        与 show_file_diff() 内部使用相同锁策略，确保输出顺序一致。
-        使用 threading.RLock（可重入）而非 asyncio.Lock，
-        避免异步锁在事件循环中的冗余串行化等待。
+        diff 通过 render_diff_to_ansi 渲染为 ANSI 字符串后，
+        经 _publish_tool_text → ToolOutputChunkEvent 统一上屏。
         """
         diff_was_active = diff_active.is_set()
         if not diff_was_active:
