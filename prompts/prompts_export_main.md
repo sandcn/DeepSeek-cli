@@ -84,7 +84,7 @@ dispatch_agent(type="map", description="分析: <模块/函数>", prompt="...")
 > **prompt 必须显式要求输出全部维度**：CFG / DFG / 关联文件列表 / 重要文件列表。缺少任一 → 视为无效，须重新派发。**对非代码项目文件**（`.md` `.json` `.yaml` `.toml` `.ini` `.cfg` `.env` `.rst` `.txt`），map 的输出维度精简为：关联文件列表 + 内容结构摘要 + 被引用关系（豁免 CFG/DFG）。
 
 ### 执行之后干嘛
-1. **用户选择计划方向（强制）**：得到有效 map 结果后 → **必须先使用 `user_select` 让用户多选需要生成计划的方向**，`multi_select=True`，选项为任务方向列表（如有多个独立模块/任务需分别规划时列出对应选项，仅一个方向时也须执行此步骤），`default_options` 设为所有选项（默认全选）。用户选择后 → 按所选方向进入规划阶段（plan Agent 不支持并发，按方向逐个串行派发）。
+1. **用户选择计划方向（强制）**：得到有效 map 结果后 → **必须先使用 `user_select` 让用户多选需要生成计划的方向**，`multi_select=True`，选项为任务方向列表（如有多个独立模块/任务需分别规划时列出对应选项，仅一个方向时也须执行此步骤），`default_options` 设为所有选项（默认全选）。用户选择后 → 按所选方向进入规划阶段（所有方向合并成一个 plan，派发单个 plan Agent）。
 
 
 # plan — 计划生成
@@ -315,11 +315,11 @@ dispatch_agent(type="execute", description="<任务摘要>", prompt="<自然语�
 ## 规划阶段
 
 ### 用户选择计划方向（强制 · 前置）
-调用 `dispatch_agent(type="plan")` **之前**，**必须先使用 `user_select` 工具让用户多选需要生成计划的方向**（对应 map 探底结果中的独立模块/任务方向），`multi_select=True`，选项为任务方向列表，`default_options` 设为所有选项（默认全选）。用户确认选择后，按所选方向分别派发 plan Agent（已选的每个方向对应一个 plan Agent 实例）。
+调用 `dispatch_agent(type="plan")` **之前**，**必须先使用 `user_select` 工具让用户多选需要生成计划的方向**（对应 map 探底结果中的独立模块/任务方向），`multi_select=True`，选项为任务方向列表，`default_options` 设为所有选项（默认全选）。用户确认选择后，所有方向合并为一个 plan，派发单个 plan Agent（覆盖所有已选方向）。
 
 > **单一方向也须执行**：即使只有一个任务方向，此步骤仍须执行（仅一个选项，默认选中），不可跳过。
 >
-> **多方向串行**：用户选择了多个方向时，按方向粒度**逐个串行派发** plan Agent，plan Agent 不支持并发。
+> **多方向合并**：所有方向合并成一个 plan，仅派发单个 plan Agent。
 
 ### 修改/新需求先委派 plan Agent（强制 · 零豁免）
 涉及文件修改或新需求，**必须先** `dispatch_agent(type="plan")`——**不论修改多少个文件，哪怕只改一个也绝无例外，** 无论修改规模大小、是否「零逻辑变更」，产出计划文件到 `.chat/plan/`。执行顺序：map → **用户选择计划方向** → plan → execute。
