@@ -73,9 +73,16 @@ class FileSystemToolBase(Func):
 
     async def display(self) -> str:
         """标准 display() 模式：打印操作描述 → 执行 → 打印结果。"""
-        self._print_operation(self._get_operation_desc())
         result = await self.execute()
-        self._print_result(result)
+        from ..core.constants import GREEN, RED, DIM, RESET
+        if result.startswith("("):
+            Func._publish_tool_text(
+                f"\n  {DIM}{self._get_operation_desc()}{RESET}\n  {RED}x {result}{RESET}"
+            )
+        else:
+            Func._publish_tool_text(
+                f"\n  {DIM}{self._get_operation_desc()}{RESET}\n  {GREEN}+ {result}{RESET}"
+            )
         return result
 
 class PathSecurityError(FileToolError):
@@ -207,10 +214,11 @@ class FileToolBase(Func):
         self.stats["lines_processed"] = lines_count
         return lines_count, size_bytes
 
-    def _show_diff(self, old: str, new: str) -> None:
+    def _show_diff(self, old: str, new: str) -> str:
         diff_text = render_diff_to_ansi(self.path, old, new)
         if diff_text:
-            Func._publish_tool_text(diff_text + "\n")
+            return diff_text + "\n"
+        return ""
 
     # ── diff 预览 ──
 
@@ -220,29 +228,34 @@ class FileToolBase(Func):
         new_content: str,
         exists: bool,
         mode_desc: str,
-    ) -> None:
-        """显示 diff 预览到终端
+    ) -> str:
+        """返回累积的 diff 预览文本
 
-        ★ 锁策略：print() 使用 timeout 超时保护的 output_lock，
-        防止 PTY 缓冲区满时锁被永久持有导致输出管线冻结。
-        超时（0.1s）后降级为直写 sys.__stdout__，保证工具执行不阻塞。
+        ★ diff_active 互斥：通过 diff_active Event 标记 diff 渲染中，
+        阻止 _refresh_loop 在此期间渲染帧，避免 diff 输出与面板刷新交叠。
 
         diff 通过 render_diff_to_ansi 渲染为 ANSI 字符串后，
-        经 _publish_tool_text → ToolOutputChunkEvent 统一上屏。
+        经本方法累积并返回，由调用方统一上屏。
         """
         diff_was_active = diff_active.is_set()
         if not diff_was_active:
             diff_active.set()
         try:
+            parts = []
             if exists:
-                Func._publish_tool_text(f"\n  {DIM}{self.path} {mode_desc}{RESET}")
+                parts.append(f"\n  {DIM}{self.path} {mode_desc}{RESET}")
                 if old_content != new_content:
-                    self._show_diff(old_content, new_content)
+                    diff_text = self._show_diff(old_content, new_content)
+                    if diff_text:
+                        parts.append(diff_text)
                 else:
-                    Func._publish_tool_text(f"  {DIM}no changes{RESET}")
+                    parts.append(f"  {DIM}no changes{RESET}")
             else:
-                Func._publish_tool_text(f"\n  {DIM}{self.path} new {mode_desc}{RESET}")
-                self._show_diff("", new_content)
+                parts.append(f"\n  {DIM}{self.path} new {mode_desc}{RESET}")
+                diff_text = self._show_diff("", new_content)
+                if diff_text:
+                    parts.append(diff_text)
+            return "".join(parts)
         finally:
             if not diff_was_active:
                 diff_active.clear()
@@ -263,8 +276,8 @@ class FileToolBase(Func):
 
     # ── 执行结果记录 ──
 
-    def _log_execution_result(self, output: str, elapsed: float) -> None:
-        """记录并显示执行结果"""
+    def _log_execution_result(self, output: str, elapsed: float) -> str:
+        """记录并返回执行结果文本"""
         ok = self._success_verb() in output
         if ok and elapsed > 0.5:
             stats_str = f" (耗时: {elapsed:.2f}s"
@@ -273,9 +286,9 @@ class FileToolBase(Func):
             stats_str += ")"
             output += stats_str
         if ok:
-            Func._publish_tool_text(f"  {GREEN}+ {output}{RESET}")
+            return f"  {GREEN}+ {output}{RESET}"
         else:
-            Func._publish_tool_text(f"  {RED}x {output}{RESET}")
+            return f"  {RED}x {output}{RESET}"
 
     async def _prepare_diff_content(self) -> tuple[str | None, str | None, bool]:
         """准备 diff 所需的新旧内容，返回 (old_content, new_content, exists)
@@ -335,21 +348,27 @@ class FileToolBase(Func):
             old_content = await self._read_original()
         try:
             new_content = await self._get_new_content()
-        except FileToolError as e:
-            err_msg = f"({self._success_verb().replace('成功','失败')}: {e})"
+        except (FileToolError, Exception) as e:
+            if not isinstance(e, FileToolError):
+                import logging
+                logging.getLogger(__name__).exception("display() 内容生成异常: %s", e)
+                err_msg = f"({self._success_verb().replace('成功','失败')}: 内容生成失败)"
+            else:
+                err_msg = f"({self._success_verb().replace('成功','失败')}: {e})"
             Func._publish_tool_text(f"  {RED}x {err_msg}{RESET}")
             return err_msg
 
-        # 显示 diff 预览
-        await self._show_diff_preview(old_content, new_content, exists, mode_desc)
+        # 获取 diff 预览文本
+        preview_text = await self._show_diff_preview(old_content, new_content, exists, mode_desc)
 
         # 执行写入并测量耗时
         start_time = time.time()
         output = await self.execute(precomputed_content=new_content)
         elapsed = time.time() - start_time
 
-        # 记录执行结果
-        self._log_execution_result(output, elapsed)
+        # 获取执行结果文本并合并发布
+        result_text = self._log_execution_result(output, elapsed)
+        Func._publish_tool_text(preview_text + result_text)
         return output
 
     async def web_display(self) -> str:
@@ -371,19 +390,22 @@ class FileToolBase(Func):
             # _get_new_content 出错，execute 会处理
             new_content = old_content or ""
 
-        # 打印 diff 预览到终端（通过 EventBus 统一渲染）
+        # 累积 diff 预览文本
+        output_parts = []
         if exists and old_content == new_content:
-            Func._publish_tool_text(f"📄 {self.path} {mode_desc}\n(无变化)\n")
+            output_parts.append(f"📄 {self.path} {mode_desc}\n(无变化)\n")
         else:
             diff_text = render_diff_to_ansi(self.path, old_content or "", new_content)
-            Func._publish_tool_text(f"📄 {self.path} {mode_desc}\n")
+            output_parts.append(f"📄 {self.path} {mode_desc}\n")
             if diff_text:
-                Func._publish_tool_text(diff_text + "\n")
+                output_parts.append(diff_text + "\n")
 
         output = await self.execute(precomputed_content=new_content)
 
         ok = self._success_verb() in output
-        Func._publish_tool_text(f"{'+' if ok else 'x'} {output}\n")
+        output_parts.append(f"{'+' if ok else 'x'} {output}\n")
+
+        Func._publish_tool_text("".join(output_parts))
 
         result_data = {
             "type": "webdiff",
