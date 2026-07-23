@@ -253,10 +253,56 @@ class ToolCallbackChain:
         if chat_ui is not None:
             chat_ui.suspend()
         try:
-            return await func.execute()
+            result = await func.execute()
         finally:
             if chat_ui is not None:
                 chat_ui.resume()
+
+        # user_select 结果通过 ToolOutputChunkEvent 上屏显示
+        self._emit_user_select_output(result, getattr(func, 'tool_label', ''))
+
+        return result
+
+    def _emit_user_select_output(self, result: str, tool_label: str) -> None:
+        """解析 user_select 结果并发布 ToolOutputChunkEvent 上屏显示。"""
+        try:
+            data = json.loads(result)
+        except (json.JSONDecodeError, TypeError):
+            return
+
+        action = data.get("action", "")
+        selected = data.get("selected", [])
+
+        if action == "confirmed":
+            if selected:
+                if len(selected) == 1:
+                    text = f"已选择: {selected[0]}"
+                else:
+                    items = ", ".join(selected[:3])
+                    if len(selected) > 3:
+                        items += f" ... 还有 {len(selected) - 3} 项"
+                    text = f"已选择 {len(selected)} 项: {items}"
+            else:
+                text = "未选择任何项"
+        elif action in ("cancel", "timeout", "non_interactive"):
+            return  # 取消/超时/非交互不输出（非用户主动选择）
+        elif action == "empty":
+            return  # 空选项列表无输出
+        elif action and action.startswith("error:"):
+            return  # 错误不输出（通过 tool_done 的 success=False 标记）
+        else:
+            return  # 未知 action 不输出
+
+        if not tool_label:
+            return
+
+        try:
+            from ....tui.events.event_types import ToolOutputChunkEvent
+            self._agent._event_port.publish_event(ToolOutputChunkEvent(
+                label=tool_label, text=text, source="agent",
+            ))
+        except Exception:
+            _logger.debug("user_select 结果上屏失败", exc_info=True)
 
     async def _run_with_capture(self, func, tool_label: str, is_web: bool):
         """执行通用工具，带 stdout 捕获和 spinner 刷新。
