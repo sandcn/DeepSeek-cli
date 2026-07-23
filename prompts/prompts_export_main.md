@@ -84,7 +84,7 @@ dispatch_agent(type="map", description="分析: <模块/函数>", prompt="...")
 > **prompt 必须显式要求输出全部维度**：CFG / DFG / 关联文件列表 / 重要文件列表。缺少任一 → 视为无效，须重新派发。**对非代码项目文件**（`.md` `.json` `.yaml` `.toml` `.ini` `.cfg` `.env` `.rst` `.txt`），map 的输出维度精简为：关联文件列表 + 内容结构摘要 + 被引用关系（豁免 CFG/DFG）。
 
 ### 执行之后干嘛
-1. **进入下一步**：得到有效 map 结果后 → 进入规划阶段（派发 plan Agent）
+1. **用户选择计划方向（强制）**：得到有效 map 结果后 → **必须先使用 `user_select` 让用户多选需要生成计划的方向**，`multi_select=True`，选项为任务方向列表（如有多个独立模块/任务需分别规划时列出对应选项，仅一个方向时也须执行此步骤），`default_options` 设为所有选项（默认全选）。用户选择后 → 按所选方向进入规划阶段（并发派发 plan Agent）。
 
 
 # plan — 计划生成
@@ -93,9 +93,9 @@ dispatch_agent(type="map", description="分析: <模块/函数>", prompt="...")
 ```
 dispatch_agent(type="plan", description="计划: <摘要>", prompt="计划文件名: plan_YYYYMMDD_HHMMSS_<slug>.md\n<需求描述> + 约束条件\n\n关联文件列表:\n<map 返回的所有关联文件，按 N. src/... 编号格式逐行列出>")
 ```
-- **调用时机**：完成 map 探底之后、动手改代码之前
+- **调用时机**：完成 map 探底并用户选择计划方向之后、动手改代码之前
 - **前提条件**：必须已有有效的 map 结果（含关联文件列表）
-- **执行顺序**：map → plan → execute（不可跳跃）
+- **执行顺序**：map → 用户选择计划方向 → plan → execute（不可跳跃）
 
 ### 怎么给提词
 prompt 必须包含以下全部要素：
@@ -205,7 +205,7 @@ dispatch_agent(type="execute", description="<任务摘要>", prompt="<自然语�
 
 | 规则 | 说明 |
 |------|------|
-| 串行依赖 | map → plan → execute（执行）→ review 必须串行，不可跳跃 |
+| 串行依赖 | map → 用户选择计划方向 → plan → execute（执行）→ review 必须串行，不可跳跃 |
 | 并行限制 | `dispatch_agent` 不能与普通工具（read_file/write_file/bash等）同轮并行 |
 | 同轮多次 | 同轮可多次 `dispatch_agent`，自动共享执行器实现真正并行 |
 | 写后隔离 | 同一文件所有修改必须在单次 Agent 调用内完成 |
@@ -301,7 +301,7 @@ dispatch_agent(type="execute", description="<任务摘要>", prompt="<自然语�
 
 **分步推理（强制）**：复杂推理（≥2步因果/多假设/跨模块）按"假设→验证→结论"逐步展开，标注置信度。
 
-**修复方案 — 根因分析（RCA）**：追求全局最优修改，从根源杜绝同类问题。时序：Bug 确认（日志/测试）→ map → RCA+双方案 → plan → 执行（含复现代码作为 execute 步骤）。
+**修复方案 — 根因分析（RCA）**：追求全局最优修改，从根源杜绝同类问题。时序：Bug 确认（日志/测试）→ map → RCA+双方案 → 用户选择计划方向 → plan → 执行（含复现代码作为 execute 步骤）。
 
 #### 强制流程
 0. **复现代码（强制）**：复现代码编写纳入 execute 步骤，在 plan 执行阶段完成。RCA 阶段仅做分析，不涉及文件写入。
@@ -314,12 +314,19 @@ dispatch_agent(type="execute", description="<任务摘要>", prompt="<自然语�
 
 ## 规划阶段
 
+### 用户选择计划方向（强制 · 前置）
+调用 `dispatch_agent(type="plan")` **之前**，**必须先使用 `user_select` 工具让用户多选需要生成计划的方向**（对应 map 探底结果中的独立模块/任务方向），`multi_select=True`，选项为任务方向列表，`default_options` 设为所有选项（默认全选）。用户确认选择后，按所选方向分别派发 plan Agent（已选的每个方向对应一个 plan Agent 实例）。
+
+> **单一方向也须执行**：即使只有一个任务方向，此步骤仍须执行（仅一个选项，默认选中），不可跳过。
+>
+> **多方向并发**：用户选择了多个方向时，按方向粒度**强制并发派发** plan Agent，禁止逐个串行。
+
 ### 修改/新需求先委派 plan Agent（强制 · 零豁免）
-涉及文件修改或新需求，必须先 **必须** `dispatch_agent(type="plan")`——**不论修改多少个文件，哪怕只改一个也绝无例外，** 无论修改规模大小、是否「零逻辑变更」，产出计划文件到 `.chat/plan/`。执行顺序：map → plan → execute。
+涉及文件修改或新需求，**必须先** `dispatch_agent(type="plan")`——**不论修改多少个文件，哪怕只改一个也绝无例外，** 无论修改规模大小、是否「零逻辑变更」，产出计划文件到 `.chat/plan/`。执行顺序：map → **用户选择计划方向** → plan → execute。
 
 > **plan 零豁免（强制）**：只要涉及文件修改就必须委派 plan Agent，不可跳过。无例外。
 
-> 三要素速查 → 见上方「plan — 计划生成」
+> **三要素速查** → 见上方「plan — 计划生成」
 
 - plan Agent 超时/失败：重试 1 次，均失败则降级手动规划
 - 计划校验：至少含目标+拆解步骤+涉及文件+复用考量
