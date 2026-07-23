@@ -379,6 +379,12 @@ class EscapeMonitor:
         if not self._input_handler.has_queued_input():
             self._input_handler.reset()
             self._input_handler._echo("")  # ★ 刷新底部栏显示空输入
+        else:
+            # Layer 3 防御：当有排队输入（如 /editmsg）时，中断期间的
+            # 终端模式切换可能产生残余 \r\n 字节延迟到达 stdin。
+            # 在此处提前排空，防止后续 EditmsgPlugin 选择界面
+            # 误消费为 Enter 确认键。
+            self._flush_stdin_residual()
         request_interrupt_async()
 
     def _monitor(self):

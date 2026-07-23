@@ -242,6 +242,43 @@ def _run_selection_raw(
             pass
 
 
+def _drain_stdin_residual(
+    fd: int,
+    timeout_per_round: float = 0.02,
+    rounds: int = 3,
+    max_per_round: int = 4096,
+) -> None:
+    """对 stdin 执行多轮排空，清除终端模式切换后延迟到达的残余字节。
+
+    使用 select.select + os.read 进行非阻塞读取，辅以轮间 tcflush 确定性能清空。
+    3 轮 × 20ms 轮询 + 每轮后 tcflush，总超时 ≤60ms。
+
+    Args:
+        fd: 终端文件描述符（如 sys.stdin.fileno()）。
+        timeout_per_round: 每轮 select 超时时间（秒），默认 0.02（20ms）。
+        rounds: 轮数，默认 3。
+        max_per_round: 每轮最大读取字节数，默认 4096。
+    """
+    import select
+    for _ in range(rounds):
+        ready = False
+        try:
+            ready, _, _ = select.select([fd], [], [], timeout_per_round)
+        except Exception:
+            pass
+        if ready:
+            try:
+                os.read(fd, max_per_round)
+            except Exception:
+                pass
+        # 轮间 tcflush：清空可能已到达但被 select 遗漏的字节
+        try:
+            from src._compat_termios import termios as _termios
+            _termios.tcflush(fd, _termios.TCIFLUSH)
+        except Exception:
+            pass
+
+
 def run_bottom_bar_selection(
     items: list[str],
     display_items: list[str],
@@ -335,31 +372,9 @@ def run_bottom_bar_selection(
         with term.cbreak():  # 替代 tty.setcbreak + termios
             # ── Post-cbreak drain：清空 cbreak 模式切换后残留的 stdin 字节 ──
             # Android/Termux 环境下，cbreak 模式切换可能导致终端驱动重新产生字节。
-            # 此 drain 作为 tcflush（cbreak 前）的补充防御层——tcflush 清空内核 tty
-            # 缓冲区，而 cbreak 模式切换后可能有新字节到达。
+            # 使用 _drain_stdin_residual() 3轮×20ms排空 + 轮间tcflush覆盖延迟到达的残余字节。
             try:
-                import select
-                drained = 0
-                while drained < 4096:
-                    ready, _, _ = select.select([fd], [], [], 0.01)
-                    if not ready:
-                        break
-                    chunk = os.read(fd, 4096 - drained)
-                    if not chunk:
-                        break
-                    drained += len(chunk)
-            except Exception:
-                pass
-
-            # ★ 方案 C: cbreak 模式切换后 tcflush — 作为 post-cbreak drain 的确定性能防御层。
-            #   Android/Termux PTY 在 tty.setcbreak(TCSANOW)（即 term.cbreak() 内部）时，
-            #   线路规程可能释放残留字节到输入队列。此 tcflush 在 drain 之后执行，确保
-            #   即使 drain 的 select 轮询错过延迟到达的字节，也能被确定性清空。
-            #   方案 B（cbreak 前 tcflush）时序过早（在 tty.setcbreak 之前），无法清空
-            #   线路规程释放的字节；此方案 C（cbreak 后 tcflush）弥补此时序缺口。
-            try:
-                from src._compat_termios import termios as _termios
-                _termios.tcflush(fd, _termios.TCIFLUSH)
+                _drain_stdin_residual(fd)
             except Exception:
                 pass
 

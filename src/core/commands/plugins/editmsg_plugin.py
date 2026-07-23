@@ -26,6 +26,7 @@ from typing import Any
 
 from .base import InteractiveCommandPlugin
 from ..base import CommandMeta, get_plugin_registry
+from ....api.interrupt_async import flush_stdin
 from ....core.constants import YELLOW, RESET
 
 _logger = logging.getLogger(__name__)
@@ -92,6 +93,8 @@ class EditmsgPlugin(InteractiveCommandPlugin):
                 monitor.stop()
 
             edit_state = {"model": state.get("model", ""), "retry": False, "prefill": ""}
+            # Layer 2 防御：进入选择界面前排空 stdin 残余字节
+            flush_stdin()
             await asyncio.to_thread(
                 _edit_msgs, session.agent, edit_state,
             )
