@@ -11,7 +11,6 @@
 from __future__ import annotations
 
 import logging
-import shutil
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -19,12 +18,8 @@ if TYPE_CHECKING:
 
 from rich.text import Text
 
-from ..animation.animator import AnimatorContext
-from ..terminal.terminal import is_narrow
-from ..core.text_utils import build_left_border_ansi
-from ..render_buffer import RenderBuffer
 from ..consumer.chat_config import ChatConfig
-from ._base import TuiComponent, _estimate_content_lines
+from ._base import TuiComponent
 
 _logger = logging.getLogger(__name__)
 
@@ -52,12 +47,7 @@ class ToolOutputBlock(TuiComponent):
                 clean = text.split('\r')[-1]
             result = clean
         else:
-            frame = AnimatorContext.get_default().frame
-            if is_narrow():
-                result = f"\033[2m   {text}\033[0m"
-            else:
-                edge_ansi = build_left_border_ansi(frame, 23, 24)
-                result = f"  {edge_ansi}   {text}"
+            result = text
 
         if buffer is not None:
             if result:
@@ -90,19 +80,8 @@ class ToolOutputBlock(TuiComponent):
                 adapter.write_raw(clean)
             if not text.endswith('\r'):
                 adapter.write_raw('\n')
-                return _estimate_content_lines(clean)
+                return clean.count('\n') + 1
             return 0
         else:
-            # 非 \\r 路径：委托 render(buffer) 获取内容，通过 Text.from_ansi 输出
-            # 以保持向后兼容（调用方期望 Text 对象而非裸字符串）
-            try:
-                term_w = shutil.get_terminal_size().columns
-            except Exception:
-                term_w = 80
-            buf = RenderBuffer(term_w, 1)
-            self.render(buf)
-            output = buf.render()
-            if output:
-                adapter.write(Text.from_ansi(output))
-                return _estimate_content_lines(output)
-            return 0
+            adapter.write(Text.from_ansi(text))
+            return text.count('\n') + 1

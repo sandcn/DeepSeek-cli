@@ -1,22 +1,20 @@
 from __future__ import annotations
 
 import asyncio
+import io
 import logging
 import os
-import sys
 import time as _time
 from functools import lru_cache
 import aiofiles
 import aiofiles.os
 from rich.syntax import Syntax
+from rich.console import Console as RichConsole
 from .base import Func, tool_metadata
 from .file_ops import validate_path_security
 from .encoding import async_detect_encoding, pick_best_decoding, FALLBACK_ENCODINGS
 from ._constants import LARGE_FILE_THRESHOLD
 from ..core.constants import CYAN, DIM, RESET, RED
-from ..tui.core.rich_console import get_console as _get_console
-console = _get_console()
-from ..tui.widgets.lock import locked_print, _try_acquire_output_lock
 
 _UNSUPPORTED_EXTENSIONS = frozenset({"txt", "text"})
 
@@ -101,11 +99,11 @@ class ReadFileFunc(Func):
         try:
             n = int(value)
             if n < 1:
-                locked_print(f"警告：{name} 必须 >= 1，已自动调整为 1")
+                Func._publish_tool_text(f"警告：{name} 必须 >= 1，已自动调整为 1")
                 return 1
             return n
         except (ValueError, TypeError):
-            locked_print(f"警告：{name} 应为整数，收到 {value}，已忽略该参数")
+            Func._publish_tool_text(f"警告：{name} 应为整数，收到 {value}，已忽略该参数")
             return None
 
     @classmethod
@@ -126,7 +124,7 @@ class ReadFileFunc(Func):
 
         # 如果两者都提供且 start_line > end_line，交换并警告
         if start_line is not None and end_line is not None and start_line > end_line:
-            locked_print(f"警告：start_line ({start_line}) 大于 end_line ({end_line})，已自动交换")
+            Func._publish_tool_text(f"警告：start_line ({start_line}) 大于 end_line ({end_line})，已自动交换")
             start_line, end_line = end_line, start_line
 
         return cls(path, start_line, end_line)
@@ -385,61 +383,18 @@ class ReadFileFunc(Func):
                 background_color="default",
             )
 
-    @staticmethod
-    def _get_chat_ui():
-        """获取活跃 ChatUI 实例，不可用时返回 None。"""
-        try:
-            from ..tui.consumer import get_active_chat_ui  # noqa: PLC0415
-            return get_active_chat_ui()
-        except Exception:
-            return None
-
-    @staticmethod
-    def _render_syntax_to_chatui(syntax: Syntax, chat_ui) -> None:
-        """将 Syntax 渲染为 ANSI 字符串，通过 ChatUI write_line 逐行上屏。
-
-        工具线程中调用，chat_ui.write_line() 是线程安全的（入队 → render 线程渲染）。
-        使用 StringIO Console 捕获 Rich 的 ANSI 输出，不直接写终端。
-        """
-        import io
-        from rich.console import Console as RichConsole
+    def _render_syntax_to_output(self, file_path: str, result: dict) -> None:
+        """将语法高亮渲染为 ANSI 字符串，通过 EventBus 上屏。"""
+        syntax = self._build_syntax(result, file_path)
+        if syntax is None:
+            return
 
         buf = io.StringIO()
         ansi_console = RichConsole(file=buf, force_terminal=True)
         ansi_console.print(syntax)
         output = buf.getvalue()
         if output:
-            for line in output.rstrip("\n").split("\n"):
-                chat_ui.write_line(line)
-
-    def _render_syntax_to_output(
-        self, file_path: str, result: dict, lock_name: str,
-        chat_ui=None,
-    ) -> None:
-        """渲染语法高亮到终端（Rich Syntax），供 display/web_display 复用。
-
-        ChatUI 激活时 → 渲染为 ANSI 字符串，路由到 ChatUI render 线程串行输出
-        （尊重 DECSTBM 分屏布局，不破坏底部栏显示）。
-        ChatUI 不可用时 → console.print(syntax) 直写终端（持 output_lock）。
-
-        Args:
-            chat_ui: 调用方传入已获取的 ChatUI 实例，避免重复查询。
-                     为 None 时内部自行查询。
-        """
-        syntax = self._build_syntax(result, file_path)
-        if syntax is None:
-            return
-
-        # ChatUI 激活 → 路由到 ChatUI render 线程串行输出
-        if chat_ui is None:
-            chat_ui = self._get_chat_ui()
-        if chat_ui is not None:
-            self._render_syntax_to_chatui(syntax, chat_ui)
-            return
-
-        # ChatUI 不可用 → console.print() 直写终端（持 output_lock）
-        with _try_acquire_output_lock(name=lock_name):
-            console.print(syntax)
+            Func._publish_tool_text(output)
 
     async def display(self):
         """异步显示文件内容并返回给大模型"""
@@ -448,25 +403,16 @@ class ReadFileFunc(Func):
         elapsed = _time.time() - start_time
 
         if not self._file_result[_SUCCESS_KEY]:
-            msg = f"  {RED}x {self._file_result[_ERROR_KEY]}{RESET}"
-            chat_ui = self._get_chat_ui()
-            if chat_ui is not None:
-                chat_ui.write_line(msg)
-            else:
-                locked_print(msg)
+            Func._publish_tool_text(f"  {RED}x {self._file_result[_ERROR_KEY]}{RESET}")
             return output
 
         file_path = self.path
         result = self._file_result
 
         info_line = await self._build_file_info_line(file_path, result)
-        chat_ui = self._get_chat_ui()
-        if chat_ui is not None:
-            chat_ui.write_line(info_line)
-        else:
-            locked_print(info_line)
+        Func._publish_tool_text(info_line)
 
-        self._render_syntax_to_output(file_path, result, "read_file.display.syntax", chat_ui=chat_ui)
+        self._render_syntax_to_output(file_path, result)
 
         return output
 
@@ -478,31 +424,16 @@ class ReadFileFunc(Func):
         elapsed = _time.time() - start_time
 
         if not self._file_result[_SUCCESS_KEY]:
-            msg = f"  {RED}x {self._file_result[_ERROR_KEY]}{RESET}\n"
-            chat_ui = self._get_chat_ui()
-            if chat_ui is not None:
-                chat_ui.write_line(msg.rstrip("\n"))
-                return output
-            with _try_acquire_output_lock(name="read_file.web_display.error"):
-                sys.__stdout__.write(msg)
-                sys.__stdout__.flush()
+            Func._publish_tool_text(f"  {RED}x {self._file_result[_ERROR_KEY]}{RESET}")
             return output
 
         file_path = self.path
         result = self._file_result
 
         info_line = await self._build_file_info_line(file_path, result)
-        chat_ui = self._get_chat_ui()
-        info_written = False
-        if chat_ui is not None:
-            chat_ui.write_line(info_line)
-            info_written = True
-        if not info_written:
-            with _try_acquire_output_lock(name="read_file.web_display.file_info"):
-                sys.__stdout__.write(info_line + "\n")
-                sys.__stdout__.flush()
+        Func._publish_tool_text(info_line)
 
-        self._render_syntax_to_output(file_path, result, "read_file.web_display.syntax", chat_ui=chat_ui)
+        self._render_syntax_to_output(file_path, result)
 
         # 为前端构建带行号信息的返回文本
         if result[_CONTENT_KEY] is not None:

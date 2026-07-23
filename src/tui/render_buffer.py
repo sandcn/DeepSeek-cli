@@ -87,6 +87,15 @@ class RenderBuffer:
         """缓冲区是否为空（width=0 或 height=0）。"""
         return self._width == 0 or self._height == 0
 
+    def _grow_to(self, min_height: int) -> None:
+        """自动扩展高度至少到 min_height（行数不足时追加空白行）。"""
+        if min_height <= self._height:
+            return
+        add_rows = min_height - self._height
+        for _ in range(add_rows):
+            self._grid.append([self._default_char] * self._width)
+        self._height = min_height
+
     # ── 写入 ──────────────────────────────────────────────
 
     def write(
@@ -110,19 +119,20 @@ class RenderBuffer:
         """
         if not text or self.is_empty():
             return
-        if y < 0 or y >= self._height:
+        if y < 0:
             return
 
         # 应用样式
         if style is not None:
             text = style.apply(text)
 
-        # 按行拆分
+        # 按行拆分，自动扩展高度
         lines = text.split("\n")
+        needed = y + len(lines)
+        if needed > self._height:
+            self._grow_to(needed)
         for i, line in enumerate(lines):
             row = y + i
-            if row >= self._height:
-                break
             if row < 0:
                 continue
             self._write_line(row, x, line)
@@ -135,8 +145,10 @@ class RenderBuffer:
             x: 起始列号（0-based）。
             text: 要写入的文本（单行，无换行符）。
         """
-        if not text or row < 0 or row >= self._height:
+        if not text or row < 0:
             return
+        if row >= self._height:
+            self._grow_to(row + 1)
         if x < 0:
             # x 为负时，从第 0 列开始写入，跳过前 |x| 个字符
             text = text[-x:]

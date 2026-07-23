@@ -19,7 +19,6 @@ from .base import Func, tool_metadata
 from ._constants import WEB_USER_AGENTS as _USER_AGENTS
 from .page_fetcher import fetch_page, format_fetch_result
 from ..core.constants import GREEN, YELLOW, DIM, RESET
-from ..tui.widgets.lock import locked_print
 
 
 @tool_metadata(
@@ -297,16 +296,16 @@ class WebSearchFunc(Func):
 
     async def display(self) -> str:
         if self.mode == "fetch":
-            locked_print(f"\n  {GREEN}📄 获取网页: {self.query}{RESET}")
+            Func._publish_tool_text(f"\n  {GREEN}📄 获取网页: {self.query}{RESET}")
         else:
             cfg = self.ENGINES[self.engine]
-            locked_print(f"\n  {GREEN}🔍 {cfg['label']}搜索: {self.query}{RESET}")
+            Func._publish_tool_text(f"\n  {GREEN}🔍 {cfg['label']}搜索: {self.query}{RESET}")
         result = await self.execute()
 
         if result.startswith("("):
-            locked_print(f"  {YELLOW}{result}{RESET}")
+            Func._publish_tool_text(f"  {YELLOW}{result}{RESET}")
         else:
-            locked_print(f"  {DIM}{result}{RESET}")
+            Func._publish_tool_text(f"  {DIM}{result}{RESET}")
 
         return result
 

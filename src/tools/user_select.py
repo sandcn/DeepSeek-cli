@@ -12,7 +12,6 @@ import time
 from src._compat_termios import HAS_TERMIOS, termios, tty
 from .base import Func, tool_metadata
 from ..core.constants import GREEN, YELLOW, RED, DIM, RESET
-from ..tui.widgets.lock import locked_print
 from ..tui.consumer import get_active_chat_ui
 from ..api.escape_monitor import get_active_monitor
 from ..api.events import publish_event
@@ -148,7 +147,7 @@ class UserSelectFunc(Func):
         except Exception as e:
             _logger.warning("user_select: termios restore failed: %s", e)
             try:
-                locked_print(f"\n  警告: 终端设置恢复失败，可能需要手动执行 'reset' 命令")
+                Func._publish_tool_text(f"\n  警告: 终端设置恢复失败，可能需要手动执行 'reset' 命令")
             except Exception:
                 _logger.debug("打印恢复警告失败")
 
@@ -407,24 +406,24 @@ class UserSelectFunc(Func):
 
     async def display(self):
         """异步显示选择界面并返回结果"""
-        locked_print(f"\n{GREEN}> 用户选择: {self.title}{RESET}")
+        Func._publish_tool_text(f"\n{GREEN}> 用户选择: {self.title}{RESET}")
 
         # 显示选项预览
         if len(self.options) <= 10:
             for i, option in enumerate(self.options):
                 if option in self.default_options:
-                    locked_print(f"  {DIM}{i}. {option} (默认){RESET}")
+                    Func._publish_tool_text(f"  {DIM}{i}. {option} (默认){RESET}")
                 else:
-                    locked_print(f"  {DIM}{i}. {option}{RESET}")
+                    Func._publish_tool_text(f"  {DIM}{i}. {option}{RESET}")
         else:
-            locked_print(f"  {DIM}共 {len(self.options)} 个选项{RESET}")
+            Func._publish_tool_text(f"  {DIM}共 {len(self.options)} 个选项{RESET}")
             for i, option in enumerate(self.options[:5]):
                 if option in self.default_options:
-                    locked_print(f"  {DIM}{i}. {option} (默认){RESET}")
-            locked_print(f"  {DIM}... 还有 {len(self.options) - 5} 个选项{RESET}")
+                    Func._publish_tool_text(f"  {DIM}{i}. {option} (默认){RESET}")
+            Func._publish_tool_text(f"  {DIM}... 还有 {len(self.options) - 5} 个选项{RESET}")
 
-        locked_print(f"  {DIM}模式: {'多选' if self.multi_select else '单选'}{RESET}")
-        locked_print(f"  {DIM}超时: {self.timeout}秒{RESET}")
+        Func._publish_tool_text(f"  {DIM}模式: {'多选' if self.multi_select else '单选'}{RESET}")
+        Func._publish_tool_text(f"  {DIM}超时: {self.timeout}秒{RESET}")
 
         # 执行选择
         result_json = await self.execute()
@@ -437,31 +436,31 @@ class UserSelectFunc(Func):
         if action == "confirmed":
             if selected:
                 if len(selected) == 1:
-                    locked_print(f"  {GREEN}+ 已选择: {selected[0]}{RESET}")
+                    Func._publish_tool_text(f"  {GREEN}+ 已选择: {selected[0]}{RESET}")
                 else:
-                    locked_print(f"  {GREEN}+ 已选择 {len(selected)} 项: {', '.join(selected[:3])}{RESET}")
+                    Func._publish_tool_text(f"  {GREEN}+ 已选择 {len(selected)} 项: {', '.join(selected[:3])}{RESET}")
                     if len(selected) > 3:
-                        locked_print(f"  {DIM}  ... 还有 {len(selected)-3} 项{RESET}")
+                        Func._publish_tool_text(f"  {DIM}  ... 还有 {len(selected)-3} 项{RESET}")
             else:
-                locked_print(f"  {YELLOW}未选择任何项{RESET}")
+                Func._publish_tool_text(f"  {YELLOW}未选择任何项{RESET}")
         elif action == "cancel":
-            locked_print(f"  {YELLOW}x 用户取消{RESET}")
+            Func._publish_tool_text(f"  {YELLOW}x 用户取消{RESET}")
             if self.default_options:
-                locked_print(f"  {DIM}使用默认选项: {', '.join(self.default_options)}{RESET}")
+                Func._publish_tool_text(f"  {DIM}使用默认选项: {', '.join(self.default_options)}{RESET}")
         elif action == "timeout":
-            locked_print(f"  {YELLOW}超时{RESET}")
+            Func._publish_tool_text(f"  {YELLOW}超时{RESET}")
             if self.default_options:
-                locked_print(f"  {DIM}使用默认选项: {', '.join(self.default_options)}{RESET}")
+                Func._publish_tool_text(f"  {DIM}使用默认选项: {', '.join(self.default_options)}{RESET}")
         elif action == "non_interactive":
-            locked_print(f"  {YELLOW}非交互式环境{RESET}")
+            Func._publish_tool_text(f"  {YELLOW}非交互式环境{RESET}")
             if self.default_options:
-                locked_print(f"  {DIM}使用默认选项: {', '.join(self.default_options)}{RESET}")
+                Func._publish_tool_text(f"  {DIM}使用默认选项: {', '.join(self.default_options)}{RESET}")
         elif action == "error" or action.startswith("error:"):
-            locked_print(f"  {RED}x 错误: {action}{RESET}")
+            Func._publish_tool_text(f"  {RED}x 错误: {action}{RESET}")
             if self.default_options:
-                locked_print(f"  {DIM}使用默认选项: {', '.join(self.default_options)}{RESET}")
+                Func._publish_tool_text(f"  {DIM}使用默认选项: {', '.join(self.default_options)}{RESET}")
         else:
-            locked_print(f"  {YELLOW}未知操作: {action}{RESET}")
+            Func._publish_tool_text(f"  {YELLOW}未知操作: {action}{RESET}")
 
         return result_json
 
