@@ -1271,7 +1271,7 @@ class TestMonitorFaultDetection:
     def test_select_error_threshold_triggers_exit(self):
         """select 错误计数达阈值时应触发退出。"""
         monitor = EscapeMonitor()
-        monitor._select_error_count = 10
+        monitor._select_error_count = _SELECT_ERROR_THRESHOLD
         assert monitor._select_error_count >= _SELECT_ERROR_THRESHOLD
 
     def test_select_error_count_resets_on_success(self):

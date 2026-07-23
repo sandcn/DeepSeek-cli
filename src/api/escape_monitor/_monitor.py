@@ -322,7 +322,11 @@ class EscapeMonitor:
         text = self._input_handler.get_current_text()
         self._pause_for_callback()
         try:
-            result = cb(action, text)
+            try:
+                result = cb(action, text)
+            except Exception:
+                _logger.warning("特殊按键回调异常 (action=%s)", action, exc_info=True)
+                return
         finally:
             self._resume_from_callback()
         if result is not None and result != text:
@@ -392,11 +396,18 @@ class EscapeMonitor:
         try:
             self._monitor_unix()
         except Exception as e:
-            _logger.debug("Unix监控方式失败，回退到Windows方式: %s", e)
+            _logger.warning(
+                "_monitor_unix 异常退出（Cygwin 环境可忽略此警告，保护性代码已捕获）: %s", e,
+                exc_info=True,
+            )
             try:
                 self._monitor_win()
             except Exception as e2:
-                _logger.warning("Unix和Windows两种监控方式均失败: %s / %s", e, e2)
+                _logger.warning(
+                    "EscapeMonitor 线程异常退出：Unix 和 Windows 两种监控方式均失败。"
+                    "若在 Cygwin 上频繁出现，请检查 termios 兼容性。"
+                    "错误详情: %s / %s", e, e2, exc_info=True,
+                )
                 self._restore_terminal_settings()
 
     def _restore_terminal_settings_impl(self):
@@ -620,28 +631,37 @@ class EscapeMonitor:
 
                 # ── ASCII 控制字符分发 ────────────────────
                 if first_byte < 0x20 or first_byte == 0x7F:
-                    self._dispatch_control_char(first_byte, raw)
+                    try:
+                        self._dispatch_control_char(first_byte, raw)
+                    except Exception:
+                        _logger.warning("_dispatch_control_char 异常", exc_info=True)
                     continue
 
                 # ── ASCII 可打印字符（单字节，直接处理 + 粘贴检测） ──
                 if first_byte < 0x80:
-                    paste_text = self._try_read_paste(fd, chr(first_byte))
-                    if len(paste_text) > 1:
-                        self._input_handler.handle_chars(paste_text)
-                    else:
-                        self._input_handler.handle_char(paste_text)
-                    self._trigger_auto_completion()
+                    try:
+                        paste_text = self._try_read_paste(fd, chr(first_byte))
+                        if len(paste_text) > 1:
+                            self._input_handler.handle_chars(paste_text)
+                        else:
+                            self._input_handler.handle_char(paste_text)
+                        self._trigger_auto_completion()
+                    except Exception:
+                        _logger.warning("ASCII 可打印字符分发异常", exc_info=True)
                     continue
 
                 # ── 多字节 UTF-8 序列（如中文、日文、韩文等 CJK 字符 + 粘贴检测） ──
-                ch = self._read_utf8_char(fd, first_byte)
-                if ch is not None:
-                    paste_text = self._try_read_paste(fd, ch)
-                    if len(paste_text) > 1:
-                        self._input_handler.handle_chars(paste_text)
-                    else:
-                        self._input_handler.handle_char(paste_text)
-                    self._trigger_auto_completion()
+                try:
+                    ch = self._read_utf8_char(fd, first_byte)
+                    if ch is not None:
+                        paste_text = self._try_read_paste(fd, ch)
+                        if len(paste_text) > 1:
+                            self._input_handler.handle_chars(paste_text)
+                        else:
+                            self._input_handler.handle_char(paste_text)
+                        self._trigger_auto_completion()
+                except Exception:
+                    _logger.warning("多字节 UTF-8 字符分发异常", exc_info=True)
         finally:
             self._restore_terminal_settings(_lock_held=False)
 
