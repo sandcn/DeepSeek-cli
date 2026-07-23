@@ -221,7 +221,7 @@ class ParallelExecutor:
 
         from ..tui.core.tool_icons import AGENT_TYPE_ABBREV as _AGENT_TYPE_ABBREV
 
-        renderer = IncrementalRenderer(typing_speed=0, show_indicator=False,
+        renderer = IncrementalRenderer(show_indicator=False,
                                        _file=_sys.__stdout__)
         try:
             for i, r in enumerate(results, 1):
@@ -300,7 +300,7 @@ class ParallelExecutor:
         term_width = _get_terminal_width()
         buf = io.StringIO()
         renderer = IncrementalRenderer(
-            typing_speed=0, show_indicator=False, _file=buf, width=term_width,
+            show_indicator=False, _file=buf, width=term_width,
         )
         try:
             renderer.write(md_text)

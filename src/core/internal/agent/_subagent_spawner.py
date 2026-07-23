@@ -121,7 +121,7 @@ class SubAgentSpawner:
                 term_width = 80
             buf = io.StringIO()
             renderer = IncrementalRenderer(
-                typing_speed=0, show_indicator=False, _file=buf, width=term_width,
+                show_indicator=False, _file=buf, width=term_width,
             )
             try:
                 renderer.write(md_text)
@@ -140,7 +140,7 @@ class SubAgentSpawner:
             from src.renderer import IncrementalRenderer
 
             renderer = IncrementalRenderer(
-                typing_speed=0, show_indicator=False, _file=_sys.__stdout__,
+                show_indicator=False, _file=_sys.__stdout__,
             )
             try:
                 for i, spec in enumerate(specs, 1):

@@ -56,13 +56,12 @@ class RenderEngine:
     """
 
     def __init__(self, output: OutputAdapter, ctx: RenderContext | None = None,
-                 code_theme: str = "monokai", typing_speed: int = 1000):
+                 code_theme: str = "monokai"):
         self._output = output
         self._ctx = ctx if ctx is not None else RenderContext()
         self._code_theme = code_theme
         self._math_renderer: MathRenderer | None = None
         self._mermaid_renderer: MermaidRenderer | None = None
-        self._typing_speed = typing_speed
         # 代码高亮缓存（lazy init）
         self._theme = None
         # 代码块/Details/Todo 状态（dataclass 封装）
@@ -134,10 +133,6 @@ class RenderEngine:
     # ═══════════════════════════════════════════════════════
 
     @property
-    def typing_speed(self) -> int:
-        return self._typing_speed
-
-    @property
     def output_width(self) -> int:
         return self._output.width
 
@@ -147,18 +142,11 @@ class RenderEngine:
     def ensure_theme(self) -> None:
         self._ensure_theme()
 
-    def code_typing_speed(self) -> int:
-        return self._typing_speed
-
     def write(self, renderable) -> None:
         self._output.write(renderable)
 
     def write_line(self, text: str = "") -> None:
         self._output.write_line(text)
-
-    def write_typing(self, text: Text, speed: int, end: str = "\n",
-                     fill_style: Style | None = None) -> None:
-        self._output.write_typing(text, speed, end, fill_style)
 
     def write_raw(self, text: str) -> None:
         """快速输出纯文本。"""
@@ -292,12 +280,9 @@ class RenderEngine:
     # ═══════════════════════════════════════════════════════
 
     def _output_assembled(self, assembled: Text):
-        """统一输出 assembled Text（打字机或即时）。"""
+        """统一输出 assembled Text。"""
         try:
-            if self._typing_speed > 0:
-                self._output.write_typing(assembled, self._typing_speed)
-            else:
-                self._output.write(assembled)
+            self._output.write(assembled)
         except Exception:
             logger.warning("assembled输出异常", exc_info=True)
 

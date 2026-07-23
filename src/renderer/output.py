@@ -6,6 +6,9 @@
 ★ 锁设计（单锁简化）：
   所有 I/O 操作统一使用全局 render_lock。
   width 属性为无锁读取（GIL 保护简单属性），消除所有「锁前锁」链。
+
+v2026-07-24 新增 captured_output 可选捕获，支持将渲染后的富文本输出
+捕获为 ANSI 字符串列表，供 RenderBuffer 集成使用。
 """
 
 from __future__ import annotations
@@ -16,23 +19,29 @@ from rich.style import Style
 
 import logging
 import time
+from io import StringIO
 from ..tui.widgets.lock import render_lock, _try_acquire_output_lock
 
 _logger = logging.getLogger(__name__)
-from .output_strategies import get_strategy
-
 
 class OutputAdapter:
     """统一终端输出适配器 — 单锁线程安全，简化缓冲。
 
     所有 write(Text) 直接输出到 Rich Console，不做中间缓冲。
     线程安全由全局 render_lock 保证。
+
+    可选捕获模式（captured_output）：
+      传入一个外部 list，每个 write() 调用同时将渲染后的 ANSI 文本
+      追加到该列表，供 RenderBuffer 或后续读取使用。
     """
 
-    def __init__(self, console: Console):
+    def __init__(self, console: Console, *, captured_output: list[str] | None = None):
         self._console = console
         self._width = self._get_terminal_width()
         self._last_width_refresh = 0.0
+        # ── 可选捕获 ──
+        self._captured_output = captured_output
+        self._capture_console: Console | None = None
 
     def _refresh_width(self):
         """刷新终端宽度缓存（线程安全），带 5 秒 TTL 避免高频系统调用。"""
@@ -68,6 +77,39 @@ class OutputAdapter:
         self._refresh_width()
         return self._width
 
+    # ── 捕获 ────────────────────────────────────────────
+
+    def _ensure_capture_console(self) -> None:
+        """惰性初始化捕获控制台，与真实控制台共享颜色系统和宽度。"""
+        if self._capture_console is not None or self._captured_output is None:
+            return
+        self._capture_file = StringIO()
+        self._capture_console = Console(
+            file=self._capture_file,
+            width=self._width,
+            force_terminal=True,
+            color_system=self._console.color_system,
+            soft_wrap=True,
+            markup=True,
+            emoji=True,
+            highlight=True,
+        )
+
+    def _capture_write(self, renderable) -> None:
+        """将 renderable 渲染到捕获控制台，追加到 captured_output 列表。"""
+        if self._captured_output is None or not renderable:
+            return
+        try:
+            self._ensure_capture_console()
+            self._capture_file.truncate(0)
+            self._capture_file.seek(0)
+            if isinstance(renderable, str) and "\x1b" in renderable:
+                renderable = Text.from_ansi(renderable)
+            self._capture_console.print(renderable)
+            self._captured_output.append(self._capture_file.getvalue())
+        except Exception:
+            _logger.debug("捕获渲染输出异常", exc_info=True)
+
     # ── 公共接口 ────────────────────────────────────────
 
     def write(self, renderable) -> None:
@@ -82,12 +124,15 @@ class OutputAdapter:
         if not renderable:
             return
         self._refresh_width()
+        # ── 捕获：锁外记录原标题快照 ──
+        _capture_item = renderable
         with _try_acquire_output_lock(name="output_adapter.write", timeout=1.0) as locked:
             if locked:
                 # 纯字符串含 ANSI 转义序列 → 转换为 Rich Text 对象
                 # 避免 console.print() 将 [38;5;... 解析为 markup 标签
                 if isinstance(renderable, str) and "\x1b" in renderable:
                     renderable = Text.from_ansi(renderable)
+                _capture_item = renderable
                 self._console.print(renderable)
             else:
                 # 锁超时降级：直写终端，不静默丢弃数据
@@ -105,6 +150,8 @@ class OutputAdapter:
                             self._console.file.flush()
                     except Exception:
                         _logger.debug("降级输出 renderable 失败")
+        # ── 捕获（锁外执行，不竞争输出锁） ──
+        self._capture_write(_capture_item)
 
     def write_raw(self, text: str) -> None:
         """快速输出纯文本（跳过 Rich 处理，极致性能路径）。
@@ -140,6 +187,7 @@ class OutputAdapter:
                 else:
                     self._console.file.write("\n")
                     self._console.file.flush()
+            self._capture_write("\n")
             return
         self._refresh_width()
         with _try_acquire_output_lock(name="output_adapter.write_line.print", timeout=1.0) as locked:
@@ -150,26 +198,8 @@ class OutputAdapter:
                 # 降级直写，不丢数据
                 self._console.file.write(text + "\n")
                 self._console.file.flush()
+        self._capture_write(text + "\n")
 
-    def write_typing(self, text: Text, speed: int = 80, end: str = "\n",
-                     fill_style: Style | None = None,
-                     mode: str = "char") -> None:
-        """Write Text with typewriter effect, delegating to current strategy.
-
-        Args:
-            text: Styled Rich Text object to stream out
-            speed: Characters per second (0 = instant, no delay)
-            end: Trailing string after all characters (default newline)
-            fill_style: If set, fill each line's remaining space with this style
-                        (used for code block background)
-            mode: Typewriter mode — "char" (逐字符), "line" (逐行), "instant" (即时)
-        """
-        if not text or not text.plain:
-            return
-        self._refresh_width()
-        strategy = get_strategy(speed, mode)
-        strategy.write(text, self._console, speed, end, fill_style,
-                       render_lock, self.width)
 
     def clear_line(self) -> None:
         """清除当前行（用于光标/进度覆盖）。"""
@@ -198,6 +228,7 @@ class OutputAdapter:
                 # 锁超时降级：直写终端（plain 文本），不调用 console.print
                 self._console.file.write(text.plain)
                 self._console.file.flush()
+        self._capture_write(text)
 
     def print(self, *args, **kwargs):
         """直接代理 console.print，适用于整块渲染（Table/Syntax 等）。"""
@@ -205,6 +236,7 @@ class OutputAdapter:
         with _try_acquire_output_lock(name="output_adapter.print", timeout=1.0) as locked:
             if locked:
                 self._console.print(*args, **kwargs)
+                self._console.file.flush()
             else:
                 # 降级：直接写入文件（解析 sep/end 保证格式正确）
                 sep = kwargs.get('sep', ' ')
@@ -212,6 +244,9 @@ class OutputAdapter:
                 out = sep.join(str(a) for a in args)
                 self._console.file.write(out + end)
                 self._console.file.flush()
+        # ── 捕获第一个参数（主 renderable） ──
+        if args:
+            self._capture_write(args[0])
 
     def flush(self) -> None:
         """刷出 sys.stdout。"""

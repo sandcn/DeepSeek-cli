@@ -15,11 +15,6 @@ class TokenHandler(ABC):
     每个 handler 负责 1~N 个相关 TokenType 的渲染。
     """
 
-    @staticmethod
-    def code_typing_speed(engine) -> int:
-        """返回代码块/图表的打字机速度（与普通文本统一）。"""
-        return engine.code_typing_speed()
-
     @abstractmethod
     def get_token_types(self) -> set[TokenType]:
         """返回此 handler 负责的 TokenType 集合"""

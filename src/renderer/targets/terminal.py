@@ -48,12 +48,10 @@ class TerminalRenderTarget(RenderTarget):
       html = target.render_inline("Hello **world**")  # 返回 Rich Text
     """
 
-    def __init__(self, output: OutputAdapter, code_theme: str = "monokai",
-                 typing_speed: int = 0):
+    def __init__(self, output: OutputAdapter, code_theme: str = "monokai"):
         logger.debug("TerminalRenderTarget 已不活跃，当前主渲染路径不直接使用此接口")
         self._output = output
         self._code_theme = code_theme
-        self._typing_speed = typing_speed
 
         # 特殊渲染器
         self._math_renderer = MathRenderer()
@@ -81,15 +79,6 @@ class TerminalRenderTarget(RenderTarget):
     def write_raw(self, text: str) -> None:
         """快速输出纯文本。"""
         self._output.write_raw(text)
-
-    def write_typing(self, renderable: Any, speed: int = 80,
-                     end: str = "\n") -> None:
-        """打字机效果输出。"""
-        if isinstance(renderable, Text):
-            self._output.write_typing(renderable, speed or self._typing_speed, end)
-        else:
-            # 非 Text 对象（如 Syntax/Table）直接输出
-            self._output.write(renderable)
 
     def clear_line(self) -> None:
         """清除当前行。"""

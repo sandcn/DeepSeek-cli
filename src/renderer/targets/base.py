@@ -28,12 +28,10 @@ class RenderTargetContext:
     Attributes:
         indent: 当前缩进级别
         depth: 嵌套深度（引用/列表嵌套）
-        typing_speed: 打字机速度（0 为即时输出）
         extra: 目标特定的额外参数
     """
     indent: int = 0
     depth: int = 0
-    typing_speed: int = 0
     extra: dict = field(default_factory=dict)
 
 
@@ -81,17 +79,6 @@ class RenderTarget(ABC):
         """渲染目标的可用宽度（字符数或像素）。"""
 
     # ── 可选实现（有默认行为） ──────────────────────────
-
-    def write_typing(self, renderable: Any, speed: int = 80,
-                     end: str = "\n") -> None:
-        """打字机效果输出（默认行为 = 直接 write）。
-
-        Args:
-            renderable: 渲染对象
-            speed: 字符/秒（0=即时）
-            end: 尾部追加字符
-        """
-        self.write(renderable)
 
     def write_raw(self, text: str) -> None:
         """快速输出纯文本（跳过格式处理）。"""
@@ -153,11 +140,6 @@ class CompositeRenderTarget(RenderTarget):
     def clear_line(self) -> None:
         for t in self._targets:
             t.clear_line()
-
-    def write_typing(self, renderable: Any, speed: int = 80,
-                     end: str = "\n") -> None:
-        for t in self._targets:
-            t.write_typing(renderable, speed, end)
 
     def write_raw(self, text: str) -> None:
         for t in self._targets:

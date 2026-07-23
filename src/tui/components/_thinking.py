@@ -5,6 +5,9 @@
 窄屏时降级为静态 _THINKING_HEADER。
 
 2026-07-15 重构：使用 Color256/Style 替代 raw ANSI。
+2026-07-24 增强：render(buffer) 优先输出 IncrementalRenderer 捕获的
+渲染后 ANSI 文本（保留 Markdown 格式/语法高亮），而非原始纯文本。
+回退路径：捕获不可用时使用 _cumulative_content 原始文本。
 """
 
 from __future__ import annotations
@@ -63,10 +66,29 @@ class ThinkingBlock(TuiComponent):
         self._rs.close_reasoning()
 
     def render(self, buffer: RenderBuffer | None = None) -> str | None:
-        """渲染累积的思考内容。"""
-        full_content = "".join(self._cumulative_content)
+        """渲染累积的思考内容。
+
+        优先使用 IncrementalRenderer 捕获的渲染后 ANSI 输出（保留 Markdown
+        格式、语法高亮等），而非原始纯文本 _cumulative_content。
+
+        当 buffer 非 None 时：
+          写入 IncrementalRenderer 的渲染后 ANSI 文本（若捕获可用），
+          否则回退到原始累积纯文本。
+        当 buffer 为 None（纯读取路径）：
+          返回原始累积纯文本。
+        """
         if buffer is not None:
+            # 路径 A：写入 RenderBuffer — 优先使用渲染后捕获输出
+            captured = getattr(self._rs, "captured_reasoning_output", None)
+            if captured:
+                rendered = "".join(captured)
+                if rendered:
+                    buffer.write(0, 0, rendered)
+                    return None
+            # 回退：使用原始累积纯文本
+            full_content = "".join(self._cumulative_content)
             if full_content:
                 buffer.write(0, 0, full_content)
             return None
-        return full_content
+        # 路径 B：字符串读取 — 返回原始累积纯文本（保持向后兼容）
+        return "".join(self._cumulative_content)

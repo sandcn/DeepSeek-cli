@@ -51,6 +51,6 @@ class MathHandler(TokenHandler):
                 _logger.warning("数学块渲染失败，降级为纯文本输出", exc_info=True)
                 panel = Text(f"[Math: {source.strip()[:80]}]", style=Style(dim=True, italic=True))
             engine.write(Text("📐 ", style=Style(bold=True)))
-            engine.write_typing(panel, 0, end="\n")
+            engine._output.write(panel)
         except Exception:
             _logger.debug("数学块关闭异常，跳过", exc_info=True)

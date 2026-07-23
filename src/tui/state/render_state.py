@@ -148,14 +148,28 @@ class ChatRenderState(RenderState):
 
     继承自 RenderState，添加聊天域特有的 reasoning/content 双通道管理和
     _ReasoningState 状态机。
+
+    captured_reasoning_output（v2026-07-24）：
+      存储推理 IncrementalRenderer 渲染后的 ANSI 输出，供 ThinkingBlock.render()
+      写入 RenderBuffer。每个 write() 调用追加一条渲染后的文本块。
+
+    captured_content_output（v2026-07-24）：
+      存储回答 IncrementalRenderer 渲染后的 ANSI 输出，供 AnswerBlock.render()
+      写入 RenderBuffer。
     """
     reasoning: "IncrementalRenderer | None" = None
     content: "IncrementalRenderer | None" = None
     reasoning_state: _ReasoningState = _ReasoningState.INACTIVE
+    captured_reasoning_output: list[str] = None  # type: ignore[assignment]
+    captured_content_output: list[str] = None  # type: ignore[assignment]
 
     def __post_init__(self) -> None:
-        """初始化基类的 _shared_adapter 属性。"""
+        """初始化基类的 _shared_adapter 属性和捕获列表。"""
         super().__init__()
+        if self.captured_reasoning_output is None:
+            self.captured_reasoning_output = []
+        if self.captured_content_output is None:
+            self.captured_content_output = []
 
     def get_reasoning(self) -> "IncrementalRenderer | None":
         if self.reasoning_state == _ReasoningState.CLOSED:
@@ -167,7 +181,8 @@ class ChatRenderState(RenderState):
             from ...renderer import IncrementalRenderer  # 保留运行时惰性 import（避免循环）
             self.reasoning = IncrementalRenderer(
                 style="dim", _file=sys.__stdout__,
-                typing_speed=1000, show_indicator=False,
+                show_indicator=False,
+                captured_output=self.captured_reasoning_output,
             )
             self.reasoning_state = _ReasoningState.ACTIVE
         return self.reasoning
@@ -179,8 +194,9 @@ class ChatRenderState(RenderState):
             from ...renderer import IncrementalRenderer  # 保留运行时惰性 import（避免循环）
             self.content = IncrementalRenderer(
                 style="", _file=sys.__stdout__,
-                typing_speed=1000, show_indicator=False,
+                show_indicator=False,
                 output_adapter=self._shared_adapter,
+                captured_output=self.captured_content_output,
             )
         return self.content
 

@@ -7,7 +7,6 @@
 
 这些 Mixin 依赖宿主类 ASTRenderer 提供以下属性/方法：
   - self._output: OutputAdapter
-  - self._typing_speed: int
   - self._code_theme: str
   - self._math_renderer: MathRenderer
   - self._mermaid_renderer: MermaidRenderer
@@ -71,10 +70,7 @@ class _TextRenderingMixin:
     def _handle_paragraph(self, node: ASTNode):
         """普通段落。"""
         t = self._render_inline(node.content)
-        if self._typing_speed > 0:
-            self._output.write_typing(t, self._typing_speed)
-        else:
-            self._output.write(t)
+        self._output.write(t)
         self._output.write_line()
 
     # ── 标题 ─────────────────────────────────────────
@@ -90,9 +86,7 @@ class _TextRenderingMixin:
         if padding is not None:
             self._output.write_raw(" " * padding)
 
-        # ★ 统一用 write_typing(end="") + write_line()，避免 speed=0 时
-        # write() 内 console.print 自带 \n 导致双换行。
-        self._output.write_typing(styled, self._typing_speed if self._typing_speed > 0 else 0, end="")
+        self._output.write(styled)
         self._output.write_line()
 
     # ── 分隔线 ───────────────────────────────────────
@@ -247,20 +241,12 @@ class _BlockRenderingMixin:
         source = node.content
         lang = node.meta.get("lang", "mermaid")
         t = _render_mermaid_block_shared(lang)
-        if self._typing_speed > 0:
-            code_speed = self._typing_speed
-            self._output.write_typing(t, code_speed)
-        else:
-            self._output.write(t)
+        self._output.write(t)
         result = self._mermaid_renderer.render(source)
         self._output.write(result)
         self._output.write_line()
         t = _render_mermaid_close_shared()
-        if self._typing_speed > 0:
-            code_speed = self._typing_speed
-            self._output.write_typing(t, code_speed)
-        else:
-            self._output.write(t)
+        self._output.write(t)
 
     # ── 表格 ─────────────────────────────────────────
 

@@ -696,7 +696,7 @@ def _display_assistant(
         _manager.write_line(f"\n{_make_think_sep(breath_frame=breath_frame)}")
         _manager.write_line("")
         reason_renderer = IncrementalRenderer(
-            typing_speed=speed, show_indicator=False, style="dim",
+            show_indicator=False, style="dim",
             _file=_output_file,
         )
         reason_renderer.write(reasoning)
@@ -706,7 +706,7 @@ def _display_assistant(
         # 渐显前缀写入 Markdown 渲染之前，后续渲染器会覆盖颜色
         _manager.write(_fade_prefix)
         renderer = IncrementalRenderer(
-            typing_speed=speed, show_indicator=False,
+            show_indicator=False,
             _file=_output_file,
         )
         renderer.write(content)

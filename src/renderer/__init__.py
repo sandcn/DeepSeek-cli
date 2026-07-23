@@ -54,18 +54,23 @@ class IncrementalRenderer:
     """
 
     def __init__(self, code_theme: str = "monokai", style: str = "",
-                 show_indicator: bool = True, typing_speed: int = 1000,
+                 show_indicator: bool = True,
                  show_summary: bool = False, _file=None, width: int | None = None,
-                 output_adapter: OutputAdapter | None = None):
+                 output_adapter: OutputAdapter | None = None,
+                 captured_output: list[str] | None = None):
         self._closed = False
         self._ctx = RenderContext()
         # 标题自动编号（默认关闭，开启后会在标题前显示如 "1.2.3  " 编号）
         self._ctx.heading_numbering = False
         self._show_summary = show_summary
+        self._captured_output_external = captured_output
 
         # ★ 支持外部注入 OutputAdapter（共享模式），消除双 Console 实例竞争
         if output_adapter is not None:
             self._output = output_adapter
+            # 外部注入的 OutputAdapter — 如果 capture 列表已设则直接绑定
+            if captured_output is not None:
+                self._output._captured_output = captured_output
         else:
             console_config = get_safe_console_config()
             if style:
@@ -75,7 +80,7 @@ class IncrementalRenderer:
             if width is not None:
                 console_config["width"] = width
             console = Console(**console_config)
-            self._output = OutputAdapter(console)
+            self._output = OutputAdapter(console, captured_output=captured_output)
 
         self._parser = RecursiveDescentParser(ctx=self._ctx)
         self._indicator = StreamingIndicator(self._output)
@@ -89,7 +94,7 @@ class IncrementalRenderer:
         # 渲染引擎
         self._engine = RenderEngine(
             self._output, ctx=self._ctx,
-            code_theme=code_theme, typing_speed=typing_speed,
+            code_theme=code_theme,
         )
 
         self._has_content = False
@@ -116,6 +121,25 @@ class IncrementalRenderer:
                 self._has_content = True
             self._engine.render(token)
 
+    # ── 捕获输出读取 ─────────────────────────────────
+
+    def get_captured_output(self) -> str:
+        """返回捕获的渲染后 ANSI 文本（累积所有 write/close 的渲染输出）。
+
+        Returns:
+            累积的 ANSI 字符串。未启用捕获时返回空字符串。
+        """
+        if self._captured_output_external is None:
+            return ""
+        return "".join(self._captured_output_external)
+
+    def clear_captured_output(self) -> None:
+        """清空捕获缓冲区。"""
+        if self._captured_output_external is not None:
+            self._captured_output_external.clear()
+
+    # ── 宽度刷新 ─────────────────────────────────────
+
     def force_refresh_width(self) -> None:
         """强制刷新内部 OutputAdapter 的终端宽度缓存。
 
@@ -138,20 +162,11 @@ class IncrementalRenderer:
         tokens = self._parser.flush()
         tokens = self._pipeline.process(tokens, self._ctx)
 
-        # ★ 关闭时 flush 的内容是完整的段落/代码块，不需要逐字符打字效果。
-        #   临时使用 typing_speed=0 即时渲染所有 flush token，确保最后
-        #   几个 token 在 close() 返回前已完全写入输出缓冲区。
-        _logger.debug("close: 临时设置 typing_speed=0（原值=%s），flush token 即时渲染",
-                      self._engine._typing_speed)
-        _saved_speed = self._engine._typing_speed
-        self._engine._typing_speed = 0
-        try:
-            for token in tokens:
-                # ★ close 阶段指示器已 stop，无需再检查 _indicator.on_first_content()
-                self._engine.render(token)
-        finally:
-            self._engine._typing_speed = _saved_speed
-            _logger.debug("close: 恢复 typing_speed=%s", _saved_speed)
+        # ★ 关闭时 flush 的内容是完整的段落/代码块，即时渲染所有 flush token，
+        #   确保最后几个 token 在 close() 返回前已完全写入输出缓冲区。
+        for token in tokens:
+            # ★ close 阶段指示器已 stop，无需再检查 _indicator.on_first_content()
+            self._engine.render(token)
 
         # ★ 确保 flush token 已物理写入 stdout（阶段结束时强制刷出）
         self._output.flush()

@@ -78,17 +78,14 @@ class CodeHandler(TokenHandler):
 
             if title:
                 t_title = self._render_code_title_bar(title, engine.code_state.lang, engine)
-                code_speed = TokenHandler.code_typing_speed(engine)
-                engine.write_typing(t_title, code_speed)
+                engine._output.write(t_title)
 
             if engine.code_state.indented:
                 t = render_code_fence_open(engine.code_state.lang, indented=True)
             else:
                 t = render_code_fence_open(engine.code_state.lang, attrs=attrs)
 
-            code_speed = TokenHandler.code_typing_speed(engine)
-            # 始终使用 write_typing：speed>0 打字机效果，speed=0 即时带换行
-            engine.write_typing(t, code_speed)
+            engine._output.write(t)
         except Exception:
             logger.debug("代码块打开渲染异常，跳过", exc_info=True)
 
@@ -96,7 +93,7 @@ class CodeHandler(TokenHandler):
     # ── 代码行 ──────────────────────────────────────────
 
     def _handle_code_line(self, token: Token, engine):
-        """输出代码行（语法高亮），打字机效果逐字输出，带背景色填充。"""
+        """输出代码行（语法高亮）。"""
         try:
             line = token.content
             engine.code_state.line_num += 1
@@ -120,13 +117,7 @@ class CodeHandler(TokenHandler):
                 else:
                     code_text = self._highlight_line(line, lexer, engine)
 
-            # 行尾不填充背景色（用户要求去除代码块背景色）
-            # 始终使用 write_typing：speed>0 打字机效果逐字输出，
-            # speed=0 时使用 InstantStrategy 自动追加换行，
-            # 避免 write(code_text) 缓冲 Text 导致多行合并（Bug P0）。
-            fill_style = None
-            code_speed = TokenHandler.code_typing_speed(engine)
-            engine.write_typing(code_text, code_speed, fill_style=fill_style)
+            engine._output.write(code_text)
         except Exception:
             logger.debug("代码行渲染异常，跳过", exc_info=True)
 
@@ -142,10 +133,7 @@ class CodeHandler(TokenHandler):
             if line_count >= 0:
                 t.append_text(_make_line_count_text(line_count))
 
-            code_speed = TokenHandler.code_typing_speed(engine)
-            # 始终使用 write_typing：speed=0 时 InstantStrategy 自动追加换行，
-            # 避免 fence 关闭标记缓冲后被前一代码行 Text 吞掉（Bug P0）。
-            engine.write_typing(t, code_speed, fill_style=None)
+            engine._output.write(t)
 
             engine.code_state.lang = ""
             engine.code_state.indented = False
@@ -157,7 +145,7 @@ class CodeHandler(TokenHandler):
     # ── 整块代码（由 CodeBlockBatcher 管道过滤器生成）──
 
     def _handle_code_block(self, token: Token, engine):
-        """渲染整块代码，支持打字机效果逐行输出。"""
+        """渲染整块代码，即时输出。"""
         try:
             source = token.content
             lang = token.meta.get("lang", "text")
@@ -165,8 +153,7 @@ class CodeHandler(TokenHandler):
 
             if title:
                 t_title = self._render_code_title_bar(title, lang, engine)
-                # 始终使用 write_typing：speed=0 时 InstantStrategy 自动追加换行
-                engine.write_typing(t_title, TokenHandler.code_typing_speed(engine))
+                engine._output.write(t_title)
 
             # fence_open 视觉标记（```python 或 📄）
             attrs = token.meta.get("attrs", "")
@@ -175,17 +162,14 @@ class CodeHandler(TokenHandler):
                 t = render_code_fence_open(lang, indented=True)
             else:
                 t = render_code_fence_open(lang, attrs=attrs)
-            code_speed = TokenHandler.code_typing_speed(engine)
-            engine.write_typing(t, code_speed)
+            engine._output.write(t)
 
             lines = source.split('\n')
             engine.ensure_theme()
 
             highlight_lines = token.meta.get("highlight_lines", [])
 
-            if engine.typing_speed > 0 and lines:
-                self._render_code_block_typing(lines, lang, engine)
-            else:
+            if lines:
                 # 即时模式：整块 Syntax 一次性渲染
                 # ★ 使用 split 保留原始空行（与 typing 路径一致的 lines 来源），
                 # 避免 source 含尾随 \n 导致 Syntax 多渲染一个空行（防御性修复）。
@@ -201,38 +185,13 @@ class CodeHandler(TokenHandler):
             line_count = len(lines)
             if line_count >= 0:
                 t.append_text(_make_line_count_text(line_count))
-            # 始终使用 write_typing：speed=0 时 InstantStrategy 自动追加换行
-            engine.write_typing(t, TokenHandler.code_typing_speed(engine),
-                                        fill_style=None)
+            engine._output.write(t)
 
             engine.code_state.lang = ""
             engine.code_state.line_num = 0
             engine.code_state.highlight_lines = []
         except Exception:
             logger.debug("整块代码渲染异常，跳过", exc_info=True)
-
-    def _render_code_block_typing(self, lines: list[str], lang: str, engine):
-        """打字机模式：逐行语法高亮 + 逐行打字机输出。"""
-        try:
-            code_speed = TokenHandler.code_typing_speed(engine)
-            lexer = engine.get_lexer(lang) if lang != "diff" else None
-
-            for line in lines:
-                if not line:
-                    engine.write_line()
-                    continue
-                if lang == "diff":
-                    code_text = render_diff_line(line)
-                elif lexer is None:
-                    code_text = Text(line)
-                else:
-                    code_text = self._highlight_line(line, lexer, engine)
-                # 始终使用 write_typing：speed=0 时 InstantStrategy 自动追加换行
-                # 避免 write(code_text) 缓冲 Text 导致多行合并（见 _handle_code_line 相同修复）
-                engine.write_typing(code_text, code_speed,
-                                            fill_style=None)
-        except Exception:
-            logger.debug("打字机代码块渲染异常，跳过", exc_info=True)
 
     def _render_code_block_instant(self, source: str, lang: str, engine,
                                     highlight_lines: list[int] | None = None):

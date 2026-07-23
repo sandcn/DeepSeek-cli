@@ -59,11 +59,10 @@ class ASTRenderer(_TextRenderingMixin, _ListRenderingMixin, _BlockRenderingMixin
     """
 
     def __init__(self, output: OutputAdapter, ctx: RenderContext | None = None,
-                 code_theme: str = "monokai", typing_speed: int = 1000):
+                 code_theme: str = "monokai"):
         self._output = output
         self._ctx = ctx or RenderContext()
         self._code_theme = code_theme
-        self._typing_speed = typing_speed
         self._math_renderer = MathRenderer()
         self._mermaid_renderer = MermaidRenderer()
 
@@ -113,11 +112,8 @@ class ASTRenderer(_TextRenderingMixin, _ListRenderingMixin, _BlockRenderingMixin
     # ── 辅助方法 ────────────────────────────────────────
 
     def _output_assembled(self, assembled: Text):
-        """统一输出 assembled Text（打字机或即时）。"""
-        if self._typing_speed > 0:
-            self._output.write_typing(assembled, self._typing_speed)
-        else:
-            self._output.write(assembled)
+        """统一输出 assembled Text。"""
+        self._output.write(assembled)
 
     # ═══════════════════════════════════════════════════════
     # 脚注渲染

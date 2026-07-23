@@ -34,10 +34,7 @@ class MermaidHandler(TokenHandler):
             lang = token.meta.get("lang", "mermaid")
             fence_text = f"```{lang}"
             t = Text(fence_text, style=Style(dim=True, italic=True))
-            if engine.typing_speed > 0:
-                engine.write_typing(t, TokenHandler.code_typing_speed(engine))
-            else:
-                engine.write(t)
+            engine._output.write(t)
         except Exception:
             _logger.debug("Mermaid块打开渲染异常，跳过", exc_info=True)
 
@@ -73,10 +70,7 @@ class MermaidHandler(TokenHandler):
                     engine.write(Text(line, style=Style(dim=True)))
 
             t = render_mermaid_close()
-            if engine.typing_speed > 0:
-                engine.write_typing(t, TokenHandler.code_typing_speed(engine))
-            else:
-                engine.write(t)
+            engine._output.write(t)
 
             engine.mermaid_buffer = []
         except Exception:

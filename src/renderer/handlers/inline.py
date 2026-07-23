@@ -58,10 +58,7 @@ class InlineHandler(TokenHandler):
         """普通段落。"""
         try:
             t = engine.render_inline(token.content)
-            if engine.typing_speed > 0:
-                engine.write_typing(t, engine.typing_speed)
-            else:
-                engine.write(t)
+            engine._output_assembled(t)
         except Exception:
             _logger.warning("段落渲染异常，跳过", exc_info=True)
 
@@ -88,11 +85,7 @@ class InlineHandler(TokenHandler):
             )
             if padding is not None:
                 engine.write_raw(" " * padding)
-            # ★ 修复 BUG: speed=0 时 write(t) 内部 console.print 自带 \n，
-            # 再 write_line() 会导致双换行。统一走 write_typing(t, 0, end="")
-            # 确保 speed>0 和 speed=0 两路径行为一致。
-            engine.write_typing(t, engine.typing_speed if engine.typing_speed > 0 else 0, end="")
-            engine.write_line()
+            engine._output_assembled(t)
         except Exception:
             _logger.warning("标题渲染异常，跳过", exc_info=True)
 
@@ -112,10 +105,7 @@ class InlineHandler(TokenHandler):
         try:
             depth = token.meta.get("depth", 1)
             assembled = _render_blockquote_shared(token.content, depth, engine.render_inline)
-            if engine.typing_speed > 0:
-                engine.write_typing(assembled, engine.typing_speed)
-            else:
-                engine.write(assembled)
+            engine._output_assembled(assembled)
         except Exception:
             _logger.warning("引用渲染异常，跳过", exc_info=True)
 
