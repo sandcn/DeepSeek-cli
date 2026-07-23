@@ -45,8 +45,13 @@ class EscapeMonitor:
         #   进入等待前设置此 Event，resume() 等待确认后再恢复活跃。
         self._paused_ack = threading.Event()
         self._paused_ack.set()  # 初始为已确认（未暂停时无需等待）
-        # _monitor_ready：monitor 线程完成 cbreak 设置后 set，
-        # 供 user_select 等调用方精确同步（替代不可靠的 asyncio.sleep）。
+        # _monitor_ready：有两种用途——
+        #   1. 线程 cbreak 就绪同步：monitor 线程完成 cbreak 设置后 set，
+        #      供 user_select 等调用方通过 _monitor_ready.wait() 精确同步
+        #      （替代不可靠的 asyncio.sleep）。
+        #   2. _echo() 期间的 cleared 状态：start() 中在 _echo() 调用前
+        #      clear()，防止 _echo() 回调路径中误判 _monitor_ready 为
+        #      已就绪（此时线程尚未启动、cbreak 尚未设置）。
         # 初始 set：未启动时视为 ready（无需等待）。
         self._monitor_ready = threading.Event()
         self._monitor_ready.set()
@@ -71,8 +76,14 @@ class EscapeMonitor:
 
     # ── 公开接口 ──────────────────────────────────────────
 
-    def start(self):
-        """开始监听（非阻塞），在执行前调用。"""
+    def start(self, prefill: str = ""):
+        """开始监听（非阻塞），在执行前调用。
+
+        Args:
+            prefill: 可选的预填文本。非空时在启动监听前设置到输入缓冲区，
+                     消除「启动监听→等待 set_prefill」的时序竞态窗口。
+                     默认空字符串保持向后兼容。
+        """
         global _active_monitor, _active_monitor_lock
         # 防止重复启动线程
         if self._thread is not None and self._thread.is_alive():
@@ -87,8 +98,12 @@ class EscapeMonitor:
         self._input_handler.reset()
         # 加载历史并重置导航状态
         self._input_handler.load_history()
+        if prefill:
+            self._input_handler.set_buffer(prefill)
+        self._monitor_ready.clear()  # 预置 cleared：在线程启动前和 _echo() 调用前 clear，防止
+        # 调用方在 cbreak 就绪前通过 _monitor_ready.wait() 穿透，同时
+        # 防止 _echo() 回调路径中误判 _monitor_ready 为已就绪。
         self._input_handler._echo(self._input_handler.get_current_text())
-        self._monitor_ready.clear()  # 重置：等待线程完成 cbreak 设置
         self._eof_count = 0
         self._select_error_count = 0
         self._thread = threading.Thread(target=self._monitor, daemon=True)

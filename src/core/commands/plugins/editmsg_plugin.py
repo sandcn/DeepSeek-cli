@@ -4,19 +4,24 @@
 让底部栏补全弹窗 + raw I/O 处理 ↑↓/Enter/Esc 交互，
 选择完成后恢复两者。
 
-prefill 数据流（5 个传递节点）:
-  1. editmsg_plugin.py:async_execute — state_dict["prefill"] 赋值
-  2. _loop.py:_handle_command_msg — 从 state_dict 同步到 state.prefill
-  3. _loop.py:_handle_round — _merge_prefill() 合并 prefill
-  4. consumer.py:wait_for_user_input — 从参数接收 prefill 并调用 set_prefill
-  5. _monitor.py:EscapeMonitor.set_prefill — 设置缓冲区并触发回显
+prefill 数据流（主路径 + 兜底路径）:
+
+  主路径（finally 块，提前注入）:
+    1. editmsg_plugin.py:async_execute — state_dict["prefill"] 赋值
+    2. editmsg_plugin.py:async_execute:finally — monitor.start(prefill=prefill_text)
+       → EscapeMonitor._start → set_buffer(prefill) 直接设置终端预填缓冲区
+    3. state["prefill"] = "" — 清空，防止兜底路径重复设置
+
+  兜底路径（state["prefill"] 已空，返回空字符串）:
+    4. _loop.py:_handle_command_msg — 从 state_dict 同步到 state.prefill（空值）
+    5. _loop.py:_handle_round — _merge_prefill() 合并 prefill（空操作）
+    6. consumer.py:wait_for_user_input — 从参数接收空 prefill，调用 set_prefill（无操作）
 """
 
 from __future__ import annotations
 
 import asyncio
 import logging
-import time
 from typing import Any
 
 from .base import InteractiveCommandPlugin
@@ -115,16 +120,23 @@ class EditmsgPlugin(InteractiveCommandPlugin):
                 )
             needs_rerender = False
         finally:
+            if chat_ui is not None:
+                try:
+                    chat_ui.resume()
+                except Exception:
+                    _logger.warning("chat_ui.resume() 在 finally 中异常", exc_info=True)
             if monitor is not None:
                 try:
-                    monitor.start()
-                    time.sleep(0.05)
+                    prefill_text = state.get("prefill", "")
+                    monitor.start(prefill=prefill_text)
+                    state["prefill"] = ""  # 幂等清除：非空时标记已应用、空时保持空
                 except Exception:
                     _logger.warning("monitor.start() 在 finally 中异常", exc_info=True)
             if chat_ui is not None:
-                chat_ui.resume()
-                chat_ui.flush()
-                _logger.debug("editmsg_plugin: bottom bar flushed after resume")
+                try:
+                    chat_ui.flush()
+                except Exception:
+                    _logger.warning("chat_ui.flush() 在 finally 中异常", exc_info=True)
 
         # ★ 编辑后反馈：编辑失败（未产生 prefill/retry）时给用户明确提示
         if not needs_rerender and chat_ui is not None:

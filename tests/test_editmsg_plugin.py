@@ -254,17 +254,21 @@ async def test_finally_block_flush_called(EditmsgPlugin, mock_loop, mock_ctx):
 
 @pytest.mark.asyncio
 async def test_finally_block_monitor_started_before_flush(EditmsgPlugin, mock_loop, mock_ctx):
-    """验证 finally 块调用顺序: monitor.start → chat_ui.resume → chat_ui.flush
+    """验证 finally 块调用顺序: chat_ui.resume → monitor.start(prefill=...) → chat_ui.flush
 
-    使用 assert_has_calls 确保时序正确：
-    1. monitor.start() 最先（确保 cbreak 就绪）
-    2. chat_ui.resume() 其次（恢复渲染线程）
+    使用 call_log 模式记录跨 mock 对象的调用时序：
+    1. chat_ui.resume() 最先（恢复渲染线程，确保 echo 回调能被处理）
+    2. monitor.start(prefill=...) 其次（启动监听并预填文本）
     3. chat_ui.flush() 最后（刷新底部栏）
     """
-    from unittest.mock import call
-
     plugin = EditmsgPlugin()
     plugin.bind_loop(mock_loop)
+
+    # 使用 call_log 记录跨 mock 的调用顺序
+    call_log = []
+    mock_loop._chat_ui.resume.side_effect = lambda: call_log.append("resume")
+    mock_loop._monitor.start.side_effect = lambda prefill="": call_log.append(f"start:{prefill}")
+    mock_loop._chat_ui.flush.side_effect = lambda: call_log.append("flush")
 
     with patch(
         "src.ui.msg_list.edit_current_messages",
@@ -272,10 +276,10 @@ async def test_finally_block_monitor_started_before_flush(EditmsgPlugin, mock_lo
     ):
         await plugin.async_execute(mock_ctx)
 
-    # 验证 monitor.start 在 finally 最先被调用
-    mock_loop._monitor.assert_has_calls([call.start()])
-    # 验证 chat_ui.resume 在 chat_ui.flush 之前
-    mock_loop._chat_ui.assert_has_calls([call.resume(), call.flush()])
+    # 验证调用顺序 + prefill 参数: resume → start:content → flush
+    assert call_log == ["resume", "start:content", "flush"], (
+        f"finally 块调用顺序或 prefill 参数异常，期望 ['resume', 'start:content', 'flush']，实际 {call_log}"
+    )
 
 
 # ═══════════════════════════════════════════════════════════════════════════

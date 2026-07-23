@@ -47,7 +47,14 @@ async def _put_and_wait(queue, msg: object, msg_done: asyncio.Event) -> None:
 
 
 def _merge_prefill(state, session) -> str:
-    """合并预填文本：将 LLM 生成期间捕获的用户键入与 state.prefill 合并。"""
+    """合并预填文本：将 LLM 生成期间捕获的用户键入与 state.prefill 合并。
+
+    调用约定：
+        state.prefill 可能已被调用方提前消费（例如通过
+        ``EscapeMonitor.start(prefill=...)`` 提前设置了 prefill），此时
+        state.prefill 已被清空，本函数读回空值，退化为仅清空
+        ``session.captured_prefill`` 并返回空字符串。调用方（如
+        ``wait_for_user_input``）据此跳过 ``set_prefill()`` 调用。"""
     prefill = state.prefill
     state.prefill = ""
     captured = session.captured_prefill
