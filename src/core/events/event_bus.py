@@ -122,7 +122,7 @@ class CoreEventBus:
         bus = CoreEventBus()
 
         def on_model_call(event: CoreEvent):
-            locked_print(f"模型调用完成: {event.data}")
+            publish_output(f"模型调用完成: {event.data}", level="info")
 
         bus.subscribe("model.call.completed", on_model_call)
         bus.publish("model.call.completed", {"model": "deepseek", "tokens": 100})

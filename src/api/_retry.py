@@ -13,7 +13,7 @@ from .client_async import (
 )
 from .interrupt_async import is_interrupted_async, wait_for_interrupt_async
 from ..config import MAX_RETRIES, RETRY_BASE_SEC
-from ..tui.widgets.lock import locked_print
+from ..tui.events.consumers import publish_output
 
 _logger = logging.getLogger(__name__)
 
@@ -48,7 +48,7 @@ async def retry_api_call_async(
             display.update_model_phase(label, "error", msg)
         elif not silent:
             from ..core.constants import YELLOW, RESET
-            locked_print(f"\n{YELLOW}{msg}{RESET}", flush=True)
+            publish_output(f"\n{YELLOW}{msg}{RESET}", level="raw")
         # silent=True 且无 display 时：不输出
 
     empty = ("", "(已中断，无内容)", {"input": 0, "output": 0}, [])
@@ -152,7 +152,7 @@ async def retry_on_parse_failure_async(
             display.update_model_phase(label, "error", msg)
         elif not silent:
             from ..core.constants import YELLOW, RESET
-            locked_print(f"\n{YELLOW}{msg}{RESET}", flush=True)
+            publish_output(f"\n{YELLOW}{msg}{RESET}", level="raw")
 
     from .json_repair import _PARSE_RETRY_STATS, _JSON_REPAIR_LOCK
 

@@ -23,7 +23,7 @@ from pathlib import Path
 import logging
 
 from .api.stats import get_token_stats
-from .tui.widgets.lock import locked_print
+from .tui.events.consumers import publish_output
 from .paths import CHAT_MSGS_DIR, ensure_chat_msgs_dir
 
 _logger = logging.getLogger(__name__)
@@ -284,10 +284,10 @@ def export_session(session_id: str, output: str | None = None) -> str | None:
         try:
             out_path.relative_to(cwd)
         except ValueError:
-            locked_print(f"  错误: 导出路径必须在当前目录下: {out_path}")
+            publish_output(f"  错误: 导出路径必须在当前目录下: {out_path}", level="raw")
             return None
         if out_path.exists():
-            locked_print(f"  错误: 文件已存在: {out_path}")
+            publish_output(f"  错误: 文件已存在: {out_path}", level="raw")
             return None
         out_path.parent.mkdir(parents=True, exist_ok=True)
         out_path.write_text(json_str, encoding='utf-8')

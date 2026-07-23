@@ -2,7 +2,7 @@
 
 提供终端底部固定输入栏（_BottomBar）、单数据源状态栏（StatusBar）、
 命令面板（CommandPalette）、会话切换器（SessionSwitcher）、
-锁定原语（render_lock/io_lock/locked_print）、补全引擎（CompletionEngine）、
+锁定原语（render_lock/io_lock）、补全引擎（CompletionEngine）、
 光标追踪（CursorTracker）和 stdout 行追踪（_StdoutLineTracker）。
 """
 
@@ -11,8 +11,7 @@ from __future__ import annotations
 # ── 底层工具（轻量模块，无循环导入风险） ──
 from .lock import (
     render_lock, io_lock, output_lock, diff_active,
-    _try_acquire_io_lock, _try_acquire_output_lock,
-    locked_print, OUTPUT_LOCK_TIMEOUT,
+    _try_acquire_output_lock, OUTPUT_LOCK_TIMEOUT,
 )
 from .cursor_tracker import CursorTracker, CursorPosition
 from .stdout_tracker import _StdoutLineTracker
@@ -65,8 +64,7 @@ def __getattr__(name: str):
 __all__ = [
     # lock
     "render_lock", "io_lock", "output_lock", "diff_active",
-    "_try_acquire_io_lock", "_try_acquire_output_lock",
-    "locked_print", "OUTPUT_LOCK_TIMEOUT",
+    "_try_acquire_output_lock", "OUTPUT_LOCK_TIMEOUT",
     # cursor_tracker
     "CursorTracker", "CursorPosition",
     # stdout_tracker

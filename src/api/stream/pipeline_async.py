@@ -30,7 +30,7 @@ from ..stream_parse import convert_tool_calls_map_with_status
 from .context import StreamContext
 from .handlers import ReasoningHandler, ContentHandler, ToolCallsHandler, SpeedHandler
 from ...core.constants import YELLOW, RESET
-from ...tui.widgets.lock import locked_print
+from ...tui.events.consumers import publish_output
 
 _logger = logging.getLogger(__name__)
 
@@ -168,7 +168,7 @@ class AsyncStreamPipeline:
                 if ctx.task_cancelled or await is_interrupted_async():
                     ctx.esc_interrupted = True
                     if not silent:
-                        locked_print(_INTERRUPTED_MSG, flush=True)
+                        publish_output(_INTERRUPTED_MSG, level="raw")
                     break
 
                 # ── 流式进度刷新：10次/秒 ──
@@ -240,7 +240,7 @@ class AsyncStreamPipeline:
             if not ctx.esc_interrupted and (ctx.task_cancelled or await is_interrupted_async()):
                 ctx.esc_interrupted = True
                 if not silent:
-                    locked_print(_INTERRUPTED_MSG, flush=True)
+                    publish_output(_INTERRUPTED_MSG, level="raw")
         finally:
             self._speed_handler.final_update(ctx)
             await self._cleanup_display(ctx)
@@ -347,7 +347,8 @@ class AsyncStreamPipeline:
         if not ctx.silent and ctx.tracker.started:
             from ...tui.consumer import get_active_chat_ui  # noqa: PLC0415
             if get_active_chat_ui() is None:
-                locked_print("\r\033[K", end="", flush=True, file=sys.__stdout__)
+                sys.__stdout__.write("\r\033[K")
+                sys.__stdout__.flush()
 
         # ── 第 2b 步：发布 PhaseDoneEvent（即使 silent=True 也要发，确保 WebUI 收到） ─
         # ★ 标记追踪：在 content.py 或 tool_calls.py 中已发布的阶段事件，此处不再重复发送
@@ -403,7 +404,8 @@ class AsyncStreamPipeline:
         if not ctx.silent and (ctx.content_full or ctx.reasoning_full):
             from ...tui.consumer import get_active_chat_ui  # noqa: PLC0415
             if get_active_chat_ui() is None:
-                locked_print(flush=True, file=sys.__stdout__)
+                sys.__stdout__.write("\n")
+                sys.__stdout__.flush()
 
     def _print_usage_summary(self, ctx: StreamContext) -> None:
         """打印使用量摘要。"""

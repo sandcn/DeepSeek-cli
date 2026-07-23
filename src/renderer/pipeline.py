@@ -29,8 +29,6 @@ from collections import Counter
 
 from .types import Token, TokenType, RenderContext
 from ._utils import parse_highlight_lines
-from ..tui.widgets.lock import locked_print
-
 _logger = logging.getLogger(__name__)
 
 

@@ -22,7 +22,6 @@ from ...core.constants import CYAN, DIM, GREEN, RESET, YELLOW, BRIGHT_CYAN, BRIG
 from ..core.theme import THEME
 from ...core.sandbox_manager import get_sandbox_manager as _get_sandbox_manager
 from ...api.interrupt_async import flush_stdin, reset_interrupt_async
-from ..widgets.lock import locked_print
 from ..widgets.bottom_bar.selection import run_bottom_bar_selection
 from ..events import publish_output
 from . import message_display as _disp
@@ -214,8 +213,9 @@ class DeleteCommand(MessageCommand):
                 or agent.messages[self.real_idx].get("role", ""),
                 30,
             )
-            locked_print(
-                f"  {THEME['warning']}\u786e\u8ba4\u5220\u9664\u300c{msg_preview}\u300d\u53ca\u4e4b\u540e\u6240\u6709\u6d88\u606f\uff1f(y/N): {RESET}"
+            publish_output(
+                f"  {THEME['warning']}\u786e\u8ba4\u5220\u9664\u300c{msg_preview}\u300d\u53ca\u4e4b\u540e\u6240\u6709\u6d88\u606f\uff1f(y/N): {RESET}",
+                level="raw",
             )
             confirm = input().strip()
         except Exception as exc:

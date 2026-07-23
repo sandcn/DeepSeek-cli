@@ -35,7 +35,7 @@ from ..ws_handler.sandbox import build_sandbox_updated
 from ..ws_handler.edit import _handle_get_messages, _handle_edit_messages_action
 from ..ws_handler.utils import _rebuild_message_indices
 from ..types import msg_sessions_list, msg_session_deleted, msg_session_loaded
-from ...tui.widgets.lock import locked_print
+from ...tui.events.consumers import publish_output
 
 if TYPE_CHECKING:
     from .context import ConnectionContext
@@ -193,8 +193,8 @@ async def _handle_exit_command(ctx: ConnectionContext) -> None:
     ws = ctx.ws
     sid = session.save()
     load_cmd = f"/load {sid}" if sid else "/load <会话ID>"
-    locked_print(f"\n  \033[32m会话已保存 (ID: {sid})\033[0m")
-    locked_print(f"  \033[32m恢复此对话请运行命令: {load_cmd}\033[0m\n")
+    publish_output(f"\n  \033[32m会话已保存 (ID: {sid})\033[0m", level="raw")
+    publish_output(f"  \033[32m恢复此对话请运行命令: {load_cmd}\033[0m\n", level="raw")
 
     # ── Termux：关闭浏览器（委托给 _termux 模块） ──
     await close_browsers()

@@ -162,7 +162,7 @@ class Func(abc.ABC):
     ) -> str:
         """display() 通用模板 — ls/find/search 统一使用。
 
-        1. 用 locked_print 输出 header（及可选的 extra_info）
+        1. 用 publish_output 输出 header（及可选的 extra_info）
         2. await self.execute()
         3. 检查结果首行是否为错误（匹配 error_prefixes）→ 分色打印
         4. 返回 result

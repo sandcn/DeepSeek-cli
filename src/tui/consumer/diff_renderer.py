@@ -19,7 +19,8 @@ from functools import lru_cache
 from typing import Optional, TYPE_CHECKING
 
 from ..core.style import Style, StyleSheet
-from ..widgets.lock import diff_active, _try_acquire_output_lock, locked_print
+from ..widgets.lock import diff_active, _try_acquire_output_lock
+from ..events.consumers import publish_output
 
 _logger = logging.getLogger(__name__)
 
@@ -193,11 +194,11 @@ def _fold_context(parsed, fold_threshold=4):
 
 
 def _write_diff_line(text: str, output_target=None):
-    """写入一行 diff 输出，优先使用 output_target，否则使用 locked_print。"""
+    """写入一行 diff 输出，优先使用 output_target，否则使用 publish_output。"""
     if output_target is not None:
         output_target.write_line(text)
     else:
-        locked_print(text)
+        publish_output(text, level="raw")
 
 
 def _render_chunk(item, w, lexer_name, output_target):
@@ -428,7 +429,7 @@ def show_file_diff(path, old_content, new_content, output_target: Optional["IOut
         if output_target is not None:
             output_target.write_line(msg)
         else:
-            locked_print(msg)
+            publish_output(msg, level="raw")
         return
     w = len(str(max(len(old_lines), len(new_lines), 1)))
     ext = os.path.splitext(path)[1].lstrip('.').lower()

@@ -471,9 +471,9 @@ class ParallelExecutor:
                 # 换行，确保后续 markdown 内容从新行开始
                 # ChatUI 激活时 write_line 自带换行，无需写 __stdout__ 破坏分屏布局
                 from ..tui.consumer import get_active_chat_ui as _get_active_chat_ui
-                from ..tui.widgets.lock import locked_print as _locked_print
                 if _get_active_chat_ui() is None:
-                    _locked_print(file=_sys.__stdout__)
+                    _sys.__stdout__.write('\n')
+                    _sys.__stdout__.flush()
 
             # 在线程池中执行所有终端输出操作，避免同步 IO 阻塞事件循环
             # 统一通过 _do_terminal_output 路由：ChatUI 激活时走 write_line，

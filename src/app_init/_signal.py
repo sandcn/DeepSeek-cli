@@ -12,7 +12,7 @@ import os
 import signal
 import threading
 
-from ..tui.widgets.lock import locked_print
+from ..tui.events.consumers import publish_output
 from ..api.escape_monitor import stop_active_monitor
 
 _logger = logging.getLogger(__name__)
@@ -40,7 +40,7 @@ class SignalManager:
         with self._sigint_lock:
             if self._shutdown_requested.is_set():
                 # 第二次按 Ctrl+C 直接强关，不再去抖
-                locked_print("\n  ⚠ 强制关闭所有任务…", flush=True)
+                publish_output("\n  ⚠ 强制关闭所有任务…", level="raw")
                 stop_active_monitor()
                 current = asyncio.current_task()
                 if current is None:
@@ -59,14 +59,14 @@ class SignalManager:
             self._shutdown_requested.set()
 
         # 锁外执行非关键路径
-        locked_print("\n  ⚠ 正在中断…（再按一次 Ctrl+C 强制退出）", flush=True)
+        publish_output("\n  ⚠ 正在中断…（再按一次 Ctrl+C 强制退出）", level="raw")
         request_interrupt_async()
 
         await asyncio.sleep(_SHUTDOWN_GRACE_PERIOD)
 
     async def shutdown(self) -> None:
         """SIGTERM 的优雅关闭 — 直接强制退出"""
-        locked_print("\n  ⚠ 正在关闭…", flush=True)
+        publish_output("\n  ⚠ 正在关闭…", level="raw")
         stop_active_monitor()
         current = asyncio.current_task()
         if current is None:
@@ -83,7 +83,7 @@ class SignalManager:
         pty 断开/Cygwin 会话变更/休眠恢复时触发，行为与 shutdown() 一致，
         但使用独立的提示信息以区分用户主动 SIGTERM 与 pty 断开 SIGHUP。
         """
-        locked_print("\n  ⚠ 检测到终端断开(SIGHUP)，正在关闭…", flush=True)
+        publish_output("\n  ⚠ 检测到终端断开(SIGHUP)，正在关闭…", level="raw")
         stop_active_monitor()
         current = asyncio.current_task()
         if current is None:

@@ -70,7 +70,7 @@ class ChatSession:
 
     使用方式:
         session = ChatSession()
-        session.on("round_end", lambda **kw: locked_print(kw))
+        session.on("round_end", lambda **kw: publish_output(str(kw), level="info"))
         result = session.run_round("你好")
     """
 

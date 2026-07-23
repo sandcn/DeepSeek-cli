@@ -17,7 +17,7 @@ from aiohttp import web
 from ._termux import auto_open_browser
 from .session import WEBChatSession
 from .routing import handle_websocket
-from ..tui.widgets.lock import locked_print
+from ..tui.events.consumers import publish_output
 
 _logger = logging.getLogger(__name__)
 
@@ -149,13 +149,13 @@ async def run_web_server(host: str = "0.0.0.0", port: int = 8080,
 
     host_display = host if host != "0.0.0.0" else "localhost"
     url = f"http://{host_display}:{port}"
-    locked_print(f"\033[1;36m  Web UI: {url}\033[0m")
-    locked_print(f"\033[2m  按 Ctrl+C 停止服务器\033[0m")
+    publish_output(f"\033[1;36m  Web UI: {url}\033[0m", level="raw")
+    publish_output(f"\033[2m  按 Ctrl+C 停止服务器\033[0m", level="raw")
 
     # ── Termux：自动用浏览器打开 URL（委托给 _termux 模块） ──
     await auto_open_browser(url)
 
-    locked_print()  # 空行分隔
+    publish_output("", level="raw")  # 空行分隔
 
     # ── 注册信号处理（优雅关闭） ─────────────────────
     _signal_registered = False

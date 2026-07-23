@@ -5,8 +5,6 @@ import logging
 import os
 import sys
 
-from ..tui.widgets.lock import locked_print
-
 from .defaults import CONFIG_DIR, LOG_FILE, RC_FILE, DEFAULTS, PROVIDERS
 from .schema import _validate_rc
 
@@ -68,7 +66,7 @@ def update_config(key: str, value) -> None:
             encoding="utf-8",
         )
     except OSError as e:
-        locked_print(f"警告: 无法写入配置文件 {RC_FILE}: {e}", file=sys.stderr)
+        sys.__stderr__.write(f"警告: 无法写入配置文件 {RC_FILE}: {e}\n")
     else:
         from . import _clear_value_cache
         _clear_value_cache()
@@ -88,8 +86,7 @@ def get_base_url(provider=None):
         provider_config = PROVIDERS[provider]
         provider_url = provider_config.get("base_url", "")
         if not provider_url and provider != "custom":
-            locked_print(f"警告: provider '{provider}' 的 API 格式与 OpenAI 不兼容，当前客户端不支持，请使用支持的 provider。",
-                  file=sys.stderr)
+            sys.__stderr__.write(f"警告: provider '{provider}' 的 API 格式与 OpenAI 不兼容，当前客户端不支持，请使用支持的 provider。\n")
         if provider_url:
             return provider_url
     return "https://api.deepseek.com/v1/chat/completions"

@@ -15,7 +15,7 @@ from ._session_cmd import _handle_session_command
 
 from ..chat_msgs import load_session, list_sessions
 from ..tui.events import OutputConsumer
-from ..tui.widgets.lock import locked_print
+from ..tui.events.consumers import publish_output
 from ..core.constants import CYAN, DIM, RESET, YELLOW
 from ..core.telemetry.trace_context import generate_trace_id, get_current_trace_id, set_current_trace_id
 from ..observability import get_default_facade
@@ -31,7 +31,7 @@ async def main():
 
     # ── 处理版本信息 ──
     if args.version or args.command == 'version':
-        locked_print(f"  Chat {VERSION}")
+        publish_output(f"  Chat {VERSION}", level="raw")
         return
 
     # ── 注册 ChatUI 错误处理器 ──
@@ -77,7 +77,7 @@ async def main():
             if args.load:
                 data = load_session(args.load)
                 if data is None:
-                    locked_print(f"\n{YELLOW}  ! 未找到会话 '{args.load}'{RESET}", flush=True)
+                    publish_output(f"\n{YELLOW}  ! 未找到会话 '{args.load}'{RESET}", level="raw")
                     return
                 loaded_data = data
 
@@ -95,17 +95,17 @@ async def main():
         if args.load:
             data = load_session(args.load)
             if data is None:
-                locked_print(f"\n{YELLOW}  ! 未找到会话 '{args.load}'，可用的会话:{RESET}", flush=True)
+                publish_output(f"\n{YELLOW}  ! 未找到会话 '{args.load}'，可用的会话:{RESET}", level="raw")
                 for s in list_sessions():
                     title = s.get("title", "")
                     title_info = f"「{title}」 " if title else ""
-                    locked_print(f"    {DIM}{s['id']}  {title_info}{s['model']}  {s['message_count']}条消息  {s['saved_at']}{RESET}", flush=True)
+                    publish_output(f"    {DIM}{s['id']}  {title_info}{s['model']}  {s['message_count']}条消息  {s['saved_at']}{RESET}", level="raw")
                 return
             loaded_data = data
             title = data.get("title", "")
             title_info = f"「{title}」 " if title else ""
-            locked_print(f"\n{CYAN}  > 已恢复会话 {title_info}{args.load}{RESET}", flush=True)
-            locked_print(f"{DIM}   模型: {data.get('model', '?')}  |  消息: {len(data.get('messages', []))} 条{RESET}", flush=True)
+            publish_output(f"\n{CYAN}  > 已恢复会话 {title_info}{args.load}{RESET}", level="raw")
+            publish_output(f"{DIM}   模型: {data.get('model', '?')}  |  消息: {len(data.get('messages', []))} 条{RESET}", level="raw")
 
         if args.prompt:
             mode = SingleMode(AppContext(loaded_data=loaded_data), args.prompt)
@@ -116,11 +116,11 @@ async def main():
         await app.run()
 
     except KeyboardInterrupt:
-        locked_print("\n\n  ⚠ 用户中断", flush=True)
+        publish_output("\n\n  ⚠ 用户中断", level="raw")
     except asyncio.CancelledError:
-        locked_print("\n\n  ⚠ 任务被取消", flush=True)
+        publish_output("\n\n  ⚠ 任务被取消", level="raw")
     except Exception as e:
-        locked_print(f"\n  ❌ 致命错误: {e}", flush=True)
+        publish_output(f"\n  ❌ 致命错误: {e}", level="raw")
         logging.critical("应用崩溃", exc_info=True)
     finally:
         stop_active_monitor()

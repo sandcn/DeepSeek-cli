@@ -18,7 +18,7 @@ import html as html_mod
 import logging
 from typing import Any
 
-from ...tui.widgets.lock import locked_print
+from ...tui.events.consumers import publish_output
 from .base import RenderTarget
 from ._web_inline import _InlineHtmlMixin
 
@@ -59,7 +59,7 @@ class WebRenderTarget(_InlineHtmlMixin, RenderTarget):
       target.write_paragraph("Hello **world**")  # 自动渲染内联格式
       target.write_heading("Title", level=1)
       target.write_code_block("print('hi')", lang="python")
-      locked_print(target.get_html())
+      publish_output(target.get_html(), level="raw")
     """
 
     def __init__(self):
