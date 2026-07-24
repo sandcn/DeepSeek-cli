@@ -610,6 +610,24 @@ class _BottomBar(_StatusMixin):
             self._main_phase_start = time.monotonic()
         self._main_phase = phase
 
+    def _register_sigwinch(self) -> None:
+        """注册 SIGWINCH 回调（终端 resize 时刷新尺寸缓存）。"""
+        def _on_sigwinch(cols: int, rows: int) -> None:
+            self._last_dimension_refresh = 0.0
+            self._cached_height = rows
+            self._cached_width = cols
+            # ★ resize 保护：标记全屏重建需要（信号安全——仅设置布尔值，无 I/O 无锁）
+            self._needs_full_repaint = True
+        self._sigwinch_cb = _on_sigwinch
+        register_sigwinch_callback(self._sigwinch_cb)
+
+    def _install_stdout_tracker(self) -> None:
+        """安装 stdout 行追踪器。"""
+        if self._tracker is None:
+            self._tracker = _StdoutLineTracker(sys.__stdout__)
+        if sys.__stdout__ is not self._tracker:
+            sys.__stdout__ = self._tracker
+
     def setup(self) -> None:
         """启用底部栏：设置滚动区域 + 状态初始化（不绘制）。
 
@@ -627,20 +645,10 @@ class _BottomBar(_StatusMixin):
         self._active = True
 
         # ── 注册 SIGWINCH 回调（终端 resize 时刷新尺寸缓存） ──
-        def _on_sigwinch(cols: int, rows: int) -> None:
-            self._last_dimension_refresh = 0.0
-            self._cached_height = rows
-            self._cached_width = cols
-            # ★ resize 保护：标记全屏重建需要（信号安全——仅设置布尔值，无 I/O 无锁）
-            self._needs_full_repaint = True
-        self._sigwinch_cb = _on_sigwinch
-        register_sigwinch_callback(self._sigwinch_cb)
+        self._register_sigwinch()
 
         # ── 安装 stdout 行追踪器 ──
-        if self._tracker is None:
-            self._tracker = _StdoutLineTracker(sys.__stdout__)
-        if sys.__stdout__ is not self._tracker:
-            sys.__stdout__ = self._tracker
+        self._install_stdout_tracker()
 
         with _try_acquire_output_lock(name="bottom_bar.setup", timeout=1.0) as locked:
             if locked:
@@ -849,6 +857,36 @@ class _BottomBar(_StatusMixin):
         self._last_cursor_pos = self._input_cursor_pos
         self._last_height = height
 
+    def _ensure_scroll_region(
+        self, out, delta: int, old_scroll_end: int, full_repaint: bool,
+        height: int, scroll_end: int, old_bottom_lines: int,
+    ) -> list[str] | None:
+        """处理 SU 上滚、终端过小保护、清除旧区域组合逻辑。
+
+        Args:
+            out: stdout 文件对象。
+            delta: 底部栏行数变化量。
+            old_scroll_end: 旧滚动区域结束行。
+            full_repaint: 是否全屏重建。
+            height: 终端高度。
+            scroll_end: 新滚动区域结束行。
+            old_bottom_lines: 旧底部栏行数。
+
+        Returns:
+            clear_buf ANSI 序列列表，或 None（终端过小时 force_redraw 应提前返回）。
+        """
+        # 底部栏扩大时 SU 上滚
+        self._do_scroll_up_for_expansion(out, delta, old_scroll_end, full_repaint)
+
+        # 终端过小处理
+        if self._handle_too_small_terminal(out, height, scroll_end):
+            return None
+
+        # 清除旧底部栏区域
+        return self._collect_clear_commands(
+            scroll_end, old_scroll_end, height, full_repaint, old_bottom_lines,
+        )
+
     def force_redraw(self) -> None:
         """无条件全量重绘全部底部栏内容（10Hz 调度，由渲染线程调用），超长文本自动拆行。
 
@@ -903,17 +941,13 @@ class _BottomBar(_StatusMixin):
             full_repaint = self._needs_full_repaint
             self._needs_full_repaint = False
 
-            # 底部栏扩大时 SU 上滚
-            self._do_scroll_up_for_expansion(out, delta, old_scroll_end, full_repaint)
-
-            # 终端过小处理
-            if self._handle_too_small_terminal(out, height, scroll_end):
-                return
-
-            # 清除旧底部栏区域
-            clear_buf = self._collect_clear_commands(
-                scroll_end, old_scroll_end, height, full_repaint, old_bottom_lines,
+            # SU 上滚 → 终端过小保护 → 清除旧区域
+            clear_buf = self._ensure_scroll_region(
+                out, delta, old_scroll_end, full_repaint,
+                height, scroll_end, old_bottom_lines,
             )
+            if clear_buf is None:
+                return
 
             r1 = height - total + 1
             subagent_start = r1 + 1

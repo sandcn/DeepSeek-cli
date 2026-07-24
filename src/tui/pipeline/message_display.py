@@ -718,21 +718,11 @@ def _display_assistant(
 
 # ── 消息列表全量显示 ────────────────────────────────────
 
-def _display_messages(
-    data: list[dict],
-    agent: Any = None,
-    idx_map: list[int] | None = None,
-    speed: int = 0,
-    role_map: dict[str, RoleConfig] | None = None,
-) -> None:
-    """恢复会话后展示所有消息内容 — 使用主题色彩美化。
+def _build_messages_header() -> str:
+    """构建消息列表美化标题行并写入输出，返回尾部装饰线字符串。
 
-    Args:
-        data: 过滤 system 后的消息列表。
-        agent: 可选 agent 引用（用于沙盒查询）。
-        idx_map: data → messages 全量索引映射。
-        speed: 打字速度。
-        role_map: 可选的角色配置映射，不传时使用硬编码默认值。
+    Returns:
+        尾部装饰线字符串（用于消息列表末尾的闭合）。
     """
     sep_width = narrow_sep_width(50)
     sep = "\u2501" * sep_width
@@ -749,42 +739,80 @@ def _display_messages(
     else:
         header = f"  {_header_side_left}{_R}  {_BC}\u2770\u2709\u6d88\u606f\u5217\u8868\u2771{_R}  {_header_side_right}{_R}"
     _manager.write_line(f"\n{header}")
+    return sep
+
+
+def _render_message_item(
+    i: int, m: dict, data: list[dict],
+    agent: Any = None, idx_map: list[int] | None = None,
+    speed: int = 0, role_map: dict[str, RoleConfig] | None = None,
+) -> None:
+    """渲染单条消息到输出。
+
+    Args:
+        i: 消息在 data 中的索引。
+        m: 消息字典。
+        data: 过滤 system 后的消息列表（用于沙盒查询）。
+        agent: 可选 agent 引用。
+        idx_map: data → messages 全量索引映射。
+        speed: 打字速度。
+        role_map: 可选的角色配置映射。
+    """
+    _breath_frame = AnimatorContext.get_default().breath_frame
+    role = m.get("role", "?")
+    icon = _role_icon(role, role_map)
+    content = m.get("content") or ""
+
+    if role == "user":
+        sandbox_text = _get_user_sandbox_text(data, i, agent, idx_map)
+    else:
+        sandbox_text = _get_sandbox_text(agent, idx_map, i)
+
+    # 优先使用 role_map 中的自定义 display_func（角色动态分发）
+    if role_map is not None:
+        cfg = role_map.get(role)
+        if cfg is not None and cfg.display_func is not None:
+            cfg.display_func(i, icon, m, sandbox_text, speed=speed,
+                             breath_frame=_breath_frame, fade_frame=_breath_frame)
+            return
+
+    if m.get("tool_calls"):
+        _display_tool_calls(i, icon, m, sandbox_text, breath_frame=_breath_frame, fade_frame=_breath_frame)
+        return
+
+    if role == "tool":
+        text = content[:_TOOL_CONTENT_PREVIEW_LEN].replace("\n", " ")
+        if len(content) > _TOOL_CONTENT_PREVIEW_LEN:
+            text += "…"
+        _manager.write_line(f"\n  {_D}\u2501{_R}" * min(narrow_sep_width(20), 10))
+        _manager.write_line(f"  {_TOOL_TAG}  {_D}\u2514 {text}{_R}")
+        return
+
+    if role == "user":
+        _display_user(i, icon, content, sandbox_text, breath_frame=_breath_frame, fade_frame=_breath_frame)
+    else:
+        _display_assistant(i, icon, m, sandbox_text, speed, breath_frame=_breath_frame, fade_frame=_breath_frame)
+
+
+def _display_messages(
+    data: list[dict],
+    agent: Any = None,
+    idx_map: list[int] | None = None,
+    speed: int = 0,
+    role_map: dict[str, RoleConfig] | None = None,
+) -> None:
+    """恢复会话后展示所有消息内容 — 使用主题色彩美化。
+
+    Args:
+        data: 过滤 system 后的消息列表。
+        agent: 可选 agent 引用（用于沙盒查询）。
+        idx_map: data → messages 全量索引映射。
+        speed: 打字速度。
+        role_map: 可选的角色配置映射，不传时使用硬编码默认值。
+    """
+    sep = _build_messages_header()
     for i, m in enumerate(data):
-        _breath_frame = AnimatorContext.get_default().breath_frame
-        role = m.get("role", "?")
-        icon = _role_icon(role, role_map)
-        content = m.get("content") or ""
-
-        if role == "user":
-            sandbox_text = _get_user_sandbox_text(data, i, agent, idx_map)
-        else:
-            sandbox_text = _get_sandbox_text(agent, idx_map, i)
-
-        # 优先使用 role_map 中的自定义 display_func（角色动态分发）
-        if role_map is not None:
-            cfg = role_map.get(role)
-            if cfg is not None and cfg.display_func is not None:
-                cfg.display_func(i, icon, m, sandbox_text, speed=speed,
-                                 breath_frame=_breath_frame, fade_frame=_breath_frame)
-                continue
-
-        if m.get("tool_calls"):
-            _display_tool_calls(i, icon, m, sandbox_text, breath_frame=_breath_frame, fade_frame=_breath_frame)
-            continue
-
-        if role == "tool":
-            text = content[:_TOOL_CONTENT_PREVIEW_LEN].replace("\n", " ")
-            if len(content) > _TOOL_CONTENT_PREVIEW_LEN:
-                text += "…"
-            _manager.write_line(f"\n  {_D}\u2501{_R}" * min(narrow_sep_width(20), 10))
-            _manager.write_line(f"  {_TOOL_TAG}  {_D}\u2514 {text}{_R}")
-            continue
-
-        if role == "user":
-            _display_user(i, icon, content, sandbox_text, breath_frame=_breath_frame, fade_frame=_breath_frame)
-        else:
-            _display_assistant(i, icon, m, sandbox_text, speed, breath_frame=_breath_frame, fade_frame=_breath_frame)
-
+        _render_message_item(i, m, data, agent, idx_map, speed, role_map)
     _manager.write_line(f"  {_D}{sep}{_R}")
 
 

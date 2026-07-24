@@ -36,9 +36,18 @@ def _cmd_name(cid: int) -> str:
 def _emergency_write(text: str, stream: str = "stdout") -> None:
     """紧急输出 — 绕过 OutputAdapter 直写终端。
 
-    仅在渲染管线不可用时使用（崩溃/队列满等紧急场景）。
+    此函数有意使用 sys.__stdout__ / sys.__stderr__ 而非 OutputAdapter，
+    这是设计上的刻意选择（NOT a bug）：
+      - 这是紧急回退路径，绕过所有渲染管线（OutputAdapter / Rich / render_lock）
+      - 用于 render 线程崩溃、队列满等无法通过正常路径输出终端的场景
+      - 若经由 OutputAdapter 写入，在 render 线程已崩溃时可能死锁或丢失消息
+
+    仅在以下场景使用：
+      - render 线程崩溃通知（_handle_render_crash → _emergency_write）
+      - 队列满降级通知（finally 排空丢弃计数）
+      不适用于正常渲染路径。
+
     不持有 output_lock，不经过 Rich/OutputAdapter 处理。
-    适用于：render 线程崩溃通知、队列满降级通知、parse_info 实时覆盖行。
 
     Args:
         text: 要写入的文本。

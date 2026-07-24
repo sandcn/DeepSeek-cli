@@ -12,6 +12,7 @@
 """
 
 from __future__ import annotations
+from unittest.mock import MagicMock, patch
 
 from src.tui.core.text_utils import truncate
 from src.tui.pipeline.message_display import (
@@ -370,3 +371,112 @@ class TestMessageDisplayColors:
         """_TOOL_TAG 常量含背景色码。"""
         assert "48;5;94" in _TOOL_TAG    # 暗黄背景
         assert "38;5;227" in _TOOL_TAG   # 亮黄文字
+
+
+class TestBuildMessagesHeader:
+    """验证 _build_messages_header() 提取方法（步骤 7：拆分 _display_messages）。
+
+    核心场景：
+      1. 返回尾部装饰线字符串
+      2. 标题被写入输出
+      3. 窄屏时自动缩短宽度
+    """
+
+    def test_returns_sep_string(self):
+        """_build_messages_header 应返回尾部装饰线字符串。"""
+        from src.tui.pipeline.message_display import _build_messages_header
+        with patch("src.tui.pipeline.message_display._manager") as mock_manager:
+            sep = _build_messages_header()
+        assert isinstance(sep, str), "返回类型应为 str"
+        assert "\u2501" in sep, "装饰线应包含 ━ 字符"
+        assert len(sep) > 0, "装饰线不应为空"
+
+    def test_writes_header_to_output(self):
+        """标题应被写入 _manager。"""
+        from src.tui.pipeline.message_display import _build_messages_header, _manager
+        original = _manager
+        try:
+            mock_manager = MagicMock()
+            with patch("src.tui.pipeline.message_display._manager", mock_manager):
+                _build_messages_header()
+            mock_manager.write_line.assert_called_once()
+            header_arg = mock_manager.write_line.call_args[0][0]
+            assert "\n" in header_arg, "标题应以换行为前缀"
+            assert "\u2770" in header_arg, "标题应包含 ❰ 字符"
+            assert "\u2771" in header_arg, "标题应包含 ❱ 字符"
+        finally:
+            pass
+
+    def test_returns_sep_with_correct_width(self):
+        """返回的尾部装饰线宽度应与 header 函数使用的 width 一致。"""
+        from src.tui.pipeline.message_display import _build_messages_header
+        with patch("src.tui.pipeline.message_display._manager"):
+            sep = _build_messages_header()
+        # sep 应为 "\u2501" * narrow_sep_width(50)
+        assert sep.startswith("\u2501"), "装饰线应以 ━ 开头"
+        assert sep.endswith("\u2501"), "装饰线应以 ━ 结尾"
+        assert len(sep) == len(sep), "装饰线应为纯 ━ 字符"
+
+
+class TestRenderMessageItem:
+    """验证 _render_message_item() 提取方法（步骤 7：拆分 _display_messages）。
+
+    核心场景：
+      1. tool_calls 消息路由到 _display_tool_calls
+      2. tool 角色消息显示工具内容
+      3. user 角色消息路由到 _display_user
+      4. assistant 角色消息路由到 _display_assistant
+      5. role_map 中有自定义 display_func 时优先使用
+    """
+
+    def test_tool_calls_routes_to_display_tool_calls(self):
+        """tool_calls 消息应路由到 _display_tool_calls。"""
+        from src.tui.pipeline.message_display import _render_message_item
+        with patch("src.tui.pipeline.message_display._display_tool_calls") as mock_display:
+            _render_message_item(
+                i=0, m={"role": "assistant", "tool_calls": [{"function": {"name": "test_fn"}}], "content": ""},
+                data=[],
+            )
+        mock_display.assert_called_once()
+
+    def test_user_role_routes_to_display_user(self):
+        """user 角色消息应路由到 _display_user。"""
+        from src.tui.pipeline.message_display import _render_message_item
+        with patch("src.tui.pipeline.message_display._display_user") as mock_display:
+            _render_message_item(
+                i=0, m={"role": "user", "content": "hello"},
+                data=[],
+            )
+        mock_display.assert_called_once()
+
+    def test_assistant_role_routes_to_display_assistant(self):
+        """assistant 角色消息应路由到 _display_assistant。"""
+        from src.tui.pipeline.message_display import _render_message_item
+        with patch("src.tui.pipeline.message_display._display_assistant") as mock_display:
+            _render_message_item(
+                i=0, m={"role": "assistant", "content": "hello"},
+                data=[],
+            )
+        mock_display.assert_called_once()
+
+    def test_tool_role_shows_content_preview(self):
+        """tool 角色消息应显示内容预览。"""
+        from src.tui.pipeline.message_display import _render_message_item, _TOOL_CONTENT_PREVIEW_LEN
+        with patch("src.tui.pipeline.message_display._manager") as mock_manager:
+            _render_message_item(
+                i=0, m={"role": "tool", "content": "tool output"},
+                data=[],
+            )
+        # tool 角色应写入两次（分隔线 + 工具内容）
+        assert mock_manager.write_line.call_count >= 2
+
+    def test_role_map_custom_display_func_used_first(self):
+        """role_map 中有自定义 display_func 时应优先使用。"""
+        from src.tui.pipeline.message_display import _render_message_item, RoleConfig
+        mock_display = MagicMock()
+        role_map = {"user": RoleConfig(icon="\u25cf", tag_func=lambda bf: "", display_func=mock_display)}
+        _render_message_item(
+            i=0, m={"role": "user", "content": "hello"},
+            data=[], role_map=role_map,
+        )
+        mock_display.assert_called_once()

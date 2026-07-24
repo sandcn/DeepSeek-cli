@@ -6,7 +6,6 @@
 导出锁清单：
   - render_lock: 渲染管线锁（_drain_queue → _phase_render → _phase_redraw_bottom）
   - io_lock:     终端 I/O 锁（LockedTerminal）
-  - output_lock: @deprecated render_lock 的兼容别名，v1.3+ 将移除
 """
 from ..widgets.lock import (
     render_lock,
@@ -14,11 +13,7 @@ from ..widgets.lock import (
     _try_acquire_output_lock,
 )
 
-# @deprecated — 使用 render_lock 替代，v1.3+ 将移除
-output_lock = render_lock
-
 __all__ = [
-    "output_lock",
     "render_lock",
     "io_lock",
     "_try_acquire_output_lock",

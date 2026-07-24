@@ -16,6 +16,8 @@
 
 from __future__ import annotations
 
+from .style import SEP_COLOR_START, SEP_COLOR_END  # 命名色号常量
+
 
 def truncate(
     text: str | None,
@@ -124,8 +126,9 @@ def build_fade_in_ansi(fade_frame: int, total_frames: int = 3) -> str:
     from ..terminal.narrow import is_narrow
     if is_narrow() or fade_frame >= total_frames:
         return ""
-    # 238(DARK_GRAY_256) → 244(GRAY_256) → RESET 三帧渐亮
-    FADE_COLORS = [238, 244]
+    # FADE_COLOR_DARK(238) → FADE_COLOR_MID(244) → RESET 三帧渐亮
+    from .style import FADE_COLOR_DARK, FADE_COLOR_MID
+    FADE_COLORS = [FADE_COLOR_DARK, FADE_COLOR_MID]
     if fade_frame < len(FADE_COLORS):
         return f"\033[38;5;{FADE_COLORS[fade_frame]}m"
     return ""
@@ -155,8 +158,8 @@ def build_warning_pulse_ansi(
 
 def make_sep_gradient(
     width: int,
-    start_color: int = 45,
-    end_color: int = 237,
+    start_color: int = SEP_COLOR_START,
+    end_color: int = SEP_COLOR_END,
     char: str = "\u2501",
 ) -> str:
     """生成全宽渐变分隔线（统一工厂）。
@@ -336,8 +339,8 @@ def parse_theme_color(theme_key: str) -> int | None:
 
 def make_sep_gradient_enhanced(
     width: int,
-    start_color: int = 45,
-    end_color: int = 237,
+    start_color: int = SEP_COLOR_START,
+    end_color: int = SEP_COLOR_END,
     char: str = "\u2501",
     *,
     effect: str = "none",

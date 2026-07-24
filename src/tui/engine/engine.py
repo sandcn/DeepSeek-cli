@@ -269,6 +269,55 @@ class TuiEngine:
 
     # ── render 线程 ────────────────────────────────
 
+    def _handle_render_crash(self, exc: Exception, idle_count: int) -> bool:
+        """处理 render 线程崩溃恢复逻辑。
+
+        提取自 _render() 的异常处理分支，包含日志记录和自动恢复决策。
+        现场重建策略：延迟等待 → 排空旧队列 → 启动新 render 线程。
+
+        Args:
+            exc: 捕获的异常。
+            idle_count: 当前空闲计数（用于日志）。
+
+        Returns:
+            True — 已重建新线程（调用方应 return 退出当前线程）。
+            False — 不可恢复（调用方应 break 退出循环）。
+        """
+        self._render_crashed.set()
+        try:
+            _logger.critical("idle_count=%d, cmd_queue.qsize=%d",
+                             idle_count, self._cmd_queue.qsize())
+            _logger.critical("render 线程异常崩溃", exc_info=True)
+            _emergency_write(
+                f"{_ANSI_RED}[ChatUI] render 线程异常终止: "
+                f"{type(exc).__name__}: {exc}{_ANSI_RESET}\n",
+                stream="stderr",
+            )
+        except Exception as exc2:
+            _logger.warning("render 循环次要异常忽略: %s", exc2, exc_info=True)
+
+        # ★ 崩溃自动恢复：尝试重建 render 线程
+        self._recover_attempts += 1
+        if self._render_running and self._recover_attempts <= self._config.max_recover_attempts:
+            _logger.info("render 线程将在 %.1f 秒后自动恢复 (第 %d/%d 次)",
+                         self._config.recover_delay, self._recover_attempts,
+                         self._config.max_recover_attempts)
+            time.sleep(self._config.recover_delay)
+            # 排空旧队列（新线程启动前，只排此刻已入队的命令）
+            self._drain_queue_safe()
+            # 标记恢复中，防止 finally 排空与新线程竞态
+            self._recovering = True
+            # 重建线程
+            self._render_thread = threading.Thread(target=self._render, daemon=True)
+            self._render_thread.start()
+            _logger.info("render 线程已自动恢复 (第 %d/%d 次)",
+                         self._recover_attempts, self._config.max_recover_attempts)
+            return True  # 调用方应 return
+        else:
+            self._render_running = False
+            self._cmd_event.set()
+            return False  # 调用方应 break
+
     def _render(self) -> None:
         """Render 线程主循环。
 
@@ -303,38 +352,10 @@ class TuiEngine:
                     if not has_content:
                         self._cmd_event.clear()
                 except Exception as exc:
-                    self._render_crashed.set()
-                    try:
-                        _logger.critical("idle_count=%d, cmd_queue.qsize=%d",
-                                         idle_count, self._cmd_queue.qsize())
-                        _logger.critical("render 线程异常崩溃", exc_info=True)
-                        _emergency_write(
-                            f"{_ANSI_RED}[ChatUI] render 线程异常终止: "
-                            f"{type(exc).__name__}: {exc}{_ANSI_RESET}\n",
-                            stream="stderr",
-                        )
-                    except Exception:
-                        pass
-                    # ★ 崩溃自动恢复：尝试重建 render 线程
-                    self._recover_attempts += 1
-                    if self._render_running and self._recover_attempts <= self._config.max_recover_attempts:
-                        _logger.info("render 线程将在 %.1f 秒后自动恢复 (第 %d/%d 次)",
-                                     self._config.recover_delay, self._recover_attempts, self._config.max_recover_attempts)
-                        time.sleep(self._config.recover_delay)
-                        # 排空旧队列（新线程启动前，只排此刻已入队的命令）
-                        self._drain_queue_safe()
-                        # 标记恢复中，防止 finally 排空与新线程竞态
-                        self._recovering = True
-                        # 重建线程
-                        self._render_thread = threading.Thread(target=self._render, daemon=True)
-                        self._render_thread.start()
-                        _logger.info("render 线程已自动恢复 (第 %d/%d 次)",
-                                     self._recover_attempts, self._config.max_recover_attempts)
-                        return  # 当前线程退出，新线程已启动
+                    if self._handle_render_crash(exc, idle_count):
+                        return  # 新线程已启动，退出当前线程
                     else:
-                        self._render_running = False
-                        self._cmd_event.set()
-                        break
+                        break  # 不可恢复，退出循环
         finally:
             # ★ 恢复路径：新线程已接管队列，跳过排空避免竞态
             if self._recovering:
@@ -405,14 +426,26 @@ class TuiEngine:
             return
         text, cursor_pos, h, w = self._bb.get_cursor_info()
         r_cursor, cursor_col = self._bb.compute_cursor_position(text, cursor_pos, h, w)
-        try:
-            from ..terminal.blessed import get_terminal
-            term = get_terminal()
-            sys.__stdout__.write(term.move_xy(cursor_col - 1, r_cursor - 1))
-        except Exception:
-            _logger.debug("position_cursor Blessed 不可用, 使用 ANSI 回退", exc_info=True)
-            sys.__stdout__.write(f"\033[{r_cursor};{cursor_col}H")
-        sys.__stdout__.flush()
+        adapter = self._renderer.output_adapter
+        if adapter is not None:
+            try:
+                from ..terminal.blessed import get_terminal
+                term = get_terminal()
+                adapter.write_raw(term.move_xy(cursor_col - 1, r_cursor - 1))
+            except Exception:
+                _logger.debug("position_cursor Blessed 不可用, 使用 ANSI 回退", exc_info=True)
+                adapter.write_raw(f"\033[{r_cursor};{cursor_col}H")
+            adapter.flush()
+        else:
+            # 兜底：output_adapter 不可用时回退到 sys.__stdout__
+            try:
+                from ..terminal.blessed import get_terminal
+                term = get_terminal()
+                sys.__stdout__.write(term.move_xy(cursor_col - 1, r_cursor - 1))
+            except Exception:
+                _logger.debug("position_cursor Blessed 不可用, 使用 ANSI 回退", exc_info=True)
+                sys.__stdout__.write(f"\033[{r_cursor};{cursor_col}H")
+            sys.__stdout__.flush()
         if self._cursor_tracker is not None:
             self._cursor_tracker.set(r_cursor, cursor_col)
 

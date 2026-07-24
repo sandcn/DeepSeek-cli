@@ -42,6 +42,9 @@ from ..core.effects import sine_easing as _easing_smooth
 # bounce_easing 已在 src.tui.core.effects 中定义，此处引用统一入口
 from ..core.effects import bounce_easing as _easing_bounce
 
+# 窄屏检测 — 统一入口（替代各类的 _is_narrow() 静态方法）
+from ..terminal.narrow import is_narrow
+
 
 def _easing_linear(t: float) -> float:
     """线性缓动 [0,1] → [0,1]。"""
@@ -130,13 +133,8 @@ def _slice_by_visual_width(text: str, target_vw: int, from_left: bool = True) ->
 # FadeIn / FadeOut — 渐显/渐隐过渡
 # ═══════════════════════════════════════════════════════════
 #
-# 【技术债】_is_narrow() 在 FadeIn / FadeOut / SlideIn / SlideOut /
-# Typewriter 五个类中各有一份重复定义（共 5 处）。由于这些类均为
-# frozen dataclass，无法通过继承基类消除重复。后续可考虑：
-#   1. 提取模块级私有函数 _check_narrow() 供所有类共用
-#   2. 或在非 frozen 前提下引入 TransitionBase 基类
-# 当前设计保持静态方法模式以维持 dataclass freeze 约束。
-# 参考：transitions.py L177,L224,L283,L336,L414
+# 【已清理】_is_narrow() 重复定义已消除 — 统一使用模块级导入
+# ``from ..terminal.narrow import is_narrow``，替代各类的 @staticmethod。
 
 
 @dataclass(frozen=True)
@@ -170,7 +168,7 @@ class FadeIn:
             frame ≥ total_frames 时返回空字符串。
         """
         # 窄屏跳过
-        if self._is_narrow():
+        if is_narrow():
             return ""
         if frame >= self.total_frames or self.total_frames <= 0:
             return ""
@@ -180,12 +178,6 @@ class FadeIn:
         color = round(self.start_color + eased_t * (self.end_color - self.start_color))
         color = max(0, min(255, color))
         return f"\033[38;5;{color}m"
-
-    @staticmethod
-    def _is_narrow() -> bool:
-        """延迟导入窄屏检测。"""
-        from ..terminal.narrow import is_narrow
-        return is_narrow()
 
 
 @dataclass(frozen=True)
@@ -215,7 +207,7 @@ class FadeOut:
         Returns:
             ANSI 前景色序列，frame ≥ total_frames 时返回空字符串。
         """
-        if self._is_narrow():
+        if is_narrow():
             return ""
         if frame >= self.total_frames or self.total_frames <= 0:
             return ""
@@ -227,11 +219,6 @@ class FadeOut:
         color = round(self.end_color + (1.0 - eased_t) * (self.start_color - self.end_color))
         color = max(0, min(255, color))
         return f"\033[38;5;{color}m"
-
-    @staticmethod
-    def _is_narrow() -> bool:
-        from ..terminal.narrow import is_narrow
-        return is_narrow()
 
 
 # ═══════════════════════════════════════════════════════════
@@ -269,7 +256,7 @@ class SlideIn:
         if not self.text or self.total_frames <= 0:
             return self.text
         # 窄屏跳过
-        if self._is_narrow():
+        if is_narrow():
             return self.text
         if frame >= self.total_frames:
             return self.text
@@ -286,11 +273,6 @@ class SlideIn:
         else:
             # 左滑入（从左到右）/ 上滑入（从上到下）：从右向左逐渐显示
             return _slice_by_visual_width(self.text, target_vw, from_left=False)
-
-    @staticmethod
-    def _is_narrow() -> bool:
-        from ..terminal.narrow import is_narrow
-        return is_narrow()
 
 
 @dataclass(frozen=True)
@@ -320,7 +302,7 @@ class SlideOut:
         """
         if not self.text or self.total_frames <= 0:
             return ""
-        if self._is_narrow():
+        if is_narrow():
             return self.text
         if frame >= self.total_frames:
             return ""
@@ -339,11 +321,6 @@ class SlideOut:
         else:
             # 向左滑出 / 向上滑出：从左向右逐渐消失（保留右侧）
             return _slice_by_visual_width(self.text, target_vw, from_left=False)
-
-    @staticmethod
-    def _is_narrow() -> bool:
-        from ..terminal.narrow import is_narrow
-        return is_narrow()
 
 
 # ═══════════════════════════════════════════════════════════
@@ -397,7 +374,7 @@ class Typewriter:
         """
         if not self.text:
             return ""
-        if self._is_narrow():
+        if is_narrow():
             return self.text
 
         total = self.total_frames or 0
@@ -411,14 +388,3 @@ class Typewriter:
         reveal_count = min(frame * self.chars_per_frame, len(self.text))
         revealed = self.text[:reveal_count]
         return self._apply_style(revealed)
-
-    def _apply_style(self, text: str) -> str:
-        """对文本应用样式（若有）。"""
-        if self.style is None:
-            return text
-        return self.style.apply(text)
-
-    @staticmethod
-    def _is_narrow() -> bool:
-        from ..terminal.narrow import is_narrow
-        return is_narrow()

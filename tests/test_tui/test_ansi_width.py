@@ -14,6 +14,7 @@ from __future__ import annotations
 import unittest
 
 from src.tui.core.ansi_utils import (
+    ansi_wrap,
     visual_width,
     truncate_ansi_visual,
     truncate_ansi_sgr,
@@ -21,6 +22,41 @@ from src.tui.core.ansi_utils import (
     strip_ansi,
     RESET,
 )
+
+
+# ── ansi_wrap ─────────────────────────────────────────
+
+class TestAnsiWrap(unittest.TestCase):
+
+    def test_none_returns_empty(self):
+        """ansi_wrap(None) 返回 ("", "")"""
+        pre, suf = ansi_wrap(None)
+        self.assertEqual(pre, "")
+        self.assertEqual(suf, "")
+
+    def test_color_0_returns_correct_ansi(self):
+        """ansi_wrap(0) — 色号 0（黑色）"""
+        pre, suf = ansi_wrap(0)
+        self.assertEqual(pre, "\033[38;5;0m")
+        self.assertEqual(suf, "\033[0m")
+
+    def test_color_45_returns_correct_ansi(self):
+        """ansi_wrap(45) — 中间色号（青色）"""
+        pre, suf = ansi_wrap(45)
+        self.assertEqual(pre, "\033[38;5;45m")
+        self.assertEqual(suf, "\033[0m")
+
+    def test_color_255_returns_correct_ansi(self):
+        """ansi_wrap(255) — 最大色号（最亮白）"""
+        pre, suf = ansi_wrap(255)
+        self.assertEqual(pre, "\033[38;5;255m")
+        self.assertEqual(suf, "\033[0m")
+
+    def test_mid_color_127_returns_correct_ansi(self):
+        """ansi_wrap(127) — 中间色号"""
+        pre, suf = ansi_wrap(127)
+        self.assertEqual(pre, "\033[38;5;127m")
+        self.assertEqual(suf, "\033[0m")
 
 
 # ── visual_width ──────────────────────────────────────

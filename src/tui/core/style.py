@@ -22,6 +22,16 @@ __all__: list[str] = [
     "Style",
     "StyledText",
     "StyleSheet",
+    # 命名色号常量
+    "FADE_COLOR_DARK",
+    "FADE_COLOR_MID",
+    "SEP_COLOR_START",
+    "SEP_COLOR_END",
+    # 紧急路径 ANSI 序列常量
+    "ANSI_EMERGENCY_RED",
+    "ANSI_EMERGENCY_YELLOW",
+    "ANSI_EMERGENCY_RESET",
+    "ANSI_EMERGENCY_CURSOR_BOTTOM",
 ]
 
 
@@ -479,3 +489,23 @@ StyleSheet.register_many({
     "tree_branch": Style(fg=239),   # 树分支灰色
     "tree_leaf":   Style(fg=45),    # 树叶青色
 })
+
+# ════════════════════════════════════════════════════════
+# 命名色号常量（消除魔法数字 — 供 text_utils 等模块引用）
+# ════════════════════════════════════════════════════════
+
+FADE_COLOR_DARK: int = 238      # 渐显暗灰（build_fade_in_ansi 第 0 帧）
+FADE_COLOR_MID: int = 244       # 渐显中灰（build_fade_in_ansi 第 1 帧）
+SEP_COLOR_START: int = 45       # 分隔线起始色 — 亮青（make_sep_gradient 默认起始）
+SEP_COLOR_END: int = 237        # 分隔线结束色 — 深灰（make_sep_gradient 默认结束）
+
+# ════════════════════════════════════════════════════════
+# 紧急路径 ANSI 序列常量（直写终端，绕过 Rich 管线）
+# ════════════════════════════════════════════════════════
+# 用于队列满/render 崩溃等无法通过正常渲染管线输出的场景。
+# 提取为 style.py 中的命名常量，const.py 通过导入引用以避免重复定义。
+
+ANSI_EMERGENCY_RED: str = "\033[31m"              # 紧急红色
+ANSI_EMERGENCY_YELLOW: str = "\033[33m"           # 紧急黄色
+ANSI_EMERGENCY_RESET: str = "\033[0m"             # 紧急 RESET
+ANSI_EMERGENCY_CURSOR_BOTTOM: str = "\033[9999;1H"  # 光标移至底行

@@ -4,7 +4,6 @@ UI 层输出同步锁 — render_lock（渲染锁）
 锁体系：
   render_lock — 保护渲染管线（_drain_queue → _phase_render → _phase_redraw_bottom）
   io_lock     — 保护终端 I/O（LockedTerminal / 裸终端写入）
-  output_lock — 保留为 render_lock 的 @deprecated 兼容别名
 
 互斥事件：
   diff_active: diff 渲染标记，ParallelDisplay 刷新循环检查此标记，
@@ -42,9 +41,6 @@ from typing import Generator
 
 render_lock = threading.RLock()     # 渲染管线锁
 io_lock = threading.Lock()          # 终端 I/O 锁
-
-# @deprecated — 使用 render_lock/io_lock 替代，v1.3+ 将移除
-output_lock = render_lock
 
 diff_active = threading.Event()
 

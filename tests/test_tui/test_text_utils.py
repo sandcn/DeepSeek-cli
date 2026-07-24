@@ -10,7 +10,8 @@
 from __future__ import annotations
 
 import pytest
-from src.tui.core.text_utils import truncate, make_sep_gradient
+from src.tui.core.text_utils import truncate, make_sep_gradient, build_fade_in_ansi
+from src.tui.core.style import FADE_COLOR_DARK, FADE_COLOR_MID, SEP_COLOR_START, SEP_COLOR_END
 
 
 class TestTruncateNormalizeTrue:
@@ -160,3 +161,95 @@ class TestMakeSepGradient:
         result_light = make_sep_gradient(10, start_color=45, end_color=240)
         # 不同结束色应产生不同结果（并非严格不等，但大概率不同）
         assert result_dark != result_light, "不同结束色应输出不同结果"
+
+
+class TestBuildFadeInAnsiMagicNumbers:
+    """build_fade_in_ansi() 使用命名色号常量后行为不变。"""
+
+    def test_fade_frame_0_uses_fade_color_dark(self):
+        """第 0 帧使用 FADE_COLOR_DARK(238) 色号。"""
+        result = build_fade_in_ansi(0, total_frames=3)
+        expected = f"\033[38;5;{FADE_COLOR_DARK}m"
+        assert result == expected, (
+            f"fade_frame=0 应输出色号 {FADE_COLOR_DARK}, 实际: {repr(result)}"
+        )
+
+    def test_fade_frame_1_uses_fade_color_mid(self):
+        """第 1 帧使用 FADE_COLOR_MID(244) 色号。"""
+        result = build_fade_in_ansi(1, total_frames=3)
+        expected = f"\033[38;5;{FADE_COLOR_MID}m"
+        assert result == expected, (
+            f"fade_frame=1 应输出色号 {FADE_COLOR_MID}, 实际: {repr(result)}"
+        )
+
+    def test_fade_frame_2_returns_reset(self):
+        """第 2 帧（>= FADE_COLORS 长度）返回空字符串。"""
+        result = build_fade_in_ansi(2, total_frames=3)
+        assert result == "", f"fade_frame=2 应返回空字符串, 实际: {repr(result)}"
+
+    def test_fade_frame_exceeds_total_returns_empty(self):
+        """第 3 帧（>= total_frames）返回空字符串。"""
+        result = build_fade_in_ansi(3, total_frames=3)
+        assert result == "", f"fade_frame=3 应返回空字符串, 实际: {repr(result)}"
+
+
+class TestNamedColorConstants:
+    """命名色号常量值验证。"""
+
+    def test_fade_color_dark_is_238(self):
+        assert FADE_COLOR_DARK == 238
+
+    def test_fade_color_mid_is_244(self):
+        assert FADE_COLOR_MID == 244
+
+    def test_sep_color_start_is_45(self):
+        assert SEP_COLOR_START == 45
+
+    def test_sep_color_end_is_237(self):
+        assert SEP_COLOR_END == 237
+
+
+class TestBuildFadeInAnsiMagicNumbers:
+    """build_fade_in_ansi() 使用命名色号常量后行为不变。"""
+
+    def test_fade_frame_0_uses_fade_color_dark(self):
+        """第 0 帧使用 FADE_COLOR_DARK(238) 色号。"""
+        result = build_fade_in_ansi(0, total_frames=3)
+        expected = f"\033[38;5;{FADE_COLOR_DARK}m"
+        assert result == expected, (
+            f"fade_frame=0 应输出色号 {FADE_COLOR_DARK}, 实际: {repr(result)}"
+        )
+
+    def test_fade_frame_1_uses_fade_color_mid(self):
+        """第 1 帧使用 FADE_COLOR_MID(244) 色号。"""
+        result = build_fade_in_ansi(1, total_frames=3)
+        expected = f"\033[38;5;{FADE_COLOR_MID}m"
+        assert result == expected, (
+            f"fade_frame=1 应输出色号 {FADE_COLOR_MID}, 实际: {repr(result)}"
+        )
+
+    def test_fade_frame_2_returns_reset(self):
+        """第 2 帧（>= FADE_COLORS 长度）返回空字符串。"""
+        result = build_fade_in_ansi(2, total_frames=3)
+        assert result == "", f"fade_frame=2 应返回空字符串, 实际: {repr(result)}"
+
+    def test_fade_frame_exceeds_total_returns_empty(self):
+        """第 3 帧（>= total_frames）返回空字符串。"""
+        result = build_fade_in_ansi(3, total_frames=3)
+        assert result == "", f"fade_frame=3 应返回空字符串, 实际: {repr(result)}"
+
+
+class TestNamedColorConstants:
+    """命名色号常量值验证。"""
+
+    def test_fade_color_dark_is_238(self):
+        assert FADE_COLOR_DARK == 238
+
+    def test_fade_color_mid_is_244(self):
+        assert FADE_COLOR_MID == 244
+
+    def test_sep_color_start_is_45(self):
+        assert SEP_COLOR_START == 45
+
+    def test_sep_color_end_is_237(self):
+        assert SEP_COLOR_END == 237

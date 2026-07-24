@@ -107,14 +107,29 @@ class TuiRenderer(FrameworkRenderer):
 
     @register_render_command(RenderCommand.TOOL_COUNT_INC, ())
     def _do_tool_count_inc(self) -> None:
+        """工具计数+1：当 ToolStartedEvent 被处理时，通知底部栏增加工具计数。
+
+        注册为 RenderCommand.TOOL_COUNT_INC 的命令处理器。
+        触发时机：每次工具开始执行（ToolStartedEvent 分发后）。
+        """
         self._bb.increment_tool()
 
     @register_render_command(RenderCommand.TOOL_COUNT_DEC, ())
     def _do_tool_count_dec(self) -> None:
+        """工具计数-1：当 ToolDoneEvent 被处理时，通知底部栏减少工具计数。
+
+        注册为 RenderCommand.TOOL_COUNT_DEC 的命令处理器。
+        触发时机：每次工具执行完成（ToolDoneEvent 分发后）。
+        """
         self._bb.decrement_tool()
 
     @register_render_command(RenderCommand.TOOL_FAIL_INC, ())
     def _do_tool_fail_inc(self) -> None:
+        """工具失败计数+1：当工具执行失败时，通知底部栏增加失败计数。
+
+        注册为 RenderCommand.TOOL_FAIL_INC 的命令处理器。
+        触发时机：工具执行失败（失败的 ToolDoneEvent 分发后）。
+        """
         self._bb.increment_tool_fail()
 
     @register_render_command(RenderCommand.MAIN_PHASE, (1,))

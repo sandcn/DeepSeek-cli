@@ -413,3 +413,77 @@ class TestMsgShortSummaryDynamicWidth:
         assert "…" in result
         # 窄屏下返回的文本比宽屏短
         assert len(result) < 50
+
+
+# ═══════════════════════════════════════════════════════════
+# bottom_bar 依赖注入测试
+# ═══════════════════════════════════════════════════════════
+
+
+class TestMessageEditorBottomBarDI:
+    """测试 MessageEditor bottom_bar 依赖注入功能。
+
+    核心断言：
+    - 构造时传入 bottom_bar 后，_bottom_bar 属性正确存储
+    - _interactive_message_select 将 bottom_bar 传递给 run_bottom_bar_selection
+    - 不传 bottom_bar 时保持向后兼容（bottom_bar=None）
+    """
+
+    def test_constructor_stores_bottom_bar(self):
+        """构造 MessageEditor(bottom_bar=mock_bar) 时 _bottom_bar 被正确存储。"""
+        mock_bar = MagicMock()
+        editor = MessageEditor(bottom_bar=mock_bar)
+        assert editor._bottom_bar is mock_bar
+
+    def test_constructor_defaults_to_none(self):
+        """构造 MessageEditor() 不传 bottom_bar 时 _bottom_bar 为 None（向后兼容）。"""
+        editor = MessageEditor()
+        assert editor._bottom_bar is None
+
+    def test_bottom_bar_passed_to_run_bottom_bar_selection(self):
+        """_interactive_message_select 将 self._bottom_bar 传递给 run_bottom_bar_selection。"""
+        mock_bar = MagicMock()
+        editor = MessageEditor(bottom_bar=mock_bar)
+        ctx = MessageDisplayContext(
+            data=[{"role": "user", "content": "hello"}],
+        )
+
+        with patch("src.tui.pipeline.message_editor.publish_output"), \
+             patch("src.tui.pipeline.message_editor.run_bottom_bar_selection",
+                   return_value={"action": "confirmed", "index": 0}) as mock_select:
+            editor._interactive_message_select(ctx, "测试")
+
+        # 验证 bottom_bar 参数被传递
+        mock_select.assert_called_once()
+        _, kwargs = mock_select.call_args
+        assert kwargs.get("bottom_bar") is mock_bar, (
+            f"期望 bottom_bar={mock_bar}，实际={kwargs.get('bottom_bar')}"
+        )
+
+    def test_no_bottom_bar_backward_compatible(self):
+        """不传 bottom_bar 时 run_bottom_bar_selection 的 bottom_bar 参数为 None（向后兼容）。"""
+        editor = MessageEditor()  # 默认 bottom_bar=None
+        ctx = MessageDisplayContext(
+            data=[{"role": "user", "content": "hello"}],
+        )
+
+        with patch("src.tui.pipeline.message_editor.publish_output"), \
+             patch("src.tui.pipeline.message_editor.run_bottom_bar_selection",
+                   return_value={"action": "confirmed", "index": 0}) as mock_select:
+            editor._interactive_message_select(ctx, "测试")
+
+        mock_select.assert_called_once()
+        _, kwargs = mock_select.call_args
+        # bottom_bar 未传入时，应为 None（run_bottom_bar_selection 会 fallback 到 get_active_chat_ui）
+        assert kwargs.get("bottom_bar") is None, (
+            f"期望 bottom_bar=None（向后兼容），实际={kwargs.get('bottom_bar')}"
+        )
+
+    def test_bottom_bar_with_different_role_map(self):
+        """bottom_bar 注入不影响 role_map 功能。"""
+        mock_bar = MagicMock()
+        role_map = {"user": MagicMock(icon="U")}
+        editor = MessageEditor(role_map=role_map, bottom_bar=mock_bar)
+
+        assert editor.role_map is role_map
+        assert editor._bottom_bar is mock_bar

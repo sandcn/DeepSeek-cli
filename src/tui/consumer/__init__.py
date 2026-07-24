@@ -36,10 +36,6 @@ from .chat_commands import ChatCommand  # noqa: F401 — 聊天域命令枚举
 # ── 配置导出 ──────────────────────────────────────
 from .chat_config import ChatConfig
 
-# ── 向后兼容导出 ──────────────────────────────────
-# @deprecated — 使用 ChatConfig.defaults().main_label 替代
-_MAIN_LABEL: str = ChatConfig.defaults().main_label
-
 # ── 全局状态导出 ──────────────────────────────────
 from ..state.consumer_registry import (
     _active_consumer,
@@ -79,6 +75,5 @@ __all__ = [
     "ChatUIErrorHandler",
     "_apply_completion",
     "_active_consumer",
-    "_MAIN_LABEL",  # @deprecated — 使用 ChatConfig.defaults().main_label
     "setup_chat_ui_error_handler",
 ]

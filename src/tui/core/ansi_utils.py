@@ -14,6 +14,7 @@ except ImportError:  # pragma: no cover
     _HAS_WCWIDTH = False
 
 from ...core.constants import RESET
+from .style import Style
 
 # ── ANSI 转义序列清洗 ───────────────────────────────────
 # 完整版：覆盖 CSI/OSC/DCS/APC 全部 ANSI 序列
@@ -107,6 +108,30 @@ def truncate_ansi_visual(text: str, max_visual: int) -> str:
     return ''.join(result)
 
 
+# ── ANSI 色彩包裹工具（从 _panel/_table 提升，消除重复） ──
+
+
+def ansi_wrap(color: int | None) -> tuple[str, str]:
+    """生成 ANSI 颜色包裹前缀/后缀。
+
+    使用 ``Style(fg=color)`` 构建 ANSI 前景色序列（与 ``_table.py`` 版本一致），
+    作为 ``_panel.py`` 和 ``_table.py`` 中各自独立 ``_ansi_wrap`` 的统一替代。
+
+    Args:
+        color: 256 色号（0-255），None 时返回空字符串对。
+
+    Returns:
+        (prefix, suffix) 元组 — prefix 为 ANSI 前景色序列，
+        suffix 为 RESET 序列（``RESET``）。
+        color 为 None 时均为空字符串。
+    """
+    if color is not None:
+        style = Style(fg=color)
+        ansi = style.to_ansi()
+        return (ansi, RESET)
+    return ("", "")
+
+
 # ── ANSI SGR 工具（从 status_bar 提升，消除重复） ──────
 
 
@@ -137,11 +162,11 @@ def truncate_ansi_sgr(text: str, max_width: int, *, from_end: bool = False) -> s
     """ANSI SGR 转义序列感知的字符串截断。
 
     仅计算可见字符的视觉宽度（跳过 \\033[...m 序列，使用 wcswidth），
-    达到 max_width 时截断，并在末尾追加 \\033[0m 重置样式。
+    达到 max_width 时截断，并在末尾追加 RESET 重置样式。
 
     与 truncate_ansi_visual 的区别：
     - truncate_ansi_visual：处理完整 ANSI 序列（CSI/OSC/DCS），超出时追加 … + RESET
-    - truncate_ansi_sgr：仅处理 SGR 序列（\\033[...m），超出时追加 \\033[0m
+    - truncate_ansi_sgr：仅处理 SGR 序列（\\033[...m），超出时追加 RESET
 
     两者均使用 _char_width（wcswidth）计算字符视觉宽度。
 
@@ -151,7 +176,7 @@ def truncate_ansi_sgr(text: str, max_width: int, *, from_end: bool = False) -> s
         from_end: True 时取最后 max_width 列可见字符（用于右侧截断）。
 
     Returns:
-        截断后的文本（末尾追加 \\033[0m）。
+        截断后的文本（末尾追加 RESET）。
     """
     if from_end:
         visible_positions: list[int] = []
@@ -167,7 +192,7 @@ def truncate_ansi_sgr(text: str, max_width: int, *, from_end: bool = False) -> s
                 i += 1
         total_width = sum(visible_widths)
         if total_width <= max_width:
-            return text + "\033[0m"
+            return text + RESET
         # 从末尾向前累加视觉宽度，找到不超过 max_width 的起始位置
         accumulated = 0
         start_idx = len(visible_positions)
@@ -175,7 +200,7 @@ def truncate_ansi_sgr(text: str, max_width: int, *, from_end: bool = False) -> s
             start_idx -= 1
             accumulated += visible_widths[start_idx]
         start = visible_positions[start_idx] if start_idx < len(visible_positions) else n
-        return text[start:] + "\033[0m"
+        return text[start:] + RESET
 
     visible = 0
     i = 0
@@ -189,7 +214,7 @@ def truncate_ansi_sgr(text: str, max_width: int, *, from_end: bool = False) -> s
                 break
             visible += cw
             i += 1
-    return text[:i] + "\033[0m"
+    return text[:i] + RESET
 
 
 # ── ANSI-aware 行截断（终端宽度自适应） ─────────────────
@@ -234,6 +259,7 @@ def truncate_ansi_line(text: str, max_width: int) -> str:
 
 
 __all__: list[str] = [
+    "ansi_wrap",
     "strip_ansi",
     "visual_width",
     "truncate_ansi_visual",

@@ -79,22 +79,6 @@ def _col_align_class(col_idx: int, rows: list[list[str]]) -> str:
     return "right"
 
 
-def _ansi_wrap(color: int | None) -> tuple[str, str]:
-    """生成 ANSI 颜色包裹前缀/后缀。
-
-    Args:
-        color: 256 色号，None 时返回空字符串对。
-
-    Returns:
-        (prefix, suffix) 元组。已迁移使用 Style，保留为兼容包装。
-    """
-    if color is not None:
-        style = Style(fg=color)
-        ansi = style.to_ansi()
-        return (ansi, "\033[0m")
-    return ("", "")
-
-
 # ═══════════════════════════════════════════════════════════
 # Table 组件
 # ═══════════════════════════════════════════════════════════
@@ -284,7 +268,6 @@ class Table(TuiComponent):
         top_border = _h_sep(chars["tl"], chars["h"], chars["tr"])
 
         # ── 表头/内容分隔线 ──
-        header_sep = _h_sep(chars.get("ml", "├"), chars.get("h", "─"), chars.get("mr", "┤"))
         # 处理 BoxStyle.ASCII 的情况
         if self.border_style == BoxStyle.ASCII:
             header_sep = _h_sep("+", "-", "+")

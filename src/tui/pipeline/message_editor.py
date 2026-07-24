@@ -338,8 +338,20 @@ class MessageEditor:
     edit_current_messages() 作为公开入口点。
     """
 
-    def __init__(self, role_map: dict[str, "_disp.RoleConfig"] | None = None) -> None:
+    def __init__(
+        self,
+        role_map: dict[str, "_disp.RoleConfig"] | None = None,
+        bottom_bar: Any | None = None,
+    ) -> None:
+        """初始化 MessageEditor。
+
+        Args:
+            role_map: 可选的角色配置映射。
+            bottom_bar: _BottomBar 实例（可选）。传入后避免反向依赖 chat_ui 获取底部栏，
+                        通过 run_bottom_bar_selection 的 bottom_bar 参数传递。
+        """
         self.role_map = role_map
+        self._bottom_bar = bottom_bar
 
     # ── 消息选择交互 ────────────────────────────────────
 
@@ -392,11 +404,11 @@ class MessageEditor:
         # ★ 消息选择弹窗：显示用户可选消息总数
         title_display = f"{BRIGHT_CYAN}{title}{RESET}{DIM}{tag}{RESET}  {DIM}\u2502{RESET}  {CYAN}{sel_count}{RESET} \u6761\u53ef\u7f16\u8f91"  # 当前会话(当前) │ N 条可编辑
 
-        # TODO: 后续可通过依赖注入传入 bottom_bar（依赖注入 DI 第二步）
         result = run_bottom_bar_selection(
             selectable, user_display,
             initial_idx=sel_count - 1,
             title=title_display,
+            bottom_bar=self._bottom_bar,
         )
 
         if result["action"] == "cancel":

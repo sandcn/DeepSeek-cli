@@ -10,7 +10,7 @@ from __future__ import annotations
 
 # ── 底层工具（轻量模块，无循环导入风险） ──
 from .lock import (
-    render_lock, io_lock, output_lock, diff_active,
+    render_lock, io_lock, diff_active,
     _try_acquire_output_lock, OUTPUT_LOCK_TIMEOUT,
 )
 from .cursor_tracker import CursorTracker, CursorPosition
@@ -76,7 +76,7 @@ def __getattr__(name: str):
 
 __all__ = [
     # lock
-    "render_lock", "io_lock", "output_lock", "diff_active",
+    "render_lock", "io_lock", "diff_active",
     "_try_acquire_output_lock", "OUTPUT_LOCK_TIMEOUT",
     # cursor_tracker
     "CursorTracker", "CursorPosition",

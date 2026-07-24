@@ -1675,5 +1675,152 @@ class TestGetSnapshot(unittest.TestCase):
                         "若返回 None 说明导入路径仍不正确或 api.stats 模块缺失")
 
 
+class TestRegisterSigwinch(unittest.TestCase):
+    """验证 _register_sigwinch() 提取方法（步骤 7：拆分 setup）。
+
+    核心场景：
+      1. 调用后 _sigwinch_cb 被正确设置
+      2. register_sigwinch_callback 被调用
+      3. _on_sigwinch 回调正确更新尺寸缓存和 full_repaint 标记
+    """
+
+    def setUp(self):
+        self.bb = _BottomBar()
+        self._stdout = sys.__stdout__
+
+    def tearDown(self):
+        sys.__stdout__ = self._stdout
+
+    def test_sets_sigwinch_cb(self):
+        """_register_sigwinch 后 _sigwinch_cb 应被设置。"""
+        with patch("src.tui.widgets.bottom_bar.bar.register_sigwinch_callback") as mock_register:
+            self.bb._register_sigwinch()
+        self.assertIsNotNone(self.bb._sigwinch_cb,
+                             "_register_sigwinch 后 _sigwinch_cb 不应为 None")
+        mock_register.assert_called_once_with(self.bb._sigwinch_cb)
+
+    def test_on_sigwinch_updates_cache(self):
+        """_on_sigwinch 回调应更新尺寸缓存并标记全屏重建。"""
+        with patch("src.tui.widgets.bottom_bar.bar.register_sigwinch_callback"):
+            self.bb._register_sigwinch()
+        # 模拟 SIGWINCH 信号：cols=120, rows=40
+        self.bb._sigwinch_cb(120, 40)
+        self.assertEqual(self.bb._cached_width, 120,
+                         "_on_sigwinch 应更新 _cached_width 到 120")
+        self.assertEqual(self.bb._cached_height, 40,
+                         "_on_sigwinch 应更新 _cached_height 到 40")
+        self.assertTrue(self.bb._needs_full_repaint,
+                        "_on_sigwinch 应设置 _needs_full_repaint = True")
+
+    def test_on_sigwinch_resets_dimension_refresh(self):
+        """_on_sigwinch 应重置 _last_dimension_refresh 强制下次刷新。"""
+        with patch("src.tui.widgets.bottom_bar.bar.register_sigwinch_callback"):
+            self.bb._register_sigwinch()
+        self.bb._last_dimension_refresh = 999.0  # 模拟上次刷新时间
+        self.bb._sigwinch_cb(80, 30)
+        self.assertEqual(self.bb._last_dimension_refresh, 0.0,
+                         "_on_sigwinch 应重置 _last_dimension_refresh 为 0")
+
+
+class TestInstallStdoutTracker(unittest.TestCase):
+    """验证 _install_stdout_tracker() 提取方法（步骤 7：拆分 setup）。
+
+    核心场景：
+      1. tracker 为 None 时创建 _StdoutLineTracker
+      2. sys.__stdout__ 被替换为 tracker
+      3. tracker 已存在时不重复创建
+    """
+
+    def setUp(self):
+        self.bb = _BottomBar()
+        self._stdout = sys.__stdout__
+
+    def tearDown(self):
+        sys.__stdout__ = self._stdout
+
+    def test_creates_tracker_when_none(self):
+        """_tracker 为 None 时 _install_stdout_tracker 应创建 _StdoutLineTracker。"""
+        self.assertIsNone(self.bb._tracker, "初始 _tracker 应为 None")
+        self.bb._install_stdout_tracker()
+        self.assertIsNotNone(self.bb._tracker,
+                             "_install_stdout_tracker 后 _tracker 不应为 None")
+        from src.tui.widgets.stdout_tracker import _StdoutLineTracker
+        self.assertIsInstance(self.bb._tracker, _StdoutLineTracker)
+
+    def test_replaces_stdout_with_tracker(self):
+        """_install_stdout_tracker 后 sys.__stdout__ 应被替换为 tracker。"""
+        original_stdout = sys.__stdout__
+        self.bb._install_stdout_tracker()
+        self.assertIsNot(sys.__stdout__, original_stdout,
+                         "sys.__stdout__ 应被替换")
+        self.assertIs(sys.__stdout__, self.bb._tracker,
+                      "sys.__stdout__ 应等于 _tracker")
+
+    def test_does_not_recreate_tracker(self):
+        """_tracker 已存在时不重复创建。"""
+        tracker = MagicMock()
+        self.bb._tracker = tracker
+        self.bb._install_stdout_tracker()
+        self.assertIs(self.bb._tracker, tracker,
+                      "不应替换已存在的 _tracker")
+
+
+class TestEnsureScrollRegion(unittest.TestCase):
+    """验证 _ensure_scroll_region() 提取方法（步骤 7：拆分 force_redraw）。
+
+    核心场景：
+      1. 正常路径返回 clear_buf 列表
+      2. 终端过小时返回 None
+      3. SU 上滚被正确触发
+    """
+
+    def setUp(self):
+        self.bb = _BottomBar()
+        self.bb._active = True
+        self.bb._last_text = "test"
+        self._stdout = sys.__stdout__
+
+    def tearDown(self):
+        sys.__stdout__ = self._stdout
+
+    def test_returns_clear_buf_on_normal_path(self):
+        """正常路径下 _ensure_scroll_region 返回 clear_buf 列表。"""
+        mock_term = _mock_terminal(width=80, height=30)
+        out = io.StringIO()
+        with patch("src.tui.widgets.bottom_bar.bar.get_terminal", return_value=mock_term):
+            result = self.bb._ensure_scroll_region(
+                out, delta=0, old_scroll_end=25, full_repaint=False,
+                height=30, scroll_end=25, old_bottom_lines=5,
+            )
+        self.assertIsNotNone(result, "正常路径应返回 clear_buf")
+        self.assertIsInstance(result, list, "clear_buf 应为列表")
+
+    def test_returns_none_on_too_small(self):
+        """终端高度过小（scroll_end < 1）时 _ensure_scroll_region 返回 None。"""
+        mock_term = _mock_terminal(width=80, height=10)  # 高度极小
+        out = io.StringIO()
+        # total > height → scroll_end < 1 触发 _handle_too_small_terminal 早退
+        with patch("src.tui.widgets.bottom_bar.bar.get_terminal", return_value=mock_term):
+            result = self.bb._ensure_scroll_region(
+                out, delta=0, old_scroll_end=3, full_repaint=False,
+                height=10, scroll_end=0, old_bottom_lines=15,
+            )
+        self.assertIsNone(result, "scroll_end < 1 时应返回 None")
+
+    def test_triggers_scroll_up_on_expansion(self):
+        """底部栏扩大（delta>0）时触发 SU 上滚。"""
+        mock_term = _mock_terminal(width=80, height=30)
+        out = io.StringIO()
+        with patch("src.tui.widgets.bottom_bar.bar.get_terminal", return_value=mock_term):
+            self.bb._ensure_scroll_region(
+                out, delta=3, old_scroll_end=25, full_repaint=False,
+                height=30, scroll_end=22, old_bottom_lines=5,
+            )
+        output = out.getvalue()
+        # delta=3 应输出 SU(3)
+        self.assertIn("\033[3S", output,
+                      "delta>0 时应输出 SU(3) 上滚序列")
+
+
 if __name__ == "__main__":
     unittest.main()

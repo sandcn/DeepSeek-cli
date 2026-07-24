@@ -527,7 +527,7 @@ class TestProgressBarPulseMode:
     def test_pulse_mode_narrow_screen(self, monkeypatch):
         """窄屏时 pulse_mode 也正常降级"""
         from src.tui.components._progress import ProgressBar
-        monkeypatch.setattr("src.tui.components._progress.ProgressBar._is_narrow", lambda self: True)
+        monkeypatch.setattr("src.tui.components._progress.is_narrow", lambda: True)
         bar = ProgressBar(progress=0.5, width=30, frame=5, animated=True, pulse_mode=True)
         result = bar.render()
         # 窄屏应不含百分比文本

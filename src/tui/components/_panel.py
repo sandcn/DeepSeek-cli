@@ -16,7 +16,7 @@ import logging
 from ..render_buffer import RenderBuffer
 from ..terminal.narrow import is_narrow
 from ..core.text_utils import truncate
-from ..core.ansi_utils import visual_width
+from ..core.ansi_utils import ansi_wrap as _ansi_wrap, visual_width
 from ._base import TuiComponent
 from ._box import BoxStyle, _BOX_CHARS
 
@@ -130,8 +130,8 @@ class Panel(TuiComponent):
             inner_width = max(1, box_width - 2)
 
         # ── ANSI 颜色前缀/后缀 ──
-        border_pre, border_suf = self._ansi_wrap(self.border_color)
-        title_pre, title_suf = self._ansi_wrap(self.title_color)
+        border_pre, border_suf = _ansi_wrap(self.border_color)
+        title_pre, title_suf = _ansi_wrap(self.title_color)
 
         # ── 展开边框字符 ──
         tl, tr = chars['tl'], chars['tr']
@@ -168,21 +168,6 @@ class Panel(TuiComponent):
         if isinstance(self.content, TuiComponent):
             return str(self.content.render())
         return str(self.content)
-
-    @staticmethod
-    def _ansi_wrap(color: int | None) -> tuple[str, str]:
-        """生成 ANSI 颜色包裹前缀/后缀。
-
-        Args:
-            color: 256 色号，None 时返回空字符串对。
-
-        Returns:
-            (prefix, suffix) 元组，prefix 为 ANSI 前景色序列，
-            suffix 为 RESET 序列。color 为 None 时均为空字符串。
-        """
-        if color is not None:
-            return (f"\033[38;5;{color}m", "\033[0m")
-        return ("", "")
 
     def _build_top_border(
         self,

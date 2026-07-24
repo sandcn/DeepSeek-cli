@@ -18,6 +18,7 @@ from .utils import _truncate_msg
 if TYPE_CHECKING:
     from ..consumer.chat_config import ChatConfig
     from ..events.event_types import (
+        DisplayEvent,
         ReasoningChunkEvent,
         ContentChunkEvent,
         PhaseDoneEvent,
@@ -153,7 +154,7 @@ class EventDispatcher:
             main_source = ChatConfig.defaults().main_source
         return source == main_source or source.startswith("agent-")
 
-    def _pre_filter(self, event, event_type, *, require_label=False, require_source=False) -> bool:
+    def _pre_filter(self, event: DisplayEvent, event_type, *, require_label=False, require_source=False) -> bool:
         """统一前置过滤：不满足条件返回 False（应跳过该事件）。
 
         取代各 handler 中重复的 isinstance/label/source 判断。
@@ -202,36 +203,36 @@ class EventDispatcher:
 
     # ── 事件处理器 ────────────────────────────────
 
-    def _on_reasoning_chunk(self, event) -> None:
+    def _on_reasoning_chunk(self, event: ReasoningChunkEvent) -> None:
         if not self._pre_filter(event, _EVENT_TYPES.ReasoningChunkEvent, require_label=True):
             return
         if not event.text:
             return
         self._push_cmd((RenderCommand.REASONING, event.text))
 
-    def _on_content_chunk(self, event) -> None:
+    def _on_content_chunk(self, event: ContentChunkEvent) -> None:
         if not self._pre_filter(event, _EVENT_TYPES.ContentChunkEvent, require_label=True):
             return
         if not event.text:
             return
         self._push_cmd((RenderCommand.CONTENT, event.text))
 
-    def _on_tool_parsing(self, event) -> None:
+    def _on_tool_parsing(self, event: ToolParsingEvent) -> None:
         if not self._pre_filter(event, _EVENT_TYPES.ToolParsingEvent, require_source=True):
             return
         self._push_cmd((RenderCommand.MAIN_PHASE, "parsing"))
 
-    def _on_phase_done(self, event) -> None:
+    def _on_phase_done(self, event: PhaseDoneEvent) -> None:
         if not self._pre_filter(event, _EVENT_TYPES.PhaseDoneEvent, require_label=True):
             return
         self._push_cmd((RenderCommand.PHASE_DONE, event.phase))
 
-    def _on_tool_started(self, event) -> None:
+    def _on_tool_started(self, event: ToolStartedEvent) -> None:
         if not self._pre_filter(event, _EVENT_TYPES.ToolStartedEvent, require_source=True):
             return
         self._push_cmd((RenderCommand.TOOL_COUNT_INC,))
 
-    def _on_tool_done(self, event) -> None:
+    def _on_tool_done(self, event: ToolDoneEvent) -> None:
         if not self._pre_filter(event, _EVENT_TYPES.ToolDoneEvent, require_source=True):
             return
         if not event.success:
@@ -240,31 +241,31 @@ class EventDispatcher:
         else:
             self._push_cmd((RenderCommand.TOOL_COUNT_DEC,))
 
-    def _on_tool_output(self, event) -> None:
+    def _on_tool_output(self, event: ToolOutputChunkEvent) -> None:
         if not self._pre_filter(event, _EVENT_TYPES.ToolOutputChunkEvent, require_source=True):
             return
         text = event.text.rstrip("\n")
         if text:
             self._push_cmd((RenderCommand.TOOL_OUTPUT, text))
 
-    def _on_parse_info(self, event) -> None:
+    def _on_parse_info(self, event: ParseInfoEvent) -> None:
         if not self._pre_filter(event, _EVENT_TYPES.ParseInfoEvent, require_source=True):
             return
         self._push_cmd((RenderCommand.PARSE_INFO, event.tool_names, event.tokens, event.elapsed))
 
-    def _on_parse_info_done(self, event) -> None:
+    def _on_parse_info_done(self, event: ParseInfoDoneEvent) -> None:
         if not self._pre_filter(event, _EVENT_TYPES.ParseInfoDoneEvent, require_source=True):
             return
         self._push_cmd((RenderCommand.PARSE_INFO, "", _CLEAR_PARSE_LINE, 0.0))
 
-    def _on_output(self, event) -> None:
+    def _on_output(self, event: OutputEvent) -> None:
         if not self._pre_filter(event, _EVENT_TYPES.OutputEvent):
             return
         if not event.text:
             return
         self._push_cmd((RenderCommand.WRITE_LINE, event.text))
 
-    def _on_model_phase(self, event) -> None:
+    def _on_model_phase(self, event: ModelPhaseEvent) -> None:
         if not self._pre_filter(event, _EVENT_TYPES.ModelPhaseEvent, require_label=True):
             return
         # 非 error 阶段转发给底部栏显示状态（思考/回答/接收工具参数）
@@ -276,7 +277,7 @@ class EventDispatcher:
         info = _truncate_msg(event.info, self._max_error_length)
         self._push_cmd((RenderCommand.ERROR, info))
 
-    def _on_tool_summary(self, event) -> None:
+    def _on_tool_summary(self, event: ToolSummaryEvent) -> None:
         if not self._pre_filter(event, _EVENT_TYPES.ToolSummaryEvent, require_source=True):
             return
         if not event.successful_tools and not event.failed_tools:

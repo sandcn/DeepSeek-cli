@@ -48,7 +48,7 @@ from __future__ import annotations
 
 import logging
 import threading
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Callable
 
 if TYPE_CHECKING:
     from .components._base import TuiComponent
@@ -446,7 +446,7 @@ class Framework:
             self._component_registry = ComponentRegistry
         return self._component_registry.get_default()
 
-    def subscribe(self, event_type: type, callback) -> None:
+    def subscribe(self, event_type: type, callback: Callable[..., Any] | None = None) -> None:
         """订阅事件总线事件。
 
         委托 DisplayEventBus.get_default().subscribe() 注册事件监听。
@@ -461,7 +461,7 @@ class Framework:
         except ImportError as exc:
             _logger.warning("subscribe 失败（DisplayEventBus 未就绪）: %s", exc)
 
-    def unsubscribe(self, event_type: type, callback) -> None:
+    def unsubscribe(self, event_type: type, callback: Callable[..., Any] | None = None) -> None:
         """取消订阅事件总线事件。
 
         委托 DisplayEventBus.get_default().unsubscribe() 取消监听。

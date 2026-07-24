@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from ._base import TuiComponent
 from ..render_buffer import RenderBuffer
+from ..terminal.narrow import is_narrow, narrow_truncate
 
 
 class ProgressBar(TuiComponent):
@@ -84,8 +85,8 @@ class ProgressBar(TuiComponent):
             带 ANSI 颜色和渐变的进度条字符串。
         """
         # 窄屏降级：减少宽度，隐藏百分比
-        if self._is_narrow():
-            width = self._narrow_width()
+        if is_narrow():
+            width = narrow_truncate(30)
             show_pct = False
         else:
             width = self._width
@@ -114,20 +115,6 @@ class ProgressBar(TuiComponent):
             pct_text = f" {round(progress * 100)}%"
 
         return f"{fill_part}\033[0m{empty_part}{pct_text}"
-
-    # ── 窄屏检测 ────────────────────────────────────────────────────────
-
-    @staticmethod
-    def _is_narrow() -> bool:
-        """检测当前是否为窄屏。"""
-        from ..terminal.narrow import is_narrow
-        return is_narrow()
-
-    @staticmethod
-    def _narrow_width() -> int:
-        """获取窄屏下的进度条宽度。"""
-        from ..terminal.narrow import narrow_truncate
-        return narrow_truncate(30)
 
     # ── 填充构建 ────────────────────────────────────────────────────────
 

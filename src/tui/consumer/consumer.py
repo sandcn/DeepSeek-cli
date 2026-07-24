@@ -12,6 +12,8 @@ import time
 from typing import TYPE_CHECKING, Any, Callable
 
 if TYPE_CHECKING:
+    from typing import Protocol
+
     from ..events.event_types import (
         ReasoningChunkEvent,
         ContentChunkEvent,
@@ -27,6 +29,21 @@ if TYPE_CHECKING:
         ModelPhaseEvent,
     )
     from .factory import _ChatUIComponents
+
+    class _MonitorProtocol(Protocol):
+        """EscapeMonitor 的最小接口协议。
+
+        用于 wait_for_user_input() 和 setup_completion() 的类型注解，
+        避免运行时循环导入。
+        """
+        is_alive: bool
+
+        def get_queued_input(self) -> str | None: ...
+        def set_prefill(self, text: str) -> None: ...
+        def set_completion_callback(self, callback: Callable[[str], str | None]) -> None: ...
+        def set_dismiss_completion_callback(self, callback: Callable[[], None]) -> None: ...
+        def set_completion_navigate_callback(self, callback: Callable[[int, str], str | None]) -> None: ...
+        def set_auto_completion_callback(self, callback: Callable[[str], None]) -> None: ...
 
 from ..engine.const import (
     RenderCommand,
@@ -252,7 +269,7 @@ class ChatUIConsumer:
     def display_messages(self, messages: list[dict], speed: int = 0) -> None:
         self._components.engine.push_cmd((RenderCommand.DISPLAY_MSGS, messages, speed))
 
-    def wait_for_user_input(self, monitor, prefill: str = "", timeout: float | None = None) -> str:
+    def wait_for_user_input(self, monitor: _MonitorProtocol, prefill: str = "", timeout: float | None = None) -> str:
         """阻塞等待用户通过 monitor 输入文本。
 
         轮询 monitor.get_queued_input()，以 50ms 间隔检查。
@@ -285,7 +302,7 @@ class ChatUIConsumer:
                 return ""
             time.sleep(0.05)
 
-    def setup_completion(self, monitor) -> None:
+    def setup_completion(self, monitor: _MonitorProtocol) -> None:
         monitor.set_completion_callback(self._components.cmpl_handler.on_tab)
         monitor.set_dismiss_completion_callback(self._components.cmpl_handler.on_dismiss)
         monitor.set_completion_navigate_callback(self._components.cmpl_handler.on_navigate)

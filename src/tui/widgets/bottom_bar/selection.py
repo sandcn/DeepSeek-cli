@@ -56,13 +56,13 @@ def _is_cygwin_or_wsl() -> bool:
             content = f.read()
         if "microsoft" in content.lower():
             return True
-    except Exception:
-        pass
+    except Exception as exc:
+        _logger.debug("WSL 检测异常（读取 /proc/version）: %s", exc, exc_info=True)
     try:
         if 'WSL_DISTRO_NAME' in os.environ:
             return True
-    except Exception:
-        pass
+    except Exception as exc:
+        _logger.debug("WSL 检测异常（检查环境变量）: %s", exc, exc_info=True)
     return False
 
 
@@ -98,8 +98,8 @@ def _restore_terminal_settings(fd: int, settings) -> None:
     try:
         from src._compat_termios import termios
         termios.tcsetattr(fd, termios.TCSADRAIN, settings)
-    except Exception:
-        pass
+    except Exception as exc:
+        _logger.warning("终端设置恢复失败: %s", exc, exc_info=True)
 
 
 def _run_selection_raw(
@@ -213,8 +213,8 @@ def _run_selection_raw(
                             if c.isalpha() or c == '~':
                                 terminator = c
                                 break
-                    except (ValueError, OSError, TypeError):
-                        pass
+                    except (ValueError, OSError, TypeError) as exc:
+                        _logger.debug("CSI 序列读取异常: %s", exc)
 
                     if terminator == 'A':
                         bb.cycle_completion(-1)
@@ -226,8 +226,8 @@ def _run_selection_raw(
                     try:
                         if select.select([fd], [], [], 0.01)[0]:
                             os.read(fd, 1)
-                    except (ValueError, OSError, TypeError):
-                        pass
+                    except (ValueError, OSError, TypeError) as exc:
+                        _logger.debug("SS3 序列处理异常: %s", exc)
                 else:
                     # 其他 ESC 组合 → 取消
                     return {"action": "cancel", "index": None}
@@ -282,13 +282,13 @@ def _drain_stdin_residual(
         r, _, _ = select.select([fd], [], [], 0)
         if r:
             os.read(fd, max_per_round)
-    except Exception:
-        pass
+    except Exception as exc:
+        _logger.warning("_drain_stdin_residual 最后兜底 select/read 异常: %s", exc)
     try:
         from src._compat_termios import termios as _termios
         _termios.tcflush(fd, _termios.TCIFLUSH)
-    except Exception:
-        pass
+    except Exception as exc:
+        _logger.warning("_drain_stdin_residual 最后兜底 tcflush 异常: %s", exc)
 
 
 def run_bottom_bar_selection(

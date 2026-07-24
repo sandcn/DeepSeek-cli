@@ -76,11 +76,19 @@ _THINKING_SEPARATOR = "\n  " + "\u2500" * 25 + "\n"
 
 # ── 紧急路径 ANSI 转义序列（直写终端，绕过 Rich 管线） ──
 # 用于队列满/render 崩溃等无法通过正常渲染管线输出的场景。
-# 提取为常量而非散落硬编码，确保可维护性。
-_ANSI_RED = "\033[31m"
-_ANSI_YELLOW = "\033[33m"
-_ANSI_RESET = "\033[0m"
-_ANSI_CURSOR_BOTTOM = "\033[9999;1H"
+# 定义位于 src.tui.core.style，此处通过导入引用以消除重复定义。
+from ..core.style import (
+    ANSI_EMERGENCY_RED,
+    ANSI_EMERGENCY_YELLOW,
+    ANSI_EMERGENCY_RESET,
+    ANSI_EMERGENCY_CURSOR_BOTTOM,
+)
+
+# 向后兼容别名（旧代码继续使用 _ANSI_* 名称，不破坏已有导入）
+_ANSI_RED = ANSI_EMERGENCY_RED
+_ANSI_YELLOW = ANSI_EMERGENCY_YELLOW
+_ANSI_RESET = ANSI_EMERGENCY_RESET
+_ANSI_CURSOR_BOTTOM = ANSI_EMERGENCY_CURSOR_BOTTOM
 
 
 # ═══════════════════════════════════════════════════════════

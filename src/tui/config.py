@@ -41,9 +41,6 @@ class TuiConfig:
 
     # ── 截断参数 ──────────────────────────────────────
     max_error_length: int = 200             # 错误消息截断长度（字符）
-    # @deprecated — 使用 ChatConfig.max_output_len 替代，v1.3+ 移除
-    max_output_len: int = 10000             # 工具输出最大长度（字符）
-
     # ── FadeIn 动效参数 ───────────────────────────────
     fade_total_frames: int = 6              # FadeIn 渐显帧数
     fade_start_color: int = 238             # FadeIn 起始暗色（256 色号）
