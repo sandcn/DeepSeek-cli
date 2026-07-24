@@ -20,8 +20,16 @@ EXCLUDED_DIRS: set[str] = {
     ".coverage", "htmlcov",
 }
 
+# ── 默认排除的编译产物/二进制文件扩展名（用于 search 搜索工具） ──
+# 新增排除模式时在此集合添加即可，自动传播到三路引擎（rg/grep/Python）
+# 注意：与 EXCLUDED_DIRS 职责分离——此集合仅管理文件模式，EXCLUDED_DIRS 仅管理目录
+
+EXCLUDED_FILE_PATTERNS: set[str] = {
+    "*.o", "*.d", "*.exe", "*.dll", "*.so", "*.a",
+}
+
 # ── 用于 rg 的 --glob !<pattern> 排除模式 ──
-RG_EXCLUDE_GLOBS: tuple[str, ...] = tuple(EXCLUDED_DIRS)
+RG_EXCLUDE_GLOBS: tuple[str, ...] = tuple(EXCLUDED_DIRS | EXCLUDED_FILE_PATTERNS)
 
 # ── 用于 grep 的 --exclude-dir 排除（仅纯目录名） ──
 GREP_EXCLUDE_DIRS: tuple[str, ...] = tuple(
@@ -30,7 +38,7 @@ GREP_EXCLUDE_DIRS: tuple[str, ...] = tuple(
 
 # ── 用于 grep 的 --exclude 排除（文件通配符模式） ──
 GREP_EXCLUDE_FILES: tuple[str, ...] = tuple(
-    d for d in EXCLUDED_DIRS if "*" in d
+    {d for d in EXCLUDED_DIRS if "*" in d} | EXCLUDED_FILE_PATTERNS
 )
 
 # ── 路径安全常量（用于 file_ops / file_base / cp / mv / rm 等） ──

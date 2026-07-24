@@ -292,6 +292,31 @@ class TestPythonSearchExcludeDirs:
         assert sf._should_exclude_dir("venv") is True
         assert sf._should_exclude_dir("dist") is True
 
+    def test_should_exclude_by_pattern_true(self):
+        """_should_exclude_by_pattern 对编译产物扩展名返回 True"""
+        sf = SearchFunc(query="test", path=".")
+        # 新增的 6 个文件模式
+        assert sf._should_exclude_by_pattern("main.o") is True
+        assert sf._should_exclude_by_pattern("app.exe") is True
+        assert sf._should_exclude_by_pattern("lib.dll") is True
+        assert sf._should_exclude_by_pattern("module.d") is True
+        assert sf._should_exclude_by_pattern("lib.so") is True
+        assert sf._should_exclude_by_pattern("lib.a") is True
+        # 已有的 *.egg-info 模式
+        assert sf._should_exclude_by_pattern("my_package.egg-info") is True
+
+    def test_should_exclude_by_pattern_false(self):
+        """_should_exclude_by_pattern 对普通文件返回 False"""
+        sf = SearchFunc(query="test", path=".")
+        # 普通源码文件不被排除
+        assert sf._should_exclude_by_pattern("main.py") is False
+        assert sf._should_exclude_by_pattern("readme.md") is False
+        assert sf._should_exclude_by_pattern("config.json") is False
+        # 边界：文件名含 .o 但不以 .o 结尾——fnmatch *.o 不应匹配 test.o.py
+        assert sf._should_exclude_by_pattern("test.o.py") is False
+        # 边界：以 .o 结尾但前面有已排除目录特征的（如 node_modules）— 仅测试文件模式本身
+        assert sf._should_exclude_by_pattern("utils.c") is False
+
 
 # ═══════════════════════════════════════════════════════════════
 # 步骤 6 性能优化测试：二进制跳过、正则边界、预编译 regex
@@ -432,3 +457,109 @@ class TestPrecompiledInclude:
 
         sf2 = SearchFunc(query="test", path=".")
         assert sf2._include_res == []
+
+
+# ═══════════════════════════════════════════════════════════════
+# 编译产物/二进制文件排除测试
+# ═══════════════════════════════════════════════════════════════
+
+class TestPythonSearchExcludeFilePatterns:
+    """纯 Python 搜索的编译产物文件排除测试——验证 .o/.d/.exe/.dll/.so/.a 被排除"""
+
+    @pytest.mark.asyncio
+    async def test_o_file_excluded(self, tmp_path):
+        """.o 文件被排除，同目录 .py 文件仍被搜索"""
+        proj = tmp_path / "proj"
+        proj.mkdir()
+        # 创建 .o 文件（纯文本，不含 null 字节，确保排除靠文件模式而非二进制检测）
+        (proj / "build.o").write_text("target_function call\n")
+        # 创建参照 .py 文件，包含相同关键词
+        (proj / "main.py").write_text("target_function call\n")
+
+        sf = SearchFunc(query="target_function", path=str(proj))
+        sf._has_rg = False
+        sf._has_grep = False
+        result = await sf.execute()
+
+        assert "main.py" in result
+        assert "build.o" not in result
+
+    @pytest.mark.asyncio
+    async def test_exe_file_excluded(self, tmp_path):
+        """.exe 文件被排除"""
+        proj = tmp_path / "proj"
+        proj.mkdir()
+        (proj / "app.exe").write_text("target_function call\n")
+        (proj / "main.py").write_text("target_function call\n")
+
+        sf = SearchFunc(query="target_function", path=str(proj))
+        sf._has_rg = False
+        sf._has_grep = False
+        result = await sf.execute()
+
+        assert "main.py" in result
+        assert "app.exe" not in result
+
+    @pytest.mark.asyncio
+    async def test_dll_file_excluded(self, tmp_path):
+        """.dll 文件被排除"""
+        proj = tmp_path / "proj"
+        proj.mkdir()
+        (proj / "lib.dll").write_text("target_function call\n")
+        (proj / "main.py").write_text("target_function call\n")
+
+        sf = SearchFunc(query="target_function", path=str(proj))
+        sf._has_rg = False
+        sf._has_grep = False
+        result = await sf.execute()
+
+        assert "main.py" in result
+        assert "lib.dll" not in result
+
+    @pytest.mark.asyncio
+    async def test_d_file_excluded(self, tmp_path):
+        """.d 文件（Makefile 依赖文件）被排除"""
+        proj = tmp_path / "proj"
+        proj.mkdir()
+        (proj / "module.d").write_text("target_function call\n")
+        (proj / "main.py").write_text("target_function call\n")
+
+        sf = SearchFunc(query="target_function", path=str(proj))
+        sf._has_rg = False
+        sf._has_grep = False
+        result = await sf.execute()
+
+        assert "main.py" in result
+        assert "module.d" not in result
+
+    @pytest.mark.asyncio
+    async def test_so_file_excluded(self, tmp_path):
+        """.so 文件被排除"""
+        proj = tmp_path / "proj"
+        proj.mkdir()
+        (proj / "lib.so").write_text("target_function call\n")
+        (proj / "main.py").write_text("target_function call\n")
+
+        sf = SearchFunc(query="target_function", path=str(proj))
+        sf._has_rg = False
+        sf._has_grep = False
+        result = await sf.execute()
+
+        assert "main.py" in result
+        assert "lib.so" not in result
+
+    @pytest.mark.asyncio
+    async def test_a_file_excluded(self, tmp_path):
+        """.a 静态库文件被排除"""
+        proj = tmp_path / "proj"
+        proj.mkdir()
+        (proj / "lib.a").write_text("target_function call\n")
+        (proj / "main.py").write_text("target_function call\n")
+
+        sf = SearchFunc(query="target_function", path=str(proj))
+        sf._has_rg = False
+        sf._has_grep = False
+        result = await sf.execute()
+
+        assert "main.py" in result
+        assert "lib.a" not in result
