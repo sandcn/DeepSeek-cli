@@ -277,6 +277,18 @@ def _drain_stdin_residual(
             _termios.tcflush(fd, _termios.TCIFLUSH)
         except Exception:
             pass
+    # ★ 最后兜底：非阻塞检查 + tcflush，关闭最终轮 tcflush 与函数返回之间的微小间隙
+    try:
+        r, _, _ = select.select([fd], [], [], 0)
+        if r:
+            os.read(fd, max_per_round)
+    except Exception:
+        pass
+    try:
+        from src._compat_termios import termios as _termios
+        _termios.tcflush(fd, _termios.TCIFLUSH)
+    except Exception:
+        pass
 
 
 def run_bottom_bar_selection(
@@ -375,6 +387,24 @@ def run_bottom_bar_selection(
             # 使用 _drain_stdin_residual() 3轮×20ms排空 + 轮间tcflush覆盖延迟到达的残余字节。
             try:
                 _drain_stdin_residual(fd)
+            except Exception:
+                pass
+
+            # ★ 最后一层防御：非阻塞排空 _drain_stdin_residual 与 term.inkey()
+            # 之间的微小间隙。终端模式切换（cooked→cbreak）产生的 \r/\n 残留字节
+            # 可能延迟到达（尤其在 Android/Termux 环境下），若恰好落在
+            # drain 结束与 inkey 起始之间，会被 inkey 误消费为 Enter 键，
+            # 导致选择弹窗立即确认首条消息 → 意外截断会话。
+            try:
+                import select as _sel
+                r, _, _ = _sel.select([fd], [], [], 0.01)
+                if r:
+                    os.read(fd, 1)
+            except Exception:
+                pass
+            try:
+                from src._compat_termios import termios as _termios
+                _termios.tcflush(fd, _termios.TCIFLUSH)
             except Exception:
                 pass
 
