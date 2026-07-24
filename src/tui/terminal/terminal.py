@@ -21,7 +21,7 @@ if TYPE_CHECKING:
     from typing import Self
 
 from .adapter import TerminalAdapter
-from ..widgets.lock import io_lock, OUTPUT_LOCK_TIMEOUT
+from .._locks import io_lock, OUTPUT_LOCK_TIMEOUT
 from .blessed import get_terminal
 from ..core.ttl_cache import TTLCache
 

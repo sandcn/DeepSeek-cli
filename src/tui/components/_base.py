@@ -21,6 +21,9 @@ from rich.text import Text
 
 from ..widget_base import Widget
 
+# FadeIn 入场动效 — 从 core/text_utils.py 导入统一入口
+from ..core.text_utils import apply_fade_in
+
 _logger = logging.getLogger(__name__)
 
 
@@ -213,33 +216,4 @@ def _estimate_content_lines(text: str) -> int:
     return text.count('\n') + 1
 
 
-def apply_fade_in(text: str, frame: int,
-                  easing: str = "smooth",
-                  total_frames: int = 6,
-                  start_color: int = 240,
-                  end_color: int = 253) -> str:
-    """对文本应用 FadeIn 入场渐显动效。
 
-    使用 FadeIn 过渡效果生成渐显前缀，包裹文本使其从暗灰渐变至目标色。
-    无动效效果时（frame 为 0 或 FadeIn 返回空前缀）返回原文本。
-
-    Args:
-        text: 要应用动效的文本。
-        frame: 当前帧号。
-        easing: 缓动函数，默认 "smooth"。
-        total_frames: 渐显总帧数，默认 6。
-        start_color: 起始 256 色号，默认 240（暗灰）。
-        end_color: 结束 256 色号，默认 253（亮白）。
-
-    Returns:
-        带 FadeIn 渐显包裹的文本。无动效时返回原文本。
-    """
-    if not text or frame <= 0:
-        return text
-    from .animation.transitions import FadeIn  # noqa: C0415
-    fade = FadeIn(easing=easing, total_frames=total_frames,
-                  start_color=start_color, end_color=end_color)
-    fade_prefix = fade.render(frame)
-    if fade_prefix:
-        return f"{fade_prefix}{text}\033[0m"
-    return text

@@ -64,3 +64,72 @@ class TestDeprecatedFieldsRemoved:
         from src.tui.widgets.lock import _try_acquire_output_lock as t2
         from src.tui.widgets import _try_acquire_output_lock as t3
         assert t1 is t2 is t3
+
+
+class TestNewConfigFields:
+    """验证新增配置字段（方向8 — 配置硬编码清理）。"""
+
+    # ── eventbus_throttle ─────────────────────────────────
+
+    def test_eventbus_throttle_default(self):
+        """TuiConfig.defaults().eventbus_throttle 默认值为 0.3。"""
+        from src.tui.config import TuiConfig
+        cfg = TuiConfig.defaults()
+        assert hasattr(cfg, "eventbus_throttle"), "缺少 eventbus_throttle 字段"
+        assert cfg.eventbus_throttle == 0.3
+
+    def test_eventbus_throttle_override(self):
+        """TuiConfig.with_overrides 可覆盖 eventbus_throttle。"""
+        from src.tui.config import TuiConfig
+        cfg = TuiConfig.defaults().with_overrides(eventbus_throttle=0.5)
+        assert cfg.eventbus_throttle == 0.5
+
+    def test_eventbus_throttle_frozen(self):
+        """eventbus_throttle 不可变（frozen dataclass）。"""
+        from src.tui.config import TuiConfig
+        cfg = TuiConfig.defaults()
+        with pytest.raises(Exception):
+            cfg.eventbus_throttle = 0.5  # type: ignore[misc]
+
+    # ── default_history ───────────────────────────────────
+
+    def test_default_history_default(self):
+        """TuiConfig.defaults().default_history 默认值为 3。"""
+        from src.tui.config import TuiConfig
+        cfg = TuiConfig.defaults()
+        assert hasattr(cfg, "default_history"), "缺少 default_history 字段"
+        assert cfg.default_history == 3
+
+    def test_default_history_override(self):
+        """TuiConfig.with_overrides 可覆盖 default_history。"""
+        from src.tui.config import TuiConfig
+        cfg = TuiConfig.defaults().with_overrides(default_history=5)
+        assert cfg.default_history == 5
+
+    def test_default_history_frozen(self):
+        """default_history 不可变（frozen dataclass）。"""
+        from src.tui.config import TuiConfig
+        cfg = TuiConfig.defaults()
+        with pytest.raises(Exception):
+            cfg.default_history = 5  # type: ignore[misc]
+
+    # ── parallel_display 读取配置 ──────────────────────────
+
+    def test_parallel_display_reads_eventbus_throttle_from_config(self):
+        """ParallelDisplay 实例从 TuiConfig 读取 eventbus_throttle。"""
+        from src.tui.parallel_display import ParallelDisplay
+        from src.tui.config import TuiConfig
+        display = ParallelDisplay(max_history=1)
+        expected = TuiConfig.defaults().eventbus_throttle
+        assert display._eventbus_throttle == expected, (
+            f"ParallelDisplay 应使用 TuiConfig 的 eventbus_throttle 值 {expected}，"
+            f"而不是模块级常量"
+        )
+
+    def test_parallel_display_retains_module_constants_as_fallback(self):
+        """_EVENTBUS_THROTTLE 和 _DEFAULT_HISTORY 模块级常量保留作为 fallback。"""
+        from src.tui import parallel_display as pd
+        assert hasattr(pd, "_EVENTBUS_THROTTLE"), "_EVENTBUS_THROTTLE 应保留为 fallback"
+        assert hasattr(pd, "_DEFAULT_HISTORY"), "_DEFAULT_HISTORY 应保留为 fallback"
+        assert pd._EVENTBUS_THROTTLE == 0.3
+        assert pd._DEFAULT_HISTORY == 3

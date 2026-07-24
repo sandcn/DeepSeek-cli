@@ -106,6 +106,7 @@ class TestRunBottomBarSelectionEnter(unittest.TestCase):
         with patch(_CHAT_UI_PATCH, return_value=mock_chat_ui), \
              patch(_TERMINAL_PATCH, return_value=mock_term), \
              patch("src.tui.widgets.bottom_bar.selection._is_cygwin_or_wsl", return_value=False), \
+             patch("src.tui.widgets.bottom_bar.selection._drain_stdin_residual", return_value=None), \
              patch("sys.stdin", mock_stdin), \
              patch("os.isatty", return_value=True), \
              patch.object(sys, '__stdout__', MagicMock()):

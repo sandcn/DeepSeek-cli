@@ -12,6 +12,7 @@
 
 from unittest.mock import MagicMock, patch
 
+from src.tui.core.ansi_utils import strip_ansi
 from src.tui.pipeline import message_editor as _me
 from src.tui.pipeline.message_editor import MessageEditor
 from src.tui.pipeline.message_display import MessageDisplayContext
@@ -120,7 +121,7 @@ class TestInteractiveMessageSelect:
         # publish_output 至少被调用一次（error 消息），
         # 匹配新错误提示"终端输入解析异常"（而非旧提示"终端可能不支持交互模式"）
         error_call_found = any(
-            "终端输入解析异常" in str(c)
+            "终端输入解析异常" in strip_ansi(str(c))
             for c in mock_pub.call_args_list
         )
         assert error_call_found, (

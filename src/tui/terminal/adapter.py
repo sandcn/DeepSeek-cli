@@ -51,7 +51,8 @@ def query_terminal_size() -> tuple[int, int]:
     try:
         term = get_terminal()
         return term.width, term.height
-    except Exception:
+    except Exception as exc:
+        _logger.debug("query_terminal_size 失败，回退 80x24: %s", exc)
         return 80, 24
 
 
@@ -154,7 +155,8 @@ class TerminalAdapter:
             rc_seq = get_terminal().rc
             if not isinstance(rc_seq, str) or not rc_seq:
                 rc_seq = '\033[u'
-        except Exception:
+        except Exception as exc:
+            _logger.debug("clear_lines_code: 获取 rc 序列失败，回退 \\033[u: %s", exc)
             rc_seq = '\033[u'
         buf = rc_seq
         buf += f'\033[{n}A'
@@ -183,7 +185,8 @@ class TerminalAdapter:
             if not isinstance(seq, str) or not seq:
                 seq = f"\033[{top};{bottom}r" if bottom else f"\033[{top};r"
             self._stdout.write(seq)
-        except Exception:
+        except Exception as exc:
+            _logger.debug("set_scrolling_region: Blessed 路径失败，回退 raw ANSI: %s", exc)
             if bottom == 0:
                 self._stdout.write(f"\033[{top};r")
             else:
@@ -202,7 +205,8 @@ class TerminalAdapter:
             if not isinstance(seq, str) or not seq:
                 seq = "\033[r"
             self._stdout.write(seq)
-        except Exception:
+        except Exception as exc:
+            _logger.debug("reset_scrolling_region: Blessed 路径失败，回退 raw ANSI: %s", exc)
             self._stdout.write("\033[r")
         self._stdout.flush()
 
@@ -217,7 +221,8 @@ class TerminalAdapter:
             term = get_terminal()
             # Blessed 使用 0-based 坐标
             self._stdout.write(term.move_xy(col - 1, row - 1))
-        except Exception:
+        except Exception as exc:
+            _logger.debug("move_cursor_to: Blessed 路径失败，回退 raw ANSI: %s", exc)
             self._stdout.write(f"\033[{row};{col}H")
         self._stdout.flush()
 
@@ -234,7 +239,8 @@ class TerminalAdapter:
             if not isinstance(seq, str) or not seq:
                 seq = f"\033[{n}S"
             self._stdout.write(seq)
-        except Exception:
+        except Exception as exc:
+            _logger.debug("scroll_up: Blessed 路径失败，回退 raw ANSI: %s", exc)
             self._stdout.write(f"\033[{n}S")
         self._stdout.flush()
 
@@ -243,7 +249,8 @@ class TerminalAdapter:
         try:
             term = get_terminal()
             self._stdout.write(term.clear_eos)
-        except Exception:
+        except Exception as exc:
+            _logger.debug("clear_screen_from_cursor: Blessed 路径失败，回退 raw ANSI: %s", exc)
             self._stdout.write("\033[0J")
         self._stdout.flush()
 
@@ -276,7 +283,8 @@ class TerminalAdapter:
                 rc_seq = get_terminal().rc
                 if not isinstance(rc_seq, str) or not rc_seq:
                     rc_seq = "\033[u"
-            except Exception:
+            except Exception as exc:
+                _logger.debug("render_frame: 获取 rc 序列失败，回退 \\033[u: %s", exc)
                 rc_seq = "\033[u"
             buf += rc_seq
             buf += f"\033[{last_lines}A"
@@ -305,7 +313,8 @@ class TerminalAdapter:
             sc_seq = get_terminal().sc
             if not isinstance(sc_seq, str) or not sc_seq:
                 sc_seq = "\033[s"
-        except Exception:
+        except Exception as exc:
+            _logger.debug("render_frame: 获取 sc 序列失败，回退 \\033[s: %s", exc)
             sc_seq = "\033[s"
         self._stdout.write(buf + "\n" + sc_seq)
         self._stdout.flush()

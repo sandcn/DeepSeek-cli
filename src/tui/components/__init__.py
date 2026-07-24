@@ -12,7 +12,7 @@
   _notification.py    — NotificationBlock
   _write_line.py      — WriteLineBlock
   _tree.py            — TreeView（层级结构展示） + TreeNode
-  （已移除 4 个死组件：StatusLine / InputLine / CompletionPopup / SelectionMenu）
+  （已移除的死组件：StatusLine / InputLine / CompletionPopup / SelectionMenu，2026-07-24 清理）
 
 兼容 re-export：BottomBarProtocol（定义在 _protocols.py）
 

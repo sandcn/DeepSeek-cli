@@ -83,29 +83,26 @@ class TestToolOutputBlock(unittest.TestCase):
         self.assertIn("\033[32m", result)
         self.assertIn("\033[31m", result)
 
-    @patch("src.tui.components._tool_output.is_narrow", return_value=True)
-    def test_render_dark_border_narrow(self, mock_is_narrow):
-        """窄屏时无呼吸边框，使用 \\033[2m 降级样式。"""
+    def test_render_dark_border_narrow(self):
+        """窄屏时 render 直接返回文本（无边框装饰）。"""
         from src.tui.components._tool_output import ToolOutputBlock
         block = ToolOutputBlock(text="narrow text")
         result = block.render()
         self.assertIsNotNone(result)
-        # 窄屏路径输出 \033[2m（dim 样式）而非左边缘边框字符 │
-        self.assertIn("\033[2m", result)
+        # 当前 render() 直接返回文本，无边框/ANSI 装饰
         self.assertIn("narrow text", result)
-        # 不应包含边框字符 │（非窄屏才含左边缘边框）
-        self.assertNotIn("\u2502", result)
+        # 不应包含 ANSI 序列（无样式装饰）
+        self.assertNotIn("\033[", result)
 
-    @patch("src.tui.components._tool_output.is_narrow", return_value=False)
-    def test_render_wide_with_border(self, mock_is_narrow):
-        """宽屏时含左边缘呼吸边框。"""
+    def test_render_wide_with_border(self):
+        """宽屏时 render 直接返回文本（无边框装饰）。"""
         from src.tui.components._tool_output import ToolOutputBlock
         block = ToolOutputBlock(text="wide text")
         result = block.render()
         self.assertIsNotNone(result)
-        # 宽屏路径包含左边缘边框字符 │（U+2502）
-        self.assertIn("\u2502", result)
+        # 当前 render() 直接返回文本，无左边缘边框字符
         self.assertIn("wide text", result)
+        self.assertNotIn("\u2502", result)  # 无边框字符
 
     def test_render_carriage_no_ansi_no_trailing(self):
         """含 \\r 且不以 \\r 结尾的文本，取最后一段。"""

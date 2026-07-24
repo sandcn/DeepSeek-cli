@@ -10,10 +10,11 @@ import queue
 import sys
 import threading
 import time
-from typing import TYPE_CHECKING, Any, Callable
+from typing import TYPE_CHECKING, Callable
 
 if TYPE_CHECKING:
     from ..consumer.protocols import BottomBarProtocol, RenderEngine
+    from ..widgets.cursor_tracker import CursorTracker
 
 from .renderer_base import FrameworkRenderer
 
@@ -50,7 +51,7 @@ class TuiEngine:
         self,
         renderer: "FrameworkRenderer",
         bottom_bar: "BottomBarProtocol",
-        cursor_tracker: Any = None,
+        cursor_tracker: "CursorTracker | None" = None,
     ):
         self._renderer = renderer
         self._bb = bottom_bar

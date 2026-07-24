@@ -134,6 +134,8 @@ class FrameRenderer:
 
     @staticmethod
     def char_width(ch: str) -> int:
+        if unicodedata.combining(ch) or unicodedata.category(ch) in ('Cf',):
+            return 0
         eaw = unicodedata.east_asian_width(ch)
         return 2 if eaw in ('W', 'F') else 1
 

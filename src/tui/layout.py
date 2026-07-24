@@ -112,8 +112,8 @@ class Vertical(Widget):
             tmp = RenderBuffer(buffer.width, effective_h - y)
             try:
                 child.render(tmp)
-            except Exception:
-                _logger.debug("Vertical: child.render failed", exc_info=True)
+            except Exception as e:
+                _logger.debug("Vertical: child.render failed: %s", e)
                 tmp = RenderBuffer(buffer.width, 1)
             # 获取渲染内容
             child_str = tmp.render()
@@ -204,8 +204,8 @@ class Horizontal(Widget):
             child_buf = RenderBuffer(effective_w - x, max_h)
             try:
                 child.render(child_buf)
-            except Exception:
-                _logger.debug("Horizontal: child.render failed", exc_info=True)
+            except Exception as e:
+                _logger.debug("Horizontal: child.render failed: %s", e)
                 child_buf = RenderBuffer(effective_w - x, 1)
             child_str = child_buf.render()
             child_lines = child_str.split("\n") if child_str else [""]
@@ -294,8 +294,8 @@ class Padding(Widget):
             tmp = RenderBuffer(inner_w, inner_h)
             try:
                 child.render(tmp)
-            except Exception:
-                _logger.debug("Border: child.render failed", exc_info=True)
+            except Exception as e:
+                _logger.debug("Padding: child.render failed: %s", e)
             # 合并回父缓冲区
             buffer.merge(tmp, pl, pt)
 
@@ -370,8 +370,8 @@ class Border(Widget):
                 if child is not None:
                     try:
                         child.render(buffer)
-                    except Exception:
-                        _logger.debug("Border narrow: child.render failed", exc_info=True)
+                    except Exception as e:
+                        _logger.debug("Border narrow: child.render failed: %s", e)
                 return
         except ImportError:
             pass
@@ -383,8 +383,8 @@ class Border(Widget):
             if child is not None:
                 try:
                     child.render(buffer)
-                except Exception:
-                    _logger.debug("Border chars None: child.render failed", exc_info=True)
+                except Exception as e:
+                    _logger.debug("Border chars None: child.render failed: %s", e)
             return
 
         # 边框占用 1 行上、1 行下、1 列左、1 列右
@@ -424,8 +424,8 @@ class Border(Widget):
             tmp = RenderBuffer(inner_w, inner_h)
             try:
                 child.render(tmp)
-            except Exception:
-                _logger.debug("Border: child.render failed", exc_info=True)
+            except Exception as e:
+                _logger.debug("Border: child.render failed: %s", e)
             buffer.merge(tmp, 1, 1)
 
     def _build_top_border(
@@ -581,8 +581,8 @@ class Grid(Widget):
                 cell_buf = RenderBuffer(col_width, buffer.height - y)
                 try:
                     cell.render(cell_buf)
-                except Exception:
-                    _logger.debug("Grid: cell.render failed", exc_info=True)
+                except Exception as e:
+                    _logger.debug("Grid: cell.render failed: %s", e)
                     cell_buf = RenderBuffer(col_width, 1)
                 cell_str = cell_buf.render()
                 cell_h = max(1, len(cell_str.split("\n")) if cell_str else 1)
@@ -681,8 +681,8 @@ class Center(Widget):
         tmp = RenderBuffer(buffer.width, buffer.height)
         try:
             child.render(tmp)
-        except Exception:
-            _logger.debug("Center: child.render failed", exc_info=True)
+        except Exception as e:
+            _logger.debug("Center: child.render failed: %s", e)
             return
 
         child_str = tmp.render()

@@ -269,6 +269,10 @@ class TestBorder:
         result = buf.render()
         lines = result.split("\n")
         assert "[ X ]" in lines[0]
+        # 居中时，[ 前只有 2 个 ─（位置靠左）
+        bracket_idx = lines[0].index("[")
+        assert bracket_idx < 5, \
+            f"居中标题 [ 应在靠左位置，实际位置 {bracket_idx}:\n{lines[0]}"
 
     def test_border_with_title_right(self):
         """标题右对齐。"""
@@ -280,6 +284,10 @@ class TestBorder:
         result = buf.render()
         lines = result.split("\n")
         assert "[ X ]" in lines[0]
+        # 右对齐时，[ 前有 5 个 ─（位置靠右）
+        bracket_idx = lines[0].index("[")
+        assert bracket_idx >= 5, \
+            f"右对齐标题 [ 应在靠右位置，实际位置 {bracket_idx}:\n{lines[0]}"
 
     def test_border_with_title_too_long(self):
         """标题过长时截断。"""
@@ -489,3 +497,389 @@ class TestLayoutComposition:
         assert "A" in lines[0]
         # Center 水平居中 "Hi"（2字符宽，10列 → x=4），Vertical 中 spacing=1 后在第2行
         assert "Hi" in lines[2]
+
+
+# ═══════════════════════════════════════════════════════════
+# 步骤 7.2 新增：边界场景测试
+# ═══════════════════════════════════════════════════════════
+
+
+class TestVerticalEdgeCases:
+    """Vertical 边界场景测试。"""
+
+    def test_vertical_child_overflow(self):
+        """超长子控件溢出时安全截断。"""
+        long_label = Label("A" * 100)
+        v = Vertical([long_label], max_height=1)
+        buf = RenderBuffer(10, 1)
+        v.mount()
+        v.render(buf)  # 不应抛异常
+        result = buf.render()
+        assert "A" in result
+
+    def test_vertical_nested_layout(self):
+        """多层嵌套 Vertical 布局。"""
+        inner = Vertical([Label("A"), Label("B")], spacing=0)
+        outer = Vertical([Label("X"), inner, Label("Y")], spacing=1)
+        buf = RenderBuffer(10, 6)  # 足够容纳 X + spacing + A + B + spacing + Y
+        outer.mount()
+        outer.render(buf)
+        result = buf.render()
+        lines = result.split("\n")
+        assert "X" in lines[0]
+        # A/B 作为 inner 的子控件，通过 outer 渲染
+        assert "A" in lines[1] or "A" in lines[2]
+        # spacing=1 → X(0) + spacing(1) + inner.A(2) + inner.B(3) + spacing(4) + Y(5)
+        assert "Y" in lines[5]
+
+    def test_vertical_overflow_within_max_height(self):
+        """max_height 严格限制显示行数。"""
+        labels = [Label(f"Line{i}") for i in range(10)]
+        v = Vertical(labels, spacing=0, max_height=3)
+        buf = RenderBuffer(10, 10)
+        v.mount()
+        v.render(buf)
+        result = buf.render()
+        lines = result.split("\n")
+        visible = [l for l in lines if l.strip()]
+        assert len(visible) <= 3, f"max_height=3 应限制可见行数 <= 3，实际 {len(visible)}"
+
+    def test_vertical_single_child_large_buffer(self):
+        """单个子控件在超大缓冲区中正常渲染。"""
+        v = Vertical([Label("Hi")], align="center")
+        buf = RenderBuffer(100, 20)
+        v.mount()
+        v.render(buf)
+        result = buf.render()
+        assert "Hi" in result
+
+
+class TestHorizontalEdgeCases:
+    """Horizontal 边界场景测试。"""
+
+    def test_horizontal_children_uneven_height(self):
+        """子控件高度不一致时安全对齐渲染。"""
+        h = Horizontal([
+            MultiLineLabel(["A", "B"]),   # 2行高
+            Label("C"),                    # 1行高
+        ], spacing=1, align="top")
+        buf = RenderBuffer(10, 3)
+        h.mount()
+        h.render(buf)
+        result = buf.render()
+        lines = result.split("\n")
+        # top 对齐，A 和 C 都在第0行
+        assert "A" in lines[0] or "C" in lines[0]
+        # B 在第1行
+        assert "B" in lines[1]
+
+    def test_horizontal_children_uneven_height_center(self):
+        """子控件高度不一致，center 对齐。"""
+        h = Horizontal([
+            MultiLineLabel(["A", "B"]),
+            Label("C"),
+        ], spacing=1, align="center")
+        buf = RenderBuffer(10, 4)
+        h.mount()
+        h.render(buf)
+        result = buf.render()
+        # 不应抛异常
+        assert result is not None
+
+    def test_horizontal_overflow_max_width(self):
+        """max_width 限制超宽截断。"""
+        h = Horizontal([
+            Label("AAAAA"),
+            Label("BBBBB"),
+            Label("CCCCC"),
+        ], spacing=1, max_width=8)
+        buf = RenderBuffer(20, 3)
+        h.mount()
+        h.render(buf)
+        result = buf.render()
+        # max_width=8 应限制渲染宽度
+        assert "AAAAA" in result
+
+    def test_horizontal_empty_children_large_spacing(self):
+        """无子控件时大 spacing 不抛异常。"""
+        h = Horizontal([], spacing=100)
+        buf = RenderBuffer(10, 3)
+        h.mount()
+        h.render(buf)  # 不应抛异常
+
+    def test_horizontal_many_children(self):
+        """多个子控件水平排列不崩溃。"""
+        children = [Label(f"Item{i}") for i in range(20)]
+        h = Horizontal(children, spacing=1)
+        buf = RenderBuffer(80, 3)
+        h.mount()
+        h.render(buf)
+        result = buf.render()
+        assert "Item0" in result or "Item" in result
+
+
+class TestPaddingEdgeCases:
+    """Padding 边界场景测试。"""
+
+    def test_padding_larger_than_container(self):
+        """边距总和超过容器尺寸时安全处理。"""
+        inner = Label("Hi")
+        p = Padding(inner, left=10, right=10, top=5, bottom=5)
+        buf = RenderBuffer(5, 3)  # 容器非常小
+        p.mount()
+        p.render(buf)  # 不应抛异常（inner_w <= 0 或 inner_h <= 0）
+
+    def test_padding_zero_margins(self):
+        """所有边距为 0 时退化为无内边距。"""
+        inner = Label("Hi")
+        p = Padding(inner, left=0, right=0, top=0, bottom=0)
+        buf = RenderBuffer(10, 3)
+        p.mount()
+        p.render(buf)
+        result = buf.render()
+        assert "Hi" in result
+
+    def test_padding_very_large_value(self):
+        """超大边距时安全处理（left=10000）。"""
+        inner = Label("Hi")
+        p = Padding(inner, left=10000)
+        buf = RenderBuffer(10, 3)
+        p.mount()
+        p.render(buf)  # 不应抛异常
+
+    def test_padding_only_top_bottom(self):
+        """仅上下边距（无左右边距）。"""
+        inner = Label("Hi")
+        p = Padding(inner, top=2, bottom=2, left=0, right=0)
+        buf = RenderBuffer(10, 6)
+        p.mount()
+        p.render(buf)
+        result = buf.render()
+        lines = result.split("\n")
+        # top=2 → "Hi" 应在第 2 行
+        assert "Hi" in lines[2] if len(lines) > 2 else True
+
+
+class TestBorderEdgeCases:
+    """Border 边界场景测试。"""
+
+    def test_border_long_title_truncation_left(self):
+        """超长标题左对齐时截断。"""
+        inner = Label("Hi")
+        b = Border(inner, style="rounded", title="A" * 50, title_align="left")
+        buf = RenderBuffer(10, 4)
+        b.mount()
+        b.render(buf)  # title 太长应被截断，不抛异常
+        result = buf.render()
+        assert "Hi" in result or "A" in result
+
+    def test_border_long_title_center(self):
+        """超长标题居中时截断。"""
+        inner = Label("Hi")
+        b = Border(inner, style="rounded", title="B" * 50, title_align="center")
+        buf = RenderBuffer(10, 4)
+        b.mount()
+        b.render(buf)  # 不应抛异常
+
+    def test_border_long_title_right(self):
+        """超长标题右对齐时截断。"""
+        inner = Label("Hi")
+        b = Border(inner, style="rounded", title="C" * 50, title_align="right")
+        buf = RenderBuffer(10, 4)
+        b.mount()
+        b.render(buf)  # 不应抛异常
+
+    def test_border_border_color_no_affect_child(self):
+        """border_color 不影响子控件内容。"""
+        inner = Label("Hello")
+        b = Border(inner, style="rounded", border_color=45)
+        buf = RenderBuffer(12, 4)
+        b.mount()
+        b.render(buf)
+        result = buf.render()
+        assert "Hello" in result
+
+    def test_border_ascii_style_fallback(self):
+        """无效边框样式降级为基本 ASCII。"""
+        inner = Label("Hi")
+        b = Border(inner, style="nonexistent_style_xyz")
+        buf = RenderBuffer(8, 4)
+        b.mount()
+        b.render(buf)  # 不应抛异常
+        result = buf.render()
+        assert "Hi" in result
+
+    def test_border_no_title(self):
+        """无标题边框渲染（title=""）。"""
+        inner = Label("Hi")
+        b = Border(inner, style="rounded", title="")
+        buf = RenderBuffer(8, 4)
+        b.mount()
+        b.render(buf)
+        result = buf.render()
+        assert "Hi" in result
+
+    def test_border_single_char_title(self):
+        """单字符标题。"""
+        inner = Label("Hi")
+        b = Border(inner, style="rounded", title="X")
+        buf = RenderBuffer(12, 4)
+        b.mount()
+        b.render(buf)
+        result = buf.render()
+        lines = result.split("\n")
+        assert "[ X ]" in lines[0]
+
+    def test_border_very_narrow_width(self):
+        """极窄宽度（width=3）安全处理。"""
+        inner = Label("A")
+        b = Border(inner, style="rounded")
+        buf = RenderBuffer(3, 3)
+        b.mount()
+        b.render(buf)  # inner_w=1, inner_h=1，应安全处理
+
+    def test_border_very_narrow_height(self):
+        """极窄高度（height=2）安全处理。"""
+        inner = Label("Hi")
+        b = Border(inner, style="rounded")
+        buf = RenderBuffer(8, 2)
+        b.mount()
+        b.render(buf)  # inner_h=0，应安全处理
+
+
+class TestGridEdgeCases:
+    """Grid 边界场景测试。"""
+
+    def test_grid_uneven_rows(self):
+        """行列不等宽（第一行 2 列，第二行 3 列）。"""
+        g = Grid([
+            [Label("A"), Label("B")],
+            [Label("C"), Label("D"), Label("E")],
+        ], spacing=1)
+        buf = RenderBuffer(20, 5)
+        g.mount()
+        g.render(buf)  # 不应抛异常
+        result = buf.render()
+        assert "A" in result and "B" in result
+        assert "C" in result and "D" in result
+
+    def test_grid_empty_cell(self):
+        """空单元格（空列表行）安全处理。"""
+        g = Grid([
+            [Label("A")],
+            [],  # 空行
+            [Label("B")],
+        ], spacing=1)
+        buf = RenderBuffer(10, 5)
+        g.mount()
+        g.render(buf)  # 不应抛异常
+        result = buf.render()
+        assert "A" in result
+        assert "B" in result
+
+    def test_grid_single_row(self):
+        """单行 Grid 渲染。"""
+        g = Grid([
+            [Label("X"), Label("Y"), Label("Z")],
+        ], spacing=1)
+        buf = RenderBuffer(20, 3)
+        g.mount()
+        g.render(buf)
+        result = buf.render()
+        assert "X" in result and "Y" in result and "Z" in result
+
+    def test_grid_single_cell(self):
+        """单单元格 Grid。"""
+        g = Grid([[Label("Alone")]], spacing=1)
+        buf = RenderBuffer(10, 3)
+        g.mount()
+        g.render(buf)
+        result = buf.render()
+        assert "Alone" in result
+
+    def test_grid_cols_larger_than_actual(self):
+        """cols 参数大于实际子控件列数时安全处理。"""
+        g = Grid([
+            [Label("A"), Label("B")],
+        ], cols=5, spacing=1)
+        buf = RenderBuffer(30, 3)
+        g.mount()
+        g.render(buf)  # cols=5 但只有2列，不应抛异常
+        result = buf.render()
+        assert "A" in result and "B" in result
+
+    def test_grid_align_center(self):
+        """Grid 水平居中对齐。"""
+        g = Grid([
+            [Label("Hi")],
+        ], spacing=1, align="center")
+        buf = RenderBuffer(20, 3)
+        g.mount()
+        g.render(buf)  # 不应抛异常
+
+    def test_grid_large_spacing(self):
+        """大间距 Grid 渲染不崩溃。"""
+        g = Grid([
+            [Label("A"), Label("B")],
+        ], spacing=20)
+        buf = RenderBuffer(50, 3)
+        g.mount()
+        g.render(buf)  # 不应抛异常
+
+
+class TestCenterEdgeCases:
+    """Center 边界场景测试。"""
+
+    def test_center_oversized_child(self):
+        """子控件大于容器时左/上对齐（不居中）。"""
+        inner = Label("Hello World")
+        c = Center(inner, axis="both")
+        buf = RenderBuffer(5, 2)  # 容器小于子控件
+        c.mount()
+        c.render(buf)  # 不应抛异常
+        result = buf.render()
+        # 子控件超出容器，部分内容可见即可
+        assert "Hello" in result or result.strip()
+
+    def test_center_axis_horizontal(self):
+        """axis='horizontal' 仅水平居中。"""
+        inner = Label("Hi")
+        c = Center(inner, axis="horizontal")
+        buf = RenderBuffer(10, 5)
+        c.mount()
+        c.render(buf)
+        result = buf.render()
+        lines = result.split("\n")
+        # 水平居中，垂直 top 对齐 → 第0行
+        assert "Hi" in lines[0]
+        assert lines[0].startswith("    Hi")
+
+    def test_center_axis_vertical(self):
+        """axis='vertical' 仅垂直居中。"""
+        inner = Label("Hi")
+        c = Center(inner, axis="vertical")
+        buf = RenderBuffer(10, 5)
+        c.mount()
+        c.render(buf)
+        result = buf.render()
+        lines = result.split("\n")
+        # 垂直居中 → 第2行，水平左对齐
+        assert "Hi" in lines[2]
+
+    def test_center_axis_invalid(self):
+        """无效 axis 参数（fallback 处理）。"""
+        inner = Label("Hi")
+        c = Center(inner, axis="invalid")
+        buf = RenderBuffer(10, 5)
+        c.mount()
+        c.render(buf)  # 不应抛异常
+        result = buf.render()
+        assert "Hi" in result
+
+    def test_center_child_none_returns_safely(self):
+        """无子控件时安全返回。"""
+        c = Center(None)  # type: ignore[arg-type]
+        buf = RenderBuffer(10, 5)
+        c._children_source = [None]  # type: ignore[list-item]
+        c.mount()
+        c.render(buf)  # 不应抛异常

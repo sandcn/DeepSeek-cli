@@ -1,15 +1,22 @@
 """
-TUI 框架统一入口 — `Framework` 单例 + 公开 API。
+TUI 框架统一入口 — `Framework` 单例 + 公开 API（外观模式）。
 
-Framework 是 TUI 框架的**统一协调者**，提供：
-  - Framework: 全局单例框架管理器
-    - 生命周期管理（start/stop/is_running）
-    - 配置管理（get_config/set_config）
-    - 组件工厂（create_component）
-    - Widget 树管理（create_widget/mount_widget/get_widget_tree）
-    - 事件总线访问（get_event_bus/publish_event/subscribe/unsubscribe）
-    - 动画上下文（get_animator/get_frame）
-    - RenderBuffer 工厂（create_render_buffer）
+Framework 是 TUI 框架的**统一协调者**，使用外观（Facade）模式将 8 个职责
+委托到 5 个单一职责委托类：
+
+  - ConfigManager      → 配置管理（get_config/set_config）
+  - EventBusManager    → 事件总线（get_event_bus/publish_event/subscribe/unsubscribe）
+  - ComponentFactory   → 组件工厂（create_component）
+  - WidgetTreeManager  → Widget 树管理（create_widget/mount_widget/...）
+  - AnimationManager   → 动画上下文（get_animator/get_frame）
+
+Framework 自身保留：
+  - 生命周期管理（start/stop/is_running）
+  - 单例模式（get_default/reset_default）
+  - RenderBuffer 工厂（create_render_buffer）
+  - 组件注册表访问（get_component_registry）
+
+便捷函数：
   - create_component(): 创建组件并触发生命周期
   - create_widget(): 创建 Widget 并挂载到 WidgetTree
   - frame_from_context(): 安全获取当前帧号的统一入口
@@ -39,6 +46,7 @@ Widget 树管理：
 
 设计原则：
   - 单例管理：框架全局唯一，通过 Framework.get_default() 获取
+  - 外观模式：8 职责拆分到 5 委托类，Framework 作为统一入口
   - 延迟导入：所有组件/效果模块在首次使用时才导入，避免循环依赖
   - 线程安全：单例创建和 API 调用均使用 threading.Lock 保护
   - 零 I/O：不涉及终端或文件 I/O，纯管理职责
@@ -58,6 +66,19 @@ if TYPE_CHECKING:
     from .widget_base import Widget, WidgetTree
     from .render_buffer import RenderBuffer
 
+from .framework_types import (
+    AnimatorContextProtocol,
+    ComponentRegistryProtocol,
+    WidgetTreeProtocol,
+)
+from .framework_delegates import (
+    AnimationManager,
+    ComponentFactory,
+    ConfigManager,
+    EventBusManager,
+    WidgetTreeManager,
+)
+
 _logger = logging.getLogger(__name__)
 
 
@@ -72,26 +93,30 @@ __all__: list[str] = [
 
 
 # ═══════════════════════════════════════════════════════════
-# Framework — 全局单例框架管理器
+# Framework — 全局单例框架管理器（外观模式）
 # ═══════════════════════════════════════════════════════════
 
 
 class Framework:
-    """TUI 框架全局单例管理器。
+    """TUI 框架全局单例管理器（外观模式）。
 
-    职责：
-      1. 组件创建与生命周期管理（create_component）
-      2. Widget 树管理（create_widget / mount_widget / get_widget_tree）
-      3. 配置管理（get_config / set_config）
-      4. 事件总线访问（get_event_bus / publish_event / subscribe / unsubscribe）
-      5. 动画上下文访问（get_animator / get_frame）
-      6. RenderBuffer 工厂（create_render_buffer）
-      7. 生命周期管理（start / stop / is_running）
+    职责（Framework 自身保留）：
+      1. 生命周期管理（start / stop / is_running）
+      2. RenderBuffer 工厂（create_render_buffer）
+      3. 组件注册表访问（get_component_registry）
+      4. 单例管理（get_default / reset_default）
 
-    架构确认（2026-07-15）：
-      ✅ 单一职责：Framework 仅管理 TUI 层单例与工厂方法，不涉及 I/O
-      ✅ 依赖方向：webui → tui（单向），Framework 不依赖 webui 层
-      ✅ 无新增依赖：get_animator() 仅委托已有 AnimatorContext，未引入新模块
+    委托职责（拆分到 5 个委托类）：
+      - ConfigManager:    配置管理（get_config / set_config）
+      - EventBusManager:  事件总线（get_event_bus / publish_event / subscribe / unsubscribe）
+      - ComponentFactory: 组件工厂（create_component）
+      - WidgetTreeManager: Widget 树管理（create_widget / mount_widget / ...）
+      - AnimationManager: 动画上下文（get_animator / get_frame）
+
+    架构变更（2026-07-24）：
+      - Framework 从"神类"重构为外观（Facade）模式
+      - 所有公开 API 签名保持不变，调用方无需修改
+      - 委托类可通过 framework._config_mgr / framework._event_bus_mgr 等属性访问
 
     **Widget 生命周期**（mount → compose → render → unmount）::
 
@@ -193,14 +218,19 @@ class Framework:
     def __init__(self) -> None:
         """初始化框架实例（私有构造器，通过 get_default() 获取）。"""
         self._lock = threading.Lock()
-        self._registry: Any = None  # EffectRegistry 引用（延迟导入）
-        self._stylesheet: Any = None  # StyleSheet 引用（延迟导入）
-        self._animator: Any = None  # AnimatorContext（延迟导入）
-        self._component_registry: Any = None
-        self._config: Any = None
+        # ── 共享状态 ──
+        self._animator: AnimatorContextProtocol | None = None  # AnimatorContext（延迟导入）
+        self._component_registry: ComponentRegistryProtocol | None = None
+        self._config: TuiConfig | None = None
         self._running: bool = False
         self._lifecycle_lock = threading.Lock()
-        self._widget_tree: Any = None  # WidgetTree 实例（延迟创建）
+        self._widget_tree: WidgetTreeProtocol | None = None  # WidgetTree 实例（延迟创建）
+        # ── 初始化 5 个委托类 ──
+        self._config_mgr = ConfigManager(self)
+        self._event_bus_mgr = EventBusManager(self)
+        self._component_factory = ComponentFactory(self)
+        self._widget_tree_mgr = WidgetTreeManager(self)
+        self._animation_mgr = AnimationManager(self)
 
     # ── 单例访问 ──────────────────────────────────────
 
@@ -252,9 +282,9 @@ class Framework:
         """
         return self._running
 
-    # ── 配置管理 ──────────────────────────────────────
+    # ── 配置管理（委托 ConfigManager）──────────────────
 
-    def get_config(self) -> "TuiConfig":
+    def get_config(self) -> TuiConfig:
         """获取当前 TUI 配置。
 
         返回 TuiConfig 默认配置。可通过 set_config() 覆盖。
@@ -262,20 +292,17 @@ class Framework:
         Returns:
             TuiConfig 实例（frozen=True，不可变）。
         """
-        if self._config is None:
-            from .config import TuiConfig
-            self._config = TuiConfig.defaults()
-        return self._config
+        return self._config_mgr.get_config()
 
-    def set_config(self, config: "TuiConfig") -> None:
+    def set_config(self, config: TuiConfig) -> None:
         """设置 TUI 配置。
 
         Args:
             config: TuiConfig 实例。
         """
-        self._config = config
+        self._config_mgr.set_config(config)
 
-    # ── 事件总线访问 ──────────────────────────────────
+    # ── 事件总线访问（委托 EventBusManager）────────────
 
     def get_event_bus(self):
         """获取全局 DisplayEventBus 实例。
@@ -283,8 +310,7 @@ class Framework:
         Returns:
             DisplayEventBus 单例实例。
         """
-        from .events.event_bus import DisplayEventBus
-        return DisplayEventBus.get_default()
+        return self._event_bus_mgr.get_event_bus()
 
     def publish_event(self, event) -> None:
         """发布事件到 DisplayEventBus。
@@ -292,11 +318,11 @@ class Framework:
         Args:
             event: DisplayEvent 子类实例。
         """
-        self.get_event_bus().publish(event)
+        self._event_bus_mgr.publish_event(event)
 
-    # ── RenderBuffer 工厂 ────────────────────────────
+    # ── RenderBuffer 工厂（Framework 自身保留）────────
 
-    def create_render_buffer(self, width: int, height: int) -> "RenderBuffer":
+    def create_render_buffer(self, width: int, height: int) -> RenderBuffer:
         """创建 RenderBuffer 实例。
 
         Args:
@@ -309,37 +335,27 @@ class Framework:
         from .render_buffer import RenderBuffer
         return RenderBuffer(width, height)
 
-    # ── WidgetTree 管理 ─────────────────────────────
+    # ── WidgetTree 管理（委托 WidgetTreeManager）───────
 
     def _ensure_widget_tree(self) -> None:
         """确保内部 WidgetTree 实例存在（延迟创建）。"""
-        if self._widget_tree is None:
-            from .widget_base import WidgetTree
-            self._widget_tree = WidgetTree()
+        self._widget_tree_mgr._ensure_widget_tree()
 
-    def mount_widget(self, widget):
+    def mount_widget(self, widget) -> None:
         """挂载控件到 Widget 树（先卸载旧根再挂载新根）。
 
         Args:
             widget: 要挂载的 Widget 实例。
         """
-        self._ensure_widget_tree()
-        if self.has_widget_tree():
-            old_root = self._widget_tree.root
-            if old_root is not None:
-                old_root.unmount()
-        widget.mount()
-        self._widget_tree.set_root(widget)
+        self._widget_tree_mgr.mount_widget(widget)
 
-    def unmount_widget(self, widget):
+    def unmount_widget(self, widget) -> None:
         """从 Widget 树卸载控件。
 
         Args:
             widget: 要卸载的 Widget 实例。
         """
-        if self._widget_tree is not None and self._widget_tree.root is widget:
-            self._widget_tree.set_root(None)
-        widget.unmount()
+        self._widget_tree_mgr.unmount_widget(widget)
 
     def get_widget_root(self):
         """获取当前 Widget 树根节点。
@@ -347,24 +363,27 @@ class Framework:
         Returns:
             Widget 实例，无树时返回 None。
         """
-        if self._widget_tree is None:
-            return None
-        return self._widget_tree.root
+        return self._widget_tree_mgr.get_widget_root()
 
     def has_widget_tree(self) -> bool:
         """是否已有挂载的 Widget 树。"""
-        return (self._widget_tree is not None
-                and self._widget_tree.root is not None)
+        return self._widget_tree_mgr.has_widget_tree()
 
-    def get_widget_tree(self) -> "WidgetTree | None":
+    def get_widget_tree(self) -> WidgetTree | None:
         """获取当前 WidgetTree 实例。
 
         Returns:
             WidgetTree 实例，尚未创建时返回 None。
         """
-        return self._widget_tree
+        return self._widget_tree_mgr.get_widget_tree()
 
-    def create_widget(self, widget_cls: type, *args, key: str | None = None, **kwargs) -> "Widget":
+    def create_widget(
+        self,
+        widget_cls: type,
+        *args,
+        key: str | None = None,
+        **kwargs,
+    ) -> Widget:
         """创建 Widget 实例，挂载到 WidgetTree 并触发生命周期。
 
         Args:
@@ -376,26 +395,26 @@ class Framework:
         Returns:
             已挂载的 Widget 实例（_mounted=True）。
         """
-        if key is not None:
-            kwargs['key'] = key
-        instance = widget_cls(*args, **kwargs)
-        self._ensure_widget_tree()
-        instance.mount()
-        return instance
+        return self._widget_tree_mgr.create_widget(
+            widget_cls, *args, key=key, **kwargs
+        )
 
-    def render_widget_tree(self, buffer):
+    def render_widget_tree(self, buffer) -> None:
         """渲染整棵 Widget 树到 RenderBuffer。
 
         Args:
             buffer: 目标 RenderBuffer 实例。
         """
-        if self._widget_tree is not None:
-            self._widget_tree.render(buffer)
+        self._widget_tree_mgr.render_widget_tree(buffer)
 
     # ── 公开 API ──────────────────────────────────────
 
-    def create_component(self, component_cls: type, *args: Any,
-                         **kwargs: Any) -> TuiComponent:
+    def create_component(
+        self,
+        component_cls: type,
+        *args: Any,
+        **kwargs: Any,
+    ) -> TuiComponent:
         """创建组件实例并触发生命周期。
 
         Args:
@@ -406,20 +425,17 @@ class Framework:
         Returns:
             已调用 did_mount() 的组件实例，_mounted=True。
         """
-        instance = component_cls(*args, **kwargs)
-        instance.did_mount()
-        return instance
+        return self._component_factory.create_component(
+            component_cls, *args, **kwargs
+        )
 
-    def get_animator(self) -> "AnimatorContext":
+    def get_animator(self) -> AnimatorContext:
         """获取全局动画上下文（AnimatorContext 实例）。
 
         Returns:
             AnimatorContext 单例实例。
         """
-        if self._animator is None:
-            from .animation.animator import AnimatorContext
-            self._animator = AnimatorContext
-        return self._animator.get_default()
+        return self._animation_mgr.get_animator()
 
     def get_frame(self) -> int:
         """获取当前动画帧号。
@@ -433,20 +449,20 @@ class Framework:
         Returns:
             当前帧号（单调递增整数），AnimatorContext 未初始化或异常时返回 0。
         """
-        try:
-            return self.get_animator().frame
-        except (AttributeError, ImportError) as exc:
-            _logger.debug("get_frame() 降级返回 0: %s", exc)
-            return 0
+        return self._animation_mgr.get_frame()
 
-    def get_component_registry(self) -> "ComponentRegistry":
+    def get_component_registry(self) -> ComponentRegistry:
         """获取全局组件注册表。"""
         if self._component_registry is None:
             from .core.component_registry import ComponentRegistry
             self._component_registry = ComponentRegistry
         return self._component_registry.get_default()
 
-    def subscribe(self, event_type: type, callback: Callable[..., Any] | None = None) -> None:
+    def subscribe(
+        self,
+        event_type: type,
+        callback: Callable[..., Any] | None = None,
+    ) -> None:
         """订阅事件总线事件。
 
         委托 DisplayEventBus.get_default().subscribe() 注册事件监听。
@@ -455,13 +471,13 @@ class Framework:
             event_type: 事件类型类。
             callback: 回调函数。
         """
-        try:
-            from .events.event_bus import DisplayEventBus
-            DisplayEventBus.get_default().subscribe(callback, event_type=event_type)
-        except ImportError as exc:
-            _logger.warning("subscribe 失败（DisplayEventBus 未就绪）: %s", exc)
+        self._event_bus_mgr.subscribe(event_type, callback)
 
-    def unsubscribe(self, event_type: type, callback: Callable[..., Any] | None = None) -> None:
+    def unsubscribe(
+        self,
+        event_type: type,
+        callback: Callable[..., Any] | None = None,
+    ) -> None:
         """取消订阅事件总线事件。
 
         委托 DisplayEventBus.get_default().unsubscribe() 取消监听。
@@ -470,11 +486,7 @@ class Framework:
             event_type: 事件类型类。
             callback: 之前注册的回调函数。
         """
-        try:
-            from .events.event_bus import DisplayEventBus
-            DisplayEventBus.get_default().unsubscribe(callback, event_type=event_type)
-        except ImportError as exc:
-            _logger.warning("unsubscribe 失败（DisplayEventBus 未就绪）: %s", exc)
+        self._event_bus_mgr.unsubscribe(event_type, callback)
 
 
 # ═══════════════════════════════════════════════════════════
@@ -502,7 +514,7 @@ def create_component(component_cls: type, *args: Any,
     return Framework.get_default().create_component(component_cls, *args, **kwargs)
 
 
-def create_widget(widget_cls: type, *args, key: str | None = None, **kwargs) -> "Widget":
+def create_widget(widget_cls: type, *args, key: str | None = None, **kwargs) -> Widget:
     """创建 Widget 实例并挂载到框架的 WidgetTree。
 
     便捷函数，等效于 Framework.get_default().create_widget(...)。
@@ -545,7 +557,7 @@ def frame_from_context(default: int = 0) -> int:
     return Framework.get_default().get_frame()
 
 
-def get_animator() -> "AnimatorContext":
+def get_animator() -> AnimatorContext:
     """获取全局动画上下文（Framework.get_animator 的便捷调用）。
 
     用法::

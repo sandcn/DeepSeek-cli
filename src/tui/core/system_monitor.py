@@ -23,6 +23,7 @@ import platform
 import subprocess
 import sys
 import time
+from typing import Any
 
 _logger = logging.getLogger(__name__)
 
@@ -47,7 +48,7 @@ class _SystemMonitor:
         # ── 平台检测 ──
         self._platform: str = self._detect_platform()
         # ── psutil 可用性 ──
-        self._psutil: object = None
+        self._psutil: Any = None
         self._has_psutil: bool = False
         self._try_init_psutil()
         # ── CPU 缓存 ──
@@ -92,7 +93,7 @@ class _SystemMonitor:
     def _try_init_psutil(self) -> None:
         """尝试导入 psutil，成功则标记 self._has_psutil = True。"""
         try:
-            import psutil  # type: ignore[import-untyped]
+            import psutil
             self._psutil = psutil
             self._has_psutil = True
         except ImportError:

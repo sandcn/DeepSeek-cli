@@ -37,7 +37,7 @@ def _is_cygwin_or_wsl() -> bool:
     设计决策：
     - 两步检测互为备灾：/proc/version 覆盖 WSL1（无 WSL_DISTRO_NAME），
       WSL_DISTRO_NAME 覆盖 /proc/version 不可读的场景
-    - 异常静默：所有文件读取和 env 检查均用 bare except 包裹，
+    - 异常静默：所有异常均被捕获并记录调试日志，不会传播，
       确保函数在任何异常场景下都不会抛异常，只返回 False
     - 前置 tty 检查：先检查 os.isatty()，非 tty 环境直接返回 False，
       避免无终端时不必要的文件读取
@@ -57,12 +57,12 @@ def _is_cygwin_or_wsl() -> bool:
         if "microsoft" in content.lower():
             return True
     except Exception as exc:
-        _logger.debug("WSL 检测异常（读取 /proc/version）: %s", exc, exc_info=True)
+        _logger.debug("WSL 检测异常（读取 /proc/version）: %s", exc)
     try:
         if 'WSL_DISTRO_NAME' in os.environ:
             return True
     except Exception as exc:
-        _logger.debug("WSL 检测异常（检查环境变量）: %s", exc, exc_info=True)
+        _logger.debug("WSL 检测异常（检查环境变量）: %s", exc)
     return False
 
 
@@ -99,7 +99,7 @@ def _restore_terminal_settings(fd: int, settings) -> None:
         from src._compat_termios import termios
         termios.tcsetattr(fd, termios.TCSADRAIN, settings)
     except Exception as exc:
-        _logger.warning("终端设置恢复失败: %s", exc, exc_info=True)
+        _logger.warning("终端设置恢复失败: %s", exc)
 
 
 def _run_selection_raw(
@@ -144,14 +144,16 @@ def _run_selection_raw(
     fd = sys.stdin.fileno()
     try:
         settings = _save_terminal_settings(fd)
-    except Exception:
+    except Exception as exc:
+        _logger.warning("_run_selection_raw: 保存终端设置失败: %s", exc)
         return {"action": "error", "index": None}
     try:
         tty.setcbreak(fd)
         while True:
             try:
                 ready, _, _ = select.select([fd], [], [], 0.1)
-            except (ValueError, OSError, TypeError, AttributeError):
+            except (ValueError, OSError, TypeError, AttributeError) as exc:
+                _logger.debug("select 异常（非关键，继续轮询）: %s", exc)
                 continue
             if not ready:
                 continue
@@ -160,7 +162,8 @@ def _run_selection_raw(
                 raw = os.read(fd, 1)
                 if not raw:
                     continue
-            except (ValueError, OSError, TypeError):
+            except (ValueError, OSError, TypeError) as exc:
+                _logger.debug("os.read 异常（非关键，继续轮询）: %s", exc)
                 continue
 
             ch = raw.decode("utf-8", errors="replace")
@@ -186,7 +189,8 @@ def _run_selection_raw(
                 # 检测是否有后续字节（ANSI 序列）
                 try:
                     has_more, _, _ = select.select([fd], [], [], 0.05)
-                except (ValueError, OSError, TypeError, AttributeError):
+                except (ValueError, OSError, TypeError, AttributeError) as exc:
+                    _logger.debug("Esc select 异常，视为无后续字节: %s", exc)
                     has_more = False
                 if not has_more:
                     # 单独 Esc → 取消
@@ -198,7 +202,8 @@ def _run_selection_raw(
                     if not next_raw:
                         return {"action": "cancel", "index": None}
                     next_ch = next_raw.decode("utf-8", errors="replace")
-                except (ValueError, OSError, TypeError):
+                except (ValueError, OSError, TypeError) as exc:
+                    _logger.debug("Esc os.read 异常，视为取消: %s", exc)
                     return {"action": "cancel", "index": None}
 
                 if next_ch == '[':
@@ -231,15 +236,15 @@ def _run_selection_raw(
                 else:
                     # 其他 ESC 组合 → 取消
                     return {"action": "cancel", "index": None}
-    except Exception:
-        _logger.warning("_run_selection_raw 异常", exc_info=True)
+    except Exception as exc:
+        _logger.warning("_run_selection_raw 异常: %s", exc)
         return {"action": "error", "index": None}
     finally:
         _restore_terminal_settings(fd, settings)
         try:
             _termios.tcflush(fd, _termios.TCIFLUSH)
-        except Exception:
-            pass
+        except Exception as exc:
+            _logger.debug("_run_selection_raw finally tcflush 异常: %s", exc)
 
 
 def _drain_stdin_residual(
@@ -264,31 +269,31 @@ def _drain_stdin_residual(
         ready = False
         try:
             ready, _, _ = select.select([fd], [], [], timeout_per_round)
-        except Exception:
-            pass
+        except Exception as exc:
+            _logger.debug("_drain_stdin_residual select 异常: %s", exc)
         if ready:
             try:
                 os.read(fd, max_per_round)
-            except Exception:
-                pass
+            except Exception as exc:
+                _logger.debug("_drain_stdin_residual os.read 异常: %s", exc)
         # 轮间 tcflush：清空可能已到达但被 select 遗漏的字节
         try:
             from src._compat_termios import termios as _termios
             _termios.tcflush(fd, _termios.TCIFLUSH)
-        except Exception:
-            pass
+        except Exception as exc:
+            _logger.debug("_drain_stdin_residual tcflush 异常: %s", exc)
     # ★ 最后兜底：非阻塞检查 + tcflush，关闭最终轮 tcflush 与函数返回之间的微小间隙
     try:
         r, _, _ = select.select([fd], [], [], 0)
         if r:
             os.read(fd, max_per_round)
     except Exception as exc:
-        _logger.warning("_drain_stdin_residual 最后兜底 select/read 异常: %s", exc)
+        _logger.debug("_drain_stdin_residual 最后兜底 select/read 异常: %s", exc)
     try:
         from src._compat_termios import termios as _termios
         _termios.tcflush(fd, _termios.TCIFLUSH)
     except Exception as exc:
-        _logger.warning("_drain_stdin_residual 最后兜底 tcflush 异常: %s", exc)
+        _logger.debug("_drain_stdin_residual 最后兜底 tcflush 异常: %s", exc)
 
 
 def run_bottom_bar_selection(
@@ -335,14 +340,15 @@ def run_bottom_bar_selection(
     if not bb._active:
         try:
             bb.setup()
-        except Exception:
+        except Exception as exc:
+            _logger.warning("bb.setup() 异常: %s", exc)
             return {"action": "error", "index": None}
 
     if _is_cygwin_or_wsl():
         try:
             bb.show_completions(display_items, initial_idx, texts=items, title=title)
         except Exception as exc:
-            _logger.warning("Cygwin show_completions 异常: %s", exc, exc_info=True)
+            _logger.warning("Cygwin show_completions 异常: %s", exc)
             if not was_active:
                 bb._active = False
             return {"action": "error", "index": None}
@@ -356,15 +362,15 @@ def run_bottom_bar_selection(
         try:
             from src._compat_termios import termios as _termios
             _termios.tcflush(sys.stdin.fileno(), _termios.TCIFLUSH)
-        except Exception:
-            pass
+        except Exception as exc:
+            _logger.debug("Cygwin 防御性 tcflush 异常: %s", exc)
         try:
             return _run_selection_raw(items, display_items, initial_idx, title, bb)
         finally:
             try:
                 bb.hide_completions()
-            except Exception:
-                pass
+            except Exception as exc:
+                _logger.debug("Cygwin hide_completions 异常: %s", exc)
             if not was_active:
                 bb._active = False
 
@@ -376,8 +382,8 @@ def run_bottom_bar_selection(
     try:
         from src._compat_termios import termios as _termios
         _termios.tcflush(sys.stdin.fileno(), _termios.TCIFLUSH)
-    except Exception:
-        pass
+    except Exception as exc:
+        _logger.debug("方案 B 防御性 tcflush 异常: %s", exc)
 
     try:
         term = get_terminal()
@@ -387,8 +393,8 @@ def run_bottom_bar_selection(
             # 使用 _drain_stdin_residual() 3轮×20ms排空 + 轮间tcflush覆盖延迟到达的残余字节。
             try:
                 _drain_stdin_residual(fd)
-            except Exception:
-                pass
+            except Exception as exc:
+                _logger.debug("Post-cbreak drain 异常: %s", exc)
 
             # ★ 最后一层防御：非阻塞排空 _drain_stdin_residual 与 term.inkey()
             # 之间的微小间隙。终端模式切换（cooked→cbreak）产生的 \r/\n 残留字节
@@ -400,18 +406,19 @@ def run_bottom_bar_selection(
                 r, _, _ = _sel.select([fd], [], [], 0.01)
                 if r:
                     os.read(fd, 1)
-            except Exception:
-                pass
+            except Exception as exc:
+                _logger.debug("最后一层防御 select/read 异常: %s", exc)
             try:
                 from src._compat_termios import termios as _termios
                 _termios.tcflush(fd, _termios.TCIFLUSH)
-            except Exception:
-                pass
+            except Exception as exc:
+                _logger.debug("最后一层防御 tcflush 异常: %s", exc)
 
             while True:
                 try:
                     key = term.inkey(timeout=None)
-                except Exception:
+                except Exception as exc:
+                    _logger.debug("term.inkey 异常（非关键，继续轮询）: %s", exc)
                     continue
                 if not key:
                     continue
@@ -453,7 +460,7 @@ def run_bottom_bar_selection(
                     return {"action": "cancel", "index": None}
 
     except Exception as exc:
-        _logger.warning("run_bottom_bar_selection Blessed 路径异常，降级到 Raw I/O: %s", exc, exc_info=True)
+        _logger.warning("run_bottom_bar_selection Blessed 路径异常，降级到 Raw I/O: %s", exc)
         # ── 万能降级兜底 ──
         # Blessed term.inkey() 在某些终端环境（如 WSL 中未走 _is_cygwin_or_wsl()
         # 前置检测的场景、Termux 特定版本、或其他非标准 PTY）可能抛出异常。
@@ -464,29 +471,29 @@ def run_bottom_bar_selection(
         # 不会读到残留的控制序列字节。
         try:
             bb.hide_completions()
-        except Exception:
-            pass
+        except Exception as exc:
+            _logger.debug("降级前 hide_completions 异常: %s", exc)
         try:
             from src._compat_termios import termios as _termios
             _termios.tcflush(sys.stdin.fileno(), _termios.TCIFLUSH)
-        except Exception:
-            pass
+        except Exception as exc:
+            _logger.debug("降级前 tcflush 异常: %s", exc)
         # 降级到 Raw I/O 路径
         try:
             return _run_selection_raw(items, display_items, initial_idx, title, bb)
         except Exception as raw_exc:
-            _logger.warning("run_bottom_bar_selection Raw I/O 降级路径异常: %s", raw_exc, exc_info=True)
+            _logger.warning("run_bottom_bar_selection Raw I/O 降级路径异常: %s", raw_exc)
             return {"action": "error", "index": None}
     finally:
         try:
             bb.hide_completions()
-        except Exception:
-            pass
+        except Exception as exc:
+            _logger.debug("finally hide_completions 异常: %s", exc)
         if not was_active:
             bb._active = False
         try:
             # 清空 stdin 缓冲
             from src._compat_termios import termios as _termios
             _termios.tcflush(sys.stdin.fileno(), _termios.TCIFLUSH)
-        except Exception:
-            pass
+        except Exception as exc:
+            _logger.debug("finally tcflush 异常: %s", exc)

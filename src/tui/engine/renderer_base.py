@@ -18,10 +18,11 @@
 from __future__ import annotations
 
 import logging
-from typing import TYPE_CHECKING, Any, Callable
+from typing import TYPE_CHECKING, Callable, Protocol, runtime_checkable
 
 if TYPE_CHECKING:
     from ...renderer.output import OutputAdapter
+    from ..widgets.cursor_tracker import CursorTracker
     from .protocols import BottomBarProtocol
 
 from .const import RenderCommand
@@ -40,6 +41,16 @@ _logger = logging.getLogger(__name__)
 # 渲染命令注册装饰器
 # ═══════════════════════════════════════════════════════════
 
+@runtime_checkable
+class _RenderCommandMethod(Protocol):
+    """具有 _render_command_id 标记属性的可调用对象协议。
+
+    用于 register_render_command 装饰器的类型安全标注，
+    替代 type: ignore[attr-defined]。
+    """
+    _render_command_id: tuple[int, tuple[int, ...]]
+
+
 def register_render_command(command_id: int, arg_indices: tuple[int, ...] = ()) -> Callable:
     """装饰器工厂：在 _do_* 方法上设置声明式标记属性。
 
@@ -48,8 +59,8 @@ def register_render_command(command_id: int, arg_indices: tuple[int, ...] = ()) 
     不再调用 ComponentRegistry.register()——注册由 ComponentRegistry.__init__
     在 _populate_defaults() 中统一负责，确保 reset_default() 后命令不丢失。
     """
-    def decorator(method: Callable) -> Callable:
-        method._render_command_id = (command_id, arg_indices)  # type: ignore[attr-defined]
+    def decorator(method: _RenderCommandMethod) -> _RenderCommandMethod:
+        method._render_command_id = (command_id, arg_indices)
         return method
     return decorator
 
@@ -69,7 +80,7 @@ class FrameworkRenderer:
     def __init__(
         self,
         output_adapter: "OutputAdapter",
-        cursor_tracker: Any = None,
+        cursor_tracker: "CursorTracker | None" = None,
         bottom_bar: "BottomBarProtocol | None" = None,
     ):
         self._adapter = output_adapter

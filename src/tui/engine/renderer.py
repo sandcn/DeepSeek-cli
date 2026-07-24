@@ -10,13 +10,14 @@ from __future__ import annotations
 import logging
 import math
 import sys
-from typing import TYPE_CHECKING, Any, Callable
+from typing import TYPE_CHECKING, Callable
 
 from rich.text import Text
 
 if TYPE_CHECKING:
     from ...renderer import IncrementalRenderer
     from ...renderer.output import OutputAdapter
+    from ..widgets.cursor_tracker import CursorTracker
     from .protocols import BottomBarProtocol
 
 from .const import (
@@ -61,7 +62,7 @@ class TuiRenderer(FrameworkRenderer):
         output_adapter: "OutputAdapter",
         bottom_bar: "BottomBarProtocol",
         on_display_messages: Callable[..., None] | None = None,
-        cursor_tracker: Any = None,
+        cursor_tracker: "CursorTracker | None" = None,
     ):
         super().__init__(
             output_adapter=output_adapter,

@@ -45,6 +45,10 @@ class TuiConfig:
     fade_total_frames: int = 6              # FadeIn 渐显帧数
     fade_start_color: int = 238             # FadeIn 起始暗色（256 色号）
 
+    # ── EventBus 参数 ──────────────────────────────────
+    eventbus_throttle: float = 0.3          # EventBus 发布频率阈值（秒），对应 300ms
+    default_history: int = 3                # 默认工具历史显示条数
+
     # ── 测试相关 ──────────────────────────────────────
     mock_terminal_width: int = 120          # MockTerminal 默认宽度
     mock_terminal_height: int = 40          # MockTerminal 默认高度

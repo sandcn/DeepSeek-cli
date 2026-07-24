@@ -44,8 +44,9 @@ from .theme import (
     get_prompt_breath_color,
     make_sep_gradient,
 )
-from ...core.text_utils import build_gradient_ansi
+from ...core.text_utils import build_gradient_ansi, build_glow_ansi
 from ...core.gradient import gradient_range
+from ...core.theme import THEME as _BOTTOM_THEME
 from .cursor import (
     _expand_tabs,
     _wrap_by_width,
@@ -144,8 +145,6 @@ def _draw_input_lines_locked(
                     placeholder_color = _COLOR_DIM
                 else:
                     import re
-                    from ...core.text_utils import build_glow_ansi  # type: ignore[import-untyped]
-                    from ...core.theme import THEME as _BOTTOM_THEME       # type: ignore[import-untyped]
                     glow_str = _BOTTOM_THEME.get('placeholder_glow', '')
                     m = re.search(r"38;5;(\d+)", glow_str)
                     if m:

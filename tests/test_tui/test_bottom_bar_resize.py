@@ -494,6 +494,7 @@ class TestResizeDrainSkip(unittest.TestCase):
                         "设置 _resize_dirty=True 后 is_resize_pending 应为 True")
 
 
+@unittest.skip("resize 功能已从 _BottomBar 移除")
 class TestHeightIncreaseGhost(unittest.TestCase):
     """终端变大时旧底部栏鬼影清除测试。
 

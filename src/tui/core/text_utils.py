@@ -17,6 +17,7 @@
 from __future__ import annotations
 
 from .style import SEP_COLOR_START, SEP_COLOR_END  # 命名色号常量
+from ..animation.transitions import FadeIn
 
 
 def truncate(
@@ -109,12 +110,44 @@ def build_gradient_ansi_frame(colors: list[int], index: int, char: str = "\u2501
     return result
 
 
+def apply_fade_in(text: str, frame: int,
+                  easing: str = "smooth",
+                  total_frames: int = 6,
+                  start_color: int = 240,
+                  end_color: int = 253) -> str:
+    """对文本应用 FadeIn 入场渐显动效。
+
+    使用 FadeIn 过渡效果生成渐显前缀，包裹文本使其从暗灰渐变至目标色。
+    无动效效果时（frame 为 0 或 FadeIn 返回空前缀）返回原文本。
+
+    Args:
+        text: 要应用动效的文本。
+        frame: 当前帧号。
+        easing: 缓动函数，默认 "smooth"。
+        total_frames: 渐显总帧数，默认 6。
+        start_color: 起始 256 色号，默认 240（暗灰）。
+        end_color: 结束 256 色号，默认 253（亮白）。
+
+    Returns:
+        带 FadeIn 渐显包裹的文本。无动效时返回原文本。
+    """
+    if not text or frame <= 0:
+        return text
+    fade = FadeIn(easing=easing, total_frames=total_frames,
+                  start_color=start_color, end_color=end_color)
+    fade_prefix = fade.render(frame)
+    if fade_prefix:
+        return f"{fade_prefix}{text}\033[0m"
+    return text
+
+
 def build_fade_in_ansi(fade_frame: int, total_frames: int = 3) -> str:
     """构建消息入场渐显 ANSI 序列。
 
     3 帧渐显：帧 0 → 暗灰(238)，帧 1 → 中灰(244)，帧 2+ → RESET（全亮）。
     总耗时约 300ms（3 帧 × ~100ms）。
     窄屏时跳过渐显（返回空字符串）。
+    此为独立实现，使用硬编码色号保持向后兼容。
 
     Args:
         fade_frame: 当前渐显帧号（0-based），≥ total_frames 时返回空字符串。
@@ -379,4 +412,6 @@ __all__ = [
     "build_sparkle_ansi", "build_glow_ansi", "build_left_border_ansi",
     "parse_theme_color",
     "make_sep_gradient_enhanced",
+    # FadeIn 动效（从 _base.py 迁移至此）
+    "apply_fade_in",
 ]

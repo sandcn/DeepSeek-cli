@@ -23,7 +23,9 @@ import asyncio
 import logging
 import time
 from typing import Any
+from warnings import deprecated
 
+from .config import TuiConfig
 from .core.output_target import IOutputTarget, TerminalTarget
 from .frame import FrameRenderer
 from .events.event_bus import DisplayEventBus
@@ -31,6 +33,7 @@ from .events.event_types import MetricsUpdateEvent
 from .core.parallel_config import DisplayConfig
 from .consumer.base_display import BaseDisplay
 from .state.agent_state import AgentStateStore
+from .state.consumer_registry import get_active_chat_ui
 from .terminal.adapter import (
     register_sigwinch_callback,
     unregister_sigwinch_callback,
@@ -87,6 +90,7 @@ class ParallelDisplay(BaseDisplay):
         self._finished = False
         self._stopped = False
         self._last_eventbus_time: float = 0.0  # EventBus 上次发布时间戳
+        self._eventbus_throttle: float = TuiConfig.defaults().eventbus_throttle  # 从配置读取
 
         # 根据终端宽度确定显示深度
         display_config = DisplayConfig(self._terminal.terminal_width)
@@ -169,14 +173,13 @@ class ParallelDisplay(BaseDisplay):
             reset_last_lines = True
 
         try:
-            from src.tui.consumer import get_active_chat_ui  # noqa: PLC0415
             _chat_ui = get_active_chat_ui()
             if _chat_ui is not None:
                 se = _chat_ui.bottom_bar.get_scroll_end()
                 if se is not None and se > 0:
                     new_scroll_end = int(se)
-        except Exception:
-            pass
+        except Exception as exc:
+            _logger.debug("_panel_refresh_callback: 获取 chat_ui 失败: %s", exc)
 
         if reset_last_lines:
             if new_scroll_end is not None:
@@ -243,8 +246,13 @@ class ParallelDisplay(BaseDisplay):
         self._store.update_parse_info(label, tool_names, tokens, elapsed)
         self._schedule_refresh()
 
+    @deprecated("不再需要，由 10Hz 定时回调驱动帧刷新替代")
     def parse_info_done(self, label: str) -> None:
-        pass
+        """空操作 — 帧刷新已由 _panel_refresh_callback() (10Hz 定时) 统一调度。
+
+        保留本方法供外部调用方兼容，不再触发实际刷新。
+        """
+        _logger.debug("parse_info_done called for %s", label)
 
     def update_tokens(self, label: str, tokens: int):
         self._store.update_tokens(label, tokens)
@@ -254,16 +262,16 @@ class ParallelDisplay(BaseDisplay):
 
     def update_live_output(self, label: str, tokens: int):
         self._store.update_live_output(label, tokens)
-        # EventBus 发布去抖
+        # EventBus 发布去抖（从 TuiConfig.eventbus_throttle 读取阈值）
         now = time.time()
-        if now - self._last_eventbus_time >= _EVENTBUS_THROTTLE:
+        if now - self._last_eventbus_time >= self._eventbus_throttle:
             self._last_eventbus_time = now
             try:
                 DisplayEventBus.get_default().publish(MetricsUpdateEvent(
                     label=label, live_output_tokens=tokens, source=label,
                 ))
-            except Exception:
-                _logger.debug("EventBus 发布 MetricsUpdateEvent 失败（非关键路径，忽略）")
+            except Exception as exc:
+                _logger.debug("EventBus 发布 MetricsUpdateEvent 失败（非关键路径，忽略）: %s", exc)
 
     def update_live_input(self, label: str, tokens: int):
         self._store.update_live_input(label, tokens)
@@ -277,6 +285,7 @@ class ParallelDisplay(BaseDisplay):
 
     # ── 帧渲染（通过命令队列） ────────────────────────
 
+    @deprecated("不再需要，帧刷新由 10Hz 定时回调驱动")
     def _schedule_refresh(self) -> None:
         """空操作 — 帧刷新由 _panel_refresh_callback() (10Hz 定时) 统一调度。
 
@@ -325,7 +334,8 @@ class ParallelDisplay(BaseDisplay):
             from .terminal.blessed import get_terminal
             term = get_terminal()
             clear_eol = term.clear_eol if term.clear_eol else "\033[K"
-        except Exception:
+        except Exception as exc:
+            _logger.debug("_build_frame: 获取 clear_eol 失败，回退 \\033[K: %s", exc)
             clear_eol = "\033[K"
 
         return (lines, self._scroll_end, self._last_lines, clear_eol)
@@ -349,9 +359,8 @@ class ParallelDisplay(BaseDisplay):
         if self._push_cmd is not None:
             try:
                 self._push_cmd((RenderCommand.SUBAGENT_FRAME, packed))
-            except Exception:
-                _logger.debug("_push_cmd 推送 SUBAGENT_FRAME 失败（非关键路径）",
-                              exc_info=True)
+            except Exception as exc:
+                _logger.debug("_push_cmd 推送 SUBAGENT_FRAME 失败（非关键路径）: %s", exc)
                 # 重置版本号，强制下帧重建并重试
                 self._last_rendered_version = 0
 
@@ -365,14 +374,13 @@ class ParallelDisplay(BaseDisplay):
 
         self._last_lines = 0
         try:
-            from src.tui.consumer import get_active_chat_ui  # noqa: PLC0415
             _chat_ui = get_active_chat_ui()
             if _chat_ui is not None:
                 bb = _chat_ui.bottom_bar
                 if hasattr(bb, 'set_subagent_frame'):
                     bb.set_subagent_frame([])
-        except Exception:
-            _logger.debug("清除 subagent 面板失败（非关键路径，静默跳过）")
+        except Exception as exc:
+            _logger.debug("清除 subagent 面板失败（非关键路径，静默跳过）: %s", exc)
 
     # ── 生命周期 ────────────────────────────────────────
 
@@ -382,7 +390,6 @@ class ParallelDisplay(BaseDisplay):
         self._started = True
         self._stopped = False
 
-        from src.tui.consumer import get_active_chat_ui  # noqa: PLC0415
         _chat_ui = get_active_chat_ui()
         if _chat_ui is not None:
             self._adapter = _chat_ui.output_adapter
@@ -392,7 +399,8 @@ class ParallelDisplay(BaseDisplay):
             try:
                 se = _chat_ui.bottom_bar.get_scroll_end()
                 self._scroll_end = int(se) if se is not None else 0
-            except Exception:
+            except Exception as exc:
+                _logger.debug("start: 获取 scroll_end 失败，使用 0: %s", exc)
                 self._scroll_end = 0
             # 首次渲染（推送 SUBAGENT_FRAME 命令到队列）
             self._push_frame_cmd()
@@ -404,9 +412,9 @@ class ParallelDisplay(BaseDisplay):
         #   替代独立的 500ms 定时器，使 subagent 面板刷新与 render 线程同步。
         try:
             _chat_ui.set_panel_refresh_callback(self._panel_refresh_callback)
-        except Exception:
+        except Exception as exc:
             _logger.debug(
-                "注册 panel_refresh_callback 失败（非关键路径，静默跳过）",
+                "注册 panel_refresh_callback 失败（非关键路径，静默跳过）: %s", exc,
             )
 
     def refresh(self, force: bool = False):
@@ -436,17 +444,16 @@ class ParallelDisplay(BaseDisplay):
         # 获取 chat_ui 引用（供后续注销回调和请求重绘使用）
         _chat_ui = None
         try:
-            from src.tui.consumer import get_active_chat_ui  # noqa: PLC0415
             _chat_ui = get_active_chat_ui()
-        except Exception:
-            pass
+        except Exception as exc:
+            _logger.debug("stop: 获取 chat_ui 失败: %s", exc)
 
         # ★ 注销面板刷新回调（render 线程不再调用）
         if _chat_ui is not None:
             try:
                 _chat_ui.set_panel_refresh_callback(None)
-            except Exception:
-                _logger.debug("注销 panel_refresh_callback 失败", exc_info=True)
+            except Exception as exc:
+                _logger.debug("注销 panel_refresh_callback 失败: %s", exc)
 
         # 注销终端 resize 回调
         unregister_sigwinch_callback(self._on_resize)
@@ -460,8 +467,8 @@ class ParallelDisplay(BaseDisplay):
         if _chat_ui is not None:
             try:
                 _chat_ui.request_bottom_redraw()
-            except Exception:
-                _logger.debug("request_bottom_redraw 失败（非关键路径，静默跳过）")
+            except Exception as exc:
+                _logger.debug("request_bottom_redraw 失败（非关键路径，静默跳过）: %s", exc)
 
         if self._adapter is not None:
             self._adapter.flush()
@@ -533,11 +540,12 @@ def _get_terminal_width() -> int:
             return cols if cols > 0 else 80
         finally:
             os.close(fd)
-    except Exception:
-        pass
+    except Exception as exc:
+        _logger.debug("_get_terminal_width ioctl 失败，回退 shutil: %s", exc)
     # 回退
     try:
         import shutil
         return shutil.get_terminal_size().columns
-    except Exception:
+    except Exception as exc:
+        _logger.debug("_get_terminal_width shutil 回退失败，使用 80: %s", exc)
         return 80
