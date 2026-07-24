@@ -95,3 +95,24 @@ class MockAsyncModelAdapter(AsyncModelPort):
         self.last_messages = messages
         self.last_model = model
         return self._result
+
+
+class SyncModelBridge:
+    """同步模型调用桥接器 — 将 api 层的 call_model_sync 包装为核心层可用的接口。
+
+    消除 core/context_manager.py 对 api/model_async.py 的直接导入依赖，
+    将桥接逻辑归一到适配器层（core/adapters/model.py），遵循依赖倒置原则。
+
+    使用方式：
+        bridge = SyncModelBridge()
+        reasoning, content, usage, tool_calls = bridge.summarize(messages, model=model)
+    """
+
+    def summarize(self, messages, model=None, tools=None, display=None, label=None):
+        """同步模型调用，返回 (reasoning, content, usage, tool_calls)。
+
+        内部延迟导入 api.model_async.call_model_sync，避免模块加载时
+        产生跨层依赖。调用方无需感知 api 层的存在。
+        """
+        from ...api.model_async import call_model_sync
+        return call_model_sync(messages, model, tools, display, label)

@@ -84,7 +84,7 @@ class Agent(BaseAgent):
 
         # _async_tool_executor: [DEPRECATED] 向后兼容别名，实际指向 ToolScheduler 全局单例。
         # 新代码请直接使用 ToolScheduler.default()。无 `.` 调用方，仅作为属性引用存在。
-        self._async_tool_executor = ToolScheduler.default()
+        self._async_tool_executor_val = ToolScheduler.default()
 
         # ── UI Ports（display/events/output） ────────────
         if display_port is not None and event_port is not None and output_port is not None:
@@ -115,6 +115,18 @@ class Agent(BaseAgent):
         self._pipeline.use_async(_InterruptCheckMiddleware())
         self._pipeline.use_async(_AsyncObservabilityMiddleware())
         self._pipeline.use_async(_AuditLogMiddleware())
+
+    # ── _async_tool_executor 废弃属性（property + setter） ──
+
+    @property
+    def _async_tool_executor(self):
+        import warnings
+        warnings.warn("_async_tool_executor is deprecated, use ToolScheduler.default()", DeprecationWarning, stacklevel=2)
+        return self._async_tool_executor_val
+
+    @_async_tool_executor.setter
+    def _async_tool_executor(self, value):
+        self._async_tool_executor_val = value
 
     # ── stdout 捕获（CaptureManager） ─────────────────
     # 调用方通过 agent._capture_mgr.xxx() 直接访问：

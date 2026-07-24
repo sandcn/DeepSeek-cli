@@ -11,6 +11,16 @@ ContextManager 是上下文压缩的唯一对外接口。
 - 降级链：摘要策略失败 → 自动降级到删除策略
 """
 
+# ═══════════════════════════════════════════════════════════════
+# 架构违反标记 — 已知技术债务（方案B已修复）
+#
+# ContextManager 的 summarize_fn 默认值原直接依赖
+# src.api.model_async.call_model_sync，违反「核心层不依赖基础设施层」
+# 原则。已在 src.core.adapters.model.SyncModelBridge 中修复：
+# summarize_fn 的默认值改为通过 SyncModelBridge().summarize
+# 桥接，消除对 api 层的直接导入依赖。
+# ═══════════════════════════════════════════════════════════════
+
 import logging
 import threading
 from typing import Optional
@@ -61,8 +71,8 @@ class ContextManager:
         self.model = model
         self._on_changed = on_messages_changed
         if summarize_fn is None:
-            from ..api.model_async import call_model_sync
-            summarize_fn = call_model_sync
+            from .adapters.model import SyncModelBridge
+            summarize_fn = SyncModelBridge().summarize
         self._summarize_fn = summarize_fn
         self._lock = threading.RLock()
         self._config_port = config_port or DefaultConfigAdapter()

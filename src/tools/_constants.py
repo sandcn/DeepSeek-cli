@@ -3,6 +3,9 @@
 消除 search.py / find.py / file_ops.py 等文件之间的 DRY 违反。
 """
 
+import fnmatch
+import re
+
 # ── 默认排除的非源码目录（用于 search / find 等搜索工具） ──
 # 注意：修改此集合会同时影响 search, find 及所有引用它的工具
 
@@ -19,6 +22,30 @@ EXCLUDED_DIRS: set[str] = {
     ".chat",
     ".coverage", "htmlcov",
 }
+
+# ── 预编译的通配符目录排除模式（供 should_exclude_dir 使用） ──
+_EXCLUDED_DIR_PATTERNS: tuple[str, ...] = tuple(
+    d for d in EXCLUDED_DIRS if any(c in d for c in "*?[]")
+)
+_EXCLUDED_DIR_RES: tuple[re.Pattern, ...] = tuple(
+    re.compile(fnmatch.translate(p)) for p in _EXCLUDED_DIR_PATTERNS
+)
+
+
+def should_exclude_dir(dirname: str) -> bool:
+    """判断目录名是否应被排除
+
+    分两阶段匹配：
+    1. set 精确查找（不含通配符的模式，O(1) 性能）
+    2. 预编译 regex 模式匹配（含通配符的模式，如 *.egg-info）
+    """
+    if dirname in EXCLUDED_DIRS:
+        return True
+    for compiled_re in _EXCLUDED_DIR_RES:
+        if compiled_re.match(dirname):
+            return True
+    return False
+
 
 # ── 默认排除的编译产物/二进制文件扩展名（用于 search 搜索工具） ──
 # 新增排除模式时在此集合添加即可，自动传播到三路引擎（rg/grep/Python）

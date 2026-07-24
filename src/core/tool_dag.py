@@ -349,25 +349,22 @@ class ToolDAG:
 
         return write_paths, read_paths, delete_paths
 
-    def _detect_path_overlap(self) -> None:
-        """检测文件路径重叠导致的隐式依赖（支持多路径工具如 cp/mv）
+    # ── 子方法：隐式依赖路径检测 ────────────────────────────
 
-        规则：
-        - 读依赖写（读最新内容）：节点 A 读路径 P，节点 B 写路径 P → A 依赖 B
-        - 写依赖写（写顺序保证）：节点 A 写路径 P，节点 B 写路径 P → 后者依赖前者
-        - 删除依赖读（删除前确保读取完成）：节点 A 删路径 P，节点 B 读路径 P → A 依赖 B
-        - 写/删混合串行化：同路径的写入、删除按原始顺序串行
-        - 删除依赖删除：同路径的多次删除按原始顺序串行
-        - 读依赖读：无依赖（并行安全）
-        - 不同路径：无依赖
-        - 多路径工具（cp/mv）：每个路径分别参与上述规则判定
-        - 父子路径：仅写入类路径作为父路径（删除类路径不含创建语义，不触发父子依赖）
+    def _collect_node_paths(self) -> tuple[dict[str, set[str]], dict[str, set[str]], dict[str, set[str]], set[str]]:
+        """收集每个节点的写入/读取/删除路径
+
+        Returns:
+            (node_write_paths, node_read_paths, node_delete_paths, has_any_path):
+                node_write_paths: tc_id → 写入路径集合
+                node_read_paths:  tc_id → 读取路径集合
+                node_delete_paths: tc_id → 删除路径集合
+                has_any_path:    有路径信息的 tc_id 集合
         """
-        # 第一步：收集每个节点的写入路径、读取路径和删除路径
         node_write_paths: dict[str, set[str]] = {}
         node_read_paths: dict[str, set[str]] = {}
         node_delete_paths: dict[str, set[str]] = {}
-        has_any_path: set[str] = set()  # 有路径信息的节点
+        has_any_path: set[str] = set()
 
         for tc_id, node in self._nodes.items():
             write_paths, read_paths, delete_paths = self._extract_tool_paths(node.name, node.arguments)
@@ -377,13 +374,30 @@ class ToolDAG:
                 node_delete_paths[tc_id] = delete_paths
                 has_any_path.add(tc_id)
 
-        if not has_any_path:
-            return
+        return node_write_paths, node_read_paths, node_delete_paths, has_any_path
 
-        # 第二步：构建路径→节点索引，区分写入者、读取者和删除者
-        # write_index: path → [(tc_id, original_order_index), ...]
-        # read_index:  path → [tc_id, ...]
-        # delete_index: path → [(tc_id, original_order_index), ...]
+    def _build_path_indexes(
+        self,
+        node_write_paths: dict[str, set[str]],
+        node_read_paths: dict[str, set[str]],
+        node_delete_paths: dict[str, set[str]],
+        has_any_path: set[str],
+    ) -> tuple[dict[str, list[tuple[str, int]]], dict[str, list[str]], dict[str, list[tuple[str, int]]], set[str]]:
+        """构建路径→节点倒排索引
+
+        Args:
+            node_write_paths: _collect_node_paths 返回的写入路径
+            node_read_paths:  _collect_node_paths 返回的读取路径
+            node_delete_paths: _collect_node_paths 返回的删除路径
+            has_any_path:     有路径信息的 tc_id 集合
+
+        Returns:
+            (write_index, read_index, delete_index, all_paths):
+                write_index: path → [(tc_id, original_order_index), ...]
+                read_index:  path → [tc_id, ...]
+                delete_index: path → [(tc_id, original_order_index), ...]
+                all_paths:   所有出现过的路径集合
+        """
         write_index: dict[str, list[tuple[str, int]]] = {}
         read_index: dict[str, list[str]] = {}
         delete_index: dict[str, list[tuple[str, int]]] = {}
@@ -401,48 +415,80 @@ class ToolDAG:
                 delete_index.setdefault(dp, []).append((tc_id, order))
 
         all_paths = set(write_index.keys()) | set(read_index.keys()) | set(delete_index.keys())
+        return write_index, read_index, delete_index, all_paths
 
-        # 第三步：对每个路径检测依赖
-        for path in all_paths:
-            writers = write_index.get(path, [])
-            readers = read_index.get(path, [])
-            deleters = delete_index.get(path, [])
+    def _add_path_deps_for_single_path(
+        self,
+        path: str,
+        writers: list[tuple[str, int]],
+        readers: list[str],
+        deleters: list[tuple[str, int]],
+    ) -> None:
+        """对单个路径检测并添加依赖边
 
-            # —— 读依赖写：每个读取者依赖所有写入者 ——
-            if writers and readers:
-                for writer_id, _ in writers:
-                    for reader_id in readers:
-                        if reader_id != writer_id:
-                            self._nodes[reader_id].dependencies.add(writer_id)
-                            self._nodes[writer_id].dependents.add(reader_id)
+        规则：
+        - 读依赖写：每个读取者依赖所有写入者
+        - 删除依赖读：删除者依赖读取者（读取者先读，删除者再删除）
+        - 写/删混合串行化：同路径的写入者和删除者按 original_order 串行
 
-            # —— 删除依赖读：deleter 依赖 reader（reader 先读，deleter 再删除） ——
-            if deleters and readers:
-                for deleter_id, _ in deleters:
-                    for reader_id in readers:
-                        if reader_id != deleter_id:
-                            self._nodes[deleter_id].dependencies.add(reader_id)
-                            self._nodes[reader_id].dependents.add(deleter_id)
+        Args:
+            path:      当前正在处理的路径（仅用于日志/上下文）
+            writers:   [(tc_id, original_order_index), ...]
+            readers:   [tc_id, ...]
+            deleters:  [(tc_id, original_order_index), ...]
+        """
+        # —— 读依赖写：每个读取者依赖所有写入者 ——
+        if writers and readers:
+            for writer_id, _ in writers:
+                for reader_id in readers:
+                    if reader_id != writer_id:
+                        self._nodes[reader_id].dependencies.add(writer_id)
+                        self._nodes[writer_id].dependents.add(reader_id)
 
-            # —— 写/删混合串行化：同路径的写入者和删除者按原始顺序串行 ——
-            # 处理场景：write+write、delete+delete、delete+write（write+delete）
-            # 将 writers 和 deleters 合并，统一按 original_order 排序串行
-            mutators = writers + deleters
-            if len(mutators) >= 2:
-                mutators_sorted = sorted(mutators, key=lambda x: x[1])
-                for k in range(len(mutators_sorted) - 1):
-                    earlier_id = mutators_sorted[k][0]
-                    later_id = mutators_sorted[k + 1][0]
-                    self._nodes[later_id].dependencies.add(earlier_id)
-                    self._nodes[earlier_id].dependents.add(later_id)
+        # —— 删除依赖读：deleter 依赖 reader（reader 先读，deleter 再删除） ——
+        if deleters and readers:
+            for deleter_id, _ in deleters:
+                for reader_id in readers:
+                    if reader_id != deleter_id:
+                        self._nodes[deleter_id].dependencies.add(reader_id)
+                        self._nodes[reader_id].dependents.add(deleter_id)
 
-            # read/read → 无依赖（并行安全）
+        # —— 写/删混合串行化：同路径的写入者和删除者按原始顺序串行 ——
+        # 处理场景：write+write、delete+delete、delete+write（write+delete）
+        # 将 writers 和 deleters 合并，统一按 original_order 排序串行
+        mutators = writers + deleters
+        if len(mutators) >= 2:
+            mutators_sorted = sorted(mutators, key=lambda x: x[1])
+            for k in range(len(mutators_sorted) - 1):
+                earlier_id = mutators_sorted[k][0]
+                later_id = mutators_sorted[k + 1][0]
+                self._nodes[later_id].dependencies.add(earlier_id)
+                self._nodes[earlier_id].dependents.add(later_id)
 
-        # —— 第四步：父子路径依赖（父目录创建先于子路径操作） ——
-        # 当工具 A 写入路径 P，工具 B 写入/读取/删除路径 Q，
-        # 且 P 是 Q 的父目录（Q 路径以 P 为前缀）时，B 依赖 A
-        # 确保父目录先创建完毕，子路径操作才能正常执行
-        # 注意：仅 write_index 中的路径作为父路径（delete 路径不产生创建语义）
+    def _add_parent_child_deps(
+        self,
+        write_index: dict[str, list[tuple[str, int]]],
+        read_index: dict[str, list[str]],
+        delete_index: dict[str, list[tuple[str, int]]],
+    ) -> None:
+        """检测父子路径依赖并添加依赖边
+
+        当工具 A 写入路径 P，工具 B 写入/读取/删除路径 Q，
+        且 P 是 Q 的父目录（Q 路径以 P 为前缀）时，B 依赖 A。
+        确保父目录先创建完毕，子路径操作才能正常执行。
+
+        规则：
+        - 子路径写入者依赖父路径写入者
+        - 子路径读取者依赖父路径写入者
+        - 子路径删除者依赖父路径写入者（父目录先存在，才能删除其子文件）
+        - 仅 write_index 中的路径作为父路径（delete 路径不产生创建语义）
+        - 跳过父路径自身（防止将父路径自身误判为子路径）
+
+        Args:
+            write_index:  path → [(tc_id, original_order_index), ...]
+            read_index:   path → [tc_id, ...]
+            delete_index: path → [(tc_id, original_order_index), ...]
+        """
         write_path_list = list(write_index.keys())
         all_child_paths = list(set(write_path_list) | set(read_index.keys()) | set(delete_index.keys()))
         for i in range(len(write_path_list)):
@@ -481,6 +527,41 @@ class ToolDAG:
                             if cd_id != pw_id:
                                 self._nodes[cd_id].dependencies.add(pw_id)
                                 self._nodes[pw_id].dependents.add(cd_id)
+
+    def _detect_path_overlap(self) -> None:
+        """检测文件路径重叠导致的隐式依赖（支持多路径工具如 cp/mv）
+
+        规则：
+        - 读依赖写（读最新内容）：节点 A 读路径 P，节点 B 写路径 P → A 依赖 B
+        - 写依赖写（写顺序保证）：节点 A 写路径 P，节点 B 写路径 P → 后者依赖前者
+        - 删除依赖读（删除前确保读取完成）：节点 A 删路径 P，节点 B 读路径 P → A 依赖 B
+        - 写/删混合串行化：同路径的写入、删除按原始顺序串行
+        - 删除依赖删除：同路径的多次删除按原始顺序串行
+        - 读依赖读：无依赖（并行安全）
+        - 不同路径：无依赖
+        - 多路径工具（cp/mv）：每个路径分别参与上述规则判定
+        - 父子路径：仅写入类路径作为父路径（删除类路径不含创建语义，不触发父子依赖）
+
+        委托给 4 个子方法按顺序执行：
+        1. _collect_node_paths() — 收集所有节点的路径信息
+        2. _build_path_indexes() — 构建路径→节点倒排索引
+        3. _add_path_deps_for_single_path() — 对每个路径检测并添加依赖边
+        4. _add_parent_child_deps() — 检测父子路径依赖
+        """
+        node_write_paths, node_read_paths, node_delete_paths, has_any_path = self._collect_node_paths()
+        if not has_any_path:
+            return
+
+        write_index, read_index, delete_index, all_paths = self._build_path_indexes(
+            node_write_paths, node_read_paths, node_delete_paths, has_any_path)
+
+        for path in all_paths:
+            writers = write_index.get(path, [])
+            readers = read_index.get(path, [])
+            deleters = delete_index.get(path, [])
+            self._add_path_deps_for_single_path(path, writers, readers, deleters)
+
+        self._add_parent_child_deps(write_index, read_index, delete_index)
 
     # ── user_select 独占层约束 ──────────────────────────────
 
@@ -573,29 +654,20 @@ class ToolDAG:
             self._path_cache[key] = False
         return False
 
-    def _detect_tool_category_constraints(self) -> None:
-        """检测工具类别调度约束（层 D）
+    # ── 子方法：工具类别约束检测 ────────────────────────────
 
-        在显式依赖、路径重叠、user_select 约束之后执行，新增第四层依赖约束：
+    def _classify_tool_nodes(self) -> tuple[list[str], list[str], list[str], list[str]]:
+        """按 tool_category 分类所有节点
 
-        规则 a — bash ↔ non-bash 双向隔断：
-            non-bash（read/write/interactive）在 bash 之前执行
-            若已有 non-bash→bash 路径（防环）或 bash→non-bash 路径（已有依赖），跳过
-        规则 b — bash → bash 链式串行：
-            多个 bash 按原始顺序链式依赖，一次只运行一个 bash
-        规则 c — read → write 默认边：
-            read 类工具在 write 类工具之前执行
-            若已有 write→read 路径（防环），跳过
-        规则 d — 防环保护：
-            所有新边添加前均经 _path_exists 反方向检查，避免形成环
+        遍历 self._original_order，根据每个节点的 tool_category 分类：
+        - read_nodes:     类别为 read 的 tc_id 列表（按原始顺序）
+        - write_nodes:    类别为 write 的 tc_id 列表（按原始顺序）
+        - bash_nodes:     类别为 bash 的 tc_id 列表（按原始顺序）
+        - non_bash_nodes: 类别为 read/write/interactive 的 tc_id 列表（不含 general）
 
-        general 类别不参与任何类别约束。
+        Returns:
+            (read_nodes, write_nodes, bash_nodes, non_bash_nodes) 四元组
         """
-        if not self._nodes:
-            return
-
-        # ── 第一步：节点分类 ──
-        # non_bash_nodes = read + write + interactive（不含 general）
         read_nodes: list[str] = []
         write_nodes: list[str] = []
         bash_nodes: list[str] = []
@@ -624,6 +696,21 @@ class ToolDAG:
             len(non_bash_nodes) - len(read_nodes) - len(write_nodes),
         )
 
+        return read_nodes, write_nodes, bash_nodes, non_bash_nodes
+
+    def _add_bash_non_bash_constraints(self, bash_nodes: list[str], non_bash_nodes: list[str]) -> None:
+        """添加 bash ↔ non-bash 约束
+
+        规则 a — bash ↔ non-bash 双向隔断：
+            non-bash（read/write/interactive）在 bash 之前执行。
+            若已有 non-bash→bash 路径（防环）或 bash→non-bash 路径（已有依赖），跳过。
+        规则 b — bash → bash 链式串行：
+            多个 bash 按原始顺序链式依赖，一次只运行一个 bash。
+
+        Args:
+            bash_nodes:     按原始顺序排列的 bash 节点 tc_id 列表
+            non_bash_nodes: 按原始顺序排列的 non-bash 节点 tc_id 列表
+        """
         # ── 规则 a：bash ↔ non-bash 双向隔断（non-bash → bash） ──
         if bash_nodes and non_bash_nodes:
             for bash_id in bash_nodes:
@@ -639,14 +726,23 @@ class ToolDAG:
 
         # ── 规则 b：bash → bash 链式串行（按原始顺序） ──
         if len(bash_nodes) >= 2:
-            # bash_nodes 已按 self._original_order 顺序排列
             for i in range(len(bash_nodes) - 1):
                 earlier_id = bash_nodes[i]
                 later_id = bash_nodes[i + 1]
                 self._nodes[later_id].dependencies.add(earlier_id)
                 self._nodes[earlier_id].dependents.add(later_id)
 
-        # ── 规则 c：read → write 默认边 ──
+    def _add_read_write_constraints(self, read_nodes: list[str], write_nodes: list[str]) -> None:
+        """添加 read → write 约束
+
+        规则 c — read → write 默认边：
+            read 类工具在 write 类工具之前执行。
+            若已有 write→read 路径（防环）或已有 read→write 路径，跳过。
+
+        Args:
+            read_nodes:  按原始顺序排列的 read 节点 tc_id 列表
+            write_nodes: 按原始顺序排列的 write 节点 tc_id 列表
+        """
         if read_nodes and write_nodes:
             for read_id in read_nodes:
                 for write_id in write_nodes:
@@ -659,6 +755,36 @@ class ToolDAG:
                     # 添加 read → write 边（read 优先于 write）
                     self._nodes[write_id].dependencies.add(read_id)
                     self._nodes[read_id].dependents.add(write_id)
+
+    def _detect_tool_category_constraints(self) -> None:
+        """检测工具类别调度约束（层 D）
+
+        在显式依赖、路径重叠、user_select 约束之后执行，新增第四层依赖约束：
+
+        规则 a — bash ↔ non-bash 双向隔断：
+            non-bash（read/write/interactive）在 bash 之前执行
+            若已有 non-bash→bash 路径（防环）或 bash→non-bash 路径（已有依赖），跳过
+        规则 b — bash → bash 链式串行：
+            多个 bash 按原始顺序链式依赖，一次只运行一个 bash
+        规则 c — read → write 默认边：
+            read 类工具在 write 类工具之前执行
+            若已有 write→read 路径（防环），跳过
+        规则 d — 防环保护：
+            所有新边添加前均经 _path_exists 反方向检查，避免形成环
+
+        general 类别不参与任何类别约束。
+
+        委托给 3 个子方法按顺序执行：
+        1. _classify_tool_nodes() — 按 tool_category 分类所有节点
+        2. _add_bash_non_bash_constraints() — 添加 bash↔non-bash 约束
+        3. _add_read_write_constraints() — 添加 read→write 约束
+        """
+        if not self._nodes:
+            return
+
+        read_nodes, write_nodes, bash_nodes, non_bash_nodes = self._classify_tool_nodes()
+        self._add_bash_non_bash_constraints(bash_nodes, non_bash_nodes)
+        self._add_read_write_constraints(read_nodes, write_nodes)
 
     # ── 环检测 ──────────────────────────────────────────────
 

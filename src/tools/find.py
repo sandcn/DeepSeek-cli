@@ -14,30 +14,14 @@ import fnmatch
 import re
 import logging
 from pathlib import Path
-from ._constants import EXCLUDED_DIRS
+from ._constants import EXCLUDED_DIRS, should_exclude_dir as _should_exclude_dir
 from .base import Func, tool_metadata
 
 logger = logging.getLogger(__name__)
 
-# ── 预编译通配符目录排除模式 ──
-_EXCLUDED_DIR_RES: list[re.Pattern] = [
-    re.compile(fnmatch.translate(p))
-    for p in EXCLUDED_DIRS if any(c in p for c in "*?[]")
-]
-
 # ── 魔法数字常量 ──────────────────────────────────────
 SMALL_DIR_ENTRY_LIMIT = 200   # 小型目录条目阈值（直接同步遍历）
 SMALL_DIR_DEPTH_LIMIT = 3     # 小型目录深度阈值
-
-
-def _should_exclude_dir(dirname: str) -> bool:
-    """判断目录名是否应被排除"""
-    if dirname in EXCLUDED_DIRS:
-        return True
-    for compiled_re in _EXCLUDED_DIR_RES:
-        if compiled_re.match(dirname):
-            return True
-    return False
 
 
 @tool_metadata(

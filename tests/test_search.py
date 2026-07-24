@@ -6,6 +6,7 @@ import pytest
 import shutil
 
 from src.tools.search import SearchFunc
+from src.tools._constants import should_exclude_dir
 
 
 # ── 辅助构造 ──────────────────────────────────────────────
@@ -278,19 +279,19 @@ class TestPythonSearchExcludeDirs:
         sf = SearchFunc(query="test", path=".")
 
         # *.egg-info 应被 fnmatch 匹配
-        assert sf._should_exclude_dir("my_package.egg-info") is True
+        assert should_exclude_dir("my_package.egg-info") is True
         # 不含通配符的模式仍通过 set 查找
-        assert sf._should_exclude_dir("__pycache__") is True
+        assert should_exclude_dir("__pycache__") is True
         # 普通目录不被排除
-        assert sf._should_exclude_dir("src") is False
+        assert should_exclude_dir("src") is False
 
     def test_should_exclude_dir_set_lookup(self):
         """_should_exclude_dir 对标准目录名通过 set 查找排除"""
         sf = SearchFunc(query="test", path=".")
-        assert sf._should_exclude_dir("node_modules") is True
-        assert sf._should_exclude_dir(".git") is True
-        assert sf._should_exclude_dir("venv") is True
-        assert sf._should_exclude_dir("dist") is True
+        assert should_exclude_dir("node_modules") is True
+        assert should_exclude_dir(".git") is True
+        assert should_exclude_dir("venv") is True
+        assert should_exclude_dir("dist") is True
 
     def test_should_exclude_by_pattern_true(self):
         """_should_exclude_by_pattern 对编译产物扩展名返回 True"""

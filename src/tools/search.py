@@ -27,6 +27,7 @@ from ._constants import (
     GREP_EXCLUDE_DIRS,
     GREP_EXCLUDE_FILES,
     RG_EXCLUDE_GLOBS,
+    should_exclude_dir,
 )
 from .base import Func, tool_metadata
 
@@ -97,26 +98,7 @@ def _matches_any(text: str) -> bool:
     return False
 
 
-# ── 预分离 EXCLUDED_DIRS 通配符模式 ─────────────────
-
-# 含通配符字符（* ? [ ]）的排除模式 — 原始 fnmatch 字符串
-_EXCLUDED_DIR_PATTERNS: tuple[str, ...] = tuple(
-    d for d in EXCLUDED_DIRS if any(c in d for c in "*?[]")
-)
-
-# 预编译的排除目录 regex（fnmatch.translate → re.compile），
-# 消除每次 _should_exclude_dir 调用时的 fnmatch 内部 translate+compile 开销
-_EXCLUDED_DIR_RES: list[re.Pattern] = [
-    re.compile(fnmatch.translate(p)) for p in _EXCLUDED_DIR_PATTERNS
-]
-
-# 预编译的排除文件 regex（来自 GREP_EXCLUDE_FILES），
-# 消除 _matches_any 中每次 fnmatch 内部的 translate+compile 开销
-_GREP_EXCLUDE_RES: list[re.Pattern] = [
-    re.compile(fnmatch.translate(p)) for p in GREP_EXCLUDE_FILES
-]
-
-# 预编译的排除文件 regex（来自 GREP_EXCLUDE_FILES），
+# ── 预编译的排除文件 regex（来自 GREP_EXCLUDE_FILES），
 # 消除 _matches_any 中每次 fnmatch 内部的 translate+compile 开销
 _GREP_EXCLUDE_RES: list[re.Pattern] = [
     re.compile(fnmatch.translate(p)) for p in GREP_EXCLUDE_FILES
@@ -412,22 +394,6 @@ class SearchFunc(Func):
     # 引擎 3：纯 Python（兜底）
     # ═══════════════════════════════════════════════════
 
-    def _should_exclude_dir(self, dirname: str) -> bool:
-        """判断目录名是否应被排除
-
-        分两阶段匹配：
-        1. set 精确查找（不含通配符的模式，O(1) 性能）
-        2. 预编译 regex 模式匹配（含通配符的模式，如 *.egg-info）
-           — 使用模块级预编译 regex，消除 fnmatch 内部 translate+compile 开销
-        """
-        if dirname in EXCLUDED_DIRS:
-            return True
-        # 预编译 regex 分支：对含通配符的排除模式做模式匹配
-        for compiled_re in _EXCLUDED_DIR_RES:
-            if compiled_re.match(dirname):
-                return True
-        return False
-
     def _should_exclude_by_pattern(self, filename: str) -> bool:
         """判断文件名是否应被排除（如 *.egg-info）"""
         return _matches_any(filename)
@@ -458,7 +424,7 @@ class SearchFunc(Func):
         files: list[str] = []
         for dirpath, dirnames, filenames in os.walk(root_path):
             for i in range(len(dirnames) - 1, -1, -1):
-                if self._should_exclude_dir(dirnames[i]):
+                if should_exclude_dir(dirnames[i]):
                     del dirnames[i]
 
             for fname in filenames:

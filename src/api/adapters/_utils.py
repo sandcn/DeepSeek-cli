@@ -7,6 +7,17 @@ from typing import Optional
 # ── 推理模型名称匹配模式 ──────────────────────────────────
 _REASONER_PATTERNS: frozenset[str] = frozenset({"reasoner"})
 
+# ── V4 模型检测 ─────────────────────────────────────────
+_V4_PREFIX = "deepseek-v4"
+
+
+def is_deepseek_v4_model(model: str) -> bool:
+    """判断模型是否为 DeepSeek V4 系列（deepseek-v4-*）。
+
+    V4 模型使用 thinking mode，需要在 API 请求中注入 thinking 参数。
+    """
+    return model.startswith(_V4_PREFIX)
+
 
 def ensure_reasoning_content(messages: list, model: Optional[str] = None) -> list:
     """确保消息列表中所有 assistant 消息的 reasoning_content 字段正确。

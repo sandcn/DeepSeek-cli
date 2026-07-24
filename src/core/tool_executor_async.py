@@ -139,6 +139,54 @@ class ToolScheduler:
         self._background_dispatch_tasks.clear()
         self._prev_non_dispatch_ids.clear()
 
+    def _find_next_layer(self, dag, layers) -> list[str] | None:
+        """在拓扑排序的层次中查找首个包含未执行节点的层。
+
+        同时应用 bash 独占过滤：若 bash 工具正在运行，仅允许 dispatch_agent 通过。
+
+        Args:
+            dag: ToolDAG 实例
+            layers: 拓扑排序后的层次列表 [[tc_id1, tc_id2], ...]
+
+        Returns:
+            None: 所有节点均已执行
+            list[str]: 当前应执行的 tc_id 列表
+            []: bash 独占过滤后为空（调用方应进行 bash 轮询等待）
+        """
+        # 找到第一个含未执行节点的层
+        # ★ 排除 _pending_tc_ids 中的节点（正在被外层调用执行），
+        #   防止嵌套 _execute_global_dag_async 重复执行外层正在处理的节点
+        target_layer: list[str] | None = None
+        for layer in layers:
+            unexecuted = [
+                tc_id for tc_id in layer
+                if tc_id not in self._results_map
+                and tc_id not in self._pending_tc_ids
+            ]
+            if unexecuted:
+                target_layer = unexecuted
+                break
+
+        if target_layer is None:
+            return None  # 全部节点已执行
+
+        # ── bash 独占运行：bash 运行中仅 dispatch_agent 可并行 ──
+        # 若已有 bash 工具正在运行，当前层仅允许 dispatch_agent 通过，
+        # 其他工具（read/write/bash/interactive）须等待 bash 完成。
+        if self._running_bash_ids:
+            filtered = []
+            for tc_id in target_layer:
+                node = dag.get_node(tc_id)
+                if node is not None:
+                    if (node.tool_category == "general"
+                            and node.name == "dispatch_agent"):
+                        filtered.append(tc_id)
+            target_layer = filtered
+            if not target_layer:
+                return []  # bash 独占过滤为空，调用方应轮询等待
+
+        return target_layer
+
     def _only_dispatch_agent_remaining(self, dag: ToolDAG) -> list[dict[str, Any]] | None:
         """检查 DAG 中所有未执行节点是否全部为 dispatch_agent。
 
@@ -166,6 +214,124 @@ class ToolScheduler:
         if not remaining:
             return None
         return remaining
+
+    async def _execute_one_layer(
+        self,
+        dag,
+        target_layer: list[str],
+        is_outermost: bool,
+        *,
+        agent_ref,
+        on_before: Optional[Callable] = None,
+        on_after: Optional[Callable] = None,
+        run_method: Optional[Callable] = None,
+    ) -> None:
+        """执行 DAG 中的一层工具调用。
+
+        构建该层 tool_call 列表 → 标记 bash 运行状态 → 并发执行 → 清理 bash 标记。
+
+        Args:
+            dag: ToolDAG 实例
+            target_layer: 当前层 tc_id 列表
+            is_outermost: 是否为最外层调用
+            agent_ref: 传给 registry.dispatch() 的 agent 引用
+            on_before: (tc, detail) -> None 执行前回调
+            on_after: (tc, output, success) -> None 执行后回调
+            run_method: (func, tc) -> str 自定义执行方式
+
+        Returns:
+            None（通过 self._results_map 副作用记录结果）
+        """
+        # 构建该层 tool_call 列表
+        layer_calls = []
+        for tc_id in target_layer:
+            node = dag.get_node(tc_id)
+            if node is not None:
+                layer_calls.append({
+                    "id": node.tc_id,
+                    "name": node.name,
+                    "arguments": node.arguments,
+                })
+
+        if not layer_calls:
+            return
+
+        # ── 标记本层 bash 工具进入运行状态 ──
+        bash_ids_in_layer: set[str] = set()
+        if is_outermost:
+            for tc_id in target_layer:
+                node = dag.get_node(tc_id)
+                if node is not None and node.tool_category == "bash":
+                    bash_ids_in_layer.add(tc_id)
+                    self._running_bash_ids.add(tc_id)
+
+        try:
+            # 同层工具并发执行
+            layer_results = await self._execute_concurrent(
+                layer_calls,
+                agent_ref=agent_ref,
+                on_before=on_before,
+                on_after=on_after,
+                run_method=run_method,
+            )
+            for r in layer_results:
+                self._results_map[r[0]] = r
+        finally:
+            # ── 层执行完成（含异常路径），清除本层 bash 运行标记 ──
+            if is_outermost and bash_ids_in_layer:
+                for bash_id in bash_ids_in_layer:
+                    self._running_bash_ids.discard(bash_id)
+
+    def _handle_dispatch_agent_early_return(
+        self,
+        dag,
+        is_outermost: bool,
+        *,
+        agent_ref,
+        on_before: Optional[Callable] = None,
+        on_after: Optional[Callable] = None,
+        run_method: Optional[Callable] = None,
+    ) -> bool:
+        """检测 DAG 中所有未执行节点是否均为 dispatch_agent。
+
+        若是，将其作为后台任务异步执行并提前返回，不阻塞外层 schedule() 返回。
+        这实现了 dispatch_agent 提前放行的语义。
+
+        Args:
+            dag: ToolDAG 实例
+            is_outermost: 是否为最外层调用
+            agent_ref: 传给 registry.dispatch() 的 agent 引用
+            on_before: (tc, detail) -> None 执行前回调
+            on_after: (tc, output, success) -> None 执行后回调
+            run_method: (func, tc) -> str 自定义执行方式
+
+        Returns:
+            True: 已触发提前返回（调用方应 break while 循环）
+            False: 不触发提前返回
+        """
+        remaining_dispatch = self._only_dispatch_agent_remaining(dag)
+        if not is_outermost or remaining_dispatch is None:
+            return False
+
+        # 标记为 pending，防止嵌套 _execute_global_dag_async 重复处理
+        for tc in remaining_dispatch:
+            self._pending_tc_ids.add(tc["id"])
+
+        # 创建后台协程：复用 _execute_concurrent 执行 dispatch_agent
+        bg_task = asyncio.ensure_future(
+            self._bg_dispatch_agents(
+                remaining_dispatch, agent_ref=agent_ref,
+                on_before=on_before, on_after=on_after,
+                run_method=run_method,
+            )
+        )
+
+        # 异常兜底回调：后台 Task 异常/取消时写入失败结果
+        bg_task.add_done_callback(
+            lambda task, rd=remaining_dispatch: self._on_bg_dispatch_done(task, rd)
+        )
+        self._background_dispatch_tasks.append(bg_task)
+        return True  # 退出 while 循环，提前返回
 
     async def _bg_dispatch_agents(
         self,
@@ -390,40 +556,16 @@ class ToolScheduler:
                                 self._results_map[r[0]] = r
                     break
 
-                # 找到第一个含未执行节点的层
-                # ★ 排除 _pending_tc_ids 中的节点（正在被外层调用执行），
-                #   防止嵌套 _execute_global_dag_async 重复执行外层正在处理的节点
-                target_layer: list[str] | None = None
-                for layer in layers:
-                    unexecuted = [
-                        tc_id for tc_id in layer
-                        if tc_id not in self._results_map
-                        and tc_id not in self._pending_tc_ids
-                    ]
-                    if unexecuted:
-                        target_layer = unexecuted
-                        break
-
+                # 查找首个未执行节点层 + bash 独占过滤
+                target_layer = self._find_next_layer(dag, layers)
                 if target_layer is None:
                     break  # 全部节点已执行
 
-                # ── bash 独占运行：bash 运行中仅 dispatch_agent 可并行 ──
-                # 若已有 bash 工具正在运行，当前层仅允许 dispatch_agent 通过，
-                # 其他工具（read/write/bash/interactive）须等待 bash 完成。
-                if self._running_bash_ids:
-                    filtered = []
-                    for tc_id in target_layer:
-                        node = dag.get_node(tc_id)
-                        if node is not None:
-                            if (node.tool_category == "general"
-                                    and node.name == "dispatch_agent"):
-                                filtered.append(tc_id)
-                    target_layer = filtered
-                    if not target_layer:
-                        # bash 运行中且无 dispatch_agent：让出控制权等待 bash 完成
-                        await asyncio.sleep(_BASH_POLL_INTERVAL)
-                        iteration -= 1  # bash 轮询不计入 _MAX_DAG_ITERATIONS
-                        continue
+                if not target_layer:
+                    # bash 运行中且无 dispatch_agent：让出控制权等待 bash 完成
+                    await asyncio.sleep(_BASH_POLL_INTERVAL)
+                    iteration -= 1  # bash 轮询不计入 _MAX_DAG_ITERATIONS
+                    continue
 
                 # 最外层：将本层节点标记为 pending（嵌套保护）
                 if is_outermost:
@@ -432,71 +574,24 @@ class ToolScheduler:
                             all_pending_ids.add(tc_id)
                             self._pending_tc_ids.add(tc_id)
 
-                # 构建该层 tool_call 列表
-                layer_calls = []
-                for tc_id in target_layer:
-                    node = dag.get_node(tc_id)
-                    if node is not None:
-                        layer_calls.append({
-                            "id": node.tc_id,
-                            "name": node.name,
-                            "arguments": node.arguments,
-                        })
+                # 执行本层工具（构建 layer_calls → 标记 bash → 执行 → 清理 bash 标记）
+                await self._execute_one_layer(
+                    dag, target_layer, is_outermost,
+                    agent_ref=agent_ref,
+                    on_before=on_before,
+                    on_after=on_after,
+                    run_method=run_method,
+                )
 
-                if not layer_calls:
-                    continue
-
-                # ── 标记本层 bash 工具进入运行状态 ──
-                bash_ids_in_layer: set[str] = set()
-                if is_outermost:
-                    for tc_id in target_layer:
-                        node = dag.get_node(tc_id)
-                        if node is not None and node.tool_category == "bash":
-                            bash_ids_in_layer.add(tc_id)
-                            self._running_bash_ids.add(tc_id)
-
-                try:
-                    # 同层工具并发执行
-                    layer_results = await self._execute_concurrent(
-                        layer_calls,
-                        agent_ref=agent_ref,
-                        on_before=on_before,
-                        on_after=on_after,
-                        run_method=run_method,
-                    )
-                    for r in layer_results:
-                        self._results_map[r[0]] = r
-                finally:
-                    # ── 层执行完成（含异常路径），清除本层 bash 运行标记 ──
-                    if is_outermost and bash_ids_in_layer:
-                        for bash_id in bash_ids_in_layer:
-                            self._running_bash_ids.discard(bash_id)
-
-                # ── 多批并发：仅剩 dispatch_agent 时提前返回 ──
-                # 检测 DAG 中所有未执行节点是否均为 dispatch_agent。
-                # 若是 → 将其作为后台任务异步执行，break 退出 while 循环，
-                # 不阻塞外层 schedule() 返回，实现 dispatch_agent 提前放行。
-                remaining_dispatch = self._only_dispatch_agent_remaining(dag)
-                if is_outermost and remaining_dispatch is not None:
-                    # 标记为 pending，防止嵌套 _execute_global_dag_async 重复处理
-                    for tc in remaining_dispatch:
-                        self._pending_tc_ids.add(tc["id"])
-
-                    # 创建后台协程：复用 _execute_concurrent 执行 dispatch_agent
-                    bg_task = asyncio.ensure_future(
-                        self._bg_dispatch_agents(
-                            remaining_dispatch, agent_ref=agent_ref,
-                            on_before=on_before, on_after=on_after,
-                            run_method=run_method,
-                        )
-                    )
-
-                    # 异常兜底回调：后台 Task 异常/取消时写入失败结果
-                    bg_task.add_done_callback(
-                        lambda task, rd=remaining_dispatch: self._on_bg_dispatch_done(task, rd)
-                    )
-                    self._background_dispatch_tasks.append(bg_task)
-                    break  # 退出 while 循环，提前返回
+                # 多批并发：仅剩 dispatch_agent 时提前返回
+                if self._handle_dispatch_agent_early_return(
+                    dag, is_outermost,
+                    agent_ref=agent_ref,
+                    on_before=on_before,
+                    on_after=on_after,
+                    run_method=run_method,
+                ):
+                    break  # dispatch_agent 已转为后台任务，提前返回
 
         finally:
             self._execution_depth -= 1

@@ -18,15 +18,12 @@ import logging
 from typing import Optional
 
 from .base import BaseLLMAdapter
-from ._utils import ensure_reasoning_content, _REASONER_PATTERNS
+from ._utils import ensure_reasoning_content, _REASONER_PATTERNS, is_deepseek_v4_model
 
 _logger = logging.getLogger(__name__)
 
 
 # ── DeepSeek 模型系列常量 ──────────────────────────────────
-
-# V4 系列前缀（含 thinking mode）
-_V4_PREFIX = "deepseek-v4"
 
 # Classic 系列（无 thinking 参数）
 _CLASSIC_MODELS: set[str] = {
@@ -74,7 +71,7 @@ class DeepSeekAdapter(BaseLLMAdapter):
 
         V4 模型使用 thinking mode，需要在 API 请求中注入 thinking 参数。
         """
-        return model.startswith(_V4_PREFIX)
+        return is_deepseek_v4_model(model)
 
     # ── 消息预处理 ─────────────────────────────────────────
 

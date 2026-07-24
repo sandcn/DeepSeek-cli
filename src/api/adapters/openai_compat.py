@@ -6,12 +6,12 @@ from __future__ import annotations
 from typing import Optional
 
 from .base import BaseLLMAdapter
-from ._utils import ensure_reasoning_content, _REASONER_PATTERNS
+from ._utils import ensure_reasoning_content, _REASONER_PATTERNS, is_deepseek_v4_model
 
 
 def _is_reasoner_model(model: str) -> bool:
     """判断模型是否需要 thinking 参数"""
-    return any(p in model for p in _REASONER_PATTERNS) or model.startswith("deepseek-v4")
+    return any(p in model for p in _REASONER_PATTERNS) or is_deepseek_v4_model(model)
 
 
 class OpenAICompatAdapter(BaseLLMAdapter):

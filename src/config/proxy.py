@@ -30,12 +30,6 @@ class ConfigProxy(ConfigPort):
 
     # ── ConfigPort 方法实现 ─────────────────────────────
 
-    def get(self, key: str, default: Any = None) -> Any:
-        """字典式访问 — 委托到 RC 字典"""
-        from src.config.loader import get_rc
-        from src.config import _resolve_rc_key
-        return _resolve_rc_key("config", get_rc()).get(key, default)
-
     def set(self, key: str, value: Any) -> None:
         """设置配置项并保存"""
         from src.config.loader import update_config

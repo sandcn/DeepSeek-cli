@@ -35,6 +35,8 @@ async def _handle_editmsg_cmd(session, state) -> None:
     让底部栏补全弹窗 + raw I/O 处理 ↑↓/Enter/Esc 交互，
     选择完成后恢复两者。与 /model 命令保持一致。
     """
+    import warnings
+    warnings.warn("_handle_editmsg_cmd is deprecated, use EditmsgPlugin.async_execute instead", DeprecationWarning, stacklevel=2)
     from ..tui.consumer import get_active_chat_ui
     from ..api.escape_monitor import get_active_monitor
     chat_ui = get_active_chat_ui()

@@ -13,7 +13,8 @@ import os
 import pytest
 from pathlib import Path
 
-from src.tools.find import FindFunc, _should_exclude_dir
+from src.tools.find import FindFunc
+from src.tools._constants import should_exclude_dir as _should_exclude_dir
 
 
 # ═══════════════════════════════════════════════════════════════════════════

@@ -491,21 +491,25 @@ ChatUIConsumer
 │   │   ├── ports/             # 六边形架构端口定义（8 个端口）
 │   │   └── telemetry/         # 可观测性（指标/追踪/上下文传播）
 │   │
-│   ├── chat_ui/            # 终端聊天渲染引擎
-│   │   ├── consumer.py        # 事件消费者（队列 → 增量渲染），持有 CursorTracker 实例注入所有子系统
-│   │   ├── engine.py          # 增量渲染引擎（render 线程 10Hz），集成 CursorTracker 坐标同步
-│   │   ├── dispatcher.py      # 事件分发（11 种事件类型 → 渲染命令）
-│   │   ├── renderer.py        # 渲染器集合（15 种 _do_* 方法，集成 CursorTracker 行数追踪）
-│   │   ├── render_state.py    # 渲染状态管理
-│   │   ├── completion.py      # Tab 命令/会话 ID 自动补全
-│   │   ├── components/        # 组件层（TuiComponent 基类 + 12 个子类）
-│   │   ├── const.py           # 渲染相关常量定义
-│   │   ├── protocols.py       # 渲染协议定义
-│   │   ├── state.py           # 渲染状态追踪
-│   │   ├── utils.py           # 渲染工具函数
-│   │   ├── error_handler.py   # 日志→上屏（日志显示在底部栏上方）
-│   │   ├── factory.py         # 渲染器工厂
-│   │   ├── lock.py            # 渲染锁（re-export ui._lock 全局锁对象）
+│   ├── tui/                # 终端 UI 聊天渲染引擎（替代 chat_ui/）
+│   │   ├── consumer/           # ChatUIConsumer 事件消费者 + 渲染入口
+│   │   ├── engine/             # 增量渲染引擎（render 线程 + 命令分发）
+│   │   ├── events/             # UI 事件总线 + DisplayEvent 类型定义
+│   │   ├── pipeline/           # 消息编辑/显示管道
+│   │   ├── state/              # 渲染/消费/输入/会话状态管理
+│   │   ├── components/         # TUI 组件（答案/面板/进度/通知等 18 个）
+│   │   ├── widgets/            # 底部栏（bar/completion/cursor/selection）+ 光标追踪
+│   │   ├── core/               # 核心工具（颜色/主题/渐变/参数格式化/输出目标）
+│   │   ├── animation/          # 动画系统（composer/palettes/transitions）
+│   │   ├── terminal/           # 终端适配器 + blessed 封装 + 窄屏检测
+│   │   ├── frame/              # 分帧渲染器
+│   │   ├── config.py           # TUI 配置
+│   │   ├── layout.py           # 布局管理
+│   │   ├── parallel_display.py # 并行 SubAgent 面板显示
+│   │   ├── render_buffer.py    # 渲染缓冲区
+│   │   ├── testing.py          # 测试工具
+│   │   ├── framework.py / framework_delegates.py / framework_types.py  # 渲染框架
+│   │   └── widget_base.py      # 组件基类
 │   │
 │   ├── renderer/           # 增量流式 Markdown 渲染引擎
 │   │   ├── engine.py          # RenderEngine 渲染引擎
@@ -519,7 +523,10 @@ ChatUIConsumer
 │   │   ├── indicator.py       # 流式指示器
 │   │   ├── ast/               # AST 构建→扁平化→优化→渲染
 │   │   ├── handlers/          # 块级元素处理器（code/table/mermaid/math/admonition 等）
-│   │   ├── targets/           # 多目标渲染适配（terminal/web）
+│   │   ├── targets/           # 渲染目标抽象（RenderTarget / CompositeRenderTarget）
+│   │   │   ├── __init__.py
+│   │   │   └── base.py
+│   │   │
 │   │   ├── pipeline_filters/  # 流式优化过滤器
 │   │   ├── math_symbols/      # 数学符号定义
 │   │   ├── _rendering/        # 内部渲染辅助
@@ -540,32 +547,7 @@ ChatUIConsumer
 │   │   ├── page_fetcher.py    # 网页内容抓取（web_search 内部依赖）
 │   │   └── parsers/           # 搜索引擎结果解析器（baidu / bing / generic / github）
 │   │
-│   ├── ui/                 # 终端 UI
-│   │   ├── display.py         # 显示系统（含 ANSI 输出、ParallelDisplay）
-│   │   ├── theme.py           # 主题（dark/light/high-contrast）
-│   │   ├── _cursor_tracker.py # ★ 全局光标坐标追踪系统（1-based row/col，save/restore 检查点）
-│   │   ├── _bottom_bar_pkg/   # 底部栏组件包（bar / completion / cursor / draw / selection / status / theme / blessed）
-│   │   ├── _completion.py     # Tab 命令/路径自动补全
-│   │   ├── _lock.py           # 输出锁机制（render 线程独占）
-│   │   ├── _stdout_tracker.py # stdout 行追踪器
-│   │   ├── _blessed.py        # blessed 终端封装
-│   │   ├── ansi.py / colors.py # ANSI / 颜色常量
-│   │   ├── console.py         # Rich 控制台
-│   │   ├── base_display.py    # BaseDisplay 基类
-│   │   ├── adapters.py        # UI 适配器
-│   │   ├── diff_renderer.py   # Diff 渲染
-│   │   ├── msg_list.py        # 消息列表编辑
-│   │   ├── narrow.py          # 窄屏检测
-│   │   ├── output_target.py   # 输出目标
-│   │   ├── terminal_adapter.py # 终端适配器
-│   │   ├── tui/               # TUI 组件（消息显示/状态栏/选择器）
-│   │   ├── parallel/          # 并行 SubAgent 面板显示
-│   │   ├── events/            # UI 事件总线（15 种事件类型）
-│   │   ├── common/            # 公共基础设施（AgentStateStore）
-│   │   ├── components/        # UI 组件（cost_display）
-│   │   ├── formatters/        # 参数格式化
-│   │   ├── renderer/          # 帧渲染器
-│   │   └── state/             # 显示状态管理
+│   ├── ui/                 # （已废弃，功能迁移至 tui/）
 │   │
 │   ├── webui/              # Web 界面
 │   │   ├── server.py          # aiohttp HTTP 服务器 + WebSocket
@@ -636,7 +618,7 @@ ChatUIConsumer
 
 **特性**：通配符订阅（如 `model.*` 匹配所有模型事件）、优先级排序（`EventPriority` 枚举，LOWEST→HIGHEST）、不可变事件数据类（`frozen dataclass`）。
 
-### UI 事件总线（`src/ui/events/`）
+### UI 事件总线（`src/tui/events/`）
 
 显示层事件系统，定义 **24 种 `DisplayEvent`** 类型（生命周期/工具调用/Agent 状态/模型阶段/流式内容/附加状态/通用输出/用户交互），基于 `CoreEventBus` 底层发布机制实现。`DisplayEventBus` 对 `DisplayEvent` 子类提供类型安全包装，与核心事件（字符串类型）并行独立运作，确保终端和 Web UI 双端共享相同的事件语义。
 

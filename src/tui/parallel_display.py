@@ -272,6 +272,8 @@ class ParallelDisplay(BaseDisplay):
 
         保留本方法供外部调用方兼容，不再触发实际刷新。
         """
+        import warnings
+        warnings.warn("parse_info_done is deprecated: 帧刷新由 10Hz 定时回调驱动", DeprecationWarning, stacklevel=2)
         _logger.debug("parse_info_done called for %s", label)
 
     def update_tokens(self, label: str, tokens: int):
@@ -312,6 +314,8 @@ class ParallelDisplay(BaseDisplay):
         保留本方法供外部调用方兼容（add_agent/update_* 等仍可安全调用），
         但不触发任何实际刷新，避免事件驱动的冗余帧推送。
         """
+        import warnings
+        warnings.warn("_schedule_refresh is deprecated: 帧刷新由 10Hz 定时回调驱动", DeprecationWarning, stacklevel=2)
 
     def _build_frame(self, final: bool = False) -> tuple | None:
         """构建面板帧数据（纯函数，不写终端）。
