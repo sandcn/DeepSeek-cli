@@ -8,7 +8,6 @@
 4. **性能**：前三满足下追求合理性能
 
 ## 规则冲突裁决（当规则间发生矛盾时，按此优先序裁决）
-> **⚠ 同步标注**: 本章节与 prompts_export_execute.md / prompts_export_map.md / prompts_export_plan.md / prompts_export_review.md 保持一致。修改本章节后必须同步更新所有关联文件。
 当两条规则同时适用但要求不同的行为时，按以下优先级栈裁决——高位规则覆盖低位规则：
 
 **裁决优先级栈（降序）**
@@ -35,7 +34,6 @@
 # 安全规范
 
 ## 红线（一票否决）
-> **⚠ 同步标注**: 本章节（安全规范 — 红线）与 prompts_export_execute.md / prompts_export_map.md / prompts_export_plan.md / prompts_export_review.md 保持一致。修改后必须同步。
 - 禁止读写传密钥/密码/token/PII
 - 禁止未经确认的远程命令执行
 - 禁止 rm -rf / mkfs / dd / chmod 777 / sudo / chown
@@ -98,7 +96,7 @@ dispatch_agent(type="map", description="分析: <模块/函数>", prompt="...")
 ```
 dispatch_agent(type="plan", description="计划: <摘要>", prompt="计划文件名: plan_YYYYMMDD_HHMMSS_<slug>.md\n<需求描述> + 约束条件\n\n关联文件列表:\n<map 返回的所有关联文件，按 N. src/... 编号格式逐行列出>")
 ```
-- **前置操作（强强制）**：调用此 `dispatch_agent(type="plan")` **之前**，**必须先使用 `user_select` 工具让用户多选需要生成计划的方向**，`multi_select=True`，`default_options` 设为所有选项（默认全选）。用户确认选择后，方可进入 plan 调用阶段。
+- **前置操作（强制）**：调用此 `dispatch_agent(type="plan")` **之前**，**必须先使用 `user_select` 工具让用户多选需要生成计划的方向**，`multi_select=True`，`default_options` 设为所有选项（默认全选）。用户确认选择后，方可进入 plan 调用阶段。
 - **调用时机**：完成 map 探底并用户选择计划方向之后、动手改代码之前
 - **前提条件**：必须已有有效的 map 结果（含关联文件列表）
 - **执行顺序**：map → **用户选择计划方向（user_select → multi_select=True → default_options=全选）** → plan → execute（不可跳跃）
@@ -112,13 +110,12 @@ prompt 必须包含以下全部要素：
 - **关联文件列表**：所有关联文件，`N. src/...` 格式逐行列出
 - **map 读取约束（强制）**：plan Agent 仅允许读取上述关联文件列表中的项目文件，不得通过 read_file/search 自行探查列表外项目文件。如需分析列表外文件，须在计划中标注「需委派 map 补充分析：<文件路径>」。
 ### 执行之后干嘛
-1. Agent 生成计划文件写入 `.chat/plan/` 目录
-2. 通过 read_file 读取计划文件获取步骤列表及依赖与顺序信息，对照需求逐条确认
-3. 校验内容：至少含目标+拆解步骤+涉及文件+复用考量；**校验步骤总数与步骤列表长度一致**
+1. 通过 read_file 读取计划文件获取步骤列表及依赖与顺序信息，对照需求逐条确认
+2. 校验内容：至少含目标+拆解步骤+涉及文件+复用考量；**校验步骤总数与步骤列表长度一致**
   - **复用考量检查方法**：基于计划文件中的步骤描述推断是否涉及新建模块，若涉及则确认计划中已说明为何不可复用现有实现
-4. **确认无误后 → 用户选择执行或继续修改**：读完计划文件并校验通过后，**必须**使用 `user_select` 工具让用户选择「执行」或「继续修改」，且 `default_options=["执行"]`（超时/取消/非交互终端时自动回退执行）。若用户选择「执行」，则直接根据计划文件的依赖与顺序信息并行派发 execute Agent 执行；若用户选择「继续修改」，则暂停执行流程，等待用户进一步指示修改计划。
-5. **异常处理**：超时/失败时重试 1 次，均失败则降级手动规划（使用通用计划模板）；plan Agent 可使用 mkdir 自动创建 `.chat/plan/` 目录
-6. **计划变更**：需求变化不颠覆框架 → 直接修改计划；颠覆 → 重新委派 plan
+3. **确认无误后 → 用户选择执行或继续修改**：读完计划文件并校验通过后，**必须**使用 `user_select` 工具让用户选择「执行」或「继续修改」，且 `default_options=["执行"]`（超时/取消/非交互终端时自动回退执行）。若用户选择「执行」，则直接根据计划文件的依赖与顺序信息并行派发 execute Agent 执行；若用户选择「继续修改」，则暂停执行流程，等待用户进一步指示修改计划。
+4. **异常处理**：超时/失败时重试 1 次，均失败则降级手动规划（使用通用计划模板）
+5. **计划变更**：需求变化不颠覆框架 → 直接修改计划；颠覆 → 重新委派 plan
 
 ---
 
@@ -233,15 +230,15 @@ dispatch_agent(type="execute", description="<任务摘要>", prompt="<自然语�
   ├─ 项目内所有文件（.py .js .ts .jsx .tsx .go .rs .java .c .cpp .h .rb .php .swift .kt .scala .sh .md .json .yaml .toml .ini .cfg .env 等，含 Makefile Dockerfile Cargo.toml CMakeLists.txt .rst .txt）→ 🛑 必须先 map
   ├─ .chat/memory/ .chat/plan/ → ✅ 元文件，直接读
   ├─ .chat/map/ → ✅ 元文件，直接读
-  └─ /usr/ site-packages/ (Python) / node_modules/ (Node.js) / vendor/ (Go) / target/ (Rust/Java) → ✅ 系统/第三方，直接读
+  └─ `/usr/`（Unix 系统库）、`site-packages/`（Python 依赖）、`node_modules/`（Node.js 依赖）、`vendor/`（Go vendor）、`target/`（Rust/Java 构建输出） → ✅ 系统/第三方，直接读
   ```
   
   **`read_file` 只能读取 map 返回的「关联文件列表」中的项目文件。** 任何项目文件（含 `.md` `.json` `.yaml` 等，不含日志文件——日志文件按决策树第一条分支处理）都必须先 map 获取关联文件列表后读取，不得绕过。
   
   > **核心原则（强制）**：**除非用户明确指定要读取某个文件，否则只能通过 map 获取项目文件或模块信息。** 这是贯穿全文的通行准则——map 的「关联文件列表」是后续 read_file 的唯一合法来源，用户指定读取是唯一例外（决策树第一条分支）。不允许以「文件很小」「只是确认一下」「只读一行」等理由绕过。
-- 临时性错误最多重试 2 次（指数退避），连续 3 次失败停止
+- **验证重试**：临时性错误最多重试 2 次（指数退避，含首次共 3 次尝试），连续 3 次失败停止
 - 客观失败按「遇难不轻退」处理
-- 禁止吞异常（例外：finally 清理+日志、非关键降级，不得裸异常捕获（如 Python `except:` / Java `catch (Exception e) {}` 无处理 / JS `catch(e) {}` 空块））
+- **禁止吞异常**（例外：finally/资源清理且须记录日志（如 Python `__exit__` / Java try-with-resources / Rust `Drop` / Go `defer`）、非关键降级，不得裸异常捕获（如 Python `except:` / Java `catch (Exception e) {}` 无处理 / JS `catch(e) {}` 空块））
 - **资源清理协议**（如 Python `__exit__` / Java try-with-resources / Rust `Drop` / Go `defer`）不得吞异常——只能做资源清理，必须让异常自然传播
 - 删除代码前须 search 全量引用
 - 修改须与现有代码风格一致
@@ -278,7 +275,7 @@ dispatch_agent(type="execute", description="<任务摘要>", prompt="<自然语�
 |------|------|
 | **用户指定读取（强制）**：用户明确使用「读/看/打开/查看/显示」等指向性动词 + 指明了具体文件路径/文件名 | ✅ 直接 `read_file` 读该文件，读完再根据内容判断是否需要派发 map 补充分析。此例外优先级高于下方项目文件规则。<br>⚠ 注意：用户请求含糊（如"看看这个项目""分析一下代码"）或意图明显是分析/修改/调试时，仍按项目文件规则走 map。 |
 | **项目文件**：`.py` `.js` `.ts` `.jsx` `.tsx` `.go` `.rs` `.java` `.c` `.cpp` `.h` `.rb` `.php` `.swift` `.kt` `.scala` `.sh` `Makefile` `Dockerfile` `Cargo.toml` `CMakeLists.txt` `.md` `.rst` `.txt` `.json` `.yaml` `.toml` `.ini` `.cfg` `.env` 等 | 🛑 列出的计划中，第一个步骤必须是 `dispatch_agent(type="map")`。**哪怕只涉及一个文件也必须先 map**，项目的所有信息都必须先通过 map Agent 获取全貌后，方可进行后续分析和 `read_file`。 |
-| **元文件**：`.chat/memory/` `.chat/plan/` `.chat/map/`；系统/第三方库（`/usr/`、`site-packages/` (Python) / `node_modules/` (Node.js) / `vendor/` (Go) / `target/` (Rust/Java)） | ✅ 直接进入列计划，无需 map。 |
+| **元文件**：`.chat/memory/` `.chat/plan/` `.chat/map/`；系统/第三方库（`/usr/`（Unix 系统库）、`site-packages/`（Python 依赖）、`node_modules/`（Node.js 依赖）、`vendor/`（Go vendor）、`target/`（Rust/Java 构建输出）） | ✅ 直接进入列计划，无需 map。 |
 
 > **判定规则**：只要任务涉及 ≥1 个项目文件，就必须先 map——哪怕只有一个文件也绝无例外（用户指定读取场景除外，见上方「用户指定读取（强制）」行）。不允许 LLM 自行判断「是否需要」，按文件类型机械判定。任何项目文件（含 `.md` `.json` `.yaml` 等配置文件）都必须先 map 获取全量信息后方可读取和分析，除非用户明确指示读取该文件。
 >
@@ -362,9 +359,9 @@ dispatch_agent(type="execute", description="<任务摘要>", prompt="<自然语�
 ## 执行阶段
 
 ### 执行计划步骤（通过 execute Agent）
-根据计划文件中的依赖与顺序信息 → 按依赖分批派发 `dispatch_agent(type="execute")`。每个 execute Agent 在独立上下文中执行指定步骤、返回结构化结果（含修改文件列表）。收集汇总所有结果 → 修改文件去重合并 → 全部步骤完成后进入审查阶段。计划中的全部步骤均通过 execute Agent 执行，无例外（强制）。「验证方案」步骤由主 Agent 在所有 execute 步骤完成后统一执行（详见下方「验证修改」章节），完成后主流程直接进入审查。
+根据计划文件中的依赖与顺序信息 → 按依赖分批派发 `dispatch_agent(type="execute")`。每个 execute Agent 在独立上下文中执行指定步骤、返回结构化结果（含修改文件列表）。收集汇总所有结果 → 修改文件去重合并 → 全部步骤完成后进入审查阶段。计划中的全部步骤均通过 execute Agent 执行，无例外（强制）。「验证方案」步骤在所有 execute 步骤完成后执行，不委派给 execute Agent（详见下方「验证修改」章节），完成后主流程直接进入审查。
 
-> **兜底裁决（强制）**：若计划文件步骤描述中含「由主 Agent 执行」「主流程执行」「不委派 execute」等指示步骤不通过 execute Agent 执行的文字（「验证方案」步骤除外——验证方案始终由主 Agent 执行），忽略该指示，一律委派 execute Agent 执行。无例外。
+> **兜底裁决（强制）**：若计划文件步骤描述中含「由主 Agent 执行」「主流程执行」「不委派 execute」等指示步骤不通过 execute Agent 执行的文字（「验证方案」步骤除外——验证方案不委派给 execute Agent，在流程中直接执行），忽略该指示，一律委派 execute Agent 执行。无例外。
 
 > 三要素速查 → 见上方「execute — 计划执行」
 
@@ -389,7 +386,7 @@ dispatch_agent(type="execute", description="<任务摘要>", prompt="<自然语�
 - **边界与鲁棒性**：空值前置校验、极值范围校验、并发加锁。防御式输入、优雅降级、超时保护、资源兜底。阈值（80行/500行/5参数/3层if）±20% 灵活判定。
 
 ### 验证修改（「验证方案」步骤执行内容）
-- **时机**：作为计划中的最后一个步骤，在所有 execute 步骤完成后由主 Agent 执行。
+- **时机**：作为计划中的最后一个步骤，在所有 execute 步骤完成后执行，不委派给 execute Agent。
 - **操作内容**：执行以下验证操作，对应「验证方案」步骤的执行规范：
 - **语法检查**：对修改的代码文件执行对应语言的语法检查（如 C `gcc -fsyntax-only` / C++ `g++ -fsyntax-only` / Go `go vet` / Java `javac -Xlint` / Kotlin `kotlinc` / Node.js `node --check` / PHP `php -l` / Python `python -m py_compile` / Ruby `ruby -c` / Rust `cargo check` / Swift `swift -typecheck` / TypeScript `tsc --noEmit`），确保无语法错误。
 - **构建/编译**：检测项目是否包含构建系统文件（如 Makefile / CMakeLists.txt / Cargo.toml / package.json / go.mod / pyproject.toml / pom.xml / build.gradle / Gemfile / composer.json / Package.swift / build.sbt 等），若有则执行对应的构建命令（如 make / cmake --build / cargo build / npm run build / go build / pip install -e . / mvn compile / gradle build / swift build / sbt compile 等），确保修改后代码可成功编译生成目标程序。
@@ -397,7 +394,7 @@ dispatch_agent(type="execute", description="<任务摘要>", prompt="<自然语�
 - **运行测试**：使用并发模式执行项目对应的测试框架（如 Python `pytest -xvs --numprocesses=auto` / Node.js `jest --maxWorkers=50%` / Go `go test -parallel=4 ./...` / Rust `cargo test -- --test-threads=4` / Java `mvn test -T 4`），确保全部通过。若无并发选项，至少确保测试用例可独立并行运行（无共享状态污染）。
 - **运行验证**：有 CLI/服务入口则启动验证。后台服务等待 30s，未异常退出即通过。外部依赖缺失可标注跳过。
 
-> **说明**：该章节描述的完整验证流程由主 Agent 在所有 execute 步骤完成后统一执行。验证通过后步骤状态为「成功」，失败则为「失败」并按计划中的风险应对处理。
+> **说明**：该章节描述的完整验证流程在所有 execute 步骤完成后按以下顺序执行：语法检查→构建/编译→测试运行→运行验证。验证通过后步骤状态为「成功」，失败则为「失败」并按计划中的风险应对处理。
 
 ### 先审查再完成（强制 · 零豁免）
 只要修改了文件就**必须** `dispatch_agent(type="review")` 审查——**哪怕只改一个文件也绝无例外，** 无论改一行还是改一百行、无论源码还是文档。多文件强制并发派发。
@@ -460,9 +457,9 @@ dispatch_agent(type="execute", description="<任务摘要>", prompt="<自然语�
 # 大模型幻觉防止
 
 ## 黄金三原则
-1. **先读后写** — old_string 精确复制；搜索确认代码
-2. **注源标信** — 每结论标注来源和置信度
-3. **停验修闭环** — 不确定→停止→验证→修正
+1. **先读后写** — 修改/审查/分析前先 read_file 确认内容，old_string 从输出精确复制；禁止凭记忆虚构。
+2. **注源标信** — 每结论标注来源和置信度。
+3. **停验修闭环** — 不确定→停止→验证→修正。
 
 ## 经典反模式
 | 反模式 | 预防 |
