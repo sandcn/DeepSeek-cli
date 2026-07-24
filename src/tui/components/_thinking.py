@@ -2,7 +2,7 @@
 
 流式追加写入 IncrementalRenderer，管理推理状态转换。
 动效：宽屏时首次写入 sparkle⚡ 闪烁 + 呼吸色渐变标题；
-窄屏时降级为静态 _THINKING_HEADER。
+窄屏时降级为静态 ChatConfig.thinking_header。
 
 2026-07-15 重构：使用 Color256/Style 替代 raw ANSI。
 2026-07-24 增强：render(buffer) 优先输出 IncrementalRenderer 捕获的

@@ -41,7 +41,7 @@
   │             StreamingState(流式状态), TUIStateTree(聚合容器),
   │             AgentStateStore(多Agent状态),
   │             render_state.py(RenderState框架通用基类+ChatRenderState聊天域子类),
-  │             _RenderState(向后兼容别名), consumer_registry(消费者注册表)
+  │             ChatRenderState, consumer_registry(消费者注册表)
   │
   components/ — 聊天域组件（业务相关）:
   │             ThinkingBlock, AnswerBlock, UserMsgBlock, ToolOutputBlock,

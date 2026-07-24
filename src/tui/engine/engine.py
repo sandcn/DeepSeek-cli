@@ -124,6 +124,10 @@ class TuiEngine:
         self._cmd_event.set()
 
     def start(self) -> None:
+        # 确保样式已注册（惰性注册，幂等安全）
+        from .const import register_tui_styles
+        register_tui_styles()
+
         if self._render_thread is not None:
             if self._render_thread.is_alive():
                 _logger.warning("start() 被重复调用，render 线程仍在运行，跳过")
@@ -412,10 +416,3 @@ class TuiEngine:
         if self._cursor_tracker is not None:
             self._cursor_tracker.set(r_cursor, cursor_col)
 
-
-# @deprecated — 使用 TuiEngine/TuiRenderer 替代，v1.3+ 将移除
-RenderEngine = TuiEngine
-
-# TuiRenderer 仅用于向后兼容别名 ContentRenderer，不参与引擎核心逻辑
-from .renderer import TuiRenderer as _TuiRenderer  # noqa: E402
-ContentRenderer = _TuiRenderer

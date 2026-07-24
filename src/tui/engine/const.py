@@ -1,4 +1,4 @@
-"""chat_ui 常量模块 — RenderCommand 枚举、Rich Style 常量、推理状态机。
+"""chat_ui 常量模块 — RenderCommand 枚举、解析哨兵、ANSI 转义序列。
 
 Layer 0 — 无内部依赖，被所有上层模块引用。
 
@@ -12,7 +12,7 @@ from __future__ import annotations
 
 from enum import IntEnum
 
-from rich.style import Style
+import threading
 
 # ── 命令枚举分层导入 ────────────────────────────────────
 from .commands import FrameworkCommand  # noqa: F401 — 重导出供外部使用
@@ -20,107 +20,59 @@ from .commands import FrameworkCommand  # noqa: F401 — 重导出供外部使�
 # 不从 engine/const.py（Layer 0）重导出以避免循环依赖。
 # 使用者通过 src.tui.consumer 导入 ChatCommand。
 
-# ── 主 Agent 标识 ───────────────────────────────────────
-# @deprecated — 使用 ChatConfig.main_label 替代，v1.3+ 移除
-# 详情参见 src/tui/consumer/chat_config.py
-_MAIN_LABEL = "assistant"
-# @deprecated — 使用 ChatConfig.main_source 替代，v1.3+ 移除
-# 详情参见 src/tui/consumer/chat_config.py
-_MAIN_SOURCE = "agent"
-
-# ── Rich Style 常量（供 OutputAdapter + Rich 渲染管线使用） ──
-# @deprecated — 使用 StyleSheet.get("dim") 替代，v1.3+ 移除
-# 详情参见 src/tui/core/style.py StyleSheet 注册表
-_STYLE_DIM = Style(dim=True)
-# @deprecated — 使用 StyleSheet.get("error") 近似替代（tui.core.Style fg=196），v1.3+ 移除
-# 详情参见 src/tui/core/style.py StyleSheet 注册表
-_STYLE_FAIL = Style(color="red")
-# @deprecated — 使用 StyleSheet.get("warn") 替代（tui.core.Style fg=220），v1.3+ 移除
-# 详情参见 src/tui/core/style.py StyleSheet 注册表
-_STYLE_WARN = Style(color="orange1")
-# @deprecated — 使用 StyleSheet.get("success") 替代（tui.core.Style fg=47），v1.3+ 移除
-# 详情参见 src/tui/core/style.py StyleSheet 注册表
-_STYLE_SUCCESS = Style(color="green")
-# @deprecated — 使用 StyleSheet.get("error") 替代（tui.core.Style fg=196, bold=True），v1.3+ 移除
-# 详情参见 src/tui/core/style.py StyleSheet 注册表
-_STYLE_ERROR = Style(color="red", bold=True)
-# @deprecated — 使用 StyleSheet.get("bold") 替代，v1.3+ 移除
-# 详情参见 src/tui/core/style.py StyleSheet 注册表
-_STYLE_BOLD = Style(bold=True)
-
-# ── 渐变色增强 Style（ChatUI 第三阶段美化，步骤 7） ──
-# @deprecated — 使用 tui.core.Style(fg=196, bold=True) 替代，v1.3+ 移除
-# 详情参见 src/tui/core/style.py StyleSheet 注册表
-_STYLE_ERROR_GRADIENT = Style(color="bright_red", bold=True)        # 亮红增强
-# @deprecated — 使用 StyleSheet.get("user_icon") 替代（tui.core.Style fg=81），v1.3+ 移除
-# 详情参见 src/tui/core/style.py StyleSheet 注册表
-_STYLE_USER_GRADIENT = Style(color="cyan", bold=True)               # 青色渐变
-# @deprecated — 使用 StyleSheet.get("neon") 替代（tui.core.Style fg=51），v1.3+ 移除
-# 详情参见 src/tui/core/style.py StyleSheet 注册表
-_STYLE_NOTIFICATION_GRADIENT = Style(color="bright_green", bold=True)  # 亮绿增强
-
 # ── 桥接：注册 tui.core.Style 等效样式到 StyleSheet（供新组件使用） ──
-# 使用 __all__ 约定 + 模块加载时自动注册，确保新旧两套样式系统共存。
+# 使用 __all__ 约定 + 惰性注册（由 TuiEngine.start() 或 factory 显式调用），
+# 消除模块加载时自动注册的副作用，确保初始化时机可控。
 # 旧代码继续使用 rich.style.Style 常量，新代码使用 StyleSheet.get() 获取 tui.core.Style。
-def _register_tui_styles() -> None:
-    """将常用样式注册到 tui.core.StyleSheet。（延迟导入避免模块加载循环）"""
-    from ..core.style import StyleSheet as _SS, Style as _TS
-    _SS.register_many({
-        # style.py 已预注册的样式不再重复注册（dim/bold/italic/underline/bold_dim/dim_italic/tree_branch/tree_leaf）
-        "bold_italic": _TS(bold=True, italic=True),
-        # 语义色（从 THEME 读取色号，兜底硬编码）
-        "error": _TS(fg=196, bold=True),
-        "success": _TS(fg=47),
-        "warn": _TS(fg=220),
-        "info": _TS(fg=45),
-        "muted": _TS(fg=244),
-        "border_breath": _TS(fg=23),
-        # 差异渲染语义色
-        "diff_add": _TS(fg=41),
-        "diff_del": _TS(fg=196),
-        "diff_ctx": _TS(fg=244),
-        # 消息角色图标色
-        "user_icon": _TS(fg=81),
-        "asst_icon": _TS(fg=47),
-        "tool_icon": _TS(fg=220),
-        # 工具输出文本色
-        "tool_txt": _TS(fg=242),
-        # 装饰色
-        "separator": _TS(fg=239),
-        "highlight": _TS(fg=45),
-        "accent": _TS(fg=221),
-        "deco": _TS(fg=242),
-        # 渲染效果语义色
-        "neon": _TS(fg=51, bold=True),
-    })
 
-_register_tui_styles()
+_register_tui_styles_lock = threading.Lock()
+_register_tui_styles_done = False
 
-# @deprecated — 使用 ChatConfig.thinking_header 替代，v1.3+ 移除
-# 详情参见 src/tui/consumer/chat_config.py
-_THINKING_HEADER = "\n  ─ 思考 ─\n"
+def register_tui_styles() -> None:
+    """将常用样式注册到 tui.core.StyleSheet。（延迟导入避免模块加载循环）
+
+    幂等设计：多次调用只注册一次。线程安全。
+    """
+    global _register_tui_styles_done
+    if _register_tui_styles_done:
+        return
+    with _register_tui_styles_lock:
+        if _register_tui_styles_done:
+            return
+        from ..core.style import StyleSheet as _SS, Style as _TS
+        _SS.register_many({
+            # style.py 已预注册的样式不再重复注册（dim/bold/italic/underline/bold_dim/dim_italic/tree_branch/tree_leaf）
+            "bold_italic": _TS(bold=True, italic=True),
+            # 语义色（从 THEME 读取色号，兜底硬编码）
+            "error": _TS(fg=196, bold=True),
+            "success": _TS(fg=47),
+            "warn": _TS(fg=220),
+            "info": _TS(fg=45),
+            "muted": _TS(fg=244),
+            "border_breath": _TS(fg=23),
+            # 差异渲染语义色
+            "diff_add": _TS(fg=41),
+            "diff_del": _TS(fg=196),
+            "diff_ctx": _TS(fg=244),
+            # 消息角色图标色
+            "user_icon": _TS(fg=81),
+            "asst_icon": _TS(fg=47),
+            "tool_icon": _TS(fg=220),
+            # 工具输出文本色
+            "tool_txt": _TS(fg=242),
+            # 装饰色
+            "separator": _TS(fg=239),
+            "highlight": _TS(fg=45),
+            "accent": _TS(fg=221),
+            "deco": _TS(fg=242),
+            # 渲染效果语义色
+            "neon": _TS(fg=51, bold=True),
+        })
+        _register_tui_styles_done = True
 
 # ── 解析进度清除哨兵 ───────────────────────────────────
 _CLEAR_PARSE_LINE = -1
 _THINKING_SEPARATOR = "\n  " + "\u2500" * 25 + "\n"
-
-# ── 统一错误消息截断长度 ─────────────────────────────
-# @deprecated — 使用 TuiConfig.max_error_length 替代，v1.3+ 移除
-# 详情参见 src/tui/config.py
-_MAX_ERROR_LENGTH = 200
-# @deprecated — 使用 ChatConfig.max_output_len 替代，v1.3+ 移除
-# 详情参见 src/tui/consumer/chat_config.py
-_MAX_OUTPUT_LEN = 10000  # 工具输出最大长度（字符），与 _MAX_ERROR_LENGTH 对齐
-
-# ── render 线程刷新间隔 ─────────────────────────────────
-# @deprecated — 使用 TuiConfig.render_interval 替代，v1.3+ 移除
-# 详情参见 src/tui/config.py
-_RENDER_INTERVAL = 0.1  # 100ms = 10Hz
-
-# ── 单次 drain_queue 最大批处理命令数 ───────────────────
-# @deprecated — 使用 TuiConfig.max_batch_size 替代，v1.3+ 移除
-# 详情参见 src/tui/config.py
-_MAX_BATCH_SIZE = 50  # 钳位值，防止单帧处理过多命令导致 UI 冻结
 
 # ── 紧急路径 ANSI 转义序列（直写终端，绕过 Rich 管线） ──
 # 用于队列满/render 崩溃等无法通过正常渲染管线输出的场景。
@@ -167,9 +119,3 @@ class RenderCommand(IntEnum):
     SUBAGENT_FRAME     = 18  # [框架通用] (18, frame_lines: tuple[str]) — SubAgent 面板帧
     SPLASH             = 19  # [框架通用] (19,) — 启动品牌屏
     MAIN_PHASE         = 20  # [聊天域] (20, phase: str) — 主Agent模型阶段变更
-
-
-# ── drain 锁超时 ─────────────────────────────────────
-# @deprecated — 使用 TuiConfig.drain_lock_timeout 替代，v1.3+ 移除
-# 详情参见 src/tui/config.py
-_DRAIN_LOCK_TIMEOUT = 0.1  # drain_queue 获取输出锁的超时（秒），与 _RENDER_INTERVAL (0.1) 对齐，避免一方修改引入竞态

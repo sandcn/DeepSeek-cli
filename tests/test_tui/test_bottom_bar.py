@@ -717,7 +717,7 @@ class TestDrainQueueSyncBottomLines(unittest.TestCase):
     """验证 _drain_queue() Stage 1 非 resize 时调用 sync_bottom_lines()。"""
 
     def setUp(self):
-        from src.tui.engine.engine import RenderEngine
+        from src.tui.engine.engine import TuiEngine
         self.mock_renderer = MagicMock()
         self.mock_bb = MagicMock()
         self.mock_bb.is_status_active = False
@@ -730,7 +730,7 @@ class TestDrainQueueSyncBottomLines(unittest.TestCase):
         self.mock_bb._last_scroll_end = 25  # 模拟已缓存的值
         self.mock_bb.get_cursor_info.return_value = ("", 0, 24, 80)
         self.mock_bb._cursor_visual_pos_from_cache.return_value = (0, 0)
-        self.engine = RenderEngine(self.mock_renderer, self.mock_bb)
+        self.engine = TuiEngine(self.mock_renderer, self.mock_bb)
         self._stdout = sys.__stdout__
 
     def tearDown(self):
@@ -765,7 +765,7 @@ class TestDrainQueueSyncBottomLines(unittest.TestCase):
         self.assertLess(sync_idx, cursor_idx,
                         "sync_bottom_lines 应在 ensure_cursor_upper 之前调用")
 
-    @unittest.skip("check_resize 已从 RenderEngine 移除，sync_bottom_lines 始终在 _phase_render 中调用")
+    @unittest.skip("check_resize 已从 TuiEngine 移除，sync_bottom_lines 始终在 _phase_render 中调用")
     def test_resized_skips_sync_bottom_lines(self):
         """resized=True 时 sync_bottom_lines 不应被调用。"""
         self._enqueue_cmd()

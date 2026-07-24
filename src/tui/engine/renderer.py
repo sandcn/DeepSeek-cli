@@ -23,7 +23,7 @@ from .const import (
     RenderCommand,
     _CLEAR_PARSE_LINE,
 )
-from ..state.render_state import _RenderState
+from ..state.render_state import ChatRenderState
 
 from ..components import (
     ThinkingBlock,
@@ -57,7 +57,7 @@ class TuiRenderer(FrameworkRenderer):
 
     def __init__(
         self,
-        rs: _RenderState,
+        rs: ChatRenderState,
         output_adapter: "OutputAdapter",
         bottom_bar: "BottomBarProtocol",
         on_display_messages: Callable[..., None] | None = None,

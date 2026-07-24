@@ -1,4 +1,4 @@
-"""ContentRenderer 边缘情况单元测试
+"""TuiRenderer 边缘情况单元测试
 
 测试范围：
 1. _do_parse_info():
@@ -16,9 +16,9 @@ from unittest.mock import MagicMock, patch
 import pytest
 from rich.text import Text
 
-from src.tui.engine.renderer import TuiRenderer as ContentRenderer
+from src.tui.engine.renderer import TuiRenderer
 from src.tui.engine.const import _CLEAR_PARSE_LINE, RenderCommand
-from src.tui.engine.renderer import _RenderState
+from src.tui.engine.renderer import ChatRenderState
 from src.tui.state.render_state import _ReasoningState
 
 
@@ -38,13 +38,13 @@ def mock_bb():
 
 @pytest.fixture
 def renderer(mock_ta, mock_bb):
-    """ContentRenderer 实例，构造注入路径全部 mock。
+    """TuiRenderer 实例，构造注入路径全部 mock。
 
-    由于 ChatUIConsumer 负责创建 OutputAdapter 并注入到 ContentRenderer，
+    由于 ChatUIConsumer 负责创建 OutputAdapter 并注入到 TuiRenderer，
     测试环境直接传入 mock_ta 作为 output_adapter 参数，避免依赖真实终端。
     """
-    rs = _RenderState()
-    r = ContentRenderer(rs, mock_ta, mock_bb, on_display_messages=None)
+    rs = ChatRenderState()
+    r = TuiRenderer(rs, mock_ta, mock_bb, on_display_messages=None)
     yield r
 
 
@@ -139,7 +139,7 @@ class TestDoReasoning:
     """_do_reasoning 渲染命令测试"""
 
     def test_first_reasoning_writes_header(self, renderer, mock_ta):
-        """INACTIVE 状态下首次调用 → 写入 _THINKING_HEADER + 内容。"""
+        """INACTIVE 状态下首次调用 → 写入 thinking_header + 内容。"""
         renderer._do_reasoning("hello")
         assert renderer._rs.reasoning is not None
         assert renderer._rs.reasoning_state == _ReasoningState.ACTIVE
@@ -404,16 +404,15 @@ class TestDoError:
 
     def test_error_truncated(self, renderer, mock_ta):
         """超长消息 → 截断后输出"""
-        from src.tui.engine.const import _MAX_ERROR_LENGTH
-        long_msg = "x" * (_MAX_ERROR_LENGTH + 50)
+        long_msg = "x" * 250
         renderer._do_error(long_msg)
         mock_ta.write.assert_called_once()
         text_arg = mock_ta.write.call_args[0][0]
         assert isinstance(text_arg, Text)
         assert "..." in text_arg.plain
-        # 截断后的消息主体（不含前缀）不应超过 _MAX_ERROR_LENGTH + 3（...）
+        # 截断后的消息主体（不含前缀）不应超过 203（200 + 3）
         body = text_arg.plain.replace("\n  ! ", "", 1)
-        assert len(body) <= _MAX_ERROR_LENGTH + 3
+        assert len(body) <= 203
 
 
 # ═══════════════════════════════════════════════════════
@@ -454,8 +453,8 @@ class TestDoDisplayMessages:
     def test_display_messages_with_callback(self):
         """有回调时 → 调用 _on_display_messages()"""
         mock_cb = MagicMock()
-        rs = _RenderState()
-        r = ContentRenderer(rs, MagicMock(), MagicMock(), on_display_messages=mock_cb)
+        rs = ChatRenderState()
+        r = TuiRenderer(rs, MagicMock(), MagicMock(), on_display_messages=mock_cb)
         msgs = [{"role": "user", "content": "hello"}]
         r._do_display_messages(msgs, speed=2)
         mock_cb.assert_called_once_with(msgs, speed=2)

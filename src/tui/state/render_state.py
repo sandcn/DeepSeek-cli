@@ -6,7 +6,6 @@ Layer 0 — 被 Layer 1 (_components) 和 Layer 2 (_renderer) 平等引用，
 架构分层（2026-07-22 泛化）：
   RenderState          — 框架通用基类：output_adapter 管理 + _safe_flush 工具方法
   ChatRenderState      — 聊天域子类：reasoning/content 双通道 + _ReasoningState 状态机
-  _RenderState         — 向后兼容别名 → ChatRenderState
 
 动效（2026-07-12）：
   - close_reasoning() 分隔线：宽屏时使用 make_sep_gradient_enhanced 叠加 wave 波动效果
@@ -17,7 +16,7 @@ from __future__ import annotations
 
 import logging
 import sys
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import Enum
 from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
@@ -40,7 +39,7 @@ class IRenderState(Protocol):
     """渲染状态接口协议。
 
     定义推理/内容渲染器生命周期管理的抽象契约。
-    ChatRenderState（及其别名 _RenderState）满足此协议。
+    ChatRenderState 满足此协议（原 _RenderState 别名已移除）。
     """
 
     reasoning_state: "_ReasoningState"
@@ -160,16 +159,12 @@ class ChatRenderState(RenderState):
     reasoning: "IncrementalRenderer | None" = None
     content: "IncrementalRenderer | None" = None
     reasoning_state: _ReasoningState = _ReasoningState.INACTIVE
-    captured_reasoning_output: list[str] = None  # type: ignore[assignment]
-    captured_content_output: list[str] = None  # type: ignore[assignment]
+    captured_reasoning_output: list[str] = field(default_factory=list)
+    captured_content_output: list[str] = field(default_factory=list)
 
     def __post_init__(self) -> None:
-        """初始化基类的 _shared_adapter 属性和捕获列表。"""
+        """初始化基类的 _shared_adapter 属性。"""
         super().__init__()
-        if self.captured_reasoning_output is None:
-            self.captured_reasoning_output = []
-        if self.captured_content_output is None:
-            self.captured_content_output = []
 
     def get_reasoning(self) -> "IncrementalRenderer | None":
         if self.reasoning_state == _ReasoningState.CLOSED:
@@ -252,9 +247,4 @@ class ChatRenderState(RenderState):
             _logger.debug("close_content 异常", exc_info=True)
 
 
-# ═══════════════════════════════════════════════════════════
-# 向后兼容别名
-# ═══════════════════════════════════════════════════════════
 
-# @deprecated — 使用 ChatRenderState 替代，_RenderState 保留为向后兼容别名
-_RenderState = ChatRenderState

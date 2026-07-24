@@ -17,11 +17,10 @@ from unittest.mock import MagicMock
 sys.path.insert(0, "/home/DeepSeek-cli")
 
 from src.tui.engine.const import (
-    _CLEAR_PARSE_LINE, _MAIN_LABEL, _MAIN_SOURCE,
-    _MAX_ERROR_LENGTH, RenderCommand,
+    _CLEAR_PARSE_LINE, RenderCommand,
 )
 from src.tui.engine.utils import _truncate_msg
-from src.tui.engine.dispatcher import EventDispatcher, _HANDLER_MAP
+from src.tui.engine.dispatcher import EventDispatcher
 from src.tui.events.event_types import (
     DisplayEvent,
     ReasoningChunkEvent, ContentChunkEvent, PhaseDoneEvent,
@@ -57,25 +56,25 @@ class TestEventDispatcherReasoningChunk:
 
     def test_normal_reasoning_chunk(self, dispatcher, push_cmd):
         """正常 ReasoningChunkEvent → push_cmd 收到 (REASONING, text)。"""
-        event = ReasoningChunkEvent(label=_MAIN_LABEL, text="thinking step 1...")
+        event = ReasoningChunkEvent(label="assistant", text="thinking step 1...")
         dispatcher._on_reasoning_chunk(event)
         push_cmd.assert_called_once_with((RenderCommand.REASONING, "thinking step 1..."))
 
     def test_empty_text_skipped(self, dispatcher, push_cmd):
         """空 text（空字符串）跳过，不调用 push_cmd。"""
-        event = ReasoningChunkEvent(label=_MAIN_LABEL, text="")
+        event = ReasoningChunkEvent(label="assistant", text="")
         dispatcher._on_reasoning_chunk(event)
         push_cmd.assert_not_called()
 
     def test_falsy_text_skipped(self, dispatcher, push_cmd):
         """falsy text（空白字符串）跳过。"""
-        event = ReasoningChunkEvent(label=_MAIN_LABEL, text="   ")
+        event = ReasoningChunkEvent(label="assistant", text="   ")
         dispatcher._on_reasoning_chunk(event)  # "   " is truthy, so actually it WILL push
         # text="   " 是非空字符串（truthy），应触发 push
         push_cmd.assert_called_once_with((RenderCommand.REASONING, "   "))
 
     def test_non_main_label_skipped(self, dispatcher, push_cmd):
-        """label != _MAIN_LABEL 跳过。"""
+        """label != "assistant" 跳过。"""
         event = ReasoningChunkEvent(label="subagent-1", text="thinking...")
         dispatcher._on_reasoning_chunk(event)
         push_cmd.assert_not_called()
@@ -90,18 +89,18 @@ class TestEventDispatcherContentChunk:
 
     def test_normal_content_chunk(self, dispatcher, push_cmd):
         """正常 ContentChunkEvent → push_cmd 收到 (CONTENT, text)。"""
-        event = ContentChunkEvent(label=_MAIN_LABEL, text="Hello world")
+        event = ContentChunkEvent(label="assistant", text="Hello world")
         dispatcher._on_content_chunk(event)
         push_cmd.assert_called_once_with((RenderCommand.CONTENT, "Hello world"))
 
     def test_empty_text_skipped(self, dispatcher, push_cmd):
         """空 text 跳过。"""
-        event = ContentChunkEvent(label=_MAIN_LABEL, text="")
+        event = ContentChunkEvent(label="assistant", text="")
         dispatcher._on_content_chunk(event)
         push_cmd.assert_not_called()
 
     def test_non_main_label_skipped(self, dispatcher, push_cmd):
-        """label != _MAIN_LABEL 跳过。"""
+        """label != "assistant" 跳过。"""
         event = ContentChunkEvent(label="other", text="content")
         dispatcher._on_content_chunk(event)
         push_cmd.assert_not_called()
@@ -116,12 +115,12 @@ class TestEventDispatcherPhaseDone:
 
     def test_normal_phase_done(self, dispatcher, push_cmd):
         """正常 PhaseDoneEvent → push_cmd 收到 (PHASE_DONE, phase)。"""
-        event = PhaseDoneEvent(label=_MAIN_LABEL, phase="content")
+        event = PhaseDoneEvent(label="assistant", phase="content")
         dispatcher._on_phase_done(event)
         push_cmd.assert_called_once_with((RenderCommand.PHASE_DONE, "content"))
 
     def test_non_main_label_skipped(self, dispatcher, push_cmd):
-        """label != _MAIN_LABEL 跳过。"""
+        """label != "assistant" 跳过。"""
         event = PhaseDoneEvent(label="subagent-1", phase="reasoning")
         dispatcher._on_phase_done(event)
         push_cmd.assert_not_called()
@@ -136,7 +135,7 @@ class TestEventDispatcherToolParsing:
 
     def test_agent_source(self, dispatcher, push_cmd):
         """source='agent' → push_cmd 收到 (MAIN_PHASE, 'parsing')。"""
-        event = ToolParsingEvent(source=_MAIN_SOURCE, label="tool_call_1")
+        event = ToolParsingEvent(source="agent", label="tool_call_1")
         dispatcher._on_tool_parsing(event)
         push_cmd.assert_called_once_with((RenderCommand.MAIN_PHASE, "parsing"))
 
@@ -168,7 +167,7 @@ class TestEventDispatcherToolStarted:
 
     def test_agent_source(self, dispatcher, push_cmd):
         """source='agent' → push_cmd 收到 (TOOL_COUNT_INC,)。"""
-        event = ToolStartedEvent(source=_MAIN_SOURCE, label="tool_call_1", tool_name="bash")
+        event = ToolStartedEvent(source="agent", label="tool_call_1", tool_name="bash")
         dispatcher._on_tool_started(event)
         push_cmd.assert_called_once_with((RenderCommand.TOOL_COUNT_INC,))
 
@@ -200,13 +199,13 @@ class TestEventDispatcherToolDone:
 
     def test_success_true(self, dispatcher, push_cmd):
         """success=True → push_cmd 收到 (TOOL_COUNT_DEC,)。"""
-        event = ToolDoneEvent(source=_MAIN_SOURCE, label="tool_1", tool_name="bash", success=True)
+        event = ToolDoneEvent(source="agent", label="tool_1", tool_name="bash", success=True)
         dispatcher._on_tool_done(event)
         push_cmd.assert_called_once_with((RenderCommand.TOOL_COUNT_DEC,))
 
     def test_success_false(self, dispatcher, push_cmd):
         """success=False → push_cmd 收到 (TOOL_FAIL_INC,) + (TOOL_COUNT_DEC,)。"""
-        event = ToolDoneEvent(source=_MAIN_SOURCE, label="tool_2", tool_name="bash", success=False)
+        event = ToolDoneEvent(source="agent", label="tool_2", tool_name="bash", success=False)
         dispatcher._on_tool_done(event)
         assert push_cmd.call_count == 2
         push_cmd.assert_any_call((RenderCommand.TOOL_FAIL_INC,))
@@ -234,14 +233,14 @@ class TestEventDispatcherToolOutput:
 
     def test_normal_output(self, dispatcher, push_cmd):
         """正常输出 → push_cmd 收到 (TOOL_OUTPUT, text)。"""
-        event = ToolOutputChunkEvent(source=_MAIN_SOURCE, label="tool_1", text="line1\nline2\n")
+        event = ToolOutputChunkEvent(source="agent", label="tool_1", text="line1\nline2\n")
         dispatcher._on_tool_output(event)
         # rstrip("\n") 去掉尾部换行
         push_cmd.assert_called_once_with((RenderCommand.TOOL_OUTPUT, "line1\nline2"))
 
     def test_empty_text_skipped(self, dispatcher, push_cmd):
         """空文本（rstrip 后为空）跳过。"""
-        event = ToolOutputChunkEvent(source=_MAIN_SOURCE, label="tool_2", text="\n\n")
+        event = ToolOutputChunkEvent(source="agent", label="tool_2", text="\n\n")
         dispatcher._on_tool_output(event)
         push_cmd.assert_not_called()
 
@@ -264,14 +263,14 @@ class TestEventDispatcherToolSummary:
         successful = ("bash", "read_file")
         failed = ()
         event = ToolSummaryEvent(
-            source=_MAIN_SOURCE, successful_tools=successful, failed_tools=failed,
+            source="agent", successful_tools=successful, failed_tools=failed,
         )
         dispatcher._on_tool_summary(event)
         push_cmd.assert_called_once_with((RenderCommand.TOOL_SUMMARY, successful, failed))
 
     def test_empty_lists_skipped(self, dispatcher, push_cmd):
         """空列表（successful=() 且 failed=()）跳过。"""
-        event = ToolSummaryEvent(source=_MAIN_SOURCE, successful_tools=(), failed_tools=())
+        event = ToolSummaryEvent(source="agent", successful_tools=(), failed_tools=())
         dispatcher._on_tool_summary(event)
         push_cmd.assert_not_called()
 
@@ -294,7 +293,7 @@ class TestEventDispatcherParseInfo:
     def test_normal_parse_info(self, dispatcher, push_cmd):
         """正常 → push_cmd 收到 (PARSE_INFO, tool_names, tokens, elapsed)。"""
         event = ParseInfoEvent(
-            source=_MAIN_SOURCE, label="assistant",
+            source="agent", label="assistant",
             tool_names="bash,read_file", tokens=150, elapsed=1.25,
         )
         dispatcher._on_parse_info(event)
@@ -318,7 +317,7 @@ class TestEventDispatcherParseInfoDone:
 
     def test_normal_parse_info_done(self, dispatcher, push_cmd):
         """正常 → push_cmd 收到 (PARSE_INFO, "", _CLEAR_PARSE_LINE, 0.0)。"""
-        event = ParseInfoDoneEvent(source=_MAIN_SOURCE, label="assistant")
+        event = ParseInfoDoneEvent(source="agent", label="assistant")
         dispatcher._on_parse_info_done(event)
         push_cmd.assert_called_once_with(
             (RenderCommand.PARSE_INFO, "", _CLEAR_PARSE_LINE, 0.0),
@@ -365,49 +364,49 @@ class TestEventDispatcherModelPhase:
     """ModelPhaseEvent 处理器测试。"""
 
     def test_error_phase(self, dispatcher, push_cmd):
-        """phase='error' + label=_MAIN_LABEL + info='msg' → (ERROR, 'msg')。"""
-        event = ModelPhaseEvent(label=_MAIN_LABEL, phase="error", info="Connection failed")
+        """phase='error' + label="assistant" + info='msg' → (ERROR, 'msg')。"""
+        event = ModelPhaseEvent(label="assistant", phase="error", info="Connection failed")
         dispatcher._on_model_phase(event)
         push_cmd.assert_called_once_with((RenderCommand.ERROR, "Connection failed"))
 
     def test_non_error_phase_pushes_main_phase(self, dispatcher, push_cmd):
         """非 error phase 推送 MAIN_PHASE 命令。"""
-        event = ModelPhaseEvent(label=_MAIN_LABEL, phase="thinking", info="thinking...")
+        event = ModelPhaseEvent(label="assistant", phase="thinking", info="thinking...")
         dispatcher._on_model_phase(event)
         push_cmd.assert_called_once_with((RenderCommand.MAIN_PHASE, "thinking"))
 
     @pytest.mark.parametrize("phase", ["answering", "parsing", ""])
     def test_all_non_error_phases(self, dispatcher, push_cmd, phase):
         """所有非 error 阶段均推送 MAIN_PHASE。"""
-        event = ModelPhaseEvent(label=_MAIN_LABEL, phase=phase, info="")
+        event = ModelPhaseEvent(label="assistant", phase=phase, info="")
         dispatcher._on_model_phase(event)
         push_cmd.assert_called_once_with((RenderCommand.MAIN_PHASE, phase))
 
     def test_empty_info_skipped(self, dispatcher, push_cmd):
         """空 info 跳过。"""
-        event = ModelPhaseEvent(label=_MAIN_LABEL, phase="error", info="")
+        event = ModelPhaseEvent(label="assistant", phase="error", info="")
         dispatcher._on_model_phase(event)
         push_cmd.assert_not_called()
 
     def test_non_main_label_skipped(self, dispatcher, push_cmd):
-        """非 _MAIN_LABEL 跳过。"""
+        """非 "assistant" 跳过。"""
         event = ModelPhaseEvent(label="subagent-1", phase="error", info="error msg")
         dispatcher._on_model_phase(event)
         push_cmd.assert_not_called()
 
     def test_long_info_truncated(self, dispatcher, push_cmd):
         """超长 info 被 _truncate_msg 截断。"""
-        long_msg = "x" * (_MAX_ERROR_LENGTH + 50)
-        expected = _truncate_msg(long_msg, _MAX_ERROR_LENGTH)
-        event = ModelPhaseEvent(label=_MAIN_LABEL, phase="error", info=long_msg)
+        long_msg = "x" * (200 + 50)
+        expected = _truncate_msg(long_msg, 200)
+        event = ModelPhaseEvent(label="assistant", phase="error", info=long_msg)
         dispatcher._on_model_phase(event)
         push_cmd.assert_called_once_with((RenderCommand.ERROR, expected))
-        assert len(expected) == _MAX_ERROR_LENGTH + 3  # 原始长度 + "..."
+        assert len(expected) == 200 + 3  # 原始长度 + "..."
 
     def test_info_at_boundary_not_truncated(self, dispatcher, push_cmd):
-        """info 刚好等于 _MAX_ERROR_LENGTH 时不被截断。"""
-        msg = "x" * _MAX_ERROR_LENGTH
-        event = ModelPhaseEvent(label=_MAIN_LABEL, phase="error", info=msg)
+        """info 刚好等于 200 时不被截断。"""
+        msg = "x" * 200
+        event = ModelPhaseEvent(label="assistant", phase="error", info=msg)
         dispatcher._on_model_phase(event)
         push_cmd.assert_called_once_with((RenderCommand.ERROR, msg))
 
@@ -435,40 +434,30 @@ class TestEventDispatcherEdgeCases:
         dispatcher._on_model_phase(MagicMock())               # type: ignore[arg-type]
         push_cmd.assert_not_called()
 
-    def test_handler_not_registered_does_nothing(self, dispatcher, push_cmd):
-        """_HANDLER_MAP 包含全部 12 个事件处理器。"""
-        from src.tui.engine.dispatcher import _HANDLER_MAP
-        registered_handlers = {name for name, (_, _) in _HANDLER_MAP.items()}
-        assert len(registered_handlers) == 12
-        assert "ReasoningChunkEvent" in registered_handlers
-        assert "ContentChunkEvent" in registered_handlers
-        assert "PhaseDoneEvent" in registered_handlers
-        assert "ToolParsingEvent" in registered_handlers
-        assert "ToolStartedEvent" in registered_handlers
-        assert "ToolDoneEvent" in registered_handlers
-        assert "ToolOutputChunkEvent" in registered_handlers
-        assert "ToolSummaryEvent" in registered_handlers
-        assert "ParseInfoEvent" in registered_handlers
-        assert "ParseInfoDoneEvent" in registered_handlers
-        assert "ModelPhaseEvent" in registered_handlers
-        assert "OutputEvent" in registered_handlers
+    def test_list_handlers_returns_12_handlers(self, dispatcher, push_cmd):
+        """list_handlers() 返回全部 12 个事件处理器。"""
+        handlers = dispatcher.list_handlers()
+        assert len(handlers) == 12
+        expected_types = {
+            ReasoningChunkEvent, ContentChunkEvent, PhaseDoneEvent,
+            ToolParsingEvent, ToolStartedEvent, ToolDoneEvent,
+            ToolOutputChunkEvent, ToolSummaryEvent,
+            ParseInfoEvent, ParseInfoDoneEvent,
+            OutputEvent, ModelPhaseEvent,
+        }
+        assert set(handlers.keys()) == expected_types
 
-    def test_handler_map_value_is_type(self, dispatcher, push_cmd):
-        """_HANDLER_MAP 值的第一元素是 type[DisplayEvent] 而非 str。"""
-        from src.tui.engine.dispatcher import _HANDLER_MAP
-        for key, (event_type, handler_name) in _HANDLER_MAP.items():
-            assert isinstance(event_type, type), (
-                f"{key} 的事件类型应为 type，实际为 {type(event_type).__name__}"
+    def test_list_handlers_values_are_callable(self, dispatcher, push_cmd):
+        """list_handlers() 返回的每个值均为可调用方法。"""
+        handlers = dispatcher.list_handlers()
+        for event_type, handler in handlers.items():
+            assert callable(handler), (
+                f"{event_type.__name__} 的处理器应为 callable，"
+                f"实际为 {type(handler).__name__}"
             )
-            assert issubclass(event_type, DisplayEvent), (
-                f"{key} 的事件类型 {event_type.__name__} 应为 DisplayEvent 子类"
+            assert handler.__name__.startswith("_on_"), (
+                f"{event_type.__name__} 的处理器名 '{handler.__name__}' 应以 '_on_' 开头"
             )
-            assert isinstance(handler_name, str), (
-                f"{key} 的 handler 名应为 str，实际为 {type(handler_name).__name__}"
-            )
-            assert handler_name.startswith("_on_"), (
-                f"{key} 的 handler 名 '{handler_name}' 应以 '_on_' 开头"
-           )
 
 
 # ═══════════════════════════════════════════════════════════

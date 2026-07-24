@@ -377,11 +377,11 @@ class TestCursorPositioningFlush:
         bus = DisplayEventBus()
         chat_ui = ChatUIConsumer(event_bus=bus)
 
-        with patch.object(chat_ui._engine, 'request_bottom_redraw') as mock_redraw:
+        with patch.object(chat_ui._components.engine, 'request_bottom_redraw') as mock_redraw:
             chat_ui.refresh_bottom_bar("test_text")
 
-        assert chat_ui._bottom_bar._last_text == "test_text"
-        assert chat_ui._bottom_bar._input_cursor_pos == 9  # len("test_text")
+        assert chat_ui._components.bottom_bar._last_text == "test_text"
+        assert chat_ui._components.bottom_bar._input_cursor_pos == 9  # len("test_text")
         mock_redraw.assert_called_once()
         chat_ui.stop()
 
@@ -390,14 +390,14 @@ class TestCursorPositioningFlush:
         bus = DisplayEventBus()
         chat_ui = ChatUIConsumer(event_bus=bus)
 
-        chat_ui._bottom_bar.ensure_cursor_in_lower = create_autospec(
-            chat_ui._bottom_bar.ensure_cursor_in_lower)
+        chat_ui._components.bottom_bar.ensure_cursor_in_lower = create_autospec(
+            chat_ui._components.bottom_bar.ensure_cursor_in_lower)
 
         with patch.object(sys.__stdout__, "flush") as mock_flush:
             chat_ui.bottom_bar.ensure_cursor_in_lower()
             # bottom_bar 直接访问底层方法，不自动 flush
             # flush 由调用方（如 refresh_bottom_bar）负责
-            chat_ui._bottom_bar.ensure_cursor_in_lower.assert_called_once()
+            chat_ui._components.bottom_bar.ensure_cursor_in_lower.assert_called_once()
         chat_ui.stop()
 
     def test_refresh_bottom_bar_flush_called_after_reposition(self):
@@ -405,9 +405,9 @@ class TestCursorPositioningFlush:
         bus = DisplayEventBus()
         chat_ui = ChatUIConsumer(event_bus=bus)
 
-        with patch.object(chat_ui._engine, 'request_bottom_redraw') as mock_redraw:
+        with patch.object(chat_ui._components.engine, 'request_bottom_redraw') as mock_redraw:
             chat_ui.refresh_bottom_bar("test")
-            assert chat_ui._bottom_bar._last_text == "test"
-            assert chat_ui._bottom_bar._input_cursor_pos == 4  # len("test")
+            assert chat_ui._components.bottom_bar._last_text == "test"
+            assert chat_ui._components.bottom_bar._input_cursor_pos == 4  # len("test")
             mock_redraw.assert_called_once()
         chat_ui.stop()

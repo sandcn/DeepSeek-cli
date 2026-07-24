@@ -4,7 +4,7 @@
 
 动效（2026-07-12）：
   - 宽屏："> " 前缀使用 sparkle 闪烁，消息文本使用呼吸色
-  - 窄屏：降级为静态 _STYLE_USER_GRADIENT
+  - 窄屏：降级为静态 StyleSheet.get("user_icon")
 """
 
 from __future__ import annotations

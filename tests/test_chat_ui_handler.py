@@ -292,76 +292,76 @@ class TestOnModelPhase:
         from src.tui.consumer import ChatUIConsumer
         c = ChatUIConsumer()
         # 清空可能残留的消息
-        while not c._engine._cmd_queue.empty():
-            c._engine._cmd_queue.get_nowait()
+        while not c._components.engine._cmd_queue.empty():
+            c._components.engine._cmd_queue.get_nowait()
         return c
 
     def test_error_phase_dispatches_error(self, consumer):
-        """phase="error" + label="_MAIN_LABEL" + 非空 info → push ERROR 命令"""
-        from src.tui.consumer import _MAIN_LABEL, RenderCommand
+        """phase="error" + label=""assistant"" + 非空 info → push ERROR 命令"""
+        from src.tui.consumer import RenderCommand
         from src.tui.events.event_types import ModelPhaseEvent
         event = ModelPhaseEvent(
-            label=_MAIN_LABEL, phase="error", info="test timeout error",
+            label="assistant", phase="error", info="test timeout error",
         )
-        consumer._disp._on_model_phase(event)
-        cmd = consumer._engine._cmd_queue.get_nowait()
+        consumer._components.dispatcher._on_model_phase(event)
+        cmd = consumer._components.engine._cmd_queue.get_nowait()
         assert cmd[0] == RenderCommand.ERROR
         assert "test timeout error" in cmd[1]
 
     def test_subagent_label_skipped(self, consumer):
-        """SubAgent label（!= _MAIN_LABEL）→ 不 push 任何命令"""
+        """SubAgent label（!= "assistant"）→ 不 push 任何命令"""
         from src.tui.consumer import RenderCommand
         from src.tui.events.event_types import ModelPhaseEvent
         event = ModelPhaseEvent(
             label="subagent", phase="error", info="subagent error",
         )
-        consumer._disp._on_model_phase(event)
-        assert consumer._engine._cmd_queue.empty()
+        consumer._components.dispatcher._on_model_phase(event)
+        assert consumer._components.engine._cmd_queue.empty()
 
     def test_non_error_phase_pushes_main_phase(self, consumer):
         """非 error phase（如 "thinking"）→ push MAIN_PHASE 命令"""
-        from src.tui.consumer import _MAIN_LABEL, RenderCommand
+        from src.tui.consumer import RenderCommand
         from src.tui.events.event_types import ModelPhaseEvent
         event = ModelPhaseEvent(
-            label=_MAIN_LABEL, phase="thinking", info="thinking...",
+            label="assistant", phase="thinking", info="thinking...",
         )
-        consumer._disp._on_model_phase(event)
-        cmd = consumer._engine._cmd_queue.get_nowait()
+        consumer._components.dispatcher._on_model_phase(event)
+        cmd = consumer._components.engine._cmd_queue.get_nowait()
         assert cmd[0] == RenderCommand.MAIN_PHASE
         assert cmd[1] == "thinking"
 
     def test_empty_phase_pushes_main_phase(self, consumer):
         """空 phase 也推送 MAIN_PHASE（用于清除状态）"""
-        from src.tui.consumer import _MAIN_LABEL, RenderCommand
+        from src.tui.consumer import RenderCommand
         from src.tui.events.event_types import ModelPhaseEvent
         event = ModelPhaseEvent(
-            label=_MAIN_LABEL, phase="", info="",
+            label="assistant", phase="", info="",
         )
-        consumer._disp._on_model_phase(event)
-        cmd = consumer._engine._cmd_queue.get_nowait()
+        consumer._components.dispatcher._on_model_phase(event)
+        cmd = consumer._components.engine._cmd_queue.get_nowait()
         assert cmd[0] == RenderCommand.MAIN_PHASE
         assert cmd[1] == ""
 
     def test_empty_info_skipped(self, consumer):
         """空 info → 不 push 任何命令"""
-        from src.tui.consumer import _MAIN_LABEL
+        # "assistant" replaced with hardcoded "assistant"
         from src.tui.events.event_types import ModelPhaseEvent
         event = ModelPhaseEvent(
-            label=_MAIN_LABEL, phase="error", info="",
+            label="assistant", phase="error", info="",
         )
-        consumer._disp._on_model_phase(event)
-        assert consumer._engine._cmd_queue.empty()
+        consumer._components.dispatcher._on_model_phase(event)
+        assert consumer._components.engine._cmd_queue.empty()
 
     def test_long_info_truncated(self, consumer):
         """超长 info（>200 字符）→ 截断并追加"..." """
-        from src.tui.consumer import _MAIN_LABEL, RenderCommand
+        from src.tui.consumer import RenderCommand
         from src.tui.events.event_types import ModelPhaseEvent
         long_info = "x" * 300
         event = ModelPhaseEvent(
-            label=_MAIN_LABEL, phase="error", info=long_info,
+            label="assistant", phase="error", info=long_info,
         )
-        consumer._disp._on_model_phase(event)
-        cmd = consumer._engine._cmd_queue.get_nowait()
+        consumer._components.dispatcher._on_model_phase(event)
+        cmd = consumer._components.engine._cmd_queue.get_nowait()
         assert cmd[0] == RenderCommand.ERROR
         result = cmd[1]
         assert len(result) == 203  # 200 + "..."
@@ -371,14 +371,14 @@ class TestOnModelPhase:
 
     def test_short_info_not_truncated(self, consumer):
         """短 info（<=200 字符）→ 原样传递"""
-        from src.tui.consumer import _MAIN_LABEL, RenderCommand
+        from src.tui.consumer import RenderCommand
         from src.tui.events.event_types import ModelPhaseEvent
         info = "short error message"
         event = ModelPhaseEvent(
-            label=_MAIN_LABEL, phase="error", info=info,
+            label="assistant", phase="error", info=info,
         )
-        consumer._disp._on_model_phase(event)
-        cmd = consumer._engine._cmd_queue.get_nowait()
+        consumer._components.dispatcher._on_model_phase(event)
+        cmd = consumer._components.engine._cmd_queue.get_nowait()
         assert cmd[0] == RenderCommand.ERROR
         assert cmd[1] == info
 
@@ -403,8 +403,7 @@ class TestIsAgentSource:
     def test_main_source_returns_true(self):
         """source='agent' → 返回 True"""
         disp = self._make_disp()
-        from src.tui.engine.const import _MAIN_SOURCE
-        assert disp._is_agent_source(_MAIN_SOURCE) is True
+        assert disp._is_agent_source("agent") is True
 
     def test_agent_prefix_returns_true(self):
         """source='agent-1' → 返回 True"""

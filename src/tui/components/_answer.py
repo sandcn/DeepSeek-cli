@@ -24,7 +24,7 @@ class AnswerBlock(TuiComponent):
       - 首次 write() 触发 FadeIn 渐显效果
       - 后续 chunk 不做过渡（避免与流式渲染冲突）
     """
-    def __init__(self, rs: "_RenderState", *, props: dict | None = None) -> None:
+    def __init__(self, rs: "ChatRenderState", *, props: dict | None = None) -> None:
         super().__init__(props=props)
         self._rs = rs
         self._first_write: bool = True

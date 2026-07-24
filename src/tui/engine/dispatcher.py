@@ -10,9 +10,7 @@ from typing import TYPE_CHECKING, Callable
 
 from .const import (
     RenderCommand,
-    _MAIN_LABEL, _MAIN_SOURCE,
     _CLEAR_PARSE_LINE,
-    _MAX_ERROR_LENGTH,       # @deprecated fallback — 优先使用 TuiConfig.max_error_length
 )
 
 from .utils import _truncate_msg
@@ -39,38 +37,13 @@ from ..framework import Framework
 
 
 # ═══════════════════════════════════════════════════════════
-# 事件处理映射表
-# @deprecated — 使用 EventHandlerRegistry 替代
-# 保留以维持向后兼容，新代码应使用 EventDispatcher.register_handler()
-# ═══════════════════════════════════════════════════════════
-
-_HANDLER_MAP: dict[str, tuple[type, str]] = {
-    "ReasoningChunkEvent":  (_EVENT_TYPES.ReasoningChunkEvent,  "_on_reasoning_chunk"),
-    "ContentChunkEvent":    (_EVENT_TYPES.ContentChunkEvent,    "_on_content_chunk"),
-    "PhaseDoneEvent":       (_EVENT_TYPES.PhaseDoneEvent,       "_on_phase_done"),
-    "ToolParsingEvent":     (_EVENT_TYPES.ToolParsingEvent,     "_on_tool_parsing"),
-    "ToolStartedEvent":     (_EVENT_TYPES.ToolStartedEvent,     "_on_tool_started"),
-    "ToolDoneEvent":        (_EVENT_TYPES.ToolDoneEvent,        "_on_tool_done"),
-    "ToolOutputChunkEvent": (_EVENT_TYPES.ToolOutputChunkEvent, "_on_tool_output"),
-    "ParseInfoEvent":       (_EVENT_TYPES.ParseInfoEvent,       "_on_parse_info"),
-    "ParseInfoDoneEvent":   (_EVENT_TYPES.ParseInfoDoneEvent,   "_on_parse_info_done"),
-    "OutputEvent":          (_EVENT_TYPES.OutputEvent,          "_on_output"),
-    "ModelPhaseEvent":      (_EVENT_TYPES.ModelPhaseEvent,      "_on_model_phase"),
-    "ToolSummaryEvent":     (_EVENT_TYPES.ToolSummaryEvent,     "_on_tool_summary"),
-}
-
-# @deprecated — 使用 EventHandlerRegistry 替代
-_HANDLER_TYPE_MAP: dict[str, type] = {k: v[0] for k, v in _HANDLER_MAP.items()}
-
-
-# ═══════════════════════════════════════════════════════════
 # EventHandlerRegistry — 可注册事件映射表
 # ═══════════════════════════════════════════════════════════
 
 class EventHandlerRegistry:
     """事件类型 → 处理器方法名的线程安全注册表。
 
-    替代原静态 _HANDLER_MAP 字典，支持运行时动态注册/查询。
+    支持运行时动态注册/查询。
     使用模式参考 ComponentRegistry。
 
     特性：
@@ -162,7 +135,7 @@ class EventDispatcher:
     def __init__(self, push_cmd: Callable[[tuple], None], config: ChatConfig | None = None):
         self._push_cmd = push_cmd
         self._config: ChatConfig | None = config
-        # ── 从 TuiConfig 读取 max_error_length（优先），_MAX_ERROR_LENGTH 作为 fallback ──
+        # ── 从 TuiConfig 读取 max_error_length ──
         _tui_cfg = Framework.get_default().get_config()
         self._max_error_length = _tui_cfg.max_error_length
         # ── 可注册事件映射表 ──
@@ -173,7 +146,11 @@ class EventDispatcher:
     def _is_agent_source(self, source: str | None) -> bool:
         if source is None:
             return False
-        main_source = self._config.main_source if self._config else _MAIN_SOURCE
+        if self._config:
+            main_source = self._config.main_source
+        else:
+            from ..consumer.chat_config import ChatConfig
+            main_source = ChatConfig.defaults().main_source
         return source == main_source or source.startswith("agent-")
 
     def _pre_filter(self, event, event_type, *, require_label=False, require_source=False) -> bool:
@@ -183,7 +160,11 @@ class EventDispatcher:
         """
         if not isinstance(event, event_type):
             return False
-        main_label = self._config.main_label if self._config else _MAIN_LABEL
+        if self._config:
+            main_label = self._config.main_label
+        else:
+            from ..consumer.chat_config import ChatConfig
+            main_label = ChatConfig.defaults().main_label
         if require_label and event.label != main_label:
             return False
         if require_source and not self._is_agent_source(event.source):

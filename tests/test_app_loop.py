@@ -801,23 +801,23 @@ class TestHandleEditmsgCmd:
         # 创建真实 ChatUIConsumer，mock 引擎避免真实线程创建
         consumer = ChatUIConsumer(event_bus=MagicMock())
         consumer._started = True
-        consumer._engine._render_running = False
-        consumer._engine.start = MagicMock()
-        consumer._engine.stop = MagicMock()
-        consumer._engine.flush = MagicMock()
+        consumer._components.engine._render_running = False
+        consumer._components.engine.start = MagicMock()
+        consumer._components.engine.stop = MagicMock()
+        consumer._components.engine.flush = MagicMock()
 
         # 模拟 run_bottom_bar_selection 泄漏 _active=True
-        consumer._bottom_bar._active = True
+        consumer._components.bottom_bar._active = True
 
         # spy on bottom_bar.setup 记录调用
-        original_setup = consumer._bottom_bar.setup
+        original_setup = consumer._components.bottom_bar.setup
         call_count = [0]
 
         def _spy_setup():
             call_count[0] += 1
             return original_setup()
 
-        consumer._bottom_bar.setup = _spy_setup
+        consumer._components.bottom_bar.setup = _spy_setup
 
         mock_monitor = MagicMock()
 
@@ -832,8 +832,8 @@ class TestHandleEditmsgCmd:
             f"预期 setup() 被调用 1 次，实际: {call_count[0]}"
         )
         # 验证 resume 后 _active 为 True（setup() 正常完成）
-        assert consumer._bottom_bar._active is True, (
-            f"resume 后 _active 应为 True，实际: {consumer._bottom_bar._active}"
+        assert consumer._components.bottom_bar._active is True, (
+            f"resume 后 _active 应为 True，实际: {consumer._components.bottom_bar._active}"
         )
 
 

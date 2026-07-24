@@ -374,10 +374,10 @@ class TestBug9PositionCursorUnderLock(unittest.TestCase):
     """
 
     def setUp(self):
-        from src.tui.engine.engine import RenderEngine
+        from src.tui.engine.engine import TuiEngine
         self.mock_renderer = MagicMock()
         self.mock_bb = MagicMock()
-        self.engine = RenderEngine(self.mock_renderer, self.mock_bb, MagicMock())
+        self.engine = TuiEngine(self.mock_renderer, self.mock_bb, MagicMock())
         self._stdout = sys.__stdout__
 
     def tearDown(self):
@@ -420,13 +420,13 @@ class TestResizeDrainSkip(unittest.TestCase):
     """Bug 修复：无流式输出时终端 resize 被 _drain_queue() 快速空闲跳过阻塞。"""
 
     def setUp(self):
-        from src.tui.engine.engine import RenderEngine
+        from src.tui.engine.engine import TuiEngine
         self.mock_renderer = MagicMock()
         self.mock_bb = MagicMock()
         self.mock_bb.is_status_active = False
         self.mock_bb.is_resize_pending = False
         self.mock_bb._resize_dirty = False
-        self.engine = RenderEngine(self.mock_renderer, self.mock_bb, MagicMock())
+        self.engine = TuiEngine(self.mock_renderer, self.mock_bb, MagicMock())
         self._stdout = sys.__stdout__
 
     def tearDown(self):
@@ -652,7 +652,7 @@ class TestResizeCursorOverride(unittest.TestCase):
     """
 
     def setUp(self):
-        from src.tui.engine.engine import RenderEngine
+        from src.tui.engine.engine import TuiEngine
         self.mock_renderer = MagicMock()
         self.mock_bb = MagicMock()
         self.mock_bb.is_status_active = False
@@ -665,7 +665,7 @@ class TestResizeCursorOverride(unittest.TestCase):
         # _position_cursor 需要 + _cursor_visual_pos_from_cache
         self.mock_bb.get_cursor_info.return_value = ("", 0, 24, 80)
         self.mock_bb._cursor_visual_pos_from_cache.return_value = (0, 0)
-        self.engine = RenderEngine(self.mock_renderer, self.mock_bb, MagicMock())
+        self.engine = TuiEngine(self.mock_renderer, self.mock_bb, MagicMock())
         self._stdout = sys.__stdout__
 
     def tearDown(self):

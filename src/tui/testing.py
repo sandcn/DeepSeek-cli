@@ -43,6 +43,7 @@ def tui_test_env() -> Generator[None, None, None]:
       - AnimatorContext（from src.tui.animation.animator）
       - ComponentRegistry（from src.tui.core.component_registry，若存在）
       - EffectRegistry（from src.tui.core.effects，清空注册表）
+      - DisplayEventBus（from src.tui.events.event_bus）
 
     用法：
         from src.tui.testing import tui_test_env
@@ -55,6 +56,7 @@ def tui_test_env() -> Generator[None, None, None]:
     from src.tui.framework import Framework
     from src.tui.animation.animator import AnimatorContext
     from src.tui.core.effects import EffectRegistry
+    from src.tui.events.event_bus import DisplayEventBus
 
     # 尝试导入 ComponentRegistry（可能尚不存在，try/except 兜底）
     _has_component_registry = False
@@ -68,6 +70,7 @@ def tui_test_env() -> Generator[None, None, None]:
     Framework.reset_default()
     AnimatorContext.reset_default()
     EffectRegistry.clear()
+    DisplayEventBus.reset_default()
     if _has_component_registry:
         ComponentRegistry.reset_default()
 
@@ -78,6 +81,7 @@ def tui_test_env() -> Generator[None, None, None]:
         Framework.reset_default()
         AnimatorContext.reset_default()
         EffectRegistry.clear()
+        DisplayEventBus.reset_default()
         if _has_component_registry:
             ComponentRegistry.reset_default()
 

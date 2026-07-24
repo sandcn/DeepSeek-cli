@@ -264,56 +264,8 @@ class ParseInfoDoneEvent(DisplayEvent):
 
 
 @dataclass(frozen=True)
-class TokenEvent(DisplayEvent):
-    """Token 数量更新（简化版本，仅传数量）。
-
-    Attributes:
-        label: Agent 标识
-        tokens: token 数量
-    """
-    label: str = ""
-    tokens: int = 0
-
-
-@dataclass(frozen=True)
-class LiveOutputEvent(DisplayEvent):
-    """实时输出 token 更新（流式场景）。
-
-    Attributes:
-        label: Agent 标识
-        tokens: 增加的 token 数量
-    """
-    label: str = ""
-    tokens: int = 0
-
-
-@dataclass(frozen=True)
-class LiveInputEvent(DisplayEvent):
-    """实时输入 token 更新。
-
-    Attributes:
-        label: Agent 标识
-        tokens: 增加的 token 数量
-    """
-    label: str = ""
-    tokens: int = 0
-
-
-@dataclass(frozen=True)
-class SpeedUpdatedEvent(DisplayEvent):
-    """速度更新。
-
-    Attributes:
-        label: Agent 标识
-        speed: 生成速度（tokens/s）
-    """
-    label: str = ""
-    speed: float = 0.0
-
-
-@dataclass(frozen=True)
 class MetricsUpdateEvent(DisplayEvent):
-    """统一的指标更新事件 — 合并 TokenEvent/LiveOutputEvent/LiveInputEvent/SpeedUpdatedEvent。
+    """统一的指标更新事件 — 合并 TokenEvent/LiveOutputEvent/LiveInputEvent/SpeedUpdatedEvent（已移除）。
 
     将所有实时指标合并到一个事件类型中，减少事件类型数量。
     发布时仅设置非默认值的字段，消费者按需读取。
@@ -404,7 +356,7 @@ ALL_EVENT_TYPES: tuple = (
     AgentAddedEvent, AgentStatusChanged,
     ModelPhaseEvent, PhaseDoneEvent, UsageUpdatedEvent,
     ContentChunkEvent, ReasoningChunkEvent,
-    ParseInfoEvent, ParseInfoDoneEvent, TokenEvent, LiveOutputEvent, LiveInputEvent, SpeedUpdatedEvent, MetricsUpdateEvent,
+    ParseInfoEvent, ParseInfoDoneEvent, MetricsUpdateEvent,
     OutputEvent, ToolSummaryEvent,
     UserSelectNeededEvent,
     AgentResultEvent,

@@ -17,7 +17,21 @@ from .cursor_tracker import CursorTracker, CursorPosition
 from .stdout_tracker import _StdoutLineTracker
 from .completion import CompletionEngine, CompletionItem
 
-# ── 延迟导入（避免循环导入：lock → widgets.__init__ → selector_base → bottom_bar → terminal → ui.colors → ...） ──
+# ── 基础模块（无循环导入风险：不依赖 widgets 子包中的任何模块，
+#    也不依赖 terminal.terminal，因此不会与 widgets.lock → terminal.terminal
+#    形成循环导入） ──
+from ..widget_base import Widget
+from ..render_buffer import RenderBuffer
+from ..layout import (
+    Vertical, Horizontal, Padding, Border, Grid, Center,
+)
+
+# ── 延迟导入（避免循环导入） ──
+# 循环导入链：terminal.terminal → widgets.lock → widgets.__init__ → ... → terminal.terminal
+# 涉及终端操作的模块（bottom_bar、status_bar、command_palette 等）必须延迟导入，
+# 因为这些模块直接或间接导入 terminal.terminal.is_narrow / get_terminal_width。
+# 当 terminal.terminal 在其模块顶层导入 widgets.lock 时，会触发 widgets.__init__ 加载，
+# 此时若再立即加载这些终端相关模块，就会形成环形依赖。
 
 def _lazy_import(mod_path: str):
     """导入并缓存到模块命名空间。"""
@@ -30,28 +44,27 @@ def _lazy_import(mod_path: str):
 
 def __getattr__(name: str):
     _LAZY = {
-        'Widget': ('src.tui.widget_base', 'Widget'),
-        'RenderBuffer': ('src.tui.render_buffer', 'RenderBuffer'),
-        'Vertical': ('src.tui.layout', 'Vertical'),
-        'Horizontal': ('src.tui.layout', 'Horizontal'),
-        'Padding': ('src.tui.layout', 'Padding'),
-        'Border': ('src.tui.layout', 'Border'),
+        # selector_base（间接导入 terminal.terminal 通过 bottom_bar.selection → terminal.blessed？
+        #   不，blessed 不导入 terminal.terminal，但 bottom_bar/__init__.py 被触发时
+        #   会导入 .bar → .completion → terminal.terminal，形成循环）
         'BaseBottomBarSelector': ('.selector_base', 'BaseBottomBarSelector'),
+        # status_bar / status_bar_widget（直接导入 terminal.terminal）
         "StatusBarWidget": ('.status_bar_widget', 'StatusBarWidget'),
         'StatusBar': ('.status_bar', 'StatusBar'),
         'render_normal': ('.status_bar', 'render_normal'),
         'build_normal_parts': ('.status_bar', 'build_normal_parts'),
         'render_streaming_line': ('.status_bar', 'render_streaming_line'),
+        # command_palette（直接导入 terminal.terminal）
         'CommandPalette': ('.command_palette', 'CommandPalette'),
+        # session_switcher（直接导入 terminal.terminal）
         'SessionSwitcher': ('.session_switcher', 'SessionSwitcher'),
+        # bottom_bar（bar.py → completion.py → terminal.terminal，形成循环）
         '_BottomBar': ('.bottom_bar', '_BottomBar'),
         '_StatusMixin': ('.bottom_bar', '_StatusMixin'),
         '_get_snapshot': ('.bottom_bar', '_get_snapshot'),
         '_TOKEN_SPEED_SNAPSHOT': ('.bottom_bar', '_TOKEN_SPEED_SNAPSHOT'),
         'run_bottom_bar_selection': ('.bottom_bar', 'run_bottom_bar_selection'),
         '_CompletionPopup': ('.bottom_bar', '_CompletionPopup'),
-        'Grid': ('src.tui.layout', 'Grid'),
-        'Center': ('src.tui.layout', 'Center'),
     }
     if name in _LAZY:
         mod_path, attr = _LAZY[name]
@@ -86,4 +99,5 @@ __all__ = [
     # widget framework
     "Widget", "RenderBuffer", "Vertical",
     "Horizontal", "Padding", "Border",
+    "Grid", "Center",
 ]

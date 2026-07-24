@@ -171,7 +171,7 @@ class TestThinkingBlockWrite(unittest.TestCase):
             block.write("Hello ")
             block.write("World")
             result = block.render()
-            # 窄屏下第一次 write 写入 _THINKING_HEADER，第二次写入 "World"
+            # 窄屏下第一次 write 写入 "\n  ─ 思考 ─\n"，第二次写入 "World"
             # 所以累积内容为 ["Hello ", "World"]
             self.assertIn("Hello ", result)
             self.assertIn("World", result)
@@ -207,15 +207,14 @@ class TestThinkingBlockWrite(unittest.TestCase):
     def test_write_returns_lines_estimate(self):
         """write() 返回正数行数估计。"""
         from src.tui.components._thinking import ThinkingBlock
-        from src.tui.engine.const import _THINKING_HEADER
 
         rs = MockRenderState()
         with patch("src.tui.components._thinking.is_narrow", return_value=True):
             block = ThinkingBlock(rs)
             lines = block.write("Hello\nWorld\nLine3")
             self.assertGreater(lines, 0)
-            # 窄屏首次 write：_THINKING_HEADER（2个换行=3行）+ 内容文本（2个换行=3行）= 6 行
-            expected = _THINKING_HEADER.count('\n') + 1 + "Hello\nWorld\nLine3".count('\n') + 1
+            # 窄屏首次 write："\n  ─ 思考 ─\n"（2个换行=3行）+ 内容文本（2个换行=3行）= 6 行
+            expected = "\n  ─ 思考 ─\n".count('\n') + 1 + "Hello\nWorld\nLine3".count('\n') + 1
             self.assertEqual(lines, expected)
 
     def test_write_get_reasoning_returns_none(self):
@@ -247,18 +246,17 @@ class TestThinkingBlockWrite(unittest.TestCase):
             self.assertGreater(lines, 0)
 
     def test_write_first_line_narrow(self):
-        """窄屏首次 write() 写入 _THINKING_HEADER 静态标题。"""
+        """窄屏首次 write() 写入 "\n  ─ 思考 ─\n" 静态标题。"""
         from src.tui.components._thinking import ThinkingBlock
-        from src.tui.engine.const import _THINKING_HEADER
 
         rs = MockRenderState()
         with patch("src.tui.components._thinking.is_narrow", return_value=True):
             block = ThinkingBlock(rs)
             lines = block.write("Hello")
-            # 应写入 _THINKING_HEADER + 内容到 reasoning renderer
+            # 应写入 "\n  ─ 思考 ─\n" + 内容到 reasoning renderer
             calls = rs.reasoning.write.call_args_list
-            # 第一次 write 调用应为 _THINKING_HEADER
-            self.assertEqual(calls[0][0][0], _THINKING_HEADER)
+            # 第一次 write 调用应为 "\n  ─ 思考 ─\n"
+            self.assertEqual(calls[0][0][0], "\n  ─ 思考 ─\n")
             self.assertGreater(lines, 0)
 
     def test_write_second_line_does_not_add_header(self):
@@ -271,7 +269,7 @@ class TestThinkingBlockWrite(unittest.TestCase):
             block.write("first")
             rs.reasoning.write.reset_mock()
             block.write("second")
-            # 第二次 write 不应再写入 _THINKING_HEADER
+            # 第二次 write 不应再写入 "\n  ─ 思考 ─\n"
             calls = [call[0][0] for call in rs.reasoning.write.call_args_list]
             self.assertEqual(len(calls), 1)
             self.assertIn("second", calls[0])
@@ -289,14 +287,13 @@ class TestThinkingBlockWrite(unittest.TestCase):
     def test_write_lines_estimate_multi_line(self):
         """多行内容 write() 返回正确行数。"""
         from src.tui.components._thinking import ThinkingBlock
-        from src.tui.engine.const import _THINKING_HEADER
 
         rs = MockRenderState()
         with patch("src.tui.components._thinking.is_narrow", return_value=True):
             block = ThinkingBlock(rs)
             lines = block.write("line1\nline2\nline3\nline4\nline5")
-            # 窄屏首次 write：_THINKING_HEADER（2个换行=3行）+ 内容文本（4个换行=5行）= 8 行
-            expected = _THINKING_HEADER.count('\n') + 1 + "line1\nline2\nline3\nline4\nline5".count('\n') + 1
+            # 窄屏首次 write："\n  ─ 思考 ─\n"（2个换行=3行）+ 内容文本（4个换行=5行）= 8 行
+            expected = "\n  ─ 思考 ─\n".count('\n') + 1 + "line1\nline2\nline3\nline4\nline5".count('\n') + 1
             self.assertEqual(lines, expected)
 
 

@@ -87,21 +87,21 @@ class TestDefaultBuild:
         try:
             from src.tui.consumer.protocols import (
                 BottomBarProtocol,
-                ContentRendererProtocol,
-                EventDispatcherProtocol,
-                RenderEngineProtocol,
-                RenderStateProtocol,
-                CmplHandlerProtocol,
+                RenderEngine as RenderEngineProtocol,
             )
+            from src.tui.engine.renderer import TuiRenderer
+            from src.tui.state.render_state import ChatRenderState as RenderStateProtocol
+            from src.tui.engine.dispatcher import EventDispatcher as EventDispatcherProtocol
+            from src.tui.consumer.completion import _CmplHandler as CmplHandlerProtocol
         except ImportError:
-            pytest.skip("_protocols 模块不存在")
+            pytest.skip("protocols 模块不存在")
 
         components = builder.build(mock_event_bus)
 
         assert isinstance(components.bus, object)  # event_bus 是具体类型
         assert isinstance(components.rs, RenderStateProtocol)
         assert isinstance(components.bottom_bar, BottomBarProtocol)
-        assert isinstance(components.renderer, ContentRendererProtocol)
+        assert isinstance(components.renderer, TuiRenderer)
         assert isinstance(components.engine, RenderEngineProtocol)
         assert isinstance(components.disp, EventDispatcherProtocol)
         assert isinstance(components.cmpl, CmplHandlerProtocol)

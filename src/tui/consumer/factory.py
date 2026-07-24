@@ -5,7 +5,7 @@
 
 架构分层（2026-07-22 泛化）：
   _create_framework_components()  — 框架层：OutputAdapter + TuiRenderer + TuiEngine
-  _create_chat_ui_components()    — 应用层：_RenderState + _BottomBar + EventDispatcher + _CmplHandler
+  _create_chat_ui_components()    — 应用层：ChatRenderState + _BottomBar + EventDispatcher + _CmplHandler
 """
 
 from __future__ import annotations
@@ -20,13 +20,11 @@ if TYPE_CHECKING:
     from ..events.event_bus import DisplayEventBus
     from ...renderer.output import OutputAdapter
     from ..engine.renderer import TuiRenderer
-    from ..state.render_state import _RenderState
+    from ..state.render_state import ChatRenderState
     from ..engine.engine import TuiEngine
     from ..engine.dispatcher import EventDispatcher
     from .completion import _CmplHandler
     from .protocols import RenderEngine
-
-from .chat_config import ChatConfig
 
 from .chat_config import ChatConfig
 
@@ -51,7 +49,7 @@ class _ChatUIComponents:
     """ChatUIConsumer 的所有子系统实例容器。
 
     属性：
-        rs: 渲染器生命周期
+        rs: ChatRenderState — 渲染器生命周期
         cursor_tracker: 全局光标追踪
         bottom_bar: 底部固定输入栏
         output_adapter: 输出适配器（Rich Console 包装）
@@ -60,7 +58,7 @@ class _ChatUIComponents:
         dispatcher: 事件过滤+入队
         cmpl_handler: Tab 补全交互
     """
-    rs: "_RenderState"
+    rs: "ChatRenderState"
     cursor_tracker: "CursorTracker"
     bottom_bar: "_BottomBar"
     output_adapter: "OutputAdapter"
@@ -71,7 +69,7 @@ class _ChatUIComponents:
 
 
 def _create_framework_components(
-    rs: "_RenderState",
+    rs: "ChatRenderState",
     output_adapter: "OutputAdapter",
     bottom_bar: "_BottomBar",
     cursor_tracker: "CursorTracker",
@@ -80,7 +78,7 @@ def _create_framework_components(
     """创建框架层子系统：TuiRenderer + TuiEngine。
 
     仅依赖框架级模块（engine/renderer/renderer_base），不直接导入聊天域模块。
-    聊天域依赖（_RenderState / _BottomBar / _display_messages）通过参数注入。
+    聊天域依赖（ChatRenderState / _BottomBar / _display_messages）通过参数注入。
 
     Args:
         rs: 渲染状态实例（聊天域依赖，通过参数注入）
@@ -117,7 +115,7 @@ def _create_chat_ui_components(event_bus=None) -> _ChatUIComponents:
 
     分两步：
       1. _create_framework_components() — 框架层（OutputAdapter + TuiRenderer + TuiEngine）
-      2. 聊天域装配（_RenderState + _BottomBar + EventDispatcher + _CmplHandler）
+      2. 聊天域装配（ChatRenderState + _BottomBar + EventDispatcher + _CmplHandler）
 
     两步可分别独立测试和替换。
 
@@ -131,6 +129,10 @@ def _create_chat_ui_components(event_bus=None) -> _ChatUIComponents:
         from ..events.event_bus import DisplayEventBus
         event_bus = DisplayEventBus.get_default()
 
+    # 确保 tui.core.StyleSheet 样式已注册（惰性注册，幂等安全）
+    from ..engine.const import register_tui_styles
+    register_tui_styles()
+
     from ..widgets.cursor_tracker import CursorTracker
     from ..widgets.bottom_bar import _BottomBar
     from ..widgets.completion import CompletionEngine
@@ -138,7 +140,7 @@ def _create_chat_ui_components(event_bus=None) -> _ChatUIComponents:
     from ...renderer.output import OutputAdapter
     from ...terminal import get_safe_console_config
 
-    from ..state.render_state import _RenderState
+    from ..state.render_state import ChatRenderState
     from ..engine.dispatcher import EventDispatcher
     from .completion import _CmplHandler
     from ..pipeline.message_display import _display_messages
@@ -148,7 +150,7 @@ def _create_chat_ui_components(event_bus=None) -> _ChatUIComponents:
     output_adapter = OutputAdapter(console)
 
     # ── 聊天域子系统 ──
-    rs = _RenderState()
+    rs = ChatRenderState()
     cursor_tracker = CursorTracker()
     bottom_bar = _BottomBar(cursor_tracker=cursor_tracker)
 

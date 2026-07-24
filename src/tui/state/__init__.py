@@ -9,7 +9,7 @@ state/ 不依赖任何业务模块（纯数据）。
   streaming_state.py   — StreamingState 流式输出临时状态
   tui_state_tree.py    — TUIStateTree 聚合容器
   agent_state.py       — AgentStateStore 多 Agent 状态
-  render_state.py      — RenderState/ChatRenderState/_RenderState 渲染器生命周期
+  render_state.py      — RenderState/ChatRenderState 渲染器生命周期
   consumer_registry.py — 全局活跃消费者注册
 """
 
@@ -20,7 +20,7 @@ from .input_state import InputState
 from .streaming_state import StreamingState
 from .tui_state_tree import TUIStateTree
 from .agent_state import AgentStateStore, AgentSlot, ToolRecord
-from .render_state import RenderState, ChatRenderState, _RenderState, _ReasoningState, IRenderState
+from .render_state import RenderState, ChatRenderState, _ReasoningState, IRenderState
 from .consumer_registry import (
     _active_consumer,
     get_active_chat_ui,
@@ -38,7 +38,6 @@ __all__ = [
     "ToolRecord",
     "RenderState",
     "ChatRenderState",
-    "_RenderState",
     "_ReasoningState",
     "IRenderState",
     "_active_consumer",

@@ -6,6 +6,7 @@ from src.tui.testing import tui_test_env, BufferOutputAdapter
 from src.tui.framework import Framework
 from src.tui.animation.animator import AnimatorContext
 from src.tui.core.effects import EffectRegistry
+from src.tui.events.event_bus import DisplayEventBus
 from rich.text import Text
 
 
@@ -45,6 +46,20 @@ class TestTuiTestEnv:
             with tui_test_env():
                 b = Framework.get_default()
                 assert a is not b
+
+    def test_resets_display_event_bus_on_entry(self):
+        """进入上下文后 DisplayEventBus 被复位。"""
+        old = DisplayEventBus.get_default()
+        with tui_test_env():
+            new = DisplayEventBus.get_default()
+            assert old is not new
+
+    def test_resets_display_event_bus_on_exit(self):
+        """退出上下文后 DisplayEventBus 再次复位。"""
+        with tui_test_env():
+            inner = DisplayEventBus.get_default()
+        outer = DisplayEventBus.get_default()
+        assert inner is not outer
 
 
 class TestBufferOutputAdapter:

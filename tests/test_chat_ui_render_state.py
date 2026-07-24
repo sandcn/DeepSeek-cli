@@ -1,4 +1,4 @@
-"""chat_ui 渲染状态模块单元测试 — _RenderState 状态机与生命周期。
+"""chat_ui 渲染状态模块单元测试 — ChatRenderState 状态机与生命周期。
 
 测试覆盖：
   - get_reasoning(): INACTIVE→ACTIVE→CLOSED 三态转换、惰性创建 IncrementalRenderer
@@ -24,14 +24,14 @@ sys.path.insert(0, "/home/DeepSeek-cli")
 # ═══════════════════════════════════════════════════════════
 
 def _make_render_state(**overrides):
-    """创建 _RenderState 实例，字段可覆盖。
+    """创建 ChatRenderState 实例，字段可覆盖。
 
     用法:
         rs = _make_render_state()
         rs = _make_render_state(reasoning_state=_ReasoningState.CLOSED)
     """
-    from src.tui.state.render_state import _RenderState
-    return _RenderState(**overrides)
+    from src.tui.state.render_state import ChatRenderState
+    return ChatRenderState(**overrides)
 
 
 def _make_mock_incremental_renderer():
@@ -44,11 +44,11 @@ def _make_mock_incremental_renderer():
 
 
 # ═══════════════════════════════════════════════════════════
-# TestRenderStateGetReasoning — 推理渲染器获取
+# TestChatRenderStateGetReasoning — 推理渲染器获取
 # ═══════════════════════════════════════════════════════════
 
 class TestRenderStateGetReasoning:
-    """_RenderState.get_reasoning() 状态机转换测试。
+    """ChatRenderState.get_reasoning() 状态机转换测试。
 
     覆盖状态转换：
       INACTIVE → 创建 IncrementalRenderer + 切换到 ACTIVE
@@ -123,7 +123,7 @@ class TestRenderStateGetReasoning:
 # ═══════════════════════════════════════════════════════════
 
 class TestRenderStateGetContent:
-    """_RenderState.get_content() 惰性创建 & 重复调用同实例测试。"""
+    """ChatRenderState.get_content() 惰性创建 & 重复调用同实例测试。"""
 
     @patch("src.renderer.IncrementalRenderer")
     def test_get_content_creates_on_first_call(self, MockRenderer):
@@ -162,7 +162,7 @@ class TestRenderStateGetContent:
 # ═══════════════════════════════════════════════════════════
 
 class TestRenderStateCloseReasoning:
-    """_RenderState.close_reasoning() 关闭推理渲染器测试。
+    """ChatRenderState.close_reasoning() 关闭推理渲染器测试。
 
     覆盖：
       - 正常关闭：写入分隔线 → close → 状态 CLOSED
@@ -210,7 +210,7 @@ class TestRenderStateCloseReasoning:
 # ═══════════════════════════════════════════════════════════
 
 class TestRenderStateReopenReasoning:
-    """_RenderState.reopen_reasoning() 重新打开推理渲染器测试。
+    """ChatRenderState.reopen_reasoning() 重新打开推理渲染器测试。
 
     覆盖：
       - CLOSED → INACTIVE，清除旧引用
@@ -289,7 +289,7 @@ class TestRenderStateReopenReasoning:
 # ═══════════════════════════════════════════════════════════
 
 class TestRenderStateCloseContent:
-    """_RenderState.close_content() 关闭内容渲染器测试。
+    """ChatRenderState.close_content() 关闭内容渲染器测试。
 
     覆盖：
       - 正常关闭：close + content=None
@@ -319,7 +319,7 @@ class TestRenderStateCloseContent:
 # ═══════════════════════════════════════════════════════════
 
 class TestRenderStateCloseAll:
-    """_RenderState.close_all() 关闭所有渲染器测试。
+    """ChatRenderState.close_all() 关闭所有渲染器测试。
 
     覆盖：
       - 关闭推理 + 关闭内容

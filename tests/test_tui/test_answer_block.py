@@ -14,7 +14,7 @@ from src.tui.state.render_state import _ReasoningState
 class MockRenderState:
     """模拟 IRenderState Protocol 的测试辅助类。
 
-    简化 _RenderState 的行为，仅暴露 AnswerBlock 所需的接口：
+    简化 ChatRenderState 的行为，仅暴露 AnswerBlock 所需的接口：
       - reasoning_state: 推理渲染器状态
       - get_content(): 返回内容渲染器 mock
       - close_reasoning(): 关闭推理渲染器，状态转换到 CLOSED

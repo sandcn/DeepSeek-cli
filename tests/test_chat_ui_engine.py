@@ -1,4 +1,4 @@
-"""RenderEngine 单元测试 — 命令队列 / render 线程 / 渲染循环。
+"""TuiEngine 单元测试 — 命令队列 / render 线程 / 渲染循环。
 
 测试范围：
 1. TestRenderEnginePushCmd    — push_cmd 入队/满队列/连续满/ERROR 直写
@@ -22,9 +22,9 @@ import pytest
 
 sys.path.insert(0, "/home/DeepSeek-cli")
 
-from src.tui.engine.const import RenderCommand, _MAX_BATCH_SIZE
+from src.tui.engine.const import RenderCommand
 from src.tui.engine.utils import _cmd_name
-from src.tui.engine.engine import TuiEngine as RenderEngine, _ACTIVE_RENDER_INTERVAL
+from src.tui.engine.engine import TuiEngine, _ACTIVE_RENDER_INTERVAL
 
 
 # ══════════════════════════════════════════════════════
@@ -56,8 +56,8 @@ def mock_bottom_bar():
 
 @pytest.fixture
 def engine(mock_renderer, mock_bottom_bar):
-    """RenderEngine 实例，依赖均已 mock。"""
-    return RenderEngine(mock_renderer, mock_bottom_bar)
+    """TuiEngine 实例，依赖均已 mock。"""
+    return TuiEngine(mock_renderer, mock_bottom_bar)
 
 
 # ══════════════════════════════════════════════════════
@@ -811,7 +811,7 @@ class TestRenderEngineDrainQueue:
     # ── 批量命令处理测试（步骤 4 性能优化） ────────────
 
     def test_drain_batch_size_limit(self, engine):
-        """入队 _MAX_BATCH_SIZE + 10 条命令 → drain_queue 只处理 _MAX_BATCH_SIZE 条。"""
+        """入队 50 + 10 条命令 → drain_queue 只处理 50 条。"""
         engine._bb.is_status_active = False
 
         # 清空队列
@@ -819,7 +819,7 @@ class TestRenderEngineDrainQueue:
             engine._cmd_queue.get_nowait()
             engine._cmd_queue.task_done()
 
-        total = _MAX_BATCH_SIZE + 10
+        total = 50 + 10
         for i in range(total):
             engine._cmd_queue.put((RenderCommand.CONTENT, f"cmd{i}"))
 
@@ -832,13 +832,13 @@ class TestRenderEngineDrainQueue:
 
             engine._drain_queue()
 
-        # 只处理了 _MAX_BATCH_SIZE 条
-        assert engine._renderer.render.call_count == _MAX_BATCH_SIZE
+        # 只处理了 50 条
+        assert engine._renderer.render.call_count == 50
         # 队列中剩余 10 条命令
         assert engine._cmd_queue.qsize() == 10
 
     def test_drain_batch_size_under_limit(self, engine):
-        """入队 _MAX_BATCH_SIZE - 1 条命令 → drain_queue 全部处理。"""
+        """入队 50 - 1 条命令 → drain_queue 全部处理。"""
         engine._bb.is_status_active = False
 
         # 清空队列
@@ -846,7 +846,7 @@ class TestRenderEngineDrainQueue:
             engine._cmd_queue.get_nowait()
             engine._cmd_queue.task_done()
 
-        total = _MAX_BATCH_SIZE - 1
+        total = 50 - 1
         for i in range(total):
             engine._cmd_queue.put((RenderCommand.CONTENT, f"cmd{i}"))
 
@@ -865,7 +865,7 @@ class TestRenderEngineDrainQueue:
         assert engine._cmd_queue.empty()
 
     def test_drain_batch_size_exact(self, engine):
-        """入队正好 _MAX_BATCH_SIZE 条命令 → drain_queue 全部处理。"""
+        """入队正好 50 条命令 → drain_queue 全部处理。"""
         engine._bb.is_status_active = False
 
         # 清空队列
@@ -873,7 +873,7 @@ class TestRenderEngineDrainQueue:
             engine._cmd_queue.get_nowait()
             engine._cmd_queue.task_done()
 
-        total = _MAX_BATCH_SIZE
+        total = 50
         for i in range(total):
             engine._cmd_queue.put((RenderCommand.CONTENT, f"cmd{i}"))
 
@@ -1070,7 +1070,7 @@ class TestRenderEngineEdgeCases:
 
     def test_init_sets_defaults(self, mock_renderer, mock_bottom_bar):
         """验证 __init__ 默认值正确。"""
-        engine = RenderEngine(mock_renderer, mock_bottom_bar)
+        engine = TuiEngine(mock_renderer, mock_bottom_bar)
 
         assert engine._renderer is mock_renderer
         assert engine._bb is mock_bottom_bar
@@ -1107,7 +1107,6 @@ class TestRenderEngineEdgeCases:
 
     def test_render_uses_exponential_backoff(self, engine):
         """_render 中自适应轮询间隔：空闲时指数退避平滑过渡。"""
-        from src.tui.engine.const import _RENDER_INTERVAL
         from src.tui.engine.engine import _ACTIVE_RENDER_INTERVAL
 
         engine._render_running = True
@@ -1144,8 +1143,8 @@ class TestRenderEngineEdgeCases:
             _ACTIVE_RENDER_INTERVAL * 4,      # 0.02s
             _ACTIVE_RENDER_INTERVAL * 8,      # 0.04s
             _ACTIVE_RENDER_INTERVAL * 16,     # 0.08s
-            _RENDER_INTERVAL,                 # 0.1s
-            _RENDER_INTERVAL,                 # 0.1s
+            0.1,                 # 0.1s
+            0.1,                 # 0.1s
         ]
         for idx, expected in enumerate(expected_timeouts):
             assert all_calls[idx] == call(timeout=expected), (
@@ -1227,12 +1226,11 @@ class TestRenderEngineEdgeCases:
         engine._render()
 
         all_calls = engine._cmd_event.wait.call_args_list
-        # idle_count ≥5 后恒为 _RENDER_INTERVAL(0.1s)
-        from src.tui.engine.const import _RENDER_INTERVAL
+        # idle_count ≥5 后恒为 0.1s
         for idx, call_args in enumerate(all_calls):
             if idx >= 5:
-                assert call_args == call(timeout=_RENDER_INTERVAL), (
-                    f"第 {idx+1} 次空闲应 timeout={_RENDER_INTERVAL}，"
+                assert call_args == call(timeout=0.1), (
+                    f"第 {idx+1} 次空闲应 timeout=0.1，"
                     f"实际={call_args}"
                 )
 

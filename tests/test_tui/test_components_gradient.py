@@ -18,26 +18,26 @@ from src.tui.components._user_msg import UserMsgBlock
 from src.tui.components._notification import NotificationBlock
 from src.tui.components._base import TuiComponent
 from src.tui.components._write_line import WriteLineBlock
-from src.tui.engine.const import (
-    _STYLE_ERROR_GRADIENT,
-    _STYLE_USER_GRADIENT,
-    _STYLE_NOTIFICATION_GRADIENT,
-)
+# 确保样式已注册（惰性注册，幂等安全）
+from src.tui.engine.const import register_tui_styles
+register_tui_styles()
 
 
 class TestErrorBlockGradient:
     """ErrorBlock 渐变色/动效增强测试"""
 
     def test_render_narrow_uses_gradient_style(self, monkeypatch):
-        """窄屏时 ErrorBlock.render() 输出使用静态 _STYLE_ERROR_GRADIENT"""
+        """窄屏时 ErrorBlock.render() 输出使用 StyleSheet 注册的 error 样式"""
+        from src.tui.core.style import StyleSheet as _SS
         monkeypatch.setattr("src.tui.components._error.is_narrow", lambda: True)
         block = ErrorBlock("test error")
         result = block.render()
         assert isinstance(result, Text)
-        # 检查两个 span（! 前缀和消息体）都使用增强样式
+        expected_rich = _SS.get("error").to_rich()
+        # 检查两个 span（! 前缀和消息体）都使用正确的 error 样式
         for span in result.spans:
-            assert span.style == _STYLE_ERROR_GRADIENT, (
-                f"预期 Style(bright_red, bold=True)，实际 {span.style}"
+            assert span.style == expected_rich, (
+                f"预期 {expected_rich}，实际 {span.style}"
             )
 
     def test_render_wide_uses_ansi_effect(self):
@@ -58,8 +58,7 @@ class TestErrorBlockGradient:
 
     def test_render_long_message_truncated(self):
         """超长消息仍正常截断"""
-        from src.tui.engine.const import _MAX_ERROR_LENGTH
-        long_msg = "x" * (_MAX_ERROR_LENGTH + 100)
+        long_msg = "x" * 300
         block = ErrorBlock(long_msg)
         result = block.render()
         plain = result.plain
@@ -70,7 +69,7 @@ class TestErrorBlockGradient:
                 break
         else:
             body = plain
-        assert len(body) <= _MAX_ERROR_LENGTH + 3  # +3 为 "..."
+        assert len(body) <= 203  # +3 为 "..."
         assert "..." in body
 
     def test_render_wide_border_present(self):
@@ -178,9 +177,11 @@ class TestErrorBlockGradient:
         block = ErrorBlock("narrow fadein")
         result = block.render()
 
+        from src.tui.core.style import StyleSheet as _SS
+        expected_rich = _SS.get("error").to_rich()
         for span in result.spans:
-            assert span.style == _STYLE_ERROR_GRADIENT, (
-                f"窄屏预期 {_STYLE_ERROR_GRADIENT}，实际 {span.style}"
+            assert span.style == expected_rich, (
+                f"窄屏预期 {expected_rich}，实际 {span.style}"
             )
 
 
@@ -188,14 +189,16 @@ class TestUserMsgBlockGradient:
     """UserMsgBlock 渐变色增强测试"""
 
     def test_render_uses_cyan_style(self, monkeypatch):
-        """窄屏时 UserMsgBlock.render() 输出使用青色加粗样式"""
+        """窄屏时 UserMsgBlock.render() 输出使用 StyleSheet 注册的 user_icon 样式"""
+        from src.tui.core.style import StyleSheet as _SS
         monkeypatch.setattr("src.tui.components._user_msg.is_narrow", lambda: True)
         block = UserMsgBlock("hello world")
         result = block.render()
         assert isinstance(result, Text)
+        expected_rich = _SS.get("user_icon").to_rich()
         for span in result.spans:
-            assert span.style == _STYLE_USER_GRADIENT, (
-                f"预期 Style(cyan, bold=True)，实际 {span.style}"
+            assert span.style == expected_rich, (
+                f"预期 {expected_rich}，实际 {span.style}"
             )
 
     def test_render_message_content_preserved(self):
@@ -230,14 +233,16 @@ class TestUserMsgBlockBeautify:
         assert "hello world" in result.plain
 
     def test_render_narrow_static(self, monkeypatch):
-        """窄屏时 UserMsgBlock.render() 使用 Rich Text 静态样式"""
+        """窄屏时 UserMsgBlock.render() 使用 StyleSheet 注册的 user_icon 样式"""
+        from src.tui.core.style import StyleSheet as _SS
         monkeypatch.setattr("src.tui.components._user_msg.is_narrow", lambda: True)
         block = UserMsgBlock("narrow msg")
         result = block.render()
         assert isinstance(result, Text)
+        expected_rich = _SS.get("user_icon").to_rich()
         for span in result.spans:
-            assert span.style == _STYLE_USER_GRADIENT, (
-                f"窄屏预期 {_STYLE_USER_GRADIENT}，实际 {span.style}"
+            assert span.style == expected_rich, (
+                f"窄屏预期 {expected_rich}，实际 {span.style}"
             )
 
     def test_render_content_preserved(self):
@@ -271,14 +276,16 @@ class TestNotificationBlockGradient:
     """NotificationBlock 渐变色增强测试"""
 
     def test_render_narrow_uses_static_style(self, monkeypatch):
-        """窄屏时 render() 使用静态 _STYLE_NOTIFICATION_GRADIENT"""
+        """窄屏时 render() 使用 StyleSheet 注册的 neon 样式"""
+        from src.tui.core.style import StyleSheet as _SS
         monkeypatch.setattr("src.tui.components._notification.is_narrow", lambda: True)
         block = NotificationBlock("task completed")
         result = block.render()
         assert isinstance(result, Text)
+        expected_rich = _SS.get("neon").to_rich()
         for span in result.spans:
-            assert span.style == _STYLE_NOTIFICATION_GRADIENT, (
-                f"窄屏预期 Style(bright_green, bold=True)，实际 {span.style}"
+            assert span.style == expected_rich, (
+                f"窄屏预期 {expected_rich}，实际 {span.style}"
             )
 
     def test_render_wide_contains_content(self):
@@ -390,9 +397,11 @@ class TestNotificationBlockGradient:
         block = NotificationBlock("narrow fade")
         result = block.render()
 
+        from src.tui.core.style import StyleSheet as _SS
+        expected_rich = _SS.get("neon").to_rich()
         for span in result.spans:
-            assert span.style == _STYLE_NOTIFICATION_GRADIENT, (
-                f"窄屏预期 {_STYLE_NOTIFICATION_GRADIENT}，实际 {span.style}"
+            assert span.style == expected_rich, (
+                f"窄屏预期 {expected_rich}，实际 {span.style}"
             )
 
 

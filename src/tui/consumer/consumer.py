@@ -26,6 +26,7 @@ if TYPE_CHECKING:
         OutputEvent,
         ModelPhaseEvent,
     )
+    from .factory import _ChatUIComponents
 
 from ..engine.const import (
     RenderCommand,
@@ -58,69 +59,57 @@ class ChatUIConsumer:
       输入行        ─── 由 _BottomBar._draw_input_lines_locked() 渲染
       Overlay       ─── 由 _CompletionPopup / _BottomBar 渲染
 
-    内部子系统：
-      _rs       (_RenderState)    — 渲染器生命周期
-      _engine   (RenderEngine)    — render 线程 + 命令队列
-      _disp     (EventDispatcher) — 事件过滤+入队
-      _renderer (TuiRenderer)     — 组件化渲染分发
-      _cmpl     (_CmplHandler)    — Tab 补全交互
+    内部子系统通过 self._components 容器访问：
+      _components.rs             (ChatRenderState) — 渲染器生命周期
+      _components.engine         (RenderEngine)    — render 线程 + 命令队列
+      _components.dispatcher     (EventDispatcher) — 事件过滤+入队
+      _components.tui_renderer   (TuiRenderer)     — 组件化渲染分发
+      _components.cmpl_handler   (_CmplHandler)    — Tab 补全交互
+      _components.bottom_bar     (_BottomBar)      — 底部固定输入栏
+      _components.cursor_tracker (CursorTracker)   — 全局光标追踪
     """
 
-    def __init__(self, event_bus=None, *, _components=None):
+    def __init__(self, event_bus=None):
         """初始化 ChatUIConsumer。
 
         Args:
             event_bus: DisplayEventBus 实例。为 None 时获取默认实例。
-            _components: 预创建的 _ChatUIComponents 实例（用于测试注入）。
-                         为 None 时通过工厂自动创建。
         """
         if event_bus is None:
             from ..events.event_bus import DisplayEventBus
             event_bus = DisplayEventBus.get_default()
         self._bus = event_bus
 
-        if _components is not None:
-            self._components = _components
-        else:
-            from .factory import _create_chat_ui_components
-            self._components = _create_chat_ui_components(event_bus)
+        from .factory import _create_chat_ui_components
+        self._components = _create_chat_ui_components(event_bus)
 
         self._bound_handlers: dict[type, Callable] | None = None
         self._state_lock = threading.Lock()
         self._started = False
         self._handlers_bound = False
 
-    # ── 向后兼容属性代理（门面模式） ──────────────
-    # 以下 @property 通过 self._components 容器访问子系统，
-    # 确保外部代码（含测试）通过 self._xxx 的访问路径保持不变。
+    @classmethod
+    def for_testing(cls, components: _ChatUIComponents, event_bus=None) -> ChatUIConsumer:
+        """创建用于测试的 ChatUIConsumer 实例，注入预创建的组件。
 
-    @property
-    def _rs(self):
-        return self._components.rs
+        Args:
+            components: 预创建的 _ChatUIComponents 实例。
+            event_bus: DisplayEventBus 实例。为 None 时获取默认实例。
 
-    @property
-    def _cursor_tracker(self):
-        return self._components.cursor_tracker
-
-    @property
-    def _bottom_bar(self):
-        return self._components.bottom_bar
-
-    @property
-    def _tui_renderer(self):
-        return self._components.tui_renderer
-
-    @property
-    def _engine(self):
-        return self._components.engine
-
-    @property
-    def _disp(self):
-        return self._components.dispatcher
-
-    @property
-    def _cmpl(self):
-        return self._components.cmpl_handler
+        Returns:
+            新的 ChatUIConsumer 实例（不调用 __init__）。
+        """
+        if event_bus is None:
+            from ..events.event_bus import DisplayEventBus
+            event_bus = DisplayEventBus.get_default()
+        instance = cls.__new__(cls)
+        instance._bus = event_bus
+        instance._components = components
+        instance._bound_handlers = None
+        instance._state_lock = threading.Lock()
+        instance._started = False
+        instance._handlers_bound = False
+        return instance
 
     # ── 生命周期 ──────────────────────────────────
 
@@ -139,7 +128,7 @@ class ChatUIConsumer:
                 return
             if self._bound_handlers is None:
                 self._bound_handlers = {}
-                for event_type, handler in self._disp.list_handlers().items():
+                for event_type, handler in self._components.dispatcher.list_handlers().items():
                     self._bound_handlers[event_type] = handler
             if self._handlers_bound:
                 for event_type in self._bound_handlers:
@@ -151,9 +140,9 @@ class ChatUIConsumer:
                 self._bus.subscribe(self._bound_handlers[event_type], event_type=event_type)
             self._handlers_bound = True
             _register_consumer(self)
-            self._engine.start()
+            self._components.engine.start()
             # ── 展示启动品牌屏 ──
-            self._engine.push_cmd((RenderCommand.SPLASH,))
+            self._components.engine.push_cmd((RenderCommand.SPLASH,))
             self._started = True
 
     def stop(self) -> None:
@@ -173,8 +162,8 @@ class ChatUIConsumer:
                         self._bus.unsubscribe(self._bound_handlers[event_type], event_type=event_type)
                     except Exception:
                         _logger.debug("stop: unsubscribe %s 失败", event_type.__name__, exc_info=True)
-            self._engine.flush()
-            self._engine.stop()
+            self._components.engine.flush()
+            self._components.engine.stop()
             _unregister_consumer()
             with render_lock:
                 self._components.rs.close_all()
@@ -193,10 +182,10 @@ class ChatUIConsumer:
         with self._state_lock:
             if not self._started:
                 return
-            self._engine.flush()
-            self._engine.stop()
+            self._components.engine.flush()
+            self._components.engine.stop()
             with render_lock:
-                self._bottom_bar.teardown()
+                self._components.bottom_bar.teardown()
 
     def resume(self) -> None:
         """恢复渲染引擎，重建底部栏。
@@ -209,7 +198,7 @@ class ChatUIConsumer:
         with self._state_lock:
             if not self._started:
                 return
-            if self._engine._render_running:
+            if self._components.engine._render_running:
                 return
             with render_lock:
                 try:
@@ -219,22 +208,22 @@ class ChatUIConsumer:
                     _logger.debug("resume 光标定位失败, 使用 ANSI 回退", exc_info=True)
                     sys.__stdout__.write(_ANSI_CURSOR_BOTTOM)
                 sys.__stdout__.flush()
-                self._bottom_bar._active = False
-                self._bottom_bar.setup()
-                self._engine.start()
+                self._components.bottom_bar._active = False
+                self._components.bottom_bar.setup()
+                self._components.engine.start()
 
     # ── 公开方法 ──────────────────────────────────
 
     def on_user_message(self, text: str) -> None:
-        self._engine.push_cmd((RenderCommand.USER_MSG, text))
+        self._components.engine.push_cmd((RenderCommand.USER_MSG, text))
 
     def on_notification(self, text: str) -> None:
-        self._engine.push_cmd((RenderCommand.NOTIFICATION, text))
+        self._components.engine.push_cmd((RenderCommand.NOTIFICATION, text))
 
     def on_error(self, message: str) -> None:
         if not message:
             return
-        self._engine.push_cmd((RenderCommand.ERROR, message))
+        self._components.engine.push_cmd((RenderCommand.ERROR, message))
 
     def register_event_handler(self, event_type: type, handler_method: Callable) -> None:
         """注册自定义事件处理器（委托给 EventDispatcher）。
@@ -246,7 +235,7 @@ class ChatUIConsumer:
             event_type: DisplayEvent 子类
             handler_method: 事件处理 callable，签名为 (event) -> None
         """
-        self._disp.register_handler(event_type, handler_method)
+        self._components.dispatcher.register_handler(event_type, handler_method)
         # 如果已经启动且已绑定，立即订阅新处理器
         with self._state_lock:
             if self._started and self._handlers_bound:
@@ -255,13 +244,13 @@ class ChatUIConsumer:
                     self._bound_handlers[event_type] = handler_method
 
     def request_bottom_redraw(self) -> None:
-        self._engine.request_bottom_redraw()
+        self._components.engine.request_bottom_redraw()
 
     def write_line(self, text: str) -> None:
-        self._engine.push_cmd((RenderCommand.WRITE_LINE, text))
+        self._components.engine.push_cmd((RenderCommand.WRITE_LINE, text))
 
     def display_messages(self, messages: list[dict], speed: int = 0) -> None:
-        self._engine.push_cmd((RenderCommand.DISPLAY_MSGS, messages, speed))
+        self._components.engine.push_cmd((RenderCommand.DISPLAY_MSGS, messages, speed))
 
     def wait_for_user_input(self, monitor, prefill: str = "", timeout: float | None = None) -> str:
         """阻塞等待用户通过 monitor 输入文本。
@@ -297,14 +286,14 @@ class ChatUIConsumer:
             time.sleep(0.05)
 
     def setup_completion(self, monitor) -> None:
-        monitor.set_completion_callback(self._cmpl.on_tab)
-        monitor.set_dismiss_completion_callback(self._cmpl.on_dismiss)
-        monitor.set_completion_navigate_callback(self._cmpl.on_navigate)
-        monitor.set_auto_completion_callback(self._cmpl.on_auto)
+        monitor.set_completion_callback(self._components.cmpl_handler.on_tab)
+        monitor.set_dismiss_completion_callback(self._components.cmpl_handler.on_dismiss)
+        monitor.set_completion_navigate_callback(self._components.cmpl_handler.on_navigate)
+        monitor.set_auto_completion_callback(self._components.cmpl_handler.on_auto)
 
     @property
     def bottom_bar(self):
-        return self._bottom_bar
+        return self._components.bottom_bar
 
     @property
     def output_adapter(self):
@@ -312,25 +301,25 @@ class ChatUIConsumer:
         return self._components.tui_renderer.output_adapter
 
     def set_panel_refresh_callback(self, callback: Callable[[], None] | None) -> None:
-        self._engine.set_panel_refresh_callback(callback)
+        self._components.engine.set_panel_refresh_callback(callback)
 
     def setup_bottom_bar(self) -> None:
         with render_lock:
-            self._bottom_bar.setup()
+            self._components.bottom_bar.setup()
 
     def teardown_bottom_bar(self) -> None:
-        self._bottom_bar.teardown()
+        self._components.bottom_bar.teardown()
 
     def ensure_cursor_upper(self) -> None:
-        self._engine.ensure_cursor_upper()
+        self._components.engine.ensure_cursor_upper()
 
     def refresh_bottom_bar(self, text: str, cursor_pos: int = -1) -> None:
         effective_pos = len(text) if cursor_pos < 0 else cursor_pos
-        self._bottom_bar.set_input_state(text, effective_pos)
-        self._engine.request_bottom_redraw()
+        self._components.bottom_bar.set_input_state(text, effective_pos)
+        self._components.engine.request_bottom_redraw()
 
     def flush(self, timeout: float | None = 5.0) -> None:
-        self._engine.flush(timeout=timeout)
+        self._components.engine.flush(timeout=timeout)
 
     def push_cmd(self, cmd: tuple) -> None:
-        self._engine.push_cmd(cmd)
+        self._components.engine.push_cmd(cmd)
