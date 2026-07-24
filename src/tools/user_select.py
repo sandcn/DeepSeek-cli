@@ -210,16 +210,12 @@ class UserSelectFunc(Func):
             bb._last_bottom_lines = bb._bottom_lines
             bb._last_scroll_end = term_h - bb._bottom_lines
 
-        # 构建显示文本（带编号）
-        display_items = [f"{i + 1}. {opt}" for i, opt in enumerate(self.options)]
-
-        # 多选：初始显示空复选框，Enter 提交全部选中项，空格切换
-        if self.multi_select:
-            multi_display = [f"  {i + 1}. {opt}" for i, opt in enumerate(self.options)]
-            multi_texts = list(self.options)
-        else:
-            multi_display = display_items
-            multi_texts = self.options
+        # 多选：初始显示复选框（默认选项前端已勾选），Enter 提交全部选中项，空格切换
+        multi_display = []
+        for i, opt in enumerate(self.options):
+            prefix = "✓ " if opt in (self.default_options or []) else "  "
+            multi_display.append(f"{prefix}{i + 1}. {opt}")
+        multi_texts = list(self.options) if self.multi_select else self.options
 
         # 保存当前选中索引的默认值
         initial_idx = 0
@@ -255,8 +251,12 @@ class UserSelectFunc(Func):
                 title="选择",
             )
 
-            # 多选状态跟踪
+            # 多选状态跟踪（默认选项初始勾选）
             selected_indices: set[int] = set()
+            if self.default_options:
+                for i, opt in enumerate(self.options):
+                    if opt in self.default_options:
+                        selected_indices.add(i)
             deadline = None if self.timeout <= 0 else time.monotonic() + self.timeout
 
             while True:
@@ -289,24 +289,14 @@ class UserSelectFunc(Func):
                         has_more, _, _ = select.select([fd], [], [], 0.3)
                         if has_more:
                             nxt = os.read(fd, 1)
-                            if nxt == b'[':
-                                # CSI 序列：\x1b[A ↑, \x1b[B ↓
+                            if nxt in (b'[', b'O'):
+                                # CSI/SS3 序列：\x1b[A/↑, \x1b[B/↓, \x1bOA/↑, \x1bOB/↓
                                 has_term, _, _ = select.select([fd], [], [], 0.1)
                                 if has_term:
                                     term = os.read(fd, 1)
                                     if term == b'A':      # ↑
                                         bb.cycle_completion(-1)
                                     elif term == b'B':    # ↓
-                                        bb.cycle_completion(1)
-                                continue
-                            elif nxt == b'O':
-                                # SS3 序列：\x1bOA ↑, \x1bOB ↓
-                                has_term, _, _ = select.select([fd], [], [], 0.1)
-                                if has_term:
-                                    term = os.read(fd, 1)
-                                    if term == b'A':
-                                        bb.cycle_completion(-1)
-                                    elif term == b'B':
                                         bb.cycle_completion(1)
                                 continue
                     except (ValueError, OSError):
@@ -331,7 +321,7 @@ class UserSelectFunc(Func):
                     new_disp = []
                     for i, opt in enumerate(self.options):
                         prefix = "✓ " if i in selected_indices else "  "
-                        new_disp.append(f"{prefix}{opt}")
+                        new_disp.append(f"{prefix}{i + 1}. {opt}")
                     show_idx = min(bb._completion_idx, len(new_disp) - 1)
                     bb.show_completions(
                         new_disp, show_idx,
@@ -412,14 +402,14 @@ class UserSelectFunc(Func):
         if len(self.options) <= 10:
             for i, option in enumerate(self.options):
                 if option in self.default_options:
-                    Func._publish_tool_text(f"  {DIM}{i}. {option} (默认){RESET}")
+                    Func._publish_tool_text(f"  {DIM}{i + 1}. {option} (默认){RESET}")
                 else:
-                    Func._publish_tool_text(f"  {DIM}{i}. {option}{RESET}")
+                    Func._publish_tool_text(f"  {DIM}{i + 1}. {option}{RESET}")
         else:
             Func._publish_tool_text(f"  {DIM}共 {len(self.options)} 个选项{RESET}")
             for i, option in enumerate(self.options[:5]):
                 if option in self.default_options:
-                    Func._publish_tool_text(f"  {DIM}{i}. {option} (默认){RESET}")
+                    Func._publish_tool_text(f"  {DIM}{i + 1}. {option} (默认){RESET}")
             Func._publish_tool_text(f"  {DIM}... 还有 {len(self.options) - 5} 个选项{RESET}")
 
         Func._publish_tool_text(f"  {DIM}模式: {'多选' if self.multi_select else '单选'}{RESET}")
@@ -445,22 +435,21 @@ class UserSelectFunc(Func):
                 Func._publish_tool_text(f"  {YELLOW}未选择任何项{RESET}")
         elif action == "cancel":
             Func._publish_tool_text(f"  {YELLOW}x 用户取消{RESET}")
-            if self.default_options:
-                Func._publish_tool_text(f"  {DIM}使用默认选项: {', '.join(self.default_options)}{RESET}")
         elif action == "timeout":
             Func._publish_tool_text(f"  {YELLOW}超时{RESET}")
-            if self.default_options:
-                Func._publish_tool_text(f"  {DIM}使用默认选项: {', '.join(self.default_options)}{RESET}")
         elif action == "non_interactive":
             Func._publish_tool_text(f"  {YELLOW}非交互式环境{RESET}")
-            if self.default_options:
-                Func._publish_tool_text(f"  {DIM}使用默认选项: {', '.join(self.default_options)}{RESET}")
-        elif action == "error" or action.startswith("error:"):
+        elif action.startswith("error:"):
             Func._publish_tool_text(f"  {RED}x 错误: {action}{RESET}")
-            if self.default_options:
-                Func._publish_tool_text(f"  {DIM}使用默认选项: {', '.join(self.default_options)}{RESET}")
+        elif action == "empty":
+            Func._publish_tool_text(f"  {DIM}(无可用选项){RESET}")
         else:
             Func._publish_tool_text(f"  {YELLOW}未知操作: {action}{RESET}")
+
+        # 统一处理默认选项显示
+        if action in ("cancel", "timeout", "non_interactive") or action.startswith("error:"):
+            if self.default_options:
+                Func._publish_tool_text(f"  {DIM}使用默认选项: {', '.join(self.default_options)}{RESET}")
 
         return result_json
 
