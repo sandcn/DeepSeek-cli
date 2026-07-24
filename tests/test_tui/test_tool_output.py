@@ -83,21 +83,6 @@ class TestToolOutputBlock(unittest.TestCase):
         self.assertIn("\033[32m", result)
         self.assertIn("\033[31m", result)
 
-    def test_render_long_text_truncated(self):
-        """超长文本被截断并附加 ...(truncated)。"""
-        from src.tui.components._tool_output import ToolOutputBlock
-        from src.tui.engine.const import _MAX_OUTPUT_LEN
-        long_text = "A" * (_MAX_OUTPUT_LEN + 100)
-        block = ToolOutputBlock(text=long_text)
-        result = block.render()
-        self.assertIsNotNone(result)
-        self.assertIn("...(truncated)", result)
-        # 截断后内容不超过 _MAX_OUTPUT_LEN + suffix 长度（含边框前缀）
-        # 且原始文本的最后 100 个字符不应出现在结果中（已被截断）
-        self.assertLess(len(result), _MAX_OUTPUT_LEN + 50)
-        # 仅保留前 _MAX_OUTPUT_LEN 个字符
-        self.assertNotIn("A" * (_MAX_OUTPUT_LEN + 1), result)
-
     @patch("src.tui.components._tool_output.is_narrow", return_value=True)
     def test_render_dark_border_narrow(self, mock_is_narrow):
         """窄屏时无呼吸边框，使用 \\033[2m 降级样式。"""

@@ -18,7 +18,6 @@ if TYPE_CHECKING:
 
 from rich.text import Text
 
-from ..consumer.chat_config import ChatConfig
 from ._base import TuiComponent
 
 _logger = logging.getLogger(__name__)
@@ -35,9 +34,6 @@ class ToolOutputBlock(TuiComponent):
         支持 buffer 参数：传入 buffer 时写入并返回 None；否则返回字符串。
         """
         text = self.text
-        _max_len = ChatConfig.defaults().max_output_len
-        if len(text) > _max_len:
-            text = text[:_max_len] + "...(truncated)"
         has_carriage = '\r' in text
 
         if has_carriage:
@@ -62,9 +58,6 @@ class ToolOutputBlock(TuiComponent):
         非 \\r 路径委托 render(buffer) 获取内容再通过 adapter 输出。
         """
         text = self.text
-        _max_len = ChatConfig.defaults().max_output_len
-        if len(text) > _max_len:
-            text = text[:_max_len] + "...(truncated)"
         has_carriage = '\r' in text
 
         if has_carriage:

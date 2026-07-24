@@ -262,16 +262,16 @@ class TestDoToolOutput:
         renderer._do_tool_output("")
         mock_ta.write.assert_called_once()
 
-    def test_tool_output_long_text_truncated(self, renderer, mock_ta):
-        """超长文本 → 截断后输出（含呼吸色左边缘 │）"""
+    def test_tool_output_long_text_not_truncated(self, renderer, mock_ta):
+        """超长文本 → 不再截断，完整输出"""
         long_text = "x" * 10050
         renderer._do_tool_output(long_text)
         mock_ta.write.assert_called_once()
         text_arg = mock_ta.write.call_args[0][0]
         assert isinstance(text_arg, Text)
-        # 宽屏模式（默认）下输出含呼吸色左边缘 "  │   " 前缀 + 截断文本
-        assert "x" * 10000 in text_arg.plain
-        assert "...(truncated)" in text_arg.plain
+        # 不再截断，完整输出所有字符
+        assert "x" * 10050 in text_arg.plain
+        assert "...(truncated)" not in text_arg.plain
 
     def test_tool_output_with_carriage_return(self, renderer, mock_ta):
         """含 \\r 的文本 → 取最后一段通过 write_raw 输出，续写入 \\n"""
