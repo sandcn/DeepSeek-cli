@@ -13,7 +13,7 @@ from rich.console import Console as RichConsole
 from .base import Func, tool_metadata
 from .file_ops import validate_path_security
 from .encoding import async_detect_encoding, pick_best_decoding, FALLBACK_ENCODINGS
-from ._constants import LARGE_FILE_THRESHOLD
+from ._constants import LARGE_FILE_THRESHOLD, MAX_DETECT_BYTES
 from ..core.constants import CYAN, DIM, RESET, RED
 
 _UNSUPPORTED_EXTENSIONS = frozenset({"txt", "text"})
@@ -157,65 +157,86 @@ class ReadFileFunc(Func):
 
         self._file_result = None
 
-    async def _determine_encoding(self, file_path):
-        """读取文件全部原始字节并检测编码，返回 (encoding, raw_bytes)
+    async def _determine_encoding(self, file_path, max_bytes=None):
+        """读取文件字节并检测编码，返回 (encoding, raw_bytes)
 
-        合并编码检测和文件读取为一次 IO（仅读取一次文件全部字节），
-        并将已读取的 raw_bytes 传给编码检测器，避免重复 IO 且使用整
-        体数据进行检测，大幅提高 GBK 等中文编码的检测准确率。
+        参数：
+          max_bytes: 最大读取字节数，None 表示读取全部文件。
+                    用于无行号范围场景——仅读 64KB 做编码检测即可，
+                    detect_encoding 内部同样使用 MAX_DETECT_BYTES 样本。
+
+        合并编码检测和文件读取为一次 IO，并将已读取的 raw_bytes
+        传给编码检测器，避免重复 IO 且使用整体数据进行检测，大幅
+        提高 GBK 等中文编码的检测准确率。
         """
         async with aiofiles.open(file_path, 'rb') as f:
-            raw_bytes = await f.read()
+            if max_bytes is not None:
+                raw_bytes = await f.read(max_bytes)
+            else:
+                raw_bytes = await f.read()
         encoding = await async_detect_encoding(file_path, raw_bytes=raw_bytes)
         return encoding, raw_bytes
-
-    async def _read_content(self, file_path: str, encoding: str, errors: str) -> dict:
-        """读取文件全部内容，返回 {'content', 'original_line_numbers', 'error', 'success'} 结构。
-
-        注意：行号范围切片逻辑已统一至 _slice_lines() 中，
-        该方法已无调用方，保留仅作向后兼容（子类覆盖）。
-        """
-        async with aiofiles.open(file_path, 'r', encoding=encoding, errors=errors) as f:
-            content = await f.read()
-        return {
-            _CONTENT_KEY: content,
-            _LINE_NUMBERS_KEY: None,
-            _ERROR_KEY: None,
-            _SUCCESS_KEY: True,
-        }
 
     def _slice_lines(self, content: str) -> dict:
         """对已解码的完整 content 按行号范围切片，返回 _file_result 字典。
 
-        将 \r\n/\r 归一化为 \n（匹配 Python 文本模式通用换行行为），
-        然后在内存中按行切片，消除第2次文件 IO。
+        使用 str.find('\\n') 索引定位替代全量 split+join，仅遍历到
+        end_line 即停止。对「读文件末尾几行」场景（如 L1000-L1020）
+        大幅减少计算——不再构建百万级字符串列表。
         """
-        # 归一化行尾：\r\n → \n,  lone \r → \n（匹配文本模式通用换行）
-        normalized = content.replace('\r\n', '\n').replace('\r', '\n')
-
-        # 分割为带行尾符的行列表（匹配 async for line in f: 的逐行行为）
-        if not normalized:
-            all_lines = []
-        elif normalized.endswith('\n'):
-            all_lines = [l + '\n' for l in normalized[:-1].split('\n')]
-        else:
-            parts = normalized.split('\n')
-            all_lines = [l + '\n' for l in parts[:-1]] + [parts[-1]]
-
-        total = len(all_lines)
         start = max(1, self.start_line) if self.start_line is not None else 1
         end = self.end_line  # 用户传入，可能为 None
 
-        if total == 0 or start > total:
-            # 行号越界：返回空内容，actual_end 匹配原始 _read_content 行为
-            selected = ''
-            actual_end = end  # 可为 None（原始行为：end 是用户传入值）
+        if not content:
+            return {
+                _CONTENT_KEY: '',
+                _LINE_NUMBERS_KEY: (start, end),
+                _ERROR_KEY: None,
+                _SUCCESS_KEY: True,
+            }
+
+        # 归一化行尾：\r\n → \n,  lone \r → \n（仅在含 \r 时执行）
+        if '\r' in content:
+            content = content.replace('\r\n', '\n').replace('\r', '\n')
+        normalized = content
+
+        # 计算总行数：\n 的个数 + (末字符非 \n 时最后一行)
+        total = normalized.count('\n')
+        if not normalized.endswith('\n'):
+            total += 1
+
+        if start > total:
+            return {
+                _CONTENT_KEY: '',
+                _LINE_NUMBERS_KEY: (start, end),
+                _ERROR_KEY: None,
+                _SUCCESS_KEY: True,
+            }
+
+        if end is None or end > total:
+            actual_end = total
         else:
-            if end is None or end > total:
-                actual_end = total
-            else:
-                actual_end = end
-            selected = ''.join(all_lines[start - 1:actual_end])
+            actual_end = end
+
+        # 用 find 定位 start 行的起始位置（跳过 start-1 个换行符）
+        pos = 0
+        for _ in range(start - 1):
+            nl = normalized.find('\n', pos)
+            if nl == -1:
+                break
+            pos = nl + 1
+
+        # 从 start 位置定位 end 行的结束位置（扫描 actual_end-start+1 个换行符）
+        end_pos = pos
+        lines_to_scan = actual_end - start + 1
+        for _ in range(lines_to_scan):
+            nl = normalized.find('\n', end_pos)
+            if nl == -1:
+                end_pos = len(normalized)
+                break
+            end_pos = nl + 1
+
+        selected = normalized[pos:end_pos]
 
         return {
             _CONTENT_KEY: selected,
@@ -239,11 +260,8 @@ class ReadFileFunc(Func):
 
         try:
             if self.start_line is not None or self.end_line is not None:
-                # ===== 行号范围场景：全量读字节做编码检测，内存切片 =====
-                # 先读全文件字节确保编码检测准确（对于大文件中后段才出现
-                # 中文的场景，仅读头部 64KB 可能检测不到正确编码）
+                # ===== 行号范围场景：全量读字节 → pick_best_decoding → 内存切片 =====
                 actual_encoding, raw_bytes = await self._determine_encoding(file_path)
-                # 多编码回退：pick_best_decoding 用全量 raw_bytes 择优，返回完整解码内容
                 decode_candidates = [actual_encoding]
                 full_candidates = decode_candidates + [e for e in FALLBACK_ENCODINGS if e not in decode_candidates]
                 final_encoding, content = await asyncio.to_thread(
@@ -255,61 +273,23 @@ class ReadFileFunc(Func):
                         "编码回退(行范围): %s → %s (文件 %s)",
                         actual_encoding, final_encoding, file_path,
                     )
-                # 内存行切片：pick_best_decoding 已返回完整解码内容，切片消除第2次文件 IO
                 self._file_result = self._slice_lines(content)
             else:
-                # ===== 无行号范围：原逻辑（全量读取 + 多编码回退） =====
-                actual_encoding, raw_bytes = await self._determine_encoding(file_path)
-                # 多编码回退解码：检测到的编码排首位，备选编码兜底
-                decode_candidates = [actual_encoding]
-                full_candidates = decode_candidates + [e for e in FALLBACK_ENCODINGS if e not in decode_candidates]
-                final_encoding, content = await asyncio.to_thread(
-                    pick_best_decoding, raw_bytes, full_candidates,
+                # ===== 无行号范围：64KB 检测编码 → 文本模式读全文件 =====
+                # MAX_DETECT_BYTES (64KB) 足够 BOM + chardet，与 detect_encoding
+                # 默认行为一致；async_detect_encoding 内部已做编码质量验证和回退
+                actual_encoding, _ = await self._determine_encoding(
+                    file_path, max_bytes=MAX_DETECT_BYTES,
                 )
-                if final_encoding != actual_encoding:
-                    logger = logging.getLogger(__name__)
-                    logger.info(
-                        "编码回退: %s → %s (文件 %s)",
-                        actual_encoding, final_encoding, file_path,
-                    )
+                async with aiofiles.open(
+                    file_path, 'r', encoding=actual_encoding, errors='replace',
+                ) as f:
+                    content = await f.read()
                 self._file_result = {
                     _CONTENT_KEY: content,
                     _LINE_NUMBERS_KEY: None,
                     _ERROR_KEY: None,
                     _SUCCESS_KEY: True,
-                }
-        except UnicodeDecodeError:
-            _logger = logging.getLogger(__name__)
-            _logger.error("意外到达死代码路径 (UnicodeDecodeError) - file=%s", file_path)
-            # 作为防御性兜底，用 replace 模式解码
-            try:
-                content = raw_bytes.decode(actual_encoding, errors='replace')
-                if self.start_line is not None or self.end_line is not None:
-                    start = self.start_line if self.start_line is not None else 1
-                    end = self.end_line if self.end_line is not None else None
-                    lines = content.splitlines(keepends=True)
-                    line_count = len(lines)
-                    if end is None or end > line_count:
-                        end = line_count
-                    if start > line_count:
-                        selected_lines = []
-                    else:
-                        selected_lines = lines[start-1:end]
-                    content = ''.join(selected_lines)
-                    original_line_numbers = (start, end)
-                else:
-                    original_line_numbers = None
-                self._file_result = {
-                    _CONTENT_KEY: content,
-                    _LINE_NUMBERS_KEY: original_line_numbers,
-                    _ERROR_KEY: None,
-                    _SUCCESS_KEY: True,
-                }
-            except Exception:
-                self._file_result = {
-                    _CONTENT_KEY: None, _LINE_NUMBERS_KEY: None,
-                    _ERROR_KEY: "(编码错误: 请尝试指定正确的encoding参数)",
-                    _SUCCESS_KEY: False
                 }
         except Exception as e:
             self._file_result = {
@@ -322,10 +302,9 @@ class ReadFileFunc(Func):
             return self._file_result[_ERROR_KEY]
 
         content = self._file_result[_CONTENT_KEY]
-        if content is not None:
-            cleaned = content.replace('\r', '')
-            if cleaned:
-                return f"文件: {self.path}\n{cleaned}"
+        cleaned = content.replace('\r', '')
+        if cleaned:
+            return f"文件: {self.path}\n{cleaned}"
         return f"(文件为空: {self.path})"
 
     # ── 公共 UI 辅助方法（消除 display/web_display 重复）──

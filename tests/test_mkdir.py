@@ -251,14 +251,16 @@ class TestMkdirFuncExecuteErrors:
             assert "创建失败" in result
 
     async def test_value_error_from_validation(self, tmp_path):
-        """path security validation 抛出 ValueError 被捕获"""
+        """execute 不再重复调用 validate_path_security——构造时已校验，execute 正常执行"""
         d = tmp_path / "valid_path"
 
         mk = MkdirFunc(path=str(d))
+        # 构造时 validate_path_security 已通过；execute 不再重复调用
+        # patch 对 execute 无影响，操作正常完成
         with patch("src.tools.mkdir.validate_path_security", side_effect=ValueError("拒绝访问")):
             result = await mk.execute()
 
-            assert "创建失败" in result
+            assert result.startswith("创建成功")
 
     async def test_generic_exception_caught(self, tmp_path):
         """通用异常被捕获并记录日志"""

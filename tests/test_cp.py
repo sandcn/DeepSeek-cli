@@ -337,16 +337,18 @@ class TestCpFuncExecuteFile:
 
     @patch("src.tools.cp.async_record_sandbox", new_callable=AsyncMock)
     async def test_value_error_from_validation(self, mock_record, tmp_path):
-        """path security validation 抛出 ValueError 被捕获"""
+        """execute 不再重复调用 validate_path_security——构造时已校验，execute 正常执行"""
         src = tmp_path / "source.txt"
         src.write_text("content")
         dst = tmp_path / "dest.txt"
 
         cp = CpFunc(source=str(src), destination=str(dst))
+        # 构造时 validate_path_security 已通过；execute 不再重复调用
+        # patch 对 execute 无影响，操作正常完成
         with patch("src.tools.cp.validate_path_security", side_effect=ValueError("拒绝访问")):
             result = await cp.execute()
 
-            assert "复制失败" in result
+            assert result.startswith("复制成功")
 
     @patch("src.tools.cp.async_record_sandbox", new_callable=AsyncMock)
     async def test_copy_file_preserves_metadata(self, mock_record, tmp_path):

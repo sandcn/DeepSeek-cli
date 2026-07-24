@@ -94,8 +94,6 @@ class RmFunc(FileSystemToolBase):
         """异步执行删除逻辑，所有阻塞操作使用 asyncio.to_thread 包装"""
 
         async def _do_remove():
-            validate_path_security(self.path)
-
             if not await async_file_exists(self.path):
                 return f"(路径不存在: {self.path})"
 

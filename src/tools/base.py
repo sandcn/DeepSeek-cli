@@ -1,12 +1,23 @@
 from __future__ import annotations
 
 import abc
+import functools
 import inspect
 import logging
 import os
 
 from src._compat import dataclass
 from typing import Optional
+
+# ── inspect.signature 缓存 ─────────────────────────────────
+# from_args() 每次调用 inspect.signature(cls.__init__) 约 0.1-0.3ms，
+# 对频繁调用的工具而言是可避免的开销。使用 lru_cache 消除重复计算，
+# 线程安全（GIL 下 dict 操作虽原子，但 lru_cache 语义更清晰）。
+
+@functools.lru_cache(maxsize=None)
+def _get_init_sig(cls: type) -> inspect.Signature:
+    """获取类的 __init__ 签名，结果无限期缓存。"""
+    return inspect.signature(cls.__init__)
 
 
 
@@ -89,7 +100,7 @@ class Func(abc.ABC):
     @classmethod
     def from_args(cls, args: dict):
         """从 JSON 参数创建实例。默认按 __init__ 参数名从 args 取值，子类可覆盖以做特殊处理。"""
-        sig = inspect.signature(cls.__init__)
+        sig = _get_init_sig(cls)
         _params = list(sig.parameters.values())
         # 跳过 self
         _init_params = [p for p in _params if p.name != 'self']

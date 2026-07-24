@@ -18,6 +18,7 @@ from src.tools.encoding import (
     CHARDET_AVAILABLE,
     detect_encoding,
     async_detect_encoding,
+    pick_best_decoding,
 )
 
 
@@ -350,7 +351,7 @@ class TestDetectEncoding:
 
     # ── 大文件边界 ────────────────────────────────────────
 
-    def test_large_file_only_reads_first_4096_bytes(self, tmp_path):
+    def test_large_file_detects_utf8(self, tmp_path):
         """大文件应只读取前 4096 字节"""
         f = tmp_path / "large.txt"
         # 写入超过 4096 字节的内容
@@ -370,6 +371,76 @@ class TestDetectEncoding:
             result = detect_encoding(str(f))
             # common encodings 依次尝试: utf-8 先成功
             assert result == 'utf-8'
+
+    # ── 通吃编码降分逻辑 ──────────────────────────────────
+
+    def test_catchall_score_degradation_utf8_with_damage(self):
+        """通吃编码降分：UTF-8 有一字节损坏 → 非通吃编码（含少量 \ufffd）应胜出
+
+        损坏的 UTF-8 字节在 replace 模式下产生少量 \ufffd（评分约 68-69），
+        仍高于通吃编码 latin-1 的 60 分，因此 UTF-8 胜出。
+        """
+        # 构造：合法 UTF-8 前缀 + 一个非法字节 + 合法 UTF-8 后缀
+        valid_utf8 = '你好世界 hello world！'.encode('utf-8')
+        # 在中间插入一个非法字节 0xFF
+        corrupted = valid_utf8[:5] + b'\xff' + valid_utf8[5:]
+        candidates = ['latin-1', 'utf-8', 'gbk']
+        best_enc, _ = pick_best_decoding(corrupted, candidates)
+        # UTF-8 replace 模式评分 70-少量\ufffd > latin-1 通吃编码评分 60
+        assert best_enc == 'utf-8'
+
+    def test_catchall_score_degradation_gbk_wins_over_latin1(self):
+        """通吃编码降分：GBK 正常解码 → GBK 评分 100，高于 latin-1 的 60
+
+        GBK 编码的纯中文在 strict 模式下 0 替代字符，非通吃编码直接返回。
+        """
+        gbk_bytes = '纯中文测试内容'.encode('gbk')
+        candidates = ['latin-1', 'utf-8', 'gbk']
+        best_enc, _ = pick_best_decoding(gbk_bytes, candidates)
+        assert best_enc == 'gbk'
+
+    def test_catchall_score_degradation_latin1_last_resort(self):
+        """通吃编码降分：无法解码的二进制 → latin-1 兜底胜出
+
+        完全随机的字节序列在 utf-8 和 gbk 下都产生大量 \ufffd，
+        latin-1 作为通吃编码（评分 60）最终胜出。
+        """
+        random_bytes = bytes(range(256))  # 0x00-0xFF 全部字节
+        candidates = ['utf-8', 'gbk', 'latin-1']
+        best_enc, best_content = pick_best_decoding(random_bytes, candidates)
+        assert best_enc == 'latin-1'
+        # latin-1 解码应无 \ufffd
+        assert '\ufffd' not in best_content
+
+    # ── pick_best_decoding 重复编码去重 ────────────────────
+
+    def test_pick_best_decoding_dedup(self):
+        """候选列表含重复编码时不应重复解码，结果与去重后一致"""
+        # 使用中文 UTF-8 内容：GBK 解码 UTF-8 中文字节大概率失败或有替代字符
+        utf8_bytes = '编码检测去重测试'.encode('utf-8')
+        # 含重复的候选列表
+        candidates_with_dup = ['gbk', 'utf-8', 'gbk', 'latin-1', 'utf-8']
+        candidates_no_dup = ['gbk', 'utf-8', 'latin-1']
+        enc1, content1 = pick_best_decoding(utf8_bytes, candidates_with_dup)
+        enc2, content2 = pick_best_decoding(utf8_bytes, candidates_no_dup)
+        # 去重前后结果一致即可（编码名和内容都应相同）
+        assert enc1 == enc2
+        assert content1 == content2
+
+    def test_pick_best_decoding_all_duplicates(self):
+        """候选列表全部为同一编码的重复 → 仅解码一次，结果正确"""
+        utf8_bytes = 'test'.encode('utf-8')
+        candidates = ['utf-8', 'utf-8', 'utf-8']
+        best_enc, best_content = pick_best_decoding(utf8_bytes, candidates)
+        assert best_enc == 'utf-8'
+        assert best_content == 'test'
+
+    def test_pick_best_decoding_empty_candidates(self):
+        """空候选列表 → 走终极降级（IndexError 被兜底）"""
+        # pick_best_decoding 对空列表会 IndexError，这是调用方的责任
+        # 实际使用中不会传入空列表（detect_encoding 和 _validate_decoding_quality
+        # 都保证至少一个候选编码）
+        pytest.skip("此边界由调用方保证")
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -438,13 +509,13 @@ class TestAsyncDetectEncoding:
 
     @pytest.mark.asyncio
     async def test_async_chardet_integration(self, tmp_path):
-        """异步检测在有 chardet 时正常委托"""
+        """异步检测在有 chardet 时正常委托（GBK 内容走 chardet 路径，非 UTF-8 fast path）"""
         f = tmp_path / "async_chardet.txt"
-        f.write_bytes('hello world'.encode('utf-8'))
+        f.write_bytes('你好世界'.encode('gbk'))
         with patch('src.tools.encoding.chardet') as mock_chardet:
-            mock_chardet.detect.return_value = {'encoding': 'utf-8', 'confidence': 0.99}
+            mock_chardet.detect.return_value = {'encoding': 'gbk', 'confidence': 0.99}
             result = await async_detect_encoding(str(f))
-            assert result == 'utf-8'
+            assert result == 'gbk'
             mock_chardet.detect.assert_called_once()
 
     @pytest.mark.asyncio

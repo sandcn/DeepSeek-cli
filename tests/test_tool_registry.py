@@ -376,11 +376,12 @@ class TestDispatch:
 
 class TestGetSchemas:
 
-    def test_empty_registry_returns_empty_list(self):
-        """空注册表返回空列表"""
+    def test_empty_registry_returns_empty_tuple(self):
+        """空注册表返回空 tuple"""
         registry = ToolRegistry(initial_tools={})
         schemas = registry.get_schemas()
-        assert schemas == []
+        assert schemas == ()
+        assert isinstance(schemas, tuple)
 
     def test_schemas_contain_required_fields(self):
         """注册工具后返回包含 schema 的列表，每个 schema 包含关键字段"""
@@ -424,15 +425,47 @@ class TestGetSchemas:
         assert schema["function"]["description"] == "读取文件内容"
         assert "path" in schema["function"]["parameters"]["properties"]
 
-    def test_get_schemas_returns_new_list(self):
-        """get_schemas 每次返回新列表（不可变保证）"""
+    def test_get_schemas_returns_immutable_on_cache_hit(self):
+        """get_schemas 缓存命中时返回不可变 tuple，防止调用方意外修改污染缓存"""
         registry = ToolRegistry(initial_tools={})
         registry.register(MockReadFile)
 
         schemas1 = registry.get_schemas()
         schemas2 = registry.get_schemas()
 
+        # 返回 tuple，内容相等且不可变（防御性编程）
+        assert schemas1 == schemas2
+        assert isinstance(schemas1, tuple)
+        assert isinstance(schemas2, tuple)
+
+    def test_get_schemas_cache_invalidated_after_register(self):
+        """注册新工具后 schema 缓存失效，返回新列表"""
+        registry = ToolRegistry(initial_tools={})
+        registry.register(MockReadFile)
+
+        schemas1 = registry.get_schemas()
+        assert len(schemas1) == 1
+
+        # 注册新工具使缓存失效
+        registry.register(MockWriteFile)
+        schemas2 = registry.get_schemas()
+        assert len(schemas2) == 2
+
+        # 注册后缓存重建，引用与之前不同
         assert schemas1 is not schemas2
+
+    def test_get_schemas_clear_invalidates_cache(self):
+        """clear() 后 get_schemas() 触发自动发现，返回新的 schema 列表"""
+        registry = ToolRegistry(initial_tools={})
+        registry.register(MockReadFile)
+        schemas_before = registry.get_schemas()
+        assert len(schemas_before) == 1
+
+        registry.clear()
+        schemas_after = registry.get_schemas()
+        # clear 后自动发现重新注册真实工具，schema 数量 > 0
+        assert len(schemas_after) > 0
+        assert schemas_before is not schemas_after
 
 
 # ============================================================
@@ -668,3 +701,153 @@ class TestEdgeCases:
             assert "read_file" in registry._tools
             registry.clear()
             assert len(registry._tools) == 0
+
+
+# ============================================================
+#  工具发现（_discover_and_register）正确性测试
+# ============================================================
+
+class TestToolDiscovery:
+
+    def test_auto_discovery_registers_all_known_tools(self):
+        """自动发现注册了所有已知工具（使用 vars() 策略后注册数量与之前一致）"""
+        registry = ToolRegistry()  # 触发自动发现
+        tools = registry.get_tools()
+
+        # 确认核心工具均被注册
+        expected_tools = [
+            "read_file", "write_file", "update_file",
+            "bash", "search", "find", "ls",
+            "cp", "mv", "rm", "mkdir",
+            "dispatch_agent", "user_select",
+        ]
+        for tool_name in expected_tools:
+            assert tool_name in tools, f"工具 {tool_name} 未被自动发现注册"
+
+    def test_auto_discovery_tool_count_is_stable(self):
+        """多次自动发现返回的工具数量一致（验证 vars() 策略无遗漏）"""
+        registry1 = ToolRegistry()
+        tools1 = registry1.get_tools()
+
+        # 清除缓存后重新发现
+        registry2 = ToolRegistry()
+        tools2 = registry2.get_tools()
+
+        assert len(tools1) == len(tools2), (
+            f"两次发现工具数量不一致: {len(tools1)} vs {len(tools2)}"
+        )
+        assert set(tools1.keys()) == set(tools2.keys()), (
+            f"两次发现工具名集合不一致"
+        )
+
+    def test_auto_discovery_all_registered_are_func_subclass(self):
+        """自动发现注册的所有工具均为 Func 子类"""
+        registry = ToolRegistry()
+        tools = registry.get_tools()
+
+        from src.tools.base import Func as RealFunc
+        for name, tool_cls in tools.items():
+            assert issubclass(tool_cls, RealFunc), (
+                f"工具 {name} ({tool_cls}) 不是 Func 子类"
+            )
+
+    def test_auto_discovery_all_have_name(self):
+        """自动发现注册的所有工具 name 不为 None"""
+        registry = ToolRegistry()
+        tools = registry.get_tools()
+
+        for name, tool_cls in tools.items():
+            assert tool_cls.name is not None, (
+                f"工具 {name} 的 name 属性为 None"
+            )
+            assert tool_cls.name == name, (
+                f"工具注册名 {name} 与类属性 {tool_cls.name} 不一致"
+            )
+
+    def test_auto_discovery_all_have_schema(self):
+        """自动发现注册的所有工具均可生成 schema"""
+        registry = ToolRegistry()
+        schemas = registry.get_schemas()
+
+        # schema 数量应与工具数量一致
+        tools = registry.get_tools()
+        assert len(schemas) == len(tools), (
+            f"schema 数量 {len(schemas)} 与工具数量 {len(tools)} 不一致"
+        )
+
+        for schema in schemas:
+            assert "type" in schema
+            assert "function" in schema
+            func = schema["function"]
+            assert "name" in func
+            assert "description" in func
+            assert "parameters" in func
+
+
+# ============================================================
+#  Schema 缓存行为测试
+# ============================================================
+
+class TestSchemaCache:
+
+    def test_cache_returned_on_consecutive_calls(self):
+        """连续调用 get_schemas() 返回内容相等的不可变 tuple"""
+        registry = ToolRegistry(initial_tools={})
+        registry.register(MockReadFile)
+
+        s1 = registry.get_schemas()
+        s2 = registry.get_schemas()
+        s3 = registry.get_schemas()
+
+        # 缓存命中，三次调用返回内容相等且不可变
+        assert s1 == s2
+        assert s2 == s3
+        assert isinstance(s1, tuple)
+        assert isinstance(s2, tuple)
+        assert isinstance(s3, tuple)
+
+    def test_cache_invalidated_by_register(self):
+        """register() 使 schema 缓存失效"""
+        registry = ToolRegistry(initial_tools={})
+        registry.register(MockReadFile)
+        schemas_before = registry.get_schemas()
+
+        # 注册新工具使缓存失效
+        registry.register(MockWriteFile)
+        schemas_after = registry.get_schemas()
+
+        assert schemas_before is not schemas_after
+        assert len(schemas_after) == len(schemas_before) + 1
+
+    def test_cache_invalidated_by_clear(self):
+        """clear() 使 schema 缓存失效"""
+        registry = ToolRegistry(initial_tools={})
+        registry.register(MockReadFile)
+        schemas_before = registry.get_schemas()
+
+        registry.clear()
+        schemas_after = registry.get_schemas()
+
+        # clear 后自动发现重新注册真实工具
+        assert schemas_before is not schemas_after
+
+    def test_cache_not_polluted_by_caller_modification(self):
+        """调用方无法修改返回值——tuple 不可变，防御性编程防止缓存污染"""
+        registry = ToolRegistry(initial_tools={})
+        registry.register(MockReadFile)
+
+        schemas = registry.get_schemas()
+        original_len = len(schemas)
+
+        # tuple 不可变，调用方无法 append/修改，尝试修改会抛 AttributeError
+        with pytest.raises((AttributeError, TypeError)):
+            schemas.append({"type": "injected"})  # type: ignore[union-attr]
+
+        # 再次获取——缓存未被污染，长度不变
+        schemas2 = registry.get_schemas()
+        assert len(schemas2) == original_len
+
+        # 验证 register 后缓存重建
+        registry.register(MockWriteFile)
+        schemas3 = registry.get_schemas()
+        assert len(schemas3) == original_len + 1

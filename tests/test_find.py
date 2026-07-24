@@ -41,6 +41,16 @@ class TestShouldExcludeDir:
         assert _should_exclude_dir("my.egg-info") is True
         assert _should_exclude_dir("foo.egg-info") is True
 
+    def test_glob_pattern_is_case_sensitive(self):
+        """通配符匹配应区分大小写。"""
+        assert _should_exclude_dir("My.Egg-Info") is False
+        # 但 set 中的精确匹配不区分大小写，此处 My.Egg-Info 不在 set 中
+        # 且不匹配 *.egg-info 通配符（大小写敏感）
+
+    def test_partial_match_not_false_positive(self):
+        """部分匹配不应误判：xegg-info 不匹配 *.egg-info。"""
+        assert _should_exclude_dir("xegg-info") is False
+
     @pytest.mark.parametrize("name", ["src", "tests", "", "mydir", "data", "docs"])
     def test_allows_normal_names(self, name):
         assert _should_exclude_dir(name) is False
@@ -330,6 +340,48 @@ class TestSyncFindFiles:
         assert "main.py" in names
         assert "test_main.py" in names
         assert "Readme.md" not in names
+
+    # ── 通配符高级匹配（子步骤 7.4）──
+
+    def test_charset_pattern(self, tmp_path):
+        """[Tt]est.py 字符集模式。"""
+        src = self._setup_src(tmp_path)
+        (src / "Test.py").write_text("")
+        (src / "test.py").write_text("")
+        (src / "best.py").write_text("")
+
+        f = FindFunc(pattern="[Tt]est.py", path=str(tmp_path))
+        results = f._sync_find_files(tmp_path)
+        names = {p.name for p in results}
+        assert "Test.py" in names
+        assert "test.py" in names
+        assert "best.py" not in names
+
+    def test_exclude_charset_pattern(self, tmp_path):
+        """[!.]* 排除隐藏文件模式。"""
+        src = self._setup_src(tmp_path)
+        (src / "visible.py").write_text("")
+        (src / ".hidden.py").write_text("")
+
+        f = FindFunc(pattern="[!.]*", path=str(tmp_path), type="file")
+        results = f._sync_find_files(tmp_path)
+        names = {p.name for p in results}
+        assert "visible.py" in names
+        assert ".hidden.py" not in names
+
+    def test_single_char_wildcard(self, tmp_path):
+        """config?.py 单字符通配符。"""
+        src = self._setup_src(tmp_path)
+        (src / "config1.py").write_text("")
+        (src / "config2.py").write_text("")
+        (src / "config10.py").write_text("")  # 两个字符，不应匹配
+
+        f = FindFunc(pattern="config?.py", path=str(tmp_path))
+        results = f._sync_find_files(tmp_path)
+        names = {p.name for p in results}
+        assert "config1.py" in names
+        assert "config2.py" in names
+        assert "config10.py" not in names
 
 
 # ═══════════════════════════════════════════════════════════════════════════

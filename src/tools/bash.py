@@ -3,7 +3,9 @@ from __future__ import annotations
 import os
 import sys
 import asyncio
+import errno as _errno
 import logging
+import re as _re
 from .base import Func, tool_metadata, print_to_terminal
 
 from ..core.constants import GREEN, RED, DIM, RESET
@@ -56,11 +58,16 @@ def _has_dangerous_command(command: str) -> str | None:
 # （is_interrupted）。200ms 平衡响应速度与 CPU 开销。
 _INTERRUPT_CHECK_INTERVAL = 0.2
 
-# ── PTY slave 关闭 errno ───────────────────────
-import errno as _errno
 
-# ── ANSI 转义码剥离 ─────────────────────────────────────
-import re as _re
+# 模块级预编译正则（消除 _strip_ansi 每次调用的 re.compile 开销）
+_ANSI_STRIP_RE = _re.compile(
+    r'\x1B(?:'
+    r'[\]PX^_].*?(?:\x1b\\|\x07)|'     # DCS/OSC/PM/APC 字符串序列
+    r'[ -/]*[0-Z\\\]-~]|'               # 非 CSI：ESC + 中间字节* + 终结字节
+    r'\[[0-?]*[ -/]*[@-~]'              # CSI：ESC [ + 参数* + 中间* + 终结
+    r')'
+)
+_CTRL_CHAR_RE = _re.compile(r'[\x08\x0b\x0c]')
 
 def _strip_ansi(text: str) -> str:
     """剥离所有 ANSI 转义序列和破坏终端布局的控制字符。
@@ -90,20 +97,10 @@ def _strip_ansi(text: str) -> str:
     #    非 CSI 序列：\x1b [中间字节(0x20-0x2F)]* 终结字节(0x30-0x7E, 排除 0x5B=[)
     #      → 覆盖 DECSC/DECRC/\x1b(B 字符集选择等
     #    CSI 序列：\x1b[ + 参数(0x30-0x3F)* + 中间(0x20-0x2F)* + 终结(0x40-0x7E)
-    result = _re.sub(
-        r'\x1B(?:'
-        r'[\]PX^_].*?(?:\x1b\\|\x07)|'     # DCS/OSC/PM/APC 字符串序列
-        r'[ -/]*[0-Z\\\]-~]|'               # 非 CSI：ESC + 中间字节* + 终结字节
-        r'\[[0-?]*[ -/]*[@-~]'              # CSI：ESC [ + 参数* + 中间* + 终结
-        r')',
-        '', text,
-    )
+    result = _ANSI_STRIP_RE.sub('', text)
     # 2. 剥离光标/显示破坏性控制字符（\b\x0b\x0c）
     #    保留 \t(0x09)、\n(0x0A)、\r(0x0D→进度条行内覆盖) 等不影响终端布局的字符。
-    result = _re.sub(
-        r'[\x08\x0b\x0c]',
-        '', result,
-    )
+    result = _CTRL_CHAR_RE.sub('', result)
     return result
 
 

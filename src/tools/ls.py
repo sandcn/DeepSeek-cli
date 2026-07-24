@@ -207,8 +207,9 @@ class LsFunc(Func):
 
         # 短格式：列式输出
         # 计算列数（基于当前终端宽度）
-        names = [entry.name for entry in entries]
-        max_name_len = max(len(n) for n in names) if names else 0
+        # 预计算 name 和 is_dir，避免双重循环中重复调用 Path.is_dir()
+        entries_info = [(entry.name, entry.is_dir()) for entry in entries]
+        max_name_len = max(len(n) for n, _ in entries_info) if entries_info else 0
         col_width = max_name_len + 2  # 名称 + 2空格间距
         cols = max(1, shutil.get_terminal_size().columns // col_width)
         rows = (total + cols - 1) // cols
@@ -219,9 +220,9 @@ class LsFunc(Func):
             for col in range(cols):
                 idx = row + col * rows
                 if idx < total:
-                    name = names[idx]
+                    name, is_dir = entries_info[idx]
                     # 目录加 / 后缀
-                    if entries[idx].is_dir():
+                    if is_dir:
                         name += "/"
                     line_parts.append(name.ljust(col_width))
             lines.append("".join(line_parts).rstrip())

@@ -63,16 +63,22 @@ class BaseParser(ABC):
         # 一级降级：lxml（最快解析器）
         try:
             soup = BeautifulSoup(html, 'lxml')
-            return self._parse_soup(soup, num_results)
         except Exception:
-            _logger.debug("BeautifulSoup(lxml) 解析失败，降级到 html.parser")
+            _logger.debug("BeautifulSoup(lxml) 构造失败，降级到 html.parser")
+        else:
+            # lxml 构造成功，尝试解析
+            try:
+                return self._parse_soup(soup, num_results)
+            except Exception:
+                _logger.debug("BeautifulSoup(lxml) 解析失败，降级到正则")
+                return self._parse_regex(html, num_results)
 
         # 二级降级：html.parser（内置，无需额外依赖）
         try:
             soup = BeautifulSoup(html, 'html.parser')
             return self._parse_soup(soup, num_results)
         except Exception:
-            _logger.debug("BeautifulSoup(html.parser) 解析失败，降级到正则")
+            _logger.debug("BeautifulSoup(html.parser) 失败，降级到正则")
 
         # 三级降级：正则回退
         return self._parse_regex(html, num_results)

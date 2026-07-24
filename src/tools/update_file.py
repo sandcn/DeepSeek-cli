@@ -117,8 +117,11 @@ class UpdateFileFunc(FileToolBase):
                 "文件不存在或为空，无法匹配old_string。如需创建新文件请用write_file，如需追加请将old_string设为空。"
             )
 
-        count = original.count(self.old_string)
-        if count == 0:
+        # 优化：用 str.find 定位替代 count+replace 两次全量扫描。
+        # 非 replace_all 唯一匹配场景仅需 1-2 次 find + 切片拼接，
+        # 避免 count() 和 replace() 各一次 O(n) 全量扫描。
+        idx = original.find(self.old_string)
+        if idx == -1:
             preview = self.old_string[:60].replace('\n', '\\n')
             if len(self.old_string) > 60:
                 preview += '...'
@@ -126,7 +129,12 @@ class UpdateFileFunc(FileToolBase):
                 f"未找到匹配内容: \"{preview}\"\n"
                 f"请先用read_file读取文件，确认要替换的内容与文件中完全一致（包括缩进和空白）。"
             )
-        if count > 1 and not self.replace_all:
+
+        # 检查是否存在第二个匹配（用于非 replace_all 歧义检测）
+        second_idx = original.find(self.old_string, idx + len(self.old_string))
+        if second_idx != -1 and not self.replace_all:
+            # 计算总出现次数用于错误消息（仅错误路径，稀有）
+            count = original.count(self.old_string)
             raise AmbiguousMatchError(
                 f"old_string在文件中出现了{count}次，无法确定替换哪一处。"
                 f"请在old_string中包含更多上下文行使其唯一，"
@@ -136,7 +144,8 @@ class UpdateFileFunc(FileToolBase):
         if self.replace_all:
             new_content = original.replace(self.old_string, self.new_string)
         else:
-            new_content = original.replace(self.old_string, self.new_string, 1)
+            # 唯一匹配：切片拼接，避免 replace 的全量扫描
+            new_content = original[:idx] + self.new_string + original[idx + len(self.old_string):]
         # 对替换后最终内容进行大小校验：replace_all 多次替换或单次替换后内容可能膨胀超过限制
         self._check_content_size(new_content)
         return new_content

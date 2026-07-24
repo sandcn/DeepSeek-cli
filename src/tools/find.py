@@ -11,12 +11,19 @@ from __future__ import annotations
 import asyncio
 import os
 import fnmatch
+import re
 import logging
 from pathlib import Path
 from ._constants import EXCLUDED_DIRS
 from .base import Func, tool_metadata
 
 logger = logging.getLogger(__name__)
+
+# ── 预编译通配符目录排除模式 ──
+_EXCLUDED_DIR_RES: list[re.Pattern] = [
+    re.compile(fnmatch.translate(p))
+    for p in EXCLUDED_DIRS if any(c in p for c in "*?[]")
+]
 
 # ── 魔法数字常量 ──────────────────────────────────────
 SMALL_DIR_ENTRY_LIMIT = 200   # 小型目录条目阈值（直接同步遍历）
@@ -27,8 +34,8 @@ def _should_exclude_dir(dirname: str) -> bool:
     """判断目录名是否应被排除"""
     if dirname in EXCLUDED_DIRS:
         return True
-    for pattern in EXCLUDED_DIRS:
-        if "*" in pattern and fnmatch.fnmatch(dirname, pattern):
+    for compiled_re in _EXCLUDED_DIR_RES:
+        if compiled_re.match(dirname):
             return True
     return False
 
@@ -178,6 +185,11 @@ class FindFunc(Func):
         # 避免遮蔽 Python builtin type()，内部使用 filter_type
         self.filter_type = type  # "file", "dir", or None
         self.depth = max(0, depth)
+        # 预编译 fnmatch 模式为 regex，消除每次匹配时 fnmatch.translate + compile 开销
+        self._patterns_re: list[re.Pattern] = [
+            re.compile(fnmatch.translate(p))
+            for p in self.pattern.split() if p.strip()
+        ]
 
     # ── 核心执行 ────────────────────────────────────────
 
@@ -217,16 +229,16 @@ class FindFunc(Func):
         """同步遍历目录树，匹配符合条件的文件/目录"""
         results: list[Path] = []
 
-        # 解析 pattern：空格分隔的多个模式（OR 逻辑）
-        patterns = [p.strip() for p in self.pattern.split() if p.strip()]
-        if not patterns:
+        # 使用 __init__ 中预编译的 regex 模式列表（OR 逻辑）
+        patterns_re = self._patterns_re
+        if not patterns_re:
             return results
 
         # 根目录自身也参与匹配（避免 depth=1 时漏掉根目录本身）
         if self.filter_type in (None, "dir"):
             root_name = root.name
-            for p in patterns:
-                if fnmatch.fnmatch(root_name, p):
+            for compiled_re in patterns_re:
+                if compiled_re.match(root_name):
                     results.append(root)
                     break
 
@@ -258,8 +270,8 @@ class FindFunc(Func):
                     # 匹配根目录层级的文件名
                     if self.filter_type in (None, "file"):
                         for fname in files:
-                            for p in patterns:
-                                if fnmatch.fnmatch(fname, p):
+                            for compiled_re in patterns_re:
+                                if compiled_re.match(fname):
                                     results.append(current_path / fname)
                                     break
                     continue
@@ -267,16 +279,16 @@ class FindFunc(Func):
                 # ── 匹配目录名 ──
                 if self.filter_type in (None, "dir"):
                     dir_name = current_path.name
-                    for p in patterns:
-                        if fnmatch.fnmatch(dir_name, p):
+                    for compiled_re in patterns_re:
+                        if compiled_re.match(dir_name):
                             results.append(current_path)
                             break
 
                 # ── 匹配文件名 ──
                 if self.filter_type in (None, "file"):
                     for fname in files:
-                        for p in patterns:
-                            if fnmatch.fnmatch(fname, p):
+                        for compiled_re in patterns_re:
+                            if compiled_re.match(fname):
                                 results.append(current_path / fname)
                                 break
 

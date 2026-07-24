@@ -141,6 +141,26 @@ class TestGetNewContentAppend:
         result = await uf._get_new_content()
         assert result == "new content"
 
+    @pytest.mark.asyncio
+    async def test_content_within_limit_succeeds(self, tmp_path):
+        """内容在限制内应正常返回"""
+        f = tmp_path / "small.txt"
+        f.write_text("hello world")
+
+        uf = UpdateFileFunc(str(f), "hello", "hi")
+        result = await uf._get_new_content()
+        assert result == "hi world"
+
+    @pytest.mark.asyncio
+    async def test_append_within_limit_succeeds(self, tmp_path):
+        """追加模式下内容在限制内应正常"""
+        f = tmp_path / "small.txt"
+        f.write_text("hello\n")
+
+        uf = UpdateFileFunc(str(f), "", "world\n")
+        result = await uf._get_new_content()
+        assert result == "hello\nworld\n"
+
 
 # ═══════════════════════════════════════════════════════════════════════════
 # 4. _get_new_content — 错误边界
@@ -500,13 +520,14 @@ class TestOversizedContent:
         from src.tools.file_base import FileSizeError
 
         f = tmp_path / "base.txt"
-        # 创建一个约 90MB 的文件内容作为 original
-        original_content = "x" * (90 * 1024 * 1024)
-        f.write_text(original_content)
+        f.write_text("small")  # 磁盘文件很小，实际内容由 mock 提供
 
-        # new_string 约 20MB，最终内容约 110MB > 100MB 限制
+        # mock _read_original 返回 ~90MB 内容，避免真实 I/O
+        large_original = "x" * (90 * 1024 * 1024)
         large_append = "y" * (20 * 1024 * 1024)
+
         uf = UpdateFileFunc(str(f), "", large_append)
+        uf._read_original = AsyncMock(return_value=large_original)
         with pytest.raises(FileSizeError, match="超过最大限制"):
             await uf._get_new_content()
 
@@ -516,14 +537,16 @@ class TestOversizedContent:
         from src.tools.file_base import FileSizeError
 
         f = tmp_path / "base.txt"
-        # 每行有一个 "X" 标记，替换后膨胀
+        f.write_text("small")  # 磁盘文件很小，实际内容由 mock 提供
+
+        # 每行有一个 "X" 标记，替换后膨胀（mock _read_original 避免真实 I/O）
         lines = ["X" + "a" * 999 for _ in range(105_000)]
-        # 每行约 1KB，共约 105MB
-        f.write_text("\n".join(lines))
+        large_original = "\n".join(lines)
 
         # 替换 "X" 为 "YYYYYYYYYY"（10 个字符），每行增加 9 字节
         # 最终约 105MB + 105000*9 ≈ 106MB > 100MB
         uf = UpdateFileFunc(str(f), "X", "YYYYYYYYYY", replace_all=True)
+        uf._read_original = AsyncMock(return_value=large_original)
         with pytest.raises(FileSizeError, match="超过最大限制"):
             await uf._get_new_content()
 
@@ -533,35 +556,179 @@ class TestOversizedContent:
         from src.tools.file_base import FileSizeError
 
         f = tmp_path / "base.txt"
-        # 创建一个接近 100MB 的文件，替换后膨胀超过限制
+        f.write_text("small")  # 磁盘文件很小，实际内容由 mock 提供
+
+        # mock _read_original 返回接近 100MB 的内容，避免真实 I/O
         near_limit = "a" * (99 * 1024 * 1024)
-        f.write_text(near_limit + "MARKER" + near_limit[:100])
+        large_original = near_limit + "MARKER" + near_limit[:100]
 
         # 替换 MARKER 为大量内容，超过限制
         huge_replacement = "b" * (3 * 1024 * 1024)
         uf = UpdateFileFunc(str(f), "MARKER", huge_replacement)
+        uf._read_original = AsyncMock(return_value=large_original)
         with pytest.raises(FileSizeError, match="超过最大限制"):
             await uf._get_new_content()
 
+
+# ═══════════════════════════════════════════════════════════════════════════
+# 10. _get_new_content — 优化后的 find+slice 逻辑边界测试
+# ═══════════════════════════════════════════════════════════════════════════
+
+class TestFindSliceBoundary:
+    """find+slice 优化的边界条件测试
+
+    验证 _get_new_content 中 str.find + 切片拼接方案在所有
+    边界场景下与旧 str.count + str.replace 行为一致。
+    """
+
     @pytest.mark.asyncio
-    async def test_content_within_limit_succeeds(self, tmp_path):
-        """内容在限制内应正常返回"""
-        f = tmp_path / "small.txt"
-        f.write_text("hello world")
-
-        uf = UpdateFileFunc(str(f), "hello", "hi")
+    async def test_old_string_at_start(self, tmp_path):
+        """old_string 在文件开头"""
+        f = tmp_path / "test.txt"
+        f.write_text("START middle end")
+        uf = UpdateFileFunc(str(f), "START", "BEGIN")
         result = await uf._get_new_content()
-        assert result == "hi world"
+        assert result == "BEGIN middle end"
 
     @pytest.mark.asyncio
-    async def test_append_within_limit_succeeds(self, tmp_path):
-        """追加模式下内容在限制内应正常"""
-        f = tmp_path / "small.txt"
-        f.write_text("hello\n")
-
-        uf = UpdateFileFunc(str(f), "", "world\n")
+    async def test_old_string_at_end(self, tmp_path):
+        """old_string 在文件结尾"""
+        f = tmp_path / "test.txt"
+        f.write_text("start middle END")
+        uf = UpdateFileFunc(str(f), "END", "FINISH")
         result = await uf._get_new_content()
-        assert result == "hello\nworld\n"
+        assert result == "start middle FINISH"
+
+    @pytest.mark.asyncio
+    async def test_old_string_entire_content(self, tmp_path):
+        """old_string 等于整个文件内容"""
+        f = tmp_path / "test.txt"
+        f.write_text("exact match content")
+        uf = UpdateFileFunc(str(f), "exact match content", "replaced")
+        result = await uf._get_new_content()
+        assert result == "replaced"
+
+    @pytest.mark.asyncio
+    async def test_old_string_single_char(self, tmp_path):
+        """old_string 为单个字符且唯一出现"""
+        f = tmp_path / "test.txt"
+        f.write_text("abc-def-ghi")
+        uf = UpdateFileFunc(str(f), "d", "D")
+        result = await uf._get_new_content()
+        assert result == "abc-Def-ghi"
+
+    @pytest.mark.asyncio
+    async def test_old_string_multiline_at_start(self, tmp_path):
+        """多行 old_string 在文件开头"""
+        f = tmp_path / "test.txt"
+        f.write_text("line1\nline2\nline3\nline4\n")
+        uf = UpdateFileFunc(str(f), "line1\nline2\n", "A\nB\n")
+        result = await uf._get_new_content()
+        assert result == "A\nB\nline3\nline4\n"
+
+    @pytest.mark.asyncio
+    async def test_old_string_multiline_at_end(self, tmp_path):
+        """多行 old_string 在文件结尾"""
+        f = tmp_path / "test.txt"
+        f.write_text("line1\nline2\nline3\nline4\n")
+        uf = UpdateFileFunc(str(f), "line3\nline4\n", "C\nD\n")
+        result = await uf._get_new_content()
+        assert result == "line1\nline2\nC\nD\n"
+
+    @pytest.mark.asyncio
+    async def test_large_file_single_replacement(self, tmp_path):
+        """大文本（~10MB）中替换单处，验证 find+slice 优化正确"""
+        # 构建 ~10MB 内容：前缀 + 唯一标记 + 后缀
+        prefix = "x" * (5 * 1024 * 1024)  # 5MB
+        suffix = "y" * (5 * 1024 * 1024)  # 5MB
+        f = tmp_path / "large.txt"
+        f.write_text(prefix + "UNIQUE_MARKER" + suffix)
+
+        uf = UpdateFileFunc(str(f), "UNIQUE_MARKER", "REPLACED")
+        result = await uf._get_new_content()
+
+        assert result == prefix + "REPLACED" + suffix
+        assert len(result) == len(prefix) + len("REPLACED") + len(suffix)
+        assert result.startswith(prefix)
+        assert result.endswith(suffix)
+
+    @pytest.mark.asyncio
+    async def test_large_file_old_at_start(self, tmp_path):
+        """大文本中 old_string 在开头"""
+        marker = "START_MARKER_12345"
+        suffix = "y" * (10 * 1024 * 1024 - len(marker))  # ~10MB total
+        f = tmp_path / "large.txt"
+        f.write_text(marker + suffix)
+
+        uf = UpdateFileFunc(str(f), marker, "NEW_START")
+        result = await uf._get_new_content()
+        assert result == "NEW_START" + suffix
+
+    @pytest.mark.asyncio
+    async def test_large_file_old_at_end(self, tmp_path):
+        """大文本中 old_string 在结尾"""
+        marker = "END_MARKER_12345"
+        prefix = "y" * (10 * 1024 * 1024 - len(marker))  # ~10MB total
+        f = tmp_path / "large.txt"
+        f.write_text(prefix + marker)
+
+        uf = UpdateFileFunc(str(f), marker, "NEW_END")
+        result = await uf._get_new_content()
+        assert result == prefix + "NEW_END"
+
+    @pytest.mark.asyncio
+    async def test_ambiguous_large_file(self, tmp_path):
+        """大文本中多处匹配触发 AmbiguousMatchError"""
+        # 多处在不同位置
+        content = ("x" * 1000 + "MARK" + "y" * 1000) * 50  # ~100KB, 50 occurrences
+        f = tmp_path / "multi.txt"
+        f.write_text(content)
+
+        uf = UpdateFileFunc(str(f), "MARK", "NEW")
+        with pytest.raises(AmbiguousMatchError) as exc:
+            await uf._get_new_content()
+        assert "出现了" in str(exc.value)
+        assert "50次" in str(exc.value) or "次" in str(exc.value)
+
+    @pytest.mark.asyncio
+    async def test_unicode_multibyte_boundary(self, tmp_path):
+        """多字节 Unicode 字符在 old_string 边界且唯一出现"""
+        f = tmp_path / "test.txt"
+        f.write_text("你好世界！Hello World！")
+        uf = UpdateFileFunc(str(f), "世界", "🌍")
+        result = await uf._get_new_content()
+        assert result == "你好🌍！Hello World！"
+
+    @pytest.mark.asyncio
+    async def test_old_string_contains_special_chars(self, tmp_path):
+        """old_string 含特殊正则/转义字符"""
+        f = tmp_path / "test.txt"
+        f.write_text("value = $HOME + $PATH\n")
+        uf = UpdateFileFunc(str(f), "$HOME", "${HOME}")
+        result = await uf._get_new_content()
+        assert result == "value = ${HOME} + $PATH\n"
+
+    @pytest.mark.asyncio
+    async def test_new_string_longer_replacement(self, tmp_path):
+        """new_string 比 old_string 长得多"""
+        f = tmp_path / "test.txt"
+        f.write_text("prefix SHORT suffix")
+        uf = UpdateFileFunc(str(f), "SHORT", "VERY_LONG_REPLACEMENT_STRING" * 10)
+        result = await uf._get_new_content()
+        assert result.startswith("prefix ")
+        assert result.endswith(" suffix")
+        assert "SHORT" not in result
+        assert "VERY_LONG_REPLACEMENT" in result
+
+    @pytest.mark.asyncio
+    async def test_replace_with_empty_new_string(self, tmp_path):
+        """new_string 为空（删除模式）+ find+slice 优化"""
+        f = tmp_path / "test.txt"
+        f.write_text("keep DELETEME keep")
+        uf = UpdateFileFunc(str(f), " DELETEME", "")
+        result = await uf._get_new_content()
+        assert result == "keep keep"
+
 
 class TestMeta:
     """工具元数据方法"""

@@ -230,6 +230,56 @@ class TestFormatEntries:
         result = ls._format_entries(entries, tmp_path)
         assert "总用量" in result
 
+    # ── 列式布局（子步骤 7.4）──
+
+    def test_column_layout_single_column(self, tmp_path):
+        """单列时的列式布局正确。"""
+        (tmp_path / "very_long_filename_that_forces_single_column.py").write_text("")
+        ls = LsFunc(path=str(tmp_path))
+        entries = ls._list_entries(tmp_path)
+        result = ls._format_entries(entries, tmp_path)
+        lines = result.split("\n")
+        # 每行一个条目
+        assert len(lines) == 1
+        assert "very_long_filename_that_forces_single_column.py" in result
+
+    def test_column_layout_multi_column(self, tmp_path):
+        """多列时列式布局正确。"""
+        for name in ("a.py", "b.py", "c.py", "d.py", "e.py", "f.py"):
+            (tmp_path / name).write_text("")
+        ls = LsFunc(path=str(tmp_path))
+        entries = ls._list_entries(tmp_path)
+        result = ls._format_entries(entries, tmp_path)
+        lines = result.split("\n")
+        # 条目数少时应在一行内（列数 > 1）
+        assert len(lines) <= 2  # 6个短文件名大概率在一行
+        for name in ("a.py", "b.py", "c.py", "d.py", "e.py", "f.py"):
+            assert name in result
+
+    def test_column_layout_dir_slash_every_entry(self, tmp_path):
+        """列式布局中所有目录都带 / 后缀。"""
+        (tmp_path / "dir_a").mkdir()
+        (tmp_path / "dir_b").mkdir()
+        (tmp_path / "dir_c").mkdir()
+        ls = LsFunc(path=str(tmp_path))
+        entries = ls._list_entries(tmp_path)
+        result = ls._format_entries(entries, tmp_path)
+        assert "dir_a/" in result
+        assert "dir_b/" in result
+        assert "dir_c/" in result
+
+    def test_column_layout_mixed_files_dirs(self, tmp_path):
+        """混合文件和目录的列式布局。"""
+        (tmp_path / "file_a.py").write_text("")
+        (tmp_path / "dir_a").mkdir()
+        (tmp_path / "file_b.py").write_text("")
+        ls = LsFunc(path=str(tmp_path))
+        entries = ls._list_entries(tmp_path)
+        result = ls._format_entries(entries, tmp_path)
+        assert "file_a.py" in result
+        assert "dir_a/" in result
+        assert "file_b.py" in result
+
 
 # ═══════════════════════════════════════════════════════════════════════════
 # 5. _format_long — 详细格式

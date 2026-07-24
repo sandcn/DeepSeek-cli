@@ -98,7 +98,7 @@ class ToolRegistry:
         self._ensure_initialized()
 
         if self._schema_cache is not None:
-            return list(self._schema_cache)
+            return tuple(self._schema_cache)
 
         schemas = []
         for tool_name, tool_class in self._tools.items():
@@ -110,7 +110,7 @@ class ToolRegistry:
                 continue
 
         self._schema_cache = schemas
-        return schemas
+        return tuple(schemas)
 
     def dispatch(self, tool_name: str, arguments: dict, agent=None):
         """
@@ -183,8 +183,9 @@ class ToolRegistry:
                 module = importlib.import_module(full_module_name)
                 logger.debug(f"导入模块: {full_module_name}")
 
-                for name, obj in inspect.getmembers(module, inspect.isclass):
-                    if (issubclass(obj, Func) and
+                for name, obj in vars(module).items():
+                    if (inspect.isclass(obj) and
+                        issubclass(obj, Func) and
                         obj != Func and
                         obj.__module__ == module.__name__ and
                         obj.name is not None):

@@ -402,6 +402,123 @@ class TestExecute:
 
 
 # ═══════════════════════════════════════════════════════════════════════════
+# 7a. _slice_lines
+# ═══════════════════════════════════════════════════════════════════════════
+
+class TestSliceLines:
+    """_slice_lines 按行号范围切片（使用 find 索引定位而非全量 split）"""
+
+    @staticmethod
+    def _make_rf(start=None, end=None):
+        """创建最小化的 ReadFileFunc 实例用于 _slice_lines 测试。"""
+        import tempfile
+        import os
+        with tempfile.NamedTemporaryFile(suffix='.txt', delete=False) as f:
+            tmp_path = f.name
+        os.unlink(tmp_path)
+        rf = ReadFileFunc(tmp_path, start_line=start, end_line=end)
+        return rf
+
+    def test_empty_content(self):
+        """空内容返回空字符串"""
+        rf = self._make_rf(start=1, end=5)
+        result = rf._slice_lines("")
+        assert result["success"] is True
+        assert result["content"] == ""
+        assert result["original_line_numbers"] == (1, 5)
+
+    def test_single_line(self):
+        """单行内容正确返回"""
+        rf = self._make_rf(start=1, end=1)
+        result = rf._slice_lines("hello world")
+        assert result["content"] == "hello world"
+        assert result["original_line_numbers"] == (1, 1)
+
+    def test_start_beyond_total(self):
+        """start_line 超出总行数返回空"""
+        rf = self._make_rf(start=10, end=20)
+        result = rf._slice_lines("line1\nline2\n")
+        assert result["content"] == ""
+        assert result["original_line_numbers"] == (10, 20)
+
+    def test_tail_range(self):
+        """读取文件尾部几行"""
+        rf = self._make_rf(start=8, end=10)
+        lines = [f"line{i}\n" for i in range(1, 11)]
+        content = "".join(lines)
+        result = rf._slice_lines(content)
+        assert result["content"] == "line8\nline9\nline10\n"
+        assert result["original_line_numbers"] == (8, 10)
+
+    def test_middle_range(self):
+        """读取文件中间几行"""
+        rf = self._make_rf(start=3, end=5)
+        lines = [f"line{i}\n" for i in range(1, 11)]
+        content = "".join(lines)
+        result = rf._slice_lines(content)
+        assert result["content"] == "line3\nline4\nline5\n"
+        assert result["original_line_numbers"] == (3, 5)
+
+    def test_crlf_mixed(self):
+        """CRLF 混合行尾正确处理"""
+        rf = self._make_rf(start=1, end=3)
+        content = "line1\r\nline2\r\nline3\r\n"
+        result = rf._slice_lines(content)
+        # 归一化后每行末尾为 \n
+        assert result["content"] == "line1\nline2\nline3\n"
+        assert result["original_line_numbers"] == (1, 3)
+
+    def test_no_trailing_newline(self):
+        """末行无换行符时正确切片"""
+        rf = self._make_rf(start=1, end=3)
+        content = "line1\nline2\nline3"
+        result = rf._slice_lines(content)
+        assert result["content"] == "line1\nline2\nline3"
+        assert result["original_line_numbers"] == (1, 3)
+
+    def test_no_trailing_newline_middle(self):
+        """末行无换行符 + 读取中间范围"""
+        rf = self._make_rf(start=2, end=3)
+        content = "line1\nline2\nline3"
+        result = rf._slice_lines(content)
+        assert result["content"] == "line2\nline3"
+        assert result["original_line_numbers"] == (2, 3)
+
+    def test_start_line_alone(self):
+        """仅指定 start_line 读到末尾"""
+        rf = self._make_rf(start=3)
+        lines = [f"line{i}\n" for i in range(1, 6)]
+        content = "".join(lines)
+        result = rf._slice_lines(content)
+        assert result["content"] == "line3\nline4\nline5\n"
+        assert result["original_line_numbers"] == (3, 5)
+
+    def test_end_line_alone(self):
+        """仅指定 end_line 从开头读到指定行"""
+        rf = self._make_rf(end=2)
+        lines = [f"line{i}\n" for i in range(1, 6)]
+        content = "".join(lines)
+        result = rf._slice_lines(content)
+        assert result["content"] == "line1\nline2\n"
+        assert result["original_line_numbers"] == (1, 2)
+
+    def test_single_line_no_newline(self):
+        """单行无换行符"""
+        rf = self._make_rf(start=1, end=1)
+        result = rf._slice_lines("only one line")
+        assert result["content"] == "only one line"
+        assert result["original_line_numbers"] == (1, 1)
+
+    def test_end_beyond_total_clipped(self):
+        """end_line 超出总行数自动裁剪"""
+        rf = self._make_rf(start=1, end=100)
+        content = "line1\nline2\n"
+        result = rf._slice_lines(content)
+        assert result["content"] == "line1\nline2\n"
+        assert result["original_line_numbers"] == (1, 2)
+
+
+# ═══════════════════════════════════════════════════════════════════════════
 # 8. display
 # ═══════════════════════════════════════════════════════════════════════════
 

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import pytest
+import shutil
 
 from src.tools.search import SearchFunc
 
@@ -162,6 +163,8 @@ async def test_to_tool_schema_no_mode():
 @pytest.mark.asyncio
 async def test_grep_exclude_dir_params(tmp_path):
     """grep 引擎使用 --exclude-dir 参数拆分（不再使用 shell 拼接）"""
+    if not shutil.which('grep'):
+        pytest.skip('grep not available')
     sub = tmp_path / "proj"
     sub.mkdir()
     (sub / "main.py").write_text("def foo():\n    pass\n")
@@ -186,7 +189,8 @@ async def test_grep_include_params(tmp_path):
     注意：Android (Termux) 的 grep 可能不支持 --include 参数。
     若 grep 不可用，测试跳过。
     """
-    import asyncio as _asyncio
+    if not shutil.which('grep'):
+        pytest.skip('grep not available')
 
     sub = tmp_path / "proj"
     sub.mkdir()
@@ -287,3 +291,144 @@ class TestPythonSearchExcludeDirs:
         assert sf._should_exclude_dir(".git") is True
         assert sf._should_exclude_dir("venv") is True
         assert sf._should_exclude_dir("dist") is True
+
+
+# ═══════════════════════════════════════════════════════════════
+# 步骤 6 性能优化测试：二进制跳过、正则边界、预编译 regex
+# ═══════════════════════════════════════════════════════════════
+
+class TestBinarySkip:
+    """二进制文件应被自动跳过（性能优化相关）"""
+
+    @pytest.mark.asyncio
+    async def test_binary_file_skipped(self, tmp_path):
+        """包含 null 字节的二进制文件被跳过"""
+        f = tmp_path / "binary.bin"
+        f.write_bytes(b"\x00\x01\x02\x03" * 200 + b"hello world\x00")
+
+        sf = SearchFunc(query="hello", path=str(f))
+        sf._has_rg = False
+        sf._has_grep = False
+        result = await sf.execute()
+
+        # 二进制文件应被跳过，无匹配
+        assert "未找到" in result
+
+    @pytest.mark.asyncio
+    async def test_text_file_with_null_is_skipped(self, tmp_path):
+        """首 512 字节内含 null 字节的文件被当作二进制跳过"""
+        f = tmp_path / "mixed.dat"
+        # null 出现在 BINARY_CHECK_SIZE(512) 范围内，确保 _is_binary 检测到
+        data = b"hello world\n" * 40 + b"\x00" + b"more text\n" * 100
+        f.write_bytes(data)
+
+        sf = SearchFunc(query="hello", path=str(f))
+        sf._has_rg = False
+        sf._has_grep = False
+        result = await sf.execute()
+
+        # _is_binary 从文件头读取 512 字节，null 在约 480 字节处命中
+        assert "未找到" in result
+
+
+class TestRegexBoundary:
+    """正则匹配边界测试"""
+
+    @pytest.mark.asyncio
+    async def test_word_boundary(self, tmp_path):
+        """\\b 单词边界匹配"""
+        f = tmp_path / "test.py"
+        f.write_text("foo\nfoobar\nbar_foo\n")
+
+        sf = SearchFunc(query=r"\bfoo\b", path=str(f))
+        sf._has_rg = False
+        sf._has_grep = False
+        result = await sf.execute()
+
+        assert "共找到" in result
+        # 只应匹配 "foo" 行，不应匹配 "foobar" 或 "bar_foo"
+        lines = [l for l in result.split("\n") if "L" in l and ":" in l]
+        # 确认 foo 行被匹配
+        matched_content = "\n".join(lines)
+        assert "foo" in matched_content
+        # foobar 不应匹配（\bfoo\b 不会匹配 foobar）
+        assert "foobar" not in matched_content
+
+    @pytest.mark.asyncio
+    async def test_line_anchor(self, tmp_path):
+        """^ 和 $ 锚点匹配"""
+        f = tmp_path / "test.py"
+        f.write_text("def foo():\n    # def bar():\n    return 'def'\n")
+
+        sf = SearchFunc(query=r"^def ", path=str(f))
+        sf._has_rg = False
+        sf._has_grep = False
+        result = await sf.execute()
+
+        assert "共找到" in result
+        # 只匹配行首的 def，不匹配注释中的
+        assert "def foo" in result
+        assert "# def bar" not in result
+
+    @pytest.mark.asyncio
+    async def test_special_regex_chars(self, tmp_path):
+        """正则特殊字符转义正确"""
+        f = tmp_path / "test.py"
+        f.write_text("a+b\n" "a+++b\n" "a.b\n")
+
+        sf = SearchFunc(query=r"a\+b", path=str(f))
+        sf._has_rg = False
+        sf._has_grep = False
+        result = await sf.execute()
+
+        assert "共找到" in result
+        # a\+b 应精确匹配 a+b
+        assert "a+b" in result
+
+
+class TestPrecompiledInclude:
+    """预编译 include regex 正确性测试"""
+
+    def test_matches_include_single_pattern(self):
+        """单个 include 模式匹配"""
+        sf = SearchFunc(query="test", path=".", include="*.py")
+        assert sf._matches_include("main.py") is True
+        assert sf._matches_include("main.txt") is False
+
+    def test_matches_include_multi_pattern(self):
+        """多个 include 模式 OR 匹配"""
+        sf = SearchFunc(query="test", path=".", include="*.py *.js")
+        assert sf._matches_include("app.py") is True
+        assert sf._matches_include("lib.js") is True
+        assert sf._matches_include("readme.md") is False
+
+    def test_matches_include_no_filter(self):
+        """无 include 过滤时全部通过"""
+        sf = SearchFunc(query="test", path=".")
+        assert sf._matches_include("anything.xyz") is True
+
+    def test_matches_include_charset_pattern(self):
+        """字符集模式 [Tt]est.py"""
+        sf = SearchFunc(query="test", path=".", include="[Tt]est.py")
+        assert sf._matches_include("Test.py") is True
+        assert sf._matches_include("test.py") is True
+        assert sf._matches_include("best.py") is False
+
+    def test_matches_include_wildcard(self):
+        """* 通配符匹配"""
+        sf = SearchFunc(query="test", path=".", include="test_*.py")
+        assert sf._matches_include("test_search.py") is True
+        assert sf._matches_include("test_utils.py") is True
+        assert sf._matches_include("search_test.py") is False
+
+    def test_include_res_initialized(self):
+        """_include_res 列表正确初始化"""
+        sf = SearchFunc(query="test", path=".", include="*.py *.md")
+        assert len(sf._include_res) == 2
+        # 确认是 re.Pattern 类型
+        import re
+        for r in sf._include_res:
+            assert isinstance(r, re.Pattern)
+
+        sf2 = SearchFunc(query="test", path=".")
+        assert sf2._include_res == []

@@ -107,9 +107,6 @@ class CpFunc(FileSystemToolBase):
         """异步执行复制逻辑，所有阻塞操作使用 asyncio.to_thread 包装"""
 
         async def _do_copy():
-            validate_path_security(self.source)
-            validate_path_security(self.destination)
-
             if not await async_file_exists(self.source):
                 return f"(源路径不存在: {self.source})"
 

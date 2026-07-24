@@ -58,7 +58,12 @@ def pick_best_decoding(
     best_content = ""
     best_score = -1  # 越大越好
 
+    seen: set[str] = set()
     for enc in candidate_encodings:
+        # 跳过已尝试的重复编码，避免重复解码
+        if enc in seen:
+            continue
+        seen.add(enc)
         # 尝试 strict 解码
         try:
             decoded = raw_bytes.decode(enc, errors='strict')
@@ -150,10 +155,26 @@ def detect_encoding(file_path: str = "", raw_bytes: bytes | None = None) -> str:
         if not sample:
             return 'utf-8'
 
-        # 检查BOM标记
-        for bom, encoding in BOM_MARKERS.items():
-            if sample.startswith(bom):
-                return encoding
+        # 检查BOM标记（优化：分支匹配替代循环遍历，消除dict迭代+startswith开销）
+        head4 = sample[:4]
+        if head4 == b'\x00\x00\xfe\xff':
+            return 'utf-32-be'
+        if head4 == b'\xff\xfe\x00\x00':
+            return 'utf-32-le'
+        if head4[:3] == b'\xef\xbb\xbf':
+            return 'utf-8-sig'
+        if head4[:2] == b'\xff\xfe':
+            return 'utf-16-le'
+        if head4[:2] == b'\xfe\xff':
+            return 'utf-16-be'
+
+        # UTF-8 fast path：BOM 检查之后、chardet 之前先尝试 UTF-8 解码，
+        # 避免 chardet 将 UTF-8 内容误检为 windows-1252 等通吃编码。
+        try:
+            sample.decode('utf-8')
+            return 'utf-8'
+        except UnicodeDecodeError:
+            pass
 
         chardet_encoding = None  # chardet 检测到的原始编码（未映射前）
 
@@ -165,11 +186,9 @@ def detect_encoding(file_path: str = "", raw_bytes: bytes | None = None) -> str:
                 confidence = result.get('confidence', 0)
 
                 if raw_enc == 'windows-1252' and confidence > 0.5:
-                    try:
-                        sample.decode('utf-8')
-                        chardet_encoding = 'utf-8'
-                    except UnicodeDecodeError:
-                        chardet_encoding = 'latin-1'
+                    # windows-1252 常误检 UTF-8 内容，UTF-8 fast path 已在上方验证，
+                    # 此处直接映射为 latin-1
+                    chardet_encoding = 'latin-1'
                 elif confidence > 0.5:
                     chardet_encoding = raw_enc
                     # 别名映射
@@ -180,13 +199,10 @@ def detect_encoding(file_path: str = "", raw_bytes: bytes | None = None) -> str:
         if chardet_encoding:
             # iso-8859-5 特殊处理：若 GBK 解码无替代字符，优先返回 gbk
             if chardet_encoding == 'iso-8859-5':
-                try:
-                    decoded = sample.decode('gbk', errors='replace')
-                    if decoded.count('\ufffd') == 0:
-                        return 'gbk'
-                    return 'iso-8859-5'
-                except UnicodeDecodeError:
-                    return 'iso-8859-5'
+                decoded = sample.decode('gbk', errors='replace')
+                if decoded.count('\ufffd') == 0:
+                    return 'gbk'
+                return 'iso-8859-5'
             return _validate_decoding_quality(sample, chardet_encoding)
 
         # chardet 无结果或低置信度 → 尝试常见编码

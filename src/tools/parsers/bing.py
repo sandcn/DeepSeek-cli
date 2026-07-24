@@ -5,17 +5,18 @@ import re
 from .base import BaseParser
 
 
+_BING_RESULT_SELECTORS = ['.b_algo', '.b_algo h2']
+_BING_ABSTRACT_SELECTORS = ['.b_caption p', '.b_caption', '.b_lineclamp2']
+
+
 class BingParser(BaseParser):
     """Bing search results parser."""
-
-    RESULT_SELECTORS = ['.b_algo', '.b_algo h2']
-    ABSTRACT_SELECTORS = ['.b_caption p', '.b_caption', '.b_lineclamp2']
 
     def _parse_soup(self, soup, num_results):
         """Parse Bing search results using BeautifulSoup"""
         results = []
         # 必应 PC 结果容器
-        selectors = self.RESULT_SELECTORS
+        selectors = _BING_RESULT_SELECTORS
         for sel in selectors:
             containers = soup.select(sel)
             if containers:
@@ -45,8 +46,8 @@ class BingParser(BaseParser):
 
             # 摘要
             abstract = ''
-            for sel in self.ABSTRACT_SELECTORS:
-                p = container.select_one(sel) if sel.startswith('.') else container.find(sel)
+            for sel in _BING_ABSTRACT_SELECTORS:
+                p = container.select_one(sel)
                 if p:
                     abstract = p.get_text(strip=True)
                     if abstract:

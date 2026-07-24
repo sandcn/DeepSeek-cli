@@ -89,20 +89,38 @@ def _is_binary(data: bytes) -> bool:
     return b"\0" in data[:8192]
 
 
-def _matches_any(text: str, patterns: tuple[str, ...]) -> bool:
-    """text 是否匹配 patterns 中的任意一个 fnmatch 模式"""
-    for pat in patterns:
-        if fnmatch.fnmatch(text, pat):
+def _matches_any(text: str) -> bool:
+    """text 是否匹配 GREP_EXCLUDE_FILES 中的任意一个模式（使用预编译 regex）"""
+    for compiled_re in _GREP_EXCLUDE_RES:
+        if compiled_re.match(text):
             return True
     return False
 
 
 # ── 预分离 EXCLUDED_DIRS 通配符模式 ─────────────────
 
-# 含通配符字符（* ? [ ]）的排除模式需要 fnmatch 匹配
+# 含通配符字符（* ? [ ]）的排除模式 — 原始 fnmatch 字符串
 _EXCLUDED_DIR_PATTERNS: tuple[str, ...] = tuple(
     d for d in EXCLUDED_DIRS if any(c in d for c in "*?[]")
 )
+
+# 预编译的排除目录 regex（fnmatch.translate → re.compile），
+# 消除每次 _should_exclude_dir 调用时的 fnmatch 内部 translate+compile 开销
+_EXCLUDED_DIR_RES: list[re.Pattern] = [
+    re.compile(fnmatch.translate(p)) for p in _EXCLUDED_DIR_PATTERNS
+]
+
+# 预编译的排除文件 regex（来自 GREP_EXCLUDE_FILES），
+# 消除 _matches_any 中每次 fnmatch 内部的 translate+compile 开销
+_GREP_EXCLUDE_RES: list[re.Pattern] = [
+    re.compile(fnmatch.translate(p)) for p in GREP_EXCLUDE_FILES
+]
+
+# 预编译的排除文件 regex（来自 GREP_EXCLUDE_FILES），
+# 消除 _matches_any 中每次 fnmatch 内部的 translate+compile 开销
+_GREP_EXCLUDE_RES: list[re.Pattern] = [
+    re.compile(fnmatch.translate(p)) for p in GREP_EXCLUDE_FILES
+]
 
 
 # ── 工具类 ────────────────────────────────────────────
@@ -264,6 +282,16 @@ class SearchFunc(Func):
             self._pattern = None
             self._regex_error = str(e)
 
+        # 预编译 include 过滤模式
+        if self.include:
+            self._include_res = [
+                re.compile(fnmatch.translate(p.strip()))
+                for p in self.include.split()
+                if p.strip()
+            ]
+        else:
+            self._include_res = []
+
     # ── 核心执行（三路引擎选择）─────────────────────────
 
     async def execute(self) -> str:
@@ -389,27 +417,27 @@ class SearchFunc(Func):
 
         分两阶段匹配：
         1. set 精确查找（不含通配符的模式，O(1) 性能）
-        2. fnmatch 模式匹配（含通配符的模式，如 *.egg-info）
+        2. 预编译 regex 模式匹配（含通配符的模式，如 *.egg-info）
+           — 使用模块级预编译 regex，消除 fnmatch 内部 translate+compile 开销
         """
         if dirname in EXCLUDED_DIRS:
             return True
-        # fnmatch 分支：对含通配符的排除模式做模式匹配
-        for pat in _EXCLUDED_DIR_PATTERNS:
-            if fnmatch.fnmatch(dirname, pat):
+        # 预编译 regex 分支：对含通配符的排除模式做模式匹配
+        for compiled_re in _EXCLUDED_DIR_RES:
+            if compiled_re.match(dirname):
                 return True
         return False
 
     def _should_exclude_by_pattern(self, filename: str) -> bool:
         """判断文件名是否应被排除（如 *.egg-info）"""
-        return _matches_any(filename, GREP_EXCLUDE_FILES)
+        return _matches_any(filename)
 
     def _matches_include(self, filename: str) -> bool:
-        """检查文件名是否匹配 include 过滤条件"""
-        if not self.include:
+        """检查文件名是否匹配 include 过滤条件（使用预编译 regex）"""
+        if not self._include_res:
             return True
-        for pat in self.include.split():
-            pat = pat.strip()
-            if pat and fnmatch.fnmatch(filename, pat):
+        for compiled_re in self._include_res:
+            if compiled_re.match(filename):
                 return True
         return False
 
@@ -478,6 +506,8 @@ class SearchFunc(Func):
         if _is_binary(head):
             return
 
+        pattern = self._pattern  # 局部变量引用，减少属性查找开销
+
         # 逐行搜索
         try:
             with open(filepath, "rb", buffering=BUFFER_SIZE) as f:
@@ -489,7 +519,7 @@ class SearchFunc(Func):
                     raw = f.read()
                     text = raw.decode("utf-8", errors="replace")
                     for line_num, line in enumerate(text.splitlines(keepends=False), 1):
-                        if self._line_matches(line):
+                        if pattern.search(line):  # 内联 _line_matches，消除函数调用开销
                             results.append((filepath, line_num, line))
                 else:
                     # 大文件逐行
@@ -497,14 +527,10 @@ class SearchFunc(Func):
                     for raw_line in f:
                         line_num += 1
                         line = raw_line.decode("utf-8", errors="replace").rstrip("\r\n")
-                        if self._line_matches(line):
+                        if pattern.search(line):  # 内联 _line_matches，消除函数调用开销
                             results.append((filepath, line_num, line))
         except OSError:
             pass
-
-    def _line_matches(self, line: str) -> bool:
-        """判断单行是否匹配搜索模式"""
-        return bool(self._pattern.search(line))
 
     # ── 结果格式化（rg/grep/Python 三路共用）───────────
 

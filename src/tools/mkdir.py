@@ -81,8 +81,6 @@ class MkdirFunc(FileSystemToolBase):
         """异步执行目录创建逻辑，所有阻塞操作使用 asyncio.to_thread 包装"""
 
         async def _do_mkdir():
-            validate_path_security(self.path)
-
             # plan agent 路径白名单校验：仅允许创建 .chat/plan/ 下的目录
             agent_type_val = getattr(self, 'agent_type', None)
             if agent_type_val == 'plan':

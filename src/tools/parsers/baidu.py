@@ -20,7 +20,7 @@ class BaiduParser(BaseParser):
             # 从 data-log 中提取 mu
             real_url = ''
             data_log_str = div.get('data-log', '')
-            if data_log_str:
+            if data_log_str and data_log_str.startswith('{'):
                 try:
                     log_data = json.loads(data_log_str)
                     real_url = log_data.get('mu', '')
@@ -45,10 +45,12 @@ class BaiduParser(BaseParser):
             # 摘要
             content_div = div.select_one('.c-result-content')
             if content_div:
-                for a_tag in content_div.find_all('a'):
-                    a_tag.extract()
                 texts = []
-                for t in content_div.stripped_strings:
+                # 使用 find_all(string=True) 获取 NavigableString（有 .parent 属性）
+                for t in content_div.find_all(string=True):
+                    # 跳过 a 标签内的文本，避免 DOM 修改开销
+                    if t.parent and t.parent.name == 'a':
+                        continue
                     t = t.strip()
                     if len(t) > 5:
                         texts.append(t)

@@ -66,6 +66,12 @@ REMOVE_CLASS_KEYWORDS = (
     "siderail", "side",
 )
 
+# 预编译噪音关键词正则（替代逐关键词循环，O(n) 替代 O(n*k)）
+_NOISE_KEYWORD_RE = re.compile(
+    '|'.join(re.escape(k) for k in REMOVE_CLASS_KEYWORDS),
+    re.IGNORECASE,
+)
+
 # 发布日期提取的 meta 属性组合
 _META_KEY = "meta"
 DATE_META_PATTERNS = [
@@ -96,13 +102,15 @@ def _is_private_url(url: str) -> bool:
         return True
 
     # 检查 IPv6 link-local 地址 (fe80::/10: 首 hextet 范围 0xFE80-0xFEBF)
-    try:
-        ipv6 = ipaddress.IPv6Address(hostname)
-        first_hextet = ipv6.packed[0] * 256 + ipv6.packed[1]
-        if 0xFE80 <= first_hextet <= 0xFEBF:
-            return True
-    except ValueError:
-        _logger.debug("IPv6 地址解析失败（非 IPv6 主机名，安全跳过）: %s", hostname)
+    # 快速排除：不含 ":" 的 hostname 不可能是 IPv6，跳过 ipaddress 解析
+    if ":" in hostname:
+        try:
+            ipv6 = ipaddress.IPv6Address(hostname)
+            first_hextet = ipv6.packed[0] * 256 + ipv6.packed[1]
+            if 0xFE80 <= first_hextet <= 0xFEBF:
+                return True
+        except ValueError:
+            _logger.debug("IPv6 地址解析失败（非 IPv6 主机名，安全跳过）: %s", hostname)
 
     # 检查是否包含字母（区分 IP 地址和主机名）
     # 私网前缀匹配仅对纯 IP 地址生效，避免误拦截如 127.example.com 等合法域名
@@ -114,21 +122,6 @@ def _is_private_url(url: str) -> bool:
             if hostname.startswith(prefix):
                 return True
 
-    # 检查是否为纯 IP（不包含字母）
-    if is_numeric_ip:
-        parts = hostname.split(".")
-        if len(parts) == 4:
-            try:
-                first = int(parts[0])
-                # 仅拦截真正的私有/保留网段
-                if first == 10 or first == 127 or first == 0:
-                    return True
-                if first == 172 and len(parts) > 2:
-                    second = int(parts[1])
-                    if 16 <= second <= 31:
-                        return True
-            except ValueError:
-                pass
 
     return False
 
@@ -222,11 +215,17 @@ def _format_date_str(date_str: str) -> str:
 def _is_noise_element(tag: Tag) -> bool:
     """判断元素是否为噪音（导航/广告/侧栏等），基于 class/id 关键词"""
     classes = " ".join(tag.get("class", [])) + " " + (tag.get("id", "") or "")
-    classes = classes.lower()
-    for keyword in REMOVE_CLASS_KEYWORDS:
-        if keyword in classes:
-            return True
-    return False
+    return bool(_NOISE_KEYWORD_RE.search(classes))
+
+
+# 策略3 常见内容区 CSS 选择器（模块级常量，避免每次调用重新构建）
+_CONTENT_SELECTORS = [
+    ".content", ".post-content", ".article-content",
+    ".entry-content", ".post-body", ".article-body",
+    ".main-content", ".page-content", ".body-content",
+    "#content", "#main-content", "#article",
+    "[itemprop='articleBody']",
+]
 
 
 def _extract_main_content(soup: BeautifulSoup) -> str:
@@ -254,14 +253,7 @@ def _extract_main_content(soup: BeautifulSoup) -> str:
             return text
 
     # 策略3: 常见内容 class
-    content_selectors = [
-        ".content", ".post-content", ".article-content",
-        ".entry-content", ".post-body", ".article-body",
-        ".main-content", ".page-content", ".body-content",
-        "#content", "#main-content", "#article",
-        "[itemprop='articleBody']",
-    ]
-    for selector in content_selectors:
+    for selector in _CONTENT_SELECTORS:
         container = soup.select_one(selector)
         if container:
             text = _extract_text_from_container(container)

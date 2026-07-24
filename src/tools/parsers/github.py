@@ -4,6 +4,8 @@ import re
 
 from .base import BaseParser
 
+_GITHUB_REPO_HREF_RE = re.compile(r'^/[\w.-]+/[\w.-]+$')
+
 
 class GitHubParser(BaseParser):
     """GitHub search results parser (repository search).
@@ -68,7 +70,7 @@ class GitHubParser(BaseParser):
     def _extract_item(self, container):
         """从单个搜索结果容器中提取仓库信息"""
         # 提取仓库链接
-        a_tag = container.find('a', href=re.compile(r'^/[\w.-]+/[\w.-]+$'))
+        a_tag = container.find('a', href=_GITHUB_REPO_HREF_RE)
         if not a_tag:
             a_tag = container.select_one('h3 a')
         if not a_tag:
@@ -99,17 +101,12 @@ class GitHubParser(BaseParser):
 
         # 如果没有 p 描述，尝试从其他常见元素提取
         if not abstract:
-            desc_selectors = [
-                '[class*="description"]',
-                '[class*="summary"]',
-                '[class*="color-fg-muted"]',
-            ]
-            for sel in desc_selectors:
-                elem = container.select_one(sel)
-                if elem:
-                    abstract = elem.get_text(strip=True)
-                    if abstract:
-                        break
+            # 合并为单个 CSS 选择器，一次 select_one 替代多次
+            elem = container.select_one(
+                '[class*="description"], [class*="summary"], [class*="color-fg-muted"]'
+            )
+            if elem:
+                abstract = elem.get_text(strip=True)
 
         return {
             'title': title,

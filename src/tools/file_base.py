@@ -92,6 +92,11 @@ class FileSizeError(FileToolError):
     pass
 
 
+# plan agent 路径白名单目录（模块级常量）
+# cwd 在进程生命周期内不变，提前计算避免每次 _validate_path_and_size 重复解析
+_PLAN_ALLOWED_DIR = os.path.realpath(os.path.join(os.getcwd(), '.chat', 'plan'))
+
+
 @tool_metadata(
     parallel_safe=False,
     requires_network=False,
@@ -126,18 +131,16 @@ class FileToolBase(Func):
     def _validate_path_and_size(self):
         """在 execute() 中执行的路径安全校验和文件大小检查。
 
-        包含同步 I/O 操作（os.path.islink, os.path.exists, os.path.realpath），
+        包含同步 I/O 操作（os.path.realpath），
         在异步上下文中执行以避免构造时阻塞。
+
+        优化：提前执行一次 realpath（原 3 次 → 1 次有效调用），
+        消除 validate_path_security 内部的重复 realpath 解析。
         """
+        # 一次 realpath 解析所有符号链接和相对路径，后续校验均基于此路径
+        real = os.path.realpath(self.path)
         try:
-            validate_path_security(self.path)
-            # 额外检查：解析符号链接后再次校验
-            if os.path.islink(self.path) or os.path.exists(self.path):
-                real = os.path.realpath(self.path)
-                try:
-                    validate_path_security(real)
-                except ValueError as e:
-                    raise PathSecurityError(f"符号链接指向越界路径: {self.path} -> {real}")
+            validate_path_security(real)
         except ValueError as e:
             raise PathSecurityError(str(e))
 
@@ -148,18 +151,16 @@ class FileToolBase(Func):
         # 上下文即无语义，不限制是正确行为。
         agent_type_val = getattr(self, 'agent_type', None)
         if agent_type_val == 'plan':
-            allowed_dir = os.path.realpath(os.path.abspath(os.path.join(os.getcwd(), '.chat', 'plan')))
+            allowed_dir = _PLAN_ALLOWED_DIR
             agent_label = "plan agent"
-            # 使用 os.path.realpath 解析目标目录的所有符号链接中间目录，
-            # 防止 allowed_dir 本身是符号链接指向外部目录时被绕过
-            abs_path = os.path.abspath(self.path)
+            # real 已是解析符号链接后的绝对路径，无需再次 abspath
             # os.path.commonpath 判断子路径关系，防 ../ 穿越
             try:
-                common = os.path.commonpath([allowed_dir, abs_path])
+                common = os.path.commonpath([allowed_dir, real])
                 if common != allowed_dir:
                     raise PathSecurityError(
                         f"{agent_label} 只能在 {allowed_dir} 目录下写入文件。"
-                        f"当前路径: {self.path}（解析后: {abs_path}），"
+                        f"当前路径: {self.path}（解析后: {real}），"
                         f"不在允许的目录: {allowed_dir}"
                     )
             except ValueError:
@@ -169,9 +170,9 @@ class FileToolBase(Func):
                     f"当前路径: {self.path} 无法与 {allowed_dir} 比较"
                 )
 
-        if os.path.exists(self.path):
+        if os.path.exists(real):
             try:
-                check_file_size(self.path, MAX_FILE_SIZE_MB)
+                check_file_size(real, MAX_FILE_SIZE_MB)
             except ValueError as e:
                 raise FileSizeError(str(e))
 
@@ -330,8 +331,7 @@ class FileToolBase(Func):
         except asyncio.CancelledError:
             raise
         except Exception as e:
-            import logging
-            logging.getLogger(__name__).exception("文件操作异常: %s", e)
+            _logger.exception("文件操作异常: %s", e)
             return f"({self._success_verb().replace('成功','失败')}: {e})"
         finally:
             self.stats["total_time"] = time.time() - total_start
@@ -350,8 +350,7 @@ class FileToolBase(Func):
             new_content = await self._get_new_content()
         except (FileToolError, Exception) as e:
             if not isinstance(e, FileToolError):
-                import logging
-                logging.getLogger(__name__).exception("display() 内容生成异常: %s", e)
+                _logger.exception("display() 内容生成异常: %s", e)
                 err_msg = f"({self._success_verb().replace('成功','失败')}: 内容生成失败)"
             else:
                 err_msg = f"({self._success_verb().replace('成功','失败')}: {e})"
