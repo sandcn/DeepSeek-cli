@@ -343,12 +343,9 @@ class AsyncStreamPipeline:
             else:
                 raise
 
-        # ── 第 2a 步：清除 tracker 显示行（仅在非 silent 模式，ChatUI 活跃时跳过） ─
-        if not ctx.silent and ctx.tracker.started:
-            from ...tui.consumer import get_active_chat_ui  # noqa: PLC0415
-            if get_active_chat_ui() is None:
-                sys.__stdout__.write("\r\033[K")
-                sys.__stdout__.flush()
+        # ── 第 2a 步：清除 tracker 显示行（合并到尾部换行处理）──
+        # 为避免 publish_output 附加的 \n 导致多余空行，
+        # tracker 行清除已合并到尾部换行步骤统一处理。
 
         # ── 第 2b 步：发布 PhaseDoneEvent（即使 silent=True 也要发，确保 WebUI 收到） ─
         # ★ 标记追踪：在 content.py 或 tool_calls.py 中已发布的阶段事件，此处不再重复发送
@@ -402,10 +399,8 @@ class AsyncStreamPipeline:
                 raise
 
         if not ctx.silent and (ctx.content_full or ctx.reasoning_full):
-            from ...tui.consumer import get_active_chat_ui  # noqa: PLC0415
-            if get_active_chat_ui() is None:
-                sys.__stdout__.write("\n")
-                sys.__stdout__.flush()
+            text = "\r\033[K" if ctx.tracker.started else ""
+            publish_output(text, level="raw")
 
     def _print_usage_summary(self, ctx: StreamContext) -> None:
         """打印使用量摘要。"""

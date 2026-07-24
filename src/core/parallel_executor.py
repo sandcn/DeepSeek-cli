@@ -19,6 +19,7 @@ from .internal.agent._capture_manager import _safe_restore as safe_restore_stdou
 from .internal.agent._subagent_spawner import SubAgentSpawner
 from .subagent import SubAgent
 from .constants import RED, RESET
+from ..tui.events.consumers import publish_output
 
 _logger = logging.getLogger(__name__)
 
@@ -347,21 +348,13 @@ class ParallelExecutor:
         #   sys.stdout.write('\r\n') 写入 _SharedCapture 会触发
         #   real_stdout 间接写入，导致终端光标同步不可靠 & 产生多余事件。
         # ────────────────────────────────────────────────────────────────
-        import sys as _sys
-
         self._stream_results_markdown(results)
 
         # ★ 终端光标重定位到下一行行首
-        #   _stream_results_markdown 写入了大量内容到 __stdout__，终端光标已
-        #   移至最后一行末尾，但 mainagent 的 Spinner \r\033[K 依赖"当前在行首"
-        #   的假设修正上一次的 Spinner 行，否则 Spinner 不可见。
-        #
-        #   全部使用 __stdout__（真实终端），而非 sys.stdout（可能被并发工具
-        #   的 _SharedCapture 劫持），消除竞态窗口。
-        from ..tui.widgets.lock import _try_acquire_output_lock
-        with _try_acquire_output_lock(name="parallel_executor.cursor_fix", timeout=1.0):
-            _sys.__stdout__.write('\r\n')
-            _sys.__stdout__.flush()
+        #   publish_output 内部通过 OutputConsumer 处理，OutputConsumer
+        #   已内置 output_lock 保护。当 ChatUI 激活时自动跳过（由 _on_output 处理），
+        #   当 ChatUI 未激活时写入终端。
+        publish_output("\r", level="raw")
 
     async def _execute_with_error_handling(
         self, coro, specs: List[Dict[str, Any]], display: ParallelDisplay,
@@ -407,12 +400,9 @@ class ParallelExecutor:
 
             if results:
                 # 取消路径下直接调用（非 to_thread），避免子任务被取消
-                if is_batch:
-                    self._do_terminal_output(results)
-                else:
-                    self._stream_results_markdown(results)
-                    import sys as _sys
-                    _sys.__stdout__.flush()
+                # 统一使用 _do_terminal_output 路由：ChatUI 激活时走 write_line，
+                # ChatUI 未激活时走 IncrementalRenderer 写终端
+                self._do_terminal_output(results)
 
             # ★ sys.stdout 泄漏检测
             try:
@@ -456,7 +446,6 @@ class ParallelExecutor:
 
             # ★ 批量模式：在打印 markdown 结果前，停止 dispatch_agent 的 Spinner
             if is_batch and not self._is_web and results:
-                import sys as _sys
                 parent_display = getattr(self.parent, 'display', None)
                 if parent_display is not None:
                     for spec in specs:
@@ -469,11 +458,7 @@ class ParallelExecutor:
                             except Exception:
                                 _logger.warning("dispatch_agent tool_done 异常", exc_info=True)
                 # 换行，确保后续 markdown 内容从新行开始
-                # ChatUI 激活时 write_line 自带换行，无需写 __stdout__ 破坏分屏布局
-                from ..tui.consumer import get_active_chat_ui as _get_active_chat_ui
-                if _get_active_chat_ui() is None:
-                    _sys.__stdout__.write('\n')
-                    _sys.__stdout__.flush()
+                publish_output("", level="raw")
 
             # 在线程池中执行所有终端输出操作，避免同步 IO 阻塞事件循环
             # 统一通过 _do_terminal_output 路由：ChatUI 激活时走 write_line，

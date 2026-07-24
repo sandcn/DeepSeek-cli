@@ -11,6 +11,7 @@ import logging
 from ..chat_msgs import save_session, get_recover_cmd
 from ..paths import CHAT_MSGS_DIR
 from ..core.constants import DIM, RESET
+from ..tui.events.consumers import publish_output
 
 _logger = logging.getLogger(__name__)
 
@@ -75,7 +76,7 @@ async def _save_loop_snapshot(session, chat_ui=None) -> None:
         if chat_ui is not None:
             chat_ui.write_line(f"  {filepath.name}")
         else:
-            print(f"  {filepath.name}", flush=True)
+            publish_output(f"  {filepath.name}", level="raw")
 
 
 def _exit_save_and_stop(session, chat_ui=None) -> None:
@@ -97,7 +98,7 @@ def _save_and_show_recover(session, chat_ui=None):
         if chat_ui is not None:
             chat_ui.write_line(f"\n{DIM}再见{RESET}")
         else:
-            print(f"\n{DIM}再见{RESET}", flush=True)
+            publish_output(f"\n{DIM}再见{RESET}", level="raw")
         return
 
     sid = session.save()
@@ -108,4 +109,4 @@ def _save_and_show_recover(session, chat_ui=None):
     if chat_ui is not None:
         chat_ui.write_line(msg)
     else:
-        print(msg, flush=True)
+        publish_output(msg, level="raw")
