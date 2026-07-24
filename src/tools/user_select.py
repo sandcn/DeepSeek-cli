@@ -229,7 +229,6 @@ class UserSelectFunc(Func):
         fd = sys.stdin.fileno()
         old_settings = termios.tcgetattr(fd)
         _termios_guard = self._save_termios()
-        _saved_status_active = bb._status_active
 
         try:
             # 清空 stdin 残留
@@ -239,8 +238,9 @@ class UserSelectFunc(Func):
             tty.setcbreak(fd)
             termios.tcflush(fd, termios.TCIFLUSH)
 
-            # 修复：压制 "AI 生成中..." 占位符，显示干净输入区
-            bb._status_active = False
+            # 仅清空输入文本，使输入区显示干净弹窗选择界面；
+            # 但保持 _status_active 不变（不清除），让状态行在弹窗期间
+            # 持续刷新 token/耗时/速率，用户能实时看到 AI 仍在生成
             if bb._last_text:
                 bb._last_text = ""
 
@@ -374,17 +374,13 @@ class UserSelectFunc(Func):
                 pass
             self._restore_termios(_termios_guard)
 
-            # 合并弹窗隐藏 + 状态恢复，由 render 线程 _phase_redraw_bottom 统一终绘
+            # 清除弹窗状态 + 主动重绘，确保底部栏立即恢复正常显示
             try:
-                if _saved_status_active:
-                    bb._status_active = True
-                    # 手动清除弹窗状态，render 线程将在下一周期拾取并重绘
-                    bb._completion._visible = False
-                    bb._completion._popup_height = 0
-                    bb._completion._items = []
-                    bb._completion._texts = []
-                else:
-                    bb.hide_completions()
+                bb._completion._visible = False
+                bb._completion._popup_height = 0
+                bb._completion._items = []
+                bb._completion._texts = []
+                bb.force_redraw()
             except Exception as e:
                 _logger.debug("user_select: cleanup failed: %s", e)
 

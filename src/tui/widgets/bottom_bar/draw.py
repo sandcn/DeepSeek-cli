@@ -407,7 +407,8 @@ def _redraw_cycle_only(bar: _BottomBar) -> None:
     """仅重绘补全弹窗高亮变化（轻量路径，调用方须持有 output_lock）。
 
     与 force_redraw() 不同，此方法仅更新弹窗行的选中高亮
-    和快捷键提示行，不重绘分隔线/状态行/输入区。
+    和快捷键提示行，以及状态行（确保 user_select 弹窗 ↑↓ 导航期间
+    状态行持续可见，不会被后续 ANSI 交互覆盖）。
 
     由 render 线程在 CYCLE_COMPLETION 命令 handler 中调用。
 
@@ -420,9 +421,26 @@ def _redraw_cycle_only(bar: _BottomBar) -> None:
     out.write(_blessed_save_cursor())
     height = bar._term_height()
     total = bar._bottom_lines
-    popup_start = height - total + 4  # +4 跳过 分隔线(1)+子Agent面板行(1)+状态行(1)+上分割线(1)
+    popup_start = height - total + 3 + len(bar._subagent_lines)  # 跳过 分隔线(1)+子Agent面板行(S)+状态行(1)+上分割线(1)=3+S
     tw = bar._term_width()
     bar._completion.render_cycle_update(out, popup_start, tw)
+
+    # 重绘状态行（弹窗 ↑↓ 导航期间状态行持续可见）
+    # r2 = r1 + 1 + len(subagent_lines) = (height - total + 1) + 1 + S = height - total + 2 + S
+    r2 = height - total + 2 + len(bar._subagent_lines)
+    status = bar._format_status()
+    bar._last_status = status
+    if status:
+        from ...terminal.terminal import is_narrow as _is_narrow_fn
+        if bar._animator.breath_frame > 0 and not _is_narrow_fn():
+            dot_color = bar._animator.sine_color(45, 81, 12)
+            dot_ansi = f"\033[38;5;{dot_color}m\u00b7{_COLOR_RESET}"
+            out.write(_blessed_move_clear(r2) + status + " " + dot_ansi)
+        else:
+            out.write(_blessed_move_clear(r2) + status)
+    else:
+        out.write(_blessed_move_clear(r2))
+
     out.write(_blessed_restore_cursor())
     out.flush()
     bar._last_height = height
