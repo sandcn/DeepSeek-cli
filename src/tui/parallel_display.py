@@ -20,10 +20,30 @@
 from __future__ import annotations
 
 import asyncio
+import functools
 import logging
 import time
+import warnings
 from typing import Any
-from warnings import deprecated
+
+
+def deprecated(message: str):
+    """「废弃标记」装饰器 — Python 3.13+ warnings.deprecated 的向下兼容实现。
+
+    Python 3.13 (PEP 702) 在 warnings 模块中新增了 @deprecated 装饰器。
+    本实现为 Python 3.9 提供等价行为：调用被装饰函数时发出 DeprecationWarning。
+    """
+    def decorator(func):
+        @functools.wraps(func)
+        def wrapper(*args, **kwargs):
+            warnings.warn(
+                f"{func.__name__} is deprecated: {message}",
+                DeprecationWarning,
+                stacklevel=2,
+            )
+            return func(*args, **kwargs)
+        return wrapper
+    return decorator
 
 from .config import TuiConfig
 from .core.output_target import IOutputTarget, TerminalTarget
