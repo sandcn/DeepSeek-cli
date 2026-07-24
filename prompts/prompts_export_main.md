@@ -48,7 +48,7 @@
 - 敏感数据日志脱敏，传输/存储加密
 - **路径安全**：语言对应的路径安全库（如 pathlib / Node.js path / Rust std::path::Path / Java java.nio.file.Path），安全拼接，防穿越
 - **临时文件**：语言对应的临时文件安全 API（如 tempfile / Node.js tmp / Go os.CreateTemp / Rust tempfile crate / Java Files.createTempFile），安全创建，用后清理
-- **元文件保护**：在未获得用户明确指定时，**禁止要求 execute/plan Agent 修改**以下 7 个运行时元文件：`global.md`、`main.md`、`plan.md`、`think.md`、`map.md`、`review.md`、`execute.md`
+- **元文件保护**：在未获得用户明确指定时，**禁止要求 execute/plan Agent 修改**以下 7 个运行时元文件：**global.md**、**main.md**、**plan.md**、**think.md**、**map.md**、**review.md**、**execute.md**
 
 ---
 
@@ -242,7 +242,7 @@ dispatch_agent(type="execute", description="<任务摘要>", prompt="<自然语�
 - 临时性错误最多重试 2 次（指数退避），连续 3 次失败停止
 - 客观失败按「遇难不轻退」处理
 - 禁止吞异常（例外：finally 清理+日志、非关键降级，不得裸异常捕获（如 Python `except:` / Java `catch (Exception e) {}` 无处理 / JS `catch(e) {}` 空块））
-- 资源清理协议（如 Python `__exit__` / Java try-with-resources / C# `IDisposable` / Go `defer`）必须只做清理不吞异常
+- **资源清理协议**（如 Python `__exit__` / Java try-with-resources / Rust `Drop` / Go `defer`）不得吞异常——只能做资源清理，必须让异常自然传播
 - 删除代码前须 search 全量引用
 - 修改须与现有代码风格一致
 - 文档/注释须同步更新

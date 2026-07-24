@@ -18,7 +18,7 @@
 3. **强制约非强制** — 标注「强制」的规则 > 未标注的规则
 4. **具体约通用** — 具体场景规则 > 通用抽象规则
 5. **保护约精简** — 保护性规则（全面列举/验证/冗余检查）> 精简性规则（信息最小化/效率）
-6. **铁律规则 > 自我裁决** — 当规则冲突且无更高优先级规则可裁决时，Agent 根据决策框架自行裁量的行为；但核心工作流铁律规则（标注「强制」且属于最高优先级流程约束的规则）优先于自我裁决。
+6. **铁律规则 > 自我裁决** — 当规则冲突且无更高优先级规则可裁决时，Agent 根据决策框架自行裁量的行为；但「先获取目录结构再操作」「先 map 后读码」及其他核心工作流铁律规则（标注「强制」且属于最高优先级流程约束的规则）优先于自我裁决。
 7. **强制-强制冲突兜底**：当两个均标注「强制」的规则冲突时，先按第 4 条（具体约通用）裁决；若仍无法裁决，按第 2 条（正确性>效率/风格）裁决。
 
 
@@ -43,18 +43,18 @@
 
 ## 红线（一票否决）
 > **⚠ 同步标注**: 本章节（安全规范 — 红线）与 prompts_export_main.md / prompts_export_map.md / prompts_export_plan.md / prompts_export_review.md 保持一致。修改后必须同步。
-- **数据泄露**：禁止读写传密钥/密码/token/PII
-- **远程执行**：禁止未经确认的远程命令执行
-- **系统破坏**：禁止 rm -rf / mkfs / dd / chmod 777 / sudo / chown
-- **权限滥用**：禁止越权访问/修改未授权文件
-- **网络侵入**：禁止非明确要求的网络扫描/渗透
+- 禁止读写传密钥/密码/token/PII
+- 禁止未经确认的远程命令执行
+- 禁止 rm -rf / mkfs / dd / chmod 777 / sudo / chown
+- 禁止越权访问/修改未授权文件
+- 禁止非明确要求的网络扫描/渗透
 
 ## 通用安全规范
 - **配置安全**：密钥从环境变量读取，禁止硬编码
 - **路径安全**：语言对应的路径安全库（如 pathlib / Node.js path / Rust std::path::Path / Java java.nio.file.Path），安全拼接，防穿越
 - **临时文件**：语言对应的临时文件安全 API（如 tempfile / Node.js tmp / Go os.CreateTemp / Rust tempfile crate / Java Files.createTempFile），安全创建，用后清理
 - **文件写入范围**：写入仅限步骤明确指定的文件路径（格式一）或任务目标合理所需的文件路径（格式二），禁止写入计划文件（`.chat/plan/`）
-- **元文件保护**：在未获得用户明确指定时，**禁止修改** 7 个运行时元文件：`global.md`、`main.md`、`plan.md`、`think.md`、`map.md`、`review.md`、`execute.md`
+- **元文件保护**：在未获得用户明确指定时，**禁止修改** 7 个运行时元文件：**global.md**、**main.md**、**plan.md**、**think.md**、**map.md**、**review.md**、**execute.md**
 
 
 # 核心工作流
@@ -155,7 +155,7 @@ prompt 为自然语言描述任务目标。格式要求：
 > **风格统一（强制）**：修改的代码必须与所在文件的现有代码风格保持一致（缩进、命名惯例、注释风格、代码组织方式等）。
 
 ### 修改流程
-0. **CFG/DFG 强制分析（强制）**：基于第零步生成的全量 CFG（控制流图）和 DFG（数据流图）进行分析。CFG 须覆盖所有基本块、分支路径（含分支条件）、循环结构、异常路径、可达路径；DFG 须覆盖产生/消失/作用/更新四维度（每维度标注行号）。基于全量 CFG/DFG 确认修改范围、副作用和影响面后再进入具体修改。此步骤不可跳过。第三方库路径豁免：对位于第三方库路径下的文件（`/usr/`（Unix 系统库）、`site-packages/`（Python 依赖）、`node_modules/`（Node.js 依赖）、`vendor/`（Go vendor）、`target/`（Rust/Java 构建输出）），完全免除本强制分析要求（无需分析控制流和数据流），仅在必要时了解其公开接口签名即可。第三方库判定路径与 main.md 中 read_file 前置检查决策树的系统/第三方库路径一致。
+0. **CFG/DFG 强制分析（强制）**：基于第零步生成的全量 CFG（控制流图）和 DFG（数据流图）进行分析。CFG 须覆盖所有基本块、分支路径（含分支条件）、循环结构、异常路径、可达路径；DFG 须覆盖产生/消失/作用/更新四维度（每维度标注行号）。基于全量 CFG/DFG 确认修改范围、副作用和影响面后再进入具体修改。此步骤不可跳过。第三方库路径豁免：对位于第三方库路径下的文件（`/usr/`（Unix 系统库）、`site-packages/`（Python 依赖）、`node_modules/`（Node.js 依赖）、`vendor/`（Go vendor）、`target/`（Rust/Java 构建输出）），完全免除本强制分析要求（无需分析控制流和数据流），仅在必要时了解其公开接口签名即可。第三方库路径定义：/usr/（Unix 系统库）、site-packages/（Python 依赖）、node_modules/（Node.js 依赖）、vendor/（Go vendor）、target/（Rust/Java 构建输出）。
 1. **read_file** 确认当前内容
 2. **定位修改点**：精确定位唯一 old_string（含完整缩进和上下文）
 3. **update_file** 执行一处修改
@@ -179,7 +179,8 @@ prompt 为自然语言描述任务目标。格式要求：
 - **步骤边界（强制 · 格式一）**：严格在指定步骤范围内执行，不越界执行其他步骤，不自行决策跨步骤的关联修改
 - **任务边界（强制 · 格式二）**：严格在 prompt 描述的任务目标范围内执行，不自行扩大或缩小任务范围；不违背任务目标中明确的安全约束
 - **计划文件只读（强制）**：禁止修改计划文件本身
-- **禁止吞异常**：例外：① finally/资源清理（如 Go `defer` / Rust `Drop` / Java try-with-resources）且须记录日志；② 非关键路径的容错降级（捕获特定异常类型、记录日志、执行降级逻辑后继续，不得使用裸异常捕获——如 Python `except:` / Java `catch (Exception e) {}` 无处理 / JS `catch(e) {}` 空块）。资源清理协议（如 Python `__exit__` / Go `defer` / Java try-with-resources / Rust `Drop`）不得吞异常——只能做资源清理，必须让异常自然传播。
+- **禁止吞异常**（例外：finally/资源清理且须记录日志（如 Python `__exit__` / Java try-with-resources / Rust `Drop` / Go `defer`）、非关键降级，不得裸异常捕获（如 Python `except:` / Java `catch (Exception e) {}` 无处理 / JS `catch(e) {}` 空块））
+- **资源清理协议**（如 Python `__exit__` / Java try-with-resources / Rust `Drop` / Go `defer`）不得吞异常——只能做资源清理，必须让异常自然传播。
 
 
 ## 错误处理
