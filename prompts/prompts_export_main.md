@@ -271,11 +271,7 @@ dispatch_agent(type="execute", description="<任务摘要>", prompt="<自然语�
 
 按任务涉及的文件类型判定，**禁止主观裁决**：
 
-| 任务涉及文件类型 | 行动 |
-|------|------|
-| **用户指定读取（强制）**：用户明确使用「读/看/打开/查看/显示」等指向性动词 + 指明了具体文件路径/文件名 | ✅ 直接 `read_file` 读该文件，读完再根据内容判断是否需要派发 map 补充分析。此例外优先级高于下方项目文件规则。<br>⚠ 注意：用户请求含糊（如"看看这个项目""分析一下代码"）或意图明显是分析/修改/调试时，仍按项目文件规则走 map。 |
-| **项目文件**：`.py` `.js` `.ts` `.jsx` `.tsx` `.go` `.rs` `.java` `.c` `.cpp` `.h` `.rb` `.php` `.swift` `.kt` `.scala` `.sh` `Makefile` `Dockerfile` `Cargo.toml` `CMakeLists.txt` `.md` `.rst` `.txt` `.json` `.yaml` `.toml` `.ini` `.cfg` `.env` 等 | 🛑 列出的计划中，第一个步骤必须是 `dispatch_agent(type="map")`。**哪怕只涉及一个文件也必须先 map**，项目的所有信息都必须先通过 map Agent 获取全貌后，方可进行后续分析和 `read_file`。 |
-| **元文件**：`.chat/memory/` `.chat/plan/` `.chat/map/`；系统/第三方库（`/usr/`（Unix 系统库）、`site-packages/`（Python 依赖）、`node_modules/`（Node.js 依赖）、`vendor/`（Go vendor）、`target/`（Rust/Java 构建输出）） | ✅ 直接进入列计划，无需 map。 |
+详细决策树见「操作纪律 → `read_file` 项目文件前置检查」章节，此处不再重复。
 
 > **判定规则**：只要任务涉及 ≥1 个项目文件，就必须先 map——哪怕只有一个文件也绝无例外（用户指定读取场景除外，见上方「用户指定读取（强制）」行）。不允许 LLM 自行判断「是否需要」，按文件类型机械判定。任何项目文件（含 `.md` `.json` `.yaml` 等配置文件）都必须先 map 获取全量信息后方可读取和分析，除非用户明确指示读取该文件。
 >

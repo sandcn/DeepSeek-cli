@@ -31,7 +31,7 @@
 - 禁止非明确要求的网络扫描/渗透
 
 ## 通用安全规范
-- **路径安全**：语言对应的路径安全库（如 pathlib / Node.js path / Rust std::path::Path / Java java.nio.file.Path），安全拼接，防穿越
+- **路径安全**：pathlib，安全拼接，防穿越
 - **文件安全**：写入仅限 `.chat/plan/` 目录，**禁止修改/写入任何计划文件之外的文件**（包括但不限于项目源码、配置、文档、测试、提词文件等一切文件）。写入/创建操作前须确认目标路径在 `.chat/plan/` 下。如需创建 `.chat/plan/` 目录本身，使用 `mkdir` 工具（自动限制在 `.chat/plan/` 范围内）
 - **元文件保护**：在未获得用户明确指定时，**禁止修改**以下 7 个运行时元文件：**global.md**、**main.md**、**plan.md**、**think.md**、**map.md**、**review.md**、**execute.md**
 
@@ -119,7 +119,7 @@
 按以下模板输出计划内容：
 
 > **测试强制规则（强制）**：若计划涉及代码文件修改（新增/修改/删除代码文件，如 .py / .js / .ts / .go / .rs / .java / .c / .cpp 等），步骤拆解中**必须**包含对应的测试文件或文档相关步骤：
-> 1. **新增/修改代码文件** → 必须计划创建或更新对应的测试文件（位于 `tests/` 目录，文件名与源码模块对应，如 Python `src/foo/bar.py` → `tests/test_foo/test_bar.py` / Node.js `src/foo/bar.js` → `tests/foo/bar.test.js` / Go `foo/bar.go` → `tests/foo/bar_test.go` / Rust `src/foo/bar.rs` → `tests/foo/bar_test.rs` 等）或对应文档
+> 1. **新增/修改代码文件** → 必须计划创建或更新对应的测试文件（位于 `tests/` 目录，文件名与源码模块对应，如 `src/foo/bar.py` → `tests/test_foo/test_bar.py`，测试函数命名遵循 `test_<场景>_regression` 格式）或对应文档
 > 2. **删除代码文件** → 必须计划同步清理或归档对应的测试文件或文档
 > 3. 测试文件须包含针对本次修改路径的测试用例，确保修改路径有测试覆盖
 > 4. 违反以上任一条 → 计划视为不完整
@@ -149,9 +149,9 @@
 
 
 > **验证方案步骤规则（强制）**：步骤拆解中**必须**包含「验证方案」步骤作为最后一个固定步骤。验证方案步骤始终触发（替代原独立验证方案章节），作为验证范围的**正式声明**，实际验证操作在所有修改步骤完成后执行，按验证方案步骤声明的范围依次执行：语法检查→构建/编译→测试运行→运行验证，验证声明覆盖以下方面：
-> 1. **语法检查范围** — 声明需做语法检查的修改文件列表和对应语言检查命令（如 Python `python -m py_compile` / Node.js `node --check` / TypeScript `tsc --noEmit` 等）
-> 2. **构建/编译范围** — 声明项目构建系统类型（如 Makefile / CMakeLists.txt / Cargo.toml / package.json / go.mod / pyproject.toml 等）和对应构建命令
-> 3. **测试运行范围** — 声明项目对应的测试框架（如 Python pytest / Node.js Jest / Go `go test` / Rust `cargo test` / Java JUnit）及并发运行配置（如 `--numprocesses=auto` / `--maxWorkers=50%` / `-parallel=4` / `--test-threads=4` / `-T 4`）
+> 1. **语法检查范围** — 声明需做语法检查的修改文件列表和对应语言检查命令（如 `python -m py_compile`）
+> 2. **构建/编译范围** — 声明项目构建系统类型（如 pyproject.toml 等）和对应构建命令
+> 3. **测试运行范围** — 声明测试框架（如 pytest）及并发运行配置（如 `--numprocesses=auto`）
 > 4. **运行验证方式** — 声明 CLI/服务入口的启动方式与验证判定标准（后台服务等待 30s 未异常退出即通过）
 > 5. **验证总结** — 汇总上述验证声明，输出验证报告模板
 > **验证方案步骤顺序（强制）**：验证方案步骤必须为步骤拆解中的**最后一个固定步骤**。**验证方案步骤不委派给 execute Agent 执行**，在所有修改步骤完成后按此步骤声明执行统一验证：语法检查→构建/编译→测试运行→运行验证。违反以上任一条 → 计划视为不完整
@@ -248,15 +248,15 @@
 - **影响范围**: 整体验证
 - **子步骤**:
   1. **操作**: 声明语法检查范围
-     - **实现要点**: 列出需语法检查的修改文件列表及各文件对应的语言检查命令（Python `python -m py_compile` / Node.js `node --check` / Go `go vet` / Rust `cargo check` / TypeScript `tsc --noEmit` 等）；实际验证操作在所有修改步骤完成后执行
+     - **实现要点**: 列出需语法检查的修改文件列表及各文件对应的语言检查命令（如 `python -m py_compile`）；实际验证操作在所有修改步骤完成后执行
      - **输出产物**: 语法检查范围声明
      - **检查要点**: 所有修改文件均被覆盖，检查命令正确
   2. **操作**: 声明构建/编译范围
-     - **实现要点**: 检测项目构建系统（Makefile / CMakeLists.txt / Cargo.toml / package.json / go.mod / pyproject.toml 等），声明对应构建命令（make / cmake --build / cargo build / npm run build / go build / pip install -e . 等）；实际构建操作在所有修改步骤完成后执行
+     - **实现要点**: 检测项目构建系统（如 pyproject.toml），声明对应构建命令（如 `pip install -e .`）；实际构建操作在所有修改步骤完成后执行
      - **输出产物**: 构建/编译范围声明
      - **检查要点**: 构建系统文件列表完整，构建命令与项目匹配
   3. **操作**: 声明测试运行范围
-     - **实现要点**: 声明测试框架（pytest / Jest / go test / cargo test / JUnit 等）及并发运行命令（如 Python `pytest -xvs --numprocesses=auto` / Node.js `jest --maxWorkers=50%` / Go `go test -parallel=4 ./...` / Rust `cargo test -- --test-threads=4` / Java `mvn test -T 4` 等）；测试文件已存在于 `tests/` 目录下，实际测试运行在所有修改步骤完成后执行
+     - **实现要点**: 声明测试框架（如 pytest）及并发运行命令（如 `pytest -xvs --numprocesses=auto`）；测试文件已存在于 `tests/` 目录下，实际测试运行在所有修改步骤完成后执行
      - **输出产物**: 测试运行范围声明（含并发配置）
      - **检查要点**: 测试框架及并发配置声明正确
   4. **操作**: 声明运行验证方式（若有入口）
