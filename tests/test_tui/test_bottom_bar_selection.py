@@ -81,7 +81,7 @@ class TestRunBottomBarSelectionEnter(unittest.TestCase):
         mock_bb.show_completions.return_value = None
 
         mock_chat_ui = MagicMock()
-        mock_chat_ui._bottom_bar = mock_bb
+        mock_chat_ui.bottom_bar = mock_bb
         return mock_chat_ui
 
     def _make_mock_terminal(self, keys):
@@ -583,7 +583,7 @@ class TestPostCbreakDrain(unittest.TestCase):
         mock_bb._completion_idx = 0
         mock_bb.show_completions.return_value = None
         mock_chat_ui = MagicMock()
-        mock_chat_ui._bottom_bar = mock_bb
+        mock_chat_ui.bottom_bar = mock_bb
         return mock_chat_ui
 
     def _make_mock_terminal(self, keys):

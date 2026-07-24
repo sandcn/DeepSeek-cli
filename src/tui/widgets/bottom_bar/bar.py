@@ -216,6 +216,10 @@ class _BottomBar(_StatusMixin):
     def _completion_idx(self) -> int:
         return self._completion._idx
 
+    @_completion_idx.setter
+    def _completion_idx(self, value: int) -> None:
+        self._completion._idx = value
+
     @property
     def _completion_popup_height(self) -> int:
         return self._completion._popup_height

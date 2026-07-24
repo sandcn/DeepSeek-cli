@@ -131,6 +131,10 @@ class _CompletionPopup:
     def _completion_idx(self) -> int:
         return self._idx
 
+    @_completion_idx.setter
+    def _completion_idx(self, value: int) -> None:
+        self._idx = value
+
     @property
     def _completion_popup_height(self) -> int:
         return self._popup_height

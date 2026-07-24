@@ -327,7 +327,7 @@ def run_bottom_bar_selection(
         chat_ui = get_active_chat_ui()
         if chat_ui is None:
             return {"action": "error", "index": None}
-        bb = chat_ui._bottom_bar
+        bb = chat_ui.bottom_bar
         if bb is None:
             return {"action": "error", "index": None}
 

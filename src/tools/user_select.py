@@ -185,7 +185,7 @@ class UserSelectFunc(Func):
 
         # 获取 ChatUIConsumer 用于操作底部栏
         chat_ui = get_active_chat_ui()
-        bb = chat_ui._bottom_bar if chat_ui else None
+        bb = chat_ui.bottom_bar if chat_ui else None
 
         if bb is None:
             self._start_monitor(monitor)
