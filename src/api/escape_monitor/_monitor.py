@@ -12,6 +12,7 @@ import threading
 import logging
 from ._history import (
     MONITOR_JOIN_TIMEOUT,
+    MONITOR_START_JOIN_TIMEOUT,
     UNIX_SELECT_TIMEOUT,
     WINDOWS_POLL_INTERVAL,
     _EOF_THRESHOLD,
@@ -85,9 +86,17 @@ class EscapeMonitor:
                      默认空字符串保持向后兼容。
         """
         global _active_monitor, _active_monitor_lock
-        # 防止重复启动线程
+        # 检测并等待旧线程退出（而非直接返回），消除双线程竞态
         if self._thread is not None and self._thread.is_alive():
-            return
+            _logger.warning(
+                "检测到旧 monitor 线程仍在运行，等待其退出（最多 2.0s）"
+            )
+            self._thread.join(timeout=MONITOR_START_JOIN_TIMEOUT)
+            if self._thread.is_alive():
+                _logger.error(
+                    "旧 monitor 线程 2s 后仍未退出，强制覆盖（极罕见情况）"
+                )
+            self._thread = None
         # 确保全局中断信号已清除
         from ..interrupt_async import reset_interrupt_async
         reset_interrupt_async()
@@ -134,8 +143,13 @@ class EscapeMonitor:
         if self._thread:
             self._thread.join(timeout=MONITOR_JOIN_TIMEOUT)
             if self._thread.is_alive():
-                _logger.warning("EscapeMonitor 线程 join 超时，已放弃等待")
-            self._thread = None
+                _logger.warning(
+                    "EscapeMonitor 线程 join 超时（%.1fs），"
+                    "保留引用等待线程自行退出，start() 将检测并等待",
+                    MONITOR_JOIN_TIMEOUT,
+                )
+            else:
+                self._thread = None
         # 确保终端设置恢复（线程的 finally 可能未执行完）
         self._restore_terminal_settings()
         with _active_monitor_lock:
@@ -363,11 +377,10 @@ class EscapeMonitor:
     def is_alive(self) -> bool:
         """EscapeMonitor 后台线程是否存活。
 
-        线程安全：CPython GIL 下读取 _thread 是原子的，无需额外锁。
-        stop() 中将 _thread 置 None 前线程已 join，返回 False 是正确的。
-
-        注意：返回 True 后线程可能在调用方下一次操作前退出（TOCTOU），
-        调用方应容忍一次额外的轮询迭代后才检测到死亡。
+        线程安全：CPython GIL 下读取 _thread 是原子的。
+        stop() join 超时时保留引用（_thread 非 None），is_alive 返回 True
+        表示旧线程仍在运行；join 成功时置 None，返回 False。
+        调用方应容忍 TOCTOU——True 后线程可能在下次操作前退出。
         """
         return self._thread is not None and self._thread.is_alive()
 

@@ -7,10 +7,9 @@
 prefill 数据流（主路径 + 兜底路径）:
 
   主路径（finally 块，提前注入）:
-    1. editmsg_plugin.py:async_execute — state_dict["prefill"] 赋值
-    2. editmsg_plugin.py:async_execute:finally — monitor.start(prefill=prefill_text)
-       → EscapeMonitor.start() → self._input_handler.set_buffer(prefill) 直接设置终端预填缓冲区
-    3. state["prefill"] = "" — 清空，防止兜底路径重复设置
+    1. editmsg_plugin.py:async_execute — state["prefill"] = edit_state.get("prefill", "") — 从编辑状态拷贝 prefill
+    2. state["prefill"] = "" — 先清空，确保 monitor.start() 异常也不残留 prefill
+    3. monitor.start(prefill=prefill_text) — 使用已捕获的 prefill_text 注入终端
 
   兜底路径（state["prefill"] 已空，返回空字符串）:
     4. _loop.py:_handle_command_msg — 从 state_dict 同步到 state.prefill（空值）
@@ -136,14 +135,15 @@ class EditmsgPlugin(InteractiveCommandPlugin):
             if monitor is not None:
                 try:
                     prefill_text = state.get("prefill", "")
-                    monitor.start(prefill=prefill_text)
-                    state["prefill"] = ""  # 幂等清除：非空时标记已应用、空时保持空
+                    # ★ 先清理状态，确保 monitor.start() 异常也不残留 prefill
+                    state["prefill"] = ""
                     # ★ 清除 captured_prefill：prefill 已通过 monitor.start() 主路径注入到
                     #   输入缓冲区。若不清理，下一轮 _merge_prefill（兜底路径）会读到
                     #   上一轮 LLM 生成期间用户键入残留的 captured_prefill，传给
                     #   wait_for_user_input → set_prefill 覆盖主路径刚设置好的预填内容。
                     if prefill_text:
                         session.captured_prefill = ''
+                    monitor.start(prefill=prefill_text)
                 except Exception:
                     _logger.warning("monitor.start() 在 finally 中异常", exc_info=True)
             if chat_ui is not None:

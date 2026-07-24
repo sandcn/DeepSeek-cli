@@ -325,3 +325,51 @@ class TestEditmsgPluginExceptionHandling:
 
         # ⑤ + ⑦ chat_ui.display_messages 未被调用（needs_rerender=False）
         mock_loop._chat_ui.display_messages.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_finally_block_clears_state_before_monitor_start(
+        self, EditmsgPlugin, mock_loop, mock_ctx, mock_session
+    ):
+        """monitor.start() 抛异常时，state["prefill"] 已提前清空（清理在 start 之前）
+
+        验证 finally 块中清理顺序修复：state["prefill"] 和 session.captured_prefill
+        的清理在 monitor.start() 之前执行，即使 monitor.start() 抛异常，
+        prefill 也不残留，不会污染下一轮对话。
+        """
+        plugin = EditmsgPlugin()
+        plugin.bind_loop(mock_loop)
+
+        # 让 monitor.start 抛出异常，模拟启动失败场景
+        mock_loop._monitor.start.side_effect = RuntimeError("monitor start failed")
+
+        # 编辑成功，产生 prefill
+        with patch(
+            "src.tui.pipeline.message_editor.edit_current_messages",
+            new=lambda agent, state: state.update({"prefill": "edited content", "retry": False}),
+        ):
+            result = await plugin.async_execute(mock_ctx)
+
+        # 命令已被识别并处理
+        assert result is True
+
+        # ★ 核心断言：monitor.start() 异常后，state["prefill"] 已为空
+        # 因为清理在 start() 之前执行，不会因 start() 异常而跳过
+        assert mock_ctx.state["prefill"] == "", (
+            f"monitor.start() 异常后 state['prefill'] 应为空字符串，"
+            f"实际为 '{mock_ctx.state['prefill']}'——清理顺序未在 start() 之前执行"
+        )
+
+        # chat_ui.resume 在 finally 中被调用（终端恢复）
+        mock_loop._chat_ui.resume.assert_called_once()
+
+        # monitor.start 被调用（随后抛异常）
+        mock_loop._monitor.start.assert_called_once_with(prefill="edited content")
+
+        # session.sync_retry_pending 正常执行（编辑未异常）
+        mock_session.sync_retry_pending.assert_called_once()
+
+        # 有 prefill 且非 retry → reset_retry_pending 被调用
+        mock_session.reset_retry_pending.assert_called_once()
+
+        # 异常后 needs_rerender 仍为 True（编辑成功产生 prefill），
+        # 但 display_messages 触发取决于 chat_ui 状态，不做强制断言

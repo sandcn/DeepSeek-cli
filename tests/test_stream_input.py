@@ -1405,3 +1405,203 @@ class TestResumeFromCallbackTcflush:
 
             # 验证 tcflush 被调用：参数为 (fd=0, TCIFLUSH=2)
             mock_termios.tcflush.assert_called_once_with(0, 2)
+
+
+class TestStopStartRaceCondition:
+    """EscapeMonitor stop()/start() 竞态条件回归测试。
+
+    验证 stop() 在 join 超时后保留旧线程引用，以及 start()
+    在检测到旧线程存活时的正确行为，消除双线程竞态条件。
+    """
+
+    # ── stop() 超时后保留线程引用 ────────────────────────
+
+    def test_stop_timeout_preserves_thread_ref(self):
+        """stop() join 超时后 _thread 不为 None，保留旧线程引用。
+
+        模拟场景：stop() 调用 join(timeout=1.0) 超时，旧线程仍在运行。
+        验证 _thread 未被置 None，后续 start() 可检测到旧线程存活。
+
+        修复前：stop() 在 join 超时后执行 self._thread = None，丢失引用。
+        修复后：仅在线程成功 join（is_alive()=False）时才清空 _thread。
+        """
+        monitor = EscapeMonitor()
+
+        # 创建 mock 线程：join() 是 no-op，is_alive() 始终返回 True
+        mock_thread = MagicMock()
+        mock_thread.is_alive.return_value = True
+        monitor._thread = mock_thread
+
+        # Mock _restore_terminal_settings + reset_interrupt_async
+        # 避免 stop() 中的终端操作副作用
+        with patch.object(monitor, '_restore_terminal_settings'), \
+             patch('src.api.interrupt_async.reset_interrupt_async'):
+            monitor.stop()
+
+        # 验证：_thread 未被置 None（旧线程引用被保留）
+        assert monitor._thread is not None, \
+            "stop() join 超时后 _thread 应为旧线程引用（非 None）"
+        assert monitor._thread is mock_thread, \
+            "stop() join 超时后 _thread 应保留原始 mock 对象"
+
+    def test_stop_normal_join_clears_thread(self):
+        """stop() 正常 join 成功后 _thread 置 None（回归测试）。
+
+        验证修改不破坏正常路径：线程在超时前退出时，
+        _thread 仍被正确清空为 None。
+        """
+        monitor = EscapeMonitor()
+
+        # 创建 mock 线程：join() 正常执行，is_alive() 返回 False
+        mock_thread = MagicMock()
+        mock_thread.is_alive.return_value = False
+        monitor._thread = mock_thread
+
+        with patch.object(monitor, '_restore_terminal_settings'), \
+             patch('src.api.interrupt_async.reset_interrupt_async'):
+            monitor.stop()
+
+        # 验证：正常 join 后 _thread 为 None
+        assert monitor._thread is None, \
+            "正常 join 后 _thread 应为 None"
+
+    # ── start() 检测旧线程 ──────────────────────────────
+
+    def test_start_detects_lingering_thread(self):
+        """stop() 超时残留线程后调用 start()，检测到旧线程并等待退出。
+
+        模拟完整竞态路径：
+        1. stop() join 超时 → _thread 保留旧引用（模拟步骤 1 修复后行为）
+        2. start() 检测到 _thread is not None and is_alive() → join(2.0) 等待
+        3. 旧线程在 2s 内退出 → _thread = None → 继续创建新线程
+
+        修复后 start() 不再直接返回，而是等待旧线程退出后继续正常启动流程。
+        """
+        monitor = EscapeMonitor()
+
+        # 模拟 stop() 超时后残留的旧线程
+        mock_old_thread = MagicMock()
+        mock_old_thread.is_alive.return_value = True
+        monitor._thread = mock_old_thread
+
+        # Mock 外部依赖，阻止实际线程创建
+        mock_new_thread = MagicMock()
+        # 阻止 _monitor_ready.wait() 阻塞
+        monitor._monitor_ready.wait = MagicMock()
+        with patch('src.api.interrupt_async.reset_interrupt_async'), \
+             patch('src.api.escape_monitor._monitor._active_monitor'), \
+             patch('src.api.escape_monitor._monitor._active_monitor_lock'), \
+             patch('threading.Thread', return_value=mock_new_thread):
+            monitor.start()
+
+        # 验证：旧线程的 join(timeout=2.0) 被调用
+        mock_old_thread.join.assert_called_once_with(timeout=2.0)
+
+        # 验证：_thread 已被替换为新线程（start() 继续正常流程）
+        assert monitor._thread is mock_new_thread, \
+            "start() 等待旧线程退出后应创建新线程"
+        mock_new_thread.start.assert_called_once()
+
+    def test_start_handles_lingering_thread_cleanly(self):
+        """start() 检测到旧线程存活时，join(2.0) 内旧线程退出 → 正常清理。
+
+        模拟场景：stop() join 超时后残留旧线程，但旧线程在 start() 的
+        额外 join(2.0) 内自行退出。验证 start() 正确清理后创建新线程，
+        不触发强制覆盖路径（无 ERROR 日志）。
+        """
+        monitor = EscapeMonitor()
+
+        # 模拟旧线程：初始存活，join(2.0) 后死亡
+        mock_old_thread = MagicMock()
+        mock_old_thread.is_alive.side_effect = [True, False]  # 第1次 True，第2次 False
+        monitor._thread = mock_old_thread
+
+        mock_new_thread = MagicMock()
+        monitor._monitor_ready.wait = MagicMock()
+        with patch('src.api.interrupt_async.reset_interrupt_async'), \
+             patch('src.api.escape_monitor._monitor._active_monitor'), \
+             patch('src.api.escape_monitor._monitor._active_monitor_lock'), \
+             patch('threading.Thread', return_value=mock_new_thread), \
+             patch('src.api.escape_monitor._monitor._logger') as mock_logger:
+            monitor.start()
+
+        # 验证：join(2.0) 被调用
+        mock_old_thread.join.assert_called_once_with(timeout=2.0)
+
+        # 验证：WARNING 日志被记录（检测到旧线程）
+        mock_logger.warning.assert_any_call(
+            "检测到旧 monitor 线程仍在运行，等待其退出（最多 2.0s）"
+        )
+
+        # 验证：ERROR 日志未被记录（旧线程正常退出，未强制覆盖）
+        error_calls = [
+            call for call in mock_logger.error.call_args_list
+            if "强制覆盖" in str(call)
+        ]
+        assert len(error_calls) == 0, \
+            "旧线程正常退出时不应触发强制覆盖 ERROR 日志"
+
+        # 验证：新线程被创建（正常路径继续）
+        assert monitor._thread is mock_new_thread
+        mock_new_thread.start.assert_called_once()
+
+    def test_start_force_overrides_stuck_thread(self):
+        """start() join(2.0) 后旧线程仍存活 → 记录 ERROR 并强制覆盖。
+
+        模拟极端场景：旧线程 2s 后仍未退出（可能卡死在 I/O 阻塞），
+        验证 start() 记录 ERROR 日志后强制覆盖创建新线程。
+        """
+        monitor = EscapeMonitor()
+
+        # 模拟旧线程始终存活（join 后仍不退出）
+        mock_old_thread = MagicMock()
+        mock_old_thread.is_alive.return_value = True  # 始终 True
+        monitor._thread = mock_old_thread
+
+        mock_new_thread = MagicMock()
+        monitor._monitor_ready.wait = MagicMock()
+        with patch('src.api.interrupt_async.reset_interrupt_async'), \
+             patch('src.api.escape_monitor._monitor._active_monitor'), \
+             patch('src.api.escape_monitor._monitor._active_monitor_lock'), \
+             patch('threading.Thread', return_value=mock_new_thread), \
+             patch('src.api.escape_monitor._monitor._logger') as mock_logger:
+            monitor.start()
+
+        # 验证：join(2.0) 被调用
+        mock_old_thread.join.assert_called_once_with(timeout=2.0)
+
+        # 验证：WARNING 日志被记录（检测到旧线程）
+        mock_logger.warning.assert_any_call(
+            "检测到旧 monitor 线程仍在运行，等待其退出（最多 2.0s）"
+        )
+
+        # 验证：ERROR 日志被记录（强制覆盖）
+        mock_logger.error.assert_any_call(
+            "旧 monitor 线程 2s 后仍未退出，强制覆盖（极罕见情况）"
+        )
+
+        # 验证：即使强制覆盖，新线程仍被创建
+        assert monitor._thread is mock_new_thread
+        mock_new_thread.start.assert_called_once()
+
+    def test_start_creates_new_thread_when_old_dead(self):
+        """旧线程已死亡时 start() 正常创建新线程（回归测试）。
+
+        验证修改不破坏正常路径：stop() 正常 join 后 _thread=None，
+        start() 应正常创建新线程。
+        """
+        monitor = EscapeMonitor()
+        # 正常 stop 后 _thread 为 None
+        monitor._thread = None
+
+        # Mock 所有外部依赖，仅验证 start() 尝试创建新线程
+        with patch('src.api.interrupt_async.reset_interrupt_async'), \
+             patch('src.api.escape_monitor._monitor._active_monitor'), \
+             patch('src.api.escape_monitor._monitor._active_monitor_lock'), \
+             patch('threading.Thread') as mock_thread_cls:
+            # 需要让 _monitor_ready.wait() 立即返回
+            monitor._monitor_ready.set()
+            monitor.start()
+
+            # 验证 Thread 构造函数被调用（创建了新线程）
+            mock_thread_cls.assert_called_once()

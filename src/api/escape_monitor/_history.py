@@ -16,7 +16,8 @@ from ...config.defaults import INPUT_HISTORY_FILE
 _logger = logging.getLogger(__name__)
 
 # 监控配置
-MONITOR_JOIN_TIMEOUT = 1.0    # 线程 join 超时时间（秒）
+MONITOR_JOIN_TIMEOUT = 1.0    # 线程 join 超时时间（秒）；stop() 中等待 monitor 线程退出的超时
+MONITOR_START_JOIN_TIMEOUT = 2.0  # start() 中等待旧线程退出的 join 超时（秒）
 UNIX_SELECT_TIMEOUT = 0.1     # Unix select 超时时间（秒）
 WINDOWS_POLL_INTERVAL = 0.05  # Windows 轮询间隔（秒）
 _POLL_INTERVAL = 0.1          # ESC序列检测等待超时（秒）— 100ms 确保 ANSI 序列（如 ↑↓箭头）有充足时间到达
