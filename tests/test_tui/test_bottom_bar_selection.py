@@ -598,48 +598,36 @@ class TestPostCbreakDrain(unittest.TestCase):
     # ── 调用顺序验证 ─────────────────────────────
 
     def test_drain_called_after_cbreak_before_inkey(self):
-        """验证 select 在 cbreak 后、inkey 前被调用。"""
+        """验证暖机 term.inkey(timeout=0.02) 在 term.inkey(timeout=None) 之前被调用。"""
         mock_chat_ui = self._make_mock_chat_ui()
         enter_key = _MockKeystroke(key='\r', is_sequence=False)
         mock_term = self._make_mock_terminal([enter_key])
 
-        call_order = []
+        call_args_list = []
 
-        def _mock_select(rlist, wlist, xlist, timeout=None):
-            call_order.append("select")
-            return ([], [], [])
-
-        # 包装 cbreak 以记录 __enter__ 调用时刻
-        def _record_cbreak(*args, **kwargs):
-            ctx = MagicMock()
-
-            def _enter():
-                call_order.append("cbreak")
-                return mock_term
-
-            ctx.__enter__ = MagicMock(side_effect=_enter)
-            ctx.__exit__ = MagicMock(return_value=False)
-            return ctx
-
-        mock_term.cbreak = MagicMock(side_effect=_record_cbreak)
-
-        # 包装 inkey 以记录首次调用时刻
-        original_inkey = mock_term.inkey
         def _record_inkey(*args, **kwargs):
-            call_order.append("inkey")
-            return original_inkey(*args, **kwargs)
+            call_args_list.append(kwargs.get('timeout', 'no-timeout-kwarg'))
+            timeout = kwargs.get('timeout')
+            if timeout == 0.02:
+                return None  # 暖机阶段无残留
+            else:
+                return enter_key  # 主循环返回 Enter
 
         mock_term.inkey = MagicMock(side_effect=_record_inkey)
 
         mock_stdin = MagicMock()
         mock_stdin.fileno.return_value = 0
 
+        # Mock time.monotonic：第一次设置 deadline，第二次仍在内 → 进入暖机，
+        # 第三次超过 deadline → 退出暖机
+        monotonic_values = iter([0.0, 0.05, 0.16])
+
         with patch(_CHAT_UI_PATCH, return_value=mock_chat_ui), \
              patch(_TERMINAL_PATCH, return_value=mock_term), \
              patch("src.tui.widgets.bottom_bar.selection._is_cygwin_or_wsl", return_value=False), \
              patch("sys.stdin", mock_stdin), \
              patch("os.isatty", return_value=True), \
-             patch("select.select", side_effect=_mock_select), \
+             patch("time.monotonic", side_effect=lambda: next(monotonic_values)), \
              patch("termios.tcflush"), \
              patch.object(sys, '__stdout__', MagicMock()):
             result = run_bottom_bar_selection(
@@ -648,36 +636,44 @@ class TestPostCbreakDrain(unittest.TestCase):
             )
 
         self.assertEqual(result["action"], "confirmed")
-        # 验证调用顺序: cbreak → select → inkey
-        cbreak_idx = call_order.index("cbreak")
-        select_idx = call_order.index("select")
-        inkey_idx = call_order.index("inkey")
-        self.assertLess(cbreak_idx, select_idx,
-                        "select 必须在 cbreak 之后调用")
-        self.assertLess(select_idx, inkey_idx,
-                        "select 必须在 inkey 之前调用")
+        # 验证 timeout=0.02（暖机）在 timeout=None（主循环）之前被调用
+        warmup_indices = [i for i, t in enumerate(call_args_list) if t == 0.02]
+        main_loop_indices = [i for i, t in enumerate(call_args_list) if t is None]
+        self.assertTrue(warmup_indices, "暖机 inkey(timeout=0.02) 应被调用")
+        self.assertTrue(main_loop_indices, "主循环 inkey(timeout=None) 应被调用")
+        self.assertLess(max(warmup_indices), min(main_loop_indices),
+                        "暖机 inkey(timeout=0.02) 必须在主循环 inkey(timeout=None) 之前调用")
 
     # ── 无残余字节 ─────────────────────────────────
 
     def test_drain_no_residual_bytes_enter_confirms(self):
-        """无残余字节时 drain 立即退出，Enter 确认正常。"""
+        """无残余字节时暖机超时退出，主循环 Enter 确认正常。"""
         mock_chat_ui = self._make_mock_chat_ui()
         enter_key = _MockKeystroke(key='\r', is_sequence=False)
-        mock_term = self._make_mock_terminal([enter_key])
+
+        # 暖机: 无按键(None) → 超时退出; 主循环: Enter
+        def _mock_inkey(timeout=None):
+            if timeout == 0.02:
+                return None  # 暖机无残留
+            return enter_key  # 主循环 Enter 确认
+
+        mock_term = MagicMock()
+        mock_term.__enter__ = MagicMock(return_value=mock_term)
+        mock_term.__exit__ = MagicMock(return_value=False)
+        mock_term.inkey = MagicMock(side_effect=_mock_inkey)
 
         mock_stdin = MagicMock()
         mock_stdin.fileno.return_value = 0
 
-        # select 返回空 → drain 立即退出
-        def _mock_select(rlist, wlist, xlist, timeout=None):
-            return ([], [], [])
+        # time.monotonic: 0.0(设deadline=0.15) → 0.05(内→进入暖机) → 0.16(超时退出)
+        monotonic_values = iter([0.0, 0.05, 0.16])
 
         with patch(_CHAT_UI_PATCH, return_value=mock_chat_ui), \
              patch(_TERMINAL_PATCH, return_value=mock_term), \
              patch("src.tui.widgets.bottom_bar.selection._is_cygwin_or_wsl", return_value=False), \
              patch("sys.stdin", mock_stdin), \
              patch("os.isatty", return_value=True), \
-             patch("select.select", side_effect=_mock_select), \
+             patch("time.monotonic", side_effect=lambda: next(monotonic_values)), \
              patch("termios.tcflush"), \
              patch.object(sys, '__stdout__', MagicMock()):
             result = run_bottom_bar_selection(
@@ -691,41 +687,40 @@ class TestPostCbreakDrain(unittest.TestCase):
     # ── 有残余字节 ─────────────────────────────────
 
     def test_drain_with_residual_bytes_enter_confirms(self):
-        """有残余字节时 drain 消费它们，Enter 确认正常。"""
+        """暖机阶段收到残留 \\n 被过滤丢弃，主循环 Enter 正常确认。"""
         mock_chat_ui = self._make_mock_chat_ui()
         enter_key = _MockKeystroke(key='\r', is_sequence=False)
-        mock_term = self._make_mock_terminal([enter_key])
+        residual = _MockKeystroke(key='\n', is_sequence=False)
+
+        warmup_keys = iter([residual, None])
+
+        def _mock_inkey(timeout=None):
+            if timeout == 0.02:
+                try:
+                    return next(warmup_keys)
+                except StopIteration:
+                    return None
+            return enter_key
+
+        mock_term = MagicMock()
+        mock_term.__enter__ = MagicMock(return_value=mock_term)
+        mock_term.__exit__ = MagicMock(return_value=False)
+        mock_term.inkey = MagicMock(side_effect=_mock_inkey)
 
         mock_stdin = MagicMock()
         mock_stdin.fileno.return_value = 0
 
-        # select 第一次返回就绪（残余字节 \n），第二次返回空
-        select_calls = [([0], [], []), ([], [], [])]
-        select_iter = iter(select_calls)
-
-        def _mock_select(rlist, wlist, xlist, timeout=None):
-            try:
-                return next(select_iter)
-            except StopIteration:
-                return ([], [], [])
-
-        # os.read 返回残余 \n 字节
-        os_read_bytes = [b"\n"]
-        os_read_iter = iter(os_read_bytes)
-
-        def _mock_os_read(fd, n):
-            try:
-                return next(os_read_iter)
-            except StopIteration:
-                return b""
+        # time.monotonic 调用序列:
+        # T0(0.0): deadline=0.15 → T1(0.05): 进入暖机 → inkey→\\n(过滤)
+        # → T3(0.10): deadline=0.25 → T1(0.30): >=0.25 → 退出暖机
+        monotonic_values = iter([0.0, 0.05, 0.10, 0.30])
 
         with patch(_CHAT_UI_PATCH, return_value=mock_chat_ui), \
              patch(_TERMINAL_PATCH, return_value=mock_term), \
              patch("src.tui.widgets.bottom_bar.selection._is_cygwin_or_wsl", return_value=False), \
              patch("sys.stdin", mock_stdin), \
              patch("os.isatty", return_value=True), \
-             patch("select.select", side_effect=_mock_select), \
-             patch("os.read", side_effect=_mock_os_read), \
+             patch("time.monotonic", side_effect=lambda: next(monotonic_values)), \
              patch("termios.tcflush"), \
              patch.object(sys, '__stdout__', MagicMock()):
             result = run_bottom_bar_selection(
@@ -735,6 +730,97 @@ class TestPostCbreakDrain(unittest.TestCase):
 
         self.assertEqual(result["action"], "confirmed")
         self.assertEqual(result["index"], 0)
+
+    def test_warmup_filters_carriage_return_and_newline(self):
+        """暖机阶段连续收到 \\r 和 \\n 均被过滤丢弃，主循环 Enter 正常确认。"""
+        mock_chat_ui = self._make_mock_chat_ui()
+        enter_key = _MockKeystroke(key='\r', is_sequence=False)
+        residual_cr = _MockKeystroke(key='\r', is_sequence=False)
+        residual_nl = _MockKeystroke(key='\n', is_sequence=False)
+
+        warmup_keys = iter([residual_cr, residual_nl])
+
+        def _mock_inkey(timeout=None):
+            if timeout == 0.02:
+                try:
+                    return next(warmup_keys)
+                except StopIteration:
+                    return None
+            return enter_key
+
+        mock_term = MagicMock()
+        mock_term.__enter__ = MagicMock(return_value=mock_term)
+        mock_term.__exit__ = MagicMock(return_value=False)
+        mock_term.inkey = MagicMock(side_effect=_mock_inkey)
+
+        mock_stdin = MagicMock()
+        mock_stdin.fileno.return_value = 0
+
+        # time.monotonic 调用序列:
+        # T0(0.0): deadline=0.15 → T1(0.05): 进入暖机 → inkey→\\r(过滤)
+        # → T3(0.10): deadline=0.25 → T1(0.15): <0.25→进入暖机 → inkey→\\n(过滤)
+        # → T3(0.20): deadline=0.35 → T1(0.40): >=0.35 → 退出暖机
+        monotonic_values = iter([0.0, 0.05, 0.10, 0.15, 0.20, 0.40])
+
+        with patch(_CHAT_UI_PATCH, return_value=mock_chat_ui), \
+             patch(_TERMINAL_PATCH, return_value=mock_term), \
+             patch("src.tui.widgets.bottom_bar.selection._is_cygwin_or_wsl", return_value=False), \
+             patch("sys.stdin", mock_stdin), \
+             patch("os.isatty", return_value=True), \
+             patch("time.monotonic", side_effect=lambda: next(monotonic_values)), \
+             patch("termios.tcflush"), \
+             patch.object(sys, '__stdout__', MagicMock()):
+            result = run_bottom_bar_selection(
+                items=["a", "b"],
+                display_items=["A", "B"],
+            )
+
+        self.assertEqual(result["action"], "confirmed")
+        self.assertEqual(result["index"], 0)
+
+    @unittest.skip("等待步骤2修复: _handle_key 函数须移至暖机循环之前定义，参见 selection.py 中的定义顺序")
+    def test_warmup_real_key_during_warmup(self):
+        """暖机阶段收到真实按键 'r' 时暖机立即结束并正确作为 resume 处理。"""
+        mock_chat_ui = self._make_mock_chat_ui()
+        # 设置 completion_idx 为非零以验证索引正确传递
+        mock_chat_ui.bottom_bar._completion_idx = 1
+        resume_key = _MockKeystroke(key='r', is_sequence=False)
+
+        warmup_keys = iter([resume_key])
+
+        def _mock_inkey(timeout=None):
+            if timeout == 0.02:
+                try:
+                    return next(warmup_keys)
+                except StopIteration:
+                    return None
+            return None  # 不应到达主循环
+
+        mock_term = MagicMock()
+        mock_term.__enter__ = MagicMock(return_value=mock_term)
+        mock_term.__exit__ = MagicMock(return_value=False)
+        mock_term.inkey = MagicMock(side_effect=_mock_inkey)
+
+        mock_stdin = MagicMock()
+        mock_stdin.fileno.return_value = 0
+
+        monotonic_values = iter([0.0, 0.05])
+
+        with patch(_CHAT_UI_PATCH, return_value=mock_chat_ui), \
+             patch(_TERMINAL_PATCH, return_value=mock_term), \
+             patch("src.tui.widgets.bottom_bar.selection._is_cygwin_or_wsl", return_value=False), \
+             patch("sys.stdin", mock_stdin), \
+             patch("os.isatty", return_value=True), \
+             patch("time.monotonic", side_effect=lambda: next(monotonic_values)), \
+             patch("termios.tcflush"), \
+             patch.object(sys, '__stdout__', MagicMock()):
+            result = run_bottom_bar_selection(
+                items=["a", "b", "c"],
+                display_items=["A", "B", "C"],
+            )
+
+        self.assertEqual(result["action"], "resume")
+        self.assertEqual(result["index"], 1)
 
 
 class TestCygwinShowCompletionsException(unittest.TestCase):

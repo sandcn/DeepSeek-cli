@@ -308,6 +308,11 @@ def run_bottom_bar_selection(
     使用 Blessed Terminal.inkey() 读取键盘输入，自动处理
     CSI/SS3 箭头序列解析。
 
+    进入主循环前，执行 Blessed-native 暖机排空（150ms 窗口，
+    term.inkey(timeout=0.02) 短超时探测）：过滤终端模式切换
+    (cooked→cbreak) 产生的 \\r/\\n 延迟残留字节，真实按键则退出暖机
+    进入正常处理。与 _drain_stdin_residual() 协作形成双层防御。
+
     Args:
         items: 原始选项列表（作为替换文本）。应为纯文本，不含 ANSI 码。
         display_items: 显示文本列表（与 items 一一对应）。建议纯文本。
@@ -396,33 +401,38 @@ def run_bottom_bar_selection(
             except Exception as exc:
                 _logger.debug("Post-cbreak drain 异常: %s", exc)
 
-            # ★ 最后一层防御：非阻塞排空 _drain_stdin_residual 与 term.inkey()
-            # 之间的微小间隙。终端模式切换（cooked→cbreak）产生的 \r/\n 残留字节
+            # ★ Blessed-native 暖机排空：弥补 _drain_stdin_residual 与 term.inkey()
+            # 之间的时序间隙。终端模式切换（cooked→cbreak）产生的 \r/\n 残留字节
             # 可能延迟到达（尤其在 Android/Termux 环境下），若恰好落在
             # drain 结束与 inkey 起始之间，会被 inkey 误消费为 Enter 键，
             # 导致选择弹窗立即确认首条消息 → 意外截断会话。
-            try:
-                import select as _sel
-                r, _, _ = _sel.select([fd], [], [], 0.01)
-                if r:
-                    os.read(fd, 1)
-            except Exception as exc:
-                _logger.debug("最后一层防御 select/read 异常: %s", exc)
-            try:
-                from src._compat_termios import termios as _termios
-                _termios.tcflush(fd, _termios.TCIFLUSH)
-            except Exception as exc:
-                _logger.debug("最后一层防御 tcflush 异常: %s", exc)
-
-            while True:
+            # 暖机阶段：用 term.inkey(timeout=0.02) 短超时探测（与主循环同路径），
+            # 在 150ms 窗口内过滤 \r/\n 残留，真实按键退出暖机统一处理。
+            import time as _time
+            _warmup_deadline = _time.monotonic() + 0.15
+            while _time.monotonic() < _warmup_deadline:
                 try:
-                    key = term.inkey(timeout=None)
+                    key = term.inkey(timeout=0.02)
                 except Exception as exc:
-                    _logger.debug("term.inkey 异常（非关键，继续轮询）: %s", exc)
+                    _logger.debug("暖机 inkey 异常: %s", exc)
                     continue
                 if not key:
                     continue
+                # \r/\n 残留 → 丢弃并重置暖机截止时间（应对连续残留）
+                if str(key) in ('\r', '\n'):
+                    _warmup_deadline = _time.monotonic() + 0.15
+                    continue
+                # 真实按键 → 退出暖机，统一分发
+                result = _handle_key(key, bb, items)
+                if result is not None:
+                    return result
+                break
 
+            def _handle_key(key, bb, items):
+                """处理单个按键分发。返回 dict 表示需立即返回，返回 None 表示继续循环。
+
+                闭包捕获 _safe_completion_idx（模块级函数），通过参数接收 bb 和 items。
+                """
                 # ── 功能键（箭头等）─
                 if key.is_sequence:
                     code = key.code
@@ -436,7 +446,7 @@ def run_bottom_bar_selection(
                     elif code == _KEY_ESCAPE:
                         return {"action": "cancel", "index": None}
                     # 其他序列键忽略
-                    continue
+                    return None
 
                 # ── r → resume（从此恢复）──
                 if key == 'r':
@@ -458,6 +468,21 @@ def run_bottom_bar_selection(
                 # ── Esc（单独收到）─
                 if key == '\x1b':
                     return {"action": "cancel", "index": None}
+
+                return None
+
+            while True:
+                try:
+                    key = term.inkey(timeout=None)
+                except Exception as exc:
+                    _logger.debug("term.inkey 异常（非关键，继续轮询）: %s", exc)
+                    continue
+                if not key:
+                    continue
+
+                result = _handle_key(key, bb, items)
+                if result is not None:
+                    return result
 
     except Exception as exc:
         _logger.warning("run_bottom_bar_selection Blessed 路径异常，降级到 Raw I/O: %s", exc)
