@@ -1149,12 +1149,18 @@ class TestMonitorRecovery:
         with patch("src.app_loop._loop._merge_prefill", return_value=""):
             result = await loop._handle_round(session, state, queue, msg_done)
 
-        loop._teardown_monitor.assert_called_once()
-        loop._setup_monitor.assert_called_once_with(session, state)
-        assert result.should_exit is True, (
-            f"恢复失败时应返回 should_exit=True，实际: {result.should_exit}"
+        # 退避重试：_setup_monitor 持续抛异常 → 5 次尝试均失败
+        assert loop._teardown_monitor.call_count == 5, (
+            f"退避重试应调用 5 次 _teardown_monitor，实际: {loop._teardown_monitor.call_count}"
         )
-        # 验证错误消息已输出
+        assert loop._setup_monitor.call_count == 5, (
+            f"退避重试应调用 5 次 _setup_monitor，实际: {loop._setup_monitor.call_count}"
+        )
+        loop._setup_monitor.assert_called_with(session, state)
+        assert result.should_exit is True, (
+            f"5 次尝试全部失败后应返回 should_exit=True，实际: {result.should_exit}"
+        )
+        # 验证警告消息已输出
         loop._chat_ui.write_line.assert_any_call(
             "\n  ⚠ EscapeMonitor 线程异常退出，正在重启…"
         )

@@ -10,6 +10,7 @@ import asyncio
 import logging
 import shutil
 import sys
+import time
 
 from ._utils import (
     _non_system_messages, _put_and_wait, _merge_prefill,
@@ -60,6 +61,9 @@ class InteractiveLoop:
         self._monitor: EscapeMonitor | None = None
         # ★ 流式输入状态共享：round_end 回调与 _handle_round 之间传递
         self._loop_state: dict = {}
+        # ★ EscapeMonitor 恢复退避计数器（跨轮累计，成功一轮后重置）
+        self._monitor_recovery_count = 0
+        self._monitor_last_recovery_time = 0.0
 
     def _get_term_width(self) -> int:
         return self._term_width_cache.get()
@@ -143,26 +147,69 @@ class InteractiveLoop:
                     self._chat_ui.write_line(
                         "\n  ⚠ EscapeMonitor 线程异常退出，正在重启…"
                     )
-                    try:
-                        self._teardown_monitor()
-                        self._setup_monitor(session, state)
-                        _register_session_handlers(session, self._monitor, self._loop_state, self._chat_ui)
-                        return _RoundResult(should_exit=False)
-                    except Exception as recovery_err:
-                        _logger.critical(
-                            "EscapeMonitor 恢复失败: %s", recovery_err,
-                            exc_info=recovery_err,
+                    # 防御性初始化：兼容绕过 __init__ 的测试路径
+                    if not hasattr(self, '_monitor_recovery_count'):
+                        self._monitor_recovery_count = 0
+                    if not hasattr(self, '_monitor_last_recovery_time'):
+                        self._monitor_last_recovery_time = 0.0
+                    for attempt in range(1, 6):
+                        self._monitor_recovery_count += 1
+                        # 上限检查：累计超过 5 次 → 退出交互
+                        if self._monitor_recovery_count > 5:
+                            _logger.critical(
+                                "EscapeMonitor 恢复超过 %d 次上限，退出交互",
+                                self._monitor_recovery_count,
+                            )
+                            self._chat_ui.write_line(
+                                "\n  [错误] EscapeMonitor 恢复失败次数过多，退出交互"
+                            )
+                            return _RoundResult(should_exit=True)
+                        # 指数退避：N=1→1s, N=2→2s, N=3→4s, N=4→8s, N=5→16s（上限 30s）
+                        backoff = min(2.0 ** (self._monitor_recovery_count - 1), 30.0)
+                        _logger.info(
+                            "EscapeMonitor 恢复第 %d 次尝试（累计 %d），退避 %.1f 秒",
+                            attempt, self._monitor_recovery_count, backoff,
                         )
-                        self._chat_ui.write_line(
-                            f"\n  [错误] 无法恢复输入监听: {recovery_err}"
-                        )
-                        return _RoundResult(should_exit=True)
+                        await asyncio.sleep(backoff)
+                        # 间隔保护：距离上次恢复不足 2 秒则等待
+                        now = time.monotonic()
+                        elapsed = now - self._monitor_last_recovery_time
+                        if elapsed < 2.0:
+                            await asyncio.sleep(2.0 - elapsed)
+                        self._monitor_last_recovery_time = time.monotonic()
+                        # 执行恢复
+                        try:
+                            self._teardown_monitor()
+                            self._setup_monitor(session, state)
+                            # 恢复验证：线程必须存活
+                            if not self._monitor.is_alive:
+                                _logger.warning(
+                                    "EscapeMonitor 恢复后线程仍死亡，第 %d 次尝试",
+                                    attempt,
+                                )
+                                continue
+                            _register_session_handlers(
+                                session, self._monitor, self._loop_state, self._chat_ui,
+                            )
+                            _logger.info("EscapeMonitor 恢复成功，第 %d 次尝试", attempt)
+                            return _RoundResult(should_exit=False)
+                        except Exception as recovery_err:
+                            _logger.warning(
+                                "EscapeMonitor 恢复异常 (第%d次): %s", attempt, recovery_err,
+                            )
+                            continue
+                    # 循环耗尽（5 次尝试全部失败）
+                    _logger.critical("EscapeMonitor 恢复：5 次尝试全部失败，退出交互")
+                    return _RoundResult(should_exit=True)
                 # 非 monitor 死亡的 RuntimeError 重新抛出
                 raise
             except (EOFError, KeyboardInterrupt):
                 return _RoundResult(should_exit=True)
 
             _logger.debug("_handle_round: wait_for_user_input returned, len=%d", len(user_input) if user_input else 0)
+
+            # ★ EscapeMonitor 恢复计数重置：成功获取一轮输入后清零
+            self._monitor_recovery_count = 0
 
             if user_input.strip().lower() == 'exit':
                 pending = session.pending_messages
@@ -509,18 +556,16 @@ class InteractiveLoop:
         # ── 初始化会话 ──
         session, state = self._setup_session_and_handlers(self._loaded_data)
 
-        # ── 初始化 EscapeMonitor 回调并启动 ──
-        self._setup_monitor(session, state)
-
         # ── 创建 MessageQueue + 消费者 ──
         queue = MessageQueue()
         msg_done = asyncio.Event()
         self._msg_done_ref = msg_done
 
-        consume_task = asyncio.create_task(queue.async_consume(lambda msg: self._cli_msg_consumer(msg, session, state, msg_done)))
-        consume_task.add_done_callback(self._check_consumer_exception)
-
         try:
+            # ── 初始化 EscapeMonitor 回调并启动 ──
+            self._setup_monitor(session, state)
+            consume_task = asyncio.create_task(queue.async_consume(lambda msg: self._cli_msg_consumer(msg, session, state, msg_done)))
+            consume_task.add_done_callback(self._check_consumer_exception)
             while True:
                 if self._force_exit.is_set():
                     _exit_save_and_stop(session, self._chat_ui)

@@ -122,6 +122,10 @@ class EscapeMonitor:
         #   会被未就绪前或 tcflush 清空，导致首次 Enter 丢失。
         #   超时 1.0s 作为安全兜底，防止 monitor 线程卡死时永久阻塞。
         self._monitor_ready.wait(timeout=1.0)
+        # 验证线程确实启动成功
+        if not self._thread.is_alive():
+            self._monitor_ready.set()  # 防止后续调用方永久阻塞
+            raise RuntimeError("EscapeMonitor 启动失败：线程未能正常启动")
         self._input_handler._echo(self._input_handler.get_current_text())
         with _active_monitor_lock:
             _active_monitor = self
