@@ -16,7 +16,7 @@
   │             capabilities(终端能力检测: TrueColor/256色/UTF-8/Emoji)
   │
   animation/  — 动画基础设施层：AnimatorContext(动画时钟管理器), BreathPalette(呼吸调色板),
-  │             composer(动画合成器), transitions(过渡效果:FadeIn/FadeOut/Slide/Typewriter)
+  │             composer(动画合成器), transitions(过渡效果:FadeIn/FadeOut)
   │
   events/     — 事件总线层：DisplayEventBus(显示层事件总线), event_types(21种事件类型),
   │             adapters(事件适配器), consumers(事件消费者)
@@ -29,7 +29,7 @@
   │
   components/ — 通用框架组件（可独立复用）:
   │             Box/RoundedBox/DoubleBox, Panel, Separator, Spinner, ProgressBar,
-  │             Table, TreeView/TreeNode, parse_markup/render_markup,
+  │             Table,
   │             CostDisplayComponent, SplashScreen
   │
   framework   — 框架入口：Framework 单例、create_component/create_widget、
@@ -188,10 +188,6 @@ _COMPONENT_SYMBOLS: set[str] = {
     "Spinner",
     "ProgressBar",
     "Table",
-    "TreeView",
-    "TreeNode",
-    "parse_markup",
-    "render_markup",
     "CostDisplayComponent",
     "SplashScreen",
 }
@@ -253,10 +249,6 @@ __all__ = [
     "Spinner",
     "ProgressBar",
     "Table",
-    "TreeView",
-    "TreeNode",
-    "parse_markup",
-    "render_markup",
     "CostDisplayComponent",
     "SplashScreen",
     # 动画

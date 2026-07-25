@@ -23,7 +23,7 @@ import pytest
 sys.path.insert(0, "/home/DeepSeek-cli")
 
 from src.tui.engine.const import RenderCommand
-from src.tui.engine.utils import _cmd_name
+from src.tui.engine.const import _cmd_name
 from src.tui.engine.engine import TuiEngine, _ACTIVE_RENDER_INTERVAL
 
 

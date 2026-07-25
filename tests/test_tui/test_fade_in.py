@@ -139,7 +139,7 @@ class TestNarrowScreen:
         # 窄屏时 FadeIn.render() 返回空字符串，apply_fade_in 返回原文本
         assert result == "hello"
 
-    @patch("src.tui.terminal.narrow.is_narrow", return_value=True)
+    @patch("src.tui.terminal.terminal.is_narrow", return_value=True)
     def test_build_fade_in_ansi_skips_on_narrow(self, mock_narrow):
         """窄屏时 build_fade_in_ansi 返回空字符串。"""
         result = build_fade_in_ansi(0, total_frames=3)

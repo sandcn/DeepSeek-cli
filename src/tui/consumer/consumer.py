@@ -57,7 +57,7 @@ from ..state.consumer_registry import (
     get_active_chat_ui,
 )
 
-from ..engine.lock import render_lock
+from ..widgets.lock import render_lock
 from ..terminal.blessed import get_terminal
 
 _logger = logging.getLogger(__name__)

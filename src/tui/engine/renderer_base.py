@@ -115,7 +115,7 @@ class FrameworkRenderer:
         cid = cmd[0]
         entry = ComponentRegistry.get_default().resolve(cid)
         if entry is None:
-            from .utils import _cmd_name
+            from .const import _cmd_name
             _logger.error("未知渲染命令: %s", _cmd_name(cid))
             return
         method_name, arg_indices = entry

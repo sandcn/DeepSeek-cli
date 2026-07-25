@@ -15,7 +15,7 @@ import math
 
 from rich.text import Text
 
-from ..engine.utils import _truncate_msg
+from ..engine.const import _truncate_msg
 from ..animation.animator import BreathPalette
 from ..core.style import Style, StyleSheet
 from ..core.effects import sine_color

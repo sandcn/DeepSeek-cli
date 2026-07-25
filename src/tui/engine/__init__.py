@@ -12,7 +12,7 @@
   FrameworkRenderer (renderer_base.py) — 框架通用基类
     └── TuiRenderer (renderer.py)      — 聊天域子类
 
-  FrameworkCommand (commands.py)       — 框架通用命令
+  FrameworkCommand (const.py)          — 框架通用命令
   RenderCommand (const.py)             — 全部命令（向后兼容）
 """
 
@@ -29,8 +29,7 @@ from .renderer_base import FrameworkRenderer
 from .dispatcher import EventDispatcher
 
 # ── 命令枚举 ──────────────────────────────────────
-from .const import RenderCommand
-from .commands import FrameworkCommand
+from .const import RenderCommand, FrameworkCommand
 
 __all__ = [
     "TuiEngine",

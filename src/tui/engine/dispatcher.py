@@ -13,7 +13,7 @@ from .const import (
     _CLEAR_PARSE_LINE,
 )
 
-from .utils import _truncate_msg
+from .const import _truncate_msg
 
 if TYPE_CHECKING:
     from ..consumer.chat_config import ChatConfig

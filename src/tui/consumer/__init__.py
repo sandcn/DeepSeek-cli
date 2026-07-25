@@ -29,8 +29,8 @@ _error_handler_lock = threading.Lock()
 # ── 命令枚举导出 ──────────────────────────────────
 from ..engine.const import (
     RenderCommand,
+    FrameworkCommand,
 )
-from ..engine.commands import FrameworkCommand  # noqa: F401 — 重导出供外部使用
 from .chat_commands import ChatCommand  # noqa: F401 — 聊天域命令枚举
 
 # ── 配置导出 ──────────────────────────────────────

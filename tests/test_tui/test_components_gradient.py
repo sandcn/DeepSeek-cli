@@ -103,7 +103,7 @@ class TestErrorBlockGradient:
         Framework.get_default().get_animator().tick()  # frame=1
 
         monkeypatch.setattr("src.tui.components._error.is_narrow", lambda: False)
-        monkeypatch.setattr("src.tui.terminal.narrow.is_narrow", lambda: False)
+        monkeypatch.setattr("src.tui.terminal.terminal.is_narrow", lambda: False)
 
         block = ErrorBlock("fadein test")
         result = block.render()
@@ -125,7 +125,7 @@ class TestErrorBlockGradient:
         Framework.reset_default()
 
         monkeypatch.setattr("src.tui.components._error.is_narrow", lambda: False)
-        monkeypatch.setattr("src.tui.terminal.narrow.is_narrow", lambda: False)
+        monkeypatch.setattr("src.tui.terminal.terminal.is_narrow", lambda: False)
 
         block = ErrorBlock("no fadein")
         result = block.render()
@@ -140,7 +140,7 @@ class TestErrorBlockGradient:
         from src.tui.framework import Framework
 
         monkeypatch.setattr("src.tui.components._error.is_narrow", lambda: False)
-        monkeypatch.setattr("src.tui.terminal.narrow.is_narrow", lambda: False)
+        monkeypatch.setattr("src.tui.terminal.terminal.is_narrow", lambda: False)
 
         # frame=0: FadeIn 因子=0，所有色号=起始色 238
         AnimatorContext.reset_default()
@@ -325,7 +325,7 @@ class TestNotificationBlockGradient:
         Framework.get_default().get_animator().tick()  # frame=1
 
         monkeypatch.setattr("src.tui.components._notification.is_narrow", lambda: False)
-        monkeypatch.setattr("src.tui.terminal.narrow.is_narrow", lambda: False)
+        monkeypatch.setattr("src.tui.terminal.terminal.is_narrow", lambda: False)
 
         block = NotificationBlock("fadein note")
         result = block.render()
@@ -346,7 +346,7 @@ class TestNotificationBlockGradient:
         Framework.reset_default()
 
         monkeypatch.setattr("src.tui.components._notification.is_narrow", lambda: False)
-        monkeypatch.setattr("src.tui.terminal.narrow.is_narrow", lambda: False)
+        monkeypatch.setattr("src.tui.terminal.terminal.is_narrow", lambda: False)
 
         block = NotificationBlock("no fade note")
         result = block.render()
@@ -361,7 +361,7 @@ class TestNotificationBlockGradient:
         from src.tui.framework import Framework
 
         monkeypatch.setattr("src.tui.components._notification.is_narrow", lambda: False)
-        monkeypatch.setattr("src.tui.terminal.narrow.is_narrow", lambda: False)
+        monkeypatch.setattr("src.tui.terminal.terminal.is_narrow", lambda: False)
 
         # frame=0
         AnimatorContext.reset_default()

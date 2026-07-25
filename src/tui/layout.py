@@ -364,7 +364,7 @@ class Border(Widget):
 
         # 窄屏降级：无边框，直接渲染子控件
         try:
-            from .terminal.narrow import is_narrow as _is_narrow
+            from .terminal.terminal import is_narrow as _is_narrow
             if _is_narrow():
                 child = self._children[0] if self._children else (self._children_source[0] if self._children_source else None)
                 if child is not None:

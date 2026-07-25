@@ -10,7 +10,7 @@ Spinner 在不同帧集间切换。
 from __future__ import annotations
 
 from ..render_buffer import RenderBuffer
-from ..terminal.narrow import is_narrow
+from ..terminal.terminal import is_narrow
 from ..core.style import Style
 from ._base import TuiComponent
 

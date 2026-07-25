@@ -13,7 +13,7 @@ import threading
 _logger = logging.getLogger(__name__)
 
 from ..state import consumer_registry as _consumer_registry
-from ..engine.utils import _truncate_msg
+from ..engine.const import _truncate_msg
 from ..framework import Framework
 
 # 线程本地重入保护（防止 emit → logger → emit 递归）

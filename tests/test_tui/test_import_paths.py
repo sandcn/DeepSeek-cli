@@ -33,8 +33,7 @@ def test_parallel_display_import() -> None:
 def test_component_registry_import() -> None:
     """验证 ComponentRegistry 顶层导入无循环依赖。
 
-    验证 # noqa: PLC0415 修复（from ..engine.const import RenderCommand）
-    改为从零依赖 _cmd_ids 导入后无循环依赖。
+    验证从 engine.const 导入 RenderCommand（v2.0 合并 _cmd_ids 到 const.py）。
     """
     from src.tui.core.component_registry import ComponentRegistry
     assert ComponentRegistry is not None
@@ -49,20 +48,14 @@ def test_locks_module_import() -> None:
     assert OUTPUT_LOCK_TIMEOUT == 1.0
 
 
-def test_cmd_ids_module_import() -> None:
-    """验证 _cmd_ids 零依赖模块导入正常。"""
-    from src.tui.engine._cmd_ids import (
-        REASONING, CONTENT, NOTIFICATION, WRITE_LINE, ERROR,
-        SUBAGENT_FRAME, SPLASH, MAIN_PHASE,
-    )
-    assert REASONING == 0
-    assert CONTENT == 1
-    assert NOTIFICATION == 11
-    assert WRITE_LINE == 12
-    assert ERROR == 16
-    assert SUBAGENT_FRAME == 18
-    assert SPLASH == 19
-    assert MAIN_PHASE == 20
+def test_framework_command_import() -> None:
+    """验证 FrameworkCommand 从 engine.const 导入正常（v2.0：已合并 commands.py 到 const.py）。"""
+    from src.tui.engine.const import FrameworkCommand
+    assert FrameworkCommand.NOTIFICATION == 11
+    assert FrameworkCommand.WRITE_LINE == 12
+    assert FrameworkCommand.ERROR == 16
+    assert FrameworkCommand.SUBAGENT_FRAME == 18
+    assert FrameworkCommand.SPLASH == 19
 
 
 def test_terminal_terminal_import_via_widgets() -> None:
@@ -113,9 +106,7 @@ def test_all_key_paths_together() -> None:
     from src.tui.parallel_display import ParallelDisplay
     from src.tui.core.component_registry import ComponentRegistry
     from src.tui._locks import render_lock, io_lock
-    from src.tui.engine._cmd_ids import (
-        REASONING, CONTENT, NOTIFICATION, SUBAGENT_FRAME,
-    )
+    from src.tui.engine.const import RenderCommand, FrameworkCommand
 
     assert LockedTerminal is not None
     assert _BottomBar is not None
@@ -123,7 +114,8 @@ def test_all_key_paths_together() -> None:
     assert ComponentRegistry is not None
     assert render_lock is not None
     assert io_lock is not None
-    assert REASONING == 0
-    assert CONTENT == 1
-    assert NOTIFICATION == 11
-    assert SUBAGENT_FRAME == 18
+    assert RenderCommand.REASONING == 0
+    assert RenderCommand.CONTENT == 1
+    assert RenderCommand.NOTIFICATION == 11
+    assert RenderCommand.SUBAGENT_FRAME == 18
+    assert FrameworkCommand.NOTIFICATION == 11

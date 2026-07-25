@@ -156,7 +156,7 @@ def build_fade_in_ansi(fade_frame: int, total_frames: int = 3) -> str:
     Returns:
         ANSI 颜色序列，≥ total_frames 时返回空字符串。
     """
-    from ..terminal.narrow import is_narrow
+    from ..terminal.terminal import is_narrow
     if is_narrow() or fade_frame >= total_frames:
         return ""
     # FADE_COLOR_DARK(238) → FADE_COLOR_MID(244) → RESET 三帧渐亮
@@ -233,7 +233,7 @@ def build_bounce_ansi(frame: int, total_frames: int = 6) -> str:
     Returns:
         ANSI 颜色序列，≥ total_frames 时返回空字符串。
     """
-    from ..terminal.narrow import is_narrow
+    from ..terminal.terminal import is_narrow
     if is_narrow() or frame >= total_frames:
         return ""
     from .effects import bounce_frame_color

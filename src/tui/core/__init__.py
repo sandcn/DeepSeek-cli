@@ -11,8 +11,8 @@
   - tool_icons: 工具颜色和图标主题定义（从 parallel 下沉）
   - formatter: 文本格式化工具函数
   - TrueColor / ColorValue: 24-bit 真彩色值对象与联合类型（颜色体系扩展）
-  - theme_loader: 轻量级 YAML 用户主题加载器
 """
+
 
 from __future__ import annotations
 
@@ -37,10 +37,8 @@ _style_mod = LazyLoader("src.tui.core.style")
 _gradient_mod = LazyLoader("src.tui.core.gradient")
 _palettes_mod = LazyLoader("src.tui.animation.palettes")
 _theme_mod = LazyLoader("src.tui.core.theme")
-_theme_loader_mod = LazyLoader("src.tui.core.theme_loader")
 _ansi_utils_mod = LazyLoader("src.tui.core.ansi_utils")
 _cost_mod = LazyLoader("src.tui.core.cost")
-_rich_console_mod = LazyLoader("src.tui.core.rich_console")
 _output_target_mod = LazyLoader("src.tui.core.output_target")
 
 
@@ -99,6 +97,8 @@ _SYMBOL_MAP: dict[str, LazyLoader] = {
     # formatter
     "format_elapsed": _formatter_mod,
     "format_speed": _formatter_mod,
+    "format_all_params": _formatter_mod,
+    "extract_key_params": _formatter_mod,
     # text_utils
     "truncate": _text_utils_mod,
     "build_gradient_ansi": _text_utils_mod,
@@ -171,9 +171,9 @@ _SYMBOL_MAP: dict[str, LazyLoader] = {
     "load_user_themes": _theme_mod,
     "load_user_themes_into_themes": _theme_mod,
     "reload_themes": _theme_mod,
-    # theme_loader
-    "load_user_themes_from_dir": _theme_loader_mod,
-    "parse_simple_yaml": _theme_loader_mod,
+    # theme (原 theme_loader 符号已合并)
+    "load_user_themes_from_dir": _theme_mod,
+    "parse_simple_yaml": _theme_mod,
     # ansi_utils
     "strip_ansi": _ansi_utils_mod,
     "visual_width": _ansi_utils_mod,
@@ -183,8 +183,8 @@ _SYMBOL_MAP: dict[str, LazyLoader] = {
     "truncate_ansi_line": _ansi_utils_mod,
     # cost
     "compute_round_cost_data": _cost_mod,
-    # rich_console
-    "get_console": _rich_console_mod,
+    # output_target (原 rich_console 符号已合并)
+    "get_console": _output_target_mod,
     # output_target
     "IOutputTarget": _output_target_mod,
     "TerminalTarget": _output_target_mod,
@@ -251,8 +251,9 @@ __all__ = [
     "UISessionState", "InputState", "StreamingState", "TUIStateTree",
     # ttl_cache
     "TTLCache",
-    # time_format
+    # formatter
     "format_elapsed", "format_speed",
+    "format_all_params", "extract_key_params",
     # text_utils
     "truncate", "build_gradient_ansi", "build_gradient_ansi_frame",
     "build_fade_in_ansi", "build_warning_pulse_ansi", "make_sep_gradient",
@@ -279,13 +280,13 @@ __all__ = [
     # theme
     "THEME", "THEMES", "set_theme", "get_active_theme", "list_themes", "get_theme_names_with_desc",
     "load_user_themes", "load_user_themes_into_themes", "reload_themes",
-    # theme_loader
+    # theme
     "load_user_themes_from_dir", "parse_simple_yaml",
     # ansi_utils
     "strip_ansi", "visual_width", "truncate_ansi_visual", "skip_ansi_sgr", "truncate_ansi_sgr", "truncate_ansi_line",
     # output_target
     "IOutputTarget", "TerminalTarget", "BufferTarget", "NullTarget",
-    # rich_console
+    # output_target
     "get_console",
     # cost
     "compute_round_cost_data",

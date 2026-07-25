@@ -121,7 +121,7 @@ class Separator(TuiComponent):
         """
         if self._width is not None:
             return max(0, self._width)
-        from ..terminal.narrow import narrow_sep_width
+        from ..terminal.terminal import narrow_sep_width
         return narrow_sep_width(max_width=40)
 
     def _build_colors(self) -> list[int]:

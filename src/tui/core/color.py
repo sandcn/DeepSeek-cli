@@ -152,7 +152,7 @@ class TrueColor:
         TrueColor 可用时返回 TrueColor，否则返回降级的 Color256。
         内部调用 ``supports_truecolor()`` 进行终端能力检测。
 
-        注意: 此方法通过跨包延迟导入 ``..terminal.capabilities`` 进行能力检测。
+        注意: 此方法通过跨包延迟导入 ``..terminal.terminal`` 进行能力检测。
         这是有意为之，以避免将终端检测逻辑合并到 core/color.py（保持关注点分离）。
         core/color.py 仅负责颜色值对象，不直接依赖终端检测。
 
@@ -165,7 +165,7 @@ class TrueColor:
             TrueColor 或 Color256，取决于终端能力。
         """
         # 延迟导入避免模块加载循环
-        from ..terminal.capabilities import supports_truecolor as _detect_tc
+        from ..terminal.terminal import supports_truecolor as _detect_tc
         if _detect_tc():
             return cls(r, g, b)
         logger.debug(

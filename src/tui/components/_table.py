@@ -16,7 +16,7 @@
 from __future__ import annotations
 
 from ..render_buffer import RenderBuffer
-from ..terminal.narrow import is_narrow
+from ..terminal.terminal import is_narrow
 from ..core.style import Style
 from ..core.ansi_utils import visual_width
 from ._base import TuiComponent

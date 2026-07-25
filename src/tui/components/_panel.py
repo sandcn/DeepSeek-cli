@@ -14,7 +14,7 @@ from __future__ import annotations
 import logging
 
 from ..render_buffer import RenderBuffer
-from ..terminal.narrow import is_narrow
+from ..terminal.terminal import is_narrow
 from ..core.text_utils import truncate
 from ..core.ansi_utils import ansi_wrap as _ansi_wrap, visual_width
 from ._base import TuiComponent

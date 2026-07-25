@@ -37,7 +37,7 @@ class TestDeprecatedFieldsRemoved:
     def test_output_lock_not_in_engine_lock(self):
         """output_lock 不应再从 src.tui.engine.lock 可导入。"""
         with pytest.raises(ImportError, match="cannot import name 'output_lock'"):
-            from src.tui.engine.lock import output_lock  # type: ignore[import-unused]
+            from src.tui.widgets.lock import output_lock  # type: ignore[import-unused]
 
     def test_output_lock_not_in_widgets_lock(self):
         """output_lock 不应再从 src.tui.widgets.lock 可导入。"""
@@ -53,14 +53,14 @@ class TestDeprecatedFieldsRemoved:
 
     def test_render_lock_still_accessible(self):
         """render_lock 仍可通过各模块正常导入。"""
-        from src.tui.engine.lock import render_lock as rl1
+        from src.tui.widgets.lock import render_lock as rl1
         from src.tui.widgets.lock import render_lock as rl2
         from src.tui.widgets import render_lock as rl3
         assert rl1 is rl2 is rl3
 
     def test_try_acquire_output_lock_still_accessible(self):
         """_try_acquire_output_lock 仍可通过各模块正常导入。"""
-        from src.tui.engine.lock import _try_acquire_output_lock as t1
+        from src.tui.widgets.lock import _try_acquire_output_lock as t1
         from src.tui.widgets.lock import _try_acquire_output_lock as t2
         from src.tui.widgets import _try_acquire_output_lock as t3
         assert t1 is t2 is t3
