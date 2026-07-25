@@ -19,7 +19,6 @@ from ..core.style import StyleSheet
 from ..core.theme import THEME
 from ..animation.animator import AnimatorContext
 from ..core.effects import build_fg_breath_ansi
-from ..terminal.terminal import is_narrow
 from ..core.text_utils import build_sparkle_ansi
 from ..render_buffer import RenderBuffer
 
@@ -30,41 +29,40 @@ class UserMsgBlock(TuiComponent):
         super().__init__(props=props)
         self.text = text
 
+    def _render_narrow(self) -> Text:
+        """窄屏降级：静态样式消息文本，不加动效。"""
+        user_style = StyleSheet.get("user_icon")
+        user_rich_style = user_style.to_rich() if user_style else None
+        return Text.assemble(
+            ("\n  > ", user_rich_style),
+            (self.text, user_rich_style),
+        )
+
     def render(self, buffer: RenderBuffer | None = None) -> str | Text | None:
-        if is_narrow():
-            user_style = StyleSheet.get("user_icon")
-            user_rich_style = user_style.to_rich() if user_style else None
-            result = Text.assemble(
-                ("\n  > ", user_rich_style),
-                (self.text, user_rich_style),
-            )
-        else:
-            # 宽屏："> " 前缀 sparkle 闪烁 + 消息文本呼吸色
-            frame = AnimatorContext.get_default().frame
+        result = self.render_with_narrow_fallback(buffer, narrow_method=self._render_narrow)
+        if result is not None:
+            return result
 
-            # 从 THEME['user_glow'] 提取 sparkle base_color
-            user_glow = THEME.get('user_glow', '\033[38;5;81m')
-            glow_match = re.search(r"38;5;(\d+)", user_glow)
-            sparkle_base = int(glow_match.group(1)) if glow_match else 81
+        # 宽屏："> " 前缀 sparkle 闪烁 + 消息文本呼吸色
+        frame = AnimatorContext.get_default().frame
 
-            # 从 THEME['user'] 提取呼吸色 base_color
-            user_color = THEME.get('user', '\033[38;5;45m')
-            user_match = re.search(r"38;5;(\d+)", user_color)
-            breath_base = int(user_match.group(1)) if user_match else 45
+        # 从 THEME['user_glow'] 提取 sparkle base_color
+        user_glow = THEME.get('user_glow', '\033[38;5;81m')
+        glow_match = re.search(r"38;5;(\d+)", user_glow)
+        sparkle_base = int(glow_match.group(1)) if glow_match else 81
 
-            sparkle_ansi = build_sparkle_ansi(frame, sparkle_base, 6)
-            breath_ansi = build_fg_breath_ansi(frame, breath_base, min(255, breath_base + 20), 12)
-            ansi_str = f"\n  {sparkle_ansi}>\033[0m {breath_ansi}{self.text}\033[0m"
-            # 弹入动效：使用 FadeIn(bounce) 包裹，产生颜色弹入效果
-            fade = FadeIn(easing="bounce", total_frames=6, start_color=240, end_color=255)
-            fade_prefix = fade.render(frame)
-            if fade_prefix:
-                ansi_str = f"{fade_prefix}{ansi_str}\033[0m"
-            result = Text.from_ansi(ansi_str)
+        # 从 THEME['user'] 提取呼吸色 base_color
+        user_color = THEME.get('user', '\033[38;5;45m')
+        user_match = re.search(r"38;5;(\d+)", user_color)
+        breath_base = int(user_match.group(1)) if user_match else 45
 
-        if buffer is not None:
-            text = result.plain if isinstance(result, Text) else str(result)
-            if text:
-                buffer.write(0, 0, text)
-            return None
-        return result
+        sparkle_ansi = build_sparkle_ansi(frame, sparkle_base, 6)
+        breath_ansi = build_fg_breath_ansi(frame, breath_base, min(255, breath_base + 20), 12)
+        ansi_str = f"\n  {sparkle_ansi}>\033[0m {breath_ansi}{self.text}\033[0m"
+        # 弹入动效：使用 FadeIn(bounce) 包裹，产生颜色弹入效果
+        fade = FadeIn(easing="bounce", total_frames=6, start_color=240, end_color=255)
+        fade_prefix = fade.render(frame)
+        if fade_prefix:
+            ansi_str = f"{fade_prefix}{ansi_str}\033[0m"
+        result = Text.from_ansi(ansi_str)
+        return self._finalize_render(result, buffer)

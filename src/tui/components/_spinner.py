@@ -10,7 +10,6 @@ Spinner 在不同帧集间切换。
 from __future__ import annotations
 
 from ..render_buffer import RenderBuffer
-from ..terminal.narrow import is_narrow
 from ..core.style import Style
 from ._base import TuiComponent
 
@@ -88,26 +87,33 @@ class Spinner(TuiComponent):
         Returns:
             str | None: 无 buffer 时返回渲染字符串；有 buffer 时返回 None。
         """
-        result = self._build_spinner()
-        if buffer is not None:
-            if result:
-                buffer.write(0, 0, result)
-            return None
-        return result
+        result = self.render_with_narrow_fallback(buffer, narrow_method=self._render_narrow)
+        if result is not None:
+            return result
 
-    def _build_spinner(self) -> str:
-        """构建转轮字符串（核心渲染逻辑）。"""
+        # 宽屏：带颜色的转轮字符
+        result = self._build_spinner()
+        return self._finalize_render(result, buffer)
+
+    def _render_narrow(self) -> str:
+        """窄屏降级：纯文本转轮字符，不加颜色。"""
         frames = _SPINNER_FRAMES.get(self.style)
         if not frames:
             frame_char = "?"
         else:
             frame_char = frames[self.frame % len(frames)]
 
-        if is_narrow():
-            # 窄屏：纯文本，不加颜色
-            if self.text:
-                return f"{frame_char} {self.text}"
-            return frame_char
+        if self.text:
+            return f"{frame_char} {self.text}"
+        return frame_char
+
+    def _build_spinner(self) -> str:
+        """构建转轮字符串（核心渲染逻辑 — 宽屏路径）。"""
+        frames = _SPINNER_FRAMES.get(self.style)
+        if not frames:
+            frame_char = "?"
+        else:
+            frame_char = frames[self.frame % len(frames)]
 
         # 宽屏：带颜色的转轮字符（使用 Style）
         styled_char = Style(fg=self.color).apply(frame_char)

@@ -5,19 +5,15 @@
 
 from __future__ import annotations
 
-import unicodedata
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from ...renderer.output import OutputAdapter
-
-from rich.text import Text
+    from ..render_buffer import RenderBuffer
 
 from ..animation.animator import AnimatorContext
-from ..core.style import Style
 from ..core.text_utils import build_left_border_ansi, build_warning_pulse_ansi
-from ..render_buffer import RenderBuffer
-from ._base import TuiComponent
+from ._base import TuiComponent, _render_via_buffer
 
 
 class ToolSummaryBlock(TuiComponent):
@@ -70,35 +66,16 @@ class ToolSummaryBlock(TuiComponent):
             lines.append(f"  {edge_ansi}   · {len(self.successful)}工具完成")
 
         result = "\n".join(lines)
-        if buffer is not None:
-            if result:
-                buffer.write(0, 0, result)
-            return None
-        return result
+        return self._finalize_render(result, buffer)
 
     def render_to_adapter(self, adapter: "OutputAdapter") -> int:
         """渲染到 OutputAdapter，返回行数。
 
-        委托 render(buffer) 获取渲染内容，再通过 Text.from_ansi() 转换为 Rich Text 输出。
-        保持与原有 Rich 样式化输出的行为一致。
+        委托 _render_via_buffer() 执行渲染流程（创建 RenderBuffer →
+        render() → buf.render() → adapter.write(Text.from_ansi())）。
+        RenderBuffer 高度设为 100 以匹配原有的 ToolSummaryBlock 行为。
         """
-        try:
-            import shutil
-            term_w = shutil.get_terminal_size().columns
-        except Exception:
-            term_w = 80
-        buf = RenderBuffer(max(term_w, 80), 100)
-        # 委托 render(buffer) 获取渲染内容
-        self.render(buf)
-        output = buf.render()
-        if not output:
-            return 0
-        # 通过 Text.from_ansi 转换为 Rich Text 输出（保持向后兼容）
-        try:
-            adapter.write(Text.from_ansi(output))
-        except Exception:
-            adapter.write(output)
-        return max(1, output.count('\n') + 1)
+        return _render_via_buffer(self, adapter, buffer_height=100)
 
     def _normalize_failed(self) -> tuple:
         safe = []

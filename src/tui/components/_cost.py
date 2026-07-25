@@ -122,11 +122,7 @@ class CostDisplayComponent(TuiComponent):
             f"  ${data['total_cost']:.4f}{ctx_str}{data['duration_str']}"
         )
 
-        if buffer is not None:
-            if line:
-                buffer.write(0, 0, line)
-            return None
-        return line
+        return self._finalize_render(line, buffer)
 
     def render_to_adapter(self, adapter) -> int:
         """通过 OutputAdapter 渲染费用显示行。

@@ -9,6 +9,8 @@ import math
 from functools import lru_cache
 from typing import Sequence
 
+from .color import to_ansi_fg
+
 
 # ═══════════════════════════════════════════════════════════
 # 正弦波呼吸工具
@@ -320,7 +322,7 @@ def get_theme_effect_color(effect_name: str, frame: int = 0) -> str:
     key = f"effect_{effect_name}"
     base = THEME.get(key, None)
     if base is None:
-        return _build_fg_ansi(45)  # 兜底青色
+        return to_ansi_fg(45)  # 兜底青色
     if frame > 0 and effect_name in ("glow", "sparkle"):
         m = re.search(r"38;5;(\d+)", base)
         if m:
@@ -328,18 +330,6 @@ def get_theme_effect_color(effect_name: str, frame: int = 0) -> str:
             breath_color = sine_color(frame, base_color, min(255, base_color + 15), 12)
             return f"\033[38;5;{breath_color}m"
     return base
-
-
-def _build_fg_ansi(color: int) -> str:
-    """构建前景色 ANSI 序列。
-
-    Args:
-        color: 256 色号（0-255）。
-
-    Returns:
-        ANSI 前景色序列。
-    """
-    return f"\033[38;5;{color}m"
 
 
 # ═══════════════════════════════════════════════════════════

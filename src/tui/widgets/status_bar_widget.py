@@ -25,42 +25,24 @@
 from __future__ import annotations
 
 import logging
-from typing import Optional
 
 from ..widget_base import Widget
 from ..render_buffer import RenderBuffer
-from ..animation.animator import AnimatorContext, BreathPalette
-from ..core.text_utils import build_glow_ansi
+from ..animation.animator import AnimatorContext
 from ..terminal.terminal import is_narrow
 
-from .bottom_bar.theme import (
-    _COLOR_ACCENT,
-    _COLOR_DIM,
-    _COLOR_RESET,
-    _COLOR_SPEED,
-    _COLOR_TIME,
-    _COLOR_TOKEN,
-    _COLOR_TOOL_FAIL,
-    _COLOR_TOOL_OK,
+from ._snapshot import _get_snapshot
+from ._status_format import (
+    build_model_label,
+    build_tool_count_text,
+    build_elapsed_text,
+    build_token_text,
+    build_speed_text,
+    build_glow_deco,
 )
+from .bottom_bar.theme import _COLOR_DIM, _COLOR_RESET
 
 _logger = logging.getLogger(__name__)
-
-
-# ── Token 速度快照惰性加载 ──────────────────────────────
-_TOKEN_SPEED_SNAPSHOT: Optional[callable] = None
-
-
-def _get_snapshot():
-    """获取 get_token_speed_snapshot 函数引用（惰性加载，异常静默）。"""
-    global _TOKEN_SPEED_SNAPSHOT
-    if _TOKEN_SPEED_SNAPSHOT is None:
-        try:
-            from ...api.stats import get_token_speed_snapshot
-            _TOKEN_SPEED_SNAPSHOT = get_token_speed_snapshot
-        except ImportError:
-            _TOKEN_SPEED_SNAPSHOT = False
-    return _TOKEN_SPEED_SNAPSHOT if callable(_TOKEN_SPEED_SNAPSHOT) else None
 
 
 __all__ = [
@@ -130,6 +112,9 @@ class StatusBarWidget(Widget):
     ) -> str:
         """构建状态行文本（优雅信息风）。
 
+        委托 ``_status_format`` 共享纯函数实现格式化。
+        本方法负责：数据获取（snapshot）、窄屏条件判断、各部件组装。
+
         Args:
             model_name: 模型名。
             tool_count: 运行中的工具数。
@@ -140,26 +125,11 @@ class StatusBarWidget(Widget):
         Returns:
             格式化后的状态行字符串（含 ANSI 色号）。
         """
-        # ── 模型名字（始终显示，带 · 图标） ──
-        if model_name:
-            if status_active:
-                ctx = AnimatorContext.get_default()
-                _pulse_frame = ctx.breath_frame
-                if _pulse_frame > 0:
-                    _pulse_color = ctx.sine_color(36, 45, 4)
-                else:
-                    _pulse_color = BreathPalette.get_color("status_pulse", _pulse_frame)
-                model_part = (
-                    f"\033[38;5;{_pulse_color}m\u00b7\033[0m"
-                    f" {_COLOR_ACCENT}{model_name}{_COLOR_RESET}"
-                )
-            else:
-                model_part = (
-                    f"{_COLOR_ACCENT}\u00b7{_COLOR_RESET}"
-                    f" {_COLOR_ACCENT}{model_name}{_COLOR_RESET}"
-                )
-        else:
-            model_part = ""
+        ctx = AnimatorContext.get_default()
+        frame = ctx.frame
+
+        # ── 模型名字（始终显示，带 · 图标，委托共享函数） ──
+        model_part = build_model_label(model_name, status_active, frame) if model_name else ""
 
         # ★ 非流式活跃时仅显示模型名
         if not status_active:
@@ -183,67 +153,31 @@ class StatusBarWidget(Widget):
 
         parts = []
 
-        # 工具调用计数（带 · 图标，运行中/总数格式）
-        if tool_total > 0:
-            if not is_narrow():
-                _gear_frame = AnimatorContext.get_default().frame
-                glow_gear = f"{build_glow_ansi(_gear_frame, 45, 12)}\u00b7\033[0m "
-            else:
-                glow_gear = ""
-            if tool_count > 0:
-                # 运行中格式：· <运行中>→<总数>
-                if tool_fail_count > 0:
-                    total_colored = f"{_COLOR_TOOL_FAIL}{tool_total}{_COLOR_RESET}"
-                else:
-                    total_colored = f"{_COLOR_TOOL_OK}{tool_total}{_COLOR_RESET}"
-                parts.append(
-                    f"{glow_gear}"
-                    f"{_COLOR_ACCENT}{tool_count}{_COLOR_RESET}"
-                    f"{_COLOR_DIM}→{_COLOR_RESET}"
-                    f"{total_colored}"
-                )
-            else:
-                # 无运行工具时保持原有逻辑
-                done = tool_total - tool_fail_count
-                if tool_fail_count > 0:
-                    parts.append(
-                        f"{glow_gear}"
-                        f"{_COLOR_TOOL_OK}{done}{_COLOR_RESET}"
-                        f"{_COLOR_DIM}/{_COLOR_RESET}"
-                        f"{_COLOR_TOOL_FAIL}{tool_total}{_COLOR_RESET}"
-                    )
-                else:
-                    parts.append(f"{glow_gear}{_COLOR_TOOL_OK}{tool_total}{_COLOR_RESET}")
+        # 工具调用计数（委托共享函数）
+        tool_text = build_tool_count_text(tool_count, tool_total, tool_fail_count, frame)
+        if tool_text:
+            parts.append(tool_text)
 
-        # 耗时（蓝灰高亮）
-        if elapsed > 0:
-            if elapsed >= 60:
-                mins = int(elapsed // 60)
-                secs = int(elapsed % 60)
-                dur = f"{mins}:{secs:02d}" if mins < 60 else f"{mins // 60}:{mins % 60:02d}:{secs:02d}"
-            else:
-                dur = f"{elapsed:.1f}s"
-            parts.append(f"{_COLOR_TIME}{dur}{_COLOR_RESET}")
+        # 耗时（委托共享函数）
+        elapsed_text = build_elapsed_text(elapsed)
+        if elapsed_text:
+            parts.append(elapsed_text)
 
-        # 令牌数（靛蓝色）
-        if total > 0:
-            tok_str = f"{total / 1000:.1f}k" if total >= 1000 else str(total)
-            parts.append(f"{_COLOR_TOKEN}{tok_str}t{_COLOR_RESET}")
+        # 令牌数（委托共享函数）
+        token_text = build_token_text(total)
+        if token_text:
+            parts.append(token_text)
 
-        # 实时 token 速度（tok/s，琥珀色）
+        # 实时 token 速度（委托共享函数，仅 speed>0 时显示）
         if per_second_speed > 0:
-            if per_second_speed >= 1:
-                speed_str = f"{per_second_speed:.1f}"
-            else:
-                speed_str = f"{per_second_speed:.2f}"
-            parts.append(f"{_COLOR_SPEED}{speed_str}t/s{_COLOR_RESET}")
+            speed_text = build_speed_text(per_second_speed)
+            if speed_text:
+                parts.append(speed_text)
 
         sep = f" {_COLOR_DIM}\u00b7{_COLOR_RESET} "
         status = sep.join(parts) if parts else ""
         if status and not is_narrow():
-            _deco_frame = AnimatorContext.get_default().frame
-            glow_dot = f"{build_glow_ansi(_deco_frame, 45, 12)}\u00b7\033[0m"
-            status = f"{status}  {glow_dot}"
+            status = f"{status}  {build_glow_deco(frame)}"
         if model_part and status:
             return f"{model_part}  {status}"
         return model_part or status

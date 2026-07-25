@@ -14,13 +14,16 @@ ChatConfig 管聊天域业务常量。
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Any
+
+from ..config import ConfigBase
 
 
 __all__: list[str] = ["ChatConfig"]
 
 
 @dataclass(frozen=True)
-class ChatConfig:
+class ChatConfig(ConfigBase):
     """聊天域配置 — 聊天应用专属常量。
 
     所有属性均为不可变（frozen=True），线程安全。
@@ -37,20 +40,4 @@ class ChatConfig:
     # ── 截断参数 ──────────────────────────────────────
     max_output_len: int = 10000        # 工具输出最大长度（字符）
 
-    # ── 工厂方法 ──────────────────────────────────────
 
-    @classmethod
-    def defaults(cls) -> ChatConfig:
-        """获取默认配置实例（等价于 ChatConfig()）。"""
-        return cls()
-
-    def with_overrides(self, **kwargs) -> ChatConfig:
-        """基于当前配置创建带覆盖值的新实例。
-
-        Args:
-            **kwargs: 要覆盖的参数名和值。
-
-        Returns:
-            新的 ChatConfig 实例（原始实例不变，frozen 保证不可变性）。
-        """
-        return type(self)(**{**self.__dict__, **kwargs})

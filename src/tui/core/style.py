@@ -181,6 +181,24 @@ class Style:
         return cls(fg=fg, bg=bg, bold=bold, italic=italic, dim=dim, underline=underline)
 
     @classmethod
+    def parse_theme_color(cls, key: str) -> int | None:
+        """从 THEME 语义键提取 256 色号。
+
+        Args:
+            key: THEME 字典的语义键（如 "title", "system" 等）。
+
+        Returns:
+            色号整数 (0-255)，键不存在或格式不匹配时返回 None。
+        """
+        from .theme import THEME
+        import re
+        value = THEME.get(key, "")
+        match = re.search(r"38;5;(\d+)", str(value))
+        if match:
+            return int(match.group(1))
+        return None
+
+    @classmethod
     def with_props(cls, fg=None, bg=None, bold=None, italic=None, dim=None, underline=None):
         """仅设置非 None 参数创建新 Style。
 
@@ -480,12 +498,38 @@ class StyleSheet:
 # ════════════════════════════════════════════════════════
 
 StyleSheet.register_many({
+    # ── 基础字型 ──
     "dim":       Style(dim=True),
     "bold":      Style(bold=True),
     "italic":    Style(italic=True),
     "underline": Style(underline=True),
     "bold_dim":  Style(bold=True, dim=True),
     "dim_italic": Style(dim=True, italic=True),
+    "bold_italic": Style(bold=True, italic=True),
+    # ── 语义色 ──
+    "error":     Style(fg=196, bold=True),
+    "success":   Style(fg=47),
+    "warn":      Style(fg=220),
+    "info":      Style(fg=45),
+    "muted":     Style(fg=244),
+    "border_breath": Style(fg=23),
+    # ── 差异渲染语义色 ──
+    "diff_add":  Style(fg=41),
+    "diff_del":  Style(fg=196),
+    "diff_ctx":  Style(fg=244),
+    # ── 消息角色图标色 ──
+    "user_icon": Style(fg=81),
+    "asst_icon": Style(fg=47),
+    "tool_icon": Style(fg=220),
+    # ── 工具输出文本色 ──
+    "tool_txt":  Style(fg=242),
+    # ── 装饰色 ──
+    "separator": Style(fg=239),
+    "highlight": Style(fg=45),
+    "accent":    Style(fg=221),
+    "deco":      Style(fg=242),
+    "neon":      Style(fg=51, bold=True),
+    # ── 树视图色 ──
     "tree_branch": Style(fg=239),   # 树分支灰色
     "tree_leaf":   Style(fg=45),    # 树叶青色
 })

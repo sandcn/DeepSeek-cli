@@ -31,6 +31,29 @@ from .lock import _try_acquire_output_lock
 
 _logger = logging.getLogger(__name__)
 
+
+# ── 光标定位辅助函数（消除 Blessed → ANSI 降级重复） ────────────
+
+def _write_cursor_blessed_or_ansi(write_stream, r_cursor: int, cursor_col: int) -> None:
+    """通过 Blessed term.move_xy 定位光标，不可用时回退到 ANSI 序列。
+
+    提取自 TuiEngine._position_cursor()——原方法中 adapter 路径和
+    sys.__stdout__ 路径各有完全相同的 try-except 降级逻辑。
+
+    Args:
+        write_stream: 写入流对象，支持 .write(text: str) -> Any 签名的对象
+                      （如 OutputAdapter.write_raw 或 sys.__stdout__.write）。
+        r_cursor: 目标行号（1-based）。
+        cursor_col: 目标列号（1-based）。
+    """
+    try:
+        from ..terminal.blessed import get_terminal
+        term = get_terminal()
+        write_stream(term.move_xy(cursor_col - 1, r_cursor - 1))
+    except Exception:
+        _logger.debug("position_cursor Blessed 不可用, 使用 ANSI 回退", exc_info=True)
+        write_stream(f"\033[{r_cursor};{cursor_col}H")
+
 # ═══════════════════════════════════════════════════════════
 # TuiEngine — 渲染引擎
 # ═══════════════════════════════════════════════════════════
@@ -362,15 +385,7 @@ class TuiEngine:
             if self._recovering:
                 self._recovering = False
                 return
-            # 统计并报告丢弃的待处理命令
-            dropped = 0
-            while not self._cmd_queue.empty():
-                try:
-                    self._cmd_queue.get_nowait()
-                    self._cmd_queue.task_done()
-                    dropped += 1
-                except queue.Empty:
-                    break
+            dropped = self._drain_queue_safe()
             if dropped > 0:
                 _emergency_write(
                     f"{_ANSI_RED}[ChatUI] render 线程已终止，"
@@ -412,15 +427,27 @@ class TuiEngine:
             self._phase_redraw_bottom()
             return has_content
 
-    def _drain_queue_safe(self) -> None:
+    def _drain_queue_safe(self) -> int:
+        """安全排空命令队列，返回排空命令数。
+
+        被 stop()、flush()、_handle_render_crash() 及 _render() finally 块调用。
+        与 _drain_queue() 不同，此方法仅排空队列、不执行渲染命令。
+        返回值 (int) 支持 finally 块复用排空逻辑并统计丢弃命令数。
+
+        Returns:
+            int: 排空期间命令队列中移出的总命令数。
+        """
+        dropped = 0
         while not self._cmd_queue.empty():
             try:
                 self._cmd_queue.get_nowait()
                 self._cmd_queue.task_done()
+                dropped += 1
             except queue.Empty:
                 break
         if self._cmd_queue_dropped > 0:
             _logger.info("render 线程终止，共丢弃 %d 条命令", self._cmd_queue_dropped)
+        return dropped
 
     def _position_cursor(self) -> None:
         if not self._bb.is_active:
@@ -429,23 +456,11 @@ class TuiEngine:
         r_cursor, cursor_col = self._bb.compute_cursor_position(text, cursor_pos, h, w)
         adapter = self._renderer.output_adapter
         if adapter is not None:
-            try:
-                from ..terminal.blessed import get_terminal
-                term = get_terminal()
-                adapter.write_raw(term.move_xy(cursor_col - 1, r_cursor - 1))
-            except Exception:
-                _logger.debug("position_cursor Blessed 不可用, 使用 ANSI 回退", exc_info=True)
-                adapter.write_raw(f"\033[{r_cursor};{cursor_col}H")
+            _write_cursor_blessed_or_ansi(adapter.write_raw, r_cursor, cursor_col)
             adapter.flush()
         else:
             # 兜底：output_adapter 不可用时回退到 sys.__stdout__
-            try:
-                from ..terminal.blessed import get_terminal
-                term = get_terminal()
-                sys.__stdout__.write(term.move_xy(cursor_col - 1, r_cursor - 1))
-            except Exception:
-                _logger.debug("position_cursor Blessed 不可用, 使用 ANSI 回退", exc_info=True)
-                sys.__stdout__.write(f"\033[{r_cursor};{cursor_col}H")
+            _write_cursor_blessed_or_ansi(sys.__stdout__.write, r_cursor, cursor_col)
             sys.__stdout__.flush()
         if self._cursor_tracker is not None:
             self._cursor_tracker.set(r_cursor, cursor_col)

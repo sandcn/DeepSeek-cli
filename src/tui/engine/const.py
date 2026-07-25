@@ -12,63 +12,15 @@ from __future__ import annotations
 
 from enum import IntEnum
 
-import threading
-
 # ── 命令枚举分层导入 ────────────────────────────────────
 from .commands import FrameworkCommand  # noqa: F401 — 重导出供外部使用
 # ChatCommand 由 consumer/chat_commands.py 定义（Layer 1），
 # 不从 engine/const.py（Layer 0）重导出以避免循环依赖。
 # 使用者通过 src.tui.consumer 导入 ChatCommand。
 
-# ── 桥接：注册 tui.core.Style 等效样式到 StyleSheet（供新组件使用） ──
-# 使用 __all__ 约定 + 惰性注册（由 TuiEngine.start() 或 factory 显式调用），
-# 消除模块加载时自动注册的副作用，确保初始化时机可控。
-# 旧代码继续使用 rich.style.Style 常量，新代码使用 StyleSheet.get() 获取 tui.core.Style。
-
-_register_tui_styles_lock = threading.Lock()
-_register_tui_styles_done = False
-
 def register_tui_styles() -> None:
-    """将常用样式注册到 tui.core.StyleSheet。（延迟导入避免模块加载循环）
-
-    幂等设计：多次调用只注册一次。线程安全。
-    """
-    global _register_tui_styles_done
-    if _register_tui_styles_done:
-        return
-    with _register_tui_styles_lock:
-        if _register_tui_styles_done:
-            return
-        from ..core.style import StyleSheet as _SS, Style as _TS
-        _SS.register_many({
-            # style.py 已预注册的样式不再重复注册（dim/bold/italic/underline/bold_dim/dim_italic/tree_branch/tree_leaf）
-            "bold_italic": _TS(bold=True, italic=True),
-            # 语义色（从 THEME 读取色号，兜底硬编码）
-            "error": _TS(fg=196, bold=True),
-            "success": _TS(fg=47),
-            "warn": _TS(fg=220),
-            "info": _TS(fg=45),
-            "muted": _TS(fg=244),
-            "border_breath": _TS(fg=23),
-            # 差异渲染语义色
-            "diff_add": _TS(fg=41),
-            "diff_del": _TS(fg=196),
-            "diff_ctx": _TS(fg=244),
-            # 消息角色图标色
-            "user_icon": _TS(fg=81),
-            "asst_icon": _TS(fg=47),
-            "tool_icon": _TS(fg=220),
-            # 工具输出文本色
-            "tool_txt": _TS(fg=242),
-            # 装饰色
-            "separator": _TS(fg=239),
-            "highlight": _TS(fg=45),
-            "accent": _TS(fg=221),
-            "deco": _TS(fg=242),
-            # 渲染效果语义色
-            "neon": _TS(fg=51, bold=True),
-        })
-        _register_tui_styles_done = True
+    """[已弃用] 样式已在 style.py 模块加载时自动注册。保留为空函数以保持向后兼容。"""
+    pass
 
 # ── 解析进度清除哨兵 ───────────────────────────────────
 _CLEAR_PARSE_LINE = -1

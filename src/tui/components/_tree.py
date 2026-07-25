@@ -215,11 +215,7 @@ class TreeView(TuiComponent):
             str | None: 无 buffer 时返回渲染字符串；有 buffer 时返回 None。
         """
         result = self._build_tree()
-        if buffer is not None:
-            if result:
-                buffer.write(0, 0, result)
-            return None
-        return result
+        return self._finalize_render(result, buffer)
 
     def _build_tree(self) -> str:
         """构建树结构字符串（核心渲染逻辑）。
@@ -370,7 +366,13 @@ class TreeView(TuiComponent):
 
     @staticmethod
     def _is_narrow_mode() -> bool:
-        """检测当前是否为窄屏模式。"""
+        """检测当前是否为窄屏模式。
+
+        专供 TreeView._render_tree() / _render_node() 递归渲染使用。
+        窄屏检测已独立封装为此静态方法，属于良好的封装模式，无需强制改为模板方法。
+        TreeView 继承自 TuiComponent，但 _is_narrow_mode() 用于递归渲染路径，
+        而非 render() 方法的窄屏降级分支，故保持此独立检测方法。
+        """
         try:
             from ..terminal.narrow import is_narrow
             return is_narrow()

@@ -141,15 +141,35 @@ class TuiRenderer(FrameworkRenderer):
     def _do_tool_output(self, text: str) -> None:
         if not self._in_tool_group:
             self._in_tool_group = True
-            # 打开 Panel 顶部边框（带呼吸辉光的圆角框）
-            _frame = AnimatorContext.get_default().frame
-            glow = build_glow_ansi(_frame, 23, 24)
-            # 固定 Panel 宽度：╭ + 10内宽 + ╮ = 12 字符
-            top_line = f"  {glow}╭── 工具调用 ──╮\033[0m"
-            self._adapter.write(Text.from_ansi(top_line))
-            self._record_lines(1)
+            self._render_tool_panel_top()
         block = ToolOutputBlock(text)
         self._record_lines(block.render_to_adapter(self._adapter))
+
+    # ── 工具 Panel 边框辅助方法（消除顶部/底部边框渲染重复） ─────────
+
+    def _render_tool_panel_top(self) -> None:
+        """渲染工具 Panel 顶部边框（带呼吸辉光的圆角框）。
+
+        边框格式：``╭── 工具调用 ──╮``（12 字符宽度）。
+        _in_tool_group 由调用方（_do_tool_output）在调用此方法前设置。
+        """
+        _frame = AnimatorContext.get_default().frame
+        glow = build_glow_ansi(_frame, 23, 24)
+        top_line = f"  {glow}╭── 工具调用 ──╮\033[0m"
+        self._adapter.write(Text.from_ansi(top_line))
+        self._record_lines(1)
+
+    def _render_tool_panel_bottom(self) -> None:
+        """渲染工具 Panel 底部边框（带呼吸辉光的圆角框）。
+
+        边框格式：``╰──────────╯``（12 字符宽度）。
+        _in_tool_group 由调用方（_do_tool_summary）在调用此方法后重置。
+        """
+        _frame = AnimatorContext.get_default().frame
+        glow = build_glow_ansi(_frame, 23, 24)
+        bottom_line = f"  {glow}╰{'─' * 10}╯\033[0m"
+        self._adapter.write(Text.from_ansi(bottom_line))
+        self._record_lines(1)
 
     @register_render_command(RenderCommand.TOOL_SUMMARY, (1, 2))
     def _do_tool_summary(self, successful: tuple, failed: tuple) -> None:
@@ -157,13 +177,7 @@ class TuiRenderer(FrameworkRenderer):
         self._record_lines(block.render_to_adapter(self._adapter))
         if self._in_tool_group:
             self._in_tool_group = False
-            # 关闭 Panel 底部边框（带呼吸辉光的圆角框）
-            _frame = AnimatorContext.get_default().frame
-            glow = build_glow_ansi(_frame, 23, 24)
-            # ★ 底部边框宽度与顶部一致：╰ + 10横线 + ╯ = 12 字符
-            bottom_line = f"  {glow}╰{'─' * 10}╯\033[0m"
-            self._adapter.write(Text.from_ansi(bottom_line))
-            self._record_lines(1)
+            self._render_tool_panel_bottom()
 
     # ── 解析进度 ──────────────────────────────────
 

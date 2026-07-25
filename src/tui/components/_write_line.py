@@ -50,10 +50,13 @@ class WriteLineBlock(TuiComponent):
         border_style = Style(fg=border_color)
         edge_ansi = f"{border_style.to_ansi()}\u2502\033[0m"
 
+        # 窄屏检测缓存 — render_to_adapter() 不是 render() 路径，不强制使用模板方法
+        is_narrow_mode = is_narrow()
+
         if '\033[' in text:
             # ANSI 转义路径
             try:
-                if is_narrow():
+                if is_narrow_mode:
                     adapter.write(Text.from_ansi(text))
                 else:
                     adapter.write(Text.from_ansi(f"  {edge_ansi} {text}"))
@@ -64,7 +67,7 @@ class WriteLineBlock(TuiComponent):
             return _estimate_content_lines(text)
         else:
             # 纯文本路径：通过 render(buffer) 获取内容
-            if is_narrow():
+            if is_narrow_mode:
                 output = text
                 adapter.write_raw(output + "\n")
             else:
@@ -73,7 +76,4 @@ class WriteLineBlock(TuiComponent):
             return _estimate_content_lines(text)
 
     def render(self, buffer: RenderBuffer | None = None) -> str | None:
-        if buffer is not None:
-            buffer.write(0, 0, self.text)
-            return None
-        return self.text
+        return self._finalize_render(self.text, buffer)

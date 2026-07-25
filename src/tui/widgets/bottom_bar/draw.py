@@ -44,8 +44,7 @@ from .theme import (
     get_prompt_breath_color,
     make_sep_gradient,
 )
-from ...core.text_utils import build_gradient_ansi, build_glow_ansi
-from ...core.gradient import gradient_range
+from ...core.effects import build_glow_ansi
 from ...core.theme import THEME as _BOTTOM_THEME
 from .cursor import (
     _expand_tabs,
@@ -302,13 +301,16 @@ def _build_sep_gradient_or_compose(
             composed = EffectRegistry.compose(
                 ["aurora", "shimmer"], frame=breath_frame, length=sep_w
             )
-            return build_gradient_ansi(composed, char=char, suffix_reset=suffix_reset)
+            # 预计算色号列表需自建 ANSI（build_gradient 不支持预计算列表）
+            parts = [f"\033[38;5;{c}m{char}" for c in composed]
+            return "".join(parts) + "\033[0m"
         except Exception:
             _logger.warning(
                 "EffectRegistry.compose() 失败，回退到静态渐变", exc_info=True
             )
-    colors = gradient_range(sep_start, 237, sep_w)
-    return build_gradient_ansi(colors, char=char, suffix_reset=suffix_reset)
+    from ...core.text_utils import build_gradient
+    return build_gradient(sep_w, start_color=sep_start, end_color=237,
+                          char=char, effect="none")
 
 
 def _visible_width(text: str) -> int:

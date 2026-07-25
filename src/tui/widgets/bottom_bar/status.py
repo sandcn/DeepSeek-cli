@@ -10,7 +10,6 @@
 from __future__ import annotations
 
 import logging
-from typing import Optional
 
 from ...animation.animator import AnimatorContext, BreathPalette
 from ...core.text_utils import build_glow_ansi
@@ -26,24 +25,9 @@ from .theme import (
     _COLOR_TOOL_FAIL,
     _COLOR_TOOL_OK,
 )
+from .._snapshot import _get_snapshot
 
 _logger = logging.getLogger(__name__)
-
-
-# ── 模块级 get_token_speed_snapshot 缓存（避免内部方法每次 import） ──
-_TOKEN_SPEED_SNAPSHOT: Optional[callable] = None  # 也可赋值为 False（标记不可用）
-
-
-def _get_snapshot():
-    """获取 get_token_speed_snapshot 函数引用（惰性加载，异常静默）。"""
-    global _TOKEN_SPEED_SNAPSHOT
-    if _TOKEN_SPEED_SNAPSHOT is None:
-        try:
-            from ....api.stats import get_token_speed_snapshot
-            _TOKEN_SPEED_SNAPSHOT = get_token_speed_snapshot
-        except ImportError:
-            _TOKEN_SPEED_SNAPSHOT = False  # 标记不可用
-    return _TOKEN_SPEED_SNAPSHOT if callable(_TOKEN_SPEED_SNAPSHOT) else None
 
 
 class _StatusMixin:

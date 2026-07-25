@@ -8,7 +8,8 @@ from __future__ import annotations
 
 # 向后兼容：确保旧导入路径有效
 from .bar import _BottomBar
-from .status import _StatusMixin, _get_snapshot, _TOKEN_SPEED_SNAPSHOT
+from .status import _StatusMixin
+from .._snapshot import _get_snapshot, _TOKEN_SPEED_SNAPSHOT
 from .selection import run_bottom_bar_selection
 from .completion import _CompletionPopup
 

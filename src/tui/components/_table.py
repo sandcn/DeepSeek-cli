@@ -16,7 +16,6 @@
 from __future__ import annotations
 
 from ..render_buffer import RenderBuffer
-from ..terminal.narrow import is_narrow
 from ..core.style import Style
 from ..core.ansi_utils import visual_width
 from ._base import TuiComponent
@@ -126,6 +125,7 @@ class Table(TuiComponent):
         """渲染完整表格。
 
         窄屏降级：移除边框，减少列间距，仅返回表头 + 行数据。
+        （通过 render_with_narrow_fallback 模板方法）。
 
         Args:
             buffer: 可选的 RenderBuffer 实例。传入时直接写入 buffer。
@@ -133,15 +133,12 @@ class Table(TuiComponent):
         Returns:
             str | None: 无 buffer 时返回渲染字符串；有 buffer 时返回 None。
         """
-        if is_narrow():
-            result = self._render_narrow()
-        else:
-            result = self._render_normal()
-        if buffer is not None:
-            if result:
-                buffer.write(0, 0, result)
-            return None
-        return result
+        result = self.render_with_narrow_fallback(buffer, narrow_method=self._render_narrow)
+        if result is not None:
+            return result
+
+        result = self._render_normal()
+        return self._finalize_render(result, buffer)
 
     # ── 列宽计算 ────────────────────────────────────────────────────────
 

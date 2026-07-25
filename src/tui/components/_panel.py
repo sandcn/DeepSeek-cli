@@ -14,8 +14,7 @@ from __future__ import annotations
 import logging
 
 from ..render_buffer import RenderBuffer
-from ..terminal.narrow import is_narrow
-from ..core.text_utils import truncate
+from ..core.text_utils import truncate, build_title_border
 from ..core.ansi_utils import ansi_wrap as _ansi_wrap, visual_width
 from ._base import TuiComponent
 from ._box import BoxStyle, _BOX_CHARS
@@ -81,15 +80,11 @@ class Panel(TuiComponent):
         Returns:
             str | None: 无 buffer 时返回渲染字符串；有 buffer 时返回 None。
         """
-        if is_narrow():
-            result = self._render_narrow()
-        else:
-            result = self._render_normal()
-        if buffer is not None:
-            if result:
-                buffer.write(0, 0, result)
-            return None
-        return result
+        narrow_result = self.render_with_narrow_fallback(buffer, narrow_method=self._render_narrow)
+        if narrow_result is not None:
+            return narrow_result
+        result = self._render_normal()
+        return self._finalize_render(result, buffer)
 
     # ── 窄屏降级 ────────────────────────────────────────
 
@@ -197,46 +192,11 @@ class Panel(TuiComponent):
         Returns:
             带 ANSI 颜色的顶部边框字符串。
         """
-        has_title = bool(self.title)
-        if not has_title:
-            return f"{border_pre}{tl}{h * (box_width - 2)}{tr}{border_suf}"
-
-        # 标题装饰部分: "[ {title} ]"
-        title_deco = f"[ {self.title} ]"
-        title_vw = visual_width(title_deco)
-
-        fill_width = box_width - 2  # 减去 tl + tr
-
-        if title_vw > fill_width:
-            # 标题超宽：截断，保留括号和空格空间
-            # 括号 + 空格 = 4 个视觉宽度: "[ ", " ]"
-            max_title_vw = fill_width - 4
-            if max_title_vw < 1:
-                # 极窄情况，仅显示截断标题
-                self.title = truncate(self.title, max(1, fill_width - 2))
-                title_deco = self.title
-                title_vw = visual_width(title_deco)
-            else:
-                self.title = truncate(self.title, max_title_vw)
-                title_deco = f"[ {self.title} ]"
-                title_vw = visual_width(title_deco)
-
-        remaining = fill_width - title_vw
-
-        if self.title_align == "left":
-            left_h = 0
-            right_h = remaining
-        elif self.title_align == "right":
-            left_h = remaining
-            right_h = 0
-        else:  # center
-            left_h = remaining // 2
-            right_h = remaining - left_h
-
-        return (
-            f"{border_pre}{tl}{h * left_h}"
-            f"{title_pre}{title_deco}{title_suf}"
-            f"{border_pre}{h * right_h}{tr}{border_suf}"
+        return build_title_border(
+            tl, tr, h, box_width, self.title, self.title_align,
+            pre=border_pre, suf=border_suf,
+            title_pre=title_pre, title_suf=title_suf,
+            width_func=visual_width,
         )
 
     def _build_content_lines(

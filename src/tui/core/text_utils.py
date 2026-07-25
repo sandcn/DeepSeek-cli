@@ -1,5 +1,11 @@
 """纯文本工具函数 — 从 message_editor / _message_display 提取的统一实现。
 
+.. deprecated::
+    ``build_gradient_ansi`` / ``build_gradient_ansi_frame`` / ``build_glow_ansi``
+    将于未来版本移除。新代码请分别使用 ``build_gradient()`` 或
+    从 ``src.tui.core.effects`` 直接导入对应函数。
+
+
 消除 _message_display._truncate() 和 message_editor._truncate_text()
 两个语义相同但签名不同的重复定义，统一为单一 truncate() 函数。
 
@@ -15,6 +21,8 @@
 """
 
 from __future__ import annotations
+
+import warnings
 
 from .style import SEP_COLOR_START, SEP_COLOR_END  # 命名色号常量
 from ..animation.transitions import FadeIn
@@ -64,7 +72,9 @@ def truncate(
 # ── 渐变 ANSI 构建工具（共享模块，避免重复实现） ────────────
 
 def build_gradient_ansi(colors: list[int], char: str = "\u2501", suffix_reset: bool = True) -> str:
-    """从 256 色号列表构建渐变 ANSI 字符串。
+    """[Deprecated] 从 256 色号列表构建渐变 ANSI 字符串。
+
+    Deprecated: 请使用 build_gradient() 代替。将在未来版本中移除。
 
     每个字符使用对应色号，适用于分隔线/进度条等场景。
     色号列表可通过 src.ui.colors.gradient_range() 生成。
@@ -77,6 +87,11 @@ def build_gradient_ansi(colors: list[int], char: str = "\u2501", suffix_reset: b
     Returns:
         带 ANSI 256 色号的渐变字符串。
     """
+    warnings.warn(
+        "build_gradient_ansi is deprecated, use build_gradient() instead",
+        DeprecationWarning,
+        stacklevel=2,
+    )
     parts: list[str] = []
     for c in colors:
         parts.append(f"\033[38;5;{c}m{char}")
@@ -87,7 +102,9 @@ def build_gradient_ansi(colors: list[int], char: str = "\u2501", suffix_reset: b
 
 
 def build_gradient_ansi_frame(colors: list[int], index: int, char: str = "\u2501", suffix_reset: bool = True) -> str:
-    """从颜色列表中取第 index 帧的颜色，构建单色 ANSI 字符串。
+    """[Deprecated] 从颜色列表中取第 index 帧的颜色，构建单色 ANSI 字符串。
+
+    Deprecated: 请使用 build_gradient() 代替。将在未来版本中移除。
 
     适用于呼吸/脉动效果中需要逐帧输出单色字符的场景。
     index 超出范围时取模循环。
@@ -101,6 +118,11 @@ def build_gradient_ansi_frame(colors: list[int], index: int, char: str = "\u2501
     Returns:
         带 ANSI 256 色号的单色字符串。
     """
+    warnings.warn(
+        "build_gradient_ansi_frame is deprecated, use build_gradient() instead",
+        DeprecationWarning,
+        stacklevel=2,
+    )
     if not colors:
         return ""
     color = colors[index % len(colors)]
@@ -108,6 +130,56 @@ def build_gradient_ansi_frame(colors: list[int], index: int, char: str = "\u2501
     if suffix_reset:
         result += "\033[0m"
     return result
+
+
+# ═══════════════════════════════════════════════════════════
+# 渐变构建统一入口（2026-07-26 重构合并）
+# ═══════════════════════════════════════════════════════════
+
+
+def build_gradient(
+    width: int,
+    start_color: int = SEP_COLOR_START,
+    end_color: int = SEP_COLOR_END,
+    char: str = "\u2501",
+    *,
+    effect: str = "none",
+    frame: int = 0,
+) -> str:
+    """构建渐变字符串 — 统一入口。
+
+    合并 4 个渐变构建函数（build_gradient_ansi / build_gradient_ansi_frame /
+    make_sep_gradient / make_sep_gradient_enhanced）为单一入口。
+    通过 effect 参数选择不同效果策略。
+
+    Args:
+        width: 渐变宽度（字符数）。
+        start_color: 起始色号，默认 SEP_COLOR_START (45/亮青)。
+        end_color: 结束色号，默认 SEP_COLOR_END (237/深灰)。
+        char: 填充字符，默认 ━ (U+2501)。
+        effect: 效果模式（"none" / "frame" / "sep" / "wave" / "shimmer"）。
+        frame: 动画帧号（effect 为 "wave"/"shimmer" 时有效）。
+
+    Returns:
+        含 ANSI 256 色号的渐变字符串（含 RESET 后缀）。
+    """
+    from .gradient import gradient_range
+
+    # 计算基础渐变色号列表
+    colors = gradient_range(start_color, end_color, width) if width > 0 else []
+    if not colors:
+        return ""
+
+    if effect == "wave":
+        return build_sep_wave(colors, frame, char)
+    elif effect == "shimmer":
+        return build_sep_shimmer(colors, frame, char)
+    else:
+        # "none", "frame", "sep" — 标准多色渐变（均使用 gradient_range + ANSI 构建）
+        ansi_parts: list[str] = []
+        for c in colors:
+            ansi_parts.append(f"\033[38;5;{c}m{char}")
+        return "".join(ansi_parts) + "\033[0m"
 
 
 def apply_fade_in(text: str, frame: int,
@@ -141,32 +213,6 @@ def apply_fade_in(text: str, frame: int,
     return text
 
 
-def build_fade_in_ansi(fade_frame: int, total_frames: int = 3) -> str:
-    """构建消息入场渐显 ANSI 序列。
-
-    3 帧渐显：帧 0 → 暗灰(238)，帧 1 → 中灰(244)，帧 2+ → RESET（全亮）。
-    总耗时约 300ms（3 帧 × ~100ms）。
-    窄屏时跳过渐显（返回空字符串）。
-    此为独立实现，使用硬编码色号保持向后兼容。
-
-    Args:
-        fade_frame: 当前渐显帧号（0-based），≥ total_frames 时返回空字符串。
-        total_frames: 渐显总帧数，默认 3。
-
-    Returns:
-        ANSI 颜色序列，≥ total_frames 时返回空字符串。
-    """
-    from ..terminal.narrow import is_narrow
-    if is_narrow() or fade_frame >= total_frames:
-        return ""
-    # FADE_COLOR_DARK(238) → FADE_COLOR_MID(244) → RESET 三帧渐亮
-    from .style import FADE_COLOR_DARK, FADE_COLOR_MID
-    FADE_COLORS = [FADE_COLOR_DARK, FADE_COLOR_MID]
-    if fade_frame < len(FADE_COLORS):
-        return f"\033[38;5;{FADE_COLORS[fade_frame]}m"
-    return ""
-
-
 def build_warning_pulse_ansi(
     frame: int,
     pulse_type: str = "error",
@@ -195,11 +241,9 @@ def make_sep_gradient(
     end_color: int = SEP_COLOR_END,
     char: str = "\u2501",
 ) -> str:
-    """生成全宽渐变分隔线（统一工厂）。
+    """生成全宽渐变分隔线（委托至 build_gradient）。
 
-    封装 gradient_range() + build_gradient_ansi() 内部组合。
-    提供统一的渐变分隔线入口，消除 _message_display 和
-    bottom_bar 子包/theme 中的两套独立实现。
+    保留原有函数签名（向后兼容），内部委托至 build_gradient() 统一实现。
 
     Args:
         width: 分隔线字符数。
@@ -210,9 +254,7 @@ def make_sep_gradient(
     Returns:
         带 ANSI 256 色渐变的完整分隔线字符串（含 RESET）。
     """
-    from .gradient import gradient_range
-    colors = gradient_range(start_color, end_color, width)
-    return build_gradient_ansi(colors, char=char)
+    return build_gradient(width, start_color=start_color, end_color=end_color, char=char, effect="none")
 
 
 # ═══════════════════════════════════════════════════════════
@@ -244,7 +286,9 @@ def build_bounce_ansi(frame: int, total_frames: int = 6) -> str:
 def build_sep_wave(
     colors: list[int], frame: int, char: str = "\u2501",
 ) -> str:
-    """构建波动分隔线 ANSI 字符串。
+    """[Deprecated] 构建波动分隔线 ANSI 字符串。
+
+    Deprecated: 请直接从 ``src.tui.core.effects`` 导入 ``build_wave_sep_ansi``。
 
     在渐变基础上叠加正弦波动，使分隔线看起来像"流动的水波"。
     帧号推进时波动沿分隔线方向传播。
@@ -264,7 +308,9 @@ def build_sep_wave(
 def build_sep_shimmer(
     colors: list[int], frame: int, char: str = "\u2501",
 ) -> str:
-    """构建流光扫光分隔线 ANSI 字符串。
+    """[Deprecated] 构建流光扫光分隔线 ANSI 字符串。
+
+    Deprecated: 请直接从 ``src.tui.core.effects`` 导入 ``build_shimmer_sep_ansi``。
 
     一条亮带沿分隔线方向周期性移动，产生"扫光"效果。
     视觉效果比静态渐变更引人注目。
@@ -301,11 +347,13 @@ def build_sparkle_ansi(frame: int, base_color: int = 45, period: int = 6) -> str
 
 
 def build_glow_ansi(frame: int, base_color: int = 45, period: int = 12) -> str:
-    """构建辉光呼吸 ANSI 序列。
+    """[Deprecated] 构建辉光呼吸 ANSI 序列。
+
+    Deprecated: 请直接从 ``src.tui.core.effects`` 导入 ``build_glow_ansi``。
+    将在未来版本中移除。
 
     .. note::
         此函数委托至 ``effects.build_glow_ansi``（从 _wave 子模块重导出）。
-        新代码建议直接从 ``src.tui.core.effects`` 导入以获得更精确的依赖。
 
     Args:
         frame: 当前帧号。
@@ -315,6 +363,11 @@ def build_glow_ansi(frame: int, base_color: int = 45, period: int = 12) -> str:
     Returns:
         ANSI 前景色序列。
     """
+    warnings.warn(
+        "build_glow_ansi is deprecated, import from src.tui.core.effects directly",
+        DeprecationWarning,
+        stacklevel=2,
+    )
     from .effects import build_glow_ansi
     return build_glow_ansi(frame, base_color, period)
 
@@ -335,34 +388,24 @@ def build_left_border_ansi(frame: int, base_color: int = 23, period: int = 24) -
         完整的 ANSI 边框序列（含 RESET），格式：
         ``\033[38;5;{color}m│\033[0m``
     """
+    from .effects import build_glow_ansi  # 直接导入非废弃版
     glow = build_glow_ansi(frame, base_color, period)
     return f"{glow}\u2502\033[0m"
 
 
 def parse_theme_color(theme_key: str) -> int | None:
-    """从 THEME 语义键中提取 256 色号。
+    """从 THEME 语义键提取 256 色号（委托至 Style.parse_theme_color）。
 
-    解析格式如 ``\033[38;5;45m`` 的 ANSI 前景色码，
-    返回色号整数。解析失败返回 None。
-
-    用途：组件需要从 THEME 键值中提取色号用于动效构建时，
-    统一使用此函数避免各组件重复实现 regex 解析逻辑。
+    保持公开接口兼容。
 
     Args:
         theme_key: THEME 字典中的语义键名（如 "border_breath" / "user" / "title"）。
 
     Returns:
-        色号整数（0-255），解析失败或键不存在时返回 None。
+        色号整数（0-255），键不存在或格式不匹配时返回 None。
     """
-    import re
-    from .theme import THEME
-    color_str = THEME.get(theme_key, "")
-    if not color_str:
-        return None
-    match = re.search(r"38;5;(\d+)", color_str)
-    if match:
-        return int(match.group(1))
-    return None
+    from .style import Style
+    return Style.parse_theme_color(theme_key)
 
 
 # ═══════════════════════════════════════════════════════════
@@ -379,10 +422,9 @@ def make_sep_gradient_enhanced(
     effect: str = "none",
     frame: int = 0,
 ) -> str:
-    """增强版渐变分隔线工厂（支持动效）。
+    """增强版渐变分隔线工厂（委托至 build_gradient）。
 
-    在 make_sep_gradient 基础上增加波动/流光等动效，
-    统一管理所有分隔线效果的创建。
+    保留原有函数签名（向后兼容），内部委托至 build_gradient() 统一实现。
 
     Args:
         width: 分隔线字符数。
@@ -395,18 +437,85 @@ def make_sep_gradient_enhanced(
     Returns:
         带 ANSI 渐变的完整分隔线字符串（含 RESET）。
     """
-    from .gradient import gradient_range
-    colors = gradient_range(start_color, end_color, width)
-    if effect == "wave" and frame > 0:
-        return build_sep_wave(colors, frame, char)
-    elif effect == "shimmer" and frame > 0:
-        return build_sep_shimmer(colors, frame, char)
-    return build_gradient_ansi(colors, char)
+    return build_gradient(width, start_color=start_color, end_color=end_color, char=char, effect=effect, frame=frame)
+
+
+def build_title_border(
+    tl: str, tr: str, h: str,
+    box_width: int,
+    title: str,
+    align: str = "left",
+    *,
+    pre: str = "",
+    suf: str = "",
+    title_pre: str = "",
+    title_suf: str = "",
+    width_func=None,
+) -> str:
+    """构建带标题的顶部边框行。
+
+    封装标题左/中/右对齐 + 水平填充的通用算法，
+    供 layout.py Border._build_top_border() 和 _panel.py Panel._build_top_border()
+    统一调用，消除两处重复实现。
+
+    格式: ``{pre}{tl}{h*left}{title_pre}[ {title} ]{title_suf}{pre}{h*right}{tr}{suf}``
+
+    Args:
+        tl: 左上角字符。
+        tr: 右上角字符。
+        h: 水平边框字符。
+        box_width: 边框总宽度。
+        title: 标题文本（空字符串时不显示标题）。
+        align: 标题对齐方式，"left" / "center" / "right"，默认 "left"。
+        pre: 边框 ANSI 颜色前缀（对边框字符生效）。
+        suf: 边框 ANSI 颜色后缀。
+        title_pre: 标题 ANSI 颜色前缀（对标题文本生效）。
+        title_suf: 标题 ANSI 颜色后缀。
+        width_func: 宽度计算函数，接收字符串返回视觉列宽。默认 ``len``，
+                    处理 CJK 字符时传 ``ansi_utils.visual_width``。
+
+    Returns:
+        带 ANSI 颜色的顶部边框字符串。
+    """
+    if width_func is None:
+        width_func = len
+    fill_w = box_width - 2  # 减去 tl + tr
+    if not title:
+        return f"{pre}{tl}{h * fill_w}{tr}{suf}"
+
+    # 标题装饰: "[ title ]"
+    title_deco = f"[ {title} ]"
+    title_vw = width_func(title) + 4  # 括号+空格
+
+    if title_vw > fill_w:
+        max_t = fill_w - 4
+        if max_t < 1:
+            return f"{pre}{tl}{h * fill_w}{tr}{suf}"
+        title_disp = title[:max_t]
+        title_deco = f"[ {title_disp} ]"
+        title_vw = len(title_disp) + 4
+
+    remaining = fill_w - title_vw
+    if align == "left":
+        left_h, right_h = 0, remaining
+    elif align == "right":
+        left_h, right_h = remaining, 0
+    else:  # center
+        left_h = remaining // 2
+        right_h = remaining - left_h
+
+    return (
+        f"{pre}{tl}{h * left_h}"
+        f"{title_pre}{title_deco}{title_suf}"
+        f"{pre}{h * right_h}{tr}{suf}"
+    )
 
 
 __all__ = [
     "truncate", "build_gradient_ansi", "build_gradient_ansi_frame",
-    "build_fade_in_ansi", "build_warning_pulse_ansi", "make_sep_gradient",
+    "build_warning_pulse_ansi", "make_sep_gradient",
+    # 渐变统一入口（2026-07-26 重构）
+    "build_gradient",
     # 增强动效（2026-07-12）
     "build_bounce_ansi", "build_sep_wave", "build_sep_shimmer",
     "build_sparkle_ansi", "build_glow_ansi", "build_left_border_ansi",
@@ -414,4 +523,5 @@ __all__ = [
     "make_sep_gradient_enhanced",
     # FadeIn 动效（从 _base.py 迁移至此）
     "apply_fade_in",
+    "build_title_border",
 ]

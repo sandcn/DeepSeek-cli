@@ -11,7 +11,6 @@ from typing import ClassVar
 
 from ._base import TuiComponent
 from ..render_buffer import RenderBuffer
-from ..terminal.narrow import is_narrow
 from ..core.style import Style
 
 __all__ = [
@@ -157,7 +156,7 @@ class Box(TuiComponent):
     def render(self, buffer: RenderBuffer | None = None) -> str | None:
         """渲染带边框的文本。
 
-        窄屏时降级为仅缩进无边框（调用 is_narrow() 检测）。
+        窄屏时降级为仅缩进无边框（通过 render_with_narrow_fallback 模板方法）。
 
         Args:
             buffer: 可选的 RenderBuffer 实例。传入时直接写入 buffer。
@@ -165,16 +164,12 @@ class Box(TuiComponent):
         Returns:
             str | None: 无 buffer 时返回渲染字符串；有 buffer 时返回 None。
         """
-        if is_narrow():
-            result = self._render_narrow()
-        else:
-            result = self._build_box()
+        result = self.render_with_narrow_fallback(buffer, narrow_method=self._render_narrow)
+        if result is not None:
+            return result
 
-        if buffer is not None:
-            if result:
-                buffer.write(0, 0, result)
-            return None
-        return result
+        result = self._build_box()
+        return self._finalize_render(result, buffer)
 
     def _build_box(self) -> str:
         """构建带边框的文本（核心渲染逻辑）。"""
@@ -193,7 +188,8 @@ class Box(TuiComponent):
         text_width = max(content_width - 2 * pad, 0)
 
         # ── 极光渐变优先于其他渐变/glow 模式 ─────────────
-        if self.aurora_gradient and not is_narrow():
+        # 注：_build_box() 仅在宽屏路径下被调用（由 render() 通过模板方法控制）
+        if self.aurora_gradient:
             return self._render_aurora(lines, chars, content_width, pad, text_width)
 
         # ── 解析渐变参数 ──────────────────────────────────

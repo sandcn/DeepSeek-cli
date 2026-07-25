@@ -13,8 +13,6 @@ from ...core.commands import get_registered_command_names
 from ...core.constants import RESET, BOLD, CYAN_256, DIM_256, BRIGHT_CYAN_256, BRIGHT_GREEN_256
 from ..core.ansi_utils import strip_ansi
 from .selector_base import BaseBottomBarSelector
-from ..core.text_utils import truncate
-from ..terminal.terminal import is_narrow, get_terminal_width
 
 
 # ── 命令描述映射 — 带 Emoji 图标，为用户提供直观的操作提示 ──
@@ -164,11 +162,7 @@ class CommandPalette(BaseBottomBarSelector[str, Optional[str]]):
         highlighted = ''.join(result)
 
         # ── 窄屏截断（高亮之后，确保高亮色码不影响截断宽度计算） ──
-        if is_narrow():
-            max_width = max(get_terminal_width() - 4, 20)
-            highlighted = truncate(highlighted, max_width)
-
-        return highlighted
+        return self._narrow_truncate_display([highlighted], min_width=20)[0]
 
 
 __all__ = ["CommandPalette"]

@@ -4,16 +4,7 @@
 设计意图：
 ---------
 BaseDisplay 是所有显示层的抽象基类，统一核心层与显示层实现接口。
-所有具体的显示实现（如终端 TUI、Web UI、日志输出等）都必须继承该类
-并实现全部抽象方法。
-
-方法分类：
-1. 生命周期控制：start() / stop()        — 显示器的启动与关闭
-2. 工具调用展示：tool_parsing / tool_start / tool_done  — 工具从解析到执行完成的全链路展示
-3. 状态与阶段：update_status / update_model_phase       — 更新工具状态和模型推理阶段
-4. 资源消耗：update_usage                               — 展示 Token 用量信息
-5. 实时指标：update_speed / update_live_input / update_live_output — 实时速率与 Token 流
-6. 代理管理：add_agent / update_agent_status             — 多 Agent 生命周期管理
+子类可按需覆盖以下可选方法。
 """
 
 from __future__ import annotations
@@ -26,10 +17,7 @@ if TYPE_CHECKING:
 
 
 class BaseDisplay(ABC):
-    """显示抽象基类 — 定义核心层显示契约。
-
-    所有显示终端（TUI/Web/日志等）必须继承此类并实现全部抽象方法。
-    """
+    """显示抽象基类，定义核心层显示契约。子类可按需覆盖以下可选方法。"""
 
     def __init__(self, output_target: Optional["IOutputTarget"] = None):
         """初始化显示基类。
@@ -44,22 +32,6 @@ class BaseDisplay(ABC):
         """获取当前输出目标。"""
         return self._output_target
 
-    # ═══════════════════════════════════════════════════════════
-    # 以下方法由子类实现
-    # ═══════════════════════════════════════════════════════════
-    #
-    # start() / stop()
-    # tool_parsing() / tool_start() / tool_done()
-    # update_model_phase() / update_usage()
-    # update_speed() / update_live_input() / update_live_output()
-    # tool_batch_start() / update_parse_info()
-    # update_agent_status() / add_agent()
-    # capture_and_print()
-    #
-    # ═══════════════════════════════════════════════════════════
-
-    # ── BaseDisplay 特有方法 ──────────────────────────────────
-
     @abstractmethod
     def update_status(self, label: str, status: str) -> None:
         """更新状态。
@@ -72,7 +44,20 @@ class BaseDisplay(ABC):
         """
         ...
 
-    # ── Web/CLI 双端收敛方法 ─────────────────────────────
+    def capture_and_print(self, display_func) -> str:
+        """捕获显示函数的输出并打印。
+
+        默认回退到简单字符串捕获。子类可覆盖以提供特定实现。
+
+        Args:
+            display_func: 可调用对象，接收一个列表参数用于追加输出行。
+
+        Returns:
+            str: 捕获的输出字符串。
+        """
+        lines: list[str] = []
+        display_func(lines)
+        return "\n".join(lines)
 
     def capture_and_print_async(self, display_func) -> str:
         """异步捕获显示函数的输出并打印。
@@ -82,25 +67,25 @@ class BaseDisplay(ABC):
         return self.capture_and_print(display_func)
 
     def tool_batch_start(self, label: str, names: list[str]) -> None:
-        """批量工具开始。默认空实现，子类可按需覆盖。"""
+        """批量工具开始。可选覆盖。"""
         pass
 
     def tool_parsing(self, label: str, tool_name: str, arguments: str = "") -> None:
-        """工具解析中。默认空实现，子类可按需覆盖。"""
+        """工具解析中。可选覆盖。"""
         pass
 
     def update_parse_info(self, label: str, tool_name: str, tokens: int, elapsed: float) -> None:
-        """更新解析信息。默认空实现，子类可按需覆盖。"""
+        """更新解析信息。可选覆盖。"""
         pass
 
     def parse_info_done(self, label: str) -> None:
-        """解析信息完成。默认空实现，子类可按需覆盖。"""
+        """解析信息完成。可选覆盖。"""
         pass
 
     def add_agent(self, label: str, description: str, status: str = "running") -> None:
-        """添加代理。默认空实现，子类可按需覆盖。"""
+        """添加代理。可选覆盖。"""
         pass
 
     def update_agent_status(self, label: str, status: str) -> None:
-        """更新代理状态。默认空实现，子类可按需覆盖。"""
+        """更新代理状态。可选覆盖。"""
         pass

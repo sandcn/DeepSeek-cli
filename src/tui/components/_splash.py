@@ -15,7 +15,6 @@ from typing import ClassVar
 
 from ..render_buffer import RenderBuffer
 from ..core.style import Style
-from ..terminal.terminal import is_narrow
 from ._base import TuiComponent
 
 
@@ -51,6 +50,21 @@ class SplashScreen(TuiComponent):
         """重置展示标记，使下次 render() 可再次输出（测试用）。"""
         cls._shown = False
 
+    # ── 窄屏渲染 ──────────────────────────────────────
+
+    def _render_narrow(self, model: str | None = None) -> str:
+        """窄屏降级渲染 — 青色静态样式。"""
+        model_name = model or self._model
+        if not model_name:
+            from ...config import MODEL as _m
+            model_name = _m
+        line1 = f"  {Style(fg=45).apply(f'> {model_name} Chat')}"
+        sep = f"{Style(fg=45).apply('─' * 50)}"
+        line2 = f"  {Style(fg=45).apply('│')}   {sep}"
+        help_text = "/help   Esc中断   / 输前缀按 Tab 补全"
+        line3 = f"  {Style(fg=45).apply('│')}   {Style(fg=242).apply(help_text)}"
+        return f"{line1}\n{line2}\n{line3}"
+
     # ── 核心渲染接口 ──────────────────────────────────
 
     def render(self, buffer: RenderBuffer | None = None) -> str | None:
@@ -76,31 +90,22 @@ class SplashScreen(TuiComponent):
             from ...config import MODEL
             model = MODEL
 
-        # 窄屏：保持现有静态渲染（青色样式）
-        if is_narrow():
-            line1 = f"  {Style(fg=45).apply(f'> {model} Chat')}"
-            sep = f"{Style(fg=45).apply('─' * 50)}"
-            line2 = f"  {Style(fg=45).apply('│')}   {sep}"
-            help_text = "/help   Esc中断   / 输前缀按 Tab 补全"
-            line3 = f"  {Style(fg=45).apply('│')}   {Style(fg=242).apply(help_text)}"
-            result = f"{line1}\n{line2}\n{line3}"
-        else:
-            # 宽屏：彩虹模型名 + 彩虹分隔线 + 灰色帮助信息
-            # ✅ 窄屏降级已确认：上方 is_narrow() 分支处理窄屏静态渲染，
-            #    build_rainbow_ansi 仅在宽屏路径调用，无窄屏兼容问题。
-            from ..core.effects import build_rainbow_ansi
-            line1 = f"  {build_rainbow_ansi(f'> {model} Chat', frame=0)}"
-            sep = build_rainbow_ansi('─' * 50, frame=0)
-            line2 = f"  {Style(fg=45).apply('│')}   {sep}"
-            help_text = "/help   Esc中断   / 输前缀按 Tab 补全"
-            line3 = f"  {Style(fg=45).apply('│')}   {Style(fg=242).apply(help_text)}"
-            result = f"{line1}\n{line2}\n{line3}"
+        # 窄屏降级：使用 render_with_narrow_fallback 模板方法
+        result = self.render_with_narrow_fallback(
+            buffer, narrow_method=self._render_narrow
+        )
+        if result is not None:
+            return result
 
-        if buffer is not None:
-            if result:
-                buffer.write(0, 0, result)
-            return None
-        return result
+        # 宽屏：彩虹模型名 + 彩虹分隔线 + 灰色帮助信息
+        from ..core.effects import build_rainbow_ansi
+        line1 = f"  {build_rainbow_ansi(f'> {model} Chat', frame=0)}"
+        sep = build_rainbow_ansi('─' * 50, frame=0)
+        line2 = f"  {Style(fg=45).apply('│')}   {sep}"
+        help_text = "/help   Esc中断   / 输前缀按 Tab 补全"
+        line3 = f"  {Style(fg=45).apply('│')}   {Style(fg=242).apply(help_text)}"
+        result = f"{line1}\n{line2}\n{line3}"
+        return self._finalize_render(result, buffer)
 
     def render_to_adapter(self, adapter) -> int:
         """通过 OutputAdapter 渲染品牌屏，返回估计行数。

@@ -76,11 +76,7 @@ class Separator(TuiComponent):
             str | None: 无 buffer 时返回渲染字符串；有 buffer 时返回 None。
         """
         result = self._build_separator()
-        if buffer is not None:
-            if result:
-                buffer.write(0, 0, result)
-            return None
-        return result
+        return self._finalize_render(result, buffer)
 
     def _build_separator(self) -> str:
         """构建分隔线字符串（核心渲染逻辑）。"""
@@ -139,28 +135,25 @@ class Separator(TuiComponent):
     # ── 动效策略 ────────────────────────────────────────────────────────
 
     def _render_static(self, colors: list[int]) -> str:
-        """静态渐变分隔线。
-
-        每个字符使用渐变色号中的对应值，无动效。
-        """
-        from ..core.text_utils import build_gradient_ansi
-        return build_gradient_ansi(colors, char=self._char)
+        """静态渐变分隔线 — 每个字符使用渐变色号中的对应值。"""
+        parts = "".join(f"\033[38;5;{c}m{self._char}" for c in colors)
+        return parts + "\033[0m"
 
     def _render_wave(self, colors: list[int]) -> str:
         """波动分隔线（水波流动效果）。
 
         在渐变基础上叠加正弦波动，帧号推进时波浪沿分隔线方向传播。
         """
-        from ..core.text_utils import build_sep_wave
-        return build_sep_wave(colors, self._frame, char=self._char)
+        from ..core.effects import build_wave_sep_ansi
+        return build_wave_sep_ansi(colors, self._frame, char=self._char)
 
     def _render_shimmer(self, colors: list[int]) -> str:
         """流光分隔线（亮带扫光效果）。
 
         一条亮带沿分隔线方向周期性移动，产生扫光视觉效果。
         """
-        from ..core.text_utils import build_sep_shimmer
-        return build_sep_shimmer(colors, self._frame, char=self._char)
+        from ..core.effects import build_shimmer_sep_ansi
+        return build_shimmer_sep_ansi(colors, self._frame, char=self._char)
 
     def _render_sparkle(self, colors: list[int]) -> str:
         """闪烁分隔线（每字符独立闪烁，如星光）。

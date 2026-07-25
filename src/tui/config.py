@@ -13,13 +13,27 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Any
 
 
-__all__: list[str] = ["TuiConfig"]
+__all__: list[str] = ["ConfigBase", "TuiConfig"]
+
+
+class ConfigBase:
+    """Frozen dataclass 工厂方法基类 — 提供 defaults() 和 with_overrides()。"""
+
+    @classmethod
+    def defaults(cls) -> "ConfigBase":
+        """返回默认配置实例。"""
+        return cls()
+
+    def with_overrides(self, **kwargs: Any) -> "ConfigBase":
+        """返回覆盖指定字段的新实例，原实例不变。"""
+        return type(self)(**{**self.__dict__, **kwargs})
 
 
 @dataclass(frozen=True)
-class TuiConfig:
+class TuiConfig(ConfigBase):
     """TUI 统一配置 — 所有可调参数集中管理。
 
     所有属性均为不可变（frozen=True），线程安全。
@@ -57,20 +71,4 @@ class TuiConfig:
     max_recover_attempts: int = 3           # render 线程最大重建次数
     recover_delay: float = 0.5              # 崩溃后重建等待（秒）
 
-    # ── 工厂方法 ──────────────────────────────────────
 
-    @classmethod
-    def defaults(cls) -> TuiConfig:
-        """获取默认配置实例（等价于 TuiConfig()）。"""
-        return cls()
-
-    def with_overrides(self, **kwargs) -> TuiConfig:
-        """基于当前配置创建带覆盖值的新实例。
-
-        Args:
-            **kwargs: 要覆盖的参数名和值。
-
-        Returns:
-            新的 TuiConfig 实例（原始实例不变，frozen 保证不可变性）。
-        """
-        return type(self)(**{**self.__dict__, **kwargs})

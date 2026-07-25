@@ -32,18 +32,12 @@ _BG_RED = '\033[48;5;124m'    # 256色暗红背景（保留，因 Style 不支�
 _BG_GREEN = '\033[48;5;28m'   # 256色柔和绿背景（保留，因 Style 不支持 bg only）
 _BG_OFF = '\033[49m'          # 重置为默认背景色
 
-# 兼容导出：原 src.core.constants 的色素映射为 StyleSheet 语义色
-# RED_256 / GREEN_256 等由 StyleSheet.resolve() 获取
-def _style_sheet_refs() -> None:
-    """确保 StyleSheet 已注册 diff 语义色（模块加载时触发）。"""
-    if not StyleSheet.has("diff_add"):
-        StyleSheet.register("diff_add", Style(fg=41))
-        StyleSheet.register("diff_del", Style(fg=196))
-        StyleSheet.register("diff_ctx", Style(fg=244))
+# 语义色常量引用（从 StyleSheet 获取，兜底硬编码确保任何加载顺序下都有默认值）
+_DIFF_ADD_STYLE: Style = StyleSheet.get("diff_add") or Style(fg=41)
+_DIFF_DEL_STYLE: Style = StyleSheet.get("diff_del") or Style(fg=196)
+_DIFF_CTX_STYLE: Style = StyleSheet.get("diff_ctx") or Style(fg=244)
 
-_style_sheet_refs()
-
-# 向后兼容常量（实际使用 StyleSheet.resolve() 语义色替代）
+# 向后兼容常量（从 StyleSheet.get() 获取语义色，兜底硬编码值）
 # 保留别名供 _render_* 函数中 f-string 使用（已迁移为 Style.apply）
 _RESET_STR = "\033[0m"
 
@@ -211,7 +205,7 @@ def _render_chunk(item, w, lexer_name, output_target):
         output_target: 可选的输出目标
     """
     typ = item[0]
-    dim = StyleSheet.resolve("diff_ctx")
+    dim = _DIFF_CTX_STYLE
     if typ == 'old_file':
         path = item[1][4:] if len(item[1]) > 4 else ""
         _write_diff_line("  " + dim.apply("┌─ " + path), output_target)
@@ -262,16 +256,16 @@ def _render_diff_summary(diff_list, output_target=None):
         return
 
     # 分隔线
-    dim = StyleSheet.resolve("diff_ctx", Style(fg=244))
+    dim = _DIFF_CTX_STYLE
     _write_diff_line("  " + dim.apply("╌" * 40), output_target)
 
     parts = []
     if adds:
-        parts.append(StyleSheet.resolve("diff_add", Style(fg=41)).apply(f"🟢 +{adds}"))
+        parts.append(_DIFF_ADD_STYLE.apply(f"🟢 +{adds}"))
     if dels:
-        parts.append(StyleSheet.resolve("diff_del", Style(fg=196)).apply(f"🔴 -{dels}"))
+        parts.append(_DIFF_DEL_STYLE.apply(f"🔴 -{dels}"))
     if ctx:
-        parts.append(Style(fg=244).apply(f"⚪ {ctx} unchanged"))
+        parts.append(_DIFF_CTX_STYLE.apply(f"⚪ {ctx} unchanged"))
     _write_diff_line("  " + "  ".join(parts), output_target)
 
 
@@ -296,9 +290,9 @@ def render_diff(diff_list, w, line_offset=0, lexer_name='', output_target: Optio
     folded = _fold_context(parsed)
 
     def _flush_pairs(del_buf, add_buf):
-        diff_del = StyleSheet.resolve("diff_del", Style(fg=196))
-        diff_add = StyleSheet.resolve("diff_add", Style(fg=41))
-        dimmer = Style(fg=244)
+        diff_del = _DIFF_DEL_STYLE
+        diff_add = _DIFF_ADD_STYLE
+        dimmer = _DIFF_CTX_STYLE
         for i in range(max(len(del_buf), len(add_buf))):
             if i < len(del_buf) and i < len(add_buf):
                 _, d_line, d_oln, _ = del_buf[i]
@@ -345,7 +339,7 @@ def render_diff(diff_list, w, line_offset=0, lexer_name='', output_target: Optio
                 _hunk_count += 1
                 if _hunk_count > 1:
                     _write_diff_line(
-                        "  " + Style(fg=244).apply("╌" * 40),
+                        "  " + _DIFF_CTX_STYLE.apply("╌" * 40),
                         output_target,
                     )
             _render_chunk(item, w, lexer_name, output_target)
@@ -425,7 +419,7 @@ def show_file_diff(path, old_content, new_content, output_target: Optional["IOut
         lineterm='', n=3
     ))
     if not diff_list:
-        msg = "  " + Style(fg=244).apply("(内容相同，无变化)")
+        msg = "  " + _DIFF_CTX_STYLE.apply("(内容相同，无变化)")
         if output_target is not None:
             output_target.write_line(msg)
         else:

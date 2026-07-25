@@ -26,53 +26,62 @@ from ..layout import (
     Vertical, Horizontal, Padding, Border, Grid, Center,
 )
 
-# ── 延迟导入（避免循环导入） ──
+from .._lazy import LazyLoader
+
+# ── 懒加载模块代理（避免循环导入） ──
 # 循环导入链：terminal.terminal → widgets.lock → widgets.__init__ → ... → terminal.terminal
 # 涉及终端操作的模块（bottom_bar、status_bar、command_palette 等）必须延迟导入，
 # 因为这些模块直接或间接导入 terminal.terminal.is_narrow / get_terminal_width。
 # 当 terminal.terminal 在其模块顶层导入 widgets.lock 时，会触发 widgets.__init__ 加载，
 # 此时若再立即加载这些终端相关模块，就会形成环形依赖。
 
-def _lazy_import(mod_path: str):
-    """导入并缓存到模块命名空间。"""
-    import importlib  # noqa: PLC0415
-    # 绝对路径（含点）视为完整模块路径
-    if '.' in mod_path and not mod_path.startswith('.'):
-        return importlib.import_module(mod_path)
-    return importlib.import_module(mod_path, __package__)
+_selector_base_mod = LazyLoader("src.tui.widgets.selector_base")
+_status_bar_mod = LazyLoader("src.tui.widgets.status_bar")
+_status_bar_widget_mod = LazyLoader("src.tui.widgets.status_bar_widget")
+_command_palette_mod = LazyLoader("src.tui.widgets.command_palette")
+_session_switcher_mod = LazyLoader("src.tui.widgets.session_switcher")
+_bottom_bar_mod = LazyLoader("src.tui.widgets.bottom_bar")
+
+
+# ── 符号到懒加载模块的映射（供 __getattr__ 使用） ──
+
+_SYMBOL_MAP: dict[str, LazyLoader] = {
+    'BaseBottomBarSelector': _selector_base_mod,
+    "StatusBarWidget": _status_bar_widget_mod,
+    'StatusBar': _status_bar_mod,
+    'render_normal': _status_bar_mod,
+    'build_normal_parts': _status_bar_mod,
+    'render_streaming_line': _status_bar_mod,
+    'CommandPalette': _command_palette_mod,
+    'SessionSwitcher': _session_switcher_mod,
+    '_BottomBar': _bottom_bar_mod,
+    '_StatusMixin': _bottom_bar_mod,
+    '_get_snapshot': _bottom_bar_mod,
+    '_TOKEN_SPEED_SNAPSHOT': _bottom_bar_mod,
+    'run_bottom_bar_selection': _bottom_bar_mod,
+    '_CompletionPopup': _bottom_bar_mod,
+}
 
 
 def __getattr__(name: str):
-    _LAZY = {
-        # selector_base（间接导入 terminal.terminal 通过 bottom_bar.selection → terminal.blessed？
-        #   不，blessed 不导入 terminal.terminal，但 bottom_bar/__init__.py 被触发时
-        #   会导入 .bar → .completion → terminal.terminal，形成循环）
-        'BaseBottomBarSelector': ('.selector_base', 'BaseBottomBarSelector'),
-        # status_bar / status_bar_widget（直接导入 terminal.terminal）
-        "StatusBarWidget": ('.status_bar_widget', 'StatusBarWidget'),
-        'StatusBar': ('.status_bar', 'StatusBar'),
-        'render_normal': ('.status_bar', 'render_normal'),
-        'build_normal_parts': ('.status_bar', 'build_normal_parts'),
-        'render_streaming_line': ('.status_bar', 'render_streaming_line'),
-        # command_palette（直接导入 terminal.terminal）
-        'CommandPalette': ('.command_palette', 'CommandPalette'),
-        # session_switcher（直接导入 terminal.terminal）
-        'SessionSwitcher': ('.session_switcher', 'SessionSwitcher'),
-        # bottom_bar（bar.py → completion.py → terminal.terminal，形成循环）
-        '_BottomBar': ('.bottom_bar', '_BottomBar'),
-        '_StatusMixin': ('.bottom_bar', '_StatusMixin'),
-        '_get_snapshot': ('.bottom_bar', '_get_snapshot'),
-        '_TOKEN_SPEED_SNAPSHOT': ('.bottom_bar', '_TOKEN_SPEED_SNAPSHOT'),
-        'run_bottom_bar_selection': ('.bottom_bar', 'run_bottom_bar_selection'),
-        '_CompletionPopup': ('.bottom_bar', '_CompletionPopup'),
-    }
-    if name in _LAZY:
-        mod_path, attr = _LAZY[name]
-        mod = _lazy_import(mod_path)
-        result = getattr(mod, attr)
-        globals()[name] = result
-        return result
+    """模块级 __getattr__ — 从对应懒加载模块延迟解析符号。
+
+    当 ``from src.tui.widgets import XXX`` 执行时，如果 XXX 不是模块的
+    直接属性，Python 会调用此函数，从 _SYMBOL_MAP 中查找对应的
+    LazyLoader 并执行延迟导入。
+
+    Raises:
+        AttributeError: 符号不在 __SYMBOL_MAP__ 中时抛出。
+    """
+    loader = _SYMBOL_MAP.get(name)
+    if loader is not None:
+        return getattr(loader, name)
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
+
+def __dir__() -> list[str]:
+    """支持 dir() 列出所有导出符号。"""
+    return sorted(__all__)
 
 __all__ = [
     # lock

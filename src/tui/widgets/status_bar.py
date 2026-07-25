@@ -21,7 +21,6 @@ import time
 
 from ..core.ansi_utils import strip_ansi, truncate_ansi_sgr
 from ...core.constants import RESET, BOLD, CYAN_256, GREEN_256, DARK_GRAY_256, GRAY_256
-from ..core.gradient import gradient_range
 from ..core.theme import THEME
 from ..core.formatter import format_token_count, format_elapsed, format_speed
 from ..terminal.terminal import is_narrow, get_terminal_width
@@ -29,7 +28,14 @@ from ..state.tui_state_tree import TUIStateTree
 from ..state.session_state import UISessionState
 from ..state.streaming_state import StreamingState
 from ..animation.animator import AnimatorContext
-from ..core.text_utils import build_glow_ansi
+
+from ._status_format import (
+    build_model_label,
+    build_elapsed_text,
+    build_token_text,
+    build_speed_text,
+    build_glow_deco,
+)
 
 # ── 流式状态行空格常量（图标与数值间视觉间距） ──
 _SP = " "  # 单一空格，视觉平衡
@@ -265,35 +271,17 @@ def render_streaming_line(state: UISessionState, streaming: StreamingState) -> s
 
     parts: list[str] = []
     if state.model:
-        # ── 模型名呼吸色（基于 THEME['title'] 主题色，窄屏降级到静态色） ──
-        if is_narrow():
-            model_color = THEME['title']
-        else:
-            import re
-            title_color = THEME['title']
-            title_match = re.search(r"38;5;(\d+)", title_color)
-            if title_match:
-                base = int(title_match.group(1))
-                peak = min(255, base + 20)
-                model_color_num = _sine_ctx.sine_color(base, peak, 6, frame=streaming.pulse_phase)
-                model_color = f"\033[38;5;{model_color_num}m"
-            else:
-                model_color = THEME['title']  # 解析失败降级到静态
-
-        parts.append(f"{CYAN_256}\u00b7{RESET} {BOLD}{model_color}{state.model}{RESET}"
-                     f" \033[38;5;{pulse_color}m{pulse_char}{RESET}")
-    parts.append(f"\033[38;5;214m\u23f1{RESET}{_SP}{format_elapsed(elapsed)}")
-    tok_str = format_token_count(tokens)
-    parts.append(f"{CYAN_256}\u2b21{RESET}{_SP}{CYAN_256}{tok_str}t{RESET}")
-    if speed > 0:
-        parts.append(f"\033[38;5;214m\u26a1{RESET}{_SP}{format_speed(speed)}t/s")
-    else:
-        parts.append(f"{DARK_GRAY_256}\u26a1{RESET}{_SP}{format_speed(speed)}t/s")
-    line = f" {DARK_GRAY_256}\u00b7{RESET} ".join(parts)
+        model_label = build_model_label(state.model, status_active=True, frame=streaming.pulse_phase)
+        parts.append(f"{model_label} \033[38;5;{pulse_color}m{pulse_char}{RESET}")
+    parts.append(build_elapsed_text(elapsed))
+    parts.append(build_token_text(tokens))
+    parts.append(build_speed_text(speed))
+    sep = f" {DARK_GRAY_256}\u00b7{RESET} "
+    line = sep.join(p for p in parts if p)
     # 非窄屏时末尾添加装饰性呼吸点
     if not is_narrow():
-        frame = AnimatorContext.get_default().frame
-        line += f" {build_glow_ansi(frame, 45, 12)}\u00b7{RESET}"
+        frame = _sine_ctx.frame
+        line += f" {build_glow_deco(frame)}"
     # 窄屏截断（复用 _narrow_split_line 消除重复）
     if is_narrow():
         tw = get_terminal_width()

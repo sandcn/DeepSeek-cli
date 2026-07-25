@@ -38,6 +38,7 @@ import logging
 
 from .widget_base import Widget
 from .render_buffer import RenderBuffer
+from .core.text_utils import build_title_border
 
 _logger = logging.getLogger(__name__)
 
@@ -362,19 +363,10 @@ class Border(Widget):
         title_align = self._props.get("title_align", "left")
         bc = self._props.get("border_color")
 
-        # 窄屏降级：无边框，直接渲染子控件
-        try:
-            from .terminal.narrow import is_narrow as _is_narrow
-            if _is_narrow():
-                child = self._children[0] if self._children else (self._children_source[0] if self._children_source else None)
-                if child is not None:
-                    try:
-                        child.render(buffer)
-                    except Exception as e:
-                        _logger.debug("Border narrow: child.render failed: %s", e)
-                return
-        except ImportError:
-            pass
+        # 窄屏降级：无边框，直接渲染子控件（Widget 体系，非 TuiComponent）
+        if self._is_narrow():
+            self._render_narrow(buffer)
+            return
 
         # 获取边框字符集
         chars = self._get_box_chars(style)
@@ -448,37 +440,27 @@ class Border(Widget):
         Returns:
             格式化后的顶部边框字符串。
         """
-        fill_w = box_w - 2  # 减去 tl + tr
-        if not title:
-            return f"{pre}{tl}{h * fill_w}{tr}{suf}"
+        return build_title_border(tl, tr, h, box_w, title, align, pre=pre, suf=suf)
 
-        # 标题装饰: "[ title ]"（不使用 \033[0m 重置，保持与外层 border_color 连贯）
-        title_deco = f"[ {title} ]"
-        # 实际视觉宽度 = len(title) + 4 (括号+空格)
-        title_vw = len(title) + 4
+    @staticmethod
+    def _is_narrow() -> bool:
+        """检测当前是否为窄屏模式（Widget 体系惰性导入）。"""
+        try:
+            from .terminal.narrow import is_narrow
+            return is_narrow()
+        except (ImportError, ModuleNotFoundError):
+            return False
 
-        if title_vw > fill_w:
-            max_t = fill_w - 4
-            if max_t < 1:
-                return f"{pre}{tl}{h * fill_w}{tr}{suf}"
-            title_disp = title[:max_t]
-            title_deco = f"[ {title_disp} ]"
-            title_vw = len(title_disp) + 4
-
-        remaining = fill_w - title_vw
-        if align == "left":
-            left_h, right_h = 0, remaining
-        elif align == "right":
-            left_h, right_h = remaining, 0
-        else:
-            left_h = remaining // 2
-            right_h = remaining - left_h
-
-        return (
-            f"{pre}{tl}{h * left_h}"
-            f"{title_deco}"
-            f"{pre}{h * right_h}{tr}{suf}"
+    def _render_narrow(self, buffer: RenderBuffer) -> None:
+        """窄屏降级：无边框，直接渲染子控件。"""
+        child = self._children[0] if self._children else (
+            self._children_source[0] if self._children_source else None
         )
+        if child is not None:
+            try:
+                child.render(buffer)
+            except Exception as e:
+                _logger.debug("Border narrow: child.render failed: %s", e)
 
     @staticmethod
     def _get_box_chars(style_name: str) -> dict | None:

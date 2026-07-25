@@ -22,12 +22,17 @@ from ...core.sandbox_manager import get_sandbox_manager as _get_sandbox_manager
 from ..terminal.terminal import (get_terminal_width, NARROW_THRESHOLD,
                                  is_narrow, narrow_truncate, narrow_indent,
                                  narrow_sep_width)
-from ..core.text_utils import (truncate, build_gradient_ansi, build_fade_in_ansi,
+from ..core.text_utils import (truncate,
                                build_warning_pulse_ansi, make_sep_gradient,
                                build_bounce_ansi, make_sep_gradient_enhanced,
-                               build_sparkle_ansi, build_glow_ansi)
+                               build_sparkle_ansi)
+from ..core.effects import build_glow_ansi
+from ..animation.transitions import FadeIn as _FadeIn
 from ..animation.animator import AnimatorContext, BreathPalette
 from ..core.effects import sine_color_range
+
+# FadeIn 降级实现（替代已移除的 build_fade_in_ansi）
+_FADE_IN_FALLBACK = _FadeIn(total_frames=3, start_color=238, end_color=244)
 from ..core.output_target import IOutputTarget, TerminalTarget
 
 
@@ -633,7 +638,7 @@ def _display_tool_calls(i: int, icon: str, m: dict, sandbox_text: str, breath_fr
     if breath_frame > 0 and fade_frame > 0:
         _fade_prefix = build_bounce_ansi(fade_frame, 6)
     else:
-        _fade_prefix = build_fade_in_ansi(fade_frame)
+        _fade_prefix = _FADE_IN_FALLBACK.render(fade_frame)
     # 检查工具调用是否含错误
     _has_error = bool(m.get("error")) or any(
         tc.get("error") for tc in m.get("tool_calls", [])
@@ -660,7 +665,7 @@ def _display_user(i: int, icon: str, content: str, sandbox_text: str, breath_fra
     if breath_frame > 0 and fade_frame > 0:
         _fade_prefix = build_bounce_ansi(fade_frame, 6)
     else:
-        _fade_prefix = build_fade_in_ansi(fade_frame)
+        _fade_prefix = _FADE_IN_FALLBACK.render(fade_frame)
     # 使用全宽渐变分隔线（青→深灰，每列一色号），支持呼吸色
     _manager.write_line(f"\n{_make_gradient_sep(breath_frame=breath_frame)}")
     # 窄屏时 _role_tag 自动降级无背景色版本；宽屏时支持呼吸色
@@ -683,7 +688,7 @@ def _display_assistant(
     if breath_frame > 0 and fade_frame > 0:
         _fade_prefix = build_bounce_ansi(fade_frame, 6)
     else:
-        _fade_prefix = build_fade_in_ansi(fade_frame)
+        _fade_prefix = _FADE_IN_FALLBACK.render(fade_frame)
     # 使用全宽渐变分隔线（青→深灰，每列一色号），支持呼吸色
     _manager.write_line(f"\n{_make_gradient_sep(breath_frame=breath_frame)}")
     # 窄屏时 _role_tag 自动降级无背景色版本；宽屏时支持呼吸色

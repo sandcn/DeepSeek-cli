@@ -19,6 +19,7 @@ from .session_state import UISessionState
 from .input_state import InputState
 from .streaming_state import StreamingState
 from .tui_state_tree import TUIStateTree
+from ._collection import ThreadSafeList
 from .agent_state import AgentStateStore, AgentSlot, ToolRecord
 from .render_state import RenderState, ChatRenderState, _ReasoningState, IRenderState
 from .consumer_registry import (
@@ -40,6 +41,7 @@ __all__ = [
     "ChatRenderState",
     "_ReasoningState",
     "IRenderState",
+    "ThreadSafeList",
     "_active_consumer",
     "get_active_chat_ui",
     "_register_consumer",

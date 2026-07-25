@@ -26,6 +26,7 @@ if TYPE_CHECKING:
 
 from ..animation.animator import AnimatorContext
 from ..terminal.terminal import is_narrow
+from ._collection import ThreadSafeList
 
 _logger = logging.getLogger(__name__)
 
@@ -159,8 +160,8 @@ class ChatRenderState(RenderState):
     reasoning: "IncrementalRenderer | None" = None
     content: "IncrementalRenderer | None" = None
     reasoning_state: _ReasoningState = _ReasoningState.INACTIVE
-    captured_reasoning_output: list[str] = field(default_factory=list)
-    captured_content_output: list[str] = field(default_factory=list)
+    captured_reasoning_output: "ThreadSafeList[str]" = field(default_factory=ThreadSafeList)
+    captured_content_output: "ThreadSafeList[str]" = field(default_factory=ThreadSafeList)
 
     def __post_init__(self) -> None:
         """初始化基类的 _shared_adapter 属性。"""

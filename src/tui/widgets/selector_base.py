@@ -23,6 +23,8 @@ from typing import Generic, TypeVar
 
 from .bottom_bar.selection import run_bottom_bar_selection
 from ..core.ttl_cache import TTLCache
+from ..core.text_utils import truncate
+from ..terminal.terminal import is_narrow, get_terminal_width
 
 T = TypeVar("T")
 R = TypeVar("R")
@@ -94,6 +96,21 @@ class BaseBottomBarSelector(Generic[T, R]):
     def _get_initial_idx(self, items: list[T]) -> int:
         """获取初始选中索引（默认 0，即第一项）。"""
         return 0
+
+    def _narrow_truncate_display(self, display: list[str], min_width: int = 20) -> list[str]:
+        """窄屏时截断显示标签，避免终端换行。
+
+        Args:
+            display: 要显示的标签列表。
+            min_width: 最小宽度阈值，默认为 20。
+
+        Returns:
+            截断后的标签列表（非窄屏时原样返回）。
+        """
+        if not is_narrow():
+            return display
+        max_width = max(get_terminal_width() - 4, min_width)
+        return [truncate(label, max_width) for label in display]
 
     # ── 增量过滤与匹配高亮钩子 ──────────────────────────
 

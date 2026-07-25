@@ -59,6 +59,8 @@ _SYMBOL_MAP: dict[str, LazyLoader] = {
     "Widget": _base_mod,
     "_estimate_content_lines": _base_mod,
     "TuiComponent": _base_mod,
+    "StyledMessageBlock": _base_mod,
+    "StreamingBlock": _base_mod,
 
     # ── 聊天域组件（业务相关）────────────────────
     "UserMsgBlock": _user_msg_mod,
@@ -121,6 +123,8 @@ __all__ = [
     # ── 基类 ─────────────────────────────────────
     "Widget",
     "TuiComponent",
+    "StyledMessageBlock",
+    "StreamingBlock",
     "_estimate_content_lines",
 
     # ── 聊天域组件（业务相关）────────────────────

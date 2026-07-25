@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from ._base import TuiComponent
 from ..render_buffer import RenderBuffer
-from ..terminal.narrow import is_narrow, narrow_truncate
+from ..terminal.narrow import narrow_truncate
 
 
 class ProgressBar(TuiComponent):
@@ -71,26 +71,37 @@ class ProgressBar(TuiComponent):
         Returns:
             str | None: 无 buffer 时返回渲染字符串；有 buffer 时返回 None。
         """
+        result = self.render_with_narrow_fallback(buffer, narrow_method=self._render_narrow)
+        if result is not None:
+            return result
+
+        # 宽屏：正常宽度 + 百分比
         result = self._build_progress()
-        if buffer is not None:
-            if result:
-                buffer.write(0, 0, result)
-            return None
-        return result
+        return self._finalize_render(result, buffer)
+
+    def _render_narrow(self) -> str:
+        """窄屏降级：减少宽度，隐藏百分比。"""
+        width = narrow_truncate(30)
+        if width <= 0:
+            return ""
+
+        progress = max(0.0, min(1.0, self._progress))
+        filled_width = round(progress * width)
+        empty_width = width - filled_width
+
+        fill_part = self._build_fill(filled_width)
+        empty_part = self._empty_char * empty_width
+
+        return f"{fill_part}\033[0m{empty_part}"
 
     def _build_progress(self) -> str:
-        """构建进度条字符串（核心渲染逻辑）。
+        """构建进度条字符串（核心渲染逻辑 — 宽屏路径）。
 
         Returns:
             带 ANSI 颜色和渐变的进度条字符串。
         """
-        # 窄屏降级：减少宽度，隐藏百分比
-        if is_narrow():
-            width = narrow_truncate(30)
-            show_pct = False
-        else:
-            width = self._width
-            show_pct = self._show_percent
+        width = self._width
+        show_pct = self._show_percent
 
         # 确保宽度有效
         if width <= 0:

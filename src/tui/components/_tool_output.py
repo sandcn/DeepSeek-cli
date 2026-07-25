@@ -18,7 +18,7 @@ if TYPE_CHECKING:
 
 from rich.text import Text
 
-from ._base import TuiComponent
+from ._base import TuiComponent, _estimate_content_lines
 
 _logger = logging.getLogger(__name__)
 
@@ -44,12 +44,7 @@ class ToolOutputBlock(TuiComponent):
             result = clean
         else:
             result = text
-
-        if buffer is not None:
-            if result:
-                buffer.write(0, 0, result)
-            return None
-        return result
+        return self._finalize_render(result, buffer)
 
     def render_to_adapter(self, adapter: "OutputAdapter") -> int:
         """渲染到 OutputAdapter，返回行数。
@@ -73,8 +68,8 @@ class ToolOutputBlock(TuiComponent):
                 adapter.write_raw(clean)
             if not text.endswith('\r'):
                 adapter.write_raw('\n')
-                return clean.count('\n') + 1
+                return _estimate_content_lines(clean)
             return 0
         else:
             adapter.write(Text.from_ansi(text))
-            return text.count('\n') + 1
+            return _estimate_content_lines(text)
