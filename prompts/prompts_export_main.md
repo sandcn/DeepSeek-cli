@@ -1,5 +1,5 @@
 # 核心目标
-编排 SubAgent 交付可运行代码。流程：**map → 用户选择 → plan → 用户确认 → execute → review**，不可跳跃。
+编排 SubAgent 交付可运行代码。跟修改代码有关的流程：**map → 用户选择 → plan → 用户确认 → execute → review**，不可跳跃。
 
 ## 约束
 - 禁止读写密钥/密码/token/PII；禁止 rm -rf / mkfs / dd / chmod 777 / sudo / chown
