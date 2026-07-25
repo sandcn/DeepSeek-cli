@@ -1,11 +1,12 @@
-"""chat_ui 常量模块 — RenderCommand/FrameworkCommand 枚举、工具函数、ANSI 转义序列。
+"""chat_ui 常量模块 — RenderCommand 枚举、工具函数、ANSI 转义序列。
 
 Layer 0 — 无内部依赖，被所有上层模块引用。
 
-RenderCommand 分层（v1.3+）：
-  - 框架通用命令 → FrameworkCommand（本模块内定义）
+RenderCommand 分层：
+  - 框架通用命令 → FrameworkCommand（RenderCommand 别名，向后兼容）
   - 聊天域命令   → consumer/chat_commands.py  ChatCommand
-  - RenderCommand 保留为向后兼容别名（含全部 20 个枚举值）
+  注：FrameworkCommand 定义为 ``FrameworkCommand = RenderCommand``，
+  不再定义独立枚举类。所有 ``from ... import FrameworkCommand`` 的导入正常工作。
 
 工具函数（v2.0 合并自 engine/utils.py）：
   - _truncate_msg / _cmd_name / _emergency_write
@@ -17,15 +18,6 @@ import sys
 import threading
 from enum import IntEnum
 
-# ── 命令枚举分层导入 ────────────────────────────────────
-# ── 框架通用命令枚举 ────────────────────────────────────
-class FrameworkCommand(IntEnum):
-    """框架层通用渲染命令 — 与聊天域无关，可被任何 TUI 应用复用。"""
-    NOTIFICATION = 11
-    WRITE_LINE = 12
-    ERROR = 16
-    SUBAGENT_FRAME = 18
-    SPLASH = 19
 # ChatCommand 由 consumer/chat_commands.py 定义（Layer 1），
 # 不从 engine/const.py（Layer 0）重导出以避免循环依赖。
 # 使用者通过 src.tui.consumer 导入 ChatCommand。
@@ -112,8 +104,8 @@ class RenderCommand(IntEnum):
     值用于 _RENDER_DISPATCH 的 O(1) 字典查找。
     格式: (cmd_value, *args) — cmd_value 即枚举值。
 
-    分层分类（v1.3+）：
-      [框架通用] — 参见 FrameworkCommand（上方定义）
+    分层分类：
+      [框架通用] — 参见 FrameworkCommand（RenderCommand 别名）
         NOTIFICATION, WRITE_LINE, ERROR, SUBAGENT_FRAME, SPLASH
       [聊天域]   — 参见 ChatCommand（consumer/chat_commands.py）
         REASONING, CONTENT, PHASE_DONE, TOOL_OUTPUT, TOOL_SUMMARY,
@@ -137,6 +129,16 @@ class RenderCommand(IntEnum):
     SUBAGENT_FRAME     = 18  # [框架通用] (18, frame_lines: tuple[str]) — SubAgent 面板帧
     SPLASH             = 19  # [框架通用] (19,) — 启动品牌屏
     MAIN_PHASE         = 20  # [聊天域] (20, phase: str) — 主Agent模型阶段变更
+
+
+# ═══════════════════════════════════════════════════════════
+# FrameworkCommand — 向后兼容别名
+# ═══════════════════════════════════════════════════════════
+# FrameworkCommand 的 5 个枚举值（NOTIFICATION/WRITE_LINE/ERROR/
+# SUBAGENT_FRAME/SPLASH）已直接合并到 RenderCommand 中。
+# 此处保留别名使所有 `from src.tui.engine.const import FrameworkCommand`
+# 的导入正常工作，无需修改引用方代码。
+FrameworkCommand = RenderCommand
 
 
 # ═══════════════════════════════════════════════════════════

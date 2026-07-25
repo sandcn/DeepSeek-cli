@@ -67,8 +67,8 @@ from .theme import (
     _PLACEHOLDER_STREAMING,
     _PLACEHOLDER_TEXT,
     get_prompt_breath_color,
-    make_sep_gradient,
 )
+from ...core.text_utils import make_sep_gradient
 from .cursor import (
     _compute_cursor_visual_pos,
     _expand_tabs,

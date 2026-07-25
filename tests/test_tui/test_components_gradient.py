@@ -29,7 +29,7 @@ class TestErrorBlockGradient:
     def test_render_narrow_uses_gradient_style(self, monkeypatch):
         """窄屏时 ErrorBlock.render() 输出使用 StyleSheet 注册的 error 样式"""
         from src.tui.core.style import StyleSheet as _SS
-        monkeypatch.setattr("src.tui.components._error.is_narrow", lambda: True)
+        monkeypatch.setattr("src.tui.terminal.terminal.is_narrow", lambda: True)
         block = ErrorBlock("test error")
         result = block.render()
         assert isinstance(result, Text)
@@ -81,7 +81,7 @@ class TestErrorBlockGradient:
 
     def test_render_narrow_no_border(self, monkeypatch):
         """窄屏时 ErrorBlock.render() 输出不含边框字符"""
-        monkeypatch.setattr("src.tui.components._error.is_narrow", lambda: True)
+        monkeypatch.setattr("src.tui.terminal.terminal.is_narrow", lambda: True)
         block = ErrorBlock("no border")
         result = block.render()
         ansi_str = str(result)
@@ -102,7 +102,7 @@ class TestErrorBlockGradient:
         Framework.reset_default()
         Framework.get_default().get_animator().tick()  # frame=1
 
-        monkeypatch.setattr("src.tui.components._error.is_narrow", lambda: False)
+        monkeypatch.setattr("src.tui.terminal.terminal.is_narrow", lambda: False)
         monkeypatch.setattr("src.tui.terminal.terminal.is_narrow", lambda: False)
 
         block = ErrorBlock("fadein test")
@@ -124,7 +124,7 @@ class TestErrorBlockGradient:
         AnimatorContext.reset_default()
         Framework.reset_default()
 
-        monkeypatch.setattr("src.tui.components._error.is_narrow", lambda: False)
+        monkeypatch.setattr("src.tui.terminal.terminal.is_narrow", lambda: False)
         monkeypatch.setattr("src.tui.terminal.terminal.is_narrow", lambda: False)
 
         block = ErrorBlock("no fadein")
@@ -139,7 +139,7 @@ class TestErrorBlockGradient:
         from src.tui.animation.animator import AnimatorContext
         from src.tui.framework import Framework
 
-        monkeypatch.setattr("src.tui.components._error.is_narrow", lambda: False)
+        monkeypatch.setattr("src.tui.terminal.terminal.is_narrow", lambda: False)
         monkeypatch.setattr("src.tui.terminal.terminal.is_narrow", lambda: False)
 
         # frame=0: FadeIn 因子=0，所有色号=起始色 238
@@ -172,7 +172,7 @@ class TestErrorBlockGradient:
         Framework.reset_default()
         Framework.get_default().get_animator().tick()  # frame=1
 
-        monkeypatch.setattr("src.tui.components._error.is_narrow", lambda: True)
+        monkeypatch.setattr("src.tui.terminal.terminal.is_narrow", lambda: True)
 
         block = ErrorBlock("narrow fadein")
         result = block.render()
@@ -278,7 +278,7 @@ class TestNotificationBlockGradient:
     def test_render_narrow_uses_static_style(self, monkeypatch):
         """窄屏时 render() 使用 StyleSheet 注册的 neon 样式"""
         from src.tui.core.style import StyleSheet as _SS
-        monkeypatch.setattr("src.tui.components._notification.is_narrow", lambda: True)
+        monkeypatch.setattr("src.tui.terminal.terminal.is_narrow", lambda: True)
         block = NotificationBlock("task completed")
         result = block.render()
         assert isinstance(result, Text)
@@ -324,7 +324,7 @@ class TestNotificationBlockGradient:
         Framework.reset_default()
         Framework.get_default().get_animator().tick()  # frame=1
 
-        monkeypatch.setattr("src.tui.components._notification.is_narrow", lambda: False)
+        monkeypatch.setattr("src.tui.terminal.terminal.is_narrow", lambda: False)
         monkeypatch.setattr("src.tui.terminal.terminal.is_narrow", lambda: False)
 
         block = NotificationBlock("fadein note")
@@ -345,7 +345,7 @@ class TestNotificationBlockGradient:
         AnimatorContext.reset_default()
         Framework.reset_default()
 
-        monkeypatch.setattr("src.tui.components._notification.is_narrow", lambda: False)
+        monkeypatch.setattr("src.tui.terminal.terminal.is_narrow", lambda: False)
         monkeypatch.setattr("src.tui.terminal.terminal.is_narrow", lambda: False)
 
         block = NotificationBlock("no fade note")
@@ -360,7 +360,7 @@ class TestNotificationBlockGradient:
         from src.tui.animation.animator import AnimatorContext
         from src.tui.framework import Framework
 
-        monkeypatch.setattr("src.tui.components._notification.is_narrow", lambda: False)
+        monkeypatch.setattr("src.tui.terminal.terminal.is_narrow", lambda: False)
         monkeypatch.setattr("src.tui.terminal.terminal.is_narrow", lambda: False)
 
         # frame=0
@@ -392,7 +392,7 @@ class TestNotificationBlockGradient:
         Framework.reset_default()
         Framework.get_default().get_animator().tick()  # frame=1
 
-        monkeypatch.setattr("src.tui.components._notification.is_narrow", lambda: True)
+        monkeypatch.setattr("src.tui.terminal.terminal.is_narrow", lambda: True)
 
         block = NotificationBlock("narrow fade")
         result = block.render()
@@ -476,7 +476,7 @@ class TestWriteLineBlockBeautify:
 
     def test_render_narrow_no_border(self, monkeypatch):
         """窄屏时 NotificationBlock.render() 输出不含边框字符"""
-        monkeypatch.setattr("src.tui.components._notification.is_narrow", lambda: True)
+        monkeypatch.setattr("src.tui.terminal.terminal.is_narrow", lambda: True)
         block = NotificationBlock("no border")
         result = block.render()
         ansi_str = str(result)

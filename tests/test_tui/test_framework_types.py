@@ -15,7 +15,7 @@ from typing import Protocol
 
 import pytest
 
-from src.tui.framework_types import (
+from src.tui.framework import (
     AnimatorContextProtocol,
     ComponentRegistryProtocol,
     WidgetTreeProtocol,
@@ -46,11 +46,17 @@ class TestProtocolDefinitions:
         assert issubclass(WidgetTreeProtocol, Protocol)
 
     def test_all_protocols_importable(self):
-        """所有 Protocol 在 __all__ 中正确暴露。"""
-        from src.tui.framework_types import __all__ as all_names
-        assert "ComponentRegistryProtocol" in all_names
-        assert "AnimatorContextProtocol" in all_names
-        assert "WidgetTreeProtocol" in all_names
+        """所有 Protocol 可从 framework 正确导入。"""
+        # Protocol 类现在定义在 framework.py 中（非 __all__）
+        # 验证它们可直接从 src.tui.framework 导入
+        from src.tui.framework import (
+            ComponentRegistryProtocol as CRP,
+            AnimatorContextProtocol as ACP,
+            WidgetTreeProtocol as WTP,
+        )
+        assert CRP is ComponentRegistryProtocol
+        assert ACP is AnimatorContextProtocol
+        assert WTP is WidgetTreeProtocol
 
 
 # ════════════════════════════════════════════════════════

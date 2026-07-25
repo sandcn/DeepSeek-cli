@@ -25,7 +25,6 @@
   │
   render_buffer/ — 渲染缓冲区：RenderBuffer(二维字符网格，支持叠加合成)
   │
-  layout/     — 声明式布局：Vertical/Horizontal/Padding/Border/Grid/Center
   │
   components/ — 通用框架组件（可独立复用）:
   │             Box/RoundedBox/DoubleBox, Panel, Separator, Spinner, ProgressBar,
@@ -49,7 +48,7 @@
   │
   engine/     — 渲染引擎层：TuiEngine(render线程+命令队列), TuiRenderer(命令分发),
   │             EventDispatcher(事件→命令映射), RenderCommand(命令枚举),
-  │             commands.py(FrameworkCommand框架通用命令),
+  │             const.py(FrameworkCommand别名),
   │             renderer_base.py(FrameworkRenderer框架通用渲染器基类)
   │
   consumer/   — 消费者 API 层：ChatUIConsumer(生命周期协调), 工厂装配,
@@ -145,18 +144,6 @@ from .consumer.chat_commands import ChatCommand
 from .state.render_state import RenderState, ChatRenderState
 
 # ═══════════════════════════════════════════════════════════
-# 布局控件
-# ═══════════════════════════════════════════════════════════
-from .layout import (
-    Vertical,
-    Horizontal,
-    Padding,
-    Border,
-    Grid,
-    Center,
-)
-
-# ═══════════════════════════════════════════════════════════
 # 通用框架组件 — 延迟导入（避免反向依赖 src.config → tui）
 # ═══════════════════════════════════════════════════════════
 from ._lazy import LazyLoader
@@ -224,13 +211,6 @@ __all__ = [
     # 状态层
     "RenderState",
     "ChatRenderState",
-    # 布局
-    "Vertical",
-    "Horizontal",
-    "Padding",
-    "Border",
-    "Grid",
-    "Center",
     # 通用组件（框架层）
     "Box",
     "BoxStyle",

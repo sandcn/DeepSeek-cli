@@ -19,8 +19,7 @@ if TYPE_CHECKING:
 from rich.text import Text
 
 from ..animation.animator import AnimatorContext
-from ..core.style import Style, StyleSheet
-from ..core.effects import sine_color
+from ..core.text_utils import build_border_breath_ansi
 from ..terminal.terminal import is_narrow
 from ._base import TuiComponent, _estimate_content_lines
 
@@ -43,12 +42,8 @@ class WriteLineBlock(TuiComponent):
         """
         text = self.text
         frame = AnimatorContext.get_default().frame
-        # 构建左边缘呼吸边框
-        border_breath = StyleSheet.resolve("border_breath", Style(fg=23))
-        border_color = sine_color(frame, border_breath.fg if border_breath.fg is not None else 23,
-                                   min(255, (border_breath.fg if border_breath.fg is not None else 23) + 2), 24)
-        border_style = Style(fg=border_color)
-        edge_ansi = f"{border_style.to_ansi()}\u2502\033[0m"
+        # 构建左边缘呼吸边框（统一使用 build_border_breath_ansi）
+        edge_ansi = build_border_breath_ansi(frame, 23, 24)
 
         if '\033[' in text:
             # ANSI 转义路径

@@ -5,17 +5,8 @@
 
 from __future__ import annotations
 
-import unicodedata
-from typing import TYPE_CHECKING
-
-if TYPE_CHECKING:
-    from ...renderer.output import OutputAdapter
-
-from rich.text import Text
-
 from ..animation.animator import AnimatorContext
-from ..core.style import Style
-from ..core.text_utils import build_left_border_ansi, build_warning_pulse_ansi
+from ..core.text_utils import build_border_breath_ansi, build_warning_pulse_ansi
 from ..render_buffer import RenderBuffer
 from ._base import TuiComponent
 
@@ -38,7 +29,7 @@ class ToolSummaryBlock(TuiComponent):
 
         if failed:
             frame = AnimatorContext.get_default().frame
-            edge_ansi = build_left_border_ansi(frame, 23, 24)
+            edge_ansi = build_border_breath_ansi(frame, 23, 24)
             names = ", ".join(n for n, _ in failed)
             pulse_ansi = build_warning_pulse_ansi(
                 AnimatorContext.get_default().breath_frame, "error",
@@ -66,7 +57,7 @@ class ToolSummaryBlock(TuiComponent):
                 lines.append(f"  {edge_ansi}   ... 及其他 {len(failed) - 3} 个")
         elif self.successful:
             frame = AnimatorContext.get_default().frame
-            edge_ansi = build_left_border_ansi(frame, 23, 24)
+            edge_ansi = build_border_breath_ansi(frame, 23, 24)
             lines.append(f"  {edge_ansi}   · {len(self.successful)}工具完成")
 
         result = "\n".join(lines)
@@ -75,30 +66,6 @@ class ToolSummaryBlock(TuiComponent):
                 buffer.write(0, 0, result)
             return None
         return result
-
-    def render_to_adapter(self, adapter: "OutputAdapter") -> int:
-        """渲染到 OutputAdapter，返回行数。
-
-        委托 render(buffer) 获取渲染内容，再通过 Text.from_ansi() 转换为 Rich Text 输出。
-        保持与原有 Rich 样式化输出的行为一致。
-        """
-        try:
-            import shutil
-            term_w = shutil.get_terminal_size().columns
-        except Exception:
-            term_w = 80
-        buf = RenderBuffer(max(term_w, 80), 100)
-        # 委托 render(buffer) 获取渲染内容
-        self.render(buf)
-        output = buf.render()
-        if not output:
-            return 0
-        # 通过 Text.from_ansi 转换为 Rich Text 输出（保持向后兼容）
-        try:
-            adapter.write(Text.from_ansi(output))
-        except Exception:
-            adapter.write(output)
-        return max(1, output.count('\n') + 1)
 
     def _normalize_failed(self) -> tuple:
         safe = []

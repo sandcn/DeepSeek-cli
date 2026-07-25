@@ -16,7 +16,7 @@ from ..terminal.terminal import (get_terminal_width, NARROW_THRESHOLD,
                                  narrow_sep_width)
 from ..core.text_utils import (truncate, build_gradient_ansi, build_fade_in_ansi,
                                build_warning_pulse_ansi, make_sep_gradient,
-                               build_bounce_ansi, make_sep_gradient_enhanced,
+                               build_bounce_ansi,
                                build_sparkle_ansi, build_glow_ansi)
 from ..animation.animator import AnimatorContext, BreathPalette
 from ..core.effects import sine_color_range
@@ -86,7 +86,7 @@ def _make_gradient_sep(start_color: int = 45, end_color: int = 237, steps: int =
         )
     if breath_frame > 0 and not is_narrow():
         start_color = BreathPalette.get_color("sep_msg", breath_frame)
-        return "  " + make_sep_gradient_enhanced(steps, start_color=start_color, end_color=end_color, effect="wave", frame=breath_frame)
+        return "  " + make_sep_gradient(steps, start_color=start_color, end_color=end_color, effect="wave", frame=breath_frame)
     return "  " + make_sep_gradient(steps, start_color=start_color, end_color=end_color)
 
 

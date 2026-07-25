@@ -42,9 +42,8 @@ from .theme import (
     _PLACEHOLDER_STREAMING,
     _PLACEHOLDER_TEXT,
     get_prompt_breath_color,
-    make_sep_gradient,
 )
-from ...core.text_utils import build_gradient_ansi, build_glow_ansi
+from ...core.text_utils import build_gradient_ansi, build_glow_ansi, make_sep_gradient
 from ...core.gradient import gradient_range
 from ...core.theme import THEME as _BOTTOM_THEME
 from .cursor import (
