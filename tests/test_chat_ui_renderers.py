@@ -101,32 +101,32 @@ class TestTruncateMsg:
 
     def test_short_msg_unchanged(self):
         """短消息不截断"""
-        from src.tui.engine.const import _truncate_msg
+        from src.tui.engine.utils import _truncate_msg
         result = _truncate_msg("hello", 10)
         assert result == "hello"
 
     def test_exact_length_unchanged(self):
         """长度刚好等于 max_len → 不截断"""
-        from src.tui.engine.const import _truncate_msg
+        from src.tui.engine.utils import _truncate_msg
         result = _truncate_msg("12345", 5)
         assert result == "12345"
 
     def test_long_msg_truncated(self):
         """超长消息截断并追加 ..."""
-        from src.tui.engine.const import _truncate_msg
+        from src.tui.engine.utils import _truncate_msg
         result = _truncate_msg("x" * 100, 10)
         assert result == "x" * 10 + "..."
         assert len(result) == 13
 
     def test_empty_msg_empty_result(self):
         """空消息 → 空字符串"""
-        from src.tui.engine.const import _truncate_msg
+        from src.tui.engine.utils import _truncate_msg
         result = _truncate_msg("", 10)
         assert result == ""
 
     def test_max_len_zero(self):
         """max_len=0 → 全部截断"""
-        from src.tui.engine.const import _truncate_msg
+        from src.tui.engine.utils import _truncate_msg
         result = _truncate_msg("hello", 0)
         assert result == "..."
 

@@ -130,6 +130,17 @@ _PLACEHOLDER_COMPACT = "/help · Ctrl+N · Tab"  # 补全弹窗可见时使用
 _PLACEHOLDER_STREAMING = "AI 生成中..."   # 流式输出期间使用
 
 
+# ── 全宽渐变分隔线 ─────────────────────────────────
+def make_sep_gradient(width: int, start_color: int = 45, char: str = "\u2501") -> str:
+    """生成全宽渐变分隔线（青色→深灰）。
+
+    委托到 _text_utils.make_sep_gradient() 实现，
+    保持向后兼容。
+    """
+    from ...core.text_utils import make_sep_gradient as _impl
+    return _impl(width, start_color=start_color, char=char)
+
+
 # ── 提示符呼吸动画（第四阶段美化） ──────────────────────────
 _PROMPT_BREATH_COLORS: list[int] = gradient_range(32, 81, 6) + gradient_range(81, 32, 6)
 """提示符呼吸色号：暗青(32)↔亮青(81) 对称呼吸，12 帧。"""

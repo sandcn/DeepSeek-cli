@@ -11,11 +11,11 @@ ChatUI 消费者层，管理事件订阅、渲染管线和底部栏。
 
 Layer 层次：位于 TUI 架构顶层，依赖 events/state/components/pipeline/widgets 层。
 
-配置与命令分层：
+配置与命令分层（v1.3+）：
   - ChatConfig        — 聊天域配置（main_label/main_source/thinking_header/max_output_len）
-  - FrameworkCommand  — 框架通用命令别名（从 engine.const 重导出，RenderCommand 别名）
+  - FrameworkCommand  — 框架通用命令（从 engine.commands 重导出）
   - ChatCommand       — 聊天域命令（本模块定义）
-  - RenderCommand     — 全部 20 个渲染命令枚举
+  - RenderCommand     — 向后兼容别名（全部 20 个命令）
 """
 
 from __future__ import annotations
@@ -29,8 +29,8 @@ _error_handler_lock = threading.Lock()
 # ── 命令枚举导出 ──────────────────────────────────
 from ..engine.const import (
     RenderCommand,
-    FrameworkCommand,
 )
+from ..engine.commands import FrameworkCommand  # noqa: F401 — 重导出供外部使用
 from .chat_commands import ChatCommand  # noqa: F401 — 聊天域命令枚举
 
 # ── 配置导出 ──────────────────────────────────────

@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from ._base import TuiComponent
 from ..render_buffer import RenderBuffer
-from ..terminal.terminal import is_narrow, narrow_truncate
+from ..terminal.narrow import is_narrow, narrow_truncate
 
 
 class ProgressBar(TuiComponent):

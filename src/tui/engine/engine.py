@@ -25,9 +25,9 @@ from .const import (
     _ANSI_RED, _ANSI_RESET,
 )
 
-from .const import _cmd_name, _emergency_write
+from .utils import _cmd_name, _emergency_write
 
-from ..widgets.lock import _try_acquire_output_lock
+from .lock import _try_acquire_output_lock
 
 _logger = logging.getLogger(__name__)
 

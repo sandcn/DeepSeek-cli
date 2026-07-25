@@ -16,7 +16,7 @@
   │             capabilities(终端能力检测: TrueColor/256色/UTF-8/Emoji)
   │
   animation/  — 动画基础设施层：AnimatorContext(动画时钟管理器), BreathPalette(呼吸调色板),
-  │             composer(动画合成器), transitions(过渡效果:FadeIn/FadeOut)
+  │             composer(动画合成器), transitions(过渡效果:FadeIn/FadeOut/Slide/Typewriter)
   │
   events/     — 事件总线层：DisplayEventBus(显示层事件总线), event_types(21种事件类型),
   │             adapters(事件适配器), consumers(事件消费者)
@@ -25,10 +25,11 @@
   │
   render_buffer/ — 渲染缓冲区：RenderBuffer(二维字符网格，支持叠加合成)
   │
+  layout/     — 声明式布局：Vertical/Horizontal/Padding/Border/Grid/Center
   │
   components/ — 通用框架组件（可独立复用）:
   │             Box/RoundedBox/DoubleBox, Panel, Separator, Spinner, ProgressBar,
-  │             Table,
+  │             Table, TreeView/TreeNode, parse_markup/render_markup,
   │             CostDisplayComponent, SplashScreen
   │
   framework   — 框架入口：Framework 单例、create_component/create_widget、
@@ -48,7 +49,7 @@
   │
   engine/     — 渲染引擎层：TuiEngine(render线程+命令队列), TuiRenderer(命令分发),
   │             EventDispatcher(事件→命令映射), RenderCommand(命令枚举),
-  │             const.py(FrameworkCommand别名),
+  │             commands.py(FrameworkCommand框架通用命令),
   │             renderer_base.py(FrameworkRenderer框架通用渲染器基类)
   │
   consumer/   — 消费者 API 层：ChatUIConsumer(生命周期协调), 工厂装配,
@@ -144,6 +145,18 @@ from .consumer.chat_commands import ChatCommand
 from .state.render_state import RenderState, ChatRenderState
 
 # ═══════════════════════════════════════════════════════════
+# 布局控件
+# ═══════════════════════════════════════════════════════════
+from .layout import (
+    Vertical,
+    Horizontal,
+    Padding,
+    Border,
+    Grid,
+    Center,
+)
+
+# ═══════════════════════════════════════════════════════════
 # 通用框架组件 — 延迟导入（避免反向依赖 src.config → tui）
 # ═══════════════════════════════════════════════════════════
 from ._lazy import LazyLoader
@@ -155,6 +168,11 @@ _components_mod = LazyLoader("src.tui.components")
 # ═══════════════════════════════════════════════════════════
 from .components._base import apply_fade_in
 
+# ═══════════════════════════════════════════════════════════
+# 测试工具
+# ═══════════════════════════════════════════════════════════
+from .testing import MockConsumer, MockTerminal
+
 # ── 组件延迟导入映射 ────────────────────────────────────
 # 以下符号通过 __getattr__ 从懒加载模块获取，
 # 避免 eager import 触发循环依赖链
@@ -163,11 +181,18 @@ from .components._base import apply_fade_in
 _COMPONENT_SYMBOLS: set[str] = {
     "Box",
     "BoxStyle",
+    "RoundedBox",
+    "DoubleBox",
     "Panel",
     "Separator",
     "Spinner",
     "ProgressBar",
     "Table",
+    "TreeView",
+    "TreeNode",
+    "parse_markup",
+    "render_markup",
+    "CostDisplayComponent",
     "SplashScreen",
 }
 
@@ -211,15 +236,32 @@ __all__ = [
     # 状态层
     "RenderState",
     "ChatRenderState",
+    # 布局
+    "Vertical",
+    "Horizontal",
+    "Padding",
+    "Border",
+    "Grid",
+    "Center",
     # 通用组件（框架层）
     "Box",
     "BoxStyle",
+    "RoundedBox",
+    "DoubleBox",
     "Panel",
     "Separator",
     "Spinner",
     "ProgressBar",
     "Table",
+    "TreeView",
+    "TreeNode",
+    "parse_markup",
+    "render_markup",
+    "CostDisplayComponent",
     "SplashScreen",
     # 动画
     "apply_fade_in",
+    # 测试
+    "MockConsumer",
+    "MockTerminal",
 ]

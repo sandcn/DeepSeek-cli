@@ -14,15 +14,13 @@ from __future__ import annotations
 
 import pytest
 
-from src.tui.framework import (
+from src.tui.framework import Framework, get_animator, get_framework
+from src.tui.framework_delegates import (
     AnimationManager,
     ComponentFactory,
     ConfigManager,
     EventBusManager,
-    Framework,
     WidgetTreeManager,
-    get_animator,
-    get_framework,
 )
 from src.tui.animation.animator import AnimatorContext
 from src.tui.config import TuiConfig

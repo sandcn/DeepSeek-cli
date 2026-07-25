@@ -133,19 +133,9 @@ def _register_session_handlers(
     loop_state: dict | None = None,
     chat_ui=None,
 ) -> None:
-    """注册会话生命周期回调（round_start / round_end）
-
-    通过 loop_state 缓存回调引用，恢复调用时先 off 旧回调再 on 新回调，
-    防止 CoreEventBus 内部 append 导致重复注册累加。
-    """
+    """注册会话生命周期回调（round_start / round_end）"""
     if loop_state is None:
         loop_state = {}
     callbacks = _make_round_callbacks(session, monitor, loop_state, chat_ui)
-    # 清除旧回调（如果存在），防止重复注册累加
-    old_callbacks = loop_state.get("_registered_callbacks")
-    if old_callbacks is not None:
-        session.off("round_start", old_callbacks["on_start"])
-        session.off("round_end", old_callbacks["on_end"])
-    loop_state["_registered_callbacks"] = callbacks
     session.on("round_start", callbacks["on_start"])
     session.on("round_end", callbacks["on_end"])

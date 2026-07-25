@@ -1,23 +1,21 @@
-"""chat_ui 常量模块 — RenderCommand 枚举、工具函数、ANSI 转义序列。
+"""chat_ui 常量模块 — RenderCommand 枚举、解析哨兵、ANSI 转义序列。
 
 Layer 0 — 无内部依赖，被所有上层模块引用。
 
-RenderCommand 分层：
-  - 框架通用命令 → FrameworkCommand（RenderCommand 别名，向后兼容）
+RenderCommand 分层（v1.3+）：
+  - 框架通用命令 → engine/commands.py  FrameworkCommand
   - 聊天域命令   → consumer/chat_commands.py  ChatCommand
-  注：FrameworkCommand 定义为 ``FrameworkCommand = RenderCommand``，
-  不再定义独立枚举类。所有 ``from ... import FrameworkCommand`` 的导入正常工作。
-
-工具函数（v2.0 合并自 engine/utils.py）：
-  - _truncate_msg / _cmd_name / _emergency_write
+  - RenderCommand 保留为向后兼容别名（含全部 20 个枚举值）
 """
 
 from __future__ import annotations
 
-import sys
-import threading
 from enum import IntEnum
 
+import threading
+
+# ── 命令枚举分层导入 ────────────────────────────────────
+from .commands import FrameworkCommand  # noqa: F401 — 重导出供外部使用
 # ChatCommand 由 consumer/chat_commands.py 定义（Layer 1），
 # 不从 engine/const.py（Layer 0）重导出以避免循环依赖。
 # 使用者通过 src.tui.consumer 导入 ChatCommand。
@@ -104,8 +102,8 @@ class RenderCommand(IntEnum):
     值用于 _RENDER_DISPATCH 的 O(1) 字典查找。
     格式: (cmd_value, *args) — cmd_value 即枚举值。
 
-    分层分类：
-      [框架通用] — 参见 FrameworkCommand（RenderCommand 别名）
+    分层分类（v1.3+）：
+      [框架通用] — 参见 FrameworkCommand（engine/commands.py）
         NOTIFICATION, WRITE_LINE, ERROR, SUBAGENT_FRAME, SPLASH
       [聊天域]   — 参见 ChatCommand（consumer/chat_commands.py）
         REASONING, CONTENT, PHASE_DONE, TOOL_OUTPUT, TOOL_SUMMARY,
@@ -129,65 +127,3 @@ class RenderCommand(IntEnum):
     SUBAGENT_FRAME     = 18  # [框架通用] (18, frame_lines: tuple[str]) — SubAgent 面板帧
     SPLASH             = 19  # [框架通用] (19,) — 启动品牌屏
     MAIN_PHASE         = 20  # [聊天域] (20, phase: str) — 主Agent模型阶段变更
-
-
-# ═══════════════════════════════════════════════════════════
-# FrameworkCommand — 向后兼容别名
-# ═══════════════════════════════════════════════════════════
-# FrameworkCommand 的 5 个枚举值（NOTIFICATION/WRITE_LINE/ERROR/
-# SUBAGENT_FRAME/SPLASH）已直接合并到 RenderCommand 中。
-# 此处保留别名使所有 `from src.tui.engine.const import FrameworkCommand`
-# 的导入正常工作，无需修改引用方代码。
-FrameworkCommand = RenderCommand
-
-
-# ═══════════════════════════════════════════════════════════
-# 工具函数（v2.0 合并自 engine/utils.py）
-# ═══════════════════════════════════════════════════════════
-
-def _truncate_msg(msg: str, max_len: int) -> str:
-    """截断超长消息，追加"..."标记（尾部安全）。
-
-    若 `msg` 长度超过 `max_len`，取前 `max_len` 字符并追加 "..."。
-    若未超过，原样返回。
-    """
-    if len(msg) > max_len:
-        return msg[:max_len] + "..."
-    return msg
-
-
-def _cmd_name(cid: int) -> str:
-    """将 RenderCommand 枚举值转为可读命令名。
-
-    返回枚举名的 `name` 属性（如 0→"REASONING"），
-    未知 ID 时回退为字符串格式的整数值（如 "255"）。
-    """
-    try:
-        return RenderCommand(cid).name
-    except ValueError:
-        return str(cid)
-
-
-def _emergency_write(text: str, stream: str = "stdout") -> None:
-    """紧急输出 — 绕过 OutputAdapter 直写终端。
-
-    此函数有意使用 sys.__stdout__ / sys.__stderr__ 而非 OutputAdapter，
-    这是设计上的刻意选择（NOT a bug）：
-      - 这是紧急回退路径，绕过所有渲染管线（OutputAdapter / Rich / render_lock）
-      - 用于 render 线程崩溃、队列满等无法通过正常路径输出终端的场景
-      - 若经由 OutputAdapter 写入，在 render 线程已崩溃时可能死锁或丢失消息
-
-    仅在以下场景使用：
-      - render 线程崩溃通知（_handle_render_crash → _emergency_write）
-      - 队列满降级通知（finally 排空丢弃计数）
-      不适用于正常渲染路径。
-
-    不持有 output_lock，不经过 Rich/OutputAdapter 处理。
-
-    Args:
-        text: 要写入的文本。
-        stream: 输出流，'stdout' 或 'stderr'。
-    """
-    f = sys.__stdout__ if stream == "stdout" else sys.__stderr__
-    f.write(text)
-    f.flush()

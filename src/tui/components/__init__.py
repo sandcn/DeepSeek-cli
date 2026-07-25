@@ -11,7 +11,8 @@
   _error.py           — ErrorBlock
   _notification.py    — NotificationBlock
   _write_line.py      — WriteLineBlock
-  （已移除的死组件：StatusLine / InputLine / CompletionPopup / SelectionMenu / TreeView / parse_markup / render_markup，2026-07-24~25 清理）
+  _tree.py            — TreeView（层级结构展示） + TreeNode
+  （已移除的死组件：StatusLine / InputLine / CompletionPopup / SelectionMenu，2026-07-24 清理）
 
 兼容 re-export：BottomBarProtocol（定义在 _protocols.py）
 
@@ -44,6 +45,8 @@ _separator_mod = LazyLoader("src.tui.components._separator")
 _spinner_mod = LazyLoader("src.tui.components._spinner")
 _progress_mod = LazyLoader("src.tui.components._progress")
 _table_mod = LazyLoader("src.tui.components._table")
+_markup_mod = LazyLoader("src.tui.components._markup")
+_tree_mod = LazyLoader("src.tui.components._tree")
 _protocols_mod = LazyLoader("src.tui.consumer.protocols")
 
 
@@ -70,11 +73,18 @@ _SYMBOL_MAP: dict[str, LazyLoader] = {
     # ── 通用框架组件（可独立复用）─────────────────
     "BoxStyle": _box_mod,
     "Box": _box_mod,
+    "RoundedBox": _box_mod,
+    "DoubleBox": _box_mod,
     "Panel": _panel_mod,
     "Separator": _separator_mod,
     "Spinner": _spinner_mod,
     "ProgressBar": _progress_mod,
     "Table": _table_mod,
+    "parse_markup": _markup_mod,
+    "render_markup": _markup_mod,
+    "TreeView": _tree_mod,
+    "TreeNode": _tree_mod,
+    "CostDisplayComponent": _cost_mod,
     "SplashScreen": _splash_mod,
 
     # ── 协议 ─────────────────────────────────────
@@ -124,12 +134,15 @@ __all__ = [
     "WriteLineBlock",
 
     # ── 通用框架组件（可独立复用）─────────────────
-    "BoxStyle", "Box",
+    "BoxStyle", "Box", "RoundedBox", "DoubleBox",
     "Panel",
     "Separator",
     "Spinner",
     "ProgressBar",
     "Table",
+    "parse_markup", "render_markup",
+    "TreeView", "TreeNode",
+    "CostDisplayComponent",
     "SplashScreen",
 
     # ── 协议 ─────────────────────────────────────

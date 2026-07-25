@@ -26,7 +26,7 @@ import logging
 from typing import Any, List, Tuple, Optional, Callable, TYPE_CHECKING
 
 from ..tools.registry import ToolRegistry
-from ..tui.core.formatter import extract_key_params
+from ..tui.core.param_formatter import extract_key_params
 from .tool_dag import ToolDAG
 
 if TYPE_CHECKING:

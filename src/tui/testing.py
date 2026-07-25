@@ -22,6 +22,8 @@ from typing import Generator
 __all__: list[str] = [
     "tui_test_env",
     "BufferOutputAdapter",
+    "MockConsumer",
+    "MockTerminal",
 ]
 
 
@@ -159,4 +161,107 @@ class BufferOutputAdapter:
         return self._buffer[index]
 
 
+# ═══════════════════════════════════════════════════════════
+# Mock 测试辅助类
+# ═══════════════════════════════════════════════════════════
 
+
+class MockConsumer:
+    """模拟 ChatUIConsumer 的最小化测试替身。
+
+    记录所有调用到内部日志，供测试断言。
+
+    用法:
+        consumer = MockConsumer()
+        consumer.on_user_message("hello")
+        assert consumer.calls == [("on_user_message", ("hello",), {})]
+        consumer.reset()
+        assert consumer.calls == []
+    """
+
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, tuple, dict]] = []
+
+    def _record(self, method_name: str, *args, **kwargs) -> None:
+        self.calls.append((method_name, args, kwargs))
+
+    def on_user_message(self, text: str) -> None:
+        self._record("on_user_message", text)
+
+    def on_notification(self, text: str) -> None:
+        self._record("on_notification", text)
+
+    def on_error(self, message: str) -> None:
+        self._record("on_error", message)
+
+    def write_line(self, text: str) -> None:
+        self._record("write_line", text)
+
+    def display_messages(self, messages: list[dict], speed: int = 0) -> None:
+        self._record("display_messages", messages, speed=speed)
+
+    def push_cmd(self, cmd: tuple) -> None:
+        self._record("push_cmd", cmd)
+
+    def flush(self, timeout: float | None = 5.0) -> None:
+        self._record("flush", timeout=timeout)
+
+    def reset(self) -> None:
+        self.calls.clear()
+
+    def __len__(self) -> int:
+        return len(self.calls)
+
+    def __getitem__(self, index):
+        return self.calls[index]
+
+
+class MockTerminal:
+    """模拟终端环境的测试辅助工具。
+
+    提供可控的终端尺寸、能力检测和输出捕获。
+
+    用法:
+        term = MockTerminal(width=80, height=24)
+        assert term.width == 80
+        assert term.height == 24
+        term.write("test")
+        assert term.output == "test"
+        term.clear()
+        assert term.output == ""
+    """
+
+    def __init__(self, width: int = 120, height: int = 40) -> None:
+        self._width = width
+        self._height = height
+        self._buffer: list[str] = []
+
+    @property
+    def width(self) -> int:
+        return self._width
+
+    @property
+    def height(self) -> int:
+        return self._height
+
+    @property
+    def is_true_color(self) -> bool:
+        return True
+
+    @property
+    def is_256_color(self) -> bool:
+        return True
+
+    def write(self, text: str) -> None:
+        self._buffer.append(text)
+
+    @property
+    def output(self) -> str:
+        return "".join(self._buffer)
+
+    def clear(self) -> None:
+        self._buffer.clear()
+
+    def resize(self, width: int, height: int) -> None:
+        self._width = width
+        self._height = height

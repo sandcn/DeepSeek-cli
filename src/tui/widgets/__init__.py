@@ -22,6 +22,9 @@ from .completion import CompletionEngine, CompletionItem
 #    形成循环导入） ──
 from ..widget_base import Widget
 from ..render_buffer import RenderBuffer
+from ..layout import (
+    Vertical, Horizontal, Padding, Border, Grid, Center,
+)
 
 # ── 延迟导入（避免循环导入） ──
 # 循环导入链：terminal.terminal → widgets.lock → widgets.__init__ → ... → terminal.terminal
@@ -94,5 +97,7 @@ __all__ = [
     "_get_snapshot", "_TOKEN_SPEED_SNAPSHOT",
     "run_bottom_bar_selection", "_CompletionPopup",
     # widget framework
-    "Widget", "RenderBuffer",
+    "Widget", "RenderBuffer", "Vertical",
+    "Horizontal", "Padding", "Border",
+    "Grid", "Center",
 ]

@@ -11,130 +11,425 @@
 """
 from __future__ import annotations
 
-import glob
-import logging
-import os
 from typing import Dict, List
 
-logger = logging.getLogger(__name__)
-
-
-def parse_simple_yaml(text: str) -> dict[str, str]:
-    """解析简单 YAML 文本为扁平键值对字典。
-
-    仅支持一级键值对（``key: value`` 或 ``key: "value"`` 格式），
-    不支持嵌套结构、列表、多行值等高级 YAML 特性。
-
-    支持的格式：
-      - 注释行：以 ``#`` 开头（行首或缩进后）
-      - 空行：自动跳过
-      - 键值对：``key: value`` / ``key: "value"`` / ``key: 'value'``
-      - 值可含 ANSI 转义序列（``\\033``、``\\x1b`` 等），
-        通过 ``codecs.decode(..., 'unicode_escape')`` 解释
-
-    Args:
-        text: YAML 文本内容（UTF-8 字符串）。
-
-    Returns:
-        解析后的键值对字典。格式错误行跳过并记录 warning。
-    """
-    result: dict[str, str] = {}
-
-    for line_no, line in enumerate(text.splitlines(), 1):
-        stripped = line.strip()
-
-        # 跳过空行和注释行
-        if not stripped or stripped.startswith('#'):
-            continue
-
-        # 查找键值分隔符 ':'
-        colon_idx = stripped.find(':')
-        if colon_idx == -1:
-            logger.warning(
-                "YAML 解析：第 %d 行缺少冒号分隔符，跳过: %r",
-                line_no, stripped,
-            )
-            continue
-
-        key = stripped[:colon_idx].strip()
-        raw_value = stripped[colon_idx + 1:].strip()
-
-        # 键不能为空
-        if not key:
-            logger.warning(
-                "YAML 解析：第 %d 行键为空，跳过: %r",
-                line_no, stripped,
-            )
-            continue
-
-        # 去除引号（双引号或单引号）
-        if len(raw_value) >= 2:
-            if (raw_value.startswith('"') and raw_value.endswith('"')) or \
-               (raw_value.startswith("'") and raw_value.endswith("'")):
-                raw_value = raw_value[1:-1]
-
-        # 值不能为空
-        if not raw_value:
-            logger.warning(
-                "YAML 解析：第 %d 行值为空，跳过: %r",
-                line_no, stripped,
-            )
-            continue
-
-        # 解释 ANSI 转义序列（仅 \033 / \x1b → ESC 字符）
-        # 使用精准替换而非 codecs.decode('unicode_escape')，
-        # 避免意外解码 \n \t \xNN 等控制字符。
-        value = raw_value.replace("\\033", "\033").replace("\\x1b", "\x1b")
-
-        result[key] = value
-
-    return result
-
-
-def load_theme_file(path: str) -> dict[str, str]:
-    """从单个 YAML 文件加载主题。
-
-    文件不存在或读取失败时静默返回空字典。
-
-    Args:
-        path: YAML 主题文件路径。
-
-    Returns:
-        主题键值对字典。失败时返回空字典。
-    """
-    try:
-        with open(path, 'r', encoding='utf-8') as f:
-            text = f.read()
-    except (FileNotFoundError, PermissionError, OSError) as e:
-        logger.warning("无法读取主题文件 %s: %s", path, e)
-        return {}
-
-    return parse_simple_yaml(text)
-
-
 # ══════════════════════════════════════════════════════════
-# 内置主题加载（从 themes/ YAML 文件）
+# 主题预设
 # ══════════════════════════════════════════════════════════
 
-_BUILTIN_THEMES_DIR = os.path.join(os.path.dirname(__file__), "themes")
+THEMES: Dict[str, Dict[str, str]] = {
+    # ── 深色主题（默认）────────────────────────────────
+    "dark": {
+        "title": "\033[38;5;45m",          # 青色
+        "subtitle": "\033[38;5;242m",      # 中灰
+        "prompt": "\033[38;5;45m",         # 青色
+        "user": "\033[38;5;45m",           # 青色
+        "assistant": "\033[38;5;41m",      # 绿色
+        "thinking": "\033[38;5;242m",      # 中灰
+        "tool": "\033[38;5;242m",          # 中灰
+        "success": "\033[38;5;41m",        # 绿色
+        "warning": "\033[38;5;221m",       # 琥珀黄
+        "error": "\033[38;5;196m",         # 红色
+        "info": "\033[38;5;242m",          # 中灰
+        "cost": "\033[38;5;242m",          # 中灰
+        "separator": "\033[38;5;239m",     # 暗灰
+        "meta": "\033[38;5;242m",          # 中灰
+        "accent": "\033[38;5;221m",        # 琥珀黄
+        "border": "\033[38;5;239m",        # 暗灰
+        "highlight": "\033[38;5;45m",      # 青色
+        "muted": "\033[38;5;237m",         # 深灰
+        "code": "\033[38;5;242m",          # 中灰
+        "divider": "\033[38;5;239m",       # 暗灰
+        # ── 新增语义键（步骤 3） ──
+        "progress_filled": "\033[38;5;41m",   # 绿色
+        "progress_empty": "\033[38;5;236m",   # 深灰
+        "diff_add": "\033[38;5;41m",          # 绿色
+        "diff_del": "\033[38;5;196m",         # 红色
+        "diff_ctx": "\033[38;5;242m",         # 中灰
+        "border_active": "\033[38;5;45m",     # 青色
+        "border_inactive": "\033[38;5;237m",  # 深灰
+        "overlay_bg": "\033[48;5;235m",       # 暗色背景
+        "tag_code": "\033[38;5;221m",         # 琥珀黄
+        "prompt_glow": "\033[38;5;45m",       # 青色 — 提示符发光
+        "border_glow": "\033[38;5;40m",       # 中青 — 边框发光
+        "status_pulse": "\033[38;5;214m",     # 琥珀 — 状态脉动
+        "breathing_base": "\033[38;5;32m",    # 暗青 — 呼吸基准
+        "pulse_highlight": "\033[38;5;81m",   # 亮青 — 脉冲高亮
+        "separator_glow": "\033[38;5;45m",    # 青色 — 分隔线发光
+        "tag_glow": "\033[38;5;45m",          # 青色 — 标签发光
+        # ── 动效语义键（Phase 5） ──
+        "effect_bounce": "\033[38;5;45m",     # 弹入动效主题色（青色）
+        "effect_wave": "\033[38;5;44m",       # 波动动效主题色（中青）
+        "effect_sparkle": "\033[38;5;81m",    # 闪烁高亮色（亮青）
+        "effect_glow": "\033[38;5;221m",      # 辉光色（琥珀黄）
+        "effect_shimmer": "\033[38;5;195m",   # 流光色（亮白青）
+        # ── 新增美化语义键（2026-07-12 TUI 美化） ──
+        "user_glow": "\033[38;5;81m",         # 亮青 — 用户消息前缀闪烁
+        "placeholder_glow": "\033[38;5;45m",  # 青色 — 底部栏占位符辉光
+        "border_breath": "\033[38;5;23m",     # 暗青 — 呼吸边框基准
+        "model_breath": "\033[38;5;45m",      # 青色 — 模型名呼吸色
+        "tag_breath": "\033[38;5;45m",        # 青色 — 角色标签呼吸色
+        "effect_border": "\033[38;5;40m",     # 中青 — 边框动效色
+        "deco_glow": "\033[38;5;221m",        # 琥珀黄 — 装饰辉光
+        "icon_glow": "\033[38;5;81m",         # 亮青 — 图标辉光
+        "accent_pulse": "\033[38;5;214m",     # 琥珀 — 强调脉动
+    },
 
+    # ── 亮色主题（浅色背景用）──────────────────────────
+    "light": {
+        "title": "\033[38;5;33m",          # 蓝色
+        "subtitle": "\033[38;5;242m",      # 中灰
+        "prompt": "\033[38;5;33m",         # 蓝色
+        "user": "\033[38;5;33m",           # 蓝色
+        "assistant": "\033[38;5;41m",      # 绿色
+        "thinking": "\033[38;5;242m",      # 中灰
+        "tool": "\033[38;5;242m",          # 中灰
+        "success": "\033[38;5;41m",        # 绿色
+        "warning": "\033[1;38;5;221m",     # BOLD + 琥珀黄
+        "error": "\033[38;5;196m",         # 红色
+        "info": "\033[38;5;242m",          # 中灰
+        "cost": "\033[38;5;242m",          # 中灰
+        "separator": "\033[38;5;239m",     # 暗灰
+        "meta": "\033[38;5;242m",          # 中灰
+        "accent": "\033[1;38;5;221m",      # BOLD + 琥珀黄
+        "border": "\033[38;5;239m",        # 暗灰
+        "highlight": "\033[38;5;33m",      # 蓝色
+        "muted": "\033[38;5;242m",         # 中灰
+        "code": "\033[38;5;242m",          # 中灰
+        "divider": "\033[38;5;239m",       # 暗灰
+        # ── 新增语义键（步骤 3） ──
+        "progress_filled": "\033[38;5;41m",
+        "progress_empty": "\033[38;5;236m",
+        "diff_add": "\033[38;5;41m",
+        "diff_del": "\033[38;5;196m",
+        "diff_ctx": "\033[38;5;242m",
+        "border_active": "\033[38;5;33m",
+        "border_inactive": "\033[38;5;237m",
+        "overlay_bg": "\033[48;5;235m",
+        "tag_code": "\033[38;5;221m",
+        "prompt_glow": "\033[38;5;33m",       # 蓝色
+        "border_glow": "\033[38;5;32m",       # 中蓝
+        "status_pulse": "\033[38;5;220m",     # 黄
+        "breathing_base": "\033[38;5;26m",    # 暗蓝
+        "pulse_highlight": "\033[38;5;75m",   # 亮蓝
+        "separator_glow": "\033[38;5;33m",    # 蓝色
+        "tag_glow": "\033[38;5;33m",          # 蓝色
+        # ── 动效语义键（Phase 5） ──
+        "effect_bounce": "\033[38;5;33m",     # 蓝色
+        "effect_wave": "\033[38;5;32m",       # 中蓝
+        "effect_sparkle": "\033[38;5;75m",    # 亮蓝
+        "effect_glow": "\033[38;5;220m",      # 金色
+        "effect_shimmer": "\033[38;5;117m",   # 亮天蓝
+        # ── 新增美化语义键（2026-07-12 TUI 美化） ──
+        "user_glow": "\033[38;5;75m",         # 亮蓝 — 用户消息前缀闪烁
+        "placeholder_glow": "\033[38;5;33m",  # 蓝色 — 底部栏占位符辉光
+        "border_breath": "\033[38;5;25m",     # 暗蓝 — 呼吸边框基准
+        "model_breath": "\033[38;5;33m",      # 蓝色 — 模型名呼吸色
+        "tag_breath": "\033[38;5;33m",        # 蓝色 — 角色标签呼吸色
+        "effect_border": "\033[38;5;32m",     # 中蓝 — 边框动效色
+        "deco_glow": "\033[38;5;220m",        # 金色 — 装饰辉光
+        "icon_glow": "\033[38;5;75m",         # 亮蓝 — 图标辉光
+        "accent_pulse": "\033[38;5;214m",     # 琥珀 — 强调脉动
+    },
 
-def _load_builtin_themes() -> Dict[str, Dict[str, str]]:
-    """从 themes/ 目录加载内置主题 YAML 文件。"""
-    themes: Dict[str, Dict[str, str]] = {}
-    theme_dir = _BUILTIN_THEMES_DIR
-    if not os.path.isdir(theme_dir):
-        return themes
-    for fname in sorted(os.listdir(theme_dir)):
-        if fname.endswith(".yaml"):
-            name = fname[:-5]
-            data = load_theme_file(os.path.join(theme_dir, fname))
-            if data:
-                themes[name] = data
-    return themes
+    # ── 高对比主题（高可读性）──────────────────────────
+    "high-contrast": {
+        "title": "\033[38;5;81m",          # 亮青
+        "subtitle": "\033[38;5;242m",      # 中灰
+        "prompt": "\033[38;5;81m",         # 亮青
+        "user": "\033[38;5;81m",           # 亮青
+        "assistant": "\033[38;5;47m",      # 亮绿
+        "thinking": "\033[38;5;15m",       # 白
+        "tool": "\033[38;5;15m",           # 白
+        "success": "\033[38;5;47m",        # 亮绿
+        "warning": "\033[38;5;227m",       # 亮黄
+        "error": "\033[1;38;5;196m",       # BOLD + 红
+        "info": "\033[38;5;255m",          # 亮白
+        "cost": "\033[38;5;255m",          # 亮白
+        "separator": "\033[38;5;242m",     # 中灰
+        "meta": "\033[38;5;255m",          # 亮白
+        "accent": "\033[38;5;227m",        # 亮黄
+        "border": "\033[38;5;255m",        # 亮白
+        "highlight": "\033[38;5;81m",      # 亮青
+        "muted": "\033[38;5;250m",         # 浅灰
+        "code": "\033[38;5;255m",          # 亮白
+        "divider": "\033[38;5;242m",       # 中灰
+        # ── 新增语义键（步骤 3） ──
+        "progress_filled": "\033[38;5;47m",
+        "progress_empty": "\033[38;5;236m",
+        "diff_add": "\033[38;5;47m",
+        "diff_del": "\033[1;38;5;196m",
+        "diff_ctx": "\033[38;5;255m",
+        "border_active": "\033[38;5;81m",
+        "border_inactive": "\033[38;5;242m",
+        "overlay_bg": "\033[48;5;235m",
+        "tag_code": "\033[38;5;227m",
+        "prompt_glow": "\033[38;5;81m",       # 亮青
+        "border_glow": "\033[38;5;81m",       # 亮青
+        "status_pulse": "\033[38;5;227m",     # 亮黄
+        "breathing_base": "\033[38;5;32m",    # 暗青
+        "pulse_highlight": "\033[38;5;81m",   # 亮青
+        "separator_glow": "\033[38;5;81m",    # 亮青
+        "tag_glow": "\033[38;5;81m",          # 亮青
+        # ── 动效语义键（Phase 5） ──
+        "effect_bounce": "\033[38;5;81m",     # 亮青
+        "effect_wave": "\033[38;5;75m",       # 中亮蓝
+        "effect_sparkle": "\033[38;5;51m",    # 最亮青
+        "effect_glow": "\033[38;5;227m",      # 亮黄
+        "effect_shimmer": "\033[38;5;255m",   # 亮白
+        # ── 新增美化语义键（2026-07-12 TUI 美化） ──
+        "user_glow": "\033[38;5;81m",         # 亮青 — 用户消息前缀闪烁
+        "placeholder_glow": "\033[38;5;81m",  # 亮青 — 底部栏占位符辉光
+        "border_breath": "\033[38;5;33m",     # 中蓝 — 呼吸边框基准
+        "model_breath": "\033[38;5;81m",      # 亮青 — 模型名呼吸色
+        "tag_breath": "\033[38;5;81m",        # 亮青 — 角色标签呼吸色
+        "effect_border": "\033[38;5;51m",     # 最亮青 — 边框动效色
+        "deco_glow": "\033[38;5;227m",        # 亮黄 — 装饰辉光
+        "icon_glow": "\033[38;5;81m",         # 亮青 — 图标辉光
+        "accent_pulse": "\033[38;5;227m",     # 亮黄 — 强调脉动
+    },
 
+    # ── Nord 极光主题（蓝灰冰霜风）────────────────────
+    "nord": {
+        # ── 基础语义键（Nord 极夜 + 冰霜配色） ──
+        "title": "\033[38;5;67m",          # 冰蓝 #5E81AC
+        "subtitle": "\033[38;5;242m",      # 中灰
+        "prompt": "\033[38;5;109m",        # 冰蓝绿 #8FBCBB
+        "user": "\033[38;5;109m",          # 冰蓝绿 #8FBCBB
+        "assistant": "\033[38;5;108m",     # 极光绿 #A3BE8C
+        "thinking": "\033[38;5;242m",      # 中灰
+        "tool": "\033[38;5;242m",          # 中灰
+        "success": "\033[38;5;108m",       # 极光绿 #A3BE8C
+        "warning": "\033[38;5;221m",       # 极光黄 #EBCB8B
+        "error": "\033[38;5;167m",         # 极光红 #BF616A
+        "info": "\033[38;5;242m",          # 中灰
+        "cost": "\033[38;5;242m",          # 中灰
+        "separator": "\033[38;5;239m",     # 极夜灰 #4C566A
+        "meta": "\033[38;5;242m",          # 中灰
+        "accent": "\033[38;5;221m",        # 极光黄 #EBCB8B
+        "border": "\033[38;5;239m",        # 极夜灰 #4C566A
+        "highlight": "\033[38;5;109m",     # 冰蓝绿 #8FBCBB
+        "muted": "\033[38;5;237m",         # 极夜灰 #434C5E
+        "code": "\033[38;5;242m",          # 中灰
+        "divider": "\033[38;5;239m",       # 极夜灰 #4C566A
+        # ── progress / diff / border / overlay ──
+        "progress_filled": "\033[38;5;108m",
+        "progress_empty": "\033[38;5;236m",
+        "diff_add": "\033[38;5;108m",
+        "diff_del": "\033[38;5;167m",
+        "diff_ctx": "\033[38;5;242m",
+        "border_active": "\033[38;5;109m",
+        "border_inactive": "\033[38;5;237m",
+        "overlay_bg": "\033[48;5;235m",
+        "tag_code": "\033[38;5;221m",
+        # ── glow / pulse 发光语义 ──
+        "prompt_glow": "\033[38;5;109m",      # 冰蓝绿
+        "border_glow": "\033[38;5;67m",       # 冰蓝
+        "status_pulse": "\033[38;5;221m",     # 极光黄
+        "breathing_base": "\033[38;5;32m",    # 暗青
+        "pulse_highlight": "\033[38;5;81m",   # 亮青
+        "separator_glow": "\033[38;5;67m",    # 冰蓝
+        "tag_glow": "\033[38;5;109m",         # 冰蓝绿
+        # ── 动效语义键 ──
+        "effect_bounce": "\033[38;5;109m",    # 冰蓝绿
+        "effect_wave": "\033[38;5;67m",       # 冰蓝
+        "effect_sparkle": "\033[38;5;81m",    # 亮青
+        "effect_glow": "\033[38;5;221m",      # 极光黄
+        "effect_shimmer": "\033[38;5;195m",   # 亮白青
+        # ── 新增美化语义键 ──
+        "user_glow": "\033[38;5;81m",         # 亮青
+        "placeholder_glow": "\033[38;5;109m", # 冰蓝绿
+        "border_breath": "\033[38;5;24m",     # 暗蓝青
+        "model_breath": "\033[38;5;67m",      # 冰蓝
+        "tag_breath": "\033[38;5;109m",       # 冰蓝绿
+        "effect_border": "\033[38;5;67m",     # 冰蓝
+        "deco_glow": "\033[38;5;221m",        # 极光黄
+        "icon_glow": "\033[38;5;81m",         # 亮青
+        "accent_pulse": "\033[38;5;214m",     # 琥珀
+    },
 
-THEMES: Dict[str, Dict[str, str]] = _load_builtin_themes()
+    # ── Catppuccin Mocha 主题（暖暗紫柔和风）────────
+    "catppuccin": {
+        # ── 基础语义键（Catppuccin Mocha 调色板） ──
+        "title": "\033[38;5;183m",         # 紫 #CBA6F7
+        "subtitle": "\033[38;5;242m",      # 中灰
+        "prompt": "\033[38;5;117m",        # 蓝 #89B4FA
+        "user": "\033[38;5;117m",          # 蓝 #89B4FA
+        "assistant": "\033[38;5;120m",     # 绿 #A6E3A1
+        "thinking": "\033[38;5;242m",      # 中灰
+        "tool": "\033[38;5;242m",          # 中灰
+        "success": "\033[38;5;120m",       # 绿 #A6E3A1
+        "warning": "\033[38;5;222m",       # 黄 #F9E2AF
+        "error": "\033[38;5;210m",         # 红 #F38BA8
+        "info": "\033[38;5;242m",          # 中灰
+        "cost": "\033[38;5;242m",          # 中灰
+        "separator": "\033[38;5;237m",     # surface1 #45475A
+        "meta": "\033[38;5;242m",          # 中灰
+        "accent": "\033[38;5;183m",        # 紫 #CBA6F7
+        "border": "\033[38;5;237m",        # surface1 #45475A
+        "highlight": "\033[38;5;117m",     # 蓝 #89B4FA
+        "muted": "\033[38;5;236m",         # surface0 #313244
+        "code": "\033[38;5;242m",          # 中灰
+        "divider": "\033[38;5;237m",       # surface1 #45475A
+        # ── progress / diff / border / overlay ──
+        "progress_filled": "\033[38;5;120m",
+        "progress_empty": "\033[38;5;236m",
+        "diff_add": "\033[38;5;120m",
+        "diff_del": "\033[38;5;210m",
+        "diff_ctx": "\033[38;5;242m",
+        "border_active": "\033[38;5;117m",
+        "border_inactive": "\033[38;5;237m",
+        "overlay_bg": "\033[48;5;235m",
+        "tag_code": "\033[38;5;222m",
+        # ── glow / pulse 发光语义 ──
+        "prompt_glow": "\033[38;5;117m",      # 蓝
+        "border_glow": "\033[38;5;183m",      # 紫
+        "status_pulse": "\033[38;5;222m",     # 黄
+        "breathing_base": "\033[38;5;26m",    # 暗蓝
+        "pulse_highlight": "\033[38;5;75m",   # 亮蓝
+        "separator_glow": "\033[38;5;183m",   # 紫
+        "tag_glow": "\033[38;5;117m",         # 蓝
+        # ── 动效语义键 ──
+        "effect_bounce": "\033[38;5;183m",    # 紫
+        "effect_wave": "\033[38;5;140m",      # 中紫
+        "effect_sparkle": "\033[38;5;75m",    # 亮蓝
+        "effect_glow": "\033[38;5;222m",      # 黄
+        "effect_shimmer": "\033[38;5;195m",   # 亮白青
+        # ── 新增美化语义键 ──
+        "user_glow": "\033[38;5;75m",         # 亮蓝
+        "placeholder_glow": "\033[38;5;183m", # 紫
+        "border_breath": "\033[38;5;26m",     # 暗蓝
+        "model_breath": "\033[38;5;183m",     # 紫
+        "tag_breath": "\033[38;5;117m",       # 蓝
+        "effect_border": "\033[38;5;140m",    # 中紫
+        "deco_glow": "\033[38;5;222m",        # 黄
+        "icon_glow": "\033[38;5;75m",         # 亮蓝
+        "accent_pulse": "\033[38;5;214m",     # 琥珀
+    },
+
+    # ── Solarized Dark 主题（深褐温和对比风）──────────
+    "solarized-dark": {
+        # ── 基础语义键（Solarized 调色板） ──
+        "title": "\033[38;5;33m",          # 蓝 #268BD2
+        "subtitle": "\033[38;5;242m",      # 中灰
+        "prompt": "\033[38;5;37m",         # 青 #2AA198
+        "user": "\033[38;5;37m",           # 青 #2AA198
+        "assistant": "\033[38;5;64m",      # 绿 #859900
+        "thinking": "\033[38;5;242m",      # 中灰
+        "tool": "\033[38;5;242m",          # 中灰
+        "success": "\033[38;5;64m",        # 绿 #859900
+        "warning": "\033[38;5;136m",       # 黄 #B58900
+        "error": "\033[38;5;160m",         # 红 #DC322F
+        "info": "\033[38;5;242m",          # 中灰
+        "cost": "\033[38;5;242m",          # 中灰
+        "separator": "\033[38;5;235m",     # base02 #073642
+        "meta": "\033[38;5;242m",          # 中灰
+        "accent": "\033[38;5;136m",        # 黄 #B58900
+        "border": "\033[38;5;235m",        # base02 #073642
+        "highlight": "\033[38;5;37m",      # 青 #2AA198
+        "muted": "\033[38;5;234m",         # base03 #002B36
+        "code": "\033[38;5;242m",          # 中灰
+        "divider": "\033[38;5;235m",       # base02 #073642
+        # ── progress / diff / border / overlay ──
+        "progress_filled": "\033[38;5;64m",
+        "progress_empty": "\033[38;5;236m",
+        "diff_add": "\033[38;5;64m",
+        "diff_del": "\033[38;5;160m",
+        "diff_ctx": "\033[38;5;242m",
+        "border_active": "\033[38;5;37m",
+        "border_inactive": "\033[38;5;235m",
+        "overlay_bg": "\033[48;5;234m",
+        "tag_code": "\033[38;5;136m",
+        # ── glow / pulse 发光语义 ──
+        "prompt_glow": "\033[38;5;37m",       # 青
+        "border_glow": "\033[38;5;33m",       # 蓝
+        "status_pulse": "\033[38;5;136m",     # 黄
+        "breathing_base": "\033[38;5;25m",    # 暗蓝
+        "pulse_highlight": "\033[38;5;69m",   # 亮蓝
+        "separator_glow": "\033[38;5;33m",    # 蓝
+        "tag_glow": "\033[38;5;37m",          # 青
+        # ── 动效语义键 ──
+        "effect_bounce": "\033[38;5;37m",     # 青
+        "effect_wave": "\033[38;5;33m",       # 蓝
+        "effect_sparkle": "\033[38;5;69m",    # 亮蓝
+        "effect_glow": "\033[38;5;136m",      # 黄
+        "effect_shimmer": "\033[38;5;195m",   # 亮白青
+        # ── 新增美化语义键 ──
+        "user_glow": "\033[38;5;69m",         # 亮蓝
+        "placeholder_glow": "\033[38;5;37m",  # 青
+        "border_breath": "\033[38;5;23m",     # 暗青
+        "model_breath": "\033[38;5;33m",      # 蓝
+        "tag_breath": "\033[38;5;37m",        # 青
+        "effect_border": "\033[38;5;33m",     # 蓝
+        "deco_glow": "\033[38;5;136m",        # 黄
+        "icon_glow": "\033[38;5;69m",         # 亮蓝
+        "accent_pulse": "\033[38;5;214m",     # 琥珀
+    },
+
+    # ── Monokai 主题（高饱和荧光风）──────────────────
+    "monokai": {
+        # ── 基础语义键（Monokai Pro 调色板） ──
+        "title": "\033[38;5;141m",         # 紫 #AE81FF
+        "subtitle": "\033[38;5;242m",      # 中灰
+        "prompt": "\033[38;5;81m",         # 蓝 #66D9EF
+        "user": "\033[38;5;81m",           # 蓝 #66D9EF
+        "assistant": "\033[38;5;83m",      # 绿 #A6E22E
+        "thinking": "\033[38;5;242m",      # 中灰
+        "tool": "\033[38;5;242m",          # 中灰
+        "success": "\033[38;5;83m",        # 绿 #A6E22E
+        "warning": "\033[38;5;228m",       # 黄 #E6DB74
+        "error": "\033[38;5;197m",         # 粉红 #F92672
+        "info": "\033[38;5;242m",          # 中灰
+        "cost": "\033[38;5;242m",          # 中灰
+        "separator": "\033[38;5;237m",     # 背景 #272822
+        "meta": "\033[38;5;242m",          # 中灰
+        "accent": "\033[38;5;228m",        # 黄 #E6DB74
+        "border": "\033[38;5;237m",        # 背景 #272822
+        "highlight": "\033[38;5;81m",      # 蓝 #66D9EF
+        "muted": "\033[38;5;236m",         # 选择 #49483E
+        "code": "\033[38;5;242m",          # 中灰
+        "divider": "\033[38;5;237m",       # 背景 #272822
+        # ── progress / diff / border / overlay ──
+        "progress_filled": "\033[38;5;83m",
+        "progress_empty": "\033[38;5;236m",
+        "diff_add": "\033[38;5;83m",
+        "diff_del": "\033[38;5;197m",
+        "diff_ctx": "\033[38;5;242m",
+        "border_active": "\033[38;5;81m",
+        "border_inactive": "\033[38;5;237m",
+        "overlay_bg": "\033[48;5;235m",
+        "tag_code": "\033[38;5;228m",
+        # ── glow / pulse 发光语义 ──
+        "prompt_glow": "\033[38;5;81m",       # 蓝
+        "border_glow": "\033[38;5;141m",      # 紫
+        "status_pulse": "\033[38;5;228m",     # 黄
+        "breathing_base": "\033[38;5;32m",    # 暗青
+        "pulse_highlight": "\033[38;5;81m",   # 亮青
+        "separator_glow": "\033[38;5;141m",   # 紫
+        "tag_glow": "\033[38;5;81m",          # 蓝
+        # ── 动效语义键 ──
+        "effect_bounce": "\033[38;5;141m",    # 紫
+        "effect_wave": "\033[38;5;81m",       # 蓝
+        "effect_sparkle": "\033[38;5;51m",    # 最亮青
+        "effect_glow": "\033[38;5;228m",      # 黄
+        "effect_shimmer": "\033[38;5;195m",   # 亮白青
+        # ── 新增美化语义键 ──
+        "user_glow": "\033[38;5;81m",         # 蓝
+        "placeholder_glow": "\033[38;5;141m", # 紫
+        "border_breath": "\033[38;5;23m",     # 暗青
+        "model_breath": "\033[38;5;141m",     # 紫
+        "tag_breath": "\033[38;5;81m",        # 蓝
+        "effect_border": "\033[38;5;81m",     # 蓝
+        "deco_glow": "\033[38;5;228m",        # 黄
+        "icon_glow": "\033[38;5;51m",         # 最亮青
+        "accent_pulse": "\033[38;5;214m",     # 琥珀
+    },
+}
+
+# ══════════════════════════════════════════════════════════
+# 内置主题备份（用户主题加载后可恢复）
+# ══════════════════════════════════════════════════════════
+
 _BUILTIN_THEMES: Dict[str, Dict[str, str]] = {k: dict(v) for k, v in THEMES.items()}
 
 
@@ -195,7 +490,8 @@ def load_user_themes() -> None:
 
     若当前活动主题被用户主题覆盖，``THEME`` 副本自动更新。
     """
-    user_themes = load_user_themes_from_dir()
+    from . import theme_loader
+    user_themes = theme_loader.load_user_themes_from_dir()
     if user_themes:
         THEMES.update(user_themes)
         # 若当前活动主题被用户主题覆盖，刷新 THEME 副本
@@ -224,47 +520,6 @@ def reload_themes() -> None:
     THEME.update(THEMES[_ACTIVE_NAME])
 
 
-def load_user_themes_from_dir(
-    theme_dir: str = "~/.deepseek/themes",
-) -> dict[str, dict[str, str]]:
-    """扫描用户主题目录，加载所有 ``*.yaml`` 主题文件。
-
-    文件名（去扩展名）即为主题名称。
-    目录不存在时静默返回空字典（不报错）。
-
-    Args:
-        theme_dir: 用户主题目录路径，默认 ``~/.deepseek/themes``。
-                   ``~`` 自动展开为用户主目录。
-
-    Returns:
-        ``{主题名: {语义键: ANSI颜色码}}`` 的嵌套字典。
-    """
-    expanded_dir = os.path.expanduser(theme_dir)
-
-    if not os.path.isdir(expanded_dir):
-        return {}
-
-    themes: dict[str, dict[str, str]] = {}
-    yaml_files = sorted(glob.glob(os.path.join(expanded_dir, "*.yaml")))
-
-    for yaml_path in yaml_files:
-        theme_name = os.path.splitext(os.path.basename(yaml_path))[0]
-        theme_data = load_theme_file(yaml_path)
-        if theme_data:
-            themes[theme_name] = theme_data
-            logger.info(
-                "已加载用户主题: %s (%d 个语义键)",
-                theme_name, len(theme_data),
-            )
-        else:
-            logger.warning(
-                "主题文件为空或解析失败，跳过: %s", yaml_path,
-            )
-
-    logger.info("用户主题加载完成: 共 %d 个", len(themes))
-    return themes
-
-
 # ── 模块加载时自动加载用户主题 ──
 load_user_themes()
 
@@ -273,6 +528,5 @@ __all__ = [
     "THEME", "THEMES",
     "set_theme", "get_active_theme", "list_themes",
     "get_theme_names_with_desc",
-    "load_user_themes", "load_user_themes_into_themes", "reload_themes",
-    "parse_simple_yaml", "load_theme_file", "load_user_themes_from_dir",
+    "load_user_themes", "reload_themes",
 ]

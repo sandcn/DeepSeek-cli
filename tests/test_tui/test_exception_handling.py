@@ -139,3 +139,110 @@ class TestSafeExecuteSilent:
         # 不抛出
 
 
+# ═══════════════════════════════════════════════════════════
+# layout.py 异常分类 — 子控件渲染降级
+# ═══════════════════════════════════════════════════════════
+
+
+class TestLayoutExceptionDegradation:
+    """验证 layout.py 异常分类后子控件渲染失败时的降级行为。
+
+    所有布局控件在子控件 render() 抛出异常时，应记录日志并继续执行，
+    使用空白/默认 RenderBuffer 降级，不应阻断整体渲染。
+    """
+
+    def test_vertical_child_render_failure_degradation(self):
+        """Vertical 子控件渲染失败时降级为空白。"""
+        from src.tui.render_buffer import RenderBuffer
+        from src.tui.layout import Vertical
+        from src.tui.widget_base import Widget
+
+        class BrokenWidget(Widget):
+            def render(self, buffer: RenderBuffer) -> None:
+                raise RuntimeError("模拟渲染失败")
+
+        v = Vertical([BrokenWidget()], key="test_v")
+        v.mount()
+        buf = RenderBuffer(10, 3)
+        # 不应抛出异常
+        v.render(buf)
+        # 渲染结果应为空（降级后空白 buffer 渲染为空字符串）
+        result = buf.render()
+        # 降级后 RenderBuffer(buffer.width, 1) 渲染结果可能为空或单行空白
+        assert isinstance(result, str)
+
+    def test_horizontal_child_render_failure_degradation(self):
+        """Horizontal 子控件渲染失败时降级为空白。"""
+        from src.tui.render_buffer import RenderBuffer
+        from src.tui.layout import Horizontal
+        from src.tui.widget_base import Widget
+
+        class BrokenWidget(Widget):
+            def render(self, buffer: RenderBuffer) -> None:
+                raise RuntimeError("模拟渲染失败")
+
+        h = Horizontal([BrokenWidget()], key="test_h")
+        h.mount()
+        buf = RenderBuffer(10, 3)
+        h.render(buf)
+        result = buf.render()
+        assert isinstance(result, str)
+
+    def test_border_child_render_failure_degradation(self):
+        """Border 子控件渲染失败时仍绘制边框。"""
+        from src.tui.render_buffer import RenderBuffer
+        from src.tui.layout import Border
+        from src.tui.widget_base import Widget
+
+        class BrokenWidget(Widget):
+            def render(self, buffer: RenderBuffer) -> None:
+                raise RuntimeError("模拟渲染失败")
+
+        b = Border(BrokenWidget(), key="test_border")
+        b.mount()
+        buf = RenderBuffer(10, 5)
+        # 不应抛出异常
+        b.render(buf)
+        result = buf.render()
+        # 边框至少绘制了四角和边框线（即使子控件渲染失败）
+        # 边框字符可能存在，验证不抛出即可
+        assert isinstance(result, str)
+        # 验证边框字符存在
+        assert any(c in result for c in ("╭", "╰", "─", "│")), \
+            f"降级时应绘制边框字符，实际输出:\n{result}"
+
+    def test_grid_cell_render_failure_degradation(self):
+        """Grid 单元格渲染失败时降级为空白。"""
+        from src.tui.render_buffer import RenderBuffer
+        from src.tui.layout import Grid
+        from src.tui.widget_base import Widget
+
+        class BrokenWidget(Widget):
+            def render(self, buffer: RenderBuffer) -> None:
+                raise RuntimeError("模拟渲染失败")
+
+        g = Grid([[BrokenWidget()]], key="test_grid")
+        g.mount()
+        buf = RenderBuffer(10, 3)
+        g.render(buf)
+        result = buf.render()
+        assert isinstance(result, str)
+        # Grid 单元格降级后返回字符串（Grid 本身不绘制边框，验证不崩溃即可）
+
+    def test_center_child_render_failure_degradation(self):
+        """Center 子控件渲染失败时返回空。"""
+        from src.tui.render_buffer import RenderBuffer
+        from src.tui.layout import Center
+        from src.tui.widget_base import Widget
+
+        class BrokenWidget(Widget):
+            def render(self, buffer: RenderBuffer) -> None:
+                raise RuntimeError("模拟渲染失败")
+
+        c = Center(BrokenWidget(), key="test_center")
+        c.mount()
+        buf = RenderBuffer(10, 5)
+        c.render(buf)
+        result = buf.render()
+        # Center 降级后返回空字符串（子控件渲染失败时 Center 不输出内容）
+        assert isinstance(result, str)

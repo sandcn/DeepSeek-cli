@@ -23,8 +23,8 @@ WINDOWS_POLL_INTERVAL = 0.05  # Windows 轮询间隔（秒）
 _POLL_INTERVAL = 0.1          # ESC序列检测等待超时（秒）— 100ms 确保 ANSI 序列（如 ↑↓箭头）有充足时间到达
 
 # 故障熔断阈值
-_EOF_THRESHOLD = 300          # stdin EOF 连续检测阈值：select 可读但 read 返回空的次数（300×0.1s=30s 容忍窗口，覆盖 Android Termux pty 挂起）
-_SELECT_ERROR_THRESHOLD = 300 # select 连续错误阈值：select 持续抛异常的次数（300×0.1s=30s 容忍窗口，覆盖 Android Termux pty 挂起）
+_EOF_THRESHOLD = 20           # stdin EOF 连续检测阈值：select 可读但 read 返回空的次数
+_SELECT_ERROR_THRESHOLD = 30  # select 连续错误阈值：select 持续抛异常的次数
 
 # ── 输入历史多进程写入配置 ────────────────────────────────
 _HISTORY_MAX_ENTRIES = 1000       # 内存历史最大条目数

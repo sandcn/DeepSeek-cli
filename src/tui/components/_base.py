@@ -24,13 +24,6 @@ from ..widget_base import Widget
 # FadeIn 入场动效 — 从 core/text_utils.py 导入统一入口
 from ..core.text_utils import apply_fade_in
 
-# ── MessageBlock 基类所需导入 ──
-from ..core.style import Style, StyleSheet
-from ..core.effects import sine_color
-from ..core.text_utils import _fade_factor, _fade_color, build_border_breath_ansi
-from ..framework import get_animator
-from ..terminal import terminal as _terminal_mod  # module ref for monkeypatch compatibility
-
 _logger = logging.getLogger(__name__)
 
 
@@ -202,143 +195,6 @@ class TuiComponent(Widget):
         if self.should_update(new_props):
             self._dirty = True
 
-
-class StreamingBlock(TuiComponent):
-    """流式内容块基类 — ThinkingBlock/AnswerBlock 共享逻辑。
-
-    提取公共的 _cumulative_content 管理、render 渲染路径。
-    子类只需实现 write() 和 close()，并设置 _captured_attr 属性。
-    """
-
-    def __init__(self, rs, *, props: dict | None = None) -> None:
-        """初始化流式内容块。
-
-        Args:
-            rs: 渲染状态对象（如 ChatRenderState），包含 captured_xxx_output 属性。
-            props: 外部传入的属性字典（可选）。
-        """
-        super().__init__(props=props)
-        self._rs = rs
-        self._cumulative_content: list[str] = []
-
-    @property
-    def _captured_attr(self) -> str:
-        """rs 对象上的捕获属性名（子类覆写）。
-
-        Returns:
-            str: 如 'captured_reasoning_output' 或 'captured_content_output'。
-        """
-        return ""
-
-    def write(self, text: str) -> int:
-        """写入内容（子类实现）。
-
-        Args:
-            text: 要写入的文本。
-
-        Returns:
-            估计行数。
-        """
-        raise NotImplementedError
-
-    def close(self) -> None:
-        """关闭流式内容（子类实现）。"""
-        raise NotImplementedError
-
-    def render(self, buffer: RenderBuffer | None = None) -> str | None:
-        """渲染累积内容。
-
-        当 buffer 非 None 时：
-          写入 IncrementalRenderer 的渲染后 ANSI 文本（若捕获可用），
-          否则回退到原始累积纯文本。
-        当 buffer 为 None（纯读取路径）：
-          返回原始累积纯文本。
-
-        Args:
-            buffer: 可选的 RenderBuffer 实例。
-
-        Returns:
-            str | None: 无 buffer 时返回累积文本；有 buffer 时返回 None。
-        """
-        if buffer is not None:
-            _render_captured_content(
-                buffer, self._captured_attr,
-                self._cumulative_content, self._rs,
-            )
-            return None
-        return "".join(self._cumulative_content)
-
-
-class MessageBlock(TuiComponent):
-    """消息提示块基类 — 消除 ErrorBlock/NotificationBlock 重复。
-
-    子类通过覆写类属性/方法提供差异化配置：
-      - _icon: 提示图标字符（如 "!" / "·"）
-      - _narrow_style_key: 窄屏样式键名
-      - _glow_base: 辉光基准色号
-      - _glow_delta: 辉光偏移量
-      - _border_target: 边框呼吸目标色号
-      - _get_message(): 获取消息文本
-    """
-
-    # ── 子类覆写以下属性 ──
-    _icon: str = "!"
-    _narrow_style_key: str = "error"
-    _glow_base: int = 196
-    _glow_delta: int = 15
-    _border_target: int = 23
-
-    def _get_message(self) -> str:
-        """获取消息文本（子类覆写）。"""
-        return ""
-
-    def render(self, buffer: RenderBuffer | None = None) -> str | Text | None:
-        """渲染消息提示块。
-
-        窄屏降级为无动效的纯文本样式；
-        宽屏使用 FadeIn + 辉光呼吸 + 边框呼吸动效。
-
-        Args:
-            buffer: 可选的 RenderBuffer 实例。
-
-        Returns:
-            str | Text | None: 无 buffer 时返回文本；有 buffer 时返回 None。
-        """
-        if _terminal_mod.is_narrow():
-            style = StyleSheet.get(self._narrow_style_key)
-            rich_style = style.to_rich() if style else None
-            result = Text.assemble(
-                (f"\n  {self._icon} ", rich_style),
-                (self._get_message(), rich_style),
-            )
-        else:
-            animator = get_animator()
-            frame = animator.frame
-            fade = _fade_factor(frame)
-
-            glow_lo = _fade_color(self._glow_base, fade)
-            glow_hi = _fade_color(min(255, self._glow_base + self._glow_delta), fade)
-            glow_color = sine_color(frame, glow_lo, glow_hi, 12)
-            glow_style = Style(fg=glow_color)
-
-            border_target = _fade_color(self._border_target, fade)
-            border_breath_ansi = build_border_breath_ansi(frame, border_target, 24)
-
-            ansi_str = (
-                f"\n  {border_breath_ansi}"
-                f" {glow_style.to_ansi()}{self._icon} \033[0m"
-                f"{glow_style.to_ansi()}{self._get_message()}\033[0m"
-            )
-            result = Text.from_ansi(ansi_str)
-
-        if buffer is not None:
-            text = result.plain if isinstance(result, Text) else str(result)
-            if text:
-                buffer.write(0, 0, text)
-            return None
-        return result
-
-
 # ═══════════════════════════════════════════════════════════
 # 行数估算辅助（内部使用）
 # ═══════════════════════════════════════════════════════════
@@ -358,38 +214,6 @@ def _estimate_content_lines(text: str) -> int:
     if not text:
         return 1
     return text.count('\n') + 1
-
-
-def _render_captured_content(
-    buffer: RenderBuffer,
-    captured_attr: str,
-    cumulative_list: list[str],
-    rs_obj: object,
-) -> None:
-    """渲染流式捕获内容到 RenderBuffer（ThinkingBlock/AnswerBlock 共享）。
-
-    优先使用 IncrementalRenderer 捕获的渲染后 ANSI 输出（保留 Markdown
-    格式、语法高亮等），回退到原始累积纯文本。
-
-    此函数只处理 buffer 写入路径。调用侧应保持：
-    ``if buffer is not None: _render_captured_content(...); return None``
-
-    Args:
-        buffer: 目标 RenderBuffer 实例。
-        captured_attr: rs_obj 上的捕获属性名（如 "captured_reasoning_output"）。
-        cumulative_list: 原始累积文本列表（如 self._cumulative_content）。
-        rs_obj: 包含 captured_attr 属性的渲染状态对象（如 self._rs）。
-    """
-    captured = getattr(rs_obj, captured_attr, None)
-    if captured:
-        rendered = "".join(captured)
-        if rendered:
-            buffer.write(0, 0, rendered)
-            return
-    # 回退：使用原始累积纯文本
-    full_content = "".join(cumulative_list)
-    if full_content:
-        buffer.write(0, 0, full_content)
 
 
 

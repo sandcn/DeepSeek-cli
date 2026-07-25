@@ -20,10 +20,30 @@
 from __future__ import annotations
 
 import asyncio
+import functools
 import logging
 import time
+import warnings
 from typing import Any
 
+
+def deprecated(message: str):
+    """「废弃标记」装饰器 — Python 3.13+ warnings.deprecated 的向下兼容实现。
+
+    Python 3.13 (PEP 702) 在 warnings 模块中新增了 @deprecated 装饰器。
+    本实现为 Python 3.9 提供等价行为：调用被装饰函数时发出 DeprecationWarning。
+    """
+    def decorator(func):
+        @functools.wraps(func)
+        def wrapper(*args, **kwargs):
+            warnings.warn(
+                f"{func.__name__} is deprecated: {message}",
+                DeprecationWarning,
+                stacklevel=2,
+            )
+            return func(*args, **kwargs)
+        return wrapper
+    return decorator
 
 from .config import TuiConfig
 from .core.output_target import IOutputTarget, TerminalTarget
@@ -246,12 +266,15 @@ class ParallelDisplay(BaseDisplay):
         self._store.update_parse_info(label, tool_names, tokens, elapsed)
         self._schedule_refresh()
 
+    @deprecated("不再需要，由 10Hz 定时回调驱动帧刷新替代")
     def parse_info_done(self, label: str) -> None:
         """空操作 — 帧刷新已由 _panel_refresh_callback() (10Hz 定时) 统一调度。
 
         保留本方法供外部调用方兼容，不再触发实际刷新。
         """
-        pass
+        import warnings
+        warnings.warn("parse_info_done is deprecated: 帧刷新由 10Hz 定时回调驱动", DeprecationWarning, stacklevel=2)
+        _logger.debug("parse_info_done called for %s", label)
 
     def update_tokens(self, label: str, tokens: int):
         self._store.update_tokens(label, tokens)
@@ -284,13 +307,15 @@ class ParallelDisplay(BaseDisplay):
 
     # ── 帧渲染（通过命令队列） ────────────────────────
 
+    @deprecated("不再需要，帧刷新由 10Hz 定时回调驱动")
     def _schedule_refresh(self) -> None:
         """空操作 — 帧刷新由 _panel_refresh_callback() (10Hz 定时) 统一调度。
 
         保留本方法供外部调用方兼容（add_agent/update_* 等仍可安全调用），
         但不触发任何实际刷新，避免事件驱动的冗余帧推送。
         """
-        pass
+        import warnings
+        warnings.warn("_schedule_refresh is deprecated: 帧刷新由 10Hz 定时回调驱动", DeprecationWarning, stacklevel=2)
 
     def _build_frame(self, final: bool = False) -> tuple | None:
         """构建面板帧数据（纯函数，不写终端）。

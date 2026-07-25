@@ -28,13 +28,20 @@ from .terminal import (
     EXTRA_NARROW_THRESHOLD,
     enter_raw_mode,
     leave_raw_mode,
+)
+from .ports import ILockedTerminal as _ILockedTerminalFromPorts  # noqa: F401
+from .blessed import get_terminal as _get_terminal  # noqa: F401
+from .narrow import (
+    is_narrow as _is_narrow,
+    narrow_truncate as _narrow_truncate,
+)
+from .capabilities import (
     supports_truecolor,
     supports_256color,
     supports_utf8,
     supports_emoji,
     get_capabilities_summary,
 )
-from .blessed import get_terminal as _get_terminal  # noqa: F401
 
 __all__ = [
     "ILockedTerminal",

@@ -11,12 +11,14 @@ from typing import ClassVar
 
 from ._base import TuiComponent
 from ..render_buffer import RenderBuffer
-from ..terminal.terminal import is_narrow
+from ..terminal.narrow import is_narrow
 from ..core.style import Style
 
 __all__ = [
     "BoxStyle",
     "Box",
+    "RoundedBox",
+    "DoubleBox",
 ]
 
 
@@ -242,12 +244,17 @@ class Box(TuiComponent):
                 bottom_border = f"{_wrap_ansi(bl_color, chars['bl'])}{h_parts}{_wrap_ansi(br_color, chars['br'])}"
 
             # 构建主体行 —— 左右边框使用垂直渐变色
-            v_grad_list = v_grad  # 捕获闭包
-            body = self._build_body_lines(
-                lines, chars, pad, text_width,
-                glow_ansi=glow_ansi if self.glow else "",
-                color_fn=lambda i: v_grad_list[i] if i < len(v_grad_list) else v_grad_list[-1],
-            )
+            body: list[str] = []
+            for i, line in enumerate(lines):
+                vc = v_grad[i] if i < len(v_grad) else v_grad[-1]
+                text_part = line[:text_width].ljust(text_width)
+                if self.glow:
+                    lv = f"{glow_ansi}{chars['v']}\033[0m"
+                    rv = f"{glow_ansi}{chars['v']}\033[0m"
+                else:
+                    lv = f"\033[38;5;{vc}m{chars['v']}\033[0m"
+                    rv = f"\033[38;5;{vc}m{chars['v']}\033[0m"
+                body.append(f"{lv}{' ' * pad}{text_part}{' ' * pad}{rv}")
         else:
             # 无渐变
             h_line = chars["h"] * content_width
@@ -259,10 +266,16 @@ class Box(TuiComponent):
                 bottom_border = f"{chars['bl']}{h_line}{chars['br']}"
 
             # 构建主体行
-            body = self._build_body_lines(
-                lines, chars, pad, text_width,
-                glow_ansi=glow_ansi if self.glow else "",
-            )
+            body: list[str] = []
+            for line in lines:
+                text_part = line[:text_width].ljust(text_width)
+                if self.glow:
+                    lv = f"{glow_ansi}{chars['v']}\033[0m"
+                    rv = f"{glow_ansi}{chars['v']}\033[0m"
+                else:
+                    lv = chars['v']
+                    rv = chars['v']
+                body.append(f"{lv}{' ' * pad}{text_part}{' ' * pad}{rv}")
 
         result = f"{top_border}\n" + "\n".join(body) + f"\n{bottom_border}"
 
@@ -297,48 +310,15 @@ class Box(TuiComponent):
         bottom_border = f"{Style(fg=h_grad[0]).apply(chars['bl'])}{h_parts}{Style(fg=h_grad[-1]).apply(chars['br'])}"
 
         # 主体行
-        body = self._build_body_lines(
-            lines, chars, pad, text_width,
-            color_fn=lambda i: v_grad[i] if i < len(v_grad) else v_grad[-1],
-        )
-
-        return f"{top_border}\n" + "\n".join(body) + f"\n{bottom_border}"
-
-    def _build_body_lines(
-        self, lines: list[str], chars: dict[str, str],
-        pad: int, text_width: int,
-        *,
-        glow_ansi: str = "",
-        color_fn=None,
-    ) -> list[str]:
-        """构建主体行列表（共享方法消除渐变/普通/极光三路重复）。
-
-        Args:
-            lines: 文本行列表。
-            chars: 边框字符字典。
-            pad: 内边距字符数。
-            text_width: 每行文本可用显示宽度。
-            glow_ansi: 辉光 ANSI 前缀（非空时启用辉光效果）。
-            color_fn: 可选的每行色号回调 color_fn(i) -> int（启用渐变/极光）。
-
-        Returns:
-            渲染后的主体行字符串列表。
-        """
         body: list[str] = []
         for i, line in enumerate(lines):
+            vc = v_grad[i] if i < len(v_grad) else v_grad[-1]
             text_part = line[:text_width].ljust(text_width)
-            if color_fn:
-                v_color = color_fn(i)
-                lv = f"\033[38;5;{v_color}m{chars['v']}\033[0m"
-                rv = lv
-            elif glow_ansi:
-                lv = f"{glow_ansi}{chars['v']}\033[0m"
-                rv = lv
-            else:
-                lv = chars['v']
-                rv = chars['v']
+            lv = Style(fg=vc).apply(chars['v'])
+            rv = Style(fg=vc).apply(chars['v'])
             body.append(f"{lv}{' ' * pad}{text_part}{' ' * pad}{rv}")
-        return body
+
+        return f"{top_border}\n" + "\n".join(body) + f"\n{bottom_border}"
 
     def _render_narrow(self) -> str:
         """窄屏降级：返回缩进的纯文本（无边框）。"""
@@ -350,4 +330,15 @@ class Box(TuiComponent):
 # 便捷子类
 # ═══════════════════════════════════════════════════════════
 
+class RoundedBox(Box):
+    """圆角边框组件 — Box(style=BoxStyle.ROUNDED) 的便捷别名。"""
 
+    def __init__(self, text: str, *, props: dict | None = None, **kwargs) -> None:
+        super().__init__(text, style=BoxStyle.ROUNDED, props=props, **kwargs)
+
+
+class DoubleBox(Box):
+    """双线边框组件 — Box(style=BoxStyle.DOUBLE) 的便捷别名。"""
+
+    def __init__(self, text: str, *, props: dict | None = None, **kwargs) -> None:
+        super().__init__(text, style=BoxStyle.DOUBLE, props=props, **kwargs)

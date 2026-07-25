@@ -38,7 +38,7 @@ from ..animation.animator import AnimatorContext
 from ..core.text_utils import build_glow_ansi
 from ..core.component_registry import ComponentRegistry
 from .renderer_base import FrameworkRenderer, register_render_command
-from .const import _cmd_name, _emergency_write
+from .utils import _cmd_name, _emergency_write
 
 _logger = logging.getLogger(__name__)
 

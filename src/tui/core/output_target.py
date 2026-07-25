@@ -220,38 +220,9 @@ class NullTarget:
         return 120
 
 
-
-# ══════════════════════════════════════════════════════════
-# Rich Console 惰性初始化（从 rich_console.py 合并）
-# ══════════════════════════════════════════════════════════
-
-from typing import Any, Dict
-
-_console = None
-_console_lock = threading.Lock()
-
-
-def get_console():
-    """获取 rich.Console 实例（惰性初始化，线程安全）。
-
-    首次调用时创建 Console 实例，后续调用复用同一实例。
-    使用双重检查锁定确保线程安全。
-    """
-    global _console
-    if _console is None:
-        with _console_lock:
-            if _console is None:  # 双重检查
-                from rich.console import Console
-                from ..terminal import get_safe_console_config
-                config: Dict[str, Any] = get_safe_console_config()
-                _console = Console(**config)
-    return _console
-
-
 __all__ = [
     "IOutputTarget",
     "TerminalTarget",
     "BufferTarget",
     "NullTarget",
-    "get_console",
 ]

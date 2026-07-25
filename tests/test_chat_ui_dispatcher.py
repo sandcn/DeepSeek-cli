@@ -19,7 +19,7 @@ sys.path.insert(0, "/home/DeepSeek-cli")
 from src.tui.engine.const import (
     _CLEAR_PARSE_LINE, RenderCommand,
 )
-from src.tui.engine.const import _truncate_msg
+from src.tui.engine.utils import _truncate_msg
 from src.tui.engine.dispatcher import EventDispatcher
 from src.tui.events.event_types import (
     DisplayEvent,

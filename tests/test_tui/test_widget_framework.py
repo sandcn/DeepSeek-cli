@@ -5,6 +5,7 @@ Tests cover:
   - Widget key/parent attributes
   - WidgetTree find/find_all/find_by_type
   - RenderBuffer operations (write/merge/sub_buffer/render)
+  - Layout widgets (Vertical/Horizontal/Padding/Border)
   - Framework WidgetTree integration
   - Style extensions
   - StatusBarWidget
@@ -356,6 +357,121 @@ class TestRenderBuffer(unittest.TestCase):
         self.assertEqual(buf._grid[1][2], " ")
 
 
+class TestLayoutWidgets(unittest.TestCase):
+    """Test layout widgets."""
+
+    def test_vertical_import(self):
+        from src.tui.layout import Vertical
+        self.assertIsNotNone(Vertical)
+
+    def test_horizontal_import(self):
+        from src.tui.layout import Horizontal
+        self.assertIsNotNone(Horizontal)
+
+    def test_padding_import(self):
+        from src.tui.layout import Padding
+        self.assertIsNotNone(Padding)
+
+    def test_border_import(self):
+        from src.tui.layout import Border
+        self.assertIsNotNone(Border)
+
+    def test_vertical_isinstance(self):
+        """Vertical is a proper Widget subclass (isinstance works)."""
+        from src.tui.layout import Vertical
+        from src.tui.widget_base import Widget
+        v = Vertical([])
+        self.assertIsInstance(v, Widget)
+        self.assertIsInstance(v, Vertical)
+
+    def test_horizontal_isinstance(self):
+        """Horizontal is a proper Widget subclass (isinstance works)."""
+        from src.tui.layout import Horizontal
+        from src.tui.widget_base import Widget
+        h = Horizontal([])
+        self.assertIsInstance(h, Widget)
+        self.assertIsInstance(h, Horizontal)
+
+    def test_padding_isinstance(self):
+        """Padding is a proper Widget subclass (isinstance works)."""
+        from src.tui.layout import Padding
+        from src.tui.widget_base import Widget
+        p = Padding(Widget())
+        self.assertIsInstance(p, Widget)
+        self.assertIsInstance(p, Padding)
+
+    def test_border_isinstance(self):
+        """Border is a proper Widget subclass (isinstance works)."""
+        from src.tui.layout import Border
+        from src.tui.widget_base import Widget
+        b = Border(Widget())
+        self.assertIsInstance(b, Widget)
+        self.assertIsInstance(b, Border)
+
+    def test_vertical_render(self):
+        """Vertical renders children top-to-bottom."""
+        from src.tui.layout import Vertical
+        from src.tui.widget_base import Widget
+        from src.tui.render_buffer import RenderBuffer
+
+        class Label(Widget):
+            def __init__(self, text):
+                super().__init__()
+                self._text = text
+            def render(self, buffer):
+                buffer.write(0, 0, self._text)
+
+        v = Vertical([Label("A"), Label("B")], spacing=0)
+        buf = RenderBuffer(10, 3)
+        v.render(buf)
+        output = buf.render()
+        lines = output.split("\n")
+        self.assertIn("A", lines[0] if lines else "")
+        self.assertIn("B", lines[1] if len(lines) > 1 else "")
+
+    def test_padding_render(self):
+        """Padding adds space around child."""
+        from src.tui.layout import Padding
+        from src.tui.widget_base import Widget
+        from src.tui.render_buffer import RenderBuffer
+
+        class Label(Widget):
+            def __init__(self, text):
+                super().__init__()
+                self._text = text
+            def render(self, buffer):
+                buffer.write(0, 0, self._text)
+
+        p = Padding(Label("X"), left=2, top=1)
+        buf = RenderBuffer(10, 5)
+        p.render(buf)
+        output = buf.render()
+        # Content should be at row 1 (due to top=1)
+        self.assertIn("X", output)
+
+    def test_layout_key_support(self):
+        """Layout controls support key attribute."""
+        from src.tui.layout import Vertical, Horizontal, Padding, Border
+        from src.tui.widget_base import Widget
+        v = Vertical([], key="v1")
+        h = Horizontal([], key="h1")
+        p = Padding(Widget(), key="p1")
+        b = Border(Widget(), key="b1")
+        self.assertEqual(v.key, "v1")
+        self.assertEqual(h.key, "h1")
+        self.assertEqual(p.key, "p1")
+        self.assertEqual(b.key, "b1")
+
+    def test_vertical_with_key_inherited(self):
+        """Vertical key is inherited from Widget."""
+        from src.tui.layout import Vertical
+        from src.tui.widget_base import Widget, WidgetTree
+        v = Vertical([], key="my_vertical")
+        tree = WidgetTree(v)
+        found = tree.find("my_vertical")
+        self.assertIs(found, v)
+
+
 class TestFrameworkWidgetTree(unittest.TestCase):
     """Test Framework WidgetTree integration."""
 
@@ -515,6 +631,18 @@ class TestStatusBarWidget(unittest.TestCase):
         self.assertIn("StatusBarWidget", r)
         self.assertIn("gpt4", r)
         self.assertIn("5", r)
+
+    def test_vertical_layout_with_statusbar(self):
+        """StatusBarWidget works inside Vertical layout."""
+        from src.tui.widgets.status_bar_widget import StatusBarWidget
+        from src.tui.layout import Vertical
+        from src.tui.render_buffer import RenderBuffer
+        sb = StatusBarWidget(props={"model_name": "test", "status_active": False})
+        v = Vertical([sb])
+        buf = RenderBuffer(80, 3)
+        v.render(buf)
+        output = buf.render()
+        self.assertIn("test", output)
 
 
 class TestIntegration(unittest.TestCase):

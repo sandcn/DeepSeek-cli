@@ -200,8 +200,6 @@ def apply_wave(colors: list[int], frame: int, amplitude: float = 3.0, wavelength
 def build_fade_in_ansi_enhanced(frame: int, total_frames: int = 4, style: str = "smooth") -> str:
     """增强版渐显 ANSI 序列（支持弹入和正弦平滑）。
 
-    委托至 FadeIn 类实现，消除独立逻辑重复。
-
     Args:
         frame: 当前渐显帧号（0-based）。
         total_frames: 渐显总帧数。
@@ -213,10 +211,15 @@ def build_fade_in_ansi_enhanced(frame: int, total_frames: int = 4, style: str = 
     from ..terminal.terminal import is_narrow
     if is_narrow() or frame >= total_frames:
         return ""
-    from ..animation.transitions import FadeIn
-    fade = FadeIn(easing=style, total_frames=total_frames,
-                  start_color=238, end_color=255)
-    return fade.render(frame)
+    if style == "bounce":
+        color = bounce_frame_color(frame, total_frames)
+    elif style == "smooth":
+        t = sine_breath_t(frame, total_frames)
+        color = round(238 + t * (255 - 238))
+    else:  # linear
+        t = frame / max(total_frames - 1, 1)
+        color = round(238 + t * (255 - 238))
+    return f"\033[38;5;{min(255, max(0, color))}m"
 
 
 def build_wave_sep_ansi(colors: list[int], frame: int, char: str = "\u2501", amplitude: float = 2.0) -> str:

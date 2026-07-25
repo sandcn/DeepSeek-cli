@@ -13,7 +13,7 @@ from unittest.mock import patch
 
 import pytest
 
-from src.tui.core.style import FADE_COLOR_DARK
+from src.tui.core.style import FADE_COLOR_DARK, FADE_COLOR_MID
 from src.tui.core.text_utils import apply_fade_in, build_fade_in_ansi
 
 
@@ -97,22 +97,18 @@ class TestBuildFadeInAnsiBackwardCompat:
             f"fade_frame=0 应输出色号 {FADE_COLOR_DARK}, 实际: {repr(result)}"
         )
 
-    def test_frame_1_produces_ansi(self):
-        """第 1 帧产生有效的 ANSI 颜色序列。"""
+    def test_frame_1_uses_fade_color_mid(self):
+        """第 1 帧使用 FADE_COLOR_MID(244) 色号。"""
         result = build_fade_in_ansi(1, total_frames=3)
-        assert result.startswith("\033[38;5;"), (
-            f"fade_frame=1 应产生 ANSI 颜色序列, 实际: {repr(result)}"
-        )
-        assert result.endswith("m"), (
-            f"fade_frame=1 应以 'm' 结尾, 实际: {repr(result)}"
+        expected = f"\033[38;5;{FADE_COLOR_MID}m"
+        assert result == expected, (
+            f"fade_frame=1 应输出色号 {FADE_COLOR_MID}, 实际: {repr(result)}"
         )
 
-    def test_frame_2_produces_ansi(self):
-        """第 2 帧产生有效的 ANSI 颜色序列（FadeIn 连续插值）。"""
+    def test_frame_2_returns_empty(self):
+        """第 2 帧（>= FADE_COLORS 长度）返回空字符串。"""
         result = build_fade_in_ansi(2, total_frames=3)
-        assert result.startswith("\033[38;5;"), (
-            f"fade_frame=2 应产生 ANSI 颜色序列, 实际: {repr(result)}"
-        )
+        assert result == "", f"fade_frame=2 应返回空字符串, 实际: {repr(result)}"
 
     def test_frame_exceeds_total_returns_empty(self):
         """第 3 帧（>= total_frames）返回空字符串。"""
@@ -143,7 +139,7 @@ class TestNarrowScreen:
         # 窄屏时 FadeIn.render() 返回空字符串，apply_fade_in 返回原文本
         assert result == "hello"
 
-    @patch("src.tui.terminal.terminal.is_narrow", return_value=True)
+    @patch("src.tui.terminal.narrow.is_narrow", return_value=True)
     def test_build_fade_in_ansi_skips_on_narrow(self, mock_narrow):
         """窄屏时 build_fade_in_ansi 返回空字符串。"""
         result = build_fade_in_ansi(0, total_frames=3)
