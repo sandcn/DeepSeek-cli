@@ -20,7 +20,6 @@ from typing import ClassVar
 
 __all__: list[str] = [
     "Style",
-    "StyledText",
     "StyleSheet",
     # 命名色号常量
     "FADE_COLOR_DARK",
@@ -350,39 +349,6 @@ class Style:
 # ═══════════════════════════════════════════════════════════
 # StyledText — 带样式的文本片段
 # ═══════════════════════════════════════════════════════════
-
-
-@dataclass
-class StyledText:
-    """带样式的文本片段。
-
-    封装文本内容和样式，提供渲染方法。
-    无样式时直接返回原文本，不引入额外 ANSI 序列。
-
-    Args:
-        text: 文本内容。
-        style: 样式描述器，None 表示无样式。
-    """
-
-    text: str
-    style: Style | None = None
-
-    def render(self) -> str:
-        """渲染为 ANSI 字符串。
-
-        有 style 时调用 ``style.apply(text)``，
-        无 style 时直接返回 text（零开销）。
-
-        Returns:
-            渲染后的字符串。
-        """
-        if self.style:
-            return self.style.apply(self.text)
-        return self.text
-
-    def __bool__(self) -> bool:
-        """判断是否包含非空文本。"""
-        return bool(self.text)
 
 
 # ═══════════════════════════════════════════════════════════

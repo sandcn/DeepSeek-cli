@@ -17,8 +17,6 @@ from ..core.style import Style
 __all__ = [
     "BoxStyle",
     "Box",
-    "RoundedBox",
-    "DoubleBox",
 ]
 
 
@@ -330,15 +328,4 @@ class Box(TuiComponent):
 # 便捷子类
 # ═══════════════════════════════════════════════════════════
 
-class RoundedBox(Box):
-    """圆角边框组件 — Box(style=BoxStyle.ROUNDED) 的便捷别名。"""
 
-    def __init__(self, text: str, *, props: dict | None = None, **kwargs) -> None:
-        super().__init__(text, style=BoxStyle.ROUNDED, props=props, **kwargs)
-
-
-class DoubleBox(Box):
-    """双线边框组件 — Box(style=BoxStyle.DOUBLE) 的便捷别名。"""
-
-    def __init__(self, text: str, *, props: dict | None = None, **kwargs) -> None:
-        super().__init__(text, style=BoxStyle.DOUBLE, props=props, **kwargs)

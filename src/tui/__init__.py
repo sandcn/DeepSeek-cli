@@ -168,11 +168,6 @@ _components_mod = LazyLoader("src.tui.components")
 # ═══════════════════════════════════════════════════════════
 from .components._base import apply_fade_in
 
-# ═══════════════════════════════════════════════════════════
-# 测试工具
-# ═══════════════════════════════════════════════════════════
-from .testing import MockConsumer, MockTerminal
-
 # ── 组件延迟导入映射 ────────────────────────────────────
 # 以下符号通过 __getattr__ 从懒加载模块获取，
 # 避免 eager import 触发循环依赖链
@@ -181,14 +176,11 @@ from .testing import MockConsumer, MockTerminal
 _COMPONENT_SYMBOLS: set[str] = {
     "Box",
     "BoxStyle",
-    "RoundedBox",
-    "DoubleBox",
     "Panel",
     "Separator",
     "Spinner",
     "ProgressBar",
     "Table",
-    "CostDisplayComponent",
     "SplashScreen",
 }
 
@@ -242,18 +234,12 @@ __all__ = [
     # 通用组件（框架层）
     "Box",
     "BoxStyle",
-    "RoundedBox",
-    "DoubleBox",
     "Panel",
     "Separator",
     "Spinner",
     "ProgressBar",
     "Table",
-    "CostDisplayComponent",
     "SplashScreen",
     # 动画
     "apply_fade_in",
-    # 测试
-    "MockConsumer",
-    "MockTerminal",
 ]

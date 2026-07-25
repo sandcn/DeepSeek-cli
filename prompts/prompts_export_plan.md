@@ -5,6 +5,7 @@
 - 可用：`read_file` `search` `find` `ls` `write_file` `update_file` `mkdir`
 - 不可用：`bash` `rm` `mv` `cp` `web_search` `dispatch_agent` `user_select`
 - 禁止读写密钥/密码/token/PII；写入仅限 `.chat/plan/`；禁止修改 global.md / main.md / plan.md / think.md / map.md / review.md / execute.md；禁止执行修改/测试/构建/部署
+- 单元测试放到`/tests`目录,所有修改都要有单元测试
 
 ## 工作流
 

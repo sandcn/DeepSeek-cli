@@ -70,14 +70,11 @@ _SYMBOL_MAP: dict[str, LazyLoader] = {
     # ── 通用框架组件（可独立复用）─────────────────
     "BoxStyle": _box_mod,
     "Box": _box_mod,
-    "RoundedBox": _box_mod,
-    "DoubleBox": _box_mod,
     "Panel": _panel_mod,
     "Separator": _separator_mod,
     "Spinner": _spinner_mod,
     "ProgressBar": _progress_mod,
     "Table": _table_mod,
-    "CostDisplayComponent": _cost_mod,
     "SplashScreen": _splash_mod,
 
     # ── 协议 ─────────────────────────────────────
@@ -127,13 +124,12 @@ __all__ = [
     "WriteLineBlock",
 
     # ── 通用框架组件（可独立复用）─────────────────
-    "BoxStyle", "Box", "RoundedBox", "DoubleBox",
+    "BoxStyle", "Box",
     "Panel",
     "Separator",
     "Spinner",
     "ProgressBar",
     "Table",
-    "CostDisplayComponent",
     "SplashScreen",
 
     # ── 协议 ─────────────────────────────────────

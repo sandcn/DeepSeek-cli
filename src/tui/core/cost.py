@@ -16,27 +16,6 @@ _COMPRESS_HINT_PCT = 80
 _MILLION = 1_000_000
 
 
-def _get_content_length(content):
-    """计算消息content的字符长度，支持字符串和多模态列表格式。
-
-    Args:
-        content: 消息内容，可以是 str 或 list（多模态格式）。
-
-    Returns:
-        int: 内容字符长度。
-    """
-    if isinstance(content, str):
-        return len(content)
-    if isinstance(content, list):
-        # 多模态消息：提取text部分的长度
-        total = 0
-        for part in content:
-            if isinstance(part, dict) and part.get("type") == "text":
-                total += len(part.get("text", ""))
-            elif isinstance(part, str):
-                total += len(part)
-        return total
-    return 0
 
 
 def compute_round_cost_data(

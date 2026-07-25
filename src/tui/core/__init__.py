@@ -10,7 +10,7 @@
   - parallel_config: 并行显示常量与自适应配置（从 parallel 下沉）
   - tool_icons: 工具颜色和图标主题定义（从 parallel 下沉）
   - formatter: 文本格式化工具函数
-  - TrueColor / ColorValue: 24-bit 真彩色值对象与联合类型（颜色体系扩展）
+  - TrueColor: 24-bit 真彩色值对象（颜色体系扩展）
 """
 
 
@@ -115,17 +115,10 @@ _SYMBOL_MAP: dict[str, LazyLoader] = {
     "make_sep_gradient_enhanced": _text_utils_mod,
     # color
     "Color256": _color_mod,
-    "RGB": _color_mod,
     "TrueColor": _color_mod,
     "GradientDescriptor": _color_mod,
-    "ColorValue": _color_mod,
-    "to_ansi_fg": _color_mod,
-    "to_ansi_bg": _color_mod,
-    "to_256": _color_mod,
-    "auto_color": _color_mod,
     # style
     "Style": _style_mod,
-    "StyledText": _style_mod,
     "StyleSheet": _style_mod,
     # gradient
     "hex_to_256": _gradient_mod,
@@ -261,10 +254,9 @@ __all__ = [
     "build_sparkle_ansi", "build_left_border_ansi",
     "parse_theme_color", "make_sep_gradient_enhanced",
     # color
-    "Color256", "RGB", "TrueColor", "GradientDescriptor",
-    "ColorValue", "to_ansi_fg", "to_ansi_bg", "to_256", "auto_color",
+    "Color256", "TrueColor", "GradientDescriptor",
     # style
-    "Style", "StyledText", "StyleSheet",
+    "Style", "StyleSheet",
     # gradient
     "hex_to_256", "gradient_step", "gradient_range",
     # palettes
