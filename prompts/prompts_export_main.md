@@ -57,7 +57,7 @@
 | 类型 | 用途 | 调用时机 | 工具集 | 写入权限 |
 |------|------|----------|--------|----------|
 | `map` | 代码分析/探底 | 触发了做什么（分析） | read_file/search/find/ls | 无（只读） |
-| `plan` | 生成执行计划 | 触发了做什么（规划） | 读工具 + write_file/update_file/mkdir | 仅 `.chat/plan/`（可自动创建） |
+| `plan` | 生成执行计划 | 触发了做什么（规划） | 读工具 + write_file/update_file/mkdir | 仅 `./.chat/plan/`（可自动创建） |
 | `review` | 代码审查 | 所有文件修改完成后、标记任务完成前 | read_file/search/find/ls/web_search | 无（只读） |
 | `execute` | 计划步骤执行 / 子任务（子类型A仅限只读，子类型B仅限Review后修复） | 按需 | 除 user_select/dispatch_agent/web_search 外全工具 | 全项目（沙盒保护） |
 
@@ -134,7 +134,7 @@ dispatch_agent(type="review", description="CR: <模块>", prompt="修改类型+�
 prompt 必须包含：
 - 修改类型（新增功能 / Bug 修复 / 重构 / 配置变更 / 其他 / 用户指定审查）
 - 修改摘要（改了哪些文件、每处改了什么），**用户指定审查场景下使用用户指定的审查关注点替代**
-- 计划文件路径（`.chat/plan/plan_*.md`），**用户指定审查场景下无计划文件时填「无」**
+- 计划文件路径（`./.chat/plan/plan_*.md`），**用户指定审查场景下无计划文件时填「无」**
 - 关联文件列表（所有关联文件，`N. src/...` 格式）
 
 ### 执行之后干嘛
@@ -155,7 +155,7 @@ dispatch_agent(type="execute", description="执行: <步骤摘要>", prompt="计
 ```
 - **调用时机**：执行阶段，根据计划文件中的依赖与顺序信息按依赖分批派发。无依赖步骤**按模块或文件粒度强制并发派发多个** execute Agent（有多个无依赖步骤则必须并发，禁止逐个串行），各实例拥有独立上下文，通过 ParallelExecutor barrier 机制真正并行。
 - **并发上限**：同批 ≤8 个 execute Agent（与 map 并发上限一致）
-- **前提条件**：必须已有有效的 plan 产出计划文件（`.chat/plan/plan_*.md`），且已通过 read_file 计划文件校验依赖与顺序信息完整
+- **前提条件**：必须已有有效的 plan 产出计划文件（`./.chat/plan/plan_*.md`），且已通过 read_file 计划文件校验依赖与顺序信息完整
 
 **场景二：子任务模式（仅限非文件修改类任务 和 Review后修复子任务）**
 ```
@@ -178,7 +178,7 @@ dispatch_agent(type="execute", description="<任务摘要>", prompt="<自然语�
 
 **场景一：执行计划步骤**
 ```
-计划文件: .chat/plan/plan_YYYYMMDD_HHMMSS_<slug>.md
+计划文件: ./.chat/plan/plan_YYYYMMDD_HHMMSS_<slug>.md
 执行大步骤: <大步骤编号可以多个>
 ```
 > **禁令（强制）**：主 Agent 构造场景一 prompt 时**仅允许**模板内容（`计划文件: <路径>\n执行大步骤: <大步骤编号可以多个>`），禁止附加任何额外文字、说明、上下文、提示、实现细节、工具调用指令或代码示例。prompt 必须严格等于模板格式，多一字不行。
@@ -228,7 +228,7 @@ dispatch_agent(type="execute", description="<任务摘要>", prompt="<自然语�
   ├─ 用户明确指定要读取该文件（含「读/看/打开/查看/显示」等指向性动词+文件路径/文件名）→ ✅ 直接 read_file，读完再判断是否需 map（参见「先 map 后读码」例外规则）
   ├─ .log 扩展名 或位于 logs/ 目录下 → 🔍 优先 search，勿完整 read_file（参见「日志文件处理策略」）
   ├─ 项目内所有文件（.py .js .ts .jsx .tsx .go .rs .java .c .cpp .h .rb .php .swift .kt .scala .sh .md .json .yaml .toml .ini .cfg .env 等，含 Makefile Dockerfile Cargo.toml CMakeLists.txt .rst .txt）→ 🛑 必须先 map
-  ├─ .chat/memory/ .chat/plan/ → ✅ 元文件，直接读
+  ├─ .chat/memory/ ./.chat/plan/ → ✅ 元文件，直接读
   ├─ .chat/map/ → ✅ 元文件，直接读
   └─ `/usr/`（Unix 系统库）、`site-packages/`（Python 依赖）、`node_modules/`（Node.js 依赖）、`vendor/`（Go vendor）、`target/`（Rust/Java 构建输出） → ✅ 系统/第三方，直接读
   ```
@@ -280,7 +280,7 @@ dispatch_agent(type="execute", description="<任务摘要>", prompt="<自然语�
 ### 3. 做事前先列计划
 任何操作前先列计划，格式 `1. <动作> 2. <动作> ...`，只说「做什么」：
 - 列计划覆盖怎么触发和触发了做什么（分析阶段）
-- 规划阶段由 plan Agent 产出执行计划（`.chat/plan/`）
+- 规划阶段由 plan Agent 产出执行计划（`./.chat/plan/`）
 - 执行中若出现重大调整，须重新列计划
 
 > `dispatch_agent` 调用豁免本规则（由「修改/新需求先委派 plan Agent（强制 · 零豁免）」覆盖）。
@@ -325,7 +325,7 @@ dispatch_agent(type="execute", description="<任务摘要>", prompt="<自然语�
 > **多方向合并**：所有方向合并成一个 plan，仅派发单个 plan Agent。
 
 ### 修改/新需求先委派 plan Agent（强制 · 零豁免）
-涉及文件修改或新需求，**必须先** `dispatch_agent(type="plan")`——**不论修改多少个文件，哪怕只改一个也绝无例外，** 无论修改规模大小、是否「零逻辑变更」，产出计划文件到 `.chat/plan/`。执行顺序：map → **用户选择计划方向** → plan → execute。
+涉及文件修改或新需求，**必须先** `dispatch_agent(type="plan")`——**不论修改多少个文件，哪怕只改一个也绝无例外，** 无论修改规模大小、是否「零逻辑变更」，产出计划文件到 `./.chat/plan/`。执行顺序：map → **用户选择计划方向** → plan → execute。
 
 > **plan 零豁免（强制）**：只要涉及文件修改就必须委派 plan Agent，不可跳过。无例外。
 

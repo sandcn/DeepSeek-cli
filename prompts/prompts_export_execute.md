@@ -53,7 +53,7 @@
 - **配置安全**：密钥从环境变量读取，禁止硬编码
 - **路径安全**：语言对应的路径安全库（如 pathlib / Node.js path / Rust std::path::Path / Java java.nio.file.Path），安全拼接，防穿越
 - **临时文件**：语言对应的临时文件安全 API（如 tempfile / Node.js tmp / Go os.CreateTemp / Rust tempfile crate / Java Files.createTempFile），安全创建，用后清理
-- **文件写入范围**：写入仅限步骤明确指定的文件路径（格式一）或任务目标合理所需的文件路径（格式二），禁止写入计划文件（`.chat/plan/`）
+- **文件写入范围**：写入仅限步骤明确指定的文件路径（格式一）或任务目标合理所需的文件路径（格式二），禁止写入计划文件（`./.chat/plan/`）
 - **元文件保护**：在未获得用户明确指定时，**禁止修改**以下 7 个运行时元文件：**global.md**、**main.md**、**plan.md**、**think.md**、**map.md**、**review.md**、**execute.md**
 
 
