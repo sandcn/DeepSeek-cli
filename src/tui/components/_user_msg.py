@@ -18,8 +18,7 @@ from ._base import TuiComponent
 from ..core.style import StyleSheet
 from ..core.theme import THEME
 from ..animation.animator import AnimatorContext
-from ..core.effects import build_fg_breath_ansi
-from ..core.text_utils import build_sparkle_ansi
+from ..core.effects import build_fg_breath_ansi, sparkle_color
 from ..render_buffer import RenderBuffer
 
 
@@ -56,7 +55,7 @@ class UserMsgBlock(TuiComponent):
         user_match = re.search(r"38;5;(\d+)", user_color)
         breath_base = int(user_match.group(1)) if user_match else 45
 
-        sparkle_ansi = build_sparkle_ansi(frame, sparkle_base, 6)
+        sparkle_ansi = f"\033[38;5;{sparkle_color(frame, sparkle_base, period=6)}m"
         breath_ansi = build_fg_breath_ansi(frame, breath_base, min(255, breath_base + 20), 12)
         ansi_str = f"\n  {sparkle_ansi}>\033[0m {breath_ansi}{self.text}\033[0m"
         # 弹入动效：使用 FadeIn(bounce) 包裹，产生颜色弹入效果

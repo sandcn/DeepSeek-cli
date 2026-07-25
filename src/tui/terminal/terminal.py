@@ -24,6 +24,7 @@ from .adapter import TerminalAdapter
 from .._locks import io_lock, OUTPUT_LOCK_TIMEOUT
 from .blessed import get_terminal
 from ..core.ttl_cache import TTLCache
+import threading
 
 _logger = logging.getLogger(__name__)
 
@@ -37,9 +38,40 @@ def _fetch_terminal_width() -> int:
 
 
 # 终端宽度 TTL 缓存实例（0.5s TTL，减少 10Hz tick 循环中 syscall 开销）
-_term_width_cache: TTLCache[int] = TTLCache(
-    fetcher=_fetch_terminal_width, ttl=0.5,
-)
+class TerminalWidthCache:
+    """终端宽度缓存 — TTL 缓存，减少高频 ioctl/syscall。
+
+    默认 0.5s TTL，适合 10Hz 渲染循环。
+    提供类级单例访问，供全局统一使用。
+    """
+
+    _instance: "TerminalWidthCache | None" = None
+    _instance_lock = threading.Lock()
+
+    def __init__(self, ttl: float = 0.5) -> None:
+        self._cache: TTLCache[int] = TTLCache(
+            fetcher=_fetch_terminal_width, ttl=ttl,
+        )
+
+    @classmethod
+    def get_default(cls) -> "TerminalWidthCache":
+        if cls._instance is None:
+            with cls._instance_lock:
+                if cls._instance is None:
+                    cls._instance = cls()
+        return cls._instance
+
+    def get_width(self) -> int:
+        return self._cache.get()
+
+    def refresh(self) -> int:
+        return self._cache.refresh()
+
+    def clear(self) -> None:
+        self._cache.clear()
+
+
+_width_cache = TerminalWidthCache.get_default()
 
 
 # ═══════════════════════════════════════════════════════════
@@ -51,7 +83,7 @@ EXTRA_NARROW_THRESHOLD = 50
 
 
 def get_terminal_width() -> int:
-    return _term_width_cache.get()
+    return _width_cache.get_width()
 
 
 def set_narrow_threshold(normal: int, extra: int) -> None:
@@ -341,6 +373,7 @@ def leave_raw_mode(guard: dict | None) -> None:
 
 __all__ = [
     "get_terminal_width",
+    "TerminalWidthCache",
     "LockedTerminal",
     "is_narrow",
     "narrow_truncate", "narrow_indent",

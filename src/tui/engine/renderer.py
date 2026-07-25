@@ -35,7 +35,7 @@ from ..components import (
 )
 
 from ..animation.animator import AnimatorContext
-from ..core.text_utils import build_glow_ansi
+from ..core.effects import build_glow_ansi
 from ..core.component_registry import ComponentRegistry
 from .renderer_base import FrameworkRenderer, register_render_command
 from .utils import _cmd_name, _emergency_write
@@ -141,34 +141,28 @@ class TuiRenderer(FrameworkRenderer):
     def _do_tool_output(self, text: str) -> None:
         if not self._in_tool_group:
             self._in_tool_group = True
-            self._render_tool_panel_top()
+            self._render_tool_panel("╭", "─", "工具调用")
         block = ToolOutputBlock(text)
         self._record_lines(block.render_to_adapter(self._adapter))
 
     # ── 工具 Panel 边框辅助方法（消除顶部/底部边框渲染重复） ─────────
 
-    def _render_tool_panel_top(self) -> None:
-        """渲染工具 Panel 顶部边框（带呼吸辉光的圆角框）。
+    def _render_tool_panel(self, corner: str, char: str, label: str = "") -> None:
+        """渲染工具 Panel 边框（带呼吸辉光的圆角框，统一顶部/底部）。
 
-        边框格式：``╭── 工具调用 ──╮``（12 字符宽度）。
-        _in_tool_group 由调用方（_do_tool_output）在调用此方法前设置。
+        Args:
+            corner: 角字符，顶部传 ``╭``，底部传 ``╰``
+            char: 边框填充字符，通常为 ``─``
+            label: 标签文本，顶部传 ``工具调用``，底部不传（空字符串）
         """
         _frame = AnimatorContext.get_default().frame
         glow = build_glow_ansi(_frame, 23, 24)
-        top_line = f"  {glow}╭── 工具调用 ──╮\033[0m"
-        self._adapter.write(Text.from_ansi(top_line))
-        self._record_lines(1)
-
-    def _render_tool_panel_bottom(self) -> None:
-        """渲染工具 Panel 底部边框（带呼吸辉光的圆角框）。
-
-        边框格式：``╰──────────╯``（12 字符宽度）。
-        _in_tool_group 由调用方（_do_tool_summary）在调用此方法后重置。
-        """
-        _frame = AnimatorContext.get_default().frame
-        glow = build_glow_ansi(_frame, 23, 24)
-        bottom_line = f"  {glow}╰{'─' * 10}╯\033[0m"
-        self._adapter.write(Text.from_ansi(bottom_line))
+        reverse_corner = corner.translate(str.maketrans({'╭': '╮', '╰': '╯'}))
+        if label:
+            line = f"  {glow}{corner}{char * 2} {label} {char * 2}{reverse_corner}\033[0m"
+        else:
+            line = f"  {glow}{corner}{char * 10}{reverse_corner}\033[0m"
+        self._adapter.write(Text.from_ansi(line))
         self._record_lines(1)
 
     @register_render_command(RenderCommand.TOOL_SUMMARY, (1, 2))
@@ -177,7 +171,7 @@ class TuiRenderer(FrameworkRenderer):
         self._record_lines(block.render_to_adapter(self._adapter))
         if self._in_tool_group:
             self._in_tool_group = False
-            self._render_tool_panel_bottom()
+            self._render_tool_panel("╰", "─")
 
     # ── 解析进度 ──────────────────────────────────
 

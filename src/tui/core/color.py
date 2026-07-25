@@ -25,7 +25,7 @@ logger = logging.getLogger(__name__)
 
 
 # ── xterm 调色板（从 gradient 共享模块导入） ──
-from .gradient import _build_xterm_palette, _XTERM_PALETTE
+from .gradient import _build_xterm_palette, _XTERM_PALETTE, _find_closest_256
 
 
 # ═══════════════════════════════════════════════════════════
@@ -305,35 +305,6 @@ def _validate_rgb(r: int, g: int, b: int) -> None:
         raise ValueError(f"g must be in [0, 255], got {g}")
     if not (0 <= b <= 255):
         raise ValueError(f"b must be in [0, 255], got {b}")
-
-
-def _find_closest_256(r: int, g: int, b: int) -> int:
-    """在 xterm-256 调色板中查找最接近的色号。
-
-    使用欧氏距离（平方）度量颜色差异，返回距离最小的色号。
-    精确匹配时提前退出。
-
-    Args:
-        r: 红色分量（0-255）。
-        g: 绿色分量（0-255）。
-        b: 蓝色分量（0-255）。
-
-    Returns:
-        最接近的色号（0-255）。
-    """
-    best_idx: int = 0
-    best_dist: int = 2**31 - 1
-
-    for i, (cr, cg, cb) in enumerate(_XTERM_PALETTE):
-        dr, dg, db = r - cr, g - cg, b - cb
-        dist: int = dr * dr + dg * dg + db * db
-        if dist < best_dist:
-            best_dist = dist
-            best_idx = i
-            if best_dist == 0:  # 精确匹配，提前退出
-                break
-
-    return best_idx
 
 
 # ═══════════════════════════════════════════════════════════

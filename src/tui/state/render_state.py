@@ -135,7 +135,22 @@ class RenderState:
             try:
                 rr._output.flush()
             except Exception:
-                _logger.debug("%s 防御性 flush 异常", renderer_attr, exc_info=True)
+                _logger.warning("%s 防御性 flush 异常", renderer_attr, exc_info=True)
+
+    def _close_renderer(self, attr_name: str) -> None:
+        """关闭并清空指定渲染器属性，安全刷出缓冲。
+
+        通用工具方法：通过属性名获取渲染器实例，close → flush → nullify 三连模式。
+        消除 ChatRenderState 中 close_content/close_reasoning 的重复关闭模式。
+
+        Args:
+            attr_name: 渲染器在子类实例上的属性名（如 "content"、"reasoning"）。
+        """
+        rr = getattr(self, attr_name, None)
+        if rr is not None:
+            rr.close()
+            self._safe_flush(attr_name)
+            setattr(self, attr_name, None)
 
 
 # ═══════════════════════════════════════════════════════════
@@ -212,9 +227,7 @@ class ChatRenderState(RenderState):
             _sep_renderer = Separator(style=_style, width=None, start_color=45, end_color=237, frame=_bf)
             _sep = _sep_renderer.render()
             rr.write(f"\n  {_sep}")
-            rr.close()
-            self._safe_flush("reasoning")
-            self.reasoning = None
+            self._close_renderer("reasoning")
         self.reasoning_state = _ReasoningState.CLOSED
 
     def reopen_reasoning(self) -> None:
@@ -227,11 +240,8 @@ class ChatRenderState(RenderState):
         self.reasoning_state = _ReasoningState.INACTIVE
 
     def close_content(self) -> None:
-        cr = self.content
-        if cr is not None:
-            cr.close()
-            self._safe_flush("content")
-            self.content = None
+        """关闭内容渲染器，刷出缓冲并置空。"""
+        self._close_renderer("content")
 
     def close_all(self) -> None:
         """关闭所有活跃的渲染器（实现基类抽象方法）。

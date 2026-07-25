@@ -22,28 +22,12 @@
 from __future__ import annotations
 
 import threading
-from typing import ClassVar, Tuple
 
-# RenderCommand 整数值 — 零依赖子模块，避免模块级循环依赖
-from ..engine._cmd_ids import (
-    CONTENT,
-    DISPLAY_MSGS,
-    ERROR,
-    MAIN_PHASE,
-    NOTIFICATION,
-    PARSE_INFO,
-    PHASE_DONE,
-    REASONING,
-    SPLASH,
-    SUBAGENT_FRAME,
-    TOOL_COUNT_DEC,
-    TOOL_COUNT_INC,
-    TOOL_FAIL_INC,
-    TOOL_OUTPUT,
-    TOOL_SUMMARY,
-    USER_MSG,
-    WRITE_LINE,
-)
+from .registry_base import RegistryBase
+from .singleton import SingletonMeta
+
+# RenderCommand 枚举值 — 使用 .value 获取整数值
+from ..engine.const import RenderCommand
 
 
 __all__: list[str] = [
@@ -51,16 +35,13 @@ __all__: list[str] = [
 ]
 
 
-class ComponentRegistry:
+class ComponentRegistry(RegistryBase, metaclass=SingletonMeta):
     """组件注册表 — 管理 RenderCommand → 组件映射。
 
     映射结构：command_id (int) → (method_name: str, arg_indices: tuple[int, ...])
 
-    单例模式，通过 get_default() 获取全局实例。
+    单例模式，由 ``SingletonMeta`` 自动提供 get_default / reset_default。
     """
-
-    _instance: ComponentRegistry | None = None
-    _instance_lock: threading.Lock = threading.Lock()
 
     def __init__(self) -> None:
         """初始化注册表（私有构造器，通过 get_default() 获取）。"""
@@ -82,24 +63,24 @@ class ComponentRegistry:
         """
         return {
             # ── 框架通用命令（5 个）── renderer_base.py
-            NOTIFICATION:  ("_do_notification",   (1,)),
-            WRITE_LINE:    ("_do_write_line",     (1,)),
-            ERROR:         ("_do_error",          (1,)),
-            SPLASH:        ("_do_splash",         ()),
-            SUBAGENT_FRAME: ("_do_subagent_frame", (1,)),
+            RenderCommand.NOTIFICATION.value:   ("_do_notification",   (1,)),
+            RenderCommand.WRITE_LINE.value:     ("_do_write_line",     (1,)),
+            RenderCommand.ERROR.value:          ("_do_error",          (1,)),
+            RenderCommand.SPLASH.value:         ("_do_splash",         ()),
+            RenderCommand.SUBAGENT_FRAME.value: ("_do_subagent_frame", (1,)),
             # ── 聊天域命令（12 个）── renderer.py
-            REASONING:     ("_do_reasoning",      (1,)),
-            CONTENT:       ("_do_content",        (1,)),
-            PHASE_DONE:    ("_do_phase_done",     (1,)),
-            TOOL_COUNT_INC: ("_do_tool_count_inc", ()),
-            TOOL_COUNT_DEC: ("_do_tool_count_dec", ()),
-            TOOL_FAIL_INC: ("_do_tool_fail_inc",  ()),
-            MAIN_PHASE:    ("_do_main_phase",     (1,)),
-            TOOL_OUTPUT:   ("_do_tool_output",    (1,)),
-            TOOL_SUMMARY:  ("_do_tool_summary",   (1, 2)),
-            PARSE_INFO:    ("_do_parse_info",     (1, 2, 3)),
-            USER_MSG:      ("_do_user_message",   (1,)),
-            DISPLAY_MSGS:  ("_do_display_messages", (1, 2)),
+            RenderCommand.REASONING.value:      ("_do_reasoning",      (1,)),
+            RenderCommand.CONTENT.value:        ("_do_content",        (1,)),
+            RenderCommand.PHASE_DONE.value:     ("_do_phase_done",     (1,)),
+            RenderCommand.TOOL_COUNT_INC.value: ("_do_tool_count_inc", ()),
+            RenderCommand.TOOL_COUNT_DEC.value: ("_do_tool_count_dec", ()),
+            RenderCommand.TOOL_FAIL_INC.value:  ("_do_tool_fail_inc",  ()),
+            RenderCommand.MAIN_PHASE.value:     ("_do_main_phase",     (1,)),
+            RenderCommand.TOOL_OUTPUT.value:    ("_do_tool_output",    (1,)),
+            RenderCommand.TOOL_SUMMARY.value:   ("_do_tool_summary",   (1, 2)),
+            RenderCommand.PARSE_INFO.value:     ("_do_parse_info",     (1, 2, 3)),
+            RenderCommand.USER_MSG.value:       ("_do_user_message",   (1,)),
+            RenderCommand.DISPLAY_MSGS.value:   ("_do_display_messages", (1, 2)),
         }
 
     def _populate_defaults(self) -> None:
@@ -111,22 +92,9 @@ class ComponentRegistry:
         for cid, (method_name, arg_indices) in self._build_default_commands().items():
             self._mapping[cid] = (method_name, arg_indices)
 
-    # ── 单例访问 ──────────────────────────────────────
-
-    @classmethod
-    def get_default(cls) -> ComponentRegistry:
-        """获取全局默认注册表实例（线程安全单例）。"""
-        if cls._instance is None:
-            with cls._instance_lock:
-                if cls._instance is None:
-                    cls._instance = cls()
-        return cls._instance
-
-    @classmethod
-    def reset_default(cls) -> None:
-        """重置默认实例（供测试使用）。"""
-        with cls._instance_lock:
-            cls._instance = None
+    # 单例访问由 SingletonMeta 提供：
+    #   ComponentRegistry.get_default() → 线程安全单例获取（DCL）
+    #   ComponentRegistry.reset_default() → 线程安全单例重置（供测试使用）
 
     # ── 注册表操作 ────────────────────────────────────
 
@@ -192,3 +160,12 @@ class ComponentRegistry:
         """
         with self._lock:
             return len(self._mapping)
+
+    def list_registered(self) -> dict:
+        """返回所有已注册映射的副本（线程安全）。
+
+        Returns:
+            命令 ID → (method_name, arg_indices) 映射字典副本。
+        """
+        with self._lock:
+            return dict(self._mapping)

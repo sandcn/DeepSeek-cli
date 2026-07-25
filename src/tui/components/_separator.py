@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from ._base import TuiComponent
 from ..render_buffer import RenderBuffer
+from ..core.effects import sine_color
 
 
 class Separator(TuiComponent):
@@ -175,7 +176,6 @@ class Separator(TuiComponent):
         整条分隔线使用同一呼吸色号，在 start_color 和 end_color+30 间
         正弦呼吸，产生柔光脉动视觉效果。
         """
-        from ..core.effects import sine_color
         breath_color = sine_color(
             self._frame,
             self._start_color,

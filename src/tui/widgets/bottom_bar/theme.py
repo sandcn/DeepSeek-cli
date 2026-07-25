@@ -21,7 +21,6 @@
 
 from __future__ import annotations
 
-from ...core.gradient import gradient_range
 from ...animation.animator import AnimatorContext
 from ...core.effects import sine_color_range
 
@@ -134,24 +133,42 @@ _PLACEHOLDER_STREAMING = "AI 生成中..."   # 流式输出期间使用
 def make_sep_gradient(width: int, start_color: int = 45, char: str = "\u2501") -> str:
     """生成全宽渐变分隔线（青色→深灰）。
 
-    委托到 _text_utils.make_sep_gradient() 实现，
-    保持向后兼容。
+    委托到 build_gradient() 实现，保持向后兼容。
     """
-    from ...core.text_utils import make_sep_gradient as _impl
-    return _impl(width, start_color=start_color, char=char)
+    from ...core.text_utils import build_gradient
+    return build_gradient(width, start_color=start_color, char=char)
 
 
-# ── 提示符呼吸动画（第四阶段美化） ──────────────────────────
-_PROMPT_BREATH_COLORS: list[int] = gradient_range(32, 81, 6) + gradient_range(81, 32, 6)
-"""提示符呼吸色号：暗青(32)↔亮青(81) 对称呼吸，12 帧。"""
-_PROMPT_BREATH_LEN: int = 12
+# ── 统一呼吸色函数 ────────────────────────────────────────
+def get_breath_ansi(frame: int, lo: int, hi: int, period: int = 12) -> str:
+    """统一呼吸色 ANSI 前景序列生成器。
+
+    使用 AnimatorContext.sine_color 在 lo↔hi 间做正弦波呼吸，
+    返回 ``\\033[38;5;{color}m`` 格式的 ANSI 256 色前景序列。
+
+    Args:
+        frame: 呼吸帧号（sine_color 内部使用全局帧，此参数保留为兼容）。
+        lo: 最暗色号（0-255）。
+        hi: 最亮色号（0-255）。
+        period: 呼吸周期帧数，默认 12。
+
+    Returns:
+        ANSI 256 色前景色序列。
+    """
+    try:
+        color = AnimatorContext.get_default().sine_color(lo, hi, period)
+        return f"\033[38;5;{color}m"
+    except Exception:
+        return f"\033[38;5;{lo}m"
 
 
 def get_prompt_breath_color(frame: int) -> str:
     """根据帧号返回当前提示符呼吸色的 ANSI 256 色序列。
 
-    使用 AnimatorContext.sine_color 做正弦波呼吸，
-    在深青(32)↔亮青(81)间平滑过渡。
+    委托到 :func:`get_breath_ansi` 实现。
+
+    .. deprecated::
+        Use :func:`get_breath_ansi` instead.
 
     Args:
         frame: 呼吸帧号（自动取模 _PROMPT_BREATH_LEN）。
@@ -159,30 +176,16 @@ def get_prompt_breath_color(frame: int) -> str:
     Returns:
         ANSI 256 色前景色序列，格式 ``\\033[38;5;{color}m``。
     """
-    if frame > 0:
-        try:
-            color = AnimatorContext.get_default().sine_color(32, 81, 12)
-            return f"\033[38;5;{color}m"
-        except Exception:
-            pass
-    if not _PROMPT_BREATH_COLORS:
-        return _COLOR_DEEP_CYAN
-    idx = frame % _PROMPT_BREATH_LEN
-    color = _PROMPT_BREATH_COLORS[idx] if idx < len(_PROMPT_BREATH_COLORS) else 32
-    return f"\033[38;5;{color}m"
-
-
-# ── 分隔线呼吸色序（第四阶段美化） ──
-_SEP_BREATH_COLORS: list[int] = [45, 44, 43, 42, 41, 40, 41, 42, 43, 44]
-"""分隔线呼吸起始色：亮青(45)↔中青(40)↔亮青(45)，10 帧对称。"""
-_SEP_BREATH_LEN: int = 10
+    return get_breath_ansi(frame, 32, 81, 12)
 
 
 def get_sep_breath_color(frame: int) -> str:
     """根据帧号返回当前分隔线呼吸起始色的 ANSI 256 色序列。
 
-    使用 AnimatorContext.sine_color 做正弦波呼吸，
-    在中青(40)↔亮青(45)间平滑过渡。
+    委托到 :func:`get_breath_ansi` 实现。
+
+    .. deprecated::
+        Use :func:`get_breath_ansi` instead.
 
     Args:
         frame: 呼吸帧号（自动取模 _SEP_BREATH_LEN）。
@@ -190,25 +193,17 @@ def get_sep_breath_color(frame: int) -> str:
     Returns:
         ANSI 256 色前景色序列，格式 ``\\033[38;5;{color}m``。
     """
-    if frame > 0:
-        try:
-            color = AnimatorContext.get_default().sine_color(40, 45, 10)
-            return f"\033[38;5;{color}m"
-        except Exception:
-            pass
-    if not _SEP_BREATH_COLORS:
-        return _COLOR_SEP_START
-    idx = frame % _SEP_BREATH_LEN
-    color = _SEP_BREATH_COLORS[idx] if idx < len(_SEP_BREATH_COLORS) else 45
-    return f"\033[38;5;{color}m"
+    return get_breath_ansi(frame, 40, 45, 10)
 
 
 # ── 提示符辉光呼吸（Phase 3 增强） ──────────────────────────
 def get_prompt_glow_color(frame: int) -> str:
     """返回当前提示符辉光色的 ANSI 256 色前景序列。
 
-    使用 AnimatorContext.sine_color 做正弦波呼吸，
-    在亮青(45)↔亮青高亮(81)间平滑过渡，产生辉光感。
+    委托到 :func:`get_breath_ansi` 实现。
+
+    .. deprecated::
+        Use :func:`get_breath_ansi` instead.
 
     Args:
         frame: 呼吸帧号。
@@ -216,11 +211,7 @@ def get_prompt_glow_color(frame: int) -> str:
     Returns:
         ANSI 256 色前景色序列，格式 ``\\033[38;5;{color}m``。
     """
-    try:
-        color = AnimatorContext.get_default().sine_color(45, 81, 12)
-    except Exception:
-        color = 45
-    return f"\033[38;5;{color}m"
+    return get_breath_ansi(frame, 45, 81, 12)
 
 
 # ── 呼吸背景辅助（Phase 3 增强） ──────────────────────────

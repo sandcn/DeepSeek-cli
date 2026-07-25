@@ -1,4 +1,4 @@
-"""chat_ui 工具函数模块 — _truncate_msg / _cmd_name 通用工具。
+"""chat_ui 工具函数模块 — _cmd_name / _emergency_write 通用工具。
 
 Layer 0 — 仅依赖 _const（RenderCommand 枚举），无其他内部依赖。
 """
@@ -8,17 +8,6 @@ from __future__ import annotations
 import sys
 
 from .const import RenderCommand
-
-
-def _truncate_msg(msg: str, max_len: int) -> str:
-    """截断超长消息，追加"..."标记（尾部安全）。
-
-    若 `msg` 长度超过 `max_len`，取前 `max_len` 字符并追加 "..."。
-    若未超过，原样返回。
-    """
-    if len(msg) > max_len:
-        return msg[:max_len] + "..."
-    return msg
 
 
 def _cmd_name(cid: int) -> str:

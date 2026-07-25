@@ -23,13 +23,11 @@ from ..terminal.terminal import (get_terminal_width, NARROW_THRESHOLD,
                                  is_narrow, narrow_truncate, narrow_indent,
                                  narrow_sep_width)
 from ..core.text_utils import (truncate,
-                               build_warning_pulse_ansi, make_sep_gradient,
-                               build_bounce_ansi, make_sep_gradient_enhanced,
-                               build_sparkle_ansi)
-from ..core.effects import build_glow_ansi
+                               build_warning_pulse_ansi, build_gradient,
+                               build_bounce_ansi)
+from ..core.effects import build_glow_ansi, sparkle_color, sine_color_range
 from ..animation.transitions import FadeIn as _FadeIn
 from ..animation.animator import AnimatorContext, BreathPalette
-from ..core.effects import sine_color_range
 
 # FadeIn 降级实现（替代已移除的 build_fade_in_ansi）
 _FADE_IN_FALLBACK = _FadeIn(total_frames=3, start_color=238, end_color=244)
@@ -172,7 +170,7 @@ _NARROW_SEP_REDUCTION = 10
 # ── 美观分隔线（256 色 + 全宽渐变增强版） ───────────────────
 
 def _make_gradient_sep(start_color: int = 45, end_color: int = 237, steps: int = 0, breath_frame: int = 0) -> str:
-    """生成全宽渐变分隔线，委托到 _text_utils.make_sep_gradient()。
+    """生成全宽渐变分隔线，委托到 _text_utils.build_gradient()。
 
     保留原有函数签名（向后兼容），实际调用统一工厂实现。
     窄屏时自动缩短宽度（通过 narrow_sep_width），保持窄屏简洁性。
@@ -204,8 +202,8 @@ def _make_gradient_sep(start_color: int = 45, end_color: int = 237, steps: int =
         )
     if breath_frame > 0 and not is_narrow():
         start_color = BreathPalette.get_color("sep_msg", breath_frame)
-        return "  " + make_sep_gradient_enhanced(steps, start_color=start_color, end_color=end_color, effect="wave", frame=breath_frame)
-    return "  " + make_sep_gradient(steps, start_color=start_color, end_color=end_color)
+        return "  " + build_gradient(steps, start_color=start_color, end_color=end_color, char="━", effect="wave", frame=breath_frame)
+    return "  " + build_gradient(steps, start_color=start_color, end_color=end_color)
 
 
 def _make_think_sep(breath_frame: int = 0) -> str:
@@ -226,10 +224,10 @@ def _make_think_sep(breath_frame: int = 0) -> str:
         full_width = narrow_sep_width(50)
     # "  ⚡思考  " 视觉宽度约 8 字符
     if breath_frame > 0 and not is_narrow():
-        # ⚡ 符号使用 build_sparkle_ansi 闪烁更生动
+        # ⚡ 符号使用 sparkle_color + 内联 ANSI 闪烁更生动
         think_color = BreathPalette.get_color("think", breath_frame)
         center_text = (
-            f"  {build_sparkle_ansi(breath_frame, 45, 6)}\u26a1"  # ⚡ 闪烁更生动
+            f"  \033[38;5;{sparkle_color(breath_frame, 45, period=6)}m\u26a1"  # ⚡ 闪烁更生动
             f"\033[38;5;{think_color}m\u601d\u8003"                # 思考 主呼吸色
             f"{_R}  "
         )
@@ -363,7 +361,7 @@ def _role_tag(role: str, breath_frame: int = 0, role_map: dict[str, RoleConfig] 
             # 图标使用 sparkle 闪烁（静态基准色，与呼吸色解耦），文字保持呼吸色
             return (
                 f"{_border_prefix}"
-                f"\033[48;5;235m{build_sparkle_ansi(breath_frame, _SPARKLE_BASE_USER, 6)}\u25cf {_R}"
+                f"\033[48;5;235m\033[38;5;{sparkle_color(breath_frame, _SPARKLE_BASE_USER, period=6)}m\u25cf {_R}"
                 f"\033[48;5;235m\033[38;5;{bc}mUSER{_R}"
                 f"\033[0m"
             )
@@ -372,7 +370,7 @@ def _role_tag(role: str, breath_frame: int = 0, role_map: dict[str, RoleConfig] 
             # 图标使用 sparkle 闪烁（静态基准色，与呼吸色解耦），文字保持呼吸色
             return (
                 f"{_border_prefix}"
-                f"\033[48;5;22m{build_sparkle_ansi(breath_frame, _SPARKLE_BASE_ASST, 6)}\u25c6 {_R}"
+                f"\033[48;5;22m\033[38;5;{sparkle_color(breath_frame, _SPARKLE_BASE_ASST, period=6)}m\u25c6 {_R}"
                 f"\033[48;5;22m\033[38;5;{bc}mASSISTANT{_R}"
                 f"\033[0m"
             )
@@ -381,7 +379,7 @@ def _role_tag(role: str, breath_frame: int = 0, role_map: dict[str, RoleConfig] 
             # 图标使用 sparkle 闪烁（静态基准色，与呼吸色解耦），文字保持呼吸色
             return (
                 f"{_border_prefix}"
-                f"\033[48;5;94m{build_sparkle_ansi(breath_frame, _SPARKLE_BASE_TOOL, 6)}\u2699 {_R}"
+                f"\033[48;5;94m\033[38;5;{sparkle_color(breath_frame, _SPARKLE_BASE_TOOL, period=6)}m\u2699 {_R}"
                 f"\033[48;5;94m\033[38;5;{bc}mTOOL{_R}"
                 f"\033[0m"
             )
@@ -548,7 +546,7 @@ def _make_default_user_tag(breath_frame: int = 0) -> str:
         bc = BreathPalette.get_color("role_user", breath_frame)
         return (
             f"{_border_prefix}"
-            f"\033[48;5;235m{build_sparkle_ansi(breath_frame, _SPARKLE_BASE_USER, 6)}\u25cf {_R}"
+            f"\033[48;5;235m\033[38;5;{sparkle_color(breath_frame, _SPARKLE_BASE_USER, period=6)}m\u25cf {_R}"
             f"\033[48;5;235m\033[38;5;{bc}mUSER{_R}"
             f"\033[0m"
         )
@@ -569,7 +567,7 @@ def _make_default_assistant_tag(breath_frame: int = 0) -> str:
         bc = BreathPalette.get_color("role_asst", breath_frame)
         return (
             f"{_border_prefix}"
-            f"\033[48;5;22m{build_sparkle_ansi(breath_frame, _SPARKLE_BASE_ASST, 6)}\u25c6 {_R}"
+            f"\033[48;5;22m\033[38;5;{sparkle_color(breath_frame, _SPARKLE_BASE_ASST, period=6)}m\u25c6 {_R}"
             f"\033[48;5;22m\033[38;5;{bc}mASSISTANT{_R}"
             f"\033[0m"
         )
@@ -590,7 +588,7 @@ def _make_default_tool_tag(breath_frame: int = 0) -> str:
         bc = BreathPalette.get_color("role_tool", breath_frame)
         return (
             f"{_border_prefix}"
-            f"\033[48;5;94m{build_sparkle_ansi(breath_frame, _SPARKLE_BASE_TOOL, 6)}\u2699 {_R}"
+            f"\033[48;5;94m\033[38;5;{sparkle_color(breath_frame, _SPARKLE_BASE_TOOL, period=6)}m\u2699 {_R}"
             f"\033[48;5;94m\033[38;5;{bc}mTOOL{_R}"
             f"\033[0m"
         )

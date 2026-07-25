@@ -19,8 +19,8 @@ from ..consumer.chat_config import ChatConfig
 from ..state.render_state import _ReasoningState
 from ..animation.animator import AnimatorContext, BreathPalette
 from ..core.style import Style
+from ..core.effects import sparkle_color
 from ..terminal.terminal import is_narrow
-from ..core.text_utils import build_sparkle_ansi
 from ._base import StreamingBlock
 
 
@@ -40,7 +40,8 @@ class ThinkingBlock(StreamingBlock):
         if is_narrow():
             return self._render_narrow_header()
         frame = AnimatorContext.get_default().frame
-        sparkle = build_sparkle_ansi(frame, 45, 6)
+        c = sparkle_color(frame, 45, period=6)
+        sparkle = f"\033[38;5;{c}m"
         think_color = BreathPalette.get_sine_color("think", frame)
         think_style = Style(fg=think_color)
         return f"\n  {'─' * 4} {sparkle}⚡{think_style.apply('思考')} {'─' * 4}\n"

@@ -12,9 +12,10 @@ Framework 是 TUI 框架的**统一协调者**，使用外观（Facade）模式�
 
 Framework 自身保留：
   - 生命周期管理（start/stop/is_running）
-  - 单例模式（get_default/reset_default）
   - RenderBuffer 工厂（create_render_buffer）
   - 组件注册表访问（get_component_registry）
+
+单例管理由 ``SingletonMeta`` 元类自动提供（get_default/reset_default）。
 
 便捷函数：
   - create_component(): 创建组件并触发生命周期
@@ -45,10 +46,10 @@ Widget 树管理：
     通过 set_output_adapter() 注入共享输出适配器
 
 设计原则：
-  - 单例管理：框架全局唯一，通过 Framework.get_default() 获取
+  - 单例管理：框架全局唯一，通过 Framework.get_default() 获取，由 SingletonMeta 元类提供
   - 外观模式：8 职责拆分到 5 委托类，Framework 作为统一入口
   - 延迟导入：所有组件/效果模块在首次使用时才导入，避免循环依赖
-  - 线程安全：单例创建和 API 调用均使用 threading.Lock 保护
+  - 线程安全：API 调用使用 threading.Lock 保护；单例创建由 SingletonMeta DCL 保证
   - 零 I/O：不涉及终端或文件 I/O，纯管理职责
 """
 
@@ -57,6 +58,8 @@ from __future__ import annotations
 import logging
 import threading
 from typing import TYPE_CHECKING, Any, Callable
+
+from .core.singleton import SingletonMeta
 
 if TYPE_CHECKING:
     from .components._base import TuiComponent
@@ -97,14 +100,13 @@ __all__: list[str] = [
 # ═══════════════════════════════════════════════════════════
 
 
-class Framework:
+class Framework(metaclass=SingletonMeta):
     """TUI 框架全局单例管理器（外观模式）。
 
     职责（Framework 自身保留）：
       1. 生命周期管理（start / stop / is_running）
       2. RenderBuffer 工厂（create_render_buffer）
       3. 组件注册表访问（get_component_registry）
-      4. 单例管理（get_default / reset_default）
 
     委托职责（拆分到 5 个委托类）：
       - ConfigManager:    配置管理（get_config / set_config）
@@ -112,6 +114,8 @@ class Framework:
       - ComponentFactory: 组件工厂（create_component）
       - WidgetTreeManager: Widget 树管理（create_widget / mount_widget / ...）
       - AnimationManager: 动画上下文（get_animator / get_frame）
+
+    单例行为由 ``SingletonMeta`` 元类自动提供（get_default / reset_default）。
 
     架构变更（2026-07-24）：
       - Framework 从"神类"重构为外观（Facade）模式
@@ -212,9 +216,6 @@ class Framework:
         False
     """
 
-    _instance: Framework | None = None
-    _instance_lock: threading.Lock = threading.Lock()
-
     def __init__(self) -> None:
         """初始化框架实例（私有构造器，通过 get_default() 获取）。"""
         self._lock = threading.Lock()
@@ -232,31 +233,13 @@ class Framework:
         self._widget_tree_mgr = WidgetTreeManager(self)
         self._animation_mgr = AnimationManager(self)
 
-    # ── 单例访问 ──────────────────────────────────────
-
-    @classmethod
-    def get_default(cls) -> Framework:
-        """获取全局默认框架实例（线程安全单例）。"""
-        if cls._instance is None:
-            with cls._instance_lock:
-                if cls._instance is None:
-                    cls._instance = cls()
-        return cls._instance
-
-    @classmethod
-    def reset_default(cls) -> None:
-        """重置默认实例（供测试使用）。
-
-        可测试性确认（2026-07-15）：
-          ✅ 所有测试文件（test_framework.py / test_components_gradient.py 等）
-             在 setUp/tearDown 中正确调用 reset_default() 确保测试隔离
-          ✅ AnimatorContext.reset_default() 与 Framework.reset_default()
-             配合使用，双重重置确保单例状态干净
-        """
-        with cls._instance_lock:
-            cls._instance = None
-
     # ── 生命周期 ──────────────────────────────────────
+
+    # 单例访问由 SingletonMeta 提供：
+    #   Framework.get_default() → 线程安全单例获取（DCL）
+    #   Framework.reset_default() → 线程安全单例重置（供测试使用）
+
+
 
     def start(self) -> None:
         """启动框架——预热子系统。幂等操作。"""

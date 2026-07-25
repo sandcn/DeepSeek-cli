@@ -8,7 +8,7 @@
 from __future__ import annotations
 
 from ..core.formatter import format_elapsed, format_token_count, format_speed
-from ..core.text_utils import build_glow_ansi
+from ..core.effects import build_glow_ansi
 from ..animation.animator import AnimatorContext
 
 from .bottom_bar.theme import (

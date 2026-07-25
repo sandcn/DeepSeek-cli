@@ -8,10 +8,9 @@ TuiComponent 继承自 Widget（src.tui.widget_base 中的统一控件基类）�
 
 from __future__ import annotations
 
-import math
 import logging
 from abc import abstractmethod
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from ...renderer.output import OutputAdapter
@@ -22,12 +21,15 @@ from rich.text import Text
 
 from ..widget_base import Widget
 
-from ..core.text_utils import apply_fade_in, build_left_border_ansi
-from ..core.effects import sine_color
-from ..engine.utils import _truncate_msg
+from ..core.effects import fade_factor, sine_color, fade_color
+from ..core.text_utils import (
+    truncate as _truncate_text,
+    apply_fade_in,
+    build_left_border_ansi,
+)
 from ..framework import get_animator
 from ..core.style import Style, StyleSheet
-from ..terminal.terminal import is_narrow
+from ..terminal.terminal import get_terminal_width, is_narrow
 
 _logger = logging.getLogger(__name__)
 
@@ -242,8 +244,7 @@ class TuiComponent(Widget):
         try:
             # 获取终端宽度确定 buffer 尺寸
             try:
-                import shutil
-                term_w = shutil.get_terminal_size().columns
+                term_w = get_terminal_width()
             except Exception:
                 term_w = 80
             buf = RenderBuffer(max(term_w, 80), 1000)
@@ -259,7 +260,7 @@ class TuiComponent(Widget):
                 adapter.write(Text.from_ansi(output))
             except Exception:
                 adapter.write(output)
-            return _estimate_content_lines(output)
+            return _estimate_content_lines(output, term_w)
         return 0
 
     # ── Widget 兼容 ──────────────────────────────────────
@@ -284,61 +285,77 @@ class TuiComponent(Widget):
 # 行数估算辅助（内部使用）
 # ═══════════════════════════════════════════════════════════
 
-def _estimate_content_lines(text: str) -> int:
+def _visual_len(s: str) -> int:
+    """计算字符串的视觉宽度（跳过 ANSI 转义序列）。"""
+    import re
+    from wcwidth import wcswidth
+    # 移除所有 ANSI 转义序列
+    clean = re.sub(r'\033\[[\d;]*[A-Za-z]', '', s)
+    clean = re.sub(r'\033\][\d;]*[^\033]*(\033\\|\a)', '', clean)
+    total = 0
+    for ch in clean:
+        try:
+            w = wcswidth(ch)
+            total += w if w >= 0 else 1
+        except Exception:
+            total += 1
+    return total
+
+
+def _estimate_content_lines(text: str, max_width: int | None = None) -> int:
     """估算文本内容的终端行数。
 
-    按文本中的换行符数量 + 1 计算行数。
-    不处理终端换行（word wrapping），仅适用于粗略估计。
+    考虑终端换行（word wrapping），当提供 max_width 时，
+    按每行视觉宽度除以 max_width 向上取整计算行数。
 
     Args:
         text: 要估算的文本。
+        max_width: 终端宽度（字符数）。传入时考虑 word wrapping；
+            为 None 或 <= 0 时回退到纯 \n 计数。
 
     Returns:
         int: 估算的行数，至少为 1。
     """
     if not text:
         return 1
-    return text.count('\n') + 1
+    if max_width is None or max_width <= 0:
+        return text.count('\n') + 1
+
+    # 处理 ANSI 转义序列的视觉宽度
+    lines = text.split('\n')
+    total_lines = 0
+    for line in lines:
+        visual_len = _visual_len(line)
+        if visual_len == 0:
+            total_lines += 1
+        else:
+            total_lines += max(1, (visual_len + max_width - 1) // max_width)
+    return total_lines
 
 
-# ── FadeIn 缓动因子（共享于 ErrorBlock / NotificationBlock） ──
-_FADE_TOTAL_FRAMES = 6
-_FADE_START_COLOR = 238
+# ── ANSI 安全写入辅助（共享于 WriteLineBlock / ToolOutputBlock） ──
 
+def _safe_write_ansi(
+    adapter: "OutputAdapter",
+    text: str,
+    fallback_suffix: str = "",
+) -> None:
+    """安全写入含 ANSI 转义序列的文本到 OutputAdapter。
 
-def _fade_factor(frame: int, total: int = _FADE_TOTAL_FRAMES) -> float:
-    """计算 smooth easing 渐显因子 [0.0, 1.0]。
-
-    FadeIn 不再通过 ANSI 前缀包裹（会被后续显式色号覆盖），
-    而是将缓动因子融入边框/辉光色号的计算中——frame 0 时色号从 dim 开始，
-    随帧递增渐亮至目标色。
-
-    Args:
-        frame: 当前帧号。
-        total: 渐显总帧数。
-
-    Returns:
-        缓动因子，0.0（初始最暗）→ 1.0（全亮）。
-    """
-    if frame <= 0:
-        return 0.0
-    t = min(frame / total, 1.0)
-    return (math.sin((t - 0.5) * math.pi) + 1) / 2
-
-
-def _fade_color(target: int, fade: float,
-                base: int = _FADE_START_COLOR) -> int:
-    """将缓动因子融入色号：暗色 → 目标色。
+    尝试使用 Text.from_ansi() 解析并写入，解析失败时回退到 write_raw。
+    消除 WriteLineBlock 和 ToolOutputBlock 中重复的 try/except 回退模式。
 
     Args:
-        target: 目标色号（256 色）。
-        fade: 缓动因子 [0.0, 1.0]。
-        base: 起始暗色。
-
-    Returns:
-        插值后的色号，clamp 到 [0, 255]。
+        adapter: OutputAdapter 实例。
+        text: 要写入的文本（可含 ANSI 转义序列）。
+        fallback_suffix: 解析失败时，追加到 write_raw 文本后的后缀。
+            如 WriteLineBlock 可传入 ``"\\n"`` 以保持换行行为一致。
     """
-    return max(0, min(255, int(base + (target - base) * fade)))
+    try:
+        adapter.write(Text.from_ansi(text))
+    except Exception:
+        _logger.debug("ANSI 解析失败, 回退 raw 输出: %r", text[:80], exc_info=True)
+        adapter.write_raw(text + fallback_suffix)
 
 
 # ── 捕获优先渲染辅助（共享于 AnswerBlock / ThinkingBlock） ──
@@ -348,7 +365,8 @@ def _render_captured_or_raw(
     obj: object,
     captured_attr_name: str,
     content_list: list[str],
-) -> None:
+    max_width: int | None = None,
+) -> int:
     """将捕获的 ANSI 渲染输出或原始累积文本写入 buffer。
 
     优先使用 IncrementalRenderer 捕获的渲染后输出（保留 Markdown 格式、
@@ -359,16 +377,28 @@ def _render_captured_or_raw(
         obj: 包含捕获属性的对象（如 ChatRenderState 实例）。
         captured_attr_name: 捕获属性名（如 ``"captured_content_output"``）。
         content_list: 原始累积内容列表（如 ``self._cumulative_content``）。
+        max_width: 终端宽度（字符数）。传入时用于计算 word wrapping 行数；
+            为 None 时自动通过 get_terminal_width() 获取。
+
+    Returns:
+        int: 写入的估计行数。未写入任何内容时返回 0。
     """
+    if max_width is None:
+        try:
+            max_width = get_terminal_width()
+        except Exception:
+            max_width = 80
     captured = getattr(obj, captured_attr_name, None)
     if captured:
         rendered = "".join(captured)
         if rendered:
             buffer.write(0, 0, rendered)
-            return
+            return _estimate_content_lines(rendered, max_width)
     full_content = "".join(content_list)
     if full_content:
         buffer.write(0, 0, full_content)
+        return _estimate_content_lines(full_content, max_width)
+    return 0
 
 
 # ── 渲染缓冲区辅助（共享于 ToolSummaryBlock / TuiComponent.render_to_adapter） ──
@@ -392,8 +422,7 @@ def _render_via_buffer(
         int: 渲染内容的估计行数，失败时返回 1（降级消息）。
     """
     try:
-        import shutil
-        term_w = shutil.get_terminal_size().columns
+        term_w = get_terminal_width()
     except Exception:
         term_w = 80
     try:
@@ -409,7 +438,7 @@ def _render_via_buffer(
             adapter.write(Text.from_ansi(output))
         except Exception:
             adapter.write(output)
-        return _estimate_content_lines(output)
+        return _estimate_content_lines(output, term_w)
     return 0
 
 
@@ -424,7 +453,7 @@ class StyledMessageBlock(TuiComponent):
     消除 ErrorBlock 和 NotificationBlock 的代码重复。
 
     窄屏：Text.assemble(prefix_char + message)
-    宽屏：sine_color 辉光呼吸 + build_left_border_ansi 边框 + 入场 FadeIn
+    宽屏：breath_color 辉光呼吸 + left_border_ansi 边框 + 入场 FadeIn
     """
 
     def __init__(
@@ -444,7 +473,7 @@ class StyledMessageBlock(TuiComponent):
         self.narrow_style_key = narrow_style_key
         self._truncate = truncate
         self._max_len = max_len
-        self._message = _truncate_msg(message, max_len) if truncate else message
+        self._message = _truncate_text(message, max_len, normalize=False, suffix="...") if truncate else message
 
     def _render_narrow(self) -> str | Text | None:
         """窄屏渲染 — 静态样式消息，不加动效。"""
@@ -460,12 +489,12 @@ class StyledMessageBlock(TuiComponent):
         if result is not None:
             # 窄屏分支已由 render_with_narrow_fallback 处理并写入 buffer
             return result
-        # 宽屏：sine_color 辉光呼吸 + build_left_border_ansi 边框 + 入场 FadeIn
+        # 宽屏：breath_color 辉光呼吸 + left_border_ansi 边框 + 入场 FadeIn
         animator = get_animator()
         frame = animator.frame
-        fade = _fade_factor(frame)
-        glow_lo = _fade_color(self.color, fade)
-        glow_hi = _fade_color(min(255, self.color + 15), fade)
+        fade = fade_factor(frame)
+        glow_lo = fade_color(self.color, fade)
+        glow_hi = fade_color(min(255, self.color + 15), fade)
         glow_color = sine_color(frame, glow_lo, glow_hi, 12)
         glow_style = Style(fg=glow_color)
         border_breath = StyleSheet.resolve("border_breath", Style(fg=23))
@@ -575,12 +604,21 @@ class StreamingBlock(TuiComponent):
             self._cumulative_content.append(text)
 
         rr.write(text)
-        return _estimate_content_lines(text)
+        try:
+            term_w = get_terminal_width()
+        except Exception:
+            term_w = 80
+        return _estimate_content_lines(text, term_w)
 
     def render(self, buffer: RenderBuffer | None = None) -> str | Text | None:
         if buffer is not None:
+            try:
+                term_w = get_terminal_width()
+            except Exception:
+                term_w = 80
             _render_captured_or_raw(
-                buffer, self._rs, self._captured_attr_name, self._cumulative_content
+                buffer, self._rs, self._captured_attr_name, self._cumulative_content,
+                max_width=term_w,
             )
             return None
         return self._finalize_render("".join(self._cumulative_content), buffer)

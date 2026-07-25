@@ -60,6 +60,35 @@ _XTERM_PALETTE: list[tuple[int, int, int]] = _build_xterm_palette()
 """xterm-256 全色表（0-255 索引 → RGB 元组），模块加载时预计算一次。"""
 
 
+def _find_closest_256(r: int, g: int, b: int) -> int:
+    """在 xterm-256 调色板中查找最接近的色号。
+
+    使用欧氏距离（平方）度量颜色差异，返回距离最小的色号。
+    精确匹配时提前退出。
+
+    Args:
+        r: 红色分量（0-255）。
+        g: 绿色分量（0-255）。
+        b: 蓝色分量（0-255）。
+
+    Returns:
+        最接近的色号（0-255）。
+    """
+    best_idx: int = 0
+    best_dist: int = 2**31 - 1
+
+    for i, (cr, cg, cb) in enumerate(_XTERM_PALETTE):
+        dr, dg, db = r - cr, g - cg, b - cb
+        dist: int = dr * dr + dg * dg + db * db
+        if dist < best_dist:
+            best_dist = dist
+            best_idx = i
+            if best_dist == 0:  # 精确匹配，提前退出
+                break
+
+    return best_idx
+
+
 def hex_to_256(hex_color: str) -> int:
     """将十六进制颜色转换为最接近的 xterm-256 色号（0-255）。
 
@@ -72,20 +101,7 @@ def hex_to_256(hex_color: str) -> int:
     try:
         cleaned = hex_color.lstrip("#")
         r, g, b = (int(cleaned[i: i + 2], 16) for i in (0, 2, 4))
-
-        best_idx: int = 0
-        best_dist: int = 2**31 - 1
-
-        for i, (cr, cg, cb) in enumerate(_XTERM_PALETTE):
-            dr, dg, db = r - cr, g - cg, b - cb
-            dist: int = dr * dr + dg * dg + db * db
-            if dist < best_dist:
-                best_dist = dist
-                best_idx = i
-                if best_dist == 0:  # 精确匹配，提前退出
-                    break
-
-        return best_idx
+        return _find_closest_256(r, g, b)
     except (ValueError, IndexError, AttributeError, TypeError):
         return 15  # 白色兜底
 

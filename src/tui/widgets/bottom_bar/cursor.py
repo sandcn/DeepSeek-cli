@@ -13,6 +13,8 @@
 
 from __future__ import annotations
 
+import logging
+
 from wcwidth import wcswidth
 
 
@@ -28,6 +30,8 @@ __all__ = [
 
 
 _TAB_WIDTH = 4  # 制表符宽度（列数）
+
+_logger = logging.getLogger(__name__)
 
 
 def _truncate_by_width(s: str, max_width: int) -> str:
@@ -267,3 +271,26 @@ def _visual_len(s: str) -> int:
             w += cw if cw >= 0 else 1
             i += 1
     return w
+
+
+# ── 光标定位辅助函数（消除 Blessed → ANSI 降级重复） ────────────
+
+def _write_cursor_blessed_or_ansi(write_stream, r_cursor: int, cursor_col: int) -> None:
+    """通过 Blessed term.move_xy 定位光标，不可用时回退到 ANSI 序列。
+
+    提取自 TuiEngine._position_cursor()——原方法中 adapter 路径和
+    sys.__stdout__ 路径各有完全相同的 try-except 降级逻辑。
+
+    Args:
+        write_stream: 写入流对象，支持 .write(text: str) -> Any 签名的对象
+                      （如 OutputAdapter.write_raw 或 sys.__stdout__.write）。
+        r_cursor: 目标行号（1-based）。
+        cursor_col: 目标列号（1-based）。
+    """
+    try:
+        from ...terminal.blessed import get_terminal
+        term = get_terminal()
+        write_stream(term.move_xy(cursor_col - 1, r_cursor - 1))
+    except Exception:
+        _logger.debug("position_cursor Blessed 不可用, 使用 ANSI 回退", exc_info=True)
+        write_stream(f"\033[{r_cursor};{cursor_col}H")

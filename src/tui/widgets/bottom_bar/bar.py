@@ -57,17 +57,9 @@ from ..stdout_tracker import _StdoutLineTracker
 from .theme import (
     _BOTTOM_MIN_HEIGHT,
     _BOTTOM_MIN_LINES,
-    _COLOR_DEEP_CYAN,
-    _COLOR_DIM,
     _COLOR_RESET,
     _COLOR_SEP,
-    _COLOR_SEP_START,
     _MIN_INPUT_ROWS,
-    _PLACEHOLDER_COMPACT,
-    _PLACEHOLDER_STREAMING,
-    _PLACEHOLDER_TEXT,
-    get_prompt_breath_color,
-    make_sep_gradient,
 )
 from .cursor import (
     _compute_cursor_visual_pos,
@@ -313,11 +305,11 @@ class _BottomBar(_StatusMixin):
             self._cached_height = term.height
             self._cached_width = term.width
         except Exception:
-            import shutil
+            from ...terminal.terminal import get_terminal_width
             try:
-                sz = shutil.get_terminal_size()
-                self._cached_height = sz.lines
-                self._cached_width = sz.columns
+                w = get_terminal_width()
+                self._cached_width = w
+                self._cached_height = 24  # 兜底
             except Exception:
                 pass
 

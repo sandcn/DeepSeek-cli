@@ -12,7 +12,7 @@ from __future__ import annotations
 import logging
 
 from ...animation.animator import AnimatorContext, BreathPalette
-from ...core.text_utils import build_glow_ansi
+from ...core.effects import build_glow_ansi
 from ...terminal.terminal import is_narrow
 
 from .theme import (

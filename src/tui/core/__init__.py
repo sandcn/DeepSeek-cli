@@ -71,6 +71,10 @@ _SYMBOL_MAP: dict[str, LazyLoader] = {
     "build_glow_ansi": _effects_mod,
     "build_fg_breath_ansi": _effects_mod,
     "build_bg_breath_ansi": _effects_mod,
+    "build_breath_ansi": _effects_mod,
+    "build_sep_wave": _effects_mod,
+    "build_sep_shimmer": _effects_mod,
+    "build_sparkle_ansi": _effects_mod,
     "get_theme_effect_color": _effects_mod,
     "rainbow_color": _effects_mod,
     "build_rainbow_ansi": _effects_mod,
@@ -106,9 +110,6 @@ _SYMBOL_MAP: dict[str, LazyLoader] = {
     "build_warning_pulse_ansi": _text_utils_mod,
     "make_sep_gradient": _text_utils_mod,
     "build_bounce_ansi": _text_utils_mod,
-    "build_sep_wave": _text_utils_mod,
-    "build_sep_shimmer": _text_utils_mod,
-    "build_sparkle_ansi": _text_utils_mod,
     "build_left_border_ansi": _text_utils_mod,
     "parse_theme_color": _text_utils_mod,
     "make_sep_gradient_enhanced": _text_utils_mod,
@@ -233,6 +234,7 @@ __all__ = [
     "build_glow_ansi",
     "build_fg_breath_ansi",
     "build_bg_breath_ansi",
+    "build_breath_ansi",
     "get_theme_effect_color",
     # 新增渲染效果（2026-07-15）
     "rainbow_color", "build_rainbow_ansi",
@@ -256,8 +258,7 @@ __all__ = [
     # text_utils
     "truncate", "build_gradient_ansi", "build_gradient_ansi_frame",
     "build_warning_pulse_ansi", "make_sep_gradient",
-    "build_bounce_ansi", "build_sep_wave", "build_sep_shimmer",
-    "build_sparkle_ansi", "build_left_border_ansi",
+    "build_bounce_ansi", "build_left_border_ansi",
     "parse_theme_color", "make_sep_gradient_enhanced",
     "build_gradient",
     # color

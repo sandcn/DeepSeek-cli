@@ -53,12 +53,99 @@ __all__: list[str] = [
 ]
 
 
+# ──────────────────────────────────────────────────────────
+# 工具函数 — 对齐逻辑提取（避免三个布局类重复实现）
+# ──────────────────────────────────────────────────────────
+
+
+def _align_horizontal(
+    buffer: RenderBuffer,
+    x: int,
+    y: int,
+    child_str: str,
+    align: str,
+    width: int,
+) -> None:
+    """水平对齐写入 — 将 child_str 按对齐方式写入 buffer 的指定位置。
+
+    Args:
+        buffer: 目标 RenderBuffer。
+        x: 起始 x 坐标。
+        y: 起始 y 坐标。
+        child_str: 要写入的字符串（可能含换行）。
+        align: "left"/"center"/"right"。
+        width: 对齐参考宽度。
+    """
+    if not child_str:
+        return
+    lines = child_str.split("\n")
+    for i, line in enumerate(lines):
+        row = y + i
+        stripped = line.rstrip()
+        if not stripped:
+            continue
+        if align == "center":
+            offset = max(0, (width - len(stripped)) // 2)
+        elif align == "right":
+            offset = max(0, width - len(stripped))
+        else:  # left
+            offset = 0
+        buffer.write(x + offset, row, stripped)
+
+
+def _align_vertical(child_h: int, container_h: int, valign: str) -> int:
+    """计算垂直偏移量。
+
+    Args:
+        child_h: 子控件高度。
+        container_h: 容器高度。
+        valign: "top"/"center"/"bottom"。
+
+    Returns:
+        垂直偏移量（y 方向偏移）。
+    """
+    if valign == "center":
+        return max(0, (container_h - child_h) // 2)
+    elif valign == "bottom":
+        return max(0, container_h - child_h)
+    else:  # top
+        return 0
+
+
+# ═══════════════════════════════════════════════════════════
+# LayoutWidget — 布局控件基类
+# ═══════════════════════════════════════════════════════════
+
+
+class LayoutWidget(Widget):
+    """布局控件基类。
+
+    封装子控件的存储和标记，消除 6 个布局类中重复的
+    _children_source 赋值和 _renders_children 标记。
+
+    Args:
+        children: 子控件列表（或 Grid 的二维列表）。
+        renders_children: 是否自行管理子控件渲染，默认 True。
+        **kwargs: 传递给 Widget.__init__ 的 props/key 等参数。
+    """
+
+    def __init__(
+        self,
+        children: list[Widget] | list[list[Widget]],
+        renders_children: bool = True,
+        **kwargs,
+    ) -> None:
+        super().__init__(**kwargs)
+        self._children_source = children
+        self._renders_children = renders_children
+
+
 # ═══════════════════════════════════════════════════════════
 # Vertical — 垂直布局
 # ═══════════════════════════════════════════════════════════
 
 
-class Vertical(Widget):
+class Vertical(LayoutWidget):
     """垂直布局控件。
 
     将多个子控件从上到下垂直排列。
@@ -78,13 +165,11 @@ class Vertical(Widget):
         max_height: int | None = None,
         key: str | None = None,
     ) -> None:
-        super().__init__(props={
+        super().__init__(list(children), renders_children=True, props={
             "spacing": spacing,
             "align": align,
             "max_height": max_height,
         }, key=key)
-        self._children_source: list[Widget] = list(children)
-        self._renders_children = True
 
     def compose(self) -> list[Widget]:
         """返回声明的子控件列表。"""
@@ -111,11 +196,7 @@ class Vertical(Widget):
                 break
             # 创建临时缓冲区渲染子控件
             tmp = RenderBuffer(buffer.width, effective_h - y)
-            try:
-                child.render(tmp)
-            except Exception as e:
-                _logger.debug("Vertical: child.render failed: %s", e)
-                tmp = RenderBuffer(buffer.width, 1)
+            Widget._render_child_safe(child, tmp, "Vertical")
             # 获取渲染内容
             child_str = tmp.render()
             child_lines = child_str.split("\n") if child_str else [""]
@@ -130,11 +211,12 @@ class Vertical(Widget):
                 stripped = line.rstrip()
                 if not stripped:
                     continue
+                # 内联对齐计算（单行，无需经过 _align_horizontal 的多行拆分）
                 if al == "center":
                     x = max(0, (buffer.width - len(stripped)) // 2)
                 elif al == "right":
                     x = max(0, buffer.width - len(stripped))
-                else:  # left
+                else:
                     x = 0
                 buffer.write(x, row, stripped)
             y += child_h + sp
@@ -149,7 +231,7 @@ class Vertical(Widget):
 # ═══════════════════════════════════════════════════════════
 
 
-class Horizontal(Widget):
+class Horizontal(LayoutWidget):
     """水平布局控件。
 
     将多个子控件从左到右水平排列。
@@ -169,13 +251,11 @@ class Horizontal(Widget):
         max_width: int | None = None,
         key: str | None = None,
     ) -> None:
-        super().__init__(props={
+        super().__init__(list(children), renders_children=True, props={
             "spacing": spacing,
             "align": align,
             "max_width": max_width,
         }, key=key)
-        self._children_source: list[Widget] = list(children)
-        self._renders_children = True
 
     def compose(self) -> list[Widget]:
         """返回声明的子控件列表。"""
@@ -203,21 +283,13 @@ class Horizontal(Widget):
                 break
             # 为子控件创建临时缓冲区
             child_buf = RenderBuffer(effective_w - x, max_h)
-            try:
-                child.render(child_buf)
-            except Exception as e:
-                _logger.debug("Horizontal: child.render failed: %s", e)
-                child_buf = RenderBuffer(effective_w - x, 1)
+            Widget._render_child_safe(child, child_buf, "Horizontal")
             child_str = child_buf.render()
             child_lines = child_str.split("\n") if child_str else [""]
             child_w = max((len(l) for l in child_lines), default=1)
             child_h = len(child_lines)
             # 计算垂直偏移
-            y_offset = 0
-            if al == "center":
-                y_offset = max(0, (max_h - child_h) // 2)
-            elif al == "bottom":
-                y_offset = max(0, max_h - child_h)
+            y_offset = _align_vertical(child_h, max_h, al)
             # 合并到父缓冲区
             for i, line in enumerate(child_lines):
                 dst_y = y_offset + i
@@ -235,7 +307,7 @@ class Horizontal(Widget):
 # ═══════════════════════════════════════════════════════════
 
 
-class Padding(Widget):
+class Padding(LayoutWidget):
     """内边距控件。
 
     在子控件周围添加空白边距。
@@ -264,12 +336,10 @@ class Padding(Widget):
         p_right = right if right is not None else padding
         p_top = top if top is not None else 0
         p_bottom = bottom if bottom is not None else 0
-        super().__init__(props={
+        super().__init__([child], renders_children=True, props={
             "left": p_left, "right": p_right,
             "top": p_top, "bottom": p_bottom,
         }, key=key)
-        self._children_source: list[Widget] = [child]
-        self._renders_children = True
 
     def compose(self) -> list[Widget]:
         """返回声明的子控件列表（始终为单元素列表）。"""
@@ -293,10 +363,7 @@ class Padding(Widget):
         if child is not None:
             # 渲染到临时缓冲区，然后写入父缓冲区正确位置
             tmp = RenderBuffer(inner_w, inner_h)
-            try:
-                child.render(tmp)
-            except Exception as e:
-                _logger.debug("Padding: child.render failed: %s", e)
+            Widget._render_child_safe(child, tmp, "Padding")
             # 合并回父缓冲区
             buffer.merge(tmp, pl, pt)
 
@@ -313,7 +380,7 @@ class Padding(Widget):
 # ═══════════════════════════════════════════════════════════
 
 
-class Border(Widget):
+class Border(LayoutWidget):
     """边框控件。
 
     在子控件周围绘制边框。
@@ -337,14 +404,12 @@ class Border(Widget):
         border_color: int | None = None,
         key: str | None = None,
     ) -> None:
-        super().__init__(props={
+        super().__init__([child], renders_children=True, props={
             "style": style,
             "title": title,
             "title_align": title_align,
             "border_color": border_color,
         }, key=key)
-        self._children_source: list[Widget] = [child]
-        self._renders_children = True
 
     def compose(self) -> list[Widget]:
         """返回声明的子控件列表（始终为单元素列表）。"""
@@ -373,10 +438,7 @@ class Border(Widget):
         if chars is None:
             child = self._children[0] if self._children else (self._children_source[0] if self._children_source else None)
             if child is not None:
-                try:
-                    child.render(buffer)
-                except Exception as e:
-                    _logger.debug("Border chars None: child.render failed: %s", e)
+                Widget._render_child_safe(child, buffer, "Border(chars_none)")
             return
 
         # 边框占用 1 行上、1 行下、1 列左、1 列右
@@ -414,10 +476,7 @@ class Border(Widget):
         if child is not None:
             # 渲染到临时缓冲区再合并回父缓冲区
             tmp = RenderBuffer(inner_w, inner_h)
-            try:
-                child.render(tmp)
-            except Exception as e:
-                _logger.debug("Border: child.render failed: %s", e)
+            Widget._render_child_safe(child, tmp, "Border")
             buffer.merge(tmp, 1, 1)
 
     def _build_top_border(
@@ -444,12 +503,9 @@ class Border(Widget):
 
     @staticmethod
     def _is_narrow() -> bool:
-        """检测当前是否为窄屏模式（Widget 体系惰性导入）。"""
-        try:
-            from .terminal.narrow import is_narrow
-            return is_narrow()
-        except (ImportError, ModuleNotFoundError):
-            return False
+        """检测当前是否为窄屏模式。"""
+        from .terminal.narrow import is_narrow
+        return is_narrow()
 
     def _render_narrow(self, buffer: RenderBuffer) -> None:
         """窄屏降级：无边框，直接渲染子控件。"""
@@ -457,10 +513,7 @@ class Border(Widget):
             self._children_source[0] if self._children_source else None
         )
         if child is not None:
-            try:
-                child.render(buffer)
-            except Exception as e:
-                _logger.debug("Border narrow: child.render failed: %s", e)
+            Widget._render_child_safe(child, buffer, "Border(narrow)")
 
     @staticmethod
     def _get_box_chars(style_name: str) -> dict | None:
@@ -496,7 +549,7 @@ class Border(Widget):
 # ═══════════════════════════════════════════════════════════
 
 
-class Grid(Widget):
+class Grid(LayoutWidget):
     """网格布局控件。
 
     将子控件按二维网格排列。每个子控件占据一个网格单元格，
@@ -519,15 +572,13 @@ class Grid(Widget):
         valign: str = "top",
         key: str | None = None,
     ) -> None:
-        super().__init__(props={
+        super().__init__(children or [], renders_children=True, props={
             "cols": cols, "spacing": spacing,
             "align": align, "valign": valign,
         }, key=key)
-        self._children_source: list[list[Widget]] = children or []
         self._flat_children: list[Widget] = []
         for row in self._children_source:
             self._flat_children.extend(row)
-        self._renders_children = True
 
     def compose(self) -> list[Widget]:
         """返回扁平化后的子控件列表。"""
@@ -561,11 +612,7 @@ class Grid(Widget):
 
             for cell in row:
                 cell_buf = RenderBuffer(col_width, buffer.height - y)
-                try:
-                    cell.render(cell_buf)
-                except Exception as e:
-                    _logger.debug("Grid: cell.render failed: %s", e)
-                    cell_buf = RenderBuffer(col_width, 1)
+                Widget._render_child_safe(cell, cell_buf, "Grid")
                 cell_str = cell_buf.render()
                 cell_h = max(1, len(cell_str.split("\n")) if cell_str else 1)
                 row_heights.append(cell_h)
@@ -583,31 +630,12 @@ class Grid(Widget):
                     cb = row_buffers[col_idx]
                     ch = row_heights[col_idx]
                     # 垂直对齐
-                    y_offset = 0
-                    if val == "center":
-                        y_offset = max(0, (row_height - ch) // 2)
-                    elif val == "bottom":
-                        y_offset = max(0, row_height - ch)
+                    y_offset = _align_vertical(ch, row_height, val)
                     # 水平对齐
-                    if al == "center":
-                        cell_w = col_width
+                    if al in ("center", "right"):
                         tmp_str = cb.render()
-                        tmp_lines = tmp_str.split("\n") if tmp_str else [""]
-                        x_offset = max(0, (cell_w - max((len(l) for l in tmp_lines), default=0)) // 2)
-                        for i, line in enumerate(tmp_lines):
-                            dst_y = y + y_offset + i
-                            if dst_y < buffer.height:
-                                buffer.write(x + x_offset, dst_y, line)
-                    elif al == "right":
-                        cell_w = col_width
-                        tmp_str = cb.render()
-                        tmp_lines = tmp_str.split("\n") if tmp_str else [""]
-                        max_line_w = max((len(l) for l in tmp_lines), default=0)
-                        x_offset = max(0, cell_w - max_line_w)
-                        for i, line in enumerate(tmp_lines):
-                            dst_y = y + y_offset + i
-                            if dst_y < buffer.height:
-                                buffer.write(x + x_offset, dst_y, line)
+                        if tmp_str:
+                            _align_horizontal(buffer, x, y + y_offset, tmp_str, al, col_width)
                     else:
                         buffer.merge(cb, x, y + y_offset)
                 x += col_width + sp
@@ -626,7 +654,7 @@ class Grid(Widget):
 # ═══════════════════════════════════════════════════════════
 
 
-class Center(Widget):
+class Center(LayoutWidget):
     """居中对齐容器控件。
 
     将子控件在容器中水平和垂直居中。
@@ -642,9 +670,7 @@ class Center(Widget):
         axis: str = "both",
         key: str | None = None,
     ) -> None:
-        super().__init__(props={"axis": axis}, key=key)
-        self._children_source: list[Widget] = [child]
-        self._renders_children = True
+        super().__init__([child], renders_children=True, props={"axis": axis}, key=key)
 
     def compose(self) -> list[Widget]:
         """返回声明的子控件列表（始终为单元素列表）。"""
@@ -661,14 +687,9 @@ class Center(Widget):
 
         # 渲染子控件到临时 buffer
         tmp = RenderBuffer(buffer.width, buffer.height)
-        try:
-            child.render(tmp)
-        except Exception as e:
-            _logger.debug("Center: child.render failed: %s", e)
-            return
-
+        Widget._render_child_safe(child, tmp, "Center")
         child_str = tmp.render()
-        if not child_str:
+        if not child_str.strip():
             return
         child_lines = child_str.split("\n")
         child_w = max((len(l) for l in child_lines), default=0)

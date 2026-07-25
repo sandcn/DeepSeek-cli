@@ -13,7 +13,7 @@ from .const import (
     _CLEAR_PARSE_LINE,
 )
 
-from .utils import _truncate_msg
+from ..core.text_utils import truncate
 
 if TYPE_CHECKING:
     from ..consumer.chat_config import ChatConfig
@@ -33,6 +33,7 @@ if TYPE_CHECKING:
         ModelPhaseEvent,
     )
 
+from ..core.registry_base import RegistryBase
 from ..events import event_types as _EVENT_TYPES
 from ..framework import Framework
 
@@ -41,7 +42,7 @@ from ..framework import Framework
 # EventHandlerRegistry — 可注册事件映射表
 # ═══════════════════════════════════════════════════════════
 
-class EventHandlerRegistry:
+class EventHandlerRegistry(RegistryBase):
     """事件类型 → 处理器方法名的线程安全注册表。
 
     支持运行时动态注册/查询。
@@ -55,6 +56,7 @@ class EventHandlerRegistry:
     """
 
     def __init__(self):
+        super().__init__()
         self._lock = threading.Lock()
         self._entries: dict[type, str] = {}
 
@@ -274,7 +276,7 @@ class EventDispatcher:
             return
         if not event.info:
             return
-        info = _truncate_msg(event.info, self._max_error_length)
+        info = truncate(event.info, self._max_error_length, normalize=False, suffix="...")
         self._push_cmd((RenderCommand.ERROR, info))
 
     def _on_tool_summary(self, event: ToolSummaryEvent) -> None:

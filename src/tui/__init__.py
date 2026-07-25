@@ -166,7 +166,7 @@ _components_mod = LazyLoader("src.tui.components")
 # ═══════════════════════════════════════════════════════════
 # 动画 — 直接从 _base 子模块导入（无循环依赖）
 # ═══════════════════════════════════════════════════════════
-from .components._base import apply_fade_in
+from .core.text_utils import apply_fade_in
 
 # ═══════════════════════════════════════════════════════════
 # 测试工具

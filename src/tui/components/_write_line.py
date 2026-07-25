@@ -22,7 +22,7 @@ from ..animation.animator import AnimatorContext
 from ..core.style import Style, StyleSheet
 from ..core.effects import sine_color
 from ..terminal.terminal import is_narrow
-from ._base import TuiComponent, _estimate_content_lines
+from ._base import TuiComponent, _estimate_content_lines, _safe_write_ansi
 
 _logger = logging.getLogger(__name__)
 
@@ -54,16 +54,10 @@ class WriteLineBlock(TuiComponent):
         is_narrow_mode = is_narrow()
 
         if '\033[' in text:
-            # ANSI 转义路径
-            try:
-                if is_narrow_mode:
-                    adapter.write(Text.from_ansi(text))
-                else:
-                    adapter.write(Text.from_ansi(f"  {edge_ansi} {text}"))
-            except Exception:
-                _logger.debug("write_line ANSI 解析失败, 回退 raw 输出", exc_info=True)
-                adapter.write_raw(text + "\n")
-                return _estimate_content_lines(text)
+            if is_narrow_mode:
+                _safe_write_ansi(adapter, text, fallback_suffix="\n")
+            else:
+                _safe_write_ansi(adapter, f"  {edge_ansi} {text}", fallback_suffix="\n")
             return _estimate_content_lines(text)
         else:
             # 纯文本路径：通过 render(buffer) 获取内容

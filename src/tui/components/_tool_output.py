@@ -18,9 +18,33 @@ if TYPE_CHECKING:
 
 from rich.text import Text
 
-from ._base import TuiComponent, _estimate_content_lines
+from ._base import TuiComponent, _estimate_content_lines, _safe_write_ansi
 
 _logger = logging.getLogger(__name__)
+
+
+def _normalize_carriage_return(text: str) -> tuple[str, bool]:
+    """规范化 \\r 回车字符，返回处理后的文本和是否有 \\r 的标志。
+
+    Args:
+        text: 原始文本。
+
+    Returns:
+        tuple[str, bool]: (处理后的文本, 是否包含 \\r)。
+            - 包含 ANSI 序列时：移除所有 \\r
+            - 纯文本时：取最后一个 \\r 之后的部分
+            - 无 \\r 时：返回原文本
+    """
+    has_carriage = '\r' in text
+    if has_carriage:
+        if '\033[' in text:
+            clean = text.replace('\r', '')
+        else:
+            clean = text.split('\r')[-1]
+    else:
+        clean = text
+    return clean, has_carriage
+
 
 class ToolOutputBlock(TuiComponent):
     """工具执行输出块。"""
@@ -34,17 +58,8 @@ class ToolOutputBlock(TuiComponent):
         支持 buffer 参数：传入 buffer 时写入并返回 None；否则返回字符串。
         """
         text = self.text
-        has_carriage = '\r' in text
-
-        if has_carriage:
-            if '\033[' in text:
-                clean = text.replace('\r', '')
-            else:
-                clean = text.split('\r')[-1]
-            result = clean
-        else:
-            result = text
-        return self._finalize_render(result, buffer)
+        clean, _ = _normalize_carriage_return(text)
+        return self._finalize_render(clean, buffer)
 
     def render_to_adapter(self, adapter: "OutputAdapter") -> int:
         """渲染到 OutputAdapter，返回行数。
@@ -53,23 +68,17 @@ class ToolOutputBlock(TuiComponent):
         非 \\r 路径委托 render(buffer) 获取内容再通过 adapter 输出。
         """
         text = self.text
-        has_carriage = '\r' in text
+        clean, has_carriage = _normalize_carriage_return(text)
 
         if has_carriage:
             if '\033[' in text:
-                clean = text.replace('\r', '')
-                try:
-                    adapter.write(Text.from_ansi(clean))
-                except Exception:
-                    _logger.debug("tool_output ANSI 解析失败, 回退 raw 输出", exc_info=True)
-                    adapter.write_raw(clean)
+                _safe_write_ansi(adapter, clean)
             else:
-                clean = text.split('\r')[-1]
                 adapter.write_raw(clean)
             if not text.endswith('\r'):
                 adapter.write_raw('\n')
                 return _estimate_content_lines(clean)
             return 0
         else:
-            adapter.write(Text.from_ansi(text))
+            _safe_write_ansi(adapter, text)
             return _estimate_content_lines(text)

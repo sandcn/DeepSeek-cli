@@ -6,7 +6,6 @@
 
 from __future__ import annotations
 
-from ..engine.utils import _truncate_msg
 from ..framework import get_framework
 from ._base import StyledMessageBlock
 

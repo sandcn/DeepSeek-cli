@@ -68,11 +68,6 @@ _BOX_CHARS: dict[BoxStyle, dict[str, str]] = {
 }
 
 
-def _wrap_ansi(color: int, text: str) -> str:
-    """用指定 256 色号包裹文本为 ANSI 转义序列。"""
-    return f"\033[38;5;{color}m{text}\033[0m"
-
-
 # ═══════════════════════════════════════════════════════════
 # Box 组件
 # ═══════════════════════════════════════════════════════════
@@ -236,8 +231,8 @@ class Box(TuiComponent):
                 top_border = f"{tl_glow}{h_parts}{tr_glow}"
                 bottom_border = f"{bl_glow}{h_parts}{br_glow}"
             else:
-                top_border = f"{_wrap_ansi(tl_color, chars['tl'])}{h_parts}{_wrap_ansi(tr_color, chars['tr'])}"
-                bottom_border = f"{_wrap_ansi(bl_color, chars['bl'])}{h_parts}{_wrap_ansi(br_color, chars['br'])}"
+                top_border = f"{Style(fg=tl_color).apply(chars['tl'])}{h_parts}{Style(fg=tr_color).apply(chars['tr'])}"
+                bottom_border = f"{Style(fg=bl_color).apply(chars['bl'])}{h_parts}{Style(fg=br_color).apply(chars['br'])}"
 
             # 构建主体行 —— 左右边框使用垂直渐变色
             body: list[str] = []
@@ -277,7 +272,7 @@ class Box(TuiComponent):
 
         # 应用前景色（最外层包裹，仅在无辉光时生效）
         if self.fg_color is not None and not self.glow:
-            result = _wrap_ansi(self.fg_color, result)
+            result = Style(fg=self.fg_color).apply(result)
 
         return result
 

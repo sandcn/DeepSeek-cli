@@ -15,10 +15,10 @@
 from __future__ import annotations
 
 import math
-from typing import Any, ClassVar, Optional
 
 from .palettes import BREATH_CYAN, BREATH_GREEN, BREATH_PURPLE, BREATH_GOLD, BREATH_ROSE
 from ..core.gradient import gradient_range
+from ..core.singleton import SingletonMeta
 
 __all__ = [
     "AnimatorContext",
@@ -26,10 +26,11 @@ __all__ = [
 ]
 
 
-class AnimatorContext:
+class AnimatorContext(metaclass=SingletonMeta):
     """集中动画时钟管理器 — 统一推进所有动画帧号。
 
-    单例模式，所有组件通过 get_default() 获取同一实例。
+    单例模式，由 ``SingletonMeta`` 自动提供 get_default / reset_default。
+    所有组件通过 get_default() 获取同一实例。
     由 render 线程（10Hz）定期调用 tick() 推进帧号。
 
     新增正弦波属性（2026-07-12）：
@@ -38,8 +39,6 @@ class AnimatorContext:
       - sine_color(low, high, period): 正弦波插值色号
       所有现有属性（breath_frame/pulse_frame）保持向后兼容。
     """
-
-    _default_instance: Optional["AnimatorContext"] = None
 
     def __init__(self) -> None:
         self.frame: int = 0                 # 全局帧号（单调递增）
@@ -140,30 +139,9 @@ class AnimatorContext:
         frac = idx_f - idx_low
         return round(colors[idx_low] + frac * (colors[idx_high] - colors[idx_low]))
 
-    _default_lock: ClassVar[Any] = None  # 类级锁，惰性初始化
-
-    @classmethod
-    def get_default(cls) -> "AnimatorContext":
-        """获取全局默认实例（单例 · 双重检查锁）。
-
-        线程安全：首次创建时使用 DCL 模式与 Framework.get_default()
-        保持一致，避免多线程并发初始化时产生多个实例。
-        """
-        if cls._default_instance is not None:
-            return cls._default_instance
-        # 惰性创建锁（避免模块导入时的 threading 开销）
-        if cls._default_lock is None:
-            import threading
-            cls._default_lock = threading.Lock()
-        with cls._default_lock:
-            if cls._default_instance is None:
-                cls._default_instance = cls()
-            return cls._default_instance
-
-    @classmethod
-    def reset_default(cls) -> None:
-        """重置默认实例（供测试使用）。"""
-        cls._default_instance = None
+    # 单例访问由 SingletonMeta 提供：
+    #   AnimatorContext.get_default() → 线程安全单例获取（DCL）
+    #   AnimatorContext.reset_default() → 线程安全单例重置（供测试使用）
 
 
 class BreathPalette:

@@ -15,22 +15,20 @@ from typing import Any, Callable, Dict, Optional, Type
 from .event_types import DisplayEvent
 from ...core.events.event_bus import CoreEventBus
 from ...core.events.event_types import CoreEvent, EventPriority
+from ..core.singleton import SingletonMeta
 
 _logger = logging.getLogger(__name__)
 
 EventHandler = Callable[[DisplayEvent], Any]
 
 
-class DisplayEventBus:
+class DisplayEventBus(metaclass=SingletonMeta):
     """显示层事件总线 — 同步发布/订阅（基于 CoreEventBus 实现）。
 
     线程安全。支持按事件类型过滤订阅。
-    默认单例可通过 DisplayEventBus.get_default() 获取。
+    单例行为由 ``SingletonMeta`` 自动提供 get_default / reset_default。
     内部委托给 CoreEventBus 进行事件分发。
     """
-
-    _default_instance: Optional["DisplayEventBus"] = None
-    _default_lock = threading.RLock()
 
     def __init__(self):
         # 内部委托给 CoreEventBus（复用线程安全分发+异常隔离）
@@ -42,24 +40,9 @@ class DisplayEventBus:
         self._handler_lock = threading.RLock()
         self._source: str = ""
 
-    # ── 工厂方法与默认实例 ──────────────────────────────
-
-    @classmethod
-    def get_default(cls) -> "DisplayEventBus":
-        """获取全局默认事件总线实例（线程安全单例）。"""
-        if cls._default_instance is None:
-            with cls._default_lock:
-                if cls._default_instance is None:
-                    cls._default_instance = cls()
-        return cls._default_instance
-
-    @classmethod
-    def reset_default(cls) -> None:
-        """重置全局默认实例（主要用于测试）。"""
-        with cls._default_lock:
-            if cls._default_instance is not None:
-                cls._default_instance.clear()
-            cls._default_instance = None
+    # 单例访问由 SingletonMeta 提供：
+    #   DisplayEventBus.get_default() → 线程安全单例获取（DCL）
+    #   DisplayEventBus.reset_default() → 线程安全单例重置（供测试使用）
 
     # ── 订阅管理 ────────────────────────────────────────
 

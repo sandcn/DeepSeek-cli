@@ -16,8 +16,6 @@ import sys
 import time
 from typing import TYPE_CHECKING
 
-from wcwidth import wcswidth
-
 _logger = logging.getLogger(__name__)
 
 from .blessed import (
@@ -42,8 +40,9 @@ from .theme import (
     _PLACEHOLDER_STREAMING,
     _PLACEHOLDER_TEXT,
     get_prompt_breath_color,
-    make_sep_gradient,
 )
+from ...core.ansi_utils import visual_width
+from ...core.text_utils import build_gradient
 from ...core.effects import build_glow_ansi
 from ...core.theme import THEME as _BOTTOM_THEME
 from .cursor import (
@@ -275,7 +274,7 @@ def _build_sep_with_system_stats(
         status_visual_width = _visible_width(status_text)
         # -1 为状态文本与渐变之间的空格分隔符
         remaining = max(1, available - status_visual_width - 1)
-        sep = make_sep_gradient(remaining, start_color=sep_start, char=char)
+        sep = build_gradient(remaining, start_color=sep_start, char=char)
         return f"  {status_colored} {sep}"
 
     # 纯渐变分隔线策略（原有行为，向后兼容）
@@ -308,17 +307,13 @@ def _build_sep_gradient_or_compose(
             _logger.warning(
                 "EffectRegistry.compose() 失败，回退到静态渐变", exc_info=True
             )
-    from ...core.text_utils import build_gradient
     return build_gradient(sep_w, start_color=sep_start, end_color=237,
                           char=char, effect="none")
 
 
 def _visible_width(text: str) -> int:
     """计算字符串的可视宽度（去除 ANSI 转义序列）。"""
-    import re
-    clean = re.sub(r'\033\[[0-9;]*m', '', text)
-    w = wcswidth(clean)
-    return w if w >= 0 else len(clean)
+    return visual_width(text)
 
 
 def _draw_all_locked(bar: _BottomBar, out, height: int, breath_frame: int = 0) -> None:

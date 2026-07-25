@@ -1,7 +1,7 @@
 """纯文本工具函数 — 从 message_editor / _message_display 提取的统一实现。
 
 .. deprecated::
-    ``build_gradient_ansi`` / ``build_gradient_ansi_frame`` / ``build_glow_ansi``
+    ``build_gradient_ansi`` / ``build_gradient_ansi_frame``
     将于未来版本移除。新代码请分别使用 ``build_gradient()`` 或
     从 ``src.tui.core.effects`` 直接导入对应函数。
 
@@ -15,8 +15,7 @@
 动效增强（2026-07-12）：
   - build_bounce_ansi(): 弹入动效（替代线性渐显）
   - build_enhanced_sep(): 增强版渐变分隔线（支持波动/流光）
-  - build_sparkle_ansi(): 闪烁高亮
-  - build_glow_ansi(): 辉光呼吸效果
+  - build_sparkle_ansi()、build_glow_ansi() 已迁移至 effects 模块
   新增函数委托至 _effects.py 实现核心计算，本层只做 ANSI 构建。
 """
 
@@ -171,9 +170,11 @@ def build_gradient(
         return ""
 
     if effect == "wave":
-        return build_sep_wave(colors, frame, char)
+        from .effects import build_wave_sep_ansi
+        return build_wave_sep_ansi(colors, frame, char)
     elif effect == "shimmer":
-        return build_sep_shimmer(colors, frame, char)
+        from .effects import build_shimmer_sep_ansi
+        return build_shimmer_sep_ansi(colors, frame, char)
     else:
         # "none", "frame", "sep" — 标准多色渐变（均使用 gradient_range + ANSI 构建）
         ansi_parts: list[str] = []
@@ -243,6 +244,9 @@ def make_sep_gradient(
 ) -> str:
     """生成全宽渐变分隔线（委托至 build_gradient）。
 
+    .. deprecated::
+        Use :func:`build_gradient` instead.
+
     保留原有函数签名（向后兼容），内部委托至 build_gradient() 统一实现。
 
     Args:
@@ -254,6 +258,11 @@ def make_sep_gradient(
     Returns:
         带 ANSI 256 色渐变的完整分隔线字符串（含 RESET）。
     """
+    warnings.warn(
+        "make_sep_gradient is deprecated, use build_gradient() instead",
+        DeprecationWarning,
+        stacklevel=2,
+    )
     return build_gradient(width, start_color=start_color, end_color=end_color, char=char, effect="none")
 
 
@@ -283,94 +292,6 @@ def build_bounce_ansi(frame: int, total_frames: int = 6) -> str:
     return f"\033[38;5;{color}m"
 
 
-def build_sep_wave(
-    colors: list[int], frame: int, char: str = "\u2501",
-) -> str:
-    """[Deprecated] 构建波动分隔线 ANSI 字符串。
-
-    Deprecated: 请直接从 ``src.tui.core.effects`` 导入 ``build_wave_sep_ansi``。
-
-    在渐变基础上叠加正弦波动，使分隔线看起来像"流动的水波"。
-    帧号推进时波动沿分隔线方向传播。
-
-    Args:
-        colors: 基础渐变色号列表。
-        frame: 当前帧号。
-        char: 显示的字符。
-
-    Returns:
-        ANSI 格式的波动渐变分隔线（含 RESET）。
-    """
-    from .effects import build_wave_sep_ansi
-    return build_wave_sep_ansi(colors, frame, char)
-
-
-def build_sep_shimmer(
-    colors: list[int], frame: int, char: str = "\u2501",
-) -> str:
-    """[Deprecated] 构建流光扫光分隔线 ANSI 字符串。
-
-    Deprecated: 请直接从 ``src.tui.core.effects`` 导入 ``build_shimmer_sep_ansi``。
-
-    一条亮带沿分隔线方向周期性移动，产生"扫光"效果。
-    视觉效果比静态渐变更引人注目。
-
-    Args:
-        colors: 基础渐变色号列表。
-        frame: 当前帧号。
-        char: 显示的字符。
-
-    Returns:
-        ANSI 格式的流光分隔线（含 RESET）。
-    """
-    from .effects import build_shimmer_sep_ansi
-    return build_shimmer_sep_ansi(colors, frame, char)
-
-
-def build_sparkle_ansi(frame: int, base_color: int = 45, period: int = 6) -> str:
-    """构建闪烁高亮 ANSI 序列。
-
-    在 base_color 和 base_color+bright 间闪烁，
-    适合用于需要吸引注意力的元素（新消息标记、完成提示等）。
-
-    Args:
-        frame: 当前帧号。
-        base_color: 基准色号。
-        period: 闪烁周期帧数。
-
-    Returns:
-        ANSI 前景色序列。
-    """
-    from .effects import sparkle_color
-    c = sparkle_color(frame, base_color, period=period)
-    return f"\033[38;5;{c}m"
-
-
-def build_glow_ansi(frame: int, base_color: int = 45, period: int = 12) -> str:
-    """[Deprecated] 构建辉光呼吸 ANSI 序列。
-
-    Deprecated: 请直接从 ``src.tui.core.effects`` 导入 ``build_glow_ansi``。
-    将在未来版本中移除。
-
-    .. note::
-        此函数委托至 ``effects.build_glow_ansi``（从 _wave 子模块重导出）。
-
-    Args:
-        frame: 当前帧号。
-        base_color: 基准色号。
-        period: 呼吸周期帧数。
-
-    Returns:
-        ANSI 前景色序列。
-    """
-    warnings.warn(
-        "build_glow_ansi is deprecated, import from src.tui.core.effects directly",
-        DeprecationWarning,
-        stacklevel=2,
-    )
-    from .effects import build_glow_ansi
-    return build_glow_ansi(frame, base_color, period)
-
 
 def build_left_border_ansi(frame: int, base_color: int = 23, period: int = 24) -> str:
     """构建左边缘呼吸边框 ANSI 序列。
@@ -388,7 +309,7 @@ def build_left_border_ansi(frame: int, base_color: int = 23, period: int = 24) -
         完整的 ANSI 边框序列（含 RESET），格式：
         ``\033[38;5;{color}m│\033[0m``
     """
-    from .effects import build_glow_ansi  # 直接导入非废弃版
+    from ._wave import build_glow_ansi
     glow = build_glow_ansi(frame, base_color, period)
     return f"{glow}\u2502\033[0m"
 
@@ -424,6 +345,9 @@ def make_sep_gradient_enhanced(
 ) -> str:
     """增强版渐变分隔线工厂（委托至 build_gradient）。
 
+    .. deprecated::
+        Use :func:`build_gradient` instead.
+
     保留原有函数签名（向后兼容），内部委托至 build_gradient() 统一实现。
 
     Args:
@@ -437,6 +361,11 @@ def make_sep_gradient_enhanced(
     Returns:
         带 ANSI 渐变的完整分隔线字符串（含 RESET）。
     """
+    warnings.warn(
+        "make_sep_gradient_enhanced is deprecated, use build_gradient() instead",
+        DeprecationWarning,
+        stacklevel=2,
+    )
     return build_gradient(width, start_color=start_color, end_color=end_color, char=char, effect=effect, frame=frame)
 
 
@@ -517,8 +446,7 @@ __all__ = [
     # 渐变统一入口（2026-07-26 重构）
     "build_gradient",
     # 增强动效（2026-07-12）
-    "build_bounce_ansi", "build_sep_wave", "build_sep_shimmer",
-    "build_sparkle_ansi", "build_glow_ansi", "build_left_border_ansi",
+    "build_bounce_ansi", "build_left_border_ansi",
     "parse_theme_color",
     "make_sep_gradient_enhanced",
     # FadeIn 动效（从 _base.py 迁移至此）

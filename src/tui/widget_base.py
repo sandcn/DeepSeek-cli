@@ -266,6 +266,26 @@ class Widget:
         _logger.error("组件 %s 渲染崩溃: %s", cls.__name__, exc)
         buffer.write(0, 0, f"\033[31m[组件 {cls.__name__} 渲染异常]\033[0m")
 
+    @staticmethod
+    def _render_child_safe(
+        child: Widget, buffer: RenderBuffer, label: str = ""
+    ) -> None:
+        """安全包裹子控件的 render 调用。
+
+        与 ``error_boundary`` 的区别：
+          - ``error_boundary`` 是渲染崩溃后写入占位符
+          - ``_render_child_safe`` 是 render 调用自身的安全包裹（仅记录日志）
+
+        Args:
+            child: 要渲染的子控件。
+            buffer: 目标 RenderBuffer。
+            label: 调试标签（通常是父控件类名），用于日志标识。
+        """
+        try:
+            child.render(buffer)
+        except Exception as e:
+            _logger.debug("%s: child.render failed: %s", label, e)
+
     def did_update(self, new_props: dict | None = None) -> None:
         """渲染后的回调钩子 —— render() 成功后调用。
 

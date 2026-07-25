@@ -266,6 +266,29 @@ def build_glow_ansi(frame: int, base_color: int = 45, period: int = 12) -> str:
     return f"\033[38;5;{c}m"
 
 
+def build_breath_ansi(frame: int, color_low: int, color_high: int, period: int = 12, layer: str = "fg") -> str:
+    """构建呼吸 ANSI 序列（前景或背景）。
+
+    在 color_low 和 color_high 间正弦呼吸，
+    支持前景色 (38;5) 和背景色 (48;5) 输出。
+
+    Args:
+        frame: 当前帧号。
+        color_low: 最暗色号。
+        color_high: 最亮色号。
+        period: 呼吸周期。
+        layer: "fg" 前景色 (38;5) 或 "bg" 背景色 (48;5)。
+
+    Returns:
+        ANSI 颜色序列。
+    """
+    c = sine_color(frame, color_low, color_high, period)
+    if layer not in ("fg", "bg"):
+        layer = "fg"
+    ansi_prefix = "38" if layer == "fg" else "48"
+    return f"\033[{ansi_prefix};5;{c}m"
+
+
 def build_fg_breath_ansi(frame: int, color_low: int, color_high: int, period: int = 12) -> str:
     """构建呼吸前景色 ANSI 序列。
 
@@ -280,8 +303,7 @@ def build_fg_breath_ansi(frame: int, color_low: int, color_high: int, period: in
     Returns:
         ANSI 前景色序列。
     """
-    c = sine_color(frame, color_low, color_high, period)
-    return f"\033[38;5;{c}m"
+    return build_breath_ansi(frame, color_low, color_high, period, layer="fg")
 
 
 def build_bg_breath_ansi(frame: int, color_low: int, color_high: int, period: int = 12) -> str:
@@ -298,8 +320,7 @@ def build_bg_breath_ansi(frame: int, color_low: int, color_high: int, period: in
     Returns:
         ANSI 背景色序列。
     """
-    c = sine_color(frame, color_low, color_high, period)
-    return f"\033[48;5;{c}m"
+    return build_breath_ansi(frame, color_low, color_high, period, layer="bg")
 
 
 # ═══════════════════════════════════════════════════════════
@@ -333,6 +354,47 @@ def get_theme_effect_color(effect_name: str, frame: int = 0) -> str:
 
 
 # ═══════════════════════════════════════════════════════════
+# FadeIn 缓动因子
+# ═══════════════════════════════════════════════════════════
+
+
+def fade_factor(frame: int, total: int = 6) -> float:
+    """平滑缓动渐显因子 [0.0, 1.0]。
+
+    使用正弦缓动（sine_easing）计算渐显程度：
+    frame 0 → 0.0（全暗），frame >= total → 1.0（全亮）。
+    从 ``_base._fade_factor`` 迁移，统一 FadeIn 缓动入口。
+
+    Args:
+        frame: 当前帧号（0-based）。
+        total: 渐显总帧数，默认 6 帧（10Hz 下约 0.6s）。
+
+    Returns:
+        [0.0, 1.0] 范围的缓动因子。
+    """
+    if frame <= 0:
+        return 0.0
+    t = min(frame / total, 1.0)
+    return (math.sin((t - 0.5) * math.pi) + 1) / 2
+
+
+def fade_color(target: int, fade: float, base: int = 238) -> int:
+    """将缓动因子融入色号：暗色 → 目标色。
+
+    从 ``_base._fade_color`` 迁移，统一 FadeIn 色号计算入口。
+
+    Args:
+        target: 目标色号（0-255）。
+        fade: 缓动因子 [0.0, 1.0]。
+        base: 起始暗色，默认 238（深灰）。
+
+    Returns:
+        插值后的色号，clamp 到 [0, 255]。
+    """
+    return max(0, min(255, int(base + (target - base) * fade)))
+
+
+# ═══════════════════════════════════════════════════════════
 # 缓动函数（统一入口）
 # ═══════════════════════════════════════════════════════════
 
@@ -358,6 +420,8 @@ __all__ = [
     "sine_breath_t", "sine_color", "sine_color_range",
     # 弹入
     "bounce_easing", "bounce_frame_color",
+    # FadeIn 缓动因子
+    "fade_factor", "fade_color",
     # 缓动（统一入口，从 transitions 迁移）
     "sine_easing",
     # 波动
@@ -368,6 +432,7 @@ __all__ = [
     "build_glow_ansi",
     "build_fg_breath_ansi",
     "build_bg_breath_ansi",
+    "build_breath_ansi",
     # 主题动效消费者
     "get_theme_effect_color",
 ]

@@ -13,7 +13,7 @@ import threading
 _logger = logging.getLogger(__name__)
 
 from ..state import consumer_registry as _consumer_registry
-from ..engine.utils import _truncate_msg
+from ..core.text_utils import truncate
 from ..framework import Framework
 
 # 线程本地重入保护（防止 emit → logger → emit 递归）
@@ -58,7 +58,7 @@ class ChatUIErrorHandler(logging.Handler):
             return
         if not msg_content:
             return
-        msg = _truncate_msg(f"{record.name}: {msg_content}", self._max_length)
+        msg = truncate(f"{record.name}: {msg_content}", self._max_length, normalize=False, suffix="...")
 
         # 设置重入标记 → 入队 → finally 清理
         with _emit_lock:

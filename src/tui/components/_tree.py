@@ -373,11 +373,8 @@ class TreeView(TuiComponent):
         TreeView 继承自 TuiComponent，但 _is_narrow_mode() 用于递归渲染路径，
         而非 render() 方法的窄屏降级分支，故保持此独立检测方法。
         """
-        try:
-            from ..terminal.narrow import is_narrow
-            return is_narrow()
-        except (ImportError, ModuleNotFoundError):
-            return False
+        from ..terminal.narrow import is_narrow
+        return is_narrow()
 
     def _get_chars(self, narrow: bool) -> dict[str, str]:
         """获取缩进线字符集。

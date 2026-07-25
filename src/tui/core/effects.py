@@ -26,10 +26,13 @@ from ._wave import (
     bounce_easing,
     bounce_frame_color,
     build_bg_breath_ansi,
+    build_breath_ansi,
     build_fade_in_ansi_enhanced,
     build_fg_breath_ansi,
     build_glow_ansi,
     build_wave_sep_ansi,
+    fade_color,
+    fade_factor,
     get_theme_effect_color,
     sine_breath_t,
     sine_color,
@@ -67,11 +70,39 @@ from ._train import (
 
 from ._compose import EffectRegistry
 
+
+# ═══════════════════════════════════════════════════════════
+# 向后兼容别名（已从 text_utils.py 删除的函数）
+# ═══════════════════════════════════════════════════════════
+
+build_sep_wave = build_wave_sep_ansi
+build_sep_shimmer = build_shimmer_sep_ansi
+
+
+def build_sparkle_ansi(frame: int, base_color: int = 45, period: int = 6) -> str:
+    """构建闪烁 ANSI 序列（向后兼容包装器）。
+
+    原位于 text_utils.py，已删除。现基于 sparkle_color 实现。
+
+    Args:
+        frame: 当前帧号。
+        base_color: 基准色号，默认 45（青色）。
+        period: 闪烁周期帧数。
+
+    Returns:
+        ANSI 前景色序列。
+    """
+    c = sparkle_color(frame, base_color, period=period)
+    return f"\033[38;5;{c}m"
+
+
 __all__ = [
     # 正弦波工具
     "sine_breath_t", "sine_color", "sine_color_range",
     # 弹入
     "bounce_easing", "bounce_frame_color",
+    # FadeIn 缓动因子
+    "fade_factor", "fade_color",
     # 缓动
     "sine_easing",
     # 波动
@@ -84,9 +115,13 @@ __all__ = [
     "build_fade_in_ansi_enhanced",
     "build_wave_sep_ansi",
     "build_shimmer_sep_ansi",
+    "build_sep_wave",
+    "build_sep_shimmer",
+    "build_sparkle_ansi",
     "build_glow_ansi",
     "build_fg_breath_ansi",
     "build_bg_breath_ansi",
+    "build_breath_ansi",
     # 主题动效消费者
     "get_theme_effect_color",
     # 新增渲染效果（2026-07-15 框架整合）
