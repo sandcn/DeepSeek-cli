@@ -64,6 +64,7 @@ class EscapeMonitor:
         # ── 故障检测计数器 ──
         self._eof_count = 0           # stdin EOF 连续计数
         self._select_error_count = 0  # select 错误连续计数
+        self._exit_reason = None      # 熔断退出原因（供 _monitor() 日志诊断）
         # ── 流式输入处理器（组合模式） ──
         self._input_handler = StreamInputHandler(self._captured_input, self._captured_lock)
         # ── 特殊按键回调（Ctrl+G/O/N/R） ──
@@ -115,6 +116,7 @@ class EscapeMonitor:
         self._monitor_ready.clear()
         self._eof_count = 0
         self._select_error_count = 0
+        self._exit_reason = None
         self._thread = threading.Thread(target=self._monitor, daemon=True)
         self._thread.start()
         # ★ Bug 修复：等待 monitor 线程就绪（cbreak + tcflush）后再回显预填文字。
@@ -122,6 +124,14 @@ class EscapeMonitor:
         #   会被未就绪前或 tcflush 清空，导致首次 Enter 丢失。
         #   超时 1.0s 作为安全兜底，防止 monitor 线程卡死时永久阻塞。
         self._monitor_ready.wait(timeout=1.0)
+        # 验证线程确实启动成功（_monitor_ready 在 finally 中 set，
+        # 即使初始化失败也会触发，需额外检查线程存活）
+        if not self._thread.is_alive():
+            self._monitor_ready.set()  # 防止后续调用方永久阻塞
+            raise RuntimeError(
+                f"EscapeMonitor 启动失败：线程未能正常启动 "
+                f"(exit_reason={self._exit_reason})"
+            )
         self._input_handler._echo(self._input_handler.get_current_text())
         with _active_monitor_lock:
             _active_monitor = self
@@ -410,18 +420,15 @@ class EscapeMonitor:
             self._monitor_unix()
         except Exception as e:
             _logger.warning(
-                "_monitor_unix 异常退出（Cygwin 环境可忽略此警告，保护性代码已捕获）: %s", e,
+                "EscapeMonitor 线程异常退出: %s", e,
                 exc_info=True,
             )
-            try:
-                self._monitor_win()
-            except Exception as e2:
+            self._restore_terminal_settings()
+        else:
+            if self._exit_reason is not None:
                 _logger.warning(
-                    "EscapeMonitor 线程异常退出：Unix 和 Windows 两种监控方式均失败。"
-                    "若在 Cygwin 上频繁出现，请检查 termios 兼容性。"
-                    "错误详情: %s / %s", e, e2, exc_info=True,
+                    "EscapeMonitor 线程因 %s 退出", self._exit_reason
                 )
-                self._restore_terminal_settings()
 
     def _restore_terminal_settings_impl(self):
         """实际终端设置恢复逻辑（无锁，由调用方保证线程安全）。
@@ -558,7 +565,7 @@ class EscapeMonitor:
         from src._compat_termios import HAS_TERMIOS, termios
         import select
 
-        # Windows 上 termios 不可用，让 _monitor() 回退到 _monitor_win()
+        # Windows 上 termios 不可用（_monitor_win 方法保留供未来适配）
         if not HAS_TERMIOS:
             self._monitor_ready.set()
             raise ImportError("termios 在当前平台（Windows）不可用，回退到 msvcrt 路径")
@@ -613,6 +620,7 @@ class EscapeMonitor:
                             "select 错误连续 %d 次，判定 stdin 不可用，退出监听",
                             self._select_error_count,
                         )
+                        self._exit_reason = "select_error"
                         return
                     # stdin 可能已关闭或不可读，跳过本轮
                     time.sleep(UNIX_SELECT_TIMEOUT)
@@ -632,7 +640,9 @@ class EscapeMonitor:
                                 "stdin EOF 连续 %d 次，判定 pty 已断开，退出监听",
                                 self._eof_count,
                             )
+                            self._exit_reason = "eof"
                             return
+                        time.sleep(UNIX_SELECT_TIMEOUT)
                         continue
                     # 读到正常数据，重置 EOF 计数器
                     self._eof_count = 0
