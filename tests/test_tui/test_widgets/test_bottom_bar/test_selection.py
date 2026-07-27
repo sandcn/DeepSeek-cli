@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import pytest
 from unittest.mock import MagicMock, patch
-from pathlib import Path
 
 
 class TestBottomBarInputIntegration:
@@ -25,26 +24,15 @@ class TestBottomBarInputIntegration:
     @pytest.fixture
     def mock_input(self, mock_width_cache):
         """创建 mock Input 实例，注入 mock width_cache。"""
-        from src.tui.input._input import Input
-        from src.tui.input._buffer import InputBuffer
-        import tempfile
-
-        with tempfile.NamedTemporaryFile(suffix='.history', delete=False) as f:
-            history_path = Path(f.name)
+        from src.tui.input import Input
 
         input_instance = Input.__new__(Input)
         input_instance._fd = -1
         input_instance._term_width_cache = mock_width_cache
         input_instance._cursor_tracker = MagicMock()
-        input_instance._buffer = InputBuffer(history_path)
+        input_instance._buffer = ""
         input_instance._parser = MagicMock()
-        input_instance._cursor = MagicMock()
-        input_instance._cursor.compute.return_value = (20, 5, 0, 2)
-
-        try:
-            history_path.unlink()
-        except Exception:
-            pass
+        input_instance.compute_cursor = MagicMock(return_value=(20, 5, 0, 2))
 
         return input_instance
 
@@ -69,8 +57,8 @@ class TestBottomBarInputIntegration:
         assert r == 20
         assert c == 5
 
-        mock_input._cursor.compute.assert_called_once()
-        args = mock_input._cursor.compute.call_args[0]
+        mock_input.compute_cursor.assert_called_once()
+        args = mock_input.compute_cursor.call_args[0]
         assert args[0] == "hello"
         assert args[1] == 5
 
@@ -105,7 +93,7 @@ class TestBottomBarInputIntegration:
 
         with patch('sys.__stdout__'):
             bb.ensure_cursor_in_lower()
-            mock_input._cursor.compute.assert_called()
+            mock_input.compute_cursor.assert_called()
 
 
 class TestSelectionInputParserIntegration:
@@ -122,11 +110,11 @@ class TestSelectionInputParserIntegration:
     @pytest.fixture
     def mock_input_with_parser(self):
         """创建 mock Input 实例。"""
-        from src.tui.input._input import Input
+        from src.tui.input import Input
 
         input_instance = Input.__new__(Input)
         input_instance._fd = -1
-        input_instance._parser = MagicMock()
+        input_instance.parse_sequence = MagicMock()
         input_instance._term_width_cache = MagicMock()
         input_instance._buffer = MagicMock()
         input_instance._cursor = MagicMock()
@@ -157,9 +145,9 @@ class TestSelectionInputParserIntegration:
     def test_arrow_up_dispatches_cycle_completion(self, mock_bb, mock_input_with_parser):
         """验证上箭头 KeyEvent → bb.cycle_completion(-1)。"""
         from src.tui.widgets.bottom_bar.selection import _run_selection_raw
-        from src.tui.input._parser import KeyEvent
+        from src.tui.input import KeyEvent
 
-        mock_input_with_parser._parser.parse_escape_sequence.return_value = KeyEvent(
+        mock_input_with_parser.parse_sequence.return_value = KeyEvent(
             kind="arrow_up", raw=b"\x1b[A"
         )
 
@@ -177,9 +165,9 @@ class TestSelectionInputParserIntegration:
     def test_arrow_down_dispatches_cycle_completion(self, mock_bb, mock_input_with_parser):
         """验证下箭头 KeyEvent → bb.cycle_completion(1)。"""
         from src.tui.widgets.bottom_bar.selection import _run_selection_raw
-        from src.tui.input._parser import KeyEvent
+        from src.tui.input import KeyEvent
 
-        mock_input_with_parser._parser.parse_escape_sequence.return_value = KeyEvent(
+        mock_input_with_parser.parse_sequence.return_value = KeyEvent(
             kind="arrow_down", raw=b"\x1b[B"
         )
 
@@ -197,9 +185,9 @@ class TestSelectionInputParserIntegration:
     def test_escape_cancels(self, mock_bb, mock_input_with_parser):
         """验证单独 Esc → cancel。"""
         from src.tui.widgets.bottom_bar.selection import _run_selection_raw
-        from src.tui.input._parser import KeyEvent
+        from src.tui.input import KeyEvent
 
-        mock_input_with_parser._parser.parse_escape_sequence.return_value = KeyEvent(
+        mock_input_with_parser.parse_sequence.return_value = KeyEvent(
             kind="escape", raw=b"\x1b"
         )
 
@@ -233,9 +221,9 @@ class TestSelectionInputParserIntegration:
     def test_unknown_csi_ignored(self, mock_bb, mock_input_with_parser):
         """验证未知 CSI 序列 → 忽略（继续轮询）。"""
         from src.tui.widgets.bottom_bar.selection import _run_selection_raw
-        from src.tui.input._parser import KeyEvent
+        from src.tui.input import KeyEvent
 
-        mock_input_with_parser._parser.parse_escape_sequence.return_value = KeyEvent(
+        mock_input_with_parser.parse_sequence.return_value = KeyEvent(
             kind="unknown", raw=b"\x1b[99X"
         )
 

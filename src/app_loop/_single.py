@@ -44,7 +44,7 @@ async def run_single_mode_async(prompt_text):
     session = ChatSession(agent=_make_event_agent())
     session.initialize()
 
-    monitor = EscapeMonitor()
+    monitor = EscapeMonitor(input_instance=chat_ui._components.input)
     _register_session_handlers(session, monitor, chat_ui=chat_ui)
 
     try:

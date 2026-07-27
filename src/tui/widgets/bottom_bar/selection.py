@@ -47,7 +47,7 @@ def _run_selection_raw(
     """使用原始 I/O 的阻塞式选择循环（Cygwin 降级路径）。
 
     绕过 Blessed term.inkey()，直接使用 os.read(fd, 1) + select.select()
-    读取按键输入。CSI/SS3 序列解析委托给 InputParser（通过 input_instance）。
+    读取按键输入。CSI/SS3 序列解析委托给 Input.parse_sequence()（通过 input_instance）。
 
     处理以下按键：
     - 上箭头（CSI A）→ bb.cycle_completion(-1)
@@ -64,7 +64,7 @@ def _run_selection_raw(
         initial_idx: 初始光标位置。
         title: 弹窗标题。
         bb: _BottomBar 实例。
-        input_instance: Input 门面类实例（可选），提供 InputParser 用于 CSI/SS3 解析。
+        input_instance: Input 类实例（可选），提供 parse_sequence() 用于 CSI/SS3 解析。
 
     Returns:
         {"action": "confirmed"|"cancel"|"error"|"resume"|"delete"|"resume_all",
@@ -119,7 +119,7 @@ def _run_selection_raw(
             if ch in ('\r', '\n'):
                 return {"action": "confirmed", "index": _safe_completion_idx(bb, items)}
 
-            # ── Esc 序列处理（委托 InputParser） ──
+            # ── Esc 序列处理（委托 Input.parse_sequence()） ──
             if ch == '\x1b':
                 if input_instance is not None:
                     key_event = input_instance.parse_sequence(fd)

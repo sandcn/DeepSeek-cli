@@ -1,4 +1,4 @@
-"""CursorPositioner 单元测试。
+"""Input 光标定位单元测试（适配统一 Input 类）。
 
 测试范围：
   - 单行文本 + 光标在末尾 → 正确行/列
@@ -10,12 +10,16 @@
 
 from __future__ import annotations
 
+import os
 import pytest
+from pathlib import Path
 from unittest import mock
 
+from src.tui.input import Input
 
-class TestCursorPositioner:
-    """CursorPositioner 单元测试。"""
+
+class TestComputeCursor:
+    """Input.compute_cursor() 单元测试。"""
 
     @pytest.fixture
     def mock_width_cache(self):
@@ -25,16 +29,20 @@ class TestCursorPositioner:
         cache.get_height.return_value = 24
         return cache
 
-    def _make_positioner(self, mock_width_cache):
-        """创建 CursorPositioner 实例。"""
-        from src.tui.input._cursor import CursorPositioner
-        return CursorPositioner(width_cache=mock_width_cache)
+    def _make_input(self, mock_width_cache):
+        """创建 Input 实例（使用 /dev/null 作为 fd）。"""
+        fd = os.open("/dev/null", os.O_RDONLY)
+        return Input(
+            fd=fd,
+            history_file=Path("/tmp/test_history"),
+            term_width_cache=mock_width_cache,
+        )
 
     def test_single_line_cursor_at_end(self, mock_width_cache):
         """单行文本 + 光标在末尾 → 正确行/列。"""
-        pos = self._make_positioner(mock_width_cache)
+        inp = self._make_input(mock_width_cache)
 
-        r_cursor, cursor_col, vis_row, vis_col = pos.compute(
+        r_cursor, cursor_col, vis_row, vis_col = inp.compute_cursor(
             text="hello world",
             cursor_pos=11,
             bottom_lines=6,
@@ -51,9 +59,9 @@ class TestCursorPositioner:
 
     def test_empty_text_default_position(self, mock_width_cache):
         """空文本 → 默认位置 (vis_row=0, vis_col=0)。"""
-        pos = self._make_positioner(mock_width_cache)
+        inp = self._make_input(mock_width_cache)
 
-        r_cursor, cursor_col, vis_row, vis_col = pos.compute(
+        r_cursor, cursor_col, vis_row, vis_col = inp.compute_cursor(
             text="",
             cursor_pos=0,
             bottom_lines=4,
@@ -67,14 +75,14 @@ class TestCursorPositioner:
 
     def test_multiline_text_cursor_in_middle(self, mock_width_cache):
         """多行文本 + 光标在中间行 → 视觉行计算正确。"""
-        pos = self._make_positioner(mock_width_cache)
+        inp = self._make_input(mock_width_cache)
 
         text = "line one\nline two\nline three"
         # 光标在 "line two" 的 "line " 之后（"line one\nline "）
         # "line one\n" = 9 chars, "line " = 5 chars, cursor_pos=14
         cursor_pos = 14
 
-        r_cursor, cursor_col, vis_row, vis_col = pos.compute(
+        r_cursor, cursor_col, vis_row, vis_col = inp.compute_cursor(
             text=text,
             cursor_pos=cursor_pos,
             bottom_lines=6,
@@ -91,11 +99,11 @@ class TestCursorPositioner:
 
     def test_tab_expansion(self, mock_width_cache):
         """含制表符文本 → 视觉列正确展开。"""
-        pos = self._make_positioner(mock_width_cache)
+        inp = self._make_input(mock_width_cache)
 
         # "a\tb": tab expands to 3 spaces (tab at col 1, next tab stop at 4)
         # expanded text: "a   b" (4 chars, width 4)
-        r_cursor, cursor_col, vis_row, vis_col = pos.compute(
+        r_cursor, cursor_col, vis_row, vis_col = inp.compute_cursor(
             text="a\tb",
             cursor_pos=2,  # after the tab
             bottom_lines=6,
@@ -109,17 +117,17 @@ class TestCursorPositioner:
     def test_completion_height_offset(self, mock_width_cache):
         """补全弹窗高度影响 r_cursor 计算（高度足够时不钳位）。"""
         mock_width_cache.get_height.return_value = 50  # 足够大避免钳位
-        pos = self._make_positioner(mock_width_cache)
+        inp = self._make_input(mock_width_cache)
 
         # 无补全弹窗
-        r1, _, _, _ = pos.compute(
+        r1, _, _, _ = inp.compute_cursor(
             text="hi", cursor_pos=2,
             bottom_lines=6, subagent_lines=0, completion_height=0,
         )
         # r1 = 50 - 6 + 4 + 0 + 0 + 0 = 48
 
         # 补全弹窗 3 行
-        r2, _, _, _ = pos.compute(
+        r2, _, _, _ = inp.compute_cursor(
             text="hi", cursor_pos=2,
             bottom_lines=6, subagent_lines=0, completion_height=3,
         )
@@ -130,14 +138,14 @@ class TestCursorPositioner:
 
     def test_subagent_lines_offset(self, mock_width_cache):
         """subagent 面板行影响 r_cursor 计算。"""
-        pos = self._make_positioner(mock_width_cache)
+        inp = self._make_input(mock_width_cache)
 
-        r1, _, _, _ = pos.compute(
+        r1, _, _, _ = inp.compute_cursor(
             text="hi", cursor_pos=2,
             bottom_lines=6, subagent_lines=0, completion_height=0,
         )
 
-        r2, _, _, _ = pos.compute(
+        r2, _, _, _ = inp.compute_cursor(
             text="hi", cursor_pos=2,
             bottom_lines=6, subagent_lines=2, completion_height=0,
         )
@@ -148,10 +156,10 @@ class TestCursorPositioner:
     def test_clamp_to_terminal_height(self, mock_width_cache):
         """r_cursor 被钳位到 [1, height]。"""
         mock_width_cache.get_height.return_value = 5
-        pos = self._make_positioner(mock_width_cache)
+        inp = self._make_input(mock_width_cache)
 
         # 如果计算结果超出终端高度，应被钳位
-        r_cursor, _, _, _ = pos.compute(
+        r_cursor, _, _, _ = inp.compute_cursor(
             text="line 1\nline 2\nline 3\nline 4",
             cursor_pos=25,
             bottom_lines=3,
@@ -164,9 +172,9 @@ class TestCursorPositioner:
     def test_cursor_col_clamp_to_width(self, mock_width_cache):
         """cursor_col 被钳位到 [1, width]。"""
         mock_width_cache.get_width.return_value = 20
-        pos = self._make_positioner(mock_width_cache)
+        inp = self._make_input(mock_width_cache)
 
-        _, cursor_col, _, _ = pos.compute(
+        _, cursor_col, _, _ = inp.compute_cursor(
             text="a very long line that exceeds terminal width",
             cursor_pos=50,
             bottom_lines=6,

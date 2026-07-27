@@ -1,7 +1,7 @@
-"""Input 门面类单元测试。
+"""Input 类单元测试（适配统一 Input 类）。
 
-覆盖：width/height 委托、buffer 委托、回调注册+调用、
-compute_cursor 委托、read_byte/read_with_timeout。
+覆盖：width/height 委托、缓冲委托、回调注册+调用、
+compute_cursor、I/O 方法、start_io/stop_io。
 """
 
 from __future__ import annotations
@@ -9,16 +9,13 @@ from __future__ import annotations
 import os
 import pytest
 from pathlib import Path
-from unittest.mock import patch, MagicMock, PropertyMock
+from unittest.mock import patch, MagicMock
 
-from src.tui.input._input import Input
-from src.tui.input._buffer import InputBuffer
-from src.tui.input._parser import InputParser, KeyEvent
-from src.tui.input._cursor import CursorPositioner
+from src.tui.input import Input, KeyEvent
 
 
 class TestInputFacade:
-    """Input 门面类基本功能测试。"""
+    """Input 类基本功能测试。"""
 
     @pytest.fixture
     def mock_terminal_width_cache(self):
@@ -31,10 +28,10 @@ class TestInputFacade:
     @pytest.fixture
     def input_instance(self, mock_terminal_width_cache, tmp_path):
         """创建 Input 实例（使用 mock 终端缓存 + tmp 历史文件）。"""
-        hist_file = tmp_path / "test_history"
+        fd = os.open("/dev/null", os.O_RDONLY)
         return Input(
-            fd=0,  # stdin fd
-            history_file=hist_file,
+            fd=fd,
+            history_file=tmp_path / "test_history",
             term_width_cache=mock_terminal_width_cache,
         )
 
@@ -46,19 +43,11 @@ class TestInputFacade:
         """height 属性委托 TermWidthCache.get_height()。"""
         assert input_instance.height == 24
 
-    def test_buffer_property(self, input_instance):
-        """buffer 属性返回 InputBuffer 实例。"""
-        assert isinstance(input_instance.buffer, InputBuffer)
-
-    def test_parser_property(self, input_instance):
-        """parser 属性返回 InputParser 实例。"""
-        assert isinstance(input_instance.parser, InputParser)
-
-    def test_buffer_handle_char_delegation(self, input_instance):
-        """buffer.handle_char 正确委托到 InputBuffer。"""
-        input_instance.buffer.handle_char('h')
-        input_instance.buffer.handle_char('i')
-        assert input_instance.buffer.get_current_text() == "hi"
+    def test_handle_char(self, input_instance):
+        """handle_char 正确插入字符到缓冲区。"""
+        input_instance.handle_char('h')
+        input_instance.handle_char('i')
+        assert input_instance.get_current_text() == "hi"
 
     def test_set_echo_callback(self, input_instance):
         """set_echo_callback 正确注册并触发回显。"""
@@ -66,7 +55,7 @@ class TestInputFacade:
         def echo_cb(text, pos):
             called.append((text, pos))
         input_instance.set_echo_callback(echo_cb)
-        input_instance.buffer.handle_char('x')
+        input_instance.handle_char('x')
         assert len(called) >= 1
         assert called[-1][0] == 'x'
         assert called[-1][1] == 1
@@ -103,27 +92,25 @@ class TestInputFacade:
 
 
 class TestInputComputeCursor:
-    """compute_cursor 委托测试。"""
+    """compute_cursor 测试。"""
 
     @pytest.fixture
     def input_instance(self, tmp_path):
-        """创建 Input 实例，mock CursorPositioner.compute。"""
+        """创建 Input 实例，mock compute_cursor 方法。"""
         mock_cache = MagicMock()
         mock_cache.get_width.return_value = 80
         mock_cache.get_height.return_value = 24
 
-        hist_file = tmp_path / "test_history"
+        fd = os.open("/dev/null", os.O_RDONLY)
         inp = Input(
-            fd=0,
-            history_file=hist_file,
+            fd=fd,
+            history_file=tmp_path / "test_history",
             term_width_cache=mock_cache,
         )
-        # Mock CursorPositioner.compute
-        inp._cursor.compute = MagicMock(return_value=(22, 5, 0, 4))
         return inp
 
-    def test_compute_cursor_delegation(self, input_instance):
-        """compute_cursor 正确委托到 CursorPositioner.compute。"""
+    def test_compute_cursor_returns_tuple(self, input_instance):
+        """compute_cursor 返回四元组。"""
         result = input_instance.compute_cursor(
             text="hello",
             cursor_pos=5,
@@ -131,10 +118,15 @@ class TestInputComputeCursor:
             subagent_lines=0,
             completion_height=0,
         )
-        assert result == (22, 5, 0, 4)
-        input_instance._cursor.compute.assert_called_once_with(
-            "hello", 5, 5, 0, 0,
-        )
+        assert isinstance(result, tuple)
+        assert len(result) == 4
+        r_cursor, cursor_col, vis_row, vis_col = result
+        assert isinstance(r_cursor, int)
+        assert isinstance(cursor_col, int)
+        assert isinstance(vis_row, int)
+        assert isinstance(vis_col, int)
+        assert 1 <= r_cursor <= input_instance.height
+        assert 1 <= cursor_col <= input_instance.width
 
 
 class TestInputFeedByte:
@@ -145,8 +137,9 @@ class TestInputFeedByte:
         mock_cache = MagicMock()
         mock_cache.get_width.return_value = 80
         mock_cache.get_height.return_value = 24
+        fd = os.open("/dev/null", os.O_RDONLY)
         return Input(
-            fd=0,
+            fd=fd,
             history_file=tmp_path / "test_history",
             term_width_cache=mock_cache,
         )
@@ -178,8 +171,9 @@ class TestInputReadMethods:
         mock_cache = MagicMock()
         mock_cache.get_width.return_value = 80
         mock_cache.get_height.return_value = 24
+        fd = os.open("/dev/null", os.O_RDONLY)
         return Input(
-            fd=0,
+            fd=fd,
             history_file=tmp_path / "test_history",
             term_width_cache=mock_cache,
         )
@@ -194,10 +188,8 @@ class TestInputReadMethods:
     def test_read_utf8_char_valid_2byte(self, input_instance):
         """read_utf8_char: 有效 2 字节 UTF-8 序列正确解码。"""
         # UTF-8 'é' = 0xC3 0xA9
-        from src.tui.input import _input as input_mod
-        with patch.object(input_mod, "select") as mock_select:
-            mock_select.select.return_value = ([0], [], [])
-            with patch.object(input_mod.os, "read", return_value=b"\xa9"):
+        with patch("select.select", return_value=([0], [], [])):
+            with patch("os.read", return_value=b"\xa9"):
                 result = input_instance.read_utf8_char(0, 0xC3)
                 assert result == "é"
 
@@ -206,3 +198,44 @@ class TestInputReadMethods:
         # 0x80 是续字节，不是有效首字节
         result = input_instance.read_utf8_char(0, 0x80)
         assert result is None
+
+
+class TestInputIOLifecycle:
+    """start_io / stop_io 生命周期测试。"""
+
+    @pytest.fixture
+    def input_instance(self, tmp_path):
+        fd = os.open("/dev/null", os.O_RDONLY)
+        return Input(
+            fd=fd,
+            history_file=tmp_path / "test_history",
+        )
+
+    def test_is_io_running_initially_false(self, input_instance):
+        assert input_instance.is_io_running is False
+
+    def test_start_stop_io(self, input_instance):
+        import time
+        input_instance.start_io()
+        try:
+            assert input_instance.is_io_running is True
+        finally:
+            input_instance.stop_io()
+        time.sleep(0.1)
+        assert input_instance.is_io_running is False
+
+    def test_stop_io_idempotent(self, input_instance):
+        input_instance.stop_io()  # 未启动时调用应安全
+        assert input_instance.is_io_running is False
+
+    def test_pause_resume_io(self, input_instance):
+        import time
+        input_instance.start_io()
+        try:
+            input_instance.pause_io()
+            time.sleep(0.05)
+            assert not input_instance._active.is_set()
+            input_instance.resume_io()
+            assert input_instance._active.is_set()
+        finally:
+            input_instance.stop_io()

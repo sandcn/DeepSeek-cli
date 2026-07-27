@@ -486,16 +486,16 @@ class InteractiveLoop:
     def _setup_monitor(self, session, state):
         """初始化 EscapeMonitor 并注册回调（假设 self._monitor 已由 _create_monitor 创建）
 
-        防御性重建：若 monitor 为 None，或 monitor 曾启动后线程死亡，
+        防御性重建：若 monitor 为 None，或 monitor 曾启动后 IO 线程死亡，
         先清理再创建新实例。首次调用时 _create_monitor 已创建的未启动
-        monitor（_thread=None）不会被误判为需要重建，确保
+        monitor（_started=False）不会被误判为需要重建，确保
         _register_session_handlers 闭包中持有的引用与最终启动的是同一实例。
 
         回调注册在 Input 实例上（render 线程中统一分发），
         EscapeMonitor 仅负责原始 I/O。
         """
         input_instance = self._chat_ui._components.input
-        if self._monitor is None or (self._monitor._thread is not None and not self._monitor.is_alive):
+        if self._monitor is None or (self._monitor._started and not self._monitor.is_alive):
             if self._monitor is not None:
                 try:
                     self._teardown_monitor()

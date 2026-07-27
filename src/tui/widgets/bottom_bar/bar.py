@@ -783,8 +783,7 @@ class _BottomBar(_StatusMixin):
         供 RenderEngine.position_cursor() 使用。
         纯计算函数，不执行终端 I/O，调用方负责 flush。
 
-        当 Input 实例已注入时，委托给 Input.compute_cursor()（内部由
-        CursorPositioner 完成计算），以统一光标定位逻辑。
+        当 Input 实例已注入时，委托给 Input.compute_cursor() 统一计算光标位置。
 
         Args:
             text: 当前输入文本
@@ -795,7 +794,7 @@ class _BottomBar(_StatusMixin):
         Returns:
             (r_cursor, cursor_col) — 光标所在行号（1-based）和列号（1-based）
         """
-        # ★ 委托给 Input（CursorPositioner）统一计算
+        # ★ 委托给 Input.compute_cursor() 统一计算
         if self._input is not None:
             bottom_for_text = self._compute_bottom_lines_for(text, w)
             r_cursor, cursor_col, _, _ = self._input.compute_cursor(
@@ -976,7 +975,7 @@ class _BottomBar(_StatusMixin):
             text = self._last_rendered_text if self._last_rendered_text else self._last_text
             cursor_pos = min(self._input_cursor_pos, len(text))
 
-            # ★ 委托给 Input（CursorPositioner）统一计算光标位置
+            # ★ 委托给 Input.compute_cursor() 统一计算光标位置
             if self._input is not None:
                 total = max(_BOTTOM_MIN_LINES, self._last_bottom_lines)
                 r_cursor, col, _, _ = self._input.compute_cursor(
@@ -1005,7 +1004,7 @@ class _BottomBar(_StatusMixin):
         """注入 Input 门面类实例，用于光标定位和尺寸查询委托。
 
         由 ChatUIConsumer 工厂在装配时调用。
-        Input 类组合了 InputBuffer / InputParser / CursorPositioner / TerminalWidthCache，
+        Input 类自包含所有输入管理逻辑（解析/缓冲/光标/终端尺寸），
         _BottomBar 通过此引用将光标定位计算和终端尺寸查询委托给 Input。
 
         Args:
