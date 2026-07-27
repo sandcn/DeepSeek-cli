@@ -12,7 +12,7 @@ import os
 import sys
 import select
 import logging
-from dataclasses import dataclass
+from src._compat import dataclass
 
 _logger = logging.getLogger(__name__)
 
