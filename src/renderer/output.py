@@ -7,6 +7,11 @@
   所有 I/O 操作统一使用全局 render_lock。
   width 属性为无锁读取（GIL 保护简单属性），消除所有「锁前锁」链。
 
+★ 锁外预渲染（v2026-07-27）：
+  write() 将 Rich 渲染（console.print）移到 render_lock 之外执行，
+  锁内仅做 file.write(pre_rendered_ansi) + flush。
+  消除并发工具输出时因锁竞争（>1s timeout）导致 Rich Markdown 格式丢失的问题。
+
 v2026-07-24 新增 captured_output 可选捕获，支持将渲染后的富文本输出
 捕获为 ANSI 字符串列表，供 RenderBuffer 集成使用。
 """
@@ -23,6 +28,21 @@ from io import StringIO
 from ..tui.widgets.lock import render_lock, _try_acquire_output_lock
 
 _logger = logging.getLogger(__name__)
+
+
+def _new_render_console(width: int, real_console: Console) -> Console:
+    """创建用于预渲染的 StringIO Console（与真实 Console 共享颜色系统）。"""
+    return Console(
+        file=StringIO(),
+        width=width,
+        force_terminal=True,
+        color_system=real_console.color_system,
+        soft_wrap=True,
+        markup=True,
+        emoji=True,
+        highlight=True,
+    )
+
 
 class OutputAdapter:
     """统一终端输出适配器 — 单锁线程安全，简化缓冲。
@@ -110,13 +130,36 @@ class OutputAdapter:
         except Exception:
             _logger.debug("捕获渲染输出异常", exc_info=True)
 
+    # ── 锁外预渲染 ────────────────────────────────────
+
+    def _render_to_ansi(self, renderable) -> str:
+        """将 Rich renderable 预渲染为 ANSI 字符串（锁外执行，线程安全）。
+
+        每次调用创建独立的 StringIO Console，无共享状态，天然线程安全。
+        Console 创建开销远小于 Rich 渲染本身，对性能影响可忽略。
+        """
+        if isinstance(renderable, str):
+            return (renderable + "\n") if not renderable.endswith("\n") else renderable
+
+        rc = _new_render_console(self._width, self._console)
+        # ★ 继承真实 Console 的全局样式（如推理渲染器的 style="dim"）
+        if self._console.style:
+            rc.style = self._console.style
+        f: StringIO = rc.file  # type: ignore[assignment]
+        rc.print(renderable)
+        result = f.getvalue()
+        f.close()
+        return result
+
     # ── 公共接口 ────────────────────────────────────────
 
     def write(self, renderable) -> None:
-        """直接输出（无中间缓冲，简化路径）。
+        """流式输出 Rich renderable — 锁外预渲染 + 锁内快速写入。
 
-        锁超时降级：renderable 为 Text 时输出纯文本至文件，
-        否则尝试 str() 直写，不调用 console.print（无法获取锁时）。
+        ★ 关键优化（v2026-07-27）：
+          Rich 渲染（console.print → ANSI 序列化）在 render_lock 之外执行，
+          锁内仅做 file.write(pre_rendered_ansi) + flush。
+          消除多并发工具输出时的锁竞争 → 超时降级 → Markdown 格式丢失问题。
 
         ANSI 安全：纯字符串中的 \\x1b ANSI 转义序列自动转换为 Rich Text
         对象，确保 console.print() 正确渲染而非按 markup 解析。
@@ -124,34 +167,27 @@ class OutputAdapter:
         if not renderable:
             return
         self._refresh_width()
-        # ── 捕获：锁外记录原标题快照 ──
-        _capture_item = renderable
+
+        # 纯字符串含 ANSI 转义序列 → 转换为 Rich Text 对象
+        # 避免 Rich Console 将 [38;5;... 解析为 markup 标签
+        if isinstance(renderable, str) and "\x1b" in renderable:
+            renderable = Text.from_ansi(renderable)
+
+        # ★ 锁外预渲染：Rich → ANSI（不占用 render_lock）
+        ansi_str = self._render_to_ansi(renderable)
+
+        # ★ 锁内仅快速写入（file.write + flush，无 Rich 渲染开销）
         with _try_acquire_output_lock(name="output_adapter.write", timeout=1.0) as locked:
             if locked:
-                # 纯字符串含 ANSI 转义序列 → 转换为 Rich Text 对象
-                # 避免 console.print() 将 [38;5;... 解析为 markup 标签
-                if isinstance(renderable, str) and "\x1b" in renderable:
-                    renderable = Text.from_ansi(renderable)
-                _capture_item = renderable
-                self._console.print(renderable)
+                self._console.file.write(ansi_str)
             else:
-                # 锁超时降级：直写终端，不静默丢弃数据
-                # Text 类型可直接输出 plain 文本，跳过 Rich 渲染管线
-                if hasattr(renderable, 'plain') and renderable.plain:
-                    self._console.file.write(renderable.plain + "\n")
-                    self._console.file.flush()
-                else:
-                    # 锁超时降级：不调用 console.print（无法获取锁），
-                    # 复杂 renderable 尝试 str() 直写，降级路径可接受纯文本
-                    try:
-                        text_repr = str(renderable)
-                        if text_repr and not text_repr.startswith('<'):
-                            self._console.file.write(text_repr.rstrip() + "\n")
-                            self._console.file.flush()
-                    except Exception:
-                        _logger.debug("降级输出 renderable 失败")
-        # ── 捕获（锁外执行，不竞争输出锁） ──
-        self._capture_write(_capture_item)
+                # 锁超时降级：仍然写入预渲染的 ANSI（保留全部 Rich 格式）
+                self._console.file.write(ansi_str)
+            self._console.file.flush()
+
+        # 捕获：追加预渲染的 ANSI 文本（无需再调用 _capture_write 重复渲染）
+        if self._captured_output is not None:
+            self._captured_output.append(ansi_str)
 
     def write_raw(self, text: str) -> None:
         """快速输出纯文本（跳过 Rich 处理，极致性能路径）。

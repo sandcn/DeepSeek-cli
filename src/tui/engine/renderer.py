@@ -76,13 +76,21 @@ class TuiRenderer(FrameworkRenderer):
         # 确保 _first_write 仅首次为 True（FadeIn 不重复），
         # _cumulative_content 持续累积（render() 可返回完整内容）。
         self._content_block: AnswerBlock | None = None
+        # ThinkingBlock 实例缓存：同一次推理的所有 REASONING 命令复用同一实例，
+        # 确保 _cumulative_content 持续累积（render() 可返回完整内容），
+        # 与 AnswerBlock 的复用模式保持一致。
+        self._reasoning_block: ThinkingBlock | None = None
 
     # ── 内容渲染 ──────────────────────────────────
 
     @register_render_command(RenderCommand.REASONING, (1,))
     def _do_reasoning(self, text: str) -> None:
-        block = ThinkingBlock(self._rs)
-        self._record_lines(block.write(text))
+        # ★ 复用 ThinkingBlock 实例（而非每次创建新实例），确保：
+        #   - _is_first_write() 基于 reasoning_state 判断（Always correct）
+        #   - _cumulative_content 持续累积（render() fallback 路径可用）
+        if self._reasoning_block is None:
+            self._reasoning_block = ThinkingBlock(self._rs)
+        self._record_lines(self._reasoning_block.write(text))
 
     @register_render_command(RenderCommand.CONTENT, (1,))
     def _do_content(self, text: str) -> None:
@@ -99,6 +107,8 @@ class TuiRenderer(FrameworkRenderer):
     def _do_phase_done(self, phase: str) -> None:
         if phase == "reasoning":
             self._rs.close_reasoning()
+            # ★ 重置 ThinkingBlock 缓存，为下一轮推理的首个 REASONING 创建新实例
+            self._reasoning_block = None
         elif phase == "content":
             self._rs.close_content()
             # ★ 重置 AnswerBlock 缓存，为下一轮回答的首个 CONTENT 创建新实例

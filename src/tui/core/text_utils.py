@@ -309,7 +309,7 @@ def build_left_border_ansi(frame: int, base_color: int = 23, period: int = 24) -
         完整的 ANSI 边框序列（含 RESET），格式：
         ``\033[38;5;{color}m│\033[0m``
     """
-    from ._wave import build_glow_ansi
+    from .effects import build_glow_ansi
     glow = build_glow_ansi(frame, base_color, period)
     return f"{glow}\u2502\033[0m"
 

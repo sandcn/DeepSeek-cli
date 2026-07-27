@@ -580,10 +580,16 @@ class StreamingBlock(TuiComponent):
         Returns:
             int: 内容的估计行数（通过 _estimate_content_lines 计算）。
         """
-        # 先判断首次写入，再获取渲染器 —— 顺序不可调换：
-        # ThinkingBlock 的 _get_renderer() 有修改 reasoning_state 的副作用，
-        # _is_first_write() 依赖 reasoning_state 判断首次写入。
+        # ★ 顺序：_is_first_write() → _on_first_write() → _get_renderer()
+        # _is_first_write() 先判断当前状态（ThinkingBlock 依赖 reasoning_state），
+        # _on_first_write() 修改状态（reopen_reasoning: CLOSED→INACTIVE），
+        # _get_renderer() 基于新状态创建渲染器（INACTIVE→ACTIVE）。
         is_first = self._is_first_write()
+
+        if is_first:
+            self._first_write = False
+            self._on_first_write()
+
         rr = self._get_renderer()
         if rr is None:
             # 渲染器不可用时仅累积
@@ -591,8 +597,6 @@ class StreamingBlock(TuiComponent):
             return 0
 
         if is_first:
-            self._first_write = False
-            self._on_first_write()
             header = self._build_header()
             if header:
                 header_str = str(header.plain if isinstance(header, Text) else header)
