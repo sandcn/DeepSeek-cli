@@ -45,11 +45,15 @@ from __future__ import annotations
 import logging
 import sys
 import time
-from typing import Any, Optional
+from typing import TYPE_CHECKING, Any, Optional
+
+if TYPE_CHECKING:
+    from ...input import Input
 
 from wcwidth import wcswidth
 
 from ...terminal.blessed import get_terminal
+from ...terminal.terminal import TerminalWidthCache
 from ...animation.animator import AnimatorContext, BreathPalette
 from .completion import _CompletionPopup
 from .status import _StatusMixin
@@ -152,14 +156,13 @@ class _BottomBar(_StatusMixin):
         self._cursor_tracker = cursor_tracker or CursorTracker()
         # ── 统一动画时钟（AnimatorContext 单例） ──
         self._animator = AnimatorContext.get_default()
-        # ── 终端尺寸缓存（性能优化，避免高频 ioctl） ──
-        self._cached_height: int = 0
-        self._cached_width: int = 0
-        self._last_dimension_refresh: float = 0.0
-        self._DIMENSION_TTL: float = 0.1  # 与 _RENDER_INTERVAL 对齐
+        # ── 终端尺寸缓存（委托 TerminalWidthCache 全局单例） ──
+        self._width_cache = TerminalWidthCache.get_default()
         self._sigwinch_cb: Any = None  # SIGWINCH 回调引用，teardown 时注销
         # ── resize 保护状态 ──
         self._needs_full_repaint: bool = False  # resize 后标记，force_redraw 中消费并重建
+        # ── Input 门面类引用（延迟注入，步骤7.1） ──
+        self._input: "Input | None" = None
         # ── 系统监控（CPU/内存） ──
         self._system_monitor: _SystemMonitor | None = None
         self._cached_cpu_percent: float = 0.0
@@ -290,29 +293,6 @@ class _BottomBar(_StatusMixin):
 
     # ── 终端尺寸查询（缓存版本，避免高频 ioctl） ──────────
 
-    def _refresh_dimensions(self) -> None:
-        """刷新终端尺寸缓存（带 TTL 消峰）。
-
-        每 _DIMENSION_TTL (0.1s) 最多执行一次 ioctl，
-        将高频调用（200Hz）消峰到 10Hz。
-        """
-        now = time.monotonic()
-        if now - self._last_dimension_refresh < self._DIMENSION_TTL:
-            return
-        self._last_dimension_refresh = now
-        try:
-            term = get_terminal()
-            self._cached_height = term.height
-            self._cached_width = term.width
-        except Exception:
-            from ...terminal.terminal import get_terminal_width
-            try:
-                w = get_terminal_width()
-                self._cached_width = w
-                self._cached_height = 24  # 兜底
-            except Exception:
-                pass
-
     def set_full_repaint_needed(self) -> None:
         """标记需要全屏重建（仅在 resize 后调用）。
 
@@ -326,22 +306,19 @@ class _BottomBar(_StatusMixin):
         """强制刷新终端尺寸缓存，绕过 TTL。
 
         供 resize 检测路径（SIGWINCH / 轮询）调用。
-        调用后下一次 _term_height/_term_width 立即使用新值。
+        委托 TerminalWidthCache.get_default().force_refresh()。
         ★ resize 保护：刷新尺寸时自动标记全屏重建需要。
         """
-        self._last_dimension_refresh = 0.0
-        self._refresh_dimensions()
+        self._width_cache.force_refresh()
         self.set_full_repaint_needed()
 
     def _term_height(self) -> int:
-        """获取终端高度（缓存版本，避免高频 ioctl）。"""
-        self._refresh_dimensions()
-        return self._cached_height or 24
+        """获取终端高度（委托 TerminalWidthCache 全局单例）。"""
+        return self._width_cache.get_height() or 24
 
     def _term_width(self) -> int:
-        """获取终端宽度（缓存版本，避免高频 ioctl）。"""
-        self._refresh_dimensions()
-        return self._cached_width or 80
+        """获取终端宽度（委托 TerminalWidthCache 全局单例）。"""
+        return self._width_cache.get_width() or 80
 
     # ── 光标定位相关 ──────────────────────────────────
 
@@ -388,6 +365,9 @@ class _BottomBar(_StatusMixin):
         供 RenderEngine.position_cursor() 使用。
         纯计算函数，不执行终端 I/O，调用方负责 flush。
 
+        当 Input 实例已注入时，委托给 Input.compute_cursor()（内部由
+        CursorPositioner 完成计算），以统一光标定位逻辑。
+
         Args:
             text: 当前输入文本
             cursor_pos: 光标在文本中的偏移位置
@@ -397,6 +377,18 @@ class _BottomBar(_StatusMixin):
         Returns:
             (r_cursor, cursor_col) — 光标所在行号（1-based）和列号（1-based）
         """
+        # ★ 委托给 Input（CursorPositioner）统一计算
+        if self._input is not None:
+            bottom_for_text = self._compute_bottom_lines_for(text, w)
+            r_cursor, cursor_col, _, _ = self._input.compute_cursor(
+                text, cursor_pos,
+                bottom_for_text,
+                len(self._subagent_lines),
+                self._completion.height,
+            )
+            return (r_cursor, cursor_col)
+
+        # ── 回退路径（Input 未注入时） ──
         max_input = max(1, w - 4)
         vis_row, vis_col = self._cursor_visual_pos_from_cache(text, cursor_pos, max_input)
         total_bottom = max(5, self._compute_bottom_lines_for(text, w))
@@ -565,20 +557,43 @@ class _BottomBar(_StatusMixin):
             term_w = self._term_width()
             text = self._last_rendered_text if self._last_rendered_text else self._last_text
             cursor_pos = min(self._input_cursor_pos, len(text))
-            max_input = max(1, term_w - 4)
-            vis_row, vis_col = _compute_cursor_visual_pos(text, cursor_pos, max_input)
-            total = max(_BOTTOM_MIN_LINES, self._last_bottom_lines)
-            # ★ +4 跳过 分隔线(1) + 子Agent面板行(1) + 状态行(1) + 上分割线(1)，
-            #   +len(_subagent_lines) 补偿分隔线与状态行之间的 subagent 面板行
-            subagent_offset = len(self._subagent_lines)
-            r_cursor = height - total + 4 + subagent_offset + self._completion.height + vis_row
-            r_cursor = max(1, min(r_cursor, height))
-            col = min(3 + vis_col, term_w)
+
+            # ★ 委托给 Input（CursorPositioner）统一计算光标位置
+            if self._input is not None:
+                total = max(_BOTTOM_MIN_LINES, self._last_bottom_lines)
+                r_cursor, col, _, _ = self._input.compute_cursor(
+                    text, cursor_pos,
+                    total,
+                    len(self._subagent_lines),
+                    self._completion.height,
+                )
+            else:
+                max_input = max(1, term_w - 4)
+                vis_row, vis_col = _compute_cursor_visual_pos(text, cursor_pos, max_input)
+                total = max(_BOTTOM_MIN_LINES, self._last_bottom_lines)
+                # ★ +4 跳过 分隔线(1) + 子Agent面板行(1) + 状态行(1) + 上分割线(1)，
+                #   +len(_subagent_lines) 补偿分隔线与状态行之间的 subagent 面板行
+                subagent_offset = len(self._subagent_lines)
+                r_cursor = height - total + 4 + subagent_offset + self._completion.height + vis_row
+                r_cursor = max(1, min(r_cursor, height))
+                col = min(3 + vis_col, term_w)
             sys.__stdout__.write(_blessed_cursor_goto(r_cursor, col))
             sys.__stdout__.flush()
             self._cursor_tracker.set(r_cursor, col)
 
     # ── 生命周期 ──────────────────────────────────────────
+
+    def set_input(self, input_instance: "Input") -> None:
+        """注入 Input 门面类实例，用于光标定位和尺寸查询委托。
+
+        由 ChatUIConsumer 工厂在装配时调用。
+        Input 类组合了 InputBuffer / InputParser / CursorPositioner / TerminalWidthCache，
+        _BottomBar 通过此引用将光标定位计算和终端尺寸查询委托给 Input。
+
+        Args:
+            input_instance: Input 门面类实例。
+        """
+        self._input = input_instance
 
     def set_input_state(self, text: str, cursor_pos: int) -> None:
         """设置输入文本和光标位置（线程安全，仅更新状态，不直接 I/O）。
@@ -605,9 +620,7 @@ class _BottomBar(_StatusMixin):
     def _register_sigwinch(self) -> None:
         """注册 SIGWINCH 回调（终端 resize 时刷新尺寸缓存）。"""
         def _on_sigwinch(cols: int, rows: int) -> None:
-            self._last_dimension_refresh = 0.0
-            self._cached_height = rows
-            self._cached_width = cols
+            self._width_cache.force_refresh()
             # ★ resize 保护：标记全屏重建需要（信号安全——仅设置布尔值，无 I/O 无锁）
             self._needs_full_repaint = True
         self._sigwinch_cb = _on_sigwinch

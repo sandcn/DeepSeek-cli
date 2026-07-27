@@ -409,6 +409,7 @@ class MessageEditor:
             initial_idx=sel_count - 1,
             title=title_display,
             bottom_bar=self._bottom_bar,
+            input_instance=getattr(self._bottom_bar, '_input', None) if self._bottom_bar is not None else None,
         )
 
         if result["action"] == "cancel":

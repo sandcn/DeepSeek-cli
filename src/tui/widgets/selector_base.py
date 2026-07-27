@@ -185,6 +185,7 @@ class BaseBottomBarSelector(Generic[T, R]):
             title=self._get_title(),
             initial_idx=self._get_initial_idx(filtered),
             bottom_bar=bottom_bar,
+            input_instance=getattr(bottom_bar, '_input', None) if bottom_bar is not None else None,
         )
 
         if result["action"] == "confirmed" and result["index"] is not None:

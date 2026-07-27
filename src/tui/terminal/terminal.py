@@ -37,7 +37,15 @@ def _fetch_terminal_width() -> int:
         return 80
 
 
-# 终端宽度 TTL 缓存实例（0.5s TTL，减少 10Hz tick 循环中 syscall 开销）
+def _fetch_terminal_height() -> int:
+    """获取终端高度（行数），通过 Blessed Terminal，异常时回退 24。"""
+    try:
+        return get_terminal().height
+    except Exception:
+        return 24
+
+
+# 终端宽度/高度 TTL 缓存实例（0.5s TTL，减少 10Hz tick 循环中 syscall 开销）
 class TerminalWidthCache:
     """终端宽度缓存 — TTL 缓存，减少高频 ioctl/syscall。
 
@@ -51,6 +59,9 @@ class TerminalWidthCache:
     def __init__(self, ttl: float = 0.5) -> None:
         self._cache: TTLCache[int] = TTLCache(
             fetcher=_fetch_terminal_width, ttl=ttl,
+        )
+        self._height_cache: TTLCache[int] = TTLCache(
+            fetcher=_fetch_terminal_height, ttl=ttl,
         )
 
     @classmethod
@@ -69,6 +80,24 @@ class TerminalWidthCache:
 
     def clear(self) -> None:
         self._cache.clear()
+        self._height_cache.clear()
+
+    def get_height(self) -> int:
+        """获取终端高度（行数），TTL 缓存。"""
+        return self._height_cache.get()
+
+    def refresh_height(self) -> int:
+        """强制刷新终端高度缓存（忽略 TTL）。"""
+        return self._height_cache.refresh()
+
+    def get_dimensions(self) -> tuple[int, int]:
+        """一次调用获取终端 (宽度, 高度)，TTL 缓存。"""
+        return (self.get_width(), self.get_height())
+
+    def force_refresh(self) -> None:
+        """强制刷新宽度和高度缓存（绕过 TTL），供 SIGWINCH 回调使用。"""
+        self.refresh()
+        self.refresh_height()
 
 
 _width_cache = TerminalWidthCache.get_default()

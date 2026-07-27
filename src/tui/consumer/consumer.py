@@ -332,6 +332,9 @@ class ChatUIConsumer:
 
     def refresh_bottom_bar(self, text: str, cursor_pos: int = -1) -> None:
         effective_pos = len(text) if cursor_pos < 0 else cursor_pos
+        # ★ 同步更新 Input 类中的文本副本（单一数据源策略）
+        if hasattr(self._components, 'input') and self._components.input is not None:
+            self._components.input.buffer.set_buffer(text)
         self._components.bottom_bar.set_input_state(text, effective_pos)
         self._components.engine.request_bottom_redraw()
 

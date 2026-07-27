@@ -42,16 +42,16 @@ def _run_selection_raw(
     initial_idx: int,
     title: str,
     bb,
+    input_instance=None,
 ) -> dict:
     """使用原始 I/O 的阻塞式选择循环（Cygwin 降级路径）。
 
     绕过 Blessed term.inkey()，直接使用 os.read(fd, 1) + select.select()
-    读取按键输入，手动解析 ANSI CSI 序列。参考 EscapeMonitor._handle_escape()
-    的 ANSI 解析风格。
+    读取按键输入。CSI/SS3 序列解析委托给 InputParser（通过 input_instance）。
 
     处理以下按键：
-    - 上箭头（\\x1b[A / CSI A）→ bb.cycle_completion(-1)
-    - 下箭头（\\x1b[B / CSI B）→ bb.cycle_completion(1)
+    - 上箭头（CSI A）→ bb.cycle_completion(-1)
+    - 下箭头（CSI B）→ bb.cycle_completion(1)
     - Enter（\\r / \\n）→ 确认选择
     - r → resume（从此恢复，保留当前消息）
     - d → delete（从此删除）
@@ -64,6 +64,7 @@ def _run_selection_raw(
         initial_idx: 初始光标位置。
         title: 弹窗标题。
         bb: _BottomBar 实例。
+        input_instance: Input 门面类实例（可选），提供 InputParser 用于 CSI/SS3 解析。
 
     Returns:
         {"action": "confirmed"|"cancel"|"error"|"resume"|"delete"|"resume_all",
@@ -118,58 +119,64 @@ def _run_selection_raw(
             if ch in ('\r', '\n'):
                 return {"action": "confirmed", "index": _safe_completion_idx(bb, items)}
 
-            # ── Esc 序列处理 ──
+            # ── Esc 序列处理（委托 InputParser） ──
             if ch == '\x1b':
-                # 检测是否有后续字节（ANSI 序列）
-                try:
-                    has_more, _, _ = select.select([fd], [], [], 0.05)
-                except (ValueError, OSError, TypeError, AttributeError) as exc:
-                    _logger.debug("Esc select 异常，视为无后续字节: %s", exc)
-                    has_more = False
-                if not has_more:
-                    # 单独 Esc → 取消
-                    return {"action": "cancel", "index": None}
-
-                # 读取后续字节
-                try:
-                    next_raw = os.read(fd, 1)
-                    if not next_raw:
-                        return {"action": "cancel", "index": None}
-                    next_ch = next_raw.decode("utf-8", errors="replace")
-                except (ValueError, OSError, TypeError) as exc:
-                    _logger.debug("Esc os.read 异常，视为取消: %s", exc)
-                    return {"action": "cancel", "index": None}
-
-                if next_ch == '[':
-                    # CSI 序列：读取参数 + 终结符（参考 EscapeMonitor._handle_escape）
-                    terminator = None
-                    try:
-                        while select.select([fd], [], [], 0.01)[0]:
-                            c_raw = os.read(fd, 1)
-                            if not c_raw:
-                                break
-                            c = c_raw.decode("utf-8", errors="replace")
-                            if c.isalpha() or c == '~':
-                                terminator = c
-                                break
-                    except (ValueError, OSError, TypeError) as exc:
-                        _logger.debug("CSI 序列读取异常: %s", exc)
-
-                    if terminator == 'A':
+                if input_instance is not None:
+                    key_event = input_instance.parse_sequence(fd)
+                    if key_event.kind == "arrow_up":
                         bb.cycle_completion(-1)
-                    elif terminator == 'B':
+                    elif key_event.kind == "arrow_down":
                         bb.cycle_completion(1)
-                    # 其他 CSI 序列（含 ~ 的功能键等）→ 忽略
-                elif next_ch == 'O':
-                    # SS3 序列（如 F1-F4）→ 消耗后续字节后忽略
-                    try:
-                        if select.select([fd], [], [], 0.01)[0]:
-                            os.read(fd, 1)
-                    except (ValueError, OSError, TypeError) as exc:
-                        _logger.debug("SS3 序列处理异常: %s", exc)
+                    elif key_event.kind == "escape":
+                        return {"action": "cancel", "index": None}
+                    elif key_event.kind == "interrupt":
+                        return {"action": "cancel", "index": None}
+                    # 其他 CSI/SS3 序列 → 忽略（继续轮询）
                 else:
-                    # 其他 ESC 组合 → 取消
-                    return {"action": "cancel", "index": None}
+                    # ── 降级路径（无 Input 实例时使用手动解析） ──
+                    try:
+                        has_more, _, _ = select.select([fd], [], [], 0.05)
+                    except (ValueError, OSError, TypeError, AttributeError) as exc:
+                        _logger.debug("Esc select 异常，视为无后续字节: %s", exc)
+                        has_more = False
+                    if not has_more:
+                        return {"action": "cancel", "index": None}
+
+                    try:
+                        next_raw = os.read(fd, 1)
+                        if not next_raw:
+                            return {"action": "cancel", "index": None}
+                        next_ch = next_raw.decode("utf-8", errors="replace")
+                    except (ValueError, OSError, TypeError) as exc:
+                        _logger.debug("Esc os.read 异常，视为取消: %s", exc)
+                        return {"action": "cancel", "index": None}
+
+                    if next_ch == '[':
+                        terminator = None
+                        try:
+                            while select.select([fd], [], [], 0.01)[0]:
+                                c_raw = os.read(fd, 1)
+                                if not c_raw:
+                                    break
+                                c = c_raw.decode("utf-8", errors="replace")
+                                if c.isalpha() or c == '~':
+                                    terminator = c
+                                    break
+                        except (ValueError, OSError, TypeError) as exc:
+                            _logger.debug("CSI 序列读取异常: %s", exc)
+
+                        if terminator == 'A':
+                            bb.cycle_completion(-1)
+                        elif terminator == 'B':
+                            bb.cycle_completion(1)
+                    elif next_ch == 'O':
+                        try:
+                            if select.select([fd], [], [], 0.01)[0]:
+                                os.read(fd, 1)
+                        except (ValueError, OSError, TypeError) as exc:
+                            _logger.debug("SS3 序列处理异常: %s", exc)
+                    else:
+                        return {"action": "cancel", "index": None}
     except Exception as exc:
         _logger.warning("_run_selection_raw 异常: %s", exc)
         return {"action": "error", "index": None}
@@ -187,6 +194,7 @@ def run_bottom_bar_selection(
     initial_idx: int = 0,
     title: str = "选择",
     bottom_bar=None,
+    input_instance=None,
 ) -> dict:
     """在底部栏补全弹窗中运行交互式选择，返回选中结果。
 
@@ -204,6 +212,8 @@ def run_bottom_bar_selection(
         initial_idx: 初始光标位置。
         title: 弹窗标题。
         bottom_bar: _BottomBar 实例（可选）。传入后避免反向依赖 chat_ui 获取底部栏。
+        input_instance: Input 门面类实例（可选）。降级路径中传递给 _run_selection_raw()
+                       用于 CSI/SS3 解析。
 
     Returns:
         {"action": "confirmed"|"cancel"|"error"|"resume"|"delete"|"resume_all",
@@ -255,7 +265,7 @@ def run_bottom_bar_selection(
         except Exception as exc:
             _logger.debug("Cygwin 防御性 tcflush 异常: %s", exc)
         try:
-            return _run_selection_raw(items, display_items, initial_idx, title, bb)
+            return _run_selection_raw(items, display_items, initial_idx, title, bb, input_instance)
         finally:
             try:
                 bb.hide_completions()
@@ -390,7 +400,7 @@ def run_bottom_bar_selection(
             _logger.debug("降级前 tcflush 异常: %s", exc)
         # 降级到 Raw I/O 路径
         try:
-            return _run_selection_raw(items, display_items, initial_idx, title, bb)
+            return _run_selection_raw(items, display_items, initial_idx, title, bb, input_instance)
         except Exception as raw_exc:
             _logger.warning("run_bottom_bar_selection Raw I/O 降级路径异常: %s", raw_exc)
             return {"action": "error", "index": None}

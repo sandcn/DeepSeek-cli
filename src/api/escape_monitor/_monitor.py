@@ -18,11 +18,13 @@ from ._history import (
     _EOF_THRESHOLD,
     _SELECT_ERROR_THRESHOLD,
     _POLL_INTERVAL,
+    INPUT_HISTORY_FILE,
     _active_monitor,
     _active_monitor_lock,
 )
 from ._input_handler import StreamInputHandler
 from ..interrupt_async import request_interrupt_async
+from ...tui.input import KeyEvent
 
 _logger = logging.getLogger(__name__)
 
@@ -65,8 +67,16 @@ class EscapeMonitor:
         self._eof_count = 0           # stdin EOF 连续计数
         self._select_error_count = 0  # select 错误连续计数
         self._exit_reason = None      # 熔断退出原因（供 _monitor() 日志诊断）
-        # ── 流式输入处理器（组合模式） ──
-        self._input_handler = StreamInputHandler(self._captured_input, self._captured_lock)
+        # ── 统一输入管理（门面类，组合 InputBuffer/InputParser/CursorPositioner） ──
+        from ...tui.input._input import Input
+        self._input = Input(
+            fd=sys.stdin.fileno(),
+            history_file=INPUT_HISTORY_FILE,
+        )
+        # ── 流式输入处理器（薄委托层，适配 InputBuffer 到 EscapeMonitor） ──
+        self._input_handler = StreamInputHandler(
+            self._input.buffer, self._captured_input, self._captured_lock,
+        )
         # ── 特殊按键回调（Ctrl+G/O/N/R） ──
         self._special_key_callback = None
         # ── Tab 补全回调 ──
@@ -514,52 +524,6 @@ class EscapeMonitor:
             except (ValueError, OSError, TypeError, AttributeError):
                 break
 
-    def _try_read_paste(self, fd: int, first_chars: str) -> str:
-        """检测并读取粘贴内容（退避 select 检测突发字符流）。
-
-        在已读取单个字符后调用，用递增超时 select（1ms→2ms→3ms）
-        检测 stdin 上是否有连续快速到达的字符序列。有则一次性批量
-        读取所有可用数据并解码。
-
-        人工键入的字符间隔通常 >20ms，三次退避检测都不会读到额外
-        数据，直接返回 first_chars（单字符，非粘贴）。
-        粘贴的字符间隔 <1ms，三次都能读到数据，进入批量读取路径。
-
-        Args:
-            fd: stdin 文件描述符。
-            first_chars: 已读取的首个 ASCII 字符/完整 UTF-8 多字节序列。
-
-        Returns:
-            first_chars（非粘贴/单字符）或完整的粘贴文本（多字符）。
-        """
-        import select
-        # 退避检测：1ms → 2ms → 3ms，任一未读到数据即判定非粘贴
-        for delay in (0.001, 0.002, 0.003):
-            try:
-                has_more, _, _ = select.select([fd], [], [], delay)
-            except (ValueError, OSError, TypeError, AttributeError):
-                return first_chars
-            if not has_more:
-                return first_chars
-        # 三次退避都读到数据 → 粘贴模式：批量读取所有可用字节
-        extra = b''
-        try:
-            while True:
-                has_more, _, _ = select.select([fd], [], [], 0.01)
-                if not has_more:
-                    break
-                more = os.read(fd, 65536)
-                if not more:
-                    break
-                extra += more
-                if len(extra) >= 262144:  # 256KB 安全上限
-                    break
-        except (ValueError, OSError, TypeError, AttributeError):
-            pass
-        if not extra:
-            return first_chars
-        return first_chars + extra.decode("utf-8", errors="replace")
-
     def _monitor_unix(self):
         """Unix/Cygwin: 用 termios + select 读取原始按键。"""
         from src._compat_termios import HAS_TERMIOS, termios
@@ -655,15 +619,20 @@ class EscapeMonitor:
                 # ── ASCII 控制字符分发 ────────────────────
                 if first_byte < 0x20 or first_byte == 0x7F:
                     try:
-                        self._dispatch_control_char(first_byte, raw)
+                        event = self._input.feed_byte(first_byte)
+                        if event is None:
+                            # ESC (0x1b) → 需读取完整转义序列
+                            self._handle_escape()
+                        else:
+                            self._dispatch_key_event(event)
                     except Exception:
-                        _logger.warning("_dispatch_control_char 异常", exc_info=True)
+                        _logger.warning("控制字符分发异常", exc_info=True)
                     continue
 
                 # ── ASCII 可打印字符（单字节，直接处理 + 粘贴检测） ──
                 if first_byte < 0x80:
                     try:
-                        paste_text = self._try_read_paste(fd, chr(first_byte))
+                        paste_text = self._input.try_read_paste(fd, chr(first_byte))
                         if len(paste_text) > 1:
                             self._input_handler.handle_chars(paste_text)
                         else:
@@ -675,74 +644,99 @@ class EscapeMonitor:
 
                 # ── 多字节 UTF-8 序列（如中文、日文、韩文等 CJK 字符 + 粘贴检测） ──
                 try:
-                    ch = self._read_utf8_char(fd, first_byte)
+                    ch = self._input.read_utf8_char(fd, first_byte)
                     if ch is not None:
-                        paste_text = self._try_read_paste(fd, ch)
+                        paste_text = self._input.try_read_paste(fd, ch)
                         if len(paste_text) > 1:
                             self._input_handler.handle_chars(paste_text)
                         else:
                             self._input_handler.handle_char(paste_text)
                         self._trigger_auto_completion()
+                    else:
+                        # 无效/不完整 UTF-8 序列 → 捕获原始字节
+                        with self._captured_lock:
+                            self._captured_input.append(first_byte)
                 except Exception:
                     _logger.warning("多字节 UTF-8 字符分发异常", exc_info=True)
         finally:
             self._restore_terminal_settings(_lock_held=False)
 
-    def _dispatch_control_char(self, first_byte: int, raw: bytes) -> None:
-        """分发 ASCII 控制字符到对应处理器。
+    def _dispatch_key_event(self, event: KeyEvent) -> None:
+        """根据 KeyEvent.kind 分发到对应的输入处理器。
 
-        从 _monitor_unix 主循环中提取，封装控制字符（0x00-0x1F / 0x7F）
-        的解码和分发逻辑。
+        替代旧的 _dispatch_control_char，使用 InputParser 解析结果。
+        仅处理 ASCII 控制字符的 KeyEvent（ESC 已在调用方单独处理）。
+
+        分发映射：
+          enter → 提交输入
+          tab → 补全
+          backspace → 退格
+          interrupt → 中断
+          home → 行首（Ctrl+A / Home 键）
+          end → 行尾（Ctrl+E / End 键）
+          delete(mod 0) → Delete 键
+          delete(mod 1) → Ctrl+W
+          delete(mod 2) → Ctrl+U
+          delete(mod 3) → Ctrl+K
+          ctrl_key → 特殊按键（Ctrl+G/O/N/R）
+          unknown → 捕获到 _captured_input
         """
-        try:
-            ch = raw.decode("utf-8", errors="replace")
-        except (ValueError, UnicodeDecodeError):
-            return
-        if ch == '\x1b':
-            self._handle_escape()
-        elif ch == '\x03':
-            self._do_interrupt()
-            self._flush_stdin_residual()
-        elif ch == '\x07':          # Ctrl+G → vim 编辑
-            self._handle_special_key('vim')
-        elif ch == '\x0f':          # Ctrl+O → /editmsg
-            self._handle_special_key('editmsg')
-        elif ch == '\x0e':          # Ctrl+N → 切换模型
-            self._handle_special_key('switch_model')
-        elif ch == '\x12':          # Ctrl+R → 切换模型（备用，Cygwin 终端会拦截 Ctrl+N）
-            self._handle_special_key('switch_model')
-        elif ch == '\x09':          # Tab → 补全
-            self._handle_tab()
-        elif ch in ('\r', '\n'):  # Enter → 提交
+        kind = event.kind
+
+        if kind == "enter":
             self._dismiss_completion()
             self._input_handler._enter()
-        elif ch in ('\x7f', '\b'):
+        elif kind == "tab":
+            self._handle_tab()
+        elif kind == "backspace":
             self._dismiss_completion()
             self._input_handler._backspace()
             self._trigger_auto_completion()
-        elif ch == '\x01':          # Ctrl+A → 行首
+        elif kind == "interrupt":
+            self._do_interrupt()
+            self._flush_stdin_residual()
+        elif kind == "home":
             self._dismiss_completion()
             self._input_handler._home()
-        elif ch == '\x05':          # Ctrl+E → 行尾
+        elif kind == "end":
             self._dismiss_completion()
             self._input_handler._end()
-        elif ch == '\x17':          # Ctrl+W → 删除前一个词
+        elif kind == "delete":
+            modifier = event.modifier
+            if modifier == 0:
+                # Delete 键 → 删除光标后字符
+                self._dismiss_completion()
+                self._input_handler._delete()
+                self._trigger_auto_completion()
+            elif modifier == 1:
+                # Ctrl+W → 删除前一个词
+                self._dismiss_completion()
+                self._input_handler._delete_word_left()
+                self._trigger_auto_completion()
+            elif modifier == 2:
+                # Ctrl+U → 删除到行首
+                self._dismiss_completion()
+                self._input_handler._kill_to_bol()
+                self._trigger_auto_completion()
+            elif modifier == 3:
+                # Ctrl+K → 删除到行尾
+                self._dismiss_completion()
+                self._input_handler._kill_to_eol()
+                self._trigger_auto_completion()
+        elif kind == "ctrl_key":
+            ch = event.char
+            if ch == '\x07':          # Ctrl+G → vim 编辑
+                self._handle_special_key('vim')
+            elif ch == '\x0f':        # Ctrl+O → /editmsg
+                self._handle_special_key('editmsg')
+            elif ch in ('\x0e', '\x12'):  # Ctrl+N / Ctrl+R → 切换模型
+                self._handle_special_key('switch_model')
+        elif kind == "unknown":
             self._dismiss_completion()
-            self._input_handler._delete_word_left()
-            self._trigger_auto_completion()
-        elif ch == '\x15':          # Ctrl+U → 删除到行首
-            self._dismiss_completion()
-            self._input_handler._kill_to_bol()
-            self._trigger_auto_completion()
-        elif ch == '\x0b':          # Ctrl+K → 删除到行尾
-            self._dismiss_completion()
-            self._input_handler._kill_to_eol()
-            self._trigger_auto_completion()
-        else:
-            self._dismiss_completion()
-            # 其他控制字符 → 旧行为：捕获到 _captured_input
-            with self._captured_lock:
-                self._captured_input.append(first_byte)
+            # 其他控制字符 → 捕获到 _captured_input
+            if event.raw:
+                with self._captured_lock:
+                    self._captured_input.append(event.raw[0])
 
     def _trigger_auto_completion(self) -> None:
         """获取当前文本并调用自动补全回调。
@@ -837,192 +831,56 @@ class EscapeMonitor:
                 return
         self._input_handler._down()
 
-    def _read_utf8_char(self, fd: int, first_byte: int) -> str | None:
-        """读取完整的多字节 UTF-8 字符序列。
-
-        从 _monitor_unix 主循环中提取，封装 UTF-8 多字节序列的
-        字节数判断、续字节读取和解码逻辑。
-
-        Args:
-            fd: stdin 文件描述符。
-            first_byte: 已读取的首字节（高位为 1，即 >= 0x80）。
-
-        Returns:
-            解码后的 Unicode 字符，或 None（无效/不完整序列，字节已捕获）。
-        """
-        import select
-        # 根据首字节确定该字符的总字节数
-        if (first_byte & 0xE0) == 0xC0:
-            total_bytes = 2
-        elif (first_byte & 0xF0) == 0xE0:
-            total_bytes = 3
-        elif (first_byte & 0xF8) == 0xF0:
-            total_bytes = 4
-        else:
-            # 无效的 UTF-8 首字节（续字节单独出现）→ 原始捕获
-            with self._captured_lock:
-                self._captured_input.append(first_byte)
-            return None
-
-        # 读取剩余续字节（with short timeout）
-        buf = bytes([first_byte])
-        for _ in range(total_bytes - 1):
-            try:
-                has_data, _, _ = select.select(
-                    [fd], [], [], UNIX_SELECT_TIMEOUT / 2)
-            except (ValueError, OSError, TypeError, AttributeError):
-                break
-            if not has_data:
-                break
-            try:
-                more = os.read(fd, 1)
-                if not more:
-                    break
-                buf += more
-            except (ValueError, OSError, TypeError):
-                break
-
-        # 解码完整序列（可能因超时不完整，用 errors="replace" 容错）
-        try:
-            return buf.decode("utf-8")
-        except UnicodeDecodeError:
-            # 不完整/无效序列 → 原始字节捕获
-            with self._captured_lock:
-                self._captured_input.extend(buf)
-            return None
-
     def _handle_escape(self):
-        """处理 Esc 按键，区分单 Esc 和 ANSI 转义序列。
+        """处理 Esc 按键 — 委托 InputParser 解析完整序列并分发。
 
-        必须使用 os.read(fd, 1) 而非 sys.stdin.read(1) 来逐字节读取，
-        否则 sys.stdin 的 BufferedReader 会一次性读取多字节到 Python
-        缓冲区，导致后续 select 检查 OS 级 fd 时误判为"无更多数据"，
-        从而将上下箭头（\\x1b[A）等 ANSI 序列误当作单 ESC 中断。
+        使用 self._input.parse_sequence(fd) 读取并解析 ANSI 转义序列，
+        根据返回的 KeyEvent.kind 分发到对应处理器。
         """
-        import select
         fd = sys.stdin.fileno()
-        try:
-            has_more, _, _ = select.select([fd], [], [], _POLL_INTERVAL)
-        except (ValueError, OSError, TypeError, AttributeError):
-            # stdin 可能已关闭或不可读，视为单 Esc
-            self._do_interrupt()
-            return
-        if not has_more:
+        event = self._input.parse_sequence(fd)
+        kind = event.kind
+
+        if kind == "escape":
             self._do_interrupt()
             self._flush_stdin_residual()
-            return
-        try:
-            raw = os.read(fd, 1)
-            if not raw:
-                self._do_interrupt()
-                return
-            next_ch = raw.decode("utf-8", errors="replace")
-        except (ValueError, OSError, TypeError):
+        elif kind == "interrupt":
             self._do_interrupt()
-            return
-        if next_ch == '[':
-            # CSI 序列：完整解析参数 + 终结符，支持：
-            #   - 简单 CSI: \x1b[A (上箭头), \x1b[H (Home), \x1b[F (End)
-            #   - 功能键:  \x1b[1~ (Home), \x1b[4~ (End)
-            #   - 修饰符:  \x1b[1;5D (Ctrl+左), \x1b[1;5C (Ctrl+右)
-            #   - CSI u:   \x1b[13;2u (Shift+Enter), \x1b[13;3u (Alt+Enter)
-            params: list[int] = []
-            current = ""
-            terminator: str | None = None
-            try:
-                while select.select([fd], [], [], 0.01)[0]:
-                    raw_c = os.read(fd, 1)
-                    if not raw_c:
-                        break
-                    c = raw_c.decode("utf-8", errors="replace")
-                    if c == ';':
-                        try:
-                            params.append(int(current) if current else 0)
-                        except ValueError:
-                            params.append(0)
-                        current = ""
-                    elif c.isdigit():
-                        current += c
-                    elif c.isalpha() or c == '~':
-                        if current:
-                            try:
-                                params.append(int(current))
-                            except ValueError:
-                                params.append(0)
-                        terminator = c
-                        break
-            except (ValueError, OSError, TypeError):
-                pass
-
-            if terminator is None:
-                pass  # 序列不完整，静默忽略
-            elif terminator == 'u':
-                # CSI u 模式: \x1b[<keycode>;<modifier>u
-                keycode = params[0] if len(params) >= 1 else 0
-                modifier = params[1] if len(params) >= 2 else 1
-                if keycode == 13 and modifier in (2, 3, 5):
-                    # Shift+Enter(2) / Alt+Enter(3) / Ctrl+Enter(5) → 插入换行
-                    self._input_handler.handle_char('\n')
-            elif terminator == '~':
-                # 功能键序列: \x1b[N~ (N=1/7=Home, 4/8=End)
-                p = params[0] if params else 0
-                if p in (1, 7):
-                    self._input_handler._home()
-                elif p in (3,):
-                    # Delete 键：删除光标后字符
-                    self._dismiss_completion()
-                    self._input_handler._delete()
-                    self._trigger_auto_completion()
-                elif p in (4, 8):
-                    self._input_handler._end()
-            elif terminator == 'H':
-                # Home (\x1b[H)
-                self._input_handler._home()
-            elif terminator == 'F':
-                # End (\x1b[F)
-                self._input_handler._end()
-            elif terminator == 'C':
-                # 右箭头 或 Ctrl+右
-                if len(params) >= 2 and params[1] == 5:
-                    self._input_handler._word_right()
-                else:
-                    self._input_handler._right()
-            elif terminator == 'D':
-                # 左箭头 或 Ctrl+左
-                if len(params) >= 2 and params[1] == 5:
-                    self._input_handler._word_left()
-                else:
-                    self._input_handler._left()
-            elif terminator == 'A':
-                self._handle_arrow_up()
-            elif terminator == 'B':
-                self._handle_arrow_down()
-        elif next_ch == 'O':
-            # ESC O 序列（F1-F4）：跳过功能键标识
-            try:
-                if select.select([fd], [], [], _POLL_INTERVAL)[0]:
-                    os.read(fd, 1)
-            except (ValueError, OSError, TypeError):
-                pass
-        elif next_ch == '\x7f':
-            # Alt+Backspace → 删除前一个词（同 Ctrl+W）
+            self._flush_stdin_residual()
+        elif kind == "arrow_up":
+            self._handle_arrow_up()
+        elif kind == "arrow_down":
+            self._handle_arrow_down()
+        elif kind == "arrow_right":
+            if event.modifier == 5:  # Ctrl+右 → 跳词
+                self._input_handler._word_right()
+            else:
+                self._input_handler._right()
+        elif kind == "arrow_left":
+            if event.modifier == 5:  # Ctrl+左 → 跳词
+                self._input_handler._word_left()
+            else:
+                self._input_handler._left()
+        elif kind == "home":
             self._dismiss_completion()
-            # 消耗可能跟随的额外字节
-            try:
-                if select.select([fd], [], [], 0.01)[0]:
-                    os.read(fd, 1)
-            except (ValueError, OSError, TypeError):
-                pass
+            self._input_handler._home()
+        elif kind == "end":
+            self._dismiss_completion()
+            self._input_handler._end()
+        elif kind == "delete":
+            # Delete 键（CSI \\x1b[3~）→ 删除光标后字符
+            self._dismiss_completion()
+            self._input_handler._delete()
+            self._trigger_auto_completion()
+        elif kind == "backspace" and event.modifier == 1:
+            # Alt+Backspace → 删除前一个词
+            self._dismiss_completion()
             self._input_handler._delete_word_left()
             self._trigger_auto_completion()
-        elif next_ch == '\x1b':
-            # 双 Esc（Alt+Esc）→ 视为中断
-            self._do_interrupt()
-            self._flush_stdin_residual()
-        else:
-            # 其他 ESC 序列 → 视为中断
-            self._do_interrupt()
-            self._flush_stdin_residual()
+        elif kind == "char" and event.char == "\n":
+            # CSI u Shift+Enter / Alt+Enter → 插入换行
+            self._input_handler.handle_char('\n')
+        # kind == "unknown" / "csi_u" → 静默忽略
 
     def _monitor_win(self):
         """Windows (非 Cygwin): 用 msvcrt 读取按键。"""

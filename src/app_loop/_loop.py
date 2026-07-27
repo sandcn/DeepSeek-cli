@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import shutil
 import sys
 
 from ._utils import (
@@ -33,8 +32,7 @@ from ..core.commands.plugins import get_interactive_registry
 from ..core.message_queue import MessageQueue
 from ..core.exceptions import is_fatal_exception, is_network_error
 from ..core.constants import CYAN, DIM, RESET, GREEN, YELLOW
-from ..tui.core.ttl_cache import TTLCache
-from ..tui.terminal.narrow import is_narrow, narrow_sep_width
+from ..tui.terminal.terminal import TerminalWidthCache, narrow_sep_width
 from ..api.escape_monitor import EscapeMonitor
 from ..api.interrupt_async import reset_interrupt_async
 from ..api.stats import reset_token_speed
@@ -49,10 +47,6 @@ class InteractiveLoop:
     def __init__(self, loaded_data=None):
         self._loaded_data = loaded_data
         self._force_exit = asyncio.Event()
-        self._term_width_cache = TTLCache(
-            fetcher=lambda: shutil.get_terminal_size().columns,
-            ttl=2.0,
-        )
         self._msg_done_ref: asyncio.Event | None = None
         # ChatUI 消费者 — 通过事件系统渲染聊天内容到终端
         self._chat_ui: ChatUIConsumer | None = None
@@ -64,7 +58,7 @@ class InteractiveLoop:
         self._monitor_recovery_count = 0
 
     def _get_term_width(self) -> int:
-        return self._term_width_cache.get()
+        return TerminalWidthCache.get_default().get_width()
 
     def _check_consumer_exception(self, task: asyncio.Task) -> None:
         """检查消费者任务是否有未捕获的异常。异常时设置 _force_exit 并唤醒 msg_done 防止死锁。"""

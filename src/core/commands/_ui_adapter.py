@@ -53,7 +53,8 @@ class CommandUiAdapter:
         返回值: {"action": "confirmed"|"cancel"|"error", "index": int | None}
         """
         from ...tui.widgets.bottom_bar.selection import run_bottom_bar_selection as _select
-        return _select(items, display_items, initial_idx, title, bottom_bar)
+        return _select(items, display_items, initial_idx, title, bottom_bar,
+                       input_instance=getattr(bottom_bar, '_input', None) if bottom_bar is not None else None)
 
     def get_theme_names_with_desc(self) -> list[tuple[str, str]]:
         """获取所有主题名称和描述。"""

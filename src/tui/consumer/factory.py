@@ -17,6 +17,7 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from ..widgets.cursor_tracker import CursorTracker
     from ..widgets.bottom_bar import _BottomBar
+    from ..input import Input
     from ..events.event_bus import DisplayEventBus
     from ...renderer.output import OutputAdapter
     from ..engine.renderer import TuiRenderer
@@ -52,6 +53,7 @@ class _ChatUIComponents:
         rs: ChatRenderState — 渲染器生命周期
         cursor_tracker: 全局光标追踪
         bottom_bar: 底部固定输入栏
+        input: 统一输入管理（Input 门面类）
         output_adapter: 输出适配器（Rich Console 包装）
         tui_renderer: 组件化渲染分发
         engine: render 线程 + 命令队列
@@ -66,6 +68,7 @@ class _ChatUIComponents:
     engine: "RenderEngine"
     dispatcher: "EventDispatcher"
     cmpl_handler: "_CmplHandler"
+    input: "Input | None" = None
 
 
 def _create_framework_components(
@@ -136,6 +139,8 @@ def _create_chat_ui_components(event_bus=None) -> _ChatUIComponents:
     from ..widgets.cursor_tracker import CursorTracker
     from ..widgets.bottom_bar import _BottomBar
     from ..widgets.completion import CompletionEngine
+    from ..input import Input
+    from ...config.defaults import INPUT_HISTORY_FILE
     from rich.console import Console
     from ...renderer.output import OutputAdapter
     from ...terminal import get_safe_console_config
@@ -153,6 +158,14 @@ def _create_chat_ui_components(event_bus=None) -> _ChatUIComponents:
     rs = ChatRenderState()
     cursor_tracker = CursorTracker()
     bottom_bar = _BottomBar(cursor_tracker=cursor_tracker)
+
+    # ── 统一输入管理（Input 门面类） ──
+    input_instance = Input(
+        fd=sys.stdin.fileno(),
+        history_file=INPUT_HISTORY_FILE,
+        cursor_tracker=cursor_tracker,
+    )
+    bottom_bar.set_input(input_instance)
 
     # ── 框架组件创建（传入聊天域依赖） ──
     fw = _create_framework_components(
@@ -175,6 +188,7 @@ def _create_chat_ui_components(event_bus=None) -> _ChatUIComponents:
         rs=rs,
         cursor_tracker=cursor_tracker,
         bottom_bar=bottom_bar,
+        input=input_instance,
         output_adapter=fw.output_adapter,
         tui_renderer=fw.renderer,
         engine=fw.engine,
