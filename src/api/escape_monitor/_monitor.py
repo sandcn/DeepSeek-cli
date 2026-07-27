@@ -300,19 +300,6 @@ class EscapeMonitor:
         """EscapeMonitor 后台线程是否存活。"""
         return self._thread is not None and self._thread.is_alive()
 
-    # ── Input 委托（向后兼容） ────────────────────────────
-
-    def get_queued_input(self) -> str | None:
-        return self._input.get_queued_input()
-
-    def has_queued_input(self) -> bool:
-        return self._input.has_queued_input()
-
-    def set_prefill(self, text: str) -> None:
-        _logger.debug("EscapeMonitor.set_prefill: len=%d", len(text))
-        self._input.set_buffer(text)
-        self._input.echo(text)
-
     # ── monitor 主循环 ───────────────────────────────────
 
     def _monitor_unix(self):

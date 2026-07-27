@@ -12,8 +12,6 @@ import time
 from typing import TYPE_CHECKING, Any, Callable
 
 if TYPE_CHECKING:
-    from typing import Protocol
-
     from ..events.event_types import (
         ReasoningChunkEvent,
         ContentChunkEvent,
@@ -29,14 +27,6 @@ if TYPE_CHECKING:
         ModelPhaseEvent,
     )
     from .factory import _ChatUIComponents
-
-    class _MonitorProtocol(Protocol):
-        """EscapeMonitor 的最小接口协议。
-
-        用于 wait_for_user_input() 的类型注解，避免运行时循环导入。
-        wait_for_user_input() 仅需 is_alive 检查；输入操作通过 Input 实例。
-        """
-        is_alive: bool
 
 from ..engine.const import (
     RenderCommand,
@@ -262,15 +252,14 @@ class ChatUIConsumer:
     def display_messages(self, messages: list[dict], speed: int = 0) -> None:
         self._components.engine.push_cmd((RenderCommand.DISPLAY_MSGS, messages, speed))
 
-    def wait_for_user_input(self, monitor: _MonitorProtocol, prefill: str = "", timeout: float | None = None,
+    def wait_for_user_input(self, monitor, prefill: str = "", timeout: float | None = None,
                             input_=None) -> str:
         """阻塞等待用户通过 Input 实例输入文本。
 
         轮询 input_.get_queued_input()，以 50ms 间隔检查。
-        input_ 参数为 None 时回退使用 monitor（向后兼容）。
 
         Args:
-            monitor: 输入监视器，需提供 is_alive 属性用于存活检测
+            monitor: EscapeMonitor 实例，用于 is_alive 存活检测
             prefill: 预填充文本（可选）
             timeout: 超时秒数，None 表示无限等待
             input_: 统一输入管理实例（Input 门面类）
@@ -278,21 +267,19 @@ class ChatUIConsumer:
         Returns:
             用户输入文本；超时时返回空字符串 ""
         """
-        # 回退：input_ 未提供时使用 monitor（向后兼容）
-        input_src = input_ if input_ is not None else monitor
         if prefill:
-            if hasattr(monitor, 'is_alive') and not monitor.is_alive:
+            if not monitor.is_alive:
                 raise RuntimeError("EscapeMonitor thread died")
-            _logger.debug("wait_for_user_input: about to set_prefill, len=%d, prefill[:50]='%s'", len(prefill), prefill[:50])
-            input_src.set_buffer(prefill)
-            input_src.echo(prefill)
-            _logger.debug("wait_for_user_input: set_prefill done, entering poll loop")
+            _logger.debug("wait_for_user_input: set prefill, len=%d", len(prefill))
+            input_.set_buffer(prefill)
+            input_.echo(prefill)
+            _logger.debug("wait_for_user_input: prefill done, entering poll loop")
         deadline = None if timeout is None else time.monotonic() + timeout
         while True:
-            if hasattr(monitor, 'is_alive') and not monitor.is_alive:
+            if not monitor.is_alive:
                 _logger.warning("EscapeMonitor 线程已死亡，退出等待")
                 raise RuntimeError("EscapeMonitor thread died")
-            text = input_src.get_queued_input()
+            text = input_.get_queued_input()
             if text is not None:
                 return text
             if deadline is not None and time.monotonic() >= deadline:
