@@ -10,13 +10,12 @@
   │             cost(费用计算纯函数), param_formatter(工具参数格式化),
   │             parallel_config / tool_icons / text_formatter,
   │             TrueColor / ColorValue（颜色值对象）, theme_loader（YAML主题加载）
-  │             system_monitor(系统监控)
   │
   terminal/   — 终端 I/O 层：blessed适配, LockedTerminal, 窄屏检测, adapter(终端适配器),
   │             capabilities(终端能力检测: TrueColor/256色/UTF-8/Emoji)
   │
   animation/  — 动画基础设施层：AnimatorContext(动画时钟管理器), BreathPalette(呼吸调色板),
-  │             composer(动画合成器), transitions(过渡效果:FadeIn/FadeOut/Slide/Typewriter)
+  │             transitions(过渡效果:FadeIn/FadeOut/Slide/Typewriter)
   │
   events/     — 事件总线层：DisplayEventBus(显示层事件总线), event_types(21种事件类型),
   │             adapters(事件适配器), consumers(事件消费者)
@@ -28,9 +27,8 @@
   layout/     — 声明式布局：Vertical/Horizontal/Padding/Border/Grid/Center
   │
   components/ — 通用框架组件（可独立复用）:
-  │             Box/RoundedBox/DoubleBox, Panel, Separator, Spinner, ProgressBar,
-  │             Table, TreeView/TreeNode, parse_markup/render_markup,
-  │             CostDisplayComponent, SplashScreen
+  │             Box/RoundedBox/DoubleBox, Separator, Spinner, ProgressBar,
+  │             SplashScreen
   │
   framework   — 框架入口：Framework 单例、create_component/create_widget、
   │             get_animator/get_framework/frame_from_context
@@ -61,8 +59,8 @@
   pipeline/   — 消息显示/编辑管线：message_display, message_editor
   │
   widgets/    — 交互控件：bottom_bar(底部固定栏/状态行/输入区/补全弹窗),
-  │             command_palette, completion, cursor_tracker,
-  │             selector_base, help_panel(快捷键帮助浮层), status_bar
+  │             completion, cursor_tracker,
+  │             help_panel(快捷键帮助浮层), status_bar
   │
   parallel_display.py — 并行 Agent 显示管理：ParallelDisplay
   │
@@ -183,16 +181,9 @@ _COMPONENT_SYMBOLS: set[str] = {
     "BoxStyle",
     "RoundedBox",
     "DoubleBox",
-    "Panel",
     "Separator",
     "Spinner",
     "ProgressBar",
-    "Table",
-    "TreeView",
-    "TreeNode",
-    "parse_markup",
-    "render_markup",
-    "CostDisplayComponent",
     "SplashScreen",
 }
 
@@ -248,16 +239,9 @@ __all__ = [
     "BoxStyle",
     "RoundedBox",
     "DoubleBox",
-    "Panel",
     "Separator",
     "Spinner",
     "ProgressBar",
-    "Table",
-    "TreeView",
-    "TreeNode",
-    "parse_markup",
-    "render_markup",
-    "CostDisplayComponent",
     "SplashScreen",
     # 动画
     "apply_fade_in",

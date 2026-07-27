@@ -1,7 +1,6 @@
-"""TUI 部件层 — 底部栏、状态栏、命令面板、会话切换器、锁定、补全、光标追踪等。
+"""TUI 部件层 — 底部栏、状态栏、锁定、补全、光标追踪等。
 
-提供终端底部固定输入栏（_BottomBar）、单数据源状态栏（StatusBar）、
-命令面板（CommandPalette）、会话切换器（SessionSwitcher）、
+提供终端底部固定输入栏（_BottomBar）、单数据源状态栏（StatusBarWidget）、
 锁定原语（render_lock/io_lock）、补全引擎（CompletionEngine）、
 光标追踪（CursorTracker）和 stdout 行追踪（_StdoutLineTracker）。
 """
@@ -30,30 +29,19 @@ from .._lazy import LazyLoader
 
 # ── 懒加载模块代理（避免循环导入） ──
 # 循环导入链：terminal.terminal → widgets.lock → widgets.__init__ → ... → terminal.terminal
-# 涉及终端操作的模块（bottom_bar、status_bar、command_palette 等）必须延迟导入，
+# 涉及终端操作的模块（bottom_bar、status_bar 等）必须延迟导入，
 # 因为这些模块直接或间接导入 terminal.terminal.is_narrow / get_terminal_width。
 # 当 terminal.terminal 在其模块顶层导入 widgets.lock 时，会触发 widgets.__init__ 加载，
 # 此时若再立即加载这些终端相关模块，就会形成环形依赖。
 
-_selector_base_mod = LazyLoader("src.tui.widgets.selector_base")
-_status_bar_mod = LazyLoader("src.tui.widgets.status_bar")
 _status_bar_widget_mod = LazyLoader("src.tui.widgets.status_bar_widget")
-_command_palette_mod = LazyLoader("src.tui.widgets.command_palette")
-_session_switcher_mod = LazyLoader("src.tui.widgets.session_switcher")
 _bottom_bar_mod = LazyLoader("src.tui.widgets.bottom_bar")
 
 
 # ── 符号到懒加载模块的映射（供 __getattr__ 使用） ──
 
 _SYMBOL_MAP: dict[str, LazyLoader] = {
-    'BaseBottomBarSelector': _selector_base_mod,
     "StatusBarWidget": _status_bar_widget_mod,
-    'StatusBar': _status_bar_mod,
-    'render_normal': _status_bar_mod,
-    'build_normal_parts': _status_bar_mod,
-    'render_streaming_line': _status_bar_mod,
-    'CommandPalette': _command_palette_mod,
-    'SessionSwitcher': _session_switcher_mod,
     '_BottomBar': _bottom_bar_mod,
     '_StatusMixin': _bottom_bar_mod,
     '_get_snapshot': _bottom_bar_mod,
@@ -93,14 +81,8 @@ __all__ = [
     "_StdoutLineTracker",
     # completion
     "CompletionEngine", "CompletionItem",
-    # selector_base
-    "BaseBottomBarSelector",
     # status_bar
-    "StatusBar", "StatusBarWidget", "render_normal", "build_normal_parts", "render_streaming_line",
-    # command_palette
-    "CommandPalette",
-    # session_switcher
-    "SessionSwitcher",
+    "StatusBarWidget",
     # bottom_bar
     "_BottomBar", "_StatusMixin",
     "_get_snapshot", "_TOKEN_SPEED_SNAPSHOT",

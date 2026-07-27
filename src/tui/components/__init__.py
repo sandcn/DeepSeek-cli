@@ -37,16 +37,11 @@ _tool_summary_mod = LazyLoader("src.tui.components._tool_summary")
 _error_mod = LazyLoader("src.tui.components._error")
 _notification_mod = LazyLoader("src.tui.components._notification")
 _write_line_mod = LazyLoader("src.tui.components._write_line")
-_cost_mod = LazyLoader("src.tui.components._cost")
 _splash_mod = LazyLoader("src.tui.components._splash")
 _box_mod = LazyLoader("src.tui.components._box")
-_panel_mod = LazyLoader("src.tui.components._panel")
 _separator_mod = LazyLoader("src.tui.components._separator")
 _spinner_mod = LazyLoader("src.tui.components._spinner")
 _progress_mod = LazyLoader("src.tui.components._progress")
-_table_mod = LazyLoader("src.tui.components._table")
-_markup_mod = LazyLoader("src.tui.components._markup")
-_tree_mod = LazyLoader("src.tui.components._tree")
 _protocols_mod = LazyLoader("src.tui.consumer.protocols")
 
 
@@ -77,16 +72,9 @@ _SYMBOL_MAP: dict[str, LazyLoader] = {
     "Box": _box_mod,
     "RoundedBox": _box_mod,
     "DoubleBox": _box_mod,
-    "Panel": _panel_mod,
     "Separator": _separator_mod,
     "Spinner": _spinner_mod,
     "ProgressBar": _progress_mod,
-    "Table": _table_mod,
-    "parse_markup": _markup_mod,
-    "render_markup": _markup_mod,
-    "TreeView": _tree_mod,
-    "TreeNode": _tree_mod,
-    "CostDisplayComponent": _cost_mod,
     "SplashScreen": _splash_mod,
 
     # ── 协议 ─────────────────────────────────────
@@ -139,14 +127,9 @@ __all__ = [
 
     # ── 通用框架组件（可独立复用）─────────────────
     "BoxStyle", "Box", "RoundedBox", "DoubleBox",
-    "Panel",
     "Separator",
     "Spinner",
     "ProgressBar",
-    "Table",
-    "parse_markup", "render_markup",
-    "TreeView", "TreeNode",
-    "CostDisplayComponent",
     "SplashScreen",
 
     # ── 协议 ─────────────────────────────────────

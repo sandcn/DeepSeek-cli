@@ -33,7 +33,7 @@ if TYPE_CHECKING:
         ModelPhaseEvent,
     )
 
-from ..core.registry_base import RegistryBase
+from ..core.component_registry import RegistryBase
 from ..events import event_types as _EVENT_TYPES
 from ..framework import Framework
 

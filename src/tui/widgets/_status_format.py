@@ -1,4 +1,4 @@
-"""状态行共享格式化纯函数模块 — 供 StatusBar 和 StatusBarWidget 共用。
+"""状态行共享格式化纯函数模块 — 供 StatusBarWidget 使用。
 
 提取自 status_bar.py 和 status_bar_widget.py 中的公共格式化逻辑。
 所有函数为纯函数（不依赖 self 或实例状态），输入数据输出 ANSI 字符串。

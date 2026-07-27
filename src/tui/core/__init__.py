@@ -18,6 +18,26 @@ from __future__ import annotations
 
 from .._lazy import LazyLoader
 
+# ── 基础工具模块直接导入（懒加载收益低，改为立即加载） ──
+from .style import (
+    Style, StyledText, StyleSheet,
+)
+from .ansi_utils import (
+    strip_ansi, visual_width, truncate_ansi_visual,
+    skip_ansi_sgr, truncate_ansi_sgr, truncate_ansi_line,
+)
+from .text_utils import (
+    truncate, build_gradient_ansi, build_gradient_ansi_frame,
+    build_warning_pulse_ansi, make_sep_gradient,
+    build_bounce_ansi, build_left_border_ansi,
+    parse_theme_color, make_sep_gradient_enhanced,
+    build_gradient,
+)
+from .color import (
+    Color256, RGB, TrueColor, GradientDescriptor,
+    ColorValue, to_ansi_fg, to_ansi_bg, to_256, auto_color,
+)
+
 
 # ═══════════════════════════════════════════════════════════
 # 懒加载模块代理
@@ -31,14 +51,10 @@ _state_streaming = LazyLoader("src.tui.state.streaming_state")
 _state_tree = LazyLoader("src.tui.state.tui_state_tree")
 _ttl_cache_mod = LazyLoader("src.tui.core.ttl_cache")
 _formatter_mod = LazyLoader("src.tui.core.formatter")
-_text_utils_mod = LazyLoader("src.tui.core.text_utils")
-_color_mod = LazyLoader("src.tui.core.color")
-_style_mod = LazyLoader("src.tui.core.style")
 _gradient_mod = LazyLoader("src.tui.core.gradient")
 _palettes_mod = LazyLoader("src.tui.animation.palettes")
 _theme_mod = LazyLoader("src.tui.core.theme")
 _theme_loader_mod = LazyLoader("src.tui.core.theme_loader")
-_ansi_utils_mod = LazyLoader("src.tui.core.ansi_utils")
 _cost_mod = LazyLoader("src.tui.core.cost")
 _rich_console_mod = LazyLoader("src.tui.core.rich_console")
 _output_target_mod = LazyLoader("src.tui.core.output_target")
@@ -72,9 +88,6 @@ _SYMBOL_MAP: dict[str, LazyLoader] = {
     "build_fg_breath_ansi": _effects_mod,
     "build_bg_breath_ansi": _effects_mod,
     "build_breath_ansi": _effects_mod,
-    "build_sep_wave": _effects_mod,
-    "build_sep_shimmer": _effects_mod,
-    "build_sparkle_ansi": _effects_mod,
     "get_theme_effect_color": _effects_mod,
     "rainbow_color": _effects_mod,
     "build_rainbow_ansi": _effects_mod,
@@ -103,31 +116,6 @@ _SYMBOL_MAP: dict[str, LazyLoader] = {
     # formatter
     "format_elapsed": _formatter_mod,
     "format_speed": _formatter_mod,
-    # text_utils
-    "truncate": _text_utils_mod,
-    "build_gradient_ansi": _text_utils_mod,
-    "build_gradient_ansi_frame": _text_utils_mod,
-    "build_warning_pulse_ansi": _text_utils_mod,
-    "make_sep_gradient": _text_utils_mod,
-    "build_bounce_ansi": _text_utils_mod,
-    "build_left_border_ansi": _text_utils_mod,
-    "parse_theme_color": _text_utils_mod,
-    "make_sep_gradient_enhanced": _text_utils_mod,
-    "build_gradient": _text_utils_mod,
-    # color
-    "Color256": _color_mod,
-    "RGB": _color_mod,
-    "TrueColor": _color_mod,
-    "GradientDescriptor": _color_mod,
-    "ColorValue": _color_mod,
-    "to_ansi_fg": _color_mod,
-    "to_ansi_bg": _color_mod,
-    "to_256": _color_mod,
-    "auto_color": _color_mod,
-    # style
-    "Style": _style_mod,
-    "StyledText": _style_mod,
-    "StyleSheet": _style_mod,
     # gradient
     "hex_to_256": _gradient_mod,
     "gradient_step": _gradient_mod,
@@ -170,18 +158,10 @@ _SYMBOL_MAP: dict[str, LazyLoader] = {
     "list_themes": _theme_mod,
     "get_theme_names_with_desc": _theme_mod,
     "load_user_themes": _theme_mod,
-    "load_user_themes_into_themes": _theme_mod,
     "reload_themes": _theme_mod,
     # theme_loader
     "load_user_themes_from_dir": _theme_loader_mod,
     "parse_simple_yaml": _theme_loader_mod,
-    # ansi_utils
-    "strip_ansi": _ansi_utils_mod,
-    "visual_width": _ansi_utils_mod,
-    "truncate_ansi_visual": _ansi_utils_mod,
-    "skip_ansi_sgr": _ansi_utils_mod,
-    "truncate_ansi_sgr": _ansi_utils_mod,
-    "truncate_ansi_line": _ansi_utils_mod,
     # cost
     "compute_round_cost_data": _cost_mod,
     # rich_console
@@ -280,7 +260,7 @@ __all__ = [
     "BREATH_CYAN", "BREATH_GREEN", "BREATH_PURPLE", "BREATH_GOLD", "BREATH_ROSE",
     # theme
     "THEME", "THEMES", "set_theme", "get_active_theme", "list_themes", "get_theme_names_with_desc",
-    "load_user_themes", "load_user_themes_into_themes", "reload_themes",
+    "load_user_themes", "reload_themes",
     # theme_loader
     "load_user_themes_from_dir", "parse_simple_yaml",
     # ansi_utils
