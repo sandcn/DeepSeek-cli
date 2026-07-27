@@ -88,12 +88,12 @@ def _make_round_callbacks(
             chat_ui.bottom_bar.enable_status()
 
     def _on_round_end(interrupted=False, delta=None, **kw):
-        # ★ 防御性检查：monitor 为 None 时跳过 drain 操作
-        #   主路径中 monitor 由 _create_monitor 在 _register_session_handlers 之前创建，
-        #   此检查作为兜底防御（异常路径/初始化顺序错误）
-        if monitor is None:
-            _logger.warning("_on_round_end: monitor 为 None，跳过 drain 操作")
+        # ★ 防御性检查：chat_ui 为 None 时跳过 drain 操作
+        if chat_ui is None or not hasattr(chat_ui, '_components') or chat_ui._components.input is None:
+            _logger.warning("_on_round_end: input 不可用，跳过 drain 操作")
             return
+
+        input_ = chat_ui._components.input
 
         # /loop 模式下不冻结状态行、不发桌面通知，保持状态行活跃
         if not loop_state.get("_loop_mode"):
@@ -110,7 +110,7 @@ def _make_round_callbacks(
 
         # ★ 排出流式输入：queued（Enter提交）优先 → 跳过下轮输入提示
         #   buffer_text（未提交）→ 作为 prefill
-        queued, buffer_text = monitor.drain_stream_input()
+        queued, buffer_text = input_.drain_all()
         if queued is not None:
             loop_state["queued_input"] = queued
         elif buffer_text:
@@ -120,7 +120,7 @@ def _make_round_callbacks(
                 session.captured_prefill = clean
 
         # ★ 原有逻辑：保存非可打印控制字符
-        captured = monitor.drain_captured_input()
+        captured = input_.drain_captured()
         if captured:
             session.captured_prefill = captured
 

@@ -77,6 +77,7 @@ def _create_framework_components(
     bottom_bar: "_BottomBar",
     cursor_tracker: "CursorTracker",
     on_display_messages=None,
+    input_instance=None,
 ) -> _FrameworkComponents:
     """创建框架层子系统：TuiRenderer + TuiEngine。
 
@@ -89,6 +90,7 @@ def _create_framework_components(
         bottom_bar: 底部栏实例（聊天域依赖，通过参数注入）
         cursor_tracker: 光标追踪器
         on_display_messages: 消息展示回调（聊天域依赖，通过参数注入）
+        input_instance: 统一输入管理实例（可选，用于 Phase 0 输入处理）
 
     Returns:
         包含 renderer 和 engine 的 _FrameworkComponents 实例。
@@ -104,6 +106,7 @@ def _create_framework_components(
     engine: "RenderEngine" = TuiEngine(
         renderer, bottom_bar,
         cursor_tracker=cursor_tracker,
+        input_instance=input_instance,
     )
 
     return _FrameworkComponents(
@@ -167,13 +170,14 @@ def _create_chat_ui_components(event_bus=None) -> _ChatUIComponents:
     )
     bottom_bar.set_input(input_instance)
 
-    # ── 框架组件创建（传入聊天域依赖） ──
+    # ── 框架组件创建（传入聊天域依赖 + 统一输入） ──
     fw = _create_framework_components(
         rs=rs,
         output_adapter=output_adapter,
         bottom_bar=bottom_bar,
         cursor_tracker=cursor_tracker,
         on_display_messages=_display_messages,
+        input_instance=input_instance,
     )
 
     # ── 聊天域装配 ──

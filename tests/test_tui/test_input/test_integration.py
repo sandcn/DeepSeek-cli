@@ -126,8 +126,7 @@ class TestInputBottomBarEngineIntegration:
 
         consumer.refresh_bottom_bar("new text", 5)
 
-        # 验证 InputBuffer 被更新
-        assert mock_input.buffer.get_current_text() == "new text"
+        # Input IS source of truth — refresh_bottom_bar no longer syncs back to InputBuffer
         # 验证 _BottomBar 被更新
         bb.set_input_state.assert_called_once_with("new text", 5)
         # 验证重绘请求被触发

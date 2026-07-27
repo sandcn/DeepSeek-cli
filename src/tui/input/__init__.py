@@ -14,6 +14,6 @@ EscapeMonitor / _BottomBar / InteractiveLoop / _run_selection_raw 中的四类�
 from ._buffer import InputBuffer
 from ._parser import InputParser, KeyEvent
 from ._cursor import CursorPositioner
-from ._input import Input
+from ._input import Input, InputEvent
 
-__all__ = ["InputBuffer", "InputParser", "KeyEvent", "CursorPositioner", "Input"]
+__all__ = ["InputBuffer", "InputParser", "KeyEvent", "CursorPositioner", "Input", "InputEvent"]

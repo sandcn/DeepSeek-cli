@@ -33,17 +33,10 @@ if TYPE_CHECKING:
     class _MonitorProtocol(Protocol):
         """EscapeMonitor 的最小接口协议。
 
-        用于 wait_for_user_input() 和 setup_completion() 的类型注解，
-        避免运行时循环导入。
+        用于 wait_for_user_input() 的类型注解，避免运行时循环导入。
+        wait_for_user_input() 仅需 is_alive 检查；输入操作通过 Input 实例。
         """
         is_alive: bool
-
-        def get_queued_input(self) -> str | None: ...
-        def set_prefill(self, text: str) -> None: ...
-        def set_completion_callback(self, callback: Callable[[str], str | None]) -> None: ...
-        def set_dismiss_completion_callback(self, callback: Callable[[], None]) -> None: ...
-        def set_completion_navigate_callback(self, callback: Callable[[int, str], str | None]) -> None: ...
-        def set_auto_completion_callback(self, callback: Callable[[str], None]) -> None: ...
 
 from ..engine.const import (
     RenderCommand,
@@ -269,44 +262,53 @@ class ChatUIConsumer:
     def display_messages(self, messages: list[dict], speed: int = 0) -> None:
         self._components.engine.push_cmd((RenderCommand.DISPLAY_MSGS, messages, speed))
 
-    def wait_for_user_input(self, monitor: _MonitorProtocol, prefill: str = "", timeout: float | None = None) -> str:
-        """阻塞等待用户通过 monitor 输入文本。
+    def wait_for_user_input(self, monitor: _MonitorProtocol, prefill: str = "", timeout: float | None = None,
+                            input_=None) -> str:
+        """阻塞等待用户通过 Input 实例输入文本。
 
-        轮询 monitor.get_queued_input()，以 50ms 间隔检查。
+        轮询 input_.get_queued_input()，以 50ms 间隔检查。
+        input_ 参数为 None 时回退使用 monitor（向后兼容）。
 
         Args:
-            monitor: 输入监视器，需提供 get_queued_input() / set_prefill()
+            monitor: 输入监视器，需提供 is_alive 属性用于存活检测
             prefill: 预填充文本（可选）
             timeout: 超时秒数，None 表示无限等待
+            input_: 统一输入管理实例（Input 门面类）
 
         Returns:
             用户输入文本；超时时返回空字符串 ""
         """
+        # 回退：input_ 未提供时使用 monitor（向后兼容）
+        input_src = input_ if input_ is not None else monitor
         if prefill:
             if hasattr(monitor, 'is_alive') and not monitor.is_alive:
                 raise RuntimeError("EscapeMonitor thread died")
             _logger.debug("wait_for_user_input: about to set_prefill, len=%d, prefill[:50]='%s'", len(prefill), prefill[:50])
-            monitor.set_prefill(prefill)
+            input_src.set_buffer(prefill)
+            input_src.echo(prefill)
             _logger.debug("wait_for_user_input: set_prefill done, entering poll loop")
         deadline = None if timeout is None else time.monotonic() + timeout
         while True:
-            # monitor 存活检测：EscapeMonitor 线程死后抛出 RuntimeError，
-            # 由 _handle_round 捕获并触发恢复逻辑（步骤 4）
             if hasattr(monitor, 'is_alive') and not monitor.is_alive:
                 _logger.warning("EscapeMonitor 线程已死亡，退出等待")
                 raise RuntimeError("EscapeMonitor thread died")
-            text = monitor.get_queued_input()
+            text = input_src.get_queued_input()
             if text is not None:
                 return text
             if deadline is not None and time.monotonic() >= deadline:
                 return ""
             time.sleep(0.05)
 
-    def setup_completion(self, monitor: _MonitorProtocol) -> None:
-        monitor.set_completion_callback(self._components.cmpl_handler.on_tab)
-        monitor.set_dismiss_completion_callback(self._components.cmpl_handler.on_dismiss)
-        monitor.set_completion_navigate_callback(self._components.cmpl_handler.on_navigate)
-        monitor.set_auto_completion_callback(self._components.cmpl_handler.on_auto)
+    def setup_completion(self, input_) -> None:
+        """设置 Tab 补全回调到 Input 实例。
+
+        Args:
+            input_: 统一输入管理实例（Input 门面类）
+        """
+        input_.set_completion_callback(self._components.cmpl_handler.on_tab)
+        input_.set_dismiss_completion_callback(self._components.cmpl_handler.on_dismiss)
+        input_.set_completion_navigate_callback(self._components.cmpl_handler.on_navigate)
+        input_.set_auto_completion_callback(self._components.cmpl_handler.on_auto)
 
     @property
     def bottom_bar(self):
@@ -332,9 +334,7 @@ class ChatUIConsumer:
 
     def refresh_bottom_bar(self, text: str, cursor_pos: int = -1) -> None:
         effective_pos = len(text) if cursor_pos < 0 else cursor_pos
-        # ★ 同步更新 Input 类中的文本副本（单一数据源策略）
-        if hasattr(self._components, 'input') and self._components.input is not None:
-            self._components.input.buffer.set_buffer(text)
+        # Input IS source of truth — no sync-back needed
         self._components.bottom_bar.set_input_state(text, effective_pos)
         self._components.engine.request_bottom_redraw()
 

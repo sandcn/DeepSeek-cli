@@ -1,6 +1,7 @@
 """InputBuffer 类。
 
-提取自 StreamInputHandler 的输入文本缓冲、光标位置、历史导航逻辑。
+输入文本缓冲、光标位置、历史导航逻辑。
+从旧 StreamInputHandler 提取，现由 Input 门面类统一管理。
 纯数据 + 逻辑层，零 I/O（不执行 os.read/select/终端写入）。
 回显通过可注入的 _echo_callback 策略实现。
 
@@ -27,8 +28,7 @@ _logger = logging.getLogger(__name__)
 class InputBuffer:
     """输入文本缓冲 + 光标位置 + 历史导航 + 回显回调。
 
-    从 StreamInputHandler 提取，移除对 _captured_input 的直接依赖
-    （非可打印字符捕获留在 EscapeMonitor 层）。
+    由 Input 门面类统一管理，非可打印字符捕获由 Input._captured_input 处理。
     线程安全：所有公开方法内部使用 _lock 保护共享状态。
     """
 
@@ -178,7 +178,7 @@ class InputBuffer:
 
         在历史浏览模式（上下箭头）中返回 " [历史 N/M]",
         N 为当前索引（1-based）, M 为总条数。
-        供外部（如 StreamInputHandler._echo）获取历史指示器文本。
+        供外部（如 Input._echo）获取历史指示器文本。
         """
         return self._history_indicator
 

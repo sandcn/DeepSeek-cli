@@ -54,10 +54,12 @@ class TuiEngine:
         renderer: "FrameworkRenderer",
         bottom_bar: "BottomBarProtocol",
         cursor_tracker: "CursorTracker | None" = None,
+        input_instance=None,
     ):
         self._renderer = renderer
         self._bb = bottom_bar
         self._cursor_tracker = cursor_tracker
+        self._input = input_instance  # 统一输入管理（可选，用于 Phase 0）
         # ── 从 Framework 统一配置读取参数（优先），模块常量作为 fallback ──
         self._cmd_queue: queue.Queue = queue.Queue(maxsize=self._config.cmd_queue_maxsize)
         self._cmd_event = threading.Event()
@@ -205,6 +207,19 @@ class TuiEngine:
             if cmd and cmd[0] in TuiEngine._CONTENT_COMMANDS:
                 return True
         return False
+
+    def _phase_process_input(self) -> None:
+        """阶段 0：处理输入事件队列（render 线程中统一分发）。
+
+        排空 Input 类中的事件队列（由 EscapeMonitor I/O 线程推送），
+        在 render 线程中分发到 InputBuffer 和回调，序列化输入处理与渲染。
+        Input 未注入时（向后兼容）静默跳过。
+        """
+        if self._input is not None:
+            try:
+                self._input.process_events()
+            except Exception:
+                _logger.warning("_phase_process_input 异常", exc_info=True)
 
     def _phase_pre_update_panels(self) -> None:
         """阶段 1：预更新面板回调。
@@ -373,20 +388,23 @@ class TuiEngine:
                 )
 
     def _drain_queue(self) -> bool:
-        """三阶段流水线：预处理面板→获取输出锁→渲染命令→重绘底部栏。
+        """四阶段流水线：处理输入→预处理面板→获取输出锁→渲染命令→重绘底部栏。
 
+        阶段 0: _phase_process_input() — 处理输入事件队列（锁外执行）
         阶段 1: _phase_pre_update_panels() — 刷新面板回调（锁外执行）
         阶段 2: 获取输出锁，批量取出队列中所有命令
         阶段 3: _phase_render() 执行渲染命令，_phase_redraw_bottom() 重绘底部栏
 
         性能优化：
+        - 输入处理和面板回调在锁外执行，减少 output_lock 持锁时间
         - 仅在面板回调注册时执行阶段 1（默认 None，跳过空调用）
-        - 面板回调（CPU 渲染 + Queue.put）在锁外执行，减少 output_lock 持锁时间
 
         Returns:
             是否处理了至少一条渲染命令
         """
         commands: list[tuple] = []
+        # ★ 阶段 0：处理输入事件（render 线程中统一分发）
+        self._phase_process_input()
         # ★ 阶段 1：锁外执行面板刷新，减少持锁时间
         self._phase_pre_update_panels()
         with _try_acquire_output_lock(name="drain_queue", timeout=self._config.drain_lock_timeout) as locked:

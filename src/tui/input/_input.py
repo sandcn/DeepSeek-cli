@@ -7,7 +7,9 @@
   - 外观（Facade）: Input 提供统一入口，内部委托给各组件
   - 组合（Composite）: Input 组合多个子组件，不做继承
 
-线程安全: Input 自身不添加额外锁，各组合组件独立保证线程安全。
+线程模型:
+  - EscapeMonitor（I/O 线程）：push 事件到 _event_queue
+  - Render 线程：调用 process_events() 排空队列并分发，与渲染序列化
 """
 
 from __future__ import annotations
@@ -15,9 +17,13 @@ from __future__ import annotations
 import os
 import sys
 import select
+import queue
+import threading
 import logging
 from pathlib import Path
 from typing import TYPE_CHECKING
+
+from src._compat import dataclass
 
 from ._buffer import InputBuffer
 from ._parser import InputParser, KeyEvent
@@ -32,12 +38,29 @@ _logger = logging.getLogger(__name__)
 _UTF8_READ_TIMEOUT = 0.05
 
 
+@dataclass(slots=True)
+class InputEvent:
+    """EscapeMonitor I/O 线程推送到 Input 处理队列的事件。
+
+    字段:
+        kind: 'key' | 'paste' | 'buffer_replace'
+        key_event: KeyEvent 实例（kind='key' 时有效）
+        text: 粘贴或缓冲区替换文本
+    """
+    kind: str  # 'key' | 'paste' | 'buffer_replace'
+    key_event: KeyEvent | None = None
+    text: str = ""
+
+
 class Input:
     """统一输入管理门面类。
 
     组合 InputBuffer（缓冲+历史）、InputParser（ANSI 解析）、
     CursorPositioner（光标定位）、TerminalWidthCache（终端尺寸），
     为 EscapeMonitor 等消费者提供统一入口。
+
+    接收来自 EscapeMonitor I/O 线程的事件推送，
+    由 render 线程调用 process_events() 统一分发。
 
     构造函数:
         fd: stdin 文件描述符（sys.stdin.fileno()）
@@ -70,12 +93,244 @@ class Input:
             cursor_tracker=cursor_tracker,
         )
 
-        # ── 回调引用（Input 类存储，后续供 EscapeMonitor 注入） ──
+        # ── 事件队列（EscapeMonitor I/O 线程 → render 线程） ──
+        self._event_queue: queue.Queue = queue.Queue()
+
+        # ── 非可打印字符捕获 ──
+        self._captured_input: bytearray = bytearray()
+        self._captured_lock = threading.Lock()
+
+        # ── 回调引用 ──
         self._special_key_callback = None
         self._completion_callback = None
         self._dismiss_completion_callback = None
         self._completion_navigate_callback = None
         self._auto_completion_callback = None
+
+    # ── 事件推送（EscapeMonitor I/O 线程调用） ────────────
+
+    def push_key_event(self, event: KeyEvent) -> None:
+        """EscapeMonitor 推入按键事件到队列。"""
+        self._event_queue.put(InputEvent(kind='key', key_event=event))
+
+    def push_paste(self, text: str) -> None:
+        """EscapeMonitor 推入粘贴文本到队列。"""
+        self._event_queue.put(InputEvent(kind='paste', text=text))
+
+    def push_buffer_replace(self, text: str) -> None:
+        """EscapeMonitor 推入缓冲区替换（特殊键回调结果）到队列。"""
+        self._event_queue.put(InputEvent(kind='buffer_replace', text=text))
+
+    # ── 事件处理（render 线程调用） ────────────────────────
+
+    def process_events(self) -> None:
+        """排空事件队列并全部分发（render 线程调用）。
+
+        非阻塞排空：处理当前队列中所有事件后返回。
+        与 I/O 线程的 push 操作通过 queue.Queue 的线程安全保证同步。
+        """
+        while True:
+            try:
+                event = self._event_queue.get_nowait()
+            except queue.Empty:
+                break
+            try:
+                self._dispatch(event)
+            except Exception:
+                _logger.warning("事件分发异常 kind=%s", event.kind, exc_info=True)
+
+    def _dispatch(self, event: InputEvent) -> None:
+        """分发单个输入事件。"""
+        if event.kind == 'key':
+            if event.key_event is not None:
+                self._dispatch_key_event(event.key_event)
+        elif event.kind == 'paste':
+            self._buffer.handle_chars(event.text)
+            self._trigger_auto_completion()
+        elif event.kind == 'buffer_replace':
+            self._buffer.set_buffer(event.text)
+            self._buffer._echo(event.text)
+            self._trigger_auto_completion()
+
+    def _dispatch_key_event(self, event: KeyEvent) -> None:
+        """根据 KeyEvent.kind 分发到对应的输入处理器。
+
+        统一处理 ASCII 控制字符和 ESC 转义序列产生的 KeyEvent。
+        interrupt 类型在 EscapeMonitor 中已内联处理，此处仅为防御。
+        """
+        kind = event.kind
+
+        if kind == "enter":
+            self._dismiss_completion()
+            self._buffer._enter()
+        elif kind == "tab":
+            self._handle_tab()
+        elif kind == "backspace":
+            self._dismiss_completion()
+            if event.modifier == 1:
+                # Alt+Backspace → 删除前一个词
+                self._buffer._delete_word_left()
+            else:
+                self._buffer._backspace()
+            self._trigger_auto_completion()
+        elif kind == "interrupt":
+            # interrupt 应在 EscapeMonitor 中内联处理，此处仅防御日志
+            _logger.debug("_dispatch_key_event: interrupt 事件到达队列（应内联处理）")
+        elif kind == "home":
+            self._dismiss_completion()
+            self._buffer._home()
+        elif kind == "end":
+            self._dismiss_completion()
+            self._buffer._end()
+        elif kind == "delete":
+            modifier = event.modifier
+            if modifier == 0:
+                self._dismiss_completion()
+                self._buffer._delete()
+                self._trigger_auto_completion()
+            elif modifier == 1:
+                self._dismiss_completion()
+                self._buffer._delete_word_left()
+                self._trigger_auto_completion()
+            elif modifier == 2:
+                self._dismiss_completion()
+                self._buffer._kill_to_bol()
+                self._trigger_auto_completion()
+            elif modifier == 3:
+                self._dismiss_completion()
+                self._buffer._kill_to_eol()
+                self._trigger_auto_completion()
+        elif kind == "arrow_up":
+            self._handle_arrow_up()
+        elif kind == "arrow_down":
+            self._handle_arrow_down()
+        elif kind == "arrow_right":
+            if event.modifier == 5:
+                self._buffer._word_right()
+            else:
+                self._buffer._right()
+        elif kind == "arrow_left":
+            if event.modifier == 5:
+                self._buffer._word_left()
+            else:
+                self._buffer._left()
+        elif kind == "ctrl_key":
+            ch = event.char
+            if ch == '\x07':          # Ctrl+G → vim 编辑
+                self._handle_special_key_action('vim')
+            elif ch == '\x0f':        # Ctrl+O → /editmsg
+                self._handle_special_key_action('editmsg')
+            elif ch in ('\x0e', '\x12'):  # Ctrl+N / Ctrl+R → 切换模型
+                self._handle_special_key_action('switch_model')
+        elif kind == "unknown":
+            self._dismiss_completion()
+            if event.raw:
+                with self._captured_lock:
+                    self._captured_input.append(event.raw[0])
+        elif kind == "char":
+            # 可打印字符（含 CSI u Shift+Enter / Alt+Enter 的换行）
+            if event.char:
+                self._buffer.handle_char(event.char)
+                self._trigger_auto_completion()
+
+    # ── 辅助分发方法 ──────────────────────────────────────
+
+    def _handle_tab(self) -> None:
+        """处理 Tab 键：调用补全回调，失败则插入制表符。"""
+        cb = self._completion_callback
+        if cb is None:
+            self._buffer.handle_char('\t')
+            return
+        text = self._buffer.get_current_text()
+        try:
+            result = cb(text)
+        except Exception:
+            _logger.debug("补全回调异常", exc_info=True)
+            result = None
+        if result is None:
+            self._buffer.handle_char('\t')
+        else:
+            self._buffer.set_buffer(result)
+            self._buffer._echo(result)
+            self._trigger_auto_completion()
+
+    def _handle_arrow_up(self) -> None:
+        """处理上箭头：补全弹窗可见时仅移动高亮，否则历史浏览。"""
+        cb = self._completion_navigate_callback
+        if cb is not None:
+            try:
+                text = self._buffer.get_current_text()
+                result = cb(-1, text)
+            except Exception:
+                _logger.debug("补全导航回调异常", exc_info=True)
+                result = None
+            if result is not None:
+                if result != text:
+                    self._buffer.set_buffer(result)
+                    self._buffer._echo(result)
+                    self._trigger_auto_completion()
+                return
+        self._buffer._up()
+
+    def _handle_arrow_down(self) -> None:
+        """处理下箭头：补全弹窗可见时仅移动高亮，否则历史浏览。"""
+        cb = self._completion_navigate_callback
+        if cb is not None:
+            try:
+                text = self._buffer.get_current_text()
+                result = cb(1, text)
+            except Exception:
+                _logger.debug("补全导航回调异常", exc_info=True)
+                result = None
+            if result is not None:
+                if result != text:
+                    self._buffer.set_buffer(result)
+                    self._buffer._echo(result)
+                    self._trigger_auto_completion()
+                return
+        self._buffer._down()
+
+    def _dismiss_completion(self) -> None:
+        """如果补全弹窗可见，关闭它。"""
+        cb = self._dismiss_completion_callback
+        if cb is not None:
+            try:
+                cb()
+            except Exception:
+                _logger.debug("关闭补全回调异常", exc_info=True)
+
+    def _trigger_auto_completion(self) -> None:
+        """获取当前文本并调用自动补全回调。"""
+        cb = self._auto_completion_callback
+        if cb is None:
+            return
+        text = self._buffer.get_current_text()
+        try:
+            cb(text)
+        except Exception:
+            _logger.debug("自动补全回调异常", exc_info=True)
+
+    def _handle_special_key_action(self, action: str) -> None:
+        """Ctrl+G/O/N/R 等特殊按键：仅调用回调，不涉及终端模式切换。
+
+        终端模式切换由 EscapeMonitor._handle_special_key() 在 I/O 线程中完成。
+        此方法在 render 线程中执行，仅负责调用回调并更新缓冲区。
+        """
+        cb = self._special_key_callback
+        if cb is None:
+            return
+        text = self._buffer.get_current_text()
+        try:
+            result = cb(action, text)
+        except Exception:
+            _logger.warning("特殊按键回调异常 (action=%s)", action, exc_info=True)
+            return
+        if result is not None and result != text:
+            self._buffer.reset()
+            self._buffer.handle_chars(result)
+
+        if action == 'editmsg':
+            self._buffer._enter()
 
     # ── I/O 方法 ──────────────────────────────────────────
 
@@ -160,7 +415,6 @@ class Input:
         Returns:
             first_chars（非粘贴/单字符）或完整的粘贴文本（多字符）。
         """
-        # 退避检测：1ms → 2ms → 3ms，任一未读到数据即判定非粘贴
         for delay in (0.001, 0.002, 0.003):
             try:
                 has_more, _, _ = select.select([fd], [], [], delay)
@@ -168,7 +422,6 @@ class Input:
                 return first_chars
             if not has_more:
                 return first_chars
-        # 三次退避都读到数据 → 粘贴模式：批量读取所有可用字节
         extra = b""
         try:
             while True:
@@ -179,7 +432,7 @@ class Input:
                 if not more:
                     break
                 extra += more
-                if len(extra) >= 262144:  # 256KB 安全上限
+                if len(extra) >= 262144:
                     break
         except (ValueError, OSError, TypeError, AttributeError):
             pass
@@ -202,7 +455,6 @@ class Input:
         Returns:
             解码后的 Unicode 字符，或 None（无效/不完整序列）。
         """
-        # 根据首字节确定该字符的总字节数
         if (first_byte & 0xE0) == 0xC0:
             total_bytes = 2
         elif (first_byte & 0xF0) == 0xE0:
@@ -210,10 +462,8 @@ class Input:
         elif (first_byte & 0xF8) == 0xF0:
             total_bytes = 4
         else:
-            # 无效的 UTF-8 首字节（续字节单独出现）
             return None
 
-        # 读取剩余续字节（with short timeout）
         buf = bytes([first_byte])
         for _ in range(total_bytes - 1):
             try:
@@ -232,11 +482,9 @@ class Input:
             except (ValueError, OSError, TypeError):
                 break
 
-        # 解码完整序列（可能因超时不完整，用 errors="replace" 容错）
         try:
             return buf.decode("utf-8")
         except UnicodeDecodeError:
-            # 不完整/无效序列
             return None
 
     # ── 属性委托 ──────────────────────────────────────────
@@ -330,7 +578,65 @@ class Input:
         """
         self._auto_completion_callback = cb
 
+    # ── 委托方法（对 InputBuffer 的薄委托） ───────────────
+
+    def drain_all(self) -> tuple[str | None, str]:
+        """排出所有流式输入状态：返回 (submitted_text, buffer_text)。"""
+        return self._buffer.drain_all()
+
+    def get_queued_input(self) -> str | None:
+        """获取排队输入。委托 InputBuffer。"""
+        return self._buffer.get_queued_input()
+
+    def has_queued_input(self) -> bool:
+        """是否有排队输入等待处理。委托 InputBuffer。"""
+        return self._buffer.has_queued_input()
+
+    def set_buffer(self, text: str) -> None:
+        """设置缓冲区文本（用于预填），光标移到末尾。委托 InputBuffer。"""
+        self._buffer.set_buffer(text)
+
+    def reset(self) -> None:
+        """清空所有流式输入状态。委托 InputBuffer。"""
+        self._buffer.reset()
+
+    def load_history(self) -> None:
+        """加载历史文件。委托 InputBuffer。"""
+        self._buffer.load_history()
+
+    def echo(self, text: str = "") -> None:
+        """调用回显回调，自动获取当前文本如果未提供。"""
+        if not text:
+            text = self._buffer.get_current_text()
+        self._buffer._echo(text)
+
+    def get_current_text(self) -> str:
+        """获取当前正在输入的文本。委托 InputBuffer。"""
+        return self._buffer.get_current_text()
+
+    def reset_and_echo(self) -> None:
+        """重置缓冲区并回显空字符串（清空输入行视觉）。"""
+        self._buffer.reset()
+        self._buffer._echo("")
+
+    # ── 非可打印字符捕获 ────────────────────────────────
+
+    def capture_bytes(self, data: bytes) -> None:
+        """追加原始字节到捕获缓冲区。EscapeMonitor 中调用，线程安全。"""
+        with self._captured_lock:
+            self._captured_input.extend(data)
+
+    def drain_captured(self) -> str:
+        """排出并返回捕获的非可打印字符。
+
+        返回所有非 ESC/Ctrl+C 字符的 UTF-8 解码文本，并清空缓冲区。
+        """
+        with self._captured_lock:
+            data = bytes(self._captured_input).decode("utf-8", errors="replace")
+            self._captured_input.clear()
+        return data
+
 
 # ── 模块导出 ──────────────────────────────────────────────
 
-__all__ = ["Input"]
+__all__ = ["Input", "InputEvent"]

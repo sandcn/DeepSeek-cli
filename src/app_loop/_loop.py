@@ -132,6 +132,7 @@ class InteractiveLoop:
             try:
                 user_input = await asyncio.to_thread(
                     self._chat_ui.wait_for_user_input, self._monitor, prefill,
+                    input_=self._chat_ui._components.input,
                 )
             except RuntimeError as e:
                 if "EscapeMonitor" in str(e):
@@ -387,10 +388,12 @@ class InteractiveLoop:
             arg = content.split(maxsplit=1)[1] if len(content.split(maxsplit=1)) > 1 else ""
             from ..core.commands import CommandUiAdapter
             _ui_adapter = CommandUiAdapter()
+            input_ = self._chat_ui._components.input
             ctx = CommandContext(
                 messages=session.messages, state=state_dict, arg=arg,
                 build_system_prompt=session.agent.build_system_prompt,
-                get_user_input=lambda prompt="": self._chat_ui.wait_for_user_input(self._monitor, prefill=prompt),
+                get_user_input=lambda prompt="": self._chat_ui.wait_for_user_input(
+                    self._monitor, prefill=prompt, input_=input_),
                 context_manager=session.context_manager,
                 session=session,
                 ui_adapter=_ui_adapter,
@@ -471,10 +474,14 @@ class InteractiveLoop:
     def _create_monitor(self):
         """创建 EscapeMonitor 实例（仅创建，不绑定回调，不启动）。
 
+        传入共享的 Input 实例，EscapeMonitor 仅负责原始 I/O，
+        所有输入事件通过 Input 队列在 render 线程中统一分发。
+
         必须在 _register_session_handlers 之前调用，确保 _setup_session_and_handlers
         中 _register_session_handlers 传入的 self._monitor 为非 None 的 EscapeMonitor。
         """
-        self._monitor = EscapeMonitor()
+        input_instance = self._chat_ui._components.input
+        self._monitor = EscapeMonitor(input_instance=input_instance)
 
     def _setup_monitor(self, session, state):
         """初始化 EscapeMonitor 并注册回调（假设 self._monitor 已由 _create_monitor 创建）
@@ -483,10 +490,13 @@ class InteractiveLoop:
         先清理再创建新实例。首次调用时 _create_monitor 已创建的未启动
         monitor（_thread=None）不会被误判为需要重建，确保
         _register_session_handlers 闭包中持有的引用与最终启动的是同一实例。
+
+        回调注册在 Input 实例上（render 线程中统一分发），
+        EscapeMonitor 仅负责原始 I/O。
         """
+        input_instance = self._chat_ui._components.input
         if self._monitor is None or (self._monitor._thread is not None and not self._monitor.is_alive):
             if self._monitor is not None:
-                # monitor 线程已死但实例还在：先安全清理
                 try:
                     self._teardown_monitor()
                 except Exception:
@@ -494,15 +504,16 @@ class InteractiveLoop:
                         "_setup_monitor: teardown 已死 monitor 时异常 (预期内)",
                         exc_info=True,
                     )
-            self._monitor = EscapeMonitor()
-        self._monitor.set_special_key_callback(
+            self._monitor = EscapeMonitor(input_instance=input_instance)
+        # 回调设置在 Input 实例上（render 线程中统一分发）
+        input_instance.set_special_key_callback(
             make_special_key_callback(self, session, state, self._chat_ui)
         )
-        self._monitor.set_echo_callback(
+        input_instance.set_echo_callback(
             lambda text, cursor_pos=-1: self._chat_ui.refresh_bottom_bar(text, cursor_pos)
         )
         if self._chat_ui is not None:
-            self._chat_ui.setup_completion(self._monitor)
+            self._chat_ui.setup_completion(input_instance)
         self._monitor.start()
 
     def _teardown_monitor(self):
