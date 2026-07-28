@@ -1,27 +1,20 @@
 """test_input_unified — 新统一 Input 类的单元测试。
 
-覆盖 KeyEvent/InputEvent dataclass、解析器（_feed_byte / _dispatch_csi）、
-缓冲操作、光标计算、I/O 线程（mock fd）等核心路径。
+覆盖 KeyEvent dataclass、解析器（_feed_byte / _dispatch_csi）、
+缓冲操作、光标计算、I/O 生命周期等核心路径。
 """
 
 from __future__ import annotations
 
 import os
-import queue
-import select
-import tempfile
-import threading
-import time
-from pathlib import Path
-from unittest.mock import MagicMock, patch
 
 import pytest
 
-from src.tui.input import Input, InputEvent, KeyEvent
+from src.tui.input import Input, KeyEvent
 
 
 # ═══════════════════════════════════════════════════════════
-# KeyEvent / InputEvent dataclass 测试
+# KeyEvent dataclass 测试
 # ═══════════════════════════════════════════════════════════
 
 class TestKeyEvent:
@@ -49,31 +42,46 @@ class TestKeyEvent:
         assert "enter" in r
 
 
-class TestInputEvent:
-    """InputEvent dataclass 不变性测试。"""
+class TestProcessEvents:
+    """测试 process_events 委托 read_stdin_once()。"""
 
-    def test_key_event(self):
-        ke = KeyEvent(kind="char", char="a", raw=b"a")
-        ie = InputEvent(kind="key", key_event=ke)
-        assert ie.kind == "key"
-        assert ie.text == ""
-        assert ie.key_event is ke
+    @pytest.fixture
+    def inp(self, tmp_path):
+        fd = os.open("/dev/null", os.O_RDONLY)
+        try:
+            yield Input(fd=fd, history_file=tmp_path / "history")
+        finally:
+            os.close(fd)
 
-    def test_paste_event(self):
-        ie = InputEvent(kind="paste", text="hello world")
-        assert ie.kind == "paste"
-        assert ie.text == "hello world"
-        assert ie.key_event is None
+    def test_process_events_no_data(self, inp):
+        """空队列（无 stdin 数据）时 process_events 不抛异常。"""
+        inp.process_events()  # 空队列不应抛异常
 
-    def test_buffer_replace(self):
-        ie = InputEvent(kind="buffer_replace", text="replaced")
-        assert ie.kind == "buffer_replace"
-        assert ie.text == "replaced"
+    def test_process_events_with_pipe(self, tmp_path):
+        """process_events 通过 read_stdin_once() 从 pipe 读取并分发。"""
+        r_fd, w_fd = os.pipe()
+        try:
+            inp = Input(fd=r_fd, history_file=tmp_path / "history")
+            os.write(w_fd, b"a")
+            inp.process_events()
+            assert inp.get_current_text() == "a"
+        finally:
+            os.close(w_fd)
+            os.close(r_fd)
 
-
-# ═══════════════════════════════════════════════════════════
-# _feed_byte 解析测试
-# ═══════════════════════════════════════════════════════════
+    def test_process_events_with_enter(self, tmp_path):
+        """process_events 通过 read_stdin_once() 处理 Enter。"""
+        r_fd, w_fd = os.pipe()
+        try:
+            inp = Input(fd=r_fd, history_file=tmp_path / "history")
+            inp.handle_chars("test")
+            os.write(w_fd, b"\r")
+            inp.process_events()
+            assert inp.has_queued_input()
+            assert inp.get_queued_input() == "test"
+        finally:
+            os.close(w_fd)
+            os.close(r_fd)
 
 class TestFeedByte:
     """测试 Input.feed_byte() 单字节解析。"""
@@ -464,9 +472,14 @@ class TestCallbacks:
     def test_special_key_callback(self, inp):
         results = []
         inp.set_special_key_callback(lambda a, t: results.append((a, t)) or t)
-        inp._handle_special_key_action('vim')
+        # 验证 _handle_special_key 直接调用回调（不操作 _active）
+        active_before = inp._active.is_set()
+        inp._handle_special_key('vim')
+        active_after = inp._active.is_set()
         assert len(results) == 1
         assert results[0][0] == 'vim'
+        # _active 标志在回调前后不变（不再有暂停/恢复逻辑）
+        assert active_before == active_after
 
     def test_completion_callback(self, inp):
         inp.set_completion_callback(lambda t: t + "_completed")
@@ -490,9 +503,8 @@ class TestCallbacks:
     def test_auto_completion(self, inp):
         results = []
         inp.set_auto_completion_callback(lambda t: results.append(t))
-        ev = KeyEvent(kind="char", char="a", raw=b"a")
-        inp.push_key_event(ev)
-        inp.process_events()
+        inp.handle_char('a')
+        inp._trigger_auto_completion()
         assert len(results) == 1
         assert results[0] == "a"
 
@@ -536,7 +548,7 @@ class TestComputeCursor:
 # ═══════════════════════════════════════════════════════════
 
 class TestIOThread:
-    """测试 start_io / stop_io / pause_io / resume_io。"""
+    """测试 start_io / stop_io / pause_io / resume_io（标志位管理模式）。"""
 
     @pytest.fixture
     def inp(self, tmp_path):
@@ -552,12 +564,8 @@ class TestIOThread:
 
     def test_start_stop_io(self, inp):
         inp.start_io()
-        try:
-            assert inp.is_io_running is True
-        finally:
-            inp.stop_io()
-        # 等待线程退出
-        time.sleep(0.1)
+        assert inp.is_io_running is True
+        inp.stop_io()
         assert inp.is_io_running is False
 
     def test_stop_io_idempotent(self, inp):
@@ -566,91 +574,11 @@ class TestIOThread:
 
     def test_pause_resume_io(self, inp):
         inp.start_io()
-        try:
-            inp.pause_io()
-            time.sleep(0.05)
-            assert not inp._active.is_set()
-            inp.resume_io()
-            assert inp._active.is_set()
-        finally:
-            inp.stop_io()
-
-    def test_io_loop_with_pipe(self, tmp_path):
-        """使用 os.pipe() 模拟 stdin，验证字节读取→解析→入队。"""
-        r_fd, w_fd = os.pipe()
-        try:
-            inp = Input(fd=r_fd, history_file=tmp_path / "history")
-            inp.start_io()
-            try:
-                # 写入字符 'a' 到管道
-                os.write(w_fd, b"a")
-                time.sleep(0.15)
-                # 事件应已入队
-                event = None
-                try:
-                    event = inp._event_queue.get_nowait()
-                except queue.Empty:
-                    pass
-                assert event is not None, "应有事件入队"
-                assert event.kind == "key"
-                assert event.key_event is not None
-                assert event.key_event.kind == "char"
-                assert event.key_event.char == "a"
-            finally:
-                inp.stop_io()
-        finally:
-            os.close(w_fd)
-            os.close(r_fd)
-
-
-# ═══════════════════════════════════════════════════════════
-# 事件队列测试
-# ═══════════════════════════════════════════════════════════
-
-class TestEventQueue:
-    """测试事件推送和分发。"""
-
-    @pytest.fixture
-    def inp(self, tmp_path):
-        fd = os.open("/dev/null", os.O_RDONLY)
-        try:
-            yield Input(fd=fd, history_file=tmp_path / "history")
-        finally:
-            os.close(fd)
-
-    def test_push_key_event(self, inp):
-        ev = KeyEvent(kind="char", char="a", raw=b"a")
-        inp.push_key_event(ev)
-        inp.process_events()
-        assert inp.get_current_text() == "a"
-
-    def test_push_paste(self, inp):
-        inp.push_paste("hello world")
-        inp.process_events()
-        assert inp.get_current_text() == "hello world"
-
-    def test_push_buffer_replace(self, inp):
-        inp.set_buffer("old")
-        inp.push_buffer_replace("new")
-        inp.process_events()
-        assert inp.get_current_text() == "new"
-
-    def test_process_events_empty_queue(self, inp):
-        inp.process_events()  # 空队列不应抛异常
-
-    def test_interrupt_event_defense(self, inp):
-        """interrupt 事件到达队列时只记录日志，不崩溃。"""
-        ev = KeyEvent(kind="interrupt", raw=b"\x03")
-        inp.push_key_event(ev)
-        inp.process_events()  # 不应抛异常
-
-    def test_unknown_event_captured(self, inp):
-        ev = KeyEvent(kind="unknown", raw=b"\xff")
-        inp.push_key_event(ev)
-        inp.process_events()
-        captured = inp.drain_captured()
-        # bytes.decode("utf-8", errors="replace") 将无效字节替换为 U+FFFD
-        assert len(captured) > 0
+        inp.pause_io()
+        assert not inp._active.is_set()
+        inp.resume_io()
+        assert inp._active.is_set()
+        inp.stop_io()
 
 
 # ═══════════════════════════════════════════════════════════

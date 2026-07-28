@@ -136,18 +136,18 @@ class InteractiveLoop:
                 )
             except RuntimeError as e:
                 if "EscapeMonitor" in str(e):
-                    _logger.warning("EscapeMonitor 线程死亡，尝试恢复: %s", e)
+                    _logger.warning("EscapeMonitor I/O 不可用，尝试恢复: %s", e)
                     self._chat_ui.write_line(
-                        "\n  ⚠ EscapeMonitor 线程异常退出，正在重启…"
+                        "\n  ⚠ EscapeMonitor I/O 中断，正在重启…"
                     )
                     for attempt in range(1, 6):
                         try:
                             self._teardown_monitor()
                             self._setup_monitor(session, state)
-                            # 验证恢复后线程确实存活
+                            # 验证恢复后 I/O 确实激活
                             if not self._monitor.is_alive:
                                 raise RuntimeError(
-                                    "EscapeMonitor 恢复后线程未存活"
+                                    "EscapeMonitor 恢复后 I/O 未激活"
                                 )
                             _register_session_handlers(
                                 session, self._monitor,
@@ -475,7 +475,7 @@ class InteractiveLoop:
         """创建 EscapeMonitor 实例（仅创建，不绑定回调，不启动）。
 
         传入共享的 Input 实例，EscapeMonitor 仅负责原始 I/O，
-        所有输入事件通过 Input 队列在 render 线程中统一分发。
+        所有输入事件在 render 线程中通过 read_stdin_once() 直接分发。
 
         必须在 _register_session_handlers 之前调用，确保 _setup_session_and_handlers
         中 _register_session_handlers 传入的 self._monitor 为非 None 的 EscapeMonitor。
@@ -486,7 +486,7 @@ class InteractiveLoop:
     def _setup_monitor(self, session, state):
         """初始化 EscapeMonitor 并注册回调（假设 self._monitor 已由 _create_monitor 创建）
 
-        防御性重建：若 monitor 为 None，或 monitor 曾启动后 IO 线程死亡，
+        防御性重建：若 monitor 为 None，或 monitor 曾启动后 is_alive 为 False，
         先清理再创建新实例。首次调用时 _create_monitor 已创建的未启动
         monitor（_started=False）不会被误判为需要重建，确保
         _register_session_handlers 闭包中持有的引用与最终启动的是同一实例。
@@ -507,7 +507,7 @@ class InteractiveLoop:
             self._monitor = EscapeMonitor(input_instance=input_instance)
         # 回调设置在 Input 实例上（render 线程中统一分发）
         input_instance.set_special_key_callback(
-            make_special_key_callback(self, session, state, self._chat_ui)
+            make_special_key_callback(self, session, state, self._chat_ui, monitor=self._monitor)
         )
         input_instance.set_echo_callback(
             lambda text, cursor_pos=-1: self._chat_ui.refresh_bottom_bar(text, cursor_pos)
@@ -520,7 +520,6 @@ class InteractiveLoop:
         """停止 EscapeMonitor 并恢复终端设置"""
         if self._monitor is not None:
             self._monitor.stop()
-            self._monitor._restore_terminal_settings()
             self._monitor = None
 
     # ── 会话生命周期辅助 ──────────────────────────────────

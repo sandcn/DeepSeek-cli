@@ -1,22 +1,19 @@
 """Input — 统一 TUI 输入管理（自包含单文件）。
 
 合并原 src/tui/input/ 下分散的四个模块（_buffer.py / _parser.py / _cursor.py / _input.py）
-为单个 Input 类，同时将 I/O 线程从 EscapeMonitor 迁移到 Input 内部，
-实现输入管理的完全自包含。
+为单个 Input 类，stdin 读取合并至 Render 线程统一处理。
 
 组件内联：
   - InputParser（ANSI CSI/SS3 解析）→ Input 私有方法
   - InputBuffer（缓冲+历史+光标）→ Input 内部状态+方法
   - CursorPositioner（光标定位）→ Input.compute_cursor()
-  - EscapeMonitor I/O 线程 → Input._io_loop (daemon)
 
 设计模式：
-  - 模板方法（Template Method）：_io_loop() 骨架，_do_interrupt()/_handle_special_key() 具体步骤
-  - 事件队列：I/O 线程 push → render 线程 process_events()
+  - 模板方法（Template Method）：read_stdin_once() 骨架，_do_interrupt()/_handle_special_key() 具体步骤
+  - 直接分发：read_stdin_once() 在 render 线程每帧调用，直接分发到缓冲/回调
 
 线程模型：
-  - I/O 线程（daemon）：_io_loop() 从 fd 读取原始字节，解析后入队
-  - Render 线程：process_events() 排空队列并分发
+  - Render 线程（daemon）：_drain_queue() 中每帧调用 read_stdin_once()，统一处理 stdin 和渲染
 """
 
 from __future__ import annotations
@@ -24,7 +21,6 @@ from __future__ import annotations
 import os
 import select
 import time
-import queue
 import threading
 import logging
 from pathlib import Path
@@ -81,24 +77,6 @@ class KeyEvent:
 
 
 # ═══════════════════════════════════════════════════════════
-# InputEvent — 事件队列条目
-# ═══════════════════════════════════════════════════════════
-
-@dataclass(slots=True)
-class InputEvent:
-    """I/O 线程推送到 Input 处理队列的事件。
-
-    字段:
-        kind: 'key' | 'paste' | 'buffer_replace'
-        key_event: KeyEvent 实例（kind='key' 时有效）
-        text: 粘贴或缓冲区替换文本
-    """
-    kind: str  # 'key' | 'paste' | 'buffer_replace'
-    key_event: KeyEvent | None = None
-    text: str = ""
-
-
-# ═══════════════════════════════════════════════════════════
 # Input — 统一输入管理类（自包含）
 # ═══════════════════════════════════════════════════════════
 
@@ -106,8 +84,8 @@ class Input:
     """统一输入管理类（自包含）。
 
     内联 InputParser（ANSI 解析）、InputBuffer（缓冲+历史）、
-    CursorPositioner（光标定位）、TerminalWidthCache（终端尺寸），
-    并内置 daemon I/O 线程从 fd 读取原始字节。
+    CursorPositioner（光标定位）、TerminalWidthCache（终端尺寸）。
+    stdin 读取由 Render 线程通过 read_stdin_once() 驱动。
 
     构造函数:
         fd: stdin 文件描述符（sys.stdin.fileno()）
@@ -147,9 +125,6 @@ class Input:
         self._history_file = history_file
         self._history_max_entries = 1000
 
-        # ── 事件队列 ──
-        self._event_queue: queue.Queue = queue.Queue()
-
         # ── 非可打印字符捕获 ──
         self._captured_input: bytearray = bytearray()
         self._captured_lock = threading.Lock()
@@ -161,8 +136,8 @@ class Input:
         self._completion_navigate_callback = None
         self._auto_completion_callback = None
 
-        # ── I/O 线程控制 ──
-        self._io_thread: threading.Thread | None = None
+        # ── I/O 状态控制 ──
+        self._io_started: bool = False
         self._active = threading.Event()
         self._active.set()
         self._stop = threading.Event()
@@ -187,8 +162,8 @@ class Input:
 
     @property
     def is_io_running(self) -> bool:
-        """I/O 线程是否在运行。"""
-        return self._io_thread is not None and self._io_thread.is_alive()
+        """I/O 是否处于激活状态（标志位管理，非线程存活检测）。"""
+        return self._io_started
 
     @property
     def interrupted(self) -> bool:
@@ -196,53 +171,39 @@ class Input:
         return self._interrupted.is_set()
 
     # ═══════════════════════════════════════════════════════
-    # I/O 线程生命周期管理
+    # I/O 状态管理
     # ═══════════════════════════════════════════════════════
 
     def start_io(self) -> None:
-        """启动 daemon I/O 线程（非阻塞）。
+        """激活 I/O 读取（标志位管理模式，不再创建 daemon 线程）。
 
-        线程从 self._fd 读取原始字节，解析后推入事件队列。
-        调用前应确保终端已设置为 cbreak 模式（由 EscapeMonitor 保证）。
-        幂等：若已有活跃线程则先停止再启动。
+        stdin 读取由 render 线程通过 ``read_stdin_once()`` 驱动，
+        此方法仅重置状态标志位。调用前应确保终端已设置为 cbreak 模式
+        （由 EscapeMonitor 保证）。幂等：重复调用仅重置标志位。
         """
-        if self._io_thread is not None and self._io_thread.is_alive():
-            _logger.warning("检测到旧 I/O 线程仍在运行，等待其退出（最多 2.0s）")
-            self._io_thread.join(timeout=2.0)
-            if self._io_thread.is_alive():
-                _logger.error("旧 I/O 线程 2s 后仍未退出，强制覆盖（极罕见情况）")
-            self._io_thread = None
-
         self._interrupted.clear()
         self._stop.clear()
         self._active.set()
+        self._io_started = True
         self._eof_count = 0
         self._select_error_count = 0
         self._exit_reason = None
 
-        self._io_thread = threading.Thread(target=self._io_loop, daemon=True)
-        self._io_thread.start()
-
     def stop_io(self) -> None:
-        """停止 I/O 线程。
+        """停用 I/O 读取（标志位管理模式，不再 join 线程）。
 
-        设置 stop 标志，等待线程退出（超时 1s）。幂等安全。
+        设置 stop 和 active 标志位，render 线程中 ``read_stdin_once()``
+        检测到后停止读取。幂等安全。
         """
         self._stop.set()
-        self._active.set()  # 唤醒等待中的线程
-        if self._io_thread is not None:
-            self._io_thread.join(timeout=1.0)
-            if self._io_thread.is_alive():
-                _logger.warning(
-                    "I/O 线程 join 超时（1.0s），保留引用等待线程自行退出"
-                )
-            else:
-                self._io_thread = None
+        self._active.set()  # 确保 read_stdin_once() 状态检查快速退出
+        self._io_started = False
 
     def pause_io(self) -> None:
         """暂停 I/O 读取（供 EscapeMonitor 的特殊按键回调使用）。
 
-        暂停后 _io_loop 停止从 fd 读取字节，但线程保持存活。
+        暂停后 ``read_stdin_once()`` 在 render 线程中检测到 ``_active``
+        未设置时跳过读取。
         """
         self._active.clear()
 
@@ -251,183 +212,47 @@ class Input:
         self._active.set()
 
     # ═══════════════════════════════════════════════════════
-    # I/O 主循环（daemon 线程）
+    # 中断与特殊按键处理（render 线程调用）
     # ═══════════════════════════════════════════════════════
-
-    def _io_loop(self) -> None:
-        """主 I/O 循环 — daemon 线程从 fd 读取原始字节。
-
-        骨架（模板方法）：
-          1. select + os.read 读取单字节
-          2. ASCII 控制字符 → feed_byte 解析 → 中断/特殊键/入队
-          3. ASCII 可打印 → 粘贴检测 → 入队
-          4. UTF-8 多字节 → read_utf8_char → 粘贴检测 → 入队
-
-        具体步骤：
-          - _do_interrupt(): 内联中断处理
-          - _handle_special_key(): 特殊按键处理（暂停→回调→恢复）
-        """
-        import select as _select_mod
-        fd = self._fd
-
-        try:
-            while not self._stop.is_set():
-                # ── 暂停状态处理 ──
-                if not self._active.is_set():
-                    self._active.wait(timeout=0.1)
-                    continue
-
-                # ── select 读取 ──
-                try:
-                    ready, _, _ = _select_mod.select(
-                        [fd], [], [], UNIX_SELECT_TIMEOUT,
-                    )
-                except (ValueError, OSError, TypeError, AttributeError):
-                    self._select_error_count += 1
-                    if self._select_error_count >= _SELECT_ERROR_THRESHOLD:
-                        _logger.warning(
-                            "select 错误连续 %d 次，判定 stdin 不可用，退出监听",
-                            self._select_error_count,
-                        )
-                        self._exit_reason = "select_error"
-                        return
-                    time.sleep(UNIX_SELECT_TIMEOUT)
-                    continue
-                self._select_error_count = 0
-                if not ready:
-                    continue
-
-                try:
-                    raw = os.read(fd, 1)
-                    if not raw:
-                        self._eof_count += 1
-                        if self._eof_count >= _EOF_THRESHOLD:
-                            _logger.warning(
-                                "stdin EOF 连续 %d 次，判定 pty 已断开，退出监听",
-                                self._eof_count,
-                            )
-                            self._exit_reason = "eof"
-                            return
-                        time.sleep(UNIX_SELECT_TIMEOUT)
-                        continue
-                    self._eof_count = 0
-                except (ValueError, OSError, TypeError):
-                    continue
-
-                first_byte = raw[0]
-
-                # ── ASCII 控制字符分发 ──
-                if first_byte < 0x20 or first_byte == 0x7F:
-                    try:
-                        event = self.feed_byte(first_byte)
-                        if event is None:
-                            # ESC (0x1b) → 读取完整转义序列
-                            event = self._parse_escape_sequence(fd)
-                            kind = event.kind
-                            if kind in ("escape", "interrupt"):
-                                self._do_interrupt()
-                                self._flush_stdin_residual()
-                            elif kind in (
-                                "arrow_up", "arrow_down", "arrow_right", "arrow_left",
-                                "home", "end", "delete", "backspace", "char",
-                            ):
-                                self.push_key_event(event)
-                            # unknown / csi_u → 静默忽略
-                        elif event.kind == "interrupt":
-                            self._do_interrupt()
-                            self._flush_stdin_residual()
-                        elif event.kind == "ctrl_key":
-                            ch = event.char
-                            if ch == '\x07':          # Ctrl+G → vim
-                                self._handle_special_key('vim')
-                            elif ch == '\x0f':        # Ctrl+O → /editmsg
-                                self._handle_special_key('editmsg')
-                            elif ch in ('\x0e', '\x12'):  # Ctrl+N/R → 切换模型
-                                self._handle_special_key('switch_model')
-                            else:
-                                self.push_key_event(event)
-                        else:
-                            # enter, tab, backspace, home, end, delete 等 → 入队
-                            self.push_key_event(event)
-                    except Exception:
-                        _logger.warning("控制字符分发异常", exc_info=True)
-                    continue
-
-                # ── ASCII 可打印字符 ──
-                if first_byte < 0x80:
-                    try:
-                        paste_text = self.try_read_paste(fd, chr(first_byte))
-                        if len(paste_text) > 1:
-                            self.push_paste(paste_text)
-                        else:
-                            event = self.feed_byte(first_byte)
-                            if event is not None:
-                                self.push_key_event(event)
-                    except Exception:
-                        _logger.warning("ASCII 可打印字符分发异常", exc_info=True)
-                    continue
-
-                # ── 多字节 UTF-8 序列 ──
-                try:
-                    ch = self.read_utf8_char(fd, first_byte)
-                    if ch is not None:
-                        paste_text = self.try_read_paste(fd, ch)
-                        if len(paste_text) > 1:
-                            self.push_paste(paste_text)
-                        else:
-                            self.push_key_event(
-                                KeyEvent(kind='char', char=ch,
-                                         raw=ch.encode("utf-8", errors="replace"))
-                            )
-                    else:
-                        self.capture_bytes(bytes([first_byte]))
-                except Exception:
-                    _logger.warning("多字节 UTF-8 字符分发异常", exc_info=True)
-        except Exception as e:
-            _logger.warning("I/O 线程异常退出: %s", e, exc_info=True)
-        else:
-            if self._exit_reason is not None:
-                _logger.warning("I/O 线程因 %s 退出", self._exit_reason)
 
     def _do_interrupt(self) -> None:
         """内联中断处理：设置中断标志 + 清空回显 + 请求异步中断。
 
-        在 I/O 线程中调用（快速路径，不经过事件队列）。
+        在 render 线程中调用（快速路径，由 ``read_stdin_once()`` 直接分发）。
         """
         if self._stop.is_set():
             return
-        self._interrupted.set()
         if not self.has_queued_input():
             self.reset_and_echo()
         else:
             self._flush_stdin_residual()
+        self._interrupted.set()
         request_interrupt_async()
 
     def _handle_special_key(self, action: str) -> None:
-        """处理特殊按键（Ctrl+G/O/N/R）：暂停 I/O → 回调 → 恢复 → 推入队列。
+        """处理特殊按键（Ctrl+G/O/N/R）：直接调用回调并应用结果。
 
-        在 I/O 线程中调用。暂停 I/O 期间不读取 stdin，
-        回调可安全运行 vim 等交互式程序（终端模式切换由 EscapeMonitor 负责）。
+        在 render 线程中调用（由 ``read_stdin_once()`` 直接分发）。
+        终端模式切换由回调函数内部直接操作 EscapeMonitor 完成。
         """
         cb = self._special_key_callback
         if cb is None:
             return
         text = self.get_current_text()
-        self._active.clear()
         try:
-            try:
-                result = cb(action, text)
-            except Exception:
-                _logger.warning("特殊按键回调异常 (action=%s)", action, exc_info=True)
-                return
-        finally:
-            self._active.set()
+            result = cb(action, text)
+        except Exception:
+            _logger.warning("特殊按键回调异常 (action=%s)", action, exc_info=True)
+            return
         if result is not None and result != text:
-            self.push_buffer_replace(result)
+            if action == 'editmsg':
+                self.reset()
+                self.set_buffer(result)
+            else:
+                self.reset()
+                self.handle_chars(result)
         if action == 'editmsg':
-            self.push_key_event(
-                KeyEvent(kind='enter', char='\r', raw=b'\r', modifier=0)
-            )
+            self._enter()
 
     def _flush_stdin_residual(self, max_flush: int = 50) -> None:
         """非阻塞清理 stdin 残留字节。"""
@@ -445,56 +270,155 @@ class Input:
                 break
 
     # ═══════════════════════════════════════════════════════
-    # 事件推送（I/O 线程调用）
+    # stdin 直接读取（render 线程调用）
     # ═══════════════════════════════════════════════════════
 
-    def push_key_event(self, event: KeyEvent) -> None:
-        """推入按键事件到队列。"""
-        self._event_queue.put(InputEvent(kind='key', key_event=event))
+    def read_stdin_once(self) -> bool:
+        """单次非阻塞 stdin 读取 + 直接分发（不经过事件队列）。
 
-    def push_paste(self, text: str) -> None:
-        """推入粘贴文本到队列。"""
-        self._event_queue.put(InputEvent(kind='paste', text=text))
+        Render 线程每帧调用一次。使用 select timeout=0 确保不阻塞渲染帧。
+        单次迭代逻辑改为直接分发（不经过 queue.Queue 中间队列）。
 
-    def push_buffer_replace(self, text: str) -> None:
-        """推入缓冲区替换（特殊键回调结果）到队列。"""
-        self._event_queue.put(InputEvent(kind='buffer_replace', text=text))
+        设计模式: 模板方法 — ``read_stdin_once()`` 为骨架，
+        保留 ``_do_interrupt()`` / ``_handle_special_key()`` 具体步骤。
+
+        Returns:
+            True — 有数据被处理（读取并分发了至少一个输入单元）。
+            False — 无数据可读、I/O 未激活、或已停止。
+        """
+        import select as _select_mod
+        fd = self._fd
+
+        # ── 状态检查 ──
+        if not self._active.is_set() or self._stop.is_set():
+            return False
+
+        # ── select 非阻塞读取（timeout=0，不阻塞渲染帧） ──
+        try:
+            ready, _, _ = _select_mod.select([fd], [], [], 0)
+        except (ValueError, OSError, TypeError, AttributeError):
+            self._select_error_count += 1
+            if self._select_error_count >= _SELECT_ERROR_THRESHOLD:
+                _logger.warning(
+                    "select 错误连续 %d 次，判定 stdin 不可用",
+                    self._select_error_count,
+                )
+                self._exit_reason = "select_error"
+            return False
+
+        if not ready:
+            return False
+
+        self._select_error_count = 0
+
+        try:
+            raw = os.read(fd, 1)
+            if not raw:
+                self._eof_count += 1
+                if self._eof_count >= _EOF_THRESHOLD:
+                    _logger.warning(
+                        "stdin EOF 连续 %d 次，判定 pty 已断开",
+                        self._eof_count,
+                    )
+                    self._exit_reason = "eof"
+                return False
+            self._eof_count = 0
+        except (ValueError, OSError, TypeError):
+            return False
+
+        first_byte = raw[0]
+
+        # ── ASCII 控制字符分发 ──
+        if first_byte < 0x20 or first_byte == 0x7F:
+            try:
+                event = self.feed_byte(first_byte)
+                if event is None:
+                    # ESC (0x1b) → 读取完整转义序列
+                    event = self._parse_escape_sequence(fd)
+                    kind = event.kind
+                    if kind in ("escape", "interrupt"):
+                        self._do_interrupt()
+                    elif kind in (
+                        "arrow_up", "arrow_down", "arrow_right", "arrow_left",
+                        "home", "end", "delete", "backspace", "char",
+                    ):
+                        self._dispatch_key_event(event)
+                    # unknown / csi_u → 静默忽略
+                elif event.kind == "interrupt":
+                    self._do_interrupt()
+                elif event.kind == "ctrl_key":
+                    ch = event.char
+                    if ch == '\x07':          # Ctrl+G → vim
+                        self._handle_special_key('vim')
+                    elif ch == '\x0f':        # Ctrl+O → /editmsg
+                        self._handle_special_key('editmsg')
+                    elif ch in ('\x0e', '\x12'):  # Ctrl+N/R → 切换模型
+                        self._handle_special_key('switch_model')
+                    else:
+                        self._dispatch_key_event(event)
+                else:
+                    # enter, tab, backspace, home, end, delete 等 → 直接分发
+                    self._dispatch_key_event(event)
+            except Exception:
+                _logger.warning("控制字符分发异常", exc_info=True)
+            return True
+
+        # ── ASCII 可打印字符 ──
+        if first_byte < 0x80:
+            try:
+                paste_text = self.try_read_paste(fd, chr(first_byte))
+                if len(paste_text) > 1:
+                    self.handle_chars(paste_text)
+                    self._trigger_auto_completion()
+                else:
+                    event = self.feed_byte(first_byte)
+                    if event is not None:
+                        self._dispatch_key_event(event)
+            except Exception:
+                _logger.warning("ASCII 可打印字符分发异常", exc_info=True)
+            return True
+
+        # ── 多字节 UTF-8 序列 ──
+        try:
+            ch = self.read_utf8_char(fd, first_byte)
+            if ch is not None:
+                paste_text = self.try_read_paste(fd, ch)
+                if len(paste_text) > 1:
+                    self.handle_chars(paste_text)
+                    self._trigger_auto_completion()
+                else:
+                    self._dispatch_key_event(
+                        KeyEvent(kind='char', char=ch,
+                                 raw=ch.encode("utf-8", errors="replace"))
+                    )
+            else:
+                self.capture_bytes(bytes([first_byte]))
+        except Exception:
+            _logger.warning("多字节 UTF-8 字符分发异常", exc_info=True)
+        return True
 
     # ═══════════════════════════════════════════════════════
     # 事件处理（render 线程调用）
     # ═══════════════════════════════════════════════════════
 
     def process_events(self) -> None:
-        """排空事件队列并全部分发（render 线程调用）。
+        """处理输入事件（render 线程调用）。
 
-        非阻塞排空：处理当前队列中所有事件后返回。
-        与 I/O 线程的 push 操作通过 queue.Queue 的线程安全保证同步。
+        委托 ``read_stdin_once()`` 执行单次非阻塞 stdin 读取+直接分发。
+        与原队列排空模式不同，改为每帧处理一个输入单元，
+        确保不阻塞渲染帧。
         """
-        while True:
-            try:
-                event = self._event_queue.get_nowait()
-            except queue.Empty:
-                break
-            try:
-                self._dispatch(event)
-            except Exception:
-                _logger.warning("事件分发异常 kind=%s", event.kind, exc_info=True)
-
-    def _dispatch(self, event: InputEvent) -> None:
-        """分发单个输入事件。"""
-        if event.kind == 'key':
-            if event.key_event is not None:
-                self._dispatch_key_event(event.key_event)
-        elif event.kind == 'paste':
-            self.handle_chars(event.text)
-            self._trigger_auto_completion()
-        elif event.kind == 'buffer_replace':
-            self.set_buffer(event.text)
-            self._echo(event.text)
-            self._trigger_auto_completion()
+        try:
+            self.read_stdin_once()
+        except Exception:
+            _logger.warning("process_events 异常", exc_info=True)
 
     def _dispatch_key_event(self, event: KeyEvent) -> None:
-        """根据 KeyEvent.kind 分发到对应的输入处理器。"""
+        """根据 KeyEvent.kind 分发到对应的输入处理器。
+
+        Ctrl+G/O/N/R 等 ctrl_key 事件已在 read_stdin_once() 中拦截处理，
+        此处分发不会收到 ctrl_key 分支。
+        """
         kind = event.kind
 
         if kind == "enter":
@@ -549,14 +473,6 @@ class Input:
                 self._word_left()
             else:
                 self._left()
-        elif kind == "ctrl_key":
-            ch = event.char
-            if ch == '\x07':          # Ctrl+G → vim 编辑
-                self._handle_special_key_action('vim')
-            elif ch == '\x0f':        # Ctrl+O → /editmsg
-                self._handle_special_key_action('editmsg')
-            elif ch in ('\x0e', '\x12'):  # Ctrl+N / Ctrl+R → 切换模型
-                self._handle_special_key_action('switch_model')
         elif kind == "unknown":
             self._dismiss_completion()
             if event.raw:
@@ -645,28 +561,6 @@ class Input:
             cb(text)
         except Exception:
             _logger.debug("自动补全回调异常", exc_info=True)
-
-    def _handle_special_key_action(self, action: str) -> None:
-        """Ctrl+G/O/N/R 等特殊按键：仅调用回调，不涉及终端模式切换。
-
-        终端模式切换由 EscapeMonitor._handle_special_key() 在 I/O 线程中完成。
-        此方法在 render 线程中执行，仅负责调用回调并更新缓冲区。
-        """
-        cb = self._special_key_callback
-        if cb is None:
-            return
-        text = self.get_current_text()
-        try:
-            result = cb(action, text)
-        except Exception:
-            _logger.warning("特殊按键回调异常 (action=%s)", action, exc_info=True)
-            return
-        if result is not None and result != text:
-            self.reset()
-            self.handle_chars(result)
-
-        if action == 'editmsg':
-            self._enter()
 
     # ═══════════════════════════════════════════════════════
     # 解析方法（原 InputParser → 内联为私有方法）
@@ -1560,4 +1454,4 @@ class Input:
 
 # ── 模块导出 ──────────────────────────────────────────────
 
-__all__ = ["Input", "InputEvent", "KeyEvent"]
+__all__ = ["Input", "KeyEvent"]

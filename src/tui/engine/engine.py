@@ -209,10 +209,8 @@ class TuiEngine:
         return False
 
     def _phase_process_input(self) -> None:
-        """阶段 0：处理输入事件队列（render 线程中统一分发）。
+        """阶段 0：调用 Input.process_events()（委托 read_stdin_once() 执行单次非阻塞 stdin 读取+直接分发）。
 
-        排空 Input 类中的事件队列（由 Input 内部 daemon I/O 线程推送），
-        在 render 线程中统一分发到缓冲和回调，序列化输入处理与渲染。
         Input 未注入时（向后兼容）静默跳过。
         """
         if self._input is not None:

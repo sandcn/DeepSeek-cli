@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import os
 import pytest
-from pathlib import Path
 from unittest.mock import patch, MagicMock
 
 from src.tui.input import Input, KeyEvent
@@ -29,11 +28,14 @@ class TestInputFacade:
     def input_instance(self, mock_terminal_width_cache, tmp_path):
         """创建 Input 实例（使用 mock 终端缓存 + tmp 历史文件）。"""
         fd = os.open("/dev/null", os.O_RDONLY)
-        return Input(
-            fd=fd,
-            history_file=tmp_path / "test_history",
-            term_width_cache=mock_terminal_width_cache,
-        )
+        try:
+            yield Input(
+                fd=fd,
+                history_file=tmp_path / "test_history",
+                term_width_cache=mock_terminal_width_cache,
+            )
+        finally:
+            os.close(fd)
 
     def test_width_delegation(self, input_instance):
         """width 属性委托 TermWidthCache.get_width()。"""
@@ -102,12 +104,14 @@ class TestInputComputeCursor:
         mock_cache.get_height.return_value = 24
 
         fd = os.open("/dev/null", os.O_RDONLY)
-        inp = Input(
-            fd=fd,
-            history_file=tmp_path / "test_history",
-            term_width_cache=mock_cache,
-        )
-        return inp
+        try:
+            yield Input(
+                fd=fd,
+                history_file=tmp_path / "test_history",
+                term_width_cache=mock_cache,
+            )
+        finally:
+            os.close(fd)
 
     def test_compute_cursor_returns_tuple(self, input_instance):
         """compute_cursor 返回四元组。"""
@@ -138,11 +142,14 @@ class TestInputFeedByte:
         mock_cache.get_width.return_value = 80
         mock_cache.get_height.return_value = 24
         fd = os.open("/dev/null", os.O_RDONLY)
-        return Input(
-            fd=fd,
-            history_file=tmp_path / "test_history",
-            term_width_cache=mock_cache,
-        )
+        try:
+            yield Input(
+                fd=fd,
+                history_file=tmp_path / "test_history",
+                term_width_cache=mock_cache,
+            )
+        finally:
+            os.close(fd)
 
     def test_feed_byte_char(self, input_instance):
         """feed_byte 可打印字符返回 KeyEvent(kind='char')。"""
@@ -172,11 +179,14 @@ class TestInputReadMethods:
         mock_cache.get_width.return_value = 80
         mock_cache.get_height.return_value = 24
         fd = os.open("/dev/null", os.O_RDONLY)
-        return Input(
-            fd=fd,
-            history_file=tmp_path / "test_history",
-            term_width_cache=mock_cache,
-        )
+        try:
+            yield Input(
+                fd=fd,
+                history_file=tmp_path / "test_history",
+                term_width_cache=mock_cache,
+            )
+        finally:
+            os.close(fd)
 
     def test_try_read_paste_single_char(self, input_instance):
         """try_read_paste: 无后续数据时返回原字符。"""
@@ -201,27 +211,26 @@ class TestInputReadMethods:
 
 
 class TestInputIOLifecycle:
-    """start_io / stop_io 生命周期测试。"""
+    """start_io / stop_io 生命周期测试（标志位管理模式）。"""
 
     @pytest.fixture
     def input_instance(self, tmp_path):
         fd = os.open("/dev/null", os.O_RDONLY)
-        return Input(
-            fd=fd,
-            history_file=tmp_path / "test_history",
-        )
+        try:
+            yield Input(
+                fd=fd,
+                history_file=tmp_path / "test_history",
+            )
+        finally:
+            os.close(fd)
 
     def test_is_io_running_initially_false(self, input_instance):
         assert input_instance.is_io_running is False
 
     def test_start_stop_io(self, input_instance):
-        import time
         input_instance.start_io()
-        try:
-            assert input_instance.is_io_running is True
-        finally:
-            input_instance.stop_io()
-        time.sleep(0.1)
+        assert input_instance.is_io_running is True
+        input_instance.stop_io()
         assert input_instance.is_io_running is False
 
     def test_stop_io_idempotent(self, input_instance):
@@ -229,13 +238,9 @@ class TestInputIOLifecycle:
         assert input_instance.is_io_running is False
 
     def test_pause_resume_io(self, input_instance):
-        import time
         input_instance.start_io()
-        try:
-            input_instance.pause_io()
-            time.sleep(0.05)
-            assert not input_instance._active.is_set()
-            input_instance.resume_io()
-            assert input_instance._active.is_set()
-        finally:
-            input_instance.stop_io()
+        input_instance.pause_io()
+        assert not input_instance._active.is_set()
+        input_instance.resume_io()
+        assert input_instance._active.is_set()
+        input_instance.stop_io()
