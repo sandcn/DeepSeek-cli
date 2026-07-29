@@ -9,7 +9,10 @@
 """
 
 from __future__ import annotations
+
+import time
 from abc import ABC, abstractmethod
+
 from ...events import publish_event
 
 
@@ -20,9 +23,12 @@ class StreamChunkHandler(ABC):
     _EVENT_TYPE: str = ""
     # 子类覆盖：定义事件节流阈值
     _MIN_CHARS: int = 1
+    # 时间节流：100ms 间隔（10Hz），与 _MIN_CHARS 构成 AND 关系
+    _MIN_INTERVAL: float = 0.1
 
     def __init__(self):
         self._chunk_buffer = ""
+        self._last_flush_time: float = 0.0
 
     # ── 子类需实现的抽象方法 ─────────────────────────────
 
@@ -48,13 +54,22 @@ class StreamChunkHandler(ABC):
             self._flush(label)
 
     def flush(self, label: str | None) -> None:
-        """刷出剩余的缓冲事件。"""
-        self._flush(label)
+        """刷出剩余的缓冲事件（强制，不受时间节流限制）。"""
+        self._flush(label, force=True)
 
-    def _flush(self, label: str | None) -> None:
-        """发布累积的缓冲文本为 EventBus 事件。"""
+    def _flush(self, label: str | None, force: bool = False) -> None:
+        """发布累积的缓冲文本为 EventBus 事件。
+
+        Args:
+            force: 若为 True，跳过时间门控检查，强制 flush。
+        """
         if not self._chunk_buffer:
             return
+        if not force:
+            now = time.time()
+            if now - self._last_flush_time < self._MIN_INTERVAL:
+                return  # 时间间隔不足 100ms，不 flush，buffer 继续累积
+            self._last_flush_time = now
         text = self._chunk_buffer
         self._chunk_buffer = ""
         publish_event(self._EVENT_TYPE, text=text, label=label or "")

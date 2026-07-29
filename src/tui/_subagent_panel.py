@@ -161,12 +161,15 @@ class _AgentSlot:
 class SubAgentPanelController:
     _instance: "SubAgentPanelController | None" = None
     _class_lock = threading.Lock()
+    # 帧渲染节流：100ms 间隔（10Hz）
+    _EMIT_INTERVAL: float = 0.1
 
     def __init__(self, max_history: int = 3):
         self._agents: Dict[str, _AgentSlot] = {}
         self._order: List[str] = []
         self._state_lock = threading.Lock()
         self._frame: int = 0
+        self._last_emit_time: float = 0.0
         self._active: bool = False
         self._cb_registered: bool = False
         self._chat_ui: Any = None
@@ -242,6 +245,11 @@ class SubAgentPanelController:
     # ── 事件处理器 ──────────────────────────────────────
 
     def _emit_frame(self) -> None:
+        """渲染并推送当前帧（受 _EMIT_INTERVAL 节流）。"""
+        now = time.time()
+        if now - self._last_emit_time < self._EMIT_INTERVAL:
+            return  # 节流，跳过本次渲染
+        self._last_emit_time = now
         lines = self._render_frame()
         self._push_frame(lines)
 
