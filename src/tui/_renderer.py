@@ -284,11 +284,10 @@ class TuiEngine:
             _logger.info("render 线程终止，共丢弃 %d 条命令", self._cmd_queue_dropped)
         return dropped
 
-    def _handle_render_crash(self, exc: Exception, idle_count: int) -> bool:
+    def _handle_render_crash(self, exc: Exception) -> bool:
         self._render_crashed.set()
         try:
-            _logger.critical("idle_count=%d, cmd_queue.qsize=%d",
-                             idle_count, self._cmd_queue.qsize())
+            _logger.critical("cmd_queue.qsize=%d", self._cmd_queue.qsize())
             _logger.critical("render 线程异常崩溃", exc_info=True)
             _emergency_write(
                 f"{ANSI_EMERGENCY_RED}[ChatUI] render 线程异常终止: "
@@ -316,27 +315,15 @@ class TuiEngine:
             return False
 
     def _render(self) -> None:
-        idle_count = 0
         try:
             while self._render_running:
                 try:
                     has_content = self._drain_queue()
-                    if has_content:
-                        idle_count = 0
-                        wait_timeout = self._config.active_render_interval
-                    else:
-                        wait_timeout = min(
-                            self._config.active_render_interval * (2 ** idle_count),
-                            self._config.render_interval,
-                        )
-                        idle_count += 1
-                        if idle_count > 10:
-                            idle_count = 10
-                    self._cmd_event.wait(timeout=wait_timeout)
+                    self._cmd_event.wait(timeout=self._config.render_interval)
                     if not has_content:
                         self._cmd_event.clear()
                 except Exception as exc:
-                    if self._handle_render_crash(exc, idle_count):
+                    if self._handle_render_crash(exc):
                         return
                     else:
                         break
