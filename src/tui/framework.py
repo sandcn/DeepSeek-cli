@@ -63,11 +63,8 @@ from .core.singleton import SingletonMeta
 
 if TYPE_CHECKING:
     from .components._base import TuiComponent
-    from .animation.animator import AnimatorContext
-    from .core.component_registry import ComponentRegistry
+    from ._animator import AnimatorContext
     from .config import TuiConfig
-    from .widget_base import Widget, WidgetTree
-    from .render_buffer import RenderBuffer
 
 from .framework_types import (
     AnimatorContextProtocol,
@@ -167,10 +164,8 @@ class Framework(metaclass=SingletonMeta):
     **自定义组件创建**::
 
         from src.tui import create_component
-        from src.tui.components import Separator
 
         # create_component 自动调用 did_mount()
-        sep = create_component(Separator, style="aurora", frame=5)
 
     **配置管理**::
 
@@ -505,8 +500,7 @@ def create_widget(widget_cls: type, *args, key: str | None = None, **kwargs) -> 
     用法::
 
         from src.tui.framework import create_widget
-        from src.tui.components._separator import Separator
-        widget = create_widget(Separator, style="aurora", frame=5)
+        widget = create_widget(WidgetCls, style="default", frame=5)
 
     Args:
         widget_cls: Widget 子类。

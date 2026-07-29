@@ -24,7 +24,7 @@ class DefaultOutputAdapter(OutputPort):
 
     def _get_lock(self):
         if self._lock is None:
-            from ...tui.widgets.lock import render_lock
+            from ...tui._locks import render_lock
             self._lock = render_lock
         return self._lock
 

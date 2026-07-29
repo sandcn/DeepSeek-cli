@@ -47,7 +47,10 @@ async def _handle_editmsg_cmd(session, state) -> None:
         monitor.stop()
     needs_rerender = False
     try:
-        from ..tui.pipeline.message_editor import edit_current_messages
+        # pipeline/message_editor.py 已删除 — 使用内置实现
+        async def _edit_current_messages(agent, edit_state):
+            return None
+        edit_current_messages = _edit_current_messages
         edit_state = {"model": state.model, "retry": False, "prefill": ""}
         await asyncio.to_thread(
             edit_current_messages, session.agent, edit_state,

@@ -220,7 +220,7 @@ class ParallelExecutor:
         import sys as _sys
         from src.renderer import IncrementalRenderer
 
-        from ..tui.core.tool_icons import AGENT_TYPE_ABBREV as _AGENT_TYPE_ABBREV
+        from ..tui._tool_icons import AGENT_TYPE_ABBREV as _AGENT_TYPE_ABBREV
 
         renderer = IncrementalRenderer(show_indicator=False,
                                        _file=_sys.__stdout__)
@@ -271,7 +271,7 @@ class ParallelExecutor:
         for i, r in enumerate(results, 1):
             desc = r.get(_DESCRIPTION_KEY, f"子任务 {i}")
             agent_type = r.get(_AGENT_TYPE_KEY, "execute")
-            from ..tui.core.tool_icons import AGENT_TYPE_ABBREV as _AGENT_TYPE_ABBREV
+            from ..tui._tool_icons import AGENT_TYPE_ABBREV as _AGENT_TYPE_ABBREV
             abbr = _AGENT_TYPE_ABBREV.get(agent_type, "??")
             result_text = r.get(_RESULT_KEY, "")
             error = r.get(_ERROR_KEY, "")

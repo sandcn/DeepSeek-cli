@@ -26,7 +26,7 @@ from __future__ import annotations
 import logging
 from typing import Callable, List
 
-from ..tui.core.output_target import IOutputTarget
+from ..tui._output_target import IOutputTarget
 from .types import msg_command_output, msg_output_frame
 
 _logger = logging.getLogger(__name__)

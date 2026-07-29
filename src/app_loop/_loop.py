@@ -32,7 +32,7 @@ from ..core.commands.plugins import get_interactive_registry
 from ..core.message_queue import MessageQueue
 from ..core.exceptions import is_fatal_exception, is_network_error
 from ..core.constants import CYAN, DIM, RESET, GREEN, YELLOW
-from ..tui.terminal.terminal import TerminalWidthCache, narrow_sep_width
+from ..tui._screen import TerminalWidthCache, narrow_sep_width
 from ..api.escape_monitor import EscapeMonitor
 from ..api.interrupt_async import reset_interrupt_async
 from ..api.stats import reset_token_speed

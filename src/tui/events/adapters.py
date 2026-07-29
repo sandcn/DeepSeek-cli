@@ -26,7 +26,7 @@ from __future__ import annotations
 import logging
 from typing import Any, Dict, List, Optional, Set, Type
 
-from ..consumer.base_display import BaseDisplay as _BaseDisplay
+from .._base_display import BaseDisplay as _BaseDisplay
 from .event_bus import DisplayEventBus, EventHandler
 from .event_types import (
     DisplayEvent,

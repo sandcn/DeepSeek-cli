@@ -1,12 +1,9 @@
-"""Input — 统一 TUI 输入管理（自包含单文件）。
+"""Input — 统一 TUI 输入管理（自包含单文件，精简版）。
 
-合并原 src/tui/input/ 下分散的四个模块（_buffer.py / _parser.py / _cursor.py / _input.py）
-为单个 Input 类，stdin 读取合并至 Render 线程统一处理。
-
-组件内联：
-  - InputParser（ANSI CSI/SS3 解析）→ Input 私有方法
-  - InputBuffer（缓冲+历史+光标）→ Input 内部状态+方法
-  - CursorPositioner（光标定位）→ Input.compute_cursor()
+合并原 src/tui/input.py 的全部逻辑，关键改动：
+  - TerminalWidthCache 从 _screen.py 导入（替代 blessed 路径）
+  - _compute_cursor_visual_pos 及其依赖内联，使用 wcswidth_simple() 替代 wcwidth.wcswidth()
+  - 其余公开 API 完全兼容旧 Input 类
 
 设计模式：
   - 模板方法（Template Method）：read_stdin_once() 骨架，_do_interrupt()/_handle_special_key() 具体步骤
@@ -38,10 +35,7 @@ from src.api.escape_monitor._history import (
     UNIX_SELECT_TIMEOUT,
 )
 from src.api.interrupt_async import request_interrupt_async
-from src.tui._input import _compute_cursor_visual_pos
-
-if TYPE_CHECKING:
-    from src.tui._screen import TerminalWidthCache
+from src.tui._screen import wcswidth_simple, TerminalWidthCache
 
 _logger = logging.getLogger(__name__)
 
@@ -50,6 +44,196 @@ _logger = logging.getLogger(__name__)
 _CSI_READ_TIMEOUT = 0.01     # CSI 参数读取超时（秒）
 _SS3_READ_TIMEOUT = 0.01     # SS3 读取超时（秒）
 _UTF8_READ_TIMEOUT = 0.05    # UTF-8 多字节序列读取超时（秒）
+
+# ═══════════════════════════════════════════════════════════
+# 光标视觉位置计算（内联自 widgets/bottom_bar/cursor.py）
+# 使用 wcswidth_simple() 替代 wcwidth.wcswidth()
+# ═══════════════════════════════════════════════════════════
+
+_TAB_WIDTH = 4  # 制表符宽度（列数）
+
+
+def _expand_tabs(text: str, start_col: int = 0, tab_width: int | None = None) -> str:
+    """将制表符按制表位展开为空格。
+
+    每个 \\t 跳到下一个制表位列（tab_width 的整数倍），
+    用空格填充至该列。
+
+    Args:
+        text: 含制表符的文本。
+        start_col: 起始列（0-based）。
+        tab_width: 制表宽度，默认 _TAB_WIDTH。
+
+    Returns:
+        展开后的纯空格文本。
+    """
+    if tab_width is None:
+        tab_width = _TAB_WIDTH
+    if '\t' not in text:
+        return text
+    result = []
+    col = start_col
+    for ch in text:
+        if ch == '\n':
+            result.append(ch)
+            col = 0
+        elif ch == '\t':
+            spaces = tab_width - (col % tab_width)
+            result.append(' ' * spaces)
+            col += spaces
+        else:
+            cw = wcswidth_simple(ch)
+            result.append(ch)
+            col += cw if cw >= 0 else 1
+    return ''.join(result)
+
+
+def _tab_pos_to_expanded(text: str, pos: int,
+                         tab_width: int | None = None) -> int:
+    """将含制表符文本中的字符位置映射到展开后的位置。
+
+    Args:
+        text: 含制表符的原始文本。
+        pos: 原始文本中的字符索引（<0 返回 -1）。
+        tab_width: 制表宽度，默认 _TAB_WIDTH。
+
+    Returns:
+        展开后文本中对应的字符索引。
+    """
+    if pos < 0:
+        return -1
+    if tab_width is None:
+        tab_width = _TAB_WIDTH
+    expanded_pos = 0
+    col = 0
+    for i, ch in enumerate(text):
+        if i >= pos:
+            break
+        if ch == '\t':
+            spaces = tab_width - (col % tab_width)
+            expanded_pos += spaces
+            col += spaces
+        elif ch == '\n':
+            expanded_pos += 1
+            col = 0
+        else:
+            cw = wcswidth_simple(ch)
+            expanded_pos += 1
+            col += cw if cw >= 0 else 1
+    return expanded_pos
+
+
+def _wrap_by_width(s: str, max_width: int) -> list[str]:
+    """按终端列宽拆分文本为多行，每行不超过 max_width 列。
+
+    优先按 \\n 拆分（强制换行），再对每段按列宽拆行。
+    调用方应先通过 _expand_tabs 展开制表符。
+    """
+    if max_width <= 0 or not s:
+        return [s] if s else [""]
+    lines: list[str] = []
+    for segment in s.split('\n'):
+        remaining = segment
+        while remaining:
+            w = 0
+            idx = 0
+            for i, ch in enumerate(remaining):
+                cw = wcswidth_simple(ch) if wcswidth_simple(ch) >= 0 else 1
+                if w + cw > max_width:
+                    break
+                w += cw
+                idx = i + 1
+            if idx == 0:
+                idx = 1
+            lines.append(remaining[:idx])
+            remaining = remaining[idx:]
+        if not segment:
+            lines.append("")
+    return lines if lines else [""]
+
+
+def _compute_cursor_visual_pos(
+    text: str, cursor_pos: int, max_width: int,
+) -> tuple[int, int]:
+    """计算光标在带 \\n 的文本中的视觉位置（行号, 列号）。
+
+    将文本按 \\n 拆分为逻辑行，每行分别制表符展开和按列宽拆行，
+    定位光标所在逻辑行，累计前面逻辑行的视觉行数得到总行号偏移。
+
+    Args:
+        text: 原始输入文本（含 \\n）。
+        cursor_pos: 光标在原始文本中的字符偏移（-1=末尾）。
+        max_width: 每行最大列宽。
+
+    Returns:
+        (visual_line_idx, visual_col) —— 均为 0-based。
+    """
+    if not text:
+        return (0, 0)
+
+    # 确定绝对光标位置
+    if cursor_pos < 0:
+        abs_cursor = len(text)
+    else:
+        abs_cursor = cursor_pos
+
+    # 拆分为逻辑行
+    lines = text.split('\n')
+    cum = 0  # 累计原始字符索引
+    for logical_idx, logical_line in enumerate(lines):
+        line_len = len(logical_line)
+        if abs_cursor <= cum + line_len:
+            # 光标在此逻辑行中（或在行末的 \n 上）
+            pos_in_line = abs_cursor - cum
+
+            # 展开并拆行
+            expanded = _expand_tabs(logical_line)
+            wrapped = _wrap_by_width(expanded, max_width)
+
+            # 计算此逻辑行内光标所处视觉行和列
+            expanded_in_line = _tab_pos_to_expanded(logical_line, pos_in_line)
+            if expanded_in_line < 0:
+                # 末尾
+                last_seg = wrapped[-1] if wrapped else ""
+                col_in_line = wcswidth_simple(last_seg)
+                visual_line_in_logical = len(wrapped) - 1 if wrapped else 0
+            else:
+                cum2 = 0
+                visual_line_in_logical = 0
+                for i, seg in enumerate(wrapped):
+                    if expanded_in_line <= cum2 + len(seg):
+                        visual_line_in_logical = i
+                        prefix = seg[:expanded_in_line - cum2]
+                        col_in_line = wcswidth_simple(prefix)
+                        break
+                    cum2 += len(seg)
+                else:
+                    visual_line_in_logical = len(wrapped) - 1 if wrapped else 0
+                    col_in_line = wcswidth_simple(wrapped[-1]) if wrapped else 0
+
+            # 累计前面逻辑行的视觉行数
+            total_before = 0
+            for prev_line in lines[:logical_idx]:
+                prev_expanded = _expand_tabs(prev_line)
+                total_before += len(_wrap_by_width(prev_expanded, max_width))
+
+            return (total_before + visual_line_in_logical, col_in_line)
+
+        # 此逻辑行已消耗：字符数 + \n 的 1 个字符
+        cum += line_len + 1
+
+    # 超出范围 → 末尾
+    last_line = lines[-1] if lines else ""
+    expanded = _expand_tabs(last_line)
+    wrapped = _wrap_by_width(expanded, max_width)
+    last_seg = wrapped[-1] if wrapped else ""
+    col = wcswidth_simple(last_seg)
+    total_before = 0
+    for prev_line in lines[:-1]:
+        prev_expanded = _expand_tabs(prev_line)
+        total_before += len(_wrap_by_width(prev_expanded, max_width))
+    visual_row = total_before + (len(wrapped) - 1 if wrapped else 0)
+    return (visual_row, col)
 
 
 # ═══════════════════════════════════════════════════════════
@@ -84,7 +268,7 @@ class Input:
     """统一输入管理类（自包含）。
 
     内联 InputParser（ANSI 解析）、InputBuffer（缓冲+历史）、
-    CursorPositioner（光标定位）、TerminalWidthCache（终端尺寸）。
+    CursorPositioner（光标定位）。
     stdin 读取由 Render 线程通过 read_stdin_once() 驱动。
 
     构造函数:
@@ -101,12 +285,10 @@ class Input:
         term_width_cache: "TerminalWidthCache | None" = None,
         cursor_tracker=None,
     ) -> None:
-        from src.tui._screen import TerminalWidthCache as _TWC
-
         self._fd = fd
         self._term_width_cache = (
             term_width_cache if term_width_cache is not None
-            else _TWC.get_default()
+            else TerminalWidthCache.get_default()
         )
         self._cursor_tracker = cursor_tracker
 
@@ -725,7 +907,7 @@ class Input:
     @staticmethod
     def _dispatch_csi(params: list[int], terminator: str) -> KeyEvent:
         """根据 CSI 参数和终结符分发到对应的 KeyEvent。"""
-        # ── CSI u 模式: \\x1b[<keycode>;<modifier>u ──
+        # ── CSI u 模式: \x1b[<keycode>;<modifier>u ──
         if terminator == 'u':
             keycode = params[0] if len(params) >= 1 else 0
             modifier = params[1] if len(params) >= 2 else 1
@@ -737,7 +919,7 @@ class Input:
 
         raw = b"\x1b[" + Input._params_to_bytes(params) + terminator.encode()
 
-        # ── 功能键序列: \\x1b[N~ ──
+        # ── 功能键序列: \x1b[N~ ──
         if terminator == '~':
             p = params[0] if params else 0
             if p in (1, 7):
@@ -748,11 +930,11 @@ class Input:
                 return KeyEvent(kind="end", raw=raw)
             return KeyEvent(kind="unknown", raw=raw)
 
-        # ── Home (\\x1b[H) ──
+        # ── Home (\x1b[H) ──
         if terminator == 'H':
             return KeyEvent(kind="home", raw=raw)
 
-        # ── End (\\x1b[F) ──
+        # ── End (\x1b[F) ──
         if terminator == 'F':
             return KeyEvent(kind="end", raw=raw)
 
@@ -1334,7 +1516,7 @@ class Input:
                 _logger.debug("_echo 回显回调失败", exc_info=True)
 
     # ═══════════════════════════════════════════════════════
-    # 光标定位（原 CursorPositioner → 内联）
+    # 光标定位（原 CursorPositioner → 内联，使用 wcswidth_simple）
     # ═══════════════════════════════════════════════════════
 
     def compute_cursor(

@@ -24,8 +24,6 @@ if TYPE_CHECKING:
     from ...renderer import IncrementalRenderer
     from ...renderer.output import OutputAdapter
 
-from ..animation.animator import AnimatorContext
-from ..terminal.terminal import is_narrow
 from ._collection import ThreadSafeList
 
 _logger = logging.getLogger(__name__)
@@ -219,13 +217,8 @@ class ChatRenderState(RenderState):
         )
         rr = self.reasoning
         if rr is not None:
-            # 动态呼吸分隔线（使用 Separator 组件替代手写）
-            # 运行时惰性 import 避免循环依赖：render_state → components → ... → render_state
-            from ..components._separator import Separator
-            _bf = AnimatorContext.get_default().breath_frame
-            _style = "wave" if not is_narrow() else "static"
-            _sep_renderer = Separator(style=_style, width=None, start_color=45, end_color=237, frame=_bf)
-            _sep = _sep_renderer.render()
+            # 静态分隔线（精简版，无动画依赖）
+            _sep = "\033[38;5;240m" + "\u2500" * 40 + "\033[0m"
             rr.write(f"\n  {_sep}")
             self._close_renderer("reasoning")
         self.reasoning_state = _ReasoningState.CLOSED

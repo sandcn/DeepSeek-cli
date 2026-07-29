@@ -36,7 +36,7 @@ async def run_single_mode_async(prompt_text):
     """单次对话模式（异步版）：输入一句话，回答后退出"""
     chat_ui = ChatUIConsumer()
     chat_ui.start()
-    from ..tui.terminal.narrow import narrow_sep_width
+    from ..tui._screen import narrow_sep_width
     _sep_w = narrow_sep_width(30)
     chat_ui.write_line(f"{CYAN}  > Chat{RESET} {DIM}· 单次模式{RESET}")
     chat_ui.write_line(f"{DIM}  {'─' * _sep_w}{RESET}")

@@ -14,7 +14,7 @@ import sys
 from typing import List, Optional
 
 from .event_bus import DisplayEventBus
-from ..widgets.lock import _try_acquire_output_lock
+from .._locks import _try_acquire_output_lock
 from .event_types import (
     DisplayEvent,
     OutputEvent,

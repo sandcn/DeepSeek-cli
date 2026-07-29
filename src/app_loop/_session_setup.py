@@ -56,7 +56,15 @@ def _setup_session(loaded_data: dict | None = None, chat_ui=None) -> tuple:
             session.model = model
             state.model = model
             non_system = _non_system_messages(session)
-            from ..tui.pipeline.message_display import _display_messages
+            # pipeline/message_display.py 已删除 — 使用内置实现
+            def _display_messages(data, agent, speed=0):
+                import sys
+                for msg in data:
+                    role = msg.get("role", "")
+                    content = msg.get("content", "")
+                    if isinstance(content, str) and content.strip():
+                        sys.__stdout__.write(f"{content}\n")
+                sys.__stdout__.flush()
             _display_messages(non_system, session.agent, speed=0)
             if session.retry_pending and chat_ui is not None:
                 chat_ui.write_line(f"  {DIM}  最后一条是用户消息，将自动继续生成回复…{RESET}")

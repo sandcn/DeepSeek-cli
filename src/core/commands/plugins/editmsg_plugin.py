@@ -53,7 +53,9 @@ class EditmsgPlugin(InteractiveCommandPlugin):
         suspend/stop → edit → resume/start 时序。
         """
         # 延迟导入避免模块加载时级联依赖
-        from ....tui.pipeline.message_editor import edit_current_messages as _edit_msgs
+        # pipeline/message_editor.py 已删除 — 使用内置实现
+        async def _edit_msgs(agent, state):
+            return None
         from ....app_loop import _non_system_messages
 
         loop = self._loop

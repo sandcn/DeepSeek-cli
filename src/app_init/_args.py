@@ -11,7 +11,10 @@ import os
 import sys
 
 from ..config import config
-from ..tui.core.theme import set_theme
+# set_theme 已从 core/theme.py 移除 — 使用 no-op 存根
+def _set_theme_noop(name: str) -> None:
+    pass
+set_theme = _set_theme_noop
 
 _logger = logging.getLogger(__name__)
 

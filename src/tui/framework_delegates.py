@@ -23,11 +23,8 @@ import logging
 from typing import TYPE_CHECKING, Any, Callable
 
 if TYPE_CHECKING:
-    from .animation.animator import AnimatorContext
+    from ._animator import AnimatorContext
     from .config import TuiConfig
-    from .core.component_registry import ComponentRegistry
-    from .widget_base import Widget, WidgetTree
-    from .components._base import TuiComponent
     from .render_buffer import RenderBuffer
 
 _logger = logging.getLogger(__name__)
@@ -346,7 +343,7 @@ class AnimationManager:
             AnimatorContext 单例实例。
         """
         if self._framework._animator is None:
-            from .animation.animator import AnimatorContext
+            from ._animator import AnimatorContext
             self._framework._animator = AnimatorContext
         return self._framework._animator.get_default()
 

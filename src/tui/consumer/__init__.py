@@ -1,21 +1,11 @@
-"""src.tui.consumer — 消费者模式聊天 UI 渲染引擎。
+"""src.tui.consumer — 消费者模式聊天 UI 渲染引擎（向后兼容 re-export）。
 
-ChatUI 消费者层，管理事件订阅、渲染管线和底部栏。
-
-职责范围：
-- ChatUIConsumer 事件订阅与渲染管线（订阅 DisplayEventBus，消费事件流）
-- 渲染状态管理（RenderState、渲染引擎生命周期）
-- 底部栏（BottomBar）管理
-- Dispatcher 配置（事件→渲染组件映射）
-- 完成提示 UI（CompletionPrompt）
-
-Layer 层次：位于 TUI 架构顶层，依赖 events/state/components/pipeline/widgets 层。
-
-配置与命令分层（v1.3+）：
-  - ChatConfig        — 聊天域配置（main_label/main_source/thinking_header/max_output_len）
-  - FrameworkCommand  — 框架通用命令（从 engine.commands 重导出）
-  - ChatCommand       — 聊天域命令（本模块定义）
-  - RenderCommand     — 向后兼容别名（全部 20 个命令）
+迁移说明（2026-07-29 TUI 重构）：
+  - ChatUIConsumer 实现已迁移至 src/tui/_consumer.py
+  - ChatCommand 已迁移至 src/tui/_const.py
+  - RenderCommand / FrameworkCommand 已迁移至 src/tui/_const.py
+  - error_handler 已内联（ChatUIErrorHandler + setup_chat_ui_error_handler）
+  - 本模块作为向后兼容的 re-export 存根
 """
 
 from __future__ import annotations
@@ -23,35 +13,67 @@ from __future__ import annotations
 import logging
 import threading
 
-_error_handler_registered: bool = False
-_error_handler_lock = threading.Lock()
-
-# ── 命令枚举导出 ──────────────────────────────────
-from ..engine.const import (
-    RenderCommand,
-)
-from ..engine.commands import FrameworkCommand  # noqa: F401 — 重导出供外部使用
-from .chat_commands import ChatCommand  # noqa: F401 — 聊天域命令枚举
-
-# ── 配置导出 ──────────────────────────────────────
+from .._consumer import ChatUIConsumer
+from ..state.consumer_registry import get_active_chat_ui, _active_consumer
+from .._const import RenderCommand, FrameworkCommand, ChatCommand
 from .chat_config import ChatConfig
 
-# ── 全局状态导出 ──────────────────────────────────
-from ..state.consumer_registry import (
-    _active_consumer,
-    get_active_chat_ui,
-)
+_logger = logging.getLogger(__name__)
 
-# ── 错误处理 ──────────────────────────────────────
-from .error_handler import ChatUIErrorHandler
+# ═══════════════════════════════════════════════════════════
+# ChatUIErrorHandler — 内联自已删除的 consumer/error_handler.py
+# ═══════════════════════════════════════════════════════════
+
+_handler_reentrant = threading.local()
+_emit_lock = threading.RLock()
+
+
+class ChatUIErrorHandler(logging.Handler):
+    """自定义 logging Handler，捕获 ERROR+ 级别日志并投递到 ChatUI 上屏。"""
+
+    def __init__(self, max_length: int | None = None):
+        super().__init__(level=logging.ERROR)
+        if max_length is None:
+            try:
+                from ..framework import Framework
+                max_length = Framework.get_default().get_config().max_error_length
+            except Exception:
+                max_length = 200
+        self._max_length = max_length
+
+    def emit(self, record: logging.LogRecord) -> None:
+        if record.levelno < logging.ERROR:
+            return
+        if getattr(_handler_reentrant, 'is_active', False):
+            return
+        if getattr(record, '_chatui_reported', False):
+            return
+        try:
+            msg_content = record.getMessage()
+        except TypeError:
+            return
+        if not msg_content:
+            return
+        msg = f"{record.name}: {msg_content}"
+        if len(msg) > self._max_length:
+            msg = msg[:self._max_length - 3] + "..."
+        with _emit_lock:
+            _handler_reentrant.is_active = True
+            try:
+                consumer = get_active_chat_ui()
+                if consumer is not None:
+                    consumer.on_error(msg)
+            finally:
+                record._chatui_reported = True
+                _handler_reentrant.is_active = False
+
+
+_error_handler_registered = False
+_error_handler_lock = threading.Lock()
 
 
 def setup_chat_ui_error_handler() -> None:
-    """显式注册 ChatUIErrorHandler 到 root logger。
-
-    替代此前 __init__.py 导入时的隐式副作用。
-    幂等操作——重复调用不重复注册。
-    """
+    """显式注册 ChatUIErrorHandler 到 root logger。幂等操作。"""
     global _error_handler_registered
     with _error_handler_lock:
         if _error_handler_registered:
@@ -59,11 +81,6 @@ def setup_chat_ui_error_handler() -> None:
         logging.getLogger().addHandler(ChatUIErrorHandler())
         _error_handler_registered = True
 
-# ── 补全纯函数 ────────────────────────────────────
-from .completion import _apply_completion
-
-# ── 核心 TUI（组件化架构） ─────────────────────────
-from .consumer import ChatUIConsumer
 
 __all__ = [
     "ChatUIConsumer",
@@ -72,8 +89,7 @@ __all__ = [
     "FrameworkCommand",
     "ChatCommand",
     "ChatConfig",
-    "ChatUIErrorHandler",
-    "_apply_completion",
     "_active_consumer",
     "setup_chat_ui_error_handler",
+    "ChatUIErrorHandler",
 ]
