@@ -250,20 +250,22 @@ class SubAgent(BaseAgent):
 
     def _update_display(self, usage):
         """更新显示状态（累加每次模型调用的 token 到显示层）"""
-        if self.display:
-            from ..tui.events.event_types import UsageUpdatedEvent, ModelPhaseEvent
+        from ..tui.events.event_types import UsageUpdatedEvent, ModelPhaseEvent
 
+        if self.display:
             if usage is not None:
                 self.display.update_usage(self.label, usage, replace=False)
                 # 累加到全局统计（方法体内延迟导入）
                 from ..api.stats import accumulate_usage
                 accumulate_usage(usage)
-                # 同步发布到 EventPort（Web 前端通过此事件更新用量显示）
+            self.display.update_model_phase(self.label, "")
+        else:
+            # display 为 None 时回退到 EventPort 路径
+            if usage is not None:
+                accumulate_usage(usage)
                 self._event_port.publish_event(UsageUpdatedEvent(
                     label=self.label, usage=usage, replace=False, source=self.label,
                 ))
-            self.display.update_model_phase(self.label, "")
-            # 同步发布到 EventPort（Web 前端通过此事件更新阶段显示）
             self._event_port.publish_event(ModelPhaseEvent(
                 label=self.label, phase="", info="", source=self.label,
             ))
@@ -311,7 +313,6 @@ class SubAgent(BaseAgent):
         self,
     ) -> Tuple[Optional[Callable], Optional[Callable], Optional[Callable]]:
         """构建工具执行回调三元组 (on_before, on_after, run_method)"""
-        from ..tui.events.event_types import ToolStartedEvent, ToolDoneEvent
         from .internal.agent._tool_callbacks import _run_file_display
 
         display = self.display
@@ -321,10 +322,6 @@ class SubAgent(BaseAgent):
             if display:
                 display.tool_parsing(self.label, tool_name, detail)
                 display.tool_start(self.label, tool_name, detail)
-            self._event_port.publish_event(ToolStartedEvent(
-                label=self.label, tool_name=tool_name, detail=detail, source=self.label,
-                tool_id=tc["id"],
-            ))
 
         def on_after(tc, output, success):
             tool_name = tc["name"]
@@ -334,10 +331,6 @@ class SubAgent(BaseAgent):
                     self.tool_calls_count += 1
             if display:
                 display.tool_done(self.label, tool_name, success=success)
-            self._event_port.publish_event(ToolDoneEvent(
-                label=self.label, tool_name=tool_name, success=success, source=self.label,
-                tool_id=tc["id"],
-            ))
 
         async def run_method(func, tc):
             if tc["name"] in ("write_file", "update_file"):
