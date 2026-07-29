@@ -504,12 +504,23 @@ class TuiRenderer:
         self._record_lines(2)
 
     def _do_subagent_frame(self, frame_lines: tuple) -> None:
+        # 空列表 = 清除面板
+        if isinstance(frame_lines, (list, tuple)) and len(frame_lines) == 0 and isinstance(frame_lines, list):
+            if hasattr(self._bb, 'set_subagent_frame'):
+                self._bb.set_subagent_frame([])
+            return
         if not frame_lines:
             return
-        if len(frame_lines) < 4:
-            return
-        lines = frame_lines[0]
-        if not lines or not isinstance(lines, (list, tuple)):
+        # 兼容两种格式：
+        #   旧: (lines, scroll_end, last_lines, clear_eol) — 4 元组
+        #   新: list[str] — 直接提供行列表
+        if isinstance(frame_lines, (list, tuple)) and frame_lines and isinstance(frame_lines[0], str):
+            # 新格式: 直接是字符串列表
+            lines = frame_lines
+        elif len(frame_lines) >= 4 and isinstance(frame_lines[0], (list, tuple)):
+            # 旧格式: 4 元组，第一个元素是行列表
+            lines = frame_lines[0]
+        else:
             return
         if hasattr(self._bb, 'set_subagent_frame'):
             self._bb.set_subagent_frame(list(lines))

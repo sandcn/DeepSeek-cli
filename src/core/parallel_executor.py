@@ -173,14 +173,19 @@ class ParallelExecutor:
         - 核心逻辑（_run_agents）由内层 try-finally 保护
         """
         self._executing = True
+        # ★ 激活 SubAgent 面板控制器（消费 EventBus 事件并渲染面板帧）
+        from ..tui._subagent_panel import SubAgentPanelController as _PanelCtrl
+        _panel = _PanelCtrl.get_default()
+        _panel.ensure_active()
+
         try:
             self._spawner.render_display(self._pending_specs)
 
-            from ..tui.parallel_display import ParallelDisplay as _ParallelDisplay
+            from ..tui.events import EventBusDisplayProxy as _EventBusDisplayProxy
             from ..tui.events import DisplayEventBus as _DisplayEventBus
             from ..tui.events.event_types import AgentAddedEvent as _AgentAddedEvent
 
-            display = _ParallelDisplay(max_history=self.max_history)
+            display = _EventBusDisplayProxy(max_history=self.max_history)
 
             # ★ 先发布 AgentAddedEvent，让前端提前创建 agent DOM 和 activeAgents 条目
             #   这样后续统一批量发布的 AgentResultEvent 才能被前端正确处理
@@ -204,9 +209,10 @@ class ParallelExecutor:
                 self._all_done.set()
         finally:
             # 最外层 finally：无论 render_display / AgentAddedEvent / _run_agents
-            # 哪个阶段抛出异常，都确保 barrier 释放 + _executing 标志复位
+            # 哪个阶段抛出异常，都确保 barrier 释放 + _executing 标志复位 + 面板清理
             self._all_done.set()
             self._executing = False
+            _panel.stop(clear_panel=True)
 
     # -- 独立模式 --
 
@@ -357,7 +363,7 @@ class ParallelExecutor:
         publish_output("\r", level="raw")
 
     async def _execute_with_error_handling(
-        self, coro, specs: List[Dict[str, Any]], display: ParallelDisplay,
+        self, coro, specs: List[Dict[str, Any]], display: EventBusDisplayProxy,
         *, is_batch: bool,
     ) -> List[Dict[str, Any]]:
         """封装 try/except/finally 错误处理模式，消除 _execute_all / run 重复。
@@ -365,7 +371,7 @@ class ParallelExecutor:
         Args:
             coro: 主协程（通常是 self._run_agents(specs, display)）
             specs: agent specs 列表（用于构造降级结果）
-            display: ParallelDisplay 实例
+            display: EventBusDisplayProxy 实例
             is_batch: True=_execute_all 批量模式, False=run 独立模式
 
         Returns:
@@ -487,24 +493,31 @@ class ParallelExecutor:
         max_workers: 最大并行数，默认 None（无限制，等于 task 数量）
         返回: [{_LABEL_KEY: str, _DESCRIPTION_KEY: str, _RESULT_KEY: str, _ERROR_KEY: str}]
         """
-        if not self._is_web:
-            self._spawner.render_display(agent_specs)
+        from ..tui._subagent_panel import SubAgentPanelController as _PanelCtrl
+        _panel = _PanelCtrl.get_default()
+        _panel.ensure_active()
 
-        from ..tui.parallel_display import ParallelDisplay as _ParallelDisplay
-        display = _ParallelDisplay(max_history=self.max_history)
-        coro = self._run_agents(agent_specs, display)
-        return await self._execute_with_error_handling(
-            coro, agent_specs, display, is_batch=False,
-        )
+        try:
+            if not self._is_web:
+                self._spawner.render_display(agent_specs)
 
-    async def _run_agents(self, specs: List[Dict[str, Any]], display: ParallelDisplay) -> List[Dict[str, Any]]:
+            from ..tui.events import EventBusDisplayProxy as _EventBusDisplayProxy
+            display = _EventBusDisplayProxy(max_history=self.max_history)
+            coro = self._run_agents(agent_specs, display)
+            return await self._execute_with_error_handling(
+                coro, agent_specs, display, is_batch=False,
+            )
+        finally:
+            _panel.stop(clear_panel=True)
+
+    async def _run_agents(self, specs: List[Dict[str, Any]], display: EventBusDisplayProxy) -> List[Dict[str, Any]]:
         """创建 SubAgent 列表 → gather 执行 → 结果收集
 
         提取自 run() 和 _execute_all() 的公共逻辑。
 
         Args:
             specs: agent specs 列表
-            display: ParallelDisplay 实例
+            display: EventBusDisplayProxy 实例
 
         Returns:
             结果列表 [{"label", "description", "result", "error"}]
@@ -531,7 +544,7 @@ class ParallelExecutor:
                 results.append(r)
         return results
 
-    async def _run_one(self, sa: SubAgent, display: ParallelDisplay, stagger: int = 0) -> Dict[str, Any]:
+    async def _run_one(self, sa: SubAgent, display: EventBusDisplayProxy, stagger: int = 0) -> Dict[str, Any]:
         if stagger > 0:
             if self._config_port is not None:
                 stagger_min = self._config_port.get_stagger_min_delay()

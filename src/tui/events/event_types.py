@@ -148,6 +148,7 @@ class AgentAddedEvent(DisplayEvent):
     description: str = ""
     status: str = "running"
     dispatch_label: str = ""
+    agent_type: str = "execute"
 
 
 @dataclass(frozen=True)

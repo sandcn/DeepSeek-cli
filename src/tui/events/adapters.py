@@ -23,6 +23,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import Any, Dict, List, Optional, Set, Type
 
@@ -162,16 +163,21 @@ class EventBusDisplayProxy(_BaseDisplay):
         event_bus: Optional[DisplayEventBus] = None,
         source: str = "",
         output_target=None,
+        max_history: int = 3,
     ):
         """
         Args:
             event_bus: 要发布事件到的事件总线。None 则使用默认单例。
             source: 事件来源标识，用于事件溯源
             output_target: 可选的输出目标（透传给 BaseDisplay）
+            max_history: 最大历史条目数（兼容旧 ParallelDisplay 接口）
         """
         super().__init__(output_target=output_target)
         self._bus = event_bus or DisplayEventBus.get_default()
         self._source = source
+        self.max_history = max_history
+        # 按 label 存储 subagent 结果
+        self._results: Dict[str, Dict[str, str]] = {}
 
     def set_source(self, source: str) -> None:
         """设置事件来源标识（可在运行时切换）。"""
@@ -255,9 +261,11 @@ class EventBusDisplayProxy(_BaseDisplay):
 
     # ── 额外公开方法（非 BaseDisplay 接口，但 ParallelDisplay 使用） ──
 
-    def add_agent(self, label: str, description: str, status: str = "running") -> None:
+    def add_agent(self, label: str, description: str, status: str = "running",
+                  agent_type: str = "execute", dispatch_label: str = "") -> None:
         self._bus.publish(AgentAddedEvent(
             label=label, description=description, status=status, source=self._source,
+            agent_type=agent_type, dispatch_label=dispatch_label,
         ))
 
     def tool_batch_start(self, label: str, tool_names: list) -> None:
@@ -313,6 +321,28 @@ class EventBusDisplayProxy(_BaseDisplay):
             failed_tools=tuple(failed_tools),
             source=self._source,
         ))
+
+    # ── ParallelDisplay 兼容方法 ─────────────────────────
+
+    def set_result(self, label: str, result_text: str = "", error: str = "") -> None:
+        """存储 subagent 结果（兼容旧 ParallelDisplay 接口）。
+
+        结果按 label 键存储，后续可通过 get_result() 查询。
+        """
+        self._results[label] = {"result_text": result_text, "error": error}
+
+    def get_result(self, label: str) -> Dict[str, str]:
+        """获取 subagent 结果。"""
+        return self._results.get(label, {"result_text": "", "error": ""})
+
+    async def await_stop(self, timeout: float = 5.0) -> None:
+        """异步停止显示并等待渲染完成（兼容旧 ParallelDisplay 接口）。
+
+        在事件驱动架构中，stop() 发布 SessionStopped 事件后立即返回。
+        await_stop() 额外增加短暂延迟以确保事件被消费。
+        """
+        self.stop(final=True)
+        await asyncio.sleep(0.05)
 
 
 # ═══════════════════════════════════════════════════════════

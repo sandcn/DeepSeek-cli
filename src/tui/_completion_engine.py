@@ -62,7 +62,7 @@ class CompletionItem:
 
 def _default_commands_source() -> list[str]:
     """默认命令列表获取函数。"""
-    from ...core.commands import get_registered_command_names
+    from ..core.commands import get_registered_command_names
     return get_registered_command_names()
 
 
@@ -99,7 +99,7 @@ class CompletionEngine:
     @staticmethod
     def _fetch_sessions() -> list[dict]:
         try:
-            from ...chat_msgs import list_sessions
+            from ..chat_msgs import list_sessions
             return list_sessions()
         except Exception:
             return []
@@ -107,11 +107,11 @@ class CompletionEngine:
     @staticmethod
     def _fetch_models() -> list[str]:
         try:
-            from ...config import MODELS
+            from ..config import MODELS
             if MODELS:
                 return list(MODELS)
             # MODELS 为空时从所有 PROVIDERS 聚合模型（去重）
-            from ...config.defaults import PROVIDERS
+            from ..config.defaults import PROVIDERS
             _seen: set[str] = set()
             result: list[str] = []
             for _p in PROVIDERS.values():
