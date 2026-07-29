@@ -49,12 +49,15 @@ class ToolCallsHandler:
                     "_stream_label": _stream_label,
                 }
                 # 🔥 发布 ToolParsingEvent 到 EventBus（Web 桥接器消费）
+                #    label 使用 ctx.label（agent 标签，如 "agent-1"），
+                #    确保 SubAgentPanelController 能正确查找对应 agent slot。
                 if ctx.display is not None:
                     try:
                         ctx.display.tool_parsing(
-                            _stream_label,
+                            ctx.label or "",
                             tool_name,
                             "",
+                            tool_id=_stream_label,
                         )
                     except Exception:
                         _logger.warning("tool_parsing 首次调用异常", exc_info=True)
@@ -72,9 +75,10 @@ class ToolCallsHandler:
                             entry_id = _entry.get("_stream_label",
                                                    _entry.get("id", "") or f"auto_{idx}")
                             ctx.display.tool_parsing(
-                                entry_id,
+                                ctx.label or "",
                                 tool_name or _entry.get("name", ""),
                                 _entry["arguments"],
+                                tool_id=entry_id,
                             )
                         except Exception:
                             _logger.warning("tool_parsing 更新调用异常", exc_info=True)

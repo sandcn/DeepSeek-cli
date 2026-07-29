@@ -199,10 +199,11 @@ class EventBusDisplayProxy(_BaseDisplay):
 
     # ── 工具调用 ────────────────────────────────────────
 
-    def tool_parsing(self, label: str, tool_name: str, arguments: str = "") -> None:
+    def tool_parsing(self, label: str, tool_name: str, arguments: str = "",
+                     tool_id: str = "") -> None:
         self._bus.publish(ToolParsingEvent(
             label=label, tool_name=tool_name,
-            arguments=arguments, source=self._source,
+            arguments=arguments, tool_id=tool_id, source=self._source,
         ))
 
     def tool_start(

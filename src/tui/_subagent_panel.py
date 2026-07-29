@@ -126,6 +126,7 @@ class _AgentSlot:
         'label', 'description', 'status', 'agent_type',
         'start_time', 'end_time',
         'model_phase', 'model_info', 'model_phase_start',
+        'parse_info',
         'input_tokens', 'output_tokens',
         'live_input_tokens', 'live_output_tokens',
         'last_speed',
@@ -144,6 +145,7 @@ class _AgentSlot:
         self.model_phase: str = ""
         self.model_info: str = ""
         self.model_phase_start: float = 0.0
+        self.parse_info: str = ""
         self.input_tokens: int = 0
         self.output_tokens: int = 0
         self.live_input_tokens: int = 0
@@ -191,15 +193,19 @@ class SubAgentPanelController:
         from .events import DisplayEventBus
         from .events.event_types import (
             AgentAddedEvent, AgentStatusChanged, ModelPhaseEvent,
-            ToolStartedEvent, ToolDoneEvent, UsageUpdatedEvent,
-            MetricsUpdateEvent,
+            ToolParsingEvent, ToolStartedEvent, ToolDoneEvent,
+            ParseInfoEvent, ParseInfoDoneEvent,
+            UsageUpdatedEvent, MetricsUpdateEvent,
         )
         bus = DisplayEventBus.get_default()
         bus.subscribe(self._on_agent_added, event_type=AgentAddedEvent)
         bus.subscribe(self._on_agent_status_changed, event_type=AgentStatusChanged)
         bus.subscribe(self._on_model_phase, event_type=ModelPhaseEvent)
+        bus.subscribe(self._on_tool_parsing, event_type=ToolParsingEvent)
         bus.subscribe(self._on_tool_started, event_type=ToolStartedEvent)
         bus.subscribe(self._on_tool_done, event_type=ToolDoneEvent)
+        bus.subscribe(self._on_parse_info, event_type=ParseInfoEvent)
+        bus.subscribe(self._on_parse_info_done, event_type=ParseInfoDoneEvent)
         bus.subscribe(self._on_usage_updated, event_type=UsageUpdatedEvent)
         bus.subscribe(self._on_metrics, event_type=MetricsUpdateEvent)
         self._register_panel_refresh()
@@ -211,16 +217,20 @@ class SubAgentPanelController:
         from .events import DisplayEventBus
         from .events.event_types import (
             AgentAddedEvent, AgentStatusChanged, ModelPhaseEvent,
-            ToolStartedEvent, ToolDoneEvent, UsageUpdatedEvent,
-            MetricsUpdateEvent,
+            ToolParsingEvent, ToolStartedEvent, ToolDoneEvent,
+            ParseInfoEvent, ParseInfoDoneEvent,
+            UsageUpdatedEvent, MetricsUpdateEvent,
         )
         bus = DisplayEventBus.get_default()
         for ev_type, handler in [
             (AgentAddedEvent, self._on_agent_added),
             (AgentStatusChanged, self._on_agent_status_changed),
             (ModelPhaseEvent, self._on_model_phase),
+            (ToolParsingEvent, self._on_tool_parsing),
             (ToolStartedEvent, self._on_tool_started),
             (ToolDoneEvent, self._on_tool_done),
+            (ParseInfoEvent, self._on_parse_info),
+            (ParseInfoDoneEvent, self._on_parse_info_done),
             (UsageUpdatedEvent, self._on_usage_updated),
             (MetricsUpdateEvent, self._on_metrics),
         ]:
@@ -291,14 +301,64 @@ class SubAgentPanelController:
             slot.model_info = event.info
         self._emit_frame()
 
+    def _on_tool_parsing(self, event) -> None:
+        """ToolParsingEvent — 流式解析工具参数时创建/更新 parsing 记录。"""
+        with self._state_lock:
+            slot = self._agents.get(event.label)
+            if slot is None:
+                return
+            # ★ 更新 model phase 为 parsing，使面板显示 "parsing" 阶段指示
+            slot.model_phase = "parsing"
+            slot.model_phase_start = time.time()
+            # 如果已有同名 parsing 记录，更新 detail（累积参数）
+            for rec in reversed(slot.tool_history):
+                if rec.tool_name == event.tool_name and rec.phase == "parsing":
+                    rec.detail = event.arguments
+                    break
+            else:
+                rec = _ToolRecord(tool_name=event.tool_name)
+                rec.detail = event.arguments
+                slot.tool_history.append(rec)
+        # ★ 强制立即渲染帧（绕过 10Hz 节流），确保 parsing 状态立即可见
+        #    注意：_render_frame 需要 _state_lock，必须先释放上方持有的锁
+        self._push_frame(self._render_frame())
+
+    def _on_parse_info(self, event) -> None:
+        """ParseInfoEvent — ToolParseTracker 定时推送的解析摘要（rf,rf 51t 0.74s）。"""
+        with self._state_lock:
+            slot = self._agents.get(event.label)
+            if slot is None:
+                return
+            tokens_str = f"{event.tokens}t" if isinstance(event.tokens, (int, float)) else str(event.tokens)
+            slot.parse_info = f"{event.tool_names} {tokens_str} {event.elapsed:.2f}s"
+        self._emit_frame()
+
+    def _on_parse_info_done(self, event) -> None:
+        """ParseInfoDoneEvent — 工具解析完成，清除解析摘要和 phase。"""
+        with self._state_lock:
+            slot = self._agents.get(event.label)
+            if slot is None:
+                return
+            slot.parse_info = ""
+            if slot.model_phase == "parsing":
+                slot.model_phase = ""
+        self._emit_frame()
+
     def _on_tool_started(self, event) -> None:
         with self._state_lock:
             slot = self._agents.get(event.label)
             if slot is None:
                 return
-            rec = _ToolRecord(tool_name=event.tool_name, detail=event.detail)
-            rec.phase = "running"
-            slot.tool_history.append(rec)
+            # 将已有 parsing 记录转换为 running，避免重复创建
+            for rec in reversed(slot.tool_history):
+                if rec.tool_name == event.tool_name and rec.phase == "parsing":
+                    rec.phase = "running"
+                    rec.detail = event.detail
+                    break
+            else:
+                rec = _ToolRecord(tool_name=event.tool_name, detail=event.detail)
+                rec.phase = "running"
+                slot.tool_history.append(rec)
         self._emit_frame()
 
     def _on_tool_done(self, event) -> None:
@@ -521,8 +581,9 @@ class SubAgentPanelController:
                 lines.append(
                     f"{_C_DIMMER}{cont}{_C_RESET}{_INDENT}{_C_ANSWERING}\u2026answering{_C_DIMMER}  {phase_time}{_C_RESET}")
             elif slot.model_phase == "parsing":
+                extra = slot.parse_info or slot.model_info
                 lines.append(
-                    f"{_C_DIMMER}{cont}{_C_RESET}{_INDENT}{_C_PARSING}\u2026parsing{_C_DIMMER}  {slot.model_info}{_C_RESET}")
+                    f"{_C_DIMMER}{cont}{_C_RESET}{_INDENT}{_C_PARSING}\u2026parsing{_C_DIMMER}  {extra}{_C_RESET}")
             elif slot.model_phase == "batch":
                 lines.append(
                     f"{_C_DIMMER}{cont}{_C_RESET}{_INDENT}{_C_BATCH}\u2026batch{_C_DIMMER}  {slot.model_info}  {phase_time}{_C_RESET}")

@@ -686,13 +686,18 @@ class EventDispatcher:
             return
         self._push_cmd((RenderCommand.PHASE_DONE, event.phase))
 
+    @staticmethod
+    def _is_subagent_label(label: str) -> bool:
+        """检查 label 是否属于 SubAgent（label 形如 agent-1, agent-2）。"""
+        return bool(label and label.startswith("agent-"))
+
     def _on_tool_started(self, event: "ToolStartedEvent") -> None:
-        if not self._is_agent_source(event.source):
+        if not self._is_agent_source(event.source) and not self._is_subagent_label(event.label):
             return
         self._push_cmd((RenderCommand.TOOL_COUNT_INC,))
 
     def _on_tool_done(self, event: "ToolDoneEvent") -> None:
-        if not self._is_agent_source(event.source):
+        if not self._is_agent_source(event.source) and not self._is_subagent_label(event.label):
             return
         if not event.success:
             self._push_cmd((RenderCommand.TOOL_FAIL_INC,))

@@ -47,8 +47,9 @@ class DefaultDisplayAdapter(DisplayPort):
     def update_status(self, label: str, status: str) -> None:
         self._get_proxy().update_status(label, status)
 
-    def tool_parsing(self, label: str, tool_name: str, arguments: str = "") -> None:
-        self._get_proxy().tool_parsing(label, tool_name, arguments)
+    def tool_parsing(self, label: str, tool_name: str, arguments: str = "",
+                     tool_id: str = "") -> None:
+        self._get_proxy().tool_parsing(label, tool_name, arguments, tool_id=tool_id)
 
     def tool_batch_start(self, label: str, names: list[str]) -> None:
         self._get_proxy().tool_batch_start(label, names)
