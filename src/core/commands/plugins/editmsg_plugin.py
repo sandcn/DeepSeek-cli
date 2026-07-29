@@ -103,9 +103,9 @@ class EditmsgPlugin(InteractiveCommandPlugin):
             state["model"] = edit_state.get("model", state.get("model", ""))
             session.sync_retry_pending()
 
-            # ★ Bug 修复: Edit 语义是预填旧内容供用户编辑重发，不是自动续接。
-            if state["prefill"] and not state["retry"]:
-                session.reset_retry_pending()
+            # ★ Edit 语义：预填旧内容供用户编辑重发，不是自动续接。
+            #    无条件重置 retry_pending，与 deitmsg_plugin.py 保持一致。
+            session.reset_retry_pending_for_edit(has_prefill=bool(state["prefill"]))
 
             # ★ 编辑生效后，标记需重新渲染剩余消息到上屏
             needs_rerender = bool(state["retry"] or state["prefill"])

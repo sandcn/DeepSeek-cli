@@ -127,8 +127,7 @@ class DeitmsgPlugin(InteractiveCommandPlugin):
             session.sync_retry_pending()
 
             # ── Edit 语义：预填旧内容供用户编辑重发，不是自动续接 ──
-            if state["prefill"] and not state["retry"]:
-                session.reset_retry_pending()
+            session.reset_retry_pending_for_edit(has_prefill=bool(state["prefill"]))
 
             # ── 标记需重新渲染 ──
             needs_rerender = True
@@ -162,7 +161,9 @@ class DeitmsgPlugin(InteractiveCommandPlugin):
 
         # ── 显示沙盒还原信息并重新渲染 ──
         if needs_rerender and chat_ui is not None:
-            # 先输出沙盒还原信息
+            # 视觉分隔线
+            chat_ui.write_line(f"  {DIM}{'─' * 40}{RESET}")
+            # 输出沙盒还原信息
             if restored_count > 0:
                 chat_ui.write_line(
                     f"  {GREEN}\u2713{RESET} \u5df2\u8fd8\u539f {restored_count} \u4e2a\u6587\u4ef6\u6c99\u76d2"

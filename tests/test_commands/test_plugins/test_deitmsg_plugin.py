@@ -105,7 +105,7 @@ class TestDeitmsgPlugin:
         session.messages = msgs
         session.captured_prefill = ""
         session.sync_retry_pending = MagicMock()
-        session.reset_retry_pending = MagicMock()
+        session.reset_retry_pending_for_edit = MagicMock()
 
         ctx = MagicMock()
         ctx.session = session
@@ -147,7 +147,7 @@ class TestDeitmsgPlugin:
         session.messages = msgs
         session.captured_prefill = ""
         session.sync_retry_pending = MagicMock()
-        session.reset_retry_pending = MagicMock()
+        session.reset_retry_pending_for_edit = MagicMock()
 
         ctx = MagicMock()
         ctx.session = session
@@ -201,7 +201,7 @@ class TestDeitmsgPlugin:
         session.messages = msgs
         session.captured_prefill = ""
         session.sync_retry_pending = MagicMock()
-        session.reset_retry_pending = MagicMock()
+        session.reset_retry_pending_for_edit = MagicMock()
 
         ctx = MagicMock()
         ctx.session = session
@@ -247,7 +247,7 @@ class TestDeitmsgPlugin:
         session.messages = msgs
         session.captured_prefill = ""
         session.sync_retry_pending = MagicMock()
-        session.reset_retry_pending = MagicMock()
+        session.reset_retry_pending_for_edit = MagicMock()
 
         ctx = MagicMock()
         ctx.session = session
@@ -285,7 +285,7 @@ class TestDeitmsgPlugin:
         session.messages = msgs
         session.captured_prefill = ""
         session.sync_retry_pending = MagicMock()
-        session.reset_retry_pending = MagicMock()
+        session.reset_retry_pending_for_edit = MagicMock()
 
         ctx = MagicMock()
         ctx.session = session
@@ -306,3 +306,112 @@ class TestDeitmsgPlugin:
         assert len(msgs) == 2
         assert msgs[-1]["content"] == "第一条"
         assert ctx.state["prefill"] == "第二条（连续）"
+
+    @pytest.mark.asyncio
+    async def test_empty_prefill_resets_retry_pending_regression(self):
+        """空消息 prefill 场景 — 验证 reset_retry_pending_for_edit 被无条件调用
+
+        Bug 场景：最后一条 user 消息 content 为空字符串 ""，
+        sync_retry_pending 设置 retry_pending=True，旧代码的条件守卫
+        (if state["prefill"] and not state["retry"]) 导致 reset 被跳过，
+        prefill 为空时用户回车后触发自动 retry 而非显示预填内容。
+        """
+        plugin = DeitmsgPlugin()
+        chat_ui = MagicMock()
+        loop = MagicMock()
+        loop._chat_ui = chat_ui
+        loop._monitor = MagicMock()
+        plugin._loop = loop
+
+        msgs = [
+            {"role": "system", "content": "system"},
+            {"role": "user", "content": "第一条"},
+            {"role": "assistant", "content": "回复1"},
+            {"role": "user", "content": ""},  # 空消息
+        ]
+        session = MagicMock()
+        session.messages = msgs
+        session.captured_prefill = ""
+        session.sync_retry_pending = MagicMock()
+        session.reset_retry_pending_for_edit = MagicMock()
+
+        ctx = MagicMock()
+        ctx.session = session
+        ctx.state = {"model": "deepseek", "retry": False, "prefill": ""}
+
+        with patch(
+            "src.core.sandbox_manager.get_sandbox_manager",
+            return_value=None,
+        ):
+            with patch(
+                "src.app_loop._non_system_messages",
+                return_value=[],
+            ):
+                result = await plugin.async_execute(ctx)
+
+        assert result is True
+        # prefill 应为空字符串
+        assert ctx.state["prefill"] == ""
+        # reset_retry_pending_for_edit 必须被调用（无条件重置）
+        session.reset_retry_pending_for_edit.assert_called_once()
+        # 验证传入了 has_prefill=False（空 prefill）
+        call_kwargs = session.reset_retry_pending_for_edit.call_args[1]
+        assert call_kwargs["has_prefill"] is False
+
+    @pytest.mark.asyncio
+    async def test_consecutive_user_messages_retry_pending_regression(self):
+        """连续 user 消息截断后 retry_pending 状态验证
+
+        Bug 场景：[system, user_A, user_B] 截断 user_B 后，
+        messages[-1] 是 user（即 user_A），sync_retry_pending 推导
+        retry_pending=True，但 reset_retry_pending_for_edit 应覆盖为 False。
+        验证截断后 retry_pending 保持 False（不被 sync 推导后残留为 True）。
+        """
+        plugin = DeitmsgPlugin()
+        chat_ui = MagicMock()
+        loop = MagicMock()
+        loop._chat_ui = chat_ui
+        loop._monitor = MagicMock()
+        plugin._loop = loop
+
+        msgs = [
+            {"role": "system", "content": "system"},
+            {"role": "user", "content": "消息A"},
+            {"role": "user", "content": "消息B（连续）"},
+        ]
+        session = MagicMock()
+        session.messages = msgs
+        session.captured_prefill = ""
+        session.sync_retry_pending = MagicMock()
+        session.reset_retry_pending_for_edit = MagicMock()
+
+        ctx = MagicMock()
+        ctx.session = session
+        ctx.state = {"model": "deepseek", "retry": False, "prefill": ""}
+
+        with patch(
+            "src.core.sandbox_manager.get_sandbox_manager",
+            return_value=None,
+        ):
+            with patch(
+                "src.app_loop._non_system_messages",
+                return_value=[],
+            ):
+                result = await plugin.async_execute(ctx)
+
+        assert result is True
+        # 截断后应剩 [system, user_A]
+        assert len(msgs) == 2
+        assert msgs[-1]["content"] == "消息A"
+        assert ctx.state["prefill"] == "消息B（连续）"
+        # sync_retry_pending 被调用
+        session.sync_retry_pending.assert_called_once()
+        # reset_retry_pending_for_edit 在 sync 之后调用，覆盖为 False
+        session.reset_retry_pending_for_edit.assert_called_once()
+        # 验证调用顺序：sync → reset
+        sync_call_order = session.sync_retry_pending.call_count
+        # 使用 mock_calls 验证顺序
+        from unittest.mock import call
+        expected_calls = [call.sync_retry_pending(), call.reset_retry_pending_for_edit(has_prefill=True)]
+        for expected in expected_calls:
+            assert expected in session.mock_calls, f"Expected {expected} in mock_calls: {session.mock_calls}"

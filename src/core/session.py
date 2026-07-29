@@ -240,6 +240,18 @@ class ChatSession:
         """
         self._state.retry_pending = False
 
+    def reset_retry_pending_for_edit(self, has_prefill: bool) -> None:
+        """编辑命令统一的 retry_pending 重置入口（模板方法）。
+
+        编辑/截断消息后强制重置 retry_pending = False。编辑语义 =
+        用户要重新编辑输入，不是自动续接。无论 prefill 是否为空，
+        均无条件重置。has_prefill 参数保留给未来扩展（如日志/可观测性）。
+
+        设计模式: 模板方法（Template Method）— 编辑类命令的统一
+        retry_pending 重置骨架，deitmsg/editmsg 等插件共用此入口。
+        """
+        self._state.retry_pending = False
+
     def _safe_save_state(self) -> None:
         """安全执行状态机 save 转换（忽略无效转换）。"""
         self._persistence_mgr._safe_save_state()

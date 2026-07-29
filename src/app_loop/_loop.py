@@ -101,18 +101,28 @@ class InteractiveLoop:
             # ★ 同步当前模型名到底部栏状态行（覆盖所有可能修改模型的路径）
             self._chat_ui.bottom_bar.set_model_name(state.model)
 
-            # ── retry / retry_pending：放入队列执行（非直接 await） ──
-            if state.retry or session.retry_pending:
+            # ★ prefill 优先：先消费 prefill，再决定路由。
+            #    当 prefill 非空时（/deitmsg /editmsg 等编辑命令预设），
+            #    跳过 retry_pending / queued_input 短路检查，直接进入用户输入等待，
+            #    避免 retry_pending 哨兵优先短路导致预填内容丢失（Bug 修复）。
+            _logger.debug("_handle_round: before _merge_prefill, state.prefill='%s', len=%d", state.prefill[:80] if state.prefill else '', len(state.prefill))
+            _cp_len_before = len(session.captured_prefill) if hasattr(session, 'captured_prefill') else 0
+            prefill = _merge_prefill(state, session)
+            _logger.debug("_handle_round: after _merge_prefill, merged prefill len=%d, captured_prefill len was=%d", len(prefill) if prefill else 0, _cp_len_before)
+
+            # ── retry / retry_pending：仅在无 prefill 时触发 ──
+            if not prefill and (state.retry or session.retry_pending):
                 state.retry = False
                 reset_interrupt_async(input_instance=self._chat_ui.input if self._chat_ui else None)
                 await _put_and_wait(queue, _RETRY_SENTINEL, msg_done)
                 return _RoundResult(should_exit=False)
 
-            # ★ 流式期间用户按了 Enter → 跳过输入提示，直接处理排队输入
-            queued = self._loop_state.pop("queued_input", None)
-            if queued:
-                await _put_and_wait(queue, queued, msg_done)
-                return _RoundResult(should_exit=False)
+            # ★ 流式期间用户按了 Enter → 仅在无 prefill 时触发
+            if not prefill:
+                queued = self._loop_state.pop("queued_input", None)
+                if queued:
+                    await _put_and_wait(queue, queued, msg_done)
+                    return _RoundResult(should_exit=False)
 
             _tw = self._get_term_width()
             self._chat_ui.write_line(f"{DIM}{'─' * max(min(_tw - 2, 40), 1)}{RESET}")
@@ -120,10 +130,6 @@ class InteractiveLoop:
             self._chat_ui.flush()
             # ★ 显式将光标定位到输入行（flush 返回时 render 线程可能尚未执行 _position_cursor）
             self._chat_ui.bottom_bar.ensure_cursor_in_lower()
-            _logger.debug("_handle_round: before _merge_prefill, state.prefill='%s', len=%d", state.prefill[:80] if state.prefill else '', len(state.prefill))
-            _cp_len_before = len(session.captured_prefill) if hasattr(session, 'captured_prefill') else 0
-            prefill = _merge_prefill(state, session)
-            _logger.debug("_handle_round: after _merge_prefill, merged prefill len=%d, captured_prefill len was=%d", len(prefill) if prefill else 0, _cp_len_before)
 
             # ★ 获取输入前清除残留中断信号
             reset_interrupt_async(input_instance=self._chat_ui.input if self._chat_ui else None)
