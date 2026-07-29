@@ -22,7 +22,6 @@ class StreamingIndicator:
       所有共享状态通过 threading.Event 管理，利用 Event 内置的内存屏障
       保证跨线程可见性，无需额外加锁。
       - _terminated: 终止标记，set() 后对所有线程立即可见
-      - _has_shown:   是否实际显示过光标，用于决定是否需要清除终端行
       - _running:     运行状态，控制 _tick 循环启停
     """
 
@@ -35,7 +34,6 @@ class StreamingIndicator:
         self._running = threading.Event()
         self._label = ""
         # Event 自带内存屏障：set() 写入对所有后续 is_set() 读取立即可见
-        self._has_shown = threading.Event()   # 标记是否实际显示过光标
         self._terminated = threading.Event()  # 终止标志，阻止清除后再写入
 
     def start(self, label: str = "正在生成"):
@@ -47,11 +45,10 @@ class StreamingIndicator:
         self._label = label
         # 重置状态变量，允许新的启动周期
         self._terminated.clear()
-        self._has_shown.clear()
         self._schedule_tick()
 
     def _schedule_tick(self):
-        self._timer = threading.Timer(0.3, self._tick)
+        self._timer = threading.Timer(0.1, self._tick)
         self._timer.daemon = True
         self._timer.start()
 
@@ -60,7 +57,6 @@ class StreamingIndicator:
         # 单次检查 _terminated，Event.is_set() 自带内存屏障保证可见性
         if self._terminated.is_set():
             return
-        self._has_shown.set()
         char = self.CURSOR_CHARS[self._idx % len(self.CURSOR_CHARS)]
         self._output.clear_line()
         self._output.write_raw(f"\033[90m  {char} {self._label}...\033[0m")
@@ -81,7 +77,7 @@ class StreamingIndicator:
         self._terminated.set()
         was_running = self._running.is_set()
         self.stop()
-        if was_running and self._has_shown.is_set():
+        if was_running:
             self._output.clear_line()
 
     def stop(self):
@@ -96,5 +92,5 @@ class StreamingIndicator:
         # on_first_content() 只在新 token 到达时才清除，如果 close() 时
         # 已无新 token 触发 on_first_content，指示器行会残留。此处确保
         # 任何关闭路径都清理干净。
-        if was_running and self._has_shown.is_set():
+        if was_running:
             self._output.clear_line()
