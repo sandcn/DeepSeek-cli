@@ -2,20 +2,19 @@
 
 保持 ChatUIConsumer + EscapeMonitor 运行，
 通过底部栏补全弹窗 + render 线程 ↑↓/Enter 交互，
-选择完成后 monitor.start(prefill=) 注入预填内容。
+选择完成后 prefill 走正常 state.prefill → _merge_prefill → wait_for_user_input 路径。
 
-prefill 数据流（主路径 + 兜底路径）:
+prefill 数据流（正常路径）:
 
-  主路径（finally 块，monitor.start 注入）:
-    1. MessageEditor.edit_current_messages — 截断消息 + edit_state["prefill"] = 旧内容
-    2. editmsg_plugin.py:async_execute — state["prefill"] = edit_state.get("prefill", "")
-    3. state["prefill"] = "" — 先清空，确保 monitor.start() 异常也不残留 prefill
-    4. monitor.start(prefill=prefill_text) — 使用已捕获的 prefill_text 注入终端
-
-  兜底路径（state["prefill"] 已空，返回空字符串）:
-    5. _loop.py:_handle_command_msg — 从 state_dict 同步到 state.prefill（空值）
-    6. _loop.py:_handle_round — _merge_prefill() 合并 prefill（空操作）
-    7. consumer.py:wait_for_user_input — 从参数接收空 prefill，调用 set_prefill（无操作）
+  1. MessageEditor.edit_current_messages — 截断消息 + edit_state["prefill"] = 旧内容
+  2. editmsg_plugin.py:async_execute — state["prefill"] = edit_state.get("prefill", "")
+     ★ finally 块不再清除 state["prefill"]，保留给 _merge_prefill 处理
+  3. _loop.py:_handle_command_msg — 从 state_dict 同步到 state.prefill（非空）
+  4. _loop.py:_handle_round — _merge_prefill(state, session) 合并 prefill：
+     - 读取 state.prefill → 清除 state.prefill
+     - session.captured_prefill 已在 finally 块中清除（防前一回合残留）
+     - 返回编辑后的消息内容
+  5. consumer.py:wait_for_user_input — 从参数接收 prefill，调用 set_buffer 注入输入行
 """
 
 from __future__ import annotations
@@ -35,9 +34,9 @@ _logger = logging.getLogger(__name__)
 class EditmsgPlugin(InteractiveCommandPlugin):
     """编辑当前会话消息 (Ctrl+O)
 
-    暂停 ChatUIConsumer + 停止 EscapeMonitor，
-    让底部栏补全弹窗 + raw I/O 处理 ↑↓/Enter/Esc 交互，
-    选择完成后恢复两者。
+    保持 ChatUIConsumer + EscapeMonitor 运行，
+    让底部栏补全弹窗 + render 线程 ↑↓/Enter 交互，
+    选择完成后 prefill 走正常 state.prefill → _merge_prefill 路径。
     """
 
     def __init__(self):
@@ -120,15 +119,17 @@ class EditmsgPlugin(InteractiveCommandPlugin):
         finally:
             if monitor is not None:
                 try:
-                    prefill_text = state.get("prefill", "")
-                    # ★ 先清理状态，确保 monitor.start() 异常也不残留 prefill
-                    state["prefill"] = ""
-                    # ★ 清除 captured_prefill
-                    if prefill_text:
-                        session.captured_prefill = ''
-                    monitor.start(prefill=prefill_text)
+                    # ★ 清除 captured_prefill（防前一回合残留）
+                    #    注意：不在此处清空 state["prefill"]，保留给
+                    #    _merge_prefill(state, session) 在下一回合正常读取。
+                    #    也不在此处调用 monitor.start()（monitor 从未被停止，
+                    #    start() 内部的 _input.reset() 会与 render 线程竞态）。
+                    session.captured_prefill = ''
+                    from ....api.interrupt_async import reset_interrupt_async
+                    reset_interrupt_async()
+                    monitor._interrupted.clear()
                 except Exception:
-                    _logger.warning("monitor.start() 在 finally 中异常", exc_info=True)
+                    _logger.warning("finally 块清理异常", exc_info=True)
             if chat_ui is not None:
                 try:
                     chat_ui.flush()
