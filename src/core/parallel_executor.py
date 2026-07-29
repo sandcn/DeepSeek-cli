@@ -197,6 +197,7 @@ class ParallelExecutor:
                 _DisplayEventBus.get_default().publish(_AgentAddedEvent(
                     label=label, description=desc, status="running", source="parallel",
                     dispatch_label=dispatch_label,
+                    agent_type=spec.get(_AGENT_TYPE_KEY, "execute"),
                 ))
 
             try:
