@@ -196,6 +196,65 @@ def _truncate_by_width(s: str, max_width: int) -> str:
     return s
 
 
+def _ansi_truncate(s: str, max_width: int) -> str:
+    """按终端列宽截断字符串（ANSI 转义序列感知）。
+
+    完整保留 ANSI 颜色/样式序列，仅截断可见字符部分。
+    截断后自动追加 ``\\033[0m`` 防止颜色溢出。
+
+    Args:
+        s: 含 ANSI 转义序列的输入字符串。
+        max_width: 最大终端显示列数。
+
+    Returns:
+        截断后的字符串（仍含有效 ANSI 序列 + 尾部 reset）。
+    """
+    if max_width <= 0 or not s:
+        return ""
+    w = 0
+    parts: list[str] = []
+    has_ansi = False
+    i = 0
+    while i < len(s):
+        if s[i] == '\033':
+            # 收集整个 ANSI 转义序列
+            seq_start = i
+            j = i + 1
+            if j < len(s) and s[j] == '[':
+                j += 1
+                while j < len(s) and s[j] not in 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz':
+                    j += 1
+                end = j + 1 if j < len(s) else len(s)
+            elif j < len(s) and s[j] in ']PX^_':
+                j += 1
+                while j < len(s):
+                    if s[j] == '\033' and j + 1 < len(s) and s[j + 1] == '\\':
+                        end = j + 2
+                        break
+                    elif s[j] == '\a':
+                        end = j + 1
+                        break
+                    j += 1
+                else:
+                    end = len(s)
+            else:
+                end = j + 1
+            parts.append(s[seq_start:end])
+            has_ansi = True
+            i = end
+            continue
+        cw = wcswidth_simple(s[i])
+        cw = cw if cw >= 0 else 1
+        if w + cw > max_width:
+            if has_ansi:
+                parts.append('\033[0m')
+            return ''.join(parts)
+        w += cw
+        parts.append(s[i])
+        i += 1
+    return ''.join(parts)
+
+
 def _build_gradient(width: int, start_color: int = 45, end_color: int = 237,
                     char: str = "\u2501") -> str:
     """构建渐变分隔线。
@@ -1146,9 +1205,10 @@ class _BottomBar:
                     sep = _build_gradient(tw - 2, start_color=sep_start)
                     clear_buf.append(f"{cursor_goto(r1, 1)}  {sep}")
 
-            # subagent 面板行
+            # subagent 面板行（每行按终端宽度截断，防止折行破坏布局）
             for i, line in enumerate(self._subagent_lines):
                 sr = subagent_start + i
+                line = _ansi_truncate(line, tw)
                 clear_buf.append(f"{cursor_goto(sr, 1)}\033[K" + line)
 
             # 状态行

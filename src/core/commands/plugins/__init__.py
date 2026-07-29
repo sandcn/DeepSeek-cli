@@ -11,6 +11,7 @@ registry.py 保留 get_interactive_registry() 作为向后兼容导出。
 """
 
 from .base import InteractiveCommandPlugin
+from .deitmsg_plugin import DeitmsgPlugin
 from .editmsg_plugin import EditmsgPlugin
 from .model_plugin import ModelPlugin
 from .loop_plugin import LoopPlugin
@@ -18,6 +19,7 @@ from .registry import get_interactive_registry
 
 __all__ = [
     "InteractiveCommandPlugin",
+    "DeitmsgPlugin",
     "EditmsgPlugin",
     "ModelPlugin",
     "LoopPlugin",
