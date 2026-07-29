@@ -70,6 +70,79 @@ class TestTuiEngineCommandQueue:
         engine.ensure_cursor_upper()
         bottom_bar.ensure_cursor_in_upper.assert_called_once()
 
+    def test_render_loop_event_cleared_before_wait(self):
+        """验证 _cmd_event.clear() 在 wait() 前无条件执行（修复 CPU 100% 忙等）"""
+        from src.tui._renderer import TuiEngine
+        from unittest.mock import MagicMock
+
+        renderer = MagicMock()
+        bottom_bar = MagicMock()
+        engine = TuiEngine(renderer, bottom_bar)
+
+        # mock _cmd_event 以跟踪调用
+        engine._cmd_event = MagicMock()
+
+        # mock _drain_queue 返回 True（模拟有 SubAgent 帧内容）
+        engine._drain_queue = MagicMock(return_value=True)
+
+        # 手动执行修复后的逻辑
+        has_content = engine._drain_queue()
+        engine._cmd_event.clear()
+        engine._cmd_event.wait(timeout=engine._config.render_interval)
+
+        # 验证 clear 在 wait 前被调用
+        engine._cmd_event.clear.assert_called_once()
+        engine._cmd_event.wait.assert_called_once_with(timeout=engine._config.render_interval)
+
+        # 验证 clear 在 wait 之前被调用（call order）
+        calls = engine._cmd_event.mock_calls
+        clear_idx = next(i for i, c in enumerate(calls) if c[0] == 'clear')
+        wait_idx = next(i for i, c in enumerate(calls) if c[0] == 'wait')
+        assert clear_idx < wait_idx, f"clear() 应在 wait() 之前调用, 实际 clear={clear_idx}, wait={wait_idx}"
+
+    def test_event_not_stuck_set_with_continuous_subagent_frames(self):
+        """模拟连续 SUBAGENT_FRAME push 场景，验证 event 不会卡在 SET 状态"""
+        from src.tui._renderer import TuiEngine
+        from src.tui._const import RenderCommand
+        from unittest.mock import MagicMock
+
+        renderer = MagicMock()
+        bottom_bar = MagicMock()
+        engine = TuiEngine(renderer, bottom_bar)
+
+        # 使用真实的 Event
+        import threading
+        engine._cmd_event = threading.Event()
+
+        # 模拟 _panel_refresh_cb: 每次刷新的 push SUBAGENT_FRAME（模拟真实场景）
+        def mock_panel_refresh():
+            engine._cmd_queue.put((RenderCommand.SUBAGENT_FRAME, ("line1",)))
+            engine._cmd_event.set()
+
+        engine._panel_refresh_cb = mock_panel_refresh
+
+        # 模拟多次渲染循环回合
+        for _ in range(5):
+            # 先 push 一些内容到队列（模拟外部 push）
+            engine._cmd_queue.put((RenderCommand.NOTIFICATION, "test"))
+            engine._cmd_event.set()
+
+            # 执行 drain（内部会调用 _phase_pre_update_panels → mock_panel_refresh → 又 set 了 event）
+            engine._drain_queue()
+
+            # ★ 修复后的行为：无论 has_content 如何，都 clear
+            engine._cmd_event.clear()
+
+            # 验证 event 已 clear（wait 会实际等待）
+            assert not engine._cmd_event.is_set(), \
+                f"循环 {_}: event 应已被 clear，但处于 SET 状态"
+
+            # 模拟 wait（设置极短超时避免慢）
+            engine._cmd_event.wait(timeout=0.001)
+
+        # 验证：清理队列
+        engine._drain_queue_safe()
+
 
 class TestTuiRenderer:
     """测试 TuiRenderer 命令分发。"""

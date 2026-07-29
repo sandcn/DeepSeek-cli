@@ -319,9 +319,10 @@ class TuiEngine:
             while self._render_running:
                 try:
                     has_content = self._drain_queue()
+                    # ★ 始终在 wait 前 clear event，防止 _phase_pre_update_panels() 在 drain 过程中
+                    #   推入 SUBAGENT_FRAME 后 set 了 event，导致 wait() 立即返回形成忙等循环
+                    self._cmd_event.clear()
                     self._cmd_event.wait(timeout=self._config.render_interval)
-                    if not has_content:
-                        self._cmd_event.clear()
                 except Exception as exc:
                     if self._handle_render_crash(exc):
                         return
