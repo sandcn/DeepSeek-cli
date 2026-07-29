@@ -38,7 +38,7 @@ class TestTuiConfigDefaults:
 
     def test_render_engine_params(self):
         assert self.cfg.render_interval == 0.1
-        assert self.cfg.active_render_interval == 0.005
+        assert self.cfg.active_render_interval == 0.1
         assert self.cfg.max_batch_size == 50
         assert self.cfg.drain_lock_timeout == 0.1
         assert self.cfg.cmd_queue_maxsize == 10000
