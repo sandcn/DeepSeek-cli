@@ -559,6 +559,8 @@ class TuiRenderer:
         self._bb.increment_tool_fail()
 
     def _do_main_phase(self, phase: str) -> None:
+        if phase == "thinking":
+            self._rs.reopen_reasoning()
         self._bb.set_main_phase(phase)
 
     def _do_tool_output(self, text: str) -> None:
