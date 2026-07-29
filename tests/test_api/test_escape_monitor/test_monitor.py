@@ -47,7 +47,8 @@ class TestEscapeMonitorLifecycle:
         """创建 EscapeMonitor 实例（注入 mock Input）。"""
         from src.api.escape_monitor._monitor import EscapeMonitor
         m = EscapeMonitor(input_instance=mock_input)
-        m._apply_monitor_settings = MagicMock()
+        m.apply_monitor_settings = MagicMock()
+        m.restore_terminal_settings = MagicMock()
         m._restore_terminal_settings = MagicMock()
         m._restore_terminal_settings_impl = MagicMock()
         return m
@@ -64,7 +65,7 @@ class TestEscapeMonitorLifecycle:
         mock_input.reset.assert_called_once()
         mock_input.load_history.assert_called_once()
         mock_input.start_io.assert_called_once()
-        monitor._apply_monitor_settings.assert_called_once()
+        monitor.apply_monitor_settings.assert_called_once()
 
     def test_start_with_prefill(self, monitor, mock_input):
         """start(prefill=...) 应调用 input.set_buffer(prefill)。"""
@@ -72,11 +73,11 @@ class TestEscapeMonitorLifecycle:
         mock_input.set_buffer.assert_called_once_with("hello")
 
     def test_stop_delegates_to_input(self, monitor, mock_input):
-        """stop() 应调用 input.stop_io()。"""
+        """stop() 应调用 input.stop_io() 并恢复终端设置。"""
         monitor.start()
         monitor.stop()
         mock_input.stop_io.assert_called_once()
-        monitor._restore_terminal_settings.assert_called()
+        monitor._restore_terminal_settings_impl.assert_called()
 
     def test_resume_delegates_to_input(self, monitor, mock_input):
         """resume() 应调用 input.resume_io()。"""

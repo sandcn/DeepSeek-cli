@@ -634,3 +634,57 @@ class TestProperties:
         inp.capture_bytes(b"\xff\xfe")
         assert inp.drain_captured() != ""
         assert inp.drain_captured() == ""  # 已清空
+
+
+# ═══════════════════════════════════════════════════════════
+# flush_stdin_buffer 测试
+# ═══════════════════════════════════════════════════════════
+
+class TestFlushStdinBuffer:
+    """测试 Input.flush_stdin_buffer() 公开方法。"""
+
+    @pytest.fixture
+    def inp(self, tmp_path):
+        fd = os.open("/dev/null", os.O_RDONLY)
+        try:
+            yield Input(fd=fd, history_file=tmp_path / "history")
+        finally:
+            os.close(fd)
+
+    def test_flush_stdin_buffer_no_data(self, inp):
+        """无数据时 flush_stdin_buffer() 应快速返回，不抛异常。"""
+        inp.flush_stdin_buffer()
+        # 不应抛异常，方法正常返回
+
+    def test_flush_stdin_buffer_after_call_flags_unchanged(self, inp):
+        """flush_stdin_buffer() 调用后标志位正常（不改变 I/O 状态）。"""
+        inp.start_io()
+        io_was_running = inp.is_io_running
+        active_was_set = inp._active.is_set()
+        stop_was_set = inp._stop.is_set()
+
+        inp.flush_stdin_buffer()
+
+        assert inp.is_io_running == io_was_running
+        assert inp._active.is_set() == active_was_set
+        assert inp._stop.is_set() == stop_was_set
+        inp.stop_io()
+
+    def test_flush_stdin_buffer_respects_max_flush(self, inp):
+        """max_flush 参数限制生效：传递给 _flush_stdin_residual。"""
+        import select as _select_mod
+        original_select = _select_mod.select
+
+        call_count = [0]
+
+        def fake_select(rlist, wlist, xlist, timeout):
+            call_count[0] += 1
+            return ([inp._fd], [], [])
+
+        try:
+            _select_mod.select = fake_select
+            inp.flush_stdin_buffer(max_flush=3)
+            # 每个迭代调用一次 select，最多 max_flush=3 次
+            assert call_count[0] <= 3 + 1  # +1 容差（tcflush 路径可能额外调用）
+        finally:
+            _select_mod.select = original_select

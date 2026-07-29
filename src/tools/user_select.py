@@ -9,7 +9,7 @@ from shutil import get_terminal_size
 import sys
 import time
 
-from src._compat_termios import HAS_TERMIOS, termios, tty
+from src._compat_termios import HAS_TERMIOS
 from .base import Func, tool_metadata
 from ..core.constants import GREEN, YELLOW, RED, DIM, RESET
 from ..tui.consumer import get_active_chat_ui
@@ -88,6 +88,7 @@ class UserSelectFunc(Func):
         self.multi_select = multi_select
         self.default_options = default_options or []
         self.timeout = timeout
+        self._input = None
 
     async def execute(self):
         """异步执行选择并返回结果"""
@@ -96,16 +97,6 @@ class UserSelectFunc(Func):
 
         # 终端模式：在底部栏补全区显示选项，raw I/O 交互
         return await self._execute_terminal_async()
-
-    async def _flush_stdin(self):
-        """清空 stdin 残留字节（如 ESC 中断后遗留的 \\x1b）"""
-        loop = asyncio.get_running_loop()
-        while select.select([sys.stdin], [], [], 0)[0]:
-            await loop.run_in_executor(None, sys.stdin.read, 1)
-        try:
-            termios.tcflush(sys.stdin, termios.TCIFLUSH)
-        except (ImportError, OSError, AttributeError):
-            pass
 
     def _stop_monitor(self, monitor):
         """完全停止 EscapeMonitor（替代 pause，更彻底地清理终端状态）。"""
@@ -126,30 +117,6 @@ class UserSelectFunc(Func):
             _logger.debug("user_select: EscapeMonitor started")
         except Exception as e:
             _logger.warning("user_select: EscapeMonitor start failed: %s", e)
-
-    def _save_termios(self) -> dict | None:
-        """保存当前终端设置，用于后续强制恢复。"""
-        try:
-            fd = sys.stdin.fileno()
-            if os.isatty(fd):
-                return {"fd": fd, "old": termios.tcgetattr(fd)}
-        except Exception as e:
-            _logger.debug("user_select: save_termios failed: %s", e)
-        return None
-
-    def _restore_termios(self, guard: dict | None) -> None:
-        """强制恢复终端设置（兜底清理）。"""
-        if guard is None:
-            return
-        try:
-            termios.tcsetattr(guard["fd"], termios.TCSADRAIN, guard["old"])
-            _logger.debug("user_select: termios restored (fd=%d)", guard["fd"])
-        except Exception as e:
-            _logger.warning("user_select: termios restore failed: %s", e)
-            try:
-                Func._publish_tool_text(f"\n  警告: 终端设置恢复失败，可能需要手动执行 'reset' 命令")
-            except Exception:
-                _logger.debug("打印恢复警告失败")
 
     async def _execute_terminal_async(self) -> str:
         """终端模式：在底部栏补全区显示选项，用 raw I/O 处理 ↑↓/Enter/Esc。
@@ -186,6 +153,8 @@ class UserSelectFunc(Func):
         # 获取 ChatUIConsumer 用于操作底部栏
         chat_ui = get_active_chat_ui()
         bb = chat_ui.bottom_bar if chat_ui else None
+        input_ = chat_ui._components.input if chat_ui else None
+        self._input = input_
 
         if bb is None:
             self._start_monitor(monitor)
@@ -225,18 +194,17 @@ class UserSelectFunc(Func):
                     initial_idx = i
                     break
 
-        # cbreak 模式 + 终端设置
-        fd = sys.stdin.fileno()
-        old_settings = termios.tcgetattr(fd)
-        _termios_guard = self._save_termios()
+        # 终端 I/O 设置：使用 Input 和 EscapeMonitor 公开 API
+        fd = input_.fd if input_ else sys.stdin.fileno()
 
         try:
             # 清空 stdin 残留
-            await self._flush_stdin()
+            if self._input:
+                self._input.flush_stdin_buffer()
 
-            # ★ 先设 cbreak 关闭回显，再画弹窗，避免 echoed 字符污染画面
-            tty.setcbreak(fd)
-            termios.tcflush(fd, termios.TCIFLUSH)
+            # 使用 EscapeMonitor 公开方法设置 cbreak 模式
+            if monitor:
+                monitor.apply_monitor_settings()
 
             # 仅清空输入文本，使输入区显示干净弹窗选择界面；
             # 但保持 _status_active 不变（不清除），让状态行在弹窗期间
@@ -275,7 +243,7 @@ class UserSelectFunc(Func):
                     break  # 超时
 
                 try:
-                    raw = os.read(fd, 1)
+                    raw = input_.read_byte() if input_ else os.read(fd, 1)
                     if not raw:
                         continue
                 except (ValueError, OSError):
@@ -288,12 +256,16 @@ class UserSelectFunc(Func):
                     try:
                         has_more, _, _ = select.select([fd], [], [], 0.3)
                         if has_more:
-                            nxt = os.read(fd, 1)
+                            nxt = input_.read_byte() if input_ else os.read(fd, 1)
                             if nxt in (b'[', b'O'):
                                 # CSI/SS3 序列：\x1b[A/↑, \x1b[B/↓, \x1bOA/↑, \x1bOB/↓
                                 has_term, _, _ = select.select([fd], [], [], 0.1)
                                 if has_term:
-                                    term = os.read(fd, 1)
+                                    term = input_.read_with_timeout(0.1) if input_ else os.read(fd, 1)
+                                    if term is None:
+                                        continue
+                                    if not term:
+                                        continue
                                     if term == b'A':      # ↑
                                         bb.cycle_completion(-1)
                                     elif term == b'B':    # ↓
@@ -367,12 +339,12 @@ class UserSelectFunc(Func):
                 "action": f"error: {error_msg}",
             }, ensure_ascii=False)
         finally:
-            # 恢复终端设置（直接恢复 + 兜底恢复）
-            try:
-                termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
-            except Exception:
-                pass
-            self._restore_termios(_termios_guard)
+            # 恢复终端设置（通过 EscapeMonitor 公开 API）
+            if monitor:
+                try:
+                    monitor.restore_terminal_settings()
+                except Exception:
+                    pass
 
             # 清除弹窗状态 + 主动重绘，确保底部栏立即恢复正常显示
             try:
@@ -385,7 +357,8 @@ class UserSelectFunc(Func):
                 _logger.debug("user_select: cleanup failed: %s", e)
 
             # 清空 stdin 残留
-            await self._flush_stdin()
+            if self._input:
+                self._input.flush_stdin_buffer()
 
             # 重启 EscapeMonitor
             self._start_monitor(monitor)

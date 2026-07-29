@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import logging
-import sys
 
 from ._editor import edit_in_vim_sync
 
@@ -27,10 +26,9 @@ def make_special_key_callback(loop, session, state, chat_ui, monitor=None):
         if action == 'vim':
             # ── 单线程模型：直接操作终端模式 + 底部栏拆装 ──
             # 不能调用 chat_ui.suspend()（会 join 当前 render 线程导致死锁）
-            # 绕过公共 API 直接调用私有方法 _restore_terminal_settings/_apply_monitor_settings
-            # 因为这些方法仅操作终端模式，不需要公共 API 的额外生命周期管理
+            # 使用 EscapeMonitor 公开 API 操作终端模式
             if monitor is not None:
-                monitor._restore_terminal_settings()
+                monitor.restore_terminal_settings()
             bar_torn_down = False
             if chat_ui is not None:
                 chat_ui.teardown_bottom_bar()
@@ -41,13 +39,11 @@ def make_special_key_callback(loop, session, state, chat_ui, monitor=None):
                 if bar_torn_down and chat_ui is not None:
                     chat_ui.setup_bottom_bar()
                 if monitor is not None:
-                    monitor._apply_monitor_settings()
+                    monitor.apply_monitor_settings()
                     # ★ vim 退出后恢复 cbreak，清空 stdin 残留字节（防止乱码注入）
-                    from src._compat_termios import termios
-                    try:
-                        termios.tcflush(sys.stdin.fileno(), termios.TCIFLUSH)
-                    except Exception:
-                        pass
+                    input_ = chat_ui.input if chat_ui is not None else None
+                    if input_ is not None:
+                        input_.flush_stdin_buffer()
         elif action == 'editmsg':
             return '/editmsg'
         elif action == 'switch_model':

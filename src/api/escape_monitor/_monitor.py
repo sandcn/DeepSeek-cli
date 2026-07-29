@@ -12,7 +12,6 @@ EscapeMonitor 仅负责终端 cbreak/cooked 模式切换和中断信号管理。
 
 from __future__ import annotations
 
-import os
 import sys
 import threading
 import logging
@@ -20,7 +19,8 @@ from ._history import (
     _active_monitor,
     _active_monitor_lock,
 )
-from ..interrupt_async import request_interrupt_async
+from ..interrupt_async import request_interrupt_async, reset_interrupt_async
+from src._compat_termios import termios, tty
 
 _logger = logging.getLogger(__name__)
 
@@ -65,8 +65,7 @@ class EscapeMonitor:
         """
         global _active_monitor, _active_monitor_lock
         self._started = True
-        from ..interrupt_async import reset_interrupt_async
-        reset_interrupt_async()
+        reset_interrupt_async(input_instance=self._input)
         self._interrupted.clear()
         self._stop.clear()
         self._active.set()
@@ -74,13 +73,12 @@ class EscapeMonitor:
         self._input.load_history()
         if prefill:
             self._input.set_buffer(prefill)
-        # ★ 在首次 _apply_monitor_settings() 前保存原始终端设置
-        from src._compat_termios import termios
+        # ★ 在首次 apply_monitor_settings() 前保存原始终端设置
         try:
             self._saved_original_settings = termios.tcgetattr(sys.stdin.fileno())
         except Exception:
             pass
-        self._apply_monitor_settings()
+        self.apply_monitor_settings()
         self._input.start_io()
         self._input.echo(self._input.get_current_text())
         with _active_monitor_lock:
@@ -92,10 +90,9 @@ class EscapeMonitor:
         self._stop.set()
         self._active.set()
         self._interrupted.clear()
-        from ..interrupt_async import reset_interrupt_async
-        reset_interrupt_async()
+        reset_interrupt_async(input_instance=self._input)
         self._input.stop_io()
-        self._restore_terminal_settings()
+        self._restore_terminal_settings_impl()
         with _active_monitor_lock:
             if _active_monitor is self:
                 _active_monitor = None
@@ -103,24 +100,17 @@ class EscapeMonitor:
     def resume(self):
         """恢复监听。"""
         self._interrupted.clear()
-        from ..interrupt_async import reset_interrupt_async
-        reset_interrupt_async()
+        reset_interrupt_async(input_instance=self._input)
         self._paused_ack.wait(timeout=1.0)
         self._paused_ack.clear()
         self._paused_ack.set()
-        self._apply_monitor_settings()
-        from src._compat_termios import termios
-        try:
-            termios.tcflush(sys.stdin.fileno(), termios.TCIFLUSH)
-        except Exception:
-            pass
+        self.apply_monitor_settings()
         self._input.resume_io()
 
     # ── 内部方法：终端控制 ────────────────────────────────
 
     def _restore_terminal_settings_impl(self):
         """实际终端设置恢复逻辑（无锁，由调用方保证线程安全）。"""
-        from src._compat_termios import termios
         settings = self._old_settings
         if settings is None:
             settings = self._saved_original_settings
@@ -128,25 +118,24 @@ class EscapeMonitor:
             try:
                 fd = sys.stdin.fileno()
                 termios.tcsetattr(fd, termios.TCSADRAIN, settings)
-                try:
-                    termios.tcflush(fd, termios.TCIFLUSH)
-                except Exception:
-                    pass
                 self._old_settings = None
             except Exception as e:
                 _logger.warning("终端设置恢复失败: %s", e)
 
-    def _restore_terminal_settings(self, *, _lock_held: bool = False):
+    def restore_terminal_settings(self) -> None:
         """确保终端设置恢复（在异常或停止时调用），线程安全。"""
+        with self._lock:
+            self._restore_terminal_settings_impl()
+
+    def _restore_terminal_settings(self, *, _lock_held: bool = False):
+        """[deprecated] 请使用 restore_terminal_settings()。"""
         if _lock_held:
             self._restore_terminal_settings_impl()
         else:
-            with self._lock:
-                self._restore_terminal_settings_impl()
+            self.restore_terminal_settings()
 
-    def _apply_monitor_settings(self) -> None:
+    def apply_monitor_settings(self) -> None:
         """获取当前终端设置并设置为 cbreak 模式（线程安全）。"""
-        from src._compat_termios import termios, tty
         with self._lock:
             try:
                 fd = sys.stdin.fileno()
@@ -154,6 +143,10 @@ class EscapeMonitor:
                 tty.setcbreak(fd)
             except Exception as e:
                 _logger.warning("设置终端 cbreak 模式失败: %s", e)
+
+    def _apply_monitor_settings(self) -> None:
+        """[deprecated] 请使用 apply_monitor_settings()。"""
+        self.apply_monitor_settings()
 
     # ── 公开属性 ──────────────────────────────────────────
 
@@ -166,6 +159,10 @@ class EscapeMonitor:
     def is_alive(self) -> bool:
         """Input 的 I/O 是否处于激活状态（标志位管理，非线程存活检测）。"""
         return self._input.is_io_running
+
+    def clear_interrupted(self) -> None:
+        """清除中断标志。"""
+        self._interrupted.clear()
 
 
 # ── 模块级导出函数 ──────────────────────────────────────────

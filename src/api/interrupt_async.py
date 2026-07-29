@@ -38,9 +38,13 @@ def request_interrupt_async() -> None:
     _interrupted.set()
 
 
-def flush_stdin() -> None:
+def flush_stdin(input_instance=None) -> None:
     """彻底清空 stdin 残留字节。
 
+    若传入 Input 实例且其有 flush_stdin_buffer 方法，则委托给 Input 处理；
+    否则回退到直接操作 sys.stdin 的旧路径（向后兼容）。
+
+    旧路径文档：
     ESC 中断大模型输出后，EscapeMonitor 已切换到原始模式读取按键，
     但 '\x1b' 等字节可能残留在 stdin 缓冲区中未被完全消费。
     残留字节会污染后续 prompt_toolkit / Picker 的输入事件循环，
@@ -51,6 +55,12 @@ def flush_stdin() -> None:
     - 根上清：中断信号复位时第一时间排空
     - 入口清：Picker 启动前再兜底一次
     """
+    # ★ 策略模式：有 Input 实例时委托给 Input.flush_stdin_buffer()
+    if input_instance is not None and hasattr(input_instance, 'flush_stdin_buffer'):
+        input_instance.flush_stdin_buffer()
+        return
+
+    # ── 旧路径：直接操作 sys.stdin（向后兼容无 Input 实例的调用方） ──
     _flushed = 0
     while _flushed < 50:
         try:
@@ -81,15 +91,19 @@ def flush_stdin() -> None:
         pass
 
 
-def reset_interrupt_async() -> None:
+def reset_interrupt_async(input_instance=None) -> None:
     """清除中断信号，并清空 stdin 残留字节。
 
     在每轮异步用户交互开始时调用，确保：
     1. 中断信号已复位
     2. stdin 缓冲区的残留 ESC 字节已被排空
+
+    Args:
+        input_instance: 可选的 Input 实例。传入时优先委托其 flush_stdin_buffer()
+            方法清空缓冲区；None 时走旧路径（直接操作 sys.stdin）。
     """
     _interrupted.clear()
-    flush_stdin()
+    flush_stdin(input_instance)
 
 
 # ── 同步桥接（用于 sync 代码调用 async 中断） ──────────────

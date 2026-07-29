@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import sys
 
 from ._utils import (
     _non_system_messages, _put_and_wait, _merge_prefill,
@@ -105,7 +104,7 @@ class InteractiveLoop:
             # ── retry / retry_pending：放入队列执行（非直接 await） ──
             if state.retry or session.retry_pending:
                 state.retry = False
-                reset_interrupt_async()
+                reset_interrupt_async(input_instance=self._chat_ui.input if self._chat_ui else None)
                 await _put_and_wait(queue, _RETRY_SENTINEL, msg_done)
                 return _RoundResult(should_exit=False)
 
@@ -127,12 +126,12 @@ class InteractiveLoop:
             _logger.debug("_handle_round: after _merge_prefill, merged prefill len=%d, captured_prefill len was=%d", len(prefill) if prefill else 0, _cp_len_before)
 
             # ★ 获取输入前清除残留中断信号
-            reset_interrupt_async()
+            reset_interrupt_async(input_instance=self._chat_ui.input if self._chat_ui else None)
 
             try:
                 user_input = await asyncio.to_thread(
                     self._chat_ui.wait_for_user_input, self._monitor, prefill,
-                    input_=self._chat_ui._components.input,
+                    input_=self._chat_ui.input,
                 )
             except RuntimeError as e:
                 if "EscapeMonitor" in str(e):
@@ -244,7 +243,7 @@ class InteractiveLoop:
             for i in range(count):
                 self._chat_ui.write_line(f"  {DIM}  ─ 第 {i+1}/{count} 轮 · 第1次 ─{RESET}")
                 # 清空对话（每轮开始前清空）
-                reset_interrupt_async()
+                reset_interrupt_async(input_instance=self._chat_ui.input if self._chat_ui else None)
                 session.clear_messages()
                 # 第1次运行（含网络错误重试）
                 result = await self._run_round_with_retry(session, prompt)
@@ -254,7 +253,7 @@ class InteractiveLoop:
 
                 # 第2次运行（固定提词"继续完成所有"，含网络错误重试）
                 self._chat_ui.write_line(f"  {DIM}  ─ 第 {i+1}/{count} 轮 · 第2次 ─{RESET}")
-                reset_interrupt_async()
+                reset_interrupt_async(input_instance=self._chat_ui.input if self._chat_ui else None)
                 result2 = await self._run_round_with_retry(session, "继续完成所有")
                 if result2.get("interrupted", False):
                     self._chat_ui.write_line(f"  {YELLOW}+ ESC 中断，提前结束循环（已执行 {i+1}/{count} 轮）{RESET}")
@@ -286,7 +285,7 @@ class InteractiveLoop:
         """
         for attempt in range(1, max_attempts + 1):
             # 每轮重试前确保 interrupt 信号已清除
-            reset_interrupt_async()
+            reset_interrupt_async(input_instance=self._chat_ui.input if self._chat_ui else None)
 
             try:
                 result = await session.run_round(prompt)
@@ -346,7 +345,7 @@ class InteractiveLoop:
 
     async def _handle_regular_msg(self, content: str, session, state: SessionState) -> None:
         """处理普通用户消息"""
-        reset_interrupt_async()
+        reset_interrupt_async(input_instance=self._chat_ui.input if self._chat_ui else None)
         # ★ 重置工具计数（新轮开始）
         if self._chat_ui is not None:
             self._chat_ui.bottom_bar.reset_tool_count()
@@ -373,7 +372,7 @@ class InteractiveLoop:
 
     async def _handle_command_msg(self, content: str, session, state: SessionState) -> None:
         """处理 / 命令分发 — 统一走插件路径"""
-        reset_interrupt_async()
+        reset_interrupt_async(input_instance=self._chat_ui.input if self._chat_ui else None)
         cmd_name = content.split()[0].lower()
 
         # 插件命令分发（统一路径）
@@ -388,7 +387,7 @@ class InteractiveLoop:
             arg = content.split(maxsplit=1)[1] if len(content.split(maxsplit=1)) > 1 else ""
             from ..core.commands import CommandUiAdapter
             _ui_adapter = CommandUiAdapter()
-            input_ = self._chat_ui._components.input
+            input_ = self._chat_ui.input
             ctx = CommandContext(
                 messages=session.messages, state=state_dict, arg=arg,
                 build_system_prompt=session.agent.build_system_prompt,
@@ -480,7 +479,7 @@ class InteractiveLoop:
         必须在 _register_session_handlers 之前调用，确保 _setup_session_and_handlers
         中 _register_session_handlers 传入的 self._monitor 为非 None 的 EscapeMonitor。
         """
-        input_instance = self._chat_ui._components.input
+        input_instance = self._chat_ui.input
         self._monitor = EscapeMonitor(input_instance=input_instance)
 
     def _setup_monitor(self, session, state):
@@ -494,7 +493,7 @@ class InteractiveLoop:
         回调注册在 Input 实例上（render 线程中统一分发），
         EscapeMonitor 仅负责原始 I/O。
         """
-        input_instance = self._chat_ui._components.input
+        input_instance = self._chat_ui.input
         if self._monitor is None or (self._monitor._started and not self._monitor.is_alive):
             if self._monitor is not None:
                 try:

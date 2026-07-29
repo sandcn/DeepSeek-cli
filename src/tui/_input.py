@@ -34,6 +34,7 @@ from src.api.escape_monitor._history import (
     _SELECT_ERROR_THRESHOLD,
     UNIX_SELECT_TIMEOUT,
 )
+from src._compat_termios import HAS_TERMIOS, termios
 from src.api.interrupt_async import request_interrupt_async
 from src.tui._screen import wcswidth_simple, TerminalWidthCache
 
@@ -333,6 +334,11 @@ class Input:
     # ── 公开属性 ──────────────────────────────────────────
 
     @property
+    def fd(self) -> int:
+        """stdin 文件描述符。"""
+        return self._fd
+
+    @property
     def width(self) -> int:
         """终端宽度（列数），TTL 缓存。"""
         return self._term_width_cache.get_width()
@@ -449,7 +455,24 @@ class Input:
                 os.read(self._fd, 1)
                 flushed += 1
             except (ValueError, OSError, TypeError, AttributeError):
+                _logger.debug("排空 stdin 残留时异常", exc_info=True)
                 break
+
+    def flush_stdin_buffer(self, max_flush: int = 50) -> None:
+        """公开方法：非阻塞清理 stdin 残留字节 + termios 缓冲区刷洗。
+
+        先使用 select 排空可读字节（委托 _flush_stdin_residual），
+        再通过 tcflush 刷洗内核输入队列（仅在 HAS_TERMIOS=True 时执行）。
+
+        Args:
+            max_flush: 最大排空字节数限制（传递给 _flush_stdin_residual）。
+        """
+        self._flush_stdin_residual(max_flush)
+        if HAS_TERMIOS:
+            try:
+                termios.tcflush(self._fd, termios.TCIFLUSH)
+            except Exception:
+                _logger.debug("tcflush 失败", exc_info=True)
 
     # ═══════════════════════════════════════════════════════
     # stdin 直接读取（render 线程调用）

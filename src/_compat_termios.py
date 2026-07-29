@@ -36,13 +36,16 @@ if _IS_NATIVE_WIN:
         TIOCGWINSZ: int = 0x5413
         TIOCSWINSZ: int = 0x5414
 
-        def tcgetattr(self, fd: int) -> list:
+        @staticmethod
+        def tcgetattr(fd: int) -> list:
             raise ImportError("termios 在当前平台（Windows）不可用")
 
-        def tcsetattr(self, fd: int, _when: int, attrs: object) -> None:
+        @staticmethod
+        def tcsetattr(fd: int, _when: int, attrs: object) -> None:
             raise ImportError("termios 在当前平台（Windows）不可用")
 
-        def tcflush(self, fd: int, queue: int) -> None:
+        @staticmethod
+        def tcflush(fd: int, queue: int) -> None:
             raise ImportError("termios 在当前平台（Windows）不可用")
 
     class _SimTty:

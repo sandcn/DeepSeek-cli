@@ -25,7 +25,7 @@ from typing import Any
 
 from .base import InteractiveCommandPlugin
 from ..base import CommandMeta, get_plugin_registry
-from ....api.interrupt_async import flush_stdin
+from ....api.interrupt_async import flush_stdin, reset_interrupt_async
 from ....core.constants import YELLOW, RESET
 
 _logger = logging.getLogger(__name__)
@@ -83,7 +83,7 @@ class EditmsgPlugin(InteractiveCommandPlugin):
             # ★ 不执行 chat_ui.suspend() — 保持 render 线程 + _BottomBar 运行
             # ★ 不执行 monitor.stop() — 保持 cbreak 模式供 render 线程驱动 ↑↓/Enter
             # Layer 2 防御：进入选择界面前排空 stdin 残余字节
-            flush_stdin()
+            flush_stdin(input_instance=chat_ui._input if chat_ui else None)
 
             edit_state = {"model": state.get("model", ""), "retry": False, "prefill": ""}
             bottom_bar = chat_ui.bottom_bar if chat_ui is not None else None
@@ -125,9 +125,8 @@ class EditmsgPlugin(InteractiveCommandPlugin):
                     #    也不在此处调用 monitor.start()（monitor 从未被停止，
                     #    start() 内部的 _input.reset() 会与 render 线程竞态）。
                     session.captured_prefill = ''
-                    from ....api.interrupt_async import reset_interrupt_async
-                    reset_interrupt_async()
-                    monitor._interrupted.clear()
+                    reset_interrupt_async(input_instance=chat_ui._input if chat_ui else None)
+                    monitor.clear_interrupted()
                 except Exception:
                     _logger.warning("finally 块清理异常", exc_info=True)
             if chat_ui is not None:

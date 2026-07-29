@@ -428,6 +428,11 @@ class ChatUIConsumer:
         input_.set_auto_completion_callback(self._cmpl_handler.on_auto)
 
     @property
+    def input(self):
+        """获取 Input 实例。"""
+        return self._input
+
+    @property
     def bottom_bar(self):
         return self._bb
 
