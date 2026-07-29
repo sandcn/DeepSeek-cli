@@ -1,20 +1,21 @@
 """EditmsgPlugin — 编辑当前会话消息 (/editmsg, Ctrl+O)
 
-暂停 ChatUIConsumer + 停止 EscapeMonitor，
-让底部栏补全弹窗 + raw I/O 处理 ↑↓/Enter/Esc 交互，
-选择完成后恢复两者。
+保持 ChatUIConsumer + EscapeMonitor 运行，
+通过底部栏补全弹窗 + render 线程 ↑↓/Enter 交互，
+选择完成后 monitor.start(prefill=) 注入预填内容。
 
 prefill 数据流（主路径 + 兜底路径）:
 
-  主路径（finally 块，提前注入）:
-    1. editmsg_plugin.py:async_execute — state["prefill"] = edit_state.get("prefill", "") — 从编辑状态拷贝 prefill
-    2. state["prefill"] = "" — 先清空，确保 monitor.start() 异常也不残留 prefill
-    3. monitor.start(prefill=prefill_text) — 使用已捕获的 prefill_text 注入终端
+  主路径（finally 块，monitor.start 注入）:
+    1. MessageEditor.edit_current_messages — 截断消息 + edit_state["prefill"] = 旧内容
+    2. editmsg_plugin.py:async_execute — state["prefill"] = edit_state.get("prefill", "")
+    3. state["prefill"] = "" — 先清空，确保 monitor.start() 异常也不残留 prefill
+    4. monitor.start(prefill=prefill_text) — 使用已捕获的 prefill_text 注入终端
 
   兜底路径（state["prefill"] 已空，返回空字符串）:
-    4. _loop.py:_handle_command_msg — 从 state_dict 同步到 state.prefill（空值）
-    5. _loop.py:_handle_round — _merge_prefill() 合并 prefill（空操作）
-    6. consumer.py:wait_for_user_input — 从参数接收空 prefill，调用 set_prefill（无操作）
+    5. _loop.py:_handle_command_msg — 从 state_dict 同步到 state.prefill（空值）
+    6. _loop.py:_handle_round — _merge_prefill() 合并 prefill（空操作）
+    7. consumer.py:wait_for_user_input — 从参数接收空 prefill，调用 set_prefill（无操作）
 """
 
 from __future__ import annotations
@@ -49,14 +50,12 @@ class EditmsgPlugin(InteractiveCommandPlugin):
     async def async_execute(self, ctx: Any) -> bool:
         """异步执行 /editmsg 命令
 
-        复制 _handle_editmsg_cmd 的完整编排逻辑：
-        suspend/stop → edit → resume/start 时序。
+        使用底部栏补全弹窗进行交互式消息选择（↑↓/Enter）。
+        不执行 chat_ui.suspend()（重构后 suspend 会拆除 _BottomBar），
+        而是保持 render 线程运行，在补全弹窗中完成选择。
         """
-        # 延迟导入避免模块加载时级联依赖
-        # pipeline/message_editor.py 已删除 — 使用内置实现
-        async def _edit_msgs(agent, state):
-            return None
         from ....app_loop import _non_system_messages
+        from ....tui.pipeline.message_editor import MessageEditor
 
         loop = self._loop
         if loop is None:
@@ -69,8 +68,6 @@ class EditmsgPlugin(InteractiveCommandPlugin):
         state = ctx.state  # dict: {"model": ..., "retry": ..., "prefill": ...}
 
         # ── 预检查：会话中是否有 user 消息可编辑 ──
-        # 必须在 suspend/stop 之前检查，避免无编辑可做时仍进行不必要的终端模式切换。
-        # 没有 user 消息时直接提示返回，不进入编辑交互。
         has_user_msg = any(
             m.get("role") == "user"
             for m in getattr(session, 'messages', []) or []
@@ -80,41 +77,38 @@ class EditmsgPlugin(InteractiveCommandPlugin):
                 chat_ui.write_line(
                     f"  {YELLOW}\u26a0{RESET} \u5f53\u524d\u4f1a\u8bdd\u65e0\u7528\u6237\u6d88\u606f\uff0c\u8bf7\u5148\u53d1\u9001\u6d88\u606f\u540e\u518d\u4f7f\u7528 /editmsg"
                 )
-            # ★ 返回 True：命令已被识别并处理（输出了提示信息），阻止调用方输出"未知命令"。
-            #   其他插件（LoopPlugin/ModelPlugin）在参数校验失败路径也返回 True，
-            #   editmsg 只有返回 True 才能避免 _handle_command_msg 的 else 分支误报。
             return True
 
         needs_rerender = False
         try:
-            # ★ suspend/stop 移入 try 内：确保 finally 总能恢复终端，即使 suspend/stop 自身异常
-            if chat_ui is not None:
-                chat_ui.suspend()
-            if monitor is not None:
-                monitor.stop()
-
-            edit_state = {"model": state.get("model", ""), "retry": False, "prefill": ""}
+            # ★ 不执行 chat_ui.suspend() — 保持 render 线程 + _BottomBar 运行
+            # ★ 不执行 monitor.stop() — 保持 cbreak 模式供 render 线程驱动 ↑↓/Enter
             # Layer 2 防御：进入选择界面前排空 stdin 残余字节
             flush_stdin()
-            await asyncio.to_thread(
-                _edit_msgs, session.agent, edit_state,
+
+            edit_state = {"model": state.get("model", ""), "retry": False, "prefill": ""}
+            bottom_bar = chat_ui.bottom_bar if chat_ui is not None else None
+            input_ = chat_ui._input if chat_ui is not None else None
+
+            editor = MessageEditor(bottom_bar=bottom_bar, input_=input_)
+            # 在线程中运行编辑器的交互式选择（使用 time.sleep 轮询）
+            loop_edit = asyncio.get_running_loop()
+            edited = await loop_edit.run_in_executor(
+                None, editor.edit_current_messages, session.agent, edit_state, "edit",
             )
-            state["prefill"] = edit_state.get("prefill", "")
-            _logger.debug("editmsg_plugin: state['prefill'] set, len=%d", len(state["prefill"]))
+
+            if edited:
+                state["prefill"] = edit_state.get("prefill", "")
+                _logger.debug("editmsg_plugin: state['prefill'] set, len=%d", len(state["prefill"]))
             state["retry"] = edit_state.get("retry", False)
             state["model"] = edit_state.get("model", state.get("model", ""))
             session.sync_retry_pending()
 
             # ★ Bug 修复: Edit 语义是预填旧内容供用户编辑重发，不是自动续接。
-            #   当有 prefill 且非主动 retry 时，重置 retry_pending = False，
-            #   确保下一轮 _handle_round 走 prefill 路径（显示旧内容到编辑行），
-            #   而不是 retry 路径（自动重新生成回复，绕过 prefill）。
-            #   不做此重置时，若截断后最后一条消息角色是 user（如连续两条 user 消息），
-            #   sync_retry_pending 会设 retry_pending=True，导致 prefill 被静默吞掉。
             if state["prefill"] and not state["retry"]:
                 session.reset_retry_pending()
 
-            # ★ 编辑生效（retry=True）后，标记需重新渲染剩余消息到上屏
+            # ★ 编辑生效后，标记需重新渲染剩余消息到上屏
             needs_rerender = bool(state["retry"] or state["prefill"])
         except Exception as exc:
             _logger.warning("EditmsgPlugin 编辑异常: %s", exc, exc_info=True)
@@ -124,25 +118,12 @@ class EditmsgPlugin(InteractiveCommandPlugin):
                 )
             needs_rerender = False
         finally:
-            if chat_ui is not None:
-                try:
-                    chat_ui.resume()
-                except Exception:
-                    _logger.warning("chat_ui.resume() 在 finally 中异常", exc_info=True)
-            if chat_ui is not None:
-                try:
-                    chat_ui.flush()
-                except Exception:
-                    _logger.warning("chat_ui.flush() (post-resume) 在 finally 中异常", exc_info=True)
             if monitor is not None:
                 try:
                     prefill_text = state.get("prefill", "")
                     # ★ 先清理状态，确保 monitor.start() 异常也不残留 prefill
                     state["prefill"] = ""
-                    # ★ 清除 captured_prefill：prefill 已通过 monitor.start() 主路径注入到
-                    #   输入缓冲区。若不清理，下一轮 _merge_prefill（兜底路径）会读到
-                    #   上一轮 LLM 生成期间用户键入残留的 captured_prefill，传给
-                    #   wait_for_user_input → set_prefill 覆盖主路径刚设置好的预填内容。
+                    # ★ 清除 captured_prefill
                     if prefill_text:
                         session.captured_prefill = ''
                     monitor.start(prefill=prefill_text)
@@ -152,7 +133,7 @@ class EditmsgPlugin(InteractiveCommandPlugin):
                 try:
                     chat_ui.flush()
                 except Exception:
-                    _logger.warning("chat_ui.flush() (post-start) 在 finally 中异常", exc_info=True)
+                    _logger.warning("chat_ui.flush() 在 finally 中异常", exc_info=True)
 
         # ★ 编辑后反馈：编辑失败（未产生 prefill/retry）时给用户明确提示
         if not needs_rerender and chat_ui is not None:
@@ -160,9 +141,7 @@ class EditmsgPlugin(InteractiveCommandPlugin):
                 f"  {YELLOW}\u26a0{RESET} \u672a\u7f16\u8f91\u4efb\u4f55\u6d88\u606f\uff0c\u5df2\u53d6\u6d88"
             )
 
-        # ★ 编辑生效后重新渲染剩余消息到上屏（scroll 区域内）
-        # 通过 ChatUI 的 command queue 统一渲染，避免直接 stdout 写入
-        # 与 render 线程（_drain_queue → force_redraw）的并发竞态。
+        # ★ 编辑生效后重新渲染剩余消息到上屏
         if needs_rerender and chat_ui is not None:
             non_system = _non_system_messages(session)
             chat_ui.display_messages(non_system, speed=0)

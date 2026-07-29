@@ -8,7 +8,7 @@
   - run_bottom_bar_selection → 使用 _bottom_bar.py 内置方法
   - 主题函数 → 去除了 theme.py 依赖，返回默认值
   - diff → 移到 _diff_renderer.py
-  - display_messages / edit_current_messages → pipeline/ 已删除，使用内置实现
+  - display_messages / edit_current_messages → 委托到 pipeline/
 """
 
 from __future__ import annotations
@@ -104,25 +104,21 @@ class CommandUiAdapter:
     ) -> None:
         """恢复会话后展示所有消息内容。
 
-        pipeline/message_display.py 已删除，使用内置简化实现。
+        委托到 pipeline/message_display.py（已恢复）。
         """
-        import sys
-        from ...core.constants import DIM, RESET
-        for msg in data:
-            role = msg.get("role", "")
-            content = msg.get("content", "")
-            if isinstance(content, str) and content.strip():
-                prefix = f"{DIM}[{role}]{RESET} " if role else ""
-                sys.__stdout__.write(f"{prefix}{content}\n")
-        sys.__stdout__.flush()
+        from ...tui.pipeline.message_display import display_messages as _fn
+        _fn(data, agent=agent, idx_map=idx_map, speed=speed)
 
-    def edit_current_messages(self, agent: Any, state: dict) -> bool:
+    def edit_current_messages(
+        self, agent: Any, state: dict,
+        bottom_bar: Any = None, input_: Any = None,
+    ) -> bool:
         """编辑当前消息列表。
 
-        pipeline/message_editor.py 已删除，返回 False。
+        委托到 pipeline/message_editor.py（已恢复）。
         """
-        _logger.warning("edit_current_messages: 消息编辑器已移除")
-        return False
+        from ...tui.pipeline.message_editor import edit_current_messages as _fn
+        return _fn(agent, state, bottom_bar=bottom_bar, input_=input_)
 
 
 __all__ = ["CommandUiAdapter"]
