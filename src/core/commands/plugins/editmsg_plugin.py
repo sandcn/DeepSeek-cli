@@ -100,7 +100,7 @@ class EditmsgPlugin(InteractiveCommandPlugin):
                 state["prefill"] = edit_state.get("prefill", "")
                 _logger.debug("editmsg_plugin: state['prefill'] set, len=%d", len(state["prefill"]))
                 # 显示沙盒恢复提示（与 /deitmsg 风格一致）
-                from ....core.constants import GREEN, DIM, RESET
+                from ....core.constants import GREEN, DIM
                 restore_text = edit_state.get("_restore_text", "")
                 if chat_ui is not None:
                     chat_ui.write_line(f"  {DIM}{'─' * 40}{RESET}")
