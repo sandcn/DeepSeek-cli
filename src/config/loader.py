@@ -5,7 +5,7 @@ import logging
 import os
 import sys
 
-from .defaults import CONFIG_DIR, LOG_FILE, RC_FILE, DEFAULTS, PROVIDERS
+from .defaults import CONFIG_DIR, LOG_FILE, RC_FILE, DEFAULTS, PROVIDERS, CONFIG_KEYS
 from .schema import _validate_rc
 
 
@@ -58,7 +58,18 @@ def get_rc():
 
 def update_config(key: str, value) -> None:
     rc = get_rc()
-    rc[key] = value
+    # 使用 CONFIG_KEYS 中的 rc_path 进行键名映射
+    if key in CONFIG_KEYS:
+        path = CONFIG_KEYS[key]["rc_path"]
+        if path:
+            target = rc
+            for part in path[:-1]:
+                target = target.setdefault(part, {})
+            target[path[-1]] = value
+        else:
+            rc[key] = value
+    else:
+        rc[key] = value
     _ensure_config_dir()
     try:
         RC_FILE.write_text(

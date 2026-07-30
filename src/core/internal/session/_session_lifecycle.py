@@ -386,6 +386,7 @@ async def _finalize_round(session, interrupted: bool,
     try:
         session_id = await _auto_save(session)
     except (KeyboardInterrupt, asyncio.CancelledError):
+        _force_state_recovery(session)
         raise
     except Exception:
         _logger.exception("_finalize_round: _auto_save 异常")

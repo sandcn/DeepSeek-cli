@@ -198,9 +198,11 @@ class InteractiveLoop:
                             )
                     if self._monitor_recovery_count > 10:
                         _logger.warning(
-                            "EscapeMonitor 累计恢复 %d 次，可能存在持续问题",
+                            "EscapeMonitor 累计恢复 %d 次，可能存在持续问题，"
+                            "终止主循环避免紧密错误循环",
                             self._monitor_recovery_count,
                         )
+                        return _RoundResult(should_exit=True)
                     return _RoundResult(should_exit=False)
                 # 非 monitor 死亡的 RuntimeError 重新抛出
                 raise
@@ -373,12 +375,14 @@ class InteractiveLoop:
         # 通过 ChatUI 打印用户消息
         if self._chat_ui is not None:
             self._chat_ui.on_user_message(content)
-        await session.run_round(content)
-        # ★ Bug3 修复：首轮消息完成后保存 checkpoint，确保异常时已成功处理的消息不丢失
-        try:
-            session.save_checkpoint()
-        except Exception:
-            _logger.exception("_handle_regular_msg: save_checkpoint 异常，不阻断消息处理")
+        result = await session.run_round(content)
+        # ★ Bug3 修复：首轮消息完成后保存 checkpoint，确保异常时已成功处理的消息不丢失。
+        #   中断路径在 _emit_round_events 中已调用 save_checkpoint()，此处避免重复保存。
+        if not result.get("interrupted", False):
+            try:
+                session.save_checkpoint()
+            except Exception:
+                _logger.exception("_handle_regular_msg: save_checkpoint 异常，不阻断消息处理")
         state.model = session.model
         if self._chat_ui is not None:
             self._chat_ui.bottom_bar.set_model_name(state.model)

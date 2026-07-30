@@ -15,6 +15,7 @@ import copy
 import asyncio
 import logging
 import threading
+import weakref
 from typing import AsyncIterator, Any
 
 import httpx
@@ -78,7 +79,7 @@ def _create_async_client() -> httpx.AsyncClient:
 # 各自持有独立 httpx.AsyncClient，避免 "bound to a different event loop"。
 # ★ 使用 asyncio.Lock 而非 threading.RLock：避免阻塞事件循环。
 #   所有访问 _clients 的操作均为 async def，可用 async with 安全等待。
-_clients: dict[int, httpx.AsyncClient] = {}
+_clients: weakref.WeakKeyDictionary = weakref.WeakKeyDictionary()
 _clients_lock = asyncio.Lock()
 
 
@@ -89,12 +90,11 @@ async def get_async_client() -> httpx.AsyncClient:
     导致 asyncio 原语（Event/Lock）"bound to a different event loop" 错误。
     """
     loop = asyncio.get_running_loop()
-    loop_id = id(loop)
     async with _clients_lock:
-        client = _clients.get(loop_id)
+        client = _clients.get(loop)
         if client is None:
             client = _create_async_client()
-            _clients[loop_id] = client
+            _clients[loop] = client
         return client
 
 
@@ -104,9 +104,8 @@ async def reset_async_client() -> None:
         loop = asyncio.get_running_loop()
     except RuntimeError:
         return
-    loop_id = id(loop)
     async with _clients_lock:
-        client = _clients.pop(loop_id, None)
+        client = _clients.pop(loop, None)
         if client is not None:
             try:
                 await client.aclose()

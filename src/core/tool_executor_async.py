@@ -827,7 +827,9 @@ class ToolScheduler:
                     for pt in pending:
                         tc2 = tasks[pt]
                         try:
-                            await pt
+                            # task may complete before cancel takes effect
+                            result = await pt
+                            results_map[tc2["id"]] = result
                         except asyncio.CancelledError:
                             results_map[tc2["id"]] = (tc2["id"], f"工具执行被级联取消: {tc2['name']}", False)
                         except Exception as e2:

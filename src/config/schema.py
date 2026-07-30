@@ -46,6 +46,7 @@ def _validate_rc(rc):
     for field in int_fields:
         if field in rc:
             if isinstance(rc[field], bool):
+                rc[field] = DEFAULTS.get(field, 0)
                 continue
             if not isinstance(rc[field], int):
                 try:
