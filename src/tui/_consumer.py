@@ -433,6 +433,28 @@ class ChatUIConsumer:
             _logger.debug(
                 "wait_for_user_input: set prefill, len=%d", len(prefill),
             )
+            # ★ 排空残留的排队输入（stale input），修复 editmsg 截断后
+            #   无法立即重新编辑的 bug。
+            #
+            # 根因：editmsg 消息选择弹窗中，用户按 Enter 确认时终端发送
+            # CR+LF (0x0d+0x0a) 序列。render 线程 process_events() 在
+            # 同一轮循环中处理两个字节：
+            #   1) CR → _suppress_enter=True → _editmsg_dismiss → 选择完成
+            #   2) LF → MessageEditor 已恢复 _suppress_enter=False →
+            #      _enter() 被调用，提交空字符串，设置 _input_ready
+            #
+            # 若 LF 的处理时机落在 editmsg_plugin finally 块的清理之后，
+            # _input_ready 会被重新设置。导致 get_queued_input() 立即
+            # 返回 ""，prefill 注入失效，用户必须再按一次 Enter 才能编辑。
+            #
+            # 修复：在设置 prefill 前先排空残留排队输入，确保 prefill
+            # 注入后用户可立即编辑。
+            stale = input_.get_queued_input()
+            if stale is not None:
+                _logger.debug(
+                    "wait_for_user_input: drained stale input %r "
+                    "before setting prefill", stale,
+                )
             input_.set_buffer(prefill)
             input_.echo(prefill)
             _logger.debug("wait_for_user_input: prefill done, entering poll loop")

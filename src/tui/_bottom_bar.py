@@ -1000,7 +1000,13 @@ class _BottomBar:
                     for r in range(old_scroll + 1, scroll_end + 1):
                         _buf.append(f"{cursor_goto(r, 1)}\033[K")
         if resized:
-            _buf.append(cursor_goto(scroll_end, 1))
+            if old_scroll > scroll_end:
+                for r in range(scroll_end + 1, min(old_scroll, height) + 1):
+                    _buf.append(f"{cursor_goto(r, 1)}\033[K")
+            elif old_scroll < scroll_end:
+                for r in range(old_scroll + 1, scroll_end + 1):
+                    _buf.append(f"{cursor_goto(r, 1)}\033[K")
+            _buf.append(cursor_goto(scroll_end, 1) + cursor_save())
         else:
             _buf.append(cursor_goto(scroll_end, 1) + cursor_save())
         out.write(''.join(_buf))

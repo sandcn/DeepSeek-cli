@@ -666,6 +666,135 @@ class TestForceRedrawExceptionHandling:
 
 
 # ═══════════════════════════════════════════════════════════
+# sync_bottom_lines resize 清除测试
+# ═══════════════════════════════════════════════════════════
+
+class TestSyncBottomLinesResizeClear:
+    """测试 sync_bottom_lines() 中 resize 路径的行清除逻辑。
+
+    验证新增修复：resize 时旧底部栏区域的 ANSI 残留行被正确清除。
+    """
+
+    @pytest.fixture
+    def bottom_bar(self):
+        from src.tui._bottom_bar import _BottomBar
+        bb = _BottomBar()
+        bb._active = True
+        bb._subagent_lines = []
+        bb._last_text = ""
+        return bb
+
+    def _setup_resize_larger(self, bb):
+        """模拟终端变大（height 增大→scroll_end 增大）。"""
+        bb._last_sync_height = 20
+        bb._last_scroll_end = 15
+
+    def _setup_resize_smaller(self, bb):
+        """模拟终端变小（height 减小→scroll_end 减小）。"""
+        bb._last_sync_height = 25
+        bb._last_scroll_end = 20
+
+    def _setup_first_call(self, bb):
+        """模拟首次调用（old_scroll=0, _last_sync_height=0）。"""
+        bb._last_sync_height = 0
+        bb._last_scroll_end = 0
+
+    def _setup_non_resize_scroll_changed(self, bb):
+        """模拟非 resize 但 scroll_end 变化（_last_sync_height == height）。"""
+        bb._last_sync_height = 25
+        bb._last_scroll_end = 18
+
+    def _run_sync_bottom_lines(self, bb, mock_size):
+        """执行 sync_bottom_lines，返回 mock_stdout。"""
+        mock_stdout = MagicMock()
+
+        with patch("src.tui._bottom_bar._get_terminal_size", return_value=mock_size):
+            with patch("src.tui._bottom_bar.sys.__stdout__", mock_stdout):
+                bb.sync_bottom_lines()
+
+        return mock_stdout
+
+    def _collect_writes(self, mock_stdout) -> str:
+        parts = []
+        for call_args in mock_stdout.write.call_args_list:
+            args, _ = call_args
+            if args and isinstance(args[0], str):
+                parts.append(args[0])
+        return ''.join(parts)
+
+    def test_resize_larger_clears_old_rows(self, bottom_bar):
+        """终端变大（scroll_end 增大）：清除 [old_scroll+1, scroll_end] 范围。"""
+        self._setup_resize_larger(bottom_bar)
+        mock_stdout = self._run_sync_bottom_lines(bottom_bar, mock_size=(80, 25))
+
+        all_writes = self._collect_writes(mock_stdout)
+
+        # old_scroll=15, scroll_end=20 → 应清除 range(16, 21)
+        for r in range(16, 21):
+            expected = f"\033[{r};1H\033[K"
+            assert expected in all_writes, f"终端变大时行 {r} 应被清除但未找到序列 {expected!r}"
+
+    def test_resize_smaller_clears_old_rows(self, bottom_bar):
+        """终端变小（scroll_end 减小）：清除 [scroll_end+1, old_scroll] 范围。"""
+        self._setup_resize_smaller(bottom_bar)
+        mock_stdout = self._run_sync_bottom_lines(bottom_bar, mock_size=(80, 20))
+
+        all_writes = self._collect_writes(mock_stdout)
+
+        # old_scroll=20, scroll_end=15, height=20 → 应清除 range(16, 21)
+        for r in range(16, 21):
+            expected = f"\033[{r};1H\033[K"
+            assert expected in all_writes, f"终端变小时行 {r} 应被清除但未找到序列 {expected!r}"
+
+    def test_first_call_no_error(self, bottom_bar):
+        """首次调用（old_scroll=0）不应报错。"""
+        self._setup_first_call(bottom_bar)
+        mock_stdout = self._run_sync_bottom_lines(bottom_bar, mock_size=(80, 25))
+
+        all_writes = self._collect_writes(mock_stdout)
+        # scroll_end=20, 应包含光标定位
+        assert "\033[20;1H" in all_writes, "首次 resize 应包含 scroll_end 光标定位"
+
+    def test_non_resize_behavior_unchanged(self, bottom_bar):
+        """非 resize 场景（resized=False）不应触发新逻辑，原行为不变。"""
+        self._setup_non_resize_scroll_changed(bottom_bar)
+        mock_stdout = self._run_sync_bottom_lines(bottom_bar, mock_size=(80, 25))
+
+        all_writes = self._collect_writes(mock_stdout)
+
+        # resized=False 时，旧路径清除 [old_scroll+1, scroll_end]
+        # old_scroll=18, scroll_end=20, 应清除 range(19, 21)
+        for r in range(19, 21):
+            expected = f"\033[{r};1H\033[K"
+            assert expected in all_writes, f"非 resize 场景行 {r} 应被清除但未找到序列 {expected!r}"
+
+    def test_resize_larger_cursor_goto_and_save(self, bottom_bar):
+        """终端变大时，cursor_goto(scroll_end, 1) + cursor_save() 出现在输出中。"""
+        self._setup_resize_larger(bottom_bar)
+        mock_stdout = self._run_sync_bottom_lines(bottom_bar, mock_size=(80, 25))
+
+        all_writes = self._collect_writes(mock_stdout)
+
+        # scroll_end=20, 应包含 \033[20;1H\033[s
+        assert "\033[20;1H\033[s" in all_writes, "应包含 cursor_goto + cursor_save"
+
+    def test_resize_smaller_height_min_prevents_oob(self, bottom_bar):
+        """终端变小时，清除范围上限使用 min(old_scroll, height) 防止越界。"""
+        self._setup_resize_smaller(bottom_bar)
+        # height=18, scroll_end=13, old_scroll=20
+        mock_stdout = self._run_sync_bottom_lines(bottom_bar, mock_size=(80, 18))
+
+        all_writes = self._collect_writes(mock_stdout)
+
+        # 应清除 range(14, min(20, 18)+1=19) = [14, 18]
+        for r in range(14, 19):
+            expected = f"\033[{r};1H\033[K"
+            assert expected in all_writes, f"终端变小（height=18）时行 {r} 应被清除"
+        # 不应有行 19+ 的清除（越界保护）
+        assert "\033[19;1H\033[K" not in all_writes, "越界行不应被清除"
+
+
+# ═══════════════════════════════════════════════════════════
 # 弹窗竞态测试
 # ═══════════════════════════════════════════════════════════
 
