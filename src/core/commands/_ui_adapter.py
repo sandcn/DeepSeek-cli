@@ -59,7 +59,7 @@ class CommandUiAdapter:
                 if input_inst is not None:
                     text = input_inst.get_queued_input()
                     if text is not None:
-                        sel_text, sel_idx, _ = bottom_bar.get_selected_completion()
+                        sel_idx = bottom_bar.get_selected_completion_index()
                         bottom_bar.hide_completions()
                         return {"action": "confirmed", "index": sel_idx}
             except Exception:

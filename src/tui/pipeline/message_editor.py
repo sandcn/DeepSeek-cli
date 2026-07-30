@@ -105,6 +105,8 @@ class EditCommand:
         # 恢复沙盒
         target_index = self.real_idx - 1 if self.real_idx > 0 else 0
         restore_text = _restore_sandbox_to(agent, target_index)
+        if restore_text:
+            state["_restore_text"] = restore_text
 
         # 截断消息
         original_len = len(messages)
@@ -133,7 +135,9 @@ class DeleteCommand:
             return False
 
         target_index = self.real_idx - 1 if self.real_idx > 0 else 0
-        _restore_sandbox_to(agent, target_index)
+        restore_text = _restore_sandbox_to(agent, target_index)
+        if restore_text:
+            state["_restore_text"] = restore_text
 
         original_len = len(messages)
         removed = original_len - self.real_idx
@@ -159,7 +163,9 @@ class ResumeCommand:
         if self.real_idx < 0 or self.real_idx >= len(messages):
             return False
 
-        _restore_sandbox_to(agent, self.real_idx)
+        restore_text = _restore_sandbox_to(agent, self.real_idx)
+        if restore_text:
+            state["_restore_text"] = restore_text
 
         original_len = len(messages)
         del messages[self.real_idx + 1:]
@@ -312,16 +318,28 @@ class MessageEditor:
         deadline = time.monotonic() + 120  # 2 分钟超时
         try:
             while time.monotonic() < deadline:
+                # 检查 ESC/中断
+                if input_.interrupted:
+                    _logger.debug("_interactive_message_select: ESC 中断，取消选择")
+                    last_sel_idx = -1  # 标记取消
+                    break
+
                 # 检查 Enter 是否被按下
                 text = input_.get_queued_input()
                 if text is not None:
-                    # Enter 被按下；消耗提交文本（丢弃，只需要 completion 选择）
+                    # Enter 被按下；在 dismiss 后读取最后保存的选中索引
+                    try:
+                        comp_idx = bb.get_selected_completion_index()
+                        if 0 <= comp_idx < sel_count:
+                            last_sel_idx = comp_idx
+                    except Exception:
+                        pass
                     break
 
                 # 追踪当前选中的 completion 索引
                 try:
                     if bb.is_completion_visible():
-                        _, comp_idx, _ = bb.get_selected_completion()
+                        comp_idx = bb.get_selected_completion_index()
                         if 0 <= comp_idx < sel_count:
                             last_sel_idx = comp_idx
                 except Exception:

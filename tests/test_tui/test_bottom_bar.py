@@ -194,6 +194,48 @@ class TestCompletionPopup:
         assert bb._completion_popup_height == 0
 
 
+class TestGetSelectedCompletionIndex:
+    """测试 get_selected_completion_index 方法。"""
+
+    def test_visible_idx_1_returns_1(self):
+        from src.tui._bottom_bar import _BottomBar
+        bb = _BottomBar()
+        bb._completion._visible = True
+        bb._completion._items = ["a", "b", "c"]
+        bb._completion._texts = ["a", "b", "c"]
+        bb._completion._idx = 1
+        bb._completion._popup_height = 3
+        assert bb.get_selected_completion_index() == 1
+
+    def test_cycle_increments_index(self):
+        from src.tui._bottom_bar import _BottomBar
+        bb = _BottomBar()
+        bb._completion._visible = True
+        bb._completion._items = ["a", "b", "c"]
+        bb._completion._texts = ["a", "b", "c"]
+        bb._completion._idx = 0
+        bb._completion._popup_height = 3
+        bb._completion.cycle(1)
+        assert bb.get_selected_completion_index() == 1
+
+    def test_hidden_returns_0(self):
+        from src.tui._bottom_bar import _BottomBar
+        bb = _BottomBar()
+        # 弹窗隐藏时 _idx 初始值为 0
+        assert bb.get_selected_completion_index() == 0
+
+    def test_hidden_returns_last_idx_before_hide(self):
+        """弹窗隐藏时返回 _last_idx_before_hide 而非 _idx。"""
+        from src.tui._bottom_bar import _BottomBar
+        bb = _BottomBar()
+        # 设置 _idx=5、_last_idx_before_hide=3，弹窗不可见
+        bb._completion._idx = 5
+        bb._completion._last_idx_before_hide = 3
+        bb._completion._visible = False
+        # 应返回 3（_last_idx_before_hide）而非 5（_idx）
+        assert bb.get_selected_completion_index() == 3
+
+
 class TestSetSubagentFrame:
     """测试 subagent 面板。"""
 

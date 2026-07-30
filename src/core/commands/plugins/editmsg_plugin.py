@@ -99,6 +99,12 @@ class EditmsgPlugin(InteractiveCommandPlugin):
             if edited:
                 state["prefill"] = edit_state.get("prefill", "")
                 _logger.debug("editmsg_plugin: state['prefill'] set, len=%d", len(state["prefill"]))
+                # 显示沙盒恢复提示（与 /deitmsg 风格一致）
+                restore_text = edit_state.get("_restore_text", "")
+                if restore_text and chat_ui is not None:
+                    from ....core.constants import GREEN, DIM, RESET
+                    chat_ui.write_line(f"  {DIM}{'─' * 40}{RESET}")
+                    chat_ui.write_line(f"  {GREEN}\u2713{RESET} {restore_text}")
             state["retry"] = edit_state.get("retry", False)
             state["model"] = edit_state.get("model", state.get("model", ""))
             session.sync_retry_pending()

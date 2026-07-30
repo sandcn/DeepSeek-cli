@@ -591,6 +591,7 @@ class _CompletionPopup:
         self._match_prefix: str = ""
         self._is_selection: bool = False
         self._idx: int = 0
+        self._last_idx_before_hide: int = 0
         self._popup_height: int = 0
         self._animator = _SimpleAnimator.get_default()
         self._tracker = cursor_tracker
@@ -1345,6 +1346,8 @@ class _BottomBar:
     def hide_completions(self) -> None:
         if not self._completion.is_visible or not self._active:
             return
+        # ★ 保存最后选中的索引（供 Enter 后读取，防止竞态）
+        self._completion._last_idx_before_hide = self._completion._idx
         self._completion._popup_height = 0
         self._completion._visible = False
         self._completion._title = "补全"
@@ -1369,6 +1372,16 @@ class _BottomBar:
 
     def get_selected_completion(self) -> tuple[str, int, str]:
         return self._completion.get_selected()
+
+    def get_selected_completion_index(self) -> int:
+        """返回当前选中的补全项索引（0-based）。
+
+        弹窗可见时返回实时 _idx；关闭时返回最后保存的索引，
+        防止 Enter 处理中 _dismiss_completion() 重置 _idx 导致的竞态。
+        """
+        if self._completion.is_visible:
+            return self._completion._idx
+        return self._completion._last_idx_before_hide
 
     def _redraw_cycle_only(self) -> None:
         if not self._completion.is_visible or not self._completion._items:
