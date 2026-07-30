@@ -348,6 +348,80 @@ class TestEventDispatcher:
         assert call_args[0] == RenderCommand.ERROR
 
 
+class TestTuiEngineCrashRecovery:
+    """测试崩溃恢复竞态修复 — _recovering → Event 替换（Issue 2）。"""
+
+    @pytest.fixture
+    def engine(self):
+        """创建 mock 后的 TuiEngine 实例。"""
+        from src.tui._renderer import TuiEngine
+        renderer = MagicMock()
+        bottom_bar = MagicMock()
+        eng = TuiEngine(renderer, bottom_bar)
+        # 缩短恢复延迟便于测试
+        eng._config = eng._config.with_overrides(recover_delay=0.01)
+        return eng
+
+    def test_recovering_event_in_init(self, engine):
+        """验证 _recovering_event 在 __init__ 中被初始化为 threading.Event。"""
+        import threading
+        assert isinstance(engine._recovering_event, threading.Event)
+        # 初始状态应为未设置
+        assert not engine._recovering_event.is_set()
+
+    def test_recovering_event_set_on_crash(self, engine):
+        """验证 _handle_render_crash 会 set 恢复事件。"""
+        # mock drain 避免实际线程操作
+        engine._drain_queue_safe = MagicMock(return_value=0)
+        engine._render_running = True
+        engine._recover_attempts = 0
+
+        exc = RuntimeError("模拟崩溃")
+        result = engine._handle_render_crash(exc)
+
+        # 恢复事件应被 set（因为 render_running=True 且 recover_attempts <= max）
+        assert engine._recovering_event.is_set()
+
+    def test_finally_checks_event_instead_of_bool(self, engine):
+        """验证 finally 块使用 _recovering_event.is_set() 而非旧 bool。"""
+        # 直接测试 _render() 的 finally 逻辑：当 _recovering_event 已 set 时，
+        # _drain_queue_safe 不应被调用（恢复路径跳过排空）
+        engine._drain_queue_safe = MagicMock(return_value=0)
+        engine._render_running = False  # 让 while 循环退出
+
+        # 设置恢复事件 simulate 正在恢复中
+        engine._recovering_event.set()
+
+        # 手动执行 _render（会进入 finally 块）
+        engine._render()
+
+        # _drain_queue_safe 不应被调用（恢复路径跳过）
+        engine._drain_queue_safe.assert_not_called()
+
+        # 恢复事件应被 clear（finally 中的清理）
+        assert not engine._recovering_event.is_set()
+
+    def test_recovering_event_cleared_after_recovery(self, engine):
+        """验证恢复完成后 _recovering_event 被 clear。"""
+        import threading
+
+        engine._drain_queue_safe = MagicMock(return_value=0)
+        engine._render_running = False  # 让 while 循环退出
+        engine._recovering_event.set()
+
+        # 模拟正常恢复后的 finally 行为
+        if engine._recovering_event.is_set():
+            engine._recovering_event.clear()
+            # 不调用 _drain_queue_safe 直接 return
+
+        assert not engine._recovering_event.is_set()
+
+    def test_no_recovering_attribute_left(self, engine):
+        """验证旧的 _recovering bool 属性已不存在（替换为 Event）。"""
+        assert not hasattr(engine, '_recovering'), \
+            "旧的 _recovering bool 属性应被移除，改用 _recovering_event"
+
+
 class TestUtilityFunctions:
     """测试 _cmd_name / _emergency_write。"""
 
@@ -376,3 +450,204 @@ class TestUtilityFunctions:
             assert "test" in output
         finally:
             _sys.__stderr__ = saved_stderr
+
+
+class TestBatchRender:
+    """测试批量渲染优化 — TuiRenderer.render_batch + TuiEngine._phase_render 分批逻辑（Issue 4）。"""
+
+    @pytest.fixture
+    def renderer(self):
+        """创建 mock 后的 TuiRenderer 实例。"""
+        from src.tui._renderer import TuiRenderer
+        rs = MagicMock()
+        adapter = MagicMock()
+        bb = MagicMock()
+        return TuiRenderer(rs, adapter, bb)
+
+    def test_batchable_commands_set_defined(self, renderer):
+        """验证 _BATCHABLE_COMMANDS 集合已正确定义。"""
+        from src.tui._const import RenderCommand
+        expected = {
+            RenderCommand.NOTIFICATION,
+            RenderCommand.WRITE_LINE,
+            RenderCommand.ERROR,
+            RenderCommand.TOOL_OUTPUT,
+            RenderCommand.TOOL_SUMMARY,
+            RenderCommand.USER_MSG,
+        }
+        assert renderer._BATCHABLE_COMMANDS == expected
+
+    def test_is_batchable_returns_true_for_batchable(self, renderer):
+        """验证 _is_batchable 对可批处理命令返回 True。"""
+        from src.tui._const import RenderCommand
+        assert renderer._is_batchable(RenderCommand.WRITE_LINE)
+        assert renderer._is_batchable(RenderCommand.NOTIFICATION)
+        assert renderer._is_batchable(RenderCommand.ERROR)
+        assert renderer._is_batchable(RenderCommand.TOOL_OUTPUT)
+        assert renderer._is_batchable(RenderCommand.TOOL_SUMMARY)
+        assert renderer._is_batchable(RenderCommand.USER_MSG)
+
+    def test_is_batchable_returns_false_for_non_batchable(self, renderer):
+        """验证 _is_batchable 对不可批处理命令返回 False。"""
+        from src.tui._const import RenderCommand
+        assert not renderer._is_batchable(RenderCommand.REASONING)
+        assert not renderer._is_batchable(RenderCommand.CONTENT)
+        assert not renderer._is_batchable(RenderCommand.SUBAGENT_FRAME)
+        assert not renderer._is_batchable(RenderCommand.SPLASH)
+
+    def test_render_batch_collects_and_calls_batch_write(self, renderer):
+        """验证 render_batch 收集 renderables 后调用一次 batch_write。"""
+        from src.tui._const import RenderCommand
+        # 推入 3 条 WRITE_LINE 命令
+        commands = [
+            (RenderCommand.WRITE_LINE, "line1\n"),
+            (RenderCommand.WRITE_LINE, "line2\n"),
+            (RenderCommand.WRITE_LINE, "line3\n"),
+        ]
+        renderer.render_batch(commands)
+        # batch_write 应被调用 1 次（非 3 次 write）
+        renderer._adapter.batch_write.assert_called_once()
+        # 验证传入的 renderables 数量
+        call_args = renderer._adapter.batch_write.call_args[0][0]
+        assert len(call_args) == 3
+
+    def test_render_batch_empty_list_no_write(self, renderer):
+        """验证空列表不调用 batch_write。"""
+        renderer.render_batch([])
+        renderer._adapter.batch_write.assert_not_called()
+
+    def test_render_batch_mixed_batchable_commands(self, renderer):
+        """验证混合的可批处理命令正确收集。"""
+        from src.tui._const import RenderCommand
+        commands = [
+            (RenderCommand.NOTIFICATION, "test notification"),
+            (RenderCommand.WRITE_LINE, "some line"),
+            (RenderCommand.ERROR, "error msg"),
+        ]
+        renderer.render_batch(commands)
+        renderer._adapter.batch_write.assert_called_once()
+        call_args = renderer._adapter.batch_write.call_args[0][0]
+        assert len(call_args) == 3
+
+    def test_render_batch_tool_output_tracks_group_state(self, renderer):
+        """验证 TOOL_OUTPUT 在批量中正确驱动 _in_tool_group 状态机。"""
+        from src.tui._const import RenderCommand
+        # 第一个 TOOL_OUTPUT 应输出工具组框，后续不重复输出
+        commands = [
+            (RenderCommand.TOOL_OUTPUT, "tool result 1"),
+            (RenderCommand.TOOL_OUTPUT, "tool result 2"),
+        ]
+        renderer.render_batch(commands)
+        renderer._adapter.batch_write.assert_called_once()
+        call_args = renderer._adapter.batch_write.call_args[0][0]
+        # 应该有 3 个 renderable: 工具组框 + 2 个工具输出
+        assert len(call_args) == 3
+        # 状态机应保持开启状态
+        assert renderer._in_tool_group is True
+
+    def test_render_batch_tool_summary_closes_group(self, renderer):
+        """验证 TOOL_SUMMARY 在批量中正确关闭 _in_tool_group。"""
+        from src.tui._const import RenderCommand
+        renderer._in_tool_group = True
+        commands = [
+            (RenderCommand.TOOL_SUMMARY, ("tool_a",), ()),
+        ]
+        renderer.render_batch(commands)
+        renderer._adapter.batch_write.assert_called_once()
+        assert renderer._in_tool_group is False
+
+    def test_render_batch_user_message(self, renderer):
+        """验证 USER_MSG 在批量中正确渲染。"""
+        from src.tui._const import RenderCommand
+        commands = [
+            (RenderCommand.USER_MSG, "hello world"),
+        ]
+        renderer.render_batch(commands)
+        renderer._adapter.batch_write.assert_called_once()
+        call_args = renderer._adapter.batch_write.call_args[0][0]
+        assert len(call_args) == 1
+
+    def test_phase_render_groups_batchable_commands(self):
+        """验证 _phase_render 将连续可批处理命令分组调用 render_batch。"""
+        from src.tui._renderer import TuiEngine
+        from src.tui._const import RenderCommand
+        renderer = MagicMock()
+        bottom_bar = MagicMock()
+        engine = TuiEngine(renderer, bottom_bar)
+
+        # 混合命令序列：WRITE_LINE(批), CONTENT(不可批), WRITE_LINE(批)
+        commands = [
+            (RenderCommand.WRITE_LINE, "a"),
+            (RenderCommand.WRITE_LINE, "b"),
+            (RenderCommand.CONTENT, "c"),
+            (RenderCommand.WRITE_LINE, "d"),
+        ]
+
+        renderer._is_batchable.side_effect = lambda cid: cid in renderer._BATCHABLE_COMMANDS or False
+        # mock _BATCHABLE_COMMANDS
+        renderer._BATCHABLE_COMMANDS = frozenset({
+            RenderCommand.WRITE_LINE,
+        })
+
+        engine._phase_render(commands)
+
+        # render_batch 应被调用 2 次（第1批: a,b; 第2批: d）
+        assert renderer.render_batch.call_count == 2
+        # render (单条) 应被调用 1 次 (CONTENT)
+        assert renderer.render.call_count == 1
+
+    def test_phase_render_preserves_order(self):
+        """验证批量渲染后命令输出顺序与原始顺序一致。"""
+        from src.tui._renderer import TuiEngine
+        from src.tui._const import RenderCommand
+        renderer = MagicMock()
+        bottom_bar = MagicMock()
+        engine = TuiEngine(renderer, bottom_bar)
+
+        # 复杂混合序列
+        commands = [
+            (RenderCommand.WRITE_LINE, "first"),
+            (RenderCommand.TOOL_OUTPUT, "second"),
+            (RenderCommand.CONTENT, "third"),
+            (RenderCommand.WRITE_LINE, "fourth"),
+            (RenderCommand.NOTIFICATION, "fifth"),
+        ]
+
+        renderer._is_batchable.side_effect = lambda cid: cid in {
+            RenderCommand.WRITE_LINE,
+            RenderCommand.TOOL_OUTPUT,
+            RenderCommand.NOTIFICATION,
+        }
+        renderer._BATCHABLE_COMMANDS = frozenset({
+            RenderCommand.WRITE_LINE,
+            RenderCommand.TOOL_OUTPUT,
+            RenderCommand.NOTIFICATION,
+        })
+
+        engine._phase_render(commands)
+
+        # 第1批: WRITE_LINE + TOOL_OUTPUT (2条连续批处理)
+        # CONTENT: 不可批，单独渲染
+        # 第2批: WRITE_LINE + NOTIFICATION (2条连续批处理)
+        assert renderer.render_batch.call_count == 2
+        assert renderer.render.call_count == 1
+
+    def test_render_batch_clears_in_tool_group_for_summary(self, renderer):
+        """验证 TOOL_SUMMARY 后 _in_tool_group 被重置。"""
+        from src.tui._const import RenderCommand
+        # 先设置工具组状态
+        renderer._in_tool_group = True
+
+        commands = [
+            (RenderCommand.TOOL_OUTPUT, "data"),
+            (RenderCommand.TOOL_SUMMARY, ("tool_ok",), ()),
+        ]
+        renderer.render_batch(commands)
+
+        # TOOL_OUTPUT（已有组框则不重复输出）+ TOOL_SUMMARY（关闭组框）
+        renderer._adapter.batch_write.assert_called_once()
+        # TOOL_OUTPUT: 1个renderable + TOOL_SUMMARY: 1个renderable（关闭框）
+        call_args = renderer._adapter.batch_write.call_args[0][0]
+        assert len(call_args) == 2
+        assert renderer._in_tool_group is False
+

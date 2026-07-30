@@ -26,7 +26,7 @@ from typing import Any
 from .base import InteractiveCommandPlugin
 from ..base import CommandMeta, get_plugin_registry
 from ....api.interrupt_async import flush_stdin, reset_interrupt_async
-from ....core.constants import YELLOW, RESET
+from ....core.constants import YELLOW, RESET, GREEN, DIM
 
 _logger = logging.getLogger(__name__)
 
@@ -99,15 +99,8 @@ class EditmsgPlugin(InteractiveCommandPlugin):
             if edited:
                 state["prefill"] = edit_state.get("prefill", "")
                 _logger.debug("editmsg_plugin: state['prefill'] set, len=%d", len(state["prefill"]))
-                # 显示沙盒恢复提示（与 /deitmsg 风格一致）
-                from ....core.constants import GREEN, DIM
-                restore_text = edit_state.get("_restore_text", "")
-                if chat_ui is not None:
-                    chat_ui.write_line(f"  {DIM}{'─' * 40}{RESET}")
-                if restore_text and chat_ui is not None:
-                    chat_ui.write_line(f"  {GREEN}\u2713{RESET} {restore_text}")
-                elif chat_ui is not None:
-                    chat_ui.write_line(f"  {DIM}\u6c99\u76d2\u65e0\u6587\u4ef6\u9700\u8fd8\u539f{RESET}")
+            # ★ 将 restore_text 的提取移到 if edited 外部，使其在 needs_rerender 块中可用
+            restore_text = edit_state.get("_restore_text", "")
             state["retry"] = edit_state.get("retry", False)
             state["model"] = edit_state.get("model", state.get("model", ""))
             session.sync_retry_pending()
@@ -134,6 +127,20 @@ class EditmsgPlugin(InteractiveCommandPlugin):
                     #    也不在此处调用 monitor.start()（monitor 从未被停止，
                     #    start() 内部的 _input.reset() 会与 render 线程竞态）。
                     session.captured_prefill = ''
+
+                    # ★ 清除 _input_ready 残留（防 cascading 效应导致需按多次 Enter）
+                    #    确保即使有未处理的 Enter 事件残留，_input_ready 也会被清除，
+                    #    防止下一轮 wait_for_user_input 立即返回空字符串。
+                    if chat_ui is not None:
+                        input_inst = chat_ui._input
+                        if input_inst is not None:
+                            try:
+                                with input_inst._lock:
+                                    input_inst._input_ready.clear()
+                                    input_inst._submitted_text = ""
+                            except Exception:
+                                _logger.debug("editmsg_plugin: 清除 _input_ready 残留时异常", exc_info=True)
+
                     reset_interrupt_async(input_instance=chat_ui._input if chat_ui else None)
                     monitor.clear_interrupted()
                 except Exception:
@@ -154,6 +161,15 @@ class EditmsgPlugin(InteractiveCommandPlugin):
         if needs_rerender and chat_ui is not None:
             non_system = _non_system_messages(session)
             chat_ui.display_messages(non_system, speed=0)
+
+        # ★ 显示沙盒恢复提示（在 display_messages 之后，避免被消息渲染滚动覆盖）
+        #    参考 deitmsg_plugin.py 中先 display_messages 后 write_line 的实现。
+        if needs_rerender and chat_ui is not None:
+            chat_ui.write_line(f"  {DIM}{'─' * 40}{RESET}")
+            if restore_text:
+                chat_ui.write_line(f"  {GREEN}\u2713{RESET} {restore_text}")
+            else:
+                chat_ui.write_line(f"  {DIM}\u6c99\u76d2\u65e0\u6587\u4ef6\u9700\u8fd8\u539f{RESET}")
 
         return True
 

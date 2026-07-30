@@ -100,3 +100,86 @@ class TestOutputHistoryIntegration:
         content = output_file.read_text(encoding="utf-8")
         assert "existing_499" in content
         assert len(content.splitlines()) == 500
+
+
+class TestFlushTimerLeak:
+    """测试 flush timer 泄露修复 — _flush_timer_stop Event（Issue 3）。"""
+
+    @pytest.fixture
+    def tracker(self, tmp_path: Path):
+        """创建 mock 后的 _StdoutLineTracker 实例。"""
+        from src.tui._stdout_tracker import _StdoutLineTracker
+        real_stdout = io.StringIO()
+        output_file = tmp_path / "test_output_history"
+        with (
+            patch("src.tui._stdout_tracker.OUTPUT_HISTORY_FILE", output_file),
+            patch("src.tui._stdout_tracker._lock_history_file", return_value=True),
+            patch("src.tui._stdout_tracker._unlock_history_file"),
+        ):
+            tr = _StdoutLineTracker(real_stdout)
+            yield tr
+
+    def test_flush_timer_stop_event_in_init(self, tracker):
+        """验证 _flush_timer_stop 在 __init__ 中被初始化为 threading.Event。"""
+        import threading
+        assert isinstance(tracker._flush_timer_stop, threading.Event)
+        # 初始状态应为未设置
+        assert not tracker._flush_timer_stop.is_set()
+
+    def test_stop_flush_timer_prevents_new_timer(self, tracker):
+        """验证 _stop_flush_timer() 后 callback 不会创建新定时器。"""
+        # 记录原始 flush timer
+        original_timer = tracker._flush_timer
+        assert original_timer is not None
+
+        # 停止定时器
+        tracker._stop_flush_timer()
+
+        # 验证 flush_timer 为 None
+        assert tracker._flush_timer is None
+
+        # 验证 stop 标志已设置
+        assert tracker._flush_timer_stop.is_set()
+
+        # 模拟 callback 被触发（即使已 cancel，已触发的 callback 仍可能执行）
+        tracker._timer_flush_callback()
+
+        # 验证不会创建新定时器
+        assert tracker._flush_timer is None
+        assert tracker._flush_timer_stop.is_set()
+
+    def test_start_flush_timer_defensive_check(self, tracker):
+        """验证 _start_flush_timer() 在 stop 标志已设置时跳过。"""
+        # 先停止
+        tracker._stop_flush_timer()
+        assert tracker._flush_timer is None
+
+        # 尝试启动（应被防御性检查阻止）
+        tracker._start_flush_timer()
+
+        # 验证未创建新定时器
+        assert tracker._flush_timer is None
+
+    def test_timer_not_created_after_teardown(self, tracker):
+        """模拟 teardown 场景：_flush_history → _stop_flush_timer → callback 不创建新 timer。"""
+        # 模拟 teardown 路径
+        tracker._flush_history()
+
+        # 验证 timer 已停止
+        assert tracker._flush_timer is None
+        assert tracker._flush_timer_stop.is_set()
+
+        # 即使 callback 被触发，也不应创建新 timer
+        tracker._timer_flush_callback()
+        assert tracker._flush_timer is None
+
+    def test_multiple_stop_calls_safe(self, tracker):
+        """验证多次调用 _stop_flush_timer 安全。"""
+        tracker._stop_flush_timer()
+        assert tracker._flush_timer is None
+        assert tracker._flush_timer_stop.is_set()
+
+        # 第二次调用不应抛异常
+        tracker._stop_flush_timer()
+        assert tracker._flush_timer is None
+        assert tracker._flush_timer_stop.is_set()

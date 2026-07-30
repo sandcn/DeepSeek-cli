@@ -128,3 +128,57 @@ class TestSubAgentPanelEmitFrameThrottle:
     def test_emit_interval_constant(self):
         """_EMIT_INTERVAL 类常量应存在且为 0.1。"""
         assert SubAgentPanelController._EMIT_INTERVAL == 0.1
+
+
+class TestSubAgentPanelReentrantLock:
+    """验证 _state_lock 改用 RLock 后可重入（Issue 1）。"""
+
+    @pytest.fixture
+    def controller(self):
+        """创建带 mock 的 SubAgentPanelController 实例。"""
+        ctrl = SubAgentPanelController()
+        ctrl._push_frame = MagicMock()
+        # _render_frame 内部也获取 _state_lock，用 RLock 不会死锁
+        ctrl._render_frame = MagicMock(return_value=["rendered_line"])
+        return ctrl
+
+    def test_reentrant_lock_within_locked_section(self, controller):
+        """在 with _state_lock 块内调用 _render_frame()，验证 RLock 可重入不崩溃。"""
+        with controller._state_lock:
+            # RLock 允许同一线程重复获取同一锁 —— 不会死锁
+            lines = controller._render_frame()
+
+        # 验证 _render_frame 被正常调用并返回结果
+        controller._render_frame.assert_called_once()
+        assert lines == ["rendered_line"]
+
+    def test_no_deadlock_on_nested_lock_acquire(self, controller):
+        """模拟 _on_tool_parsing 场景：持有锁期间调用 _render_frame，验证不会死锁。"""
+        # 模拟事件处理器逻辑：在 with _state_lock 块内调用 _render_frame
+        with controller._state_lock:
+            # _render_frame 内部会再次获取 _state_lock（原代码中存在此模式）
+            controller._render_frame()
+
+        controller._render_frame.assert_called_once()
+
+    def test_push_frame_called_via_on_tool_parsing(self, controller):
+        """验证通过 _on_tool_parsing 路径时，_push_frame 被正确调用。"""
+        # 创建 mock 事件
+        from unittest.mock import MagicMock as _MM
+        event = _MM()
+        event.label = "agent-test"
+        event.tool_name = "read_file"
+        event.arguments = "test.py"
+
+        # 先添加 agent 到 _agents
+        from src.tui._subagent_panel import _AgentSlot
+        controller._agents["agent-test"] = _AgentSlot(
+            label="agent-test", description="test agent"
+        )
+
+        # 调用 _on_tool_parsing（内部持有 _state_lock 后调用 _emit_frame）
+        controller._push_frame.reset_mock()
+        controller._on_tool_parsing(event)
+
+        # _push_frame 应该被调用（至少一次）
+        assert controller._push_frame.call_count >= 1

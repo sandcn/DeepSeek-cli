@@ -21,10 +21,11 @@ class SandboxManager:
     管理文件修改历史，支持按消息索引恢复文件状态。
 
     ⚠️ 锁层次（必须遵守，防止死锁）:
-        ContextManager._lock → SandboxManager.lock
+        ContextManager._lock → SandboxManager.lock → _FileHistory._lock
     解释：ContextManager 在持有 _lock 期间可能通过 on_messages_changed 回调
     调用本类的 shift_indices()/remap_indices()。因此 SandboxManager.lock
     永远不得在 ContextManager._lock 之前获取，否则形成 ABBA 死锁。
+    _FileHistory._lock 在最内层，仅在需要直接访问 _fh.file_history 时获取。
     """
 
     def __init__(self, max_history_per_file: int = 100):
@@ -288,32 +289,33 @@ class SandboxManager:
                 return old - sum(1 for r in removed_set if r < old)
 
             # 通过 file_history 更新所有记录的 message_index
-            for path, records in list(self._fh.file_history.items()):
-                new_records = []
-                for r in records:
-                    ni = new_idx(r.message_index)
-                    if ni >= 0:
-                        r.message_index = ni
-                        new_records.append(r)
-                if new_records:
-                    self._fh.file_history[path] = new_records
-                else:
-                    del self._fh.file_history[path]
+            with self._fh._lock:
+                for path, records in list(self._fh.file_history.items()):
+                    new_records = []
+                    for r in records:
+                        ni = new_idx(r.message_index)
+                        if ni >= 0:
+                            r.message_index = ni
+                            new_records.append(r)
+                    if new_records:
+                        self._fh.file_history[path] = new_records
+                    else:
+                        del self._fh.file_history[path]
 
-            # ★ 收集 orphan 记录：仅在 message_history 中存在但在 file_history
-            #   中被移除的记录
-            orphan_records: List[FileChangeRecord] = []
-            for records in list(self.message_history.values()):
-                for r in records:
-                    ni = new_idx(r.message_index)
-                    if ni >= 0:
-                        if r.file_path in self._fh.file_history:
-                            if r not in self._fh.file_history[r.file_path]:
+                # ★ 收集 orphan 记录：仅在 message_history 中存在但在 file_history
+                #   中被移除的记录
+                orphan_records: List[FileChangeRecord] = []
+                for records in list(self.message_history.values()):
+                    for r in records:
+                        ni = new_idx(r.message_index)
+                        if ni >= 0:
+                            if r.file_path in self._fh.file_history:
+                                if r not in self._fh.file_history[r.file_path]:
+                                    r.message_index = ni
+                                    orphan_records.append(r)
+                            else:
                                 r.message_index = ni
                                 orphan_records.append(r)
-                        else:
-                            r.message_index = ni
-                            orphan_records.append(r)
 
             # 从 file_history 重建 message_history，再合并 orphan
             self._rebuild_message_history()

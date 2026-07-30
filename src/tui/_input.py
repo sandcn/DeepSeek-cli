@@ -325,6 +325,7 @@ class Input:
         self._active.set()
         self._stop = threading.Event()
         self._interrupted = threading.Event()
+        self._suppress_enter: bool = False
 
         # ── 故障检测 ──
         self._eof_count = 0
@@ -629,7 +630,8 @@ class Input:
 
         if kind == "enter":
             self._dismiss_completion()
-            self._enter()
+            if not self._suppress_enter:
+                self._enter()
         elif kind == "tab":
             self._handle_tab()
         elif kind == "backspace":
@@ -1629,6 +1631,22 @@ class Input:
         cb 签名: (text: str) -> None
         """
         self._auto_completion_callback = cb
+
+    def set_suppress_enter(self, suppress: bool) -> None:
+        """设置 Enter 抑制标志（用于 editmsg 消息选择期间）。
+
+        当 suppress=True 时，_dispatch_key_event 中的 Enter 分支
+        将跳过 _enter() 调用，防止选择确认 Enter 被误提交为输入。
+
+        线程安全：使用 _lock 保护。
+        """
+        with self._lock:
+            self._suppress_enter = suppress
+
+    def get_suppress_enter(self) -> bool:
+        """获取当前 Enter 抑制状态。线程安全。"""
+        with self._lock:
+            return self._suppress_enter
 
     # ═══════════════════════════════════════════════════════
     # 便捷方法

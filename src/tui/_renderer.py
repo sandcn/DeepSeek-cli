@@ -125,7 +125,7 @@ class TuiEngine:
         self._render_crashed: threading.Event = threading.Event()
         self._last_bottom_redraw: float = 0.0
         self._recover_attempts: int = 0
-        self._recovering: bool = False
+        self._recovering_event: threading.Event = threading.Event()
 
     def push_cmd(self, cmd: tuple) -> None:
         try:
@@ -222,13 +222,30 @@ class TuiEngine:
                 self.ensure_cursor_upper()
             except Exception:
                 _logger.debug("phase_render ensure_cursor_upper 异常", exc_info=True)
-        for cmd in commands:
-            try:
-                self._renderer.render(cmd)
-            except Exception:
-                _logger.warning(
-                    "渲染命令 %s 失败", _cmd_name(cmd[0]) if cmd else '?', exc_info=True,
-                )
+        # 按命令类型分批渲染：收集连续可批处理命令 → batch_write，不可批处理命令单独执行
+        i = 0
+        while i < len(commands):
+            cmd = commands[i]
+            if cmd and self._renderer._is_batchable(cmd[0]):
+                # 收集连续的可批处理命令
+                batch_end = i + 1
+                while batch_end < len(commands) and self._renderer._is_batchable(commands[batch_end][0]):
+                    batch_end += 1
+                try:
+                    self._renderer.render_batch(commands[i:batch_end])
+                except Exception:
+                    _logger.warning(
+                        "批量渲染 %d 条命令失败", batch_end - i, exc_info=True,
+                    )
+                i = batch_end
+            else:
+                try:
+                    self._renderer.render(cmd)
+                except Exception:
+                    _logger.warning(
+                        "渲染命令 %s 失败", _cmd_name(cmd[0]) if cmd else '?', exc_info=True,
+                    )
+                i += 1
 
     def _phase_redraw_bottom(self) -> None:
         now = time.monotonic()
@@ -303,7 +320,7 @@ class TuiEngine:
                          self._config.max_recover_attempts)
             time.sleep(self._config.recover_delay)
             self._drain_queue_safe()
-            self._recovering = True
+            self._recovering_event.set()
             self._render_thread = threading.Thread(target=self._render, daemon=True)
             self._render_thread.start()
             _logger.info("render 线程已自动恢复 (第 %d/%d 次)",
@@ -322,17 +339,20 @@ class TuiEngine:
                     # ★ 始终在 wait 前 clear event，防止 _phase_pre_update_panels() 在 drain 过程中
                     #   推入 SUBAGENT_FRAME 后 set 了 event，导致 wait() 立即返回形成忙等循环
                     self._cmd_event.clear()
-                    self._cmd_event.wait(timeout=self._config.render_interval)
+                    timeout = self._config.render_interval
+                    self._cmd_event.wait(timeout=timeout)
                 except Exception as exc:
                     if self._handle_render_crash(exc):
                         return
                     else:
                         break
         finally:
-            if self._recovering:
-                self._recovering = False
+            if self._recovering_event.is_set():
+                _logger.debug("render 线程恢复中，跳过排空")
+                self._recovering_event.clear()
                 return
             dropped = self._drain_queue_safe()
+            _logger.debug("render 线程 finally 排空 %d 条命令", dropped)
             if dropped > 0:
                 _emergency_write(
                     f"{ANSI_EMERGENCY_RED}[ChatUI] render 线程已终止，"
@@ -408,6 +428,84 @@ class TuiRenderer:
             RenderCommand.USER_MSG: self._do_user_message,
             RenderCommand.DISPLAY_MSGS: self._do_display_messages,
         }
+
+    # ── 批量渲染支持 ──────────────────────────────
+
+    # 可批量渲染的命令集合：它们都使用 Text.from_ansi() + self._adapter.write() 模式
+    _BATCHABLE_COMMANDS = frozenset({
+        RenderCommand.NOTIFICATION,
+        RenderCommand.WRITE_LINE,
+        RenderCommand.ERROR,
+        RenderCommand.TOOL_OUTPUT,
+        RenderCommand.TOOL_SUMMARY,
+        RenderCommand.USER_MSG,
+    })
+
+    def _is_batchable(self, cid: int) -> bool:
+        """判断命令 ID 是否可批量渲染。"""
+        return cid in self._BATCHABLE_COMMANDS
+
+    def render_batch(self, commands: list[tuple]) -> None:
+        """批量渲染连续的可批处理命令 — 锁外预渲染 + 锁内合并写入。
+
+        将多个可批处理命令的 renderable 在锁外逐个渲染为 ANSI 字符串，
+        然后通过 adapter.batch_write() 在单次锁获取内合并写入 + flush。
+        保持命令渲染顺序与输入一致，并正确驱动 _in_tool_group 状态机。
+        """
+        from rich.text import Text
+
+        renderables: list = []
+        for cmd in commands:
+            if not cmd:
+                continue
+            cid = cmd[0]
+
+            if cid == RenderCommand.NOTIFICATION:
+                text = cmd[1]
+                renderables.append(Text.from_ansi(f"  \033[38;5;242m\u2502\033[0m {text}"))
+                self._record_lines(1)
+
+            elif cid == RenderCommand.WRITE_LINE:
+                text = cmd[1]
+                renderables.append(Text.from_ansi(text))
+                self._record_lines(1)
+
+            elif cid == RenderCommand.ERROR:
+                message = cmd[1]
+                renderables.append(Text.from_ansi(
+                    f"  \033[1;38;5;196m!\033[0m \033[38;5;196m{message}\033[0m"
+                ))
+                self._record_lines(1)
+
+            elif cid == RenderCommand.TOOL_OUTPUT:
+                text = cmd[1]
+                if not self._in_tool_group:
+                    self._in_tool_group = True
+                    renderables.append(Text.from_ansi(
+                        f"  \033[38;5;23m\u256d\u2500\u2500 工具调用 \u2500\u2500\u256e\033[0m"
+                    ))
+                renderables.append(Text.from_ansi(f"  \033[38;5;242m\u2502\033[0m {text}"))
+                self._record_lines(1)
+
+            elif cid == RenderCommand.TOOL_SUMMARY:
+                successful = cmd[1]
+                failed = cmd[2]
+                if self._in_tool_group:
+                    self._in_tool_group = False
+                    renderables.append(Text.from_ansi(
+                        f"  \033[38;5;23m\u2570\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u256f\033[0m"
+                    ))
+                self._record_lines(1)
+
+            elif cid == RenderCommand.USER_MSG:
+                text = cmd[1]
+                renderables.append(Text.from_ansi(
+                    f"\n  \033[1;38;5;81m>\033[0m \033[38;5;252m{text}\033[0m\n"
+                ))
+                self._record_lines(2)
+
+        if renderables:
+            self._adapter.batch_write(renderables)
 
     @property
     def output_adapter(self) -> "OutputAdapter":

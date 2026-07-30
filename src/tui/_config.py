@@ -41,7 +41,7 @@ class TuiConfig(ConfigBase):
     """
 
     # ── 渲染引擎参数 ──────────────────────────────────
-    render_interval: float = 0.1            # render 线程刷新间隔（秒），固定 10Hz
+    render_interval: float = 0.1            # render 线程刷新间隔（秒），活跃时 10Hz
     max_batch_size: int = 50                # 单帧最大批处理命令数，防止 UI 冻结
     drain_lock_timeout: float = 0.1         # drain 锁超时（秒），与 render_interval 对齐
     cmd_queue_maxsize: int = 10000          # 命令队列最大容量

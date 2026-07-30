@@ -189,6 +189,52 @@ class OutputAdapter:
         if self._captured_output is not None:
             self._captured_output.append(ansi_str)
 
+    def batch_write(self, renderables: list) -> None:
+        """批量输出多个 Rich renderable — 锁外预渲染 + 锁内合并写入。
+
+        将多个 renderable 在锁外逐个预渲染为 ANSI 字符串，然后在单个
+        render_lock 块内一次性写入 + flush。减少锁竞争和 Rich Console
+        调用次数，显著优化流式场景的批量渲染性能。
+
+        Args:
+            renderables: Rich renderable 列表（支持 Text / str / Rich renderable）
+
+        渲染顺序与输入列表顺序一致。空列表快速返回，不做任何 I/O。
+        """
+        if not renderables:
+            return
+
+        self._refresh_width()
+
+        # ★ 锁外预渲染：逐个渲染所有 renderable（不占用 render_lock）
+        ansi_parts: list[str] = []
+        for renderable in renderables:
+            if not renderable:
+                continue
+            # 纯字符串含 ANSI 转义序列 → 转换为 Rich Text 对象
+            if isinstance(renderable, str) and "\x1b" in renderable:
+                renderable = Text.from_ansi(renderable)
+            ansi_str = self._render_to_ansi(renderable)
+            ansi_parts.append(ansi_str)
+
+        if not ansi_parts:
+            return
+
+        all_ansi = "".join(ansi_parts)
+
+        # ★ 锁内仅快速合并写入（file.write + flush，单次锁获取）
+        with _try_acquire_output_lock(name="output_adapter.batch_write", timeout=1.0) as locked:
+            if locked:
+                self._console.file.write(all_ansi)
+            else:
+                self._console.file.write(all_ansi)
+            self._console.file.flush()
+
+        # 捕获：追加所有预渲染的 ANSI 文本
+        if self._captured_output is not None:
+            for part in ansi_parts:
+                self._captured_output.append(part)
+
     def write_raw(self, text: str) -> None:
         """快速输出纯文本（跳过 Rich 处理，极致性能路径）。
 

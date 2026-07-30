@@ -18,6 +18,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
+import threading
 from typing import Any
 
 from ...core.constants import DIM, RESET, YELLOW, BRIGHT_CYAN, BRIGHT_GREEN, GREEN
@@ -76,11 +77,15 @@ def _restore_sandbox_to(agent: Any, target_idx: int) -> str:
     sandbox_manager = _get_sandbox_manager()
     if not sandbox_manager:
         return ""
-    results = sandbox_manager.restore_to_message(target_idx)
-    if results:
-        restored = sum(1 for success in results.values() if success)
-        return f"\u5df2\u6062\u590d {restored} \u4e2a\u6587\u4ef6"
-    return ""
+    try:
+        results = sandbox_manager.restore_to_message(target_idx)
+        if results:
+            restored = sum(1 for success in results.values() if success)
+            return f"\u5df2\u6062\u590d {restored} \u4e2a\u6587\u4ef6"
+        return ""
+    except Exception as exc:
+        _logger.warning("沙盒恢复失败 (target_idx=%s): %s", target_idx, exc)
+        return f"沙盒恢复失败: {exc}"
 
 
 # ═══════════════════════════════════════════════════════════
@@ -226,6 +231,8 @@ class MessageEditor:
         """
         self._bottom_bar = bottom_bar
         self._input = input_
+        self._selection_ready: threading.Event = threading.Event()
+        self._selection_confirmed: bool = False
 
     # ── 公开入口 ──
 
@@ -259,10 +266,40 @@ class MessageEditor:
         for display_idx, (orig_idx, msg) in enumerate(user_msgs):
             display_items.append(_user_msg_summary(msg, display_idx))
 
-        # 选择要编辑的消息
-        real_idx = self._interactive_message_select(
-            user_msgs, display_items,
-        )
+        # ★ 设置 Enter 抑制 + 替换补全关闭回调
+        #   在交互选择期间，Enter 键不经过 _enter() 提交，
+        #   而是通过自定义回调设置独立信号 _selection_ready。
+        input_ = self._input
+        if input_ is None:
+            return False
+
+        input_.set_suppress_enter(True)
+        orig_dismiss_cb = input_._dismiss_completion_callback
+
+        def _editmsg_dismiss():
+            """自定义补全关闭回调 — 设置选择完成信号。
+
+            在 render 线程中调用：
+              _dispatch_key_event(enter) → _dismiss_completion()
+            → 调用此回调 → 设置 _selection_ready 通知 executor 线程。
+            """
+            self._selection_confirmed = True
+            self._selection_ready.set()
+
+        input_._dismiss_completion_callback = _editmsg_dismiss
+
+        try:
+            real_idx = self._interactive_message_select(
+                user_msgs, display_items,
+            )
+        finally:
+            # 恢复原始回调 + 清除抑制标志
+            input_._dismiss_completion_callback = orig_dismiss_cb
+            input_.set_suppress_enter(False)
+            # 清理独立信号（防残留）
+            self._selection_ready.clear()
+            self._selection_confirmed = False
+
         if real_idx is None:
             return False
 
@@ -315,10 +352,11 @@ class MessageEditor:
         deadline = time.monotonic() + 120  # 2 分钟超时
         try:
             while time.monotonic() < deadline:
-                # 先检查 Enter 提交（优先于 ESC，确保提交不被竞态误判为取消）
-                text = input_.get_queued_input()
-                if text is not None:
-                    # Enter 被按下；在 dismiss 后读取最后保存的选中索引
+                # ★ 使用独立信号检测 Enter（不经过 get_queued_input / _enter 路径）
+                #   当用户按 Enter 时，自定义回调设置 _selection_ready，
+                #   wait(timeout=0.05) 返回 True，与原有 50ms 轮询周期一致。
+                if self._selection_ready.wait(timeout=0.05):
+                    # Enter 已被检测到；读取最后保存的选中索引
                     try:
                         comp_idx = bb.get_selected_completion_index()
                         if 0 <= comp_idx < sel_count:
@@ -341,8 +379,6 @@ class MessageEditor:
                             last_sel_idx = comp_idx
                 except Exception as exc:
                     _logger.debug("_interactive_message_select: get_selected_completion_index 异常（轮询路径）: %s", exc)
-
-                time.sleep(0.05)
 
             # 隐藏弹窗
             try:

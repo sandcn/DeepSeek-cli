@@ -54,6 +54,14 @@ class _StdoutLineTracker:
 
     _MAX_LINES = 1000
 
+    # flush timer 生命周期管理：
+    #   _flush_timer_stop Event 用于防止 teardown() 后已触发的 callback
+    #   创建新定时器（资源泄露）。停止流程：_stop_flush_timer() 先 set
+    #   停止标志，再 cancel 当前 timer。_timer_flush_callback() 自重置前
+    #   检查标志，已停止时不创建新定时器。
+    #   若需要重启 timer（当前无重启场景），需先调用
+    #   _flush_timer_stop.clear() 再调用 _start_flush_timer()。
+
     def __init__(self, real_stdout: IO[str]):
         self._real_stdout = real_stdout
         self._ring: deque[str] = deque(maxlen=self._MAX_LINES)
@@ -64,6 +72,7 @@ class _StdoutLineTracker:
         self._buffer_lock = threading.Lock()
         self._last_flush_time: float = time.monotonic()
         self._flush_timer: threading.Timer | None = None
+        self._flush_timer_stop = threading.Event()
         self._output_history_file: Path = OUTPUT_HISTORY_FILE
         self._load_output_history()
         self._start_flush_timer()
@@ -239,6 +248,8 @@ class _StdoutLineTracker:
 
     def _start_flush_timer(self) -> None:
         """启动 2 秒定时刷盘定时器。"""
+        if self._flush_timer_stop.is_set():
+            return
         timer = threading.Timer(2.0, self._timer_flush_callback)
         timer.daemon = True
         self._flush_timer = timer
@@ -250,11 +261,12 @@ class _StdoutLineTracker:
             self._flush_buffered_lines()
         except Exception:
             pass
-        if self._flush_timer is not None:
+        if self._flush_timer is not None and not self._flush_timer_stop.is_set():
             self._start_flush_timer()
 
     def _stop_flush_timer(self) -> None:
         """停止定时刷盘定时器。"""
+        self._flush_timer_stop.set()
         if self._flush_timer is not None:
             self._flush_timer.cancel()
             self._flush_timer = None

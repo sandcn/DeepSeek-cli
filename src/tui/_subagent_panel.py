@@ -169,7 +169,8 @@ class SubAgentPanelController:
     def __init__(self, max_history: int = 3):
         self._agents: Dict[str, _AgentSlot] = {}
         self._order: List[str] = []
-        self._state_lock = threading.Lock()
+        # RLock: 允许 _on_tool_parsing 等事件处理器在持有锁时调用 _push_frame(_render_frame()) 而不死锁；_render_frame() 内部也获取此锁
+        self._state_lock = threading.RLock()
         self._frame: int = 0
         self._last_emit_time: float = 0.0
         self._active: bool = False
