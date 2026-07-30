@@ -315,13 +315,7 @@ class MessageEditor:
         deadline = time.monotonic() + 120  # 2 分钟超时
         try:
             while time.monotonic() < deadline:
-                # 检查 ESC/中断
-                if input_.interrupted:
-                    _logger.debug("_interactive_message_select: ESC 中断，取消选择")
-                    last_sel_idx = -1  # 标记取消
-                    break
-
-                # 检查 Enter 是否被按下
+                # 先检查 Enter 提交（优先于 ESC，确保提交不被竞态误判为取消）
                 text = input_.get_queued_input()
                 if text is not None:
                     # Enter 被按下；在 dismiss 后读取最后保存的选中索引
@@ -329,8 +323,14 @@ class MessageEditor:
                         comp_idx = bb.get_selected_completion_index()
                         if 0 <= comp_idx < sel_count:
                             last_sel_idx = comp_idx
-                    except Exception:
-                        pass
+                    except Exception as exc:
+                        _logger.debug("_interactive_message_select: get_selected_completion_index 异常（Enter 路径）: %s", exc)
+                    break
+
+                # 检查 ESC/中断
+                if input_.interrupted:
+                    _logger.debug("_interactive_message_select: ESC 中断，取消选择")
+                    last_sel_idx = -1  # 标记取消
                     break
 
                 # 追踪当前选中的 completion 索引
@@ -339,8 +339,8 @@ class MessageEditor:
                         comp_idx = bb.get_selected_completion_index()
                         if 0 <= comp_idx < sel_count:
                             last_sel_idx = comp_idx
-                except Exception:
-                    pass
+                except Exception as exc:
+                    _logger.debug("_interactive_message_select: get_selected_completion_index 异常（轮询路径）: %s", exc)
 
                 time.sleep(0.05)
 

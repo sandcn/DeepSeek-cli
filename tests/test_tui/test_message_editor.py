@@ -139,3 +139,30 @@ class TestInteractiveMessageSelect:
 
         assert result is None  # ESC 取消返回 None
         bb.hide_completions.assert_called_once()
+
+    # ── 场景 5：竞态条件 Enter + interrupted 同时触发 → Enter 优先（回归测试）──
+
+    @patch("src.tui.pipeline.message_editor.time.sleep")
+    @patch("src.tui.pipeline.message_editor.time.monotonic")
+    def test_interactive_message_select_enter_priority_over_interrupted_regression(
+        self, mock_monotonic: MagicMock, mock_sleep: MagicMock,
+    ):
+        """Enter 和 interrupted 同时触发 → Enter 优先，返回选中索引。"""
+        bb = self._make_mock_bottom_bar(completion_idx=1)
+        inp = self._make_mock_input()
+        # 竞态条件：Enter 提交和 ESC 中断同时触发
+        inp.get_queued_input.return_value = "\n"
+        inp.interrupted = True
+        editor = MessageEditor(bottom_bar=bb, input_=inp)
+
+        mock_monotonic.side_effect = [100.0, 200.0]
+
+        user_msgs = self._make_user_msgs(3)
+        display_items = self._make_display_items(3)
+
+        result = editor._interactive_message_select(user_msgs, display_items)
+
+        # Enter 优先，返回选中索引而非 None
+        assert result == 1
+        bb.get_selected_completion_index.assert_called_once()
+        bb.hide_completions.assert_called_once()
