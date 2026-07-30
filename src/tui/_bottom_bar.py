@@ -1213,6 +1213,11 @@ class _BottomBar:
                 elif not full_repaint and self._last_height > 0 and height > self._last_height:
                     for r in range(old_scroll_end + 1, scroll_end + 1):
                         clear_buf.append(f"{cursor_goto(r, 1)}\033[K")
+                # ★ 修Bug：full_repaint 时滚动区域扩大（scroll_end > old_scroll_end），
+                #   新内容区行 [old_scroll_end+1, scroll_end] 须清除以防残留旧内容
+                if full_repaint and scroll_end > old_scroll_end and self._last_height > 0:
+                    for r in range(old_scroll_end + 1, scroll_end + 1):
+                        clear_buf.append(f"{cursor_goto(r, 1)}\033[K")
 
                 r1 = height - total + 1
                 subagent_start = r1 + 1
@@ -1262,7 +1267,7 @@ class _BottomBar:
                 if self._tracker is not None:
                     self._tracker.set_scroll_end(scroll_end)
                 out.write(set_scroll_region(1, scroll_end))
-                if delta < 0 and old_scroll_end > 0:
+                if delta < 0 and old_scroll_end > 0 and not full_repaint:
                     for r in range(old_scroll_end + 1, scroll_end + 1):
                         out.write(f"{cursor_goto(r, 1)}\033[K")
                 out.write(cursor_restore())

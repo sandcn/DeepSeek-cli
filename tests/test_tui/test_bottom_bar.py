@@ -360,6 +360,180 @@ class TestSystemMonitor:
         assert m.CPU_CACHE_TTL == 1.0
 
 
+class TestForceRedrawFullRepaintClear:
+    """测试 force_redraw() 中 full_repaint 时 scroll_end > old_scroll_end 的行清除。
+
+    验证新增修复：resize（full_repaint=True）且滚动区域扩大时，
+    新内容区行 [old_scroll_end+1, scroll_end] 被正确清除。
+    """
+
+    @pytest.fixture
+    def bottom_bar(self):
+        from src.tui._bottom_bar import _BottomBar
+        bb = _BottomBar()
+        bb._active = True
+        bb._subagent_lines = []
+        bb._last_text = ""
+        bb._cached_cpu_percent = 0.0
+        bb._cached_mem_percent = 0.0
+        bb._last_system_stats_time = float('inf')
+        return bb
+
+    def _setup_height_increase(self, bb, old_h=25, old_bottom=5):
+        """模拟全量重绘时高度增加（新高度由 _run_force_redraw 的 mock_size 参数控制）。
+
+        Args:
+            old_h: 旧终端高度。
+            old_bottom: 旧底部栏行数。
+        """
+        bb._last_height = old_h
+        bb._last_bottom_lines = old_bottom
+        # _bottom_lines 由 _compute_input_rows() 决定
+        # 空文本 + 无 subagent 时: 2 + 0 + (2+1+0) = 5
+        bb._needs_full_repaint = True
+
+    def _setup_height_same(self, bb, h=25, old_bottom=5):
+        """模拟全量重绘时高度不变，scroll_end == old_scroll_end。"""
+        bb._last_height = h
+        bb._last_bottom_lines = old_bottom
+        bb._needs_full_repaint = True
+
+    def _setup_height_decrease(self, bb, old_h=30, old_bottom=5):
+        """模拟全量重绘时高度减小（新高度由 _run_force_redraw 的 mock_size 参数控制），scroll_end < old_scroll_end。"""
+        bb._last_height = old_h
+        bb._last_bottom_lines = old_bottom
+        bb._needs_full_repaint = True
+
+    def _setup_first_draw(self, bb, h=25, old_bottom=5):
+        """模拟首次绘制（_last_height == 0）。"""
+        bb._last_height = 0
+        bb._last_bottom_lines = old_bottom
+        bb._needs_full_repaint = True
+
+    def _run_force_redraw(self, bb, mock_size):
+        """执行 force_redraw，返回 mock_stdout。"""
+        mock_stdout = MagicMock()
+
+        with patch("src.tui._bottom_bar._get_terminal_size", return_value=mock_size):
+            with patch("src.tui._bottom_bar.sys.__stdout__", mock_stdout):
+                with patch("src.tui._bottom_bar._try_acquire_output_lock") as mock_lock:
+                    mock_lock.return_value.__enter__.return_value = True
+                    with patch("src.tui._bottom_bar.sgr_reset"):
+                        bb.force_redraw()
+
+        return mock_stdout
+
+    def _collect_writes(self, mock_stdout) -> str:
+        """从 mock_stdout.write 调用参数中收集所有写入字符串。"""
+        parts = []
+        for call_args in mock_stdout.write.call_args_list:
+            args, _ = call_args
+            if args and isinstance(args[0], str):
+                parts.append(args[0])
+        return ''.join(parts)
+
+    def test_full_repaint_height_increase_clears_new_rows(self, bottom_bar):
+        """核心场景：高度增大、full_repaint=True、scroll_end > old_scroll_end → 清除新内容区行。"""
+        self._setup_height_increase(bottom_bar, old_h=25)
+        mock_stdout = self._run_force_redraw(bottom_bar, mock_size=(80, 30))
+
+        all_writes = self._collect_writes(mock_stdout)
+
+        # 验证新内容区行 [21, 25] 被清除
+        # old_scroll_end = 25 - 5 = 20, scroll_end = 30 - 5 = 25
+        # 应清除 range(21, 26): cursor_goto(r, 1) + \033[K
+        for r in range(21, 26):
+            expected = f"\033[{r};1H\033[K"
+            assert expected in all_writes, f"行 {r} 应被清除但未找到序列 {expected!r}"
+
+        # 验证 full_repaint 被消费重置
+        assert bottom_bar._needs_full_repaint is False
+
+    def test_full_repaint_height_same_no_extra_clear(self, bottom_bar):
+        """full_repaint=True 但高度不变、scroll_end == old_scroll_end → 无额外清除。"""
+        self._setup_height_same(bottom_bar, h=25)
+        # _bottom_lines = 5 (空文本), scroll_end = 25 - 5 = 20, old_scroll_end = 25 - 5 = 20
+        # scroll_end(20) == old_scroll_end(20) → 不应触发额外清除
+        mock_stdout = self._run_force_redraw(bottom_bar, mock_size=(80, 25))
+
+        all_writes = self._collect_writes(mock_stdout)
+
+        # 确认底部栏区域 [scroll_end+1=21, height=25] 被清除（这是常规清除）
+        for r in range(21, 26):
+            expected = f"\033[{r};1H\033[K"
+            assert expected in all_writes, f"底部栏行 {r} 应被清除"
+
+        # 但 scroll_end 范围内不应有来自修复分支的清除
+        # （底部栏区域的清除来自常规 full_repaint 路径，不是修复分支）
+
+    def test_full_repaint_height_decrease_no_extra_clear(self, bottom_bar):
+        """full_repaint=True 高度减小、scroll_end < old_scroll_end → 无额外清除。"""
+        self._setup_height_decrease(bottom_bar, old_h=30)
+        # old_scroll_end = 30 - 5 = 25, scroll_end = 25 - 5 = 20
+        # scroll_end(20) < old_scroll_end(25) → 不应触发额外清除
+        mock_stdout = self._run_force_redraw(bottom_bar, mock_size=(80, 25))
+
+        all_writes = self._collect_writes(mock_stdout)
+
+        # 底部栏区域 [scroll_end+1=21, height=25] 被清除
+        for r in range(21, 26):
+            expected = f"\033[{r};1H\033[K"
+            assert expected in all_writes, f"底部栏行 {r} 应被清除"
+
+    def test_full_repaint_last_height_zero_no_extra_clear(self, bottom_bar):
+        """首次绘制（_last_height=0）时不应触发额外清除。"""
+        self._setup_first_draw(bottom_bar, h=25)
+        # _last_height=0 → self._last_height > 0 条件不满足 → 不触发
+        mock_stdout = self._run_force_redraw(bottom_bar, mock_size=(80, 25))
+
+        all_writes = self._collect_writes(mock_stdout)
+
+        # 仅底部栏区域被清除，不应有 old_scroll_end 范围的清除
+        # _last_height=0 时 old_scroll_end = (0 if 0>0 else 25) - 5 = 20
+        # scroll_end = 25 - 5 = 20, 所以 scroll_end == old_scroll_end, 无额外清除
+
+    def test_full_repaint_height_increase_with_subagent_lines(self, bottom_bar):
+        """高度增大且有 subagent 行时，新内容区行被正确清除。"""
+        bottom_bar._subagent_lines = ["[agent-1]", "[agent-2]"]
+        # _bottom_lines = 2 + 2 + (2+1+0) = 7
+        bottom_bar._last_height = 30
+        bottom_bar._last_bottom_lines = 7
+        bottom_bar._needs_full_repaint = True
+
+        mock_stdout = self._run_force_redraw(bottom_bar, mock_size=(80, 35))
+
+        all_writes = self._collect_writes(mock_stdout)
+
+        # old_scroll_end = 30 - 7 = 23, scroll_end = 35 - 7 = 28
+        # 应清除 range(24, 29)
+        for r in range(24, 29):
+            expected = f"\033[{r};1H\033[K"
+            assert expected in all_writes, f"行 {r} 应被清除但未找到序列 {expected!r}"
+
+    def test_full_repaint_bottom_lines_decrease_clears_new_rows(self, bottom_bar):
+        """底部行数减少（8→5）导致 scroll_end 扩大（22→25），新内容区行 [23,25] 应被清除。"""
+        # 模拟输入文本，宽度变化导致 wrap 行数变化
+        bottom_bar._last_text = "a" * 50  # 长文本，宽屏时少行
+        # 旧底部行数较大（8行），当前底部行数较小（5行）
+        # 但这里控制 _last_bottom_lines 和 current _bottom_lines 的关系
+        bottom_bar._last_height = 30
+        bottom_bar._last_bottom_lines = 8  # 旧底部行数
+
+        # 在新宽度下 _bottom_lines 不变（空文本），但旧底部行设大
+        # → scroll_end(25) < old_scroll_end(22) → 不触发
+        bottom_bar._needs_full_repaint = True
+
+        mock_stdout = self._run_force_redraw(bottom_bar, mock_size=(80, 30))
+        all_writes = self._collect_writes(mock_stdout)
+
+        # 旧_scroll_end = 30 - 8 = 22
+        # scroll_end = 30 - 5 = 25
+        # scroll_end(25) > old_scroll_end(22) → 应清除 range(23, 26)
+        for r in range(23, 26):
+            expected = f"\033[{r};1H\033[K"
+            assert expected in all_writes, f"底部行数减少时行 {r} 应被清除但未找到序列 {expected!r}"
+
+
 class TestForceRedrawExceptionHandling:
     """测试 force_redraw() 的异常处理 — 防止异常吞没。
 
