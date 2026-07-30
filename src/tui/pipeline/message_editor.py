@@ -105,8 +105,7 @@ class EditCommand:
         # 恢复沙盒
         target_index = self.real_idx - 1 if self.real_idx > 0 else 0
         restore_text = _restore_sandbox_to(agent, target_index)
-        if restore_text:
-            state["_restore_text"] = restore_text
+        state["_restore_text"] = restore_text
 
         # 截断消息
         original_len = len(messages)
@@ -136,8 +135,7 @@ class DeleteCommand:
 
         target_index = self.real_idx - 1 if self.real_idx > 0 else 0
         restore_text = _restore_sandbox_to(agent, target_index)
-        if restore_text:
-            state["_restore_text"] = restore_text
+        state["_restore_text"] = restore_text
 
         original_len = len(messages)
         removed = original_len - self.real_idx
@@ -164,8 +162,7 @@ class ResumeCommand:
             return False
 
         restore_text = _restore_sandbox_to(agent, self.real_idx)
-        if restore_text:
-            state["_restore_text"] = restore_text
+        state["_restore_text"] = restore_text
 
         original_len = len(messages)
         del messages[self.real_idx + 1:]
