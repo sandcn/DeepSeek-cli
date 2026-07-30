@@ -140,6 +140,13 @@ class EditmsgPlugin(InteractiveCommandPlugin):
                                     input_inst._submitted_text = ""
                             except Exception:
                                 _logger.debug("editmsg_plugin: 清除 _input_ready 残留时异常", exc_info=True)
+                            # 双重保障：清除残留的 submitted_text 和 buffer
+                            # 即使 _input_ready 清除后仍有 Enter 被处理设置 _submitted_text，
+                            # drain_all() 也会将其清空
+                            try:
+                                input_inst.drain_all()
+                            except Exception:
+                                _logger.debug("editmsg_plugin: drain_all 异常", exc_info=True)
 
                     reset_interrupt_async(input_instance=chat_ui._input if chat_ui else None)
                     monitor.clear_interrupted()
@@ -170,6 +177,7 @@ class EditmsgPlugin(InteractiveCommandPlugin):
                 chat_ui.write_line(f"  {GREEN}\u2713{RESET} {restore_text}")
             else:
                 chat_ui.write_line(f"  {DIM}\u6c99\u76d2\u65e0\u6587\u4ef6\u9700\u8fd8\u539f{RESET}")
+            chat_ui.flush()
 
         return True
 

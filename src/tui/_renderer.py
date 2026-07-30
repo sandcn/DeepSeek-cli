@@ -600,7 +600,7 @@ class TuiRenderer:
 
     def _do_subagent_frame(self, frame_lines: tuple) -> None:
         # 空列表 = 清除面板
-        if isinstance(frame_lines, (list, tuple)) and len(frame_lines) == 0 and isinstance(frame_lines, list):
+        if isinstance(frame_lines, list) and not frame_lines:
             if hasattr(self._bb, 'set_subagent_frame'):
                 self._bb.set_subagent_frame([])
             return

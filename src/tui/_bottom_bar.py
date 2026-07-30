@@ -18,7 +18,7 @@ import subprocess
 import sys
 import threading
 import time
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Callable
 
 from src.tui._locks import _try_acquire_output_lock
 from src.tui._screen import (
@@ -837,6 +837,7 @@ class _BottomBar:
         self._width_cache = TerminalWidthCache.get_default()
         self._sigwinch_cb: Any = None
         self._needs_full_repaint: bool = False
+        self._request_redraw_cb: Callable[[], None] | None = None
         self._input: "Input | None" = None
         # 系统监控
         self._system_monitor: _SystemMonitor | None = None
@@ -932,8 +933,16 @@ class _BottomBar:
         self._needs_full_repaint = True
 
     def force_refresh_dimensions(self) -> None:
-        self._width_cache._refresh()
+        self._width_cache.force_refresh()
         self.set_full_repaint_needed()
+
+    def set_request_redraw_cb(self, cb: Callable[[], None] | None) -> None:
+        """设置请求重绘回调（由 TuiEngine.request_bottom_redraw 驱动）。
+
+        Args:
+            cb: 无参回调，SIGWINCH 时调用以触发底部栏重绘和光标重定位。
+        """
+        self._request_redraw_cb = cb
 
     # ── 光标定位 ──────────────────────────────────
 
@@ -1057,8 +1066,14 @@ class _BottomBar:
 
     def _register_sigwinch(self) -> None:
         def _on_sigwinch(cols: int, rows: int) -> None:
-            self._width_cache._refresh()
+            self._width_cache.force_refresh()
             self._needs_full_repaint = True
+            # 通知引擎立即触发重绘和光标重定位
+            if self._request_redraw_cb is not None:
+                try:
+                    self._request_redraw_cb()
+                except Exception:
+                    pass
         self._sigwinch_cb = _on_sigwinch
         register_sigwinch_callback(self._sigwinch_cb)
 

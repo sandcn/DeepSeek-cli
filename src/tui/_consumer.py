@@ -198,7 +198,7 @@ class ChatUIConsumer:
         # ── 框架组件 ──
         self._renderer: "TuiRenderer" = TuiRenderer(
             self._rs, output_adapter, self._bb,
-            on_display_messages=None,
+            on_display_messages=self._display_messages_handler,
             cursor_tracker=cursor_tracker,
         )
         self._engine: "TuiEngine" = TuiEngine(
@@ -217,6 +217,9 @@ class ChatUIConsumer:
             self._bb, CompletionEngine(),
             request_redraw=self._engine.request_bottom_redraw,
         )
+
+        # 连接 SIGWINCH 重绘回调（resize 时触发底部栏重绘和光标重定位）
+        self._bb.set_request_redraw_cb(self._engine.request_bottom_redraw)
 
         # ── 向后兼容的 _components 属性 ──
         self._components = _ComponentsNamespace(self._input)
@@ -368,6 +371,32 @@ class ChatUIConsumer:
                 self._bus.subscribe(handler_method, event_type=event_type)
                 if self._bound_handlers is not None:
                     self._bound_handlers[event_type] = handler_method
+
+    def _display_messages_handler(self, messages: list[dict], speed: int) -> None:
+        """渲染消息列表到上屏区域（on_display_messages 回调）。
+
+        Args:
+            messages: 消息列表（已过滤 system 角色）。
+            speed: 渲染速度（0=立即，>0=逐条渐显）。
+        """
+        if not messages:
+            return
+        from src.core.constants import DIM, RESET
+        for msg in messages:
+            role = msg.get("role", "")
+            content = str(msg.get("content", ""))
+            if role == "user":
+                line = f"\n  \033[1;38;5;81m>\033[0m \033[38;5;252m{content}\033[0m\n"
+            elif role == "assistant":
+                line = f"  \033[38;5;242m\u2502\033[0m {content}"
+            elif role == "system":
+                continue
+            else:
+                line = f"  \033[38;5;242m\u2502\033[0m {content}"
+            self._engine.push_cmd((RenderCommand.WRITE_LINE, line))
+        # 最后推入分隔线
+        self._engine.push_cmd((RenderCommand.WRITE_LINE, f"  {DIM}{'─' * 40}{RESET}"))
+        self._engine.flush()
 
     def request_bottom_redraw(self) -> None:
         self._engine.request_bottom_redraw()

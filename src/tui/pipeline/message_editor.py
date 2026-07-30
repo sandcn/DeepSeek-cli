@@ -296,6 +296,13 @@ class MessageEditor:
             # 恢复原始回调 + 清除抑制标志
             input_._dismiss_completion_callback = orig_dismiss_cb
             input_.set_suppress_enter(False)
+            # 排空 stdin 中残留的 Enter 事件字节
+            # 防止 set_suppress_enter(False) 后 render 线程立即处理残留 Enter
+            # 导致 _enter() 误触发提交空文本
+            try:
+                input_.flush_stdin_buffer()
+            except Exception:
+                _logger.debug("edit_current_messages: flush_stdin_buffer 异常", exc_info=True)
             # 清理独立信号（防残留）
             self._selection_ready.clear()
             self._selection_confirmed = False
