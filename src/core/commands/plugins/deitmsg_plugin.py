@@ -181,6 +181,14 @@ class DeitmsgPlugin(InteractiveCommandPlugin):
                     "DeitmsgPlugin display_messages 异常: %s", exc
                 )
 
+            # 确保渲染命令在插件返回前排空
+            try:
+                chat_ui.flush()
+            except Exception:
+                _logger.warning(
+                    "DeitmsgPlugin chat_ui.flush() post-finally 异常", exc_info=True
+                )
+
         return True
 
     def execute(self, ctx: Any) -> bool:

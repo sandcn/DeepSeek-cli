@@ -8,7 +8,7 @@
 
 from __future__ import annotations
 
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, call, patch
 
 import pytest
 
@@ -182,6 +182,27 @@ class TestDeitmsgPlugin:
         restore_msg = [c for c in write_calls if "还原" in str(c)]
         assert len(restore_msg) > 0, f"No restore message found in: {write_calls}"
         assert "2" in str(restore_msg[0]), f"Expected '2' in '{restore_msg[0]}'"
+        # 验证 post-finally 块中 flush 被调用
+        # finally 块已有 1 次 flush + post-finally 块新增 1 次 = 共 2 次
+        assert chat_ui.flush.call_count >= 2, (
+            f"Expected flush >= 2 times, got {chat_ui.flush.call_count}"
+        )
+        # 验证调用顺序：display_messages 在 post-finally flush 之前
+        display_idx = None
+        flush_indices = []
+        for idx, c in enumerate(chat_ui.mock_calls):
+            cname = str(c)
+            if "display_messages" in cname:
+                display_idx = idx
+            if "flush" in cname:
+                flush_indices.append(idx)
+        assert display_idx is not None, "display_messages not found in mock_calls"
+        # 至少有 2 次 flush（finally + post-finally），其中至少一次在 display_messages 之后
+        post_display_flushes = [i for i in flush_indices if i > display_idx]
+        assert len(post_display_flushes) >= 1, (
+            f"No flush after display_messages. flush_indices={flush_indices}, "
+            f"display_idx={display_idx}, mock_calls={chat_ui.mock_calls}"
+        )
 
     @pytest.mark.asyncio
     async def test_no_sandbox_manager(self):
@@ -408,10 +429,67 @@ class TestDeitmsgPlugin:
         session.sync_retry_pending.assert_called_once()
         # reset_retry_pending_for_edit 在 sync 之后调用，覆盖为 False
         session.reset_retry_pending_for_edit.assert_called_once()
-        # 验证调用顺序：sync → reset
-        sync_call_order = session.sync_retry_pending.call_count
-        # 使用 mock_calls 验证顺序
-        from unittest.mock import call
-        expected_calls = [call.sync_retry_pending(), call.reset_retry_pending_for_edit(has_prefill=True)]
-        for expected in expected_calls:
-            assert expected in session.mock_calls, f"Expected {expected} in mock_calls: {session.mock_calls}"
+        # 验证调用顺序：sync → reset（严格顺序）
+        session.assert_has_calls(
+            [call.sync_retry_pending(), call.reset_retry_pending_for_edit(has_prefill=True)],
+            any_order=False,
+        )
+
+    @pytest.mark.asyncio
+    async def test_post_finally_flush_called(self):
+        """验证 post-finally 块中 flush 被调用，即使 display_messages 抛异常"""
+        plugin = DeitmsgPlugin()
+        chat_ui = MagicMock()
+        # display_messages 抛出异常但 flush 仍应被调用
+        chat_ui.display_messages.side_effect = RuntimeError("render error")
+        loop = MagicMock()
+        loop._chat_ui = chat_ui
+        loop._monitor = MagicMock()
+        plugin._loop = loop
+
+        msgs = [
+            {"role": "system", "content": "system"},
+            {"role": "user", "content": "测试消息"},
+        ]
+        session = MagicMock()
+        session.messages = msgs
+        session.captured_prefill = ""
+        session.sync_retry_pending = MagicMock()
+        session.reset_retry_pending_for_edit = MagicMock()
+
+        ctx = MagicMock()
+        ctx.session = session
+        ctx.state = {"model": "deepseek", "retry": False, "prefill": ""}
+
+        with patch(
+            "src.core.sandbox_manager.get_sandbox_manager",
+            return_value=None,
+        ):
+            with patch(
+                "src.app_loop._non_system_messages",
+                return_value=msgs[1:],
+            ):
+                result = await plugin.async_execute(ctx)
+
+        assert result is True
+        # display_messages 被调用但抛异常
+        chat_ui.display_messages.assert_called_once()
+        # 验证 flush 仍被调用（finally + post-finally 共 2 次）
+        assert chat_ui.flush.call_count >= 2, (
+            f"Expected flush >= 2 even when display_messages fails, "
+            f"got {chat_ui.flush.call_count}"
+        )
+        # 验证 post-finally flush 在 display_messages 之后调用
+        display_idx = None
+        flush_indices = []
+        for idx, c in enumerate(chat_ui.mock_calls):
+            cname = str(c)
+            if "display_messages" in cname:
+                display_idx = idx
+            if "flush" in cname:
+                flush_indices.append(idx)
+        assert display_idx is not None
+        post_display_flushes = [i for i in flush_indices if i > display_idx]
+        assert len(post_display_flushes) >= 1, (
+            "flush not called after display_messages failed"
+        )
