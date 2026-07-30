@@ -122,6 +122,7 @@ class EditCommand:
             sm.remap_indices(list(range(self.real_idx, original_len)))
 
         state["prefill"] = old_content
+        state["_edit_performed"] = True
         return True
 
 
@@ -150,6 +151,7 @@ class DeleteCommand:
         if sm:
             sm.remap_indices(list(range(self.real_idx, original_len)))
 
+        state["_edit_performed"] = True
         return True
 
 
@@ -177,6 +179,7 @@ class ResumeCommand:
             sm.remap_indices(list(range(self.real_idx + 1, original_len)))
 
         _check_last_message_role(agent, state)
+        state["_edit_performed"] = True
         return True
 
 
@@ -191,6 +194,7 @@ class ResumeAllCommand:
         if not agent.messages:
             return False
         _check_last_message_role(agent, state)
+        state["_edit_performed"] = True
         return True
 
 
@@ -293,16 +297,16 @@ class MessageEditor:
                 user_msgs, display_items,
             )
         finally:
-            # 恢复原始回调 + 清除抑制标志
+            # 恢复原始回调
             input_._dismiss_completion_callback = orig_dismiss_cb
-            input_.set_suppress_enter(False)
-            # 排空 stdin 中残留的 Enter 事件字节
-            # 防止 set_suppress_enter(False) 后 render 线程立即处理残留 Enter
-            # 导致 _enter() 误触发提交空文本
+            # ★ 先排空 stdin 残留字节（含 CR+LF 中的 \n），再恢复 Enter 抑制，
+            #   防止竞态窗口内残留 \n 触发 _enter() 误消费 prefill
             try:
                 input_.flush_stdin_buffer()
             except Exception:
                 _logger.debug("edit_current_messages: flush_stdin_buffer 异常", exc_info=True)
+            # 安全恢复 Enter 抑制（在排空 stdin 之后，确保无残留字节）
+            input_.set_suppress_enter(False)
             # 清理独立信号（防残留）
             self._selection_ready.clear()
             self._selection_confirmed = False

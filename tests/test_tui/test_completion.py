@@ -34,9 +34,9 @@ class TestCmplHandlerTab:
 
         handler._bb.show_completions.assert_called_once()
         handler._request_redraw.assert_called()
-        # 结果应为补全后的文本
+        # 结果应为原始输入文本（首次 Tab 不自动应用补全）
         assert result is not None
-        assert "hello world" in result
+        assert result == "say hello"
 
     def test_first_tab_no_results(self, handler):
         """首次 Tab 无结果时应隐藏弹窗，返回 None。"""

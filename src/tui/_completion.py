@@ -167,9 +167,7 @@ class _CmplHandler:
             match_prefix=match_prefix,
         )
         self._request_redraw()
-        return _apply_completion(
-            text, items[0].text, items[0].start_pos, last_word,
-        )
+        return text
 
 
 def _apply_completion(

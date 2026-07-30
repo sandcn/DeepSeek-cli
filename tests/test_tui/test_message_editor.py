@@ -226,3 +226,182 @@ class TestRestoreSandboxTo:
         assert state.get("_restore_text", "").startswith("沙盒恢复失败")
         # 消息已被截断：4 条 → 3 条（real_idx=3 被截断）
         assert len(agent.messages) == 3
+
+
+class TestEditCurrentMessagesFinallyOrder:
+    """测试 edit_current_messages() 中 finally 块的执行顺序。
+
+    回归测试：验证 flush_stdin_buffer() 在 set_suppress_enter(False) 之前调用，
+    防止 CR+LF 竞态导致 \n 残留字节在 Enter 抑制恢复后被 render 线程读取触发
+    _enter() 误消费 prefill。
+    """
+
+    @patch("src.tui.pipeline.message_editor._get_sandbox_manager")
+    def test_flush_stdin_buffer_before_set_suppress_enter_regression(
+        self, mock_get_sm: MagicMock,
+    ):
+        """验证 finally 块中 flush_stdin_buffer 先于 set_suppress_enter(False) 调用。"""
+        import threading
+
+        from src.tui.pipeline.message_editor import MessageEditor
+
+        # 构造 mock sandbox manager（避免 None 导致的副作用）
+        sm = MagicMock()
+        sm.restore_to_message.return_value = {}
+        sm.remap_indices = MagicMock()
+        mock_get_sm.return_value = sm
+
+        # 构造 mock Input，带调用顺序记录
+        call_order: list[str] = []
+
+        inp = MagicMock()
+        inp.set_suppress_enter = MagicMock(
+            side_effect=lambda *a: call_order.append("set_suppress_enter")
+        )
+        inp.flush_stdin_buffer = MagicMock(
+            side_effect=lambda *a: call_order.append("flush_stdin_buffer")
+        )
+
+        # 构造 mock BottomBar
+        bb = MagicMock()
+
+        # 构造 mock agent
+        agent = MagicMock()
+        agent.messages = [
+            {"role": "system", "content": "system prompt"},
+            {"role": "user", "content": "hello"},
+        ]
+
+        editor = MessageEditor(bottom_bar=bb, input_=inp)
+
+        # Mock _interactive_message_select 返回有效索引
+        with patch.object(
+            editor, "_interactive_message_select", return_value=1,
+        ):
+            state: dict = {}
+            result = editor.edit_current_messages(agent, state, action="edit")
+
+        assert result is True
+
+        # 验证调用顺序：flush_stdin_buffer 在 finally 块中的 set_suppress_enter(False) 之前
+        # 注意：set_suppress_enter 被调用两次（True → False），我们关心的是 finally 块中的第二次
+        flush_idx = call_order.index("flush_stdin_buffer") if "flush_stdin_buffer" in call_order else -1
+        # 获取 set_suppress_enter 的所有出现位置
+        suppress_indices = [
+            i for i, name in enumerate(call_order) if name == "set_suppress_enter"
+        ]
+        assert flush_idx >= 0, f"flush_stdin_buffer 未被调用, call_order={call_order}"
+        assert len(suppress_indices) >= 2, (
+            f"set_suppress_enter 应被调用两次（True + False），实际: {call_order}"
+        )
+        # finally 块中的 set_suppress_enter(False) 是第二次调用
+        suppress_false_idx = suppress_indices[1]
+        assert flush_idx < suppress_false_idx, (
+            f"flush_stdin_buffer (idx={flush_idx}) 应在 finally 块中的 "
+            f"set_suppress_enter(False) (idx={suppress_false_idx}) 之前调用, "
+            f"call_order={call_order}"
+        )
+
+
+class TestEditPerformedFlag:
+    """测试四个命令类正确设置 _edit_performed 标志。"""
+
+    @patch("src.tui.pipeline.message_editor._get_sandbox_manager")
+    def test_edit_command_sets_edit_performed_flag_regression(
+        self, mock_get_sm: MagicMock,
+    ):
+        """EditCommand.execute() 成功后 state["_edit_performed"] 为 True。"""
+        from src.tui.pipeline.message_editor import EditCommand
+
+        sm = MagicMock()
+        sm.restore_to_message.return_value = {}
+        sm.remap_indices = MagicMock()
+        mock_get_sm.return_value = sm
+
+        agent = MagicMock()
+        agent.messages = [
+            {"role": "system", "content": "system"},
+            {"role": "user", "content": "hello"},
+        ]
+
+        cmd = EditCommand(agent, real_idx=1)
+        state: dict = {}
+        result = cmd.execute(state)
+
+        assert result is True
+        assert state["_edit_performed"] is True
+
+    @patch("src.tui.pipeline.message_editor._get_sandbox_manager")
+    def test_delete_command_sets_edit_performed_flag_regression(
+        self, mock_get_sm: MagicMock,
+    ):
+        """DeleteCommand.execute() 成功后 state["_edit_performed"] 为 True。"""
+        from src.tui.pipeline.message_editor import DeleteCommand
+
+        sm = MagicMock()
+        sm.restore_to_message.return_value = {}
+        sm.remap_indices = MagicMock()
+        mock_get_sm.return_value = sm
+
+        agent = MagicMock()
+        agent.messages = [
+            {"role": "system", "content": "system"},
+            {"role": "user", "content": "hello"},
+        ]
+
+        cmd = DeleteCommand(agent, real_idx=1)
+        state: dict = {}
+        result = cmd.execute(state)
+
+        assert result is True
+        assert state["_edit_performed"] is True
+
+    @patch("src.tui.pipeline.message_editor._get_sandbox_manager")
+    def test_resume_command_sets_edit_performed_flag_regression(
+        self, mock_get_sm: MagicMock,
+    ):
+        """ResumeCommand.execute() 成功后 state["_edit_performed"] 为 True。"""
+        from src.tui.pipeline.message_editor import ResumeCommand
+
+        sm = MagicMock()
+        sm.restore_to_message.return_value = {}
+        sm.remap_indices = MagicMock()
+        mock_get_sm.return_value = sm
+
+        agent = MagicMock()
+        agent.messages = [
+            {"role": "system", "content": "system"},
+            {"role": "user", "content": "hello"},
+            {"role": "assistant", "content": "hi"},
+        ]
+
+        cmd = ResumeCommand(agent, real_idx=1)
+        state: dict = {}
+        result = cmd.execute(state)
+
+        assert result is True
+        assert state["_edit_performed"] is True
+
+    @patch("src.tui.pipeline.message_editor._get_sandbox_manager")
+    def test_resume_all_command_sets_edit_performed_flag_regression(
+        self, mock_get_sm: MagicMock,
+    ):
+        """ResumeAllCommand.execute() 成功后 state["_edit_performed"] 为 True。"""
+        from src.tui.pipeline.message_editor import ResumeAllCommand
+
+        sm = MagicMock()
+        mock_get_sm.return_value = sm
+
+        agent = MagicMock()
+        agent.messages = [
+            {"role": "system", "content": "system"},
+            {"role": "user", "content": "hello"},
+            {"role": "assistant", "content": "hi"},
+        ]
+
+        cmd = ResumeAllCommand(agent)
+        state: dict = {}
+        result = cmd.execute(state)
+
+        assert result is True
+        assert state["_edit_performed"] is True

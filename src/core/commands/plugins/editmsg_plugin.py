@@ -109,8 +109,9 @@ class EditmsgPlugin(InteractiveCommandPlugin):
             #    无条件重置 retry_pending，与 deitmsg_plugin.py 保持一致。
             session.reset_retry_pending_for_edit(has_prefill=bool(state["prefill"]))
 
-            # ★ 编辑生效后，标记需重新渲染剩余消息到上屏
-            needs_rerender = bool(state["retry"] or state["prefill"])
+            # ★ 编辑生效后标记需重新渲染：_edit_performed 独立于 prefill 是否为空，
+            #   确保空内容编辑的沙盒信息也能显示
+            needs_rerender = bool(edit_state.get("_edit_performed", False) or state["retry"] or state["prefill"])
         except Exception as exc:
             _logger.warning("EditmsgPlugin 编辑异常: %s", exc, exc_info=True)
             if chat_ui is not None:
