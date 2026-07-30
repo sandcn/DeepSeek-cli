@@ -47,7 +47,7 @@ def _validate_rc(rc):
         if field in rc:
             if isinstance(rc[field], bool):
                 rc[field] = DEFAULTS.get(field, 0)
-                continue
+                pass
             if not isinstance(rc[field], int):
                 try:
                     rc[field] = int(rc[field])

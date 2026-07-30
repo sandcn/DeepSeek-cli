@@ -62,6 +62,9 @@ def update_config(key: str, value) -> None:
     if key in CONFIG_KEYS:
         path = CONFIG_KEYS[key]["rc_path"]
         if path:
+            assert all(isinstance(p, str) and p for p in path), (
+                f"CONFIG_KEYS['{key}']['rc_path'] 包含无效路径段: {path}"
+            )
             target = rc
             for part in path[:-1]:
                 target = target.setdefault(part, {})

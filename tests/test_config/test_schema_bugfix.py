@@ -120,16 +120,17 @@ class TestB5UpdateConfigKeyPath:
         finally:
             update_config("provider", old_provider)
 
-    @pytest.mark.skip(reason="嵌套路径写入影响持久 RC 文件")
-    def test_nested_path_key(self):
+    def test_nested_path_key(self, monkeypatch, tmp_path):
         """嵌套路径键（如 HTTP_CONNECT_TIMEOUT）写入嵌套字典"""
         from src.config.loader import update_config, get_rc
-        import src.config.loader as loader_mod
-        loader_mod._RC = None
-        loader_mod._RC_LOADED = False
-
+        from src.config.defaults import CONFIG_KEYS, RC_FILE
+        # 重定向 RC_FILE 到临时路径
+        monkeypatch.setattr("src.config.defaults.RC_FILE", tmp_path / "chatrc.json")
         path = CONFIG_KEYS["HTTP_CONNECT_TIMEOUT"]["rc_path"]
         rc = get_rc()
+        old_val = rc
+        for part in path:
+            old_val = old_val.get(part, {})
         try:
             update_config("HTTP_CONNECT_TIMEOUT", 60)
             target = rc

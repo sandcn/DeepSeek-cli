@@ -825,7 +825,9 @@ class ToolScheduler:
                     for pt in pending:
                         pt.cancel()
                     for pt in pending:
-                        tc2 = tasks[pt]
+                        tc2 = tasks.get(pt)
+                        if tc2 is None:
+                            continue
                         try:
                             # task may complete before cancel takes effect
                             result = await pt
