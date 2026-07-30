@@ -1095,6 +1095,10 @@ class _BottomBar:
             self._sigwinch_cb = None
         if self._tracker is not None and sys.__stdout__ is self._tracker:
             sys.__stdout__ = self._tracker._real_stdout
+            try:
+                self._tracker._flush_history()
+            except Exception:
+                pass
             self._tracker = None
         with _try_acquire_output_lock(name="bottom_bar.teardown", timeout=1.0) as locked:
             if locked:

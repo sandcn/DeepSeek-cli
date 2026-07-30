@@ -9,6 +9,7 @@ CONFIG_DIR  = Path.home() / ".chat_config"
 LOG_FILE    = CONFIG_DIR / "audit.log"
 RC_FILE     = CONFIG_DIR / "chatrc.json"
 INPUT_HISTORY_FILE = CONFIG_DIR / "input_history"
+OUTPUT_HISTORY_FILE = CONFIG_DIR / "output_history"
 
 PROVIDERS = {
     "deepseek": {

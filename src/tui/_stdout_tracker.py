@@ -16,6 +16,16 @@ from __future__ import annotations
 import re
 from collections import deque
 from typing import IO, Any
+import threading
+import time
+import logging
+import os
+from pathlib import Path
+from src.config.defaults import OUTPUT_HISTORY_FILE
+from src.api.escape_monitor._history import (
+    _lock_history_file,
+    _unlock_history_file,
+)
 
 # Unified regex matching cursor positioning (CUP) and cursor restore (DECRC/SCRC)
 # sequences. Processed in data-stream order so that a restore between two
@@ -30,6 +40,8 @@ _CONTROL_SEQ_RE = re.compile(
     r'|\x1b\[u'                            # SCRC
 )
 
+_logger = logging.getLogger(__name__)
+
 
 class _StdoutLineTracker:
     """Transparent stdout wrapper that tracks complete lines.
@@ -40,7 +52,7 @@ class _StdoutLineTracker:
     sequences) is filtered out and not tracked.
     """
 
-    _MAX_LINES = 300
+    _MAX_LINES = 1000
 
     def __init__(self, real_stdout: IO[str]):
         self._real_stdout = real_stdout
@@ -48,6 +60,13 @@ class _StdoutLineTracker:
         self._partial_line: str = ""
         self._scroll_end: int = 0
         self._in_bottom_bar: bool = False
+        self._output_buffer: list[str] = []
+        self._buffer_lock = threading.Lock()
+        self._last_flush_time: float = time.monotonic()
+        self._flush_timer: threading.Timer | None = None
+        self._output_history_file: Path = OUTPUT_HISTORY_FILE
+        self._load_output_history()
+        self._start_flush_timer()
 
     # ── File object protocol ──
 
@@ -141,3 +160,154 @@ class _StdoutLineTracker:
             if not self._in_bottom_bar:
                 for line in complete_lines:
                     self._ring.append(line)
+                    self._buffer_to_output(line)
+
+    def _buffer_to_output(self, line: str) -> None:
+        """将完整行加入输出历史缓冲，达到阈值时异步刷盘。"""
+        with self._buffer_lock:
+            self._output_buffer.append(line)
+            if len(self._output_buffer) >= 50:
+                threading.Thread(target=self._flush_buffered_lines, daemon=True).start()
+
+    def _flush_buffered_lines(self) -> bool:
+        """刷出输出缓冲中的行到历史文件。"""
+        try:
+            with self._buffer_lock:
+                buf = self._output_buffer
+                self._output_buffer = []
+            if not buf:
+                return True
+            try:
+                self._output_history_file.parent.mkdir(parents=True, exist_ok=True)
+                with open(self._output_history_file, "a", encoding="utf-8") as f:
+                    locked = _lock_history_file(f.fileno(), shared=False)
+                    if not locked:
+                        return False
+                    try:
+                        for line in buf:
+                            f.write(line + "\n")
+                        f.flush()
+                        os.fsync(f.fileno())
+                    finally:
+                        _unlock_history_file(f.fileno())
+            except OSError as exc:
+                _logger.warning("输出历史刷盘失败: %s", exc)
+                return False
+            self._last_flush_time = time.monotonic()
+            try:
+                self._maybe_compact_output_history()
+            except Exception:
+                pass
+            return True
+        except Exception:
+            return False
+
+    def _load_output_history(self) -> None:
+        """从输出历史文件加载最后 N 行到环形缓冲。"""
+        try:
+            path = self._output_history_file
+            if not path.exists():
+                return
+
+            with open(path, "r", encoding="utf-8", errors="replace") as f:
+                locked = _lock_history_file(f.fileno(), shared=True)
+                if not locked:
+                    return
+                try:
+                    content = f.read()
+                finally:
+                    _unlock_history_file(f.fileno())
+
+            if not content:
+                return
+
+            lines = content.splitlines()
+            restore = lines[-self._MAX_LINES:] if len(lines) > self._MAX_LINES else lines
+            for line in restore:
+                self._ring.append(line)
+
+        except (OSError, FileNotFoundError):
+            _logger.debug("输出历史文件不存在，跳过加载")
+
+    def _flush_history(self) -> None:
+        """停止定时器并刷出所有剩余输出行到历史文件。"""
+        self._stop_flush_timer()
+        try:
+            self._flush_buffered_lines()
+        except Exception:
+            _logger.warning("_flush_history: 最终刷盘异常", exc_info=True)
+
+    def _start_flush_timer(self) -> None:
+        """启动 2 秒定时刷盘定时器。"""
+        timer = threading.Timer(2.0, self._timer_flush_callback)
+        timer.daemon = True
+        self._flush_timer = timer
+        timer.start()
+
+    def _timer_flush_callback(self) -> None:
+        """定时刷盘回调，自重置定时器。"""
+        try:
+            self._flush_buffered_lines()
+        except Exception:
+            pass
+        if self._flush_timer is not None:
+            self._start_flush_timer()
+
+    def _stop_flush_timer(self) -> None:
+        """停止定时刷盘定时器。"""
+        if self._flush_timer is not None:
+            self._flush_timer.cancel()
+            self._flush_timer = None
+
+    def _maybe_compact_output_history(self) -> bool:
+        """检查并压缩输出历史文件（>5000行时去重+截断至2000行）。"""
+        try:
+            path = self._output_history_file
+            if not path.exists():
+                return False
+
+            with open(path, "r", encoding="utf-8", errors="replace") as f:
+                locked = _lock_history_file(f.fileno(), shared=False)
+                if not locked:
+                    return False
+                try:
+                    content = f.read()
+                finally:
+                    _unlock_history_file(f.fileno())
+
+            if not content:
+                return False
+
+            lines = content.splitlines()
+            if len(lines) <= 5000:
+                return False
+
+            # 去重（保留首次出现的行）+ 取最后2000行
+            seen: set[str] = set()
+            unique: list[str] = []
+            for line in lines:
+                if line not in seen:
+                    unique.append(line)
+                    seen.add(line)
+
+            keep = unique[-2000:] if len(unique) > 2000 else unique
+
+            # 原子写入
+            tmp_path = path.with_suffix(".tmp")
+            with open(tmp_path, "w", encoding="utf-8") as tmp:
+                for line in keep:
+                    tmp.write(line + "\n")
+                tmp.flush()
+                os.fsync(tmp.fileno())
+            os.rename(tmp_path, path)
+            _logger.debug("输出历史压缩完成: %d行→去重%d行→保留%d行", len(lines), len(unique), len(keep))
+            return True
+
+        except (OSError, FileNotFoundError) as exc:
+            _logger.warning("输出历史压缩失败: %s", exc)
+            try:
+                tmp_path = self._output_history_file.with_suffix(".tmp")
+                tmp_path.unlink(missing_ok=True)
+            except OSError:
+                pass
+            return False
