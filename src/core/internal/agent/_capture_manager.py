@@ -213,7 +213,10 @@ class CaptureManager:
                 try:
                     state['active_labels'].remove(tool_label)
                 except ValueError:
-                    pass
+                    _logger.warning(
+                        "start_capture: label '%s' 不在 active_labels 中（回滚时异常）",
+                        tool_label,
+                    )
             if state and not state.get('active_labels'):
                 self.cleanup()
 
@@ -225,11 +228,16 @@ class CaptureManager:
         state = self._state
         if state is None:
             return
-        if tool_label:
+        if not tool_label:
+            _logger.debug("stop_capture: 收到空 tool_label（可能由外部清理路径传入）")
+        else:
             try:
                 state['active_labels'].remove(tool_label)
             except ValueError:
-                pass
+                _logger.warning(
+                    "stop_capture: label '%s' 不在 active_labels 中（label 管理可能异常）",
+                    tool_label,
+                )
         if not state['active_labels']:
             self.cleanup()
 

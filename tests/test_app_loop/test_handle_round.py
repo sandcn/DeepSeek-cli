@@ -75,8 +75,8 @@ class TestHandleRoundPrefillPriority:
         state = _make_mock_state(prefill="旧内容")
 
         queue = MagicMock()
-        queue.put = AsyncMock()
         msg_done = asyncio.Event()
+        queue.put = AsyncMock(side_effect=lambda msg: msg_done.set())
 
         # asyncio.to_thread 在 mock 环境下无效，mock 掉
         with patch(
@@ -129,8 +129,8 @@ class TestHandleRoundPrefillPriority:
         session.captured_prefill = ""
 
         queue = MagicMock()
-        queue.put = AsyncMock()
         msg_done = asyncio.Event()
+        queue.put = AsyncMock(side_effect=lambda msg: msg_done.set())
 
         with patch(
             "src.app_loop._loop._merge_prefill",
@@ -174,8 +174,8 @@ class TestHandleRoundPrefillPriority:
         state = _make_mock_state(prefill="编辑内容")
 
         queue = MagicMock()
-        queue.put = AsyncMock()
         msg_done = asyncio.Event()
+        queue.put = AsyncMock(side_effect=lambda msg: msg_done.set())
 
         with patch(
             "src.app_loop._loop._merge_prefill",
@@ -214,8 +214,8 @@ class TestHandleRoundPrefillPriority:
         state = _make_mock_state(prefill="")
 
         queue = MagicMock()
-        queue.put = AsyncMock()
         msg_done = asyncio.Event()
+        queue.put = AsyncMock(side_effect=lambda msg: msg_done.set())
 
         with patch(
             "src.app_loop._loop._merge_prefill",

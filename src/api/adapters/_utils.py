@@ -37,10 +37,17 @@ def ensure_reasoning_content(messages: list, model: Optional[str] = None) -> lis
             continue
         rc = msg.get("reasoning_content")
         if "reasoning_content" not in msg:
+            # ① key 缺失 → 补空字符串
             msg["reasoning_content"] = ""
             _log.debug("assistant[%d] 缺失 reasoning_content，已补空字符串", i)
-        elif not isinstance(rc, str):
+        elif rc is None:
+            # ② key 存在但值为 None → 补空字符串
             msg["reasoning_content"] = ""
-            _log.debug("assistant[%d] reasoning_content 修复: %s → ''",
+            _log.debug("assistant[%d] reasoning_content 修复: None → ''", i)
+        elif not isinstance(rc, str):
+            # ③ key 存在且值非 str 类型 → 类型转换为 str
+            msg["reasoning_content"] = str(rc)
+            _log.debug("assistant[%d] reasoning_content 类型转换: %s → str",
                        i, type(rc).__name__)
+        # ④ key 存在且值是 str → 保留原值，不做任何操作
     return messages

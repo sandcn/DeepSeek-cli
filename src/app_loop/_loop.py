@@ -135,10 +135,25 @@ class InteractiveLoop:
             reset_interrupt_async(input_instance=self._chat_ui.input if self._chat_ui else None)
 
             try:
-                user_input = await asyncio.to_thread(
-                    self._chat_ui.wait_for_user_input, self._monitor, prefill,
-                    input_=self._chat_ui.input,
+                # P0-3: 超时保护包装 asyncio.to_thread，防止 EscapeMonitor 线程已死时永久挂起
+                _input_timeout = 300  # 5 分钟超时
+                user_input = await asyncio.wait_for(
+                    asyncio.to_thread(
+                        self._chat_ui.wait_for_user_input, self._monitor, prefill,
+                        input_=self._chat_ui.input,
+                    ),
+                    timeout=_input_timeout,
                 )
+            except asyncio.TimeoutError:
+                _logger.warning(
+                    "wait_for_user_input 超时 (%ds)，EscapeMonitor 可能已死，触发恢复",
+                    _input_timeout,
+                )
+                self._chat_ui.write_line(
+                    f"\n  ⚠ 输入监听超时（{_input_timeout}秒），正在尝试恢复…"
+                )
+                # 复用现有 RuntimeError 恢复路径
+                raise RuntimeError("EscapeMonitor I/O 超时") from None
             except RuntimeError as e:
                 if "EscapeMonitor" in str(e):
                     _logger.warning("EscapeMonitor I/O 不可用，尝试恢复: %s", e)

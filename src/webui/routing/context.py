@@ -175,23 +175,34 @@ class ConnectionContext:
 
         ★ 页面刷新保护：传入 session 使 cleanup_connection 保留
            正在运行的 LLM 生成任务，而不是取消它。
+
+        清理顺序（P1-4）：先 unsub bridge（停事件流）→ 再 off cost_handler → 排空队列 → 通用清理
         """
-        # 先移除本连接的 cost_update handler（每个连接独立注册，必须各自移除）
+        # 1. 先取消 bridge 订阅（停止事件流）
+        if self.bridge is not None:
+            try:
+                self.bridge.unsubscribe()
+            except Exception:
+                _logger.exception("连接清理: bridge.unsubscribe() 异常")
+
+        # 2. 再移除本连接的 cost_update handler（每个连接独立注册，必须各自移除）
         if self.session is not None and self._cost_handler is not None:
             try:
                 self.session.off("cost_update", self._cost_handler)
             except Exception:
-                _logger.exception("取消 cost_update 订阅异常")
+                _logger.exception("连接清理: cost_update handler 取消订阅异常")
             self._cost_handler = None
 
-        # 先排空发送队列中的残留消息
+        # 3. 排空发送队列中的残留消息
         if self.drain_send_queue is not None:
             try:
                 await self.drain_send_queue()
             except Exception:
-                _logger.exception("排空发送队列异常")
+                _logger.exception("连接清理: 排空发送队列异常")
+
+        # 4. 通用清理（bridge 已提前 unsub，传 None 避免重复）
         await cleanup_connection(
-            bridge=self.bridge,
+            bridge=None,  # bridge.unsubscribe 已在步骤 1 完成
             my_select_ids=self.my_select_ids,
             pending_send_tasks=self.pending_send_tasks,
             process_task=self.process_task,

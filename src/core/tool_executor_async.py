@@ -697,27 +697,31 @@ class ToolScheduler:
                 # 锁保护 _global_dag / _global_tool_calls / _batch_boundaries
                 # 以及 add_batch 中对 _prev_non_dispatch_ids 的读取。
                 # 锁不覆盖 await 执行调用，避免嵌套 SubAgent schedule() 死锁。
+                # ── 临界区：最小化锁保护（P0-4: add_batch 移出锁外） ──
+                # 锁内仅做：首批创建 DAG / 后续批捕获 add_batch 所需参数
+                # add_batch 调用在锁外执行，消除嵌套 SubAgent schedule() 死锁风险
                 async with self._schedule_lock:
                     if self._global_dag is None:
-                        # 首批：创建全局 DAG
+                        # 首批：在锁内创建 DAG（轻量操作，无 await，无死锁风险）
                         _logger.debug("schedule[%s]: 首批 %d 个工具 → 创建全局 DAG",
                                       agent_label, len(tool_calls))
                         self._global_dag = ToolDAG(tool_calls, self._registry)
                         self._global_tool_calls = list(tool_calls)
+                        self._batch_boundaries.append(len(self._global_tool_calls))
+                        _add_batch_needed = False
                     else:
-                        # 后续批：扩展全局 DAG。
-                        # 多批并发续接：若上一批 dispatch_agent 已转为后台任务，
-                        # 本批通过 add_batch 追加节点后，while 循环重新拓扑会捕获
-                        # 这些新节点。已完成的后台 dispatch_agent 结果已在
-                        # _results_map 中，不会被重复执行。
-                        _logger.debug("schedule[%s]: 扩展批次 %d 个工具 → add_batch",
-                                      agent_label, len(tool_calls))
-                        self._global_dag.add_batch(
-                            tool_calls, self._registry,
-                            prev_non_dispatch_ids=self._prev_non_dispatch_ids,
-                        )
-                        self._global_tool_calls.extend(tool_calls)
+                        # 后续批：锁内仅读取 add_batch 所需参数
+                        _prev_ids_capture = set(self._prev_non_dispatch_ids)
+                        _add_batch_needed = True
 
+                # 锁外：add_batch（不持锁，消除嵌套死锁风险）
+                if _add_batch_needed:
+                    self._global_dag.add_batch(
+                        tool_calls, self._registry,
+                        prev_non_dispatch_ids=_prev_ids_capture,
+                    )
+                    self._global_tool_calls.extend(tool_calls)
+                    # _batch_boundaries 在锁外更新：仅用于边界记录，不参与调度决策
                     self._batch_boundaries.append(len(self._global_tool_calls))
 
                 # ── 锁外：执行全局 DAG（不持锁，避免嵌套死锁） ──
@@ -839,12 +843,13 @@ class ToolScheduler:
             tasks.clear()
             raise
         finally:
-            # 兜底：确保没有任务残留（正常退出时 tasks 已为空，此分支仅在非取消异常时触发）
-            if tasks:
-                for task in list(tasks.keys()):
+            remaining_tasks = list(tasks.keys())
+            if remaining_tasks:
+                for task in remaining_tasks:
                     if not task.done():
                         task.cancel()
-                await asyncio.gather(*tasks.keys(), return_exceptions=True)
+                await asyncio.gather(*remaining_tasks, return_exceptions=True)
+            tasks.clear()  # P0-2: 确保 tasks 引用在所有路径上被清除，消除 Task 残留引用
 
         # 按原顺序返回结果
         return [results_map[tc["id"]] for tc in tool_calls]

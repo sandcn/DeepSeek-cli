@@ -356,6 +356,12 @@ async def _finalize_round(session, interrupted: bool,
             session._ctx_mgr.enforce_message_limit()
     except Exception as exc:
         _logger.exception("enforce_message_limit 异常: %s", exc)
+        # P1-5: 清理 context_manager 状态防止后续使用损坏数据
+        if session._ctx_mgr is not None:
+            try:
+                session._ctx_mgr.invalidate_cache()
+            except Exception:
+                _logger.debug("enforce 异常后 invalidate_cache 失败", exc_info=True)
 
     # 计算本轮消耗
     delta = _compute_token_delta(session, prev_stats)
@@ -376,8 +382,14 @@ async def _finalize_round(session, interrupted: bool,
             _logger.exception("状态转换异常，执行强制恢复: %s", exc)
             _force_state_recovery(session)
 
-    # 自动保存
-    session_id = await _auto_save(session)
+    # P1-5: _auto_save 独立 try/except 保护，与 enforce_message_limit 分离
+    try:
+        session_id = await _auto_save(session)
+    except (KeyboardInterrupt, asyncio.CancelledError):
+        raise
+    except Exception:
+        _logger.exception("_finalize_round: _auto_save 异常")
+        session_id = None
 
     # 发射事件并返回
     return _emit_round_events(session, interrupted, session_id, delta)
@@ -429,10 +441,7 @@ def _emit_round_events(session, interrupted: bool, session_id: str | None,
                        delta: dict) -> dict:
     """发射 round 事件，返回结果字典。
 
-    变更行为：
-    - Pipeline CancelledError 时额外保存 checkpoint（Bug 4）：检查 pipeline
-      的 ctx.checkpoint_requested 标记，若为 True 则在已有 save_checkpoint()
-      之后再次调用 save_checkpoint()，确保被取消的模型调用状态也被持久化。
+    interrupted 分支中无条件调用 save_checkpoint() 确保中断时持久化状态。
     """
     from ....api.stats import get_token_stats, get_session_start_time
 
@@ -449,18 +458,8 @@ def _emit_round_events(session, interrupted: bool, session_id: str | None,
                       messages=session._agent.messages)
 
     if interrupted:
-        # ★ Bug4: 检查 Pipeline 的 checkpoint_requested 标记
-        #   （CancelledError 路径设置的），避免重复调用 save_checkpoint()
-        # HACK: 通过 pipeline._last_ctx（私有属性）跨模块访问 checkpoint_requested
-        #       是设计上的耦合。当前阶段保持此耦合以最小化变更范围，
-        #       后续大版本重构时可考虑通过 Event/Callback 机制解耦。
-        pipe_ctx = getattr(session._agent.pipeline, '_last_ctx', None)
         try:
-            if pipe_ctx is not None and pipe_ctx.checkpoint_requested:
-                _logger.warning("Pipeline CancelledError 标记已检测，保存 checkpoint")
-                session.save_checkpoint()
-            else:
-                session.save_checkpoint()
+            session.save_checkpoint()
         except Exception as exc:
             _logger.warning("save_checkpoint 失败，不阻断事件发射: %s", exc)
         session._emit("interrupted")
@@ -471,8 +470,10 @@ def _emit_round_events(session, interrupted: bool, session_id: str | None,
                   delta=delta,
                   elapsed=elapsed)
 
-    # ★ 修复：每轮执行完成后复位 retry_pending，避免应用层误判需要自动续接
-    session._state.retry_pending = False
+    # ★ P1-3: 仅在非 interrupted 路径下复位 retry_pending，
+    #   interrupted 路径下保持原值，让中断后的自动 retry 机制正常工作
+    if not interrupted:
+        session._state.retry_pending = False
 
     return {
         "interrupted": interrupted,

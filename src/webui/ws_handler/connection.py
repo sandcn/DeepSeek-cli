@@ -180,5 +180,6 @@ def _setup_connection(ws, session, ws_send, select_id_tracker=None):
         _tracked_send(msg_round_cost(data))
 
     session.on("cost_update", _on_cost_update)
+    _logger.debug("cost_update handler 已注册 (handler_id=%s)", hex(id(_on_cost_update)))
 
     return msg_idx_state, web_display, bridge, adapter, pending_send_tasks, _drain_send_queue, _on_cost_update

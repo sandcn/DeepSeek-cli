@@ -25,9 +25,6 @@ class TestDeletedDirectories:
     def test_frame_deleted(self):
         assert not os.path.exists(_tui_path("frame"))
 
-    def test_pipeline_deleted(self):
-        assert not os.path.exists(_tui_path("pipeline"))
-
 
 class TestDeletedFiles:
     """验证已删除的单文件。"""

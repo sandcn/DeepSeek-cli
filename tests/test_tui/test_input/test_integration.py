@@ -41,7 +41,7 @@ class TestInputBottomBarEngineIntegration:
     @pytest.fixture
     def mock_bottom_bar(self, mock_input, mock_width_cache):
         """创建注入了 Input 的 _BottomBar mock。"""
-        from src.tui.widgets.bottom_bar.bar import _BottomBar
+        from src.tui._bottom_bar import _BottomBar
 
         bb = _BottomBar()
         bb._width_cache = mock_width_cache
@@ -95,24 +95,20 @@ class TestInputBottomBarEngineIntegration:
 
     def test_refresh_bottom_bar_updates_input_state(self, mock_input):
         """验证 ChatUIConsumer.refresh_bottom_bar 同步更新 Input 状态。"""
-        from src.tui.consumer.factory import _ChatUIComponents
-
         # 创建最小化的 components
         bb = MagicMock()
         engine = MagicMock()
-        components = _ChatUIComponents(
-            rs=MagicMock(),
-            cursor_tracker=MagicMock(),
-            bottom_bar=bb,
-            output_adapter=MagicMock(),
-            tui_renderer=MagicMock(),
-            engine=engine,
-            dispatcher=MagicMock(),
-            cmpl_handler=MagicMock(),
-            input=mock_input,
-        )
+        components = {
+            'rs': MagicMock(),
+            'bottom_bar': bb,
+            'tui_renderer': MagicMock(),
+            'engine': engine,
+            'dispatcher': MagicMock(),
+            'cmpl_handler': MagicMock(),
+            'input': mock_input,
+        }
 
-        from src.tui.consumer.consumer import ChatUIConsumer
+        from src.tui._consumer import ChatUIConsumer
         consumer = ChatUIConsumer.for_testing(components)
 
         consumer.refresh_bottom_bar("new text", 5)

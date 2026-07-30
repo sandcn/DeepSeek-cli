@@ -37,7 +37,7 @@ class TestRenderIntegration:
         调用 Input.process_events() → read_stdin_once()。
         此测试验证该调用链完整。
         """
-        from src.tui.engine.engine import TuiEngine
+        from src.tui._renderer import TuiEngine
 
         # 创建 engine 实例（最小 mock）
         mock_renderer = MagicMock()
@@ -63,7 +63,7 @@ class TestRenderIntegration:
 
     def test_drain_queue_without_input_no_crash(self) -> None:
         """验证 TuiEngine._drain_queue() 在无 _input 时不崩溃（向后兼容）。"""
-        from src.tui.engine.engine import TuiEngine
+        from src.tui._renderer import TuiEngine
 
         mock_renderer = MagicMock()
         mock_bb = MagicMock()
@@ -102,7 +102,7 @@ class TestRenderIntegration:
         之前调用，确保 stdin 读取不持锁。
         此测试验证代码结构（方法调用顺序）。
         """
-        from src.tui.engine.engine import TuiEngine
+        from src.tui._renderer import TuiEngine
         import inspect
 
         source = inspect.getsource(TuiEngine._drain_queue)

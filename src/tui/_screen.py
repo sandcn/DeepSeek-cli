@@ -523,52 +523,118 @@ def _handle_sigwinch(signum: int, frame: object) -> None:
 
 
 # ═══════════════════════════════════════════════════════════
-# TerminalWidthCache — 终端宽度缓存（兼容旧 API）
+# TerminalWidthCache — 终端宽度缓存（TTL 惰性缓存 + 主动失效）
 # ═══════════════════════════════════════════════════════════
 
 class TerminalWidthCache:
-    """终端宽度缓存 — 惰性查询 + 主动失效。
+    """终端宽度缓存 — TTL 惰性缓存 + 主动失效。
 
     提供与旧 ``terminal/terminal.py`` 中同名的兼容实现，
     使用 ``_get_terminal_size()`` 替代 blessed Terminal。
+
+    设计模式: 装饰器（Decorator）— 在 ``_get_terminal_size()`` 之上
+    添加 TTL 缓存层。
     """
 
     _instance: TerminalWidthCache | None = None
 
-    def __init__(self) -> None:
+    def __init__(self, ttl: float = 60.0) -> None:
+        """初始化缓存。
+
+        Args:
+            ttl: TTL 秒数（默认 60 秒）。get_width/get_height 在 TTL 内
+                 返回缓存值，过期后调用 _get_terminal_size() 获取新值。
+        """
+        self._ttl = ttl
         self._width: int = 0
         self._height: int = 0
-        self._refresh()
+        self._last_width_fetch: float = 0.0
+        self._last_height_fetch: float = 0.0
+        self._fetch()
 
-    def _refresh(self) -> None:
-        """刷新缓存的终端尺寸。"""
-        self._width, self._height = _get_terminal_size()
+    def _fetch(self) -> None:
+        """从底层获取终端尺寸并更新缓存。"""
+        import time
+        try:
+            self._width, self._height = _get_terminal_size()
+        except Exception:
+            self._width, self._height = 80, 24
+        now = time.monotonic()
+        self._last_width_fetch = now
+        self._last_height_fetch = now
+
+    def _is_expired(self, last_fetch: float) -> bool:
+        """检查缓存是否过期（超过 TTL）。"""
+        import time
+        return (time.monotonic() - last_fetch) > self._ttl
 
     def get_width(self) -> int:
-        """获取终端宽度，每次调用时惰性刷新。
-
-        Returns:
-            终端列数。
-        """
-        self._refresh()
+        """获取终端宽度（TTL 缓存）。"""
+        import time
+        if self._is_expired(self._last_width_fetch):
+            try:
+                w, h = _get_terminal_size()
+                self._width = w
+                self._height = h
+            except Exception:
+                self._width, self._height = 80, 24
+            now = time.monotonic()
+            self._last_width_fetch = now
+            self._last_height_fetch = now
         return self._width
 
     def get_height(self) -> int:
-        """获取终端高度，每次调用时惰性刷新。
+        """获取终端高度（TTL 缓存）。"""
+        import time
+        if self._is_expired(self._last_height_fetch):
+            try:
+                w, h = _get_terminal_size()
+                self._width = w
+                self._height = h
+            except Exception:
+                self._width, self._height = 80, 24
+            now = time.monotonic()
+            self._last_width_fetch = now
+            self._last_height_fetch = now
+        return self._height
+
+    def get_dimensions(self) -> tuple[int, int]:
+        """获取终端尺寸 (宽度, 高度)。"""
+        # 先获取宽度（也会更新高度）
+        w = self.get_width()
+        h = self._height
+        return (w, h)
+
+    def force_refresh(self) -> None:
+        """绕过 TTL 立即刷新宽度和高度。"""
+        self._fetch()
+
+    def clear(self) -> None:
+        """清空缓存，下次查询强制刷新。"""
+        self._last_width_fetch = 0.0
+        self._last_height_fetch = 0.0
+
+    def refresh_height(self) -> int:
+        """强制刷新高度缓存，返回新高度。
 
         Returns:
-            终端行数。
+            当前终端高度。
         """
-        self._refresh()
+        import time
+        try:
+            w, h = _get_terminal_size()
+            self._width = w
+            self._height = h
+        except Exception:
+            self._width, self._height = 80, 24
+        now = time.monotonic()
+        self._last_width_fetch = now
+        self._last_height_fetch = now
         return self._height
 
     @classmethod
     def get_default(cls) -> TerminalWidthCache:
-        """获取全局单例。
-
-        Returns:
-            TerminalWidthCache 单例。
-        """
+        """获取全局单例。"""
         if cls._instance is None:
             cls._instance = cls()
         return cls._instance

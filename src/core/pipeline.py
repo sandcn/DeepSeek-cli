@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import sys
 from dataclasses import field
 from src._compat import dataclass
 from typing import TYPE_CHECKING, Any, Optional
@@ -243,10 +244,16 @@ class Pipeline:
                         ctx.error = e
                         ctx.interrupted = True
                     finally:
-                        # P0-6: 确保工具执行后 stdout 捕获被清理，防止 sys.stdout 永久劫持
+                        # P0-1: 先强制清空所有 active_labels，确保 cleanup() 恢复 sys.stdout 且无残留标签
                         cm = getattr(agent, '_capture_mgr', None)
                         if cm is not None:
                             try:
+                                if hasattr(cm, '_state') and cm._state is not None:
+                                    labels = cm._state.get('active_labels', [])
+                                    if labels:
+                                        labels.clear()
+                                    # 同时也清理 real_stdout 引用，确保不持有过时的 stdout 引用
+                                    cm._state['real_stdout'] = sys.__stdout__
                                 cm.cleanup()
                             except Exception:
                                 _logger.debug("_capture_mgr.cleanup() 失败（非关键）")

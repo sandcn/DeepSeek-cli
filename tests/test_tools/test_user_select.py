@@ -32,7 +32,7 @@ class TestUserSelectNoDirectTermios:
     def mock_input(self):
         """创建 mock Input 实例。"""
         m = MagicMock()
-        m._fd = 0  # /dev/null fd
+        m.fd = 0  # /dev/null fd
         m.flush_stdin_buffer = MagicMock()
         m.read_byte = MagicMock(return_value=b'\r')  # Enter
         m.read_with_timeout = MagicMock(return_value=None)

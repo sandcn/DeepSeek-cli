@@ -1,78 +1,13 @@
-"""测试 core/__init__.py 懒加载精简后的导入完整性。
+"""测试 core/__init__.py 精简导出后的导入完整性。
 
-覆盖三类场景：
-  1. 直接导入（原懒加载 → 改为立即加载）的符号可正常访问
-  2. 仍保持懒加载的符号不受影响，仍可正常访问
-  3. __all__ 中所有符号均可正常导入
+覆盖 1 类场景：
+  1. __all__ 中所有 13 个符号均可正常导入
+
+已删除的符号（Color256、RGB、ansi_utils、text_utils、TTLCache、AnimatorContext
+等）已随 core/__init__.py 精简移除，不再测试。
 """
 
 from src.tui.core import __all__
-
-
-class TestDirectImportsAccessible:
-    """验证改为直接导入的 4 组基础工具符号可正常访问。"""
-
-    def test_color_symbols_direct_import(self) -> None:
-        from src.tui.core import (
-            Color256, RGB, TrueColor, GradientDescriptor,
-            ColorValue, to_ansi_fg, to_ansi_bg, to_256, auto_color,
-        )
-        assert Color256.__name__ == "Color256"
-        assert RGB.__name__ == "RGB"
-        assert TrueColor.__name__ == "TrueColor"
-
-    def test_style_symbols_direct_import(self) -> None:
-        from src.tui.core import Style, StyledText, StyleSheet
-        assert Style.__name__ == "Style"
-        assert StyledText.__name__ == "StyledText"
-        assert StyleSheet.__name__ == "StyleSheet"
-
-    def test_ansi_utils_symbols_direct_import(self) -> None:
-        from src.tui.core import (
-            strip_ansi, visual_width, truncate_ansi_visual,
-            skip_ansi_sgr, truncate_ansi_sgr, truncate_ansi_line,
-        )
-        assert callable(strip_ansi)
-        assert callable(visual_width)
-
-    def test_text_utils_symbols_direct_import(self) -> None:
-        from src.tui.core import (
-            truncate, build_gradient_ansi, build_gradient_ansi_frame,
-            build_warning_pulse_ansi, make_sep_gradient,
-            build_bounce_ansi, build_left_border_ansi,
-            parse_theme_color, make_sep_gradient_enhanced,
-            build_gradient,
-        )
-        assert callable(truncate)
-        assert callable(build_gradient_ansi)
-
-
-class TestLazyImportsStillWork:
-    """验证仍保持懒加载的模块符号不受影响。"""
-
-    def test_ttl_cache_lazy_import(self) -> None:
-        from src.tui.core import TTLCache
-        assert TTLCache.__name__ == "TTLCache"
-
-    def test_animator_context_lazy_import(self) -> None:
-        from src.tui.core import AnimatorContext
-        assert AnimatorContext.__name__ == "AnimatorContext"
-
-    def test_format_elapsed_lazy_import(self) -> None:
-        from src.tui.core import format_elapsed
-        assert callable(format_elapsed)
-
-    def test_ui_session_state_lazy_import(self) -> None:
-        from src.tui.core import UISessionState
-        assert UISessionState.__name__ == "UISessionState"
-
-    def test_breath_palette_lazy_import(self) -> None:
-        from src.tui.core import BreathPalette
-        assert BreathPalette.__name__ == "BreathPalette"
-
-    def test_effect_registry_lazy_import(self) -> None:
-        from src.tui.core import EffectRegistry
-        assert EffectRegistry.__name__ == "EffectRegistry"
 
 
 class TestAllExportedSymbolsAccessible:

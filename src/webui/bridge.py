@@ -115,6 +115,7 @@ class WebEventBridge(BaseWebSocketSender):
             handler = getattr(self, method_name)
             self._bus.subscribe(handler, event_type=event_type)
             self._handlers.append((handler, event_type))
+        _logger.debug("WebEventBridge.subscribe: 已注册 %d 个事件处理器", len(self._handlers))
 
     def unsubscribe(self) -> None:
         """取消所有订阅。"""
