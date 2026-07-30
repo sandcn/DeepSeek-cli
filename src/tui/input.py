@@ -10,10 +10,10 @@
 
 设计模式：
   - 模板方法（Template Method）：read_stdin_once() 骨架，_do_interrupt()/_handle_special_key() 具体步骤
-  - 直接分发：read_stdin_once() 在 render 线程每帧调用，直接分发到缓冲/回调
+  - 直接分发：process_events() 在 render 线程每帧调用，循环读取所有待处理输入并分发到缓冲/回调
 
 线程模型：
-  - Render 线程（daemon）：_drain_queue() 中每帧调用 read_stdin_once()，统一处理 stdin 和渲染
+  - Render 线程（daemon）：_drain_queue() 中每帧调用 process_events()，一次性处理所有 stdin 输入，统一处理 stdin 和渲染
 """
 
 from __future__ import annotations
@@ -425,14 +425,15 @@ class Input:
     # ═══════════════════════════════════════════════════════
 
     def process_events(self) -> None:
-        """处理输入事件（render 线程调用）。
+        """处理所有输入事件（render 线程调用）。
 
-        委托 ``read_stdin_once()`` 执行单次非阻塞 stdin 读取+直接分发。
-        与原队列排空模式不同，改为每帧处理一个输入单元，
-        确保不阻塞渲染帧。
+        循环调用 ``read_stdin_once()`` 直到无可读数据，
+        确保一次渲染帧内处理完所有待处理的输入。
+        不再逐帧仅处理一个输入单元。
         """
         try:
-            self.read_stdin_once()
+            while self.read_stdin_once():
+                pass
         except Exception:
             _logger.warning("process_events 异常", exc_info=True)
 

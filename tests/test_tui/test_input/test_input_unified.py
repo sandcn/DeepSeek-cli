@@ -83,6 +83,18 @@ class TestProcessEvents:
             os.close(w_fd)
             os.close(r_fd)
 
+    def test_process_events_multiple_bytes(self, tmp_path):
+        """process_events 一次处理多个输入字节（通过粘贴检测批量读取）。"""
+        r_fd, w_fd = os.pipe()
+        try:
+            inp = Input(fd=r_fd, history_file=tmp_path / "history")
+            os.write(w_fd, b"hello")
+            inp.process_events()
+            assert inp.get_current_text() == "hello"
+        finally:
+            os.close(w_fd)
+            os.close(r_fd)
+
 class TestFeedByte:
     """测试 Input.feed_byte() 单字节解析。"""
 
