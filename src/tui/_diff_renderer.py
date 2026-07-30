@@ -78,10 +78,28 @@ def _get_highlighter(lexer_name):
     return None
 
 
+def _sanitize_ansi(text: str) -> str:
+    """移除字符串中所有 ANSI 转义序列（移除所有 ESC 字符）。
+
+    这是最安全的兜底消毒策略——移除所有 \\x1b（ESC）字符，
+    无论其是否为合法序列头。语法高亮生成的 ANSI 序列在本函数
+    之后执行，不受影响。
+
+    Args:
+        text: 可能含 ANSI 转义序列的输入字符串。
+
+    Returns:
+        不含任何 \\x1b 字符的安全字符串。
+    """
+    return re.sub('\x1b', '', text)
+
+
 def _syntax_hl(text, lexer_name):
-    """对单行文本做语法高亮"""
+    """对单行文本做语法高亮（输入先做 ANSI 消毒防注入）。"""
     if not lexer_name or not text.strip():
         return text
+    # 先消毒再传 pygments，防止 ANSI 注入
+    text = _sanitize_ansi(text)
     pair = _get_highlighter(lexer_name)
     if not pair:
         return text
@@ -95,11 +113,11 @@ def _syntax_hl(text, lexer_name):
 def _inline_highlight(old_text, new_text):
     """对比两段文本，返回带背景色高亮差异部分的 (old_hl, new_hl)
 
-    注意：对输入文本做 ANSI 转义序列消毒，防止终端注入。
+    注意：对输入文本做 ANSI 转义序列消毒（移除所有 ESC 字符），防止终端注入。
     """
-    # 消毒：移除输入文本中的 ANSI 转义序列（含 OSC 8 超链接、DCS、APC 等）
-    old_text = re.sub(r'\x1B(?:[@-Z\\]|\[[0-?]*[ -/]*[@-~]|[\]PX^_].*?(?:\x1B\\|\x07))', '', old_text)
-    new_text = re.sub(r'\x1B(?:[@-Z\\]|\[[0-?]*[ -/]*[@-~]|[\]PX^_].*?(?:\x1B\\|\x07))', '', new_text)
+    # 消毒：最安全的兜底——移除所有 ESC 字符
+    old_text = _sanitize_ansi(old_text)
+    new_text = _sanitize_ansi(new_text)
 
     sm = difflib.SequenceMatcher(None, old_text, new_text)
     if sm.ratio() < 0.25:
@@ -226,8 +244,9 @@ def _render_chunk(item, w, lexer_name, output_target):
             output_target,
         )
         return
-    # ctx: 上下文行
+    # ctx: 上下文行（先消毒用户内容再输出，防 ANSI 注入）
     ctx_text = item[1][1:] if item[1].startswith(' ') else item[1]
+    ctx_text = _sanitize_ansi(ctx_text)
     hl_text = _syntax_hl(ctx_text, lexer_name) if lexer_name else ctx_text
     _write_diff_line(
         "  " + dim.apply(f"│ {item[2]:>{w}} │") + " " + hl_text,
@@ -448,6 +467,7 @@ __all__ = [
     "render_diff",
     "_resolve_lexer_name",
     "_get_highlighter",
+    "_sanitize_ansi",
     "_syntax_hl",
     "_inline_highlight",
     "_parse_diff_hunks",

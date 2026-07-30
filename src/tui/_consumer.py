@@ -256,6 +256,9 @@ class ChatUIConsumer:
                 )
             self._handlers_bound = True
             _register_consumer(self)
+            # ★ _engine.start() 在锁内调用：确保 daemon 线程创建时 _started 已设置，
+            #    消除 stop() 在 start() 设置 _started 前通过锁检查的竞态窗口。
+            #    _engine.start() 仅创建 daemon 线程并 start，不阻塞，锁内调用安全。
             self._engine.start()
             # ── 展示启动品牌屏 ──
             self._engine.push_cmd((RenderCommand.SPLASH,))

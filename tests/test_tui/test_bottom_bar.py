@@ -7,6 +7,9 @@ Mock 终端尺寸，不执行真实终端 I/O。
 
 from __future__ import annotations
 
+import logging
+from unittest.mock import MagicMock, patch
+
 import pytest
 
 from src.tui._screen import _get_terminal_size
@@ -355,3 +358,327 @@ class TestSystemMonitor:
         # 缓存未过期，时间戳应相同
         # (这取决于实际执行速度，但大概率在 1s 内)
         assert m.CPU_CACHE_TTL == 1.0
+
+
+class TestForceRedrawExceptionHandling:
+    """测试 force_redraw() 的异常处理 — 防止异常吞没。
+
+    验证：
+    1. out.write() 抛出 OSError/ValueError/AttributeError 时被正确捕获
+    2. 捕获后记录 _logger.warning
+    3. sgr_reset() 被调用以恢复终端状态
+    4. 异常后正常返回（不向上传播）
+    """
+
+    @pytest.fixture
+    def bottom_bar(self):
+        from src.tui._bottom_bar import _BottomBar
+        bb = _BottomBar()
+        # 设置 active 状态
+        bb._active = True
+        return bb
+
+    def test_oserror_on_write_is_caught(self, bottom_bar, caplog):
+        """out.write() 抛出 OSError 应被捕获并记录日志。"""
+        caplog.set_level(logging.WARNING)
+        mock_stdout = MagicMock()
+        mock_stdout.write.side_effect = OSError("Broken pipe")
+
+        from src.tui._locks import _try_acquire_output_lock
+        with patch("src.tui._bottom_bar.sys.__stdout__", mock_stdout):
+            with patch("src.tui._bottom_bar._try_acquire_output_lock") as mock_lock:
+                mock_lock.return_value.__enter__.return_value = True
+                with patch("src.tui._bottom_bar.sgr_reset") as mock_reset:
+                    bottom_bar.force_redraw()
+
+        # 应记录警告日志
+        warning_records = [r for r in caplog.records if r.levelno == logging.WARNING]
+        assert any("force_redraw" in r.message for r in warning_records), (
+            "应记录 force_redraw 写入失败的警告"
+        )
+
+    def test_valueerror_on_write_is_caught(self, bottom_bar, caplog):
+        """out.write() 抛出 ValueError 应被捕获并记录日志。"""
+        caplog.set_level(logging.WARNING)
+        mock_stdout = MagicMock()
+        mock_stdout.write.side_effect = ValueError("I/O operation on closed file")
+
+        with patch("src.tui._bottom_bar.sys.__stdout__", mock_stdout):
+            with patch("src.tui._bottom_bar._try_acquire_output_lock") as mock_lock:
+                mock_lock.return_value.__enter__.return_value = True
+                with patch("src.tui._bottom_bar.sgr_reset") as mock_reset:
+                    bottom_bar.force_redraw()
+
+        warning_records = [r for r in caplog.records if r.levelno == logging.WARNING]
+        assert any("force_redraw" in r.message for r in warning_records)
+
+    def test_sgr_reset_called_on_failure(self, bottom_bar):
+        """写入失败时 sgr_reset() 应被调用以恢复终端状态。"""
+        mock_stdout = MagicMock()
+        mock_stdout.write.side_effect = OSError("Broken pipe")
+
+        with patch("src.tui._bottom_bar.sys.__stdout__", mock_stdout):
+            with patch("src.tui._bottom_bar._try_acquire_output_lock") as mock_lock:
+                mock_lock.return_value.__enter__.return_value = True
+                with patch("src.tui._bottom_bar.sgr_reset") as mock_reset:
+                    bottom_bar.force_redraw()
+
+        mock_reset.assert_called_once()
+
+    def test_exception_does_not_propagate(self, bottom_bar):
+        """异常不应向上传播 — force_redraw 应正常返回。"""
+        mock_stdout = MagicMock()
+        mock_stdout.write.side_effect = AttributeError("'NoneType' object has no attribute 'write'")
+
+        with patch("src.tui._bottom_bar.sys.__stdout__", mock_stdout):
+            with patch("src.tui._bottom_bar._try_acquire_output_lock") as mock_lock:
+                mock_lock.return_value.__enter__.return_value = True
+                with patch("src.tui._bottom_bar.sgr_reset") as mock_reset:
+                    # 不应抛出异常
+                    bottom_bar.force_redraw()
+
+        # 执行到达此处即通过（无异常传播）
+
+    def test_normal_path_no_exception(self, bottom_bar):
+        """正常路径（无异常）下 force_redraw 应正常完成。"""
+        mock_stdout = MagicMock()
+
+        with patch("src.tui._bottom_bar.sys.__stdout__", mock_stdout):
+            with patch("src.tui._bottom_bar._try_acquire_output_lock") as mock_lock:
+                mock_lock.return_value.__enter__.return_value = True
+                with patch("src.tui._bottom_bar.sgr_reset") as mock_reset:
+                    bottom_bar.force_redraw()
+
+        # 正常路径下不调用 sgr_reset
+        mock_reset.assert_not_called()
+
+    def test_oserror_on_flush_is_caught(self, bottom_bar, caplog):
+        """out.flush() 抛出 OSError 应被捕获并记录日志。"""
+        caplog.set_level(logging.WARNING)
+        # 让 write 成功但 flush 失败
+        mock_stdout = MagicMock()
+        mock_stdout.write.return_value = None  # write 正常返回
+        mock_stdout.flush.side_effect = OSError("Broken pipe on flush")
+
+        with patch("src.tui._bottom_bar.sys.__stdout__", mock_stdout):
+            with patch("src.tui._bottom_bar._try_acquire_output_lock") as mock_lock:
+                mock_lock.return_value.__enter__.return_value = True
+                with patch("src.tui._bottom_bar.sgr_reset") as mock_reset:
+                    bottom_bar.force_redraw()
+
+        warning_records = [r for r in caplog.records if r.levelno == logging.WARNING]
+        assert any("force_redraw" in r.message for r in warning_records)
+
+    def test_inactive_does_not_throw(self):
+        """_active=False 时 force_redraw 直接返回，不执行任何 I/O。"""
+        from src.tui._bottom_bar import _BottomBar
+        bb = _BottomBar()
+        assert bb._active is False
+
+        # 不应抛出异常
+        bb.force_redraw()
+
+    def test_lock_not_acquired_returns_early(self, bottom_bar):
+        """锁未获取到时直接返回，不执行写入。"""
+        mock_stdout = MagicMock()
+
+        with patch("src.tui._bottom_bar.sys.__stdout__", mock_stdout):
+            with patch("src.tui._bottom_bar._try_acquire_output_lock") as mock_lock:
+                mock_lock.return_value.__enter__.return_value = False  # locked=False
+                bottom_bar.force_redraw()
+
+        # 锁未获取时不应执行任何写入
+        mock_stdout.write.assert_not_called()
+
+
+# ═══════════════════════════════════════════════════════════
+# 弹窗竞态测试
+# ═══════════════════════════════════════════════════════════
+
+class TestCompletionRaceCondition:
+    """测试 hide_completions / get_selected_completion_index 竞态修复。
+
+    验证：
+    1. hide_completions() 后 get_selected_completion_index() 返回隐藏时的正确索引
+    2. 快速连续 hide/show 后索引正确性
+    """
+
+    @pytest.fixture
+    def bottom_bar(self):
+        from src.tui._bottom_bar import _BottomBar
+        bb = _BottomBar()
+        bb._active = True
+        return bb
+
+    def test_hide_saves_last_index(self, bottom_bar):
+        """hide_completions 后 _last_idx_before_hide 应等于隐藏时的 _idx。"""
+        # 模拟有 5 个补全项，选中 idx=3
+        items = [f"item{i}" for i in range(5)]
+        bottom_bar.show_completions(
+            items=items, selected_idx=3,
+            texts=items, start_pos=0,
+        )
+        # 验证弹窗可见且 idx 正确
+        assert bottom_bar.is_completion_visible
+        assert bottom_bar._completion._idx == 3
+
+        # 隐藏弹窗
+        bottom_bar.hide_completions()
+        # 验证 _last_idx_before_hide 正确保存了隐藏时的 idx
+        assert bottom_bar._completion._last_idx_before_hide == 3
+        assert not bottom_bar.is_completion_visible
+
+    def test_get_selected_completion_index_after_hide(self, bottom_bar):
+        """隐藏后 get_selected_completion_index() 返回最后保存的索引。"""
+        items = [f"item{i}" for i in range(5)]
+        bottom_bar.show_completions(items=items, selected_idx=2, texts=items)
+        assert bottom_bar._completion._idx == 2
+
+        bottom_bar.hide_completions()
+        # 隐藏后应返回 _last_idx_before_hide (2)
+        result = bottom_bar.get_selected_completion_index()
+        assert result == 2
+
+    def test_get_selected_completion_index_when_visible(self, bottom_bar):
+        """弹窗可见时 get_selected_completion_index() 返回实时 _idx。"""
+        items = [f"item{i}" for i in range(5)]
+        bottom_bar.show_completions(items=items, selected_idx=4, texts=items)
+        assert bottom_bar.is_completion_visible
+
+        # 可见时返回当前 idx
+        result = bottom_bar.get_selected_completion_index()
+        assert result == 4
+
+    def test_rapid_hide_show_preserves_index(self, bottom_bar):
+        """快速连续 hide/show 后，get_selected_completion_index 返回正确索引。"""
+        items = [f"item{i}" for i in range(5)]
+
+        # 第一次显示，选中 idx=3
+        bottom_bar.show_completions(items=items, selected_idx=3, texts=items)
+        assert bottom_bar._completion._idx == 3
+
+        # 隐藏（保存 idx=3）
+        bottom_bar.hide_completions()
+        assert bottom_bar._completion._last_idx_before_hide == 3
+
+        # 重新显示，选中 idx=1
+        bottom_bar.show_completions(items=items[:3], selected_idx=1, texts=items[:3])
+        assert bottom_bar._completion._idx == 1
+
+        # 可见时返回实时 idx=1
+        result = bottom_bar.get_selected_completion_index()
+        assert result == 1
+
+        # 再次隐藏
+        bottom_bar.hide_completions()
+        # 隐藏后应返回隐藏时的 idx=1
+        result = bottom_bar.get_selected_completion_index()
+        assert result == 1
+
+    def test_local_variable_atomic_read(self, bottom_bar):
+        """验证 hide_completions 中使用局部变量保存 _idx。
+
+        通过检查源代码确认 local variable 模式存在（编译时验证）。
+        此测试是防御性，确保修复模式不会被后续修改退化。
+        """
+        import inspect
+        from src.tui import _bottom_bar
+        source = inspect.getsource(_bottom_bar._BottomBar.hide_completions)
+        # 应包含 saved_idx = self._completion._idx 模式
+        assert "saved_idx" in source or "_last_idx_before_hide" in source
+        # 确认 _last_idx_before_hide 赋值使用局部变量而非直接引用
+        assert "saved_idx" in source
+
+
+# ═══════════════════════════════════════════════════════════
+# 负值光标坐标 clamp 测试
+# ═══════════════════════════════════════════════════════════
+
+class TestNegativeCursorCoordinateClamp:
+    """测试负值光标坐标 clamp 修复。
+
+    验证 _cursor_tracker.set() 收到负值/零值 row/col 时被 clamp 到 1。
+    修复位置: CursorTracker.set() 中使用 max(1, row) / max(1, col)。
+    """
+
+    def test_cursor_tracker_set_clamps_negative_row(self):
+        """负值 row 被 clamp 到 1。"""
+        from src.tui._cursor_tracker import CursorTracker
+        ct = CursorTracker()
+        ct.set(-5, 10)
+        pos = ct.pos
+        assert pos.row == 1, f"负值 row -5 应 clamp 到 1，实际得到 {pos.row}"
+        assert pos.col == 10
+
+    def test_cursor_tracker_set_clamps_zero_row(self):
+        """零值 row 被 clamp 到 1。"""
+        from src.tui._cursor_tracker import CursorTracker
+        ct = CursorTracker()
+        ct.set(0, 5)
+        pos = ct.pos
+        assert pos.row == 1, f"零值 row 0 应 clamp 到 1，实际得到 {pos.row}"
+        assert pos.col == 5
+
+    def test_cursor_tracker_set_clamps_negative_col(self):
+        """负值 col 被 clamp 到 1。"""
+        from src.tui._cursor_tracker import CursorTracker
+        ct = CursorTracker()
+        ct.set(10, -3)
+        pos = ct.pos
+        assert pos.row == 10
+        assert pos.col == 1, f"负值 col -3 应 clamp 到 1，实际得到 {pos.col}"
+
+    def test_cursor_tracker_set_clamps_zero_col(self):
+        """零值 col 被 clamp 到 1。"""
+        from src.tui._cursor_tracker import CursorTracker
+        ct = CursorTracker()
+        ct.set(3, 0)
+        pos = ct.pos
+        assert pos.row == 3
+        assert pos.col == 1
+
+    def test_cursor_tracker_set_normal_values_unchanged(self):
+        """正常正值不被 clamp。"""
+        from src.tui._cursor_tracker import CursorTracker
+        ct = CursorTracker()
+        ct.set(5, 8)
+        pos = ct.pos
+        assert pos.row == 5
+        assert pos.col == 8
+
+    def test_cursor_tracker_set_both_negative(self):
+        """row 和 col 同时为负值时均被 clamp 到 1。"""
+        from src.tui._cursor_tracker import CursorTracker
+        ct = CursorTracker()
+        ct.set(-10, -20)
+        pos = ct.pos
+        assert pos.row == 1
+        assert pos.col == 1
+
+    def test_ensure_cursor_in_lower_safe_with_negative(self):
+        """ensure_cursor_in_lower 中计算出的负值 r_cursor 被 clamp。
+
+        模拟边界条件：输入文本为空，终端高度极小，确保最终 set 收到 clamp 后的安全值。
+        """
+        from unittest.mock import MagicMock, patch
+        from src.tui._bottom_bar import _BottomBar
+        from src.tui._cursor_tracker import CursorTracker
+
+        ct = CursorTracker()
+        bb = _BottomBar(cursor_tracker=ct)
+        bb._active = True
+        bb._last_bottom_lines = 5
+        bb._subagent_lines = []
+        bb._input_cursor_pos = 0
+
+        with patch("src.tui._bottom_bar._get_terminal_size", return_value=(80, 3)):
+            with patch("src.tui._bottom_bar._try_acquire_output_lock") as mock_lock:
+                mock_lock.return_value.__enter__.return_value = True
+                with patch("src.tui._bottom_bar.sys.__stdout__") as mock_stdout:
+                    # 不应抛出异常
+                    bb.ensure_cursor_in_lower()
+
+        # 执行到达此处即通过（无异常）
+        # 光标行号应 ≥ 1
+        assert ct.pos.row >= 1
+        assert ct.pos.col >= 1

@@ -154,6 +154,10 @@ class TuiEngine:
         self._cmd_event.set()
 
     def start(self) -> None:
+        # 原子性检查：_render_running 已为 True 说明线程已在运行，防止竞态重复启动
+        if self._render_running:
+            _logger.warning("start() 被重复调用，render 线程仍在运行，跳过")
+            return
         if self._render_thread is not None:
             if self._render_thread.is_alive():
                 _logger.warning("start() 被重复调用，render 线程仍在运行，跳过")
@@ -199,6 +203,11 @@ class TuiEngine:
     # ── 四阶段流水线 ──────────────────────────────
 
     def _phase_process_input(self) -> None:
+        """处理输入事件（在 render_lock 外调用，可安全执行 I/O 操作）。
+
+        此方法由 _drain_queue() 在 with _try_acquire_output_lock 块外调用，
+        确保 Input.process_events() 不持 render_lock，避免锁顺序反转死锁。
+        """
         if self._input is not None:
             try:
                 self._input.process_events()

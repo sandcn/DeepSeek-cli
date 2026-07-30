@@ -256,7 +256,16 @@ class SubAgentPanelController:
     # ── 事件处理器 ──────────────────────────────────────
 
     def _emit_frame(self) -> None:
-        """渲染并推送当前帧（受 _EMIT_INTERVAL 节流）。"""
+        """渲染并推送当前帧（受 _EMIT_INTERVAL 节流）。
+
+        锁顺序保证（防死锁）：
+          ┌─ _render_frame() 内部获取/释放 _state_lock（RLock 可重入）
+          └─ _push_frame()  在此函数外层调用，_state_lock 已释放
+
+        调用此函数时调用方不应持有 _state_lock。
+        _render_frame 内部获取/释放锁，_push_frame 在锁外调用。
+        违反此顺序可能导致 render 线程等待 _state_lock 时形成 ABBA 死锁。
+        """
         now = time.time()
         if now - self._last_emit_time < self._EMIT_INTERVAL:
             return  # 节流，跳过本次渲染
@@ -321,7 +330,11 @@ class SubAgentPanelController:
                 rec.detail = event.arguments
                 slot.tool_history.append(rec)
         # ★ 强制立即渲染帧（绕过 10Hz 节流），确保 parsing 状态立即可见
-        #    注意：_render_frame 需要 _state_lock，必须先释放上方持有的锁
+        #    锁顺序保证（防死锁）：
+        #      _render_frame() 内部获取/释放 _state_lock（RLock 可重入）
+        #      _push_frame()   在 _render_frame 返回后调用，锁已释放
+        #    注意：_push_frame 绝不可在 with self._state_lock 块内调用，
+        #    否则 render 线程在同一锁上阻塞时形成 ABBA 死锁。
         self._push_frame(self._render_frame())
 
     def _on_parse_info(self, event) -> None:

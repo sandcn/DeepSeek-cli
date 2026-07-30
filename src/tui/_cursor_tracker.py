@@ -109,12 +109,15 @@ class CursorTracker:
 
         用于在已通过其他方式定位光标后，同步追踪器的状态。
 
+        自动 clamp：负值或零值会被提升为 1（终端坐标最小有效值），
+        防止负值坐标被传给 cursor_goto ANSI 序列导致终端异常。
+
         Args:
-            row: 行号（1-based）。
-            col: 列号（1-based）。
+            row: 行号（1-based），负值或零值自动 clamp 到 1。
+            col: 列号（1-based），负值或零值自动 clamp 到 1。
         """
-        self._row = row
-        self._col = col
+        self._row = max(1, row)
+        self._col = max(1, col)
 
     def record_newlines(self, n: int) -> None:
         """记录输出了 n 行文本后的光标位置变化。

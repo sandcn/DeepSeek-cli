@@ -331,6 +331,7 @@ class Input:
         self._eof_count = 0
         self._select_error_count = 0
         self._exit_reason: str | None = None
+        self._fd_status: str = "ok"
 
     # ── 公开属性 ──────────────────────────────────────────
 
@@ -377,6 +378,7 @@ class Input:
         self._eof_count = 0
         self._select_error_count = 0
         self._exit_reason = None
+        self._fd_status = "ok"
 
     def stop_io(self) -> None:
         """停用 I/O 读取（标志位管理模式，不再 join 线程）。
@@ -387,6 +389,7 @@ class Input:
         self._stop.set()
         self._active.set()  # 确保 read_stdin_once() 状态检查快速退出
         self._io_started = False
+        self._fd_status = "ok"
 
     def pause_io(self) -> None:
         """暂停 I/O 读取（供 EscapeMonitor 的特殊按键回调使用）。
@@ -441,10 +444,15 @@ class Input:
                 self.reset()
                 self.handle_chars(result)
         if action == 'editmsg':
+            # editmsg 是用户主动发起的编辑/提交操作（Ctrl+O），
+            # 清除 _suppress_enter 确保 _enter() 不被抑制
+            self.set_suppress_enter(False)
             self._enter()
 
     def _flush_stdin_residual(self, max_flush: int = 50) -> None:
         """非阻塞清理 stdin 残留字节。"""
+        if self._fd_status == "error":
+            return
         flushed = 0
         while flushed < max_flush:
             if self._stop.is_set():
@@ -496,6 +504,8 @@ class Input:
         fd = self._fd
 
         # ── 状态检查 ──
+        if self._fd_status == "error":
+            return False
         if not self._active.is_set() or self._stop.is_set():
             return False
 
@@ -510,6 +520,7 @@ class Input:
                     self._select_error_count,
                 )
                 self._exit_reason = "select_error"
+                self._fd_status = "error"
             return False
 
         if not ready:
@@ -530,6 +541,7 @@ class Input:
                 return False
             self._eof_count = 0
         except (ValueError, OSError, TypeError):
+            self._fd_status = "error"
             return False
 
         first_byte = raw[0]

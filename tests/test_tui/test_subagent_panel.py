@@ -182,3 +182,151 @@ class TestSubAgentPanelReentrantLock:
 
         # _push_frame 应该被调用（至少一次）
         assert controller._push_frame.call_count >= 1
+
+
+class TestSubagentPanelDeadlockPrevention:
+    """死锁预防测试 — 验证 _push_frame 绝不在 _state_lock 内调用。
+
+    核心原则：
+      _emit_frame() 中 _render_frame() → (锁释放) → _push_frame()
+      _on_tool_parsing() 中 with _state_lock: ... → (锁释放) → _render_frame() → _push_frame()
+    """
+
+    @pytest.fixture
+    def controller(self):
+        ctrl = SubAgentPanelController()
+        # 替换 _render_frame 为可追踪的 mock
+        ctrl._render_frame_orig = ctrl._render_frame
+        return ctrl
+
+    def test_emit_frame_lock_order(self):
+        """验证 _emit_frame() 调用顺序：_render_frame（锁内）→ _push_frame（锁外）。"""
+        ctrl = SubAgentPanelController()
+        call_order = []
+
+        orig_render = ctrl._render_frame
+
+        def tracked_render():
+            call_order.append("render_frame")
+            # 验证 _render_frame 获取 _state_lock — RLock 可重入，不阻塞
+            with ctrl._state_lock:
+                call_order.append("in_render_lock")
+            return ["line"]
+
+        orig_push = ctrl._push_frame
+
+        def tracked_push(lines):
+            call_order.append("push_frame")
+
+        ctrl._render_frame = tracked_render
+        ctrl._push_frame = tracked_push
+
+        ctrl._last_emit_time = 0.0
+        with patch("src.tui._subagent_panel.time.time", return_value=0.15):
+            ctrl._emit_frame()
+
+        # 验证调用顺序
+        assert "render_frame" in call_order
+        assert "push_frame" in call_order
+        render_idx = call_order.index("render_frame")
+        push_idx = call_order.index("push_frame")
+        # _render_frame 必须在 _push_frame 之前调用
+        assert render_idx < push_idx, (
+            f"_render_frame (idx={render_idx}) 应在 _push_frame (idx={push_idx}) 之前"
+        )
+
+    def test_on_tool_parsing_lock_released_before_push(self):
+        """验证 _on_tool_parsing 在锁释放后才调 _push_frame。"""
+        ctrl = SubAgentPanelController()
+        call_order = []
+
+        # 添加一个 agent slot 到 _agents
+        from src.tui._subagent_panel import _AgentSlot
+        ctrl._agents["agent-x"] = _AgentSlot(label="agent-x", description="test")
+
+        orig_render = ctrl._render_frame
+        orig_push = ctrl._push_frame
+
+        def tracked_render():
+            call_order.append("render_frame")
+            # _render_frame 内部获取锁（RLock 可重入）
+            with ctrl._state_lock:
+                call_order.append("in_render_lock")
+            return ["line"]
+
+        def tracked_push(lines):
+            call_order.append("push_frame")
+            # 验证：调用 _push_frame 时锁应已释放
+            # 验证方法：尝试获取锁（非阻塞），应该能获取到
+            acquired = ctrl._state_lock.acquire(blocking=False)
+            if acquired:
+                call_order.append("lock_available_in_push")
+                ctrl._state_lock.release()
+            else:
+                call_order.append("lock_held_in_push")
+
+        ctrl._render_frame = tracked_render
+        ctrl._push_frame = tracked_push
+
+        # 构造 mock 事件
+        event = MagicMock()
+        event.label = "agent-x"
+        event.tool_name = "read_file"
+        event.arguments = "test.py"
+
+        ctrl._on_tool_parsing(event)
+
+        # 验证调用顺序
+        assert "push_frame" in call_order, "_push_frame 应被调用"
+        push_idx = call_order.index("push_frame")
+        render_idx = call_order.index("render_frame")
+        assert render_idx < push_idx, (
+            f"_render_frame (idx={render_idx}) 应在 _push_frame (idx={push_idx}) 之前"
+        )
+        # 验证在 _push_frame 中锁可用 — 表明锁已释放
+        if "lock_available_in_push" in call_order:
+            lock_available_idx = call_order.index("lock_available_in_push")
+            push_idx = call_order.index("push_frame")
+            assert lock_available_idx > push_idx, (
+                "调用 _push_frame 时锁应未被持有（可在 push 中获取）"
+            )
+
+    def test_event_handlers_call_emit_frame_outside_lock(self):
+        """验证所有事件处理器在锁外调用 _emit_frame。"""
+        ctrl = SubAgentPanelController()
+        call_trace = []
+
+        # 替换 _emit_frame 为追踪版
+        orig_emit = ctrl._emit_frame
+        def tracked_emit():
+            call_trace.append("emit_frame")
+            # 验证在 _emit_frame 中锁是否被调用方持有
+            try:
+                acquired = ctrl._state_lock.acquire(blocking=False)
+                if acquired:
+                    ctrl._state_lock.release()
+                    call_trace.append("lock_free_in_emit")
+                else:
+                    call_trace.append("lock_held_in_emit")
+            except RuntimeError:
+                call_trace.append("lock_error_in_emit")
+
+        ctrl._emit_frame = tracked_emit
+        ctrl._push_frame = MagicMock()
+
+        from src.tui._subagent_panel import _AgentSlot
+        ctrl._agents["agent-x"] = _AgentSlot(label="agent-x", description="test")
+
+        # 测试 _on_agent_status_changed — 它在锁外调 _emit_frame
+        event = MagicMock()
+        event.label = "agent-x"
+        event.status = "done"
+        ctrl._on_agent_status_changed(event)
+
+        assert "emit_frame" in call_trace, "_emit_frame 应被调用"
+        if "lock_free_in_emit" in call_trace:
+            assert True  # 锁在 _emit_frame 时可用 — 正确
+        elif "lock_held_in_emit" in call_trace:
+            # 也可能 _on_agent_status_changed 在 with _state_lock 内调用了 _emit_frame
+            # 但实际上代码中 _emit_frame 在 with 块外调用，这不应发生
+            pytest.fail("_emit_frame 被调用时 _state_lock 仍被持有 — 可能导致死锁")

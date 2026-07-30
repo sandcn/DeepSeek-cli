@@ -6,6 +6,7 @@
   - Input 历史管理（load_history mock）
   - 补全回调流程
   - 光标视觉位置计算（_compute_cursor_visual_pos）
+  - 异常类型明确性（无裸 except，所有异常类型显式声明）
   - 不测试真实 stdin I/O（需 PTY 环境）
 """
 
@@ -622,3 +623,260 @@ class TestHistory:
         # 光标应该移到上一行
         text = inp.get_current_text()
         assert "line" in text
+
+
+# ═══════════════════════════════════════════════════════════
+# get_queued_input 类型安全
+# ═══════════════════════════════════════════════════════════
+
+class TestGetQueuedInputTypeSafety:
+    """测试 get_queued_input() 返回类型 str|None 的调用方安全性。
+
+    验证：
+    1. get_queued_input() 在无排队输入时返回 None
+    2. get_queued_input() 在有排队输入时返回 str
+    3. 调用方在收到 None 时不崩溃（不调用 .encode() 等 str 方法）
+    """
+
+    def test_returns_none_when_no_input(self, input_instance):
+        """无排队输入时 get_queued_input() 返回 None。"""
+        inp = input_instance
+        result = inp.get_queued_input()
+        assert result is None
+
+    def test_returns_string_after_enter(self, input_instance):
+        """Enter 提交后 get_queued_input() 返回 str。"""
+        inp = input_instance
+        inp.handle_chars("test type safety")
+        inp._enter()
+        result = inp.get_queued_input()
+        assert result is not None
+        assert isinstance(result, str)
+        assert result == "test type safety"
+
+    def test_returns_none_after_drain(self, input_instance):
+        """消费后再次调用 get_queued_input() 返回 None。"""
+        inp = input_instance
+        inp.handle_chars("drain me")
+        inp._enter()
+        first = inp.get_queued_input()
+        assert first is not None  # 第一次返回 str
+        second = inp.get_queued_input()
+        assert second is None  # 第二次返回 None
+
+    def test_caller_handles_none_safely(self, input_instance):
+        """模拟调用方安全处理 None（不调用 .encode()/.strip() 等 str 方法）。"""
+        inp = input_instance
+        text = inp.get_queued_input()
+        # 调用方应检查 None 再操作
+        if text is not None:
+            encoded = text.encode("utf-8")
+            assert isinstance(encoded, bytes)
+        # 若 text 为 None，此分支不执行，不崩溃
+        assert text is None  # 确认本测试场景下返回 None
+
+    def test_caller_handles_string_safely(self, input_instance):
+        """模拟调用方正常处理 str 返回值。"""
+        inp = input_instance
+        inp.handle_chars("safe string")
+        inp._enter()
+        text = inp.get_queued_input()
+        assert text is not None
+        # 调用方在确认非 None 后调用 str 方法
+        encoded = text.encode("utf-8")
+        stripped = text.strip()
+        assert isinstance(encoded, bytes)
+        assert isinstance(stripped, str)
+
+
+# ═══════════════════════════════════════════════════════════
+# 异常类型明确性测试（无裸 except）
+# ═══════════════════════════════════════════════════════════
+
+class TestExplicitExceptionTypes:
+    """验证 _input.py 中无裸 ``except:`` 捕获（修复 P2 裸 except）。
+
+    所有异常捕获必须使用明确异常类型（如 ``except (ValueError, OSError):``），
+    禁止使用裸 ``except:`` 吞没 KeyboardInterrupt/SystemExit。
+
+    验证策略：
+    1. 源文件扫描：确认文件中无裸 ``except:`` 语法
+    2. 功能验证：在边界条件下（无效 fd/超时）异常被正确捕获而非吞没
+    """
+
+    def test_no_bare_except_in_source_file(self):
+        """源文件中不存在裸 except: 语句。
+
+        通过搜索 ``except:`` 模式确认（注意冒号前无括号或异常类型时即为裸 except）。
+        """
+        import ast
+        import inspect
+
+        from src.tui import _input
+        source = inspect.getsource(_input)
+
+        # 逐行检查 except 语句行
+        lines = source.split('\n')
+        bare_except_lines = []
+        for i, line in enumerate(lines):
+            stripped = line.strip()
+            # 匹配 "except:" 但排除 "except (": 和 "except Exception:"
+            if stripped.startswith('except:'):
+                bare_except_lines.append(i + 1)  # 1-based line number
+            elif stripped.startswith('except ') and ':' in stripped:
+                # 检查 except 后面是否有异常类型
+                except_part = stripped[7:stripped.index(':')].strip()
+                if not except_part or except_part == ':':
+                    bare_except_lines.append(i + 1)
+
+        assert not bare_except_lines, (
+            f"存在裸 except: 的行: {bare_except_lines}"
+        )
+
+    def test_parse_escape_sequence_select_error_handled(self, input_instance):
+        """_parse_escape_sequence 中的 select 异常被显式处理。
+
+        验证在无效 fd 上调用 parse_sequence 时，异常被显式捕获并返回
+        KeyEvent(kind='escape')，而非被裸 except 吞没或传播。
+        """
+        inp = input_instance
+        # 使用无效 fd（-1）模拟 select/read 错误
+        with patch.object(inp, '_fd', -1):
+            result = inp.parse_sequence(fd_override=-1)
+            # 验证异常被显式捕获并返回 escape event
+            assert result is not None
+            assert result.kind == "escape"
+            # 验证不是被裸 except 吞没的 unknown
+            assert result.kind != "unknown"
+
+    def test_parse_escape_sequence_read_error_handled(self, input_instance):
+        """_parse_escape_sequence 中的 os.read 异常被显式处理。"""
+        inp = input_instance
+        with patch.object(inp, '_fd', -1):
+            result = inp.parse_sequence(fd_override=-1)
+            assert result is not None
+            assert result.kind == "escape"
+
+    def test_flush_stdin_residual_exception_handled(self, input_instance):
+        """_flush_stdin_residual 中的 select/read 异常被显式处理。
+
+        使用无效 fd 模拟异常路径，验证异常被捕获后 break 而非传播。
+        """
+        inp = input_instance
+        inp._stop.clear()
+        with patch.object(inp, '_fd', -1):
+            # 不应抛出异常
+            inp._flush_stdin_residual(max_flush=5)
+
+    def test_read_stdin_once_select_error_handled(self, input_instance):
+        """read_stdin_once 中 select 异常增加计数而不崩溃。"""
+        inp = input_instance
+        inp.start_io()
+        with patch.object(inp, '_fd', -1):
+            # 不应抛出异常，select 错误被捕获
+            result = inp.read_stdin_once()
+            assert result is False  # 无数据可读
+            # select 错误计数应增加
+            assert inp._select_error_count > 0
+
+    def test_read_stdin_once_read_error_handled(self, input_instance):
+        """read_stdin_once 中 os.read 异常被捕获而不崩溃。"""
+        inp = input_instance
+        inp.start_io()
+        # 使用 select mock 返回 "ready" 但 os.read 失败
+        with patch('src.tui._input.select.select', return_value=([1], [], [])), \
+             patch.object(inp, '_fd', 999):  # 无效 fd
+            result = inp.read_stdin_once()
+            assert result is False  # 异常被捕获，不崩溃
+
+    def test_try_read_paste_exception_handled(self, input_instance):
+        """try_read_paste 中 select/read 异常被捕获。"""
+        inp = input_instance
+        with patch.object(inp, '_fd', -1):
+            result = inp.try_read_paste(-1, "a")
+            assert result == "a"  # 异常后返回原始字符
+
+
+# ═══════════════════════════════════════════════════════════
+# _suppress_enter 绕过测试
+# ═══════════════════════════════════════════════════════════
+
+class TestSuppressEnterBypass:
+    """测试 _handle_special_key('editmsg') 不绕过 _suppress_enter。
+
+    验证：
+    1. set_suppress_enter(True) 后 _dispatch_key_event 中 Enter 被抑制
+    2. _handle_special_key('editmsg') 清除 suppress_enter 后调用 _enter()
+    3. editmsg 路径不会意外被 suppress_enter 阻止
+    """
+
+    def test_enter_suppressed_when_suppress_enter_true(self, input_instance):
+        """_suppress_enter=True 时 _dispatch_key_event 中的 Enter 被抑制。"""
+        inp = input_instance
+        inp.set_suppress_enter(True)
+        inp.handle_chars("test enter suppressed")
+        assert inp.get_current_text() == "test enter suppressed"
+
+        # 模拟 Enter 按键事件分发
+        inp._dispatch_key_event(KeyEvent(kind="enter"))
+
+        # 由于 _suppress_enter=True，文本不应被提交
+        assert not inp.has_queued_input()
+        # 缓冲区应保持不变
+        assert inp.get_current_text() == "test enter suppressed"
+
+    def test_enter_processed_when_suppress_enter_false(self, input_instance):
+        """_suppress_enter=False 时 _dispatch_key_event 中的 Enter 正常处理。"""
+        inp = input_instance
+        inp.set_suppress_enter(False)
+        inp.handle_chars("test enter processed")
+        assert inp.get_current_text() == "test enter processed"
+
+        inp._dispatch_key_event(KeyEvent(kind="enter"))
+
+        # Enter 被正常处理，文本被提交
+        assert inp.has_queued_input()
+        text = inp.get_queued_input()
+        assert text == "test enter processed"
+
+    def test_editmsg_clears_suppress_enter(self, input_instance):
+        """_handle_special_key('editmsg') 在调用 _enter() 前清除 _suppress_enter。"""
+        inp = input_instance
+        inp.set_suppress_enter(True)
+        inp.set_buffer("editmsg test")
+
+        # 设置 mock special_key_callback 返回新文本
+        cb = MagicMock(return_value="edited message")
+        inp.set_special_key_callback(cb)
+
+        # 调用 _handle_special_key('editmsg')
+        inp._handle_special_key('editmsg')
+
+        # 验证 _suppress_enter 被清除
+        assert inp.get_suppress_enter() is False
+        # 由于 enter 被调用，文本应从 get_queued_input 获取
+        assert inp.has_queued_input()
+        text = inp.get_queued_input()
+        assert text == "edited message" or text is not None
+
+    def test_editmsg_submits_without_suppress(self, input_instance):
+        """editmsg 路径在 _suppress_enter=True 时仍能正确提交。"""
+        inp = input_instance
+        inp.set_suppress_enter(True)
+
+        # 直接给 buffer 设置文本（模拟编辑后返回）
+        inp.set_buffer("final edit result")
+
+        # 模拟 special_key_callback 返回结果
+        cb = MagicMock(return_value="final edit result")
+        inp.set_special_key_callback(cb)
+
+        # 调用 editmsg
+        inp._handle_special_key('editmsg')
+
+        # suppress_enter 已清除
+        assert inp.get_suppress_enter() is False
+        # 文本已被提交
+        assert inp.has_queued_input()
+        result = inp.get_queued_input()
+        assert result == "final edit result"

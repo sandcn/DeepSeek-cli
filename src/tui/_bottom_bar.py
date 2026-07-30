@@ -440,7 +440,10 @@ class _SystemMonitor:
                     idle_str = parts[-1].replace("%", "")
                     return max(0.0, 100.0 - float(idle_str))
             return 0.0
-        except (subprocess.TimeoutExpired, OSError, ValueError, IndexError):
+        except subprocess.TimeoutExpired:
+            _logger.warning("子进程超时: iostat -c 2 2", exc_info=True)
+            return 0.0
+        except (OSError, ValueError, IndexError):
             return 0.0
 
     def _read_cpu_windows(self) -> float:
@@ -456,7 +459,10 @@ class _SystemMonitor:
                 if line.startswith("LoadPercentage="):
                     return float(line.split("=", 1)[1].strip())
             return 0.0
-        except (subprocess.TimeoutExpired, OSError, ValueError, IndexError):
+        except subprocess.TimeoutExpired:
+            _logger.warning("子进程超时: wmic cpu get loadpercentage", exc_info=True)
+            return 0.0
+        except (OSError, ValueError, IndexError):
             return 0.0
 
     def _read_mem_proc_meminfo(self) -> float:
@@ -497,7 +503,10 @@ class _SystemMonitor:
             )
             if result.returncode == 0:
                 total_bytes = int(result.stdout.strip())
-        except (subprocess.TimeoutExpired, OSError, ValueError):
+        except subprocess.TimeoutExpired:
+            _logger.warning("子进程超时: sysctl -n hw.memsize", exc_info=True)
+            return 0.0
+        except (OSError, ValueError):
             return 0.0
         if total_bytes <= 0:
             return 0.0
@@ -508,7 +517,10 @@ class _SystemMonitor:
             )
             if result.returncode != 0:
                 return 0.0
-        except (subprocess.TimeoutExpired, OSError):
+        except subprocess.TimeoutExpired:
+            _logger.warning("子进程超时: vm_stat", exc_info=True)
+            return 0.0
+        except OSError:
             return 0.0
         page_size = 4096
         active_pages = 0
@@ -550,7 +562,10 @@ class _SystemMonitor:
             )
             if result.returncode != 0:
                 return 0.0
-        except (subprocess.TimeoutExpired, OSError):
+        except subprocess.TimeoutExpired:
+            _logger.warning("子进程超时: wmic OS get TotalVisibleMemorySize,FreePhysicalMemory", exc_info=True)
+            return 0.0
+        except OSError:
             return 0.0
         total_kb = 0
         free_kb = 0
@@ -1127,122 +1142,138 @@ class _BottomBar:
         with _try_acquire_output_lock(name="bottom_bar.force_redraw", timeout=1.0) as locked:
             if not locked:
                 return
-            text = self._last_text
-            total = self._bottom_lines
-            new_status = self._format_status()
-            old_bottom_lines = self._last_bottom_lines
-            scroll_end = height - total
-            delta = total - old_bottom_lines
-            old_scroll_end = (
-                (self._last_height if self._last_height > 0 else height) - old_bottom_lines
-            )
-            self._last_status = new_status
-            self._last_subagent_lines = list(self._subagent_lines)
-            out = sys.__stdout__
-            out.write(cursor_save())
-            out.write(reset_scroll_region())
-            self._last_bottom_lines = total
-            full_repaint = self._needs_full_repaint
-            self._needs_full_repaint = False
-
-            # SU 上滚
-            if delta > 0 and old_scroll_end > 0 and not full_repaint:
-                out.write(set_scroll_region(1, old_scroll_end))
-                out.write(cursor_goto(old_scroll_end, 1))
-                out.write(scroll_up(delta))
+            try:
+                text = self._last_text
+                total = self._bottom_lines
+                new_status = self._format_status()
+                old_bottom_lines = self._last_bottom_lines
+                scroll_end = height - total
+                delta = total - old_bottom_lines
+                old_scroll_end = (
+                    (self._last_height if self._last_height > 0 else height) - old_bottom_lines
+                )
+                self._last_status = new_status
+                self._last_subagent_lines = list(self._subagent_lines)
+                out = sys.__stdout__
+                out.write(cursor_save())
                 out.write(reset_scroll_region())
+                self._last_bottom_lines = total
+                full_repaint = self._needs_full_repaint
+                self._needs_full_repaint = False
 
-            # 终端过小
-            if scroll_end < 1:
-                for r in range(1, height + 1):
+                # SU 上滚
+                if delta > 0 and old_scroll_end > 0 and not full_repaint:
+                    out.write(set_scroll_region(1, old_scroll_end))
+                    out.write(cursor_goto(old_scroll_end, 1))
+                    out.write(scroll_up(delta))
+                    out.write(reset_scroll_region())
+
+                # 终端过小
+                if scroll_end < 1:
+                    for r in range(1, height + 1):
+                        out.write(f"{cursor_goto(r, 1)}\033[K")
+                    out.write(cursor_restore())
+                    out.write(cursor_goto(height, 1) + cursor_save())
+                    out.flush()
+                    self._cursor_tracker.set(height, 1)
+                    self._last_cursor_pos = self._input_cursor_pos
+                    self._last_height = height
+                    self._last_scroll_end = height
+                    if self._tracker is not None:
+                        self._tracker.set_scroll_end(height)
+                    return
+
+                # 清除旧区域
+                if full_repaint:
+                    clear_start = scroll_end + 1
+                else:
+                    clear_start = max(old_scroll_end, scroll_end) + 1
+                clear_end = height
+                clear_buf: list[str] = []
+                for r in range(clear_start, clear_end + 1):
+                    clear_buf.append(f"{cursor_goto(r, 1)}\033[K")
+                if not full_repaint and self._last_height > 0 and height < self._last_height:
+                    for r in range(max(scroll_end + 1, 1), min(old_scroll_end, height) + 1):
+                        clear_buf.append(f"{cursor_goto(r, 1)}\033[K")
+                elif not full_repaint and self._last_height > 0 and height > self._last_height:
+                    for r in range(old_scroll_end + 1, scroll_end + 1):
+                        clear_buf.append(f"{cursor_goto(r, 1)}\033[K")
+
+                r1 = height - total + 1
+                subagent_start = r1 + 1
+                r2 = subagent_start + len(self._subagent_lines)
+                tw = self._term_width()
+
+                # 分隔线
+                if _is_narrow():
+                    sep_len = min(tw - 2, 40)
+                    sep = f"{_COLOR_SEP}\u2501{_COLOR_RESET}" * sep_len
+                    clear_buf.append(f"{cursor_goto(r1, 1)}  {sep}")
+                else:
+                    sep_start = 45
+                    if self._animator.breath_frame > 0:
+                        sep_start = self._animator.sine_color(40, 45, 10)
+                    status_text = _build_status_text(
+                        self._status_active, self._main_phase, self._main_phase_start,
+                        self._tool_count, self._tool_phase_start,
+                    ) if self._status_active else ""
+                    if self._status_active and status_text:
+                        status_colored = f"{_COLOR_ACCENT}{status_text}{_COLOR_RESET}"
+                        remaining = max(1, tw - 2 - _visual_width(status_text) - 1)
+                        sep = _build_gradient(remaining, start_color=sep_start)
+                        clear_buf.append(f"{cursor_goto(r1, 1)}  {status_colored} {sep}")
+                    else:
+                        sep = _build_gradient(tw - 2, start_color=sep_start)
+                        clear_buf.append(f"{cursor_goto(r1, 1)}  {sep}")
+
+                # subagent 面板行（每行按终端宽度截断，防止折行破坏布局）
+                for i, line in enumerate(self._subagent_lines):
+                    sr = subagent_start + i
+                    line = _ansi_truncate(line, tw)
+                    clear_buf.append(f"{cursor_goto(sr, 1)}\033[K" + line)
+
+                # 状态行
+                clear_buf.append(f"{cursor_goto(r2, 1)}\033[K" + new_status)
+                out.write(''.join(clear_buf))
+
+                # 输入行
+                self._draw_input_lines(out, text, r2 + 1, tw)
+                input_rows = self._cached_input_rows
+
+                # 清除底部残留 + 设置 DECSTBM
+                for r in range(r2 + 1 + input_rows, height + 1):
                     out.write(f"{cursor_goto(r, 1)}\033[K")
+                self._last_scroll_end = scroll_end
+                if self._tracker is not None:
+                    self._tracker.set_scroll_end(scroll_end)
+                out.write(set_scroll_region(1, scroll_end))
+                if delta < 0 and old_scroll_end > 0:
+                    for r in range(old_scroll_end + 1, scroll_end + 1):
+                        out.write(f"{cursor_goto(r, 1)}\033[K")
                 out.write(cursor_restore())
-                out.write(cursor_goto(height, 1) + cursor_save())
+                out.write(cursor_goto(scroll_end, 1) + cursor_save())
                 out.flush()
-                self._cursor_tracker.set(height, 1)
                 self._last_cursor_pos = self._input_cursor_pos
                 self._last_height = height
-                self._last_scroll_end = height
-                if self._tracker is not None:
-                    self._tracker.set_scroll_end(height)
+            except (OSError, ValueError, AttributeError):
+                _logger.warning("force_redraw 写入失败", exc_info=True)
+                # 终端状态恢复（PTY 断开后 sgr_reset 也可能失败，用 try/except 包裹）
+                try:
+                    sgr_reset()
+                except Exception:
+                    pass
                 return
-
-            # 清除旧区域
-            if full_repaint:
-                clear_start = scroll_end + 1
-            else:
-                clear_start = max(old_scroll_end, scroll_end) + 1
-            clear_end = height
-            clear_buf: list[str] = []
-            for r in range(clear_start, clear_end + 1):
-                clear_buf.append(f"{cursor_goto(r, 1)}\033[K")
-            if not full_repaint and self._last_height > 0 and height < self._last_height:
-                for r in range(max(scroll_end + 1, 1), min(old_scroll_end, height) + 1):
-                    clear_buf.append(f"{cursor_goto(r, 1)}\033[K")
-            elif not full_repaint and self._last_height > 0 and height > self._last_height:
-                for r in range(old_scroll_end + 1, scroll_end + 1):
-                    clear_buf.append(f"{cursor_goto(r, 1)}\033[K")
-
-            r1 = height - total + 1
-            subagent_start = r1 + 1
-            r2 = subagent_start + len(self._subagent_lines)
-            tw = self._term_width()
-
-            # 分隔线
-            if _is_narrow():
-                sep_len = min(tw - 2, 40)
-                sep = f"{_COLOR_SEP}\u2501{_COLOR_RESET}" * sep_len
-                clear_buf.append(f"{cursor_goto(r1, 1)}  {sep}")
-            else:
-                sep_start = 45
-                if self._animator.breath_frame > 0:
-                    sep_start = self._animator.sine_color(40, 45, 10)
-                status_text = _build_status_text(
-                    self._status_active, self._main_phase, self._main_phase_start,
-                    self._tool_count, self._tool_phase_start,
-                ) if self._status_active else ""
-                if self._status_active and status_text:
-                    status_colored = f"{_COLOR_ACCENT}{status_text}{_COLOR_RESET}"
-                    remaining = max(1, tw - 2 - _visual_width(status_text) - 1)
-                    sep = _build_gradient(remaining, start_color=sep_start)
-                    clear_buf.append(f"{cursor_goto(r1, 1)}  {status_colored} {sep}")
-                else:
-                    sep = _build_gradient(tw - 2, start_color=sep_start)
-                    clear_buf.append(f"{cursor_goto(r1, 1)}  {sep}")
-
-            # subagent 面板行（每行按终端宽度截断，防止折行破坏布局）
-            for i, line in enumerate(self._subagent_lines):
-                sr = subagent_start + i
-                line = _ansi_truncate(line, tw)
-                clear_buf.append(f"{cursor_goto(sr, 1)}\033[K" + line)
-
-            # 状态行
-            clear_buf.append(f"{cursor_goto(r2, 1)}\033[K" + new_status)
-            out.write(''.join(clear_buf))
-
-            # 输入行
-            self._draw_input_lines_locked(out, text, r2 + 1, tw)
-            input_rows = self._cached_input_rows
-
-            # 清除底部残留 + 设置 DECSTBM
-            for r in range(r2 + 1 + input_rows, height + 1):
-                out.write(f"{cursor_goto(r, 1)}\033[K")
-            self._last_scroll_end = scroll_end
-            if self._tracker is not None:
-                self._tracker.set_scroll_end(scroll_end)
-            out.write(set_scroll_region(1, scroll_end))
-            if delta < 0 and old_scroll_end > 0:
-                for r in range(old_scroll_end + 1, scroll_end + 1):
-                    out.write(f"{cursor_goto(r, 1)}\033[K")
-            out.write(cursor_restore())
-            out.write(cursor_goto(scroll_end, 1) + cursor_save())
-            out.flush()
-            self._last_cursor_pos = self._input_cursor_pos
-            self._last_height = height
 
     # ── 输入行绘制 ────────────────────────────────
 
-    def _draw_input_lines_locked(self, out, text: str, r_start: int, term_width: int) -> None:
+    def _draw_input_lines(self, out, text: str, r_start: int, term_width: int) -> None:
+        """绘制输入行（含补全弹窗、CPU/MEM 行、输入文本行、时间戳行）。
+
+        调用时需确保 render_lock 已被持有（由 ``force_redraw`` 中的
+        ``_try_acquire_output_lock`` 保证）。此方法名中的 ``_locked``
+        语义已移除——实际锁由调用方通过 ``_try_acquire_output_lock``
+        控制，本方法不自行获取或释放任何锁。
+        """
         max_input = max(1, term_width - 4)
         expanded = _expand_tabs(text)
         wrapped = _wrap_by_width(expanded, max_input)
@@ -1351,7 +1382,9 @@ class _BottomBar:
         if not self._completion.is_visible or not self._active:
             return
         # ★ 保存最后选中的索引（供 Enter 后读取，防止竞态）
-        self._completion._last_idx_before_hide = self._completion._idx
+        # 使用局部变量确保读取原子性，防止并发线程中 _idx 被修改
+        saved_idx = self._completion._idx
+        self._completion._last_idx_before_hide = saved_idx
         self._completion._popup_height = 0
         self._completion._visible = False
         self._completion._title = "补全"

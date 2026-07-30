@@ -62,6 +62,57 @@ class TestTuiEngineCommandQueue:
         engine.set_panel_refresh_callback(cb)
         assert engine._panel_refresh_cb is cb
 
+    def test_duplicate_start_race_prevention(self):
+        """验证重复调用 start() 时仅第一次有效（原子性检查）。"""
+        import threading
+        from unittest.mock import MagicMock
+        from src.tui._renderer import TuiEngine
+
+        renderer = MagicMock()
+        bottom_bar = MagicMock()
+        engine = TuiEngine(renderer, bottom_bar)
+
+        # 首次 start
+        assert engine._render_thread is None
+        engine.start()
+        assert engine._render_thread is not None
+        assert engine._render_thread.is_alive()
+        original_thread = engine._render_thread
+
+        # 第二次 start（重复调用）— 应被原子性检查拦截
+        engine.start()
+        assert engine._render_thread is original_thread, "重复 start 不应创建新线程"
+
+        # 第三次 start（再次确认）
+        engine.start()
+        assert engine._render_thread is original_thread, "多次重复 start 不应创建新线程"
+
+        # 清理
+        engine.stop()
+
+    def test_start_after_stop_works(self):
+        """验证 stop() 后重新 start() 正常创建新线程。"""
+        from unittest.mock import MagicMock
+        from src.tui._renderer import TuiEngine
+
+        renderer = MagicMock()
+        bottom_bar = MagicMock()
+        engine = TuiEngine(renderer, bottom_bar)
+
+        # start → stop → start
+        engine.start()
+        engine.stop()
+        assert engine._render_running is False
+        assert engine._render_thread is not None
+        old_thread = engine._render_thread
+
+        engine.start()
+        assert engine._render_running is True
+        assert engine._render_thread is not old_thread, "重新 start 应创建新线程"
+
+        # 清理
+        engine.stop()
+
     def test_ensure_cursor_upper(self):
         from src.tui._renderer import TuiEngine
         renderer = MagicMock()
