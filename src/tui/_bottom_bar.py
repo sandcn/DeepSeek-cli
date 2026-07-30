@@ -22,6 +22,22 @@ from typing import TYPE_CHECKING, Any, Callable
 
 from src.tui._locks import _try_acquire_output_lock
 from src.tui._screen import (
+    _COLOR_ACCENT,
+    _COLOR_COMPLETE_CMD_PREFIX,
+    _COLOR_COMPLETE_DIR,
+    _COLOR_COMPLETE_MATCH,
+    _COLOR_COMPLETE_TITLE,
+    _COLOR_DEEP_CYAN,
+    _COLOR_DIM,
+    _COLOR_RESET,
+    _COLOR_SEP,
+    _COLOR_SPEED,
+    _COLOR_TIME,
+    _COLOR_TOKEN,
+    _COLOR_TOOL_FAIL,
+    _COLOR_TOOL_OK,
+    _COLOR_SELECT_BG,
+    _COLOR_SELECT_FG,
     _get_terminal_size,
     clear_line,
     cursor_goto,
@@ -61,25 +77,8 @@ _TAB_WIDTH = 4
 
 
 # ═══════════════════════════════════════════════════════════
-# ANSI 颜色常量（256 色体系，内联，零第三方依赖）
+# ANSI 颜色常量 — 从 _screen.py 导入
 # ═══════════════════════════════════════════════════════════
-
-_COLOR_ACCENT = "\033[38;5;45m"
-_COLOR_DEEP_CYAN = "\033[38;5;32m"
-_COLOR_DIM = "\033[38;5;242m"
-_COLOR_RESET = "\033[0m"
-_COLOR_SEP = "\033[38;5;237m"
-_COLOR_TIME = "\033[38;5;110m"
-_COLOR_TOKEN = "\033[38;5;68m"
-_COLOR_SPEED = "\033[38;5;214m"
-_COLOR_TOOL_OK = "\033[38;5;41m"
-_COLOR_TOOL_FAIL = "\033[38;5;196m"
-_COLOR_SELECT_BG = "\033[48;5;236m"
-_COLOR_SELECT_FG = "\033[38;5;15m"
-_COLOR_COMPLETE_TITLE = "\033[1;38;5;45m"
-_COLOR_COMPLETE_CMD_PREFIX = "\033[1;38;5;45m"
-_COLOR_COMPLETE_DIR = "\033[38;5;110m"
-_COLOR_COMPLETE_MATCH = "\033[38;5;221m"
 
 _PLACEHOLDER_TEXT = "输入消息 · /help 查看命令 · Ctrl+N 切换模型 · Tab 补全"
 _PLACEHOLDER_COMPACT = "/help · Ctrl+N · Tab"
@@ -807,6 +806,7 @@ class _BottomBar:
         self._tool_fail_count: int = 0
         self._tool_total: int = 0
         self._subagent_lines: list[str] = []
+        self._subagent_lines_lock = threading.Lock()
         self._last_subagent_lines: list[str] = []
         self._main_phase: str = ""
         self._main_phase_start: float = 0.0
@@ -1054,7 +1054,8 @@ class _BottomBar:
     # ── 子Agent面板 ───────────────────────────────
 
     def set_subagent_frame(self, lines: list[str]) -> None:
-        self._subagent_lines = list(lines)
+        with self._subagent_lines_lock:
+            self._subagent_lines = list(lines)
 
     # ── 生命周期 ──────────────────────────────────
 
@@ -1165,7 +1166,10 @@ class _BottomBar:
                 return
             try:
                 text = self._last_text
-                total = self._bottom_lines
+                # 锁内复制 _subagent_lines，确保线程安全
+                with self._subagent_lines_lock:
+                    subagent_lines = list(self._subagent_lines)
+                total = 2 + len(subagent_lines) + self._compute_input_rows()
                 new_status = self._format_status()
                 old_bottom_lines = self._last_bottom_lines
                 scroll_end = height - total
@@ -1174,7 +1178,7 @@ class _BottomBar:
                     (self._last_height if self._last_height > 0 else height) - old_bottom_lines
                 )
                 self._last_status = new_status
-                self._last_subagent_lines = list(self._subagent_lines)
+                self._last_subagent_lines = list(subagent_lines)
                 out = sys.__stdout__
                 out.write(cursor_save())
                 out.write(reset_scroll_region())
@@ -1227,7 +1231,7 @@ class _BottomBar:
 
                 r1 = height - total + 1
                 subagent_start = r1 + 1
-                r2 = subagent_start + len(self._subagent_lines)
+                r2 = subagent_start + len(subagent_lines)
                 tw = self._term_width()
 
                 # 分隔线
@@ -1253,7 +1257,7 @@ class _BottomBar:
                         clear_buf.append(f"{cursor_goto(r1, 1)}  {sep}")
 
                 # subagent 面板行（每行按终端宽度截断，防止折行破坏布局）
-                for i, line in enumerate(self._subagent_lines):
+                for i, line in enumerate(subagent_lines):
                     sr = subagent_start + i
                     line = _ansi_truncate(line, tw)
                     clear_buf.append(f"{cursor_goto(sr, 1)}\033[K" + line)

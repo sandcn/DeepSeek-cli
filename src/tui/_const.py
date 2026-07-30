@@ -25,7 +25,7 @@ ANSI_EMERGENCY_CURSOR_BOTTOM: str = "\033[9999;1H"
 # ═══════════════════════════════════════════════════════════
 
 class FrameworkCommand(IntEnum):
-    """框架层通用渲染命令 — 与聊天域无关，可被任何 TUI 应用复用。"""
+    """框架层通用渲染命令 — 已合并到 RenderCommand（保留仅为向后兼容）。"""
     NOTIFICATION = 11
     WRITE_LINE = 12
     ERROR = 16
@@ -38,7 +38,7 @@ class FrameworkCommand(IntEnum):
 # ═══════════════════════════════════════════════════════════
 
 class ChatCommand(IntEnum):
-    """聊天域渲染命令 — DeepSeek-CLI Chat 专属。"""
+    """聊天域渲染命令 — 已合并到 RenderCommand（保留仅为向后兼容）。"""
     REASONING = 0
     CONTENT = 1
     PHASE_DONE = 2
@@ -58,7 +58,7 @@ class ChatCommand(IntEnum):
 # ═══════════════════════════════════════════════════════════
 
 class RenderCommand(IntEnum):
-    """渲染命令类型，替代魔数整数。值完全不变（20 个枚举值）。"""
+    """渲染命令类型，替代魔数整数。合并 FrameworkCommand（框架命令）与 ChatCommand（聊天命令），值完全不变（20 个枚举值）。"""
     REASONING = 0       # (0, text: str)
     CONTENT = 1         # (1, text: str)
     PHASE_DONE = 2      # (2, phase: str)

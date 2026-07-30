@@ -327,6 +327,10 @@ class Input:
         self._interrupted = threading.Event()
         self._suppress_enter: bool = False
 
+        # ── 粘贴退避优化 ──
+        self._paste_skip_counter: int = 0
+        self._paste_skip_threshold: int = 10
+
         # ── 故障检测 ──
         self._eof_count = 0
         self._select_error_count = 0
@@ -1037,13 +1041,25 @@ class Input:
 
     def try_read_paste(self, fd: int, first_chars: str) -> str:
         """检测并读取粘贴内容（退避 select 检测突发字符流）。"""
-        for delay in (0.001, 0.002, 0.003):
+        # 快速路径：若近期均非粘贴，跳过退避检测
+        if self._paste_skip_counter >= self._paste_skip_threshold:
             try:
-                has_more, _, _ = select.select([fd], [], [], delay)
+                has_more, _, _ = select.select([fd], [], [], 0.0)
             except (ValueError, OSError, TypeError, AttributeError):
                 return first_chars
             if not has_more:
                 return first_chars
+            # 有数据，重置计数器并进入粘贴检测
+            self._paste_skip_counter = 0
+        else:
+            for delay in (0.0001, 0.002, 0.003):
+                try:
+                    has_more, _, _ = select.select([fd], [], [], delay)
+                except (ValueError, OSError, TypeError, AttributeError):
+                    return first_chars
+                if not has_more:
+                    self._paste_skip_counter += 1
+                    return first_chars
         extra = b""
         try:
             while True:

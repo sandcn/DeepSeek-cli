@@ -126,6 +126,7 @@ class TuiEngine:
         self._last_bottom_redraw: float = 0.0
         self._recover_attempts: int = 0
         self._recovering_event: threading.Event = threading.Event()
+        self._render_version: int = 0
 
     def push_cmd(self, cmd: tuple) -> None:
         try:
@@ -141,6 +142,12 @@ class TuiEngine:
             )
             if self._consecutive_full >= self._config.consecutive_full_threshold:
                 _logger.error("渲染输出管线持续拥堵（%d 次连续满队列）", self._consecutive_full)
+                if self._consecutive_full % self._config.consecutive_full_threshold == 0:
+                    _emergency_write(
+                        f"{ANSI_EMERGENCY_RED}[ChatUI] 渲染队列已满，已丢弃 "
+                        f"{self._cmd_queue_dropped} 条命令{ANSI_EMERGENCY_RESET}\n",
+                        stream="stderr",
+                    )
 
     @property
     def render_crashed(self) -> bool:
@@ -170,12 +177,20 @@ class TuiEngine:
     def stop(self) -> None:
         self._render_running = False
         if self._render_thread is not None:
-            self._render_thread.join(timeout=2.0)
-            if self._render_thread.is_alive():
-                for _ in range(3):
-                    self._render_thread.join(timeout=0.5)
-                    if not self._render_thread.is_alive():
-                        break
+            max_retries = 2
+            for attempt in range(max_retries):
+                thread = self._render_thread
+                version = self._render_version
+                if thread is None:
+                    break
+                thread.join(timeout=2.0)
+                if not thread.is_alive():
+                    break
+                # 检查是否有新线程（崩溃恢复后）替代了旧线程
+                if self._render_version != version:
+                    self._render_running = False
+                    continue  # 重新尝试 join 新线程
+                break
         self._drain_queue_safe()
 
     def flush(self, timeout: float | None = 5.0) -> None:
@@ -329,6 +344,7 @@ class TuiEngine:
                          self._config.max_recover_attempts)
             time.sleep(self._config.recover_delay)
             self._drain_queue_safe()
+            self._render_version += 1
             self._recovering_event.set()
             self._render_thread = threading.Thread(target=self._render, daemon=True)
             self._render_thread.start()
@@ -341,6 +357,7 @@ class TuiEngine:
             return False
 
     def _render(self) -> None:
+        entry_version = self._render_version
         try:
             while self._render_running:
                 try:
@@ -356,9 +373,8 @@ class TuiEngine:
                     else:
                         break
         finally:
-            if self._recovering_event.is_set():
-                _logger.debug("render 线程恢复中，跳过排空")
-                self._recovering_event.clear()
+            if self._render_version != entry_version:
+                _logger.debug("render 线程版本已更新（新线程已启动），跳过排空")
                 return
             dropped = self._drain_queue_safe()
             _logger.debug("render 线程 finally 排空 %d 条命令", dropped)
@@ -532,36 +548,13 @@ class TuiRenderer:
         if handler is None:
             _logger.error("未知渲染命令: %s", _cmd_name(cid))
             return
-        # 按命令 ID 提取参数
-        if cid == RenderCommand.REASONING:
-            handler(cmd[1])
-        elif cid == RenderCommand.CONTENT:
-            handler(cmd[1])
-        elif cid == RenderCommand.PHASE_DONE:
-            handler(cmd[1])
-        elif cid == RenderCommand.TOOL_OUTPUT:
-            handler(cmd[1])
-        elif cid == RenderCommand.TOOL_SUMMARY:
-            handler(cmd[1], cmd[2])
-        elif cid == RenderCommand.USER_MSG:
-            handler(cmd[1])
-        elif cid == RenderCommand.PARSE_INFO:
-            handler(cmd[1], cmd[2], cmd[3])
-        elif cid == RenderCommand.NOTIFICATION:
-            handler(cmd[1])
-        elif cid == RenderCommand.WRITE_LINE:
-            handler(cmd[1])
-        elif cid == RenderCommand.DISPLAY_MSGS:
-            handler(cmd[1], cmd[2])
-        elif cid == RenderCommand.ERROR:
-            handler(cmd[1])
-        elif cid == RenderCommand.SUBAGENT_FRAME:
-            handler(cmd[1])
-        elif cid == RenderCommand.MAIN_PHASE:
-            handler(cmd[1])
-        else:
-            # 无参命令
-            handler()
+        try:
+            handler(*cmd[1:])
+        except TypeError:
+            _logger.error(
+                "渲染命令 %s 参数错误: 期望签名与传入参数不匹配",
+                _cmd_name(cid),
+            )
 
     # ═══════════════════════════════════════════════════════
     # 框架级命令

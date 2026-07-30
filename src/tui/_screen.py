@@ -16,6 +16,7 @@ import signal
 import struct
 import sys
 import termios
+import time
 from typing import Callable
 
 
@@ -447,6 +448,28 @@ def set_window_title(title: str) -> None:
 
 
 # ═══════════════════════════════════════════════════════════
+# ANSI 颜色常量（256 色体系）
+# ═══════════════════════════════════════════════════════════
+
+_COLOR_ACCENT = "\033[38;5;45m"
+_COLOR_DEEP_CYAN = "\033[38;5;32m"
+_COLOR_DIM = "\033[38;5;242m"
+_COLOR_RESET = "\033[0m"
+_COLOR_SEP = "\033[38;5;237m"
+_COLOR_TIME = "\033[38;5;110m"
+_COLOR_TOKEN = "\033[38;5;68m"
+_COLOR_SPEED = "\033[38;5;214m"
+_COLOR_TOOL_OK = "\033[38;5;41m"
+_COLOR_TOOL_FAIL = "\033[38;5;196m"
+_COLOR_SELECT_BG = "\033[48;5;236m"
+_COLOR_SELECT_FG = "\033[38;5;15m"
+_COLOR_COMPLETE_TITLE = "\033[1;38;5;45m"
+_COLOR_COMPLETE_CMD_PREFIX = "\033[1;38;5;45m"
+_COLOR_COMPLETE_DIR = "\033[38;5;110m"
+_COLOR_COMPLETE_MATCH = "\033[38;5;221m"
+
+
+# ═══════════════════════════════════════════════════════════
 # 便捷组合函数
 # ═══════════════════════════════════════════════════════════
 
@@ -554,7 +577,6 @@ class TerminalWidthCache:
 
     def _fetch(self) -> None:
         """从底层获取终端尺寸并更新缓存。"""
-        import time
         try:
             self._width, self._height = _get_terminal_size()
         except Exception:
@@ -565,12 +587,10 @@ class TerminalWidthCache:
 
     def _is_expired(self, last_fetch: float) -> bool:
         """检查缓存是否过期（超过 TTL）。"""
-        import time
         return (time.monotonic() - last_fetch) > self._ttl
 
     def get_width(self) -> int:
         """获取终端宽度（TTL 缓存）。"""
-        import time
         if self._is_expired(self._last_width_fetch):
             try:
                 w, h = _get_terminal_size()
@@ -585,7 +605,6 @@ class TerminalWidthCache:
 
     def get_height(self) -> int:
         """获取终端高度（TTL 缓存）。"""
-        import time
         if self._is_expired(self._last_height_fetch):
             try:
                 w, h = _get_terminal_size()
@@ -620,7 +639,6 @@ class TerminalWidthCache:
         Returns:
             当前终端高度。
         """
-        import time
         try:
             w, h = _get_terminal_size()
             self._width = w
@@ -657,7 +675,7 @@ def narrow_sep_width(width: int | None = None, threshold: int = 40) -> int:
         分隔线宽度。
     """
     if width is None:
-        width, _ = _get_terminal_size()
+        width = TerminalWidthCache.get_default().get_width()
     if width < threshold:
         return max(10, width - 2)
     return width

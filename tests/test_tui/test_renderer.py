@@ -433,39 +433,43 @@ class TestTuiEngineCrashRecovery:
         # 恢复事件应被 set（因为 render_running=True 且 recover_attempts <= max）
         assert engine._recovering_event.is_set()
 
-    def test_finally_checks_event_instead_of_bool(self, engine):
-        """验证 finally 块使用 _recovering_event.is_set() 而非旧 bool。"""
-        # 直接测试 _render() 的 finally 逻辑：当 _recovering_event 已 set 时，
-        # _drain_queue_safe 不应被调用（恢复路径跳过排空）
+    def test_finally_checks_version_instead_of_event(self, engine):
+        """验证 finally 块使用 _render_version != entry_version 而非旧 _recovering_event。"""
         engine._drain_queue_safe = MagicMock(return_value=0)
         engine._render_running = False  # 让 while 循环退出
 
-        # 设置恢复事件 simulate 正在恢复中
-        engine._recovering_event.set()
+        # 手动执行 _render：版本号未变（正常退出），应调用 _drain_queue_safe
+        engine._render()
+        engine._drain_queue_safe.assert_called_once()
 
-        # 手动执行 _render（会进入 finally 块）
+    def test_finally_skips_drain_on_version_change(self, engine):
+        """验证版本号变化时 finally 块跳过排空（恢复路径）。"""
+        engine._drain_queue_safe = MagicMock(return_value=0)
+        engine._render_running = True  # 让 while 循环至少进入一次
+
+        # 第一次 drain 时：递增版本号模拟崩溃恢复 + 设置 _render_running=False 退出循环
+        def _drain_and_bump():
+            engine._render_version += 1  # 模拟另一个线程启动了新版本
+            engine._render_running = False  # 让 while 循环在下一次检查时退出
+            return False
+        engine._drain_queue = _drain_and_bump
+
         engine._render()
 
-        # _drain_queue_safe 不应被调用（恢复路径跳过）
+        # 版本号已变（entry_version != self._render_version），应跳过排空
         engine._drain_queue_safe.assert_not_called()
 
-        # 恢复事件应被 clear（finally 中的清理）
-        assert not engine._recovering_event.is_set()
-
-    def test_recovering_event_cleared_after_recovery(self, engine):
-        """验证恢复完成后 _recovering_event 被 clear。"""
-        import threading
-
+    def test_recovering_event_still_set_on_crash(self, engine):
+        """验证 _handle_render_crash 仍会 set _recovering_event。"""
         engine._drain_queue_safe = MagicMock(return_value=0)
-        engine._render_running = False  # 让 while 循环退出
-        engine._recovering_event.set()
+        engine._render_running = True
+        engine._recover_attempts = 0
 
-        # 模拟正常恢复后的 finally 行为
-        if engine._recovering_event.is_set():
-            engine._recovering_event.clear()
-            # 不调用 _drain_queue_safe 直接 return
+        exc = RuntimeError("模拟崩溃")
+        result = engine._handle_render_crash(exc)
 
-        assert not engine._recovering_event.is_set()
+        # _recovering_event 仍应被 set（供其他组件检查恢复状态）
+        assert engine._recovering_event.is_set()
 
     def test_no_recovering_attribute_left(self, engine):
         """验证旧的 _recovering bool 属性已不存在（替换为 Event）。"""
