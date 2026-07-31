@@ -408,16 +408,16 @@ class TestLoadHistory:
     def test_load_history_empty_file(self):
         """空历史文件不报错，保留空历史。"""
         inp = _make_input(Path("/tmp/test_history"))
-        with patch("src.tui.input._read_history_file", return_value=("", False)):
+        with patch("src.tui._input._read_history_file", return_value=("", False)):
             inp.load_history()
         assert inp._history == []
 
     def test_load_history_from_mock_file(self):
         """load_history 从 mock 文件加载，正确反转顺序。"""
         inp = _make_input(Path("/tmp/test_history"))
-        with patch("src.tui.input._read_history_file",
+        with patch("src.tui._input._read_history_file",
                    return_value=("line1\nline2\nline3\n", True)):
-            with patch("src.tui.input._compact_history_file"):
+            with patch("src.tui._input._compact_history_file"):
                 inp.load_history()
         # 反转: 最近的在 index=0
         assert inp._history[0] == "line3"
@@ -427,9 +427,9 @@ class TestLoadHistory:
         """load_history 合并到已有内存历史。"""
         inp = _make_input(Path("/tmp/test_history"))
         inp._history = ["mem_entry"]
-        with patch("src.tui.input._read_history_file",
+        with patch("src.tui._input._read_history_file",
                    return_value=("file_entry\n", True)):
-            with patch("src.tui.input._compact_history_file"):
+            with patch("src.tui._input._compact_history_file"):
                 inp.load_history()
         assert "mem_entry" in inp._history
         assert "file_entry" in inp._history

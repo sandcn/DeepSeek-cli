@@ -315,11 +315,9 @@ class TestEventDispatcher:
         from src.tui.events.event_types import ToolStartedEvent
         from src.tui._const import RenderCommand
         push_cmd = MagicMock()
-        # 需要配置 config 使 source 过滤通过
-        from src.tui.consumer.chat_config import ChatConfig
-        cfg = ChatConfig.defaults()
-        dispatcher = EventDispatcher(push_cmd, cfg)
-        event = ToolStartedEvent(source=cfg.main_source or "main")
+        # 使用默认 filter_fn：source == "agent" 通过
+        dispatcher = EventDispatcher(push_cmd)
+        event = ToolStartedEvent(source="agent")
         dispatcher._on_tool_started(event)
         push_cmd.assert_called_once_with((RenderCommand.TOOL_COUNT_INC,))
 
@@ -328,10 +326,8 @@ class TestEventDispatcher:
         from src.tui.events.event_types import ToolDoneEvent
         from src.tui._const import RenderCommand
         push_cmd = MagicMock()
-        from src.tui.consumer.chat_config import ChatConfig
-        cfg = ChatConfig.defaults()
-        dispatcher = EventDispatcher(push_cmd, cfg)
-        event = ToolDoneEvent(source=cfg.main_source or "main", success=True)
+        dispatcher = EventDispatcher(push_cmd)
+        event = ToolDoneEvent(source="agent", success=True)
         dispatcher._on_tool_done(event)
         push_cmd.assert_called_once_with((RenderCommand.TOOL_COUNT_DEC,))
 
@@ -340,10 +336,8 @@ class TestEventDispatcher:
         from src.tui.events.event_types import ToolDoneEvent
         from src.tui._const import RenderCommand
         push_cmd = MagicMock()
-        from src.tui.consumer.chat_config import ChatConfig
-        cfg = ChatConfig.defaults()
-        dispatcher = EventDispatcher(push_cmd, cfg)
-        event = ToolDoneEvent(source=cfg.main_source or "main", success=False)
+        dispatcher = EventDispatcher(push_cmd)
+        event = ToolDoneEvent(source="agent", success=False)
         dispatcher._on_tool_done(event)
         assert push_cmd.call_count == 2
         push_cmd.assert_any_call((RenderCommand.TOOL_FAIL_INC,))
@@ -354,10 +348,8 @@ class TestEventDispatcher:
         from src.tui.events.event_types import ParseInfoEvent
         from src.tui._const import RenderCommand
         push_cmd = MagicMock()
-        from src.tui.consumer.chat_config import ChatConfig
-        cfg = ChatConfig.defaults()
-        dispatcher = EventDispatcher(push_cmd, cfg)
-        event = ParseInfoEvent(source=cfg.main_source or "main", tool_names="test", tokens=100, elapsed=0.5)
+        dispatcher = EventDispatcher(push_cmd)
+        event = ParseInfoEvent(source="agent", tool_names="test", tokens=100, elapsed=0.5)
         dispatcher._on_parse_info(event)
         push_cmd.assert_called_once_with((RenderCommand.PARSE_INFO, "test", 100, 0.5))
 
@@ -379,7 +371,7 @@ class TestEventDispatcher:
         push_cmd = MagicMock()
         from src.tui.consumer.chat_config import ChatConfig
         cfg = ChatConfig.defaults()
-        dispatcher = EventDispatcher(push_cmd, cfg)
+        dispatcher = EventDispatcher(push_cmd, main_label=cfg.main_label)
         event = ModelPhaseEvent(label=cfg.main_label or "main", phase="thinking", info="")
         dispatcher._on_model_phase(event)
         push_cmd.assert_called_once_with((RenderCommand.MAIN_PHASE, "thinking"))
@@ -391,7 +383,7 @@ class TestEventDispatcher:
         push_cmd = MagicMock()
         from src.tui.consumer.chat_config import ChatConfig
         cfg = ChatConfig.defaults()
-        dispatcher = EventDispatcher(push_cmd, cfg)
+        dispatcher = EventDispatcher(push_cmd, main_label=cfg.main_label)
         event = ModelPhaseEvent(label=cfg.main_label or "main", phase="error", info="something went wrong")
         dispatcher._on_model_phase(event)
         push_cmd.assert_called_once()

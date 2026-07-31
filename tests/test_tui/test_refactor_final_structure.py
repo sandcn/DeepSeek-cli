@@ -95,18 +95,25 @@ class TestStep9FinalStructure:
 
     _NEW_MODULES = [
         "_config.py", "_const.py", "_screen.py", "_buffer.py",
-        "_input.py", "_bottom_bar.py", "_renderer.py", "_consumer.py",
+        "_input.py", "_bottom_bar", "_renderer", "_consumer.py",
         "_completion.py", "_completion_engine.py", "_locks.py",
+        "_animator.py",
         "_cursor_tracker.py", "_stdout_tracker.py",
         "_diff_renderer.py", "_base_display.py", "_snapshot.py",
+        "_subagent_panel.py", "_param_formatter.py", "_tool_icons.py",
         "__init__.py",
     ]
+
+    @staticmethod
+    def _path_exists(name: str) -> bool:
+        p = _tui_path() / name
+        return p.exists()
 
     def test_new_modules_exist(self) -> None:
         """验证 TUI 根层级新模块全部存在。"""
         missing = []
         for fname in self._NEW_MODULES:
-            if not (_tui_path() / fname).exists():
+            if not self._path_exists(fname):
                 missing.append(fname)
         assert not missing, f"缺少新模块: {missing}"
 

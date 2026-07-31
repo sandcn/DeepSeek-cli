@@ -24,7 +24,7 @@ from __future__ import annotations
 import logging
 import threading
 import time
-from typing import Any, Dict, List, Tuple
+from typing import Any, Callable, Dict, List, Tuple
 
 from ._const import RenderCommand
 
@@ -166,7 +166,8 @@ class SubAgentPanelController:
     # 帧渲染节流：100ms 间隔（10Hz）
     _EMIT_INTERVAL: float = 0.1
 
-    def __init__(self, max_history: int = 3):
+    def __init__(self, max_history: int = 3,
+                 push_cmd: Callable[[tuple], None] | None = None):
         self._agents: Dict[str, _AgentSlot] = {}
         self._order: List[str] = []
         # RLock: 允许 _on_tool_parsing 等事件处理器在持有锁时调用 _push_frame(_render_frame()) 而不死锁；_render_frame() 内部也获取此锁
@@ -176,6 +177,7 @@ class SubAgentPanelController:
         self._active: bool = False
         self._cb_registered: bool = False
         self._chat_ui: Any = None
+        self._push_cmd_cb: Callable[[tuple], None] | None = push_cmd
         self.max_history: int = max_history
 
     @classmethod
@@ -429,6 +431,10 @@ class SubAgentPanelController:
     # ── 面板刷新回调 ────────────────────────────────────
 
     def _register_panel_refresh(self) -> None:
+        if self._push_cmd_cb is not None:
+            # 已注入 push_cmd，无需通过 get_active_chat_ui 获取 ChatUIConsumer
+            # panel_refresh 回调由 engine 的 panel_refresh_cb 驱动
+            return
         from ._consumer import get_active_chat_ui
         chat_ui = get_active_chat_ui()
         if chat_ui is not None:
@@ -638,6 +644,14 @@ class SubAgentPanelController:
     # ── 帧推送 ──────────────────────────────────────────
 
     def _push_frame(self, lines: List[str]) -> None:
+        # 优先使用注入的 push_cmd 回调，避免 get_active_chat_ui() 循环依赖
+        if self._push_cmd_cb is not None:
+            try:
+                self._push_cmd_cb((RenderCommand.SUBAGENT_FRAME, lines))
+                return
+            except Exception:
+                pass
+        # 降级：通过 get_active_chat_ui() 获取
         chat_ui = self._chat_ui
         if chat_ui is None:
             from ._consumer import get_active_chat_ui

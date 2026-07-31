@@ -254,17 +254,17 @@ class TestSetSubagentFrame:
 
 
 class TestSimpleAnimator:
-    """测试内联动画时钟。"""
+    """测试动画时钟（原 _SimpleAnimator，现 AnimatorContext）。"""
 
     def test_singleton(self):
-        from src.tui._bottom_bar import _SimpleAnimator
-        a1 = _SimpleAnimator.get_default()
-        a2 = _SimpleAnimator.get_default()
+        from src.tui._animator import AnimatorContext
+        a1 = AnimatorContext.get_default()
+        a2 = AnimatorContext.get_default()
         assert a1 is a2
 
     def test_tick(self):
-        from src.tui._bottom_bar import _SimpleAnimator
-        a = _SimpleAnimator()
+        from src.tui._animator import AnimatorContext
+        a = AnimatorContext()
         assert a.frame == 0
         a.tick()
         assert a.frame == 1
@@ -272,9 +272,9 @@ class TestSimpleAnimator:
         assert a.frame == 2
 
     def test_sine_color(self):
-        from src.tui._bottom_bar import _SimpleAnimator
-        a = _SimpleAnimator()
-        # breath_frame=0 → sin(0)=0 → ratio=0.5 → lo + (hi-lo)*0.5
+        from src.tui._animator import AnimatorContext
+        a = AnimatorContext()
+        # frame=0 → sin(0)=0 → ratio=0.5 → lo + (hi-lo)*0.5
         color = a.sine_color(40, 50, 12)
         assert 40 <= color <= 50
 
@@ -414,12 +414,13 @@ class TestForceRedrawFullRepaintClear:
         """执行 force_redraw，返回 mock_stdout。"""
         mock_stdout = MagicMock()
 
-        with patch("src.tui._bottom_bar._get_terminal_size", return_value=mock_size):
-            with patch("src.tui._bottom_bar.sys.__stdout__", mock_stdout):
-                with patch("src.tui._bottom_bar._try_acquire_output_lock") as mock_lock:
-                    mock_lock.return_value.__enter__.return_value = True
-                    with patch("src.tui._bottom_bar.sgr_reset"):
-                        bb.force_redraw()
+        with patch("src.tui._bottom_bar._bar._get_terminal_size", return_value=mock_size):
+            with patch("src.tui._bottom_bar._layout._get_terminal_size", return_value=mock_size):
+                with patch("src.tui._bottom_bar._render.sys.__stdout__", mock_stdout):
+                    with patch("src.tui._bottom_bar._render._try_acquire_output_lock") as mock_lock:
+                        mock_lock.return_value.__enter__.return_value = True
+                        with patch("src.tui._bottom_bar._render.sgr_reset"):
+                            bb.force_redraw()
 
         return mock_stdout
 
@@ -559,10 +560,10 @@ class TestForceRedrawExceptionHandling:
         mock_stdout.write.side_effect = OSError("Broken pipe")
 
         from src.tui._locks import _try_acquire_output_lock
-        with patch("src.tui._bottom_bar.sys.__stdout__", mock_stdout):
-            with patch("src.tui._bottom_bar._try_acquire_output_lock") as mock_lock:
+        with patch("src.tui._bottom_bar._render.sys.__stdout__", mock_stdout):
+            with patch("src.tui._bottom_bar._render._try_acquire_output_lock") as mock_lock:
                 mock_lock.return_value.__enter__.return_value = True
-                with patch("src.tui._bottom_bar.sgr_reset") as mock_reset:
+                with patch("src.tui._bottom_bar._render.sgr_reset") as mock_reset:
                     bottom_bar.force_redraw()
 
         # 应记录警告日志
@@ -577,12 +578,13 @@ class TestForceRedrawExceptionHandling:
         mock_stdout = MagicMock()
         mock_stdout.write.side_effect = ValueError("I/O operation on closed file")
 
-        with patch("src.tui._bottom_bar.sys.__stdout__", mock_stdout):
-            with patch("src.tui._bottom_bar._try_acquire_output_lock") as mock_lock:
+        with patch("src.tui._bottom_bar._render.sys.__stdout__", mock_stdout):
+            with patch("src.tui._bottom_bar._render._try_acquire_output_lock") as mock_lock:
                 mock_lock.return_value.__enter__.return_value = True
-                with patch("src.tui._bottom_bar.sgr_reset") as mock_reset:
+                with patch("src.tui._bottom_bar._render.sgr_reset") as mock_reset:
                     bottom_bar.force_redraw()
 
+        # 应记录警告日志
         warning_records = [r for r in caplog.records if r.levelno == logging.WARNING]
         assert any("force_redraw" in r.message for r in warning_records)
 
@@ -591,10 +593,10 @@ class TestForceRedrawExceptionHandling:
         mock_stdout = MagicMock()
         mock_stdout.write.side_effect = OSError("Broken pipe")
 
-        with patch("src.tui._bottom_bar.sys.__stdout__", mock_stdout):
-            with patch("src.tui._bottom_bar._try_acquire_output_lock") as mock_lock:
+        with patch("src.tui._bottom_bar._render.sys.__stdout__", mock_stdout):
+            with patch("src.tui._bottom_bar._render._try_acquire_output_lock") as mock_lock:
                 mock_lock.return_value.__enter__.return_value = True
-                with patch("src.tui._bottom_bar.sgr_reset") as mock_reset:
+                with patch("src.tui._bottom_bar._render.sgr_reset") as mock_reset:
                     bottom_bar.force_redraw()
 
         mock_reset.assert_called_once()
@@ -604,10 +606,10 @@ class TestForceRedrawExceptionHandling:
         mock_stdout = MagicMock()
         mock_stdout.write.side_effect = AttributeError("'NoneType' object has no attribute 'write'")
 
-        with patch("src.tui._bottom_bar.sys.__stdout__", mock_stdout):
-            with patch("src.tui._bottom_bar._try_acquire_output_lock") as mock_lock:
+        with patch("src.tui._bottom_bar._render.sys.__stdout__", mock_stdout):
+            with patch("src.tui._bottom_bar._render._try_acquire_output_lock") as mock_lock:
                 mock_lock.return_value.__enter__.return_value = True
-                with patch("src.tui._bottom_bar.sgr_reset") as mock_reset:
+                with patch("src.tui._bottom_bar._render.sgr_reset") as mock_reset:
                     # 不应抛出异常
                     bottom_bar.force_redraw()
 
@@ -617,10 +619,10 @@ class TestForceRedrawExceptionHandling:
         """正常路径（无异常）下 force_redraw 应正常完成。"""
         mock_stdout = MagicMock()
 
-        with patch("src.tui._bottom_bar.sys.__stdout__", mock_stdout):
-            with patch("src.tui._bottom_bar._try_acquire_output_lock") as mock_lock:
+        with patch("src.tui._bottom_bar._render.sys.__stdout__", mock_stdout):
+            with patch("src.tui._bottom_bar._render._try_acquire_output_lock") as mock_lock:
                 mock_lock.return_value.__enter__.return_value = True
-                with patch("src.tui._bottom_bar.sgr_reset") as mock_reset:
+                with patch("src.tui._bottom_bar._render.sgr_reset") as mock_reset:
                     bottom_bar.force_redraw()
 
         # 正常路径下不调用 sgr_reset
@@ -634,10 +636,10 @@ class TestForceRedrawExceptionHandling:
         mock_stdout.write.return_value = None  # write 正常返回
         mock_stdout.flush.side_effect = OSError("Broken pipe on flush")
 
-        with patch("src.tui._bottom_bar.sys.__stdout__", mock_stdout):
-            with patch("src.tui._bottom_bar._try_acquire_output_lock") as mock_lock:
+        with patch("src.tui._bottom_bar._render.sys.__stdout__", mock_stdout):
+            with patch("src.tui._bottom_bar._render._try_acquire_output_lock") as mock_lock:
                 mock_lock.return_value.__enter__.return_value = True
-                with patch("src.tui._bottom_bar.sgr_reset") as mock_reset:
+                with patch("src.tui._bottom_bar._render.sgr_reset") as mock_reset:
                     bottom_bar.force_redraw()
 
         warning_records = [r for r in caplog.records if r.levelno == logging.WARNING]
@@ -656,8 +658,8 @@ class TestForceRedrawExceptionHandling:
         """锁未获取到时直接返回，不执行写入。"""
         mock_stdout = MagicMock()
 
-        with patch("src.tui._bottom_bar.sys.__stdout__", mock_stdout):
-            with patch("src.tui._bottom_bar._try_acquire_output_lock") as mock_lock:
+        with patch("src.tui._bottom_bar._render.sys.__stdout__", mock_stdout):
+            with patch("src.tui._bottom_bar._render._try_acquire_output_lock") as mock_lock:
                 mock_lock.return_value.__enter__.return_value = False  # locked=False
                 bottom_bar.force_redraw()
 
@@ -708,8 +710,8 @@ class TestSyncBottomLinesResizeClear:
         """执行 sync_bottom_lines，返回 mock_stdout。"""
         mock_stdout = MagicMock()
 
-        with patch("src.tui._bottom_bar._get_terminal_size", return_value=mock_size):
-            with patch("src.tui._bottom_bar.sys.__stdout__", mock_stdout):
+        with patch("src.tui._bottom_bar._bar._get_terminal_size", return_value=mock_size):
+            with patch("src.tui._bottom_bar._render.sys.__stdout__", mock_stdout):
                 bb.sync_bottom_lines()
 
         return mock_stdout
@@ -974,10 +976,10 @@ class TestNegativeCursorCoordinateClamp:
         bb._subagent_lines = []
         bb._input_cursor_pos = 0
 
-        with patch("src.tui._bottom_bar._get_terminal_size", return_value=(80, 3)):
-            with patch("src.tui._bottom_bar._try_acquire_output_lock") as mock_lock:
+        with patch("src.tui._bottom_bar._bar._get_terminal_size", return_value=(80, 3)):
+            with patch("src.tui._bottom_bar._render._try_acquire_output_lock") as mock_lock:
                 mock_lock.return_value.__enter__.return_value = True
-                with patch("src.tui._bottom_bar.sys.__stdout__") as mock_stdout:
+                with patch("src.tui._bottom_bar._render.sys.__stdout__") as mock_stdout:
                     # 不应抛出异常
                     bb.ensure_cursor_in_lower()
 

@@ -164,6 +164,10 @@ class ChatUIConsumer:
           1. 框架基础设施（Console + OutputAdapter）
           2. 聊天域子系统（ChatRenderState + _BottomBar + Input + TuiEngine +
              TuiRenderer + EventDispatcher + _CmplHandler）
+
+        **依赖注入**：在 _assemble 中创建共享依赖实例（AnimatorContext、
+        TerminalWidthCache、TuiConfig），通过构造函数注入子组件，
+        消除构造函数中的 get_default() 调用。
         """
         from src.tui._bottom_bar import _BottomBar
         from src.tui._input import Input
@@ -177,15 +181,27 @@ class ChatUIConsumer:
         from rich.console import Console
         from src.renderer.output import OutputAdapter
         from src.terminal import get_safe_console_config
+        from src.tui._animator import AnimatorContext
+        from src.tui._screen import TerminalWidthCache
+        from src.tui._config import TuiConfig
 
         # ── 框架基础设施 ──
         console = Console(**get_safe_console_config(), file=sys.__stdout__)
         output_adapter = OutputAdapter(console)
 
+        # ── 创建共享依赖实例 ──
+        animator = AnimatorContext.get_default()
+        width_cache = TerminalWidthCache.get_default()
+        tui_config = TuiConfig.defaults()
+
         # ── 聊天域子系统 ──
         self._rs: "ChatRenderState" = ChatRenderState()
         cursor_tracker = CursorTracker()
-        self._bb: "_BottomBar" = _BottomBar(cursor_tracker=cursor_tracker)
+        self._bb: "_BottomBar" = _BottomBar(
+            cursor_tracker=cursor_tracker,
+            animator=animator,
+            width_cache=width_cache,
+        )
 
         # ── 统一输入管理 ──
         self._input: "Input" = Input(
@@ -205,12 +221,17 @@ class ChatUIConsumer:
             self._renderer, self._bb,
             cursor_tracker=cursor_tracker,
             input_instance=self._input,
+            config=tui_config,
         )
 
         # ── 聊天域装配 ──
+        # EventDispatcher: 使用 filter_fn + main_label 替代直接持有 ChatConfig
+        chat_config = ChatConfig.defaults()
         self._dispatcher: "EventDispatcher" = EventDispatcher(
             push_cmd=self._engine.push_cmd,
-            config=ChatConfig.defaults(),
+            filter_fn=self._make_agent_filter_fn(),
+            main_label=chat_config.main_label,
+            max_error_length=tui_config.max_error_length,
         )
         self._rs.set_output_adapter(output_adapter)
         self._cmpl_handler: "_CmplHandler" = _CmplHandler(
@@ -221,10 +242,26 @@ class ChatUIConsumer:
         # 连接 SIGWINCH 重绘回调（resize 时触发底部栏重绘和光标重定位）
         self._bb.set_request_redraw_cb(self._engine.request_bottom_redraw)
 
+        # SubAgent 面板: 注入 push_cmd 以打破循环依赖
+        from src.tui._subagent_panel import SubAgentPanelController
+        self._subagent_controller = SubAgentPanelController(
+            push_cmd=self._engine.push_cmd,
+        )
+
         # ── 向后兼容的 _components 属性 ──
         self._components = _ComponentsNamespace(self._input)
 
     # ── 生命周期 ──────────────────────────────────
+
+    @staticmethod
+    def _make_agent_filter_fn() -> Callable[[str | None], bool]:
+        """创建 Agent source 过滤函数。
+
+        Returns:
+            过滤函数，接收 source 返回 bool。
+            默认：source == "agent" 或以 "agent-" 开头。
+        """
+        return lambda source: source == "agent" or (source or "").startswith("agent-")
 
     def start(self) -> None:
         """启动 ChatUI 消费者。

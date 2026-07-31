@@ -21,39 +21,6 @@ ANSI_EMERGENCY_CURSOR_BOTTOM: str = "\033[9999;1H"
 
 
 # ═══════════════════════════════════════════════════════════
-# FrameworkCommand — 框架层通用渲染命令
-# ═══════════════════════════════════════════════════════════
-
-class FrameworkCommand(IntEnum):
-    """框架层通用渲染命令 — 已合并到 RenderCommand（保留仅为向后兼容）。"""
-    NOTIFICATION = 11
-    WRITE_LINE = 12
-    ERROR = 16
-    SUBAGENT_FRAME = 18
-    SPLASH = 19
-
-
-# ═══════════════════════════════════════════════════════════
-# ChatCommand — 聊天域渲染命令
-# ═══════════════════════════════════════════════════════════
-
-class ChatCommand(IntEnum):
-    """聊天域渲染命令 — 已合并到 RenderCommand（保留仅为向后兼容）。"""
-    REASONING = 0
-    CONTENT = 1
-    PHASE_DONE = 2
-    TOOL_OUTPUT = 6
-    TOOL_SUMMARY = 7
-    USER_MSG = 8
-    PARSE_INFO = 9
-    DISPLAY_MSGS = 13
-    TOOL_COUNT_INC = 14
-    TOOL_FAIL_INC = 15
-    TOOL_COUNT_DEC = 17
-    MAIN_PHASE = 20
-
-
-# ═══════════════════════════════════════════════════════════
 # RenderCommand — 渲染命令枚举（向后兼容，含全部 20 个值）
 # ═══════════════════════════════════════════════════════════
 
@@ -76,3 +43,11 @@ class RenderCommand(IntEnum):
     SUBAGENT_FRAME = 18 # (18, frame_lines: tuple[str]) — SubAgent 面板帧
     SPLASH = 19         # (19,) — 启动品牌屏
     MAIN_PHASE = 20     # (20, phase: str) — 主Agent模型阶段变更
+
+
+# ═══════════════════════════════════════════════════════════
+# 向后兼容别名 — FrameworkCommand/ChatCommand → RenderCommand
+# ═══════════════════════════════════════════════════════════
+
+FrameworkCommand = RenderCommand
+ChatCommand = RenderCommand

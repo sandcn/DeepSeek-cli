@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import math
 import threading
 
 
@@ -49,6 +50,20 @@ class AnimatorContext:
     def pulse_frame(self) -> int:
         """脉冲帧 — 4 帧循环，兼容旧接口。"""
         return self._frame % 4
+
+    def sine_color(self, lo: int, hi: int, period: int = 12) -> int:
+        """正弦波颜色插值。
+
+        Args:
+            lo: 最暗色号。
+            hi: 最亮色号。
+            period: 周期帧数。
+
+        Returns:
+            插值色号（lo~hi 范围）。
+        """
+        ratio = (math.sin(2 * math.pi * self._frame / period) + 1) / 2
+        return lo + int((hi - lo) * ratio)
 
     def tick(self) -> None:
         """帧计数递增。每帧调用一次。"""
