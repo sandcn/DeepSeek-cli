@@ -75,6 +75,11 @@ class InputDispatcher:
         self._suppress_enter: bool = False
         self._suppress_enter_lock = threading.Lock()
 
+        # ── 残留 Enter 标记（editmsg 竞态修复） ──
+        # editmsg 选择确认 Enter（CR）被抑制后，标记可能存在残留 LF（\n）待丢弃。
+        # GIL 原子 bool，与 _suppress_enter 同等无锁访问（不改 API 签名）。
+        self._enter_residual_pending: bool = False
+
         # ── 非可打印字符捕获 ──
         self._captured_input: bytearray = bytearray()
         self._captured_lock = threading.Lock()
@@ -190,6 +195,16 @@ class InputDispatcher:
 
         first_byte = raw[0]
 
+        # ── 残留 Enter 后置 LF/CR 丢弃（editmsg 竞态修复） ──
+        # 若 _enter_residual_pending 置位（被抑制 Enter 后可能残留 LF），
+        # 先清标记；首字节为 LF（0x0a）/ CR（0x0d）时丢弃并返回 True
+        # （不触发 _enter()，prefill 保持可编辑）；非 LF/CR 首字节
+        # （如用户立即输入字符）不误丢，继续正常分发。
+        if self._enter_residual_pending:
+            self._enter_residual_pending = False
+            if first_byte in (0x0a, 0x0d):
+                return True
+
         # ── ASCII 控制字符分发 ──
         if first_byte < 0x20 or first_byte == 0x7F:
             try:
@@ -287,6 +302,10 @@ class InputDispatcher:
             self._dismiss_completion()
             if not self._suppress_enter:
                 self._buffer_editor._enter()
+            else:
+                # editmsg 选择确认 CR 被抑制后标记残留 LF（\n），
+                # 由 read_stdin_once 丢弃，避免 LF 在 prefill 注入后被误提交。
+                self._enter_residual_pending = True
         elif kind == "tab":
             self._handle_tab()
         elif kind == "backspace":
@@ -504,6 +523,10 @@ class InputDispatcher:
         """
         with self._suppress_enter_lock:
             self._suppress_enter = suppress
+            # 防单 CR 终端：恢复 Enter 时清除残留标记，避免误丢弃用户后续回车。
+            # suppress=True 时不清标记（保留至 LF 被处理或恢复 False）。
+            if not suppress:
+                self._enter_residual_pending = False
 
     def get_suppress_enter(self) -> bool:
         """获取当前 Enter 抑制状态。线程安全。"""

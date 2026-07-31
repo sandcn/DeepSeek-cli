@@ -208,3 +208,52 @@ class TestInputOrchestratorEventWaiting:
         inp._enter()
         t.join()
         assert result["text"] == "prefill text"
+
+
+# ═══════════════════════════════════════════════════════════
+# 2026-08-01：TuiInputOrchestrator prefill 残留提交兜底恢复回归测试
+# ═══════════════════════════════════════════════════════════
+
+class TestInputOrchestratorPrefillResidual:
+    """prefill 注入后残留 Enter 提交恢复（editmsg 竞态兜底修复）。
+
+    覆盖场景：LF 在 set_buffer(prefill) 之后才被 render 线程处理、
+    _enter() 已提交 prefill 的残余窗口——编排器在 set_buffer 后再次
+    get_queued_input() 检查残留提交，若非 None 则重新注入恢复。
+    采用可控 mock 序列保证确定性（避免线程时序不确定性）。
+    """
+
+    def test_prefill_residual_enter_restored_regression(self, tmp_path):
+        """注入 prefill 后残留提交被恢复，prefill 仍在缓冲中。"""
+        fd = os.open("/dev/null", os.O_RDONLY)
+        try:
+            inp = Input(fd=fd, history_file=tmp_path / "history")
+            from src.tui._input_orchestrator import TuiInputOrchestrator
+            orch = TuiInputOrchestrator(inp)
+            monitor = MagicMock()
+            monitor.is_alive = True
+
+            # 记录 set_buffer 调用；保留原方法以便真实设置缓冲
+            set_buffer_calls = []
+            original_set_buffer = inp.set_buffer
+            with patch.object(
+                inp, "set_buffer",
+                side_effect=lambda text: (
+                    set_buffer_calls.append(text), original_set_buffer(text),
+                )[1],
+            ), patch.object(
+                inp, "get_queued_input",
+                side_effect=iter([None, "prefill text"]).__next__,
+            ), patch.object(inp, "wait_until_ready", return_value=False):
+                result = orch.wait_for_user_input(
+                    monitor, prefill="prefill text", timeout=0.1,
+                )
+
+            # 注入 + 恢复各调用一次 set_buffer
+            assert set_buffer_calls == ["prefill text", "prefill text"]
+            # prefill 仍在缓冲中（恢复后未被消费）
+            assert inp.get_current_text() == "prefill text"
+            # 超时返回空字符串（用户未输入）
+            assert result == ""
+        finally:
+            os.close(fd)

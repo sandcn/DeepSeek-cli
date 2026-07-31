@@ -891,6 +891,80 @@ class TestSuppressEnterBypass:
 
 
 # ═══════════════════════════════════════════════════════════
+# editmsg 残留 Enter 标记与 LF 丢弃回归测试（新增，2026-08-01）
+# ═══════════════════════════════════════════════════════════
+
+class TestEnterResidualLF:
+    """editmsg 选择确认后残留 LF 丢弃回归测试（修复 CR+LF 竞态）。
+
+    终端按 Enter 发送 CR+LF：CR 在 _suppress_enter=True 期间被
+    _dispatch_key_event 抑制（消费选择确认），残留 LF 若在 prefill 注入
+    之后才被 render 线程处理，会被 _enter() 误提交。本类验证修复 1：
+    - 被抑制 Enter 后置 _enter_residual_pending，紧随 LF 被
+      read_stdin_once 丢弃（不触发 _enter，prefill 保持可编辑）；
+    - set_suppress_enter(False) 清残留标记，单 CR 终端恢复后用户
+      后续 Enter 不被误丢弃。
+    """
+
+    def test_enter_residual_lf_discarded_regression(
+        self, tmp_path, wait_pipe_readable_fixture,
+    ) -> None:
+        """被抑制 Enter 后紧随 LF 被丢弃（不触发 _enter，prefill 保持可编辑）。"""
+        r_fd, w_fd = os.pipe()
+        try:
+            inp = Input(fd=r_fd, history_file=tmp_path / "test_history")
+            inp.start_io()
+            inp.set_suppress_enter(True)
+            inp.handle_chars("edit content")
+            os.write(w_fd, b"\r\n")
+
+            # 第一次 read_stdin_once：处理 CR（被抑制）→ 置残留标记
+            assert wait_pipe_readable_fixture(r_fd)
+            assert inp.read_stdin_once() is True
+            assert inp._dispatcher._enter_residual_pending is True
+            assert not inp.has_queued_input()
+            assert inp.get_current_text() == "edit content"
+
+            # 第二次 read_stdin_once：处理 LF → 被丢弃（不触发 _enter）
+            assert wait_pipe_readable_fixture(r_fd)
+            assert inp.read_stdin_once() is True
+            assert inp._dispatcher._enter_residual_pending is False
+            assert not inp.has_queued_input()
+            assert inp.get_current_text() == "edit content"
+        finally:
+            os.close(w_fd)
+            os.close(r_fd)
+
+    def test_suppress_false_clears_residual_enter_commits_regression(self, tmp_path) -> None:
+        """set_suppress_enter(False) 清残留标记，用户后续 Enter 正常提交。
+
+        覆盖「单 CR 终端（无 LF）恢复后用户 Enter 不被误丢弃」。
+        """
+        r_fd, w_fd = os.pipe()
+        try:
+            inp = Input(fd=r_fd, history_file=tmp_path / "test_history")
+            inp.set_suppress_enter(True)
+            inp.handle_chars("edit content")
+            # 模拟被抑制 Enter（CR 被 _dispatch_key_event 消费）
+            inp._dispatch_key_event(KeyEvent(kind="enter"))
+            assert inp._dispatcher._enter_residual_pending is True
+            assert not inp.has_queued_input()
+
+            # 恢复 Enter 抑制 → 清残留标记
+            inp.set_suppress_enter(False)
+            assert inp._dispatcher._enter_residual_pending is False
+
+            # 用户后续 Enter 正常提交（不被误丢弃）
+            with patch("src.tui._input._append_to_history_file", return_value=True):
+                inp._dispatch_key_event(KeyEvent(kind="enter"))
+            assert inp.has_queued_input()
+            assert inp.get_queued_input() == "edit content"
+        finally:
+            os.close(w_fd)
+            os.close(r_fd)
+
+
+# ═══════════════════════════════════════════════════════════
 # 以下类合并自 test_input/ 目录（步骤 12 Input 测试去重）
 # 原文件：test_input_unified / test_input_buffer / test_cursor /
 #         test_parser / test_read_stdin_once / test_new_input
