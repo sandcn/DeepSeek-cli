@@ -163,15 +163,8 @@ class TuiAssembly:
             push_cmd=engine.push_cmd,
         )
 
-        # ── InputReader（可选） ──
+        # ── InputReader（暂不启用 — process_events 尚未集成队列消费路径） ──
         reader = None
-        try:
-            from src.tui._input_reader import InputReader
-            reader = InputReader(fd=sys.stdin.fileno())
-            input_instance.set_reader(reader)
-            _logger.debug("InputReader 已创建")
-        except Exception:
-            _logger.debug("InputReader 创建失败，降级为直接 stdin 读取", exc_info=True)
 
         # ── 向后兼容的 _components 命名空间 ──
         from src.tui._consumer import _ComponentsNamespace

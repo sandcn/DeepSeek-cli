@@ -114,9 +114,7 @@ class ChatUIConsumer:
         )
         self._input_orchestrator = TuiInputOrchestrator(self._input)
 
-        # ── 启动 InputReader（如果 TuiAssembly 创建了） ──
-        if result.reader is not None:
-            result.reader.start()
+        # ── InputReader 暂不启用（process_events 尚未集成队列消费路径） ──
 
     @classmethod
     def for_testing(cls, components, event_bus=None) -> "ChatUIConsumer":

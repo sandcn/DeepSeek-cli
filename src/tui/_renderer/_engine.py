@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import itertools
 import logging
 import queue
 import sys
@@ -144,6 +145,7 @@ class TuiEngine:
         self._recover_attempts: int = 0
         self._recovering_event: threading.Event = threading.Event()
         self._render_version: int = 0
+        self._cmd_seq = itertools.count()
 
     def push_cmd(self, cmd: Union[RenderCmd, tuple]) -> None:
         """入队渲染命令。低优先级命令满队列时丢弃，高优先级命令同步等待。"""
@@ -151,9 +153,9 @@ class TuiEngine:
         try:
             if priority <= _CMD_PRIORITY_HIGH:
                 # 高优先级命令：短时阻塞等待，尽力不丢失
-                self._cmd_queue.put((priority, cmd), block=True, timeout=0.1)
+                self._cmd_queue.put((priority, next(self._cmd_seq), cmd), block=True, timeout=0.1)
             else:
-                self._cmd_queue.put((priority, cmd), block=False)
+                self._cmd_queue.put((priority, next(self._cmd_seq), cmd), block=False)
             self._consecutive_full = 0
             self._cmd_event.set()
         except queue.Full:
@@ -177,7 +179,7 @@ class TuiEngine:
     def push_cmd_critical(self, cmd: Union[RenderCmd, tuple]) -> None:
         """入队关键命令 — 阻塞等待以确保绝不丢失。"""
         priority = _CMD_PRIORITY_CRITICAL
-        self._cmd_queue.put((priority, cmd), block=True, timeout=1.0)
+        self._cmd_queue.put((priority, next(self._cmd_seq), cmd), block=True, timeout=1.0)
         self._consecutive_full = 0
         self._cmd_event.set()
 
@@ -332,7 +334,7 @@ class TuiEngine:
                 return False
             while len(commands) < self._config.max_batch_size:
                 try:
-                    _, cmd = self._cmd_queue.get_nowait()
+                    _, _, cmd = self._cmd_queue.get_nowait()
                     self._cmd_queue.task_done()
                     commands.append(cmd)
                 except queue.Empty:
@@ -347,7 +349,7 @@ class TuiEngine:
         dropped = 0
         while not self._cmd_queue.empty():
             try:
-                _, cmd = self._cmd_queue.get_nowait()
+                _, _, cmd = self._cmd_queue.get_nowait()
                 self._cmd_queue.task_done()
                 dropped += 1
             except queue.Empty:

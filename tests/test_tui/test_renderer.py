@@ -166,8 +166,11 @@ class TestTuiEngineCommandQueue:
         engine._cmd_event = threading.Event()
 
         # 模拟 _panel_refresh_cb: 每次刷新的 push SUBAGENT_FRAME（模拟真实场景）
+        _seq = 0
         def mock_panel_refresh():
-            engine._cmd_queue.put((RenderCommand.SUBAGENT_FRAME, ("line1",)))
+            nonlocal _seq
+            engine._cmd_queue.put((RenderCommand.SUBAGENT_FRAME, _seq, ("line1",)))
+            _seq += 1
             engine._cmd_event.set()
 
         engine._panel_refresh_cb = mock_panel_refresh
@@ -175,7 +178,8 @@ class TestTuiEngineCommandQueue:
         # 模拟多次渲染循环回合
         for _ in range(5):
             # 先 push 一些内容到队列（模拟外部 push）
-            engine._cmd_queue.put((RenderCommand.NOTIFICATION, "test"))
+            engine._cmd_queue.put((RenderCommand.NOTIFICATION, _seq, "test"))
+            _seq += 1
             engine._cmd_event.set()
 
             # 执行 drain（内部会调用 _phase_pre_update_panels → mock_panel_refresh → 又 set 了 event）
