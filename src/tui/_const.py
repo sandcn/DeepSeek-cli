@@ -2,6 +2,11 @@
 
 Layer 0 — 无内部依赖，被所有 TUI 模块引用。
 整合旧 engine/const.py、engine/commands.py、consumer/chat_commands.py 三套枚举到一个文件。
+
+保留确认（2026-07-31 方向F）：``FrameworkCommand``/``ChatCommand`` 为
+``RenderCommand`` 别名，被 ``src/tui/__init__.py`` 与 ``src/tui/consumer/__init__.py``
+re-export（公共 API 约束）；``RenderCommand`` 20 枚举值均有对应 ``RenderCmd``
+dataclass 且全部被分发使用，**无未引用枚举**。别名保留不删。
 """
 
 from __future__ import annotations
@@ -19,6 +24,43 @@ ANSI_EMERGENCY_RED: str = "\033[31m"
 ANSI_EMERGENCY_YELLOW: str = "\033[33m"
 ANSI_EMERGENCY_RESET: str = "\033[0m"
 ANSI_EMERGENCY_CURSOR_BOTTOM: str = "\033[9999;1H"
+
+
+# ═══════════════════════════════════════════════════════════
+# ANSI 颜色常量（256 色体系）— 唯一真源（方向F 步骤12 收敛）
+# ═══════════════════════════════════════════════════════════
+# 收敛 _screen.py（底栏 _COLOR_*）与 _subagent_panel.py（面板 _C_*）两套颜色
+# 到本 Layer 0 模块单一真源；_screen.py 保留 re-export（bottom_bar 导入路径不变），
+# _subagent_panel.py 改为模块级从本模块导入。值与原定义完全一致，零行为变化。
+
+_COLOR_ACCENT = "\033[38;5;45m"
+_COLOR_DEEP_CYAN = "\033[38;5;32m"
+_COLOR_DIM = "\033[38;5;242m"
+_COLOR_RESET = "\033[0m"
+_COLOR_SEP = "\033[38;5;237m"
+_COLOR_TIME = "\033[38;5;110m"
+_COLOR_TOKEN = "\033[38;5;68m"
+_COLOR_SPEED = "\033[38;5;214m"
+_COLOR_TOOL_OK = "\033[38;5;41m"
+_COLOR_TOOL_FAIL = "\033[38;5;196m"
+_COLOR_SELECT_BG = "\033[48;5;236m"
+_COLOR_SELECT_FG = "\033[38;5;15m"
+_COLOR_COMPLETE_TITLE = "\033[1;38;5;45m"
+_COLOR_COMPLETE_CMD_PREFIX = "\033[1;38;5;45m"
+_COLOR_COMPLETE_DIR = "\033[38;5;110m"
+_COLOR_COMPLETE_MATCH = "\033[38;5;221m"
+
+_C_RUNNING       = "\033[38;5;214m"   # 琥珀色 — 运行中
+_C_DONE          = "\033[38;5;40m"    # 亮绿 — 完成
+_C_FAIL          = "\033[38;5;196m"   # 亮红 — 失败
+_C_ANSWERING     = "\033[38;5;75m"    # 浅蓝 — 回答中
+_C_PARSING       = "\033[38;5;178m"   # 金色 — 解析
+_C_BATCH         = "\033[38;5;140m"   # 淡紫 — 批量
+_C_DIMMER        = "\033[38;5;240m"   # 暗灰 — 辅助
+_C_DIMMEST       = "\033[38;5;238m"   # 深灰 — 分隔线
+_C_SUMMARY_DIM   = "\033[38;5;245m"   # 中灰 — 摘要次要
+_C_BRANCH        = "\033[38;5;239m"   # 灰 — 树形线
+_C_RESET         = "\033[0m"
 
 
 # ═══════════════════════════════════════════════════════════
@@ -147,3 +189,55 @@ class MainPhaseCmd(RenderCmd):
 
 FrameworkCommand = RenderCommand
 ChatCommand = RenderCommand
+
+
+# ═══════════════════════════════════════════════════════════
+# CONTENT_COMMANDS — 内容命令集合（唯一真源，步骤 4.1）
+# ═══════════════════════════════════════════════════════════
+# 收敛 _renderer/_renderer.py 与 _renderer/_engine.py 的重复定义。
+# 私有名 _CONTENT_COMMANDS 在各自模块保留别名以兼容 re-export。
+
+CONTENT_COMMANDS: frozenset[RenderCommand] = frozenset({
+    RenderCommand.REASONING,
+    RenderCommand.CONTENT,
+    RenderCommand.PHASE_DONE,
+    RenderCommand.TOOL_OUTPUT,
+    RenderCommand.TOOL_SUMMARY,
+    RenderCommand.PARSE_INFO,
+    RenderCommand.USER_MSG,
+    RenderCommand.ERROR,
+    RenderCommand.WRITE_LINE,
+    RenderCommand.NOTIFICATION,
+    RenderCommand.DISPLAY_MSGS,
+    RenderCommand.SPLASH,
+})
+
+
+def is_agent_source(source: str | None) -> bool:
+    """判断事件 source 是否为 agent 来源（唯一真源，供过滤策略收敛引用）。
+
+    与历史 `EventDispatcher._default_filter_fn` / 装配注入 lambda 语义一致：
+    ``source == "agent"`` 或 ``source.startswith("agent-")``；None 视为非 agent。
+    """
+    if source is None:
+        return False
+    return source == "agent" or source.startswith("agent-")
+
+
+def truncate_error_message(text: str | None, max_length: int) -> str:
+    """截断错误消息至 max_length 字符（含省略号，唯一真源，步骤 4.3）。
+
+    收敛 _renderer/_dispatcher.py `_on_model_phase` 与 consumer/__init__.py
+    `ChatUIErrorHandler.emit` 的重复截断逻辑。
+    语义：超长时保留前 max_length-3 字符并追加 "..."，使结果长度恰为
+    max_length（max_length<=3 时退化为直接截断，不加省略号）；未超长时原样返回。
+    """
+    if text is None:
+        return ""
+    if max_length <= 0:
+        return ""
+    if len(text) <= max_length:
+        return text
+    if max_length <= 3:
+        return text[:max_length]
+    return text[:max_length - 3] + "..."

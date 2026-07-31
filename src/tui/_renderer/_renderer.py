@@ -16,11 +16,10 @@ from src.tui._const import (
     ToolOutputCmd, ToolSummaryCmd,
     UserMsgCmd, ParseInfoCmd,
     NotificationCmd, WriteLineCmd, DisplayMsgsCmd,
-    ToolCountIncCmd, ToolFailIncCmd, ErrorCmd, ToolCountDecCmd,
-    SubagentFrameCmd, SplashCmd, MainPhaseCmd,
+    ErrorCmd,
+    SubagentFrameCmd, MainPhaseCmd,
+    CONTENT_COMMANDS,
     _CLEAR_PARSE_LINE,
-    ANSI_EMERGENCY_RED,
-    ANSI_EMERGENCY_RESET,
 )
 
 if TYPE_CHECKING:
@@ -28,6 +27,7 @@ if TYPE_CHECKING:
     from src.tui.state.render_state import ChatRenderState
     from src.tui._cursor_tracker import CursorTracker
     from src.renderer.output import OutputAdapter
+    from src.tui._output import RenderOutput
 
 _logger = logging.getLogger(__name__)
 
@@ -52,34 +52,6 @@ def _emergency_write(text: str, stream: str = "stdout") -> None:
     f.flush()
 
 
-def _cmd_to_tuple(cmd: Union[RenderCmd, tuple]) -> tuple:
-    """将 RenderCmd 数据类或元组统一转为元组。"""
-    if isinstance(cmd, tuple):
-        return cmd
-    if isinstance(cmd, RenderCmd):
-        cls_name = type(cmd).__name__
-        cid = cmd.cid
-        if isinstance(cmd, ToolSummaryCmd):
-            return (cid, cmd.successful, cmd.failed)
-        if isinstance(cmd, DisplayMsgsCmd):
-            return (cid, cmd.messages, cmd.speed)
-        if isinstance(cmd, ParseInfoCmd):
-            return (cid, cmd.tool_names, cmd.tokens, cmd.elapsed)
-        if isinstance(cmd, SubagentFrameCmd):
-            return (cid, cmd.frame_lines)
-        if isinstance(cmd, (ToolCountIncCmd, ToolCountDecCmd, ToolFailIncCmd, SplashCmd)):
-            return (cid,)
-        # 命令带单个 text/message/phase 参数
-        if hasattr(cmd, 'text'):
-            return (cid, cmd.text)
-        if hasattr(cmd, 'message'):
-            return (cid, cmd.message)
-        if hasattr(cmd, 'phase'):
-            return (cid, cmd.phase)
-        return (cid,)
-    raise TypeError(f"不支持的命令类型: {type(cmd)}")
-
-
 # ═══════════════════════════════════════════════════════════
 # TuiRenderer — 内容渲染器
 # ═══════════════════════════════════════════════════════════
@@ -88,23 +60,10 @@ class TuiRenderer:
     """聊天域内容渲染器 — 执行 RenderCommand 并直接输出。
 
     使用 dict 分发命令 ID 到对应的 _do_* 方法。
-    同时支持 RenderCmd 数据类和 tuple 两种输入格式。
+    仅接受 RenderCmd 数据类输入（tuple 双格式已移除）。
     """
 
-    _CONTENT_COMMANDS = frozenset({
-        RenderCommand.REASONING,
-        RenderCommand.CONTENT,
-        RenderCommand.PHASE_DONE,
-        RenderCommand.TOOL_OUTPUT,
-        RenderCommand.TOOL_SUMMARY,
-        RenderCommand.PARSE_INFO,
-        RenderCommand.USER_MSG,
-        RenderCommand.ERROR,
-        RenderCommand.WRITE_LINE,
-        RenderCommand.NOTIFICATION,
-        RenderCommand.DISPLAY_MSGS,
-        RenderCommand.SPLASH,
-    })
+    _CONTENT_COMMANDS = CONTENT_COMMANDS  # 真源在 _const.CONTENT_COMMANDS（步骤 4.1）
 
     def __init__(
         self,
@@ -113,9 +72,12 @@ class TuiRenderer:
         bottom_bar: "_BottomBar",
         on_display_messages: Callable[..., None] | None = None,
         cursor_tracker: "CursorTracker | None" = None,
+        render_output: "RenderOutput | None" = None,
     ):
         self._rs = rs
-        self._adapter = output_adapter
+        # 统一输出端口（可选）：提供时作为内容写路径（装饰 OutputAdapter，
+        # 叠加行跟踪回调）；未提供时直接使用 output_adapter（兼容旧构造）
+        self._adapter = render_output if render_output is not None else output_adapter
         self._bb = bottom_bar
         self._on_display_messages = on_display_messages
         self._tracker = cursor_tracker
@@ -153,43 +115,40 @@ class TuiRenderer:
         RenderCommand.USER_MSG,
     })
 
-    def _is_batchable(self, cmd_or_cid: Union[int, RenderCmd, tuple]) -> bool:
+    def _is_batchable(self, cmd_or_cid: Union[int, RenderCmd]) -> bool:
         if isinstance(cmd_or_cid, int):
             return cmd_or_cid in self._BATCHABLE_COMMANDS
         if isinstance(cmd_or_cid, RenderCmd):
             return cmd_or_cid.cid in self._BATCHABLE_COMMANDS
-        if isinstance(cmd_or_cid, tuple) and cmd_or_cid:
-            return cmd_or_cid[0] in self._BATCHABLE_COMMANDS
         return False
 
-    def render_batch(self, commands: list) -> None:
+    def render_batch(self, commands: list[RenderCmd]) -> None:
         from rich.text import Text
         renderables: list = []
         for cmd in commands:
-            if not cmd:
-                continue
-            tup = _cmd_to_tuple(cmd) if isinstance(cmd, RenderCmd) else cmd
-            cid = tup[0]
+            if not isinstance(cmd, RenderCmd):
+                raise TypeError(f"不支持的命令类型: {type(cmd)}")
+            cid = cmd.cid
 
             if cid == RenderCommand.NOTIFICATION:
-                text = tup[1]
+                text = cmd.text
                 renderables.append(Text.from_ansi(f"  \033[38;5;242m\u2502\033[0m {text}"))
                 self._record_lines(1)
 
             elif cid == RenderCommand.WRITE_LINE:
-                text = tup[1]
+                text = cmd.text
                 renderables.append(Text.from_ansi(text))
                 self._record_lines(1)
 
             elif cid == RenderCommand.ERROR:
-                message = tup[1]
+                message = cmd.message
                 renderables.append(Text.from_ansi(
                     f"  \033[1;38;5;196m!\033[0m \033[38;5;196m{message}\033[0m"
                 ))
                 self._record_lines(1)
 
             elif cid == RenderCommand.TOOL_OUTPUT:
-                text = tup[1]
+                text = cmd.text
                 if not self._in_tool_group:
                     self._in_tool_group = True
                     renderables.append(Text.from_ansi(
@@ -199,8 +158,6 @@ class TuiRenderer:
                 self._record_lines(1)
 
             elif cid == RenderCommand.TOOL_SUMMARY:
-                successful = tup[1]
-                failed = tup[2]
                 if self._in_tool_group:
                     self._in_tool_group = False
                     renderables.append(Text.from_ansi(
@@ -209,7 +166,7 @@ class TuiRenderer:
                 self._record_lines(1)
 
             elif cid == RenderCommand.USER_MSG:
-                text = tup[1]
+                text = cmd.text
                 renderables.append(Text.from_ansi(
                     f"\n  \033[1;38;5;81m>\033[0m \033[38;5;252m{text}\033[0m\n"
                 ))
@@ -226,23 +183,46 @@ class TuiRenderer:
         if self._tracker is not None:
             self._tracker.record_newlines(n)
 
-    def render(self, cmd: Union[RenderCmd, tuple]) -> None:
-        if not cmd:
-            return
-        # 统一转为元组进行分发（同时兼容 RenderCmd 数据类和 tuple）
-        tup = _cmd_to_tuple(cmd) if isinstance(cmd, RenderCmd) else cmd
-        cid = tup[0]
+    def render(self, cmd: RenderCmd) -> None:
+        if not isinstance(cmd, RenderCmd):
+            raise TypeError(f"不支持的命令类型: {type(cmd)}")
+        cid = cmd.cid
         handler = self._handlers.get(cid)
         if handler is None:
             _logger.error("未知渲染命令: %s", _cmd_name(cid))
             return
         try:
-            handler(*tup[1:])
+            handler(*self._cmd_args(cmd))
         except TypeError:
             _logger.error(
                 "渲染命令 %s 参数错误: 期望签名与传入参数不匹配",
                 _cmd_name(cid),
+                exc_info=True,
             )
+
+    def _cmd_args(self, cmd: RenderCmd) -> tuple:
+        """提取 handler 位置参数（RenderCmd 属性 → 位置参数）。
+
+        显式 isinstance 链（与旧 _cmd_to_tuple 的 per-type 映射一致），
+        消除 hasattr 属性探测在 RenderCmd 扩展时误捕的风险。
+        """
+        if isinstance(cmd, ToolSummaryCmd):
+            return (cmd.successful, cmd.failed)
+        if isinstance(cmd, DisplayMsgsCmd):
+            return (cmd.messages, cmd.speed)
+        if isinstance(cmd, ParseInfoCmd):
+            return (cmd.tool_names, cmd.tokens, cmd.elapsed)
+        if isinstance(cmd, SubagentFrameCmd):
+            return (cmd.frame_lines,)
+        if isinstance(cmd, (WriteLineCmd, NotificationCmd, ToolOutputCmd,
+                            UserMsgCmd, ReasoningCmd, ContentCmd)):
+            return (cmd.text,)
+        if isinstance(cmd, ErrorCmd):
+            return (cmd.message,)
+        if isinstance(cmd, (MainPhaseCmd, PhaseDoneCmd)):
+            return (cmd.phase,)
+        # 其余命令无参（ToolCountIncCmd/ToolCountDecCmd/ToolFailIncCmd/SplashCmd）
+        return ()
 
     # ═══════════════════════════════════════════════════════
     # 框架级命令
@@ -275,7 +255,7 @@ class TuiRenderer:
         self._adapter.write(Text.from_ansi(splash_text))
         self._record_lines(2)
 
-    def _do_subagent_frame(self, frame_lines: tuple) -> None:
+    def _do_subagent_frame(self, frame_lines: tuple | list) -> None:
         if isinstance(frame_lines, list) and not frame_lines:
             if hasattr(self._bb, 'set_subagent_frame'):
                 self._bb.set_subagent_frame([])
@@ -300,12 +280,20 @@ class TuiRenderer:
         if rr is not None:
             rr.write(text)
             self._record_lines(0)
+        elif text:
+            # 推理渲染器已关闭：显式丢弃（不静默、不重建不错位），
+            # 与 _do_content 的关闭后丢弃语义一致（渲染状态层兜底）。
+            _logger.debug("推理渲染器已关闭，丢弃推理文本（%d 字符）", len(text))
 
     def _do_content(self, text: str) -> None:
         cr = self._rs.get_content()
         if cr is not None:
             cr.write(text)
             self._record_lines(0)
+        elif text:
+            # 内容渲染器已关闭：显式丢弃（不静默、不重建不错位）。
+            # 多轮会话由 _do_main_phase 触发 reopen_content 后重建。
+            _logger.debug("内容渲染器已关闭，丢弃内容文本（%d 字符）", len(text))
 
     def _do_phase_done(self, phase: str) -> None:
         if phase == "reasoning":
@@ -325,6 +313,13 @@ class TuiRenderer:
     def _do_main_phase(self, phase: str) -> None:
         if phase == "thinking":
             self._rs.reopen_reasoning()
+        if phase in ("thinking", "answering"):
+            # 新一轮内容开始前重开 content 通道（多轮会话：工具调用关闭
+            # content 后，下一轮首个 content 前由 ContentHandler 发布
+            # ModelPhaseEvent("answering") → MainPhaseCmd 先于首个 ContentCmd
+            # 出队，seq 保序保证 reopen 先于新内容渲染；"thinking" 为推理模型
+            # 新一轮信号（兜底）。
+            self._rs.reopen_content()
         self._bb.set_main_phase(phase)
 
     def _do_tool_output(self, text: str) -> None:
@@ -349,7 +344,8 @@ class TuiRenderer:
 
     def _do_parse_info(self, tool_names: str, tokens, elapsed: float) -> None:
         if tokens == _CLEAR_PARSE_LINE:
-            _emergency_write("\n")
+            # 换行结束进度行（write_raw 保持行内覆盖语义，不经 Rich 渲染）
+            self._adapter.write_raw("\n")
             self._record_lines(1)
             return
         if isinstance(tokens, (int, float)):
@@ -357,7 +353,9 @@ class TuiRenderer:
         else:
             tokens_str = str(tokens)
         output = f"\r\033[K  ~ {tool_names} {tokens_str} {elapsed:.2f}s"
-        _emergency_write(output)
+        # 统一输出管线：进度行走 OutputAdapter.write_raw（\r 覆盖语义，
+        # 不使用 _emergency_write 绕过）
+        self._adapter.write_raw(output)
 
     def _do_user_message(self, text: str) -> None:
         from rich.text import Text

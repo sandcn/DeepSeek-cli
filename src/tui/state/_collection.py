@@ -1,13 +1,15 @@
 """线程安全集合管理 — ThreadSafeList 线程安全列表封装。
 
-提供基于 threading.Lock 的线程安全列表，用于统一管理
-ChatRenderState 的 captured_*_output 等可变集合。
+提供基于 threading.Lock 的线程安全列表，用于统一管理跨线程共享的可变集合。
 
 设计决策（v2026-07-26）：
   - 仅封装 list 的基础可变操作（append/clear/__iter__/__len__/__getitem__）
   - 不引入 dirty/version 模式（AgentStateStore 的 dirty/version 有特定用途，
     与简单列表管理差异过大，不适合统一）
   - 最小化侵入：保持 list 兼容接口，下游代码无需修改
+
+用途收敛（2026-07-31 方向C）：
+  captured_* 机制已删除（P1-1），本工具类保留供其他线程安全集合场景使用。
 """
 
 from __future__ import annotations
@@ -25,7 +27,7 @@ class ThreadSafeList:
     确保多线程环境下的 append/clear/__len__/__iter__ 等操作安全。
 
     主要用途：
-      - ChatRenderState 的 captured_reasoning_output / captured_content_output
+      - 跨线程共享的可变字符串/对象集合（captured_* 机制已删除，2026-07-31）
 
     兼容性：
       - 支持 append()、clear()、__iter__()、__len__()、__getitem__()

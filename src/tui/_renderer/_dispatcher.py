@@ -6,21 +6,22 @@
 from __future__ import annotations
 
 import logging
-import math
-from typing import TYPE_CHECKING, Callable, Union
+from typing import TYPE_CHECKING, Callable
 
 from src.tui._const import (
-    RenderCommand,
     RenderCmd,
     ReasoningCmd, ContentCmd, PhaseDoneCmd,
     ToolOutputCmd, ToolSummaryCmd,
     UserMsgCmd, ParseInfoCmd,
     NotificationCmd, WriteLineCmd,
     ToolCountIncCmd, ToolFailIncCmd, ErrorCmd, ToolCountDecCmd,
-    SubagentFrameCmd, SplashCmd, MainPhaseCmd,
+    SubagentFrameCmd, MainPhaseCmd,
     _CLEAR_PARSE_LINE,
+    is_agent_source,
+    truncate_error_message,
 )
 from src.tui._config import TuiConfig
+from src.tui.events.event_types import DisplayEvent
 
 if TYPE_CHECKING:
     from src.tui.events.event_types import (
@@ -51,11 +52,16 @@ class EventDispatcher:
 
     将 12 种 DisplayEvent 类型映射到对应的 RenderCommand 并推入命令队列。
     使用注入的 ``filter_fn`` 替代直接持有 ChatConfig 进行 source/label 过滤。
+
+    方向D 步骤7（2026-07-31）：订阅声明式化——
+    ``list_handlers()`` 结果缓存（内置 12 类 + ``_handler_groups`` 声明式订阅组
+    + ``_custom_handlers`` 自定义），``register_group`` 提供声明式订阅表入口；
+    返回的 dict 为缓存对象，调用方（如 _lifecycle）只迭代不修改。
     """
 
     def __init__(
         self,
-        push_cmd: Callable[[Union[RenderCmd, tuple]], None],
+        push_cmd: Callable[[RenderCmd], None],
         filter_fn: Callable[[str | None], bool] | None = None,
         *,
         main_label: str | None = None,
@@ -72,15 +78,20 @@ class EventDispatcher:
         self._push_cmd = push_cmd
         self._filter_fn = filter_fn or self._default_filter_fn
         self._main_label = main_label or "default"
-        self._max_error_length = max_error_length or TuiConfig.defaults().max_error_length
-        self._custom_handlers: dict[type, Callable] = {}
+        self._max_error_length = (
+            max_error_length if max_error_length is not None
+            else TuiConfig.defaults().max_error_length
+        )
+        self._custom_handlers: dict[type, Callable[..., None]] = {}
+        # 声明式订阅组注册表（方向D 步骤7）：register_group 存储事件类型 → 处理器映射
+        self._handler_groups: dict[str, dict[type, Callable]] = {}
+        # list_handlers 结果缓存：register_handler / register_group 后置 None 失效重建
+        self._handlers_cache: dict[type, Callable] | None = None
 
     @staticmethod
     def _default_filter_fn(source: str | None) -> bool:
-        """默认 source 过滤函数。"""
-        if source is None:
-            return False
-        return source == "agent" or (source or "").startswith("agent-")
+        """默认 source 过滤函数（收敛至 _const.is_agent_source 真源）。"""
+        return is_agent_source(source)
 
     def _is_agent_source(self, source: str | None) -> bool:
         if source is None:
@@ -91,9 +102,48 @@ class EventDispatcher:
         return label == self._main_label
 
     def register_handler(self, event_type: type, handler_method: Callable) -> None:
+        # P2-9：类型校验对齐 DisplayEventBus.subscribe（非 DisplayEvent 子类抛 TypeError）
+        if not issubclass(event_type, DisplayEvent):
+            raise TypeError(
+                f"event_type 必须是 DisplayEvent 的子类，收到: {event_type}"
+            )
         self._custom_handlers[event_type] = handler_method
+        self._handlers_cache = None  # 缓存失效，下次 list_handlers() 重建
+
+    def register_group(self, name: str, mapping: dict[type, Callable]) -> None:
+        """注册声明式订阅组（方向D 步骤7）。
+
+        Args:
+            name: 订阅组名称（唯一标识，重复注册覆盖同组映射）。
+            mapping: 事件类型 → 处理器方法映射。
+
+        Raises:
+            TypeError: mapping 中存在非 DisplayEvent 子类的键（P2-9 对齐
+                DisplayEventBus.subscribe 校验）。
+        """
+        # P2-9：mapping 键类型校验（对齐 DisplayEventBus.subscribe）
+        for mapping_key in mapping:
+            if not issubclass(mapping_key, DisplayEvent):
+                raise TypeError(
+                    f"register_group {name!r} 的映射键必须是 DisplayEvent "
+                    f"的子类，收到: {mapping_key}"
+                )
+        self._handler_groups[name] = mapping
+        self._handlers_cache = None  # 缓存失效，下次 list_handlers() 重建
 
     def list_handlers(self) -> dict[type, Callable]:
+        """返回事件类型 → 处理器映射（结果缓存，只读使用）。
+
+        返回的 dict 为内部缓存对象，调用方应只读使用（勿修改，避免污染缓存）。
+        register_handler / register_group 后缓存失效，下次调用重新构建。
+
+        P3-9 并发说明：``_handlers_cache`` 无锁缓存——**注册仅在启动阶段
+        单线程执行**（TuiAssembly 装配 + _lifecycle.start 订阅），运行期
+        无动态注册调用方；读端（list_handlers）也仅在 start 阶段调用。
+        若未来引入运行期动态注册须改用 RLock 保护。
+        """
+        if self._handlers_cache is not None:
+            return self._handlers_cache
         from src.tui.events import event_types as _ET
         result: dict[type, Callable] = {
             _ET.ReasoningChunkEvent: self._on_reasoning_chunk,
@@ -109,7 +159,10 @@ class EventDispatcher:
             _ET.ModelPhaseEvent: self._on_model_phase,
             _ET.ToolSummaryEvent: self._on_tool_summary,
         }
+        for group in self._handler_groups.values():
+            result.update(group)
         result.update(self._custom_handlers)
+        self._handlers_cache = result
         return result
 
     # ── 事件处理器 ────────────────────────────────
@@ -186,10 +239,8 @@ class EventDispatcher:
             return
         if not event.info:
             return
-        _info = event.info
-        if len(_info) > self._max_error_length:
-            _info = _info[:self._max_error_length] + "..."
-        self._push_cmd(ErrorCmd(message=_info))
+        message = truncate_error_message(event.info, self._max_error_length)
+        self._push_cmd(ErrorCmd(message=message))
 
     def _on_tool_summary(self, event: "ToolSummaryEvent") -> None:
         if not self._is_agent_source(event.source):

@@ -14,45 +14,36 @@ from __future__ import annotations
 
 import logging
 import sys
-import time
 from typing import TYPE_CHECKING
 
-from src.tui._locks import _try_acquire_output_lock
+from src.renderer._locks import _try_acquire_output_lock
 from src.tui._screen import (
     _COLOR_ACCENT,
-    _COLOR_DIM,
     _COLOR_RESET,
     _COLOR_SEP,
-    _COLOR_SPEED,
-    _COLOR_TOOL_FAIL,
-    _COLOR_TOOL_OK,
-    _get_terminal_size,
-    clear_line,
     cursor_goto,
     cursor_restore,
     cursor_save,
     register_sigwinch_callback,
     reset_scroll_region,
-    scroll_down,
     scroll_up,
     set_scroll_region,
     sgr_reset,
+    unregister_sigwinch_callback,
 )
+from src.tui._stdout_tracker import _StdoutLineTracker as _ST
 from src.tui._animator import AnimatorContext
+from src.tui._input import _compute_cursor_visual_pos
 from src.tui._bottom_bar._layout import (
     _BOTTOM_MIN_HEIGHT,
     _BOTTOM_MIN_LINES,
-    _MIN_INPUT_ROWS,
     _is_narrow,
     _ansi_truncate,
     _visual_width,
-    _build_glow_ansi,
     _compute_input_rows,
-    _compute_bottom_lines_for,
     _draw_input_lines,
 )
 from src.tui._bottom_bar._status import _build_status_text
-from src.tui._bottom_bar._monitor import _SystemMonitor
 
 if TYPE_CHECKING:
     from src.tui._bottom_bar._bar import _BottomBar
@@ -170,7 +161,6 @@ def _do_ensure_cursor_in_lower(bb: "_BottomBar") -> None:
                 len(bb._subagent_lines), bb._completion.height,
             )
         else:
-            from src.tui._input import _compute_cursor_visual_pos
             max_input = max(1, term_w - 4)
             vis_row, vis_col = _compute_cursor_visual_pos(text, cursor_pos, max_input)
             total = max(_BOTTOM_MIN_LINES, bb._last_bottom_lines)
@@ -189,8 +179,6 @@ def _do_ensure_cursor_in_lower(bb: "_BottomBar") -> None:
 
 def _do_register_sigwinch(bb: "_BottomBar") -> None:
     """注册 SIGWINCH 信号处理器。"""
-    from src.tui._screen import register_sigwinch_callback
-
     def _on_sigwinch(cols: int, rows: int) -> None:
         bb._width_cache.force_refresh()
         bb._needs_full_repaint = True
@@ -198,7 +186,7 @@ def _do_register_sigwinch(bb: "_BottomBar") -> None:
             try:
                 bb._request_redraw_cb()
             except Exception:
-                pass
+                _logger.debug("SIGWINCH 回调触发 request_redraw 失败", exc_info=True)
     bb._sigwinch_cb = _on_sigwinch
     register_sigwinch_callback(bb._sigwinch_cb)
 
@@ -216,11 +204,10 @@ def _do_setup(bb: "_BottomBar") -> None:
         return
     bb._active = True
     _do_register_sigwinch(bb)
-    from src.tui._stdout_tracker import _StdoutLineTracker as _ST
+    # 显式行跟踪器：由装配层通过 RenderOutput.set_line_tracker 注入，
+    # 不再全局劫持 sys.__stdout__（防御性兜底：未注入时创建实例）
     if bb._tracker is None:
         bb._tracker = _ST(sys.__stdout__)
-    if sys.__stdout__ is not bb._tracker:
-        sys.__stdout__ = bb._tracker
     with _try_acquire_output_lock(name="bottom_bar.setup", timeout=1.0) as locked:
         if locked:
             bb._last_text = ""
@@ -251,13 +238,12 @@ def _do_teardown(bb: "_BottomBar") -> None:
     bb._active = False
     if bb._sigwinch_cb is not None:
         try:
-            from src.tui._screen import unregister_sigwinch_callback
             unregister_sigwinch_callback(bb._sigwinch_cb)
         except Exception:
-            pass
+            _logger.debug("注销 SIGWINCH 回调失败", exc_info=True)
         bb._sigwinch_cb = None
-    if bb._tracker is not None and sys.__stdout__ is bb._tracker:
-        sys.__stdout__ = bb._tracker._real_stdout
+    # 显式行跟踪器：不再恢复 sys.__stdout__（未劫持），仅刷出历史落盘
+    if bb._tracker is not None:
         try:
             bb._tracker._flush_history()
         except Exception:
@@ -278,6 +264,67 @@ def _do_teardown(bb: "_BottomBar") -> None:
     bb._last_bottom_lines = _BOTTOM_MIN_LINES
     bb._last_height = 0
     bb._last_sync_height = 0
+
+
+# ═══════════════════════════════════════════════════════════
+# force_redraw 子函数（方向E·步骤10 拆分）
+# ═══════════════════════════════════════════════════════════
+
+def _build_separator_line(bb: "_BottomBar", r1: int, tw: int,
+                          sep_start: int) -> list[str]:
+    """构建分隔线 + 状态文本内嵌片段。
+
+    方向E·步骤10 从 _do_force_redraw 拆出：纯字符串构建段，
+    输出与原内联逻辑逐字符一致。sep_start 由主函数计算传入
+    （narrow 分支不使用）。
+    """
+    buf: list[str] = []
+    if _is_narrow():
+        sep_len = min(tw - 2, 40)
+        sep = f"{_COLOR_SEP}\u2501{_COLOR_RESET}" * sep_len
+        buf.append(f"{cursor_goto(r1, 1)}  {sep}")
+    else:
+        # P1-4 修复：一次 snapshot 取全部状态字段（避免 5 次独立 property →
+        # 5 次独立加锁快照，跨线程时字段可能来自不同时刻）；_build_status_text
+        # 现接收 snap dict，从同一快照提取，保证
+        # 「tool_count>0 用 tool_phase_start 否则用 main_phase_start」一致性。
+        snap = bb._status.snapshot()
+        status_text = (
+            _build_status_text(snap) if snap.get("status_active") else ""
+        )
+        if snap.get("status_active") and status_text:
+            status_colored = f"{_COLOR_ACCENT}{status_text}{_COLOR_RESET}"
+            remaining = max(1, tw - 2 - _visual_width(status_text) - 1)
+            sep = _build_gradient(remaining, start_color=sep_start)
+            buf.append(f"{cursor_goto(r1, 1)}  {status_colored} {sep}")
+        else:
+            sep = _build_gradient(tw - 2, start_color=sep_start)
+            buf.append(f"{cursor_goto(r1, 1)}  {sep}")
+    return buf
+
+
+def _build_subagent_lines(bb: "_BottomBar", subagent_lines: list[str], tw: int,
+                          start: int) -> list[str]:
+    """构建 subagent 面板行片段。
+
+    方向E·步骤10 从 _do_force_redraw 拆出：逐行截断 + 光标定位，
+    输出与原内联逻辑逐字符一致。
+    """
+    buf: list[str] = []
+    for i, line in enumerate(subagent_lines):
+        sr = start + i
+        line = _ansi_truncate(line, tw)
+        buf.append(f"{cursor_goto(sr, 1)}\033[K" + line)
+    return buf
+
+
+def _build_status_line(bb: "_BottomBar", r2: int, new_status: str) -> list[str]:
+    """构建状态行片段。
+
+    方向E·步骤10 从 _do_force_redraw 拆出：输出与原内联逻辑逐字符一致。
+    （P2-12：删除未使用 tw 参数；状态行不做宽度截断，与原逻辑一致。）
+    """
+    return [f"{cursor_goto(r2, 1)}\033[K" + new_status]
 
 
 # ═══════════════════════════════════════════════════════════
@@ -310,8 +357,8 @@ def _do_force_redraw(bb: "_BottomBar") -> None:
             old_scroll_end = (
                 (bb._last_height if bb._last_height > 0 else height) - old_bottom_lines
             )
-            bb._last_status = new_status
-            bb._last_subagent_lines = list(subagent_lines)
+            # P3-14：_last_status / _last_subagent_lines 为只写不读死字段，已删除
+            # （原 bb._last_status = new_status / bb._last_subagent_lines = ... 移除）
             out = sys.__stdout__
             out.write(cursor_save())
             out.write(reset_scroll_region())
@@ -365,36 +412,14 @@ def _do_force_redraw(bb: "_BottomBar") -> None:
             r2 = subagent_start + len(subagent_lines)
             tw = bb._term_width()
 
-            # 分隔线
-            if _is_narrow():
-                sep_len = min(tw - 2, 40)
-                sep = f"{_COLOR_SEP}\u2501{_COLOR_RESET}" * sep_len
-                clear_buf.append(f"{cursor_goto(r1, 1)}  {sep}")
-            else:
-                sep_start = 45
-                if bb._animator.breath_frame > 0:
-                    sep_start = bb._animator.sine_color(40, 45, 10)
-                status_text = _build_status_text(
-                    bb._status_active, bb._main_phase, bb._main_phase_start,
-                    bb._tool_count, bb._tool_phase_start,
-                ) if bb._status_active else ""
-                if bb._status_active and status_text:
-                    status_colored = f"{_COLOR_ACCENT}{status_text}{_COLOR_RESET}"
-                    remaining = max(1, tw - 2 - _visual_width(status_text) - 1)
-                    sep = _build_gradient(remaining, start_color=sep_start)
-                    clear_buf.append(f"{cursor_goto(r1, 1)}  {status_colored} {sep}")
-                else:
-                    sep = _build_gradient(tw - 2, start_color=sep_start)
-                    clear_buf.append(f"{cursor_goto(r1, 1)}  {sep}")
-
-            # subagent 面板行
-            for i, line in enumerate(subagent_lines):
-                sr = subagent_start + i
-                line = _ansi_truncate(line, tw)
-                clear_buf.append(f"{cursor_goto(sr, 1)}\033[K" + line)
-
-            # 状态行
-            clear_buf.append(f"{cursor_goto(r2, 1)}\033[K" + new_status)
+            # 分隔线 / subagent 面板 / 状态行（方向E·步骤10 拆分子函数，
+            # 输出序列与原内联逻辑逐字符一致）
+            sep_start = 45
+            if bb._animator.breath_frame > 0:
+                sep_start = bb._animator.sine_color(40, 45, 10)
+            clear_buf.extend(_build_separator_line(bb, r1, tw, sep_start))
+            clear_buf.extend(_build_subagent_lines(bb, subagent_lines, tw, subagent_start))
+            clear_buf.extend(_build_status_line(bb, r2, new_status))
             out.write(''.join(clear_buf))
 
             # 输入行
@@ -427,6 +452,9 @@ def _do_force_redraw(bb: "_BottomBar") -> None:
 
 __all__ = [
     "_build_gradient",
+    "_build_separator_line",
+    "_build_subagent_lines",
+    "_build_status_line",
     "_do_sync_bottom_lines",
     "_do_ensure_cursor_in_upper",
     "_do_ensure_cursor_in_lower",

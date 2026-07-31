@@ -8,11 +8,10 @@ Mock 终端尺寸，不执行真实终端 I/O。
 from __future__ import annotations
 
 import logging
+from contextlib import ExitStack
 from unittest.mock import MagicMock, patch
 
 import pytest
-
-from src.tui._screen import _get_terminal_size
 
 
 class TestBottomBarInit:
@@ -318,6 +317,40 @@ class TestUtilityFunctions:
         result = _build_glow_ansi(0, 45, 12)
         assert result.startswith("\033[38;5;")
 
+    def test_visual_width_ansi_cjk(self):
+        from src.tui._bottom_bar import _visual_width
+        assert _visual_width("\033[38;5;45m你好\033[0m") == 4
+
+    def test_visual_width_emoji(self):
+        from src.tui._bottom_bar import _visual_width
+        # emoji 宽度 ≥ 1（wcswidth_simple 兜底为 1）
+        assert _visual_width("a😀") >= 2
+
+    def test_truncate_by_width_exact_width(self):
+        from src.tui._bottom_bar import _truncate_by_width
+        assert _truncate_by_width("hello", 5) == "hello"
+
+    def test_truncate_by_width_empty(self):
+        from src.tui._bottom_bar import _truncate_by_width
+        assert _truncate_by_width("", 3) == ""
+
+    def test_truncate_by_width_cjk_boundary(self):
+        from src.tui._bottom_bar import _truncate_by_width
+        # "你好世" 宽 6 > 5 → 截断为 "你好"（宽 4）
+        assert _truncate_by_width("你好世界", 5) == "你好"
+
+    def test_layout_utils_is_single_source(self):
+        """验证 _bottom_bar 与 _layout_utils 导出的工具函数为同一真源对象。"""
+        from src.tui._bottom_bar import _is_narrow, _visual_width, _truncate_by_width
+        from src.tui._bottom_bar._layout_utils import (
+            _is_narrow as src_is_narrow,
+            _visual_width as src_visual_width,
+            _truncate_by_width as src_truncate_by_width,
+        )
+        assert _is_narrow is src_is_narrow
+        assert _visual_width is src_visual_width
+        assert _truncate_by_width is src_truncate_by_width
+
 
 class TestSystemMonitor:
     """测试 _SystemMonitor。"""
@@ -365,6 +398,11 @@ class TestForceRedrawFullRepaintClear:
 
     验证新增修复：resize（full_repaint=True）且滚动区域扩大时，
     新内容区行 [old_scroll_end+1, scroll_end] 被正确清除。
+
+    ⚠️ 已知遗留（P2-12 评估结论）：本类为 ANSI 逐字节白盒断言，
+    与 _render.py 的 cursor_goto/清行序列实现细节强耦合（f"\\033[{r};1H\\033[K"）。
+    改动风险高：重构渲染输出格式将直接破坏此类断言。保留现状并加注释说明耦合性；
+    后续如需解耦，应先将渲染输出格式抽象为结构化写入记录再断言。
     """
 
     @pytest.fixture
@@ -415,7 +453,7 @@ class TestForceRedrawFullRepaintClear:
         mock_stdout = MagicMock()
 
         with patch("src.tui._bottom_bar._bar._get_terminal_size", return_value=mock_size):
-            with patch("src.tui._bottom_bar._layout._get_terminal_size", return_value=mock_size):
+            with patch("src.tui._bottom_bar._layout_utils._get_terminal_size", return_value=mock_size):
                 with patch("src.tui._bottom_bar._render.sys.__stdout__", mock_stdout):
                     with patch("src.tui._bottom_bar._render._try_acquire_output_lock") as mock_lock:
                         mock_lock.return_value.__enter__.return_value = True
@@ -559,7 +597,6 @@ class TestForceRedrawExceptionHandling:
         mock_stdout = MagicMock()
         mock_stdout.write.side_effect = OSError("Broken pipe")
 
-        from src.tui._locks import _try_acquire_output_lock
         with patch("src.tui._bottom_bar._render.sys.__stdout__", mock_stdout):
             with patch("src.tui._bottom_bar._render._try_acquire_output_lock") as mock_lock:
                 mock_lock.return_value.__enter__.return_value = True
@@ -675,6 +712,11 @@ class TestSyncBottomLinesResizeClear:
     """测试 sync_bottom_lines() 中 resize 路径的行清除逻辑。
 
     验证新增修复：resize 时旧底部栏区域的 ANSI 残留行被正确清除。
+
+    ⚠️ 已知遗留（P2-12 评估结论）：本类为 ANSI 逐字节白盒断言，
+    与 _render.py 的 cursor_goto/清行序列实现细节强耦合。
+    改动风险高：重构渲染输出格式将直接破坏此类断言。保留现状并加注释说明耦合性；
+    后续如需解耦，应先将渲染输出格式抽象为结构化写入记录再断言。
     """
 
     @pytest.fixture
@@ -815,7 +857,37 @@ class TestCompletionRaceCondition:
         bb._active = True
         return bb
 
-    def test_hide_saves_last_index(self, bottom_bar):
+    @pytest.fixture
+    def deterministic_terminal(self):
+        """确定性终端环境：消除真实终端 I/O 副作用。
+
+        对照 TestForceRedrawFullRepaintClear._run_force_redraw 的 5 层 patch 模式：
+          - _bar._get_terminal_size / _layout_utils._get_terminal_size → mock_size (80, 24)
+          - _render.sys.__stdout__ → mock_stdout（MagicMock 带 write/flush）
+          - _render._try_acquire_output_lock → 可获取的锁（locked=True）
+          - _render.sgr_reset → no-op
+
+        show_completions/hide_completions 内部调用 force_redraw() 触发终端写入，
+        本 fixture 拦截全部 I/O 使竞态测试在无真实终端环境下可运行（CI 友好）。
+        """
+        mock_stdout = MagicMock()
+        mock_size = (80, 24)
+        with ExitStack() as stack:
+            stack.enter_context(
+                patch("src.tui._bottom_bar._bar._get_terminal_size", return_value=mock_size)
+            )
+            stack.enter_context(
+                patch("src.tui._bottom_bar._layout_utils._get_terminal_size", return_value=mock_size)
+            )
+            stack.enter_context(patch("src.tui._bottom_bar._render.sys.__stdout__", mock_stdout))
+            mock_lock = stack.enter_context(
+                patch("src.tui._bottom_bar._render._try_acquire_output_lock")
+            )
+            mock_lock.return_value.__enter__.return_value = True
+            stack.enter_context(patch("src.tui._bottom_bar._render.sgr_reset"))
+            yield {"stdout": mock_stdout, "size": mock_size, "lock": mock_lock}
+
+    def test_hide_saves_last_index(self, bottom_bar, deterministic_terminal):
         """hide_completions 后 _last_idx_before_hide 应等于隐藏时的 _idx。"""
         # 模拟有 5 个补全项，选中 idx=3
         items = [f"item{i}" for i in range(5)]
@@ -833,7 +905,7 @@ class TestCompletionRaceCondition:
         assert bottom_bar._completion._last_idx_before_hide == 3
         assert not bottom_bar.is_completion_visible
 
-    def test_get_selected_completion_index_after_hide(self, bottom_bar):
+    def test_get_selected_completion_index_after_hide(self, bottom_bar, deterministic_terminal):
         """隐藏后 get_selected_completion_index() 返回最后保存的索引。"""
         items = [f"item{i}" for i in range(5)]
         bottom_bar.show_completions(items=items, selected_idx=2, texts=items)
@@ -844,7 +916,7 @@ class TestCompletionRaceCondition:
         result = bottom_bar.get_selected_completion_index()
         assert result == 2
 
-    def test_get_selected_completion_index_when_visible(self, bottom_bar):
+    def test_get_selected_completion_index_when_visible(self, bottom_bar, deterministic_terminal):
         """弹窗可见时 get_selected_completion_index() 返回实时 _idx。"""
         items = [f"item{i}" for i in range(5)]
         bottom_bar.show_completions(items=items, selected_idx=4, texts=items)
@@ -854,7 +926,7 @@ class TestCompletionRaceCondition:
         result = bottom_bar.get_selected_completion_index()
         assert result == 4
 
-    def test_rapid_hide_show_preserves_index(self, bottom_bar):
+    def test_rapid_hide_show_preserves_index(self, bottom_bar, deterministic_terminal):
         """快速连续 hide/show 后，get_selected_completion_index 返回正确索引。"""
         items = [f"item{i}" for i in range(5)]
 
@@ -880,16 +952,18 @@ class TestCompletionRaceCondition:
         result = bottom_bar.get_selected_completion_index()
         assert result == 1
 
-    def test_local_variable_atomic_read(self, bottom_bar):
-        """验证 hide_completions 中使用局部变量保存 _idx。
+    def test_local_variable_atomic_read(self, bottom_bar, deterministic_terminal):
+        """验证 hide（_CompletionPopup 正式方法）中使用局部变量保存 _idx。
 
         通过检查源代码确认 local variable 模式存在（编译时验证）。
         此测试是防御性，确保修复模式不会被后续修改退化。
+        方向E·步骤10：hide 逻辑从 _BottomBar.hide_completions 迁入
+        _CompletionPopup.hide，检查目标同步更新。
         """
         import inspect
-        from src.tui import _bottom_bar
-        source = inspect.getsource(_bottom_bar._BottomBar.hide_completions)
-        # 应包含 saved_idx = self._completion._idx 模式
+        from src.tui._bottom_bar._popup import _CompletionPopup
+        source = inspect.getsource(_CompletionPopup.hide)
+        # 应包含 saved_idx = self._idx 模式
         assert "saved_idx" in source or "_last_idx_before_hide" in source
         # 确认 _last_idx_before_hide 赋值使用局部变量而非直接引用
         assert "saved_idx" in source
@@ -987,3 +1061,290 @@ class TestNegativeCursorCoordinateClamp:
         # 光标行号应 ≥ 1
         assert ct.pos.row >= 1
         assert ct.pos.col >= 1
+
+
+# ═══════════════════════════════════════════════════════════
+# BottomBarStatus 状态对象拆分测试（方向E·步骤9）
+# ═══════════════════════════════════════════════════════════
+
+class TestBottomBarStatusObject:
+    """测试 BottomBarStatus 状态对象拆分（方向E·步骤9）。
+
+    验证：
+    1. BottomBarStatus 独立状态对象加锁 + 快照行为
+    2. _BottomBar 组合持有状态对象，私有属性委托读写路径可用
+    3. 跨线程写 / 读无竞态
+    """
+
+    def test_bottom_bar_status_snapshot_regression(self):
+        """snapshot() 返回独立副本且反映状态更新。"""
+        from src.tui._bottom_bar._state import BottomBarStatus
+        st = BottomBarStatus()
+        assert st.snapshot()["tool_count"] == 0
+        st.increment_tool()
+        snap = st.snapshot()
+        assert snap["tool_count"] == 1
+        assert snap["tool_total"] == 1
+        # 修改副本不影响内部状态
+        snap["tool_count"] = 999
+        assert st.snapshot()["tool_count"] == 1
+
+    def test_bottom_bar_status_set_main_phase_start_update(self):
+        """set_main_phase 阶段变化时更新 _main_phase_start，相同阶段不刷新。"""
+        from src.tui._bottom_bar._state import BottomBarStatus
+        st = BottomBarStatus()
+        st.set_main_phase("thinking")
+        first_start = st.snapshot()["main_phase_start"]
+        assert first_start > 0.0
+        st.set_main_phase("thinking")  # 相同阶段不刷新
+        assert st.snapshot()["main_phase_start"] == first_start
+        st.set_main_phase("answering")  # 变化刷新
+        second_start = st.snapshot()["main_phase_start"]
+        assert second_start >= first_start
+
+    def test_bottom_bar_status_increment_tool_phase_start(self):
+        """increment_tool 首次置位 _tool_phase_start，后续不刷新。"""
+        from src.tui._bottom_bar._state import BottomBarStatus
+        st = BottomBarStatus()
+        assert st.snapshot()["tool_phase_start"] == 0.0
+        st.increment_tool()
+        assert st.snapshot()["tool_phase_start"] > 0.0
+        first = st.snapshot()["tool_phase_start"]
+        st.increment_tool()
+        assert st.snapshot()["tool_phase_start"] == first
+
+    def test_bottom_bar_status_thread_safety_regression(self):
+        """主线程写 + 子线程读并发 100 次，无异常且最终计数一致。"""
+        import threading
+        from src.tui._bottom_bar._state import BottomBarStatus
+        st = BottomBarStatus()
+        errors = []
+
+        def writer():
+            try:
+                for _ in range(100):
+                    st.increment_tool()
+                    st.set_main_phase("thinking")
+            except Exception as exc:  # pragma: no cover
+                errors.append(exc)
+
+        def reader():
+            try:
+                for _ in range(100):
+                    snap = st.snapshot()
+                    assert snap["tool_count"] >= 0
+            except Exception as exc:  # pragma: no cover
+                errors.append(exc)
+
+        t1 = threading.Thread(target=writer)
+        t2 = threading.Thread(target=reader)
+        t1.start()
+        t2.start()
+        t1.join(timeout=5)
+        t2.join(timeout=5)
+        assert not errors, f"并发读写异常: {errors}"
+        assert st.snapshot()["tool_count"] == 100
+        assert st.snapshot()["tool_total"] == 100
+
+    def test_status_object_delegation_regression(self):
+        """_BottomBar 公开方法委托 BottomBarStatus，私有属性读写路径可用。"""
+        from src.tui._bottom_bar import _BottomBar
+        bb = _BottomBar()
+        bb.enable_status()
+        assert bb._status_active is True
+        assert bb.is_status_active is True
+        bb.set_model_name("deepseek-v3")
+        assert bb._model_name == "deepseek-v3"
+        bb.increment_tool()
+        assert bb._tool_count == 1
+        assert bb._tool_total == 1
+        bb.decrement_tool()
+        assert bb._tool_count == 0
+        bb.set_main_phase("answering")
+        assert bb._main_phase == "answering"
+        # 直接属性写入（兼容路径）也生效
+        bb._tool_count = 5
+        assert bb._tool_count == 5
+        bb.disable_status()
+        assert bb._status_active is False
+
+    def test_get_status_elapsed_seconds_pure(self):
+        """get_status_elapsed_seconds 为纯状态职责，不依赖 _snapshot。"""
+        from src.tui._bottom_bar._state import BottomBarStatus
+        st = BottomBarStatus()
+        assert st.get_status_elapsed_seconds() == 0.0
+        st.set_main_phase("thinking")
+        elapsed = st.get_status_elapsed_seconds()
+        assert elapsed >= 0.0
+
+
+# ═══════════════════════════════════════════════════════════
+# 弹窗正式方法 + 状态文本收敛 + force_redraw 拆分测试（方向E·步骤10）
+# ═══════════════════════════════════════════════════════════
+
+class TestBottomBarFormalMethodsAndConvergence:
+    """测试 _CompletionPopup 正式方法 + 状态文本收敛 + force_redraw 拆分（方向E·步骤10）。
+
+    验证：
+    1. _CompletionPopup.show/hide/reset 正式方法接口
+    2. _BottomBar.show_completions/hide_completions 委托正式方法
+    3. _build_status_text 为阶段文本唯一入口，_format_status 不重复
+    4. _do_force_redraw 拆分子函数后输出关键 ANSI 序列存在
+    """
+
+    def test_popup_show_hide_formal_methods_regression(self):
+        """_CompletionPopup.show() 后字段正确、hide() 后清空且 _last_idx_before_hide 保存。"""
+        from src.tui._bottom_bar import _CompletionPopup
+        cp = _CompletionPopup()
+        cp.show(
+            ["foo", "bar"], 1, 4,
+            title="选择", texts=["foo", "bar", "baz"],
+            start_pos=1, orig_prefix="/f", types=["command", "dir"],
+            match_prefix="/f",
+        )
+        assert cp.is_visible is True
+        assert cp._visible is True
+        assert cp._popup_height == 4
+        assert cp._title == "选择"
+        assert cp._is_selection is True
+        assert cp._items == ["foo", "bar"]
+        assert cp._texts == ["foo", "bar", "baz"]
+        assert cp._idx == 1
+        assert cp._start_pos == 1
+        assert cp._orig_prefix == "/f"
+        assert cp._types == ["command", "dir"]
+        assert cp._match_prefix == "/f"
+
+        cp.hide()
+        assert cp.is_visible is False
+        assert cp._last_idx_before_hide == 1
+        assert cp._popup_height == 0
+        assert cp._items == []
+        assert cp._texts == []
+        assert cp._idx == 0
+
+    def test_popup_reset_formal_method_regression(self):
+        """_CompletionPopup.reset() 清空全部字段且不保存 _last_idx_before_hide。"""
+        from src.tui._bottom_bar import _CompletionPopup
+        cp = _CompletionPopup()
+        cp.show(["a"], 0, 3, texts=["a"])
+        assert cp.is_visible is True
+        cp.reset()
+        assert cp.is_visible is False
+        assert cp._popup_height == 0
+        assert cp._items == []
+        assert cp._title == "补全"
+        assert cp._is_selection is False
+
+    def test_bottom_bar_show_completions_delegates_regression(self):
+        """bb.show_completions() 委托 _CompletionPopup.show()，字段正确。"""
+        from src.tui._bottom_bar import _BottomBar
+        bb = _BottomBar()
+        bb._active = True
+        # show_completions 会触发 force_redraw → mock 终端 I/O
+        with patch("src.tui._bottom_bar._bar._get_terminal_size", return_value=(80, 24)):
+            with patch("src.tui._bottom_bar._layout_utils._get_terminal_size", return_value=(80, 24)):
+                with patch("src.tui._bottom_bar._render.sys.__stdout__", MagicMock()):
+                    with patch("src.tui._bottom_bar._render._try_acquire_output_lock") as mock_lock:
+                        mock_lock.return_value.__enter__.return_value = True
+                        with patch("src.tui._bottom_bar._render.sgr_reset"):
+                            bb.show_completions(
+                                items=["foo", "bar", "baz"], selected_idx=2,
+                                texts=["foo", "bar", "baz"],
+                            )
+        assert bb._completion._visible is True
+        assert bb._completion._popup_height == 5  # 3 项 + 2
+        assert bb._completion._items == ["foo", "bar", "baz"]
+        assert bb._completion._idx == 2
+        assert bb.is_completion_visible is True
+
+    def test_bottom_bar_hide_completions_delegates_regression(self):
+        """bb.hide_completions() 委托 _CompletionPopup.hide()，_last_idx_before_hide 保存。"""
+        from src.tui._bottom_bar import _BottomBar
+        bb = _BottomBar()
+        bb._active = True
+        with patch("src.tui._bottom_bar._bar._get_terminal_size", return_value=(80, 24)):
+            with patch("src.tui._bottom_bar._layout_utils._get_terminal_size", return_value=(80, 24)):
+                with patch("src.tui._bottom_bar._render.sys.__stdout__", MagicMock()):
+                    with patch("src.tui._bottom_bar._render._try_acquire_output_lock") as mock_lock:
+                        mock_lock.return_value.__enter__.return_value = True
+                        with patch("src.tui._bottom_bar._render.sgr_reset"):
+                            bb.show_completions(
+                                items=["a", "b", "c", "d", "e"], selected_idx=3,
+                                texts=["a", "b", "c", "d", "e"],
+                            )
+                            assert bb._completion._idx == 3
+                            bb.hide_completions()
+        assert bb._completion._last_idx_before_hide == 3
+        assert not bb.is_completion_visible
+
+    def test_status_text_convergence_regression(self):
+        """状态文本收敛：_build_status_text 为阶段文本唯一入口，_format_status 不重复阶段文本。
+
+        P3-21 说明：旧版 _format_status 本就不含「思考」阶段段（该段属
+        _build_status_text 供分隔线使用），本断言固化既有行为——即使上下文
+        相同（enable_status + thinking 阶段），_format_status 也不产生阶段
+        文本段，防止未来收敛时误将阶段段并入状态行。
+        """
+        import re
+        import time
+        from src.tui._bottom_bar import _BottomBar
+        from src.tui._bottom_bar._status import _PHASE_DISPLAY, _build_status_text
+
+        # 阶段显示映射存在
+        assert _PHASE_DISPLAY["thinking"] == "思考"
+
+        # P1-4：_build_status_text 现接收一次性 snapshot dict（从同一快照提取
+        # 字段，消除跨字段非原子读取）；此处构造与 BottomBarStatus.snapshot()
+        # 同构的 dict 验证「· 思考 X.XXs」格式（唯一入口）
+        snap = {
+            "status_active": True,
+            "main_phase": "thinking",
+            "main_phase_start": time.monotonic() - 3.2,
+            "tool_count": 0,
+            "tool_phase_start": 0.0,
+        }
+        text = _build_status_text(snap)
+        assert re.match(r"^· 思考 \d+\.\d{2}s$", text)
+
+        # _format_status 状态行（相同阶段上下文）不产生阶段文本段重复
+        bb = _BottomBar()
+        bb.enable_status()
+        bb.set_main_phase("thinking")
+        result = bb._format_status()
+        assert "思考" not in result
+
+    def test_force_redraw_output_snapshot_regression(self):
+        """force_redraw 拆分后输出关键 ANSI 序列存在（分隔线/状态行/滚动区域）。"""
+        from src.tui._bottom_bar import _BottomBar
+        bb = _BottomBar()
+        bb._active = True
+        bb._last_text = ""
+        bb._cached_cpu_percent = 0.0
+        bb._cached_mem_percent = 0.0
+        bb._last_system_stats_time = float('inf')
+        mock_stdout = MagicMock()
+
+        with patch("src.tui._bottom_bar._bar._get_terminal_size", return_value=(80, 24)):
+            with patch("src.tui._bottom_bar._layout_utils._get_terminal_size", return_value=(80, 24)):
+                with patch("src.tui._bottom_bar._render.sys.__stdout__", mock_stdout):
+                    with patch("src.tui._bottom_bar._render._try_acquire_output_lock") as mock_lock:
+                        mock_lock.return_value.__enter__.return_value = True
+                        with patch("src.tui._bottom_bar._render.sgr_reset"):
+                            bb.force_redraw()
+
+        parts = []
+        for call_args in mock_stdout.write.call_args_list:
+            args, _ = call_args
+            if args and isinstance(args[0], str):
+                parts.append(args[0])
+        all_writes = ''.join(parts)
+
+        # 分隔线行（r1）光标定位
+        assert "\033[20;1H" in all_writes or "\033[21;1H" in all_writes
+        # 状态行清行序列
+        assert "\033[K" in all_writes
+        # 分隔线 gradient 或状态行 ANSI 颜色
+        assert "\033[38;5;" in all_writes or "\033[0m" in all_writes
+        # reset_scroll_region
+        assert "\033[r" in all_writes

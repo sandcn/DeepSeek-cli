@@ -17,7 +17,7 @@ from .file_ops import (
 )
 from ..core.constants import GREEN, RED, DIM, RESET
 from ..tui._diff_renderer import render_diff_to_ansi
-from ..tui._locks import (
+from ..renderer._locks import (
     diff_active,
 )
 from ..core.sandbox_manager import async_record_file_change_from_context

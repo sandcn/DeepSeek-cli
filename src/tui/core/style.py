@@ -8,14 +8,21 @@
 设计原则：
   - 不可变：Style 为冻结 dataclass，所有合并操作返回新实例
   - 纯函数：to_ansi()/apply() 无副作用，结果可缓存
-  - 延迟导入：from_theme() 方法体内延迟加载 THEME，避免模块加载顺序依赖
-  - 零依赖：仅使用标准库，不依赖 src/tui/ 上层模块
+  - 最小依赖：仅依赖 src/tui/_const.py（Layer 0 常量/枚举），不依赖上层 TUI 模块
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import ClassVar
+
+# 紧急路径 ANSI 序列常量 — 唯一真源在 _const.py（Layer 0），此处 re-export 保持兼容
+from src.tui._const import (
+    ANSI_EMERGENCY_RED,
+    ANSI_EMERGENCY_YELLOW,
+    ANSI_EMERGENCY_RESET,
+    ANSI_EMERGENCY_CURSOR_BOTTOM,
+)
 
 
 __all__: list[str] = [
@@ -136,67 +143,6 @@ class Style:
             dim=other.dim or self.dim,
             underline=other.underline or self.underline,
         )
-
-    @classmethod
-    def from_theme(cls, key: str) -> Style:
-        """从 THEME 语义键解析构建 Style。
-
-        解析 THEME 字典中的 ANSI 前景色/背景色码，
-        提取 256 色号构建 Style。支持 ``38;5;N`` 和 ``48;5;N`` 格式。
-
-        Args:
-            key: THEME 字典中的语义键名（如 "border_breath" / "user"）。
-
-        Returns:
-            解析后的 Style 实例。键不存在或解析失败时返回空 Style。
-        """
-        import re
-        # 方法体内延迟导入，避免模块加载循环
-        from .theme import THEME
-
-        color_str = THEME.get(key, "")
-        if not color_str:
-            return cls()
-
-        fg: int | None = None
-        bg: int | None = None
-
-        fg_match = re.search(r"38;5;(\d+)", color_str)
-        if fg_match:
-            fg = int(fg_match.group(1))
-
-        bg_match = re.search(r"48;5;(\d+)", color_str)
-        if bg_match:
-            bg = int(bg_match.group(1))
-
-        # 检测粗体/暗淡等 SGR 参数
-        # 使用正则精确匹配独立 SGR 参数 1（加粗），
-        # 匹配 ``1m`` 和 ``1;`` 两种 ANSI SGR 格式，
-        # 避免误匹配 21m(双下划线)、31m(红色) 等含"1"的序列。
-        bold = bool(re.search(r'(?<!\d)1[;m]', color_str))
-        dim = "2m" in color_str
-        italic = "3m" in color_str
-        underline = "4m" in color_str
-
-        return cls(fg=fg, bg=bg, bold=bold, italic=italic, dim=dim, underline=underline)
-
-    @classmethod
-    def parse_theme_color(cls, key: str) -> int | None:
-        """从 THEME 语义键提取 256 色号。
-
-        Args:
-            key: THEME 字典的语义键（如 "title", "system" 等）。
-
-        Returns:
-            色号整数 (0-255)，键不存在或格式不匹配时返回 None。
-        """
-        from .theme import THEME
-        import re
-        value = THEME.get(key, "")
-        match = re.search(r"38;5;(\d+)", str(value))
-        if match:
-            return int(match.group(1))
-        return None
 
     @classmethod
     def with_props(cls, fg=None, bg=None, bold=None, italic=None, dim=None, underline=None):
@@ -547,9 +493,4 @@ SEP_COLOR_END: int = 237        # 分隔线结束色 — 深灰（make_sep_gradi
 # 紧急路径 ANSI 序列常量（直写终端，绕过 Rich 管线）
 # ════════════════════════════════════════════════════════
 # 用于队列满/render 崩溃等无法通过正常渲染管线输出的场景。
-# 提取为 style.py 中的命名常量，const.py 通过导入引用以避免重复定义。
-
-ANSI_EMERGENCY_RED: str = "\033[31m"              # 紧急红色
-ANSI_EMERGENCY_YELLOW: str = "\033[33m"           # 紧急黄色
-ANSI_EMERGENCY_RESET: str = "\033[0m"             # 紧急 RESET
-ANSI_EMERGENCY_CURSOR_BOTTOM: str = "\033[9999;1H"  # 光标移至底行
+# 唯一真源在 src/tui/_const.py（Layer 0），本文件顶部导入并 re-export（步骤 4.5）。

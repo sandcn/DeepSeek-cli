@@ -2,6 +2,13 @@
 
 提供 MessageDisplayContext（消息上下文封装）、display_messages（消息列表显示）、
 RoleConfig（角色图标配置）。
+
+★ 输出路径统一（2026-07-31 方向C 步骤4）：本函数为「非 ChatUI 上下文兜底直写实现」。
+ChatUI 活跃时消息显示统一走路径 A（``ChatUIConsumer.display_messages →
+DisplayMsgsCmd → TuiRenderer._do_display_messages → on_display_messages``，
+经 render_lock 保护）；调用方（``CommandUiAdapter.display_messages`` /
+``_session_setup``）已委托路径 A。本函数保留供无 ChatUI 场景（如单次模式）
+与向后兼容 re-export（``src.tui.pipeline``）使用。
 """
 
 from __future__ import annotations
@@ -87,10 +94,13 @@ def display_messages(
     idx_map: list[int] | None = None,
     speed: int = 0,
 ) -> None:
-    """将消息列表渲染到终端（简化版 — 直接写入 stdout）。
+    """将消息列表渲染到终端（非 ChatUI 上下文兜底直写实现）。
 
-    pipeline/message_display.py 已删除（TUI 重构），此为精简内置替代。
-    保留与旧版的接口兼容。
+    ★ 输出路径统一（2026-07-31 方向C 步骤4）：ChatUI 活跃时消息显示由路径 A
+    （``ChatUIConsumer.display_messages`` → ``DisplayMsgsCmd`` 管线）承担，本函数
+    仅在无 ChatUI 场景（单次模式等）作为兜底直接写入 ``sys.__stdout__``；
+    调用方（``CommandUiAdapter`` / ``_session_setup``）已委托路径 A。
+    函数体零改动，保留向后兼容 re-export。
 
     Args:
         data: 消息列表（不含 system 消息）。

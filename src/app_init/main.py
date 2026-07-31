@@ -54,7 +54,9 @@ async def main():
         set_current_trace_id(generate_trace_id())
     obs.start()
 
-    output_consumer = OutputConsumer()
+    # 单消费路径策略显式声明（方向D 步骤7）：ChatUI 活跃时 OutputEvent 由
+    # ChatUIConsumer 渲染管线消费，OutputConsumer 仅处理非 ChatUI 上下文输出。
+    output_consumer = OutputConsumer(chat_ui_managed=True)
     output_consumer.start()
 
     # ── session 子命令：无异步操作，快速返回 ──

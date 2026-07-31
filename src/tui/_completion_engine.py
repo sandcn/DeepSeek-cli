@@ -12,9 +12,9 @@
 from __future__ import annotations
 
 import os
+import threading
 import time
 import glob as _glob_module
-from pathlib import Path
 from typing import Callable, TypeVar
 
 T = TypeVar("T")
@@ -67,6 +67,14 @@ def _default_commands_source() -> list[str]:
 
 
 # ── 补全引擎 ────────────────────────────────────────────
+
+
+# ── 主题适配器（模块级懒加载单例） ──────────────────────────
+# CommandUiAdapter 无状态，复用同一实例避免每次缓存刷新（TTL 300s）
+# 重复构造。延迟导入保留（避免 core→tui 循环依赖）。
+# 双检锁保证多线程并发首次访问时只构造一次（线程安全单例）。
+_THEME_ADAPTER = None
+_THEME_ADAPTER_LOCK = threading.Lock()
 
 
 class CompletionEngine:
@@ -125,11 +133,15 @@ class CompletionEngine:
 
     @staticmethod
     def _fetch_themes() -> list[tuple[str, str]]:
-        try:
-            from ..core.theme import get_theme_names_with_desc
-            return list(get_theme_names_with_desc())
-        except Exception:
-            return []
+        # 延迟导入避免循环依赖：主题名来自 core 层 CommandUiAdapter
+        # （原 from ..core.theme 指向不存在的模块，2026-07-31 修复幽灵导入）
+        from src.core.commands._ui_adapter import CommandUiAdapter
+        global _THEME_ADAPTER
+        if _THEME_ADAPTER is None:
+            with _THEME_ADAPTER_LOCK:
+                if _THEME_ADAPTER is None:
+                    _THEME_ADAPTER = CommandUiAdapter()
+        return list(_THEME_ADAPTER.get_theme_names_with_desc())
 
     # ── 主入口 ─────────────────────────────────────────
 

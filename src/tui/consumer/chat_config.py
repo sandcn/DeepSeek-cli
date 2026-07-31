@@ -16,7 +16,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
-from ..config import ConfigBase
+from .._config import ConfigBase
 
 
 __all__: list[str] = ["ChatConfig"]

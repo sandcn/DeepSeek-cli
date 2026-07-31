@@ -19,9 +19,20 @@ from .internal.agent._capture_manager import _safe_restore as safe_restore_stdou
 from .internal.agent._subagent_spawner import SubAgentSpawner
 from .subagent import SubAgent
 from .constants import RED, RESET
-from ..tui.events.consumers import publish_output
 
 _logger = logging.getLogger(__name__)
+
+
+def _publish_output(text: str, level: str = "info", source: str = "") -> None:
+    """发布输出事件（经 get_output_publisher 工厂，工厂返回 None 时静默降级；真实无头模式经 OutputConsumer 兜底直写终端）。
+
+    替代模块级 ``from ..tui.events.consumers import publish_output`` 的直接依赖，
+    实现 core → display_target Protocol 依赖倒置。
+    """
+    from .display_target import get_output_publisher
+    publisher = get_output_publisher()
+    if publisher is not None:
+        publisher(text, level=level, source=source)
 
 # ── 常量 ──────────────────────────────────────────────
 _TIMEOUT = 3.0  # 显示停止等超时（秒）
@@ -358,10 +369,10 @@ class ParallelExecutor:
         self._stream_results_markdown(results)
 
         # ★ 终端光标重定位到下一行行首
-        #   publish_output 内部通过 OutputConsumer 处理，OutputConsumer
+        #   _publish_output 内部通过 OutputConsumer 处理，OutputConsumer
         #   已内置 output_lock 保护。当 ChatUI 激活时自动跳过（由 _on_output 处理），
         #   当 ChatUI 未激活时写入终端。
-        publish_output("\r", level="raw")
+        _publish_output("\r", level="raw")
 
     async def _execute_with_error_handling(
         self, coro, specs: List[Dict[str, Any]], display: EventBusDisplayProxy,
@@ -465,7 +476,7 @@ class ParallelExecutor:
                             except Exception:
                                 _logger.warning("dispatch_agent tool_done 异常", exc_info=True)
                 # 换行，确保后续 markdown 内容从新行开始
-                publish_output("", level="raw")
+                _publish_output("", level="raw")
 
             # 在线程池中执行所有终端输出操作，避免同步 IO 阻塞事件循环
             # 统一通过 _do_terminal_output 路由：ChatUI 激活时走 write_line，

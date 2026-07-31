@@ -107,11 +107,13 @@ class TestInputDispatchKeyEvent:
 
     @pytest.fixture
     def input_(self, tmp_path):
-        """创建 Input 实例，mock 内部方法和回调。
+        """创建 Input 实例，mock 拆分后分发目标的底层组件方法。
 
-        统一 Input 类中 _dispatch_key_event 直接调用 self._backspace() /
-        self._enter() / self._delete() 等方法（不再通过 _buffer 子对象），
-        因此直接 mock Input 实例上的这些方法。
+        方向A 步骤1 拆分后：``_dispatch_key_event`` 位于 InputDispatcher，
+        内部直接调用 InputBufferEditor 的编辑方法与自身辅助方法
+        （_dismiss_completion / _trigger_auto_completion / _handle_tab 等）。
+        因此 mock 目标为 ``input_._dispatcher`` / ``input_._buffer_editor``
+        的对应方法（Input 薄外观仅转发，不再直接持有编辑方法）。
         """
         mock_cache = MagicMock()
         mock_cache.get_width.return_value = 80
@@ -123,30 +125,32 @@ class TestInputDispatchKeyEvent:
                 history_file=tmp_path / "test_history",
                 term_width_cache=mock_cache,
             )
-            # Mock 内部编辑方法（统一 Input 类直接调用 self._xxx，不通过 _buffer）
-            inp._enter = MagicMock()
-            inp._backspace = MagicMock()
-            inp._delete = MagicMock()
-            inp._delete_word_left = MagicMock()
-            inp._kill_to_bol = MagicMock()
-            inp._kill_to_eol = MagicMock()
-            inp._home = MagicMock()
-            inp._end = MagicMock()
-            inp._left = MagicMock()
-            inp._right = MagicMock()
-            inp._word_left = MagicMock()
-            inp._word_right = MagicMock()
-            inp.handle_char = MagicMock()
-            inp._handle_tab = MagicMock()
-            inp._dismiss_completion = MagicMock()
-            inp._trigger_auto_completion = MagicMock()
-            inp._handle_arrow_up = MagicMock()
-            inp._handle_arrow_down = MagicMock()
-            inp._special_key_callback = None
-            inp._completion_callback = None
-            inp._completion_navigate_callback = None
-            inp._dismiss_completion_callback = None
-            inp._auto_completion_callback = None
+            # Mock InputDispatcher 辅助方法
+            inp._dispatcher._dismiss_completion = MagicMock()
+            inp._dispatcher._trigger_auto_completion = MagicMock()
+            inp._dispatcher._handle_tab = MagicMock()
+            inp._dispatcher._handle_arrow_up = MagicMock()
+            inp._dispatcher._handle_arrow_down = MagicMock()
+            # Mock InputBufferEditor 编辑方法
+            inp._buffer_editor._enter = MagicMock()
+            inp._buffer_editor._backspace = MagicMock()
+            inp._buffer_editor._delete = MagicMock()
+            inp._buffer_editor._delete_word_left = MagicMock()
+            inp._buffer_editor._kill_to_bol = MagicMock()
+            inp._buffer_editor._kill_to_eol = MagicMock()
+            inp._buffer_editor._home = MagicMock()
+            inp._buffer_editor._end = MagicMock()
+            inp._buffer_editor._left = MagicMock()
+            inp._buffer_editor._right = MagicMock()
+            inp._buffer_editor._word_left = MagicMock()
+            inp._buffer_editor._word_right = MagicMock()
+            inp._buffer_editor.handle_char = MagicMock()
+            # 回调引用保持 None（真实分发路径按 None 短路）
+            inp._dispatcher._special_key_callback = None
+            inp._dispatcher._completion_callback = None
+            inp._dispatcher._completion_navigate_callback = None
+            inp._dispatcher._dismiss_completion_callback = None
+            inp._dispatcher._auto_completion_callback = None
             yield inp
         finally:
             os.close(fd)
@@ -155,116 +159,116 @@ class TestInputDispatchKeyEvent:
         """Enter → 关闭补全 + 提交输入。"""
         event = KeyEvent(kind="enter")
         input_._dispatch_key_event(event)
-        input_._dismiss_completion.assert_called_once()
-        input_._enter.assert_called_once()
+        input_._dispatcher._dismiss_completion.assert_called_once()
+        input_._buffer_editor._enter.assert_called_once()
 
     def test_tab_dispatch(self, input_):
         """Tab → 调用补全处理。"""
         event = KeyEvent(kind="tab")
         input_._dispatch_key_event(event)
-        input_._handle_tab.assert_called_once()
+        input_._dispatcher._handle_tab.assert_called_once()
 
     def test_backspace_dispatch(self, input_):
         """Backspace → 关闭补全 + 退格 + 自动补全。"""
         event = KeyEvent(kind="backspace")
         input_._dispatch_key_event(event)
-        input_._dismiss_completion.assert_called_once()
-        input_._backspace.assert_called_once()
-        input_._trigger_auto_completion.assert_called_once()
+        input_._dispatcher._dismiss_completion.assert_called_once()
+        input_._buffer_editor._backspace.assert_called_once()
+        input_._dispatcher._trigger_auto_completion.assert_called_once()
 
     def test_home_dispatch(self, input_):
         """Home → 关闭补全 + 移到行首。"""
         event = KeyEvent(kind="home")
         input_._dispatch_key_event(event)
-        input_._dismiss_completion.assert_called_once()
-        input_._home.assert_called_once()
+        input_._dispatcher._dismiss_completion.assert_called_once()
+        input_._buffer_editor._home.assert_called_once()
 
     def test_end_dispatch(self, input_):
         """End → 关闭补全 + 移到行尾。"""
         event = KeyEvent(kind="end")
         input_._dispatch_key_event(event)
-        input_._dismiss_completion.assert_called_once()
-        input_._end.assert_called_once()
+        input_._dispatcher._dismiss_completion.assert_called_once()
+        input_._buffer_editor._end.assert_called_once()
 
     def test_delete_key_dispatch(self, input_):
         """Delete 键 (mod=0) → 关闭补全 + 删除 + 自动补全。"""
         event = KeyEvent(kind="delete", modifier=0)
         input_._dispatch_key_event(event)
-        input_._dismiss_completion.assert_called_once()
-        input_._delete.assert_called_once()
-        input_._trigger_auto_completion.assert_called_once()
+        input_._dispatcher._dismiss_completion.assert_called_once()
+        input_._buffer_editor._delete.assert_called_once()
+        input_._dispatcher._trigger_auto_completion.assert_called_once()
 
     def test_ctrl_w_dispatch(self, input_):
         """Ctrl+W (mod=1) → 关闭补全 + 删词 + 自动补全。"""
         event = KeyEvent(kind="delete", modifier=1)
         input_._dispatch_key_event(event)
-        input_._dismiss_completion.assert_called_once()
-        input_._delete_word_left.assert_called_once()
-        input_._trigger_auto_completion.assert_called_once()
+        input_._dispatcher._dismiss_completion.assert_called_once()
+        input_._buffer_editor._delete_word_left.assert_called_once()
+        input_._dispatcher._trigger_auto_completion.assert_called_once()
 
     def test_ctrl_u_dispatch(self, input_):
         """Ctrl+U (mod=2) → 关闭补全 + 删到行首 + 自动补全。"""
         event = KeyEvent(kind="delete", modifier=2)
         input_._dispatch_key_event(event)
-        input_._dismiss_completion.assert_called_once()
-        input_._kill_to_bol.assert_called_once()
-        input_._trigger_auto_completion.assert_called_once()
+        input_._dispatcher._dismiss_completion.assert_called_once()
+        input_._buffer_editor._kill_to_bol.assert_called_once()
+        input_._dispatcher._trigger_auto_completion.assert_called_once()
 
     def test_ctrl_k_dispatch(self, input_):
         """Ctrl+K (mod=3) → 关闭补全 + 删到行尾 + 自动补全。"""
         event = KeyEvent(kind="delete", modifier=3)
         input_._dispatch_key_event(event)
-        input_._dismiss_completion.assert_called_once()
-        input_._kill_to_eol.assert_called_once()
-        input_._trigger_auto_completion.assert_called_once()
+        input_._dispatcher._dismiss_completion.assert_called_once()
+        input_._buffer_editor._kill_to_eol.assert_called_once()
+        input_._dispatcher._trigger_auto_completion.assert_called_once()
 
     def test_arrow_up_dispatch(self, input_):
         """上箭头 → _handle_arrow_up。"""
         event = KeyEvent(kind="arrow_up")
         input_._dispatch_key_event(event)
-        input_._handle_arrow_up.assert_called_once()
+        input_._dispatcher._handle_arrow_up.assert_called_once()
 
     def test_arrow_right_dispatch(self, input_):
         """右箭头 → _right。"""
         event = KeyEvent(kind="arrow_right")
         input_._dispatch_key_event(event)
-        input_._right.assert_called_once()
+        input_._buffer_editor._right.assert_called_once()
 
     def test_ctrl_right_dispatch(self, input_):
         """Ctrl+右 → _word_right。"""
         event = KeyEvent(kind="arrow_right", modifier=5)
         input_._dispatch_key_event(event)
-        input_._word_right.assert_called_once()
+        input_._buffer_editor._word_right.assert_called_once()
 
     def test_arrow_left_dispatch(self, input_):
         """左箭头 → _left。"""
         event = KeyEvent(kind="arrow_left")
         input_._dispatch_key_event(event)
-        input_._left.assert_called_once()
+        input_._buffer_editor._left.assert_called_once()
 
     def test_ctrl_left_dispatch(self, input_):
         """Ctrl+左 → _word_left。"""
         event = KeyEvent(kind="arrow_left", modifier=5)
         input_._dispatch_key_event(event)
-        input_._word_left.assert_called_once()
+        input_._buffer_editor._word_left.assert_called_once()
 
     def test_char_newline_dispatch(self, input_):
         """CSI u Shift+Enter (kind=char, char='\n') → handle_char('\n')。"""
         event = KeyEvent(kind="char", char="\n")
         input_._dispatch_key_event(event)
-        input_.handle_char.assert_called_once_with('\n')
+        input_._buffer_editor.handle_char.assert_called_once_with('\n')
 
     def test_unknown_captures(self, input_):
         """unknown → 关闭补全 + 捕获到 _captured_input。"""
         event = KeyEvent(kind="unknown", raw=b'\x00')
         input_._dispatch_key_event(event)
-        input_._dismiss_completion.assert_called_once()
-        assert bytes(input_._captured_input) == b'\x00'
+        input_._dispatcher._dismiss_completion.assert_called_once()
+        assert bytes(input_._dispatcher._captured_input) == b'\x00'
 
     def test_alt_backspace_dispatch(self, input_):
         """Alt+Backspace (backspace, mod=1) → 关闭补全 + 删词 + 自动补全。"""
         event = KeyEvent(kind="backspace", modifier=1)
         input_._dispatch_key_event(event)
-        input_._dismiss_completion.assert_called_once()
-        input_._delete_word_left.assert_called_once()
-        input_._trigger_auto_completion.assert_called_once()
+        input_._dispatcher._dismiss_completion.assert_called_once()
+        input_._buffer_editor._delete_word_left.assert_called_once()
+        input_._dispatcher._trigger_auto_completion.assert_called_once()

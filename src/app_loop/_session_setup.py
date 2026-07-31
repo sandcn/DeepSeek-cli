@@ -5,7 +5,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import logging
 from typing import Any
 
@@ -56,16 +55,20 @@ def _setup_session(loaded_data: dict | None = None, chat_ui=None) -> tuple:
             session.model = model
             state.model = model
             non_system = _non_system_messages(session)
-            # pipeline/message_display.py 已删除 — 使用内置实现
-            def _display_messages(data, agent, speed=0):
-                import sys
-                for msg in data:
-                    role = msg.get("role", "")
-                    content = msg.get("content", "")
-                    if isinstance(content, str) and content.strip():
-                        sys.__stdout__.write(f"{content}\n")
-                sys.__stdout__.flush()
-            _display_messages(non_system, session.agent, speed=0)
+            # 输出路径统一（方向C 步骤4）：--load 启动恢复消息经路径 A 渲染
+            # （ChatUIConsumer.display_messages → DisplayMsgsCmd 管线，经 render_lock 保护）。
+            # _setup_session 在交互模式必有 chat_ui；chat_ui=None 时跳过并 debug 日志
+            # （非 ChatUI 上下文，如单次模式）。
+            if chat_ui is not None:
+                chat_ui.display_messages(non_system, speed=0)
+                # P3-7：--load 启动恢复消息后 flush，确保首屏渲染命令在
+                # _setup_session 返回前排空（display_messages 走 DisplayMsgsCmd
+                # 管线，flush 驱动 engine 队列排空，避免首屏顺序错乱）。
+                chat_ui.flush()
+            else:
+                _logger.debug(
+                    "_setup_session: chat_ui 为 None，跳过恢复消息显示（非 ChatUI 上下文）",
+                )
             if session.retry_pending and chat_ui is not None:
                 chat_ui.write_line(f"  {DIM}  最后一条是用户消息，将自动继续生成回复…{RESET}")
 

@@ -1,7 +1,7 @@
 """输出适配器 — 默认输出实现
 
-职责：桥接核心层与基础设施层（ui.events / ui._lock）。
-适配器层允许导入 ui/ 模块（这是适配器层的职责——桥接核心与基础设施）。
+职责：桥接核心层与基础设施层（tui.events / renderer._locks）。
+适配器层允许导入 tui/ 模块（这是适配器层的职责——桥接核心与基础设施）。
 """
 from __future__ import annotations
 
@@ -13,10 +13,10 @@ from ..ports import OutputPort
 
 
 class DefaultOutputAdapter(OutputPort):
-    """默认输出适配器 — 委托给 ui.events.publish_output
+    """默认输出适配器 — 经 get_output_publisher 工厂委托给 publish_output
 
     作为全局默认输出端口，供核心模块在没有依赖注入时使用。
-    适配器层允许导入 ui/ 模块（桥接职责）。
+    适配器层允许导入桥接模块（display_target Protocol）。
     """
 
     def __init__(self):
@@ -24,19 +24,31 @@ class DefaultOutputAdapter(OutputPort):
 
     def _get_lock(self):
         if self._lock is None:
-            from ...tui._locks import render_lock
+            from ...renderer._locks import render_lock
             self._lock = render_lock
         return self._lock
 
     def write(self, text: str, level: str = "info", source: str = "core") -> None:
-        from ...tui.events import publish_output
-        publish_output(text, level=level, source=source)
+        """输出文本到终端（无锁）"""
+        self._publish(text, level=level, source=source)
 
     def write_with_lock(self, text: str, level: str = "info", source: str = "core") -> None:
+        """持有输出锁写入文本到终端"""
         lock = self._get_lock()
         with lock:
-            from ...tui.events import publish_output
-            publish_output(text, level=level, source=source)
+            self._publish(text, level=level, source=source)
+
+    def _publish(self, text: str, level: str = "info", source: str = "core") -> None:
+        """经 get_output_publisher 工厂发布输出事件（依赖倒置：core 定义 Protocol、tui 实现）。
+
+        无头 None 判定已移除（P0 修复）：工厂始终返回可调用的 publish_output，
+        输出经 OutputConsumer 兜底直写终端（原链路保留）；``if publisher is not None``
+        保留为防御性判断以兼容未来返回 None 场景。
+        """
+        from ..display_target import get_output_publisher
+        publisher = get_output_publisher()
+        if publisher is not None:
+            publisher(text, level=level, source=source)
 
     @contextmanager
     def locked(self):

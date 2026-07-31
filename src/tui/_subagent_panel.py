@@ -6,7 +6,7 @@
     → SubAgentPanelController（本模块）
     → 帧渲染（含摘要行/分隔线/树形连接/工具历史/spinner）
     → RenderCommand.SUBAGENT_FRAME 推送
-    → TuiEngine._do_subagent_frame()
+    → TuiRenderer._do_subagent_frame()
     → BottomBar.set_subagent_frame() → 终端显示
 
 渲染效果：
@@ -24,56 +24,59 @@ from __future__ import annotations
 import logging
 import threading
 import time
-from typing import Any, Callable, Dict, List, Tuple
+from typing import Any, Callable, Dict, List
 
-from ._const import RenderCommand, SubagentFrameCmd
+from src.tui._const import (
+    _C_ANSWERING,
+    _C_BATCH,
+    _C_BRANCH,
+    _C_DIMMER,
+    _C_DIMMEST,
+    _C_DONE,
+    _C_FAIL,
+    _C_PARSING,
+    _C_RESET,
+    _C_RUNNING,
+    _C_SUMMARY_DIM,
+    RenderCmd,
+    SubagentFrameCmd,
+)
+from src.tui._tool_icons import TOOL_CATEGORY_COLORS, TOOL_CATEGORY_MAP
+from src.tui.events.event_types import (
+    AgentAddedEvent, AgentStatusChanged, ModelPhaseEvent,
+    ToolParsingEvent, ToolStartedEvent, ToolDoneEvent,
+    ParseInfoEvent, ParseInfoDoneEvent,
+    UsageUpdatedEvent, MetricsUpdateEvent,
+)
 
 _logger = logging.getLogger(__name__)
 
-# ── 256 色 ANSI 常量 ───────────────────────────────────
-_C_RUNNING       = "\033[38;5;214m"   # 琥珀色 — 运行中
-_C_DONE          = "\033[38;5;40m"    # 亮绿 — 完成
-_C_FAIL          = "\033[38;5;196m"   # 亮红 — 失败
-_C_ANSWERING     = "\033[38;5;75m"    # 浅蓝 — 回答中
-_C_PARSING       = "\033[38;5;178m"   # 金色 — 解析
-_C_BATCH         = "\033[38;5;140m"   # 淡紫 — 批量
-_C_DIMMER        = "\033[38;5;240m"   # 暗灰 — 辅助
-_C_DIMMEST       = "\033[38;5;238m"   # 深灰 — 分隔线
-_C_SUMMARY_DIM   = "\033[38;5;245m"   # 中灰 — 摘要次要
-_C_BRANCH        = "\033[38;5;239m"   # 灰 — 树形线
-_C_RESET         = "\033[0m"
-
-# ── Agent 类型 → 颜色（从 _tool_icons 导入，此处保留本地副本用于渲染线程） ──
-# ── 工具类别 → 颜色 ────────────────────────────────────
-_TOOL_CATEGORY_COLORS: Dict[str, str] = {
-    "shell":      "\033[38;5;41m",
-    "file_read":  "\033[38;5;81m",
-    "file_write": "\033[38;5;213m",
-    "search":     "\033[38;5;221m",
-    "agent":      "\033[38;5;75m",
-    "interact":   "\033[38;5;51m",
-    "delete":     "\033[38;5;203m",
-}
-
-_TOOL_CATEGORY_MAP: Dict[str, str] = {
-    "bash": "shell", "execute_command": "shell",
-    "read_file": "file_read",
-    "write_file": "file_write", "update_file": "file_write",
-    "str_replace_editor": "file_write", "file_editor": "file_write",
-    "grep": "search", "find": "search", "glob": "search",
-    "web_search": "search", "web_fetch": "search",
-    "dispatch_agent": "agent",
-    "user_select": "interact",
-    "rm": "delete",
-}
+# ── 颜色常量（唯一真源收敛，方向F 步骤12） ──────────────
+# _C_* 面板配色唯一真源已收敛至 src/tui/_const.py（本模块改为模块级导入）；
+# _COLOR_* 底栏配色同样收敛至 _const（_screen re-export 保持 bottom_bar 路径）。
+# ── 工具名 → 类别/颜色映射（单一真源，方向F 步骤12 收敛） ──
+# 工具名→展示映射唯一真源在 src/tui/_tool_icons.py：
+#   TOOL_ICONS（图标）+ TOOL_CATEGORY_MAP/TOOL_CATEGORY_COLORS（类别配色）
+#   + AGENT_TYPE_ABBREV/AGENT_TYPE_COLORS（Agent 类型）
+# 映射在 import 后只读，Python 字典读操作在 GIL 下线程安全；
+# 原「保留本地副本避免跨线程共享可变映射」的线程隔离顾虑已消除（无共享写风险），
+# 收敛为单一真源。AGENT_TYPE_ABBREV / AGENT_TYPE_COLORS / TOOL_ICONS
+# 仍在 _build_agent_lines / _format_tool_record 内从 _tool_icons 延迟导入
+# （既有模式不变，P2-14 注释修正方法名）。
 
 _SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
 _INDENT = "  "
 
 
 def _get_tool_color(tool_name: str) -> str:
-    cat = _TOOL_CATEGORY_MAP.get(tool_name, "")
-    return _TOOL_CATEGORY_COLORS.get(cat, "\033[38;5;245m")
+    """查询工具类别配色（共享单一真源映射，_tool_icons.TOOL_CATEGORY_MAP/COLORS）。
+
+    函数签名保留（方向F 步骤12 收敛后查询共享映射，线程安全只读）。
+    """
+    cat = TOOL_CATEGORY_MAP.get(tool_name, "")
+    # P3-17：默认兜底色引用 _C_SUMMARY_DIM（_const 模块级导入），
+    # 消除硬编码 "\033[38;5;245m"（值一致，语义命名）
+    return TOOL_CATEGORY_COLORS.get(cat, _C_SUMMARY_DIM)
 
 
 def _format_duration(seconds: float) -> str:
@@ -158,6 +161,16 @@ class _AgentSlot:
 
 # ═══════════════════════════════════════════════════════════
 # SubAgentPanelController
+# 上帝类评估（方向④·步骤 10.3）：4 职责约 500 行 — 暂缓拆分
+#   1. 订阅管理：ensure_active()/stop() 中 10 类事件订阅/取消订阅
+#   2. 事件处理器：_on_agent_added / _on_agent_status_changed / _on_model_phase /
+#      _on_tool_parsing / _on_tool_started / _on_tool_done / _on_parse_info /
+#      _on_parse_info_done / _on_usage_updated / _on_metrics（10 个）
+#   3. 面板状态建模：_agents / _order / _state_lock / _frame 等
+#   4. 帧渲染+推送：_render_frame() / _push_frame()（含摘要行/分隔线/树形连接/
+#      工具历史/spinner）
+# 暂缓拆分，保留单类实现；后续重构方向：按职责域提取独立模块，
+# 渲染与状态建模分离、事件处理器注册收敛为声明式订阅表。
 # ═══════════════════════════════════════════════════════════
 
 class SubAgentPanelController:
@@ -165,9 +178,24 @@ class SubAgentPanelController:
     _class_lock = threading.Lock()
     # 帧渲染节流：100ms 间隔（10Hz）
     _EMIT_INTERVAL: float = 0.1
+    # 声明式订阅表（方向D 步骤7）：事件类型 → 处理器方法名。
+    # 与 webui bridge _EVENT_BINDINGS 数据驱动风格对齐，ensure_active()/stop()
+    # 遍历本表订阅/取消订阅，消除硬编码重复代码。
+    _SUBSCRIPTIONS: tuple[tuple[type, str], ...] = (
+        (AgentAddedEvent, "_on_agent_added"),
+        (AgentStatusChanged, "_on_agent_status_changed"),
+        (ModelPhaseEvent, "_on_model_phase"),
+        (ToolParsingEvent, "_on_tool_parsing"),
+        (ToolStartedEvent, "_on_tool_started"),
+        (ToolDoneEvent, "_on_tool_done"),
+        (ParseInfoEvent, "_on_parse_info"),
+        (ParseInfoDoneEvent, "_on_parse_info_done"),
+        (UsageUpdatedEvent, "_on_usage_updated"),
+        (MetricsUpdateEvent, "_on_metrics"),
+    )
 
     def __init__(self, max_history: int = 3,
-                 push_cmd: Callable[[tuple], None] | None = None):
+                 push_cmd: Callable[[RenderCmd], None] | None = None):
         self._agents: Dict[str, _AgentSlot] = {}
         self._order: List[str] = []
         # RLock: 允许 _on_tool_parsing 等事件处理器在持有锁时调用 _push_frame(_render_frame()) 而不死锁；_render_frame() 内部也获取此锁
@@ -177,7 +205,7 @@ class SubAgentPanelController:
         self._active: bool = False
         self._cb_registered: bool = False
         self._chat_ui: Any = None
-        self._push_cmd_cb: Callable[[tuple], None] | None = push_cmd
+        self._push_cmd_cb: Callable[[RenderCmd], None] | None = push_cmd
         self.max_history: int = max_history
 
     @classmethod
@@ -194,61 +222,44 @@ class SubAgentPanelController:
         if self._active:
             return
         from .events import DisplayEventBus
-        from .events.event_types import (
-            AgentAddedEvent, AgentStatusChanged, ModelPhaseEvent,
-            ToolParsingEvent, ToolStartedEvent, ToolDoneEvent,
-            ParseInfoEvent, ParseInfoDoneEvent,
-            UsageUpdatedEvent, MetricsUpdateEvent,
-        )
         bus = DisplayEventBus.get_default()
-        bus.subscribe(self._on_agent_added, event_type=AgentAddedEvent)
-        bus.subscribe(self._on_agent_status_changed, event_type=AgentStatusChanged)
-        bus.subscribe(self._on_model_phase, event_type=ModelPhaseEvent)
-        bus.subscribe(self._on_tool_parsing, event_type=ToolParsingEvent)
-        bus.subscribe(self._on_tool_started, event_type=ToolStartedEvent)
-        bus.subscribe(self._on_tool_done, event_type=ToolDoneEvent)
-        bus.subscribe(self._on_parse_info, event_type=ParseInfoEvent)
-        bus.subscribe(self._on_parse_info_done, event_type=ParseInfoDoneEvent)
-        bus.subscribe(self._on_usage_updated, event_type=UsageUpdatedEvent)
-        bus.subscribe(self._on_metrics, event_type=MetricsUpdateEvent)
-        self._register_panel_refresh()
+        # P3-11：订阅循环 try/except 包裹并统一回滚已订阅项（与 stop() 防御
+        # 风格对齐）——任一订阅失败时回滚已订阅项，保持订阅状态一致。
+        subscribed: list[tuple[type, Callable]] = []
+        try:
+            for ev_type, method_name in self._SUBSCRIPTIONS:
+                handler = getattr(self, method_name)
+                bus.subscribe(handler, event_type=ev_type)
+                subscribed.append((ev_type, handler))
+            self._register_panel_refresh()
+        except Exception:
+            # 回滚已订阅项（尽力而为，日志不抛）
+            for ev_type, handler in subscribed:
+                try:
+                    bus.unsubscribe(handler, event_type=ev_type)
+                except Exception:
+                    _logger.debug("ensure_active 回滚取消订阅异常", exc_info=True)
+            raise
         self._active = True
 
     def stop(self, clear_panel: bool = True) -> None:
         if not self._active:
             return
         from .events import DisplayEventBus
-        from .events.event_types import (
-            AgentAddedEvent, AgentStatusChanged, ModelPhaseEvent,
-            ToolParsingEvent, ToolStartedEvent, ToolDoneEvent,
-            ParseInfoEvent, ParseInfoDoneEvent,
-            UsageUpdatedEvent, MetricsUpdateEvent,
-        )
         bus = DisplayEventBus.get_default()
-        for ev_type, handler in [
-            (AgentAddedEvent, self._on_agent_added),
-            (AgentStatusChanged, self._on_agent_status_changed),
-            (ModelPhaseEvent, self._on_model_phase),
-            (ToolParsingEvent, self._on_tool_parsing),
-            (ToolStartedEvent, self._on_tool_started),
-            (ToolDoneEvent, self._on_tool_done),
-            (ParseInfoEvent, self._on_parse_info),
-            (ParseInfoDoneEvent, self._on_parse_info_done),
-            (UsageUpdatedEvent, self._on_usage_updated),
-            (MetricsUpdateEvent, self._on_metrics),
-        ]:
+        for ev_type, method_name in self._SUBSCRIPTIONS:
             try:
-                bus.unsubscribe(handler, event_type=ev_type)
+                bus.unsubscribe(getattr(self, method_name), event_type=ev_type)
             except Exception:
-                pass
+                _logger.debug("stop() 取消订阅异常", exc_info=True)
         if clear_panel:
             self._push_frame([])
             # 强制立即重绘底部栏，确保面板立即消失
             if self._chat_ui is not None:
                 try:
-                    self._chat_ui._engine.request_bottom_redraw()
+                    self._chat_ui.request_bottom_redraw()
                 except Exception:
-                    pass
+                    _logger.debug("request_bottom_redraw 异常", exc_info=True)
         self._unregister_panel_refresh()
         with self._state_lock:
             self._agents.clear()
@@ -448,7 +459,7 @@ class SubAgentPanelController:
             try:
                 self._chat_ui.set_panel_refresh_callback(None)
             except Exception:
-                pass
+                _logger.debug("set_panel_refresh_callback(None) 异常", exc_info=True)
         self._chat_ui = None
 
     def _panel_refresh(self) -> None:
@@ -633,7 +644,8 @@ class SubAgentPanelController:
         if rec.phase == "parsing":
             line = f"{prefix}{_C_PARSING}\u25cc{_C_RESET} {tool_abbr}{detail_disp}"
         elif rec.phase == "running":
-            pulse_color = "\033[38;5;214m"
+            # P2-14：硬编码 "\033[38;5;214m" → _C_RUNNING（_const 模块级导入，值一致）
+            pulse_color = _C_RUNNING
             line = f"{prefix}{pulse_color}\u25cf{_C_RESET} {tool_abbr}{detail_disp}  {_C_DIMMER}{time_str}{_C_RESET}"
         elif rec.phase == "done":
             line = f"{prefix}{_C_DONE}\u2714{_C_RESET} {tool_abbr}{detail_disp}  {_C_DIMMER}{time_str}{_C_RESET}"
@@ -650,7 +662,7 @@ class SubAgentPanelController:
                 self._push_cmd_cb(SubagentFrameCmd(frame_lines=lines))
                 return
             except Exception:
-                pass
+                _logger.debug("_push_frame push_cmd_cb 异常", exc_info=True)
         # 降级：通过 get_active_chat_ui() 获取
         chat_ui = self._chat_ui
         if chat_ui is None:
@@ -662,4 +674,4 @@ class SubAgentPanelController:
         try:
             chat_ui.push_cmd(SubagentFrameCmd(frame_lines=lines))
         except Exception:
-            pass
+            _logger.debug("_push_frame chat_ui.push_cmd 异常", exc_info=True)

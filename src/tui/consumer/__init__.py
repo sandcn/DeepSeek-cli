@@ -15,7 +15,7 @@ import threading
 
 from .._consumer import ChatUIConsumer
 from ..state.consumer_registry import get_active_chat_ui, _active_consumer
-from .._const import RenderCommand, FrameworkCommand, ChatCommand
+from .._const import RenderCommand, FrameworkCommand, ChatCommand, truncate_error_message
 from .chat_config import ChatConfig
 
 _logger = logging.getLogger(__name__)
@@ -52,8 +52,7 @@ class ChatUIErrorHandler(logging.Handler):
         if not msg_content:
             return
         msg = f"{record.name}: {msg_content}"
-        if len(msg) > self._max_length:
-            msg = msg[:self._max_length - 3] + "..."
+        msg = truncate_error_message(msg, self._max_length)
         with _emit_lock:
             _handler_reentrant.is_active = True
             try:

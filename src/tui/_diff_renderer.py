@@ -19,13 +19,13 @@ from functools import lru_cache
 from typing import Optional, TYPE_CHECKING
 
 from .core.style import Style, StyleSheet
-from ._locks import diff_active, _try_acquire_output_lock
+from src.renderer._locks import diff_active, _try_acquire_output_lock
 from .events.consumers import publish_output
 
 _logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
-    from .core.output_target import IOutputTarget
+    from ._output_target import IOutputTarget
 
 # 行内差异背景色（256 色，使用 Style）
 _BG_RED = '\033[48;5;124m'    # 256色暗红背景（保留，因 Style 不支持 bg only）

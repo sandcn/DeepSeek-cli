@@ -12,10 +12,12 @@
 
 from __future__ import annotations
 
-import pytest
+import os
 import tempfile
 from pathlib import Path
 from unittest.mock import MagicMock, patch
+
+import pytest
 
 from src.tui._input import (
     Input,
@@ -66,7 +68,6 @@ def mock_history_file():
     with tempfile.NamedTemporaryFile(mode="w", suffix=".hist", delete=False) as f:
         f.write("")
     yield Path(f.name)
-    import os
     os.unlink(f.name)
 
 
@@ -171,7 +172,7 @@ class TestBuffer:
         inp.handle_chars("drain_test")
         inp._enter()
         submitted, buffer_text = inp.drain_all()
-        assert submitted == "drain_test" or submitted is not None
+        assert submitted == "drain_test"
         assert inp.get_current_text() == ""
 
 
@@ -474,8 +475,10 @@ class TestCursorVisualPos:
     def test_wrap_by_width(self):
         text = "a" * 100
         row, col = _compute_cursor_visual_pos(text, 90, 30)
-        # 每行 30 个字符，位置 90 应在某行末尾
-        assert row >= 0
+        # 100 字符按 30 列拆为 4 行（30/30/30/10），
+        # 位置 90 位于第 3 行（0-based 2）的列 30（行末）
+        assert row == 2
+        assert col == 30
 
     def test_expand_tabs(self):
         text = "a\tb"
@@ -605,7 +608,7 @@ class TestHistory:
 
         inp.handle_chars("text")
         inp._up()
-        assert "[历史" in inp._history_indicator or inp._history_indicator
+        assert inp._history_indicator == " [历史 1/1]"
 
     def test_empty_history_up_does_nothing(self, input_instance):
         inp = input_instance
@@ -617,12 +620,11 @@ class TestHistory:
         """多行文本中上下箭头移动光标。"""
         inp = input_instance
         inp.handle_chars("line1\nline2\nline3")
-        # 光标在末尾，第二个 line
-        # 上移
+        # 光标在末尾（pos=17，"line3" 之后）
+        assert inp._cursor_pos == 17
         inp._up()
-        # 光标应该移到上一行
-        text = inp.get_current_text()
-        assert "line" in text
+        # 光标应移到上一行 "line2" 末尾（pos=11）
+        assert inp._cursor_pos == 11
 
 
 # ═══════════════════════════════════════════════════════════
@@ -705,29 +707,35 @@ class TestExplicitExceptionTypes:
     """
 
     def test_no_bare_except_in_source_file(self):
-        """源文件中不存在裸 except: 语句。
+        """源文件中不存在裸 except: 语句（P1-1：覆盖四个拆分文件）。
 
-        通过搜索 ``except:`` 模式确认（注意冒号前无括号或异常类型时即为裸 except）。
+        方向A 步骤1 拆分后，Input 上帝类拆分为 _input.py / _input_io.py /
+        _input_buffer.py / _input_dispatcher.py 四个文件；本测试扩展扫描范围
+        至全部四个文件，保持无裸 except 断言。
         """
         import ast
         import inspect
 
         from src.tui import _input
-        source = inspect.getsource(_input)
+        # P1-1：扩展扫描范围至 _input*.py 全部拆分文件
+        # （_input.py 模块级已导入 _input_io/_input_buffer/_input_dispatcher）
+        from src.tui import _input_io, _input_buffer, _input_dispatcher
+        modules = [_input, _input_io, _input_buffer, _input_dispatcher]
 
-        # 逐行检查 except 语句行
-        lines = source.split('\n')
-        bare_except_lines = []
-        for i, line in enumerate(lines):
-            stripped = line.strip()
-            # 匹配 "except:" 但排除 "except (": 和 "except Exception:"
-            if stripped.startswith('except:'):
-                bare_except_lines.append(i + 1)  # 1-based line number
-            elif stripped.startswith('except ') and ':' in stripped:
-                # 检查 except 后面是否有异常类型
-                except_part = stripped[7:stripped.index(':')].strip()
-                if not except_part or except_part == ':':
-                    bare_except_lines.append(i + 1)
+        bare_except_lines: list[str] = []
+        for mod in modules:
+            source = inspect.getsource(mod)
+            lines = source.split('\n')
+            for i, line in enumerate(lines):
+                stripped = line.strip()
+                # 匹配 "except:" 但排除 "except (": 和 "except Exception:"
+                if stripped.startswith('except:'):
+                    bare_except_lines.append(f"{mod.__name__}:{i + 1}")
+                elif stripped.startswith('except ') and ':' in stripped:
+                    # 检查 except 后面是否有异常类型
+                    except_part = stripped[7:stripped.index(':')].strip()
+                    if not except_part or except_part == ':':
+                        bare_except_lines.append(f"{mod.__name__}:{i + 1}")
 
         assert not bare_except_lines, (
             f"存在裸 except: 的行: {bare_except_lines}"
@@ -857,7 +865,7 @@ class TestSuppressEnterBypass:
         # 由于 enter 被调用，文本应从 get_queued_input 获取
         assert inp.has_queued_input()
         text = inp.get_queued_input()
-        assert text == "edited message" or text is not None
+        assert text == "edited message"
 
     def test_editmsg_submits_without_suppress(self, input_instance):
         """editmsg 路径在 _suppress_enter=True 时仍能正确提交。"""
@@ -880,3 +888,1248 @@ class TestSuppressEnterBypass:
         assert inp.has_queued_input()
         result = inp.get_queued_input()
         assert result == "final edit result"
+
+
+# ═══════════════════════════════════════════════════════════
+# 以下类合并自 test_input/ 目录（步骤 12 Input 测试去重）
+# 原文件：test_input_unified / test_input_buffer / test_cursor /
+#         test_parser / test_read_stdin_once / test_new_input
+# 去重原则：保留门面级公开行为测试；独有断言迁移至此；重复类删除。
+# ═══════════════════════════════════════════════════════════
+
+class TestKeyEventReprRegression:
+    """KeyEvent repr 输出包含 kind（合并自 test_input_unified）。"""
+
+    def test_repr_contains_kind_regression(self):
+        ev = KeyEvent(kind="enter", char="\r", raw=b"\r")
+        assert "enter" in repr(ev)
+
+
+class TestProcessEventsRegression:
+    """process_events() 委托 read_stdin_once()（合并自 test_input_unified）。"""
+
+    @pytest.fixture
+    def pipe_input(self, tmp_path):
+        fd = os.open("/dev/null", os.O_RDONLY)
+        try:
+            yield Input(fd=fd, history_file=tmp_path / "history")
+        finally:
+            os.close(fd)
+
+    def test_process_events_no_data_regression(self, pipe_input):
+        """空队列（无 stdin 数据）时 process_events 不抛异常。"""
+        pipe_input.process_events()
+
+    def test_process_events_with_pipe_regression(self, tmp_path):
+        """process_events 通过 read_stdin_once() 从 pipe 读取并分发。"""
+        r_fd, w_fd = os.pipe()
+        try:
+            inp = Input(fd=r_fd, history_file=tmp_path / "history")
+            os.write(w_fd, b"a")
+            inp.process_events()
+            assert inp.get_current_text() == "a"
+        finally:
+            os.close(w_fd)
+            os.close(r_fd)
+
+    def test_process_events_with_enter_regression(self, tmp_path):
+        """process_events 通过 read_stdin_once() 处理 Enter。"""
+        r_fd, w_fd = os.pipe()
+        try:
+            inp = Input(fd=r_fd, history_file=tmp_path / "history")
+            inp.handle_chars("test")
+            os.write(w_fd, b"\r")
+            inp.process_events()
+            assert inp.has_queued_input()
+            assert inp.get_queued_input() == "test"
+        finally:
+            os.close(w_fd)
+            os.close(r_fd)
+
+    def test_process_events_multiple_bytes_regression(self, tmp_path):
+        """process_events 一次处理多个输入字节（通过粘贴检测批量读取）。"""
+        r_fd, w_fd = os.pipe()
+        try:
+            inp = Input(fd=r_fd, history_file=tmp_path / "history")
+            os.write(w_fd, b"hello")
+            inp.process_events()
+            assert inp.get_current_text() == "hello"
+        finally:
+            os.close(w_fd)
+            os.close(r_fd)
+
+
+class TestParseEscapeSequenceRegression:
+    """parse_sequence() I/O 测试（合并自 test_parser，os.pipe 模拟）。"""
+
+    @pytest.fixture
+    def parse_input(self, tmp_path):
+        fd = os.open("/dev/null", os.O_RDONLY)
+        try:
+            yield Input(fd=fd, history_file=tmp_path / "test_history")
+        finally:
+            os.close(fd)
+
+    def test_arrow_up_regression(self, parse_input):
+        r_fd, w_fd = os.pipe()
+        try:
+            os.write(w_fd, b"[A")
+            assert parse_input.parse_sequence(r_fd).kind == "arrow_up"
+        finally:
+            os.close(r_fd)
+            os.close(w_fd)
+
+    def test_arrow_down_regression(self, parse_input):
+        r_fd, w_fd = os.pipe()
+        try:
+            os.write(w_fd, b"[B")
+            assert parse_input.parse_sequence(r_fd).kind == "arrow_down"
+        finally:
+            os.close(r_fd)
+            os.close(w_fd)
+
+    def test_home_regression(self, parse_input):
+        r_fd, w_fd = os.pipe()
+        try:
+            os.write(w_fd, b"[H")
+            assert parse_input.parse_sequence(r_fd).kind == "home"
+        finally:
+            os.close(r_fd)
+            os.close(w_fd)
+
+    def test_end_regression(self, parse_input):
+        r_fd, w_fd = os.pipe()
+        try:
+            os.write(w_fd, b"[F")
+            assert parse_input.parse_sequence(r_fd).kind == "end"
+        finally:
+            os.close(r_fd)
+            os.close(w_fd)
+
+    def test_delete_tilde_regression(self, parse_input):
+        r_fd, w_fd = os.pipe()
+        try:
+            os.write(w_fd, b"[3~")
+            assert parse_input.parse_sequence(r_fd).kind == "delete"
+        finally:
+            os.close(r_fd)
+            os.close(w_fd)
+
+    def test_csi_u_shift_enter_regression(self, parse_input):
+        r_fd, w_fd = os.pipe()
+        try:
+            os.write(w_fd, b"[13;2u")
+            ev = parse_input.parse_sequence(r_fd)
+            assert ev.kind == "char"
+            assert ev.char == "\n"
+            assert ev.modifier == 2
+        finally:
+            os.close(r_fd)
+            os.close(w_fd)
+
+    def test_ss3_f1_regression(self, parse_input):
+        """SS3 序列（ESC O P = F1）→ unknown。"""
+        r_fd, w_fd = os.pipe()
+        try:
+            os.write(w_fd, b"OP")
+            assert parse_input.parse_sequence(r_fd).kind == "unknown"
+        finally:
+            os.close(r_fd)
+            os.close(w_fd)
+
+    def test_alt_backspace_regression(self, parse_input):
+        """ESC DEL → backspace with modifier=1。"""
+        r_fd, w_fd = os.pipe()
+        try:
+            os.write(w_fd, b"\x7f")
+            ev = parse_input.parse_sequence(r_fd)
+            assert ev.kind == "backspace"
+            assert ev.modifier == 1
+        finally:
+            os.close(r_fd)
+            os.close(w_fd)
+
+    def test_double_esc_regression(self, parse_input):
+        """双 ESC → interrupt。"""
+        r_fd, w_fd = os.pipe()
+        try:
+            os.write(w_fd, b"\x1b")
+            assert parse_input.parse_sequence(r_fd).kind == "interrupt"
+        finally:
+            os.close(r_fd)
+            os.close(w_fd)
+
+    def test_single_esc_timeout_regression(self, parse_input):
+        """单 ESC（无后续字节）→ escape。"""
+        r_fd, w_fd = os.pipe()
+        try:
+            assert parse_input.parse_sequence(r_fd).kind == "escape"
+        finally:
+            os.close(r_fd)
+            os.close(w_fd)
+
+    def test_other_esc_combination_regression(self, parse_input):
+        """其他 ESC 组合 → interrupt。"""
+        r_fd, w_fd = os.pipe()
+        try:
+            os.write(w_fd, b"x")
+            assert parse_input.parse_sequence(r_fd).kind == "interrupt"
+        finally:
+            os.close(r_fd)
+            os.close(w_fd)
+
+    def test_ctrl_arrow_left_regression(self, parse_input):
+        """Ctrl+左箭头 → arrow_left with modifier=5。"""
+        r_fd, w_fd = os.pipe()
+        try:
+            os.write(w_fd, b"[1;5D")
+            ev = parse_input.parse_sequence(r_fd)
+            assert ev.kind == "arrow_left"
+            assert ev.modifier == 5
+        finally:
+            os.close(r_fd)
+            os.close(w_fd)
+
+
+class TestParseEscapeSequenceMockRegression:
+    """parse_sequence 的 mock 测试（合并自 test_parser，隔离真实 fd I/O）。"""
+
+    def test_select_error_returns_escape_regression(self, tmp_path):
+        fd = os.open("/dev/null", os.O_RDONLY)
+        try:
+            inp = Input(fd=fd, history_file=tmp_path / "test_history")
+            with patch("select.select", side_effect=ValueError):
+                ev = inp.parse_sequence(0)
+                assert ev.kind == "escape"
+        finally:
+            os.close(fd)
+
+    def test_os_read_empty_returns_escape_regression(self, tmp_path):
+        fd = os.open("/dev/null", os.O_RDONLY)
+        try:
+            inp = Input(fd=fd, history_file=tmp_path / "test_history")
+            with patch("select.select", return_value=([0], [], [])):
+                with patch("os.read", return_value=b""):
+                    ev = inp.parse_sequence(0)
+                    assert ev.kind == "escape"
+        finally:
+            os.close(fd)
+
+    def test_os_read_error_returns_escape_regression(self, tmp_path):
+        fd = os.open("/dev/null", os.O_RDONLY)
+        try:
+            inp = Input(fd=fd, history_file=tmp_path / "test_history")
+            with patch("select.select", return_value=([0], [], [])):
+                with patch("os.read", side_effect=OSError):
+                    ev = inp.parse_sequence(0)
+                    assert ev.kind == "escape"
+        finally:
+            os.close(fd)
+
+
+class TestReadStdinOnceRegression:
+    """read_stdin_once() 正常路径测试（合并自 test_read_stdin_once，os.pipe 模拟）。"""
+
+    @staticmethod
+    def _create_input(pipe_fd, tmp_path) -> Input:
+        return Input(fd=pipe_fd, history_file=tmp_path / "test_history")
+
+    def test_read_stdin_once_no_data_regression(self, tmp_path) -> None:
+        """无数据时返回 False，不阻塞。"""
+        r_fd, w_fd = os.pipe()
+        try:
+            inp = self._create_input(r_fd, tmp_path)
+            assert inp.read_stdin_once() is False
+        finally:
+            os.close(w_fd)
+            os.close(r_fd)
+
+    def test_read_stdin_once_char_regression(self, tmp_path, wait_pipe_readable_fixture) -> None:
+        """写入字符 'a' 后正确分发到缓冲区。"""
+        r_fd, w_fd = os.pipe()
+        try:
+            inp = self._create_input(r_fd, tmp_path)
+            os.write(w_fd, b"a")
+            assert wait_pipe_readable_fixture(r_fd)
+            assert inp.read_stdin_once() is True
+            assert inp.get_current_text() == "a"
+        finally:
+            os.close(w_fd)
+            os.close(r_fd)
+
+    def test_read_stdin_once_enter_regression(self, tmp_path, wait_pipe_readable_fixture) -> None:
+        """Enter 键写入后 has_queued_input() 返回 True。"""
+        r_fd, w_fd = os.pipe()
+        try:
+            inp = self._create_input(r_fd, tmp_path)
+            inp.handle_chars("test")
+            os.write(w_fd, b"\r")
+            assert wait_pipe_readable_fixture(r_fd)
+            assert inp.read_stdin_once() is True
+            assert inp.has_queued_input()
+            assert inp.get_queued_input() == "test"
+        finally:
+            os.close(w_fd)
+            os.close(r_fd)
+
+    def test_read_stdin_once_interrupt_regression(self, tmp_path, wait_pipe_readable_fixture) -> None:
+        """Ctrl+C 触发 _do_interrupt()，缓冲区被清空并设置 interrupted。"""
+        r_fd, w_fd = os.pipe()
+        try:
+            inp = self._create_input(r_fd, tmp_path)
+            inp.handle_chars("hello")
+            os.write(w_fd, b"\x03")
+            assert wait_pipe_readable_fixture(r_fd)
+            assert inp.read_stdin_once() is True
+            assert inp.get_current_text() == ""
+            assert inp.interrupted
+        finally:
+            os.close(w_fd)
+            os.close(r_fd)
+
+    def test_read_stdin_once_paused_regression(self, tmp_path, wait_pipe_readable_fixture) -> None:
+        """暂停状态下不读取数据，返回 False。"""
+        r_fd, w_fd = os.pipe()
+        try:
+            inp = self._create_input(r_fd, tmp_path)
+            inp.pause_io()
+            os.write(w_fd, b"a")
+            assert wait_pipe_readable_fixture(r_fd)
+            assert inp.read_stdin_once() is False
+            assert inp.get_current_text() == ""
+        finally:
+            os.close(w_fd)
+            os.close(r_fd)
+
+    def test_read_stdin_once_stopped_regression(self, tmp_path, wait_pipe_readable_fixture) -> None:
+        """已停止状态下不读取数据，返回 False。"""
+        r_fd, w_fd = os.pipe()
+        try:
+            inp = self._create_input(r_fd, tmp_path)
+            inp.stop_io()
+            os.write(w_fd, b"a")
+            assert wait_pipe_readable_fixture(r_fd)
+            assert inp.read_stdin_once() is False
+        finally:
+            os.close(w_fd)
+            os.close(r_fd)
+
+    def test_read_stdin_once_paste_detection_regression(self, tmp_path, wait_pipe_readable_fixture) -> None:
+        """粘贴检测：快速连续写入多个字符应被识别为粘贴。"""
+        r_fd, w_fd = os.pipe()
+        try:
+            inp = self._create_input(r_fd, tmp_path)
+            os.write(w_fd, b"hello")
+            assert wait_pipe_readable_fixture(r_fd)
+            assert inp.read_stdin_once() is True
+            assert inp.get_current_text() == "hello"
+        finally:
+            os.close(w_fd)
+            os.close(r_fd)
+
+    def test_read_stdin_once_backspace_regression(self, tmp_path, wait_pipe_readable_fixture) -> None:
+        """退格键正确删除字符。"""
+        r_fd, w_fd = os.pipe()
+        try:
+            inp = self._create_input(r_fd, tmp_path)
+            inp.handle_chars("abc")
+            os.write(w_fd, b"\x7f")
+            assert wait_pipe_readable_fixture(r_fd)
+            assert inp.read_stdin_once() is True
+            assert inp.get_current_text() == "ab"
+        finally:
+            os.close(w_fd)
+            os.close(r_fd)
+
+    def test_read_stdin_once_tab_regression(self, tmp_path, wait_pipe_readable_fixture) -> None:
+        """Tab 键插入制表符。"""
+        r_fd, w_fd = os.pipe()
+        try:
+            inp = self._create_input(r_fd, tmp_path)
+            os.write(w_fd, b"\t")
+            assert wait_pipe_readable_fixture(r_fd)
+            assert inp.read_stdin_once() is True
+            assert inp.get_current_text() == "\t"
+        finally:
+            os.close(w_fd)
+            os.close(r_fd)
+
+    def test_read_stdin_once_eof_no_crash_regression(self, tmp_path, wait_pipe_readable_fixture) -> None:
+        """pipe 写入端关闭后不崩溃，返回 False。"""
+        r_fd, w_fd = os.pipe()
+        try:
+            inp = self._create_input(r_fd, tmp_path)
+            os.close(w_fd)
+            assert wait_pipe_readable_fixture(r_fd)
+            assert inp.read_stdin_once() is False
+        finally:
+            os.close(r_fd)
+
+
+class TestFlushStdinBufferRegression:
+    """Input.flush_stdin_buffer() 公开方法测试（合并自 test_input_unified）。"""
+
+    @pytest.fixture
+    def inp(self, tmp_path):
+        fd = os.open("/dev/null", os.O_RDONLY)
+        try:
+            yield Input(fd=fd, history_file=tmp_path / "history")
+        finally:
+            os.close(fd)
+
+    def test_flush_stdin_buffer_no_data_regression(self, inp):
+        """无数据时 flush_stdin_buffer() 快速返回，不抛异常。"""
+        inp.flush_stdin_buffer()
+
+    def test_flush_stdin_buffer_after_call_flags_unchanged_regression(self, inp):
+        """flush_stdin_buffer() 调用后标志位正常（不改变 I/O 状态）。"""
+        inp.start_io()
+        io_was_running = inp.is_io_running
+        active_was_set = inp._active.is_set()
+        stop_was_set = inp._stop.is_set()
+
+        inp.flush_stdin_buffer()
+
+        assert inp.is_io_running == io_was_running
+        assert inp._active.is_set() == active_was_set
+        assert inp._stop.is_set() == stop_was_set
+        inp.stop_io()
+
+    def test_flush_stdin_buffer_respects_max_flush_regression(self, inp):
+        """max_flush 参数限制生效：传递给 _flush_stdin_residual。"""
+        call_count = [0]
+
+        def fake_select(rlist, wlist, xlist, timeout):
+            call_count[0] += 1
+            return ([inp._fd], [], [])
+
+        with patch("src.tui._input.select.select", side_effect=fake_select):
+            inp.flush_stdin_buffer(max_flush=3)
+            assert call_count[0] <= 3 + 1  # +1 容差（tcflush 路径可能额外调用）
+
+
+class TestInputReadMethodsRegression:
+    """read_utf8_char / try_read_paste 测试（合并自 test_new_input）。"""
+
+    @pytest.fixture
+    def inp(self, tmp_path):
+        fd = os.open("/dev/null", os.O_RDONLY)
+        try:
+            yield Input(
+                fd=fd,
+                history_file=tmp_path / "test_history",
+                term_width_cache=MagicMock(),
+            )
+        finally:
+            os.close(fd)
+
+    def test_try_read_paste_single_char_regression(self, inp):
+        """try_read_paste: 无后续数据时返回原字符。"""
+        with patch("select.select", return_value=([], [], [])):
+            assert inp.try_read_paste(0, "a") == "a"
+
+    def test_read_utf8_char_valid_2byte_regression(self, inp):
+        """read_utf8_char: 有效 2 字节 UTF-8 序列正确解码。"""
+        with patch("select.select", return_value=([0], [], [])):
+            with patch("os.read", return_value=b"\xa9"):
+                assert inp.read_utf8_char(0, 0xC3) == "é"
+
+    def test_read_utf8_char_invalid_first_byte_regression(self, inp):
+        """read_utf8_char: 无效首字节返回 None。"""
+        assert inp.read_utf8_char(0, 0x80) is None
+
+
+class TestUnescapeRegression:
+    """_unescape 静态方法测试（合并自 test_input_unified/test_input_buffer）。"""
+
+    def test_no_escape_regression(self):
+        assert Input._unescape("hello") == "hello"
+
+    def test_escaped_newline_regression(self):
+        assert Input._unescape(r"hello\nworld") == "hello\nworld"
+
+    def test_multiple_newlines_regression(self):
+        assert Input._unescape(r"a\nb\nc") == "a\nb\nc"
+
+    def test_empty_regression(self):
+        assert Input._unescape("") == ""
+
+
+class TestLoadHistoryRegression:
+    """load_history 去重 + 合并测试（合并自 test_input_buffer）。"""
+
+    @pytest.fixture
+    def inp(self, tmp_path):
+        """创建 Input 实例（P2-7：fixture 确保 fd 关闭，修复 os.open /dev/null 泄漏）。"""
+        fd = os.open("/dev/null", os.O_RDONLY)
+        try:
+            yield Input(fd=fd, history_file=tmp_path / "test_history")
+        finally:
+            os.close(fd)
+
+    def test_load_history_empty_file_regression(self, inp):
+        """空历史文件不报错，保留空历史。"""
+        with patch("src.tui._input._read_history_file", return_value=("", False)):
+            inp.load_history()
+        assert inp._history == []
+
+    def test_load_history_from_mock_file_regression(self, inp):
+        """load_history 从 mock 文件加载，正确反转顺序。"""
+        with patch("src.tui._input._read_history_file",
+                   return_value=("line1\nline2\nline3\n", True)):
+            with patch("src.tui._input._compact_history_file"):
+                inp.load_history()
+        assert inp._history[0] == "line3"
+        assert len(inp._history) == 3
+
+    def test_load_history_merge_existing_regression(self, inp):
+        """load_history 合并到已有内存历史。"""
+        inp._history = ["mem_entry"]
+        with patch("src.tui._input._read_history_file",
+                   return_value=("file_entry\n", True)):
+            with patch("src.tui._input._compact_history_file"):
+                inp.load_history()
+        assert "mem_entry" in inp._history
+        assert "file_entry" in inp._history
+
+
+class TestBufferExtraRegression:
+    """缓冲操作独有断言（合并自 test_input_buffer）。"""
+
+    @pytest.fixture
+    def inp(self, tmp_path):
+        """创建 Input 实例（P2-7：fixture 确保 fd 关闭，修复 os.open /dev/null 泄漏）。"""
+        fd = os.open("/dev/null", os.O_RDONLY)
+        try:
+            yield Input(fd=fd, history_file=tmp_path / "test_history")
+        finally:
+            os.close(fd)
+
+    def test_handle_char_filter_control_regression(self, inp):
+        """handle_char 过滤不可打印控制字符。"""
+        received = []
+
+        def cb(text, pos):
+            received.append((text, pos))
+
+        inp.set_echo_callback(cb)
+        inp.handle_char('x')
+        received.clear()
+        inp.handle_char('\x03')  # Ctrl+C 应被静默忽略
+        assert received == []
+        assert inp.get_current_text() == "x"
+
+    def test_handle_chars_batch_echo_once_regression(self, inp):
+        """handle_chars 批量插入（粘贴场景）只触发一次回显。"""
+        received = []
+
+        def cb(text, pos):
+            received.append((text, pos))
+
+        inp.set_echo_callback(cb)
+        inp.handle_chars("hello world")
+        assert len(received) == 1
+        assert received[0] == ("hello world", 11)
+
+    def test_handle_chars_multiline_paste_regression(self, inp):
+        """handle_chars 粘贴含换行的文本。"""
+        inp.handle_chars("line1\nline2")
+        assert inp.get_current_text() == "line1\nline2"
+
+    def test_enter_adds_to_history_regression(self, inp):
+        """Enter 添加输入到历史（mock 磁盘写入以隔离真实历史文件）。
+
+        _enter → _append_history_locked 真实执行历史入内存；
+        仅 mock 模块级 _append_to_history_file 隔离磁盘写入，避免自证断言。
+        """
+        inp.handle_chars("test line")
+        with patch("src.tui._input._append_to_history_file", return_value=True):
+            inp._enter()
+        assert "test line" in inp._history
+
+    def test_set_buffer_clears_submitted_regression(self, inp):
+        """set_buffer 清除残留的提交状态。"""
+        inp.handle_chars("old")
+        with patch.object(inp, "_append_history_locked", return_value=None):
+            inp._enter()  # 提交
+        inp.set_buffer("new")
+        assert inp.get_queued_input() is None  # 残留被清除
+
+    def test_drain_all_resets_history_regression(self, inp):
+        """drain_all 重置历史导航状态。"""
+        inp._history = ["old"]
+        inp._history_idx = 0
+        inp._saved_input_before_history = "original"
+        inp.drain_all()
+        assert inp._history_idx == -1
+        assert inp._saved_input_before_history == ""
+
+
+class TestEditingExtraRegression:
+    """编辑操作独有断言（合并自 test_input_buffer）。"""
+
+    @pytest.fixture
+    def inp(self, tmp_path):
+        """创建 Input 实例（P2-7：fixture 确保 fd 关闭，修复 os.open /dev/null 泄漏）。"""
+        fd = os.open("/dev/null", os.O_RDONLY)
+        try:
+            yield Input(fd=fd, history_file=tmp_path / "test_history")
+        finally:
+            os.close(fd)
+
+    def test_backspace_exits_history_regression(self, inp):
+        """历史导航模式下退格退出导航。"""
+        inp._history = ["old1", "old2"]
+        inp._history_idx = 0
+        inp._buffer = "old1"
+        inp._cursor_pos = 4
+        inp._backspace()
+        assert inp._history_idx == -1
+        assert inp.get_current_text() == "old"
+
+    def test_delete_at_end_regression(self, inp):
+        """光标在末尾时 Del 无操作。"""
+        inp.handle_chars("abc")
+        inp._delete()
+        assert inp.get_current_text() == "abc"
+
+    def test_home_multiline_regression(self, inp):
+        """多行文本：Home 跳到当前逻辑行首。"""
+        inp.handle_chars("line1\nline2")
+        inp._home()
+        received = []
+
+        def cb(text, pos):
+            received.append((text, pos))
+
+        inp.set_echo_callback(cb)
+        inp.handle_char('>')
+        assert "line1\n>line2" in inp.get_current_text()
+
+    def test_word_left_basic_regression(self, inp):
+        """_word_left 词边界移动（插入点验证）。"""
+        inp.handle_chars("hello world")
+        inp._word_left()
+        received = []
+
+        def cb(text, pos):
+            received.append((text, pos))
+
+        inp.set_echo_callback(cb)
+        inp.handle_char('x')
+        assert inp.get_current_text().startswith("hello xworld")
+
+    def test_word_right_basic_regression(self, inp):
+        """_word_right 词边界移动（插入点验证）。"""
+        inp.handle_chars("hello world")
+        for _ in range(11):
+            inp._left()
+        inp._word_right()
+        received = []
+
+        def cb(text, pos):
+            received.append((text, pos))
+
+        inp.set_echo_callback(cb)
+        inp.handle_char('>')
+        assert "hello >world" in inp.get_current_text()
+
+
+class TestHistoryExtraRegression:
+    """历史导航独有断言（合并自 test_input_buffer）。"""
+
+    @pytest.fixture
+    def inp(self, tmp_path):
+        """创建 Input 实例（P2-7：fixture 确保 fd 关闭，修复 os.open /dev/null 泄漏）。"""
+        fd = os.open("/dev/null", os.O_RDONLY)
+        try:
+            yield Input(fd=fd, history_file=tmp_path / "test_history")
+        finally:
+            os.close(fd)
+
+    def test_up_then_edit_exits_history_regression(self, inp):
+        """历史浏览中编辑退出导航。"""
+        inp._history = ["stored"]
+        inp._up()  # 进入历史导航
+        assert inp._history_idx == 0
+        inp.handle_char('!')  # 编辑
+        assert inp._history_idx == -1
+
+    def test_down_no_navigation_regression(self, inp):
+        """非导航模式下 _down 无操作。"""
+        inp.handle_chars("text")
+        inp._down()
+        assert inp.get_current_text() == "text"
+
+    def test_history_indicator_navigation_mode_regression(self, inp):
+        """历史导航模式下指示器显示 位置/总数。"""
+        inp._history = ["a", "b", "c"]
+        inp._history_idx = 1
+        assert "历史 2/3" in inp.get_history_indicator()
+
+    def test_echo_with_history_indicator_regression(self, inp):
+        """历史导航模式下回显包含指示器，光标位置仍为原始文本长度。"""
+        inp._history = ["hist1", "hist2"]
+        inp._history_idx = 0
+        inp._buffer = "hist1"
+        inp._cursor_pos = 5
+        calls = []
+
+        def cb(text, pos):
+            calls.append((text, pos))
+
+        inp.set_echo_callback(cb)
+        inp._echo("hist1")
+        assert "历史 1/2" in calls[0][0]
+        assert calls[0][1] == 5
+
+
+class TestCallbacksExtraRegression:
+    """回调接口独有断言（合并自 test_input_unified）。"""
+
+    @pytest.fixture
+    def inp(self, tmp_path):
+        fd = os.open("/dev/null", os.O_RDONLY)
+        try:
+            yield Input(fd=fd, history_file=tmp_path / "history")
+        finally:
+            os.close(fd)
+
+    def test_completion_navigate_regression(self, inp):
+        inp.set_completion_navigate_callback(lambda d, t: t + "_nav")
+        inp.handle_chars("prefix")
+        inp._handle_arrow_up()
+        assert inp.get_current_text() == "prefix_nav"
+
+    def test_auto_completion_regression(self, inp):
+        results = []
+        inp.set_auto_completion_callback(lambda t: results.append(t))
+        inp.handle_char('a')
+        inp._trigger_auto_completion()
+        assert len(results) == 1
+        assert results[0] == "a"
+
+    def test_dismiss_completion_regression(self, inp):
+        dismissed = []
+        inp.set_dismiss_completion_callback(lambda: dismissed.append(True))
+        inp._dismiss_completion()
+        assert len(dismissed) == 1
+
+    def test_special_key_does_not_toggle_active_regression(self, inp):
+        """_handle_special_key 直接调用回调，不操作 _active 标志。"""
+        results = []
+        inp.set_special_key_callback(lambda a, t: results.append((a, t)) or t)
+        active_before = inp._active.is_set()
+        inp._handle_special_key('vim')
+        active_after = inp._active.is_set()
+        assert len(results) == 1
+        assert results[0][0] == 'vim'
+        assert active_before == active_after
+
+    def test_capture_bytes_and_drain_regression(self, inp):
+        inp.capture_bytes(b"\xff\xfe")
+        assert inp.drain_captured() != ""
+        assert inp.drain_captured() == ""  # 已清空
+
+    def test_get_history_indicator_empty_regression(self, inp):
+        assert inp.get_history_indicator() == ""
+
+
+class TestParsingExtraRegression:
+    """解析独有断言（合并自 test_input_unified/test_parser）。"""
+
+    @pytest.fixture
+    def inp(self, tmp_path):
+        """创建 Input 实例（P2-7：fixture 确保 fd 关闭，修复 os.open /dev/null 泄漏）。"""
+        fd = os.open("/dev/null", os.O_RDONLY)
+        try:
+            yield Input(fd=fd, history_file=tmp_path / "test_history")
+        finally:
+            os.close(fd)
+
+    def test_unknown_control_regression(self, inp):
+        """NUL 字节 → unknown。"""
+        ev = inp.feed_byte(0x00)
+        assert ev is not None
+        assert ev.kind == "unknown"
+
+    def test_csi_u_shift_enter_regression(self):
+        """CSI u shift+Enter → char '\\n' modifier 2。"""
+        ev = Input._dispatch_csi([13, 2], 'u')
+        assert ev.kind == "char"
+        assert ev.char == "\n"
+        assert ev.modifier == 2
+
+    def test_csi_u_alt_enter_regression(self):
+        """CSI u alt+Enter → char '\\n' modifier 3。"""
+        ev = Input._dispatch_csi([13, 3], 'u')
+        assert ev.kind == "char"
+        assert ev.char == "\n"
+        assert ev.modifier == 3
+
+    def test_csi_unknown_terminator_regression(self):
+        """未知 CSI 终结符 → unknown。"""
+        ev = Input._dispatch_csi([], 'Z')
+        assert ev.kind == "unknown"
+
+
+class TestComputeCursorPreciseRegression:
+    """compute_cursor() 精确断言（合并自 test_cursor）。"""
+
+    @pytest.fixture
+    def mock_width_cache(self):
+        """Mock TerminalWidthCache 返回固定宽度 80、高度 24。"""
+        cache = MagicMock()
+        cache.get_width.return_value = 80
+        cache.get_height.return_value = 24
+        return cache
+
+    @pytest.fixture
+    def inp(self, mock_width_cache, tmp_path):
+        """创建 Input 实例（P2-7：fixture 确保 fd 关闭，修复 os.open /dev/null 泄漏）。"""
+        fd = os.open("/dev/null", os.O_RDONLY)
+        try:
+            yield Input(
+                fd=fd,
+                history_file=tmp_path / "test_history",
+                term_width_cache=mock_width_cache,
+            )
+        finally:
+            os.close(fd)
+
+    def test_single_line_cursor_at_end_regression(self, mock_width_cache, inp):
+        inp_inst = inp
+        r_cursor, cursor_col, vis_row, vis_col = inp_inst.compute_cursor(
+            text="hello world", cursor_pos=11,
+            bottom_lines=6, subagent_lines=0, completion_height=0,
+        )
+        assert vis_row == 0
+        assert r_cursor == 22
+        assert cursor_col == 14
+
+    def test_empty_text_default_position_regression(self, mock_width_cache, inp):
+        r_cursor, cursor_col, vis_row, vis_col = inp.compute_cursor(
+            text="", cursor_pos=0,
+            bottom_lines=4, subagent_lines=0, completion_height=0,
+        )
+        assert vis_row == 0
+        assert vis_col == 0
+        assert r_cursor == 24
+
+    def test_multiline_text_cursor_in_middle_regression(self, mock_width_cache, inp):
+        text = "line one\nline two\nline three"
+        r_cursor, cursor_col, vis_row, vis_col = inp.compute_cursor(
+            text=text, cursor_pos=14,
+            bottom_lines=6, subagent_lines=0, completion_height=0,
+        )
+        assert vis_row == 1
+        assert vis_col == 5
+        assert r_cursor == 23
+
+    def test_tab_expansion_vis_col_regression(self, mock_width_cache, inp):
+        r_cursor, cursor_col, vis_row, vis_col = inp.compute_cursor(
+            text="a\tb", cursor_pos=2,
+            bottom_lines=6, subagent_lines=0, completion_height=0,
+        )
+        assert vis_col == 4
+
+    def test_completion_height_offset_regression(self, mock_width_cache, inp):
+        mock_width_cache.get_height.return_value = 50
+        r1, _, _, _ = inp.compute_cursor(
+            text="hi", cursor_pos=2,
+            bottom_lines=6, subagent_lines=0, completion_height=0,
+        )
+        r2, _, _, _ = inp.compute_cursor(
+            text="hi", cursor_pos=2,
+            bottom_lines=6, subagent_lines=0, completion_height=3,
+        )
+        assert r2 > r1
+
+    def test_subagent_lines_offset_regression(self, mock_width_cache, inp):
+        r1, _, _, _ = inp.compute_cursor(
+            text="hi", cursor_pos=2,
+            bottom_lines=6, subagent_lines=0, completion_height=0,
+        )
+        r2, _, _, _ = inp.compute_cursor(
+            text="hi", cursor_pos=2,
+            bottom_lines=6, subagent_lines=2, completion_height=0,
+        )
+        assert r2 == r1 + 2
+
+    def test_clamp_to_terminal_height_regression(self, mock_width_cache, inp):
+        mock_width_cache.get_height.return_value = 5
+        r_cursor, _, _, _ = inp.compute_cursor(
+            text="line 1\nline 2\nline 3\nline 4", cursor_pos=25,
+            bottom_lines=3, subagent_lines=0, completion_height=0,
+        )
+        assert 1 <= r_cursor <= 5
+
+    def test_cursor_col_clamp_to_width_regression(self, mock_width_cache, inp):
+        mock_width_cache.get_width.return_value = 20
+        _, cursor_col, _, _ = inp.compute_cursor(
+            text="a very long line that exceeds terminal width", cursor_pos=50,
+            bottom_lines=6, subagent_lines=0, completion_height=0,
+        )
+        assert 1 <= cursor_col <= 20
+
+
+# ═══════════════════════════════════════════════════════════
+# 方向A 步骤1/2 拆分回归测试（新增，2026-07-31）
+# ═══════════════════════════════════════════════════════════
+
+class TestInputFacade:
+    """薄外观委托测试（方向A 步骤1）：Input 保留全部公开 API，方法体委托三组件。"""
+
+    @pytest.fixture
+    def inp(self, tmp_path):
+        """创建 Input 实例（P2-7：fixture 确保 fd 关闭，修复 os.open /dev/null 泄漏）。"""
+        fd = os.open("/dev/null", os.O_RDONLY)
+        try:
+            yield Input(fd=fd, history_file=tmp_path / "test_history")
+        finally:
+            os.close(fd)
+
+    def test_components_created(self, inp):
+        """Input 组合持有 InputIO / InputBufferEditor / InputDispatcher。"""
+        from src.tui._input_io import InputIO
+        from src.tui._input_buffer import InputBufferEditor
+        from src.tui._input_dispatcher import InputDispatcher
+        assert isinstance(inp._io, InputIO)
+        assert isinstance(inp._buffer_editor, InputBufferEditor)
+        assert isinstance(inp._dispatcher, InputDispatcher)
+
+    def test_facade_buffer_delegation(self, inp):
+        """缓冲操作经外观委托 InputBufferEditor，行为一致。"""
+        inp.handle_chars("facade test")
+        assert inp.get_current_text() == "facade test"
+        assert inp._buffer_editor.get_current_text() == "facade test"
+        inp.set_buffer("prefill")
+        assert inp.get_current_text() == "prefill"
+        inp.reset()
+        assert inp.get_current_text() == ""
+        assert inp._buffer_editor.get_current_text() == ""
+
+    def test_facade_queue_delegation(self, inp):
+        """队列语义经外观委托：_enter → get_queued_input。"""
+        inp.handle_chars("queued")
+        inp._enter()
+        assert inp.has_queued_input()
+        assert inp._buffer_editor.has_queued_input()
+        assert inp.get_queued_input() == "queued"
+        assert inp._buffer_editor.get_queued_input() is None
+
+    def test_facade_io_delegation(self, inp):
+        """I/O 状态经外观委托 InputIO。"""
+        inp.start_io()
+        assert inp.is_io_running
+        assert inp._io.is_io_running
+        inp.pause_io()
+        assert not inp._io.active.is_set()
+        inp.resume_io()
+        assert inp._io.active.is_set()
+        inp.stop_io()
+        assert not inp.is_io_running
+
+    def test_facade_history_delegation(self, inp):
+        """历史管理经外观委托 InputBufferEditor。"""
+        inp._history = ["a", "b"]
+        inp._history_idx = 0
+        assert inp._buffer_editor._history == ["a", "b"]
+        assert inp._buffer_editor._history_idx == 0
+        assert inp.get_history_indicator() == " [历史 1/2]"
+
+    def test_facade_callback_delegation(self, inp):
+        """回调设置经外观委托到对应组件。"""
+        special = lambda a, t: t
+        comp = lambda t: t
+        dismiss = lambda: None
+        nav = lambda d, t: t
+        auto = lambda t: None
+        interrupt = lambda: None
+        inp.set_special_key_callback(special)
+        inp.set_completion_callback(comp)
+        inp.set_dismiss_completion_callback(dismiss)
+        inp.set_completion_navigate_callback(nav)
+        inp.set_auto_completion_callback(auto)
+        inp.set_interrupt_callback(interrupt)
+        assert inp._dispatcher._special_key_callback is special
+        assert inp._dispatcher._completion_callback is comp
+        assert inp._dispatcher._dismiss_completion_callback is dismiss
+        assert inp._dispatcher._completion_navigate_callback is nav
+        assert inp._dispatcher._auto_completion_callback is auto
+        assert inp._dispatcher._interrupt_callback is interrupt
+
+        echo = lambda text, pos: None
+        inp.set_echo_callback(echo)
+        assert inp._buffer_editor._echo_callback is echo
+
+    def test_facade_suppress_enter_delegation(self, inp):
+        """_suppress_enter 读写经外观委托 InputDispatcher。"""
+        inp.set_suppress_enter(True)
+        assert inp.get_suppress_enter() is True
+        assert inp._dispatcher.get_suppress_enter() is True
+        inp.set_suppress_enter(False)
+        assert inp.get_suppress_enter() is False
+
+    def test_facade_capture_delegation(self, inp):
+        """捕获缓冲区经外观委托 InputDispatcher。"""
+        inp.capture_bytes(b"\x01")
+        assert inp._dispatcher.drain_captured() != ""
+        assert inp.drain_captured() == ""
+
+    def test_facade_read_stdin_once_delegation(self, tmp_path):
+        """read_stdin_once / process_events 经外观委托 InputDispatcher。"""
+        import select as _sel
+        r_fd, w_fd = os.pipe()
+        try:
+            inp = Input(fd=r_fd, history_file=tmp_path / "history")
+            os.write(w_fd, b"a")
+            ready, _, _ = _sel.select([r_fd], [], [], 2.0)
+            assert ready
+            assert inp.read_stdin_once() is True
+            assert inp.get_current_text() == "a"
+        finally:
+            os.close(w_fd)
+            os.close(r_fd)
+
+
+class TestInputIOUnit:
+    """InputIO 单元测试（方向A 步骤1）：读取原语 + I/O 状态机。"""
+
+    @pytest.fixture
+    def io(self):
+        """创建 InputIO 实例（P2-7：fixture 确保 fd 关闭）。"""
+        from src.tui._input_io import InputIO
+        fd = os.open("/dev/null", os.O_RDONLY)
+        try:
+            yield InputIO(fd=fd)
+        finally:
+            os.close(fd)
+
+    def test_read_utf8_char_timeout_regression(self, io):
+        """read_utf8_char 超时（后续字节未到）返回 None（截断序列）。"""
+        with patch("select.select", return_value=([], [], [])):
+            assert io.read_utf8_char(0, 0xC3) is None
+
+    def test_read_utf8_char_truncated_regression(self, io):
+        """read_utf8_char 只读到部分字节时返回 None。"""
+        with patch("select.select", return_value=([0], [], [])):
+            with patch("os.read", side_effect=[b"\xbd", b""]):
+                # 3 字节序列：首字节 0xE4 已给，续字节只读到 1 个 → 解码失败 → None
+                assert io.read_utf8_char(0, 0xE4) is None
+
+    def test_try_read_paste_backoff_regression(self, io):
+        """try_read_paste 退避：无后续数据时计数器递增并返回原字符。"""
+        with patch("select.select", return_value=([], [], [])):
+            assert io.try_read_paste(0, "a") == "a"
+            assert io._paste_skip_counter == 1
+
+    def test_try_read_paste_paste_detection_regression(self, io):
+        """try_read_paste 检测到粘贴并读取 extra（262144 上限不变）。"""
+        def fake_select(rlist, wlist, xlist, timeout):
+            return ([0], [], [])
+        with patch("select.select", side_effect=fake_select):
+            with patch("os.read", side_effect=[b"bc", b""]):
+                assert io.try_read_paste(0, "a") == "abc"
+
+    def test_flush_stdin_buffer_mock_tcflush_regression(self, io):
+        """flush_stdin_buffer 在 HAS_TERMIOS 时调用 tcflush（mock）。"""
+        with patch("src.tui._input_io.HAS_TERMIOS", True):
+            with patch("src.tui._input_io.termios") as mock_termios:
+                mock_termios.TCIFLUSH = 0
+                io.flush_stdin_buffer(max_flush=1)
+                mock_termios.tcflush.assert_called()
+
+    def test_start_stop_io_state_regression(self, io):
+        """start_io/stop_io 状态机：_fd_status / _io_started / _exit_reason。"""
+        io.start_io()
+        assert io.is_io_running
+        assert io.fd_status == "ok"
+        io.record_select_error()
+        assert io.select_error_count == 1
+        io.stop_io()
+        assert not io.is_io_running
+        assert io.fd_status == "ok"
+
+
+class TestInputBufferEditorUnit:
+    """InputBufferEditor 单元测试（方向A 步骤1）：缓冲编辑 + 历史 + _input_ready。"""
+
+    @pytest.fixture
+    def editor(self, tmp_path):
+        """创建 InputBufferEditor 实例（注入 _HistoryIO 保持 patch 路径）。"""
+        from src.tui._input_buffer import InputBufferEditor
+        from src.tui._input import _HistoryIO
+        return InputBufferEditor(
+            history_file=tmp_path / "test_history",
+            history_io=_HistoryIO(),
+        )
+
+    def test_editor_edit_ops(self, editor):
+        """编辑操作：handle_char / _backspace / _left / _right。"""
+        editor.handle_chars("abc")
+        assert editor.get_current_text() == "abc"
+        editor._left()
+        editor.handle_char('X')
+        assert editor.get_current_text() == "abXc"
+        editor._backspace()
+        assert editor.get_current_text() == "abc"
+
+    def test_editor_history_dedup(self, editor):
+        """历史去重：重复条目前移不重复。"""
+        with patch("src.tui._input._append_to_history_file", return_value=True):
+            editor._history = ["a", "b"]
+            editor._buffer = "b"
+            editor._cursor_pos = 1
+            editor._enter()
+        assert editor._history == ["b", "a"]
+
+    def test_editor_input_ready_event_semantics(self, editor):
+        """_input_ready 事件语义：enter set / get_queued_input clear。"""
+        assert not editor._input_ready.is_set()
+        editor._buffer = "text"
+        editor._cursor_pos = 4
+        with patch("src.tui._input._append_to_history_file", return_value=True):
+            editor._enter()
+        assert editor._input_ready.is_set()
+        assert editor.get_queued_input() == "text"
+        assert not editor._input_ready.is_set()
+
+    def test_editor_wait_until_ready(self, editor):
+        """wait_until_ready：事件未设置超时返回 False，设置后返回 True。"""
+        assert editor.wait_until_ready(timeout=0.05) is False
+        editor._input_ready.set()
+        assert editor.wait_until_ready(timeout=0.05) is True
+
+
+class TestDoInterruptCallbackInjection:
+    """interrupt 回调注入（方向A 步骤1）：未注入不抛异常，注入后被调用。"""
+
+    @pytest.fixture
+    def inp(self, tmp_path):
+        """创建 Input 实例（P2-7：fixture 确保 fd 关闭）。"""
+        fd = os.open("/dev/null", os.O_RDONLY)
+        try:
+            yield Input(fd=fd, history_file=tmp_path / "test_history")
+        finally:
+            os.close(fd)
+
+    def test_do_interrupt_no_callback_no_exception_regression(self, inp):
+        """未注入 interrupt 回调时 _do_interrupt 不抛异常（None 短路）。"""
+        inp.handle_chars("hello")
+        inp._do_interrupt()
+        assert inp.interrupted  # 中断标志仍被设置
+
+    def test_do_interrupt_injected_callback_called_regression(self, inp):
+        """注入 mock 回调后被调用。"""
+        cb = MagicMock()
+        inp.set_interrupt_callback(cb)
+        inp.handle_chars("hello")
+        inp._do_interrupt()
+        cb.assert_called_once()
+
+    def test_do_interrupt_clears_buffer_when_no_queued_regression(self, inp):
+        """无排队输入时 _do_interrupt 清空缓冲区。"""
+        inp.handle_chars("hello")
+        assert inp.get_current_text() == "hello"
+        inp._do_interrupt()
+        assert inp.get_current_text() == ""
+        assert inp.interrupted
+
+    def test_do_interrupt_has_queued_only_flush_stdin_residual_regression(self, inp):
+        """P3-3：has_queued_input()==True 分支 → 仅 _flush_stdin_residual()（不 reset）。
+
+        _do_interrupt 在有排队输入时不清空缓冲区（保持待消费的 submitted 文本），
+        仅排空 stdin 残留字节后设置中断标志。
+        """
+        inp.handle_chars("hello")
+        inp._enter()  # 提交 → has_queued_input() == True
+        assert inp.has_queued_input() is True
+        assert inp.get_current_text() == ""  # _enter 清空 buffer
+
+        with patch.object(inp._io, "_flush_stdin_residual") as mock_flush:
+            inp._do_interrupt()
+
+        mock_flush.assert_called_once()
+        assert inp.interrupted
+        # 排队输入仍保留（未被 reset 消费）
+        assert inp.has_queued_input() is True
+        assert inp.get_queued_input() == "hello"
+
+    def test_do_interrupt_stop_set_early_return_regression(self, inp):
+        """P3-3：stop.is_set() 提前返回 → 不设置中断标志、不调用回调。"""
+        cb = MagicMock()
+        inp.set_interrupt_callback(cb)
+        inp.handle_chars("hello")
+        inp._stop.set()  # I/O 已停止
+
+        inp._do_interrupt()
+
+        # 提前返回：中断标志未设置、回调未调用、缓冲区未被 reset
+        assert inp.interrupted is False
+        cb.assert_not_called()
+        assert inp.get_current_text() == "hello"
+
+    def test_read_stdin_once_interrupt_with_callback_regression(self, tmp_path):
+        """Ctrl+C 经 read_stdin_once 分发到 _do_interrupt 并调用注入回调。"""
+        import select as _sel
+        r_fd, w_fd = os.pipe()
+        try:
+            inp = Input(fd=r_fd, history_file=tmp_path / "history")
+            cb = MagicMock()
+            inp.set_interrupt_callback(cb)
+            inp.start_io()
+            inp.handle_chars("hello")
+            os.write(w_fd, b"\x03")
+            ready, _, _ = _sel.select([r_fd], [], [], 2.0)
+            assert ready
+            assert inp.read_stdin_once() is True
+            assert inp.interrupted
+            assert inp.get_current_text() == ""
+            cb.assert_called_once()
+        finally:
+            os.close(w_fd)
+            os.close(r_fd)
+
+
+class TestWaitUntilReadyFacade:
+    """wait_until_ready（方向A 步骤2）：Input 薄外观暴露，_input_ready 事件语义。"""
+
+    @pytest.fixture
+    def inp(self, tmp_path):
+        """创建 Input 实例（P2-7：fixture 确保 fd 关闭）。"""
+        fd = os.open("/dev/null", os.O_RDONLY)
+        try:
+            yield Input(fd=fd, history_file=tmp_path / "test_history")
+        finally:
+            os.close(fd)
+
+    def test_wait_until_ready_timeout_false_regression(self, inp):
+        """超时返回 False。"""
+        assert inp.wait_until_ready(timeout=0.05) is False
+
+    def test_wait_until_ready_set_returns_true_regression(self, inp):
+        """事件已设置立即返回 True。"""
+        inp._input_ready.set()
+        assert inp.wait_until_ready(timeout=0.05) is True
+
+    def test_wait_until_ready_after_enter_regression(self, inp):
+        """_enter 后 wait_until_ready 返回 True，get_queued_input 可取文本。"""
+        inp.handle_chars("ready")
+        inp._enter()
+        assert inp.wait_until_ready(timeout=0.05) is True
+        assert inp.get_queued_input() == "ready"
+
+    def test_wait_until_ready_thread_safety_regression(self, inp):
+        """多线程 set/wait 无竞态（另一线程 _enter，主线程事件等待立即唤醒）。"""
+        import threading
+
+        def submit():
+            inp.handle_chars("threaded")
+            inp._enter()
+
+        t = threading.Thread(target=submit)
+        t.start()
+        assert inp.wait_until_ready(timeout=5.0) is True
+        assert inp.get_queued_input() == "threaded"
+        t.join()

@@ -33,6 +33,8 @@ import time
 _logger = logging.getLogger(__name__)
 
 from rich.console import Console
+from rich.style import Style
+from rich.text import Text
 
 from .output import OutputAdapter
 from .indicator import StreamingIndicator
@@ -44,6 +46,90 @@ from .pipeline_filters import HeadingAnchorFilter, TokenStreamOptimizer
 
 from ..terminal import get_safe_console_config
 from ._rendering import render_toc, render_render_summary
+
+
+class _StyledOutputAdapter:
+    """包装 OutputAdapter，为共享 adapter 添加独立样式（装饰器模式）。
+
+    用于 ``IncrementalRenderer(output_adapter=..., style=...)`` 场景：
+    共享底层 OutputAdapter（单一输出管线），同时保留调用方独立样式
+    （如推理渲染器的 dim）。完整转发 OutputAdapter 调用面，
+    仅 write()/batch_write()/write_inline() 对 renderable 应用样式。
+
+    样式兼容：
+      - ``style="dim"``（字符串）→ ``Style.parse("dim")``
+      - ``style=Style(dim=True)``（rich Style 对象）→ 直接使用
+
+    复用考量：不复制渲染逻辑，仅叠加样式层；captured_output 机制
+    通过 ``_captured_output`` property 转发到底层 OutputAdapter。
+    """
+
+    def __init__(self, output_adapter, style):
+        self._output = output_adapter
+        self._style = style if isinstance(style, Style) else Style.parse(style)
+
+    # ── 宽度 ─────────────────────────────────────────
+
+    @property
+    def width(self) -> int:
+        return self._output.width
+
+    def force_refresh_width(self) -> None:
+        self._output.force_refresh_width()
+
+    # ── 捕获转发（IncrementalRenderer captured_output 机制） ──
+
+    @property
+    def _captured_output(self):
+        return self._output._captured_output
+
+    @_captured_output.setter
+    def _captured_output(self, value):
+        self._output._captured_output = value
+
+    # ── 样式应用 ─────────────────────────────────────
+
+    def _styled(self, renderable):
+        """对 str/Text renderable 应用样式，其他类型原样委托。
+
+        rich ``Text.stylize`` 就地修改并返回 None，故须先 copy 再 stylize。
+        """
+        if isinstance(renderable, str):
+            text = Text.from_ansi(renderable)
+            text.stylize(self._style)
+            return text
+        if isinstance(renderable, Text):
+            # copy 避免就地修改调用方复用的 Text 对象
+            text = renderable.copy()
+            text.stylize(self._style)
+            return text
+        return renderable
+
+    # ── 输出调用面（样式化后委托底层） ────────────────
+
+    def write(self, renderable) -> None:
+        self._output.write(self._styled(renderable))
+
+    def batch_write(self, renderables: list) -> None:
+        self._output.batch_write([self._styled(r) for r in renderables])
+
+    def write_raw(self, text: str) -> None:
+        self._output.write_raw(text)
+
+    def write_line(self, text: str = "") -> None:
+        self._output.write_line(text)
+
+    def write_inline(self, text) -> None:
+        self._output.write_inline(self._styled(text))
+
+    def print(self, *args, **kwargs) -> None:
+        self._output.print(*args, **kwargs)
+
+    def clear_line(self) -> None:
+        self._output.clear_line()
+
+    def flush(self) -> None:
+        self._output.flush()
 
 
 class IncrementalRenderer:
@@ -67,7 +153,14 @@ class IncrementalRenderer:
 
         # ★ 支持外部注入 OutputAdapter（共享模式），消除双 Console 实例竞争
         if output_adapter is not None:
-            self._output = output_adapter
+            if style:
+                # 共享 adapter + 样式：用 _StyledOutputAdapter 包装，
+                # 保留独立样式（如推理 dim）而不创建独立 Console
+                self._output = _StyledOutputAdapter(
+                    output_adapter, style=style,
+                )
+            else:
+                self._output = output_adapter
             # 外部注入的 OutputAdapter — 如果 capture 列表已设则直接绑定
             if captured_output is not None:
                 self._output._captured_output = captured_output

@@ -8,7 +8,7 @@ BaseDisplay 是所有显示层的抽象基类，统一核心层与显示层实�
 
 迁移说明（2026-07-29 TUI 重构）：
   - 从 src/tui/consumer/base_display.py 迁移至 TUI 根层级
-  - 导入路径更新为使用 .core.output_target
+  - 导入路径更新为使用 ._output_target
 """
 
 from __future__ import annotations
@@ -17,7 +17,7 @@ from abc import ABC, abstractmethod
 from typing import Optional, TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from .core.output_target import IOutputTarget
+    from ._output_target import IOutputTarget
 
 
 class BaseDisplay(ABC):

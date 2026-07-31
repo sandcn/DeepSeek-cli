@@ -16,31 +16,111 @@ class TestTuiEngineCommandQueue:
 
     def test_push_cmd(self):
         from src.tui._renderer import TuiEngine
+        from src.tui._const import ReasoningCmd
         renderer = MagicMock()
         bottom_bar = MagicMock()
         engine = TuiEngine(renderer, bottom_bar)
-        engine.push_cmd((0, "test"))
+        engine.push_cmd(ReasoningCmd(text="test"))
         assert engine._cmd_queue.qsize() == 1
 
     def test_push_cmd_queue_full_handling(self):
         from src.tui._renderer import TuiEngine
+        from src.tui._const import ReasoningCmd
         renderer = MagicMock()
         bottom_bar = MagicMock()
         engine = TuiEngine(renderer, bottom_bar)
         # 设置较小的队列容量来测试满队列
         engine._cmd_queue.maxsize = 3
         for i in range(5):
-            engine.push_cmd((0, f"test{i}"))
+            engine.push_cmd(ReasoningCmd(text=f"test{i}"))
         assert engine._cmd_queue.qsize() <= engine._cmd_queue.maxsize
 
-    def test_flush_drains_queue(self):
+    def test_push_cmd_high_priority_nonblocking_regression(self):
+        """方向D 步骤8：高优先级 push_cmd 满队列时不阻塞（非阻塞 + 丢弃计数）。"""
+        import queue as _queue
         from src.tui._renderer import TuiEngine
+        from src.tui._const import ReasoningCmd
         renderer = MagicMock()
         bottom_bar = MagicMock()
         engine = TuiEngine(renderer, bottom_bar)
-        # 推入命令（不启动线程，flush 应排空）
+        # 满队列 mock：put 抛 queue.Full
+        engine._cmd_queue = MagicMock()
+        engine._cmd_queue.put.side_effect = _queue.Full
+
+        engine.push_cmd(ReasoningCmd(text="test"))
+
+        # 非阻塞：put 应以 block=False 调用
+        engine._cmd_queue.put.assert_called_once()
+        _, kwargs = engine._cmd_queue.put.call_args
+        assert kwargs["block"] is False
+        # 丢弃计数递增
+        assert engine._cmd_queue_dropped == 1
+        assert engine._consecutive_full == 1
+
+    def test_push_cmd_critical_blocks_regression(self):
+        """方向D 步骤8：push_cmd_critical 满队列时仍走阻塞路径。"""
+        import queue as _queue
+        from src.tui._renderer import TuiEngine
+        from src.tui._const import PhaseDoneCmd
+        renderer = MagicMock()
+        bottom_bar = MagicMock()
+        engine = TuiEngine(renderer, bottom_bar)
+        engine._cmd_queue = MagicMock()
+        engine._cmd_queue.put.side_effect = _queue.Full
+
+        with pytest.raises(_queue.Full):
+            engine.push_cmd_critical(PhaseDoneCmd(phase="done"))
+
+        # 阻塞路径：block=True + timeout=1.0
+        engine._cmd_queue.put.assert_called_once()
+        _, kwargs = engine._cmd_queue.put.call_args
+        assert kwargs["block"] is True
+        assert kwargs["timeout"] == 1.0
+
+    def test_drain_queue_panel_refresh_outside_lock_regression(self):
+        """方向D 步骤8：_phase_pre_update_panels（SubAgentPanel 刷新）在输出锁获取之前。"""
+        import queue as _queue
+        from unittest.mock import patch
+        from src.tui._renderer import TuiEngine
+
+        renderer = MagicMock()
+        bottom_bar = MagicMock()
+        bottom_bar.is_active = False
+        engine = TuiEngine(renderer, bottom_bar)
+
+        call_order = []
+        engine._phase_process_input = lambda: call_order.append("process_input")
+        engine._phase_pre_update_panels = lambda: call_order.append("pre_update_panels")
+        engine._cmd_queue = MagicMock()
+        engine._cmd_queue.get_nowait.side_effect = _queue.Empty
+
+        class _FakeLock:
+            def __enter__(self):
+                call_order.append("acquire_lock")
+                return True
+            def __exit__(self, *a):
+                call_order.append("release_lock")
+                return False
+
+        with patch(
+            "src.tui._renderer._engine._try_acquire_output_lock",
+            return_value=_FakeLock(),
+        ):
+            engine._drain_queue()
+
+        # 面板刷新与输入分发必须先于锁获取（锁外执行）
+        assert call_order.index("pre_update_panels") < call_order.index("acquire_lock")
+        assert call_order.index("process_input") < call_order.index("acquire_lock")
+
+    def test_flush_drains_queue(self):
+        from src.tui._renderer import TuiEngine
+        from src.tui._const import WriteLineCmd
+        renderer = MagicMock()
+        bottom_bar = MagicMock()
+        engine = TuiEngine(renderer, bottom_bar)
+        # 推入命令（不启动线程，flush 应排空）；queue 元素为三元组 (priority, seq, cmd)
         for i in range(5):
-            engine._cmd_queue.put((0, f"test{i}"))
+            engine._cmd_queue.put((0, i, WriteLineCmd(text=f"test{i}")))
         engine.flush(timeout=1.0)
         assert engine._cmd_queue.qsize() == 0
 
@@ -154,7 +234,7 @@ class TestTuiEngineCommandQueue:
     def test_event_not_stuck_set_with_continuous_subagent_frames(self):
         """模拟连续 SUBAGENT_FRAME push 场景，验证 event 不会卡在 SET 状态"""
         from src.tui._renderer import TuiEngine
-        from src.tui._const import RenderCommand
+        from src.tui._const import RenderCommand, SubagentFrameCmd, NotificationCmd
         from unittest.mock import MagicMock
 
         renderer = MagicMock()
@@ -169,7 +249,7 @@ class TestTuiEngineCommandQueue:
         _seq = 0
         def mock_panel_refresh():
             nonlocal _seq
-            engine._cmd_queue.put((RenderCommand.SUBAGENT_FRAME, _seq, ("line1",)))
+            engine._cmd_queue.put((RenderCommand.SUBAGENT_FRAME, _seq, SubagentFrameCmd(frame_lines=("line1",))))
             _seq += 1
             engine._cmd_event.set()
 
@@ -178,7 +258,7 @@ class TestTuiEngineCommandQueue:
         # 模拟多次渲染循环回合
         for _ in range(5):
             # 先 push 一些内容到队列（模拟外部 push）
-            engine._cmd_queue.put((RenderCommand.NOTIFICATION, _seq, "test"))
+            engine._cmd_queue.put((RenderCommand.NOTIFICATION, _seq, NotificationCmd(text="test")))
             _seq += 1
             engine._cmd_event.set()
 
@@ -208,8 +288,9 @@ class TestTuiRenderer:
         adapter = MagicMock()
         bb = MagicMock()
         renderer = TuiRenderer(rs, adapter, bb)
-        # 未知命令不应抛异常
-        renderer.render((999,))
+        # 非 RenderCmd 输入应抛 TypeError（tuple 双格式已移除）
+        with pytest.raises(TypeError):
+            renderer.render(999)
         # adapter 不应被调用
         adapter.write.assert_not_called()
 
@@ -219,47 +300,49 @@ class TestTuiRenderer:
         adapter = MagicMock()
         bb = MagicMock()
         renderer = TuiRenderer(rs, adapter, bb)
-        renderer.render(())
+        # 原空 tuple 跳过语义已移除：非 RenderCmd 输入应抛 TypeError
+        with pytest.raises(TypeError):
+            renderer.render(())
         adapter.write.assert_not_called()
 
     def test_render_tool_count_inc(self):
         from src.tui._renderer import TuiRenderer
-        from src.tui._const import RenderCommand
+        from src.tui._const import ToolCountIncCmd
         rs = MagicMock()
         adapter = MagicMock()
         bb = MagicMock()
         renderer = TuiRenderer(rs, adapter, bb)
-        renderer.render((RenderCommand.TOOL_COUNT_INC,))
+        renderer.render(ToolCountIncCmd())
         bb.increment_tool.assert_called_once()
 
     def test_render_tool_count_dec(self):
         from src.tui._renderer import TuiRenderer
-        from src.tui._const import RenderCommand
+        from src.tui._const import ToolCountDecCmd
         rs = MagicMock()
         adapter = MagicMock()
         bb = MagicMock()
         renderer = TuiRenderer(rs, adapter, bb)
-        renderer.render((RenderCommand.TOOL_COUNT_DEC,))
+        renderer.render(ToolCountDecCmd())
         bb.decrement_tool.assert_called_once()
 
     def test_render_tool_fail_inc(self):
         from src.tui._renderer import TuiRenderer
-        from src.tui._const import RenderCommand
+        from src.tui._const import ToolFailIncCmd
         rs = MagicMock()
         adapter = MagicMock()
         bb = MagicMock()
         renderer = TuiRenderer(rs, adapter, bb)
-        renderer.render((RenderCommand.TOOL_FAIL_INC,))
+        renderer.render(ToolFailIncCmd())
         bb.increment_tool_fail.assert_called_once()
 
     def test_render_main_phase(self):
         from src.tui._renderer import TuiRenderer
-        from src.tui._const import RenderCommand
+        from src.tui._const import MainPhaseCmd
         rs = MagicMock()
         adapter = MagicMock()
         bb = MagicMock()
         renderer = TuiRenderer(rs, adapter, bb)
-        renderer.render((RenderCommand.MAIN_PHASE, "thinking"))
+        renderer.render(MainPhaseCmd(phase="thinking"))
         bb.set_main_phase.assert_called_once_with("thinking")
 
     def test_output_adapter_property(self):
@@ -317,7 +400,7 @@ class TestEventDispatcher:
     def test_on_tool_started(self):
         from src.tui._renderer import EventDispatcher
         from src.tui.events.event_types import ToolStartedEvent
-        from src.tui._const import RenderCommand, ToolCountIncCmd
+        from src.tui._const import ToolCountIncCmd
         push_cmd = MagicMock()
         # 使用默认 filter_fn：source == "agent" 通过
         dispatcher = EventDispatcher(push_cmd)
@@ -328,7 +411,7 @@ class TestEventDispatcher:
     def test_on_tool_done_success(self):
         from src.tui._renderer import EventDispatcher
         from src.tui.events.event_types import ToolDoneEvent
-        from src.tui._const import RenderCommand, ToolCountDecCmd
+        from src.tui._const import ToolCountDecCmd
         push_cmd = MagicMock()
         dispatcher = EventDispatcher(push_cmd)
         event = ToolDoneEvent(source="agent", success=True)
@@ -338,7 +421,7 @@ class TestEventDispatcher:
     def test_on_tool_done_fail(self):
         from src.tui._renderer import EventDispatcher
         from src.tui.events.event_types import ToolDoneEvent
-        from src.tui._const import RenderCommand, ToolFailIncCmd, ToolCountDecCmd
+        from src.tui._const import ToolFailIncCmd, ToolCountDecCmd
         push_cmd = MagicMock()
         dispatcher = EventDispatcher(push_cmd)
         event = ToolDoneEvent(source="agent", success=False)
@@ -350,7 +433,7 @@ class TestEventDispatcher:
     def test_on_parse_info(self):
         from src.tui._renderer import EventDispatcher
         from src.tui.events.event_types import ParseInfoEvent
-        from src.tui._const import RenderCommand, ParseInfoCmd
+        from src.tui._const import ParseInfoCmd
         push_cmd = MagicMock()
         dispatcher = EventDispatcher(push_cmd)
         event = ParseInfoEvent(source="agent", tool_names="test", tokens=100, elapsed=0.5)
@@ -368,10 +451,59 @@ class TestEventDispatcher:
         assert OutputEvent in handlers
         assert handlers[OutputEvent] is custom
 
+    def test_list_handlers_cache_regression(self):
+        """方向D 步骤7：list_handlers() 结果缓存，register_handler 后失效重建。"""
+        from src.tui._renderer import EventDispatcher
+        from src.tui.events.event_types import OutputEvent, SessionStarted
+        push_cmd = MagicMock()
+        dispatcher = EventDispatcher(push_cmd)
+
+        # 首次调用构建缓存，两次调用返回同一对象（缓存生效）
+        h1 = dispatcher.list_handlers()
+        h2 = dispatcher.list_handlers()
+        assert h1 is h2, "list_handlers() 应返回同一缓存对象"
+        assert len(h1) == 12
+
+        # register_handler 后缓存失效，返回新对象且含新 handler
+        custom = MagicMock()
+        dispatcher.register_handler(SessionStarted, custom)
+        h3 = dispatcher.list_handlers()
+        assert h3 is not h2, "register_handler 后应重新构建缓存"
+        assert SessionStarted in h3
+        assert h3[SessionStarted] is custom
+        assert len(h3) == 13
+
+    def test_register_group_regression(self):
+        """方向D 步骤7：register_group 注册声明式订阅组并合并进 list_handlers。"""
+        from src.tui._renderer import EventDispatcher
+        from src.tui.events.event_types import SessionStarted, SessionStopped
+        push_cmd = MagicMock()
+        dispatcher = EventDispatcher(push_cmd)
+
+        group_handler = MagicMock()
+        dispatcher.register_group(
+            "test_group",
+            {SessionStarted: group_handler},
+        )
+        handlers = dispatcher.list_handlers()
+        assert SessionStarted in handlers
+        assert handlers[SessionStarted] is group_handler
+        assert len(handlers) == 13
+
+        # 缓存失效：重复 register_group 后返回新对象
+        another = MagicMock()
+        dispatcher.register_group(
+            "test_group",
+            {SessionStarted: group_handler, SessionStopped: another},
+        )
+        handlers2 = dispatcher.list_handlers()
+        assert handlers2 is not handlers
+        assert handlers2[SessionStopped] is another
+
     def test_on_model_phase_thinking(self):
         from src.tui._renderer import EventDispatcher
         from src.tui.events.event_types import ModelPhaseEvent
-        from src.tui._const import RenderCommand, MainPhaseCmd, ErrorCmd
+        from src.tui._const import MainPhaseCmd
         push_cmd = MagicMock()
         from src.tui.consumer.chat_config import ChatConfig
         cfg = ChatConfig.defaults()
@@ -393,6 +525,45 @@ class TestEventDispatcher:
         push_cmd.assert_called_once()
         call_args = push_cmd.call_args[0][0]
         assert call_args.cid == RenderCommand.ERROR
+
+    def test_on_model_phase_error_truncates_to_max_length(self):
+        """_on_model_phase error 时消息截断到 max_error_length（P3-9 端到端断言）。"""
+        from src.tui._renderer import EventDispatcher
+        from src.tui.events.event_types import ModelPhaseEvent
+        from src.tui._const import RenderCommand, ErrorCmd
+        push_cmd = MagicMock()
+        from src.tui.consumer.chat_config import ChatConfig
+        cfg = ChatConfig.defaults()
+        dispatcher = EventDispatcher(
+            push_cmd, main_label=cfg.main_label, max_error_length=50,
+        )
+        long_info = "E" * 100
+        event = ModelPhaseEvent(label=cfg.main_label or "main", phase="error", info=long_info)
+        dispatcher._on_model_phase(event)
+        push_cmd.assert_called_once()
+        call_args = push_cmd.call_args[0][0]
+        assert isinstance(call_args, ErrorCmd)
+        assert call_args.cid == RenderCommand.ERROR
+        assert len(call_args.message) == 50
+
+    def test_on_model_phase_error_max_length_zero_returns_empty(self):
+        """max_error_length=0 时 _on_model_phase error 消息为空串（P3-7）。"""
+        from src.tui._renderer import EventDispatcher
+        from src.tui.events.event_types import ModelPhaseEvent
+        from src.tui._const import RenderCommand, ErrorCmd
+        push_cmd = MagicMock()
+        from src.tui.consumer.chat_config import ChatConfig
+        cfg = ChatConfig.defaults()
+        dispatcher = EventDispatcher(
+            push_cmd, main_label=cfg.main_label, max_error_length=0,
+        )
+        event = ModelPhaseEvent(label=cfg.main_label or "main", phase="error", info="something went wrong")
+        dispatcher._on_model_phase(event)
+        push_cmd.assert_called_once()
+        call_args = push_cmd.call_args[0][0]
+        assert isinstance(call_args, ErrorCmd)
+        assert call_args.cid == RenderCommand.ERROR
+        assert call_args.message == ""
 
 
 class TestTuiEngineCrashRecovery:
@@ -503,6 +674,39 @@ class TestUtilityFunctions:
             _sys.__stderr__ = saved_stderr
 
 
+class TestContentCommandsSingleSource:
+    """验证 _CONTENT_COMMANDS 收敛至 _const.CONTENT_COMMANDS 单一真源（步骤 4.1）。"""
+
+    def test_engine_module_alias_matches_source(self):
+        from src.tui._renderer import _CONTENT_COMMANDS as reexport
+        from src.tui._renderer._engine import _CONTENT_COMMANDS as engine_cmds
+        from src.tui._const import CONTENT_COMMANDS
+        assert engine_cmds is CONTENT_COMMANDS
+        assert reexport is CONTENT_COMMANDS
+
+    def test_renderer_class_attribute_matches_source(self):
+        from src.tui._renderer import TuiRenderer
+        from src.tui._const import CONTENT_COMMANDS
+        assert TuiRenderer._CONTENT_COMMANDS is CONTENT_COMMANDS
+
+    def test_content_commands_set_contents(self):
+        from src.tui._const import CONTENT_COMMANDS, RenderCommand
+        assert RenderCommand.REASONING in CONTENT_COMMANDS
+        assert RenderCommand.SPLASH in CONTENT_COMMANDS
+        assert RenderCommand.TOOL_COUNT_INC not in CONTENT_COMMANDS
+        assert RenderCommand.SUBAGENT_FRAME not in CONTENT_COMMANDS
+
+    def test_has_content_command_still_works(self):
+        """TuiEngine._has_content_command 使用收敛后的集合行为不变。"""
+        from src.tui._renderer import TuiEngine
+        from src.tui._const import ContentCmd, SubagentFrameCmd
+        renderer = MagicMock()
+        bottom_bar = MagicMock()
+        engine = TuiEngine(renderer, bottom_bar)
+        assert engine._has_content_command([ContentCmd(text="x")]) is True
+        assert engine._has_content_command([SubagentFrameCmd(frame_lines=("l",))]) is False
+
+
 class TestBatchRender:
     """测试批量渲染优化 — TuiRenderer.render_batch + TuiEngine._phase_render 分批逻辑（Issue 4）。"""
 
@@ -548,12 +752,12 @@ class TestBatchRender:
 
     def test_render_batch_collects_and_calls_batch_write(self, renderer):
         """验证 render_batch 收集 renderables 后调用一次 batch_write。"""
-        from src.tui._const import RenderCommand
+        from src.tui._const import WriteLineCmd
         # 推入 3 条 WRITE_LINE 命令
         commands = [
-            (RenderCommand.WRITE_LINE, "line1\n"),
-            (RenderCommand.WRITE_LINE, "line2\n"),
-            (RenderCommand.WRITE_LINE, "line3\n"),
+            WriteLineCmd(text="line1\n"),
+            WriteLineCmd(text="line2\n"),
+            WriteLineCmd(text="line3\n"),
         ]
         renderer.render_batch(commands)
         # batch_write 应被调用 1 次（非 3 次 write）
@@ -569,11 +773,11 @@ class TestBatchRender:
 
     def test_render_batch_mixed_batchable_commands(self, renderer):
         """验证混合的可批处理命令正确收集。"""
-        from src.tui._const import RenderCommand
+        from src.tui._const import NotificationCmd, WriteLineCmd, ErrorCmd
         commands = [
-            (RenderCommand.NOTIFICATION, "test notification"),
-            (RenderCommand.WRITE_LINE, "some line"),
-            (RenderCommand.ERROR, "error msg"),
+            NotificationCmd(text="test notification"),
+            WriteLineCmd(text="some line"),
+            ErrorCmd(message="error msg"),
         ]
         renderer.render_batch(commands)
         renderer._adapter.batch_write.assert_called_once()
@@ -582,11 +786,11 @@ class TestBatchRender:
 
     def test_render_batch_tool_output_tracks_group_state(self, renderer):
         """验证 TOOL_OUTPUT 在批量中正确驱动 _in_tool_group 状态机。"""
-        from src.tui._const import RenderCommand
+        from src.tui._const import ToolOutputCmd
         # 第一个 TOOL_OUTPUT 应输出工具组框，后续不重复输出
         commands = [
-            (RenderCommand.TOOL_OUTPUT, "tool result 1"),
-            (RenderCommand.TOOL_OUTPUT, "tool result 2"),
+            ToolOutputCmd(text="tool result 1"),
+            ToolOutputCmd(text="tool result 2"),
         ]
         renderer.render_batch(commands)
         renderer._adapter.batch_write.assert_called_once()
@@ -598,10 +802,10 @@ class TestBatchRender:
 
     def test_render_batch_tool_summary_closes_group(self, renderer):
         """验证 TOOL_SUMMARY 在批量中正确关闭 _in_tool_group。"""
-        from src.tui._const import RenderCommand
+        from src.tui._const import ToolSummaryCmd
         renderer._in_tool_group = True
         commands = [
-            (RenderCommand.TOOL_SUMMARY, ("tool_a",), ()),
+            ToolSummaryCmd(successful=("tool_a",), failed=()),
         ]
         renderer.render_batch(commands)
         renderer._adapter.batch_write.assert_called_once()
@@ -609,9 +813,9 @@ class TestBatchRender:
 
     def test_render_batch_user_message(self, renderer):
         """验证 USER_MSG 在批量中正确渲染。"""
-        from src.tui._const import RenderCommand
+        from src.tui._const import UserMsgCmd
         commands = [
-            (RenderCommand.USER_MSG, "hello world"),
+            UserMsgCmd(text="hello world"),
         ]
         renderer.render_batch(commands)
         renderer._adapter.batch_write.assert_called_once()
@@ -621,20 +825,20 @@ class TestBatchRender:
     def test_phase_render_groups_batchable_commands(self):
         """验证 _phase_render 将连续可批处理命令分组调用 render_batch。"""
         from src.tui._renderer import TuiEngine
-        from src.tui._const import RenderCommand
+        from src.tui._const import RenderCommand, WriteLineCmd, ContentCmd
         renderer = MagicMock()
         bottom_bar = MagicMock()
         engine = TuiEngine(renderer, bottom_bar)
 
         # 混合命令序列：WRITE_LINE(批), CONTENT(不可批), WRITE_LINE(批)
         commands = [
-            (RenderCommand.WRITE_LINE, "a"),
-            (RenderCommand.WRITE_LINE, "b"),
-            (RenderCommand.CONTENT, "c"),
-            (RenderCommand.WRITE_LINE, "d"),
+            WriteLineCmd(text="a"),
+            WriteLineCmd(text="b"),
+            ContentCmd(text="c"),
+            WriteLineCmd(text="d"),
         ]
 
-        renderer._is_batchable.side_effect = lambda cmd: (cmd[0] if isinstance(cmd, tuple) else cmd.cid) in renderer._BATCHABLE_COMMANDS
+        renderer._is_batchable.side_effect = lambda cmd: cmd.cid in renderer._BATCHABLE_COMMANDS
         # mock _BATCHABLE_COMMANDS
         renderer._BATCHABLE_COMMANDS = frozenset({
             RenderCommand.WRITE_LINE,
@@ -650,21 +854,21 @@ class TestBatchRender:
     def test_phase_render_preserves_order(self):
         """验证批量渲染后命令输出顺序与原始顺序一致。"""
         from src.tui._renderer import TuiEngine
-        from src.tui._const import RenderCommand
+        from src.tui._const import RenderCommand, WriteLineCmd, ToolOutputCmd, ContentCmd, NotificationCmd
         renderer = MagicMock()
         bottom_bar = MagicMock()
         engine = TuiEngine(renderer, bottom_bar)
 
         # 复杂混合序列
         commands = [
-            (RenderCommand.WRITE_LINE, "first"),
-            (RenderCommand.TOOL_OUTPUT, "second"),
-            (RenderCommand.CONTENT, "third"),
-            (RenderCommand.WRITE_LINE, "fourth"),
-            (RenderCommand.NOTIFICATION, "fifth"),
+            WriteLineCmd(text="first"),
+            ToolOutputCmd(text="second"),
+            ContentCmd(text="third"),
+            WriteLineCmd(text="fourth"),
+            NotificationCmd(text="fifth"),
         ]
 
-        renderer._is_batchable.side_effect = lambda cmd: (cmd[0] if isinstance(cmd, tuple) else cmd.cid) in {
+        renderer._is_batchable.side_effect = lambda cmd: cmd.cid in {
             RenderCommand.WRITE_LINE,
             RenderCommand.TOOL_OUTPUT,
             RenderCommand.NOTIFICATION,
@@ -685,13 +889,13 @@ class TestBatchRender:
 
     def test_render_batch_clears_in_tool_group_for_summary(self, renderer):
         """验证 TOOL_SUMMARY 后 _in_tool_group 被重置。"""
-        from src.tui._const import RenderCommand
+        from src.tui._const import ToolOutputCmd, ToolSummaryCmd
         # 先设置工具组状态
         renderer._in_tool_group = True
 
         commands = [
-            (RenderCommand.TOOL_OUTPUT, "data"),
-            (RenderCommand.TOOL_SUMMARY, ("tool_ok",), ()),
+            ToolOutputCmd(text="data"),
+            ToolSummaryCmd(successful=("tool_ok",), failed=()),
         ]
         renderer.render_batch(commands)
 
@@ -701,4 +905,49 @@ class TestBatchRender:
         call_args = renderer._adapter.batch_write.call_args[0][0]
         assert len(call_args) == 2
         assert renderer._in_tool_group is False
+
+
+class TestChatRenderStateCapturedRemoval:
+    """方向C 步骤5 — captured_* 机制删除回归测试（P1-1）。"""
+
+    def test_chat_render_state_no_captured_regression(self):
+        """ChatRenderState 实例不再具有 captured_* 属性。"""
+        from src.tui.state.render_state import ChatRenderState
+
+        rs = ChatRenderState()
+        assert not hasattr(rs, "captured_reasoning_output")
+        assert not hasattr(rs, "captured_content_output")
+
+    def test_get_reasoning_no_captured_binding_regression(self):
+        """get_reasoning() 构造渲染器时不传 captured_output 参数。"""
+        from unittest.mock import MagicMock, patch
+        from src.tui.state.render_state import ChatRenderState
+
+        rs = ChatRenderState()
+        rs.set_output_adapter(MagicMock())
+
+        # P2-8：模块级无 IncrementalRenderer 符号（函数内惰性 import），
+        # patch 路径改为 src.renderer.IncrementalRenderer
+        with patch("src.renderer.IncrementalRenderer") as mock_renderer:
+            rs.get_reasoning()
+            mock_renderer.assert_called_once()
+            kwargs = mock_renderer.call_args.kwargs
+            assert "captured_output" not in kwargs, \
+                "get_reasoning 不应再绑定 captured_output（P1-1 已删除）"
+
+    def test_get_content_no_captured_binding_regression(self):
+        """get_content() 构造渲染器时不传 captured_output 参数。"""
+        from unittest.mock import MagicMock, patch
+        from src.tui.state.render_state import ChatRenderState
+
+        rs = ChatRenderState()
+        rs.set_output_adapter(MagicMock())
+
+        # P2-8：patch 路径改为 src.renderer.IncrementalRenderer（同上）
+        with patch("src.renderer.IncrementalRenderer") as mock_renderer:
+            rs.get_content()
+            mock_renderer.assert_called_once()
+            kwargs = mock_renderer.call_args.kwargs
+            assert "captured_output" not in kwargs, \
+                "get_content 不应再绑定 captured_output（P1-1 已删除）"
 

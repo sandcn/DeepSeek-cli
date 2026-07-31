@@ -4,13 +4,11 @@
   - Color256: 256 色值对象（冻结 slots dataclass），带校验/转换/运算
   - RGB: RGB 颜色值对象
   - hex_to_rgb / rgb_to_256 / lerp_color: 颜色转换纯函数（@lru_cache 缓存）
-  - GradientDescriptor: 渐变描述值对象（延迟导入避免循环依赖）
+  - GradientDescriptor: 渐变描述值对象（字段 + 校验；resolve 已随渐变模块删除）
 
 设计原则：
   - 纯函数/值对象：无副作用，不可变
   - 缓存热点：rgb_to_256 / lerp_color 使用 @lru_cache 减少重复计算
-  - 延迟导入：resolve() / resolve_with_effect() 方法内部延迟导入，
-    避免模块加载循环（core 层不依赖 src/tui/ 上层模块）
 """
 
 from __future__ import annotations
@@ -203,11 +201,9 @@ class TrueColor:
         """根据终端能力自动选择最佳颜色类型。
 
         TrueColor 可用时返回 TrueColor，否则返回降级的 Color256。
-        内部调用 ``supports_truecolor()`` 进行终端能力检测。
-
-        注意: 此方法通过跨包延迟导入 ``..terminal.capabilities`` 进行能力检测。
-        这是有意为之，以避免将终端检测逻辑合并到 core/color.py（保持关注点分离）。
-        core/color.py 仅负责颜色值对象，不直接依赖终端检测。
+        终端真彩检测模块已删除（2026-07-31 幽灵导入清理，
+        原 ``..terminal.capabilities`` 包不存在），
+        当前实现恒返回 Color256 降级路径。
 
         Args:
             r: 红色分量（0-255）。
@@ -215,12 +211,8 @@ class TrueColor:
             b: 蓝色分量（0-255）。
 
         Returns:
-            TrueColor 或 Color256，取决于终端能力。
+            Color256（恒为降级路径）。
         """
-        # 延迟导入避免模块加载循环
-        from ..terminal.capabilities import supports_truecolor as _detect_tc
-        if _detect_tc():
-            return cls(r, g, b)
         logger.debug(
             "TrueColor not supported, falling back to Color256 for "
             "RGB(%d, %d, %d)", r, g, b
@@ -449,8 +441,10 @@ def lerp_color(a: int, b: int, t: float) -> int:
 class GradientDescriptor:
     """渐变描述值对象。
 
-    定义渐变的起始/结束色号、步数和动效类型，
-    通过 resolve() / resolve_with_effect() 生成具体色号列表。
+    定义渐变的起始/结束色号、步数和动效类型。
+
+    注：resolve()/resolve_with_effect() 已随 gradient/effects 模块删除
+    （2026-07-31 幽灵导入清理），本类保留为纯值对象（字段 + 校验）。
 
     Attributes:
         start_color: 起始 256 色号（0-255）。
@@ -486,48 +480,6 @@ class GradientDescriptor:
                 f"effect must be one of {self.__effect_options}, "
                 f"got '{self.effect}'"
             )
-
-    def resolve(self) -> list[int]:
-        """生成色号列表。
-
-        调用 ``src.tui.core.gradient.gradient_range()`` 生成 steps 个均匀分布的色号。
-        延迟导入避免模块加载循环。
-
-        Returns:
-            steps 个色号的列表（steps=1 时返回 [start_color]）。
-        """
-        # 延迟导入：gradient_range 在同层 gradient 模块
-        from .gradient import gradient_range
-        return gradient_range(self.start_color, self.end_color, self.steps)
-
-    def resolve_with_effect(self, frame: int) -> list[int]:
-        """生成带动效的色号列表。
-
-        先调用 resolve() 生成基础渐变，再根据 effect 类型施加动效。
-        动效函数延迟导入 ``src/tui/core/effects``。
-
-        Args:
-            frame: 当前帧号（动效推进使用），≤ 0 时跳过动效。
-
-        Returns:
-            动效处理后的色号列表，长度与 steps 一致。
-        """
-        if self.effect == "none" or frame <= 0:
-            return self.resolve()
-
-        colors = self.resolve()
-
-        if self.effect == "wave":
-            # 延迟导入：apply_wave 在同层 effects 模块
-            from .effects import apply_wave
-            return apply_wave(colors, frame)
-
-        if self.effect == "shimmer":
-            # 延迟导入：shimmer_apply 在同层 effects 模块
-            from .effects import shimmer_apply
-            return shimmer_apply(colors, frame)
-
-        return colors
 
 
 # ═══════════════════════════════════════════════════════════
@@ -605,7 +557,8 @@ def auto_color(r: int, g: int, b: int) -> ColorValue:
     """根据终端能力自动选择最佳颜色类型。
 
     TrueColor 可用时返回 TrueColor，否则返回 Color256。
-    内部调用 ``supports_truecolor()`` 进行终端能力检测。
+    当前实现恒返回 Color256 降级路径（终端真彩检测模块已删除，
+    见 ``TrueColor.best_effort``）。
 
     Args:
         r: 红色分量（0-255）。
@@ -613,7 +566,7 @@ def auto_color(r: int, g: int, b: int) -> ColorValue:
         b: 蓝色分量（0-255）。
 
     Returns:
-        TrueColor 或 Color256，取决于终端能力。
+        Color256（恒为降级路径）。
     """
     return TrueColor.best_effort(r, g, b)
 

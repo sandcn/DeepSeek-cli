@@ -24,7 +24,7 @@ if TYPE_CHECKING:
     from src.tui.events.event_bus import DisplayEventBus
 
 from src.tui._const import SplashCmd
-from src.tui._locks import render_lock
+from src.renderer._locks import render_lock
 from src.tui._screen import cursor_goto
 
 _logger = logging.getLogger(__name__)
@@ -59,6 +59,15 @@ class TuiLifecycle:
 
     # ── 公开方法 ──────────────────────────────────
 
+    @property
+    def bound_handlers(self) -> dict[type, Callable] | None:
+        """已绑定的事件处理器映射（公开读写方法，收敛私有字段访问）。"""
+        return self._bound_handlers
+
+    @bound_handlers.setter
+    def bound_handlers(self, value: dict[type, Callable] | None) -> None:
+        self._bound_handlers = value
+
     def start(self) -> None:
         """启动生命周期。
 
@@ -87,6 +96,17 @@ class TuiLifecycle:
                     self._bound_handlers[event_type], event_type=event_type,
                 )
             self._handlers_bound = True
+            # 高频事件批处理评估（2026-07-31）：**不启用**。
+            # 上游 StreamChunkHandler 已有 100ms 节流（≤10Hz），33ms 批处理窗口
+            # 无实际合并收益；且批处理将「延迟分发的高频事件」与「同步直发的
+            # 阶段切换事件」（PhaseDoneEvent CRITICAL 优先级 > ReasoningCmd HIGH）
+            # 的顺序竞态放大为固定窗口——渲染线程先 close_reasoning()（state=CLOSED）
+            # 后 Timer flush 的 ReasoningCmd 到达时 get_reasoning() 返回 None，
+            # 导致推理文本静默丢失（ContentChunkEvent 同理导致 content 开新块）。
+            # 批处理机制（_TimeWindowBatcher / register_batched_event）保留但不启用；
+            # 若未来需要启用须先解决顺序保障。同步测试见
+            # tests/test_tui/test_consumer.py::TestLifecycleBatchedRegistration
+            # （断言 start() 后 bus._batched_events 为空）。
             self._engine.start()
             self._engine.push_cmd(SplashCmd())
             self._started = True
@@ -133,7 +153,7 @@ class TuiLifecycle:
         with self._state_lock:
             if not self._started:
                 return
-            if self._engine._render_running:
+            if self._engine.is_render_running():
                 return
             with render_lock:
                 try:
@@ -146,7 +166,7 @@ class TuiLifecycle:
                     )
                     sys.__stdout__.write("\033[9999;1H")
                 sys.__stdout__.flush()
-                self._bb._active = False
+                self._bb.set_active(False)
                 self._bb.setup()
                 self._engine.start()
 
@@ -159,10 +179,25 @@ class TuiLifecycle:
         return self._handlers_bound
 
     def register_event_handler(self, event_type: type, handler_method: Callable) -> None:
-        """注册自定义事件处理器。"""
+        """注册自定义事件处理器。
+
+        P3-12 防御性：注册时先 ``bus.unsubscribe`` 旧 handler 再订阅新 handler，
+        防止同类型重复注册导致旧 handler 泄漏（当前无生产调用方，防御性改动）。
+        """
         self._dispatcher.register_handler(event_type, handler_method)
         with self._state_lock:
             if self._started and self._handlers_bound:
+                old_handler = None
+                if self._bound_handlers is not None:
+                    old_handler = self._bound_handlers.get(event_type)
+                if old_handler is not None:
+                    try:
+                        self._bus.unsubscribe(old_handler, event_type=event_type)
+                    except Exception:
+                        _logger.debug(
+                            "register_event_handler: 取消订阅旧 handler 失败",
+                            exc_info=True,
+                        )
                 self._bus.subscribe(handler_method, event_type=event_type)
                 if self._bound_handlers is not None:
                     self._bound_handlers[event_type] = handler_method

@@ -1,8 +1,13 @@
 """低层级锁原语 — 零依赖，无 widget 包依赖。
 
 Layer 0 — 仅依赖标准库 threading/logging/contextlib。
-不依赖任何 src/tui/ 包内模块，供 terminal/terminal.py 等需要
-锁原语但不希望触发 widget 包加载的模块使用。
+不依赖任何 src/tui/ 包内模块，供需要锁原语但不希望触发
+widget 包加载的模块使用（含 renderer 层自身）。
+
+★ 归属说明（2026-07-31 依赖方向解耦）：
+  锁原语自 src/tui/_locks.py 迁移至此，消除 renderer→tui 逆向依赖。
+  旧 shim（src/tui/_locks.py）已于步骤 8 删除，全部调用方已迁移至真源；
+  新代码一律从 src.renderer._locks 导入。
 
 锁体系（与原 widgets/lock.py 一致）：
   render_lock — 保护渲染管线（_drain_queue → _phase_render → _phase_redraw_bottom）
@@ -34,6 +39,19 @@ Layer 0 — 仅依赖标准库 threading/logging/contextlib。
   LockedTerminal:   仅 io_lock
   _BottomBar:       仅 io_lock
   所有锁获取均带超时兜底
+
+★ 导入点审计（2026-07-31 步骤1-子步骤1 差异盘点）：
+  迁移后锁导入清单（src/renderer/_locks 新家）：
+    - src/renderer/output.py                — render_lock, _try_acquire_output_lock
+    - src/tui/_renderer/_engine.py          — _try_acquire_output_lock
+    - src/tui/_diff_renderer.py             — diff_active, _try_acquire_output_lock
+    - src/tui/events/consumers.py           — _try_acquire_output_lock
+    - src/tui/_bottom_bar/_bar.py           — _try_acquire_output_lock
+    - src/tui/_bottom_bar/_render.py        — _try_acquire_output_lock
+    - src/tui/_lifecycle.py                 — render_lock
+    - src/tui/_consumer.py                  — render_lock
+    - src/core/adapters/output.py           — render_lock
+    - src/tools/file_base.py                — diff_active（已迁移至真源，shim 已删）
 """
 
 from __future__ import annotations
@@ -54,6 +72,14 @@ diff_active = threading.Event()
 OUTPUT_LOCK_TIMEOUT = 1.0
 
 _logger = logging.getLogger(__name__)
+
+__all__ = [
+    "render_lock",
+    "io_lock",
+    "diff_active",
+    "_try_acquire_output_lock",
+    "OUTPUT_LOCK_TIMEOUT",
+]
 
 
 # ── 锁获取上下文管理器 ────────────────────────────

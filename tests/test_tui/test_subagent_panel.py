@@ -330,3 +330,73 @@ class TestSubagentPanelDeadlockPrevention:
             # 也可能 _on_agent_status_changed 在 with _state_lock 内调用了 _emit_frame
             # 但实际上代码中 _emit_frame 在 with 块外调用，这不应发生
             pytest.fail("_emit_frame 被调用时 _state_lock 仍被持有 — 可能导致死锁")
+
+
+class TestSubAgentPanelDeclarativeSubscriptions:
+    """方向D 步骤7 — 声明式订阅表回归测试。"""
+
+    def test_declarative_subscriptions_regression(self):
+        """ensure_active() 订阅 10 类事件，stop() 取消全部订阅。"""
+        from src.tui.events.event_bus import DisplayEventBus
+        from unittest.mock import MagicMock as _MM
+
+        DisplayEventBus.reset_default()
+        bus = DisplayEventBus.get_default()
+        ctrl = SubAgentPanelController()
+        # mock 面板刷新注册/帧推送，避免消费端依赖
+        ctrl._register_panel_refresh = _MM()
+        ctrl._push_frame = _MM()
+        try:
+            # 声明式表含 10 项（拼写错误会静默漏订阅，此断言兜底）
+            assert len(ctrl._SUBSCRIPTIONS) == 10
+            for ev_type, method_name in ctrl._SUBSCRIPTIONS:
+                assert hasattr(ctrl, method_name), f"{method_name} 不存在"
+                assert callable(getattr(ctrl, method_name)), f"{method_name} 不可调用"
+
+            ctrl.ensure_active()
+            assert ctrl._active is True
+            # 10 类事件各 1 个订阅者
+            assert bus.subscriber_count == 10
+
+            ctrl.stop()
+            assert ctrl._active is False
+            assert bus.subscriber_count == 0
+        finally:
+            bus.clear()
+            DisplayEventBus.reset_default()
+
+
+class TestToolMappingSingleSource:
+    """方向F 步骤12 — 工具名映射收敛到 _tool_icons 单一真源回归测试。"""
+
+    def test_tool_mapping_single_source_regression(self):
+        """_subagent_panel 不再定义本地映射，_get_tool_color 查用共享映射。"""
+        import src.tui._subagent_panel as sp
+        from src.tui._tool_icons import TOOL_CATEGORY_COLORS, TOOL_CATEGORY_MAP
+
+        # 本地副本已删除（唯一真源收敛）
+        assert not hasattr(sp, "_TOOL_CATEGORY_MAP")
+        assert not hasattr(sp, "_TOOL_CATEGORY_COLORS")
+        # 查用共享映射，返回值与 TOOL_CATEGORY_COLORS["shell"] 一致
+        assert sp._get_tool_color("bash") == TOOL_CATEGORY_COLORS["shell"]
+        assert sp._get_tool_color("read_file") == TOOL_CATEGORY_COLORS["file_read"]
+        assert sp._get_tool_color("unknown_tool") == "\033[38;5;245m"
+        # _C_* 面板颜色仍可经模块访问（从 _const 导入）
+        assert sp._C_RUNNING == "\033[38;5;214m"
+        assert sp._C_RESET == "\033[0m"
+
+    def test_tool_icons_exports_categories_regression(self):
+        """_tool_icons 导出 TOOL_CATEGORY_MAP / TOOL_CATEGORY_COLORS。"""
+        from src.tui._tool_icons import (
+            TOOL_CATEGORY_COLORS, TOOL_CATEGORY_MAP,
+        )
+        assert TOOL_CATEGORY_MAP["bash"] == "shell"
+        assert TOOL_CATEGORY_MAP["execute_command"] == "shell"
+        assert TOOL_CATEGORY_MAP["read_file"] == "file_read"
+        assert TOOL_CATEGORY_MAP["write_file"] == "file_write"
+        assert TOOL_CATEGORY_MAP["grep"] == "search"
+        assert TOOL_CATEGORY_MAP["dispatch_agent"] == "agent"
+        assert TOOL_CATEGORY_MAP["rm"] == "delete"
+        for cat in ("shell", "file_read", "file_write", "search",
+                    "agent", "interact", "delete"):
+            assert cat in TOOL_CATEGORY_COLORS

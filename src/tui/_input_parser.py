@@ -1,0 +1,292 @@
+"""InputParser — TUI 输入 ANSI 解析逻辑（提取自 _input.py，方向⑤）。
+
+将 Input 上帝类中的解析算法族提取为独立策略对象，Input 组合持有：
+  - feed_byte: 单字节推入解析状态机
+  - _decode_control_char: ASCII 控制字符解码（静态）
+  - _parse_escape_sequence / _read_csi_sequence / _read_ss3_sequence: ESC 序列读取（I/O）
+  - _dispatch_csi / _params_to_bytes: CSI 参数分发（静态）
+  - parse_sequence: ESC 序列解析入口（I/O）
+
+KeyEvent 数据类随解析逻辑搬移至本模块（Input 层 re-export，公开 API 不变）。
+
+设计模式:
+  策略（Strategy）— 解析算法族从 Input 提取为独立策略对象，Input 组合持有。
+
+依赖方向:
+  _input.py → _input_parser.py 单向依赖；本模块不得 import _input（避免循环）。
+
+模块级 ``import select`` 供 I/O 方法使用；可被 ``patch("select.select", ...)``
+全局拦截（与 _input.py 原行为等价）。
+"""
+
+from __future__ import annotations
+
+import os
+import select
+
+from src._compat import dataclass
+
+__all__ = ["InputParser", "KeyEvent"]
+
+# ── 常量 ──────────────────────────────────────────────────
+
+_CSI_READ_TIMEOUT = 0.01     # CSI 参数读取超时（秒）
+_SS3_READ_TIMEOUT = 0.01     # SS3 读取超时（秒）
+_UTF8_READ_TIMEOUT = 0.05    # UTF-8 多字节序列读取超时（秒）
+_ESC_FOLLOWUP_TIMEOUT = 0.05  # ESC 后续字节等待超时（秒）
+_ALT_BACKSPACE_DRAIN_TIMEOUT = 0.01  # Alt+Backspace 后续字节排空检测超时（秒）
+
+
+# ═══════════════════════════════════════════════════════════
+# KeyEvent — 按键事件数据类
+# ═══════════════════════════════════════════════════════════
+
+@dataclass(slots=True)
+class KeyEvent:
+    """按键事件数据类。
+
+    字段:
+        kind: 按键类型标识字符串
+        char: 可打印字符值（kind="char" 时有效）
+        modifier: 修饰键位掩码（CSI u 模式使用，1=无修饰, 2=Shift, 3=Alt, 5=Ctrl）
+        keycode: CSI u 键码（如 13=Enter）
+        raw: 原始字节序列（调试用）
+    """
+    kind: str        # "char" | "enter" | "tab" | "backspace" | "escape" |
+                     # "arrow_up" | "arrow_down" | "arrow_left" | "arrow_right" |
+                     # "home" | "end" | "delete" | "ctrl_key" | "interrupt" | "csi_u" | "unknown"
+    char: str = ""
+    modifier: int = 0
+    keycode: int = 0
+    raw: bytes = b""
+
+
+# ═══════════════════════════════════════════════════════════
+# InputParser — ANSI 解析策略（无共享实例状态，fd 均以参数传入）
+# ═══════════════════════════════════════════════════════════
+
+class InputParser:
+    """ANSI 输入解析策略。
+
+    从 Input 类提取的解析算法族；Input 组合持有本类实例并委托。
+    所有方法保持与 _input.py 原实现逐行等价（零逻辑改动）。
+    """
+
+    def feed_byte(self, byte: int) -> KeyEvent | None:
+        """单字节推入解析状态机。
+
+        Args:
+            byte: 单字节整数值 (0-255)。
+
+        Returns:
+            KeyEvent — 完整按键事件；None — 需要解析完整转义序列。
+        """
+        # ── ESC 序列入口 ──
+        if byte == 0x1b:
+            return None
+
+        # ── ASCII 控制字符分发 ──
+        if byte <= 0x1f or byte == 0x7f:
+            return self._decode_control_char(byte)
+
+        # ── ASCII 可打印 / 高位字节 ──
+        try:
+            ch = bytes([byte]).decode("utf-8", errors="replace")
+        except (ValueError, UnicodeDecodeError):
+            ch = chr(byte)
+        return KeyEvent(kind="char", char=ch, raw=bytes([byte]))
+
+    def parse_sequence(self, fd: int) -> KeyEvent:
+        """解析 ESC 转义序列（含 I/O）。
+
+        在首字节已确认为 0x1b 后调用。fd 由调用方显式传入
+        （Input.parse_sequence 负责注入 self._fd 或 fd_override）。
+
+        Args:
+            fd: 输入文件描述符。
+
+        Returns:
+            解析后的 KeyEvent。
+        """
+        return self._parse_escape_sequence(fd)
+
+    def _parse_escape_sequence(self, fd: int) -> KeyEvent:
+        """读取并解析 ESC 转义序列（含 I/O）。"""
+        # 读取 ESC 后的下一个字节
+        try:
+            has_more, _, _ = select.select([fd], [], [], _ESC_FOLLOWUP_TIMEOUT)
+        except (ValueError, OSError, TypeError, AttributeError):
+            return KeyEvent(kind="escape", raw=b"\x1b")
+
+        if not has_more:
+            return KeyEvent(kind="escape", raw=b"\x1b")
+
+        try:
+            raw2 = os.read(fd, 1)
+            if not raw2:
+                return KeyEvent(kind="escape", raw=b"\x1b")
+            next_byte = raw2[0]
+        except (ValueError, OSError, TypeError):
+            return KeyEvent(kind="escape", raw=b"\x1b")
+
+        # ── CSI 序列：ESC [ ──
+        if next_byte == ord('['):
+            return self._read_csi_sequence(fd)
+
+        # ── SS3 序列：ESC O ──
+        if next_byte == ord('O'):
+            return self._read_ss3_sequence(fd)
+
+        # ── Alt+Backspace：ESC DEL ──
+        if next_byte == 0x7f:
+            try:
+                if select.select([fd], [], [], _ALT_BACKSPACE_DRAIN_TIMEOUT)[0]:
+                    os.read(fd, 1)
+            except (ValueError, OSError, TypeError):
+                pass
+            return KeyEvent(kind="backspace", modifier=1, raw=b"\x1b\x7f")
+
+        # ── 双 Esc ──
+        if next_byte == 0x1b:
+            return KeyEvent(kind="interrupt", raw=b"\x1b\x1b")
+
+        # ── 其他 ESC 组合 → 视为中断 ──
+        return KeyEvent(kind="interrupt", raw=b"\x1b" + bytes([next_byte]))
+
+    @staticmethod
+    def _decode_control_char(byte: int) -> KeyEvent:
+        """将 ASCII 控制字符 (0x00-0x1F / 0x7F) 解码为 KeyEvent。"""
+        raw = bytes([byte])
+        if byte in (0x0d, 0x0a):        # \r / \n
+            return KeyEvent(kind="enter", raw=raw)
+        if byte == 0x09:                 # \t
+            return KeyEvent(kind="tab", raw=raw)
+        if byte in (0x7f, 0x08):        # DEL / BS
+            return KeyEvent(kind="backspace", raw=raw)
+        if byte == 0x03:                 # Ctrl+C
+            return KeyEvent(kind="interrupt", raw=raw)
+        if byte == 0x01:                 # Ctrl+A → Home
+            return KeyEvent(kind="home", raw=raw)
+        if byte == 0x05:                 # Ctrl+E → End
+            return KeyEvent(kind="end", raw=raw)
+        if byte == 0x17:                 # Ctrl+W → delete word left
+            return KeyEvent(kind="delete", modifier=1, raw=raw)
+        if byte == 0x15:                 # Ctrl+U → kill to BOL
+            return KeyEvent(kind="delete", modifier=2, raw=raw)
+        if byte == 0x0b:                 # Ctrl+K → kill to EOL
+            return KeyEvent(kind="delete", modifier=3, raw=raw)
+        if byte in (0x07, 0x0f, 0x0e, 0x12):  # Ctrl+G/O/N/R → 特殊按键
+            return KeyEvent(kind="ctrl_key", char=chr(byte), raw=raw)
+        # 其他控制字符 → unknown
+        return KeyEvent(kind="unknown", raw=raw)
+
+    def _read_csi_sequence(self, fd: int) -> KeyEvent:
+        """读取 CSI 序列参数 + 终结符并解析为 KeyEvent。"""
+        params: list[int] = []
+        current = ""
+        terminator: str | None = None
+
+        try:
+            while select.select([fd], [], [], _CSI_READ_TIMEOUT)[0]:
+                raw_c = os.read(fd, 1)
+                if not raw_c:
+                    break
+                c = raw_c.decode("utf-8", errors="replace")
+                if c == ';':
+                    try:
+                        params.append(int(current) if current else 0)
+                    except ValueError:
+                        params.append(0)
+                    current = ""
+                elif c.isdigit():
+                    current += c
+                elif c.isalpha() or c == '~':
+                    if current:
+                        try:
+                            params.append(int(current))
+                        except ValueError:
+                            params.append(0)
+                    terminator = c
+                    break
+        except (ValueError, OSError, TypeError):
+            pass
+
+        if terminator is None:
+            return KeyEvent(kind="unknown", raw=b"\x1b[")
+
+        return self._dispatch_csi(params, terminator)
+
+    def _read_ss3_sequence(self, fd: int) -> KeyEvent:
+        """读取 SS3 序列（ESC O + 字符，通常为 F1-F4）。"""
+        try:
+            if select.select([fd], [], [], _SS3_READ_TIMEOUT)[0]:
+                raw_c = os.read(fd, 1)
+                if raw_c:
+                    return KeyEvent(kind="unknown", raw=b"\x1bO" + raw_c)
+        except (ValueError, OSError, TypeError):
+            pass
+        return KeyEvent(kind="unknown", raw=b"\x1bO")
+
+    @staticmethod
+    def _dispatch_csi(params: list[int], terminator: str) -> KeyEvent:
+        """根据 CSI 参数和终结符分发到对应的 KeyEvent。"""
+        # ── CSI u 模式: \x1b[<keycode>;<modifier>u ──
+        if terminator == 'u':
+            keycode = params[0] if len(params) >= 1 else 0
+            modifier = params[1] if len(params) >= 2 else 1
+            raw = b"\x1b[" + InputParser._params_to_bytes(params) + b"u"
+            if keycode == 13 and modifier in (2, 3, 5):
+                return KeyEvent(kind="char", char="\n", modifier=modifier,
+                                keycode=keycode, raw=raw)
+            return KeyEvent(kind="csi_u", modifier=modifier, keycode=keycode, raw=raw)
+
+        raw = b"\x1b[" + InputParser._params_to_bytes(params) + terminator.encode()
+
+        # ── 功能键序列: \x1b[N~ ──
+        if terminator == '~':
+            p = params[0] if params else 0
+            if p in (1, 7):
+                return KeyEvent(kind="home", raw=raw)
+            if p == 3:
+                return KeyEvent(kind="delete", raw=raw)
+            if p in (4, 8):
+                return KeyEvent(kind="end", raw=raw)
+            return KeyEvent(kind="unknown", raw=raw)
+
+        # ── Home (\x1b[H) ──
+        if terminator == 'H':
+            return KeyEvent(kind="home", raw=raw)
+
+        # ── End (\x1b[F) ──
+        if terminator == 'F':
+            return KeyEvent(kind="end", raw=raw)
+
+        # ── 右箭头 / Ctrl+右 ──
+        if terminator == 'C':
+            if len(params) >= 2 and params[1] == 5:
+                return KeyEvent(kind="arrow_right", modifier=5, raw=raw)
+            return KeyEvent(kind="arrow_right", raw=raw)
+
+        # ── 左箭头 / Ctrl+左 ──
+        if terminator == 'D':
+            if len(params) >= 2 and params[1] == 5:
+                return KeyEvent(kind="arrow_left", modifier=5, raw=raw)
+            return KeyEvent(kind="arrow_left", raw=raw)
+
+        # ── 上箭头 ──
+        if terminator == 'A':
+            return KeyEvent(kind="arrow_up", raw=raw)
+
+        # ── 下箭头 ──
+        if terminator == 'B':
+            return KeyEvent(kind="arrow_down", raw=raw)
+
+        # ── 其他 CSI 序列 ──
+        return KeyEvent(kind="unknown", raw=raw)
+
+    @staticmethod
+    def _params_to_bytes(params: list[int]) -> bytes:
+        """将参数列表转为 CSI 参数字节串。"""
+        if not params:
+            return b""
+        return ";".join(str(p) for p in params).encode()

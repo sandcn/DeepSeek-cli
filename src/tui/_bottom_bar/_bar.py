@@ -11,7 +11,7 @@ import threading
 import time
 from typing import TYPE_CHECKING, Any, Callable
 
-from src.tui._locks import _try_acquire_output_lock
+from src.renderer._locks import _try_acquire_output_lock
 from src.tui._screen import (
     _COLOR_ACCENT,
     _COLOR_DIM,
@@ -30,17 +30,15 @@ from src.tui._screen import (
 from src.tui._animator import AnimatorContext
 from src.tui._input import (
     _compute_cursor_visual_pos,
-    _expand_tabs,
-    _wrap_by_width,
 )
 from src.tui._bottom_bar._monitor import _SystemMonitor
 from src.tui._bottom_bar._popup import _CompletionPopup
+from src.tui._bottom_bar._state import BottomBarStatus
 from src.tui._bottom_bar._layout import (
     _BOTTOM_MIN_HEIGHT,
     _BOTTOM_MIN_LINES,
     _MIN_INPUT_ROWS,
     _is_narrow,
-    _visual_width,
     _compute_input_rows,
     _compute_bottom_lines_for,
     _draw_input_lines,
@@ -55,7 +53,7 @@ from src.tui._bottom_bar._render import (
     _do_teardown,
     _do_force_redraw,
 )
-from src.tui._bottom_bar._status import _build_status_text
+from src.tui._bottom_bar._status import _format_duration
 
 if TYPE_CHECKING:
     from src.tui._input import Input
@@ -66,6 +64,28 @@ _logger = logging.getLogger(__name__)
 
 # ═══════════════════════════════════════════════════════════
 # _BottomBar — 终端底部固定输入栏
+# ═══════════════════════════════════════════════════════════
+
+# ═══════════════════════════════════════════════════════════
+# 上帝类评估（方向④·步骤 10.2 原始；方向E·步骤9 已实施状态域收敛）：
+# _BottomBar 状态收敛 — 状态域已收敛到 BottomBarStatus（_state.py，加锁+快照），
+# 其余职责域（布局/动画/补全/监控）保留在 _BottomBar，以下按 6 个职责域
+# 分组清单作为后续拆分依据（当前状态）：
+#   1. 状态/生命周期：_active / _last_text / _last_status /
+#      _needs_full_repaint（_status_active 已收敛到 _status 状态对象）
+#   2. 状态域（已收敛）：_model_name / _tool_count / _tool_fail_count /
+#      _tool_total / _main_phase / _main_phase_start / _tool_phase_start /
+#      _status_active → BottomBarStatus（_state.py）；_subagent_lines /
+#      _subagent_lines_lock / _last_subagent_lines 保留于 _bar（面板行，非状态域）
+#   3. 布局/光标：_last_bottom_lines / _input_cursor_pos / _last_cursor_pos /
+#      _cached_wrapped_for / _cached_wrapped_width / _cached_wrapped_lines /
+#      _cached_input_rows / _last_rendered_text / _last_scroll_end /
+#      _last_height / _last_sync_height
+#   4. 动画：_animator
+#   5. 补全：_completion
+#   6. 监控：_system_monitor / _cached_cpu_percent / _cached_mem_percent /
+#      _last_system_stats_time / _SYSTEM_STATS_INTERVAL
+# 状态写入点已由公开访问器覆盖：set_active() / is_active（步骤 7.3）。
 # ═══════════════════════════════════════════════════════════
 
 class _BottomBar:
@@ -82,19 +102,12 @@ class _BottomBar:
                  width_cache: TerminalWidthCache | None = None):
         self._active = False
         self._last_text = ""
-        self._last_status = ""
-        # _StatusMixin 字段
-        self._status_active: bool = False
-        self._model_name: str = ""
-        self._tool_count: int = 0
-        self._tool_fail_count: int = 0
-        self._tool_total: int = 0
+        # P3-14：_last_status / _last_subagent_lines 为只写不读死字段，已删除
+        # 状态域（方向E·步骤9 收敛）：BottomBarStatus 状态对象（加锁 + 快照）
+        self._status = BottomBarStatus()
+        # subagent 面板行（非状态域，保留于 _bar；已有 _subagent_lines_lock）
         self._subagent_lines: list[str] = []
         self._subagent_lines_lock = threading.Lock()
-        self._last_subagent_lines: list[str] = []
-        self._main_phase: str = ""
-        self._main_phase_start: float = 0.0
-        self._tool_phase_start: float = 0.0
         # 布局/光标
         self._last_bottom_lines = _BOTTOM_MIN_LINES
         self._input_cursor_pos: int = -1
@@ -136,6 +149,10 @@ class _BottomBar:
     def is_active(self) -> bool:
         return self._active
 
+    def set_active(self, active: bool) -> None:
+        """设置底部栏激活状态（公开访问器，收敛私有字段写入）。"""
+        self._active = active
+
     @property
     def is_completion_visible(self) -> bool:
         return self._completion.is_visible
@@ -144,13 +161,82 @@ class _BottomBar:
     def is_status_active(self) -> bool:
         return self._status_active
 
+    # ── 状态域属性委托（方向E·步骤9：BottomBarStatus 加锁+快照） ──
+    # 读端经 snapshot() 一次性取快照（线程安全）；写端经 setter 委托
+    # 状态对象受锁写入。保持私有属性读写路径向后兼容（测试/渲染读取）。
+
+    @property
+    def _status_active(self) -> bool:
+        return self._status.snapshot()["status_active"]
+
+    @_status_active.setter
+    def _status_active(self, value: bool) -> None:
+        self._status.update(status_active=bool(value))
+
+    @property
+    def _model_name(self) -> str:
+        return self._status.snapshot()["model_name"]
+
+    @_model_name.setter
+    def _model_name(self, value: str) -> None:
+        self._status.update(model_name=value)
+
+    @property
+    def _tool_count(self) -> int:
+        return self._status.snapshot()["tool_count"]
+
+    @_tool_count.setter
+    def _tool_count(self, value: int) -> None:
+        self._status.update(tool_count=value)
+
+    @property
+    def _tool_fail_count(self) -> int:
+        return self._status.snapshot()["tool_fail_count"]
+
+    @_tool_fail_count.setter
+    def _tool_fail_count(self, value: int) -> None:
+        self._status.update(tool_fail_count=value)
+
+    @property
+    def _tool_total(self) -> int:
+        return self._status.snapshot()["tool_total"]
+
+    @_tool_total.setter
+    def _tool_total(self, value: int) -> None:
+        self._status.update(tool_total=value)
+
+    @property
+    def _main_phase(self) -> str:
+        return self._status.snapshot()["main_phase"]
+
+    @_main_phase.setter
+    def _main_phase(self, value: str) -> None:
+        self._status.update(main_phase=value)
+
+    @property
+    def _main_phase_start(self) -> float:
+        return self._status.snapshot()["main_phase_start"]
+
+    @_main_phase_start.setter
+    def _main_phase_start(self, value: float) -> None:
+        self._status.update(main_phase_start=value)
+
+    @property
+    def _tool_phase_start(self) -> float:
+        return self._status.snapshot()["tool_phase_start"]
+
+    @_tool_phase_start.setter
+    def _tool_phase_start(self, value: float) -> None:
+        self._status.update(tool_phase_start=value)
+
     @property
     def _completion_idx(self) -> int:
         return self._completion._idx
 
     @_completion_idx.setter
     def _completion_idx(self, value: int) -> None:
-        self._completion._idx = value
+        # P2-11：委托 _CompletionPopup 正式方法（消除对私有字段直改）
+        self._completion.set_idx(value)
 
     @property
     def _completion_popup_height(self) -> int:
@@ -158,7 +244,8 @@ class _BottomBar:
 
     @_completion_popup_height.setter
     def _completion_popup_height(self, value: int) -> None:
-        self._completion._popup_height = value
+        # P2-11：委托 _CompletionPopup 正式方法（消除对私有字段直改）
+        self._completion.set_popup_height(value)
 
     @property
     def _bottom_lines(self) -> int:
@@ -194,7 +281,8 @@ class _BottomBar:
             self._cached_cpu_percent = cpu_pct
             self._cached_mem_percent = mem_pct
         except Exception:
-            pass
+            # P2-10：空异常捕获 → 记 debug 日志（exc_info 保留堆栈，便于诊断）
+            _logger.debug("_update_system_stats: 获取 CPU/MEM 统计失败", exc_info=True)
 
     # ── resize 保护 ───────────────────────────────
 
@@ -260,14 +348,17 @@ class _BottomBar:
     def set_input(self, input_instance: "Input") -> None:
         self._input = input_instance
 
+    def set_tracker(self, tracker) -> None:
+        """设置 stdout 行跟踪器（由装配层注入，与 RenderOutput 共享实例）。"""
+        self._tracker = tracker
+
     def set_input_state(self, text: str, cursor_pos: int) -> None:
         self._last_text = text
         self._input_cursor_pos = cursor_pos
 
     def set_main_phase(self, phase: str) -> None:
-        if phase != self._main_phase:
-            self._main_phase_start = time.monotonic()
-        self._main_phase = phase
+        """设置主阶段（委托 BottomBarStatus；阶段变化时更新起始时间）。"""
+        self._status.set_main_phase(phase)
 
     def _register_sigwinch(self) -> None:
         _do_register_sigwinch(self)
@@ -308,35 +399,19 @@ class _BottomBar:
             popup_height = h_items + 2
         visible_items = items[:h_items]
         selected_idx = min(selected_idx, h_items - 1)
-        self._completion._popup_height = popup_height
-        self._completion._visible = True
-        self._completion._title = title
-        self._completion._is_selection = (title != "补全")
-        self._completion._items = list(visible_items)
-        self._completion._texts = list(texts) if texts is not None else list(visible_items)
-        self._completion._idx = selected_idx
-        self._completion._start_pos = start_pos
-        self._completion._orig_prefix = orig_prefix
-        self._completion._types = list(types) if types is not None else []
-        self._completion._match_prefix = match_prefix
+        # 字段赋值委托 _CompletionPopup.show（方向E·步骤10 正式方法）
+        self._completion.show(
+            visible_items, selected_idx, popup_height,
+            title=title, texts=texts, start_pos=start_pos,
+            orig_prefix=orig_prefix, types=types, match_prefix=match_prefix,
+        )
         self.force_redraw()
 
     def hide_completions(self) -> None:
         if not self._completion.is_visible or not self._active:
             return
-        saved_idx = self._completion._idx
-        self._completion._last_idx_before_hide = saved_idx
-        self._completion._popup_height = 0
-        self._completion._visible = False
-        self._completion._title = "补全"
-        self._completion._is_selection = False
-        self._completion._items = []
-        self._completion._texts = []
-        self._completion._idx = 0
-        self._completion._start_pos = 0
-        self._completion._orig_prefix = ""
-        self._completion._types = []
-        self._completion._match_prefix = ""
+        # 委托 _CompletionPopup.hide（内部保存 _last_idx_before_hide 后清空）
+        self._completion.hide()
         self.force_redraw()
 
     def cycle_completion(self, delta: int = 1) -> int:
@@ -368,7 +443,7 @@ class _BottomBar:
         self._completion.render_cycle_update(out, popup_start, tw)
         r2 = height - total + 2 + len(self._subagent_lines)
         status = self._format_status()
-        self._last_status = status
+        # P3-14：_last_status 死字段已删除（原 self._last_status = status）
         if status:
             if self._animator.breath_frame > 0 and not _is_narrow():
                 dot_color = self._animator.sine_color(45, 81, 12)
@@ -382,37 +457,38 @@ class _BottomBar:
         out.flush()
         self._last_height = height
 
-    # ── 状态管理（_StatusMixin 内联） ───────────────
+    # ── 状态管理（方向E·步骤9：委托 BottomBarStatus） ──
 
     def enable_status(self) -> None:
-        self._status_active = True
-        self._last_status = ""
+        self._status.enable_status()
+        # P3-14：_last_status 死字段已删除（原 self._last_status = ""）
 
     def disable_status(self) -> None:
-        self._status_active = False
+        self._status.disable_status()
 
     def increment_tool(self) -> None:
-        if self._tool_count == 0:
-            self._tool_phase_start = time.monotonic()
-        self._tool_count += 1
-        self._tool_total += 1
+        self._status.increment_tool()
 
     def decrement_tool(self) -> None:
-        self._tool_count = max(0, self._tool_count - 1)
+        self._status.decrement_tool()
 
     def increment_tool_fail(self) -> None:
-        self._tool_fail_count += 1
+        self._status.increment_tool_fail()
 
     def reset_tool_count(self) -> None:
-        self._tool_count = 0
-        self._tool_fail_count = 0
-        self._tool_total = 0
-        self._tool_phase_start = 0.0
+        self._status.reset_tool_count()
 
     def set_model_name(self, name: str) -> None:
-        self._model_name = name
+        self._status.set_model_name(name)
 
     def get_status_elapsed(self) -> float:
+        """返回当前会话 token 速度快照的 elapsed_seconds（token 速度快照语义）。
+
+        P3-13/P3-14 标注：本方法基于 ``_snapshot``（token 速度快照，由
+        api.stats 维护），与 ``BottomBarStatus.get_status_elapsed_seconds``
+        （状态对象方法，基于 _tool_phase_start/_main_phase_start 计算阶段/
+        工具耗时）语义不同，勿混用。
+        """
         try:
             from src.tui._snapshot import _get_snapshot
             snap_func = _get_snapshot()
@@ -423,8 +499,19 @@ class _BottomBar:
             return 0.0
 
     def _format_status(self) -> str:
-        if self._model_name:
-            if self._status_active:
+        # 状态文本构建单一入口收敛（2026-07-31 方向E）：
+        # 阶段/工具耗时文本（「· 思考 3.20s」）唯一构建入口为
+        # _status._build_status_text（_render 分隔线使用）；本方法
+        # 仅组装模型名/工具计数/总耗时/token/速度段（基于 snapshot
+        # 数据，与 _build_status_text 职责不同，不重复阶段文本逻辑）。
+        st = self._status.snapshot()
+        model_name = st["model_name"]
+        status_active = st["status_active"]
+        tool_count = st["tool_count"]
+        tool_fail_count = st["tool_fail_count"]
+        tool_total = st["tool_total"]
+        if model_name:
+            if status_active:
                 _bf = self._animator.breath_frame
                 if _bf > 0:
                     _pulse_color = self._animator.sine_color(36, 45, 4)
@@ -432,16 +519,16 @@ class _BottomBar:
                     _pulse_color = 45
                 model_part = (
                     f"\033[38;5;{_pulse_color}m\u00b7\033[0m"
-                    f" {_COLOR_ACCENT}{self._model_name}{_COLOR_RESET}"
+                    f" {_COLOR_ACCENT}{model_name}{_COLOR_RESET}"
                 )
             else:
                 model_part = (
                     f"{_COLOR_ACCENT}\u00b7{_COLOR_RESET}"
-                    f" {_COLOR_ACCENT}{self._model_name}{_COLOR_RESET}"
+                    f" {_COLOR_ACCENT}{model_name}{_COLOR_RESET}"
                 )
         else:
             model_part = ""
-        if not self._status_active:
+        if not status_active:
             return model_part
         try:
             from src.tui._snapshot import _get_snapshot
@@ -454,43 +541,40 @@ class _BottomBar:
         total = snap.get("total_tokens", 0)
         elapsed = snap.get("elapsed_seconds", 0.0)
         per_second_speed = snap.get("per_second_speed", 0.0)
-        if total <= 0 and elapsed <= 0 and per_second_speed <= 0 and self._tool_total <= 0:
+        if total <= 0 and elapsed <= 0 and per_second_speed <= 0 and tool_total <= 0:
             return model_part
         parts = []
-        if self._tool_total > 0:
+        if tool_total > 0:
             if not _is_narrow():
                 glow_gear = f"{_build_glow_ansi(self._animator.frame, 45, 12)}\u00b7\033[0m "
             else:
                 glow_gear = ""
-            if self._tool_count > 0:
-                if self._tool_fail_count > 0:
-                    total_colored = f"{_COLOR_TOOL_FAIL}{self._tool_total}{_COLOR_RESET}"
+            if tool_count > 0:
+                if tool_fail_count > 0:
+                    total_colored = f"{_COLOR_TOOL_FAIL}{tool_total}{_COLOR_RESET}"
                 else:
-                    total_colored = f"{_COLOR_TOOL_OK}{self._tool_total}{_COLOR_RESET}"
+                    total_colored = f"{_COLOR_TOOL_OK}{tool_total}{_COLOR_RESET}"
                 parts.append(
                     f"{glow_gear}"
-                    f"{_COLOR_ACCENT}{self._tool_count}{_COLOR_RESET}"
+                    f"{_COLOR_ACCENT}{tool_count}{_COLOR_RESET}"
                     f"{_COLOR_DIM}\u2192{_COLOR_RESET}"
                     f"{total_colored}"
                 )
             else:
-                done = self._tool_total - self._tool_count - self._tool_fail_count
-                if self._tool_fail_count > 0:
+                done = tool_total - tool_count - tool_fail_count
+                if tool_fail_count > 0:
                     parts.append(
                         f"{glow_gear}"
                         f"{_COLOR_TOOL_OK}{done}{_COLOR_RESET}"
                         f"{_COLOR_DIM}/{_COLOR_RESET}"
-                        f"{_COLOR_TOOL_FAIL}{self._tool_total}{_COLOR_RESET}"
+                        f"{_COLOR_TOOL_FAIL}{tool_total}{_COLOR_RESET}"
                     )
                 else:
-                    parts.append(f"{glow_gear}{_COLOR_TOOL_OK}{self._tool_total}{_COLOR_RESET}")
+                    parts.append(f"{glow_gear}{_COLOR_TOOL_OK}{tool_total}{_COLOR_RESET}")
         if elapsed > 0:
-            if elapsed >= 60:
-                mins = int(elapsed // 60)
-                secs = int(elapsed % 60)
-                dur = f"{mins}:{secs:02d}" if mins < 60 else f"{mins // 60}:{mins % 60:02d}:{secs:02d}"
-            else:
-                dur = f"{elapsed:.1f}s"
+            # P3-15：耗时格式化共享 _status._format_duration（默认 precision=1，
+            # 保持原 .1f 语义；≥60s 用 mins:secs / hours:min:sec）
+            dur = _format_duration(elapsed)
             parts.append(f"{_COLOR_TIME}{dur}{_COLOR_RESET}")
         if total > 0:
             tok_str = f"{total / 1000:.1f}k" if total >= 1000 else str(total)

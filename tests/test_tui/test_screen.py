@@ -21,7 +21,6 @@ from src.tui._screen import (
     fg_256,
     bg_256,
     _get_terminal_size,
-    TerminalWidthCache,
     narrow_sep_width,
 )
 
@@ -143,20 +142,6 @@ class TestTerminalSize:
         assert rows > 0
 
 
-class TestTerminalWidthCache:
-    """测试终端宽度缓存。"""
-
-    def test_singleton(self):
-        c1 = TerminalWidthCache.get_default()
-        c2 = TerminalWidthCache.get_default()
-        assert c1 is c2
-
-    def test_get_width(self):
-        w = TerminalWidthCache.get_default().get_width()
-        assert isinstance(w, int)
-        assert w > 0
-
-
 class TestNarrowSepWidth:
     """测试窄屏分隔线宽度。"""
 
@@ -168,3 +153,69 @@ class TestNarrowSepWidth:
 
     def test_very_narrow(self):
         assert narrow_sep_width(5, threshold=40) == 10  # max(10, 5-2)
+
+
+class TestColorConstants:
+    """方向F 步骤12 — ANSI 颜色常量唯一真源收敛回归测试。"""
+
+    def test_color_constants_reexport_regression(self):
+        """_const 与 _screen 的 _COLOR_* 值相等（_screen re-export 保持路径）。"""
+        from src.tui._const import (
+            _COLOR_ACCENT, _COLOR_DEEP_CYAN, _COLOR_DIM, _COLOR_RESET,
+            _COLOR_SEP, _COLOR_TIME, _COLOR_TOKEN, _COLOR_SPEED,
+            _COLOR_TOOL_OK, _COLOR_TOOL_FAIL, _COLOR_SELECT_BG,
+            _COLOR_SELECT_FG, _COLOR_COMPLETE_TITLE,
+            _COLOR_COMPLETE_CMD_PREFIX, _COLOR_COMPLETE_DIR,
+            _COLOR_COMPLETE_MATCH,
+        )
+        from src.tui._screen import (
+            _COLOR_ACCENT as S_ACCENT,
+            _COLOR_DEEP_CYAN as S_DEEP_CYAN,
+            _COLOR_DIM as S_DIM,
+            _COLOR_RESET as S_RESET,
+            _COLOR_SEP as S_SEP,
+            _COLOR_TIME as S_TIME,
+            _COLOR_TOKEN as S_TOKEN,
+            _COLOR_SPEED as S_SPEED,
+            _COLOR_TOOL_OK as S_TOOL_OK,
+            _COLOR_TOOL_FAIL as S_TOOL_FAIL,
+            _COLOR_SELECT_BG as S_SELECT_BG,
+            _COLOR_SELECT_FG as S_SELECT_FG,
+            _COLOR_COMPLETE_TITLE as S_TITLE,
+            _COLOR_COMPLETE_CMD_PREFIX as S_CMD_PREFIX,
+            _COLOR_COMPLETE_DIR as S_DIR,
+            _COLOR_COMPLETE_MATCH as S_MATCH,
+        )
+        assert _COLOR_ACCENT == S_ACCENT
+        assert _COLOR_DEEP_CYAN == S_DEEP_CYAN
+        assert _COLOR_DIM == S_DIM
+        assert _COLOR_RESET == S_RESET
+        assert _COLOR_SEP == S_SEP
+        assert _COLOR_TIME == S_TIME
+        assert _COLOR_TOKEN == S_TOKEN
+        assert _COLOR_SPEED == S_SPEED
+        assert _COLOR_TOOL_OK == S_TOOL_OK
+        assert _COLOR_TOOL_FAIL == S_TOOL_FAIL
+        assert _COLOR_SELECT_BG == S_SELECT_BG
+        assert _COLOR_SELECT_FG == S_SELECT_FG
+        assert _COLOR_COMPLETE_TITLE == S_TITLE
+        assert _COLOR_COMPLETE_CMD_PREFIX == S_CMD_PREFIX
+        assert _COLOR_COMPLETE_DIR == S_DIR
+        assert _COLOR_COMPLETE_MATCH == S_MATCH
+
+        # P2-15：关键色硬编码值锚点（防常量值漂移，先 read_file _const.py 确认值）
+        assert _COLOR_ACCENT == "\033[38;5;45m"
+        assert _COLOR_RESET == "\033[0m"
+        assert _COLOR_SPEED == "\033[38;5;214m"
+        assert _COLOR_TOOL_OK == "\033[38;5;41m"
+
+    def test_emergency_constants_in_const_regression(self):
+        """ANSI_EMERGENCY_* 在 _const 可导入（引擎紧急路径依赖，值不变）。"""
+        from src.tui._const import (
+            ANSI_EMERGENCY_RED, ANSI_EMERGENCY_YELLOW,
+            ANSI_EMERGENCY_RESET, ANSI_EMERGENCY_CURSOR_BOTTOM,
+        )
+        assert ANSI_EMERGENCY_RED == "\033[31m"
+        assert ANSI_EMERGENCY_YELLOW == "\033[33m"
+        assert ANSI_EMERGENCY_RESET == "\033[0m"
+        assert ANSI_EMERGENCY_CURSOR_BOTTOM == "\033[9999;1H"

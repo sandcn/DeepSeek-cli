@@ -177,6 +177,16 @@ def _setup_connection(ws, session, ws_send, select_id_tracker=None):
             session_elapsed=session_elapsed or 0,
             messages=messages,
         )
+        # ★ 费用降级（2026-07-31，计划步骤 3）：src/tui/_cost.py 已 DEPRECATED
+        #   （费用计算移除，返回全零兼容占位）。检测到空/全零数据时跳过推送，
+        #   避免向前端展示假费用。前端字段消费位置未在关联列表，
+        #   需委派 map 补充分析（步骤 3 委派清单），此处仅做后端最小降级。
+        if not data:
+            _logger.debug("cost_update 收到但费用数据为空，跳过 round_cost 推送（费用计算已移除）")
+            return
+        if all(v in (0, 0.0, "", None) for v in data.values()):
+            _logger.debug("cost_update 收到但费用数据为全零占位，跳过 round_cost 推送（费用计算已移除）")
+            return
         _tracked_send(msg_round_cost(data))
 
     session.on("cost_update", _on_cost_update)

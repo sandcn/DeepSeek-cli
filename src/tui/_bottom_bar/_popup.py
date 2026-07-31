@@ -20,66 +20,14 @@ from src.tui._screen import (
     cursor_goto,
 )
 from src.tui._animator import AnimatorContext
+from src.tui._bottom_bar._layout_utils import (
+    _is_narrow,
+    _visual_width,
+    _truncate_by_width,
+)
 
 if TYPE_CHECKING:
     from src.tui._cursor_tracker import CursorTracker
-
-
-# ═══════════════════════════════════════════════════════════
-# 工具函数（内联自 _bottom_bar_old.py）
-# ═══════════════════════════════════════════════════════════
-
-def _is_narrow() -> bool:
-    """判断是否为窄屏（宽度 < 60 列）。"""
-    from src.tui._screen import _get_terminal_size
-    w, _ = _get_terminal_size()
-    return w < 60
-
-
-def _visual_width(text: str) -> int:
-    """计算字符串的可视宽度（去除 ANSI 转义序列）。"""
-    from src.tui._screen import wcswidth_simple
-    w = 0
-    i = 0
-    while i < len(text):
-        if text[i] == '\033':
-            j = i + 1
-            if j < len(text) and text[j] == '[':
-                j += 1
-                while j < len(text) and text[j] not in 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz':
-                    j += 1
-                i = j + 1 if j < len(text) else len(text)
-            elif j < len(text) and text[j] in ']PX^_':
-                j += 1
-                while j < len(text):
-                    if text[j] == '\033' and j + 1 < len(text) and text[j + 1] == '\\':
-                        i = j + 2
-                        break
-                    elif text[j] == '\a':
-                        i = j + 1
-                        break
-                    j += 1
-                else:
-                    i = len(text)
-            else:
-                i = j + 1
-        else:
-            cw = wcswidth_simple(text[i])
-            w += cw if cw >= 0 else 1
-            i += 1
-    return w
-
-
-def _truncate_by_width(s: str, max_width: int) -> str:
-    """按终端列宽截断字符串。"""
-    from src.tui._screen import wcswidth_simple
-    w = 0
-    for i, ch in enumerate(s):
-        cw = wcswidth_simple(ch) if wcswidth_simple(ch) >= 0 else 1
-        if w + cw > max_width:
-            return s[:i]
-        w += cw
-    return s
 
 
 # ═══════════════════════════════════════════════════════════
@@ -132,6 +80,74 @@ class _CompletionPopup:
             return ("", 0, "")
         idx = min(self._idx, len(self._texts) - 1)
         return (self._texts[idx], self._start_pos, self._orig_prefix)
+
+    # ── 正式方法接口（方向E·步骤10） ───────────────
+    # _BottomBar.show_completions / hide_completions 委托此处，
+    # 消除 _BottomBar 对 _CompletionPopup 私有字段的直改。
+
+    def show(self, items: list[str], selected_idx: int, popup_height: int,
+             title: str = "补全", texts: list[str] | None = None,
+             start_pos: int = 0, orig_prefix: str = "",
+             types: list[str] | None = None,
+             match_prefix: str = "") -> None:
+        """显示补全弹窗（封装全部字段赋值）。
+
+        Args:
+            items: 可见候选项（_BottomBar 已按高度裁剪）。
+            selected_idx: 选中索引（已 clamp 到可见范围）。
+            popup_height: 弹窗总高度（由 _BottomBar 计算传入）。
+            title: 弹窗标题；非「补全」时视为选择模式（_is_selection）。
+            texts: 完整候选项文本（可能多于可见 items）；缺省用 items。
+            start_pos: 补全起始位置。
+            orig_prefix: 原始前缀。
+            types: 候选项类型列表。
+            match_prefix: 匹配前缀。
+        """
+        self._popup_height = popup_height
+        self._visible = True
+        self._title = title
+        self._is_selection = (title != "补全")
+        self._items = list(items)
+        self._texts = list(texts) if texts is not None else list(items)
+        self._idx = selected_idx
+        self._start_pos = start_pos
+        self._orig_prefix = orig_prefix
+        self._types = list(types) if types is not None else []
+        self._match_prefix = match_prefix
+
+    def hide(self) -> None:
+        """隐藏弹窗：先保存 _last_idx_before_hide，再清空全部字段。"""
+        if not self._visible:
+            return
+        saved_idx = self._idx
+        self._last_idx_before_hide = saved_idx
+        self.reset()
+
+    def reset(self) -> None:
+        """清空补全相关字段（hide 复用的纯清理，不保存 _last_idx_before_hide）。"""
+        self._popup_height = 0
+        self._visible = False
+        self._title = "补全"
+        self._is_selection = False
+        self._items = []
+        self._texts = []
+        self._idx = 0
+        self._start_pos = 0
+        self._orig_prefix = ""
+        self._types = []
+        self._match_prefix = ""
+
+    # ── 兼容字段写入正式方法（P2-11） ───────────────
+    # _BottomBar._completion_idx / _completion_popup_height setter 委托此处，
+    # 消除对 _CompletionPopup 私有字段的直接写（兼容测试/渲染读取路径）。
+
+    def set_idx(self, value: int) -> None:
+        """设置选中索引（兼容 _BottomBar._completion_idx setter 委托）。"""
+        self._idx = value
+
+    def set_popup_height(self, value: int) -> None:
+        """设置弹窗高度（兼容 _BottomBar._completion_popup_height setter 委托）。"""
+        self._popup_height = value
 
     @staticmethod
     def _calc_popup_width(items: list[str], term_width: int) -> int:
@@ -200,26 +216,8 @@ class _CompletionPopup:
         header = f" {title_ansi}{self._title}{_COLOR_RESET} {_COLOR_DIM}({total_items}项){_COLOR_RESET}"
         out.write(f"{cursor_goto(r_start, 1)}\033[K" + header)
         cell_w = popup_w - 3
-        types = self._types if len(self._types) == n else [""] * n
-        for i, item in enumerate(self._items):
-            r = r_start + 1 + i
-            self._render_item_line(out, r, item, types[i], self._match_prefix, cell_w,
-                                   is_selected=(i == self._idx))
-        footer_r = r_start + 1 + n
-        truncated = total_items > n
-        is_selection = self._is_selection
-        hint_prefix = "\u2191\u2193 Enter Esc" if is_selection else "Tab \u2191\u2193 Esc"
-        if truncated:
-            hint = (f" {_COLOR_TIME}{self._idx + 1}/{n}{_COLOR_RESET}"
-                    f" {_COLOR_DIM}(\u524d{n}/{total_items}){_COLOR_RESET}  {hint_prefix} ")
-        else:
-            hint = f" {hint_prefix} "
-        if not _is_narrow():
-            dot_color = self._animator.sine_color(45, 81, 12)
-            hint_dot = f" \033[38;5;{dot_color}m\u25c9{_COLOR_RESET}"
-        else:
-            hint_dot = ""
-        out.write(f"{cursor_goto(footer_r, 1)}\033[K" + f"{_COLOR_DIM}{hint}{_COLOR_RESET}{hint_dot}")
+        self._write_items(out, r_start, cell_w, n)
+        self._write_footer(out, r_start, n, total_items)
         return popup_height
 
     def render_cycle_update(self, out, popup_r_start: int, term_width: int) -> None:
@@ -229,13 +227,23 @@ class _CompletionPopup:
         n = len(self._items)
         popup_w = self._calc_popup_width(self._items, term_width)
         cell_w = popup_w - 3
+        self._write_items(out, popup_r_start, cell_w, n)
+        total_items = len(self._texts)
+        self._write_footer(out, popup_r_start, n, total_items)
+
+    # ── 渲染共享子方法（P3-16：render / render_cycle_update 去重） ──
+
+    def _write_items(self, out, r_start: int, cell_w: int, n: int) -> None:
+        """渲染候选项行（render / render_cycle_update 共享，逐字符一致）。"""
         types = self._types if len(self._types) == n else [""] * n
         for i, item in enumerate(self._items):
-            r = popup_r_start + 1 + i
+            r = r_start + 1 + i
             self._render_item_line(out, r, item, types[i], self._match_prefix, cell_w,
                                    is_selected=(i == self._idx))
-        total_items = len(self._texts)
-        footer_r = popup_r_start + 1 + n
+
+    def _write_footer(self, out, r_start: int, n: int, total_items: int) -> None:
+        """渲染底部提示行（render / render_cycle_update 共享，逐字符一致）。"""
+        footer_r = r_start + 1 + n
         truncated = total_items > n
         is_selection = self._is_selection
         hint_prefix = "\u2191\u2193 Enter Esc" if is_selection else "Tab \u2191\u2193 Esc"

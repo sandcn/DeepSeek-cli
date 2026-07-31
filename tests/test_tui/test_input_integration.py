@@ -118,3 +118,93 @@ class TestInputBottomBarEngineIntegration:
         bb.set_input_state.assert_called_once_with("new text", 5)
         # 验证重绘请求被触发
         engine.request_bottom_redraw.assert_called_once()
+
+
+# ═══════════════════════════════════════════════════════════
+# 方向A 步骤2：TuiInputOrchestrator 事件化等待回归测试（新增，2026-07-31）
+# ═══════════════════════════════════════════════════════════
+
+class TestInputOrchestratorEventWaiting:
+    """TuiInputOrchestrator.wait_for_user_input 事件化（方向A 步骤2）。"""
+
+    @pytest.fixture
+    def inp(self, tmp_path):
+        """创建 Input 实例（P2-7：fixture 确保 fd 关闭）。"""
+        fd = os.open("/dev/null", os.O_RDONLY)
+        try:
+            yield Input(fd=fd, history_file=tmp_path / "test_history")
+        finally:
+            os.close(fd)
+
+    @pytest.fixture
+    def monitor(self):
+        m = MagicMock()
+        m.is_alive = True
+        return m
+
+    def test_wait_until_ready_event_regression(self, inp, monitor, tmp_path):
+        """Enter 提交后 wait_for_user_input 立即返回（<100ms，验证无 50ms 轮询延迟）。"""
+        import threading
+        import time
+
+        from src.tui._input_orchestrator import TuiInputOrchestrator
+        orch = TuiInputOrchestrator(inp)
+
+        def submit():
+            with patch("src.tui._input._append_to_history_file", return_value=True):
+                inp.handle_chars("hello")
+                inp._enter()
+
+        t = threading.Thread(target=submit)
+        start = time.monotonic()
+        t.start()
+        text = orch.wait_for_user_input(monitor, timeout=5.0)
+        elapsed = time.monotonic() - start
+        t.join()
+        assert text == "hello"
+        assert elapsed < 0.1  # 验证无 50ms 轮询延迟（事件化后立即唤醒）
+
+    def test_wait_for_user_input_timeout_regression(self, inp, monitor):
+        """timeout 超时返回空字符串。"""
+        from src.tui._input_orchestrator import TuiInputOrchestrator
+        orch = TuiInputOrchestrator(inp)
+        text = orch.wait_for_user_input(monitor, timeout=0.2)
+        assert text == ""
+
+    def test_wait_for_user_input_monitor_death_regression(self, inp):
+        """monitor 死亡时抛 RuntimeError（_loop.py 捕获后走恢复逻辑）。"""
+        from src.tui._input_orchestrator import TuiInputOrchestrator
+        orch = TuiInputOrchestrator(inp)
+        dead_monitor = MagicMock()
+        dead_monitor.is_alive = False
+        with pytest.raises(RuntimeError, match="EscapeMonitor"):
+            orch.wait_for_user_input(dead_monitor, timeout=0.5)
+
+    def test_wait_for_user_input_prefill_regression(self, inp, monitor):
+        """prefill 注入后缓冲区被预填且可正常提交。"""
+        import threading
+        import time
+
+        from src.tui._input_orchestrator import TuiInputOrchestrator
+        orch = TuiInputOrchestrator(inp)
+        result = {}
+
+        def wait_with_prefill():
+            with patch("src.tui._input._append_to_history_file", return_value=True):
+                result["text"] = orch.wait_for_user_input(
+                    monitor, prefill="prefill text", timeout=5.0,
+                )
+
+        t = threading.Thread(target=wait_with_prefill)
+        t.start()
+        # 等待 prefill 注入完成（缓冲区被预填）
+        deadline = time.monotonic() + 2.0
+        while time.monotonic() < deadline:
+            if inp.get_current_text() == "prefill text":
+                break
+            time.sleep(0.01)
+        assert inp.get_current_text() == "prefill text"
+        # 提交（模拟用户按 Enter）——patch 上下文在 wait 线程内仍活跃，无磁盘写入
+        inp._enter()
+        t.join()
+        assert result["text"] == "prefill text"

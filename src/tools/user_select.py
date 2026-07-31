@@ -153,7 +153,7 @@ class UserSelectFunc(Func):
         # 获取 ChatUIConsumer 用于操作底部栏
         chat_ui = get_active_chat_ui()
         bb = chat_ui.bottom_bar if chat_ui else None
-        input_ = chat_ui._components.input if chat_ui else None
+        input_ = chat_ui.get_input_component() if chat_ui else None
         self._input = input_
 
         if bb is None:
@@ -164,7 +164,7 @@ class UserSelectFunc(Func):
             }, ensure_ascii=False)
 
         # 确保底部栏已激活（否则 show_completions 静默跳过）
-        if not bb._active:
+        if not bb.is_active:
             term_h = get_terminal_size().lines
             if term_h < bb._MIN_HEIGHT:
                 self._start_monitor(monitor)
@@ -173,7 +173,7 @@ class UserSelectFunc(Func):
                     "action": "error: 终端高度不足",
                 }, ensure_ascii=False)
             # 最小激活：仅设置标志和缓存，跳过全量绘制（由 show_completions 完成）
-            bb._active = True
+            bb.set_active(True)
             bb._last_text = ""
             bb._last_rendered_text = ""
             bb._last_bottom_lines = bb._bottom_lines

@@ -24,12 +24,12 @@ class ContentHandler(StreamChunkHandler):
         """处理一段 content 增量"""
         if ctx.is_reasoning:
             ctx.is_reasoning = False
-            # 🔥 推理阶段结束 → 发布 PhaseDoneEvent
+            # 🔥 推理阶段结束 → 发布 PhaseDoneEvent（去重助手，每流恰一次）
             # 即使 silent=True 也要发布，确保 EventBus 时序正确：
             # 如果推后到 _cleanup_display() 才发布，ContentChunkEvent
             # 已经通过 buffer→flush 提前到达前端，导致"思考"气泡完成信号
             # 晚于内容数据到达，前端可能将内容渲染到错误的容器中。
-            publish_event("PhaseDoneEvent", label=ctx.label or "", phase="reasoning")
+            ctx.publish_phase_done_once("reasoning")
 
         if ctx.display and ctx.label and not ctx.phase_answering_sent:
             ctx.display.update_model_phase(ctx.label, "answering")

@@ -1,7 +1,7 @@
 """事件适配器 — EventPort 的 DisplayEventBus 实现
 
 职责：桥接核心层 EventPort 抽象与基础设施层 DisplayEventBus。
-适配器层允许导入 ui/ 模块（桥接职责）。
+适配器层允许导入 tui/ 模块（桥接职责）。
 """
 from __future__ import annotations
 
@@ -131,9 +131,11 @@ class DisplayEventBusAdapter(EventPort):
     # ── 内部辅助方法 ────────────────────────────────────
 
     def _publish_output(self, text: str, level: str = "info", source: str = "core") -> None:
-        """发布输出事件"""
-        from ...tui.events import publish_output
-        publish_output(text, level=level, source=source)
+        """发布输出事件（经 get_output_publisher 工厂，工厂返回 None 时静默降级；真实无头模式经 OutputConsumer 兜底直写终端）。"""
+        from ..display_target import get_output_publisher
+        publisher = get_output_publisher()
+        if publisher is not None:
+            publisher(text, level=level, source=source)
 
     def _publish_tool_summary(self, data: dict, source: str = "core") -> None:
         """发布工具摘要事件"""

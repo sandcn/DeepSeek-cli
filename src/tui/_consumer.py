@@ -11,7 +11,7 @@ ChatUIConsumer 作为薄外观（Thin Facade），将职责委托给三个独立
 from __future__ import annotations
 
 import logging
-from typing import TYPE_CHECKING, Any, Callable
+from typing import TYPE_CHECKING, Callable
 
 if TYPE_CHECKING:
     from src.tui._renderer import TuiEngine, TuiRenderer, EventDispatcher
@@ -35,35 +35,21 @@ if TYPE_CHECKING:
     )
 
 from src.tui._const import (
+    RenderCmd,
     UserMsgCmd, NotificationCmd, ErrorCmd,
     WriteLineCmd, DisplayMsgsCmd,
 )
-from src.tui._locks import render_lock
+from src.renderer._locks import render_lock
 from src.tui.state.consumer_registry import (
     _register_consumer,
     _unregister_consumer,
 )
 from src.tui._assembly import TuiAssembly, TuiAssemblyResult
+from src.tui._components import _ComponentsNamespace
 from src.tui._lifecycle import TuiLifecycle
 from src.tui._input_orchestrator import TuiInputOrchestrator
 
 _logger = logging.getLogger(__name__)
-
-
-# ═══════════════════════════════════════════════════════════
-# 向后兼容的组件命名空间
-# ═══════════════════════════════════════════════════════════
-
-class _ComponentsNamespace:
-    """向后兼容的组件命名空间。
-
-    Attributes:
-        input: 统一输入管理实例。
-    """
-    __slots__ = ('input',)
-
-    def __init__(self, input_instance: "Input | None" = None):
-        self.input = input_instance
 
 
 # ═══════════════════════════════════════════════════════════
@@ -113,8 +99,6 @@ class ChatUIConsumer:
             subagent_controller=self._subagent_controller,
         )
         self._input_orchestrator = TuiInputOrchestrator(self._input)
-
-        # ── InputReader 暂不启用（process_events 尚未集成队列消费路径） ──
 
     @classmethod
     def for_testing(cls, components, event_bus=None) -> "ChatUIConsumer":
@@ -176,11 +160,11 @@ class ChatUIConsumer:
 
     @property
     def _bound_handlers(self):
-        return getattr(self._lifecycle, '_bound_handlers', None)
+        return self._lifecycle.bound_handlers
 
     @_bound_handlers.setter
     def _bound_handlers(self, value):
-        self._lifecycle._bound_handlers = value
+        self._lifecycle.bound_handlers = value
 
     @property
     def _state_lock(self):
@@ -227,10 +211,14 @@ class ChatUIConsumer:
         """渲染消息列表到上屏区域。"""
         if not messages:
             return
+        # P3-8：list[dict] content（vision 消息）序列化复用 pipeline/message_display
+        # 的 _content_str 逻辑（提取公共函数本地等价复用），使 vision 消息显示
+        # 质量与旧直写一致（dict 取 text 字段、list 逐项拼接）。
+        from src.tui.pipeline.message_display import _content_str
         from src.core.constants import DIM, RESET
         for msg in messages:
             role = msg.get("role", "")
-            content = str(msg.get("content", ""))
+            content = _content_str(msg.get("content", ""))
             if role == "user":
                 line = f"\n  \033[1;38;5;81m>\033[0m \033[38;5;252m{content}\033[0m\n"
             elif role == "assistant":
@@ -245,6 +233,14 @@ class ChatUIConsumer:
 
     def request_bottom_redraw(self) -> None:
         self._engine.request_bottom_redraw()
+
+    def get_input_component(self):
+        """返回输入组件实例（兼容旧 _components.input 访问路径）。"""
+        return self._components.input
+
+    def get_input(self):
+        """返回输入组件实例（供 core 层插件使用）。"""
+        return self._input
 
     def write_line(self, text: str) -> None:
         self._engine.push_cmd(WriteLineCmd(text=text))
@@ -301,5 +297,5 @@ class ChatUIConsumer:
     def flush(self, timeout: float | None = 5.0) -> None:
         self._engine.flush(timeout=timeout)
 
-    def push_cmd(self, cmd: tuple) -> None:
+    def push_cmd(self, cmd: RenderCmd) -> None:
         self._engine.push_cmd(cmd)

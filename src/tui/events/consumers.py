@@ -14,7 +14,7 @@ import sys
 from typing import List, Optional
 
 from .event_bus import DisplayEventBus
-from .._locks import _try_acquire_output_lock
+from src.renderer._locks import _try_acquire_output_lock
 from .event_types import (
     DisplayEvent,
     OutputEvent,
@@ -43,13 +43,26 @@ class OutputConsumer:
     替代直接 print() 调用，统一输出路由。
     非 TTY 环境自动剥离颜色码。
 
+    单一消费路径策略（方向D 步骤7）：
+      ChatUI 活跃时，OutputEvent 由 EventDispatcher（管线路径）消费
+      （_on_output → WriteLineCmd），OutputConsumer 仅处理非 ChatUI 上下文输出；
+      由 ``_should_skip`` 显式策略方法判定（source="cmd" 或 ChatUI 活跃均跳过直写）。
+      ``chat_ui_managed`` 参数使该策略可配置（测试可传 False 关闭 ChatUI 检测）。
+
     ToolSummaryEvent 已移至 ChatUIConsumer 处理，此处不再订阅。
     """
 
-    def __init__(self, event_bus: Optional[DisplayEventBus] = None, stream=None):
+    def __init__(
+        self,
+        event_bus: Optional[DisplayEventBus] = None,
+        stream=None,
+        *,
+        chat_ui_managed: bool = True,
+    ):
         self._bus = event_bus or DisplayEventBus.get_default()
         self._stream = stream or sys.stdout
         self._started: bool = False
+        self._chat_ui_managed = chat_ui_managed
 
     def start(self) -> None:
         """订阅 OutputEvent。"""
@@ -68,18 +81,31 @@ class OutputConsumer:
     def _on_output(self, event: DisplayEvent) -> None:
         if not isinstance(event, OutputEvent):
             return
-        # source="cmd" 的事件已由 ChatUIConsumer 接管渲染，此处跳过避免重复
-        if event.source == "cmd":
+        if self._should_skip(event):
             return
-        # ChatUI 活跃时，所有 OutputEvent 由 ChatUIConsumer 渲染管线处理，
-        # OutputConsumer 跳过直写避免重复和绕过 ChatUI
+        self._write(event.text, event.level)
+
+    def _should_skip(self, event: DisplayEvent) -> bool:
+        """单一消费路径策略：返回 True 表示跳过直写。
+
+        策略：
+          - source="cmd" 的事件已由 ChatUIConsumer 接管渲染，跳过避免重复；
+          - ChatUI 活跃时（chat_ui_managed 且存在活跃 ChatUIConsumer），
+            所有 OutputEvent 由 ChatUIConsumer 渲染管线处理，
+            OutputConsumer 跳过直写避免重复和绕过 ChatUI。
+        """
+        if event.source == "cmd":
+            return True
+        if self._chat_ui_managed and self._active_chat_ui_present():
+            return True
+        return False
+
+    def _active_chat_ui_present(self) -> bool:
         try:
             from ..consumer import get_active_chat_ui
-            if get_active_chat_ui() is not None:
-                return
+            return get_active_chat_ui() is not None
         except ImportError:
-            pass
-        self._write(event.text, event.level)
+            return False
 
     def _write(self, text: str, level: str = "info") -> None:
         """输出带颜色/级别的文本到终端（由 output_lock 保护）。"""

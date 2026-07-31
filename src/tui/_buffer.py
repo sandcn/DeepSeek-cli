@@ -1,5 +1,16 @@
 """RenderBuffer 渲染缓冲区 — 二维字符网格，支持叠加合成（精简版）。
 
+★ 保留决策（2026-07-31 方向C）：
+  RenderBuffer 运行时无实例化消费方（全项目仅测试与公共 re-export 引用），
+  但因 `src/tui/__init__.py` 公共 API 与 `tests/test_tui/test_tui_structure.py`
+  断言约束，**保留不删**，标记为 P2 遗留（未来若解除公共 API 约束可评估删除
+  或接入 captured 数据）；本模块零改动。
+
+★ 职责（2026-07-31 步骤2-A 输出路径统一）：
+  RenderBuffer = 布局合成（底部栏/补全弹窗等二维网格合成），零 I/O，
+  纯内存操作。不属于内容输出管线——内容行由 OutputAdapter 写入，
+  输出历史由 _StdoutLineTracker 跟踪（缓冲职责矩阵见 src/tui/_output.py）。
+
 提供：
   - RenderBuffer: 二维字符缓冲区，支持 write/merge/render 操作
   - 用于 Widget 渲染输出的统一目标

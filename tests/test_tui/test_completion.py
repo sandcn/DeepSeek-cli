@@ -181,3 +181,132 @@ class TestApplyCompletion:
 
         result = _apply_completion("old", "new text", 0, "")
         assert result == "new text"
+
+
+class TestThemeParamCompletion:
+    """/theme 参数补全测试 — 验证返回真实主题名（幽灵导入修复回归）。"""
+
+    def test_theme_completion_returns_real_themes(self):
+        """/theme 补全应返回真实主题名（来自 core 层 CommandUiAdapter）。"""
+        from src.tui._completion_engine import CompletionEngine
+
+        engine = CompletionEngine()
+        items = engine.complete("/theme")
+        names = [item.text for item in items]
+        # CommandUiAdapter.get_theme_names_with_desc 返回真实主题名（default）
+        assert "default" in names
+
+    def test_theme_completion_item_type(self):
+        """/theme 补全项类型应为 param。"""
+        from src.tui._completion_engine import CompletionEngine
+
+        engine = CompletionEngine()
+        items = engine.complete("/theme")
+        assert items
+        assert all(item.item_type == "param" for item in items)
+
+
+class TestCompletionShowDedup:
+    """方向F·步骤13 补全弹窗显示去重回归测试（_show_completions_for helper）。"""
+
+    def _make_handler(self):
+        from src.tui._completion import _CmplHandler
+        mock_bb = MagicMock()
+        mock_engine = MagicMock()
+        mock_redraw = MagicMock()
+        return _CmplHandler(mock_bb, mock_engine, mock_redraw), mock_bb, mock_engine, mock_redraw
+
+    def test_show_completions_for_helper_regression(self):
+        """helper 直接调用时 show_completions 参数正确（display/texts/start_pos/orig_prefix/types/match_prefix）。"""
+        from src.tui._completion import _show_completions_for
+        from src.tui._completion_engine import CompletionItem
+        mock_bb = MagicMock()
+        mock_engine = MagicMock()
+        mock_engine.complete.return_value = [
+            CompletionItem("hello world", display="hello world", start_pos=-11, item_type=""),
+        ]
+
+        result = _show_completions_for(mock_bb, mock_engine, "say hello")
+
+        assert result is True
+        mock_bb.show_completions.assert_called_once_with(
+            ["hello world"], 0,
+            texts=["hello world"],
+            start_pos=-11,
+            orig_prefix="hello",
+            types=[""],
+            match_prefix="hello",
+        )
+
+    def test_show_completions_for_no_items_regression(self):
+        """helper 无候选项时返回 False 且不调用 show_completions。"""
+        from src.tui._completion import _show_completions_for
+        mock_bb = MagicMock()
+        mock_engine = MagicMock()
+        mock_engine.complete.return_value = []
+
+        result = _show_completions_for(mock_bb, mock_engine, "xyz")
+
+        assert result is False
+        mock_bb.show_completions.assert_not_called()
+
+    def test_first_tab_uses_helper_regression(self):
+        """_first_tab 经 helper 显示弹窗且参数与旧版一致。"""
+        from src.tui._completion_engine import CompletionItem
+        handler, mock_bb, mock_engine, mock_redraw = self._make_handler()
+        mock_engine.complete.return_value = [
+            CompletionItem("hello world", display="hello world", start_pos=-11, item_type=""),
+        ]
+        mock_bb.is_completion_visible = False
+
+        result = handler._first_tab("say hello")
+
+        assert result == "say hello"
+        mock_bb.show_completions.assert_called_once_with(
+            ["hello world"], 0,
+            texts=["hello world"],
+            start_pos=-11,
+            orig_prefix="hello",
+            types=[""],
+            match_prefix="hello",
+        )
+        mock_redraw.assert_called()
+
+    def test_first_tab_no_items_hides_via_helper_regression(self):
+        """_first_tab 无候选项时经 helper 返回 False 后 hide + request_redraw。"""
+        handler, mock_bb, mock_engine, mock_redraw = self._make_handler()
+        mock_engine.complete.return_value = []
+        mock_bb.is_completion_visible = False
+
+        result = handler._first_tab("xyz")
+
+        assert result is None
+        mock_bb.hide_completions.assert_called_once()
+        mock_bb.show_completions.assert_not_called()
+        mock_redraw.assert_called()
+
+    def test_on_auto_uses_helper_regression(self):
+        """on_auto 经 helper 显示弹窗且 _last_auto_text 更新。"""
+        from src.tui._completion_engine import CompletionItem
+        handler, mock_bb, mock_engine, mock_redraw = self._make_handler()
+        mock_engine.complete.return_value = [
+            CompletionItem("/help", display="/help", start_pos=-5, item_type="command"),
+        ]
+        mock_bb.is_completion_visible = False
+
+        handler.on_auto("/hel")
+
+        mock_bb.show_completions.assert_called_once()
+        mock_redraw.assert_called()
+        assert handler._last_auto_text == "/hel"
+
+    def test_on_auto_no_items_hides_via_helper_regression(self):
+        """on_auto 无候选项时经 helper 返回 False 后 hide + 防抖更新。"""
+        handler, mock_bb, mock_engine, mock_redraw = self._make_handler()
+        mock_engine.complete.return_value = []
+
+        handler.on_auto("something")
+
+        mock_bb.hide_completions.assert_called_once()
+        mock_bb.show_completions.assert_not_called()
+        assert handler._last_auto_text == "something"

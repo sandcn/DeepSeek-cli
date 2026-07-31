@@ -184,6 +184,28 @@ def _check_response(resp: httpx.Response) -> None:
         raise APIError(resp.status_code, resp.text[:500])
 
 
+def _has_finish_reason(chunk: dict) -> bool:
+    """检查 chunk 是否携带非空 finish_reason（用于提前结束 SSE 流迭代）。
+
+    对不发送 ``[DONE]`` 且连接不关闭的服务端，finish_reason 是可靠的流结束
+    信号；返回 True 时调用方应在 yield 当前 chunk 后停止迭代（先消费最后一个
+    delta 再结束）。不检查 null/空字符串 finish_reason（流式过程中 finish_reason
+    为 null/缺失为常态，仅最终块非空）。
+    """
+    try:
+        choices = chunk.get("choices")
+        if not choices:
+            return False
+        first = choices[0]
+        if not isinstance(first, dict):
+            return False
+        fr = first.get("finish_reason")
+        return bool(fr and str(fr).strip())
+    except (IndexError, TypeError, AttributeError):
+        # chunk 结构异常（如 data: null 解析为 None）时保守返回 False，不中断
+        return False
+
+
 # ── 公开接口 ────────────────────────────────────────────────
 
 async def chat_completions_async(
@@ -300,35 +322,70 @@ async def _stream_iter_async(
                 consecutive_failures = 0
 
                 done = False
+
+                def _process_sse_line(line_bytes: bytes):
+                    """处理单行 SSE 数据（完整行与尾部残余无换行行共用）。
+
+                    返回 (parsed, should_yield, stop)：
+                      - parsed: JSON 解析结果（JSON 为 null 时可能为 None，
+                        仍会 yield——与原完整行路径行为一致）
+                      - should_yield: 是否应 yield parsed
+                      - stop: 是否应停止迭代（[DONE] 或 finish_reason 非空）
+                    JSON 解析失败按既有 consecutive_failures 计数/跳过策略处理。
+                    """
+                    nonlocal consecutive_failures
+                    if not line_bytes:
+                        return None, False, False
+                    if not line_bytes.startswith(b"data: "):
+                        return None, False, False
+                    data_bytes = line_bytes[6:]
+                    if data_bytes == b"[DONE]":
+                        return None, False, True
+                    try:
+                        parsed = _json_loads(data_bytes.decode("utf-8"))
+                        consecutive_failures = 0
+                    except _JSON_DECODE_ERRORS:
+                        consecutive_failures += 1
+                        if consecutive_failures >= 3:
+                            _logger.warning(
+                                "流式数据 JSON 连续解析失败 %d 次: %s",
+                                consecutive_failures, line_bytes[:100],
+                            )
+                        else:
+                            _logger.debug(
+                                "流式数据 JSON 解析失败，已跳过: %s",
+                                line_bytes[:100], exc_info=True,
+                            )
+                        return None, False, False
+                    # finish_reason 结束检查：非空时置 stop（先 yield 当前 chunk
+                    # 再结束，确保最后一个 delta 被下游处理）。覆盖完整行与残余
+                    # 行两条解析路径；对不发送 [DONE] 且连接不关闭的服务端，
+                    # 避免流挂起至空闲超时。
+                    return parsed, True, _has_finish_reason(parsed)
+
                 async for chunk in resp.aiter_raw():
                     if done:
                         break
                     buffer += chunk
                     while b"\n" in buffer:
                         line_bytes, buffer = buffer.split(b"\n", 1)
-                        if not line_bytes:
-                            continue
-                        if line_bytes.startswith(b"data: "):
-                            data_bytes = line_bytes[6:]
-                            if data_bytes == b"[DONE]":
-                                done = True
-                                break
-                            try:
-                                parsed = _json_loads(data_bytes.decode("utf-8"))
-                                consecutive_failures = 0
-                                yield parsed
-                            except _JSON_DECODE_ERRORS:
-                                consecutive_failures += 1
-                                if consecutive_failures >= 3:
-                                    _logger.warning(
-                                        "流式数据 JSON 连续解析失败 %d 次: %s",
-                                        consecutive_failures, line_bytes[:100],
-                                    )
-                                else:
-                                    _logger.debug(
-                                        "流式数据 JSON 解析失败，已跳过: %s",
-                                        line_bytes[:100], exc_info=True,
-                                    )
+                        parsed, should_yield, stop = _process_sse_line(line_bytes)
+                        if should_yield:
+                            yield parsed
+                        if stop:
+                            done = True
+                            break
+                # 循环结束后残余 buffer（尾部 data 行无 \n，原实现从不解析）——
+                # 修复尾 token 丢失：残余行按与完整行相同逻辑处理（含 [DONE]/
+                # finish_reason 结束检查；解析失败按既有策略跳过，不抛错）。
+                if buffer:
+                    line_bytes = buffer.rstrip(b"\r\n")
+                    buffer = b""
+                    parsed, should_yield, stop = _process_sse_line(line_bytes)
+                    if should_yield:
+                        yield parsed
+                    if stop:
+                        done = True
                 break  # 正常完成 (含 [DONE] 正常结束)
 
         except _CONNECTION_ERRORS as e:

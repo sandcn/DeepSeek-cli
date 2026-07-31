@@ -9,8 +9,12 @@
 
 from __future__ import annotations
 
+import json
+
 import pytest
-from unittest.mock import MagicMock, patch, AsyncMock
+from unittest.mock import MagicMock, patch
+
+from src._compat_termios import HAS_TERMIOS
 
 
 # ── TestUserSelectNoDirectTermios ──────────────────────────────────
@@ -42,12 +46,43 @@ class TestUserSelectNoDirectTermios:
     def mock_chat_ui(self, mock_input):
         """创建 mock ChatUI。"""
         ui = MagicMock()
-        ui._components = MagicMock()
-        ui._components.input = mock_input
+        # 收敛后 user_select 通过公开 API 获取输入组件
+        ui.get_input_component = MagicMock(return_value=mock_input)
+        ui.get_input = MagicMock(return_value=mock_input)
         bb = MagicMock()
         bb._active = True
+        bb.is_active = True
+        # 显式设置 _MIN_HEIGHT 为 int，避免未来 is_active=False 路径
+        # 触发 int < MagicMock 的 TypeError（P2-11 修复：防御性显式类型）
+        bb._MIN_HEIGHT = 12
+        # 固定选中索引为合法值，使 Enter 走通正常确认路径
+        # （P2-10 修复：避免 MagicMock 索引 options 抛 TypeError 走异常路径）
+        bb._completion_idx = 0
         ui.bottom_bar = bb
         return ui
+
+    @pytest.fixture
+    def terminal_env(self, mock_monitor, mock_input, mock_chat_ui):
+        """5 层 patch 的共享 fixture（替代 5 个 async 测试中重复的 with patch 块）。
+
+        通过 ExitStack 应用 5 层 patch；测试结束后后进先出恢复，与嵌套 with 等价。
+        依赖注入：显式取用 mock_monitor / mock_input / mock_chat_ui。
+        """
+        from contextlib import ExitStack
+
+        with ExitStack() as stack:
+            stack.enter_context(
+                patch("src.tools.user_select.get_active_monitor", return_value=mock_monitor)
+            )
+            stack.enter_context(
+                patch("src.tools.user_select.get_active_chat_ui", return_value=mock_chat_ui)
+            )
+            stack.enter_context(patch("sys.stdin.fileno", return_value=0))
+            stack.enter_context(patch("os.isatty", return_value=True))
+            stack.enter_context(
+                patch("src.tools.user_select.select.select", return_value=([0], [], []))
+            )
+            yield
 
     def test_methods_deleted(self):
         """验证 _flush_stdin / _save_termios / _restore_termios 已删除。"""
@@ -73,72 +108,60 @@ class TestUserSelectNoDirectTermios:
             if 'os.read' in line and 'input_' not in line:
                 pytest.fail(f"发现直接 os.read 调用（非 fallback）：{line.strip()}")
 
+    @pytest.mark.skipif(not HAS_TERMIOS, reason="需 termios 支持")
     @pytest.mark.asyncio
-    async def test_uses_input_flush_stdin_buffer(self, mock_monitor, mock_input, mock_chat_ui):
+    async def test_uses_input_flush_stdin_buffer(self, terminal_env, mock_monitor, mock_input, mock_chat_ui):
         """验证 _execute_terminal_async 使用 Input.flush_stdin_buffer()。"""
         from src.tools.user_select import UserSelectFunc
 
         us = UserSelectFunc("test", ["a", "b"])
 
-        with patch("src.tools.user_select.get_active_monitor", return_value=mock_monitor), \
-             patch("src.tools.user_select.get_active_chat_ui", return_value=mock_chat_ui), \
-             patch("sys.stdin.fileno", return_value=0), \
-             patch("os.isatty", return_value=True):
-            # 正常情况下 read_byte 返回 Enter 快速退出
-            await us._execute_terminal_async()
+        # 正常情况下 read_byte 返回 Enter 快速退出
+        await us._execute_terminal_async()
 
         mock_input.flush_stdin_buffer.assert_called()
 
+    @pytest.mark.skipif(not HAS_TERMIOS, reason="需 termios 支持")
     @pytest.mark.asyncio
-    async def test_uses_monitor_apply_settings(self, mock_monitor, mock_input, mock_chat_ui):
+    async def test_uses_monitor_apply_settings(self, terminal_env, mock_monitor, mock_input, mock_chat_ui):
         """验证使用 EscapeMonitor.apply_monitor_settings()。"""
         from src.tools.user_select import UserSelectFunc
 
         us = UserSelectFunc("test", ["a", "b"])
 
-        with patch("src.tools.user_select.get_active_monitor", return_value=mock_monitor), \
-             patch("src.tools.user_select.get_active_chat_ui", return_value=mock_chat_ui), \
-             patch("sys.stdin.fileno", return_value=0), \
-             patch("os.isatty", return_value=True):
-            await us._execute_terminal_async()
+        await us._execute_terminal_async()
 
         mock_monitor.apply_monitor_settings.assert_called()
 
+    @pytest.mark.skipif(not HAS_TERMIOS, reason="需 termios 支持")
     @pytest.mark.asyncio
-    async def test_uses_monitor_restore_in_finally(self, mock_monitor, mock_input, mock_chat_ui):
+    async def test_uses_monitor_restore_in_finally(self, terminal_env, mock_monitor, mock_input, mock_chat_ui):
         """验证 finally 块使用 EscapeMonitor.restore_terminal_settings()。"""
         from src.tools.user_select import UserSelectFunc
 
         us = UserSelectFunc("test", ["a", "b"])
 
-        with patch("src.tools.user_select.get_active_monitor", return_value=mock_monitor), \
-             patch("src.tools.user_select.get_active_chat_ui", return_value=mock_chat_ui), \
-             patch("sys.stdin.fileno", return_value=0), \
-             patch("os.isatty", return_value=True):
-            await us._execute_terminal_async()
+        await us._execute_terminal_async()
 
         mock_monitor.restore_terminal_settings.assert_called()
 
+    @pytest.mark.skipif(not HAS_TERMIOS, reason="需 termios 支持")
     @pytest.mark.asyncio
-    async def test_uses_input_read_byte(self, mock_monitor, mock_input, mock_chat_ui):
+    async def test_uses_input_read_byte(self, terminal_env, mock_monitor, mock_input, mock_chat_ui):
         """验证使用 Input.read_byte() 读取按键。"""
         from src.tools.user_select import UserSelectFunc
 
-        # 设置 read_byte 返回 Enter 键快速完成
-        mock_input.read_byte = MagicMock(return_value=b'\r')
-
         us = UserSelectFunc("test", ["a", "b"])
 
-        with patch("src.tools.user_select.get_active_monitor", return_value=mock_monitor), \
-             patch("src.tools.user_select.get_active_chat_ui", return_value=mock_chat_ui), \
-             patch("sys.stdin.fileno", return_value=0), \
-             patch("os.isatty", return_value=True):
-            await us._execute_terminal_async()
+        result = await us._execute_terminal_async()
 
         mock_input.read_byte.assert_called()
+        # P2-10：mock _completion_idx 后应走通正常确认路径（单选 Enter → confirmed）
+        assert json.loads(result)["action"] == "confirmed"
 
+    @pytest.mark.skipif(not HAS_TERMIOS, reason="需 termios 支持")
     @pytest.mark.asyncio
-    async def test_stops_and_starts_monitor(self, mock_monitor, mock_input, mock_chat_ui):
+    async def test_stops_and_starts_monitor(self, terminal_env, mock_monitor, mock_input, mock_chat_ui):
         """验证停止并重新启动 EscapeMonitor。"""
         from src.tools.user_select import UserSelectFunc
 
@@ -146,11 +169,7 @@ class TestUserSelectNoDirectTermios:
 
         us = UserSelectFunc("test", ["a", "b"])
 
-        with patch("src.tools.user_select.get_active_monitor", return_value=mock_monitor), \
-             patch("src.tools.user_select.get_active_chat_ui", return_value=mock_chat_ui), \
-             patch("sys.stdin.fileno", return_value=0), \
-             patch("os.isatty", return_value=True):
-            await us._execute_terminal_async()
+        await us._execute_terminal_async()
 
         mock_monitor.stop.assert_called()
         mock_monitor.start.assert_called()

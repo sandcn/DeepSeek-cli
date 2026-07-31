@@ -20,6 +20,11 @@
   - 单线程使用（仅在 render 线程中），无需锁
   - 坐标 1-based，与人类习惯和终端 ANSI 序列一致
   - 轻量无依赖，仅依赖标准库
+
+遗留评估（2026-07-31 方向F）：光标追踪双路径——CursorTracker.record_newlines/
+move_to 记录（本模块）vs Input.compute_cursor 计算（src/tui/_input.py）存在漂移风险；
+收敛需统一「写终端者=记录者」模型，改动横跨 _renderer/_engine.py _position_cursor、
+_bottom_bar/_render.py、_screen.py，**改动大 → 标记 P2 遗留**，保留现状不收敛。
 """
 
 from __future__ import annotations

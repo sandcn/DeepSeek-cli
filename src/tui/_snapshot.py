@@ -6,14 +6,20 @@
 迁移说明（2026-07-29 TUI 重构）：
   - 从 src/tui/widgets/_snapshot.py 迁移至 TUI 根层级
   - 导入路径更新为 ..api.stats
+
+消费方说明（2026-07-31 方向F）：本模块仅含私有函数 ``_get_snapshot``，
+**非死代码**——被 ``src/tui/_bottom_bar/_bar.py`` 的 ``get_status_elapsed()`` 与
+``_format_status()`` 消费（惰性加载 ``get_token_speed_snapshot``，异常静默）。
+**保留不删**；恢复 Token 速度展示或迁移至统一快照源时须同步上述消费方。
 """
 
 from __future__ import annotations
 
-from typing import Optional
+from typing import Any, Callable, Optional
 
 # ── 模块级缓存 ──────────────────────────────────────────
-_TOKEN_SPEED_SNAPSHOT: Optional[callable] = None  # 也可赋值为 False（标记不可用）
+# P3-18：Optional[callable] → Optional[Callable[[], Any]]（from typing 导入）
+_TOKEN_SPEED_SNAPSHOT: Optional[Callable[[], Any]] = None  # 也可赋值为 False（标记不可用）
 
 
 def _get_snapshot():

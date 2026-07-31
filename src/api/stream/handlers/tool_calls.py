@@ -1,7 +1,6 @@
 """ToolCallsHandler — 处理工具调用增量"""
 from __future__ import annotations
 import logging
-from ...events import publish_event
 from ...tokens import estimate_tokens
 from ...stats import add_token_size
 from ..context import StreamContext
@@ -28,9 +27,9 @@ class ToolCallsHandler:
                     ctx.is_reasoning = False
             await ctx.tracker.start()
             # 🔥 内容阶段结束 → 发布 PhaseDoneEvent（在工具调用前刷新 UI）
-            # ChatUIConsumer 收到此事件后关闭 content 渲染器
+            # ChatUIConsumer 收到此事件后关闭 content 渲染器（去重助手，每流恰一次）
             if ctx.content_full:
-                publish_event("PhaseDoneEvent", label=ctx.label or "", phase="content")
+                ctx.publish_phase_done_once("content")
 
         for tc in delta_tool_calls:
             idx = tc.get("index", 0)

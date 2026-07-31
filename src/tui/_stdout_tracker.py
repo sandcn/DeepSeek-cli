@@ -122,6 +122,14 @@ class _StdoutLineTracker:
 
     # ── Line tracking ──
 
+    def track(self, data: str) -> None:
+        """公开行跟踪入口 — 供 RenderOutput 内容写回调。
+
+        语义与内部 ``_track`` 一致：按数据流顺序处理光标控制序列，
+        检测完整行（\\n）存入环形缓冲与输出历史。
+        """
+        self._track(data)
+
     def _track(self, data: str) -> None:
         """Process data for line tracking.
 

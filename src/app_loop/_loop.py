@@ -33,7 +33,7 @@ from ..core.exceptions import is_fatal_exception, is_network_error
 from ..core.constants import CYAN, DIM, RESET, GREEN, YELLOW
 from ..tui._screen import TerminalWidthCache, narrow_sep_width
 from ..api.escape_monitor import EscapeMonitor
-from ..api.interrupt_async import reset_interrupt_async
+from ..api.interrupt_async import reset_interrupt_async, request_interrupt_async
 from ..api.stats import reset_token_speed
 from ..tui.consumer import ChatUIConsumer
 
@@ -518,6 +518,12 @@ class InteractiveLoop:
         input_instance.set_special_key_callback(
             make_special_key_callback(self, session, state, self._chat_ui, monitor=self._monitor)
         )
+        # ★ interrupt 回调注入（方向A 步骤1）：_input.py 不再直接 import
+        #   src.api.interrupt_async，改为经本注入点回调 request_interrupt_async()。
+        #   ESC 中断路径（_do_interrupt）行为不变：注入后仍 set 全局中断信号。
+        input_instance.set_interrupt_callback(
+            lambda: request_interrupt_async()
+        )
         input_instance.set_echo_callback(
             lambda text, cursor_pos=-1: self._chat_ui.refresh_bottom_bar(text, cursor_pos)
         )
@@ -550,6 +556,9 @@ class InteractiveLoop:
 
         # ── 创建 EscapeMonitor 实例（需在 _setup_session_and_handlers 之前，
         #    确保 _register_session_handlers 传递的 monitor 非 None） ──
+        # ★ 初始化顺序确认（2026-07-31 方向F）：_create_monitor →
+        #   _setup_session_and_handlers → _setup_monitor 顺序为既有约束（注释强调），
+        #   Builder 模式改造改动大且当前顺序已有注释约束 → **标记 P2 遗留**，保留现状。
         self._create_monitor()
 
         # ── 初始化会话 ──

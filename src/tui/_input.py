@@ -1,57 +1,74 @@
-"""Input — 统一 TUI 输入管理（自包含单文件，精简版）。
+"""Input — 统一 TUI 输入管理（薄外观，方向A 步骤1 拆分）。
 
-合并原 src/tui/input.py 的全部逻辑，关键改动：
-  - TerminalWidthCache 从 _screen.py 导入（替代 blessed 路径）
-  - _compute_cursor_visual_pos 及其依赖内联，使用 wcswidth_simple() 替代 wcwidth.wcswidth()
-  - 其余公开 API 完全兼容旧 Input 类
+原 Input 上帝类（约 1500 行，7 职责域内联）按职责拆分为三个独立类，
+Input 保留全部公开 API 作为薄外观（Facade），方法体委托：
 
-设计模式：
-  - 模板方法（Template Method）：read_stdin_once() 骨架，_do_interrupt()/_handle_special_key() 具体步骤
-  - 直接分发：process_events() 在 render 线程每帧调用，循环读取所有待处理输入并分发到缓冲/回调
+  - InputIO（_input_io.py）          — stdin 原始读取 + I/O 状态机（SRP 提取）
+  - InputBufferEditor（_input_buffer.py）— 缓冲编辑 + 历史 + 队列 + 回显（Strategy 提取）
+  - InputDispatcher（_input_dispatcher.py）— 事件分发胶水（Template Method 提取）
+
+关键改动（方向A 步骤1）：
+  - 移除对 ``src.api.interrupt_async`` 的直接 import：``_do_interrupt`` 改调
+    注入回调（``set_interrupt_callback``，由 _loop.py _setup_monitor 注入
+    ``lambda: request_interrupt_async()``）；未注入时记 debug 日志并跳过。
+  - 历史写盘决策（2026-07-31）：``_append_history_locked`` 保持每 Enter 调
+    ``_append_to_history_file``（**保持现状**，批量化风险 > 收益，见 _input_buffer.py）。
+
+设计模式：外观（Facade）——薄外观保持公共 API；组合持有三个拆分组件。
+
+模块级私有函数（``_TAB_WIDTH`` / ``_compute_cursor_visual_pos`` / ``_expand_tabs`` /
+``_wrap_by_width`` / ``_tab_pos_to_expanded``）保持定义于本文件：
+bottom_bar（_bar/_layout/_render）依赖，勿迁移。
 
 线程模型：
-  - Render 线程（daemon）：_drain_queue() 中每帧调用 process_events()，一次性处理所有 stdin 输入，统一处理 stdin 和渲染
+  - Render 线程（daemon）：_drain_queue() 中每帧调用 process_events()，
+    一次性处理所有 stdin 输入，统一处理 stdin 和渲染。
 """
 
 from __future__ import annotations
 
-import os
-import select
-import time
-import threading
 import logging
+import select  # ★ 保持模块级 import：tests 通过 patch("src.tui._input.select.select") 拦截读取
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from src._compat import dataclass
 from src.api.escape_monitor._history import (
     _read_history_file,
     _append_to_history_file,
     _compact_history_file,
-    _HISTORY_MAX_ENTRIES,
-    _HISTORY_COMPACT_RATIO,
-    _EOF_THRESHOLD,
-    _SELECT_ERROR_THRESHOLD,
-    UNIX_SELECT_TIMEOUT,
 )
-from src._compat_termios import HAS_TERMIOS, termios
-from src.api.interrupt_async import request_interrupt_async
 from src.tui._screen import wcswidth_simple, TerminalWidthCache
+from ._input_parser import (
+    InputParser,
+    KeyEvent,
+)
+from ._input_io import InputIO
+from ._input_buffer import InputBufferEditor
+from ._input_dispatcher import InputDispatcher
+
+if TYPE_CHECKING:
+    import threading
 
 _logger = logging.getLogger(__name__)
 
 # ── 常量 ──────────────────────────────────────────────────
-
-_CSI_READ_TIMEOUT = 0.01     # CSI 参数读取超时（秒）
-_SS3_READ_TIMEOUT = 0.01     # SS3 读取超时（秒）
-_UTF8_READ_TIMEOUT = 0.05    # UTF-8 多字节序列读取超时（秒）
+# 解析超时常量（_CSI_READ_TIMEOUT / _SS3_READ_TIMEOUT / _UTF8_READ_TIMEOUT）
+# 已随解析逻辑搬移至 _input_parser.py；_UTF8_READ_TIMEOUT 由 read_utf8_char
+# 使用，随读取层搬移至 _input_io.py（本模块不再需要）。
 
 # ═══════════════════════════════════════════════════════════
 # 光标视觉位置计算（内联自 widgets/bottom_bar/cursor.py）
 # 使用 wcswidth_simple() 替代 wcwidth.wcswidth()
 # ═══════════════════════════════════════════════════════════
+# 唯一真源（步骤 5.1 确认）：本文件（_input.py）提供 _compute_cursor_visual_pos /
+# _expand_tabs / _tab_pos_to_expanded / _wrap_by_width / _TAB_WIDTH 的实现，
+# _bar.py / _render.py / _layout.py 均从此处导入，无重复实现（主路径
+# Input.compute_cursor 与兜底 _BottomBar.compute_cursor_position 引用同一实现）。
+# 暂缓标注（步骤 5.1）：不再迁移至 _bottom_bar/_layout_utils.py —— 迁移将引入
+# _input.py → _bottom_bar 反向依赖（input 为底层组件），且本文件为高风险大文件；
+# 后续如需迁移，须先解决依赖方向与循环导入问题（与方向④ 上帝类评估合并推进）。
 
-_TAB_WIDTH = 4  # 制表符宽度（列数）
+_TAB_WIDTH = 4  # 制表符宽度（列数）—— 唯一真源（_layout.py 从此处导入）
 
 
 def _expand_tabs(text: str, start_col: int = 0, tab_width: int | None = None) -> str:
@@ -85,7 +102,7 @@ def _expand_tabs(text: str, start_col: int = 0, tab_width: int | None = None) ->
         else:
             cw = wcswidth_simple(ch)
             result.append(ch)
-            col += cw if cw >= 0 else 1
+            col += cw
     return ''.join(result)
 
 
@@ -120,7 +137,7 @@ def _tab_pos_to_expanded(text: str, pos: int,
         else:
             cw = wcswidth_simple(ch)
             expanded_pos += 1
-            col += cw if cw >= 0 else 1
+            col += cw
     return expanded_pos
 
 
@@ -139,7 +156,7 @@ def _wrap_by_width(s: str, max_width: int) -> list[str]:
             w = 0
             idx = 0
             for i, ch in enumerate(remaining):
-                cw = wcswidth_simple(ch) if wcswidth_simple(ch) >= 0 else 1
+                cw = wcswidth_simple(ch)
                 if w + cw > max_width:
                     break
                 w += cw
@@ -238,39 +255,48 @@ def _compute_cursor_visual_pos(
 
 
 # ═══════════════════════════════════════════════════════════
-# KeyEvent — 按键事件数据类
+# _HistoryIO — 历史文件 I/O 适配器
 # ═══════════════════════════════════════════════════════════
 
-@dataclass(slots=True)
-class KeyEvent:
-    """按键事件数据类。
+class _HistoryIO:
+    """历史文件 I/O 适配器 — 经本模块命名空间解析历史读写函数。
 
-    字段:
-        kind: 按键类型标识字符串
-        char: 可打印字符值（kind="char" 时有效）
-        modifier: 修饰键位掩码（CSI u 模式使用，1=无修饰, 2=Shift, 3=Alt, 5=Ctrl）
-        keycode: CSI u 键码（如 13=Enter）
-        raw: 原始字节序列（调试用）
+    InputBufferEditor 通过构造注入本适配器，使其 ``load_history`` /
+    ``_append_history_locked`` 调用的 ``_read_history_file`` /
+    ``_append_to_history_file`` / ``_compact_history_file`` 在调用时从本模块
+    命名空间解析——保证 tests 中 ``patch("src.tui._input._read_history_file", ...)``
+    等仍可拦截（与拆分前行为一致）。
     """
-    kind: str        # "char" | "enter" | "tab" | "backspace" | "escape" |
-                     # "arrow_up" | "arrow_down" | "arrow_left" | "arrow_right" |
-                     # "home" | "end" | "delete" | "ctrl_key" | "interrupt" | "csi_u" | "unknown"
-    char: str = ""
-    modifier: int = 0
-    keycode: int = 0
-    raw: bytes = b""
+
+    __slots__ = ()
+
+    @staticmethod
+    def read() -> tuple[str, bool]:
+        return _read_history_file()
+
+    @staticmethod
+    def append(text: str) -> bool:
+        return _append_to_history_file(text)
+
+    @staticmethod
+    def compact() -> bool:
+        return _compact_history_file()
 
 
 # ═══════════════════════════════════════════════════════════
-# Input — 统一输入管理类（自包含）
+# Input — 统一输入管理类（薄外观）
 # ═══════════════════════════════════════════════════════════
 
 class Input:
-    """统一输入管理类（自包含）。
+    """统一输入管理类（薄外观）。
 
-    内联 InputParser（ANSI 解析）、InputBuffer（缓冲+历史）、
-    CursorPositioner（光标定位）。
-    stdin 读取由 Render 线程通过 read_stdin_once() 驱动。
+    组合持有三个拆分组件并委托：
+      - InputIO（stdin 读取 + I/O 状态机）
+      - InputBufferEditor（缓冲编辑 + 历史 + 队列 + 回显）
+      - InputDispatcher（事件分发）
+      - InputParser（ANSI 解析）
+
+    公开 API 与旧版完全兼容（零回归约束）。
 
     构造函数:
         fd: stdin 文件描述符（sys.stdin.fileno()）
@@ -286,66 +312,32 @@ class Input:
         term_width_cache: "TerminalWidthCache | None" = None,
         cursor_tracker=None,
     ) -> None:
-        self._fd = fd
+        # ANSI 解析策略对象（方向⑤：解析算法族提取至 _input_parser.py）
+        self._parser = InputParser()
         self._term_width_cache = (
             term_width_cache if term_width_cache is not None
             else TerminalWidthCache.get_default()
         )
         self._cursor_tracker = cursor_tracker
 
-        # ── 缓冲状态（原 InputBuffer） ──
-        self._buffer: str = ""
-        self._cursor_pos: int = 0
-        self._submitted_text: str = ""
-        self._input_ready = threading.Event()
-        self._lock = threading.Lock()
-        self._echo_callback = None
-
-        # ── 历史（原 InputBuffer） ──
-        self._history: list[str] = []
-        self._history_idx: int = -1
-        self._saved_input_before_history: str = ""
-        self._history_file = history_file
-        self._history_max_entries = 1000
-
-        # ── 非可打印字符捕获 ──
-        self._captured_input: bytearray = bytearray()
-        self._captured_lock = threading.Lock()
-
-        # ── 回调引用 ──
-        self._special_key_callback = None
-        self._completion_callback = None
-        self._dismiss_completion_callback = None
-        self._completion_navigate_callback = None
-        self._auto_completion_callback = None
-
-        # ── InputReader 支持（可选，由外部注入） ──
-        self._reader = None
-
-        # ── I/O 状态控制 ──
-        self._io_started: bool = False
-        self._active = threading.Event()
-        self._active.set()
-        self._stop = threading.Event()
-        self._interrupted = threading.Event()
-        self._suppress_enter: bool = False
-
-        # ── 粘贴退避优化 ──
-        self._paste_skip_counter: int = 0
-        self._paste_skip_threshold: int = 10
-
-        # ── 故障检测 ──
-        self._eof_count = 0
-        self._select_error_count = 0
-        self._exit_reason: str | None = None
-        self._fd_status: str = "ok"
+        # ── 职责拆分（方向A 步骤1） ──
+        self._io = InputIO(fd=fd)
+        self._buffer_editor = InputBufferEditor(
+            history_file=history_file,
+            history_io=_HistoryIO(),
+        )
+        self._dispatcher = InputDispatcher(
+            io=self._io,
+            buffer_editor=self._buffer_editor,
+            parser=self._parser,
+        )
 
     # ── 公开属性 ──────────────────────────────────────────
 
     @property
     def fd(self) -> int:
         """stdin 文件描述符。"""
-        return self._fd
+        return self._io.fd
 
     @property
     def width(self) -> int:
@@ -360,450 +352,224 @@ class Input:
     @property
     def is_io_running(self) -> bool:
         """I/O 是否处于激活状态（标志位管理，非线程存活检测）。"""
-        return self._io_started
+        return self._io.is_io_running
 
     @property
     def interrupted(self) -> bool:
         """中断标志是否被设置。"""
-        return self._interrupted.is_set()
+        return self._io.interrupted
+
+    # ── 私有属性委托（保持拆分前测试/调用方访问路径） ──────
+
+    @property
+    def _fd(self) -> int:
+        """stdin fd（委托 InputIO；tests 经 patch.object(inp, '_fd', ...) 覆盖）。"""
+        return self._io.fd
+
+    @_fd.setter
+    def _fd(self, value: int) -> None:
+        self._io.fd = value
+
+    @_fd.deleter
+    def _fd(self) -> None:
+        """no-op deleter：支持 patch.object(inp, '_fd', ...) 退出时的 delattr。
+
+        （unittest.mock 对非实例属性在 __exit__ 先 delattr；类 property 存在使
+        hasattr 为 True，后续不会 setattr 恢复——但测试在 with 块内使用后不再
+        复用实例，io.fd 保持打补丁值无副作用。）
+
+        观察说明（P3-22）：patch.object 退出后 ``self._io.fd`` 保持打补丁值
+        （deleter 为 no-op，不恢复原值）——对生产路径无影响（生产代码不在
+        patch 上下文运行），测试约定 with 块内使用后不依赖恢复值。
+        """
+        pass
+
+    @property
+    def _buffer(self) -> str:
+        """当前输入缓冲文本（委托 InputBufferEditor，供测试直接操作）。"""
+        return self._buffer_editor._buffer
+
+    @_buffer.setter
+    def _buffer(self, value: str) -> None:
+        self._buffer_editor._buffer = value
+
+    @property
+    def _cursor_pos(self) -> int:
+        """光标位置（委托 InputBufferEditor，供测试直接操作）。"""
+        return self._buffer_editor._cursor_pos
+
+    @_cursor_pos.setter
+    def _cursor_pos(self, value: int) -> None:
+        self._buffer_editor._cursor_pos = value
+
+    @property
+    def _active(self) -> "threading.Event":
+        """I/O 激活事件（委托 InputIO，供状态断言）。"""
+        return self._io.active
+
+    @property
+    def _stop(self) -> "threading.Event":
+        """I/O 停止事件（委托 InputIO，供状态断言）。"""
+        return self._io.stop
+
+    @property
+    def _select_error_count(self) -> int:
+        """select 连续错误计数（委托 InputIO，供故障断言）。"""
+        return self._io.select_error_count
+
+    @property
+    def _history(self) -> list[str]:
+        """内存历史（委托 InputBufferEditor，供测试直接操作）。"""
+        return self._buffer_editor._history
+
+    @_history.setter
+    def _history(self, value: list[str]) -> None:
+        self._buffer_editor._history = value
+
+    @property
+    def _history_idx(self) -> int:
+        """历史导航索引（委托 InputBufferEditor）。"""
+        return self._buffer_editor._history_idx
+
+    @_history_idx.setter
+    def _history_idx(self, value: int) -> None:
+        self._buffer_editor._history_idx = value
+
+    @property
+    def _saved_input_before_history(self) -> str:
+        """进入历史导航前保存的输入（委托 InputBufferEditor）。"""
+        return self._buffer_editor._saved_input_before_history
+
+    @_saved_input_before_history.setter
+    def _saved_input_before_history(self, value: str) -> None:
+        self._buffer_editor._saved_input_before_history = value
+
+    @property
+    def _history_indicator(self) -> str:
+        """历史浏览状态指示器（委托 InputBufferEditor）。"""
+        return self._buffer_editor._history_indicator
+
+    @property
+    def _input_ready(self) -> "threading.Event":
+        """输入就绪事件（委托 InputBufferEditor；editmsg 插件与步骤 2 使用）。"""
+        return self._buffer_editor._input_ready
+
+    @property
+    def _lock(self) -> "threading.Lock":
+        """输入缓冲锁（委托 InputBufferEditor；editmsg 插件 finally 清理使用）。"""
+        return self._buffer_editor._lock
+
+    @property
+    def _submitted_text(self) -> str:
+        """已提交文本（委托 InputBufferEditor；editmsg 插件 finally 清理使用）。"""
+        return self._buffer_editor._submitted_text
+
+    @_submitted_text.setter
+    def _submitted_text(self, value: str) -> None:
+        self._buffer_editor._submitted_text = value
+
+    @property
+    def _dismiss_completion_callback(self):
+        """补全弹窗关闭回调（委托 InputDispatcher；message_editor 替换使用）。
+
+        message_editor.py 在 /editmsg（Ctrl+O）交互选择期间直接读写
+        ``input_._dismiss_completion_callback``（保存原回调 → 替换为自定义回调
+        → finally 恢复）；薄外观缺失此属性曾导致 AttributeError 被
+        editmsg_plugin 捕获（用户只见「编辑失败」）。与 ``_input_ready``
+        委托模式一致：get/set 均委托 ``self._dispatcher._dismiss_completion_callback``。
+        """
+        return self._dispatcher._dismiss_completion_callback
+
+    @_dismiss_completion_callback.setter
+    def _dismiss_completion_callback(self, value) -> None:
+        self._dispatcher._dismiss_completion_callback = value
 
     # ═══════════════════════════════════════════════════════
-    # I/O 状态管理
+    # I/O 状态管理（委托 InputIO）
     # ═══════════════════════════════════════════════════════
 
     def start_io(self) -> None:
-        """激活 I/O 读取（标志位管理模式，不再创建 daemon 线程）。
-
-        stdin 读取由 render 线程通过 ``read_stdin_once()`` 驱动，
-        此方法仅重置状态标志位。调用前应确保终端已设置为 cbreak 模式
-        （由 EscapeMonitor 保证）。幂等：重复调用仅重置标志位。
-        """
-        self._interrupted.clear()
-        self._stop.clear()
-        self._active.set()
-        self._io_started = True
-        self._eof_count = 0
-        self._select_error_count = 0
-        self._exit_reason = None
-        self._fd_status = "ok"
+        """激活 I/O 读取（委托 InputIO）。"""
+        self._io.start_io()
 
     def stop_io(self) -> None:
-        """停用 I/O 读取（标志位管理模式，不再 join 线程）。
-
-        设置 stop 和 active 标志位，render 线程中 ``read_stdin_once()``
-        检测到后停止读取。幂等安全。
-        """
-        self._stop.set()
-        self._active.set()  # 确保 read_stdin_once() 状态检查快速退出
-        self._io_started = False
-        self._fd_status = "ok"
+        """停用 I/O 读取（委托 InputIO）。"""
+        self._io.stop_io()
 
     def pause_io(self) -> None:
-        """暂停 I/O 读取（供 EscapeMonitor 的特殊按键回调使用）。
-
-        暂停后 ``read_stdin_once()`` 在 render 线程中检测到 ``_active``
-        未设置时跳过读取。
-        """
-        self._active.clear()
+        """暂停 I/O 读取（委托 InputIO）。"""
+        self._io.pause_io()
 
     def resume_io(self) -> None:
-        """恢复 I/O 读取（供 EscapeMonitor 的特殊按键回调使用）。"""
-        self._active.set()
+        """恢复 I/O 读取（委托 InputIO）。"""
+        self._io.resume_io()
 
     # ═══════════════════════════════════════════════════════
-    # 中断与特殊按键处理（render 线程调用）
+    # 中断与特殊按键处理（委托 InputDispatcher）
     # ═══════════════════════════════════════════════════════
 
     def _do_interrupt(self) -> None:
-        """内联中断处理：设置中断标志 + 清空回显 + 请求异步中断。
-
-        在 render 线程中调用（快速路径，由 ``read_stdin_once()`` 直接分发）。
-        """
-        if self._stop.is_set():
-            return
-        if not self.has_queued_input():
-            self.reset_and_echo()
-        else:
-            self._flush_stdin_residual()
-        self._interrupted.set()
-        request_interrupt_async()
+        """内联中断处理（委托 InputDispatcher，interrupt 回调注入）。"""
+        self._dispatcher._do_interrupt()
 
     def _handle_special_key(self, action: str) -> None:
-        """处理特殊按键（Ctrl+G/O/N/R）：直接调用回调并应用结果。
-
-        在 render 线程中调用（由 ``read_stdin_once()`` 直接分发）。
-        终端模式切换由回调函数内部直接操作 EscapeMonitor 完成。
-        """
-        cb = self._special_key_callback
-        if cb is None:
-            return
-        text = self.get_current_text()
-        try:
-            result = cb(action, text)
-        except Exception:
-            _logger.warning("特殊按键回调异常 (action=%s)", action, exc_info=True)
-            return
-        if result is not None and result != text:
-            if action == 'editmsg':
-                self.reset()
-                self.set_buffer(result)
-            else:
-                self.reset()
-                self.handle_chars(result)
-        if action == 'editmsg':
-            # editmsg 是用户主动发起的编辑/提交操作（Ctrl+O），
-            # 清除 _suppress_enter 确保 _enter() 不被抑制
-            self.set_suppress_enter(False)
-            self._enter()
+        """处理特殊按键（Ctrl+G/O/N/R）（委托 InputDispatcher）。"""
+        self._dispatcher._handle_special_key(action)
 
     def _flush_stdin_residual(self, max_flush: int = 50) -> None:
-        """非阻塞清理 stdin 残留字节。"""
-        if self._fd_status == "error":
-            return
-        flushed = 0
-        while flushed < max_flush:
-            if self._stop.is_set():
-                return
-            try:
-                ready, _, _ = select.select([self._fd], [], [], 0.05)
-                if not ready:
-                    break
-                os.read(self._fd, 1)
-                flushed += 1
-            except (ValueError, OSError, TypeError, AttributeError):
-                _logger.debug("排空 stdin 残留时异常", exc_info=True)
-                break
+        """非阻塞清理 stdin 残留字节（委托 InputIO）。"""
+        self._io._flush_stdin_residual(max_flush)
 
     def flush_stdin_buffer(self, max_flush: int = 50) -> None:
-        """公开方法：非阻塞清理 stdin 残留字节 + termios 缓冲区刷洗。
-
-        先使用 select 排空可读字节（委托 _flush_stdin_residual），
-        再通过 tcflush 刷洗内核输入队列（仅在 HAS_TERMIOS=True 时执行）。
-
-        Args:
-            max_flush: 最大排空字节数限制（传递给 _flush_stdin_residual）。
-        """
-        self._flush_stdin_residual(max_flush)
-        if HAS_TERMIOS:
-            try:
-                termios.tcflush(self._fd, termios.TCIFLUSH)
-            except Exception:
-                _logger.debug("tcflush 失败", exc_info=True)
+        """公开方法：非阻塞清理 stdin 残留字节 + termios 缓冲区刷洗（委托 InputIO）。"""
+        self._io.flush_stdin_buffer(max_flush)
 
     # ═══════════════════════════════════════════════════════
-    # stdin 直接读取（render 线程调用）
+    # stdin 直接读取（委托 InputDispatcher）
     # ═══════════════════════════════════════════════════════
 
     def read_stdin_once(self) -> bool:
-        """单次非阻塞 stdin 读取 + 直接分发（不经过事件队列）。
-
-        Render 线程每帧调用一次。使用 select timeout=0 确保不阻塞渲染帧。
-        单次迭代逻辑改为直接分发（不经过 queue.Queue 中间队列）。
-
-        设计模式: 模板方法 — ``read_stdin_once()`` 为骨架，
-        保留 ``_do_interrupt()`` / ``_handle_special_key()`` 具体步骤。
-
-        Returns:
-            True — 有数据被处理（读取并分发了至少一个输入单元）。
-            False — 无数据可读、I/O 未激活、或已停止。
-        """
-        import select as _select_mod
-        fd = self._fd
-
-        # ── 状态检查 ──
-        if self._fd_status == "error":
-            return False
-        if not self._active.is_set() or self._stop.is_set():
-            return False
-
-        # ── select 非阻塞读取（timeout=0，不阻塞渲染帧） ──
-        try:
-            ready, _, _ = _select_mod.select([fd], [], [], 0)
-        except (ValueError, OSError, TypeError, AttributeError):
-            self._select_error_count += 1
-            if self._select_error_count >= _SELECT_ERROR_THRESHOLD:
-                _logger.warning(
-                    "select 错误连续 %d 次，判定 stdin 不可用",
-                    self._select_error_count,
-                )
-                self._exit_reason = "select_error"
-                self._fd_status = "error"
-            return False
-
-        if not ready:
-            return False
-
-        self._select_error_count = 0
-
-        try:
-            raw = os.read(fd, 1)
-            if not raw:
-                self._eof_count += 1
-                if self._eof_count >= _EOF_THRESHOLD:
-                    _logger.warning(
-                        "stdin EOF 连续 %d 次，判定 pty 已断开",
-                        self._eof_count,
-                    )
-                    self._exit_reason = "eof"
-                return False
-            self._eof_count = 0
-        except (ValueError, OSError, TypeError):
-            self._fd_status = "error"
-            return False
-
-        first_byte = raw[0]
-
-        # ── ASCII 控制字符分发 ──
-        if first_byte < 0x20 or first_byte == 0x7F:
-            try:
-                event = self.feed_byte(first_byte)
-                if event is None:
-                    # ESC (0x1b) → 读取完整转义序列
-                    event = self._parse_escape_sequence(fd)
-                    kind = event.kind
-                    if kind in ("escape", "interrupt"):
-                        self._do_interrupt()
-                    elif kind in (
-                        "arrow_up", "arrow_down", "arrow_right", "arrow_left",
-                        "home", "end", "delete", "backspace", "char",
-                    ):
-                        self._dispatch_key_event(event)
-                    # unknown / csi_u → 静默忽略
-                elif event.kind == "interrupt":
-                    self._do_interrupt()
-                elif event.kind == "ctrl_key":
-                    ch = event.char
-                    if ch == '\x07':          # Ctrl+G → vim
-                        self._handle_special_key('vim')
-                    elif ch == '\x0f':        # Ctrl+O → /editmsg
-                        self._handle_special_key('editmsg')
-                    elif ch in ('\x0e', '\x12'):  # Ctrl+N/R → 切换模型
-                        self._handle_special_key('switch_model')
-                    else:
-                        self._dispatch_key_event(event)
-                else:
-                    # enter, tab, backspace, home, end, delete 等 → 直接分发
-                    self._dispatch_key_event(event)
-            except Exception:
-                _logger.warning("控制字符分发异常", exc_info=True)
-            return True
-
-        # ── ASCII 可打印字符 ──
-        if first_byte < 0x80:
-            try:
-                paste_text = self.try_read_paste(fd, chr(first_byte))
-                if len(paste_text) > 1:
-                    self.handle_chars(paste_text)
-                    self._trigger_auto_completion()
-                else:
-                    event = self.feed_byte(first_byte)
-                    if event is not None:
-                        self._dispatch_key_event(event)
-            except Exception:
-                _logger.warning("ASCII 可打印字符分发异常", exc_info=True)
-            return True
-
-        # ── 多字节 UTF-8 序列 ──
-        try:
-            ch = self.read_utf8_char(fd, first_byte)
-            if ch is not None:
-                paste_text = self.try_read_paste(fd, ch)
-                if len(paste_text) > 1:
-                    self.handle_chars(paste_text)
-                    self._trigger_auto_completion()
-                else:
-                    self._dispatch_key_event(
-                        KeyEvent(kind='char', char=ch,
-                                 raw=ch.encode("utf-8", errors="replace"))
-                    )
-            else:
-                self.capture_bytes(bytes([first_byte]))
-        except Exception:
-            _logger.warning("多字节 UTF-8 字符分发异常", exc_info=True)
-        return True
-
-    # ── InputReader 支持 ─────────────────────────────
-
-    def set_reader(self, reader) -> None:
-        """注入 InputReader 实例，使 process_events 从队列消费。
-
-        Args:
-            reader: InputReader 实例，或 None 降级为直接 stdin 读取。
-        """
-        self._reader = reader
-
-    # ═══════════════════════════════════════════════════════
-    # 事件处理（render 线程调用）
-    # ═══════════════════════════════════════════════════════
+        """单次非阻塞 stdin 读取 + 直接分发（委托 InputDispatcher）。"""
+        return self._dispatcher.read_stdin_once()
 
     def process_events(self) -> None:
-        """处理所有输入事件（render 线程调用）。
-
-        循环调用 ``read_stdin_once()`` 直到无可读数据，
-        确保一次渲染帧内处理完所有待处理的输入。
-        """
-        try:
-            while self.read_stdin_once():
-                pass
-        except Exception:
-            _logger.warning("process_events 异常", exc_info=True)
+        """处理所有输入事件（委托 InputDispatcher）。"""
+        self._dispatcher.process_events()
 
     def _dispatch_key_event(self, event: KeyEvent) -> None:
-        """根据 KeyEvent.kind 分发到对应的输入处理器。
-
-        Ctrl+G/O/N/R 等 ctrl_key 事件已在 read_stdin_once() 中拦截处理，
-        此处分发不会收到 ctrl_key 分支。
-        """
-        kind = event.kind
-
-        if kind == "enter":
-            self._dismiss_completion()
-            if not self._suppress_enter:
-                self._enter()
-        elif kind == "tab":
-            self._handle_tab()
-        elif kind == "backspace":
-            self._dismiss_completion()
-            if event.modifier == 1:
-                self._delete_word_left()
-            else:
-                self._backspace()
-            self._trigger_auto_completion()
-        elif kind == "interrupt":
-            _logger.debug("_dispatch_key_event: interrupt 事件到达队列（应内联处理）")
-        elif kind == "home":
-            self._dismiss_completion()
-            self._home()
-        elif kind == "end":
-            self._dismiss_completion()
-            self._end()
-        elif kind == "delete":
-            modifier = event.modifier
-            if modifier == 0:
-                self._dismiss_completion()
-                self._delete()
-                self._trigger_auto_completion()
-            elif modifier == 1:
-                self._dismiss_completion()
-                self._delete_word_left()
-                self._trigger_auto_completion()
-            elif modifier == 2:
-                self._dismiss_completion()
-                self._kill_to_bol()
-                self._trigger_auto_completion()
-            elif modifier == 3:
-                self._dismiss_completion()
-                self._kill_to_eol()
-                self._trigger_auto_completion()
-        elif kind == "arrow_up":
-            self._handle_arrow_up()
-        elif kind == "arrow_down":
-            self._handle_arrow_down()
-        elif kind == "arrow_right":
-            if event.modifier == 5:
-                self._word_right()
-            else:
-                self._right()
-        elif kind == "arrow_left":
-            if event.modifier == 5:
-                self._word_left()
-            else:
-                self._left()
-        elif kind == "unknown":
-            self._dismiss_completion()
-            if event.raw:
-                with self._captured_lock:
-                    self._captured_input.append(event.raw[0])
-        elif kind == "char":
-            if event.char:
-                self.handle_char(event.char)
-                self._trigger_auto_completion()
+        """根据 KeyEvent.kind 分发到对应的输入处理器（委托 InputDispatcher）。"""
+        self._dispatcher._dispatch_key_event(event)
 
     # ═══════════════════════════════════════════════════════
-    # 辅助分发方法
+    # 辅助分发方法（委托 InputDispatcher）
     # ═══════════════════════════════════════════════════════
 
     def _handle_tab(self) -> None:
-        """处理 Tab 键：调用补全回调，失败则插入制表符。"""
-        cb = self._completion_callback
-        if cb is None:
-            self.handle_char('\t')
-            return
-        text = self.get_current_text()
-        try:
-            result = cb(text)
-        except Exception:
-            _logger.debug("补全回调异常", exc_info=True)
-            result = None
-        if result is None:
-            self.handle_char('\t')
-        else:
-            self.set_buffer(result)
-            self._echo(result)
-            self._trigger_auto_completion()
+        """处理 Tab 键（委托 InputDispatcher）。"""
+        self._dispatcher._handle_tab()
 
     def _handle_arrow_up(self) -> None:
-        """处理上箭头：补全弹窗可见时仅移动高亮，否则历史浏览。"""
-        cb = self._completion_navigate_callback
-        if cb is not None:
-            try:
-                text = self.get_current_text()
-                result = cb(-1, text)
-            except Exception:
-                _logger.debug("补全导航回调异常", exc_info=True)
-                result = None
-            if result is not None:
-                if result != text:
-                    self.set_buffer(result)
-                    self._echo(result)
-                    self._trigger_auto_completion()
-                return
-        self._up()
+        """处理上箭头（委托 InputDispatcher）。"""
+        self._dispatcher._handle_arrow_up()
 
     def _handle_arrow_down(self) -> None:
-        """处理下箭头：补全弹窗可见时仅移动高亮，否则历史浏览。"""
-        cb = self._completion_navigate_callback
-        if cb is not None:
-            try:
-                text = self.get_current_text()
-                result = cb(1, text)
-            except Exception:
-                _logger.debug("补全导航回调异常", exc_info=True)
-                result = None
-            if result is not None:
-                if result != text:
-                    self.set_buffer(result)
-                    self._echo(result)
-                    self._trigger_auto_completion()
-                return
-        self._down()
+        """处理下箭头（委托 InputDispatcher）。"""
+        self._dispatcher._handle_arrow_down()
 
     def _dismiss_completion(self) -> None:
-        """如果补全弹窗可见，关闭它。"""
-        cb = self._dismiss_completion_callback
-        if cb is not None:
-            try:
-                cb()
-            except Exception:
-                _logger.debug("关闭补全回调异常", exc_info=True)
+        """如果补全弹窗可见，关闭它（委托 InputDispatcher）。"""
+        self._dispatcher._dismiss_completion()
 
     def _trigger_auto_completion(self) -> None:
-        """获取当前文本并调用自动补全回调。"""
-        cb = self._auto_completion_callback
-        if cb is None:
-            return
-        text = self.get_current_text()
-        try:
-            cb(text)
-        except Exception:
-            _logger.debug("自动补全回调异常", exc_info=True)
+        """获取当前文本并调用自动补全回调（委托 InputDispatcher）。"""
+        self._dispatcher._trigger_auto_completion()
 
     # ═══════════════════════════════════════════════════════
-    # 解析方法（原 InputParser → 内联为私有方法）
+    # 解析方法（委托 InputParser → _input_parser.py）
     # ═══════════════════════════════════════════════════════
 
     def feed_byte(self, byte: int) -> KeyEvent | None:
-        """单字节推入解析状态机。
+        """单字节推入解析状态机（委托 InputParser）。
 
         Args:
             byte: 单字节整数值 (0-255)。
@@ -811,23 +577,10 @@ class Input:
         Returns:
             KeyEvent — 完整按键事件；None — 需要解析完整转义序列。
         """
-        # ── ESC 序列入口 ──
-        if byte == 0x1b:
-            return None
-
-        # ── ASCII 控制字符分发 ──
-        if byte <= 0x1f or byte == 0x7f:
-            return self._decode_control_char(byte)
-
-        # ── ASCII 可打印 / 高位字节 ──
-        try:
-            ch = bytes([byte]).decode("utf-8", errors="replace")
-        except (ValueError, UnicodeDecodeError):
-            ch = chr(byte)
-        return KeyEvent(kind="char", char=ch, raw=bytes([byte]))
+        return self._parser.feed_byte(byte)
 
     def parse_sequence(self, fd_override: int | None = None) -> KeyEvent:
-        """解析 ESC 转义序列（含 I/O）。
+        """解析 ESC 转义序列（含 I/O，委托 InputParser）。
 
         在首字节已确认为 0x1b 后调用。
 
@@ -837,752 +590,184 @@ class Input:
         Returns:
             解析后的 KeyEvent。
         """
-        return self._parse_escape_sequence(
+        return self._parser.parse_sequence(
             fd_override if fd_override is not None else self._fd,
         )
 
     def _parse_escape_sequence(self, fd: int) -> KeyEvent:
-        """读取并解析 ESC 转义序列（含 I/O）。"""
-        # 读取 ESC 后的下一个字节
-        try:
-            has_more, _, _ = select.select([fd], [], [], 0.05)
-        except (ValueError, OSError, TypeError, AttributeError):
-            return KeyEvent(kind="escape", raw=b"\x1b")
-
-        if not has_more:
-            return KeyEvent(kind="escape", raw=b"\x1b")
-
-        try:
-            raw2 = os.read(fd, 1)
-            if not raw2:
-                return KeyEvent(kind="escape", raw=b"\x1b")
-            next_byte = raw2[0]
-        except (ValueError, OSError, TypeError):
-            return KeyEvent(kind="escape", raw=b"\x1b")
-
-        # ── CSI 序列：ESC [ ──
-        if next_byte == ord('['):
-            return self._read_csi_sequence(fd)
-
-        # ── SS3 序列：ESC O ──
-        if next_byte == ord('O'):
-            return self._read_ss3_sequence(fd)
-
-        # ── Alt+Backspace：ESC DEL ──
-        if next_byte == 0x7f:
-            try:
-                if select.select([fd], [], [], 0.01)[0]:
-                    os.read(fd, 1)
-            except (ValueError, OSError, TypeError):
-                pass
-            return KeyEvent(kind="backspace", modifier=1, raw=b"\x1b\x7f")
-
-        # ── 双 Esc ──
-        if next_byte == 0x1b:
-            return KeyEvent(kind="interrupt", raw=b"\x1b\x1b")
-
-        # ── 其他 ESC 组合 → 视为中断 ──
-        return KeyEvent(kind="interrupt", raw=b"\x1b" + bytes([next_byte]))
+        """读取并解析 ESC 转义序列（含 I/O，委托 InputParser）。"""
+        return self._parser._parse_escape_sequence(fd)
 
     @staticmethod
     def _decode_control_char(byte: int) -> KeyEvent:
-        """将 ASCII 控制字符 (0x00-0x1F / 0x7F) 解码为 KeyEvent。"""
-        raw = bytes([byte])
-        if byte in (0x0d, 0x0a):        # \r / \n
-            return KeyEvent(kind="enter", raw=raw)
-        if byte == 0x09:                 # \t
-            return KeyEvent(kind="tab", raw=raw)
-        if byte in (0x7f, 0x08):        # DEL / BS
-            return KeyEvent(kind="backspace", raw=raw)
-        if byte == 0x03:                 # Ctrl+C
-            return KeyEvent(kind="interrupt", raw=raw)
-        if byte == 0x01:                 # Ctrl+A → Home
-            return KeyEvent(kind="home", raw=raw)
-        if byte == 0x05:                 # Ctrl+E → End
-            return KeyEvent(kind="end", raw=raw)
-        if byte == 0x17:                 # Ctrl+W → delete word left
-            return KeyEvent(kind="delete", modifier=1, raw=raw)
-        if byte == 0x15:                 # Ctrl+U → kill to BOL
-            return KeyEvent(kind="delete", modifier=2, raw=raw)
-        if byte == 0x0b:                 # Ctrl+K → kill to EOL
-            return KeyEvent(kind="delete", modifier=3, raw=raw)
-        if byte in (0x07, 0x0f, 0x0e, 0x12):  # Ctrl+G/O/N/R → 特殊按键
-            return KeyEvent(kind="ctrl_key", char=chr(byte), raw=raw)
-        # 其他控制字符 → unknown
-        return KeyEvent(kind="unknown", raw=raw)
+        """将 ASCII 控制字符 (0x00-0x1F / 0x7F) 解码为 KeyEvent（转发 InputParser）。"""
+        return InputParser._decode_control_char(byte)
 
     def _read_csi_sequence(self, fd: int) -> KeyEvent:
-        """读取 CSI 序列参数 + 终结符并解析为 KeyEvent。"""
-        params: list[int] = []
-        current = ""
-        terminator: str | None = None
-
-        try:
-            while select.select([fd], [], [], _CSI_READ_TIMEOUT)[0]:
-                raw_c = os.read(fd, 1)
-                if not raw_c:
-                    break
-                c = raw_c.decode("utf-8", errors="replace")
-                if c == ';':
-                    try:
-                        params.append(int(current) if current else 0)
-                    except ValueError:
-                        params.append(0)
-                    current = ""
-                elif c.isdigit():
-                    current += c
-                elif c.isalpha() or c == '~':
-                    if current:
-                        try:
-                            params.append(int(current))
-                        except ValueError:
-                            params.append(0)
-                    terminator = c
-                    break
-        except (ValueError, OSError, TypeError):
-            pass
-
-        if terminator is None:
-            return KeyEvent(kind="unknown", raw=b"\x1b[")
-
-        return self._dispatch_csi(params, terminator)
+        """读取 CSI 序列参数 + 终结符并解析为 KeyEvent（委托 InputParser）。"""
+        return self._parser._read_csi_sequence(fd)
 
     def _read_ss3_sequence(self, fd: int) -> KeyEvent:
-        """读取 SS3 序列（ESC O + 字符，通常为 F1-F4）。"""
-        try:
-            if select.select([fd], [], [], _SS3_READ_TIMEOUT)[0]:
-                raw_c = os.read(fd, 1)
-                if raw_c:
-                    return KeyEvent(kind="unknown", raw=b"\x1bO" + raw_c)
-        except (ValueError, OSError, TypeError):
-            pass
-        return KeyEvent(kind="unknown", raw=b"\x1bO")
+        """读取 SS3 序列（ESC O + 字符，通常为 F1-F4）（委托 InputParser）。"""
+        return self._parser._read_ss3_sequence(fd)
 
     @staticmethod
     def _dispatch_csi(params: list[int], terminator: str) -> KeyEvent:
-        """根据 CSI 参数和终结符分发到对应的 KeyEvent。"""
-        # ── CSI u 模式: \x1b[<keycode>;<modifier>u ──
-        if terminator == 'u':
-            keycode = params[0] if len(params) >= 1 else 0
-            modifier = params[1] if len(params) >= 2 else 1
-            raw = b"\x1b[" + Input._params_to_bytes(params) + b"u"
-            if keycode == 13 and modifier in (2, 3, 5):
-                return KeyEvent(kind="char", char="\n", modifier=modifier,
-                                keycode=keycode, raw=raw)
-            return KeyEvent(kind="csi_u", modifier=modifier, keycode=keycode, raw=raw)
-
-        raw = b"\x1b[" + Input._params_to_bytes(params) + terminator.encode()
-
-        # ── 功能键序列: \x1b[N~ ──
-        if terminator == '~':
-            p = params[0] if params else 0
-            if p in (1, 7):
-                return KeyEvent(kind="home", raw=raw)
-            if p == 3:
-                return KeyEvent(kind="delete", raw=raw)
-            if p in (4, 8):
-                return KeyEvent(kind="end", raw=raw)
-            return KeyEvent(kind="unknown", raw=raw)
-
-        # ── Home (\x1b[H) ──
-        if terminator == 'H':
-            return KeyEvent(kind="home", raw=raw)
-
-        # ── End (\x1b[F) ──
-        if terminator == 'F':
-            return KeyEvent(kind="end", raw=raw)
-
-        # ── 右箭头 / Ctrl+右 ──
-        if terminator == 'C':
-            if len(params) >= 2 and params[1] == 5:
-                return KeyEvent(kind="arrow_right", modifier=5, raw=raw)
-            return KeyEvent(kind="arrow_right", raw=raw)
-
-        # ── 左箭头 / Ctrl+左 ──
-        if terminator == 'D':
-            if len(params) >= 2 and params[1] == 5:
-                return KeyEvent(kind="arrow_left", modifier=5, raw=raw)
-            return KeyEvent(kind="arrow_left", raw=raw)
-
-        # ── 上箭头 ──
-        if terminator == 'A':
-            return KeyEvent(kind="arrow_up", raw=raw)
-
-        # ── 下箭头 ──
-        if terminator == 'B':
-            return KeyEvent(kind="arrow_down", raw=raw)
-
-        # ── 其他 CSI 序列 ──
-        return KeyEvent(kind="unknown", raw=raw)
+        """根据 CSI 参数和终结符分发到对应的 KeyEvent（转发 InputParser）。"""
+        return InputParser._dispatch_csi(params, terminator)
 
     @staticmethod
     def _params_to_bytes(params: list[int]) -> bytes:
-        """将参数列表转为 CSI 参数字节串。"""
-        if not params:
-            return b""
-        return ";".join(str(p) for p in params).encode()
+        """将参数列表转为 CSI 参数字节串（转发 InputParser）。"""
+        return InputParser._params_to_bytes(params)
 
     # ═══════════════════════════════════════════════════════
-    # I/O 辅助方法
+    # I/O 辅助方法（委托 InputIO）
     # ═══════════════════════════════════════════════════════
 
     def read_byte(self) -> bytes:
-        """从 fd 读取单个原始字节。
-
-        Returns:
-            读取到的单字节 bytes 对象；EOF/错误时返回空 bytes。
-        """
-        try:
-            return os.read(self._fd, 1)
-        except (ValueError, OSError, TypeError):
-            return b""
+        """从 fd 读取单个原始字节（委托 InputIO）。"""
+        return self._io.read_byte()
 
     def read_with_timeout(self, timeout: float) -> bytes | None:
-        """使用 select + os.read 读取单个字节，超时返回 None。"""
-        try:
-            ready, _, _ = select.select([self._fd], [], [], timeout)
-        except (ValueError, OSError, TypeError, AttributeError):
-            return None
-        if not ready:
-            return None
-        try:
-            raw = os.read(self._fd, 1)
-            return raw if raw else None
-        except (ValueError, OSError, TypeError):
-            return None
+        """使用 select + os.read 读取单个字节，超时返回 None（委托 InputIO）。"""
+        return self._io.read_with_timeout(timeout)
 
     def try_read_paste(self, fd: int, first_chars: str) -> str:
-        """检测并读取粘贴内容（退避 select 检测突发字符流）。"""
-        # 快速路径：若近期均非粘贴，跳过退避检测
-        if self._paste_skip_counter >= self._paste_skip_threshold:
-            try:
-                has_more, _, _ = select.select([fd], [], [], 0.0)
-            except (ValueError, OSError, TypeError, AttributeError):
-                return first_chars
-            if not has_more:
-                return first_chars
-            # 有数据，重置计数器并进入粘贴检测
-            self._paste_skip_counter = 0
-        else:
-            for delay in (0.0001, 0.002, 0.003):
-                try:
-                    has_more, _, _ = select.select([fd], [], [], delay)
-                except (ValueError, OSError, TypeError, AttributeError):
-                    return first_chars
-                if not has_more:
-                    self._paste_skip_counter += 1
-                    return first_chars
-        extra = b""
-        try:
-            while True:
-                has_more, _, _ = select.select([fd], [], [], 0.01)
-                if not has_more:
-                    break
-                more = os.read(fd, 65536)
-                if not more:
-                    break
-                extra += more
-                if len(extra) >= 262144:
-                    break
-        except (ValueError, OSError, TypeError, AttributeError):
-            pass
-        if not extra:
-            return first_chars
-        return first_chars + extra.decode("utf-8", errors="replace")
+        """检测并读取粘贴内容（退避 select 检测突发字符流）（委托 InputIO）。"""
+        return self._io.try_read_paste(fd, first_chars)
 
     def read_utf8_char(self, fd: int, first_byte: int) -> str | None:
-        """读取完整的多字节 UTF-8 字符序列。"""
-        if (first_byte & 0xE0) == 0xC0:
-            total_bytes = 2
-        elif (first_byte & 0xF0) == 0xE0:
-            total_bytes = 3
-        elif (first_byte & 0xF8) == 0xF0:
-            total_bytes = 4
-        else:
-            return None
-
-        buf = bytes([first_byte])
-        for _ in range(total_bytes - 1):
-            try:
-                has_data, _, _ = select.select(
-                    [fd], [], [], _UTF8_READ_TIMEOUT,
-                )
-            except (ValueError, OSError, TypeError, AttributeError):
-                break
-            if not has_data:
-                break
-            try:
-                more = os.read(fd, 1)
-                if not more:
-                    break
-                buf += more
-            except (ValueError, OSError, TypeError):
-                break
-
-        try:
-            return buf.decode("utf-8")
-        except UnicodeDecodeError:
-            return None
+        """读取完整的多字节 UTF-8 字符序列（委托 InputIO）。"""
+        return self._io.read_utf8_char(fd, first_byte)
 
     # ═══════════════════════════════════════════════════════
-    # 缓冲操作（原 InputBuffer → 内联为实例方法）
+    # 缓冲操作（委托 InputBufferEditor）
     # ═══════════════════════════════════════════════════════
 
     def handle_char(self, ch: str) -> None:
-        """处理流式输入字符：插入到缓冲区光标位置并回显。"""
-        if not (ch.isprintable() or ch in (' ', '\t', '\n')):
-            return
-        with self._lock:
-            if self._history_idx >= 0:
-                self._history_idx = -1
-            self._buffer = (
-                self._buffer[:self._cursor_pos]
-                + ch
-                + self._buffer[self._cursor_pos:]
-            )
-            self._cursor_pos += len(ch)
-            text = self._buffer
-        self._echo(text)
+        """处理流式输入字符：插入到缓冲区光标位置并回显（委托 InputBufferEditor）。"""
+        self._buffer_editor.handle_char(ch)
 
     def handle_chars(self, text: str) -> None:
-        """批量处理多个字符（粘贴/预填场景），只在全部插入后触发一次回显。"""
-        with self._lock:
-            if self._history_idx >= 0:
-                self._history_idx = -1
-            self._buffer = (
-                self._buffer[:self._cursor_pos]
-                + text
-                + self._buffer[self._cursor_pos:]
-            )
-            self._cursor_pos += len(text)
-            result = self._buffer
-        self._echo(result)
+        """批量处理多个字符（粘贴/预填场景）（委托 InputBufferEditor）。"""
+        self._buffer_editor.handle_chars(text)
 
     def get_queued_input(self) -> str | None:
         """获取排队输入（Enter 提交的文本），返回 None 表示无排队输入。"""
-        if not self._input_ready.is_set():
-            return None
-        with self._lock:
-            text = self._submitted_text
-            self._submitted_text = ""
-            self._input_ready.clear()
-        return text
+        return self._buffer_editor.get_queued_input()
 
     def has_queued_input(self) -> bool:
         """是否有排队输入等待处理。"""
-        return self._input_ready.is_set()
+        return self._buffer_editor.has_queued_input()
 
     def get_current_text(self) -> str:
         """获取当前正在输入的文本（不消费）。"""
-        with self._lock:
-            return self._buffer
+        return self._buffer_editor.get_current_text()
 
     def reset(self) -> None:
         """清空所有流式输入状态（缓冲区、提交文本、历史导航、中断标志）。"""
-        with self._lock:
-            self._buffer = ""
-            self._cursor_pos = 0
-            self._submitted_text = ""
-            self._input_ready.clear()
-            self._history_idx = -1
-            self._saved_input_before_history = ""
-        self._interrupted.clear()
+        self._dispatcher.reset()
 
     def drain_all(self) -> tuple[str | None, str]:
         """排出所有流式输入状态：返回 (submitted_text, buffer_text)。"""
-        with self._lock:
-            submitted = self._submitted_text if self._input_ready.is_set() else None
-            buffer_text = self._buffer
-            self._submitted_text = ""
-            self._buffer = ""
-            self._cursor_pos = 0
-            self._history_idx = -1
-            self._saved_input_before_history = ""
-        return submitted, buffer_text
+        return self._buffer_editor.drain_all()
 
     def set_buffer(self, text: str) -> None:
         """设置缓冲区文本（用于预填），光标移到末尾。"""
-        with self._lock:
-            self._buffer = text
-            self._cursor_pos = len(text)
-            self._history_idx = -1
-            self._submitted_text = ""
-            self._input_ready.clear()
+        self._buffer_editor.set_buffer(text)
 
     def get_history_indicator(self) -> str:
         """历史浏览状态指示器，非导航模式返回空字符串。"""
-        return self._history_indicator
+        return self._buffer_editor.get_history_indicator()
 
     # ═══════════════════════════════════════════════════════
-    # 历史管理
+    # 历史管理（委托 InputBufferEditor）
     # ═══════════════════════════════════════════════════════
 
     @staticmethod
     def _unescape(line: str) -> str:
-        """将文件中转义的 \\n 还原为真实换行符。"""
-        return line.replace("\\n", "\n")
+        """将文件中转义的 \\n 还原为真实换行符（转发 InputBufferEditor）。"""
+        return InputBufferEditor._unescape(line)
 
     def load_history(self) -> None:
         """从 INPUT_HISTORY_FILE 加载历史行（多进程安全）。"""
-        raw, locked = _read_history_file()
-        if not raw:
-            return
-
-        lines = raw.splitlines()
-        if not lines:
-            return
-
-        # 第一趟 O(n)：记录每个条目在文件中的最后出现索引
-        latest: dict[str, int] = {}
-        for i, line in enumerate(lines):
-            stripped = line.strip()
-            if not stripped:
-                continue
-            entry = self._unescape(stripped)
-            if not entry:
-                continue
-            latest[entry] = i
-
-        # 第二趟 O(n)：只保留最后出现的条目，保持原始顺序
-        seen: set[str] = set()
-        unique: list[str] = []
-        for i, line in enumerate(lines):
-            stripped = line.strip()
-            if not stripped:
-                continue
-            entry = self._unescape(stripped)
-            if not entry:
-                continue
-            if i == latest.get(entry) and entry not in seen:
-                unique.append(entry)
-                seen.add(entry)
-
-        # 合并到现有内存历史
-        file_entries = unique[:_HISTORY_MAX_ENTRIES]
-        if self._history:
-            if file_entries:
-                existing = set(self._history)
-                for entry in reversed(file_entries):
-                    if entry not in existing:
-                        self._history.append(entry)
-                        existing.add(entry)
-                self._history = self._history[:_HISTORY_MAX_ENTRIES]
-        else:
-            self._history = list(reversed(file_entries))
-
-        if locked:
-            _compact_history_file()
-
-    # ═══════════════════════════════════════════════════════
-    # 缓冲编辑操作（原 InputBuffer 内部方法 → 私有方法）
-    # ═══════════════════════════════════════════════════════
-
-    def _backspace(self) -> None:
-        """退格：删除光标前一个字符。"""
-        with self._lock:
-            if self._history_idx >= 0:
-                self._history_idx = -1
-            if self._cursor_pos > 0:
-                self._buffer = (
-                    self._buffer[:self._cursor_pos - 1]
-                    + self._buffer[self._cursor_pos:]
-                )
-                self._cursor_pos -= 1
-            text = self._buffer
-        self._echo(text)
-
-    def _left(self) -> None:
-        """左箭头：光标左移一格。"""
-        with self._lock:
-            if self._cursor_pos > 0:
-                self._cursor_pos -= 1
-            text = self._buffer
-        self._echo(text)
-
-    def _right(self) -> None:
-        """右箭头：光标右移一格。"""
-        with self._lock:
-            if self._cursor_pos < len(self._buffer):
-                self._cursor_pos += 1
-            text = self._buffer
-        self._echo(text)
-
-    def _enter(self) -> None:
-        """Enter：保存提交文本、标记就绪、清空缓冲区。"""
-        with self._lock:
-            if self._input_ready.is_set():
-                return
-            text = self._buffer
-            self._submitted_text = text
-            self._buffer = ""
-            self._cursor_pos = 0
-            self._input_ready.set()
-            if self._history_idx >= 0:
-                self._history_idx = -1
-            self._append_history_locked(text)
-        self._echo("")
+        self._buffer_editor.load_history()
 
     def _append_history_locked(self, text: str) -> None:
-        """保存输入到历史（需持 _lock）。"""
-        if not text.strip():
-            return
-        if text in self._history:
-            self._history.remove(text)
-        self._history.insert(0, text)
-        if len(self._history) > self._history_max_entries:
-            self._history = self._history[:self._history_max_entries]
-        escaped = text.replace("\n", "\\n")
-        if not _append_to_history_file(escaped):
-            _logger.warning("历史文件追加写入失败: %s", self._history_file)
+        """保存输入到历史（需持 _lock，委托 InputBufferEditor）。
 
-    def _up(self) -> None:
-        """上箭头：多行上移一行；首行或单行回退到历史浏览。"""
-        # ── 阶段1：多行光标上移 ──
-        text = None
-        with self._lock:
-            if '\n' in self._buffer:
-                before_cursor = self._buffer[:self._cursor_pos]
-                cur_line = before_cursor.count('\n')
-                if cur_line > 0:
-                    lines = self._buffer.split('\n')
-                    pos = sum(len(lines[i]) + 1 for i in range(cur_line))
-                    col = self._cursor_pos - pos
-                    prev_start = sum(len(lines[i]) + 1 for i in range(cur_line - 1))
-                    prev_len = len(lines[cur_line - 1])
-                    self._cursor_pos = prev_start + min(col, prev_len)
-                    text = self._buffer
-        if text is not None:
-            self._echo(text)
-            return
-
-        # ── 阶段2：单行或首行 → 历史浏览 ──
-        with self._lock:
-            if not self._history:
-                return
-            if self._history_idx < 0:
-                self._saved_input_before_history = self._buffer
-                self._history_idx = 0
-            elif self._history_idx < len(self._history) - 1:
-                self._history_idx += 1
-            self._buffer = self._history[self._history_idx]
-            self._cursor_pos = len(self._buffer)
-            text = self._buffer
-        self._echo(text)
-
-    def _home(self) -> None:
-        """Home：光标移到当前逻辑行首。"""
-        with self._lock:
-            if '\n' in self._buffer:
-                before_cursor = self._buffer[:self._cursor_pos]
-                last_nl = before_cursor.rfind('\n')
-                self._cursor_pos = last_nl + 1
-            else:
-                self._cursor_pos = 0
-            text = self._buffer
-        self._echo(text)
-
-    def _end(self) -> None:
-        """End：光标移到当前逻辑行尾。"""
-        with self._lock:
-            if '\n' in self._buffer:
-                after_cursor = self._buffer[self._cursor_pos:]
-                next_nl = after_cursor.find('\n')
-                if next_nl >= 0:
-                    self._cursor_pos = self._cursor_pos + next_nl
-                else:
-                    self._cursor_pos = len(self._buffer)
-            else:
-                self._cursor_pos = len(self._buffer)
-            text = self._buffer
-        self._echo(text)
-
-    def _word_left(self) -> None:
-        """Ctrl+左：向左跳一个词。"""
-        with self._lock:
-            if self._cursor_pos <= 0:
-                text = self._buffer
-            else:
-                pos = self._cursor_pos - 1
-                while pos >= 0 and not (
-                    self._buffer[pos].isalnum() or self._buffer[pos] == '_'
-                ):
-                    pos -= 1
-                while pos >= 0 and (
-                    self._buffer[pos].isalnum() or self._buffer[pos] == '_'
-                ):
-                    pos -= 1
-                self._cursor_pos = pos + 1
-                text = self._buffer
-        self._echo(text)
-
-    def _word_right(self) -> None:
-        """Ctrl+右：向右跳一个词。"""
-        with self._lock:
-            n = len(self._buffer)
-            if self._cursor_pos >= n:
-                text = self._buffer
-            else:
-                pos = self._cursor_pos
-                while pos < n and not (
-                    self._buffer[pos].isalnum() or self._buffer[pos] == '_'
-                ):
-                    pos += 1
-                while pos < n and (
-                    self._buffer[pos].isalnum() or self._buffer[pos] == '_'
-                ):
-                    pos += 1
-                while pos < n and not (
-                    self._buffer[pos].isalnum() or self._buffer[pos] == '_'
-                ):
-                    pos += 1
-                self._cursor_pos = pos
-                text = self._buffer
-        self._echo(text)
-
-    def _down(self) -> None:
-        """下箭头：多行下移一行；尾行或单行回退到历史浏览。"""
-        # ── 阶段1：多行光标下移 ──
-        text = None
-        with self._lock:
-            if '\n' in self._buffer:
-                before_cursor = self._buffer[:self._cursor_pos]
-                cur_line = before_cursor.count('\n')
-                lines = self._buffer.split('\n')
-                if cur_line < len(lines) - 1:
-                    pos = sum(len(lines[i]) + 1 for i in range(cur_line))
-                    col = self._cursor_pos - pos
-                    next_start = sum(len(lines[i]) + 1 for i in range(cur_line + 1))
-                    next_len = len(lines[cur_line + 1])
-                    self._cursor_pos = next_start + min(col, next_len)
-                    text = self._buffer
-        if text is not None:
-            self._echo(text)
-            return
-
-        # ── 阶段2：尾行或单行 → 历史浏览 ──
-        with self._lock:
-            if not self._history:
-                return
-            if self._history_idx < 0:
-                return
-            elif self._history_idx > 0:
-                self._history_idx -= 1
-                self._buffer = self._history[self._history_idx]
-            else:
-                self._history_idx = -1
-                self._buffer = self._saved_input_before_history
-            self._cursor_pos = len(self._buffer)
-            text = self._buffer
-        self._echo(text)
-
-    def _delete(self) -> None:
-        """Del：删除光标后的字符。"""
-        with self._lock:
-            if self._history_idx >= 0:
-                self._history_idx = -1
-            n = len(self._buffer)
-            if self._cursor_pos < n:
-                self._buffer = (
-                    self._buffer[:self._cursor_pos]
-                    + self._buffer[self._cursor_pos + 1:]
-                )
-            text = self._buffer
-        self._echo(text)
-
-    def _delete_word_left(self) -> None:
-        """Ctrl+W / Alt+Backspace：删除光标前的一个词。"""
-        with self._lock:
-            if self._history_idx >= 0:
-                self._history_idx = -1
-            if self._cursor_pos <= 0:
-                text = self._buffer
-            else:
-                pos = self._cursor_pos - 1
-                while pos >= 0 and not (
-                    self._buffer[pos].isalnum() or self._buffer[pos] == '_'
-                ):
-                    pos -= 1
-                while pos >= 0 and (
-                    self._buffer[pos].isalnum() or self._buffer[pos] == '_'
-                ):
-                    pos -= 1
-                word_start = pos + 1
-                self._buffer = (
-                    self._buffer[:word_start]
-                    + self._buffer[self._cursor_pos:]
-                )
-                self._cursor_pos = word_start
-                text = self._buffer
-        self._echo(text)
-
-    def _kill_to_bol(self) -> None:
-        """Ctrl+U：删除光标到当前逻辑行首。"""
-        with self._lock:
-            if self._history_idx >= 0:
-                self._history_idx = -1
-            if self._cursor_pos <= 0:
-                text = self._buffer
-            else:
-                before_cursor = self._buffer[:self._cursor_pos]
-                last_nl = before_cursor.rfind('\n')
-                line_start = last_nl + 1
-                self._buffer = (
-                    self._buffer[:line_start]
-                    + self._buffer[self._cursor_pos:]
-                )
-                self._cursor_pos = line_start
-                text = self._buffer
-        self._echo(text)
-
-    def _kill_to_eol(self) -> None:
-        """Ctrl+K：删除光标到当前逻辑行尾。"""
-        with self._lock:
-            if self._history_idx >= 0:
-                self._history_idx = -1
-            n = len(self._buffer)
-            if self._cursor_pos >= n:
-                text = self._buffer
-            else:
-                after_cursor = self._buffer[self._cursor_pos:]
-                next_nl = after_cursor.find('\n')
-                if next_nl >= 0:
-                    line_end = self._cursor_pos + next_nl
-                else:
-                    line_end = n
-                self._buffer = (
-                    self._buffer[:self._cursor_pos]
-                    + self._buffer[line_end:]
-                )
-                text = self._buffer
-        self._echo(text)
-
-    @property
-    def _history_indicator(self) -> str:
-        """历史浏览状态指示器。"""
-        if self._history_idx < 0:
-            return ""
-        total = len(self._history)
-        current = self._history_idx + 1
-        return f" [历史 {current}/{total}]"
-
-    def _echo(self, text: str) -> None:
-        """调用回显回调。"""
-        with self._lock:
-            pos = self._cursor_pos
-            indicator = self._history_indicator
-            if indicator:
-                display_text = text + indicator
-            else:
-                display_text = text
-        cb = self._echo_callback
-        if cb is not None:
-            try:
-                cb(display_text, pos)
-            except Exception:
-                _logger.debug("_echo 回显回调失败", exc_info=True)
+        历史写盘决策（方向A 步骤1 评估，2026-07-31）：保持每 Enter 调用一次
+        ``_append_to_history_file``（**保持现状**），见 _input_buffer.py。
+        """
+        self._buffer_editor._append_history_locked(text)
 
     # ═══════════════════════════════════════════════════════
-    # 光标定位（原 CursorPositioner → 内联，使用 wcswidth_simple）
+    # 缓冲编辑操作（委托 InputBufferEditor）
+    # ═══════════════════════════════════════════════════════
+
+    def _enter(self) -> None:
+        """Enter：保存提交文本、标记就绪、清空缓冲区（委托 InputBufferEditor）。
+
+        外观层注入自身 ``_append_history_locked``，保证 tests 对外观实例的
+        ``patch.object(inp, "_append_history_locked", ...)`` 拦截路径有效。
+        """
+        self._buffer_editor._enter(append_history=self._append_history_locked)
+
+    def _backspace(self) -> None:
+        """退格：删除光标前一个字符（委托 InputBufferEditor）。"""
+        self._buffer_editor._backspace()
+
+    def _left(self) -> None:
+        """左箭头：光标左移一格（委托 InputBufferEditor）。"""
+        self._buffer_editor._left()
+
+    def _right(self) -> None:
+        """右箭头：光标右移一格（委托 InputBufferEditor）。"""
+        self._buffer_editor._right()
+
+    def _up(self) -> None:
+        """上箭头：多行上移一行；首行或单行回退到历史浏览（委托 InputBufferEditor）。"""
+        self._buffer_editor._up()
+
+    def _home(self) -> None:
+        """Home：光标移到当前逻辑行首（委托 InputBufferEditor）。"""
+        self._buffer_editor._home()
+
+    def _end(self) -> None:
+        """End：光标移到当前逻辑行尾（委托 InputBufferEditor）。"""
+        self._buffer_editor._end()
+
+    def _word_left(self) -> None:
+        """Ctrl+左：向左跳一个词（委托 InputBufferEditor）。"""
+        self._buffer_editor._word_left()
+
+    def _word_right(self) -> None:
+        """Ctrl+右：向右跳一个词（委托 InputBufferEditor）。"""
+        self._buffer_editor._word_right()
+
+    def _down(self) -> None:
+        """下箭头：多行下移一行；尾行或单行回退到历史浏览（委托 InputBufferEditor）。"""
+        self._buffer_editor._down()
+
+    def _delete(self) -> None:
+        """Del：删除光标后的字符（委托 InputBufferEditor）。"""
+        self._buffer_editor._delete()
+
+    def _delete_word_left(self) -> None:
+        """Ctrl+W / Alt+Backspace：删除光标前的一个词（委托 InputBufferEditor）。"""
+        self._buffer_editor._delete_word_left()
+
+    def _kill_to_bol(self) -> None:
+        """Ctrl+U：删除光标到当前逻辑行首（委托 InputBufferEditor）。"""
+        self._buffer_editor._kill_to_bol()
+
+    def _kill_to_eol(self) -> None:
+        """Ctrl+K：删除光标到当前逻辑行尾（委托 InputBufferEditor）。"""
+        self._buffer_editor._kill_to_eol()
+
+    # ═══════════════════════════════════════════════════════
+    # 光标定位（保留于外观，使用 wcswidth_simple）
     # ═══════════════════════════════════════════════════════
 
     def compute_cursor(
@@ -1627,7 +812,7 @@ class Input:
         return (r_cursor, cursor_col, vis_row, vis_col)
 
     # ═══════════════════════════════════════════════════════
-    # 回调接口
+    # 回调接口（委托 InputBufferEditor / InputDispatcher）
     # ═══════════════════════════════════════════════════════
 
     def set_echo_callback(self, cb) -> None:
@@ -1635,42 +820,50 @@ class Input:
 
         cb 签名: (display_text: str, cursor_pos: int) -> None
         """
-        self._echo_callback = cb
+        self._buffer_editor.set_echo_callback(cb)
 
     def set_special_key_callback(self, cb) -> None:
         """设置特殊按键回调（Ctrl+G/O/N/R）。
 
         cb 签名: (action: str, current_text: str) -> str | None
         """
-        self._special_key_callback = cb
+        self._dispatcher.set_special_key_callback(cb)
 
     def set_completion_callback(self, cb) -> None:
         """设置 Tab 补全回调。
 
         cb 签名: (text: str) -> str | None
         """
-        self._completion_callback = cb
+        self._dispatcher.set_completion_callback(cb)
 
     def set_dismiss_completion_callback(self, cb) -> None:
         """设置补全弹窗关闭回调。
 
         cb 签名: () -> None
         """
-        self._dismiss_completion_callback = cb
+        self._dispatcher.set_dismiss_completion_callback(cb)
 
     def set_completion_navigate_callback(self, cb) -> None:
         """设置补全弹窗上下导航回调。
 
         cb 签名: (delta: int, text: str) -> str | None
         """
-        self._completion_navigate_callback = cb
+        self._dispatcher.set_completion_navigate_callback(cb)
 
     def set_auto_completion_callback(self, cb) -> None:
         """设置自动补全回调。
 
         cb 签名: (text: str) -> None
         """
-        self._auto_completion_callback = cb
+        self._dispatcher.set_auto_completion_callback(cb)
+
+    def set_interrupt_callback(self, cb) -> None:
+        """设置中断回调（方向A 步骤1 注入点）。
+
+        cb 签名: () -> None
+        None 缺省时 ``_do_interrupt`` 记 debug 日志并跳过（测试兼容）。
+        """
+        self._dispatcher.set_interrupt_callback(cb)
 
     def set_suppress_enter(self, suppress: bool) -> None:
         """设置 Enter 抑制标志（用于 editmsg 消息选择期间）。
@@ -1678,15 +871,13 @@ class Input:
         当 suppress=True 时，_dispatch_key_event 中的 Enter 分支
         将跳过 _enter() 调用，防止选择确认 Enter 被误提交为输入。
 
-        线程安全：使用 _lock 保护。
+        线程安全：使用 _suppress_enter_lock 保护。
         """
-        with self._lock:
-            self._suppress_enter = suppress
+        self._dispatcher.set_suppress_enter(suppress)
 
     def get_suppress_enter(self) -> bool:
         """获取当前 Enter 抑制状态。线程安全。"""
-        with self._lock:
-            return self._suppress_enter
+        return self._dispatcher.get_suppress_enter()
 
     # ═══════════════════════════════════════════════════════
     # 便捷方法
@@ -1696,26 +887,51 @@ class Input:
         """调用回显回调，自动获取当前文本如果未提供。"""
         if not text:
             text = self.get_current_text()
-        self._echo(text)
+        self._buffer_editor._echo(text)
+
+    def _echo(self, text: str) -> None:
+        """调用回显回调（委托 InputBufferEditor，供测试直接调用）。"""
+        self._buffer_editor._echo(text)
 
     def reset_and_echo(self) -> None:
         """重置缓冲区并回显空字符串（清空输入行视觉）。"""
-        self.reset()
-        self._echo("")
+        self._dispatcher.reset_and_echo()
 
     def capture_bytes(self, data: bytes) -> None:
         """追加原始字节到捕获缓冲区。线程安全。"""
-        with self._captured_lock:
-            self._captured_input.extend(data)
+        self._dispatcher.capture_bytes(data)
 
     def drain_captured(self) -> str:
         """排出并返回捕获的非可打印字符。"""
-        with self._captured_lock:
-            data = bytes(self._captured_input).decode("utf-8", errors="replace")
-            self._captured_input.clear()
-        return data
+        return self._dispatcher.drain_captured()
+
+    # ═══════════════════════════════════════════════════════
+    # 事件等待（方向A 步骤2：_input_ready 事件化）
+    # ═══════════════════════════════════════════════════════
+
+    def wait_until_ready(self, timeout: float | None = None) -> bool:
+        """等待输入就绪事件（``_input_ready``）被设置。
+
+        线程安全（threading.Event）；timeout=None 表示无限等待。
+
+        Args:
+            timeout: 超时秒数；None 表示无限等待。
+
+        Returns:
+            True — 事件已设置（可安全调用 ``get_queued_input``）；
+            False — 超时。
+        """
+        return self._buffer_editor.wait_until_ready(timeout)
 
 
 # ── 模块导出 ──────────────────────────────────────────────
 
-__all__ = ["Input", "KeyEvent"]
+__all__ = [
+    "Input",
+    "KeyEvent",
+    # 跨模块 re-export 的私有符号（_bar.py / _render.py / _layout.py 从此处导入）
+    "_TAB_WIDTH",
+    "_compute_cursor_visual_pos",
+    "_expand_tabs",
+    "_wrap_by_width",
+]

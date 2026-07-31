@@ -183,3 +183,67 @@ class TestFlushTimerLeak:
         tracker._stop_flush_timer()
         assert tracker._flush_timer is None
         assert tracker._flush_timer_stop.is_set()
+
+
+class TestPublicTrackMethod:
+    """步骤2（A 输出路径统一）：新增公开 track(data) 方法。
+
+    语义与内部 _track 一致，供 RenderOutput 内容写回调调用。
+    """
+
+    def test_track_public_method_records_full_lines(self, tmp_path):
+        from src.tui._stdout_tracker import _StdoutLineTracker
+
+        output_file = tmp_path / "output_history_track"
+        with (
+            patch("src.tui._stdout_tracker.OUTPUT_HISTORY_FILE", output_file),
+            patch("src.tui._stdout_tracker._lock_history_file", return_value=True),
+            patch("src.tui._stdout_tracker._unlock_history_file"),
+        ):
+            real_stdout = io.StringIO()
+            tracker = _StdoutLineTracker(real_stdout)
+            tracker._scroll_end = 10
+
+            tracker.track("alpha\n")
+            tracker.track("beta\n")
+            assert list(tracker._ring) == ["alpha", "beta"]
+
+    def test_track_public_method_partial_line(self, tmp_path):
+        """流式 chunk 无 \\n 时累积 partial_line，\\n 到达后入 ring。"""
+        from src.tui._stdout_tracker import _StdoutLineTracker
+
+        output_file = tmp_path / "output_history_track_partial"
+        with (
+            patch("src.tui._stdout_tracker.OUTPUT_HISTORY_FILE", output_file),
+            patch("src.tui._stdout_tracker._lock_history_file", return_value=True),
+            patch("src.tui._stdout_tracker._unlock_history_file"),
+        ):
+            real_stdout = io.StringIO()
+            tracker = _StdoutLineTracker(real_stdout)
+            tracker._scroll_end = 10
+
+            tracker.track("hel")
+            tracker.track("lo\n")
+            assert list(tracker._ring) == ["hello"]
+
+    def test_track_public_method_flush_history(self, tmp_path):
+        """track 的完整行经 _flush_history 落盘到输出历史文件。"""
+        from src.tui._stdout_tracker import _StdoutLineTracker
+
+        output_file = tmp_path / "output_history_track_flush"
+        with (
+            patch("src.tui._stdout_tracker.OUTPUT_HISTORY_FILE", output_file),
+            patch("src.tui._stdout_tracker._lock_history_file", return_value=True),
+            patch("src.tui._stdout_tracker._unlock_history_file"),
+        ):
+            real_stdout = io.StringIO()
+            tracker = _StdoutLineTracker(real_stdout)
+            tracker._scroll_end = 10
+
+            tracker.track("persisted\n")
+            tracker._flush_history()
+
+            assert output_file.exists()
+            content = output_file.read_text(encoding="utf-8")
+            assert "persisted" in content
+

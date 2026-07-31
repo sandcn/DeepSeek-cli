@@ -11,16 +11,17 @@ import queue
 import sys
 import threading
 import time
-from typing import TYPE_CHECKING, Callable, Union
+from typing import TYPE_CHECKING, Callable
 
 from src.tui._const import (
     RenderCommand,
     RenderCmd,
+    CONTENT_COMMANDS,
     ANSI_EMERGENCY_RED,
     ANSI_EMERGENCY_RESET,
 )
 from src.tui._config import TuiConfig
-from src.tui._locks import _try_acquire_output_lock
+from src.renderer._locks import _try_acquire_output_lock
 from src.tui._screen import cursor_goto
 from src.tui._renderer._renderer import _cmd_name, _emergency_write
 
@@ -29,30 +30,18 @@ if TYPE_CHECKING:
     from src.tui._bottom_bar import _BottomBar
     from src.tui._input import Input
     from src.tui._cursor_tracker import CursorTracker
+    from src.tui._output import RenderOutput
 
 _logger = logging.getLogger(__name__)
 
-# ── 内容命令集合（供 _has_content_command 共用） ──
+# ── 内容命令集合（真源在 _const.CONTENT_COMMANDS，此处保留别名兼容 re-export） ──
 
-_CONTENT_COMMANDS = frozenset({
-    RenderCommand.REASONING,
-    RenderCommand.CONTENT,
-    RenderCommand.PHASE_DONE,
-    RenderCommand.TOOL_OUTPUT,
-    RenderCommand.TOOL_SUMMARY,
-    RenderCommand.PARSE_INFO,
-    RenderCommand.USER_MSG,
-    RenderCommand.ERROR,
-    RenderCommand.WRITE_LINE,
-    RenderCommand.NOTIFICATION,
-    RenderCommand.DISPLAY_MSGS,
-    RenderCommand.SPLASH,
-})
+_CONTENT_COMMANDS = CONTENT_COMMANDS
 
 # ── 命令优先级（值越小越优先） ──
 
-_CMD_PRIORITY_CRITICAL = 0   # PhaseDone, ToolSummary, TOOL_COUNT_INC/DEC, TOOL_FAIL_INC, MAIN_PHASE, SPLASH
-_CMD_PRIORITY_HIGH = 1       # REASONING, CONTENT, SUBAGENT_FRAME, ERROR
+_CMD_PRIORITY_CRITICAL = 0   # PhaseDone, ToolSummary, TOOL_COUNT_INC/DEC, TOOL_FAIL_INC, MAIN_PHASE, SPLASH + 流式内容命令 REASONING/CONTENT（_STREAM_CMDS）
+_CMD_PRIORITY_HIGH = 1       # SUBAGENT_FRAME, ERROR
 _CMD_PRIORITY_NORMAL = 2     # TOOL_OUTPUT, USER_MSG, PARSE_INFO, NOTIFICATION
 _CMD_PRIORITY_LOW = 3        # WRITE_LINE, DISPLAY_MSGS
 
@@ -65,9 +54,17 @@ _CRITICAL_CMDS = frozenset({
     RenderCommand.MAIN_PHASE,
     RenderCommand.SPLASH,
 })
-_HIGH_CMDS = frozenset({
+# 流式内容命令（REASONING/CONTENT）— 与 PhaseDone 同级优先级（0），
+# 通过 PriorityQueue 的 seq 序号保持插入序，确保同批内内容命令先于完成命令
+# 出队（修复优先级反转竞态：PhaseDoneCmd 不再先于同批 ReasoningCmd/ContentCmd）。
+# 注意：**不加入 _CRITICAL_CMDS** —— push_cmd 的阻塞判定（_get_cmd_id(cmd)
+# in _CRITICAL_CMDS）不变，内容命令保持 block=False 非阻塞（避免极端拥塞时
+# 阻塞流式发布者）。
+_STREAM_CMDS = frozenset({
     RenderCommand.REASONING,
     RenderCommand.CONTENT,
+})
+_HIGH_CMDS = frozenset({
     RenderCommand.SUBAGENT_FRAME,
     RenderCommand.ERROR,
 })
@@ -83,15 +80,15 @@ _LOW_CMDS = frozenset({
 })
 
 
-def _get_cmd_priority(cmd: Union[RenderCmd, tuple]) -> int:
-    """获取命令优先级（值越小越优先）。"""
-    if isinstance(cmd, RenderCmd):
-        cid = cmd.cid
-    elif isinstance(cmd, tuple) and cmd:
-        cid = cmd[0]
-    else:
-        return _CMD_PRIORITY_NORMAL
-    if cid in _CRITICAL_CMDS:
+def _get_cmd_priority(cmd: RenderCmd) -> int:
+    """获取命令优先级（值越小越优先）。
+
+    REASONING/CONTENT（_STREAM_CMDS）与 PhaseDone 等关键命令同为优先级 0：
+    同批命令经 PriorityQueue 的 seq 序号保插入序，使流式内容命令先于
+    完成命令（PhaseDoneCmd）出队；阻塞语义由 _CRITICAL_CMDS 独立判定。
+    """
+    cid = cmd.cid
+    if cid in _CRITICAL_CMDS or cid in _STREAM_CMDS:
         return _CMD_PRIORITY_CRITICAL
     if cid in _HIGH_CMDS:
         return _CMD_PRIORITY_HIGH
@@ -100,13 +97,9 @@ def _get_cmd_priority(cmd: Union[RenderCmd, tuple]) -> int:
     return _CMD_PRIORITY_LOW
 
 
-def _get_cmd_id(cmd: Union[RenderCmd, tuple]) -> int | None:
-    """从 RenderCmd 数据类或元组中提取命令 ID。"""
-    if isinstance(cmd, RenderCmd):
-        return cmd.cid
-    if isinstance(cmd, tuple) and cmd:
-        return cmd[0]
-    return None
+def _get_cmd_id(cmd: RenderCmd) -> int:
+    """从 RenderCmd 数据类中提取命令 ID。"""
+    return cmd.cid
 
 
 # ═══════════════════════════════════════════════════════════
@@ -126,12 +119,15 @@ class TuiEngine:
         cursor_tracker: "CursorTracker | None" = None,
         input_instance: "Input | None" = None,
         config: TuiConfig | None = None,
+        render_output: "RenderOutput | None" = None,
     ):
         self._renderer = renderer
         self._bb = bottom_bar
         self._cursor_tracker = cursor_tracker
         self._input = input_instance
         self._config: TuiConfig = config or TuiConfig.defaults()
+        # 统一输出端口（可选）：队列满/崩溃紧急路径走 RenderOutput.write_emergency
+        self._render_output = render_output
         self._cmd_queue: queue.PriorityQueue = queue.PriorityQueue(maxsize=self._config.cmd_queue_maxsize)
         self._cmd_event = threading.Event()
         self._render_thread: threading.Thread | None = None
@@ -147,22 +143,60 @@ class TuiEngine:
         self._render_version: int = 0
         self._cmd_seq = itertools.count()
 
-    def push_cmd(self, cmd: Union[RenderCmd, tuple]) -> None:
-        """入队渲染命令。低优先级命令满队列时丢弃，高优先级命令同步等待。"""
+    def _write_emergency(self, text: str, stream: str = "stderr") -> None:
+        """紧急输出统一出口。
+
+        优先走 RenderOutput.write_emergency（受控 + 限频）；
+        未注入 render_output 时回退旧 _emergency_write（兼容测试/降级）。
+        """
+        if self._render_output is not None:
+            self._render_output.write_emergency(text, stream=stream)
+        else:
+            _emergency_write(text, stream=stream)
+
+    def push_cmd(self, cmd: RenderCmd) -> None:
+        """入队渲染命令。
+
+        关键命令（``_CRITICAL_CMDS`` 集合：PhaseDone/ToolSummary/工具计数/
+        主阶段/品牌屏）保留阻塞语义（block=True timeout=0.1，尽力不丢，
+        非无限阻塞避免卡死发布者）；其余命令非阻塞入队，队列满时丢弃计数。
+
+        方向D 步骤8（2026-07-31）+ P1-2 修复：高优先级命令（SUBAGENT_FRAME/
+        ERROR）不再短时阻塞发布者线程（原 block=True timeout=0.1 → 统一
+        block=False），与低优先级一致；REASONING/CONTENT 优先级提至 0（与
+        PhaseDone 同级，PriorityQueue 以 seq 保插入序 → 同批内容命令先于
+        完成命令出队，修复尾部 token 竞态），但仍保持非阻塞（不加入
+        _CRITICAL_CMDS）。极端拥塞（队列满 10000 条）时
+        丢弃并计数（_cmd_queue_dropped / _consecutive_full 递增 + warning 日志 +
+        连续满阈值触发 _write_emergency）。**关键命令（PhaseDone/ToolSummary 等）
+        在 push_cmd 内保留阻塞语义**——push_cmd_critical 无生产调用方，
+        EventDispatcher 注入的是本方法（push_cmd）；若关键命令走非阻塞路径，
+        极端拥塞时丢弃 PhaseDoneCmd 使 ``_rs.close_reasoning()`` 不执行、
+        丢弃 ToolSummaryCmd 使 ``_in_tool_group`` 不闭合。
+        ``push_cmd_critical``（block=True timeout=1.0）保留供测试/未来调用方使用。
+        """
         priority = _get_cmd_priority(cmd)
+        blocking = _get_cmd_id(cmd) in _CRITICAL_CMDS
         try:
-            if priority <= _CMD_PRIORITY_HIGH:
-                # 高优先级命令：短时阻塞等待，尽力不丢失
-                self._cmd_queue.put((priority, next(self._cmd_seq), cmd), block=True, timeout=0.1)
+            if blocking:
+                self._cmd_queue.put(
+                    (priority, next(self._cmd_seq), cmd),
+                    block=True, timeout=0.1,
+                )
             else:
-                self._cmd_queue.put((priority, next(self._cmd_seq), cmd), block=False)
+                self._cmd_queue.put(
+                    (priority, next(self._cmd_seq), cmd), block=False,
+                )
             self._consecutive_full = 0
             self._cmd_event.set()
         except queue.Full:
+            # P3-10：_consecutive_full / _cmd_queue_dropped 无锁自增——
+            # 统计日志不影响渲染正确性（仅用于拥塞诊断），GIL 下自增
+            # 原子性足够，不引入额外锁开销。
             self._consecutive_full += 1
             self._cmd_queue_dropped += 1
             cmd_id = _get_cmd_id(cmd)
-            cmd_name = _cmd_name(cmd_id) if cmd_id is not None else "?"
+            cmd_name = _cmd_name(cmd_id)
             _logger.warning(
                 "渲染命令队列已满（%s 条），丢弃命令: %s (优先级=%d)",
                 self._cmd_queue.qsize(), cmd_name, priority,
@@ -170,13 +204,13 @@ class TuiEngine:
             if self._consecutive_full >= self._config.consecutive_full_threshold:
                 _logger.error("渲染输出管线持续拥堵（%d 次连续满队列）", self._consecutive_full)
                 if self._consecutive_full % self._config.consecutive_full_threshold == 0:
-                    _emergency_write(
+                    self._write_emergency(
                         f"{ANSI_EMERGENCY_RED}[ChatUI] 渲染队列已满，已丢弃 "
                         f"{self._cmd_queue_dropped} 条命令{ANSI_EMERGENCY_RESET}\n",
                         stream="stderr",
                     )
 
-    def push_cmd_critical(self, cmd: Union[RenderCmd, tuple]) -> None:
+    def push_cmd_critical(self, cmd: RenderCmd) -> None:
         """入队关键命令 — 阻塞等待以确保绝不丢失。"""
         priority = _CMD_PRIORITY_CRITICAL
         self._cmd_queue.put((priority, next(self._cmd_seq), cmd), block=True, timeout=1.0)
@@ -186,6 +220,10 @@ class TuiEngine:
     @property
     def render_crashed(self) -> bool:
         return self._render_crashed.is_set()
+
+    def is_render_running(self) -> bool:
+        """返回 render 线程是否正在运行（公开访问器，收敛私有字段读取）。"""
+        return self._render_running
 
     def set_panel_refresh_callback(self, callback: Callable[[], None] | None) -> None:
         self._panel_refresh_cb = callback
@@ -277,11 +315,10 @@ class TuiEngine:
         while i < len(commands):
             cmd = commands[i]
             cmd_id = _get_cmd_id(cmd)
-            if cmd_id is not None and self._renderer._is_batchable(cmd):
+            if self._renderer._is_batchable(cmd):
                 batch_end = i + 1
                 while batch_end < len(commands):
-                    next_id = _get_cmd_id(commands[batch_end])
-                    if next_id is None or not self._renderer._is_batchable(commands[batch_end]):
+                    if not self._renderer._is_batchable(commands[batch_end]):
                         break
                     batch_end += 1
                 try:
@@ -296,7 +333,7 @@ class TuiEngine:
                     self._renderer.render(cmd)
                 except Exception:
                     _logger.warning(
-                        "渲染命令 %s 失败", _cmd_name(cmd_id) if cmd_id is not None else '?', exc_info=True,
+                        "渲染命令 %s 失败", _cmd_name(cmd_id), exc_info=True,
                     )
                 i += 1
 
@@ -321,12 +358,16 @@ class TuiEngine:
             if not cmd:
                 continue
             cmd_id = _get_cmd_id(cmd)
-            if cmd_id is not None and cmd_id in _CONTENT_COMMANDS:
+            if cmd_id in _CONTENT_COMMANDS:
                 return True
         return False
 
     def _drain_queue(self) -> bool:
         commands: list = []
+        # ★ 确认（2026-07-31 方向D）：输入分发（_phase_process_input）与
+        #   面板刷新（_phase_pre_update_panels，SubAgentPanel）均在输出锁获取
+        #   （drain 阶段锁区间起点）之前执行 —— 面板刷新移出锁外，无锁内
+        #   面板刷新阻塞；若未来需快照式渲染再评估。
         self._phase_process_input()
         self._phase_pre_update_panels()
         with _try_acquire_output_lock(name="drain_queue", timeout=self._config.drain_lock_timeout) as locked:
@@ -363,7 +404,7 @@ class TuiEngine:
         try:
             _logger.critical("cmd_queue.qsize=%d", self._cmd_queue.qsize())
             _logger.critical("render 线程异常崩溃", exc_info=True)
-            _emergency_write(
+            self._write_emergency(
                 f"{ANSI_EMERGENCY_RED}[ChatUI] render 线程异常终止: "
                 f"{type(exc).__name__}: {exc}{ANSI_EMERGENCY_RESET}\n",
                 stream="stderr",
@@ -410,7 +451,7 @@ class TuiEngine:
             dropped = self._drain_queue_safe()
             _logger.debug("render 线程 finally 排空 %d 条命令", dropped)
             if dropped > 0:
-                _emergency_write(
+                self._write_emergency(
                     f"{ANSI_EMERGENCY_RED}[ChatUI] render 线程已终止，"
                     f"丢弃 {dropped} 条待处理命令{ANSI_EMERGENCY_RESET}\n",
                     stream="stderr",

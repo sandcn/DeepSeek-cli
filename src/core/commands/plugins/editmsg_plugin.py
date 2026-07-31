@@ -83,11 +83,11 @@ class EditmsgPlugin(InteractiveCommandPlugin):
             # ★ 不执行 chat_ui.suspend() — 保持 render 线程 + _BottomBar 运行
             # ★ 不执行 monitor.stop() — 保持 cbreak 模式供 render 线程驱动 ↑↓/Enter
             # Layer 2 防御：进入选择界面前排空 stdin 残余字节
-            flush_stdin(input_instance=chat_ui._input if chat_ui else None)
+            flush_stdin(input_instance=chat_ui.get_input() if chat_ui else None)
 
             edit_state = {"model": state.get("model", ""), "retry": False, "prefill": ""}
             bottom_bar = chat_ui.bottom_bar if chat_ui is not None else None
-            input_ = chat_ui._input if chat_ui is not None else None
+            input_ = chat_ui.get_input() if chat_ui is not None else None
 
             editor = MessageEditor(bottom_bar=bottom_bar, input_=input_)
             # 在线程中运行编辑器的交互式选择（使用 time.sleep 轮询）
@@ -133,7 +133,7 @@ class EditmsgPlugin(InteractiveCommandPlugin):
                     #    确保即使有未处理的 Enter 事件残留，_input_ready 也会被清除，
                     #    防止下一轮 wait_for_user_input 立即返回空字符串。
                     if chat_ui is not None:
-                        input_inst = chat_ui._input
+                        input_inst = chat_ui.get_input()
                         if input_inst is not None:
                             try:
                                 with input_inst._lock:
@@ -149,7 +149,7 @@ class EditmsgPlugin(InteractiveCommandPlugin):
                             except Exception:
                                 _logger.debug("editmsg_plugin: drain_all 异常", exc_info=True)
 
-                    reset_interrupt_async(input_instance=chat_ui._input if chat_ui else None)
+                    reset_interrupt_async(input_instance=chat_ui.get_input() if chat_ui else None)
                     monitor.clear_interrupted()
                 except Exception:
                     _logger.warning("finally 块清理异常", exc_info=True)

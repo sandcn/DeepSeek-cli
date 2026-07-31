@@ -115,3 +115,62 @@ class TestRunBottomBarSelection:
             ["a", "b"], ["A", "B"], initial_idx=0, title="选择", bottom_bar=None,
         )
         assert result == {"action": "error", "index": None}
+
+
+class TestDisplayMessagesDelegation:
+    """方向C 步骤4 输出路径统一回归测试。
+
+    验证 CommandUiAdapter.display_messages：
+      - ChatUI 活跃时委托 ChatUIConsumer.display_messages（路径 A）
+      - ChatUI 不活跃时回退 pipeline/message_display 直写（非 ChatUI 兜底）
+    """
+
+    def test_display_messages_delegates_to_chat_ui_regression(self):
+        """get_active_chat_ui 返回 consumer → display_messages 委托路径 A。"""
+        from src.core.commands._ui_adapter import CommandUiAdapter
+
+        adapter = CommandUiAdapter()
+        data = [{"role": "user", "content": "hello"}]
+        mock_consumer = MagicMock()
+
+        with patch(
+            "src.tui.consumer.get_active_chat_ui", return_value=mock_consumer,
+        ):
+            adapter.display_messages(data)
+
+        mock_consumer.display_messages.assert_called_once_with(data, speed=0)
+
+    def test_display_messages_delegates_preserves_speed_regression(self):
+        """委托路径保留 speed 参数。"""
+        from src.core.commands._ui_adapter import CommandUiAdapter
+
+        adapter = CommandUiAdapter()
+        data = [{"role": "assistant", "content": "hi"}]
+        mock_consumer = MagicMock()
+
+        with patch(
+            "src.tui.consumer.get_active_chat_ui", return_value=mock_consumer,
+        ):
+            adapter.display_messages(data, speed=1000)
+
+        mock_consumer.display_messages.assert_called_once_with(data, speed=1000)
+
+    def test_display_messages_fallback_no_chat_ui_regression(self):
+        """get_active_chat_ui 返回 None → 回退 pipeline 直写路径不抛异常。"""
+        from src.core.commands._ui_adapter import CommandUiAdapter
+
+        adapter = CommandUiAdapter()
+        data = [{"role": "user", "content": "fallback"}]
+
+        with patch(
+            "src.tui.consumer.get_active_chat_ui", return_value=None,
+        ) as mock_get:
+            with patch(
+                "src.tui.pipeline.message_display.display_messages",
+            ) as mock_fn:
+                adapter.display_messages(data)
+
+        mock_get.assert_called_once()
+        mock_fn.assert_called_once_with(
+            data, agent=None, idx_map=None, speed=0,
+        )

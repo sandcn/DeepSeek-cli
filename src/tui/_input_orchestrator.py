@@ -1,12 +1,17 @@
 """TuiInputOrchestrator — 用户输入等待编排器。
 
 从 ChatUIConsumer.wait_for_user_input() 提取为独立类，
-负责输入等待轮询、prefill 注入和残留输入排空。
+负责输入等待（事件化）、prefill 注入和残留输入排空。
 
 单一职责：
-  - 阻塞等待用户输入（轮询 Input.get_queued_input()）
+  - 阻塞等待用户输入（基于 Input._input_ready threading.Event，非忙等轮询）
   - prefill 文本注入 + 残留输入排空
   - EscapeMonitor 存活检测
+
+方向A 步骤2（2026-07-31）：wait_for_user_input 由 50ms ``time.sleep`` 忙等
+轮询改为 ``input_.wait_until_ready()`` 事件等待——线程在 threading.Event 上
+休眠，Enter（render 线程 ``_enter()`` set）后立即唤醒，消除 50ms 轮询延迟；
+0.2s 等待上限仅为周期性检查 monitor 存活（非忙等）。
 """
 
 from __future__ import annotations
@@ -40,7 +45,9 @@ class TuiInputOrchestrator:
     ) -> str:
         """阻塞等待用户通过 Input 实例输入文本。
 
-        轮询 ``input_.get_queued_input()``，以 50ms 间隔检查。
+        基于 ``input_.wait_until_ready()``（_input_ready threading.Event）
+        事件等待，线程在 Event 上休眠而非 50ms 忙等轮询；Enter 提交后立即
+        唤醒返回。
 
         Args:
             monitor: EscapeMonitor 实例，用于 is_alive 存活检测。
@@ -71,17 +78,33 @@ class TuiInputOrchestrator:
             input_.set_buffer(prefill)
             input_.echo(prefill)
             _logger.debug("wait_for_user_input: prefill done, entering poll loop")
+
         deadline = None if timeout is None else time.monotonic() + timeout
         while True:
+            # ── 事件等待（方向A 步骤2：消除 50ms 忙等） ──
+            #   _input_ready 在 render 线程 _enter() 中 set、在 get_queued_input()
+            #   中 clear；wait 与 clear 之间仅单一消费者（本编排器），无竞态。
+            #   prefill 路径中 set_buffer 会 clear _input_ready，随后事件等待
+            #   从干净状态开始。
+            # P3-4 前提锁定：``wait_until_ready`` 返回 True 与 ``get_queued_input``
+            #   之间理论存在竞态（其他消费者可能先消费）——当前**单一消费者**
+            #   前提成立（仅 TuiInputOrchestrator 调用 get_queued_input；editmsg
+            #   等路径不经过本编排器）。若未来引入第二消费者须加锁/队列语义。
+            remaining = None if deadline is None else deadline - time.monotonic()
+            wait_timeout = min(0.2, remaining) if remaining is not None else 0.2
+            if input_.wait_until_ready(timeout=wait_timeout):
+                text = input_.get_queued_input()
+                if text is not None:
+                    return text
+                # 防御：wait 返回 True 但被其他路径先消费（当前无此调用方）
+                # ——与旧轮询语义一致（get 到 None 就继续循环）。
+                continue
+            # wait 返回 False（0.2s 上限，周期性检查 monitor 存活 + 超时）
             if not monitor.is_alive:
                 _logger.warning("EscapeMonitor 线程已死亡，退出等待")
                 raise RuntimeError("EscapeMonitor thread died")
-            text = input_.get_queued_input()
-            if text is not None:
-                return text
             if deadline is not None and time.monotonic() >= deadline:
                 return ""
-            time.sleep(0.05)
 
 
 __all__ = ["TuiInputOrchestrator"]

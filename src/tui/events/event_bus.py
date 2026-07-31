@@ -99,6 +99,11 @@ class DisplayEventBus(metaclass=SingletonMeta):
 
     线程安全。支持按事件类型过滤订阅。
     单例行为由 ``SingletonMeta`` 自动提供 get_default / reset_default。
+
+    单例作用域评估（2026-07-31 方向D）：
+      CLI/WebUI 共享 DisplayEventBus 进程级单例为既有架构；webui bridge
+      （_EVENT_BINDINGS 16 类）与 TUI 内部（_lifecycle/_subagent_panel/consumers）
+      强依赖 get_default()，隔离改动过大 → 标记 P2 遗留，保持单例，不做隔离。
     """
 
     def __init__(self):
@@ -161,10 +166,19 @@ class DisplayEventBus(metaclass=SingletonMeta):
                     self._all_handlers.remove(handler)
 
     def clear(self) -> None:
-        """清除所有订阅。"""
+        """清除所有订阅与批处理注册（全量重置，供测试隔离与整体 teardown）。
+
+        与 stop() 不同（stop 不注销批处理以保持生命周期内稳定），
+        clear() 为完整重置语义，一并清空 _batched_events。
+
+        P2-7 审计：clear() 全量重置（订阅 + 批处理注册）仅供测试隔离/整体
+        teardown；**生产代码当前无调用方**（生产路径使用 subscribe/unsubscribe
+        或 stop() 的生命周期语义）。
+        """
         with self._lock:
             self._handlers.clear()
             self._all_handlers.clear()
+            self._batched_events.clear()
             self._batcher.clear()
 
     @property

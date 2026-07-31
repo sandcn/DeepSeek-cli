@@ -228,8 +228,8 @@ class AsyncStreamPipeline:
                     # 延迟渲染，工具输出先于思考内容到达终端。
                     if ctx.is_reasoning:
                         ctx.is_reasoning = False
-                        publish_event("PhaseDoneEvent",
-                                      label=ctx.label or "", phase="reasoning")
+                        # 🔥 发布 PhaseDoneEvent("reasoning")（去重助手：每流恰一次）
+                        ctx.publish_phase_done_once("reasoning")
                     await self._tool_calls_handler.handle(ctx, dtc)
                     self._speed_handler.try_update(ctx)
                     continue
@@ -322,14 +322,16 @@ class AsyncStreamPipeline:
         ctx._cleaned_up = True
 
         # ── 第 1 步：刷出剩余的 EventBus 缓冲事件 ───────────
+        # flush 顺序：reasoning 尾事件先于 content 尾事件（推理→内容过渡顺序），
+        # 且均先于后续 PhaseDoneEvent 发布——命令队列优先级（REASONING/CONTENT
+        # 与 PhaseDone 同级 0）+ seq 保序保证渲染线程先渲染内容命令再渲染完成命令。
         self._reasoning_handler.flush(ctx.label)
         self._content_handler.flush(ctx.label)
 
-        # ⏳ 单次 await asyncio.sleep(0)，让事件循环有机会处理
-        # 已排队的 ContentChunkEvent/ReasoningChunkEvent task，
-        # 确保最后一批 chunk 先于 PhaseDoneEvent 到达前端。
-        # 后续所有 publish_event 调用不再额外 sleep(0)，
-        # 利用 EventBus 同步发布特性，在单次调度后按序发送。
+        # ⏳ 单次 await asyncio.sleep(0) 仅为事件循环让出（保留 CancelledError
+        # 保护）；事件顺序由队列优先级 + seq 保证——flush 为同步 publish
+        # （DisplayEventBus 无批处理启用）→ 内容命令先于 PhaseDoneCmd 入队。
+        # 后续所有 publish_event 调用不再额外 sleep(0)。
         # ★ 保护：CancelledError 不跳过后续清理，防止渲染器泄漏
         try:
             await asyncio.sleep(0)
@@ -351,15 +353,23 @@ class AsyncStreamPipeline:
         # ★ 标记追踪：在 content.py 或 tool_calls.py 中已发布的阶段事件，此处不再重复发送
         #   PhaseDoneEvent("reasoning") 由 content.py 在首次 content 到达时发布，
         #   PhaseDoneEvent("content") 由 tool_calls.py 在首次工具调用时发布。
-        #   使用 _phase_done_reasoning_sent / _phase_done_content_sent 标记避免重复。
-        if ctx.reasoning_full and not ctx.phase_thinking_sent:
-            # phase_thinking_sent 在首次 content 到达时被 content.py 置 True，
-            # 因此若它仍为 False → PhaseDoneEvent("reasoning") 尚未被发布过。
-            publish_event("PhaseDoneEvent", label=ctx.label or "", phase="reasoning")
+        #   统一经 ctx.publish_phase_done_once() 去重（每流同 phase 至多一次）。
+        #   ★ 修正（2026-07-31）：不再误用 phase_thinking_sent 判断「是否已发
+        #     PhaseDone("reasoning")」——phase_thinking_sent 由 reasoning.py 在
+        #     首个推理 chunk 置位（语义为「thinking 阶段已宣布」），与 PhaseDone
+        #     发布无关；reasoning-only 流（有推理、无 content、无工具）此前因此
+        #     从不发布 PhaseDone("reasoning")，导致 close_reasoning() 不执行、
+        #     推理尾部无换行 token 滞留 parser 缓冲永不渲染。改为「始终尝试 +
+        #     去重助手」：content.py 已发布时幂等跳过，reasoning-only 流在收尾
+        #     必发布一次。
+        if ctx.reasoning_full:
+            ctx.publish_phase_done_once("reasoning")
         if ctx.content_full and not ctx.tool_calls_map and not ctx.esc_interrupted:
             # 仅当没有工具调用路径且未被中断时才发布 content done 事件
-            # (tool_calls.py 已发布过 content done, 此处跳过)
-            publish_event("PhaseDoneEvent", label=ctx.label or "", phase="content")
+            # （tool_calls.py 已发布过 content done，助手幂等跳过；条件保留——
+            #  not ctx.esc_interrupted 必须保留，否则中断文本 ContentChunk 晚于
+            #  PhaseDone 到达被丢弃）
+            ctx.publish_phase_done_once("content")
 
         # 🔥 中断标记：向前端发送 (已中断) 标记
         if ctx.esc_interrupted:
@@ -369,14 +379,16 @@ class AsyncStreamPipeline:
             else:
                 publish_event("ContentChunkEvent", text=_INTERRUPTED_MSG_TEXT,
                               label=ctx.label or "")
-            publish_event("PhaseDoneEvent", label=ctx.label or "", phase="content")
+            # 🔥 发布 PhaseDoneEvent("content")（去重助手：每流恰一次）
+            ctx.publish_phase_done_once("content")
 
         # 🔥 有工具调用时，先闭合 content 气泡，再发送 segment_end 信号。
         #    中断时不发送 segment_end：不完整工具调用不应触发完成信号。
         #    工具参数接收中断（tracker.interrupted）同样不发送：不完整参数不应触发生成信号。
         if ctx.tool_calls_map and not ctx.esc_interrupted and not ctx.tracker.interrupted:
             if ctx.content_full:
-                publish_event("PhaseDoneEvent", label=ctx.label or "", phase="content")
+                # 🔥 发布 PhaseDoneEvent("content")（去重助手：tool_calls.py 已置位时幂等跳过）
+                ctx.publish_phase_done_once("content")
             publish_event("PhaseDoneEvent", label=ctx.label or "", phase="segment_end")
 
         # ⏳ 再次保护：tracker.finalize() 内部有 asyncio.sleep(0.2) 取消 Task，

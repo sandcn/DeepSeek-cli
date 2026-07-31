@@ -2,25 +2,48 @@
 
 重构说明（2026-07-29）：
   - 删除旧 terminal/animation/components/core/frame/pipeline/layout/widgets/engine/consumer 等 100+ 文件
-  - 用 ~12 个新模块替代，零第三方依赖（blessed/wcwidth 移除）
+  - 用 ~24 个顶层模块替代，零第三方依赖（blessed/wcwidth 移除）
   - rich 仅限内容渲染（OutputAdapter），TUI 框架本身不依赖 rich
   - 所有 ANSI 序列手写，终端尺寸通过 fcntl.ioctl + os.get_terminal_size 获取
 
 模块架构：
-  _config.py      — TuiConfig 配置 dataclass
-  _const.py       — RenderCommand / FrameworkCommand / ChatCommand 枚举
-  _screen.py      — 纯 ANSI 终端屏幕管理（尺寸/光标/滚动/颜色/SIGWINCH）
-  _buffer.py      — RenderBuffer 二维字符渲染缓冲区
-  _input.py       — Input 统一输入管理（stdin 读取/解析/缓冲/历史/补全）
-  _bottom_bar.py  — DECSTBM 分屏底部固定栏
-  _renderer.py    — TuiEngine + TuiRenderer + EventDispatcher（统一渲染器）
-  _consumer.py    — ChatUIConsumer 兼容实现
-  _completion.py  — _CmplHandler 补全处理器
-  _locks.py       — 输出锁（render_lock / io_lock / diff_active）
-  framework.py    — Framework 单例框架入口（保留不变）
+  _config.py                — TuiConfig 配置 dataclass
+  _const.py                 — RenderCommand / FrameworkCommand / ChatCommand 枚举
+  _screen.py                — 纯 ANSI 终端屏幕管理（尺寸/光标/滚动/颜色/SIGWINCH）
+  _buffer.py                — RenderBuffer 二维字符渲染缓冲区
+  _input.py                 — Input 统一输入管理（stdin 读取/解析/缓冲/历史/补全）
+  _input_parser.py          — InputParser ANSI 解析策略（Input 组合持有委托）
+  _bottom_bar/              — DECSTBM 分屏底部固定栏（目录：_bar/_layout/_layout_utils/_monitor/_popup/_render/_status）
+  _renderer/                — TuiEngine + TuiRenderer + EventDispatcher（目录：_dispatcher/_engine/_renderer）
+  _consumer.py              — ChatUIConsumer 兼容实现
+  _completion.py            — _CmplHandler 补全处理器
+  _completion_engine.py     — CompletionEngine 终端补全引擎（/命令/路径/参数补全，
+                              供 EscapeMonitor Tab 回调使用；与 _completion.py 平行存在）
+  _animator.py              — 最小动画上下文存根（替换已删除 animation/）
+  _assembly.py              — TuiAssembly 子系统装配工厂
+  _base_display.py          — 显示抽象基类（被 webui 引用）
+  _cost.py                  — 费用计算占位（DEPRECATED，全零占位兼容旧调用方）
+  _cursor_tracker.py        — CursorTracker 全局光标坐标追踪器
+  _diff_renderer.py         — 差异渲染（纯函数，被 core/tools/webui 引用）
+  _input_orchestrator.py    — TuiInputOrchestrator 输入等待编排器
+  _lifecycle.py             — TuiLifecycle 生命周期管理（start/stop/suspend/resume）
+  _output.py                — 统一渲染输出端口（RenderOutput 装饰 OutputAdapter）
+  _output_target.py         — 输出目标协议存根（IOutputTarget）
+  _snapshot.py              — Token 速度快照惰性加载共享模块
+  _stdout_tracker.py        — _StdoutLineTracker stdout 行追踪（环形缓冲）
+  _subagent_panel.py        — SubAgent 面板控制器（EventBus 事件渲染）
+  _tool_icons.py            — 工具图标 & Agent 类型标签
+  input.py                  — Input 统一输入门面（委托实现至 ._input）
+
+新结构目录（非旧残留）：
+  consumer/                 — ChatUIConsumer 事件消费者 + 渲染入口
+  core/                     — 核心工具（color/style/singleton）
+  events/                   — UI 事件总线 + DisplayEvent 类型定义
+  pipeline/                 — 消息编辑/显示管道（message_display/message_editor）
+  state/                    — 渲染/消费/输入/会话状态管理（consumer_registry/render_state）
 
 Layer 层次（由底向上）：
-  _config → _const → _screen → _buffer → _input → _bottom_bar → _renderer → _consumer → Framework
+  _config → _const → _screen → _buffer → _input → _bottom_bar/ → _renderer/ → _consumer
 """
 
 from __future__ import annotations
@@ -34,11 +57,6 @@ from ._config import TuiConfig
 # 命令枚举
 # ═══════════════════════════════════════════════════════════
 from ._const import RenderCommand, FrameworkCommand, ChatCommand
-
-# ═══════════════════════════════════════════════════════════
-# 框架入口
-# ═══════════════════════════════════════════════════════════
-from .framework import Framework
 
 # ═══════════════════════════════════════════════════════════
 # 核心抽象
@@ -109,8 +127,6 @@ __all__ = [
     "RenderCommand",
     "FrameworkCommand",
     "ChatCommand",
-    # 框架入口
-    "Framework",
     # 核心抽象
     "RenderBuffer",
     # 输入系统

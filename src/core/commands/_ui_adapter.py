@@ -8,7 +8,9 @@
   - run_bottom_bar_selection → 使用 _bottom_bar.py 内置方法
   - 主题函数 → 去除了 theme.py 依赖，返回默认值
   - diff → 移到 _diff_renderer.py
-  - display_messages / edit_current_messages → 委托到 pipeline/
+  - display_messages → 委托活跃 ChatUIConsumer（路径 A），无 ChatUI 时回退
+    pipeline/message_display（P2-4 docstring 修正）
+  - edit_current_messages → 委托到 pipeline/message_editor
 """
 
 from __future__ import annotations
@@ -104,8 +106,26 @@ class CommandUiAdapter:
     ) -> None:
         """恢复会话后展示所有消息内容。
 
-        委托到 pipeline/message_display.py（已恢复）。
+        输出路径统一（方向C 步骤4）：ChatUI 活跃时委托 ChatUIConsumer.display_messages
+        （路径 A：DisplayMsgsCmd 管线，经 render_lock 保护），否则回退
+        pipeline/message_display 直写（非 ChatUI 上下文兜底，如单次模式）。
+
+        P3-6 标注：``agent`` / ``idx_map`` **仅兜底路径有效**——路径 A 委托下
+        ChatUIConsumer.display_messages 仅接受 messages/speed，不传递二者；
+        委托异常时降级兜底直写并 warning 日志（与 deitmsg_plugin 防御风格对齐）。
         """
+        from ...tui.consumer import get_active_chat_ui
+        chat_ui = get_active_chat_ui()
+        if chat_ui is not None:
+            try:
+                chat_ui.display_messages(data, speed=speed)
+                return
+            except Exception as exc:
+                _logger.warning(
+                    "CommandUiAdapter display_messages 路径A委托异常: %s", exc,
+                    exc_info=True,
+                )
+                # 降级兜底直写，保证消息不丢失（仅此分支传递 agent/idx_map）
         from ...tui.pipeline.message_display import display_messages as _fn
         _fn(data, agent=agent, idx_map=idx_map, speed=speed)
 

@@ -16,15 +16,13 @@ from __future__ import annotations
 
 import logging
 import sys
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from enum import Enum
 from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
 if TYPE_CHECKING:
     from ...renderer import IncrementalRenderer
     from ...renderer.output import OutputAdapter
-
-from ._collection import ThreadSafeList
 
 _logger = logging.getLogger(__name__)
 
@@ -162,50 +160,70 @@ class ChatRenderState(RenderState):
     继承自 RenderState，添加聊天域特有的 reasoning/content 双通道管理和
     _ReasoningState 状态机。
 
-    captured_reasoning_output（v2026-07-24）：
-      存储推理 IncrementalRenderer 渲染后的 ANSI 输出，供 ThinkingBlock.render()
-      写入 RenderBuffer。每个 write() 调用追加一条渲染后的文本块。
-
-    captured_content_output（v2026-07-24）：
-      存储回答 IncrementalRenderer 渲染后的 ANSI 输出，供 AnswerBlock.render()
-      写入 RenderBuffer。
+    已删除 captured_* 机制（P1-1：无消费方 + 共享 adapter 覆盖导致错乱，2026-07-31）：
+      原 captured_reasoning_output / captured_content_output 字段已删除，
+      渲染输出统一经共享 OutputAdapter 直写，不再累积捕获列表。
     """
     reasoning: "IncrementalRenderer | None" = None
     content: "IncrementalRenderer | None" = None
     reasoning_state: _ReasoningState = _ReasoningState.INACTIVE
-    captured_reasoning_output: "ThreadSafeList[str]" = field(default_factory=ThreadSafeList)
-    captured_content_output: "ThreadSafeList[str]" = field(default_factory=ThreadSafeList)
 
     def __post_init__(self) -> None:
         """初始化基类的 _shared_adapter 属性。"""
         super().__init__()
+        # content 通道关闭标志：close_content() 置位后 get_content() 返回 None
+        # （不重建不错位）；多轮会话由 reopen_content() 重开后惰性重建。
+        self._content_closed = False
 
     def get_reasoning(self) -> "IncrementalRenderer | None":
         if self.reasoning_state == _ReasoningState.CLOSED:
+            # 推理通道已关闭：明确丢弃后续到达的推理文本（不重建不错位），
+            # 与 content 通道关闭后的丢弃语义对齐（见 get_content）。
             return None
         if self.reasoning is None:
             assert self.reasoning_state.can_transition_to(_ReasoningState.ACTIVE), (
                 f"非法状态转换: {self.reasoning_state} -> ACTIVE"
             )
+            # P2-8 注释：模块级无 IncrementalRenderer 符号——函数内惰性
+            # from ...renderer import（避免 _renderer → state 循环依赖）。
+            # 测试如需 patch 渲染器类，须 patch ``src.renderer.IncrementalRenderer``
+            # （inspect 断言见 tests/test_tui/test_renderer.py）。
             from ...renderer import IncrementalRenderer  # 保留运行时惰性 import（避免循环）
-            self.reasoning = IncrementalRenderer(
-                style="dim", _file=sys.__stdout__,
-                show_indicator=False,
-                captured_output=self.captured_reasoning_output,
-            )
+            if self._shared_adapter is None:
+                # 兜底：共享 adapter 未注入时保持旧路径（独立 Console 直写 stdout）
+                _logger.warning("get_reasoning: _shared_adapter 未设置，回退旧路径")
+                self.reasoning = IncrementalRenderer(
+                    style="dim", _file=sys.__stdout__,
+                    show_indicator=False,
+                )
+            else:
+                # 统一输出管线：reasoning 走共享 OutputAdapter（样式由
+                # _StyledOutputAdapter 保留 dim），不再创建独立 Console
+                self.reasoning = IncrementalRenderer(
+                    output_adapter=self._shared_adapter,
+                    style="dim",
+                    show_indicator=False,
+                )
             self.reasoning_state = _ReasoningState.ACTIVE
         return self.reasoning
 
-    def get_content(self) -> "IncrementalRenderer":
+    def get_content(self) -> "IncrementalRenderer | None":
+        if self._content_closed:
+            # 内容阶段已关闭：明确丢弃后续到达内容，不重建不错位。
+            # 多轮会话（工具调用后新一轮 content）由 reopen_content() 重开后
+            # 惰性重建渲染器（get_content 再次构造）。
+            return None
         if self.content is None:
             if self._shared_adapter is None:
                 _logger.warning("get_content: _shared_adapter 未设置")
+            # P2-8 注释：模块级无 IncrementalRenderer 符号——函数内惰性
+            # from ...renderer import（避免 _renderer → state 循环依赖）。
+            # 测试如需 patch 渲染器类，须 patch ``src.renderer.IncrementalRenderer``。
             from ...renderer import IncrementalRenderer  # 保留运行时惰性 import（避免循环）
             self.content = IncrementalRenderer(
-                style="", _file=sys.__stdout__,
+                style="",
                 show_indicator=False,
                 output_adapter=self._shared_adapter,
-                captured_output=self.captured_content_output,
             )
         return self.content
 
@@ -235,6 +253,18 @@ class ChatRenderState(RenderState):
     def close_content(self) -> None:
         """关闭内容渲染器，刷出缓冲并置空。"""
         self._close_renderer("content")
+        # 置位关闭标志：get_content() 关闭后返回 None（不重建不错位）。
+        # 重复调用幂等（_close_renderer 对 None 早退，标志重复置位无害）。
+        self._content_closed = True
+
+    def reopen_content(self) -> None:
+        """重新打开 content 通道（多轮会话新一轮内容前调用）。
+
+        仅清除关闭标志，不立即重建渲染器——由下一轮 get_content()
+        惰性重建（与 reopen_reasoning 的 CLOSED→INACTIVE 模式对称）。
+        幂等：未关闭时调用无副作用。
+        """
+        self._content_closed = False
 
     def close_all(self) -> None:
         """关闭所有活跃的渲染器（实现基类抽象方法）。

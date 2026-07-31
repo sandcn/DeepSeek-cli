@@ -14,7 +14,7 @@
 
 ```bash
 # 安装全部核心依赖
-pip install aiohttp httpx rich Pygments Jinja2 beautifulsoup4 chardet aiofiles blessed
+pip install aiohttp httpx rich Pygments Jinja2 beautifulsoup4 chardet aiofiles
 
 # 安装开发依赖（测试/代码检查等）
 pip install pytest pytest-asyncio pytest-xdist pytest-cov ruff mypy
@@ -42,7 +42,6 @@ pip install ".[dev]"
 | `beautifulsoup4` | HTML 解析 | `pip install beautifulsoup4` |
 | `chardet` | 字符编码检测 | `pip install chardet` |
 | `aiofiles` | 异步文件操作 | `pip install aiofiles` |
-| `blessed` | 终端底层控制（光标移动、屏幕管理、键盘事件） | `pip install blessed` |
 
 ---
 
@@ -313,7 +312,7 @@ def can_use(cls, tool_name: str, agent_type: str = "execute") -> tuple[bool, str
 | 方法 | 功能 |
 |------|------|
 | `move_to(row, col)` | 写 ANSI CUP 序列 + 更新内部坐标 |
-| `move_xy(col, row)` | 0-based → 1-based 转换入口（blessed 风格） |
+| `move_xy(col, row)` | 0-based → 1-based 转换入口 |
 | `set(row, col)` | 仅更新内部状态，不写终端 |
 | `record_newlines(n)` | 追加 `n` 行后自动更新行号 + 列号复位 |
 | `record_move_down(n)` | 下移 `n` 行（滚动场景） |
@@ -492,24 +491,17 @@ ChatUIConsumer
 │   │   └── telemetry/         # 可观测性（指标/追踪/上下文传播）
 │   │
 │   ├── tui/                # 终端 UI 聊天渲染引擎（替代 chat_ui/）
+│   │   ├── _animator.py / _assembly.py / _base_display.py / _buffer.py / _completion.py / _completion_engine.py
+│   │   ├── _config.py / _const.py / _consumer.py / _cost.py / _cursor_tracker.py / _diff_renderer.py
+│   │   ├── _input.py / _input_parser.py / _input_orchestrator.py / _lifecycle.py / _output.py / _output_target.py
+│   │   ├── _screen.py / _snapshot.py / _stdout_tracker.py / _subagent_panel.py / _tool_icons.py / input.py
+│   │   ├── _bottom_bar/        # DECSTBM 分屏底部固定栏（_bar/_layout/_layout_utils/_monitor/_popup/_render/_status）
+│   │   ├── _renderer/          # TuiEngine + TuiRenderer + EventDispatcher（_dispatcher/_engine/_renderer）
 │   │   ├── consumer/           # ChatUIConsumer 事件消费者 + 渲染入口
-│   │   ├── engine/             # 增量渲染引擎（render 线程 + 命令分发）
+│   │   ├── core/               # 核心工具（color/style/singleton）
 │   │   ├── events/             # UI 事件总线 + DisplayEvent 类型定义
 │   │   ├── pipeline/           # 消息编辑/显示管道
-│   │   ├── state/              # 渲染/消费/输入/会话状态管理
-│   │   ├── components/         # TUI 组件（答案/面板/进度/通知等 18 个）
-│   │   ├── widgets/            # 底部栏（bar/completion/cursor/selection）+ 光标追踪
-│   │   ├── core/               # 核心工具（颜色/主题/渐变/参数格式化/输出目标）
-│   │   ├── animation/          # 动画系统（composer/palettes/transitions）
-│   │   ├── terminal/           # 终端适配器 + blessed 封装 + 窄屏检测
-│   │   ├── frame/              # 分帧渲染器
-│   │   ├── config.py           # TUI 配置
-│   │   ├── layout.py           # 布局管理
-│   │   ├── parallel_display.py # 并行 SubAgent 面板显示
-│   │   ├── render_buffer.py    # 渲染缓冲区
-│   │   ├── testing.py          # 测试工具
-│   │   ├── framework.py / framework_delegates.py / framework_types.py  # 渲染框架
-│   │   └── widget_base.py      # 组件基类
+│   │   └── state/              # 渲染/消费/输入/会话状态管理
 │   │
 │   ├── renderer/           # 增量流式 Markdown 渲染引擎
 │   │   ├── engine.py          # RenderEngine 渲染引擎
@@ -547,8 +539,6 @@ ChatUIConsumer
 │   │   ├── page_fetcher.py    # 网页内容抓取（web_search 内部依赖）
 │   │   └── parsers/           # 搜索引擎结果解析器（baidu / bing / generic / github）
 │   │
-│   ├── ui/                 # （已废弃，功能迁移至 tui/）
-│   │
 │   ├── webui/              # Web 界面
 │   │   ├── server.py          # aiohttp HTTP 服务器 + WebSocket
 │   │   ├── bridge.py          # WebEventBridge（EventBus → WebSocket）
@@ -574,7 +564,7 @@ ChatUIConsumer
 
 ## 六边形架构（Ports & Adapters）
 
-核心层通过 **8 个端口接口** 访问基础设施，实现依赖倒置——核心层不直接依赖 `api`、`ui`、`chat_msgs` 等具体实现模块，基础设施层通过适配器模式实现这些端口。
+核心层通过 **8 个端口接口** 访问基础设施，实现依赖倒置——核心层不直接依赖 `api`、`tui`、`webui`、`chat_msgs` 等具体实现模块，基础设施层通过适配器模式实现这些端口。
 
 | 端口 | 文件 | 说明 |
 |------|------|------|
@@ -665,7 +655,7 @@ Pipeline 将 Agent 对话循环编排为可插拔中间件链。中间件按注�
 
 重构终端用户界面渲染层，提升视觉体验与交互流畅度：
 
-- **流式渲染性能优化** ✅ — 降低增量 Markdown 渲染延迟，消除大 Token 输出时的界面卡顿（`chat_ui/` 增量流式渲染引擎已实现）
+- **流式渲染性能优化** ✅ — 降低增量 Markdown 渲染延迟，消除大 Token 输出时的界面卡顿（`src/tui/` 增量流式渲染引擎已实现）
 - **光标坐标追踪** ✅ — 新增 `CursorTracker` 全局光标坐标追踪系统，集成到 ContentRenderer / RenderEngine / _BottomBar / _CompletionPopup，消除坐标推算累积误差
 - **富交互组件** — 在终端中嵌入可交互元素（选择列表、确认弹窗、进度条），减少纯文本输出的信息密度
 - **语法高亮增强** — 支持更多编程语言的代码块高亮，优化长代码段的折叠/展开机制

@@ -31,6 +31,43 @@ def _get_match_prefix(items: list, last_word: str) -> str:
     return last_word
 
 
+def _show_completions_for(bb, engine, text: str) -> bool:
+    """计算候选项并显示补全弹窗（on_auto / _first_tab 共用 helper）。
+
+    方向F·步骤13 去重：两处显示块逻辑一致，收敛为单一入口。
+
+    P3-20 副作用说明：本函数为**有副作用的显示入口**（调用
+    ``bb.show_completions`` 显示弹窗），仅收敛显示块逻辑，**不承担状态管理**
+    （防抖状态 ``_last_auto_text`` / 隐藏逻辑由调用方 _CmplHandler 管理）。
+
+    Args:
+        bb: _BottomBar 实例（调用 show_completions）。
+        engine: CompletionEngine 实例（调用 complete）。
+        text: 当前输入缓冲区文本。
+
+    Returns:
+        True 表示已显示弹窗；False 表示无候选项（调用方负责 hide）。
+    """
+    items = engine.complete(text)
+    if not items:
+        return False
+
+    words = text.split()
+    last_word = words[-1] if words else ""
+
+    match_prefix = _get_match_prefix(items, last_word)
+
+    bb.show_completions(
+        [item.display for item in items], 0,
+        texts=[item.text for item in items],
+        start_pos=items[0].start_pos,
+        orig_prefix=last_word,
+        types=[item.item_type for item in items],
+        match_prefix=match_prefix,
+    )
+    return True
+
+
 class _CmplHandler:
     """Tab 补全交互处理器。
 
@@ -108,26 +145,12 @@ class _CmplHandler:
             self._last_auto_text = text
             return
 
-        items = self._engine.complete(text)
-        if not items:
+        if not _show_completions_for(self._bb, self._engine, text):
             self._bb.hide_completions()
             self._request_redraw()
             self._last_auto_text = text
             return
 
-        words = text.split()
-        last_word = words[-1] if words else ""
-
-        match_prefix = _get_match_prefix(items, last_word)
-
-        self._bb.show_completions(
-            [item.display for item in items], 0,
-            texts=[item.text for item in items],
-            start_pos=items[0].start_pos,
-            orig_prefix=last_word,
-            types=[item.item_type for item in items],
-            match_prefix=match_prefix,
-        )
         self._request_redraw()
         self._last_auto_text = text
 
@@ -147,25 +170,10 @@ class _CmplHandler:
 
     def _first_tab(self, text: str) -> str | None:
         """首次 Tab → 计算候选项，设置状态 + 请求重绘。"""
-        items = self._engine.complete(text)
-        if not items:
+        if not _show_completions_for(self._bb, self._engine, text):
             self._bb.hide_completions()
             self._request_redraw()
             return None
-
-        words = text.split()
-        last_word = words[-1] if words else ""
-
-        match_prefix = _get_match_prefix(items, last_word)
-
-        self._bb.show_completions(
-            [item.display for item in items], 0,
-            texts=[item.text for item in items],
-            start_pos=items[0].start_pos,
-            orig_prefix=last_word,
-            types=[item.item_type for item in items],
-            match_prefix=match_prefix,
-        )
         self._request_redraw()
         return text
 

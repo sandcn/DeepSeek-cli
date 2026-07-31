@@ -6,10 +6,11 @@
 
 from __future__ import annotations
 
-from src.tui._const import SplashCmd
+from unittest.mock import MagicMock, patch
 
 import pytest
-from unittest.mock import MagicMock, patch, PropertyMock
+
+from src.tui._const import SplashCmd
 
 
 class TestChatUIConsumerLifecycle:
@@ -104,7 +105,7 @@ class TestChatUIConsumerLifecycle:
         """resume() 应重建底部栏并启动引擎。"""
         c = mock_subsystems['consumer']
         c._lifecycle._started = True
-        c._engine._render_running = False
+        c._engine.is_render_running = MagicMock(return_value=False)
 
         c.resume()
 
@@ -281,7 +282,7 @@ class TestChatUIConsumerPublicMethods:
 
     def test_push_cmd_delegates(self, mock_consumer):
         """push_cmd 应委托给 engine.push_cmd。"""
-        cmd = (99, "test")
+        cmd = SplashCmd()
         mock_consumer.push_cmd(cmd)
         mock_consumer._engine.push_cmd.assert_called_once_with(cmd)
 
@@ -293,6 +294,19 @@ class TestChatUIConsumerPublicMethods:
         """output_adapter 属性应委托给 renderer。"""
         mock_consumer._renderer.output_adapter = "mock_adapter"
         assert mock_consumer.output_adapter == "mock_adapter"
+
+    def test_get_input_component(self, mock_consumer):
+        """get_input_component 应返回 _components.input 实例（收敛私有访问）。"""
+        assert mock_consumer.get_input_component() is mock_consumer._components.input
+
+    def test_get_input(self, mock_consumer):
+        """get_input 应返回输入组件实例。"""
+        assert mock_consumer.get_input() is mock_consumer._input
+
+    def test_request_bottom_redraw_delegates(self, mock_consumer):
+        """request_bottom_redraw 应委托给 engine（公开 API 收敛）。"""
+        mock_consumer.request_bottom_redraw()
+        mock_consumer._engine.request_bottom_redraw.assert_called_once()
 
 
 class TestForTesting:
@@ -369,7 +383,333 @@ def _create_mock_consumer(mock_assemble):
         rs=c._rs, dispatcher=c._dispatcher,
     )
     c._input_orchestrator = TuiInputOrchestrator(c._input)
-    c._lifecycle._bound_handlers = None
+    c._lifecycle.bound_handlers = None
     c._lifecycle._started = False
     c._lifecycle._handlers_bound = False
     return c
+
+
+class TestSharedSourceFilterAndTruncation:
+    """测试步骤 4.2/4.3 收敛的公共函数 — _const.is_agent_source / truncate_error_message。
+
+    验证 source 过滤谓词与错误截断公共函数的行为（唯一真源）。
+    """
+
+    def test_is_agent_source_agent(self):
+        from src.tui._const import is_agent_source
+        assert is_agent_source("agent") is True
+
+    def test_is_agent_source_agent_prefix(self):
+        from src.tui._const import is_agent_source
+        assert is_agent_source("agent-1") is True
+        assert is_agent_source("agent-tool") is True
+
+    def test_is_agent_source_other(self):
+        from src.tui._const import is_agent_source
+        assert is_agent_source("tool") is False
+        assert is_agent_source("user") is False
+        assert is_agent_source("") is False
+
+    def test_is_agent_source_none(self):
+        from src.tui._const import is_agent_source
+        assert is_agent_source(None) is False
+
+    def test_truncate_within_limit(self):
+        from src.tui._const import truncate_error_message
+        assert truncate_error_message("short error", 200) == "short error"
+
+    def test_truncate_exact_limit(self):
+        from src.tui._const import truncate_error_message
+        text = "x" * 200
+        assert truncate_error_message(text, 200) == text
+
+    def test_truncate_over_limit(self):
+        from src.tui._const import truncate_error_message
+        text = "x" * 250
+        result = truncate_error_message(text, 200)
+        assert len(result) == 200
+        assert result == "x" * 197 + "..."
+
+    def test_truncate_empty(self):
+        from src.tui._const import truncate_error_message
+        assert truncate_error_message("", 200) == ""
+
+    def test_truncate_none(self):
+        from src.tui._const import truncate_error_message
+        assert truncate_error_message(None, 200) == ""
+
+    def test_truncate_zero_max_length(self):
+        from src.tui._const import truncate_error_message
+        assert truncate_error_message("hello", 0) == ""
+
+    def test_truncate_small_max_length(self):
+        from src.tui._const import truncate_error_message
+        # max_length <= 3 时退化为直接截断，不加省略号
+        assert truncate_error_message("hello", 3) == "hel"
+
+
+class TestAssemblyRefactorRegression:
+    """方向B 步骤3 装配层重构回归测试。
+
+    验证 _ComponentsNamespace 迁出至 _components.py 后：
+      - 旧导入路径（_consumer）与新导入路径（_components）均可用且同一类
+      - assemble() 拆分为工厂方法后返回全部 9 个 slot 字段
+      - _consumer ↔ _assembly 无循环 import
+    """
+
+    def test_components_namespace_moved_regression(self):
+        """_ComponentsNamespace 从 _consumer 与 _components 均可导入且同一类。"""
+        from src.tui._consumer import _ComponentsNamespace as FromConsumer
+        from src.tui._components import _ComponentsNamespace as FromComponents
+        assert FromConsumer is FromComponents
+
+        ns = FromConsumer(None)
+        assert ns.input is None
+        ns2 = FromComponents("mock_input")
+        assert ns2.input == "mock_input"
+
+    def test_assembly_factory_methods_regression(self):
+        """TuiAssembly.assemble() 返回全部 9 个 slot 字段非 None。"""
+        import sys
+        from unittest.mock import patch
+        from src.tui._assembly import TuiAssembly
+
+        class _FakeStdin:
+            """pytest 下 sys.stdin 为 pseudofile 无 fileno()，提供伪造 fd。"""
+            def fileno(self):
+                return 0
+
+        with patch.object(sys, "stdin", _FakeStdin()):
+            result = TuiAssembly.assemble()
+        slots = (
+            'rs', 'engine', 'bb', 'dispatcher', 'renderer',
+            'cmpl_handler', 'input_instance', 'subagent_controller',
+            'components',
+        )
+        for slot in slots:
+            assert getattr(result, slot) is not None, (
+                f"slot {slot} 应为非 None"
+            )
+        # 命名空间 input 与 input_instance 一致
+        assert result.components.input is result.input_instance
+
+    def test_no_cycle_import_regression(self):
+        """_consumer 与 _assembly 任意导入顺序均成功（P2-3：subprocess 子进程验证）。
+
+        原实现直接 importlib.import_module 受 sys.modules 缓存影响——
+        第二次顺序验证时模块已缓存，验证名不副实。改用 subprocess +
+        ``python -c`` 子进程（每种子进程全新解释器，无模块缓存），分别以
+        两种顺序 import，断言均成功。
+        """
+        import os
+        import subprocess
+        import sys
+        from pathlib import Path
+
+        project_root = Path(__file__).resolve().parents[2]
+        script_template = (
+            "import {first}; import {second}; print('IMPORT_OK')"
+        )
+        for first, second in (
+            ("src.tui._consumer", "src.tui._assembly"),
+            ("src.tui._assembly", "src.tui._consumer"),
+        ):
+            script = script_template.format(first=first, second=second)
+            proc = subprocess.run(
+                [sys.executable, "-c", script],
+                cwd=str(project_root),
+                capture_output=True,
+                text=True,
+                timeout=30,
+                env={**os.environ, "PYTHONPATH": str(project_root)},
+            )
+            assert proc.returncode == 0, (
+                f"导入顺序 ({first}, {second}) 失败:\n{proc.stderr}"
+            )
+            assert "IMPORT_OK" in proc.stdout
+
+        # 类同一性在当前进程内仍可验证（与模块缓存无关的符号一致性）
+        import src.tui._consumer
+        import src.tui._assembly
+        assert src.tui._consumer._ComponentsNamespace is (
+            src.tui._assembly._ComponentsNamespace
+        )
+
+
+class TestLifecycleBatchedRegistration:
+    """方向D 步骤6 / P0-3 重估 — TuiLifecycle.start() 批处理注册决策回归测试。"""
+
+    def test_lifecycle_start_registers_batched_events_regression(self):
+        """start() 后总线 _batched_events **为空**（批处理不启用决策，P0-3）。
+
+        2026-07-31 重估：上游 StreamChunkHandler 100ms 节流已满足降频目标，
+        33ms 批处理窗口无实际合并收益，且将「批处理延迟事件 vs 同步直发阶段
+        切换事件」的顺序竞态放大为固定窗口（推理文本静默丢失/content 开新块）
+        → 批处理机制保留但**不启用**。
+        """
+        from unittest.mock import MagicMock
+        from src.tui._lifecycle import TuiLifecycle
+        from src.tui.events.event_bus import DisplayEventBus
+        from src.tui.events.event_types import ContentChunkEvent, ReasoningChunkEvent
+
+        DisplayEventBus.reset_default()
+        try:
+            bus = DisplayEventBus.get_default()
+            engine = MagicMock()
+            dispatcher = MagicMock()
+            dispatcher.list_handlers.return_value = {}
+            bb = MagicMock()
+            rs = MagicMock()
+            lc = TuiLifecycle(
+                engine=engine, bus=bus, bb=bb, rs=rs, dispatcher=dispatcher,
+            )
+
+            lc.start()
+
+            # 批处理不启用：_batched_events 为空（无 ContentChunk/Reasoning 注册）
+            assert bus._batched_events == set()
+            assert ContentChunkEvent not in bus._batched_events
+            assert ReasoningChunkEvent not in bus._batched_events
+
+            # 重复 start() 幂等（仍不注册批处理）
+            lc.start()
+            assert bus._batched_events == set()
+
+            lc.stop()
+
+            # stop() 后仍为空
+            assert bus._batched_events == set()
+        finally:
+            DisplayEventBus.reset_default()
+
+
+class TestStreamToRenderOrdering:
+    """端到端排序回归：事件总线 → dispatcher → engine → renderer 调用顺序。
+
+    验证核心修复（步骤2 优先级 + seq 保序）：同批内容命令
+    （ReasoningCmd/ContentCmd）先于完成命令（PhaseDoneCmd）出队渲染——
+    事件生成顺序本身即正确渲染顺序（reasoning 尾 → PhaseDone("reasoning") →
+    content 首/尾 → PhaseDone("content")），REASONING/CONTENT 与 PhaseDone
+    同级优先级(0) 后 PriorityQueue 的 seq 序号自然保持插入序。
+    """
+
+    def test_same_batch_content_before_phase_done(self):
+        from src.tui._renderer import EventDispatcher, TuiEngine
+        from src.tui.events.event_bus import DisplayEventBus
+        from src.tui.events.event_types import (
+            ContentChunkEvent, PhaseDoneEvent, ReasoningChunkEvent,
+        )
+        from src.tui._const import RenderCommand
+
+        DisplayEventBus.reset_default()
+        try:
+            bus = DisplayEventBus.get_default()
+            renderer = MagicMock()
+            renderer._is_batchable.return_value = False  # 全部走单条 render()
+            bb = MagicMock()
+            bb.is_active = False
+            engine = TuiEngine(renderer, bb)
+            dispatcher = EventDispatcher(push_cmd=engine.push_cmd, main_label="main")
+            # 按事件类型订阅（勿订阅所有事件：各 handler 内部不做类型判空，
+            # 订阅全部会导致非本类型事件被误处理入队）
+            for event_type, handler in dispatcher.list_handlers().items():
+                bus.subscribe(handler, event_type)
+
+            # 依序发布（reasoning 尾 → PhaseDone("reasoning") → content 首/尾 → PhaseDone("content")）
+            bus.publish(ReasoningChunkEvent(text="tail-thought", label="main"))
+            bus.publish(PhaseDoneEvent(phase="reasoning", label="main"))
+            bus.publish(ContentChunkEvent(text="first", label="main"))
+            bus.publish(ContentChunkEvent(text="tail", label="main"))
+            bus.publish(PhaseDoneEvent(phase="content", label="main"))
+
+            class _FakeLock:
+                def __enter__(self):
+                    return True
+                def __exit__(self, *a):
+                    return False
+
+            with patch(
+                "src.tui._renderer._engine._try_acquire_output_lock",
+                return_value=_FakeLock(),
+            ):
+                engine._drain_queue()
+
+            # 断言 renderer.render 调用顺序 cid
+            rendered_cids = [call.args[0].cid for call in renderer.render.call_args_list]
+            assert rendered_cids == [
+                RenderCommand.REASONING,
+                RenderCommand.PHASE_DONE,
+                RenderCommand.CONTENT,
+                RenderCommand.CONTENT,
+                RenderCommand.PHASE_DONE,
+            ], (
+                "同批内容命令应先于完成命令渲染，实际顺序: "
+                f"{[RenderCommand(c).name for c in rendered_cids]}"
+            )
+        finally:
+            DisplayEventBus.reset_default()
+
+    def test_non_main_label_content_not_enqueued(self):
+        """label 非 main 的 ContentChunkEvent 不入队（_on_content_chunk label 过滤）。"""
+        from src.tui._renderer import EventDispatcher, TuiEngine
+        from src.tui.events.event_bus import DisplayEventBus
+        from src.tui.events.event_types import ContentChunkEvent
+
+        DisplayEventBus.reset_default()
+        try:
+            bus = DisplayEventBus.get_default()
+            renderer = MagicMock()
+            bb = MagicMock()
+            engine = TuiEngine(renderer, bb)
+            dispatcher = EventDispatcher(push_cmd=engine.push_cmd, main_label="main")
+            for event_type, handler in dispatcher.list_handlers().items():
+                bus.subscribe(handler, event_type)
+
+            # 非 main label（如 SubAgent）的 ContentChunkEvent 不应入队
+            bus.publish(ContentChunkEvent(text="subagent-content", label="agent-1"))
+            assert engine._cmd_queue.qsize() == 0
+        finally:
+            DisplayEventBus.reset_default()
+
+    def test_model_phase_answering_reopens_content(self):
+        """MainPhaseCmd("answering") 渲染时触发 reopen_content（多轮会话重开通道）。"""
+        from src.tui._renderer import EventDispatcher, TuiEngine
+        from src.tui.events.event_bus import DisplayEventBus
+        from src.tui.events.event_types import ModelPhaseEvent
+
+        DisplayEventBus.reset_default()
+        try:
+            bus = DisplayEventBus.get_default()
+            renderer = MagicMock()
+            renderer._is_batchable.return_value = False
+            bb = MagicMock()
+            bb.is_active = False
+            engine = TuiEngine(renderer, bb)
+            dispatcher = EventDispatcher(push_cmd=engine.push_cmd, main_label="main")
+            for event_type, handler in dispatcher.list_handlers().items():
+                bus.subscribe(handler, event_type)
+
+            # 每轮首个 content 前由 ContentHandler 发布 ModelPhaseEvent("answering")
+            bus.publish(ModelPhaseEvent(label="main", phase="answering", info=""))
+
+            class _FakeLock:
+                def __enter__(self):
+                    return True
+                def __exit__(self, *a):
+                    return False
+
+            with patch(
+                "src.tui._renderer._engine._try_acquire_output_lock",
+                return_value=_FakeLock(),
+            ):
+                engine._drain_queue()
+
+            # MainPhaseCmd 入队并渲染：调用 rs.reopen_content（每轮 content 重开）
+            assert renderer.render.call_count == 1
+            cmd = renderer.render.call_args.args[0]
+            from src.tui._const import MainPhaseCmd
+            assert isinstance(cmd, MainPhaseCmd)
+            assert cmd.phase == "answering"
+        finally:
+            DisplayEventBus.reset_default()
+

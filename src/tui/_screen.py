@@ -5,6 +5,10 @@ SIGWINCH 信号处理等基础设施。所有函数为纯字符串返回或
 直接写入 ``sys.__stdout__``，不依赖 blessed/wcwidth 等第三方库。
 
 设计模式: 外观（Facade）— 作为所有终端 I/O 的统一入口。
+
+遗留标注（2026-07-31 方向F）：鼠标输入不支持 / bracketed paste 无协议——
+功能增强项，不在本次架构改进范围，**标记 P2 遗留**（后续如需鼠标支持须引入
+终端能力协商与协议解析，评估后再实施）。
 """
 
 from __future__ import annotations
@@ -18,6 +22,27 @@ import sys
 import termios
 import time
 from typing import Callable
+
+# ANSI 颜色常量唯一真源在 src/tui/_const.py（方向F 步骤12 收敛）；
+# 本模块 re-export 保持 bottom_bar 各子模块既有导入路径不变。
+from ._const import (
+    _COLOR_ACCENT,
+    _COLOR_COMPLETE_CMD_PREFIX,
+    _COLOR_COMPLETE_DIR,
+    _COLOR_COMPLETE_MATCH,
+    _COLOR_COMPLETE_TITLE,
+    _COLOR_DEEP_CYAN,
+    _COLOR_DIM,
+    _COLOR_RESET,
+    _COLOR_SELECT_BG,
+    _COLOR_SELECT_FG,
+    _COLOR_SEP,
+    _COLOR_SPEED,
+    _COLOR_TIME,
+    _COLOR_TOKEN,
+    _COLOR_TOOL_FAIL,
+    _COLOR_TOOL_OK,
+)
 
 
 # ═══════════════════════════════════════════════════════════
@@ -448,25 +473,12 @@ def set_window_title(title: str) -> None:
 
 
 # ═══════════════════════════════════════════════════════════
-# ANSI 颜色常量（256 色体系）
+# ANSI 颜色常量（256 色体系）— re-export from _const
 # ═══════════════════════════════════════════════════════════
-
-_COLOR_ACCENT = "\033[38;5;45m"
-_COLOR_DEEP_CYAN = "\033[38;5;32m"
-_COLOR_DIM = "\033[38;5;242m"
-_COLOR_RESET = "\033[0m"
-_COLOR_SEP = "\033[38;5;237m"
-_COLOR_TIME = "\033[38;5;110m"
-_COLOR_TOKEN = "\033[38;5;68m"
-_COLOR_SPEED = "\033[38;5;214m"
-_COLOR_TOOL_OK = "\033[38;5;41m"
-_COLOR_TOOL_FAIL = "\033[38;5;196m"
-_COLOR_SELECT_BG = "\033[48;5;236m"
-_COLOR_SELECT_FG = "\033[38;5;15m"
-_COLOR_COMPLETE_TITLE = "\033[1;38;5;45m"
-_COLOR_COMPLETE_CMD_PREFIX = "\033[1;38;5;45m"
-_COLOR_COMPLETE_DIR = "\033[38;5;110m"
-_COLOR_COMPLETE_MATCH = "\033[38;5;221m"
+# 唯一真源已收敛至 src/tui/_const.py（方向F 步骤12）；本模块保留 re-export，
+# 使 bottom_bar 各子模块（_bar/_layout/_popup/_render）既有
+# ``from src.tui._screen import _COLOR_*`` 导入路径不变。
+# （常量定义见本文件顶部 from ._const import ...）
 
 
 # ═══════════════════════════════════════════════════════════
@@ -476,7 +488,7 @@ _COLOR_COMPLETE_MATCH = "\033[38;5;221m"
 def write_stdout(data: str) -> None:
     """直接写入 ``sys.__stdout__``。
 
-    用于紧急路径输出，绕过渲染管线。
+    仅紧急路径使用，禁止常规调用（常规内容/布局写一律走统一输出管线）。
 
     Args:
         data: 要写入的字符串。
