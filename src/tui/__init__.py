@@ -38,14 +38,7 @@ from ._const import RenderCommand, FrameworkCommand, ChatCommand
 # ═══════════════════════════════════════════════════════════
 # 框架入口
 # ═══════════════════════════════════════════════════════════
-from .framework import (
-    Framework,
-    create_component,
-    create_widget,
-    get_animator,
-    get_framework,
-    frame_from_context,
-)
+from .framework import Framework
 
 # ═══════════════════════════════════════════════════════════
 # 核心抽象
@@ -90,6 +83,8 @@ def __getattr__(name: str):
         "Box", "BoxStyle", "RoundedBox", "DoubleBox", "Separator",
         "Spinner", "ProgressBar", "SplashScreen",
         "Widget", "WidgetTree",
+        "create_widget", "get_animator", "get_framework", "frame_from_context",
+        "create_component",
         "Vertical", "Horizontal", "Padding", "Border", "Grid", "Center",
         "apply_fade_in",
         "MockConsumer", "MockTerminal",
@@ -97,7 +92,7 @@ def __getattr__(name: str):
     if name in _OBSOLETE_SYMBOLS:
         raise ImportError(
             f"{name!r} 已在 TUI 重构中移除。"
-            f" 请参考 src/tui/* 新模块或使用 RenderBuffer 替代 Widget/RenderBuffer 体系。"
+            f" 请参考 src/tui/* 新模块。"
         )
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
@@ -116,11 +111,6 @@ __all__ = [
     "ChatCommand",
     # 框架入口
     "Framework",
-    "create_component",
-    "create_widget",
-    "get_animator",
-    "get_framework",
-    "frame_from_context",
     # 核心抽象
     "RenderBuffer",
     # 输入系统

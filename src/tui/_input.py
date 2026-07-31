@@ -319,6 +319,9 @@ class Input:
         self._completion_navigate_callback = None
         self._auto_completion_callback = None
 
+        # ── InputReader 支持（可选，由外部注入） ──
+        self._reader = None
+
         # ── I/O 状态控制 ──
         self._io_started: bool = False
         self._active = threading.Event()
@@ -619,6 +622,16 @@ class Input:
             _logger.warning("多字节 UTF-8 字符分发异常", exc_info=True)
         return True
 
+    # ── InputReader 支持 ─────────────────────────────
+
+    def set_reader(self, reader) -> None:
+        """注入 InputReader 实例，使 process_events 从队列消费。
+
+        Args:
+            reader: InputReader 实例，或 None 降级为直接 stdin 读取。
+        """
+        self._reader = reader
+
     # ═══════════════════════════════════════════════════════
     # 事件处理（render 线程调用）
     # ═══════════════════════════════════════════════════════
@@ -628,7 +641,6 @@ class Input:
 
         循环调用 ``read_stdin_once()`` 直到无可读数据，
         确保一次渲染帧内处理完所有待处理的输入。
-        不再逐帧仅处理一个输入单元。
         """
         try:
             while self.read_stdin_once():

@@ -10,10 +10,11 @@ import queue
 import sys
 import threading
 import time
-from typing import TYPE_CHECKING, Callable
+from typing import TYPE_CHECKING, Callable, Union
 
 from src.tui._const import (
     RenderCommand,
+    RenderCmd,
     ANSI_EMERGENCY_RED,
     ANSI_EMERGENCY_RESET,
 )
@@ -47,6 +48,65 @@ _CONTENT_COMMANDS = frozenset({
     RenderCommand.SPLASH,
 })
 
+# ── 命令优先级（值越小越优先） ──
+
+_CMD_PRIORITY_CRITICAL = 0   # PhaseDone, ToolSummary, TOOL_COUNT_INC/DEC, TOOL_FAIL_INC, MAIN_PHASE, SPLASH
+_CMD_PRIORITY_HIGH = 1       # REASONING, CONTENT, SUBAGENT_FRAME, ERROR
+_CMD_PRIORITY_NORMAL = 2     # TOOL_OUTPUT, USER_MSG, PARSE_INFO, NOTIFICATION
+_CMD_PRIORITY_LOW = 3        # WRITE_LINE, DISPLAY_MSGS
+
+_CRITICAL_CMDS = frozenset({
+    RenderCommand.PHASE_DONE,
+    RenderCommand.TOOL_SUMMARY,
+    RenderCommand.TOOL_COUNT_INC,
+    RenderCommand.TOOL_COUNT_DEC,
+    RenderCommand.TOOL_FAIL_INC,
+    RenderCommand.MAIN_PHASE,
+    RenderCommand.SPLASH,
+})
+_HIGH_CMDS = frozenset({
+    RenderCommand.REASONING,
+    RenderCommand.CONTENT,
+    RenderCommand.SUBAGENT_FRAME,
+    RenderCommand.ERROR,
+})
+_NORMAL_CMDS = frozenset({
+    RenderCommand.TOOL_OUTPUT,
+    RenderCommand.USER_MSG,
+    RenderCommand.PARSE_INFO,
+    RenderCommand.NOTIFICATION,
+})
+_LOW_CMDS = frozenset({
+    RenderCommand.WRITE_LINE,
+    RenderCommand.DISPLAY_MSGS,
+})
+
+
+def _get_cmd_priority(cmd: Union[RenderCmd, tuple]) -> int:
+    """获取命令优先级（值越小越优先）。"""
+    if isinstance(cmd, RenderCmd):
+        cid = cmd.cid
+    elif isinstance(cmd, tuple) and cmd:
+        cid = cmd[0]
+    else:
+        return _CMD_PRIORITY_NORMAL
+    if cid in _CRITICAL_CMDS:
+        return _CMD_PRIORITY_CRITICAL
+    if cid in _HIGH_CMDS:
+        return _CMD_PRIORITY_HIGH
+    if cid in _NORMAL_CMDS:
+        return _CMD_PRIORITY_NORMAL
+    return _CMD_PRIORITY_LOW
+
+
+def _get_cmd_id(cmd: Union[RenderCmd, tuple]) -> int | None:
+    """从 RenderCmd 数据类或元组中提取命令 ID。"""
+    if isinstance(cmd, RenderCmd):
+        return cmd.cid
+    if isinstance(cmd, tuple) and cmd:
+        return cmd[0]
+    return None
+
 
 # ═══════════════════════════════════════════════════════════
 # TuiEngine — 渲染引擎
@@ -71,7 +131,7 @@ class TuiEngine:
         self._cursor_tracker = cursor_tracker
         self._input = input_instance
         self._config: TuiConfig = config or TuiConfig.defaults()
-        self._cmd_queue: queue.Queue = queue.Queue(maxsize=self._config.cmd_queue_maxsize)
+        self._cmd_queue: queue.PriorityQueue = queue.PriorityQueue(maxsize=self._config.cmd_queue_maxsize)
         self._cmd_event = threading.Event()
         self._render_thread: threading.Thread | None = None
         self._render_running = False
@@ -85,17 +145,25 @@ class TuiEngine:
         self._recovering_event: threading.Event = threading.Event()
         self._render_version: int = 0
 
-    def push_cmd(self, cmd: tuple) -> None:
+    def push_cmd(self, cmd: Union[RenderCmd, tuple]) -> None:
+        """入队渲染命令。低优先级命令满队列时丢弃，高优先级命令同步等待。"""
+        priority = _get_cmd_priority(cmd)
         try:
-            self._cmd_queue.put(cmd, block=False)
+            if priority <= _CMD_PRIORITY_HIGH:
+                # 高优先级命令：短时阻塞等待，尽力不丢失
+                self._cmd_queue.put((priority, cmd), block=True, timeout=0.1)
+            else:
+                self._cmd_queue.put((priority, cmd), block=False)
             self._consecutive_full = 0
             self._cmd_event.set()
         except queue.Full:
             self._consecutive_full += 1
             self._cmd_queue_dropped += 1
+            cmd_id = _get_cmd_id(cmd)
+            cmd_name = _cmd_name(cmd_id) if cmd_id is not None else "?"
             _logger.warning(
-                "渲染命令队列已满（%s 条），丢弃命令: %s",
-                self._cmd_queue.qsize(), _cmd_name(cmd[0]),
+                "渲染命令队列已满（%s 条），丢弃命令: %s (优先级=%d)",
+                self._cmd_queue.qsize(), cmd_name, priority,
             )
             if self._consecutive_full >= self._config.consecutive_full_threshold:
                 _logger.error("渲染输出管线持续拥堵（%d 次连续满队列）", self._consecutive_full)
@@ -105,6 +173,13 @@ class TuiEngine:
                         f"{self._cmd_queue_dropped} 条命令{ANSI_EMERGENCY_RESET}\n",
                         stream="stderr",
                     )
+
+    def push_cmd_critical(self, cmd: Union[RenderCmd, tuple]) -> None:
+        """入队关键命令 — 阻塞等待以确保绝不丢失。"""
+        priority = _CMD_PRIORITY_CRITICAL
+        self._cmd_queue.put((priority, cmd), block=True, timeout=1.0)
+        self._consecutive_full = 0
+        self._cmd_event.set()
 
     @property
     def render_crashed(self) -> bool:
@@ -186,7 +261,7 @@ class TuiEngine:
             except Exception:
                 _logger.warning("panel_refresh_cb 异常", exc_info=True)
 
-    def _phase_render(self, commands: list[tuple]) -> None:
+    def _phase_render(self, commands: list) -> None:
         try:
             self._bb.sync_bottom_lines()
         except Exception:
@@ -199,9 +274,13 @@ class TuiEngine:
         i = 0
         while i < len(commands):
             cmd = commands[i]
-            if cmd and self._renderer._is_batchable(cmd[0]):
+            cmd_id = _get_cmd_id(cmd)
+            if cmd_id is not None and self._renderer._is_batchable(cmd):
                 batch_end = i + 1
-                while batch_end < len(commands) and self._renderer._is_batchable(commands[batch_end][0]):
+                while batch_end < len(commands):
+                    next_id = _get_cmd_id(commands[batch_end])
+                    if next_id is None or not self._renderer._is_batchable(commands[batch_end]):
+                        break
                     batch_end += 1
                 try:
                     self._renderer.render_batch(commands[i:batch_end])
@@ -215,7 +294,7 @@ class TuiEngine:
                     self._renderer.render(cmd)
                 except Exception:
                     _logger.warning(
-                        "渲染命令 %s 失败", _cmd_name(cmd[0]) if cmd else '?', exc_info=True,
+                        "渲染命令 %s 失败", _cmd_name(cmd_id) if cmd_id is not None else '?', exc_info=True,
                     )
                 i += 1
 
@@ -235,14 +314,17 @@ class TuiEngine:
                 _logger.debug("position_cursor 异常", exc_info=True)
 
     @staticmethod
-    def _has_content_command(commands: list[tuple]) -> bool:
+    def _has_content_command(commands: list) -> bool:
         for cmd in commands:
-            if cmd and cmd[0] in _CONTENT_COMMANDS:
+            if not cmd:
+                continue
+            cmd_id = _get_cmd_id(cmd)
+            if cmd_id is not None and cmd_id in _CONTENT_COMMANDS:
                 return True
         return False
 
     def _drain_queue(self) -> bool:
-        commands: list[tuple] = []
+        commands: list = []
         self._phase_process_input()
         self._phase_pre_update_panels()
         with _try_acquire_output_lock(name="drain_queue", timeout=self._config.drain_lock_timeout) as locked:
@@ -250,8 +332,9 @@ class TuiEngine:
                 return False
             while len(commands) < self._config.max_batch_size:
                 try:
-                    commands.append(self._cmd_queue.get_nowait())
+                    _, cmd = self._cmd_queue.get_nowait()
                     self._cmd_queue.task_done()
+                    commands.append(cmd)
                 except queue.Empty:
                     break
             has_content = bool(commands)
@@ -264,7 +347,7 @@ class TuiEngine:
         dropped = 0
         while not self._cmd_queue.empty():
             try:
-                self._cmd_queue.get_nowait()
+                _, cmd = self._cmd_queue.get_nowait()
                 self._cmd_queue.task_done()
                 dropped += 1
             except queue.Empty:

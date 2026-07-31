@@ -1,20 +1,28 @@
-"""DisplayEventBus — 显示层事件总线（基于 CoreEventBus 实现）
+"""DisplayEventBus — 显示层事件总线（直接分发实现）。
 
-内部委托给 CoreEventBus 实现线程安全的事件分发，
-消除与核心层事件总线的功能重叠。
+自行实现线程安全的事件分发，移除对 CoreEventBus 的包装委托，
+消除高频事件（ContentChunkEvent/ReasoningChunkEvent）的装箱/拆箱开销。
 
-对外接口完全不变。
+架构：
+  - 按事件类型（DisplayEvent 子类）存储 handler 列表
+  - subscribe() 支持按类型订阅或订阅所有（event_type=None）
+  - publish() 直接调用 handler，异常隔离
+  - 批处理机制：高频事件 ~33ms 时间窗口合并
+
+设计原则：
+  - 线程安全：RLock 保护 handler 注册表，异常隔离
+  - 轻量无依赖：无需 CoreEventBus，自实现完整分发
+  - 向后兼容：所有公开接口签名与旧版完全一致
 """
 
 from __future__ import annotations
 
 import logging
 import threading
-from typing import Any, Callable, Dict, Optional, Type
+import time
+from typing import Any, Callable, Optional, Type
 
 from .event_types import DisplayEvent
-from ...core.events.event_bus import CoreEventBus
-from ...core.events.event_types import CoreEvent, EventPriority
 from ..core.singleton import SingletonMeta
 
 _logger = logging.getLogger(__name__)
@@ -22,22 +30,83 @@ _logger = logging.getLogger(__name__)
 EventHandler = Callable[[DisplayEvent], Any]
 
 
+# ═══════════════════════════════════════════════════════════
+# _TimeWindowBatcher — 时间窗口批处理器
+# ═══════════════════════════════════════════════════════════
+
+class _TimeWindowBatcher:
+    """时间窗口批处理器 — 在指定时间窗口内合并对同一 handler 的多次触发。
+
+    用于高频事件（ContentChunkEvent, ReasoningChunkEvent）的批处理，
+    减少渲染压力。窗口默认 ~33ms。
+    """
+
+    def __init__(self, window: float = 0.033):
+        self._window = window
+        self._last_dispatch: float = 0.0
+        self._pending: list[tuple[EventHandler, DisplayEvent]] = []
+        self._lock = threading.RLock()
+        self._timer: threading.Timer | None = None
+
+    def enqueue(self, handler: EventHandler, event: DisplayEvent) -> None:
+        """将事件加入待处理队列，在时间窗口结束后统一分发。"""
+        with self._lock:
+            self._pending.append((handler, event))
+            now = time.monotonic()
+            if now - self._last_dispatch >= self._window:
+                self._flush()
+            elif self._timer is None:
+                remaining = self._window - (now - self._last_dispatch)
+                self._timer = threading.Timer(remaining, self._flush)
+                self._timer.daemon = True
+                self._timer.start()
+
+    def _flush(self) -> None:
+        with self._lock:
+            if self._timer is not None:
+                self._timer.cancel()
+                self._timer = None
+            if not self._pending:
+                return
+            batch = self._pending[:]
+            self._pending.clear()
+            self._last_dispatch = time.monotonic()
+        for handler, event in batch:
+            try:
+                handler(event)
+            except Exception:
+                _logger.exception(
+                    "批处理事件处理函数 %s 处理 %s 时异常",
+                    getattr(handler, "__name__", repr(handler)),
+                    type(event).__name__,
+                )
+
+    def clear(self) -> None:
+        """清空待处理队列。"""
+        with self._lock:
+            if self._timer is not None:
+                self._timer.cancel()
+                self._timer = None
+            self._pending.clear()
+
+
+# ═══════════════════════════════════════════════════════════
+# DisplayEventBus — 显示层事件总线
+# ═══════════════════════════════════════════════════════════
+
 class DisplayEventBus(metaclass=SingletonMeta):
-    """显示层事件总线 — 同步发布/订阅（基于 CoreEventBus 实现）。
+    """显示层事件总线 — 同步发布/订阅（直接分发实现）。
 
     线程安全。支持按事件类型过滤订阅。
     单例行为由 ``SingletonMeta`` 自动提供 get_default / reset_default。
-    内部委托给 CoreEventBus 进行事件分发。
     """
 
     def __init__(self):
-        # 内部委托给 CoreEventBus（复用线程安全分发+异常隔离）
-        self._bus = CoreEventBus()
-        # 维护 handler 映射: original_handler → list of (mode, event_type, wrapper)
-        # mode: 'type' 表示按类型订阅, 'all' 表示订阅所有事件
-        # ★ 改为列表存储，支持同一 handler 在多个 event_type 上注册
-        self._handler_map: Dict[EventHandler, list[tuple[str, Optional[type], Any]]] = {}
-        self._handler_lock = threading.RLock()
+        self._handlers: dict[type, list[EventHandler]] = {}
+        self._all_handlers: list[EventHandler] = []
+        self._lock = threading.RLock()
+        self._batched_events: set[type] = set()
+        self._batcher = _TimeWindowBatcher()
         self._source: str = ""
 
     # 单例访问由 SingletonMeta 提供：
@@ -54,24 +123,20 @@ class DisplayEventBus(metaclass=SingletonMeta):
         """注册事件处理函数。
 
         Args:
-            handler: 事件处理函数，接受 DisplayEvent 参数
+            handler: 事件处理函数，接受 DisplayEvent 参数。
             event_type: 指定订阅的事件类型。None 表示订阅所有事件。
         """
         if event_type is not None:
             if not issubclass(event_type, DisplayEvent):
                 raise TypeError(f"event_type 必须是 DisplayEvent 的子类，收到: {event_type}")
-            # 创建包装器：CoreEvent → 提取 DisplayEvent → 调用原始 handler
-            wrapper = self._make_wrapper(handler)
-            self._bus.subscribe(event_type.__name__, wrapper, priority=EventPriority.NORMAL)
-            with self._handler_lock:
-                entries = self._handler_map.setdefault(handler, [])
-                entries.append(('type', event_type, wrapper))
+            with self._lock:
+                handlers = self._handlers.setdefault(event_type, [])
+                if handler not in handlers:
+                    handlers.append(handler)
         else:
-            wrapper = self._make_wrapper(handler)
-            self._bus.subscribe('*', wrapper, priority=EventPriority.NORMAL)
-            with self._handler_lock:
-                entries = self._handler_map.setdefault(handler, [])
-                entries.append(('all', None, wrapper))
+            with self._lock:
+                if handler not in self._all_handlers:
+                    self._all_handlers.append(handler)
 
     def unsubscribe(
         self,
@@ -81,39 +146,35 @@ class DisplayEventBus(metaclass=SingletonMeta):
         """移除事件处理函数。
 
         Args:
-            handler: 之前注册的事件处理函数
+            handler: 之前注册的事件处理函数。
             event_type: 指定取消订阅的类型。None 表示从全局订阅中移除。
         """
-        with self._handler_lock:
-            entries = self._handler_map.get(handler)
-            if not entries:
-                return
-            # 找到匹配的条目移除
-            for i, (mode, et, wrapper) in enumerate(entries):
-                if (event_type is None and mode == 'all') or \
-                   (event_type is not None and mode == 'type' and et == event_type):
-                    entry = entries.pop(i)
-                    if not entries:
-                        del self._handler_map[handler]
-                    break
+        with self._lock:
+            if event_type is not None:
+                handlers = self._handlers.get(event_type)
+                if handlers and handler in handlers:
+                    handlers.remove(handler)
+                    if not handlers:
+                        del self._handlers[event_type]
             else:
-                return  # 无匹配条目
-        mode, et, wrapper = entry
-        if mode == 'type' and et is not None:
-            self._bus.unsubscribe(et.__name__, wrapper)
-        else:
-            self._bus.unsubscribe('*', wrapper)
+                if handler in self._all_handlers:
+                    self._all_handlers.remove(handler)
 
     def clear(self) -> None:
         """清除所有订阅。"""
-        self._bus.clear()
-        with self._handler_lock:
-            self._handler_map.clear()
+        with self._lock:
+            self._handlers.clear()
+            self._all_handlers.clear()
+            self._batcher.clear()
 
     @property
     def subscriber_count(self) -> int:
         """获取当前订阅者总数。"""
-        return self._bus.subscriber_count()
+        with self._lock:
+            count = len(self._all_handlers)
+            for handlers in self._handlers.values():
+                count += len(handlers)
+            return count
 
     # ── 发布 ────────────────────────────────────────────
 
@@ -121,68 +182,55 @@ class DisplayEventBus(metaclass=SingletonMeta):
         """同步发布事件到所有匹配的订阅者。
 
         Args:
-            event: 要发布的事件对象
+            event: 要发布的事件对象。
         """
-        # 将 DisplayEvent 包装为 CoreEvent 发布
-        # batch 参数省略 → CoreEventBus 自动判断（_batched_events 注册的走批处理）
-        # 高频事件如 ContentChunkEvent 已注册批处理，自动走 ~33ms 窗口
-        event_type_name = type(event).__name__
-        self._bus.publish(
-            event_type=event_type_name,
-            data={'_display_event': event},
-            source=event.source or self._source,
-        )
+        event_type = type(event)
+        # 收集目标 handler（在锁内快照，锁外调用避免死锁）
+        targets: list[EventHandler] = []
+        with self._lock:
+            if event_type in self._handlers:
+                targets.extend(self._handlers[event_type])
+            targets.extend(self._all_handlers)
+        if not targets:
+            return
+        # 批处理检查
+        if event_type in self._batched_events:
+            for handler in targets:
+                self._batcher.enqueue(handler, event)
+        else:
+            for handler in targets:
+                try:
+                    handler(event)
+                except Exception:
+                    _logger.exception(
+                        "事件处理函数 %s 处理 %s 时异常",
+                        getattr(handler, "__name__", repr(handler)),
+                        event_type.__name__,
+                    )
 
     # ── 时间窗口批处理 ──────────────────────────────────
 
     def register_batched_event(self, event_type: type[DisplayEvent]) -> None:
-        """注册需要时间窗口批处理的 UI 事件类型
+        """注册需要时间窗口批处理的事件类型。
 
         高频 UI 事件（如 ContentChunkEvent、ReasoningChunkEvent）
         走 ~33ms 窗口批处理，降低渲染压力。
 
         Args:
-            event_type: DisplayEvent 的子类
+            event_type: DisplayEvent 的子类。
         """
         if not issubclass(event_type, DisplayEvent):
             raise TypeError(
                 f"event_type 必须是 DisplayEvent 的子类，收到: {event_type}"
             )
-        self._bus.register_batched_event(event_type.__name__)
+        with self._lock:
+            self._batched_events.add(event_type)
 
     def unregister_batched_event(self, event_type: type[DisplayEvent]) -> None:
-        """取消 UI 事件类型的批处理注册"""
-        if not issubclass(event_type, DisplayEvent):
-            raise TypeError(
-                f"event_type 必须是 DisplayEvent 的子类，收到: {event_type}"
-            )
-        self._bus.unregister_batched_event(event_type.__name__)
-
-    # ── 内部方法 ────────────────────────────────────────
-
-    @staticmethod
-    def _make_wrapper(handler: EventHandler) -> Callable[[CoreEvent], None]:
-        """创建 CoreEvent → DisplayEvent 的适配包装器
-
-        从 CoreEvent.data['_display_event'] 中提取原始 DisplayEvent，
-        再调用原始 handler。
+        """取消事件类型的批处理注册。
 
         Args:
-            handler: 原始 DisplayEvent handler
-
-        Returns:
-            适配后的 CoreEvent handler
+            event_type: DisplayEvent 的子类。
         """
-        def wrapper(core_event: CoreEvent) -> None:
-            display_event = core_event.data.get('_display_event')
-            if display_event is None:
-                return
-            try:
-                handler(display_event)
-            except Exception:
-                _logger.exception(
-                    "事件处理函数 %s 处理 %s 时异常",
-                    getattr(handler, "__name__", repr(handler)),
-                    type(display_event).__name__,
-                )
-        return wrapper
+        with self._lock:
+            self._batched_events.discard(event_type)

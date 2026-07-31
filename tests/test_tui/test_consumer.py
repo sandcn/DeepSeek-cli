@@ -6,6 +6,8 @@
 
 from __future__ import annotations
 
+from src.tui._const import SplashCmd
+
 import pytest
 from unittest.mock import MagicMock, patch, PropertyMock
 
@@ -15,8 +17,8 @@ class TestChatUIConsumerLifecycle:
 
     @pytest.fixture
     def mock_subsystems(self):
-        """创建 mock 子系统并 patch _assemble 方法。"""
-        with patch('src.tui._consumer.ChatUIConsumer._assemble') as mock_assemble, \
+        """创建 mock 子系统并 patch TuiAssembly.assemble 方法。"""
+        with patch('src.tui._consumer.TuiAssembly.assemble') as mock_assemble, \
              patch('src.tui._consumer._register_consumer') as mock_register, \
              patch('src.tui._consumer._unregister_consumer') as mock_unregister, \
              patch('src.tui._consumer.render_lock') as mock_render_lock:
@@ -32,9 +34,7 @@ class TestChatUIConsumerLifecycle:
             }
 
     def test_init_calls_assemble(self, mock_subsystems):
-        """__init__ 组装子系统（通过 _assemble 完成）。"""
-        # _assemble 被 patch，mock consumer 通过 _create_mock_consumer 创建
-        # 验证 consumer 对象正确创建即可
+        """__init__ 组装子系统（通过 TuiAssembly.assemble 完成）。"""
         c = mock_subsystems['consumer']
         assert c is not None
         assert hasattr(c, '_engine')
@@ -51,7 +51,7 @@ class TestChatUIConsumerLifecycle:
         mock_subsystems['mock_register'].assert_called_once_with(c)
         c._engine.start.assert_called_once()
         # SPLASH 命令入队
-        c._engine.push_cmd.assert_any_call((19,))  # RenderCommand.SPLASH = 19
+        c._engine.push_cmd.assert_any_call(SplashCmd())
 
     def test_start_idempotent(self, mock_subsystems):
         """重复调用 start() 应幂等。"""
@@ -74,7 +74,7 @@ class TestChatUIConsumerLifecycle:
         c._bus.subscribe = MagicMock()
         c._engine.start = MagicMock()
         c._engine.push_cmd = MagicMock()
-        c._started = True
+        c._lifecycle._started = True
 
         c.stop()
 
@@ -84,7 +84,7 @@ class TestChatUIConsumerLifecycle:
     def test_stop_when_not_started(self, mock_subsystems):
         """未启动时 stop() 应直接返回。"""
         c = mock_subsystems['consumer']
-        c._started = False
+        c._lifecycle._started = False
 
         c.stop()
 
@@ -93,7 +93,7 @@ class TestChatUIConsumerLifecycle:
     def test_suspend_stops_engine(self, mock_subsystems):
         """suspend() 应停止引擎并拆除底部栏。"""
         c = mock_subsystems['consumer']
-        c._started = True
+        c._lifecycle._started = True
 
         c.suspend()
 
@@ -103,7 +103,7 @@ class TestChatUIConsumerLifecycle:
     def test_resume_restarts_engine(self, mock_subsystems):
         """resume() 应重建底部栏并启动引擎。"""
         c = mock_subsystems['consumer']
-        c._started = True
+        c._lifecycle._started = True
         c._engine._render_running = False
 
         c.resume()
@@ -123,8 +123,10 @@ class TestChatUIConsumerRaceCondition:
     @pytest.fixture
     def real_lock_consumer(self):
         """创建使用真实 threading.Lock 的 ChatUIConsumer。"""
-        with patch('src.tui._consumer.ChatUIConsumer._assemble'):
+        with patch('src.tui._consumer.TuiAssembly.assemble'):
             from src.tui._consumer import ChatUIConsumer, _ComponentsNamespace
+            from src.tui._lifecycle import TuiLifecycle
+            from src.tui._input_orchestrator import TuiInputOrchestrator
             import threading
 
             c = ChatUIConsumer.__new__(ChatUIConsumer)
@@ -136,11 +138,14 @@ class TestChatUIConsumerRaceCondition:
             c._engine = MagicMock()
             c._dispatcher = MagicMock()
             c._cmpl_handler = MagicMock()
+            c._subagent_controller = None
             c._components = _ComponentsNamespace(c._input)
-            c._bound_handlers = None
-            c._state_lock = threading.Lock()  # 真实锁
-            c._started = False
-            c._handlers_bound = False
+            c._lifecycle = TuiLifecycle(
+                engine=c._engine, bus=c._bus, bb=c._bb,
+                rs=c._rs, dispatcher=c._dispatcher,
+            )
+            c._lifecycle._state_lock = threading.Lock()  # 真实锁
+            c._input_orchestrator = TuiInputOrchestrator(c._input)
             return c
 
     def test_engine_start_inside_lock(self, real_lock_consumer):
@@ -216,7 +221,7 @@ class TestChatUIConsumerRaceCondition:
         # 第一次 start/stop
         c.start()
         assert c._started is True
-        c._started = False  # 模拟 stop 后的状态
+        c._lifecycle._started = False  # 模拟 stop 后的状态
 
         # 重新 start
         c.start()
@@ -230,7 +235,7 @@ class TestChatUIConsumerPublicMethods:
     @pytest.fixture
     def mock_consumer(self):
         """创建 mock ChatUIConsumer。"""
-        with patch('src.tui._consumer.ChatUIConsumer._assemble'):
+        with patch('src.tui._consumer.TuiAssembly.assemble'):
             c = _create_mock_consumer(MagicMock())
             c._dispatcher.list_handlers = MagicMock(return_value={})
             return c
@@ -240,22 +245,22 @@ class TestChatUIConsumerPublicMethods:
         mock_consumer.on_user_message("hello")
         mock_consumer._engine.push_cmd.assert_called_once()
         cmd = mock_consumer._engine.push_cmd.call_args[0][0]
-        assert cmd[0] == 8  # RenderCommand.USER_MSG
-        assert cmd[1] == "hello"
+        assert cmd.cid == 8  # RenderCommand.USER_MSG
+        assert cmd.text == "hello"
 
     def test_on_notification(self, mock_consumer):
         """on_notification 应入队 NOTIFICATION 命令。"""
         mock_consumer.on_notification("test")
         cmd = mock_consumer._engine.push_cmd.call_args[0][0]
-        assert cmd[0] == 11  # RenderCommand.NOTIFICATION
-        assert cmd[1] == "test"
+        assert cmd.cid == 11  # RenderCommand.NOTIFICATION
+        assert cmd.text == "test"
 
     def test_on_error(self, mock_consumer):
         """on_error 应入队 ERROR 命令。"""
         mock_consumer.on_error("oops")
         cmd = mock_consumer._engine.push_cmd.call_args[0][0]
-        assert cmd[0] == 16  # RenderCommand.ERROR
-        assert cmd[1] == "oops"
+        assert cmd.cid == 16  # RenderCommand.ERROR
+        assert cmd.message == "oops"
 
     def test_on_error_empty_message(self, mock_consumer):
         """空错误消息不应入队。"""
@@ -266,8 +271,8 @@ class TestChatUIConsumerPublicMethods:
         """write_line 应入队 WRITE_LINE 命令。"""
         mock_consumer.write_line("line")
         cmd = mock_consumer._engine.push_cmd.call_args[0][0]
-        assert cmd[0] == 12  # RenderCommand.WRITE_LINE
-        assert cmd[1] == "line"
+        assert cmd.cid == 12  # RenderCommand.WRITE_LINE
+        assert cmd.text == "line"
 
     def test_flush_delegates(self, mock_consumer):
         """flush 应委托给 engine.flush。"""
@@ -344,6 +349,8 @@ class TestForTesting:
 def _create_mock_consumer(mock_assemble):
     """创建 mock ChatUIConsumer 实例，绕过真实装配。"""
     from src.tui._consumer import ChatUIConsumer, _ComponentsNamespace
+    from src.tui._lifecycle import TuiLifecycle
+    from src.tui._input_orchestrator import TuiInputOrchestrator
 
     c = ChatUIConsumer.__new__(ChatUIConsumer)
     c._bus = MagicMock()
@@ -354,11 +361,15 @@ def _create_mock_consumer(mock_assemble):
     c._engine = MagicMock()
     c._dispatcher = MagicMock()
     c._cmpl_handler = MagicMock()
+    c._subagent_controller = None
     c._components = _ComponentsNamespace(c._input)
-    c._bound_handlers = None
-    c._state_lock = MagicMock()
-    c._state_lock.__enter__ = MagicMock(return_value=None)
-    c._state_lock.__exit__ = MagicMock(return_value=None)
-    c._started = False
-    c._handlers_bound = False
+    # 先创建 _lifecycle 和 _input_orchestrator，再设置状态
+    c._lifecycle = TuiLifecycle(
+        engine=c._engine, bus=c._bus, bb=c._bb,
+        rs=c._rs, dispatcher=c._dispatcher,
+    )
+    c._input_orchestrator = TuiInputOrchestrator(c._input)
+    c._lifecycle._bound_handlers = None
+    c._lifecycle._started = False
+    c._lifecycle._handlers_bound = False
     return c

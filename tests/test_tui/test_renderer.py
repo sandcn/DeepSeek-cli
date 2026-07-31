@@ -313,45 +313,45 @@ class TestEventDispatcher:
     def test_on_tool_started(self):
         from src.tui._renderer import EventDispatcher
         from src.tui.events.event_types import ToolStartedEvent
-        from src.tui._const import RenderCommand
+        from src.tui._const import RenderCommand, ToolCountIncCmd
         push_cmd = MagicMock()
         # 使用默认 filter_fn：source == "agent" 通过
         dispatcher = EventDispatcher(push_cmd)
         event = ToolStartedEvent(source="agent")
         dispatcher._on_tool_started(event)
-        push_cmd.assert_called_once_with((RenderCommand.TOOL_COUNT_INC,))
+        push_cmd.assert_called_once_with(ToolCountIncCmd())
 
     def test_on_tool_done_success(self):
         from src.tui._renderer import EventDispatcher
         from src.tui.events.event_types import ToolDoneEvent
-        from src.tui._const import RenderCommand
+        from src.tui._const import RenderCommand, ToolCountDecCmd
         push_cmd = MagicMock()
         dispatcher = EventDispatcher(push_cmd)
         event = ToolDoneEvent(source="agent", success=True)
         dispatcher._on_tool_done(event)
-        push_cmd.assert_called_once_with((RenderCommand.TOOL_COUNT_DEC,))
+        push_cmd.assert_called_once_with(ToolCountDecCmd())
 
     def test_on_tool_done_fail(self):
         from src.tui._renderer import EventDispatcher
         from src.tui.events.event_types import ToolDoneEvent
-        from src.tui._const import RenderCommand
+        from src.tui._const import RenderCommand, ToolFailIncCmd, ToolCountDecCmd
         push_cmd = MagicMock()
         dispatcher = EventDispatcher(push_cmd)
         event = ToolDoneEvent(source="agent", success=False)
         dispatcher._on_tool_done(event)
         assert push_cmd.call_count == 2
-        push_cmd.assert_any_call((RenderCommand.TOOL_FAIL_INC,))
-        push_cmd.assert_any_call((RenderCommand.TOOL_COUNT_DEC,))
+        push_cmd.assert_any_call(ToolFailIncCmd())
+        push_cmd.assert_any_call(ToolCountDecCmd())
 
     def test_on_parse_info(self):
         from src.tui._renderer import EventDispatcher
         from src.tui.events.event_types import ParseInfoEvent
-        from src.tui._const import RenderCommand
+        from src.tui._const import RenderCommand, ParseInfoCmd
         push_cmd = MagicMock()
         dispatcher = EventDispatcher(push_cmd)
         event = ParseInfoEvent(source="agent", tool_names="test", tokens=100, elapsed=0.5)
         dispatcher._on_parse_info(event)
-        push_cmd.assert_called_once_with((RenderCommand.PARSE_INFO, "test", 100, 0.5))
+        push_cmd.assert_called_once_with(ParseInfoCmd(tool_names="test", tokens=100, elapsed=0.5))
 
     def test_register_handler(self):
         from src.tui._renderer import EventDispatcher
@@ -367,19 +367,19 @@ class TestEventDispatcher:
     def test_on_model_phase_thinking(self):
         from src.tui._renderer import EventDispatcher
         from src.tui.events.event_types import ModelPhaseEvent
-        from src.tui._const import RenderCommand
+        from src.tui._const import RenderCommand, MainPhaseCmd, ErrorCmd
         push_cmd = MagicMock()
         from src.tui.consumer.chat_config import ChatConfig
         cfg = ChatConfig.defaults()
         dispatcher = EventDispatcher(push_cmd, main_label=cfg.main_label)
         event = ModelPhaseEvent(label=cfg.main_label or "main", phase="thinking", info="")
         dispatcher._on_model_phase(event)
-        push_cmd.assert_called_once_with((RenderCommand.MAIN_PHASE, "thinking"))
+        push_cmd.assert_called_once_with(MainPhaseCmd(phase="thinking"))
 
     def test_on_model_phase_error(self):
         from src.tui._renderer import EventDispatcher
         from src.tui.events.event_types import ModelPhaseEvent
-        from src.tui._const import RenderCommand
+        from src.tui._const import RenderCommand, ErrorCmd
         push_cmd = MagicMock()
         from src.tui.consumer.chat_config import ChatConfig
         cfg = ChatConfig.defaults()
@@ -388,7 +388,7 @@ class TestEventDispatcher:
         dispatcher._on_model_phase(event)
         push_cmd.assert_called_once()
         call_args = push_cmd.call_args[0][0]
-        assert call_args[0] == RenderCommand.ERROR
+        assert call_args.cid == RenderCommand.ERROR
 
 
 class TestTuiEngineCrashRecovery:
@@ -630,7 +630,7 @@ class TestBatchRender:
             (RenderCommand.WRITE_LINE, "d"),
         ]
 
-        renderer._is_batchable.side_effect = lambda cid: cid in renderer._BATCHABLE_COMMANDS or False
+        renderer._is_batchable.side_effect = lambda cmd: (cmd[0] if isinstance(cmd, tuple) else cmd.cid) in renderer._BATCHABLE_COMMANDS
         # mock _BATCHABLE_COMMANDS
         renderer._BATCHABLE_COMMANDS = frozenset({
             RenderCommand.WRITE_LINE,
@@ -660,7 +660,7 @@ class TestBatchRender:
             (RenderCommand.NOTIFICATION, "fifth"),
         ]
 
-        renderer._is_batchable.side_effect = lambda cid: cid in {
+        renderer._is_batchable.side_effect = lambda cmd: (cmd[0] if isinstance(cmd, tuple) else cmd.cid) in {
             RenderCommand.WRITE_LINE,
             RenderCommand.TOOL_OUTPUT,
             RenderCommand.NOTIFICATION,

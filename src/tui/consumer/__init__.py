@@ -34,11 +34,8 @@ class ChatUIErrorHandler(logging.Handler):
     def __init__(self, max_length: int | None = None):
         super().__init__(level=logging.ERROR)
         if max_length is None:
-            try:
-                from ..framework import Framework
-                max_length = Framework.get_default().get_config().max_error_length
-            except Exception:
-                max_length = 200
+            from .._config import TuiConfig
+            max_length = TuiConfig.defaults().max_error_length
         self._max_length = max_length
 
     def emit(self, record: logging.LogRecord) -> None:

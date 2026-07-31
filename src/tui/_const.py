@@ -6,6 +6,7 @@ Layer 0 — 无内部依赖，被所有 TUI 模块引用。
 
 from __future__ import annotations
 
+from dataclasses import dataclass, field
 from enum import IntEnum
 
 # ── 解析进度清除哨兵 ───────────────────────────────────
@@ -43,6 +44,101 @@ class RenderCommand(IntEnum):
     SUBAGENT_FRAME = 18 # (18, frame_lines: tuple[str]) — SubAgent 面板帧
     SPLASH = 19         # (19,) — 启动品牌屏
     MAIN_PHASE = 20     # (20, phase: str) — 主Agent模型阶段变更
+
+
+# ═══════════════════════════════════════════════════════════
+# RenderCmd — 渲染命令数据类（取代元组传递）
+# ═══════════════════════════════════════════════════════════
+
+@dataclass(frozen=True)
+class RenderCmd:
+    """渲染命令基类。所有子类必须设 cid 默认值。"""
+    cid: int = 0
+
+@dataclass(frozen=True)
+class ReasoningCmd(RenderCmd):
+    cid: int = RenderCommand.REASONING
+    text: str = ""
+
+@dataclass(frozen=True)
+class ContentCmd(RenderCmd):
+    cid: int = RenderCommand.CONTENT
+    text: str = ""
+
+@dataclass(frozen=True)
+class PhaseDoneCmd(RenderCmd):
+    cid: int = RenderCommand.PHASE_DONE
+    phase: str = ""
+
+@dataclass(frozen=True)
+class ToolOutputCmd(RenderCmd):
+    cid: int = RenderCommand.TOOL_OUTPUT
+    text: str = ""
+
+@dataclass(frozen=True)
+class ToolSummaryCmd(RenderCmd):
+    cid: int = RenderCommand.TOOL_SUMMARY
+    successful: tuple = ()
+    failed: tuple = ()
+
+@dataclass(frozen=True)
+class UserMsgCmd(RenderCmd):
+    cid: int = RenderCommand.USER_MSG
+    text: str = ""
+
+@dataclass(frozen=True)
+class ParseInfoCmd(RenderCmd):
+    cid: int = RenderCommand.PARSE_INFO
+    tool_names: str = ""
+    tokens: int = 0
+    elapsed: float = 0.0
+
+@dataclass(frozen=True)
+class NotificationCmd(RenderCmd):
+    cid: int = RenderCommand.NOTIFICATION
+    text: str = ""
+
+@dataclass(frozen=True)
+class WriteLineCmd(RenderCmd):
+    cid: int = RenderCommand.WRITE_LINE
+    text: str = ""
+
+@dataclass(frozen=True)
+class DisplayMsgsCmd(RenderCmd):
+    cid: int = RenderCommand.DISPLAY_MSGS
+    messages: list = field(default_factory=list)
+    speed: int = 0
+
+@dataclass(frozen=True)
+class ToolCountIncCmd(RenderCmd):
+    cid: int = RenderCommand.TOOL_COUNT_INC
+
+@dataclass(frozen=True)
+class ToolFailIncCmd(RenderCmd):
+    cid: int = RenderCommand.TOOL_FAIL_INC
+
+@dataclass(frozen=True)
+class ErrorCmd(RenderCmd):
+    cid: int = RenderCommand.ERROR
+    message: str = ""
+
+@dataclass(frozen=True)
+class ToolCountDecCmd(RenderCmd):
+    cid: int = RenderCommand.TOOL_COUNT_DEC
+
+@dataclass(frozen=True)
+class SubagentFrameCmd(RenderCmd):
+    cid: int = RenderCommand.SUBAGENT_FRAME
+    frame_lines: tuple = ()
+
+@dataclass(frozen=True)
+class SplashCmd(RenderCmd):
+    cid: int = RenderCommand.SPLASH
+
+@dataclass(frozen=True)
+class MainPhaseCmd(RenderCmd):
+    cid: int = RenderCommand.MAIN_PHASE
+    phase: str = ""
 
 
 # ═══════════════════════════════════════════════════════════

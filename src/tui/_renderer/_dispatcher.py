@@ -7,10 +7,17 @@ from __future__ import annotations
 
 import logging
 import math
-from typing import TYPE_CHECKING, Callable
+from typing import TYPE_CHECKING, Callable, Union
 
 from src.tui._const import (
     RenderCommand,
+    RenderCmd,
+    ReasoningCmd, ContentCmd, PhaseDoneCmd,
+    ToolOutputCmd, ToolSummaryCmd,
+    UserMsgCmd, ParseInfoCmd,
+    NotificationCmd, WriteLineCmd,
+    ToolCountIncCmd, ToolFailIncCmd, ErrorCmd, ToolCountDecCmd,
+    SubagentFrameCmd, SplashCmd, MainPhaseCmd,
     _CLEAR_PARSE_LINE,
 )
 from src.tui._config import TuiConfig
@@ -44,16 +51,11 @@ class EventDispatcher:
 
     将 12 种 DisplayEvent 类型映射到对应的 RenderCommand 并推入命令队列。
     使用注入的 ``filter_fn`` 替代直接持有 ChatConfig 进行 source/label 过滤。
-
-    改造说明（2026-07-31）：
-      - 原构造函数接受 ``config: ChatConfig | None``，现改为 ``filter_fn``
-      - 所有 ``self._config.main_source`` / ``self._config.main_label``
-        引用已替换为注入的 ``filter_fn`` / ``label_filter``
     """
 
     def __init__(
         self,
-        push_cmd: Callable[[tuple], None],
+        push_cmd: Callable[[Union[RenderCmd, tuple]], None],
         filter_fn: Callable[[str | None], bool] | None = None,
         *,
         main_label: str | None = None,
@@ -63,10 +65,9 @@ class EventDispatcher:
 
         Args:
             push_cmd: 命令推送回调。
-            filter_fn: source 过滤函数，接收 source 字符串返回是否通过过滤。
-                       None 时使用默认过滤（``source == "agent" or (source or "").startswith("agent-")``）。
-            main_label: 主 Agent label，用于 label 过滤。None 时使用 ``"default"``。
-            max_error_length: 错误消息截断长度。None 时使用 ``TuiConfig.defaults().max_error_length``。
+            filter_fn: source 过滤函数。
+            main_label: 主 Agent label。
+            max_error_length: 错误消息截断长度。
         """
         self._push_cmd = push_cmd
         self._filter_fn = filter_fn or self._default_filter_fn
@@ -82,13 +83,11 @@ class EventDispatcher:
         return source == "agent" or (source or "").startswith("agent-")
 
     def _is_agent_source(self, source: str | None) -> bool:
-        """判断事件 source 是否属于主 Agent。"""
         if source is None:
             return False
         return self._filter_fn(source)
 
     def _is_main_label(self, label: str | None) -> bool:
-        """判断事件 label 是否为主 label。"""
         return label == self._main_label
 
     def register_handler(self, event_type: type, handler_method: Callable) -> None:
@@ -120,24 +119,24 @@ class EventDispatcher:
             return
         if not event.text:
             return
-        self._push_cmd((RenderCommand.REASONING, event.text))
+        self._push_cmd(ReasoningCmd(text=event.text))
 
     def _on_content_chunk(self, event: "ContentChunkEvent") -> None:
         if event.label != self._main_label:
             return
         if not event.text:
             return
-        self._push_cmd((RenderCommand.CONTENT, event.text))
+        self._push_cmd(ContentCmd(text=event.text))
 
     def _on_tool_parsing(self, event: "ToolParsingEvent") -> None:
         if not self._is_agent_source(event.source):
             return
-        self._push_cmd((RenderCommand.MAIN_PHASE, "parsing"))
+        self._push_cmd(MainPhaseCmd(phase="parsing"))
 
     def _on_phase_done(self, event: "PhaseDoneEvent") -> None:
         if event.label != self._main_label:
             return
-        self._push_cmd((RenderCommand.PHASE_DONE, event.phase))
+        self._push_cmd(PhaseDoneCmd(phase=event.phase))
 
     @staticmethod
     def _is_subagent_label(label: str) -> bool:
@@ -146,59 +145,58 @@ class EventDispatcher:
     def _on_tool_started(self, event: "ToolStartedEvent") -> None:
         if not self._is_agent_source(event.source) and not self._is_subagent_label(event.label):
             return
-        self._push_cmd((RenderCommand.TOOL_COUNT_INC,))
+        self._push_cmd(ToolCountIncCmd())
 
     def _on_tool_done(self, event: "ToolDoneEvent") -> None:
         if not self._is_agent_source(event.source) and not self._is_subagent_label(event.label):
             return
         if not event.success:
-            self._push_cmd((RenderCommand.TOOL_FAIL_INC,))
-            self._push_cmd((RenderCommand.TOOL_COUNT_DEC,))
+            self._push_cmd(ToolFailIncCmd())
+            self._push_cmd(ToolCountDecCmd())
         else:
-            self._push_cmd((RenderCommand.TOOL_COUNT_DEC,))
+            self._push_cmd(ToolCountDecCmd())
 
     def _on_tool_output(self, event: "ToolOutputChunkEvent") -> None:
         if not self._is_agent_source(event.source):
             return
         text = event.text.rstrip("\n")
         if text:
-            self._push_cmd((RenderCommand.TOOL_OUTPUT, text))
+            self._push_cmd(ToolOutputCmd(text=text))
 
     def _on_parse_info(self, event: "ParseInfoEvent") -> None:
         if not self._is_agent_source(event.source):
             return
-        self._push_cmd((RenderCommand.PARSE_INFO, event.tool_names, event.tokens, event.elapsed))
+        self._push_cmd(ParseInfoCmd(tool_names=event.tool_names, tokens=event.tokens, elapsed=event.elapsed))
 
     def _on_parse_info_done(self, event: "ParseInfoDoneEvent") -> None:
         if not self._is_agent_source(event.source):
             return
-        self._push_cmd((RenderCommand.PARSE_INFO, "", _CLEAR_PARSE_LINE, 0.0))
+        self._push_cmd(ParseInfoCmd(tool_names="", tokens=_CLEAR_PARSE_LINE, elapsed=0.0))
 
     def _on_output(self, event: "OutputEvent") -> None:
         if not event.text:
             return
-        self._push_cmd((RenderCommand.WRITE_LINE, event.text))
+        self._push_cmd(WriteLineCmd(text=event.text))
 
     def _on_model_phase(self, event: "ModelPhaseEvent") -> None:
         if event.label != self._main_label:
             return
         if event.phase != "error":
-            self._push_cmd((RenderCommand.MAIN_PHASE, event.phase))
+            self._push_cmd(MainPhaseCmd(phase=event.phase))
             return
         if not event.info:
             return
         _info = event.info
         if len(_info) > self._max_error_length:
             _info = _info[:self._max_error_length] + "..."
-        info = _info
-        self._push_cmd((RenderCommand.ERROR, info))
+        self._push_cmd(ErrorCmd(message=_info))
 
     def _on_tool_summary(self, event: "ToolSummaryEvent") -> None:
         if not self._is_agent_source(event.source):
             return
         if not event.successful_tools and not event.failed_tools:
             return
-        self._push_cmd((RenderCommand.TOOL_SUMMARY, event.successful_tools, event.failed_tools))
+        self._push_cmd(ToolSummaryCmd(successful=event.successful_tools, failed=event.failed_tools))
 
 
 __all__ = ["EventDispatcher"]

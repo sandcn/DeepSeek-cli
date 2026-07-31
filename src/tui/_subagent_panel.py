@@ -26,7 +26,7 @@ import threading
 import time
 from typing import Any, Callable, Dict, List, Tuple
 
-from ._const import RenderCommand
+from ._const import RenderCommand, SubagentFrameCmd
 
 _logger = logging.getLogger(__name__)
 
@@ -647,7 +647,7 @@ class SubAgentPanelController:
         # 优先使用注入的 push_cmd 回调，避免 get_active_chat_ui() 循环依赖
         if self._push_cmd_cb is not None:
             try:
-                self._push_cmd_cb((RenderCommand.SUBAGENT_FRAME, lines))
+                self._push_cmd_cb(SubagentFrameCmd(frame_lines=lines))
                 return
             except Exception:
                 pass
@@ -660,6 +660,6 @@ class SubAgentPanelController:
         if chat_ui is None:
             return
         try:
-            chat_ui.push_cmd((RenderCommand.SUBAGENT_FRAME, lines))
+            chat_ui.push_cmd(SubagentFrameCmd(frame_lines=lines))
         except Exception:
             pass
