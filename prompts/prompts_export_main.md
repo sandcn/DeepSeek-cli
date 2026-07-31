@@ -326,10 +326,12 @@ dispatch_agent(type="execute", description="<任务摘要>", prompt="<自然语�
 >
 > **多方向合并**：所有方向合并成一个 plan，仅派发单个 plan Agent。
 
-### 修改/新需求先委派 plan Agent（强制 · 零豁免）
-涉及文件修改或新需求，**必须先** `dispatch_agent(type="plan")`——**不论修改多少个文件，哪怕只改一个也绝无例外，** 无论修改规模大小、是否「零逻辑变更」，产出计划文件到 `.chat/plan/`。执行顺序：map → **用户选择计划方向** → plan → execute。
+### 修改/新需求先委派 plan Agent（强制）
+涉及文件修改或新需求，当修改文件数 **≥4 个** 时，**必须先** `dispatch_agent(type="plan")`——产出计划文件到 `.chat/plan/`。执行顺序：map → **用户选择计划方向** → plan → execute。
 
-> **plan 零豁免（强制）**：只要涉及文件修改就必须委派 plan Agent，不可跳过。无例外。
+> **少量文件修改豁免（强制）**：仅修改 **1–3 个文件**的代码时，**不要调用 plan，直接修改**——无需产出计划文件，跳过 plan 阶段（map → 直接修改 → review）。
+>
+> **plan 调用门槛（强制）**：涉及文件修改 **≥4 个文件** 时，必须委派 plan Agent，不可跳过。无例外。
 
 > **三要素速查** → 见上方「plan — 计划生成」
 
