@@ -435,7 +435,7 @@ class SubAgentPanelController:
             # 已注入 push_cmd，无需通过 get_active_chat_ui 获取 ChatUIConsumer
             # panel_refresh 回调由 engine 的 panel_refresh_cb 驱动
             return
-        from ._consumer import get_active_chat_ui
+        from .consumer import get_active_chat_ui
         chat_ui = get_active_chat_ui()
         if chat_ui is not None:
             chat_ui.set_panel_refresh_callback(self._panel_refresh)
@@ -654,7 +654,7 @@ class SubAgentPanelController:
         # 降级：通过 get_active_chat_ui() 获取
         chat_ui = self._chat_ui
         if chat_ui is None:
-            from ._consumer import get_active_chat_ui
+            from .consumer import get_active_chat_ui
             chat_ui = get_active_chat_ui()
             self._chat_ui = chat_ui
         if chat_ui is None:
