@@ -26,7 +26,8 @@ def first_diff_line(prev: Frame, new: Frame) -> int:
     """
     n = min(len(prev.lines), len(new.lines))
     for i in range(n):
-        if prev.lines[i].runs != new.lines[i].runs:
+        # ★ 身份短路：缓存行（committed-chat）为同一对象 → O(1) 跳过比较
+        if prev.lines[i] is not new.lines[i] and prev.lines[i].runs != new.lines[i].runs:
             return i
     if len(prev.lines) != len(new.lines):
         return n

@@ -23,11 +23,11 @@ def _to_styled_runs(line) -> list[StyledRun]:
     return [StyledRun(r.text, r.style) for r in runs if r.text]
 
 
-def _block_styled_lines(block) -> list[list[StyledRun]]:
-    """将块的行转为 styled run 列表（块级样式叠加）。"""
+def _block_styled_lines(block, start: int = 0) -> list[list[StyledRun]]:
+    """将块的行（从 start 起）转为 styled run 列表（块级样式叠加）。"""
     kind = block.kind
     out: list[list[StyledRun]] = []
-    for line in block.lines:
+    for line in block.lines[start:]:
         runs = _to_styled_runs(line)
         if kind == "reasoning" and runs:
             # 推理行叠加 dim/italic 基础样式
@@ -68,14 +68,21 @@ def register() -> None:
 
 
 def ChatView(props) -> object:
-    """ChatView 组件：缓存已提交块 + 渲染未提交块。"""
+    """ChatView 组件：缓存已提交块 + 渲染未提交块。
+
+    未提交块的行给**索引 key**——调和器据此复用 fiber，换行缓存才能命中
+    （否则无唯一 key → 每帧重建 → 开放大块整块重包裹，流式卡顿）。
+    """
     model = props["model"]
     children = []
     if model.committed_lines:
         children.append(h("committed-chat", {"lines": model.committed_lines}))
+    line_idx = 0
     for block in model.blocks[model.committed_count:]:
-        for runs in _block_styled_lines(block):
-            children.append(h(TEXT, {"styled": runs}))
+        # 开放块只渲染未提交尾（已增量提交的行在缓存中，不再重建）
+        for runs in _block_styled_lines(block, block.committed_line_count):
+            children.append(h(TEXT, {"key": f"chat-{line_idx}", "styled": runs}))
+            line_idx += 1
     return h(BOX, None, children)
 
 

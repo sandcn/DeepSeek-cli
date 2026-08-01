@@ -111,13 +111,19 @@ def _do_content(model, cmd) -> None:
 
 
 def _flush_renderer_to_block(model, channel: str, renderer) -> None:
-    """将渲染器新产出的行固化到对应块。"""
+    """将渲染器新产出的行固化到对应块，并**增量提交**已闭合行到缓存。
+
+    流式内容只把未闭合尾留在开放块，闭段行立即进 committed_lines 缓存 →
+    大响应渲染成本不随响应增长。
+    """
     lines = renderer.take_lines()
     if not lines:
         return
     idx = model.reasoning_block_index if channel == "reasoning" else model.content_block_index
     if 0 <= idx < len(model.blocks):
-        model.blocks[idx].lines.extend(lines)
+        block = model.blocks[idx]
+        block.lines.extend(lines)
+        model.commit_open_block(block)
 
 
 def _do_phase_done(model, cmd) -> None:
@@ -170,6 +176,7 @@ def _do_tool_output(model, cmd) -> None:
     line = AnsiLine.of("  \u2502 ", _S_TOOL_LINE)
     line.append(cmd.text)
     block.lines.append(line)
+    model.commit_open_block(block)  # 工具输出行增量提交（长输出不拖慢渲染）
 
 
 def _do_tool_summary(model, cmd) -> None:

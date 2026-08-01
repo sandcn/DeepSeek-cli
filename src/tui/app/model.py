@@ -41,6 +41,8 @@ class ChatBlock:
     extra: dict = field(default_factory=dict)
     #: 块是否已关闭（不再追加行）。仅连续的已关闭块可提交到增量缓存。
     closed: bool = False
+    #: 已提交到缓存的行数（开放块随段落闭合增量提交 → 每帧只处理未提交尾）。
+    committed_line_count: int = 0
 
 
 @dataclass
@@ -122,31 +124,50 @@ class AppModel:
         self.commit_block(len(self.blocks) - 1)
         return block
 
+    def commit_open_block(self, block: ChatBlock) -> None:
+        """增量提交开放块的已闭合行（流式内容随段落闭合提交）。
+
+        开放块（content/reasoning/tool）的闭段行立即进入缓存，块内只留
+        未闭合尾（当前段落）→ 每帧渲染成本 O(live+当前段落)，不随响应增长。
+        """
+        if block.committed_line_count >= len(block.lines):
+            return
+        self.committed_lines.extend(
+            self._block_to_ink_lines(block, block.committed_line_count)
+        )
+        block.committed_line_count = len(block.lines)
+
     def commit_block(self, index: int) -> None:
         """提交 blocks[committed_count..index] 到增量渲染缓存。
 
         仅提交**连续的已关闭**块——前面若有未关闭块（如流式内容块）则停止，
-        避免跳过开放块导致其后续行丢失。
+        避免跳过开放块导致其后续行丢失。已增量提交的行（committed_line_count）
+        不再重复渲染。
         """
         while self.committed_count <= index and self.committed_count < len(self.blocks):
             block = self.blocks[self.committed_count]
             if not block.closed:
                 break
-            self.committed_lines.extend(self._block_to_ink_lines(block))
+            if block.committed_line_count < len(block.lines):
+                self.committed_lines.extend(
+                    self._block_to_ink_lines(block, block.committed_line_count)
+                )
+                block.committed_line_count = len(block.lines)
             self.committed_count += 1
 
     @staticmethod
-    def _block_to_ink_lines(block):
-        """将块内 AnsiLine 转为 ink Line（推理块叠加 dim/italic）。"""
+    def _block_to_ink_lines(block, start: int = 0):
+        """将块内 AnsiLine（从 start 起）转为 ink Line（推理块叠加 dim/italic）。"""
         from src.tui.ink import Line, StyledRun
         from src.renderer.ansi.style import Style as _AnsiStyle
-        if not block.lines:
+        slice_lines = block.lines[start:]
+        if not slice_lines:
             return []
         reasoning_style = (
             _AnsiStyle(dim=True, italic=True) if block.kind == "reasoning" else None
         )
         out: list = []
-        for ansi_line in block.lines:
+        for ansi_line in slice_lines:
             runs = []
             for r in ansi_line.runs:
                 if not r.text:
