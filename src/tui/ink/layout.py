@@ -166,8 +166,13 @@ def _measure(fiber: Fiber, x: int, y: int, avail_w: int, fill: bool = True) -> L
         style = fiber.props.get("style")
         if styled is not None:
             runs = list(styled)
+            # 缓存键：拼接 run 文本 + 样式指纹（静态历史样式稳定 → 缓存命中）
+            cache_text = "".join(r.text for r in runs)
+            style_fp = tuple(id(r.style) for r in runs)
         else:
             runs = [StyledRun(text, style)] if text else []
+            cache_text = text
+            style_fp = (id(style),)
         if explicit_w is not None:
             width = max(0, int(explicit_w))
         elif fill:
@@ -178,7 +183,16 @@ def _measure(fiber: Fiber, x: int, y: int, avail_w: int, fill: bool = True) -> L
             else:
                 content_w = max((wcswidth_simple(line) for line in text.split("\n")), default=0)
             width = max(0, min(avail_w, content_w))
-        lines = wrap_runs_by_width(runs, width)
+        # ★ 换行缓存：同 (text, width, style) 复用包裹结果，
+        #   避免每帧重新包裹全部静态历史（大历史下 O(chars) Python 逐字符循环）。
+        cache = getattr(fiber, "_wrap_cache", None)
+        key = (cache_text, width, style_fp)
+        if cache is not None and cache[0] == key:
+            lines = cache[1]
+        else:
+            lines = wrap_runs_by_width(runs, width)
+            fiber._wrap_cache = (key, lines)
+        fiber._wrapped_lines = lines  # 供 paint 复用（免二次包裹）
         h = max(1, len(lines)) if (lines or runs or text) else 1
         box = LayoutBox(x, y, width, h)
         fiber.layout_box = box

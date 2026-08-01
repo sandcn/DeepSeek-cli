@@ -39,6 +39,8 @@ class ChatBlock:
     kind: str
     lines: list = field(default_factory=list)
     extra: dict = field(default_factory=dict)
+    #: 块是否已关闭（不再追加行）。仅连续的已关闭块可提交到增量缓存。
+    closed: bool = False
 
 
 @dataclass
@@ -79,6 +81,10 @@ class AppModel:
     def __init__(self) -> None:
         # ── 聊天块 ──
         self.blocks: list[ChatBlock] = []
+        # ★ 增量渲染缓存：已关闭（提交）块的渲染行。
+        #   静态历史只渲染一次并缓存，每帧不重建 → 大历史下渲染 O(live+新增)。
+        self.committed_lines: list = []
+        self.committed_count: int = 0
         # 推理/内容通道（AnsiStreamRenderer 惰性创建）
         self.reasoning_renderer: Any = None
         self.content_renderer: Any = None
@@ -104,9 +110,53 @@ class AppModel:
     # ── 块管理 ──────────────────────────────────────
 
     def append_block(self, kind: str, lines=None) -> ChatBlock:
+        """追加聊天块（不自动提交，供流式累积）。"""
         block = ChatBlock(kind, list(lines) if lines else [])
         self.blocks.append(block)
         return block
+
+    def append_committed(self, kind: str, lines) -> ChatBlock:
+        """追加一个立即提交（关闭）的块：渲染缓存 + 块列表。"""
+        block = self.append_block(kind, lines)
+        block.closed = True
+        self.commit_block(len(self.blocks) - 1)
+        return block
+
+    def commit_block(self, index: int) -> None:
+        """提交 blocks[committed_count..index] 到增量渲染缓存。
+
+        仅提交**连续的已关闭**块——前面若有未关闭块（如流式内容块）则停止，
+        避免跳过开放块导致其后续行丢失。
+        """
+        while self.committed_count <= index and self.committed_count < len(self.blocks):
+            block = self.blocks[self.committed_count]
+            if not block.closed:
+                break
+            self.committed_lines.extend(self._block_to_ink_lines(block))
+            self.committed_count += 1
+
+    @staticmethod
+    def _block_to_ink_lines(block):
+        """将块内 AnsiLine 转为 ink Line（推理块叠加 dim/italic）。"""
+        from src.tui.ink import Line, StyledRun
+        from src.renderer.ansi.style import Style as _AnsiStyle
+        if not block.lines:
+            return []
+        reasoning_style = (
+            _AnsiStyle(dim=True, italic=True) if block.kind == "reasoning" else None
+        )
+        out: list = []
+        for ansi_line in block.lines:
+            runs = []
+            for r in ansi_line.runs:
+                if not r.text:
+                    continue
+                st = r.style
+                if reasoning_style is not None:
+                    st = reasoning_style if st is None else st.merge(reasoning_style)
+                runs.append(StyledRun(r.text, st))
+            out.append(Line(runs))
+        return out
 
     # ── 推理/内容通道 ───────────────────────────────
 
@@ -138,6 +188,10 @@ class AppModel:
                 block.lines.append(AnsiLine.of("  " + "\u2500" * 40, Style(fg=240)))
             self.reasoning_renderer = None
         self.reasoning_state = ReasoningState.CLOSED
+        # 提交到增量渲染缓存
+        if 0 <= self.reasoning_block_index < len(self.blocks):
+            self.blocks[self.reasoning_block_index].closed = True
+            self.commit_block(self.reasoning_block_index)
 
     def reopen_reasoning(self) -> None:
         """重新打开推理通道（CLOSED → INACTIVE）。"""
@@ -167,6 +221,10 @@ class AppModel:
                 self.blocks[self.content_block_index].lines.extend(lines)
             self.content_renderer = None
         self.content_closed = True
+        # 提交到增量渲染缓存
+        if 0 <= self.content_block_index < len(self.blocks):
+            self.blocks[self.content_block_index].closed = True
+            self.commit_block(self.content_block_index)
 
     def reopen_content(self) -> None:
         """重新打开内容通道（多轮会话新一轮内容前调用）。"""
@@ -194,8 +252,13 @@ class AppModel:
         return self.blocks[self.tool_block_index]
 
     def close_tool_group(self) -> None:
+        idx = self.tool_block_index
         self.in_tool_group = False
         self.tool_block_index = -1
+        # 提交工具块到增量渲染缓存
+        if 0 <= idx < len(self.blocks):
+            self.blocks[idx].closed = True
+            self.commit_block(idx)
 
 
 __all__ = [

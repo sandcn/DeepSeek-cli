@@ -19,7 +19,7 @@ from typing import Any
 
 from src.tui.core.style import Style
 from .fiber import Fiber
-from .layout import layout_tree, layout_children, wrap_text_lines
+from .layout import layout_tree, layout_children, wrap_text_lines, _skip_function
 from .output import Frame, Line
 
 
@@ -78,14 +78,19 @@ def _paint(fiber: Fiber, canvas: list[dict]) -> None:
     ftype = fiber.type
 
     if ftype == "text":
-        styled = fiber.props.get("styled")
-        text = str(fiber.props.get("children", ""))
-        style = fiber.props.get("style")
-        if styled is not None:
-            from .helpers import wrap_runs_by_width
-            lines = wrap_runs_by_width(list(styled), box.w)
+        # ★ 复用 layout 阶段缓存的换行结果（免二次包裹）
+        wrapped = getattr(fiber, "_wrapped_lines", None)
+        if wrapped is not None:
+            lines = wrapped
         else:
-            lines = wrap_text_lines(text, box.w, style)
+            styled = fiber.props.get("styled")
+            text = str(fiber.props.get("children", ""))
+            style = fiber.props.get("style")
+            if styled is not None:
+                from .helpers import wrap_runs_by_width
+                lines = wrap_runs_by_width(list(styled), box.w)
+            else:
+                lines = wrap_text_lines(text, box.w, style)
         for i, line in enumerate(lines):
             row = box.y + i
             if 0 <= row < len(canvas):
@@ -118,8 +123,14 @@ def _paint(fiber: Fiber, canvas: list[dict]) -> None:
         _paint(child, canvas)
 
 
-def _canvas_row_to_line(row: dict[int, tuple[str, Style | None]]) -> Line:
-    """画布行（列→字符）转为 Line（按列排序，合并相邻同样式）。"""
+def _canvas_row_to_line(row) -> Line:
+    """画布行转 Line。
+
+    支持两种行：dict（列→(char,style)，增量合并）或已缓存的 Line
+    （committed-chat 直接引用，免逐字符重绘 → 增量渲染核心）。
+    """
+    if isinstance(row, Line):
+        return row
     line = Line()
     for col in sorted(row):
         ch, style = row[col]
@@ -137,7 +148,13 @@ def render_frame(root: Fiber, width: int) -> Frame:
     Returns:
         完整文档的 Frame。
     """
-    total_h = layout_tree(root, width)
+    # ★ 复用 reconciler 已布局的高度（免二次 layout_tree）
+    host_root = _skip_function(root) or root
+    box = host_root.layout_box
+    if box is not None and box.w == width:
+        total_h = box.h
+    else:
+        total_h = layout_tree(root, width)
     canvas: list[dict] = [{} for _ in range(max(1, total_h))]
     _paint(root, canvas)
     return Frame(_canvas_row_to_line(row) for row in canvas)

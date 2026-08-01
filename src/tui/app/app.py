@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from src.tui.ink import h, APP, STATIC, BOX, TEXT, StyledRun
 from src.tui._animator import AnimatorContext
-from .chat_view import ChatView
+from .chat_view import ChatView, register as _register_committed
 from .status_bar import StatusBar
 from .subagent_panel import SubAgentPanel
 from . import input_area as _input_area
@@ -63,7 +63,8 @@ def build_app_element(model, width: int, animator=None) -> object:
     return h(App, {"model": model, "width": width, "animator": animator})
 
 
-# 模块导入时注册 input-area host 组件
+# 模块导入时注册 input-area / committed-chat host 组件
 _input_area.register()
+_register_committed()
 
 __all__ = ["App", "build_app_element"]

@@ -56,33 +56,28 @@ def _cmd_name(cid: int) -> str:
 
 
 def _do_notification(model, cmd) -> None:
-    block = model.append_block("notification")
     line = AnsiLine.of("  \u2502 ", _S_NOTICE)
     line.append(cmd.text)
-    block.lines.append(line)
+    model.append_committed("notification", [line])
 
 
 def _do_write_line(model, cmd) -> None:
-    block = model.append_block("write_line")
-    block.lines.append(ansi_to_line(cmd.text))
+    model.append_committed("write_line", [ansi_to_line(cmd.text)])
 
 
 def _do_error(model, cmd) -> None:
     if not cmd.message:
         return
-    block = model.append_block("error")
     line = AnsiLine.of("  ! ", _S_ERROR_ICON)
     line.append(cmd.message, _S_ERROR)
-    block.lines.append(line)
+    model.append_committed("error", [line])
 
 
 def _do_splash(model, cmd) -> None:
-    block = model.append_block("splash")
     line = AnsiLine.of("  DeepSeek CLI", _S_SPLASH)
     if model.status.model_name:
         line.append(f" \u00b7 {model.status.model_name}", _S_SPLASH_DIM)
-    block.lines.append(line)
-    block.lines.append(AnsiLine.of(""))
+    model.append_committed("splash", [line, AnsiLine.of("")])
 
 
 def _do_subagent_frame(model, cmd) -> None:
@@ -189,8 +184,7 @@ def _do_parse_info(model, cmd) -> None:
     if cmd.tokens == _CLEAR_PARSE_LINE:
         # 提交当前进度行到文档（等价旧 \n 结束进度行），清空实时行
         if model.parse_line is not None:
-            block = model.append_block("parse_info")
-            block.lines.append(model.parse_line)
+            model.append_committed("parse_info", [model.parse_line])
             model.parse_line = None
         return
     if isinstance(cmd.tokens, (int, float)):
@@ -201,10 +195,9 @@ def _do_parse_info(model, cmd) -> None:
 
 
 def _do_user_message(model, cmd) -> None:
-    block = model.append_block("user")
     line = AnsiLine.of("  > ", _S_USER_ICON)
     line.append(cmd.text, _S_USER_TEXT)
-    block.lines.append(line)
+    model.append_committed("user", [line])
 
 
 def _do_display_messages(model, cmd) -> None:
@@ -214,18 +207,15 @@ def _do_display_messages(model, cmd) -> None:
         role = msg.get("role", "")
         content = _content_str(msg.get("content", ""))
         if role == "user":
-            block = model.append_block("user")
             line = AnsiLine.of("  > ", _S_USER_ICON)
             line.append(content, _S_USER_TEXT)
-            block.lines.append(line)
+            model.append_committed("user", [line])
         elif role in ("assistant", "other"):
-            block = model.append_block("write_line")
             line = AnsiLine.of("  \u2502 ", _S_NOTICE)
             line.append(content)
-            block.lines.append(line)
+            model.append_committed("write_line", [line])
     if messages:
-        sep_block = model.append_block("write_line")
-        sep_block.lines.append(AnsiLine.of("  " + "\u2500" * 40, Style(fg=240)))
+        model.append_committed("write_line", [AnsiLine.of("  " + "\u2500" * 40, Style(fg=240))])
 
 
 _HANDLERS: dict[int, object] = {
