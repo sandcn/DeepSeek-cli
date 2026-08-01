@@ -11,7 +11,8 @@
 from __future__ import annotations
 
 import time
-from dataclasses import dataclass, field
+from src._compat import dataclass
+from dataclasses import field
 from enum import Enum
 from typing import Any
 

@@ -11,8 +11,9 @@ fiber 的 ``layout_box`` 在 layout 阶段填充（LayoutBox(x,y,w,h)）。
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
-from typing import Any, Callable, Optional
+from src._compat import dataclass
+from dataclasses import field
+from typing import Any, Callable, Optional, Union
 
 # ── fiber tag 常量 ─────────────────────────────────────────
 TAG_ROOT = "root"
@@ -59,8 +60,8 @@ class EffectHook:
     last_deps: Any = None
 
 
-#: hook 节点联合类型。
-HookNode = StateHook | RefHook | EffectHook
+#: hook 节点联合类型（Python 3.9 兼容：不用 `X | Y` 运行时求值）。
+HookNode = Union[StateHook, RefHook, EffectHook]
 
 
 @dataclass

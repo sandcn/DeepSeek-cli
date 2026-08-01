@@ -12,7 +12,8 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from src._compat import dataclass
+from dataclasses import field
 from typing import Iterable
 
 from src.tui.core.style import Style

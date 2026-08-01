@@ -20,7 +20,8 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from src._compat import dataclass
+from dataclasses import field
 from typing import Optional
 
 from src.tui._screen import wcswidth_simple

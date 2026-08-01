@@ -12,7 +12,8 @@ props 为样式/布局属性字典，children 为子元素元组。
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from src._compat import dataclass
+from dataclasses import field
 from typing import Any, Callable, Mapping, Sequence, Union
 
 # ── host 组件标签常量（唯一真源） ──────────────────────────

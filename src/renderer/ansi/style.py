@@ -9,7 +9,8 @@ tests/test_renderer/test_locks_location.py）。故本包自带最小 Style：
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from src._compat import dataclass
+from dataclasses import field
 from typing import Union
 
 # 颜色值：256 色号（int）或 (r,g,b) 24-bit 三元组
