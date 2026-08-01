@@ -365,6 +365,96 @@ class TestRowMargin:
         assert box.w == 5
 
 
+class TestRowFillFalseWidth:
+    """方向1 步骤1.7 — row 方向 fill=False 子节点宽度（内容自适应）+ 剩余宽度 0 高度。"""
+
+    def _collect_children(self, root):
+        children = []
+        child = root.child.child
+        while child:
+            children.append(child)
+            child = child.sibling
+        return children
+
+    def test_row_fill_false_width_regression(self):
+        """row 内 BOX 子节点（无显式 width）宽度为内容宽（非剩余宽）。
+
+        修复前 column 分支忽略 fill 恒填满剩余行宽（row 内 BOX 错误占满
+        avail_w）；修复后 fill=False 内容自适应（BOX 宽 = 内容 + padding）。
+        """
+        root, box = _render_and_layout(
+            h(BOX, {"flexDirection": "row"},
+              h(BOX, {"padding": 1}, h(TEXT, {"children": "ab"})),
+              h(TEXT, {"children": "c"})),
+            80,
+        )
+        children = self._collect_children(root)
+        # BOX：padding 1 + 内容 2 + padding 1 = 宽 4（修复前填满剩余 80）
+        assert children[0].layout_box.w == 4, (
+            f"row 内 BOX 子节点应内容自适应宽 4，实际 {children[0].layout_box.w}"
+        )
+        # row 总宽 = 4 + 1 = 5（非修复前占满 80）
+        assert box.w == 5, f"row 总宽应为 5（内容宽），实际 {box.w}"
+
+    def test_row_remaining_zero_height_regression(self):
+        """row 内剩余宽度 0 子节点高度为 0（row_h 不虚增）。
+
+        修复前 fill=False 且 width=0 时 wrap_runs_by_width(runs, 0) 返回单行
+        → h=1（零宽仍占 1 行高度）；修复后零宽非 fill 子节点不占位。
+        """
+        root, box = _render_and_layout(
+            h(BOX, {"flexDirection": "row"},
+              h(TEXT, {"children": "a" * 10}),
+              h(TEXT, {"children": "b"})),
+            10,
+        )
+        children = self._collect_children(root)
+        assert children[0].layout_box.w == 10  # 占满
+        assert children[1].layout_box.w == 0  # 剩余 0 → 宽 0
+        assert children[1].layout_box.h == 0, (
+            f"零宽非 fill 子节点高度应为 0，实际 {children[1].layout_box.h}"
+        )
+        assert box.h == 1  # row_h 不虚增
+
+    def test_row_zero_width_spacer_no_height_regression(self):
+        """row 内 SPACER 显式 width=0 → 高度 0（不虚增 row_h）。
+
+        修复前 SPACER width=0 时 height 仍按 prop（如 5）参与 row_h 累加；
+        修复后零宽 SPACER 不占位。
+        """
+        root, box = _render_and_layout(
+            h(BOX, {"flexDirection": "row"},
+              h(TEXT, {"children": "a" * 10}),
+              h(SPACER, {"width": 0, "height": 5})),
+            10,
+        )
+        children = self._collect_children(root)
+        assert children[1].layout_box.w == 0
+        assert children[1].layout_box.h == 0, (
+            f"零宽 SPACER 高度应为 0，实际 {children[1].layout_box.h}"
+        )
+        assert box.h == 1
+
+    def test_row_box_inner_text_content_width_regression(self):
+        """row 内 BOX 内部 TEXT 以内容自适应测量（fill 沿树传播）。
+
+        修复前 BOX 内 TEXT fill=True 填满内部宽度（BOX 恒占满剩余宽）；
+        修复后 fill=False 沿树传播 → TEXT 内容宽决定 BOX 宽。
+        """
+        root, box = _render_and_layout(
+            h(BOX, {"flexDirection": "row"},
+              h(BOX, None, h(TEXT, {"children": "xy"})),
+              h(TEXT, {"children": "z"})),
+            80,
+        )
+        children = self._collect_children(root)
+        # BOX 内容 TEXT 宽 2 → BOX 宽 2；row 总宽 3
+        assert children[0].layout_box.w == 2, (
+            f"row 内 BOX 内部 TEXT 内容自适应 → BOX 宽 2，实际 {children[0].layout_box.w}"
+        )
+        assert box.w == 3
+
+
 class TestEmptyTextHeight:
     """方向1 — 空 TEXT 高度恒 ≥1 修复（空文本 h=0，不再产生空行占位）。"""
 

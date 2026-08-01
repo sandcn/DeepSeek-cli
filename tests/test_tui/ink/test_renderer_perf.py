@@ -9,6 +9,7 @@ import io
 
 from src.tui.ink.output import Frame, Line
 from src.tui.ink.renderer import InkRenderer, _MAX_REWRITE_ROWS
+from src.tui._screen import clear_screen
 
 
 def _frame(*plain_lines: str) -> Frame:
@@ -83,7 +84,12 @@ class TestMaxRewriteRowsFallback:
         return InkRenderer(stream=out), out
 
     def test_max_rewrite_rows_fallback_regression(self):
-        """大差异（> _MAX_REWRITE_ROWS 行）降级为仅写末尾 _MAX_REWRITE_ROWS 行。"""
+        """大差异（> _MAX_REWRITE_ROWS 行）降级为全量 clear + 全量重建（1.5 修复）。
+
+        旧行为「仅写末尾 _MAX_REWRITE_ROWS 行 + _CLEAR_EOL」在文档中间残留旧行；
+        修复后全量 clear + 全量重建（重建路径不写 _CLEAR_EOL），画布与目标帧
+        一致、无残留。
+        """
         r, out = self._new()
         # 首帧 1 行
         r.render(_frame("start"))
@@ -93,10 +99,11 @@ class TestMaxRewriteRowsFallback:
         big = _frame(*(f"L{i}" for i in range(500)))
         r.render(big)
         val = out.getvalue()
-        # 重写行数不超过 _MAX_REWRITE_ROWS（每行写 1 次 _CLEAR_EOL）
-        assert val.count("\x1b[K") <= _MAX_REWRITE_ROWS
+        # 全量 clear 开头（ED2 + CUP），全量重建（500 行，每行 \r 前缀）
+        assert val.startswith("\x1b[2J\x1b[H")
+        assert val.count("\r") == 500
         # 最后一行被写入
-        assert val.rstrip().endswith("L499\x1b[K")
+        assert val.rstrip().endswith("L499")
         # 光标位置更新正确
         assert r.cursor_row == 501
         # 尾部内容可恢复：下一帧与 500 行帧一致 → 无输出
@@ -108,6 +115,53 @@ class TestMaxRewriteRowsFallback:
     def test_max_rewrite_rows_constant_regression(self):
         """_MAX_REWRITE_ROWS 常量为 200。"""
         assert _MAX_REWRITE_ROWS == 200
+
+    def test_rewrite_degrade_no_stale_lines_regression(self):
+        """超限降级全量 clear + 重建：画布与目标帧一致、无旧行残留（1.5 修复）。
+
+        修复前「仅写末尾 _MAX_REWRITE_ROWS 行」跳过首差异行之前的静态内容，
+        中间行残留旧帧行；修复后全量 clear + 全量重建，全部行重写且下一帧
+        与目标帧一致时无输出。
+        """
+        r, out = self._new()
+        r.render(_frame("start"))
+        out.seek(0)
+        out.truncate()
+        big = _frame(*(f"L{i}" for i in range(500)))
+        r.render(big)
+        val = out.getvalue()
+        # 全量 clear 开头（ED2 + CUP）
+        assert val.startswith(clear_screen()), (
+            f"降级应全量 clear 开头，实际: {val[:20]!r}"
+        )
+        # 全部 500 行被写入（每行 \r 前缀；旧实现仅写末尾 200 行 → 首行 L0 缺失）
+        assert val.count("\r") == 500, (
+            f"全量重建应写 500 行，实际 {val.count(chr(13))} 行"
+        )
+        assert "L0" in val, "首行 L0 应被写入（修复前跳写末尾 200 行不写 L0）"
+        assert val.rstrip().endswith("L499"), "末行 L499 应被写入"
+        # 光标位置更新正确（全量重建后位于文档底部）
+        assert r.cursor_row == 501
+        # 尾部内容可恢复：下一帧与 500 行帧一致 → 无输出
+        out.seek(0)
+        out.truncate()
+        r.render(big)
+        assert out.getvalue() == ""
+
+    def test_rewrite_degrade_emit_only_new_lines_regression(self):
+        """降级全量重建仅回调新增行（prev_h..new_h），不重复回调已有行。"""
+        r, out = self._new()
+        emitted: list[str] = []
+        r.set_line_callback(lambda text: emitted.append(text))
+        r.render(_frame("start"))
+        emitted.clear()
+        big = _frame(*(f"L{i}" for i in range(500)))
+        r.render(big)
+        # 首帧 1 行 + 新帧 500 行 → 仅回调 499 个新增行（L1..L499），
+        # 首行 L0 是已有行（prev_h=1）不重复回调。
+        assert emitted[0] == "L1\n", f"首个新增行应为 L1，实际 {emitted[0]!r}"
+        assert emitted[-1] == "L499\n", f"末个新增行应为 L499，实际 {emitted[-1]!r}"
+        assert len(emitted) == 499
 
 
 class TestBufferedSingleWrite:

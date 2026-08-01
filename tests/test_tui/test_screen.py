@@ -52,6 +52,31 @@ class TestWcswidth:
     def test_fullwidth(self):
         assert wcswidth_simple("\uff01") == 2  # ！
 
+    def test_regional_indicator_pair_width_regression(self):
+        """RI 码点（0x1F1E6-0x1F1FF）宽度修复：成对 RI 按 2 列、单 RI 按 1 列。
+
+        修复前 (0x1F000, 0x1FAFF) 覆盖 RI → 🇨🇳 误计 4；修复后排除 RI，
+        单 RI 宽 1（保守语义）、成对 RI（国旗）1×2=2，与主流 wcwidth 一致。
+        """
+        # 🇨 = U+1F1E8（RI），🇳 = U+1F1F3（RI）→ 1+1=2（修复前 4）
+        assert wcswidth_simple("\U0001F1E8\U0001F1F3") == 2
+        # 单 RI 宽 1（保守：部分终端按 2 列渲染，本实现取 wcwidth 语义）
+        assert wcswidth_simple("\U0001F1E8") == 1
+        # 常规 emoji（📖 U+1F4D6）仍宽 2，行为不变
+        assert wcswidth_simple("\U0001F4D6") == 2
+
+    def test_zwj_sequence_width_regression(self):
+        """ZWNJ/ZWJ（0x200C/0x200D）宽度修复：零宽，emoji ZWJ 序列按组件累加。
+
+        👨👩👧 = U+1F468 + ZWJ + U+1F469 + ZWJ + U+1F467 → 2+0+2+0+2 = 6
+        （修复前 ZWJ 误计 1 → 8，组件间溢出）。
+        """
+        assert wcswidth_simple("\u200D") == 0  # ZWJ 本身零宽
+        assert wcswidth_simple("\u200C") == 0  # ZWNJ 本身零宽
+        assert wcswidth_simple(
+            "\U0001F468\u200D\U0001F469\u200D\U0001F467"
+        ) == 6  # 各组件宽度之和（不溢出）
+
 
 class TestScrollRegion:
     """测试滚动区域序列。"""
@@ -372,3 +397,33 @@ class TestTerminalWidthCacheDimensions:
             w, h = cache.get_dimensions()
         # 宽度缓存命中（120 保持），高度刷新（30）
         assert (w, h) == (120, 30)
+
+    def test_width_cache_timestamps_regression(self):
+        """get_width/get_height 过期刷新后两个时间戳同步更新（回归确认）。
+
+        bug 清单快照行号过时——当前实现 get_width 刷新时已同步更新
+        ``_last_height_fetch``（get_height 同理），本测试锁定不回归：
+        get_width 过期刷新 → 两个 fetch 时间戳均推进；get_height 同理。
+        """
+        import time as _time
+        from unittest.mock import patch
+        from src.tui._screen import TerminalWidthCache
+        cache = TerminalWidthCache(ttl=60.0)
+        cache._width, cache._height = 120, 40
+        old = _time.monotonic() - 100.0  # 两个 TTL 均过期
+        cache._last_width_fetch = old
+        cache._last_height_fetch = old
+        with patch("src.tui._screen._get_terminal_size", return_value=(100, 30)):
+            assert cache.get_width() == 100
+            assert cache._last_width_fetch > old, "get_width 过期刷新后 _last_width_fetch 应推进"
+            assert cache._last_height_fetch > old, (
+                "get_width 过期刷新后 _last_height_fetch 应同步推进（回归确认）"
+            )
+            # get_height 同理：两个时间戳均过期 → 刷新后同步推进
+            cache._last_width_fetch = old
+            cache._last_height_fetch = old
+            assert cache.get_height() == 30
+            assert cache._last_height_fetch > old, "get_height 过期刷新后 _last_height_fetch 应推进"
+            assert cache._last_width_fetch > old, (
+                "get_height 过期刷新后 _last_width_fetch 应同步推进（回归确认）"
+            )

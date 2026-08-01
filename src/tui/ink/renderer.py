@@ -99,39 +99,27 @@ class InkRenderer:
             self._stream.flush()
             return
 
-        # ★ PERF-4 单帧重写行数上限：超限时降级为仅写末尾 _MAX_REWRITE_ROWS 行
-        #   + 清残留（避免病态大重写冻结 UI）。
+        # ★ PERF-4 单帧重写行数上限：超限时降级（避免病态大重写冻结 UI）。
         rewrite_count = new_h - i
         if rewrite_count > _MAX_REWRITE_ROWS:
             _logger.warning(
-                "单帧重写行数 %d 超上限 %d，降级为仅写末尾 %d 行",
-                rewrite_count, _MAX_REWRITE_ROWS, _MAX_REWRITE_ROWS,
+                "单帧重写行数 %d 超上限 %d，降级为全量 clear + 全量重建",
+                rewrite_count, _MAX_REWRITE_ROWS,
             )
-            buf = io.StringIO()  # ★ 整帧缓冲（方向1）
-            start_idx = max(0, new_h - _MAX_REWRITE_ROWS)
-            target_row = start_idx + 1
-            n_move = self._cursor_row - target_row
-            if n_move > 0:
-                buf.write(cursor_up(n_move))
-            elif n_move < 0:
-                buf.write(cursor_down(-n_move))
-            for line_idx in range(start_idx, new_h):
-                buf.write("\r")
-                buf.write(frame.render_line(line_idx))
-                buf.write(_CLEAR_EOL)
-                buf.write("\n")
-            # 新增内容行（文档增长）回调输出历史
-            if new_h > prev_h:
-                self._emit_new_lines(frame, prev_h, new_h)
-            # 文档收缩：清除残留行
-            if new_h < prev_h:
-                for _ in range(prev_h - new_h):
-                    buf.write(clear_line())
-                    buf.write(cursor_down(1))
-            self._cursor_row = max(new_h, prev_h) + 1
+            # ★ 1.5 修复：旧实现「仅写末尾 _MAX_REWRITE_ROWS 行 + 清残留」在文档
+            #   中间留下旧行残留——跳写语义使首差异行之前的静态内容被跳过，中间
+            #   行无法与目标帧对齐，画布出现陈旧行。改为「全量 clear + 全量重建」：
+            #   仅超限罕见路径触发，闪烁可接受；重建仅回调新增行（prev_h..new_h），
+            #   不重复回调已有行（输出历史不被污染）；_cursor_row 由 _write_full
+            #   重置为 new_h + 1（与目标帧一致）。
+            try:
+                self._stream.write(clear_screen())
+            except Exception:
+                _logger.debug("降级 clear_screen 写入异常", exc_info=True)
+            self._write_full(frame, prev_h)
+            # _write_full 不更新 _prev（首帧/重置路径由调用方置 None）；降级重建
+            # 须写回目标帧，否则下一帧误判首帧全量重写（输出重复）。
             self._prev = frame
-            self._stream.write(buf.getvalue())
-            self._stream.flush()
             return
 
         # ★ 定位到行 i：从当前光标位置（_cursor_row，可能已被 place_cursor
@@ -195,12 +183,17 @@ class InkRenderer:
                 return False
         return True
 
-    def _write_full(self, frame: Frame) -> None:
+    def _write_full(self, frame: Frame, emit_start: int = 0) -> None:
         """首帧/重置后：全量写入文档。
 
         raw 终端模式下 \n 不归位列 1，每行前缀 \r（与 OutputAdapter 的
         CRLF 语义一致）。方向1：整帧缓冲单次 write+flush（免逐行 flush
         闪烁/撕裂）。
+
+        Args:
+            frame: 目标帧。
+            emit_start: 新增行回调起始行（仅回调 ``[emit_start, height)``；
+                首帧默认 0=全量回调；降级重建传上一帧高度，避免重复回调已有行）。
         """
         if not frame.lines:
             return
@@ -209,7 +202,7 @@ class InkRenderer:
             buf.write("\r")
             buf.write(line.render())
             buf.write("\n")
-        self._emit_new_lines(frame, 0, frame.height)
+        self._emit_new_lines(frame, emit_start, frame.height)
         self._cursor_row = frame.height + 1
         self._stream.write(buf.getvalue())
         self._stream.flush()

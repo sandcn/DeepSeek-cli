@@ -320,3 +320,162 @@ class TestHighlighterCache:
         """_get_highlighter 缓存 maxsize=64（防无限增长）。"""
         from src.tui._diff_renderer import _get_highlighter
         assert _get_highlighter.cache_info().maxsize == 64
+
+
+# ═══════════════════════════════════════════════════════════
+# 方向1 P0-2 — diff 文件头误判修复（基于 parsed 结构统计）
+# ═══════════════════════════════════════════════════════════
+
+class TestDiffFileHeaderParsing:
+    """方向1 P0-2 — 文件头精确匹配 ``--- ``/``+++ ``，删除/新增行不被误判。"""
+
+    def _collect(self, diff, **kwargs):
+        """render_diff + _render_diff_summary 收集输出（含统计摘要）。"""
+        from src.tui._diff_renderer import render_diff, _render_diff_summary
+        collected: list[str] = []
+
+        class _Collector:
+            _target = collected
+            @classmethod
+            def write_line(cls, text: str) -> None:
+                cls._target.append(text)
+
+        render_diff(diff, w=4, output_target=_Collector, **kwargs)
+        _render_diff_summary(diff, output_target=_Collector)
+        return collected
+
+    def test_del_line_not_file_header_regression(self):
+        """删除行 `---foo` / 新增行 `+++bar`（内容以 --/++ 开头）不被误判为文件头。
+
+        修复前 ``startswith('---')`` 把删除行 `---foo`（`-`+`--foo`）误判为
+        old_file → 渲染 `┌─ --foo`；修复后仅 ``--- ``（含空格）且非 ``----``
+        判定为文件头，`---foo` 落入 del 分支（统计基于 parsed 结构，含增删）。
+        """
+        diff = [
+            '--- a/test.py',
+            '+++ b/test.py',
+            '@@ -1,3 +1,3 @@',
+            ' hello',
+            '---foo',   # 删除行，内容 --foo（无空格，非文件头）
+            '+++bar',   # 新增行，内容 ++bar（无空格，非文件头）
+            ' world',
+        ]
+        out = self._collect(diff, lexer_name='')
+        output = '\n'.join(out)
+        # 正常文件头仍渲染 ┌─ / └─（各一次；路径含 a//b/ 前缀——`--- a/path`[4:]=a/path）
+        assert '┌─ a/test.py' in output
+        assert '└─ b/test.py' in output
+        assert output.count('┌─ ') == 1, "删除行 ---foo 不应再被误判为文件头（┌─ 仅一次）"
+        assert output.count('└─ ') == 1, "新增行 +++bar 不应再被误判为文件头（└─ 仅一次）"
+        # 统计基于 parsed 结构：含 1 条删除 + 1 条新增
+        assert '🟢 +1' in output
+        assert '🔴 -1' in output
+        # 删除/新增行内容作为普通行渲染（消毒后字面量保留）
+        assert '--foo' in output
+        assert '++bar' in output
+
+    def test_normal_file_header_still_rendered_regression(self):
+        """正常文件头 `--- a/x` / `+++ b/x` 仍渲染 ┌─ / └─（行为不变）。"""
+        diff = [
+            '--- a/x',
+            '+++ b/x',
+            '@@ -1,1 +1,1 @@',
+            '-a',
+            '+b',
+        ]
+        out = self._collect(diff, lexer_name='')
+        output = '\n'.join(out)
+        assert '┌─ a/x' in output
+        assert '└─ b/x' in output
+        assert '🟢 +1' in output
+        assert '🔴 -1' in output
+
+    def test_four_dash_edge_not_file_header_regression(self):
+        """`----` 边界：`---` 后跟 `-`（第4字符非空格）不判定为文件头（落入 del 分支）。"""
+        diff = [
+            '--- a/x',
+            '+++ b/x',
+            '@@ -1,2 +1,1 @@',
+            '----foo',   # 4 个 -，第4字符非空格 → 不匹配 ``--- `` → del 分支
+            '+ok',
+        ]
+        out = self._collect(diff, lexer_name='')
+        output = '\n'.join(out)
+        assert output.count('┌─ ') == 1, "`----foo` 不应被误判为文件头（┌─ 仅一次）"
+        # `----foo` 作为删除行计入统计（非文件头不计入——统计含 1 删）
+        assert '🔴 -1' in output
+
+
+# ═══════════════════════════════════════════════════════════
+# 方向1 P1 — show_file_diff None 防御 + 分隔线宽度参数化
+# ═══════════════════════════════════════════════════════════
+
+class TestShowFileDiffNoneAndWidthParam:
+    """方向1 P1 — show_file_diff old_content=None 防御 + diff 摘要分隔线宽度参数化。"""
+
+    def _collector(self):
+        collected: list[str] = []
+
+        class _Collector:
+            _target = collected
+            @classmethod
+            def write_line(cls, text: str) -> None:
+                cls._target.append(text)
+
+        return collected, _Collector
+
+    def test_show_file_diff_none_old_regression(self):
+        """show_file_diff old_content=None 不崩溃（修复前 None.replace 崩溃）。"""
+        from src.tui._diff_renderer import show_file_diff
+        collected, _Collector = self._collector()
+        show_file_diff("x", None, "new", output_target=_Collector)
+        output = '\n'.join(collected)
+        # 正常渲染（None 视为空内容 → 全部新增）
+        assert '┌─ a/x' in output
+        assert '└─ b/x' in output
+        assert 'new' in output
+
+    def test_diff_summary_width_param(self):
+        """_render_diff_summary width 参数化：分隔线随 width 收缩（默认 40 不变）。"""
+        from src.tui._diff_renderer import _render_diff_summary
+        diff = ['--- a/x', '+++ b/x', '@@ -1,1 +1,1 @@', '-a', '+b']
+
+        # 默认 width=40 → 分隔线 40 个 ╌（行为不变）
+        collected1, _Collector1 = self._collector()
+        _render_diff_summary(diff, output_target=_Collector1)
+        sep_lines1 = [line for line in collected1 if '╌' in line]
+        assert len(sep_lines1) == 1
+        assert sep_lines1[0].count('╌') == 40, "默认 width=40 分隔线应 40 个 ╌"
+
+        # width=10 → 分隔线收缩为 10 个 ╌（窄终端不溢出）
+        collected2, _Collector2 = self._collector()
+        _render_diff_summary(diff, output_target=_Collector2, width=10)
+        sep_lines2 = [line for line in collected2 if '╌' in line]
+        assert len(sep_lines2) == 1
+        assert sep_lines2[0].count('╌') == 10, "width=10 分隔线应 10 个 ╌"
+
+    def test_render_diff_multi_hunk_separator_width_param(self):
+        """render_diff 多 hunk 分隔线宽度参数化：width=10 时 hunk 间分隔线收缩。"""
+        from src.tui._diff_renderer import render_diff
+        diff = [
+            '--- a/x',
+            '+++ b/x',
+            '@@ -1,1 +1,1 @@',
+            '-a',
+            '+b',
+            '@@ -5,1 +5,1 @@',
+            '-c',
+            '+d',
+        ]
+        collected1, _Collector1 = self._collector()
+        render_diff(diff, w=4, lexer_name='', output_target=_Collector1)
+        # 默认 width=40：多 hunk 分隔线 40 个 ╌
+        sep_lines1 = [line for line in collected1 if '╌' in line]
+        assert len(sep_lines1) == 1
+        assert sep_lines1[0].count('╌') == 40
+
+        collected2, _Collector2 = self._collector()
+        render_diff(diff, w=4, lexer_name='', output_target=_Collector2, width=10)
+        sep_lines2 = [line for line in collected2 if '╌' in line]
+        assert len(sep_lines2) == 1
+        assert sep_lines2[0].count('╌') == 10, "width=10 时多 hunk 分隔线应收缩为 10"

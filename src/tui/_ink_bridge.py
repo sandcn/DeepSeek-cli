@@ -117,7 +117,9 @@ class InkBridge(_BottomBarCompatMixin):
         c.title = title
         c.items = list(items)
         c.texts = list(texts) if texts is not None else list(items)
-        c.selected = min(int(selected_idx), max(0, len(items) - 1))
+        # ★ 1.8 修复：selected_idx 负值钳制到 0（修复前 min(int(-1), len-1) = -1
+        #   → 负索引越界；改为 max(0, min(...)) 双向钳制；超上界仍钳到 len-1）。
+        c.selected = max(0, min(int(selected_idx), len(items) - 1))
         c.start_pos = int(start_pos)
         c.orig_prefix = orig_prefix
         c.types = list(types) if types is not None else []

@@ -155,3 +155,128 @@ class TestRenderIntegrationNewProps:
             assert display in out
         finally:
             session.stop()
+
+
+# ═══════════════════════════════════════════════════════════
+# 方向1 P0-1 — 超宽行按 width wrap（committed 发射前）
+# ═══════════════════════════════════════════════════════════
+
+class TestOverwidthLineWrap:
+    """方向1 P0-1 — 超宽行在 ``_block_to_ink_lines`` 按 width wrap（行级 diff 正确性）。"""
+
+    def test_overwidth_line_wrapped_regression(self):
+        """超宽 ASCII 行 append_committed 后 committed_lines 各行 ≤ width 且总行数正确。"""
+        from src.renderer.ansi.helpers import AnsiLine
+        from src.renderer.ansi.style import Style
+
+        model = AppModel()
+        model.width = 40
+        line = AnsiLine.of("a" * 100, Style(fg=1))  # 100 列 ASCII，超宽
+        model.append_committed("content", [line])
+        assert len(model.committed_lines) == 3, (
+            f"100 列 / width 40 应拆 3 行（40+40+20），实际 {len(model.committed_lines)}"
+        )
+        for ln in model.committed_lines:
+            assert ln.width <= 40, f"committed ink Line 宽度 {ln.width} 应 <= 40"
+
+    def test_overwidth_cjk_line_wrapped_regression(self):
+        """超宽 CJK 行 append_committed 后 committed_lines 各行 ≤ width（不拆宽字符）。"""
+        from src.renderer.ansi.helpers import AnsiLine
+        from src.renderer.ansi.style import Style
+
+        model = AppModel()
+        model.width = 40
+        line = AnsiLine.of("你" * 30, Style(fg=2))  # 30×2=60 列，超宽
+        model.append_committed("content", [line])
+        assert len(model.committed_lines) == 2, (
+            f"60 列 / width 40 应拆 2 行（20+10），实际 {len(model.committed_lines)}"
+        )
+        for ln in model.committed_lines:
+            assert ln.width <= 40, f"committed ink Line 宽度 {ln.width} 应 <= 40"
+
+    def test_normal_width_line_unwrapped_regression(self):
+        """宽度 ≤ width 的普通行行为不变（零回归：wrap 仅超宽行触发）。"""
+        from src.renderer.ansi.helpers import AnsiLine
+        from src.renderer.ansi.style import Style
+
+        model = AppModel()
+        model.width = 40
+        line = AnsiLine.of("hello", Style(fg=1))
+        model.append_committed("content", [line])
+        assert len(model.committed_lines) == 1
+        assert model.committed_lines[0].width == 5
+
+
+# ═══════════════════════════════════════════════════════════
+# 方向1 步骤1.6 — 长工具输出关闭后 committed_lines 标题行图标更新
+# ═══════════════════════════════════════════════════════════
+
+class TestToolTitleIconUpdate:
+    """方向1 步骤1.6 — 长工具输出关闭后 committed_lines 标题行图标由 ● 更新为 ✔/✖。
+
+    修复前：长工具输出（> _TOOL_INCREMENTAL_THRESHOLD）触发 commit_open_block
+    增量提交时标题行已进入 committed_lines（状态 running ●）；close_tool_box
+    仅冻结/提交未提交尾（不含标题行）→ committed_lines 标题行恒 ●。
+    修复后：首次提交记录 ``_first_committed_offset``，close 时更新该行图标。
+    """
+
+    def _open_long_tool(self, tool_id, tool_name="bash", output_lines=None):
+        from src.tui.app.model import AppModel, _TOOL_INCREMENTAL_THRESHOLD
+
+        model = AppModel()
+        model.open_tool_box(tool_id, tool_name)
+        for i in range(_TOOL_INCREMENTAL_THRESHOLD + 1):
+            model.append_tool_output(tool_id, f"line{i}")
+        return model
+
+    def test_tool_title_icon_updates_after_close_regression(self):
+        """> _TOOL_INCREMENTAL_THRESHOLD 行工具输出关闭后 committed_lines 标题行
+        图标由 ● 更新为 ✔（修复前恒 ●）。"""
+        from src.tui.app.model import AppModel, _TOOL_INCREMENTAL_THRESHOLD
+
+        model = self._open_long_tool("t1", "bash")
+        block = model.blocks[-1]
+        offset = block.extra.get("_first_committed_offset")
+        assert offset is not None, "增量提交应记录 _first_committed_offset"
+        assert 0 <= offset < len(model.committed_lines), "偏移应指向 committed_lines 内"
+        # 关闭前：标题行图标为 running ●
+        assert model.committed_lines[offset].plain.startswith("\u25cf"), (
+            "关闭前 committed_lines 标题行应为 running ●"
+        )
+        model.close_tool_box("t1", True)
+        # 关闭后：标题行图标为 done ✔
+        assert model.committed_lines[offset].plain.startswith("\u2714"), (
+            "关闭后 committed_lines 标题行图标应更新为 ✔"
+        )
+        # 标题文本保留（图标替换不丢失标题内容；bash 显示名经 registry 缩写为 bs）
+        assert len(model.committed_lines[offset].plain) > len("\u2714"), (
+            "标题行图标更新后应保留标题文本"
+        )
+
+    def test_tool_title_icon_fail_updates_after_close_regression(self):
+        """fail 场景：长工具输出关闭后标题行图标更新为 ✖。"""
+        from src.tui.app.model import AppModel, _TOOL_INCREMENTAL_THRESHOLD
+
+        model = self._open_long_tool("t2", "bash")
+        block = model.blocks[-1]
+        offset = block.extra.get("_first_committed_offset")
+        assert offset is not None
+        model.close_tool_box("t2", False)
+        assert model.committed_lines[offset].plain.startswith("\u2716"), (
+            "关闭后 committed_lines 标题行图标应更新为 ✖"
+        )
+
+    def test_short_tool_title_icon_no_offset_unchanged(self):
+        """短工具输出（未增量提交）关闭后 committed_lines 标题行直接带 ✔（行为不变）。"""
+        from src.tui.app.model import AppModel
+
+        model = AppModel()
+        model.open_tool_box("t3", "read_file")
+        model.append_tool_output("t3", "brief")
+        model.close_tool_box("t3", True)
+        # 关闭后标题行（committed_lines 首行）直接带 ✔——未触发增量提交时
+        # close 经 commit_block 提交的标题行已带 done 图标，无需 offset 更新路径。
+        assert model.committed_lines, "关闭后 committed_lines 不应为空"
+        assert model.committed_lines[0].plain.startswith("\u2714"), (
+            "短工具关闭后 committed_lines 标题行应为 ✔"
+        )

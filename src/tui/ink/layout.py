@@ -387,7 +387,14 @@ def _measure(fiber: Fiber, x: int, y: int, avail_w: int, fill: bool = True) -> L
         #   wrap_runs_by_width 返回单行 h=1 不变）。_paint TEXT 分支对 h=0
         #   的 box 零绘制安全（lines 为空循环不执行），layout_children 对
         #   空 TEXT 高度 0 不产生空行。
-        h = len(lines)
+        # ★ 1.7 修复：row 内剩余宽度 0（fill=False 且 width==0）时高度视为 0
+        #   ——wrap_runs_by_width(runs, 0) 返回单行令 h=1，子节点 0 宽仍占 1 行
+        #   高度使 row_h 虚增；零宽且非 fill 子节点不占位（fill=True 的
+        #   column 容器零宽不受影响，容器本身高度仍按内容）。
+        if width == 0 and not fill:
+            h = 0
+        else:
+            h = len(lines)
         box = LayoutBox(x, y, width, h)
         fiber.layout_box = box
         return box
@@ -403,6 +410,10 @@ def _measure(fiber: Fiber, x: int, y: int, avail_w: int, fill: bool = True) -> L
             h = max(0, int(h))
         except (TypeError, ValueError):
             h = 1
+        # ★ 1.7 修复：零宽 SPACER（显式 width=0 或剩余宽度 0）高度视为 0——
+        #   不参与 row 高度累加（row_h 不虚增；fill=False 时 width=1 不受影响）。
+        if width == 0:
+            h = 0
         box = LayoutBox(x, y, width, h)
         fiber.layout_box = box
         return box
@@ -466,13 +477,32 @@ def _measure(fiber: Fiber, x: int, y: int, avail_w: int, fill: bool = True) -> L
         total_h = row_h
     else:
         # 子节点纵向堆叠（填充宽度），高度为内容累加
-        width = max(0, int(explicit_w)) if explicit_w is not None else avail_w
+        if explicit_w is not None:
+            width = max(0, int(explicit_w))
+        elif fill:
+            width = avail_w
+        else:
+            # ★ 1.7 修复：row 内 column/BOX 子节点（fill=False）内容自适应宽度——
+            #   先以 fill=False 测量子节点自然宽度（内容宽度 = 子节点自然宽度，
+            #   纵向堆叠取最大），加 padding/border 且不超可用宽度。修复前 column
+            #   分支忽略 fill 恒填满剩余行宽（row 内 BOX 子节点错误占满整行）。
+            probe_w = 0
+            for child in children:
+                probe_box = _measure(
+                    child, inner_x, inner_y,
+                    max(0, avail_w - 2 * (padding + border)), fill=False,
+                )
+                if probe_box.w > probe_w:
+                    probe_w = probe_box.w
+            width = max(0, min(avail_w, probe_w + 2 * (padding + border)))
         inner_w = max(0, width - 2 * (padding + border))
         cursor_y = inner_y
         total_h = 0
         n = len(children)
         for i, child in enumerate(children):
-            cbox = _measure(child, inner_x, cursor_y, inner_w, fill=True)
+            # fill 沿树传播：fill=False（row 内）时子节点内容自适应（孙 TEXT 不
+            # 填满 BOX 内部，BOX 宽度才能由内容决定而非固定填充）。
+            cbox = _measure(child, inner_x, cursor_y, inner_w, fill=fill)
             cursor_y += cbox.h + margin
             total_h += cbox.h
             if i < n - 1:

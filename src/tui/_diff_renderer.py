@@ -32,6 +32,10 @@ _BG_RED = '\033[48;5;124m'    # 256色暗红背景（保留，因 Style 不支�
 _BG_GREEN = '\033[48;5;28m'   # 256色柔和绿背景（保留，因 Style 不支持 bg only）
 _BG_OFF = '\033[49m'          # 重置为默认背景色
 
+# 分隔线默认宽度（方向1 P1：diff 摘要/多 hunk 分隔线固定 40 → 提取常量，
+# 窄终端调用方传收缩宽度 min(40, max(10, ...))，默认 40 行为不变）
+_SEPARATOR_WIDTH = 40
+
 # 语义色常量引用（从 StyleSheet 获取，兜底硬编码确保任何加载顺序下都有默认值）
 _DIFF_ADD_STYLE: Style = StyleSheet.get("diff_add") or Style(fg=41)
 _DIFF_DEL_STYLE: Style = StyleSheet.get("diff_del") or Style(fg=196)
@@ -156,15 +160,22 @@ def _parse_diff_hunks(diff_list, line_offset=0):
 
     每条记录为 (type, line, old_num, new_num) 元组，
     type 取值: 'hunk' | 'del' | 'add' | 'ctx'
+
+    ★ 方向1 P0-2（文件头误判修复）：文件头精确匹配 ``--- ``/``+++ ``（含空格，
+    difflib.unified_diff 输出恒为 ``--- a/...``/``+++ b/...``），并排除 ``----``
+    边界——删除行内容以 ``--`` 开头（diff 表示为 ``---foo``，无空格）不再被
+    误判为 old_file，落入 del 分支（``-`` 前缀）。
     """
     hunk_re = re.compile(r'^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@')
     old_num = new_num = 0
     parsed = []
     for line in diff_list:
-        if line.startswith('---'):
+        # 文件头：``--- a/path`` / ``+++ b/path``（difflib 输出恒含空格）；
+        # ``----`` 边界兜底（排除 ``---``+非空格 前缀）
+        if line.startswith('--- ') and not line.startswith('----'):
             parsed.append(('old_file', line, 0, 0))
             continue
-        if line.startswith('+++'):
+        if line.startswith('+++ ') and not line.startswith('++++'):
             parsed.append(('new_file', line, 0, 0))
             continue
         m = hunk_re.match(line)
@@ -270,29 +281,36 @@ def _render_chunk(item, w, lexer_name, output_target):
     )
 
 
-def _render_diff_summary(diff_list, output_target=None):
+def _render_diff_summary(diff_list, output_target=None, width: int = _SEPARATOR_WIDTH):
     """渲染 diff 变更统计摘要（增删行数）。
 
-    从 diff_list 中统计 +/-/ctx 行数，输出分隔线和统计行。
-    排除 ---/+++ 文件头和 @@ 块头行。
+    ★ 方向1 P0-2：基于 ``_parse_diff_hunks`` 的 parsed 结构统计——不再用
+    ``startswith`` 前缀启发式判定文件头/增删行：删除行内容以 ``--`` 开头
+    （diff 表示为 ``---foo``）等场景不再被误判为文件头；old_file/new_file/
+    hunk/fold 不计入统计。输出分隔线和统计行。
+
+    方向1 P1（宽度参数化）：分隔线宽度提取 ``_SEPARATOR_WIDTH``（默认 40）；
+    调用方（render_diff_to_ansi/show_file_diff）传 ``min(40, max(10, 终端宽度
+    或 w*2))``——窄终端分隔线收缩不溢出，默认 width=40 行为不变。
     """
+    parsed = _parse_diff_hunks(diff_list)
     adds = dels = ctx = 0
-    for line in diff_list:
-        if line.startswith('---') or line.startswith('+++') or line.startswith('@@'):
-            continue
-        if line.startswith('+'):
+    for typ, _line, _old_num, _new_num in parsed:
+        if typ == 'add':
             adds += 1
-        elif line.startswith('-'):
+        elif typ == 'del':
             dels += 1
-        else:
+        elif typ == 'ctx':
             ctx += 1
+        # old_file/new_file/hunk/fold 不计入统计
 
     if adds == 0 and dels == 0:
         return
 
-    # 分隔线
+    # 分隔线（宽度参数化：取 min(_SEPARATOR_WIDTH, width)，调用方已 clamp ≥10）
     dim = _DIFF_CTX_STYLE
-    _write_diff_line("  " + dim.apply("╌" * 40), output_target)
+    sep = min(_SEPARATOR_WIDTH, width)
+    _write_diff_line("  " + dim.apply("╌" * sep), output_target)
 
     parts = []
     if adds:
@@ -304,7 +322,7 @@ def _render_diff_summary(diff_list, output_target=None):
     _write_diff_line("  " + "  ".join(parts), output_target)
 
 
-def render_diff(diff_list, w, line_offset=0, lexer_name='', output_target: Optional["IOutputTarget"] = None):
+def render_diff(diff_list, w, line_offset=0, lexer_name='', output_target: Optional["IOutputTarget"] = None, width: int = _SEPARATOR_WIDTH):
     """
     美化后的差异渲染：
     - 文件头：┌─ a/path（old） / └─ b/path（new）
@@ -315,6 +333,9 @@ def render_diff(diff_list, w, line_offset=0, lexer_name='', output_target: Optio
     - 折叠行：┄ N lines ┄
     - 多 hunk 间 ╌╌╌ 分隔线
     - 成对修改行内高亮差异部分（红/绿背景色）
+
+    方向1 P1（宽度参数化）：多 hunk 分隔线宽度提取 ``_SEPARATOR_WIDTH``
+    （默认 40），调用方传收缩宽度（如 ``min(40, max(10, w*2))``）。
     """
     def _hl(text):
         # 方向A 步骤3：无条件调用 _syntax_hl——空 lexer 时也消毒（消除单行
@@ -326,6 +347,8 @@ def render_diff(diff_list, w, line_offset=0, lexer_name='', output_target: Optio
     parsed = _parse_diff_hunks(diff_list, line_offset)
     # 折叠上下文
     folded = _fold_context(parsed)
+    # 多 hunk 分隔线宽度（方向1 P1：调用方已 clamp ≥10）
+    sep = min(_SEPARATOR_WIDTH, width)
 
     def _flush_pairs(del_buf, add_buf):
         diff_del = _DIFF_DEL_STYLE
@@ -372,12 +395,12 @@ def render_diff(diff_list, w, line_offset=0, lexer_name='', output_target: Optio
             if del_buf or add_buf:
                 _flush_pairs(del_buf, add_buf)
                 del_buf, add_buf = [], []
-            # 多 hunk 间输出分隔线
+            # 多 hunk 间输出分隔线（宽度参数化，方向1 P1）
             if typ == 'hunk':
                 _hunk_count += 1
                 if _hunk_count > 1:
                     _write_diff_line(
-                        "  " + _DIFF_CTX_STYLE.apply("╌" * 40),
+                        "  " + _DIFF_CTX_STYLE.apply("╌" * sep),
                         output_target,
                     )
             _render_chunk(item, w, lexer_name, output_target)
@@ -411,6 +434,8 @@ def render_diff_to_ansi(path: str, old_content: str, new_content: str) -> str:
     w = len(str(max(len(old_lines), len(new_lines), 1)))
     ext = os.path.splitext(path)[1].lstrip('.').lower()
     lexer_name = _resolve_lexer_name(ext)
+    # 方向1 P1：分隔线宽度随行号宽度收缩（min(40, max(10, w*2))，窄终端不溢出）
+    sep_w = min(_SEPARATOR_WIDTH, max(10, w * 2))
 
     # 使用简单列表收集器（纯内存操作，无锁）
     collected: list[str] = []
@@ -422,9 +447,9 @@ def render_diff_to_ansi(path: str, old_content: str, new_content: str) -> str:
         def write_line(cls, text: str) -> None:
             cls._target.append(text)
 
-    render_diff(diff_list, w, lexer_name=lexer_name, output_target=_Collector)
+    render_diff(diff_list, w, lexer_name=lexer_name, output_target=_Collector, width=sep_w)
     # 追加变更统计摘要
-    _render_diff_summary(diff_list, output_target=_Collector)
+    _render_diff_summary(diff_list, output_target=_Collector, width=sep_w)
     # 移除最后的空行（如有）
     while collected and collected[-1] == '':
         collected.pop()
@@ -445,7 +470,7 @@ def show_file_diff(path, old_content, new_content, output_target: Optional["IOut
       - 超时兜底：_render_frame_unlocked 在 diff_active 超过 30s 且
         _diff_count==0 时强制清除（认为异常/取消导致残留）。
     """
-    old_norm = old_content.replace('\r\n', '\n')
+    old_norm = old_content.replace('\r\n', '\n') if old_content else ""
     new_norm = new_content.replace('\r\n', '\n')
 
     old_lines = old_norm.splitlines(keepends=False)
@@ -466,6 +491,8 @@ def show_file_diff(path, old_content, new_content, output_target: Optional["IOut
     w = len(str(max(len(old_lines), len(new_lines), 1)))
     ext = os.path.splitext(path)[1].lstrip('.').lower()
     lexer_name = _resolve_lexer_name(ext)
+    # 方向1 P1：分隔线宽度随行号宽度收缩（min(40, max(10, w*2))，窄终端不溢出）
+    sep_w = min(_SEPARATOR_WIDTH, max(10, w * 2))
     # 锁外预热 Pygments lexer，避免在锁内首次加载阻塞其他线程
     _get_highlighter(lexer_name)
     diff_was_active = diff_active.is_set()
@@ -473,8 +500,8 @@ def show_file_diff(path, old_content, new_content, output_target: Optional["IOut
         diff_active.set()
     try:
         with _try_acquire_output_lock(name=f"show_file_diff:{os.path.basename(path)}"):
-            render_diff(diff_list, w, lexer_name=lexer_name, output_target=output_target)
-            _render_diff_summary(diff_list, output_target=output_target)
+            render_diff(diff_list, w, lexer_name=lexer_name, output_target=output_target, width=sep_w)
+            _render_diff_summary(diff_list, output_target=output_target, width=sep_w)
     finally:
         if not diff_was_active:
             diff_active.clear()

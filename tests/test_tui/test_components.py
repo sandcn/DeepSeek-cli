@@ -137,6 +137,37 @@ class TestCompletionPopupHeightConsistency:
         assert _completion_height(None) == 0
 
 
+class TestInkBridgeCompletionSelected:
+    """方向1 步骤1.8 — show_completions selected 负值钳制。"""
+
+    def _bridge(self):
+        import io
+        from src.tui._ink_bridge import InkBridge
+        from src.tui.ink.session import InkSession
+
+        m = AppModel()
+        stream = io.StringIO()
+        session = InkSession(model=m, stream=stream)
+        return InkBridge(m, session), m
+
+    def test_show_completions_negative_selected_regression(self):
+        """selected_idx 为负（如 -1）时 selected 钳制到 0（修复前负索引越界）。"""
+        bridge, model = self._bridge()
+        bridge.show_completions(["a", "b", "c"], -1, texts=["a", "b", "c"])
+        assert model.completion.selected == 0, (
+            f"负 selected_idx 应钳制到 0，实际 {model.completion.selected}"
+        )
+        assert bridge.get_selected_completion_index() == 0
+        assert bridge._last_completion_idx == 0
+
+    def test_show_completions_upper_bound_clamp_unchanged(self):
+        """selected_idx 超上界仍钳制到 len-1（回归）。"""
+        bridge, model = self._bridge()
+        bridge.show_completions(["a", "b", "c"], 99, texts=["a", "b", "c"])
+        assert model.completion.selected == 2
+        assert bridge.get_selected_completion_index() == 2
+
+
 class TestStatusBar:
     def test_status_line_present(self):
         m = AppModel()

@@ -196,6 +196,11 @@ class AppModel:
         """
         if block.committed_line_count >= len(block.lines):
             return
+        # ★ 1.6：块首次提交（committed_line_count==0）记录标题行在
+        #   committed_lines 中的偏移（committed_lines 只增不删，偏移稳定），
+        #   供 close_tool_box 关闭时更新标题行状态图标。
+        if block.committed_line_count == 0:
+            block.extra.setdefault("_first_committed_offset", len(self.committed_lines))
         self.committed_lines.extend(
             self._block_to_ink_lines(block, block.committed_line_count)
         )
@@ -220,6 +225,10 @@ class AppModel:
             if not block.closed:
                 break
             if block.committed_line_count < len(block.lines):
+                # ★ 1.6：块首次提交（committed_line_count==0）记录标题行偏移
+                #   （与 commit_open_block 一致——增量提交路径也须记录）。
+                if block.committed_line_count == 0:
+                    block.extra.setdefault("_first_committed_offset", len(self.committed_lines))
                 self.committed_lines.extend(
                     self._block_to_ink_lines(block, block.committed_line_count)
                 )
@@ -231,11 +240,18 @@ class AppModel:
     def _block_to_ink_lines(self, block, start: int = 0):
         """将块内 AnsiLine（从 start 起）转为 ink Line（推理块叠加 dim/italic）。
 
+        ★ 方向1 P0-1（超宽行 wrap）：committed 发射前按 ``self.width`` wrap——
+        任一 AnsiLine 显示宽度超过终端宽度时，经 ``renderer.ansi.helpers.wrap_line``
+        拆为多行（保持 run 样式），避免超宽行破坏行级 diff 模型（committed_lines
+        每行 ink Line 宽度须 <= width）。仅超宽行走 wrap（普通行零额外成本）；
+        ``self.width <= 0`` 时跳过 wrap 保持原样（防御）。
+
         方向D 步骤15：工具块标题行前置状态图标（running ● / done ✔ / fail ✖，
         渲染装饰不改动 block.lines 原文；仅 start==0 时前置一次）。
         """
         from src.tui.ink import Line, StyledRun
         from src.renderer.ansi.style import Style as _AnsiStyle
+        from src.renderer.ansi.helpers import wrap_line
         slice_lines = block.lines[start:]
         if not slice_lines:
             return []
@@ -245,19 +261,30 @@ class AppModel:
         icon_runs = (
             _tool_icon_runs(block) if (block.kind == "tool" and start == 0) else []
         )
+        width = getattr(self, "width", 0)
         out: list = []
         for idx, ansi_line in enumerate(slice_lines):
-            runs = []
-            for r in ansi_line.runs:
-                if not r.text:
-                    continue
-                st = r.style
-                if reasoning_style is not None:
-                    st = reasoning_style if st is None else st.merge(reasoning_style)
-                runs.append(StyledRun(r.text, st))
-            if idx == 0 and icon_runs:
-                runs = icon_runs + runs
-            out.append(Line(runs))
+            # ★ 方向1 P0-1：超宽行按 width wrap（wrap 与测量使用一致的宽度工具；
+            #   仅超宽行走 wrap，普通行零额外成本；width<=0 跳过 wrap 防御）
+            src_lines = (
+                wrap_line(ansi_line, width)
+                if (width > 0 and ansi_line.width > width)
+                else [ansi_line]
+            )
+            first = True
+            for wrapped in src_lines:
+                runs = []
+                for r in wrapped.runs:
+                    if not r.text:
+                        continue
+                    st = r.style
+                    if reasoning_style is not None:
+                        st = reasoning_style if st is None else st.merge(reasoning_style)
+                    runs.append(StyledRun(r.text, st))
+                if idx == 0 and icon_runs and first:
+                    runs = icon_runs + runs
+                first = False
+                out.append(Line(runs))
         return out
 
     # ── 推理/内容通道 ───────────────────────────────
@@ -449,6 +476,21 @@ class AppModel:
         block.extra["tool_status"] = "done" if success else "fail"
         # Claude TUI parity 步骤 2.2：关闭后无进行中工具（ToolStatusHeader 隐藏）
         self.active_tool = None
+
+        # ★ 1.6 修复：长工具输出（> _TOOL_INCREMENTAL_THRESHOLD 触发增量提交后
+        #   标题行已在 committed_lines）关闭时更新 committed_lines 中标题行状态
+        #   图标——修复前 committed_lines 标题行恒 ●（首帧增量提交时状态为
+        #   running，close 后不再更新）。替换 runs 时新建 StyledRun 列表但保留
+        #   Line 对象引用（增量缓存身份复用不破坏）；未触发增量提交的短工具
+        #   （_first_committed_offset 不存在）关闭时经 commit_block 提交的标题行
+        #   已带 done/fail 图标，无需更新。
+        offset = block.extra.get("_first_committed_offset")
+        if offset is not None and 0 <= offset < len(self.committed_lines):
+            icon = _tool_icon_runs(block)
+            if icon:
+                title_line = self.committed_lines[offset]
+                # 替换图标 run（runs[0]），保留标题其余 run（runs[1:]）
+                title_line.runs = icon + list(title_line.runs)[1:]
 
         block.closed = True
         # ★ 方向4（增量提交协同）：冻结仅**未提交部分**（已提交行在

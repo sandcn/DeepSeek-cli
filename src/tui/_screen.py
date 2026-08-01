@@ -123,6 +123,7 @@ _ZERO_WIDTH_RANGES: list[tuple[int, int]] = [
     (0x1AB0, 0x1AFF),   # Combining Diacritical Marks Extended
     (0x1DC0, 0x1DFF),   # Combining Diacritical Marks Supplement
     (0x20D0, 0x20FF),   # Combining Diacritical Marks for Symbols
+    (0x200C, 0x200D),   # ZWNJ/ZWJ（零宽连接符）——emoji ZWJ 序列按各组件宽度累加
     (0xFE00, 0xFE0F),   # Variation Selectors
     (0xFE20, 0xFE2F),   # Combining Half Marks
     (0xE0100, 0xE01EF), # Variation Selectors Supplement
@@ -137,8 +138,13 @@ _FULLWIDTH_RANGES: list[tuple[int, int]] = [
 # Emoji 宽符号范围（终端以 2 列渲染；与 wcwidth 的 emoji-wide 集对齐）。
 # 1F000+ 主要 emoji 块恒宽；2600-27BF 仅列出的具体码点为宽
 # （⚠ 不包含 ✔✎⚙✕ 等文本呈现符号——它们宽度为 1，误计为 2 会导致表格错位）。
+# ★ 方向1（RI 码点）：原 (0x1F000, 0x1FAFF) 覆盖 Regional Indicator（RI，
+#   0x1F1E6-0x1F1FF，国旗字母），将其排除——单 RI 终端行为有差异（部分终端
+#   按 2 列渲染），本实现取保守语义：单 RI 宽 1、成对 RI（国旗）按 1×2=2 列
+#   （与主流 wcwidth 一致）。0x1F200+（如 🈁）仍按 2 列计。
 _EMOJI_WIDE_RANGES: list[tuple[int, int]] = [
-    (0x1F000, 0x1FAFF),   # 主要 emoji 块（📖📄🔍 等）
+    (0x1F000, 0x1F1E5),   # 主要 emoji 块（📖📄🔍 等；不含 RI 码点）
+    (0x1F200, 0x1FAFF),   # 主要 emoji 块续（🈁 等；RI 码点 0x1F1E6-0x1F1FF 已排除）
     (0x231A, 0x231B),     # ⌚⏳
     (0x23E9, 0x23EC),     # ⏩⏪⏫⏬
     (0x23F0, 0x23F0),     # ⏰
