@@ -4,8 +4,14 @@
   - measure_fn：补全弹窗 + 上分隔线 + 输入行 + 下分隔线高度。
   - paint_fn：绘制到画布。
 
-复用 _input.py 的 ``_expand_tabs`` / ``_wrap_by_width`` / ``_compute_cursor_visual_pos``
-（唯一真源），保证换行/CJK/光标计算与旧实现一致。
+复用 _input.py 的 ``_expand_tabs`` / ``_wrap_by_width`` /
+``_compute_cursor_visual_pos`` / ``_compute_input_layout`` /
+``_cursor_visual_from_layout``（唯一真源），保证换行/CJK/光标计算与旧实现
+一致。
+
+方向5（光标算法单一真源）：``_compute_input_layout`` /
+``_cursor_visual_from_layout`` 已迁移至 ``_input.py``（本文件从 _input 导入，
+删除本地副本——input_area 与 session 共享同一实现，不再双实现）。
 """
 
 from __future__ import annotations
@@ -26,6 +32,11 @@ from src.tui._input import (
     _wrap_by_width,
     _tab_pos_to_expanded,
     _compute_cursor_visual_pos,
+    # ★ 方向5（光标算法单一真源）：_compute_input_layout /
+    #   _cursor_visual_from_layout 自本文件迁移至 _input.py——这里从 _input
+    #   导入（删除本地副本，避免双实现）。
+    _compute_input_layout,
+    _cursor_visual_from_layout,
 )
 from src.tui.core.style import Style
 from src.tui.ink import register_host, Line
@@ -62,31 +73,16 @@ def _placeholder_fade_color(fiber, ph: str, end_color: int) -> int:
     """
     key = getattr(fiber, "_placeholder_fade_key", None)
     if key is None or key[0] != ph:
-        fiber._placeholder_fade_key = (ph, time.monotonic())
-        start = time.monotonic()
+        # ★ 方向6（复用一次 time.monotonic）：修复前两次调用——第一次存储值
+        #   未用于计算，start 取第二次调用值，两次调用间时钟推进产生轻微
+        #   起始抖动窗口；统一为单次调用（now 既存储又作为 start）。
+        now = time.monotonic()
+        fiber._placeholder_fade_key = (ph, now)
+        start = now
     else:
         start = key[1]
     elapsed = time.monotonic() - start
     return _fx.fade_color(elapsed, None, 238, end_color)
-
-
-def _compute_input_layout(text: str, max_input: int) -> tuple[int, list[list[str]]]:
-    """单次换行计算：返回 (总行数, 每逻辑行拆行后的段列表)。
-
-    ``wrapped_by_logical[i]`` 为第 i 个逻辑行（按 ``\\n`` 拆分）拆行后的段列表；
-    空逻辑行对应 ``[""]``。PERF-1 统一换行计算（每帧至多 1 次），
-    ``_measure`` / ``_build_lines`` / ``session._position_cursor`` 均复用。
-    """
-    if not text:
-        return 1, [[""]]
-    expanded = _expand_tabs(text)
-    wrapped_by_logical: list[list[str]] = []
-    total_rows = 0
-    for segment in expanded.split('\n'):
-        seg_wrapped = _wrap_by_width(segment, max_input) or [""]
-        wrapped_by_logical.append(seg_wrapped)
-        total_rows += len(seg_wrapped)
-    return max(1, total_rows), wrapped_by_logical
 
 
 def _compute_input_rows(text: str, max_input: int) -> int:
@@ -99,63 +95,6 @@ def _wrap_input_text(text: str, max_input: int) -> list[str]:
     """输入文本拆行段列表（扁平，兼容旧调用面）。"""
     _, wrapped_by_logical = _compute_input_layout(text, max_input)
     return [seg for segs in wrapped_by_logical for seg in segs]
-
-
-def _cursor_visual_from_layout(
-    text: str,
-    cursor_pos: int,
-    wrapped_by_logical: list[list[str]],
-) -> tuple[int, int]:
-    """基于已缓存的换行布局计算光标视觉位置（复用缓存，避免重复换行计算）。
-
-    与 ``_compute_cursor_visual_pos`` 语义一致：返回 (visual_line_idx, visual_col)。
-    仅对光标所在逻辑行做 O(行) 定位，不重新整段换行。
-    """
-    if not text:
-        return (0, 0)
-    abs_cursor = len(text) if cursor_pos < 0 else cursor_pos
-
-    lines = text.split('\n')
-    cum = 0
-    for logical_idx, logical_line in enumerate(lines):
-        line_len = len(logical_line)
-        if abs_cursor <= cum + line_len:
-            # 光标在此逻辑行中（或在行末的 \n 上）
-            pos_in_line = abs_cursor - cum
-            segs = (
-                wrapped_by_logical[logical_idx]
-                if logical_idx < len(wrapped_by_logical)
-                else [""]
-            )
-            expanded_in_line = _tab_pos_to_expanded(logical_line, pos_in_line)
-            if expanded_in_line < 0:
-                last_seg = segs[-1] if segs else ""
-                col_in_line = wcswidth_simple(last_seg)
-                visual_line_in_logical = len(segs) - 1 if segs else 0
-            else:
-                cum2 = 0
-                visual_line_in_logical = 0
-                for i, seg in enumerate(segs):
-                    if expanded_in_line <= cum2 + len(seg):
-                        visual_line_in_logical = i
-                        prefix = seg[:expanded_in_line - cum2]
-                        col_in_line = wcswidth_simple(prefix)
-                        break
-                    cum2 += len(seg)
-                else:
-                    visual_line_in_logical = len(segs) - 1 if segs else 0
-                    col_in_line = wcswidth_simple(segs[-1]) if segs else 0
-            total_before = sum(len(s) for s in wrapped_by_logical[:logical_idx])
-            return (total_before + visual_line_in_logical, col_in_line)
-        cum += line_len + 1
-
-    # 超出范围 → 末尾
-    last_segs = wrapped_by_logical[-1] if wrapped_by_logical else [""]
-    last_seg = last_segs[-1] if last_segs else ""
-    col = wcswidth_simple(last_seg)
-    total_before = sum(len(s) for s in wrapped_by_logical[:-1])
-    visual_row = total_before + (len(last_segs) - 1 if last_segs else 0)
-    return (visual_row, col)
 
 
 # ── 测量 ───────────────────────────────────────────
@@ -206,6 +145,51 @@ def _build_lines(fiber) -> list[Line]:
     popup_height = _completion_height(completion)
     status_active = bool(props.get("status_active", False))
     max_input = max(1, width - len(_PROMPT))
+
+    # ★ 快照缓存（方向4）：同快照（text/max_input/completion 全字段/cpu/mem/
+    #   status_active/history_search/时间桶）命中直接返回缓存的 Line 列表——
+    #   免每帧重建全部行（补全弹窗/分隔线/时间戳/输入行）。时间戳降级 1s 桶
+    #   （``int(time.monotonic() / 1.0)``）——当前每帧 ``time.localtime()``
+    #   秒级时间戳导致每帧重建；1s 桶内时间显示最多滞后 1s（可接受，与状态栏
+    #   1s 桶一致）。补全弹窗高亮移动（selected 变化）与状态变化（cpu/mem 每
+    #   2s）必须进 key——均已包含。
+    time_bucket = int(time.monotonic() / 1.0)
+    if completion is not None:
+        completion_snap = (
+            completion.visible,
+            tuple(completion.items),
+            completion.selected,
+            completion.title,
+            tuple(completion.texts),
+            completion.match_prefix,
+            tuple(completion.types),
+            tuple(completion.descriptions),
+        )
+    else:
+        completion_snap = (False, (), 0, "", (), "", (), ())
+    search = props.get("history_search")
+    if search is not None:
+        search_snap = (
+            bool(search.active),
+            search.query,
+            tuple(search.matches),
+            search.index,
+        )
+    else:
+        search_snap = (False, "", (), -1)
+    snap_key = (
+        text,
+        max_input,
+        completion_snap,
+        int(props.get("cpu", 0)),
+        int(props.get("mem", 0)),
+        status_active,
+        search_snap,
+        time_bucket,
+    )
+    cached = getattr(fiber, "_lines_cache", None)
+    if cached is not None and cached[0] == snap_key:
+        return cached[1]
 
     # ★ PERF-1：复用 measure 阶段缓存的换行布局（未命中时回退单次计算）
     cached = getattr(fiber, "_input_layout_cache", None)
@@ -310,6 +294,8 @@ def _build_lines(fiber) -> list[Line]:
     bottom.append(f" {ts}", _S_TIME)
     lines.append(bottom)
 
+    # ★ 快照缓存写回（方向4）：未命中重建后更新缓存（同快照下次命中）
+    fiber._lines_cache = (snap_key, lines)
     return lines
 
 
@@ -361,7 +347,13 @@ def _paint(fiber, canvas) -> None:
     for i, line in enumerate(lines):
         row = box.y + i
         if 0 <= row < len(canvas):
-            _merge(canvas[row], box.x, line)
+            # ★ 画布惰性行（方向4）：canvas 初始 None——仅未命中行创建 dict；
+            #   自定义 host paint 与内置 TEXT 共用惰性语义。
+            target = canvas[row]
+            if target is None:
+                target = {}
+                canvas[row] = target
+            _merge(target, box.x, line)
 
 
 def _merge(row: dict, x: int, line: Line) -> None:

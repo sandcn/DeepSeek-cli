@@ -158,24 +158,42 @@ def _do_phase_done(model, cmd) -> None:
         model.close_content()
 
 
-def _do_tool_count_inc(model, cmd) -> None:
-    st = model.status
+# ── 工具计数单一真源（方向5：apply 与 _ink_bridge 共用） ─────────
+
+def tool_count_inc(st) -> None:
+    """工具计数递增（单一真源；apply ``_do_tool_count_inc`` 与
+    ``_ink_bridge.InkBridge.increment_tool`` 共用，零行为变化）。"""
     st.tool_count += 1
     st.tool_total += 1
     if st.tool_count > 0 and st.tool_phase_start <= 0:
         st.tool_phase_start = time.monotonic()
 
 
-def _do_tool_count_dec(model, cmd) -> None:
-    st = model.status
+def tool_count_dec(st) -> None:
+    """工具计数递减（单一真源；apply ``_do_tool_count_dec`` 与
+    ``_ink_bridge.InkBridge.decrement_tool`` 共用，零行为变化）。"""
     if st.tool_count > 0:
         st.tool_count -= 1
     if st.tool_count <= 0:
         st.tool_phase_start = 0.0
 
 
+def tool_fail_inc(st) -> None:
+    """工具失败计数递增（单一真源；apply ``_do_tool_fail_inc`` 与
+    ``_ink_bridge.InkBridge.increment_tool_fail`` 共用，零行为变化）。"""
+    st.tool_fail += 1
+
+
+def _do_tool_count_inc(model, cmd) -> None:
+    tool_count_inc(model.status)
+
+
+def _do_tool_count_dec(model, cmd) -> None:
+    tool_count_dec(model.status)
+
+
 def _do_tool_fail_inc(model, cmd) -> None:
-    model.status.tool_fail += 1
+    tool_fail_inc(model.status)
 
 
 def _do_main_phase(model, cmd) -> None:
@@ -235,6 +253,24 @@ def _do_user_message(model, cmd) -> None:
     model.append_committed("user", [build_user_line(cmd.text)])
 
 
+def _last_committed_plain(model) -> str:
+    """获取最后已提交行 plain（committed_lines 最后一行或最后块最后行）。
+
+    方向6（分隔线去重判定）：committed_lines 为 ink Line（``.plain`` 即
+    纯文本）；块行优先取最后块最后行（开放块未提交尾仍在块内）。
+    """
+    if model.committed_lines:
+        last = model.committed_lines[-1]
+        plain = getattr(last, "plain", "")
+        if plain:
+            return plain
+    if model.blocks:
+        last_block = model.blocks[-1]
+        if last_block.lines:
+            return getattr(last_block.lines[-1], "plain", "")
+    return ""
+
+
 def _do_display_messages(model, cmd) -> None:
     from src.tui.pipeline.message_display import _content_str
     messages = cmd.messages or []
@@ -246,7 +282,13 @@ def _do_display_messages(model, cmd) -> None:
         elif role in ("assistant", "other"):
             model.append_committed("write_line", [build_assistant_line(content)])
     if messages:
-        model.append_committed("write_line", [AnsiLine.of("  " + "\u2500" * 40, Style(fg=240))])
+        # ★ 方向6（分隔线去重）：仅在「上次提交行不是分隔线」时追加——避免
+        #   多次 DISPLAY_MSGS 命令累积多条分隔线。判定基于 plain 前缀
+        #   （`  ─`）：用户/助手消息行前缀为 `  > `/`  │ `，不误伤；用户消息
+        #   恰好以 `  ─` 开头的极端场景会误判跳过，安全性高（只影响「不追加
+        #   分隔线」方向）。
+        if not _last_committed_plain(model).startswith("  \u2500"):
+            model.append_committed("write_line", [AnsiLine.of("  " + "\u2500" * 40, Style(fg=240))])
 
 
 _HANDLERS: dict[int, object] = {

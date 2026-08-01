@@ -297,6 +297,67 @@ class TestToolBox:
         apply_cmd(m, ToolSummaryCmd(successful=("x",), failed=()))
         assert m.blocks[-1].closed is True
 
+    def test_tool_output_incremental_commit_threshold(self):
+        """工具输出 >64 行 → committed_line_count 推进、committed_lines 含已提交行。"""
+        m = _model()
+        m.open_tool_box("t1", "read_file")
+        block = m.blocks[-1]
+        # 标题(1) + 65 行输出 = 66 行；超过阈值触发增量提交
+        for i in range(65):
+            m.append_tool_output("t1", f"line{i}\n")
+        assert block.committed_line_count >= 64, (
+            f"增量提交应推进 committed_line_count，实际 {block.committed_line_count}"
+        )
+        assert len(m.committed_lines) >= 64  # committed_lines 含已提交行
+        remaining = len(block.lines) - block.committed_line_count
+        assert remaining < 64  # 块内仅留未提交尾
+
+    def test_tool_output_incremental_close_no_duplicate(self):
+        """增量提交后关闭 → 关闭后无重复行（关键不变量：committed_lines 与块不重叠）。"""
+        m = _model()
+        m.open_tool_box("t1", "read_file")
+        block = m.blocks[-1]
+        for i in range(70):
+            m.append_tool_output("t1", f"line{i}\n")
+        assert block.committed_line_count > 0  # 增量提交已发生
+        m.close_tool_box("t1", True)
+        # 关闭后全部行已提交（committed_line_count == len）
+        assert block.committed_line_count == len(block.lines)
+        # 无重复行：committed_lines 长度 == 块行数（每 AnsiLine → 1 ink Line）
+        assert len(m.committed_lines) == len(block.lines), (
+            f"关闭后 committed_lines 与块行应一一对应，committed={len(m.committed_lines)} lines={len(block.lines)}"
+        )
+        committed_plains = [l.plain for l in m.committed_lines]
+        assert "✔" in committed_plains[-1]
+        assert any("line0" in p for p in committed_plains)
+        assert any("line69" in p for p in committed_plains)
+        # 内容顺序：line0 在前、line69 在后
+        assert committed_plains.index(next(p for p in committed_plains if "line0" in p)) < \
+               committed_plains.index(next(p for p in committed_plains if "line69" in p))
+
+    def test_tool_output_under_threshold_no_incremental(self):
+        """工具输出 <64 行 → 不触发增量提交（committed_line_count 保持 0）。"""
+        m = _model()
+        m.open_tool_box("t1", "read_file")
+        block = m.blocks[-1]
+        for i in range(10):
+            m.append_tool_output("t1", f"line{i}\n")
+        assert block.committed_line_count == 0
+
+    def test_cached_ink_lines_frozen_uncommitted_tail(self):
+        """close_tool_box 冻结仅未提交部分（已提交行在 committed_lines 中）。"""
+        m = _model()
+        m.open_tool_box("t1", "read_file")
+        block = m.blocks[-1]
+        for i in range(70):
+            m.append_tool_output("t1", f"line{i}\n")
+        committed_before = block.committed_line_count
+        assert committed_before > 0
+        m.close_tool_box("t1", True)
+        # 冻结缓存 = 未提交尾（不含已提交行）
+        assert block._cached_ink_lines is not None
+        assert len(block._cached_ink_lines) == len(block.lines) - committed_before
+
 
 class TestStatusCounts:
     """状态计数。"""
@@ -375,3 +436,151 @@ class TestToolCardState:
         apply_cmd(m, ToolOpenCmd(tool_name="x", tool_id="t1"))
         apply_cmd(m, ToolCloseCmd(tool_id="t1", success=False))
         assert m.blocks[-1].extra["tool_status"] == "fail"
+
+
+class TestToolCountHelper:
+    """方向5 — 工具计数单一真源（apply 与 _ink_bridge 共用 helper）。"""
+
+    def test_tool_count_inc_helper(self):
+        """tool_count_inc 递增 count/total 并启动 tool_phase_start。"""
+        from src.tui.app.apply import tool_count_inc
+        m = _model()
+        st = m.status
+        tool_count_inc(st)
+        tool_count_inc(st)
+        assert st.tool_count == 2
+        assert st.tool_total == 2
+        assert st.tool_phase_start > 0
+
+    def test_tool_count_dec_helper(self):
+        """tool_count_dec 递减并复位 tool_phase_start。"""
+        from src.tui.app.apply import tool_count_dec, tool_count_inc
+        m = _model()
+        st = m.status
+        tool_count_inc(st)
+        assert st.tool_phase_start > 0
+        tool_count_dec(st)
+        assert st.tool_count == 0
+        assert st.tool_phase_start == 0.0
+
+    def test_tool_count_dec_never_negative(self):
+        """tool_count_dec 不使计数为负。"""
+        from src.tui.app.apply import tool_count_dec
+        m = _model()
+        tool_count_dec(m.status)
+        assert m.status.tool_count == 0
+
+    def test_tool_fail_inc_helper(self):
+        """tool_fail_inc 递增 tool_fail。"""
+        from src.tui.app.apply import tool_fail_inc
+        m = _model()
+        tool_fail_inc(m.status)
+        assert m.status.tool_fail == 1
+
+    def test_apply_and_ink_bridge_results_consistent(self):
+        """InkBridge.increment_tool/decrement_tool/increment_tool_fail 与 apply 路径结果一致。"""
+        import io
+        from src.tui._ink_bridge import InkBridge
+        from src.tui.ink.session import InkSession
+
+        model = _model()
+        stream = io.StringIO()
+        session = InkSession(model=model, stream=stream)
+        bridge = InkBridge(model, session)
+        # 注入后 _request_redraw 不抛（session.request_bottom_redraw 安全）
+        bridge.increment_tool()
+        bridge.increment_tool()
+        assert model.status.tool_count == 2
+        assert model.status.tool_total == 2
+        bridge.decrement_tool()
+        assert model.status.tool_count == 1
+        bridge.increment_tool_fail()
+        assert model.status.tool_fail == 1
+
+        # 与 apply_cmd 路径结果一致
+        m2 = _model()
+        apply_cmd(m2, ToolCountIncCmd())
+        apply_cmd(m2, ToolCountIncCmd())
+        apply_cmd(m2, ToolCountDecCmd())
+        apply_cmd(m2, ToolFailIncCmd())
+        assert (m2.status.tool_count, m2.status.tool_total, m2.status.tool_fail) == (
+            model.status.tool_count, model.status.tool_total, model.status.tool_fail,
+        )
+
+
+class TestCommitBlockFreeze:
+    """方向5 — commit_block 全块提交完成冻结（append_committed 立即关闭块）。"""
+
+    def test_append_committed_freezes_cache_regression(self):
+        """append_committed 创建的立即关闭块自动冻结 _cached_ink_lines。"""
+        m = _model()
+        apply_cmd(m, NotificationCmd(text="hi"))
+        block = m.blocks[-1]
+        assert block.closed is True
+        assert block._cached_ink_lines is not None
+        assert len(block._cached_ink_lines) == len(block.lines)
+
+    def test_sandwiched_closed_block_freezes_after_commit_regression(self):
+        """被开放块夹住的已关闭块：后续提交推进后提交并冻结。"""
+        from src.tui._const import ContentCmd
+        m = _model()
+        # 开放 content 块在前（不关闭）
+        apply_cmd(m, ContentCmd(text="streaming line\n"))
+        assert m.blocks[0].closed is False
+        # append_committed 创建的 closed 块被开放块夹住（未提交、未冻结）
+        apply_cmd(m, NotificationCmd(text="sandwiched"))
+        sand_block = m.blocks[-1]
+        assert sand_block.closed is True
+        assert sand_block._cached_ink_lines is None  # 被夹住未提交 → 未冻结
+        # 开放块关闭（commit_block 仅处理到 content_block_index，夹住块未推进）
+        apply_cmd(m, PhaseDoneCmd(phase="content"))
+        assert m.blocks[0].closed is True
+        assert sand_block._cached_ink_lines is None
+        # 后续 append_committed 推进 commit_block → 夹住的已关闭块提交并冻结
+        apply_cmd(m, NotificationCmd(text="after"))
+        assert sand_block.committed_line_count == len(sand_block.lines)
+        assert sand_block._cached_ink_lines is not None
+        assert len(sand_block._cached_ink_lines) == len(sand_block.lines)
+
+
+class TestDisplayMsgsSeparatorDedup:
+    """方向6 — _do_display_messages 分隔线去重。"""
+
+    def test_consecutive_unhandled_role_no_duplicate_separator(self):
+        """连续 DISPLAY_MSGS：第二批为未处理 role（不产行）→ 仅一条分隔线。"""
+        m = _model()
+        apply_cmd(m, DisplayMsgsCmd(messages=[{"role": "user", "content": "m1"}], speed=0))
+        assert m.blocks[-1].kind == "write_line"  # 分隔线
+        # 第二批 role=system（未处理 → 不产行）→ 上次提交行为分隔线 → 跳过
+        apply_cmd(m, DisplayMsgsCmd(messages=[{"role": "system", "content": "sys"}], speed=0))
+        separators = [b for b in m.blocks if b.kind == "write_line"
+                      and b.lines and b.lines[0].plain.startswith("  \u2500")]
+        assert len(separators) == 1, (
+            f"连续 DISPLAY_MSGS 应仅一条分隔线，实际 {len(separators)}"
+        )
+
+    def test_different_content_keeps_separator_per_batch(self):
+        """不同消息内容两次 → 各消息行 + 各批分隔线（不误去重）。"""
+        m = _model()
+        apply_cmd(m, DisplayMsgsCmd(messages=[{"role": "user", "content": "m1"}], speed=0))
+        apply_cmd(m, DisplayMsgsCmd(messages=[{"role": "assistant", "content": "a2"}], speed=0))
+        user_blocks = [b for b in m.blocks if b.kind == "user"]
+        write_blocks = [b for b in m.blocks if b.kind == "write_line"]
+        separators = [b for b in m.blocks if b.kind == "write_line"
+                      and b.lines and b.lines[0].plain.startswith("  \u2500")]
+        assert len(user_blocks) == 1
+        assert any("m1" in b.lines[0].plain for b in user_blocks)
+        # write_line 块 = assistant 行 + 两批各一条分隔线
+        assert len(write_blocks) == 3, (
+            f"write_line 块应含 assistant 行 + 2 条分隔线，实际 {len(write_blocks)}"
+        )
+        assert any("a2" in b.lines[0].plain for b in write_blocks)
+        assert len(separators) == 2
+
+    def test_user_message_line_not_mistaken_for_separator(self):
+        """分隔线判定不误伤用户消息行（前缀 `  > ` 不是 `  ─`）。"""
+        m = _model()
+        apply_cmd(m, DisplayMsgsCmd(messages=[{"role": "user", "content": "m1"}], speed=0))
+        # 用户行渲染后 → 分隔线仍追加（用户行不被判为分隔线）
+        assert m.blocks[-1].kind == "write_line"
+        assert m.blocks[-1].lines[0].plain.startswith("  \u2500")

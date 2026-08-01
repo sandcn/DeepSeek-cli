@@ -57,8 +57,14 @@ def _resolve_lexer_name(ext: str) -> str:
     return ext
 
 
+@lru_cache(maxsize=64)
 def _get_highlighter(lexer_name):
-    """获取或缓存 pygments lexer + formatter，未知 lexer 自动降级到 text。"""
+    """获取或缓存 pygments lexer + formatter，未知 lexer 自动降级到 text。
+
+    方向4：``lru_cache`` 缓存（lexer_name → (lexer, formatter)）——pygments
+    lexer/formatter 无状态可安全复用；``_resolve_lexer_name`` 已 lru_cache，
+    组合后热点路径（每行高亮）免重建（修复前每次调用重建 lexer+formatter）。
+    """
     try:
         from pygments.lexers import get_lexer_by_name
         from pygments.formatters import TerminalFormatter

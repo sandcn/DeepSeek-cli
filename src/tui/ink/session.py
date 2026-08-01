@@ -34,16 +34,14 @@ from src.renderer._locks import _try_acquire_output_lock
 from src.tui._screen import (
     TerminalWidthCache,
     _get_terminal_size,
-    detect_truecolor,
     process_sigwinch,
 )
 from .reconciler import Reconciler
 from .renderer import InkRenderer
 from . import components as _components
 from . import hooks as _hooks
-from src.tui._input import _compute_cursor_visual_pos
+from src.tui._input import _compute_cursor_visual_pos, _cursor_visual_from_layout
 from src.tui.app.input_area import (
-    _cursor_visual_from_layout,
     _completion_height,
     _is_search_active,
 )
@@ -178,15 +176,14 @@ class InkSession:
         # ★ useApp 控制（方向B 步骤10）：session 注入 exit/clear 回调
         self._exit_requested = False
         _hooks.set_app_control({"exit": self.request_exit, "clear": self.request_clear})
-        # ★ 终端能力协商（方向B 步骤12）：truecolor 支持（构造时检测一次）。
-        #   当前消费方（core/color.auto_color / TrueColor.best_effort）仍走 256
-        #   色降级路径——本属性仅供未来组件选择 TrueColor 的协商查询点，
-        #   避免行为漂移（文档注明）。
-        self._supports_truecolor = detect_truecolor()
         # ★ P5：input-area fiber 引用缓存（方向2 P5）——_render_frame 仅在失效时
         #   重建（None/deleted/类型不符），_position_cursor 复用（避免每帧全树
         #   递归查找 input-area）。
         self._input_fiber = None
+        # ★ 方向6：上次渲染帧宽度（resize 后向开放通道 renderer 传播 set_width；
+        #   初始 0 → 首帧必触发传播，renderer 创建时已用当前宽度，重复 set_width
+        #   幂等无副作用）。
+        self._last_render_width: int = 0
         # 系统监控（CPU/MEM；每 2 秒刷新输入区顶部分隔线显示）
         self._system_monitor = None
         self._last_sys_stats_time: float = 0.0
@@ -255,6 +252,34 @@ class InkSession:
             self._consecutive_full = 0
             self._cmd_event.set()
         except queue.Full:
+            # ★ 方向4（队列满 LOW 优先丢弃）：新命令优先级高于 LOW 且队列中
+            #   存在 LOW 命令（WRITE_LINE/DISPLAY_MSGS）时腾位——持 mutex 锁内
+            #   遍历队列移除至多一个 LOW 项（记录 dropped + warning）后重试 put；
+            #   新命令本身为 LOW 或队列无 LOW 项时保持现状丢弃（保护
+            #   STREAM/CRITICAL 不丢）。
+            evicted = False
+            if priority < _CMD_PRIORITY_LOW:
+                with self._cmd_queue.mutex:
+                    for i, item in enumerate(self._cmd_queue.queue):
+                        if item[0] >= _CMD_PRIORITY_LOW:
+                            removed = self._cmd_queue.queue.pop(i)
+                            self._cmd_queue_dropped += 1
+                            _logger.warning(
+                                "渲染命令队列已满，腾位移除 LOW 命令: %s",
+                                _cmd_name(_get_cmd_id(removed[2])),
+                            )
+                            evicted = True
+                            break
+            if evicted:
+                try:
+                    self._cmd_queue.put(
+                        (priority, next(self._cmd_seq), cmd), block=False,
+                    )
+                    self._consecutive_full = 0
+                    self._cmd_event.set()
+                    return
+                except queue.Full:
+                    pass  # 并发竞争仍满 → 保持丢弃（不无限循环）
             self._consecutive_full += 1
             self._cmd_queue_dropped += 1
             cmd_id = _get_cmd_id(cmd)
@@ -359,16 +384,6 @@ class InkSession:
     def is_render_running(self) -> bool:
         return self._render_running
 
-    @property
-    def supports_truecolor(self) -> bool:
-        """终端 truecolor 支持（方向B 步骤12，构造时检测一次）。
-
-        当前消费方（core/color.auto_color / TrueColor.best_effort）仍走 256
-        色降级路径——本属性仅作协商查询点供未来组件选择 TrueColor，
-        避免行为漂移。
-        """
-        return self._supports_truecolor
-
     def set_panel_refresh_callback(self, callback: Callable[[], None] | None) -> None:
         self._panel_refresh_cb = callback
 
@@ -378,11 +393,22 @@ class InkSession:
         self._cmd_event.set()
         # ★ render 线程停止时（suspend 期间交互工具如 user_select），
         #   同步渲染一帧使补全弹窗立即可见——否则模型更新无人渲染。
+        #   方向1（suspend 同步渲染竞态修复）：同步渲染路径与 _drain_queue
+        #   共用 _try_acquire_output_lock（同一 output lock）——避免 suspend
+        #   期间同步渲染与外部输出竞争撕裂；locked=False（锁超时）时跳过
+        #   并记 debug（弹窗显示延迟一帧可接受，与 _drain_queue 超时跳过一致）。
         if not self._render_running:
-            try:
-                self._render_frame()
-            except Exception:
-                _logger.debug("request_bottom_redraw 同步渲染异常", exc_info=True)
+            with _try_acquire_output_lock(
+                name="ink_session.sync_render",
+                timeout=self._config.drain_lock_timeout,
+            ) as locked:
+                if not locked:
+                    _logger.debug("request_bottom_redraw 同步渲染跳过（输出锁不可用）")
+                    return
+                try:
+                    self._render_frame()
+                except Exception:
+                    _logger.debug("request_bottom_redraw 同步渲染异常", exc_info=True)
 
     # ── 输入更新（echo 回调） ─────────────────────────
 
@@ -522,7 +548,8 @@ class InkSession:
         try:
             while self._render_running:
                 try:
-                    has_content = self._drain_queue()
+                    # 方向5（死代码清理）：返回值未使用——has_content 删除。
+                    self._drain_queue()
                     self._cmd_event.clear()
                     # ★ P3-2：渲染线程内 request_exit 的延迟退出语义——
                     #   仅置位后本帧结束检查此处退出（stop 由外部线程调用或
@@ -581,9 +608,14 @@ class InkSession:
                     # P7（方向2）：持久性渲染异常从 10Hz 无限重试降为指数退避
                     # （0.1→0.2→0.4→…→1.0 封顶，≤1Hz），日志刷屏缓解；正常
                     # 路径无 sleep（渲染帧率 10Hz 不降低）。
+                    # 方向1（渲染失败帧不重试修复）：_should_render 已清
+                    # _dirty，失败帧若不补置脏标记下一拍不会重试（仅退避等待）
+                    # ——补置 _dirty = True，下一 10Hz 拍重试，配合既有指数
+                    # 退避防刷屏（退避封顶 1s，不会无限重试）。
                     self._consecutive_render_failures += 1
                     delay = min(0.1 * 2 ** (self._consecutive_render_failures - 1), 1.0)
                     time.sleep(delay)
+                    self._dirty = True
                     _logger.warning(
                         "渲染帧失败（连续 %d 次，退避 %.2fs）",
                         self._consecutive_render_failures,
@@ -635,6 +667,21 @@ class InkSession:
         width = self._width_cache.get_width()
         if self._model is not None:
             self._model.width = width  # 渲染器 TOC 边框宽度
+            # ★ 方向6（resize 后流式渲染宽度陈旧）：宽度变化时向开放通道
+            #   renderer（AnsiStreamRenderer.set_width 已实现）传播新宽度——
+            #   TOC 边框/表格宽度在 resize 后刷新；已关闭通道 renderer 为
+            #   None 跳过。set_width 幂等（重复调用无副作用）。
+            if width != self._last_render_width:
+                for renderer in (
+                    getattr(self._model, "reasoning_renderer", None),
+                    getattr(self._model, "content_renderer", None),
+                ):
+                    if renderer is not None:
+                        try:
+                            renderer.set_width(width)
+                        except Exception:
+                            _logger.debug("set_width 传播异常", exc_info=True)
+                self._last_render_width = width
         element = self._build_tree(self._model, width)
         self._reconciler.render(self._root_fiber, element, width, self._width_cache.get_height())
         frame = _components.render_frame(self._root_fiber, width)
@@ -744,7 +791,10 @@ class InkSession:
         #   高度辅助，保持一致）。
         if _is_search_active(fiber.props.get("history_search")):
             row += 1
-        col = box.x + len(prompt) + vis_col + 1
+        # ★ 方向6（光标列右边界 clamp）：超宽输入（vis_col 超终端宽度）时
+        #   光标列钳制到终端宽度（修复前 col 越界溢出导致光标定位异常）。
+        width = self._width_cache.get_width()
+        col = min(box.x + len(prompt) + vis_col + 1, width)
         try:
             self._ink_renderer.place_cursor(row, col)
         except Exception:

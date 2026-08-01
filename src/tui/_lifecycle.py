@@ -13,7 +13,6 @@
 from __future__ import annotations
 
 import logging
-import sys
 import threading
 from typing import TYPE_CHECKING, Callable
 
@@ -26,7 +25,6 @@ if TYPE_CHECKING:
 
 from src.tui._const import SplashCmd
 from src.renderer._locks import render_lock
-from src.tui._screen import cursor_goto
 
 _logger = logging.getLogger(__name__)
 
@@ -135,7 +133,8 @@ class TuiLifecycle:
             self._engine.stop()
             with render_lock:
                 self._safe_close_all(self._rs)
-                self._bb.teardown()
+            # ★ 方向5：bb.teardown 为兼容层 no-op（_BottomBarCompatMixin），
+            #   已删除——生命周期收敛为 engine.flush/stop 单一路径。
             self._started = False
             self._bound_handlers = None
 
@@ -151,36 +150,32 @@ class TuiLifecycle:
             _logger.debug("close_all/flush_open_channels 异常", exc_info=True)
 
     def suspend(self) -> None:
-        """暂停渲染引擎，供交互式工具独占终端。"""
+        """暂停渲染引擎，供交互式工具独占终端。
+
+        方向5（生命周期收敛）：直接委托 ``engine.suspend()``（InkSession.
+        suspend 已实现 flush + stop + ink_renderer.suspend + drain + 光标
+        定位）；删除重复的 ``flush()``/``stop()`` 组合与 ``bb.teardown()``
+        （``_BottomBarCompatMixin`` 的 setup/teardown 为兼容 no-op）。
+        """
         with self._state_lock:
             if not self._started:
                 return
-            self._engine.flush()
-            self._engine.stop()
-            with render_lock:
-                self._bb.teardown()
+            self._engine.suspend()
 
     def resume(self) -> None:
-        """恢复渲染引擎，重建底部栏。"""
+        """恢复渲染引擎。
+
+        方向5（生命周期收敛）：直接委托 ``engine.resume()``（InkSession.
+        resume 已实现 reset + 立即渲染 + 启动线程）；删除 ``bb.set_active/
+        setup`` 调用（兼容层 no-op）。``is_render_running`` 检查保留
+        （resume 幂等——已运行时不重复启动）。
+        """
         with self._state_lock:
             if not self._started:
                 return
             if self._engine.is_render_running():
                 return
-            with render_lock:
-                try:
-                    from src.tui._screen import _get_terminal_size
-                    _, height = _get_terminal_size()
-                    sys.__stdout__.write(cursor_goto(height, 1))
-                except Exception:
-                    _logger.debug(
-                        "resume 光标定位失败, 使用 ANSI 回退", exc_info=True,
-                    )
-                    sys.__stdout__.write("\033[9999;1H")
-                sys.__stdout__.flush()
-                self._bb.set_active(False)
-                self._bb.setup()
-                self._engine.start()
+            self._engine.resume()
 
     @property
     def is_started(self) -> bool:

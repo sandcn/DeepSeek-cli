@@ -336,3 +336,58 @@ class TestFlushSingleFlightAndCompactCooldown:
             assert tracker._maybe_compact_output_history() is True
             content = output_file.read_text(encoding="utf-8")
             assert len(content.splitlines()) <= 2000  # 已压缩（去重 + 截断 2000）
+
+
+class TestAnsiStripOutputHistory:
+    """方向1 — 输出历史 ANSI SGR 剥离（环形缓冲/历史文件存纯文本）。"""
+
+    def test_track_strips_ansi_from_ring_and_file(self, tmp_path):
+        """写入含 SGR 的行 → _ring/输出历史文件内容为纯文本 RED。"""
+        from src.tui._stdout_tracker import _StdoutLineTracker
+
+        output_file = tmp_path / "output_history_ansi"
+        real_stdout = io.StringIO()
+        with (
+            patch("src.tui._stdout_tracker.OUTPUT_HISTORY_FILE", output_file),
+            patch("src.tui._stdout_tracker._lock_history_file", return_value=True),
+            patch("src.tui._stdout_tracker._unlock_history_file"),
+        ):
+            tracker = _StdoutLineTracker(real_stdout)
+            tracker._scroll_end = 10
+            tracker.track("\033[31mRED\033[0m\n")
+            assert list(tracker._ring) == ["RED"]
+            tracker._flush_history()
+            content = output_file.read_text(encoding="utf-8")
+            assert "RED" in content
+            assert "\033[" not in content
+
+    def test_load_history_strips_ansi(self, tmp_path):
+        """_load_output_history 加载含 SGR 的历史文件 → 环形缓冲纯文本。"""
+        from src.tui._stdout_tracker import _StdoutLineTracker
+
+        output_file = tmp_path / "output_history_ansi_load"
+        output_file.write_text("\033[32mGREEN\033[0m\n", encoding="utf-8")
+        real_stdout = io.StringIO()
+        with (
+            patch("src.tui._stdout_tracker.OUTPUT_HISTORY_FILE", output_file),
+            patch("src.tui._stdout_tracker._lock_history_file", return_value=True),
+            patch("src.tui._stdout_tracker._unlock_history_file"),
+        ):
+            tracker = _StdoutLineTracker(real_stdout)
+            assert list(tracker._ring) == ["GREEN"]
+
+    def test_track_plain_text_unchanged(self, tmp_path):
+        """纯文本行不受剥离影响（回归：无 ANSI 时内容一致）。"""
+        from src.tui._stdout_tracker import _StdoutLineTracker
+
+        output_file = tmp_path / "output_history_plain"
+        real_stdout = io.StringIO()
+        with (
+            patch("src.tui._stdout_tracker.OUTPUT_HISTORY_FILE", output_file),
+            patch("src.tui._stdout_tracker._lock_history_file", return_value=True),
+            patch("src.tui._stdout_tracker._unlock_history_file"),
+        ):
+            tracker = _StdoutLineTracker(real_stdout)
+            tracker._scroll_end = 10
+            tracker.track("hello world\n")
+            assert list(tracker._ring) == ["hello world"]

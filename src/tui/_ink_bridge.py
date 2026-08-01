@@ -67,23 +67,21 @@ class InkBridge(_BottomBarCompatMixin):
         self._request_redraw()
 
     def increment_tool(self) -> None:
-        st = self._model.status
-        st.tool_count += 1
-        st.tool_total += 1
-        if st.tool_phase_start <= 0:
-            st.tool_phase_start = time.monotonic()
+        # ★ 方向5（工具计数收敛）：委托 app.apply.tool_count_inc 单一真源。
+        from src.tui.app.apply import tool_count_inc
+        tool_count_inc(self._model.status)
         self._request_redraw()
 
     def decrement_tool(self) -> None:
-        st = self._model.status
-        if st.tool_count > 0:
-            st.tool_count -= 1
-        if st.tool_count <= 0:
-            st.tool_phase_start = 0.0
+        # ★ 方向5（工具计数收敛）：委托 app.apply.tool_count_dec 单一真源。
+        from src.tui.app.apply import tool_count_dec
+        tool_count_dec(self._model.status)
         self._request_redraw()
 
     def increment_tool_fail(self) -> None:
-        self._model.status.tool_fail += 1
+        # ★ 方向5（工具计数收敛）：委托 app.apply.tool_fail_inc 单一真源。
+        from src.tui.app.apply import tool_fail_inc
+        tool_fail_inc(self._model.status)
         self._request_redraw()
 
     def set_main_phase(self, phase: str) -> None:

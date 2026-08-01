@@ -449,6 +449,91 @@ class TestRenderBackoff:
         assert delays == [0.1, 0.2, 0.4, 0.8, 1.0, 1.0]
         assert s._consecutive_render_failures == 6
 
+    def test_render_failure_sets_dirty_for_retry_regression(self):
+        """渲染失败后 _dirty 仍为 True（下拍重试，修复前失败帧不重试）。"""
+        s = _make_session()
+        with patch("src.tui.ink.session._try_acquire_output_lock", return_value=self._FakeLock()), \
+             patch.object(s, "_should_render", return_value=True), \
+             patch.object(s, "_render_frame", side_effect=RuntimeError("boom")), \
+             patch("src.tui.ink.session.time.sleep"):
+            s._dirty = True
+            s._drain_queue()
+        # 失败帧补置脏标记（下一 10Hz 拍重试）
+        assert s._dirty is True
+        assert s._consecutive_render_failures == 1
+
+    def test_render_success_clears_dirty_and_resets_failures(self):
+        """成功渲染后 _dirty 清空且连续失败计数复位（协同：失败→重试→成功）。"""
+        s = _make_session()
+        with patch("src.tui.ink.session._try_acquire_output_lock", return_value=self._FakeLock()), \
+             patch.object(s, "_should_render", return_value=True), \
+             patch.object(s, "_render_frame", side_effect=[RuntimeError("boom"), None]), \
+             patch("src.tui.ink.session.time.sleep"):
+            s._dirty = True
+            s._drain_queue()  # 失败 → _dirty 补置
+            assert s._dirty is True
+            s._drain_queue()  # 成功 → 复位
+        assert s._consecutive_render_failures == 0
+
+
+class TestSyncRenderLock:
+    """方向1 — request_bottom_redraw 同步渲染路径加锁（suspend 竞态修复）。"""
+
+    class _FakeLockAcquired:
+        """锁桩：可获取（_try_acquire_output_lock 成功路径）。"""
+
+        def __enter__(self):
+            return True
+
+        def __exit__(self, *a):
+            return False
+
+    class _FakeLockUnavailable:
+        """锁桩：不可获取（locked=False）。"""
+
+        def __enter__(self):
+            return False
+
+        def __exit__(self, *a):
+            return False
+
+    def test_sync_render_holds_output_lock_regression(self):
+        """render 线程停止时同步渲染持有 output lock（patch _try_acquire_output_lock 断言进入）。"""
+        s = _make_session()
+        s._render_running = False
+        entered = []
+
+        class _RecorderLock(self._FakeLockAcquired):
+            def __enter__(self):
+                entered.append("enter")
+                return super().__enter__()
+
+        with patch("src.tui.ink.session._try_acquire_output_lock", return_value=_RecorderLock()) as mock_lock, \
+             patch.object(s, "_render_frame") as mock_rf:
+            s.request_bottom_redraw()
+        mock_lock.assert_called_once()
+        assert entered == ["enter"]
+        mock_rf.assert_called_once()
+
+    def test_sync_render_lock_unavailable_skips_regression(self):
+        """同步渲染锁超时（locked=False）→ 跳过渲染（弹窗延迟一帧可接受）。"""
+        s = _make_session()
+        s._render_running = False
+        with patch("src.tui.ink.session._try_acquire_output_lock", return_value=self._FakeLockUnavailable()), \
+             patch.object(s, "_render_frame") as mock_rf:
+            s.request_bottom_redraw()
+        mock_rf.assert_not_called()
+
+    def test_sync_render_only_when_thread_stopped_regression(self):
+        """render 线程运行时不走同步渲染（不加锁不渲染）。"""
+        s = _make_session()
+        s._render_running = True
+        with patch("src.tui.ink.session._try_acquire_output_lock") as mock_lock, \
+             patch.object(s, "_render_frame") as mock_rf:
+            s.request_bottom_redraw()
+        mock_lock.assert_not_called()
+        mock_rf.assert_not_called()
+
 
 class TestEventBatching:
     """脏标记 + 窗口内事件批处理（不单独渲染，等 10Hz 拍；空闲跳过渲染）。"""
@@ -667,6 +752,68 @@ class _Box:
         self.y = y
         self.w = w
         self.h = h
+
+
+class TestDirection6CursorAndWidth:
+    """方向6 — 光标列右边界 clamp + resize 后流式渲染宽度传播。"""
+
+    def test_position_cursor_clamps_col_regression(self):
+        """超宽输入（vis_col 超 width）→ place_cursor 收到 col ≤ width（右边界 clamp）。"""
+        from src.tui.ink.fiber import Fiber
+
+        s = _make_session()
+        s._width_cache = MagicMock()
+        s._width_cache.get_width.return_value = 20  # 窄终端
+        fiber = Fiber("host", "input-area", {
+            "text": "x" * 100,
+            "cursor_pos": 100,
+            "prompt": "> ",
+            "completion": None,
+        })
+        fiber.layout_box = _Box(x=1, y=0, w=30, h=4)
+        s._root_fiber = fiber
+        with patch.object(s._ink_renderer, "place_cursor") as mock_pc:
+            s._position_cursor()
+            row, col = mock_pc.call_args[0]
+            assert col <= 20, f"光标列应 clamp 到 width(20)，实际 {col}"
+
+    def test_render_frame_propagates_width_to_open_renderers_regression(self):
+        """宽度变化 → 开放通道 renderer.set_width 传播；宽度未变不重复；renderer None 跳过。"""
+        from src.tui.app.model import AppModel
+        from src.tui.app.apply import apply_cmd
+        from src.tui.app.app import build_app_element
+        from src.tui._const import ContentCmd, PhaseDoneCmd
+
+        model = AppModel()
+        apply_cmd(model, ContentCmd(text="# Hi\n"))
+        renderer = model.content_renderer
+        assert renderer is not None
+        s = InkSession(model=model, apply_cmd=apply_cmd, build_tree=build_app_element)
+        s._width_cache = MagicMock()
+        s._width_cache.get_width.return_value = 80
+        s._width_cache.get_height.return_value = 24
+        s._ink_renderer = MagicMock()
+        s._last_render_width = 0
+
+        # 首帧（0→80）：set_width(80) 传播
+        s._render_frame()
+        assert renderer._width == 80, f"开放 renderer 应收到 set_width(80)，实际 {renderer._width}"
+        assert s._last_render_width == 80
+
+        # 同宽度再次渲染：不重复传播（_last_render_width 已更新）
+        s._render_frame()
+        assert renderer._width == 80
+
+        # 宽度变化 80→100：再次传播
+        s._width_cache.get_width.return_value = 100
+        s._render_frame()
+        assert renderer._width == 100, f"resize 后应传播 set_width(100)，实际 {renderer._width}"
+
+        # 已关闭通道 renderer=None：跳过不抛
+        apply_cmd(model, PhaseDoneCmd(phase="content"))
+        assert model.content_renderer is None
+        s._width_cache.get_width.return_value = 120
+        s._render_frame()  # 不抛异常
 
 
 def _cursor_visual_from_cached(fiber):

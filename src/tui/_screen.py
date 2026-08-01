@@ -716,10 +716,15 @@ class TerminalWidthCache:
         return self._height
 
     def get_dimensions(self) -> tuple[int, int]:
-        """获取终端尺寸 (宽度, 高度)。"""
-        # 先获取宽度（也会更新高度）
+        """获取终端尺寸 (宽度, 高度)。
+
+        ★ 方向1（高度陈旧修复）：高度经 ``get_height()`` 走独立 TTL 检查——
+        修复前直接读 ``_height`` 字段绕过 height TTL（width TTL 未过期时
+        返回陈旧高度）。
+        """
+        # 先获取宽度（也会更新高度缓存）
         w = self.get_width()
-        h = self._height
+        h = self.get_height()
         return (w, h)
 
     def force_refresh(self) -> None:

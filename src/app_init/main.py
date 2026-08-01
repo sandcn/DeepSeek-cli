@@ -34,15 +34,16 @@ async def main():
         publish_output(f"  Chat {VERSION}", level="raw")
         return
 
-    # ── 注册 ChatUI 错误处理器 ──
-    from src.tui.consumer import setup_chat_ui_error_handler
-    setup_chat_ui_error_handler()
-
-    # ── 设置日志级别 ──
+    # ── 设置日志级别（先 basicConfig 再注册 ChatUI 错误处理器——root 已有
+    #    handler 时 basicConfig 静默失效，方向2 修复调用顺序） ──
     if args.verbose >= 2:
         logging.basicConfig(level=logging.DEBUG)
     elif args.verbose >= 1:
         logging.basicConfig(level=logging.INFO)
+
+    # ── 注册 ChatUI 错误处理器（须在 basicConfig 之后调用） ──
+    from src.tui.consumer import setup_chat_ui_error_handler
+    setup_chat_ui_error_handler()
 
     # ── 覆盖模型配置 ──
     if args.model:

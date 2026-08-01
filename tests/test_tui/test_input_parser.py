@@ -185,6 +185,75 @@ class TestDispatchCsi:
         assert ev.keycode == 97
         assert ev.modifier == 1
 
+
+# ═══════════════════════════════════════════════════════════
+# 方向2 — CSI u 增强键盘协议 modifier=1（无修饰键）映射
+# ═══════════════════════════════════════════════════════════
+
+class TestCsiUModifier1:
+    """方向2 — CSI u 增强键盘协议 modifier=1 映射（修复前落入 csi_u 静默丢弃）。"""
+
+    def test_modifier1_enter(self):
+        """\\x1b[13;1u → enter（无修饰键 Enter）。"""
+        ev = InputParser._dispatch_csi([13, 1], 'u')
+        assert ev.kind == "enter"
+        assert ev.modifier == 1
+        assert ev.keycode == 13
+
+    def test_modifier1_tab(self):
+        """\\x1b[9;1u → tab（无修饰键 Tab）。"""
+        ev = InputParser._dispatch_csi([9, 1], 'u')
+        assert ev.kind == "tab"
+        assert ev.modifier == 1
+        assert ev.keycode == 9
+
+    def test_modifier1_home(self):
+        """\\x1b[1;1u → home。"""
+        ev = InputParser._dispatch_csi([1, 1], 'u')
+        assert ev.kind == "home"
+        assert ev.modifier == 1
+
+    def test_modifier1_end(self):
+        """\\x1b[4;1u → end。"""
+        ev = InputParser._dispatch_csi([4, 1], 'u')
+        assert ev.kind == "end"
+        assert ev.modifier == 1
+
+    def test_modifier1_arrows_kitty(self):
+        """kitty 码位 57417-57420 → arrow_up/down/left/right。"""
+        assert InputParser._dispatch_csi([57417, 1], 'u').kind == "arrow_up"
+        assert InputParser._dispatch_csi([57418, 1], 'u').kind == "arrow_down"
+        assert InputParser._dispatch_csi([57419, 1], 'u').kind == "arrow_left"
+        assert InputParser._dispatch_csi([57420, 1], 'u').kind == "arrow_right"
+
+    def test_modifier1_arrows_ascii(self):
+        """ASCII 变体 65-68（A/B/C/D）→ arrow。"""
+        assert InputParser._dispatch_csi([65, 1], 'u').kind == "arrow_up"
+        assert InputParser._dispatch_csi([66, 1], 'u').kind == "arrow_down"
+        assert InputParser._dispatch_csi([67, 1], 'u').kind == "arrow_right"
+        assert InputParser._dispatch_csi([68, 1], 'u').kind == "arrow_left"
+
+    def test_modifier1_unknown_kept_csi_u(self):
+        """未知 keycode modifier=1 仍走 csi_u（router 可消费，不静默丢）。"""
+        ev = InputParser._dispatch_csi([97, 1], 'u')
+        assert ev.kind == "csi_u"
+        assert ev.modifier == 1
+
+    def test_modifier2_5_regression(self):
+        """modifier=2/5 既有映射回归（不因新增 modifier=1 分支改变）。"""
+        ev = InputParser._dispatch_csi([13, 2], 'u')
+        assert ev.kind == "char"
+        assert ev.char == "\n"
+        assert ev.modifier == 2
+        ev = InputParser._dispatch_csi([9, 2], 'u')
+        assert ev.kind == "tab"
+        assert ev.modifier == 2
+        ev = InputParser._dispatch_csi([119, 5], 'u')
+        assert ev.kind == "delete"
+        assert ev.modifier == 1
+        ev = InputParser._dispatch_csi([5, 5], 'u')
+        assert ev.kind == "ctrl_key"
+
     def test_function_key_tilde(self):
         assert InputParser._dispatch_csi([1], '~').kind == "home"
         assert InputParser._dispatch_csi([7], '~').kind == "home"

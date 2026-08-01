@@ -459,3 +459,55 @@ class TestSharedContentStrTruncate:
     def test_truncate_exact_limit_no_ellipsis(self) -> None:
         from src.tui.pipeline.message_display import _truncate
         assert _truncate("x" * 10, 10) == "x" * 10
+
+
+class TestEditmsgBackspaceNoConfirm:
+    """方向2 — editmsg 选择期间 backspace 不提前确认（dismiss 回调不触发）。
+
+    message_editor 将 dismiss 回调替换为 ``_editmsg_dismiss``（设置
+    ``_selection_ready`` 确认信号）——backspace 等非确认键触发 dismiss
+    会提前确认选择；修复后 suppress_enter=True 期间 backspace 跳过 dismiss。
+    """
+
+    def test_backspace_does_not_set_selection_ready(self, tmp_path):
+        """suppress_enter=True + dismiss 回调替换为确认信号 → backspace 不触发确认。"""
+        import os
+        import threading
+        from src.tui.input import Input
+        from src.tui._input_parser import KeyEvent
+
+        fd = os.open("/dev/null", os.O_RDONLY)
+        try:
+            inp = Input(fd=fd, history_file=tmp_path / "history")
+            inp.set_suppress_enter(True)
+            selection_ready = threading.Event()
+            # 模拟 message_editor._editmsg_dismiss 替换
+            inp._dismiss_completion_callback = lambda: selection_ready.set()
+            inp.handle_chars("hello")
+            # backspace 不提前确认
+            inp._dispatch_key_event(KeyEvent(kind="backspace"))
+            assert not selection_ready.is_set()
+            # Enter 仍确认（editmsg 正常确认机制）
+            inp._dispatch_key_event(KeyEvent(kind="enter"))
+            assert selection_ready.is_set()
+        finally:
+            os.close(fd)
+
+    def test_home_does_not_set_selection_ready(self, tmp_path):
+        """suppress_enter=True 期间 home 不触发确认信号。"""
+        import os
+        import threading
+        from src.tui.input import Input
+        from src.tui._input_parser import KeyEvent
+
+        fd = os.open("/dev/null", os.O_RDONLY)
+        try:
+            inp = Input(fd=fd, history_file=tmp_path / "history")
+            inp.set_suppress_enter(True)
+            selection_ready = threading.Event()
+            inp._dismiss_completion_callback = lambda: selection_ready.set()
+            inp.handle_chars("hello")
+            inp._dispatch_key_event(KeyEvent(kind="home"))
+            assert not selection_ready.is_set()
+        finally:
+            os.close(fd)

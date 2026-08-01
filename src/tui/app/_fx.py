@@ -89,6 +89,10 @@ def spinner_frame(tick_hz: float, frames) -> int:
 def needs_animation(active_flags) -> bool:
     """判定是否存在活跃/动画状态（需要重绘推进动效）。
 
+    # deprecated: 无生产调用方（``__all__`` 导出 + test_fx.py 锁定），公共
+    # 导出保留（不删除）。活跃判定由 ``_subagent_panel._needs_animation``
+    # （委托 StateStore.needs_animation）承担。
+
     Args:
         active_flags: 可迭代的活跃状态标志（布尔值或可判断真值的对象），
             如 ``(rec.phase in ("running", "parsing") for rec in agents)``。

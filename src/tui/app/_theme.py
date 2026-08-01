@@ -10,12 +10,17 @@
 
 依赖约束：仅依赖 src/tui/core.style.Style 与标准库（math/time），
 不依赖 _animator、不依赖任何 app 组件，可独立导入。
+
+方向6 步骤6.4 评估结论（配色）：dark 主题已对齐 ``_SEMANTIC_COLOR`` 槽位
+（方向3 步骤15 收敛），light/high-contrast 主题族已注册；无调整需求 →
+**评估不做**（记录于 docstring 可追溯）。
 """
 
 from __future__ import annotations
 
 import math
 import time
+from functools import lru_cache
 
 from src._compat import dataclass
 from src.tui._const import _SEMANTIC_COLOR
@@ -186,6 +191,10 @@ def time_glow(lo: int, hi: int, period: float = 12.0) -> int:
     PERF-5：0.1s 时间桶缓存——同一时间桶（``int(t/0.1)``）且同 (lo,hi,period)
     参数时返回缓存色号（每帧调用不重复计算正弦）。
 
+    方向6（多桶缓存）：内部经 ``_glow_bucket`` lru_cache（maxsize=32）——
+    input_area 与 status_bar 不同 (lo,hi,period) 参数不再互相覆盖单桶缓存
+    （修复前单桶互相覆盖导致频繁重算）；桶切换（0.1s）后 key 变化自动失效。
+
     Args:
         lo: 呼吸下限色号。
         hi: 呼吸上限色号。
@@ -194,24 +203,22 @@ def time_glow(lo: int, hi: int, period: float = 12.0) -> int:
     Returns:
         [lo, hi] 区间内的 256 色号整数。
     """
-    t = time.monotonic()
-    bucket = int(t / 0.1)
-    global _glow_cache
-    if (
-        _glow_cache[0] == bucket
-        and _glow_cache[1] == lo
-        and _glow_cache[2] == hi
-        and _glow_cache[3] == period
-    ):
-        return _glow_cache[4]
+    bucket = int(time.monotonic() / 0.1)
+    return _glow_bucket(lo, hi, period, bucket)
+
+
+@lru_cache(maxsize=32)
+def _glow_bucket(lo: int, hi: int, period: float, bucket: int) -> int:
+    """0.1s 时间桶内计算呼吸色号（多参数多桶缓存，互不覆盖）。
+
+    bucket 为 ``int(time.monotonic() / 0.1)``——同一参数同一时间桶命中缓存
+    （key 含 lo/hi/period/bucket，不同参数不互相污染）；桶切换后 bucket 变化
+    自动失效；maxsize=32 防无限增长。桶内代表时间取桶中点
+    （``(bucket + 0.5) * 0.1``，单调稳定）。
+    """
+    t = (bucket + 0.5) * 0.1
     ratio = (math.sin(2 * math.pi * t / period) + 1) / 2
-    color = max(lo, min(hi, lo + int((hi - lo) * ratio)))
-    _glow_cache = (bucket, lo, hi, period, color)
-    return color
-
-
-#: time_glow 时间桶缓存 (bucket, lo, hi, period, color)
-_glow_cache: tuple = (0, 0, 0, 0, 0)
+    return max(lo, min(hi, lo + int((hi - lo) * ratio)))
 
 
 __all__ = [

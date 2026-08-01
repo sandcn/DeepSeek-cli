@@ -3370,3 +3370,194 @@ class TestEscCancelInput:
             assert inp._dispatcher._active_status_fn is fn
         finally:
             os.close(fd)
+
+
+# ═══════════════════════════════════════════════════════════
+# 方向2 — editmsg 选择期间非确认键不触发 dismiss 确认 + Tab 不写缓冲
+# ═══════════════════════════════════════════════════════════
+
+class TestEditmsgKeyDismissGuard:
+    """方向2 — editmsg 选择期间（_suppress_enter=True）backspace 等非确认键
+    不触发 dismiss 回调（message_editor 将 dismiss 回调替换为确认信号——
+    非确认键触发会提前确认选择）。"""
+
+    @pytest.fixture
+    def inp(self, tmp_path):
+        fd = os.open("/dev/null", os.O_RDONLY)
+        try:
+            yield Input(fd=fd, history_file=tmp_path / "history")
+        finally:
+            os.close(fd)
+
+    def test_backspace_not_dismiss_when_suppress_enter(self, inp):
+        """set_suppress_enter(True) 后 backspace 不调用 dismiss 回调。"""
+        dismissed = []
+        inp.set_dismiss_completion_callback(lambda: dismissed.append(True))
+        inp.set_suppress_enter(True)
+        inp.handle_chars("abc")
+        inp._dispatch_key_event(KeyEvent(kind="backspace"))
+        assert dismissed == []
+
+    def test_backspace_dismiss_when_not_suppress(self, inp):
+        """set_suppress_enter(False) 后 backspace 恢复调用 dismiss（零回归）。"""
+        dismissed = []
+        inp.set_dismiss_completion_callback(lambda: dismissed.append(True))
+        inp.set_suppress_enter(False)
+        inp.handle_chars("abc")
+        inp._dispatch_key_event(KeyEvent(kind="backspace"))
+        assert dismissed == [True]
+
+    def test_home_end_delete_unknown_not_dismiss_when_suppress(self, inp):
+        """suppress=True 时 home/end/delete/unknown 不调用 dismiss 回调。"""
+        dismissed = []
+        inp.set_dismiss_completion_callback(lambda: dismissed.append(True))
+        inp.set_suppress_enter(True)
+        inp.handle_chars("hello")
+        for kind in ("home", "end", "delete", "unknown"):
+            inp._dispatch_key_event(KeyEvent(kind=kind))
+        assert dismissed == []
+
+    def test_enter_still_dismisses_when_suppress(self, inp):
+        """suppress=True 时 Enter 仍调用 dismiss（editmsg 确认机制不可改动）。"""
+        dismissed = []
+        inp.set_dismiss_completion_callback(lambda: dismissed.append(True))
+        inp.set_suppress_enter(True)
+        inp.handle_chars("hello")
+        inp._dispatch_key_event(KeyEvent(kind="enter"))
+        assert dismissed == [True]
+
+    def test_cancel_input_dismisses(self, inp):
+        """_cancel_input 调用 dismiss 回调（Esc 取消同时关闭补全弹窗）。"""
+        dismissed = []
+        inp.set_dismiss_completion_callback(lambda: dismissed.append(True))
+        inp.set_suppress_enter(False)
+        inp._dispatcher._cancel_input()
+        assert dismissed == [True]
+
+    def test_editmsg_tab_navigates_not_confirms(self, inp):
+        """editmsg 模式（suppress=True）Tab 调用 navigate 回调（cycle），不写缓冲。"""
+        navigated = []
+        confirmed = []
+        inp.set_completion_navigate_callback(
+            lambda delta, text: navigated.append((delta, text)) or text
+        )
+        inp.set_completion_callback(
+            lambda text: confirmed.append(text) or text
+        )
+        inp.set_suppress_enter(True)
+        inp.handle_chars("hello")
+        inp._dispatch_key_event(KeyEvent(kind="tab"))
+        assert navigated == [(1, "hello")]  # 正向 cycle
+        assert confirmed == []              # 不经 on_tab 确认
+        assert inp.get_current_text() == "hello"  # 不写缓冲
+
+    def test_editmsg_tab_no_navigate_callback(self, inp):
+        """editmsg 模式无 navigate 回调时 Tab no-op（不抛异常）。"""
+        inp.set_suppress_enter(True)
+        inp.handle_chars("hello")
+        inp._dispatch_key_event(KeyEvent(kind="tab"))  # 不抛异常
+        assert inp.get_current_text() == "hello"
+
+    def test_normal_tab_confirms_when_completion_visible(self, inp):
+        """普通模式（suppress=False）Tab 保持确认行为（on_tab 路径）。"""
+        navigated = []
+        inp.set_completion_navigate_callback(
+            lambda delta, text: navigated.append((delta, text)) or text
+        )
+        inp.set_suppress_enter(False)
+        inp.handle_chars("hello")
+        inp._dispatch_key_event(KeyEvent(kind="tab"))
+        # 普通模式 Tab 走 _handle_tab（completion_callback 确认路径），不经 navigate
+        assert navigated == []
+
+
+class TestHandleCharsCarriageReturnFilter:
+    """方向2 — handle_chars 过滤 \\r（粘贴文本 CR 不进入缓冲；\\n 保留）。"""
+
+    @pytest.fixture
+    def inp(self, tmp_path):
+        fd = os.open("/dev/null", os.O_RDONLY)
+        try:
+            yield Input(fd=fd, history_file=tmp_path / "history")
+        finally:
+            os.close(fd)
+
+    def test_handle_chars_removes_cr_keeps_lf(self, inp):
+        """handle_chars(\"a\\rb\\nc\") → 缓冲 \"ab\\nc\"（\\r 移除，\\n 保留）。"""
+        inp.handle_chars("a\rb\nc")
+        assert inp.get_current_text() == "ab\nc"
+
+    def test_handle_chars_crlf_line_ending(self, inp):
+        """CRLF 行尾（\\r\\n）→ 归一为 \\n（多行粘贴场景）。"""
+        inp.handle_chars("line1\r\nline2\r\nline3")
+        assert inp.get_current_text() == "line1\nline2\nline3"
+
+    def test_handle_chars_plain_text_unchanged(self, inp):
+        """纯文本（无 \\r）不受影响（回归）。"""
+        inp.handle_chars("hello world")
+        assert inp.get_current_text() == "hello world"
+
+    def test_handle_chars_cr_only_removed(self, inp):
+        """仅 \\r 的文本 → 空（不插入 CR）。"""
+        inp.handle_chars("\r\r")
+        assert inp.get_current_text() == ""
+
+
+class TestHistoryIdxResetOnNavigation:
+    """方向2 — _home/_end/_word_left/_word_right 重置 _history_idx（与其他编辑方法对齐）。"""
+
+    @pytest.fixture
+    def inp(self, tmp_path):
+        fd = os.open("/dev/null", os.O_RDONLY)
+        try:
+            yield Input(fd=fd, history_file=tmp_path / "history")
+        finally:
+            os.close(fd)
+
+    def test_home_resets_history_idx(self, inp):
+        """历史浏览中按 Home → _history_idx == -1。"""
+        inp._history = ["stored"]
+        inp._up()  # 进入历史导航
+        assert inp._history_idx == 0
+        inp._home()
+        assert inp._history_idx == -1
+
+    def test_end_resets_history_idx(self, inp):
+        """历史浏览中按 End → _history_idx == -1。"""
+        inp._history = ["stored"]
+        inp._up()
+        assert inp._history_idx == 0
+        inp._end()
+        assert inp._history_idx == -1
+
+    def test_word_left_resets_history_idx(self, inp):
+        """历史浏览中按 Ctrl+左 → _history_idx == -1。"""
+        inp._history = ["stored"]
+        inp._up()
+        assert inp._history_idx == 0
+        inp._word_left()
+        assert inp._history_idx == -1
+
+    def test_word_right_resets_history_idx(self, inp):
+        """历史浏览中按 Ctrl+右 → _history_idx == -1。"""
+        inp._history = ["stored"]
+        inp._up()
+        assert inp._history_idx == 0
+        inp._word_right()
+        assert inp._history_idx == -1
+
+    def test_next_up_resaves_saved_input(self, inp):
+        """重置后下次 _up 重新保存当前缓冲（语义保持：_saved_input_before_history 为当时缓冲）。"""
+        inp._history = ["old", "older"]
+        inp.handle_chars("current")
+        inp._up()  # 进入历史导航
+        assert inp._saved_input_before_history == "current"
+        assert inp._buffer == "old"
+        inp._home()  # 退出导航（_history_idx 重置，缓冲仍为历史条目内容）
+        assert inp._history_idx == -1
+        # 回到当前输入再 _up → 重新保存当前缓冲
+        inp.set_buffer("current2")
+        inp._up()
+        assert inp._saved_input_before_history == "current2"
+        assert inp._history_idx == 0
+        assert inp._buffer == "old"

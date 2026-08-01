@@ -19,6 +19,10 @@ from typing import Any
 
 _logger = logging.getLogger(__name__)
 
+#: 开放工具块增量提交阈值（方向4）——输出行超出该阈值时经 commit_open_block
+#: 增量提交已闭合行到 committed_lines（长工具输出每帧不再全量重渲染）。
+_TOOL_INCREMENTAL_THRESHOLD = 64
+
 
 class ReasoningState(Enum):
     """推理通道状态机（与 _ReasoningState 等价语义）。"""
@@ -203,6 +207,13 @@ class AppModel:
         仅提交**连续的已关闭**块——前面若有未关闭块（如流式内容块）则停止，
         避免跳过开放块导致其后续行丢失。已增量提交的行（committed_line_count）
         不再重复渲染。
+
+        ★ 方向5（append_committed 冻结）：全块提交完成（closed 且
+        committed_line_count == len(lines)）且尚未冻结时建立 ``_cached_ink_lines``
+        ——append_committed 创建的立即关闭块自动冻结（免每帧重渲染）；
+        被开放块夹住的已关闭块提交后同样冻结。仅 ``is None`` 时冻结：
+        close_reasoning/close_content/close_tool_box 已在关闭时冻结（内容
+        可能不同——如 close_tool_box 冻结未提交尾），不覆盖。
         """
         while self.committed_count <= index and self.committed_count < len(self.blocks):
             block = self.blocks[self.committed_count]
@@ -213,6 +224,8 @@ class AppModel:
                     self._block_to_ink_lines(block, block.committed_line_count)
                 )
                 block.committed_line_count = len(block.lines)
+            if block._cached_ink_lines is None:
+                block._cached_ink_lines = self._block_to_ink_lines(block, 0)
             self.committed_count += 1
 
     def _block_to_ink_lines(self, block, start: int = 0):
@@ -374,7 +387,11 @@ class AppModel:
     def append_tool_output(self, tool_id: str, text: str) -> None:
         """追加工具输出行到对应分组（无边框）。
 
-        输出行不增量提交 committed_lines（关闭时统一提交/冻结）。
+        方向4（开放工具块增量提交）：输出行数超过阈值
+        （``_TOOL_INCREMENTAL_THRESHOLD``）时经 ``commit_open_block`` 增量提交
+        已闭合行到 committed_lines——长工具输出每帧不再全量重渲染（开放块只
+        渲染未提交尾）；关闭时 ``commit_block`` 追加剩余尾（含状态行），
+        ``committed_line_count`` 计数保证不重复（「关闭后无重复行」不变量）。
 
         Bug A 修复：按 tool_id 精确路由——key 命中精确追加；key 未命中且
         tool_id 非空 → 创建匿名 box（标题回退「工具」，输出不丢失）；
@@ -394,6 +411,10 @@ class AppModel:
             l = AnsiLine.of("  ", Style(fg=242))
             l.append(seg)
             block.lines.append(l)
+        # ★ 方向4：增量提交阈值——长工具输出不每帧全量重渲染（超过阈值即提交
+        #   已闭合行到 committed_lines；开放块渲染只取未提交尾）。
+        if len(block.lines) - block.committed_line_count >= _TOOL_INCREMENTAL_THRESHOLD:
+            self.commit_open_block(block)
 
     def close_tool_box(self, tool_id: str, success: bool) -> None:
         """关闭工具分组：置状态、冻结并提交（无边框）。
@@ -430,8 +451,12 @@ class AppModel:
         self.active_tool = None
 
         block.closed = True
-        # 冻结行缓存（方向D 步骤15：关闭块免每帧重渲染；含标题状态图标）
-        block._cached_ink_lines = self._block_to_ink_lines(block, 0)
+        # ★ 方向4（增量提交协同）：冻结仅**未提交部分**（已提交行在
+        #   committed_lines 中，避免重复存储；``_block_styled_lines`` 冻结
+        #   缓存分支已调整为 ``cache[0:]``——冻结缓存即未提交部分，start 参数
+        #   对冻结缓存无意义）。关闭后 ``commit_block`` 追加剩余尾（含状态行），
+        #   ``committed_line_count`` 计数保证不重复追加已提交行。
+        block._cached_ink_lines = self._block_to_ink_lines(block, block.committed_line_count)
         self.commit_block(len(self.blocks) - 1)
 
     def _next_tool_id(self) -> str:

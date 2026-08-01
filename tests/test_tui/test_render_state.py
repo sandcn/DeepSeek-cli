@@ -233,3 +233,56 @@ class TestResetDisplay:
         assert m.active_tool["name"] == "bs"  # get_tool_display_name("bash") → 缩写
         m.close_tool_box("t1", True)
         assert m.active_tool is None
+
+
+class TestChatViewCompositeKey:
+    """方向5 — chat_view 开放块行复合 key（流式追加行 key 稳定，fiber 复用）。"""
+
+    @staticmethod
+    def _chat_fibers(root) -> dict:
+        """收集根树中 key 以 ``chat-`` 开头的 TEXT fiber。"""
+        found: dict = {}
+
+        def walk(f):
+            f2 = f
+            while f2 is not None:
+                props = getattr(f2, "props", None)
+                key = props.get("key") if isinstance(props, dict) else None
+                if isinstance(key, str) and key.startswith("chat-"):
+                    found[key] = f2
+                walk(f2.child)
+                f2 = f2.sibling
+
+        walk(root)
+        return found
+
+    def test_open_block_row_key_stable_on_stream_append_regression(self):
+        """流式追加新行时已渲染开放块行的 key 不变（调和复用 fiber 断言）。"""
+        from src.tui.app.app import build_app_element
+        from src.tui.ink.reconciler import Reconciler
+
+        m = AppModel()
+        m.open_tool_box("t1", "read_file")
+        m.append_tool_output("t1", "out1\n")
+        m.append_tool_output("t1", "out2\n")
+
+        r = Reconciler()
+        root = r.create_root()
+        r.render(root, build_app_element(m, 80), 80, 24)
+        fibers1 = self._chat_fibers(root)
+        assert len(fibers1) >= 2  # 标题 + out1/out2 已渲染
+
+        # 流式追加新行（开放工具块追加输出）
+        m.append_tool_output("t1", "out3\n")
+        r.render(root, build_app_element(m, 80), 80, 24)
+        fibers2 = self._chat_fibers(root)
+
+        # 已渲染行 key 保留且 fiber 身份复用（修复前位置索引 chat-{line_idx}
+        # 使行号前移 → 已渲染行 key 变化 → fiber 重建）
+        for key, fiber1 in fibers1.items():
+            assert key in fibers2, f"key {key} 应保留"
+            assert fibers2[key] is fiber1, (
+                f"key {key} 的 fiber 应复用（身份不变）"
+            )
+        # 新增行产生新 key（key 数量增加）
+        assert len(fibers2) > len(fibers1)

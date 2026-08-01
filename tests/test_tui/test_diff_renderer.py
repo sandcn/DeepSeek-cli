@@ -281,3 +281,42 @@ class TestLexerCacheBounded:
         assert _resolve_lexer_name("") == "text"
         assert _resolve_lexer_name("txt") == "text"
         assert _resolve_lexer_name("ext_known") == "ext_known"
+
+
+# ═══════════════════════════════════════════════════════════
+# 方向4 — _get_highlighter lru_cache（同一 lexer 复用同一对象）
+# ═══════════════════════════════════════════════════════════
+
+class TestHighlighterCache:
+    """方向4 — _get_highlighter 有界缓存（同一 lexer_name 返回同一对象）。"""
+
+    def test_same_lexer_returns_same_object_regression(self):
+        """同一 lexer_name 两次 _get_highlighter → 返回同一 (lexer, formatter) 对象。"""
+        from src.tui._diff_renderer import _get_highlighter
+        _get_highlighter.cache_clear()
+        try:
+            pair1 = _get_highlighter("python")
+            pair2 = _get_highlighter("python")
+            # pygments 可用时断言对象复用；不可用时两者均 None（缓存 None）
+            assert pair1 == pair2
+            if pair1 is not None:
+                assert pair1[0] is pair2[0]
+                assert pair1[1] is pair2[1]
+        finally:
+            _get_highlighter.cache_clear()
+
+    def test_unknown_lexer_falls_back_text_cached_regression(self):
+        """未知 lexer 降级 text 且缓存（同一名称返回同一对象）。"""
+        from src.tui._diff_renderer import _get_highlighter
+        _get_highlighter.cache_clear()
+        try:
+            pair1 = _get_highlighter("nonexistent-lexer-xyz")
+            pair2 = _get_highlighter("nonexistent-lexer-xyz")
+            assert pair1 == pair2  # 降级结果一致（text 或 None）
+        finally:
+            _get_highlighter.cache_clear()
+
+    def test_highlighter_cache_bounded_regression(self):
+        """_get_highlighter 缓存 maxsize=64（防无限增长）。"""
+        from src.tui._diff_renderer import _get_highlighter
+        assert _get_highlighter.cache_info().maxsize == 64

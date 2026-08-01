@@ -9,6 +9,15 @@ PERF-3/PERF-5：内部用 ``use_memo`` 缓存 ``_build_status_runs`` 结果
 BEAUTY-1/PERF-3（方向A 步骤1）：模型名点 FadeIn 渐显窗口内按 0.1s 时间桶
 刷新（``time_dep = int(t/0.1)``，渐显平滑推进），渐显结束后回退 1s 桶
 （PERF-3 缓存语义保持）——修复 1s 桶内渐显冻结、桶边界跳变。
+
+方向6 步骤6.4 评估结论（布局比例/信息密度/配色，记录于 docstring 可追溯）：
+  - 布局比例：非全屏流动模型内容驱动、无视口 pin，聊天区/输入区/状态栏为
+    自然文档流，**无固定比例可调**；调整（如压缩聊天区）违背非全屏模型
+    设计约束 → **评估不做**。
+  - 状态栏信息密度：当前已含模型名/工具计数/耗时/token/速度，信息完备；
+    增加密度损害可读性，减少丢失关键状态 → **评估不做**。
+  - 配色：dark 已对齐 ``_SEMANTIC_COLOR`` 槽位（方向3 步骤15 收敛），
+    light/high-contrast 主题族已注册；无调整需求 → **评估不做**。
 """
 
 from __future__ import annotations
@@ -164,12 +173,21 @@ def StatusBar(props) -> object:
         ),
     )
     # 分割线（上面）
-    sep = Line.of("\u2501" * max(1, width - 2), _S_SEP)
+    # ★ 方向6（分隔线宽度统一）：分隔线铺满 width 列（修复前 width-2 与
+    #   状态行 col2 缩进宽度不一致）；状态行前缀 2 列 + 内容经 truncate_line
+    #   截断至 width（内容从 col3 起 ≤ width-2）——宽度统一为 width。
+    sep = Line.of("\u2501" * max(1, width), _S_SEP)
     # 状态行（下面）
     status_line = Line.of("  ", None)
     if status_runs:
         for run in status_runs:
             status_line.append_run(run)
+    # ★ 方向4（状态行溢出截断）：超长状态 runs 截断至 width——复用
+    #   ink.helpers.truncate_line（subagent_panel 已用 truncate_runs 族，
+    #   status_bar 用 truncate_line 保持 Line 结构；修复前溢出静默裁剪）。
+    if status_line.width > width:
+        from src.tui.ink.helpers import truncate_line
+        status_line = truncate_line(status_line, width)
     return h(BOX, None, [
         h(TEXT, {"styled": sep.runs, "height": 1}),
         h(TEXT, {"styled": status_line.runs, "height": 1}),

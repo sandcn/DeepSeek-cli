@@ -77,6 +77,10 @@ class _InkRendererFacade:
     """旧 renderer 兼容面（output_adapter 占位）。
 
     非全屏流动模型无 OutputAdapter；output_adapter 返回 None（无生产消费方）。
+
+    # deprecated: output_adapter 无生产调用方（ChatUIConsumer.output_adapter
+    # 委托 + test_consumer.py::test_output_adapter_property 锁定），占位保留
+    # （公共 API 兼容，不删除）。
     """
 
     __slots__ = ("_session",)
@@ -169,9 +173,10 @@ class TuiAssembly:
             bridge, CompletionEngine(),
             request_redraw=session.request_bottom_redraw,
         )
-        subagent_controller = SubAgentPanelController(
-            push_cmd=session.push_cmd,
-        )
+        subagent_controller = SubAgentPanelController.get_default()
+        # ★ 方向5（单例统一）：装配复用单例并注入 push_cmd 回调（消除双实例
+        #   ——事件订阅/状态在单例上累积，不因装配重建丢失）。
+        subagent_controller.set_push_cmd(session.push_cmd)
         return dispatcher, cmpl_handler, subagent_controller
 
     @staticmethod

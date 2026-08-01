@@ -11,6 +11,11 @@ hook 节点（保留状态/引用），从而跨渲染保持状态。
 useImperativeHandle 评估（方向② 步骤5）：需引入 forwardRef/ref 转发
 基础设施（fiber 增加 ref 挂载点、组件间 ref 传递协议），当前框架无消费
 方，成本高——**不做**（评估结论保留可追溯）。
+
+方向3 评估（ClassComponent / ref / forwardRef / 绝对定位，预期不做）：
+均无消费方，需引入基础设施（fiber 生命周期 class、ref 传递协议、绝对定位
+坐标系）；评估不做（成本高、无消费方、收益低）——useImperativeHandle
+评估结论见上文，可追溯。
 """
 
 from __future__ import annotations
@@ -151,10 +156,20 @@ def _next_state_hook(reducer: Callable[[Any, Any], Any] | None, initial: Any) ->
     return hook
 
 
-def _make_setter(hook: StateHook) -> Callable[[Any], None]:
-    """创建 set_state/dispatch 函数（入队 + 触发重渲染）。"""
+def _make_setter(fiber: Fiber, hook: StateHook) -> Callable[[Any], None]:
+    """创建 set_state/dispatch 函数（入队 + 触发重渲染）。
+
+    方向3（已卸载组件 setter 修复）：setter 捕获渲染期 fiber——组件已卸载
+    （``fiber.deleted=True``）时 set_state 不排队不触发重渲染（修复前 setter
+    闭包仅持 hook，无条件 ``_schedule()``，已卸载组件 setter 仍触发重渲染）。
+    fiber 复用时 reconciler 会重置 ``deleted=False``（setter 闭包捕获的 fiber
+    对象在复用时仍有效，deleted 已复位）；Python 引用计数保证 fiber 对象存活
+    （闭包持有），deleted 检查仅读布尔字段无风险。
+    """
 
     def _set(value: Any) -> None:
+        if getattr(fiber, "deleted", False):
+            return  # 已卸载组件 set_state：不排队不触发重渲染
         if hook.queue is None:
             hook.queue = []
         hook.queue.append(value)
@@ -173,7 +188,7 @@ def use_state(initial: Any) -> tuple[Any, Callable[[Any], None]]:
         (state, set_state) 元组。set_state 接受新值或更新函数。
     """
     hook = _next_state_hook(None, initial)
-    return (hook.state, _make_setter(hook))
+    return (hook.state, _make_setter(_current(), hook))
 
 
 def use_reducer(reducer: Callable[[Any, Any], Any], initial: Any) -> tuple[Any, Callable[[Any], None]]:
@@ -187,7 +202,7 @@ def use_reducer(reducer: Callable[[Any, Any], Any], initial: Any) -> tuple[Any, 
         (state, dispatch) 元组。dispatch 接受 action。
     """
     hook = _next_state_hook(reducer, initial)
-    return (hook.state, _make_setter(hook))
+    return (hook.state, _make_setter(_current(), hook))
 
 
 # ═══════════════════════════════════════════════════════════

@@ -140,6 +140,15 @@ class SubAgentPanelController:
                     cls._instance = cls()
         return cls._instance
 
+    def set_push_cmd(self, cb: Callable[[RenderCmd], None] | None) -> None:
+        """注入/更新 push_cmd 回调（单例复用后装配调用；None 清除）。
+
+        方向5（单例统一）：装配复用 ``get_default()`` 单例后经本方法注入
+        push_cmd 回调（替代每次构造新实例——双实例导致事件订阅/状态分裂，
+        装配重建时订阅/动画状态丢失）。``_push_frame`` 已优先使用本回调。
+        """
+        self._push_cmd_cb = cb
+
     # ── 生命周期 ────────────────────────────────────────
 
     def ensure_active(self) -> None:
@@ -298,16 +307,25 @@ class SubAgentPanelController:
     # ── 面板刷新回调 ────────────────────────────────────
 
     def _register_panel_refresh(self) -> None:
-        if self._push_cmd_cb is not None:
-            # 已注入 push_cmd，无需通过 get_active_chat_ui 获取 ChatUIConsumer
-            # panel_refresh 回调由 engine 的 panel_refresh_cb 驱动
-            return
+        # ★ 方向5（push_cmd 注入路径动画回调修复）：不再因已注入 push_cmd
+        #   直接 return——即使已注入，仍尝试经 get_active_chat_ui() 获取
+        #   chat_ui 并注册 _panel_refresh 到 engine（ChatUIConsumer.
+        #   set_panel_refresh_callback 委托 engine.set_panel_refresh_callback
+        #   ——session 的 _panel_refresh_cb 每帧驱动动画 10Hz 推进 spinner）。
+        #   chat_ui 为 None 时记 debug 跳过（非致命——push_cmd 推送路径仍
+        #   正常，仅动画回调缺失）。
         from .consumer import get_active_chat_ui
         chat_ui = get_active_chat_ui()
         if chat_ui is not None:
             chat_ui.set_panel_refresh_callback(self._panel_refresh)
             self._cb_registered = True
             self._chat_ui = chat_ui
+            return
+        if self._push_cmd_cb is not None:
+            _logger.debug(
+                "_register_panel_refresh: push_cmd 已注入但 chat_ui 不可用，"
+                "动画回调未注册（非致命）"
+            )
 
     def _unregister_panel_refresh(self) -> None:
         self._cb_registered = False

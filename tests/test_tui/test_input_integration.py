@@ -368,3 +368,57 @@ class TestNewInputKindsChain:
         time.sleep(0.1)
         inp.process_events()
         assert inp.interrupted is True
+
+
+# ═══════════════════════════════════════════════════════════
+# 方向2 — 粘贴文本先问 router（消费则跳过旧路径）
+# ═══════════════════════════════════════════════════════════
+
+class TestPasteRouterConsume:
+    """方向2 — 粘贴绕过 router 修复：粘贴文本先经 input router 消费判定。"""
+
+    @pytest.fixture
+    def piped_input(self, tmp_path):
+        """创建 (Input, 写端 fd) 对：真实 pipe fd 驱动粘贴检测。"""
+        r_fd, w_fd = os.pipe()
+        try:
+            inp = Input(fd=r_fd, history_file=tmp_path / "history")
+            yield inp, w_fd
+        finally:
+            os.close(w_fd)
+            os.close(r_fd)
+
+    def test_paste_consumed_by_router_skips_handle_chars(self, piped_input):
+        """router 返回 True → 粘贴文本不被 handle_chars 处理（缓冲不变）。"""
+        inp, w_fd = piped_input
+        consumed = []
+        inp.set_input_hook_router(lambda ev: consumed.append(ev) or True)
+        inp.handle_chars("prefix")
+        os.write(w_fd, b"abc")  # 一次性写入模拟粘贴
+        time.sleep(0.05)
+        inp.process_events()
+        assert consumed  # router 收到粘贴 char 事件
+        assert inp.get_current_text() == "prefix"  # 粘贴未被插入
+
+    def test_paste_not_consumed_by_router_inserts(self, piped_input):
+        """router 返回 False → 粘贴正常插入（零行为变化）。"""
+        inp, w_fd = piped_input
+        inp.set_input_hook_router(lambda ev: False)
+        inp.handle_chars("prefix")
+        os.write(w_fd, b"abc")
+        time.sleep(0.05)
+        inp.process_events()
+        assert inp.get_current_text() == "prefixabc"
+
+    def test_paste_router_event_kind_char(self, piped_input):
+        """router 收到的粘贴事件为 char 类型且 char 为整段文本。"""
+        inp, w_fd = piped_input
+        events = []
+        inp.set_input_hook_router(lambda ev: events.append(ev) or False)
+        os.write(w_fd, b"hello")
+        time.sleep(0.05)
+        inp.process_events()
+        assert events
+        ev = events[0]
+        assert ev.kind == "char"
+        assert ev.char == "hello"

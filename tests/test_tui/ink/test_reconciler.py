@@ -872,3 +872,240 @@ class TestRouterCacheStableSeq:
         h2 = InputHook(handler=lambda e: False)
         assert h1.seq != h2.seq
         assert h1.seq < h2.seq
+
+
+class TestDeleteSubtreeDestroy:
+    """方向1 — 删除子树 effect destroy 被执行（修复前先置 deleted 后遍历，
+    首节点即跳过整棵子树，destroy 永不收集）。"""
+
+    def test_deleted_subtree_destroy_called_once(self):
+        """keyed 列表移除项 → 其 effect destroy 被调用一次。"""
+        from src.tui.ink.hooks import use_effect
+        destroyed = []
+        mounts = []
+
+        def Item(props):
+            def create():
+                mounts.append(props["label"])
+
+                def destroy():
+                    destroyed.append(props["label"])
+
+                return destroy
+            use_effect(create, [])
+            return h(TEXT, {"children": props["label"]})
+
+        r = Reconciler()
+        root = r.create_root()
+
+        def make(order):
+            return h(
+                BOX, None,
+                *(h(Item, {"key": label, "label": label}) for label in order),
+            )
+
+        r.render(root, make(["a", "b"]), 80, 24)
+        # 方向3 effect 后序提交（子先父后、兄弟反转）——仅断言两组件均已挂载
+        assert set(mounts) == {"a", "b"}
+        # 移除 a → a 的 effect destroy 被调用（修复前不执行）
+        r.render(root, make(["b"]), 80, 24)
+        assert destroyed == ["a"]
+
+    def test_active_sibling_effect_not_destroyed(self):
+        """活跃兄弟 fiber 的 effect 不被误销毁（_mark_deleted 置 sibling=None
+        保证收集不波及活跃节点）。"""
+        from src.tui.ink.hooks import use_effect
+        destroyed = []
+        mounts = []
+
+        def Item(props):
+            def create():
+                mounts.append(props["label"])
+
+                def destroy():
+                    destroyed.append(props["label"])
+
+                return destroy
+            use_effect(create, [])
+            return h(TEXT, {"children": props["label"]})
+
+        r = Reconciler()
+        root = r.create_root()
+
+        def make(order):
+            return h(
+                BOX, None,
+                *(h(Item, {"key": label, "label": label}) for label in order),
+            )
+
+        r.render(root, make(["a", "b"]), 80, 24)
+        # 移除 a：b 复用（活跃），b 的 destroy 不应被收集/调用
+        r.render(root, make(["b"]), 80, 24)
+        assert destroyed == ["a"]  # 仅 a 被销毁
+
+    def test_destroyed_function_fiber_chain(self):
+        """函数组件删除（同 key 但 type 变化重建）→ 旧 fiber 子树 destroy 执行。"""
+        from src.tui.ink.hooks import use_effect
+        destroyed = []
+
+        def CompA(props):
+            def create():
+                def destroy():
+                    destroyed.append("A")
+
+                return destroy
+            use_effect(create, [])
+            return h(TEXT, {"children": "a"})
+
+        def CompB(props):
+            return h(TEXT, {"children": "b"})
+
+        r = Reconciler()
+        root = r.create_root()
+        r.render(root, h(CompA, {"key": "x"}), 80, 24)
+        r.render(root, h(CompB, {"key": "x"}), 80, 24)  # type 变化 → A 子树删除
+        assert destroyed == ["A"]
+
+
+class TestEffectCommitOrder:
+    """方向3 — effect 提交顺序：子 effect 先于父 effect（React 语义，后序提交）。"""
+
+    def test_child_effect_before_parent_effect(self):
+        """嵌套组件：子 effect create 先于父 effect create。"""
+        from src.tui.ink.hooks import use_effect
+        order = []
+
+        def Child(props):
+            def create():
+                order.append("child")
+
+            use_effect(create, [])
+            return h(TEXT, {"children": "x"})
+
+        def Parent(props):
+            def create():
+                order.append("parent")
+
+            use_effect(create, [])
+            return h(Child)
+
+        r = Reconciler()
+        root = r.create_root()
+        r.render(root, h(Parent), 80, 24)
+        assert order == ["child", "parent"], f"子 effect 应先于父 effect: {order}"
+
+    def test_sibling_effects_both_committed(self):
+        """同层兄弟 effect 均提交（反转方案下兄弟逆序，但两 effect 均执行）。"""
+        from src.tui.ink.hooks import use_effect
+        order = []
+
+        def ItemA(props):
+            def create():
+                order.append("A")
+
+            use_effect(create, [])
+            return h(TEXT, {"children": "a"})
+
+        def ItemB(props):
+            def create():
+                order.append("B")
+
+            use_effect(create, [])
+            return h(TEXT, {"children": "b"})
+
+        r = Reconciler()
+        root = r.create_root()
+        r.render(root, h(BOX, None, h(ItemA), h(ItemB)), 80, 24)
+        assert set(order) == {"A", "B"}
+
+
+class TestNoKeyListReuse:
+    """方向3 — 无显式 key 列表按索引匹配（修复前同 type 兄弟共享派生 key 错误复用）。"""
+
+    def test_no_key_same_type_siblings_reuse_by_index(self):
+        """无 key 同 type 兄弟列表 [A,A,A]：按索引复用，各 fiber state 独立。"""
+        from src.tui.ink.hooks import use_state
+        seen = []
+        holders = []
+
+        def Item(props):
+            n, set_n = use_state(0)
+            if not holders:
+                holders.append(set_n)
+            seen.append(n)
+            return h(TEXT, {"children": str(n)})
+
+        r = Reconciler()
+        root = r.create_root()
+        el = h(BOX, None, h(Item), h(Item), h(Item))
+        r.render(root, el, 80, 24)
+        assert seen == [0, 0, 0]
+        # 更新第一个 Item 的 state（索引 0 的 fiber）
+        holders[0](42)
+        r.render(root, el, 80, 24)
+        # 无 key 索引匹配：索引 0 fiber 复用（state 42），其余保持 0
+        assert seen == [0, 0, 0, 42, 0, 0]
+        # 三兄弟 fiber 身份稳定（复用不重建）
+        fibers1 = [f for f in _collect_hosts(root) if f.type == "text"]
+        # text host 有三个（每个 Item 一个）
+        assert len(fibers1) == 3
+
+    def test_no_key_removal_marks_deleted(self):
+        """无 key 列表移除尾项 → 多余旧 fiber 被标记删除。"""
+        r = Reconciler()
+        root = r.create_root()
+        r.render(root, h(BOX, None, h(TEXT, {"children": "a"}), h(TEXT, {"children": "b"})), 80, 24)
+        # 保存 b fiber 引用（删除后从活跃树移除，无法经树遍历找到）
+        old_b = None
+        child = root.child.child
+        while child:
+            if child.props.get("children") == "b":
+                old_b = child
+                break
+            child = child.sibling
+        assert old_b is not None
+        # 移除 b（无 key 列表 [a]）
+        r.render(root, h(BOX, None, h(TEXT, {"children": "a"})), 80, 24)
+        assert old_b.deleted is True
+
+    def test_no_key_type_change_rebuilds(self):
+        """无 key 列表元素 type 变化 → 旧 fiber 删除重建。"""
+        r = Reconciler()
+        root = r.create_root()
+        r.render(root, h(BOX, None, h(TEXT, {"children": "a"})), 80, 24)
+        old = root.child.child
+        # 首元素 type 变化（TEXT → BOX）
+        r.render(root, h(BOX, None, h(BOX, None, h(TEXT, {"children": "x"}))), 80, 24)
+        assert old.deleted is True
+        assert root.child.child is not old
+
+
+class TestDuplicateKeyWarning:
+    """方向3 — 同 key 重复元素检测（warning + 继续，静默创建行为保留）。"""
+
+    def test_duplicate_key_logs_warning(self, caplog):
+        """显式 key 重复 → 记录 warning 且不崩溃。"""
+        import logging
+        r = Reconciler()
+        root = r.create_root()
+        el = h(BOX, None,
+               h(TEXT, {"key": "dup", "children": "a"}),
+               h(TEXT, {"key": "dup", "children": "b"}))
+        with caplog.at_level(logging.WARNING, logger="src.tui.ink.reconciler"):
+            r.render(root, el, 80, 24)  # 不崩溃
+        assert any(
+            rec.name == "src.tui.ink.reconciler"
+            and "重复 key" in rec.getMessage()
+            for rec in caplog.records
+        )
+
+    def test_duplicate_key_both_rendered(self):
+        """重复 key 两元素均渲染（第二个静默创建新 fiber 行为保留）。"""
+        r = Reconciler()
+        root = r.create_root()
+        el = h(BOX, None,
+               h(TEXT, {"key": "dup", "children": "a"}),
+               h(TEXT, {"key": "dup", "children": "b"}))
+        r.render(root, el, 80, 24)
+        texts = [f.props["children"] for f in _collect_hosts(root) if f.type == "text"]
+        assert set(texts) == {"a", "b"}

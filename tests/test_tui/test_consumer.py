@@ -91,26 +91,34 @@ class TestChatUIConsumerLifecycle:
 
         c._engine.stop.assert_not_called()
 
-    def test_suspend_stops_engine(self, mock_subsystems):
-        """suspend() 应停止引擎并拆除底部栏。"""
+    def test_suspend_delegates_to_engine_suspend(self, mock_subsystems):
+        """suspend() 委托 engine.suspend（方向5 生命周期收敛）。"""
         c = mock_subsystems['consumer']
         c._lifecycle._started = True
 
         c.suspend()
 
-        c._engine.stop.assert_called_once()
-        c._bb.teardown.assert_called_once()
+        c._engine.suspend.assert_called_once()
 
-    def test_resume_restarts_engine(self, mock_subsystems):
-        """resume() 应重建底部栏并启动引擎。"""
+    def test_resume_delegates_to_engine_resume(self, mock_subsystems):
+        """resume() 委托 engine.resume（方向5 生命周期收敛）。"""
         c = mock_subsystems['consumer']
         c._lifecycle._started = True
         c._engine.is_render_running = MagicMock(return_value=False)
 
         c.resume()
 
-        c._bb.setup.assert_called_once()
-        c._engine.start.assert_called_once()
+        c._engine.resume.assert_called_once()
+
+    def test_resume_idempotent_when_running(self, mock_subsystems):
+        """resume() 渲染运行中时不重复启动（is_render_running 检查保留）。"""
+        c = mock_subsystems['consumer']
+        c._lifecycle._started = True
+        c._engine.is_render_running = MagicMock(return_value=True)
+
+        c.resume()
+
+        c._engine.resume.assert_not_called()
 
 
 class TestChatUIConsumerRaceCondition:
@@ -990,3 +998,78 @@ class TestOutputConsumerWriteException:
         c._write("hi", "success")
         assert stream.getvalue() == "\033[32mhi\033[0m\n"
 
+
+
+class TestErrorHandlerBasicConfigOrder:
+    """方向2 — setup_chat_ui_error_handler 在 basicConfig 之后调用（静默失效修复）。"""
+
+    @staticmethod
+    def _reset_root_handlers():
+        """清空 root handlers + 复位注册标志（测试隔离）。"""
+        import logging
+        import src.tui.consumer as consumer_mod
+        logging.getLogger().handlers.clear()
+        with consumer_mod._error_handler_lock:
+            consumer_mod._error_handler_registered = False
+
+    def test_handler_registered_after_basic_config(self):
+        """先 basicConfig 再 setup → root 有 2 个 handler（StreamHandler + ChatUIErrorHandler）。"""
+        import logging
+        from src.tui.consumer import setup_chat_ui_error_handler, ChatUIErrorHandler
+        self._reset_root_handlers()
+        try:
+            logging.basicConfig(level=logging.INFO)
+            setup_chat_ui_error_handler()
+            handlers = logging.getLogger().handlers
+            assert any(isinstance(h, ChatUIErrorHandler) for h in handlers)
+            # basicConfig 的 StreamHandler + ChatUIErrorHandler
+            assert len(handlers) == 2, f"root handlers: {handlers}"
+        finally:
+            self._reset_root_handlers()
+
+    def test_setup_idempotent(self):
+        """重复 setup 不重复添加 handler（幂等）。"""
+        import logging
+        from src.tui.consumer import setup_chat_ui_error_handler, ChatUIErrorHandler
+        self._reset_root_handlers()
+        try:
+            setup_chat_ui_error_handler()
+            setup_chat_ui_error_handler()
+            handlers = logging.getLogger().handlers
+            chatui_handlers = [h for h in handlers if isinstance(h, ChatUIErrorHandler)]
+            assert len(chatui_handlers) == 1
+        finally:
+            self._reset_root_handlers()
+
+    def test_old_order_basic_config_no_duplicate(self):
+        """（防御回归）先 setup 后 basicConfig——basicConfig 静默不重复添加 handler。"""
+        import logging
+        from src.tui.consumer import setup_chat_ui_error_handler, ChatUIErrorHandler
+        self._reset_root_handlers()
+        try:
+            setup_chat_ui_error_handler()
+            logging.basicConfig(level=logging.DEBUG)  # root 已有 handler → 静默
+            handlers = logging.getLogger().handlers
+            chatui_handlers = [h for h in handlers if isinstance(h, ChatUIErrorHandler)]
+            assert len(chatui_handlers) == 1  # 不重复添加
+        finally:
+            self._reset_root_handlers()
+
+    def test_handler_emits_error_to_consumer(self):
+        """ChatUIErrorHandler.emit 将 ERROR 级日志投递到活跃 ChatUI（行为回归）。"""
+        import logging
+        from unittest.mock import MagicMock
+        from src.tui.consumer import ChatUIErrorHandler
+        handler = ChatUIErrorHandler()
+        record = logging.LogRecord("test", logging.ERROR, __file__, 1, "boom msg", None, None)
+        consumer = MagicMock()
+        with MagicMock() as _patch_consumer:
+            import src.tui.consumer as consumer_mod
+            original = consumer_mod.get_active_chat_ui
+            consumer_mod.get_active_chat_ui = lambda: consumer
+            try:
+                handler.emit(record)
+            finally:
+                consumer_mod.get_active_chat_ui = original
+        consumer.on_error.assert_called_once()
+        assert "boom msg" in consumer.on_error.call_args[0][0]

@@ -85,3 +85,76 @@ class TestEnginePriority:
             assert kwargs["block"] is False
         assert session._cmd_queue_dropped == 2
         assert session._consecutive_full == 2
+
+
+class TestQueueEvictLow:
+    """方向4 — 队列满 LOW 优先丢弃（腾位：新命令优先级高于 LOW 时移除队列中 LOW 命令）。"""
+
+    def _make_session(self):
+        s = _make_session()
+        s._cmd_queue = _queue.PriorityQueue(maxsize=2)
+        return s
+
+    def test_high_evicts_low_when_full(self):
+        """队列满 + 新命令 HIGH + 队列含 LOW → LOW 被移除、HIGH 入队。"""
+        from src.tui._const import WriteLineCmd, SubagentFrameCmd, RenderCommand
+        s = self._make_session()
+        s.push_cmd(WriteLineCmd(text="low1"))          # LOW (3)
+        s.push_cmd(WriteLineCmd(text="low2"))          # LOW (3) → 队列满
+        assert s._cmd_queue.qsize() == 2
+        s.push_cmd(SubagentFrameCmd(frame_lines=("h",)))  # HIGH (1) < LOW → 腾位
+        assert s._cmd_queue.qsize() == 2  # 腾位后仍满（移除 1 LOW + 入队 HIGH）
+        # HIGH 命令已入队
+        cids = [cmd.cid for _, _, cmd in s._cmd_queue.queue]
+        assert RenderCommand.SUBAGENT_FRAME in cids
+        # LOW 被移除计数
+        assert s._cmd_queue_dropped == 1
+
+    def test_low_new_cmd_no_evict(self):
+        """新命令本身为 LOW → 直接丢弃不腾位。"""
+        from src.tui._const import WriteLineCmd
+        s = self._make_session()
+        s.push_cmd(WriteLineCmd(text="low1"))
+        s.push_cmd(WriteLineCmd(text="low2"))          # 队列满
+        s.push_cmd(WriteLineCmd(text="low3"))          # LOW → 丢弃（不腾位）
+        assert s._cmd_queue.qsize() == 2
+        # 队列中仍只有 2 个 LOW（未被移除）
+        cids = [cmd.cid for _, _, cmd in s._cmd_queue.queue]
+        assert len(cids) == 2
+        assert s._cmd_queue_dropped == 1
+
+    def test_stream_cmd_full_not_evicted(self):
+        """STREAM 命令（CONTENT，优先级 0）满时走丢弃计数（不因腾位逻辑改变关键分支）。"""
+        from src.tui._const import ContentCmd, WriteLineCmd
+        s = self._make_session()
+        s.push_cmd(WriteLineCmd(text="low1"))
+        s.push_cmd(WriteLineCmd(text="low2"))          # 队列满
+        s.push_cmd(ContentCmd(text="x"))               # CRITICAL/STREAM (0) → 腾位
+        # CONTENT 优先级 0 < 3 → 触发腾位（移除 LOW 后入队）
+        assert s._cmd_queue.qsize() == 2
+        assert s._cmd_queue_dropped == 1
+        cids = [cmd.cid for _, _, cmd in s._cmd_queue.queue]
+        from src.tui._const import RenderCommand
+        assert RenderCommand.CONTENT in cids
+
+    def test_evict_retry_still_full_falls_back_drop(self):
+        """腾位重试 put 仍满（并发竞争）→ 保持丢弃（不无限循环）。"""
+        from src.tui._const import WriteLineCmd, SubagentFrameCmd
+        s = self._make_session()
+        s.push_cmd(WriteLineCmd(text="low1"))
+        s.push_cmd(WriteLineCmd(text="low2"))          # 队列满
+        # 模拟腾位后重试 put 仍满（并发竞争：另一线程腾位后立即填满）
+        real_put = s._cmd_queue.put
+        calls = {"n": 0}
+
+        def flaky_put(*a, **kw):
+            calls["n"] += 1
+            if calls["n"] == 2:  # 第 1 次为初始 put（满→Full）；第 2 次为腾位后重试 → 仍满
+                raise _queue.Full
+            return real_put(*a, **kw)
+
+        s._cmd_queue.put = flaky_put
+        s.push_cmd(SubagentFrameCmd(frame_lines=("h",)))
+        # 腾位发生（LOW 被移除），但重试 put 仍满 → HIGH 丢弃
+        assert s._cmd_queue.qsize() == 1  # 仅剩 1 个 LOW
+        assert s._cmd_queue_dropped == 2  # 移除 LOW(1) + 丢弃 HIGH(1)

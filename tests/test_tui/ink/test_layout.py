@@ -269,6 +269,126 @@ class TestFlexShrink:
         assert texts[0].layout_box.h == 1
 
 
+class TestFlexDistributeRemainder:
+    """方向1 — flex 余数分配修复：余数仅分配给权重 >0 的节点（非按 children 索引）。"""
+
+    def _collect_texts(self, root):
+        texts = []
+        child = root.child.child
+        while child:
+            texts.append(child)
+            child = child.sibling
+        return texts
+
+    def test_flexgrow_remainder_skips_zero_weight(self):
+        """flexGrow 权重 [0,2,1]、remaining=5 → 余数 2 全部分给权重>0 节点（grow=2 得 3、grow=1 得 2）。
+
+        修复前按 children 索引 ``i < remainder`` 分配：i=0（grow=0）错误得分 1；
+        修复后余数仅按权重>0 节点序列计索引（grow=2、grow=1 依次得余数 1+1）。
+        """
+        root, box = _render_and_layout(
+            h(BOX, {"height": 8},  # 内容 3 行 + remaining 5
+              h(TEXT, {"children": "a", "flexGrow": 0}),
+              h(TEXT, {"children": "b", "flexGrow": 2}),
+              h(TEXT, {"children": "c", "flexGrow": 1})),
+            80,
+        )
+        texts = self._collect_texts(root)
+        # 内容各 1 行；remaining=5, total=3, per=1, remainder=2
+        # → grow=0: 0；grow=2: 1*2+1=3；grow=1: 1*1+1=2
+        assert [t.layout_box.h for t in texts] == [1, 4, 3]
+        assert box.h == 8  # 总高度不变
+
+    def test_flexshrink_remainder_skips_zero_weight(self):
+        """flexShrink 权重 [0,2]、deficit=5 → 仅 shrink=2 节点缩减（shrink=0 不受影响）。
+
+        修复前按 children 索引 ``i < remainder`` 分配：i=0（shrink=0）错误缩减 1 行；
+        修复后余数仅按权重>0 节点序列计索引（shrink=2 节点独立获得全部余数）。
+        """
+        root, box = _render_and_layout(
+            h(BOX, {"height": 4},  # 内容 9 行（5+4）→ deficit=5
+              h(TEXT, {"children": "a" * 50, "flexShrink": 0}),   # 5 行，不参与
+              h(TEXT, {"children": "b" * 40, "flexShrink": 2})),  # 4 行，全缩减
+            10,
+        )
+        texts = self._collect_texts(root)
+        # deficit=5, total=2, per=2, remainder=1 → shrink=2 节点 reduce=2*2+1=5 → 4-5 → clamp 1
+        assert texts[0].layout_box.h == 5   # shrink=0 不变
+        assert texts[1].layout_box.h == 1   # shrink=2 全缩减至 1 行
+        assert box.h == 4
+
+    def test_flexshrink_reflows_grandchildren(self):
+        """flexShrink 修改直接子节点高度后孙节点 y 递归重排（孙节点跟随新 y）。
+
+        父 BOX(height=5) + 两个 shrink=1 的子容器（各 3 行内容）：
+        deficit=1, shrink=[1,1], per=0, remainder=1 → A 缩减 1 行（y=0）、
+        B 不缩减但 y 重排 3→2——B 内部孙节点 y 须同步重排（修复前孙节点 y
+        保持 shrink 前的 [3,4,5] 陈旧值）。
+        """
+        root, box = _render_and_layout(
+            h(BOX, {"height": 5},
+              h(BOX, {"flexShrink": 1}, h(TEXT, {"children": "a" * 30})),
+              h(BOX, {"flexShrink": 1}, h(TEXT, {"children": "b" * 30}))),
+            10,
+        )
+        # 直接子容器
+        children = []
+        child = root.child.child
+        while child:
+            children.append(child)
+            child = child.sibling
+        assert len(children) == 2
+        # A 缩减 1 行 → h=2；B 保持 h=3 但 y 重排到 2
+        assert children[0].layout_box.h == 2
+        assert children[0].layout_box.y == 0
+        assert children[1].layout_box.h == 3
+        assert children[1].layout_box.y == 2
+        # 孙节点（B 内部 TEXT）y 递归重排：跟随 B.y=2（修复前陈旧为 3）
+        b_text = children[1].child
+        assert b_text.layout_box.y == 2
+        assert b_text.layout_box.h == 3
+
+
+class TestRowMargin:
+    """方向1 — row 分支最后一个子节点不计 margin（与 column 一致）。"""
+
+    def test_row_last_child_margin_not_counted(self):
+        """row 三子节点 margin=1：内部宽度 = 3 + 2*1 = 5（最后 margin 不计）。"""
+        root, box = _render_and_layout(
+            h(BOX, {"flexDirection": "row", "margin": 1},
+              h(TEXT, {"children": "a"}),
+              h(TEXT, {"children": "b"}),
+              h(TEXT, {"children": "c"})),
+            80,
+        )
+        # 内容宽 3 + 两次 margin（1+1）= 5；修复前无条件累加 3 次 margin → 6
+        assert box.w == 5
+
+
+class TestEmptyTextHeight:
+    """方向1 — 空 TEXT 高度恒 ≥1 修复（空文本 h=0，不再产生空行占位）。"""
+
+    def test_empty_text_height_zero(self):
+        """空 TEXT（children=""）→ LayoutBox.h == 0（修复前恒 1）。"""
+        root, box = _render_and_layout(h(TEXT, {"children": ""}), 80)
+        assert box.h == 0
+
+    def test_empty_text_styled_height_zero(self):
+        """空 styled 列表 TEXT（styled=[]）→ h == 0。"""
+        from src.tui.ink.output import StyledRun
+        root, box = _render_and_layout(
+            h(TEXT, {"styled": []}), 80
+        )
+        assert box.h == 0
+
+    def test_nonempty_text_height_unchanged(self):
+        """非空 TEXT 高度不变（回归：h == 换行行数）。"""
+        root, box = _render_and_layout(h(TEXT, {"children": "abc"}), 80)
+        assert box.h == 1
+        root, box = _render_and_layout(h(TEXT, {"children": "a" * 30}), 10)
+        assert box.h == 3
+
+
 class TestTextWrapTruncate:
     """方向B 步骤12 — textWrap 模式（truncate 省略号）。"""
 
@@ -356,3 +476,130 @@ class TestTextWrapTruncate:
         assert box.h == 3  # 换行为 3 行（不截断）
         lines = self._frame_plain(h(TEXT, {"children": "a" * 30}), 10)
         assert lines == ["a" * 10, "a" * 10, "a" * 10]
+
+
+class TestJustifyContentAlignItems:
+    """方向3 — column justifyContent 与 row alignItems（已实现）。"""
+
+    def _collect_texts(self, root):
+        texts = []
+        child = root.child.child
+        while child:
+            texts.append(child)
+            child = child.sibling
+        return texts
+
+    def test_column_justify_center(self):
+        """column+center：剩余空间 extra=2 → 所有子节点 y += 1。"""
+        root, box = _render_and_layout(
+            h(BOX, {"height": 4, "justifyContent": "center"},
+              h(TEXT, {"children": "a"}),
+              h(TEXT, {"children": "b"})),
+            80,
+        )
+        texts = self._collect_texts(root)
+        assert box.h == 4
+        assert texts[0].layout_box.y == 1  # 0 + extra//2 (2//2=1)
+        assert texts[1].layout_box.y == 2  # 1 + 1
+
+    def test_column_justify_flex_end(self):
+        """column+flex-end：剩余空间 extra=2 → 所有子节点 y += 2。"""
+        root, box = _render_and_layout(
+            h(BOX, {"height": 4, "justifyContent": "flex-end"},
+              h(TEXT, {"children": "a"}),
+              h(TEXT, {"children": "b"})),
+            80,
+        )
+        texts = self._collect_texts(root)
+        assert box.h == 4
+        assert texts[0].layout_box.y == 2
+        assert texts[1].layout_box.y == 3
+
+    def test_column_justify_flex_start_default(self):
+        """column 默认 flex-start：无偏移（回归）。"""
+        root, box = _render_and_layout(
+            h(BOX, {"height": 4},
+              h(TEXT, {"children": "a"}),
+              h(TEXT, {"children": "b"})),
+            80,
+        )
+        texts = self._collect_texts(root)
+        assert texts[0].layout_box.y == 0
+        assert texts[1].layout_box.y == 1
+
+    def test_column_justify_no_extra_no_offset(self):
+        """column+center 无剩余空间（extra=0）→ 无偏移。"""
+        root, box = _render_and_layout(
+            h(BOX, {"justifyContent": "center"},
+              h(TEXT, {"children": "a"}),
+              h(TEXT, {"children": "b"})),
+            80,
+        )
+        texts = self._collect_texts(root)
+        assert box.h == 2
+        assert texts[0].layout_box.y == 0
+        assert texts[1].layout_box.y == 1
+
+    def test_column_justify_with_flexgrow_no_offset(self):
+        """flexGrow 分尽余数后 justify 无偏移（grow 消费剩余空间）。"""
+        root, box = _render_and_layout(
+            h(BOX, {"height": 6, "justifyContent": "center"},
+              h(TEXT, {"children": "a", "flexGrow": 1}),
+              h(TEXT, {"children": "b", "flexGrow": 1})),
+            80,
+        )
+        texts = self._collect_texts(root)
+        # 内容 2 行 + remaining 4 → grow 分尽（每子 +2）→ 子高 [3,3]，extra=0
+        assert box.h == 6
+        assert [t.layout_box.h for t in texts] == [3, 3]
+        assert texts[0].layout_box.y == 0  # grow 已消费全部剩余 → justify 无偏移
+        assert texts[1].layout_box.y == 3
+
+    def test_row_align_center(self):
+        """row+center：子节点 y += (row_h - cbox.h)//2。"""
+        root, box = _render_and_layout(
+            h(BOX, {"flexDirection": "row", "alignItems": "center"},
+              h(TEXT, {"children": "ab"}),
+              h(BOX, {"height": 3}, h(TEXT, {"children": "c"}))),
+            80,
+        )
+        # 第一个 TEXT 高 1，第二个 BOX 高 3 → row_h=3 → text0.y += (3-1)//2=1
+        texts = []
+        child = root.child.child
+        while child:
+            texts.append(child)
+            child = child.sibling
+        assert texts[0].layout_box.y == 1
+        assert texts[1].layout_box.y == 0
+
+    def test_row_align_flex_end(self):
+        """row+flex-end：子节点 y += (row_h - cbox.h)。"""
+        root, box = _render_and_layout(
+            h(BOX, {"flexDirection": "row", "alignItems": "flex-end"},
+              h(TEXT, {"children": "ab"}),
+              h(BOX, {"height": 3}, h(TEXT, {"children": "c"}))),
+            80,
+        )
+        texts = []
+        child = root.child.child
+        while child:
+            texts.append(child)
+            child = child.sibling
+        assert texts[0].layout_box.y == 2  # (3-1)
+        assert texts[1].layout_box.y == 0
+
+    def test_row_align_stretch_default(self):
+        """row 默认 stretch：无偏移（回归）。"""
+        root, box = _render_and_layout(
+            h(BOX, {"flexDirection": "row"},
+              h(TEXT, {"children": "ab"}),
+              h(BOX, {"height": 3}, h(TEXT, {"children": "c"}))),
+            80,
+        )
+        texts = []
+        child = root.child.child
+        while child:
+            texts.append(child)
+            child = child.sibling
+        assert texts[0].layout_box.y == 0
+        assert texts[1].layout_box.y == 0

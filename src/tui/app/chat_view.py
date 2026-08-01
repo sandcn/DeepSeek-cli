@@ -35,8 +35,13 @@ def _block_styled_lines(block, start: int = 0) -> list[list[StyledRun]]:
     kind = block.kind
     cache = getattr(block, "_cached_ink_lines", None)
     if cache is not None and kind != "reasoning":
-        # 冻结缓存：Line.runs 引用级复用（同一 runs 列表对象，跨帧不重建）
-        return [line.runs for line in cache[start:]]
+        # 冻结缓存：Line.runs 引用级复用（同一 runs 列表对象，跨帧不重建）。
+        # ★ 方向4（增量提交协同）：冻结缓存即「未提交部分」（close_tool_box
+        #   冻结自 committed_line_count 起；close_reasoning/close_content 关闭
+        #   时 committed_line_count=0 → 未提交部分=全量）——``cache[0:]`` 从头
+        #   返回（start 参数对冻结缓存无意义；修复前按 ``cache[start:]`` 切片，
+        #   增量提交后 start=committed_line_count 越界返回空 → 尾部渲染丢失）。
+        return [line.runs for line in cache[0:]]
     slice_lines = block.lines[start:]
     out: list[list[StyledRun]] = []
     for line in slice_lines:
@@ -67,17 +72,46 @@ def _measure(fiber, avail_w):
 def _paint(fiber, canvas):
     box = fiber.layout_box
     lines = fiber.props.get("lines") or []
+    n = len(lines)
+    if box.x == 0:
+        # ★ 增量快路径（大历史 O(1)/帧）：committed 静态行跨帧身份复用——
+        #   前缀缓存挂在 fiber（fiber 复用即命中，替换/重建自然失效）。
+        #   仅 box.y==0（文档顶部、无重叠）才允许跳过画布重写：render_frame
+        #   经缓存前缀 + 尾部重建 Frame。修复长回答 + 子代理期间每帧全量
+        #   重建画布 → 渲染线程持续占用 CPU 100%。
+        if box.y == 0:
+            key = (id(lines), n, box.y)
+            cached = getattr(fiber, "_committed_prefix", None)
+            if cached is not None and cached[0] == key:
+                return  # 前缀未变：跳过画布重写（render_frame 复用缓存）
+            if (
+                cached is not None
+                and cached[0][0] == key[0]
+                and cached[0][2] == key[2]
+                and n > cached[0][1]
+            ):
+                # committed_lines 原地 extend（引用不变、长度增长）→ 仅追加新增行
+                prefix = cached[1]
+                prefix.extend(lines[cached[0][1]:])
+            else:
+                prefix = list(lines)
+            fiber._committed_prefix = (key, prefix)
+            return
+        # 非顶部（box.y != 0）：直接引用缓存行（历史兼容，O(n) 每帧）
+        for i, line in enumerate(lines):
+            row = box.y + i
+            if 0 <= row < len(canvas):
+                canvas[row] = line
+        return
+    # box.x != 0（缩进/padded）：逐行重建（历史兼容，O(n) 每帧）
     for i, line in enumerate(lines):
         row = box.y + i
         if 0 <= row < len(canvas):
-            if box.x == 0:
-                canvas[row] = line  # 直接引用缓存行（免逐字符重绘）
-            else:
-                padded = Line()
-                padded.append(" " * box.x)
-                for run in line.runs:
-                    padded.append_run(run)
-                canvas[row] = padded
+            padded = Line()
+            padded.append(" " * box.x)
+            for run in line.runs:
+                padded.append_run(run)
+            canvas[row] = padded
 
 
 def register() -> None:
@@ -105,12 +139,23 @@ def ChatView(props) -> object:
     children = []
     if model.committed_lines:
         children.append(committed_el)
-    line_idx = 0
-    for block in model.blocks[model.committed_count:]:
+    # ★ 方向5（chat_view 复合 key）：开放块行 key 用「块索引 + 行内序号」
+    #   复合（修复前 ``chat-{line_idx}`` 位置索引——流式追加使行号前移导致
+    #   已渲染行重建）；block_idx = 块在 model.blocks 中的索引（块只追加、
+    #   索引稳定）；row_in_block = 块内行号（已提交行不参与开放块渲染，
+    #   未提交尾从 committed_line_count 起行号稳定）→ 流式追加新行时已渲染
+    #   行 key 不变，调和器复用 fiber。
+    for block_idx, block in enumerate(
+        model.blocks[model.committed_count:], start=model.committed_count,
+    ):
         # 开放块只渲染未提交尾（已增量提交的行在缓存中，不再重建）
-        for runs in _block_styled_lines(block, block.committed_line_count):
-            children.append(h(TEXT, {"key": f"chat-{line_idx}", "styled": runs}))
-            line_idx += 1
+        for row_in_block, runs in enumerate(
+            _block_styled_lines(block, block.committed_line_count)
+        ):
+            children.append(h(TEXT, {
+                "key": f"chat-{block_idx}-{row_in_block}",
+                "styled": runs,
+            }))
     return h(BOX, None, children)
 
 

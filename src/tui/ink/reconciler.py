@@ -132,33 +132,66 @@ class Reconciler:
         测试锁定 + 计算成本 O(keyed 子项数) 极低；renderer 行级 diff 暂不
         消费，保留供未来 keyed 子树尾部跳过优化（fiber.py moved 字段注释
         同步标注）。不做移除。
+
+        方向3（无 key 列表复用修复）：元素**无显式 key**（``props.get("key")
+        is None``）时按索引匹配旧 sibling 链对应位置——不查 ``existing_map``
+        （无 key 同 type 兄弟共享派生 key ``host:text`` 会错误复用首个）；type
+        相同复用、不同删除重建。有显式 key 的元素保持 key 匹配。同 key 重复
+        元素经 ``seen_keys`` 检测记 warning（当前静默创建新 fiber 行为保留）。
         """
         existing_map: dict[str, Fiber] = {}
         old_index_map: dict[str, int] = {}
+        old_list: list[Fiber] = []
         child = return_fiber.child
         idx = 0
         while child is not None:
             existing_map[child.key] = child
             old_index_map[child.key] = idx
+            old_list.append(child)
             child = child.sibling
             idx += 1
 
+        # 已消费旧 fiber 的 id 集合（复用 / 已标记删除的节点；结尾删除跳过）
+        consumed: set[int] = set()
         first: Fiber | None = None
         prev: Fiber | None = None
+        # 无显式 key 元素按索引匹配的旧链消费计数器（每消费一个旧节点 +1，
+        # 含被 _mark_deleted 的节点——保证无 key 列表顺序一致）。
+        positional_idx = 0
+        seen_keys: set[str] = set()
         for new_idx, element in enumerate(elements):
-            key = element.key
-            old = existing_map.pop(key, None)
+            explicit_key = element.props.get("key")
+            old = None
+            if explicit_key is None:
+                # 无显式 key → 按索引匹配旧 sibling 链对应位置
+                if positional_idx < len(old_list):
+                    old = old_list[positional_idx]
+                    positional_idx += 1
+            else:
+                key = element.key
+                # ★ 同 key 重复元素检测（方向3）：显式 key 重复 → warning +
+                #   继续（当前静默创建新 fiber 行为保留，仅加警告）。
+                if key in seen_keys:
+                    _logger.warning("调和器检测到重复 key: %s", key)
+                seen_keys.add(key)
+                old = existing_map.pop(key, None)
             if old is not None and _is_same_type(old, element):
                 fiber = old
-                # ★ moved 标记：旧位置 != 新位置 → True（每帧重算，非累计）
-                fiber.moved = old_index_map.get(key) != new_idx
+                if explicit_key is None:
+                    # 无 key 列表按索引复用：无位置信息语义（moved 恒 False）
+                    fiber.moved = False
+                else:
+                    # ★ moved 标记：旧位置 != 新位置 → True（每帧重算，非累计）
+                    fiber.moved = old_index_map.get(key) != new_idx
                 fiber.props = dict(element.props)
                 fiber.deleted = False
                 fiber.return_ = return_fiber
                 self._begin_work(fiber, element)
+                consumed.add(id(fiber))
             else:
                 if old is not None:
                     self._mark_deleted(old)
+                    consumed.add(id(old))
                 fiber = self._create_and_begin(element, return_fiber)
             # ★ 清除旧 sibling 链——复用 fiber 若保留旧 sibling 指针会形成环
             fiber.sibling = None
@@ -167,8 +200,10 @@ class Reconciler:
             else:
                 first = fiber
             prev = fiber
-        for old in existing_map.values():
-            self._mark_deleted(old)
+        # ★ 删除未消费的旧 fiber（existing_map 剩余 + 无 key 未消费的旧节点）
+        for old in old_list:
+            if id(old) not in consumed:
+                self._mark_deleted(old)
         return_fiber.child = first
 
     def _reconcile_single(
@@ -421,10 +456,15 @@ class Reconciler:
           - B 的 effect destroy 被误收集进 ``_pending_destroys``（活跃 B 的
             effect 被错误销毁重建）。
         置 None 后遍历只覆盖 fiber.child 子树（删除子树的全部后代）。
+
+        方向1（删除子树 effect destroy 不执行修复）：**先收集删除子树全部
+        function fiber 的 EffectHook.destroy，再置 ``fiber.deleted = True``**
+        ——修复前先置 deleted 后 ``_traverse_functions``，首节点即跳过整棵
+        子树，destroy 永不收集（删除组件卸载清理依赖缺失）。
         """
-        fiber.deleted = True
         fiber.sibling = None
-        self._traverse_functions(fiber, self._queue_destroys)
+        self._traverse_functions(fiber, self._queue_destroys, include_self=True)
+        fiber.deleted = True
         self._cleanup_contexts(fiber)
 
     def _cleanup_contexts(self, fiber: Fiber | None) -> None:
@@ -468,8 +508,17 @@ class Reconciler:
             _logger.debug("effect 销毁执行异常 fiber=%s", fiber.type, exc_info=True)
 
     def _run_live_effects(self, root: Fiber) -> None:
-        """遍历活树，提交依赖变化的 effect。"""
-        self._traverse_functions(root, self._commit_live)
+        """遍历活树，提交依赖变化的 effect（后序——子 effect 先于父 effect，React 语义）。
+
+        方向3（effect 提交顺序修复）：React 中 effect 提交顺序为**子先父后**
+        （子组件 effect 先于父组件 effect 提交）——修复前 ``_traverse_functions``
+        前序遍历父先子后，与 React 相反。实现：前序收集 function fiber 列表
+        （``_traverse_functions`` 保持前序不变），再 reversed 执行（后序提交）。
+        """
+        collected: list[Fiber] = []
+        self._traverse_functions(root, collected.append)
+        for fiber in reversed(collected):
+            self._commit_live(fiber)
 
     def _commit_live(self, fiber: Fiber) -> None:
         for hook in fiber.hooks:
@@ -494,8 +543,22 @@ class Reconciler:
         self,
         fiber: Fiber | None,
         cb: Callable[[Fiber], None],
+        include_self: bool = False,
     ) -> None:
-        """前序遍历 fiber 树，对 function fiber 调用 cb（跳过已删除）。"""
+        """前序遍历 fiber 树，对 function fiber 调用 cb（跳过已删除）。
+
+        Args:
+            fiber: 遍历起点。
+            cb: 对 function fiber 调用的回调。
+            include_self: True 时对起点 fiber 自身也调用 cb（即使其已置
+                deleted 标记——``_mark_deleted`` 收集删除子树 destroy 的
+                前置场景；默认 False 保持 ``_run_live_effects`` /
+                ``_collect_input_hooks`` 等既有调用语义不变）。
+        """
+        # include_self：起点 fiber 已 deleted 时仍调用 cb（收集其 destroy）——
+        # 正常路径（起点未 deleted）由下方 while 循环处理，不重复。
+        if include_self and fiber is not None and fiber.deleted and fiber.is_function:
+            cb(fiber)
         f = fiber
         while f is not None:
             if f.deleted:

@@ -175,3 +175,74 @@ class TestSnapshotThrottle:
                 mock_fn.assert_not_called()
             assert d2 == {"v": 7}  # 缓存数据（非新查询）
             assert d1 == d2
+
+
+class TestStatusBarTruncate:
+    """方向4 — 状态行溢出截断（超长 runs 截断至 width，修复前静默裁剪）。"""
+
+    def test_overflow_status_line_truncated(self):
+        """超长状态 runs → 输出行宽度 ≤ width。"""
+        from src.tui.ink.components import render_frame
+        model = _Model()
+        model.status.model_name = "M" * 200  # 超长模型名（status_active=False → model_part）
+        with patch("src.tui.app.status_bar.time.monotonic", return_value=100.0):
+            r = Reconciler()
+            root = r.create_root()
+            el = h(StatusBar, {"model": model, "width": 80})
+            r.render(root, el, 80, 24)
+            frame = render_frame(root, 80)
+        # 状态行（第二行）宽度 ≤ 80（截断生效）
+        status_line = frame.lines[1]
+        assert status_line.width <= 80, (
+            f"状态行宽度应 ≤ 80，实际 {status_line.width}"
+        )
+
+    def test_fit_status_line_unchanged(self):
+        """未超宽状态行不变（回归：截断不破坏正常显示）。"""
+        from src.tui.ink.components import render_frame
+        model = _Model()
+        model.status.model_name = "test-model"
+        with patch("src.tui.app.status_bar.time.monotonic", return_value=100.0):
+            r = Reconciler()
+            root = r.create_root()
+            el = h(StatusBar, {"model": model, "width": 80})
+            r.render(root, el, 80, 24)
+            frame = render_frame(root, 80)
+        status_line = frame.lines[1]
+        assert "test-model" in status_line.plain
+        assert status_line.width <= 80
+
+
+class TestStatusBarSeparatorWidth:
+    """方向6 — 分隔线宽度统一（铺满 width，与状态行缩进基准一致）。"""
+
+    def test_separator_width_equals_width_regression(self):
+        """分隔线行宽 == width（修复前 width-2 与状态行 col2 缩进不一致）。"""
+        from src.tui.ink.components import render_frame
+        model = _Model()
+        with patch("src.tui.app.status_bar.time.monotonic", return_value=100.0):
+            r = Reconciler()
+            root = r.create_root()
+            el = h(StatusBar, {"model": model, "width": 80})
+            r.render(root, el, 80, 24)
+            frame = render_frame(root, 80)
+        sep_line = frame.lines[0]
+        assert sep_line.width == 80, (
+            f"分隔线行宽应 == width(80)，实际 {sep_line.width}"
+        )
+        assert sep_line.plain.startswith("\u2501")
+
+    def test_status_line_prefix_two_cols_regression(self):
+        """状态行前缀 2 列 + 内容 ≤ width（分隔线全宽、状态行缩进 2 列）。"""
+        from src.tui.ink.components import render_frame
+        model = _Model()
+        with patch("src.tui.app.status_bar.time.monotonic", return_value=100.0):
+            r = Reconciler()
+            root = r.create_root()
+            el = h(StatusBar, {"model": model, "width": 80})
+            r.render(root, el, 80, 24)
+            frame = render_frame(root, 80)
+        status_line = frame.lines[1]
+        assert status_line.width <= 80
+        # 前缀 2 列（空）+ 模型名点 + 模型名
+        assert status_line.plain.startswith("  \u00b7 test-model")

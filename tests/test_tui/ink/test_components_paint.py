@@ -76,3 +76,171 @@ class TestBuiltinPaintIsolation:
         # child0 因 border 失败跳过（空行）；child1 正常绘制
         assert frame.lines[0].plain == ""
         assert frame.lines[1].plain == "ok"
+
+
+class TestBorderZeroWidthGuard:
+    """方向1 — box.w=0 边框负索引防御（修复前 x1=x0-1 负索引写污染画布）。"""
+
+    def test_zero_width_border_no_crash(self):
+        """LayoutBox(w=0,h=1) 边框绘制不抛异常且画布无越界写。"""
+        root = Fiber("host", "static", {"border": 1})
+        root.layout_box = LayoutBox(x=0, y=0, w=0, h=1)
+        frame = _components.render_frame(root, 0)  # 不抛异常（width 与 box.w 匹配）
+        assert frame.height == 1
+
+    def test_zero_height_border_no_crash(self):
+        """LayoutBox(w=5,h=0) 边框绘制不抛异常（零高直接返回）。"""
+        root = Fiber("host", "static", {"border": 1})
+        root.layout_box = LayoutBox(x=0, y=0, w=5, h=0)
+        frame = _components.render_frame(root, 5)  # 不抛异常
+        assert frame.height == 1
+
+    def test_border_normal_still_draws(self):
+        """正常 box 边框仍绘制（防御不破坏既有绘制）。"""
+        root = Fiber("host", "static", {"border": 1})
+        root.layout_box = LayoutBox(x=0, y=0, w=80, h=3)
+        frame = _components.render_frame(root, 80)
+        assert frame.height == 3
+        top = frame.lines[0].plain
+        assert top.startswith("┌") and top.endswith("┐")
+
+
+class TestCanvasRowCache:
+    """方向4 — 画布行级缓存：同引用同 box 整行复用 Line 对象（identity）。"""
+
+    def test_same_ref_same_box_reuses_line(self):
+        """同 styled/text 引用 + 同 box 两次 render_frame → 第二次复用 Line 对象。"""
+        from src.tui.ink.element import h, TEXT
+        from src.tui.ink.reconciler import Reconciler
+        r = Reconciler()
+        root = r.create_root()
+        el = h(TEXT, {"children": "hello"})
+        r.render(root, el, 80, 24)
+        frame1 = _components.render_frame(root, 80)
+        first_line = frame1.lines[0]
+        # 第二次渲染（同 fiber 同 props 同 box）→ 画布行直接复用 Line 对象
+        r.render(root, el, 80, 24)
+        frame2 = _components.render_frame(root, 80)
+        assert frame2.lines[0] is first_line, (
+            "同引用同 box 应整行复用 Line 对象（identity 短路）"
+        )
+
+    def test_box_change_rebuilds(self):
+        """box 变化（宽度）→ 缓存失效重建（不同 Line 对象）。"""
+        from src.tui.ink.element import h, TEXT
+        from src.tui.ink.reconciler import Reconciler
+        r = Reconciler()
+        root = r.create_root()
+        el = h(TEXT, {"children": "hello"})
+        r.render(root, el, 80, 24)
+        frame1 = _components.render_frame(root, 80)
+        first_line = frame1.lines[0]
+        # 显式宽度变化 → box.w 变化 → 缓存失效
+        el2 = h(TEXT, {"children": "hello", "width": 10})
+        r.render(root, el2, 80, 24)
+        frame2 = _components.render_frame(root, 10)
+        assert frame2.lines[0] is not first_line
+
+    def test_ref_change_rebuilds(self):
+        """styled 内容变化 → 缓存失效重建（不同 Line 对象）。"""
+        from src.tui.ink.element import h, TEXT
+        from src.tui.ink.output import StyledRun
+        from src.tui.ink.reconciler import Reconciler
+        r = Reconciler()
+        root = r.create_root()
+        el = h(TEXT, {"styled": [StyledRun("hello", None)]})
+        r.render(root, el, 80, 24)
+        frame1 = _components.render_frame(root, 80)
+        # 内容变化（hello → world）→ 换行结果变化 → 重建
+        el2 = h(TEXT, {"styled": [StyledRun("world", None)]})
+        r.render(root, el2, 80, 24)
+        frame2 = _components.render_frame(root, 80)
+        assert frame2.lines[0] is not frame1.lines[0]
+
+
+class TestCommittedPrefixCache:
+    """committed-chat 帧前缀复用（长回答 + 子代理 CPU 100% 修复）。
+
+    ``chat_view._paint`` 维护 ``fiber._committed_prefix``（身份 Line 引用），
+    ``render_frame`` 经该前缀 + 尾部重建 Frame——大历史下渲染 O(live)，
+    不再每帧全量重建整帧。本测试锁定前缀复用 / 增量扩展 / 输出一致性。
+    """
+
+    def _make_root(self, lines, tail_text: str = "tail"):
+        """构造共享 reconciler/root（同 fiber 跨帧复用，前缀缓存生命周期内扩展）。"""
+        from src.tui.ink.element import h, BOX, TEXT
+        from src.tui.ink.reconciler import Reconciler
+        import src.tui.app.chat_view as _cv
+        _cv.register()  # 幂等：注册 committed-chat host
+        r = Reconciler()
+        root = r.create_root()
+        el = h(BOX, None, [
+            h("committed-chat", {"lines": lines}),
+            h(TEXT, {"children": tail_text}),
+        ])
+        return r, root, el
+
+    def test_committed_prefix_reused_across_frames(self):
+        """同 committed_lines 引用两帧 → 前缀 Line 对象身份复用（免重建）。"""
+        from src.tui.ink.output import StyledRun
+        lines = [Line([StyledRun(f"line {i}", None)]) for i in range(500)]
+        r, root, el = self._make_root(lines)
+        r.render(root, el, 80, 24)
+        f1 = _components.render_frame(root, 80)
+        assert f1.height == 501  # 500 committed + 1 tail
+        assert f1.lines[0].plain == "line 0"
+        assert f1.lines[499].plain == "line 499"
+        assert f1.lines[500].plain == "tail"
+        # 同 root 同 lines 再次渲染 → 前缀 Line 对象身份复用（大历史下 O(1)）
+        r.render(root, el, 80, 24)
+        f2 = _components.render_frame(root, 80)
+        assert f2.lines[0] is f1.lines[0]
+        assert f2.lines[499] is f1.lines[499]
+
+    def test_committed_prefix_extend_on_growth(self):
+        """committed_lines 原地增长（增量提交）→ 前缀同一列表增量追加。"""
+        from src.tui.ink.output import StyledRun
+        lines = [Line([StyledRun(f"line {i}", None)]) for i in range(100)]
+        r, root, el = self._make_root(lines)
+        r.render(root, el, 80, 24)
+        f1 = _components.render_frame(root, 80)
+        cc = _components._find_committed_chat(root)
+        prefix = cc._committed_prefix[1]
+        assert len(prefix) == 100
+        # 原地 extend（模拟 commit_open_block 增量提交）→ 前缀同一列表追加
+        lines.extend(Line([StyledRun(f"new {i}", None)]) for i in range(5))
+        r.render(root, el, 80, 24)
+        f2 = _components.render_frame(root, 80)
+        assert f2.height == 106
+        assert f2.lines[100].plain == "new 0"
+        assert f2.lines[104].plain == "new 4"
+        # 缓存前缀仍是同一列表对象（增量扩展，未全量重建）
+        assert cc._committed_prefix[1] is prefix
+        assert len(cc._committed_prefix[1]) == 105
+
+    def test_committed_prefix_matches_canvas_reference(self):
+        """前缀快路径输出与旧全画布转换输出字节一致。"""
+        from src.tui.ink.output import StyledRun
+        from unittest.mock import patch
+        lines = [Line([StyledRun(f"line {i}", None)]) for i in range(50)]
+        r, root, el = self._make_root(lines)
+        r.render(root, el, 80, 24)
+        f_fast = _components.render_frame(root, 80)
+        fast_plain = [l.plain for l in f_fast.lines]
+        # 旧 _paint（始终写画布）作为参考实现
+        import src.tui.app.chat_view as _cv
+        old = _cv._paint
+
+        def old_paint(fiber, canvas):
+            box = fiber.layout_box
+            lns = fiber.props.get("lines") or []
+            for i, line in enumerate(lns):
+                row = box.y + i
+                if 0 <= row < len(canvas):
+                    canvas[row] = line
+
+        with patch.object(_cv, "_paint", side_effect=old_paint):
+            r2, root2, el2 = self._make_root(lines)
+            r2.render(root2, el2, 80, 24)
+            f_ref = _components.render_frame(root2, 80)
+        assert [l.plain for l in f_ref.lines] == fast_plain

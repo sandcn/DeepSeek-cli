@@ -119,7 +119,12 @@ class InputBufferEditor:
 
         PERF-6：大粘贴用 list 拼接 ``''.join(parts)``（避免三次切片+拼接的
         多重临时分配，超大粘贴单次 O(n) 完成）。
+
+        方向2（handle_chars \\r 过滤）：粘贴文本含 \\r（CR）不进入缓冲
+        （``text.replace("\\r", "")``——\\n 保留用于多行输入）。仅影响粘贴/
+        预填路径（``set_buffer`` 不受影响）。
         """
+        text = text.replace("\r", "")
         with self._lock:
             if self._history_idx >= 0:
                 self._history_idx = -1
@@ -485,8 +490,15 @@ class InputBufferEditor:
         self._echo(text)
 
     def _home(self) -> None:
-        """Home：光标移到当前逻辑行首。"""
+        """Home：光标移到当前逻辑行首。
+
+        方向2（_history_idx 重置修复）：历史浏览中按 Home 退出历史导航——
+        与其他编辑方法（_backspace/_delete/_delete_word_left/_kill_to_bol/
+        _kill_to_eol）一致，防止后续编辑污染历史导航状态。
+        """
         with self._lock:
+            if self._history_idx >= 0:
+                self._history_idx = -1
             if '\n' in self._buffer:
                 before_cursor = self._buffer[:self._cursor_pos]
                 last_nl = before_cursor.rfind('\n')
@@ -497,8 +509,14 @@ class InputBufferEditor:
         self._echo(text)
 
     def _end(self) -> None:
-        """End：光标移到当前逻辑行尾。"""
+        """End：光标移到当前逻辑行尾。
+
+        方向2（_history_idx 重置修复）：历史浏览中按 End 退出历史导航（同
+        _home 修复语义）。
+        """
         with self._lock:
+            if self._history_idx >= 0:
+                self._history_idx = -1
             if '\n' in self._buffer:
                 after_cursor = self._buffer[self._cursor_pos:]
                 next_nl = after_cursor.find('\n')
@@ -512,8 +530,14 @@ class InputBufferEditor:
         self._echo(text)
 
     def _word_left(self) -> None:
-        """Ctrl+左：向左跳一个词。"""
+        """Ctrl+左：向左跳一个词。
+
+        方向2（_history_idx 重置修复）：历史浏览中按 Ctrl+左 退出历史导航（同
+        _home 修复语义）。
+        """
         with self._lock:
+            if self._history_idx >= 0:
+                self._history_idx = -1
             if self._cursor_pos <= 0:
                 text = self._buffer
             else:
@@ -531,8 +555,14 @@ class InputBufferEditor:
         self._echo(text)
 
     def _word_right(self) -> None:
-        """Ctrl+右：向右跳一个词。"""
+        """Ctrl+右：向右跳一个词。
+
+        方向2（_history_idx 重置修复）：历史浏览中按 Ctrl+右 退出历史导航（同
+        _home 修复语义）。
+        """
         with self._lock:
+            if self._history_idx >= 0:
+                self._history_idx = -1
             n = len(self._buffer)
             if self._cursor_pos >= n:
                 text = self._buffer

@@ -280,6 +280,28 @@ class InputParser:
             # （_dispatch_key_event 消费：补全可见时反向循环）。
             if keycode == 9 and modifier == 2:
                 return KeyEvent(kind="tab", modifier=2, keycode=keycode, raw=raw)
+            # ★ 方向2（CSI u 增强键盘协议 modifier=1 映射）：无修饰键的
+            #   Enter/Tab/Home/End/方向键在增强键盘协议下发送 ``keycode;1u``——
+            #   修复前这些事件落入 ``csi_u`` 被静默丢弃（P3-4 no-op 分支）。
+            #   方向键覆盖 kitty 码位（57417-57420）与 ASCII 变体（A/B/C/D）。
+            #   未知 keycode modifier=1 仍走 csi_u（router 可消费，不静默丢）。
+            if modifier == 1:
+                if keycode == 13:
+                    return KeyEvent(kind="enter", modifier=1, keycode=keycode, raw=raw)
+                if keycode == 9:
+                    return KeyEvent(kind="tab", modifier=1, keycode=keycode, raw=raw)
+                if keycode == 1:
+                    return KeyEvent(kind="home", modifier=1, keycode=keycode, raw=raw)
+                if keycode == 4:
+                    return KeyEvent(kind="end", modifier=1, keycode=keycode, raw=raw)
+                if keycode in (57417, 65):   # ↑ / ASCII A
+                    return KeyEvent(kind="arrow_up", modifier=1, keycode=keycode, raw=raw)
+                if keycode in (57418, 66):   # ↓ / ASCII B
+                    return KeyEvent(kind="arrow_down", modifier=1, keycode=keycode, raw=raw)
+                if keycode in (57419, 68):   # ← / ASCII D
+                    return KeyEvent(kind="arrow_left", modifier=1, keycode=keycode, raw=raw)
+                if keycode in (57420, 67):   # → / ASCII C
+                    return KeyEvent(kind="arrow_right", modifier=1, keycode=keycode, raw=raw)
             # 方向A 步骤1：CSI u Ctrl+字母（keycode 97-122, modifier=5）→ 复用
             # _decode_control_char(keycode-96) 语义（Ctrl+A=Home、Ctrl+W=delete word 等）。
             if 97 <= keycode <= 122 and modifier == 5:

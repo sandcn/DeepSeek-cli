@@ -648,6 +648,69 @@ class TestBeautyTimeBasedEffects:
 
 
 
+class TestSubAgentPanelSingletonAndPushCmd:
+    """方向5 — 单例统一（get_default） + push_cmd 注入路径动画回调注册。"""
+
+    def test_singleton_identity_regression(self):
+        """get_default() 多次返回同一实例（单例幂等）。"""
+        c1 = SubAgentPanelController.get_default()
+        c2 = SubAgentPanelController.get_default()
+        assert c1 is c2
+
+    def test_assembly_reuses_singleton_regression(self):
+        """TuiAssembly 装配复用 get_default() 单例（双实例消除）。"""
+        import sys
+        from unittest.mock import patch
+        from src.tui._assembly import TuiAssembly
+
+        class _FakeStdin:
+            def fileno(self):
+                return 0
+
+        with patch.object(sys, "stdin", _FakeStdin()):
+            result = TuiAssembly.assemble()
+        assert result.subagent_controller is SubAgentPanelController.get_default()
+
+    def test_set_push_cmd_routes_push_frame_regression(self):
+        """set_push_cmd 注入后 _push_frame 走 push_cmd 回调。"""
+        ctrl = SubAgentPanelController()
+        push_cmd = MagicMock()
+        ctrl.set_push_cmd(push_cmd)
+        ctrl._push_frame(["line1"])
+        push_cmd.assert_called_once()
+        cmd = push_cmd.call_args[0][0]
+        assert cmd.frame_lines == ["line1"]
+
+    def test_register_panel_refresh_with_push_cmd_regression(self):
+        """push_cmd 注入路径下 _register_panel_refresh 仍注册 panel_refresh 回调。"""
+        ctrl = SubAgentPanelController()
+        ctrl.set_push_cmd(lambda cmd: None)
+        chat_ui = MagicMock()
+        # _register_panel_refresh 内 `from .consumer import get_active_chat_ui`
+        # 惰性导入 → patch src.tui.consumer.get_active_chat_ui
+        with patch("src.tui.consumer.get_active_chat_ui", return_value=chat_ui):
+            ctrl._register_panel_refresh()
+        chat_ui.set_panel_refresh_callback.assert_called_once_with(ctrl._panel_refresh)
+        assert ctrl._cb_registered is True
+
+    def test_register_panel_refresh_no_chat_ui_debug_regression(self):
+        """push_cmd 注入但 chat_ui 为 None → 动画回调未注册（非致命，不抛）。"""
+        ctrl = SubAgentPanelController()
+        ctrl.set_push_cmd(lambda cmd: None)
+        with patch("src.tui.consumer.get_active_chat_ui", return_value=None):
+            ctrl._register_panel_refresh()  # 不抛异常
+        assert ctrl._cb_registered is False
+
+    def test_register_panel_refresh_no_push_cmd_regression(self):
+        """push_cmd 未注入且 chat_ui 可用 → 注册回调（既有路径保持）。"""
+        ctrl = SubAgentPanelController()
+        chat_ui = MagicMock()
+        with patch("src.tui.consumer.get_active_chat_ui", return_value=chat_ui):
+            ctrl._register_panel_refresh()
+        chat_ui.set_panel_refresh_callback.assert_called_once_with(ctrl._panel_refresh)
+        assert ctrl._cb_registered is True
+
+
 class TestSubAgentSingleLineContract:
     """P3-? — subagent 行单行契约：含 \n/\r 的字段转义为字面量（不拆成两行）。
 

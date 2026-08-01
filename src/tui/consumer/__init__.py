@@ -69,7 +69,13 @@ _error_handler_lock = threading.Lock()
 
 
 def setup_chat_ui_error_handler() -> None:
-    """显式注册 ChatUIErrorHandler 到 root logger。幂等操作。"""
+    """显式注册 ChatUIErrorHandler 到 root logger。幂等操作。
+
+    ★ 方向2（basicConfig 静默失效修复）：**须在 ``logging.basicConfig()`` 之后
+    调用**——若先向 root 添加 handler，后续 ``basicConfig`` 因 root 已有 handler
+    静默不生效（level/format 配置丢失）。调用方（``src/app_init/main.py``）已
+    保证顺序（先 basicConfig 再注册）。
+    """
     global _error_handler_registered
     with _error_handler_lock:
         if _error_handler_registered:

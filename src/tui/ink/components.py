@@ -57,6 +57,11 @@ def _merge_line(row: dict[int, tuple[str, Style | None]], x: int, line: Line) ->
 def _paint_border(fiber: Fiber, canvas: list[dict], border: int) -> None:
     """绘制 box 边框（border>=1 时画单线框）。"""
     box = fiber.layout_box
+    # ★ 边框防御（方向1）：box 无效（None / 零宽 / 零高）时直接返回——
+    #   修复前 ``x1 = x0 + box.w - 1`` 在 w=0 时 x1=x0-1，``row[x1]`` 负索引
+    #   从列表末尾写（越界污染画布）。
+    if box is None or box.w <= 0 or box.h <= 0:
+        return
     style = _border_style(fiber.props)
     x0, y0 = box.x, box.y
     x1 = x0 + box.w - 1
@@ -70,6 +75,10 @@ def _paint_border(fiber: Fiber, canvas: list[dict], border: int) -> None:
         if y < 0 or y >= len(canvas):
             continue
         row = canvas[y]
+        # ★ 画布惰性行（方向4）：未命中行才创建 dict（行级缓存优化）
+        if row is None:
+            row = {}
+            canvas[y] = row
         if y0 == y1 and row_idx == 1:
             continue
         row[x0] = (corner_l, style)
@@ -81,6 +90,9 @@ def _paint_border(fiber: Fiber, canvas: list[dict], border: int) -> None:
         if r < 0 or r >= len(canvas):
             continue
         row = canvas[r]
+        if row is None:
+            row = {}
+            canvas[r] = row
         row[x0] = ("│", style)
         row[x1] = ("│", style)
 
@@ -126,10 +138,27 @@ def _paint_impl(fiber: Fiber, canvas: list[dict]) -> None:
                 lines = wrap_runs_by_width(list(styled), box.w)
             else:
                 lines = wrap_text_lines(text, box.w, style)
+        # ★ 画布行级缓存（方向4）：同 styled/text 引用 + 同 box 命中时整行复用
+        #   Line 对象（免逐字符重绘）；未命中正常绘制并写缓存。缓存键
+        #   ``(ref, (box.x, box.w), lines)``——ref 为 styled 引用或 text 字符串，
+        #   lines 为换行结果（引用）；fiber 复用/更新 props 后 ref 变化自然失效。
+        ref = fiber.props.get("styled")
+        if ref is None:
+            ref = str(fiber.props.get("children", ""))
+        cache = getattr(fiber, "_paint_cache", None)
+        cache_key = (ref, (box.x, box.w), lines)
+        if cache is None or cache[0] != cache_key:
+            fiber._paint_cache = (cache_key, lines)
         for i, line in enumerate(lines):
             row = box.y + i
             if 0 <= row < len(canvas):
-                _merge_line(canvas[row], box.x, line)
+                if box.x == 0:
+                    # 整行复用 Line 对象（免逐字符重绘 → diff 身份短路受益）
+                    canvas[row] = line
+                else:
+                    if canvas[row] is None:
+                        canvas[row] = {}
+                    _merge_line(canvas[row], box.x, line)
         return
 
     if ftype == "spacer":
@@ -162,16 +191,40 @@ def _paint_impl(fiber: Fiber, canvas: list[dict]) -> None:
 def _canvas_row_to_line(row) -> Line:
     """画布行转 Line。
 
-    支持两种行：dict（列→(char,style)，增量合并）或已缓存的 Line
-    （committed-chat 直接引用，免逐字符重绘 → 增量渲染核心）。
+    支持三种行：dict（列→(char,style)，增量合并）、已缓存的 Line
+    （committed-chat 直接引用，免逐字符重绘 → 增量渲染核心）、None
+    （画布惰性行——行级缓存优化，未绘制的空行）。
     """
     if isinstance(row, Line):
         return row
+    if row is None:
+        return Line()
     line = Line()
     for col in sorted(row):
         ch, style = row[col]
         line.append(ch, style)
     return line
+
+
+def _find_committed_chat(root: Fiber):
+    """DFS 查找 committed-chat host fiber（聊天历史增量缓存发射器）。
+
+    组件树中聊天历史作为单个 host 挂载（ChatView use_memo 缓存元素），
+    静态行经 ``chat_view._paint`` 维护帧前缀缓存；render_frame 复用该前缀，
+    每帧只重建尾部 live 区——大历史下 Frame 构建 O(live) 而非 O(全部历史)。
+    """
+    stack = [root]
+    while stack:
+        f = stack.pop()
+        if getattr(f, "deleted", False):
+            continue
+        if f.is_host and f.type == "committed-chat":
+            return f
+        child = f.child
+        while child is not None:
+            stack.append(child)
+            child = child.sibling
+    return None
 
 
 def render_frame(root: Fiber, width: int) -> Frame:
@@ -191,8 +244,23 @@ def render_frame(root: Fiber, width: int) -> Frame:
         total_h = box.h
     else:
         total_h = layout_tree(root, width)
-    canvas: list[dict] = [{} for _ in range(max(1, total_h))]
+    # ★ 画布惰性行（方向4）：初始 None——仅未命中行创建 dict（行级缓存优化；
+    #   TEXT 命中行直接放 Line 对象，免逐字符重绘）。
+    canvas: list = [None] * max(1, total_h)
     _paint(root, canvas)
+    # ★ committed-chat 前缀复用（大历史下渲染 O(live)）：静态提交行跨帧身份
+    #   复用（``chat_view._paint`` 维护 ``_committed_prefix``），不再每帧全量
+    #   遍历全部历史重建 Frame——修复长回答 + 子代理期间渲染线程持续重建
+    #   整帧导致 CPU 100%。前缀未变时画布 committed 行被跳过（None），此处
+    #   直接经缓存前缀拼接尾部。
+    committed = _find_committed_chat(root)
+    if committed is not None:
+        prefix_info = getattr(committed, "_committed_prefix", None)
+        if prefix_info is not None:
+            prefix = prefix_info[1]
+            tail_start = min(len(prefix), len(canvas))
+            tail = [_canvas_row_to_line(r) for r in canvas[tail_start:]]
+            return Frame(prefix + tail)
     return Frame(_canvas_row_to_line(row) for row in canvas)
 
 

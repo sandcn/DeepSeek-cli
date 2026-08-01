@@ -335,3 +335,40 @@ class TestDetectTruecolor:
         from src.tui._screen import detect_truecolor
         with patch.dict("os.environ", {"COLORTERM": "256color"}):
             assert detect_truecolor() is False
+
+
+class TestTerminalWidthCacheDimensions:
+    """方向1 — get_dimensions 高度走独立 TTL（height 过期时刷新，宽度缓存命中）。"""
+
+    def test_get_dimensions_refreshes_height_ttl_regression(self):
+        """get_dimensions 高度经 get_height() 独立 TTL 检查。
+
+        场景：height TTL 已过期（width TTL 未过期），终端尺寸已变 (100,30)
+        ——修复前直接读 ``_height`` 字段（40）绕过 height TTL → 返回陈旧高度
+        40；修复后经 get_height() 刷新为 30（宽度缓存命中保持 120）。
+        """
+        import time as _time
+        from unittest.mock import patch
+        from src.tui._screen import TerminalWidthCache
+        cache = TerminalWidthCache(ttl=60.0)
+        cache._width, cache._height = 120, 40
+        cache._last_width_fetch = _time.monotonic()            # width TTL 未过期
+        cache._last_height_fetch = _time.monotonic() - 100.0   # height TTL 已过期
+        with patch("src.tui._screen._get_terminal_size", return_value=(100, 30)):
+            assert cache.get_width() == 120  # width 缓存命中（未过期）
+            w, h = cache.get_dimensions()
+        assert (w, h) == (120, 30), f"高度应刷新为 30，实际 {h}（陈旧高度 40）"
+
+    def test_get_dimensions_width_cache_hit_keeps_width_regression(self):
+        """width TTL 未过期时 get_dimensions 宽度保持缓存值（不强制刷新）。"""
+        import time as _time
+        from unittest.mock import patch
+        from src.tui._screen import TerminalWidthCache
+        cache = TerminalWidthCache(ttl=60.0)
+        cache._width, cache._height = 120, 40
+        cache._last_width_fetch = _time.monotonic()
+        cache._last_height_fetch = _time.monotonic() - 100.0
+        with patch("src.tui._screen._get_terminal_size", return_value=(100, 30)):
+            w, h = cache.get_dimensions()
+        # 宽度缓存命中（120 保持），高度刷新（30）
+        assert (w, h) == (120, 30)

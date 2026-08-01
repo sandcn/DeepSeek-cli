@@ -110,6 +110,76 @@ class TestMaxRewriteRowsFallback:
         assert _MAX_REWRITE_ROWS == 200
 
 
+class TestBufferedSingleWrite:
+    """方向1 — 整帧缓冲输出：render() 单帧仅一次 write + 一次 flush。"""
+
+    def test_render_single_write_after_first_frame_regression(self):
+        """首帧后 diff 路径单帧 write 调用次数为 1（缓冲合并，防闪烁/撕裂）。"""
+        out = io.StringIO()
+        r = InkRenderer(stream=out)
+        r.render(_frame("a", "b", "c"))
+        out.seek(0)
+        out.truncate()
+        # 记录 write 调用次数
+        original_write = r._stream.write
+        write_count = {"n": 0}
+
+        def counting_write(data):
+            write_count["n"] += 1
+            return original_write(data)
+
+        r._stream.write = counting_write
+        r.render(_frame("a", "b", "c", "d"))  # 平移快路径
+        assert write_count["n"] == 1, (
+            f"diff 路径应单次 write（缓冲合并），实际 {write_count['n']} 次"
+        )
+
+    def test_render_single_write_rewrite_path_regression(self):
+        """常规重写路径单帧 write 调用次数为 1（缓冲合并）。"""
+        out = io.StringIO()
+        r = InkRenderer(stream=out)
+        r.render(_frame("a", "b", "c"))
+        out.seek(0)
+        out.truncate()
+        original_write = r._stream.write
+        write_count = {"n": 0}
+
+        def counting_write(data):
+            write_count["n"] += 1
+            return original_write(data)
+
+        r._stream.write = counting_write
+        r.render(_frame("a", "X", "b"))  # 中间插入 → 常规重写路径
+        assert write_count["n"] == 1
+
+    def test_write_full_single_write_regression(self):
+        """首帧全量写入单次 write（缓冲合并）。"""
+        out = io.StringIO()
+        r = InkRenderer(stream=out)
+        original_write = r._stream.write
+        write_count = {"n": 0}
+
+        def counting_write(data):
+            write_count["n"] += 1
+            return original_write(data)
+
+        r._stream.write = counting_write
+        r.render(_frame("a", "b", "c"))
+        assert write_count["n"] == 1
+        assert r.cursor_row == 4
+
+    def test_buffered_output_content_preserved_regression(self):
+        """缓冲合并不改变输出内容（既有 diff 行为回归）。"""
+        out = io.StringIO()
+        r = InkRenderer(stream=out)
+        r.render(_frame("a", "b", "c"))
+        out.seek(0)
+        out.truncate()
+        r.render(_frame("a", "X", "b", "c"))
+        val = out.getvalue()
+        assert val == "\x1b[2A" + "\rX\x1b[K\n" + "\rb\x1b[K\n" + "\rc\x1b[K\n"
+
+
 class TestInputRouterCache:
     """方向C 步骤6 — _build_input_router 签名缓存（同签名复用 router 对象）。"""
 

@@ -26,6 +26,9 @@ from src.api.escape_monitor._history import (
     _lock_history_file,
     _unlock_history_file,
 )
+# ★ 方向1：输出历史 ANSI SGR 剥离复用 ink.helpers.strip_ansi（纯函数，
+#   依赖仅 _screen/core.style/ink.output，无环）——历史文件/环形缓冲存纯文本。
+from src.tui.ink.helpers import strip_ansi
 
 # Unified regex matching cursor positioning (CUP) and cursor restore (DECRC/SCRC)
 # sequences. Processed in data-stream order so that a restore between two
@@ -89,6 +92,9 @@ class _StdoutLineTracker:
         self._start_flush_timer()
 
     # ── File object protocol ──
+    # # deprecated: 本模块作为 ``sys.__stdout__`` 替换方须兼容 File-object 协议
+    # （encoding/errors/buffer/fileno/isatty/writable）——无生产调用方，协议
+    # 兼容保留（不删除，供 ``sys.__stdout__`` 替换场景使用）。
 
     @property
     def encoding(self) -> str:
@@ -181,14 +187,20 @@ class _StdoutLineTracker:
             self._add_text(data[prev_end:])
 
     def _add_text(self, text: str) -> None:
-        """Accumulate text and extract complete lines (split on \\n)."""
+        """Accumulate text and extract complete lines (split on \\n).
+
+        方向1（ANSI SGR 剥离）：完整行在存入环形缓冲/输出历史前剥离 ANSI
+        转义序列（复用 ink.helpers.strip_ansi）——输出历史是用户可读记录，
+        不应含 SGR 颜色序列；环形缓冲/历史文件均存纯文本。
+        """
         self._partial_line += text
         if '\n' in self._partial_line:
             *complete_lines, self._partial_line = self._partial_line.split('\n')
             if not self._in_bottom_bar:
                 for line in complete_lines:
-                    self._ring.append(line)
-                    self._buffer_to_output(line)
+                    plain_line = strip_ansi(line)
+                    self._ring.append(plain_line)
+                    self._buffer_to_output(plain_line)
 
     def _buffer_to_output(self, line: str) -> None:
         """将完整行加入输出历史缓冲，达到阈值时异步刷盘（单飞）。
@@ -279,7 +291,8 @@ class _StdoutLineTracker:
             lines = content.splitlines()
             restore = lines[-self._MAX_LINES:] if len(lines) > self._MAX_LINES else lines
             for line in restore:
-                self._ring.append(line)
+                # 方向1：历史文件可能含旧 SGR 残留——加载时同样剥离
+                self._ring.append(strip_ansi(line))
 
         except (OSError, FileNotFoundError):
             _logger.debug("输出历史文件不存在，跳过加载")

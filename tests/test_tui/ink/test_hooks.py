@@ -833,3 +833,75 @@ class TestUseLayoutEffectDocs:
         doc = useLayoutEffect.__doc__ or ""
         assert "与 useEffect 等价" in doc
         assert "不实施" in doc
+
+
+class TestUnmountedSetterGuard:
+    """方向3 — 已卸载组件 setter 不触发重渲染（fiber.deleted 检查）。"""
+
+    def test_setter_skips_schedule_when_deleted(self):
+        """组件渲染后 fiber.deleted=True → setter 不排队不调度。"""
+        from src.tui.ink.hooks import use_state
+        scheduled = []
+        holder = []
+
+        def Comp(props):
+            n, set_n = use_state(0)
+            if not holder:
+                holder.append(set_n)
+            return h(TEXT, {"children": str(n)})
+
+        r = Reconciler(schedule_callback=lambda: scheduled.append(1))
+        root = r.create_root()
+        el = h(Comp)
+        r.render(root, el, 80, 24)
+        fiber = root.child  # function fiber
+        fiber.deleted = True  # 模拟卸载
+        holder[0](42)
+        assert scheduled == []  # 不触发调度（修复前无条件 _schedule）
+        # queue 不追加（状态不变）
+        state_hook = fiber.hooks[0]
+        assert state_hook.queue is None or state_hook.queue == []
+
+    def test_setter_works_after_reuse(self):
+        """fiber.deleted 复位（复用）后 setter 正常工作。"""
+        from src.tui.ink.hooks import use_state
+        scheduled = []
+        holder = []
+
+        def Comp(props):
+            n, set_n = use_state(0)
+            if not holder:
+                holder.append(set_n)
+            return h(TEXT, {"children": str(n)})
+
+        r = Reconciler(schedule_callback=lambda: scheduled.append(1))
+        root = r.create_root()
+        el = h(Comp)
+        r.render(root, el, 80, 24)
+        fiber = root.child
+        fiber.deleted = False  # 复用（正常路径 reconciler 已复位）
+        holder[0](5)
+        assert scheduled == [1]  # 触发调度
+
+    def test_normal_setter_still_schedules(self):
+        """正常组件 setter 行为不变（零回归）。"""
+        from src.tui.ink.hooks import use_state
+        scheduled = []
+        holder = []
+        seen = []
+
+        def Comp(props):
+            n, set_n = use_state(0)
+            if not holder:
+                holder.append(set_n)
+            seen.append(n)
+            return h(TEXT, {"children": str(n)})
+
+        r = Reconciler(schedule_callback=lambda: scheduled.append(1))
+        root = r.create_root()
+        el = h(Comp)
+        r.render(root, el, 80, 24)
+        holder[0](7)
+        r.render(root, el, 80, 24)
+        assert scheduled == [1]
+        assert seen == [0, 7]  # state 更新生效

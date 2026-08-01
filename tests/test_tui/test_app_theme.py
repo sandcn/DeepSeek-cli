@@ -59,12 +59,18 @@ class TestTimeGlowPeriodic:
 class TestTimeGlowBucketCache:
     """PERF-5 — time_glow 0.1s 时间桶缓存。"""
 
+    @staticmethod
+    def _reset_cache():
+        """清空 _glow_bucket lru_cache（多桶缓存，方向6）。"""
+        import src.tui.app._theme as theme
+        theme._glow_bucket.cache_clear()
+
     def test_time_glow_bucket_cache_regression(self) -> None:
         """同桶（同 int(t/0.1) 且同参数）返回缓存色号；跨桶重新计算。"""
         from unittest.mock import patch
         import src.tui.app._theme as theme
 
-        theme._glow_cache = (0, 0, 0, 0, 0)
+        self._reset_cache()
         # 同桶：两次调用返回同值
         with patch("src.tui.app._theme.time.monotonic", return_value=100.0):
             v1 = time_glow(32, 49)
@@ -75,12 +81,37 @@ class TestTimeGlowBucketCache:
             v3 = time_glow(32, 49)
         assert 32 <= v3 <= 49
         # 不同 lo/hi 参数即使同桶也分别计算（不互相污染缓存）
-        theme._glow_cache = (0, 0, 0, 0, 0)
+        self._reset_cache()
         with patch("src.tui.app._theme.time.monotonic", return_value=100.0):
             a = time_glow(10, 20)
             b = time_glow(200, 210)
         assert 10 <= a <= 20
         assert 200 <= b <= 210
+
+    def test_time_glow_multi_param_no_overwrite_regression(self) -> None:
+        """方向6 — 不同 (lo,hi,period) 参数多桶互不覆盖（同桶同参命中缓存）。"""
+        from unittest.mock import patch
+        import src.tui.app._theme as theme
+
+        self._reset_cache()
+        with patch("src.tui.app._theme.time.monotonic", return_value=100.0):
+            # input_area 参数 (32,49,12) 与 status_bar 参数 (36,45,4) 交替调用
+            a1 = time_glow(32, 49, 12.0)
+            b1 = time_glow(36, 45, 4.0)
+            a2 = time_glow(32, 49, 12.0)
+            b2 = time_glow(36, 45, 4.0)
+        # 同参数同桶命中缓存 → 返回值一致（修复前单桶互相覆盖 → 频繁重算）
+        assert a1 == a2
+        assert b1 == b2
+        assert 32 <= a1 <= 49
+        assert 36 <= b1 <= 45
+        # lru 命中路径：同参数同桶不再触发内部计算
+        with patch("src.tui.app._theme.time.monotonic", return_value=100.0):
+            cache_info = theme._glow_bucket.cache_info()
+            hits_before = cache_info.hits
+            time_glow(32, 49, 12.0)
+            cache_info = theme._glow_bucket.cache_info()
+            assert cache_info.hits > hits_before, "lru_cache 应命中（多桶缓存）"
 
 
 class TestThemeConstants:

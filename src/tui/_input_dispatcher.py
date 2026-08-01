@@ -360,8 +360,16 @@ class InputDispatcher:
             try:
                 paste_text = self._io.try_read_paste(fd, chr(first_byte))
                 if len(paste_text) > 1:
-                    self._buffer_editor.handle_chars(paste_text)
-                    self._trigger_auto_completion()
+                    # ★ 方向2（粘贴绕过 router 修复）：粘贴文本先进 input router
+                    #   ——消费（useInput 钩子拦截整段粘贴）则跳过旧路径；未消费
+                    #   走 handle_chars + auto completion（零行为变化）。
+                    paste_event = KeyEvent(
+                        kind="char", char=paste_text,
+                        raw=paste_text.encode("utf-8", errors="replace"),
+                    )
+                    if not self._router_consume(paste_event):
+                        self._buffer_editor.handle_chars(paste_text)
+                        self._trigger_auto_completion()
                 else:
                     event = self._parser.feed_byte(first_byte)
                     if event is not None:
@@ -376,8 +384,14 @@ class InputDispatcher:
             if ch is not None:
                 paste_text = self._io.try_read_paste(fd, ch)
                 if len(paste_text) > 1:
-                    self._buffer_editor.handle_chars(paste_text)
-                    self._trigger_auto_completion()
+                    # ★ 方向2：多字节 UTF-8 粘贴路径同样先问 router
+                    paste_event = KeyEvent(
+                        kind="char", char=paste_text,
+                        raw=paste_text.encode("utf-8", errors="replace"),
+                    )
+                    if not self._router_consume(paste_event):
+                        self._buffer_editor.handle_chars(paste_text)
+                        self._trigger_auto_completion()
                 else:
                     self._dispatch_key_event(
                         KeyEvent(kind='char', char=ch,
@@ -464,6 +478,12 @@ class InputDispatcher:
                 # 方向D 步骤14：搜索模式 Tab 应用匹配并退出搜索（与 Enter 一致）
                 self._buffer_editor._enter()
                 self._sync_reverse_search()
+            elif self.get_suppress_enter():
+                # ★ 方向2（editmsg Tab 误写缓冲修复）：editmsg 选择期间
+                #   （_suppress_enter=True）Tab 经 _handle_editmsg_tab 正向循环
+                #   补全高亮——不写输入缓冲、不确认（修复前经 _handle_tab →
+                #   _CmplHandler.on_tab → 弹窗可见时 _cycle_tab 确认写入缓冲）。
+                self._handle_editmsg_tab()
             elif event.modifier == 2:
                 # 方向A 步骤1：Shift+Tab（CSI u 9;2u）→ 补全反向循环；
                 # 补全不可见 / 回调未消费 → no-op（不插入制表符）。
@@ -497,7 +517,7 @@ class InputDispatcher:
             # （不再静默丢弃——router 可经 useInput 钩子消费）。
             _logger.debug("%s 功能键未被 input router 消费", kind)
         elif kind == "backspace":
-            self._dismiss_completion()
+            self._maybe_dismiss_completion()
             if event.modifier == 1:
                 self._buffer_editor._delete_word_left()
             else:
@@ -506,27 +526,27 @@ class InputDispatcher:
         elif kind == "interrupt":
             _logger.debug("_dispatch_key_event: interrupt 事件到达队列（应内联处理）")
         elif kind == "home":
-            self._dismiss_completion()
+            self._maybe_dismiss_completion()
             self._buffer_editor._home()
         elif kind == "end":
-            self._dismiss_completion()
+            self._maybe_dismiss_completion()
             self._buffer_editor._end()
         elif kind == "delete":
             modifier = event.modifier
             if modifier == 0:
-                self._dismiss_completion()
+                self._maybe_dismiss_completion()
                 self._buffer_editor._delete()
                 self._trigger_auto_completion()
             elif modifier == 1:
-                self._dismiss_completion()
+                self._maybe_dismiss_completion()
                 self._buffer_editor._delete_word_left()
                 self._trigger_auto_completion()
             elif modifier == 2:
-                self._dismiss_completion()
+                self._maybe_dismiss_completion()
                 self._buffer_editor._kill_to_bol()
                 self._trigger_auto_completion()
             elif modifier == 3:
-                self._dismiss_completion()
+                self._maybe_dismiss_completion()
                 self._buffer_editor._kill_to_eol()
                 self._trigger_auto_completion()
         elif kind == "arrow_up":
@@ -544,7 +564,7 @@ class InputDispatcher:
             else:
                 self._buffer_editor._left()
         elif kind == "unknown":
-            self._dismiss_completion()
+            self._maybe_dismiss_completion()
             if event.raw:
                 with self._captured_lock:
                     self._captured_input.append(event.raw[0])
@@ -602,9 +622,14 @@ class InputDispatcher:
             return False
 
     def _cancel_input(self) -> None:
-        """取消当前输入：清空缓冲 + 回显空串（不触发中断标志）。"""
+        """取消当前输入：清空缓冲 + 回显空串 + 关闭补全弹窗（不触发中断标志）。
+
+        方向2（_cancel_input 未 dismiss 修复）：Esc 取消输入同时关闭补全弹窗
+        （修复前仅清缓冲不回显 dismiss，补全弹窗残留）。
+        """
         self._buffer_editor.set_buffer("")
         self._buffer_editor._echo("")
+        self._dismiss_completion()
 
     # ═══════════════════════════════════════════════════════
     # 辅助分发方法
@@ -685,6 +710,25 @@ class InputDispatcher:
             self._buffer_editor._echo(result)
             self._trigger_auto_completion()
 
+    def _handle_editmsg_tab(self) -> None:
+        """editmsg 模式 Tab：正向循环补全高亮（不写缓冲、不确认）。
+
+        方向2（editmsg Tab 误写输入缓冲修复）：editmsg 选择期间 Tab 经
+        ``_completion_navigate_callback(1, text)``（等价 ``_CmplHandler.on_navigate
+        (+1)`` cycle_completion）移动高亮——弹窗可见时仅循环不高亮写入
+        （on_navigate 返回 text 不应用，``_CmplHandler.on_navigate`` 已实现
+        ``return text`` 不应用），不写输入缓冲、不确认。``_suppress_enter``
+        为 editmsg 模式的代理标志（当前唯一场景）。
+        """
+        cb = self._completion_navigate_callback
+        if cb is None:
+            return
+        try:
+            text = self._buffer_editor.get_current_text()
+            cb(1, text)
+        except Exception:
+            _logger.debug("editmsg Tab 补全导航回调异常", exc_info=True)
+
     def _dismiss_completion(self) -> None:
         """如果补全弹窗可见，关闭它。"""
         cb = self._dismiss_completion_callback
@@ -693,6 +737,20 @@ class InputDispatcher:
                 cb()
             except Exception:
                 _logger.debug("关闭补全回调异常", exc_info=True)
+
+    def _maybe_dismiss_completion(self) -> None:
+        """关闭补全弹窗（editmsg 选择期间除外——_suppress_enter=True 时不触发）。
+
+        方向2（editmsg 选择期间 backspace 等误触发确认修复）：editmsg 选择期间
+        ``_suppress_enter=True``，message_editor 将 dismiss 回调替换为确认信号
+        （``_editmsg_dismiss`` 设置 ``_selection_ready``）——backspace/home/end/
+        delete/unknown 等**非确认键**若触发 dismiss 会提前确认选择。仅 Enter
+        保持无条件 ``_dismiss_completion()``（正常确认机制，不可改动——
+        message_editor 依赖 dismiss 回调作为 Enter 确认信号）。
+        """
+        if self.get_suppress_enter():
+            return
+        self._dismiss_completion()
 
     def _trigger_auto_completion(self) -> None:
         """获取当前文本并调用自动补全回调。"""
