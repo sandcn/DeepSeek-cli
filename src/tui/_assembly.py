@@ -134,6 +134,11 @@ class TuiAssembly:
         session.set_input(input_instance)
         # 输入 echo → 模型输入状态
         input_instance.set_echo_callback(session.update_input)
+        # useInput hook router：无 handler 时放行（输入旧路径零行为变化）
+        input_instance.set_input_hook_router(_make_input_hook_router())
+        # useApp control：exit = session.stop
+        from src.tui.ink import hooks as _hooks
+        _hooks.set_app_control({"exit": session.stop})
         # SIGWINCH → 刷新宽度 + 重绘
         register_sigwinch_callback(_make_sigwinch_cb(session))
         bridge = InkBridge(model, session)
@@ -183,6 +188,29 @@ class TuiAssembly:
             subagent_controller=subagent_controller,
             components=components,
         )
+
+
+def _make_input_hook_router():
+    """构建 useInput hook router。
+
+    应用层 useInput 注册的 handler 在此分发；当前无 handler 注册时返回
+    False（放行 → 走旧回调路径，零行为变化）。
+    """
+
+    def _router(event):
+        try:
+            from src.tui.ink import hooks as _hooks
+            app_control = _hooks.get_app_control()
+            if app_control is not None:
+                handlers = app_control.get("keyHandlers")
+                if handlers:
+                    # 若 useInput 已注册 handler，尝试消费
+                    return False  # 占位：当前无 useInput 消费逻辑
+        except Exception:
+            pass
+        return False
+
+    return _router
 
 
 def _make_sigwinch_cb(session):

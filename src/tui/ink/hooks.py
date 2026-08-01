@@ -26,6 +26,20 @@ _current_fiber_stack: List[Fiber] = []
 # 状态更新后触发重渲染的回调（session 注入）
 _schedule_callback: Callable[[], None] | None = None
 
+# useApp control（exit 等退出操作，assembly 注入）
+_app_control: dict | None = None
+
+
+def set_app_control(control: dict | None) -> None:
+    """注入 useApp control（含 exit 等操作）。"""
+    global _app_control
+    _app_control = control
+
+
+def get_app_control() -> dict | None:
+    """读取 useApp control。"""
+    return _app_control
+
 
 def set_schedule_callback(cb: Callable[[], None] | None) -> None:
     """注入状态更新重渲染回调。"""
@@ -208,4 +222,6 @@ __all__ = [
     "set_schedule_callback",
     "deps_changed",
     "mark_effect_committed",
+    "set_app_control",
+    "get_app_control",
 ]

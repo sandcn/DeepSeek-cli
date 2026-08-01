@@ -309,3 +309,42 @@ class TestInputFacadeWiring:
         inp.set_interrupt_callback(cb)
         inp._do_interrupt()
         cb.assert_called_once()
+
+
+# ═══════════════════════════════════════════════════════════
+# 步骤5.4 — 装配层注入 useInput router 与 useApp control
+# ═══════════════════════════════════════════════════════════
+
+class TestAssemblyHooksWiring:
+    """步骤5 — assemble 后 input hook router / useApp control 已接线。"""
+
+    def test_assembly_wires_input_router_regression(self):
+        """assemble 后 input_instance 已注入 router；无 handler 时输入放行。"""
+        from src.tui._assembly import TuiAssembly
+        from src.tui.ink import hooks as _hooks
+
+        result = TuiAssembly.assemble()
+        try:
+            # router 已注入 InputDispatcher
+            router = result.input_instance._dispatcher._input_hook_router
+            assert router is not None
+            assert callable(router)
+            # 无 handler 注册时 router 放行（输入旧路径零行为变化）
+            assert router(object()) is False
+            # useApp control 已注入（exit = session.stop）
+            assert _hooks._app_control is not None
+            assert callable(_hooks._app_control["exit"])
+        finally:
+            _hooks.set_app_control(None)
+
+    def test_assembly_wires_app_control_exit_regression(self):
+        """注入的 useApp control exit 可调用（session.stop 幂等）。"""
+        from src.tui._assembly import TuiAssembly
+        from src.tui.ink import hooks as _hooks
+
+        result = TuiAssembly.assemble()
+        try:
+            exit_fn = _hooks._app_control["exit"]
+            exit_fn()  # 调用不抛（session.stop 幂等）
+        finally:
+            _hooks.set_app_control(None)

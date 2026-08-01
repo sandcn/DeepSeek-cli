@@ -344,13 +344,14 @@ class SubAgentPanelController:
                 rec = _ToolRecord(tool_name=event.tool_name)
                 rec.detail = event.arguments
                 slot.tool_history.append(rec)
-        # ★ 强制立即渲染帧（绕过 10Hz 节流），确保 parsing 状态立即可见
+        # ★ 经 _emit_frame 走 10Hz 节流（parsing 事件不再强制绕过节流，
+        #    避免高频解析参数时每帧重建面板）。
         #    锁顺序保证（防死锁）：
         #      _render_frame() 内部获取/释放 _state_lock（RLock 可重入）
         #      _push_frame()   在 _render_frame 返回后调用，锁已释放
         #    注意：_push_frame 绝不可在 with self._state_lock 块内调用，
         #    否则 render 线程在同一锁上阻塞时形成 ABBA 死锁。
-        self._push_frame(self._render_frame())
+        self._emit_frame()
 
     def _on_parse_info(self, event) -> None:
         """ParseInfoEvent — ToolParseTracker 定时推送的解析摘要（rf,rf 51t 0.74s）。"""

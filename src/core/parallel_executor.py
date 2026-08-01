@@ -294,7 +294,7 @@ class ParallelExecutor:
             result_text = r.get(_RESULT_KEY, "")
             error = r.get(_ERROR_KEY, "")
 
-            md_parts.append(f"### {i}. {RED}[{abbr}]{RESET} {desc}")
+            md_parts.append(f"### {i}. [{abbr}] {desc}")
             if error:
                 md_parts.append(f"\n> 错误: {error}\n")
             if result_text:

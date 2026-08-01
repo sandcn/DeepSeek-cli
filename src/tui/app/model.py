@@ -43,6 +43,8 @@ class ChatBlock:
     closed: bool = False
     #: 已提交到缓存的行数（开放块随段落闭合增量提交 → 每帧只处理未提交尾）。
     committed_line_count: int = 0
+    #: 关闭时冻结的整块 ink 行缓存（未提交尾引用复用，免每帧 Style merge）。
+    _cached_ink_lines: Any = None
 
 
 @dataclass
@@ -127,8 +129,14 @@ class AppModel:
         """追加一个立即提交（关闭）的块：渲染缓存 + 块列表。"""
         block = self.append_block(kind, lines)
         block.closed = True
+        self._freeze_cache(block)
         self.commit_block(len(self.blocks) - 1)
         return block
+
+    def _freeze_cache(self, block: ChatBlock) -> None:
+        """冻结块整行 ink 缓存（关闭块未提交尾引用复用）。"""
+        if block._cached_ink_lines is None:
+            block._cached_ink_lines = self._block_to_ink_lines(block, 0)
 
     def commit_open_block(self, block: ChatBlock) -> None:
         """增量提交开放块的已闭合行（流式内容随段落闭合提交）。
@@ -154,6 +162,9 @@ class AppModel:
             block = self.blocks[self.committed_count]
             if not block.closed:
                 break
+            # 冻结整块行缓存（关闭块未提交尾引用复用）
+            if block._cached_ink_lines is None:
+                block._cached_ink_lines = self._block_to_ink_lines(block, 0)
             if block.committed_line_count < len(block.lines):
                 self.committed_lines.extend(
                     self._block_to_ink_lines(block, block.committed_line_count)
@@ -224,7 +235,9 @@ class AppModel:
         self.reasoning_state = ReasoningState.CLOSED
         # 提交到增量渲染缓存
         if 0 <= self.reasoning_block_index < len(self.blocks):
-            self.blocks[self.reasoning_block_index].closed = True
+            block = self.blocks[self.reasoning_block_index]
+            block.closed = True
+            self._freeze_cache(block)
             self.commit_block(self.reasoning_block_index)
 
     def reopen_reasoning(self) -> None:
@@ -257,7 +270,9 @@ class AppModel:
         self.content_closed = True
         # 提交到增量渲染缓存
         if 0 <= self.content_block_index < len(self.blocks):
-            self.blocks[self.content_block_index].closed = True
+            block = self.blocks[self.content_block_index]
+            block.closed = True
+            self._freeze_cache(block)
             self.commit_block(self.content_block_index)
 
     def reopen_content(self) -> None:
@@ -318,6 +333,7 @@ class AppModel:
         status = "\u2714" if success else "\u2716"
         block.lines.append(AnsiLine.of(f"  {status}", Style(fg=41 if success else 196)))
         block.closed = True
+        self._freeze_cache(block)
         self.commit_block(len(self.blocks) - 1)
         if self._current_tool_box is block:
             self._current_tool_box = None

@@ -400,3 +400,56 @@ class TestToolMappingSingleSource:
         for cat in ("shell", "file_read", "file_write", "search",
                     "agent", "interact", "delete"):
             assert cat in TOOL_CATEGORY_COLORS
+
+
+class TestSubAgentPanelParsingThrottle:
+    """步骤6.3 — tool parsing 事件不再绕过节流（10Hz）。"""
+
+    @pytest.fixture
+    def controller(self):
+        """创建带 mock 的 SubAgentPanelController 实例。"""
+        ctrl = SubAgentPanelController()
+        ctrl._push_frame = MagicMock()
+        ctrl._render_frame = MagicMock(return_value=["line1", "line2"])
+        return ctrl
+
+    @patch("src.tui._subagent_panel.time.time")
+    def test_tool_parsing_respects_throttle_regression(self, mock_time, controller):
+        """连续两次 parsing 事件在节流间隔内只 push 一次。"""
+        from src.tui._subagent_panel import _AgentSlot
+        mock_time.return_value = 0.15  # 首次调用（>=0.1 可渲染）
+        ctrl = controller
+        ctrl._agents["agent-x"] = _AgentSlot(label="agent-x", description="test")
+        event = MagicMock()
+        event.label = "agent-x"
+        event.tool_name = "read_file"
+        event.arguments = "a.py"
+
+        ctrl._on_tool_parsing(event)
+        assert ctrl._push_frame.call_count == 1
+        assert ctrl._last_emit_time == 0.15
+
+        # 100ms 内第二次事件 → 节流（不 push）
+        mock_time.return_value = 0.18
+        ctrl._on_tool_parsing(event)
+        assert ctrl._push_frame.call_count == 1
+
+        # 超过 100ms → 再次 push
+        mock_time.return_value = 0.30
+        ctrl._on_tool_parsing(event)
+        assert ctrl._push_frame.call_count == 2
+
+    @patch("src.tui._subagent_panel.time.time")
+    def test_tool_parsing_no_push_when_throttled_immediately(self, mock_time, controller):
+        """parsing 事件在 <0.1s 时被节流（不绕过 _EMIT_INTERVAL）。"""
+        from src.tui._subagent_panel import _AgentSlot
+        mock_time.return_value = 0.05  # 与初始 _last_emit_time=0.0 相差 <100ms
+        ctrl = controller
+        ctrl._agents["agent-x"] = _AgentSlot(label="agent-x", description="test")
+        event = MagicMock()
+        event.label = "agent-x"
+        event.tool_name = "read_file"
+        event.arguments = "a.py"
+
+        ctrl._on_tool_parsing(event)
+        assert ctrl._push_frame.call_count == 0  # 被节流

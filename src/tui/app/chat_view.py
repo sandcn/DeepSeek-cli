@@ -24,7 +24,15 @@ def _to_styled_runs(line) -> list[StyledRun]:
 
 
 def _block_styled_lines(block, start: int = 0) -> list[list[StyledRun]]:
-    """将块的行（从 start 起）转为 styled run 列表（块级样式叠加）。"""
+    """将块的行（从 start 起）转为 styled run 列表（块级样式叠加）。
+
+    关闭块（_cached_ink_lines 已冻结）→ 直接复用缓存 runs（引用级复用，
+    免每帧 Style merge）。
+    """
+    cached = getattr(block, "_cached_ink_lines", None)
+    if cached is not None:
+        # 引用级复用：返回同一 runs 列表对象（免每帧 Style merge）
+        return [line.runs for line in cached[start:]]
     kind = block.kind
     out: list[list[StyledRun]] = []
     for line in block.lines[start:]:

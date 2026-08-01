@@ -100,7 +100,7 @@ class SubAgentSpawner:
             abbr = _AGENT_TYPE_ABBREV.get(agent_type, "??")
             prompt = spec.get("prompt", "")
             if prompt:
-                md_parts.append(f"### {i}. {RED}[{abbr}]{RESET} {desc}")
+                md_parts.append(f"### {i}. [{abbr}] {desc}")
                 md_parts.append(prompt)
 
         md_text = "\n".join(md_parts)

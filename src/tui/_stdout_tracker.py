@@ -42,6 +42,9 @@ _CONTROL_SEQ_RE = re.compile(
 
 _logger = logging.getLogger(__name__)
 
+#: 输出历史压缩冷却（秒）：压缩后冷却期内不再触发
+_COMPACT_COOLDOWN: float = 60.0
+
 
 class _StdoutLineTracker:
     """Transparent stdout wrapper that tracks complete lines.
@@ -70,7 +73,10 @@ class _StdoutLineTracker:
         self._in_bottom_bar: bool = False
         self._output_buffer: list[str] = []
         self._buffer_lock = threading.Lock()
+        # 单飞刷盘：刷盘线程在途时不重复新建线程
+        self._flush_in_flight: bool = False
         self._last_flush_time: float = time.monotonic()
+        self._last_compact_time: float = 0.0
         self._flush_timer: threading.Timer | None = None
         self._flush_timer_stop = threading.Event()
         self._output_history_file: Path = OUTPUT_HISTORY_FILE
@@ -180,14 +186,15 @@ class _StdoutLineTracker:
                     self._buffer_to_output(line)
 
     def _buffer_to_output(self, line: str) -> None:
-        """将完整行加入输出历史缓冲，达到阈值时异步刷盘。"""
+        """将完整行加入输出历史缓冲，达到阈值时异步刷盘（单飞）。"""
         with self._buffer_lock:
             self._output_buffer.append(line)
-            if len(self._output_buffer) >= 50:
+            if len(self._output_buffer) >= 50 and not self._flush_in_flight:
+                self._flush_in_flight = True
                 threading.Thread(target=self._flush_buffered_lines, daemon=True).start()
 
     def _flush_buffered_lines(self) -> bool:
-        """刷出输出缓冲中的行到历史文件。"""
+        """刷出输出缓冲中的行到历史文件（单飞：结束后清标志）。"""
         try:
             with self._buffer_lock:
                 buf = self._output_buffer
@@ -216,8 +223,9 @@ class _StdoutLineTracker:
             except Exception:
                 pass
             return True
-        except Exception:
-            return False
+        finally:
+            # 单飞：无论结果如何，清除在途标志
+            self._flush_in_flight = False
 
     def _load_output_history(self) -> None:
         """从输出历史文件加载最后 N 行到环形缓冲。"""
@@ -281,6 +289,9 @@ class _StdoutLineTracker:
 
     def _maybe_compact_output_history(self) -> bool:
         """检查并压缩输出历史文件（>5000行时去重+截断至2000行）。"""
+        # 压缩冷却：冷却期内跳过（避免频繁大文件重写）
+        if time.monotonic() - self._last_compact_time < _COMPACT_COOLDOWN:
+            return False
         try:
             path = self._output_history_file
             if not path.exists():
@@ -320,6 +331,7 @@ class _StdoutLineTracker:
                 tmp.flush()
                 os.fsync(tmp.fileno())
             os.rename(tmp_path, path)
+            self._last_compact_time = time.monotonic()
             _logger.debug("输出历史压缩完成: %d行→去重%d行→保留%d行", len(lines), len(unique), len(keep))
             return True
 

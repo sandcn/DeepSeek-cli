@@ -247,3 +247,92 @@ class TestPublicTrackMethod:
             content = output_file.read_text(encoding="utf-8")
             assert "persisted" in content
 
+
+
+class TestFlushSingleFlightAndCompactCooldown:
+    """步骤6.4 — 刷盘单飞（不再每 50 行新线程）+ 压缩冷却。"""
+
+    def test_no_thread_per_50_lines_regression(self, tmp_path: Path):
+        """写入 150 行：单飞刷盘线程 ≤ 1（不再每 50 行无条件新线程）。"""
+        import threading
+        import time as _time
+        from src.tui._stdout_tracker import _StdoutLineTracker
+
+        output_file = tmp_path / "output_history_singleflight"
+        real_stdout = io.StringIO()
+        created = []
+        orig_thread = threading.Thread
+        with (
+            patch("src.tui._stdout_tracker.OUTPUT_HISTORY_FILE", output_file),
+            patch("src.tui._stdout_tracker._lock_history_file", return_value=True),
+            patch("src.tui._stdout_tracker._unlock_history_file"),
+        ):
+            tracker = _StdoutLineTracker(real_stdout)
+            tracker._scroll_end = 10
+            # 刷盘 worker 慢速执行（模拟文件 I/O 在途）→ 单飞标志保持置位
+            def slow_flush():
+                _time.sleep(0.5)
+                return True
+            tracker._flush_buffered_lines = slow_flush
+
+            def counting_thread(*a, **kw):
+                t = orig_thread(*a, **kw)
+                created.append(t)
+                return t
+
+            with patch("threading.Thread", side_effect=counting_thread):
+                for i in range(150):
+                    tracker._track(f"line_{i}\n")
+
+            # 单飞：刷盘线程在途时不再为后续 50 行批量创建新线程
+            assert len(created) <= 1
+
+        # 等待在途线程完成，避免 daemon 残留
+        for t in created:
+            t.join(timeout=1.0)
+
+    def test_compact_cooldown_regression(self, tmp_path: Path):
+        """冷却内不触发压缩（即使文件 >5000 行）。"""
+        import time as _time
+        from src.tui._stdout_tracker import _StdoutLineTracker, _COMPACT_COOLDOWN
+
+        output_file = tmp_path / "output_history_cooldown"
+        output_file.write_text(
+            "\n".join(f"l{i}" for i in range(6000)) + "\n", encoding="utf-8"
+        )
+        real_stdout = io.StringIO()
+        with (
+            patch("src.tui._stdout_tracker.OUTPUT_HISTORY_FILE", output_file),
+            patch("src.tui._stdout_tracker._lock_history_file", return_value=True),
+            patch("src.tui._stdout_tracker._unlock_history_file"),
+        ):
+            tracker = _StdoutLineTracker(real_stdout)
+            tracker._scroll_end = 10
+            # 冷却内：即使文件 >5000 行也不压缩
+            tracker._last_compact_time = _time.monotonic()
+            assert tracker._maybe_compact_output_history() is False
+            content = output_file.read_text(encoding="utf-8")
+            assert len(content.splitlines()) == 6000  # 未压缩
+
+    def test_compact_allowed_after_cooldown_regression(self, tmp_path: Path):
+        """冷却过后可压缩（>5000 行时去重 + 截断 2000）。"""
+        import time as _time
+        from src.tui._stdout_tracker import _StdoutLineTracker, _COMPACT_COOLDOWN
+
+        output_file = tmp_path / "output_history_cooldown_ok"
+        output_file.write_text(
+            "\n".join(f"l{i}" for i in range(6000)) + "\n", encoding="utf-8"
+        )
+        real_stdout = io.StringIO()
+        with (
+            patch("src.tui._stdout_tracker.OUTPUT_HISTORY_FILE", output_file),
+            patch("src.tui._stdout_tracker._lock_history_file", return_value=True),
+            patch("src.tui._stdout_tracker._unlock_history_file"),
+        ):
+            tracker = _StdoutLineTracker(real_stdout)
+            tracker._scroll_end = 10
+            # 冷却已过（last = now - cooldown - 1）
+            tracker._last_compact_time = _time.monotonic() - _COMPACT_COOLDOWN - 1.0
+            assert tracker._maybe_compact_output_history() is True
+            content = output_file.read_text(encoding="utf-8")
+            assert len(content.splitlines()) <= 2000  # 已压缩（去重 + 截断 2000）
