@@ -158,6 +158,10 @@ class InkSession:
         self._render_version: int = 0
         self._cmd_seq = itertools.count()
         self._input = None  # Phase F 接线注入
+        # 系统监控（CPU/MEM；每 2 秒刷新输入区顶部分隔线显示）
+        self._system_monitor = None
+        self._last_sys_stats_time: float = 0.0
+        self._sys_stats_interval: float = 2.0
 
     # ── 注入 ─────────────────────────────────────────
 
@@ -400,9 +404,10 @@ class InkSession:
                 )
 
     def _drain_queue(self) -> bool:
-        """单帧处理：输入分发 → 面板刷新 → 排空命令 → 应用 → 渲染 → 光标。"""
+        """单帧处理：输入分发 → 面板刷新 → 系统监控 → 排空命令 → 应用 → 渲染 → 光标。"""
         self._phase_process_input()
         self._phase_pre_update_panels()
+        self._update_system_stats()
         commands: list = []
         with _try_acquire_output_lock(name="ink_session.drain_queue", timeout=self._config.drain_lock_timeout) as locked:
             if not locked:
@@ -471,6 +476,33 @@ class InkSession:
         self._position_cursor()
 
     # ── 阶段 ─────────────────────────────────────────
+
+    def _update_system_stats(self) -> None:
+        """每 2 秒采集 CPU/MEM 写入模型并标记脏（输入区顶部分隔线显示）。
+
+        空闲时也每 2 秒渲染一次（仅更新该值），CPU 开销可忽略。
+        """
+        now = time.monotonic()
+        if now - self._last_sys_stats_time < self._sys_stats_interval:
+            return
+        self._last_sys_stats_time = now
+        if self._model is None:
+            return
+        if self._system_monitor is None:
+            from src.tui._system_monitor import _SystemMonitor
+            self._system_monitor = _SystemMonitor()
+        status = getattr(self._model, "status", None)
+        if status is None:
+            return  # 测试桩模型无 status
+        try:
+            cpu, mem = self._system_monitor.get_cpu_and_mem()
+        except Exception:
+            _logger.debug("系统监控采集异常", exc_info=True)
+            return
+        if int(cpu) != status.cpu or int(mem) != status.mem:
+            status.cpu = int(cpu)
+            status.mem = int(mem)
+            self._dirty = True  # 触发渲染显示新值
 
     def _phase_process_input(self) -> None:
         if self._input is not None:
