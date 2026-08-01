@@ -91,6 +91,8 @@ _NORMAL_CMDS = frozenset({
 _LOW_CMDS = frozenset({
     RenderCommand.WRITE_LINE,
     RenderCommand.DISPLAY_MSGS,
+    # 与 WRITE_LINE 同优先级（低优先级批量投递，不抢占流式内容）
+    RenderCommand.SUBAGENT_MARKDOWN,
 })
 
 

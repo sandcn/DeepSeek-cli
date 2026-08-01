@@ -228,152 +228,6 @@ class ParallelExecutor:
 
     # -- 独立模式 --
 
-    def _stream_results_markdown(self, results: List[Dict[str, Any]]):
-        """将 subagent 结果以渲染后的 markdown 格式打印到终端。
-
-        通过 _file=sys.__stdout__ 绕过 stdout 捕获（_SharedCapture），
-        直接写入真实终端 stdout。
-        仅在 ChatUIConsumer 未激活（无底部栏分屏）时使用。
-        """
-        import sys as _sys
-        from src.renderer import IncrementalRenderer
-
-        from ..tui._tool_icons import AGENT_TYPE_ABBREV as _AGENT_TYPE_ABBREV
-
-        renderer = IncrementalRenderer(show_indicator=False,
-                                       _file=_sys.__stdout__)
-        try:
-            for i, r in enumerate(results, 1):
-                label = r.get(_LABEL_KEY, f"agent-{i}")
-                desc = r.get(_DESCRIPTION_KEY, label)
-                agent_type = r.get(_AGENT_TYPE_KEY, "execute")
-                abbr = _AGENT_TYPE_ABBREV.get(agent_type, "??")
-                result_text = r.get(_RESULT_KEY, "")
-                error = r.get(_ERROR_KEY, "")
-                renderer.write(f"### {i}. [{abbr}] {desc}")
-                if error:
-                    renderer.write(f"\n> 错误: {error}\n")
-                if result_text:
-                    renderer.write(result_text)
-                if not error and not result_text:
-                    renderer.write("\n_空结果_\n")
-        finally:
-            renderer.close()
-
-    def _stream_results_via_chatui(self, results: List[Dict[str, Any]]) -> None:
-        """通过 ChatUI write_line 将子代理结果以 markdown 格式上屏。
-
-        策略：先将 markdown 文本用 IncrementalRenderer 渲染为 ANSI 格式
-        （保留完整的 markdown 渲染能力：标题加粗、代码高亮、引用块等），
-        再将 ANSI 输出通过 chat_ui.write_line() 由 render 线程统一上屏。
-
-        ChatUI 激活时用此路径替代 _stream_results_markdown，原因：
-        - _stream_results_markdown 直接写 __stdout__ 会破坏 DECSTBM 分屏布局
-        - 此路径用 StringIO 捕获 IncrementalRenderer 的 ANSI 输出，再路由到
-          ChatUI 的统一渲染管线（render 线程持 output_lock 渲染，尊重分屏布局）
-
-        线程安全：write_line 是线程安全的（入队 → render 线程统一消费）。
-        StringIO 无竞态（仅在当前线程中访问）。
-        Parser/Engine 无实例锁（单线程专用，不与其他渲染器共享）。
-        """
-        import io
-        from src.renderer import IncrementalRenderer
-
-        from ..tui.consumer import get_active_chat_ui as _get_active_chat_ui
-        chat_ui = _get_active_chat_ui()
-        if chat_ui is None:
-            return
-
-        # ── 构造完整的 markdown 文本 ──────────────────────────────────
-        md_parts: list[str] = []
-        for i, r in enumerate(results, 1):
-            desc = r.get(_DESCRIPTION_KEY, f"子任务 {i}")
-            agent_type = r.get(_AGENT_TYPE_KEY, "execute")
-            from ..tui._tool_icons import AGENT_TYPE_ABBREV as _AGENT_TYPE_ABBREV
-            abbr = _AGENT_TYPE_ABBREV.get(agent_type, "??")
-            result_text = r.get(_RESULT_KEY, "")
-            error = r.get(_ERROR_KEY, "")
-
-            md_parts.append(f"### {i}. [{abbr}] {desc}")
-            if error:
-                md_parts.append(f"\n> 错误: {error}\n")
-            if result_text:
-                md_parts.append(result_text)
-            if not error and not result_text:
-                md_parts.append("\n_空结果_\n")
-
-        md_text = "\n".join(md_parts)
-        if not md_text.strip():
-            return
-
-        # ── IncrementalRenderer 渲染 markdown → ANSI 字符串 ──────────
-        # 使用 StringIO 捕获 Console 的 ANSI 输出，不直接写 __stdout__。
-        # IncrementalRenderer 内部 Console 的 force_terminal=True 保证
-        # 即使 file=StringIO 也输出完整 ANSI 序列。
-        #
-        # ★ 显式传入 width 参数：当 _file=StringIO 时 Rich Console 无法
-        #   通过 ioctl 探测终端宽度，默认回退到 shutil.get_terminal_size()
-        #   （Android Termux 上因环境变量陈旧返回 120），导致渲染输出行宽
-        #   与真实终端（~70列）不匹配，在 ChatUI 中换行显示错乱。
-        #   通过 ioctl(/dev/tty) 获取真实宽度并传入，消除错位重叠问题。
-        term_width = _get_terminal_width()
-        buf = io.StringIO()
-        renderer = IncrementalRenderer(
-            show_indicator=False, _file=buf, width=term_width,
-        )
-        try:
-            renderer.write(md_text)
-        finally:
-            renderer.close()
-
-        # ── ANSI 输出通过 ChatUI 上屏 ─────────────────────────────────
-        # write_line 内部用 Text.from_ansi() 解析 ANSI 序列为 Rich Text，
-        # 再由 render 线程的 OutputAdapter（Console with __stdout__）渲染。
-        # 双 Console 转换（StringIO Console → __stdout__ Console）对标准
-        # ANSI SGR 序列（颜色/样式）无损，保留完整 markdown 渲染效果。
-        output = buf.getvalue()
-        if output:
-            chat_ui.write_line("")  # 开头空行
-            for line in output.rstrip("\n").split("\n"):
-                chat_ui.write_line(line)
-            chat_ui.write_line("")  # 结尾空行
-
-    def _do_terminal_output(self, results: List[Dict[str, Any]]):
-        """在线程池中执行所有终端输出操作，避免同步 IO 阻塞事件循环。
-
-        路由策略（二选一）：
-        1. ChatUIConsumer 激活 → _stream_results_via_chatui
-           （write_line 入队 → render 线程统一渲染，尊重 DECSTBM 分屏布局）
-        2. ChatUIConsumer 未激活 → _stream_results_markdown
-           （IncrementalRenderer 直接写 __stdout__，适用于非分屏模式）
-
-        ChatUI 激活时无需光标修复：write_line 内部自动处理输出位置
-        （render 线程持 output_lock，渲染后底部栏 force_redraw 刷新光标）。
-        """
-        from ..tui.consumer import get_active_chat_ui as _get_active_chat_ui
-        chat_ui = _get_active_chat_ui()
-        if chat_ui is not None:
-            # ChatUI 激活 → 走统一渲染管线
-            self._stream_results_via_chatui(results)
-            return
-
-        # ChatUI 不可用 → 回退到直接写 __stdout__
-        # ────────────────────────────────────────────────────────────────
-        # ★ 安全约束：该方法在线程池 (asyncio.to_thread) 中运行，
-        #   所有 I/O 必须以 sys.__stdout__（真实终端）为准，禁止操作
-        #   sys.stdout，因为它可能被同一事件循环中其他并发工具的
-        #   _start_tool_output_capture 临时改为 _SharedCapture 实例。
-        #   sys.stdout.write('\r\n') 写入 _SharedCapture 会触发
-        #   real_stdout 间接写入，导致终端光标同步不可靠 & 产生多余事件。
-        # ────────────────────────────────────────────────────────────────
-        self._stream_results_markdown(results)
-
-        # ★ 终端光标重定位到下一行行首
-        #   _publish_output 内部通过 OutputConsumer 处理，OutputConsumer
-        #   已内置 output_lock 保护。当 ChatUI 激活时自动跳过（由 _on_output 处理），
-        #   当 ChatUI 未激活时写入终端。
-        _publish_output("\r", level="raw")
-
     async def _execute_with_error_handling(
         self, coro, specs: List[Dict[str, Any]], display: EventBusDisplayProxy,
         *, is_batch: bool,
@@ -397,8 +251,8 @@ class ParallelExecutor:
         mode_name = "批量模式" if is_batch else "独立模式"
 
         results: list | None = None
-        # BUG-A1：取消路径输出/发布去重标志 — CancelledError 分支已执行
-        # _do_terminal_output + publish_summary 后置位，finally 跳过重复执行。
+        # BUG-A1：取消路径发布去重标志 — CancelledError 分支已执行
+        # publish_summary 后置位，finally 跳过重复发布。
         cancel_output_done = False
         try:
             results = await coro
@@ -418,12 +272,6 @@ class ParallelExecutor:
                 await display.await_stop(timeout=_TIMEOUT)
             except Exception:
                 _logger.exception("%s 取消路径 await_stop 异常", log_prefix)
-
-            if results:
-                # 取消路径下直接调用（非 to_thread），避免子任务被取消
-                # 统一使用 _do_terminal_output 路由：ChatUI 激活时走 write_line，
-                # ChatUI 未激活时走 IncrementalRenderer 写终端
-                self._do_terminal_output(results)
 
             # ★ sys.stdout 泄漏检测
             try:
@@ -466,7 +314,7 @@ class ParallelExecutor:
             except Exception:
                 _logger.exception("%s await_stop 异常", log_prefix)
 
-            # ★ 批量模式：在打印 markdown 结果前，停止 dispatch_agent 的 Spinner
+            # ★ 批量模式：停止 dispatch_agent 的 Spinner
             if is_batch and not self._is_web and results:
                 parent_display = getattr(self.parent, 'display', None)
                 if parent_display is not None:
@@ -479,15 +327,6 @@ class ParallelExecutor:
                                 )
                             except Exception:
                                 _logger.warning("dispatch_agent tool_done 异常", exc_info=True)
-                # 换行，确保后续 markdown 内容从新行开始
-                _publish_output("", level="raw")
-
-            # 在线程池中执行所有终端输出操作，避免同步 IO 阻塞事件循环
-            # 统一通过 _do_terminal_output 路由：ChatUI 激活时走 write_line，
-            # ChatUI 未激活时走 IncrementalRenderer 直接写 __stdout__。
-            # BUG-A1：取消路径已直接调用过（非 to_thread），finally 跳过避免重复输出
-            if results and not cancel_output_done:
-                await asyncio.to_thread(self._do_terminal_output, results)
 
             # ★ sys.stdout 泄漏检测
             try:

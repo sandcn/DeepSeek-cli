@@ -5,7 +5,7 @@ Layer 0 — 无内部依赖，被所有 TUI 模块引用。
 
 保留确认（2026-07-31 方向F）：``FrameworkCommand``/``ChatCommand`` 为
 ``RenderCommand`` 别名，被 ``src/tui/__init__.py`` 与 ``src/tui/consumer/__init__.py``
-re-export（公共 API 约束）；``RenderCommand`` 20 枚举值均有对应 ``RenderCmd``
+re-export（公共 API 约束）；``RenderCommand`` 21 枚举值均有对应 ``RenderCmd``
 dataclass 且全部被分发使用，**无未引用枚举**。别名保留不删。
 """
 
@@ -92,7 +92,7 @@ _C_RESET         = "\033[0m"
 # ═══════════════════════════════════════════════════════════
 
 class RenderCommand(IntEnum):
-    """渲染命令类型，替代魔数整数。合并 FrameworkCommand（框架命令）与 ChatCommand（聊天命令），值完全不变（20 个枚举值）。"""
+    """渲染命令类型，替代魔数整数。合并 FrameworkCommand（框架命令）与 ChatCommand（聊天命令），值完全不变（21 个枚举值）。"""
     REASONING = 0       # (0, text: str)
     CONTENT = 1         # (1, text: str)
     PHASE_DONE = 2      # (2, phase: str)
@@ -112,6 +112,7 @@ class RenderCommand(IntEnum):
     MAIN_PHASE = 20     # (20, phase: str) — 主Agent模型阶段变更
     TOOL_OPEN = 21      # (21, tool_name, tool_id, detail) — 工具 box 打开
     TOOL_CLOSE = 22     # (22, tool_id, success) — 工具 box 关闭
+    SUBAGENT_MARKDOWN = 23  # (23, text: str) — subagent 提词/返回 markdown 消息区块
 
 
 # ═══════════════════════════════════════════════════════════
@@ -221,6 +222,11 @@ class SplashCmd(RenderCmd):
 class MainPhaseCmd(RenderCmd):
     cid: int = RenderCommand.MAIN_PHASE
     phase: str = ""
+
+@dataclass(frozen=True)
+class SubagentMarkdownCmd(RenderCmd):
+    cid: int = RenderCommand.SUBAGENT_MARKDOWN
+    text: str = ""
 
 
 # ═══════════════════════════════════════════════════════════

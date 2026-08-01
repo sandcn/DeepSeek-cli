@@ -23,7 +23,7 @@ from .event_types import (
     ContentChunkEvent, ReasoningChunkEvent,
     ParseInfoEvent, ParseInfoDoneEvent, MetricsUpdateEvent,
     OutputEvent, ToolSummaryEvent,
-    UserSelectNeededEvent, AgentResultEvent,
+    UserSelectNeededEvent, SubagentPromptEvent, AgentResultEvent,
     ALL_EVENT_TYPES,
 )
 from .event_bus import DisplayEventBus, EventHandler
@@ -44,6 +44,7 @@ __all__ = [
     "SessionStarted", "SessionStopped",
     "ToolParsingEvent", "ToolStartedEvent", "ToolDoneEvent", "ToolOutputChunkEvent", "ToolBatchStartedEvent",
     "AgentAddedEvent", "AgentStatusChanged", "AgentResultEvent",
+    "SubagentPromptEvent",
     "ModelPhaseEvent", "PhaseDoneEvent", "UsageUpdatedEvent",
     "ContentChunkEvent", "ReasoningChunkEvent",
     "ParseInfoEvent", "ParseInfoDoneEvent", "MetricsUpdateEvent",

@@ -1,92 +1,68 @@
-"""测试 BUG-A4 修复：markdown 文本不含 ANSI 转义。
+"""测试 BUG-A4 修复：提词/返回 markdown 事件文本不含 ANSI 转义。
 
-覆盖：
-  - parallel_executor._stream_results_via_chatui 输出文本不含 \\x1b
-  - _subagent_spawner._render_subagent_display ChatUI 分支不含 \\x1b
-  - _subagent_spawner._render_subagent_display 非 ChatUI 分支不含 \\x1b
+subagent 提词/返回改为事件投递到 TUI 消息区后，core 层只发布纯文本事件，
+不直接渲染。本文件验证发布事件中的 markdown 文本不含 \\x1b：
+  - SubAgentSpawner.render_display 发布 SubagentPromptEvent.prompt 无 ANSI
+  - SubAgentSpawner.publish_summary 发布 AgentResultEvent.result 无 ANSI
 """
 
 from __future__ import annotations
 
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 from src.core.internal.agent._subagent_spawner import SubAgentSpawner
-from src.core.parallel_executor import ParallelExecutor
-
-
-class TestParallelExecutorMarkdownNoAnsi:
-    """BUG-A4：parallel_executor markdown 文本不含 \\x1b。"""
-
-    def test_markdown_no_ansi_injection_regression(self) -> None:
-        """捕获传入 renderer.write 的 md_text，断言不含 \\x1b。"""
-        executor = ParallelExecutor(MagicMock())
-        results = [
-            {"label": "agent-1", "description": "t1", "result": "ok", "error": "",
-             "agent_type": "execute"},
-        ]
-
-        captured = {}
-
-        class _FakeRenderer:
-            def __init__(self, **kwargs):
-                self._buf = []
-
-            def write(self, text):
-                self._buf.append(text)
-
-            def close(self):
-                captured["text"] = "".join(self._buf)
-
-        mock_ui = MagicMock()
-        with patch("src.tui.consumer.get_active_chat_ui", return_value=mock_ui), \
-             patch("src.renderer.IncrementalRenderer", _FakeRenderer), \
-             patch("src.core.parallel_executor._get_terminal_width", return_value=80):
-            executor._stream_results_via_chatui(results)
-
-        assert "\x1b" not in captured["text"]
-        assert "### 1. [ex] t1" in captured["text"]
+from src.tui.events.event_types import AgentResultEvent, SubagentPromptEvent
 
 
 class TestSubAgentSpawnerMarkdownNoAnsi:
-    """BUG-A4：_subagent_spawner markdown 文本不含 \\x1b。"""
+    """BUG-A4：subagent 提词/返回事件文本不含 \\x1b。"""
 
-    def test_subagent_spawner_markdown_no_ansi_regression(self) -> None:
-        """ChatUI 分支：捕获 renderer.write 的 md_text，断言不含 \\x1b。"""
-        spawner = SubAgentSpawner(MagicMock(), MagicMock())
+    def test_render_display_publishes_prompt_no_ansi(self) -> None:
+        """render_display 发布 SubagentPromptEvent，prompt 纯文本无 ANSI。"""
+        mock_port = MagicMock()
+        spawner = SubAgentSpawner(MagicMock(), MagicMock(), event_port=mock_port)
         specs = [{"description": "t1", "prompt": "p1", "agent_type": "execute"}]
 
-        captured = {}
+        spawner.render_display(specs)
 
-        class _FakeRenderer:
-            def __init__(self, **kwargs):
-                self._buf = []
+        assert mock_port.publish_event.call_count == 1
+        ev = mock_port.publish_event.call_args[0][0]
+        assert isinstance(ev, SubagentPromptEvent)
+        assert "\x1b" not in ev.prompt
+        assert ev.prompt == "p1"
+        assert ev.label == "agent-1"
+        assert ev.index == 1
+        assert ev.agent_type == "execute"
 
-            def write(self, text):
-                self._buf.append(text)
+    def test_publish_summary_publishes_result_no_ansi(self) -> None:
+        """publish_summary 发布 AgentResultEvent，result 纯文本无 ANSI。"""
+        mock_port = MagicMock()
+        spawner = SubAgentSpawner(MagicMock(), MagicMock(), event_port=mock_port)
+        results = [
+            {"label": "agent-1", "description": "t1", "result": "ok", "error": ""},
+        ]
 
-            def close(self):
-                captured["text"] = "".join(self._buf)
+        spawner.publish_summary(results)
 
-        mock_ui = MagicMock()
-        with patch("src.core.display_target.get_display_target", return_value=mock_ui), \
-             patch("src.core._terminal.get_terminal_width", return_value=100), \
-             patch("src.renderer.IncrementalRenderer", _FakeRenderer):
-            spawner._render_subagent_display(specs)
+        assert mock_port.publish_event.call_count == 1
+        ev = mock_port.publish_event.call_args[0][0]
+        assert isinstance(ev, AgentResultEvent)
+        assert "\x1b" not in ev.result
+        assert ev.result == "ok"
+        assert ev.index == 1
+        assert ev.agent_type == "execute"
 
-        assert "\x1b" not in captured["text"]
-        assert "### 1. [ex] t1" in captured["text"]
+    def test_publish_summary_error_no_ansi(self) -> None:
+        """error 场景同样无 ANSI。"""
+        mock_port = MagicMock()
+        spawner = SubAgentSpawner(MagicMock(), MagicMock(), event_port=mock_port)
+        results = [
+            {"label": "agent-1", "description": "t1", "result": "", "error": "boom"},
+        ]
 
-    def test_subagent_spawner_markdown_no_ansi_direct_regression(self) -> None:
-        """非 ChatUI 分支（直接写 __stdout__）同样不含 \\x1b。"""
-        spawner = SubAgentSpawner(MagicMock(), MagicMock())
-        specs = [{"description": "t1", "prompt": "p1", "agent_type": "execute"}]
+        spawner.publish_summary(results)
 
-        captured = []
-        with patch("src.core.display_target.get_display_target", return_value=None), \
-             patch("src.renderer.IncrementalRenderer") as mock_renderer:
-            mock_renderer.return_value.write.side_effect = lambda text: captured.append(text)
-            spawner._render_subagent_display(specs)
-
-        text = "".join(captured)
-        assert "\x1b" not in text
-        assert "### 1. [ex] t1" in text
+        ev = mock_port.publish_event.call_args[0][0]
+        assert isinstance(ev, AgentResultEvent)
+        assert "\x1b" not in ev.error
+        assert ev.error == "boom"

@@ -17,6 +17,7 @@ from src.tui._const import (
     NotificationCmd, WriteLineCmd,
     ToolCountIncCmd, ToolFailIncCmd, ErrorCmd, ToolCountDecCmd,
     SubagentFrameCmd, MainPhaseCmd,
+    SubagentMarkdownCmd,
     _CLEAR_PARSE_LINE,
     is_agent_source,
     truncate_error_message,
@@ -39,6 +40,8 @@ if TYPE_CHECKING:
         ToolParsingEvent,
         ToolStartedEvent,
         ToolSummaryEvent,
+        SubagentPromptEvent,
+        AgentResultEvent,
     )
 
 _logger = logging.getLogger(__name__)
@@ -51,11 +54,11 @@ _logger = logging.getLogger(__name__)
 class EventDispatcher:
     """DisplayEvent → RenderCommand 过滤+入队。
 
-    将 12 种 DisplayEvent 类型映射到对应的 RenderCommand 并推入命令队列。
+    将 14 种 DisplayEvent 类型映射到对应的 RenderCommand 并推入命令队列。
     使用注入的 ``filter_fn`` 替代直接持有 ChatConfig 进行 source/label 过滤。
 
     方向D 步骤7（2026-07-31）：订阅声明式化——
-    ``list_handlers()`` 结果缓存（内置 12 类 + ``_handler_groups`` 声明式订阅组
+    ``list_handlers()`` 结果缓存（内置 14 类 + ``_handler_groups`` 声明式订阅组
     + ``_custom_handlers`` 自定义），``register_group`` 提供声明式订阅表入口；
     返回的 dict 为缓存对象，调用方（如 _lifecycle）只迭代不修改。
     """
@@ -159,6 +162,8 @@ class EventDispatcher:
             _ET.OutputEvent: self._on_output,
             _ET.ModelPhaseEvent: self._on_model_phase,
             _ET.ToolSummaryEvent: self._on_tool_summary,
+            _ET.SubagentPromptEvent: self._on_subagent_prompt,
+            _ET.AgentResultEvent: self._on_agent_result,
         }
         for group in self._handler_groups.values():
             result.update(group)
@@ -262,6 +267,30 @@ class EventDispatcher:
         if not event.successful_tools and not event.failed_tools:
             return
         self._push_cmd(ToolSummaryCmd(successful=event.successful_tools, failed=event.failed_tools))
+
+    def _on_subagent_prompt(self, event: "SubagentPromptEvent") -> None:
+        """subagent 提词 → markdown 消息区块（事件投递，替代 core 直渲）。"""
+        if not event.prompt:
+            return
+        from src.tui._tool_icons import AGENT_TYPE_ABBREV as _AGENT_TYPE_ABBREV
+        abbr = _AGENT_TYPE_ABBREV.get(event.agent_type, "??")
+        md = f"### {event.index}. [{abbr}] {event.description}\n{event.prompt}"
+        self._push_cmd(SubagentMarkdownCmd(text=md))
+
+    def _on_agent_result(self, event: "AgentResultEvent") -> None:
+        """subagent 返回 → markdown 消息区块（事件投递，替代 core 直渲）。"""
+        if not event.result and not event.error:
+            return
+        from src.tui._tool_icons import AGENT_TYPE_ABBREV as _AGENT_TYPE_ABBREV
+        abbr = _AGENT_TYPE_ABBREV.get(event.agent_type, "??")
+        parts = [f"### {event.index}. [{abbr}] {event.description}"]
+        if event.error:
+            parts.append(f"\n> 错误: {event.error}\n")
+        if event.result:
+            parts.append(event.result)
+        if not event.error and not event.result:
+            parts.append("\n_空结果_\n")
+        self._push_cmd(SubagentMarkdownCmd(text="\n".join(parts)))
 
 
 __all__ = ["EventDispatcher"]

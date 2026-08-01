@@ -1,9 +1,9 @@
 """
-SubAgentSpawner — SubAgent 创建、终端显示渲染、结果事件发布
+SubAgentSpawner — SubAgent 创建、提词事件发布、结果事件发布
 
 从 ParallelExecutor 提取，封装三个职责：
 1. spawn() — 从 spec 创建 SubAgent 实例并注册到 display
-2. render_display() — 打印任务摘要（终端模式）
+2. render_display() — 逐 spec 发布 SubagentPromptEvent（事件投递到 TUI 消息区）
 3. publish_summary() — 批量发布 AgentResultEvent
 """
 
@@ -19,10 +19,11 @@ _DESCRIPTION_KEY = "description"
 _ERROR_KEY = "error"
 _LABEL_KEY = "label"
 _RESULT_KEY = "result"
+_AGENT_TYPE_KEY = "agent_type"
 
 
 class SubAgentSpawner:
-    """创建 SubAgent 实例、渲染终端显示、发布结果事件"""
+    """创建 SubAgent 实例、发布提词/结果事件"""
 
     def __init__(self, parent_agent, agent_factory, is_web: bool = False,
                  event_port=None):
@@ -51,7 +52,11 @@ class SubAgentSpawner:
         return self._spawn_subagent(spec, index, display)
 
     def render_display(self, specs: List[Dict[str, Any]]) -> None:
-        """打印任务摘要到终端（仅非 Web 模式）。"""
+        """逐 spec 发布 SubagentPromptEvent（仅非 Web 模式，投递到 TUI 消息区）。
+
+        事件经 EventBus → EventDispatcher → SubagentMarkdownCmd 在消息区
+        渲染为独立 markdown 块；无头（无 ChatUI）模式下无消费者，不再输出。
+        """
         if not self._is_web and specs:
             self._render_subagent_display(specs)
 
@@ -80,87 +85,37 @@ class SubAgentSpawner:
         return sa
 
     def _render_subagent_display(self, specs: List[Dict[str, Any]]) -> None:
-        """在执行前打印任务摘要 — 使用 IncrementalRenderer 渲染 markdown。
+        """逐 spec 发布 SubagentPromptEvent（事件投递，替代 core 直接渲染）。
 
-        路由策略（与 parallel_executor._stream_results_markdown 修复一致）：
-        1. ChatUIConsumer 激活 → StringIO 捕获 ANSI → chat_ui.write_line()
-           （尊重 DECSTBM 分屏布局，prompt markdown 正确显示在屏幕上）
-        2. ChatUIConsumer 未激活 → IncrementalRenderer 直接写 sys.__stdout__
-           （适用于非分屏模式，原逻辑不变）
+        删除原 IncrementalRenderer/get_display_target/get_terminal_width/
+        sys.__stdout__ 渲染路径；渲染统一由 TUI 侧消费事件完成
+        （EventDispatcher → SubagentMarkdownCmd → apply_cmd → 消息区块）。
         """
-        from src.core.display_target import get_display_target
-
-        # ── 构造完整的 markdown 文本 ──────────────────────────────────
-        md_parts: list[str] = []
+        from ....tui.events.event_types import SubagentPromptEvent as _SubagentPromptEvent
         for i, spec in enumerate(specs, 1):
             desc = spec.get(_DESCRIPTION_KEY, f"子任务 {i}")
             agent_type = spec.get("agent_type", "execute")
-            from ....tui._tool_icons import AGENT_TYPE_ABBREV as _AGENT_TYPE_ABBREV
-            abbr = _AGENT_TYPE_ABBREV.get(agent_type, "??")
             prompt = spec.get("prompt", "")
             if prompt:
-                md_parts.append(f"### {i}. [{abbr}] {desc}")
-                md_parts.append(prompt)
-
-        md_text = "\n".join(md_parts)
-        if not md_text.strip():
-            return
-
-        chat_ui = get_display_target()
-        if chat_ui is not None:
-            # ChatUI 激活 → StringIO 捕获 ANSI → chat_ui.write_line() 统一上屏
-            # （与 parallel_executor._stream_results_via_chatui 模式一致）
-            import io
-            from src.core._terminal import get_terminal_width
-            from src.renderer import IncrementalRenderer
-
-            # BUG-A3：宽度统一走共享 get_terminal_width（/dev/tty ioctl 优先，
-            # 避免 os.get_terminal_size() 在 Termux 上返回陈旧值；共享函数已含兜底）
-            term_width = get_terminal_width()
-            buf = io.StringIO()
-            renderer = IncrementalRenderer(
-                show_indicator=False, _file=buf, width=term_width,
-            )
-            try:
-                renderer.write(md_text)
-            finally:
-                renderer.close()
-
-            output = buf.getvalue()
-            if output:
-                chat_ui.write_line("")  # 开头空行
-                for line in output.rstrip("\n").split("\n"):
-                    chat_ui.write_line(line)
-                chat_ui.write_line("")  # 结尾空行
-        else:
-            # ChatUI 未激活 → 直接写 __stdout__（原逻辑）
-            import sys as _sys
-            from src.renderer import IncrementalRenderer
-
-            renderer = IncrementalRenderer(
-                show_indicator=False, _file=_sys.__stdout__,
-            )
-            try:
-                for i, spec in enumerate(specs, 1):
-                    desc = spec.get(_DESCRIPTION_KEY, f"子任务 {i}")
-                    agent_type = spec.get("agent_type", "execute")
-                    from ....tui._tool_icons import AGENT_TYPE_ABBREV as _AGENT_TYPE_ABBREV
-                    abbr = _AGENT_TYPE_ABBREV.get(agent_type, "??")
-                    prompt = spec.get("prompt", "")
-                    if prompt:
-                        renderer.write(f"### {i}. [{abbr}] {desc}")
-                        renderer.write(prompt)
-            finally:
-                renderer.close()
+                self._event_port.publish_event(_SubagentPromptEvent(
+                    label=f"agent-{i}",
+                    description=desc,
+                    prompt=prompt,
+                    agent_type=agent_type,
+                    index=i,
+                    source="parallel",
+                ))
 
     def _publish_tool_summary(self, results: List[Dict[str, Any]]) -> None:
         """批量发布所有 subagent 的 AgentResultEvent（全部完成后统一发送）。"""
         from ....tui.events.event_types import AgentResultEvent as _AgentResultEvent
-        for r in results:
+        for i, r in enumerate(results, 1):
             self._event_port.publish_event(_AgentResultEvent(
                 label=r.get(_LABEL_KEY, "?"),
                 description=r.get(_DESCRIPTION_KEY, "?"),
                 result=r.get(_RESULT_KEY, ""),
                 error=r.get(_ERROR_KEY, ""),
+                agent_type=r.get(_AGENT_TYPE_KEY, "execute"),
+                index=i,
                 source="parallel",
             ))

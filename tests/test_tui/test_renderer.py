@@ -19,7 +19,7 @@ class TestEventDispatcher:
         from src.tui._dispatcher import EventDispatcher
         dispatcher = EventDispatcher(MagicMock())
         handlers = dispatcher.list_handlers()
-        assert len(handlers) == 12
+        assert len(handlers) == 14
 
     def test_on_reasoning_chunk(self):
         """main label 的 reasoning chunk → push ReasoningCmd（加固：非仅不抛异常）。"""
@@ -112,6 +112,73 @@ class TestEventDispatcher:
         dispatcher._on_parse_info(event)
         push_cmd.assert_called_once_with(ParseInfoCmd(tool_names="test", tokens=100, elapsed=0.5))
 
+    def test_on_subagent_prompt(self):
+        """SubagentPromptEvent → SubagentMarkdownCmd（含标题+提词）。"""
+        from src.tui._dispatcher import EventDispatcher
+        from src.tui._const import SubagentMarkdownCmd
+        from src.tui.events.event_types import SubagentPromptEvent
+        push_cmd = MagicMock()
+        dispatcher = EventDispatcher(push_cmd)
+        event = SubagentPromptEvent(
+            label="agent-1", description="t1", prompt="do the thing",
+            agent_type="execute", index=1,
+        )
+        dispatcher._on_subagent_prompt(event)
+        push_cmd.assert_called_once_with(
+            SubagentMarkdownCmd(text="### 1. [ex] t1\ndo the thing")
+        )
+
+    def test_on_subagent_prompt_empty_prompt_skipped(self):
+        """空 prompt 不入队。"""
+        from src.tui._dispatcher import EventDispatcher
+        from src.tui.events.event_types import SubagentPromptEvent
+        push_cmd = MagicMock()
+        dispatcher = EventDispatcher(push_cmd)
+        event = SubagentPromptEvent(description="t1", prompt="")
+        dispatcher._on_subagent_prompt(event)
+        push_cmd.assert_not_called()
+
+    def test_on_agent_result(self):
+        """AgentResultEvent → SubagentMarkdownCmd（含标题+结果）。"""
+        from src.tui._dispatcher import EventDispatcher
+        from src.tui._const import SubagentMarkdownCmd
+        from src.tui.events.event_types import AgentResultEvent
+        push_cmd = MagicMock()
+        dispatcher = EventDispatcher(push_cmd)
+        event = AgentResultEvent(
+            label="agent-1", description="t1", result="done ok",
+            agent_type="execute", index=1,
+        )
+        dispatcher._on_agent_result(event)
+        push_cmd.assert_called_once_with(
+            SubagentMarkdownCmd(text="### 1. [ex] t1\ndone ok")
+        )
+
+    def test_on_agent_result_error(self):
+        """错误场景 → 含错误引用块。"""
+        from src.tui._dispatcher import EventDispatcher
+        from src.tui._const import SubagentMarkdownCmd
+        from src.tui.events.event_types import AgentResultEvent
+        push_cmd = MagicMock()
+        dispatcher = EventDispatcher(push_cmd)
+        event = AgentResultEvent(
+            label="agent-1", description="t1", error="boom", index=1,
+        )
+        dispatcher._on_agent_result(event)
+        cmd = push_cmd.call_args[0][0]
+        assert isinstance(cmd, SubagentMarkdownCmd)
+        assert "> 错误: boom" in cmd.text
+
+    def test_on_agent_result_empty_skipped(self):
+        """result/error 均空不入队。"""
+        from src.tui._dispatcher import EventDispatcher
+        from src.tui.events.event_types import AgentResultEvent
+        push_cmd = MagicMock()
+        dispatcher = EventDispatcher(push_cmd)
+        event = AgentResultEvent(label="agent-1", description="t1")
+        dispatcher._on_agent_result(event)
+        push_cmd.assert_not_called()
+
     def test_register_handler(self):
         from src.tui._dispatcher import EventDispatcher
         from src.tui.events.event_types import OutputEvent
@@ -133,7 +200,7 @@ class TestEventDispatcher:
         h1 = dispatcher.list_handlers()
         h2 = dispatcher.list_handlers()
         assert h1 is h2, "list_handlers() 应返回同一缓存对象"
-        assert len(h1) == 12
+        assert len(h1) == 14
 
         custom = MagicMock()
         dispatcher.register_handler(SessionStarted, custom)
@@ -141,7 +208,7 @@ class TestEventDispatcher:
         assert h3 is not h2, "register_handler 后应重新构建缓存"
         assert SessionStarted in h3
         assert h3[SessionStarted] is custom
-        assert len(h3) == 13
+        assert len(h3) == 15
 
     def test_register_group_regression(self):
         """register_group 注册声明式订阅组并合并进 list_handlers。"""
@@ -158,7 +225,7 @@ class TestEventDispatcher:
         handlers = dispatcher.list_handlers()
         assert SessionStarted in handlers
         assert handlers[SessionStarted] is group_handler
-        assert len(handlers) == 13
+        assert len(handlers) == 15
 
     def test_on_model_phase_thinking(self):
         from src.tui._dispatcher import EventDispatcher

@@ -253,6 +253,27 @@ def _do_user_message(model, cmd) -> None:
     model.append_committed("user", [build_user_line(cmd.text)])
 
 
+def _do_subagent_markdown(model, cmd) -> None:
+    """subagent 提词/返回 markdown → 消息区块（kind "subagent"）。
+
+    使用主 agent 回答的流式 markdown 渲染路径（``AnsiStreamRenderer``，
+    零 Rich Console 往返），渲染结果直接产出 AnsiLine 提交到已关闭块——
+    与主 agent 内容渲染一致，无特殊样式。
+    """
+    if not cmd.text or not cmd.text.strip():
+        return
+    from src.renderer.ansi import AnsiStreamRenderer
+    renderer = AnsiStreamRenderer(width=max(model.width, 20))
+    try:
+        renderer.write(cmd.text)
+    finally:
+        renderer.close()
+    lines = renderer.take_lines()
+    if not lines:
+        return
+    model.append_committed("subagent", lines)
+
+
 def _last_committed_plain(model) -> str:
     """获取最后已提交行 plain（committed_lines 最后一行或最后块最后行）。
 
@@ -312,6 +333,7 @@ _HANDLERS: dict[int, object] = {
     RenderCommand.PARSE_INFO: _do_parse_info,
     RenderCommand.USER_MSG: _do_user_message,
     RenderCommand.DISPLAY_MSGS: _do_display_messages,
+    RenderCommand.SUBAGENT_MARKDOWN: _do_subagent_markdown,
 }
 
 __all__ = ["apply_cmd", "build_user_line", "build_assistant_line"]

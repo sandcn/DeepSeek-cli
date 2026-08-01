@@ -29,6 +29,7 @@ from src.tui._const import (
     SubagentFrameCmd,
     SplashCmd,
     DisplayMsgsCmd,
+    SubagentMarkdownCmd,
     _CLEAR_PARSE_LINE,
 )
 
@@ -506,6 +507,30 @@ class TestToolCountHelper:
         assert (m2.status.tool_count, m2.status.tool_total, m2.status.tool_fail) == (
             model.status.tool_count, model.status.tool_total, model.status.tool_fail,
         )
+
+
+class TestSubagentMarkdown:
+    """SUBAGENT_MARKDOWN → 消息区块（kind "subagent"）。"""
+
+    def test_subagent_markdown_appends_block(self):
+        m = _model()
+        apply_cmd(m, SubagentMarkdownCmd(text="### 1. [ex] t1\ndo the thing"))
+        block = m.blocks[-1]
+        assert block.kind == "subagent"
+        assert block.closed is True  # 立即提交（已关闭块）
+        # 标题渲染进块内行
+        assert any("t1" in l.plain for l in block.lines)
+        assert any("do the thing" in l.plain for l in block.lines)
+
+    def test_subagent_markdown_empty_skipped(self):
+        m = _model()
+        apply_cmd(m, SubagentMarkdownCmd(text=""))
+        assert m.blocks == []
+
+    def test_subagent_markdown_whitespace_skipped(self):
+        m = _model()
+        apply_cmd(m, SubagentMarkdownCmd(text="   \n  "))
+        assert m.blocks == []
 
 
 class TestCommitBlockFreeze:
