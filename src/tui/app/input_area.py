@@ -24,7 +24,7 @@ from src.tui._screen import (
 from src.tui._input import _expand_tabs, _wrap_by_width, _compute_cursor_visual_pos
 from src.tui.core.style import Style
 from src.tui.ink import register_host, Line
-from src.tui._animator import AnimatorContext
+from src.tui.app._theme import time_glow, _S_ACCENT, _S_SEP, _S_TIME
 
 # 占位符
 _PLACEHOLDER_TEXT = "输入消息 · /help 查看命令 · Ctrl+N 切换模型 · Tab 补全"
@@ -33,19 +33,16 @@ _PLACEHOLDER_STREAMING = "AI 生成中..."
 
 _PROMPT = "> "
 
-_S_SEP = Style(fg=237)
 _S_PROMPT = Style(fg=45, bold=True)
 _S_TEXT = Style(fg=252)
 _S_CONT = Style(fg=242)
-_S_TIME = Style(fg=242)
 _S_CPU = Style(fg=214)
 _S_MEM = Style(fg=214)
 _S_PLACEHOLDER = Style(fg=242)
-_S_ACCENT = Style(fg=45, bold=True)
 
 
-def _glow_color(animator, base: int, amp: int) -> int:
-    return animator.sine_color(base, base + amp, 12)
+def _glow_color(base: int, amp: int) -> int:
+    return time_glow(base, base + amp, 12.0)
 
 
 def _compute_input_rows(text: str, max_input: int) -> int:
@@ -95,7 +92,6 @@ def _build_lines(fiber) -> list[Line]:
     box = fiber.layout_box
     width = box.w
     text = str(props.get("text", ""))
-    animator = props.get("animator") or AnimatorContext.get_default()
     completion = props.get("completion")
     popup_height = _completion_height(completion)
     status_active = bool(props.get("status_active", False))
@@ -151,7 +147,7 @@ def _build_lines(fiber) -> list[Line]:
     for i, segment in enumerate(wrapped):
         line = Line()
         if i == 0:
-            color = _glow_color(animator, 32, 49)
+            color = _glow_color(32, 49)
             line.append(_PROMPT, Style(fg=color, bold=True))
             if text:
                 line.append(segment, _S_TEXT)
@@ -160,7 +156,7 @@ def _build_lines(fiber) -> list[Line]:
                     ph = _PLACEHOLDER_STREAMING
                 else:
                     ph = _PLACEHOLDER_COMPACT if (completion is not None and completion.visible) else _PLACEHOLDER_TEXT
-                line.append(ph, Style(fg=_glow_color(animator, 242, 10)))
+                line.append(ph, Style(fg=_glow_color(242, 10)))
         else:
             line.append("\u00b7 ", _S_CONT)
             line.append(segment, _S_TEXT)

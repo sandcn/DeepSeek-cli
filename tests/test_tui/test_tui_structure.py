@@ -49,9 +49,9 @@ class TestKeyModulesExist:
     """TUI 根层级关键模块存在。"""
 
     _KEY_MODULES = [
-        "_config.py", "_const.py", "_screen.py", "_buffer.py",
+        "_config.py", "_const.py", "_screen.py",
         "_input.py", "_consumer.py", "_completion.py", "_completion_engine.py",
-        "_animator.py", "_cursor_tracker.py", "_stdout_tracker.py",
+        "_stdout_tracker.py",
         "_diff_renderer.py", "_base_display.py", "_snapshot.py",
         "_subagent_panel.py", "_tool_icons.py", "_dispatcher.py",
         "_ink_bridge.py", "__init__.py",
@@ -71,7 +71,7 @@ class TestPublicApiExports:
 
     _PUBLIC_API = [
         "TuiConfig", "RenderCommand", "FrameworkCommand", "ChatCommand",
-        "RenderBuffer", "Input", "KeyEvent", "ChatUIConsumer",
+        "Input", "KeyEvent", "ChatUIConsumer",
         "get_active_chat_ui", "AppModel", "ChatConfig",
         "render_diff_to_ansi", "show_file_diff", "BaseDisplay",
     ]
@@ -89,6 +89,7 @@ class TestDeletedDeadCodeNotRegress:
     _DELETED_MODULES = [
         "framework.py", "config.py", "render_buffer.py",
         "_input_reader.py", "_locks.py", "_param_formatter.py",
+        "_buffer.py", "_cursor_tracker.py", "_cost.py", "_animator.py",
     ]
 
     def test_dead_code_modules_not_regress(self) -> None:

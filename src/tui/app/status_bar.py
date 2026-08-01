@@ -8,17 +8,12 @@ from __future__ import annotations
 
 from src.tui.core.style import Style
 from src.tui.ink import h, BOX, TEXT, Line, StyledRun
-from src.tui._animator import AnimatorContext
+from src.tui.app._theme import time_glow, _S_ACCENT, _S_ACCENT_BOLD, _S_DIM, _S_SEP, _S_TIME
 
-_S_ACCENT = Style(fg=45)
-_S_ACCENT_BOLD = Style(fg=45, bold=True)
-_S_DIM = Style(fg=242)
-_S_TIME = Style(fg=110)
 _S_TOKEN = Style(fg=68)
 _S_SPEED = Style(fg=214)
 _S_TOOL_OK = Style(fg=41)
 _S_TOOL_FAIL = Style(fg=196)
-_S_SEP = Style(fg=237)
 
 
 def _snapshot() -> dict:
@@ -42,7 +37,7 @@ def _format_duration(seconds: float) -> str:
     return f"{mins // 60}:{mins % 60:02d}:{secs:02d}"
 
 
-def _build_status_runs(model, animator) -> list[StyledRun]:
+def _build_status_runs(model) -> list[StyledRun]:
     """构建状态文本 runs（模型名/工具计数/耗时/token/速度）。"""
     st = model.status
     runs: list[StyledRun] = []
@@ -50,7 +45,7 @@ def _build_status_runs(model, animator) -> list[StyledRun]:
 
     model_part: list[StyledRun] = []
     if st.model_name:
-        dot_style = Style(fg=_glow(animator, 36, 45, 4)) if status_active else _S_ACCENT
+        dot_style = Style(fg=_glow(36, 45, 4)) if status_active else _S_ACCENT
         model_part.append(StyledRun("\u00b7 ", dot_style))
         model_part.append(StyledRun(st.model_name, _S_ACCENT_BOLD))
     if not status_active:
@@ -95,16 +90,15 @@ def _build_status_runs(model, animator) -> list[StyledRun]:
     return joined
 
 
-def _glow(animator, base: int, hi: int, amp: int) -> int:
-    return animator.sine_color(base, hi, amp) if animator.breath_frame > 0 else base
+def _glow(base: int, hi: int, amp: int) -> int:
+    return time_glow(base, hi, amp)
 
 
 def StatusBar(props) -> object:
     """StatusBar 组件：分割线一行在上，状态文本一行在下。"""
     model = props["model"]
-    animator = props.get("animator") or AnimatorContext.get_default()
     width = props.get("width", 80)
-    status_runs = _build_status_runs(model, animator)
+    status_runs = _build_status_runs(model)
     # 分割线（上面）
     sep = Line.of("\u2501" * max(1, width - 2), _S_SEP)
     # 状态行（下面）

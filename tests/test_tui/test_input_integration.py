@@ -39,7 +39,6 @@ class TestInputBottomBarEngineIntegration:
                 fd=fd,
                 history_file=tmp_path / "test_history",
                 term_width_cache=mock_width_cache,
-                cursor_tracker=MagicMock(),
             )
             yield inp
         finally:

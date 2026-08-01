@@ -13,8 +13,6 @@ from ..msg_index import MsgIndexState, assign_msg_index
 from ..display import WebDisplay
 from ..bridge import WebEventBridge
 from ..adapter import UIDisplayAdapter
-from ..types import msg_round_cost
-from ...tui._cost import compute_round_cost_data
 
 _logger = logging.getLogger(__name__)
 
@@ -167,27 +165,12 @@ def _setup_connection(ws, session, ws_send, select_id_tracker=None):
                         session_elapsed=0, messages=None, **kw):
         if not delta or not total:
             return
-        data = compute_round_cost_data(
-            delta_in=delta.get("input", 0),
-            delta_out=delta.get("output", 0),
-            delta_calls=delta.get("calls", 0),
-            model=model or session.model,
-            prices=prices or {"input": 0.01, "output": 0.03},
-            total_stats=total,
-            session_elapsed=session_elapsed or 0,
-            messages=messages,
-        )
-        # ★ 费用降级（2026-07-31，计划步骤 3）：src/tui/_cost.py 已 DEPRECATED
-        #   （费用计算移除，返回全零兼容占位）。检测到空/全零数据时跳过推送，
-        #   避免向前端展示假费用。前端字段消费位置未在关联列表，
-        #   需委派 map 补充分析（步骤 3 委派清单），此处仅做后端最小降级。
-        if not data:
-            _logger.debug("cost_update 收到但费用数据为空，跳过 round_cost 推送（费用计算已移除）")
-            return
-        if all(v in (0, 0.0, "", None) for v in data.values()):
-            _logger.debug("cost_update 收到但费用数据为全零占位，跳过 round_cost 推送（费用计算已移除）")
-            return
-        _tracked_send(msg_round_cost(data))
+        # ★ 费用计算已移除（2026-08-01 计划步骤 3）：src/tui/_cost.py 已删除，
+        #   不再推送 round_cost，避免向前端展示假费用。
+        #   保留 handler 签名/注册/返回值契约（routing/context.py 通过
+        #   session.off("cost_update", self._cost_handler) 注销该 handler）。
+        _logger.debug("cost_update 收到但费用计算已移除（src/tui/_cost.py 已删除），跳过 round_cost 推送")
+        return
 
     session.on("cost_update", _on_cost_update)
     _logger.debug("cost_update handler 已注册 (handler_id=%s)", hex(id(_on_cost_update)))

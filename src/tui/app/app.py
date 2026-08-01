@@ -8,7 +8,6 @@
 from __future__ import annotations
 
 from src.tui.ink import h, APP, STATIC, BOX, TEXT, StyledRun
-from src.tui._animator import AnimatorContext
 from .chat_view import ChatView, register as _register_committed
 from .status_bar import StatusBar
 from .subagent_panel import SubAgentPanel
@@ -21,11 +20,9 @@ def App(props) -> object:
     Props:
         model: AppModel 实例。
         width: 终端宽度。
-        animator: 动画时钟（可选）。
     """
     model = props["model"]
     width = props.get("width", 80)
-    animator = props.get("animator") or AnimatorContext.get_default()
 
     input_props = {
         "text": model.input_text,
@@ -35,14 +32,13 @@ def App(props) -> object:
         "status_active": model.status.status_active,
         "cpu": model.status.cpu,
         "mem": model.status.mem,
-        "animator": animator,
     }
 
     children = [
         h(STATIC, None, [h(ChatView, {"model": model})]),
         h(_ParseLine, {"model": model}),
         h(SubAgentPanel, {"model": model, "width": width}),
-        h(StatusBar, {"model": model, "width": width, "animator": animator}),
+        h(StatusBar, {"model": model, "width": width}),
         h("input-area", input_props),
     ]
     return h(APP, {"width": width}, children)
@@ -59,8 +55,11 @@ def _ParseLine(props) -> object:
 
 
 def build_app_element(model, width: int, animator=None) -> object:
-    """构建根元素（session 渲染入口）。"""
-    return h(App, {"model": model, "width": width, "animator": animator})
+    """构建根元素（session 渲染入口）。
+
+    animator: 保留参数（兼容旧调用面），App 组件已不使用动画上下文。
+    """
+    return h(App, {"model": model, "width": width})
 
 
 # 模块导入时注册 input-area / committed-chat host 组件

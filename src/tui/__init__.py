@@ -10,7 +10,6 @@
   _config.py                — TuiConfig 配置 dataclass
   _const.py                 — RenderCommand / FrameworkCommand / ChatCommand 枚举
   _screen.py                — 纯 ANSI 终端屏幕管理（尺寸/光标/滚动/颜色/SIGWINCH）
-  _buffer.py                — RenderBuffer 二维字符渲染缓冲区
   _input.py                 — Input 统一输入管理（stdin 读取/解析/缓冲/历史/补全）
   _input_parser.py          — InputParser ANSI 解析策略（Input 组合持有委托）
   _dispatcher.py            — EventDispatcher（DisplayEvent → RenderCommand 过滤+入队）
@@ -18,11 +17,8 @@
   _completion.py            — _CmplHandler 补全处理器
   _completion_engine.py     — CompletionEngine 终端补全引擎（/命令/路径/参数补全，
                               供 EscapeMonitor Tab 回调使用；与 _completion.py 平行存在）
-  _animator.py              — 最小动画上下文存根（替换已删除 animation/）
   _assembly.py              — TuiAssembly 子系统装配工厂
   _base_display.py          — 显示抽象基类（被 webui 引用）
-  _cost.py                  — 费用计算占位（DEPRECATED，全零占位兼容旧调用方）
-  _cursor_tracker.py        — CursorTracker 全局光标坐标追踪器
   _diff_renderer.py         — 差异渲染（纯函数，被 core/tools/webui 引用）
   _input_orchestrator.py    — TuiInputOrchestrator 输入等待编排器
   _lifecycle.py             — TuiLifecycle 生命周期管理（start/stop/suspend/resume）
@@ -43,7 +39,7 @@
   app/                      — 应用组件与模型（AppModel + apply_cmd + 组件树）
 
 Layer 层次（由底向上）：
-  _config → _const → _screen → _buffer → _input → _dispatcher → ink/app → _consumer
+  _config → _const → _screen → _input → _dispatcher → ink/app → _consumer
 """
 
 from __future__ import annotations
@@ -57,11 +53,6 @@ from ._config import TuiConfig
 # 命令枚举
 # ═══════════════════════════════════════════════════════════
 from ._const import RenderCommand, FrameworkCommand, ChatCommand
-
-# ═══════════════════════════════════════════════════════════
-# 核心抽象
-# ═══════════════════════════════════════════════════════════
-from ._buffer import RenderBuffer
 
 # ═══════════════════════════════════════════════════════════
 # 输入系统
@@ -127,8 +118,6 @@ __all__ = [
     "RenderCommand",
     "FrameworkCommand",
     "ChatCommand",
-    # 核心抽象
-    "RenderBuffer",
     # 输入系统
     "Input",
     "KeyEvent",

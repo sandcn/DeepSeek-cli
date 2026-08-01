@@ -60,15 +60,11 @@ _logger = logging.getLogger(__name__)
 # 光标视觉位置计算（内联自 widgets/bottom_bar/cursor.py）
 # 使用 wcswidth_simple() 替代 wcwidth.wcswidth()
 # ═══════════════════════════════════════════════════════════
-# 唯一真源（步骤 5.1 确认）：本文件（_input.py）提供 _compute_cursor_visual_pos /
+# 唯一真源：本文件（_input.py）提供 _compute_cursor_visual_pos /
 # _expand_tabs / _tab_pos_to_expanded / _wrap_by_width / _TAB_WIDTH 的实现，
-# _bar.py / _render.py / _layout.py 均从此处导入，无重复实现（主路径
-# Input.compute_cursor 与兜底 _BottomBar.compute_cursor_position 引用同一实现）。
-# 暂缓标注（步骤 5.1）：不再迁移至 _bottom_bar/_layout_utils.py —— 迁移将引入
-# _input.py → _bottom_bar 反向依赖（input 为底层组件），且本文件为高风险大文件；
-# 后续如需迁移，须先解决依赖方向与循环导入问题（与方向④ 上帝类评估合并推进）。
+# Input.compute_cursor 引用同一实现。
 
-_TAB_WIDTH = 4  # 制表符宽度（列数）—— 唯一真源（_layout.py 从此处导入）
+_TAB_WIDTH = 4  # 制表符宽度（列数）—— 唯一真源
 
 
 def _expand_tabs(text: str, start_col: int = 0, tab_width: int | None = None) -> str:
@@ -302,7 +298,6 @@ class Input:
         fd: stdin 文件描述符（sys.stdin.fileno()）
         history_file: 历史文件路径
         term_width_cache: 可选，默认使用 TerminalWidthCache.get_default()
-        cursor_tracker: 可选，全局光标追踪器
     """
 
     def __init__(
@@ -310,7 +305,6 @@ class Input:
         fd: int,
         history_file: Path,
         term_width_cache: "TerminalWidthCache | None" = None,
-        cursor_tracker=None,
     ) -> None:
         # ANSI 解析策略对象（方向⑤：解析算法族提取至 _input_parser.py）
         self._parser = InputParser()
@@ -318,7 +312,6 @@ class Input:
             term_width_cache if term_width_cache is not None
             else TerminalWidthCache.get_default()
         )
-        self._cursor_tracker = cursor_tracker
 
         # ── 职责拆分（方向A 步骤1） ──
         self._io = InputIO(fd=fd)
@@ -937,7 +930,7 @@ class Input:
 __all__ = [
     "Input",
     "KeyEvent",
-    # 跨模块 re-export 的私有符号（_bar.py / _render.py / _layout.py 从此处导入）
+    # 跨模块 re-export 的私有符号（供布局/光标计算外部模块导入）
     "_TAB_WIDTH",
     "_compute_cursor_visual_pos",
     "_expand_tabs",

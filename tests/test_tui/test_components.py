@@ -174,3 +174,30 @@ class TestFullDocument:
         assert fiber is not None
         assert fiber.layout_box is not None
         assert fiber.layout_box.h >= 3  # 上分隔 + 输入 + 下分隔
+
+
+class TestNoAnimatorDependency:
+    """app 组件无 _animator 运行时依赖（步骤 5 重构回归）。"""
+
+    def test_render_no_animator_dependency_regression(self):
+        """导入 app 组件模块不应触发 src.tui._animator 加载。"""
+        import sys
+
+        # 幂等：防止其他测试进程内已引入 src.tui._animator
+        sys.modules.pop("src.tui._animator", None)
+        import src.tui.app.app  # noqa: F401
+        import src.tui.app.input_area  # noqa: F401
+        import src.tui.app.status_bar  # noqa: F401
+        assert "src.tui._animator" not in sys.modules
+
+    def test_render_deterministic_regression(self):
+        """同一 model 连续两次渲染的 plain 行完全一致（确定性渲染）。"""
+        m = AppModel()
+        apply_cmd(m, UserMsgCmd(text="hi"))
+        apply_cmd(m, ContentCmd(text="answer\n"))
+        apply_cmd(m, PhaseDoneCmd(phase="content"))
+        m.status.status_active = True
+        m.status.model_name = "deepseek"
+        f1 = _frame(m)
+        f2 = _frame(m)
+        assert [l.plain for l in f1.lines] == [l.plain for l in f2.lines]

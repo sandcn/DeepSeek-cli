@@ -16,7 +16,6 @@ import pytest
 from unittest.mock import MagicMock
 
 from src.tui._const import is_agent_source
-from src.tui._cost import compute_round_cost_data
 from src.tui._consumer import ChatUIConsumer
 
 
@@ -49,6 +48,10 @@ class TestAppStartupImportChain:
             "src.tui._input_reader",
             "src.tui._locks",
             "src.tui._param_formatter",
+            "src.tui._buffer",
+            "src.tui._cursor_tracker",
+            "src.tui._cost",
+            "src.tui._animator",
         )
         for mod_name in deleted:
             with pytest.raises(ImportError):
@@ -88,37 +91,20 @@ class TestParamFormatterChain:
 # ═══════════════════════════════════════════════════════════
 
 class TestCostDegradeChain:
-    """_cost 全零占位 + webui 降级消费链路。"""
-
-    def test_cost_placeholder_all_zero_regression(self):
-        """compute_round_cost_data 返回全零占位（费用计算已移除）。"""
-        data = compute_round_cost_data(
-            delta_in=10,
-            delta_out=20,
-            delta_calls=2,
-            model="test-model",
-            prices={"input": 0.01, "output": 0.03},
-            total_stats={"input": 100, "output": 200},
-            session_elapsed=3,
-            messages=[],
-        )
-        assert data == {
-            "input_tokens": 0,
-            "output_tokens": 0,
-            "input_cost": 0.0,
-            "output_cost": 0.0,
-            "total_cost": 0.0,
-        }
-
-    def test_cost_placeholder_triggers_webui_degrade_regression(self):
-        """全零占位数据满足 webui 降级判断（connection.py 全零检测），不会推送假费用。"""
-        data = compute_round_cost_data(delta_in=1, delta_out=1, delta_calls=1)
-        # 与 src/webui/ws_handler/connection.py `_on_cost_update` 降级分支判断一致
-        assert all(v in (0, 0.0, "", None) for v in data.values())
+    """_cost 删除后 webui cost_update 链路（handler 契约保留，费用推送降级跳过）。"""
 
     def test_webui_connection_import_chain_regression(self):
         """webui ws_handler.connection 可正常导入（cost 消费链路完整）。"""
         import src.webui.ws_handler.connection  # noqa: F401
+
+    def test_webui_connection_no_cost_import_regression(self):
+        """webui ws_handler.connection 不再依赖 src.tui._cost（模块已删除）。"""
+        import sys
+
+        # 幂等：防止其他测试进程内已引入 src.tui._cost
+        sys.modules.pop("src.tui._cost", None)
+        import src.webui.ws_handler.connection  # noqa: F401
+        assert "src.tui._cost" not in sys.modules
 
 
 # ═══════════════════════════════════════════════════════════
