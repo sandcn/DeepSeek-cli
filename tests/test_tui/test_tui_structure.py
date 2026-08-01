@@ -26,11 +26,11 @@ def _src_tui() -> Path:
 class TestKeyDirectoriesExist:
     """关键子目录存在。"""
 
-    def test_bottom_bar_dir_exists(self) -> None:
-        assert (_src_tui() / "_bottom_bar").is_dir()
+    def test_ink_dir_exists(self) -> None:
+        assert (_src_tui() / "ink").is_dir()
 
-    def test_renderer_dir_exists(self) -> None:
-        assert (_src_tui() / "_renderer").is_dir()
+    def test_app_dir_exists(self) -> None:
+        assert (_src_tui() / "app").is_dir()
 
     def test_consumer_dir_exists(self) -> None:
         assert (_src_tui() / "consumer").is_dir()
@@ -53,7 +53,8 @@ class TestKeyModulesExist:
         "_input.py", "_consumer.py", "_completion.py", "_completion_engine.py",
         "_animator.py", "_cursor_tracker.py", "_stdout_tracker.py",
         "_diff_renderer.py", "_base_display.py", "_snapshot.py",
-        "_subagent_panel.py", "_tool_icons.py", "__init__.py",
+        "_subagent_panel.py", "_tool_icons.py", "_dispatcher.py",
+        "_ink_bridge.py", "__init__.py",
     ]
 
     def test_key_modules_exist(self) -> None:
@@ -71,7 +72,7 @@ class TestPublicApiExports:
     _PUBLIC_API = [
         "TuiConfig", "RenderCommand", "FrameworkCommand", "ChatCommand",
         "RenderBuffer", "Input", "KeyEvent", "ChatUIConsumer",
-        "get_active_chat_ui", "RenderState", "ChatRenderState", "ChatConfig",
+        "get_active_chat_ui", "AppModel", "ChatConfig",
         "render_diff_to_ansi", "show_file_diff", "BaseDisplay",
     ]
 
@@ -100,6 +101,7 @@ class TestDeletedOldDirectoriesNotRegress:
 
     _DELETED_DIRS = [
         "engine", "widgets", "terminal", "animation", "components", "frame",
+        "_bottom_bar", "_renderer",
     ]
 
     def test_old_directories_not_regress(self) -> None:
@@ -112,7 +114,7 @@ class TestDeletedOldFilesNotRegress:
 
     _DELETED_FILES = [
         "layout.py", "widget_base.py", "parallel_display.py",
-        "testing.py", "_exceptions.py", "_lazy.py",
+        "testing.py", "_exceptions.py", "_lazy.py", "_output.py",
     ]
 
     def test_old_files_not_regress(self) -> None:
@@ -130,8 +132,12 @@ class TestSubpackageStructure:
 
     def test_state_essential_files(self) -> None:
         state = _src_tui() / "state"
-        for fname in ["__init__.py", "_collection.py", "consumer_registry.py", "render_state.py"]:
+        for fname in ["__init__.py", "_collection.py", "consumer_registry.py"]:
             assert (state / fname).is_file(), f"state/{fname} 应存在"
+
+    def test_render_state_deleted(self) -> None:
+        """render_state.py 已并入 AppModel（应删除）。"""
+        assert not (_src_tui() / "state" / "render_state.py").exists()
 
     def test_events_essential_files(self) -> None:
         events = _src_tui() / "events"

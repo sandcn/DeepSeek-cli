@@ -14,11 +14,12 @@ import logging
 from typing import TYPE_CHECKING, Callable
 
 if TYPE_CHECKING:
-    from src.tui._renderer import TuiEngine, TuiRenderer, EventDispatcher
-    from src.tui._bottom_bar import _BottomBar
+    from src.tui.ink.session import InkSession
+    from src.tui._ink_bridge import InkBridge
+    from src.tui._dispatcher import EventDispatcher
     from src.tui._input import Input
     from src.tui._completion import _CmplHandler
-    from src.tui.state.render_state import ChatRenderState
+    from src.tui.app.model import AppModel
     from src.tui.events.event_types import (
         ContentChunkEvent,
         ModelPhaseEvent,
@@ -83,10 +84,10 @@ class ChatUIConsumer:
             on_display_messages=self._display_messages_handler,
         )
         self._rs = result.rs
-        self._engine: "TuiEngine" = result.engine
-        self._bb: "_BottomBar" = result.bb
+        self._engine: "InkSession" = result.engine
+        self._bb: "InkBridge" = result.bb
         self._dispatcher: "EventDispatcher" = result.dispatcher
-        self._renderer: "TuiRenderer" = result.renderer
+        self._renderer = result.renderer
         self._cmpl_handler: "_CmplHandler" = result.cmpl_handler
         self._input: "Input" = result.input_instance
         self._subagent_controller = result.subagent_controller
@@ -291,8 +292,8 @@ class ChatUIConsumer:
 
     def refresh_bottom_bar(self, text: str, cursor_pos: int = -1) -> None:
         effective_pos = len(text) if cursor_pos < 0 else cursor_pos
-        self._bb.set_input_state(text, effective_pos)
-        self._engine.request_bottom_redraw()
+        # ink 模型：输入状态注入 AppModel + 重渲染
+        self._engine.update_input(text, effective_pos)
 
     def flush(self, timeout: float | None = 5.0) -> None:
         self._engine.flush(timeout=timeout)

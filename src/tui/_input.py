@@ -857,6 +857,14 @@ class Input:
         """
         self._dispatcher.set_auto_completion_callback(cb)
 
+    def set_input_hook_router(self, router) -> None:
+        """设置 input hook router（委托 InputDispatcher，ink useInput 钩子）。
+
+        router 签名: ``(event: KeyEvent) -> bool`` —— True=消费（跳过旧回调
+        路径），False=放行（走旧路径）。None 可清除注入。
+        """
+        self._dispatcher.set_input_hook_router(router)
+
     def set_interrupt_callback(self, cb) -> None:
         """设置中断回调（方向A 步骤1 注入点）。
 

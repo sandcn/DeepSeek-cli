@@ -18,9 +18,10 @@ import threading
 from typing import TYPE_CHECKING, Callable
 
 if TYPE_CHECKING:
-    from src.tui._renderer import TuiEngine, EventDispatcher
-    from src.tui._bottom_bar import _BottomBar
-    from src.tui.state.render_state import ChatRenderState
+    from src.tui.ink.session import InkSession
+    from src.tui._dispatcher import EventDispatcher
+    from src.tui._ink_bridge import InkBridge
+    from src.tui.app.model import AppModel
     from src.tui.events.event_bus import DisplayEventBus
 
 from src.tui._const import SplashCmd
@@ -38,10 +39,10 @@ class TuiLifecycle:
 
     def __init__(
         self,
-        engine: "TuiEngine",
+        engine: "InkSession",
         bus: "DisplayEventBus",
-        bb: "_BottomBar",
-        rs: "ChatRenderState",
+        bb: "InkBridge",
+        rs: "AppModel",
         dispatcher: "EventDispatcher",
         subagent_controller=None,
     ):
@@ -133,10 +134,21 @@ class TuiLifecycle:
             self._engine.flush()
             self._engine.stop()
             with render_lock:
-                self._rs.close_all()
+                self._safe_close_all(self._rs)
                 self._bb.teardown()
             self._started = False
             self._bound_handlers = None
+
+    @staticmethod
+    def _safe_close_all(rs) -> None:
+        """关闭所有渲染通道（AppModel.flush_open_channels 或旧 close_all）。"""
+        closer = getattr(rs, "flush_open_channels", None) or getattr(rs, "close_all", None)
+        if closer is None:
+            return
+        try:
+            closer()
+        except Exception:
+            _logger.debug("close_all/flush_open_channels 异常", exc_info=True)
 
     def suspend(self) -> None:
         """暂停渲染引擎，供交互式工具独占终端。"""

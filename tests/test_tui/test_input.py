@@ -13,6 +13,7 @@
 from __future__ import annotations
 
 import os
+import select
 import tempfile
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -2207,3 +2208,105 @@ class TestWaitUntilReadyFacade:
         assert inp.wait_until_ready(timeout=5.0) is True
         assert inp.get_queued_input() == "threaded"
         t.join()
+
+
+# ═══════════════════════════════════════════════════════════
+# input hook router 分发路径（步骤 8 useInput 钩子优先分发）
+# ═══════════════════════════════════════════════════════════
+
+class TestInputHookRouterFacade:
+    """Input 薄外观 set_input_hook_router 委托 + 钩子优先分发。
+
+    验证：
+    1. set_input_hook_router 经外观委托 InputDispatcher
+    2. router 消费（返回 True）→ 跳过旧回调路径
+    3. router 放行（返回 False）/ 未注入 → 走旧路径（零行为变化）
+    4. read_stdin_once 内联分发经 router（char 键消费/放行）
+    """
+
+    @pytest.fixture
+    def inp(self, tmp_path):
+        """创建 Input 实例（P2-7：fixture 确保 fd 关闭）。"""
+        fd = os.open("/dev/null", os.O_RDONLY)
+        try:
+            yield Input(fd=fd, history_file=tmp_path / "history")
+        finally:
+            os.close(fd)
+
+    def test_set_input_hook_router_delegates_to_dispatcher(self, inp):
+        """set_input_hook_router 委托 InputDispatcher。"""
+        router = lambda ev: False
+        inp.set_input_hook_router(router)
+        assert inp._dispatcher._input_hook_router is router
+
+    def test_router_consumes_char_skips_buffer(self, inp):
+        """router 消费 char → 不插入缓冲区（跳过旧回调路径）。"""
+        inp.set_input_hook_router(lambda ev: True)
+        inp._dispatch_key_event(KeyEvent(kind="char", char="X"))
+        assert inp.get_current_text() == ""
+
+    def test_router_releases_char_to_buffer(self, inp):
+        """router 放行 char → 插入缓冲区（走旧路径）。"""
+        inp.set_input_hook_router(lambda ev: False)
+        inp._dispatch_key_event(KeyEvent(kind="char", char="X"))
+        assert inp.get_current_text() == "X"
+
+    def test_no_router_unchanged(self, inp):
+        """未注入 router → 零行为变化。"""
+        inp._dispatch_key_event(KeyEvent(kind="char", char="X"))
+        assert inp.get_current_text() == "X"
+
+    def test_router_consumes_enter_blocks_submit(self, inp):
+        """router 消费 enter → 不提交（无排队输入）。"""
+        inp.handle_chars("test")
+        inp.set_input_hook_router(lambda ev: True)
+        with patch("src.tui._input._append_to_history_file", return_value=True):
+            inp._dispatch_key_event(KeyEvent(kind="enter"))
+        assert not inp.has_queued_input()
+
+    def test_router_release_enter_commits(self, inp):
+        """router 放行 enter → 正常提交。"""
+        inp.handle_chars("test")
+        inp.set_input_hook_router(lambda ev: False)
+        with patch("src.tui._input._append_to_history_file", return_value=True):
+            inp._dispatch_key_event(KeyEvent(kind="enter"))
+        assert inp.has_queued_input()
+        assert inp.get_queued_input() == "test"
+
+    def test_router_exception_isolated(self, inp):
+        """router 异常 → 放行（走旧路径，不阻断）。"""
+        inp.set_input_hook_router(lambda ev: (_ for _ in ()).throw(ValueError("boom")))
+        inp._dispatch_key_event(KeyEvent(kind="char", char="X"))
+        assert inp.get_current_text() == "X"
+
+    def test_read_stdin_once_char_consumed(self, tmp_path):
+        """read_stdin_once 中 char 键被 router 消费（不插入缓冲区）。"""
+        r_fd, w_fd = os.pipe()
+        try:
+            inp = Input(fd=r_fd, history_file=tmp_path / "history")
+            inp.start_io()
+            inp.set_input_hook_router(lambda ev: True)
+            os.write(w_fd, b"a")
+            ready, _, _ = select.select([r_fd], [], [], 2.0)
+            assert ready
+            assert inp.read_stdin_once() is True
+            assert inp.get_current_text() == ""
+        finally:
+            os.close(w_fd)
+            os.close(r_fd)
+
+    def test_read_stdin_once_char_released(self, tmp_path):
+        """read_stdin_once 中 char 键被 router 放行 → 插入缓冲区。"""
+        r_fd, w_fd = os.pipe()
+        try:
+            inp = Input(fd=r_fd, history_file=tmp_path / "history")
+            inp.start_io()
+            inp.set_input_hook_router(lambda ev: False)
+            os.write(w_fd, b"a")
+            ready, _, _ = select.select([r_fd], [], [], 2.0)
+            assert ready
+            assert inp.read_stdin_once() is True
+            assert inp.get_current_text() == "a"
+        finally:
+            os.close(w_fd)
+            os.close(r_fd)

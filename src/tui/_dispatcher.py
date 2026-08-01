@@ -1,6 +1,7 @@
 """事件分发模块 — EventDispatcher DisplayEvent→RenderCommand 过滤+入队。
 
-从 ``_renderer.py`` 提取为独立子模块，ChatConfig 依赖替换为 filter_fn 注入。
+独立模块（2026-08-01 ink 重构：从 _renderer/ 迁出），ChatConfig 依赖替换为
+filter_fn 注入。``push_cmd`` 由装配层注入（InkSession.push_cmd）。
 """
 
 from __future__ import annotations

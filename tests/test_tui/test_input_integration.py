@@ -1,20 +1,26 @@
-"""集成测试：Input → _BottomBar → TuiEngine 光标定位闭环（适配统一 Input 类）。
+"""集成测试：Input → InkSession 光标定位（ink 非全屏流动模型）。
 
-验证 _BottomBar 适配统一 Input 类后的端到端光标定位正确性。
+验证 InkSession._position_cursor 经 input-area fiber 的 layout_box +
+_compute_cursor_visual_pos 计算光标位置。
 """
 
 from __future__ import annotations
 
+import io
 import os
 import pytest
 from unittest.mock import MagicMock, patch
 from pathlib import Path
 
 from src.tui.input import Input
+from src.tui.ink.session import InkSession
+from src.tui.app.model import AppModel
+from src.tui.app.app import build_app_element
+from src.tui._input import _compute_cursor_visual_pos
 
 
 class TestInputBottomBarEngineIntegration:
-    """验证 Input → _BottomBar → TuiEngine 的光标定位闭环。"""
+    """验证 Input → InkSession 的光标定位。"""
 
     @pytest.fixture
     def mock_width_cache(self):
@@ -26,72 +32,80 @@ class TestInputBottomBarEngineIntegration:
 
     @pytest.fixture
     def mock_input(self, mock_width_cache, tmp_path):
-        """创建 mock Input 实例。"""
+        """创建 Input 实例。"""
         fd = os.open("/dev/null", os.O_RDONLY)
-        inp = Input(
-            fd=fd,
-            history_file=tmp_path / "test_history",
-            term_width_cache=mock_width_cache,
-            cursor_tracker=MagicMock(),
+        try:
+            inp = Input(
+                fd=fd,
+                history_file=tmp_path / "test_history",
+                term_width_cache=mock_width_cache,
+                cursor_tracker=MagicMock(),
+            )
+            yield inp
+        finally:
+            os.close(fd)
+
+    def test_engine_injected_input_processes_stdin(self):
+        """回归：装配后 InkSession._input 已注入，渲染循环可读取 stdin。
+
+        旧 bug：_assembly 未调用 session.set_input(input_instance) →
+        _phase_process_input() 恒空转 → 用户无法输入。
+        """
+        import os
+        import select
+        import sys as _sys
+
+        class _FakeStdin:
+            def fileno(self):
+                return 0
+
+        with patch.object(_sys, "stdin", _FakeStdin()):
+            from src.tui._assembly import TuiAssembly
+            result = TuiAssembly.assemble()
+
+        assert result.engine._input is result.input_instance
+        r_fd, w_fd = os.pipe()
+        try:
+            inp = result.input_instance
+            inp._fd = r_fd
+            inp.start_io()
+            os.write(w_fd, b"hello")
+            ready, _, _ = select.select([r_fd], [], [], 2.0)
+            assert ready
+            result.engine._phase_process_input()
+            result.engine.flush(timeout=3.0)
+            assert result.rs.input_text == "hello"
+        finally:
+            os.close(w_fd)
+            os.close(r_fd)
+
+    def test_engine_position_cursor_finds_input_fiber(self, mock_width_cache):
+        """InkSession._position_cursor 找到 input-area fiber 并计算光标。"""
+        model = AppModel()
+        model.input_text = "test input"
+        model.input_cursor = 5
+        session = InkSession(
+            model=model,
+            apply_cmd=None,
+            build_tree=build_app_element,
+            width_cache=mock_width_cache,
+            stream=io.StringIO(),
         )
-        # Mock compute_cursor 返回值
-        inp.compute_cursor = MagicMock(return_value=(20, 5, 0, 2))
-        return inp
+        session._render_frame()
+        # 渲染后光标已写入流（place_cursor）
+        assert session._ink_renderer.cursor_row >= 1
 
-    @pytest.fixture
-    def mock_bottom_bar(self, mock_input, mock_width_cache):
-        """创建注入了 Input 的 _BottomBar mock。"""
-        from src.tui._bottom_bar import _BottomBar
-
-        bb = _BottomBar()
-        bb._width_cache = mock_width_cache
-        bb.set_input(mock_input)
-        bb._active = True
-        bb._last_text = "test input"
-        bb._last_rendered_text = "test input"
-        bb._input_cursor_pos = 10
-        bb._last_bottom_lines = 8
-        bb._completion._popup_height = 0
-        return bb
-
-    def test_engine_position_cursor_delegates_through_bb(self, mock_bottom_bar, mock_input):
-        """验证 TuiEngine._position_cursor 通过 _BottomBar 间接使用 Input。"""
-        # 模拟 Engine 调用 _position_cursor
-        # 该路径：bb.get_cursor_info() → bb.compute_cursor_position() → Input.compute_cursor()
-
-        text, cursor_pos, h, w = mock_bottom_bar.get_cursor_info()
-        assert text == "test input"
-        assert cursor_pos == 10
-
-        r_cursor, cursor_col = mock_bottom_bar.compute_cursor_position(
-            text, cursor_pos, h, w,
-        )
-        assert r_cursor == 20
-        assert cursor_col == 5
-
-        # 验证 Input.compute_cursor 被调用
-        mock_input.compute_cursor.assert_called()
-
-    def test_cursor_position_consistency(self, mock_bottom_bar, mock_input, mock_width_cache):
-        """验证同一输入下 compute_cursor_position 和 ensure_cursor_in_lower 光标一致。"""
-        # compute_cursor_position 路径
+    def test_cursor_visual_pos_consistency(self):
+        """_compute_cursor_visual_pos 多行输入光标一致。"""
         text = "hello world"
-        pos = 11
-        r1, c1 = mock_bottom_bar.compute_cursor_position(text, pos, 24, 80)
-
-        # 重置 mock 调用计数
-        mock_input.compute_cursor.reset_mock()
-        mock_input.compute_cursor.return_value = (r1, c1, 0, 5)
-
-        # ensure_cursor_in_lower 路径
-        mock_bottom_bar._last_rendered_text = text
-        mock_bottom_bar._input_cursor_pos = pos
-
-        with patch('sys.__stdout__'):
-            mock_bottom_bar.ensure_cursor_in_lower()
-
-        # 两条路径均委托到 Input.compute_cursor
-        assert mock_input.compute_cursor.called
+        vis_row, vis_col = _compute_cursor_visual_pos(text, 11, 76)
+        assert vis_row == 0
+        assert vis_col == 11
+        # 多行：第二行光标（"line one\n" 占 9 字符，光标 14 → 第二行第 5 列）
+        multi = "line one\nline two"
+        row2, col2 = _compute_cursor_visual_pos(multi, 14, 76)
+        assert row2 == 1
+        assert col2 == 5
 
     def test_refresh_bottom_bar_updates_input_state(self, mock_input):
         """验证 ChatUIConsumer.refresh_bottom_bar 同步更新 Input 状态。"""
@@ -113,11 +127,8 @@ class TestInputBottomBarEngineIntegration:
 
         consumer.refresh_bottom_bar("new text", 5)
 
-        # Input IS source of truth — refresh_bottom_bar no longer syncs back to InputBuffer
-        # 验证 _BottomBar 被更新
-        bb.set_input_state.assert_called_once_with("new text", 5)
-        # 验证重绘请求被触发
-        engine.request_bottom_redraw.assert_called_once()
+        # ink 模型：输入状态注入 engine（InkSession.update_input → AppModel）
+        engine.update_input.assert_called_once_with("new text", 5)
 
 
 # ═══════════════════════════════════════════════════════════

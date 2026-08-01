@@ -389,6 +389,132 @@ def _create_mock_consumer(mock_assemble):
     return c
 
 
+class TestInkBridgeCompat:
+    """InkBridge 兼容 user_select 等对 _BottomBar 内部字段的直接访问。
+
+    回归：user_select 读写 bb._last_text / _completion_idx / _completion._visible
+    等内部字段，InkBridge 缺失曾导致 AttributeError。
+    """
+
+    @pytest.fixture
+    def bridge(self):
+        import sys
+
+        class _FakeStdin:
+            def fileno(self):
+                return 0
+
+        with patch.object(sys, "stdin", _FakeStdin()):
+            from src.tui._assembly import TuiAssembly
+            result = TuiAssembly.assemble()
+        return result.bb, result.rs
+
+    def test_last_text_maps_to_model(self, bridge):
+        bb, model = bridge
+        model.input_text = "typing"
+        assert bb._last_text == "typing"
+        bb._last_text = ""
+        assert model.input_text == ""
+
+    def test_completion_idx_maps_to_model(self, bridge):
+        bb, model = bridge
+        bb.show_completions(["a", "b"], 0, texts=["a", "b"])
+        assert bb._completion_idx == 0
+        bb.cycle_completion(1)
+        assert bb._completion_idx == 1
+        assert model.completion.selected == 1
+        bb._completion_idx = 0
+        assert model.completion.selected == 0
+
+    def test_completion_internal_cleanup(self, bridge):
+        bb, model = bridge
+        bb.show_completions(["a", "b"], 0, texts=["a", "b"])
+        assert model.completion.visible is True
+        bb._completion._visible = False
+        bb._completion._popup_height = 0
+        bb._completion._items = []
+        bb._completion._texts = []
+        bb.force_redraw()
+        assert model.completion.visible is False
+        assert model.completion.items == []
+
+    def test_misc_internal_fields(self, bridge):
+        bb, model = bridge
+        assert bb._MIN_HEIGHT == 12
+        assert bb._last_bottom_lines == 5
+        assert bb._bottom_lines == 5
+        assert bb._last_scroll_end == 0
+        assert bb.is_active is True
+        bb.force_redraw()  # 不抛异常
+        bb.set_active(False)  # no-op
+
+
+class TestUserSelectSyncRender:
+    """user_select 挂起期间补全弹窗同步渲染回归。
+
+    回归：_run_interactive 在 user_select 前 chat_ui.suspend()（render 线程停止），
+    旧实现弹窗依赖 render 线程渲染 → suspend 期间不显示。
+    """
+
+    @pytest.fixture
+    def session_pair(self):
+        import io
+        import sys
+
+        class _FakeStdin:
+            def fileno(self):
+                return 0
+
+        with patch.object(sys, "stdin", _FakeStdin()):
+            from src.tui.app.model import AppModel
+            from src.tui.app.apply import apply_cmd
+            from src.tui.app.app import build_app_element
+            from src.tui.ink.session import InkSession
+            from src.tui._ink_bridge import InkBridge
+            from src.tui._const import UserMsgCmd
+
+            model = AppModel()
+            apply_cmd(model, UserMsgCmd(text="hi"))
+            stream = io.StringIO()
+            session = InkSession(
+                model=model, apply_cmd=apply_cmd,
+                build_tree=build_app_element, stream=stream,
+            )
+            bridge = InkBridge(model, session)
+            return session, bridge, stream, model
+
+    def test_popup_renders_while_suspended(self, session_pair):
+        """suspend 后 show_completions 同步渲染（弹窗立即可见）。"""
+        session, bridge, stream, model = session_pair
+        session.start()
+        session.flush(timeout=3.0)
+        session.suspend()
+        stream.seek(0)
+        stream.truncate()
+        bridge.show_completions(["1. read_file", "2. write_file"], 0,
+                                texts=["read_file", "write_file"], title="选择")
+        assert "read_file" in stream.getvalue(), "suspend 期间弹窗应同步渲染"
+        session.resume()
+        session.flush(timeout=3.0)
+        session.stop()
+
+    def test_cycle_triggers_redraw_while_suspended(self, session_pair):
+        """suspend 期间 cycle_completion 触发重绘（高亮移动）。"""
+        session, bridge, stream, model = session_pair
+        session.start()
+        session.flush(timeout=3.0)
+        session.suspend()
+        bridge.show_completions(["a", "b"], 0, texts=["a", "b"])
+        stream.seek(0)
+        stream.truncate()
+        bridge.cycle_completion(1)
+        assert len(stream.getvalue()) > 0, "cycle 应触发同步重绘"
+        assert model.completion.selected == 1
+        session.resume()
+        session.flush(timeout=3.0)
+        session.stop()
+
+
 class TestSharedSourceFilterAndTruncation:
     """测试步骤 4.2/4.3 收敛的公共函数 — _const.is_agent_source / truncate_error_message。
 
@@ -594,122 +720,105 @@ class TestStreamToRenderOrdering:
     """
 
     def test_same_batch_content_before_phase_done(self):
-        from src.tui._renderer import EventDispatcher, TuiEngine
+        """事件生成顺序 → 入队顺序 → AppModel 块顺序（内容先于完成）。"""
+        from src.tui._dispatcher import EventDispatcher
+        from src.tui.ink.session import InkSession
+        from src.tui.app.model import AppModel
+        from src.tui.app.apply import apply_cmd
         from src.tui.events.event_bus import DisplayEventBus
         from src.tui.events.event_types import (
             ContentChunkEvent, PhaseDoneEvent, ReasoningChunkEvent,
         )
-        from src.tui._const import RenderCommand
 
         DisplayEventBus.reset_default()
         try:
             bus = DisplayEventBus.get_default()
-            renderer = MagicMock()
-            renderer._is_batchable.return_value = False  # 全部走单条 render()
-            bb = MagicMock()
-            bb.is_active = False
-            engine = TuiEngine(renderer, bb)
-            dispatcher = EventDispatcher(push_cmd=engine.push_cmd, main_label="main")
-            # 按事件类型订阅（勿订阅所有事件：各 handler 内部不做类型判空，
-            # 订阅全部会导致非本类型事件被误处理入队）
+            model = AppModel()
+            session = InkSession(model=model, apply_cmd=apply_cmd)
+            dispatcher = EventDispatcher(push_cmd=session.push_cmd, main_label="main")
             for event_type, handler in dispatcher.list_handlers().items():
                 bus.subscribe(handler, event_type)
 
             # 依序发布（reasoning 尾 → PhaseDone("reasoning") → content 首/尾 → PhaseDone("content")）
-            bus.publish(ReasoningChunkEvent(text="tail-thought", label="main"))
+            bus.publish(ReasoningChunkEvent(text="tail-thought\n", label="main"))
             bus.publish(PhaseDoneEvent(phase="reasoning", label="main"))
-            bus.publish(ContentChunkEvent(text="first", label="main"))
-            bus.publish(ContentChunkEvent(text="tail", label="main"))
+            bus.publish(ContentChunkEvent(text="first\n\n", label="main"))
+            bus.publish(ContentChunkEvent(text="tail\n\n", label="main"))
             bus.publish(PhaseDoneEvent(phase="content", label="main"))
 
-            class _FakeLock:
-                def __enter__(self):
-                    return True
-                def __exit__(self, *a):
-                    return False
+            # 排空队列并应用
+            drained = []
+            while not session._cmd_queue.empty():
+                _, _, cmd = session._cmd_queue.get_nowait()
+                drained.append(cmd)
+            for cmd in drained:
+                apply_cmd(model, cmd)
 
-            with patch(
-                "src.tui._renderer._engine._try_acquire_output_lock",
-                return_value=_FakeLock(),
-            ):
-                engine._drain_queue()
-
-            # 断言 renderer.render 调用顺序 cid
-            rendered_cids = [call.args[0].cid for call in renderer.render.call_args_list]
-            assert rendered_cids == [
-                RenderCommand.REASONING,
-                RenderCommand.PHASE_DONE,
-                RenderCommand.CONTENT,
-                RenderCommand.CONTENT,
-                RenderCommand.PHASE_DONE,
-            ], (
-                "同批内容命令应先于完成命令渲染，实际顺序: "
-                f"{[RenderCommand(c).name for c in rendered_cids]}"
-            )
+            # AppModel 块顺序：reasoning 先于 content
+            kinds = [b.kind for b in model.blocks]
+            assert kinds == ["reasoning", "content"], f"块顺序: {kinds}"
         finally:
             DisplayEventBus.reset_default()
 
     def test_non_main_label_content_not_enqueued(self):
         """label 非 main 的 ContentChunkEvent 不入队（_on_content_chunk label 过滤）。"""
-        from src.tui._renderer import EventDispatcher, TuiEngine
+        from src.tui._dispatcher import EventDispatcher
+        from src.tui.ink.session import InkSession
+        from src.tui.app.model import AppModel
+        from src.tui.app.apply import apply_cmd
         from src.tui.events.event_bus import DisplayEventBus
         from src.tui.events.event_types import ContentChunkEvent
 
         DisplayEventBus.reset_default()
         try:
             bus = DisplayEventBus.get_default()
-            renderer = MagicMock()
-            bb = MagicMock()
-            engine = TuiEngine(renderer, bb)
-            dispatcher = EventDispatcher(push_cmd=engine.push_cmd, main_label="main")
+            session = InkSession(model=AppModel(), apply_cmd=apply_cmd)
+            dispatcher = EventDispatcher(push_cmd=session.push_cmd, main_label="main")
             for event_type, handler in dispatcher.list_handlers().items():
                 bus.subscribe(handler, event_type)
 
             # 非 main label（如 SubAgent）的 ContentChunkEvent 不应入队
             bus.publish(ContentChunkEvent(text="subagent-content", label="agent-1"))
-            assert engine._cmd_queue.qsize() == 0
+            assert session._cmd_queue.qsize() == 0
         finally:
             DisplayEventBus.reset_default()
 
     def test_model_phase_answering_reopens_content(self):
-        """MainPhaseCmd("answering") 渲染时触发 reopen_content（多轮会话重开通道）。"""
-        from src.tui._renderer import EventDispatcher, TuiEngine
+        """MainPhaseCmd("answering") 入队 → apply_cmd 触发 reopen_content。"""
+        from src.tui._dispatcher import EventDispatcher
+        from src.tui.ink.session import InkSession
+        from src.tui.app.model import AppModel
+        from src.tui.app.apply import apply_cmd
         from src.tui.events.event_bus import DisplayEventBus
         from src.tui.events.event_types import ModelPhaseEvent
+        from src.tui._const import MainPhaseCmd, ContentCmd, PhaseDoneCmd
 
         DisplayEventBus.reset_default()
         try:
             bus = DisplayEventBus.get_default()
-            renderer = MagicMock()
-            renderer._is_batchable.return_value = False
-            bb = MagicMock()
-            bb.is_active = False
-            engine = TuiEngine(renderer, bb)
-            dispatcher = EventDispatcher(push_cmd=engine.push_cmd, main_label="main")
+            model = AppModel()
+            session = InkSession(model=model, apply_cmd=apply_cmd)
+            dispatcher = EventDispatcher(push_cmd=session.push_cmd, main_label="main")
             for event_type, handler in dispatcher.list_handlers().items():
                 bus.subscribe(handler, event_type)
 
-            # 每轮首个 content 前由 ContentHandler 发布 ModelPhaseEvent("answering")
+            # 首轮 content 关闭
+            apply_cmd(model, ContentCmd(text="x"))
+            apply_cmd(model, PhaseDoneCmd(phase="content"))
+            assert model.content_closed is True
+
+            # 每轮首个 content 前发布 ModelPhaseEvent("answering")
             bus.publish(ModelPhaseEvent(label="main", phase="answering", info=""))
+            drained = []
+            while not session._cmd_queue.empty():
+                _, _, cmd = session._cmd_queue.get_nowait()
+                drained.append(cmd)
+            for cmd in drained:
+                apply_cmd(model, cmd)
 
-            class _FakeLock:
-                def __enter__(self):
-                    return True
-                def __exit__(self, *a):
-                    return False
-
-            with patch(
-                "src.tui._renderer._engine._try_acquire_output_lock",
-                return_value=_FakeLock(),
-            ):
-                engine._drain_queue()
-
-            # MainPhaseCmd 入队并渲染：调用 rs.reopen_content（每轮 content 重开）
-            assert renderer.render.call_count == 1
-            cmd = renderer.render.call_args.args[0]
-            from src.tui._const import MainPhaseCmd
-            assert isinstance(cmd, MainPhaseCmd)
-            assert cmd.phase == "answering"
+            # MainPhaseCmd 应用后 content 通道重开
+            assert model.status.main_phase == "answering"
+            assert model.content_closed is False
         finally:
             DisplayEventBus.reset_default()
 

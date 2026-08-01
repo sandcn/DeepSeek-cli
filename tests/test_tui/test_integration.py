@@ -279,7 +279,7 @@ class TestSharedPredicates:
 
     def test_dispatcher_source_filter_uses_predicate_regression(self):
         """EventDispatcher 默认过滤函数收敛至 _const.is_agent_source。"""
-        from src.tui._renderer._dispatcher import EventDispatcher
+        from src.tui._dispatcher import EventDispatcher
 
         dispatcher = EventDispatcher(push_cmd=lambda cmd: None, filter_fn=None)
         assert dispatcher._default_filter_fn("agent") is True
@@ -325,7 +325,9 @@ class TestCrossDirectionIntegration:
             NotificationCmd,
         )
         from src.tui._consumer import ChatUIConsumer
-        from src.tui._renderer import TuiEngine, TuiRenderer
+        from src.tui.ink.session import InkSession
+        from src.tui.app.model import AppModel
+        from src.tui.app.apply import apply_cmd
 
         # ── 公开 API 链路：ChatUIConsumer.on_* → engine.push_cmd(RenderCmd) ──
         components = {
@@ -343,23 +345,21 @@ class TestCrossDirectionIntegration:
         assert isinstance(cmd, RenderCmd)
         assert cmd.text == "hi"
 
-        # ── 内部链路：engine._drain_queue → renderer.render → _do_* handler ──
-        rs = MagicMock()
-        adapter = MagicMock()
-        bb = MagicMock()
-        bb.is_active = False  # 跳过真实光标定位（_position_cursor）
-        renderer = TuiRenderer(rs, adapter, bb)
-        engine = TuiEngine(renderer, bb)
-        engine.push_cmd(ReasoningCmd(text="reason"))
-        engine.push_cmd(ToolCountIncCmd())
-        engine.push_cmd(NotificationCmd(text="notify"))
-        engine._drain_queue()
+        # ── 内部链路：InkSession.push_cmd → apply_cmd → AppModel ──
+        model = AppModel()
+        session = InkSession(model=model, apply_cmd=apply_cmd)
+        session.push_cmd(ReasoningCmd(text="reason"))
+        session.push_cmd(ToolCountIncCmd())
+        session.push_cmd(NotificationCmd(text="notify"))
+        drained = []
+        while not session._cmd_queue.empty():
+            _, _, c = session._cmd_queue.get_nowait()
+            drained.append(c)
+        session._apply_commands(drained)
 
-        rr = rs.get_reasoning()
-        rr.write.assert_called_once_with("reason")
-        bb.increment_tool.assert_called_once()
-        # NotificationCmd → render_batch 内联处理 → adapter.batch_write
-        adapter.batch_write.assert_called_once()
+        assert any(b.kind == "reasoning" for b in model.blocks)
+        assert model.status.tool_count == 1
+        assert any(b.kind == "notification" for b in model.blocks)
 
     def test_output_publisher_core_to_tui_chain_regression(self):
         """方向④：core DefaultOutputAdapter.write() 经工厂 → tui publish_output → EventBus。"""

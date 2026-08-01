@@ -16,7 +16,7 @@ import os
 
 if TYPE_CHECKING:
     from src.tui._completion_engine import CompletionEngine
-    from src.tui._bottom_bar import _BottomBar
+    from src.tui._ink_bridge import InkBridge
 
 
 def _get_match_prefix(items: list, last_word: str) -> str:
@@ -41,7 +41,7 @@ def _show_completions_for(bb, engine, text: str) -> bool:
     （防抖状态 ``_last_auto_text`` / 隐藏逻辑由调用方 _CmplHandler 管理）。
 
     Args:
-        bb: _BottomBar 实例（调用 show_completions）。
+        bb: InkBridge 实例（调用 show_completions）。
         engine: CompletionEngine 实例（调用 complete）。
         text: 当前输入缓冲区文本。
 
@@ -80,7 +80,7 @@ class _CmplHandler:
     """
 
     def __init__(
-        self, bottom_bar: "_BottomBar", engine: "CompletionEngine",
+        self, bottom_bar: "InkBridge", engine: "CompletionEngine",
         request_redraw: Callable[[], None],
     ):
         self._bb = bottom_bar

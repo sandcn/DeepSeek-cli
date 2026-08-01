@@ -116,6 +116,46 @@ _FULLWIDTH_RANGES: list[tuple[int, int]] = [
     (0xFFE0, 0xFFE6),   # Fullwidth Signs
 ]
 
+# Emoji 宽符号范围（终端以 2 列渲染；与 wcwidth 的 emoji-wide 集对齐）。
+# 1F000+ 主要 emoji 块恒宽；2600-27BF 仅列出的具体码点为宽
+# （⚠ 不包含 ✔✎⚙✕ 等文本呈现符号——它们宽度为 1，误计为 2 会导致表格错位）。
+_EMOJI_WIDE_RANGES: list[tuple[int, int]] = [
+    (0x1F000, 0x1FAFF),   # 主要 emoji 块（📖📄🔍 等）
+    (0x231A, 0x231B),     # ⌚⏳
+    (0x23E9, 0x23EC),     # ⏩⏪⏫⏬
+    (0x23F0, 0x23F0),     # ⏰
+    (0x23F3, 0x23F3),     # ⏳
+    (0x25FD, 0x25FE),     # ◽◾
+    (0x2614, 0x2615),     # ☔☕
+    (0x2648, 0x2653),     # 星座
+    (0x267F, 0x267F),     # ♿
+    (0x2693, 0x2693),     # ⚓
+    (0x26A1, 0x26A1),     # ⚡（shell 工具图标）
+    (0x26AA, 0x26AB),     # ⚪⚫
+    (0x26BD, 0x26BE),     # ⚽⚾
+    (0x26C4, 0x26C5),     # ⛄⛅
+    (0x26CE, 0x26CE),     # ⛎
+    (0x26D4, 0x26D4),     # ⛔
+    (0x26EA, 0x26EA),     # ⛪
+    (0x26F2, 0x26F3),     # ⛲⛳
+    (0x26F5, 0x26F5),     # ⛵
+    (0x26FA, 0x26FA),     # ⛺
+    (0x26FD, 0x26FD),     # ⛽
+    (0x2705, 0x2705),     # ✅
+    (0x270A, 0x270B),     # ✊✋
+    (0x2728, 0x2728),     # ✨
+    (0x274C, 0x274C),     # ❌
+    (0x274E, 0x274E),     # ❎
+    (0x2753, 0x2755),     # ❓❔❕（user_select 图标 ❓）
+    (0x2757, 0x2757),     # ❗
+    (0x2795, 0x2797),     # ➕➖➗
+    (0x27B0, 0x27B0),     # ➰
+    (0x27BF, 0x27BF),     # ➿
+    (0x2B1B, 0x2B1C),     # ⬛⬜
+    (0x2B50, 0x2B50),     # ⭐
+    (0x2B55, 0x2B55),     # ⭕
+]
+
 
 def _in_ranges(cp: int, ranges: list[tuple[int, int]]) -> bool:
     """检查码点是否在范围内。"""
@@ -149,6 +189,8 @@ def wcswidth_simple(text: str) -> int:
         elif _in_ranges(cp, _CJK_RANGES):
             width += 2
         elif _in_ranges(cp, _FULLWIDTH_RANGES):
+            width += 2
+        elif _in_ranges(cp, _EMOJI_WIDE_RANGES):
             width += 2
         elif _in_ranges(cp, _ZERO_WIDTH_RANGES):
             width += 0

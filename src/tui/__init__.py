@@ -13,8 +13,7 @@
   _buffer.py                — RenderBuffer 二维字符渲染缓冲区
   _input.py                 — Input 统一输入管理（stdin 读取/解析/缓冲/历史/补全）
   _input_parser.py          — InputParser ANSI 解析策略（Input 组合持有委托）
-  _bottom_bar/              — DECSTBM 分屏底部固定栏（目录：_bar/_layout/_layout_utils/_monitor/_popup/_render/_status）
-  _renderer/                — TuiEngine + TuiRenderer + EventDispatcher（目录：_dispatcher/_engine/_renderer）
+  _dispatcher.py            — EventDispatcher（DisplayEvent → RenderCommand 过滤+入队）
   _consumer.py              — ChatUIConsumer 兼容实现
   _completion.py            — _CmplHandler 补全处理器
   _completion_engine.py     — CompletionEngine 终端补全引擎（/命令/路径/参数补全，
@@ -27,7 +26,6 @@
   _diff_renderer.py         — 差异渲染（纯函数，被 core/tools/webui 引用）
   _input_orchestrator.py    — TuiInputOrchestrator 输入等待编排器
   _lifecycle.py             — TuiLifecycle 生命周期管理（start/stop/suspend/resume）
-  _output.py                — 统一渲染输出端口（RenderOutput 装饰 OutputAdapter）
   _output_target.py         — 输出目标协议存根（IOutputTarget）
   _snapshot.py              — Token 速度快照惰性加载共享模块
   _stdout_tracker.py        — _StdoutLineTracker stdout 行追踪（环形缓冲）
@@ -40,10 +38,12 @@
   core/                     — 核心工具（color/style/singleton）
   events/                   — UI 事件总线 + DisplayEvent 类型定义
   pipeline/                 — 消息编辑/显示管道（message_display/message_editor）
-  state/                    — 渲染/消费/输入/会话状态管理（consumer_registry/render_state）
+  state/                    — 消费/注册表状态管理（consumer_registry）
+  ink/                      — React Ink 风格组件框架（调和器 + flexbox 布局 + 非全屏渲染）
+  app/                      — 应用组件与模型（AppModel + apply_cmd + 组件树）
 
 Layer 层次（由底向上）：
-  _config → _const → _screen → _buffer → _input → _bottom_bar/ → _renderer/ → _consumer
+  _config → _const → _screen → _buffer → _input → _dispatcher → ink/app → _consumer
 """
 
 from __future__ import annotations
@@ -75,9 +75,9 @@ from ._consumer import ChatUIConsumer
 from .state.consumer_registry import get_active_chat_ui
 
 # ═══════════════════════════════════════════════════════════
-# 渲染状态
+# 应用模型（替代 RenderState/ChatRenderState — render_state.py 已并入 AppModel）
 # ═══════════════════════════════════════════════════════════
-from .state.render_state import RenderState, ChatRenderState
+from .app.model import AppModel
 
 # ═══════════════════════════════════════════════════════════
 # 聊天域配置
@@ -135,9 +135,8 @@ __all__ = [
     # 消费者
     "ChatUIConsumer",
     "get_active_chat_ui",
-    # 渲染状态
-    "RenderState",
-    "ChatRenderState",
+    # 应用模型
+    "AppModel",
     # 聊天域配置
     "ChatConfig",
     # 差异渲染

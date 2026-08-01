@@ -84,6 +84,12 @@ class InputDispatcher:
         self._captured_input: bytearray = bytearray()
         self._captured_lock = threading.Lock()
 
+        # ── input hook router（ink useInput 钩子优先分发） ──
+        # 注入路由回调后，_dispatch_key_event 先询问 router：返回 True=消费
+        # （跳过旧回调路径），False=放行（走旧路径，零行为变化）；router 异常
+        # 视为放行（不阻断输入）。None 缺省时行为与未注入完全一致。
+        self._input_hook_router = None
+
     # ═══════════════════════════════════════════════════════
     # 中断与特殊按键处理（render 线程调用）
     # ═══════════════════════════════════════════════════════
@@ -295,8 +301,22 @@ class InputDispatcher:
 
         Ctrl+G/O/N/R 等 ctrl_key 事件已在 read_stdin_once() 中拦截处理，
         此处分发不会收到 ctrl_key 分支。
+
+        步骤 8（ink useInput 钩子）：已注入 ``_input_hook_router`` 时先询问
+        router——返回 True 消费该事件（跳过旧回调路径）；返回 False 或抛异常
+        时放行（走旧路径，零行为变化）。read_stdin_once 内联分发（char 键等）
+        最终汇入本方法，故统一覆盖。
         """
         kind = event.kind
+
+        # ── ink useInput 钩子优先分发 ──
+        router = self._input_hook_router
+        if router is not None:
+            try:
+                if router(event):
+                    return  # 已消费，跳过旧回调路径
+            except Exception:
+                _logger.debug("input hook router 异常，放行事件", exc_info=True)
 
         if kind == "enter":
             self._dismiss_completion()
@@ -512,6 +532,17 @@ class InputDispatcher:
         None 缺省时 ``_do_interrupt`` 记 debug 日志并跳过（测试兼容）。
         """
         self._interrupt_callback = cb
+
+    def set_input_hook_router(self, router) -> None:
+        """设置 input hook router（步骤 8：ink useInput 钩子优先分发）。
+
+        router 签名: ``(event: KeyEvent) -> bool`` —— True=消费（跳过旧回调
+        路径），False=放行（走旧路径）。None 可清除注入。
+
+        Args:
+            router: 路由回调或 None。
+        """
+        self._input_hook_router = router
 
     def set_suppress_enter(self, suppress: bool) -> None:
         """设置 Enter 抑制标志（用于 editmsg 消息选择期间）。

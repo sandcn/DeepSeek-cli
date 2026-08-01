@@ -101,7 +101,6 @@ class TestAssemblyFullPipeline:
     def test_assembly_full_pipeline_regression(self):
         """assemble() 返回全部 9 个 slot；rs 绑定 render_output 后 get_content 可用且无 captured 绑定。"""
         from src.tui._assembly import TuiAssembly
-        from src.tui._output import RenderOutput
 
         result = TuiAssembly.assemble()
 
@@ -115,14 +114,20 @@ class TestAssemblyFullPipeline:
 
         # _components 命名空间与 input_instance 一致
         assert result.components.input is result.input_instance
+        # ★ Input 已注入 InkSession（render 循环依赖 _phase_process_input 读取 stdin，
+        #   未注入则用户无法输入）
+        assert result.engine._input is result.input_instance
 
-        # rs 绑定统一输出管线后 get_content 可创建渲染器（无 captured 绑定）
+        # AppModel 通道流式写入（apply_cmd 路径替代 get_content/get_reasoning）
         rs = result.rs
-        rs.set_output_adapter(result.renderer.output_adapter)
-        content_rr = rs.get_content()
-        assert content_rr is not None
-        reasoning_rr = rs.get_reasoning()
-        assert reasoning_rr is not None
+        from src.tui.app.apply import apply_cmd
+        from src.tui._const import ContentCmd, PhaseDoneCmd
+        apply_cmd(rs, ContentCmd(text="# Hi\n"))
+        apply_cmd(rs, PhaseDoneCmd(phase="content"))
+        assert any(
+            "Hi" in line.plain
+            for block in rs.blocks for line in block.lines
+        )
 
         # 方向C 步骤5：captured_* 机制已删除
         assert not hasattr(rs, "captured_reasoning_output")
