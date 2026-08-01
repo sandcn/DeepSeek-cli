@@ -27,26 +27,25 @@ _STYLE_HIGHLIGHT_BG = Style(fg=221)
 _CODE_THEME = "monokai"
 
 
-def _pygments_color_to_256(color) -> int | None:
-    """pygments Color → 256 色号（None 表示无前景色）。"""
-    if color is None:
+def _hex_to_256(hex_color: str) -> int | None:
+    """#RRGGBB → 256 色号（None 表示无前景色）。"""
+    if not hex_color or not hex_color.startswith("#"):
         return None
-    rgb = getattr(color, "rgb", None)
-    if rgb is None:
+    try:
+        r = int(hex_color[1:3], 16)
+        g = int(hex_color[3:5], 16)
+        b = int(hex_color[5:7], 16)
+    except (ValueError, IndexError):
         return None
-    r = (rgb >> 16) & 0xFF
-    g = (rgb >> 8) & 0xFF
-    b = rgb & 0xFF
     return rgb_to_256(r, g, b)
 
 
-def _token_style(pyg_style) -> Style:
-    """pygments token 样式 → tui Style（仅前景色）。"""
-    return Style(fg=_pygments_color_to_256(getattr(pyg_style, "color", None)))
-
-
 def _highlight_line(line: str, lexer, pyg_style) -> AnsiLine:
-    """单行代码词法高亮 → AnsiLine。"""
+    """单行代码词法高亮 → AnsiLine。
+
+    pygments 2.20：样式存于 ``Style.styles``（token → '#RRGGBB' 字符串），
+    无 ``get_style_for_token``。解析 hex → 256 色号。
+    """
     aline = AnsiLine()
     try:
         for ttype, value in lexer.get_tokens(line):
@@ -55,8 +54,8 @@ def _highlight_line(line: str, lexer, pyg_style) -> AnsiLine:
             val = value.rstrip("\n")
             if not val:
                 continue
-            style = pyg_style.get_style_for_token(ttype)
-            aline.append(val, _token_style(style))
+            fg = _hex_to_256(pyg_style.styles.get(ttype, ""))
+            aline.append(val, Style(fg=fg) if fg is not None else None)
         return aline
     except Exception:
         _logger.debug("代码高亮失败，降级纯文本", exc_info=True)
@@ -102,6 +101,7 @@ def render_code_block(
     lexer = get_lexer(lang) if lang and lang != "text" else None
     hl = set(highlight_lines or [])
     if lexer is not None:
+        # get_code_style 返回 pygments 样式类；_highlight_line 经 styles dict 取色
         pyg_style = get_code_style(theme)
         for idx, src_line in enumerate(source.split("\n"), start=1):
             aline = _highlight_line(src_line, lexer, pyg_style)

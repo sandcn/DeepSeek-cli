@@ -165,6 +165,18 @@ class TestCode:
         lines = render_code_block("a\nb", lang="text", highlight_lines=[1])
         assert lines  # 不抛异常
 
+    def test_code_syntax_highlight_colors(self):
+        """pygments 语法高亮：关键字/标识符/运算符取不同前景色。"""
+        lines = render_code_block("def add(a, b):\n    return a + b", lang="python")
+        line = next(l for l in lines if "def add" in l.plain)
+        runs = line.runs
+        # 关键字 def 与 标识符 add 应有非 None 前景色且不同
+        fg_def = [r.style.fg for r in runs if r.text == "def"]
+        fg_add = [r.style.fg for r in runs if r.text == "add"]
+        assert fg_def and fg_add
+        assert fg_def[0] is not None and fg_add[0] is not None
+        assert fg_def[0] != fg_add[0], "def 与 add 应不同色"
+
 
 class TestTable:
     def test_table_direct(self):
