@@ -100,20 +100,22 @@ def _glow(animator, base: int, hi: int, amp: int) -> int:
 
 
 def StatusBar(props) -> object:
-    """StatusBar 组件：状态文本靠左 + 分隔线填充右侧（与旧版分隔线一致）。"""
+    """StatusBar 组件：分割线一行在上，状态文本一行在下。"""
     model = props["model"]
     animator = props.get("animator") or AnimatorContext.get_default()
     width = props.get("width", 80)
     status_runs = _build_status_runs(model, animator)
-    line = Line.of("  ", None)  # 左侧缩进（与旧版底栏分隔线一致）
+    # 分割线（上面）
+    sep = Line.of("\u2501" * max(1, width - 2), _S_SEP)
+    # 状态行（下面）
+    status_line = Line.of("  ", None)
     if status_runs:
         for run in status_runs:
-            line.append_run(run)
-        line.append(" ", None)
-    # 分隔线填充剩余宽度（status 靠左、分隔线靠右）
-    sep_len = max(1, width - line.width)
-    line.append("\u2501" * sep_len, _S_SEP)
-    return h(BOX, None, [h(TEXT, {"styled": line.runs, "height": 1})])
+            status_line.append_run(run)
+    return h(BOX, None, [
+        h(TEXT, {"styled": sep.runs, "height": 1}),
+        h(TEXT, {"styled": status_line.runs, "height": 1}),
+    ])
 
 
 __all__ = ["StatusBar"]
