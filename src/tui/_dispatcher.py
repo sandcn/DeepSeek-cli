@@ -199,17 +199,20 @@ class EventDispatcher:
     def _on_tool_started(self, event: "ToolStartedEvent") -> None:
         if not self._is_agent_source(event.source) and not self._is_subagent_label(event.label):
             return
-        tool_id = event.tool_id or event.label
-        self._push_cmd(ToolOpenCmd(
-            tool_name=event.tool_name, tool_id=tool_id, detail=event.detail,
-        ))
+        # 主 agent 工具 → 上屏 box；subagent 工具 → 仅计数（面板自渲染）
+        if event.source == "agent":
+            tool_id = event.tool_id or event.label
+            self._push_cmd(ToolOpenCmd(
+                tool_name=event.tool_name, tool_id=tool_id, detail=event.detail,
+            ))
         self._push_cmd(ToolCountIncCmd())
 
     def _on_tool_done(self, event: "ToolDoneEvent") -> None:
         if not self._is_agent_source(event.source) and not self._is_subagent_label(event.label):
             return
-        tool_id = event.tool_id or event.label
-        self._push_cmd(ToolCloseCmd(tool_id=tool_id, success=event.success))
+        if event.source == "agent":
+            tool_id = event.tool_id or event.label
+            self._push_cmd(ToolCloseCmd(tool_id=tool_id, success=event.success))
         if not event.success:
             self._push_cmd(ToolFailIncCmd())
             self._push_cmd(ToolCountDecCmd())
@@ -218,6 +221,9 @@ class EventDispatcher:
 
     def _on_tool_output(self, event: "ToolOutputChunkEvent") -> None:
         if not self._is_agent_source(event.source):
+            return
+        # 仅主 agent 工具输出进入主内容 box；subagent 输出由面板自渲染
+        if event.source != "agent":
             return
         text = event.text.rstrip("\n")
         if text:
