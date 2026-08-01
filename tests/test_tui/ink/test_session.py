@@ -306,6 +306,33 @@ class TestDrainQueue:
         assert s._model.input_cursor == 5
 
 
+class TestEventBatching:
+    """窗口内事件批处理（不单独渲染，等 10Hz 拍）。"""
+
+    def test_event_within_window_waits_for_tick(self):
+        """事件到达但 render_interval 未到期 → 不渲染。"""
+        import time
+        s = _make_session()
+        s._last_bottom_redraw = time.monotonic()
+        assert s._should_render(changed=True) is False, "窗口内事件不应立即渲染"
+
+    def test_tick_renders_batched_events(self):
+        """render_interval 到期 → 渲染（批处理窗口内全部事件）。"""
+        import time
+        s = _make_session()
+        s._last_bottom_redraw = time.monotonic()
+        time.sleep(s._config.render_interval + 0.01)
+        assert s._should_render(changed=True) is True, "10Hz 拍应渲染"
+
+    def test_no_render_before_interval(self):
+        s = _make_session()
+        s._last_bottom_redraw = 0.0
+        # 初始立即渲染（last=0 → now-0 >= interval）
+        assert s._should_render(changed=False) is True
+        # 刚渲染后未到期 → 不渲染
+        assert s._should_render(changed=False) is False
+
+
 class TestRenderInvariants:
     """render 相关不变式。"""
 
