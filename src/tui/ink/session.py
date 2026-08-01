@@ -414,16 +414,19 @@ class InkSession:
             return changed
 
     def _should_render(self, changed: bool) -> bool:
-        """是否需渲染本帧：有命令变化或重绘请求时立即渲染；
-        空闲时以低频（1s）刷新（时间戳/动效），避免 10Hz 空转重算整树。"""
+        """是否需渲染本帧：固定 10Hz（render_interval=0.1s）。
+
+        命令变化/重绘请求立即渲染；否则按 render_interval 定时渲染
+        （时间戳/呼吸动效等低频内容也以 10Hz 刷新）。帧差异由
+        InkRenderer 短路（无变化时不输出），故定时重算仅 CPU 轻开销。
+        """
         now = time.monotonic()
         force = self._bottom_redraw_requested.is_set()
         self._bottom_redraw_requested.clear()
         if force or changed:
             self._last_bottom_redraw = now
             return True
-        # 空闲刷新间隔（仅时间戳/呼吸等低频内容需要）
-        if now - self._last_bottom_redraw >= 1.0:
+        if now - self._last_bottom_redraw >= self._config.render_interval:
             self._last_bottom_redraw = now
             return True
         return False
