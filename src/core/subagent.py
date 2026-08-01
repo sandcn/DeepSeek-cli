@@ -333,9 +333,14 @@ class SubAgent(BaseAgent):
                 display.tool_done(self.label, tool_name, success=success)
 
         async def run_method(func, tc):
+            from .internal.agent._tool_context import run_with_tool_context
+            # SubAgent 事件 label 为 agent-1 等（与 start_capture 语义一致），
+            # 工具输出经 contextvar 定向路由到对应 label。
             if tc["name"] in ("write_file", "update_file"):
-                return await _run_file_display(func, display)
-            return await func.execute()
+                coro = _run_file_display(func, display)
+            else:
+                coro = func.execute()
+            return await run_with_tool_context(self.label, coro)
 
         return on_before, on_after, run_method
 

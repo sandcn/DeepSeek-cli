@@ -374,7 +374,7 @@ class TestToolCard:
     """方向D 步骤15 — 工具调用卡片渲染（状态图标 / 折叠 / running 输出可见）。"""
 
     def test_tool_done_collapsed_shows_title_and_hint(self):
-        """done 且折叠 → 仅标题（含 ✔ 图标）+ 折叠提示行，输出行隐藏。"""
+        """done 且折叠 → 标题（含 ✔ 图标）+ 前 2 行输出 + 折叠提示（Bug B 修复）。"""
         from src.tui._config import TuiConfig
         m = AppModel(config=TuiConfig.defaults().with_overrides(
             tool_auto_collapse_threshold=3))
@@ -388,8 +388,11 @@ class TestToolCard:
         assert any("\u2714" in p and "rf" in p for p in plains)
         # 折叠提示行可见
         assert any("已折叠（4 行输出）" in p for p in plains)
-        # 输出行隐藏
-        assert not any("out1" in p or "out2" in p or "out3" in p or "out4" in p for p in plains)
+        # Bug B 修复：折叠显示前 2 行输出（取头预览）
+        assert any("out1" in p for p in plains)
+        assert any("out2" in p for p in plains)
+        # 后 2 行输出隐藏（仅预览前 2 行）
+        assert not any("out3" in p or "out4" in p for p in plains)
 
     def test_tool_running_output_visible(self):
         """running → 输出可见（● 图标 + 标题）。"""

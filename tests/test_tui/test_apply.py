@@ -220,13 +220,61 @@ class TestToolBox:
         assert "line1" in block.lines[1].plain
         assert "line2" in block.lines[2].plain
 
-    def test_tool_output_auto_opens_box(self):
-        """无 ToolOpen 的输出自动创建分组（兼容）。"""
+    def test_tool_output_unknown_id_auto_opens_box(self):
+        """无 ToolOpen 但 tool_id 非空的输出自动创建分组（兼容）。"""
         m = _model()
-        apply_cmd(m, ToolOutputCmd(text="running X"))
+        apply_cmd(m, ToolOutputCmd(text="running X", tool_id="t1"))
         block = m.blocks[-1]
         assert block.kind == "tool"
         assert block.lines[0].plain.startswith("  · ")
+
+    def test_append_tool_output_routes_by_tool_id(self):
+        """两个 tool_id 分别追加输出 → 各自 block 行数正确、互不污染。"""
+        m = _model()
+        m.open_tool_box("t1", "read_file")
+        m.open_tool_box("t2", "bash")
+        m.append_tool_output("t1", "a1\n")
+        m.append_tool_output("t2", "b1\n")
+        m.append_tool_output("t1", "a2\n")
+        m.append_tool_output("t2", "b2\n")
+        boxes = {b.extra.get("tool_id"): b for b in m.blocks if b.kind == "tool"}
+        assert boxes["t1"].extra["tool_output_count"] == 2
+        assert boxes["t2"].extra["tool_output_count"] == 2
+        t1_plains = [l.plain for l in boxes["t1"].lines]
+        t2_plains = [l.plain for l in boxes["t2"].lines]
+        assert any("a1" in p for p in t1_plains)
+        assert any("a2" in p for p in t1_plains)
+        assert any("b1" in p for p in t2_plains)
+        assert any("b2" in p for p in t2_plains)
+        # 互不污染：t1 不含 b 行、t2 不含 a 行
+        assert not any("b1" in p or "b2" in p for p in t1_plains)
+        assert not any("a1" in p or "a2" in p for p in t2_plains)
+
+    def test_append_tool_output_unknown_id_creates_anonymous_box(self):
+        """未知 tool_id 追加 → 创建匿名 box 且输出不丢。"""
+        m = _model()
+        m.append_tool_output("t-unknown", "data\n")
+        block = m.blocks[-1]
+        assert block.kind == "tool"
+        assert block.extra.get("tool_id") == "t-unknown"
+        assert "data" in block.lines[1].plain
+
+    def test_append_tool_output_empty_id_discarded(self):
+        """空 tool_id 追加 → 不创建块、不抛异常。"""
+        m = _model()
+        m.append_tool_output("", "orphan\n")
+        assert m.blocks == []
+        assert m.tool_boxes == {}
+
+    def test_close_tool_box_unknown_id_noop(self):
+        """未知 tool_id close → 不抛异常、不影响其他块。"""
+        m = _model()
+        m.open_tool_box("t1", "read_file")
+        m.close_tool_box("t-unknown", True)  # 不抛
+        assert len(m.blocks) == 1
+        assert m.tool_boxes.get("t1") is not None
+        m.close_tool_box("t1", True)
+        assert m.blocks[-1].closed is True
 
     def test_tool_close_commits_box(self):
         m = _model()
@@ -342,24 +390,27 @@ class TestToolCardState:
         assert m.blocks[-1].extra["tool_output_count"] == 3
 
     def test_tool_close_auto_collapse(self):
-        """输出行数 > 折叠阈值 → tool_expanded=False，块行=标题+折叠提示。"""
+        """输出行数 > 折叠阈值 → tool_expanded=False，块行保留完整输出行。"""
         from src.tui._config import TuiConfig
         m = AppModel(config=TuiConfig.defaults().with_overrides(
             tool_auto_collapse_threshold=3))
         m.open_tool_box("t1", "read_file")
         for i in range(5):
-            m.append_tool_output("t1", f"line{i}\n")
+            m.append_tool_output("t1", f"line{i}")
         m.close_tool_box("t1", True)
         block = m.blocks[-1]
         assert block.extra["tool_expanded"] is False
         assert block.extra["tool_status"] == "done"
-        assert len(block.lines) == 2  # 标题 + 折叠提示
-        assert "已折叠（5 行输出）" in block.lines[1].plain
+        # Bug B 修复：折叠块保留完整输出行（不重写 block.lines）
+        assert len(block.lines) == 7  # 标题 + 5 输出 + 状态
+        # 折叠提示在可见形式中（标题 + 前 2 行 + 提示），不在 block.lines
+        assert "已折叠（5 行输出）" not in block.lines[1].plain
+        assert "line0" in block.lines[1].plain
         # 原始标题行保持（渲染图标是装饰，不改动模型原文）
         assert block.lines[0].plain.startswith("  · ")
 
     def test_tool_output_truncated(self):
-        """超长输出截断：保留首尾 + 省略行（head_n + 1 + tail_n = max_lines）。"""
+        """超长输出截断：Claude Code 风格——保留开头 + 省略 + 状态（无 tail）。"""
         from src.tui._config import TuiConfig
         m = AppModel(config=TuiConfig.defaults().with_overrides(
             tool_output_max_lines=4,
@@ -373,13 +424,87 @@ class TestToolCardState:
         assert block.extra["tool_output_count"] == 10
         assert block.extra["tool_output_truncated"] is True
         assert block.extra["tool_expanded"] is True  # 10 ≤ 1000 不折叠
-        # 标题 + head(2) + 省略 + tail(1) + 状态 = 6 行
-        assert len(block.lines) == 6
+        # 标题 + head(4) + 省略 + 状态 = 7 行（无 tail）
+        assert len(block.lines) == 7
         assert "line1" in block.lines[1].plain
         assert "line2" in block.lines[2].plain
-        assert "已截断（10 行输出）" in block.lines[3].plain
-        assert "line10" in block.lines[4].plain
+        assert "line3" in block.lines[3].plain
+        assert "line4" in block.lines[4].plain
+        assert "已截断（10 行输出）" in block.lines[5].plain
+        # 无 tail：尾部输出不保留（line10 已截断）
+        assert not any("line10" in l.plain for l in block.lines)
         assert block.lines[-1].plain.strip() == "✔"
+
+    def test_tool_collapse_preserves_output_lines(self):
+        """输出 10 行（>8）→ 折叠但 block.lines 保留完整行（长度不减）。"""
+        m = _model()
+        m.open_tool_box("t1", "read_file")
+        for i in range(10):
+            m.append_tool_output("t1", f"line{i}")
+        m.close_tool_box("t1", True)
+        block = m.blocks[-1]
+        assert block.extra["tool_expanded"] is False
+        # 标题 + 10 输出 + 状态 = 12 行（完整保留）
+        assert len(block.lines) == 12
+
+    def test_tool_collapsed_visible_form_head_preview(self):
+        """折叠块可见形式 = 标题 + 前 2 行 + 提示（Bug B 修复目标）。"""
+        from src.tui.app.model import _visible_tool_ansi_lines
+        from src.tui._config import TuiConfig
+        m = _model()
+        m.open_tool_box("t1", "read_file")
+        for i in range(10):
+            m.append_tool_output("t1", f"line{i}")
+        m.close_tool_box("t1", True)
+        block = m.blocks[-1]
+        visible = _visible_tool_ansi_lines(block, TuiConfig.defaults())
+        plains = [l.plain for l in visible]
+        assert len(plains) == 4  # 标题 + 前 2 行 + 提示
+        assert plains[0].startswith("  · ")
+        assert "line0" in plains[1]
+        assert "line1" in plains[2]
+        assert "已折叠（10 行输出）· Space 展开" in plains[3]
+
+    def test_tool_truncation_head_style_no_tail(self):
+        """输出 60 行（>50）→ 截断块 = 标题 + head(50) + 省略 + 状态（无 tail）。"""
+        from src.tui._config import TuiConfig
+        m = AppModel(config=TuiConfig.defaults().with_overrides(
+            tool_auto_collapse_threshold=1000,  # 关闭折叠，仅观察截断
+        ))
+        m.open_tool_box("t1", "bash")
+        for i in range(1, 61):
+            m.append_tool_output("t1", f"line{i}")
+        m.close_tool_box("t1", True)
+        block = m.blocks[-1]
+        assert block.extra["tool_output_truncated"] is True
+        # 标题 + head(50) + 省略 + 状态 = 53 行
+        assert len(block.lines) == 53
+        assert "line1" in block.lines[1].plain
+        assert "line50" in block.lines[50].plain
+        assert "已截断（60 行输出）" in block.lines[51].plain
+        assert block.lines[-1].plain.strip() == "✔"
+        # 无 tail：line60 不保留
+        assert not any("line60" in l.plain for l in block.lines)
+
+    def test_tool_collapse_preview_lines_respected(self):
+        """with_overrides(tool_collapse_preview_lines=3) → 折叠可见形式前 3 行。"""
+        from src.tui.app.model import _visible_tool_ansi_lines
+        from src.tui._config import TuiConfig
+        cfg = TuiConfig.defaults().with_overrides(tool_collapse_preview_lines=3)
+        m = AppModel(config=cfg)
+        m.open_tool_box("t1", "read_file")
+        for i in range(10):
+            m.append_tool_output("t1", f"line{i}")
+        m.close_tool_box("t1", True)
+        block = m.blocks[-1]
+        assert block.extra["tool_expanded"] is False
+        visible = _visible_tool_ansi_lines(block, cfg)
+        plains = [l.plain for l in visible]
+        assert len(plains) == 5  # 标题 + 前 3 行 + 提示
+        assert "line0" in plains[1]
+        assert "line1" in plains[2]
+        assert "line2" in plains[3]
+        assert "已折叠（10 行输出）· Space 展开" in plains[4]
 
     def test_tool_no_truncation_within_limit(self):
         """输出 ≤ max_lines 不截断（全部保留）。"""
@@ -395,3 +520,74 @@ class TestToolCardState:
         block = m.blocks[-1]
         assert block.extra.get("tool_output_truncated") is None
         assert len(block.lines) == 5  # 标题 + 3 输出 + 状态
+
+
+class TestToolToggle:
+    """方向④ — 交互式折叠/展开（toggle_tool_box）。"""
+
+    @staticmethod
+    def _make_collapsed_box(m=None, n=10):
+        m = m if m is not None else _model()
+        m.open_tool_box("t1", "read_file")
+        for i in range(n):
+            m.append_tool_output("t1", f"line{i}\n")
+        m.close_tool_box("t1", True)
+        return m
+
+    def test_toggle_tool_box_expands_collapsed(self):
+        """构造折叠块 → toggle → tool_expanded=True 且缓存失效重建为完整形式。"""
+        from src.tui.app.model import _visible_tool_ansi_lines
+        from src.tui._config import TuiConfig
+        m = self._make_collapsed_box()
+        block = m.blocks[-1]
+        assert block.extra["tool_expanded"] is False
+        assert block._cached_ink_lines is not None
+        result = m.toggle_tool_box("t1")
+        assert result is True
+        assert block.extra["tool_expanded"] is True
+        # 冻结缓存失效（下次渲染按新状态重建）
+        assert block._cached_ink_lines is None
+        # committed_lines 已全量重建（含展开可见形式行）
+        assert m.committed_lines
+        # 可见形式恢复完整行
+        visible = _visible_tool_ansi_lines(block, TuiConfig.defaults())
+        assert len(visible) == len(block.lines)  # 完整 12 行
+
+    def test_toggle_tool_box_collapses_expanded(self):
+        """展开块（超阈值）→ toggle → tool_expanded=False 且可见形式为折叠形式。"""
+        from src.tui.app.model import _visible_tool_ansi_lines
+        from src.tui._config import TuiConfig
+        m = self._make_collapsed_box()
+        block = m.blocks[-1]
+        # 先展开
+        m.toggle_tool_box("t1")
+        assert block.extra["tool_expanded"] is True
+        # 再折叠
+        result = m.toggle_tool_box("t1")
+        assert result is False
+        assert block.extra["tool_expanded"] is False
+        visible = _visible_tool_ansi_lines(block, TuiConfig.defaults())
+        assert len(visible) == 4  # 标题 + 前 2 行 + 提示
+
+    def test_recent_collapsed_tool_id_returns_latest(self):
+        """多个折叠块 → 返回最近关闭者。"""
+        m = _model()
+        for i in range(3):
+            m.open_tool_box(f"t{i}", "read_file")
+            for j in range(10):
+                m.append_tool_output(f"t{i}", f"line{j}\n")
+            m.close_tool_box(f"t{i}", True)
+        assert m._recent_collapsed_tool_id() == "t2"
+        # 展开最近者后返回上一个
+        m.toggle_tool_box("t2")
+        assert m._recent_collapsed_tool_id() == "t1"
+
+    def test_toggle_unknown_tool_id_noop(self):
+        """未知 tool_id toggle → 返回 None、不抛异常。"""
+        m = _model()
+        assert m.toggle_tool_box("t-unknown") is None
+
+    def test_toggle_no_collapsed_returns_none(self):
+        """无折叠块时 _recent_collapsed_tool_id 返回 None（按键处理器 no-op）。"""
+        m = _model()
+        assert m._recent_collapsed_tool_id() is None

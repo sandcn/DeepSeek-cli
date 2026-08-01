@@ -368,3 +368,88 @@ class TestNewInputKindsChain:
         time.sleep(0.1)
         inp.process_events()
         assert inp.interrupted is True
+
+
+# ═══════════════════════════════════════════════════════════
+# 方向④ — 交互式折叠/展开按键路由（App use_input handler 经 input router）
+# ═══════════════════════════════════════════════════════════
+
+class TestToolToggleKeyRouting:
+    """方向④ — Space/Ctrl+E 按键路由（App use_input handler 经 input router）。
+
+    覆盖：空缓冲 Space 消费切换、非空缓冲 Space 放行、Ctrl+E 任意时刻切换。
+    """
+
+    @pytest.fixture
+    def mock_width_cache(self):
+        """Mock TerminalWidthCache。"""
+        cache = MagicMock()
+        cache.get_width.return_value = 80
+        cache.get_height.return_value = 24
+        return cache
+
+    @staticmethod
+    def _make_collapsed_model():
+        from src.tui.app.model import AppModel
+        m = AppModel()
+        m.open_tool_box("t1", "read_file")
+        for i in range(10):
+            m.append_tool_output("t1", f"line{i}\n")
+        m.close_tool_box("t1", True)
+        return m
+
+    def _render_router(self, model, mock_width_cache):
+        """渲染 App 组件树并返回 input router（session._pending_input_router）。"""
+        import io
+        from src.tui.ink.session import InkSession
+        from src.tui.app.app import build_app_element
+        session = InkSession(
+            model=model,
+            apply_cmd=None,
+            build_tree=build_app_element,
+            width_cache=mock_width_cache,
+            stream=io.StringIO(),
+        )
+        session._render_frame()
+        router = session._pending_input_router
+        assert router is not None
+        return router
+
+    def test_space_toggles_collapsed_when_input_empty(self, mock_width_cache):
+        """空缓冲 Space → 切换最近折叠块并消费事件。"""
+        from src.tui._input_parser import KeyEvent
+        m = self._make_collapsed_model()
+        assert m.blocks[-1].extra["tool_expanded"] is False
+        router = self._render_router(m, mock_width_cache)
+        consumed = router(KeyEvent(kind="char", char=" "))
+        assert consumed is True
+        assert m.blocks[-1].extra["tool_expanded"] is True
+
+    def test_space_not_consumed_when_input_nonempty(self, mock_width_cache):
+        """非空缓冲 Space → 不消费（放行输入路径，零行为变化）。"""
+        from src.tui._input_parser import KeyEvent
+        m = self._make_collapsed_model()
+        m.input_text = "typing"
+        router = self._render_router(m, mock_width_cache)
+        consumed = router(KeyEvent(kind="char", char=" "))
+        assert consumed is False
+        assert m.blocks[-1].extra["tool_expanded"] is False  # 未切换
+
+    def test_ctrl_e_toggles_collapsed_anytime(self, mock_width_cache):
+        """Ctrl+E → 任意时刻（含非空缓冲）切换最近折叠块并消费。"""
+        from src.tui._input_parser import KeyEvent
+        m = self._make_collapsed_model()
+        m.input_text = "some text"
+        router = self._render_router(m, mock_width_cache)
+        consumed = router(KeyEvent(kind="ctrl_key", char="\x05"))
+        assert consumed is True
+        assert m.blocks[-1].extra["tool_expanded"] is True
+
+    def test_other_keys_passthrough(self, mock_width_cache):
+        """其他按键（如 'a'）→ 不消费（放行）。"""
+        from src.tui._input_parser import KeyEvent
+        m = self._make_collapsed_model()
+        router = self._render_router(m, mock_width_cache)
+        consumed = router(KeyEvent(kind="char", char="a"))
+        assert consumed is False
+        assert m.blocks[-1].extra["tool_expanded"] is False

@@ -21,16 +21,23 @@ def _get_init_sig(cls: type) -> inspect.Signature:
 
 
 
-async def print_to_terminal(text: str) -> None:
+async def print_to_terminal(text: str, tool_id: str = "") -> None:
     """所有工具输出的唯一终端写入路径。
 
     通过 EventBus 发布 ToolOutputChunkEvent，由 ChatUIConsumer
     render 线程统一排队渲染，不与底部栏刷新竞态。
+
+    Args:
+        text: 输出文本。
+        tool_id: 可选工具调用 ID。为空时从 contextvar（当前工具上下文）
+            解析归属；仍为空回退 "assistant"（兼容旧行为）。
     """
     from ..tui.events.event_types import ToolOutputChunkEvent
     from ..tui.events.event_bus import DisplayEventBus
+    from ..core.internal.agent._tool_context import get_current_tool_id
+    resolved = tool_id or get_current_tool_id() or "assistant"
     DisplayEventBus.get_default().publish(ToolOutputChunkEvent(
-        label="assistant", text=text, source="agent",
+        label=resolved, tool_id=resolved, text=text, source="agent",
     ))
 
 
@@ -133,13 +140,21 @@ class Func(abc.ABC):
     # ── 通用显示辅助 ──
 
     @staticmethod
-    def _publish_tool_text(text: str) -> None:
-        """将工具显示文本发布到 EventBus，统一走 ChatUIConsumer cmd 队列渲染。"""
+    def _publish_tool_text(text: str, tool_id: str = "") -> None:
+        """将工具显示文本发布到 EventBus，统一走 ChatUIConsumer cmd 队列渲染。
+
+        Args:
+            text: 显示文本。
+            tool_id: 可选工具调用 ID。为空时从 contextvar 解析归属；
+                仍为空回退 "assistant"（兼容旧行为）。
+        """
         from ..tui.events.event_types import ToolOutputChunkEvent
         from ..tui.events.event_bus import DisplayEventBus
+        from ..core.internal.agent._tool_context import get_current_tool_id
         try:
+            resolved = tool_id or get_current_tool_id() or "assistant"
             DisplayEventBus.get_default().publish(ToolOutputChunkEvent(
-                label="assistant", text=text, source="agent",
+                label=resolved, tool_id=resolved, text=text, source="agent",
             ))
         except Exception:
             _logger = logging.getLogger(__name__)

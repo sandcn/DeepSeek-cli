@@ -114,9 +114,11 @@ class ToolOutputChunkEvent(DisplayEvent):
     Attributes:
         label: 工具标识（tool_call_id）
         text: 输出文本块
+        tool_id: 工具调用唯一 ID（tool_call_id），用于前端精确匹配
     """
     label: str = ""
     text: str = ""
+    tool_id: str = ""
 
 
 @dataclass(frozen=True)

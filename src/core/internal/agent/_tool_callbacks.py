@@ -220,6 +220,9 @@ class ToolCallbackChain:
         - dispatch_agent: 跳过 UI 输出，直接 execute
         - user_select: 交互式终端工具，跳过 stdout 捕获
         - 其他工具: 统一走 stdout 捕获 + display/web_display
+
+        执行期间设置 contextvar（当前 tool_id），使 print_to_terminal /
+        SharedCapture.write 能定向分发输出事件到正确的工具 box。
         """
         agent = self._agent
         tool_label = tc.get("id", "")
@@ -230,10 +233,13 @@ class ToolCallbackChain:
         is_web = getattr(agent._display_port, 'is_web', False)
 
         if tool_name == "dispatch_agent":
-            return await func.execute()
-        if tool_name == "user_select":
-            return await self._run_interactive(func, is_web)
-        return await self._run_with_capture(func, tool_label, is_web)
+            coro = func.execute()
+        elif tool_name == "user_select":
+            coro = self._run_interactive(func, is_web)
+        else:
+            coro = self._run_with_capture(func, tool_label, is_web)
+        from ._tool_context import run_with_tool_context
+        return await run_with_tool_context(tool_label, coro)
 
     async def _run_interactive(self, func, is_web: bool):
         """执行交互式终端工具（user_select），跳过 stdout 捕获。
@@ -299,7 +305,7 @@ class ToolCallbackChain:
         try:
             from ....tui.events.event_types import ToolOutputChunkEvent
             self._agent._event_port.publish_event(ToolOutputChunkEvent(
-                label=tool_label, text=text, source="agent",
+                label=tool_label, tool_id=tool_label, text=text, source="agent",
             ))
         except Exception:
             _logger.debug("user_select 结果上屏失败", exc_info=True)

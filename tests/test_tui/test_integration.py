@@ -457,7 +457,7 @@ class TestToolCardChain:
         assert "\u2716" in block.lines[-1].plain
 
     def test_tool_auto_collapse_regression(self):
-        """输出行数超阈值（>8）→ 自动折叠（仅标题 + 折叠提示行）。"""
+        """输出行数超阈值（>8）→ 自动折叠（可见形式 = 标题 + 前 2 行 + 折叠提示）。"""
         from src.tui._const import ToolOpenCmd, ToolOutputCmd, ToolCloseCmd
         from src.tui.app.model import AppModel
 
@@ -471,17 +471,18 @@ class TestToolCardChain:
 
         block = model.blocks[-1]
         assert block.extra["tool_expanded"] is False
-        # 折叠后仅标题 + 折叠提示行
-        assert len(block.lines) == 2
-        assert "折叠" in block.lines[1].plain
-        # 冻结缓存同步为折叠形态（2 行）
-        assert len(block._cached_ink_lines) == 2
+        # Bug B 修复：折叠块保留完整输出行（不重写 block.lines）
+        assert len(block.lines) == 12  # 标题 + 10 输出 + 状态
+        # 冻结缓存为可见形式（标题 + 前 2 行 + 折叠提示）
+        assert len(block._cached_ink_lines) == 4
+        plains = [line.plain for line in block._cached_ink_lines]
+        assert any("折叠" in p for p in plains)
 
     def test_tool_output_truncate_regression(self):
-        """输出行数超截断上限（>tool_output_max_lines）→ 保留首尾 + 省略行。
+        """输出行数超截断上限（>tool_output_max_lines）→ Claude Code 风格截断。
 
         使用「截断上限 < 折叠阈值」的配置，使截断在未折叠场景下独立可见：
-        max_lines=4 → head(2) + 省略 + tail(1) + 状态底行。
+        max_lines=4 → 标题 + head(4) + 省略 + 状态底行（无 tail）。
         """
         from src.tui._const import ToolOpenCmd, ToolOutputCmd, ToolCloseCmd
         from src.tui.app.model import AppModel
@@ -499,9 +500,11 @@ class TestToolCardChain:
 
         block = model.blocks[-1]
         assert block.extra.get("tool_output_truncated") is True
-        # 截断后总行数 = 标题 + head(2) + 省略 + tail(1) + 状态底行 = 6
-        assert len(block.lines) == 6
-        assert "已截断" in block.lines[3].plain
-        # 首行保留（line00）、尾行保留（line09）、省略行标记输出总数
+        # 截断后总行数 = 标题 + head(4) + 省略 + 状态底行 = 7
+        assert len(block.lines) == 7
+        assert "已截断" in block.lines[5].plain
+        # 首行保留（line00）；尾部不保留（line09 已截断）
         assert "line00" in block.lines[1].plain
-        assert "line09" in block.lines[4].plain
+        assert "line03" in block.lines[4].plain
+        assert not any("line09" in l.plain for l in block.lines)
+        assert block.lines[-1].plain.strip() == "✔"

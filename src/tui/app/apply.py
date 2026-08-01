@@ -207,8 +207,11 @@ def _do_tool_close(model, cmd) -> None:
 
 def _do_tool_summary(model, cmd) -> None:
     # 批内工具已由 ToolDoneEvent → ToolCloseCmd 逐盒关闭；此命令防御性
-    # 关闭残留开放 box（兼容旧调用方）
-    model.close_tool_group()
+    # 关闭残留开放 box（兼容旧调用方）。
+    # Bug A 修复：不再依赖单值指针（close_tool_group 已删除），
+    # 遍历 tool_boxes 逐个防御性关闭。
+    for tool_id in list(model.tool_boxes.keys()):
+        model.close_tool_box(tool_id, True)
 
 
 def _do_parse_info(model, cmd) -> None:

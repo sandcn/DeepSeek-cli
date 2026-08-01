@@ -131,6 +131,38 @@ def _default_config():
     return TuiConfig.defaults()
 
 
+def _visible_tool_ansi_lines(block, cfg) -> list:
+    """工具块可见形式 AnsiLine 列表（Bug B 修复，方向①④ 单一真源）。
+
+    按 ``tool_expanded`` 标志生成可见形式（模型层渲染/冻结缓存共用）：
+      - 展开（tool_expanded=True）：返回 ``block.lines`` 全量（含标题/输出/状态）；
+      - 折叠（tool_expanded=False）：标题 + 前 ``tool_collapse_preview_lines``
+        行输出 + 折叠提示行（含输出计数与「Space 展开」按键提示）。
+
+    ``block.lines`` 始终保留完整输出行（折叠分支不重写），内存占用受
+    ``tool_output_max_lines`` 截断约束（≤50 行/块，可接受）。
+
+    Args:
+        block: 工具块（ChatBlock.kind == "tool"）。
+        cfg: TuiConfig（tool_collapse_preview_lines 消费方）。
+    """
+    if block.extra.get("tool_expanded", True):
+        return block.lines
+    from src.tui.core.style import Style
+    from src.renderer.ansi.helpers import AnsiLine
+    output_count = block.extra.get("tool_output_count", 0)
+    output = block.lines[1:-1]
+    preview_n = min(
+        max(0, int(cfg.tool_collapse_preview_lines)),
+        len(output),
+    )
+    hint = AnsiLine.of(
+        f"  \u2026 \u5df2\u6298\u53e0\uff08{output_count} \u884c\u8f93\u51fa\uff09\u00b7 Space \u5c55\u5f00",
+        Style(fg=242),
+    )
+    return [block.lines[0]] + list(output[:preview_n]) + [hint]
+
+
 class AppModel:
     """聊天 UI 应用模型。"""
 
@@ -157,7 +189,6 @@ class AppModel:
         self.tool_block_index: int = -1
         # 每工具 box 跟踪（tool_id → 开放 box）
         self.tool_boxes: dict = {}
-        self._current_tool_box: ChatBlock | None = None
         self._tool_id_seq: int = 0
         # 状态栏
         self.status: StatusState = StatusState()
@@ -219,16 +250,28 @@ class AppModel:
                 block.committed_line_count = len(block.lines)
             self.committed_count += 1
 
-    @staticmethod
-    def _block_to_ink_lines(block, start: int = 0):
+    def _block_to_ink_lines(self, block, start: int = 0):
         """将块内 AnsiLine（从 start 起）转为 ink Line（推理块叠加 dim/italic）。
 
         方向D 步骤15：工具块标题行前置状态图标（running ● / done ✔ / fail ✖，
         渲染装饰不改动 block.lines 原文；仅 start==0 时前置一次）。
+
+        Bug B 修复：工具块按**可见形式**渲染——折叠块（tool_expanded=False）
+        先取 ``_visible_tool_ansi_lines``（标题 + 前 N 行输出 + 折叠提示），
+        展开块全量（block.lines）。``committed_lines`` 提交的始终是可见形式
+        行（增量缓存与渲染一致）。
         """
         from src.tui.ink import Line, StyledRun
         from src.renderer.ansi.style import Style as _AnsiStyle
-        slice_lines = block.lines[start:]
+        if (
+            block.kind == "tool"
+            and start == 0
+            and not block.extra.get("tool_expanded", True)
+        ):
+            cfg = self._config if self._config is not None else _default_config()
+            slice_lines = _visible_tool_ansi_lines(block, cfg)
+        else:
+            slice_lines = block.lines[start:]
         if not slice_lines:
             return []
         reasoning_style = (
@@ -363,7 +406,6 @@ class AppModel:
         if detail:
             title = f"  \u00b7 {display} \u00b7 {detail}"
         block.lines.append(AnsiLine.of(title, Style(fg=23, bold=True)))
-        self._current_tool_box = block
         self.tool_boxes[tool_id or self._next_tool_id()] = block
         return block
 
@@ -372,11 +414,20 @@ class AppModel:
 
         方向D 步骤15：维护输出行计数（tool_output_count，供折叠/截断判定）；
         输出行不增量提交 committed_lines（关闭时统一按可见形式提交/冻结）。
+
+        Bug A 修复：按 tool_id 精确路由——key 命中精确追加；key 未命中且
+        tool_id 非空 → 创建匿名 box（标题回退「工具」，输出不丢失）；
+        tool_id 为空 → 丢弃并 debug 日志（无归属输出不静默错路由）。
         """
         from src.tui.core.style import Style
         from src.renderer.ansi.helpers import AnsiLine
-        block = self.tool_boxes.get(tool_id) or self._current_tool_box
+        block = self.tool_boxes.get(tool_id)
         if block is None:
+            if not tool_id:
+                _logger.debug(
+                    "append_tool_output: 收到空 tool_id，输出丢弃: %.80s", text,
+                )
+                return
             block = self.open_tool_box(tool_id, "")
         for seg in text.split("\n"):
             l = AnsiLine.of("  ", Style(fg=242))
@@ -388,20 +439,28 @@ class AppModel:
                 )
 
     def close_tool_box(self, tool_id: str, success: bool) -> None:
-        """关闭工具分组：置状态/折叠标记、按可见形式重写行并提交（无边框）。
+        """关闭工具分组：置状态/折叠标记、按可见形式冻结并提交（无边框）。
 
         方向D 步骤15：
           - extra.tool_status = done/fail（渲染层标题前置 ✔/✖ 图标）；
           - 输出行数 > tool_auto_collapse_threshold → tool_expanded=False，
-            块行重写为 [标题, 折叠提示]（隐藏输出）；
-          - 输出行数 > tool_output_max_lines → 截断存储行为
-            [首 head_n + 省略 + 尾 tail_n + 状态]（保留首尾算法）；
-          - 关闭块冻结 _cached_ink_lines（含状态图标，免每帧 Style merge）。
+            **不重写 block.lines**（完整输出行保留在内存，渲染层按可见形式
+            过滤为「标题 + 前 tool_collapse_preview_lines 行 + 折叠提示」）；
+          - 输出行数 > tool_output_max_lines → 截断存储行为 Claude Code 风格
+            [标题 + 前 max_lines 行 + 省略 + 状态]（去掉尾部保留）；
+          - 关闭块冻结 _cached_ink_lines（可见形式，含状态图标，免每帧
+            Style merge）。
+
+        Bug A 修复：按 tool_id 精确 pop，不再 fallback 到 _current_tool_box
+        （单值指针语义已移除）；找不到对应 box 时静默丢弃（debug 日志）。
         """
         from src.tui.core.style import Style
         from src.renderer.ansi.helpers import AnsiLine
-        block = self.tool_boxes.pop(tool_id, None) or self._current_tool_box
+        block = self.tool_boxes.pop(tool_id, None)
         if block is None:
+            _logger.debug(
+                "close_tool_box: 未找到 tool_id=%r 的工具 box，静默丢弃", tool_id,
+            )
             return
         status = "\u2714" if success else "\u2716"
         block.lines.append(AnsiLine.of(f"  {status}", Style(fg=41 if success else 196)))
@@ -415,52 +474,91 @@ class AppModel:
         # （tool_output_count）；病理输出（大量空段）时实际行数可远超
         # ``tool_output_max_lines``，旧的非空行计数判定会漏截断。
         if len(block.lines) > max_lines + 2 and len(block.lines) > 2:
-            # 超长截断：保留首尾 + 省略行（head_n + 1 + tail_n = max_lines）
-            head_n = max_lines // 2
-            tail_n = max_lines - head_n - 1
+            # Claude Code 风格截断：保留开头 + 结尾省略提示（去掉尾部保留）
+            head_n = max_lines
             output = block.lines[1:-1]
-            if len(output) > head_n + tail_n:
-                head = output[:head_n]
-                tail = output[-tail_n:] if tail_n > 0 else []
+            if len(output) > head_n:
                 ellipsis = AnsiLine.of(
                     f"  \u2026 \u5df2\u622a\u65ad\uff08{output_count} \u884c\u8f93\u51fa\uff09\u2026",
                     Style(fg=242),
                 )
                 block.lines = (
-                    [block.lines[0]] + head + [ellipsis] + tail + [block.lines[-1]]
+                    [block.lines[0]] + output[:head_n] + [ellipsis] + [block.lines[-1]]
                 )
                 block.extra["tool_output_truncated"] = True
 
         if output_count > cfg.tool_auto_collapse_threshold:
-            # 自动折叠：仅标题 + 折叠提示行（输出隐藏）
+            # 自动折叠：仅标记 tool_expanded=False，**不重写 block.lines**
+            # （完整输出行保留在内存；渲染层/冻结缓存按可见形式过滤——
+            # Bug B 修复：折叠后仍可展开查看完整输出）。
+            # tool_output_truncated 保持截断分支结果（不强制清 False——
+            # 展开时可见形式由渲染层按两标志联合决定）。
             block.extra["tool_expanded"] = False
-            # P3-7：折叠分支同时清除截断标志——折叠后块行已重写为 [标题, 提示]，
-            # 截断 extra 信息与内容不一致（修复前残留 True）。
-            block.extra["tool_output_truncated"] = False
-            hint = AnsiLine.of(
-                f"  \u2026 \u5df2\u6298\u53e0\uff08{output_count} \u884c\u8f93\u51fa\uff09",
-                Style(fg=242),
-            )
-            block.lines = [block.lines[0], hint]
 
         block.closed = True
-        # 冻结行缓存（方向D 步骤15：关闭块免每帧重渲染；含标题状态图标）
+        # 冻结行缓存（方向D 步骤15：关闭块免每帧重渲染；含标题状态图标；
+        # 折叠块冻结**可见形式**——标题 + 前 N 行 + 折叠提示）
         block._cached_ink_lines = self._block_to_ink_lines(block, 0)
         self.commit_block(len(self.blocks) - 1)
-        if self._current_tool_box is block:
-            self._current_tool_box = None
+
+    # ── 交互式折叠/展开（方向④） ────────────────────
+
+    def toggle_tool_box(self, tool_id: str) -> bool | None:
+        """切换工具块展开/折叠状态（方向④ 交互式折叠/展开）。
+
+        按 tool_id 在 blocks 中查找工具块；翻转 ``tool_expanded``、失效
+        冻结缓存（``_cached_ink_lines=None``）并全量重建 committed_lines
+        （低频用户操作，O(已提交块) 可接受）。返回切换后状态；未找到块
+        返回 None（调用方 no-op）。
+
+        Bug B 修复配合：折叠块保留完整输出行，toggle 展开后可见形式即时
+        恢复完整行（无需重新捕获输出）。
+        """
+        block = self._find_tool_block(tool_id)
+        if block is None:
+            return None
+        expanded = not block.extra.get("tool_expanded", True)
+        block.extra["tool_expanded"] = expanded
+        # 失效冻结缓存：下次渲染（_block_to_ink_lines/_block_styled_lines）
+        # 按新状态重建可见形式
+        block._cached_ink_lines = None
+        self._rebuild_committed()
+        return expanded
+
+    def _find_tool_block(self, tool_id: str):
+        """按 tool_id 在 blocks 中查找工具块（倒序，最近者优先）。"""
+        for b in reversed(self.blocks):
+            if b.kind == "tool" and b.extra.get("tool_id") == tool_id:
+                return b
+        return None
+
+    def _rebuild_committed(self) -> None:
+        """全量重建 committed_lines 增量缓存（方向④ toggle 后调用）。
+
+        重置所有**已关闭**块的 committed_line_count（开放块的增量提交指针
+        不动——其段落行已在缓存中），清空后从头 commit_block 全量重提交
+        （O(已提交块)，仅用户按键触发，低频可接受）。
+        """
+        for block in self.blocks:
+            if block.closed:
+                block.committed_line_count = 0
+        self.committed_lines = []
+        self.committed_count = 0
+        self.commit_block(len(self.blocks) - 1)
+
+    def _recent_collapsed_tool_id(self) -> str | None:
+        """返回最近一个折叠（tool_expanded=False）工具块的 tool_id（供按键定位）。
+
+        按 blocks 逆序查找；无折叠块返回 None（按键处理器 no-op）。
+        """
+        for b in reversed(self.blocks):
+            if b.kind == "tool" and b.extra.get("tool_expanded") is False:
+                return b.extra.get("tool_id") or ""
+        return None
 
     def _next_tool_id(self) -> str:
         self._tool_id_seq += 1
         return f"tool-{self._tool_id_seq}"
-
-    # 兼容旧字段（open_tool_group/close_tool_group 由 per-tool box 取代）
-    def open_tool_group(self) -> ChatBlock:
-        return self.open_tool_box("", "")
-
-    def close_tool_group(self) -> None:
-        if self._current_tool_box is not None:
-            self.close_tool_box("", True)
 
 
 __all__ = [

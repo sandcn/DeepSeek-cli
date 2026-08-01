@@ -127,6 +127,11 @@ class Reconciler:
         方向B 步骤11：记录旧 sibling 链各 fiber 的旧位置索引
         （``old_index_map[key] = idx``）；复用 fiber 时比较旧/新位置，
         不同则置 ``fiber.moved = True``（keyed 列表重排信息，纯信息标记）。
+
+        方向② 步骤6（moved 保留决策）：moved 标记保留——TestMovedFlag
+        测试锁定 + 计算成本 O(keyed 子项数) 极低；renderer 行级 diff 暂不
+        消费，保留供未来 keyed 子树尾部跳过优化（fiber.py moved 字段注释
+        同步标注）。不做移除。
         """
         existing_map: dict[str, Fiber] = {}
         old_index_map: dict[str, int] = {}

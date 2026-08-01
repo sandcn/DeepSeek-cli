@@ -7,6 +7,10 @@ hook 节点（保留状态/引用），从而跨渲染保持状态。
 
 ``use_effect`` 的 create 函数返回销毁函数；effect 的提交（先销毁后创建）
 由 reconciler 在整棵调和完成后执行。
+
+useImperativeHandle 评估（方向② 步骤5）：需引入 forwardRef/ref 转发
+基础设施（fiber 增加 ref 挂载点、组件间 ref 传递协议），当前框架无消费
+方，成本高——**不做**（评估结论保留可追溯）。
 """
 
 from __future__ import annotations
@@ -89,6 +93,37 @@ def _schedule() -> None:
             _logger.debug("schedule 回调异常", exc_info=True)
 
 
+def _next_hook(hook_cls: type, *init_args) -> HookNode:
+    """获取/创建当前 fiber 的下一个 hook 节点（公共骨架，方向② 步骤5）。
+
+    模板方法：从 fiber.hook_index 取下标、递增，按下标复用同类型 hook
+    （保留状态）或创建新 hook（``hook_cls(*init_args)``）。各 hook 特有
+    的初始化/更新逻辑在返回后由调用方补充（``_next_state_hook`` 应用
+    queue、``use_effect``/``use_memo``/``use_input`` 更新字段）。
+
+    Args:
+        hook_cls: 期望的 hook 类型（StateHook/RefHook/EffectHook/...）。
+        *init_args: 创建新 hook 时的构造参数。
+
+    Returns:
+        HookNode：复用或新建的 hook 节点。
+
+    Raises:
+        HookStateError: 下标处已有 hook 但类型不一致（hook 顺序变化，编程错误）。
+    """
+    fiber = _current()
+    idx = fiber.hook_index
+    fiber.hook_index += 1
+    if idx < len(fiber.hooks):
+        hook = fiber.hooks[idx]
+        if not isinstance(hook, hook_cls):
+            raise HookStateError(f"hook 类型不一致: {type(hook)}")
+    else:
+        hook = hook_cls(*init_args)
+        fiber.hooks.append(hook)
+    return hook
+
+
 # ═══════════════════════════════════════════════════════════
 # use_state / use_reducer
 # ═══════════════════════════════════════════════════════════
@@ -96,18 +131,9 @@ def _schedule() -> None:
 
 def _next_state_hook(reducer: Callable[[Any, Any], Any] | None, initial: Any) -> StateHook:
     """获取/创建当前 fiber 的下一个 StateHook 并应用待处理更新。"""
-    fiber = _current()
-    idx = fiber.hook_index
-    fiber.hook_index += 1
-    if idx < len(fiber.hooks):
-        hook = fiber.hooks[idx]
-        if not isinstance(hook, StateHook):
-            raise HookStateError(f"hook 类型不一致: {type(hook)}")
-        if reducer is not None:
-            hook.reducer = reducer
-    else:
-        hook = StateHook(initial, None, reducer)
-        fiber.hooks.append(hook)
+    hook = _next_hook(StateHook, initial, None, reducer)
+    if reducer is not None:
+        hook.reducer = reducer
     if hook.queue:
         if hook.reducer is not None:
             # use_reducer：queue 中为 action，经 reducer 归约
@@ -170,16 +196,7 @@ def use_reducer(reducer: Callable[[Any, Any], Any], initial: Any) -> tuple[Any, 
 
 def use_ref(initial: Any = None) -> RefHook:
     """React useRef 等价物。返回带 ``.current`` 的可变引用对象。"""
-    fiber = _current()
-    idx = fiber.hook_index
-    fiber.hook_index += 1
-    if idx < len(fiber.hooks):
-        hook = fiber.hooks[idx]
-        if not isinstance(hook, RefHook):
-            raise HookStateError(f"hook 类型不一致: {type(hook)}")
-    else:
-        hook = RefHook(initial)
-        fiber.hooks.append(hook)
+    hook = _next_hook(RefHook, initial)
     return hook
 
 
@@ -198,19 +215,27 @@ def use_effect(create: Callable[[], Any] | None, deps: list | tuple | None = Non
     Returns:
         EffectHook 节点。
     """
-    fiber = _current()
-    idx = fiber.hook_index
-    fiber.hook_index += 1
-    if idx < len(fiber.hooks):
-        hook = fiber.hooks[idx]
-        if not isinstance(hook, EffectHook):
-            raise HookStateError(f"hook 类型不一致: {type(hook)}")
-    else:
-        hook = EffectHook(create, deps, None, None)
-        fiber.hooks.append(hook)
+    hook = _next_hook(EffectHook, create, deps, None, None)
     hook.create = create
     hook.deps = list(deps) if deps is not None else deps
     return hook
+
+
+def useLayoutEffect(create: Callable[[], Any] | None, deps: list | tuple | None = None) -> EffectHook:
+    """React useLayoutEffect 等价物（方向② 步骤5，当前为 useEffect 别名）。
+
+    当前架构无「绘制前」阶段（非全屏流动模型：单帧渲染 + 调和后统一提交
+    effects），useLayoutEffect 与 useEffect 均在调和后提交期执行，行为
+    等价。保留命名供 React 生态组件移植（hook 签名一致）。
+
+    Args:
+        create: 创建函数（挂载或依赖变化时执行，返回销毁函数）。
+        deps: 依赖列表；None 表示每次渲染都执行。
+
+    Returns:
+        EffectHook 节点。
+    """
+    return use_effect(create, deps)
 
 
 # ═══════════════════════════════════════════════════════════
@@ -270,16 +295,7 @@ def use_memo(factory: Callable[[], Any], deps: list | tuple | None = None) -> An
     Returns:
         缓存值（deps 未变化时返回上次计算结果）。
     """
-    fiber = _current()
-    idx = fiber.hook_index
-    fiber.hook_index += 1
-    if idx < len(fiber.hooks):
-        hook = fiber.hooks[idx]
-        if not isinstance(hook, MemoHook):
-            raise HookStateError(f"hook 类型不一致: {type(hook)}")
-    else:
-        hook = MemoHook(factory, deps, None, None)
-        fiber.hooks.append(hook)
+    hook = _next_hook(MemoHook, factory, deps, None, None)
     hook.factory = factory
     hook.deps = list(deps) if deps is not None else deps
     if _memo_deps_changed(hook):
@@ -400,16 +416,7 @@ def use_input(handler: Callable[[Any], bool], is_active: bool = True) -> None:
     Returns:
         None（与 react-ink 一致）。
     """
-    fiber = _current()
-    idx = fiber.hook_index
-    fiber.hook_index += 1
-    if idx < len(fiber.hooks):
-        hook = fiber.hooks[idx]
-        if not isinstance(hook, InputHook):
-            raise HookStateError(f"hook 类型不一致: {type(hook)}")
-    else:
-        hook = InputHook(handler, is_active)
-        fiber.hooks.append(hook)
+    hook = _next_hook(InputHook, handler, is_active)
     hook.handler = handler
     hook.is_active = is_active
     return None
@@ -535,6 +542,7 @@ __all__ = [
     "use_reducer",
     "use_ref",
     "use_effect",
+    "useLayoutEffect",
     "use_memo",
     "use_callback",
     "use_context",

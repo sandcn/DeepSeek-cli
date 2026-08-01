@@ -155,18 +155,25 @@ class TestToolCardConfig:
         """默认最大保留行数 50。"""
         assert TuiConfig.defaults().tool_output_max_lines == 50
 
+    def test_tool_collapse_preview_lines_default(self):
+        """步骤3 — 折叠预览行数默认 2（替代硬编码「前 2 行」）。"""
+        assert TuiConfig.defaults().tool_collapse_preview_lines == 2
+
     def test_tool_config_overrides(self):
         """with_overrides 可覆盖工具卡片字段。"""
         cfg = TuiConfig.defaults()
         new_cfg = cfg.with_overrides(
             tool_auto_collapse_threshold=3,
             tool_output_max_lines=4,
+            tool_collapse_preview_lines=3,
         )
         assert new_cfg.tool_auto_collapse_threshold == 3
         assert new_cfg.tool_output_max_lines == 4
+        assert new_cfg.tool_collapse_preview_lines == 3
         # 原实例不变
         assert cfg.tool_auto_collapse_threshold == 8
         assert cfg.tool_output_max_lines == 50
+        assert cfg.tool_collapse_preview_lines == 2
 
 
 class TestEscCancelConfig:

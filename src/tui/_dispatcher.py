@@ -227,7 +227,8 @@ class EventDispatcher:
             return
         text = event.text.rstrip("\n")
         if text:
-            self._push_cmd(ToolOutputCmd(text=text, tool_id=event.label))
+            tool_id = event.tool_id or event.label
+            self._push_cmd(ToolOutputCmd(text=text, tool_id=tool_id))
 
     def _on_parse_info(self, event: "ParseInfoEvent") -> None:
         if not self._is_agent_source(event.source):

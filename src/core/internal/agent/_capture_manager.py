@@ -41,10 +41,19 @@ class SharedCapture(io.StringIO):
     def write(self, s: str) -> int:
         if s and s.strip():
             from ....tui.events.event_types import ToolOutputChunkEvent
-            for lbl in list(self._tool_labels):
+            from ._tool_context import get_current_tool_id
+            # Bug A 修复：按 contextvar 定向分发——命中当前工具 label 时仅
+            # 发布给该 label（O(1) 事件，消除并发 O(N²) 广播放大 + 错路由）；
+            # 未命中时广播兜底保留旧行为（正常工具执行均命中）。
+            target = get_current_tool_id()
+            if target and target in self._tool_labels:
+                labels = [target]
+            else:
+                labels = list(self._tool_labels)
+            for lbl in labels:
                 try:
                     self._event_port.publish_event(ToolOutputChunkEvent(
-                        label=lbl, text=s, source="agent",
+                        label=lbl, tool_id=lbl, text=s, source="agent",
                     ))
                 except asyncio.CancelledError:
                     raise
