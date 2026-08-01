@@ -11,6 +11,8 @@ fiber 的 ``layout_box`` 在 layout 阶段填充（LayoutBox(x,y,w,h)）。
 
 from __future__ import annotations
 
+import itertools
+
 from src._compat import dataclass
 from dataclasses import field
 from typing import Any, Callable, Optional, Union
@@ -19,6 +21,10 @@ from typing import Any, Callable, Optional, Union
 TAG_ROOT = "root"
 TAG_HOST = "host"
 TAG_FUNCTION = "function"
+
+#: InputHook 稳定序号真源（方向1 L3）——模块级递增计数器，替代 id(hook)
+#:   （id 复用风险）。fiber 复用/删除均不重置；仅进程生命周期内递增。
+_HOOK_SEQ = itertools.count()
 
 #: provider 值变更检测哨兵（``Fiber._last_provider_value`` 的未初始化标记；
 #:   None 是合法 provider 值，不能用 None 作哨兵）。
@@ -89,11 +95,15 @@ class InputHook:
         handler: 按键处理回调（签名 ``(event) -> bool``，True=消费）。
         is_active: 是否参与输入路由（False 时 hook 不参与）。
         focused: 焦点仲裁标志（useFocus 设置；True=参与焦点优先路由）。
+        seq: 稳定递增序号（方向1 L3）——hook 实例唯一标识，router 签名以此
+            替代 ``id(hook)``（id 复用风险：hook 被 GC 后新对象可能复用旧 id，
+            导致 router 签名误判为未变而复用过期 router）。单调递增，无复用。
     """
 
     handler: Callable[[Any], bool] | None = None
     is_active: bool = True
     focused: bool = True
+    seq: int = field(default_factory=lambda: next(_HOOK_SEQ))
 
 
 @dataclass

@@ -86,7 +86,27 @@ def _paint_border(fiber: Fiber, canvas: list[dict], border: int) -> None:
 
 
 def _paint(fiber: Fiber, canvas: list[dict]) -> None:
-    """递归绘制一个 host fiber 到画布。"""
+    """递归绘制一个 host fiber 到画布。
+
+    方向2 P7（建议7）：函数体 try/except 隔离——单节点 paint 抛异常 →
+    该节点跳过、整帧仍渲染、异常不传播（与自定义 host 一致）。递归调用
+    经本包装各自隔离（子节点异常不影响兄弟节点绘制）。layout 异常仍由
+    session 层退避兜底（本步隔离 paint，不隔离 layout——布局失败影响树
+    结构，保持 session 级处理）。
+    """
+    try:
+        _paint_impl(fiber, canvas)
+    except Exception:
+        # 非关键降级：内置 host paint 失败不影响整帧
+        _logger.debug("%s paint 异常", fiber.type, exc_info=True)
+
+
+def _paint_impl(fiber: Fiber, canvas: list[dict]) -> None:
+    """递归绘制一个 host fiber 到画布（_paint 内部实现，经 _paint 隔离）。
+
+    递归调用 ``_paint(child, canvas)``（经包装）——子节点 paint 异常在
+    子节点层级被捕获，不影响兄弟节点与父容器继续绘制。
+    """
     box = fiber.layout_box
     if box is None:
         return

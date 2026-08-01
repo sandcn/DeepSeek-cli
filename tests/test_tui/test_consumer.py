@@ -275,6 +275,15 @@ class TestChatUIConsumerPublicMethods:
         assert cmd.cid == 12  # RenderCommand.WRITE_LINE
         assert cmd.text == "line"
 
+    def test_display_messages_pushes_display_msgs_cmd(self, mock_consumer):
+        """display_messages 仍推 DisplayMsgsCmd（方向3 步骤16：handler 清理后路径不变）。"""
+        from src.tui._const import DisplayMsgsCmd
+        mock_consumer.display_messages([{"role": "user", "content": "hi"}], speed=2)
+        cmd = mock_consumer._engine.push_cmd.call_args[0][0]
+        assert isinstance(cmd, DisplayMsgsCmd)
+        assert cmd.messages == [{"role": "user", "content": "hi"}]
+        assert cmd.speed == 2
+
     def test_flush_delegates(self, mock_consumer):
         """flush 应委托给 engine.flush。"""
         mock_consumer.flush(timeout=3.0)
@@ -307,20 +316,6 @@ class TestChatUIConsumerPublicMethods:
         """request_bottom_redraw 应委托给 engine（公开 API 收敛）。"""
         mock_consumer.request_bottom_redraw()
         mock_consumer._engine.request_bottom_redraw.assert_called_once()
-
-
-class TestDisplayMessagesFlushShortTimeout:
-    """BUG-T5 — _display_messages_handler flush 短超时（0.5s，防阻塞会话设置）。"""
-
-    def test_display_messages_flush_short_timeout_regression(self):
-        """_display_messages_handler 尾部 flush 以 timeout=0.5 调用。"""
-        from src.tui._consumer import ChatUIConsumer
-
-        c = _create_mock_consumer(MagicMock())
-        c._engine.flush = MagicMock()
-        c._engine.push_cmd = MagicMock()
-        c._display_messages_handler([{"role": "user", "content": "hi"}], 0)
-        c._engine.flush.assert_called_once_with(timeout=0.5)
 
 
 class TestForTesting:

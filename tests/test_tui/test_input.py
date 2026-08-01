@@ -294,11 +294,12 @@ class TestParsing:
         assert ev is not None
         assert ev.kind == "home"
 
-    def test_feed_byte_ctrl_e_end(self, input_instance):
+    def test_feed_byte_ctrl_e_ctrl_key(self, input_instance):
         inp = input_instance
-        ev = inp.feed_byte(0x05)  # Ctrl+E
+        ev = inp.feed_byte(0x05)  # Ctrl+E（方向1 B1：不再 end）
         assert ev is not None
-        assert ev.kind == "end"
+        assert ev.kind == "ctrl_key"
+        assert ev.char == "\x05"
 
     def test_feed_byte_ctrl_w_delete_word(self, input_instance):
         inp = input_instance
@@ -2069,6 +2070,226 @@ class TestInputIOUnit:
         assert io.fd_status == "ok"
 
 
+# ═══════════════════════════════════════════════════════════
+# 方向1 B8 — _flush_stdin_residual 总体时间预算（最坏 2.5s → <0.2s）
+# ═══════════════════════════════════════════════════════════
+
+class TestFlushResidualBudget:
+    """方向1 B8 — _flush_stdin_residual 时间预算回归。
+
+    旧实现每次 select 超时固定 0.05s——fd 恒可读（持续输入）时 50 字节 × 0.05s
+    最坏阻塞 2.5s（render 线程卡顿）。修复后总体预算（默认 50ms）+ 短超时
+    （≤1ms）非阻塞排空：超预算即 break。本测试 mock select 模拟真实阻塞耗时，
+    验证总耗时受预算兜底（< 0.2s）且未排完 max_flush 即 break。
+    """
+
+    @pytest.fixture
+    def io(self):
+        """创建 InputIO 实例（P2-7：fixture 确保 fd 关闭）。"""
+        from src.tui._input_io import InputIO
+        fd = os.open("/dev/null", os.O_RDONLY)
+        try:
+            yield InputIO(fd=fd)
+        finally:
+            os.close(fd)
+
+    def test_flush_residual_budget_limits_worst_case(self, io):
+        """mock select 恒 ready + 模拟真实阻塞耗时 → 总耗时 < 0.2s（预算兜底）。"""
+        import time as _time
+
+        def fake_select(rlist, wlist, xlist, timeout):
+            # 模拟真实 select：恒可读但仍按 timeout 阻塞（旧实现 0.05s/次
+            # → 50 次 2.5s；新实现每次 ≤0.001s → 预算 50ms 内 break）
+            if timeout > 0:
+                _time.sleep(timeout)
+            return (rlist, [], [])
+
+        reads = []
+        with patch("select.select", side_effect=fake_select):
+            with patch("os.read", side_effect=lambda fd, n: reads.append(n) or b"x"):
+                start = _time.monotonic()
+                io._flush_stdin_residual(max_flush=1000)  # 不设限 → 预算兜底
+                elapsed = _time.monotonic() - start
+        assert elapsed < 0.2
+        assert len(reads) < 1000  # 预算触发 break（未排完 max_flush）
+
+    def test_flush_residual_no_data_fast(self, io):
+        """无数据时 select 立即空 → 快速返回（不消耗预算）。"""
+        import time as _time
+        with patch("select.select", return_value=([], [], [])):
+            start = _time.monotonic()
+            io._flush_stdin_residual(max_flush=50)
+            elapsed = _time.monotonic() - start
+        assert elapsed < 0.2
+
+    def test_flush_residual_respects_max_flush(self, io):
+        """max_flush 仍生效：恒可读时最多排空 max_flush 字节。"""
+        reads = []
+        with patch("select.select", return_value=([0], [], [])):
+            with patch("os.read", side_effect=lambda fd, n: reads.append(n) or b"x"):
+                io._flush_stdin_residual(max_flush=3)
+        assert len(reads) == 3
+
+
+# ═══════════════════════════════════════════════════════════
+# 方向1 步骤1 — 粘贴多字节解码辅助（_decode_paste_bytes / _paste_partial）
+# ═══════════════════════════════════════════════════════════
+
+class TestPastePartialDecode:
+    """InputIO._decode_paste_bytes 粘贴多字节解码（方向1 B4 前置封装）。
+
+    覆盖：完整多字节一次返回；截断 1-3 字节保留、下次补齐后无 U+FFFD；
+    连续多次截断累计正确；中部损坏字节 replace 兜底。
+    """
+
+    @pytest.fixture
+    def io(self):
+        """创建 InputIO 实例（P2-7：fixture 确保 fd 关闭）。"""
+        from src.tui._input_io import InputIO
+        fd = os.open("/dev/null", os.O_RDONLY)
+        try:
+            yield InputIO(fd=fd)
+        finally:
+            os.close(fd)
+
+    def test_complete_multibyte_returns_immediately(self, io):
+        """完整多字节序列一次返回（无 U+FFFD）。"""
+        # "你" = E4 BD A0
+        assert io._decode_paste_bytes(b"\xe4\xbd\xa0") == "你"
+        assert io._paste_partial == b""
+
+    def test_complete_ascii_returns_immediately(self, io):
+        """完整 ASCII 一次返回。"""
+        assert io._decode_paste_bytes(b"hello") == "hello"
+        assert io._paste_partial == b""
+
+    def test_truncated_one_byte_kept(self, io):
+        """截断 1 字节（UTF-8 3 字节序列尾 1 字节）保留，补齐后完整。"""
+        # "你" 拆为 [E4 BD] + [A0]
+        assert io._decode_paste_bytes(b"\xe4\xbd") == ""  # 不产生 U+FFFD
+        assert io._paste_partial == b"\xe4\xbd"
+        assert io._decode_paste_bytes(b"\xa0") == "你"
+        assert io._paste_partial == b""
+
+    def test_truncated_two_bytes_kept(self, io):
+        """截断 2 字节（UTF-8 3 字节序列尾 2 字节）保留，补齐后完整。"""
+        assert io._decode_paste_bytes(b"\xe4") == ""
+        assert io._paste_partial == b"\xe4"
+        assert io._decode_paste_bytes(b"\xbd\xa0") == "你"
+        assert io._paste_partial == b""
+
+    def test_truncated_three_bytes_kept(self, io):
+        """截断 3 字节（UTF-8 4 字节序列尾 3 字节）保留，补齐后完整。"""
+        # "𠜎" = F0 A0 9C 8E
+        assert io._decode_paste_bytes(b"\xf0") == ""
+        assert io._paste_partial == b"\xf0"
+        assert io._decode_paste_bytes(b"\xa0\x9c\x8e") == "𠜎"
+        assert io._paste_partial == b""
+
+    def test_consecutive_truncations_accumulate(self, io):
+        """连续多次截断累计正确。"""
+        # "你好" = [E4 BD A0] [E5 A5 BD]；逐字节拆分
+        assert io._decode_paste_bytes(b"\xe4") == ""
+        assert io._decode_paste_bytes(b"\xbd") == ""
+        assert io._paste_partial == b"\xe4\xbd"
+        assert io._decode_paste_bytes(b"\xa0") == "你"
+        assert io._paste_partial == b""
+        assert io._decode_paste_bytes(b"\xe5") == ""
+        assert io._decode_paste_bytes(b"\xa5") == ""
+        assert io._decode_paste_bytes(b"\xbd") == "好"
+        assert io._paste_partial == b""
+
+    def test_invalid_bytes_all_prefixes_fail_replace_fallback(self, io):
+        """全部前缀均无法严格解码 → replace 兜底（不崩溃、残留清空）。"""
+        # 5 个非法字节：尾部 1-3 字节切割前缀均 decode 失败 → 整体 replace
+        result = io._decode_paste_bytes(b"\xff\xff\xff\xff\xff")
+        assert result == "\ufffd" * 5
+        assert io._paste_partial == b""
+
+    def test_partial_then_ascii_keeps_partial(self, io):
+        """残留不完整序列后追加无法补齐的字节 → 整体保留（不产生 U+FFFD）。"""
+        assert io._decode_paste_bytes(b"\xe4") == ""
+        # \xe4 需要 UTF-8 续字节（0x80-0xBF）；'x' 非续字节 → 整体作为
+        # 潜在不完整尾部保留（真实粘贴为合法 UTF-8，此场景为人为构造）。
+        result = io._decode_paste_bytes(b"x")
+        assert result == ""
+        assert io._paste_partial == b"\xe4x"
+        # 继续追加续字节：整体仍作为尾部保留（直到可解码才返回）
+        result2 = io._decode_paste_bytes(b"\xa0")
+        assert result2 == ""
+        assert io._paste_partial == b"\xe4x\xa0"
+
+
+# ═══════════════════════════════════════════════════════════
+# 方向1 B4 — 多字节粘贴边界回归（try_read_paste 经 _decode_paste_bytes 解码）
+# ═══════════════════════════════════════════════════════════
+
+class TestPasteMultibyteBoundary:
+    """方向1 B4 — 粘贴边界无 U+FFFD 污染（多字节截断）。
+
+    覆盖：pipe 多字节字符拆两次写入 → 缓冲完整无 U+FFFD；粘贴 extra 尾部
+    截断多字节（旧实现 extra.decode(errors="replace") → U+FFFD）→ 修复后
+    无 U+FFFD 且截断字节保留在 _paste_partial（下次补齐）。
+    """
+
+    def test_pipe_split_multibyte_char_complete(self, tmp_path):
+        """pipe 写入多字节字符被拆两次（先前 2 字节再剩余）→ 缓冲完整无 U+FFFD。"""
+        r_fd, w_fd = os.pipe()
+        try:
+            inp = Input(fd=r_fd, history_file=tmp_path / "history")
+            # "你" = E4 BD A0，拆两次写入（同一 read_stdin_once 前全部落管）
+            os.write(w_fd, b"\xe4\xbd")
+            os.write(w_fd, b"\xa0")
+            ready, _, _ = select.select([r_fd], [], [], 2.0)
+            assert ready
+            assert inp.read_stdin_once() is True
+            assert inp.get_current_text() == "你"
+            assert "\ufffd" not in inp.get_current_text()
+        finally:
+            os.close(w_fd)
+            os.close(r_fd)
+
+    def test_paste_extra_truncated_multibyte_no_fffd(self, tmp_path):
+        """粘贴 extra 尾部截断多字节（B4 核心）→ 无 U+FFFD、截断字节保留。"""
+        r_fd, w_fd = os.pipe()
+        try:
+            inp = Input(fd=r_fd, history_file=tmp_path / "history")
+            # 粘贴正文：完整"你"（E4 BD A0）+ 下一字符"好"的首字节 E5（截断）。
+            # 旧实现 try_read_paste 对 extra=E5 直解 errors="replace" → "你\ufffd"；
+            # 修复后 E5 保留 _paste_partial，返回 "你"（无 U+FFFD）。
+            os.write(w_fd, b"\xe4\xbd\xa0\xe5")
+            ready, _, _ = select.select([r_fd], [], [], 2.0)
+            assert ready
+            assert inp.read_stdin_once() is True
+            assert inp.get_current_text() == "你"
+            assert "\ufffd" not in inp.get_current_text()
+            assert inp._io._paste_partial == b"\xe5"
+        finally:
+            os.close(w_fd)
+            os.close(r_fd)
+
+    def test_try_read_paste_direct_truncated_keeps_partial(self):
+        """try_read_paste 直接调用：extra 截断多字节 → 无 U+FFFD、partial 保留。"""
+        from src.tui._input_io import InputIO
+        r_fd, w_fd = os.pipe()
+        try:
+            io = InputIO(fd=r_fd)
+            # 直接调用场景：first_chars 为已解码的"你"（read_utf8_char 已消费
+            # E4 BD A0），管道中仅剩下一字符"好"的首字节 E5（截断）作为粘贴
+            # extra——try_read_paste 经 _decode_paste_bytes 保留 E5。
+            os.write(w_fd, b"\xe5")
+            result = io.try_read_paste(r_fd, "你")
+            assert result == "你"
+            assert "\ufffd" not in result
+            assert io._paste_partial == b"\xe5"
+            # 下次补齐剩余 2 字节 → _decode_paste_bytes 完成 "好"
+            assert io._decode_paste_bytes(b"\xa5\xbd") == "好"
+            assert io._paste_partial == b""
+        finally:
+            os.close(w_fd)
+            os.close(r_fd)
+
+
 class TestInputBufferEditorUnit:
     """InputBufferEditor 单元测试（方向A 步骤1）：缓冲编辑 + 历史 + _input_ready。"""
 
@@ -2352,6 +2573,65 @@ class TestInputHookRouterFacade:
         finally:
             os.close(w_fd)
             os.close(r_fd)
+
+
+# ═══════════════════════════════════════════════════════════
+# 方向1 步骤1 — _router_consume 公共辅助（策略收敛单一入口）
+# ═══════════════════════════════════════════════════════════
+
+class TestRouterConsume:
+    """InputDispatcher._router_consume 公共辅助（router 优先分发统一入口）。
+
+    语义：有 router 且 handler 返回 True 则消费（返回 True）；router 为
+    None 或抛异常时返回 False（放行）。供 read_stdin_once 内联路径与
+    _dispatch_key_event 复用。
+    """
+
+    @pytest.fixture
+    def inp(self, tmp_path):
+        """创建 Input 实例（P2-7：fixture 确保 fd 关闭）。"""
+        fd = os.open("/dev/null", os.O_RDONLY)
+        try:
+            yield Input(fd=fd, history_file=tmp_path / "history")
+        finally:
+            os.close(fd)
+
+    def test_no_router_returns_false(self, inp):
+        """无 router 时返回 False（放行）。"""
+        from src.tui._input_parser import KeyEvent
+        assert inp._dispatcher._router_consume(KeyEvent(kind="char", char="a")) is False
+
+    def test_router_returns_true_consumes(self, inp):
+        """router 返回 True → 消费（True）。"""
+        from src.tui._input_parser import KeyEvent
+        inp.set_input_hook_router(lambda ev: True)
+        assert inp._dispatcher._router_consume(KeyEvent(kind="char", char="a")) is True
+
+    def test_router_returns_false_releases(self, inp):
+        """router 返回 False → 放行（False）。"""
+        from src.tui._input_parser import KeyEvent
+        inp.set_input_hook_router(lambda ev: False)
+        assert inp._dispatcher._router_consume(KeyEvent(kind="char", char="a")) is False
+
+    def test_router_exception_releases(self, inp):
+        """router 抛异常 → 放行（False，不阻断输入）。"""
+        from src.tui._input_parser import KeyEvent
+        inp.set_input_hook_router(lambda ev: (_ for _ in ()).throw(ValueError("boom")))
+        assert inp._dispatcher._router_consume(KeyEvent(kind="char", char="a")) is False
+
+    def test_dispatch_key_event_uses_helper(self, inp):
+        """_dispatch_key_event 复用 _router_consume（消费跳过旧路径）。"""
+        from src.tui._input_parser import KeyEvent
+        inp.set_input_hook_router(lambda ev: True)
+        inp._dispatch_key_event(KeyEvent(kind="char", char="X"))
+        assert inp.get_current_text() == ""  # 被消费，未插入缓冲
+
+    def test_dispatch_key_event_release_helper(self, inp):
+        """_dispatch_key_event 复用 _router_consume（放行走旧路径）。"""
+        from src.tui._input_parser import KeyEvent
+        inp.set_input_hook_router(lambda ev: False)
+        inp._dispatch_key_event(KeyEvent(kind="char", char="X"))
+        assert inp.get_current_text() == "X"
 
 
 # ═══════════════════════════════════════════════════════════
@@ -2856,7 +3136,7 @@ class TestCtrlDEOF:
     """Claude TUI parity 步骤 3.2 — Ctrl+D EOF 提交。"""
 
     def test_ctrl_d_empty_buffer_submits_exit(self, tmp_path):
-        """空缓冲 Ctrl+D → 提交 "exit"。"""
+        """空缓冲 Ctrl+D → 提交 "exit"（方向1 B2：不写入历史）。"""
         r_fd, w_fd = os.pipe()
         try:
             inp = Input(fd=r_fd, history_file=tmp_path / "history")
@@ -2865,6 +3145,9 @@ class TestCtrlDEOF:
             assert ready
             assert inp.read_stdin_once() is True
             assert inp.get_queued_input() == "exit"
+            # 方向1 B2：Ctrl+D 空缓冲提交的 "exit" 不写入历史——内存历史为空
+            # （写盘路径 _append_history_locked 未触发，_history_io.append 未调用）
+            assert inp._buffer_editor._history == []
         finally:
             os.close(w_fd)
             os.close(r_fd)
@@ -2884,6 +3167,35 @@ class TestCtrlDEOF:
         finally:
             os.close(w_fd)
             os.close(r_fd)
+
+
+class TestRetryDraftPreservation:
+    """方向1 B3 — Ctrl+R retry 不丢弃输入草稿。
+
+    注入 special_key 回调返回 '/retry'，设置非空缓冲，调用
+    ``_handle_special_key('retry')``：
+    - 非空草稿：提交 /retry 后缓冲恢复为原草稿（供继续编辑）；
+    - 空草稿：行为与现状一致（提交 /retry，缓冲为空）。
+    """
+
+    def test_retry_preserves_draft_after_submit(self, input_instance):
+        """非空草稿触发 retry → 提交 /retry 后缓冲恢复为原草稿。"""
+        inp = input_instance
+        inp.handle_chars("draft text")
+        cb = MagicMock(return_value="/retry")
+        inp.set_special_key_callback(cb)
+        inp._handle_special_key('retry')
+        assert inp.get_queued_input() == "/retry"
+        assert inp.get_current_text() == "draft text"
+
+    def test_retry_empty_draft_unchanged(self, input_instance):
+        """草稿为空时 retry → 提交 /retry，缓冲为空（行为与现状一致）。"""
+        inp = input_instance
+        cb = MagicMock(return_value="/retry")
+        inp.set_special_key_callback(cb)
+        inp._handle_special_key('retry')
+        assert inp.get_queued_input() == "/retry"
+        assert inp.get_current_text() == ""
 
 
 class TestShiftEnterNewline:

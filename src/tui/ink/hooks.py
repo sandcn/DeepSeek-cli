@@ -16,6 +16,7 @@ useImperativeHandle 评估（方向② 步骤5）：需引入 forwardRef/ref 转
 from __future__ import annotations
 
 import logging
+import math
 from typing import Any, Callable, List
 
 from .fiber import (
@@ -228,6 +229,12 @@ def useLayoutEffect(create: Callable[[], Any] | None, deps: list | tuple | None 
     effects），useLayoutEffect 与 useEffect 均在调和后提交期执行，行为
     等价。保留命名供 React 生态组件移植（hook 签名一致）。
 
+    方向2 L5 评估结论（可追溯）：**当前与 useEffect 等价（无绘制前阶段）**；
+    独立 hook 类型（区分 use_layout_effect）评估——需引入「绘制前提交
+    期」基础设施（effects 分批：layout effects 在布局后立即执行、passive
+    effects 在帧后执行），当前无消费方需要该时序差异，**收益低、不实施**
+    （保持单一 EffectHook 类型，避免 hook 类型不一致编程错误面扩大）。
+
     Args:
         create: 创建函数（挂载或依赖变化时执行，返回销毁函数）。
         deps: 依赖列表；None 表示每次渲染都执行。
@@ -243,15 +250,41 @@ def useLayoutEffect(create: Callable[[], Any] | None, deps: list | tuple | None 
 # ═══════════════════════════════════════════════════════════
 
 
+def _object_is(a, b) -> bool:
+    """React Object.is 语义比较（方向1 步骤1 提取，use_effect/use_memo 单一真源）。
+
+    规则：
+      - ``a is b`` → True（同一对象/引用；小整数等 is 缓存命中）；
+      - 同为 int/float 且 type 相同 → NaN 与 NaN 相等、+0 与 -0 不等
+        （用 ``math.copysign(1, a)`` 区分）、其余按 ``==``；
+      - bool 与 int / int 与 float 等 type 不同返回 False。
+    """
+    if a is b:
+        return True
+    ta, tb = type(a), type(b)
+    if ta is int and tb is int:
+        return a == b
+    if ta is float and tb is float:
+        if a != a and b != b:          # NaN 与 NaN 相等
+            return True
+        if a == 0 and b == 0:          # +0 与 -0 不等
+            return math.copysign(1, a) == math.copysign(1, b)
+        return a == b
+    return False
+
+
 def _deps_equal(a, b) -> bool:
     """浅比较依赖列表是否相等（use_effect / use_memo 共用，INK-4 一致性）。
 
-    None 与任何列表不等（None 表示每次渲染重算）；列表按值浅比较
-    （与 React 的 Object.is 语义近似，文档标注：引用类型字段须自行保证稳定）。
+    None 与任何列表不等（None 表示每次渲染重算）；列表按长度相等 + 逐项
+    ``_object_is``（React Object.is 语义：数值按 Object.is 规则、其余按
+    is 引用比较——引用类型字段须自行保证稳定）。
     """
     if a is None or b is None:
         return a is b
-    return a == b
+    if len(a) != len(b):
+        return False
+    return all(_object_is(x, y) for x, y in zip(a, b))
 
 
 def deps_changed(hook: EffectHook) -> bool:

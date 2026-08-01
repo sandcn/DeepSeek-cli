@@ -401,6 +401,55 @@ class TestDrainQueue:
         assert s._model.input_cursor == 5
 
 
+class TestRenderBackoff:
+    """方向2 P7 — _drain_queue 渲染异常指数退避（递增间隔，成功复位）。"""
+
+    class _FakeLock:
+        """锁桩：恒可获取（模拟 _try_acquire_output_lock 成功路径）。"""
+
+        def __enter__(self):
+            return True
+
+        def __exit__(self, *a):
+            return False
+
+    def test_render_failure_backoff_exponential_regression(self):
+        """连续异常时 sleep 间隔 0.1→0.2→0.4（≤1.0 封顶）；成功后复位。"""
+        s = _make_session()
+        with patch("src.tui.ink.session._try_acquire_output_lock", return_value=self._FakeLock()), \
+             patch.object(s, "_should_render", return_value=True), \
+             patch.object(s, "_render_frame", side_effect=[
+                 RuntimeError("boom1"),
+                 RuntimeError("boom2"),
+                 RuntimeError("boom3"),
+                 None,  # 成功
+             ]), \
+             patch("src.tui.ink.session.time.sleep") as mock_sleep:
+            s._drain_queue()  # 第 1 次失败 → sleep 0.1
+            s._drain_queue()  # 第 2 次失败 → sleep 0.2
+            s._drain_queue()  # 第 3 次失败 → sleep 0.4
+            s._drain_queue()  # 成功渲染 → 复位
+        delays = [c.args[0] for c in mock_sleep.call_args_list]
+        assert delays == [0.1, 0.2, 0.4]
+        assert all(d <= 1.0 for d in delays)
+        assert s._consecutive_render_failures == 0
+
+    def test_render_backoff_caps_at_one_second_regression(self):
+        """连续 6 次失败 → 间隔 0.1,0.2,0.4,0.8,1.0,1.0（1.0 封顶）。"""
+        s = _make_session()
+        with patch("src.tui.ink.session._try_acquire_output_lock", return_value=self._FakeLock()), \
+             patch.object(s, "_should_render", return_value=True), \
+             patch.object(s, "_render_frame", side_effect=[
+                 RuntimeError(f"boom{i}") for i in range(6)
+             ]), \
+             patch("src.tui.ink.session.time.sleep") as mock_sleep:
+            for _ in range(6):
+                s._drain_queue()
+        delays = [c.args[0] for c in mock_sleep.call_args_list]
+        assert delays == [0.1, 0.2, 0.4, 0.8, 1.0, 1.0]
+        assert s._consecutive_render_failures == 6
+
+
 class TestEventBatching:
     """脏标记 + 窗口内事件批处理（不单独渲染，等 10Hz 拍；空闲跳过渲染）。"""
 
@@ -556,6 +605,56 @@ class TestPositionCursorReusesInputCache:
         with patch.object(s._ink_renderer, "place_cursor") as mock_pc:
             s._position_cursor()
             mock_pc.assert_called_once()
+
+
+class TestInputFiberCache:
+    """方向2 P5 — session._input_fiber 缓存 input-area fiber 引用（免每帧全树递归查找）。"""
+
+    def _make_session_with_input_tree(self):
+        """构造 build_tree 产出 input-area 的会话（host 未注册时按容器处理，无终端依赖）。"""
+        from src.tui.ink.element import h, BOX
+        state = {"key": "ia-1"}
+
+        def build(model, width):
+            return h(BOX, None, h("input-area", {
+                "key": state["key"],
+                "text": "hello",
+                "cursor_pos": 0,
+                "prompt": "> ",
+                "completion": None,
+            }))
+
+        s = _make_session(build_tree=build)
+        return s, state
+
+    def test_position_cursor_uses_cached_fiber_regression(self):
+        """渲染一帧建立缓存后，再次 _position_cursor 不触发 _find_input_fiber。"""
+        s, _ = self._make_session_with_input_tree()
+        s._ink_renderer = MagicMock()  # 避免真实终端输出
+        s._render_frame()
+        assert s._input_fiber is not None
+        assert s._input_fiber.type == "input-area"
+        with patch.object(s, "_find_input_fiber", wraps=s._find_input_fiber) as mock_find:
+            s._position_cursor()
+            mock_find.assert_not_called()
+
+    def test_render_frame_rebuilds_on_fiber_replaced_regression(self):
+        """input-area fiber 被替换（旧 fiber 删除）→ _render_frame 重建缓存。"""
+        s, state = self._make_session_with_input_tree()
+        s._ink_renderer = MagicMock()
+        s._render_frame()
+        old = s._input_fiber
+        assert old is not None
+        # 替换 input-area（不同 key）→ 调和器删除旧 fiber（deleted=True 保持）→
+        # _render_frame 缓存失效重建（找到新 fiber）
+        state["key"] = "ia-2"
+        with patch.object(s, "_find_input_fiber", wraps=s._find_input_fiber) as mock_find:
+            s._render_frame()
+            mock_find.assert_called_once()
+            assert s._input_fiber is not None
+            assert s._input_fiber is not old
+            assert s._input_fiber.type == "input-area"
+            assert s._input_fiber.props.get("key") == "ia-2"
 
 
 class _Box:

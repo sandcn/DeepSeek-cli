@@ -27,6 +27,7 @@ import logging
 import os
 import select
 import threading
+import time
 
 from src._compat_termios import HAS_TERMIOS, termios
 # P3-1 说明：从 escape_monitor._history 导入仅取常量（_EOF_THRESHOLD /
@@ -67,6 +68,11 @@ class InputIO:
         # ── 粘贴退避优化 ──
         self._paste_skip_counter: int = 0
         self._paste_skip_threshold: int = 10
+
+        # ── 粘贴多字节解码缓冲（方向1 步骤1） ──
+        # 跨 read_stdin_once 调用保留不完整的 UTF-8 尾部字节，配合
+        # _decode_paste_bytes 实现截断粘贴无 U+FFFD 污染（方向1 B4）。
+        self._paste_partial: bytes = b""
 
         # ── 故障检测 ──
         self._eof_count = 0
@@ -301,7 +307,50 @@ class InputIO:
             pass
         if not extra:
             return first_chars
-        return first_chars + extra.decode("utf-8", errors="replace")
+        # 方向1 B4：粘贴正文经 _decode_paste_bytes 解码——extra 尾部若为截断
+        # 多字节 UTF-8 序列，保留到 _paste_partial 留待下次补齐，不再产生
+        # U+FFFD 污染（旧实现 extra.decode("utf-8", errors="replace") 直解
+        # 截断字节 → U+FFFD）。
+        # 边界说明：_paste_partial 状态跨 read_stdin_once 调用保留——粘贴
+        # 结束无后续字节时残留不完整尾部（下次粘贴前拼接，语义正确）。
+        return first_chars + self._decode_paste_bytes(extra)
+
+    def _decode_paste_bytes(self, data: bytes) -> str:
+        """解码粘贴字节流（处理跨调用截断的多字节 UTF-8 序列）。
+
+        将上次残留的 ``_paste_partial`` 与本次 ``data`` 拼接后严格 decode；
+        解码失败时从尾部（最多 3 字节）向前找最大合法前缀——前缀严格
+        decode（仍失败则 errors="replace" 兜底），尾部不完整序列存入
+        ``_paste_partial`` 留待下次拼接（连续多次截断累计正确）。
+
+        假定粘贴字节流仅尾部可能不完整（终端粘贴为合法 UTF-8）；中部损坏
+        字节仍以 replace 兜底（可接受）。
+
+        Args:
+            data: 本次读取到的粘贴字节。
+
+        Returns:
+            解码后的文本（截断部分不产生 U+FFFD，留待下次补齐）。
+        """
+        buf = self._paste_partial + data
+        try:
+            text = buf.decode("utf-8")
+            self._paste_partial = b""
+            return text
+        except UnicodeDecodeError:
+            pass
+        # 从尾部向前找最大合法前缀（不完整序列最多 3 字节）
+        for cut in range(1, min(4, len(buf)) + 1):
+            prefix = buf[:-cut] if cut < len(buf) else b""
+            try:
+                text = prefix.decode("utf-8")
+            except UnicodeDecodeError:
+                continue
+            self._paste_partial = buf[-cut:]
+            return text
+        # 前缀均无法严格解码（中部损坏）→ replace 兜底，残留全部丢弃
+        self._paste_partial = b""
+        return buf.decode("utf-8", errors="replace")
 
     def read_utf8_char(self, fd: int, first_byte: int) -> str | None:
         """读取完整的多字节 UTF-8 字符序列。"""
@@ -337,16 +386,34 @@ class InputIO:
         except UnicodeDecodeError:
             return None
 
-    def _flush_stdin_residual(self, max_flush: int = 50) -> None:
-        """非阻塞清理 stdin 残留字节。"""
+    def _flush_stdin_residual(
+        self, max_flush: int = 50, budget: float = 0.05
+    ) -> None:
+        """非阻塞清理 stdin 残留字节（总体时间预算 + 短超时非阻塞排空）。
+
+        方向1 B8：旧实现每次 select 超时固定 0.05s——fd 恒可读（持续输入）时
+        50 字节 × 0.05s 最坏阻塞 2.5s（render 线程卡顿）。改为总体时间预算
+        （默认 50ms）+ 每次短超时（≤1ms）非阻塞排空：超预算即 break；无数据
+        时 select 立即空快速返回（不消耗预算）。保留 ``max_flush`` 上限与
+        ``stop`` 检查。调用方（``flush_stdin_buffer``/``_do_interrupt``）签名
+        不变（新增可选参数默认值向后兼容）。termios 可用时
+        ``flush_stdin_buffer`` 后续 tcflush 兜底刷洗内核队列（极端输入下少排
+        若干字节语义安全）。
+        """
         if self._fd_status == "error":
             return
         flushed = 0
+        deadline = time.monotonic() + budget
         while flushed < max_flush:
             if self._stop.is_set():
                 return
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
             try:
-                ready, _, _ = select.select([self._fd], [], [], 0.05)
+                ready, _, _ = select.select(
+                    [self._fd], [], [], min(0.001, remaining),
+                )
                 if not ready:
                     break
                 os.read(self._fd, 1)

@@ -591,3 +591,56 @@ class TestToolToggle:
         """无折叠块时 _recent_collapsed_tool_id 返回 None（按键处理器 no-op）。"""
         m = _model()
         assert m._recent_collapsed_tool_id() is None
+
+
+class TestRebuildCommittedOpenBlock:
+    """方向1 L1 — _rebuild_committed 重建保留开放块已提交行。
+
+    覆盖：开放 content 块已提交段落行在 toggle 折叠工具块（触发
+    _rebuild_committed）后仍存在于 committed_lines（修复前清空重建只提交
+    已关闭块，开放块已提交行从缓存丢失）。
+    """
+
+    def test_rebuild_keeps_open_block_committed_lines(self):
+        """开放 content 块已提交行在 toggle 折叠工具块后仍存在。"""
+        m = _model()
+        # 已关闭块：工具块
+        apply_cmd(m, ToolOpenCmd(tool_name="read_file", tool_id="t1"))
+        apply_cmd(m, ToolOutputCmd(text="out", tool_id="t1"))
+        apply_cmd(m, ToolCloseCmd(tool_id="t1", success=True))
+        # 开放块：content 块（流式中，段落闭合已提交）
+        apply_cmd(m, ContentCmd(text="para one\n\n"))
+        apply_cmd(m, ContentCmd(text="para two\n\n"))
+        block = m.blocks[-1]
+        assert block.kind == "content"
+        assert block.closed is False
+        assert block.committed_line_count > 0
+        assert len(m.committed_lines) > 0
+        # toggle 折叠工具块 → _rebuild_committed
+        m.toggle_tool_box("t1")
+        # 开放块已提交行仍存在（不丢）
+        assert block.committed_line_count > 0
+        plains = [l.plain for l in m.committed_lines]
+        assert any("para one" in p for p in plains)
+        assert any("para two" in p for p in plains)
+
+    def test_rebuild_without_open_block_unchanged(self):
+        """无开放块已提交行时 _rebuild_committed 行为不变（纯关闭块场景）。"""
+        m = _model()
+        apply_cmd(m, ToolOpenCmd(tool_name="read_file", tool_id="t1"))
+        apply_cmd(m, ToolOutputCmd(text="out", tool_id="t1"))
+        apply_cmd(m, ToolCloseCmd(tool_id="t1", success=True))
+        committed_before = len(m.committed_lines)
+        assert committed_before > 0
+        m.toggle_tool_box("t1")
+        assert len(m.committed_lines) > 0  # 已关闭块仍提交
+
+    def test_open_block_zero_committed_skipped(self):
+        """开放块无已提交行（committed_line_count == 0）→ 跳过保留，不报错。"""
+        m = _model()
+        # 仅一个开放 content 块（无段落闭合 → committed_line_count == 0）
+        m.ensure_content()
+        block = m.blocks[-1]
+        assert block.committed_line_count == 0
+        m._rebuild_committed()  # 不抛异常
+        assert block.committed_line_count == 0

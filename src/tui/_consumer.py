@@ -80,9 +80,9 @@ class ChatUIConsumer:
         self._bus = event_bus
 
         # ── 通过 TuiAssembly 装配子系统 ──
-        result: TuiAssemblyResult = TuiAssembly.assemble(
-            on_display_messages=self._display_messages_handler,
-        )
+        # 方向3 步骤16：assemble(on_display_messages=) 死参数已移除，
+        # 显示路径统一由 DisplayMsgsCmd → apply._do_display_messages 承载。
+        result: TuiAssemblyResult = TuiAssembly.assemble()
         self._rs = result.rs
         self._engine: "InkSession" = result.engine
         self._bb: "InkBridge" = result.bb
@@ -207,33 +207,6 @@ class ChatUIConsumer:
     def register_event_handler(self, event_type: type, handler_method: Callable) -> None:
         """注册自定义事件处理器（委托 TuiLifecycle）。"""
         self._lifecycle.register_event_handler(event_type, handler_method)
-
-    def _display_messages_handler(self, messages: list[dict], speed: int) -> None:
-        """渲染消息列表到上屏区域。"""
-        if not messages:
-            return
-        # P3-8：list[dict] content（vision 消息）序列化复用 pipeline/message_display
-        # 的 _content_str 逻辑（提取公共函数本地等价复用），使 vision 消息显示
-        # 质量与旧直写一致（dict 取 text 字段、list 逐项拼接）。
-        # 方向C 步骤4：user 消息改走 UserMsgCmd（apply 统一渲染——块级渲染自带
-        # 换行语义，不再手工拼接 `\n` 前缀/后缀）；assistant/other 保持
-        # WriteLineCmd 但内容经 build_assistant_line 共享构建（样式单一真源）。
-        from src.tui.pipeline.message_display import _content_str
-        from src.core.constants import DIM, RESET
-        from src.tui.app.apply import build_assistant_line
-        for msg in messages:
-            role = msg.get("role", "")
-            content = _content_str(msg.get("content", ""))
-            if role == "user":
-                self._engine.push_cmd(UserMsgCmd(text=content))
-            elif role == "system":
-                continue
-            else:
-                self._engine.push_cmd(WriteLineCmd(text=build_assistant_line(content).render()))
-        self._engine.push_cmd(WriteLineCmd(text=f"  {DIM}{'─' * 40}{RESET}"))
-        # BUG-T5：短超时非阻塞 flush（默认 5s 可能阻塞会话设置，降为 0.5s；
-        # InkSession.flush 超时后排空语义保持）
-        self._engine.flush(timeout=0.5)
 
     def request_bottom_redraw(self) -> None:
         self._engine.request_bottom_redraw()

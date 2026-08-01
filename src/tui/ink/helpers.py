@@ -53,24 +53,26 @@ def wrap_runs_by_width(runs: list[StyledRun], max_width: int) -> list[Line]:
     for run in runs:
         if not run.text:
             continue
-        # 单个 run 内按字符拆（保持样式一致性，逐字符累积宽度）
+        # 单个 run 内按字符拆（保持样式一致性，逐字符累积宽度；
+        # 字符先累积到 list、段级一次性 join——避免 str 不可变逐字符
+        # 拼接 O(n²)；段长受换行宽度约束有界，join 成本可接受）
         text = run.text
-        buf = ""
+        buf_chars: list[str] = []
         buf_width = 0
         for ch in text:
             cw = wcswidth_simple(ch)
-            if current_width + buf_width + cw > max_width and (current.runs or buf):
-                if buf:
-                    current.append(buf, run.style)
-                    buf = ""
+            if current_width + buf_width + cw > max_width and (current.runs or buf_chars):
+                if buf_chars:
+                    current.append("".join(buf_chars), run.style)
+                    buf_chars = []
                     buf_width = 0
                 lines.append(current)
                 current = Line()
                 current_width = 0
-            buf += ch
+            buf_chars.append(ch)
             buf_width += cw
-        if buf:
-            current.append(buf, run.style)
+        if buf_chars:
+            current.append("".join(buf_chars), run.style)
             current_width += buf_width
     if current.runs:
         lines.append(current)

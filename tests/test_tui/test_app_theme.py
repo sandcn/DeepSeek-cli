@@ -136,3 +136,90 @@ class TestPaletteRegistry:
         from src.tui.app._theme import get_active_palette, resolve_theme, _invalidate_palette_cache
         _invalidate_palette_cache()
         assert get_active_palette() == resolve_theme("dark")
+
+
+class TestSingleSourceOfTruth:
+    """方向3 步骤15 — 样式/颜色单一真源收敛回归。
+
+    断言 dark Palette 各槽值 == ``_SEMANTIC_COLOR`` 槽位表 == ``_COLOR_*``
+    字符串内色号（防止未来漂移；值与既有硬编码完全一致，零视觉回归）。
+    """
+
+    def test_dark_palette_slots_match_semantic_color_regression(self) -> None:
+        """dark Palette 各槽 Style 色号与 _SEMANTIC_COLOR 槽位表一致。"""
+        from src.tui._const import _SEMANTIC_COLOR
+        from src.tui.app._theme import resolve_theme
+
+        dark = resolve_theme("dark")
+        # Palette 字段名 → _SEMANTIC_COLOR 槽位名映射（selection_bg 为背景槽）
+        slot_map = {
+            "accent": "accent",
+            "accent_bold": "accent",
+            "dim": "dim",
+            "sep": "sep",
+            "time": "time",
+            "token": "token",
+            "speed": "speed",
+            "tool_ok": "tool_ok",
+            "tool_fail": "tool_fail",
+            "tool_running": "speed",
+            "border": "border",
+            "selection_bg": "select_bg",
+            "selection_fg": "select_fg",
+            "placeholder": "placeholder",
+        }
+        for palette_slot, semantic_name in slot_map.items():
+            style = getattr(dark, palette_slot)
+            color = style.bg if palette_slot == "selection_bg" else style.fg
+            assert color == _SEMANTIC_COLOR[semantic_name], (
+                f"dark.{palette_slot} 漂移：期望 {_SEMANTIC_COLOR[semantic_name]}，"
+                f"实际 {color}（应与 _SEMANTIC_COLOR 槽位一致，防止样式漂移）"
+            )
+
+    def test_color_constants_derived_from_semantic_color_regression(self) -> None:
+        """_COLOR_*/_C_* ANSI 字符串内色号与 _SEMANTIC_COLOR 槽位一致。"""
+        from src.tui._const import (
+            _SEMANTIC_COLOR,
+            _COLOR_ACCENT, _COLOR_DEEP_CYAN, _COLOR_DIM, _COLOR_SEP,
+            _COLOR_TIME, _COLOR_TOKEN, _COLOR_SPEED, _COLOR_TOOL_OK,
+            _COLOR_TOOL_FAIL, _COLOR_SELECT_BG, _COLOR_SELECT_FG,
+            _COLOR_COMPLETE_TITLE, _COLOR_COMPLETE_CMD_PREFIX, _COLOR_COMPLETE_DIR,
+            _C_RUNNING, _C_FAIL,
+        )
+        sc = _SEMANTIC_COLOR
+        # 前景派生（38;5;n）
+        assert _COLOR_ACCENT == f"\033[38;5;{sc['accent']}m"
+        assert _COLOR_DEEP_CYAN == f"\033[38;5;{sc['deep_cyan']}m"
+        assert _COLOR_DIM == f"\033[38;5;{sc['dim']}m"
+        assert _COLOR_SEP == f"\033[38;5;{sc['sep']}m"
+        assert _COLOR_TIME == f"\033[38;5;{sc['time']}m"
+        assert _COLOR_TOKEN == f"\033[38;5;{sc['token']}m"
+        assert _COLOR_SPEED == f"\033[38;5;{sc['speed']}m"
+        assert _COLOR_TOOL_OK == f"\033[38;5;{sc['tool_ok']}m"
+        assert _COLOR_TOOL_FAIL == f"\033[38;5;{sc['tool_fail']}m"
+        # 背景派生（48;5;n）
+        assert _COLOR_SELECT_BG == f"\033[48;5;{sc['select_bg']}m"
+        assert _COLOR_SELECT_FG == f"\033[38;5;{sc['select_fg']}m"
+        # 加粗前缀派生
+        assert _COLOR_COMPLETE_TITLE == f"\033[1;38;5;{sc['accent']}m"
+        assert _COLOR_COMPLETE_CMD_PREFIX == f"\033[1;38;5;{sc['accent']}m"
+        assert _COLOR_COMPLETE_DIR == f"\033[38;5;{sc['time']}m"
+        # _C_* 面板系列
+        assert _C_RUNNING == f"\033[38;5;{sc['speed']}m"
+        assert _C_FAIL == f"\033[38;5;{sc['tool_fail']}m"
+
+    def test_semantic_color_anchors_regression(self) -> None:
+        """槽位表关键锚点（test_screen.py 硬编码锚点同步防漂移）。"""
+        from src.tui._const import _SEMANTIC_COLOR
+        assert _SEMANTIC_COLOR["accent"] == 45
+        assert _SEMANTIC_COLOR["speed"] == 214
+        assert _SEMANTIC_COLOR["tool_ok"] == 41
+        assert _SEMANTIC_COLOR["tool_fail"] == 196
+
+    def test_style_sheet_error_matches_tool_fail_regression(self) -> None:
+        """StyleSheet "error" 与 _SEMANTIC_COLOR["tool_fail"] 同源（防漂移）。"""
+        from src.tui._const import _SEMANTIC_COLOR
+        from src.tui.core.style import StyleSheet
+        error = StyleSheet.get("error")
+        assert error is not None
+        assert error.fg == _SEMANTIC_COLOR["tool_fail"]

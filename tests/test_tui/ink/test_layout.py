@@ -202,6 +202,73 @@ class TestFlexGrowRemainder:
         assert box.h == 9
 
 
+class TestFlexShrink:
+    """方向2 U4 — flexShrink 收缩（与 flexGrow 余数分配对称）。"""
+
+    def _collect_texts(self, root):
+        texts = []
+        child = root.child.child
+        while child:
+            texts.append(child)
+            child = child.sibling
+        return texts
+
+    def test_flexshrink_reduces_children_to_fit(self):
+        """BOX(height=2) + 两个 flexShrink=1 的 3 行 TEXT → 总高 2、子节点高度收缩。"""
+        root, box = _render_and_layout(
+            h(BOX, {"height": 2},
+              h(TEXT, {"children": "a" * 30, "flexShrink": 1}),
+              h(TEXT, {"children": "b" * 30, "flexShrink": 1})),
+            10,
+        )
+        texts = self._collect_texts(root)
+        assert box.h == 2
+        # deficit=4, shrink=[1,1] → per=2 → 每子缩减 2 行 → [1,1]
+        assert [t.layout_box.h for t in texts] == [1, 1]
+        # y 重新堆叠（无重叠）
+        assert texts[0].layout_box.y == 0
+        assert texts[1].layout_box.y == 1
+
+    def test_flexshrink_no_shrink_unchanged(self):
+        """无 flexShrink 时子节点高度/位置不变（行为零变化）。"""
+        root, box = _render_and_layout(
+            h(BOX, {"height": 2},
+              h(TEXT, {"children": "a" * 30}),
+              h(TEXT, {"children": "b" * 30})),
+            10,
+        )
+        texts = self._collect_texts(root)
+        assert box.h == 2
+        # 子节点保持自然高度（3 行）与自然 y（内容溢出容器底部，不改动）
+        assert [t.layout_box.h for t in texts] == [3, 3]
+        assert texts[0].layout_box.y == 0
+        assert texts[1].layout_box.y == 3
+
+    def test_flexshrink_weight_distribution(self):
+        """shrink 权重分配：shrink=[2,1]、deficit=3 → 缩减 [2,1] 行。"""
+        root, box = _render_and_layout(
+            h(BOX, {"height": 3},
+              h(TEXT, {"children": "a" * 30, "flexShrink": 2}),
+              h(TEXT, {"children": "b" * 30, "flexShrink": 1})),
+            10,
+        )
+        texts = self._collect_texts(root)
+        assert box.h == 3
+        # child0: 3-2=1；child1: 3-1=2（总 3 = 容器高）
+        assert [t.layout_box.h for t in texts] == [1, 2]
+
+    def test_flexshrink_single_child_min_clamp(self):
+        """单子钳制 ≥1：BOX(height=1) + 5 行 TEXT shrink=1 → 子高 1。"""
+        root, box = _render_and_layout(
+            h(BOX, {"height": 1},
+              h(TEXT, {"children": "a" * 50, "flexShrink": 1})),
+            10,
+        )
+        texts = self._collect_texts(root)
+        assert box.h == 1
+        assert texts[0].layout_box.h == 1
+
+
 class TestTextWrapTruncate:
     """方向B 步骤12 — textWrap 模式（truncate 省略号）。"""
 

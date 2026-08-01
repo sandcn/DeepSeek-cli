@@ -453,3 +453,76 @@ class TestToolToggleKeyRouting:
         consumed = router(KeyEvent(kind="char", char="a"))
         assert consumed is False
         assert m.blocks[-1].extra["tool_expanded"] is False
+
+    # ── 方向1 B1 真实解析链回归（新增，2026-08-01） ──────────────
+    # 以 os.pipe 写入真实字节流，验证 Ctrl+E 折叠键经
+    # 「原始字节 → InputParser 解析 → InputDispatcher 分发（router 先行）→
+    # App use_input handler → tool_expanded 翻转」完整链路生效。
+    # 用 select.select 轮询（不 sleep），与 test_engine_injected_input_processes_stdin
+    # 风格一致。
+
+    def test_ctrl_e_real_chain_regression(self, mock_width_cache, tmp_path):
+        """真实 0x05 字节 → ctrl_key → router 消费 → tool_expanded 翻转。"""
+        import select as _sel
+        from src.tui._input import Input
+        m = self._make_collapsed_model()
+        assert m.blocks[-1].extra["tool_expanded"] is False
+        router = self._render_router(m, mock_width_cache)
+        assert router is not None
+        r_fd, w_fd = os.pipe()
+        try:
+            inp = Input(fd=r_fd, history_file=tmp_path / "history")
+            inp.start_io()
+            inp.set_input_hook_router(router)
+            os.write(w_fd, b"\x05")  # Ctrl+E（直接控制字符路径）
+            ready, _, _ = _sel.select([r_fd], [], [], 2.0)
+            assert ready
+            assert inp.read_stdin_once() is True
+            assert m.blocks[-1].extra["tool_expanded"] is True
+        finally:
+            os.close(w_fd)
+            os.close(r_fd)
+
+    def test_ctrl_e_csi_u_small_keycode_chain_regression(self, mock_width_cache, tmp_path):
+        """CSI u 小键码路径（\\x1b[5;5u）→ ctrl_key '\\x05' → 折叠翻转。"""
+        import select as _sel
+        from src.tui._input import Input
+        m = self._make_collapsed_model()
+        assert m.blocks[-1].extra["tool_expanded"] is False
+        router = self._render_router(m, mock_width_cache)
+        assert router is not None
+        r_fd, w_fd = os.pipe()
+        try:
+            inp = Input(fd=r_fd, history_file=tmp_path / "history")
+            inp.start_io()
+            inp.set_input_hook_router(router)
+            os.write(w_fd, b"\x1b[5;5u")
+            ready, _, _ = _sel.select([r_fd], [], [], 2.0)
+            assert ready
+            assert inp.read_stdin_once() is True
+            assert m.blocks[-1].extra["tool_expanded"] is True
+        finally:
+            os.close(w_fd)
+            os.close(r_fd)
+
+    def test_ctrl_e_csi_u_letter_keycode_chain_regression(self, mock_width_cache, tmp_path):
+        """CSI u 字母键码路径（\\x1b[101;5u）→ ctrl_key '\\x05' → 折叠翻转。"""
+        import select as _sel
+        from src.tui._input import Input
+        m = self._make_collapsed_model()
+        assert m.blocks[-1].extra["tool_expanded"] is False
+        router = self._render_router(m, mock_width_cache)
+        assert router is not None
+        r_fd, w_fd = os.pipe()
+        try:
+            inp = Input(fd=r_fd, history_file=tmp_path / "history")
+            inp.start_io()
+            inp.set_input_hook_router(router)
+            os.write(w_fd, b"\x1b[101;5u")
+            ready, _, _ = _sel.select([r_fd], [], [], 2.0)
+            assert ready
+            assert inp.read_stdin_once() is True
+            assert m.blocks[-1].extra["tool_expanded"] is True
+        finally:
+            os.close(w_fd)
+            os.close(r_fd)

@@ -179,8 +179,10 @@ class InputParser:
             return KeyEvent(kind="interrupt", raw=raw)
         if byte == 0x01:                 # Ctrl+A → Home
             return KeyEvent(kind="home", raw=raw)
-        if byte == 0x05:                 # Ctrl+E → End
-            return KeyEvent(kind="end", raw=raw)
+        # 方向1 B1：0x05（Ctrl+E）不再映射为光标行尾（end 语义移除）。
+        # 这是让工具折叠键生效的既定取舍——Ctrl+E 经 ctrl_key 进入分发，
+        # 由 App use_input handler（input router）消费触发折叠；未消费时
+        # _handle_ctrl_key 保持未知 no-op 兜底（不产生 end 光标行为）。
         if byte == 0x17:                 # Ctrl+W → delete word left
             return KeyEvent(kind="delete", modifier=1, raw=raw)
         if byte == 0x15:                 # Ctrl+U → kill to BOL
@@ -189,22 +191,32 @@ class InputParser:
             return KeyEvent(kind="delete", modifier=3, raw=raw)
         # Claude TUI parity 步骤 1.4：Ctrl+L(0x0c 清屏) / Ctrl+D(0x04 EOF) /
         # Ctrl+T(0x14 主题) 加入特殊按键（分发在 dispatcher 处理）
-        if byte in (0x04, 0x07, 0x0c, 0x0e, 0x0f, 0x12, 0x14):  # Ctrl+D/G/L/N/O/R/T
+        # 方向1 B1：0x05（Ctrl+E）加入 ctrl_key 集合（折叠键）
+        if byte in (0x04, 0x05, 0x07, 0x0c, 0x0e, 0x0f, 0x12, 0x14):  # Ctrl+D/E/G/L/N/O/R/T
             return KeyEvent(kind="ctrl_key", char=chr(byte), raw=raw)
         # 其他控制字符 → unknown
         return KeyEvent(kind="unknown", raw=raw)
 
     def _read_csi_sequence(self, fd: int) -> KeyEvent:
-        """读取 CSI 序列参数 + 终结符并解析为 KeyEvent。"""
+        """读取 CSI 序列参数 + 终结符并解析为 KeyEvent。
+
+        方向1 B6：循环内累积已读原始字节到 ``raw_acc``（初始 ``b"\\x1b["``，
+        每 ``os.read`` 到字节先 ``raw_acc += raw_bytes`` 再 decode 处理）；
+        超时（terminator 为 None）时 unknown 事件 raw 含已读参数（原返回
+        ``b"\\x1b["`` 丢失已读部分）；成功路径 raw 构建不变（经
+        ``_params_to_bytes``，与 _dispatch_csi 内部构建一致）。
+        """
         params: list[int] = []
         current = ""
         terminator: str | None = None
+        raw_acc = b"\x1b["  # 方向1 B6：累积已读原始字节（超时 raw 保留）
 
         try:
             while select.select([fd], [], [], _CSI_READ_TIMEOUT)[0]:
                 raw_c = os.read(fd, 1)
                 if not raw_c:
                     break
+                raw_acc += raw_c  # 方向1 B6：先累积再 decode 处理
                 c = raw_c.decode("utf-8", errors="replace")
                 if c == ';':
                     try:
@@ -226,7 +238,8 @@ class InputParser:
             pass
 
         if terminator is None:
-            return KeyEvent(kind="unknown", raw=b"\x1b[")
+            # 方向1 B6：超时 → unknown raw 保留已读参数（原返回 b"\x1b[" 丢失）
+            return KeyEvent(kind="unknown", raw=raw_acc)
 
         return self._dispatch_csi(params, terminator)
 
@@ -274,6 +287,17 @@ class InputParser:
                 decoded = InputParser._decode_control_char(keycode - 96)
                 return KeyEvent(kind=decoded.kind, char=decoded.char,
                                 modifier=decoded.modifier, keycode=keycode, raw=raw)
+            # 方向1 B1：CSI u Ctrl 字母解码扩展至 keycode 1-26（modifier=5），
+            # 使 \x1b[5;5u（Ctrl+E）等小键码也映射 ctrl_key——真实增强键盘
+            # 协议终端以 keycode 而非 ASCII 字母发送 Ctrl 组合（修复折叠键
+            # 经 CSI u 路径失效）。keycode 1-26 即 ASCII 控制码（Ctrl+X 编码
+            # = X 在字母表中的位置），直接经 _decode_control_char 解码
+            # （keycode=5 → 0x05 → ctrl_key '\x05'）。keycode 9/13 已在更早
+            # 分支处理（modifier=5 时 13 → char '\n'），防御排除防重复。
+            if 1 <= keycode <= 26 and modifier == 5 and keycode not in (9, 13):
+                decoded = InputParser._decode_control_char(keycode)
+                return KeyEvent(kind=decoded.kind, char=decoded.char,
+                                modifier=decoded.modifier, keycode=keycode, raw=raw)
             return KeyEvent(kind="csi_u", modifier=modifier, keycode=keycode, raw=raw)
 
         raw = b"\x1b[" + InputParser._params_to_bytes(params) + terminator.encode()
@@ -297,24 +321,31 @@ class InputParser:
         if terminator == 'F':
             return KeyEvent(kind="end", raw=raw)
 
-        # ── 右箭头 / Ctrl+右 ──
+        # ── 右箭头 / Shift+右 / Alt+右 / Ctrl+右 ──
+        # 方向1 B7：保留 modifier 2/3/5（Alt/Shift 箭头不再降级为普通箭头）——
+        # 事件字段增强，消费方按需使用（_dispatch_key_event：modifier 5 → 词跳转；
+        # 2/3 → 单字符移动；input router 可消费带修饰符事件）。
         if terminator == 'C':
-            if len(params) >= 2 and params[1] == 5:
-                return KeyEvent(kind="arrow_right", modifier=5, raw=raw)
+            if len(params) >= 2 and params[1] in (2, 3, 5):
+                return KeyEvent(kind="arrow_right", modifier=params[1], raw=raw)
             return KeyEvent(kind="arrow_right", raw=raw)
 
-        # ── 左箭头 / Ctrl+左 ──
+        # ── 左箭头 / Shift+左 / Alt+左 / Ctrl+左 ──
         if terminator == 'D':
-            if len(params) >= 2 and params[1] == 5:
-                return KeyEvent(kind="arrow_left", modifier=5, raw=raw)
+            if len(params) >= 2 and params[1] in (2, 3, 5):
+                return KeyEvent(kind="arrow_left", modifier=params[1], raw=raw)
             return KeyEvent(kind="arrow_left", raw=raw)
 
-        # ── 上箭头 ──
+        # ── 上箭头 / Shift+上 / Alt+上 / Ctrl+上 ──
         if terminator == 'A':
+            if len(params) >= 2 and params[1] in (2, 3, 5):
+                return KeyEvent(kind="arrow_up", modifier=params[1], raw=raw)
             return KeyEvent(kind="arrow_up", raw=raw)
 
-        # ── 下箭头 ──
+        # ── 下箭头 / Shift+下 / Alt+下 / Ctrl+下 ──
         if terminator == 'B':
+            if len(params) >= 2 and params[1] in (2, 3, 5):
+                return KeyEvent(kind="arrow_down", modifier=params[1], raw=raw)
             return KeyEvent(kind="arrow_down", raw=raw)
 
         # ── Shift+Tab (\x1b[Z) — 部分终端发送 CSI Z 而非 CSI u(9;2u) ──

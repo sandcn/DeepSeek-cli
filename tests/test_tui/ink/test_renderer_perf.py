@@ -171,3 +171,30 @@ class TestInputRouterCache:
         finally:
             from src.tui.ink.hooks import set_input_router_callback
             set_input_router_callback(None)
+
+
+class TestWrapLargeLineSmoke:
+    """方向2 P2 — 大输入换行性能冒烟（防逐字符 O(n²) 回归）。
+
+    冒烟阈值宽松（CI 抖动容忍），仅防 ``buf += ch`` 类逐字符 str 拼接
+    导致的 O(n²) 回归；行内容拼接正确性一并断言。
+    """
+
+    def test_wrap_large_line_smoke(self):
+        """100k 字符单行 wrap 完成 < 1s 且行内容拼接正确。"""
+        import time
+
+        from src.tui.ink.helpers import wrap_runs_by_width
+        from src.tui.ink.output import StyledRun
+
+        text = "a" * 100_000
+        runs = [StyledRun(text, None)]
+        start = time.monotonic()
+        lines = wrap_runs_by_width(runs, 80)
+        elapsed = time.monotonic() - start
+        assert elapsed < 1.0, (
+            f"100k 字符 wrap 耗时 {elapsed:.3f}s（疑似逐字符 O(n²) 回归）"
+        )
+        # 100000 整除 80 → 恰好 1250 行，每行 80 字符
+        assert len(lines) == 1250
+        assert "".join(l.plain for l in lines) == text

@@ -237,6 +237,81 @@ class TestUseEffect:
         assert deps_changed(hook) is True
 
 
+class TestDepsObjectIs:
+    """方向1 步骤1 — _object_is / _deps_equal React Object.is 语义。
+
+    覆盖：小整数 is 缓存相等；对象 is 不同则不等；NaN 相等；+0/-0 不等；
+    bool vs int 不等；int vs float 不等；长度不等直接 False。
+    """
+
+    def test_small_int_is_cache_equal(self):
+        """_deps_equal([1],[1]) True（小整数 is 缓存命中）。"""
+        from src.tui.ink.hooks import _object_is, _deps_equal
+        assert _object_is(1, 1) is True
+        assert _deps_equal([1], [1]) is True
+
+    def test_large_int_equal(self):
+        """大整数按 == 相等（is 不命中）。"""
+        from src.tui.ink.hooks import _object_is
+        assert _object_is(1000, 1000) is True
+
+    def test_distinct_dict_objects_not_equal(self):
+        """_deps_equal([dict()],[dict()]) False（对象 is 不同）。"""
+        from src.tui.ink.hooks import _object_is, _deps_equal
+        assert _object_is({}, {}) is False
+        assert _deps_equal([dict()], [dict()]) is False
+
+    def test_nan_equal(self):
+        """NaN 与 NaN 相等（Object.is 语义）。"""
+        import math
+        from src.tui.ink.hooks import _object_is, _deps_equal
+        assert _object_is(float("nan"), float("nan")) is True
+        assert _deps_equal([float("nan")], [float("nan")]) is True
+
+    def test_positive_zero_negative_zero_not_equal(self):
+        """+0 与 -0 不等（Object.is 语义）。"""
+        from src.tui.ink.hooks import _object_is, _deps_equal
+        assert _object_is(0.0, -0.0) is False
+        assert _deps_equal([0.0], [-0.0]) is False
+
+    def test_bool_vs_int_not_equal(self):
+        """bool 与 int 因 type 不同返回 False。"""
+        from src.tui.ink.hooks import _object_is, _deps_equal
+        assert _object_is(True, 1) is False
+        assert _deps_equal([True], [1]) is False
+
+    def test_int_vs_float_not_equal(self):
+        """int 与 float type 不同返回 False。"""
+        from src.tui.ink.hooks import _object_is
+        assert _object_is(1, 1.0) is False
+
+    def test_deps_equal_length_mismatch(self):
+        """长度不等直接 False。"""
+        from src.tui.ink.hooks import _deps_equal
+        assert _deps_equal([1], [1, 2]) is False
+
+    def test_deps_equal_none_semantics(self):
+        """None 与列表不等（None 表示每次渲染重算）。"""
+        from src.tui.ink.hooks import _deps_equal
+        assert _deps_equal(None, None) is True
+        assert _deps_equal(None, [1]) is False
+        assert _deps_equal([1], None) is False
+
+    def test_same_list_reference_equal(self):
+        """同一列表对象引用 → True（a is b 命中）。"""
+        from src.tui.ink.hooks import _deps_equal
+        deps = [1, 2]
+        assert _deps_equal(deps, deps) is True
+
+    def test_deps_changed_uses_object_is(self):
+        """deps_changed 经 _deps_equal 逐项 _object_is（新 dict 触发重跑）。"""
+        from src.tui.ink.fiber import EffectHook
+        from src.tui.ink.hooks import deps_changed
+        hook = EffectHook(create=None, deps=[{}], destroy=None, last_deps=[{}])
+        # 两个不同 dict 对象（is 不同）→ deps 变化 → True
+        assert deps_changed(hook) is True
+
+
 class TestMemoInputHookDataclass:
     """INK-2/INK-1 — MemoHook / InputHook 数据结构（fiber.py 新增）。"""
 
@@ -747,3 +822,14 @@ class TestUseContextCache:
         assert child_fiber._context_cache.get(Ctx.tag) == "stable"
         r.render(root, h(Provider, {"value": "stable"}), 80, 24)  # 值未变
         assert child_fiber._context_cache.get(Ctx.tag) == "stable"  # 缓存保留
+
+
+class TestUseLayoutEffectDocs:
+    """方向2 L5 — useLayoutEffect 评估结论文档化（可选断言，可追溯）。"""
+
+    def test_uselayouteffect_docstring_records_evaluation(self):
+        """useLayoutEffect docstring 明确与 useEffect 等价 + 独立 hook 类型评估不实施。"""
+        from src.tui.ink.hooks import useLayoutEffect
+        doc = useLayoutEffect.__doc__ or ""
+        assert "与 useEffect 等价" in doc
+        assert "不实施" in doc

@@ -91,8 +91,11 @@ class TestDecodeControlChar:
     def test_ctrl_a_home(self):
         assert InputParser._decode_control_char(0x01).kind == "home"
 
-    def test_ctrl_e_end(self):
-        assert InputParser._decode_control_char(0x05).kind == "end"
+    def test_ctrl_e_ctrl_key(self):
+        """方向1 B1：0x05 移入 ctrl_key 集合（不再 end 光标行尾）。"""
+        ev = InputParser._decode_control_char(0x05)
+        assert ev.kind == "ctrl_key"
+        assert ev.char == "\x05"
 
     def test_ctrl_w_delete_word_left(self):
         ev = InputParser._decode_control_char(0x17)
@@ -210,6 +213,64 @@ class TestDispatchCsi:
     def test_unknown(self):
         # 'Z' 已映射为 Shift+Tab（Claude TUI parity 步骤 1.4），改用 'q' 作为未知样本
         assert InputParser._dispatch_csi([], 'q').kind == "unknown"
+
+
+# ═══════════════════════════════════════════════════════════
+# 方向1 B7 — CSI 箭头修饰符保留（2/3/5 不再降级为普通箭头）
+# ═══════════════════════════════════════════════════════════
+
+class TestArrowModifiers:
+    """方向1 B7 — 箭头修饰符保留回归。
+
+    覆盖：Shift(2)/Alt(3)/Ctrl(5) 修饰符在 A/B/C/D 四个箭头方向均保留；
+    无修饰符时 modifier 保持 0（普通箭头，零回归）。
+    """
+
+    def test_right_modifier_preserved(self):
+        """右箭头 Shift/Alt/Ctrl → arrow_right modifier 保留。"""
+        for mod in (2, 3, 5):
+            ev = InputParser._dispatch_csi([1, mod], 'C')
+            assert ev.kind == "arrow_right"
+            assert ev.modifier == mod
+
+    def test_left_modifier_preserved(self):
+        """左箭头 Shift/Alt/Ctrl → arrow_left modifier 保留。"""
+        for mod in (2, 3, 5):
+            ev = InputParser._dispatch_csi([1, mod], 'D')
+            assert ev.kind == "arrow_left"
+            assert ev.modifier == mod
+
+    def test_up_modifier_preserved(self):
+        """上箭头 Shift/Alt/Ctrl → arrow_up modifier 保留（修复前上/下无修饰符）。"""
+        for mod in (2, 3, 5):
+            ev = InputParser._dispatch_csi([1, mod], 'A')
+            assert ev.kind == "arrow_up"
+            assert ev.modifier == mod
+
+    def test_down_modifier_preserved(self):
+        """下箭头 Shift/Alt/Ctrl → arrow_down modifier 保留（修复前上/下无修饰符）。"""
+        for mod in (2, 3, 5):
+            ev = InputParser._dispatch_csi([1, mod], 'B')
+            assert ev.kind == "arrow_down"
+            assert ev.modifier == mod
+
+    def test_no_modifier_arrows_plain(self):
+        """无修饰符箭头 → modifier 保持 0（普通箭头，零回归）。"""
+        for term in 'ABCD':
+            ev = InputParser._dispatch_csi([], term)
+            assert ev.kind in (
+                "arrow_up", "arrow_down", "arrow_left", "arrow_right",
+            )
+            assert ev.modifier == 0
+
+    def test_arrow_keycode_5_modifier_unchanged(self):
+        """Ctrl 箭头（1;5C / 1;5D）既有语义不变（modifier 5）。"""
+        ev = InputParser._dispatch_csi([1, 5], 'C')
+        assert ev.kind == "arrow_right"
+        assert ev.modifier == 5
+        ev = InputParser._dispatch_csi([1, 5], 'D')
+        assert ev.kind == "arrow_left"
+        assert ev.modifier == 5
 
 
 # ═══════════════════════════════════════════════════════════
@@ -380,6 +441,59 @@ class TestReadCsiSequenceDirect:
         finally:
             os.close(r_fd)
             os.close(w_fd)
+
+
+class TestCsiTimeoutRawPreserved:
+    """方向1 B6 — _read_csi_sequence 超时保留已读参数到 unknown raw。
+
+    修复前超时 unknown 事件 raw 仅 b"\\x1b["（丢失已读参数）；修复后 raw
+    累积已读原始字节（调试/未来消费用途，无行为回归）。
+    """
+
+    def test_mock_partial_read_then_timeout_keeps_raw(self):
+        """mock select 首次 ready、os.read 返回部分参数后超时 → raw 含已读参数。"""
+        parser = InputParser()
+        # 三次 select ready（读 b"1" b";" b"2"）→ 第四次 select 空（超时）
+        select_calls = [([1], [], []), ([1], [], []), ([1], [], []), ([], [], [])]
+        with patch("select.select", side_effect=select_calls):
+            with patch("os.read", side_effect=[b"1", b";", b"2"]):
+                ev = parser._read_csi_sequence(1)
+        assert ev.kind == "unknown"
+        assert ev.raw == b"\x1b[1;2"
+
+    def test_mock_single_param_then_timeout_keeps_raw(self):
+        """仅读到单参数字节后超时 → raw 含该参数（不再仅 b'\\x1b['）。"""
+        parser = InputParser()
+        select_calls = [([1], [], []), ([], [], [])]
+        with patch("select.select", side_effect=select_calls):
+            with patch("os.read", return_value=b"1"):
+                ev = parser._read_csi_sequence(1)
+        assert ev.kind == "unknown"
+        assert ev.raw == b"\x1b[1"
+
+    def test_pipe_partial_then_timeout_keeps_raw(self):
+        """真实 pipe 部分参数后超时 → unknown raw 含已读参数。"""
+        r_fd, w_fd = os.pipe()
+        try:
+            os.write(w_fd, b"1;2")
+            parser = InputParser()
+            ev = parser._read_csi_sequence(r_fd)
+            assert ev.kind == "unknown"
+            assert ev.raw == b"\x1b[1;2"
+        finally:
+            os.close(r_fd)
+            os.close(w_fd)
+
+    def test_success_path_raw_unchanged(self):
+        """成功路径 raw 构建不变（经 _params_to_bytes，raw 与 _dispatch_csi 一致）。"""
+        parser = InputParser()
+        select_calls = [([1], [], []), ([1], [], []), ([1], [], []), ([1], [], [])]
+        with patch("select.select", side_effect=select_calls):
+            with patch("os.read", side_effect=[b"1", b";", b"5", b"C"]):
+                ev = parser._read_csi_sequence(1)
+        assert ev.kind == "arrow_right"
+        assert ev.modifier == 5
+        assert ev.raw == b"\x1b[1;5C"
 
 
 class TestReadSs3SequenceDirect:

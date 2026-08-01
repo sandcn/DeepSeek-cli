@@ -359,9 +359,11 @@ class Reconciler:
         焦点仲裁（方向B 步骤10）：优先仅取 ``focused`` 且 active 的 hook；
         focused 集合为空时回退全部 active hook（无焦点仲裁时行为不变，零回归）。
 
-        性能：签名 ``tuple((id(hook), is_active, id(handler), focused))`` 未变时
+        性能：签名 ``tuple((hook.seq, is_active, id(handler), focused))`` 未变时
         复用上次 router 对象（避免每帧全树重建闭包）；handler/is_active/focused
-        变化时签名变 → 重建。
+        变化时签名变 → 重建。方向1 L3：签名首元改用 ``hook.seq``（稳定递增序号）
+        替代 ``id(hook)``——修复 id 复用风险（hook 被 GC 后新对象复用旧 id →
+        签名误判未变 → 复用过期 router 闭包）。
         """
         hooks_list: list[InputHook] = []
         self._collect_input_hooks(root_fiber, hooks_list)
@@ -373,7 +375,7 @@ class Reconciler:
         if focused_hooks:
             hooks_list = focused_hooks
         signature = tuple(
-            (id(hook), hook.is_active, id(hook.handler), getattr(hook, "focused", True))
+            (hook.seq, hook.is_active, id(hook.handler), getattr(hook, "focused", True))
             for hook in hooks_list
         )
         if (
@@ -432,6 +434,13 @@ class Reconciler:
         sibling 指针可能仍指向已被复用的活跃 fiber，误遍历会误删其 context 注册）。
         仅当 fiber 为 host 且 ``contexts`` 非空（本帧确实充当 provider）且注册表
         含对应标签时移除；卸载后重新 create_context 会以新 tag 重新注册。
+
+        方向2 L2 评估结论（可追溯）：**多 Provider 同 Context 卸载误伤评估**——
+        当前架构单 Context 仅一个 Provider 挂载（``_context_registry[tag]`` 单条
+        记录，无挂载计数）；多 Provider 同 Context 时卸载任一 Provider 会误删注册
+        条目，导致其余 Provider 子树 ``use_context`` 回退 default。**当前无多
+        Provider 场景，低优先保留现状**；未来引入多 Provider 时需按挂载计数
+        （``contexts`` 内记录 count）清理——注释注明，不实施。
         """
         f = fiber
         while f is not None:

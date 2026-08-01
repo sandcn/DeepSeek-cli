@@ -22,7 +22,6 @@ from __future__ import annotations
 
 import logging
 import sys
-from typing import Callable
 
 from src.tui._input import Input
 from src.tui._completion import _CmplHandler
@@ -176,10 +175,12 @@ class TuiAssembly:
         return dispatcher, cmpl_handler, subagent_controller
 
     @staticmethod
-    def assemble(
-        on_display_messages: Callable | None = None,
-    ) -> TuiAssemblyResult:
-        """装配所有子系统（ink 渲染模型）。"""
+    def assemble() -> TuiAssemblyResult:
+        """装配所有子系统（ink 渲染模型）。
+
+        方向3 步骤16：移除 ``on_display_messages`` 死参数——显示路径已统一由
+        ``DisplayMsgsCmd → apply._do_display_messages`` 承载，无回调注入需求。
+        """
         line_tracker = TuiAssembly._create_infrastructure()
         tui_config, model = TuiAssembly._create_shared()
         input_instance = TuiAssembly._create_chat_domain()

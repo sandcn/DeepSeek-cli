@@ -18,6 +18,7 @@ import math
 import time
 
 from src._compat import dataclass
+from src.tui._const import _SEMANTIC_COLOR
 from src.tui.core.style import Style
 
 # ── 共享样式常量池 ────────────────────────────────────────────
@@ -57,27 +58,31 @@ class Palette:
     每个字段为语义色槽对应的 ``Style``。dark 各槽与既有常量值一致，
     light/high-contrast 为独立主题族（组件经 ``get_active_palette()``
     按需解析，暗色下渲染结果与硬编码现状逐字节一致）。
+
+    方向3 步骤15（样式/颜色单一真源）：dark 各槽中与 ``_SEMANTIC_COLOR``
+    槽位表共有的语义色改从槽位读取（唯一真源防漂移），值与既有 ``_S_*``
+    常量完全一致（零视觉回归）；light/high-contrast 为独立主题族不引用槽位。
     """
 
-    accent: Style = _S_ACCENT
-    accent_bold: Style = _S_ACCENT_BOLD
-    dim: Style = _S_DIM
-    sep: Style = _S_SEP
-    time: Style = _S_TIME
+    accent: Style = Style(fg=_SEMANTIC_COLOR["accent"])
+    accent_bold: Style = Style(fg=_SEMANTIC_COLOR["accent"], bold=True)
+    dim: Style = Style(fg=_SEMANTIC_COLOR["dim"])
+    sep: Style = Style(fg=_SEMANTIC_COLOR["sep"])
+    time: Style = Style(fg=_SEMANTIC_COLOR["time"])
     user_icon: Style = _S_USER_ICON
     user_text: Style = _S_USER_TEXT
     notice: Style = _S_NOTICE
     text: Style = _S_TEXT
-    token: Style = Style(fg=68)
-    speed: Style = Style(fg=214)
-    tool_ok: Style = Style(fg=41)
-    tool_fail: Style = Style(fg=196)
-    tool_running: Style = Style(fg=214)
-    border: Style = Style(fg=23)
+    token: Style = Style(fg=_SEMANTIC_COLOR["token"])
+    speed: Style = Style(fg=_SEMANTIC_COLOR["speed"])
+    tool_ok: Style = Style(fg=_SEMANTIC_COLOR["tool_ok"])
+    tool_fail: Style = Style(fg=_SEMANTIC_COLOR["tool_fail"])
+    tool_running: Style = Style(fg=_SEMANTIC_COLOR["speed"])
+    border: Style = Style(fg=_SEMANTIC_COLOR["border"])
     code_bg: Style = Style(bg=235)
-    selection_bg: Style = Style(bg=236)
-    selection_fg: Style = Style(fg=15)
-    placeholder: Style = Style(fg=238)
+    selection_bg: Style = Style(bg=_SEMANTIC_COLOR["select_bg"])
+    selection_fg: Style = Style(fg=_SEMANTIC_COLOR["select_fg"])
+    placeholder: Style = Style(fg=_SEMANTIC_COLOR["placeholder"])
 
 
 def _light_palette() -> Palette:

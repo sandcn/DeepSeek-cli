@@ -32,34 +32,58 @@ ANSI_EMERGENCY_CURSOR_BOTTOM: str = "\033[9999;1H"
 # 收敛 _screen.py（底栏 _COLOR_*）与 _subagent_panel.py（面板 _C_*）两套颜色
 # 到本 Layer 0 模块单一真源；_screen.py 保留 re-export（bottom_bar 导入路径不变），
 # _subagent_panel.py 改为模块级从本模块导入。值与原定义完全一致，零行为变化。
+#
+# 方向3 步骤15（样式/颜色单一真源）：新增 ``_SEMANTIC_COLOR`` 槽位表——
+# 语义色名 → 256 色号的唯一真源。``_COLOR_*``/``_C_*`` 中与
+# ``app/_theme.py`` Palette(dark) 共有的语义色由槽位派生（防漂移），
+# 其余无槽位字面量保留原值；``app/_theme.py`` 暗色 Palette 各槽与
+# ``core/style.py`` StyleSheet 的 "error" 亦引用本槽位表（零视觉回归）。
 
-_COLOR_ACCENT = "\033[38;5;45m"
-_COLOR_DEEP_CYAN = "\033[38;5;32m"
-_COLOR_DIM = "\033[38;5;242m"
+#: 语义色槽位表（语义名 → 256 色号）— 样式/颜色单一真源。
+#: 覆盖 Palette(dark) 与 _COLOR_* 共有的语义色；值与原硬编码完全一致。
+_SEMANTIC_COLOR: dict[str, int] = {
+    "accent": 45,
+    "deep_cyan": 32,
+    "dim": 242,
+    "sep": 237,
+    "time": 110,
+    "token": 68,
+    "speed": 214,
+    "tool_ok": 41,
+    "tool_fail": 196,
+    "select_bg": 236,
+    "select_fg": 15,
+    "border": 23,
+    "placeholder": 238,
+}
+
+_COLOR_ACCENT = f"\033[38;5;{_SEMANTIC_COLOR['accent']}m"
+_COLOR_DEEP_CYAN = f"\033[38;5;{_SEMANTIC_COLOR['deep_cyan']}m"
+_COLOR_DIM = f"\033[38;5;{_SEMANTIC_COLOR['dim']}m"
 _COLOR_RESET = "\033[0m"
-_COLOR_SEP = "\033[38;5;237m"
-_COLOR_TIME = "\033[38;5;110m"
-_COLOR_TOKEN = "\033[38;5;68m"
-_COLOR_SPEED = "\033[38;5;214m"
-_COLOR_TOOL_OK = "\033[38;5;41m"
-_COLOR_TOOL_FAIL = "\033[38;5;196m"
-_COLOR_SELECT_BG = "\033[48;5;236m"
-_COLOR_SELECT_FG = "\033[38;5;15m"
-_COLOR_COMPLETE_TITLE = "\033[1;38;5;45m"
-_COLOR_COMPLETE_CMD_PREFIX = "\033[1;38;5;45m"
-_COLOR_COMPLETE_DIR = "\033[38;5;110m"
-_COLOR_COMPLETE_MATCH = "\033[38;5;221m"
+_COLOR_SEP = f"\033[38;5;{_SEMANTIC_COLOR['sep']}m"
+_COLOR_TIME = f"\033[38;5;{_SEMANTIC_COLOR['time']}m"
+_COLOR_TOKEN = f"\033[38;5;{_SEMANTIC_COLOR['token']}m"
+_COLOR_SPEED = f"\033[38;5;{_SEMANTIC_COLOR['speed']}m"
+_COLOR_TOOL_OK = f"\033[38;5;{_SEMANTIC_COLOR['tool_ok']}m"
+_COLOR_TOOL_FAIL = f"\033[38;5;{_SEMANTIC_COLOR['tool_fail']}m"
+_COLOR_SELECT_BG = f"\033[48;5;{_SEMANTIC_COLOR['select_bg']}m"
+_COLOR_SELECT_FG = f"\033[38;5;{_SEMANTIC_COLOR['select_fg']}m"
+_COLOR_COMPLETE_TITLE = f"\033[1;38;5;{_SEMANTIC_COLOR['accent']}m"
+_COLOR_COMPLETE_CMD_PREFIX = f"\033[1;38;5;{_SEMANTIC_COLOR['accent']}m"
+_COLOR_COMPLETE_DIR = f"\033[38;5;{_SEMANTIC_COLOR['time']}m"
+_COLOR_COMPLETE_MATCH = "\033[38;5;221m"  # 无槽位语义（补全匹配高亮），保留字面量
 
-_C_RUNNING       = "\033[38;5;214m"   # 琥珀色 — 运行中
-_C_DONE          = "\033[38;5;40m"    # 亮绿 — 完成
-_C_FAIL          = "\033[38;5;196m"   # 亮红 — 失败
-_C_ANSWERING     = "\033[38;5;75m"    # 浅蓝 — 回答中
-_C_PARSING       = "\033[38;5;178m"   # 金色 — 解析
-_C_BATCH         = "\033[38;5;140m"   # 淡紫 — 批量
-_C_DIMMER        = "\033[38;5;240m"   # 暗灰 — 辅助
-_C_DIMMEST       = "\033[38;5;238m"   # 深灰 — 分隔线
-_C_SUMMARY_DIM   = "\033[38;5;245m"   # 中灰 — 摘要次要
-_C_BRANCH        = "\033[38;5;239m"   # 灰 — 树形线
+_C_RUNNING       = f"\033[38;5;{_SEMANTIC_COLOR['speed']}m"    # 琥珀色 — 运行中
+_C_DONE          = "\033[38;5;40m"     # 亮绿 — 完成（无槽位，保留字面量）
+_C_FAIL          = f"\033[38;5;{_SEMANTIC_COLOR['tool_fail']}m"  # 亮红 — 失败
+_C_ANSWERING     = "\033[38;5;75m"     # 浅蓝 — 回答中（无槽位，保留字面量）
+_C_PARSING       = "\033[38;5;178m"    # 金色 — 解析（无槽位，保留字面量）
+_C_BATCH         = "\033[38;5;140m"    # 淡紫 — 批量（无槽位，保留字面量）
+_C_DIMMER        = "\033[38;5;240m"    # 暗灰 — 辅助（无槽位，保留字面量）
+_C_DIMMEST       = "\033[38;5;238m"    # 深灰 — 分隔线（无槽位，保留字面量）
+_C_SUMMARY_DIM   = "\033[38;5;245m"    # 中灰 — 摘要次要（无槽位，保留字面量）
+_C_BRANCH        = "\033[38;5;239m"    # 灰 — 树形线（无槽位，保留字面量）
 _C_RESET         = "\033[0m"
 
 

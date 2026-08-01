@@ -815,3 +815,60 @@ class TestInputRouterFocus:
         finally:
             from src.tui.ink.hooks import set_input_router_callback
             set_input_router_callback(None)
+
+
+class TestRouterCacheStableSeq:
+    """方向1 L3 — router 签名用 hook.seq（id(hook) 复用风险修复）。
+
+    覆盖：同 hook 二次渲染 → 签名相同 → router 复用（缓存命中）；
+    两个不同 hook 对象（同 handler）→ seq 不同 → 签名不同 → 不复用旧 router。
+    """
+
+    def test_same_hook_second_render_reuses_router(self):
+        """同 hook 二次渲染 → 签名相同 → 缓存命中（router 对象复用）。"""
+        from src.tui.ink.hooks import use_input
+        handler = MagicMock(return_value=False)
+
+        def Comp(props):
+            use_input(handler, True)
+            return h(TEXT, {"children": "x"})
+
+        r = Reconciler()
+        root = r.create_root()
+        r.render(root, h(Comp), 80, 24)
+        cache1 = r._input_router_cache
+        assert cache1 is not None
+        r.render(root, h(Comp), 80, 24)
+        cache2 = r._input_router_cache
+        assert cache2 is not None
+        assert cache2[0] == cache1[0]  # 签名相同（seq/is_active/id(handler)/focused）
+        assert cache2[1] is cache1[1]  # router 对象复用
+
+    def test_different_hooks_same_handler_rebuilds_router(self):
+        """两个不同 hook 对象（同 handler）→ seq 不同 → 签名不同 → router 重建。"""
+        from src.tui.ink.hooks import use_input
+        handler = MagicMock(return_value=False)
+
+        def CompA(props):
+            use_input(handler, True)
+            return h(TEXT, {"children": "a"})
+
+        def CompB(props):
+            use_input(handler, True)
+            return h(TEXT, {"children": "b"})
+
+        r = Reconciler()
+        root = r.create_root()
+        r.render(root, h(CompA), 80, 24)
+        sig1 = r._input_router_cache[0]
+        r.render(root, h(CompB), 80, 24)
+        sig2 = r._input_router_cache[0]
+        assert sig1 != sig2  # seq 不同 → 签名不同 → 不复用旧 router
+
+    def test_hook_seq_monotonic_increasing(self):
+        """InputHook.seq 单调递增（稳定标识，无 id 复用风险）。"""
+        from src.tui.ink.fiber import InputHook
+        h1 = InputHook(handler=lambda e: False)
+        h2 = InputHook(handler=lambda e: False)
+        assert h1.seq != h2.seq
+        assert h1.seq < h2.seq

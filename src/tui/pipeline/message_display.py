@@ -49,7 +49,13 @@ def _content_str(content: Any) -> str:
 
 
 def _truncate(text: str, max_len: int) -> str:
-    """截断文本到指定长度。"""
+    """截断文本到指定长度（单一真源，方向3 步骤16）。
+
+    统一 message_editor 语义：先去除换行/回车（\n → 空格、\r → 删除），
+    超长时截断并追加 "..."。本函数与 ``_content_str`` 为 message_display 与
+    message_editor 共用的公共函数（message_editor 已删除本地副本改从此导入）。
+    """
+    text = text.replace('\n', ' ').replace('\r', '')
     if len(text) <= max_len:
         return text
     return text[:max_len - 3] + "..."
@@ -115,8 +121,8 @@ def display_messages(
         content = _content_str(msg.get("content", ""))
         if not content.strip():
             continue
-        # 截断过长的消息用于显示
-        preview = _truncate(content.replace('\n', ' '), 120)
+        # 截断过长的消息用于显示（_truncate 内部已去除 \n/\r）
+        preview = _truncate(content, 120)
         sys.__stdout__.write(f"  {icon} [{role}] {preview}\n")
     sys.__stdout__.flush()
 

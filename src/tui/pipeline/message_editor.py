@@ -23,6 +23,9 @@ from typing import Any
 
 from ...core.constants import DIM, RESET, YELLOW, BRIGHT_CYAN, BRIGHT_GREEN, GREEN
 from ...core.sandbox_manager import get_sandbox_manager as _get_sandbox_manager
+# 方向3 步骤16：_content_str/_truncate 单一真源在 message_display（已被
+# _consumer/apply 消费）；本模块删除本地副本改从单一真源导入（零行为变化）。
+from .message_display import _content_str, _truncate
 
 _logger = logging.getLogger(__name__)
 
@@ -30,29 +33,6 @@ _logger = logging.getLogger(__name__)
 # ═══════════════════════════════════════════════════════════
 # 工具函数
 # ═══════════════════════════════════════════════════════════
-
-def _content_str(content: Any) -> str:
-    """将 content（可能是 str 或 list[dict]）转换为纯文本字符串。"""
-    if isinstance(content, str):
-        return content
-    if isinstance(content, list):
-        parts = []
-        for c in content:
-            if isinstance(c, dict):
-                parts.append(str(c.get("text", c)))
-            else:
-                parts.append(str(c))
-        return " ".join(parts)
-    return str(content)
-
-
-def _truncate(text: str, max_len: int) -> str:
-    """截断文本到指定长度，超出部分用 '...' 表示。"""
-    text = text.replace('\n', ' ').replace('\r', '')
-    if len(text) <= max_len:
-        return text
-    return text[:max_len - 3] + "..."
-
 
 def _user_msg_summary(msg: dict, idx: int, max_w: int = 60) -> str:
     """生成用户消息的简短摘要（用于底部栏弹窗显示）。

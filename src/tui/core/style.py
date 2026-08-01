@@ -22,6 +22,7 @@ from src.tui._const import (
     ANSI_EMERGENCY_YELLOW,
     ANSI_EMERGENCY_RESET,
     ANSI_EMERGENCY_CURSOR_BOTTOM,
+    _SEMANTIC_COLOR,
 )
 
 
@@ -442,6 +443,9 @@ class StyleSheet:
 # ════════════════════════════════════════════════════════
 # 预注册基本样式（模块加载时自动注册）
 # ════════════════════════════════════════════════════════
+# 方向3 步骤15：StyleSheet 为独立命名样式注册表（语义词汇与 _SEMANTIC_COLOR
+# 槽位不同源——如 "success"=47 与槽 tool_ok=41 语义不同不强制合并）；仅
+# "error"（196）与槽 tool_fail 同值同语义，引用槽位防漂移（零视觉变化）。
 
 StyleSheet.register_many({
     # ── 基础字型 ──
@@ -453,7 +457,7 @@ StyleSheet.register_many({
     "dim_italic": Style(dim=True, italic=True),
     "bold_italic": Style(bold=True, italic=True),
     # ── 语义色 ──
-    "error":     Style(fg=196, bold=True),
+    "error":     Style(fg=_SEMANTIC_COLOR["tool_fail"], bold=True),
     "success":   Style(fg=47),
     "warn":      Style(fg=220),
     "info":      Style(fg=45),

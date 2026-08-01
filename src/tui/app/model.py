@@ -411,7 +411,14 @@ class AppModel:
         if detail:
             title = f"  \u00b7 {display} \u00b7 {detail}"
         block.lines.append(AnsiLine.of(title, Style(fg=23, bold=True)))
-        self.tool_boxes[tool_id or self._next_tool_id()] = block
+        # 方向1 B8：记录实际存储 key（非空 tool_id 即自身；空 tool_id 场景为
+        # _next_tool_id() 生成值）。``_box_key`` 记录**原始传入 tool_id**——
+        # 非空时即实际存储 key（tool_boxes 按原 id 存取）；空 id 场景为 ""，
+        # 供 ``close_tool_box("")`` 按空 id 匹配匿名 box 关闭（修复空 tool_id
+        # box 泄漏：旧实现空 id open 存于生成 key，close("") 永远 pop 不到）。
+        key = tool_id or self._next_tool_id()
+        block.extra["_box_key"] = tool_id
+        self.tool_boxes[key] = block
         # Claude TUI parity 步骤 2.2：记录进行中工具（ToolStatusHeader 消费）
         self.active_tool = {
             "name": display, "detail": detail, "status": "running",
@@ -463,10 +470,20 @@ class AppModel:
 
         Bug A 修复：按 tool_id 精确 pop，不再 fallback 到 _current_tool_box
         （单值指针语义已移除）；找不到对应 box 时静默丢弃（debug 日志）。
+
+        方向1 B8：空 tool_id 关闭——``pop("")`` 未命中且 tool_id 为空时遍历
+        ``tool_boxes`` 按 ``_box_key == ""``（open 记录的原始空 id 标记）查找
+        匿名 box 关闭（倒序取最近者，与 ``_find_tool_block`` 语义一致）；
+        找不到时静默丢弃（debug 日志）。修复空 tool_id box 泄漏。
         """
         from src.tui.core.style import Style
         from src.renderer.ansi.helpers import AnsiLine
         block = self.tool_boxes.pop(tool_id, None)
+        if block is None and not tool_id:
+            for stored_key, candidate in reversed(list(self.tool_boxes.items())):
+                if candidate.extra.get("_box_key") == "":
+                    block = self.tool_boxes.pop(stored_key)
+                    break
         if block is None:
             _logger.debug(
                 "close_tool_box: 未找到 tool_id=%r 的工具 box，静默丢弃", tool_id,
@@ -550,13 +567,30 @@ class AppModel:
         重置所有**已关闭**块的 committed_line_count（开放块的增量提交指针
         不动——其段落行已在缓存中），清空后从头 commit_block 全量重提交
         （O(已提交块)，仅用户按键触发，低频可接受）。
+
+        方向1 L1：重建前保留开放块已提交行——旧实现清空 committed_lines 后
+        commit_block 只处理已关闭块，开放块（如流式 content）已提交的段落行
+        会从缓存丢失（渲染回退）。重建前对 ``not closed and
+        committed_line_count > 0`` 的开放块取
+        ``_block_to_ink_lines(block, 0)[:committed_line_count]`` 存入
+        ``open_committed``，清空重建后追加回（开放块在显示序中位于已关闭块
+        之后，追加尾部顺序正确）。开放块为工具块（流式中）时其可见形式与
+        ``_block_to_ink_lines(0)`` 一致（未折叠），无歧义。
         """
+        open_committed: list = []
+        for block in self.blocks:
+            if not block.closed and block.committed_line_count > 0:
+                open_committed.extend(
+                    self._block_to_ink_lines(block, 0)[: block.committed_line_count]
+                )
         for block in self.blocks:
             if block.closed:
                 block.committed_line_count = 0
         self.committed_lines = []
         self.committed_count = 0
         self.commit_block(len(self.blocks) - 1)
+        if open_committed:
+            self.committed_lines.extend(open_committed)
 
     def _recent_collapsed_tool_id(self) -> str | None:
         """返回最近一个折叠（tool_expanded=False）工具块的 tool_id（供按键定位）。

@@ -154,6 +154,8 @@ class InputDispatcher:
           - Ctrl+L → 清屏（非流式时；未注入回调跳过）
           - Ctrl+D → EOF（空缓冲提交 exit；非空 no-op 防误退）
           - Ctrl+T → 主题切换
+          - 方向1 B1：Ctrl+E（\x05）→ 未知 no-op 兜底——消费由 input router
+            （App use_input handler）先行完成；此处不产生 end 光标行为。
         """
         if ch == '\x07':          # Ctrl+G → vim
             self._handle_special_key('vim')
@@ -187,11 +189,16 @@ class InputDispatcher:
             _logger.debug("Ctrl+L clear_screen 回调异常", exc_info=True)
 
     def _handle_ctrl_d(self) -> None:
-        """Ctrl+D EOF：空缓冲 → 提交 exit；非空 no-op（防误退）。"""
+        """Ctrl+D EOF：空缓冲 → 提交 exit；非空 no-op（防误退）。
+
+        方向1 B2：空缓冲提交 "exit" 不写入历史——复用 ``_enter`` 既有
+        ``append_history`` 注入参数传 no-op lambda（零 API 变更），避免
+        Ctrl+D 空缓冲 "exit" 污染历史文件。
+        """
         if self._buffer_editor.get_current_text():
             return
         self._buffer_editor.set_buffer("exit")
-        self._buffer_editor._enter()
+        self._buffer_editor._enter(append_history=lambda _text: None)
 
     def _handle_special_key(self, action: str) -> None:
         """处理特殊按键（Ctrl+G/O/N/R/T）：直接调用回调并应用结果。
@@ -203,6 +210,12 @@ class InputDispatcher:
         ``_special_key_callback``（_special_keys.py 工厂，_loop.py 注入）承担；
         Input 仅保留 result 应用——editmsg/retry 的 reset / set_buffer /
         handle_chars + ``_enter`` 属缓冲编辑职责（InputBufferEditor），保留。
+
+        ★ 方向1 B3：retry 路径在 reset 前保存草稿，``_enter()`` 提交后恢复
+        草稿到缓冲（不丢用户输入）；editmsg 保持既有行为（编辑流程刻意替换
+        缓冲）。评估对照：Claude Code 中 Ctrl+R 为反向搜索（方向4 默认开启），
+        retry 路径仅在 reverse_search_enabled=False 时可达，草稿保留为
+        「至少不丢草稿」的保守实现。
         """
         cb = self._special_key_callback
         if cb is None:
@@ -213,8 +226,13 @@ class InputDispatcher:
         except Exception:
             _logger.warning("特殊按键回调异常 (action=%s)", action, exc_info=True)
             return
+        draft: str | None = None
         if result is not None and result != text:
             if action in ('editmsg', 'retry'):
+                # 方向1 B3：retry 在 reset 前保存草稿（_enter 提交后恢复，
+                # 不丢用户输入）；editmsg 保持既有行为（编辑流程刻意替换）。
+                if action == 'retry':
+                    draft = self._buffer_editor.get_current_text()
                 self.reset()
                 self._buffer_editor.set_buffer(result)
             else:
@@ -225,6 +243,13 @@ class InputDispatcher:
             # 清除 _suppress_enter 确保 _enter() 不被抑制
             self.set_suppress_enter(False)
             self._buffer_editor._enter()
+            # 方向1 B3：retry 提交后恢复用户草稿（供继续编辑）；draft 为空时
+            # 行为与现状一致（不恢复）。用 handle_chars 而非 set_buffer——
+            # set_buffer 会清空 _submitted_text/_input_ready，导致 _enter()
+            # 已提交的 /retry 丢失；handle_chars 在空缓冲插入草稿，保留
+            # _enter() 的提交状态（编排器仍可读到 /retry，无重复提交）。
+            if action == 'retry' and draft:
+                self._buffer_editor.handle_chars(draft)
 
     # ═══════════════════════════════════════════════════════
     # stdin 直接读取（render 线程调用）
@@ -319,7 +344,11 @@ class InputDispatcher:
                 elif event.kind == "interrupt":
                     self._do_interrupt()
                 elif event.kind == "ctrl_key":
-                    self._handle_ctrl_key(event.char)
+                    # 方向1 B1：内联 ctrl_key 路径 router 先行（经 _router_consume
+                    # 统一入口）。router 消费（如 App Ctrl+E 折叠）→ 跳过旧回调
+                    # 路径；未消费 → _handle_ctrl_key 走旧分发（Ctrl+G/O/N/R/L/D/T）。
+                    if not self._router_consume(event):
+                        self._handle_ctrl_key(event.char)
                 else:
                     # enter, tab, backspace, home, end, delete 等 → 直接分发
                     self._dispatch_key_event(event)
@@ -377,6 +406,30 @@ class InputDispatcher:
         except Exception:
             _logger.warning("process_events 异常", exc_info=True)
 
+    def _router_consume(self, event: KeyEvent) -> bool:
+        """router 优先分发统一入口（策略收敛，方向1 步骤1）。
+
+        语义：有 router 且 handler 返回 True 则消费（返回 True）；router 为
+        None 或抛异常时返回 False（放行）。供 ``read_stdin_once`` 内联路径
+        （ctrl_key 等）与 ``_dispatch_key_event`` 复用，消除两处重复的
+        try/except router 调用。
+
+        Args:
+            event: 待分发按键事件。
+
+        Returns:
+            True — 事件已被 router 消费（跳过旧回调路径）；
+            False — 放行（走旧路径，零行为变化）。
+        """
+        router = self._input_hook_router
+        if router is None:
+            return False
+        try:
+            return bool(router(event))
+        except Exception:
+            _logger.debug("input hook router 异常，放行事件", exc_info=True)
+            return False
+
     def _dispatch_key_event(self, event: KeyEvent) -> None:
         """根据 KeyEvent.kind 分发到对应的输入处理器。
 
@@ -390,14 +443,9 @@ class InputDispatcher:
         """
         kind = event.kind
 
-        # ── ink useInput 钩子优先分发 ──
-        router = self._input_hook_router
-        if router is not None:
-            try:
-                if router(event):
-                    return  # 已消费，跳过旧回调路径
-            except Exception:
-                _logger.debug("input hook router 异常，放行事件", exc_info=True)
+        # ── ink useInput 钩子优先分发（经 _router_consume 统一入口） ──
+        if self._router_consume(event):
+            return  # 已消费，跳过旧回调路径
 
         if kind == "enter":
             if self._buffer_editor.is_search_active():

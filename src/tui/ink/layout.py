@@ -151,6 +151,20 @@ def _flex_grow(fiber: Fiber) -> int:
         return 0
 
 
+def _flex_shrink(fiber: Fiber) -> int:
+    """解析 flexShrink（非数字兜底为 0，与 _flex_grow 对称——方向2 U4）。
+
+    与 flexGrow 对称：``int(...)`` 对非数字值（None/对象/畸形串）会抛
+    ValueError/TypeError 直接中断渲染；同文件 width/height/padding/border/
+    margin/flexGrow 均有 try/except 兜底——补上。
+    """
+    g = fiber.props.get("flexShrink", 0)
+    try:
+        return max(0, int(g))
+    except (TypeError, ValueError):
+        return 0
+
+
 def _measure(fiber: Fiber, x: int, y: int, avail_w: int, fill: bool = True) -> LayoutBox:
     """递归测量并赋值 layout_box。返回该 fiber 的 LayoutBox。
 
@@ -184,21 +198,6 @@ def _measure(fiber: Fiber, x: int, y: int, avail_w: int, fill: bool = True) -> L
         styled = fiber.props.get("styled")
         text = str(fiber.props.get("children", ""))
         style = fiber.props.get("style")
-        if styled is not None:
-            runs = list(styled)
-            # 缓存键：拼接 run 文本 + 样式指纹（静态历史样式稳定 → 缓存命中）
-            cache_text = "".join(r.text for r in runs)
-            # BUG-T1：稳定样式指纹（值驱动），替代 id() 对象身份——
-            #   id() 在对象 GC 后可能复用导致错误缓存命中/未命中
-            #   注意：style 可为 None（无样式 run）→ 记 None（hashable 常量）
-            style_fp = tuple(
-                style_fingerprint(r.style) if r.style is not None else None
-                for r in runs
-            )
-        else:
-            runs = [StyledRun(text, style)] if text else []
-            cache_text = text
-            style_fp = (style_fingerprint(style),) if style is not None else (None,)
         # ★ textWrap 模式（方向B 步骤12 / 完善 ink）：
         #   "wrap"（默认，现行为）/ "truncate" / "truncate-end"（单行截断省略号，
         #   末尾省略号）/"truncate-start"（省略号在开头，保留尾部）/
@@ -209,29 +208,69 @@ def _measure(fiber: Fiber, x: int, y: int, avail_w: int, fill: bool = True) -> L
         elif fill:
             width = avail_w
         else:
-            if runs:
-                content_w = _runs_natural_width(runs)
-            else:
+            # row 方向内容自适应宽度（快速路径前不构造 runs 列表——直接测自然宽）
+            if styled is not None and styled:
+                content_w = _runs_natural_width(styled)
+            elif text:
                 content_w = max((wcswidth_simple(line) for line in text.split("\n")), default=0)
-            width = max(0, min(avail_w, content_w))
-        # ★ 换行缓存：同 (text, width, style, textWrap) 复用包裹结果，
-        #   避免每帧重新包裹全部静态历史（大历史下 O(chars) Python 逐字符循环）。
-        cache = getattr(fiber, "_wrap_cache", None)
-        key = (cache_text, width, style_fp, text_wrap)
-        if cache is not None and cache[0] == key:
-            lines = cache[1]
-        else:
-            if text_wrap in ("truncate", "truncate-end", "truncate-start", "truncate-middle"):
-                # 单行截断：内容超宽 → 截断 + 省略号（位置随模式）；未超宽 → 原样单行
-                if text_wrap == "truncate-start":
-                    lines = [Line(truncate_runs_start(runs, width))]
-                elif text_wrap == "truncate-middle":
-                    lines = [Line(truncate_runs_middle(runs, width))]
-                else:
-                    lines = [Line(truncate_runs_ellipsis(runs, width))]
             else:
-                lines = wrap_runs_by_width(runs, width)
-            fiber._wrap_cache = (key, lines)
+                content_w = 0
+            width = max(0, min(avail_w, content_w))
+        # ★ 换行缓存（方向2 P1+P3）：结构 ``(ref, (width, text_wrap), style_fp, lines)``
+        #   - cache[0] = ref：styled 列表引用（引用级快速路径）或 text 字符串
+        #   - cache[1] = (width, text_wrap)
+        #   - cache[2] = style_fp：稳定样式指纹（值驱动，BUG-T1——替代 id()）
+        #   - cache[3] = lines：换行结果（跨帧复用）
+        #   旧结构 ``(key, lines)`` 的 key 含 ``cache_text``（每帧先 join 再比较的
+        #   完整拼接文本副本）——新结构不再持有该副本（P3 内存优化；ref 已被组件
+        #   树引用，不额外占用）。P1 热路径优化：styled 静态历史（model 冻结行
+        #   引用，如 committed_lines）同引用跨帧复用时直接复用 lines，免每帧
+        #   O(chars) join + O(runs) 指纹计算（仅首次 miss 时计算）。
+        cache = getattr(fiber, "_wrap_cache", None)
+        cache_wt = (width, text_wrap)
+        if (
+            styled is not None
+            and cache is not None
+            and cache[0] is styled
+            and cache[1] == cache_wt
+        ):
+            # 引用级快速路径：同 styled 引用 + (width, text_wrap) 不变 → 复用 lines
+            lines = cache[3]
+            runs = list(styled)  # 供下游 h 计算（行为与旧实现一致）
+        else:
+            if styled is not None:
+                runs = list(styled)
+                # BUG-T1：稳定样式指纹（值驱动），替代 id() 对象身份——
+                #   id() 在对象 GC 后可能复用导致错误缓存命中/未命中
+                #   注意：style 可为 None（无样式 run）→ 记 None（hashable 常量）
+                style_fp = tuple(
+                    style_fingerprint(r.style) if r.style is not None else None
+                    for r in runs
+                )
+                ref = styled
+            else:
+                runs = [StyledRun(text, style)] if text else []
+                style_fp = (style_fingerprint(style),) if style is not None else (None,)
+                ref = text
+            if (
+                cache is not None
+                and cache[0] == ref
+                and cache[1] == cache_wt
+                and cache[2] == style_fp
+            ):
+                lines = cache[3]
+            else:
+                if text_wrap in ("truncate", "truncate-end", "truncate-start", "truncate-middle"):
+                    # 单行截断：内容超宽 → 截断 + 省略号（位置随模式）；未超宽 → 原样单行
+                    if text_wrap == "truncate-start":
+                        lines = [Line(truncate_runs_start(runs, width))]
+                    elif text_wrap == "truncate-middle":
+                        lines = [Line(truncate_runs_middle(runs, width))]
+                    else:
+                        lines = [Line(truncate_runs_ellipsis(runs, width))]
+                else:
+                    lines = wrap_runs_by_width(runs, width)
+                fiber._wrap_cache = (ref, cache_wt, style_fp, lines)
         fiber._wrapped_lines = lines  # 供 paint 复用（免二次包裹）
         h = max(1, len(lines)) if (lines or runs or text) else 1
         box = LayoutBox(x, y, width, h)
@@ -308,6 +347,30 @@ def _measure(fiber: Fiber, x: int, y: int, avail_w: int, fill: bool = True) -> L
     content_h = total_h if children else 0
     h = content_h + 2 * (padding + border)
     h = _resolve_height(fiber, h)
+
+    # flexShrink：显式高度不足（h < 内容高）且 children 含 shrink>0 时，按
+    #   shrink 权重比例缩减子节点高度（每子至少保留 1 行，deficit 按 shrink
+    #   权重分配）——与 flexGrow 余数分配对称（方向2 U4）。
+    if h < content_h + 2 * (padding + border) and children:
+        shrink_total = 0
+        for child in children:
+            shrink_total += _flex_shrink(child)
+        deficit = (content_h + 2 * (padding + border)) - h
+        if shrink_total > 0 and deficit > 0:
+            per = deficit // shrink_total
+            remainder = deficit % shrink_total
+            cursor_y = inner_y
+            for i, child in enumerate(children):
+                cb = child.layout_box
+                shrink = _flex_shrink(child)
+                reduce = per * shrink + (1 if i < remainder else 0)
+                if reduce > 0:
+                    # 每子至少保留 1 行（钳制 ≥1）
+                    cb.h = max(1, cb.h - reduce)
+                # ★ 收缩修改子节点高度后重排 y 坐标（与 flexGrow 余数分配一致）
+                cb.y = cursor_y
+                child.layout_box = cb
+                cursor_y += cb.h + margin
 
     # flexGrow：显式高度富余时按 flexGrow 比例分配（余数分配到前 n 个子节点）
     if h > content_h + 2 * (padding + border) and children:

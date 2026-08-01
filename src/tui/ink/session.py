@@ -156,6 +156,9 @@ class InkSession:
         self._render_thread: threading.Thread | None = None
         self._render_running = False
         self._consecutive_full = 0
+        # ★ 方向2 P7：连续渲染失败计数（_drain_queue 渲染异常指数退避基准；
+        #   成功渲染后复位 0）
+        self._consecutive_render_failures = 0
         self._bottom_redraw_requested = threading.Event()
         self._panel_refresh_cb: Callable[[], None] | None = None
         self._cmd_queue_dropped: int = 0
@@ -180,6 +183,10 @@ class InkSession:
         #   色降级路径——本属性仅供未来组件选择 TrueColor 的协商查询点，
         #   避免行为漂移（文档注明）。
         self._supports_truecolor = detect_truecolor()
+        # ★ P5：input-area fiber 引用缓存（方向2 P5）——_render_frame 仅在失效时
+        #   重建（None/deleted/类型不符），_position_cursor 复用（避免每帧全树
+        #   递归查找 input-area）。
+        self._input_fiber = None
         # 系统监控（CPU/MEM；每 2 秒刷新输入区顶部分隔线显示）
         self._system_monitor = None
         self._last_sys_stats_time: float = 0.0
@@ -571,7 +578,21 @@ class InkSession:
                     # 吞掉仅记 warning：**单帧失败 + 10Hz 重试**（render 线程不
                     # 崩溃不重启）。reconciler._handle_render_crash 崩溃恢复仅
                     # 服务 render 循环级异常（队列/输入/面板回调等）。
-                    _logger.warning("渲染帧失败", exc_info=True)
+                    # P7（方向2）：持久性渲染异常从 10Hz 无限重试降为指数退避
+                    # （0.1→0.2→0.4→…→1.0 封顶，≤1Hz），日志刷屏缓解；正常
+                    # 路径无 sleep（渲染帧率 10Hz 不降低）。
+                    self._consecutive_render_failures += 1
+                    delay = min(0.1 * 2 ** (self._consecutive_render_failures - 1), 1.0)
+                    time.sleep(delay)
+                    _logger.warning(
+                        "渲染帧失败（连续 %d 次，退避 %.2fs）",
+                        self._consecutive_render_failures,
+                        delay,
+                        exc_info=True,
+                    )
+                else:
+                    # 成功渲染 → 复位连续失败计数（P7 退避语义）
+                    self._consecutive_render_failures = 0
             return changed
 
     def _should_render(self, changed: bool) -> bool:
@@ -618,6 +639,15 @@ class InkSession:
         self._reconciler.render(self._root_fiber, element, width, self._width_cache.get_height())
         frame = _components.render_frame(self._root_fiber, width)
         self._ink_renderer.render(frame)
+        # ★ P5：input-area fiber 缓存——仅在失效时重建（避免每帧全树递归查找）。
+        #   调和器复用 fiber 时重置 deleted=False；input-area 被删除/替换（旧
+        #   fiber 未复用 → deleted 保持 True）时缓存自动失效重建。
+        if (
+            self._input_fiber is None
+            or self._input_fiber.deleted
+            or self._input_fiber.type != "input-area"
+        ):
+            self._input_fiber = self._find_input_fiber(self._root_fiber)
         self._position_cursor()
 
     # ── 阶段 ─────────────────────────────────────────
@@ -680,7 +710,11 @@ class InkSession:
         """渲染后定位输入光标（从文档底部相对移动）。"""
         if self._model is None:
             return
-        fiber = self._find_input_fiber(self._root_fiber)
+        # ★ P5：优先复用缓存的 input-area fiber（_render_frame 已保证其有效；
+        #   None 时回退全树查找——如测试直接构造 root 的场景）
+        fiber = self._input_fiber
+        if fiber is None:
+            fiber = self._find_input_fiber(self._root_fiber)
         if fiber is None:
             return
         box = fiber.layout_box

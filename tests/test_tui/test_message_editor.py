@@ -405,3 +405,57 @@ class TestEditPerformedFlag:
 
         assert result is True
         assert state["_edit_performed"] is True
+
+
+class TestSharedContentStrTruncate:
+    """方向3 步骤16 — _content_str/_truncate 单一真源共享函数测试。
+
+    断言 message_display 为单一真源，message_editor 从同源导入（同一对象）；
+    行为覆盖 list[dict] content、\n\r 替换、max_len 截断。
+    """
+
+    def test_single_source_of_truth_same_object_regression(self) -> None:
+        """message_editor 导入的 _content_str/_truncate 与 message_display 同一对象。"""
+        import src.tui.pipeline.message_display as md
+        import src.tui.pipeline.message_editor as me
+        assert me._content_str is md._content_str
+        assert me._truncate is md._truncate
+
+    def test_content_str_str_input(self) -> None:
+        from src.tui.pipeline.message_display import _content_str
+        assert _content_str("hello world") == "hello world"
+        assert _content_str("") == ""
+
+    def test_content_str_list_of_dicts(self) -> None:
+        from src.tui.pipeline.message_display import _content_str
+        content = [{"text": "first"}, {"text": "second"}]
+        assert _content_str(content) == "first second"
+
+    def test_content_str_dict_takes_text_field(self) -> None:
+        from src.tui.pipeline.message_display import _content_str
+        # list 内 dict 取 text 字段
+        assert _content_str([{"text": "vision"}]) == "vision"
+        # 直接 dict 走 str(dict) 兜底（既有行为，list[dict] 才是取 text 的场景）
+        assert _content_str({"text": "vision"}) == "{'text': 'vision'}"
+
+    def test_truncate_within_limit(self) -> None:
+        from src.tui.pipeline.message_display import _truncate
+        assert _truncate("short", 10) == "short"
+
+    def test_truncate_over_limit(self) -> None:
+        from src.tui.pipeline.message_display import _truncate
+        result = _truncate("x" * 100, 10)
+        assert result == "x" * 7 + "..."
+        assert len(result) == 10
+
+    def test_truncate_newline_replaced(self) -> None:
+        from src.tui.pipeline.message_display import _truncate
+        assert _truncate("line1\nline2", 120) == "line1 line2"
+
+    def test_truncate_carriage_return_removed(self) -> None:
+        from src.tui.pipeline.message_display import _truncate
+        assert _truncate("a\r\nb", 120) == "a b"
+
+    def test_truncate_exact_limit_no_ellipsis(self) -> None:
+        from src.tui.pipeline.message_display import _truncate
+        assert _truncate("x" * 10, 10) == "x" * 10

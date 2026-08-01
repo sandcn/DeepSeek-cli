@@ -279,3 +279,66 @@ class TestToolContextModule:
         result = await run_with_tool_context("call_10", _probe())
         assert result == "call_10"
         assert get_current_tool_id() == ""  # 结束后重置
+
+
+class TestEmptyToolIdBoxLifecycle:
+    """方向1 B8 — 空 tool_id 工具 box 生命周期（open/close 不泄漏）。
+
+    覆盖：open("") 记录原始空 id 标记；close("") 按 _box_key == "" 匹配匿名
+    box 关闭（无泄漏）；多空 id box 取最近者（倒序语义）；无匿名 box 时
+    close("") no-op（不误关其他 box）。
+    """
+
+    def test_open_empty_tool_id_records_box_key(self):
+        """open('') → 实际存储于生成 key，_box_key 记录原始空 id。"""
+        from src.tui.app.model import AppModel
+        m = AppModel()
+        block = m.open_tool_box("", "x")
+        assert block.extra["_box_key"] == ""
+        assert len(m.tool_boxes) == 1
+        stored_key = next(iter(m.tool_boxes))
+        assert stored_key.startswith("tool-")  # 实际存储 key 为生成 id
+        assert m.tool_boxes[stored_key] is block
+
+    def test_close_empty_tool_id_closes_box_no_leak(self):
+        """open('') + close('') → tool_boxes 空、块已关闭、无泄漏。"""
+        from src.tui.app.model import AppModel
+        m = AppModel()
+        m.open_tool_box("", "x")
+        m.close_tool_box("", True)
+        assert m.tool_boxes == {}
+        block = m.blocks[-1]
+        assert block.closed is True
+        assert block.extra["tool_status"] == "done"
+
+    def test_close_empty_tool_id_latest_anonymous_box(self):
+        """多个空 tool_id box → close('') 关闭最近打开者（倒序语义）。"""
+        from src.tui.app.model import AppModel
+        m = AppModel()
+        m.open_tool_box("", "first")
+        m.open_tool_box("", "second")
+        m.close_tool_box("", True)
+        assert len(m.tool_boxes) == 1
+        # 最近的 "second" 已关闭，最早的 "first" 保留
+        assert m.blocks[0].extra.get("tool_name") == "first"
+        assert m.blocks[0].closed is False
+        assert m.blocks[1].extra.get("tool_name") == "second"
+        assert m.blocks[1].closed is True
+
+    def test_close_empty_tool_id_no_anonymous_box_noop(self):
+        """无空 tool_id box 时 close('') → no-op（不误关其他 box）。"""
+        from src.tui.app.model import AppModel
+        m = AppModel()
+        m.open_tool_box("t1", "read_file")
+        m.close_tool_box("", True)  # 不抛、不误关
+        assert len(m.tool_boxes) == 1
+        assert m.tool_boxes["t1"].closed is False
+
+    def test_close_named_id_still_direct_pop(self):
+        """非空 tool_id close 仍直接 pop（不走 _box_key 匹配路径）。"""
+        from src.tui.app.model import AppModel
+        m = AppModel()
+        m.open_tool_box("t1", "read_file")
+        m.close_tool_box("t1", True)
+        assert m.tool_boxes == {}
+        assert m.blocks[-1].closed is True

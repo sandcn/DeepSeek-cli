@@ -184,12 +184,20 @@ class FrameBuilder:
         if self._width <= 0:
             self._current.append(text, style)
             return
+        # 字符先累积到 list、段级一次性 join 追加——避免逐字符调用
+        # Line.append 段拼接 O(n²)；段长受换行宽度约束有界，join 成本可接受。
+        buf_chars: list[str] = []
         for ch in text:
             cw = wcswidth_simple(ch)
-            if self._current_width + cw > self._width and self._current.runs:
+            if self._current_width + cw > self._width and (self._current.runs or buf_chars):
+                if buf_chars:
+                    self._current.append("".join(buf_chars), style)
+                    buf_chars = []
                 self._newline()
-            self._current.append(ch, style)
+            buf_chars.append(ch)
             self._current_width += cw
+        if buf_chars:
+            self._current.append("".join(buf_chars), style)
 
     def append_run(self, run: StyledRun) -> None:
         """追加 StyledRun（按宽换行）。"""
