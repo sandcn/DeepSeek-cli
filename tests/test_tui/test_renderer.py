@@ -42,32 +42,39 @@ class TestEventDispatcher:
     def test_on_tool_started(self):
         from src.tui._dispatcher import EventDispatcher
         from src.tui.events.event_types import ToolStartedEvent
-        from src.tui._const import ToolCountIncCmd
+        from src.tui._const import ToolCountIncCmd, ToolOpenCmd
         push_cmd = MagicMock()
         dispatcher = EventDispatcher(push_cmd)
-        event = ToolStartedEvent(source="agent")
+        event = ToolStartedEvent(source="agent", tool_name="read_file")
         dispatcher._on_tool_started(event)
-        push_cmd.assert_called_once_with(ToolCountIncCmd())
+        # 打开 box + 计数 +1
+        assert push_cmd.call_count == 2
+        push_cmd.assert_any_call(ToolOpenCmd(tool_name="read_file", tool_id="", detail=""))
+        push_cmd.assert_any_call(ToolCountIncCmd())
 
     def test_on_tool_done_success(self):
         from src.tui._dispatcher import EventDispatcher
         from src.tui.events.event_types import ToolDoneEvent
-        from src.tui._const import ToolCountDecCmd
+        from src.tui._const import ToolCountDecCmd, ToolCloseCmd
         push_cmd = MagicMock()
         dispatcher = EventDispatcher(push_cmd)
         event = ToolDoneEvent(source="agent", success=True)
         dispatcher._on_tool_done(event)
-        push_cmd.assert_called_once_with(ToolCountDecCmd())
+        # 关闭 box + 计数 -1
+        assert push_cmd.call_count == 2
+        push_cmd.assert_any_call(ToolCloseCmd(tool_id="", success=True))
+        push_cmd.assert_any_call(ToolCountDecCmd())
 
     def test_on_tool_done_fail(self):
         from src.tui._dispatcher import EventDispatcher
         from src.tui.events.event_types import ToolDoneEvent
-        from src.tui._const import ToolFailIncCmd, ToolCountDecCmd
+        from src.tui._const import ToolFailIncCmd, ToolCountDecCmd, ToolCloseCmd
         push_cmd = MagicMock()
         dispatcher = EventDispatcher(push_cmd)
         event = ToolDoneEvent(source="agent", success=False)
         dispatcher._on_tool_done(event)
-        assert push_cmd.call_count == 2
+        assert push_cmd.call_count == 3
+        push_cmd.assert_any_call(ToolCloseCmd(tool_id="", success=False))
         push_cmd.assert_any_call(ToolFailIncCmd())
         push_cmd.assert_any_call(ToolCountDecCmd())
 

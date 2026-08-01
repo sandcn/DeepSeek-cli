@@ -59,10 +59,15 @@ _CRITICAL_CMDS = frozenset({
     RenderCommand.TOOL_FAIL_INC,
     RenderCommand.MAIN_PHASE,
     RenderCommand.SPLASH,
+    RenderCommand.TOOL_OPEN,
+    RenderCommand.TOOL_CLOSE,
 })
 _STREAM_CMDS = frozenset({
     RenderCommand.REASONING,
     RenderCommand.CONTENT,
+    # 工具输出与 Open/Close（prio0）同序——否则 Close 先于 Output 出队，
+    # 输出落到无名新 box（每工具 box 增量刷新依赖此顺序）。
+    RenderCommand.TOOL_OUTPUT,
 })
 _HIGH_CMDS = frozenset({
     RenderCommand.SUBAGENT_FRAME,

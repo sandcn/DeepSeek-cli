@@ -25,8 +25,6 @@ _S_USER_TEXT = Style(fg=252)
 _S_NOTICE = Style(fg=242)
 _S_ERROR = Style(fg=196)
 _S_ERROR_ICON = Style(fg=196, bold=True)
-_S_TOOL_FRAME = Style(fg=23)
-_S_TOOL_LINE = Style(fg=242)
 _S_PARSE = Style(fg=242)
 _S_SPLASH = Style(fg=45, bold=True)
 _S_SPLASH_DIM = Style(fg=242)
@@ -166,24 +164,26 @@ def _do_main_phase(model, cmd) -> None:
         model.reopen_content()
 
 
+def _do_tool_open(model, cmd) -> None:
+    """工具开始：打开该工具的 box（标题立即上屏，输出增量刷新）。"""
+    model.open_tool_box(cmd.tool_id, cmd.tool_name, cmd.detail)
+
+
 def _do_tool_output(model, cmd) -> None:
     if not cmd.text:
         return
-    if not model.in_tool_group:
-        block = model.open_tool_group()
-        block.lines.append(AnsiLine.of("  \u256d\u2500\u2500 工具调用 \u2500\u2500\u256e", _S_TOOL_FRAME))
-    block = model.blocks[model.tool_block_index]
-    line = AnsiLine.of("  \u2502 ", _S_TOOL_LINE)
-    line.append(cmd.text)
-    block.lines.append(line)
-    model.commit_open_block(block)  # 工具输出行增量提交（长输出不拖慢渲染）
+    model.append_tool_output(cmd.tool_id, cmd.text)
+
+
+def _do_tool_close(model, cmd) -> None:
+    """工具结束：关闭对应 box 并追加状态底行。"""
+    model.close_tool_box(cmd.tool_id, cmd.success)
 
 
 def _do_tool_summary(model, cmd) -> None:
-    if model.in_tool_group:
-        block = model.blocks[model.tool_block_index]
-        block.lines.append(AnsiLine.of("  \u2570\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u256f", _S_TOOL_FRAME))
-        model.close_tool_group()
+    # 批内工具已由 ToolDoneEvent → ToolCloseCmd 逐盒关闭；此命令防御性
+    # 关闭残留开放 box（兼容旧调用方）
+    model.close_tool_group()
 
 
 def _do_parse_info(model, cmd) -> None:
@@ -241,6 +241,8 @@ _HANDLERS: dict[int, object] = {
     RenderCommand.MAIN_PHASE: _do_main_phase,
     RenderCommand.TOOL_OUTPUT: _do_tool_output,
     RenderCommand.TOOL_SUMMARY: _do_tool_summary,
+    RenderCommand.TOOL_OPEN: _do_tool_open,
+    RenderCommand.TOOL_CLOSE: _do_tool_close,
     RenderCommand.PARSE_INFO: _do_parse_info,
     RenderCommand.USER_MSG: _do_user_message,
     RenderCommand.DISPLAY_MSGS: _do_display_messages,

@@ -12,7 +12,7 @@ from typing import TYPE_CHECKING, Callable
 from src.tui._const import (
     RenderCmd,
     ReasoningCmd, ContentCmd, PhaseDoneCmd,
-    ToolOutputCmd, ToolSummaryCmd,
+    ToolOutputCmd, ToolSummaryCmd, ToolOpenCmd, ToolCloseCmd,
     UserMsgCmd, ParseInfoCmd,
     NotificationCmd, WriteLineCmd,
     ToolCountIncCmd, ToolFailIncCmd, ErrorCmd, ToolCountDecCmd,
@@ -199,11 +199,17 @@ class EventDispatcher:
     def _on_tool_started(self, event: "ToolStartedEvent") -> None:
         if not self._is_agent_source(event.source) and not self._is_subagent_label(event.label):
             return
+        tool_id = event.tool_id or event.label
+        self._push_cmd(ToolOpenCmd(
+            tool_name=event.tool_name, tool_id=tool_id, detail=event.detail,
+        ))
         self._push_cmd(ToolCountIncCmd())
 
     def _on_tool_done(self, event: "ToolDoneEvent") -> None:
         if not self._is_agent_source(event.source) and not self._is_subagent_label(event.label):
             return
+        tool_id = event.tool_id or event.label
+        self._push_cmd(ToolCloseCmd(tool_id=tool_id, success=event.success))
         if not event.success:
             self._push_cmd(ToolFailIncCmd())
             self._push_cmd(ToolCountDecCmd())
@@ -215,7 +221,7 @@ class EventDispatcher:
             return
         text = event.text.rstrip("\n")
         if text:
-            self._push_cmd(ToolOutputCmd(text=text))
+            self._push_cmd(ToolOutputCmd(text=text, tool_id=event.label))
 
     def _on_parse_info(self, event: "ParseInfoEvent") -> None:
         if not self._is_agent_source(event.source):

@@ -86,6 +86,8 @@ class RenderCommand(IntEnum):
     SUBAGENT_FRAME = 18 # (18, frame_lines: tuple[str]) — SubAgent 面板帧
     SPLASH = 19         # (19,) — 启动品牌屏
     MAIN_PHASE = 20     # (20, phase: str) — 主Agent模型阶段变更
+    TOOL_OPEN = 21      # (21, tool_name, tool_id, detail) — 工具 box 打开
+    TOOL_CLOSE = 22     # (22, tool_id, success) — 工具 box 关闭
 
 
 # ═══════════════════════════════════════════════════════════
@@ -116,12 +118,26 @@ class PhaseDoneCmd(RenderCmd):
 class ToolOutputCmd(RenderCmd):
     cid: int = RenderCommand.TOOL_OUTPUT
     text: str = ""
+    tool_id: str = ""
 
 @dataclass(frozen=True)
 class ToolSummaryCmd(RenderCmd):
     cid: int = RenderCommand.TOOL_SUMMARY
     successful: tuple = ()
     failed: tuple = ()
+
+@dataclass(frozen=True)
+class ToolOpenCmd(RenderCmd):
+    cid: int = RenderCommand.TOOL_OPEN
+    tool_name: str = ""
+    tool_id: str = ""
+    detail: str = ""
+
+@dataclass(frozen=True)
+class ToolCloseCmd(RenderCmd):
+    cid: int = RenderCommand.TOOL_CLOSE
+    tool_id: str = ""
+    success: bool = True
 
 @dataclass(frozen=True)
 class UserMsgCmd(RenderCmd):

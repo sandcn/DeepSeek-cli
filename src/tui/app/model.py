@@ -97,6 +97,10 @@ class AppModel:
         # 工具调用组
         self.in_tool_group: bool = False
         self.tool_block_index: int = -1
+        # 每工具 box 跟踪（tool_id → 开放 box）
+        self.tool_boxes: dict = {}
+        self._current_tool_box: ChatBlock | None = None
+        self._tool_id_seq: int = 0
         # 状态栏
         self.status: StatusState = StatusState()
         # 输入
@@ -262,24 +266,68 @@ class AppModel:
         except Exception:
             pass
 
-    # ── 工具组 ──────────────────────────────────────
+    # ── 工具 box（每工具一个，增量刷新） ────────────
 
+    def open_tool_box(self, tool_id: str, tool_name: str, detail: str = "") -> ChatBlock:
+        """打开一个工具 box：标题行立即显示，输出增量追加。"""
+        from src.tui.core.style import Style
+        from src.renderer.ansi.helpers import AnsiLine
+        from src.tools.registry import get_tool_display_name
+        display = get_tool_display_name(tool_name) or tool_name or "工具"
+        block = self.append_block("tool")
+        block.extra["tool_id"] = tool_id or ""
+        block.extra["tool_name"] = tool_name
+        title = f"  \u250c\u2500 {display} \u2500\u2510"
+        if detail:
+            title = f"  \u250c\u2500 {display} \u00b7 {detail} \u2500\u2510"
+        block.lines.append(AnsiLine.of(title, Style(fg=23, bold=True)))
+        self._current_tool_box = block
+        self.tool_boxes[tool_id or self._next_tool_id()] = block
+        self.commit_open_block(block)  # 标题立即上屏
+        return block
+
+    def append_tool_output(self, tool_id: str, text: str) -> None:
+        """追加工具输出行到对应 box（增量提交）。"""
+        from src.tui.core.style import Style
+        from src.renderer.ansi.helpers import AnsiLine
+        block = self.tool_boxes.get(tool_id) or self._current_tool_box
+        if block is None:
+            block = self.open_tool_box(tool_id, "")
+        line = AnsiLine.of("  \u2502 ", Style(fg=242))
+        for seg in text.split("\n"):
+            l = AnsiLine.of("  \u2502 ", Style(fg=242))
+            l.append(seg)
+            block.lines.append(l)
+        self.commit_open_block(block)
+
+    def close_tool_box(self, tool_id: str, success: bool) -> None:
+        """关闭工具 box：追加状态底行并提交。"""
+        from src.tui.core.style import Style
+        from src.renderer.ansi.helpers import AnsiLine
+        block = self.tool_boxes.pop(tool_id, None) or self._current_tool_box
+        if block is None:
+            return
+        status = "\u2714" if success else "\u2716"
+        block.lines.append(AnsiLine.of(
+            f"  \u2570\u2500 {status} \u2500\u2518",
+            Style(fg=41 if success else 196),
+        ))
+        block.closed = True
+        self.commit_block(len(self.blocks) - 1)
+        if self._current_tool_box is block:
+            self._current_tool_box = None
+
+    def _next_tool_id(self) -> str:
+        self._tool_id_seq += 1
+        return f"tool-{self._tool_id_seq}"
+
+    # 兼容旧字段（open_tool_group/close_tool_group 由 per-tool box 取代）
     def open_tool_group(self) -> ChatBlock:
-        """打开工具调用组（返回工具块）。"""
-        if not self.in_tool_group:
-            self.in_tool_group = True
-            self.tool_block_index = len(self.blocks)
-            return self.append_block("tool")
-        return self.blocks[self.tool_block_index]
+        return self.open_tool_box("", "")
 
     def close_tool_group(self) -> None:
-        idx = self.tool_block_index
-        self.in_tool_group = False
-        self.tool_block_index = -1
-        # 提交工具块到增量渲染缓存
-        if 0 <= idx < len(self.blocks):
-            self.blocks[idx].closed = True
-            self.commit_block(idx)
+        if self._current_tool_box is not None:
+            self.close_tool_box("", True)
 
 
 __all__ = [

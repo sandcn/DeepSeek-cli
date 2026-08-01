@@ -15,6 +15,8 @@ from src.tui._const import (
     PhaseDoneCmd,
     ToolOutputCmd,
     ToolSummaryCmd,
+    ToolOpenCmd,
+    ToolCloseCmd,
     UserMsgCmd,
     ParseInfoCmd,
     NotificationCmd,
@@ -192,33 +194,59 @@ class TestContentChannel:
         assert len(m.blocks) == 2
 
 
-class TestToolGroup:
-    """工具调用组开闭。"""
+class TestToolBox:
+    """每工具一个 box（打开/增量输出/关闭）。"""
 
-    def test_tool_output_opens_group(self):
+    def test_tool_open_creates_box(self):
         m = _model()
-        apply_cmd(m, ToolOutputCmd(text="running X"))
-        assert m.in_tool_group is True
+        apply_cmd(m, ToolOpenCmd(tool_name="read_file", tool_id="t1"))
         block = m.blocks[-1]
         assert block.kind == "tool"
-        # 组框 + 输出行
-        assert block.lines[0].plain.startswith("  ╭")
-        assert "running X" in block.lines[1].plain
+        assert block.lines[0].plain.startswith("  ┌─")
+        # 显示名（get_tool_display_name 缩写）
+        from src.tools.registry import get_tool_display_name
+        assert get_tool_display_name("read_file") in block.lines[0].plain
+        assert block.closed is False  # 开放 box
 
-    def test_multiple_outputs_same_group(self):
+    def test_tool_output_appends_to_box(self):
         m = _model()
-        apply_cmd(m, ToolOutputCmd(text="a"))
-        apply_cmd(m, ToolOutputCmd(text="b"))
-        assert m.in_tool_group is True
-        assert len(m.blocks) == 1
-        assert len(m.blocks[0].lines) == 3  # 组框 + 2 行
+        apply_cmd(m, ToolOpenCmd(tool_name="read_file", tool_id="t1"))
+        apply_cmd(m, ToolOutputCmd(text="line1", tool_id="t1"))
+        apply_cmd(m, ToolOutputCmd(text="line2", tool_id="t1"))
+        block = m.blocks[-1]
+        assert block.kind == "tool"
+        assert "line1" in block.lines[1].plain
+        assert "line2" in block.lines[2].plain
 
-    def test_tool_summary_closes_group(self):
+    def test_tool_output_auto_opens_box(self):
+        """无 ToolOpen 的输出自动创建 box（兼容）。"""
         m = _model()
-        apply_cmd(m, ToolOutputCmd(text="a"))
+        apply_cmd(m, ToolOutputCmd(text="running X"))
+        block = m.blocks[-1]
+        assert block.kind == "tool"
+        assert block.lines[0].plain.startswith("  ┌─")
+
+    def test_tool_close_commits_box(self):
+        m = _model()
+        apply_cmd(m, ToolOpenCmd(tool_name="read_file", tool_id="t1"))
+        apply_cmd(m, ToolOutputCmd(text="data", tool_id="t1"))
+        apply_cmd(m, ToolCloseCmd(tool_id="t1", success=True))
+        block = m.blocks[-1]
+        assert block.closed is True
+        assert block.lines[-1].plain.startswith("  ╰─")
+        assert "✔" in block.lines[-1].plain
+
+    def test_tool_close_fail(self):
+        m = _model()
+        apply_cmd(m, ToolOpenCmd(tool_name="x", tool_id="t1"))
+        apply_cmd(m, ToolCloseCmd(tool_id="t1", success=False))
+        assert "✖" in m.blocks[-1].lines[-1].plain
+
+    def test_tool_summary_closes_open_box(self):
+        m = _model()
+        apply_cmd(m, ToolOpenCmd(tool_name="x", tool_id="t1"))
         apply_cmd(m, ToolSummaryCmd(successful=("x",), failed=()))
-        assert m.in_tool_group is False
-        assert m.blocks[0].lines[-1].plain.startswith("  ╰")
+        assert m.blocks[-1].closed is True
 
 
 class TestStatusCounts:
