@@ -15,11 +15,59 @@ from __future__ import annotations
 
 import logging
 import math
+import os
 from functools import lru_cache
 from typing import Union
 from src._compat import dataclass
 
 logger = logging.getLogger(__name__)
+
+
+# ═══════════════════════════════════════════════════════════
+# TrueColor 终端能力检测（Claude TUI parity 步骤 1.2）
+# ═══════════════════════════════════════════════════════════
+# 终端能力检测模块已于 2026-07-31 清理删除，此处重建为纯环境变量检测，
+# 不引入任何第三方依赖。结果模块级缓存（检测一次，进程内不变）。
+
+_truecolor_result: bool | None = None
+
+
+def detect_truecolor() -> bool:
+    """检测终端是否支持 TrueColor（环境变量约定，结果进程级缓存）。
+
+    判定优先级：
+      1. ``NO_COLOR`` 置位（非空）→ 强制 256 色降级（最高优先级）。
+      2. ``COLORTERM`` 含 "truecolor"/"24bit" → TrueColor。
+      3. ``TERM`` 含 "direct" → TrueColor。
+      4. 其余情况 → False（256 色降级，向后兼容）。
+
+    Returns:
+        是否应使用 TrueColor。
+    """
+    global _truecolor_result
+    if _truecolor_result is not None:
+        return _truecolor_result
+    result = _detect_truecolor_uncached()
+    _truecolor_result = result
+    return result
+
+
+def _detect_truecolor_uncached() -> bool:
+    if os.environ.get("NO_COLOR"):
+        return False
+    ct = os.environ.get("COLORTERM", "").lower()
+    if "truecolor" in ct or "24bit" in ct:
+        return True
+    term = os.environ.get("TERM", "")
+    if "direct" in term:
+        return True
+    return False
+
+
+def _reset_truecolor_cache() -> None:
+    """清空 TrueColor 检测缓存（测试用）。"""
+    global _truecolor_result
+    _truecolor_result = None
 
 
 # ── xterm 调色板（内联，原 gradient.py 已删除） ──
@@ -201,9 +249,8 @@ class TrueColor:
         """根据终端能力自动选择最佳颜色类型。
 
         TrueColor 可用时返回 TrueColor，否则返回降级的 Color256。
-        终端真彩检测模块已删除（2026-07-31 幽灵导入清理，
-        原 ``..terminal.capabilities`` 包不存在），
-        当前实现恒返回 Color256 降级路径。
+        能力检测为纯环境变量检测（``detect_truecolor``，Claude TUI
+        parity 步骤 1.2），检测失败/不支持一律回退 256 色（向后兼容）。
 
         Args:
             r: 红色分量（0-255）。
@@ -211,8 +258,10 @@ class TrueColor:
             b: 蓝色分量（0-255）。
 
         Returns:
-            Color256（恒为降级路径）。
+            TrueColor（终端支持时）或 Color256（降级路径）。
         """
+        if detect_truecolor():
+            return cls(r, g, b)
         logger.debug(
             "TrueColor not supported, falling back to Color256 for "
             "RGB(%d, %d, %d)", r, g, b
@@ -557,8 +606,8 @@ def auto_color(r: int, g: int, b: int) -> ColorValue:
     """根据终端能力自动选择最佳颜色类型。
 
     TrueColor 可用时返回 TrueColor，否则返回 Color256。
-    当前实现恒返回 Color256 降级路径（终端真彩检测模块已删除，
-    见 ``TrueColor.best_effort``）。
+    能力检测为纯环境变量检测（``detect_truecolor``），支持时返回
+    TrueColor，否则 Color256 降级（向后兼容）。
 
     Args:
         r: 红色分量（0-255）。
@@ -566,7 +615,7 @@ def auto_color(r: int, g: int, b: int) -> ColorValue:
         b: 蓝色分量（0-255）。
 
     Returns:
-        Color256（恒为降级路径）。
+        TrueColor（终端支持时）或 Color256（降级路径）。
     """
     return TrueColor.best_effort(r, g, b)
 
@@ -591,4 +640,7 @@ __all__ = [
     "to_ansi_bg",
     "to_256",
     "auto_color",
+    # TrueColor 能力检测
+    "detect_truecolor",
+    "_reset_truecolor_cache",
 ]

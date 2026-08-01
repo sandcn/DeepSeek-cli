@@ -490,8 +490,8 @@ class TestErrorBoundary:
         def BoomComp(props):
             raise RuntimeError("boom")
 
-        def Fallback(error):
-            return h(TEXT, {"children": f"fallback:{type(error).__name__}"})
+        def Fallback(props):
+            return h(TEXT, {"children": f"fallback:{type(props['error']).__name__}"})
 
         r = Reconciler()
         root = r.create_root()

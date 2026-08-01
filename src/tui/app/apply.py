@@ -19,7 +19,7 @@ from src.tui.core.style import Style
 from src.renderer.ansi.helpers import AnsiLine, ansi_to_line
 # 方向C 步骤4：_S_USER_ICON/_S_USER_TEXT/_S_NOTICE 迁入 app/_theme.py 共享池
 # （被 apply 多处使用；享元收敛原则：多处使用才共享）。
-from src.tui.app._theme import _S_USER_ICON, _S_USER_TEXT, _S_NOTICE
+from src.tui.app._theme import _S_USER_ICON, _S_USER_TEXT, _S_NOTICE, get_active_palette
 
 _logger = logging.getLogger(__name__)
 
@@ -58,10 +58,12 @@ def _cmd_name(cid: int) -> str:
 def build_user_line(content: str) -> AnsiLine:
     """构建用户消息行（`  > ` 图标 + 文本）。
 
-    apply 与 _consumer 共享的唯一真源；样式取自 _theme 共享池。
+    apply 与 _consumer 共享的唯一真源；样式取自活动调色板槽位
+    （Claude TUI parity 步骤 2.3；dark 下与 _S_USER_ICON/_S_USER_TEXT 同值）。
     """
-    line = AnsiLine.of("  > ", _S_USER_ICON)
-    line.append(content, _S_USER_TEXT)
+    palette = get_active_palette()
+    line = AnsiLine.of("  > ", palette.user_icon)
+    line.append(content, palette.user_text)
     return line
 
 

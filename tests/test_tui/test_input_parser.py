@@ -116,6 +116,13 @@ class TestDecodeControlChar:
             assert ev.kind == "ctrl_key"
             assert ev.char == chr(byte)
 
+    def test_ctrl_l_d_t_special(self):
+        """Ctrl+L/D/T → ctrl_key（Claude TUI parity 步骤 1.4）。"""
+        for byte in (0x0c, 0x04, 0x14):  # L / D / T
+            ev = InputParser._decode_control_char(byte)
+            assert ev.kind == "ctrl_key"
+            assert ev.char == chr(byte)
+
     def test_unknown_control_char(self):
         ev = InputParser._decode_control_char(0x02)  # Ctrl+B
         assert ev.kind == "unknown"
@@ -144,6 +151,13 @@ class TestDispatchCsi:
     def test_csi_u_shift_tab(self):
         """CSI u Shift+Tab（9;2）→ tab modifier=2（方向A 步骤1）。"""
         ev = InputParser._dispatch_csi([9, 2], 'u')
+        assert ev.kind == "tab"
+        assert ev.modifier == 2
+        assert ev.keycode == 9
+
+    def test_csi_z_shift_tab(self):
+        """CSI Z（\\x1b[Z）→ tab modifier=2（Claude TUI parity 步骤 1.4）。"""
+        ev = InputParser._dispatch_csi([], 'Z')
         assert ev.kind == "tab"
         assert ev.modifier == 2
         assert ev.keycode == 9
@@ -194,7 +208,8 @@ class TestDispatchCsi:
         assert ev.modifier == 5
 
     def test_unknown(self):
-        assert InputParser._dispatch_csi([], 'Z').kind == "unknown"
+        # 'Z' 已映射为 Shift+Tab（Claude TUI parity 步骤 1.4），改用 'q' 作为未知样本
+        assert InputParser._dispatch_csi([], 'q').kind == "unknown"
 
 
 # ═══════════════════════════════════════════════════════════

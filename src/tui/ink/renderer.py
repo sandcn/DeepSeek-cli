@@ -25,7 +25,7 @@ from __future__ import annotations
 import logging
 import sys
 
-from src.tui._screen import cursor_up, cursor_down, clear_line, cursor_forward
+from src.tui._screen import cursor_up, cursor_down, clear_line, cursor_forward, clear_screen
 from .output import Frame
 from .diff import first_diff_line
 
@@ -236,6 +236,20 @@ class InkRenderer:
     def set_line_callback(self, callback) -> None:
         """设置新增行回调（输出历史跟踪）。"""
         self._line_callback = callback
+
+    def full_clear(self) -> None:
+        """全帧清屏（Claude TUI parity 步骤 3.1，Ctrl+L 清屏）。
+
+        写入 ``clear_screen()``（``\\033[2J\\033[H``）并重置 prev/光标——
+        下一帧从空文档全量渲染。scrollback 历史保留（终端自身行为）。
+        """
+        try:
+            self._stream.write(clear_screen())
+            self._stream.flush()
+        except Exception:
+            _logger.debug("full_clear 写入异常", exc_info=True)
+        self._prev = None
+        self._cursor_row = 0
 
     # ── 生命周期 ─────────────────────────────────────
 

@@ -78,19 +78,54 @@ class CommandUiAdapter:
         return {"action": "cancel", "index": None}
 
     def get_theme_names_with_desc(self) -> list[tuple[str, str]]:
-        """获取所有主题名称和描述。
+        """获取所有主题名称和描述（Claude TUI parity 步骤 3.5/4.3）。
 
-        TUI 重构后 theme.py 已删除，返回默认主题列表。
+        主题集单一真源在 ``tui.app._theme.ThemeRegistry``（dark/light/
+        high-contrast）；描述为中文文案。
         """
-        return [("default", "默认终端主题")]
+        try:
+            from ...tui.app._theme import ThemeRegistry
+            desc = {"dark": "暗色", "light": "亮色", "high-contrast": "高对比"}
+            return [(n, desc.get(n, n)) for n in ThemeRegistry.names()]
+        except Exception:
+            _logger.debug("get_theme_names_with_desc 读取 ThemeRegistry 异常", exc_info=True)
+            return [("dark", "暗色"), ("light", "亮色"), ("high-contrast", "高对比")]
 
     def get_active_theme(self) -> str:
-        """获取当前主题名称。"""
-        return "default"
+        """获取当前主题名称（读 config THEME；异常/缺省回退 dark）。"""
+        try:
+            from ...config.proxy import config
+            value = config.get("theme", "dark")
+            if isinstance(value, str) and value:
+                return value
+        except Exception:
+            _logger.debug("get_active_theme 读 config 异常", exc_info=True)
+        return "dark"
 
     def set_theme(self, name: str) -> None:
-        """设置活动主题（重构后为 no-op）。"""
-        _logger.debug("set_theme(%s): 主题系统已移除，忽略", name)
+        """设置活动主题：校验名 ∈ 主题集 → 写 config → 失效调色板缓存。
+
+        未知名忽略（不抛异常）；config 写入失败仅记日志（不阻断返回）。
+        调色板缓存失效使组件下次渲染按新主题取色（Step 4.3 全量生效）。
+        """
+        names = [n for n, _d in self.get_theme_names_with_desc()]
+        if name not in names:
+            _logger.debug("set_theme(%s): 未知主题，忽略", name)
+            return
+        try:
+            from ...config.loader import update_config
+            update_config("theme", name)
+        except Exception:
+            try:
+                from ...config.proxy import config
+                config.set("theme", name)
+            except Exception:
+                _logger.debug("set_theme(%s): config 持久化失败", name, exc_info=True)
+        try:
+            from ...tui.app._theme import _invalidate_palette_cache
+            _invalidate_palette_cache()
+        except Exception:
+            _logger.debug("set_theme(%s): 调色板缓存失效异常", name, exc_info=True)
 
     def render_diff_to_ansi(self, path: str, old_content: str, new_content: str) -> str:
         """将文件差异渲染为带 ANSI 颜色的纯文本字符串。"""

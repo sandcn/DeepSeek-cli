@@ -175,7 +175,12 @@ def _measure(fiber: Fiber, x: int, y: int, avail_w: int, fill: bool = True) -> L
 
     # ── 叶子：TEXT ──
     if ftype == "text":
-        from .helpers import wrap_runs_by_width, truncate_runs_ellipsis
+        from .helpers import (
+            wrap_runs_by_width,
+            truncate_runs_ellipsis,
+            truncate_runs_start,
+            truncate_runs_middle,
+        )
         styled = fiber.props.get("styled")
         text = str(fiber.props.get("children", ""))
         style = fiber.props.get("style")
@@ -194,10 +199,10 @@ def _measure(fiber: Fiber, x: int, y: int, avail_w: int, fill: bool = True) -> L
             runs = [StyledRun(text, style)] if text else []
             cache_text = text
             style_fp = (style_fingerprint(style),) if style is not None else (None,)
-        # ★ textWrap 模式（方向B 步骤12）：
-        #   "wrap"（默认，现行为）/ "truncate" / "truncate-end"（单行截断省略号）；
-        #   "truncate-start"/"truncate-middle"（react-ink 语义）**未实现**——
-        #   当前回退为 truncate-end 行为（末尾省略号），完整语义留待后续。
+        # ★ textWrap 模式（方向B 步骤12 / 完善 ink）：
+        #   "wrap"（默认，现行为）/ "truncate" / "truncate-end"（单行截断省略号，
+        #   末尾省略号）/"truncate-start"（省略号在开头，保留尾部）/
+        #   "truncate-middle"（保留头尾，中间省略号）——react-ink 完整语义。
         text_wrap = fiber.props.get("textWrap", "wrap")
         if explicit_w is not None:
             width = max(0, int(explicit_w))
@@ -217,9 +222,13 @@ def _measure(fiber: Fiber, x: int, y: int, avail_w: int, fill: bool = True) -> L
             lines = cache[1]
         else:
             if text_wrap in ("truncate", "truncate-end", "truncate-start", "truncate-middle"):
-                # 单行截断：内容超宽 → 截断至 width-1 + 省略号；未超宽 → 原样单行
-                # （truncate-start/truncate-middle 未实现完整语义，回退为末尾省略号）
-                lines = [Line(truncate_runs_ellipsis(runs, width))]
+                # 单行截断：内容超宽 → 截断 + 省略号（位置随模式）；未超宽 → 原样单行
+                if text_wrap == "truncate-start":
+                    lines = [Line(truncate_runs_start(runs, width))]
+                elif text_wrap == "truncate-middle":
+                    lines = [Line(truncate_runs_middle(runs, width))]
+                else:
+                    lines = [Line(truncate_runs_ellipsis(runs, width))]
             else:
                 lines = wrap_runs_by_width(runs, width)
             fiber._wrap_cache = (key, lines)

@@ -316,6 +316,27 @@ class InkSession:
             return
         self.stop()
 
+    def clear_screen(self) -> None:
+        """Ctrl+L 清屏（Claude TUI parity 步骤 3.1）。
+
+        清空模型显示状态（``model.reset_display()``，保留 status/输入）→
+        渲染器全帧清屏（``full_clear``）→ 立即重建空文档。scrollback 历史
+        保留；会话消息内存不受影响。调用方须保证非流式（生成中忽略）。
+        """
+        if self._model is not None:
+            try:
+                self._model.reset_display()
+            except Exception:
+                _logger.debug("clear_screen reset_display 异常", exc_info=True)
+        try:
+            self._ink_renderer.full_clear()
+        except Exception:
+            _logger.debug("clear_screen full_clear 异常", exc_info=True)
+        try:
+            self._render_frame()
+        except Exception:
+            _logger.debug("clear_screen 重建空文档异常", exc_info=True)
+
     def request_clear(self) -> None:
         """请求全帧清屏重绘（useApp().clear 触发）。
 

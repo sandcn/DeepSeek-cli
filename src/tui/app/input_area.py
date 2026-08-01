@@ -30,7 +30,7 @@ from src.tui._input import (
 from src.tui.core.style import Style
 from src.tui.ink import register_host, Line
 from src.tui.app import _fx
-from src.tui.app._theme import time_glow, _S_ACCENT, _S_SEP, _S_TEXT, _S_TIME
+from src.tui.app._theme import time_glow, _S_ACCENT, _S_DIM, _S_SEP, _S_TEXT, _S_TIME
 
 # 占位符
 _PLACEHOLDER_TEXT = "输入消息 · /help 查看命令 · Ctrl+N 切换模型 · Tab 补全"
@@ -240,6 +240,11 @@ def _build_lines(fiber) -> list[Line]:
                 line.append("  ")
             for run in _styled_completion(item, types[i], match_prefix, cell_w).runs:
                 line.append_run(run)
+            # Claude TUI parity 步骤 3.7：斜杠命令描述灰显（command 且描述非空）
+            descs = completion.descriptions or []
+            if types[i] == "command" and i < len(descs) and descs[i]:
+                line.append("  ", _S_DIM)
+                line.append(descs[i], _S_DIM)
             lines.append(line)
         # 底部提示
         hint = Line.of(" ", _S_TIME)

@@ -170,6 +170,20 @@ def get_registered_command_names() -> list[str]:
     return sorted(names, key=lambda x: (x != "/help", x))  # /help 排首位
 
 
+def get_command_help(name: str) -> str:
+    """返回命令的帮助描述（注册表 ``info.help``；无则空串）。
+
+    Claude TUI parity 步骤 3.7：补全弹窗命令描述数据源。name 可带或不带
+    前导 ``/``（注册表 key 带 ``/``，如 ``/help``）。
+    """
+    info = _commands.get(name)
+    if info is None:
+        info = _commands.get("/" + name.lstrip("/"))
+    if info is None:
+        return ""
+    return str(info.get("help", ""))
+
+
 def get_dynamic_help_text() -> str:
     """从命令注册表实时构建帮助文本"""
     from ...constants import DIM, RESET, TEAL

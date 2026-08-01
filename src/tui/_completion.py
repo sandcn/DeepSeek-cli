@@ -64,6 +64,8 @@ def _show_completions_for(bb, engine, text: str) -> bool:
         orig_prefix=last_word,
         types=[item.item_type for item in items],
         match_prefix=match_prefix,
+        # Claude TUI parity 步骤 3.7：斜杠命令描述（缺省空列表兼容旧调用）
+        descriptions=[getattr(item, "desc", "") for item in items],
     )
     return True
 

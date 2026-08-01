@@ -146,6 +146,9 @@ class TuiAssembly:
         # 活跃状态回调（生成中不取消输入，走既有中断）
         input_instance.set_esc_cancel_input(tui_config.esc_cancel_input)
         input_instance.set_active_status_callback(_make_active_status_cb(model))
+        # Claude TUI parity 步骤 3.1：Ctrl+L 清屏（session.clear_screen；
+        # 未注入时 dispatcher 记 debug 跳过，测试兼容）
+        input_instance.set_clear_screen_callback(session.clear_screen)
         # SIGWINCH → 刷新宽度 + 重绘
         register_sigwinch_callback(_make_sigwinch_cb(session))
         bridge = InkBridge(model, session)

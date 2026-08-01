@@ -187,3 +187,49 @@ class TestClosedToolBoxFreezeCache:
         # 缓存行含内容文本
         plains = [line.plain for line in content_block._cached_ink_lines]
         assert any("frozen content" in p for p in plains)
+
+
+class TestResetDisplay:
+    """Claude TUI parity 步骤 2.2 — reset_display 清屏语义。"""
+
+    def test_reset_display_clears_blocks_keeps_status_input(self):
+        """清屏后 blocks 为空、status/input 保留。"""
+        m = AppModel()
+        m.append_committed("user", [])
+        m.open_tool_box("t1", "bash", "ls")
+        m.status.model_name = "deepseek-chat"
+        m.input_text = "hello"
+        m.input_cursor = 5
+        m.completion = "x"
+        m.subagent_lines = [object()]
+        m.reset_display()
+        assert m.blocks == []
+        assert m.committed_lines == []
+        assert m.committed_count == 0
+        assert m.tool_boxes == {}
+        assert m.active_tool is None
+        assert m.subagent_lines == []
+        assert m.parse_line is None
+        # 保留项
+        assert m.status.model_name == "deepseek-chat"
+        assert m.input_text == "hello"
+        assert m.input_cursor == 5
+        assert m.completion == "x"
+
+    def test_reset_display_clears_active_tool(self):
+        """reset_display 清空进行中工具状态。"""
+        m = AppModel()
+        m.open_tool_box("t1", "bash", "ls")
+        assert m.active_tool is not None
+        m.reset_display()
+        assert m.active_tool is None
+
+    def test_open_close_maintains_active_tool(self):
+        """open/close 正确维护 active_tool。"""
+        m = AppModel()
+        m.open_tool_box("t1", "bash", "ls")
+        assert m.active_tool is not None
+        assert m.active_tool["status"] == "running"
+        assert m.active_tool["name"] == "bs"  # get_tool_display_name("bash") → 缩写
+        m.close_tool_box("t1", True)
+        assert m.active_tool is None

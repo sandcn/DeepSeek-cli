@@ -95,3 +95,44 @@ class TestThemeConstants:
         assert _S_DIM.fg == 242
         assert _S_SEP.fg == 237
         assert _S_TIME.fg == 110
+
+
+class TestPaletteRegistry:
+    """Claude TUI parity 步骤 1.1 — 语义化调色板注册表。"""
+
+    def test_dark_values_match_existing_constants(self) -> None:
+        """dark 各槽值与现有 _S_* 常量逐一相等（零视觉回归）。"""
+        from src.tui.app._theme import Palette, ThemeRegistry, resolve_theme
+        dark = resolve_theme("dark")
+        assert dark.accent == _S_ACCENT
+        assert dark.accent_bold == _S_ACCENT_BOLD
+        assert dark.dim == _S_DIM
+        assert dark.sep == _S_SEP
+        assert dark.time == _S_TIME
+        # 兜底默认 Palette() 即 dark
+        assert Palette() == dark
+
+    def test_light_high_contrast_slots_exist(self) -> None:
+        """light / high-contrast 主题注册且全部槽位存在。"""
+        from src.tui.app._theme import _PALETTE_SLOTS, ThemeRegistry
+        for name in ("light", "high-contrast"):
+            pal = ThemeRegistry.get(name)
+            assert pal is not None
+            for slot in _PALETTE_SLOTS:
+                assert getattr(pal, slot) is not None, f"{name}.{slot} 缺失"
+
+    def test_unknown_theme_falls_back_to_dark(self) -> None:
+        """未知名主题回退 dark（零回归安全侧）。"""
+        from src.tui.app._theme import resolve_theme
+        assert resolve_theme("不存在的主题") == resolve_theme("dark")
+
+    def test_theme_names_registered(self) -> None:
+        """dark/light/high-contrast 三套主题均已注册。"""
+        from src.tui.app._theme import ThemeRegistry
+        assert set(ThemeRegistry.names()) == {"dark", "light", "high-contrast"}
+
+    def test_get_active_palette_default_dark(self) -> None:
+        """get_active_palette 默认返回 dark（config 不可读时）。"""
+        from src.tui.app._theme import get_active_palette, resolve_theme, _invalidate_palette_cache
+        _invalidate_palette_cache()
+        assert get_active_palette() == resolve_theme("dark")

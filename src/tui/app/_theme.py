@@ -17,6 +17,7 @@ from __future__ import annotations
 import math
 import time
 
+from src._compat import dataclass
 from src.tui.core.style import Style
 
 # ── 共享样式常量池 ────────────────────────────────────────────
@@ -31,6 +32,143 @@ _S_USER_ICON = Style(fg=81, bold=True)   # 用户消息图标 `>`
 _S_USER_TEXT = Style(fg=252)             # 用户消息文本
 _S_NOTICE = Style(fg=242)                # 通知/助手消息前缀
 _S_TEXT = Style(fg=252)                  # 输入区输入文本
+
+
+# ═══════════════════════════════════════════════════════════
+# 语义化调色板注册表（Claude TUI parity 步骤 1.1）
+# ═══════════════════════════════════════════════════════════
+# 从散落硬编码（_theme/_const/各组件）提取统一语义色槽；dark 各槽值
+# 与现有 _S_*/_C_* 常量数值完全一致（零视觉回归），light/high-contrast
+# 为新增主题族。现有 _S_* 常量保留为 dark palette 对应槽的别名。
+
+#: 语义色槽名称（Palette 字段），供 resolve_theme/ThemeRegistry 消费。
+_PALETTE_SLOTS: tuple[str, ...] = (
+    "accent", "accent_bold", "dim", "sep", "time",
+    "user_icon", "user_text", "notice", "text",
+    "token", "speed", "tool_ok", "tool_fail", "tool_running",
+    "border", "code_bg", "selection_bg", "selection_fg", "placeholder",
+)
+
+
+@dataclass(frozen=True)
+class Palette:
+    """语义化调色板（冻结，不可变）。
+
+    每个字段为语义色槽对应的 ``Style``。dark 各槽与既有常量值一致，
+    light/high-contrast 为独立主题族（组件经 ``get_active_palette()``
+    按需解析，暗色下渲染结果与硬编码现状逐字节一致）。
+    """
+
+    accent: Style = _S_ACCENT
+    accent_bold: Style = _S_ACCENT_BOLD
+    dim: Style = _S_DIM
+    sep: Style = _S_SEP
+    time: Style = _S_TIME
+    user_icon: Style = _S_USER_ICON
+    user_text: Style = _S_USER_TEXT
+    notice: Style = _S_NOTICE
+    text: Style = _S_TEXT
+    token: Style = Style(fg=68)
+    speed: Style = Style(fg=214)
+    tool_ok: Style = Style(fg=41)
+    tool_fail: Style = Style(fg=196)
+    tool_running: Style = Style(fg=214)
+    border: Style = Style(fg=23)
+    code_bg: Style = Style(bg=235)
+    selection_bg: Style = Style(bg=236)
+    selection_fg: Style = Style(fg=15)
+    placeholder: Style = Style(fg=238)
+
+
+def _light_palette() -> Palette:
+    """亮色主题（暗字亮底）。"""
+    return Palette(
+        accent=Style(fg=30), accent_bold=Style(fg=30, bold=True),
+        dim=Style(fg=244), sep=Style(fg=250), time=Style(fg=60),
+        user_icon=Style(fg=27, bold=True), user_text=Style(fg=234),
+        notice=Style(fg=244), text=Style(fg=234),
+        token=Style(fg=25), speed=Style(fg=130),
+        tool_ok=Style(fg=28), tool_fail=Style(fg=124), tool_running=Style(fg=130),
+        border=Style(fg=240), code_bg=Style(bg=253),
+        selection_bg=Style(bg=189), selection_fg=Style(fg=0),
+        placeholder=Style(fg=244),
+    )
+
+
+def _high_contrast_palette() -> Palette:
+    """高对比主题（最大色差）。"""
+    return Palette(
+        accent=Style(fg=39), accent_bold=Style(fg=39, bold=True),
+        dim=Style(fg=250), sep=Style(fg=252), time=Style(fg=69),
+        user_icon=Style(fg=33, bold=True), user_text=Style(fg=15),
+        notice=Style(fg=250), text=Style(fg=15),
+        token=Style(fg=45), speed=Style(fg=214),
+        tool_ok=Style(fg=47), tool_fail=Style(fg=196), tool_running=Style(fg=214),
+        border=Style(fg=15), code_bg=Style(bg=236),
+        selection_bg=Style(bg=22), selection_fg=Style(fg=15),
+        placeholder=Style(fg=250),
+    )
+
+
+class ThemeRegistry:
+    """主题注册表（按名解析 Palette，不可变）。"""
+
+    _themes: dict[str, Palette] = {
+        "dark": Palette(),
+        "light": _light_palette(),
+        "high-contrast": _high_contrast_palette(),
+    }
+
+    @classmethod
+    def names(cls) -> tuple[str, ...]:
+        return tuple(cls._themes.keys())
+
+    @classmethod
+    def get(cls, name: str) -> Palette | None:
+        return cls._themes.get(name)
+
+    @classmethod
+    def resolve(cls, name: str) -> Palette:
+        """按名解析调色板；未知名回退 dark（零回归安全侧）。"""
+        return cls._themes.get(name, cls._themes["dark"])
+
+
+def resolve_theme(name: str) -> Palette:
+    """按名解析调色板（未知名回退 dark）。"""
+    return ThemeRegistry.resolve(name)
+
+
+#: 活动调色板 TTL 缓存（≤1Hz 刷新；读 config THEME 键）
+_ACTIVE_PALETTE_TTL = 1.0
+_active_palette_cache: tuple[float, Palette] = (0.0, ThemeRegistry.resolve("dark"))
+
+
+def get_active_palette() -> Palette:
+    """返回当前活动调色板（读 config THEME，TLR 缓存 1s）。
+
+    config 读取失败/未加载 → 回退 dark（零回归安全侧）。
+    """
+    global _active_palette_cache
+    now = time.monotonic()
+    if now - _active_palette_cache[0] < _ACTIVE_PALETTE_TTL:
+        return _active_palette_cache[1]
+    theme = "dark"
+    try:
+        from src.config.proxy import config
+        value = config.get("theme", "dark")
+        if isinstance(value, str) and value:
+            theme = value
+    except Exception:
+        pass
+    pal = resolve_theme(theme)
+    _active_palette_cache = (now, pal)
+    return pal
+
+
+def _invalidate_palette_cache() -> None:
+    """使活动调色板缓存失效（/theme 切换后强制重解析）。"""
+    global _active_palette_cache
+    _active_palette_cache = (0.0, ThemeRegistry.resolve("dark"))
 
 
 def time_glow(lo: int, hi: int, period: float = 12.0) -> int:
@@ -82,4 +220,10 @@ __all__ = [
     "_S_NOTICE",
     "_S_TEXT",
     "time_glow",
+    "Palette",
+    "ThemeRegistry",
+    "resolve_theme",
+    "get_active_palette",
+    "_invalidate_palette_cache",
+    "_PALETTE_SLOTS",
 ]

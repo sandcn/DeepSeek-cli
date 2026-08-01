@@ -66,6 +66,8 @@ class CompletionState:
     types: list = field(default_factory=list)
     match_prefix: str = ""
     popup_height: int = 0
+    # 斜杠命令描述（Claude TUI parity 步骤 3.7；与 items 对齐，缺省空列表）
+    descriptions: list = field(default_factory=list)
 
 
 @dataclass
@@ -203,6 +205,9 @@ class AppModel:
         self.subagent_lines: list = []
         # 反向历史搜索状态（None=未激活；input_area 渲染覆盖行）
         self.history_search: "HistorySearchState | None" = None
+        # 顶部工具调用状态（Claude TUI parity 步骤 2.2：active_tool 供
+        # ToolStatusHeader 渲染；None=无进行中工具，不占行）
+        self.active_tool: dict | None = None
 
     # ── 块管理 ──────────────────────────────────────
 
@@ -407,6 +412,11 @@ class AppModel:
             title = f"  \u00b7 {display} \u00b7 {detail}"
         block.lines.append(AnsiLine.of(title, Style(fg=23, bold=True)))
         self.tool_boxes[tool_id or self._next_tool_id()] = block
+        # Claude TUI parity 步骤 2.2：记录进行中工具（ToolStatusHeader 消费）
+        self.active_tool = {
+            "name": display, "detail": detail, "status": "running",
+            "tool_name": tool_name or "",
+        }
         return block
 
     def append_tool_output(self, tool_id: str, text: str) -> None:
@@ -466,6 +476,8 @@ class AppModel:
         block.lines.append(AnsiLine.of(f"  {status}", Style(fg=41 if success else 196)))
         block.extra["tool_status"] = "done" if success else "fail"
         output_count = block.extra.get("tool_output_count", 0)
+        # Claude TUI parity 步骤 2.2：关闭后无进行中工具（ToolStatusHeader 隐藏）
+        self.active_tool = None
 
         cfg = self._config if self._config is not None else _default_config()
         max_lines = cfg.tool_output_max_lines
@@ -559,6 +571,30 @@ class AppModel:
     def _next_tool_id(self) -> str:
         self._tool_id_seq += 1
         return f"tool-{self._tool_id_seq}"
+
+    def reset_display(self) -> None:
+        """清空显示状态（Claude TUI parity 步骤 2.2，供 Ctrl+L 清屏复用）。
+
+        清空聊天块/增量缓存/推理内容通道/subagent 行/进行中工具/解析行，
+        保留 ``status/input_text/input_cursor/completion``（用户输入与状态不丢）。
+        调用方须保证非流式（status.status_active=False）时调用，避免丢未提交块。
+        """
+        self.blocks = []
+        self.committed_lines = []
+        self.committed_count = 0
+        self.reasoning_renderer = None
+        self.content_renderer = None
+        self.reasoning_state = ReasoningState.INACTIVE
+        self.content_closed = False
+        self.reasoning_block_index = -1
+        self.content_block_index = -1
+        self.in_tool_group = False
+        self.tool_block_index = -1
+        self.tool_boxes = {}
+        self._tool_id_seq = 0
+        self.parse_line = None
+        self.subagent_lines = []
+        self.active_tool = None
 
 
 __all__ = [

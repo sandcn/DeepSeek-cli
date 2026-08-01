@@ -1785,7 +1785,8 @@ class TestParsingExtraRegression:
 
     def test_csi_unknown_terminator_regression(self):
         """未知 CSI 终结符 → unknown。"""
-        ev = Input._dispatch_csi([], 'Z')
+        # 'Z' 已映射为 Shift+Tab（Claude TUI parity 步骤 1.4），改用 'q' 作为未知样本
+        ev = Input._dispatch_csi([], 'q')
         assert ev.kind == "unknown"
 
 
@@ -2640,8 +2641,8 @@ class TestReverseSearchEditor:
 class TestReverseSearchDispatch:
     """方向D 步骤14 — InputDispatcher Ctrl+R 路由（配置门控，默认 False 零回归）。"""
 
-    def test_ctrl_r_disabled_switch_model_regression(self, tmp_path):
-        """未启用时 Ctrl+R 仍走 switch_model（零回归）。"""
+    def test_ctrl_r_disabled_retry_regression(self, tmp_path):
+        """未启用反向搜索时 Ctrl+R 走 retry（Claude TUI parity 3.4 重映射）。"""
         r_fd, w_fd = os.pipe()
         try:
             inp = Input(fd=r_fd, history_file=tmp_path / "history")
@@ -2651,7 +2652,7 @@ class TestReverseSearchDispatch:
             ready, _, _ = select.select([r_fd], [], [], 2.0)
             assert ready
             assert inp.read_stdin_once() is True
-            assert calls == ["switch_model"]
+            assert calls == ["retry"]
         finally:
             os.close(w_fd)
             os.close(r_fd)
@@ -2799,6 +2800,125 @@ class TestReverseSearchDispatch:
             assert inp._dispatcher._reverse_search_callback is cb
         finally:
             os.close(fd)
+
+
+class TestCtrlLScreenClear:
+    """Claude TUI parity 步骤 3.1 — Ctrl+L 清屏分发。"""
+
+    def test_ctrl_l_invokes_clear_screen_callback(self, tmp_path):
+        """Ctrl+L（0x0c）→ 调用注入的 clear_screen 回调。"""
+        r_fd, w_fd = os.pipe()
+        try:
+            inp = Input(fd=r_fd, history_file=tmp_path / "history")
+            calls = []
+            inp.set_clear_screen_callback(lambda: calls.append(True))
+            os.write(w_fd, b"\x0c")
+            ready, _, _ = select.select([r_fd], [], [], 2.0)
+            assert ready
+            assert inp.read_stdin_once() is True
+            assert calls == [True]
+        finally:
+            os.close(w_fd)
+            os.close(r_fd)
+
+    def test_ctrl_l_no_callback_skips(self, tmp_path):
+        """未注入 clear_screen 回调时 Ctrl+L 不抛异常（测试兼容）。"""
+        r_fd, w_fd = os.pipe()
+        try:
+            inp = Input(fd=r_fd, history_file=tmp_path / "history")
+            os.write(w_fd, b"\x0c")
+            ready, _, _ = select.select([r_fd], [], [], 2.0)
+            assert ready
+            assert inp.read_stdin_once() is True  # 不抛异常
+        finally:
+            os.close(w_fd)
+            os.close(r_fd)
+
+    def test_ctrl_l_skipped_while_streaming(self, tmp_path):
+        """生成中（active_status=True）Ctrl+L 被忽略。"""
+        r_fd, w_fd = os.pipe()
+        try:
+            inp = Input(fd=r_fd, history_file=tmp_path / "history")
+            calls = []
+            inp.set_clear_screen_callback(lambda: calls.append(True))
+            inp.set_active_status_callback(lambda: True)  # 生成中
+            os.write(w_fd, b"\x0c")
+            ready, _, _ = select.select([r_fd], [], [], 2.0)
+            assert ready
+            assert inp.read_stdin_once() is True
+            assert calls == []
+        finally:
+            os.close(w_fd)
+            os.close(r_fd)
+
+
+class TestCtrlDEOF:
+    """Claude TUI parity 步骤 3.2 — Ctrl+D EOF 提交。"""
+
+    def test_ctrl_d_empty_buffer_submits_exit(self, tmp_path):
+        """空缓冲 Ctrl+D → 提交 "exit"。"""
+        r_fd, w_fd = os.pipe()
+        try:
+            inp = Input(fd=r_fd, history_file=tmp_path / "history")
+            os.write(w_fd, b"\x04")
+            ready, _, _ = select.select([r_fd], [], [], 2.0)
+            assert ready
+            assert inp.read_stdin_once() is True
+            assert inp.get_queued_input() == "exit"
+        finally:
+            os.close(w_fd)
+            os.close(r_fd)
+
+    def test_ctrl_d_nonempty_buffer_noop(self, tmp_path):
+        """非空缓冲 Ctrl+D → 无副作用（防误退）。"""
+        r_fd, w_fd = os.pipe()
+        try:
+            inp = Input(fd=r_fd, history_file=tmp_path / "history")
+            inp.handle_chars("hello")
+            os.write(w_fd, b"\x04")
+            ready, _, _ = select.select([r_fd], [], [], 2.0)
+            assert ready
+            assert inp.read_stdin_once() is True
+            assert inp.get_queued_input() is None
+            assert inp.get_current_text() == "hello"
+        finally:
+            os.close(w_fd)
+            os.close(r_fd)
+
+
+class TestShiftEnterNewline:
+    """Claude TUI parity 步骤 3.6 — Shift+Enter 换行（CSI u 13;2）。"""
+
+    def test_shift_enter_inserts_newline_not_submit(self, tmp_path):
+        """CSI u Shift+Enter → 缓冲插入换行，不触发提交。"""
+        r_fd, w_fd = os.pipe()
+        try:
+            inp = Input(fd=r_fd, history_file=tmp_path / "history")
+            os.write(w_fd, b"\x1b[13;2u")
+            ready, _, _ = select.select([r_fd], [], [], 2.0)
+            assert ready
+            assert inp.read_stdin_once() is True
+            assert inp.get_current_text() == "\n"
+            assert inp.get_queued_input() is None  # 未提交
+        finally:
+            os.close(w_fd)
+            os.close(r_fd)
+
+    def test_shift_enter_appends_to_existing(self, tmp_path):
+        """已有文本时 Shift+Enter 追加换行（不提交）。"""
+        r_fd, w_fd = os.pipe()
+        try:
+            inp = Input(fd=r_fd, history_file=tmp_path / "history")
+            inp.handle_chars("abc")
+            os.write(w_fd, b"\x1b[13;2u")
+            ready, _, _ = select.select([r_fd], [], [], 2.0)
+            assert ready
+            assert inp.read_stdin_once() is True
+            assert inp.get_current_text() == "abc\n"
+            assert inp.get_queued_input() is None
+        finally:
+            os.close(w_fd)
+            os.close(r_fd)
 
 
 # ═══════════════════════════════════════════════════════════

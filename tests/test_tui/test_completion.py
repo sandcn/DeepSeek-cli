@@ -193,8 +193,10 @@ class TestThemeParamCompletion:
         engine = CompletionEngine()
         items = engine.complete("/theme")
         names = [item.text for item in items]
-        # CommandUiAdapter.get_theme_names_with_desc 返回真实主题名（default）
-        assert "default" in names
+        # CommandUiAdapter.get_theme_names_with_desc 返回真实主题名（dark/light/high-contrast）
+        assert "dark" in names
+        assert "light" in names
+        assert "high-contrast" in names
 
     def test_theme_completion_item_type(self):
         """/theme 补全项类型应为 param。"""
@@ -236,6 +238,7 @@ class TestCompletionShowDedup:
             orig_prefix="hello",
             types=[""],
             match_prefix="hello",
+            descriptions=[""],
         )
 
     def test_show_completions_for_no_items_regression(self):
@@ -269,6 +272,7 @@ class TestCompletionShowDedup:
             orig_prefix="hello",
             types=[""],
             match_prefix="hello",
+            descriptions=[""],
         )
         mock_redraw.assert_called()
 
@@ -470,13 +474,13 @@ class TestLoadSessionCompletion:
     def test_load_title_prefix_before_sid_substring_regression(self):
         """title 前缀（cat 2）排在 sid 子串（cat 3）之前。"""
         engine = self._engine_with_sessions([
-            {"id": "sess-xyz", "title": "部署文档"},
-            {"id": "abc-xyz", "title": "文档评审"},
+            {"id": "sess-abc", "title": "文档部署"},
+            {"id": "abc-文档", "title": "部署"},
         ])
         items = engine._complete_param("/load 文档")
         texts = [i.text for i in items]
-        # "文档" 命中 title 前缀（sess-xyz）与 sid 子串（abc-xyz）→ title 前缀优先
-        assert texts == ["sess-xyz", "abc-xyz"]
+        # "文档" 命中 title 前缀（sess-abc）与 sid 子串（abc-文档）→ title 前缀优先
+        assert texts == ["sess-abc", "abc-文档"]
 
     def test_load_empty_prefix_keeps_order_regression(self):
         """/load（无参数）→ 空前缀保持注册表顺序。"""
@@ -486,3 +490,26 @@ class TestLoadSessionCompletion:
         ])
         items = engine._complete_param("/load")
         assert [i.text for i in items] == ["b-id", "a-id"]
+
+
+class TestCommandDescription:
+    """Claude TUI parity 步骤 3.7 — 斜杠命令补全带描述。"""
+
+    def test_command_completion_has_description(self):
+        """/help 补全项含命令描述（来自注册表 help）。"""
+        from src.tui._completion_engine import CompletionEngine
+        engine = CompletionEngine()
+        items = engine._complete_command("/h")
+        help_item = next((i for i in items if i.text == "/help"), None)
+        assert help_item is not None
+        assert isinstance(help_item.desc, str)
+        # /help 有描述（注册表有 help 文本）；至少非 None
+        assert help_item.desc  # 非空
+
+    def test_get_command_help_direct(self):
+        """get_command_help 返回注册表描述；未知命令返回空串。"""
+        from src.core.internal.commands._command_core import get_command_help
+        h = get_command_help("/clear")
+        assert isinstance(h, str)
+        # /clear 已注册且有描述（或至少不抛异常）
+        assert get_command_help("/不存在的命令") == ""

@@ -12,6 +12,7 @@ from src.tui.ink.hooks import _schedule as _request_rerender
 from .chat_view import ChatView, register as _register_committed
 from .status_bar import StatusBar
 from .subagent_panel import SubAgentPanel
+from .tool_header import ToolStatusHeader
 from . import input_area as _input_area
 
 
@@ -61,6 +62,8 @@ def App(props) -> object:
     children = [
         h(STATIC, None, [h(ChatView, {"model": model})]),
         h(_ParseLine, {"model": model}),
+        # Claude TUI parity 步骤 2.1：顶部工具调用状态区（live 区，不占行时零成本）
+        h(ToolStatusHeader, {"model": model, "width": width}),
         h(SubAgentPanel, {"model": model, "width": width}),
         h(StatusBar, {"model": model, "width": width}),
         h("input-area", input_props),

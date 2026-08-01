@@ -46,6 +46,28 @@ def make_special_key_callback(loop, session, state, chat_ui, monitor=None):
                         input_.flush_stdin_buffer()
         elif action == 'editmsg':
             return '/editmsg'
+        elif action == 'retry':
+            # Claude TUI parity 步骤 3.4：Ctrl+R → 重新生成上一轮（提交 /retry）
+            return '/retry'
+        elif action == 'toggle_theme':
+            # Claude TUI parity 步骤 3.5：Ctrl+T → dark/light 循环切换（不提交输入）
+            try:
+                from ..core.commands._ui_adapter import CommandUiAdapter
+                adapter = CommandUiAdapter()
+                names = [n for n, _d in adapter.get_theme_names_with_desc()]
+                if len(names) < 2:
+                    return text
+                current = adapter.get_active_theme()
+                if current not in names:
+                    current = names[0]
+                idx = names.index(current)
+                nxt = names[(idx + 1) % len(names)]
+                adapter.set_theme(nxt)
+                if chat_ui is not None:
+                    chat_ui.on_notification(f"+ 已切换到主题 {nxt}")
+            except Exception:
+                _logger.debug("toggle_theme 异常", exc_info=True)
+            return text
         elif action == 'switch_model':
             _models: list[str] = []
             try:

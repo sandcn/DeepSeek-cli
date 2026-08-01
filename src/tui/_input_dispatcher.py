@@ -102,6 +102,10 @@ class InputDispatcher:
         self._esc_cancel_input: bool = False
         self._active_status_fn = None
 
+        # ── Ctrl+L 清屏回调（Claude TUI parity 步骤 3.1，装配注入） ──
+        # 注入 session.clear_screen；未注入时 Ctrl+L 记 debug 跳过（测试兼容）。
+        self._clear_screen_callback = None
+
     # ═══════════════════════════════════════════════════════
     # 中断与特殊按键处理（render 线程调用）
     # ═══════════════════════════════════════════════════════
@@ -140,16 +144,65 @@ class InputDispatcher:
             except Exception:
                 _logger.debug("_do_interrupt: interrupt 回调异常", exc_info=True)
 
+    def _handle_ctrl_key(self, ch: str) -> None:
+        """Ctrl 组合键统一分发（Claude TUI parity 步骤 3）。
+
+        直接控制字符路径与 CSI u 转义路径共用（避免两处分支漂移）：
+          - Ctrl+G/O → vim / editmsg（既有）
+          - Ctrl+R → 反向历史搜索（配置门控）或 retry（重生成上一轮）
+          - Ctrl+N → switch_model（保留）
+          - Ctrl+L → 清屏（非流式时；未注入回调跳过）
+          - Ctrl+D → EOF（空缓冲提交 exit；非空 no-op 防误退）
+          - Ctrl+T → 主题切换
+        """
+        if ch == '\x07':          # Ctrl+G → vim
+            self._handle_special_key('vim')
+        elif ch == '\x0f':        # Ctrl+O → /editmsg
+            self._handle_special_key('editmsg')
+        elif ch == '\x12' and self._reverse_search_enabled:
+            # 方向D 步骤14：Ctrl+R 反向历史搜索（配置门控，默认 False）
+            self._handle_reverse_search()
+        elif ch == '\x0c':        # Ctrl+L → 清屏（流式保护：生成中忽略）
+            if not self._is_active_status():
+                self._handle_clear_screen()
+        elif ch == '\x04':        # Ctrl+D → EOF
+            self._handle_ctrl_d()
+        elif ch == '\x14':        # Ctrl+T → 主题切换
+            self._handle_special_key('toggle_theme')
+        elif ch == '\x12':        # Ctrl+R → 重新生成上一轮（Claude parity 3.4）
+            self._handle_special_key('retry')
+        elif ch == '\x0e':        # Ctrl+N → 切换模型（保留）
+            self._handle_special_key('switch_model')
+        # else：未知 ctrl_key → no-op（router 已先行询问）
+
+    def _handle_clear_screen(self) -> None:
+        """Ctrl+L 清屏：调用注入的 clear_screen 回调（未注入记 debug 跳过）。"""
+        cb = self._clear_screen_callback
+        if cb is None:
+            _logger.debug("Ctrl+L: 未注入 clear_screen 回调，跳过")
+            return
+        try:
+            cb()
+        except Exception:
+            _logger.debug("Ctrl+L clear_screen 回调异常", exc_info=True)
+
+    def _handle_ctrl_d(self) -> None:
+        """Ctrl+D EOF：空缓冲 → 提交 exit；非空 no-op（防误退）。"""
+        if self._buffer_editor.get_current_text():
+            return
+        self._buffer_editor.set_buffer("exit")
+        self._buffer_editor._enter()
+
     def _handle_special_key(self, action: str) -> None:
-        """处理特殊按键（Ctrl+G/O/N/R）：直接调用回调并应用结果。
+        """处理特殊按键（Ctrl+G/O/N/R/T）：直接调用回调并应用结果。
 
         在 render 线程中调用（由 ``read_stdin_once()`` 直接分发）。
         终端模式切换由回调函数内部直接操作 EscapeMonitor 完成。
 
         ★ 收敛确认（方向A 步骤1）：vim / editmsg / switch_model 业务已完全由
         ``_special_key_callback``（_special_keys.py 工厂，_loop.py 注入）承担；
-        Input 仅保留 result 应用——editmsg 的 reset / set_buffer / handle_chars
-        + ``_enter`` 属缓冲编辑职责（InputBufferEditor），保留。
+        Input 仅保留 result 应用——editmsg/retry 的 reset / set_buffer /
+        handle_chars + ``_enter`` 属缓冲编辑职责（InputBufferEditor），保留。
         """
         cb = self._special_key_callback
         if cb is None:
@@ -161,14 +214,14 @@ class InputDispatcher:
             _logger.warning("特殊按键回调异常 (action=%s)", action, exc_info=True)
             return
         if result is not None and result != text:
-            if action == 'editmsg':
+            if action in ('editmsg', 'retry'):
                 self.reset()
                 self._buffer_editor.set_buffer(result)
             else:
                 self.reset()
                 self._buffer_editor.handle_chars(result)
-        if action == 'editmsg':
-            # editmsg 是用户主动发起的编辑/提交操作（Ctrl+O），
+        if action in ('editmsg', 'retry'):
+            # editmsg/retry 是用户主动发起的提交操作（Ctrl+O/Ctrl+R），
             # 清除 _suppress_enter 确保 _enter() 不被抑制
             self.set_suppress_enter(False)
             self._buffer_editor._enter()
@@ -266,18 +319,7 @@ class InputDispatcher:
                 elif event.kind == "interrupt":
                     self._do_interrupt()
                 elif event.kind == "ctrl_key":
-                    ch = event.char
-                    if ch == '\x07':          # Ctrl+G → vim
-                        self._handle_special_key('vim')
-                    elif ch == '\x0f':        # Ctrl+O → /editmsg
-                        self._handle_special_key('editmsg')
-                    elif ch == '\x12' and self._reverse_search_enabled:
-                        # 方向D 步骤14：Ctrl+R 反向历史搜索（配置门控，默认 False）
-                        self._handle_reverse_search()
-                    elif ch in ('\x0e', '\x12'):  # Ctrl+N/R → 切换模型
-                        self._handle_special_key('switch_model')
-                    else:
-                        self._dispatch_key_event(event)
+                    self._handle_ctrl_key(event.char)
                 else:
                     # enter, tab, backspace, home, end, delete 等 → 直接分发
                     self._dispatch_key_event(event)
@@ -394,17 +436,7 @@ class InputDispatcher:
             # 事件复用同一分发逻辑（含 _handle_reverse_search 门控）。
             # 直接控制字符路径（read_stdin_once 内联）已在读取处处理，不会
             # 重复到达此处——本分支服务 ESC/CSI u 转义序列路径。
-            ch = event.char
-            if ch == '\x07':          # Ctrl+G → vim
-                self._handle_special_key('vim')
-            elif ch == '\x0f':        # Ctrl+O → /editmsg
-                self._handle_special_key('editmsg')
-            elif ch == '\x12' and self._reverse_search_enabled:
-                # 方向D 步骤14：Ctrl+R 反向历史搜索（配置门控，默认 False）
-                self._handle_reverse_search()
-            elif ch in ('\x0e', '\x12'):  # Ctrl+N/R → 切换模型
-                self._handle_special_key('switch_model')
-            # else：未知 ctrl_key → no-op（router 已先行询问）
+            self._handle_ctrl_key(event.char)
         elif kind == "csi_u":
             # P3-4：未映射为已知 kind 的 CSI u 事件——router 已在函数开头
             # 先行询问（消费则返回）；此处为显式 no-op 分支（不再静默丢弃，
@@ -736,6 +768,14 @@ class InputDispatcher:
         None 缺省时视为空闲（默认 False）。
         """
         self._active_status_fn = fn
+
+    def set_clear_screen_callback(self, cb) -> None:
+        """设置 Ctrl+L 清屏回调（Claude TUI parity 步骤 3.1，装配注入）。
+
+        cb 签名: ``() -> None``（session.clear_screen）；None 可清除注入。
+        未注入时 Ctrl+L 记 debug 跳过（测试兼容）。
+        """
+        self._clear_screen_callback = cb
 
     def set_suppress_enter(self, suppress: bool) -> None:
         """设置 Enter 抑制标志（用于 editmsg 消息选择期间）。

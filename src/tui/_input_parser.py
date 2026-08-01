@@ -187,7 +187,9 @@ class InputParser:
             return KeyEvent(kind="delete", modifier=2, raw=raw)
         if byte == 0x0b:                 # Ctrl+K → kill to EOL
             return KeyEvent(kind="delete", modifier=3, raw=raw)
-        if byte in (0x07, 0x0f, 0x0e, 0x12):  # Ctrl+G/O/N/R → 特殊按键
+        # Claude TUI parity 步骤 1.4：Ctrl+L(0x0c 清屏) / Ctrl+D(0x04 EOF) /
+        # Ctrl+T(0x14 主题) 加入特殊按键（分发在 dispatcher 处理）
+        if byte in (0x04, 0x07, 0x0c, 0x0e, 0x0f, 0x12, 0x14):  # Ctrl+D/G/L/N/O/R/T
             return KeyEvent(kind="ctrl_key", char=chr(byte), raw=raw)
         # 其他控制字符 → unknown
         return KeyEvent(kind="unknown", raw=raw)
@@ -314,6 +316,11 @@ class InputParser:
         # ── 下箭头 ──
         if terminator == 'B':
             return KeyEvent(kind="arrow_down", raw=raw)
+
+        # ── Shift+Tab (\x1b[Z) — 部分终端发送 CSI Z 而非 CSI u(9;2u) ──
+        # Claude TUI parity 步骤 1.4：映射为 tab modifier=2（反向补全导航）。
+        if terminator == 'Z':
+            return KeyEvent(kind="tab", modifier=2, keycode=9, raw=raw)
 
         # ── 其他 CSI 序列 ──
         return KeyEvent(kind="unknown", raw=raw)

@@ -240,6 +240,49 @@ class TestTextWrapTruncate:
         lines = self._frame_plain(h(TEXT, {"children": "b" * 20, "textWrap": "truncate-end"}), 6)
         assert lines == ["b" * 5 + "…"]
 
+    def test_textwrap_truncate_start_keeps_tail(self):
+        """textWrap='truncate-start'：省略号在开头，保留尾部（react-ink 语义）。"""
+        root, box = _render_and_layout(
+            h(TEXT, {"children": "a" * 20, "textWrap": "truncate-start"}), 6
+        )
+        assert box.h == 1
+        lines = self._frame_plain(h(TEXT, {"children": "a" * 20, "textWrap": "truncate-start"}), 6)
+        assert lines == ["…" + "a" * 5]
+
+    def test_textwrap_truncate_start_fits_no_ellipsis(self):
+        """textWrap='truncate-start'：内容未超宽 → 原样单行（无省略号）。"""
+        lines = self._frame_plain(h(TEXT, {"children": "abc", "textWrap": "truncate-start"}), 10)
+        assert lines == ["abc"]
+
+    def test_textwrap_truncate_middle_keeps_head_tail(self):
+        """textWrap='truncate-middle'：保留头尾，中间省略号（react-ink 语义）。"""
+        # 宽度 6 → 头 (6-1)//2=2 + … + 尾 3
+        lines = self._frame_plain(h(TEXT, {"children": "abcdefghij", "textWrap": "truncate-middle"}), 6)
+        assert lines == ["ab…hij"]
+
+    def test_textwrap_truncate_middle_odd_width(self):
+        """textWrap='truncate-middle'：奇数宽度头部取 floor、尾部取 ceil。"""
+        # 宽度 7 → 头 3 + … + 尾 3
+        lines = self._frame_plain(h(TEXT, {"children": "abcdefghij", "textWrap": "truncate-middle"}), 7)
+        assert lines == ["abc…hij"]
+
+    def test_textwrap_truncate_middle_narrow_falls_back_to_end(self):
+        """textWrap='truncate-middle'：宽度 <=3 回退末尾省略号（预算不足）。"""
+        lines = self._frame_plain(h(TEXT, {"children": "abcdef", "textWrap": "truncate-middle"}), 3)
+        assert lines == ["ab…"]
+
+    def test_textwrap_truncate_middle_cjk_not_split(self):
+        """textWrap='truncate-middle'：CJK 宽字符不拆分（宽度依据 wcswidth_simple）。"""
+        # "你好世界" 宽 8 → 截断至 6：头 2 格("你") + … + 尾 3 格("界")，总宽 5<=6
+        lines = self._frame_plain(h(TEXT, {"children": "你好世界", "textWrap": "truncate-middle"}), 6)
+        assert lines == ["你…界"]
+
+    def test_textwrap_truncate_start_cjk_not_split(self):
+        """textWrap='truncate-start'：CJK 宽字符不拆分（保留尾部）。"""
+        # "你好世界" 宽 8 → 截断至 5：尾 4 格("世界") + …，总宽 5<=5
+        lines = self._frame_plain(h(TEXT, {"children": "你好世界", "textWrap": "truncate-start"}), 5)
+        assert lines == ["…世界"]
+
     def test_textwrap_default_wrap_unchanged(self):
         """默认 textWrap='wrap' 行为不变（回归：超宽换行而非截断）。"""
         root, box = _render_and_layout(h(TEXT, {"children": "a" * 30}), 10)

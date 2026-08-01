@@ -889,6 +889,13 @@ class Input:
         """
         self._dispatcher.set_active_status_callback(fn)
 
+    def set_clear_screen_callback(self, cb) -> None:
+        """设置 Ctrl+L 清屏回调（委托 InputDispatcher，Claude TUI parity 3.1）。
+
+        cb 签名: ``() -> None``（session.clear_screen）；None 可清除注入。
+        """
+        self._dispatcher.set_clear_screen_callback(cb)
+
     def set_interrupt_callback(self, cb) -> None:
         """设置中断回调（方向A 步骤1 注入点）。
 

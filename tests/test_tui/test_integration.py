@@ -183,8 +183,9 @@ class TestThemeCompletionChain:
         for name, desc in themes:
             assert isinstance(name, str)
             assert isinstance(desc, str)
-        # 默认主题存在（对应 CommandUiAdapter 返回的默认列表）
-        assert any(name == "default" for name, _ in themes)
+        # 主题集合含 dark/light/high-contrast（CommandUiAdapter 经 ThemeRegistry）
+        names = [name for name, _ in themes]
+        assert "dark" in names and "light" in names and "high-contrast" in names
 
     def test_theme_adapter_concurrent_singleton_regression(self):
         """多线程并发首次访问 _fetch_themes 时 CommandUiAdapter 仅构造一次（双检锁）。

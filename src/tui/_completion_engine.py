@@ -51,13 +51,15 @@ class _TTLCache:
 class CompletionItem:
     """单个补全项。"""
 
-    __slots__ = ("text", "display", "start_pos", "item_type")
+    __slots__ = ("text", "display", "start_pos", "item_type", "desc")
 
-    def __init__(self, text: str, display: str = "", start_pos: int = 0, item_type: str = ""):
+    def __init__(self, text: str, display: str = "", start_pos: int = 0,
+                 item_type: str = "", desc: str = ""):
         self.text = text          # 替换文本
         self.display = display or text  # 显示文本
         self.start_pos = start_pos     # 从光标前多少字符开始替换
         self.item_type = item_type     # 补全项类型：command/dir/file/param/session
+        self.desc = desc               # 描述（斜杠命令菜单，Claude parity 3.7）
 
 
 def _default_commands_source() -> list[str]:
@@ -264,7 +266,16 @@ class CompletionEngine:
         ranked = _ranked(commands, prefix)
         result: list[CompletionItem] = []
         for cmd in ranked:
-            result.append(CompletionItem(cmd, start_pos=-len(prefix), item_type="command"))
+            # Claude TUI parity 步骤 3.7：命令描述（注册表 help；无则空串）
+            desc = ""
+            try:
+                from ..core.internal.commands._command_core import get_command_help
+                desc = get_command_help(cmd)
+            except Exception:
+                pass
+            result.append(CompletionItem(
+                cmd, start_pos=-len(prefix), item_type="command", desc=desc,
+            ))
         return result
 
     # ── 参数补全 ───────────────────────────────────────
@@ -314,7 +325,12 @@ class CompletionEngine:
             for s in sessions:
                 sid: str = s.get("id", "")
                 title: str = s.get("title", "")
-                if sid.startswith(param_last) or title.startswith(param_last):
+                # 前缀 + 子串双匹配：与 _ranked_sessions 的 cat 0-4 对齐——
+                # 仅前缀过滤会丢弃 title/sid 子串命中（cat 3/4 成为死代码）。
+                if (
+                    sid.startswith(param_last) or title.startswith(param_last)
+                    or param_last in sid or param_last in title
+                ):
                     matched.append((sid, title))
             # P1-1 回归修复：多键加权排序（sid 精确 > sid 前缀 > title 前缀 >
             # sid 子串 > title 子串）替代二次 sid 过滤——title 匹配但 sid 不匹配
