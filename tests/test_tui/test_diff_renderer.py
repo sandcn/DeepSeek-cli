@@ -231,3 +231,26 @@ class TestRenderDiffNoInjection:
         output = '\n'.join(out)
         # hunk 头由我们自己的样式生成，应保留 ANSI
         assert '\x1b[' in output
+
+
+# ═══════════════════════════════════════════════════════════
+# _resolve_lexer_name 有界缓存（BUG-T8）
+# ═══════════════════════════════════════════════════════════
+
+class TestLexerCacheBounded:
+    """BUG-T8 — _resolve_lexer_name 有界缓存（maxsize=64，防无限增长）。"""
+
+    def test_lexer_cache_bounded_regression(self):
+        """cache_info().maxsize == 64；大量随机扩展名后 currsize <= 64。"""
+        from src.tui._diff_renderer import _resolve_lexer_name
+
+        assert _resolve_lexer_name.cache_info().maxsize == 64
+        # 大量随机扩展名
+        for i in range(200):
+            _resolve_lexer_name(f"ext{i}")
+        info = _resolve_lexer_name.cache_info()
+        assert info.currsize <= 64
+        # 既有行为不变：空/未知扩展映射 text
+        assert _resolve_lexer_name("") == "text"
+        assert _resolve_lexer_name("txt") == "text"
+        assert _resolve_lexer_name("ext_known") == "ext_known"

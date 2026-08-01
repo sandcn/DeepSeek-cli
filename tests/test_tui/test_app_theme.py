@@ -38,16 +38,49 @@ class TestTimeGlowPeriodic:
     """time_glow 时间基周期性。"""
 
     def test_time_glow_periodic_regression(self) -> None:
-        """极小 period 下时间推进可观察到值变化；正常 period 下结果稳定在区间。"""
-        # 极小周期：连续采样中时间推进导致相位跨越 → 出现不同值（非恒定）
-        values = {time_glow(32, 49, period=1e-6) for _ in range(60)}
+        """时间推进（跨桶）可观察到值变化；正常 period 下结果稳定在区间。"""
+        from unittest.mock import patch
+
+        # 跨桶采样（PERF-5：同桶缓存返回同值；跨桶重新计算）：时间推进出现不同值
+        with patch(
+            "src.tui.app._theme.time.monotonic",
+            side_effect=[0.0, 0.15, 0.30, 0.45, 0.60, 0.75],
+        ):
+            values = {time_glow(32, 49, period=1.0) for _ in range(6)}
         assert all(32 <= v <= 49 for v in values)
-        assert len(values) > 1, "时间基 glow 在极小 period 下应随时间变化"
+        assert len(values) > 1, "时间基 glow 跨桶应随时间变化"
 
         # 正常周期：结果始终在区间内
         for _ in range(20):
             v = time_glow(32, 49, period=12.0)
             assert 32 <= v <= 49
+
+
+class TestTimeGlowBucketCache:
+    """PERF-5 — time_glow 0.1s 时间桶缓存。"""
+
+    def test_time_glow_bucket_cache_regression(self) -> None:
+        """同桶（同 int(t/0.1) 且同参数）返回缓存色号；跨桶重新计算。"""
+        from unittest.mock import patch
+        import src.tui.app._theme as theme
+
+        theme._glow_cache = (0, 0, 0, 0, 0)
+        # 同桶：两次调用返回同值
+        with patch("src.tui.app._theme.time.monotonic", return_value=100.0):
+            v1 = time_glow(32, 49)
+            v2 = time_glow(32, 49)
+        assert v1 == v2
+        # 跨桶（+0.2s）：重新计算（可能不同值，但不越界）
+        with patch("src.tui.app._theme.time.monotonic", return_value=100.2):
+            v3 = time_glow(32, 49)
+        assert 32 <= v3 <= 49
+        # 不同 lo/hi 参数即使同桶也分别计算（不互相污染缓存）
+        theme._glow_cache = (0, 0, 0, 0, 0)
+        with patch("src.tui.app._theme.time.monotonic", return_value=100.0):
+            a = time_glow(10, 20)
+            b = time_glow(200, 210)
+        assert 10 <= a <= 20
+        assert 200 <= b <= 210
 
 
 class TestThemeConstants:

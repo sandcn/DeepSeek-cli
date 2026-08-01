@@ -453,3 +453,196 @@ class TestSubAgentPanelParsingThrottle:
 
         ctrl._on_tool_parsing(event)
         assert ctrl._push_frame.call_count == 0  # 被节流
+
+
+class TestSubAgentPanelDirtyShortCircuit:
+    """PERF-2 — _panel_refresh 增量/变更检测短路。"""
+
+    @pytest.fixture
+    def controller(self):
+        """创建带 mock 的 SubAgentPanelController。"""
+        ctrl = SubAgentPanelController()
+        ctrl._push_frame = MagicMock()
+        ctrl._render_frame = MagicMock(return_value=["line1"])
+        ctrl._cb_registered = True
+        return ctrl
+
+    def test_panel_refresh_skips_when_idle_regression(self, controller):
+        """无事件、无 running agent 时 _render_frame 不被调用。"""
+        ctrl = controller
+        ctrl._dirty = False
+        ctrl._panel_refresh()
+        ctrl._render_frame.assert_not_called()
+
+    def test_panel_refresh_renders_when_dirty_regression(self, controller):
+        """脏标记置位时 _panel_refresh 渲染并复位。"""
+        ctrl = controller
+        ctrl._dirty = True
+        ctrl._panel_refresh()
+        ctrl._render_frame.assert_called_once()
+        assert ctrl._dirty is False  # 渲染后复位
+
+    def test_panel_refresh_renders_when_animation_regression(self, controller):
+        """running agent 存在（动画需求）时仍渲染。"""
+        from src.tui._subagent_panel import _AgentSlot
+        ctrl = controller
+        ctrl._dirty = False
+        ctrl._agents["agent-x"] = _AgentSlot(
+            label="agent-x", description="test", status="running",
+        )
+        ctrl._order.append("agent-x")
+        ctrl._panel_refresh()
+        ctrl._render_frame.assert_called_once()  # running → 动画 → 渲染
+
+    def test_panel_refresh_skips_when_done_agents_idle_regression(self, controller):
+        """全部 done 且无事件时跳过渲染（done 不触发动画）。"""
+        from src.tui._subagent_panel import _AgentSlot
+        ctrl = controller
+        ctrl._dirty = False
+        ctrl._agents["agent-done"] = _AgentSlot(
+            label="agent-done", description="test", status="done",
+        )
+        ctrl._order.append("agent-done")
+        ctrl._panel_refresh()
+        ctrl._render_frame.assert_not_called()  # done → 无动画 → 空闲跳过
+
+    def test_needs_animation_running_tool_regression(self, controller):
+        """running 工具记录（非 running agent）也触发动画需求。"""
+        from src.tui._subagent_panel import _AgentSlot, _ToolRecord
+        ctrl = controller
+        ctrl._dirty = False
+        slot = _AgentSlot(label="agent-x", description="test", status="running")
+        rec = _ToolRecord(tool_name="read_file")
+        rec.phase = "running"
+        slot.tool_history.append(rec)
+        ctrl._agents["agent-x"] = slot
+        ctrl._order.append("agent-x")
+        assert ctrl._needs_animation() is True
+
+    def test_needs_animation_idle_false_regression(self, controller):
+        """空闲（无 running agent/tool）→ _needs_animation False。"""
+        from src.tui._subagent_panel import _AgentSlot
+        ctrl = controller
+        ctrl._dirty = False
+        ctrl._agents["agent-done"] = _AgentSlot(
+            label="agent-done", description="test", status="done",
+        )
+        ctrl._order.append("agent-done")
+        assert ctrl._needs_animation() is False
+
+    def test_event_handler_sets_dirty_regression(self, controller):
+        """事件处理器更新状态后置位 _dirty。"""
+        from src.tui._subagent_panel import _AgentSlot
+        ctrl = controller
+        ctrl._dirty = False
+        ctrl._agents["agent-x"] = _AgentSlot(label="agent-x", description="test")
+        ctrl._order.append("agent-x")
+        with patch.object(ctrl, "_emit_frame"):  # 隔离渲染复位，验证脏标记置位
+            event = MagicMock()
+            event.label = "agent-x"
+            event.phase = "thinking"
+            event.info = ""
+            ctrl._on_model_phase(event)
+        assert ctrl._dirty is True  # 事件 → 脏标记
+
+
+class TestBeautyTimeBasedEffects:
+    """步骤8 — 美化动效时间基回归（BEAUTY-1/2/3）。"""
+
+    def test_fade_in_title_color_regression(self):
+        """BEAUTY-1：elapsed=0 时标题标签色为 fade_start_color；elapsed>=duration 时回到 agent_type 原色。"""
+        import re as _re
+        from src.tui._subagent_panel import SubAgentPanelController, _AgentSlot
+
+        ctrl = SubAgentPanelController()
+        with patch("src.tui._subagent_panel.time.monotonic", return_value=1000.0):
+            slot = _AgentSlot(label="agent-x", description="test", status="done",
+                              agent_type="execute")
+
+        def _title_tag_code(mono_time):
+            with patch("src.tui._subagent_panel.time.monotonic", return_value=mono_time):
+                lines = ctrl._build_agent_lines(slot, now=mono_time, is_last=False)
+            title = lines[0]
+            m = _re.search(r"\x1b\[38;5;(\d+)m\[ex\]\x1b\[0m", title)
+            assert m, f"未找到 [ex] 标签色号: {title!r}"
+            return int(m.group(1))
+
+        # elapsed=0 → fade_start_color=238（execute 原色 208 的渐显起点）
+        assert _title_tag_code(1000.0) == 238
+        # elapsed=1.0 > fade_duration_sec=0.6 → 回到 execute 原色 208
+        assert _title_tag_code(1001.0) == 208
+
+    def test_spinner_time_based_regression(self):
+        """BEAUTY-3：相同 _frame 下 spinner 帧号随时间推进（时间基，非帧计数）。"""
+        from src.tui._subagent_panel import (
+            SubAgentPanelController, _AgentSlot, _SPINNER_FRAMES,
+        )
+        ctrl = SubAgentPanelController()
+        ctrl._frame = 5  # 固定帧计数——不得影响时间基推进
+        slot = _AgentSlot(label="agent-x", description="test", status="running")
+        # patch _fx.time.monotonic（spinner_frame 内部使用）
+        with patch("src.tui.app._fx.time.monotonic", return_value=0.0):
+            title0 = ctrl._build_agent_lines(slot, now=0.0, is_last=False)[0]
+        with patch("src.tui.app._fx.time.monotonic", return_value=0.35):
+            title1 = ctrl._build_agent_lines(slot, now=0.35, is_last=False)[0]
+        # int(0.00*10)%10=0；int(0.35*10)%10=3
+        assert _SPINNER_FRAMES[0] in title0
+        assert _SPINNER_FRAMES[3] in title1
+        assert _SPINNER_FRAMES[0] != _SPINNER_FRAMES[3]
+
+    def test_breathe_color_time_based_regression(self):
+        """BEAUTY-2：running 时摘要进度条/分隔线呼吸色随时间变化且在 [lo,hi] 内。"""
+        import re as _re
+        import time as _time
+        from src.tui._subagent_panel import (
+            SubAgentPanelController, _AgentSlot,
+        )
+        ctrl = SubAgentPanelController()
+        with patch("src.tui._subagent_panel.time.monotonic", return_value=0.0):
+            slot_running = _AgentSlot(label="agent-run", description="run", status="running")
+            slot_done = _AgentSlot(label="agent-done", description="done", status="done")
+        slot_done.end_time = _time.time()
+        ctrl._agents = {"agent-run": slot_running, "agent-done": slot_done}
+        ctrl._order = ["agent-run", "agent-done"]
+
+        bar_codes: set[int] = set()
+        sep_codes: set[int] = set()
+        for t in (0.0, 0.15, 0.30, 0.45, 0.60, 0.75, 0.90):
+            # time_glow 在 _theme 内使用 time.monotonic（跨桶采样）
+            with patch("src.tui.app._theme.time.monotonic", return_value=t):
+                lines = ctrl._render_frame()
+            summary = lines[0]
+            m_bar = _re.search(r"\x1b\[38;5;(\d+)m\u2588", summary)
+            assert m_bar, f"未找到进度条色号: {summary!r}"
+            code = int(m_bar.group(1))
+            assert 214 <= code <= 220, f"进度条呼吸色越界: {code}"
+            bar_codes.add(code)
+            m_sep = _re.search(r"\x1b\[38;5;(\d+)m \u2501", lines[1])
+            assert m_sep, f"未找到分隔线色号: {lines[1]!r}"
+            sep_code = int(m_sep.group(1))
+            assert 237 <= sep_code <= 245, f"分隔线呼吸色越界: {sep_code}"
+            sep_codes.add(sep_code)
+        # 时间基呼吸 → 跨桶采样应出现变化
+        assert len(bar_codes) > 1, "running 进度条呼吸色应随时间变化"
+        assert len(sep_codes) > 1, "running 分隔线呼吸色应随时间变化"
+
+    def test_idle_summary_static_color_regression(self):
+        """BEAUTY-2：空闲（无 running）时摘要进度条保持静态 _C_RUNNING（214），不呼吸。"""
+        import re as _re
+        import time as _time
+        from src.tui._subagent_panel import (
+            SubAgentPanelController, _AgentSlot,
+        )
+        ctrl = SubAgentPanelController()
+        with patch("src.tui._subagent_panel.time.monotonic", return_value=0.0):
+            slot_done = _AgentSlot(label="agent-done", description="done", status="done")
+        slot_done.end_time = _time.time()
+        ctrl._agents = {"agent-done": slot_done}
+        ctrl._order = ["agent-done"]
+        with patch("src.tui.app._theme.time.monotonic", return_value=0.0):
+            lines = ctrl._render_frame()
+        # done 分支：进度条用 _C_DONE（40），无 _C_RUNNING 呼吸段
+        summary = lines[0]
+        assert "\u2588" in summary
+        assert "\x1b[38;5;214m\u2588" not in summary  # 无 running 呼吸段
+

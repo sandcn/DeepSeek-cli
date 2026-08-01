@@ -219,3 +219,83 @@ class TestColorConstants:
         assert ANSI_EMERGENCY_YELLOW == "\033[33m"
         assert ANSI_EMERGENCY_RESET == "\033[0m"
         assert ANSI_EMERGENCY_CURSOR_BOTTOM == "\033[9999;1H"
+
+
+class TestSigwinchSignalSafe:
+    """BUG-T4 — SIGWINCH 信号安全：处理器只置标志，渲染循环轮询。"""
+
+    def _install_callback(self, cb):
+        """注册回调并返回清理函数。"""
+        import src.tui._screen as scr
+        scr._sigwinch_callbacks.append(cb)
+
+        def cleanup():
+            scr._sigwinch_callbacks.remove(cb)
+            scr._sigwinch_pending = False
+
+        return cleanup
+
+    def test_sigwinch_handler_only_sets_flag_regression(self):
+        """调用 _handle_sigwinch 不立即调用回调（仅置 pending 标志）。"""
+        from unittest.mock import MagicMock
+        import src.tui._screen as scr
+
+        cb = MagicMock()
+        cleanup = self._install_callback(cb)
+        try:
+            scr._sigwinch_pending = False
+            scr._handle_sigwinch(28, None)  # SIGWINCH 在 Linux 为 28
+            cb.assert_not_called()
+            assert scr._sigwinch_pending is True
+        finally:
+            cleanup()
+
+    def test_process_sigwinch_invokes_callbacks_regression(self):
+        """process_sigwinch 复位 pending 并在线程上下文调用回调。"""
+        from unittest.mock import MagicMock, patch
+        import src.tui._screen as scr
+
+        cb = MagicMock()
+        cleanup = self._install_callback(cb)
+        try:
+            scr._sigwinch_pending = True
+            with patch.object(scr, "_get_terminal_size", return_value=(120, 40)):
+                result = scr.process_sigwinch()
+            assert result is True
+            cb.assert_called_once_with(120, 40)
+            assert scr._sigwinch_pending is False
+        finally:
+            cleanup()
+
+    def test_process_sigwinch_no_pending_regression(self):
+        """无 pending 时 process_sigwinch 返回 False（不调用回调）。"""
+        from unittest.mock import MagicMock
+        import src.tui._screen as scr
+
+        cb = MagicMock()
+        cleanup = self._install_callback(cb)
+        try:
+            scr._sigwinch_pending = False
+            assert scr.process_sigwinch() is False
+            cb.assert_not_called()
+        finally:
+            cleanup()
+
+    def test_callback_exception_isolated_regression(self):
+        """单个回调异常不中断其他回调。"""
+        from unittest.mock import MagicMock, patch
+        import src.tui._screen as scr
+
+        cb_ok = MagicMock()
+        cb_bad = MagicMock(side_effect=RuntimeError("boom"))
+        cleanup1 = self._install_callback(cb_ok)
+        cleanup2 = self._install_callback(cb_bad)
+        try:
+            scr._sigwinch_pending = True
+            with patch.object(scr, "_get_terminal_size", return_value=(80, 24)):
+                result = scr.process_sigwinch()
+            assert result is True
+            cb_ok.assert_called_once_with(80, 24)
+        finally:
+            cleanup1()
+            cleanup2()

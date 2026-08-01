@@ -309,6 +309,20 @@ class TestChatUIConsumerPublicMethods:
         mock_consumer._engine.request_bottom_redraw.assert_called_once()
 
 
+class TestDisplayMessagesFlushShortTimeout:
+    """BUG-T5 — _display_messages_handler flush 短超时（0.5s，防阻塞会话设置）。"""
+
+    def test_display_messages_flush_short_timeout_regression(self):
+        """_display_messages_handler 尾部 flush 以 timeout=0.5 调用。"""
+        from src.tui._consumer import ChatUIConsumer
+
+        c = _create_mock_consumer(MagicMock())
+        c._engine.flush = MagicMock()
+        c._engine.push_cmd = MagicMock()
+        c._display_messages_handler([{"role": "user", "content": "hi"}], 0)
+        c._engine.flush.assert_called_once_with(timeout=0.5)
+
+
 class TestForTesting:
     """for_testing 工厂方法测试。"""
 

@@ -106,14 +106,41 @@ class TestCommandQueue:
         assert s._consecutive_full == 2
 
     def test_push_cmd_critical_blocks(self):
+        """队列满时 push_cmd_critical 走紧急直写兜底（BUG-T2，不抛异常）。"""
         s = _make_session()
         s._cmd_queue = MagicMock()
         s._cmd_queue.put.side_effect = _queue.Full
-        with pytest.raises(_queue.Full):
-            s.push_cmd_critical(PhaseDoneCmd(phase="done"))
+        s._write_emergency = MagicMock()
+        s.push_cmd_critical(PhaseDoneCmd(phase="done"))
         _, kwargs = s._cmd_queue.put.call_args
         assert kwargs["block"] is True
         assert kwargs["timeout"] == 1.0
+        # 兜底：不抛异常、丢弃计数增加、紧急直写被调用
+        assert s._cmd_queue_dropped == 1
+        assert s._consecutive_full == 1
+        s._write_emergency.assert_called_once()
+
+    def test_push_cmd_critical_full_fallback_regression(self):
+        """BUG-T2 回归：队列满时不抛异常，关键命令经紧急路径直写（不静默丢失）。"""
+        s = _make_session()
+        s._cmd_queue = MagicMock()
+        s._cmd_queue.put.side_effect = _queue.Full
+        s._write_emergency = MagicMock()
+        # 关键命令（PHASE_DONE 属 _CRITICAL_CMDS）
+        s.push_cmd_critical(PhaseDoneCmd(phase="done"))
+        assert s._cmd_queue_dropped == 1
+        assert s._consecutive_full == 1
+        s._write_emergency.assert_called_once()
+        # 紧急直写内容包含命令名（不静默）
+        emergency_text = s._write_emergency.call_args[0][0]
+        assert "PHASE_DONE" in emergency_text
+        # 成功路径（非 Full）维持原语义：_consecutive_full 复位 + 事件 set
+        s2 = _make_session()
+        s2._cmd_event = MagicMock()
+        s2._cmd_queue = MagicMock()
+        s2.push_cmd_critical(PhaseDoneCmd(phase="done"))
+        assert s2._consecutive_full == 0
+        s2._cmd_event.set.assert_called_once()
 
     def test_same_batch_order_by_seq(self):
         """同批命令出队顺序保持插入序（内容命令先于完成命令）。"""
@@ -185,6 +212,38 @@ class TestLifecycle:
     def test_ensure_cursor_upper_noop(self):
         s = _make_session()
         s.ensure_cursor_upper()  # 不抛异常
+
+    def test_stop_version_change_joins_new_thread_regression(self):
+        """BUG-T9 回归：版本变化时 stop 不提前返回，重新捕获新线程并 join。"""
+        s = _make_session()
+        s._ink_renderer.suspend = MagicMock()
+        s._drain_queue_safe = MagicMock()
+
+        old_thread = MagicMock()
+        new_thread = MagicMock()
+
+        # 第一轮：old_thread 在 join 时触发"崩溃恢复"（版本变化 + 线程替换）
+        def old_join(timeout):
+            s._render_version = 2          # 版本变化
+            s._render_thread = new_thread  # 崩溃恢复重启新线程
+
+        old_thread.join.side_effect = old_join
+        old_thread.is_alive.return_value = True  # join 后仍存活（触发版本检查）
+
+        # 第二轮：new_thread join 后死亡
+        new_thread.join.side_effect = lambda timeout: None
+        new_thread.is_alive.return_value = False
+
+        s._render_thread = old_thread
+        s._render_version = 1
+
+        s.stop()
+
+        # 新线程被 join 且最终 _render_running 为 False
+        old_thread.join.assert_called_once()
+        new_thread.join.assert_called_once()
+        assert s._render_running is False
+        s._drain_queue_safe.assert_called()
 
 
 class TestCrashRecovery:
@@ -276,6 +335,42 @@ class TestDrainQueue:
         clear_idx = next(i for i, c in enumerate(calls) if c[0] == "clear")
         wait_idx = next(i for i, c in enumerate(calls) if c[0] == "wait")
         assert clear_idx < wait_idx
+
+    def test_session_drain_polls_sigwinch_regression(self):
+        """BUG-T4 回归：渲染循环 _phase_process_sigwinch 轮询 process_sigwinch。"""
+        s = _make_session()
+        with patch("src.tui.ink.session.process_sigwinch") as mock_ps:
+            mock_ps.return_value = False
+            s._phase_process_sigwinch()
+            mock_ps.assert_called_once()
+
+    def test_drain_queue_invokes_sigwinch_phase(self):
+        """_drain_queue 前置阶段调用 _phase_process_sigwinch（SIGWINCH 轮询）。"""
+        s = _make_session()
+        call_order = []
+        s._phase_process_sigwinch = lambda: call_order.append("sigwinch")
+        s._phase_process_input = lambda: call_order.append("process_input")
+        s._phase_pre_update_panels = lambda: call_order.append("pre_update_panels")
+        s._update_system_stats = lambda: call_order.append("sys_stats")
+        s._cmd_queue = MagicMock()
+        s._cmd_queue.get_nowait.side_effect = _queue.Empty
+
+        class _FakeLock:
+            def __enter__(self):
+                call_order.append("acquire_lock")
+                return True
+            def __exit__(self, *a):
+                call_order.append("release_lock")
+                return False
+
+        with patch(
+            "src.tui.ink.session._try_acquire_output_lock",
+            return_value=_FakeLock(),
+        ):
+            s._drain_queue()
+
+        assert "sigwinch" in call_order
+        assert call_order.index("sigwinch") < call_order.index("process_input")
 
     def test_apply_cmd_called(self):
         """_apply_commands 调用注入的 apply_cmd。"""
@@ -376,3 +471,115 @@ class TestRenderInvariants:
         s.push_cmd(NotificationCmd(text="n"))
         _, kwargs = s._cmd_queue.put.call_args
         assert kwargs["block"] is False
+
+
+class TestInputRouterInjection:
+    """INK-1 — session 接线 use_input router → Input.set_input_hook_router。"""
+
+    def test_session_injects_router_to_input_regression(self):
+        """_on_input_router 经 Input.set_input_hook_router 接线（消费端只读注入点）。"""
+        s = _make_session()
+        mock_input = MagicMock()
+        s.set_input(mock_input)
+        s._on_input_router(lambda ev: True)
+        mock_input.set_input_hook_router.assert_called()
+        router = mock_input.set_input_hook_router.call_args[0][0]
+        assert callable(router)
+
+    def test_session_pending_router_replayed_on_set_input_regression(self):
+        """构造期（_input 未注入）发布的 router 缓存，set_input 后补发。"""
+        s = _make_session()
+        s._on_input_router(lambda ev: False)  # _input 为 None → 缓存
+        assert s._pending_input_router is not None
+        mock_input = MagicMock()
+        s.set_input(mock_input)
+        mock_input.set_input_hook_router.assert_called_once()
+        assert s._pending_input_router is None
+
+    def test_session_on_input_router_sets_pending(self):
+        """_on_input_router 始终记录最新 router（含 _input 已注入场景）。"""
+        s = _make_session()
+        mock_input = MagicMock()
+        s.set_input(mock_input)
+        s._on_input_router(lambda ev: True)
+        assert s._pending_input_router is not None
+        mock_input.set_input_hook_router.assert_called()
+
+
+class TestPositionCursorReusesInputCache:
+    """PERF-1 — session._position_cursor 复用 input_area 缓存布局。"""
+
+    def test_position_cursor_reuses_input_cache_regression(self):
+        """同 text/max_input 时 _position_cursor 走缓存布局（不重新整段换行）。"""
+        from src.tui.app.input_area import _compute_input_layout
+        from src.tui.ink.fiber import Fiber
+        from src.tui.ink.output import Frame, Line
+
+        s = _make_session()
+        # 手工构造 input-area fiber + 布局缓存（模拟 measure 已建立缓存）
+        fiber = Fiber("host", "input-area", {
+            "text": "hello world",
+            "cursor_pos": 5,
+            "prompt": "> ",
+            "completion": None,
+        })
+        fiber.layout_box = _Box(x=1, y=0, w=30, h=4)
+        text = "hello world"
+        max_input = 30 - len("> ")
+        rows, wrapped = _compute_input_layout(text, max_input)
+        fiber._input_layout_cache = ((text, max_input), (rows, wrapped))
+        s._root_fiber = fiber
+        # 验证 _position_cursor 不抛异常且 place_cursor 被调用（复用缓存路径）
+        with patch.object(s._ink_renderer, "place_cursor") as mock_pc:
+            s._position_cursor()
+            mock_pc.assert_called_once()
+        # 缓存路径与回退路径结果一致：手工比对光标位置
+        from src.tui._input import _compute_cursor_visual_pos as old
+        new_row, new_col = _cursor_visual_from_cached(fiber)
+        old_row, old_col = old("hello world", 5, max_input)
+        assert (new_row, new_col) == (old_row, old_col)
+
+    def test_position_cursor_falls_back_on_miss_regression(self):
+        """缓存未命中（text 变化）时回退 _compute_cursor_visual_pos。"""
+        from src.tui.ink.fiber import Fiber
+
+        s = _make_session()
+        fiber = Fiber("host", "input-area", {
+            "text": "abc",
+            "cursor_pos": 2,
+            "prompt": "> ",
+            "completion": None,
+        })
+        fiber.layout_box = _Box(x=1, y=0, w=30, h=4)
+        # 不设置 _input_layout_cache（模拟未建立缓存）→ 走回退路径
+        s._root_fiber = fiber
+        with patch.object(s._ink_renderer, "place_cursor") as mock_pc:
+            s._position_cursor()
+            mock_pc.assert_called_once()
+
+
+class _Box:
+    """极简 LayoutBox 桩（含 x/y/w/h 属性）。"""
+
+    __slots__ = ("x", "y", "w", "h")
+
+    def __init__(self, x=0, y=0, w=0, h=0):
+        self.x = x
+        self.y = y
+        self.w = w
+        self.h = h
+
+
+def _cursor_visual_from_cached(fiber):
+    """经 session._position_cursor 同款逻辑读取缓存并计算光标（测试辅助）。"""
+    from src.tui.app.input_area import _cursor_visual_from_layout
+    text = str(fiber.props.get("text", ""))
+    cursor_pos = int(fiber.props.get("cursor_pos", -1))
+    prompt = str(fiber.props.get("prompt", "> "))
+    max_input = max(1, fiber.layout_box.w - len(prompt))
+    cached = getattr(fiber, "_input_layout_cache", None)
+    if cached is not None and cached[0] == (text, max_input):
+        _, wrapped_by_logical = cached[1]
+        return _cursor_visual_from_layout(text, cursor_pos, wrapped_by_logical)
+    from src.tui._input import _compute_cursor_visual_pos
+    return _compute_cursor_visual_pos(text, cursor_pos, max_input)

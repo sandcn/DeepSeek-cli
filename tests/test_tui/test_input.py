@@ -1540,6 +1540,44 @@ class TestBufferExtraRegression:
         assert inp._saved_input_before_history == ""
 
 
+class TestDrainAllClearsInputReady:
+    """BUG-T7 — drain_all 清理 _input_ready 事件（不残留 set 状态）。"""
+
+    def test_drain_all_clears_input_ready_regression(self, tmp_path):
+        """_enter 后 has_queued_input() True，drain_all() 后 False 且 wait 超时 False。"""
+        from src.tui._input import Input
+
+        fd = os.open("/dev/null", os.O_RDONLY)
+        try:
+            inp = Input(fd=fd, history_file=tmp_path / "history")
+            inp.handle_chars("drain_test")
+            inp._enter()
+            assert inp.has_queued_input() is True
+            submitted, buffer_text = inp.drain_all()
+            assert submitted == "drain_test"
+            assert inp.get_current_text() == ""
+            # 事件残留清除：不再 set
+            assert inp.has_queued_input() is False
+            assert inp.wait_until_ready(timeout=0) is False
+        finally:
+            os.close(fd)
+
+    def test_drain_all_clears_event_without_submitted_regression(self, tmp_path):
+        """无排队输入时 drain_all 亦清除事件（防止旧残留 set 状态）。"""
+        from src.tui._input import Input
+
+        fd = os.open("/dev/null", os.O_RDONLY)
+        try:
+            inp = Input(fd=fd, history_file=tmp_path / "history")
+            inp._input_ready.set()  # 模拟残留 set 状态（_submitted_text 为空串）
+            submitted, _ = inp.drain_all()
+            assert submitted == ""  # 事件已 set 但无提交文本 → 空串
+            assert inp.has_queued_input() is False
+            assert inp.wait_until_ready(timeout=0) is False
+        finally:
+            os.close(fd)
+
+
 class TestEditingExtraRegression:
     """编辑操作独有断言（合并自 test_input_buffer）。"""
 
@@ -2310,3 +2348,64 @@ class TestInputHookRouterFacade:
         finally:
             os.close(w_fd)
             os.close(r_fd)
+
+
+# ═══════════════════════════════════════════════════════════
+# PERF-6 大粘贴 list 拼接（步骤 6.6）
+# ═══════════════════════════════════════════════════════════
+
+class TestHandleCharsLargePaste:
+    """PERF-6 — handle_chars 大粘贴 list 拼接（O(n) 单次完成）。"""
+
+    def test_handle_chars_large_paste_regression(self, tmp_path):
+        """50k 字符粘贴后 buffer 正确、cursor 正确。"""
+        from src.tui._input import Input
+
+        fd = os.open("/dev/null", os.O_RDONLY)
+        try:
+            inp = Input(fd=fd, history_file=tmp_path / "history")
+            text = "a" * 50000
+            inp.handle_chars(text)
+            assert inp.get_current_text() == text
+            assert inp._cursor_pos == 50000
+            # 光标在中间插入粘贴
+            inp._home()
+            suffix = "b" * 100
+            inp.handle_chars(suffix)
+            assert inp._cursor_pos == 100
+            assert inp.get_current_text() == suffix + text
+        finally:
+            os.close(fd)
+
+    def test_handle_chars_large_paste_middle_cursor_regression(self, tmp_path):
+        """光标在中间时大粘贴插入正确。"""
+        from src.tui._input import Input
+
+        fd = os.open("/dev/null", os.O_RDONLY)
+        try:
+            inp = Input(fd=fd, history_file=tmp_path / "history")
+            inp.handle_chars("hello world")
+            inp._home()
+            inp._right()
+            inp._right()  # 光标在 "he|llo world"
+            paste = "X" * 20000
+            inp.handle_chars(paste)
+            assert inp.get_current_text().startswith("he" + paste)
+            assert inp._cursor_pos == 2 + 20000
+        finally:
+            os.close(fd)
+
+    def test_handle_chars_large_paste_echo_once_regression(self, tmp_path):
+        """大粘贴只触发一次回显（批量语义保持）。"""
+        from src.tui._input import Input
+
+        fd = os.open("/dev/null", os.O_RDONLY)
+        try:
+            inp = Input(fd=fd, history_file=tmp_path / "history")
+            received = []
+            inp.set_echo_callback(lambda t, p: received.append((t, p)))
+            inp.handle_chars("z" * 50000)
+            assert len(received) == 1
+            assert received[0][1] == 50000
+        finally:
+            os.close(fd)

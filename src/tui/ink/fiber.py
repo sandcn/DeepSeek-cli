@@ -60,8 +60,53 @@ class EffectHook:
     last_deps: Any = None
 
 
+@dataclass
+class MemoHook:
+    """use_memo / use_callback hook 节点。
+
+    Attributes:
+        factory: 计算结果工厂函数（use_callback 时返回 fn 本身）。
+        deps: 依赖列表。
+        value: 缓存的计算结果（use_callback 时为函数对象）。
+        last_deps: 上次计算时记录的依赖列表（用于检测变化）。
+    """
+
+    factory: Callable[[], Any] | None = None
+    deps: Any = None
+    value: Any = None
+    last_deps: Any = None
+
+
+@dataclass
+class InputHook:
+    """use_input hook 节点。
+
+    Attributes:
+        handler: 按键处理回调（签名 ``(event) -> bool``，True=消费）。
+        is_active: 是否参与输入路由（False 时 hook 不参与）。
+    """
+
+    handler: Callable[[Any], bool] | None = None
+    is_active: bool = True
+
+
+@dataclass
+class Context:
+    """create_context 创建的 context 对象。
+
+    Attributes:
+        default: 默认值（未找到 Provider 时返回）。
+        tag: 唯一标签（provider host 标签）。
+        Provider: provider host 标签字符串（``h(ctx.Provider, {"value": v}, ...)`` 可用）。
+    """
+
+    default: Any = None
+    tag: str = ""
+    Provider: str = ""
+
+
 #: hook 节点联合类型（Python 3.9 兼容：不用 `X | Y` 运行时求值）。
-HookNode = Union[StateHook, RefHook, EffectHook]
+HookNode = Union[StateHook, RefHook, EffectHook, MemoHook, InputHook]
 
 
 @dataclass
@@ -93,6 +138,8 @@ class Fiber:
     hook_index: int = 0
     layout_box: Any = None
     deleted: bool = False
+    #: context provider 值传递（每次渲染重置；子树 use_context 沿 return_ 链查找）
+    contexts: dict = field(default_factory=dict)
 
     # ── 派生属性 ──────────────────────────────────────
 
@@ -141,6 +188,9 @@ __all__ = [
     "StateHook",
     "RefHook",
     "EffectHook",
+    "MemoHook",
+    "InputHook",
+    "Context",
     "HookNode",
     "Fiber",
 ]

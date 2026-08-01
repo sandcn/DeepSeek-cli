@@ -8,6 +8,12 @@
   4. 静态内容在首差异行之前**永不重写**。
   5. 输入光标：渲染后按 ``place_cursor`` 放置。
 
+PERF-4：
+  - 平移快路径：``new_h > prev_h`` 且尾部内容整体下移且相同（仅新增 delta 行
+    位于 ``prev_h`` 起始）时，跳过重写相同尾部，仅写新增 delta 行。
+  - 单帧重写行数上限 ``_MAX_REWRITE_ROWS``：超限时降级为"仅写末尾
+    ``_MAX_REWRITE_ROWS`` 行 + 清残留"（避免病态大重写冻结 UI）。
+
 不切换备用屏幕、不用 DECSTBM——内容自然流入 scrollback。
 
 Args:
@@ -16,14 +22,20 @@ Args:
 
 from __future__ import annotations
 
+import logging
 import sys
 
 from src.tui._screen import cursor_up, cursor_down, clear_line, cursor_forward
 from .output import Frame
 from .diff import first_diff_line
 
+_logger = logging.getLogger(__name__)
+
 # 行尾清除（防止旧行尾部残留）
 _CLEAR_EOL = "\033[K"
+
+# PERF-4：单帧重写行数上限（防病态大重写冻结 UI）
+_MAX_REWRITE_ROWS = 200
 
 
 class InkRenderer:
@@ -59,6 +71,64 @@ class InkRenderer:
             # 帧完全一致：仅刷新光标位置（调用方自行 place_cursor）
             return
 
+        delta = new_h - prev_h
+
+        # ★ PERF-4 平移快路径：仅新增 delta 行导致尾部整体下移且内容相同
+        #   （delta 新行位于 prev_h 起始，尾部相同内容跳过重写）。
+        #   安全条件：i >= prev_h（首差异恰在文档末尾，无需要平移的尾部）——
+        #   中间插入场景（i < prev_h）尾部必须重写（终端无 insert-line 语义），
+        #   走下方常规路径。
+        if new_h > prev_h and i >= prev_h and self._is_tail_shifted(self._prev, frame, i, delta):
+            # 定位到 prev_h+1（从 prev 文档底部开始写 delta 新行）
+            n_move = self._cursor_row - (prev_h + 1)
+            if n_move > 0:
+                self._stream.write(cursor_up(n_move))
+            elif n_move < 0:
+                self._stream.write(cursor_down(-n_move))
+            for line_idx in range(prev_h, new_h):
+                self._stream.write("\r")
+                self._stream.write(frame.render_line(line_idx))
+                self._stream.write(_CLEAR_EOL)
+                self._stream.write("\n")
+            self._emit_new_lines(frame, prev_h, new_h)
+            self._cursor_row = new_h + 1
+            self._prev = frame
+            self._stream.flush()
+            return
+
+        # ★ PERF-4 单帧重写行数上限：超限时降级为仅写末尾 _MAX_REWRITE_ROWS 行
+        #   + 清残留（避免病态大重写冻结 UI）。
+        rewrite_count = new_h - i
+        if rewrite_count > _MAX_REWRITE_ROWS:
+            _logger.warning(
+                "单帧重写行数 %d 超上限 %d，降级为仅写末尾 %d 行",
+                rewrite_count, _MAX_REWRITE_ROWS, _MAX_REWRITE_ROWS,
+            )
+            start_idx = max(0, new_h - _MAX_REWRITE_ROWS)
+            target_row = start_idx + 1
+            n_move = self._cursor_row - target_row
+            if n_move > 0:
+                self._stream.write(cursor_up(n_move))
+            elif n_move < 0:
+                self._stream.write(cursor_down(-n_move))
+            for line_idx in range(start_idx, new_h):
+                self._stream.write("\r")
+                self._stream.write(frame.render_line(line_idx))
+                self._stream.write(_CLEAR_EOL)
+                self._stream.write("\n")
+            # 新增内容行（文档增长）回调输出历史
+            if new_h > prev_h:
+                self._emit_new_lines(frame, prev_h, new_h)
+            # 文档收缩：清除残留行
+            if new_h < prev_h:
+                for _ in range(prev_h - new_h):
+                    self._stream.write(clear_line())
+                    self._stream.write(cursor_down(1))
+            self._cursor_row = max(new_h, prev_h) + 1
+            self._prev = frame
+            self._stream.flush()
+            return
+
         # ★ 定位到行 i：从当前光标位置（_cursor_row，可能已被 place_cursor
         #   移到输入行）移动到目标行 i+1。不能假设光标恒在文档底部 prev_h+1——
         #   否则每帧重写会上移一行（输入光标行 ≠ 底部+1）。
@@ -88,6 +158,35 @@ class InkRenderer:
         self._cursor_row = max(new_h, prev_h) + 1
         self._prev = frame
         self._stream.flush()
+
+    def _is_tail_shifted(self, prev: Frame, frame: Frame, i: int, delta: int) -> bool:
+        """检测尾部内容是否只是整体下移（仅新增 delta 行）。
+
+        规则：``prev.lines[i:prev_h]`` 与 ``frame.lines[i+delta:new_h]``
+        逐行相同（身份短路 + runs 值相等）。
+
+        Args:
+            prev: 上一帧。
+            frame: 新帧。
+            i: 首差异行。
+            delta: 高度差（new_h - prev_h，>0 时检测有意义）。
+
+        Returns:
+            True — 尾部内容整体下移且相同（可跳过重写）。
+        """
+        p = prev.lines
+        n = frame.lines
+        start = i + delta
+        if start > len(n):
+            return False
+        a = p[i:prev.height]
+        b = n[start:len(n)]
+        if len(a) != len(b):
+            return False
+        for x, y in zip(a, b):
+            if x is not y and x.runs != y.runs:
+                return False
+        return True
 
     def _write_full(self, frame: Frame) -> None:
         """首帧/重置后：全量写入文档。

@@ -2,6 +2,8 @@
 
 验证所有字段默认值和不可变性。
 """
+import pytest
+
 from src.tui._config import ConfigBase, TuiConfig
 
 
@@ -84,3 +86,42 @@ class TestTuiConfigFrozen:
         orig_interval = cfg.render_interval
         cfg.with_overrides(render_interval=0.99)
         assert cfg.render_interval == orig_interval
+
+
+class TestFadeConfig:
+    """步骤7 — 动效时间基配置默认值与兼容性。"""
+
+    def test_fade_config_defaults_regression(self):
+        """新字段默认值：fade_duration_sec==0.6、spinner_tick_hz==10.0。"""
+        cfg = TuiConfig.defaults()
+        assert cfg.fade_duration_sec == 0.6
+        assert cfg.spinner_tick_hz == 10.0
+        assert cfg.fade_start_color == 238
+        assert cfg.fade_total_frames == 6
+        # 时间基默认值 = 帧数 × 渲染间隔（0.6 = 6 × 0.1），语义自洽（浮点容差）
+        assert cfg.fade_duration_sec == pytest.approx(
+            cfg.fade_total_frames * cfg.render_interval)
+
+    def test_old_config_compat_regression(self):
+        """旧字段（不含新字段的构造方式）with_overrides 仍可用不抛异常。"""
+        cfg = TuiConfig.defaults()
+        old_style = cfg.with_overrides(
+            fade_total_frames=10,
+            fade_start_color=240,
+            breath_cycle_len=8,
+        )
+        assert old_style.fade_total_frames == 10
+        assert old_style.fade_start_color == 240
+        assert old_style.breath_cycle_len == 8
+        # 未覆盖的新字段保持默认
+        assert old_style.fade_duration_sec == 0.6
+        assert old_style.spinner_tick_hz == 10.0
+
+    def test_new_field_overrides_regression(self):
+        """新字段可经 with_overrides 覆盖（frozen dataclass 天然支持）。"""
+        cfg = TuiConfig.defaults()
+        new_style = cfg.with_overrides(fade_duration_sec=1.2, spinner_tick_hz=8.0)
+        assert new_style.fade_duration_sec == 1.2
+        assert new_style.spinner_tick_hz == 8.0
+        # 原实例不变
+        assert cfg.fade_duration_sec == 0.6

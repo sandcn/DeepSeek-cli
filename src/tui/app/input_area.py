@@ -21,9 +21,15 @@ from src.tui._screen import (
     _COLOR_TIME,
     wcswidth_simple,
 )
-from src.tui._input import _expand_tabs, _wrap_by_width, _compute_cursor_visual_pos
+from src.tui._input import (
+    _expand_tabs,
+    _wrap_by_width,
+    _tab_pos_to_expanded,
+    _compute_cursor_visual_pos,
+)
 from src.tui.core.style import Style
 from src.tui.ink import register_host, Line
+from src.tui.app import _fx
 from src.tui.app._theme import time_glow, _S_ACCENT, _S_SEP, _S_TIME
 
 # 占位符
@@ -45,20 +51,110 @@ def _glow_color(base: int, amp: int) -> int:
     return time_glow(base, base + amp, 12.0)
 
 
+def _placeholder_fade_color(fiber, ph: str, end_color: int) -> int:
+    """占位提示 FadeIn 渐显色号（BEAUTY-1，时间基）。
+
+    fiber 上记录 ``(ph, start_monotonic)``；占位符出现/切换时重置起始时间，
+    同占位符持续显示时 elapsed 单调递增；elapsed>=duration 后返回 end_color
+    （动画结束返回终色，不再触发重绘——BEAUTY-5）。duration/start 使用
+    ``_fx.fade_color`` 默认参数（对齐 TuiConfig.fade_duration_sec/fade_start_color）。
+    """
+    key = getattr(fiber, "_placeholder_fade_key", None)
+    if key is None or key[0] != ph:
+        fiber._placeholder_fade_key = (ph, time.monotonic())
+        start = time.monotonic()
+    else:
+        start = key[1]
+    elapsed = time.monotonic() - start
+    return _fx.fade_color(elapsed, None, 238, end_color)
+
+
+def _compute_input_layout(text: str, max_input: int) -> tuple[int, list[list[str]]]:
+    """单次换行计算：返回 (总行数, 每逻辑行拆行后的段列表)。
+
+    ``wrapped_by_logical[i]`` 为第 i 个逻辑行（按 ``\\n`` 拆分）拆行后的段列表；
+    空逻辑行对应 ``[""]``。PERF-1 统一换行计算（每帧至多 1 次），
+    ``_measure`` / ``_build_lines`` / ``session._position_cursor`` 均复用。
+    """
+    if not text:
+        return 1, [[""]]
+    expanded = _expand_tabs(text)
+    wrapped_by_logical: list[list[str]] = []
+    total_rows = 0
+    for segment in expanded.split('\n'):
+        seg_wrapped = _wrap_by_width(segment, max_input) or [""]
+        wrapped_by_logical.append(seg_wrapped)
+        total_rows += len(seg_wrapped)
+    return max(1, total_rows), wrapped_by_logical
+
+
 def _compute_input_rows(text: str, max_input: int) -> int:
     """输入文本换行行数（至少 1）。"""
-    if not text:
-        return 1
-    expanded = _expand_tabs(text)
-    wrapped = _wrap_by_width(expanded, max_input)
-    return max(1, len(wrapped))
+    rows, _ = _compute_input_layout(text, max_input)
+    return rows
 
 
 def _wrap_input_text(text: str, max_input: int) -> list[str]:
+    """输入文本拆行段列表（扁平，兼容旧调用面）。"""
+    _, wrapped_by_logical = _compute_input_layout(text, max_input)
+    return [seg for segs in wrapped_by_logical for seg in segs]
+
+
+def _cursor_visual_from_layout(
+    text: str,
+    cursor_pos: int,
+    wrapped_by_logical: list[list[str]],
+) -> tuple[int, int]:
+    """基于已缓存的换行布局计算光标视觉位置（复用缓存，避免重复换行计算）。
+
+    与 ``_compute_cursor_visual_pos`` 语义一致：返回 (visual_line_idx, visual_col)。
+    仅对光标所在逻辑行做 O(行) 定位，不重新整段换行。
+    """
     if not text:
-        return [""]
-    expanded = _expand_tabs(text)
-    return _wrap_by_width(expanded, max_input)
+        return (0, 0)
+    abs_cursor = len(text) if cursor_pos < 0 else cursor_pos
+
+    lines = text.split('\n')
+    cum = 0
+    for logical_idx, logical_line in enumerate(lines):
+        line_len = len(logical_line)
+        if abs_cursor <= cum + line_len:
+            # 光标在此逻辑行中（或在行末的 \n 上）
+            pos_in_line = abs_cursor - cum
+            segs = (
+                wrapped_by_logical[logical_idx]
+                if logical_idx < len(wrapped_by_logical)
+                else [""]
+            )
+            expanded_in_line = _tab_pos_to_expanded(logical_line, pos_in_line)
+            if expanded_in_line < 0:
+                last_seg = segs[-1] if segs else ""
+                col_in_line = wcswidth_simple(last_seg)
+                visual_line_in_logical = len(segs) - 1 if segs else 0
+            else:
+                cum2 = 0
+                visual_line_in_logical = 0
+                for i, seg in enumerate(segs):
+                    if expanded_in_line <= cum2 + len(seg):
+                        visual_line_in_logical = i
+                        prefix = seg[:expanded_in_line - cum2]
+                        col_in_line = wcswidth_simple(prefix)
+                        break
+                    cum2 += len(seg)
+                else:
+                    visual_line_in_logical = len(segs) - 1 if segs else 0
+                    col_in_line = wcswidth_simple(segs[-1]) if segs else 0
+            total_before = sum(len(s) for s in wrapped_by_logical[:logical_idx])
+            return (total_before + visual_line_in_logical, col_in_line)
+        cum += line_len + 1
+
+    # 超出范围 → 末尾
+    last_segs = wrapped_by_logical[-1] if wrapped_by_logical else [""]
+    last_seg = last_segs[-1] if last_segs else ""
+    col = wcswidth_simple(last_seg)
+    total_before = sum(len(s) for s in wrapped_by_logical[:-1])
+    visual_row = total_before + (len(last_segs) - 1 if last_segs else 0)
+    return (visual_row, col)
 
 
 # ── 测量 ───────────────────────────────────────────
@@ -79,7 +175,13 @@ def _measure(fiber, avail_w) -> tuple[int, int]:
     popup_height = _completion_height(completion)
     max_input = max(1, width - len(_PROMPT))
     text = str(props.get("text", ""))
-    rows = _compute_input_rows(text, max_input)
+    # ★ PERF-1：缓存命中（同 text/max_input）时复用换行布局（每帧至多 1 次换行）
+    cached = getattr(fiber, "_input_layout_cache", None)
+    if cached is not None and cached[0] == (text, max_input):
+        rows, _ = cached[1]
+    else:
+        rows, wrapped_by_logical = _compute_input_layout(text, max_input)
+        fiber._input_layout_cache = ((text, max_input), (rows, wrapped_by_logical))
     height = popup_height + 2 + rows
     return (width, height)
 
@@ -96,6 +198,14 @@ def _build_lines(fiber) -> list[Line]:
     popup_height = _completion_height(completion)
     status_active = bool(props.get("status_active", False))
     max_input = max(1, width - len(_PROMPT))
+
+    # ★ PERF-1：复用 measure 阶段缓存的换行布局（未命中时回退单次计算）
+    cached = getattr(fiber, "_input_layout_cache", None)
+    if cached is not None and cached[0] == (text, max_input):
+        _, wrapped_by_logical = cached[1]
+    else:
+        _, wrapped_by_logical = _compute_input_layout(text, max_input)
+    wrapped = [seg for segs in wrapped_by_logical for seg in segs]
 
     lines: list[Line] = []
 
@@ -143,7 +253,7 @@ def _build_lines(fiber) -> list[Line]:
     lines.append(top)
 
     # ── 输入文本行 ──
-    wrapped = _wrap_input_text(text, max_input)
+    # ★ PERF-1：wrapped 已在函数开头从缓存/单次计算得到（见上），此处直接使用
     for i, segment in enumerate(wrapped):
         line = Line()
         if i == 0:
@@ -156,10 +266,8 @@ def _build_lines(fiber) -> list[Line]:
                     ph = _PLACEHOLDER_STREAMING
                 else:
                     ph = _PLACEHOLDER_COMPACT if (completion is not None and completion.visible) else _PLACEHOLDER_TEXT
-                # ★ 占位符按输入区宽度截断，避免窄终端下超宽被二次换行
-                if wcswidth_simple(ph) > max_input:
-                    ph = _truncate_width(ph, max_input)
-                line.append(ph, Style(fg=_glow_color(242, 10)))
+                # BEAUTY-1：占位提示 FadeIn 渐显（时间基；_glow_color 呼吸色为终色）
+                line.append(ph, Style(fg=_placeholder_fade_color(fiber, ph, _glow_color(242, 10))))
         else:
             line.append("\u00b7 ", _S_CONT)
             line.append(segment, _S_TEXT)
@@ -244,4 +352,12 @@ def register() -> None:
     register_host("input-area", _measure, _paint)
 
 
-__all__ = ["register", "_measure", "_paint", "_compute_input_rows"]
+__all__ = [
+    "register",
+    "_measure",
+    "_paint",
+    "_compute_input_rows",
+    "_compute_input_layout",
+    "_wrap_input_text",
+    "_cursor_visual_from_layout",
+]

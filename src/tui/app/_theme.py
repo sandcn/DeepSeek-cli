@@ -34,6 +34,9 @@ def time_glow(lo: int, hi: int, period: float = 12.0) -> int:
     与 AnimatorContext 帧基 glow 不同：时间基与渲染帧率无关，
     即使帧计数恒为 0 也能产生连续呼吸观感。
 
+    PERF-5：0.1s 时间桶缓存——同一时间桶（``int(t/0.1)``）且同 (lo,hi,period)
+    参数时返回缓存色号（每帧调用不重复计算正弦）。
+
     Args:
         lo: 呼吸下限色号。
         hi: 呼吸上限色号。
@@ -43,8 +46,23 @@ def time_glow(lo: int, hi: int, period: float = 12.0) -> int:
         [lo, hi] 区间内的 256 色号整数。
     """
     t = time.monotonic()
+    bucket = int(t / 0.1)
+    global _glow_cache
+    if (
+        _glow_cache[0] == bucket
+        and _glow_cache[1] == lo
+        and _glow_cache[2] == hi
+        and _glow_cache[3] == period
+    ):
+        return _glow_cache[4]
     ratio = (math.sin(2 * math.pi * t / period) + 1) / 2
-    return max(lo, min(hi, lo + int((hi - lo) * ratio)))
+    color = max(lo, min(hi, lo + int((hi - lo) * ratio)))
+    _glow_cache = (bucket, lo, hi, period, color)
+    return color
+
+
+#: time_glow 时间桶缓存 (bucket, lo, hi, period, color)
+_glow_cache: tuple = (0, 0, 0, 0, 0)
 
 
 __all__ = [

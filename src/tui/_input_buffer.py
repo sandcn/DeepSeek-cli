@@ -108,15 +108,20 @@ class InputBufferEditor:
         self._echo(text)
 
     def handle_chars(self, text: str) -> None:
-        """批量处理多个字符（粘贴/预填场景），只在全部插入后触发一次回显。"""
+        """批量处理多个字符（粘贴/预填场景），只在全部插入后触发一次回显。
+
+        PERF-6：大粘贴用 list 拼接 ``''.join(parts)``（避免三次切片+拼接的
+        多重临时分配，超大粘贴单次 O(n) 完成）。
+        """
         with self._lock:
             if self._history_idx >= 0:
                 self._history_idx = -1
-            self._buffer = (
-                self._buffer[:self._cursor_pos]
-                + text
-                + self._buffer[self._cursor_pos:]
-            )
+            parts = [
+                self._buffer[:self._cursor_pos],
+                text,
+                self._buffer[self._cursor_pos:],
+            ]
+            self._buffer = ''.join(parts)
             self._cursor_pos += len(text)
             result = self._buffer
         self._echo(result)
@@ -157,12 +162,8 @@ class InputBufferEditor:
     def drain_all(self) -> tuple[str | None, str]:
         """排出所有流式输入状态：返回 (submitted_text, buffer_text)。
 
-        P3-2 语义观察：本方法**不清理** ``_input_ready`` 事件——消费后事件
-        可能仍处于 set 状态；``wait_until_ready()`` 随后立即返回 True 且
-        ``get_queued_input()`` 返回 None（submitted 已清空）时，编排器
-        （TuiInputOrchestrator）将其视为「防御路径」继续循环，可容忍。
-        editmsg 插件 finally 清理显式调用 ``_input_ready.clear()`` 消除
-        cascading，因此 drain_all 无需承担该语义。
+        BUG-T7：drain_all 清理 ``_input_ready`` 事件——消费后事件不残留 set
+        状态（消除编排器对「事件已 set 但 submitted 已清空」的防御路径依赖）。
         """
         with self._lock:
             submitted = self._submitted_text if self._input_ready.is_set() else None
@@ -172,6 +173,7 @@ class InputBufferEditor:
             self._cursor_pos = 0
             self._history_idx = -1
             self._saved_input_before_history = ""
+            self._input_ready.clear()
         return submitted, buffer_text
 
     def set_buffer(self, text: str) -> None:

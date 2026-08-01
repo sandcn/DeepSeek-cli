@@ -42,9 +42,12 @@ _DIFF_CTX_STYLE: Style = StyleSheet.get("diff_ctx") or Style(fg=244)
 _RESET_STR = "\033[0m"
 
 
-@lru_cache(maxsize=None)
+@lru_cache(maxsize=64)
 def _resolve_lexer_name(ext: str) -> str:
-    """将文件扩展名转为安全的 Pygments lexer 名称，未知扩展默认用 text。"""
+    """将文件扩展名转为安全的 Pygments lexer 名称，未知扩展默认用 text。
+
+    BUG-T8：缓存有界（64）——扩展名集合有限，maxsize=64 足够且防无限增长。
+    """
     if not ext:
         return "text"
     # 已知 Pygments 不支持的别名 → 直接映射到 text

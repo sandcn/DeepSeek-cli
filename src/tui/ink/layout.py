@@ -27,6 +27,7 @@ from typing import Optional
 from src.tui._screen import wcswidth_simple
 from .fiber import Fiber, TAG_HOST
 from .output import StyledRun, Line
+from ._style_fp import style_fingerprint
 
 
 # ═══════════════════════════════════════════════════════════
@@ -168,11 +169,17 @@ def _measure(fiber: Fiber, x: int, y: int, avail_w: int, fill: bool = True) -> L
             runs = list(styled)
             # 缓存键：拼接 run 文本 + 样式指纹（静态历史样式稳定 → 缓存命中）
             cache_text = "".join(r.text for r in runs)
-            style_fp = tuple(id(r.style) for r in runs)
+            # BUG-T1：稳定样式指纹（值驱动），替代 id() 对象身份——
+            #   id() 在对象 GC 后可能复用导致错误缓存命中/未命中
+            #   注意：style 可为 None（无样式 run）→ 记 None（hashable 常量）
+            style_fp = tuple(
+                style_fingerprint(r.style) if r.style is not None else None
+                for r in runs
+            )
         else:
             runs = [StyledRun(text, style)] if text else []
             cache_text = text
-            style_fp = (id(style),)
+            style_fp = (style_fingerprint(style),) if style is not None else (None,)
         if explicit_w is not None:
             width = max(0, int(explicit_w))
         elif fill:

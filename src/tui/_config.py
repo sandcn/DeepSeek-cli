@@ -55,8 +55,10 @@ class TuiConfig(ConfigBase):
     # ── 截断参数 ──────────────────────────────────────
     max_error_length: int = 200             # 错误消息截断长度（字符）
     # ── FadeIn 动效参数 ───────────────────────────────
-    fade_total_frames: int = 6              # FadeIn 渐显帧数
+    fade_total_frames: int = 6              # FadeIn 渐显帧数（兼容旧配置保留）
     fade_start_color: int = 238             # FadeIn 起始暗色（256 色号）
+    fade_duration_sec: float = 0.6          # FadeIn 渐显总时长（秒）= fade_total_frames 6 × render_interval 0.1s
+    spinner_tick_hz: float = 10.0           # spinner 时间基推进频率（Hz），对齐原帧计数 10Hz 观感
 
     # ── EventBus 参数 ──────────────────────────────────
     eventbus_throttle: float = 0.3          # EventBus 发布频率阈值（秒），对应 300ms

@@ -548,6 +548,8 @@ def write_stdout(data: str) -> None:
 
 _sigwinch_callbacks: list[Callable[[int, int], None]] = []
 _sigwinch_registered: bool = False
+# BUG-T4：信号处理器只置标志（信号安全），渲染循环经 process_sigwinch() 消费
+_sigwinch_pending: bool = False
 
 
 def register_sigwinch_callback(cb: Callable[[int, int], None]) -> None:
@@ -582,21 +584,45 @@ def unregister_sigwinch_callback(cb: Callable[[int, int], None]) -> None:
 
 
 def _handle_sigwinch(signum: int, frame: object) -> None:
-    """SIGWINCH 信号处理器。
+    """SIGWINCH 信号处理器 — 仅置标志（信号安全）。
 
-    注意：信号处理器中不得使用 logging（非信号安全）。
-    所有回调调用须包裹 try/except 防止单个回调崩溃中断其他回调。
+    BUG-T4：信号处理器中禁止调用非信号安全操作（fcntl.ioctl / Event.set /
+    用户回调 / logging）。终端尺寸刷新与回调执行迁移到 ``process_sigwinch()``，
+    由渲染循环轮询调用。
 
     Args:
         signum: 信号编号。
         frame: 当前栈帧（未使用）。
     """
-    width, height = _get_terminal_size()
+    global _sigwinch_pending
+    _sigwinch_pending = True
+
+
+def process_sigwinch() -> bool:
+    """处理待处理的 SIGWINCH 事件（渲染线程轮询调用）。
+
+    若信号处理器已置位 pending 标志，则复位标志并在**正常线程上下文**中
+    刷新终端尺寸 + 遍历执行 SIGWINCH 回调（每个回调 try/except 隔离，
+    防止单个回调崩溃中断其他回调）。
+
+    Returns:
+        True — 本帧有 SIGWINCH 待处理且已处理；
+        False — 无待处理事件。
+    """
+    global _sigwinch_pending
+    if not _sigwinch_pending:
+        return False
+    _sigwinch_pending = False
+    try:
+        width, height = _get_terminal_size()
+    except Exception:
+        width, height = 80, 24
     for cb in _sigwinch_callbacks:
         try:
             cb(width, height)
         except Exception:
             pass
+    return True
 
 
 # ═══════════════════════════════════════════════════════════

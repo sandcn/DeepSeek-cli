@@ -43,8 +43,6 @@ class ChatBlock:
     closed: bool = False
     #: 已提交到缓存的行数（开放块随段落闭合增量提交 → 每帧只处理未提交尾）。
     committed_line_count: int = 0
-    #: 关闭时冻结的整块 ink 行缓存（未提交尾引用复用，免每帧 Style merge）。
-    _cached_ink_lines: Any = None
 
 
 @dataclass
@@ -129,14 +127,8 @@ class AppModel:
         """追加一个立即提交（关闭）的块：渲染缓存 + 块列表。"""
         block = self.append_block(kind, lines)
         block.closed = True
-        self._freeze_cache(block)
         self.commit_block(len(self.blocks) - 1)
         return block
-
-    def _freeze_cache(self, block: ChatBlock) -> None:
-        """冻结块整行 ink 缓存（关闭块未提交尾引用复用）。"""
-        if block._cached_ink_lines is None:
-            block._cached_ink_lines = self._block_to_ink_lines(block, 0)
 
     def commit_open_block(self, block: ChatBlock) -> None:
         """增量提交开放块的已闭合行（流式内容随段落闭合提交）。
@@ -162,9 +154,6 @@ class AppModel:
             block = self.blocks[self.committed_count]
             if not block.closed:
                 break
-            # 冻结整块行缓存（关闭块未提交尾引用复用）
-            if block._cached_ink_lines is None:
-                block._cached_ink_lines = self._block_to_ink_lines(block, 0)
             if block.committed_line_count < len(block.lines):
                 self.committed_lines.extend(
                     self._block_to_ink_lines(block, block.committed_line_count)
@@ -172,35 +161,28 @@ class AppModel:
                 block.committed_line_count = len(block.lines)
             self.committed_count += 1
 
-    def _block_to_ink_lines(self, block, start: int = 0):
-        """将块内 AnsiLine（从 start 起）转为 ink Line（推理块叠加 dim/italic）。
-
-        ★ 提交时按 ``self.width`` 预换行：committed-chat 直接发射缓存行（不重新
-        布局），未预换行的段落会超宽 → 终端二次换行成两行。
-        """
+    @staticmethod
+    def _block_to_ink_lines(block, start: int = 0):
+        """将块内 AnsiLine（从 start 起）转为 ink Line（推理块叠加 dim/italic）。"""
         from src.tui.ink import Line, StyledRun
         from src.renderer.ansi.style import Style as _AnsiStyle
-        from src.renderer.ansi.helpers import wrap_line as _wrap
         slice_lines = block.lines[start:]
         if not slice_lines:
             return []
-        width = getattr(self, "width", 80)
         reasoning_style = (
             _AnsiStyle(dim=True, italic=True) if block.kind == "reasoning" else None
         )
         out: list = []
         for ansi_line in slice_lines:
-            wrapped = _wrap(ansi_line, width) or [ansi_line]
-            for wl in wrapped:
-                runs = []
-                for r in wl.runs:
-                    if not r.text:
-                        continue
-                    st = r.style
-                    if reasoning_style is not None:
-                        st = reasoning_style if st is None else st.merge(reasoning_style)
-                    runs.append(StyledRun(r.text, st))
-                out.append(Line(runs))
+            runs = []
+            for r in ansi_line.runs:
+                if not r.text:
+                    continue
+                st = r.style
+                if reasoning_style is not None:
+                    st = reasoning_style if st is None else st.merge(reasoning_style)
+                runs.append(StyledRun(r.text, st))
+            out.append(Line(runs))
         return out
 
     # ── 推理/内容通道 ───────────────────────────────
@@ -235,9 +217,7 @@ class AppModel:
         self.reasoning_state = ReasoningState.CLOSED
         # 提交到增量渲染缓存
         if 0 <= self.reasoning_block_index < len(self.blocks):
-            block = self.blocks[self.reasoning_block_index]
-            block.closed = True
-            self._freeze_cache(block)
+            self.blocks[self.reasoning_block_index].closed = True
             self.commit_block(self.reasoning_block_index)
 
     def reopen_reasoning(self) -> None:
@@ -270,9 +250,7 @@ class AppModel:
         self.content_closed = True
         # 提交到增量渲染缓存
         if 0 <= self.content_block_index < len(self.blocks):
-            block = self.blocks[self.content_block_index]
-            block.closed = True
-            self._freeze_cache(block)
+            self.blocks[self.content_block_index].closed = True
             self.commit_block(self.content_block_index)
 
     def reopen_content(self) -> None:
@@ -333,7 +311,6 @@ class AppModel:
         status = "\u2714" if success else "\u2716"
         block.lines.append(AnsiLine.of(f"  {status}", Style(fg=41 if success else 196)))
         block.closed = True
-        self._freeze_cache(block)
         self.commit_block(len(self.blocks) - 1)
         if self._current_tool_box is block:
             self._current_tool_box = None

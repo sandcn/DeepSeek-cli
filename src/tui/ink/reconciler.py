@@ -21,6 +21,7 @@ from .fiber import (
     TAG_ROOT,
     TAG_FUNCTION,
     EffectHook,
+    InputHook,
 )
 from .element import Element
 from . import hooks as _hooks
@@ -76,6 +77,9 @@ class Reconciler:
             self._run_destroy(hook)
         self._pending_destroys = []
         self._run_live_effects(root_fiber)
+        # ★ 发布 composite input router（use_input 钩子，INK-1）
+        router = self._build_input_router(root_fiber)
+        _hooks._publish_input_router(router)
 
     # ── 挂载 ────────────────────────────────────────
 
@@ -163,8 +167,57 @@ class Reconciler:
                 rendered = Element("text", {"children": str(rendered)}, ())
             fiber.child = self._reconcile_single(fiber, fiber.child, rendered)
         else:
+            # ★ context provider：先重置 contexts（每次渲染不残留旧值），
+            #   再按 host 标签匹配注册的 Context（INK-3）——value 写入
+            #   fiber.contexts（键为 ctx.tag 唯一标签）供子树 use_context
+            #   沿 return_ 链查找。
+            fiber.contexts.clear()
+            ftype = fiber.type
+            if isinstance(ftype, str):
+                ctx = _hooks._context_registry.get(ftype)
+                if ctx is not None:
+                    fiber.contexts[ctx.tag] = fiber.props.get("value", ctx.default)
             children = list(element.children)
             self._reconcile_children(fiber, children)
+
+    # ── input router 构建（INK-1） ─────────────────────
+
+    def _build_input_router(self, root_fiber: Fiber):
+        """前序遍历收集 active InputHook，构建 composite router。
+
+        无 active hooks 时返回 None（输入走旧路径，零行为变化）。
+        Router 按 hook 顺序调用各 handler；任一返回 True 视为消费（返回 True）；
+        全部未消费返回 False（放行旧路径）；handler 异常视为未消费（放行）。
+        """
+        hooks_list: list[InputHook] = []
+        self._collect_input_hooks(root_fiber, hooks_list)
+        if not hooks_list:
+            return None
+
+        def router(event) -> bool:
+            for hook in hooks_list:
+                try:
+                    if hook.handler is not None and hook.handler(event):
+                        return True
+                except Exception:
+                    continue
+            return False
+
+        return router
+
+    def _collect_input_hooks(self, fiber: Fiber | None, out: list[InputHook]) -> None:
+        """前序遍历 fiber 树，收集 active 且已设 handler 的 InputHook（跳过已删除）。"""
+        f = fiber
+        while f is not None:
+            if f.deleted:
+                f = f.sibling
+                continue
+            if f.is_function:
+                for hook in f.hooks:
+                    if isinstance(hook, InputHook) and hook.is_active and hook.handler is not None:
+                        out.append(hook)
+            self._collect_input_hooks(f.child, out)
+            f = f.sibling
 
     def _mark_deleted(self, fiber: Fiber) -> None:
         """标记子树删除（收集其 effect 销毁函数）。"""

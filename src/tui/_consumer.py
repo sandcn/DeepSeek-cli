@@ -38,7 +38,7 @@ if TYPE_CHECKING:
 from src.tui._const import (
     RenderCmd,
     UserMsgCmd, NotificationCmd, ErrorCmd,
-    WriteLineCmd, DisplayMsgsCmd, RenderMarkdownCmd,
+    WriteLineCmd, DisplayMsgsCmd,
 )
 from src.renderer._locks import render_lock
 from src.tui.state.consumer_registry import (
@@ -230,7 +230,9 @@ class ChatUIConsumer:
                 line = f"  \033[38;5;242m\u2502\033[0m {content}"
             self._engine.push_cmd(WriteLineCmd(text=line))
         self._engine.push_cmd(WriteLineCmd(text=f"  {DIM}{'─' * 40}{RESET}"))
-        self._engine.flush()
+        # BUG-T5：短超时非阻塞 flush（默认 5s 可能阻塞会话设置，降为 0.5s；
+        # InkSession.flush 超时后排空语义保持）
+        self._engine.flush(timeout=0.5)
 
     def request_bottom_redraw(self) -> None:
         self._engine.request_bottom_redraw()
@@ -248,15 +250,6 @@ class ChatUIConsumer:
 
     def display_messages(self, messages: list[dict], speed: int = 0) -> None:
         self._engine.push_cmd(DisplayMsgsCmd(messages=messages, speed=speed))
-
-    def display_markdown(self, markdown_text: str) -> None:
-        """渲染整段 markdown 到消息区（subagent 提词/返回）。
-
-        经 RenderMarkdownCmd 由 render 线程用 ANSI 引擎渲染为内容块。
-        """
-        if not markdown_text:
-            return
-        self._engine.push_cmd(RenderMarkdownCmd(text=markdown_text))
 
     def wait_for_user_input(
         self, monitor, prefill: str = "", timeout: float | None = None,

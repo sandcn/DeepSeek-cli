@@ -316,26 +316,30 @@ class TestInputFacadeWiring:
 # ═══════════════════════════════════════════════════════════
 
 class TestAssemblyHooksWiring:
-    """步骤5 — assemble 后 input hook router / useApp control 已接线。"""
+    """步骤5 — assemble 后 input hook router 注入链路已建立。"""
 
     def test_assembly_wires_input_router_regression(self):
-        """assemble 后 input_instance 已注入 router；无 handler 时输入放行。"""
+        """assemble 后 input router 注入链路已建立（session → Input.set_input_hook_router）。
+
+        无 use_input handler 时发布 None → 输入放行（旧路径零行为变化）；
+        注入 callable router 后可消费（useInput 钩子完整接线）。
+        """
         from src.tui._assembly import TuiAssembly
-        from src.tui.ink import hooks as _hooks
 
         result = TuiAssembly.assemble()
         try:
-            # router 已注入 InputDispatcher
-            router = result.input_instance._dispatcher._input_hook_router
-            assert router is not None
-            assert callable(router)
-            # 无 handler 注册时 router 放行（输入旧路径零行为变化）
-            assert router(object()) is False
-            # useApp control 已注入（exit = session.stop）
-            assert _hooks._app_control is not None
-            assert callable(_hooks._app_control["exit"])
+            session = result.engine
+            # session 已注入 Input（render 循环输入分发）
+            assert session._input is result.input_instance
+            # 注入链路：_on_input_router → Input.set_input_hook_router → dispatcher
+            router = lambda ev: True
+            session._on_input_router(router)
+            assert result.input_instance._dispatcher._input_hook_router is router
+            # 无 handler 时发布 None → 输入放行（旧路径零行为变化）
+            session._on_input_router(None)
+            assert result.input_instance._dispatcher._input_hook_router is None
         finally:
-            _hooks.set_app_control(None)
+            result.engine._on_input_router(None)
 
     def test_assembly_wires_app_control_exit_regression(self):
         """注入的 useApp control exit 可调用（session.stop 幂等）。"""

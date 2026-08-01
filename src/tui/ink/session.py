@@ -31,11 +31,13 @@ from src.tui._const import (
 )
 from src.tui._config import TuiConfig
 from src.renderer._locks import _try_acquire_output_lock
-from src.tui._screen import TerminalWidthCache, _get_terminal_size
+from src.tui._screen import TerminalWidthCache, _get_terminal_size, process_sigwinch
 from .reconciler import Reconciler
 from .renderer import InkRenderer
 from . import components as _components
+from . import hooks as _hooks
 from src.tui._input import _compute_cursor_visual_pos
+from src.tui.app.input_area import _cursor_visual_from_layout
 
 if TYPE_CHECKING:
     from src.tui.events.event_bus import DisplayEventBus
@@ -68,8 +70,6 @@ _STREAM_CMDS = frozenset({
     # 工具输出与 Open/Close（prio0）同序——否则 Close 先于 Output 出队，
     # 输出落到无名新 box（每工具 box 增量刷新依赖此顺序）。
     RenderCommand.TOOL_OUTPUT,
-    # subagent 提词/返回整段 markdown（与内容同优先级）
-    RenderCommand.RENDER_MARKDOWN,
 })
 _HIGH_CMDS = frozenset({
     RenderCommand.SUBAGENT_FRAME,
@@ -160,6 +160,9 @@ class InkSession:
         self._render_version: int = 0
         self._cmd_seq = itertools.count()
         self._input = None  # Phase F 接线注入
+        # use_input router 发布缓存（_input 未注入时记录，set_input 后补发）
+        self._pending_input_router = None
+        _hooks.set_input_router_callback(self._on_input_router)
         # 系统监控（CPU/MEM；每 2 秒刷新输入区顶部分隔线显示）
         self._system_monitor = None
         self._last_sys_stats_time: float = 0.0
@@ -170,6 +173,27 @@ class InkSession:
     def set_input(self, input_instance) -> None:
         """注入 Input 实例（render 循环输入分发）。"""
         self._input = input_instance
+        # ★ use_input router 补发：构造期（_input 未注入）发布的 router 缓存于此，
+        #   set_input 后补发最新 router，保证 useInput 钩子完整接线。
+        if self._pending_input_router is not None and self._input is not None:
+            try:
+                self._input.set_input_hook_router(self._pending_input_router)
+                self._pending_input_router = None
+            except Exception:
+                _logger.debug("set_input 补发 input router 异常", exc_info=True)
+
+    def _on_input_router(self, router) -> None:
+        """use_input composite router 发布回调（reconciler 每帧调用）。
+
+        记录最新 router（供 set_input 补发）；_input 已注入时直接接线
+        InputDispatcher.set_input_hook_router（消费端只读注入点）。
+        """
+        self._pending_input_router = router
+        if self._input is not None:
+            try:
+                self._input.set_input_hook_router(router)
+            except Exception:
+                _logger.debug("_on_input_router 注入异常", exc_info=True)
 
     def set_model(self, model) -> None:
         """替换模型（测试用）。"""
@@ -224,11 +248,29 @@ class InkSession:
                     )
 
     def push_cmd_critical(self, cmd: RenderCmd) -> None:
-        """入队关键命令 — 阻塞等待以确保绝不丢失。"""
+        """入队关键命令 — 阻塞等待以确保绝不丢失。
+
+        队列满（queue.Full）时**不抛异常**：经紧急路径直写 stderr 兜底
+        （BUG-T2），保证"关键命令绝不丢失"语义（非静默丢弃）。
+        """
         priority = _CMD_PRIORITY_CRITICAL
-        self._cmd_queue.put((priority, next(self._cmd_seq), cmd), block=True, timeout=1.0)
-        self._consecutive_full = 0
-        self._cmd_event.set()
+        cmd_id = _get_cmd_id(cmd)
+        try:
+            self._cmd_queue.put((priority, next(self._cmd_seq), cmd), block=True, timeout=1.0)
+            self._consecutive_full = 0
+            self._cmd_event.set()
+        except queue.Full:
+            self._consecutive_full += 1
+            self._cmd_queue_dropped += 1
+            _logger.warning(
+                "关键命令队列已满，紧急直写: %s (优先级=%d)",
+                _cmd_name(cmd_id), priority,
+            )
+            self._write_emergency(
+                f"{ANSI_EMERGENCY_RED}[ChatUI] 关键命令队列已满，紧急直写: "
+                f"{_cmd_name(cmd_id)}{ANSI_EMERGENCY_RESET}\n",
+                stream="stderr",
+            )
 
     # ── 公开访问器 ───────────────────────────────────
 
@@ -298,6 +340,8 @@ class InkSession:
         if self._render_thread is not None:
             max_retries = 2
             for attempt in range(max_retries):
+                # BUG-T9：崩溃恢复可能已重启新线程——每轮重新捕获最新线程/版本，
+                #   确保版本变化时仍能 join 到新线程（不提前返回）。
                 thread = self._render_thread
                 version = self._render_version
                 if thread is None:
@@ -306,9 +350,16 @@ class InkSession:
                 if not thread.is_alive():
                     break
                 if self._render_version != version:
+                    # 崩溃恢复重启了新线程 → 继续下一轮 join 新线程
                     self._render_running = False
                     continue
                 break
+            # 兜底：循环结束后线程仍存活 → 记 warning 并排空队列（不无限等待）
+            if self._render_thread is not None and self._render_thread.is_alive():
+                _logger.warning(
+                    "stop() 等待 render 线程超时（版本=%d），排空队列后退出",
+                    self._render_version,
+                )
         # 重置渲染器状态（suspend/resume 路径：下次 start 全量重绘）
         self._ink_renderer.suspend()
         self._drain_queue_safe()
@@ -406,14 +457,11 @@ class InkSession:
                 )
 
     def _drain_queue(self) -> bool:
-        """单帧处理：输入分发 → 面板刷新 → 系统监控 → 排空命令 → 应用 → 渲染 → 光标。"""
+        """单帧处理：SIGWINCH 轮询 → 输入分发 → 面板刷新 → 系统监控 → 排空命令 → 应用 → 渲染 → 光标。"""
+        self._phase_process_sigwinch()
         self._phase_process_input()
         self._phase_pre_update_panels()
         self._update_system_stats()
-        # ★ 应用命令前刷新 model.width：markdown 渲染（subagent 提词/返回）
-        #   用当前终端宽度换行，避免陈旧宽度导致行宽超过终端→终端再换行成两行
-        if self._model is not None:
-            self._model.width = self._width_cache.get_width()
         commands: list = []
         with _try_acquire_output_lock(name="ink_session.drain_queue", timeout=self._config.drain_lock_timeout) as locked:
             if not locked:
@@ -510,6 +558,17 @@ class InkSession:
             status.mem = int(mem)
             self._dirty = True  # 触发渲染显示新值
 
+    def _phase_process_sigwinch(self) -> None:
+        """轮询处理 SIGWINCH（BUG-T4：信号处理器只置标志，渲染循环此处消费）。
+
+        process_sigwinch() 返回 True 时，回调已触发 force_refresh / 请求重绘，
+        无需额外置脏。
+        """
+        try:
+            process_sigwinch()
+        except Exception:
+            _logger.debug("_phase_process_sigwinch 异常", exc_info=True)
+
     def _phase_process_input(self) -> None:
         if self._input is not None:
             try:
@@ -544,7 +603,14 @@ class InkSession:
         if completion is not None and getattr(completion, "visible", False) and getattr(completion, "items", None):
             popup_height = len(completion.items) + 2
         max_input = max(1, box.w - len(prompt))
-        vis_row, vis_col = _compute_cursor_visual_pos(text, cursor_pos, max_input)
+        # ★ PERF-1：优先复用 input_area measure 阶段缓存的换行布局（每帧至多 1 次换行），
+        #   未命中（fiber 缓存不存在或 text/max_input 已变）时回退既有计算。
+        cached = getattr(fiber, "_input_layout_cache", None)
+        if cached is not None and cached[0] == (text, max_input):
+            _, wrapped_by_logical = cached[1]
+            vis_row, vis_col = _cursor_visual_from_layout(text, cursor_pos, wrapped_by_logical)
+        else:
+            vis_row, vis_col = _compute_cursor_visual_pos(text, cursor_pos, max_input)
         # 输入文本起始行 = box.y + popup_height + 1（上分隔线之后）
         row = box.y + popup_height + 1 + vis_row + 1
         col = box.x + len(prompt) + vis_col + 1

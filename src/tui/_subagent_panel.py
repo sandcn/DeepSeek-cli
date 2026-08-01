@@ -22,6 +22,7 @@
 from __future__ import annotations
 
 import logging
+import re
 import threading
 import time
 from typing import Any, Callable, Dict, List
@@ -41,7 +42,10 @@ from src.tui._const import (
     RenderCmd,
     SubagentFrameCmd,
 )
+from src.tui._config import TuiConfig
 from src.tui._tool_icons import TOOL_CATEGORY_COLORS, TOOL_CATEGORY_MAP
+from src.tui.app import _fx
+from src.tui.app._theme import time_glow
 from src.tui.events.event_types import (
     AgentAddedEvent, AgentStatusChanged, ModelPhaseEvent,
     ToolParsingEvent, ToolStartedEvent, ToolDoneEvent,
@@ -66,6 +70,56 @@ _logger = logging.getLogger(__name__)
 
 _SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
 _INDENT = "  "
+
+# ── 动效时间基配置（步骤7 新增 fade_duration_sec / spinner_tick_hz） ──
+_CFG = TuiConfig.defaults()
+_FADE_DURATION: float = _CFG.fade_duration_sec       # FadeIn 渐显总时长（0.6s）
+_FADE_START_COLOR: int = _CFG.fade_start_color       # FadeIn 起始暗色（238）
+_SPINNER_HZ: float = _CFG.spinner_tick_hz            # spinner 时间基推进频率（10Hz）
+
+
+def _color_256_ansi(code: int) -> str:
+    """256 色号 → ANSI 前景序列。"""
+    return f"\033[38;5;{code}m"
+
+
+def _ansi_256_code(ansi: str) -> int | None:
+    """从 ANSI 序列提取 256 色号（如 ``"\\033[38;5;214m"`` → 214）；无法解析返回 None。"""
+    m = re.search(r"38;5;(\d+)", ansi)
+    return int(m.group(1)) if m else None
+
+
+def _fade_type_ansi(agent_type_ansi: str, elapsed: float) -> str:
+    """agent 类型标签 FadeIn 渐显（BEAUTY-1）。
+
+    时间基：elapsed>=duration 时返回原色（动画结束不触发重绘）；
+    elapsed 期间从 ``_FADE_START_COLOR`` 渐变到原色号。
+    """
+    code = _ansi_256_code(agent_type_ansi)
+    if code is None:
+        return agent_type_ansi
+    faded = _fx.fade_color(elapsed, _FADE_DURATION, _FADE_START_COLOR, code)
+    return _color_256_ansi(faded)
+
+
+def _breathe_running_ansi(active: bool) -> str:
+    """running 摘要段呼吸色（BEAUTY-2）：仅 running 时 time_glow(214,220,12s) 呼吸。
+
+    空闲（无 running）时返回静态 ``_C_RUNNING``（零开销，不触发重绘）。
+    """
+    if not active:
+        return _C_RUNNING
+    return _color_256_ansi(time_glow(214, 220, 12.0))
+
+
+def _breathe_sep_ansi(active: bool) -> str:
+    """分隔线微呼吸（BEAUTY-2）：仅 running 时在 [237, 245] 微呼吸。
+
+    空闲时返回静态 ``_C_DIMMEST``。
+    """
+    if not active:
+        return _C_DIMMEST
+    return _color_256_ansi(time_glow(237, 245, 12.0))
 
 
 def _get_tool_color(tool_name: str) -> str:
@@ -128,6 +182,7 @@ class _AgentSlot:
     __slots__ = (
         'label', 'description', 'status', 'agent_type',
         'start_time', 'end_time',
+        'appear_time',
         'model_phase', 'model_info', 'model_phase_start',
         'parse_info',
         'input_tokens', 'output_tokens',
@@ -145,6 +200,8 @@ class _AgentSlot:
         self.agent_type = agent_type
         self.start_time: float = time.time()
         self.end_time: float = 0.0
+        # BEAUTY-1：FadeIn 出现时刻（时间基，time.monotonic()）
+        self.appear_time: float = time.monotonic()
         self.model_phase: str = ""
         self.model_info: str = ""
         self.model_phase_start: float = 0.0
@@ -202,6 +259,8 @@ class SubAgentPanelController:
         self._state_lock = threading.RLock()
         self._frame: int = 0
         self._last_emit_time: float = 0.0
+        # PERF-2：面板脏标记（事件处理器更新状态后置位；渲染后复位）
+        self._dirty: bool = False
         # 上一推送帧（变更检测，避免空转推送）
         self._last_pushed_frame: List[str] | None = None
         self._active: bool = False
@@ -287,6 +346,8 @@ class SubAgentPanelController:
         self._last_emit_time = now
         lines = self._render_frame()
         self._push_frame(lines)
+        # PERF-2：渲染后复位脏标记（后续空闲不再渲染）
+        self._dirty = False
 
     def _on_agent_added(self, event) -> None:
         with self._state_lock:
@@ -299,6 +360,7 @@ class SubAgentPanelController:
                 )
                 self._agents[event.label] = slot
                 self._order.append(event.label)
+        self._dirty = True
         self._emit_frame()
 
     def _on_agent_status_changed(self, event) -> None:
@@ -313,6 +375,7 @@ class SubAgentPanelController:
                     if rec.phase in ("running", "parsing"):
                         rec.phase = "done" if event.status == "done" else "fail"
                         rec.end_time = time.time()
+        self._dirty = True
         self._emit_frame()
 
     def _on_model_phase(self, event) -> None:
@@ -324,6 +387,7 @@ class SubAgentPanelController:
                 slot.model_phase_start = time.time()
             slot.model_phase = event.phase
             slot.model_info = event.info
+        self._dirty = True
         self._emit_frame()
 
     def _on_tool_parsing(self, event) -> None:
@@ -344,13 +408,15 @@ class SubAgentPanelController:
                 rec = _ToolRecord(tool_name=event.tool_name)
                 rec.detail = event.arguments
                 slot.tool_history.append(rec)
-        # ★ 经 _emit_frame 走 10Hz 节流（parsing 事件不再强制绕过节流，
-        #    避免高频解析参数时每帧重建面板）。
+        # ★ BUG-T3：改走 _emit_frame() 节流（10Hz）——流式 parsing 高频事件
+        #   不再绕过 _EMIT_INTERVAL 每事件全帧渲染（既有
+        #   TestSubAgentPanelParsingThrottle 已锁定此行为）。
         #    锁顺序保证（防死锁）：
         #      _render_frame() 内部获取/释放 _state_lock（RLock 可重入）
         #      _push_frame()   在 _render_frame 返回后调用，锁已释放
         #    注意：_push_frame 绝不可在 with self._state_lock 块内调用，
         #    否则 render 线程在同一锁上阻塞时形成 ABBA 死锁。
+        self._dirty = True
         self._emit_frame()
 
     def _on_parse_info(self, event) -> None:
@@ -361,6 +427,7 @@ class SubAgentPanelController:
                 return
             tokens_str = f"{event.tokens}t" if isinstance(event.tokens, (int, float)) else str(event.tokens)
             slot.parse_info = f"{event.tool_names} {tokens_str} {event.elapsed:.2f}s"
+        self._dirty = True
         self._emit_frame()
 
     def _on_parse_info_done(self, event) -> None:
@@ -372,6 +439,7 @@ class SubAgentPanelController:
             slot.parse_info = ""
             if slot.model_phase == "parsing":
                 slot.model_phase = ""
+        self._dirty = True
         self._emit_frame()
 
     def _on_tool_started(self, event) -> None:
@@ -389,6 +457,7 @@ class SubAgentPanelController:
                 rec = _ToolRecord(tool_name=event.tool_name, detail=event.detail)
                 rec.phase = "running"
                 slot.tool_history.append(rec)
+        self._dirty = True
         self._emit_frame()
 
     def _on_tool_done(self, event) -> None:
@@ -402,6 +471,7 @@ class SubAgentPanelController:
                     rec.phase = "done" if event.success else "fail"
                     rec.end_time = time.time()
                     break
+        self._dirty = True
         self._emit_frame()
 
     def _on_usage_updated(self, event) -> None:
@@ -424,6 +494,7 @@ class SubAgentPanelController:
                 slot.live_input_tokens += usage.get("live_input", 0)
                 slot.live_output_tokens += usage.get("live_output", 0)
             slot.last_speed = float(usage.get("speed", 0))
+        self._dirty = True
         self._emit_frame()
 
     def _on_metrics(self, event) -> None:
@@ -440,6 +511,7 @@ class SubAgentPanelController:
                 slot.output_tokens += event.output_tokens
             if event.speed > 0:
                 slot.last_speed = event.speed
+        self._dirty = True
         self._emit_frame()
 
     # ── 面板刷新回调 ────────────────────────────────────
@@ -465,9 +537,30 @@ class SubAgentPanelController:
                 _logger.debug("set_panel_refresh_callback(None) 异常", exc_info=True)
         self._chat_ui = None
 
+    def _needs_animation(self) -> bool:
+        """是否存在活跃/动画状态（running agent / running tool）需要重绘推进。
+
+        PERF-2：空闲（无事件 + 无动画需求）时 ``_panel_refresh`` 短路跳过
+        全量渲染（保持动画时仍按 10Hz 渲染）。
+        """
+        with self._state_lock:
+            for label in self._order:
+                slot = self._agents.get(label)
+                if slot is None:
+                    continue
+                if slot.status == "running":
+                    return True
+                for rec in slot.tool_history:
+                    if rec.phase in ("running", "parsing"):
+                        return True
+        return False
+
     def _panel_refresh(self) -> None:
         if not self._cb_registered:
             self._register_panel_refresh()
+        # ★ PERF-2：无事件且无动画需求时跳过全量渲染（避免每帧重建整个面板）
+        if not self._dirty and not self._needs_animation():
+            return
         try:
             lines = self._render_frame()
             # ★ 变更检测：帧无变化时跳过推送（避免空转 keep-alive 推送使
@@ -478,6 +571,8 @@ class SubAgentPanelController:
         except Exception:
             _logger.debug("_panel_refresh 异常", exc_info=True)
         self._frame += 1
+        # PERF-2：渲染后复位脏标记（后续空闲不再渲染）
+        self._dirty = False
 
     # ── 帧渲染（与旧 FrameRenderer 等效的输出格式） ────
 
@@ -521,12 +616,14 @@ class SubAgentPanelController:
             bar_width = min(12, total * 4)
             if done_count < total:
                 done_blocks = int(bar_width * done_count / total) if total else 0
+                # BEAUTY-2：running 时进度条/图标经 time_glow 呼吸（空闲静态）
+                running_ansi = _breathe_running_ansi(has_running)
                 bar = (
-                    _C_RUNNING + "\u2588" * done_blocks
+                    running_ansi + "\u2588" * done_blocks
                     + _C_DIMMEST + "\u2591" * (bar_width - done_blocks)
                     + _C_RESET
                 )
-                icon = f"{_C_RUNNING}\u25cf{_C_RESET}"
+                icon = f"{running_ansi}\u25cf{_C_RESET}"
                 summary = (
                     f"{icon} {_C_SUMMARY_DIM}{total} agents{_C_RESET}"
                     f" {bar}"
@@ -547,8 +644,9 @@ class SubAgentPanelController:
                 )
             lines.append(summary)
 
-            # ── 分隔线 ──
-            lines.append(f"{_C_DIMMEST} \u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501{_C_RESET}")
+            # ── 分隔线（BEAUTY-2：running 时微呼吸，空闲静态） ──
+            sep_ansi = _breathe_sep_ansi(has_running)
+            lines.append(f"{sep_ansi} \u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501{_C_RESET}")
 
             # ── 各 Agent ──
             prev_has_sublines = False
@@ -582,11 +680,12 @@ class SubAgentPanelController:
         output_str = _format_tokens(disp_out)
         speed_str = _format_speed(slot.last_speed) if slot.status == "running" else ""
 
-        # ── 类型标签 ──
+        # ── 类型标签（BEAUTY-1：新 agent 标题 FadeIn 渐显，时间基） ──
         from ._tool_icons import AGENT_TYPE_ABBREV, AGENT_TYPE_COLORS
-        agent_type_color = AGENT_TYPE_COLORS.get(slot.agent_type, _C_DIMMER)
+        agent_type_ansi = AGENT_TYPE_COLORS.get(slot.agent_type, _C_DIMMER)
         abbr = AGENT_TYPE_ABBREV.get(slot.agent_type, "??")
-        type_tag = f"{agent_type_color}[{abbr}]{_C_RESET}"
+        fade_elapsed = time.monotonic() - slot.appear_time
+        type_tag = f"{_fade_type_ansi(agent_type_ansi, fade_elapsed)}[{abbr}]{_C_RESET}"
 
         # ── 状态图标 + 标题行 ──
         if slot.status == "done":
@@ -598,7 +697,8 @@ class SubAgentPanelController:
             suffix = f"  {_C_DIMMER}{elapsed_str}{_C_RESET}"
             title = f"{_C_BRANCH}{branch}{_C_RESET} {icon} {type_tag} {slot.description}{suffix}"
         else:
-            spinner = _SPINNER_FRAMES[self._frame % len(_SPINNER_FRAMES)]
+            # BEAUTY-3：spinner 时间基推进（非帧计数；_frame 字段保留兼容）
+            spinner = _SPINNER_FRAMES[_fx.spinner_frame(_SPINNER_HZ, _SPINNER_FRAMES)]
             dot = f"{_C_RUNNING}{spinner}{_C_RESET}"
             suffix = (
                 f"  {_C_DIMMER}{output_str}{_C_RESET}"

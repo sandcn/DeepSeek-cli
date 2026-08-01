@@ -10,15 +10,15 @@ ParallelExecutor — 使用 asyncio.gather 并行调度多个 SubAgent
 from __future__ import annotations
 
 import asyncio
-import os
-import random
 import logging
+import random
+import time
 from typing import List, Dict, Any
 
+from ._terminal import get_terminal_width as _get_terminal_width
 from .internal.agent._capture_manager import _safe_restore as safe_restore_stdout
 from .internal.agent._subagent_spawner import SubAgentSpawner
 from .subagent import SubAgent
-from .constants import RED, RESET
 
 _logger = logging.getLogger(__name__)
 
@@ -36,7 +36,10 @@ def _publish_output(text: str, level: str = "info", source: str = "") -> None:
 
 # ── 常量 ──────────────────────────────────────────────
 _TIMEOUT = 3.0  # 显示停止等超时（秒）
-# barrier 等待不设超时 — dispatch_agent 等到底
+# barrier 兜底超时 — dispatch 等待为分钟级任务，60s 兜底防永久阻塞
+# （任一 dispatch_agent 在 register_and_wait 前抛异常时，其余等待者
+#  不会永久阻塞；超时后由 register_and_wait 主动触发 _execute_all 唤醒）
+_BARRIER_TIMEOUT = 60.0
 
 # ── 结果字典键常量 ─────────────────────────────────
 _DESCRIPTION_KEY = "description"
@@ -47,30 +50,9 @@ _AGENT_TYPE_KEY = "agent_type"
 
 
 # ── 终端尺寸查询 ─────────────────────────────────────
-# 复用 TerminalAdapter 的 ioctl 策略获取真实终端宽度。
-# 不能依赖 shutil.get_terminal_size()（Android Termux 上返回
-# 陈旧环境变量值），必须通过 /dev/tty ioctl 查询。
-def _get_terminal_width() -> int:
-    """获取终端宽度（列数），优先通过 /dev/tty ioctl 查询。"""
-    import fcntl, termios, struct
-
-    try:
-        fd = os.open("/dev/tty", os.O_RDONLY)
-        try:
-            data = fcntl.ioctl(fd, termios.TIOCGWINSZ,
-                               struct.pack("HHHH", 0, 0, 0, 0))
-            rows, cols, _, _ = struct.unpack("HHHH", data)
-            return cols if cols > 0 else 80
-        finally:
-            os.close(fd)
-    except Exception:
-        pass
-    # 回退
-    try:
-        import shutil
-        return shutil.get_terminal_size().columns
-    except Exception:
-        return 80
+# 共享 get_terminal_width（src/core/_terminal.py）：优先 /dev/tty ioctl 查询，
+# 不能依赖 shutil.get_terminal_size()（Android Termux 上返回陈旧环境变量值）。
+# 保留 _get_terminal_width 兼容别名（步骤 1.4 迁移），避免外部调用点破坏。
 
 
 class ParallelExecutor:
@@ -122,6 +104,7 @@ class ParallelExecutor:
         self._expected_count = count
         self._registered_count = 0
         self._all_done.clear()
+        self._barrier_deadline = time.monotonic() + _BARRIER_TIMEOUT
 
     async def register_and_wait(self) -> None:
         """
@@ -130,7 +113,8 @@ class ParallelExecutor:
         设计要点：
         - 最后一个注册的协程自动触发 _execute_all()
         - 其他协程通过 asyncio.Event.wait() 纯异步等待，不消耗线程池工人
-        - barrier 不设超时 — dispatch_agent 无限等待到底
+        - barrier 带 _BARRIER_TIMEOUT 兜底超时：任一协程在注册前抛异常时，
+          其余等待者不会永久阻塞；超时后主动触发 _execute_all 唤醒全部等待者
         """
         if self._expected_count <= 0:
             return
@@ -139,8 +123,24 @@ class ParallelExecutor:
             all_registered = (self._registered_count >= self._expected_count)
         if all_registered:
             await self._execute_all()
-        else:
+            return
+        # 未全部注册 → 带超时等待（remaining 随 deadline 递减，防永久阻塞）
+        remaining = max(0.0, self._barrier_deadline - time.monotonic())
+        try:
+            # asyncio.Event.wait() 不支持 timeout 参数，用 wait_for 实现带超时等待
+            await asyncio.wait_for(self._all_done.wait(), timeout=remaining)
+            done = True
+        except asyncio.TimeoutError:
+            done = False
+        if done:
+            return
+        # 超时兜底：未注册协程永远不会到达 → 主动触发执行唤醒等待者
+        if self._registered_count >= 1 and not self._executing:
+            await self._execute_all()
+        elif self._executing:
+            # 已有协程正在执行 → 等待其完成（_all_done 由最外层 finally 保证）
             await self._all_done.wait()
+        # _registered_count == 0（防御分支，正常注册后不可达）→ 直接返回
 
     def add_agent(self, description: str, prompt: str, agent_type: str = "execute",
                   model: str = None, tool_label: str = None) -> int:
@@ -250,7 +250,7 @@ class ParallelExecutor:
                 abbr = _AGENT_TYPE_ABBREV.get(agent_type, "??")
                 result_text = r.get(_RESULT_KEY, "")
                 error = r.get(_ERROR_KEY, "")
-                renderer.write(f"### {i}. {RED}[{abbr}]{RESET} {desc}")
+                renderer.write(f"### {i}. [{abbr}] {desc}")
                 if error:
                     renderer.write(f"\n> 错误: {error}\n")
                 if result_text:
@@ -306,13 +306,37 @@ class ParallelExecutor:
         if not md_text.strip():
             return
 
-        # ── ANSI 引擎渲染 markdown → 内容块上屏 ──────────────────────
-        # display_markdown 由 render 线程的 ANSI 引擎渲染为内容块
-        # （标题/加粗/代码/表格等完整 markdown），替代旧 IncrementalRenderer
-        # （Rich）→ ANSI → write_line 路径（存在 TOC 伪影/标题错位）。
-        chat_ui.write_line("")  # 开头空行
-        chat_ui.display_markdown(md_text)
-        chat_ui.write_line("")  # 结尾空行
+        # ── IncrementalRenderer 渲染 markdown → ANSI 字符串 ──────────
+        # 使用 StringIO 捕获 Console 的 ANSI 输出，不直接写 __stdout__。
+        # IncrementalRenderer 内部 Console 的 force_terminal=True 保证
+        # 即使 file=StringIO 也输出完整 ANSI 序列。
+        #
+        # ★ 显式传入 width 参数：当 _file=StringIO 时 Rich Console 无法
+        #   通过 ioctl 探测终端宽度，默认回退到 shutil.get_terminal_size()
+        #   （Android Termux 上因环境变量陈旧返回 120），导致渲染输出行宽
+        #   与真实终端（~70列）不匹配，在 ChatUI 中换行显示错乱。
+        #   通过 ioctl(/dev/tty) 获取真实宽度并传入，消除错位重叠问题。
+        term_width = _get_terminal_width()
+        buf = io.StringIO()
+        renderer = IncrementalRenderer(
+            show_indicator=False, _file=buf, width=term_width,
+        )
+        try:
+            renderer.write(md_text)
+        finally:
+            renderer.close()
+
+        # ── ANSI 输出通过 ChatUI 上屏 ─────────────────────────────────
+        # write_line 内部用 Text.from_ansi() 解析 ANSI 序列为 Rich Text，
+        # 再由 render 线程的 OutputAdapter（Console with __stdout__）渲染。
+        # 双 Console 转换（StringIO Console → __stdout__ Console）对标准
+        # ANSI SGR 序列（颜色/样式）无损，保留完整 markdown 渲染效果。
+        output = buf.getvalue()
+        if output:
+            chat_ui.write_line("")  # 开头空行
+            for line in output.rstrip("\n").split("\n"):
+                chat_ui.write_line(line)
+            chat_ui.write_line("")  # 结尾空行
 
     def _do_terminal_output(self, results: List[Dict[str, Any]]):
         """在线程池中执行所有终端输出操作，避免同步 IO 阻塞事件循环。
@@ -373,6 +397,9 @@ class ParallelExecutor:
         mode_name = "批量模式" if is_batch else "独立模式"
 
         results: list | None = None
+        # BUG-A1：取消路径输出/发布去重标志 — CancelledError 分支已执行
+        # _do_terminal_output + publish_summary 后置位，finally 跳过重复执行。
+        cancel_output_done = False
         try:
             results = await coro
         except asyncio.CancelledError:
@@ -409,6 +436,7 @@ class ParallelExecutor:
 
             if results:
                 self._spawner.publish_summary(results)
+            cancel_output_done = True
             raise
         except Exception as e:
             _logger.error("%s: %s", error_prefix, e, exc_info=True)
@@ -457,7 +485,8 @@ class ParallelExecutor:
             # 在线程池中执行所有终端输出操作，避免同步 IO 阻塞事件循环
             # 统一通过 _do_terminal_output 路由：ChatUI 激活时走 write_line，
             # ChatUI 未激活时走 IncrementalRenderer 直接写 __stdout__。
-            if results:
+            # BUG-A1：取消路径已直接调用过（非 to_thread），finally 跳过避免重复输出
+            if results and not cancel_output_done:
                 await asyncio.to_thread(self._do_terminal_output, results)
 
             # ★ sys.stdout 泄漏检测
@@ -469,7 +498,8 @@ class ParallelExecutor:
                 _logger.warning("%s stdout 泄漏检测异常", trace_prefix, exc_info=True)
 
             # 统一批量发布 AgentResultEvent
-            if results:
+            # BUG-A1：取消路径已发布过，finally 跳过避免重复发布
+            if results and not cancel_output_done:
                 self._spawner.publish_summary(results)
         return results
 

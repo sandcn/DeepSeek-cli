@@ -5,18 +5,19 @@
 
 超宽行截断（不换行）：与旧版 _ansi_truncate(line, tw) 语义一致——
 每行保持单行，超出终端宽度部分丢弃，避免破坏面板树形结构。
+
+PERF-3：内部用 ``use_memo`` 缓存子树（deps = subagent_lines 内容 + 状态
+活跃标志），组件树重建时对未变更 live 区短路。
 """
 
 from __future__ import annotations
 
-from src.tui.ink import h, BOX, TEXT, StyledRun, truncate_runs
+from src.tui.ink import h, BOX, TEXT, StyledRun, truncate_runs, use_memo
 from src.renderer.ansi.helpers import ansi_to_runs
 
 
-def SubAgentPanel(props) -> object:
-    """渲染 subagent 面板行（超宽截断为单行）。"""
-    model = props["model"]
-    width = props.get("width", 80)
+def _render_children(model, width: int) -> list:
+    """构建面板子树（按行截断 + 转样式 run）。"""
     children = []
     for line in model.subagent_lines or []:
         if not line:
@@ -27,6 +28,21 @@ def SubAgentPanel(props) -> object:
         )
         if runs:
             children.append(h(TEXT, {"styled": runs}))
+    return children
+
+
+def SubAgentPanel(props) -> object:
+    """渲染 subagent 面板行（超宽截断为单行）。
+
+    PERF-3：``use_memo`` 缓存子树——deps 用 subagent_lines 内容
+    （列表变化时重建）+ 状态活跃标志，未变化时调和期返回缓存元素。
+    """
+    model = props["model"]
+    width = props.get("width", 80)
+    children = use_memo(
+        lambda: _render_children(model, width),
+        (tuple(model.subagent_lines or ()), model.status.status_active),
+    )
     if not children:
         return h(BOX, None, [])
     return h(BOX, None, children)
