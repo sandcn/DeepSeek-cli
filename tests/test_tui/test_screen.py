@@ -299,3 +299,39 @@ class TestSigwinchSignalSafe:
         finally:
             cleanup1()
             cleanup2()
+
+
+class TestDetectTruecolor:
+    """方向B 步骤12 — 终端能力协商（COLORTERM 环境变量检测）。"""
+
+    def test_detect_truecolor_true(self):
+        from unittest.mock import patch
+        from src.tui._screen import detect_truecolor
+        with patch.dict("os.environ", {"COLORTERM": "truecolor"}):
+            assert detect_truecolor() is True
+
+    def test_detect_truecolor_24bit(self):
+        from unittest.mock import patch
+        from src.tui._screen import detect_truecolor
+        with patch.dict("os.environ", {"COLORTERM": "24bit"}):
+            assert detect_truecolor() is True
+
+    def test_detect_truecolor_case_insensitive(self):
+        from unittest.mock import patch
+        from src.tui._screen import detect_truecolor
+        with patch.dict("os.environ", {"COLORTERM": "TrueColor"}):
+            assert detect_truecolor() is True
+
+    def test_detect_truecolor_default_false(self):
+        """未设置 COLORTERM → 默认 False（安全兜底，走 256 降级）。"""
+        from unittest.mock import patch
+        from src.tui._screen import detect_truecolor
+        with patch.dict("os.environ", {}, clear=True):
+            assert detect_truecolor() is False
+
+    def test_detect_truecolor_unknown_value_false(self):
+        """COLORTERM 为 256color 等未知值 → False（不误判）。"""
+        from unittest.mock import patch
+        from src.tui._screen import detect_truecolor
+        with patch.dict("os.environ", {"COLORTERM": "256color"}):
+            assert detect_truecolor() is False

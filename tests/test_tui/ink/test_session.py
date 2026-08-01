@@ -583,3 +583,50 @@ def _cursor_visual_from_cached(fiber):
         return _cursor_visual_from_layout(text, cursor_pos, wrapped_by_logical)
     from src.tui._input import _compute_cursor_visual_pos
     return _compute_cursor_visual_pos(text, cursor_pos, max_input)
+
+
+class TestAppControl:
+    """方向B 步骤10 — session 接线 useApp control（exit/clear）。"""
+
+    def test_session_wires_app_control_regression(self):
+        """session 构造后 _app_control 注入 exit/clear（对齐既有装配测试契约）。"""
+        from src.tui.ink import hooks as _hooks
+        try:
+            s = _make_session()
+            ctrl = _hooks._app_control
+            assert ctrl is not None
+            assert callable(ctrl["exit"])
+            assert callable(ctrl["clear"])
+        finally:
+            _hooks.set_app_control(None)
+
+    def test_request_exit_sets_flag_and_stops(self):
+        """request_exit 置 exit_requested 并停止渲染（幂等）。"""
+        s = _make_session()
+        s.stop = MagicMock()
+        assert s.exit_requested is False
+        s.request_exit()
+        assert s.exit_requested is True
+        s.stop.assert_called_once()
+
+    def test_use_app_exit_sets_session_exit_requested(self):
+        """useApp().exit() 后 session.exit_requested 置位。"""
+        from src.tui.ink.hooks import useApp, set_app_control
+        try:
+            s = _make_session()
+            s.stop = MagicMock()  # 避免真实 stop 干扰
+            set_app_control({"exit": s.request_exit, "clear": s.request_clear})
+            ctrl = useApp()
+            ctrl["exit"]()
+            assert s.exit_requested is True
+        finally:
+            set_app_control(None)
+
+    def test_request_clear_resets_renderer_and_requests_redraw(self):
+        """request_clear 重置渲染器 + 请求重绘（非全屏模型强制全量重绘）。"""
+        s = _make_session()
+        s._ink_renderer.reset = MagicMock()
+        s.request_bottom_redraw = MagicMock()
+        s.request_clear()
+        s._ink_renderer.reset.assert_called_once()
+        s.request_bottom_redraw.assert_called_once()

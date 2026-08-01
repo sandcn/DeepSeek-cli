@@ -98,11 +98,16 @@ def _sanitize_ansi(text: str) -> str:
 
 
 def _syntax_hl(text, lexer_name):
-    """对单行文本做语法高亮（输入先做 ANSI 消毒防注入）。"""
+    """对单行文本做语法高亮（输入先做 ANSI 消毒防注入）。
+
+    方向A 步骤3 修复：消毒移动到提前 return 之前——空 lexer（无语法高亮）
+    时输入含恶意 ANSI 也必须消毒后返回（修复前空 lexer 提前返回原文，
+    ANSI 注入窗口存在于单行 add/del 路径）。
+    """
+    # 先消毒再返回/传 pygments，防止 ANSI 注入
+    text = _sanitize_ansi(text)
     if not lexer_name or not text.strip():
         return text
-    # 先消毒再传 pygments，防止 ANSI 注入
-    text = _sanitize_ansi(text)
     pair = _get_highlighter(lexer_name)
     if not pair:
         return text
@@ -228,11 +233,13 @@ def _render_chunk(item, w, lexer_name, output_target):
     typ = item[0]
     dim = _DIFF_CTX_STYLE
     if typ == 'old_file':
-        path = item[1][4:] if len(item[1]) > 4 else ""
+        # P3-12：文件头路径消毒（ANSI 注入防护）——path 来自 diff 列表
+        # （可能是用户提供的文件名），须与 ctx/add/del 行一致走 _sanitize_ansi。
+        path = _sanitize_ansi(item[1][4:] if len(item[1]) > 4 else "")
         _write_diff_line("  " + dim.apply("┌─ " + path), output_target)
         return
     if typ == 'new_file':
-        path = item[1][4:] if len(item[1]) > 4 else ""
+        path = _sanitize_ansi(item[1][4:] if len(item[1]) > 4 else "")
         _write_diff_line("  " + dim.apply("└─ " + path), output_target)
         return
     if typ == 'hunk':
@@ -304,7 +311,10 @@ def render_diff(diff_list, w, line_offset=0, lexer_name='', output_target: Optio
     - 成对修改行内高亮差异部分（红/绿背景色）
     """
     def _hl(text):
-        return _syntax_hl(text, lexer_name) if lexer_name else text
+        # 方向A 步骤3：无条件调用 _syntax_hl——空 lexer 时也消毒（消除单行
+        # add/del 内容含恶意 ANSI 时完全跳过消毒的注入窗口；_syntax_hl 内部
+        # 已先消毒，空 lexer 返回消毒后字面量）。
+        return _syntax_hl(text, lexer_name)
 
     # 解析 diff
     parsed = _parse_diff_hunks(diff_list, line_offset)

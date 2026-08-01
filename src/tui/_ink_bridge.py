@@ -8,62 +8,37 @@
   - 补全域：is_completion_visible / show_completions / hide_completions /
     cycle_completion / get_selected_completion
   - 输入：set_input_state → 模型输入状态 + 重渲染
-  - 生命周期 no-op：setup / teardown / is_active / ensure_cursor_in_upper /
-    ensure_cursor_in_lower（非全屏流动模型无 DECSTBM）
+  - 兼容访问器域（方向C 步骤8 拆分至 _ink_bridge_compat）：
+    生命周期 no-op（setup/teardown/is_active/ensure_cursor_*）与 _BottomBar
+    内部字段（_last_text/_bottom_lines/_completion_idx/_completion 等）
   - subagent：set_subagent_frame → 模型行（兼容旧路径）
+
+方向C 步骤8 拆分说明：
+  兼容访问器域（生命周期 no-op + _BottomBar 内部字段）迁移至
+  ``src/tui/_ink_bridge_compat.py`` 的 ``_BottomBarCompatMixin``；
+  本模块保留状态域/补全域/输入域/子代理域。公开方法面与构造签名不变。
 """
 
 from __future__ import annotations
 
+import logging
 import time
 
 from .app.model import CompletionState
+from ._ink_bridge_compat import (
+    _BottomBarCompatMixin,
+    _CompletionProxy,  # noqa: F401  re-export 保持路径兼容
+)
+
+_logger = logging.getLogger(__name__)
 
 
-class _CompletionProxy:
-    """兼容 _BottomBar._completion 内部字段访问（user_select 等直接读写）。"""
+class InkBridge(_BottomBarCompatMixin):
+    """底部栏/状态/补全桥（AppModel + InkSession）。
 
-    def __init__(self, model):
-        self._model = model
-
-    @property
-    def _visible(self) -> bool:
-        return self._model.completion.visible
-
-    @_visible.setter
-    def _visible(self, value: bool) -> None:
-        self._model.completion.visible = bool(value)
-
-    @property
-    def _popup_height(self) -> int:
-        return self._model.completion.popup_height
-
-    @_popup_height.setter
-    def _popup_height(self, value: int) -> None:
-        self._model.completion.popup_height = int(value)
-
-    @property
-    def _items(self) -> list:
-        return self._model.completion.items
-
-    @_items.setter
-    def _items(self, value: list) -> None:
-        self._model.completion.items = list(value)
-
-    @property
-    def _texts(self) -> list:
-        return self._model.completion.texts
-
-    @_texts.setter
-    def _texts(self, value: list) -> None:
-        self._model.completion.texts = list(value)
-
-
-class InkBridge:
-    """底部栏/状态/补全桥（AppModel + InkSession）。"""
-
-    # 兼容 user_select 的 _MIN_HEIGHT 检查（is_active 恒 True，实际不会走到）
-    _MIN_HEIGHT = 12
+    继承 ``_BottomBarCompatMixin``（兼容访问器域：生命周期 no-op +
+    _BottomBar 内部字段）；本类保留状态/补全/输入/子代理域。
+    """
 
     def __init__(self, model, session):
         self._model = model
@@ -149,6 +124,9 @@ class InkBridge:
         c.orig_prefix = orig_prefix
         c.types = list(types) if types is not None else []
         c.match_prefix = match_prefix
+        # 方向A 步骤1：show 时同步 _last_completion_idx（修复陈旧索引——
+        # 新补全会话不再读到 hide 保留的旧索引；hide 语义保留，message_editor 依赖）。
+        self._last_completion_idx = c.selected
         self._request_redraw()
 
     def hide_completions(self) -> None:
@@ -172,6 +150,9 @@ class InkBridge:
             return 0
         n = len(c.items)
         c.selected = (c.selected + delta) % n
+        # 方向A 步骤1：cycle 后同步 _last_completion_idx（修复陈旧索引——
+        # 新补全会话不再读到 hide 保留的旧索引；hide 语义保留，message_editor 依赖）。
+        self._last_completion_idx = c.selected
         self._request_redraw()  # 高亮移动需重绘
         return c.selected
 
@@ -189,86 +170,6 @@ class InkBridge:
         self._model.input_cursor = cursor_pos
         self._request_redraw()
 
-    # ── 兼容 _BottomBar 内部字段（user_select 等直接读写） ──
-
-    @property
-    def _last_text(self) -> str:
-        return self._model.input_text
-
-    @_last_text.setter
-    def _last_text(self, value: str) -> None:
-        self._model.input_text = value
-        self._request_redraw()
-
-    @property
-    def _last_rendered_text(self) -> str:
-        return self._model.input_text
-
-    @_last_rendered_text.setter
-    def _last_rendered_text(self, value: str) -> None:
-        self._model.input_text = value
-        self._request_redraw()
-
-    @property
-    def _bottom_lines(self) -> int:
-        """非全屏模型无 DECSTBM：返回输入区近似行数（兼容访问）。"""
-        return 5
-
-    @property
-    def _last_bottom_lines(self) -> int:
-        return 5
-
-    @_last_bottom_lines.setter
-    def _last_bottom_lines(self, value: int) -> None:
-        pass
-
-    @property
-    def _last_scroll_end(self) -> int:
-        return 0
-
-    @_last_scroll_end.setter
-    def _last_scroll_end(self, value: int) -> None:
-        pass
-
-    @property
-    def _completion_idx(self) -> int:
-        return self._model.completion.selected
-
-    @_completion_idx.setter
-    def _completion_idx(self, value: int) -> None:
-        self._model.completion.selected = int(value)
-        self._request_redraw()
-
-    @property
-    def _completion(self) -> "_CompletionProxy":
-        """兼容 _completion._visible/_popup_height/_items/_texts 访问。"""
-        return _CompletionProxy(self._model)
-
-    def force_redraw(self) -> None:
-        """强制重绘（非全屏模型：请求下一帧渲染）。"""
-        self._request_redraw()
-
-    # ── 生命周期 no-op ─────────────────────────────
-
-    @property
-    def is_active(self) -> bool:
-        return True
-
-    def set_active(self, active: bool) -> None:
-        pass
-
-    def setup(self) -> None:
-        pass
-
-    def teardown(self) -> None:
-        pass
-
-    def ensure_cursor_in_upper(self) -> None:
-        pass
-
-    def ensure_cursor_in_lower(self) -> None:
-        pass
-
     # ── subagent（兼容旧路径） ──────────────────────
 
     def set_subagent_frame(self, lines) -> None:
@@ -278,10 +179,12 @@ class InkBridge:
     # ── 内部 ───────────────────────────────────────
 
     def _request_redraw(self) -> None:
+        # P2-8：不再裸吞异常——记录 debug 日志（request_bottom_redraw 异常
+        # 属非关键降级，不阻断调用方）。
         try:
             self._session.request_bottom_redraw()
         except Exception:
-            pass
+            _logger.debug("request_bottom_redraw 异常", exc_info=True)
 
 
 __all__ = ["InkBridge"]

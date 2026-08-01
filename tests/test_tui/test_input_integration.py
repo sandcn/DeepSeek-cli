@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import io
 import os
+import time
 import pytest
 from unittest.mock import MagicMock, patch
 from pathlib import Path
@@ -267,3 +268,103 @@ class TestInputOrchestratorPrefillResidual:
             assert result == ""
         finally:
             os.close(fd)
+
+
+# ═══════════════════════════════════════════════════════════
+# 横切步骤18 — 新输入 kind 全链路（解析→分发→缓冲/补全）
+# ═══════════════════════════════════════════════════════════
+
+class TestNewInputKindsChain:
+    """横切步骤18 — Alt 组合 / Shift+Tab / Ctrl+R 搜索 / Esc 取消 全链路。
+
+    以 os.pipe 模拟 stdin，验证「原始字节 → InputParser 解析 → InputDispatcher
+    分发 → 缓冲编辑/补全回调」整条输入链在新 kind 上连通。
+    """
+
+    @pytest.fixture
+    def piped_input(self, tmp_path):
+        """创建 (Input, 写端 fd) 对：真实 pipe fd 驱动全链路。"""
+        r_fd, w_fd = os.pipe()
+        try:
+            inp = Input(fd=r_fd, history_file=tmp_path / "history")
+            yield inp, w_fd
+        finally:
+            os.close(w_fd)
+            os.close(r_fd)
+
+    def test_alt_b_word_left_chain_regression(self, piped_input):
+        """Alt+B（ESC b）→ alt_char → 词跳转左（缓冲光标生效）。"""
+        inp, w_fd = piped_input
+        inp.set_buffer("hello world")
+        inp._cursor_pos = len("hello world")
+        os.write(w_fd, b"\x1bb")
+        time.sleep(0.05)
+        inp.process_events()
+        # 光标从末尾跳到 "world" 词首之前（"hello " 末尾）
+        assert inp._cursor_pos == len("hello ")
+
+    def test_alt_f_word_right_chain_regression(self, piped_input):
+        """Alt+F（ESC f）→ alt_char → 词跳转右（缓冲光标生效）。"""
+        inp, w_fd = piped_input
+        inp.set_buffer("hello world")
+        inp._cursor_pos = 0
+        os.write(w_fd, b"\x1bf")
+        time.sleep(0.05)
+        inp.process_events()
+        # 词跳转右：从词首跳到下一词首（跳过词与分隔空格，pos 0 → 6）
+        assert inp._cursor_pos == 6
+
+    def test_shift_tab_reverse_chain_regression(self, piped_input):
+        """Shift+Tab（CSI u 9;2u）→ tab/modifier=2 → 补全反向循环。"""
+        inp, w_fd = piped_input
+        navigated = []
+        inp.set_completion_navigate_callback(
+            lambda delta, text: navigated.append((delta, text)) or text
+        )
+        inp.set_buffer("he")
+        os.write(w_fd, b"\x1b[9;2u")
+        time.sleep(0.05)
+        inp.process_events()
+        assert navigated == [(-1, "he")]
+
+    def test_ctrl_r_search_chain_regression(self, piped_input):
+        """Ctrl+R（启用配置门控）→ 反向历史搜索进入（状态同步回调触发）。"""
+        inp, w_fd = piped_input
+        inp.set_reverse_search_enabled(True)
+        inp._history = ["hello world", "hello there", "other"]
+        states = []
+        inp.set_reverse_search_callback(
+            lambda query, matches, index, active: states.append(
+                (query, matches, index, active)
+            )
+        )
+        inp.set_buffer("hello")
+        os.write(w_fd, b"\x12")  # Ctrl+R
+        time.sleep(0.05)
+        inp.process_events()
+        assert inp._buffer_editor.is_search_active() is True
+        assert states and states[0][0] == "hello"
+        assert states[0][1] == ["hello world", "hello there"]
+        assert states[0][2] == 0  # 最近匹配优先
+
+    def test_esc_cancel_input_chain_regression(self, piped_input):
+        """Esc（启用配置门控 + 空闲 + 非空缓冲）→ 清空输入（非中断）。"""
+        inp, w_fd = piped_input
+        inp.set_esc_cancel_input(True)
+        inp.set_active_status_callback(lambda: False)
+        inp.set_buffer("hello")
+        os.write(w_fd, b"\x1b")  # 单独 Esc
+        time.sleep(0.1)
+        inp.process_events()
+        assert inp.get_current_text() == ""
+        assert inp.interrupted is False  # 未触发中断标志
+
+    def test_esc_cancel_input_disabled_keeps_interrupt_regression(self, piped_input):
+        """Esc（未启用配置门控）→ 保持中断语义（中断标志置位）。"""
+        inp, w_fd = piped_input
+        inp.set_esc_cancel_input(False)
+        inp.set_buffer("hello")
+        os.write(w_fd, b"\x1b")
+        time.sleep(0.1)
+        inp.process_events()
+        assert inp.interrupted is True

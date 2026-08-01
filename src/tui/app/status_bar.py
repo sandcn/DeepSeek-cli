@@ -4,7 +4,11 @@
 数据源：AppModel.status + api 快照（_get_snapshot）。
 
 PERF-3/PERF-5：内部用 ``use_memo`` 缓存 ``_build_status_runs`` 结果
-（deps = 状态关键字段快照 + 1s 时间桶），组件树重建时对未变更 live 区短路。
+（deps = 状态关键字段快照 + 时间桶），组件树重建时对未变更 live 区短路。
+
+BEAUTY-1/PERF-3（方向A 步骤1）：模型名点 FadeIn 渐显窗口内按 0.1s 时间桶
+刷新（``time_dep = int(t/0.1)``，渐显平滑推进），渐显结束后回退 1s 桶
+（PERF-3 缓存语义保持）——修复 1s 桶内渐显冻结、桶边界跳变。
 """
 
 from __future__ import annotations
@@ -15,6 +19,9 @@ from src.tui.core.style import Style
 from src.tui.ink import h, BOX, TEXT, Line, StyledRun, use_memo, use_ref
 from src.tui.app import _fx
 from src.tui.app._theme import time_glow, _S_ACCENT, _S_ACCENT_BOLD, _S_DIM, _S_SEP, _S_TIME
+# 方向C 步骤4：_format_duration 唯一真源在 src/tui/_format.py（Layer 0）；
+# 模块级 re-export 保持 patch("src.tui.app.status_bar._format_duration") 路径有效。
+from src.tui._format import format_duration as _format_duration
 
 _S_TOKEN = Style(fg=68)
 _S_SPEED = Style(fg=214)
@@ -22,13 +29,27 @@ _S_TOOL_OK = Style(fg=41)
 _S_TOOL_FAIL = Style(fg=196)
 
 # PERF-5：快照查询 TTL 缓存（≤1Hz；渲染线程单写，GIL 原子赋值足够）
+# 方向D 步骤16：TTL 常量化（_SNAPSHOT_TTL）——与状态栏 1s 时间桶对齐，
+# 快照与显示节奏不产生错位。
+_SNAPSHOT_TTL = 1.0
 _snapshot_cache: tuple[float, dict] = (0.0, {})
+
+# BEAUTY-1/PERF-3：TuiConfig 惰性获取（避免模块加载环；配置不可变可安全缓存）
+_CFG = None
+
+
+def _get_cfg():
+    global _CFG
+    if _CFG is None:
+        from src.tui._config import TuiConfig
+        _CFG = TuiConfig.defaults()
+    return _CFG
 
 
 def _snapshot() -> dict:
     global _snapshot_cache
     now = time.monotonic()
-    if now - _snapshot_cache[0] < 1.0:
+    if now - _snapshot_cache[0] < _SNAPSHOT_TTL:
         return _snapshot_cache[1]
     try:
         from src.tui._snapshot import _get_snapshot
@@ -38,16 +59,6 @@ def _snapshot() -> dict:
         data = {}
     _snapshot_cache = (now, data)
     return data
-
-
-def _format_duration(seconds: float) -> str:
-    if seconds < 60:
-        return f"{seconds:.1f}s"
-    mins = int(seconds // 60)
-    secs = int(seconds % 60)
-    if mins < 60:
-        return f"{mins}:{secs:02d}"
-    return f"{mins // 60}:{mins % 60:02d}:{secs:02d}"
 
 
 def _build_status_runs(model, dot_elapsed: float = 0.0) -> list[StyledRun]:
@@ -122,8 +133,9 @@ def StatusBar(props) -> object:
     """StatusBar 组件：分割线一行在上，状态文本一行在下。
 
     PERF-3：``use_memo`` 缓存 ``_build_status_runs(model)`` 结果——
-    deps = 状态关键字段快照 + 1s 时间桶（PERF-5）。字段快照须显式列出
-    （不能传整个 model/status 对象，否则恒变 → 缓存失效）。
+    deps = 状态关键字段快照 + 时间桶（BEAUTY-1：渐显窗口内 0.1s 桶，
+    结束后 1s 桶）。字段快照须显式列出（不能传整个 model/status 对象，
+    否则恒变 → 缓存失效）。
     """
     model = props["model"]
     width = props.get("width", 80)
@@ -134,6 +146,12 @@ def StatusBar(props) -> object:
     if dot_fade_ref.current is None or dot_fade_ref.current[0] != st.status_active:
         dot_fade_ref.current = (st.status_active, time.monotonic())
     dot_elapsed = time.monotonic() - dot_fade_ref.current[1]
+    # BEAUTY-1/PERF-3：渐显窗口内按 0.1s 桶刷新（平滑渐显），结束后回 1s 桶
+    # （PERF-3 缓存语义保持）。fade_duration_sec<=0（配置异常）→ 回退纯 1s 桶。
+    cfg = _get_cfg()
+    fade_sec = cfg.fade_duration_sec
+    fading = fade_sec > 0 and dot_elapsed < fade_sec
+    time_dep = int(time.monotonic() / 0.1) if fading else int(time.monotonic() / 1.0)
     status_runs = use_memo(
         lambda: _build_status_runs(model, dot_elapsed),
         (
@@ -142,7 +160,7 @@ def StatusBar(props) -> object:
             st.tool_total,
             st.tool_count,
             st.tool_fail,
-            int(time.monotonic() / 1.0),
+            time_dep,
         ),
     )
     # 分割线（上面）

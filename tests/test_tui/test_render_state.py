@@ -74,6 +74,22 @@ class TestRenderStateCloseReopen:
         assert m.content_renderer is None
         assert m.reasoning_renderer is None
 
+    def test_flush_open_channels_exception_logged(self, caplog):
+        """flush_open_channels 内部异常被记录（非关键降级不抛，后续通道仍关闭）。"""
+        import logging
+        from unittest.mock import patch
+
+        m = AppModel()
+        with patch.object(m, "close_reasoning", side_effect=RuntimeError("boom")):
+            with caplog.at_level(logging.DEBUG, logger="src.tui.app.model"):
+                m.flush_open_channels()  # 不抛异常
+        assert m.content_closed is True  # close_content 仍执行
+        assert any(
+            rec.name == "src.tui.app.model"
+            and "flush_open_channels" in rec.getMessage()
+            for rec in caplog.records
+        )
+
 
 class TestRenderStateApplyIntegration:
     """apply_cmd 与渲染状态的集成语义。"""

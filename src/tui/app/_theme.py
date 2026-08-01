@@ -26,6 +26,12 @@ _S_DIM = Style(fg=242)                   # 弱化色（暗灰）
 _S_SEP = Style(fg=237)                   # 分隔线色（深灰）
 _S_TIME = Style(fg=110)                  # 时间戳色（浅蓝）
 
+# 方向C 步骤4：收敛 apply.py / input_area.py 多处使用的样式常量（享元共享池）
+_S_USER_ICON = Style(fg=81, bold=True)   # 用户消息图标 `>`
+_S_USER_TEXT = Style(fg=252)             # 用户消息文本
+_S_NOTICE = Style(fg=242)                # 通知/助手消息前缀
+_S_TEXT = Style(fg=252)                  # 输入区输入文本
+
 
 def time_glow(lo: int, hi: int, period: float = 12.0) -> int:
     """时间基正弦插值呼吸色号。
@@ -71,5 +77,9 @@ __all__ = [
     "_S_DIM",
     "_S_SEP",
     "_S_TIME",
+    "_S_USER_ICON",
+    "_S_USER_TEXT",
+    "_S_NOTICE",
+    "_S_TEXT",
     "time_glow",
 ]

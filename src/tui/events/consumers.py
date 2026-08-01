@@ -10,6 +10,7 @@ ToolSummaryEvent 已移至 ChatUIConsumer（chat_ui.py）处理。
 
 from __future__ import annotations
 
+import logging
 import sys
 from typing import List, Optional
 
@@ -20,6 +21,8 @@ from .event_types import (
     OutputEvent,
     ToolSummaryEvent,
 )
+
+_logger = logging.getLogger(__name__)
 
 # -- 级别 -> ANSI 颜色映射 ----------------------------------------------
 
@@ -121,7 +124,8 @@ class OutputConsumer:
                 self._stream.write(line + "\n")
                 self._stream.flush()
             except (ValueError, OSError):
-                pass
+                # 输出写失败属非关键降级（终端关闭/坏管道等），记录警告不抛
+                _logger.warning("输出写失败", exc_info=True)
 
 
 # -- 便捷函数 -----------------------------------------------------------

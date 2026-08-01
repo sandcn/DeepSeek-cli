@@ -59,10 +59,12 @@ class Element:
 
 
 def _type_key(type_: ElementType) -> str:
-    """将元素 type 转为字符串 key。"""
+    """将元素 type 转为字符串 key（函数组件带模块限定，消除跨模块同名冲突）。"""
     if isinstance(type_, str):
         return f"host:{type_}"
-    return f"fn:{getattr(type_, '__name__', repr(type_))}"
+    mod = getattr(type_, "__module__", "?")
+    name = getattr(type_, "__name__", repr(type_))
+    return f"fn:{mod}.{name}"
 
 
 def _as_element(child: Any) -> Element:

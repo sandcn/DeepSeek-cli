@@ -66,6 +66,73 @@ def _default_commands_source() -> list[str]:
     return get_registered_command_names()
 
 
+def _ranked(items: list[str], prefix: str) -> list[str]:
+    """候选语义排序（方向D 步骤13）：精确匹配 > 前缀匹配（长度升序）> 子串包含（长度升序）。
+
+    同优先级按字母序（大小写不敏感次级键；稳定排序保持输入序为最终次级）。
+    路径补全不经过本函数（保持目录优先 + 字母序）。
+    """
+    if not prefix:
+        return sorted(items, key=lambda s: s.lower())
+    exact: list[str] = []
+    prefix_matches: list[tuple[str, int]] = []
+    substring_matches: list[tuple[str, int]] = []
+    for item in items:
+        if item == prefix:
+            exact.append(item)
+        elif item.startswith(prefix):
+            prefix_matches.append((item, len(item)))
+        elif prefix in item:
+            substring_matches.append((item, len(item)))
+    prefix_matches.sort(key=lambda t: (t[1], t[0].lower()))
+    substring_matches.sort(key=lambda t: (t[1], t[0].lower()))
+    exact.sort(key=lambda s: s.lower())
+    return exact + [t[0] for t in prefix_matches] + [t[0] for t in substring_matches]
+
+
+def _ranked_sessions(
+    matched: list[tuple[str, str]], prefix: str,
+) -> list[tuple[str, str]]:
+    """/load 会话候选语义排序（P1-1 回归修复）。
+
+    /load 支持 sid 与 title 双重匹配（``sid.startswith(prefix) or
+    title.startswith(prefix)``），但候选须按 **多键加权** 排序而非二次过滤
+    （修复前 ``_ranked([sid for sid, _t in matched], prefix)`` 仅保留 sid
+    匹配项，title 匹配但 sid 不匹配的会话被丢弃返回空）。
+
+    排序权重（低值优先）：
+      0  sid 精确 > 1 sid 前缀 > 2 title 前缀 > 3 sid 子串 > 4 title 子串
+    同级按 sid 长度升序 + 字母序（稳定排序保持输入序为最终次级）。
+    空前缀（``/load`` 无参数）→ 保持注册表顺序（全部候选）。
+
+    Args:
+        matched: 已按 sid/title 前缀过滤的 ``(sid, title)`` 对列表。
+        prefix: 参数最后词（``/load`` 后的匹配前缀）。
+
+    Returns:
+        排序后的 ``(sid, title)`` 对列表。
+    """
+    if not prefix:
+        return matched
+    categories: list[tuple[int, str, str]] = []
+    for sid, title in matched:
+        if sid == prefix:
+            cat = 0
+        elif sid.startswith(prefix):
+            cat = 1
+        elif title.startswith(prefix):
+            cat = 2
+        elif prefix in sid:
+            cat = 3
+        elif prefix in title:
+            cat = 4
+        else:
+            continue  # 已过滤，防御性跳过
+        categories.append((cat, sid, title))
+    categories.sort(key=lambda t: (t[0], len(t[1]), t[1].lower()))
+    return [(sid, title) for _cat, sid, title in categories]
+
+
 # ── 补全引擎 ────────────────────────────────────────────
 
 
@@ -188,12 +255,16 @@ class CompletionEngine:
     # ── 命令补全 ───────────────────────────────────────
 
     def _complete_command(self, prefix: str) -> list[CompletionItem]:
-        """补全命令名（/ 开头）。"""
+        """补全命令名（/ 开头）。
+
+        方向D 步骤13：候选语义排序——精确匹配 > 前缀匹配（长度升序）>
+        子串包含（长度升序）；同优先级按字母序（稳定排序保持注册表序为次级）。
+        """
         commands = self._commands_cache.get()
+        ranked = _ranked(commands, prefix)
         result: list[CompletionItem] = []
-        for cmd in commands:
-            if cmd.startswith(prefix):
-                result.append(CompletionItem(cmd, start_pos=-len(prefix), item_type="command"))
+        for cmd in ranked:
+            result.append(CompletionItem(cmd, start_pos=-len(prefix), item_type="command"))
         return result
 
     # ── 参数补全 ───────────────────────────────────────
@@ -223,27 +294,36 @@ class CompletionEngine:
 
         if cmd_name == "/model":
             models = self._models_cache.get()
+            # 方向D 步骤13：语义排序（精确 > 前缀 > 子串，长度升序）
             return [
                 CompletionItem(m, start_pos=start, item_type="param")
-                for m in models if m.startswith(param_last)
+                for m in _ranked(models, param_last)
             ]
 
         elif cmd_name == "/theme":
             themes = self._theme_cache.get()
+            ranked = _ranked([name for name, _desc in themes], param_last)
             return [
                 CompletionItem(name, start_pos=start, item_type="param")
-                for name, _desc in themes if name.startswith(param_last)
+                for name in ranked
             ]
 
         elif cmd_name == "/load":
             sessions = self._sessions_cache.get()
-            result: list[CompletionItem] = []
+            matched: list[tuple[str, str]] = []
             for s in sessions:
                 sid: str = s.get("id", "")
                 title: str = s.get("title", "")
                 if sid.startswith(param_last) or title.startswith(param_last):
-                    display = f"{sid[:8]} - {title}" if title else sid[:8]
-                    result.append(CompletionItem(sid, display=display, start_pos=start, item_type="session"))
+                    matched.append((sid, title))
+            # P1-1 回归修复：多键加权排序（sid 精确 > sid 前缀 > title 前缀 >
+            # sid 子串 > title 子串）替代二次 sid 过滤——title 匹配但 sid 不匹配
+            # 的会话不再被丢弃。
+            ranked = _ranked_sessions(matched, param_last)
+            result: list[CompletionItem] = []
+            for sid, title in ranked:
+                display = f"{sid[:8]} - {title}" if title else sid[:8]
+                result.append(CompletionItem(sid, display=display, start_pos=start, item_type="session"))
             return result
 
         return []

@@ -31,13 +31,22 @@ from src.tui._const import (
 )
 from src.tui._config import TuiConfig
 from src.renderer._locks import _try_acquire_output_lock
-from src.tui._screen import TerminalWidthCache, _get_terminal_size, process_sigwinch
+from src.tui._screen import (
+    TerminalWidthCache,
+    _get_terminal_size,
+    detect_truecolor,
+    process_sigwinch,
+)
 from .reconciler import Reconciler
 from .renderer import InkRenderer
 from . import components as _components
 from . import hooks as _hooks
 from src.tui._input import _compute_cursor_visual_pos
-from src.tui.app.input_area import _cursor_visual_from_layout
+from src.tui.app.input_area import (
+    _cursor_visual_from_layout,
+    _completion_height,
+    _is_search_active,
+)
 
 if TYPE_CHECKING:
     from src.tui.events.event_bus import DisplayEventBus
@@ -163,6 +172,14 @@ class InkSession:
         # use_input router 发布缓存（_input 未注入时记录，set_input 后补发）
         self._pending_input_router = None
         _hooks.set_input_router_callback(self._on_input_router)
+        # ★ useApp 控制（方向B 步骤10）：session 注入 exit/clear 回调
+        self._exit_requested = False
+        _hooks.set_app_control({"exit": self.request_exit, "clear": self.request_clear})
+        # ★ 终端能力协商（方向B 步骤12）：truecolor 支持（构造时检测一次）。
+        #   当前消费方（core/color.auto_color / TrueColor.best_effort）仍走 256
+        #   色降级路径——本属性仅供未来组件选择 TrueColor 的协商查询点，
+        #   避免行为漂移（文档注明）。
+        self._supports_truecolor = detect_truecolor()
         # 系统监控（CPU/MEM；每 2 秒刷新输入区顶部分隔线显示）
         self._system_monitor = None
         self._last_sys_stats_time: float = 0.0
@@ -278,8 +295,51 @@ class InkSession:
     def render_crashed(self) -> bool:
         return self._render_crashed.is_set()
 
+    @property
+    def exit_requested(self) -> bool:
+        """是否已请求退出（useApp().exit 置位）。"""
+        return self._exit_requested
+
+    def request_exit(self) -> None:
+        """请求退出（useApp().exit 触发）。
+
+        P3-2（渲染期死锁修复）：**渲染线程内**（组件渲染期调用 useApp().exit）
+        仅置位 ``_exit_requested``、延迟到渲染循环本帧结束后退出——直接
+        ``stop()`` 会 ``join(timeout=2.0)`` 自身（渲染线程）造成死锁；
+        **非渲染线程**调用时同步 ``stop()``（幂等：render 线程未启动/已停止
+        时安全返回）。
+        """
+        self._exit_requested = True
+        if threading.current_thread() is self._render_thread:
+            # 渲染线程内：仅置位 + 唤醒循环（下一帧退出）
+            self._cmd_event.set()
+            return
+        self.stop()
+
+    def request_clear(self) -> None:
+        """请求全帧清屏重绘（useApp().clear 触发）。
+
+        非全屏模型无 DECSTBM 清屏——实现为强制全量重绘（reset 渲染器 →
+        下帧全量写入），文档注明与 react-ink 的 DECSTBM 清屏差异。
+        """
+        try:
+            self._ink_renderer.reset()
+        except Exception:
+            _logger.debug("request_clear reset 异常", exc_info=True)
+        self.request_bottom_redraw()
+
     def is_render_running(self) -> bool:
         return self._render_running
+
+    @property
+    def supports_truecolor(self) -> bool:
+        """终端 truecolor 支持（方向B 步骤12，构造时检测一次）。
+
+        当前消费方（core/color.auto_color / TrueColor.best_effort）仍走 256
+        色降级路径——本属性仅作协商查询点供未来组件选择 TrueColor，
+        避免行为漂移。
+        """
+        return self._supports_truecolor
 
     def set_panel_refresh_callback(self, callback: Callable[[], None] | None) -> None:
         self._panel_refresh_cb = callback
@@ -436,6 +496,11 @@ class InkSession:
                 try:
                     has_content = self._drain_queue()
                     self._cmd_event.clear()
+                    # ★ P3-2：渲染线程内 request_exit 的延迟退出语义——
+                    #   仅置位后本帧结束检查此处退出（stop 由外部线程调用或
+                    #   自然结束；渲染线程自身不 join）。
+                    if self._exit_requested:
+                        break
                     timeout = self._config.render_interval
                     self._cmd_event.wait(timeout=timeout)
                 except Exception as exc:
@@ -480,6 +545,11 @@ class InkSession:
                 try:
                     self._render_frame()
                 except Exception:
+                    # P3-16（设计说明）：无 boundary 异常端到端不触发崩溃恢复——
+                    # reconciler 层对无边界异常 re-raise 保留，但 session 层在此
+                    # 吞掉仅记 warning：**单帧失败 + 10Hz 重试**（render 线程不
+                    # 崩溃不重启）。reconciler._handle_render_crash 崩溃恢复仅
+                    # 服务 render 循环级异常（队列/输入/面板回调等）。
                     _logger.warning("渲染帧失败", exc_info=True)
             return changed
 
@@ -599,9 +669,9 @@ class InkSession:
         cursor_pos = int(fiber.props.get("cursor_pos", -1))
         prompt = str(fiber.props.get("prompt", "> "))
         completion = fiber.props.get("completion")
-        popup_height = 0
-        if completion is not None and getattr(completion, "visible", False) and getattr(completion, "items", None):
-            popup_height = len(completion.items) + 2
+        # 方向C 步骤4：popup_height 唯一真源 _completion_height（与 input_area
+        # 渲染高度共享；session 已从 input_area 导入辅助函数，无新依赖环）。
+        popup_height = _completion_height(completion)
         max_input = max(1, box.w - len(prompt))
         # ★ PERF-1：优先复用 input_area measure 阶段缓存的换行布局（每帧至多 1 次换行），
         #   未命中（fiber 缓存不存在或 text/max_input 已变）时回退既有计算。
@@ -613,6 +683,12 @@ class InkSession:
             vis_row, vis_col = _compute_cursor_visual_pos(text, cursor_pos, max_input)
         # 输入文本起始行 = box.y + popup_height + 1（上分隔线之后）
         row = box.y + popup_height + 1 + vis_row + 1
+        # ★ P0-1：反向历史搜索激活时 input_area 在输入文本行前追加 1 行
+        #   (reverse-i-search) 覆盖行（_measure 已正确增行）——光标行偏移须
+        #   同步计入（与 input_area._measure/_build_lines 共享 _is_search_active
+        #   高度辅助，保持一致）。
+        if _is_search_active(fiber.props.get("history_search")):
+            row += 1
         col = box.x + len(prompt) + vis_col + 1
         try:
             self._ink_renderer.place_cursor(row, col)

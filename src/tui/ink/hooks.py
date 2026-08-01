@@ -11,6 +11,7 @@ hook 节点（保留状态/引用），从而跨渲染保持状态。
 
 from __future__ import annotations
 
+import logging
 from typing import Any, Callable, List
 
 from .fiber import (
@@ -23,6 +24,18 @@ from .fiber import (
     Context,
 )
 
+_logger = logging.getLogger(__name__)
+
+
+class HookStateError(RuntimeError):
+    """hook 状态机异常（编程错误：渲染期外调用 / hook 类型不一致）。
+
+    不参与 ErrorBoundary 捕获——hook 顺序/类型错误视为编程错误，须向
+    调用方传播（reconciler 捕获函数组件渲染异常时对 HookStateError 直接
+    re-raise，不执行边界降级）。
+    """
+
+
 # 渲染期当前 fiber 栈（渲染线程单线程，模块级栈即可）
 _current_fiber_stack: List[Fiber] = []
 
@@ -34,6 +47,13 @@ _context_registry: dict[str, Context] = {}
 
 # input router 注入回调（session 注入；reconciler 每帧发布 composite router）
 _input_router_callback: Callable[[Any], None] | None = None
+
+# app control（session 注入：{"exit": fn, "clear": fn}；useApp 读取）
+_app_control: dict | None = None
+
+# context 缓存版本号（方向B 步骤11）：provider 值变化时递增；
+# use_context 命中校验（与 contexts 内容解耦，避免依赖每帧重置的 contexts）。
+_context_version: int = 0
 
 
 def set_schedule_callback(cb: Callable[[], None] | None) -> None:
@@ -56,7 +76,7 @@ def _pop_current() -> None:
 def _current() -> Fiber:
     """读取当前 fiber。"""
     if not _current_fiber_stack:
-        raise RuntimeError("use_* hook 只能在函数组件渲染期间调用")
+        raise HookStateError("use_* hook 只能在函数组件渲染期间调用")
     return _current_fiber_stack[-1]
 
 
@@ -66,7 +86,7 @@ def _schedule() -> None:
         try:
             _schedule_callback()
         except Exception:
-            pass
+            _logger.debug("schedule 回调异常", exc_info=True)
 
 
 # ═══════════════════════════════════════════════════════════
@@ -81,7 +101,8 @@ def _next_state_hook(reducer: Callable[[Any, Any], Any] | None, initial: Any) ->
     fiber.hook_index += 1
     if idx < len(fiber.hooks):
         hook = fiber.hooks[idx]
-        assert isinstance(hook, StateHook), f"hook 类型不一致: {type(hook)}"
+        if not isinstance(hook, StateHook):
+            raise HookStateError(f"hook 类型不一致: {type(hook)}")
         if reducer is not None:
             hook.reducer = reducer
     else:
@@ -154,7 +175,8 @@ def use_ref(initial: Any = None) -> RefHook:
     fiber.hook_index += 1
     if idx < len(fiber.hooks):
         hook = fiber.hooks[idx]
-        assert isinstance(hook, RefHook), f"hook 类型不一致: {type(hook)}"
+        if not isinstance(hook, RefHook):
+            raise HookStateError(f"hook 类型不一致: {type(hook)}")
     else:
         hook = RefHook(initial)
         fiber.hooks.append(hook)
@@ -181,7 +203,8 @@ def use_effect(create: Callable[[], Any] | None, deps: list | tuple | None = Non
     fiber.hook_index += 1
     if idx < len(fiber.hooks):
         hook = fiber.hooks[idx]
-        assert isinstance(hook, EffectHook), f"hook 类型不一致: {type(hook)}"
+        if not isinstance(hook, EffectHook):
+            raise HookStateError(f"hook 类型不一致: {type(hook)}")
     else:
         hook = EffectHook(create, deps, None, None)
         fiber.hooks.append(hook)
@@ -252,7 +275,8 @@ def use_memo(factory: Callable[[], Any], deps: list | tuple | None = None) -> An
     fiber.hook_index += 1
     if idx < len(fiber.hooks):
         hook = fiber.hooks[idx]
-        assert isinstance(hook, MemoHook), f"hook 类型不一致: {type(hook)}"
+        if not isinstance(hook, MemoHook):
+            raise HookStateError(f"hook 类型不一致: {type(hook)}")
     else:
         hook = MemoHook(factory, deps, None, None)
         fiber.hooks.append(hook)
@@ -309,6 +333,10 @@ def use_context(ctx: Context) -> Any:
     沿当前 fiber 的 return_ 链向上查找最近的 Provider 提供的值；
     未找到 Provider 时返回 ctx.default。
 
+    性能（方向B 步骤11）：逐 fiber 缓存——同 fiber 多次 use_context 同 ctx
+    只 O(depth) 一次；Provider 值变化时 reconciler 清空子树缓存并递增
+    ``_context_version``（版本号校验缓存命中，与 contexts 内容解耦）。
+
     Args:
         ctx: create_context 返回的 Context 对象。
 
@@ -316,12 +344,29 @@ def use_context(ctx: Context) -> Any:
         Provider 提供的 value（或 ctx.default）。
     """
     fiber = _current()
+    cache = fiber._context_cache
+    if fiber._context_cache_version == _context_version and ctx.tag in cache:
+        return cache[ctx.tag]
+    value = ctx.default
     f = fiber.return_
     while f is not None:
         if f.contexts and ctx.tag in f.contexts:
-            return f.contexts[ctx.tag]
+            value = f.contexts[ctx.tag]
+            break
         f = f.return_
-    return ctx.default
+    cache[ctx.tag] = value
+    fiber._context_cache_version = _context_version
+    return value
+
+
+def _bump_context_version() -> None:
+    """provider 值变化 → 递增 context 缓存版本号（失效全部逐 fiber 缓存）。
+
+    由 reconciler 在 provider 值变更检测时调用（与子树清缓存配合：
+    子树精确清空 + 版本号防御失效；误失效只导致多一次查找，无正确性风险）。
+    """
+    global _context_version
+    _context_version += 1
 
 
 # ═══════════════════════════════════════════════════════════
@@ -341,7 +386,7 @@ def _publish_input_router(router) -> None:
         try:
             _input_router_callback(router)
         except Exception:
-            pass
+            _logger.debug("input router 发布异常", exc_info=True)
 
 
 def use_input(handler: Callable[[Any], bool], is_active: bool = True) -> None:
@@ -360,13 +405,129 @@ def use_input(handler: Callable[[Any], bool], is_active: bool = True) -> None:
     fiber.hook_index += 1
     if idx < len(fiber.hooks):
         hook = fiber.hooks[idx]
-        assert isinstance(hook, InputHook), f"hook 类型不一致: {type(hook)}"
+        if not isinstance(hook, InputHook):
+            raise HookStateError(f"hook 类型不一致: {type(hook)}")
     else:
         hook = InputHook(handler, is_active)
         fiber.hooks.append(hook)
     hook.handler = handler
     hook.is_active = is_active
     return None
+
+
+# ═══════════════════════════════════════════════════════════
+# use_error_state（方向B 步骤9 — ErrorBoundary 内部 hook）
+# ═══════════════════════════════════════════════════════════
+
+
+def use_error_state() -> Any:
+    """ErrorBoundary 内部 hook：读取 reconciler 注入的 boundary error。
+
+    子组件渲染异常被边界捕获后，reconciler 将异常对象记录到边界 fiber 的
+    ``_boundary_error`` 字段；ErrorBoundary 组件下次渲染经本 hook 读取，
+    非 None 时渲染 ``fallback(error)``（或默认占位）。
+
+    Returns:
+        boundary error（异常对象）；None 表示无错误。
+    """
+    fiber = _current()
+    return getattr(fiber, "_boundary_error", None)
+
+
+# ═══════════════════════════════════════════════════════════
+# memo / useApp / useFocus（方向B 步骤10）
+# ═══════════════════════════════════════════════════════════
+
+
+def memo(Component: Callable, are_equal: Callable | None = None) -> Callable:
+    """React.memo 等价物：组件级渲染短路。
+
+    返回带 ``_is_memo``/``_are_equal`` 标记的包装函数；reconciler 在
+    props 未变（``are_equal`` 或默认浅比较 ``props == last_props``）
+    且无待处理 state 更新时跳过组件函数调用与子树重建（memo 短路）。
+
+    Args:
+        Component: 函数组件。
+        are_equal: 自定义相等比较 ``(prev_props, next_props) -> bool``；
+            None 时默认浅比较（``==``；props 含不可比较对象时 try/except
+            兜底视为不等 → 重渲染，安全侧）。
+
+    Returns:
+        包装后的 memo 组件函数（保留原组件名/模块，避免 fiber key 冲突）。
+    """
+    def Memoized(props):
+        return Component(props)
+
+    Memoized._is_memo = True
+    Memoized._are_equal = are_equal
+    Memoized.__name__ = getattr(Component, "__name__", "Memoized")
+    Memoized.__module__ = getattr(Component, "__module__", __name__)
+    return Memoized
+
+
+def set_app_control(control: dict | None) -> None:
+    """注入 app control（session 注入：``{"exit": fn, "clear": fn}``）。
+
+    对齐既有测试契约：``_hooks._app_control["exit"]`` 可调用。
+    ``None`` 清除注入（测试清理路径）。
+    """
+    global _app_control
+    _app_control = control
+
+
+#: 别名（保留 ``set_app_callbacks`` 命名兼容；二者等价）
+set_app_callbacks = set_app_control
+
+
+def useApp() -> dict:
+    """React useApp 等价物：返回应用控制函数 ``{"exit": fn, "clear": fn}``。
+
+    - ``exit``：请求退出（session 置 exit_requested + 停止渲染，幂等）。
+    - ``clear``：请求全帧清屏重绘（非全屏模型：强制全量重绘，非 DECSTBM
+      清屏——文档注明与 react-ink 的差异）。
+
+    未注入控制时返回 no-op（安全兜底，不抛异常）。
+    """
+    control = _app_control or {}
+
+    def _noop(*args, **kwargs):
+        return None
+
+    return {
+        "exit": control.get("exit") or _noop,
+        "clear": control.get("clear") or _noop,
+    }
+
+
+def useFocus(is_focused: bool = True) -> None:
+    """React useFocus 等价物：注册当前 fiber 的 InputHook 焦点标志。
+
+    焦点仲裁：reconciler 构建 input router 时优先仅取 ``focused`` 且
+    ``active`` 的 hook；focused 集合为空时回退全部 active hook
+    （无焦点仲裁时行为不变，零回归）。与 ``use_input`` 配套使用
+    （**先 ``use_input`` 后 ``useFocus``**——P2-7 契约）。
+
+    P2-7：useFocus 经 ``reversed(fiber.hooks)`` 取最近的 InputHook；若用户
+    先 useFocus 后 use_input（反序），找不到 InputHook——显式 raise
+    HookStateError（编程错误），而非静默 no-op（静默会导致焦点标志丢失或
+    命中更早的 hook，行为不可预期）。
+
+    Args:
+        is_focused: 是否参与焦点优先路由；False 时该 hook 在存在其他
+            focused hook 时不参与路由。
+
+    Raises:
+        HookStateError: 当前 fiber 无任何已注册 InputHook（必须先调用
+            ``use_input``）。
+    """
+    fiber = _current()
+    for hook in reversed(fiber.hooks):
+        if isinstance(hook, InputHook):
+            hook.focused = is_focused
+            return None
+    raise HookStateError(
+        "useFocus 必须在 use_input 之后调用（当前 fiber 未注册 InputHook）"
+    )
 
 
 __all__ = [
@@ -379,9 +540,16 @@ __all__ = [
     "use_context",
     "create_context",
     "use_input",
+    "use_error_state",
+    "memo",
+    "useApp",
+    "useFocus",
     "set_schedule_callback",
     "set_input_router_callback",
+    "set_app_control",
+    "set_app_callbacks",
     "deps_changed",
     "mark_effect_committed",
     "_deps_equal",
+    "HookStateError",
 ]

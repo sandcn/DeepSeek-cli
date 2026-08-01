@@ -310,3 +310,179 @@ class TestCompletionShowDedup:
         mock_bb.hide_completions.assert_called_once()
         mock_bb.show_completions.assert_not_called()
         assert handler._last_auto_text == "something"
+
+
+# ═══════════════════════════════════════════════════════════
+# 方向D 步骤13 — 命令/参数候选语义排序增强
+# ═══════════════════════════════════════════════════════════
+
+class TestCommandCompletionSorting:
+    """方向D 步骤13 — 命令补全候选语义排序（精确 > 前缀 > 子串，长度升序）。"""
+
+    @staticmethod
+    def _engine_with_commands(commands):
+        from src.tui._completion_engine import CompletionEngine
+        return CompletionEngine(commands_source=lambda: list(commands))
+
+    def test_command_exact_match_first_regression(self):
+        """输入 /m 时精确项 /model 优先于 /model-check（精确 > 前缀）。"""
+        engine = self._engine_with_commands(["/model-check", "/model", "/theme"])
+        items = engine._complete_command("/m")
+        texts = [i.text for i in items]
+        assert texts[0] == "/model"
+        assert texts.index("/model") < texts.index("/model-check")
+
+    def test_command_prefix_shorter_first_regression(self):
+        """输入 /mo 时 /model 排在 /model-check 前（前缀长度升序）。"""
+        engine = self._engine_with_commands(["/model-check", "/model", "/theme"])
+        items = engine._complete_command("/mo")
+        texts = [i.text for i in items]
+        assert texts.index("/model") < texts.index("/model-check")
+
+    def test_command_substring_after_prefix_regression(self):
+        """子串包含排在前缀匹配之后（防御用例：验证 _ranked 分级）。"""
+        from src.tui._completion_engine import _ranked
+        # 子串匹配需 prefix 完整出现在命令非开头位置——构造含第二斜杠的命令名
+        # （命令注册表一般不含，本用例防御验证 _ranked 分级逻辑）。
+        commands = ["/model-check", "/model", "/x/model"]
+        texts = _ranked(commands, "/model")
+        assert texts[0] == "/model"                          # 精确最前
+        assert texts.index("/model-check") < texts.index("/x/model")  # 前缀 < 子串
+
+    def test_command_same_prefix_alphabetical_regression(self):
+        """同优先级按字母序（稳定排序）。"""
+        engine = self._engine_with_commands(["/theme", "/model", "/help"])
+        items = engine._complete_command("/")
+        texts = [i.text for i in items]
+        # 空前缀语义：所有命令均为前缀匹配（cmd.startswith("/")），长度均为 5+ →
+        # 按字母序：/help /model /theme
+        assert texts == ["/help", "/model", "/theme"]
+
+    def test_command_empty_prefix_defensive_regression(self):
+        """空前缀防御：_ranked 返回全部命令按字母序（complete() 主入口已短路）。"""
+        engine = self._engine_with_commands(["/theme", "/model", "/help"])
+        items = engine._complete_command("")
+        assert [i.text for i in items] == ["/help", "/model", "/theme"]
+
+    def test_command_single_char_prefix_regression(self):
+        """单字符前缀 /m：前缀匹配（长度升序）+ 字母序。"""
+        engine = self._engine_with_commands(["/model-check", "/model", "/theme", "/modify"])
+        items = engine._complete_command("/m")
+        texts = [i.text for i in items]
+        # 前缀匹配长度升序：/model(6) /modify(7) /model-check(12)
+        assert texts.index("/model") < texts.index("/modify") < texts.index("/model-check")
+
+    def test_command_case_sensitive_startswith_regression(self):
+        """startswith 大小写敏感保持现状：大写命令不匹配小写前缀。"""
+        engine = self._engine_with_commands(["/Model", "/model"])
+        items = engine._complete_command("/m")
+        texts = [i.text for i in items]
+        assert texts == ["/model"]
+
+    def test_command_no_match_empty_regression(self):
+        """无匹配时返回空。"""
+        engine = self._engine_with_commands(["/model", "/theme"])
+        items = engine._complete_command("/zzz")
+        assert items == []
+
+    def test_command_empty_registry_empty_regression(self):
+        """命令注册表为空时返回空。"""
+        engine = self._engine_with_commands([])
+        assert engine._complete_command("/m") == []
+
+
+class TestParamCompletionSorting:
+    """方向D 步骤13 — 参数补全候选语义排序（model/theme/session）。"""
+
+    @staticmethod
+    def _engine_with_models(models):
+        import time
+        from src.tui._completion_engine import CompletionEngine
+        engine = CompletionEngine()
+        engine._models_cache._value = list(models)
+        engine._models_cache._expires = time.monotonic() + 100
+        return engine
+
+    def test_param_model_exact_first_regression(self):
+        """/model 参数精确匹配优先。"""
+        engine = self._engine_with_models(["deepseek-chat", "deepseek-reasoner", "deepseek"])
+        items = engine._complete_param("/model deepseek")
+        texts = [i.text for i in items]
+        assert texts[0] == "deepseek"
+
+    def test_param_model_prefix_shorter_first_regression(self):
+        """/model 参数前缀匹配长度升序：deepseek-chat 排在 deepseek-reasoner 前。"""
+        engine = self._engine_with_models(["deepseek-reasoner", "deepseek-chat"])
+        items = engine._complete_param("/model deepseek")
+        texts = [i.text for i in items]
+        assert texts.index("deepseek-chat") < texts.index("deepseek-reasoner")
+
+    def test_param_model_substring_after_prefix_regression(self):
+        """/model 参数子串包含排在前缀之后。"""
+        engine = self._engine_with_models(["gpt-4o", "deepseek-chat"])
+        # prefix="ee"：无前缀匹配（无 "ee" 开头），deepseek-chat 为子串包含
+        items = engine._complete_param("/model ee")
+        texts = [i.text for i in items]
+        assert texts == ["deepseek-chat"]
+
+    def test_param_model_no_match_empty_regression(self):
+        """/model 参数无匹配返回空。"""
+        engine = self._engine_with_models(["deepseek-chat"])
+        assert engine._complete_param("/model zzz") == []
+
+
+class TestLoadSessionCompletion:
+    """P1-1 回归 — /load 会话补全：title 匹配不被 sid 二次过滤丢弃。"""
+
+    @staticmethod
+    def _engine_with_sessions(sessions):
+        import time
+        from src.tui._completion_engine import CompletionEngine
+        engine = CompletionEngine()
+        engine._sessions_cache._value = list(sessions)
+        engine._sessions_cache._expires = time.monotonic() + 100
+        return engine
+
+    def test_load_title_match_survives_ranking_regression(self):
+        """title 匹配但 sid 不匹配的会话返回（修复前被 _ranked 二次过滤丢空）。"""
+        engine = self._engine_with_sessions([
+            {"id": "sess-0001-aaaa", "title": "调研 TUI 架构"},
+            {"id": "sess-0002-bbbb", "title": "编写单元测试"},
+        ])
+        items = engine._complete_param("/load 调研")
+        texts = [i.text for i in items]
+        # title 前缀匹配（sid 不含 "调研"）→ 不再被丢弃
+        assert texts == ["sess-0001-aaaa"]
+        assert items[0].item_type == "session"
+
+    def test_load_sid_exact_beats_title_prefix_regression(self):
+        """sid 精确 > sid 前缀 > title 前缀 加权排序（多键不互斥）。"""
+        engine = self._engine_with_sessions([
+            {"id": "abc", "title": "xyz-proj"},
+            {"id": "abcd", "title": "zzz"},
+            {"id": "other", "title": "abc-doc"},
+        ])
+        items = engine._complete_param("/load abc")
+        texts = [i.text for i in items]
+        assert texts[0] == "abc"      # sid 精确
+        assert texts.index("abcd") < texts.index("other")  # sid 前缀 < title 前缀
+
+    def test_load_title_prefix_before_sid_substring_regression(self):
+        """title 前缀（cat 2）排在 sid 子串（cat 3）之前。"""
+        engine = self._engine_with_sessions([
+            {"id": "sess-xyz", "title": "部署文档"},
+            {"id": "abc-xyz", "title": "文档评审"},
+        ])
+        items = engine._complete_param("/load 文档")
+        texts = [i.text for i in items]
+        # "文档" 命中 title 前缀（sess-xyz）与 sid 子串（abc-xyz）→ title 前缀优先
+        assert texts == ["sess-xyz", "abc-xyz"]
+
+    def test_load_empty_prefix_keeps_order_regression(self):
+        """/load（无参数）→ 空前缀保持注册表顺序。"""
+        engine = self._engine_with_sessions([
+            {"id": "b-id", "title": "B"},
+            {"id": "a-id", "title": "A"},
+        ])
+        items = engine._complete_param("/load")
+        assert [i.text for i in items] == ["b-id", "a-id"]

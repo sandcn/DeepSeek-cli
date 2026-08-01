@@ -1103,11 +1103,11 @@ class TestParseEscapeSequenceRegression:
             os.close(w_fd)
 
     def test_ss3_f1_regression(self, parse_input):
-        """SS3 序列（ESC O P = F1）→ unknown。"""
+        """SS3 序列（ESC O P = F1）→ f1（方向A 步骤1：不再 unknown）。"""
         r_fd, w_fd = os.pipe()
         try:
             os.write(w_fd, b"OP")
-            assert parse_input.parse_sequence(r_fd).kind == "unknown"
+            assert parse_input.parse_sequence(r_fd).kind == "f1"
         finally:
             os.close(r_fd)
             os.close(w_fd)
@@ -1144,11 +1144,14 @@ class TestParseEscapeSequenceRegression:
             os.close(w_fd)
 
     def test_other_esc_combination_regression(self, parse_input):
-        """其他 ESC 组合 → interrupt。"""
+        """其他 ESC 组合（ESC+可打印）→ alt_char（方向A 步骤1：不再 interrupt）。"""
         r_fd, w_fd = os.pipe()
         try:
             os.write(w_fd, b"x")
-            assert parse_input.parse_sequence(r_fd).kind == "interrupt"
+            ev = parse_input.parse_sequence(r_fd)
+            assert ev.kind == "alt_char"
+            assert ev.char == "x"
+            assert ev.modifier == 3
         finally:
             os.close(r_fd)
             os.close(w_fd)
@@ -2407,5 +2410,531 @@ class TestHandleCharsLargePaste:
             inp.handle_chars("z" * 50000)
             assert len(received) == 1
             assert received[0][1] == 50000
+        finally:
+            os.close(fd)
+
+
+# ═══════════════════════════════════════════════════════════
+# 方向A 步骤1 输入组合键缺陷修复分发测试（2026-08-01）
+# ═══════════════════════════════════════════════════════════
+
+class TestCombinationKeyDispatch:
+    """组合键分发：Alt+B/F 词跳转 / Shift+Tab 反向循环 / CSI u Ctrl+字母 / F1-F4 router。
+
+    验证 read_stdin_once → _parse_escape_sequence → _dispatch_key_event
+    全链路（os.pipe 模拟真实字节流，含 ESC 前缀）。
+    """
+
+    def test_alt_b_word_left_regression(self, tmp_path):
+        """ESC+b → alt_char → _word_left（词左跳，不再 interrupt）。"""
+        r_fd, w_fd = os.pipe()
+        try:
+            inp = Input(fd=r_fd, history_file=tmp_path / "history")
+            inp.handle_chars("hello world")  # 光标在末尾（pos=11）
+            os.write(w_fd, b"\x1bb")
+            ready, _, _ = select.select([r_fd], [], [], 2.0)
+            assert ready
+            assert inp.read_stdin_once() is True
+            assert inp._cursor_pos == 6  # 跳到 "hello " 后（'w' 前）
+            assert not inp.interrupted
+        finally:
+            os.close(w_fd)
+            os.close(r_fd)
+
+    def test_alt_f_word_right_regression(self, tmp_path):
+        """ESC+f → alt_char → _word_right（词右跳）。"""
+        r_fd, w_fd = os.pipe()
+        try:
+            inp = Input(fd=r_fd, history_file=tmp_path / "history")
+            inp.handle_chars("hello world")
+            inp._home()
+            os.write(w_fd, b"\x1bf")
+            ready, _, _ = select.select([r_fd], [], [], 2.0)
+            assert ready
+            assert inp.read_stdin_once() is True
+            assert inp._cursor_pos == 6  # 跳到 "hello " 后（'w' 前）
+        finally:
+            os.close(w_fd)
+            os.close(r_fd)
+
+    def test_shift_tab_reverse_completion_regression(self, tmp_path):
+        """CSI u Shift+Tab → tab/modifier=2 → 补全反向循环（delta=-1）。"""
+        r_fd, w_fd = os.pipe()
+        try:
+            inp = Input(fd=r_fd, history_file=tmp_path / "history")
+            calls = []
+            inp.set_completion_navigate_callback(lambda d, t: calls.append(d) or t)
+            inp.handle_chars("pre")
+            os.write(w_fd, b"\x1b[9;2u")
+            ready, _, _ = select.select([r_fd], [], [], 2.0)
+            assert ready
+            assert inp.read_stdin_once() is True
+            assert calls == [-1]
+        finally:
+            os.close(w_fd)
+            os.close(r_fd)
+
+    def test_shift_tab_no_completion_noop_regression(self, tmp_path):
+        """CSI u Shift+Tab 且无补全导航回调 → no-op（不插入制表符）。"""
+        r_fd, w_fd = os.pipe()
+        try:
+            inp = Input(fd=r_fd, history_file=tmp_path / "history")
+            inp.handle_chars("pre")
+            os.write(w_fd, b"\x1b[9;2u")
+            ready, _, _ = select.select([r_fd], [], [], 2.0)
+            assert ready
+            assert inp.read_stdin_once() is True
+            assert inp.get_current_text() == "pre"  # 未插入 \t
+        finally:
+            os.close(w_fd)
+            os.close(r_fd)
+
+    def test_csi_u_ctrl_a_home_regression(self, tmp_path):
+        """CSI u Ctrl+A（97;5）→ home（光标移到行首）。"""
+        r_fd, w_fd = os.pipe()
+        try:
+            inp = Input(fd=r_fd, history_file=tmp_path / "history")
+            inp.handle_chars("hello")
+            inp._left()
+            inp._left()  # 光标在 "hel|lo"
+            os.write(w_fd, b"\x1b[97;5u")
+            ready, _, _ = select.select([r_fd], [], [], 2.0)
+            assert ready
+            assert inp.read_stdin_once() is True
+            assert inp._cursor_pos == 0  # home
+        finally:
+            os.close(w_fd)
+            os.close(r_fd)
+
+    def test_f1_router_consumed_regression(self, tmp_path):
+        """F1 经 input router 消费（不再静默丢弃）。"""
+        r_fd, w_fd = os.pipe()
+        try:
+            inp = Input(fd=r_fd, history_file=tmp_path / "history")
+            consumed = []
+            inp.set_input_hook_router(lambda ev: consumed.append(ev.kind) or True)
+            os.write(w_fd, b"\x1bOP")
+            ready, _, _ = select.select([r_fd], [], [], 2.0)
+            assert ready
+            assert inp.read_stdin_once() is True
+            assert consumed == ["f1"]
+        finally:
+            os.close(w_fd)
+            os.close(r_fd)
+
+    def test_f4_router_release_noop_regression(self, tmp_path):
+        """F4 router 放行 → no-op（不崩溃、不产生中断）。"""
+        r_fd, w_fd = os.pipe()
+        try:
+            inp = Input(fd=r_fd, history_file=tmp_path / "history")
+            inp.set_input_hook_router(lambda ev: False)
+            inp.handle_chars("abc")
+            os.write(w_fd, b"\x1bOS")
+            ready, _, _ = select.select([r_fd], [], [], 2.0)
+            assert ready
+            assert inp.read_stdin_once() is True
+            assert inp.get_current_text() == "abc"
+            assert not inp.interrupted
+        finally:
+            os.close(w_fd)
+            os.close(r_fd)
+
+
+# ═══════════════════════════════════════════════════════════
+# 方向D 步骤14 — Ctrl+R 反向历史搜索（配置门控）
+# ═══════════════════════════════════════════════════════════
+
+class TestReverseSearchEditor:
+    """InputBufferEditor 反向历史搜索方法（search_enter/next/prev/exit/is_search_active）。"""
+
+    @pytest.fixture
+    def editor(self, tmp_path):
+        from src.tui._input_buffer import InputBufferEditor
+        from src.tui._input import _HistoryIO
+        return InputBufferEditor(
+            history_file=tmp_path / "test_history",
+            history_io=_HistoryIO(),
+        )
+
+    def test_search_enter_builds_matches_most_recent_first(self, editor):
+        """search_enter 建立匹配列表（最近优先），idx 指向最近匹配。"""
+        editor._history = ["newest match", "middle", "oldest match"]
+        assert editor.search_enter("match") is True
+        assert editor.is_search_active() is True
+        assert editor._search_query == "match"
+        assert editor._search_matches == ["newest match", "oldest match"]
+        assert editor._search_idx == 0
+
+    def test_search_enter_empty_query_does_not_activate(self, editor):
+        """查询为空不进入搜索。"""
+        assert editor.search_enter("") is False
+        assert editor.is_search_active() is False
+
+    def test_search_enter_no_match_activates_empty(self, editor):
+        """查询非空但无匹配时进入搜索（matches 空、idx=-1）。"""
+        editor._history = ["entry one", "entry two"]
+        assert editor.search_enter("zzz") is True
+        assert editor.is_search_active() is True
+        assert editor._search_matches == []
+        assert editor._search_idx == -1
+
+    def test_search_next_prev_cycle(self, editor):
+        """search_next/prev 循环移动。"""
+        editor._history = ["a1", "b2", "a3"]
+        editor.search_enter("a")
+        assert editor._search_matches == ["a1", "a3"]
+        assert editor.search_next() == "a3"
+        assert editor.search_next() == "a1"  # 循环
+        assert editor.search_prev() == "a3"
+        assert editor.search_prev() == "a1"
+
+    def test_search_exit_restores_original_buffer(self, editor):
+        """search_exit(apply=False) 恢复进入搜索前的缓冲。"""
+        editor.handle_chars("partial")
+        editor._history = ["entry one", "entry two"]
+        editor.search_enter("entry")
+        assert editor.get_current_text() == "partial"  # 搜索期间缓冲不变
+        editor.search_exit(apply=False)
+        assert editor.is_search_active() is False
+        assert editor.get_current_text() == "partial"
+
+    def test_search_exit_apply_replaces_buffer(self, editor):
+        """search_exit(apply=True) 用当前匹配替换缓冲。"""
+        editor._history = ["first entry", "second entry"]
+        editor.handle_chars("abc")
+        editor.search_enter("entry")
+        assert editor._search_matches == ["first entry", "second entry"]
+        editor.search_exit(apply=True)
+        assert editor.is_search_active() is False
+        assert editor.get_current_text() == "first entry"
+
+    def test_enter_in_search_applies_match_not_submit(self, editor):
+        """搜索模式 _enter 应用匹配并退出（不提交排队输入）。"""
+        editor._history = ["search target", "other"]
+        editor.handle_chars("x")
+        editor.search_enter("search")
+        editor._enter()
+        assert editor.is_search_active() is False
+        assert editor.get_current_text() == "search target"
+        assert not editor.has_queued_input()
+
+    def test_reset_clears_search_state(self, editor):
+        """reset 清理搜索状态。"""
+        editor._history = ["match me"]
+        editor.handle_chars("x")
+        editor.search_enter("match")
+        assert editor.is_search_active() is True
+        editor.reset()
+        assert editor.is_search_active() is False
+        assert editor._search_matches == []
+
+    def test_drain_all_clears_search_state(self, editor):
+        """drain_all 清理搜索状态。"""
+        editor._history = ["match me"]
+        editor.handle_chars("x")
+        editor.search_enter("match")
+        editor.drain_all()
+        assert editor.is_search_active() is False
+
+
+class TestReverseSearchDispatch:
+    """方向D 步骤14 — InputDispatcher Ctrl+R 路由（配置门控，默认 False 零回归）。"""
+
+    def test_ctrl_r_disabled_switch_model_regression(self, tmp_path):
+        """未启用时 Ctrl+R 仍走 switch_model（零回归）。"""
+        r_fd, w_fd = os.pipe()
+        try:
+            inp = Input(fd=r_fd, history_file=tmp_path / "history")
+            calls = []
+            inp.set_special_key_callback(lambda a, t: calls.append(a) or t)
+            os.write(w_fd, b"\x12")
+            ready, _, _ = select.select([r_fd], [], [], 2.0)
+            assert ready
+            assert inp.read_stdin_once() is True
+            assert calls == ["switch_model"]
+        finally:
+            os.close(w_fd)
+            os.close(r_fd)
+
+    def test_ctrl_r_enabled_enters_search(self, tmp_path):
+        """启用后 Ctrl+R 进入反向搜索（查询=当前缓冲，回调 active=True）。"""
+        r_fd, w_fd = os.pipe()
+        try:
+            inp = Input(fd=r_fd, history_file=tmp_path / "history")
+            inp.set_reverse_search_enabled(True)
+            syncs = []
+            inp.set_reverse_search_callback(
+                lambda q, m, i, a: syncs.append((q, m, i, a))
+            )
+            inp._history = ["hello world", "goodbye"]
+            inp.handle_chars("hello")
+            os.write(w_fd, b"\x12")
+            ready, _, _ = select.select([r_fd], [], [], 2.0)
+            assert ready
+            assert inp.read_stdin_once() is True
+            assert syncs and syncs[0][3] is True
+            assert syncs[0][0] == "hello"
+            assert syncs[0][1] == ["hello world"]
+        finally:
+            os.close(w_fd)
+            os.close(r_fd)
+
+    def test_ctrl_r_empty_buffer_no_search(self, tmp_path):
+        """启用后 Ctrl+R 且当前缓冲为空 → 不进入搜索（查询为空）。"""
+        r_fd, w_fd = os.pipe()
+        try:
+            inp = Input(fd=r_fd, history_file=tmp_path / "history")
+            inp.set_reverse_search_enabled(True)
+            syncs = []
+            inp.set_reverse_search_callback(
+                lambda q, m, i, a: syncs.append(a)
+            )
+            inp._history = ["hello world"]
+            os.write(w_fd, b"\x12")
+            ready, _, _ = select.select([r_fd], [], [], 2.0)
+            assert ready
+            assert inp.read_stdin_once() is True
+            assert syncs == []  # 未进入搜索 → 无状态同步
+            assert not inp._buffer_editor.is_search_active()
+        finally:
+            os.close(w_fd)
+            os.close(r_fd)
+
+    def test_ctrl_r_advances_next_match(self, tmp_path):
+        """启用后再次 Ctrl+R 推进到下一匹配（index 递增）。"""
+        r_fd, w_fd = os.pipe()
+        try:
+            inp = Input(fd=r_fd, history_file=tmp_path / "history")
+            inp.set_reverse_search_enabled(True)
+            syncs = []
+            inp.set_reverse_search_callback(
+                lambda q, m, i, a: syncs.append((q, m, i, a))
+            )
+            inp._history = ["m1", "m2"]
+            inp.handle_chars("m")
+            # 第一次 Ctrl+R：进入（idx=0）
+            os.write(w_fd, b"\x12")
+            ready, _, _ = select.select([r_fd], [], [], 2.0)
+            assert ready
+            assert inp.read_stdin_once() is True
+            # 第二次 Ctrl+R：推进（idx=1）
+            os.write(w_fd, b"\x12")
+            ready, _, _ = select.select([r_fd], [], [], 2.0)
+            assert ready
+            assert inp.read_stdin_once() is True
+            assert syncs[-1][3] is True
+            assert syncs[-1][2] == 1
+            assert syncs[-1][1] == ["m1", "m2"]
+        finally:
+            os.close(w_fd)
+            os.close(r_fd)
+
+    def test_escape_exits_search_restores_buffer(self, tmp_path):
+        """搜索模式 Esc 退出搜索并恢复原缓冲（不触发中断）。"""
+        r_fd, w_fd = os.pipe()
+        try:
+            inp = Input(fd=r_fd, history_file=tmp_path / "history")
+            inp.set_reverse_search_enabled(True)
+            syncs = []
+            inp.set_reverse_search_callback(
+                lambda q, m, i, a: syncs.append(a)
+            )
+            inp._history = ["hello world", "hello again"]
+            inp.handle_chars("hello")
+            os.write(w_fd, b"\x12")  # 进入搜索
+            ready, _, _ = select.select([r_fd], [], [], 2.0)
+            assert ready
+            assert inp.read_stdin_once() is True
+            assert inp._buffer_editor.is_search_active()
+            os.write(w_fd, b"\x1b")  # Esc 退出搜索
+            ready, _, _ = select.select([r_fd], [], [], 2.0)
+            assert ready
+            assert inp.read_stdin_once() is True
+            assert not inp._buffer_editor.is_search_active()
+            assert inp.get_current_text() == "hello"
+            assert syncs[-1] is False  # active=False
+            assert not inp.interrupted  # Esc 未触发中断
+        finally:
+            os.close(w_fd)
+            os.close(r_fd)
+
+    def test_enter_in_search_applies_match(self, tmp_path):
+        """搜索模式 Enter 应用匹配并退出（不提交）。"""
+        r_fd, w_fd = os.pipe()
+        try:
+            inp = Input(fd=r_fd, history_file=tmp_path / "history")
+            inp.set_reverse_search_enabled(True)
+            syncs = []
+            inp.set_reverse_search_callback(
+                lambda q, m, i, a: syncs.append(a)
+            )
+            inp._history = ["hello world"]
+            inp.handle_chars("hel")
+            os.write(w_fd, b"\x12")  # 进入搜索
+            ready, _, _ = select.select([r_fd], [], [], 2.0)
+            assert ready
+            assert inp.read_stdin_once() is True
+            assert inp._buffer_editor.is_search_active()
+            os.write(w_fd, b"\r")  # Enter 应用匹配
+            ready, _, _ = select.select([r_fd], [], [], 2.0)
+            assert ready
+            assert inp.read_stdin_once() is True
+            assert not inp._buffer_editor.is_search_active()
+            assert inp.get_current_text() == "hello world"
+            assert not inp.has_queued_input()
+            assert syncs[-1] is False
+        finally:
+            os.close(w_fd)
+            os.close(r_fd)
+
+    def test_facade_setters_delegate(self, tmp_path):
+        """外观 set_reverse_search_* 委托 InputDispatcher。"""
+        fd = os.open("/dev/null", os.O_RDONLY)
+        try:
+            inp = Input(fd=fd, history_file=tmp_path / "history")
+            cb = lambda q, m, i, a: None
+            inp.set_reverse_search_enabled(True)
+            inp.set_reverse_search_callback(cb)
+            assert inp._dispatcher._reverse_search_enabled is True
+            assert inp._dispatcher._reverse_search_callback is cb
+        finally:
+            os.close(fd)
+
+
+# ═══════════════════════════════════════════════════════════
+# 方向D 步骤16 — Esc 取消输入（配置门控，默认 False 零回归）
+# ═══════════════════════════════════════════════════════════
+
+class TestEscCancelInput:
+    """InputDispatcher Esc 取消输入（配置门控）。
+
+    语义：启用（set_esc_cancel_input(True)）+ 空闲（活跃状态 False）+
+    缓冲非空时，单次 Esc 清空输入取消编辑（不触发中断）；否则走既有
+    _do_interrupt（默认零回归）。
+    """
+
+    def test_esc_disabled_interrupt_regression(self, tmp_path):
+        """未启用时 Esc → 中断（零回归）。"""
+        r_fd, w_fd = os.pipe()
+        try:
+            inp = Input(fd=r_fd, history_file=tmp_path / "history")
+            inp.handle_chars("partial")
+            os.write(w_fd, b"\x1b")
+            ready, _, _ = select.select([r_fd], [], [], 2.0)
+            assert ready
+            assert inp.read_stdin_once() is True
+            assert inp.interrupted
+            assert inp.get_current_text() == ""
+        finally:
+            os.close(w_fd)
+            os.close(r_fd)
+
+    def test_esc_enabled_idle_nonempty_clears_buffer(self, tmp_path):
+        """启用 + 空闲 + 非空缓冲 → 清空输入（不触发中断）。"""
+        r_fd, w_fd = os.pipe()
+        try:
+            inp = Input(fd=r_fd, history_file=tmp_path / "history")
+            inp.set_esc_cancel_input(True)
+            inp.set_active_status_callback(lambda: False)
+            inp.handle_chars("draft text")
+            os.write(w_fd, b"\x1b")
+            ready, _, _ = select.select([r_fd], [], [], 2.0)
+            assert ready
+            assert inp.read_stdin_once() is True
+            assert inp.get_current_text() == ""
+            assert not inp.interrupted
+        finally:
+            os.close(w_fd)
+            os.close(r_fd)
+
+    def test_esc_enabled_empty_buffer_interrupt(self, tmp_path):
+        """启用 + 缓冲为空 → 仍中断（双 Esc / 空输入语义）。"""
+        r_fd, w_fd = os.pipe()
+        try:
+            inp = Input(fd=r_fd, history_file=tmp_path / "history")
+            inp.set_esc_cancel_input(True)
+            inp.set_active_status_callback(lambda: False)
+            os.write(w_fd, b"\x1b")
+            ready, _, _ = select.select([r_fd], [], [], 2.0)
+            assert ready
+            assert inp.read_stdin_once() is True
+            assert inp.interrupted
+        finally:
+            os.close(w_fd)
+            os.close(r_fd)
+
+    def test_esc_enabled_generating_interrupt(self, tmp_path):
+        """启用 + 生成中（活跃状态 True）→ 中断（不取消输入）。"""
+        r_fd, w_fd = os.pipe()
+        try:
+            inp = Input(fd=r_fd, history_file=tmp_path / "history")
+            inp.set_esc_cancel_input(True)
+            inp.set_active_status_callback(lambda: True)
+            inp.handle_chars("draft")
+            os.write(w_fd, b"\x1b")
+            ready, _, _ = select.select([r_fd], [], [], 2.0)
+            assert ready
+            assert inp.read_stdin_once() is True
+            assert inp.interrupted
+            assert inp.get_current_text() == ""
+        finally:
+            os.close(w_fd)
+            os.close(r_fd)
+
+    def test_esc_enabled_status_callback_exception_treated_idle(self, tmp_path):
+        """活跃状态回调抛异常 → 视为空闲（取消输入，不阻断）。"""
+        r_fd, w_fd = os.pipe()
+        try:
+            inp = Input(fd=r_fd, history_file=tmp_path / "history")
+            inp.set_esc_cancel_input(True)
+
+            def _boom():
+                raise RuntimeError("status cb boom")
+
+            inp.set_active_status_callback(_boom)
+            inp.handle_chars("draft")
+            os.write(w_fd, b"\x1b")
+            ready, _, _ = select.select([r_fd], [], [], 2.0)
+            assert ready
+            assert inp.read_stdin_once() is True
+            assert inp.get_current_text() == ""
+            assert not inp.interrupted
+        finally:
+            os.close(w_fd)
+            os.close(r_fd)
+
+    def test_esc_double_interrupt(self, tmp_path):
+        """启用后首次 Esc 清空，再次 Esc（缓冲空）→ 中断。"""
+        r_fd, w_fd = os.pipe()
+        try:
+            inp = Input(fd=r_fd, history_file=tmp_path / "history")
+            inp.set_esc_cancel_input(True)
+            inp.set_active_status_callback(lambda: False)
+            inp.handle_chars("draft")
+            os.write(w_fd, b"\x1b")
+            ready, _, _ = select.select([r_fd], [], [], 2.0)
+            assert ready
+            assert inp.read_stdin_once() is True
+            assert inp.get_current_text() == ""
+            assert not inp.interrupted
+            os.write(w_fd, b"\x1b")
+            ready, _, _ = select.select([r_fd], [], [], 2.0)
+            assert ready
+            assert inp.read_stdin_once() is True
+            assert inp.interrupted
+        finally:
+            os.close(w_fd)
+            os.close(r_fd)
+
+    def test_facade_setters_delegate(self, tmp_path):
+        """外观 set_esc_cancel_input / set_active_status_callback 委托。"""
+        fd = os.open("/dev/null", os.O_RDONLY)
+        try:
+            inp = Input(fd=fd, history_file=tmp_path / "history")
+            fn = lambda: True
+            inp.set_esc_cancel_input(True)
+            inp.set_active_status_callback(fn)
+            assert inp._dispatcher._esc_cancel_input is True
+            assert inp._dispatcher._active_status_fn is fn
         finally:
             os.close(fd)

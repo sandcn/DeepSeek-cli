@@ -101,6 +101,50 @@ def truncate_runs(runs: list[StyledRun], max_width: int) -> list[StyledRun]:
     return out
 
 
+def truncate_runs_ellipsis(runs: list[StyledRun], max_width: int) -> list[StyledRun]:
+    """将 StyledRun 序列截断至 max_width 显示宽度并追加省略号 ``…``（保持样式）。
+
+    内容不超过 max_width 时原样返回（不追加省略号）；超过时截断内容至
+    max_width-1 宽度（不拆分宽字符 CJK，宽度依据 ``wcswidth_simple``）并
+    追加 ``…``（宽度 1）。省略号沿用截断点所在 run 的样式（与截断内容
+    同 run，保持样式一致性）。
+
+    Args:
+        runs: StyledRun 列表（连续片段）。
+        max_width: 最大显示宽度；<=0 返回空列表。
+
+    Returns:
+        截断后的 StyledRun 列表（总宽度 <= max_width）。
+    """
+    if max_width < 0:
+        return []
+    total = 0
+    for run in runs:
+        total += run.width
+    if total <= max_width:
+        return list(runs)
+    budget = max_width - 1
+    out: list[StyledRun] = []
+    ellipsis_style: Style | None = runs[0].style if runs else None
+    width = 0
+    for run in runs:
+        if width >= budget:
+            break
+        buf = ""
+        for ch in run.text:
+            cw = wcswidth_simple(ch)
+            if width + cw > budget:
+                break
+            buf += ch
+            width += cw
+        if buf:
+            out.append(StyledRun(buf, run.style))
+            ellipsis_style = run.style
+    if width < max_width:
+        out.append(StyledRun("…", ellipsis_style))
+    return out
+
+
 def truncate_line(line: Line, max_width: int) -> Line:
     """将行截断至 max_width 显示宽度（保持样式）。
 
@@ -143,6 +187,7 @@ __all__ = [
     "visual_width",
     "wrap_runs_by_width",
     "truncate_runs",
+    "truncate_runs_ellipsis",
     "truncate_line",
     "pad_line",
     "line_to_ansi",

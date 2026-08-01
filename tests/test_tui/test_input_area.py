@@ -144,3 +144,52 @@ class TestCursorFromLayout:
         ]
         for text, pos, w in cases:
             self._compare(text, pos, w)
+
+
+# ═══════════════════════════════════════════════════════════
+# 方向D 步骤14 — 反向历史搜索覆盖行渲染
+# ═══════════════════════════════════════════════════════════
+
+class TestReverseSearchOverlay:
+    """方向D 步骤14 — input-area 反向历史搜索覆盖行渲染与测量。"""
+
+    @staticmethod
+    def _search_fiber(
+        query="hello", matches=("hello world",), index=0, active=True,
+        text="hello", **extra,
+    ) -> Fiber:
+        from src.tui.app.model import HistorySearchState
+        fiber = _input_fiber(text=text, cursor_pos=len(text), **extra)
+        fiber.props["history_search"] = HistorySearchState(
+            query=query, matches=list(matches), index=index, active=active,
+        )
+        fiber.layout_box = _Box(x=0, y=0, w=80, h=1)
+        return fiber
+
+    def test_search_overlay_line_rendered(self):
+        """搜索激活时渲染 (reverse-i-search)`query`: match 覆盖行。"""
+        fiber = self._search_fiber()
+        lines = _build_lines(fiber)
+        plains = [line.plain for line in lines]
+        assert any("(reverse-i-search)`hello`: hello world" in p for p in plains)
+
+    def test_search_overlay_inactive_not_rendered(self):
+        """搜索未激活时不渲染覆盖行。"""
+        fiber = self._search_fiber(active=False)
+        lines = _build_lines(fiber)
+        plains = [line.plain for line in lines]
+        assert not any("reverse-i-search" in p for p in plains)
+
+    def test_search_overlay_no_match(self):
+        """搜索激活但无匹配：渲染 (reverse-i-search)`query`: 空匹配。"""
+        fiber = self._search_fiber(query="nope", matches=(), index=-1)
+        lines = _build_lines(fiber)
+        plains = [line.plain for line in lines]
+        assert any("(reverse-i-search)`nope`:" in p for p in plains)
+
+    def test_measure_includes_search_row(self):
+        """_measure 读取 history_search 增行（激活时 +1）。"""
+        w, h_active = _measure(self._search_fiber(), 80)
+        w2, h_inactive = _measure(self._search_fiber(active=False), 80)
+        assert w == w2 == 80
+        assert h_active == h_inactive + 1

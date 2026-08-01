@@ -90,6 +90,18 @@ class InputDispatcher:
         # 视为放行（不阻断输入）。None 缺省时行为与未注入完全一致。
         self._input_hook_router = None
 
+        # ── 反向历史搜索（方向D 步骤14，Ctrl+R 配置门控） ──
+        # 默认 False 保持既有 Ctrl+R switch_model 语义；装配注入
+        # TuiConfig.reverse_search_enabled。
+        self._reverse_search_enabled: bool = False
+        self._reverse_search_callback = None
+
+        # ── Esc 取消输入（方向D 步骤16，配置门控） ──
+        # 默认 False 保持既有 Esc 中断语义；装配注入
+        # TuiConfig.esc_cancel_input 与活跃状态回调（生成中不取消输入）。
+        self._esc_cancel_input: bool = False
+        self._active_status_fn = None
+
     # ═══════════════════════════════════════════════════════
     # 中断与特殊按键处理（render 线程调用）
     # ═══════════════════════════════════════════════════════
@@ -107,6 +119,13 @@ class InputDispatcher:
         """
         if self._io.stop.is_set():
             return
+        # P2-5：搜索模式中断（Ctrl+C/双 Esc）→ 先退出搜索并同步 UI 状态，
+        # 避免 model.history_search 残留 active=True（input-area 持续渲染
+        # (reverse-i-search) 覆盖行）。reset_and_echo 的 buffer_editor.reset()
+        # 也会清理搜索内部状态，但未调用 _sync_reverse_search——UI 侧不同步。
+        if self._buffer_editor.is_search_active():
+            self._buffer_editor.search_exit(apply=False)
+            self._sync_reverse_search()
         if not self._buffer_editor.has_queued_input():
             self.reset_and_echo()
         else:
@@ -220,10 +239,27 @@ class InputDispatcher:
                     event = self._parse_escape_sequence(fd)
                     kind = event.kind
                     if kind in ("escape", "interrupt"):
-                        self._do_interrupt()
+                        if kind == "escape" and self._buffer_editor.is_search_active():
+                            # 方向D 步骤14：搜索模式 Esc 退出搜索（恢复原缓冲）
+                            self._buffer_editor.search_exit(apply=False)
+                            self._sync_reverse_search()
+                        elif kind == "escape" and self._should_cancel_input():
+                            # 方向D 步骤16：Esc 取消输入（启用 + 空闲 + 非空缓冲）
+                            self._cancel_input()
+                        else:
+                            self._do_interrupt()
                     elif kind in (
                         "arrow_up", "arrow_down", "arrow_right", "arrow_left",
                         "home", "end", "delete", "backspace", "char",
+                        # 方向A 步骤1：Alt 组合 / 功能键 / CSI u Shift+Tab 进入分发
+                        "alt_char", "f1", "f2", "f3", "f4", "tab",
+                        # P2-4：CSI u Ctrl 字母（keycode 103/111/110/114）映射为
+                        #   ctrl_key 事件进入分发（增强键盘协议终端 Ctrl+G/O/N/R
+                        #   失效修复——修复前 ESC 路径分发元组不含 "ctrl_key"，
+                        #   此类事件被静默忽略）；
+                        # P3-4：其余 csi_u 事件先进 input router（消费则返回），
+                        #   未消费则 no-op（不再静默丢弃）。
+                        "ctrl_key", "csi_u",
                     ):
                         self._dispatch_key_event(event)
                     # unknown / csi_u → 静默忽略
@@ -235,6 +271,9 @@ class InputDispatcher:
                         self._handle_special_key('vim')
                     elif ch == '\x0f':        # Ctrl+O → /editmsg
                         self._handle_special_key('editmsg')
+                    elif ch == '\x12' and self._reverse_search_enabled:
+                        # 方向D 步骤14：Ctrl+R 反向历史搜索（配置门控，默认 False）
+                        self._handle_reverse_search()
                     elif ch in ('\x0e', '\x12'):  # Ctrl+N/R → 切换模型
                         self._handle_special_key('switch_model')
                     else:
@@ -319,6 +358,11 @@ class InputDispatcher:
                 _logger.debug("input hook router 异常，放行事件", exc_info=True)
 
         if kind == "enter":
+            if self._buffer_editor.is_search_active():
+                # 方向D 步骤14：搜索模式 Enter 应用匹配并退出搜索（不提交）
+                self._buffer_editor._enter()
+                self._sync_reverse_search()
+                return
             self._dismiss_completion()
             if not self._suppress_enter:
                 self._buffer_editor._enter()
@@ -327,7 +371,52 @@ class InputDispatcher:
                 # 由 read_stdin_once 丢弃，避免 LF 在 prefill 注入后被误提交。
                 self._enter_residual_pending = True
         elif kind == "tab":
-            self._handle_tab()
+            if self._buffer_editor.is_search_active():
+                # 方向D 步骤14：搜索模式 Tab 应用匹配并退出搜索（与 Enter 一致）
+                self._buffer_editor._enter()
+                self._sync_reverse_search()
+            elif event.modifier == 2:
+                # 方向A 步骤1：Shift+Tab（CSI u 9;2u）→ 补全反向循环；
+                # 补全不可见 / 回调未消费 → no-op（不插入制表符）。
+                self._handle_shift_tab_reverse()
+            else:
+                self._handle_tab()
+        elif kind == "alt_char":
+            # 方向A 步骤1：Alt+B/F 词跳转（等价 Ctrl+左/右）；
+            # 其余 Alt+组合已先行询问 input router，未消费则 no-op（不产生中断）。
+            # P3-3：大小写等效——大写 'B'/'F'（ESC+B/ESC+F）同样触发词跳转。
+            if event.char in ('b', 'B'):
+                self._buffer_editor._word_left()
+            elif event.char in ('f', 'F'):
+                self._buffer_editor._word_right()
+        elif kind == "ctrl_key":
+            # P2-4：CSI u Ctrl 字母（keycode 103/111/110/114）映射的 ctrl_key
+            # 事件复用同一分发逻辑（含 _handle_reverse_search 门控）。
+            # 直接控制字符路径（read_stdin_once 内联）已在读取处处理，不会
+            # 重复到达此处——本分支服务 ESC/CSI u 转义序列路径。
+            ch = event.char
+            if ch == '\x07':          # Ctrl+G → vim
+                self._handle_special_key('vim')
+            elif ch == '\x0f':        # Ctrl+O → /editmsg
+                self._handle_special_key('editmsg')
+            elif ch == '\x12' and self._reverse_search_enabled:
+                # 方向D 步骤14：Ctrl+R 反向历史搜索（配置门控，默认 False）
+                self._handle_reverse_search()
+            elif ch in ('\x0e', '\x12'):  # Ctrl+N/R → 切换模型
+                self._handle_special_key('switch_model')
+            # else：未知 ctrl_key → no-op（router 已先行询问）
+        elif kind == "csi_u":
+            # P3-4：未映射为已知 kind 的 CSI u 事件——router 已在函数开头
+            # 先行询问（消费则返回）；此处为显式 no-op 分支（不再静默丢弃，
+            # 供 input router 未来消费）。
+            _logger.debug(
+                "csi_u 事件未被 input router 消费 (keycode=%s modifier=%s)",
+                event.keycode, event.modifier,
+            )
+        elif kind in ("f1", "f2", "f3", "f4"):
+            # 方向A 步骤1：功能键已先行询问 input router；未消费 no-op
+            # （不再静默丢弃——router 可经 useInput 钩子消费）。
+            _logger.debug("%s 功能键未被 input router 消费", kind)
         elif kind == "backspace":
             self._dismiss_completion()
             if event.modifier == 1:
@@ -384,6 +473,59 @@ class InputDispatcher:
             if event.char:
                 self._buffer_editor.handle_char(event.char)
                 self._trigger_auto_completion()
+
+    # ═══════════════════════════════════════════════════════
+    # 反向历史搜索（方向D 步骤14，Ctrl+R 配置门控）
+    # ═══════════════════════════════════════════════════════
+
+    def _handle_reverse_search(self) -> None:
+        """Ctrl+R 反向历史搜索：首次进入（当前缓冲为查询），再次推进到下一匹配。"""
+        be = self._buffer_editor
+        if be.is_search_active():
+            be.search_next()
+        else:
+            if not be.search_enter(be.get_current_text()):
+                return  # 查询为空 → 不进入搜索
+        self._sync_reverse_search()
+
+    def _sync_reverse_search(self) -> None:
+        """同步反向搜索状态到 UI（装配注入回调：更新 model.history_search + 重绘）。"""
+        be = self._buffer_editor
+        cb = self._reverse_search_callback
+        if cb is None:
+            return
+        try:
+            cb(be._search_query, be._search_matches, be._search_idx, be._search_active)
+        except Exception:
+            _logger.debug("反向搜索状态同步回调异常", exc_info=True)
+
+    # ═══════════════════════════════════════════════════════
+    # Esc 取消输入（方向D 步骤16，配置门控）
+    # ═══════════════════════════════════════════════════════
+
+    def _should_cancel_input(self) -> bool:
+        """Esc 取消输入判定：启用 + 缓冲非空 + 空闲（无生成中）。"""
+        if not self._esc_cancel_input:
+            return False
+        if not self._buffer_editor.get_current_text():
+            return False
+        return not self._is_active_status()
+
+    def _is_active_status(self) -> bool:
+        """查询活跃状态（生成中）。回调缺失时视为空闲（默认 False）。"""
+        fn = self._active_status_fn
+        if fn is None:
+            return False
+        try:
+            return bool(fn())
+        except Exception:
+            _logger.debug("活跃状态回调异常", exc_info=True)
+            return False
+
+    def _cancel_input(self) -> None:
+        """取消当前输入：清空缓冲 + 回显空串（不触发中断标志）。"""
+        self._buffer_editor.set_buffer("")
+        self._buffer_editor._echo("")
 
     # ═══════════════════════════════════════════════════════
     # 辅助分发方法
@@ -443,6 +585,26 @@ class InputDispatcher:
                     self._trigger_auto_completion()
                 return
         self._buffer_editor._down()
+
+    def _handle_shift_tab_reverse(self) -> None:
+        """处理 Shift+Tab：补全弹窗可见时反向循环，否则 no-op。
+
+        方向A 步骤1：CSI u Shift+Tab（keycode=9, modifier=2）→ tab/modifier=2
+        事件分发至此；补全导航回调未消费（补全不可见）时 no-op（不插入制表符）。
+        """
+        cb = self._completion_navigate_callback
+        if cb is None:
+            return
+        try:
+            text = self._buffer_editor.get_current_text()
+            result = cb(-1, text)
+        except Exception:
+            _logger.debug("补全导航回调异常", exc_info=True)
+            return
+        if result is not None and result != text:
+            self._buffer_editor.set_buffer(result)
+            self._buffer_editor._echo(result)
+            self._trigger_auto_completion()
 
     def _dismiss_completion(self) -> None:
         """如果补全弹窗可见，关闭它。"""
@@ -543,6 +705,37 @@ class InputDispatcher:
             router: 路由回调或 None。
         """
         self._input_hook_router = router
+
+    def set_reverse_search_enabled(self, enabled: bool) -> None:
+        """设置 Ctrl+R 反向历史搜索启用标志（方向D 步骤14，默认 False）。
+
+        由装配注入 ``TuiConfig.reverse_search_enabled``；False 保持既有
+        switch_model 语义（键位冲突门控）。
+        """
+        self._reverse_search_enabled = enabled
+
+    def set_reverse_search_callback(self, cb) -> None:
+        """设置反向搜索状态同步回调（方向D 步骤14，装配注入）。
+
+        cb 签名: ``(query: str, matches: list[str], index: int, active: bool) -> None``
+        None 缺省时搜索功能内部可用，仅 UI 状态不同步。
+        """
+        self._reverse_search_callback = cb
+
+    def set_esc_cancel_input(self, enabled: bool) -> None:
+        """设置 Esc 取消输入启用标志（方向D 步骤16，默认 False）。
+
+        由装配注入 ``TuiConfig.esc_cancel_input``；False 保持既有 Esc 中断语义。
+        """
+        self._esc_cancel_input = enabled
+
+    def set_active_status_callback(self, fn) -> None:
+        """设置活跃状态回调（方向D 步骤16，装配注入）。
+
+        fn 签名: ``() -> bool`` —— True=生成中（Esc 不取消输入，走中断）；
+        None 缺省时视为空闲（默认 False）。
+        """
+        self._active_status_fn = fn
 
     def set_suppress_enter(self, suppress: bool) -> None:
         """设置 Enter 抑制标志（用于 editmsg 消息选择期间）。

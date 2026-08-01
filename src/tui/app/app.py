@@ -32,6 +32,8 @@ def App(props) -> object:
         "status_active": model.status.status_active,
         "cpu": model.status.cpu,
         "mem": model.status.mem,
+        # 方向D 步骤14：Ctrl+R 反向历史搜索状态（input-area 渲染覆盖行）
+        "history_search": model.history_search,
     }
 
     children = [
@@ -58,6 +60,7 @@ def build_app_element(model, width: int, animator=None) -> object:
     """构建根元素（session 渲染入口）。
 
     animator: 保留参数（兼容旧调用面），App 组件已不使用动画上下文。
+    # deprecated: animator 参数已废弃，仅兼容旧调用面
     """
     return h(App, {"model": model, "width": width})
 

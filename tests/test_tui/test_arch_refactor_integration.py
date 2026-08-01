@@ -352,3 +352,138 @@ class TestAssemblyHooksWiring:
             exit_fn()  # 调用不抛（session.stop 幂等）
         finally:
             _hooks.set_app_control(None)
+
+
+# ═══════════════════════════════════════════════════════════
+# 方向C 步骤7 — SubAgent 面板三模块职责边界
+# ═══════════════════════════════════════════════════════════
+
+class TestSubAgentPanelThreeModuleBoundary:
+    """方向C 步骤7 — SubAgent 面板拆分后三模块职责边界。
+
+    状态模块（_subagent_state）无渲染/事件订阅 import；
+    渲染模块（_subagent_render）无事件订阅；
+    控制器（_subagent_panel）re-export 保持兼容访问路径。
+    """
+
+    def test_state_module_no_render_or_event_import_regression(self):
+        """_subagent_state 不依赖渲染/事件订阅（Layer 0 约束）。"""
+        import ast
+        import inspect
+        from src.tui import _subagent_state
+
+        # 仅检查 import 区段（docstring 提到模块名不算依赖）
+        tree = ast.parse(inspect.getsource(_subagent_state))
+        imports = []
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                imports.extend(alias.name for alias in node.names)
+            elif isinstance(node, ast.ImportFrom):
+                imports.append(node.module or "")
+        joined = " ".join(imports)
+        assert "_subagent_render" not in joined
+        assert "_subagent_panel" not in joined
+        assert "events" not in joined
+        assert "subscribe" not in joined
+        assert "EventBus" not in joined
+        # 状态模块公开 StateStore/_AgentSlot/_ToolRecord
+        assert hasattr(_subagent_state, "StateStore")
+        assert hasattr(_subagent_state, "_AgentSlot")
+        assert hasattr(_subagent_state, "_ToolRecord")
+
+    def test_render_module_no_event_subscription_regression(self):
+        """_subagent_render 不订阅事件（渲染模块仅消费状态快照）。"""
+        import ast
+        import inspect
+        from src.tui import _subagent_render
+
+        tree = ast.parse(inspect.getsource(_subagent_render))
+        imports = []
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                imports.extend(alias.name for alias in node.names)
+            elif isinstance(node, ast.ImportFrom):
+                imports.append(node.module or "")
+        joined = " ".join(imports)
+        assert "events" not in joined
+        assert "EventBus" not in joined
+        # 渲染模块导出帧渲染/动效辅助
+        assert callable(_subagent_render.render_frame)
+        assert callable(_subagent_render.build_agent_lines)
+        assert callable(_subagent_render.format_tool_record)
+        assert callable(_subagent_render._get_tool_color)
+
+    def test_controller_reexports_split_symbols_regression(self):
+        """控制器 re-export 拆分符号（既有测试/插件访问路径不变）。"""
+        from src.tui import _subagent_panel, _subagent_state, _subagent_render
+
+        assert _subagent_panel._AgentSlot is _subagent_state._AgentSlot
+        assert _subagent_panel._ToolRecord is _subagent_state._ToolRecord
+        assert _subagent_panel._SPINNER_FRAMES is _subagent_render._SPINNER_FRAMES
+        assert _subagent_panel._get_tool_color is _subagent_render._get_tool_color
+        # 控制器仍暴露状态引用（同一 StateStore）
+        ctrl = _subagent_panel.SubAgentPanelController()
+        assert ctrl._agents is ctrl._store._agents
+        assert ctrl._order is ctrl._store._order
+        assert ctrl._state_lock is ctrl._store._state_lock
+
+
+# ═══════════════════════════════════════════════════════════
+# 横切步骤18 — 集成调用链：配置注入 / 新模块导入 / 公开 API
+# ═══════════════════════════════════════════════════════════
+
+class TestStep18AssemblyConfigChain:
+    """横切步骤18 — 配置链连通：TuiConfig 新字段 → _assembly 注入 → dispatcher。"""
+
+    def test_assembly_injects_reverse_search_config_regression(self):
+        """装配注入 Ctrl+R 反向历史搜索配置（默认 False，键位门控）。"""
+        from src.tui._assembly import TuiAssembly
+
+        result = TuiAssembly.assemble()
+        try:
+            disp = result.input_instance._dispatcher
+            assert disp._reverse_search_enabled is False
+            assert disp._reverse_search_callback is not None
+        finally:
+            result.engine._on_input_router(None)
+            result.engine.stop()
+
+    def test_assembly_injects_esc_cancel_and_active_status_regression(self):
+        """装配注入 Esc 取消输入配置 + 活跃状态回调（默认 False 保持中断）。"""
+        from src.tui._assembly import TuiAssembly
+
+        result = TuiAssembly.assemble()
+        try:
+            disp = result.input_instance._dispatcher
+            assert disp._esc_cancel_input is False
+            assert callable(disp._active_status_fn)
+            # 活跃状态回调读取 model.status.status_active（生成中判定）
+            assert disp._active_status_fn() is False  # 默认空闲
+        finally:
+            result.engine._on_input_router(None)
+            result.engine.stop()
+
+    def test_step18_new_modules_importable_regression(self):
+        """步骤 4/7/8/9 新建模块可导入（无循环/缺依赖）。"""
+        import src.tui._format  # noqa: F401
+        import src.tui._subagent_state  # noqa: F401
+        import src.tui._subagent_render  # noqa: F401
+        import src.tui._ink_bridge_compat  # noqa: F401
+        import src.tui.ink.error_boundary  # noqa: F401
+
+        from src.tui._format import format_duration
+        from src.tui.ink.error_boundary import ErrorBoundary
+        assert callable(format_duration)
+        assert callable(ErrorBoundary)
+
+    def test_public_api_render_diff_to_ansi_signature_regression(self):
+        """公开 API render_diff_to_ansi 签名保留（core/tools/webui 调用链）。"""
+        import inspect
+
+        from src.tui import render_diff_to_ansi
+
+        params = list(inspect.signature(render_diff_to_ansi).parameters)
+        assert params == ["path", "old_content", "new_content"]
+        # 纯函数：返回字符串，不抛异常（无 I/O、无锁）
+        out = render_diff_to_ansi("a.py", "old", "new")
+        assert isinstance(out, str)

@@ -473,6 +473,106 @@ class TestInkBridgeCompat:
         bb.hide_completions()
         assert bb.get_selected_completion_index() == 1
 
+    def test_show_completions_resets_stale_idx_regression(self, bridge):
+        """show_completions 同步 _last_completion_idx（修复陈旧索引，方向A 步骤1）。
+
+        场景：show(2项,selected=1)→cycle→hide→show(新项,selected=0)
+        → _last_completion_idx==0（修复前 show/cycle 不更新 → 陈旧值残留）
+        → get_selected_completion_index()==0。
+        """
+        bb, model = bridge
+        bb.show_completions(["a", "b"], 1, texts=["a", "b"])
+        assert bb._last_completion_idx == 1  # show 同步选中索引
+        bb.cycle_completion(1)               # (1+1)%2 = 0
+        assert bb._last_completion_idx == 0  # cycle 同步选中索引
+        # hide 保留隐藏前索引（message_editor 依赖 dismiss 后读旧索引）
+        bb.hide_completions()
+        assert bb.get_selected_completion_index() == 0
+        # 新补全会话：selected=0 应同步，不再读到旧会话残留索引
+        bb.show_completions(["x", "y", "z"], 0, texts=["x", "y", "z"])
+        assert bb._last_completion_idx == 0
+        assert bb.get_selected_completion_index() == 0
+
+
+class TestInkBridgeDomainSplit:
+    """方向C 步骤8 — _ink_bridge 拆分后 6 域方法归属（compat 方法经 bridge 访问）。
+
+    兼容访问器域（生命周期 no-op + _BottomBar 内部字段）迁移至
+    ``_ink_bridge_compat._BottomBarCompatMixin``；拆分后公开方法面不变，
+    全部 6 域方法仍可经 bridge 实例访问。
+    """
+
+    @pytest.fixture
+    def bridge(self):
+        import sys
+
+        class _FakeStdin:
+            def fileno(self):
+                return 0
+
+        with patch.object(sys, "stdin", _FakeStdin()):
+            from src.tui._assembly import TuiAssembly
+            result = TuiAssembly.assemble()
+        return result.bb, result.rs
+
+    def test_six_domains_accessible_via_bridge(self, bridge):
+        """6 域（状态/补全/输入/子代理/兼容访问器/生命周期）均可经 bridge 访问。"""
+        bb, model = bridge
+
+        # 状态域
+        for name in (
+            "set_model_name", "enable_status", "disable_status",
+            "reset_tool_count", "increment_tool", "decrement_tool",
+            "increment_tool_fail", "set_main_phase", "get_status_elapsed",
+        ):
+            assert callable(getattr(bb, name)), f"状态域缺少 {name}"
+
+        # 补全域
+        for name in (
+            "show_completions", "hide_completions", "cycle_completion",
+            "get_selected_completion_index", "get_selected_completion",
+        ):
+            assert callable(getattr(bb, name)), f"补全域缺少 {name}"
+        assert hasattr(bb, "is_completion_visible")
+
+        # 输入域
+        assert callable(bb.set_input_state)
+
+        # 子代理域
+        assert callable(bb.set_subagent_frame)
+
+        # 兼容访问器域（mixin 拆分后仍可经 bridge 访问）
+        for name in (
+            "_last_text", "_last_rendered_text", "_bottom_lines",
+            "_last_bottom_lines", "_last_scroll_end", "_completion_idx",
+            "_completion",
+        ):
+            assert hasattr(bb, name), f"兼容访问器域缺少 {name}"
+        assert bb._MIN_HEIGHT == 12
+        assert callable(bb.force_redraw)
+
+        # 生命周期域（mixin 拆分后仍可经 bridge 访问）
+        for name in (
+            "setup", "teardown", "set_active",
+            "ensure_cursor_in_upper", "ensure_cursor_in_lower",
+        ):
+            assert callable(getattr(bb, name)), f"生命周期域缺少 {name}"
+        assert bb.is_active is True
+
+    def test_compat_mixin_isolated_module_regression(self):
+        """兼容访问器域已独立成模块（_ink_bridge_compat），_ink_bridge 不内联定义。"""
+        import inspect
+        from src.tui import _ink_bridge
+        from src.tui import _ink_bridge_compat
+
+        assert hasattr(_ink_bridge_compat, "_BottomBarCompatMixin")
+        assert hasattr(_ink_bridge_compat, "_CompletionProxy")
+        # _CompletionProxy 由 _ink_bridge 从 compat re-export（路径兼容）
+        assert _ink_bridge._CompletionProxy is _ink_bridge_compat._CompletionProxy
+        src = inspect.getsource(_ink_bridge.InkBridge)
+        assert "class _CompletionProxy" not in src  # 内联类已迁移至 compat 模块
+        assert issubclass(_ink_bridge.InkBridge, _ink_bridge_compat._BottomBarCompatMixin)
+
 
 class TestUserSelectSyncRender:
     """user_select 挂起期间补全弹窗同步渲染回归。
@@ -846,4 +946,52 @@ class TestStreamToRenderOrdering:
             assert model.content_closed is False
         finally:
             DisplayEventBus.reset_default()
+
+
+class TestOutputConsumerWriteException:
+    """方向C 步骤5 — OutputConsumer._write 异常记录警告（非关键降级不抛）。"""
+
+    def _consumer_with_failing_stream(self, exc):
+        import io
+        from src.tui.events.consumers import OutputConsumer
+
+        class _FailingStream(io.StringIO):
+            def write(self, *a, **kw):
+                raise exc
+
+        return OutputConsumer(stream=_FailingStream(), chat_ui_managed=False)
+
+    def test_write_oserror_logged_not_raised(self, caplog):
+        """write 抛 OSError → 不传播 + warning 日志记录。"""
+        import logging
+        c = self._consumer_with_failing_stream(OSError("broken pipe"))
+        with caplog.at_level(logging.WARNING, logger="src.tui.events.consumers"):
+            c._write("hello")  # 不抛异常
+        assert any(
+            rec.name == "src.tui.events.consumers"
+            and "输出写失败" in rec.getMessage()
+            for rec in caplog.records
+        )
+
+    def test_write_valueerror_logged_not_raised(self, caplog):
+        """write 抛 ValueError → 不传播 + warning 日志记录。"""
+        import logging
+        c = self._consumer_with_failing_stream(ValueError("closed stream"))
+        with caplog.at_level(logging.WARNING, logger="src.tui.events.consumers"):
+            c._write("hello")  # 不抛异常
+        assert any(
+            rec.name == "src.tui.events.consumers"
+            and "输出写失败" in rec.getMessage()
+            for rec in caplog.records
+        )
+
+    def test_write_success_normal_path(self):
+        """正常写路径不受影响（行内容 + 颜色）。"""
+        import io
+        from src.tui.events.consumers import OutputConsumer
+
+        stream = io.StringIO()
+        c = OutputConsumer(stream=stream, chat_ui_managed=False)
+        c._write("hi", "success")
+        assert stream.getvalue() == "\033[32mhi\033[0m\n"
 

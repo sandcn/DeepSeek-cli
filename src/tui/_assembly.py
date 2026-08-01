@@ -20,6 +20,7 @@ TuiEngine/TuiRenderer/_BottomBar/ChatRenderState 装配。
 
 from __future__ import annotations
 
+import logging
 import sys
 from typing import Callable
 
@@ -39,6 +40,8 @@ from src.tui.app.apply import apply_cmd
 from src.tui.app.app import build_app_element
 from src.tui.ink.session import InkSession
 from src.tui._dispatcher import EventDispatcher
+
+_logger = logging.getLogger(__name__)
 
 
 # ═══════════════════════════════════════════════════════════
@@ -134,6 +137,15 @@ class TuiAssembly:
         session.set_input(input_instance)
         # 输入 echo → 模型输入状态
         input_instance.set_echo_callback(session.update_input)
+        # 方向D 步骤14：Ctrl+R 反向历史搜索（配置门控，默认 False 保持 switch_model）
+        input_instance.set_reverse_search_enabled(tui_config.reverse_search_enabled)
+        input_instance.set_reverse_search_callback(
+            _make_reverse_search_cb(model, session)
+        )
+        # 方向D 步骤16：Esc 取消输入（配置门控，默认 False 保持中断语义）；
+        # 活跃状态回调（生成中不取消输入，走既有中断）
+        input_instance.set_esc_cancel_input(tui_config.esc_cancel_input)
+        input_instance.set_active_status_callback(_make_active_status_cb(model))
         # SIGWINCH → 刷新宽度 + 重绘
         register_sigwinch_callback(_make_sigwinch_cb(session))
         bridge = InkBridge(model, session)
@@ -189,13 +201,48 @@ def _make_sigwinch_cb(session):
     """构建 SIGWINCH 回调（刷新宽度 + 请求重绘）。"""
 
     def _on_sigwinch(cols, rows):
+        # P2-9：不再裸吞异常——记录 debug 日志（SIGWINCH 刷新异常属非关键
+        # 降级，不阻断信号处理）。
         try:
             session._width_cache.force_refresh()
             session.request_bottom_redraw()
         except Exception:
-            pass
+            _logger.debug("SIGWINCH 刷新异常", exc_info=True)
 
     return _on_sigwinch
+
+
+def _make_reverse_search_cb(model, session):
+    """构建反向历史搜索状态同步回调（更新 model.history_search + 重绘）。
+
+    方向D 步骤14：InputDispatcher 在 render 线程调用本回调，将搜索状态写入
+    AppModel 供 input-area 渲染搜索覆盖行；退出搜索（active=False）时置 None。
+    """
+
+    def _cb(query, matches, index, active):
+        if active:
+            from src.tui.app.model import HistorySearchState
+            model.history_search = HistorySearchState(
+                query=query, matches=matches, index=index, active=True,
+            )
+        else:
+            model.history_search = None
+        session.request_bottom_redraw()
+
+    return _cb
+
+
+def _make_active_status_cb(model):
+    """构建活跃状态回调（方向D 步骤16：Esc 取消输入判定用）。
+
+    返回 ``lambda: model.status.status_active``——生成中（True）时 Esc 不取消
+    输入（走既有中断）；空闲（False）时若启用且缓冲非空则清空输入取消编辑。
+    """
+
+    def _cb():
+        return model.status.status_active
+
+    return _cb
 
 
 __all__ = ["TuiAssembly", "TuiAssemblyResult"]

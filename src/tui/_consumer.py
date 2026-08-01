@@ -215,20 +215,21 @@ class ChatUIConsumer:
         # P3-8：list[dict] content（vision 消息）序列化复用 pipeline/message_display
         # 的 _content_str 逻辑（提取公共函数本地等价复用），使 vision 消息显示
         # 质量与旧直写一致（dict 取 text 字段、list 逐项拼接）。
+        # 方向C 步骤4：user 消息改走 UserMsgCmd（apply 统一渲染——块级渲染自带
+        # 换行语义，不再手工拼接 `\n` 前缀/后缀）；assistant/other 保持
+        # WriteLineCmd 但内容经 build_assistant_line 共享构建（样式单一真源）。
         from src.tui.pipeline.message_display import _content_str
         from src.core.constants import DIM, RESET
+        from src.tui.app.apply import build_assistant_line
         for msg in messages:
             role = msg.get("role", "")
             content = _content_str(msg.get("content", ""))
             if role == "user":
-                line = f"\n  \033[1;38;5;81m>\033[0m \033[38;5;252m{content}\033[0m\n"
-            elif role == "assistant":
-                line = f"  \033[38;5;242m\u2502\033[0m {content}"
+                self._engine.push_cmd(UserMsgCmd(text=content))
             elif role == "system":
                 continue
             else:
-                line = f"  \033[38;5;242m\u2502\033[0m {content}"
-            self._engine.push_cmd(WriteLineCmd(text=line))
+                self._engine.push_cmd(WriteLineCmd(text=build_assistant_line(content).render()))
         self._engine.push_cmd(WriteLineCmd(text=f"  {DIM}{'─' * 40}{RESET}"))
         # BUG-T5：短超时非阻塞 flush（默认 5s 可能阻塞会话设置，降为 0.5s；
         # InkSession.flush 超时后排空语义保持）

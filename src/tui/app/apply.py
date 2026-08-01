@@ -17,12 +17,13 @@ from src.tui._const import (
 )
 from src.tui.core.style import Style
 from src.renderer.ansi.helpers import AnsiLine, ansi_to_line
+# 方向C 步骤4：_S_USER_ICON/_S_USER_TEXT/_S_NOTICE 迁入 app/_theme.py 共享池
+# （被 apply 多处使用；享元收敛原则：多处使用才共享）。
+from src.tui.app._theme import _S_USER_ICON, _S_USER_TEXT, _S_NOTICE
 
 _logger = logging.getLogger(__name__)
 
-_S_USER_ICON = Style(fg=81, bold=True)
-_S_USER_TEXT = Style(fg=252)
-_S_NOTICE = Style(fg=242)
+# 仅单处使用的样式常量保留模块私有（享元收敛原则）
 _S_ERROR = Style(fg=196)
 _S_ERROR_ICON = Style(fg=196, bold=True)
 _S_PARSE = Style(fg=242)
@@ -48,6 +49,30 @@ def _cmd_name(cid: int) -> str:
         return RenderCommand(cid).name
     except ValueError:
         return str(cid)
+
+
+# ═══════════════════════════════════════════════════════════
+# 消息行共享构建（方向C 步骤4）
+# ═══════════════════════════════════════════════════════════
+
+def build_user_line(content: str) -> AnsiLine:
+    """构建用户消息行（`  > ` 图标 + 文本）。
+
+    apply 与 _consumer 共享的唯一真源；样式取自 _theme 共享池。
+    """
+    line = AnsiLine.of("  > ", _S_USER_ICON)
+    line.append(content, _S_USER_TEXT)
+    return line
+
+
+def build_assistant_line(content: str) -> AnsiLine:
+    """构建助手/其他消息行（`  \u2502 ` 前缀 + 文本）。
+
+    apply 与 _consumer 共享的唯一真源；样式取自 _theme 共享池。
+    """
+    line = AnsiLine.of("  \u2502 ", _S_NOTICE)
+    line.append(content)
+    return line
 
 
 # ── 命令分发表 ─────────────────────────────────────
@@ -202,9 +227,7 @@ def _do_parse_info(model, cmd) -> None:
 
 
 def _do_user_message(model, cmd) -> None:
-    line = AnsiLine.of("  > ", _S_USER_ICON)
-    line.append(cmd.text, _S_USER_TEXT)
-    model.append_committed("user", [line])
+    model.append_committed("user", [build_user_line(cmd.text)])
 
 
 def _do_display_messages(model, cmd) -> None:
@@ -214,13 +237,9 @@ def _do_display_messages(model, cmd) -> None:
         role = msg.get("role", "")
         content = _content_str(msg.get("content", ""))
         if role == "user":
-            line = AnsiLine.of("  > ", _S_USER_ICON)
-            line.append(content, _S_USER_TEXT)
-            model.append_committed("user", [line])
+            model.append_committed("user", [build_user_line(content)])
         elif role in ("assistant", "other"):
-            line = AnsiLine.of("  \u2502 ", _S_NOTICE)
-            line.append(content)
-            model.append_committed("write_line", [line])
+            model.append_committed("write_line", [build_assistant_line(content)])
     if messages:
         model.append_committed("write_line", [AnsiLine.of("  " + "\u2500" * 40, Style(fg=240))])
 
@@ -248,4 +267,4 @@ _HANDLERS: dict[int, object] = {
     RenderCommand.DISPLAY_MSGS: _do_display_messages,
 }
 
-__all__ = ["apply_cmd"]
+__all__ = ["apply_cmd", "build_user_line", "build_assistant_line"]

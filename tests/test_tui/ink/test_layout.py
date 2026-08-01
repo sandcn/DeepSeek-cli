@@ -149,3 +149,100 @@ class TestRenderFrame:
         r.render(root, el, 80, 24)
         frame = render_frame(root, 80)
         assert frame.lines[0].plain == "committed"
+
+
+class TestFlexGrowRemainder:
+    """方向C 步骤6 — flexGrow 余数分配（总高度不变，余数到前 n 个子节点）。"""
+
+    def _collect_texts(self, root):
+        texts = []
+        child = root.child.child
+        while child:
+            texts.append(child)
+            child = child.sibling
+        return texts
+
+    def test_flexgrow_remainder_distribution(self):
+        """remaining=8, grow=[2,1] → per=2, remainder=2 → extra=[5,3]。"""
+        root, box = _render_and_layout(
+            h(BOX, {"height": 10},
+              h(TEXT, {"children": "a", "flexGrow": 2}),
+              h(TEXT, {"children": "b", "flexGrow": 1})),
+            80,
+        )
+        texts = self._collect_texts(root)
+        assert texts[0].layout_box.h == 6  # 1 内容 + 5 富余
+        assert texts[1].layout_box.h == 4  # 1 内容 + 3 富余
+        assert box.h == 10  # 总高度不变
+
+    def test_flexgrow_remainder_goes_to_first_n(self):
+        """remaining=5, grow=[1,1,1] → per=1, remainder=2 → extra=[2,2,1]。"""
+        root, box = _render_and_layout(
+            h(BOX, {"height": 8},
+              h(TEXT, {"children": "a", "flexGrow": 1}),
+              h(TEXT, {"children": "b", "flexGrow": 1}),
+              h(TEXT, {"children": "c", "flexGrow": 1})),
+            80,
+        )
+        texts = self._collect_texts(root)
+        assert [t.layout_box.h for t in texts] == [3, 3, 2]
+        assert box.h == 8
+
+    def test_flexgrow_equal_grow_balanced(self):
+        """remaining=6, grow=[1,1,1] → per=2, remainder=0 → extra=[2,2,2]。"""
+        root, box = _render_and_layout(
+            h(BOX, {"height": 9},
+              h(TEXT, {"children": "a", "flexGrow": 1}),
+              h(TEXT, {"children": "b", "flexGrow": 1}),
+              h(TEXT, {"children": "c", "flexGrow": 1})),
+            80,
+        )
+        texts = self._collect_texts(root)
+        assert [t.layout_box.h for t in texts] == [3, 3, 3]
+        assert box.h == 9
+
+
+class TestTextWrapTruncate:
+    """方向B 步骤12 — textWrap 模式（truncate 省略号）。"""
+
+    def _frame_plain(self, element, width):
+        """渲染元素并返回整帧纯文本行列表。"""
+        r = Reconciler()
+        root = r.create_root()
+        r.render(root, element, width, 24)
+        frame = render_frame(root, width)
+        return [line.plain for line in frame.lines]
+
+    def test_textwrap_truncate_single_line_with_ellipsis(self):
+        """textWrap='truncate'：高度为 1 行且内容截断+省略号。"""
+        root, box = _render_and_layout(
+            h(TEXT, {"children": "a" * 30, "textWrap": "truncate"}), 10
+        )
+        assert box.h == 1  # 单行
+        lines = self._frame_plain(h(TEXT, {"children": "a" * 30, "textWrap": "truncate"}), 10)
+        assert lines == ["a" * 9 + "…"]  # 9 个 a + 省略号（宽度 10）
+
+    def test_textwrap_truncate_fits_no_ellipsis(self):
+        """textWrap='truncate'：内容未超宽 → 原样单行（无省略号）。"""
+        root, box = _render_and_layout(
+            h(TEXT, {"children": "abc", "textWrap": "truncate"}), 10
+        )
+        assert box.h == 1
+        lines = self._frame_plain(h(TEXT, {"children": "abc", "textWrap": "truncate"}), 10)
+        assert lines == ["abc"]
+
+    def test_textwrap_truncate_end_same_as_truncate(self):
+        """textWrap='truncate-end' 与 'truncate' 同语义（末尾省略号）。"""
+        root, box = _render_and_layout(
+            h(TEXT, {"children": "b" * 20, "textWrap": "truncate-end"}), 6
+        )
+        assert box.h == 1
+        lines = self._frame_plain(h(TEXT, {"children": "b" * 20, "textWrap": "truncate-end"}), 6)
+        assert lines == ["b" * 5 + "…"]
+
+    def test_textwrap_default_wrap_unchanged(self):
+        """默认 textWrap='wrap' 行为不变（回归：超宽换行而非截断）。"""
+        root, box = _render_and_layout(h(TEXT, {"children": "a" * 30}), 10)
+        assert box.h == 3  # 换行为 3 行（不截断）
+        lines = self._frame_plain(h(TEXT, {"children": "a" * 30}), 10)
+        assert lines == ["a" * 10, "a" * 10, "a" * 10]

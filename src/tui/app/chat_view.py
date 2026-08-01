@@ -24,8 +24,19 @@ def _to_styled_runs(line) -> list[StyledRun]:
 
 
 def _block_styled_lines(block, start: int = 0) -> list[list[StyledRun]]:
-    """将块的行（从 start 起）转为 styled run 列表（块级样式叠加）。"""
+    """将块的行（从 start 起）转为 styled run 列表（块级样式叠加）。
+
+    方向D 步骤15：
+      - 关闭块（``_cached_ink_lines`` 非 None）直接复用冻结 ``Line.runs``
+        引用（同一 runs 列表对象跨帧复用，免每帧 Style merge）；推理块除外
+        ——冻结语义（dim italic）与即时渲染（fg=242 italic）不同，保持即时路径。
+      - 工具块标题行前置状态图标（running ● / done ✔ / fail ✖）。
+    """
     kind = block.kind
+    cache = getattr(block, "_cached_ink_lines", None)
+    if cache is not None and kind != "reasoning":
+        # 冻结缓存：Line.runs 引用级复用（同一 runs 列表对象，跨帧不重建）
+        return [line.runs for line in cache[start:]]
     out: list[list[StyledRun]] = []
     for line in block.lines[start:]:
         runs = _to_styled_runs(line)
@@ -35,6 +46,12 @@ def _block_styled_lines(block, start: int = 0) -> list[list[StyledRun]]:
             out.append(merged)
         else:
             out.append(runs)
+    if kind == "tool" and start == 0 and out:
+        # 开放工具块：标题前置状态图标（running ●；关闭块已在冻结缓存中）
+        from src.tui.app.model import _tool_icon_runs
+        icon = _tool_icon_runs(block)
+        if icon:
+            out[0] = icon + out[0]
     return out
 
 

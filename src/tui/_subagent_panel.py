@@ -3,7 +3,7 @@
 架构（与旧 ParallelDisplay 同等的终端渲染效果）：
   事件源（EventBusDisplayProxy / parallel_executor）
     → EventBus.publish(AgentAddedEvent, AgentStatusChanged, ModelPhaseEvent, ...)
-    → SubAgentPanelController（本模块）
+    → SubAgentPanelController（本模块，外观）
     → 帧渲染（含摘要行/分隔线/树形连接/工具历史/spinner）
     → RenderCommand.SUBAGENT_FRAME 推送
     → TuiRenderer._do_subagent_frame()
@@ -17,12 +17,18 @@
    │  ● read_file /path/to/file.py  0.3s
    │  ✔ grep pattern src/  0.1s
    └─ ✔ [EXE] 生成测试  8.2k out  10.1s
+
+方向C 步骤7 拆分说明（上帝类 → 三域分离）：
+  - 状态建模 → ``src/tui/_subagent_state.py``（``_AgentSlot``/``_ToolRecord``/``StateStore``）
+  - 帧渲染   → ``src/tui/_subagent_render.py``（``render_frame``/``build_agent_lines``/动效辅助）
+  - 本模块   → 控制器外观（订阅管理 + 事件分发 + 推送），保持公开方法面不变。
+  兼容：``_AgentSlot``/``_ToolRecord``/``_SPINNER_FRAMES``/``_get_tool_color``/``_C_*``
+  仍经本模块 re-export（既有测试/插件访问路径不变）。
 """
 
 from __future__ import annotations
 
 import logging
-import re
 import threading
 import time
 from typing import Any, Callable, Dict, List
@@ -42,10 +48,9 @@ from src.tui._const import (
     RenderCmd,
     SubagentFrameCmd,
 )
-from src.tui._config import TuiConfig
-from src.tui._tool_icons import TOOL_CATEGORY_COLORS, TOOL_CATEGORY_MAP
-from src.tui.app import _fx
-from src.tui.app._theme import time_glow
+from src.tui._format import format_duration as _format_duration
+from src.tui._format import format_tokens as _format_tokens
+from src.tui._format import format_speed as _format_speed
 from src.tui.events.event_types import (
     AgentAddedEvent, AgentStatusChanged, ModelPhaseEvent,
     ToolParsingEvent, ToolStartedEvent, ToolDoneEvent,
@@ -53,191 +58,47 @@ from src.tui.events.event_types import (
     UsageUpdatedEvent, MetricsUpdateEvent,
 )
 
+from src.tui._subagent_state import StateStore, _AgentSlot, _ToolRecord
+from src.tui._subagent_render import (
+    _SPINNER_FRAMES,
+    _get_tool_color,
+    build_agent_lines as _build_agent_lines_impl,
+    render_frame as _render_frame_impl,
+)
+
 _logger = logging.getLogger(__name__)
 
-# ── 颜色常量（唯一真源收敛，方向F 步骤12） ──────────────
-# _C_* 面板配色唯一真源已收敛至 src/tui/_const.py（本模块改为模块级导入）；
-# _COLOR_* 底栏配色同样收敛至 _const（_screen re-export 保持 bottom_bar 路径）。
-# ── 工具名 → 类别/颜色映射（单一真源，方向F 步骤12 收敛） ──
-# 工具名→展示映射唯一真源在 src/tui/_tool_icons.py：
-#   TOOL_ICONS（图标）+ TOOL_CATEGORY_MAP/TOOL_CATEGORY_COLORS（类别配色）
-#   + AGENT_TYPE_ABBREV/AGENT_TYPE_COLORS（Agent 类型）
-# 映射在 import 后只读，Python 字典读操作在 GIL 下线程安全；
-# 原「保留本地副本避免跨线程共享可变映射」的线程隔离顾虑已消除（无共享写风险），
-# 收敛为单一真源。AGENT_TYPE_ABBREV / AGENT_TYPE_COLORS / TOOL_ICONS
-# 仍在 _build_agent_lines / _format_tool_record 内从 _tool_icons 延迟导入
-# （既有模式不变，P2-14 注释修正方法名）。
-
-_SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
-_INDENT = "  "
-
-# ── 动效时间基配置（步骤7 新增 fade_duration_sec / spinner_tick_hz） ──
-_CFG = TuiConfig.defaults()
-_FADE_DURATION: float = _CFG.fade_duration_sec       # FadeIn 渐显总时长（0.6s）
-_FADE_START_COLOR: int = _CFG.fade_start_color       # FadeIn 起始暗色（238）
-_SPINNER_HZ: float = _CFG.spinner_tick_hz            # spinner 时间基推进频率（10Hz）
-
-
-def _color_256_ansi(code: int) -> str:
-    """256 色号 → ANSI 前景序列。"""
-    return f"\033[38;5;{code}m"
-
-
-def _ansi_256_code(ansi: str) -> int | None:
-    """从 ANSI 序列提取 256 色号（如 ``"\\033[38;5;214m"`` → 214）；无法解析返回 None。"""
-    m = re.search(r"38;5;(\d+)", ansi)
-    return int(m.group(1)) if m else None
-
-
-def _fade_type_ansi(agent_type_ansi: str, elapsed: float) -> str:
-    """agent 类型标签 FadeIn 渐显（BEAUTY-1）。
-
-    时间基：elapsed>=duration 时返回原色（动画结束不触发重绘）；
-    elapsed 期间从 ``_FADE_START_COLOR`` 渐变到原色号。
-    """
-    code = _ansi_256_code(agent_type_ansi)
-    if code is None:
-        return agent_type_ansi
-    faded = _fx.fade_color(elapsed, _FADE_DURATION, _FADE_START_COLOR, code)
-    return _color_256_ansi(faded)
-
-
-def _breathe_running_ansi(active: bool) -> str:
-    """running 摘要段呼吸色（BEAUTY-2）：仅 running 时 time_glow(214,220,12s) 呼吸。
-
-    空闲（无 running）时返回静态 ``_C_RUNNING``（零开销，不触发重绘）。
-    """
-    if not active:
-        return _C_RUNNING
-    return _color_256_ansi(time_glow(214, 220, 12.0))
-
-
-def _breathe_sep_ansi(active: bool) -> str:
-    """分隔线微呼吸（BEAUTY-2）：仅 running 时在 [237, 245] 微呼吸。
-
-    空闲时返回静态 ``_C_DIMMEST``。
-    """
-    if not active:
-        return _C_DIMMEST
-    return _color_256_ansi(time_glow(237, 245, 12.0))
-
-
-def _get_tool_color(tool_name: str) -> str:
-    """查询工具类别配色（共享单一真源映射，_tool_icons.TOOL_CATEGORY_MAP/COLORS）。
-
-    函数签名保留（方向F 步骤12 收敛后查询共享映射，线程安全只读）。
-    """
-    cat = TOOL_CATEGORY_MAP.get(tool_name, "")
-    # P3-17：默认兜底色引用 _C_SUMMARY_DIM（_const 模块级导入），
-    # 消除硬编码 "\033[38;5;245m"（值一致，语义命名）
-    return TOOL_CATEGORY_COLORS.get(cat, _C_SUMMARY_DIM)
-
-
-def _format_duration(seconds: float) -> str:
-    if seconds < 60:
-        return f"{seconds:.1f}s"
-    m = int(seconds // 60)
-    s = seconds % 60
-    return f"{m}m{s:.0f}s"
-
-
-def _format_tokens(n: int) -> str:
-    if n >= 1_000_000:
-        return f"{n / 1_000_000:.1f}M"
-    elif n >= 1_000:
-        return f"{n / 1_000:.1f}k"
-    return str(n)
-
-
-def _format_speed(s: float) -> str:
-    if s <= 0:
-        return "-"
-    if s >= 1_000_000:
-        return f"{s / 1_000_000:.1f}M/s"
-    elif s >= 1_000:
-        return f"{s / 1_000:.0f}k/s"
-    elif s >= 100:
-        return f"{s:.0f}/s"
-    elif s >= 1:
-        return f"{s:.1f}/s"
-    return f"{s:.2f}/s"
+# 兼容 re-export（既有测试/插件经 src.tui._subagent_panel 访问路径不变）：
+#   _AgentSlot / _ToolRecord（test_subagent_panel 直接导入）
+#   _SPINNER_FRAMES（test_subagent_panel 直接导入）
+#   _get_tool_color（test_tool_mapping_single_source 经 sp._get_tool_color 访问）
+#   _C_*（test 经 sp._C_RUNNING / sp._C_RESET 访问，模块级从 _const 导入）
+#   _format_duration / _format_tokens / _format_speed（patch 路径兼容）
+#   time（patch("src.tui._subagent_panel.time.monotonic") 兼容——标准库 time 模块引用）
 
 
 # ═══════════════════════════════════════════════════════════
-# 状态槽位
-# ═══════════════════════════════════════════════════════════
-
-class _ToolRecord:
-    __slots__ = ('tool_name', 'detail', 'start_time', 'end_time', 'phase')
-
-    def __init__(self, tool_name: str, detail: str = ""):
-        self.tool_name = tool_name
-        self.detail = detail
-        self.start_time: float = time.time()
-        self.end_time: float = 0.0
-        self.phase: str = "parsing"  # parsing / running / done / fail
-
-
-class _AgentSlot:
-    __slots__ = (
-        'label', 'description', 'status', 'agent_type',
-        'start_time', 'end_time',
-        'appear_time',
-        'model_phase', 'model_info', 'model_phase_start',
-        'parse_info',
-        'input_tokens', 'output_tokens',
-        'live_input_tokens', 'live_output_tokens',
-        'last_speed',
-        'tool_history',
-        'result_text', 'result_error',
-    )
-
-    def __init__(self, label: str, description: str, status: str = "running",
-                 agent_type: str = "execute"):
-        self.label = label
-        self.description = description
-        self.status = status
-        self.agent_type = agent_type
-        self.start_time: float = time.time()
-        self.end_time: float = 0.0
-        # BEAUTY-1：FadeIn 出现时刻（时间基，time.monotonic()）
-        self.appear_time: float = time.monotonic()
-        self.model_phase: str = ""
-        self.model_info: str = ""
-        self.model_phase_start: float = 0.0
-        self.parse_info: str = ""
-        self.input_tokens: int = 0
-        self.output_tokens: int = 0
-        self.live_input_tokens: int = 0
-        self.live_output_tokens: int = 0
-        self.last_speed: float = 0.0
-        self.tool_history: List[_ToolRecord] = []
-        self.result_text: str = ""
-        self.result_error: str = ""
-
-
-# ═══════════════════════════════════════════════════════════
-# SubAgentPanelController
-# 上帝类评估（方向④·步骤 10.3）：4 职责约 500 行 — 暂缓拆分
-#   1. 订阅管理：ensure_active()/stop() 中 10 类事件订阅/取消订阅
-#   2. 事件处理器：_on_agent_added / _on_agent_status_changed / _on_model_phase /
-#      _on_tool_parsing / _on_tool_started / _on_tool_done / _on_parse_info /
-#      _on_parse_info_done / _on_usage_updated / _on_metrics（10 个）
-#   3. 面板状态建模：_agents / _order / _state_lock / _frame 等
-#   4. 帧渲染+推送：_render_frame() / _push_frame()（含摘要行/分隔线/树形连接/
-#      工具历史/spinner）
-# 暂缓拆分，保留单类实现；后续重构方向：按职责域提取独立模块，
-# 渲染与状态建模分离、事件处理器注册收敛为声明式订阅表。
+# SubAgentPanelController（外观：订阅管理 + 事件分发 + 推送）
 # ═══════════════════════════════════════════════════════════
 
 class SubAgentPanelController:
+    """SubAgent 面板控制器（外观模式）。
+
+    职责收敛（方向C 步骤7 拆分后）：
+      1. 订阅管理：``ensure_active()``/``stop()`` 中 10 类事件订阅/取消订阅
+         （``_SUBSCRIPTIONS`` 声明式表）
+      2. 事件分发：10 个 ``_on_*`` 处理器——委托 ``StateStore`` 变更方法
+         （锁内）+ 置脏 + ``_emit_frame()``（锁外节流推送）
+      3. 帧推送：``_push_frame``（注入 push_cmd 或降级 chat_ui）
+      - 状态建模在 ``_subagent_state``；帧渲染在 ``_subagent_render``。
+    """
+
     _instance: "SubAgentPanelController | None" = None
     _class_lock = threading.Lock()
     # 帧渲染节流：100ms 间隔（10Hz）
     _EMIT_INTERVAL: float = 0.1
-    # 声明式订阅表（方向D 步骤7）：事件类型 → 处理器方法名。
-    # 与 webui bridge _EVENT_BINDINGS 数据驱动风格对齐，ensure_active()/stop()
-    # 遍历本表订阅/取消订阅，消除硬编码重复代码。
+    # 声明式订阅表：事件类型 → 处理器方法名。
+    # ensure_active()/stop() 遍历本表订阅/取消订阅，消除硬编码重复代码。
     _SUBSCRIPTIONS: tuple[tuple[type, str], ...] = (
         (AgentAddedEvent, "_on_agent_added"),
         (AgentStatusChanged, "_on_agent_status_changed"),
@@ -253,10 +114,12 @@ class SubAgentPanelController:
 
     def __init__(self, max_history: int = 3,
                  push_cmd: Callable[[RenderCmd], None] | None = None):
-        self._agents: Dict[str, _AgentSlot] = {}
-        self._order: List[str] = []
-        # RLock: 允许 _on_tool_parsing 等事件处理器在持有锁时调用 _push_frame(_render_frame()) 而不死锁；_render_frame() 内部也获取此锁
-        self._state_lock = threading.RLock()
+        self._store = StateStore(max_history=max_history)
+        # 兼容既有测试直接访问 _agents/_order/_state_lock（与 store 同一引用）
+        self._agents: Dict[str, _AgentSlot] = self._store._agents
+        self._order: List[str] = self._store._order
+        # RLock: 允许事件处理器在持有锁时调用渲染函数而不死锁；_render_frame 内部也获取此锁
+        self._state_lock = self._store._state_lock
         self._frame: int = 0
         self._last_emit_time: float = 0.0
         # PERF-2：面板脏标记（事件处理器更新状态后置位；渲染后复位）
@@ -322,12 +185,10 @@ class SubAgentPanelController:
                 except Exception:
                     _logger.debug("request_bottom_redraw 异常", exc_info=True)
         self._unregister_panel_refresh()
-        with self._state_lock:
-            self._agents.clear()
-            self._order.clear()
+        self._store.clear()
         self._active = False
 
-    # ── 事件处理器 ──────────────────────────────────────
+    # ── 事件处理器（委托 StateStore 变更 + 置脏 + 节流推送） ──
 
     def _emit_frame(self) -> None:
         """渲染并推送当前帧（受 _EMIT_INTERVAL 节流）。
@@ -346,171 +207,91 @@ class SubAgentPanelController:
         self._last_emit_time = now
         lines = self._render_frame()
         self._push_frame(lines)
+        # P3-13：推送成功后同步 _last_pushed_frame（与 _panel_refresh 变更检测
+        # 状态一致）——修复前仅 _panel_refresh 更新，动画期间 _emit_frame 推送
+        # 后 _panel_refresh 可能重复推同帧。
+        self._last_pushed_frame = list(lines)
         # PERF-2：渲染后复位脏标记（后续空闲不再渲染）
         self._dirty = False
 
     def _on_agent_added(self, event) -> None:
-        with self._state_lock:
-            if event.label not in self._agents:
-                slot = _AgentSlot(
-                    label=event.label,
-                    description=event.description,
-                    status=event.status,
-                    agent_type=getattr(event, 'agent_type', 'execute'),
-                )
-                self._agents[event.label] = slot
-                self._order.append(event.label)
+        self._store.add_agent(
+            label=event.label,
+            description=event.description,
+            status=event.status,
+            agent_type=getattr(event, 'agent_type', 'execute'),
+        )
         self._dirty = True
         self._emit_frame()
 
     def _on_agent_status_changed(self, event) -> None:
-        with self._state_lock:
-            slot = self._agents.get(event.label)
-            if slot is None:
-                return
-            slot.status = event.status
-            if event.status in ("done", "fail"):
-                slot.end_time = time.time()
-                for rec in slot.tool_history:
-                    if rec.phase in ("running", "parsing"):
-                        rec.phase = "done" if event.status == "done" else "fail"
-                        rec.end_time = time.time()
+        self._store.update_status(event.label, event.status)
         self._dirty = True
         self._emit_frame()
 
     def _on_model_phase(self, event) -> None:
-        with self._state_lock:
-            slot = self._agents.get(event.label)
-            if slot is None:
-                return
-            if event.phase != slot.model_phase:
-                slot.model_phase_start = time.time()
-            slot.model_phase = event.phase
-            slot.model_info = event.info
+        self._store.set_model_phase(event.label, event.phase, event.info)
         self._dirty = True
         self._emit_frame()
 
     def _on_tool_parsing(self, event) -> None:
-        """ToolParsingEvent — 流式解析工具参数时创建/更新 parsing 记录。"""
-        with self._state_lock:
-            slot = self._agents.get(event.label)
-            if slot is None:
-                return
-            # ★ 更新 model phase 为 parsing，使面板显示 "parsing" 阶段指示
-            slot.model_phase = "parsing"
-            slot.model_phase_start = time.time()
-            # 如果已有同名 parsing 记录，更新 detail（累积参数）
-            for rec in reversed(slot.tool_history):
-                if rec.tool_name == event.tool_name and rec.phase == "parsing":
-                    rec.detail = event.arguments
-                    break
-            else:
-                rec = _ToolRecord(tool_name=event.tool_name)
-                rec.detail = event.arguments
-                slot.tool_history.append(rec)
-        # ★ BUG-T3：改走 _emit_frame() 节流（10Hz）——流式 parsing 高频事件
-        #   不再绕过 _EMIT_INTERVAL 每事件全帧渲染（既有
-        #   TestSubAgentPanelParsingThrottle 已锁定此行为）。
-        #    锁顺序保证（防死锁）：
-        #      _render_frame() 内部获取/释放 _state_lock（RLock 可重入）
-        #      _push_frame()   在 _render_frame 返回后调用，锁已释放
-        #    注意：_push_frame 绝不可在 with self._state_lock 块内调用，
-        #    否则 render 线程在同一锁上阻塞时形成 ABBA 死锁。
+        """ToolParsingEvent — 流式解析工具参数时创建/更新 parsing 记录。
+
+        ★ BUG-T3：改走 _emit_frame() 节流（10Hz）——流式 parsing 高频事件
+          不再绕过 _EMIT_INTERVAL 每事件全帧渲染（既有
+          TestSubAgentPanelParsingThrottle 已锁定此行为）。
+           锁顺序保证（防死锁）：
+             _store 变更方法内部获取/释放 _state_lock（RLock 可重入）
+             _emit_frame() → _render_frame() 内部取锁 → _push_frame() 锁外
+            注意：_push_frame 绝不可在 with self._state_lock 块内调用，
+            否则 render 线程在同一锁上阻塞时形成 ABBA 死锁。
+        """
+        self._store.update_tool_parsing(
+            event.label, event.tool_name, event.arguments,
+        )
         self._dirty = True
         self._emit_frame()
 
     def _on_parse_info(self, event) -> None:
         """ParseInfoEvent — ToolParseTracker 定时推送的解析摘要（rf,rf 51t 0.74s）。"""
-        with self._state_lock:
-            slot = self._agents.get(event.label)
-            if slot is None:
-                return
-            tokens_str = f"{event.tokens}t" if isinstance(event.tokens, (int, float)) else str(event.tokens)
-            slot.parse_info = f"{event.tool_names} {tokens_str} {event.elapsed:.2f}s"
+        self._store.set_parse_info(
+            event.label, event.tool_names, event.tokens, event.elapsed,
+        )
         self._dirty = True
         self._emit_frame()
 
     def _on_parse_info_done(self, event) -> None:
         """ParseInfoDoneEvent — 工具解析完成，清除解析摘要和 phase。"""
-        with self._state_lock:
-            slot = self._agents.get(event.label)
-            if slot is None:
-                return
-            slot.parse_info = ""
-            if slot.model_phase == "parsing":
-                slot.model_phase = ""
+        self._store.clear_parse_info(event.label)
         self._dirty = True
         self._emit_frame()
 
     def _on_tool_started(self, event) -> None:
-        with self._state_lock:
-            slot = self._agents.get(event.label)
-            if slot is None:
-                return
-            # 将已有 parsing 记录转换为 running，避免重复创建
-            for rec in reversed(slot.tool_history):
-                if rec.tool_name == event.tool_name and rec.phase == "parsing":
-                    rec.phase = "running"
-                    rec.detail = event.detail
-                    break
-            else:
-                rec = _ToolRecord(tool_name=event.tool_name, detail=event.detail)
-                rec.phase = "running"
-                slot.tool_history.append(rec)
+        self._store.start_tool(event.label, event.tool_name, event.detail)
         self._dirty = True
         self._emit_frame()
 
     def _on_tool_done(self, event) -> None:
-        with self._state_lock:
-            slot = self._agents.get(event.label)
-            if slot is None:
-                return
-            # 找到最后一个匹配的 running 工具并标记完成
-            for rec in reversed(slot.tool_history):
-                if rec.tool_name == event.tool_name and rec.phase == "running":
-                    rec.phase = "done" if event.success else "fail"
-                    rec.end_time = time.time()
-                    break
+        self._store.done_tool(event.label, event.tool_name, event.success)
         self._dirty = True
         self._emit_frame()
 
     def _on_usage_updated(self, event) -> None:
-        with self._state_lock:
-            slot = self._agents.get(event.label)
-            if slot is None:
-                return
-            usage = event.usage
-            if not isinstance(usage, dict):
-                return
-            replace = getattr(event, 'replace', False)
-            if replace:
-                slot.input_tokens = usage.get("input", 0)
-                slot.output_tokens = usage.get("output", 0)
-                slot.live_input_tokens = usage.get("live_input", 0)
-                slot.live_output_tokens = usage.get("live_output", 0)
-            else:
-                slot.input_tokens += usage.get("input", 0)
-                slot.output_tokens += usage.get("output", 0)
-                slot.live_input_tokens += usage.get("live_input", 0)
-                slot.live_output_tokens += usage.get("live_output", 0)
-            slot.last_speed = float(usage.get("speed", 0))
+        self._store.update_usage(
+            event.label, event.usage, getattr(event, 'replace', False),
+        )
         self._dirty = True
         self._emit_frame()
 
     def _on_metrics(self, event) -> None:
         """MetricsUpdateEvent → 增量更新实时 token 计数和速度。"""
-        with self._state_lock:
-            slot = self._agents.get(event.label)
-            if slot is None:
-                return
-            if event.live_input_tokens:
-                slot.live_input_tokens += event.live_input_tokens
-            if event.live_output_tokens:
-                slot.live_output_tokens += event.live_output_tokens
-            if event.output_tokens:
-                slot.output_tokens += event.output_tokens
-            if event.speed > 0:
-                slot.last_speed = event.speed
+        self._store.update_metrics(
+            event.label,
+            event.live_input_tokens,
+            event.live_output_tokens,
+            event.output_tokens,
+            event.speed,
+        )
         self._dirty = True
         self._emit_frame()
 
@@ -541,19 +322,9 @@ class SubAgentPanelController:
         """是否存在活跃/动画状态（running agent / running tool）需要重绘推进。
 
         PERF-2：空闲（无事件 + 无动画需求）时 ``_panel_refresh`` 短路跳过
-        全量渲染（保持动画时仍按 10Hz 渲染）。
+        全量渲染（保持动画时仍按 10Hz 渲染）。委托 ``StateStore.needs_animation``。
         """
-        with self._state_lock:
-            for label in self._order:
-                slot = self._agents.get(label)
-                if slot is None:
-                    continue
-                if slot.status == "running":
-                    return True
-                for rec in slot.tool_history:
-                    if rec.phase in ("running", "parsing"):
-                        return True
-        return False
+        return self._store.needs_animation()
 
     def _panel_refresh(self) -> None:
         if not self._cb_registered:
@@ -574,191 +345,22 @@ class SubAgentPanelController:
         # PERF-2：渲染后复位脏标记（后续空闲不再渲染）
         self._dirty = False
 
-    # ── 帧渲染（与旧 FrameRenderer 等效的输出格式） ────
+    # ── 帧渲染委托（实现迁移至 _subagent_render） ────
 
     def _render_frame(self) -> List[str]:
-        with self._state_lock:
-            if not self._agents:
-                return []
-            now = time.time()
-            lines: List[str] = []
+        """渲染面板帧（委托 _subagent_render.render_frame）。
 
-            # ── 摘要行 ──
-            total = len(self._order)
-            done_count = 0
-            total_output = 0
-            earliest_start: float | None = None
-            latest_speed = 0.0
-            has_running = False
+        agents/order 传入当前引用（兼容既有测试整体替换 ``ctrl._agents``
+        的场景）；锁取自 store（RLock 可重入）。
+        """
+        return _render_frame_impl(
+            self._store, self.max_history, self._agents, self._order,
+        )
 
-            for label in self._order:
-                slot = self._agents.get(label)
-                if slot is None:
-                    continue
-                disp_out = slot.output_tokens + slot.live_output_tokens
-                total_output += disp_out
-                if slot.status == "running":
-                    has_running = True
-                    if slot.last_speed > 0:
-                        latest_speed += slot.last_speed
-                if slot.status in ("done", "fail"):
-                    done_count += 1
-                if earliest_start is None or slot.start_time < earliest_start:
-                    earliest_start = slot.start_time
-
-            elapsed = (now - earliest_start) if earliest_start else 0
-            elapsed_str = _format_duration(elapsed)
-            output_str = _format_tokens(total_output)
-            speed_str = _format_speed(latest_speed) if has_running else "-"
-
-            sep = f" {_C_DIMMER}\u00b7{_C_RESET} "
-            # 简易进度条
-            bar_width = min(12, total * 4)
-            if done_count < total:
-                done_blocks = int(bar_width * done_count / total) if total else 0
-                # BEAUTY-2：running 时进度条/图标经 time_glow 呼吸（空闲静态）
-                running_ansi = _breathe_running_ansi(has_running)
-                bar = (
-                    running_ansi + "\u2588" * done_blocks
-                    + _C_DIMMEST + "\u2591" * (bar_width - done_blocks)
-                    + _C_RESET
-                )
-                icon = f"{running_ansi}\u25cf{_C_RESET}"
-                summary = (
-                    f"{icon} {_C_SUMMARY_DIM}{total} agents{_C_RESET}"
-                    f" {bar}"
-                    f"{sep}{_C_SUMMARY_DIM}{output_str} out{_C_RESET}"
-                    f"{sep}{_C_SUMMARY_DIM}{speed_str}{_C_RESET}"
-                    f"{sep}{_C_SUMMARY_DIM}{elapsed_str}{_C_RESET}"
-                    f"{sep}{_C_RUNNING}{done_count}/{total} done{_C_RESET}"
-                )
-            else:
-                bar = _C_DONE + "\u2588" * bar_width + _C_RESET
-                icon = f"{_C_DONE}\u2714{_C_RESET}"
-                summary = (
-                    f"{icon} {_C_DONE}{total} agents{_C_RESET}"
-                    f" {bar}"
-                    f"{sep}{_C_SUMMARY_DIM}{output_str} out{_C_RESET}"
-                    f"{sep}{_C_SUMMARY_DIM}{elapsed_str}{_C_RESET}"
-                    f"{sep}{_C_DONE}{done_count}/{total} done{_C_RESET}"
-                )
-            lines.append(summary)
-
-            # ── 分隔线（BEAUTY-2：running 时微呼吸，空闲静态） ──
-            sep_ansi = _breathe_sep_ansi(has_running)
-            lines.append(f"{sep_ansi} \u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501{_C_RESET}")
-
-            # ── 各 Agent ──
-            prev_has_sublines = False
-            for idx, label in enumerate(self._order):
-                slot = self._agents.get(label)
-                if slot is None:
-                    continue
-                is_last = (idx == len(self._order) - 1)
-
-                # Agent 间空白延续行
-                if idx > 0 and prev_has_sublines:
-                    lines.append(f"{_C_BRANCH} \u2502 {_C_RESET}")
-
-                agent_lines = self._build_agent_lines(slot, now, is_last)
-                lines.extend(agent_lines)
-                prev_has_sublines = len(agent_lines) > 1
-
-            # 清理尾部空行
-            while lines and lines[-1] == "":
-                lines.pop()
-            return lines
-
-    def _build_agent_lines(self, slot: _AgentSlot, now: float, is_last: bool) -> List[str]:
-        lines: List[str] = []
-        branch = " \u2514\u2500" if is_last else " \u251c\u2500"
-        cont   = "   " if is_last else " \u2502 "
-
-        elapsed = (slot.end_time or now) - slot.start_time
-        elapsed_str = _format_duration(elapsed)
-        disp_out = slot.output_tokens + slot.live_output_tokens
-        output_str = _format_tokens(disp_out)
-        speed_str = _format_speed(slot.last_speed) if slot.status == "running" else ""
-
-        # ── 类型标签（BEAUTY-1：新 agent 标题 FadeIn 渐显，时间基） ──
-        from ._tool_icons import AGENT_TYPE_ABBREV, AGENT_TYPE_COLORS
-        agent_type_ansi = AGENT_TYPE_COLORS.get(slot.agent_type, _C_DIMMER)
-        abbr = AGENT_TYPE_ABBREV.get(slot.agent_type, "??")
-        fade_elapsed = time.monotonic() - slot.appear_time
-        type_tag = f"{_fade_type_ansi(agent_type_ansi, fade_elapsed)}[{abbr}]{_C_RESET}"
-
-        # ── 状态图标 + 标题行 ──
-        if slot.status == "done":
-            icon = f"{_C_DONE}\u2714{_C_RESET}"
-            suffix = f"  {_C_DIMMER}{output_str}{_C_RESET}  {_C_DIMMER}{elapsed_str}{_C_RESET}"
-            title = f"{_C_BRANCH}{branch}{_C_RESET} {icon} {type_tag} {slot.description}{suffix}"
-        elif slot.status == "fail":
-            icon = f"{_C_FAIL}\u2716{_C_RESET}"
-            suffix = f"  {_C_DIMMER}{elapsed_str}{_C_RESET}"
-            title = f"{_C_BRANCH}{branch}{_C_RESET} {icon} {type_tag} {slot.description}{suffix}"
-        else:
-            # BEAUTY-3：spinner 时间基推进（非帧计数；_frame 字段保留兼容）
-            spinner = _SPINNER_FRAMES[_fx.spinner_frame(_SPINNER_HZ, _SPINNER_FRAMES)]
-            dot = f"{_C_RUNNING}{spinner}{_C_RESET}"
-            suffix = (
-                f"  {_C_DIMMER}{output_str}{_C_RESET}"
-                f"  {_C_SUMMARY_DIM}{speed_str}{_C_RESET}"
-                f"  {_C_DIMMER}{elapsed_str}{_C_RESET}"
-            )
-            title = f"{_C_BRANCH}{branch}{_C_RESET} {dot} {type_tag} {slot.description}{suffix}"
-        lines.append(title)
-
-        # ── 阶段指示 ──
-        if slot.status == "running" and slot.model_phase:
-            phase_elapsed = now - slot.model_phase_start if slot.model_phase_start else 0
-            phase_time = f"{phase_elapsed:.1f}s"
-            if slot.model_phase == "thinking":
-                lines.append(
-                    f"{_C_DIMMER}{cont}{_C_RESET}{_INDENT}\u2026thinking  {phase_time}")
-            elif slot.model_phase == "answering":
-                lines.append(
-                    f"{_C_DIMMER}{cont}{_C_RESET}{_INDENT}{_C_ANSWERING}\u2026answering{_C_DIMMER}  {phase_time}{_C_RESET}")
-            elif slot.model_phase == "parsing":
-                extra = slot.parse_info or slot.model_info
-                lines.append(
-                    f"{_C_DIMMER}{cont}{_C_RESET}{_INDENT}{_C_PARSING}\u2026parsing{_C_DIMMER}  {extra}{_C_RESET}")
-            elif slot.model_phase == "batch":
-                lines.append(
-                    f"{_C_DIMMER}{cont}{_C_RESET}{_INDENT}{_C_BATCH}\u2026batch{_C_DIMMER}  {slot.model_info}  {phase_time}{_C_RESET}")
-
-        # ── 工具历史（仅 running 时展开；done/fail 折叠为单行） ──
-        if slot.status not in ("done", "fail"):
-            history = slot.tool_history[-self.max_history:]
-            for rec in reversed(history):
-                lines.append(self._format_tool_record(rec, now, cont))
-
-        return lines
-
-    def _format_tool_record(self, rec: _ToolRecord, now: float, cont: str) -> str:
-        elapsed = (rec.end_time or now) - rec.start_time if rec.start_time else 0
-        time_str = f"{elapsed:.1f}s"
-        detail = rec.detail.replace('\r', '\\r').replace('\n', '\\n') if rec.detail else ""
-
-        from ._tool_icons import TOOL_ICONS
-        from src.tools.registry import get_tool_display_name
-        tool_icon = TOOL_ICONS.get(rec.tool_name, "")
-        display_name = get_tool_display_name(rec.tool_name)
-        tool_color = _get_tool_color(rec.tool_name)
-        tool_abbr = f"{tool_icon} {tool_color}{display_name}{_C_RESET}" if tool_icon else f"{tool_color}{display_name}{_C_RESET}"
-        detail_disp = f" {_C_DIMMER}{detail}{_C_RESET}" if detail else ""
-        prefix = f"{_C_BRANCH}{cont}{_C_RESET}{_INDENT}"
-
-        if rec.phase == "parsing":
-            line = f"{prefix}{_C_PARSING}\u25cc{_C_RESET} {tool_abbr}{detail_disp}"
-        elif rec.phase == "running":
-            # P2-14：硬编码 "\033[38;5;214m" → _C_RUNNING（_const 模块级导入，值一致）
-            pulse_color = _C_RUNNING
-            line = f"{prefix}{pulse_color}\u25cf{_C_RESET} {tool_abbr}{detail_disp}  {_C_DIMMER}{time_str}{_C_RESET}"
-        elif rec.phase == "done":
-            line = f"{prefix}{_C_DONE}\u2714{_C_RESET} {tool_abbr}{detail_disp}  {_C_DIMMER}{time_str}{_C_RESET}"
-        else:  # fail
-            line = f"{prefix}{_C_FAIL}\u2716{_C_RESET} {tool_abbr}{detail_disp}  {_C_DIMMER}{time_str}{_C_RESET}"
-        return line
+    def _build_agent_lines(self, slot: _AgentSlot, now: float,
+                           is_last: bool) -> List[str]:
+        """构建单个 Agent 显示行（委托 _subagent_render.build_agent_lines）。"""
+        return _build_agent_lines_impl(slot, now, is_last, self.max_history)
 
     # ── 帧推送 ──────────────────────────────────────────
 

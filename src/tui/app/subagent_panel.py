@@ -3,6 +3,12 @@
 将 AppModel.subagent_lines（控制器推送的 ANSI 行）渲染为 Text 元素。
 行内含 ANSI 颜色序列 → 经 ansi_to_runs 解析为样式 run。
 
+样式互换契约（方向C 步骤8 收敛）：
+  ANSI 字符串为「控制器→模型→组件」互换契约——模型 ``subagent_lines``
+  存 ANSI 行（由 ``_subagent_render.render_frame`` 产生，ANSI 字符串
+  是唯一序列化形式）；组件侧转换点收敛到本模块 ``_render_children`` 的
+  ``ansi_to_runs`` 一处（删除任何重复 ANSI 解析/样式拼接）。
+
 超宽行截断（不换行）：与旧版 _ansi_truncate(line, tw) 语义一致——
 每行保持单行，超出终端宽度部分丢弃，避免破坏面板树形结构。
 
@@ -17,7 +23,11 @@ from src.renderer.ansi.helpers import ansi_to_runs
 
 
 def _render_children(model, width: int) -> list:
-    """构建面板子树（按行截断 + 转样式 run）。"""
+    """构建面板子树（按行截断 + 转样式 run）。
+
+    唯一 ANSI → StyledRun 转换点（方向C 步骤8）：subagent_lines 的
+    ANSI 行经 ``ansi_to_runs`` 解析为样式 run，再按终端宽度截断。
+    """
     children = []
     for line in model.subagent_lines or []:
         if not line:
@@ -41,7 +51,10 @@ def SubAgentPanel(props) -> object:
     width = props.get("width", 80)
     children = use_memo(
         lambda: _render_children(model, width),
-        (tuple(model.subagent_lines or ()), model.status.status_active),
+        # P3-9：deps 补 width——_render_children 截断宽度依赖 width；修复前
+        # 仅 (subagent_lines, status_active)，终端 resize 且内容未变时面板行
+        # 按旧宽度截断（陈旧）。
+        (tuple(model.subagent_lines or ()), model.status.status_active, width),
     )
     if not children:
         return h(BOX, None, [])

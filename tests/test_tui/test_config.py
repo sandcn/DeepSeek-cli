@@ -125,3 +125,107 @@ class TestFadeConfig:
         assert new_style.spinner_tick_hz == 8.0
         # 原实例不变
         assert cfg.fade_duration_sec == 0.6
+
+
+class TestReverseSearchConfig:
+    """方向D 步骤14 — reverse_search_enabled 配置字段。"""
+
+    def test_reverse_search_enabled_default_false(self):
+        """默认 False（保持既有 Ctrl+R switch_model 语义，键位冲突门控）。"""
+        cfg = TuiConfig.defaults()
+        assert cfg.reverse_search_enabled is False
+
+    def test_reverse_search_enabled_override(self):
+        """with_overrides 可覆盖 reverse_search_enabled。"""
+        cfg = TuiConfig.defaults()
+        new_cfg = cfg.with_overrides(reverse_search_enabled=True)
+        assert new_cfg.reverse_search_enabled is True
+        # 原实例不变
+        assert cfg.reverse_search_enabled is False
+
+
+class TestToolCardConfig:
+    """方向D 步骤15 — 工具调用卡片展示配置字段。"""
+
+    def test_tool_auto_collapse_threshold_default(self):
+        """默认折叠阈值 8 行输出。"""
+        assert TuiConfig.defaults().tool_auto_collapse_threshold == 8
+
+    def test_tool_output_max_lines_default(self):
+        """默认最大保留行数 50。"""
+        assert TuiConfig.defaults().tool_output_max_lines == 50
+
+    def test_tool_config_overrides(self):
+        """with_overrides 可覆盖工具卡片字段。"""
+        cfg = TuiConfig.defaults()
+        new_cfg = cfg.with_overrides(
+            tool_auto_collapse_threshold=3,
+            tool_output_max_lines=4,
+        )
+        assert new_cfg.tool_auto_collapse_threshold == 3
+        assert new_cfg.tool_output_max_lines == 4
+        # 原实例不变
+        assert cfg.tool_auto_collapse_threshold == 8
+        assert cfg.tool_output_max_lines == 50
+
+
+class TestEscCancelConfig:
+    """方向D 步骤16 — esc_cancel_input 配置字段。"""
+
+    def test_esc_cancel_input_default_false(self):
+        """默认 False（保持既有 Esc 中断语义，键位语义门控）。"""
+        cfg = TuiConfig.defaults()
+        assert cfg.esc_cancel_input is False
+
+    def test_esc_cancel_input_override(self):
+        """with_overrides 可覆盖 esc_cancel_input。"""
+        cfg = TuiConfig.defaults()
+        new_cfg = cfg.with_overrides(esc_cancel_input=True)
+        assert new_cfg.esc_cancel_input is True
+        # 原实例不变
+        assert cfg.esc_cancel_input is False
+
+
+class TestStep17ConfigSummary:
+    """横切步骤17 — 新增配置项汇总核对（方向D 步骤14/15/16 字段）。"""
+
+    def test_four_new_fields_exist_with_correct_defaults(self):
+        """四个新增字段存在且默认值正确（汇总核对清单）。"""
+        cfg = TuiConfig.defaults()
+        # 步骤14：Ctrl+R 反向历史搜索（默认 False 保持 switch_model）
+        assert cfg.reverse_search_enabled is False
+        # 步骤15：工具调用卡片（折叠阈值 8 / 截断上限 50）
+        assert cfg.tool_auto_collapse_threshold == 8
+        assert cfg.tool_output_max_lines == 50
+        # 步骤16：Esc 取消输入（默认 False 保持中断语义）
+        assert cfg.esc_cancel_input is False
+
+    def test_defaults_constructible_with_new_fields(self):
+        """TuiConfig.defaults() 可构造（frozen dataclass 无类型错误）。"""
+        cfg = TuiConfig.defaults()
+        assert isinstance(cfg, TuiConfig)
+        # 全部新字段可读且类型正确
+        assert isinstance(cfg.reverse_search_enabled, bool)
+        assert isinstance(cfg.tool_auto_collapse_threshold, int)
+        assert isinstance(cfg.tool_output_max_lines, int)
+        assert isinstance(cfg.esc_cancel_input, bool)
+
+    def test_with_overrides_covers_all_new_fields(self):
+        """with_overrides 一次性覆盖四个新增字段有效（原实例不变）。"""
+        cfg = TuiConfig.defaults()
+        new_cfg = cfg.with_overrides(
+            reverse_search_enabled=True,
+            tool_auto_collapse_threshold=3,
+            tool_output_max_lines=4,
+            esc_cancel_input=True,
+        )
+        assert new_cfg.reverse_search_enabled is True
+        assert new_cfg.tool_auto_collapse_threshold == 3
+        assert new_cfg.tool_output_max_lines == 4
+        assert new_cfg.esc_cancel_input is True
+        # 原实例不变
+        assert cfg.reverse_search_enabled is False
+        assert cfg.tool_auto_collapse_threshold == 8
+        assert cfg.tool_output_max_lines == 50
+        assert cfg.esc_cancel_input is False
+

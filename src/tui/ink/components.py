@@ -15,12 +15,15 @@
 
 from __future__ import annotations
 
+import logging
 from typing import Any
 
 from src.tui.core.style import Style
 from .fiber import Fiber
 from .layout import layout_tree, layout_children, wrap_text_lines, _skip_function
 from .output import Frame, Line
+
+_logger = logging.getLogger(__name__)
 
 
 def _border_style(props: dict) -> Style:
@@ -31,12 +34,24 @@ def _border_style(props: dict) -> Style:
 
 
 def _merge_line(row: dict[int, tuple[str, Style | None]], x: int, line: Line) -> None:
-    """将 Line 合并到画布行（从第 x 列开始）。"""
+    """将 Line 合并到画布行（从第 x 列开始）。
+
+    性能快路径：构造 ``{col: (ch, style)}`` 片段，与目标行键集无交时批量
+    ``row.update(slice_)``；重叠时回退逐字符覆盖（语义一致）。
+    """
+    if not line.runs:
+        return
+    slice_: dict[int, tuple[str, Style | None]] = {}
     col = x
     for run in line.runs:
         for ch in run.text:
-            row[col] = (ch, run.style)
+            slice_[col] = (ch, run.style)
             col += 1
+    if slice_.keys().isdisjoint(row):
+        row.update(slice_)
+    else:
+        for c, v in slice_.items():
+            row[c] = v
 
 
 def _paint_border(fiber: Fiber, canvas: list[dict], border: int) -> None:
@@ -108,7 +123,8 @@ def _paint(fiber: Fiber, canvas: list[dict]) -> None:
         try:
             paint_fn(fiber, canvas)
         except Exception:
-            pass
+            # 非关键降级：host 绘制失败不影响整帧
+            _logger.debug("custom host %s paint 异常", ftype, exc_info=True)
         return
 
     # 容器：BOX / STATIC / APP

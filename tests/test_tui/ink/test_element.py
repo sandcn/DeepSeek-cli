@@ -82,7 +82,38 @@ class TestH:
         el = h(Comp, {"k": 1})
         assert el.type is Comp
         assert el.props == {"k": 1}
-        assert el.key == "fn:Comp"
+        # 函数组件 key 带模块限定（方向C 步骤6：消除跨模块同名冲突）
+        assert el.key == f"fn:{Comp.__module__}.{Comp.__name__}"
+
+    def test_same_name_different_module_keys(self):
+        """跨模块同名组件产生不同 key（方向C 步骤6 模块限定）。"""
+        def comp_a(props):
+            return h(TEXT, {"children": "a"})
+
+        def comp_b(props):
+            return h(TEXT, {"children": "b"})
+
+        comp_a.__name__ = "SameName"
+        comp_b.__name__ = "SameName"
+        comp_a.__module__ = "mod_a"
+        comp_b.__module__ = "mod_b"
+
+        el_a = h(comp_a)
+        el_b = h(comp_b)
+        assert el_a.key != el_b.key
+        assert el_a.key == "fn:mod_a.SameName"
+        assert el_b.key == "fn:mod_b.SameName"
+
+    def test_fiber_key_matches_element_key(self):
+        """Fiber.key 与 Element.key 对函数组件采用同一模块限定格式。"""
+        from src.tui.ink.fiber import Fiber, TAG_FUNCTION
+
+        def Comp(props):
+            return h(TEXT, {"children": "x"})
+
+        el = h(Comp)
+        fiber = Fiber(TAG_FUNCTION, Comp, {})
+        assert fiber.key == el.key == f"fn:{Comp.__module__}.{Comp.__name__}"
 
 
 class TestHostTags:

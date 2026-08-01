@@ -300,3 +300,98 @@ class TestDisplayMsgs:
         apply_cmd(m, DisplayMsgsCmd(messages=[{"role": "user", "content": "m1"}], speed=0))
         assert m.blocks[-1].kind == "write_line"  # 分隔线
         assert m.blocks[-2].kind == "user"
+
+
+class TestToolCardState:
+    """方向D 步骤15 — 工具调用卡片状态/折叠/截断标记。"""
+
+    def test_tool_open_sets_running_state(self):
+        """open 后 extra 记录 running + 默认展开。"""
+        m = _model()
+        apply_cmd(m, ToolOpenCmd(tool_name="read_file", tool_id="t1"))
+        block = m.blocks[-1]
+        assert block.extra["tool_status"] == "running"
+        assert block.extra["tool_expanded"] is True
+        assert block.extra["tool_output_count"] == 0
+
+    def test_tool_close_sets_status_and_expanded(self):
+        """close 后状态 done + 输出少不折叠 + 冻结缓存建立。"""
+        m = _model()
+        apply_cmd(m, ToolOpenCmd(tool_name="read_file", tool_id="t1"))
+        apply_cmd(m, ToolOutputCmd(text="data", tool_id="t1"))
+        apply_cmd(m, ToolCloseCmd(tool_id="t1", success=True))
+        block = m.blocks[-1]
+        assert block.extra["tool_status"] == "done"
+        assert block.extra["tool_expanded"] is True  # 1 行 < 阈值 8
+        assert block._cached_ink_lines is not None
+        assert len(block._cached_ink_lines) == len(block.lines)
+
+    def test_tool_close_fail_status(self):
+        """close 失败 → status=fail。"""
+        m = _model()
+        apply_cmd(m, ToolOpenCmd(tool_name="x", tool_id="t1"))
+        apply_cmd(m, ToolCloseCmd(tool_id="t1", success=False))
+        assert m.blocks[-1].extra["tool_status"] == "fail"
+
+    def test_tool_output_count_accumulates(self):
+        """append_tool_output 维护输出行计数（空段不计）。"""
+        m = _model()
+        apply_cmd(m, ToolOpenCmd(tool_name="read_file", tool_id="t1"))
+        apply_cmd(m, ToolOutputCmd(text="a\n", tool_id="t1"))
+        apply_cmd(m, ToolOutputCmd(text="b\nc\n", tool_id="t1"))
+        assert m.blocks[-1].extra["tool_output_count"] == 3
+
+    def test_tool_close_auto_collapse(self):
+        """输出行数 > 折叠阈值 → tool_expanded=False，块行=标题+折叠提示。"""
+        from src.tui._config import TuiConfig
+        m = AppModel(config=TuiConfig.defaults().with_overrides(
+            tool_auto_collapse_threshold=3))
+        m.open_tool_box("t1", "read_file")
+        for i in range(5):
+            m.append_tool_output("t1", f"line{i}\n")
+        m.close_tool_box("t1", True)
+        block = m.blocks[-1]
+        assert block.extra["tool_expanded"] is False
+        assert block.extra["tool_status"] == "done"
+        assert len(block.lines) == 2  # 标题 + 折叠提示
+        assert "已折叠（5 行输出）" in block.lines[1].plain
+        # 原始标题行保持（渲染图标是装饰，不改动模型原文）
+        assert block.lines[0].plain.startswith("  · ")
+
+    def test_tool_output_truncated(self):
+        """超长输出截断：保留首尾 + 省略行（head_n + 1 + tail_n = max_lines）。"""
+        from src.tui._config import TuiConfig
+        m = AppModel(config=TuiConfig.defaults().with_overrides(
+            tool_output_max_lines=4,
+            tool_auto_collapse_threshold=1000,  # 关闭折叠，仅观察截断
+        ))
+        m.open_tool_box("t1", "bash")
+        for i in range(1, 11):
+            m.append_tool_output("t1", f"line{i}")
+        m.close_tool_box("t1", True)
+        block = m.blocks[-1]
+        assert block.extra["tool_output_count"] == 10
+        assert block.extra["tool_output_truncated"] is True
+        assert block.extra["tool_expanded"] is True  # 10 ≤ 1000 不折叠
+        # 标题 + head(2) + 省略 + tail(1) + 状态 = 6 行
+        assert len(block.lines) == 6
+        assert "line1" in block.lines[1].plain
+        assert "line2" in block.lines[2].plain
+        assert "已截断（10 行输出）" in block.lines[3].plain
+        assert "line10" in block.lines[4].plain
+        assert block.lines[-1].plain.strip() == "✔"
+
+    def test_tool_no_truncation_within_limit(self):
+        """输出 ≤ max_lines 不截断（全部保留）。"""
+        from src.tui._config import TuiConfig
+        m = AppModel(config=TuiConfig.defaults().with_overrides(
+            tool_output_max_lines=4,
+            tool_auto_collapse_threshold=1000,
+        ))
+        m.open_tool_box("t1", "bash")
+        for i in range(1, 4):
+            m.append_tool_output("t1", f"line{i}")
+        m.close_tool_box("t1", True)
+        block = m.blocks[-1]
+        assert block.extra.get("tool_output_truncated") is None
+        assert len(block.lines) == 5  # 标题 + 3 输出 + 状态

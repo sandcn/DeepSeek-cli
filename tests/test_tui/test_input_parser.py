@@ -141,6 +141,33 @@ class TestDispatchCsi:
         assert ev.char == "\n"
         assert ev.modifier == 2
 
+    def test_csi_u_shift_tab(self):
+        """CSI u Shift+Tab（9;2）→ tab modifier=2（方向A 步骤1）。"""
+        ev = InputParser._dispatch_csi([9, 2], 'u')
+        assert ev.kind == "tab"
+        assert ev.modifier == 2
+        assert ev.keycode == 9
+
+    def test_csi_u_ctrl_a_home(self):
+        """CSI u Ctrl+A（97;5）→ home（复用控制字符语义，方向A 步骤1）。"""
+        ev = InputParser._dispatch_csi([97, 5], 'u')
+        assert ev.kind == "home"
+        assert ev.keycode == 97
+
+    def test_csi_u_ctrl_w_delete_word(self):
+        """CSI u Ctrl+W（119;5）→ delete modifier=1（delete word left）。"""
+        ev = InputParser._dispatch_csi([119, 5], 'u')
+        assert ev.kind == "delete"
+        assert ev.modifier == 1
+        assert ev.keycode == 119
+
+    def test_csi_u_other_kept(self):
+        """其余 csi_u（非 Shift+Tab / Ctrl+字母）保持 csi_u（供 input router 消费）。"""
+        ev = InputParser._dispatch_csi([97, 1], 'u')  # 普通 'a' 键
+        assert ev.kind == "csi_u"
+        assert ev.keycode == 97
+        assert ev.modifier == 1
+
     def test_function_key_tilde(self):
         assert InputParser._dispatch_csi([1], '~').kind == "home"
         assert InputParser._dispatch_csi([7], '~').kind == "home"
@@ -238,14 +265,25 @@ class TestParseSequenceIO:
             os.close(w_fd)
 
     def test_ss3_f1(self):
-        """ESC O P → unknown。"""
+        """ESC O P → f1（F1 功能键）。"""
         r_fd, w_fd = os.pipe()
         try:
             os.write(w_fd, b"OP")
-            assert self.parser.parse_sequence(r_fd).kind == "unknown"
+            assert self.parser.parse_sequence(r_fd).kind == "f1"
         finally:
             os.close(r_fd)
             os.close(w_fd)
+
+    def test_ss3_f2_f4(self):
+        """ESC O Q/R/S → f2/f3/f4。"""
+        for seq, kind in ((b"OQ", "f2"), (b"OR", "f3"), (b"OS", "f4")):
+            r_fd, w_fd = os.pipe()
+            try:
+                os.write(w_fd, seq)
+                assert self.parser.parse_sequence(r_fd).kind == kind
+            finally:
+                os.close(r_fd)
+                os.close(w_fd)
 
     def test_alt_backspace(self):
         """ESC DEL → backspace modifier=1。"""
@@ -277,9 +315,24 @@ class TestParseSequenceIO:
             os.close(w_fd)
 
     def test_other_esc_combination(self):
+        """ESC+可打印字符 → alt_char（方向A 步骤1：不再 interrupt）。"""
         r_fd, w_fd = os.pipe()
         try:
             os.write(w_fd, b"x")
+            ev = self.parser.parse_sequence(r_fd)
+            assert ev.kind == "alt_char"
+            assert ev.char == "x"
+            assert ev.modifier == 3
+            assert ev.raw == b"\x1bx"
+        finally:
+            os.close(r_fd)
+            os.close(w_fd)
+
+    def test_esc_non_printable_still_interrupt(self):
+        """ESC+非打印字符 → 仍 interrupt（旧语义保留）。"""
+        r_fd, w_fd = os.pipe()
+        try:
+            os.write(w_fd, b"\x01")  # ESC + Ctrl+A（非可打印）
             assert self.parser.parse_sequence(r_fd).kind == "interrupt"
         finally:
             os.close(r_fd)
@@ -317,15 +370,29 @@ class TestReadCsiSequenceDirect:
 class TestReadSs3SequenceDirect:
     """_read_ss3_sequence 直接调用（ESC O 已消费）。"""
 
-    def test_f2_unknown(self):
+    def test_f2(self):
+        """SS3 Q → f2（方向A 步骤1：不再 unknown）。"""
         r_fd, w_fd = os.pipe()
         try:
             # _read_ss3_sequence 调用时 ESC O 已消费，fd 上应为 SS3 后的字符
             os.write(w_fd, b"Q")
             parser = InputParser()
             ev = parser._read_ss3_sequence(r_fd)
-            assert ev.kind == "unknown"
+            assert ev.kind == "f2"
             assert ev.raw == b"\x1bOQ"
+        finally:
+            os.close(r_fd)
+            os.close(w_fd)
+
+    def test_unknown_ss3_keeps_raw(self):
+        """未知 SS3 字符保持 unknown 且 raw 完整。"""
+        r_fd, w_fd = os.pipe()
+        try:
+            os.write(w_fd, b"X")
+            parser = InputParser()
+            ev = parser._read_ss3_sequence(r_fd)
+            assert ev.kind == "unknown"
+            assert ev.raw == b"\x1bOX"
         finally:
             os.close(r_fd)
             os.close(w_fd)

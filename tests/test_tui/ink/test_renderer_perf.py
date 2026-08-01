@@ -108,3 +108,66 @@ class TestMaxRewriteRowsFallback:
     def test_max_rewrite_rows_constant_regression(self):
         """_MAX_REWRITE_ROWS 常量为 200。"""
         assert _MAX_REWRITE_ROWS == 200
+
+
+class TestInputRouterCache:
+    """方向C 步骤6 — _build_input_router 签名缓存（同签名复用 router 对象）。"""
+
+    def _capture(self):
+        from src.tui.ink.hooks import set_input_router_callback
+        captured = []
+        set_input_router_callback(lambda router: captured.append(router))
+        return captured
+
+    def test_router_cached_same_signature_regression(self):
+        """同签名两次构建返回同一 router 对象（免每帧重建闭包）。"""
+        from src.tui.ink.hooks import use_input
+        from src.tui.ink.element import h, TEXT
+        from src.tui.ink.reconciler import Reconciler
+
+        captured = self._capture()
+        handler = lambda ev: True  # 稳定身份（跨渲染同一函数对象）
+
+        def Comp(props):
+            use_input(handler, True)
+            return h(TEXT, {"children": "x"})
+
+        try:
+            r = Reconciler()
+            root = r.create_root()
+            r.render(root, h(Comp), 80, 24)
+            r.render(root, h(Comp), 80, 24)
+            assert len(captured) == 2
+            assert captured[0] is not None
+            assert captured[0] is captured[1]  # 同签名 → 同一 router 对象
+        finally:
+            from src.tui.ink.hooks import set_input_router_callback
+            set_input_router_callback(None)
+
+    def test_router_rebuilt_on_handler_change_regression(self):
+        """handler 变化（签名变）→ 重建 router（缓存失效）。"""
+        from src.tui.ink.hooks import use_input
+        from src.tui.ink.element import h, TEXT
+        from src.tui.ink.reconciler import Reconciler
+
+        captured = self._capture()
+
+        class Wrap:
+            handler = lambda ev: True
+
+        def Comp(props):
+            use_input(Wrap.handler, True)
+            return h(TEXT, {"children": "x"})
+
+        try:
+            r = Reconciler()
+            root = r.create_root()
+            r.render(root, h(Comp), 80, 24)
+            r.render(root, h(Comp), 80, 24)
+            assert captured[0] is captured[1]  # 同签名命中缓存
+            Wrap.handler = lambda ev: False    # handler 变化 → 签名变
+            r.render(root, h(Comp), 80, 24)
+            assert captured[2] is not captured[1]  # 重建
+        finally:
+            from src.tui.ink.hooks import set_input_router_callback
+            set_input_router_callback(None)

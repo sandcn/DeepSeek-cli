@@ -22,22 +22,46 @@ class TestEventDispatcher:
         assert len(handlers) == 12
 
     def test_on_reasoning_chunk(self):
+        """main label 的 reasoning chunk → push ReasoningCmd（加固：非仅不抛异常）。"""
+        from src.tui._dispatcher import EventDispatcher
+        from src.tui._const import ReasoningCmd
+        from src.tui.events.event_types import ReasoningChunkEvent
+        push_cmd = MagicMock()
+        dispatcher = EventDispatcher(push_cmd, main_label="main")
+        event = ReasoningChunkEvent(text="hello", label="main")
+        dispatcher._on_reasoning_chunk(event)
+        push_cmd.assert_called_once_with(ReasoningCmd(text="hello"))
+
+    def test_on_reasoning_chunk_filters_non_main_label(self):
+        """非 main label 的 reasoning chunk 不入队（label 过滤）。"""
         from src.tui._dispatcher import EventDispatcher
         from src.tui.events.event_types import ReasoningChunkEvent
         push_cmd = MagicMock()
-        dispatcher = EventDispatcher(push_cmd)
-        event = ReasoningChunkEvent(text="hello", label="main")
+        dispatcher = EventDispatcher(push_cmd, main_label="main")
+        event = ReasoningChunkEvent(text="hello", label="agent-1")
         dispatcher._on_reasoning_chunk(event)
-        # 不应抛异常
+        push_cmd.assert_not_called()
 
     def test_on_content_chunk(self):
+        """main label 的 content chunk → push ContentCmd（加固：非仅不抛异常）。"""
+        from src.tui._dispatcher import EventDispatcher
+        from src.tui._const import ContentCmd
+        from src.tui.events.event_types import ContentChunkEvent
+        push_cmd = MagicMock()
+        dispatcher = EventDispatcher(push_cmd, main_label="main")
+        event = ContentChunkEvent(text="world", label="main")
+        dispatcher._on_content_chunk(event)
+        push_cmd.assert_called_once_with(ContentCmd(text="world"))
+
+    def test_on_content_chunk_filters_non_main_label(self):
+        """非 main label 的 content chunk 不入队（label 过滤）。"""
         from src.tui._dispatcher import EventDispatcher
         from src.tui.events.event_types import ContentChunkEvent
         push_cmd = MagicMock()
-        dispatcher = EventDispatcher(push_cmd)
-        event = ContentChunkEvent(text="world", label="main")
+        dispatcher = EventDispatcher(push_cmd, main_label="main")
+        event = ContentChunkEvent(text="world", label="agent-1")
         dispatcher._on_content_chunk(event)
-        # 不应抛异常
+        push_cmd.assert_not_called()
 
     def test_on_tool_started(self):
         from src.tui._dispatcher import EventDispatcher

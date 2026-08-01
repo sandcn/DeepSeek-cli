@@ -1,8 +1,8 @@
 """Fiber — 调和器工作单元（React 风格 fiber 节点）。
 
 Fiber 表示组件树中一个待调和/已调和的节点，通过 child/sibling/return
-指针构成链表树。alternate 指向上一次渲染的对应 fiber（用于复用 DOM /
-保留 hooks 状态）。
+指针构成链表树。fiber 复用（同 key/type 保留 hooks 状态）由 reconciler
+按元素 key 匹配实现，fiber 自身不再持有 alternate 字段。
 
 fiber 的 ``layout_box`` 在 layout 阶段填充（LayoutBox(x,y,w,h)）。
 
@@ -19,6 +19,10 @@ from typing import Any, Callable, Optional, Union
 TAG_ROOT = "root"
 TAG_HOST = "host"
 TAG_FUNCTION = "function"
+
+#: provider 值变更检测哨兵（``Fiber._last_provider_value`` 的未初始化标记；
+#:   None 是合法 provider 值，不能用 None 作哨兵）。
+_MISSING = object()
 
 
 @dataclass
@@ -84,10 +88,12 @@ class InputHook:
     Attributes:
         handler: 按键处理回调（签名 ``(event) -> bool``，True=消费）。
         is_active: 是否参与输入路由（False 时 hook 不参与）。
+        focused: 焦点仲裁标志（useFocus 设置；True=参与焦点优先路由）。
     """
 
     handler: Callable[[Any], bool] | None = None
     is_active: bool = True
+    focused: bool = True
 
 
 @dataclass
@@ -120,7 +126,6 @@ class Fiber:
         child: 第一个子 fiber。
         sibling: 下一个兄弟 fiber。
         return_: 父 fiber。
-        alternate: 上一次渲染的对应 fiber。
         hooks: hook 节点列表。
         hook_index: 当前 hook 索引（渲染期递增）。
         layout_box: layout 阶段填充的 LayoutBox（None 表示未布局）。
@@ -133,13 +138,31 @@ class Fiber:
     child: Optional["Fiber"] = None
     sibling: Optional["Fiber"] = None
     return_: Optional["Fiber"] = None
-    alternate: Optional["Fiber"] = None
     hooks: list = field(default_factory=list)
     hook_index: int = 0
     layout_box: Any = None
     deleted: bool = False
     #: context provider 值传递（每次渲染重置；子树 use_context 沿 return_ 链查找）
     contexts: dict = field(default_factory=dict)
+    #: ErrorBoundary 边界标记（ErrorBoundary 组件渲染时置位，供异常沿 return_ 查找）
+    _is_boundary: bool = False
+    #: ErrorBoundary 捕获的异常对象（含类型/消息/栈）；None=无错误
+    _boundary_error: Any = None
+    #: onError 是否已回调（一次）
+    _boundary_on_error_called: bool = False
+    #: memo 组件上次渲染的 props（memo 短路比较基准）
+    _last_memo_props: Any = None
+    #: keyed 列表调和 moved 标记（方向B 步骤11）——位置变化信息（纯信息，
+    #:   renderer 暂不消费；文档注明未来可用于 diff 尾部跳过）。
+    moved: bool = False
+    #: context 逐 fiber 缓存（方向B 步骤11）：ctx.tag → value。
+    #:   同 fiber 多次 use_context 同 ctx 只 O(depth) 一次；provider 值变化时
+    #:   reconciler 清空子树缓存并递增 ``hooks._context_version``。
+    _context_cache: dict = field(default_factory=dict)
+    #: context 缓存版本（命中校验：== ``hooks._context_version``）。
+    _context_cache_version: int = 0
+    #: provider 值变更检测基准（``_MISSING`` 表示未初始化；None 是合法值）。
+    _last_provider_value: Any = _MISSING
 
     # ── 派生属性 ──────────────────────────────────────
 
@@ -150,7 +173,10 @@ class Fiber:
         if key is None:
             if isinstance(self.type, str):
                 return f"host:{self.type}"
-            return f"fn:{getattr(self.type, '__name__', repr(self.type))}"
+            # 模块限定：消除跨模块同名组件 key 冲突（仅影响无显式 key 的函数组件）
+            mod = getattr(self.type, "__module__", "?")
+            name = getattr(self.type, "__name__", repr(self.type))
+            return f"fn:{mod}.{name}"
         return str(key)
 
     @property

@@ -139,9 +139,14 @@ class TestSyntaxHlSanitize:
             assert "1" in result
 
     def test_none_lexer_returns_text(self):
-        """lexer_name 为 None/空时直接返回原文（消毒后的输入）。"""
+        """lexer_name 为空时也消毒：返回消毒后的字面量（方向A 步骤3）。
+
+        修复前空 lexer 提前返回原文（ANSI 保留），与「输入先消毒」docstring
+        矛盾；修复后消毒移动到提前 return 之前，空 lexer 输入含 ANSI 时
+        输出消毒后字面量。
+        """
         result = _syntax_hl("\x1b[31mhello", "")
-        assert result == "\x1b[31mhello"
+        assert result == "[31mhello"
 
     def test_pygments_absent_returns_text(self):
         """pygments 不可用时返回原文（消毒后的输入）。"""
@@ -174,7 +179,7 @@ class TestRenderDiffNoInjection:
         return collected
 
     def test_no_ansi_injection_in_diff_content(self):
-        """diff 内容中的 ANSI 注入应被消毒。"""
+        """diff 内容中的 ANSI 注入应被消毒（严格断言，非 `or` 恒真）。"""
         diff = [
             '--- a/test.py',
             '+++ b/test.py',
@@ -185,10 +190,32 @@ class TestRenderDiffNoInjection:
         ]
         out = self._collect_output(diff)
         output = '\n'.join(out)
-        # 注入的 ANSI 应被移除
-        assert '\x1b[31m' not in output or 'old' not in output  # old 被移除
-        # 实际上 old 和 new 的行在 diff 输出中可能以不同形式出现
-        # 关键是输出中不应有"line"紧邻注入 ANSI
+        # 注入的 ANSI 转义序列被移除（不出现原始注入序列）
+        assert '\x1b[31m' not in output
+        assert '\x1b[32m' not in output
+        # 行内容作为消毒后字面量保留（old/new 均在输出中）
+        assert 'old' in output
+        assert 'new' in output
+
+    def test_no_ansi_injection_empty_lexer_del_add(self):
+        """空 lexer 下单行 del/add 含恶意 ANSI 也应消毒（注入窗口关闭，方向A 步骤3）。
+
+        修复前 ``render_diff._hl`` 在 lexer_name 为空时完全跳过消毒——
+        单行 add/del 内容可含恶意 ANSI；修复后无条件经 ``_syntax_hl`` 消毒。
+        """
+        diff = [
+            '--- a/test.txt',
+            '+++ b/test.txt',
+            '@@ -1,2 +1,2 @@',
+            '-old\x1b[31mline',
+            '+new\x1b[32mline',
+        ]
+        out = self._collect_output(diff, lexer_name='')
+        output = '\n'.join(out)
+        assert '\x1b[31m' not in output
+        assert '\x1b[32m' not in output
+        assert 'old' in output
+        assert 'new' in output
 
     def test_ctx_line_ansi_injection(self):
         """上下文行中的 ANSI 注入应被消毒。"""

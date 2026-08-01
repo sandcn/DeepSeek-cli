@@ -393,3 +393,115 @@ class TestCrossDirectionIntegration:
         parser = InputParser()
         ev2 = parser.feed_byte(ord("b"))
         assert ev2 is not None and ev2.kind == "char" and ev2.char == "b"
+
+
+# ═══════════════════════════════════════════════════════════
+# 横切步骤18 — 端到端工具命令流（新工具状态/折叠/截断语义）
+# ═══════════════════════════════════════════════════════════
+
+class TestToolCardChain:
+    """横切步骤18 — TOOL_OPEN → TOOL_OUTPUT → TOOL_CLOSE 端到端命令流。
+
+    验证方向D 步骤15 新工具状态语义在「事件 → 命令 → 模型」链路上的落地：
+      - 关闭成功 → tool_status=done、输出可见（未超阈值不折叠）；
+      - 关闭失败 → tool_status=fail；
+      - 输出行数超阈值 → tool_expanded=False（自动折叠）；
+      - 输出行数超截断上限 → 行截断（保留首尾 + 省略行）。
+    """
+
+    def _drive(self, model, cmds):
+        """批量应用命令（等价 InkSession._apply_commands）。"""
+        from src.tui.app.apply import apply_cmd
+        for cmd in cmds:
+            apply_cmd(model, cmd)
+
+    def test_tool_open_output_close_status_done_regression(self):
+        """成功关闭：状态 done、输出可见（未超折叠阈值）。"""
+        from src.tui._const import ToolOpenCmd, ToolOutputCmd, ToolCloseCmd
+        from src.tui.app.model import AppModel
+        from src.tools.registry import get_tool_display_name
+
+        model = AppModel()
+        self._drive(model, [
+            ToolOpenCmd(tool_id="t1", tool_name="bash", detail="ls"),
+            ToolOutputCmd(tool_id="t1", text="file1\nfile2"),
+            ToolCloseCmd(tool_id="t1", success=True),
+        ])
+        tool_blocks = [b for b in model.blocks if b.kind == "tool"]
+        assert len(tool_blocks) == 1
+        block = tool_blocks[0]
+        assert block.extra["tool_status"] == "done"
+        assert block.extra.get("tool_expanded") is not False  # 未折叠
+        assert block.closed is True
+        # 冻结行缓存存在（方向D 步骤15：关闭块免每帧重渲染）
+        assert block._cached_ink_lines is not None
+        # 标题含工具显示名（工具名经 registry 显示名映射）
+        display = get_tool_display_name("bash") or "bash"
+        assert display in block.lines[0].plain
+        # 状态底行（✔）
+        assert "\u2714" in block.lines[-1].plain
+
+    def test_tool_close_fail_status_fail_regression(self):
+        """失败关闭：状态 fail、底行 ✖。"""
+        from src.tui._const import ToolOpenCmd, ToolCloseCmd
+        from src.tui.app.model import AppModel
+
+        model = AppModel()
+        self._drive(model, [
+            ToolOpenCmd(tool_id="t2", tool_name="bash"),
+            ToolCloseCmd(tool_id="t2", success=False),
+        ])
+        block = model.blocks[-1]
+        assert block.kind == "tool"
+        assert block.extra["tool_status"] == "fail"
+        assert "\u2716" in block.lines[-1].plain
+
+    def test_tool_auto_collapse_regression(self):
+        """输出行数超阈值（>8）→ 自动折叠（仅标题 + 折叠提示行）。"""
+        from src.tui._const import ToolOpenCmd, ToolOutputCmd, ToolCloseCmd
+        from src.tui.app.model import AppModel
+
+        model = AppModel()
+        self._drive(model, [
+            ToolOpenCmd(tool_id="t3", tool_name="bash"),
+        ])
+        for i in range(10):
+            self._drive(model, [ToolOutputCmd(tool_id="t3", text=f"line{i}")])
+        self._drive(model, [ToolCloseCmd(tool_id="t3", success=True)])
+
+        block = model.blocks[-1]
+        assert block.extra["tool_expanded"] is False
+        # 折叠后仅标题 + 折叠提示行
+        assert len(block.lines) == 2
+        assert "折叠" in block.lines[1].plain
+        # 冻结缓存同步为折叠形态（2 行）
+        assert len(block._cached_ink_lines) == 2
+
+    def test_tool_output_truncate_regression(self):
+        """输出行数超截断上限（>tool_output_max_lines）→ 保留首尾 + 省略行。
+
+        使用「截断上限 < 折叠阈值」的配置，使截断在未折叠场景下独立可见：
+        max_lines=4 → head(2) + 省略 + tail(1) + 状态底行。
+        """
+        from src.tui._const import ToolOpenCmd, ToolOutputCmd, ToolCloseCmd
+        from src.tui.app.model import AppModel
+        from src.tui._config import TuiConfig
+
+        cfg = TuiConfig.defaults().with_overrides(
+            tool_output_max_lines=4,
+            tool_auto_collapse_threshold=100,
+        )
+        model = AppModel(config=cfg)
+        self._drive(model, [ToolOpenCmd(tool_id="t4", tool_name="bash")])
+        for i in range(10):
+            self._drive(model, [ToolOutputCmd(tool_id="t4", text=f"line{i:02d}")])
+        self._drive(model, [ToolCloseCmd(tool_id="t4", success=True)])
+
+        block = model.blocks[-1]
+        assert block.extra.get("tool_output_truncated") is True
+        # 截断后总行数 = 标题 + head(2) + 省略 + tail(1) + 状态底行 = 6
+        assert len(block.lines) == 6
+        assert "已截断" in block.lines[3].plain
+        # 首行保留（line00）、尾行保留（line09）、省略行标记输出总数
+        assert "line00" in block.lines[1].plain
+        assert "line09" in block.lines[4].plain

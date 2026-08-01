@@ -466,3 +466,284 @@ class TestUseInput:
         finally:
             from src.tui.ink.hooks import set_input_router_callback
             set_input_router_callback(None)
+
+
+class TestScheduleException:
+    """方向C 步骤5 — _schedule 回调异常记录日志（非关键降级不传播）。"""
+
+    def test_schedule_callback_exception_logged(self, caplog):
+        """schedule 回调抛异常 → 不传播且日志记录。"""
+        import logging
+        from src.tui.ink.hooks import set_schedule_callback
+
+        def bad_callback():
+            raise RuntimeError("schedule boom")
+
+        def Comp(props):
+            n, set_n = use_state(0)
+            if n == 0:
+                set_n(1)  # 渲染期入队 → 触发 _schedule → bad_callback 抛异常
+            return h(TEXT, {"children": str(n)})
+
+        # 回调经 Reconciler 注入（构造与 render 均会 set_schedule_callback）
+        r = Reconciler(schedule_callback=bad_callback)
+        root = r.create_root()
+        with caplog.at_level(logging.DEBUG, logger="src.tui.ink.hooks"):
+            r.render(root, h(Comp), 80, 24)  # 不抛异常
+        assert any(
+            rec.name == "src.tui.ink.hooks"
+            and "schedule 回调异常" in rec.getMessage()
+            for rec in caplog.records
+        )
+
+
+class TestContextRegistryCleanup:
+    """方向C 步骤6 — 动态 context provider 卸载时注册表条目清理。"""
+
+    def test_context_registry_cleaned_on_provider_unmount(self):
+        """动态创建 context → 卸载 provider → 注册表条目消失。"""
+        from src.tui.ink.hooks import create_context, _context_registry
+
+        Ctx = create_context("default")
+        tag = Ctx.tag
+        assert tag in _context_registry
+
+        def ProviderComp(props):
+            return h(Ctx.Provider, {"value": "v"}, h(TEXT, {"children": "x"}))
+
+        def OtherComp(props):
+            return h(TEXT, {"children": "y"})
+
+        r = Reconciler()
+        root = r.create_root()
+        r.render(root, h(ProviderComp), 80, 24)
+        assert tag in _context_registry  # provider 挂载后仍在注册表
+        # 卸载 provider（渲染无 provider 的组件树）→ 注册表条目被清理
+        r.render(root, h(OtherComp), 80, 24)
+        assert tag not in _context_registry
+
+    def test_context_registry_kept_while_mounted(self):
+        """未卸载的 provider 注册表条目保留（复用不触发清理）。"""
+        from src.tui.ink.hooks import create_context, _context_registry
+
+        Ctx = create_context("default")
+        tag = Ctx.tag
+
+        def ProviderComp(props):
+            return h(Ctx.Provider, {"value": "v"}, h(TEXT, {"children": "x"}))
+
+        r = Reconciler()
+        root = r.create_root()
+        r.render(root, h(ProviderComp), 80, 24)
+        assert tag in _context_registry
+        r.render(root, h(ProviderComp), 80, 24)  # 复用，不卸载
+        assert tag in _context_registry
+
+
+class TestHookStateError:
+    """方向B 步骤9 — HookStateError（hook 状态机异常，不参与 boundary 捕获）。"""
+
+    def test_hook_state_error_subclass_of_runtime_error(self):
+        """HookStateError 是 RuntimeError 子类（既有 raises(RuntimeError) 兼容）。"""
+        from src.tui.ink.hooks import HookStateError
+        assert issubclass(HookStateError, RuntimeError)
+
+    def test_use_state_outside_component_raises_hook_state_error(self):
+        """渲染期外调用 use_state → HookStateError（原 RuntimeError 语义保持）。"""
+        import pytest
+        from src.tui.ink.hooks import use_state, HookStateError, _current_fiber_stack
+        assert _current_fiber_stack == []
+        with pytest.raises(HookStateError):
+            use_state(0)
+
+
+class TestUseErrorState:
+    """方向B 步骤9 — use_error_state 读取 fiber._boundary_error。"""
+
+    def test_use_error_state_returns_boundary_error(self):
+        """无错误时返回 None；boundary fiber 记录异常后返回异常对象。"""
+        from src.tui.ink.hooks import use_error_state
+        from src.tui.ink.fiber import Fiber, TAG_FUNCTION
+        from src.tui.ink.element import TEXT
+
+        seen = []
+
+        def Comp(props):
+            seen.append(use_error_state())
+            return h(TEXT, {"children": "x"})
+
+        r = Reconciler()
+        root = r.create_root()
+        r.render(root, h(Comp), 80, 24)
+        assert seen == [None]
+        # 直接注入 boundary error 到 fiber（模拟 reconciler 记录）
+        fiber = root.child
+        fiber._boundary_error = RuntimeError("boom")
+        # 重新渲染 → use_error_state 读到注入的 error
+        seen.clear()
+        r.render(root, h(Comp), 80, 24)
+        assert isinstance(seen[0], RuntimeError)
+        assert str(seen[0]) == "boom"
+
+
+class TestUseApp:
+    """方向B 步骤10 — useApp 应用控制。"""
+
+    def test_use_app_returns_exit_clear(self):
+        """useApp 返回 {exit, clear} 可调用（未注入时 no-op）。"""
+        from src.tui.ink.hooks import useApp, set_app_control
+        try:
+            ctrl = useApp()
+            assert callable(ctrl["exit"])
+            assert callable(ctrl["clear"])
+            ctrl["exit"]()  # no-op 不抛
+            ctrl["clear"]()
+        finally:
+            set_app_control(None)
+
+    def test_use_app_forwards_injected_control(self):
+        """注入 control 后 useApp 转发 exit/clear。"""
+        from src.tui.ink.hooks import useApp, set_app_control
+        calls = {"exit": 0, "clear": 0}
+        try:
+            set_app_control({
+                "exit": lambda: calls.__setitem__("exit", calls["exit"] + 1),
+                "clear": lambda: calls.__setitem__("clear", calls["clear"] + 1),
+            })
+            ctrl = useApp()
+            ctrl["exit"]()
+            ctrl["clear"]()
+            assert calls == {"exit": 1, "clear": 1}
+        finally:
+            set_app_control(None)
+
+    def test_set_app_control_clears(self):
+        """set_app_control(None) 清除注入（测试清理路径）。"""
+        from src.tui.ink import hooks as _hooks
+        from src.tui.ink.hooks import useApp
+        try:
+            _hooks.set_app_control({"exit": lambda: None, "clear": lambda: None})
+            assert _hooks._app_control is not None
+            _hooks.set_app_control(None)
+            assert _hooks._app_control is None
+            ctrl = useApp()
+            assert callable(ctrl["exit"])  # 清除后 no-op
+        finally:
+            _hooks.set_app_control(None)
+
+
+class TestUseFocus:
+    """方向B 步骤10 — useFocus 焦点标志。"""
+
+    def test_use_focus_sets_input_hook_focused(self):
+        """useFocus 设置当前 fiber 最近 InputHook 的 focused 标志。"""
+        from src.tui.ink.hooks import useFocus, use_input, _current_fiber_stack
+        from src.tui.ink.fiber import InputHook
+        seen = []
+
+        def Comp(props):
+            use_input(lambda ev: False, True)
+            useFocus(False)  # 置为非 focused
+            seen.append([
+                h.focused for h in _current_fiber_stack[-1].hooks
+                if isinstance(h, InputHook)
+            ])
+            return h(TEXT, {"children": "x"})
+
+        r = Reconciler()
+        root = r.create_root()
+        r.render(root, h(Comp), 80, 24)
+        assert seen == [[False]]
+
+    def test_use_focus_default_true_on_input_hook(self):
+        """未调用 useFocus 时 InputHook.focused 默认 True（零回归）。"""
+        from src.tui.ink.fiber import InputHook
+        hook = InputHook(handler=lambda ev: False, is_active=True)
+        assert hook.focused is True
+
+
+class TestUseContextCache:
+    """方向B 步骤11 — use_context 逐 fiber 缓存 + Provider 值变更传播（保守版）。"""
+
+    def test_provider_value_change_propagates_to_consumer(self):
+        """Provider 值变化 → 子树 use_context 读到新值。"""
+        from src.tui.ink.hooks import create_context, use_context
+        Ctx = create_context("default")
+        seen = []
+
+        def Child(props):
+            seen.append(use_context(Ctx))
+            return h(TEXT, {"children": "x"})
+
+        def Provider(props):
+            return h(Ctx.Provider, {"value": props["value"]}, h(Child))
+
+        r = Reconciler()
+        root = r.create_root()
+        r.render(root, h(Provider, {"value": "v1"}), 80, 24)
+        r.render(root, h(Provider, {"value": "v2"}), 80, 24)
+        assert seen == ["v1", "v2"]
+
+    def test_same_fiber_repeated_use_context_cache_hit(self):
+        """同 fiber 多次 use_context 同 ctx → 值一致（缓存命中语义）。"""
+        from src.tui.ink.hooks import create_context, use_context
+        Ctx = create_context("default")
+        results = []
+
+        def Child(props):
+            a = use_context(Ctx)
+            b = use_context(Ctx)
+            results.append((a, b))
+            return h(TEXT, {"children": "x"})
+
+        def Provider(props):
+            return h(Ctx.Provider, {"value": "v"}, h(Child))
+
+        r = Reconciler()
+        root = r.create_root()
+        r.render(root, h(Provider, {"value": "v"}), 80, 24)
+        assert results == [("v", "v")]
+
+    def test_context_cache_invalidated_on_provider_change(self):
+        """Provider 值变化 → 子树 _context_cache 清空并回填新值（可观察）。"""
+        from src.tui.ink.hooks import create_context, use_context
+        Ctx = create_context("default")
+        seen = []
+
+        def Child(props):
+            seen.append(use_context(Ctx))
+            return h(TEXT, {"children": "x"})
+
+        def Provider(props):
+            return h(Ctx.Provider, {"value": props["value"]}, h(Child))
+
+        r = Reconciler()
+        root = r.create_root()
+        r.render(root, h(Provider, {"value": "v1"}), 80, 24)
+        # 树：root → Provider(fn) → Provider host → Child(fn) → text(host)
+        child_fiber = root.child.child.child
+        assert child_fiber._context_cache.get(Ctx.tag) == "v1"  # 已缓存
+        r.render(root, h(Provider, {"value": "v2"}), 80, 24)
+        # 值变化 → 子树缓存被清空 → 重查回填新值
+        assert child_fiber._context_cache.get(Ctx.tag) == "v2"
+        assert seen == ["v1", "v2"]
+
+    def test_provider_value_unchanged_cache_preserved(self):
+        """Provider 值未变 → 子树 _context_cache 不被清空（缓存保留）。"""
+        from src.tui.ink.hooks import create_context, use_context
+        Ctx = create_context("default")
+
+        def Child(props):
+            use_context(Ctx)
+            return h(TEXT, {"children": "x"})
+
+        def Provider(props):
+            return h(Ctx.Provider, {"value": "stable"}, h(Child))
+
+        r = Reconciler()
+        root = r.create_root()
+        r.render(root, h(Provider, {"value": "stable"}), 80, 24)
+        child_fiber = root.child.child.child
+        assert child_fiber._context_cache.get(Ctx.tag) == "stable"
+        r.render(root, h(Provider, {"value": "stable"}), 80, 24)  # 值未变
+        assert child_fiber._context_cache.get(Ctx.tag) == "stable"  # 缓存保留

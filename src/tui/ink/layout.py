@@ -137,6 +137,20 @@ def _resolve_height(fiber: Fiber, content_h: int) -> int:
     return h
 
 
+def _flex_grow(fiber: Fiber) -> int:
+    """解析 flexGrow（非数字兜底为 0，与 _resolve_width 一致——P2-2 修复）。
+
+    ``int(...)`` 对非数字值（如字符串 ``"2"`` 之外的 ``None``/对象/畸形串）会抛
+    ValueError/TypeError 直接中断渲染；同文件 width/height/padding/border/margin
+    均有 try/except 兜底，唯独 flexGrow 缺失——补上。
+    """
+    g = fiber.props.get("flexGrow", 0)
+    try:
+        return max(0, int(g))
+    except (TypeError, ValueError):
+        return 0
+
+
 def _measure(fiber: Fiber, x: int, y: int, avail_w: int, fill: bool = True) -> LayoutBox:
     """递归测量并赋值 layout_box。返回该 fiber 的 LayoutBox。
 
@@ -161,7 +175,7 @@ def _measure(fiber: Fiber, x: int, y: int, avail_w: int, fill: bool = True) -> L
 
     # ── 叶子：TEXT ──
     if ftype == "text":
-        from .helpers import wrap_runs_by_width
+        from .helpers import wrap_runs_by_width, truncate_runs_ellipsis
         styled = fiber.props.get("styled")
         text = str(fiber.props.get("children", ""))
         style = fiber.props.get("style")
@@ -180,6 +194,11 @@ def _measure(fiber: Fiber, x: int, y: int, avail_w: int, fill: bool = True) -> L
             runs = [StyledRun(text, style)] if text else []
             cache_text = text
             style_fp = (style_fingerprint(style),) if style is not None else (None,)
+        # ★ textWrap 模式（方向B 步骤12）：
+        #   "wrap"（默认，现行为）/ "truncate" / "truncate-end"（单行截断省略号）；
+        #   "truncate-start"/"truncate-middle"（react-ink 语义）**未实现**——
+        #   当前回退为 truncate-end 行为（末尾省略号），完整语义留待后续。
+        text_wrap = fiber.props.get("textWrap", "wrap")
         if explicit_w is not None:
             width = max(0, int(explicit_w))
         elif fill:
@@ -190,14 +209,19 @@ def _measure(fiber: Fiber, x: int, y: int, avail_w: int, fill: bool = True) -> L
             else:
                 content_w = max((wcswidth_simple(line) for line in text.split("\n")), default=0)
             width = max(0, min(avail_w, content_w))
-        # ★ 换行缓存：同 (text, width, style) 复用包裹结果，
+        # ★ 换行缓存：同 (text, width, style, textWrap) 复用包裹结果，
         #   避免每帧重新包裹全部静态历史（大历史下 O(chars) Python 逐字符循环）。
         cache = getattr(fiber, "_wrap_cache", None)
-        key = (cache_text, width, style_fp)
+        key = (cache_text, width, style_fp, text_wrap)
         if cache is not None and cache[0] == key:
             lines = cache[1]
         else:
-            lines = wrap_runs_by_width(runs, width)
+            if text_wrap in ("truncate", "truncate-end", "truncate-start", "truncate-middle"):
+                # 单行截断：内容超宽 → 截断至 width-1 + 省略号；未超宽 → 原样单行
+                # （truncate-start/truncate-middle 未实现完整语义，回退为末尾省略号）
+                lines = [Line(truncate_runs_ellipsis(runs, width))]
+            else:
+                lines = wrap_runs_by_width(runs, width)
             fiber._wrap_cache = (key, lines)
         fiber._wrapped_lines = lines  # 供 paint 复用（免二次包裹）
         h = max(1, len(lines)) if (lines or runs or text) else 1
@@ -276,22 +300,28 @@ def _measure(fiber: Fiber, x: int, y: int, avail_w: int, fill: bool = True) -> L
     h = content_h + 2 * (padding + border)
     h = _resolve_height(fiber, h)
 
-    # flexGrow：显式高度富余时按 flexGrow 比例分配
+    # flexGrow：显式高度富余时按 flexGrow 比例分配（余数分配到前 n 个子节点）
     if h > content_h + 2 * (padding + border) and children:
         grow_total = 0
         for child in children:
-            grow_total += int(child.props.get("flexGrow", 0))
+            grow_total += _flex_grow(child)
         remaining = h - (content_h + 2 * (padding + border))
         if grow_total > 0 and remaining > 0:
             per = remaining // grow_total
+            remainder = remaining % grow_total
             cursor_y = inner_y
-            for child in children:
+            for i, child in enumerate(children):
                 cb = child.layout_box
-                grow = int(child.props.get("flexGrow", 0))
-                extra = per * grow
+                grow = _flex_grow(child)
+                extra = per * grow + (1 if i < remainder else 0)
                 if extra > 0:
                     cb.h += extra
-                    child.layout_box = cb
+                # ★ P1-4：余数分配修改子节点高度后**重排 y 坐标**——_measure 按
+                #   原高度分配 y（如 BOX(height=10)+两个 TEXT flexGrow 2/1 →
+                #   text0.h=6 但 y=0、text1.h=4 但 y=1 垂直重叠）；写回
+                #   cb.y = cursor_y 后光标再按新高度累加。
+                cb.y = cursor_y
+                child.layout_box = cb
                 cursor_y += cb.h + margin
 
     box = LayoutBox(x, y, width, h)

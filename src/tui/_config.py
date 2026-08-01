@@ -8,6 +8,11 @@
     from src.tui._config import TuiConfig
     cfg = TuiConfig.defaults()
     print(cfg.render_interval)  # 0.1
+
+配置模板约定（横切步骤17）：本项目配置为 ``TuiConfig`` dataclass，无独立
+.env/.env.example/config.yaml 模板文件——**新增字段即默认值模板**：新增可调
+参数直接在 ``TuiConfig`` 定义字段与默认值（含 docstring 注释说明语义/默认值/
+影响模块），无需同步外部模板；``TuiConfig.defaults()`` 为唯一默认值真源。
 """
 
 from __future__ import annotations
@@ -71,3 +76,19 @@ class TuiConfig(ConfigBase):
     # ── 崩溃恢复 ──────────────────────────────────────
     max_recover_attempts: int = 3           # render 线程最大重建次数
     recover_delay: float = 0.5              # 崩溃后重建等待（秒）
+
+    # ── 方向D 步骤14：Ctrl+R 反向历史搜索 ──────────────
+    # 默认 False 保持既有 Ctrl+R switch_model 语义（键位冲突配置门控）。
+    # 启用后 Ctrl+R 进入/推进反向历史搜索；Esc 退出、Enter/Tab 应用匹配。
+    reverse_search_enabled: bool = False
+
+    # ── 方向D 步骤15：工具调用卡片展示 ──────────────────
+    # 工具输出行数超过该阈值时自动折叠为「标题 + 折叠提示行」（简洁展示）。
+    tool_auto_collapse_threshold: int = 8
+    # 工具输出最大保留行数（超长截断：保留首尾 + 省略行）。
+    tool_output_max_lines: int = 50
+
+    # ── 方向D 步骤16：Esc 取消输入 ──────────────────────
+    # 默认 False 保持既有 Esc 中断语义（键位语义门控）。
+    # 启用后单次 Esc 在「空闲 + 缓冲非空」时清空输入取消编辑；生成中仍中断。
+    esc_cancel_input: bool = False

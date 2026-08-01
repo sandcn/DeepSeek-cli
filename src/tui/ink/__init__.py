@@ -12,7 +12,15 @@
   - components.py — host 组件渲染函数
   - renderer.py   — InkRenderer 非全屏渲染器（行级 diff）
   - diff.py       — 新旧 Frame 行级 diff
+  - error_boundary.py — ErrorBoundary 函数组件（组件树异常局部降级）
   - session.py    — InkSession（PriorityQueue + render 线程 + 生命周期）
+
+视口/滚动评估（方向B 步骤12）：
+  当前架构为非全屏流动模型：文档高度 = 内容高度（内容驱动），无 DECSTBM
+  视口 pin；滚动由终端 scrollback 承担（内容自然流入 scrollback）。实现
+  视口/滚动需引入内容偏移模型（如 viewport offset + 滚动条 + 内容裁剪），
+  与「内容自然流入 scrollback」设计冲突。**评估结论：不做视口/滚动**
+  （记录理由；未来若引入须新增独立 viewport 层，不影响现有流动模型）。
 """
 
 from __future__ import annotations
@@ -40,6 +48,7 @@ from .helpers import (
     line_to_ansi,
 )
 from .registry import register_host, unregister_host, get_host, has_host
+from .error_boundary import ErrorBoundary, create_error_boundary
 from .hooks import (
     use_state,
     use_reducer,
@@ -50,7 +59,13 @@ from .hooks import (
     use_context,
     create_context,
     use_input,
+    use_error_state,
+    memo,
+    useApp,
+    useFocus,
     set_input_router_callback,
+    set_app_control,
+    set_app_callbacks,
 )
 
 __all__ = [
@@ -83,6 +98,9 @@ __all__ = [
     "unregister_host",
     "get_host",
     "has_host",
+    # error boundary
+    "ErrorBoundary",
+    "create_error_boundary",
     # hooks
     "use_state",
     "use_reducer",
@@ -93,5 +111,11 @@ __all__ = [
     "use_context",
     "create_context",
     "use_input",
+    "use_error_state",
+    "memo",
+    "useApp",
+    "useFocus",
     "set_input_router_callback",
+    "set_app_control",
+    "set_app_callbacks",
 ]

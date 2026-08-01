@@ -74,6 +74,62 @@ class TestStatusBarMemo:
         r, root = _render_twice_same_bucket(model)
         assert root.child is not None
 
+    def test_fade_not_frozen_within_bucket_regression(self):
+        """同一 1s 桶内渐显推进 0.2s → _build_status_runs 再次调用且 dot 色号变化。
+
+        BEAUTY-1：修复前 use_memo deps 仅含 1s 时间桶（不含 dot_elapsed），同桶内
+        渐显冻结、桶边界跳变；修复后渐显窗口按 0.1s 桶刷新（平滑渐显），
+        渐显结束后回 1s 桶（PERF-3 缓存语义保持）。
+        """
+        model = _Model()
+        # render1: ref=100.0 / elapsed=100.0 / deps=100.0 / time_glow=100.0；
+        # render2: elapsed=100.2 / deps=100.2 / time_glow=100.2（同一 1s 桶内推进 0.2s）
+        # 注：patch 作用于全局 time 模块，time_glow（_theme）也消费同一时间序列。
+        # P2-12：side_effect 对剩余调用返回固定值（100.2）——渲染路径任何新增
+        # 单调时钟调用不再触发 StopIteration（修复前依赖精确次数消费，脆弱）。
+        times = iter([100.0, 100.0, 100.0, 100.0, 100.2, 100.2, 100.2])
+        captured: list = []
+
+        def _capture(*args, **kwargs):
+            result = _build_status_runs(*args, **kwargs)
+            captured.append(result)
+            return result
+
+        with patch("src.tui.app.status_bar._snapshot", return_value={}):
+            with patch("src.tui.app.status_bar.time.monotonic", side_effect=lambda: next(times, 100.2)):
+                with patch("src.tui.app.status_bar._build_status_runs", side_effect=_capture) as mock_br:
+                    r = Reconciler()
+                    root = r.create_root()
+                    el = h(StatusBar, {"model": model, "width": 80})
+                    r.render(root, el, 80, 24)
+                    r.render(root, el, 80, 24)
+                    assert mock_br.call_count == 2, (
+                        f"渐显窗口内同 1s 桶推进 0.2s 应重算，实际 {mock_br.call_count}"
+                    )
+        # dot 色号变化（渐显插值推进：elapsed 0.0 → start 238；0.2 → 插值色）
+        assert len(captured) == 2
+        assert captured[0][0].style.fg != captured[1][0].style.fg, (
+            f"dot 色号应随渐显推进变化: {captured[0][0].style.fg} vs {captured[1][0].style.fg}"
+        )
+
+
+class TestSnapshotTTLConstant:
+    """方向D 步骤16 — 快照 TTL 常量化（_SNAPSHOT_TTL）。"""
+
+    def test_snapshot_ttl_constant_exists_positive(self):
+        """TTL 常量存在且 >0（显示节奏与快照对齐）。"""
+        import src.tui.app.status_bar as sb
+        assert hasattr(sb, "_SNAPSHOT_TTL")
+        assert sb._SNAPSHOT_TTL > 0
+
+    def test_snapshot_uses_ttl_constant(self):
+        """_snapshot 源码引用 _SNAPSHOT_TTL（非硬编码 1.0）。"""
+        import inspect
+        import src.tui.app.status_bar as sb
+        assert sb._SNAPSHOT_TTL == 1.0  # 语义不变（≤1Hz）
+        src = inspect.getsource(sb._snapshot)
+        assert "_SNAPSHOT_TTL" in src
+
 
 class TestSnapshotThrottle:
     """PERF-5 — _snapshot() TTL 缓存（≤1Hz 查询底层函数）。"""

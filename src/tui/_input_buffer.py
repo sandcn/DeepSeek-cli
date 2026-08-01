@@ -76,6 +76,13 @@ class InputBufferEditor:
         # ── 历史文件 I/O 适配器（由 _input.py 注入，保持测试 patch 路径） ──
         self._history_io = history_io
 
+        # ── 反向历史搜索（方向D 步骤14，Ctrl+R 配置门控） ──
+        self._search_query: str = ""
+        self._search_matches: list[str] = []
+        self._search_idx: int = -1
+        self._search_active: bool = False
+        self._search_saved_buffer: str = ""
+
     # ═══════════════════════════════════════════════════════
     # 回调
     # ═══════════════════════════════════════════════════════
@@ -146,7 +153,7 @@ class InputBufferEditor:
             return self._buffer
 
     def reset(self) -> None:
-        """清空所有流式输入状态（缓冲区、提交文本、历史导航）。
+        """清空所有流式输入状态（缓冲区、提交文本、历史导航、搜索状态）。
 
         （中断标志 _interrupted 由 InputDispatcher.reset() 一并清除，
         本方法仅负责缓冲/队列状态。）
@@ -158,6 +165,11 @@ class InputBufferEditor:
             self._input_ready.clear()
             self._history_idx = -1
             self._saved_input_before_history = ""
+            self._search_query = ""
+            self._search_matches = []
+            self._search_idx = -1
+            self._search_active = False
+            self._search_saved_buffer = ""
 
     def drain_all(self) -> tuple[str | None, str]:
         """排出所有流式输入状态：返回 (submitted_text, buffer_text)。
@@ -173,6 +185,11 @@ class InputBufferEditor:
             self._cursor_pos = 0
             self._history_idx = -1
             self._saved_input_before_history = ""
+            self._search_query = ""
+            self._search_matches = []
+            self._search_idx = -1
+            self._search_active = False
+            self._search_saved_buffer = ""
             self._input_ready.clear()
         return submitted, buffer_text
 
@@ -199,7 +216,13 @@ class InputBufferEditor:
         return line.replace("\\n", "\n")
 
     def load_history(self) -> None:
-        """从 INPUT_HISTORY_FILE 加载历史行（多进程安全）。"""
+        """从 INPUT_HISTORY_FILE 加载历史行（多进程安全）。
+
+        P3-6 说明：本方法**不加锁**直接改写 ``_history``——设计上仅在装配/
+        启动阶段（render 线程启动前）调用，与渲染线程的 ``search_enter`` /
+        ``_append_history_locked`` 无并发窗口；若未来在运行期调用，须先获取
+        ``_lock``（既有限制文档化，非缺陷）。
+        """
         raw, locked = self._history_io.read()
         if not raw:
             return
@@ -290,22 +313,121 @@ class InputBufferEditor:
             append_history: 历史追加回调。None 时使用自身 ``_append_history_locked``；
                 外观层注入其 ``_append_history_locked`` 以保持测试对外观实例的
                 ``patch.object(inp, "_append_history_locked", ...)`` 拦截路径。
+
+        方向D 步骤14：反向历史搜索激活时（Ctrl+R），Enter 应用当前匹配到缓冲
+        并退出搜索（不提交——bash 语义：接受匹配项到命令行继续编辑）。
+        搜索分支置于 ``_input_ready`` 早退判断**之前**（P2-6 修复）：搜索模式
+        不提交、不受抑制语义约束——若进入搜索前存在未消费排队输入，早退会静默
+        跳过搜索 Enter/Tab 应用匹配，搜索状态残留。
         """
         with self._lock:
-            if self._input_ready.is_set():
-                return
-            text = self._buffer
-            self._submitted_text = text
-            self._buffer = ""
-            self._cursor_pos = 0
-            self._input_ready.set()
-            if self._history_idx >= 0:
-                self._history_idx = -1
-            if append_history is not None:
-                append_history(text)
+            if self._search_active:
+                # 搜索模式：应用当前匹配到缓冲并退出搜索（不提交）
+                if self._search_matches and 0 <= self._search_idx < len(self._search_matches):
+                    self._buffer = self._search_matches[self._search_idx]
+                self._cursor_pos = len(self._buffer)
+                self._search_query = ""
+                self._search_matches = []
+                self._search_idx = -1
+                self._search_active = False
+                self._search_saved_buffer = ""
+                text = self._buffer
+                applied_search = True
             else:
-                self._append_history_locked(text)
-        self._echo("")
+                if self._input_ready.is_set():
+                    return
+                text = self._buffer
+                applied_search = False
+                self._submitted_text = text
+                self._buffer = ""
+                self._cursor_pos = 0
+                self._input_ready.set()
+                if self._history_idx >= 0:
+                    self._history_idx = -1
+                if append_history is not None:
+                    append_history(text)
+                else:
+                    self._append_history_locked(text)
+        if applied_search:
+            self._echo(text)
+        else:
+            self._echo("")
+
+    # ═══════════════════════════════════════════════════════
+    # 反向历史搜索（方向D 步骤14，Ctrl+R 配置门控）
+    # ═══════════════════════════════════════════════════════
+
+    def search_enter(self, query: str) -> bool:
+        """进入反向历史搜索：对 ``_history`` 过滤 ``query in entry`` 建立匹配列表。
+
+        Args:
+            query: 搜索查询（进入搜索时的缓冲文本）。查询为空时不进入。
+
+        Returns:
+            True — 已进入搜索模式（无论是否有匹配）；False — 查询为空未进入。
+        """
+        if not query:
+            return False
+        with self._lock:
+            self._search_query = query
+            self._search_matches = [
+                entry for entry in self._history if query in entry
+            ]
+            # 最近匹配优先（_history[0] 为最新）
+            self._search_idx = 0 if self._search_matches else -1
+            self._search_active = True
+            self._search_saved_buffer = self._buffer
+        return True
+
+    def search_next(self) -> str:
+        """循环移动到下一匹配（更旧），返回当前匹配文本。"""
+        with self._lock:
+            if self._search_matches:
+                self._search_idx = (self._search_idx + 1) % len(self._search_matches)
+                return self._search_matches[self._search_idx]
+            return ""
+
+    def search_prev(self) -> str:
+        """循环移动到上一匹配（更新），返回当前匹配文本。"""
+        with self._lock:
+            if self._search_matches:
+                self._search_idx = (self._search_idx - 1) % len(self._search_matches)
+                return self._search_matches[self._search_idx]
+            return ""
+
+    def search_exit(self, apply: bool = False) -> str:
+        """退出搜索：apply=True 用当前匹配替换缓冲；否则恢复进入搜索前的缓冲。
+
+        P3-5：apply=True 且**无匹配**时也恢复 ``_search_saved_buffer``（修复前
+        无匹配时 buffer 保持搜索期间用户编辑后的文本，语义不明确）——无匹配可
+        应用 → 行为与 apply=False 一致（恢复进入搜索前的缓冲）。
+
+        P3-18：搜索查询固定为进入搜索时的缓冲（``search_enter(query)`` 记录）；
+        搜索期间新输入不更新查询，Enter 应用匹配会覆盖搜索期间新输入（计划内
+        简化设计）。
+
+        Returns:
+            退出后的缓冲文本。
+        """
+        with self._lock:
+            if apply and self._search_matches and 0 <= self._search_idx < len(self._search_matches):
+                self._buffer = self._search_matches[self._search_idx]
+            else:
+                # apply=True 且无匹配 → 恢复进入搜索前的缓冲（P3-5）
+                self._buffer = self._search_saved_buffer
+            self._cursor_pos = len(self._buffer)
+            self._search_query = ""
+            self._search_matches = []
+            self._search_idx = -1
+            self._search_active = False
+            self._search_saved_buffer = ""
+            text = self._buffer
+        self._echo(text)
+        return text
+
+    def is_search_active(self) -> bool:
+        """是否处于反向历史搜索模式。"""
+        return self._search_active
 
     def _append_history_locked(self, text: str) -> None:
         """保存输入到历史（需持 _lock）。

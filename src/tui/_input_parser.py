@@ -54,7 +54,8 @@ class KeyEvent:
     """
     kind: str        # "char" | "enter" | "tab" | "backspace" | "escape" |
                      # "arrow_up" | "arrow_down" | "arrow_left" | "arrow_right" |
-                     # "home" | "end" | "delete" | "ctrl_key" | "interrupt" | "csi_u" | "unknown"
+                     # "home" | "end" | "delete" | "ctrl_key" | "interrupt" | "csi_u" | "unknown" |
+                     # "alt_char" | "f1" | "f2" | "f3" | "f4"（方向A 步骤1 新增）
     char: str = ""
     modifier: int = 0
     keycode: int = 0
@@ -150,7 +151,18 @@ class InputParser:
         if next_byte == 0x1b:
             return KeyEvent(kind="interrupt", raw=b"\x1b\x1b")
 
-        # ── 其他 ESC 组合 → 视为中断 ──
+        # ── 其他 ESC 组合 → Alt+可打印字符 或 中断 ──
+        # 方向A 步骤1：ESC+可打印 ASCII（0x20 <= nb < 0x7f）→ alt_char 事件
+        # （modifier=3 表示 Alt），Alt+B/F 词跳转由 _dispatch_key_event 消费；
+        # 其余 alt_char 经 input router（router 未消费则 no-op，不产生中断）。
+        # 非打印组合保持 interrupt（旧语义保留，行为变更符合需求）。
+        if 0x20 <= next_byte < 0x7f:
+            return KeyEvent(
+                kind="alt_char",
+                char=chr(next_byte),
+                modifier=3,
+                raw=b"\x1b" + bytes([next_byte]),
+            )
         return KeyEvent(kind="interrupt", raw=b"\x1b" + bytes([next_byte]))
 
     @staticmethod
@@ -217,12 +229,24 @@ class InputParser:
         return self._dispatch_csi(params, terminator)
 
     def _read_ss3_sequence(self, fd: int) -> KeyEvent:
-        """读取 SS3 序列（ESC O + 字符，通常为 F1-F4）。"""
+        """读取 SS3 序列（ESC O + 字符，通常为 F1-F4）。
+
+        方向A 步骤1：ESC O P/Q/R/S → f1/f2/f3/f4 功能键事件；
+        其余 SS3 字符保持 unknown（raw 保留完整字节供调试/未来消费）。
+        """
         try:
             if select.select([fd], [], [], _SS3_READ_TIMEOUT)[0]:
                 raw_c = os.read(fd, 1)
                 if raw_c:
-                    return KeyEvent(kind="unknown", raw=b"\x1bO" + raw_c)
+                    raw = b"\x1bO" + raw_c
+                    mapping = {
+                        ord('P'): "f1",
+                        ord('Q'): "f2",
+                        ord('R'): "f3",
+                        ord('S'): "f4",
+                    }
+                    kind = mapping.get(raw_c[0], "unknown")
+                    return KeyEvent(kind=kind, raw=raw)
         except (ValueError, OSError, TypeError):
             pass
         return KeyEvent(kind="unknown", raw=b"\x1bO")
@@ -238,6 +262,16 @@ class InputParser:
             if keycode == 13 and modifier in (2, 3, 5):
                 return KeyEvent(kind="char", char="\n", modifier=modifier,
                                 keycode=keycode, raw=raw)
+            # 方向A 步骤1：CSI u Shift+Tab（keycode=9, modifier=2）→ tab modifier=2
+            # （_dispatch_key_event 消费：补全可见时反向循环）。
+            if keycode == 9 and modifier == 2:
+                return KeyEvent(kind="tab", modifier=2, keycode=keycode, raw=raw)
+            # 方向A 步骤1：CSI u Ctrl+字母（keycode 97-122, modifier=5）→ 复用
+            # _decode_control_char(keycode-96) 语义（Ctrl+A=Home、Ctrl+W=delete word 等）。
+            if 97 <= keycode <= 122 and modifier == 5:
+                decoded = InputParser._decode_control_char(keycode - 96)
+                return KeyEvent(kind=decoded.kind, char=decoded.char,
+                                modifier=decoded.modifier, keycode=keycode, raw=raw)
             return KeyEvent(kind="csi_u", modifier=modifier, keycode=keycode, raw=raw)
 
         raw = b"\x1b[" + InputParser._params_to_bytes(params) + terminator.encode()

@@ -858,6 +858,37 @@ class Input:
         """
         self._dispatcher.set_input_hook_router(router)
 
+    def set_reverse_search_enabled(self, enabled: bool) -> None:
+        """设置 Ctrl+R 反向历史搜索启用标志（委托 InputDispatcher，方向D 步骤14）。
+
+        由装配注入 ``TuiConfig.reverse_search_enabled``（默认 False 保持
+        switch_model 语义）。
+        """
+        self._dispatcher.set_reverse_search_enabled(enabled)
+
+    def set_reverse_search_callback(self, cb) -> None:
+        """设置反向搜索状态同步回调（委托 InputDispatcher，方向D 步骤14）。
+
+        cb 签名: ``(query: str, matches: list[str], index: int, active: bool) -> None``
+        由装配注入（更新 model.history_search + 重绘）。
+        """
+        self._dispatcher.set_reverse_search_callback(cb)
+
+    def set_esc_cancel_input(self, enabled: bool) -> None:
+        """设置 Esc 取消输入启用标志（委托 InputDispatcher，方向D 步骤16）。
+
+        由装配注入 ``TuiConfig.esc_cancel_input``（默认 False 保持中断语义）。
+        """
+        self._dispatcher.set_esc_cancel_input(enabled)
+
+    def set_active_status_callback(self, fn) -> None:
+        """设置活跃状态回调（委托 InputDispatcher，方向D 步骤16）。
+
+        fn 签名: ``() -> bool`` —— True=生成中（Esc 不取消输入，走中断）。
+        由装配注入（model.status.status_active）。
+        """
+        self._dispatcher.set_active_status_callback(fn)
+
     def set_interrupt_callback(self, cb) -> None:
         """设置中断回调（方向A 步骤1 注入点）。
 

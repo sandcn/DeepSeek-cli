@@ -30,7 +30,7 @@ from src.tui._input import (
 from src.tui.core.style import Style
 from src.tui.ink import register_host, Line
 from src.tui.app import _fx
-from src.tui.app._theme import time_glow, _S_ACCENT, _S_SEP, _S_TIME
+from src.tui.app._theme import time_glow, _S_ACCENT, _S_SEP, _S_TEXT, _S_TIME
 
 # 占位符
 _PLACEHOLDER_TEXT = "输入消息 · /help 查看命令 · Ctrl+N 切换模型 · Tab 补全"
@@ -39,12 +39,13 @@ _PLACEHOLDER_STREAMING = "AI 生成中..."
 
 _PROMPT = "> "
 
-_S_PROMPT = Style(fg=45, bold=True)
-_S_TEXT = Style(fg=252)
+# 方向C 步骤4：_S_TEXT 被多处使用 → 迁入 app/_theme.py 共享池；以下单处使用
+# 常量保留模块私有（享元收敛原则：仅多处使用才共享）。
+# P2-10：_S_PROMPT/_S_PLACEHOLDER 为死常量（定义后全项目无引用——提示符已用
+# 呼吸色 _glow_color、占位符已用渐显色 _placeholder_fade_color）→ 删除。
 _S_CONT = Style(fg=242)
 _S_CPU = Style(fg=214)
 _S_MEM = Style(fg=214)
-_S_PLACEHOLDER = Style(fg=242)
 
 
 def _glow_color(base: int, amp: int) -> int:
@@ -167,6 +168,11 @@ def _completion_height(completion) -> int:
     return len(completion.items) + 2
 
 
+def _is_search_active(search) -> bool:
+    """反向历史搜索是否激活（history_search 非 None 且 active，方向D 步骤14）。"""
+    return search is not None and bool(getattr(search, "active", False))
+
+
 def _measure(fiber, avail_w) -> tuple[int, int]:
     props = fiber.props
     explicit = props.get("width")
@@ -175,6 +181,8 @@ def _measure(fiber, avail_w) -> tuple[int, int]:
     popup_height = _completion_height(completion)
     max_input = max(1, width - len(_PROMPT))
     text = str(props.get("text", ""))
+    # ★ 方向D 步骤14：反向历史搜索覆盖行（追加一行）
+    search_active = _is_search_active(props.get("history_search"))
     # ★ PERF-1：缓存命中（同 text/max_input）时复用换行布局（每帧至多 1 次换行）
     cached = getattr(fiber, "_input_layout_cache", None)
     if cached is not None and cached[0] == (text, max_input):
@@ -182,7 +190,7 @@ def _measure(fiber, avail_w) -> tuple[int, int]:
     else:
         rows, wrapped_by_logical = _compute_input_layout(text, max_input)
         fiber._input_layout_cache = ((text, max_input), (rows, wrapped_by_logical))
-    height = popup_height + 2 + rows
+    height = popup_height + 2 + rows + (1 if search_active else 0)
     return (width, height)
 
 
@@ -251,6 +259,21 @@ def _build_lines(fiber) -> list[Line]:
     top.append(" \u00b7 MEM:", _S_ACCENT)
     top.append(f"{mem}%", _S_MEM)
     lines.append(top)
+
+    # ── 反向历史搜索覆盖行（方向D 步骤14，Ctrl+R 配置门控） ──
+    # 搜索激活时在上分隔线之后、输入文本行之前追加一行（measure 已增行）：
+    # (reverse-i-search)`query`: match
+    search = props.get("history_search")
+    if _is_search_active(search):
+        q = search.query
+        match = ""
+        if search.matches and 0 <= search.index < len(search.matches):
+            match = search.matches[search.index]
+        sline = Line.of("(reverse-i-search)`", _S_ACCENT)
+        sline.append(q, Style(fg=221))
+        sline.append("`: ", _S_ACCENT)
+        sline.append(match, _S_TEXT)
+        lines.append(sline)
 
     # ── 输入文本行 ──
     # ★ PERF-1：wrapped 已在函数开头从缓存/单次计算得到（见上），此处直接使用
