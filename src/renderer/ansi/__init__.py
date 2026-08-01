@@ -38,9 +38,10 @@ class AnsiStreamRenderer:
 
     Args:
         code_theme: pygments 代码主题名。
+        width: 终端宽度（TOC 边框用；可由 set_width 更新）。
     """
 
-    def __init__(self, code_theme: str = "monokai"):
+    def __init__(self, code_theme: str = "monokai", width: int = 80):
         from src.renderer.recursive_parser import RecursiveDescentParser
         from src.renderer.types import RenderContext
         from src.renderer.pipeline import TokenPipeline, CodeBlockBatcher
@@ -55,6 +56,11 @@ class AnsiStreamRenderer:
         self._engine = AnsiRenderEngine(code_theme=code_theme)
         self._lines: list[AnsiLine] = []
         self._closed = False
+        self._width = width
+
+    def set_width(self, width: int) -> None:
+        """更新终端宽度（TOC 边框用）。"""
+        self._width = width
 
     def write(self, text: str) -> None:
         """流式写入内容块（解析 + 渲染 + 追加）。"""
@@ -66,7 +72,10 @@ class AnsiStreamRenderer:
             self._lines.extend(self._engine.render(token))
 
     def close(self) -> None:
-        """关闭渲染器：flush 解析器残差并渲染（幂等）。"""
+        """关闭渲染器：flush 解析器残差并渲染（幂等）。
+
+        流式 markdown 结束时在末尾渲染 TOC（目录，若 ctx.toc 有标题）。
+        """
         if self._closed:
             return
         self._closed = True
@@ -75,6 +84,11 @@ class AnsiStreamRenderer:
             tokens = self._pipeline.process(tokens, self._ctx)
             for token in tokens:
                 self._lines.extend(self._engine.render(token))
+            # 末尾渲染目录
+            toc = getattr(self._ctx, "toc", None)
+            if toc:
+                from .toc import render_toc
+                self._lines.extend(render_toc(toc, self._width))
         finally:
             self._engine.reset()
 

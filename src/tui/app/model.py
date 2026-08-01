@@ -94,6 +94,8 @@ class AppModel:
         self.content_closed: bool = False
         self.reasoning_block_index: int = -1
         self.content_block_index: int = -1
+        # 终端宽度（session 每帧更新；渲染器 TOC 边框用）
+        self.width: int = 80
         # 工具调用组
         self.in_tool_group: bool = False
         self.tool_block_index: int = -1
@@ -191,7 +193,7 @@ class AppModel:
             return None
         if self.reasoning_renderer is None:
             from src.renderer.ansi import AnsiStreamRenderer
-            self.reasoning_renderer = AnsiStreamRenderer()
+            self.reasoning_renderer = AnsiStreamRenderer(width=self.width)
             self.reasoning_state = ReasoningState.ACTIVE
             self.reasoning_block_index = len(self.blocks)
             self.append_block("reasoning")
@@ -231,7 +233,7 @@ class AppModel:
             return None
         if self.content_renderer is None:
             from src.renderer.ansi import AnsiStreamRenderer
-            self.content_renderer = AnsiStreamRenderer()
+            self.content_renderer = AnsiStreamRenderer(width=self.width)
             self.content_block_index = len(self.blocks)
             self.append_block("content")
         return self.content_renderer

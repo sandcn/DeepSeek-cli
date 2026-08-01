@@ -462,6 +462,8 @@ class InkSession:
         if self._build_tree is None:
             return
         width = self._width_cache.get_width()
+        if self._model is not None:
+            self._model.width = width  # 渲染器 TOC 边框宽度
         element = self._build_tree(self._model, width)
         self._reconciler.render(self._root_fiber, element, width, self._width_cache.get_height())
         frame = _components.render_frame(self._root_fiber, width)

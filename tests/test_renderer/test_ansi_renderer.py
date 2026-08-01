@@ -79,6 +79,25 @@ class TestStreamRenderer:
         lines = _render("")
         assert lines == []
 
+    def test_toc_at_end(self):
+        """流式 markdown 结束时在末尾渲染目录（TOC）。"""
+        r = AnsiStreamRenderer(width=50)
+        r.write("# 第一章\n\n正文。\n\n# 第二章\n\n结束。\n")
+        r.close()
+        plains = [l.plain for l in r.take_lines()]
+        toc_idx = next(i for i, p in enumerate(plains) if "目录" in p)
+        end_idx = next(i for i, p in enumerate(plains) if "结束。" in p)
+        assert toc_idx > end_idx, "TOC 应在内容末尾"
+        assert any("第一章" in p and "┣" in p for p in plains)
+
+    def test_toc_no_headings(self):
+        """无标题时无 TOC。"""
+        r = AnsiStreamRenderer(width=50)
+        r.write("plain text\n\nmore\n")
+        r.close()
+        plains = [l.plain for l in r.take_lines()]
+        assert not any("目录" in p for p in plains)
+
     def test_streaming_chunks(self):
         """分块流式输入逐块累积。"""
         r = AnsiStreamRenderer()
