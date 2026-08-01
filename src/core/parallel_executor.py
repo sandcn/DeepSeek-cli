@@ -306,37 +306,13 @@ class ParallelExecutor:
         if not md_text.strip():
             return
 
-        # ── IncrementalRenderer 渲染 markdown → ANSI 字符串 ──────────
-        # 使用 StringIO 捕获 Console 的 ANSI 输出，不直接写 __stdout__。
-        # IncrementalRenderer 内部 Console 的 force_terminal=True 保证
-        # 即使 file=StringIO 也输出完整 ANSI 序列。
-        #
-        # ★ 显式传入 width 参数：当 _file=StringIO 时 Rich Console 无法
-        #   通过 ioctl 探测终端宽度，默认回退到 shutil.get_terminal_size()
-        #   （Android Termux 上因环境变量陈旧返回 120），导致渲染输出行宽
-        #   与真实终端（~70列）不匹配，在 ChatUI 中换行显示错乱。
-        #   通过 ioctl(/dev/tty) 获取真实宽度并传入，消除错位重叠问题。
-        term_width = _get_terminal_width()
-        buf = io.StringIO()
-        renderer = IncrementalRenderer(
-            show_indicator=False, _file=buf, width=term_width,
-        )
-        try:
-            renderer.write(md_text)
-        finally:
-            renderer.close()
-
-        # ── ANSI 输出通过 ChatUI 上屏 ─────────────────────────────────
-        # write_line 内部用 Text.from_ansi() 解析 ANSI 序列为 Rich Text，
-        # 再由 render 线程的 OutputAdapter（Console with __stdout__）渲染。
-        # 双 Console 转换（StringIO Console → __stdout__ Console）对标准
-        # ANSI SGR 序列（颜色/样式）无损，保留完整 markdown 渲染效果。
-        output = buf.getvalue()
-        if output:
-            chat_ui.write_line("")  # 开头空行
-            for line in output.rstrip("\n").split("\n"):
-                chat_ui.write_line(line)
-            chat_ui.write_line("")  # 结尾空行
+        # ── ANSI 引擎渲染 markdown → 内容块上屏 ──────────────────────
+        # display_markdown 由 render 线程的 ANSI 引擎渲染为内容块
+        # （标题/加粗/代码/表格等完整 markdown），替代旧 IncrementalRenderer
+        # （Rich）→ ANSI → write_line 路径（存在 TOC 伪影/标题错位）。
+        chat_ui.write_line("")  # 开头空行
+        chat_ui.display_markdown(md_text)
+        chat_ui.write_line("")  # 结尾空行
 
     def _do_terminal_output(self, results: List[Dict[str, Any]]):
         """在线程池中执行所有终端输出操作，避免同步 IO 阻塞事件循环。

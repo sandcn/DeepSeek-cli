@@ -38,7 +38,7 @@ if TYPE_CHECKING:
 from src.tui._const import (
     RenderCmd,
     UserMsgCmd, NotificationCmd, ErrorCmd,
-    WriteLineCmd, DisplayMsgsCmd,
+    WriteLineCmd, DisplayMsgsCmd, RenderMarkdownCmd,
 )
 from src.renderer._locks import render_lock
 from src.tui.state.consumer_registry import (
@@ -248,6 +248,15 @@ class ChatUIConsumer:
 
     def display_messages(self, messages: list[dict], speed: int = 0) -> None:
         self._engine.push_cmd(DisplayMsgsCmd(messages=messages, speed=speed))
+
+    def display_markdown(self, markdown_text: str) -> None:
+        """渲染整段 markdown 到消息区（subagent 提词/返回）。
+
+        经 RenderMarkdownCmd 由 render 线程用 ANSI 引擎渲染为内容块。
+        """
+        if not markdown_text:
+            return
+        self._engine.push_cmd(RenderMarkdownCmd(text=markdown_text))
 
     def wait_for_user_input(
         self, monitor, prefill: str = "", timeout: float | None = None,

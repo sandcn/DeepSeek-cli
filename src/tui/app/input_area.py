@@ -156,6 +156,9 @@ def _build_lines(fiber) -> list[Line]:
                     ph = _PLACEHOLDER_STREAMING
                 else:
                     ph = _PLACEHOLDER_COMPACT if (completion is not None and completion.visible) else _PLACEHOLDER_TEXT
+                # ★ 占位符按输入区宽度截断，避免窄终端下超宽被二次换行
+                if wcswidth_simple(ph) > max_input:
+                    ph = _truncate_width(ph, max_input)
                 line.append(ph, Style(fg=_glow_color(242, 10)))
         else:
             line.append("\u00b7 ", _S_CONT)

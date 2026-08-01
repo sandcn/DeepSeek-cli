@@ -164,6 +164,22 @@ def _do_main_phase(model, cmd) -> None:
         model.reopen_content()
 
 
+def _do_render_markdown(model, cmd) -> None:
+    """渲染整段 markdown 为内容块（subagent 提词/返回）。"""
+    if not cmd.text:
+        return
+    from src.renderer.ansi import AnsiStreamRenderer
+    renderer = AnsiStreamRenderer(width=getattr(model, "width", 80))
+    try:
+        renderer.write(cmd.text)
+        renderer.close()
+        lines = renderer.take_lines()
+    finally:
+        renderer._engine.reset()
+    if lines:
+        model.append_committed("subagent", lines)
+
+
 def _do_tool_open(model, cmd) -> None:
     """工具开始：打开该工具的 box（标题立即上屏，输出增量刷新）。"""
     model.open_tool_box(cmd.tool_id, cmd.tool_name, cmd.detail)
@@ -243,6 +259,7 @@ _HANDLERS: dict[int, object] = {
     RenderCommand.TOOL_SUMMARY: _do_tool_summary,
     RenderCommand.TOOL_OPEN: _do_tool_open,
     RenderCommand.TOOL_CLOSE: _do_tool_close,
+    RenderCommand.RENDER_MARKDOWN: _do_render_markdown,
     RenderCommand.PARSE_INFO: _do_parse_info,
     RenderCommand.USER_MSG: _do_user_message,
     RenderCommand.DISPLAY_MSGS: _do_display_messages,

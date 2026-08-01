@@ -68,6 +68,8 @@ _STREAM_CMDS = frozenset({
     # 工具输出与 Open/Close（prio0）同序——否则 Close 先于 Output 出队，
     # 输出落到无名新 box（每工具 box 增量刷新依赖此顺序）。
     RenderCommand.TOOL_OUTPUT,
+    # subagent 提词/返回整段 markdown（与内容同优先级）
+    RenderCommand.RENDER_MARKDOWN,
 })
 _HIGH_CMDS = frozenset({
     RenderCommand.SUBAGENT_FRAME,
@@ -408,6 +410,10 @@ class InkSession:
         self._phase_process_input()
         self._phase_pre_update_panels()
         self._update_system_stats()
+        # ★ 应用命令前刷新 model.width：markdown 渲染（subagent 提词/返回）
+        #   用当前终端宽度换行，避免陈旧宽度导致行宽超过终端→终端再换行成两行
+        if self._model is not None:
+            self._model.width = self._width_cache.get_width()
         commands: list = []
         with _try_acquire_output_lock(name="ink_session.drain_queue", timeout=self._config.drain_lock_timeout) as locked:
             if not locked:

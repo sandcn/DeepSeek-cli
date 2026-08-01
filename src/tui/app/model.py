@@ -161,28 +161,35 @@ class AppModel:
                 block.committed_line_count = len(block.lines)
             self.committed_count += 1
 
-    @staticmethod
-    def _block_to_ink_lines(block, start: int = 0):
-        """将块内 AnsiLine（从 start 起）转为 ink Line（推理块叠加 dim/italic）。"""
+    def _block_to_ink_lines(self, block, start: int = 0):
+        """将块内 AnsiLine（从 start 起）转为 ink Line（推理块叠加 dim/italic）。
+
+        ★ 提交时按 ``self.width`` 预换行：committed-chat 直接发射缓存行（不重新
+        布局），未预换行的段落会超宽 → 终端二次换行成两行。
+        """
         from src.tui.ink import Line, StyledRun
         from src.renderer.ansi.style import Style as _AnsiStyle
+        from src.renderer.ansi.helpers import wrap_line as _wrap
         slice_lines = block.lines[start:]
         if not slice_lines:
             return []
+        width = getattr(self, "width", 80)
         reasoning_style = (
             _AnsiStyle(dim=True, italic=True) if block.kind == "reasoning" else None
         )
         out: list = []
         for ansi_line in slice_lines:
-            runs = []
-            for r in ansi_line.runs:
-                if not r.text:
-                    continue
-                st = r.style
-                if reasoning_style is not None:
-                    st = reasoning_style if st is None else st.merge(reasoning_style)
-                runs.append(StyledRun(r.text, st))
-            out.append(Line(runs))
+            wrapped = _wrap(ansi_line, width) or [ansi_line]
+            for wl in wrapped:
+                runs = []
+                for r in wl.runs:
+                    if not r.text:
+                        continue
+                    st = r.style
+                    if reasoning_style is not None:
+                        st = reasoning_style if st is None else st.merge(reasoning_style)
+                    runs.append(StyledRun(r.text, st))
+                out.append(Line(runs))
         return out
 
     # ── 推理/内容通道 ───────────────────────────────

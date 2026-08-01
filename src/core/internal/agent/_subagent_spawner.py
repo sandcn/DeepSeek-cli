@@ -109,31 +109,9 @@ class SubAgentSpawner:
 
         chat_ui = get_display_target()
         if chat_ui is not None:
-            # ChatUI 激活 → StringIO 捕获 ANSI → chat_ui.write_line() 统一上屏
-            # （与 parallel_executor._stream_results_via_chatui 模式一致）
-            import io
-            import os
-            from src.renderer import IncrementalRenderer
-
-            try:
-                term_width = os.get_terminal_size().columns
-            except (OSError, PermissionError):
-                term_width = 80
-            buf = io.StringIO()
-            renderer = IncrementalRenderer(
-                show_indicator=False, _file=buf, width=term_width,
-            )
-            try:
-                renderer.write(md_text)
-            finally:
-                renderer.close()
-
-            output = buf.getvalue()
-            if output:
-                chat_ui.write_line("")  # 开头空行
-                for line in output.rstrip("\n").split("\n"):
-                    chat_ui.write_line(line)
-                chat_ui.write_line("")  # 结尾空行
+            # ChatUI 激活 → display_markdown 用 ANSI 引擎渲染为内容块
+            chat_ui.write_line("")  # 开头空行
+            chat_ui.display_markdown(md_text)
         else:
             # ChatUI 未激活 → 直接写 __stdout__（原逻辑）
             import sys as _sys

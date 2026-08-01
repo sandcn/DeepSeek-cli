@@ -88,6 +88,7 @@ class RenderCommand(IntEnum):
     MAIN_PHASE = 20     # (20, phase: str) — 主Agent模型阶段变更
     TOOL_OPEN = 21      # (21, tool_name, tool_id, detail) — 工具 box 打开
     TOOL_CLOSE = 22     # (22, tool_id, success) — 工具 box 关闭
+    RENDER_MARKDOWN = 23  # (23, text) — 渲染整段 markdown 为内容块（subagent 提词/返回）
 
 
 # ═══════════════════════════════════════════════════════════
@@ -138,6 +139,11 @@ class ToolCloseCmd(RenderCmd):
     cid: int = RenderCommand.TOOL_CLOSE
     tool_id: str = ""
     success: bool = True
+
+@dataclass(frozen=True)
+class RenderMarkdownCmd(RenderCmd):
+    cid: int = RenderCommand.RENDER_MARKDOWN
+    text: str = ""
 
 @dataclass(frozen=True)
 class UserMsgCmd(RenderCmd):
