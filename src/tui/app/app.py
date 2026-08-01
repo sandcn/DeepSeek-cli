@@ -7,8 +7,7 @@
 
 from __future__ import annotations
 
-from src.tui.ink import h, APP, STATIC, BOX, TEXT, StyledRun, use_input
-from src.tui.ink.hooks import _schedule as _request_rerender
+from src.tui.ink import h, APP, STATIC, BOX, TEXT, StyledRun
 from .chat_view import ChatView, register as _register_committed
 from .status_bar import StatusBar
 from .subagent_panel import SubAgentPanel
@@ -25,27 +24,6 @@ def App(props) -> object:
     """
     model = props["model"]
     width = props.get("width", 80)
-
-    # 方向④：交互式折叠/展开（工具输出块按键展开/折叠）。
-    # 键位：输入缓冲为空时 Space 切换最近折叠工具块；Ctrl+E（\x05）任意
-    # 时刻切换（\x05 不在 vim/editmsg/switch_model/reverse_search 映射内，
-    # 走 input router 询问）。其余按键返回 False 放行旧路径（零行为变化）。
-    # 切换后经 hooks._schedule → session._request_render 标记脏，下一拍渲染。
-    def _on_tool_toggle_handler(event) -> bool:
-        trigger = False
-        if event.kind == "char" and event.char == " " and model.input_text == "":
-            trigger = True
-        elif event.kind == "ctrl_key" and event.char == "\x05":  # Ctrl+E
-            trigger = True
-        if trigger:
-            tool_id = model._recent_collapsed_tool_id()
-            if tool_id is not None:
-                model.toggle_tool_box(tool_id)
-                _request_rerender()
-                return True
-        return False
-
-    use_input(_on_tool_toggle_handler, True)
 
     input_props = {
         "text": model.input_text,

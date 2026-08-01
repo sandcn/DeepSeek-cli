@@ -132,7 +132,7 @@ class TestRenderIntegrationNewProps:
             session.stop()
 
     def test_tool_card_status_props_render_regression(self):
-        """工具块折叠（done + 折叠）时帧输出含折叠提示行。"""
+        """工具块（done）超长输出完整渲染到帧输出（无折叠/截断）。"""
         from src.tui._const import ToolOpenCmd, ToolOutputCmd, ToolCloseCmd
         from src.tui.app.model import AppModel
         from src.tui.app.apply import apply_cmd
@@ -147,8 +147,9 @@ class TestRenderIntegrationNewProps:
         stream, session = self._render_frame_to_stream(model)
         try:
             out = stream.getvalue()
-            # 折叠提示行渲染到帧输出
-            assert "已折叠" in out
+            # 超长输出完整显示（首尾行均在帧输出中，无折叠/截断）
+            assert "line0" in out
+            assert "line9" in out
             # 工具显示名标题渲染（工具名经 registry 显示名映射）
             display = get_tool_display_name("bash") or "bash"
             assert display in out

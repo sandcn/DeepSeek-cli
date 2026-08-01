@@ -49,6 +49,17 @@ from src.tui._subagent_state import _AgentSlot, _ToolRecord
 _SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
 _INDENT = "  "
 
+
+def _single_line(text: str) -> str:
+    """确保单行显示：将换行/回车转义为字面量（subagent 行契约=单行）。
+
+    每个 ``subagent_lines`` 条目应为一条终端行；来源字段（description /
+    parse_info / model_info / tool detail）可能含 ``\n``/``\r``，直接插入
+    会使终端按换行渲染成两行。与 ``format_tool_record`` 既有转义一致，
+    转义为可见字面量 ``\\n``/``\\r``。
+    """
+    return text.replace("\r", "\\r").replace("\n", "\\n") if text else ""
+
 # ── 动效时间基配置 ──
 _CFG = TuiConfig.defaults()
 _FADE_DURATION: float = _CFG.fade_duration_sec       # FadeIn 渐显总时长（0.6s）
@@ -248,14 +259,16 @@ def build_agent_lines(slot: _AgentSlot, now: float, is_last: bool,
     type_tag = f"{_fade_type_ansi(agent_type_ansi, fade_elapsed)}[{abbr}]{_C_RESET}"
 
     # ── 状态图标 + 标题行 ──
+    # P3-?：description 经 _single_line 转义（可能含 \n → 强制单行显示）
+    description = _single_line(slot.description)
     if slot.status == "done":
         icon = f"{_C_DONE}\u2714{_C_RESET}"
         suffix = f"  {_C_DIMMER}{output_str}{_C_RESET}  {_C_DIMMER}{elapsed_str}{_C_RESET}"
-        title = f"{_C_BRANCH}{branch}{_C_RESET} {icon} {type_tag} {slot.description}{suffix}"
+        title = f"{_C_BRANCH}{branch}{_C_RESET} {icon} {type_tag} {description}{suffix}"
     elif slot.status == "fail":
         icon = f"{_C_FAIL}\u2716{_C_RESET}"
         suffix = f"  {_C_DIMMER}{elapsed_str}{_C_RESET}"
-        title = f"{_C_BRANCH}{branch}{_C_RESET} {icon} {type_tag} {slot.description}{suffix}"
+        title = f"{_C_BRANCH}{branch}{_C_RESET} {icon} {type_tag} {description}{suffix}"
     else:
         # BEAUTY-3：spinner 时间基推进（非帧计数；_frame 字段保留兼容）
         spinner = _SPINNER_FRAMES[_fx.spinner_frame(_SPINNER_HZ, _SPINNER_FRAMES)]
@@ -265,7 +278,7 @@ def build_agent_lines(slot: _AgentSlot, now: float, is_last: bool,
             f"  {_C_SUMMARY_DIM}{speed_str}{_C_RESET}"
             f"  {_C_DIMMER}{elapsed_str}{_C_RESET}"
         )
-        title = f"{_C_BRANCH}{branch}{_C_RESET} {dot} {type_tag} {slot.description}{suffix}"
+        title = f"{_C_BRANCH}{branch}{_C_RESET} {dot} {type_tag} {description}{suffix}"
     lines.append(title)
 
     # ── 阶段指示 ──
@@ -279,12 +292,12 @@ def build_agent_lines(slot: _AgentSlot, now: float, is_last: bool,
             lines.append(
                 f"{_C_DIMMER}{cont}{_C_RESET}{_INDENT}{_C_ANSWERING}\u2026answering{_C_DIMMER}  {phase_time}{_C_RESET}")
         elif slot.model_phase == "parsing":
-            extra = slot.parse_info or slot.model_info
+            extra = _single_line(slot.parse_info or slot.model_info)
             lines.append(
                 f"{_C_DIMMER}{cont}{_C_RESET}{_INDENT}{_C_PARSING}\u2026parsing{_C_DIMMER}  {extra}{_C_RESET}")
         elif slot.model_phase == "batch":
             lines.append(
-                f"{_C_DIMMER}{cont}{_C_RESET}{_INDENT}{_C_BATCH}\u2026batch{_C_DIMMER}  {slot.model_info}  {phase_time}{_C_RESET}")
+                f"{_C_DIMMER}{cont}{_C_RESET}{_INDENT}{_C_BATCH}\u2026batch{_C_DIMMER}  {_single_line(slot.model_info)}  {phase_time}{_C_RESET}")
 
     # ── 工具历史（仅 running 时展开；done/fail 折叠为单行） ──
     if slot.status not in ("done", "fail"):
@@ -298,7 +311,7 @@ def build_agent_lines(slot: _AgentSlot, now: float, is_last: bool,
 def format_tool_record(rec: _ToolRecord, now: float, cont: str) -> str:
     elapsed = (rec.end_time or now) - rec.start_time if rec.start_time else 0
     time_str = f"{elapsed:.1f}s"
-    detail = rec.detail.replace('\r', '\\r').replace('\n', '\\n') if rec.detail else ""
+    detail = _single_line(rec.detail)
 
     from ._tool_icons import TOOL_ICONS
     from src.tools.registry import get_tool_display_name

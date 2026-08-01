@@ -171,6 +171,16 @@ class TestSubAgentPanel:
         assert len(sub_lines) == 1, f"超宽行应截断为单行，实际 {len(sub_lines)} 行"
         assert all(l.width <= 40 for l in sub_lines)
 
+    def test_subagent_newline_renders_single_line(self):
+        """含 \n 的 subagent 行渲染为单行（转义为字面量，不拆成两行）。"""
+        m = AppModel()
+        m.subagent_lines = ["  ├─ [EXE] task line one\nline two"]
+        f = _frame(m)
+        sub_lines = [l for l in f.lines if "task line one" in l.plain]
+        assert len(sub_lines) == 1, f"含换行行应保持单行，实际 {len(sub_lines)} 行"
+        # \n 转义为字面量（反斜杠 n），不产生终端换行
+        assert "task line one\\nline two" in sub_lines[0].plain
+
     def test_single_conversion_point_matches_ansi_to_runs(self):
         """方向C 步骤8 — 子代理行经单一转换点渲染与 ansi_to_runs 直接解析一致。
 
@@ -371,28 +381,7 @@ class TestCustomHostPaintErrorLogging:
 
 
 class TestToolCard:
-    """方向D 步骤15 — 工具调用卡片渲染（状态图标 / 折叠 / running 输出可见）。"""
-
-    def test_tool_done_collapsed_shows_title_and_hint(self):
-        """done 且折叠 → 标题（含 ✔ 图标）+ 前 2 行输出 + 折叠提示（Bug B 修复）。"""
-        from src.tui._config import TuiConfig
-        m = AppModel(config=TuiConfig.defaults().with_overrides(
-            tool_auto_collapse_threshold=3))
-        m.open_tool_box("t1", "read_file")
-        for i in range(1, 5):
-            m.append_tool_output("t1", f"out{i}")
-        m.close_tool_box("t1", True)
-        f = _frame(m)
-        plains = [l.plain for l in f.lines]
-        # 标题可见（done 图标 ✔ 前置；工具名经 get_tool_display_name 缩写为 rf）
-        assert any("\u2714" in p and "rf" in p for p in plains)
-        # 折叠提示行可见
-        assert any("已折叠（4 行输出）" in p for p in plains)
-        # Bug B 修复：折叠显示前 2 行输出（取头预览）
-        assert any("out1" in p for p in plains)
-        assert any("out2" in p for p in plains)
-        # 后 2 行输出隐藏（仅预览前 2 行）
-        assert not any("out3" in p or "out4" in p for p in plains)
+    """方向D 步骤15 — 工具调用卡片渲染（状态图标 / running 输出可见）。"""
 
     def test_tool_running_output_visible(self):
         """running → 输出可见（● 图标 + 标题）。"""
@@ -406,8 +395,8 @@ class TestToolCard:
         assert any("partial2" in p for p in plains)
         assert any("\u25cf" in p and "rf" in p for p in plains)
 
-    def test_tool_done_expanded_shows_output_and_status(self):
-        """done 且展开（输出少）→ 输出可见 + 状态行。"""
+    def test_tool_done_shows_output_and_status(self):
+        """done → 输出完整可见 + 状态行。"""
         m = AppModel()
         m.open_tool_box("t1", "read_file")
         m.append_tool_output("t1", "brief")

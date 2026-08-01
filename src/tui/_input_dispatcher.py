@@ -154,8 +154,7 @@ class InputDispatcher:
           - Ctrl+L → 清屏（非流式时；未注入回调跳过）
           - Ctrl+D → EOF（空缓冲提交 exit；非空 no-op 防误退）
           - Ctrl+T → 主题切换
-          - 方向1 B1：Ctrl+E（\x05）→ 未知 no-op 兜底——消费由 input router
-            （App use_input handler）先行完成；此处不产生 end 光标行为。
+          - 方向1 B1：Ctrl+E（\x05）→ 未知 no-op 兜底——不产生 end 光标行为。
         """
         if ch == '\x07':          # Ctrl+G → vim
             self._handle_special_key('vim')
@@ -175,7 +174,7 @@ class InputDispatcher:
             self._handle_special_key('retry')
         elif ch == '\x0e':        # Ctrl+N → 切换模型（保留）
             self._handle_special_key('switch_model')
-        # else：未知 ctrl_key → no-op（router 已先行询问）
+        # else：未知 ctrl_key → no-op
 
     def _handle_clear_screen(self) -> None:
         """Ctrl+L 清屏：调用注入的 clear_screen 回调（未注入记 debug 跳过）。"""
@@ -345,8 +344,8 @@ class InputDispatcher:
                     self._do_interrupt()
                 elif event.kind == "ctrl_key":
                     # 方向1 B1：内联 ctrl_key 路径 router 先行（经 _router_consume
-                    # 统一入口）。router 消费（如 App Ctrl+E 折叠）→ 跳过旧回调
-                    # 路径；未消费 → _handle_ctrl_key 走旧分发（Ctrl+G/O/N/R/L/D/T）。
+                    # 统一入口）。router 消费 → 跳过旧回调路径；未消费 →
+                    # _handle_ctrl_key 走旧分发（Ctrl+G/O/N/R/L/D/T）。
                     if not self._router_consume(event):
                         self._handle_ctrl_key(event.char)
                 else:

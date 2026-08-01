@@ -82,16 +82,6 @@ class TuiConfig(ConfigBase):
     # 启用后 Ctrl+R 进入/推进反向历史搜索；Esc 退出、Enter/Tab 应用匹配。
     reverse_search_enabled: bool = False
 
-    # ── 方向D 步骤15：工具调用卡片展示 ──────────────────
-    # 工具输出行数超过该阈值时自动折叠为「标题 + 前 tool_collapse_preview_lines
-    # 行 + 折叠提示行」（简洁展示；折叠块保留完整输出行，可交互展开——方向④）。
-    tool_auto_collapse_threshold: int = 8
-    # 工具输出最大保留行数（超长截断：保留开头 + 省略行 + 状态行，Claude Code 风格）。
-    tool_output_max_lines: int = 50
-    # 折叠预览行数：工具块折叠时显示的前 N 行输出（默认 2，替代硬编码；
-    # 影响模块 model.py——_visible_tool_ansi_lines）。
-    tool_collapse_preview_lines: int = 2
-
     # ── 方向D 步骤16：Esc 取消输入 ──────────────────────
     # 默认 False 保持既有 Esc 中断语义（键位语义门控）。
     # 启用后单次 Esc 在「空闲 + 缓冲非空」时清空输入取消编辑；生成中仍中断。

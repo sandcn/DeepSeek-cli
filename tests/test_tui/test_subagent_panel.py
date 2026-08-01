@@ -646,3 +646,69 @@ class TestBeautyTimeBasedEffects:
         assert "\u2588" in summary
         assert "\x1b[38;5;214m\u2588" not in summary  # 无 running 呼吸段
 
+
+
+class TestSubAgentSingleLineContract:
+    """P3-? — subagent 行单行契约：含 \n/\r 的字段转义为字面量（不拆成两行）。
+
+    每个 ``subagent_lines`` 条目应为一条终端行；来源字段（description /
+    parse_info / model_info / tool detail）可能含 ``\n``/``\r``，直接渲染
+    会被终端按换行拆成两行。渲染层转义后保持单行。
+    """
+
+    def test_build_agent_lines_escapes_description_newline(self):
+        """description 含 \n → 标题行仍为单行（转义为字面量）。"""
+        import time
+        from src.tui._subagent_render import build_agent_lines
+        from src.tui._subagent_state import _AgentSlot
+
+        slot = _AgentSlot(
+            label="a", description="task one\ntask two", status="running",
+        )
+        lines = build_agent_lines(slot, time.time(), is_last=False)
+        assert lines, "应产出标题行"
+        title = lines[0]
+        assert "\n" not in title, "标题行不得含原始换行"
+        assert "task one\\ntask two" in title
+
+    def test_build_agent_lines_escapes_parse_info_newline(self):
+        """parse_info 含 \n → 阶段指示行单行（转义为字面量）。"""
+        import time
+        from src.tui._subagent_render import build_agent_lines
+        from src.tui._subagent_state import _AgentSlot
+
+        slot = _AgentSlot(
+            label="a", description="run", status="running",
+        )
+        slot.model_phase = "parsing"
+        slot.parse_info = "rf,rf 51t\n0.74s"
+        lines = build_agent_lines(slot, time.time(), is_last=False)
+        assert any("parsing" in l for l in lines)
+        for l in lines:
+            assert "\n" not in l, f"阶段指示行不得含原始换行: {l!r}"
+        assert any("rf,rf 51t\\n0.74s" in l for l in lines)
+
+    def test_format_tool_record_escapes_detail_newline(self):
+        """tool detail 含 \n → 工具历史行单行（既有转义行为回归）。"""
+        import time
+        from src.tui._subagent_render import format_tool_record
+        from src.tui._subagent_state import _ToolRecord
+
+        rec = _ToolRecord(tool_name="read_file", detail="line1\nline2")
+        rec.phase = "running"
+        line = format_tool_record(rec, time.time(), cont=" ")
+        assert "\n" not in line, "工具历史行不得含原始换行"
+        assert "line1\\nline2" in line
+
+    def test_render_children_boundary_escapes_newline(self):
+        """显示边界 _render_children 对含 \n 的行强制单行（防御兜底）。"""
+        from src.tui.app.model import AppModel
+        from src.tui.app.subagent_panel import _render_children
+
+        m = AppModel()
+        m.subagent_lines = ["  ├─ [EXE] task line one\nline two"]
+        children = _render_children(m, 80)
+        assert len(children) == 1, "应产出 1 个子节点"
+        text = "".join(r.text for r in children[0].props["styled"])
+        assert "\n" not in text, "子节点文本不得含原始换行"
+        assert "task line one\\nline two" in text

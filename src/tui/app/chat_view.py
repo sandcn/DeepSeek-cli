@@ -23,7 +23,7 @@ def _to_styled_runs(line) -> list[StyledRun]:
     return [StyledRun(r.text, r.style) for r in runs if r.text]
 
 
-def _block_styled_lines(block, start: int = 0, cfg=None) -> list[list[StyledRun]]:
+def _block_styled_lines(block, start: int = 0) -> list[list[StyledRun]]:
     """将块的行（从 start 起）转为 styled run 列表（块级样式叠加）。
 
     方向D 步骤15：
@@ -31,30 +31,13 @@ def _block_styled_lines(block, start: int = 0, cfg=None) -> list[list[StyledRun]
         引用（同一 runs 列表对象跨帧复用，免每帧 Style merge）；推理块除外
         ——冻结语义（dim italic）与即时渲染（fg=242 italic）不同，保持即时路径。
       - 工具块标题行前置状态图标（running ● / done ✔ / fail ✖）。
-
-    Bug B 修复：折叠工具块（tool_expanded=False）即时路径先取
-    ``_visible_tool_ansi_lines``（标题 + 前 N 行 + 折叠提示）——冻结缓存
-    优先复用可见形式；缓存失效（toggle 后 _cached_ink_lines=None）时此路径
-    保证可见形式一致。cfg 供可见形式预览行数（None 时取默认配置）。
     """
     kind = block.kind
     cache = getattr(block, "_cached_ink_lines", None)
     if cache is not None and kind != "reasoning":
         # 冻结缓存：Line.runs 引用级复用（同一 runs 列表对象，跨帧不重建）
         return [line.runs for line in cache[start:]]
-    if (
-        kind == "tool"
-        and start == 0
-        and not block.extra.get("tool_expanded", True)
-    ):
-        # 折叠工具块：可见形式（标题 + 前 N 行 + 折叠提示）
-        from src.tui.app.model import _visible_tool_ansi_lines
-        if cfg is None:
-            from src.tui.app.model import _default_config as _model_default_config
-            cfg = _model_default_config()
-        slice_lines = _visible_tool_ansi_lines(block, cfg)
-    else:
-        slice_lines = block.lines[start:]
+    slice_lines = block.lines[start:]
     out: list[list[StyledRun]] = []
     for line in slice_lines:
         runs = _to_styled_runs(line)
@@ -123,12 +106,9 @@ def ChatView(props) -> object:
     if model.committed_lines:
         children.append(committed_el)
     line_idx = 0
-    # Bug B 修复：折叠工具块可见形式需 TuiConfig（tool_collapse_preview_lines）
-    from src.tui.app.model import _default_config as _model_default_config
-    cfg = model._config if model._config is not None else _model_default_config()
     for block in model.blocks[model.committed_count:]:
         # 开放块只渲染未提交尾（已增量提交的行在缓存中，不再重建）
-        for runs in _block_styled_lines(block, block.committed_line_count, cfg):
+        for runs in _block_styled_lines(block, block.committed_line_count):
             children.append(h(TEXT, {"key": f"chat-{line_idx}", "styled": runs}))
             line_idx += 1
     return h(BOX, None, children)

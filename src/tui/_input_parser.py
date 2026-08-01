@@ -180,9 +180,8 @@ class InputParser:
         if byte == 0x01:                 # Ctrl+A → Home
             return KeyEvent(kind="home", raw=raw)
         # 方向1 B1：0x05（Ctrl+E）不再映射为光标行尾（end 语义移除）。
-        # 这是让工具折叠键生效的既定取舍——Ctrl+E 经 ctrl_key 进入分发，
-        # 由 App use_input handler（input router）消费触发折叠；未消费时
-        # _handle_ctrl_key 保持未知 no-op 兜底（不产生 end 光标行为）。
+        # Ctrl+E 经 ctrl_key 进入分发；_handle_ctrl_key 对未知 ctrl_key
+        # 保持 no-op 兜底（不产生 end 光标行为）。
         if byte == 0x17:                 # Ctrl+W → delete word left
             return KeyEvent(kind="delete", modifier=1, raw=raw)
         if byte == 0x15:                 # Ctrl+U → kill to BOL
@@ -191,7 +190,7 @@ class InputParser:
             return KeyEvent(kind="delete", modifier=3, raw=raw)
         # Claude TUI parity 步骤 1.4：Ctrl+L(0x0c 清屏) / Ctrl+D(0x04 EOF) /
         # Ctrl+T(0x14 主题) 加入特殊按键（分发在 dispatcher 处理）
-        # 方向1 B1：0x05（Ctrl+E）加入 ctrl_key 集合（折叠键）
+        # 方向1 B1：0x05（Ctrl+E）加入 ctrl_key 集合（no-op）
         if byte in (0x04, 0x05, 0x07, 0x0c, 0x0e, 0x0f, 0x12, 0x14):  # Ctrl+D/E/G/L/N/O/R/T
             return KeyEvent(kind="ctrl_key", char=chr(byte), raw=raw)
         # 其他控制字符 → unknown
@@ -289,7 +288,7 @@ class InputParser:
                                 modifier=decoded.modifier, keycode=keycode, raw=raw)
             # 方向1 B1：CSI u Ctrl 字母解码扩展至 keycode 1-26（modifier=5），
             # 使 \x1b[5;5u（Ctrl+E）等小键码也映射 ctrl_key——真实增强键盘
-            # 协议终端以 keycode 而非 ASCII 字母发送 Ctrl 组合（修复折叠键
+            # 协议终端以 keycode 而非 ASCII 字母发送 Ctrl 组合（修复 Ctrl 组合
             # 经 CSI u 路径失效）。keycode 1-26 即 ASCII 控制码（Ctrl+X 编码
             # = X 在字母表中的位置），直接经 _decode_control_char 解码
             # （keycode=5 → 0x05 → ctrl_key '\x05'）。keycode 9/13 已在更早

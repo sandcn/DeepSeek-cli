@@ -32,6 +32,10 @@ def _render_children(model, width: int) -> list:
     for line in model.subagent_lines or []:
         if not line:
             continue
+        # 强制单行契约：来源字段（description/model_info/parse_info/tool detail
+        # 等）可能含 \n/\r，直接渲染会被终端按换行拆成两行——显示前转义为
+        # 字面量（与 _subagent_render.format_tool_record 语义一致）。
+        line = line.replace("\r", "\\r").replace("\n", "\\n")
         runs = truncate_runs(
             [StyledRun(r.text, r.style) for r in ansi_to_runs(line) if r.text],
             width,
