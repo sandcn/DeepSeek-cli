@@ -448,6 +448,17 @@ class TestInkBridgeCompat:
         bb.force_redraw()  # 不抛异常
         bb.set_active(False)  # no-op
 
+    def test_get_selected_completion_index(self):
+        """editmsg 依赖 get_selected_completion_index（导航后取当前索引）。"""
+        bb, model = bridge
+        bb.show_completions(["a", "b", "c"], 2, texts=["a", "b", "c"])
+        assert bb.get_selected_completion_index() == 2
+        bb.cycle_completion(-1)
+        assert bb.get_selected_completion_index() == 1
+        # hide 后返回隐藏前索引
+        bb.hide_completions()
+        assert bb.get_selected_completion_index() == 1
+
 
 class TestUserSelectSyncRender:
     """user_select 挂起期间补全弹窗同步渲染回归。

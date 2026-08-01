@@ -154,8 +154,17 @@ class InkBridge:
     def hide_completions(self) -> None:
         if not self._model.completion.visible:
             return
+        # 保存隐藏前选中索引（兼容 _BottomBar.get_selected_completion_index）
+        self._last_completion_idx = self._model.completion.selected
         self._model.completion = CompletionState()
         self._request_redraw()
+
+    def get_selected_completion_index(self) -> int:
+        """返回当前选中索引（可见时用选中；隐藏后用隐藏前索引）。"""
+        c = self._model.completion
+        if c.visible and c.items:
+            return c.selected
+        return getattr(self, "_last_completion_idx", 0)
 
     def cycle_completion(self, delta: int = 1) -> int:
         c = self._model.completion
