@@ -448,7 +448,7 @@ class TestInkBridgeCompat:
         bb.force_redraw()  # 不抛异常
         bb.set_active(False)  # no-op
 
-    def test_get_selected_completion_index(self):
+    def test_get_selected_completion_index(self, bridge):
         """editmsg 依赖 get_selected_completion_index（导航后取当前索引）。"""
         bb, model = bridge
         bb.show_completions(["a", "b", "c"], 2, texts=["a", "b", "c"])
