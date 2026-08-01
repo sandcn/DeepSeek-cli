@@ -269,7 +269,7 @@ class AppModel:
     # ── 工具 box（每工具一个，增量刷新） ────────────
 
     def open_tool_box(self, tool_id: str, tool_name: str, detail: str = "") -> ChatBlock:
-        """打开一个工具 box：标题行立即显示，输出增量追加。"""
+        """打开一个工具分组：标题行立即显示，输出增量追加（无边框）。"""
         from src.tui.core.style import Style
         from src.renderer.ansi.helpers import AnsiLine
         from src.tools.registry import get_tool_display_name
@@ -277,9 +277,9 @@ class AppModel:
         block = self.append_block("tool")
         block.extra["tool_id"] = tool_id or ""
         block.extra["tool_name"] = tool_name
-        title = f"  \u250c\u2500 {display} \u2500\u2510"
+        title = f"  \u00b7 {display}"
         if detail:
-            title = f"  \u250c\u2500 {display} \u00b7 {detail} \u2500\u2510"
+            title = f"  \u00b7 {display} \u00b7 {detail}"
         block.lines.append(AnsiLine.of(title, Style(fg=23, bold=True)))
         self._current_tool_box = block
         self.tool_boxes[tool_id or self._next_tool_id()] = block
@@ -287,31 +287,27 @@ class AppModel:
         return block
 
     def append_tool_output(self, tool_id: str, text: str) -> None:
-        """追加工具输出行到对应 box（增量提交）。"""
+        """追加工具输出行到对应分组（增量提交，无边框）。"""
         from src.tui.core.style import Style
         from src.renderer.ansi.helpers import AnsiLine
         block = self.tool_boxes.get(tool_id) or self._current_tool_box
         if block is None:
             block = self.open_tool_box(tool_id, "")
-        line = AnsiLine.of("  \u2502 ", Style(fg=242))
         for seg in text.split("\n"):
-            l = AnsiLine.of("  \u2502 ", Style(fg=242))
+            l = AnsiLine.of("  ", Style(fg=242))
             l.append(seg)
             block.lines.append(l)
         self.commit_open_block(block)
 
     def close_tool_box(self, tool_id: str, success: bool) -> None:
-        """关闭工具 box：追加状态底行并提交。"""
+        """关闭工具分组：追加状态行并提交（无边框）。"""
         from src.tui.core.style import Style
         from src.renderer.ansi.helpers import AnsiLine
         block = self.tool_boxes.pop(tool_id, None) or self._current_tool_box
         if block is None:
             return
         status = "\u2714" if success else "\u2716"
-        block.lines.append(AnsiLine.of(
-            f"  \u2570\u2500 {status} \u2500\u2518",
-            Style(fg=41 if success else 196),
-        ))
+        block.lines.append(AnsiLine.of(f"  {status}", Style(fg=41 if success else 196)))
         block.closed = True
         self.commit_block(len(self.blocks) - 1)
         if self._current_tool_box is block:

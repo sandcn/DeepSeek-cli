@@ -195,18 +195,20 @@ class TestContentChannel:
 
 
 class TestToolBox:
-    """每工具一个 box（打开/增量输出/关闭）。"""
+    """每工具一个分组（无边框：标题圆点 + 缩进输出 + 状态行，增量刷新）。"""
 
     def test_tool_open_creates_box(self):
         m = _model()
         apply_cmd(m, ToolOpenCmd(tool_name="read_file", tool_id="t1"))
         block = m.blocks[-1]
         assert block.kind == "tool"
-        assert block.lines[0].plain.startswith("  ┌─")
+        assert block.lines[0].plain.startswith("  · ")
+        # 无边框字符
+        assert not any(ch in block.lines[0].plain for ch in "┌─┐│╰╯")
         # 显示名（get_tool_display_name 缩写）
         from src.tools.registry import get_tool_display_name
         assert get_tool_display_name("read_file") in block.lines[0].plain
-        assert block.closed is False  # 开放 box
+        assert block.closed is False  # 开放分组
 
     def test_tool_output_appends_to_box(self):
         m = _model()
@@ -219,12 +221,12 @@ class TestToolBox:
         assert "line2" in block.lines[2].plain
 
     def test_tool_output_auto_opens_box(self):
-        """无 ToolOpen 的输出自动创建 box（兼容）。"""
+        """无 ToolOpen 的输出自动创建分组（兼容）。"""
         m = _model()
         apply_cmd(m, ToolOutputCmd(text="running X"))
         block = m.blocks[-1]
         assert block.kind == "tool"
-        assert block.lines[0].plain.startswith("  ┌─")
+        assert block.lines[0].plain.startswith("  · ")
 
     def test_tool_close_commits_box(self):
         m = _model()
@@ -233,8 +235,9 @@ class TestToolBox:
         apply_cmd(m, ToolCloseCmd(tool_id="t1", success=True))
         block = m.blocks[-1]
         assert block.closed is True
-        assert block.lines[-1].plain.startswith("  ╰─")
-        assert "✔" in block.lines[-1].plain
+        assert block.lines[-1].plain.strip() == "✔"
+        # 无边框字符
+        assert not any(ch in block.lines[-1].plain for ch in "┌─┐│╰╯")
 
     def test_tool_close_fail(self):
         m = _model()
