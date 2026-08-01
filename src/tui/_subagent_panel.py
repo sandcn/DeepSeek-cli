@@ -202,6 +202,8 @@ class SubAgentPanelController:
         self._state_lock = threading.RLock()
         self._frame: int = 0
         self._last_emit_time: float = 0.0
+        # 上一推送帧（变更检测，避免空转推送）
+        self._last_pushed_frame: List[str] | None = None
         self._active: bool = False
         self._cb_registered: bool = False
         self._chat_ui: Any = None
@@ -467,7 +469,11 @@ class SubAgentPanelController:
             self._register_panel_refresh()
         try:
             lines = self._render_frame()
-            self._push_frame(lines)
+            # ★ 变更检测：帧无变化时跳过推送（避免空转 keep-alive 推送使
+            #   render 循环持续置脏 → 空闲 CPU 100%）
+            if lines != self._last_pushed_frame:
+                self._last_pushed_frame = list(lines)
+                self._push_frame(lines)
         except Exception:
             _logger.debug("_panel_refresh 异常", exc_info=True)
         self._frame += 1

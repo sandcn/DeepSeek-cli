@@ -145,6 +145,9 @@ class InkSession:
         self._cmd_queue_dropped: int = 0
         self._render_crashed: threading.Event = threading.Event()
         self._last_bottom_redraw: float = 0.0
+        # ★ 脏标记：模型有变更（命令应用/输入/重绘请求）时置位，
+        #   空闲时跳过渲染（避免 10Hz 全量重建整棵树 → CPU 100%）
+        self._dirty: bool = False
         self._recover_attempts: int = 0
         self._recovering_event: threading.Event = threading.Event()
         self._render_version: int = 0
@@ -230,6 +233,7 @@ class InkSession:
 
     def request_bottom_redraw(self) -> None:
         self._bottom_redraw_requested.set()
+        self._dirty = True
         self._cmd_event.set()
         # ★ render 线程停止时（suspend 期间交互工具如 user_select），
         #   同步渲染一帧使补全弹窗立即可见——否则模型更新无人渲染。
@@ -250,8 +254,9 @@ class InkSession:
         self._request_render()
 
     def _request_render(self) -> None:
-        """请求下一帧渲染。"""
+        """请求下一帧渲染（标记脏 + 唤醒循环）。"""
         self._bottom_redraw_requested.set()
+        self._dirty = True
         self._cmd_event.set()
 
     def _schedule_render(self) -> None:
@@ -272,6 +277,7 @@ class InkSession:
         self._render_running = True
         # 请求首帧渲染：resume 后立即重绘（prev 已重置 → 全量写入）
         self._bottom_redraw_requested.set()
+        self._dirty = True
         self._cmd_event.set()
         self._render_thread = threading.Thread(target=self._render, daemon=True)
         self._render_thread.start()
@@ -414,17 +420,24 @@ class InkSession:
             return changed
 
     def _should_render(self, changed: bool) -> bool:
-        """是否需渲染本帧：固定 10Hz（render_interval=0.1s）批处理。
+        """是否需渲染本帧：脏标记 + 10Hz 拍批处理。
 
-        窗口内到达的事件（命令/重绘请求）只唤醒循环并**应用到模型**
-        （_drain_queue 的 _apply_commands 已先执行），不单独触发渲染——
-        与下一个 10Hz 拍一起渲染（批处理）。``changed`` 参数保留兼容调用，
-        但不参与渲染决策。
+        事件（命令/重绘请求）标记脏并唤醒循环，但不立即渲染——与下一个
+        10Hz 拍一起渲染（批处理）。**空闲（无脏）时跳过渲染**，避免固定
+        10Hz 全量重建整棵聊天树（大历史下 CPU 100%）。
+
+        Returns:
+            True — 本拍渲染（脏且 render_interval 已到期）。
         """
         now = time.monotonic()
-        # 清除 pending 重绘标志（不单独触发；由 10Hz 拍统一渲染）
+        force = self._bottom_redraw_requested.is_set()
         self._bottom_redraw_requested.clear()
+        if changed:
+            self._dirty = True  # 本批命令已应用 → 标记脏
+        if not (self._dirty or force):
+            return False  # 空闲且无变化：跳过渲染（CPU ~0）
         if now - self._last_bottom_redraw >= self._config.render_interval:
+            self._dirty = False
             self._last_bottom_redraw = now
             return True
         return False

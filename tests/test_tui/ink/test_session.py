@@ -307,29 +307,47 @@ class TestDrainQueue:
 
 
 class TestEventBatching:
-    """窗口内事件批处理（不单独渲染，等 10Hz 拍）。"""
+    """脏标记 + 窗口内事件批处理（不单独渲染，等 10Hz 拍；空闲跳过渲染）。"""
 
     def test_event_within_window_waits_for_tick(self):
-        """事件到达但 render_interval 未到期 → 不渲染。"""
+        """事件到达但 render_interval 未到期 → 不渲染（等待批处理）。"""
         import time
         s = _make_session()
         s._last_bottom_redraw = time.monotonic()
         assert s._should_render(changed=True) is False, "窗口内事件不应立即渲染"
 
     def test_tick_renders_batched_events(self):
-        """render_interval 到期 → 渲染（批处理窗口内全部事件）。"""
+        """脏且 render_interval 到期 → 渲染（批处理窗口内全部事件）。"""
         import time
         s = _make_session()
         s._last_bottom_redraw = time.monotonic()
         time.sleep(s._config.render_interval + 0.01)
         assert s._should_render(changed=True) is True, "10Hz 拍应渲染"
 
-    def test_no_render_before_interval(self):
+    def test_idle_no_render(self):
+        """空闲（无变化）→ 跳过渲染（避免 CPU 100%）。"""
         s = _make_session()
         s._last_bottom_redraw = 0.0
-        # 初始立即渲染（last=0 → now-0 >= interval）
+        assert s._should_render(changed=False) is False, "无脏变化不应渲染"
+
+    def test_dirty_initial_render(self):
+        """脏标记且间隔到期 → 渲染并清除脏。"""
+        s = _make_session()
+        s._dirty = True
+        s._last_bottom_redraw = 0.0
         assert s._should_render(changed=False) is True
-        # 刚渲染后未到期 → 不渲染
+        assert s._dirty is False
+        # 渲染后未到期且已清除脏 → 不再渲染
+        assert s._should_render(changed=False) is False
+
+    def test_render_clears_dirty(self):
+        """渲染后清除脏标记（后续空闲不再渲染）。"""
+        import time
+        s = _make_session()
+        s._dirty = True
+        s._last_bottom_redraw = time.monotonic() - s._config.render_interval - 0.01
+        assert s._should_render(changed=False) is True
+        assert s._dirty is False
         assert s._should_render(changed=False) is False
 
 
