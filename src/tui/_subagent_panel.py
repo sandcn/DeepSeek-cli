@@ -124,6 +124,10 @@ class SubAgentPanelController:
         self._last_emit_time: float = 0.0
         # PERF-2：面板脏标记（事件处理器更新状态后置位；渲染后复位）
         self._dirty: bool = False
+        # 方向2（节流丢帧补推）：_emit_frame 节流跳过时置位；_panel_refresh
+        # （每帧回调）检测到补推最新帧并清标志（修复前节流期事件丢弃，事件
+        # 期间最新状态可能延迟）。
+        self._pending_emit: bool = False
         # 上一推送帧（变更检测，避免空转推送）
         self._last_pushed_frame: List[str] | None = None
         self._active: bool = False
@@ -209,11 +213,17 @@ class SubAgentPanelController:
         调用此函数时调用方不应持有 _state_lock。
         _render_frame 内部获取/释放锁，_push_frame 在锁外调用。
         违反此顺序可能导致 render 线程等待 _state_lock 时形成 ABBA 死锁。
+
+        方向2（节流丢帧补推）：节流跳过时置位 ``_pending_emit``——由
+        ``_panel_refresh``（每帧回调）在下一帧补推最新状态（修复前节流期间
+        事件丢弃，事件期间最新状态可能延迟）。
         """
         now = time.time()
         if now - self._last_emit_time < self._EMIT_INTERVAL:
-            return  # 节流，跳过本次渲染
+            self._pending_emit = True  # 节流，跳过本次渲染 + 标记待补推
+            return
         self._last_emit_time = now
+        self._pending_emit = False
         lines = self._render_frame()
         self._push_frame(lines)
         # P3-13：推送成功后同步 _last_pushed_frame（与 _panel_refresh 变更检测
@@ -347,8 +357,9 @@ class SubAgentPanelController:
     def _panel_refresh(self) -> None:
         if not self._cb_registered:
             self._register_panel_refresh()
-        # ★ PERF-2：无事件且无动画需求时跳过全量渲染（避免每帧重建整个面板）
-        if not self._dirty and not self._needs_animation():
+        # ★ PERF-2：无事件、无动画需求且无待补推时跳过全量渲染（避免每帧
+        #   重建整个面板）；_pending_emit 置位（节流期丢帧）时绕过短路补推。
+        if not self._dirty and not self._needs_animation() and not self._pending_emit:
             return
         try:
             lines = self._render_frame()
@@ -362,6 +373,8 @@ class SubAgentPanelController:
         self._frame += 1
         # PERF-2：渲染后复位脏标记（后续空闲不再渲染）
         self._dirty = False
+        # 方向2（节流丢帧补推）：渲染后清除待补推标志（补推完成）
+        self._pending_emit = False
 
     # ── 帧渲染委托（实现迁移至 _subagent_render） ────
 

@@ -118,7 +118,11 @@ class _BottomBarCompatMixin:
 
     @_completion_idx.setter
     def _completion_idx(self, value: int) -> None:
-        self._model.completion.selected = int(value)
+        # 方向2（负索引越界修复）：setter 双向钳制到 [0, len(items)-1]——
+        # 修复前负值直接写入 selected（负索引越界）；items 空时钳 0。
+        items = self._model.completion.items
+        max_idx = max(0, len(items) - 1)
+        self._model.completion.selected = max(0, min(int(value), max_idx))
         self._request_redraw()
 
     @property

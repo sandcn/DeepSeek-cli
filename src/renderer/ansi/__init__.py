@@ -93,10 +93,32 @@ class AnsiStreamRenderer:
             self._engine.reset()
 
     def take_lines(self) -> list[AnsiLine]:
-        """取出全部已渲染行（消费缓冲）。"""
+        """取出全部已渲染行（消费缓冲）。
+
+        ★ 消毒残留原始 ANSI：markdown 源文本可能透传输入里的原始转义序列
+        （如子代理结果内嵌 read_file 高亮、模型原文）。保留进 ``Run.text``
+        会让宽度测量把转义码当可见字符（宽度膨胀 → 误触发 wrap），
+        ``wrap_line`` 逐字符截断把转义序列拦腰截断（残留 ``;49;00m``）渲染
+        错乱。输出统一消毒——先剥完整合法序列，再移除残留孤立 ESC（防注入）；
+        无 ESC 时零拷贝原样返回（fast path）。
+        """
         lines = self._lines
         self._lines = []
-        return lines
+        if not any("\x1b" in (r.text or "") for line in lines for r in line.runs):
+            return lines
+        from .helpers import strip_ansi as _strip_ansi
+        out: list[AnsiLine] = []
+        for line in lines:
+            if not any("\x1b" in (r.text or "") for r in line.runs):
+                out.append(line)
+                continue
+            clean = AnsiLine()
+            for r in line.runs:
+                t = _strip_ansi(r.text or "").replace("\x1b", "")
+                if t:
+                    clean.append(t, r.style)
+            out.append(clean)
+        return out
 
     @property
     def lines(self) -> list[AnsiLine]:

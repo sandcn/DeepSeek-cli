@@ -117,9 +117,19 @@ class TuiAssembly:
 
     @staticmethod
     def _create_chat_domain():
-        """创建输入实例。"""
+        """创建输入实例。
+
+        方向2（无 TTY 兜底）：CI/管道/测试环境 stdin 无 ``fileno()``（抛
+        io.UnsupportedOperation/AttributeError）——回退 ``fd=0``（无数据即
+        返回），装配不崩溃（修复前 ``_create_chat_domain`` 直接崩溃）。
+        """
+        try:
+            fd = sys.stdin.fileno()
+        except (AttributeError, ValueError, OSError):
+            fd = 0
+            _logger.warning("stdin 无 fileno（无 TTY 环境），回退 fd=0")
         input_instance = Input(
-            fd=sys.stdin.fileno(),
+            fd=fd,
             history_file=INPUT_HISTORY_FILE,
         )
         return input_instance
@@ -135,6 +145,10 @@ class TuiAssembly:
         )
         # 输出历史：新增内容行回调 tracker.track
         session._ink_renderer.set_line_callback(line_tracker.track)
+        # 方向2（输出历史落盘接线）：tracker 引用注入 session——TuiLifecycle
+        # stop 流程经 ``session._line_tracker`` 调用 close()（flush 剩余行 +
+        # 停止 daemon 刷盘定时器），修复 _flush_history 无生产调用方。
+        session._line_tracker = line_tracker
         # ★ 注入 Input：render 循环的 _phase_process_input 需调用 process_events()
         #   读取 stdin——未注入则输入完全无效（用户无法输入）。
         session.set_input(input_instance)

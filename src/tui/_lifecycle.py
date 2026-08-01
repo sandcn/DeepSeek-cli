@@ -90,10 +90,25 @@ class TuiLifecycle:
                             "start: unsubscribe %s 失败",
                             event_type.__name__, exc_info=True,
                         )
+            subscribed: list[tuple[type, Callable]] = []
             for event_type in self._bound_handlers:
-                self._bus.subscribe(
-                    self._bound_handlers[event_type], event_type=event_type,
-                )
+                handler = self._bound_handlers[event_type]
+                try:
+                    self._bus.subscribe(handler, event_type=event_type)
+                    subscribed.append((event_type, handler))
+                except Exception:
+                    # 方向2（订阅回滚）：订阅中途失败 → 已订阅 handler 全部
+                    # 取消订阅 + _handlers_bound=False + 不启动 engine（回滚后
+                    # re-raise）——避免半订阅状态（下次 start 重复订阅）。
+                    for ev_type, h in subscribed:
+                        try:
+                            self._bus.unsubscribe(h, event_type=ev_type)
+                        except Exception:
+                            _logger.debug(
+                                "start 回滚取消订阅异常", exc_info=True,
+                            )
+                    self._handlers_bound = False
+                    raise
             self._handlers_bound = True
             # 高频事件批处理评估（2026-07-31）：**不启用**。
             # 上游 StreamChunkHandler 已有 100ms 节流（≤10Hz），33ms 批处理窗口
@@ -135,8 +150,28 @@ class TuiLifecycle:
                 self._safe_close_all(self._rs)
             # ★ 方向5：bb.teardown 为兼容层 no-op（_BottomBarCompatMixin），
             #   已删除——生命周期收敛为 engine.flush/stop 单一路径。
+            # 方向2（输出历史落盘接线）：停止时关闭 line tracker——flush 剩余
+            # 行到历史文件 + 停止 daemon 刷盘定时器（修复 _flush_history 无生产
+            # 调用方——停止时历史文件缺失末尾行 + daemon Timer 自重置泄漏）。
+            self._close_line_tracker()
             self._started = False
             self._bound_handlers = None
+
+    def _close_line_tracker(self) -> None:
+        """关闭输出历史 line tracker（flush 剩余行 + 停止 daemon 定时器）。
+
+        方向2（输出历史落盘接线）：line_tracker 经 ``_assembly`` 注入 engine
+        （``session._line_tracker``）；停止时调用 ``close()``（幂等）保证历史
+        文件含全部缓冲行且 daemon Timer 不再自重置泄漏。engine 无 tracker
+        引用（测试桩/旧装配）时跳过。
+        """
+        tracker = getattr(self._engine, "_line_tracker", None)
+        if tracker is None:
+            return
+        try:
+            tracker.close()
+        except Exception:
+            _logger.debug("line_tracker.close 异常", exc_info=True)
 
     @staticmethod
     def _safe_close_all(rs) -> None:

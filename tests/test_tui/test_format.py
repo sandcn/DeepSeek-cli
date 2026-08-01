@@ -35,6 +35,12 @@ class TestFormatDuration:
         # 负数按 <60s 分支：x.xs（与旧 status_bar 实现一致）
         assert format_duration(-5) == "-5.0s"
 
+    def test_inf_nan(self):
+        """方向2 — inf/NaN 防护：非有限值返回 "-"（修复前 OverflowError/ValueError）。"""
+        assert format_duration(float("inf")) == "-"
+        assert format_duration(float("-inf")) == "-"
+        assert format_duration(float("nan")) == "-"
+
 
 class TestFormatTokens:
     """format_tokens：原样数字 / k / M。"""

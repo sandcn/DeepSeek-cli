@@ -1109,3 +1109,143 @@ class TestDuplicateKeyWarning:
         r.render(root, el, 80, 24)
         texts = [f.props["children"] for f in _collect_hosts(root) if f.type == "text"]
         assert set(texts) == {"a", "b"}
+
+
+class TestMixedKeyedNoKeyConsumed:
+    """方向1 步骤3 — 混合 keyed/无 key 列表：已消费旧 fiber 不复用（防双父/环）。"""
+
+    def test_mixed_keyed_nokey_no_fiber_cycle_regression(self):
+        """keyed 元素消费旧节点后，无 key 元素不复用同一旧 fiber。
+
+        首帧：keyed A + 无 key B（旧链 [A, B]）；第二帧：keyed A2 + 无 key C。
+        修复前无 key 分支按 ``positional_idx`` 直接取 old_list[0]=A（已被
+        keyed A2 消费）→ 同一 fiber 双父（A.sibling=A 环）；修复后跳过已消费
+        节点 → 无 key C 复用 B（无环、无双父、props 正确）。
+        """
+        r = Reconciler()
+        root = r.create_root()
+        # 首帧：keyed A + 无 key B
+        r.render(root, h(BOX, None,
+            h(TEXT, {"key": "k1", "children": "A"}),
+            h(TEXT, {"children": "B"})), 80, 24)
+        old_texts = [f for f in _collect_hosts(root) if f.type == "text"]
+        old_a, old_b = old_texts[0], old_texts[1]
+        # 第二帧：keyed A2 + 无 key C
+        r.render(root, h(BOX, None,
+            h(TEXT, {"key": "k1", "children": "A2"}),
+            h(TEXT, {"children": "C"})), 80, 24)
+        texts = [f for f in _collect_hosts(root) if f.type == "text"]
+        assert texts[0] is old_a, "keyed A2 应复用旧 keyed A fiber"
+        assert texts[1] is old_b, "无 key C 应复用旧无 key B fiber（跳过已消费 A）"
+        assert texts[0].props["children"] == "A2"
+        assert texts[1].props["children"] == "C"
+        # BOX 两个直接子不同（无双父/环）
+        children = []
+        child = root.child.child
+        while child:
+            children.append(child)
+            child = child.sibling
+        assert len(children) == 2
+        assert children[0] is not children[1]
+
+    def test_mixed_keyed_consumed_no_revive_regression(self):
+        """keyed 分支：已消费旧节点（被前序无 key 元素消费）不复活。
+
+        首帧：keyed B + 无 key A（旧链 [B, A]）；第二帧：无 key C + keyed B2。
+        无 key C 按位置消费 old_list[0]=B（keyed 旧节点）→ consumed 含 B；
+        修复前 keyed B2 经 ``existing_map.pop("k2")`` 直接取回 B（已消费）→
+        同一 fiber 双父；修复后先 ``get`` + ``consumed`` 检查 → 已消费视为
+        None（新建 fiber，不复活）。
+        """
+        r = Reconciler()
+        root = r.create_root()
+        # 首帧：keyed B + 无 key A
+        r.render(root, h(BOX, None,
+            h(TEXT, {"key": "k2", "children": "B"}),
+            h(TEXT, {"children": "A"})), 80, 24)
+        old_texts = [f for f in _collect_hosts(root) if f.type == "text"]
+        old_b, old_a = old_texts[0], old_texts[1]
+        # 第二帧：无 key C + keyed B2
+        r.render(root, h(BOX, None,
+            h(TEXT, {"children": "C"}),
+            h(TEXT, {"key": "k2", "children": "B2"})), 80, 24)
+        texts = [f for f in _collect_hosts(root) if f.type == "text"]
+        # 无 key C 按位置消费旧 keyed B；keyed B2 不复用已消费旧 B（新建）
+        assert texts[0] is old_b, "无 key C 按索引匹配旧链首节点（keyed B）"
+        assert texts[0].props["children"] == "C"
+        assert texts[1] is not old_b, "已消费的旧 keyed fiber 不应复活（双父）"
+        assert texts[1].props["children"] == "B2"
+        assert texts[1] is not old_a
+        # 未消费旧 A 被标记删除
+        assert old_a.deleted is True
+
+
+class TestRouterIdReuse:
+    """方向1 步骤3 — input router 签名 id 复用修复（引用校验）。"""
+
+    def _capture(self):
+        from src.tui.ink.hooks import set_input_router_callback
+        captured = {}
+        set_input_router_callback(lambda router: captured.update(router=router))
+        return captured
+
+    def test_router_id_reuse_regression(self):
+        """id(handler) 复用：签名相同但 hooks 引用不同 → router 重建（不误命中）。
+
+        模拟 handler 被 GC 后新对象复用旧 id：篡改缓存为「签名一致 + hooks
+        引用不同」——缓存命中校验（逐一 is 比对 hook/handler）应失败 → 重建。
+        """
+        from src.tui.ink.hooks import use_input
+        captured = self._capture()
+        handler = MagicMock(return_value=False)
+
+        def Comp(props):
+            use_input(handler, True)
+            return h(TEXT, {"children": "x"})
+
+        try:
+            r = Reconciler()
+            root = r.create_root()
+            r.render(root, h(Comp), 80, 24)
+            old_cache = r._input_router_cache
+            assert old_cache is not None
+            old_signature, old_router, old_hooks = old_cache
+            # 篡改缓存：hooks 引用换成新对象（同 signature——模拟 id(handler)
+            # 复用导致签名误判未变，但引用已失效）
+            fake_hook = type(old_hooks[0])(
+                handler=lambda ev: False, is_active=True,
+            )
+            fake_hook.seq = old_hooks[0].seq  # 同 seq → 同签名
+            r._input_router_cache = (old_signature, old_router, [fake_hook])
+            # 再次渲染（真实 hook 引用 = old_hooks[0]）→ 签名命中但引用校验
+            # 失败 → 重建 router
+            r.render(root, h(Comp), 80, 24)
+            assert r._input_router_cache[1] is not old_router, (
+                "id 复用场景应重建 router（引用校验失败）"
+            )
+        finally:
+            from src.tui.ink.hooks import set_input_router_callback
+            set_input_router_callback(None)
+
+    def test_same_hooks_reuses_router_after_guard_regression(self):
+        """同 hooks 引用 + 同签名 → 仍复用 router（守卫不误杀正常缓存命中）。"""
+        from src.tui.ink.hooks import use_input
+        captured = self._capture()
+        handler = MagicMock(return_value=False)
+
+        def Comp(props):
+            use_input(handler, True)
+            return h(TEXT, {"children": "x"})
+
+        try:
+            r = Reconciler()
+            root = r.create_root()
+            r.render(root, h(Comp), 80, 24)
+            first_router = r._input_router_cache[1]
+            r.render(root, h(Comp), 80, 24)
+            assert r._input_router_cache[1] is first_router, (
+                "同 hooks 引用应复用 router（引用校验通过）"
+            )
+        finally:
+            from src.tui.ink.hooks import set_input_router_callback
+            set_input_router_callback(None)

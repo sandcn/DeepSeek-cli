@@ -119,6 +119,11 @@ class TestAnsiToRuns:
         style, reset = parse_sgr_params("0")
         assert reset is True
 
+    def test_parse_sgr_reset_leading_zero(self):
+        """Rich 输出 \x1b[39;49;00m 形式的重置——00 须视为重置（防样式泄漏）。"""
+        style, reset = parse_sgr_params("39;49;00")
+        assert reset is True
+
     def test_parse_sgr_truecolor(self):
         style, _ = parse_sgr_params("38;2;10;20;30")
         assert style.fg == (10, 20, 30)

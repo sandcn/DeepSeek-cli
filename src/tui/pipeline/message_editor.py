@@ -258,7 +258,9 @@ class MessageEditor:
             return False
 
         input_.set_suppress_enter(True)
-        orig_dismiss_cb = input_._dismiss_completion_callback
+        # 方向2（私有属性访问公开化）：dismiss 回调经公开 API 保存/替换/恢复
+        # （不直接读写 input_._dismiss_completion_callback 私有字段）。
+        orig_dismiss_cb = input_.get_dismiss_completion_callback()
 
         def _editmsg_dismiss():
             """自定义补全关闭回调 — 设置选择完成信号。
@@ -270,15 +272,15 @@ class MessageEditor:
             self._selection_confirmed = True
             self._selection_ready.set()
 
-        input_._dismiss_completion_callback = _editmsg_dismiss
+        input_.set_dismiss_completion_callback(_editmsg_dismiss)
 
         try:
             real_idx = self._interactive_message_select(
                 user_msgs, display_items,
             )
         finally:
-            # 恢复原始回调
-            input_._dismiss_completion_callback = orig_dismiss_cb
+            # 恢复原始回调（经公开 API）
+            input_.set_dismiss_completion_callback(orig_dismiss_cb)
             # ★ 先排空 stdin 残留字节（含 CR+LF 中的 \n），再恢复 Enter 抑制，
             #   防止竞态窗口内残留 \n 触发 _enter() 误消费 prefill
             try:
@@ -364,7 +366,9 @@ class MessageEditor:
 
                 # 追踪当前选中的 completion 索引
                 try:
-                    if bb.is_completion_visible():
+                    # 方向2（property 调用修复）：bb.is_completion_visible 为
+                    # property——修复前按方法调用抛 TypeError 中断选择轮询。
+                    if bb.is_completion_visible:
                         comp_idx = bb.get_selected_completion_index()
                         if 0 <= comp_idx < sel_count:
                             last_sel_idx = comp_idx

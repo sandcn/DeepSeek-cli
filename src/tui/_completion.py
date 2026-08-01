@@ -13,6 +13,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Callable
 import os
+import re
 
 if TYPE_CHECKING:
     from src.tui._completion_engine import CompletionEngine
@@ -186,14 +187,23 @@ def _apply_completion(
     """将补全结果应用到输入文本（模块级纯函数）。
 
     三阶段定位 orig_prefix 的替换位置：
-      1. rfind 全文搜索 — "最后一个匹配"语义天然对齐光标附近输入
+      1. 词边界匹配（(^|\\s) 前缀 + (?=\\s|$) 后缀）从尾部向前找——最后一个
+         完整词前缀命中（替换词前缀，保留词前空格）
       2. start_pos 裁剪回退 — 基于偏移量裁剪尾部后拼接
       3. 返回 repl_text — 兜底全替换
     """
     if orig_prefix:
-        idx = text.rfind(orig_prefix)
-        if idx >= 0:
-            return text[:idx] + repl_text
+        # 方向2（中间词误匹配修复）：rfind 会匹配中间词（如 "foo bar baz"
+        # 中 orig_prefix="ba" 命中 "bar" 中部）→ 丢弃后缀。改用词边界匹配
+        # 从尾部向前找——(^|\s) 前缀 + (?=\s|$) 后缀边界，仅替换完整词前缀
+        # （``text[:m.end(1)]`` 保留词前空格，与旧 rfind 语义一致）；未命中
+        # 边界匹配回退既有 start_pos 逻辑。
+        boundary_matches = list(
+            re.finditer(rf"(^|\s){re.escape(orig_prefix)}(?=\s|$)", text)
+        )
+        if boundary_matches:
+            m = boundary_matches[-1]
+            return text[:m.end(1)] + repl_text
 
     if start_pos < 0:
         trim_len = -start_pos

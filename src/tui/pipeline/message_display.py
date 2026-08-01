@@ -34,9 +34,16 @@ _DEFAULT_ROLE_MAP: dict[str, RoleConfig] = {
 
 
 def _content_str(content: Any) -> str:
-    """将 content（可能是 str 或 list[dict]）转换为纯文本字符串。"""
+    """将 content（可能是 str 或 list[dict]）转换为纯文本字符串。
+
+    ★ 消毒残留原始 ANSI：消息内容来自会话历史，可能透传工具输出里的转义序列。
+    保留进文本会让宽度测量把转义码当可见字符（宽度膨胀 → 误触发 wrap），
+    ``wrap_line`` 逐字符截断把转义序列拦腰截断（残留 ``;49;00m``）渲染错乱。
+    消息按统一角色色显示，消毒（剥完整合法序列 + 移除孤立 ESC）符合显示语义。
+    """
+    from src.tui.ink.helpers import strip_ansi as _strip_ansi
     if isinstance(content, str):
-        return content
+        return _strip_ansi(content).replace("\x1b", "")
     if isinstance(content, list):
         parts = []
         for c in content:
@@ -44,8 +51,8 @@ def _content_str(content: Any) -> str:
                 parts.append(str(c.get("text", c)))
             else:
                 parts.append(str(c))
-        return " ".join(parts)
-    return str(content)
+        return _strip_ansi(" ".join(parts)).replace("\x1b", "")
+    return _strip_ansi(str(content)).replace("\x1b", "")
 
 
 def _truncate(text: str, max_len: int) -> str:

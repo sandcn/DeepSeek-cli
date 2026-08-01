@@ -253,14 +253,27 @@ def render_frame(root: Fiber, width: int) -> Frame:
     #   遍历全部历史重建 Frame——修复长回答 + 子代理期间渲染线程持续重建
     #   整帧导致 CPU 100%。前缀未变时画布 committed 行被跳过（None），此处
     #   直接经缓存前缀拼接尾部。
+    #   方向1 步骤4（非顶部前缀守卫）：仅顶部（committed.layout_box.y == 0）
+    #   允许前缀直接拼接尾部——非顶部前缀与画布尾部重建偏移语义不一致时回退
+    #   全量（防御层，成本 O(1)）；非顶部前缀已由 ``chat_view._paint`` 跳过
+    #   画布写入，回退全量前将前缀行填入画布对应区域（box.y 起）保证 committed
+    #   行不丢失。
     committed = _find_committed_chat(root)
     if committed is not None:
         prefix_info = getattr(committed, "_committed_prefix", None)
         if prefix_info is not None:
+            committed_box = committed.layout_box
             prefix = prefix_info[1]
-            tail_start = min(len(prefix), len(canvas))
-            tail = [_canvas_row_to_line(r) for r in canvas[tail_start:]]
-            return Frame(prefix + tail)
+            if committed_box is not None and committed_box.y == 0:
+                tail_start = min(len(prefix), len(canvas))
+                tail = [_canvas_row_to_line(r) for r in canvas[tail_start:]]
+                return Frame(prefix + tail)
+            # 非顶部：前缀行填入画布对应区域（_paint 命中缓存已跳过画布写入）
+            y0 = committed_box.y if committed_box is not None else 0
+            for j, line in enumerate(prefix):
+                row = y0 + j
+                if 0 <= row < len(canvas):
+                    canvas[row] = line
     return Frame(_canvas_row_to_line(row) for row in canvas)
 
 

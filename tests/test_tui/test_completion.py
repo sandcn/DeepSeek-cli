@@ -182,6 +182,72 @@ class TestApplyCompletion:
         result = _apply_completion("old", "new text", 0, "")
         assert result == "new text"
 
+    def test_apply_completion_boundary_no_suffix_loss_regression(self):
+        """方向2 — 中间词不误匹配（词边界匹配）：orig_prefix="ba" 不命中 "bar" 中部。
+
+        修复前 rfind 匹配中间词 → 丢弃后缀（"bar baz" → "ba" 命中 "bar" 中部）。
+        """
+        from src.tui._completion import _apply_completion
+
+        # "bar" 中部无词边界（前面是 b 前无空格/起始）→ 不误命中
+        result = _apply_completion("foo bar baz", "beta", -2, "ba")
+        # 回退 start_pos 逻辑：-2 → 裁剪末尾 2 字符（"az"）→ "foo bar b" + "beta"
+        assert result == "foo bar bbeta"
+
+    def test_apply_completion_last_word_boundary_regression(self):
+        """方向2 — 最后一个词（尾部优先）边界命中保持 rfind 语义（保留词前空格）。"""
+        from src.tui._completion import _apply_completion
+
+        # "ls foo ls "：最后一个 "ls" 为词边界（前有空格 + 后有空格/结尾）
+        result = _apply_completion("ls foo ls ", "ls_cmd", -2, "ls")
+        assert result == "ls foo ls_cmd"
+
+    def test_apply_completion_start_boundary_regression(self):
+        """方向2 — 前缀位于行首（^ 边界）时全替换。"""
+        from src.tui._completion import _apply_completion
+
+        result = _apply_completion("ls", "ls_cmd", -2, "ls")
+        assert result == "ls_cmd"
+
+
+class TestPathCompletionGlobEscape:
+    """方向2 — _complete_path glob 通配符转义（前缀含 []? 按字面匹配）。"""
+
+    def test_path_completion_glob_escape_regression(self, tmp_path):
+        """前缀含 `[` 时按字面匹配（不解释为通配符）。"""
+        import os
+        from src.tui._completion_engine import CompletionEngine
+
+        # 构造两个文件：字面 "a[1].txt" 与 "a1.txt"（通配误匹配场景）
+        (tmp_path / "a[1].txt").write_text("x")
+        (tmp_path / "a1.txt").write_text("y")
+
+        engine = CompletionEngine()
+        # 前缀 "a[1" → 修复前被 glob 解释为字符类 → 匹配 a1.txt（误命中）
+        prefix = os.path.join(str(tmp_path), "a[1")
+        items = engine._complete_path(prefix)
+        names = [i.display for i in items]
+        assert "a[1].txt" in names, (
+            f"字面前缀应命中 a[1].txt，实际 {names}"
+        )
+        assert "a1.txt" not in names, (
+            f"通配误匹配应被转义阻断，实际 {names}"
+        )
+
+    def test_path_completion_normal_unchanged_regression(self, tmp_path):
+        """正常路径补全不受转义影响（前缀无通配符）。"""
+        import os
+        from src.tui._completion_engine import CompletionEngine
+
+        (tmp_path / "normal.txt").write_text("x")
+        (tmp_path / "other.md").write_text("y")
+
+        engine = CompletionEngine()
+        prefix = os.path.join(str(tmp_path), "norm")
+        items = engine._complete_path(prefix)
+        names = [i.display for i in items]
+        assert names == ["normal.txt"]
+
 
 class TestThemeParamCompletion:
     """/theme 参数补全测试 — 验证返回真实主题名（幽灵导入修复回归）。"""
@@ -194,9 +260,10 @@ class TestThemeParamCompletion:
         items = engine.complete("/theme")
         names = [item.text for item in items]
         # CommandUiAdapter.get_theme_names_with_desc 返回真实主题名（dark/light/high-contrast）
-        assert "dark" in names
-        assert "light" in names
-        assert "high-contrast" in names
+        # 方向2（命令前缀保留）：无参数分支候选为完整替换串 "/theme <name>"
+        assert "/theme dark" in names
+        assert "/theme light" in names
+        assert "/theme high-contrast" in names
 
     def test_theme_completion_item_type(self):
         """/theme 补全项类型应为 param。"""
@@ -206,6 +273,62 @@ class TestThemeParamCompletion:
         items = engine.complete("/theme")
         assert items
         assert all(item.item_type == "param" for item in items)
+
+
+class TestParamCompletionKeepsCommandPrefix:
+    """方向2 — _complete_param 无参数分支保留命令前缀（修复前 /model 被替换为纯参数）。"""
+
+    def test_param_completion_keeps_command_prefix_regression(self):
+        """/model Tab 确认后缓冲为 /model <param>（命令前缀保留）。"""
+        import time
+        from src.tui._completion_engine import CompletionEngine
+
+        engine = CompletionEngine()
+        engine._models_cache._value = ["deepseek-chat", "deepseek-reasoner"]
+        engine._models_cache._expires = time.monotonic() + 100
+
+        items = engine._complete_param("/model")
+        assert items
+        # 候选为完整替换串（命令前缀 + 空格 + 参数）
+        assert items[0].text.startswith("/model ")
+        assert items[0].start_pos == 0
+        # 应用后保留命令前缀（_apply_completion start_pos==0 → 全替换为候选串）
+        from src.tui._completion import _apply_completion
+        applied = _apply_completion("/model", items[0].text, items[0].start_pos, "")
+        assert applied == "/model deepseek-chat"
+
+    def test_theme_param_keeps_command_prefix_regression(self):
+        """/theme Tab 确认后缓冲为 /theme <name>（命令前缀保留）。"""
+        from src.tui._completion_engine import CompletionEngine
+        from src.tui._completion import _apply_completion
+
+        engine = CompletionEngine()
+        items = engine._complete_param("/theme")
+        assert items
+        assert all(i.start_pos == 0 for i in items)
+        assert items[0].text.startswith("/theme ")
+        applied = _apply_completion("/theme", items[0].text, items[0].start_pos, "")
+        assert applied.startswith("/theme ")
+
+    def test_load_param_keeps_command_prefix_regression(self):
+        """/load Tab 确认后缓冲为 /load <sid>（命令前缀保留）。"""
+        import time
+        from src.tui._completion_engine import CompletionEngine
+        from src.tui._completion import _apply_completion
+
+        engine = CompletionEngine()
+        engine._sessions_cache._value = [
+            {"id": "sess-0001-aaaa", "title": "调研"},
+            {"id": "sess-0002-bbbb", "title": "测试"},
+        ]
+        engine._sessions_cache._expires = time.monotonic() + 100
+
+        items = engine._complete_param("/load")
+        assert items
+        assert all(i.start_pos == 0 for i in items)
+        assert items[0].text.startswith("/load ")
+        applied = _apply_completion("/load", items[0].text, items[0].start_pos, "")
+        assert applied.startswith("/load ")
 
 
 class TestCompletionShowDedup:
@@ -483,13 +606,16 @@ class TestLoadSessionCompletion:
         assert texts == ["sess-abc", "abc-文档"]
 
     def test_load_empty_prefix_keeps_order_regression(self):
-        """/load（无参数）→ 空前缀保持注册表顺序。"""
+        """/load（无参数）→ 空前缀保持注册表顺序。
+
+        方向2（命令前缀保留）：无参数分支候选为完整替换串 ``/load <sid>``。
+        """
         engine = self._engine_with_sessions([
             {"id": "b-id", "title": "B"},
             {"id": "a-id", "title": "A"},
         ])
         items = engine._complete_param("/load")
-        assert [i.text for i in items] == ["b-id", "a-id"]
+        assert [i.text for i in items] == ["/load b-id", "/load a-id"]
 
 
 class TestCommandDescription:

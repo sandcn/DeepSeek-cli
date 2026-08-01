@@ -249,6 +249,42 @@ class TestToolBox:
         assert not any("b1" in p or "b2" in p for p in t1_plains)
         assert not any("a1" in p or "a2" in p for p in t2_plains)
 
+    def test_append_tool_output_parses_ansi_into_runs(self):
+        """工具输出含 ANSI 高亮序列（read_file 经 Rich 上屏）→ 解析为带样式
+        Run，宽度测量不含转义码，wrap 不会截断转义序列（防 ;49;00m 残留）。"""
+        m = _model()
+        # Rich 风格 TrueColor 高亮：\x1b[38;2;R;G;B;49m...\x1b[0m
+        raw = "\x1b[38;2;102;217;239;49mdef\x1b[0m\x1b[38;2;248;248;242;49m f()\x1b[0m"
+        m.open_tool_box("t1", "read_file")
+        m.append_tool_output("t1", raw + "\n")
+        block = m.tool_boxes["t1"]
+        line = block.lines[1]
+        # 转义序列已解析为样式：run.text 不含 \x1b 字符
+        assert "\x1b" not in line.plain
+        assert "def f()" in line.plain
+        # 宽度按可见字符测量（不含转义码），超宽 wrap 不会产出残缺转义片段
+        assert line.width == len("def f()") + 2  # 前缀 "  "
+        styled = [r for r in line.runs if r.style is not None and r.style.fg == (102, 217, 239)]
+        assert styled and styled[0].text == "def"
+
+    def test_append_tool_output_ansi_wrap_keeps_sequences_intact(self):
+        """ANSI 工具输出超宽 wrap 后，渲染结果不含裸露的转义残留片段。"""
+        import re as _re
+        m = _model()
+        m.width = 8
+        raw = (
+            "\x1b[38;2;102;217;239;49mdef\x1b[0m\x1b[38;2;248;248;242;49m f()\x1b[0m"
+            + "A" * 40
+        )
+        m.open_tool_box("t1", "read_file")
+        m.append_tool_output("t1", raw + "\n")
+        m.close_tool_box("t1", True)
+        # 经 _block_to_ink_lines 提交到 committed_lines → 行级 wrap 后渲染
+        rendered = "\n".join(l.render() for l in m.committed_lines)
+        stripped = _re.sub(r"\x1b\[[0-9;?]*[A-Za-z]", "", rendered)
+        for frag in (";49", ";00m", ";49m", "8;248"):
+            assert frag not in stripped, f"wrap 残留残缺转义片段 {frag!r}: {stripped!r}"
+
     def test_append_tool_output_unknown_id_creates_anonymous_box(self):
         """未知 tool_id 追加 → 创建匿名 box 且输出不丢。"""
         m = _model()
@@ -408,6 +444,18 @@ class TestDisplayMsgs:
         apply_cmd(m, DisplayMsgsCmd(messages=[{"role": "user", "content": "m1"}], speed=0))
         assert m.blocks[-1].kind == "write_line"  # 分隔线
         assert m.blocks[-2].kind == "user"
+
+    def test_display_messages_strips_raw_ansi(self):
+        """会话历史消息内容透传 ANSI → _content_str 消毒（防宽度膨胀/wrap 截断）。"""
+        m = _model()
+        raw = "hi \x1b[38;2;102;217;239;49mdef\x1b[0m tail"
+        apply_cmd(m, DisplayMsgsCmd(
+            messages=[{"role": "user", "content": raw}], speed=0,
+        ))
+        user_block = next(b for b in m.blocks if b.kind == "user")
+        # run.text 无 ESC，宽度按可见字符测量
+        assert "\x1b" not in user_block.lines[-1].plain
+        assert user_block.lines[-1].width == len(user_block.lines[-1].plain)
 
 
 class TestToolCardState:

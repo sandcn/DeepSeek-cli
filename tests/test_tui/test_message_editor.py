@@ -481,8 +481,8 @@ class TestEditmsgBackspaceNoConfirm:
             inp = Input(fd=fd, history_file=tmp_path / "history")
             inp.set_suppress_enter(True)
             selection_ready = threading.Event()
-            # 模拟 message_editor._editmsg_dismiss 替换
-            inp._dismiss_completion_callback = lambda: selection_ready.set()
+            # 模拟 message_editor._editmsg_dismiss 替换（经公开 API，方向2）
+            inp.set_dismiss_completion_callback(lambda: selection_ready.set())
             inp.handle_chars("hello")
             # backspace 不提前确认
             inp._dispatch_key_event(KeyEvent(kind="backspace"))
@@ -505,9 +505,77 @@ class TestEditmsgBackspaceNoConfirm:
             inp = Input(fd=fd, history_file=tmp_path / "history")
             inp.set_suppress_enter(True)
             selection_ready = threading.Event()
-            inp._dismiss_completion_callback = lambda: selection_ready.set()
+            # 模拟 message_editor._editmsg_dismiss 替换（经公开 API，方向2）
+            inp.set_dismiss_completion_callback(lambda: selection_ready.set())
             inp.handle_chars("hello")
             inp._dispatch_key_event(KeyEvent(kind="home"))
             assert not selection_ready.is_set()
+        finally:
+            os.close(fd)
+
+
+class TestCompletionVisiblePropertyAndPublicApi:
+    """方向2 — is_completion_visible property 调用修复 + dismiss 回调公开 API 收敛。"""
+
+    def test_is_completion_visible_property_regression(self):
+        """is_completion_visible 为 property 时轮询路径不抛 TypeError（修复前按方法调用）。"""
+        from unittest.mock import MagicMock
+
+        from src.tui.pipeline.message_editor import MessageEditor
+
+        class _FakeBB:
+            def __init__(self):
+                self._visible = True
+
+            @property
+            def is_completion_visible(self):
+                return self._visible
+
+            def show_completions(self, items, selected_idx, **kw):
+                pass
+
+            def hide_completions(self):
+                pass
+
+            def get_selected_completion_index(self):
+                return 0
+
+        class _FakeInput:
+            interrupted = False
+
+        editor = MessageEditor(bottom_bar=_FakeBB(), input_=_FakeInput())
+        # 轮询路径：_selection_ready.wait 首次超时（False）→ 进入 is_completion_visible
+        # 轮询；第二次 True → 退出循环（返回选中索引）。
+        editor._selection_ready.wait = MagicMock(side_effect=[False, True])
+        # 时间：deadline 计算（100.0）+ 循环检查两次（200.0 < 220 → 进入循环）
+        mock_monotonic = MagicMock(side_effect=[100.0, 200.0, 200.0])
+
+        import src.tui.pipeline.message_editor as me_mod
+        with patch.object(me_mod.time, "monotonic", mock_monotonic):
+            user_msgs = [
+                (0, {"role": "user", "content": "m0"}),
+                (1, {"role": "user", "content": "m1"}),
+            ]
+            display_items = ["0. \u25cf \u2502 m0", "1. \u25cf \u2502 m1"]
+            result = editor._interactive_message_select(user_msgs, display_items)
+
+        # 修复前 `bb.is_completion_visible()` 抛 TypeError → 捕获返回 None；
+        # 修复后属性访问正常 → 返回追踪到的选中索引 0
+        assert result == 0
+
+    def test_dismiss_callback_public_api_regression(self, tmp_path):
+        """Input 公开 get/set_dismiss_completion_callback 收敛私有字段访问（message_editor 使用）。"""
+        import os
+
+        from src.tui.input import Input
+
+        fd = os.open("/dev/null", os.O_RDONLY)
+        try:
+            inp = Input(fd=fd, history_file=tmp_path / "history")
+            cb = lambda: None  # noqa: E731
+            inp.set_dismiss_completion_callback(cb)
+            assert inp.get_dismiss_completion_callback() is cb
+            # 与 dispatcher 私有字段同一引用（getter 读同一回调）
+            assert inp._dispatcher._dismiss_completion_callback is cb
         finally:
             os.close(fd)

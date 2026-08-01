@@ -867,6 +867,15 @@ class Input:
         """
         self._dispatcher.set_dismiss_completion_callback(cb)
 
+    def get_dismiss_completion_callback(self):
+        """获取补全弹窗关闭回调（委托 InputDispatcher；公开访问器）。
+
+        方向2（私有属性访问公开化）：与 ``set_dismiss_completion_callback``
+        对称——message_editor 保存/恢复 dismiss 回调经公开 API（不直接读写
+        私有字段）。
+        """
+        return self._dispatcher.get_dismiss_completion_callback()
+
     def set_completion_navigate_callback(self, cb) -> None:
         """设置补全弹窗上下导航回调。
 

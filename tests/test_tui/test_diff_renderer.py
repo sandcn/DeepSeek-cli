@@ -37,12 +37,16 @@ class TestSanitizeAnsi:
         assert _sanitize_ansi("") == ""
 
     def test_removes_csi_sequences(self):
-        """CSI 序列（\x1b[...m 等）的 ESC 被移除，剩余文本成为无害字面量。"""
+        """CSI 序列（\x1b[...m 等）的 ESC 与序列体被移除（方向1 步骤2 语义）。
+
+        修复前仅移除 ESC 字符（残留 ``[31m`` 字面量）；修复后经统一
+        ``strip_ansi`` 剥离完整序列（CSI 参数 + 最终字节一并移除），
+        再兜底移除孤立 ESC——更干净的消毒（无残留序列体垃圾字面量）。
+        """
         result = _sanitize_ansi("\x1b[31mred\x1b[0m")
-        # ESC 被移除，CSI 括号序列成为无害文本
         assert '\x1b' not in result
         assert "red" in result
-        assert result == "[31mred[0m"
+        assert result == "red"
 
     def test_removes_osc_sequences(self):
         """OSC 序列（\x1b]...\x07 等）的 ESC 被移除。"""
@@ -81,6 +85,26 @@ class TestSanitizeAnsi:
         assert '\x1b' not in result
         assert "malicious" in result
         assert "code" in result
+
+    def test_sanitize_ansi_unified_regression(self):
+        """_sanitize_ansi 经统一 strip_ansi 主真源实现（方向1 步骤2）。
+
+        合法 ANSI 序列被完整剥离（含序列体）；孤立 ESC 经兜底移除——
+        与 ``ink.helpers.strip_ansi`` 输出在合法序列场景一致，且任何
+        \\x1b 均不进入结果（防注入兜底语义保留）。
+        """
+        from src.tui.ink.helpers import strip_ansi
+        # 合法序列：sanitize 剥离完整序列（strip_ansi 已移除序列体 → 一致）
+        text = "\x1b[1m\x1b[31mbold red\x1b[0m"
+        assert _sanitize_ansi(text) == strip_ansi(text)
+        # 孤立 ESC（strip_ansi 不匹配）：sanitize 兜底移除 → 无 \\x1b
+        result = _sanitize_ansi("abc\x1bdef")
+        assert '\x1b' not in result
+        assert result == "abcdef"
+        # 不定义独立正则（复用统一工具）
+        import inspect
+        import src.tui._diff_renderer as mod
+        assert "re.sub('\\x1b'" not in inspect.getsource(mod) or "strip_ansi" in inspect.getsource(mod._sanitize_ansi)
 
 
 # ═══════════════════════════════════════════════════════════
@@ -143,10 +167,11 @@ class TestSyntaxHlSanitize:
 
         修复前空 lexer 提前返回原文（ANSI 保留），与「输入先消毒」docstring
         矛盾；修复后消毒移动到提前 return 之前，空 lexer 输入含 ANSI 时
-        输出消毒后字面量。
+        输出消毒后字面量。方向1 步骤2：统一工具剥离完整序列（不再残留
+        ``[31m`` 序列体字面量）。
         """
         result = _syntax_hl("\x1b[31mhello", "")
-        assert result == "[31mhello"
+        assert result == "hello"
 
     def test_pygments_absent_returns_text(self):
         """pygments 不可用时返回原文（消毒后的输入）。"""

@@ -153,7 +153,18 @@ def _build_lines(fiber) -> list[Line]:
     #   秒级时间戳导致每帧重建；1s 桶内时间显示最多滞后 1s（可接受，与状态栏
     #   1s 桶一致）。补全弹窗高亮移动（selected 变化）与状态变化（cpu/mem 每
     #   2s）必须进 key——均已包含。
-    time_bucket = int(time.monotonic() / 1.0)
+    #   方向1 步骤4（呼吸动画渐显 0.1s 桶）：占位符渐显期（_placeholder_fade_key
+    #   起始后 elapsed < fade_duration）用 0.1s 桶平滑渐显（避免 1s 桶内渐显
+    #   冻结）；结束后回 1s 桶（性能保持，与 status_bar 语义对齐）；
+    #   fade_duration<=0（配置异常）回退纯 1s 桶。
+    now = time.monotonic()
+    fade_key = getattr(fiber, "_placeholder_fade_key", None)
+    fading = False
+    if fade_key is not None:
+        fade_elapsed = now - fade_key[1]
+        fade_duration = _fx._DEFAULT_FADE_DURATION
+        fading = fade_duration > 0 and fade_elapsed < fade_duration
+    time_bucket = int(now / 0.1) if fading else int(now / 1.0)
     if completion is not None:
         completion_snap = (
             completion.visible,
@@ -228,7 +239,10 @@ def _build_lines(fiber) -> list[Line]:
             descs = completion.descriptions or []
             if types[i] == "command" and i < len(descs) and descs[i]:
                 line.append("  ", _S_DIM)
-                line.append(descs[i], _S_DIM)
+                # 方向1 步骤4（窄屏防溢出）：描述截断至剩余行宽（复用
+                # _truncate_width，截断点不拆 CJK）——超长描述不再撑爆行宽。
+                desc_budget = max(1, width - line.width)
+                line.append(_truncate_width(descs[i], desc_budget), _S_DIM)
             lines.append(line)
         # 底部提示
         hint = Line.of(" ", _S_TIME)
@@ -241,12 +255,19 @@ def _build_lines(fiber) -> list[Line]:
     cpu_mem = f"CPU:{cpu}% \u00b7 MEM:{mem}%"
     cpu_mem_w = len(cpu_mem) + 2
     top = Line.of("", _S_SEP)
-    sep_len = max(1, width - cpu_mem_w)
+    # 方向1 步骤4（窄屏防溢出）：sep_len 下限改为 0（修复前 ``max(1, ...)``
+    # 在 width < cpu_mem_w 时内容超宽溢出）；CPU/MEM 内容独立行逐段截断至
+    # 剩余宽度（不拆 CJK；width < 22 时不再超宽）。
+    sep_len = max(0, width - cpu_mem_w)
     top.append("\u2501" * sep_len, _S_SEP)
-    top.append(" CPU:", _S_ACCENT)
-    top.append(f"{cpu}%", _S_CPU)
-    top.append(" \u00b7 MEM:", _S_ACCENT)
-    top.append(f"{mem}%", _S_MEM)
+    content_budget = max(1, width - sep_len)
+    content = Line()
+    _append_truncated(content, " CPU:", _S_ACCENT, content_budget)
+    _append_truncated(content, f"{cpu}%", _S_CPU, content_budget)
+    _append_truncated(content, " \u00b7 MEM:", _S_ACCENT, content_budget)
+    _append_truncated(content, f"{mem}%", _S_MEM, content_budget)
+    for run in content.runs:
+        top.append_run(run)
     lines.append(top)
 
     # ── 反向历史搜索覆盖行（方向D 步骤14，Ctrl+R 配置门控） ──
@@ -261,7 +282,13 @@ def _build_lines(fiber) -> list[Line]:
         sline = Line.of("(reverse-i-search)`", _S_ACCENT)
         sline.append(q, Style(fg=221))
         sline.append("`: ", _S_ACCENT)
-        sline.append(match, _S_TEXT)
+        # 方向1 步骤4（窄屏防溢出）：match 截断至剩余行宽（不拆 CJK）
+        match_budget = max(1, width - sline.width)
+        sline.append(_truncate_width(match, match_budget), _S_TEXT)
+        # 极窄屏（前缀 + query 已超宽）→ 整行截断至 width（复用 truncate_line）
+        if sline.width > width:
+            from src.tui.ink.helpers import truncate_line
+            sline = truncate_line(sline, width)
         lines.append(sline)
 
     # ── 输入文本行 ──
@@ -278,6 +305,13 @@ def _build_lines(fiber) -> list[Line]:
                     ph = _PLACEHOLDER_STREAMING
                 else:
                     ph = _PLACEHOLDER_COMPACT if (completion is not None and completion.visible) else _PLACEHOLDER_TEXT
+                # 方向1 步骤4（窄屏防溢出）：占位符截断至剩余输入区宽度
+                # （提示符后；_truncate_width 不拆 CJK）——width < 占位符长度
+                # 时不再撑爆行宽。截断后的 ph 作为渐显键（同占位符持续显示
+                # 语义一致）。
+                ph_budget = max(1, width - len(_PROMPT))
+                if wcswidth_simple(ph) > ph_budget:
+                    ph = _truncate_width(ph, ph_budget)
                 # BEAUTY-1：占位提示 FadeIn 渐显（时间基；_glow_color 呼吸色为终色）
                 line.append(ph, Style(fg=_placeholder_fade_color(fiber, ph, _glow_color(242, 10))))
         else:
@@ -290,8 +324,15 @@ def _build_lines(fiber) -> list[Line]:
     ts = f"{now_local.tm_year}-{now_local.tm_mon:02d}-{now_local.tm_mday:02d} {now_local.tm_hour:02d}:{now_local.tm_min:02d}:{now_local.tm_sec:02d}"
     time_w = len(ts) + 2
     bottom = Line.of("", _S_SEP)
-    bottom.append("\u2501" * max(1, width - time_w), _S_SEP)
-    bottom.append(f" {ts}", _S_TIME)
+    # 方向1 步骤4（窄屏防溢出）：sep_len 下限 0 + 时间戳内容独立行截断
+    # （width < 22 时不超宽；正常宽度时间戳完整保留）
+    sep_len = max(0, width - time_w)
+    bottom.append("\u2501" * sep_len, _S_SEP)
+    content_budget = max(1, width - sep_len)
+    content = Line()
+    _append_truncated(content, f" {ts}", _S_TIME, content_budget)
+    for run in content.runs:
+        bottom.append_run(run)
     lines.append(bottom)
 
     # ★ 快照缓存写回（方向4）：未命中重建后更新缓存（同快照下次命中）
@@ -339,6 +380,18 @@ def _truncate_width(s: str, max_w: int) -> str:
     return "".join(out)
 
 
+def _append_truncated(line: Line, text: str, style, budget: int) -> None:
+    """向内容行追加文本，超宽时按剩余预算截断（不拆 CJK）。
+
+    方向1 步骤4：窄屏防溢出辅助——内容行（从 0 列计宽，独立于分隔线）
+    逐段截断至预算，保证分隔线行总宽不超 width。
+    """
+    remaining = max(0, budget - line.width)
+    if remaining <= 0:
+        return
+    line.append(_truncate_width(text, remaining), style)
+
+
 def _paint(fiber, canvas) -> None:
     box = fiber.layout_box
     if box is None:
@@ -357,11 +410,14 @@ def _paint(fiber, canvas) -> None:
 
 
 def _merge(row: dict, x: int, line: Line) -> None:
+    # 方向1 步骤4（CJK 列推进）：列偏移按显示宽度推进（``wcswidth_simple``）
+    # ——修复前 ``col += 1`` 按字符计数，CJK 宽字符占 2 列却只推进 1，
+    # 后续字符错位。
     col = x
     for run in line.runs:
         for ch in run.text:
             row[col] = (ch, run.style)
-            col += 1
+            col += wcswidth_simple(ch)
 
 
 # ── 注册 ───────────────────────────────────────────

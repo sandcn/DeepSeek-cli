@@ -282,6 +282,13 @@ class InkSession:
                     return
                 except queue.Full:
                     pass  # 并发竞争仍满 → 保持丢弃（不无限循环）
+            # 方向2（CRITICAL 不静默丢弃）：blocking（CRITICAL）命令腾位失败后
+            # 改走 push_cmd_critical 紧急直写语义（_write_emergency 兜底，绝不
+            # 静默丢弃）——PhaseDone/ToolClose 等通道关闭命令丢失会导致通道
+            # 永不关闭。非 CRITICAL 保持既有丢弃语义（计数/日志不变）。
+            if blocking:
+                self.push_cmd_critical(cmd)
+                return
             self._consecutive_full += 1
             self._cmd_queue_dropped += 1
             cmd_id = _get_cmd_id(cmd)
@@ -585,9 +592,13 @@ class InkSession:
         self._phase_pre_update_panels()
         self._update_system_stats()
         commands: list = []
+        changed = False
         with _try_acquire_output_lock(name="ink_session.drain_queue", timeout=self._config.drain_lock_timeout) as locked:
             if not locked:
                 return False
+            # 方向1 步骤4（渲染失败 sleep 出锁）：锁块内仅排空 + 应用命令——
+            # 渲染与失败处理移出锁块（块内置 render_failed 标记？否——渲染在
+            # 锁外直接执行，sleep 退避期间输出锁可被其他写入方获取）。
             while len(commands) < self._config.max_batch_size:
                 try:
                     _, _, cmd = self._cmd_queue.get_nowait()
@@ -598,36 +609,38 @@ class InkSession:
             changed = bool(commands)
             if commands:
                 self._apply_commands(commands)
-            if self._should_render(changed):
-                try:
-                    self._render_frame()
-                except Exception:
-                    # P3-16（设计说明）：无 boundary 异常端到端不触发崩溃恢复——
-                    # reconciler 层对无边界异常 re-raise 保留，但 session 层在此
-                    # 吞掉仅记 warning：**单帧失败 + 10Hz 重试**（render 线程不
-                    # 崩溃不重启）。reconciler._handle_render_crash 崩溃恢复仅
-                    # 服务 render 循环级异常（队列/输入/面板回调等）。
-                    # P7（方向2）：持久性渲染异常从 10Hz 无限重试降为指数退避
-                    # （0.1→0.2→0.4→…→1.0 封顶，≤1Hz），日志刷屏缓解；正常
-                    # 路径无 sleep（渲染帧率 10Hz 不降低）。
-                    # 方向1（渲染失败帧不重试修复）：_should_render 已清
-                    # _dirty，失败帧若不补置脏标记下一拍不会重试（仅退避等待）
-                    # ——补置 _dirty = True，下一 10Hz 拍重试，配合既有指数
-                    # 退避防刷屏（退避封顶 1s，不会无限重试）。
-                    self._consecutive_render_failures += 1
-                    delay = min(0.1 * 2 ** (self._consecutive_render_failures - 1), 1.0)
-                    time.sleep(delay)
-                    self._dirty = True
-                    _logger.warning(
-                        "渲染帧失败（连续 %d 次，退避 %.2fs）",
-                        self._consecutive_render_failures,
-                        delay,
-                        exc_info=True,
-                    )
-                else:
-                    # 成功渲染 → 复位连续失败计数（P7 退避语义）
-                    self._consecutive_render_failures = 0
-            return changed
+        # 渲染与失败处理移出锁块（方向1 步骤4）：渲染失败退避 sleep 不再持有
+        # 输出锁（修复前 sleep 在锁块内 → render_lock 阻塞其他写入方输出）。
+        if self._should_render(changed):
+            try:
+                self._render_frame()
+            except Exception:
+                # P3-16（设计说明）：无 boundary 异常端到端不触发崩溃恢复——
+                # reconciler 层对无边界异常 re-raise 保留，但 session 层在此
+                # 吞掉仅记 warning：**单帧失败 + 10Hz 重试**（render 线程不
+                # 崩溃不重启）。reconciler._handle_render_crash 崩溃恢复仅
+                # 服务 render 循环级异常（队列/输入/面板回调等）。
+                # P7（方向2）：持久性渲染异常从 10Hz 无限重试降为指数退避
+                # （0.1→0.2→0.4→…→1.0 封顶，≤1Hz），日志刷屏缓解；正常
+                # 路径无 sleep（渲染帧率 10Hz 不降低）。
+                # 方向1（渲染失败帧不重试修复）：_should_render 已清
+                # _dirty，失败帧若不补置脏标记下一拍不会重试（仅退避等待）
+                # ——补置 _dirty = True，下一 10Hz 拍重试，配合既有指数
+                # 退避防刷屏（退避封顶 1s，不会无限重试）。
+                self._consecutive_render_failures += 1
+                delay = min(0.1 * 2 ** (self._consecutive_render_failures - 1), 1.0)
+                time.sleep(delay)
+                self._dirty = True
+                _logger.warning(
+                    "渲染帧失败（连续 %d 次，退避 %.2fs）",
+                    self._consecutive_render_failures,
+                    delay,
+                    exc_info=True,
+                )
+            else:
+                # 成功渲染 → 复位连续失败计数（P7 退避语义）
+                self._consecutive_render_failures = 0
+        return changed
 
     def _should_render(self, changed: bool) -> bool:
         """是否需渲染本帧：脏标记 + 10Hz 拍批处理。
@@ -773,9 +786,18 @@ class InkSession:
         cursor_pos = int(fiber.props.get("cursor_pos", -1))
         prompt = str(fiber.props.get("prompt", "> "))
         completion = fiber.props.get("completion")
-        # 方向C 步骤4：popup_height 唯一真源 _completion_height（与 input_area
-        # 渲染高度共享；session 已从 input_area 导入辅助函数，无新依赖环）。
-        popup_height = _completion_height(completion)
+        # 方向1 步骤4（缺失 completion 属性守卫）：popup_height 与 row 计算
+        # 纳入 try/except——completion 缺 ``items`` 等属性时抛 AttributeError
+        # 中断渲染；修复后缺属性回退 popup_height=0（记 debug），place_cursor
+        # 调用保持独立 try。
+        try:
+            popup_height = _completion_height(completion)
+        except Exception:
+            popup_height = 0
+            _logger.debug(
+                "_position_cursor: completion 属性缺失，回退 popup_height=0",
+                exc_info=True,
+            )
         max_input = max(1, box.w - len(prompt))
         # ★ PERF-1：优先复用 input_area measure 阶段缓存的换行布局（每帧至多 1 次换行），
         #   未命中（fiber 缓存不存在或 text/max_input 已变）时回退既有计算。

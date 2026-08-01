@@ -168,6 +168,32 @@ class TestPaletteRegistry:
         _invalidate_palette_cache()
         assert get_active_palette() == resolve_theme("dark")
 
+    def test_palette_invalidate_ttl_boundary_regression(self) -> None:
+        """方向2 — 失效后 TTL 边界（进程启动早期 now<TTL）不误返回 dark。
+
+        修复前失效置 (0.0, dark) → now-0<TTL 窗口内 get 误返回 dark；修复后
+        缓存值保持当前活动 palette。
+        """
+        from unittest.mock import patch
+        import src.tui.app._theme as theme
+        from src.tui.app._theme import (
+            _invalidate_palette_cache, get_active_palette, resolve_theme,
+        )
+
+        try:
+            # 模拟：活动调色板为 light（缓存新鲜，时间戳 10.0）+ 进程启动早期
+            # （mock monotonic=0.5 → now-0<TTL 边界）
+            theme._active_palette_cache = (10.0, resolve_theme("light"))
+            with patch("src.tui.app._theme.time.monotonic", return_value=0.5):
+                _invalidate_palette_cache()
+                # 失效后缓存值保持 light（修复前硬编码 dark）
+                assert theme._active_palette_cache[1] == resolve_theme("light")
+                # TTL 边界内 get 返回 light（不误回 dark）
+                assert get_active_palette() == resolve_theme("light")
+        finally:
+            # 恢复全局缓存为已知状态（防测试间污染）
+            theme._active_palette_cache = (0.0, theme.ThemeRegistry.resolve("dark"))
+
 
 class TestSingleSourceOfTruth:
     """方向3 步骤15 — 样式/颜色单一真源收敛回归。

@@ -175,7 +175,15 @@ class ChatUIConsumer:
         """启动 ChatUI 消费者（委托 TuiLifecycle + 注册消费者）。"""
         if not self._started:
             _register_consumer(self)
-        self._lifecycle.start()
+            # 方向2（注册回滚）：lifecycle.start 异常不泄漏消费者注册表——
+            # 回滚注册并 re-raise（不静默丢输出）。
+            try:
+                self._lifecycle.start()
+            except Exception:
+                _unregister_consumer()
+                raise
+        else:
+            self._lifecycle.start()
 
     def stop(self) -> None:
         """停止 ChatUI 消费者（委托 TuiLifecycle + 注销消费者）。"""

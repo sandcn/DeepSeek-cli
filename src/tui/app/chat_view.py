@@ -76,32 +76,28 @@ def _paint(fiber, canvas):
     if box.x == 0:
         # ★ 增量快路径（大历史 O(1)/帧）：committed 静态行跨帧身份复用——
         #   前缀缓存挂在 fiber（fiber 复用即命中，替换/重建自然失效）。
-        #   仅 box.y==0（文档顶部、无重叠）才允许跳过画布重写：render_frame
-        #   经缓存前缀 + 尾部重建 Frame。修复长回答 + 子代理期间每帧全量
-        #   重建画布 → 渲染线程持续占用 CPU 100%。
-        if box.y == 0:
-            key = (id(lines), n, box.y)
-            cached = getattr(fiber, "_committed_prefix", None)
-            if cached is not None and cached[0] == key:
-                return  # 前缀未变：跳过画布重写（render_frame 复用缓存）
-            if (
-                cached is not None
-                and cached[0][0] == key[0]
-                and cached[0][2] == key[2]
-                and n > cached[0][1]
-            ):
-                # committed_lines 原地 extend（引用不变、长度增长）→ 仅追加新增行
-                prefix = cached[1]
-                prefix.extend(lines[cached[0][1]:])
-            else:
-                prefix = list(lines)
-            fiber._committed_prefix = (key, prefix)
-            return
-        # 非顶部（box.y != 0）：直接引用缓存行（历史兼容，O(n) 每帧）
-        for i, line in enumerate(lines):
-            row = box.y + i
-            if 0 <= row < len(canvas):
-                canvas[row] = line
+        #   方向1 步骤4（非顶部前缀缓存）：前缀键 ``(id(lines), n, box.y)``
+        #   覆盖非顶部路径（box.y != 0）——非顶部同样维护 ``_committed_prefix``
+        #   （命中即跳过画布重写）；render_frame 消费前缀时校验
+        #   ``committed.layout_box.y == 0``——顶部才允许前缀复用，非顶部前缀
+        #   与画布尾部重建偏移语义不一致时由 render_frame 回退全量（防御层，
+        #   成本 O(1)）。
+        key = (id(lines), n, box.y)
+        cached = getattr(fiber, "_committed_prefix", None)
+        if cached is not None and cached[0] == key:
+            return  # 前缀未变：跳过画布重写（render_frame 复用缓存）
+        if (
+            cached is not None
+            and cached[0][0] == key[0]
+            and cached[0][2] == key[2]
+            and n > cached[0][1]
+        ):
+            # committed_lines 原地 extend（引用不变、长度增长）→ 仅追加新增行
+            prefix = cached[1]
+            prefix.extend(lines[cached[0][1]:])
+        else:
+            prefix = list(lines)
+        fiber._committed_prefix = (key, prefix)
         return
     # box.x != 0（缩进/padded）：逐行重建（历史兼容，O(n) 每帧）
     for i, line in enumerate(lines):

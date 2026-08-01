@@ -74,6 +74,12 @@ class InputIO:
         # _decode_paste_bytes 实现截断粘贴无 U+FFFD 污染（方向1 B4）。
         self._paste_partial: bytes = b""
 
+        # ── 慢速多字节 UTF-8 续读缓冲（方向2） ──
+        # 跨 read_stdin_once 调用保留 read_utf8_char 读取到的合法 UTF-8 前缀
+        # （续字节 select 超时/读取中断时），下次调用拼接补齐——慢速多字节
+        # 中文不丢首字节（修复前解码失败返回 None → 首字节被 capture）。
+        self._utf8_partial: bytes = b""
+
         # ── 故障检测 ──
         self._eof_count = 0
         self._select_error_count = 0
@@ -181,6 +187,10 @@ class InputIO:
 
         与 _input.py 原 read_stdin_once EOF 分支等价（仅增量 + 阈值判定，
         不改变返回语义——调用方一律返回 False）。
+
+        方向2（EOF 空转修复）：达阈值同时置 ``_fd_status = "error"``——修复前
+        ``can_read()`` 恒 True → render 线程每帧 select+read 空转 + 日志刷屏；
+        置位后 ``can_read()`` 返回 False（与 ``record_select_error`` 对称）。
         """
         self._eof_count += 1
         if self._eof_count >= _EOF_THRESHOLD:
@@ -189,6 +199,7 @@ class InputIO:
                 self._eof_count,
             )
             self._exit_reason = "eof"
+            self._fd_status = "error"
 
     def reset_eof(self) -> None:
         """读取成功后清零 EOF 计数。"""
@@ -217,6 +228,8 @@ class InputIO:
         self._select_error_count = 0
         self._exit_reason = None
         self._fd_status = "ok"
+        # 方向2：启动时清空慢速多字节续读缓冲（会话重启不携带旧 partial）
+        self._utf8_partial = b""
 
     def stop_io(self) -> None:
         """停用 I/O 读取（标志位管理模式，不再 join 线程）。
@@ -228,6 +241,8 @@ class InputIO:
         self._active.set()  # 确保 read_stdin_once() 状态检查快速退出
         self._io_started = False
         self._fd_status = "ok"
+        # 方向2：停止时清空慢速多字节续读缓冲（重启后从干净状态恢复）
+        self._utf8_partial = b""
 
     def pause_io(self) -> None:
         """暂停 I/O 读取（供 EscapeMonitor 的特殊按键回调使用）。
@@ -319,9 +334,9 @@ class InputIO:
         """解码粘贴字节流（处理跨调用截断的多字节 UTF-8 序列）。
 
         将上次残留的 ``_paste_partial`` 与本次 ``data`` 拼接后严格 decode；
-        解码失败时从尾部（最多 3 字节）向前找最大合法前缀——前缀严格
-        decode（仍失败则 errors="replace" 兜底），尾部不完整序列存入
-        ``_paste_partial`` 留待下次拼接（连续多次截断累计正确）。
+        解码失败时经 ``_take_valid_prefix`` 从尾部（最多 3 字节）向前找最大
+        合法前缀——前缀严格 decode（仍失败则 errors="replace" 兜底），尾部
+        不完整序列存入 ``_paste_partial`` 留待下次拼接（连续多次截断累计正确）。
 
         假定粘贴字节流仅尾部可能不完整（终端粘贴为合法 UTF-8）；中部损坏
         字节仍以 replace 兜底（可接受）。
@@ -333,10 +348,34 @@ class InputIO:
             解码后的文本（截断部分不产生 U+FFFD，留待下次补齐）。
         """
         buf = self._paste_partial + data
+        text, partial = self._take_valid_prefix(buf)
+        self._paste_partial = partial
+        return text
+
+    @staticmethod
+    def _take_valid_prefix(buf: bytes) -> tuple[str, bytes]:
+        """从字节流中提取最大合法 UTF-8 前缀，返回 ``(text, partial)``。
+
+        方向2（公共前缀 helper）：从 ``_decode_paste_bytes``「从尾部找最大合法
+        前缀」思路提取——供粘贴解码与 ``read_utf8_char`` 慢速续读补齐共用
+        （差异封装：单一实现，两处行为一致）。
+
+        - 完整解码成功 → ``(text, b"")``；
+        - 从尾部（最多 3 字节）向前找最大严格解码前缀 → ``(前缀文本, 尾部
+          不完整序列)``（尾部为可补齐的截断 UTF-8）；
+        - 前缀均无法严格解码（中部损坏）→ ``(errors="replace" 文本, b"")``
+          （粘贴场景兜底；``read_utf8_char`` 场景调用方自行判定 partial 空
+          时返回 None，不产出替换字符）。
+
+        Args:
+            buf: 待解码字节流。
+
+        Returns:
+            (text, partial) —— text 为严格/兜底解码文本，partial 为待下次
+            拼接的不完整 UTF-8 尾部（无则不完整时为空字节串）。
+        """
         try:
-            text = buf.decode("utf-8")
-            self._paste_partial = b""
-            return text
+            return buf.decode("utf-8"), b""
         except UnicodeDecodeError:
             pass
         # 从尾部向前找最大合法前缀（不完整序列最多 3 字节）
@@ -346,25 +385,40 @@ class InputIO:
                 text = prefix.decode("utf-8")
             except UnicodeDecodeError:
                 continue
-            self._paste_partial = buf[-cut:]
-            return text
+            return text, buf[-cut:]
         # 前缀均无法严格解码（中部损坏）→ replace 兜底，残留全部丢弃
-        self._paste_partial = b""
-        return buf.decode("utf-8", errors="replace")
+        return buf.decode("utf-8", errors="replace"), b""
 
     def read_utf8_char(self, fd: int, first_byte: int) -> str | None:
-        """读取完整的多字节 UTF-8 字符序列。"""
-        if (first_byte & 0xE0) == 0xC0:
+        """读取完整的多字节 UTF-8 字符序列。
+
+        方向2（慢速多字节不丢字节）：续字节 select 超时/读取中断时，已读
+        字节若可组成合法 UTF-8 前缀则存入 ``_utf8_partial`` 返回 None（待
+        下次调用拼接补齐）；不可组成则清空返回 None（首字节调回 capture
+        路径）。跨 read_stdin_once 调用保留 partial——慢速多字节不丢首字节。
+        """
+        if self._utf8_partial:
+            # 有跨调用残留 partial——当前 first_byte 为续字节：以 partial
+            # 首字节推总字节数（续字节本身无法判定长度），续读补齐。
+            first = self._utf8_partial[0]
+            buf = bytes([first_byte])
+        else:
+            first = first_byte
+            buf = bytes([first_byte])
+
+        if (first & 0xE0) == 0xC0:
             total_bytes = 2
-        elif (first_byte & 0xF0) == 0xE0:
+        elif (first & 0xF0) == 0xE0:
             total_bytes = 3
-        elif (first_byte & 0xF8) == 0xF0:
+        elif (first & 0xF8) == 0xF0:
             total_bytes = 4
         else:
+            self._utf8_partial = b""
             return None
 
-        buf = bytes([first_byte])
-        for _ in range(total_bytes - 1):
+        # 已读字节数（含 partial 与当前 first_byte）
+        have = len(self._utf8_partial) + 1
+        for _ in range(total_bytes - have):
             try:
                 has_data, _, _ = select.select(
                     [fd], [], [], _UTF8_READ_TIMEOUT,
@@ -381,10 +435,21 @@ class InputIO:
             except (ValueError, OSError, TypeError):
                 break
 
+        full = self._utf8_partial + buf
         try:
-            return buf.decode("utf-8")
+            text = full.decode("utf-8")
+            self._utf8_partial = b""
+            return text
         except UnicodeDecodeError:
+            pass
+        # 从尾部找最大合法前缀——可组成合法前缀（不完整序列）→ 存 partial
+        # 返回 None（待下次补齐）；不可组成 → 清空返回 None（不产生 U+FFFD）。
+        _text, partial = self._take_valid_prefix(full)
+        if partial:
+            self._utf8_partial = partial
             return None
+        self._utf8_partial = b""
+        return None
 
     def _flush_stdin_residual(
         self, max_flush: int = 50, budget: float = 0.05

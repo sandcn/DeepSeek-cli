@@ -170,7 +170,8 @@ def parse_sgr_params(params: str) -> tuple[Style | None, bool]:
     i = 0
     while i < len(parts):
         p = parts[i]
-        if p == "" or p == "0":
+        # 0 / 00 / 000 → 重置（Rich 有时输出 \x1b[39;49;00m 形式的重置）
+        if p == "" or (p.isdigit() and int(p) == 0):
             reset = True
         elif p == "1":
             bold = True

@@ -142,6 +142,22 @@ class TestCommandQueue:
         assert s2._consecutive_full == 0
         s2._cmd_event.set.assert_called_once()
 
+    def test_push_cmd_critical_no_drop_regression(self):
+        """方向2 — 队列满且无 LOW 可腾位时 CRITICAL 命令不静默丢弃（紧急直写兜底）。"""
+        s = _make_session()
+        s._cmd_queue = MagicMock()
+        s._cmd_queue.put.side_effect = _queue.Full
+        s._cmd_queue.mutex = MagicMock()  # 腾位扫描需要 mutex 上下文
+        s._cmd_queue.queue = []           # 队列无 LOW 可腾位
+        s._write_emergency = MagicMock()
+        # blocking（CRITICAL）命令：PHASE_DONE 属 _CRITICAL_CMDS
+        s.push_cmd(PhaseDoneCmd(phase="content"))
+        # 不静默丢弃：经 push_cmd_critical 紧急直写兜底
+        s._write_emergency.assert_called_once()
+        assert s._cmd_queue_dropped == 1
+        emergency_text = s._write_emergency.call_args[0][0]
+        assert "PHASE_DONE" in emergency_text
+
     def test_same_batch_order_by_seq(self):
         """同批命令出队顺序保持插入序（内容命令先于完成命令）。"""
         s = _make_session()
@@ -474,6 +490,119 @@ class TestRenderBackoff:
             assert s._dirty is True
             s._drain_queue()  # 成功 → 复位
         assert s._consecutive_render_failures == 0
+
+
+class TestRenderFailureSleepOutsideLock:
+    """方向1 步骤4 — 渲染失败退避 sleep 移出输出锁块（锁外退避）。"""
+
+    class _RecorderLock:
+        """锁桩：记录进入/退出（验证 sleep 在锁外）。"""
+
+        def __enter__(self):
+            return True
+
+        def __exit__(self, *a):
+            return False
+
+    def test_render_failure_sleep_outside_lock_runtime_regression(self):
+        """渲染失败时 sleep 在锁释放后调用（锁外退避，不阻塞其他写入方）。"""
+        s = _make_session()
+        order = []
+
+        class RecorderLock(self._RecorderLock):
+            def __enter__(self):
+                order.append("lock_enter")
+                return True
+
+            def __exit__(self, *a):
+                order.append("lock_exit")
+                return False
+
+        with patch("src.tui.ink.session._try_acquire_output_lock", return_value=RecorderLock()), \
+             patch.object(s, "_should_render", return_value=True), \
+             patch.object(s, "_render_frame", side_effect=RuntimeError("boom")), \
+             patch("src.tui.ink.session.time.sleep", side_effect=lambda d: order.append("sleep")):
+            s._drain_queue()
+        assert order.index("lock_exit") < order.index("sleep"), (
+            f"sleep 应在锁释放后调用（锁外退避），实际 order={order}"
+        )
+
+    def test_render_failure_sleep_outside_lock_source_regression(self):
+        """源码层面：渲染决策与 sleep 位于 _try_acquire_output_lock 锁块外。
+
+        锁块为 ``with _try_acquire_output_lock(...)``（块内缩进 > 锁行缩进）；
+        渲染调用经 ``self._should_render(changed)`` 决策、位于锁块外
+        （缩进 <= 锁行缩进），sleep 在其后。
+        """
+        import inspect
+        src = inspect.getsource(InkSession._drain_queue)
+        lines = src.splitlines()
+        lock_line_idx = next(i for i, l in enumerate(lines) if "_try_acquire_output_lock" in l)
+        should_render_idx = next(i for i, l in enumerate(lines) if "self._should_render(changed)" in l)
+        render_line_idx = next(i for i, l in enumerate(lines) if "self._render_frame()" in l)
+        sleep_line_idx = next(i for i, l in enumerate(lines) if "time.sleep(delay)" in l)
+        lock_indent = len(lines[lock_line_idx]) - len(lines[lock_line_idx].lstrip())
+        should_indent = len(lines[should_render_idx]) - len(lines[should_render_idx].lstrip())
+        assert should_render_idx > lock_line_idx, "渲染决策应在锁行之后"
+        assert should_indent <= lock_indent, (
+            f"_should_render 调用应位于锁块外（缩进 {should_indent} <= 锁行 {lock_indent}）"
+        )
+        assert render_line_idx > should_render_idx, "渲染调用应在决策之后"
+        assert sleep_line_idx > render_line_idx, "sleep 应在渲染调用之后"
+
+
+class TestPositionCursorMissingCompletionAttr:
+    """方向1 步骤4 — session._position_cursor 缺失 completion 属性守卫。"""
+
+    class _MissingItemsCompletion:
+        """缺 items 属性的 completion 桩（_completion_height 访问 items 抛 AttributeError）。"""
+        visible = True
+
+        def __getattr__(self, name):
+            raise AttributeError(f"missing attr: {name}")
+
+    def test_position_cursor_missing_completion_attr_regression(self):
+        """构造缺 items 属性的 completion → _position_cursor 不抛异常、正常放置光标。"""
+        from src.tui.ink.fiber import Fiber
+
+        s = _make_session()
+        fiber = Fiber("host", "input-area", {
+            "text": "abc",
+            "cursor_pos": 2,
+            "prompt": "> ",
+            "completion": self._MissingItemsCompletion(),
+        })
+        fiber.layout_box = _Box(x=1, y=0, w=30, h=4)
+        s._root_fiber = fiber
+        with patch.object(s._ink_renderer, "place_cursor") as mock_pc:
+            s._position_cursor()  # 不抛异常（缺属性回退 popup_height=0）
+            mock_pc.assert_called_once()
+        # popup_height 回退 0 → row = box.y(0) + 0 + 1 + vis_row + 1
+        row, col = mock_pc.call_args[0]
+        assert row >= 1, f"光标行应正常计算（popup_height=0），实际 {row}"
+
+    def test_position_cursor_completion_normal_regression(self):
+        """正常 completion（含 items）行为不变（回归）。"""
+        from src.tui.ink.fiber import Fiber
+        from src.tui.app.model import CompletionState
+
+        s = _make_session()
+        fiber = Fiber("host", "input-area", {
+            "text": "abc",
+            "cursor_pos": 2,
+            "prompt": "> ",
+            "completion": CompletionState(
+                visible=True, items=["a", "b"], texts=["a", "b"], selected=0,
+            ),
+        })
+        fiber.layout_box = _Box(x=1, y=0, w=30, h=4)
+        s._root_fiber = fiber
+        with patch.object(s._ink_renderer, "place_cursor") as mock_pc:
+            s._position_cursor()  # 不抛异常
+            mock_pc.assert_called_once()
+        # popup_height = 2（items 2 个 + 2）→ row 计入弹窗高度
+        row, col = mock_pc.call_args[0]
+        assert row >= 4, f"含弹窗时光标行应计入 popup_height，实际 {row}"
 
 
 class TestSyncRenderLock:

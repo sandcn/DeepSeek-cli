@@ -693,3 +693,50 @@ class TestJustifyContentAlignItems:
             child = child.sibling
         assert texts[0].layout_box.y == 0
         assert texts[1].layout_box.y == 0
+
+
+class TestMalformedWidthFallback:
+    """方向1 步骤3 — width 畸形兜底（_resolve_width 收敛，4 处 int(explicit_w) 统一）。"""
+
+    def test_text_malformed_width_no_crash_regression(self):
+        """TEXT width="abc"/对象 → 不抛异常（回退 avail）；正常 int 不变。"""
+        root, box = _render_and_layout(h(TEXT, {"children": "abc", "width": "abc"}), 80)
+        assert box.w == 80, f"畸形 width 应回退 avail，实际 {box.w}"
+        root, box = _render_and_layout(h(TEXT, {"children": "abc", "width": object()}), 80)
+        assert box.w == 80
+        root, box = _render_and_layout(h(TEXT, {"children": "abc", "width": 5}), 80)
+        assert box.w == 5  # 正常 int 行为不变
+
+    def test_spacer_malformed_width_no_crash_regression(self):
+        """SPACER width 畸形 → 回退 avail。"""
+        root, box = _render_and_layout(h(SPACER, {"width": "abc"}), 80)
+        assert box.w == 80
+
+    def test_row_malformed_width_no_crash_regression(self):
+        """row 容器 width 畸形 → 回退 avail。"""
+        root, box = _render_and_layout(
+            h(BOX, {"flexDirection": "row", "width": "abc"},
+              h(TEXT, {"children": "ab"})),
+            80,
+        )
+        assert box.w == 80
+
+    def test_column_malformed_width_no_crash_regression(self):
+        """column 容器 width 畸形 → 回退 avail。"""
+        root, box = _render_and_layout(
+            h(BOX, {"width": object()}, h(TEXT, {"children": "x"})),
+            80,
+        )
+        assert box.w == 80
+
+    def test_resolve_width_has_callers_regression(self):
+        """_resolve_width 由死代码变为真源（4 处 int(explicit_w) 收敛后有调用方）。"""
+        import inspect
+        import src.tui.ink.layout as layout_mod
+        src = inspect.getsource(layout_mod._measure)
+        assert "width = _resolve_width(fiber, avail_w)" in src, (
+            "_measure 应调用 _resolve_width（收敛真源）"
+        )
+        assert "max(0, int(explicit_w))" not in src, (
+            "int(explicit_w) 直接解析应全部收敛至 _resolve_width"
+        )

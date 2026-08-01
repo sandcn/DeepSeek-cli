@@ -79,7 +79,16 @@ class InkRenderer:
         #   安全条件：i >= prev_h（首差异恰在文档末尾，无需要平移的尾部）——
         #   中间插入场景（i < prev_h）尾部必须重写（终端无 insert-line 语义），
         #   走下方常规路径。
-        if new_h > prev_h and i >= prev_h and self._is_tail_shifted(self._prev, frame, i, delta):
+        #   方向1 步骤3（越底守卫）：追加 ``self._cursor_row >= prev_h + 1``——
+        #   place_cursor 已把光标移到输入行下方（文档底部之上）时 ``n_move<0``，
+        #   从下方写 delta 新行会越过屏幕底部触发滚动 → 放弃平移快路径走常规
+        #   差异路径（安全侧，无正确性损失；罕见场景，性能可接受）。
+        if (
+            new_h > prev_h
+            and i >= prev_h
+            and self._cursor_row >= prev_h + 1
+            and self._is_tail_shifted(self._prev, frame, i, delta)
+        ):
             buf = io.StringIO()  # ★ 整帧缓冲（方向1）：多段输出先合并再单次 write+flush
             # 定位到 prev_h+1（从 prev 文档底部开始写 delta 新行）
             n_move = self._cursor_row - (prev_h + 1)
@@ -196,6 +205,9 @@ class InkRenderer:
                 首帧默认 0=全量回调；降级重建传上一帧高度，避免重复回调已有行）。
         """
         if not frame.lines:
+            # 方向1 步骤3（首帧空帧光标）：空帧也更新 _cursor_row（=height+1=1）
+            # ——修复前空帧不置位，下一帧 ``n_move`` 产生多余光标移动。
+            self._cursor_row = frame.height + 1
             return
         buf = io.StringIO()
         for line in frame.lines:

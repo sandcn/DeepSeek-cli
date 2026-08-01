@@ -104,6 +104,35 @@ class TestSubAgentPanelEmitFrameThrottle:
         controller._emit_frame()
         assert controller._push_frame.call_count == 2
 
+    # ── 场景 9：节流丢帧补推（方向2） ──
+
+    @patch("src.tui._subagent_panel.time.time")
+    def test_emit_frame_catchup_regression(self, mock_time, controller):
+        """方向2 — 节流期丢帧后 _panel_refresh 补推最新状态（_pending_emit 标志）。"""
+        controller._cb_registered = True  # 跳过 _register_panel_refresh 依赖
+
+        # 首次调用：时间 0.1 → 渲染（推送 line1/line2）
+        mock_time.return_value = 0.1
+        controller._emit_frame()
+        assert controller._push_frame.call_count == 1
+        assert controller._pending_emit is False
+
+        # 节流期事件：0.15（100ms 窗口内）→ 跳过 + 置位 _pending_emit
+        mock_time.return_value = 0.15
+        controller._emit_frame()
+        assert controller._push_frame.call_count == 1  # 节流未推送
+        assert controller._pending_emit is True
+
+        # _panel_refresh（每帧回调）：检测 _pending_emit → 补推最新状态
+        controller._dirty = False
+        controller._render_frame = MagicMock(return_value=["latest", "state"])
+        controller._panel_refresh()
+        assert controller._push_frame.call_count == 2
+        assert controller._pending_emit is False
+        # 补推内容为最新帧
+        pushed = controller._push_frame.call_args[0][0]
+        assert pushed == ["latest", "state"]
+
     # ── 场景 6：stop() 不经过 _emit_frame() → 不受节流影响 ──
 
     def test_stop_bypasses_emit_frame(self, controller):

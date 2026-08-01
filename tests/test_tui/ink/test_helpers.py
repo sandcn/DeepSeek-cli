@@ -7,8 +7,39 @@ CJK 宽度计算（不拆宽字符）。
 from __future__ import annotations
 
 from src.tui.ink import StyledRun, Line
-from src.tui.ink.helpers import build_border_box
+from src.tui.ink.helpers import build_border_box, strip_ansi, cursor_control_re
 from src.tui.core.style import Style
+
+
+class TestStripAnsi:
+    """方向1 步骤2 — 统一 ANSI 工具主真源行为回归。"""
+
+    def test_strip_ansi_unified_regression(self):
+        """strip_ansi 剥离 SGR/光标 CSI/OSC 三类合法序列；孤立 ESC 保留。
+
+        注：DECRC（``\\x1b8``）不在 ``_ANSI_RE`` 匹配范围（由
+        ``cursor_control_re`` 专供解析，非剥离）——strip_ansi 保留之
+        （既有行为，测试锁定）。
+        """
+        assert strip_ansi("\x1b[31mred\x1b[0m") == "red"
+        assert strip_ansi("\x1b[1;31mbold") == "bold"
+        # 光标控制 CSI 序列（CUP / SCRC）
+        assert strip_ansi("a\x1b[2;5Hb") == "ab"
+        assert strip_ansi("a\x1b[ub") == "ab"
+        # OSC
+        assert strip_ansi("\x1b]0;title\x07x") == "x"
+        # 孤立 ESC（非合法序列）保留（strip_ansi 语义；sanitize 兜底移除）
+        assert strip_ansi("abc\x1bdef") == "abc\x1bdef"
+
+    def test_cursor_control_re_group_semantics_regression(self):
+        """cursor_control_re 保留 CUP row/col 命名组（_stdout_tracker 底部栏过滤依赖）。"""
+        m = cursor_control_re.search("\x1b[5;10H")
+        assert m is not None
+        assert m.group("row") == "5"
+        assert m.group("col") == "10"
+        # DECRC / SCRC
+        assert cursor_control_re.search("\x1b8") is not None
+        assert cursor_control_re.search("\x1b[u") is not None
 
 
 class TestBuildBorderBox:

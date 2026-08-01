@@ -167,6 +167,21 @@ class TestInkBridgeCompletionSelected:
         assert model.completion.selected == 2
         assert bridge.get_selected_completion_index() == 2
 
+    def test_completion_idx_clamp_regression(self):
+        """方向2 — _completion_idx setter 负值/超界钳制（修复前负索引越界）。"""
+        bridge, model = self._bridge()
+        bridge.show_completions(["a", "b", "c"], 0, texts=["a", "b", "c"])
+        # 负值钳到 0（修复前直接写入 selected → 负索引越界）
+        bridge._completion_idx = -1
+        assert model.completion.selected == 0
+        # 超上界钳到 len-1
+        bridge._completion_idx = 99
+        assert model.completion.selected == 2
+        # items 空时钳 0（max_idx = max(0, -1) = 0）
+        bridge.hide_completions()  # 清空 items（CompletionState()）
+        bridge._completion_idx = 5
+        assert model.completion.selected == 0
+
 
 class TestStatusBar:
     def test_status_line_present(self):

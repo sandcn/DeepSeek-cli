@@ -163,7 +163,15 @@ class Reconciler:
             explicit_key = element.props.get("key")
             old = None
             if explicit_key is None:
-                # 无显式 key → 按索引匹配旧 sibling 链对应位置
+                # 无显式 key → 按索引匹配旧 sibling 链对应位置（跳过已消费
+                # 节点——方向1 步骤3：混合 keyed/无 key 列表中 keyed 元素消费
+                # 旧节点后，无 key 元素按位置不复用同一旧 fiber，防 fiber 树
+                # 环/双父）。
+                while (
+                    positional_idx < len(old_list)
+                    and id(old_list[positional_idx]) in consumed
+                ):
+                    positional_idx += 1
                 if positional_idx < len(old_list):
                     old = old_list[positional_idx]
                     positional_idx += 1
@@ -174,7 +182,14 @@ class Reconciler:
                 if key in seen_keys:
                     _logger.warning("调和器检测到重复 key: %s", key)
                 seen_keys.add(key)
-                old = existing_map.pop(key, None)
+                # 方向1 步骤3（keyed 分支 consumed 检查）：先 ``get`` 再校验
+                # 已消费——已消费（被前序元素复用/标记删除）的旧 fiber 不再
+                # 复活（修复前 ``pop`` 直接取回已消费节点 → 同一 fiber 双父）。
+                old = existing_map.get(key)
+                if old is not None and id(old) in consumed:
+                    old = None
+                elif old is not None:
+                    existing_map.pop(key, None)
             if old is not None and _is_same_type(old, element):
                 fiber = old
                 if explicit_key is None:
@@ -398,7 +413,10 @@ class Reconciler:
         复用上次 router 对象（避免每帧全树重建闭包）；handler/is_active/focused
         变化时签名变 → 重建。方向1 L3：签名首元改用 ``hook.seq``（稳定递增序号）
         替代 ``id(hook)``——修复 id 复用风险（hook 被 GC 后新对象复用旧 id →
-        签名误判未变 → 复用过期 router 闭包）。
+        签名误判未变 → 复用过期 router 闭包）。方向1 步骤3：缓存保存
+        ``(signature, router, hooks_list)`` 三元组——签名命中时逐一 ``is`` 比对
+        hook/handler 引用仍有效（handler 被 GC 后新对象复用旧 id → 签名相同但
+        引用不同 → 重建，闭环修复 id 复用）。
         """
         hooks_list: list[InputHook] = []
         self._collect_input_hooks(root_fiber, hooks_list)
@@ -413,11 +431,18 @@ class Reconciler:
             (hook.seq, hook.is_active, id(hook.handler), getattr(hook, "focused", True))
             for hook in hooks_list
         )
-        if (
-            self._input_router_cache is not None
-            and self._input_router_cache[0] == signature
-        ):
-            return self._input_router_cache[1]
+        if self._input_router_cache is not None:
+            cached_signature, cached_router, cached_hooks = self._input_router_cache
+            if cached_signature == signature:
+                # ★ 方向1 步骤3（router id 复用修复）：id(hook.handler) 在 handler
+                #   被 GC 后 id 可复用 → 签名误判未变 → 复用过期 router 闭包。
+                #   缓存保存 hooks_list，命中时逐一 ``is`` 比对 hook/handler
+                #   引用仍有效（低开销：每帧一次、hooks 数量极少）。
+                if len(cached_hooks) == len(hooks_list) and all(
+                    a is b and a.handler is b.handler
+                    for a, b in zip(cached_hooks, hooks_list)
+                ):
+                    return cached_router
 
         def router(event) -> bool:
             for hook in hooks_list:
@@ -428,7 +453,7 @@ class Reconciler:
                     continue
             return False
 
-        self._input_router_cache = (signature, router)
+        self._input_router_cache = (signature, router, hooks_list)
         return router
 
     def _collect_input_hooks(self, fiber: Fiber | None, out: list[InputHook]) -> None:

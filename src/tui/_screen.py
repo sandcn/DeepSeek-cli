@@ -13,6 +13,7 @@ SIGWINCH 信号处理等基础设施。所有函数为纯字符串返回或
 
 from __future__ import annotations
 
+import bisect
 import fcntl
 import io
 import os
@@ -20,6 +21,7 @@ import signal
 import struct
 import sys
 import termios
+import threading
 import time
 from typing import Callable
 
@@ -182,8 +184,100 @@ _EMOJI_WIDE_RANGES: list[tuple[int, int]] = [
 
 
 def _in_ranges(cp: int, ranges: list[tuple[int, int]]) -> bool:
-    """检查码点是否在范围内。"""
+    """检查码点是否在范围内（线性扫描，兼容旧调用面；热路径用二分版）。"""
     return any(lo <= cp <= hi for lo, hi in ranges)
+
+
+def _build_flat_ranges(ranges: list[tuple[int, int]]) -> list[int]:
+    """构造区间表的扁平排序边界数组（每个区间起点/终点后一位，供 bisect 定位）。
+
+    二分正确性依赖「有序不重叠」不变式——实现时显式排序 + 断言（区间表
+    声明为有序不重叠；断言保护排序不变式，防后续误改区间表破坏二分）。
+
+    Args:
+        ranges: 有序不重叠区间列表（升序；启动时排序保证）。
+
+    Returns:
+        扁平的 ``[lo0, hi0+1, lo1, hi1+1, ...]`` 数组。
+    """
+    ordered = sorted(ranges, key=lambda r: r[0])
+    flat: list[int] = []
+    prev_end = -1
+    for lo, hi in ordered:
+        assert lo <= hi, f"区间非法: ({lo}, {hi})"
+        assert lo > prev_end, f"区间表重叠/乱序: ({lo}, {hi}) 与前一区间 {prev_end}"
+        flat.append(lo)
+        flat.append(hi + 1)
+        prev_end = hi
+    return flat
+
+
+def _in_ranges_bisect(cp: int, flat: list[int]) -> bool:
+    """二分定位码点所在区间（flat 为排序后起点/终点后一位交替数组）。
+
+    区间 ``[lo, hi]`` 展开为 ``lo, hi+1`` 两个边界；``bisect_right`` 返回
+    第一个 > cp 的边界索引——索引为奇数 ⇒ cp 落在某区间内（O(log n)）。
+    """
+    idx = bisect.bisect_right(flat, cp)
+    return (idx % 2) == 1
+
+
+#: 预计算的排序扁平边界表（wcswidth_simple 热路径用；区间内容不变）
+_CJK_FLAT = _build_flat_ranges(_CJK_RANGES)
+_FULLWIDTH_FLAT = _build_flat_ranges(_FULLWIDTH_RANGES)
+_EMOJI_WIDE_FLAT = _build_flat_ranges(_EMOJI_WIDE_RANGES)
+_ZERO_WIDTH_FLAT = _build_flat_ranges(_ZERO_WIDTH_RANGES)
+
+
+def _skip_ansi_at(text: str, i: int) -> int:
+    """跳过从 ``text[i]``（\\x1b）开始的完整 ANSI 转义序列，返回序列后索引。
+
+    支持三类（与 ``ink.helpers._ANSI_RE`` 匹配范围对齐，步骤2 统一 ANSI
+    工具；本函数为 _screen 层局部最小匹配器——避免 Layer 0 → ink 反向
+    依赖）：
+      - CSI：``\\x1b[`` + 参数(0-9;?) + 最终字节(A-Za-z)
+      - OSC：``\\x1b]`` + 内容 + BEL(\\x07) 或 ST(\\x1b\\\\)
+      - 单字符控制：``\\x1b`` + [@-Z\\\\-_]
+
+    残缺/嵌套序列安全跳过（不抛异常）：已消费的合法前缀返回，孤立 ESC
+    仅跳过 ESC 本身——宽度测量场景整段计宽 0。
+
+    Args:
+        text: 输入字符串。
+        i: ``\\x1b`` 所在索引。
+
+    Returns:
+        跳过序列后的下一个索引（保证 > i，不越界）。
+    """
+    n = len(text)
+    if i >= n or text[i] != "\x1b":
+        return i + 1
+    j = i + 1
+    if j >= n:
+        return j
+    c = text[j]
+    if c == "[":
+        # CSI：\x1b[ 参数(0-9;?) + 最终字节(A-Za-z)
+        k = j + 1
+        while k < n and text[k] in "0123456789;?":
+            k += 1
+        if k < n and ("A" <= text[k] <= "Z" or "a" <= text[k] <= "z"):
+            return k + 1
+        return k  # 残缺 CSI：跳过已消费参数
+    if c == "]":
+        # OSC：\x1b] ... (BEL 或 ST)
+        k = j + 1
+        while k < n and text[k] not in ("\x07", "\x1b"):
+            k += 1
+        if k < n and text[k] == "\x07":
+            return k + 1
+        if k < n and text[k] == "\x1b" and k + 1 < n and text[k + 1] == "\\":
+            return k + 2
+        return k  # 残缺 OSC
+    # 单字符控制序列：\x1bX（X 为 @-Z \ - _）
+    if ("@" <= c <= "Z") or c in ("\\", "-", "_"):
+        return j + 1
+    return j  # 孤立 ESC：仅跳过 ESC 本身
 
 
 def wcswidth_simple(text: str) -> int:
@@ -191,11 +285,18 @@ def wcswidth_simple(text: str) -> int:
 
     规则：
     - ASCII 可打印字符 (0x20-0x7E)：宽度 1
-    - 控制字符 (0x00-0x1F, 0x7F-0x9F)：宽度 0
+    - 控制字符 (0x00-0x1F, 0x7F-0x9F)：宽度 0（含制表符 \\t——控制字符分支）
+    - ANSI 转义序列（\\x1b 起始）：整段宽度 0（方向1 步骤1 修复——修复前
+      ``\\x1b[31m`` 的 ``[31m`` 被逐字符计宽，ANSI 行测宽虚高导致换行/截断
+      错位）
     - CJK 字符：宽度 2
     - 全角字符：宽度 2
     - 组合标记/零宽字符：宽度 0
     - 其他：宽度 1
+
+    实现（方向1 步骤1）：码点区间判定由线性扫描改为排序边界数组 +
+    ``bisect`` 二分（单字符 O(log n)；ASCII 0x20-0x7E 走 O(1) 快路径）。
+    区间表内容不变（行为语义保持，测试锁定）。
 
     Args:
         text: 输入字符串。
@@ -204,22 +305,34 @@ def wcswidth_simple(text: str) -> int:
         显示宽度（整数）。
     """
     width = 0
-    for ch in text:
-        cp = ord(ch)
+    i = 0
+    n = len(text)
+    while i < n:
+        cp = ord(text[i])
         if 0x20 <= cp <= 0x7E:
             width += 1
+            i += 1
+        elif text[i] == "\x1b":
+            # ANSI 转义序列：整段宽度 0（跳过完整序列；残缺/孤立 ESC 安全）
+            i = _skip_ansi_at(text, i)
         elif cp < 0x20 or (0x7F <= cp <= 0x9F):
-            width += 0  # 控制字符
-        elif _in_ranges(cp, _CJK_RANGES):
+            width += 0  # 控制字符（含制表符 \t——宽度 0，不展开为空格）
+            i += 1
+        elif _in_ranges_bisect(cp, _CJK_FLAT):
             width += 2
-        elif _in_ranges(cp, _FULLWIDTH_RANGES):
+            i += 1
+        elif _in_ranges_bisect(cp, _FULLWIDTH_FLAT):
             width += 2
-        elif _in_ranges(cp, _EMOJI_WIDE_RANGES):
+            i += 1
+        elif _in_ranges_bisect(cp, _EMOJI_WIDE_FLAT):
             width += 2
-        elif _in_ranges(cp, _ZERO_WIDTH_RANGES):
+            i += 1
+        elif _in_ranges_bisect(cp, _ZERO_WIDTH_FLAT):
             width += 0
+            i += 1
         else:
             width += 1
+            i += 1
     return width
 
 
@@ -761,10 +874,20 @@ class TerminalWidthCache:
 
     @classmethod
     def get_default(cls) -> TerminalWidthCache:
-        """获取全局单例。"""
+        """获取全局单例（双检锁——方向1 步骤1：并发首次调用不产生多实例）。
+
+        多实例会各自 TTL 缓存导致宽度不一致（并发首次调用竞态）；双检锁为
+        Python 标准模式（GIL 下安全）；实例已存在时无锁路径零开销。
+        """
         if cls._instance is None:
-            cls._instance = cls()
+            with _instance_lock:
+                if cls._instance is None:
+                    cls._instance = cls()
         return cls._instance
+
+
+#: TerminalWidthCache 单例双检锁（get_default 并发首次调用互斥）
+_instance_lock = threading.Lock()
 
 
 # ═══════════════════════════════════════════════════════════

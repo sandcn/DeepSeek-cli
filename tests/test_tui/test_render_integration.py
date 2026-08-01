@@ -280,3 +280,79 @@ class TestToolTitleIconUpdate:
         assert model.committed_lines[0].plain.startswith("\u2714"), (
             "短工具关闭后 committed_lines 标题行应为 ✔"
         )
+
+
+# ═══════════════════════════════════════════════════════════
+# 方向1 步骤4 — chat_view 非顶部 committed-prefix 缓存
+# ═══════════════════════════════════════════════════════════
+
+class TestCommittedPrefixNonTop:
+    """方向1 步骤4 — chat_view._paint 非顶部路径接入 committed-prefix 缓存。
+
+    修复前 box.y != 0 分支每帧 O(n) 引用缓存行且不设 _committed_prefix →
+    render_frame 全量重建画布。修复后非顶部同样维护 _committed_prefix
+    （key 含 box.y），命中即跳过画布重写；render_frame 消费守卫校验
+    layout_box.y == 0（非顶部填前缀后全量转换，committed 行不丢失）。
+    """
+
+    def _make_root(self, lines, header_text: str = "header"):
+        """构造非顶部 committed-chat（上方 header 占 y=0 → committed 在 y>=1）。"""
+        from src.tui.ink.element import h, BOX, TEXT
+        from src.tui.ink.reconciler import Reconciler
+        import src.tui.app.chat_view as _cv
+        _cv.register()  # 幂等：注册 committed-chat host
+        r = Reconciler()
+        root = r.create_root()
+        el = h(BOX, None, [
+            h(TEXT, {"children": header_text}),
+            h("committed-chat", {"lines": lines}),
+            h(TEXT, {"children": "tail"}),
+        ])
+        return r, root, el
+
+    def test_committed_prefix_non_top_regression(self):
+        """非顶部 committed-chat：帧内容与目标一致 + 前缀缓存 key 含 box.y。"""
+        from src.tui.ink.output import StyledRun, Line
+        from src.tui.ink import components as _components
+        lines = [Line([StyledRun(f"line {i}", None)]) for i in range(100)]
+        r, root, el = self._make_root(lines)
+        r.render(root, el, 80, 24)
+        f1 = _components.render_frame(root, 80)
+        # 顶部 header + 100 committed + tail
+        assert f1.height == 102
+        assert f1.lines[0].plain == "header"
+        assert f1.lines[1].plain == "line 0"
+        assert f1.lines[100].plain == "line 99"
+        assert f1.lines[101].plain == "tail"
+        # 非顶部 committed-chat 维护 _committed_prefix（key 含 box.y=1）
+        cc = _components._find_committed_chat(root)
+        assert cc is not None
+        assert cc._committed_prefix is not None, "非顶部 committed 应维护前缀缓存"
+        assert cc._committed_prefix[0][2] == 1, (
+            f"前缀键应含 box.y（非顶部），实际 box.y={cc._committed_prefix[0][2]}"
+        )
+        # 同引用再渲染 → 前缀命中（跳过画布重写），帧内容仍一致
+        r.render(root, el, 80, 24)
+        f2 = _components.render_frame(root, 80)
+        assert [ln.plain for ln in f2.lines] == [ln.plain for ln in f1.lines]
+        # committed 行 Line 对象身份复用（非顶部路径不再每帧重建）
+        assert f2.lines[1] is f1.lines[1]
+        assert f2.lines[100] is f1.lines[100]
+
+    def test_committed_prefix_non_top_growth_regression(self):
+        """非顶部 committed_lines 原地增长 → 前缀增量追加（帧内容正确）。"""
+        from src.tui.ink.output import StyledRun, Line
+        from src.tui.ink import components as _components
+        lines = [Line([StyledRun(f"line {i}", None)]) for i in range(10)]
+        r, root, el = self._make_root(lines)
+        r.render(root, el, 80, 24)
+        f1 = _components.render_frame(root, 80)
+        assert f1.height == 12  # header + 10 + tail
+        # 原地 extend（增量提交）
+        lines.extend(Line([StyledRun(f"new {i}", None)]) for i in range(3))
+        r.render(root, el, 80, 24)
+        f2 = _components.render_frame(root, 80)
+        assert f2.height == 15
+        assert f2.lines[11].plain == "new 0"
+        assert f2.lines[13].plain == "new 2"
+        assert f2.lines[14].plain == "tail"

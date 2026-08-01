@@ -125,6 +125,30 @@ class TestStreamRenderer:
         assert len(r.take_lines()) == 0
         assert n >= 1
 
+    def test_take_lines_strips_raw_ansi(self):
+        """源文本透传原始 ANSI（子代理结果内嵌高亮）→ 输出 run.text 消毒，
+        宽度不再被转义码膨胀、wrap 不会截断转义序列（防 ;49;00m 残留）。"""
+        r = AnsiStreamRenderer()
+        raw = "plain \x1b[38;2;102;217;239;49mdef\x1b[0m tail"
+        r.write(raw + "\n")
+        r.close()
+        lines = r.take_lines()
+        # 无 ESC 残留，且宽度按可见字符测量（不含转义码）
+        assert all("\x1b" not in l.plain for l in lines)
+        target = next((l for l in lines if "def" in l.plain), None)
+        assert target is not None
+        assert target.width == len(target.plain)  # 全 ASCII：宽度 == 字符数
+
+    def test_take_lines_partial_escape_sanitized(self):
+        """跨 chunk 拆开的残缺转义序列（\x1b[ 与尾随参数分离）→ 仍被消毒。"""
+        r = AnsiStreamRenderer()
+        r.write("a\x1b[38;2;102;217;239;4")
+        r.write("9mdef\x1b[0m b\n")
+        r.close()
+        lines = r.take_lines()
+        assert all("\x1b" not in l.plain for l in lines)
+        assert any("def" in l.plain for l in lines)
+
 
 class TestInline:
     def test_bold_italic_code(self):

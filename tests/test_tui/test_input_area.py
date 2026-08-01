@@ -315,3 +315,156 @@ class TestPlaceholderFadeSingleClock:
             color = _placeholder_fade_color(fiber, "ph", 242)
         assert fiber._placeholder_fade_key == ("ph", 100.0)
         assert 238 <= color <= 242
+
+
+# ═══════════════════════════════════════════════════════════
+# 方向1 步骤4 — input_area 渲染修复（CJK merge / 窄屏截断 / 分隔线 / 渐显桶）
+# ═══════════════════════════════════════════════════════════
+
+class TestMergeCjkColumnAdvance:
+    """方向1 步骤4 — _merge 按显示宽度推进列（CJK 宽 2 推进 2）。"""
+
+    def test_merge_cjk_column_advance_regression(self):
+        """CJK 字符在画布行中占 2 列（col 1 留空），后续字符不错位。"""
+        from src.tui.app.input_area import _merge
+        from src.tui.ink.output import Line
+        row = {}
+        line = Line()
+        line.append("你", None)  # 宽 2
+        line.append("a", None)   # 宽 1
+        _merge(row, 0, line)
+        # "你" 占 col 0（宽 2 → col 1 留空）；"a" 在 col 2（修复前 col 1 被覆盖）
+        assert row[0] == ("你", None)
+        assert row[2] == ("a", None), (
+            f"CJK 后字符应在 col 2（显示宽度推进），实际 row={row!r}"
+        )
+        assert 1 not in row or row[1] != ("a", None)
+
+    def test_merge_cjk_then_cjk(self):
+        """连续 CJK：每个占 2 列（col 0、col 2）。"""
+        from src.tui.app.input_area import _merge
+        from src.tui.ink.output import Line
+        row = {}
+        line = Line()
+        line.append("你", None)
+        line.append("好", None)
+        _merge(row, 0, line)
+        assert row[0] == ("你", None)
+        assert row[2] == ("好", None)
+
+
+class TestNarrowTerminalTruncation:
+    """方向1 步骤4 — 窄屏（width=20/15）各行宽度 ≤ width（补全/搜索/占位符/分隔线）。"""
+
+    def _plain_widths(self, fiber):
+        lines = _build_lines(fiber)
+        return [line.width for line in lines]
+
+    def test_popup_narrow_terminal_regression(self):
+        """width=20：补全弹窗（含超长命令描述）各行宽度 ≤ width。"""
+        from src.tui.app.model import CompletionState
+        fiber = _input_fiber(
+            text="", cursor_pos=0, width=20,
+            completion=CompletionState(
+                visible=True,
+                items=["/model", "/help"],
+                texts=["/model", "/help"],
+                selected=0,
+                title="命令",
+                descriptions=[
+                    "这是一个非常非常长的命令描述文本用于测试截断行为是否正确",
+                    "short",
+                ],
+                types=["command", "command"],
+            ),
+        )
+        fiber.layout_box = _Box(x=0, y=0, w=20, h=1)
+        widths = self._plain_widths(fiber)
+        assert all(w <= 20 for w in widths), (
+            f"窄屏补全弹窗行超宽: {widths}"
+        )
+
+    def test_search_overlay_narrow_regression(self):
+        """width=20：反向历史搜索覆盖行（超长 match）宽度 ≤ width。"""
+        from src.tui.app.model import HistorySearchState
+        fiber = _input_fiber(
+            text="", cursor_pos=0, width=20,
+            history_search=HistorySearchState(
+                query="foo", matches=["foobar" * 20], index=0, active=True,
+            ),
+        )
+        fiber.layout_box = _Box(x=0, y=0, w=20, h=1)
+        widths = self._plain_widths(fiber)
+        assert all(w <= 20 for w in widths), (
+            f"窄屏搜索覆盖行超宽: {widths}"
+        )
+
+    def test_placeholder_narrow_regression(self):
+        """width=15：占位符（超长）截断至剩余输入区宽度（行宽 ≤ width）。"""
+        fiber = _input_fiber(text="", cursor_pos=0, width=15)
+        fiber.layout_box = _Box(x=0, y=0, w=15, h=1)
+        widths = self._plain_widths(fiber)
+        assert all(w <= 15 for w in widths), (
+            f"窄屏占位符行超宽: {widths}"
+        )
+
+    def test_separator_narrow_no_overflow_regression(self):
+        """width=20/15：上下分隔线行总宽 ≤ width（CPU/MEM/时间戳截断）。"""
+        for w in (20, 15):
+            fiber = _input_fiber(text="", cursor_pos=0, width=w, cpu=100, mem=99)
+            fiber.layout_box = _Box(x=0, y=0, w=w, h=1)
+            widths = self._plain_widths(fiber)
+            assert all(ln <= w for ln in widths), (
+                f"width={w} 分隔线行超宽: {widths}"
+            )
+
+
+class TestPlaceholderFadeSmoothBucket:
+    """方向1 步骤4 — 占位符渐显期 0.1s 桶（平滑渐显）、结束后 1s 桶。"""
+
+    def _fade_fiber(self):
+        from src.tui.app.input_area import _placeholder_fade_color, _PLACEHOLDER_TEXT
+        fiber = _input_fiber(text="", cursor_pos=0, width=80)
+        fiber.layout_box = _Box(x=0, y=0, w=80, h=1)
+        # 建立渐显起始（同占位符持续显示）
+        with patch("src.tui.app.input_area.time.monotonic", return_value=1000.0):
+            _placeholder_fade_color(fiber, _PLACEHOLDER_TEXT, 242)
+        return fiber
+
+    def test_placeholder_fade_smooth_regression(self):
+        """渐显期（elapsed < fade_duration）：snap_key 每 0.1s 变化。"""
+        fiber = self._fade_fiber()
+        keys = []
+        with patch("src.tui.app.input_area.time.monotonic") as mock_time:
+            # 渐显期 0.6s 内：1000.0 ~ 1000.55，每 0.1s 变化
+            for t in (1000.05, 1000.15, 1000.25, 1000.35):
+                mock_time.return_value = t
+                keys.append(_snap_key_of(fiber))
+        assert len(set(keys)) >= 3, (
+            f"渐显期 snap_key 应随 0.1s 桶变化，实际 keys={keys}"
+        )
+
+    def test_placeholder_fade_ends_1s_bucket(self):
+        """渐显结束后（elapsed >= fade_duration）：回退 1s 桶。"""
+        fiber = self._fade_fiber()
+        keys = []
+        with patch("src.tui.app.input_area.time.monotonic") as mock_time:
+            # 渐显结束后（>0.6s）：同 1s 桶（1000.7、1000.9）→ snap_key 不变
+            mock_time.return_value = 1000.7
+            keys.append(_snap_key_of(fiber))
+            mock_time.return_value = 1000.9
+            keys.append(_snap_key_of(fiber))
+            # 跨 1s 桶 → 变化
+            mock_time.return_value = 1001.7
+            keys.append(_snap_key_of(fiber))
+        assert keys[0] == keys[1], "渐显结束后同 1s 桶 snap_key 应不变"
+        assert keys[1] != keys[2], "跨 1s 桶 snap_key 应变化"
+
+
+def _snap_key_of(fiber):
+    """读取 fiber 快照缓存键（_build_lines 写回的 snap_key）。"""
+    from src.tui.app.input_area import _build_lines
+    _build_lines(fiber)
+    cached = getattr(fiber, "_lines_cache", None)
+    assert cached is not None
+    return cached[0][-1]  # 最后一项为 time_bucket

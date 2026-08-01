@@ -337,6 +337,66 @@ class TestFlushSingleFlightAndCompactCooldown:
             content = output_file.read_text(encoding="utf-8")
             assert len(content.splitlines()) <= 2000  # 已压缩（去重 + 截断 2000）
 
+    def test_compact_cooldown_triggers_regression(self, tmp_path: Path):
+        """方向2 — 压缩冷却修复：_flush_buffered_lines 不再刷新冷却 → 冷却过后压缩可触发。
+
+        修复前 _flush_buffered_lines 每次刷盘后更新 _last_compact_time →
+        now-last<30 恒成立 → 压缩永不触发。
+        """
+        import time as _time
+        from src.tui._stdout_tracker import _StdoutLineTracker, _COMPACT_COOLDOWN
+
+        output_file = tmp_path / "output_history_compact_fix"
+        output_file.write_text(
+            "\n".join(f"l{i}" for i in range(6000)) + "\n", encoding="utf-8"
+        )
+        real_stdout = io.StringIO()
+        with (
+            patch("src.tui._stdout_tracker.OUTPUT_HISTORY_FILE", output_file),
+            patch("src.tui._stdout_tracker._lock_history_file", return_value=True),
+            patch("src.tui._stdout_tracker._unlock_history_file"),
+        ):
+            tracker = _StdoutLineTracker(real_stdout)
+            tracker._scroll_end = 10
+            # 冷却已过（last = now - cooldown - 1）——修复前 _flush_buffered_lines
+            # 刷盘后更新 _last_compact_time → 冷却恒不满足 → 压缩不触发
+            tracker._last_compact_time = _time.monotonic() - _COMPACT_COOLDOWN - 1.0
+            tracker._buffer_to_output("new_line")
+            assert tracker._flush_buffered_lines() is True
+            content = output_file.read_text(encoding="utf-8")
+            assert len(content.splitlines()) <= 2000, (
+                f"冷却过后刷盘应触发压缩，实际行数 {len(content.splitlines())}"
+            )
+
+    def test_close_flushes_history_and_stops_timer_regression(self, tmp_path: Path):
+        """方向2 — close() 刷出全部缓冲行 + 停止 daemon 定时器（幂等）。"""
+        from src.tui._stdout_tracker import _StdoutLineTracker
+
+        output_file = tmp_path / "output_history_close"
+        real_stdout = io.StringIO()
+        with (
+            patch("src.tui._stdout_tracker.OUTPUT_HISTORY_FILE", output_file),
+            patch("src.tui._stdout_tracker._lock_history_file", return_value=True),
+            patch("src.tui._stdout_tracker._unlock_history_file"),
+        ):
+            tracker = _StdoutLineTracker(real_stdout)
+            tracker._scroll_end = 10
+            tracker.track("line_a\n")
+            tracker.track("line_b\n")
+            tracker.close()
+            # 缓冲行已落盘（输出历史含全部行）
+            content = output_file.read_text(encoding="utf-8")
+            assert "line_a" in content
+            assert "line_b" in content
+            # 定时器已停止（不再自重置泄漏）
+            assert tracker._flush_timer is None
+            assert tracker._flush_timer_stop.is_set()
+            # 幂等：重复 close 安全（不抛异常）
+            tracker.close()
+            # close 后 _start_flush_timer 防御性跳过（不再创建新定时器）
+            tracker._start_flush_timer()
+            assert tracker._flush_timer is None
+
 
 class TestAnsiStripOutputHistory:
     """方向1 — 输出历史 ANSI SGR 剥离（环形缓冲/历史文件存纯文本）。"""
@@ -391,3 +451,56 @@ class TestAnsiStripOutputHistory:
             tracker._scroll_end = 10
             tracker.track("hello world\n")
             assert list(tracker._ring) == ["hello world"]
+
+
+class TestCrlfAndUnifiedAnsi:
+    """方向1 步骤2 — CRLF 行尾 \\r 剥除 + ANSI 统一工具消费。"""
+
+    def test_track_crlf_no_carriage_regression(self, tmp_path):
+        """CRLF 终端行尾残留 \\r 剥除：track("a\\r\\nb\\n") 后 ring 含 "a"、"b"（无 \\r）。"""
+        from src.tui._stdout_tracker import _StdoutLineTracker
+
+        output_file = tmp_path / "output_history_crlf"
+        real_stdout = io.StringIO()
+        with (
+            patch("src.tui._stdout_tracker.OUTPUT_HISTORY_FILE", output_file),
+            patch("src.tui._stdout_tracker._lock_history_file", return_value=True),
+            patch("src.tui._stdout_tracker._unlock_history_file"),
+        ):
+            tracker = _StdoutLineTracker(real_stdout)
+            tracker._scroll_end = 10
+            tracker.track("a\r\nb\n")
+            assert list(tracker._ring) == ["a", "b"], (
+                f"CRLF 行尾 \\r 应剥除，实际 ring={list(tracker._ring)!r}"
+            )
+
+    def test_track_crlf_mid_carriage_kept(self, tmp_path):
+        """行中段 \\r 不剥（仅行尾）："a\\rb\\n" → "a\\rb"。"""
+        from src.tui._stdout_tracker import _StdoutLineTracker
+
+        output_file = tmp_path / "output_history_crlf_mid"
+        real_stdout = io.StringIO()
+        with (
+            patch("src.tui._stdout_tracker.OUTPUT_HISTORY_FILE", output_file),
+            patch("src.tui._stdout_tracker._lock_history_file", return_value=True),
+            patch("src.tui._stdout_tracker._unlock_history_file"),
+        ):
+            tracker = _StdoutLineTracker(real_stdout)
+            tracker._scroll_end = 10
+            tracker.track("a\rb\n")
+            assert list(tracker._ring) == ["a\rb"], (
+                f"行中段 \\r 应保留，实际 ring={list(tracker._ring)!r}"
+            )
+
+    def test_no_local_control_seq_re(self):
+        """_stdout_tracker 不再定义独立 _CONTROL_SEQ_RE（收敛至 ink/helpers）。"""
+        import inspect
+        import src.tui._stdout_tracker as mod
+        src = inspect.getsource(mod)
+        assert "_CONTROL_SEQ_RE = re.compile" not in src, (
+            "_stdout_tracker 不应再定义独立光标控制正则（统一工具收敛）"
+        )
+        from src.tui.ink.helpers import cursor_control_re
+        assert mod.cursor_control_re is cursor_control_re, (
+            "_stdout_tracker 应消费统一 ink.helpers.cursor_control_re"
+        )

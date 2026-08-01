@@ -2069,6 +2069,38 @@ class TestInputIOUnit:
         assert not io.is_io_running
         assert io.fd_status == "ok"
 
+    def test_slow_multibyte_no_char_loss_regression(self, io):
+        """方向2 — 慢速 3 字节中文：首次 select 超时不丢首字节，二次补齐后正确解码。
+
+        修复前 read_utf8_char 续字节超时 → 解码失败返回 None → 首字节被
+        capture（慢速多字节丢字节）。
+        """
+        # 首次调用：续字节 select 超时（无数据）→ 返回 None，首字节存入 _utf8_partial
+        with patch("select.select", return_value=([], [], [])):
+            assert io.read_utf8_char(0, 0xE4) is None
+        assert io._utf8_partial == b"\xe4", (
+            f"首字节应保留在 _utf8_partial，实际 {io._utf8_partial!r}"
+        )
+        # 二次调用：续字节到达（0xB8 为第二个续字节）→ 拼接补齐（E4 B8 AD = "中"）
+        # 首字节 E4（3 字节），partial 已有 1 字节 + 当前 1 字节 → 还需读 1 个续字节
+        with patch("select.select", return_value=([0], [], [])):
+            with patch("os.read", return_value=b"\xad"):
+                assert io.read_utf8_char(0, 0xB8) == "中"
+        assert io._utf8_partial == b"", "补齐后 partial 应清空"
+
+    def test_eof_fd_status_error_regression(self, io):
+        """方向2 — record_eof 达阈值置 _fd_status="error"（can_read 停止读取）。
+
+        修复前达阈值仅置 _exit_reason，_fd_status 保持 "ok" → can_read() 恒
+        True → render 线程每帧 select+read 空转 + 日志刷屏。
+        """
+        from src.api.escape_monitor._history import _EOF_THRESHOLD
+        for _ in range(_EOF_THRESHOLD):
+            io.record_eof()
+        assert io.fd_status == "error"
+        assert io.exit_reason == "eof"
+        assert io.can_read() is False  # 不再空转读取
+
 
 # ═══════════════════════════════════════════════════════════
 # 方向1 B8 — _flush_stdin_residual 总体时间预算（最坏 2.5s → <0.2s）
@@ -3164,6 +3196,26 @@ class TestCtrlDEOF:
             assert inp.read_stdin_once() is True
             assert inp.get_queued_input() is None
             assert inp.get_current_text() == "hello"
+        finally:
+            os.close(w_fd)
+            os.close(r_fd)
+
+    def test_ctrl_d_suppress_enter_regression(self, tmp_path):
+        """方向2 — editmsg 选择期间（suppress_enter=True）空缓冲 Ctrl+D → no-op。
+
+        修复前 Ctrl+D 绕过 Enter 抑制提交 "exit"（editmsg 选择期间误退出）。
+        """
+        r_fd, w_fd = os.pipe()
+        try:
+            inp = Input(fd=r_fd, history_file=tmp_path / "history")
+            inp.set_suppress_enter(True)
+            os.write(w_fd, b"\x04")
+            ready, _, _ = select.select([r_fd], [], [], 2.0)
+            assert ready
+            assert inp.read_stdin_once() is True
+            # 不提交 exit（editmsg 选择期间 Ctrl+D no-op）
+            assert inp.get_queued_input() is None
+            assert inp.get_current_text() == ""
         finally:
             os.close(w_fd)
             os.close(r_fd)

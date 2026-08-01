@@ -13,7 +13,6 @@ complete lines (detected by \n) in a ring buffer.
 
 from __future__ import annotations
 
-import re
 from collections import deque
 from typing import IO, Any
 import threading
@@ -28,20 +27,10 @@ from src.api.escape_monitor._history import (
 )
 # ★ 方向1：输出历史 ANSI SGR 剥离复用 ink.helpers.strip_ansi（纯函数，
 #   依赖仅 _screen/core.style/ink.output，无环）——历史文件/环形缓冲存纯文本。
-from src.tui.ink.helpers import strip_ansi
-
-# Unified regex matching cursor positioning (CUP) and cursor restore (DECRC/SCRC)
-# sequences. Processed in data-stream order so that a restore between two
-# cursor-positioning sequences takes effect at its actual position.
-#
-#   \033[{r};{c}H  — CUP (cursor absolute positioning)
-#   \0338          — DECRC (restore cursor)
-#   \033[u         — SCRC (restore cursor, ANSI.SYS variant)
-_CONTROL_SEQ_RE = re.compile(
-    r'\x1b\[(?P<row>\d+);(?P<col>\d+)H'  # CUP
-    r'|\x1b8'                              # DECRC
-    r'|\x1b\[u'                            # SCRC
-)
+# 方向1 步骤2（ANSI 单一工具）：光标控制序列解析复用统一
+# ``ink.helpers.cursor_control_re``（CUP/DECRC/SCRC 分组语义迁移自本文件
+# 旧 ``_CONTROL_SEQ_RE``；本文件不再定义独立正则）。
+from src.tui.ink.helpers import strip_ansi, cursor_control_re
 
 _logger = logging.getLogger(__name__)
 
@@ -90,6 +79,8 @@ class _StdoutLineTracker:
         self._output_history_file: Path = OUTPUT_HISTORY_FILE
         self._load_output_history()
         self._start_flush_timer()
+        # 方向2（close 幂等标志）：close() 后停止一切刷盘活动（防重复执行）
+        self._closed: bool = False
 
     # ── File object protocol ──
     # # deprecated: 本模块作为 ``sys.__stdout__`` 替换方须兼容 File-object 协议
@@ -150,19 +141,19 @@ class _StdoutLineTracker:
     def _track(self, data: str) -> None:
         """Process data for line tracking.
 
-        Uses a unified regex to match cursor positioning sequences
-        (\\033[{r};{c}H) and cursor restore sequences (\\0338, \\033[u)
-        in data-stream order.  Cursor positioning to a row > scroll_end
-        enters bottom bar mode (content not tracked); cursor restore exits
-        bottom bar mode.  All matched control sequences are stripped from
-        tracked text.  Only tracks complete lines (ending with \\n) when
-        scroll_end >= 1.
+        Uses the unified cursor control regex (``ink.helpers.cursor_control_re``)
+        to match cursor positioning sequences (\\033[{r};{c}H) and cursor
+        restore sequences (\\0338, \\033[u) in data-stream order.  Cursor
+        positioning to a row > scroll_end enters bottom bar mode (content not
+        tracked); cursor restore exits bottom bar mode.  All matched control
+        sequences are stripped from tracked text.  Only tracks complete lines
+        (ending with \\n) when scroll_end >= 1.
         """
         if self._scroll_end < 1:
             return
 
         prev_end = 0
-        for m in _CONTROL_SEQ_RE.finditer(data):
+        for m in cursor_control_re.finditer(data):
             # Text before this control sequence
             if m.start() > prev_end:
                 self._add_text(data[prev_end:m.start()])
@@ -192,13 +183,18 @@ class _StdoutLineTracker:
         方向1（ANSI SGR 剥离）：完整行在存入环形缓冲/输出历史前剥离 ANSI
         转义序列（复用 ink.helpers.strip_ansi）——输出历史是用户可读记录，
         不应含 SGR 颜色序列；环形缓冲/历史文件均存纯文本。
+
+        方向1 步骤2（CRLF 修复）：完整行在 split 后对每行 ``rstrip("\\r")``
+        ——CRLF 终端行尾残留 \\r 剥除（行存入环形缓冲/输出历史前）。行中段
+        \\r 不剥（仅行尾）；先剥 ANSI 再 rstrip \\r（顺序固定，与 1.1 的
+        ANSI 剥离协同）。
         """
         self._partial_line += text
         if '\n' in self._partial_line:
             *complete_lines, self._partial_line = self._partial_line.split('\n')
             if not self._in_bottom_bar:
                 for line in complete_lines:
-                    plain_line = strip_ansi(line)
+                    plain_line = strip_ansi(line).rstrip("\r")
                     self._ring.append(plain_line)
                     self._buffer_to_output(plain_line)
 
@@ -259,8 +255,9 @@ class _StdoutLineTracker:
                 _logger.warning("输出历史刷盘失败: %s", exc)
                 return False
             self._last_flush_time = time.monotonic()
-            # BUG-T6：成功刷盘后更新压缩冷却时间戳（供 _maybe_compact_output_history 判定）
-            self._last_compact_time = time.monotonic()
+            # 方向2（压缩冷却修复）：**不再**更新 ``_last_compact_time``——
+            # 该字段语义为「上次压缩执行时间」，由 ``_maybe_compact_output_history``
+            # 自行更新（修复前每次刷盘后更新 → now-last<30 恒成立 → 压缩永不触发）。
             try:
                 self._maybe_compact_output_history()
             except Exception:
@@ -322,6 +319,23 @@ class _StdoutLineTracker:
                 _logger.warning("_flush_history: 最终刷盘异常", exc_info=True)
                 break
 
+    def close(self) -> None:
+        """停止定时刷盘并刷出所有剩余输出行到历史文件（幂等）。
+
+        方向2（_flush_history 接线修复）：``close()`` 为生命周期关闭入口——
+        ``TuiLifecycle.stop`` 停止流程调用（经 ``session._line_tracker``）：
+        停止 daemon 刷盘定时器（不再自重置泄漏）+ 循环排空缓冲直至空且无
+        在途 worker（复用 ``_flush_history`` 逻辑），输出历史文件含全部缓冲行。
+        幂等：``_closed`` 标志防重复执行；重复调用安全返回。
+        """
+        if self._closed:
+            return
+        self._closed = True
+        try:
+            self._flush_history()
+        except Exception:
+            _logger.warning("close: 最终刷盘异常", exc_info=True)
+
     def _start_flush_timer(self) -> None:
         """启动 2 秒定时刷盘定时器。"""
         if self._flush_timer_stop.is_set():
@@ -350,11 +364,14 @@ class _StdoutLineTracker:
     def _maybe_compact_output_history(self) -> bool:
         """检查并压缩输出历史文件（>5000行时去重+截断至2000行）。
 
-        BUG-T6 压缩冷却：距上次成功刷盘不足 _COMPACT_COOLDOWN 秒时跳过，
-        避免频繁压缩（每 50 行刷盘都会触发检查）。
+        方向2（压缩冷却修复）：``_last_compact_time`` 语义为「上次压缩执行
+        时间」——通过冷却检查即更新（成功/尝试后）。修复前 ``_flush_buffered_lines``
+        每次刷盘后更新该字段 → now-last<30 恒成立 → 压缩永不触发。
         """
         if time.monotonic() - self._last_compact_time < _COMPACT_COOLDOWN:
             return False
+        # 通过冷却检查 → 记录本次压缩尝试（防频繁检查）
+        self._last_compact_time = time.monotonic()
         try:
             path = self._output_history_file
             if not path.exists():

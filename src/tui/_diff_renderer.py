@@ -21,6 +21,9 @@ from typing import Optional, TYPE_CHECKING
 from .core.style import Style, StyleSheet
 from src.renderer._locks import diff_active, _try_acquire_output_lock
 from .events.consumers import publish_output
+# 方向1 步骤2（ANSI 单一工具）：消毒复用统一 ``ink.helpers.strip_ansi``
+# 主真源（本文件不再定义独立正则；先剥离合法序列 + 兜底移除孤立 ESC）。
+from src.tui.ink.helpers import strip_ansi
 
 _logger = logging.getLogger(__name__)
 
@@ -92,11 +95,13 @@ def _get_highlighter(lexer_name):
 
 
 def _sanitize_ansi(text: str) -> str:
-    """移除字符串中所有 ANSI 转义序列（移除所有 ESC 字符）。
+    """移除字符串中所有 ANSI 转义序列（复用统一 ``ink.helpers.strip_ansi`` 主真源）。
 
-    这是最安全的兜底消毒策略——移除所有 \\x1b（ESC）字符，
-    无论其是否为合法序列头。语法高亮生成的 ANSI 序列在本函数
-    之后执行，不受影响。
+    方向1 步骤2：改为基于 ``strip_ansi`` 的窄包装——先剥离合法 ANSI 序列
+    （SGR/光标/OSC），再兜底移除残留的孤立 ESC 字符（strip_ansi 不匹配的
+    非法/残缺序列）——与历史「移除所有 \\x1b」的安全兜底语义一致：任何
+    \\x1b 都不进入终端（防注入）。语法高亮生成的 ANSI 序列在本函数之后
+    执行，不受影响。
 
     Args:
         text: 可能含 ANSI 转义序列的输入字符串。
@@ -104,7 +109,7 @@ def _sanitize_ansi(text: str) -> str:
     Returns:
         不含任何 \\x1b 字符的安全字符串。
     """
-    return re.sub('\x1b', '', text)
+    return strip_ansi(text).replace("\x1b", "")
 
 
 def _syntax_hl(text, lexer_name):

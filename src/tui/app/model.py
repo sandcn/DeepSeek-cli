@@ -425,7 +425,7 @@ class AppModel:
         tool_id 为空 → 丢弃并 debug 日志（无归属输出不静默错路由）。
         """
         from src.tui.core.style import Style
-        from src.renderer.ansi.helpers import AnsiLine
+        from src.renderer.ansi.helpers import AnsiLine, ansi_to_line
         block = self.tool_boxes.get(tool_id)
         if block is None:
             if not tool_id:
@@ -436,7 +436,13 @@ class AppModel:
             block = self.open_tool_box(tool_id, "")
         for seg in text.split("\n"):
             l = AnsiLine.of("  ", Style(fg=242))
-            l.append(seg)
+            # ★ 工具输出可能含 Rich/pygments 高亮 ANSI 序列（read_file 等）。
+            #   原样保留进 Run.text 会让宽度测量把转义码当可见字符（宽度膨胀→
+            #   误触发 wrap），wrap_line 逐字符截断把转义序列拦腰截断（如残留
+            #   ;49;00m）渲染错乱。经 ansi_to_line 解析为带样式 Run，宽度测量
+            #   与 wrap 按样式安全处理。
+            for r in ansi_to_line(seg).runs:
+                l.append_run(r)
             block.lines.append(l)
         # ★ 方向4：增量提交阈值——长工具输出不每帧全量重渲染（超过阈值即提交
         #   已闭合行到 committed_lines；开放块渲染只取未提交尾）。

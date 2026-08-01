@@ -18,6 +18,8 @@
 
 from __future__ import annotations
 
+import math
+
 
 def format_duration(seconds: float) -> str:
     """格式化时长（status_bar 规范格式）。
@@ -28,7 +30,13 @@ def format_duration(seconds: float) -> str:
     Returns:
         <60s → ``x.xs``；≥60s → ``m:ss``；≥1h → ``h:mm:ss``。
         负数按 <60s 分支处理（``x.xs``，与旧 status_bar 实现一致）。
+
+        方向2（inf/NaN 防护）：非有限值（inf/NaN）返回 ``-``（与
+        ``format_speed`` ≤0 的 ``-`` 语义一致）——修复前
+        ``int(inf//60)`` OverflowError / ``int(nan)`` ValueError。
     """
+    if not math.isfinite(seconds):
+        return "-"
     if seconds < 60:
         return f"{seconds:.1f}s"
     mins = int(seconds // 60)

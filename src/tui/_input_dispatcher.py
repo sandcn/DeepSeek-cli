@@ -193,7 +193,13 @@ class InputDispatcher:
         方向1 B2：空缓冲提交 "exit" 不写入历史——复用 ``_enter`` 既有
         ``append_history`` 注入参数传 no-op lambda（零 API 变更），避免
         Ctrl+D 空缓冲 "exit" 污染历史文件。
+
+        方向2（editmsg Ctrl+D 绕过抑制修复）：editmsg 选择期间
+        （``_suppress_enter=True``）Ctrl+D no-op——修复前空缓冲 Ctrl+D 提交
+        "exit" 绕过 Enter 抑制（编辑期间误退出）。
         """
+        if self.get_suppress_enter():
+            return
         if self._buffer_editor.get_current_text():
             return
         self._buffer_editor.set_buffer("exit")
@@ -809,6 +815,14 @@ class InputDispatcher:
         cb 签名: () -> None
         """
         self._dismiss_completion_callback = cb
+
+    def get_dismiss_completion_callback(self):
+        """获取补全弹窗关闭回调（公开访问器，收敛私有字段直读）。
+
+        与 ``set_dismiss_completion_callback`` 对称——message_editor 经公开
+        API 保存/恢复 dismiss 回调（不直接读写私有字段）。
+        """
+        return self._dismiss_completion_callback
 
     def set_completion_navigate_callback(self, cb) -> None:
         """设置补全弹窗上下导航回调。

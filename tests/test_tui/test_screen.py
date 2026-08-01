@@ -43,7 +43,9 @@ class TestWcswidth:
 
     def test_control_chars(self):
         # 控制字符宽度为 0
-        assert wcswidth_simple("\x1b[31m") == 4  # ESC + [ + 3 + 1 + m
+        assert wcswidth_simple("\n") == 0
+        assert wcswidth_simple("\r") == 0
+        assert wcswidth_simple("\t") == 0  # 制表符宽度 0（不展开为空格）
 
     def test_zero_width(self):
         # 组合标记宽度为 0
@@ -76,6 +78,107 @@ class TestWcswidth:
         assert wcswidth_simple(
             "\U0001F468\u200D\U0001F469\u200D\U0001F467"
         ) == 6  # 各组件宽度之和（不溢出）
+
+    def test_wcswidth_ansi_sequence_regression(self):
+        """ANSI 转义序列整段宽度 0（方向1 步骤1——修复前 ``\\x1b[31m`` 的
+        ``[31m`` 被逐字符计宽 4，ANSI 行测宽虚高导致换行/截断错位）。"""
+        # CSI SGR：\x1b[31m + AB + \x1b[0m → 仅 AB 计宽 2（修复前 2+4+2=6）
+        assert wcswidth_simple("\x1b[31mAB\x1b[0m") == 2
+        assert wcswidth_simple("\x1b[31m") == 0
+        # OSC 序列宽度 0
+        assert wcswidth_simple("\x1b]0;title\x07") == 0
+        # 单字符控制序列（\x1bM 反向换行）宽度 0
+        assert wcswidth_simple("\x1bM") == 0
+        # 孤立 ESC 宽度 0（安全跳过，不抛异常）
+        assert wcswidth_simple("a\x1bb") == 2
+        # 残缺 CSI（无最终字节）宽度 0（安全跳过）
+        assert wcswidth_simple("\x1b[31") == 0
+
+    def test_wcswidth_bisect_consistency(self):
+        """二分实现与线性扫描参考实现全样本一致（方向1 步骤1——行为不漂移）。"""
+        from src.tui._screen import (
+            _CJK_RANGES,
+            _FULLWIDTH_RANGES,
+            _EMOJI_WIDE_RANGES,
+            _ZERO_WIDTH_RANGES,
+        )
+
+        def _legacy_in_ranges(cp, ranges):
+            return any(lo <= cp <= hi for lo, hi in ranges)
+
+        def _legacy_wcswidth(text):
+            width = 0
+            for ch in text:
+                cp = ord(ch)
+                if 0x20 <= cp <= 0x7E:
+                    width += 1
+                elif cp < 0x20 or (0x7F <= cp <= 0x9F):
+                    width += 0
+                elif _legacy_in_ranges(cp, _CJK_RANGES):
+                    width += 2
+                elif _legacy_in_ranges(cp, _FULLWIDTH_RANGES):
+                    width += 2
+                elif _legacy_in_ranges(cp, _EMOJI_WIDE_RANGES):
+                    width += 2
+                elif _legacy_in_ranges(cp, _ZERO_WIDTH_RANGES):
+                    width += 0
+                else:
+                    width += 1
+            return width
+
+        samples = [
+            "abc XYZ 123",
+            "你好世界",
+            "hello你好",
+            "🎉📖🔍",
+            "🇨🇳",            # RI 成对
+            "🇨",             # 单 RI
+            "👨\u200d👩\u200d👧",  # ZWJ 序列
+            "\u0300\u0301",  # 组合标记
+            "！＂｀",          # 全角
+            "\x00\x1f\x7f\x9f",  # 控制字符
+            "中文，。！？",
+            "a\tb",           # 制表符宽度 0（控制字符分支）
+            " ",
+            "a",
+            "\u4e00",  # CJK 单字
+            "\uff01",  # 全角单字
+            "\u2764",  # ❤（1F000 外文本呈现符号，宽 1）
+            "\u2600",  # ☀（文本呈现，宽 1）
+            "\u2b50",  # ⭐（2B50 宽 2）
+        ]
+        for s in samples:
+            assert wcswidth_simple(s) == _legacy_wcswidth(s), (
+                f"二分实现与线性参考不一致: {s!r}"
+            )
+
+    def test_width_cache_singleton_lock_regression(self):
+        """TerminalWidthCache.get_default 并发首次调用返回同一实例（双检锁）。"""
+        import threading
+        from src.tui._screen import TerminalWidthCache
+
+        # 清空单例（测试隔离）
+        TerminalWidthCache._instance = None
+        results = []
+        barrier = threading.Barrier(100)
+
+        def worker():
+            barrier.wait()
+            results.append(TerminalWidthCache.get_default())
+
+        threads = [threading.Thread(target=worker) for _ in range(100)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(timeout=5.0)
+        assert results, "并发调用应产生结果"
+        assert all(r is results[0] for r in results), (
+            "并发首次调用应返回同一实例（双检锁防多实例）"
+        )
+        # 实例已存在时无锁路径返回同一实例
+        assert TerminalWidthCache.get_default() is results[0]
+        # 清理单例（避免影响其他测试）
+        TerminalWidthCache._instance = None
 
 
 class TestScrollRegion:

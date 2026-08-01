@@ -294,6 +294,12 @@ class CompletionEngine:
             # 无参数部分 → 返回所有参数（空前缀匹配全部）
             param_last = ""
             start = 0
+            # 方向2（命令前缀保留）：无参数分支候选文本为完整替换串
+            #   ``f"{cmd_name} {m}"``——修复前候选仅 ``m`` 且 start_pos=0 →
+            #   _apply_completion 走 start_pos==0 分支返回纯参数（/model 被
+            #   替换为 deepseek-chat，命令前缀丢失）。完整替换串 + start_pos=0
+            #   应用后保留 ``/model <param>``。
+            replace_full = True
         else:
             cmd_name = parts[0]
             if cmd_name not in self._PARAM_COMMANDS:
@@ -302,12 +308,16 @@ class CompletionEngine:
             param_words = param_part.split()
             param_last = param_words[-1] if param_words else ""
             start = -len(param_last)
+            replace_full = False
 
         if cmd_name == "/model":
             models = self._models_cache.get()
             # 方向D 步骤13：语义排序（精确 > 前缀 > 子串，长度升序）
             return [
-                CompletionItem(m, start_pos=start, item_type="param")
+                CompletionItem(
+                    f"{cmd_name} {m}" if replace_full else m,
+                    start_pos=start, item_type="param",
+                )
                 for m in _ranked(models, param_last)
             ]
 
@@ -315,7 +325,10 @@ class CompletionEngine:
             themes = self._theme_cache.get()
             ranked = _ranked([name for name, _desc in themes], param_last)
             return [
-                CompletionItem(name, start_pos=start, item_type="param")
+                CompletionItem(
+                    f"{cmd_name} {name}" if replace_full else name,
+                    start_pos=start, item_type="param",
+                )
                 for name in ranked
             ]
 
@@ -339,7 +352,10 @@ class CompletionEngine:
             result: list[CompletionItem] = []
             for sid, title in ranked:
                 display = f"{sid[:8]} - {title}" if title else sid[:8]
-                result.append(CompletionItem(sid, display=display, start_pos=start, item_type="session"))
+                result.append(CompletionItem(
+                    f"{cmd_name} {sid}" if replace_full else sid,
+                    display=display, start_pos=start, item_type="session",
+                ))
             return result
 
         return []
@@ -369,7 +385,12 @@ class CompletionEngine:
             return []
 
         try:
-            search_pattern = os.path.join(search_dir, file_prefix + "*")
+            # 方向2（glob 通配符转义）：file_prefix 含 `[`/`]`/`?` 等被 glob
+            # 解释为通配符 → 前缀经 ``glob.escape`` 转义（保留尾部 ``*`` 匹配
+            # 后缀）——前缀按字面匹配，不误命中通配语义。
+            search_pattern = os.path.join(
+                search_dir, _glob_module.escape(file_prefix) + "*",
+            )
             matches = _glob_module.glob(search_pattern)
         except Exception:
             return []

@@ -313,7 +313,10 @@ def _measure(fiber: Fiber, x: int, y: int, avail_w: int, fill: bool = True) -> L
         #   "truncate-middle"（保留头尾，中间省略号）——react-ink 完整语义。
         text_wrap = fiber.props.get("textWrap", "wrap")
         if explicit_w is not None:
-            width = max(0, int(explicit_w))
+            # 方向1 步骤3（width 畸形兜底收敛）：复用 _resolve_width（含
+            # try/except TypeError/ValueError 兜底）——width 传 "abc"/对象/None
+            # 不抛异常（回退 avail）。
+            width = _resolve_width(fiber, avail_w)
         elif fill:
             width = avail_w
         else:
@@ -402,7 +405,8 @@ def _measure(fiber: Fiber, x: int, y: int, avail_w: int, fill: bool = True) -> L
     # ── 叶子：SPACER ──
     if ftype == "spacer":
         if explicit_w is not None:
-            width = max(0, int(explicit_w))
+            # 方向1 步骤3：width 畸形兜底（复用 _resolve_width）
+            width = _resolve_width(fiber, avail_w)
         else:
             width = avail_w if fill else 1
         h = fiber.props.get("height", 1)
@@ -457,7 +461,8 @@ def _measure(fiber: Fiber, x: int, y: int, avail_w: int, fill: bool = True) -> L
                 cursor_x += margin
             row_h = max(row_h, cbox.h)
         if explicit_w is not None:
-            width = max(0, int(explicit_w))
+            # 方向1 步骤3：width 畸形兜底（复用 _resolve_width）
+            width = _resolve_width(fiber, avail_w)
         else:
             content_w = cursor_x - inner_x
             width = max(0, min(avail_w, content_w + 2 * (padding + border)))
@@ -478,7 +483,8 @@ def _measure(fiber: Fiber, x: int, y: int, avail_w: int, fill: bool = True) -> L
     else:
         # 子节点纵向堆叠（填充宽度），高度为内容累加
         if explicit_w is not None:
-            width = max(0, int(explicit_w))
+            # 方向1 步骤3：width 畸形兜底（复用 _resolve_width）
+            width = _resolve_width(fiber, avail_w)
         elif fill:
             width = avail_w
         else:

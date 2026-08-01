@@ -19,6 +19,17 @@ _ANSI_RE = re.compile(
     r"|\x1b[@-Z\\-_]"
 )
 
+# 光标控制序列（CUP 绝对定位 + DECRC/SCRC 光标恢复）——统一供
+# ``_stdout_tracker`` 数据流顺序解析底部栏过滤（row/col 命名组）。
+# 与 ``_ANSI_RE``（全量剥离）分工：本正则保留 row/col 分组语义，仅服务
+# 光标控制序列解析（非纯剥离）。方向1 步骤2：三套 ANSI 正则收敛——
+# ``_CONTROL_SEQ_RE`` 语义迁移至此（组名/匹配范围不变）。
+cursor_control_re = re.compile(
+    r"\x1b\[(?P<row>\d+);(?P<col>\d+)H"  # CUP
+    r"|\x1b8"                              # DECRC
+    r"|\x1b\[u"                            # SCRC
+)
+
 
 def strip_ansi(text: str) -> str:
     """剥离 ANSI 转义序列，返回纯文本。"""
@@ -363,4 +374,5 @@ __all__ = [
     "pad_line",
     "line_to_ansi",
     "build_border_box",
+    "cursor_control_re",
 ]

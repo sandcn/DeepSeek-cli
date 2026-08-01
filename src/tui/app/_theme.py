@@ -178,7 +178,12 @@ def get_active_palette() -> Palette:
 def _invalidate_palette_cache() -> None:
     """使活动调色板缓存失效（/theme 切换后强制重解析）。"""
     global _active_palette_cache
-    _active_palette_cache = (0.0, ThemeRegistry.resolve("dark"))
+    # 方向2（TTL 边界修复）：失效时缓存值保持当前活动 palette（不硬编码
+    # dark）——修复前置 ``(0.0, resolve("dark"))`` 在进程启动 1s 内
+    # （``now - 0 < TTL`` 判定）误返回 dark；保持当前 palette 使 TTL 边界
+    # 处仍返回既有主题。正常（进程运行 >1s）时时间戳 0 使缓存立即过期 →
+    # 下个 get 重读 config 返回新主题。
+    _active_palette_cache = (0.0, get_active_palette())
 
 
 def time_glow(lo: int, hi: int, period: float = 12.0) -> int:

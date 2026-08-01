@@ -322,3 +322,53 @@ class TestWrapLargeLineSmoke:
         # 100000 整除 80 → 恰好 1250 行，每行 80 字符
         assert len(lines) == 1250
         assert "".join(l.plain for l in lines) == text
+
+
+class TestFastPathGuards:
+    """方向1 步骤3 — renderer 平移快路径守卫 + 首帧空帧光标。"""
+
+    def _new(self) -> tuple[InkRenderer, io.StringIO]:
+        out = io.StringIO()
+        return InkRenderer(stream=out), out
+
+    def test_translate_fast_path_no_scroll_regression(self):
+        """光标位于 prev 文档底部之上（n_move<0）→ 放弃平移快路径走常规路径。
+
+        场景：place_cursor 把光标移到文档中部（row 2 < prev_h+1=4），下一帧
+        尾部下移（新增 delta 行）——修复前快路径 ``n_move<0`` 从下方写 delta
+        行可能越过屏幕底部触发滚动；修复后走常规差异路径（安全侧）。
+        """
+        r, out = self._new()
+        r.render(_frame("a", "b", "c"))
+        assert r.cursor_row == 4
+        # place_cursor 把光标移到文档中部（row 2）
+        r.place_cursor(2, 1)
+        out.seek(0)
+        out.truncate()
+        # 新帧尾部下移：["a","b","c"] → ["a","b","c","d"]（delta=1）
+        r.render(_frame("a", "b", "c", "d"))
+        val = out.getvalue()
+        # 常规差异路径：从 cursor_row=2 上移到行 i+1=4（cursor_down 2）→ 写 d
+        # 无越界滚动序列（\x1b[9999;1H 或 CUD 越界）
+        assert "\x1b[9999" not in val, f"不应出现越底滚动序列: {val!r}"
+        assert val.endswith("\rd\x1b[K\n"), f"应写 delta 新行 d: {val!r}"
+        assert r.cursor_row == 5, f"渲染后光标应在文档底部下一行，实际 {r.cursor_row}"
+
+    def test_first_frame_empty_cursor_row_regression(self):
+        """首帧空 Frame 也更新 _cursor_row（=1）——下一帧移动量正确（无多余移动）。
+
+        修复前空帧不置位（_cursor_row=0）→ 下一帧平移快路径 ``n_move=-1``
+        cursor_down 产生多余移动。
+        """
+        r, out = self._new()
+        r.render(_frame())  # 空帧
+        assert r.cursor_row == 1, f"空帧后 _cursor_row 应为 1（height+1），实际 {r.cursor_row}"
+        out.seek(0)
+        out.truncate()
+        r.render(_frame("a"))  # 第二帧 1 行
+        val = out.getvalue()
+        # 从 cursor_row=1 到行 i=0：n_move = 1-1 = 0 → 无移动，直接写
+        assert val == "\ra\x1b[K\n", (
+            f"第二帧应无多余光标移动（仅写 a 行），实际: {val!r}"
+        )
+        assert r.cursor_row == 2

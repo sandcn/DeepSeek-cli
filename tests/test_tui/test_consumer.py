@@ -68,6 +68,18 @@ class TestChatUIConsumerLifecycle:
         # _register_consumer 只调用一次
         assert mock_subsystems['mock_register'].call_count == 1
 
+    def test_start_register_rollback_regression(self, mock_subsystems):
+        """方向2 — lifecycle.start 抛异常 → 消费者注册回滚（_unregister_consumer）+ 异常传播。"""
+        c = mock_subsystems['consumer']
+        c._lifecycle.start = MagicMock(side_effect=RuntimeError("start boom"))
+
+        with pytest.raises(RuntimeError):
+            c.start()
+
+        # 注册表不泄漏：register 后回滚 unregister
+        mock_subsystems['mock_register'].assert_called_once_with(c)
+        mock_subsystems['mock_unregister'].assert_called_once()
+
     def test_stop_unsubscribes_and_unregisters(self, mock_subsystems):
         """stop() 应取消订阅、停止引擎、注销消费者。"""
         c = mock_subsystems['consumer']
@@ -789,6 +801,22 @@ class TestAssemblyRefactorRegression:
             src.tui._assembly._ComponentsNamespace
         )
 
+    def test_assembly_no_tty_fallback_regression(self):
+        """方向2 — stdin 无 fileno（无 TTY/CI/管道）→ 装配不崩溃，Input fd 回退 0。"""
+        import sys
+        from unittest.mock import patch
+
+        class _NoFilenoStdin:
+            """模拟无 fileno() 的 stdin（如 CI/管道/测试环境）。"""
+
+        with patch.object(sys, "stdin", _NoFilenoStdin()):
+            from src.tui._assembly import TuiAssembly
+            result = TuiAssembly.assemble()
+
+        # 装配成功且 Input fd 回退 0（修复前 fileno() 抛异常 → 装配崩溃）
+        assert result.input_instance is not None
+        assert result.input_instance.fd == 0
+
 
 class TestLifecycleBatchedRegistration:
     """方向D 步骤6 / P0-3 重估 — TuiLifecycle.start() 批处理注册决策回归测试。"""
@@ -835,6 +863,60 @@ class TestLifecycleBatchedRegistration:
             assert bus._batched_events == set()
         finally:
             DisplayEventBus.reset_default()
+
+
+class TestLifecycleSubscribeRollback:
+    """方向2 — TuiLifecycle.start 事件订阅中途失败回滚（半订阅状态消除）。"""
+
+    class _FakeBus:
+        """记录 subscribe/unsubscribe 的伪总线（第 2 个 handler 订阅失败）。"""
+
+        def __init__(self):
+            self.subscribed: list = []
+            self.unsubscribed: list = []
+
+        def subscribe(self, handler, event_type=None):
+            if getattr(handler, "_boom", False):
+                raise RuntimeError("subscribe boom")
+            self.subscribed.append(handler)
+
+        def unsubscribe(self, handler, event_type=None):
+            self.unsubscribed.append(handler)
+
+    def test_lifecycle_subscribe_rollback_regression(self):
+        """订阅第 2 个 handler 抛异常 → 已订阅 handler 取消订阅 + _handlers_bound=False + engine 未启动。"""
+        from unittest.mock import MagicMock
+
+        from src.tui._lifecycle import TuiLifecycle
+
+        bus = self._FakeBus()
+        engine = MagicMock()
+        dispatcher = MagicMock()
+
+        h1 = lambda e: None  # noqa: E731
+        h1._boom = False
+        h2 = lambda e: None  # noqa: E731
+        h2._boom = True
+        dispatcher.list_handlers.return_value = {
+            type("Ev1", (), {}): h1,
+            type("Ev2", (), {}): h2,
+        }
+
+        lc = TuiLifecycle(
+            engine=engine, bus=bus, bb=MagicMock(), rs=MagicMock(),
+            dispatcher=dispatcher,
+        )
+
+        with pytest.raises(RuntimeError):
+            lc.start()
+
+        # 半订阅状态消除：已订阅 h1 被回滚取消订阅
+        assert bus.subscribed == [h1]
+        assert bus.unsubscribed == [h1]
+        assert lc._handlers_bound is False
+        # 不启动 engine（回滚后 re-raise）
+        engine.start.assert_not_called()
+        engine.push_cmd.assert_not_called()
 
 
 class TestStreamToRenderOrdering:
