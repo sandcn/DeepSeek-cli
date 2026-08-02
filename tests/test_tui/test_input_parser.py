@@ -139,8 +139,10 @@ class TestDispatchCsi:
     """_dispatch_csi 各分支。"""
 
     def test_csi_u(self):
+        """CSI u 可打印 ASCII keycode（'a'=97）→ char 事件（方向1 修复）。"""
         ev = InputParser._dispatch_csi([97, 1], 'u')  # 'a' 键
-        assert ev.kind == "csi_u"
+        assert ev.kind == "char"
+        assert ev.char == "a"
         assert ev.keycode == 97
         assert ev.modifier == 1
 
@@ -179,10 +181,14 @@ class TestDispatchCsi:
         assert ev.keycode == 119
 
     def test_csi_u_other_kept(self):
-        """其余 csi_u（非 Shift+Tab / Ctrl+字母）保持 csi_u（供 input router 消费）。"""
-        ev = InputParser._dispatch_csi([97, 1], 'u')  # 普通 'a' 键
+        """其余 csi_u（非 Shift+Tab / Ctrl+字母 / 可打印 ASCII）保持 csi_u（供 input router 消费）。
+
+        方向1 修复：可打印 ASCII keycode（如 'a'=97）→ char 事件（增强键盘
+        终端正常打字）；仅非可打印未知 keycode 仍走 csi_u。
+        """
+        ev = InputParser._dispatch_csi([999, 1], 'u')  # 未知非可打印键
         assert ev.kind == "csi_u"
-        assert ev.keycode == 97
+        assert ev.keycode == 999
         assert ev.modifier == 1
 
 
@@ -226,16 +232,26 @@ class TestCsiUModifier1:
         assert InputParser._dispatch_csi([57419, 1], 'u').kind == "arrow_left"
         assert InputParser._dispatch_csi([57420, 1], 'u').kind == "arrow_right"
 
-    def test_modifier1_arrows_ascii(self):
-        """ASCII 变体 65-68（A/B/C/D）→ arrow。"""
-        assert InputParser._dispatch_csi([65, 1], 'u').kind == "arrow_up"
-        assert InputParser._dispatch_csi([66, 1], 'u').kind == "arrow_down"
-        assert InputParser._dispatch_csi([67, 1], 'u').kind == "arrow_right"
-        assert InputParser._dispatch_csi([68, 1], 'u').kind == "arrow_left"
+    def test_modifier1_ascii_chars(self):
+        """可打印 ASCII keycode（65='A'、66='B'、67='C'、68='D'）→ char 事件。
+
+        方向1 修复：CSI-u 协议中 keycode 即 ASCII 码（大写 A=65 等），
+        旧实现把 65-68 误映射方向键、小写/数字落入 csi_u no-op——增强键盘
+        终端无法正常打字。修复后可打印 ASCII → char（大写/小写/数字/标点）。
+        """
+        assert InputParser._dispatch_csi([65, 1], 'u').kind == "char"
+        assert InputParser._dispatch_csi([65, 1], 'u').char == "A"
+        assert InputParser._dispatch_csi([66, 1], 'u').char == "B"
+        assert InputParser._dispatch_csi([67, 1], 'u').char == "C"
+        assert InputParser._dispatch_csi([68, 1], 'u').char == "D"
+        assert InputParser._dispatch_csi([97, 1], 'u').char == "a"
+        assert InputParser._dispatch_csi([120, 1], 'u').char == "x"
+        assert InputParser._dispatch_csi([49, 1], 'u').char == "1"
+        assert InputParser._dispatch_csi([32, 1], 'u').char == " "
 
     def test_modifier1_unknown_kept_csi_u(self):
-        """未知 keycode modifier=1 仍走 csi_u（router 可消费，不静默丢）。"""
-        ev = InputParser._dispatch_csi([97, 1], 'u')
+        """未知非可打印 keycode modifier=1 仍走 csi_u（router 可消费，不静默丢）。"""
+        ev = InputParser._dispatch_csi([999, 1], 'u')
         assert ev.kind == "csi_u"
         assert ev.modifier == 1
 

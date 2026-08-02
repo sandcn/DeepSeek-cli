@@ -220,19 +220,33 @@ class TuiAssembly:
         )
 
 
+#: 当前活动会话（SIGWINCH 回调读取；``_make_sigwinch_cb`` 更新）。
+#:   方向1 修复：回调使用**稳定模块级函数**（身份恒定），``assemble`` 时仅
+#:   更新本引用——修复前每次 assemble 创建新闭包，``register_sigwinch_callback``
+#:   按身份去重（``cb not in _sigwinch_callbacks``）失败，旧闭包越积越多，
+#:   每次 resize 触发 N 个回调且持陈旧 session 引用（内存泄漏）。
+_active_session = None
+
+
+def _sigwinch_cb_impl(cols, rows):
+    """稳定 SIGWINCH 回调实现（模块级函数，身份恒定可去重）。"""
+    session = _active_session
+    if session is None:
+        return
+    # P2-9：不再裸吞异常——记录 debug 日志（SIGWINCH 刷新异常属非关键
+    # 降级，不阻断信号处理）。
+    try:
+        session._width_cache.force_refresh()
+        session.request_bottom_redraw()
+    except Exception:
+        _logger.debug("SIGWINCH 刷新异常", exc_info=True)
+
+
 def _make_sigwinch_cb(session):
-    """构建 SIGWINCH 回调（刷新宽度 + 请求重绘）。"""
-
-    def _on_sigwinch(cols, rows):
-        # P2-9：不再裸吞异常——记录 debug 日志（SIGWINCH 刷新异常属非关键
-        # 降级，不阻断信号处理）。
-        try:
-            session._width_cache.force_refresh()
-            session.request_bottom_redraw()
-        except Exception:
-            _logger.debug("SIGWINCH 刷新异常", exc_info=True)
-
-    return _on_sigwinch
+    """记录活动会话并返回稳定回调（模块级函数，身份恒定）。"""
+    global _active_session
+    _active_session = session
+    return _sigwinch_cb_impl
 
 
 def _make_reverse_search_cb(model, session):

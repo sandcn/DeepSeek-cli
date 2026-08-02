@@ -3,24 +3,37 @@
 from __future__ import annotations
 
 
-# 零宽字符集合（frozenset 预计算，O(1) 查找）
-_ZERO_WIDTH_CHARS = frozenset({
-    0x00AD,      # SOFT HYPHEN
-    0x200B,      # ZERO WIDTH SPACE
-    0x200C,      # ZERO WIDTH NON-JOINER
-    0x200D,      # ZERO WIDTH JOINER
-    0x200E,      # LEFT-TO-RIGHT MARK
-    0x200F,      # RIGHT-TO-LEFT MARK
-    0x2060,      # WORD JOINER
-    0x2061,      # FUNCTION APPLICATION
-    0x2062,      # INVISIBLE TIMES
-    0x2063,      # INVISIBLE SEPARATOR
-    0x2064,      # INVISIBLE PLUS
-    0xFE00, 0xFE01, 0xFE02, 0xFE03, 0xFE04,
-    0xFE05, 0xFE06, 0xFE07, 0xFE08, 0xFE09,
-    0xFE0A, 0xFE0B, 0xFE0C, 0xFE0D, 0xFE0E, 0xFE0F,  # 变体选择符
-    0xFEFF,      # ZERO WIDTH NO-BREAK SPACE / BOM
-})
+# 组合标记区段（零宽——终端以其上方基准字符渲染，不占列；与
+# ``src.tui._screen._ZERO_WIDTH_RANGES`` 对齐，双宽度函数一致——方向1 修复：
+# 修复前 cjk_display_width 把组合标记计宽 1，与 ink 布局的 wcswidth_simple
+# （计宽 0）不一致，同一文本在两处测量结果不同 → 含组合符的行换行/截断错位）。
+_COMBINING_MARK_RANGES: tuple[tuple[int, int], ...] = (
+    (0x0300, 0x036F),    # Combining Diacritical Marks
+    (0x1AB0, 0x1AFF),    # Combining Diacritical Marks Extended
+    (0x1DC0, 0x1DFF),    # Combining Diacritical Marks Supplement
+    (0x20D0, 0x20FF),    # Combining Diacritical Marks for Symbols
+    (0xFE20, 0xFE2F),    # Combining Half Marks
+    (0xE0100, 0xE01EF),  # Variation Selectors Supplement
+)
+
+
+def _zero_width_codepoints() -> frozenset:
+    """构建零宽码点集合（显式单点 + 组合标记区段展开）。"""
+    cps = {
+        0x00AD, 0x200B, 0x200C, 0x200D, 0x200E, 0x200F,
+        0x2060, 0x2061, 0x2062, 0x2063, 0x2064,
+        0xFE00, 0xFE01, 0xFE02, 0xFE03, 0xFE04,
+        0xFE05, 0xFE06, 0xFE07, 0xFE08, 0xFE09,
+        0xFE0A, 0xFE0B, 0xFE0C, 0xFE0D, 0xFE0E, 0xFE0F,  # 变体选择符
+        0xFEFF,  # ZERO WIDTH NO-BREAK SPACE / BOM
+    }
+    for lo, hi in _COMBINING_MARK_RANGES:
+        cps.update(range(lo, hi + 1))
+    return frozenset(cps)
+
+
+#: 零宽字符集合（frozenset 预计算，O(1) 查找）
+_ZERO_WIDTH_CHARS = _zero_width_codepoints()
 
 
 def cjk_display_width(s: str) -> int:
@@ -59,8 +72,13 @@ def cjk_display_width(s: str) -> int:
 
 # Emoji 宽符号范围（终端以 2 列渲染；与 wcwidth emoji-wide 集对齐）。
 # ⚠ 不含 ✔✎⚙✕ 等文本呈现符号（宽度 1）——误计为 2 会导致表格/布局错位。
+# 方向1（RI 码点）：首项拆为 (0x1F000, 0x1F1E5) + (0x1F200, 0x1FAFF)，排除
+# Regional Indicator（RI，0x1F1E6-0x1F1FF，国旗字母）——与
+# ``src.tui._screen._EMOJI_WIDE_RANGES`` 对齐（单 RI 计宽 1、成对 RI 按
+# 1×2=2 列）。修复前 (0x1F000, 0x1FAFF) 把单 RI 计宽 2，双宽度函数不一致。
 _EMOJI_WIDE: tuple[tuple[int, int], ...] = (
-    (0x1F000, 0x1FAFF),
+    (0x1F000, 0x1F1E5),   # 主要 emoji 块（📖📄🔍 等；不含 RI 码点）
+    (0x1F200, 0x1FAFF),   # 主要 emoji 块续（🈁 等；RI 码点 0x1F1E6-0x1F1FF 已排除）
     (0x231A, 0x231B),
     (0x23E9, 0x23EC),
     (0x23F0, 0x23F0),

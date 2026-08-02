@@ -369,9 +369,14 @@ class TestParsing:
         assert ev.kind == "delete"
 
     def test_dispatch_csi_u(self):
-        """测试 CSI u 模式（非 Enter 键）。"""
+        """测试 CSI u 模式（非 Enter 键）。
+
+        方向1 修复：可打印 ASCII keycode（如 'a'=97）→ char 事件（增强键盘
+        终端正常打字）——旧实现落入 csi_u no-op 被静默丢弃。
+        """
         ev = Input._dispatch_csi([97, 1], 'u')  # 'a' 键
-        assert ev.kind == "csi_u"
+        assert ev.kind == "char"
+        assert ev.char == "a"
         assert ev.keycode == 97
         assert ev.modifier == 1
 

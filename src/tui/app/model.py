@@ -6,6 +6,13 @@
 块列表：每个聊天块 = ChatBlock（kind + AnsiLine 行列表）。
 推理/内容通道：AnsiStreamRenderer 流式累积，PhaseDone 关闭后固化到块。
 阶段状态机：推理 INACTIVE/ACTIVE/CLOSED + content 关闭标志（多轮重开）。
+
+卡片结构：``committed_lines`` 为「卡片文档」——每块提交为
+``[角色头] + [正文] + [空行]``（无头 kind 为 ``[正文] + [空行]``，如
+user/write_line/splash/parse_info）。角色头经 ``_role_header_line`` 截断
+保证单行 ≤width；空行经 ``_append_card_trailer`` 在块关闭提交时追加恰好
+一次。正文-only 冻结缓存 ``_cached_ink_lines`` 不含卡片头/空行
+（``len == len(block.lines)`` 不变式）。
 """
 
 from __future__ import annotations
@@ -54,6 +61,11 @@ class ChatBlock:
     #: Line（含工具状态图标），供 ``_block_styled_lines`` 复用 ``Line.runs``
     #: 引用（免每帧 Style merge）。None=未冻结（开放块/未关闭）。
     _cached_ink_lines: list | None = None
+    #: 开放块 styled 引用缓存（dict[AnsiLine, list[StyledRun]]，方向1）——
+    #: ``_block_styled_lines`` 按行对象缓存 AnsiLine→StyledRun 转换结果，使
+    #: ``_measure`` 的 ``cache[0] is styled`` 身份快路径跨帧命中（大 open 块
+    #: 每帧零重建）。行被 block.lines 持有，dict 随 block GC 自然释放。
+    _open_styled_cache: dict | None = None
 
 
 @dataclass
@@ -131,6 +143,50 @@ def _tool_icon_runs(block) -> list:
     return [StyledRun("\u25cf ", StyleSheet.resolve("warn", Style(fg=214)))]
 
 
+def _role_header_runs(block, model) -> list:
+    """构建块角色头 StyledRun 列表（卡片首行，按 kind 选样式与文本）。
+
+    无头 kind（user/write_line/splash/parse_info）返回空列表（不占行）。
+    样式取活动调色板槽位（``get_active_palette()``，dark 下与既有常量同值）；
+    reasoning/error 用硬编码兜底（与正文样式语义一致）。
+    """
+    from src.tui.app._theme import get_active_palette
+    from src.tui.core.style import Style
+    from src.tui.ink import StyledRun
+    kind = block.kind
+    pal = get_active_palette()
+    if kind == "content":
+        return [StyledRun("\u258e", pal.accent_bold), StyledRun("回答", pal.text)]
+    if kind == "reasoning":
+        return [StyledRun("\u258d\U0001f4ad 思考", Style(fg=242, italic=True))]
+    if kind == "tool":
+        tool_name = block.extra.get("tool_name") or "工具"
+        return [StyledRun("\u258e\u26a1", pal.accent), StyledRun(f" 工具 {tool_name}", pal.dim)]
+    if kind == "notification":
+        return [StyledRun("\u258e", pal.notice), StyledRun("通知", pal.notice)]
+    if kind == "error":
+        return [StyledRun("\u258e错误", Style(fg=196, bold=True))]
+    if kind == "subagent":
+        return [StyledRun("\u258e", pal.dim), StyledRun("子代理", pal.dim)]
+    return []
+
+
+def _role_header_line(block, model, width) -> "Line | None":
+    """构建块角色头行（单行，截断至 width 满足行级 diff 宽度不变量）。
+
+    无头 kind 返回 None。头部必须单行且宽度 <= width（committed_lines 每行
+    ink Line 宽度 <= width 不变量）；width<=0 时保持原样（防御）。
+    """
+    runs = _role_header_runs(block, model)
+    if not runs:
+        return None
+    from src.tui.ink import Line
+    from src.tui.ink.helpers import truncate_runs
+    if width and width > 0:
+        runs = truncate_runs(runs, width)
+    return Line(runs)
+
+
 class AppModel:
     """聊天 UI 应用模型。"""
 
@@ -196,13 +252,14 @@ class AppModel:
         """
         if block.committed_line_count >= len(block.lines):
             return
-        # ★ 1.6：块首次提交（committed_line_count==0）记录标题行在
-        #   committed_lines 中的偏移（committed_lines 只增不删，偏移稳定），
-        #   供 close_tool_box 关闭时更新标题行状态图标。
+        # ★ 1.6：块首次提交（committed_line_count==0）记录卡片首行（角色头）
+        #   在 committed_lines 中的偏移（committed_lines 只增不删，偏移稳定），
+        #   供 close_tool_box 关闭时更新其后一行（正文标题）状态图标。
+        #   open 块不加卡片尾空行（_append_card_trailer 仅关闭提交时追加）。
         if block.committed_line_count == 0:
             block.extra.setdefault("_first_committed_offset", len(self.committed_lines))
         self.committed_lines.extend(
-            self._block_to_ink_lines(block, block.committed_line_count)
+            self._card_lines(block, block.committed_line_count)
         )
         block.committed_line_count = len(block.lines)
 
@@ -211,7 +268,8 @@ class AppModel:
 
         仅提交**连续的已关闭**块——前面若有未关闭块（如流式内容块）则停止，
         避免跳过开放块导致其后续行丢失。已增量提交的行（committed_line_count）
-        不再重复渲染。
+        不再重复渲染。卡片结构：本次有新增内容提交时经 ``_card_lines`` 发射
+        （首次提交带头行）并追加卡片尾空行 ``_append_card_trailer``。
 
         ★ 方向5（append_committed 冻结）：全块提交完成（closed 且
         committed_line_count == len(lines)）且尚未冻结时建立 ``_cached_ink_lines``
@@ -225,16 +283,24 @@ class AppModel:
             if not block.closed:
                 break
             if block.committed_line_count < len(block.lines):
-                # ★ 1.6：块首次提交（committed_line_count==0）记录标题行偏移
+                # ★ 1.6：块首次提交（committed_line_count==0）记录卡片首行偏移
                 #   （与 commit_open_block 一致——增量提交路径也须记录）。
                 if block.committed_line_count == 0:
                     block.extra.setdefault("_first_committed_offset", len(self.committed_lines))
                 self.committed_lines.extend(
-                    self._block_to_ink_lines(block, block.committed_line_count)
+                    self._card_lines(block, block.committed_line_count)
                 )
                 block.committed_line_count = len(block.lines)
+                # ★ 卡片尾空行：块关闭提交（本次有新增内容）时追加一个空行
+                #   分隔卡片——幂等重入（committed_line_count >= len(lines)
+                #   提前返回）时不再追加，空行恰好一次。
+                self._append_card_trailer(block)
             if block._cached_ink_lines is None:
                 block._cached_ink_lines = self._block_to_ink_lines(block, 0)
+                # ★ 方向1（内存回收）：冻结后开放 styled 缓存不再被
+                #   ``_block_styled_lines`` 使用（改走冻结缓存）——释放引用防
+                #   大会话累积（dict 持有全部已转换行引用）。
+                block._open_styled_cache = None
             self.committed_count += 1
 
     def _block_to_ink_lines(self, block, start: int = 0):
@@ -287,6 +353,34 @@ class AppModel:
                 out.append(Line(runs))
         return out
 
+    def _card_lines(self, block, start: int = 0):
+        """块卡片行：正文 + （首次提交时）角色头。
+
+        committed_lines 为「卡片文档」（角色头 + 正文 + 空行）。角色头仅在
+        start==0（块首次提交，committed_line_count==0）时前置一次；增量提交
+        （start>0）不再重复。冻结行 ``_cached_ink_lines`` 保持正文-only（不改，
+        测试锁定 ``len(_cached_ink_lines) == len(block.lines)``）。
+        """
+        out = self._block_to_ink_lines(block, start)
+        if start == 0:
+            header = _role_header_line(block, self, getattr(self, "width", 0))
+            if header is not None:
+                out = [header] + out
+        return out
+
+    def _append_card_trailer(self, block) -> None:
+        """块完全提交后追加卡片尾空行（卡片与下一条目分隔）。
+
+        仅当正文末行非空时追加（正文已以空行结尾则跳过，防双空行）。
+        committed_lines 原地增长（引用不变），前缀缓存兼容。
+        """
+        if not block.lines:
+            return
+        if getattr(block.lines[-1], "plain", "") == "":
+            return
+        from src.tui.ink import Line
+        self.committed_lines.append(Line())
+
     # ── 推理/内容通道 ───────────────────────────────
 
     def ensure_reasoning(self):
@@ -322,6 +416,7 @@ class AppModel:
             block = self.blocks[self.reasoning_block_index]
             block.closed = True
             block._cached_ink_lines = self._block_to_ink_lines(block, 0)
+            block._open_styled_cache = None  # 冻结后开放缓存不再需要
             self.commit_block(self.reasoning_block_index)
 
     def reopen_reasoning(self) -> None:
@@ -357,6 +452,7 @@ class AppModel:
             block = self.blocks[self.content_block_index]
             block.closed = True
             block._cached_ink_lines = self._block_to_ink_lines(block, 0)
+            block._open_styled_cache = None  # 冻结后开放缓存不再需要
             self.commit_block(self.content_block_index)
 
     def reopen_content(self) -> None:
@@ -490,11 +586,14 @@ class AppModel:
         #   Line 对象引用（增量缓存身份复用不破坏）；未触发增量提交的短工具
         #   （_first_committed_offset 不存在）关闭时经 commit_block 提交的标题行
         #   已带 done/fail 图标，无需更新。
+        #   卡片结构：``_first_committed_offset`` 指向卡片**首行（角色头）**；
+        #   带状态图标的正文标题行在其后一行（头部保证单行——_role_header_line
+        #   截断 → 正文标题恒在 offset+1）。
         offset = block.extra.get("_first_committed_offset")
-        if offset is not None and 0 <= offset < len(self.committed_lines):
+        if offset is not None and 0 <= offset + 1 < len(self.committed_lines):
             icon = _tool_icon_runs(block)
             if icon:
-                title_line = self.committed_lines[offset]
+                title_line = self.committed_lines[offset + 1]
                 # 替换图标 run（runs[0]），保留标题其余 run（runs[1:]）
                 title_line.runs = icon + list(title_line.runs)[1:]
 
@@ -505,6 +604,7 @@ class AppModel:
         #   对冻结缓存无意义）。关闭后 ``commit_block`` 追加剩余尾（含状态行），
         #   ``committed_line_count`` 计数保证不重复追加已提交行。
         block._cached_ink_lines = self._block_to_ink_lines(block, block.committed_line_count)
+        block._open_styled_cache = None  # 冻结后开放缓存不再需要
         self.commit_block(len(self.blocks) - 1)
 
     def _next_tool_id(self) -> str:

@@ -68,6 +68,12 @@ class _StdoutLineTracker:
         self._in_bottom_bar: bool = False
         self._output_buffer: list[str] = []
         self._buffer_lock = threading.Lock()
+        # ★ 方向1（追加写与压缩 rename 串行化）：文件级操作锁（进程内互斥）——
+        #   刷盘追加写（_flush_buffered_lines）与输出历史压缩（_maybe_compact_
+        #   output_history）并发时，压缩的 os.rename 会把追加写持有的旧 inode
+        #   换掉，追加行落入已删除文件 → 行丢失。本锁保证两段操作互斥；
+        #   跨进程安全仍由 _lock_history_file（flock）保证。
+        self._file_io_lock = threading.Lock()
         self._last_flush_time: float = time.monotonic()
         # BUG-T6：刷盘单飞标志 + 压缩冷却时间戳（既有测试引用）
         self._flush_in_progress: bool = False
@@ -240,17 +246,20 @@ class _StdoutLineTracker:
                 return True
             try:
                 self._output_history_file.parent.mkdir(parents=True, exist_ok=True)
-                with open(self._output_history_file, "a", encoding="utf-8") as f:
-                    locked = _lock_history_file(f.fileno(), shared=False)
-                    if not locked:
-                        return False
-                    try:
-                        for line in buf:
-                            f.write(line + "\n")
-                        f.flush()
-                        os.fsync(f.fileno())
-                    finally:
-                        _unlock_history_file(f.fileno())
+                # ★ 方向1：追加写持 _file_io_lock——与压缩（rename）互斥，
+                #   防止并发 rename 期间追加写入落旧 inode 丢失行。
+                with self._file_io_lock:
+                    with open(self._output_history_file, "a", encoding="utf-8") as f:
+                        locked = _lock_history_file(f.fileno(), shared=False)
+                        if not locked:
+                            return False
+                        try:
+                            for line in buf:
+                                f.write(line + "\n")
+                            f.flush()
+                            os.fsync(f.fileno())
+                        finally:
+                            _unlock_history_file(f.fileno())
             except OSError as exc:
                 _logger.warning("输出历史刷盘失败: %s", exc)
                 return False
@@ -367,58 +376,64 @@ class _StdoutLineTracker:
         方向2（压缩冷却修复）：``_last_compact_time`` 语义为「上次压缩执行
         时间」——通过冷却检查即更新（成功/尝试后）。修复前 ``_flush_buffered_lines``
         每次刷盘后更新该字段 → now-last<30 恒成立 → 压缩永不触发。
+
+        方向1（并发压缩修复）：整段操作（冷却检查 + 读 + 写 tmp + rename）持
+        ``_file_io_lock``——与 ``_flush_buffered_lines`` 的追加写串行化（防止
+        rename 期间追加写落旧 inode 丢行）；冷却检查同锁内读，双线程不会同时
+        通过检查并发压缩（第二次压缩在锁内重读文件行数已 <=5000 自然跳过）。
         """
-        if time.monotonic() - self._last_compact_time < _COMPACT_COOLDOWN:
-            return False
-        # 通过冷却检查 → 记录本次压缩尝试（防频繁检查）
-        self._last_compact_time = time.monotonic()
-        try:
-            path = self._output_history_file
-            if not path.exists():
+        with self._file_io_lock:
+            if time.monotonic() - self._last_compact_time < _COMPACT_COOLDOWN:
                 return False
-
-            with open(path, "r", encoding="utf-8", errors="replace") as f:
-                locked = _lock_history_file(f.fileno(), shared=False)
-                if not locked:
-                    return False
-                try:
-                    content = f.read()
-                finally:
-                    _unlock_history_file(f.fileno())
-
-            if not content:
-                return False
-
-            lines = content.splitlines()
-            if len(lines) <= 5000:
-                return False
-
-            # 去重（保留首次出现的行）+ 取最后2000行
-            seen: set[str] = set()
-            unique: list[str] = []
-            for line in lines:
-                if line not in seen:
-                    unique.append(line)
-                    seen.add(line)
-
-            keep = unique[-2000:] if len(unique) > 2000 else unique
-
-            # 原子写入
-            tmp_path = path.with_suffix(".tmp")
-            with open(tmp_path, "w", encoding="utf-8") as tmp:
-                for line in keep:
-                    tmp.write(line + "\n")
-                tmp.flush()
-                os.fsync(tmp.fileno())
-            os.rename(tmp_path, path)
-            _logger.debug("输出历史压缩完成: %d行→去重%d行→保留%d行", len(lines), len(unique), len(keep))
-            return True
-
-        except (OSError, FileNotFoundError) as exc:
-            _logger.warning("输出历史压缩失败: %s", exc)
+            # 通过冷却检查 → 记录本次压缩尝试（防频繁检查）
+            self._last_compact_time = time.monotonic()
             try:
-                tmp_path = self._output_history_file.with_suffix(".tmp")
-                tmp_path.unlink(missing_ok=True)
-            except OSError:
-                pass
-            return False
+                path = self._output_history_file
+                if not path.exists():
+                    return False
+
+                with open(path, "r", encoding="utf-8", errors="replace") as f:
+                    locked = _lock_history_file(f.fileno(), shared=False)
+                    if not locked:
+                        return False
+                    try:
+                        content = f.read()
+                    finally:
+                        _unlock_history_file(f.fileno())
+
+                if not content:
+                    return False
+
+                lines = content.splitlines()
+                if len(lines) <= 5000:
+                    return False
+
+                # 去重（保留首次出现的行）+ 取最后2000行
+                seen: set[str] = set()
+                unique: list[str] = []
+                for line in lines:
+                    if line not in seen:
+                        unique.append(line)
+                        seen.add(line)
+
+                keep = unique[-2000:] if len(unique) > 2000 else unique
+
+                # 原子写入
+                tmp_path = path.with_suffix(".tmp")
+                with open(tmp_path, "w", encoding="utf-8") as tmp:
+                    for line in keep:
+                        tmp.write(line + "\n")
+                    tmp.flush()
+                    os.fsync(tmp.fileno())
+                os.rename(tmp_path, path)
+                _logger.debug("输出历史压缩完成: %d行→去重%d行→保留%d行", len(lines), len(unique), len(keep))
+                return True
+
+            except (OSError, FileNotFoundError) as exc:
+                _logger.warning("输出历史压缩失败: %s", exc)
+                try:
+                    tmp_path = self._output_history_file.with_suffix(".tmp")
+                    tmp_path.unlink(missing_ok=True)
+                except OSError:
+                    pass
+                return False

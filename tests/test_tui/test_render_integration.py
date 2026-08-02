@@ -173,8 +173,9 @@ class TestOverwidthLineWrap:
         model.width = 40
         line = AnsiLine.of("a" * 100, Style(fg=1))  # 100 列 ASCII，超宽
         model.append_committed("content", [line])
-        assert len(model.committed_lines) == 3, (
-            f"100 列 / width 40 应拆 3 行（40+40+20），实际 {len(model.committed_lines)}"
+        # 卡片结构：角色头 + 3 行 wrap 正文 + 卡片尾空行 = 5
+        assert len(model.committed_lines) == 5, (
+            f"100 列 / width 40 应拆 3 行（40+40+20）+ 头 + 空行，实际 {len(model.committed_lines)}"
         )
         for ln in model.committed_lines:
             assert ln.width <= 40, f"committed ink Line 宽度 {ln.width} 应 <= 40"
@@ -188,8 +189,9 @@ class TestOverwidthLineWrap:
         model.width = 40
         line = AnsiLine.of("你" * 30, Style(fg=2))  # 30×2=60 列，超宽
         model.append_committed("content", [line])
-        assert len(model.committed_lines) == 2, (
-            f"60 列 / width 40 应拆 2 行（20+10），实际 {len(model.committed_lines)}"
+        # 卡片结构：角色头 + 2 行 wrap 正文 + 卡片尾空行 = 4
+        assert len(model.committed_lines) == 4, (
+            f"60 列 / width 40 应拆 2 行（20+10）+ 头 + 空行，实际 {len(model.committed_lines)}"
         )
         for ln in model.committed_lines:
             assert ln.width <= 40, f"committed ink Line 宽度 {ln.width} 应 <= 40"
@@ -203,8 +205,9 @@ class TestOverwidthLineWrap:
         model.width = 40
         line = AnsiLine.of("hello", Style(fg=1))
         model.append_committed("content", [line])
-        assert len(model.committed_lines) == 1
-        assert model.committed_lines[0].width == 5
+        # 卡片结构：角色头 + 正文 + 卡片尾空行 = 3；正文（下标 1）宽度 == 5
+        assert len(model.committed_lines) == 3
+        assert model.committed_lines[1].width == 5
 
 
 # ═══════════════════════════════════════════════════════════
@@ -239,17 +242,21 @@ class TestToolTitleIconUpdate:
         offset = block.extra.get("_first_committed_offset")
         assert offset is not None, "增量提交应记录 _first_committed_offset"
         assert 0 <= offset < len(model.committed_lines), "偏移应指向 committed_lines 内"
-        # 关闭前：标题行图标为 running ●
-        assert model.committed_lines[offset].plain.startswith("\u25cf"), (
+        # 卡片结构：offset 指向角色头；带状态图标的正文标题行在 offset+1
+        assert "工具" in model.committed_lines[offset].plain, (
+            "offset 应指向卡片角色头"
+        )
+        # 关闭前：正文标题行图标为 running ●
+        assert model.committed_lines[offset + 1].plain.startswith("\u25cf"), (
             "关闭前 committed_lines 标题行应为 running ●"
         )
         model.close_tool_box("t1", True)
-        # 关闭后：标题行图标为 done ✔
-        assert model.committed_lines[offset].plain.startswith("\u2714"), (
+        # 关闭后：正文标题行图标为 done ✔
+        assert model.committed_lines[offset + 1].plain.startswith("\u2714"), (
             "关闭后 committed_lines 标题行图标应更新为 ✔"
         )
         # 标题文本保留（图标替换不丢失标题内容；bash 显示名经 registry 缩写为 bs）
-        assert len(model.committed_lines[offset].plain) > len("\u2714"), (
+        assert len(model.committed_lines[offset + 1].plain) > len("\u2714"), (
             "标题行图标更新后应保留标题文本"
         )
 
@@ -262,7 +269,7 @@ class TestToolTitleIconUpdate:
         offset = block.extra.get("_first_committed_offset")
         assert offset is not None
         model.close_tool_box("t2", False)
-        assert model.committed_lines[offset].plain.startswith("\u2716"), (
+        assert model.committed_lines[offset + 1].plain.startswith("\u2716"), (
             "关闭后 committed_lines 标题行图标应更新为 ✖"
         )
 
@@ -274,11 +281,15 @@ class TestToolTitleIconUpdate:
         model.open_tool_box("t3", "read_file")
         model.append_tool_output("t3", "brief")
         model.close_tool_box("t3", True)
-        # 关闭后标题行（committed_lines 首行）直接带 ✔——未触发增量提交时
-        # close 经 commit_block 提交的标题行已带 done 图标，无需 offset 更新路径。
+        # 关闭后正文标题行（committed_lines[1]，下标 0 为角色头）直接带 ✔——
+        # 未触发增量提交时 close 经 commit_block 提交的标题行已带 done 图标，
+        # 无需 offset 更新路径。
         assert model.committed_lines, "关闭后 committed_lines 不应为空"
-        assert model.committed_lines[0].plain.startswith("\u2714"), (
-            "短工具关闭后 committed_lines 标题行应为 ✔"
+        assert model.committed_lines[0].plain.startswith("\u258e"), (
+            "短工具关闭后 committed_lines 首行应为角色头"
+        )
+        assert model.committed_lines[1].plain.startswith("\u2714"), (
+            "短工具关闭后 committed_lines 正文标题行应为 ✔"
         )
 
 

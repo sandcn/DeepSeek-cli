@@ -360,17 +360,39 @@ class TestToolBox:
         m.close_tool_box("t1", True)
         # 关闭后全部行已提交（committed_line_count == len）
         assert block.committed_line_count == len(block.lines)
-        # 无重复行：committed_lines 长度 == 块行数（每 AnsiLine → 1 ink Line）
-        assert len(m.committed_lines) == len(block.lines), (
-            f"关闭后 committed_lines 与块行应一一对应，committed={len(m.committed_lines)} lines={len(block.lines)}"
+        # 无重复行：卡片结构下 committed_lines = 块行 + 角色头 + 卡片尾空行
+        # （每 AnsiLine → 1 ink Line；头/空行各 1 行额外）
+        assert len(m.committed_lines) == len(block.lines) + 2, (
+            f"关闭后 committed_lines 应 = 块行 + 头 + 空行，committed={len(m.committed_lines)} lines={len(block.lines)}"
         )
         committed_plains = [l.plain for l in m.committed_lines]
-        assert "✔" in committed_plains[-1]
+        # 尾行为卡片空行；✔ 在正文标题行（去空行后）
+        assert committed_plains[-1] == ""
+        assert "✔" in "".join(committed_plains)
         assert any("line0" in p for p in committed_plains)
         assert any("line69" in p for p in committed_plains)
         # 内容顺序：line0 在前、line69 在后
         assert committed_plains.index(next(p for p in committed_plains if "line0" in p)) < \
                committed_plains.index(next(p for p in committed_plains if "line69" in p))
+
+    def test_commit_open_block_header_once_trailer_once(self):
+        """卡片结构：commit_open_block 多次增量提交角色头恰好一次；关闭后尾空行恰好一次。"""
+        m = _model()
+        m.open_tool_box("t1", "read_file")
+        block = m.blocks[-1]
+        # 输出行数远超阈值 → 多次 commit_open_block 增量提交
+        for i in range(200):
+            m.append_tool_output("t1", f"line{i}\n")
+        assert block.committed_line_count > 0
+        # 角色头仅首次提交（committed_line_count==0）发射一次
+        headers = [l for l in m.committed_lines if l.plain.startswith("\u258e\u26a1")]
+        assert len(headers) == 1, f"角色头应恰好一次，实际 {len(headers)}"
+        # 开放块未关闭 → 尚无卡片尾空行（无空 plain 行）
+        assert all(l.plain != "" for l in m.committed_lines), "开放块不应有尾空行"
+        m.close_tool_box("t1", True)
+        # 关闭提交（新增状态行）→ 卡片尾空行恰好一次
+        assert m.committed_lines[-1].plain == "", "关闭后应有卡片尾空行"
+        assert sum(1 for l in m.committed_lines if l.plain == "") == 1, "尾空行应恰好一次"
 
     def test_tool_output_under_threshold_no_incremental(self):
         """工具输出 <64 行 → 不触发增量提交（committed_line_count 保持 0）。"""

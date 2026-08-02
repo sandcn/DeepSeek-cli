@@ -232,7 +232,13 @@ def ansi_to_runs(text: str, base_style: Style | None = None) -> list[Run]:
             buf = ""
         style, is_reset = parse_sgr_params(m.group(1))
         if is_reset:
+            # ★ 组合 SGR「重置 + 颜色」修复（方向1）：``\x1b[0;31m`` 等
+            #   （Pygments/Rich 常输出）——终端语义先 reset 再应用颜色。
+            #   修复前直接 ``current = Style()`` 把同序列解析出的 fg=31 丢弃，
+            #   reset 后文本渲染成默认色而非红色。
             current = Style() if base_style is None else base_style
+            if style:
+                current = current.merge(style)
         else:
             current = current.merge(style) if style else current
     if pos < len(text):

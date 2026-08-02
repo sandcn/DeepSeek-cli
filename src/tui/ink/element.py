@@ -22,6 +22,10 @@ TEXT = "text"
 STATIC = "static"
 SPACER = "spacer"
 APP = "app"
+#: Fragment — 透明分组容器（React Fragment 等价）。不产生独立布局盒，
+#: 子节点直接流入父容器布局（layout_children 扁平化）。用于组件返回
+#: 多个兄弟而不引入额外嵌套盒（BOX 会引入 padding/border/自身 box）。
+FRAGMENT = "fragment"
 
 #: 元素类型 — host 标签字符串或 function component。
 ElementType = Union[str, Callable[..., Any]]

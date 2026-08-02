@@ -83,13 +83,21 @@ def _skip_function(fiber: Fiber | None) -> Fiber | None:
 
 
 def layout_children(fiber: Fiber) -> list[Fiber]:
-    """返回 fiber 的直接 host 子节点（跳过 function 链）。"""
+    """返回 fiber 的直接 host 子节点（跳过 function 链）。
+
+    方向1（Fragment 支持）：Fragment host（``fragment``）为透明分组容器——
+    其子节点递归扁平化直接流入父容器布局（不产生独立布局盒）。嵌套 Fragment
+    经递归自然展开。
+    """
     result: list[Fiber] = []
     child = fiber.child
     while child is not None:
         host = _skip_function(child)
         if host is not None:
-            result.append(host)
+            if host.is_host and host.type == "fragment":
+                result.extend(layout_children(host))
+            else:
+                result.append(host)
         child = child.sibling
     return result
 
@@ -178,7 +186,6 @@ def _distribute_extra(
     children: list[Fiber],
     weight_fn: Callable[[Fiber], int],
     total_extra: int,
-    cursor_y: int,
     inner_y: int,
     margin: int,
     direction: int = 1,
@@ -201,8 +208,7 @@ def _distribute_extra(
         children: 直接 host 子节点。
         weight_fn: 权重解析函数（``_flex_grow`` 或 ``_flex_shrink``）。
         total_extra: 待分配的总余数（>0 才有意义）。
-        cursor_y: 起始 y 游标（未使用——统一从 inner_y 重排）。
-        inner_y: 容器内边距后的起始 y。
+        inner_y: 容器内边距后的起始 y（统一从 inner_y 重排）。
         margin: 子节点间距（每子累计）。
         direction: 分配方向——``1`` 增加高度（flexGrow）；``-1`` 缩减高度
             （flexShrink）。
@@ -231,6 +237,76 @@ def _distribute_extra(
         cb.y = cursor
         child.layout_box = cb
         cursor += cb.h + margin
+
+
+def _reflow_row_justify(
+    children: list[Fiber],
+    justify: str,
+    start_x: int,
+    margin: int,
+    extra: int,
+) -> None:
+    """row justifyContent 重排子节点 x（space-between/space-around/space-evenly）。
+
+    方向1（完善 flexbox）：横向主轴剩余宽度分布——与 column justifyContent
+    （纵向，已实现）对称。三种模式均从 ``start_x`` 起重排 x（忽略 grow/align
+    已产生的偏移；调用点在 row flexGrow 之后，grow 消费剩余则 extra≈0 不触发）：
+
+      - ``space-between``：首子靠左、末子靠右，中间等间隔（gaps = n-1）；
+      - ``space-evenly``：含边缘等间隔（slots = n+1）；
+      - ``space-around``：每子两侧等半间隔（边缘半间隔、中间整间隔，2n 单位）。
+
+    余数（extra % slots）逐个加到前若干个间隔上（视觉差 ≤1 列，可接受）。
+
+    Args:
+        children: 直接 host 子节点（已测量，layout_box 非 None）。
+        justify: space-between / space-around / space-evenly。
+        start_x: 内边距后的起始 x。
+        margin: 子节点间距（每子累计）。
+        extra: 待分配的剩余宽度（>0 才有意义）。
+    """
+    n = len(children)
+    if n == 0:
+        return
+    widths = [child.layout_box.w for child in children]
+    if justify == "space-between":
+        gaps = n - 1
+        per = extra // gaps if gaps else 0
+        rem = extra % gaps if gaps else 0
+        cx = start_x
+        for i, child in enumerate(children):
+            cb = child.layout_box
+            cb.x = cx
+            cx += cb.w
+            if i < gaps:
+                cx += margin + per + (1 if i < rem else 0)
+            child.layout_box = cb
+    elif justify == "space-evenly":
+        slots = n + 1
+        per = extra // slots
+        rem = extra % slots
+        gaps = [per] * slots
+        for i in range(rem):
+            gaps[i] += 1
+        cx = start_x + gaps[0]
+        for i, child in enumerate(children):
+            cb = child.layout_box
+            cb.x = cx
+            cx += cb.w + margin + gaps[i + 1]
+            child.layout_box = cb
+    else:  # space-around：2n 半间隔（边缘半间隔、中间整间隔）
+        half_units = 2 * n
+        per = extra // half_units
+        rem = extra % half_units
+        gaps = [per if i in (0, n) else per * 2 for i in range(n + 1)]
+        for i in range(rem):
+            gaps[i % (n + 1)] += 1
+        cx = start_x + gaps[0]
+        for i, child in enumerate(children):
+            cb = child.layout_box
+            cb.x = cx
+            cx += cb.w + margin + gaps[i + 1]
+            child.layout_box = cb
 
 
 def _reflow_subtree(fiber: Fiber, new_y: int) -> None:
@@ -466,6 +542,51 @@ def _measure(fiber: Fiber, x: int, y: int, avail_w: int, fill: bool = True) -> L
         else:
             content_w = cursor_x - inner_x
             width = max(0, min(avail_w, content_w + 2 * (padding + border)))
+        # ★ row flexGrow（方向1 完善 flexbox）：显式宽度富余时按 flexGrow 分配
+        #   额外宽度（横向主轴 grow——修复前 flexGrow 仅作用于 column 高度）。
+        inner_w_row = max(0, width - 2 * (padding + border))
+        used_w = cursor_x - inner_x
+        extra_w = max(0, inner_w_row - used_w)
+        grow_total = 0
+        for child in children:
+            grow_total += _flex_grow(child)
+        if grow_total > 0 and extra_w > 0:
+            per = extra_w // grow_total
+            remainder = extra_w % grow_total
+            g_idx = 0
+            for child in children:
+                g = _flex_grow(child)
+                if g > 0:
+                    cb = child.layout_box
+                    cb.w += per * g + (1 if g_idx < remainder else 0)
+                    child.layout_box = cb
+                    g_idx += 1
+            # 重排 x（grow 改变宽度后；最后子节点不计 margin）
+            cx = inner_x
+            for i, child in enumerate(children):
+                cb = child.layout_box
+                cb.x = cx
+                cx += cb.w
+                if i < len(children) - 1:
+                    cx += margin
+                child.layout_box = cb
+            # grow 消费全部剩余 → justify 无偏移（CSS flexbox 语义）
+            used_w = inner_w_row
+            extra_w = 0
+        # ★ row justifyContent（方向1 完善 flexbox）：横向主轴剩余宽度分布——
+        #   center → 所有子节点 x += extra//2；flex-end → x += extra；
+        #   space-between/space-around/space-evenly → 按间隔重排（_reflow_row_justify）。
+        #   flex-start（默认）不变。与 row flexGrow 语义重叠（grow 先分）。
+        justify = fiber.props.get("justifyContent", "flex-start")
+        if justify in ("center", "flex-end") and extra_w > 0:
+            offset = extra_w // 2 if justify == "center" else extra_w
+            for child in children:
+                cb = child.layout_box
+                if cb is not None:
+                    cb.x += offset
+                    child.layout_box = cb
+        elif justify in ("space-between", "space-around", "space-evenly") and extra_w > 0:
+            _reflow_row_justify(children, justify, inner_x, margin, extra_w)
         # ★ alignItems（方向3，已实现）：row 横向对齐子节点 y 偏移——
         #   center → 每子 y += (row_h - cbox.h)//2；flex-end → y += (row_h - cbox.h)；
         #   stretch（默认）无偏移（当前行为）。
@@ -505,14 +626,29 @@ def _measure(fiber: Fiber, x: int, y: int, avail_w: int, fill: bool = True) -> L
         cursor_y = inner_y
         total_h = 0
         n = len(children)
+        # ★ column alignItems（方向1 完善 flexbox）：横轴对齐——center/flex-end
+        #   时子节点按**自然宽度**测量（不填充 stretch）再横向偏移；stretch
+        #   （默认）保持现状填充。子节点显式 width 不受影响（_measure 优先
+        #   显式宽度）。仅子节点自然宽度 < 容器内宽时产生偏移。
+        align = fiber.props.get("alignItems", "stretch")
+        child_fill = fill if align == "stretch" else False
         for i, child in enumerate(children):
             # fill 沿树传播：fill=False（row 内）时子节点内容自适应（孙 TEXT 不
             # 填满 BOX 内部，BOX 宽度才能由内容决定而非固定填充）。
-            cbox = _measure(child, inner_x, cursor_y, inner_w, fill=fill)
+            cbox = _measure(child, inner_x, cursor_y, inner_w, fill=child_fill)
             cursor_y += cbox.h + margin
             total_h += cbox.h
             if i < n - 1:
                 total_h += margin
+        if align in ("center", "flex-end") and inner_w > 0:
+            for child in children:
+                cb = child.layout_box
+                if cb is not None and cb.w < inner_w:
+                    if align == "center":
+                        cb.x += (inner_w - cb.w) // 2
+                    else:
+                        cb.x += (inner_w - cb.w)
+                    child.layout_box = cb
 
     content_h = total_h if children else 0
     h = content_h + 2 * (padding + border)
@@ -530,7 +666,7 @@ def _measure(fiber: Fiber, x: int, y: int, avail_w: int, fill: bool = True) -> L
         deficit = (content_h + 2 * (padding + border)) - h
         if shrink_total > 0 and deficit > 0:
             _distribute_extra(
-                children, _flex_shrink, deficit, inner_y, inner_y, margin,
+                children, _flex_shrink, deficit, inner_y, margin,
                 direction=-1, clamp_min=1,
             )
             # ★ flexShrink 孙节点重排（方向1）：shrink 修改直接子节点高度后
@@ -555,7 +691,7 @@ def _measure(fiber: Fiber, x: int, y: int, avail_w: int, fill: bool = True) -> L
             # 2/1 → text0.h=6 但 y=0、text1.h=4 但 y=1 垂直重叠）；写回
             # cb.y = cursor_y 后光标再按新高度累加。
             _distribute_extra(
-                children, _flex_grow, remaining, inner_y, inner_y, margin,
+                children, _flex_grow, remaining, inner_y, margin,
             )
 
     # ★ justifyContent（方向3，已实现）：column 纵向对齐基于 flexGrow 分配后
@@ -564,8 +700,12 @@ def _measure(fiber: Fiber, x: int, y: int, avail_w: int, fill: bool = True) -> L
     #   flexGrow 先分（子节点高度增长），justify 基于分配后剩余；grow 分尽则
     #   extra≈0 无偏移（符合 CSS flexbox 语义）。性能：仅在有剩余空间时计算
     #   （不引入每帧 O(树) 无条件遍历）。
+    #   方向1（完善 flexbox）：仅 column 走本块——row 的横向 justifyContent
+    #   已在 row 分支处理（本块 n 仅在 column 分支定义，row 路径引用会
+    #   UnboundLocalError，原实现隐含依赖「row 无 justifyContent 消费方」）。
     justify = fiber.props.get("justifyContent", "flex-start")
-    if justify in ("center", "flex-end") and children:
+    if direction == "column" and justify in ("center", "flex-end") and children:
+        n = len(children)
         children_total = 0
         for child in children:
             cb = child.layout_box

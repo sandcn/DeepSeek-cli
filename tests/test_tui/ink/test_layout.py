@@ -695,6 +695,221 @@ class TestJustifyContentAlignItems:
         assert texts[1].layout_box.y == 0
 
 
+class TestRowFlexboxComplete:
+    """方向1（完善 flexbox）— row flexGrow / row justifyContent / column alignItems。"""
+
+    def _collect_texts(self, root):
+        texts = []
+        child = root.child.child
+        while child:
+            texts.append(child)
+            child = child.sibling
+        return texts
+
+    # ── row flexGrow（横向主轴 grow） ──
+
+    def test_row_flexgrow_equal(self):
+        """row width=10 + 两子 flexGrow=1 → 每子 +3（extra 6/2），x 重排 0/5。"""
+        root, box = _render_and_layout(
+            h(BOX, {"flexDirection": "row", "width": 10},
+              h(TEXT, {"children": "ab", "flexGrow": 1}),
+              h(TEXT, {"children": "cd", "flexGrow": 1})),
+            80,
+        )
+        texts = self._collect_texts(root)
+        assert box.w == 10
+        assert [t.layout_box.w for t in texts] == [5, 5]
+        assert [t.layout_box.x for t in texts] == [0, 5]
+
+    def test_row_flexgrow_weighted(self):
+        """row flexGrow=2/1 → 宽度分配 6/4（2:1）。"""
+        root, box = _render_and_layout(
+            h(BOX, {"flexDirection": "row", "width": 10},
+              h(TEXT, {"children": "ab", "flexGrow": 2}),
+              h(TEXT, {"children": "cd", "flexGrow": 1})),
+            80,
+        )
+        texts = self._collect_texts(root)
+        assert [t.layout_box.w for t in texts] == [6, 4]
+        assert [t.layout_box.x for t in texts] == [0, 6]
+
+    def test_row_flexgrow_no_extra_unchanged(self):
+        """无富余宽度（内容占满）→ flexGrow 不改变宽度。"""
+        root, box = _render_and_layout(
+            h(BOX, {"flexDirection": "row", "width": 4},
+              h(TEXT, {"children": "ab", "flexGrow": 1}),
+              h(TEXT, {"children": "cd", "flexGrow": 1})),
+            80,
+        )
+        texts = self._collect_texts(root)
+        assert [t.layout_box.w for t in texts] == [2, 2]
+
+    # ── row justifyContent ──
+
+    def test_row_justify_center(self):
+        """row+center：extra=6 → 每子 x += 3。"""
+        root, box = _render_and_layout(
+            h(BOX, {"flexDirection": "row", "width": 10, "justifyContent": "center"},
+              h(TEXT, {"children": "ab"}),
+              h(TEXT, {"children": "cd"})),
+            80,
+        )
+        texts = self._collect_texts(root)
+        assert [t.layout_box.x for t in texts] == [3, 5]
+
+    def test_row_justify_flex_end(self):
+        """row+flex-end：extra=6 → 每子 x += 6。"""
+        root, box = _render_and_layout(
+            h(BOX, {"flexDirection": "row", "width": 10, "justifyContent": "flex-end"},
+              h(TEXT, {"children": "ab"}),
+              h(TEXT, {"children": "cd"})),
+            80,
+        )
+        texts = self._collect_texts(root)
+        assert [t.layout_box.x for t in texts] == [6, 8]
+
+    def test_row_justify_space_between(self):
+        """row+space-between：三子 "ab/cd/ef" extra=4 → 首左末右等间隔。"""
+        root, box = _render_and_layout(
+            h(BOX, {"flexDirection": "row", "width": 10, "justifyContent": "space-between"},
+              h(TEXT, {"children": "ab"}),
+              h(TEXT, {"children": "cd"}),
+              h(TEXT, {"children": "ef"})),
+            80,
+        )
+        texts = self._collect_texts(root)
+        assert [t.layout_box.x for t in texts] == [0, 4, 8]
+
+    def test_row_justify_space_evenly(self):
+        """row+space-evenly：三子 extra=4 slots=4 per=1 → x = 1/4/7。"""
+        root, box = _render_and_layout(
+            h(BOX, {"flexDirection": "row", "width": 10, "justifyContent": "space-evenly"},
+              h(TEXT, {"children": "ab"}),
+              h(TEXT, {"children": "cd"}),
+              h(TEXT, {"children": "ef"})),
+            80,
+        )
+        texts = self._collect_texts(root)
+        assert [t.layout_box.x for t in texts] == [1, 4, 7]
+
+    def test_row_justify_space_around(self):
+        """row+space-around：三子 "ab/cd/ef" width=12 extra=6 per=1 → x = 1/5/9。"""
+        root, box = _render_and_layout(
+            h(BOX, {"flexDirection": "row", "width": 12, "justifyContent": "space-around"},
+              h(TEXT, {"children": "ab"}),
+              h(TEXT, {"children": "cd"}),
+              h(TEXT, {"children": "ef"})),
+            80,
+        )
+        texts = self._collect_texts(root)
+        assert [t.layout_box.x for t in texts] == [1, 5, 9]
+
+    def test_row_justify_flex_start_default(self):
+        """row 默认 flex-start：无偏移（回归）。"""
+        root, box = _render_and_layout(
+            h(BOX, {"flexDirection": "row", "width": 10},
+              h(TEXT, {"children": "ab"}),
+              h(TEXT, {"children": "cd"})),
+            80,
+        )
+        texts = self._collect_texts(root)
+        assert [t.layout_box.x for t in texts] == [0, 2]
+
+    # ── column alignItems（横轴对齐） ──
+
+    def test_column_align_center(self):
+        """column+center：子节点按自然宽度测量并横向居中。"""
+        root, box = _render_and_layout(
+            h(BOX, {"width": 10, "alignItems": "center"},
+              h(TEXT, {"children": "ab"}),
+              h(TEXT, {"children": "cd"})),
+            80,
+        )
+        texts = self._collect_texts(root)
+        assert box.w == 10
+        assert [t.layout_box.w for t in texts] == [2, 2]  # 自然宽度（非填充）
+        assert [t.layout_box.x for t in texts] == [4, 4]  # (10-2)//2
+
+    def test_column_align_flex_end(self):
+        """column+flex-end：子节点靠右对齐。"""
+        root, box = _render_and_layout(
+            h(BOX, {"width": 10, "alignItems": "flex-end"},
+              h(TEXT, {"children": "ab"}),
+              h(TEXT, {"children": "cd"})),
+            80,
+        )
+        texts = self._collect_texts(root)
+        assert [t.layout_box.x for t in texts] == [8, 8]  # 10-2
+
+    def test_column_align_stretch_default(self):
+        """column 默认 stretch：子节点填充容器宽（回归）。"""
+        root, box = _render_and_layout(
+            h(BOX, {"width": 10},
+              h(TEXT, {"children": "ab"})),
+            80,
+        )
+        text = root.child.child
+        assert text.layout_box.w == 10
+        assert text.layout_box.x == 0
+
+
+class TestFragment:
+    """方向1（完善 ink）— Fragment 透明分组容器：子节点流入父容器布局。"""
+
+    def test_fragment_flattens_into_parent(self):
+        """Fragment 包裹两个 TEXT → 与直接子节点同布局（无额外 box）。"""
+        root, box = _render_and_layout(
+            h(BOX, {"width": 80},
+              h("fragment", None,
+                h(TEXT, {"children": "a"}),
+                h(TEXT, {"children": "b"}))),
+            80,
+        )
+        # fiber 树仍含 fragment 节点；layout_children 布局时扁平化——
+        # fragment 的 TEXT 子节点直接以父容器坐标布局（y=0/1，无 box 偏移）
+        frag = root.child.child
+        assert frag.type == "fragment"
+        first = frag.child
+        assert first.type == "text"
+        assert first.layout_box.y == 0
+        second = first.sibling
+        assert second.type == "text"
+        assert second.layout_box.y == 1
+        assert box.h == 2
+
+    def test_fragment_nested_flattens(self):
+        """嵌套 Fragment 递归扁平化。"""
+        root, box = _render_and_layout(
+            h(BOX, {"width": 80},
+              h("fragment", None,
+                h("fragment", None,
+                  h(TEXT, {"children": "a"}),
+                  h(TEXT, {"children": "b"})))),
+            80,
+        )
+        outer = root.child.child
+        assert outer.type == "fragment"
+        inner = outer.child
+        assert inner.type == "fragment"
+        first = inner.child
+        assert first.type == "text"
+        assert first.layout_box.y == 0
+        assert first.sibling.type == "text"
+        assert box.h == 2
+
+    def test_fragment_paints_children(self):
+        """Fragment 子节点经 render_frame 正确渲染。"""
+        root, _ = _render_and_layout(
+            h(BOX, {"width": 80},
+              h("fragment", None,
+                h(TEXT, {"children": "hi"})),
+              h(TEXT, {"children": "yo"})),
+            80,
+        )
+        frame = render_frame(root, 80)
+        assert [line.plain for line in frame.lines] == ["hi", "yo"]
+
+
 class TestMalformedWidthFallback:
     """方向1 步骤3 — width 畸形兜底（_resolve_width 收敛，4 处 int(explicit_w) 统一）。"""
 

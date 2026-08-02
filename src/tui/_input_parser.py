@@ -283,8 +283,13 @@ class InputParser:
             # ★ 方向2（CSI u 增强键盘协议 modifier=1 映射）：无修饰键的
             #   Enter/Tab/Home/End/方向键在增强键盘协议下发送 ``keycode;1u``——
             #   修复前这些事件落入 ``csi_u`` 被静默丢弃（P3-4 no-op 分支）。
-            #   方向键覆盖 kitty 码位（57417-57420）与 ASCII 变体（A/B/C/D）。
-            #   未知 keycode modifier=1 仍走 csi_u（router 可消费，不静默丢）。
+            #   方向键覆盖 kitty 码位（57417-57420）——**不含 ASCII 变体**
+            #   （方向1 修复：CSI-u 协议中 keycode 65/66/67/68 即大写字母
+            #   A/B/C/D，不是方向键；旧映射把增强键盘终端输入的大写字母吞成
+            #   方向键。遗留 CSI 箭头 ``\x1b[A`` 已由下方终结符分支处理）。
+            #   未知 keycode modifier=1 且为可打印 ASCII（32-126）→ char 事件
+            #   （大写/小写字母、数字、标点经 CSI-u 输入的修复——旧实现落入
+            #   csi_u no-op 被静默丢弃）；其余仍走 csi_u（router 可消费）。
             if modifier == 1:
                 if keycode == 13:
                     return KeyEvent(kind="enter", modifier=1, keycode=keycode, raw=raw)
@@ -294,14 +299,22 @@ class InputParser:
                     return KeyEvent(kind="home", modifier=1, keycode=keycode, raw=raw)
                 if keycode == 4:
                     return KeyEvent(kind="end", modifier=1, keycode=keycode, raw=raw)
-                if keycode in (57417, 65):   # ↑ / ASCII A
+                if keycode == 57417:   # ↑
                     return KeyEvent(kind="arrow_up", modifier=1, keycode=keycode, raw=raw)
-                if keycode in (57418, 66):   # ↓ / ASCII B
+                if keycode == 57418:   # ↓
                     return KeyEvent(kind="arrow_down", modifier=1, keycode=keycode, raw=raw)
-                if keycode in (57419, 68):   # ← / ASCII D
+                if keycode == 57419:   # ←
                     return KeyEvent(kind="arrow_left", modifier=1, keycode=keycode, raw=raw)
-                if keycode in (57420, 67):   # → / ASCII C
+                if keycode == 57420:   # →
                     return KeyEvent(kind="arrow_right", modifier=1, keycode=keycode, raw=raw)
+                # ★ CSI-u 可打印 ASCII 键（无修饰键）→ char 事件（方向1 修复：
+                #   kitty/wezterm/iTerm2 等增强键盘终端输入普通字母/数字/标点
+                #   发送 ``keycode;1u``——keycode 即 ASCII 码（如 'A'=65）。
+                #   修复前大写 A/B/C/D 被误映射方向键、小写字母/数字落入
+                #   csi_u no-op 被静默丢弃，CSI-u 终端无法正常打字。）
+                if 32 <= keycode <= 126:
+                    return KeyEvent(kind="char", char=chr(keycode), modifier=1,
+                                    keycode=keycode, raw=raw)
             # 方向A 步骤1：CSI u Ctrl+字母（keycode 97-122, modifier=5）→ 复用
             # _decode_control_char(keycode-96) 语义（Ctrl+A=Home、Ctrl+W=delete word 等）。
             if 97 <= keycode <= 122 and modifier == 5:

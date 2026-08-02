@@ -164,6 +164,13 @@ def _paint_impl(fiber: Fiber, canvas: list[dict]) -> None:
     if ftype == "spacer":
         return  # 空行已由画布预置
 
+    if ftype == "fragment":
+        # 透明分组容器：直接绘制子节点（无独立 box——layout_children 已将
+        # fragment 扁平化；本分支为防御，覆盖 fragment 被直接调度的路径）
+        for child in layout_children(fiber):
+            _paint(child, canvas)
+        return
+
     # ── 自定义 host（注册表） ──
     from .registry import get_host
     host = get_host(ftype)

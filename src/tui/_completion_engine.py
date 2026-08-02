@@ -231,8 +231,10 @@ class CompletionEngine:
         if cursor_pos is not None and cursor_pos >= 0:
             text = text[:cursor_pos]
 
-        # 获取最后一个词（空格分隔）
-        words = text.split()
+        # 获取最后一个词（空格分隔；方向1 修复：用 ``split(" ")`` 保留末尾
+        # 空词——``text.split()`` 丢弃末尾空串，输入 ``"cd "`` 时 last_word
+        # 取到 "cd" 把 "cd" 当文件前缀补全，而非枚举当前目录）。
+        words = text.split(" ")
         last_word = words[-1] if words else ""
 
         if last_word.startswith("/"):

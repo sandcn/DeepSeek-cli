@@ -288,8 +288,6 @@ class EventDispatcher:
             parts.append(f"\n> 错误: {event.error}\n")
         if event.result:
             parts.append(event.result)
-        if not event.error and not event.result:
-            parts.append("\n_空结果_\n")
         self._push_cmd(SubagentMarkdownCmd(text="\n".join(parts)))
 
 

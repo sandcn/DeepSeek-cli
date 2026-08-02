@@ -44,9 +44,20 @@ def ToolStatusHeader(props) -> object:
         return h(BOX, None, [])
     palette = get_active_palette()
     title_runs = _build_header_runs(active, palette)
-    lines = build_border_box(title_runs, None, width=max(1, width - 1), status="open")
-    runs = [StyledRun(r.text, r.style) for line in lines for r in line.runs if r.text]
-    return h(BOX, None, [h(TEXT, {"styled": runs, "height": 1})])
+    # ★ 方向1（美化/健壮性）：边框颜色用活动调色板 ``palette.border``（主题
+    #   一致；dark 与硬编码 fg=23 同值，零视觉回归）；边框块各行分别渲染为
+    #   独立 TEXT 行——修复前把全部行 runs 扁平进单个 height=1 的 TEXT（多行
+    #   边框块会被压进一行错乱；当前 body_lines=None 仅单行标题，行为一致）。
+    lines = build_border_box(
+        title_runs, None, width=max(1, width - 1),
+        status="open", border_style=palette.border,
+    )
+    children = []
+    for line in lines:
+        runs = [StyledRun(r.text, r.style) for r in line.runs if r.text]
+        if runs:
+            children.append(h(TEXT, {"styled": runs, "height": 1}))
+    return h(BOX, None, children)
 
 
 __all__ = ["ToolStatusHeader", "_build_header_runs"]

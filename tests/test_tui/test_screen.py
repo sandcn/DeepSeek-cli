@@ -152,6 +152,31 @@ class TestWcswidth:
                 f"二分实现与线性参考不一致: {s!r}"
             )
 
+    def test_width_functions_alignment_regression(self):
+        """双宽度函数一致（方向1 修复）：renderer 的 cjk_display_width 与 ink 的
+        wcswidth_simple 对同一文本返回相同宽度。
+
+        修复前 cjk_display_width 把组合标记计宽 1（_ZERO_WIDTH_CHARS 缺组合
+        区段）、单 RI 计宽 2（_EMOJI_WIDE 含 RI）——与 wcswidth_simple 分歧，
+        同一文本在两处测量不同 → 含组合符/国旗的行换行/截断错位。本测试锁定
+        两函数对关键样本结果一致。
+        """
+        from src.renderer._utils import cjk_display_width
+        samples = [
+            "a\u0301",          # 组合重音（修复前 cjk=2 / wcs=1）
+            "\U0001F1E8\U0001F1F3",  # 🇨🇳 成对 RI（修复前 cjk=4 / wcs=2）
+            "\U0001F1E8",       # 单 RI（修复前 cjk=2 / wcs=1）
+            "\u200D",           # ZWJ
+            "\U0001F468\u200D\U0001F469\u200D\U0001F467",  # 👨👩👧 ZWJ 序列
+            "\u4F60\u597D",     # 你好
+            "\U0001F4D6",       # 📖
+            "hello\u4E16\u754C",  # hello世界
+        ]
+        for s in samples:
+            assert cjk_display_width(s) == wcswidth_simple(s), (
+                f"双宽度函数不一致: {s!r} cjk={cjk_display_width(s)} wcs={wcswidth_simple(s)}"
+            )
+
     def test_width_cache_singleton_lock_regression(self):
         """TerminalWidthCache.get_default 并发首次调用返回同一实例（双检锁）。"""
         import threading

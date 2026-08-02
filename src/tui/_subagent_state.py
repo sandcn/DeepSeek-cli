@@ -155,6 +155,12 @@ class StateStore:
             slot = self._agents.get(label)
             if slot is None:
                 return
+            # ★ 方向1（parsing 阶段清除修复）：工具转为 running 时清除
+            #   model_phase 的 "parsing" 指示（update_tool_parsing 设置的）——
+            #   修复前工具运行/完成后面板仍显示 "…parsing"，直到后续
+            #   set_model_phase/clear_parse_info 到达。
+            if slot.model_phase == "parsing":
+                slot.model_phase = ""
             # 将已有 parsing 记录转换为 running，避免重复创建
             for rec in reversed(slot.tool_history):
                 if rec.tool_name == tool_name and rec.phase == "parsing":

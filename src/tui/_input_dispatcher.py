@@ -404,7 +404,16 @@ class InputDispatcher:
                                  raw=ch.encode("utf-8", errors="replace"))
                     )
             else:
-                self.capture_bytes(bytes([first_byte]))
+                # ★ 方向1（慢速多字节首字节重复捕获修复）：read_utf8_char 返回
+                #   None 有两种情况——(1) 已读字节可组成合法 UTF-8 前缀 → 存入
+                #   ``_io._utf8_partial``（字节已保留待补齐，后续作为完整 char
+                #   事件分发）；(2) 首字节非法/无法组成前缀 → 清空丢弃。仅情况
+                #   (2) 才 capture first_byte（供 prefill 捕获）——修复前两种
+                #   情况都 capture，情况 (1) 保留的首字节稍后补齐分发时又被
+                #   capture，drain_captured 把孤立首字节解码为 U+FFFD 泄漏进
+                #   会话 prefill。
+                if not getattr(self._io, "_utf8_partial", b""):
+                    self.capture_bytes(bytes([first_byte]))
         except Exception:
             _logger.warning("多字节 UTF-8 字符分发异常", exc_info=True)
         return True
@@ -473,7 +482,10 @@ class InputDispatcher:
                 self._sync_reverse_search()
                 return
             self._dismiss_completion()
-            if not self._suppress_enter:
+            # ★ 方向1（加锁读取）：与其他访问统一经 get_suppress_enter()
+            # （带 _suppress_enter_lock）——修复前此处直接读裸字段，与 setter
+            # 加锁不一致（GIL 下原子读良性，但并发访问模式不一致）。
+            if not self.get_suppress_enter():
                 self._buffer_editor._enter()
             else:
                 # editmsg 选择确认 CR 被抑制后标记残留 LF（\n），

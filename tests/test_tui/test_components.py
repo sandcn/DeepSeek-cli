@@ -50,6 +50,25 @@ class TestChatView:
         line = next(l for l in f.lines if "bold" in l.plain)
         assert any(r.style is not None and r.style.bold for r in line.runs)
 
+    def test_card_role_headers_and_blank_separator(self):
+        """卡片结构：回答卡带头行（▎回答），用户卡无头，用户与回答卡之间空白行分隔。"""
+        m = AppModel()
+        apply_cmd(m, UserMsgCmd(text="question"))
+        apply_cmd(m, ContentCmd(text="# Answer\n\nbody text\n"))
+        apply_cmd(m, PhaseDoneCmd(phase="content"))
+        f = _frame(m)
+        plains = [l.plain for l in f.lines]
+        assert any("\u258e" in p and "\u56de\u7b54" in p for p in plains)  # ▎回答
+        # 用户卡无角色头：帧首行即用户正文（无 ▎ 头行）
+        assert plains[0] == "  > question", "用户卡不应有角色头"
+        # 用户卡（正文 "  > question"）与回答卡（▎回答）之间应有空白行（用户卡尾空行）
+        i_user = next(i for i, p in enumerate(plains) if p.startswith("  > question"))
+        i_answer = next(i for i, p in enumerate(plains) if "\u56de\u7b54" in p)
+        assert i_user < i_answer
+        assert any(p == "" for p in plains[i_user + 1:i_answer]), (
+            "用户与回答卡之间应有空白行"
+        )
+
 
 class TestInputArea:
     def test_input_line_renders(self):

@@ -1,8 +1,11 @@
-"""App — 根组件：<Box><Static>ChatView</Static><SubAgentPanel/><StatusBar/><input-area/></Box>。
+"""App — 根组件：flexbox column 布局消息区 + 底部区。
 
 组件树结构（非全屏流动模型）：
+  - 消息区（flexGrow=1）：Static 聊天历史 + 实时解析行 + 工具状态头 +
+    subagent 面板——「占据剩余高度」意图（非全屏流动模型高度由内容驱动，
+    无固定视口时 grow 为空操作；未来引入高度约束即生效）。
+  - 底部区：状态栏 + 输入区（固定内容高度）。
   - Static 包裹聊天历史（静态内容，首差异行之前永不重写）
-  - SubAgentPanel / StatusBar / input-area 为尾部 live 区（随内容流动）
 """
 
 from __future__ import annotations
@@ -37,16 +40,25 @@ def App(props) -> object:
         "history_search": model.history_search,
     }
 
-    children = [
+    # ★ 方向1（Flexbox 布局消息区 + 底部区）：根容器 flexbox column——消息区
+    #   （flexGrow=1，聊天历史/实时解析行/工具状态头/subagent 面板）与底部区
+    #   （状态栏 + 输入区）分组。非全屏流动模型下 grow 为空操作（高度内容
+    #   驱动），结构清晰、语义明确；未来引入高度约束（视口 pin）即生效。
+    message_area = [
         h(STATIC, None, [h(ChatView, {"model": model})]),
         h(_ParseLine, {"model": model}),
         # Claude TUI parity 步骤 2.1：顶部工具调用状态区（live 区，不占行时零成本）
         h(ToolStatusHeader, {"model": model, "width": width}),
         h(SubAgentPanel, {"model": model, "width": width}),
+    ]
+    bottom_area = [
         h(StatusBar, {"model": model, "width": width}),
         h("input-area", input_props),
     ]
-    return h(APP, {"width": width}, children)
+    return h(APP, {"width": width, "flexDirection": "column"}, [
+        h(BOX, {"flexGrow": 1}, message_area),
+        h(BOX, None, bottom_area),
+    ])
 
 
 def _ParseLine(props) -> object:

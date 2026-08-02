@@ -270,7 +270,8 @@ class TestChatViewCompositeKey:
         root = r.create_root()
         r.render(root, build_app_element(m, 80), 80, 24)
         fibers1 = self._chat_fibers(root)
-        assert len(fibers1) >= 2  # 标题 + out1/out2 已渲染
+        # 卡片 live 路径：角色头 key（chat-{idx}-h）+ 标题 + out1/out2 已渲染
+        assert len(fibers1) >= 3
 
         # 流式追加新行（开放工具块追加输出）
         m.append_tool_output("t1", "out3\n")

@@ -3,13 +3,20 @@
 静态历史（已提交块）渲染一次并缓存到 ``model.committed_lines``，每帧经
 ``committed-chat`` host **直接发射**（免逐字符重绘）；仅未提交块（当前
 流式块）常规渲染。大历史下渲染成本 O(live + 新增)，不再 O(全部历史)。
+
+卡片结构：committed_lines 为「卡片文档」（角色头 + 正文 + 空行），经
+``committed-chat`` host 原样发射（``props["lines"]`` 即卡片行列表）。
+未提交（live）块的**角色头**经 ``_role_header_line`` 在正文行之前发射
+（仅 ``committed_line_count == 0`` 时——已增量提交的头已在 committed_lines，
+互斥不重复）；正文行仍走 ``_block_styled_lines``（正文-only，不带头）。
 """
 
 from __future__ import annotations
 
+from src.renderer.ansi.helpers import Run
+from src.tui.app.model import _role_header_line
 from src.tui.core.style import Style
 from src.tui.ink import h, BOX, TEXT, StyledRun, Line, register_host, use_memo
-from src.renderer.ansi.helpers import Run
 
 _S_REASONING = Style(fg=242, italic=True)
 
@@ -43,15 +50,26 @@ def _block_styled_lines(block, start: int = 0) -> list[list[StyledRun]]:
         #   增量提交后 start=committed_line_count 越界返回空 → 尾部渲染丢失）。
         return [line.runs for line in cache[0:]]
     slice_lines = block.lines[start:]
+    # ★ 方向1（open 块 styled 引用缓存）：开放块行转换结果按**行对象**缓存于
+    #   block——修复前每帧 ``_to_styled_runs`` 重建全部 StyledRun 列表（新对象
+    #   每帧），``_measure`` 的 ``cache[0] is styled`` 身份快路径恒 miss →
+    #   每帧 O(chars) style_fingerprint + 列表比较 + 潜在重包裹（大 open 块
+    #   帧成本 O(全部行)）。缓存后同 line 引用返回同一 runs 列表对象 → 身份
+    #   命中 → 零重建。行对象被 block.lines 持有，dict 随 block GC 自然释放。
+    open_cache = getattr(block, "_open_styled_cache", None)
+    if open_cache is None:
+        open_cache = {}
+        block._open_styled_cache = open_cache
     out: list[list[StyledRun]] = []
     for line in slice_lines:
-        runs = _to_styled_runs(line)
-        if kind == "reasoning" and runs:
-            # 推理行叠加 dim/italic 基础样式
-            merged = [StyledRun(r.text, (r.style or Style()).merge(_S_REASONING)) for r in runs]
-            out.append(merged)
-        else:
-            out.append(runs)
+        runs = open_cache.get(line)
+        if runs is None:
+            runs = _to_styled_runs(line)
+            if kind == "reasoning" and runs:
+                # 推理行叠加 dim/italic 基础样式
+                runs = [StyledRun(r.text, (r.style or Style()).merge(_S_REASONING)) for r in runs]
+            open_cache[line] = runs
+        out.append(runs)
     if kind == "tool" and start == 0 and out:
         # 开放工具块：标题前置状态图标（running ●；关闭块已在冻结缓存中）
         from src.tui.app.model import _tool_icon_runs
@@ -144,6 +162,16 @@ def ChatView(props) -> object:
     for block_idx, block in enumerate(
         model.blocks[model.committed_count:], start=model.committed_count,
     ):
+        # 卡片角色头（live 路径）：块尚未有任何增量提交（committed_line_count
+        # == 0）时在正文行前发射——已提交的头在 committed_lines 中，此处不再
+        # 重复（互斥）。头独立 key ``chat-{block_idx}-h``（不与整数行号冲突）。
+        if block.committed_line_count == 0:
+            header_line = _role_header_line(block, model, getattr(model, "width", 0))
+            if header_line is not None:
+                children.append(h(TEXT, {
+                    "key": f"chat-{block_idx}-h",
+                    "styled": header_line.runs,
+                }))
         # 开放块只渲染未提交尾（已增量提交的行在缓存中，不再重建）
         for row_in_block, runs in enumerate(
             _block_styled_lines(block, block.committed_line_count)
