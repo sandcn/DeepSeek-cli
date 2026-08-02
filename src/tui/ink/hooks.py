@@ -134,12 +134,25 @@ def _next_hook(hook_cls: type, *init_args) -> HookNode:
 # use_state / use_reducer
 # ═══════════════════════════════════════════════════════════
 
+#: 惰性初始值待解析哨兵（use_state/use_reducer 的 initial 为 callable 时标记；
+#: 首个渲染期解析一次，后续渲染忽略——React useState 惰性初始化语义）。
+_INIT_PENDING = object()
+
 
 def _next_state_hook(reducer: Callable[[Any, Any], Any] | None, initial: Any) -> StateHook:
-    """获取/创建当前 fiber 的下一个 StateHook 并应用待处理更新。"""
-    hook = _next_hook(StateHook, initial, None, reducer)
+    """获取/创建当前 fiber 的下一个 StateHook 并应用待处理更新。
+
+    React 惰性初始化（方向1）：initial 为 callable 时仅首个渲染调用一次
+    （``hook.state is _INIT_PENDING`` 标记），后续渲染复用既有 state——
+    修复前 callable initial 被原样存入 state（渲染出 ``<function ...>``）且
+    每次渲染重新求值（意外副作用）。
+    """
+    init_value = _INIT_PENDING if callable(initial) else initial
+    hook = _next_hook(StateHook, init_value, None, reducer)
     if reducer is not None:
         hook.reducer = reducer
+    if hook.state is _INIT_PENDING:
+        hook.state = initial() if callable(initial) else initial
     if hook.queue:
         if hook.reducer is not None:
             # use_reducer：queue 中为 action，经 reducer 归约
@@ -191,17 +204,28 @@ def use_state(initial: Any) -> tuple[Any, Callable[[Any], None]]:
     return (hook.state, _make_setter(_current(), hook))
 
 
-def use_reducer(reducer: Callable[[Any, Any], Any], initial: Any) -> tuple[Any, Callable[[Any], None]]:
+def use_reducer(
+    reducer: Callable[[Any, Any], Any],
+    initial: Any,
+    init: Callable[[Any], Any] | None = None,
+) -> tuple[Any, Callable[[Any], None]]:
     """React useReducer 等价物。
 
     Args:
         reducer: (state, action) -> new_state。
-        initial: 初始状态。
+        initial: 初始状态（init 提供时作为 init 参数传入）。
+        init: 惰性初始化函数 ``(initial) -> 初始 state``（React useReducer
+            第三参，方向1）；提供时仅首渲染调用一次。
 
     Returns:
         (state, dispatch) 元组。dispatch 接受 action。
     """
-    hook = _next_state_hook(reducer, initial)
+    if init is not None:
+        # 惰性初始化：initial 作为参数传入 init；经 _next_state_hook 的
+        # callable 惰性路径求值（``lambda: init(initial)`` 仅首渲染调用）。
+        hook = _next_state_hook(reducer, (lambda: init(initial)))
+    else:
+        hook = _next_state_hook(reducer, initial)
     return (hook.state, _make_setter(_current(), hook))
 
 

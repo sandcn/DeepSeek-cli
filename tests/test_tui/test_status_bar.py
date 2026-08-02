@@ -244,5 +244,7 @@ class TestStatusBarSeparatorWidth:
             frame = render_frame(root, 80)
         status_line = frame.lines[1]
         assert status_line.width <= 80
-        # 前缀 2 列（空）+ 模型名点 + 模型名
-        assert status_line.plain.startswith("  \u00b7 test-model")
+        # 前缀 2 列（空）+ 状态指示字符（`·` 空闲 / spinner 活跃）+ 模型名
+        assert status_line.plain.startswith("  ")
+        assert status_line.plain[2] != " "
+        assert "test-model" in status_line.plain

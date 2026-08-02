@@ -519,3 +519,30 @@ class TestToolCard:
         f = _frame(m)
         plains = [l.plain for l in f.lines]
         assert any("\u2716" in p and "Bash" in p for p in plains)
+
+
+class TestStreamingPlaceholderAnimation:
+    """BEAUTY-8 — 流式占位符动画点（status_active 时 0.25s 帧推进）。"""
+
+    def _streaming_placeholder(self, now: float) -> str:
+        from unittest.mock import patch
+        with patch("src.tui.app.input_area.time.monotonic", return_value=now):
+            m = AppModel()
+            m.status.status_active = True
+            f = _frame(m, width=60)
+        for l in f.lines:
+            if "AI \u751f\u6210\u4e2d" in l.plain:
+                return l.plain
+        return ""
+
+    def test_placeholder_dots_animate(self):
+        p0 = self._streaming_placeholder(100.0)   # n_dots=0
+        p1 = self._streaming_placeholder(100.25)  # n_dots=1
+        p2 = self._streaming_placeholder(100.5)   # n_dots=2
+        p3 = self._streaming_placeholder(100.75)  # n_dots=3
+        p4 = self._streaming_placeholder(101.0)   # n_dots=0 循环
+        assert p0.endswith("AI \u751f\u6210\u4e2d")
+        assert p1.endswith("AI \u751f\u6210\u4e2d.")
+        assert p2.endswith("AI \u751f\u6210\u4e2d..")
+        assert p3.endswith("AI \u751f\u6210\u4e2d...")
+        assert p4.endswith("AI \u751f\u6210\u4e2d")

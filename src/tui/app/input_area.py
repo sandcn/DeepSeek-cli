@@ -46,7 +46,10 @@ from src.tui.app._theme import time_glow, _S_ACCENT, _S_DIM, _S_SEP, _S_TEXT, _S
 # 占位符
 _PLACEHOLDER_TEXT = "输入消息 · /help 查看命令 · Ctrl+N 切换模型 · Tab 补全"
 _PLACEHOLDER_COMPACT = "/help · Ctrl+N · Tab"
+#: 流式占位符完整显示（保留既有值/外部引用）
 _PLACEHOLDER_STREAMING = "AI 生成中..."
+#: 流式占位符动画基文本（无尾点；BEAUTY-8 动态追加 0-3 个点循环）
+_PLACEHOLDER_STREAMING_BASE = "AI 生成中"
 
 _PROMPT = "> "
 
@@ -105,9 +108,13 @@ def _desc_column_width(width: int) -> int:
 
     取终端宽度 1/3，钳制到 [8, 40]，且给左栏选项至少预留 12 列——
     极窄终端（width<20）下右栏同步缩小，避免左栏被挤压溢出。
+    极窄分支：宽度下限钳制到可用宽度（≤ width-1，左栏至少 1 列）——
+    修复前 ``max(8, ...)`` 在 width<20 时右栏恒 8 超过终端总宽，
+    分栏行总宽溢出终端。
     """
-    max_w = max(8, int(width) - 12)
-    return max(8, min(int(width) // 3, 40, max_w))
+    if int(width) < 20:
+        return max(1, min(int(width) - 1, int(width) // 2))
+    return max(8, min(int(width) // 3, 40, int(width) - 12))
 
 
 def _completion_height(completion, width=None) -> int:
@@ -178,6 +185,9 @@ def _build_lines(fiber) -> list[Line]:
     #   起始后 elapsed < fade_duration）用 0.1s 桶平滑渐显（避免 1s 桶内渐显
     #   冻结）；结束后回 1s 桶（性能保持，与 status_bar 语义对齐）；
     #   fade_duration<=0（配置异常）回退纯 1s 桶。
+    #   BEAUTY-8：status_active 期间恒用 0.1s 桶——流式占位符动画点
+    #   （``AI 生成中.`` 推进）以 10Hz 平滑刷新（流式期间帧率本就 10Hz，
+    #   零额外渲染成本）；空闲回 1s 桶（静态显示，CPU 保持低占用）。
     now = time.monotonic()
     fade_key = getattr(fiber, "_placeholder_fade_key", None)
     fading = False
@@ -185,7 +195,10 @@ def _build_lines(fiber) -> list[Line]:
         fade_elapsed = now - fade_key[1]
         fade_duration = _fx._DEFAULT_FADE_DURATION
         fading = fade_duration > 0 and fade_elapsed < fade_duration
-    time_bucket = int(now / 0.1) if fading else int(now / 1.0)
+    if status_active or fading:
+        time_bucket = int(now / 0.1)
+    else:
+        time_bucket = int(now / 1.0)
     if completion is not None:
         completion_snap = (
             completion.visible,
@@ -363,18 +376,26 @@ def _build_lines(fiber) -> list[Line]:
                 line.append(segment, _S_TEXT)
             else:
                 if status_active:
-                    ph = _PLACEHOLDER_STREAMING
+                    # BEAUTY-8：流式占位符动画点（0.25s 帧推进；
+                    # 渐显键用稳定基文本——动画点变化不重置 FadeIn）
+                    base_ph = _PLACEHOLDER_STREAMING_BASE
+                    n_dots = int(now * 4) % 4
+                    ph = base_ph + "." * n_dots
                 else:
-                    ph = _PLACEHOLDER_COMPACT if (completion is not None and completion.visible) else _PLACEHOLDER_TEXT
+                    base_ph = _PLACEHOLDER_COMPACT if (completion is not None and completion.visible) else _PLACEHOLDER_TEXT
+                    ph = base_ph
                 # 方向1 步骤4（窄屏防溢出）：占位符截断至剩余输入区宽度
                 # （提示符后；_truncate_width 不拆 CJK）——width < 占位符长度
-                # 时不再撑爆行宽。截断后的 ph 作为渐显键（同占位符持续显示
-                # 语义一致）。
+                # 时不再撑爆行宽。截断后的 base_ph 作为渐显键（同占位符持续
+                # 显示语义一致）。
                 ph_budget = max(1, width - len(_PROMPT))
                 if wcswidth_simple(ph) > ph_budget:
                     ph = _truncate_width(ph, ph_budget)
+                fade_key_ph = base_ph
+                if wcswidth_simple(fade_key_ph) > ph_budget:
+                    fade_key_ph = _truncate_width(fade_key_ph, ph_budget)
                 # BEAUTY-1：占位提示 FadeIn 渐显（时间基；_glow_color 呼吸色为终色）
-                line.append(ph, Style(fg=_placeholder_fade_color(fiber, ph, _glow_color(242, 10))))
+                line.append(ph, Style(fg=_placeholder_fade_color(fiber, fade_key_ph, _glow_color(242, 10))))
         else:
             line.append("\u00b7 ", _S_CONT)
             line.append(segment, _S_TEXT)
@@ -462,9 +483,15 @@ def _paint(fiber, canvas) -> None:
         row = box.y + i
         if 0 <= row < len(canvas):
             # ★ 画布惰性行（方向4）：canvas 初始 None——仅未命中行创建 dict；
-            #   自定义 host paint 与内置 TEXT 共用惰性语义。
+            #   自定义 host paint 与内置 TEXT 共用惰性语义。行可能为 Line
+            #   （x==0 快路径写入的兄弟节点）→ 归一并合并（修复前对 Line
+            #   直接 ``row[col]=...`` 抛 TypeError，内容被 _paint 隔离吞掉）。
             target = canvas[row]
-            if target is None:
+            if isinstance(target, Line):
+                from src.tui.ink.components import _line_as_dict
+                target = _line_as_dict(target)
+                canvas[row] = target
+            elif target is None:
                 target = {}
                 canvas[row] = target
             _merge(target, box.x, line)

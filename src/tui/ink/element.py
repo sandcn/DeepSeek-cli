@@ -72,16 +72,29 @@ def _type_key(type_: ElementType) -> str:
 
 
 def _as_element(child: Any) -> Element:
-    """将子元素规范化为 Element（字符串 → Text 元素）。"""
+    """将子元素规范化为 Element（字符串 → Text 元素）。
+
+    None/True/False 子级（React null/boolean 语义）转为空 Text 元素——
+    ``_normalize_children`` 已在上游过滤（不创建 fiber）；此处兜底防御。
+    """
     if isinstance(child, Element):
         return child
+    if child is None or child is True or child is False:
+        return Element(TEXT, {"children": ""}, ())
     return Element(TEXT, {"children": str(child)}, ())
 
 
 def _normalize_children(children: Sequence[Any]) -> tuple[Element, ...]:
-    """扁平化子元素序列：list/tuple 子级展开，其余转为 Element。"""
+    """扁平化子元素序列：list/tuple 子级展开，其余转为 Element。
+
+    React 语义（方向1）：``None/True/False`` 子级渲染为空（不产生内容）。
+    修复前 None 子级转为 Text "None"（如 ``h(BOX, None, [el, None, el2])``
+    中间多出一行 "None" 文本）——条件式 children 的常见误用。
+    """
     out: list[Element] = []
     for c in children:
+        if c is None or c is True or c is False:
+            continue
         if isinstance(c, (list, tuple)):
             out.extend(_normalize_children(c))
         else:

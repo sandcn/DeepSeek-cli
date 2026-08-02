@@ -32,6 +32,11 @@ from . import layout as _layout
 
 _logger = logging.getLogger(__name__)
 
+#: 内置 host 标签集合——绝不可能是 context provider（create_context 生成
+#: 唯一 ``__ctx_*__`` 标签；内置标签无 provider 注册路径）。reconciler
+#: begin_work 跳过注册表 dict 查找（流式开放块每行 TEXT 各省一次 dict miss）。
+_BUILTIN_HOSTS = frozenset({"text", "box", "static", "spacer", "app", "fragment"})
+
 
 def _is_same_type(old_fiber: Fiber, element: Element) -> bool:
     """判断旧 fiber 与新元素 type 是否相同（决定是否复用）。"""
@@ -139,17 +144,36 @@ class Reconciler:
         相同复用、不同删除重建。有显式 key 的元素保持 key 匹配。同 key 重复
         元素经 ``seen_keys`` 检测记 warning（当前静默创建新 fiber 行为保留）。
         """
-        existing_map: dict[str, Fiber] = {}
-        old_index_map: dict[str, int] = {}
         old_list: list[Fiber] = []
         child = return_fiber.child
-        idx = 0
         while child is not None:
-            existing_map[child.key] = child
-            old_index_map[child.key] = idx
             old_list.append(child)
             child = child.sibling
-            idx += 1
+
+        # ★ 性能（方向1）：空元素快路径——直接删除全部旧子链（跳过 map
+        #   构建与消费循环；``_mark_deleted`` 置 sibling=None，先取 next）。
+        if not elements:
+            c = return_fiber.child
+            while c is not None:
+                nxt = c.sibling
+                self._mark_deleted(c)
+                c = nxt
+            return_fiber.child = None
+            return
+
+        # ★ 性能（方向1）：append-only 稳定列表快路径——前 N 个位置 key/type
+        #   与旧链一致时按序复用（免构建 key maps / consumed 集合）。流式
+        #   开放块每帧 1000 行 TEXT（key ``chat-{i}-{row}``）场景关键收益：
+        #   ``_try_reuse_stable`` 为 O(N) 线性比较，命中原 2 dict + 1 set
+        #   分配 + 逐项 dict 查找。
+        if self._try_reuse_stable(return_fiber, old_list, elements):
+            return
+
+        existing_map: dict[str, Fiber] = {}
+        old_index_map: dict[str, int] = {}
+        for idx, f in enumerate(old_list):
+            existing_map[f.key] = f
+            old_index_map[f.key] = idx
 
         # 已消费旧 fiber 的 id 集合（复用 / 已标记删除的节点；结尾删除跳过）
         consumed: set[int] = set()
@@ -220,6 +244,53 @@ class Reconciler:
             if id(old) not in consumed:
                 self._mark_deleted(old)
         return_fiber.child = first
+
+    def _try_reuse_stable(
+        self,
+        return_fiber: Fiber,
+        old_list: list[Fiber],
+        elements: list[Element],
+    ) -> bool:
+        """append-only 稳定列表快路径：按序复用旧 fiber + 创建尾部新元素。
+
+        触发条件（方向1）：``len(elements) >= len(old_list)`` 且前 N 个位置
+        key/type 与旧链一致（keyed 元素 key 相等；无 key 元素位置对应）。
+        满足时行为与完整调和算法等价（复用/新建结果一致），但省去 key maps
+        与 consumed 集合构建——流式开放块每帧 1000 行 TEXT 场景关键收益。
+
+        Returns:
+            True — 快路径已执行；False — 条件不满足（调用方走完整算法）。
+        """
+        n_old = len(old_list)
+        if n_old == 0 or len(elements) < n_old:
+            return False
+        for i in range(n_old):
+            el = elements[i]
+            of = old_list[i]
+            if not _is_same_type(of, el):
+                return False
+            if el.props.get("key") is not None and of.key != el.key:
+                return False
+        first: Fiber | None = None
+        prev: Fiber | None = None
+        for i, el in enumerate(elements):
+            if i < n_old:
+                fiber = old_list[i]
+                fiber.props = dict(el.props)
+                fiber.deleted = False
+                fiber.return_ = return_fiber
+                fiber.moved = False  # 稳定列表：位置不变
+                self._begin_work(fiber, el)
+            else:
+                fiber = self._create_and_begin(el, return_fiber)
+            fiber.sibling = None
+            if prev is not None:
+                prev.sibling = fiber
+            else:
+                first = fiber
+            prev = fiber
+        return_fiber.child = first
+        return True
 
     def _reconcile_single(
         self,
@@ -313,7 +384,11 @@ class Reconciler:
             #   沿 return_ 链查找。
             fiber.contexts.clear()
             ftype = fiber.type
-            if isinstance(ftype, str):
+            # ★ 性能（方向1）：内置 host 标签（text/box/static/spacer/app/
+            #   fragment）绝不可能是 context provider（create_context 生成
+            #   唯一 ``__ctx_*__`` 标签）——跳过注册表 dict 查找（流式开放
+            #   块每行 TEXT 各省一次 dict miss）。
+            if isinstance(ftype, str) and ftype not in _BUILTIN_HOSTS:
                 ctx = _hooks._context_registry.get(ftype)
                 if ctx is not None:
                     value = fiber.props.get("value", ctx.default)
@@ -328,8 +403,14 @@ class Reconciler:
                         fiber._last_provider_value = value
                         _hooks._bump_context_version()
                         _clear_context_cache_subtree(fiber.child)
-            children = list(element.children)
-            self._reconcile_children(fiber, children)
+            children = element.children
+            if children:
+                self._reconcile_children(fiber, list(children))
+            elif fiber.child is not None:
+                # ★ 性能（方向1）：空子元素快路径——叶子/无子节点容器直接
+                #   删除旧子链（修复前无条件 ``_reconcile_children(fiber, [])``
+                #   仍构建空 maps + 遍历旧链，流式开放块每行 TEXT 都走一遍）。
+                self._reconcile_children(fiber, [])
 
     # ── ErrorBoundary（方向B 步骤9） ────────────────────
 

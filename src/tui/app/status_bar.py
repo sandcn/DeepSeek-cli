@@ -71,13 +71,16 @@ def _snapshot() -> dict:
     return data
 
 
-def _build_status_runs(model, dot_elapsed: float = 0.0) -> list[StyledRun]:
+def _build_status_runs(model, dot_elapsed: float = 0.0,
+                       spinner_char: str = "\u00b7") -> list[StyledRun]:
     """构建状态文本 runs（模型名/工具计数/耗时/token/速度）。
 
     Args:
         model: AppModel 实例。
         dot_elapsed: 模型名点 FadeIn 渐显已流逝时间（BEAUTY-1，时间基）；
             >=duration 后返回呼吸色（动画结束）。
+        spinner_char: 活跃状态指示字符（BEAUTY-7：streaming 时 10Hz spinner
+            帧；空闲为静态 ``·``）。
     """
     st = model.status
     runs: list[StyledRun] = []
@@ -91,7 +94,7 @@ def _build_status_runs(model, dot_elapsed: float = 0.0) -> list[StyledRun]:
             dot_style = Style(fg=dot_color)
         else:
             dot_style = _S_ACCENT
-        model_part.append(StyledRun("\u00b7 ", dot_style))
+        model_part.append(StyledRun(f"{spinner_char} ", dot_style))
         model_part.append(StyledRun(st.model_name, _S_ACCENT_BOLD))
     if not status_active:
         return model_part
@@ -158,12 +161,20 @@ def StatusBar(props) -> object:
     dot_elapsed = time.monotonic() - dot_fade_ref.current[1]
     # BEAUTY-1/PERF-3：渐显窗口内按 0.1s 桶刷新（平滑渐显），结束后回 1s 桶
     # （PERF-3 缓存语义保持）。fade_duration_sec<=0（配置异常）→ 回退纯 1s 桶。
+    # BEAUTY-7：status_active 期间恒用 0.1s 桶——streaming spinner + 模型点
+    #   呼吸以 10Hz 平滑推进（流式期间帧率本就 10Hz，零额外渲染成本）；
+    #   空闲回 1s 桶（静态显示，CPU 保持低占用）。
     cfg = _get_cfg()
-    fade_sec = cfg.fade_duration_sec
-    fading = fade_sec > 0 and dot_elapsed < fade_sec
-    time_dep = int(time.monotonic() / 0.1) if fading else int(time.monotonic() / 1.0)
+    if st.status_active:
+        time_dep = int(time.monotonic() / 0.1)
+        # BEAUTY-7：streaming spinner 帧（10Hz）
+        from src.tui.app import _fx
+        spinner_char = _fx.spinner_frame(10.0, "\u280b\u2819\u2839\u2838\u283c\u2834\u2826\u2827\u2807\u280f")
+    else:
+        time_dep = int(time.monotonic() / 1.0)
+        spinner_char = "\u00b7"
     status_runs = use_memo(
-        lambda: _build_status_runs(model, dot_elapsed),
+        lambda: _build_status_runs(model, dot_elapsed, spinner_char),
         (
             st.status_active,
             st.model_name,

@@ -100,8 +100,10 @@ class TestInkRenderer:
         out.seek(0)
         out.truncate()
         r.render(_frame("a", "Y", "c"))
-        # 首差异=1 → cursor_up(3-1=2) + "\rY\x1b[K\n" + "\rc\x1b[K\n"
-        assert out.getvalue() == "\x1b[2A" + "\rY\x1b[K\n" + "\rc\x1b[K\n"
+        # 差异区间=[(1,2)]：仅重写第 2 行（Y），不重写未变的第 3 行（c）；
+        # 重写后光标移回文档底部（cursor_down 1）。修复前从首差异行重写到
+        # 末尾（冗余重写 c）。
+        assert out.getvalue() == "\x1b[2A" + "\rY\x1b[K\n" + "\x1b[1B"
 
     def test_no_up_shift_after_place_cursor(self):
         """回归：place_cursor 将光标移到输入行后，下一帧重写不向上偏移。
@@ -174,3 +176,71 @@ class TestInkRenderer:
         out.truncate()
         r.render(_frame("x"))
         assert out.getvalue() == "\rx\n"
+
+
+class TestIncrementalRuns:
+    """增量渲染细化 — 差异区间重写（头部动画不再引发整帧重写）。"""
+
+    def _new(self) -> tuple[InkRenderer, io.StringIO]:
+        out = io.StringIO()
+        return InkRenderer(stream=out), out
+
+    def test_header_animation_rewrites_only_line_zero(self):
+        """仅首行变化（头部呼吸色）→ 只重写首行，committed/输入行不重写。
+
+        修复前「首差异行→末尾全重写」在首行变化时整帧重写。
+        """
+        r, out = self._new()
+        r.render(_frame("h1", "c1", "c2", "c3", "status", "in1"))
+        out.seek(0)
+        out.truncate()
+        r.render(_frame("h2", "c1", "c2", "c3", "status", "in1"))
+        val = out.getvalue()
+        # 仅重写首行 h2，其余 5 行原样保留（未出现重写序列）；光标移回底部
+        assert val == "\x1b[6A\rh2\x1b[K\n\x1b[5B", val
+        assert val.count("\x1b[K") == 1
+        assert "c1" not in val and "c3" not in val
+        assert r.cursor_row == 7
+
+    def test_sparse_diff_rewrites_only_changed_runs(self):
+        """稀疏差异（头部 + 输入变化，中间静态行不动）→ 仅重写两个区间。"""
+        r, out = self._new()
+        r.render(_frame("h1", "c1", "c2", "c3", "status", "in1"))
+        out.seek(0)
+        out.truncate()
+        r.render(_frame("h2", "c1", "c2", "c3", "status", "in2"))
+        val = out.getvalue()
+        # 首行 h2 与末行 in2 各重写一次；中间 c1/c2/c3/status 未被重写
+        assert val.count("\x1b[K") == 2, val
+        assert "c1" not in val and "c2" not in val and "c3" not in val
+        assert "status" not in val
+        assert "h2" in val and "in2" in val
+        assert r.cursor_row == 7
+
+    def test_typing_only_rewrites_input_area(self):
+        """输入变化（输入区在文档尾部）→ 仅重写输入区行。"""
+        r, out = self._new()
+        r.render(_frame("h", "c1", "c2", "c3", "status", "input: ab"))
+        # place_cursor 把光标放到输入文本行（row 6，模拟真实输入态）
+        r.place_cursor(6, 9)
+        out.seek(0)
+        out.truncate()
+        r.render(_frame("h", "c1", "c2", "c3", "status", "input: abc"))
+        val = out.getvalue()
+        # 仅末行重写（光标已在输入行 → 无上移/下移）
+        assert val == "\rinput: abc\x1b[K\n", val
+        assert val.count("\x1b[K") == 1
+        assert "c3" not in val
+        assert r.cursor_row == 7
+
+    def test_diff_runs_unit(self):
+        """_diff_runs 差异区间收集（身份短路 + 值相等 + 区间合并）。"""
+        r, _ = self._new()
+        prev = _frame("a", "b", "c", "d")
+        new = _frame("x", "b", "c", "y")
+        assert r._diff_runs(prev, new, 4) == [(0, 1), (3, 4)]
+        # 连续差异合并
+        new2 = _frame("x", "y", "z", "d")
+        assert r._diff_runs(prev, new2, 4) == [(0, 3)]
+        # 完全一致 → 空
+        assert r._diff_runs(prev, _frame("a", "b", "c", "d"), 4) == []

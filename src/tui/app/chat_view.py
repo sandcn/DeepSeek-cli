@@ -127,15 +127,14 @@ def _paint(fiber, canvas):
             prefix = list(lines)
         fiber._committed_prefix = (key, prefix)
         return
-    # box.x != 0（缩进/padded）：逐行重建（历史兼容，O(n) 每帧）
+    # box.x != 0（缩进/padded）：逐行合并（保留已有边框/内容——修复前
+    # ``canvas[row] = padded`` 整体替换：父容器边框（行内已写 cols x0/x1）
+    # 被 padded 空格覆盖，缩进框内 committed 行丢失左/右边框）。
     for i, line in enumerate(lines):
         row = box.y + i
         if 0 <= row < len(canvas):
-            padded = Line()
-            padded.append(" " * box.x)
-            for run in line.runs:
-                padded.append_run(run)
-            canvas[row] = padded
+            from src.tui.ink.components import _merge_line
+            canvas[row] = _merge_line(canvas[row], box.x, line)
 
 
 def register() -> None:

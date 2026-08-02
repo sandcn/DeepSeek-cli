@@ -13,7 +13,6 @@
 from __future__ import annotations
 
 from src._compat import dataclass
-from dataclasses import field
 from typing import Iterable
 
 from src.tui.core.style import Style
@@ -204,8 +203,13 @@ class FrameBuilder:
         self.append(run.text, run.style)
 
     def append_line(self, line: Line) -> None:
-        """追加一整行（强制换行后追加）。"""
-        self._newline()
+        """追加一整行（完整行语义，不额外插入空行）。
+
+        当前行有内容时先结束当前行；否则直接追加（修复前无条件
+        ``_newline()``——在已结束行后调用会多追加一个空行）。
+        """
+        if self._current.runs:
+            self._newline()
         self._lines.append(line)
         self._current = Line()
         self._current_width = 0

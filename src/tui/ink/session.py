@@ -20,7 +20,7 @@ import queue
 import sys
 import threading
 import time
-from typing import TYPE_CHECKING, Callable
+from typing import Callable
 
 from src.tui._const import (
     RenderCommand,
@@ -46,11 +46,7 @@ from src.tui.app.input_area import (
     _is_search_active,
 )
 
-if TYPE_CHECKING:
-    from src.tui.events.event_bus import DisplayEventBus
-
 _logger = logging.getLogger(__name__)
-
 # ── 内容命令集合（真源在 _const.CONTENT_COMMANDS） ──────────
 _CONTENT_COMMANDS = CONTENT_COMMANDS
 
@@ -148,7 +144,12 @@ class InkSession:
 
         self._reconciler = Reconciler(schedule_callback=self._schedule_render)
         self._root_fiber = self._reconciler.create_root()
-        self._ink_renderer = InkRenderer(stream=stream)
+        # ★ 增量渲染屏幕坐标（方向1）：渲染器接收终端屏幕高度——文档高于屏幕
+        #   时按屏幕坐标跟踪物理光标（防 cursor_up 越出屏幕顶部错位）、可见区
+        #   上方（滚动区）的行跳过重写（头部动画不再引发整帧重写）。
+        self._ink_renderer = InkRenderer(
+            stream=stream, height=self._width_cache.get_height(),
+        )
 
         # ── 队列 / 线程 ──
         self._cmd_queue: queue.PriorityQueue = queue.PriorityQueue(maxsize=self._config.cmd_queue_maxsize)
@@ -186,6 +187,9 @@ class InkSession:
         #   初始 0 → 首帧必触发传播，renderer 创建时已用当前宽度，重复 set_width
         #   幂等无副作用）。
         self._last_render_width: int = 0
+        # ★ 增量渲染屏幕高度（方向1）：上次传播给 InkRenderer 的高度（初始 0 →
+        #   首帧必触发 set_height 同步，与 renderer 创建时已用当前高度幂等）。
+        self._last_render_height: int = 0
         # 系统监控（CPU/MEM；每 2 秒刷新输入区顶部分隔线显示）
         self._system_monitor = None
         self._last_sys_stats_time: float = 0.0
@@ -707,6 +711,15 @@ class InkSession:
                         except Exception:
                             _logger.debug("set_width 传播异常", exc_info=True)
                 self._last_render_width = width
+            # ★ 增量渲染屏幕高度传播（方向1）：高度变化（resize）时更新
+            #   InkRenderer.set_height——渲染器按新屏幕高度钳制光标/跳过不可达行。
+            height = self._width_cache.get_height()
+            if height != self._last_render_height:
+                try:
+                    self._ink_renderer.set_height(height)
+                except Exception:
+                    _logger.debug("set_height 传播异常", exc_info=True)
+                self._last_render_height = height
         element = self._build_tree(self._model, width)
         self._reconciler.render(self._root_fiber, element, width, self._width_cache.get_height())
         frame = _components.render_frame(self._root_fiber, width)

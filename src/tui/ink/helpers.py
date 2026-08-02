@@ -10,7 +10,7 @@ import re
 
 from src.tui._screen import wcswidth_simple
 from src.tui.core.style import Style
-from .output import StyledRun, Line, Frame
+from .output import StyledRun, Line
 
 # ANSI 转义序列（SGR 颜色/属性 + 光标控制）
 _ANSI_RE = re.compile(
