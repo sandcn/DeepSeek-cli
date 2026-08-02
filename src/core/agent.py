@@ -160,6 +160,17 @@ class Agent(BaseAgent):
         from ..prompt_builder.builder import build_system_prompt as _build
         return _build()
 
+    def rebuild_system_prompt(self) -> None:
+        """按当前空模式重建系统提示词消息（保留非 system 消息）。
+
+        供 Ctrl+M 切换主 agent 空模式时调用——替换 system 消息为最新
+        ``build_system_prompt()`` 结果（空/完整），保留用户/助手历史。
+        """
+        parts = self.build_system_prompt()
+        system_msgs = [{"role": "system", "content": part} for part in parts]
+        non_system = [m for m in self.messages if m.get("role") != "system"]
+        self.messages = system_msgs + non_system
+
     def _get_active_tools(self) -> list[dict]:
         """返回当前工具 schemas。"""
         return self.tools

@@ -126,8 +126,14 @@ class TestDecodeControlChar:
             assert ev.kind == "ctrl_key"
             assert ev.char == chr(byte)
 
+    def test_ctrl_b_special(self):
+        """Ctrl+B(0x02) → ctrl_key（主 agent 空模式切换）。"""
+        ev = InputParser._decode_control_char(0x02)
+        assert ev.kind == "ctrl_key"
+        assert ev.char == chr(0x02)
+
     def test_unknown_control_char(self):
-        ev = InputParser._decode_control_char(0x02)  # Ctrl+B
+        ev = InputParser._decode_control_char(0x06)  # Ctrl+F（未绑定）
         assert ev.kind == "unknown"
 
 

@@ -191,7 +191,8 @@ class InputParser:
         # Claude TUI parity 步骤 1.4：Ctrl+L(0x0c 清屏) / Ctrl+D(0x04 EOF) /
         # Ctrl+T(0x14 主题) 加入特殊按键（分发在 dispatcher 处理）
         # 方向1 B1：0x05（Ctrl+E）加入 ctrl_key 集合（no-op）
-        if byte in (0x04, 0x05, 0x07, 0x0c, 0x0e, 0x0f, 0x12, 0x14):  # Ctrl+D/E/G/L/N/O/R/T
+        # Ctrl+B(0x02) → 主 agent 空模式切换（0x02 非打印控制，不与 Enter 冲突）
+        if byte in (0x02, 0x04, 0x05, 0x07, 0x0c, 0x0e, 0x0f, 0x12, 0x14):  # Ctrl+B/D/E/G/L/N/O/R/T
             return KeyEvent(kind="ctrl_key", char=chr(byte), raw=raw)
         # 其他控制字符 → unknown
         return KeyEvent(kind="unknown", raw=raw)

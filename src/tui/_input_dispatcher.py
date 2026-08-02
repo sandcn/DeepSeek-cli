@@ -174,6 +174,8 @@ class InputDispatcher:
             self._handle_special_key('retry')
         elif ch == '\x0e':        # Ctrl+N → 切换模型（保留）
             self._handle_special_key('switch_model')
+        elif ch == '\x02':        # Ctrl+B → 主 agent 空模式切换
+            self._handle_special_key('empty_mode')
         # else：未知 ctrl_key → no-op
 
     def _handle_clear_screen(self) -> None:

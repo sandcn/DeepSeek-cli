@@ -29,6 +29,29 @@ from .vcs_info import _build_vcs_info
 # ── Prompts 目录路径 ────────────────────────────────────────
 _PROMPTS_DIR: str | None = None
 
+# ── 主 agent 空模式（Ctrl+M 切换） ───────────────────────────
+# True 时 build_system_prompt 加载 prompts_export_main_empty.md
+# （仅基础安全/通用规范，无完整规则集）。
+_EMPTY_MODE: bool = False
+
+
+def is_empty_mode() -> bool:
+    """是否处于主 agent 空模式。"""
+    return _EMPTY_MODE
+
+
+def toggle_empty_mode() -> bool:
+    """切换主 agent 空模式，返回新状态（True=空模式）。"""
+    global _EMPTY_MODE
+    _EMPTY_MODE = not _EMPTY_MODE
+    return _EMPTY_MODE
+
+
+def set_empty_mode(enabled: bool) -> None:
+    """设置主 agent 空模式（测试用）。"""
+    global _EMPTY_MODE
+    _EMPTY_MODE = bool(enabled)
+
 
 def _get_prompts_dir() -> str:
     """获取 prompts 目录的绝对路径，带缓存"""
@@ -237,8 +260,10 @@ def build_system_prompt(
     """构建主代理系统提示词。
 
     从 prompts_export_main.md 加载静态规则，追加运行时动态信息。
+    空模式（``is_empty_mode()``，Ctrl+M 切换）加载 prompts_export_main_empty.md。
     """
-    return _build_prompt("main","prompts_export_main", _FALLBACK_MAIN_PROMPT, include_version_control, cwd)
+    export_name = "prompts_export_main_empty" if _EMPTY_MODE else "prompts_export_main"
+    return _build_prompt("main", export_name, _FALLBACK_MAIN_PROMPT, include_version_control, cwd)
 
 
 __all__ = [
@@ -250,4 +275,7 @@ __all__ = [
     "build_plan_agent_system_prompt",
     "build_execute_agent_system_prompt",
     "reset_prompts_cache",
+    "is_empty_mode",
+    "toggle_empty_mode",
+    "set_empty_mode",
 ]

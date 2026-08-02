@@ -16,6 +16,8 @@ def make_special_key_callback(loop, session, state, chat_ui, monitor=None):
     - 'vim'：启动 vim 编辑器编辑文本
     - 'editmsg'：返回 '/editmsg' 命令
     - 'switch_model'：循环切换模型
+    - 'empty_mode'：Ctrl+B 切换主 agent 空模式（系统提词替换为
+      prompts_export_main_empty.md，重建 agent 系统消息）
 
     monitor: EscapeMonitor 实例，用于 vim 路径中的终端模式切换。
              在单线程模型中，回调在 render 线程执行，不能调用
@@ -116,6 +118,25 @@ def make_special_key_callback(loop, session, state, chat_ui, monitor=None):
             if chat_ui is not None:
                 chat_ui.bottom_bar.set_model_name(next_model)
                 chat_ui.on_notification(f"+ 已切换到 {next_model}")
+            return text
+        elif action == 'empty_mode':
+            # Ctrl+B → 切换主 agent 空模式：系统提词替换为
+            # prompts_export_main_empty.md（builder 层标志 + agent 消息重建）
+            try:
+                from ..prompt_builder.builder import toggle_empty_mode
+                empty = toggle_empty_mode()
+                agent = getattr(session, '_agent', None) or getattr(session, 'agent', None)
+                if agent is not None and hasattr(agent, 'rebuild_system_prompt'):
+                    try:
+                        agent.rebuild_system_prompt()
+                    except Exception:
+                        _logger.debug("rebuild_system_prompt 异常", exc_info=True)
+                if chat_ui is not None:
+                    chat_ui.on_notification(
+                        f"+ 主 Agent 已{'进入' if empty else '退出'}空模式"
+                    )
+            except Exception:
+                _logger.debug("empty_mode 切换异常", exc_info=True)
             return text
         return None
 
