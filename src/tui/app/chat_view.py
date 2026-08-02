@@ -21,7 +21,7 @@ from src.tui.app.model import _role_header_line
 from src.tui.core.style import Style
 from src.tui.ink import h, BOX, TEXT, StyledRun, Line, register_host, use_memo
 
-_S_REASONING = Style(fg=242, italic=True)
+_S_REASONING = Style(fg=242)
 
 
 def _to_styled_runs(line) -> list[StyledRun]:
@@ -39,7 +39,7 @@ def _block_styled_lines(block, start: int = 0, width: int = 0) -> list[list[Styl
     分支顺序：
       - 关闭块（``_cached_ink_lines`` 非 None）直接复用冻结 ``Line.runs``
         引用（同一 runs 列表对象跨帧复用，免每帧 Style merge）；推理块除外
-        ——冻结语义（dim italic）与即时渲染（fg=242 italic）不同，保持即时路径。
+        ——冻结语义（dim）与即时渲染（fg=242）不同，保持即时路径。
       - 工具块短路：直接返回 ``_tool_card_styled_lines`` 边框行（open 卡无
         底边框）。**不走** per-line ``_open_styled_cache``——卡片行数与输入行
         非 1:1（wrap/边框），缓存键失效。
@@ -82,7 +82,7 @@ def _block_styled_lines(block, start: int = 0, width: int = 0) -> list[list[Styl
         if runs is None:
             runs = _to_styled_runs(line)
             if kind == "reasoning" and runs:
-                # 推理行叠加 dim/italic 基础样式
+                # 推理行叠加 dim 基础样式（不斜体）
                 runs = [StyledRun(r.text, (r.style or Style()).merge(_S_REASONING)) for r in runs]
             open_cache[line] = runs
         out.append(runs)

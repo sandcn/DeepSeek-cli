@@ -384,7 +384,7 @@ def _role_header_runs(block, model) -> list:
         # `▎回答` 头行；用户消息以 `> ` 前缀区分）
         return []
     if kind == "reasoning":
-        return [StyledRun("\u258d\U0001f4ad 思考", Style(fg=242, italic=True))]
+        return [StyledRun("\u258d\U0001f4ad 思考", Style(fg=242))]
     if kind == "tool":
         # 工具卡片顶边框替代 `▎⚡ 工具 X` 角色头（卡片化对齐 Claude Code）；
         # 无头 → _card_lines 不前置独立头行，顶边框即卡片首行。
@@ -567,7 +567,7 @@ class AppModel:
                 block, start, stop, getattr(self, "width", 0),
             )
         reasoning_style = (
-            _AnsiStyle(dim=True, italic=True) if block.kind == "reasoning" else None
+            _AnsiStyle(dim=True) if block.kind == "reasoning" else None
         )
         width = getattr(self, "width", 0)
         out: list = []
