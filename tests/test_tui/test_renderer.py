@@ -76,6 +76,27 @@ class TestEventDispatcher:
         push_cmd.assert_any_call(ToolOpenCmd(tool_name="read_file", tool_id="", detail=""))
         push_cmd.assert_any_call(ToolCountIncCmd())
 
+    def test_on_tool_started_dispatch_agent_no_toolcard(self):
+        """调用 subagent（dispatch_agent/Task）不建普通工具卡，仅计数。
+
+        回归：dispatch_agent 的 tool_start（source='agent'）此前创建
+        ``⚙ Task`` 普通工具卡，与 SubAgent 面板卡（┌─ ● ⚡ 子代理 ─┐）
+        重复显示。修复后只计数、不上屏 box。
+        """
+        from src.tui._dispatcher import EventDispatcher
+        from src.tui.events.event_types import ToolStartedEvent
+        from src.tui._const import ToolCountIncCmd, ToolOpenCmd
+        push_cmd = MagicMock()
+        dispatcher = EventDispatcher(push_cmd)
+        event = ToolStartedEvent(
+            source="agent", tool_name="dispatch_agent", tool_id="call_x",
+        )
+        dispatcher._on_tool_started(event)
+        # 仅计数 +1，无 ToolOpenCmd
+        push_cmd.assert_called_once_with(ToolCountIncCmd())
+        for call in push_cmd.call_args_list:
+            assert not isinstance(call.args[0], ToolOpenCmd)
+
     def test_on_tool_done_success(self):
         from src.tui._dispatcher import EventDispatcher
         from src.tui.events.event_types import ToolDoneEvent
@@ -101,6 +122,39 @@ class TestEventDispatcher:
         push_cmd.assert_any_call(ToolCloseCmd(tool_id="", success=False))
         push_cmd.assert_any_call(ToolFailIncCmd())
         push_cmd.assert_any_call(ToolCountDecCmd())
+
+    def test_on_tool_done_dispatch_agent_no_close(self):
+        """调用 subagent（dispatch_agent）done 不推 ToolCloseCmd（无卡可关）。
+
+        回归：dispatch_agent 未开工具卡，若仍推 ToolCloseCmd 会经
+        close_tool_box 找不到 box 而 debug 丢弃（无实际影响但属冗余路径）。
+        """
+        from src.tui._dispatcher import EventDispatcher
+        from src.tui.events.event_types import ToolDoneEvent
+        from src.tui._const import ToolCloseCmd, ToolCountDecCmd
+        push_cmd = MagicMock()
+        dispatcher = EventDispatcher(push_cmd)
+        event = ToolDoneEvent(source="agent", tool_name="dispatch_agent", success=True)
+        dispatcher._on_tool_done(event)
+        # 仅计数 -1，无 ToolCloseCmd
+        push_cmd.assert_called_once_with(ToolCountDecCmd())
+        for call in push_cmd.call_args_list:
+            assert not isinstance(call.args[0], ToolCloseCmd)
+
+    def test_on_tool_done_dispatch_agent_fail_still_counts(self):
+        """dispatch_agent 失败仍计数（失败递增 + 计数递减），只是不关卡。"""
+        from src.tui._dispatcher import EventDispatcher
+        from src.tui.events.event_types import ToolDoneEvent
+        from src.tui._const import ToolFailIncCmd, ToolCountDecCmd, ToolCloseCmd
+        push_cmd = MagicMock()
+        dispatcher = EventDispatcher(push_cmd)
+        event = ToolDoneEvent(source="agent", tool_name="dispatch_agent", success=False)
+        dispatcher._on_tool_done(event)
+        assert push_cmd.call_count == 2
+        push_cmd.assert_any_call(ToolFailIncCmd())
+        push_cmd.assert_any_call(ToolCountDecCmd())
+        for call in push_cmd.call_args_list:
+            assert not isinstance(call.args[0], ToolCloseCmd)
 
     def test_on_parse_info(self):
         from src.tui._dispatcher import EventDispatcher
