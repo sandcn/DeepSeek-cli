@@ -53,7 +53,10 @@ def App(props) -> object:
         # 此落到 y>=1，走非顶部前缀路径——render_frame 已正确回退全量）
         h(TopHeader, {"model": model, "width": width}),
         # 子代理活动卡片已并入 ChatView 消息流（原独立 SubAgentPanel 组件移除）
-        h(STATIC, None, [h(ChatView, {"model": model})]),
+        # ★ 传 width 给 ChatView：内部截断宽度与布局宽度同源（props width），
+        #   修复 model.width 与布局宽度不一致时 subagent/工具卡行被 wrap 拆成
+        #   两行（第二行只剩边框字符）的显示错乱。
+        h(ChatView, {"model": model, "width": width}),
         h(_ParseLine, {"model": model}),
     ]
     bottom_area = [

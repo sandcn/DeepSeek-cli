@@ -809,3 +809,75 @@ class TestSubAgentSingleLineContract:
         text = "".join(r.text for r in children[0].props["styled"])
         assert "\n" not in text, "子节点文本不得含原始换行"
         assert "task line one\\nline two" in text
+
+
+class TestSubAgentCardWidthConsistency:
+    """subagent 卡片截断宽度与布局宽度同源（防「第二行只剩边框字符」错乱）。
+
+    回归：ChatView 截断用 model.width，而 TEXT 布局按 box.w wrap——两者不一致
+    （TTL 缓存 / resize 时序 / 默认 80）时，卡片行被 wrap 拆成两行，第二行只剩
+    尾部边框字符（``┐``/``│``）——用户可见「工具调用历史显示成 2 行，第二行
+    只有一个字符」。修复：App 传 width 给 ChatView，截断与布局同源。
+    """
+
+    @staticmethod
+    def _build_subagent_lines():
+        from src.tui._subagent_state import StateStore
+        from src.tui._subagent_render import render_frame as sub_render
+        store = StateStore()
+        store.add_agent("agent-1", "分析项目结构", status="running", agent_type="map")
+        store.update_tool_parsing(
+            "agent-1", "bash", '{"command": "ls -la &&\\necho hi"}',
+        )
+        store.start_tool("agent-1", "bash", "ls -la &&\necho hi")
+        return sub_render(store, max_history=3)
+
+    def test_no_single_char_wrap_when_model_width_stale(self):
+        """model.width 陈旧（60）而布局宽度 40：卡片每行仍单行，无单字符残留行。"""
+        from src.tui.app.model import AppModel
+        from src.tui.app.apply import apply_cmd
+        from src.tui._const import SubagentFrameCmd
+        from src.tui.ink.reconciler import Reconciler
+        from src.tui.ink.components import render_frame
+        from src.tui.app.app import build_app_element
+
+        sub_lines = self._build_subagent_lines()
+        m = AppModel()
+        m.width = 60  # 陈旧截断宽度（修复前用此值 truncate → 超布局宽度 wrap）
+        apply_cmd(m, SubagentFrameCmd(frame_lines=sub_lines))
+
+        r = Reconciler()
+        root = r.create_root()
+        r.render(root, build_app_element(m, 40), 40, 24)  # 布局宽度 40
+        frame = render_frame(root, 40)
+        plains = [line.plain for line in frame.lines]
+
+        # 边框残留单字符行（┐/│ 单独成行）不得出现——修复前 subagent 卡片每行
+        # 都被 wrap 出第二行（┐ 或 │）
+        for p in plains:
+            stripped = p.strip()
+            assert not (len(stripped) <= 2 and stripped in ("┐", "│", "└", "┘")), (
+                f"卡片边框字符被 wrap 成独立行: {p!r}"
+            )
+        # 工具历史行（含 Bash）只占一行（完整边框或窄屏截断，均不 wrap 成两行）
+        bash_rows = [p for p in plains if "Bash" in p]
+        assert len(bash_rows) == 1, f"工具历史行应单行完整: {bash_rows!r}"
+        assert len(bash_rows[0]) <= 40, f"工具历史行不超布局宽度: {bash_rows[0]!r}"
+
+    def test_render_children_uses_layout_width_not_model_width(self):
+        """_render_children 截断宽度=布局宽度（40 而非 model.width=60）。"""
+        from src.tui.app.model import AppModel
+        from src.tui.app.subagent_panel import _render_children
+
+        sub_lines = self._build_subagent_lines()
+        m = AppModel()
+        m.width = 60
+        m.subagent_lines = sub_lines
+        children = _render_children(m, 40)
+        assert children, "应产出 subagent TEXT 节点"
+        for child in children:
+            text = "".join(r.text for r in child.props["styled"])
+            from src.tui._screen import wcswidth_simple
+            assert wcswidth_simple(text) <= 40, (
+                f"截断后行宽超布局宽度: {text!r} width={wcswidth_simple(text)}"
+            )

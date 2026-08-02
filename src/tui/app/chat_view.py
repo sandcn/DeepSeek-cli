@@ -156,6 +156,11 @@ def ChatView(props) -> object:
     调用（hook 顺序不变式；ChatView 仅此一个 hook，无顺序风险）。
     """
     model = props["model"]
+    # ★ 截断宽度与布局宽度同源：优先用 props width（App 传入，= reconciler
+    #   布局宽度），回退 model.width——修复 model.width 与实际布局宽度不一致
+    #   （TTL 缓存 / resize 时序 / 默认 80）时，截断到 model.width 的行在
+    #   布局按 box.w wrap，第二行只剩尾部边框字符（显示错乱）。
+    width = props.get("width") or getattr(model, "width", 0)
     committed_el = use_memo(
         lambda: h("committed-chat", {"lines": model.committed_lines}),
         (model.committed_lines,),
@@ -176,7 +181,7 @@ def ChatView(props) -> object:
         # == 0）时在正文行前发射——已提交的头在 committed_lines 中，此处不再
         # 重复（互斥）。头独立 key ``chat-{block_idx}-h``（不与整数行号冲突）。
         if block.committed_line_count == 0:
-            header_line = _role_header_line(block, model, getattr(model, "width", 0))
+            header_line = _role_header_line(block, model, width)
             if header_line is not None:
                 children.append(h(TEXT, {
                     "key": f"chat-{block_idx}-h",
@@ -185,7 +190,7 @@ def ChatView(props) -> object:
         # 开放块只渲染未提交尾（已增量提交的行在缓存中，不再重建）
         for row_in_block, runs in enumerate(
             _block_styled_lines(
-                block, block.committed_line_count, getattr(model, "width", 0),
+                block, block.committed_line_count, width,
             )
         ):
             children.append(h(TEXT, {
@@ -197,7 +202,7 @@ def ChatView(props) -> object:
     # 后追加到消息文档（原独立 SubAgentPanel 组件已移除）。
     if model.subagent_lines:
         from .subagent_panel import _render_children
-        children.extend(_render_children(model, getattr(model, "width", 0)))
+        children.extend(_render_children(model, width))
     return h(BOX, None, children)
 
 
