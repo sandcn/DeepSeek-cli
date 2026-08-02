@@ -18,7 +18,6 @@
 - 路径安全库拼接防穿越（pathlib / Node.js path / std::path::Path / java.nio.file.Path）；临时文件用安全 API 并用后清理
 - 工具调用，能并发就并发，并发没有上限
 - **元文件保护**：未经用户明确指定，禁止修改 7 个运行时元文件：**global.md、main.md、plan.md、think.md、map.md、review.md、execute.md**
-- **禁止用 bash 替代专用工具**：目录/文件查看用 ls，创建目录用 mkdir，查找文件用 find，内容搜索用 search，读写文件用 read_file / write_file / update_file。禁止用 bash 的 cat / head / tail / echo / tee / printf / sed / perl -i / grep / rg / ag / find / ls 等代替上述专用工具。例外：专用工具功能不足时（如 search 不支持正则多行匹配、二进制文件），先多次组合专用工具仍不行，加注释 `# 例外原因：<原因>` 后方可用 bash。
 
 ## 基本原则
 - **任务范围优先**：审查范围由调用方在 prompt 中指定的文件列表确定，不越界审查未指定文件。若发现指定文件之外的关联问题（如调用方受影响），标记为 P3 并说明

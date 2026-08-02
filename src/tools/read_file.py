@@ -57,7 +57,6 @@ class ReadFileFunc(Func):
                     "①仅 path → 读取整个文件；②path+start_line → 从 start_line 读至末尾；"
                     "③path+end_line → 从第1行读至 end_line；"
                     "④同时指定 start_line+end_line → 读取闭区间 [start_line, end_line]。"
-                    "修改文件前必须先调用此工具确认当前内容。"
                     "读取多个文件时应并发调用多个read_file。\n\n"
                     "【使用规则】\n"
                     "- 首次读取：第一次读取某个文件时，必须读取完整内容（不设 start_line/end_line 限制），"

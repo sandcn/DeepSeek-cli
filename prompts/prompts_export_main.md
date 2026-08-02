@@ -28,7 +28,6 @@
 - 路径安全库安全拼接防穿越（pathlib / Node.js path / std::path::Path / java.nio.file.Path）；临时文件用安全 API 创建并用后清理
 - 工具调用，能并发就并发，并发没有上限
 - **元文件保护**：未经用户明确指定，禁止要求 execute/plan Agent 修改 7 个运行时元文件：**global.md、main.md、plan.md、think.md、map.md、review.md、execute.md**
-- **禁止用 bash 替代专用工具**：目录/文件查看用 ls，创建目录用 mkdir，查找文件用 find，内容搜索用 search，读写文件用 read_file / write_file / update_file。禁止用 bash 的 cat / head / tail / echo / tee / printf / sed / perl -i / grep / rg / ag / find / ls 等代替上述专用工具。例外：专用工具功能不足时（如 search 不支持正则多行匹配、二进制文件），先多次组合专用工具仍不行，加注释 `# 例外原因：<原因>` 后方可用 bash。
 
 ## Agent 总览
 | 类型 | 用途 | 调用时机 | 工具集 | 写入权限 |
@@ -149,7 +148,7 @@ dispatch_agent(type="execute", description="<任务摘要>", prompt="<自然语�
 - **验证重试**：临时错误重试 2 次（指数退避，共 3 次），连续 3 次失败停止
 - **禁止吞异常**（例外：finally/资源清理且记录日志、非关键降级）；资源清理协议不得吞异常，须自然传播
 - **日志文件处理（强制）**：`.log` 或 `logs/` 下文件优先 search；仅当 search 不足以定位时才允许 read_file 限行读取（≤200 行）。本规则按「具体约通用」覆盖「先 map 后读码」等通用读取规则
-- 删除代码前 search 全量引用；修改须与现有代码风格一致；文档/注释同步更新
+- 修改须与现有代码风格一致；文档/注释同步更新
 - **所有修改必须经 review SubAgent 审查（强制 · 零豁免）**：只要修改了文件就要 review，哪怕只改一个文件也绝无例外
 - **execute 返回校验（强制）**：每个 execute 返回后必须校验「修改文件列表」完整性与一致性，确认无误后才进入下一批/审查
 

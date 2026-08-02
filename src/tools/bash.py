@@ -227,6 +227,7 @@ class BashFunc(Func):
                     "\n| write_file | bash echo / tee / printf > | P0 绕过沙盒 |"
                     "\n| search | bash grep / rg / ag | P1 非结构化输出 |"
                     "\n| find / ls | bash find / ls | P2 非结构化输出 |"
+                    "\n| mkdir | bash mkdir | P0 绕过沙盒 |"
                     "\n"
                     "\n例外：专用工具功能不足时（如search不支持正则多行匹配、二进制文件），"
                     "先多次组合专用工具仍不行，加注释 `# 例外原因：<原因>` 后可用 bash。"
