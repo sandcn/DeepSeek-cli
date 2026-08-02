@@ -38,7 +38,7 @@ class TestChatView:
         apply_cmd(m, PhaseDoneCmd(phase="content"))
         f = _frame(m)
         plains = [l.plain for l in f.lines]
-        assert "  > question" in plains
+        assert "> question" in plains
         assert "Answer" in plains
         assert "body text" in plains
 
@@ -60,11 +60,11 @@ class TestChatView:
         plains = [l.plain for l in f.lines]
         # 无 `▎回答` 头行（content 无角色头，对齐 Claude Code 无头回答）
         assert not any("\u258e" in p and "\u56de\u7b54" in p for p in plains)
-        # 用户卡无角色头：按 `  > question` 前缀定位用户行（帧首行已被顶部
+        # 用户卡无角色头：按 `> question` 前缀定位用户行（帧首行已被顶部
         # 标题栏 `✦ DeepSeek CLI` 占据，不再直接是用户正文）
-        assert any(p.startswith("  > question") for p in plains), "用户卡不应有角色头"
+        assert any(p.startswith("> question") for p in plains), "用户卡不应有角色头"
         # 用户消息与回答正文之间应有空白行（用户卡尾空行）
-        i_user = next(i for i, p in enumerate(plains) if p.startswith("  > question"))
+        i_user = next(i for i, p in enumerate(plains) if p.startswith("> question"))
         i_answer = next(i for i, p in enumerate(plains) if "Answer" in p)
         assert i_user < i_answer
         assert any(p == "" for p in plains[i_user + 1:i_answer]), (
@@ -291,7 +291,8 @@ class TestFullDocument:
         # 静态内容在上，输入区在下（输入行在文档底部）
         last_plains = [l.plain for l in f.lines]
         chat_idx = next(i for i, p in enumerate(last_plains) if "answer" in p)
-        input_idx = next(i for i, p in enumerate(last_plains) if p.startswith("> "))
+        # 输入行同样以 `> ` 起始（顶格对齐后与用户消息同前缀）——取最后一条
+        input_idx = max(i for i, p in enumerate(last_plains) if p.startswith("> "))
         assert chat_idx < input_idx
 
     def test_cursor_fiber_has_layout(self):
@@ -460,7 +461,7 @@ class TestToolCard:
         plains = [l.plain for l in f.lines]
         assert any("partial1" in p for p in plains)
         assert any("partial2" in p for p in plains)
-        assert any("\u25cf" in p and "rf" in p for p in plains)
+        assert any("\u25cf" in p and "Read" in p for p in plains)
 
     def test_tool_done_shows_output_and_status(self):
         """done → 输出完整可见 + 状态行。"""
@@ -474,11 +475,11 @@ class TestToolCard:
         assert any("\u2714" in p for p in plains)
 
     def test_tool_fail_icon(self):
-        """fail → 标题前置 ✖ 图标（工具名经缩写为 bs）。"""
+        """fail → 标题前置 ✖ 图标（工具显示完整名 Bash）。"""
         m = AppModel()
         m.open_tool_box("t1", "bash")
         m.append_tool_output("t1", "boom")
         m.close_tool_box("t1", False)
         f = _frame(m)
         plains = [l.plain for l in f.lines]
-        assert any("\u2716" in p and "bs" in p for p in plains)
+        assert any("\u2716" in p and "Bash" in p for p in plains)

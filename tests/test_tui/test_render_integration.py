@@ -132,14 +132,14 @@ class TestRenderIntegrationNewProps:
             session.stop()
 
     def test_tool_card_status_props_render_regression(self):
-        """工具块（done）超长输出完整渲染到帧输出（无折叠/截断）。"""
+        """工具块（done，非 bash）超长输出完整渲染到帧输出（无折叠/截断）。"""
         from src.tui._const import ToolOpenCmd, ToolOutputCmd, ToolCloseCmd
         from src.tui.app.model import AppModel
         from src.tui.app.apply import apply_cmd
         from src.tools.registry import get_tool_display_name
 
         model = AppModel()
-        apply_cmd(model, ToolOpenCmd(tool_id="t9", tool_name="bash"))
+        apply_cmd(model, ToolOpenCmd(tool_id="t9", tool_name="read_file"))
         for i in range(10):
             apply_cmd(model, ToolOutputCmd(tool_id="t9", text=f"line{i}"))
         apply_cmd(model, ToolCloseCmd(tool_id="t9", success=True))
@@ -147,11 +147,12 @@ class TestRenderIntegrationNewProps:
         stream, session = self._render_frame_to_stream(model)
         try:
             out = stream.getvalue()
-            # 超长输出完整显示（首尾行均在帧输出中，无折叠/截断）
+            # 超长输出完整显示（首尾行均在帧输出中，无折叠/截断；bash 例外——
+            # 其输出按最后 3 行尾显示，见 TestBashTailDisplay）
             assert "line0" in out
             assert "line9" in out
             # 工具显示名标题渲染（工具名经 registry 显示名映射）
-            display = get_tool_display_name("bash") or "bash"
+            display = get_tool_display_name("read_file") or "read_file"
             assert display in out
         finally:
             session.stop()
@@ -237,7 +238,8 @@ class TestToolTitleIconUpdate:
         图标由 ● 更新为 ✔（修复前恒 ●）。"""
         from src.tui.app.model import AppModel, _TOOL_INCREMENTAL_THRESHOLD
 
-        model = self._open_long_tool("t1", "bash")
+        # read_file（非 bash，不触发尾截断）→ 保持增量提交行为
+        model = self._open_long_tool("t1", "read_file")
         block = model.blocks[-1]
         offset = block.extra.get("_first_committed_offset")
         assert offset is not None, "增量提交应记录 _first_committed_offset"
@@ -255,8 +257,8 @@ class TestToolTitleIconUpdate:
         assert "\u2714" in model.committed_lines[offset].plain, (
             "关闭后 committed_lines 顶边框图标应更新为 ✔"
         )
-        # 标题文本保留（图标替换不丢失标题内容；bash 显示名经 registry 缩写为 bs）
-        assert "bs" in model.committed_lines[offset].plain, (
+        # 标题文本保留（图标替换不丢失标题内容；read_file 显示完整名 Read）
+        assert "Read" in model.committed_lines[offset].plain, (
             "顶边框图标更新后应保留标题文本"
         )
 
@@ -264,7 +266,7 @@ class TestToolTitleIconUpdate:
         """fail 场景：长工具输出关闭后标题行图标更新为 ✖。"""
         from src.tui.app.model import AppModel, _TOOL_INCREMENTAL_THRESHOLD
 
-        model = self._open_long_tool("t2", "bash")
+        model = self._open_long_tool("t2", "read_file")
         block = model.blocks[-1]
         offset = block.extra.get("_first_committed_offset")
         assert offset is not None

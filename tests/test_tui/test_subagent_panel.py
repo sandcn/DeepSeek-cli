@@ -579,7 +579,7 @@ class TestBeautyTimeBasedEffects:
     """步骤8 — 美化动效时间基回归（BEAUTY-1/2/3）。"""
 
     def test_fade_in_title_color_regression(self):
-        """BEAUTY-1：elapsed=0 时标题标签色为 fade_start_color；elapsed>=duration 时回到 agent_type 原色。"""
+        """BEAUTY-1：elapsed=0 时类型名色为 fade_start_color；elapsed>=duration 时回到 agent_type 原色。"""
         import re as _re
         from src.tui._subagent_panel import SubAgentPanelController, _AgentSlot
 
@@ -588,18 +588,18 @@ class TestBeautyTimeBasedEffects:
             slot = _AgentSlot(label="agent-x", description="test", status="done",
                               agent_type="execute")
 
-        def _title_tag_code(mono_time):
+        def _type_code(mono_time):
             with patch("src.tui._subagent_panel.time.monotonic", return_value=mono_time):
                 lines = ctrl._build_agent_lines(slot, now=mono_time, is_last=False)
             title = lines[0]
-            m = _re.search(r"\x1b\[38;5;(\d+)m\[ex\]\x1b\[0m", title)
-            assert m, f"未找到 [ex] 标签色号: {title!r}"
+            m = _re.search(r"\x1b\[38;5;(\d+)mexecute\x1b\[0m", title)
+            assert m, f"未找到类型名色号: {title!r}"
             return int(m.group(1))
 
         # elapsed=0 → fade_start_color=238（execute 原色 208 的渐显起点）
-        assert _title_tag_code(1000.0) == 238
+        assert _type_code(1000.0) == 238
         # elapsed=1.0 > fade_duration_sec=0.6 → 回到 execute 原色 208
-        assert _title_tag_code(1001.0) == 208
+        assert _type_code(1001.0) == 208
 
     def test_spinner_time_based_regression(self):
         """BEAUTY-3：相同 _frame 下 spinner 帧号随时间推进（时间基，非帧计数）。"""
@@ -619,8 +619,8 @@ class TestBeautyTimeBasedEffects:
         assert _SPINNER_FRAMES[3] in title1
         assert _SPINNER_FRAMES[0] != _SPINNER_FRAMES[3]
 
-    def test_breathe_color_time_based_regression(self):
-        """BEAUTY-2：running 时摘要进度条/分隔线呼吸色随时间变化且在 [lo,hi] 内。"""
+    def test_group_card_running_open_done_included(self):
+        """单卡合并：running agent 优先展开、done agent 单行；running 时开放（无底边框）。"""
         import re as _re
         import time as _time
         from src.tui._subagent_panel import (
@@ -633,30 +633,17 @@ class TestBeautyTimeBasedEffects:
         slot_done.end_time = _time.time()
         ctrl._agents = {"agent-run": slot_running, "agent-done": slot_done}
         ctrl._order = ["agent-run", "agent-done"]
+        lines = ctrl._render_frame()
+        plains = [_re.sub(r"\x1b\[[0-9;?]*[A-Za-z]", "", l) for l in lines]
+        # 单卡：顶边框含 `子代理 · 2`；running agent 标题在 done 之前
+        assert plains[0].startswith("\u250c") and "子代理 · 2" in plains[0]
+        assert any("run" in p for p in plains)
+        assert any("done" in p for p in plains)
+        # running → 开放卡（无底边框）
+        assert not any(p.startswith("\u2514") for p in plains)
 
-        bar_codes: set[int] = set()
-        sep_codes: set[int] = set()
-        for t in (0.0, 0.15, 0.30, 0.45, 0.60, 0.75, 0.90):
-            # time_glow 在 _theme 内使用 time.monotonic（跨桶采样）
-            with patch("src.tui.app._theme.time.monotonic", return_value=t):
-                lines = ctrl._render_frame()
-            summary = lines[0]
-            m_bar = _re.search(r"\x1b\[38;5;(\d+)m\u2588", summary)
-            assert m_bar, f"未找到进度条色号: {summary!r}"
-            code = int(m_bar.group(1))
-            assert 214 <= code <= 220, f"进度条呼吸色越界: {code}"
-            bar_codes.add(code)
-            m_sep = _re.search(r"\x1b\[38;5;(\d+)m \u2501", lines[1])
-            assert m_sep, f"未找到分隔线色号: {lines[1]!r}"
-            sep_code = int(m_sep.group(1))
-            assert 237 <= sep_code <= 245, f"分隔线呼吸色越界: {sep_code}"
-            sep_codes.add(sep_code)
-        # 时间基呼吸 → 跨桶采样应出现变化
-        assert len(bar_codes) > 1, "running 进度条呼吸色应随时间变化"
-        assert len(sep_codes) > 1, "running 分隔线呼吸色应随时间变化"
-
-    def test_idle_summary_static_color_regression(self):
-        """BEAUTY-2：空闲（无 running）时摘要进度条保持静态 _C_RUNNING（214），不呼吸。"""
+    def test_group_card_closed_when_all_done(self):
+        """全部结束后单卡闭合（`✔ 完成` 底边框）。"""
         import re as _re
         import time as _time
         from src.tui._subagent_panel import (
@@ -668,12 +655,27 @@ class TestBeautyTimeBasedEffects:
         slot_done.end_time = _time.time()
         ctrl._agents = {"agent-done": slot_done}
         ctrl._order = ["agent-done"]
-        with patch("src.tui.app._theme.time.monotonic", return_value=0.0):
-            lines = ctrl._render_frame()
-        # done 分支：进度条用 _C_DONE（40），无 _C_RUNNING 呼吸段
-        summary = lines[0]
-        assert "\u2588" in summary
-        assert "\x1b[38;5;214m\u2588" not in summary  # 无 running 呼吸段
+        lines = ctrl._render_frame()
+        plains = [_re.sub(r"\x1b\[[0-9;?]*[A-Za-z]", "", l) for l in lines]
+        assert plains[0].startswith("\u250c") and "子代理 · 1" in plains[0]
+        assert any(p.startswith("\u2514") and "✔ 完成" in p for p in plains)
+
+    def test_group_card_row_protection(self):
+        """行数保护：max_lines 超限时截断并追加 `… +K 行省略`（不撑爆终端）。"""
+        import time as _time
+        from src.tui._subagent_render import render_frame as _rf
+        from src.tui._subagent_panel import SubAgentPanelController, _AgentSlot
+        ctrl = SubAgentPanelController()
+        with patch("src.tui._subagent_panel.time.monotonic", return_value=0.0):
+            slots = {
+                f"a{i}": _AgentSlot(label=f"a{i}", description=f"t{i}", status="running")
+                for i in range(5)
+            }
+        ctrl._agents = slots
+        ctrl._order = list(slots)
+        lines = _rf(ctrl, max_lines=4)
+        assert len(lines) == 4, f"卡片应限制在 max_lines 内，实际 {len(lines)}"
+        assert any("省略" in l for l in lines), "超限应有省略提示"
 
 
 

@@ -37,6 +37,10 @@ _logger = logging.getLogger(__name__)
 #: 增量提交已闭合行到 committed_lines（长工具输出每帧不再全量重渲染）。
 _TOOL_INCREMENTAL_THRESHOLD = 64
 
+#: bash/execute_command 工具输出尾显示行数——超过该行数时只保留最后 N 行
+#: （对齐终端 ``tail`` 语义；bash 输出常为冗长命令回显/构建日志，防卡片撑爆）。
+_BASH_OUTPUT_TAIL_LINES = 3
+
 
 class ReasoningState(Enum):
     """推理通道状态机（与 _ReasoningState 等价语义）。"""
@@ -211,6 +215,19 @@ def _tool_card_styled_lines(block, width, start=0, stop=None):
     # 关闭状态行（_tool_status_index）跳过——状态已移入底边框（对齐 Claude Code）
     body_end = len(block.lines) if stop is None else min(stop, len(block.lines))
     body_start = start if start > 0 else 1
+    # bash 尾显示：前置省略提示行「… 前 N 行省略」（仅首次提交 start==0）
+    omitted = block.extra.get("_bash_omitted_lines", 0)
+    if omitted > 0:
+        ind_runs = [StyledRun(f"\u2026 前 {omitted} 行省略", Style(fg=242))]
+        if width > 0:
+            body = [StyledRun("\u2502 ", border)] + ind_runs
+            pad = inner_w - sum(r.width for r in ind_runs)
+            if pad > 0:
+                body.append(StyledRun(" " * pad, border))
+            body.append(StyledRun(" \u2502", border))
+            out.append(body)
+        else:
+            out.append(ind_runs)
     for abs_idx in range(body_start, body_end):
         if status_idx is not None and abs_idx == status_idx:
             continue
@@ -280,11 +297,12 @@ def _tool_status_index(block):
 
 
 def _user_marker_styled_lines(block, start, stop, width):
-    """用户消息每行 `> ` 标记（渲染期变换，每行 `  > {segment}`）。
+    """用户消息每行 `> ` 标记（渲染期变换，每行 `> {segment}` 顶格）。
 
-    输入为 ``build_user_line`` 产出的 AnsiLine（runs[0]=`  > ` 前缀 run）：
-    剥离前缀 run → 内容 wrap 到 ``inner=width-4`` → 重前缀（首段 ``  > ``，
-    续段 ``> ``——续段 ≤ width-2 安全，满足行级 diff 宽度不变量）。
+    输入为 ``build_user_line`` 产出的 AnsiLine（runs[0]=`> ` 前缀 run）：
+    剥离前缀 run → 内容 wrap 到 ``inner=width-2`` → 重前缀（每段均 ``> ``，
+    Claude Code 顶格列 0，续行同样带 ``> ``——≤ width 安全，满足行级 diff
+    宽度不变量）。
 
     Args:
         block: 用户块（ChatBlock.kind == "user"）。
@@ -301,15 +319,15 @@ def _user_marker_styled_lines(block, start, stop, width):
     pal = get_active_palette()
     icon = pal.user_icon
     width = width if isinstance(width, int) and width > 0 else 0
-    inner = max(1, width - 4) if width > 0 else 0
+    inner = max(1, width - 2) if width > 0 else 0
     out: list[Line] = []
     for ansi_line in block.lines[start:stop]:
         runs = list(ansi_line.runs)
-        # 剥离 `  > ` 前缀 run（build_user_line 结构：runs[0] = 图标前缀）
-        if runs and runs[0].text.startswith("  > "):
+        # 剥离 `> ` 前缀 run（build_user_line 结构：runs[0] = 图标前缀）
+        if runs and runs[0].text.startswith("> "):
             first = runs[0]
-            if len(first.text) > 4:
-                content_runs = [Run(first.text[4:], first.style)] + runs[1:]
+            if len(first.text) > 2:
+                content_runs = [Run(first.text[2:], first.style)] + runs[1:]
             else:
                 content_runs = runs[1:]
         else:
@@ -320,13 +338,12 @@ def _user_marker_styled_lines(block, start, stop, width):
             else ([AnsiLine(content_runs)] if content_runs else [])
         )
         if not wrapped:
-            # 空消息 → 保留前缀行 `  > `（不吞行）
-            out.append(Line([StyledRun("  > ", icon)]))
+            # 空消息 → 保留前缀行 `> `（不吞行）
+            out.append(Line([StyledRun("> ", icon)]))
             continue
-        for i, seg in enumerate(wrapped):
+        for seg in wrapped:
             seg_runs = [StyledRun(r.text, r.style) for r in seg.runs if r.text]
-            prefix = StyledRun("  > ", icon) if i == 0 else StyledRun("> ", icon)
-            out.append(Line([prefix] + seg_runs))
+            out.append(Line([StyledRun("> ", icon)] + seg_runs))
     return out
 
 
@@ -506,7 +523,8 @@ class AppModel:
         分支（先于通用 wrap）：
           - tool：卡片化边框行（顶/底边框 + `│ ` 主体行）——渲染期变换，不改动
             ``block.lines`` 原文；builder 统一管理宽度约束，不走通用 wrap。
-          - user：每行 ``  > `` / 续行 ``> `` 标记——即使不超宽也要重前缀。
+          - user：每行 ``> `` 标记（顶格列 0，对齐 Claude Code）——即使不超宽
+            也要重前缀。
 
         stop: 可选结束下标（不含）——``reflow_committed`` 重建块**已提交部分**
         （``lines[:committed_line_count]``）时限定范围，避免未提交尾混入。
@@ -791,10 +809,34 @@ class AppModel:
             for r in ansi_to_line(seg).runs:
                 l.append_run(r)
             block.lines.append(l)
+        # bash/execute_command：输出超过阈值行数时只保留最后 N 行（tail 显示，
+        # 对齐 Claude Code 收敛冗长 bash 输出；修剪后行数 ≤ N+1，不触发增量提交）
+        if block.extra.get("tool_name") in ("bash", "execute_command"):
+            self._trim_tool_output_tail(block, _BASH_OUTPUT_TAIL_LINES)
         # ★ 方向4：增量提交阈值——长工具输出不每帧全量重渲染（超过阈值即提交
         #   已闭合行到 committed_lines；开放块渲染只取未提交尾）。
         if len(block.lines) - block.committed_line_count >= _TOOL_INCREMENTAL_THRESHOLD:
             self.commit_open_block(block)
+
+    def _trim_tool_output_tail(self, block, keep: int) -> None:
+        """工具块输出修剪为最后 keep 行（保留标题行 block.lines[0]）。
+
+        bash 尾显示：输出超过 keep 行时删除前置输出行（下标 1..N-keep），
+        累计省略数记入 ``block.extra["_bash_omitted_lines"]``（卡片渲染时
+        前置「… 前 N 行省略」提示）；同步 ``committed_line_count``（已提交行
+        被删则回退计数，防越界/重复提交）。修剪后行数 ≤ 1+keep，远低于增量
+        提交阈值 → 无增量提交。
+        """
+        lines = block.lines
+        if len(lines) <= 1 + keep:
+            return
+        del_count = len(lines) - 1 - keep
+        del lines[1:1 + del_count]
+        block.extra["_bash_omitted_lines"] = (
+            block.extra.get("_bash_omitted_lines", 0) + del_count
+        )
+        if block.committed_line_count > 0:
+            block.committed_line_count = max(0, block.committed_line_count - del_count)
 
     def close_tool_box(self, tool_id: str, success: bool) -> None:
         """关闭工具分组：置状态、冻结并提交（工具卡片）。

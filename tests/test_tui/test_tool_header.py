@@ -36,8 +36,8 @@ class TestToolStatusHeader:
         model = AppModel()
         model.open_tool_box("t1", "bash", detail="ls -la")
         lines = _render(model, width=40)
-        # bash 缩写 bs，图标 ⚡
-        assert any(l.startswith("┌─ ⚡ bs") for l in lines)
+        # bash 显示完整名 Bash，图标 ⚡
+        assert any(l.startswith("┌─ ⚡ Bash") for l in lines)
         assert any("ls -la" in l for l in lines)
 
     def test_closed_tool_hides_header(self):

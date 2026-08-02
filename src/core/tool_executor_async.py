@@ -430,7 +430,9 @@ class ToolScheduler:
         dispatch_agent 内部使用 asyncio.Event 纯异步等待 barrier，
         不消耗任何线程池工人。
         """
-        detail = extract_key_params(tc["name"], tc["arguments"], show_all=True)
+        # 对齐 Claude Code：工具卡 detail 用关键参数**值**（非 JSON）——已知工具
+        # 显示如 `Read pyproject.toml` 的路径/命令，未知工具显示紧凑 `k=v`
+        detail = extract_key_params(tc["name"], tc["arguments"])
 
         if on_before:
             on_before(tc, detail)

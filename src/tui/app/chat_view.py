@@ -192,6 +192,12 @@ def ChatView(props) -> object:
                 "key": f"chat-{block_idx}-{row_in_block}",
                 "styled": runs,
             }))
+    # 子代理活动卡片（并入消息流，对齐 Claude Code）：subagent_lines 为
+    # _subagent_render 产出的逐 agent 卡片 ANSI 行，经 _render_children 转换
+    # 后追加到消息文档（原独立 SubAgentPanel 组件已移除）。
+    if model.subagent_lines:
+        from .subagent_panel import _render_children
+        children.extend(_render_children(model, getattr(model, "width", 0)))
     return h(BOX, None, children)
 
 

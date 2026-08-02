@@ -73,7 +73,7 @@ class TestBasicCommands:
         apply_cmd(m, UserMsgCmd(text="hello"))
         block = m.blocks[-1]
         assert block.kind == "user"
-        assert block.lines[0].plain == "  > hello"
+        assert block.lines[0].plain == "> hello"
 
     def test_subagent_frame(self):
         m = _model()
@@ -235,9 +235,9 @@ class TestToolBox:
         m.open_tool_box("t1", "read_file")
         m.open_tool_box("t2", "bash")
         m.append_tool_output("t1", "a1\n")
-        m.append_tool_output("t2", "b1\n")
+        m.append_tool_output("t2", "b1")
         m.append_tool_output("t1", "a2\n")
-        m.append_tool_output("t2", "b2\n")
+        m.append_tool_output("t2", "b2")
         boxes = {b.extra.get("tool_id"): b for b in m.blocks if b.kind == "tool"}
         t1_plains = [l.plain for l in boxes["t1"].lines]
         t2_plains = [l.plain for l in boxes["t2"].lines]
@@ -327,6 +327,27 @@ class TestToolBox:
         apply_cmd(m, ToolOpenCmd(tool_name="x", tool_id="t1"))
         apply_cmd(m, ToolCloseCmd(tool_id="t1", success=False))
         assert "✖" in m.blocks[-1].lines[-1].plain
+
+    def test_bash_output_tail_display(self):
+        """bash 输出超过 3 行 → 只保留最后 3 行 + 省略提示「… 前 N 行省略」。"""
+        m = _model()
+        m.width = 40
+        m.open_tool_box("t1", "bash", "make build")
+        for i in range(10):
+            m.append_tool_output("t1", f"line{i}")
+        m.close_tool_box("t1", True)
+        block = m.blocks[-1]
+        # block.lines 修剪为 标题 + 最后 3 行 + 状态行
+        assert len(block.lines) == 1 + 3 + 1
+        assert "line9" in block.lines[-2].plain
+        # 省略计数记录（10 输出 - 3 保留 = 7）
+        assert block.extra["_bash_omitted_lines"] == 7
+        # 卡片渲染：顶边框 + 省略提示 + 最后 3 行 + 底边框；前置行不显示
+        plains = [l.plain for l in m.committed_lines]
+        assert "前 7 行省略" in "".join(plains)
+        assert any("line7" in p for p in plains)
+        assert any("line9" in p for p in plains)
+        assert not any("line0" in p for p in plains)
 
     def test_tool_summary_closes_open_box(self):
         m = _model()
@@ -722,16 +743,17 @@ class TestReflowCommitted:
         assert all(ln.width <= 20 for ln in m.committed_lines)
         plains = [ln.plain for ln in m.committed_lines]
         assert "line69" not in "".join(plains), "未提交尾不应混入 committed"
-        # 卡片化：重排后首行为工具卡片顶边框（running ● 图标 + 显示名 rf）
+        # 卡片化：重排后首行为工具卡片顶边框（running ● 图标 + 显示名 Read）
         assert plains[0].startswith("\u250c"), "重排后卡片首行应为顶边框"
         assert "\u25cf" in plains[0], "顶边框应含 running ● 状态图标"
-        assert "rf" in plains[0], "顶边框应含工具显示名"
+        assert "Read" in plains[0], "顶边框应含工具显示名"
 
     def test_closed_tool_header_icon_trailer_preserved(self):
         """关闭工具块重排：头/关闭图标/尾空行保留，_first_committed_offset 重建。"""
         m = _model()
         m.width = 40
-        m.open_tool_box("t1", "bash")
+        # read_file（非 bash，不受输出尾截断影响——通用长工具重排路径）
+        m.open_tool_box("t1", "read_file")
         for i in range(70):
             m.append_tool_output("t1", f"out{i}\n")
         m.close_tool_box("t1", True)

@@ -14,7 +14,7 @@ import logging
 from typing import Dict, Type, Any, List, Optional
 
 from .base import Func, ToolMetadata, get_tool_metadata
-from ._constants import TOOL_ABBR
+from ._constants import TOOL_DISPLAY_NAME
 
 logger = logging.getLogger(__name__)
 
@@ -252,8 +252,8 @@ def clear_registry() -> None:
     logger.info("工具注册表已清空")
 
 
-# ── 工具名缩写映射（UI显示用，映射表见 _constants.TOOL_ABBR） ──
+# ── 工具显示名映射（UI显示用，映射表见 _constants.TOOL_DISPLAY_NAME） ──
 
 def get_tool_display_name(tool_name: str) -> str:
-    """获取工具在UI上显示的缩写名称，无映射则返回原名称。"""
-    return TOOL_ABBR.get(tool_name, tool_name)
+    """获取工具在UI上显示的完整名称（对齐 Claude Code），无映射则返回原名称。"""
+    return TOOL_DISPLAY_NAME.get(tool_name, tool_name)

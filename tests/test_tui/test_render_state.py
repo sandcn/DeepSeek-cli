@@ -231,7 +231,7 @@ class TestResetDisplay:
         m.open_tool_box("t1", "bash", "ls")
         assert m.active_tool is not None
         assert m.active_tool["status"] == "running"
-        assert m.active_tool["name"] == "bs"  # get_tool_display_name("bash") → 缩写
+        assert m.active_tool["name"] == "Bash"  # get_tool_display_name("bash") → 完整名
         m.close_tool_box("t1", True)
         assert m.active_tool is None
 

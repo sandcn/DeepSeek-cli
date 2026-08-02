@@ -56,12 +56,11 @@ def _cmd_name(cid: int) -> str:
 # ═══════════════════════════════════════════════════════════
 
 def build_user_line(content: str) -> list[AnsiLine]:
-    """构建用户消息行列表（按 ``\\n`` 切分，每行 ``  > {segment}``）。
+    """构建用户消息行列表（按 ``\\n`` 切分，每行 ``> {segment}`` 顶格）。
 
-    Claude Code 视觉对齐：多行/换行内容每行都带 ``  > `` 标记（首行 4 列
-    前缀 + 续行 ``> `` 前缀由 model 用户分支重前缀）。样式取自活动调色板
-    槽位（Claude TUI parity 步骤 2.3；dark 下与 _S_USER_ICON/_S_USER_TEXT
-    同值）。
+    Claude Code 视觉对齐：多行/换行内容每行都带 ``> `` 标记（顶格列 0；
+    续行前缀由 model 用户分支重前缀）。样式取自活动调色板槽位
+    （Claude TUI parity 步骤 2.3；dark 下与 _S_USER_ICON/_S_USER_TEXT 同值）。
 
     Returns:
         AnsiLine 列表（每行一条）。
@@ -69,7 +68,7 @@ def build_user_line(content: str) -> list[AnsiLine]:
     palette = get_active_palette()
     lines = []
     for segment in content.split("\n"):
-        line = AnsiLine.of("  > ", palette.user_icon)
+        line = AnsiLine.of("> ", palette.user_icon)
         if segment:
             line.append(segment, palette.user_text)
         lines.append(line)

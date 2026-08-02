@@ -69,13 +69,13 @@ class TestParamFormatterChain:
         """tool_executor_async 从 core.param_formatter 导入 extract_key_params 且行为正确。"""
         from src.core.param_formatter import extract_key_params
 
-        # 已知工具参数裁剪
-        assert extract_key_params("read_file", {"path": "src/main.py"}) == "path=src/main.py"
-        assert extract_key_params("bash", '{"command": "ls -la"}') == "command=ls -la"
-        # 未知工具展示全部参数
-        assert "full" in extract_key_params("unknown_tool", {"full": "value"})
-        # show_all=True 展示全部参数
-        assert "path" in extract_key_params("read_file", {"path": "a.py"}, show_all=True)
+        # 已知工具参数裁剪：纯值（对齐 Claude Code `Read pyproject.toml`，非 JSON/k=v）
+        assert extract_key_params("read_file", {"path": "src/main.py"}) == "src/main.py"
+        assert extract_key_params("bash", '{"command": "ls -la"}') == "ls -la"
+        # 未知工具：紧凑 `k=v` 空格连接（非 JSON 大括号）
+        assert extract_key_params("unknown_tool", {"full": "value"}) == "full=value"
+        # show_all=True：同样非 JSON（k=v 空格连接）
+        assert extract_key_params("read_file", {"path": "a.py"}, show_all=True) == "path=a.py"
 
         # 消费方模块可正常导入（调用链完整）
         import src.core.tool_executor_async  # noqa: F401

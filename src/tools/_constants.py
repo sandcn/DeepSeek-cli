@@ -160,22 +160,27 @@ WEB_USER_AGENTS: list[str] = [
     "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
 ]
 
-# ── 工具缩写映射（UI显示用） ──
+# ── 工具显示名映射（UI显示用，对齐 Claude Code 完整名） ──
 
-TOOL_ABBR: dict[str, str] = {
-    "read_file": "rf",
-    "write_file": "wf",
-    "update_file": "uf",
-    "dispatch_agent": "da",
-    "find": "fn",
-    "bash": "bs",
-    "cp": "cp",
-    "mv": "mv",
-    "rm": "rm",
-    "mkdir": "mkdir",
-    "user_select": "us",
-    "web_search": "ws",
-    "search": "sr",
-    "ls": "ls",
-
+TOOL_DISPLAY_NAME: dict[str, str] = {
+    "read_file": "Read",
+    "write_file": "Write",
+    "update_file": "Edit",
+    "str_replace_editor": "Edit",
+    "file_editor": "Edit",
+    "dispatch_agent": "Task",
+    "find": "Grep",
+    "grep": "Grep",
+    "glob": "Glob",
+    "search": "Grep",
+    "bash": "Bash",
+    "execute_command": "Bash",
+    "cp": "CP",
+    "mv": "MV",
+    "rm": "RM",
+    "mkdir": "Mkdir",
+    "user_select": "UserSelect",
+    "web_search": "WebSearch",
+    "web_fetch": "WebFetch",
+    "ls": "LS",
 }
