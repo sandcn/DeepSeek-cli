@@ -781,19 +781,44 @@ class AppModel:
         方向D 步骤15：extra 记录工具状态（running）与顶边框 detail
         （``tool_detail``）；输出行不再增量提交 committed_lines（关闭时统一
         提交/冻结，避免 committed_lines 与块状态不一致）。
+
+        防孤儿卡（同一 tool_id 重复 open）：非空 tool_id 已存在开放 box 时
+        **复用**——修复前直接新建块并覆盖 ``tool_boxes[tool_id]``，旧块成为
+        孤儿（永不关闭、无主体，只渲染一个 `┌─ ●` 顶边框，TUI 显示多一行）。
+        触发场景：同一 tool_call_id 重复 ToolStartedEvent（重试/重复投递），
+        或 append_tool_output 兜底建 box 后 ToolStartedEvent 后到。复用并更新
+        标题/状态（如兜底 box 的 tool_name="" → 后到 open 补全 Bash·detail）。
         """
         from src.tui.core.style import Style
         from src.renderer.ansi.helpers import AnsiLine
         from src.tools.registry import get_tool_display_name
         display = get_tool_display_name(tool_name) or tool_name or "工具"
-        block = self.append_block("tool")
-        block.extra["tool_id"] = tool_id or ""
-        block.extra["tool_name"] = tool_name
-        block.extra["tool_status"] = "running"
         # 工具卡片顶边框 detail 数据源（_tool_card_styled_lines 消费）；
         # ★ bash 多行命令 detail 含 \n——强制单行转义（对齐 _single_line 契约，
         #   防 \n 拆破单行边框）。title/active_tool 复用转义后值（同源单行）。
         detail = _single_line_detail(detail)
+        if tool_id:
+            existing = self.tool_boxes.get(tool_id)
+            if existing is not None:
+                # 复用已开放 box：更新工具名/状态/detail + 顶边框标题行
+                # （live 渲染下一帧生效；开放 box 未提交，更新安全）
+                existing.extra["tool_name"] = tool_name
+                existing.extra["tool_status"] = "running"
+                existing.extra["tool_detail"] = detail
+                title = f"  \u00b7 {display}"
+                if detail:
+                    title = f"  \u00b7 {display} \u00b7 {detail}"
+                if existing.lines:
+                    existing.lines[0] = AnsiLine.of(title, Style(fg=23, bold=True))
+                self.active_tool = {
+                    "name": display, "detail": detail, "status": "running",
+                    "tool_name": tool_name or "",
+                }
+                return existing
+        block = self.append_block("tool")
+        block.extra["tool_id"] = tool_id or ""
+        block.extra["tool_name"] = tool_name
+        block.extra["tool_status"] = "running"
         block.extra["tool_detail"] = detail
         title = f"  \u00b7 {display}"
         if detail:

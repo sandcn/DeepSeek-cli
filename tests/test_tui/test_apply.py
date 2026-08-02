@@ -328,6 +328,69 @@ class TestToolBox:
         apply_cmd(m, ToolCloseCmd(tool_id="t1", success=False))
         assert "✖" in m.blocks[-1].lines[-1].plain
 
+    def test_tool_open_same_id_reuses_box_no_orphan(self):
+        """同一非空 tool_id 重复 open → 复用同一 box（不新建块）。
+
+        回归：修复前重复 open 覆盖 tool_boxes[tool_id]，旧块成为孤儿
+        （● 空卡永不关闭、只渲染一个顶边框，TUI 显示多一行）。
+        """
+        m = _model()
+        m.width = 40
+        first = m.open_tool_box("t1", "bash", "make build")
+        second = m.open_tool_box("t1", "bash", "make build")
+        # 复用同一 block，不新建
+        assert second is first
+        assert len(m.blocks) == 1
+        assert m.tool_boxes["t1"] is first
+        # 输出/关闭均作用于该 box，无孤儿残留
+        for i in range(10):
+            m.append_tool_output("t1", f"line{i}")
+        m.close_tool_box("t1", True)
+        assert m.blocks[-1].closed is True
+        assert m.blocks[-1].extra["tool_status"] == "done"
+        assert m.tool_boxes == {}
+        # 渲染后无重复顶边框（committed_lines 仅一个 `┌─` 首行）
+        tops = [ln.plain for ln in m.committed_lines if ln.plain.startswith("\u250c")]
+        assert len(tops) == 1, f"重复 open 不应产生孤儿顶边框: {tops}"
+
+    def test_tool_open_after_output_fallback_reuses_box(self):
+        """append_tool_output 兜底建 box 后 ToolStartedEvent 后到 → 复用并补全标题。
+
+        回归：修复前兜底 box（tool_name=""）与后到 open 的 box 并存，兜底 box
+        成为孤儿（● 空卡），后到 open 的标题信息（Bash·detail）只出现在新块。
+        """
+        from src.tools.registry import get_tool_display_name
+        m = _model()
+        m.width = 40
+        # 输出先到（兜底建 box，tool_name 为空）
+        m.append_tool_output("t1", "line0")
+        fallback = m.blocks[-1]
+        assert fallback.extra.get("tool_name") == ""
+        # ToolStartedEvent 后到 → 复用兜底 box 并补全标题
+        reopened = m.open_tool_box("t1", "bash", "make build")
+        assert reopened is fallback
+        assert len(m.blocks) == 1
+        assert reopened.extra.get("tool_name") == "bash"
+        assert "make build" in reopened.lines[0].plain
+        assert get_tool_display_name("bash") in reopened.lines[0].plain
+        # 输出累积到同一 box（无孤儿）
+        m.append_tool_output("t1", "line1")
+        m.close_tool_box("t1", True)
+        assert m.blocks[-1].closed is True
+        assert m.tool_boxes == {}
+
+    def test_tool_open_empty_id_still_separate_boxes(self):
+        """空 tool_id 重复 open 仍创建独立 box（行为不变，不触发复用路径）。"""
+        m = _model()
+        first = m.open_tool_box("", "first")
+        second = m.open_tool_box("", "second")
+        assert first is not second
+        assert len(m.blocks) == 2
+        # 最近者关闭，最早者保留（倒序语义，与既有 close("") 行为一致）
+        m.close_tool_box("", True)
+        assert m.blocks[0].closed is False
+        assert m.blocks[1].closed is True
+
     def test_bash_output_tail_display(self):
         """bash 输出超过 3 行 → 只保留最后 3 行 + 省略提示「… 前 N 行省略」。"""
         m = _model()
