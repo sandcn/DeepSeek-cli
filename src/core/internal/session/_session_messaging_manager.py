@@ -83,11 +83,28 @@ class SessionMessagingManager:
     def clear_messages(self, system_messages_fn, build_system_prompt_fn) -> int:
         """清空对话（保留 system prompt）。
 
+        若现有 system 消息与当前构建状态（完整/空模式）不一致——例如 Ctrl+B
+        切换空模式后 agent system 消息未同步重建——则按当前状态重建标准
+        system 消息，并保留用户通过 /system 追加的额外 system 消息。
+
         Returns:
             被删除的消息数量
         """
         system_msgs = system_messages_fn()
         removed = len(self._messages) - len(system_msgs)
+
+        # ★ 空模式同步：比较现有 system 首条与当前 build_system_prompt() 首条，
+        #   不一致时按当前状态（完整/空模式）重建，防止清空后残留旧状态提词。
+        if system_msgs:
+            parts = build_system_prompt_fn()
+            if parts:
+                expected_head = parts[0][:60]
+                existing_head = system_msgs[0].get("content", "")[:60]
+                if expected_head != existing_head:
+                    base = [{"role": "system", "content": p} for p in parts]
+                    extra = system_msgs[len(parts):]
+                    system_msgs = base + extra
+
         self._messages[:] = system_msgs
 
         if not self._messages:

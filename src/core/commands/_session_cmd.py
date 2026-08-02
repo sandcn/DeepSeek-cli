@@ -15,6 +15,20 @@ def _cmd_clear(ctx):
     """清空对话，保留所有 system 消息（含用户通过 /system 追加的内容）。"""
     # 保留所有 system 消息（含用户追加），与 session.clear_messages() 行为一致
     system_msgs = [m for m in ctx.messages if m.get("role") == "system"]
+
+    # ★ 空模式同步：与 session.clear_messages() 逻辑一致——Ctrl+B 切换空模式后
+    #   若 agent system 消息未同步重建，清空时按当前状态重建标准 system，
+    #   并保留用户追加的额外 system 消息。
+    if system_msgs:
+        parts = ctx.build_system_prompt()
+        if parts:
+            expected_head = parts[0][:60]
+            existing_head = system_msgs[0].get("content", "")[:60]
+            if expected_head != existing_head:
+                base = [{"role": "system", "content": p} for p in parts]
+                extra = system_msgs[len(parts):]
+                system_msgs = base + extra
+
     ctx.messages[:] = system_msgs
     if not ctx.messages:
         # 没有任何 system 消息时，用 build_system_prompt 兜底重建
