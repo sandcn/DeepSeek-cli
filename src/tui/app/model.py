@@ -9,10 +9,12 @@
 
 卡片结构：``committed_lines`` 为「卡片文档」——每块提交为
 ``[角色头] + [正文] + [空行]``（无头 kind 为 ``[正文] + [空行]``，如
-user/write_line/splash/parse_info）。角色头经 ``_role_header_line`` 截断
-保证单行 ≤width；空行经 ``_append_card_trailer`` 在块关闭提交时追加恰好
-一次。正文-only 冻结缓存 ``_cached_ink_lines`` 不含卡片头/空行
-（``len == len(block.lines)`` 不变式）。
+user/write_line/splash/parse_info；工具块为渲染期边框卡
+``[顶边框] + [主体行] + [底边框]``，顶边框替代 `▎⚡` 角色头）。角色头经
+``_role_header_line`` 截断保证单行 ≤width；空行经 ``_append_card_trailer``
+在块关闭提交时追加恰好一次。正文-only 冻结缓存 ``_cached_ink_lines``
+不含卡片头/空行（``len == len(block.lines)`` 不变式；工具卡含底边框，
+``len == len(block.lines) + 1``）。
 
 终端 resize：``reflow_committed(width)`` 在宽度变化后按新宽度重建全部
 已提交行（committed_lines 提交时按旧宽度 wrap，宽度变化后需重排）——
@@ -148,6 +150,146 @@ def _tool_icon_runs(block) -> list:
     return [StyledRun("\u25cf ", StyleSheet.resolve("warn", Style(fg=214)))]
 
 
+def _tool_card_styled_lines(block, width, start=0, stop=None):
+    """工具卡片渲染期边框行（顶/底边框 + `│ ` 主体行）。
+
+    渲染期变换：不改动 ``block.lines`` 原文（model 测试不变式
+    ``block.lines[0].plain.startswith("  · ")`` / ``strip()=="✔"`` / 无边框
+    字符依赖此）。顶边框仅 ``start==0``（块首次提交）；底边框仅块关闭且为
+    最终块（``stop is None`` 或 ``stop >= len(block.lines)``）。关闭状态行
+    ``  ✔`` 保留为**主体行**（底边框不含状态文本，只画 ``└────┘``）。
+
+    Args:
+        block: 工具块（ChatBlock.kind == "tool"）。
+        width: 卡片总宽度（终端列宽）；<=0 时按无边框主体行防御渲染。
+        start: 起始 AnsiLine 下标（块内行）。
+        stop: 结束下标（不含）；None 表示到块末尾。
+
+    Returns:
+        list[list[StyledRun]] — 每行 StyledRun 列表（卡片边框行）。
+    """
+    from src.tui.app._theme import get_active_palette
+    from src.tui.core.style import Style
+    from src.tui.ink import StyledRun
+    from src.tui.ink.helpers import truncate_runs
+    from src.tools.registry import get_tool_display_name
+    from src.tui._tool_icons import TOOL_ICONS
+    from src.renderer.ansi.helpers import wrap_line
+    pal = get_active_palette()
+    border = pal.border
+    width = width if isinstance(width, int) and width > 0 else 0
+    inner_w = max(1, width - 4) if width > 0 else 0
+    out: list[list[StyledRun]] = []
+    # 顶边框（仅 start==0）：┌─ ● ⚡ rf[ · detail] ─…─┐
+    if start == 0:
+        tool_name = block.extra.get("tool_name") or "工具"
+        display = get_tool_display_name(tool_name) or tool_name or "工具"
+        icon_char = TOOL_ICONS.get(tool_name, "\u2699")
+        detail = block.extra.get("tool_detail", "")
+        # 标题 runs：状态图标（●/✔/✖）+ 工具图标 + 显示名（+ detail）。
+        # 状态图标恒为 title_runs[0] → 顶边框 runs[1]（前缀 `┌─ ` 后），
+        # 供 close_tool_box 原位翻转图标。
+        title_runs = list(_tool_icon_runs(block))
+        title_runs.append(StyledRun(f"{icon_char} ", Style(fg=252)))
+        title_runs.append(StyledRun(display, Style(fg=252)))
+        if detail:
+            title_runs.append(StyledRun(f" \u00b7 {detail}", pal.dim))
+        head = [StyledRun("\u250c\u2500 ", border)]
+        if width > 0:
+            for run in truncate_runs(title_runs, max(1, width - 4)):
+                head.append(run)
+            fill = max(0, width - 1 - sum(r.width for r in head))
+            if fill > 0:
+                head.append(StyledRun("\u2500" * fill, border))
+            head.append(StyledRun("\u2510", border))
+        else:
+            head.extend(title_runs)
+        out.append(head)
+    # 主体行：block.lines[start:stop]，start==0 时跳过标题行（名字已在顶边框）
+    body_end = len(block.lines) if stop is None else min(stop, len(block.lines))
+    body_start = start if start > 0 else 1
+    for ansi_line in block.lines[body_start:body_end]:
+        wrapped = (
+            wrap_line(ansi_line, inner_w)
+            if width > 0
+            else ([ansi_line] if ansi_line.runs else [])
+        )
+        if not wrapped:
+            # 空输出行 → 有边框空行 `│    │`（保持行映射）
+            if width > 0:
+                out.append([StyledRun("\u2502 " + " " * inner_w + " \u2502", border)])
+            continue
+        for seg in wrapped:
+            seg_runs = [StyledRun(r.text, r.style) for r in seg.runs if r.text]
+            if width <= 0:
+                out.append(seg_runs)
+                continue
+            body = [StyledRun("\u2502 ", border)] + seg_runs
+            pad = inner_w - sum(r.width for r in seg_runs)
+            if pad > 0:
+                body.append(StyledRun(" " * pad, border))
+            body.append(StyledRun(" \u2502", border))
+            out.append(body)
+    # 底边框：仅关闭块且为最终块（└────┘）
+    if block.closed and (stop is None or stop >= len(block.lines)):
+        if width > 0:
+            out.append([StyledRun("\u2514" + "\u2500" * max(1, width - 2) + "\u2518", border)])
+        else:
+            out.append([StyledRun("\u2514\u2518", border)])
+    return out
+
+
+def _user_marker_styled_lines(block, start, stop, width):
+    """用户消息每行 `> ` 标记（渲染期变换，每行 `  > {segment}`）。
+
+    输入为 ``build_user_line`` 产出的 AnsiLine（runs[0]=`  > ` 前缀 run）：
+    剥离前缀 run → 内容 wrap 到 ``inner=width-4`` → 重前缀（首段 ``  > ``，
+    续段 ``> ``——续段 ≤ width-2 安全，满足行级 diff 宽度不变量）。
+
+    Args:
+        block: 用户块（ChatBlock.kind == "user"）。
+        start: 起始 AnsiLine 下标。
+        stop: 结束下标（不含）；None 表示到块末尾。
+        width: 文档宽度；<=0 时仅剥离前缀不换行。
+
+    Returns:
+        list[Line] — 用户消息 ink Line 列表。
+    """
+    from src.tui.app._theme import get_active_palette
+    from src.tui.ink import Line, StyledRun
+    from src.renderer.ansi.helpers import AnsiLine, Run, wrap_line
+    pal = get_active_palette()
+    icon = pal.user_icon
+    width = width if isinstance(width, int) and width > 0 else 0
+    inner = max(1, width - 4) if width > 0 else 0
+    out: list[Line] = []
+    for ansi_line in block.lines[start:stop]:
+        runs = list(ansi_line.runs)
+        # 剥离 `  > ` 前缀 run（build_user_line 结构：runs[0] = 图标前缀）
+        if runs and runs[0].text.startswith("  > "):
+            first = runs[0]
+            if len(first.text) > 4:
+                content_runs = [Run(first.text[4:], first.style)] + runs[1:]
+            else:
+                content_runs = runs[1:]
+        else:
+            content_runs = runs
+        wrapped = (
+            wrap_line(AnsiLine(content_runs), inner)
+            if (width > 0 and content_runs)
+            else ([AnsiLine(content_runs)] if content_runs else [])
+        )
+        if not wrapped:
+            # 空消息 → 保留前缀行 `  > `（不吞行）
+            out.append(Line([StyledRun("  > ", icon)]))
+            continue
+        for i, seg in enumerate(wrapped):
+            seg_runs = [StyledRun(r.text, r.style) for r in seg.runs if r.text]
+            prefix = StyledRun("  > ", icon) if i == 0 else StyledRun("> ", icon)
+            out.append(Line([prefix] + seg_runs))
+    return out
+
+
 def _role_header_runs(block, model) -> list:
     """构建块角色头 StyledRun 列表（卡片首行，按 kind 选样式与文本）。
 
@@ -165,8 +307,9 @@ def _role_header_runs(block, model) -> list:
     if kind == "reasoning":
         return [StyledRun("\u258d\U0001f4ad 思考", Style(fg=242, italic=True))]
     if kind == "tool":
-        tool_name = block.extra.get("tool_name") or "工具"
-        return [StyledRun("\u258e\u26a1", pal.accent), StyledRun(f" 工具 {tool_name}", pal.dim)]
+        # 工具卡片顶边框替代 `▎⚡ 工具 X` 角色头（卡片化对齐 Claude Code）；
+        # 无头 → _card_lines 不前置独立头行，顶边框即卡片首行。
+        return []
     if kind == "notification":
         return [StyledRun("\u258e", pal.notice), StyledRun("通知", pal.notice)]
     if kind == "error":
@@ -309,7 +452,7 @@ class AppModel:
             self.committed_count += 1
 
     def _block_to_ink_lines(self, block, start: int = 0, stop=None):
-        """将块内 AnsiLine（从 start 起到 stop）转为 ink Line（推理块叠加 dim/italic）。
+        """将块内 AnsiLine（从 start 起到 stop）转为 ink Line（块级样式叠加）。
 
         ★ 方向1 P0-1（超宽行 wrap）：committed 发射前按 ``self.width`` wrap——
         任一 AnsiLine 显示宽度超过终端宽度时，经 ``renderer.ansi.helpers.wrap_line``
@@ -317,8 +460,10 @@ class AppModel:
         每行 ink Line 宽度须 <= width）。仅超宽行走 wrap（普通行零额外成本）；
         ``self.width <= 0`` 时跳过 wrap 保持原样（防御）。
 
-        方向D 步骤15：工具块标题行前置状态图标（running ● / done ✔ / fail ✖，
-        渲染装饰不改动 block.lines 原文；仅 start==0 时前置一次）。
+        分支（先于通用 wrap）：
+          - tool：卡片化边框行（顶/底边框 + `│ ` 主体行）——渲染期变换，不改动
+            ``block.lines`` 原文；builder 统一管理宽度约束，不走通用 wrap。
+          - user：每行 ``  > `` / 续行 ``> `` 标记——即使不超宽也要重前缀。
 
         stop: 可选结束下标（不含）——``reflow_committed`` 重建块**已提交部分**
         （``lines[:committed_line_count]``）时限定范围，避免未提交尾混入。
@@ -329,15 +474,24 @@ class AppModel:
         slice_lines = block.lines[start:stop]
         if not slice_lines:
             return []
+        # 工具卡片（渲染期边框行）：builder 统一管理宽度约束；不走通用 wrap
+        if block.kind == "tool":
+            return [
+                Line(runs) for runs in _tool_card_styled_lines(
+                    block, getattr(self, "width", 0), start, stop,
+                )
+            ]
+        # 用户消息（每行 `> ` 标记）：即使不超宽也要重前缀 → 先于通用 wrap
+        if block.kind == "user":
+            return _user_marker_styled_lines(
+                block, start, stop, getattr(self, "width", 0),
+            )
         reasoning_style = (
             _AnsiStyle(dim=True, italic=True) if block.kind == "reasoning" else None
         )
-        icon_runs = (
-            _tool_icon_runs(block) if (block.kind == "tool" and start == 0) else []
-        )
         width = getattr(self, "width", 0)
         out: list = []
-        for idx, ansi_line in enumerate(slice_lines):
+        for ansi_line in slice_lines:
             # ★ 方向1 P0-1：超宽行按 width wrap（wrap 与测量使用一致的宽度工具；
             #   仅超宽行走 wrap，普通行零额外成本；width<=0 跳过 wrap 防御）
             src_lines = (
@@ -345,7 +499,6 @@ class AppModel:
                 if (width > 0 and ansi_line.width > width)
                 else [ansi_line]
             )
-            first = True
             for wrapped in src_lines:
                 runs = []
                 for r in wrapped.runs:
@@ -355,9 +508,6 @@ class AppModel:
                     if reasoning_style is not None:
                         st = reasoning_style if st is None else st.merge(reasoning_style)
                     runs.append(StyledRun(r.text, st))
-                if idx == 0 and icon_runs and first:
-                    runs = icon_runs + runs
-                first = False
                 out.append(Line(runs))
         return out
 
@@ -532,11 +682,11 @@ class AppModel:
     # ── 工具 box（每工具一个，增量刷新） ────────────
 
     def open_tool_box(self, tool_id: str, tool_name: str, detail: str = "") -> ChatBlock:
-        """打开一个工具分组：标题行立即显示，输出增量追加（无边框）。
+        """打开一个工具分组：卡片顶边框立即显示，输出增量追加（卡片化）。
 
-        方向D 步骤15：extra 记录工具状态（running）；输出行不再增量提交
-        committed_lines（关闭时统一提交/冻结，避免 committed_lines 与块状态
-        不一致）。
+        方向D 步骤15：extra 记录工具状态（running）与顶边框 detail
+        （``tool_detail``）；输出行不再增量提交 committed_lines（关闭时统一
+        提交/冻结，避免 committed_lines 与块状态不一致）。
         """
         from src.tui.core.style import Style
         from src.renderer.ansi.helpers import AnsiLine
@@ -546,6 +696,8 @@ class AppModel:
         block.extra["tool_id"] = tool_id or ""
         block.extra["tool_name"] = tool_name
         block.extra["tool_status"] = "running"
+        # 工具卡片顶边框 detail 数据源（_tool_card_styled_lines 消费）
+        block.extra["tool_detail"] = detail
         title = f"  \u00b7 {display}"
         if detail:
             title = f"  \u00b7 {display} \u00b7 {detail}"
@@ -566,7 +718,7 @@ class AppModel:
         return block
 
     def append_tool_output(self, tool_id: str, text: str) -> None:
-        """追加工具输出行到对应分组（无边框）。
+        """追加工具输出行到对应分组（卡片主体行）。
 
         方向4（开放工具块增量提交）：输出行数超过阈值
         （``_TOOL_INCREMENTAL_THRESHOLD``）时经 ``commit_open_block`` 增量提交
@@ -604,11 +756,11 @@ class AppModel:
             self.commit_open_block(block)
 
     def close_tool_box(self, tool_id: str, success: bool) -> None:
-        """关闭工具分组：置状态、冻结并提交（无边框）。
+        """关闭工具分组：置状态、冻结并提交（工具卡片）。
 
         方向D 步骤15：
-          - extra.tool_status = done/fail（渲染层标题前置 ✔/✖ 图标）；
-          - 关闭块冻结 _cached_ink_lines（含状态图标，免每帧 Style merge）。
+          - extra.tool_status = done/fail（卡片顶边框状态图标原位翻转 ✔/✖）；
+          - 关闭块冻结 _cached_ink_lines（含底边框，免每帧 Style merge）。
 
         Bug A 修复：按 tool_id 精确 pop，不再 fallback 到 _current_tool_box
         （单值指针语义已移除）；找不到对应 box 时静默丢弃（debug 日志）。
@@ -634,26 +786,35 @@ class AppModel:
         status = "\u2714" if success else "\u2716"
         block.lines.append(AnsiLine.of(f"  {status}", Style(fg=41 if success else 196)))
         block.extra["tool_status"] = "done" if success else "fail"
-        # Claude TUI parity 步骤 2.2：关闭后无进行中工具（ToolStatusHeader 隐藏）
+        # Claude TUI parity 步骤 2.2：关闭后无进行中工具（ToolStatusHeader 隔离
+        # 测试仍消费 active_tool；app 组件树已移除该组件）
         self.active_tool = None
 
         # ★ 1.6 修复：长工具输出（> _TOOL_INCREMENTAL_THRESHOLD 触发增量提交后
-        #   标题行已在 committed_lines）关闭时更新 committed_lines 中标题行状态
-        #   图标——修复前 committed_lines 标题行恒 ●（首帧增量提交时状态为
+        #   顶边框已在 committed_lines）关闭时更新 committed_lines 中顶边框状态
+        #   图标——修复前 committed_lines 顶边框恒 ●（首帧增量提交时状态为
         #   running，close 后不再更新）。替换 runs 时新建 StyledRun 列表但保留
         #   Line 对象引用（增量缓存身份复用不破坏）；未触发增量提交的短工具
-        #   （_first_committed_offset 不存在）关闭时经 commit_block 提交的标题行
+        #   （_first_committed_offset 不存在）关闭时经 commit_block 提交的顶边框
         #   已带 done/fail 图标，无需更新。
-        #   卡片结构：``_first_committed_offset`` 指向卡片**首行（角色头）**；
-        #   带状态图标的正文标题行在其后一行（头部保证单行——_role_header_line
-        #   截断 → 正文标题恒在 offset+1）。
+        #   卡片结构：``_first_committed_offset`` 指向卡片**首行（顶边框）**，
+        #   状态图标为边框内 runs[1]（``┌─ `` 前缀后；runs[0] 为边框前缀）。
         offset = block.extra.get("_first_committed_offset")
-        if offset is not None and 0 <= offset + 1 < len(self.committed_lines):
+        if offset is not None and 0 <= offset < len(self.committed_lines):
             icon = _tool_icon_runs(block)
             if icon:
-                title_line = self.committed_lines[offset + 1]
-                # 替换图标 run（runs[0]），保留标题其余 run（runs[1:]）
-                title_line.runs = icon + list(title_line.runs)[1:]
+                top_line = self.committed_lines[offset]
+                runs = list(top_line.runs)
+                # 顶边框结构：[0]=`┌─ ` 边框前缀, [1]=状态图标, [2:]=标题内容
+                idx = 1
+                if not (len(runs) > 1 and runs[0].text.startswith("\u250c")):
+                    # 防御：超窄宽度下标题被截断时按图标字符扫描定位
+                    for i, r in enumerate(runs):
+                        if r.text and r.text.strip() in ("\u25cf", "\u2714", "\u2716"):
+                            idx = i
+                            break
+                # 替换图标 run，保留边框前缀与标题内容（runs 引用身份保留）
+                top_line.runs = runs[:idx] + icon + runs[idx + 1:]
 
         block.closed = True
         # ★ 方向4（增量提交协同）：冻结仅**未提交部分**（已提交行在

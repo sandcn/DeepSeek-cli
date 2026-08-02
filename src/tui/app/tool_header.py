@@ -6,8 +6,9 @@
   - status="done"/"fail"：该工具已关闭 → 不显示（header 仅展示「进行中」工具，
     与 Claude Code 顶部正在执行工具一致）。
 
-位置：App 组件树 ChatView 之后、SubAgentPanel 之前（live 区尾部）→ 工具状态
-变化时首差异行在 live 区头部，聊天缓存行不被重写，维持 O(live+新增)。
+位置：已从 App 组件树移除（工具运行状态改由工具卡片顶边框 ● 图标展示，
+双份冗余）——本组件文件与 ``test_tool_header.py`` 保留用于隔离验证
+（``model.active_tool`` 仍由 open/close_tool_box 维护）。
 """
 
 from __future__ import annotations

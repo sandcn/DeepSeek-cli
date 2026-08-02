@@ -55,16 +55,25 @@ def _cmd_name(cid: int) -> str:
 # 消息行共享构建（方向C 步骤4）
 # ═══════════════════════════════════════════════════════════
 
-def build_user_line(content: str) -> AnsiLine:
-    """构建用户消息行（`  > ` 图标 + 文本）。
+def build_user_line(content: str) -> list[AnsiLine]:
+    """构建用户消息行列表（按 ``\\n`` 切分，每行 ``  > {segment}``）。
 
-    apply 与 _consumer 共享的唯一真源；样式取自活动调色板槽位
-    （Claude TUI parity 步骤 2.3；dark 下与 _S_USER_ICON/_S_USER_TEXT 同值）。
+    Claude Code 视觉对齐：多行/换行内容每行都带 ``  > `` 标记（首行 4 列
+    前缀 + 续行 ``> `` 前缀由 model 用户分支重前缀）。样式取自活动调色板
+    槽位（Claude TUI parity 步骤 2.3；dark 下与 _S_USER_ICON/_S_USER_TEXT
+    同值）。
+
+    Returns:
+        AnsiLine 列表（每行一条）。
     """
     palette = get_active_palette()
-    line = AnsiLine.of("  > ", palette.user_icon)
-    line.append(content, palette.user_text)
-    return line
+    lines = []
+    for segment in content.split("\n"):
+        line = AnsiLine.of("  > ", palette.user_icon)
+        if segment:
+            line.append(segment, palette.user_text)
+        lines.append(line)
+    return lines
 
 
 def build_assistant_line(content: str) -> AnsiLine:
@@ -250,7 +259,7 @@ def _do_parse_info(model, cmd) -> None:
 
 
 def _do_user_message(model, cmd) -> None:
-    model.append_committed("user", [build_user_line(cmd.text)])
+    model.append_committed("user", build_user_line(cmd.text))
 
 
 def _do_subagent_markdown(model, cmd) -> None:
@@ -299,7 +308,7 @@ def _do_display_messages(model, cmd) -> None:
         role = msg.get("role", "")
         content = _content_str(msg.get("content", ""))
         if role == "user":
-            model.append_committed("user", [build_user_line(content)])
+            model.append_committed("user", build_user_line(content))
         elif role in ("assistant", "other"):
             model.append_committed("write_line", [build_assistant_line(content)])
     if messages:

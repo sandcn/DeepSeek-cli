@@ -9,6 +9,8 @@
 未提交（live）块的**角色头**经 ``_role_header_line`` 在正文行之前发射
 （仅 ``committed_line_count == 0`` 时——已增量提交的头已在 committed_lines，
 互斥不重复）；正文行仍走 ``_block_styled_lines``（正文-only，不带头）。
+工具块例外：卡片化后无独立角色头——live 顶边框经 ``_block_styled_lines``
+工具短路（``_tool_card_styled_lines``）发射，与 committed 首次提交互斥。
 """
 
 from __future__ import annotations
@@ -30,14 +32,22 @@ def _to_styled_runs(line) -> list[StyledRun]:
     return [StyledRun(r.text, r.style) for r in runs if r.text]
 
 
-def _block_styled_lines(block, start: int = 0) -> list[list[StyledRun]]:
+def _block_styled_lines(block, start: int = 0, width: int = 0) -> list[list[StyledRun]]:
     """将块的行（从 start 起）转为 styled run 列表（块级样式叠加）。
 
-    方向D 步骤15：
+    分支顺序：
       - 关闭块（``_cached_ink_lines`` 非 None）直接复用冻结 ``Line.runs``
         引用（同一 runs 列表对象跨帧复用，免每帧 Style merge）；推理块除外
         ——冻结语义（dim italic）与即时渲染（fg=242 italic）不同，保持即时路径。
-      - 工具块标题行前置状态图标（running ● / done ✔ / fail ✖）。
+      - 工具块短路：直接返回 ``_tool_card_styled_lines`` 边框行（open 卡无
+        底边框）。**不走** per-line ``_open_styled_cache``——卡片行数与输入行
+        非 1:1（wrap/边框），缓存键失效。
+      - 其余（reasoning/content）保持原 per-line styled 引用缓存逻辑。
+
+    Args:
+        block: 聊天块。
+        start: 起始 AnsiLine 下标。
+        width: 文档宽度（工具卡片边框宽度约束；调用方传 model.width）。
     """
     kind = block.kind
     cache = getattr(block, "_cached_ink_lines", None)
@@ -49,6 +59,11 @@ def _block_styled_lines(block, start: int = 0) -> list[list[StyledRun]]:
         #   返回（start 参数对冻结缓存无意义；修复前按 ``cache[start:]`` 切片，
         #   增量提交后 start=committed_line_count 越界返回空 → 尾部渲染丢失）。
         return [line.runs for line in cache[0:]]
+    if kind == "tool":
+        # 开放工具卡：边框行（live 仅 committed_line_count==0 发顶边框——
+        # 与 committed 首次提交互斥；start>0 已增量提交 → 仅主体行）
+        from src.tui.app.model import _tool_card_styled_lines
+        return _tool_card_styled_lines(block, width, start, None)
     slice_lines = block.lines[start:]
     # ★ 方向1（open 块 styled 引用缓存）：开放块行转换结果按**行对象**缓存于
     #   block——修复前每帧 ``_to_styled_runs`` 重建全部 StyledRun 列表（新对象
@@ -70,12 +85,6 @@ def _block_styled_lines(block, start: int = 0) -> list[list[StyledRun]]:
                 runs = [StyledRun(r.text, (r.style or Style()).merge(_S_REASONING)) for r in runs]
             open_cache[line] = runs
         out.append(runs)
-    if kind == "tool" and start == 0 and out:
-        # 开放工具块：标题前置状态图标（running ●；关闭块已在冻结缓存中）
-        from src.tui.app.model import _tool_icon_runs
-        icon = _tool_icon_runs(block)
-        if icon:
-            out[0] = icon + out[0]
     return out
 
 
@@ -174,7 +183,9 @@ def ChatView(props) -> object:
                 }))
         # 开放块只渲染未提交尾（已增量提交的行在缓存中，不再重建）
         for row_in_block, runs in enumerate(
-            _block_styled_lines(block, block.committed_line_count)
+            _block_styled_lines(
+                block, block.committed_line_count, getattr(model, "width", 0),
+            )
         ):
             children.append(h(TEXT, {
                 "key": f"chat-{block_idx}-{row_in_block}",

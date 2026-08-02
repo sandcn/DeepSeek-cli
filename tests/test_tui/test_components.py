@@ -59,8 +59,9 @@ class TestChatView:
         f = _frame(m)
         plains = [l.plain for l in f.lines]
         assert any("\u258e" in p and "\u56de\u7b54" in p for p in plains)  # ▎回答
-        # 用户卡无角色头：帧首行即用户正文（无 ▎ 头行）
-        assert plains[0] == "  > question", "用户卡不应有角色头"
+        # 用户卡无角色头：按 `  > question` 前缀定位用户行（帧首行已被顶部
+        # 标题栏 `✦ DeepSeek CLI` 占据，不再直接是用户正文）
+        assert any(p.startswith("  > question") for p in plains), "用户卡不应有角色头"
         # 用户卡（正文 "  > question"）与回答卡（▎回答）之间应有空白行（用户卡尾空行）
         i_user = next(i for i, p in enumerate(plains) if p.startswith("  > question"))
         i_answer = next(i for i, p in enumerate(plains) if "\u56de\u7b54" in p)

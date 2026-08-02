@@ -384,9 +384,10 @@ class TestToolBox:
         for i in range(200):
             m.append_tool_output("t1", f"line{i}\n")
         assert block.committed_line_count > 0
-        # 角色头仅首次提交（committed_line_count==0）发射一次
-        headers = [l for l in m.committed_lines if l.plain.startswith("\u258e\u26a1")]
-        assert len(headers) == 1, f"角色头应恰好一次，实际 {len(headers)}"
+        # 工具卡片顶边框仅首次提交（committed_line_count==0）发射一次
+        # （卡片化后顶边框替代 `▎⚡` 角色头，无独立角色头行）
+        borders = [l for l in m.committed_lines if l.plain.startswith("\u250c")]
+        assert len(borders) == 1, f"工具卡片顶边框应恰好一次，实际 {len(borders)}"
         # 开放块未关闭 → 尚无卡片尾空行（无空 plain 行）
         assert all(l.plain != "" for l in m.committed_lines), "开放块不应有尾空行"
         m.close_tool_box("t1", True)
@@ -413,9 +414,10 @@ class TestToolBox:
         committed_before = block.committed_line_count
         assert committed_before > 0
         m.close_tool_box("t1", True)
-        # 冻结缓存 = 未提交尾（不含已提交行）
+        # 冻结缓存 = 未提交尾（不含已提交行）+ 底边框（卡片结构：尾部主体行
+        # 之后追加 `└────┘`，故 +1；关闭状态行作为主体行保留）
         assert block._cached_ink_lines is not None
-        assert len(block._cached_ink_lines) == len(block.lines) - committed_before
+        assert len(block._cached_ink_lines) == len(block.lines) - committed_before + 1
 
 
 class TestStatusCounts:
@@ -499,7 +501,8 @@ class TestToolCardState:
         block = m.blocks[-1]
         assert block.extra["tool_status"] == "done"
         assert block._cached_ink_lines is not None
-        assert len(block._cached_ink_lines) == len(block.lines)
+        # 卡片结构：冻结缓存 = 顶边框 + 主体行 + 底边框（+1 为底边框）
+        assert len(block._cached_ink_lines) == len(block.lines) + 1
 
     def test_tool_close_fail_status(self):
         """close 失败 → status=fail。"""
@@ -733,7 +736,10 @@ class TestReflowCommitted:
         assert all(ln.width <= 20 for ln in m.committed_lines)
         plains = [ln.plain for ln in m.committed_lines]
         assert "line69" not in "".join(plains), "未提交尾不应混入 committed"
-        assert plains[0] == "▎⚡ 工具 read_file"
+        # 卡片化：重排后首行为工具卡片顶边框（running ● 图标 + 显示名 rf）
+        assert plains[0].startswith("\u250c"), "重排后卡片首行应为顶边框"
+        assert "\u25cf" in plains[0], "顶边框应含 running ● 状态图标"
+        assert "rf" in plains[0], "顶边框应含工具显示名"
 
     def test_closed_tool_header_icon_trailer_preserved(self):
         """关闭工具块重排：头/关闭图标/尾空行保留，_first_committed_offset 重建。"""
@@ -747,13 +753,13 @@ class TestReflowCommitted:
         assert len(m.committed_lines) == len(block.lines) + 2
         m.reflow_committed(30)
         plains = [ln.plain for ln in m.committed_lines]
-        assert plains[0] == "▎⚡ 工具 bash"
-        assert plains[1].startswith("✔")  # 关闭图标保留
+        assert plains[0].startswith("\u250c"), "关闭工具卡首行应为顶边框"
+        assert "\u2714" in plains[0], "顶边框应含关闭 ✔ 状态图标"
         assert plains[-1] == ""  # 尾空行保留
         assert sum(1 for p in plains if p == "") == 1
         offset = block.extra["_first_committed_offset"]
-        assert m.committed_lines[offset].plain == "▎⚡ 工具 bash"
-        assert m.committed_lines[offset + 1].plain.startswith("✔")
+        assert m.committed_lines[offset].plain.startswith("\u250c"), "offset 应指向顶边框"
+        assert "\u2714" in m.committed_lines[offset].plain, "顶边框应含关闭 ✔ 图标"
 
     def test_idempotent_same_width(self):
         """同宽度/非法宽度调用 → 不重建（引用不变）。"""
