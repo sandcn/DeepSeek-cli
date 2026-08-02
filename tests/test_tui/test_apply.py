@@ -232,7 +232,7 @@ class TestToolBox:
     def test_append_tool_output_routes_by_tool_id(self):
         """两个 tool_id 分别追加输出 → 各自 block 行数正确、互不污染。"""
         m = _model()
-        m.open_tool_box("t1", "read_file")
+        m.open_tool_box("t1", "web_search")
         m.open_tool_box("t2", "bash")
         m.append_tool_output("t1", "a1\n")
         m.append_tool_output("t2", "b1")
@@ -255,7 +255,7 @@ class TestToolBox:
         m = _model()
         # Rich 风格 TrueColor 高亮：\x1b[38;2;R;G;B;49m...\x1b[0m
         raw = "\x1b[38;2;102;217;239;49mdef\x1b[0m\x1b[38;2;248;248;242;49m f()\x1b[0m"
-        m.open_tool_box("t1", "read_file")
+        m.open_tool_box("t1", "web_search")
         m.append_tool_output("t1", raw + "\n")
         block = m.tool_boxes["t1"]
         line = block.lines[1]
@@ -276,7 +276,7 @@ class TestToolBox:
             "\x1b[38;2;102;217;239;49mdef\x1b[0m\x1b[38;2;248;248;242;49m f()\x1b[0m"
             + "A" * 40
         )
-        m.open_tool_box("t1", "read_file")
+        m.open_tool_box("t1", "web_search")
         m.append_tool_output("t1", raw + "\n")
         m.close_tool_box("t1", True)
         # 经 _block_to_ink_lines 提交到 committed_lines → 行级 wrap 后渲染
@@ -304,7 +304,7 @@ class TestToolBox:
     def test_close_tool_box_unknown_id_noop(self):
         """未知 tool_id close → 不抛异常、不影响其他块。"""
         m = _model()
-        m.open_tool_box("t1", "read_file")
+        m.open_tool_box("t1", "web_search")
         m.close_tool_box("t-unknown", True)  # 不抛
         assert len(m.blocks) == 1
         assert m.tool_boxes.get("t1") is not None
@@ -370,6 +370,63 @@ class TestToolBox:
                     f"width={width} committed_lines[{i}] 宽度 {ln.width} 超宽: {ln.plain!r}"
                 )
 
+    def test_head_tools_display(self):
+        """find/search/ls/read_file 输出超过 3 行 → 只保留前 3 行 + 省略提示「… 后 N 行省略」。"""
+        for tool in ("find", "search", "ls", "read_file"):
+            m = _model()
+            m.width = 40
+            m.open_tool_box("t1", tool)
+            for i in range(10):
+                m.append_tool_output("t1", f"line{i}")
+            m.close_tool_box("t1", True)
+            block = m.blocks[-1]
+            # block.lines 修剪为 标题 + 前 3 行 + 状态行
+            assert len(block.lines) == 1 + 3 + 1, tool
+            assert "line2" in block.lines[-2].plain, tool
+            # 省略计数记录（10 输出 - 3 保留 = 7）
+            assert block.extra["_head_omitted_lines"] == 7, tool
+            # 卡片渲染：顶边框 + 前 3 行 + 省略提示 + 底边框；后置行不显示
+            plains = [l.plain for l in m.committed_lines]
+            assert "后 7 行省略" in "".join(plains), tool
+            assert any("line0" in p for p in plains), tool
+            assert any("line2" in p for p in plains), tool
+            assert not any("line3" in p for p in plains), tool
+            assert not any("line9" in p for p in plains), tool
+
+    def test_head_tools_under_three_lines_unchanged(self):
+        """find/search/ls/read_file 输出 ≤3 行 → 不修剪（无省略提示）。"""
+        for tool in ("find", "search", "ls", "read_file"):
+            m = _model()
+            m.open_tool_box("t1", tool)
+            for i in range(3):
+                m.append_tool_output("t1", f"line{i}")
+            m.close_tool_box("t1", True)
+            block = m.blocks[-1]
+            # 标题 + 3 行输出 + 状态行（不修剪）
+            assert len(block.lines) == 1 + 3 + 1, tool
+            assert "_head_omitted_lines" not in block.extra, tool
+            assert "_bash_omitted_lines" not in block.extra, tool
+
+    def test_head_output_narrow_terminal_no_overflow(self):
+        """窄终端 + find 大量输出 → 省略提示行截断至内宽，卡片不撑破（无超宽行）。
+
+        对齐 bash 尾显示回归：省略提示文本超内宽会撑破卡片边框，窄终端错乱。
+        """
+        for width in (20, 16, 14, 12, 10, 8, 6):
+            m = _model()
+            m.width = width
+            m.open_tool_box("t1", "find")
+            for i in range(50):
+                m.append_tool_output("t1", f"line{i}-" + "y" * 20)
+            m.close_tool_box("t1", True)
+            # 省略提示已触发
+            assert m.blocks[-1].extra.get("_head_omitted_lines", 0) > 0
+            # 卡片所有行宽度 ≤ 终端宽度（无撑破边框的超宽行）
+            for i, ln in enumerate(m.committed_lines):
+                assert ln.width <= width, (
+                    f"width={width} committed_lines[{i}] 宽度 {ln.width} 超宽: {ln.plain!r}"
+                )
+
     def test_tool_summary_closes_open_box(self):
         m = _model()
         apply_cmd(m, ToolOpenCmd(tool_name="x", tool_id="t1"))
@@ -379,7 +436,7 @@ class TestToolBox:
     def test_tool_output_incremental_commit_threshold(self):
         """工具输出 >64 行 → committed_line_count 推进、committed_lines 含已提交行。"""
         m = _model()
-        m.open_tool_box("t1", "read_file")
+        m.open_tool_box("t1", "web_search")
         block = m.blocks[-1]
         # 标题(1) + 65 行输出 = 66 行；超过阈值触发增量提交
         for i in range(65):
@@ -394,7 +451,7 @@ class TestToolBox:
     def test_tool_output_incremental_close_no_duplicate(self):
         """增量提交后关闭 → 关闭后无重复行（关键不变量：committed_lines 与块不重叠）。"""
         m = _model()
-        m.open_tool_box("t1", "read_file")
+        m.open_tool_box("t1", "web_search")
         block = m.blocks[-1]
         for i in range(70):
             m.append_tool_output("t1", f"line{i}\n")
@@ -420,7 +477,7 @@ class TestToolBox:
     def test_commit_open_block_header_once_trailer_once(self):
         """卡片结构：commit_open_block 多次增量提交角色头恰好一次；关闭后尾空行恰好一次。"""
         m = _model()
-        m.open_tool_box("t1", "read_file")
+        m.open_tool_box("t1", "web_search")
         block = m.blocks[-1]
         # 输出行数远超阈值 → 多次 commit_open_block 增量提交
         for i in range(200):
@@ -440,7 +497,7 @@ class TestToolBox:
     def test_tool_output_under_threshold_no_incremental(self):
         """工具输出 <64 行 → 不触发增量提交（committed_line_count 保持 0）。"""
         m = _model()
-        m.open_tool_box("t1", "read_file")
+        m.open_tool_box("t1", "web_search")
         block = m.blocks[-1]
         for i in range(10):
             m.append_tool_output("t1", f"line{i}\n")
@@ -449,7 +506,7 @@ class TestToolBox:
     def test_cached_ink_lines_frozen_uncommitted_tail(self):
         """close_tool_box 冻结仅未提交部分（已提交行在 committed_lines 中）。"""
         m = _model()
-        m.open_tool_box("t1", "read_file")
+        m.open_tool_box("t1", "web_search")
         block = m.blocks[-1]
         for i in range(70):
             m.append_tool_output("t1", f"line{i}\n")
@@ -753,7 +810,7 @@ class TestReflowCommitted:
         """open 块（增量提交）重排：仅已提交行重建，未提交尾不混入。"""
         m = _model()
         m.width = 40
-        m.open_tool_box("t1", "read_file")
+        m.open_tool_box("t1", "web_search")
         block = m.blocks[-1]
         for i in range(70):
             m.append_tool_output("t1", f"line{i}" + "x" * 60 + "\n")
@@ -764,17 +821,17 @@ class TestReflowCommitted:
         assert all(ln.width <= 20 for ln in m.committed_lines)
         plains = [ln.plain for ln in m.committed_lines]
         assert "line69" not in "".join(plains), "未提交尾不应混入 committed"
-        # 卡片化：重排后首行为工具卡片顶边框（running ● 图标 + 显示名 Read）
+        # 卡片化：重排后首行为工具卡片顶边框（running ● 图标 + 显示名 WebSearch）
         assert plains[0].startswith("\u250c"), "重排后卡片首行应为顶边框"
         assert "\u25cf" in plains[0], "顶边框应含 running ● 状态图标"
-        assert "Read" in plains[0], "顶边框应含工具显示名"
+        assert "WebSearch" in plains[0], "顶边框应含工具显示名"
 
     def test_closed_tool_header_icon_trailer_preserved(self):
         """关闭工具块重排：头/关闭图标/尾空行保留，_first_committed_offset 重建。"""
         m = _model()
         m.width = 40
-        # read_file（非 bash，不受输出尾截断影响——通用长工具重排路径）
-        m.open_tool_box("t1", "read_file")
+        # web_search（非 bash，不受输出尾截断影响——通用长工具重排路径）
+        m.open_tool_box("t1", "web_search")
         for i in range(70):
             m.append_tool_output("t1", f"out{i}\n")
         m.close_tool_box("t1", True)

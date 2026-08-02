@@ -41,6 +41,11 @@ _TOOL_INCREMENTAL_THRESHOLD = 64
 #: （对齐终端 ``tail`` 语义；bash 输出常为冗长命令回显/构建日志，防卡片撑爆）。
 _BASH_OUTPUT_TAIL_LINES = 3
 
+#: 头显示工具集合——find/search/ls/read_file 输出超过阈值行数时只保留前 N 行
+#: （对齐终端 ``head`` 语义；目录列表/文件预览等有序输出看开头即可，防卡片撑爆）。
+_TOOL_HEAD_TOOLS = ("find", "search", "ls", "read_file")
+_TOOL_HEAD_LINES = 3
+
 
 def _single_line_detail(detail: str) -> str:
     """工具卡 detail 强制单行：换行/回车转义为字面量（``\n``/``\r``）。
@@ -231,22 +236,28 @@ def _tool_card_styled_lines(block, width, start=0, stop=None):
     # 关闭状态行（_tool_status_index）跳过——状态已移入底边框（对齐 Claude Code）
     body_end = len(block.lines) if stop is None else min(stop, len(block.lines))
     body_start = start if start > 0 else 1
+
+    def _omitted_line(text: str) -> list:
+        """省略提示边框行（`│ … 前/后 N 行省略`）。
+
+        窄屏防溢出：提示文本（如「… 前 5000 行省略」）超内宽会撑破卡片边框，
+        截断至内宽（与顶/底边框一致——不截断时窄终端错乱）。
+        """
+        ind_runs = [StyledRun(text, Style(fg=242))]
+        if width <= 0:
+            return ind_runs
+        ind_runs = truncate_runs(ind_runs, inner_w)
+        body = [StyledRun("\u2502 ", border)] + ind_runs
+        pad = inner_w - sum(r.width for r in ind_runs)
+        if pad > 0:
+            body.append(StyledRun(" " * pad, border))
+        body.append(StyledRun(" \u2502", border))
+        return body
+
     # bash 尾显示：前置省略提示行「… 前 N 行省略」（仅首次提交 start==0）
     omitted = block.extra.get("_bash_omitted_lines", 0)
     if omitted > 0:
-        ind_runs = [StyledRun(f"\u2026 前 {omitted} 行省略", Style(fg=242))]
-        if width > 0:
-            # 窄屏防溢出：省略提示截断至内宽（与顶/底边框一致——不截断时提示
-            # 文本（如「… 前 5000 行省略」）超内宽会撑破卡片边框，窄终端错乱）
-            ind_runs = truncate_runs(ind_runs, inner_w)
-            body = [StyledRun("\u2502 ", border)] + ind_runs
-            pad = inner_w - sum(r.width for r in ind_runs)
-            if pad > 0:
-                body.append(StyledRun(" " * pad, border))
-            body.append(StyledRun(" \u2502", border))
-            out.append(body)
-        else:
-            out.append(ind_runs)
+        out.append(_omitted_line(f"\u2026 前 {omitted} 行省略"))
     for abs_idx in range(body_start, body_end):
         if status_idx is not None and abs_idx == status_idx:
             continue
@@ -272,6 +283,11 @@ def _tool_card_styled_lines(block, width, start=0, stop=None):
                 body.append(StyledRun(" " * pad, border))
             body.append(StyledRun(" \u2502", border))
             out.append(body)
+    # find/search/ls/read_file 头显示：后置省略提示行「… 后 N 行省略」
+    # （head 省略的行在末尾——提示置于主体行之后，对齐终端 head 语义）
+    omitted_head = block.extra.get("_head_omitted_lines", 0)
+    if omitted_head > 0:
+        out.append(_omitted_line(f"\u2026 后 {omitted_head} 行省略"))
     # 底边框：仅关闭块且为最终块；含状态文本（对齐 Claude Code `└─ ✔ 完成 ─┘`）
     if block.closed and (stop is None or stop >= len(block.lines)):
         if width > 0:
@@ -835,6 +851,10 @@ class AppModel:
         # 对齐 Claude Code 收敛冗长 bash 输出；修剪后行数 ≤ N+1，不触发增量提交）
         if block.extra.get("tool_name") in ("bash", "execute_command"):
             self._trim_tool_output_tail(block, _BASH_OUTPUT_TAIL_LINES)
+        # find/search/ls/read_file：输出超过阈值行数时只保留前 N 行（head 显示，
+        # 对齐终端 head 语义——目录列表/文件预览等有序输出看开头即可，防卡片撑爆）
+        if block.extra.get("tool_name") in _TOOL_HEAD_TOOLS:
+            self._trim_tool_output_head(block, _TOOL_HEAD_LINES)
         # ★ 方向4：增量提交阈值——长工具输出不每帧全量重渲染（超过阈值即提交
         #   已闭合行到 committed_lines；开放块渲染只取未提交尾）。
         if len(block.lines) - block.committed_line_count >= _TOOL_INCREMENTAL_THRESHOLD:
@@ -859,6 +879,31 @@ class AppModel:
         )
         if block.committed_line_count > 0:
             block.committed_line_count = max(0, block.committed_line_count - del_count)
+
+    def _trim_tool_output_head(self, block, keep: int) -> None:
+        """工具块输出修剪为前 keep 行（保留标题行 block.lines[0]）。
+
+        find/search/ls/read_file 头显示：输出超过 keep 行时删除后置输出行
+        （下标 1+keep..末尾），累计省略数记入 ``block.extra["_head_omitted_lines"]``
+        （卡片渲染时在主体行后置「… 后 N 行省略」提示）；同步
+        ``committed_line_count``（已提交行被删则回退计数，防越界/重复提交）。
+        修剪后行数 ≤ 1+keep，远低于增量提交阈值 → 无增量提交。
+        """
+        lines = block.lines
+        # 尾部换行符产生的空行（text.split("\n") 尾空 seg → 仅前缀的空行）不
+        # 算内容行——先剔除，避免「前 N 行」计数被尾空行占位（如 read_file
+        # 整文件输出以 \n 结尾时尾空行无意义，会挤占前 3 行显示位）。
+        while len(lines) > 1 and lines[-1].plain.strip() == "":
+            del lines[-1]
+        if len(lines) <= 1 + keep:
+            return
+        del_count = len(lines) - (1 + keep)
+        del lines[1 + keep:]
+        block.extra["_head_omitted_lines"] = (
+            block.extra.get("_head_omitted_lines", 0) + del_count
+        )
+        if block.committed_line_count > len(lines):
+            block.committed_line_count = len(lines)
 
     def close_tool_box(self, tool_id: str, success: bool) -> None:
         """关闭工具分组：置状态、冻结并提交（工具卡片）。

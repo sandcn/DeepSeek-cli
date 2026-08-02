@@ -263,7 +263,8 @@ class TestChatViewCompositeKey:
         from src.tui.ink.reconciler import Reconciler
 
         m = AppModel()
-        m.open_tool_box("t1", "read_file")
+        # web_search（非 head/tail 修剪工具）→ 流式追加行数稳定增长
+        m.open_tool_box("t1", "web_search")
         m.append_tool_output("t1", "out1\n")
         m.append_tool_output("t1", "out2\n")
 
