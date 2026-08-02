@@ -12,7 +12,7 @@
 from __future__ import annotations
 
 from src.tui._const import MainPhaseCmd, ContentCmd, ReasoningCmd, PhaseDoneCmd
-from src.tui.app.model import AppModel, ReasoningState
+from src.tui.app.model import AppModel, ReasoningState, _single_line_detail
 from src.tui.app.apply import apply_cmd
 
 
@@ -288,3 +288,60 @@ class TestChatViewCompositeKey:
             )
         # 新增行产生新 key（key 数量增加）
         assert len(fibers2) > len(fibers1)
+
+
+class TestToolCardMultilineDetail:
+    """bash 多行命令 detail 强制单行（防 \n 拆破工具卡边框显示错乱）。"""
+
+    @staticmethod
+    def _render_plains(model, width=40):
+        from src.tui.app.app import build_app_element
+        from src.tui.ink.reconciler import Reconciler
+        from src.tui.ink.components import render_frame
+        r = Reconciler()
+        root = r.create_root()
+        r.render(root, build_app_element(model, width), width, 24)
+        frame = render_frame(root, width)
+        return [line.plain for line in frame.lines]
+
+    def test_multiline_command_detail_escaped_single_line(self):
+        """bash 命令含 \n：detail 存单行字面量，渲染帧无换行符破坏边框。"""
+        m = AppModel()
+        m.open_tool_box("t1", "bash", "cmd1\ncmd2 && echo hi")
+        assert m.active_tool["detail"] == "cmd1\\ncmd2 && echo hi"
+        assert m.tool_boxes["t1"].extra["tool_detail"] == "cmd1\\ncmd2 && echo hi"
+        # 标题行（block.lines[0]）同样单行（open_tool_box 同源转义）
+        assert "\n" not in m.tool_boxes["t1"].lines[0].plain
+        plains = self._render_plains(m)
+        assert any("\u250c" in p for p in plains)  # 顶边框存在
+        for p in plains:
+            assert "\n" not in p, f"渲染行含换行符破坏边框: {p!r}"
+        # 转义后命令仍可见（字面量 \n）
+        assert any("cmd1\\ncmd2" in p for p in plains)
+
+    def test_render_frame_top_border_well_formed_regression(self):
+        """回归：修复前 \n 把顶边框拆成两行，┐ 落到下一行错乱。"""
+        m = AppModel()
+        m.open_tool_box("t1", "bash", "ls\npwd")
+        m.append_tool_output("t1", "out\n")
+        # 边框 builder 产物：顶边框行单行完整（┌ 与 ┐ 同行），无物理换行
+        from src.tui.app.model import _tool_card_styled_lines
+        head_lines = _tool_card_styled_lines(m.tool_boxes["t1"], 40, 0, None)
+        head_text = "".join(r.text for r in head_lines[0])
+        head_width = sum(r.width for r in head_lines[0])
+        assert "\n" not in head_text
+        assert head_text.startswith("\u250c")
+        assert head_text.endswith("\u2510")
+        assert head_width == 40  # 显示宽度恰为卡片宽度（不超不欠）
+        # 渲染帧同样无换行符破坏边框
+        plains = self._render_plains(m, 40)
+        for p in plains:
+            assert "\n" not in p, f"渲染行含换行符破坏边框: {p!r}"
+        assert any("ls\\npwd" in p for p in plains)
+
+    def test_single_line_detail_helper(self):
+        """_single_line_detail：\n/\r 转义为字面量，空串原样。"""
+        assert _single_line_detail("") == ""
+        assert _single_line_detail("a\nb") == "a\\nb"
+        assert _single_line_detail("a\rb") == "a\\rb"
+        assert _single_line_detail("已含\\n字面量") == "已含\\n字面量"

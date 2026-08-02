@@ -42,6 +42,19 @@ _TOOL_INCREMENTAL_THRESHOLD = 64
 _BASH_OUTPUT_TAIL_LINES = 3
 
 
+def _single_line_detail(detail: str) -> str:
+    """工具卡 detail 强制单行：换行/回车转义为字面量（``\n``/``\r``）。
+
+    对齐 ``_subagent_render._single_line`` 单行契约——bash 命令参数可能含
+    多行（``command`` 值携带 ``\n``），直接放进单行边框（卡片顶边框/标题行）
+    会被终端按物理换行拆成多行，撑破工具卡边框显示错乱；显示前转义为可见
+    字面量 ``\\n``/``\\r``。
+    """
+    if not detail:
+        return ""
+    return detail.replace("\r", "\\r").replace("\n", "\\n")
+
+
 class ReasoningState(Enum):
     """推理通道状态机（与 _ReasoningState 等价语义）。"""
 
@@ -761,7 +774,10 @@ class AppModel:
         block.extra["tool_id"] = tool_id or ""
         block.extra["tool_name"] = tool_name
         block.extra["tool_status"] = "running"
-        # 工具卡片顶边框 detail 数据源（_tool_card_styled_lines 消费）
+        # 工具卡片顶边框 detail 数据源（_tool_card_styled_lines 消费）；
+        # ★ bash 多行命令 detail 含 \n——强制单行转义（对齐 _single_line 契约，
+        #   防 \n 拆破单行边框）。title/active_tool 复用转义后值（同源单行）。
+        detail = _single_line_detail(detail)
         block.extra["tool_detail"] = detail
         title = f"  \u00b7 {display}"
         if detail:
