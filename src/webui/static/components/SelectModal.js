@@ -27,6 +27,7 @@ export function SelectModal(props) {
     visible = false,
     title = '',
     options = [],
+    optionDescriptions = [],
     multiSelect = false,
     defaultOptions = [],
     /* timeout 由父组件处理倒计时逻辑，此处仅透传 */
@@ -89,7 +90,7 @@ export function SelectModal(props) {
         <div class="select-title">📋 ${title}</div>
         <div class="select-options">
           ${options.map(
-            (opt) => html`
+            (opt, i) => html`
               <label>
                 <input
                   type=${multiSelect ? 'checkbox' : 'radio'}
@@ -98,7 +99,8 @@ export function SelectModal(props) {
                   checked=${selected.includes(opt)}
                   onChange=${() => handleChange(opt)}
                 />
-                ${opt}
+                <span class="select-option-label">${opt}</span>
+                ${optionDescriptions && optionDescriptions[i] ? html`<span class="select-option-desc">${optionDescriptions[i]}</span>` : ''}
               </label>
             `,
           )}

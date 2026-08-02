@@ -801,7 +801,7 @@ class InkSession:
         # 中断渲染；修复后缺属性回退 popup_height=0（记 debug），place_cursor
         # 调用保持独立 try。
         try:
-            popup_height = _completion_height(completion)
+            popup_height = _completion_height(completion, box.w)
         except Exception:
             popup_height = 0
             _logger.debug(

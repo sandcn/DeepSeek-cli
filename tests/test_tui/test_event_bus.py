@@ -350,6 +350,7 @@ class TestEventTypes:
         assert u.multi_select is False
         assert u.timeout == 120
         assert u.options == ()
+        assert u.option_descriptions == ()
 
         m = MetricsUpdateEvent()
         assert m.output_tokens == 0

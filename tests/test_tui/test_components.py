@@ -157,6 +157,42 @@ class TestCompletionPopupHeightConsistency:
         assert _completion_height(comp) == 0  # 无候选项
         assert _completion_height(None) == 0
 
+    def test_completion_height_split_desc_multiline(self):
+        """分栏说明模式（split_desc=True 且有说明）：说明多行时高度取较大值。
+
+        user_select 的分栏弹窗右侧显示当前选中项说明；说明在右栏内换行可能
+        超过选项数 → 弹窗高度随说明行数增高（未传 width 时回退单栏高度）。
+        """
+        from src.tui.app.input_area import _completion_height, _desc_column_width
+        comp = CompletionState()
+        comp.visible = True
+        comp.items = ["a", "b"]
+        comp.texts = ["a", "b"]
+        comp.selected = 0
+        comp.title = "选择"
+        comp.descriptions = [
+            "这是一个很长很长很长很长很长很长的说明文字会换行显示",
+            "short",
+        ]
+        comp.split_desc = True
+        # 未传 width 时回退单栏高度（兼容旧调用）
+        assert _completion_height(comp) == 4  # 2 项 + 标题 + 提示行
+        # 传 width=40：左栏宽 max(16, min(13,40))=16，长说明换行 > 2 行 → 高度增高
+        h = _completion_height(comp, 40)
+        assert h >= 5, f"分栏长说明高度应 > 单栏（实际 {h}）"
+        # 无说明（descriptions 空）即使 split_desc=True 也回退单栏
+        comp2 = CompletionState()
+        comp2.visible = True
+        comp2.items = ["a", "b"]
+        comp2.texts = ["a", "b"]
+        comp2.selected = 0
+        comp2.split_desc = True
+        assert _completion_height(comp2, 40) == 4
+        # 左栏宽度钳制范围 [8, 40]，并给右栏至少留 12 列
+        assert _desc_column_width(80) == 26
+        assert _desc_column_width(20) == 8
+        assert _desc_column_width(200) == 40
+
 
 class TestInkBridgeCompletionSelected:
     """方向1 步骤1.8 — show_completions selected 负值钳制。"""

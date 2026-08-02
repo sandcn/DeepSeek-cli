@@ -100,11 +100,32 @@ def _wrap_input_text(text: str, max_input: int) -> list[str]:
 # ── 测量 ───────────────────────────────────────────
 
 
-def _completion_height(completion) -> int:
-    """补全弹窗高度（标题 + 候选项 + 提示行）。"""
+def _desc_column_width(width: int) -> int:
+    """分栏说明模式右栏宽度（user_select：说明在选项右侧显示）。
+
+    取终端宽度 1/3，钳制到 [8, 40]，且给左栏选项至少预留 12 列——
+    极窄终端（width<20）下右栏同步缩小，避免左栏被挤压溢出。
+    """
+    max_w = max(8, int(width) - 12)
+    return max(8, min(int(width) // 3, 40, max_w))
+
+
+def _completion_height(completion, width=None) -> int:
+    """补全弹窗高度（标题 + 候选项 + 提示行）。
+
+    分栏说明模式（split_desc 且存在说明）下，高度取选项数与当前选中项说明
+    换行行数的较大值——说明可多行，弹窗随说明行数增高。
+    """
     if completion is None or not completion.visible or not completion.items:
         return 0
-    return len(completion.items) + 2
+    n = len(completion.items)
+    descs = completion.descriptions or []
+    if not (getattr(completion, "split_desc", False) and descs) or width is None:
+        return n + 2
+    desc_w = _desc_column_width(width)
+    sel = max(0, min(completion.selected, len(descs) - 1))
+    desc_lines = _wrap_by_width(descs[sel] or "", desc_w)
+    return max(n, len(desc_lines)) + 2
 
 
 def _is_search_active(search) -> bool:
@@ -117,7 +138,7 @@ def _measure(fiber, avail_w) -> tuple[int, int]:
     explicit = props.get("width")
     width = max(0, int(explicit)) if explicit is not None else avail_w
     completion = props.get("completion")
-    popup_height = _completion_height(completion)
+    popup_height = _completion_height(completion, width)
     max_input = max(1, width - len(_PROMPT))
     text = str(props.get("text", ""))
     # ★ 方向D 步骤14：反向历史搜索覆盖行（追加一行）
@@ -142,7 +163,7 @@ def _build_lines(fiber) -> list[Line]:
     width = box.w
     text = str(props.get("text", ""))
     completion = props.get("completion")
-    popup_height = _completion_height(completion)
+    popup_height = _completion_height(completion, width)
     status_active = bool(props.get("status_active", False))
     max_input = max(1, width - len(_PROMPT))
 
@@ -175,9 +196,10 @@ def _build_lines(fiber) -> list[Line]:
             completion.match_prefix,
             tuple(completion.types),
             tuple(completion.descriptions),
+            getattr(completion, "split_desc", False),
         )
     else:
-        completion_snap = (False, (), 0, "", (), "", (), ())
+        completion_snap = (False, (), 0, "", (), "", (), (), False)
     search = props.get("history_search")
     if search is not None:
         search_snap = (
@@ -220,30 +242,69 @@ def _build_lines(fiber) -> list[Line]:
         types = completion.types or [""] * len(items)
         title = completion.title
         total = len(completion.texts) if completion.texts else len(items)
+        descs = completion.descriptions or []
+        # 分栏说明模式（user_select）：左侧选项列表、右侧当前选中项说明
+        split = bool(getattr(completion, "split_desc", False)) and bool(descs)
+        desc_w = _desc_column_width(width) if split else 0
+        # 左栏选项宽度 = 总宽 - 右栏说明 - 分隔线
+        opt_w = max(1, width - desc_w - 1) if split else 0
         # 标题行
         head = Line.of(" ", Style(fg=45, bold=True))
         head.append(title, Style(fg=45, bold=True))
         head.append(f" ({total}项)", _S_TIME)
+        if split:
+            # 左栏标题占位（标题与选项栏对齐；右栏说明位置留白）
+            head.append(" " * max(0, opt_w - head.width), _S_DIM)
         lines.append(head)
         # 候选项
-        cell_w = max(1, min(max((_vwidth(i) for i in items), default=10) + 4, width - 2) - 3)
-        for i, item in enumerate(items):
-            line = Line()
-            if i == selected:
-                line.append(" \u25b6 ", Style(fg=15, bg=236))
-            else:
-                line.append("  ")
-            for run in _styled_completion(item, types[i], match_prefix, cell_w).runs:
-                line.append_run(run)
-            # Claude TUI parity 步骤 3.7：斜杠命令描述灰显（command 且描述非空）
-            descs = completion.descriptions or []
-            if types[i] == "command" and i < len(descs) and descs[i]:
-                line.append("  ", _S_DIM)
-                # 方向1 步骤4（窄屏防溢出）：描述截断至剩余行宽（复用
-                # _truncate_width，截断点不拆 CJK）——超长描述不再撑爆行宽。
-                desc_budget = max(1, width - line.width)
-                line.append(_truncate_width(descs[i], desc_budget), _S_DIM)
-            lines.append(line)
+        if split:
+            # 左栏选项内容宽度（前缀 ▶ + 文本；右栏说明独立换行）
+            cell_w = max(
+                1, min(max((_vwidth(i) for i in items), default=10) + 4, opt_w - 2) - 3,
+            )
+            desc_text = descs[selected] if 0 <= selected < len(descs) else ""
+            desc_lines = _wrap_by_width(desc_text or "", desc_w)
+            n_rows = max(len(items), len(desc_lines))
+            for row in range(n_rows):
+                line = Line()
+                # 左栏：选项
+                if row < len(items):
+                    i = row
+                    if i == selected:
+                        line.append(" \u25b6 ", Style(fg=15, bg=236))
+                    else:
+                        line.append("   ")
+                    for run in _styled_completion(items[i], types[i], match_prefix, cell_w).runs:
+                        line.append_run(run)
+                    # 补齐左栏剩余宽度（选项不足 opt_w 时留白，分隔线对齐）
+                    pad = opt_w - line.width
+                    if pad > 0:
+                        line.append(" " * pad, _S_DIM)
+                else:
+                    line.append(" " * opt_w, _S_DIM)
+                line.append("\u2502", _S_SEP)
+                # 右栏：当前选中项说明（分栏换行）
+                if row < len(desc_lines):
+                    line.append(_truncate_width(desc_lines[row], desc_w), _S_DIM)
+                lines.append(line)
+        else:
+            cell_w = max(1, min(max((_vwidth(i) for i in items), default=10) + 4, width - 2) - 3)
+            for i, item in enumerate(items):
+                line = Line()
+                if i == selected:
+                    line.append(" \u25b6 ", Style(fg=15, bg=236))
+                else:
+                    line.append("  ")
+                for run in _styled_completion(item, types[i], match_prefix, cell_w).runs:
+                    line.append_run(run)
+                # Claude TUI parity 步骤 3.7：斜杠命令描述灰显（command 且描述非空）
+                if types[i] == "command" and i < len(descs) and descs[i]:
+                    line.append("  ", _S_DIM)
+                    # 方向1 步骤4（窄屏防溢出）：描述截断至剩余行宽（复用
+                    # _truncate_width，截断点不拆 CJK）——超长描述不再撑爆行宽。
+                    desc_budget = max(1, width - line.width)
+                    line.append(_truncate_width(descs[i], desc_budget), _S_DIM)
+                lines.append(line)
         # 底部提示
         hint = Line.of(" ", _S_TIME)
         hint.append("Tab \u2191\u2193 Esc", _S_TIME)

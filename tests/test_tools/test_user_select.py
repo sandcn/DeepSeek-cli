@@ -173,3 +173,41 @@ class TestUserSelectNoDirectTermios:
 
         mock_monitor.stop.assert_called()
         mock_monitor.start.assert_called()
+
+    def test_option_descriptions_alignment(self):
+        """option_descriptions 与 options 对齐（缺省补齐、超出截断、缺省空）。"""
+        from src.tools.user_select import UserSelectFunc
+
+        # 长度不足 → 补齐空字符串
+        us = UserSelectFunc("t", ["a", "b", "c"], option_descriptions=["x"])
+        assert us.option_descriptions == ["x", "", ""]
+        # 长度超出 → 截断
+        us2 = UserSelectFunc("t", ["a"], option_descriptions=["x", "y"])
+        assert us2.option_descriptions == ["x"]
+        # 缺省 → 全空
+        us3 = UserSelectFunc("t", ["a", "b"])
+        assert us3.option_descriptions == ["", ""]
+        # None → 全空
+        us4 = UserSelectFunc("t", ["a"], option_descriptions=None)
+        assert us4.option_descriptions == [""]
+
+    @pytest.mark.skipif(not HAS_TERMIOS, reason="需 termios 支持")
+    @pytest.mark.asyncio
+    async def test_passes_option_descriptions_to_show_completions(
+        self, terminal_env, mock_chat_ui,
+    ):
+        """验证 option_descriptions/split_desc 传给 show_completions（分栏说明）。"""
+        from src.tools.user_select import UserSelectFunc
+
+        us = UserSelectFunc(
+            "test", ["a", "b"],
+            option_descriptions=["说明A", "说明B"],
+        )
+
+        await us._execute_terminal_async()
+
+        calls = mock_chat_ui.bottom_bar.show_completions.call_args_list
+        assert calls, "应调用 show_completions"
+        kw = calls[0].kwargs
+        assert kw.get("descriptions") == ["说明A", "说明B"]
+        assert kw.get("split_desc") is True

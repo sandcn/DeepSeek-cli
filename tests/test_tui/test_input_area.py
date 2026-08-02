@@ -419,6 +419,80 @@ class TestNarrowTerminalTruncation:
             )
 
 
+class TestPopupSplitDesc:
+    """分栏说明模式（user_select）：左栏选项列表 + 右栏当前选中项说明。"""
+
+    def _split_fiber(self, selected=0, width=60):
+        from src.tui.app.model import CompletionState
+        fiber = _input_fiber(
+            text="", cursor_pos=0, width=width,
+            completion=CompletionState(
+                visible=True,
+                items=["/model", "/help"],
+                texts=["/model", "/help"],
+                selected=selected,
+                title="选择",
+                descriptions=["切换当前模型", "显示帮助"],
+                split_desc=True,
+            ),
+        )
+        fiber.layout_box = _Box(x=0, y=0, w=width, h=1)
+        return fiber
+
+    def test_split_desc_right_column_shows_selected(self):
+        """左栏显示选项，右栏显示当前选中项说明，行宽 ≤ width。"""
+        lines = _build_lines(self._split_fiber(selected=0, width=60))
+        assert "选择" in lines[0].plain, lines[0].plain
+        body = lines[1].plain
+        assert "/model" in body, f"左栏应显示选项: {body!r}"
+        assert "│" in body, f"应含左右栏分隔线: {body!r}"
+        assert "切换当前模型" in body, f"右栏应显示选中项说明: {body!r}"
+        assert body.index("/model") < body.index("│") < body.index("切换当前模型"), (
+            f"选项应在左栏、说明应在右栏: {body!r}"
+        )
+        assert all(line.width <= 60 for line in lines), (
+            f"分栏行超宽: {[l.width for l in lines]}"
+        )
+
+    def test_split_desc_updates_with_selection(self):
+        """高亮移动到不同选项时右栏说明随之更新。"""
+        # 选中第 2 项 → 右栏显示其说明
+        fiber = self._split_fiber(selected=1, width=60)
+        lines = _build_lines(fiber)
+        assert "显示帮助" in lines[1].plain, lines[1].plain
+        # 快照缓存键含 split_desc/descriptions/selected：改选中后重新渲染
+        from src.tui.app.model import CompletionState
+        comp = fiber.props["completion"]
+        comp.selected = 0
+        del fiber._lines_cache  # 清除快照缓存（模拟下一帧）
+        lines2 = _build_lines(fiber)
+        assert "切换当前模型" in lines2[1].plain, lines2[1].plain
+
+    def test_split_desc_command_popup_unchanged(self):
+        """命令补全（split_desc=False）仍保持右侧灰显描述（不分栏）。"""
+        from src.tui.app.model import CompletionState
+        fiber = _input_fiber(
+            text="", cursor_pos=0, width=60,
+            completion=CompletionState(
+                visible=True,
+                items=["/model", "/help"],
+                texts=["/model", "/help"],
+                selected=0,
+                title="命令",
+                descriptions=["切换当前模型", "显示帮助"],
+                types=["command", "command"],
+                split_desc=False,
+            ),
+        )
+        fiber.layout_box = _Box(x=0, y=0, w=60, h=1)
+        lines = _build_lines(fiber)
+        body = lines[1].plain
+        # 不分栏：无分隔线，描述在选项右侧
+        assert "│" not in body, f"命令补全不应分栏: {body!r}"
+        assert "切换当前模型" in body, f"描述应在右侧灰显: {body!r}"
+        assert body.index("/model") < body.index("切换当前模型"), body
+
+
 class TestPlaceholderFadeSmoothBucket:
     """方向1 步骤4 — 占位符渐显期 0.1s 桶（平滑渐显）、结束后 1s 桶。"""
 

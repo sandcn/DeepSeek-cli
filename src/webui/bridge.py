@@ -160,6 +160,7 @@ class WebEventBridge(BaseWebSocketSender):
                 multi_select=event.multi_select,
                 default_options=list(event.default_options),
                 timeout=event.timeout,
+                option_descriptions=list(getattr(event, "option_descriptions", ()) or ()),
             ))
 
     def _on_agent_added(self, event: DisplayEvent) -> None:

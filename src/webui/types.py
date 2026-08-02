@@ -191,7 +191,7 @@ def msg_command_output(text: str, level: str = "info") -> dict:
 
 def msg_user_select_needed(select_id: str, title: str, options: list,
                            multi_select: bool, default_options: list,
-                           timeout: int) -> dict:
+                           timeout: int, option_descriptions: list | None = None) -> dict:
     return {
         "type": WSMsgType.USER_SELECT_NEEDED,
         "select_id": select_id,
@@ -200,6 +200,7 @@ def msg_user_select_needed(select_id: str, title: str, options: list,
         "multi_select": multi_select,
         "default_options": list(default_options),
         "timeout": timeout,
+        "option_descriptions": list(option_descriptions or []),
     }
 
 

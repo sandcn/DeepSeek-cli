@@ -95,6 +95,9 @@ class CompletionState:
     popup_height: int = 0
     # 斜杠命令描述（Claude TUI parity 步骤 3.7；与 items 对齐，缺省空列表）
     descriptions: list = field(default_factory=list)
+    # 分栏说明模式（user_select 使用）：True 时弹窗左侧选项列表、
+    # 右侧显示当前选中项说明；False（命令补全等）保持描述右侧灰显的既有行为
+    split_desc: bool = False
 
 
 @dataclass

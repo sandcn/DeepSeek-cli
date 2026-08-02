@@ -615,7 +615,8 @@ function handleUserSelectNeeded(data) {
   optionsDiv.innerHTML = '';
   optionsDiv.dataset.multi = data.multi_select ? 'true' : 'false';
 
-  for (const opt of data.options) {
+  for (let i = 0; i < data.options.length; i++) {
+    const opt = data.options[i];
     const label = document.createElement('label');
     const input = document.createElement('input');
     input.type = data.multi_select ? 'checkbox' : 'radio';
@@ -625,7 +626,16 @@ function handleUserSelectNeeded(data) {
       input.checked = true;
     }
     label.appendChild(input);
-    label.appendChild(document.createTextNode(' ' + opt));
+    const optSpan = document.createElement('span');
+    optSpan.className = 'select-option-label';
+    optSpan.textContent = opt;
+    label.appendChild(optSpan);
+    if (data.option_descriptions && data.option_descriptions[i]) {
+      const descSpan = document.createElement('span');
+      descSpan.className = 'select-option-desc';
+      descSpan.textContent = data.option_descriptions[i];
+      label.appendChild(descSpan);
+    }
     optionsDiv.appendChild(label);
   }
 

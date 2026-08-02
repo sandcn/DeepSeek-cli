@@ -46,7 +46,7 @@ class UserSelectFunc(Func):
             "type": "function",
             "function": {
                 "name": "user_select",
-                "description": "向用户显示交互式选择界面，用于确认方案、选择选项或澄清需求歧义。支持单选/多选，超时自动选中默认项。非交互环境自动回退默认选项。需要用户确认时优先使用此工具。\n\n参数行为摘要：\n- title（必填）：选择界面的标题，简明扼要即可\n- options（必填）：选项字符串列表，用户从中选择；空列表时返回 {\"selected\":[], \"action\":\"empty\"}\n- multi_select：是否允许多选，false=单选（默认），true=多选可勾选多项\n- default_options：超时/取消/非交互时回退的默认选项列表，值必须在 options 中\n- timeout：超时秒数（默认120），超时自动回退 default_options，action=\"timeout\"\n\n【边界信息】\n- options为空时返回 {\"selected\":[], \"action\":\"empty\"}，不会崩溃\n- 非交互式终端（非tty）自动回退默认选项，action为\"non_interactive\"\n- 超时（默认120秒）自动选中默认选项，action为\"timeout\"\n- 用户取消操作时返回默认选项，action为\"cancel\"\n- 异常发生时回退默认选项并返回错误信息，action为\"error: ...\"\n- multi_select默认为False（单选模式）\n- default_options参数可选，默认为空列表",
+                "description": "向用户显示交互式选择界面，用于确认方案、选择选项或澄清需求歧义。支持单选/多选，超时自动选中默认项。非交互环境自动回退默认选项。需要用户确认时优先使用此工具。\n\n参数行为摘要：\n- title（必填）：选择界面的标题，简明扼要即可\n- options（必填）：选项字符串列表，用户从中选择；空列表时返回 {\"selected\":[], \"action\":\"empty\"}\n- option_descriptions（可选）：与 options 等长的说明字符串列表，option_descriptions[i] 为 options[i] 的说明；TUI 终端中移动到选项时说明显示在选项右侧。缺省为空\n- multi_select：是否允许多选，false=单选（默认），true=多选可勾选多项\n- default_options：超时/取消/非交互时回退的默认选项列表，值必须在 options 中\n- timeout：超时秒数（默认120），超时自动回退 default_options，action=\"timeout\"\n\n【边界信息】\n- options为空时返回 {\"selected\":[], \"action\":\"empty\"}，不会崩溃\n- 非交互式终端（非tty）自动回退默认选项，action为\"non_interactive\"\n- 超时（默认120秒）自动选中默认选项，action为\"timeout\"\n- 用户取消操作时返回默认选项，action为\"cancel\"\n- 异常发生时回退默认选项并返回错误信息，action为\"error: ...\"\n- multi_select默认为False（单选模式）\n- default_options参数可选，默认为空列表\n- option_descriptions长度不足时缺省为空字符串；长度超出部分忽略",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -58,6 +58,12 @@ class UserSelectFunc(Func):
                             "type": "array",
                             "items": {"type": "string"},
                             "description": "选项字符串列表，用户从中选择；空列表时返回 {\"selected\":[], \"action\":\"empty\"}"
+                        },
+                        "option_descriptions": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "description": "与 options 等长的说明列表，option_descriptions[i] 为 options[i] 的说明；TUI 中移动到选项时说明显示在右侧。可选，默认空",
+                            "default": []
                         },
                         "multi_select": {
                             "type": "boolean",
@@ -81,13 +87,18 @@ class UserSelectFunc(Func):
             }
         }
 
-    def __init__(self, title, options, multi_select=False, default_options=None, timeout=120):
+    def __init__(self, title, options, multi_select=False, default_options=None, timeout=120, option_descriptions=None):
         super().__init__()  # 调用父类初始化，设置agent为None
         self.title = title
         self.options = options
         self.multi_select = multi_select
         self.default_options = default_options or []
         self.timeout = timeout
+        # 与 options 等长的说明列表；长度不足补齐空串，超出截断
+        descs = list(option_descriptions or [])
+        if len(descs) < len(self.options):
+            descs += [""] * (len(self.options) - len(descs))
+        self.option_descriptions = descs[: len(self.options)]
         self._input = None
 
     async def execute(self):
@@ -217,6 +228,8 @@ class UserSelectFunc(Func):
                 multi_display, initial_idx,
                 texts=multi_texts,
                 title="选择",
+                descriptions=self.option_descriptions,
+                split_desc=True,
             )
 
             # 多选状态跟踪（默认选项初始勾选）
@@ -299,6 +312,8 @@ class UserSelectFunc(Func):
                         new_disp, show_idx,
                         texts=self.options,
                         title="选择",
+                        descriptions=self.option_descriptions,
+                        split_desc=True,
                     )
                     continue
 
@@ -352,6 +367,7 @@ class UserSelectFunc(Func):
                 bb._completion._popup_height = 0
                 bb._completion._items = []
                 bb._completion._texts = []
+                bb._completion._split_desc = False
                 bb.force_redraw()
             except Exception as e:
                 _logger.debug("user_select: cleanup failed: %s", e)
@@ -368,17 +384,28 @@ class UserSelectFunc(Func):
         Func._publish_tool_text(f"\n{GREEN}> 用户选择: {self.title}{RESET}")
 
         # 显示选项预览
+        def _opt_desc(i: int) -> str:
+            desc = self.option_descriptions[i] if i < len(self.option_descriptions) else ""
+            if not desc:
+                return ""
+            desc_short = desc.replace('\r', '').replace('\n', ' ')
+            if len(desc_short) > 40:
+                desc_short = desc_short[:37] + "..."
+            return f" — {desc_short}"
+
         if len(self.options) <= 10:
             for i, option in enumerate(self.options):
                 if option in self.default_options:
-                    Func._publish_tool_text(f"  {DIM}{i + 1}. {option} (默认){RESET}")
+                    Func._publish_tool_text(f"  {DIM}{i + 1}. {option}{_opt_desc(i)} (默认){RESET}")
                 else:
-                    Func._publish_tool_text(f"  {DIM}{i + 1}. {option}{RESET}")
+                    Func._publish_tool_text(f"  {DIM}{i + 1}. {option}{_opt_desc(i)}{RESET}")
         else:
             Func._publish_tool_text(f"  {DIM}共 {len(self.options)} 个选项{RESET}")
             for i, option in enumerate(self.options[:5]):
                 if option in self.default_options:
-                    Func._publish_tool_text(f"  {DIM}{i + 1}. {option} (默认){RESET}")
+                    Func._publish_tool_text(f"  {DIM}{i + 1}. {option}{_opt_desc(i)} (默认){RESET}")
+                else:
+                    Func._publish_tool_text(f"  {DIM}{i + 1}. {option}{_opt_desc(i)}{RESET}")
             Func._publish_tool_text(f"  {DIM}... 还有 {len(self.options) - 5} 个选项{RESET}")
 
         Func._publish_tool_text(f"  {DIM}模式: {'多选' if self.multi_select else '单选'}{RESET}")
@@ -441,7 +468,8 @@ class UserSelectFunc(Func):
                           options=tuple(self.options),
                           multi_select=self.multi_select,
                           default_options=tuple(self.default_options or []),
-                          timeout=self.timeout)
+                          timeout=self.timeout,
+                          option_descriptions=tuple(self.option_descriptions))
 
             try:
                 result = await asyncio.wait_for(future, timeout=self.timeout + 5)

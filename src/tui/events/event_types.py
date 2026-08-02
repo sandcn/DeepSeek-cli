@@ -332,6 +332,7 @@ class UserSelectNeededEvent(DisplayEvent):
     multi_select: bool = False
     default_options: tuple[str, ...] = ()
     timeout: int = 120
+    option_descriptions: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)

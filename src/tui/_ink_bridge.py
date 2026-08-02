@@ -109,7 +109,8 @@ class InkBridge(_BottomBarCompatMixin):
 
     def show_completions(self, items, selected_idx, texts=None, start_pos=0,
                          orig_prefix="", title="补全", types=None,
-                         match_prefix="", descriptions=None) -> None:
+                         match_prefix="", descriptions=None,
+                         split_desc=False) -> None:
         if not items:
             return
         c = self._model.completion
@@ -126,6 +127,8 @@ class InkBridge(_BottomBarCompatMixin):
         c.match_prefix = match_prefix
         # Claude TUI parity 步骤 3.7：斜杠命令描述（缺省空列表兼容旧调用）
         c.descriptions = list(descriptions) if descriptions is not None else []
+        # 分栏说明模式（user_select）：True 时弹窗右侧显示当前选中项说明
+        c.split_desc = bool(split_desc)
         # 方向A 步骤1：show 时同步 _last_completion_idx（修复陈旧索引——
         # 新补全会话不再读到 hide 保留的旧索引；hide 语义保留，message_editor 依赖）。
         self._last_completion_idx = c.selected

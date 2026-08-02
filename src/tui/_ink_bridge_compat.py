@@ -61,6 +61,14 @@ class _CompletionProxy:
     def _texts(self, value: list) -> None:
         self._model.completion.texts = list(value)
 
+    @property
+    def _split_desc(self) -> bool:
+        return self._model.completion.split_desc
+
+    @_split_desc.setter
+    def _split_desc(self, value: bool) -> None:
+        self._model.completion.split_desc = bool(value)
+
 
 class _BottomBarCompatMixin:
     """兼容访问器 mixin（生命周期 no-op + _BottomBar 内部字段）。
