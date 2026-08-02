@@ -50,21 +50,22 @@ class TestChatView:
         line = next(l for l in f.lines if "bold" in l.plain)
         assert any(r.style is not None and r.style.bold for r in line.runs)
 
-    def test_card_role_headers_and_blank_separator(self):
-        """卡片结构：回答卡带头行（▎回答），用户卡无头，用户与回答卡之间空白行分隔。"""
+    def test_answer_no_header_and_blank_separator(self):
+        """卡片结构：回答卡无头（对齐 Claude Code），用户与回答之间空白行分隔。"""
         m = AppModel()
         apply_cmd(m, UserMsgCmd(text="question"))
         apply_cmd(m, ContentCmd(text="# Answer\n\nbody text\n"))
         apply_cmd(m, PhaseDoneCmd(phase="content"))
         f = _frame(m)
         plains = [l.plain for l in f.lines]
-        assert any("\u258e" in p and "\u56de\u7b54" in p for p in plains)  # ▎回答
+        # 无 `▎回答` 头行（content 无角色头，对齐 Claude Code 无头回答）
+        assert not any("\u258e" in p and "\u56de\u7b54" in p for p in plains)
         # 用户卡无角色头：按 `  > question` 前缀定位用户行（帧首行已被顶部
         # 标题栏 `✦ DeepSeek CLI` 占据，不再直接是用户正文）
         assert any(p.startswith("  > question") for p in plains), "用户卡不应有角色头"
-        # 用户卡（正文 "  > question"）与回答卡（▎回答）之间应有空白行（用户卡尾空行）
+        # 用户消息与回答正文之间应有空白行（用户卡尾空行）
         i_user = next(i for i, p in enumerate(plains) if p.startswith("  > question"))
-        i_answer = next(i for i, p in enumerate(plains) if "\u56de\u7b54" in p)
+        i_answer = next(i for i, p in enumerate(plains) if "Answer" in p)
         assert i_user < i_answer
         assert any(p == "" for p in plains[i_user + 1:i_answer]), (
             "用户与回答卡之间应有空白行"

@@ -157,7 +157,8 @@ def _tool_card_styled_lines(block, width, start=0, stop=None):
     ``block.lines[0].plain.startswith("  · ")`` / ``strip()=="✔"`` / 无边框
     字符依赖此）。顶边框仅 ``start==0``（块首次提交）；底边框仅块关闭且为
     最终块（``stop is None`` 或 ``stop >= len(block.lines)``）。关闭状态行
-    ``  ✔`` 保留为**主体行**（底边框不含状态文本，只画 ``└────┘``）。
+    ``  ✔``（模型层保留）**不渲染为主体行**——状态移入底边框
+    （``└─ ✔ 完成 ─┘`` / ``└─ ✖ 失败 ─┘``，对齐 Claude Code）。
 
     Args:
         block: 工具块（ChatBlock.kind == "tool"）。
@@ -179,6 +180,7 @@ def _tool_card_styled_lines(block, width, start=0, stop=None):
     border = pal.border
     width = width if isinstance(width, int) and width > 0 else 0
     inner_w = max(1, width - 4) if width > 0 else 0
+    status_idx = _tool_status_index(block)
     out: list[list[StyledRun]] = []
     # 顶边框（仅 start==0）：┌─ ● ⚡ rf[ · detail] ─…─┐
     if start == 0:
@@ -205,10 +207,14 @@ def _tool_card_styled_lines(block, width, start=0, stop=None):
         else:
             head.extend(title_runs)
         out.append(head)
-    # 主体行：block.lines[start:stop]，start==0 时跳过标题行（名字已在顶边框）
+    # 主体行：block.lines[start:stop]，start==0 时跳过标题行（名字已在顶边框）；
+    # 关闭状态行（_tool_status_index）跳过——状态已移入底边框（对齐 Claude Code）
     body_end = len(block.lines) if stop is None else min(stop, len(block.lines))
     body_start = start if start > 0 else 1
-    for ansi_line in block.lines[body_start:body_end]:
+    for abs_idx in range(body_start, body_end):
+        if status_idx is not None and abs_idx == status_idx:
+            continue
+        ansi_line = block.lines[abs_idx]
         wrapped = (
             wrap_line(ansi_line, inner_w)
             if width > 0
@@ -230,13 +236,47 @@ def _tool_card_styled_lines(block, width, start=0, stop=None):
                 body.append(StyledRun(" " * pad, border))
             body.append(StyledRun(" \u2502", border))
             out.append(body)
-    # 底边框：仅关闭块且为最终块（└────┘）
+    # 底边框：仅关闭块且为最终块；含状态文本（对齐 Claude Code `└─ ✔ 完成 ─┘`）
     if block.closed and (stop is None or stop >= len(block.lines)):
         if width > 0:
-            out.append([StyledRun("\u2514" + "\u2500" * max(1, width - 2) + "\u2518", border)])
+            tail = [StyledRun("\u2514\u2500 ", border)]
+            status = block.extra.get("tool_status", "running")
+            if status == "done":
+                status_runs = [StyledRun("\u2714 完成", Style(fg=41))]
+            elif status == "fail":
+                status_runs = [StyledRun("\u2716 失败", Style(fg=196))]
+            else:
+                status_runs = []
+            # 窄屏防溢出：状态文本截断至剩余宽度（└─/┘ 占用 4 列 → 预算 width-4）
+            for run in truncate_runs(status_runs, max(1, width - 4)):
+                tail.append(run)
+            fill = max(0, width - 1 - sum(r.width for r in tail))
+            if fill > 0:
+                tail.append(StyledRun("\u2500" * fill, border))
+            tail.append(StyledRun("\u2518", border))
+            out.append(tail)
         else:
             out.append([StyledRun("\u2514\u2518", border)])
     return out
+
+
+def _tool_status_index(block):
+    """工具卡状态行下标（close 追加的 `  ✔`/`  ✖` 行）；无则返回 None。
+
+    关闭工具块时 ``close_tool_box`` 追加状态行到 block.lines 末尾（模型层
+    不变式 ``block.lines[-1].plain.strip()=="✔"``）。卡片渲染把状态移到底边框
+    （``└─ ✔ 完成 ─┘``，对齐 Claude Code），渲染主体行时跳过该行。
+    ``_status_line_index`` 由 close_tool_box 记录（歧义安全）；回退按末行
+    plain 匹配（覆盖 reflow/旧块等未记录场景）。
+    """
+    idx = block.extra.get("_status_line_index")
+    if idx is not None:
+        return idx
+    if block.closed and block.lines:
+        last = block.lines[-1]
+        if getattr(last, "plain", "").strip() in ("\u2714", "\u2716"):
+            return len(block.lines) - 1
+    return None
 
 
 def _user_marker_styled_lines(block, start, stop, width):
@@ -293,7 +333,8 @@ def _user_marker_styled_lines(block, start, stop, width):
 def _role_header_runs(block, model) -> list:
     """构建块角色头 StyledRun 列表（卡片首行，按 kind 选样式与文本）。
 
-    无头 kind（user/write_line/splash/parse_info）返回空列表（不占行）。
+    无头 kind（content/tool/user/write_line/splash/parse_info）返回空列表
+    （不占行）——content 对齐 Claude Code 无头回答；tool 由卡片顶边框替代。
     样式取活动调色板槽位（``get_active_palette()``，dark 下与既有常量同值）；
     reasoning/error 用硬编码兜底（与正文样式语义一致）。
     """
@@ -303,7 +344,9 @@ def _role_header_runs(block, model) -> list:
     kind = block.kind
     pal = get_active_palette()
     if kind == "content":
-        return [StyledRun("\u258e", pal.accent_bold), StyledRun("回答", pal.text)]
+        # 助手回答无角色头（对齐 Claude Code：markdown 文本直接流动，无
+        # `▎回答` 头行；用户消息以 `> ` 前缀区分）
+        return []
     if kind == "reasoning":
         return [StyledRun("\u258d\U0001f4ad 思考", Style(fg=242, italic=True))]
     if kind == "tool":
@@ -514,10 +557,11 @@ class AppModel:
     def _card_lines(self, block, start: int = 0):
         """块卡片行：正文 + （首次提交时）角色头。
 
-        committed_lines 为「卡片文档」（角色头 + 正文 + 空行）。角色头仅在
-        start==0（块首次提交，committed_line_count==0）时前置一次；增量提交
-        （start>0）不再重复。冻结行 ``_cached_ink_lines`` 保持正文-only（不改，
-        测试锁定 ``len(_cached_ink_lines) == len(block.lines)``）。
+        committed_lines 为「卡片文档」（角色头 + 正文 + 空行；content/tool 无
+        角色头——content 对齐 Claude Code 无头回答，tool 由卡片顶边框替代）。
+        角色头仅在 start==0（块首次提交，committed_line_count==0）时前置一次；
+        增量提交（start>0）不再重复。冻结行 ``_cached_ink_lines`` 保持正文-only
+        （不改，测试锁定 ``len(_cached_ink_lines) == len(block.lines)``）。
         """
         out = self._block_to_ink_lines(block, start)
         if start == 0:
@@ -604,7 +648,7 @@ class AppModel:
         return self.reasoning_renderer
 
     def close_reasoning(self) -> None:
-        """关闭推理通道：固化渲染器输出 + 分隔线。"""
+        """关闭推理通道：固化渲染器输出（无分隔线——对齐 Claude Code 消息间仅空行）。"""
         if self.reasoning_state == ReasoningState.CLOSED:
             return
         rr = self.reasoning_renderer
@@ -614,9 +658,6 @@ class AppModel:
             if 0 <= self.reasoning_block_index < len(self.blocks):
                 block = self.blocks[self.reasoning_block_index]
                 block.lines.extend(lines)
-                from src.tui.core.style import Style
-                from src.renderer.ansi.helpers import AnsiLine
-                block.lines.append(AnsiLine.of("  " + "\u2500" * 40, Style(fg=240)))
             self.reasoning_renderer = None
         self.reasoning_state = ReasoningState.CLOSED
         # 提交到增量渲染缓存（方向D 步骤15：关闭块冻结行缓存）
@@ -784,6 +825,9 @@ class AppModel:
             )
             return
         status = "\u2714" if success else "\u2716"
+        # 记录状态行下标（卡片渲染跳过该主体行——状态已移入底边框；模型层
+        # 不变式 block.lines[-1].plain.strip()=="✔" 保留）
+        block.extra["_status_line_index"] = len(block.lines)
         block.lines.append(AnsiLine.of(f"  {status}", Style(fg=41 if success else 196)))
         block.extra["tool_status"] = "done" if success else "fail"
         # Claude TUI parity 步骤 2.2：关闭后无进行中工具（ToolStatusHeader 隔离

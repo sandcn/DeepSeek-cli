@@ -283,24 +283,6 @@ def _do_subagent_markdown(model, cmd) -> None:
     model.append_committed("subagent", lines)
 
 
-def _last_committed_plain(model) -> str:
-    """获取最后已提交行 plain（committed_lines 最后一行或最后块最后行）。
-
-    方向6（分隔线去重判定）：committed_lines 为 ink Line（``.plain`` 即
-    纯文本）；块行优先取最后块最后行（开放块未提交尾仍在块内）。
-    """
-    if model.committed_lines:
-        last = model.committed_lines[-1]
-        plain = getattr(last, "plain", "")
-        if plain:
-            return plain
-    if model.blocks:
-        last_block = model.blocks[-1]
-        if last_block.lines:
-            return getattr(last_block.lines[-1], "plain", "")
-    return ""
-
-
 def _do_display_messages(model, cmd) -> None:
     from src.tui.pipeline.message_display import _content_str
     messages = cmd.messages or []
@@ -311,14 +293,7 @@ def _do_display_messages(model, cmd) -> None:
             model.append_committed("user", build_user_line(content))
         elif role in ("assistant", "other"):
             model.append_committed("write_line", [build_assistant_line(content)])
-    if messages:
-        # ★ 方向6（分隔线去重）：仅在「上次提交行不是分隔线」时追加——避免
-        #   多次 DISPLAY_MSGS 命令累积多条分隔线。判定基于 plain 前缀
-        #   （`  ─`）：用户/助手消息行前缀为 `  > `/`  │ `，不误伤；用户消息
-        #   恰好以 `  ─` 开头的极端场景会误判跳过，安全性高（只影响「不追加
-        #   分隔线」方向）。
-        if not _last_committed_plain(model).startswith("  \u2500"):
-            model.append_committed("write_line", [AnsiLine.of("  " + "\u2500" * 40, Style(fg=240))])
+    # 无消息间分隔线（对齐 Claude Code：消息间仅空行分隔，由卡片尾空行承担）
 
 
 _HANDLERS: dict[int, object] = {

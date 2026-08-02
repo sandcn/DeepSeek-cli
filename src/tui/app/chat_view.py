@@ -9,7 +9,8 @@
 未提交（live）块的**角色头**经 ``_role_header_line`` 在正文行之前发射
 （仅 ``committed_line_count == 0`` 时——已增量提交的头已在 committed_lines，
 互斥不重复）；正文行仍走 ``_block_styled_lines``（正文-only，不带头）。
-工具块例外：卡片化后无独立角色头——live 顶边框经 ``_block_styled_lines``
+content/tool 无角色头（content 对齐 Claude Code 无头回答；tool 由卡片顶边框
+替代）——live content 直接渲染正文，live 工具顶边框经 ``_block_styled_lines``
 工具短路（``_tool_card_styled_lines``）发射，与 committed 首次提交互斥。
 """
 

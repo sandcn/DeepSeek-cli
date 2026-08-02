@@ -131,8 +131,8 @@ class TestReasoningStateMachine:
         apply_cmd(m, PhaseDoneCmd(phase="reasoning"))
         assert m.reasoning_state == ReasoningState.CLOSED
         assert m.reasoning_renderer is None
-        # 分隔线已追加
-        assert m.blocks[0].lines[-1].plain.startswith("  ─")
+        # 无分隔线（对齐 Claude Code：消息间仅空行分隔）；末行为渲染内容
+        assert not any(l.plain.startswith("  \u2500") for l in m.blocks[0].lines)
 
     def test_reasoning_discarded_after_close(self):
         m = _model()
@@ -360,13 +360,13 @@ class TestToolBox:
         m.close_tool_box("t1", True)
         # 关闭后全部行已提交（committed_line_count == len）
         assert block.committed_line_count == len(block.lines)
-        # 无重复行：卡片结构下 committed_lines = 块行 + 角色头 + 卡片尾空行
-        # （每 AnsiLine → 1 ink Line；头/空行各 1 行额外）
-        assert len(m.committed_lines) == len(block.lines) + 2, (
-            f"关闭后 committed_lines 应 = 块行 + 头 + 空行，committed={len(m.committed_lines)} lines={len(block.lines)}"
+        # 无重复行：卡片结构下 committed_lines = 顶边框 + 主体行（标题行被顶边框
+        # 替代、状态行被跳过——移入底边框）+ 底边框 + 卡片尾空行 → 块行 +1
+        assert len(m.committed_lines) == len(block.lines) + 1, (
+            f"关闭后 committed_lines 应 = 块行 + 底边框，committed={len(m.committed_lines)} lines={len(block.lines)}"
         )
         committed_plains = [l.plain for l in m.committed_lines]
-        # 尾行为卡片空行；✔ 在正文标题行（去空行后）
+        # 尾行为卡片空行；✔ 在顶边框与底边框 `✔ 完成`（去空行后）
         assert committed_plains[-1] == ""
         assert "✔" in "".join(committed_plains)
         assert any("line0" in p for p in committed_plains)
@@ -414,10 +414,10 @@ class TestToolBox:
         committed_before = block.committed_line_count
         assert committed_before > 0
         m.close_tool_box("t1", True)
-        # 冻结缓存 = 未提交尾（不含已提交行）+ 底边框（卡片结构：尾部主体行
-        # 之后追加 `└────┘`，故 +1；关闭状态行作为主体行保留）
+        # 冻结缓存 = 未提交尾（不含已提交行 + 底边框；状态行跳过——已移入底
+        # 边框，故与「未提交行数」恰好相等）
         assert block._cached_ink_lines is not None
-        assert len(block._cached_ink_lines) == len(block.lines) - committed_before + 1
+        assert len(block._cached_ink_lines) == len(block.lines) - committed_before
 
 
 class TestStatusCounts:
@@ -466,8 +466,7 @@ class TestDisplayMsgs:
     def test_display_messages(self):
         m = _model()
         apply_cmd(m, DisplayMsgsCmd(messages=[{"role": "user", "content": "m1"}], speed=0))
-        assert m.blocks[-1].kind == "write_line"  # 分隔线
-        assert m.blocks[-2].kind == "user"
+        assert m.blocks[-1].kind == "user"  # 无消息间分隔线（对齐 Claude Code）
 
     def test_display_messages_strips_raw_ansi(self):
         """会话历史消息内容透传 ANSI → _content_str 消毒（防宽度膨胀/wrap 截断）。"""
@@ -501,8 +500,9 @@ class TestToolCardState:
         block = m.blocks[-1]
         assert block.extra["tool_status"] == "done"
         assert block._cached_ink_lines is not None
-        # 卡片结构：冻结缓存 = 顶边框 + 主体行 + 底边框（+1 为底边框）
-        assert len(block._cached_ink_lines) == len(block.lines) + 1
+        # 卡片结构：冻结缓存 = 顶边框 + 主体行 + 底边框（标题行被顶边框替代、
+        # 状态行跳过移入底边框 → 与块行数相等）
+        assert len(block._cached_ink_lines) == len(block.lines)
 
     def test_tool_close_fail_status(self):
         """close 失败 → status=fail。"""
@@ -641,47 +641,34 @@ class TestCommitBlockFreeze:
         assert len(sand_block._cached_ink_lines) == len(sand_block.lines)
 
 
-class TestDisplayMsgsSeparatorDedup:
-    """方向6 — _do_display_messages 分隔线去重。"""
+class TestDisplayMsgsNoSeparator:
+    """方向6 — _do_display_messages 无消息间分隔线（对齐 Claude Code：仅空行分隔）。"""
 
-    def test_consecutive_unhandled_role_no_duplicate_separator(self):
-        """连续 DISPLAY_MSGS：第二批为未处理 role（不产行）→ 仅一条分隔线。"""
+    def test_no_separator_after_user_message(self):
+        """用户消息后不追加分隔线块（仅 user 块）。"""
         m = _model()
         apply_cmd(m, DisplayMsgsCmd(messages=[{"role": "user", "content": "m1"}], speed=0))
-        assert m.blocks[-1].kind == "write_line"  # 分隔线
-        # 第二批 role=system（未处理 → 不产行）→ 上次提交行为分隔线 → 跳过
-        apply_cmd(m, DisplayMsgsCmd(messages=[{"role": "system", "content": "sys"}], speed=0))
-        separators = [b for b in m.blocks if b.kind == "write_line"
-                      and b.lines and b.lines[0].plain.startswith("  \u2500")]
-        assert len(separators) == 1, (
-            f"连续 DISPLAY_MSGS 应仅一条分隔线，实际 {len(separators)}"
-        )
+        assert m.blocks[-1].kind == "user"
+        assert not any(b.kind == "write_line" for b in m.blocks)
 
-    def test_different_content_keeps_separator_per_batch(self):
-        """不同消息内容两次 → 各消息行 + 各批分隔线（不误去重）。"""
+    def test_system_role_produces_no_block(self):
+        """未处理 role（system）不产块、无分隔线。"""
+        m = _model()
+        apply_cmd(m, DisplayMsgsCmd(messages=[{"role": "user", "content": "m1"}], speed=0))
+        n = len(m.blocks)
+        apply_cmd(m, DisplayMsgsCmd(messages=[{"role": "system", "content": "sys"}], speed=0))
+        assert len(m.blocks) == n  # 不追加任何块
+        assert not any(l.plain.startswith("  \u2500") for b in m.blocks for l in b.lines)
+
+    def test_user_and_assistant_messages_no_separator(self):
+        """user + assistant 消息 → user 块 + assistant（write_line）块，无分隔线。"""
         m = _model()
         apply_cmd(m, DisplayMsgsCmd(messages=[{"role": "user", "content": "m1"}], speed=0))
         apply_cmd(m, DisplayMsgsCmd(messages=[{"role": "assistant", "content": "a2"}], speed=0))
-        user_blocks = [b for b in m.blocks if b.kind == "user"]
-        write_blocks = [b for b in m.blocks if b.kind == "write_line"]
-        separators = [b for b in m.blocks if b.kind == "write_line"
-                      and b.lines and b.lines[0].plain.startswith("  \u2500")]
-        assert len(user_blocks) == 1
-        assert any("m1" in b.lines[0].plain for b in user_blocks)
-        # write_line 块 = assistant 行 + 两批各一条分隔线
-        assert len(write_blocks) == 3, (
-            f"write_line 块应含 assistant 行 + 2 条分隔线，实际 {len(write_blocks)}"
-        )
-        assert any("a2" in b.lines[0].plain for b in write_blocks)
-        assert len(separators) == 2
-
-    def test_user_message_line_not_mistaken_for_separator(self):
-        """分隔线判定不误伤用户消息行（前缀 `  > ` 不是 `  ─`）。"""
-        m = _model()
-        apply_cmd(m, DisplayMsgsCmd(messages=[{"role": "user", "content": "m1"}], speed=0))
-        # 用户行渲染后 → 分隔线仍追加（用户行不被判为分隔线）
-        assert m.blocks[-1].kind == "write_line"
-        assert m.blocks[-1].lines[0].plain.startswith("  \u2500")
+        kinds = [b.kind for b in m.blocks]
+        assert kinds == ["user", "write_line"]
+        assert any("a2" in b.lines[0].plain for b in m.blocks if b.kind == "write_line")
+        assert not any(l.plain.startswith("  \u2500") for b in m.blocks for l in b.lines)
 
 
 class TestReflowCommitted:
@@ -699,19 +686,18 @@ class TestReflowCommitted:
         return AnsiLine.of("a" * 100, Style(fg=1))  # 100 列 ASCII 超宽
 
     def test_shrink_rewraps_committed_lines(self):
-        """宽→窄：重排后 committed_lines 各行 ≤ 新宽度，头/尾空行保留。"""
+        """宽→窄：重排后 committed_lines 各行 ≤ 新宽度，尾空行保留（无头）。"""
         m = _model()
         m.width = 40
         m.append_committed("content", [self._wide_content()])
-        assert len(m.committed_lines) == 5  # 头 + 3 wrap 正文 + 空
+        assert len(m.committed_lines) == 4  # 3 wrap 正文 + 空（content 无角色头）
         m.reflow_committed(20)
         assert all(ln.width <= 20 for ln in m.committed_lines), (
             "缩窄后 committed 每行宽度应 ≤ 20"
         )
         plains = [ln.plain for ln in m.committed_lines]
-        assert plains[0] == "▎回答"
+        assert plains[0].startswith("a")
         assert plains[-1] == ""  # 尾空行保留
-        assert plains[1].startswith("a")
 
     def test_grow_keeps_width_invariant(self):
         """窄→宽：重排后每行 ≤ 新宽度（行不重新合并，仅保证不变量）。"""
@@ -750,7 +736,8 @@ class TestReflowCommitted:
             m.append_tool_output("t1", f"out{i}\n")
         m.close_tool_box("t1", True)
         block = m.blocks[-1]
-        assert len(m.committed_lines) == len(block.lines) + 2
+        # 卡片结构：顶边框 + 主体行（状态行跳过移入底边框）+ 底边框 + 尾空行
+        assert len(m.committed_lines) == len(block.lines) + 1
         m.reflow_committed(30)
         plains = [ln.plain for ln in m.committed_lines]
         assert plains[0].startswith("\u250c"), "关闭工具卡首行应为顶边框"

@@ -173,9 +173,9 @@ class TestOverwidthLineWrap:
         model.width = 40
         line = AnsiLine.of("a" * 100, Style(fg=1))  # 100 列 ASCII，超宽
         model.append_committed("content", [line])
-        # 卡片结构：角色头 + 3 行 wrap 正文 + 卡片尾空行 = 5
-        assert len(model.committed_lines) == 5, (
-            f"100 列 / width 40 应拆 3 行（40+40+20）+ 头 + 空行，实际 {len(model.committed_lines)}"
+        # 卡片结构：3 行 wrap 正文 + 卡片尾空行 = 4（content 无角色头）
+        assert len(model.committed_lines) == 4, (
+            f"100 列 / width 40 应拆 3 行（40+40+20）+ 空行，实际 {len(model.committed_lines)}"
         )
         for ln in model.committed_lines:
             assert ln.width <= 40, f"committed ink Line 宽度 {ln.width} 应 <= 40"
@@ -189,9 +189,9 @@ class TestOverwidthLineWrap:
         model.width = 40
         line = AnsiLine.of("你" * 30, Style(fg=2))  # 30×2=60 列，超宽
         model.append_committed("content", [line])
-        # 卡片结构：角色头 + 2 行 wrap 正文 + 卡片尾空行 = 4
-        assert len(model.committed_lines) == 4, (
-            f"60 列 / width 40 应拆 2 行（20+10）+ 头 + 空行，实际 {len(model.committed_lines)}"
+        # 卡片结构：2 行 wrap 正文 + 卡片尾空行 = 3（content 无角色头）
+        assert len(model.committed_lines) == 3, (
+            f"60 列 / width 40 应拆 2 行（20+10）+ 空行，实际 {len(model.committed_lines)}"
         )
         for ln in model.committed_lines:
             assert ln.width <= 40, f"committed ink Line 宽度 {ln.width} 应 <= 40"
@@ -205,9 +205,9 @@ class TestOverwidthLineWrap:
         model.width = 40
         line = AnsiLine.of("hello", Style(fg=1))
         model.append_committed("content", [line])
-        # 卡片结构：角色头 + 正文 + 卡片尾空行 = 3；正文（下标 1）宽度 == 5
-        assert len(model.committed_lines) == 3
-        assert model.committed_lines[1].width == 5
+        # 卡片结构：正文 + 卡片尾空行 = 2（content 无角色头）；正文（下标 0）宽度 == 5
+        assert len(model.committed_lines) == 2
+        assert model.committed_lines[0].width == 5
 
 
 # ═══════════════════════════════════════════════════════════
