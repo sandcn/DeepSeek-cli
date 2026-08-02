@@ -66,17 +66,20 @@ class ToolCallsHandler:
                 if tool_name:
                     _entry["name"] = tool_name
                 if ctx.display is not None:
-                    if _entry.get("arguments"):
+                    if _entry.get("_args_preview"):
                         try:
                             # ★ 使用缓存的 _stream_label，确保标签在整个流式过程中一致
                             #   即使后续 chunk 提供了 id，也不改变已创建的流式标签，
                             #   避免前端因标签变化而创建重复气泡。
                             entry_id = _entry.get("_stream_label",
                                                    _entry.get("id", "") or f"auto_{idx}")
+                            # ★ 只发布参数**预览**（截断 200 字符）——修复前发布
+                            #   完整累积参数（write_file 大 content）→ 子代理工具
+                            #   记录 detail 存超大 JSON → 卡片渲染卡顿/CPU 满。
                             ctx.display.tool_parsing(
                                 ctx.label or "",
                                 tool_name or _entry.get("name", ""),
-                                _entry["arguments"],
+                                _entry["_args_preview"],
                                 tool_id=entry_id,
                             )
                         except Exception:
@@ -97,7 +100,19 @@ class ToolCallsHandler:
                     entry["name"] = fname
                 fargs = func.get("arguments")
                 if fargs:
-                    entry["arguments"] += fargs
+                    # ★ list 累积参数片段——避免 `entry["arguments"] += fargs`
+                    #   对超大参数（write_file 大 content）O(n²) 复制
+                    #   （1MB ≈ 175ms 接收卡顿）。
+                    entry.setdefault("_args_parts", []).append(fargs)
+                    # 惰性维护完整参数串：仅当消费方需要时 join（见
+                    # stream_parse/_tool_parse_utils 的 _args_parts 读取）。
+                    entry["arguments"] = ""
+                    # ★ 参数预览增量累积（≤200 字符，避免 join 全部片段）——
+                    #   供 tool_parsing 发布，防超大参数进入工具记录。
+                    if len(entry.get("_args_preview", "")) < 200:
+                        entry["_args_preview"] = entry.get("_args_preview", "") + fargs
+                        if len(entry["_args_preview"]) > 200:
+                            entry["_args_preview"] = entry["_args_preview"][:200]
                     # 实时估算工具调用参数的 token 数，确保 token_estimate
                     # 在流式接收 dispatch_agent 等大参数时持续增长，
                     # 驱动 SpeedHandler 发出 update_live_output 更新。

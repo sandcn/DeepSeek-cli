@@ -19,6 +19,18 @@ from .json_repair import json_loads_safe
 _logger = logging.getLogger(__name__)
 
 
+def full_args_str(tc: dict) -> str:
+    """工具调用条目完整参数串（流式 `_args_parts` list 或 legacy `arguments`）。
+
+    tool_calls 流式累积改 list（避免超长参数 O(n²) 拼接）——完整串在消费方
+    需要时 join，此处统一读取入口。
+    """
+    parts = tc.get("_args_parts")
+    if parts:
+        return "".join(parts)
+    return tc.get("arguments", "")
+
+
 def convert_tool_calls_map_with_status(tool_calls_map):
     """将流式累积的工具调用映射 {index: {...}} 转换为列表格式，同时返回解析失败 ID。
 
@@ -32,7 +44,7 @@ def convert_tool_calls_map_with_status(tool_calls_map):
     for idx in sorted(tool_calls_map.keys()):
         tc = tool_calls_map[idx]
         try:
-            args_str = tc.get("arguments", "")
+            args_str = full_args_str(tc)
             args = json_loads_safe(args_str)[0] if args_str else {}
         except json.JSONDecodeError as e:
             tool_id = tc.get("_stream_label") or tc.get("id") or f"auto_{idx}"

@@ -361,6 +361,16 @@ class SubAgentPanelController:
         #   重建整个面板）；_pending_emit 置位（节流期丢帧）时绕过短路补推。
         if not self._dirty and not self._needs_animation() and not self._pending_emit:
             return
+        # ★ PERF-4：面板刷新节流——与 _emit_frame 共用 _last_emit_time/
+        #   _EMIT_INTERVAL（10Hz）。修复前每渲染循环迭代都渲染+推送（流式
+        #   期间命令持续唤醒循环 → 循环高频运转），subagent 活跃时 CPU 满。
+        #   节流跳过时置 _pending_emit，下一允许拍补推最新帧（不丢状态）。
+        now = time.time()
+        if now - self._last_emit_time < self._EMIT_INTERVAL:
+            self._pending_emit = True
+            return
+        self._last_emit_time = now
+        self._pending_emit = False
         try:
             lines = self._render_frame()
             # ★ 变更检测：帧无变化时跳过推送（避免空转 keep-alive 推送使
@@ -373,8 +383,6 @@ class SubAgentPanelController:
         self._frame += 1
         # PERF-2：渲染后复位脏标记（后续空闲不再渲染）
         self._dirty = False
-        # 方向2（节流丢帧补推）：渲染后清除待补推标志（补推完成）
-        self._pending_emit = False
 
     # ── 帧渲染委托（实现迁移至 _subagent_render） ────
 

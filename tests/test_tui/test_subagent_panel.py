@@ -123,9 +123,12 @@ class TestSubAgentPanelEmitFrameThrottle:
         assert controller._push_frame.call_count == 1  # 节流未推送
         assert controller._pending_emit is True
 
-        # _panel_refresh（每帧回调）：检测 _pending_emit → 补推最新状态
+        # _panel_refresh（每帧回调）：检测 _pending_emit → 下个 10Hz 拍补推
+        # （PERF-4：_panel_refresh 与 _emit_frame 共用 10Hz 节流——节流期
+        #   跳过置 _pending_emit，距上次推送 ≥0.1s 后补推最新帧，不丢状态）
         controller._dirty = False
         controller._render_frame = MagicMock(return_value=["latest", "state"])
+        mock_time.return_value = 0.20  # 距上次推送 0.1s → 允许补推
         controller._panel_refresh()
         assert controller._push_frame.call_count == 2
         assert controller._pending_emit is False

@@ -11,7 +11,7 @@ import logging
 import time
 import asyncio
 
-from ._tool_parse_utils import convert_tool_calls_map, convert_tool_calls_map_with_status, parse_raw_tool_calls, parse_raw_tool_calls_with_status  # noqa: F401 — 重导出
+from ._tool_parse_utils import convert_tool_calls_map, convert_tool_calls_map_with_status, parse_raw_tool_calls, parse_raw_tool_calls_with_status, full_args_str  # noqa: F401 — 重导出
 from .tokens import estimate_tokens
 from .stats import set_tool_parse_elapsed
 from .interrupt_async import is_interrupted_async
@@ -52,7 +52,7 @@ class ToolParseTracker:
 
                 elapsed = time.monotonic() - self._start_time
                 snapshot = [{**tc} for tc in self._tool_calls_map.values()]
-                total_args = ''.join(tc["arguments"] for tc in snapshot)
+                total_args = ''.join(full_args_str(tc) for tc in snapshot)
                 tokens = estimate_tokens(total_args)
                 names = [tc["name"] for tc in snapshot if tc["name"]]
                 name_str = ','.join(get_tool_display_name(n) for n in names) if names else '工具'
@@ -98,7 +98,7 @@ class ToolParseTracker:
         set_tool_parse_elapsed(elapsed)
 
         snapshot = dict(self._tool_calls_map)
-        total_args = ''.join(tc["arguments"] for tc in snapshot.values())
+        total_args = ''.join(full_args_str(tc) for tc in snapshot.values())
         tokens = estimate_tokens(total_args)
         names = [tc["name"] for tc in snapshot.values() if tc["name"]]
         name_str = ','.join(get_tool_display_name(n) for n in names) if names else '工具'
