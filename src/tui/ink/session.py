@@ -681,6 +681,16 @@ class InkSession:
             return
         width = self._width_cache.get_width()
         if self._model is not None:
+            # ★ 终端 resize：宽度变化时重排已提交历史（committed_lines 提交时
+            #   按旧宽度 wrap，宽度变化后需按新宽度重建——重排产出新列表对象，
+            #   前缀缓存自动失效）。幂等（宽度未变直接返回）；桩模型无
+            #   reflow_committed 时跳过（兼容）。
+            reflow = getattr(self._model, "reflow_committed", None)
+            if reflow is not None:
+                try:
+                    reflow(width)
+                except Exception:
+                    _logger.debug("reflow_committed 异常", exc_info=True)
             self._model.width = width  # 渲染器 TOC 边框宽度
             # ★ 方向6（resize 后流式渲染宽度陈旧）：宽度变化时向开放通道
             #   renderer（AnsiStreamRenderer.set_width 已实现）传播新宽度——

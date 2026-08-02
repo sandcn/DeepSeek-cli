@@ -13,6 +13,11 @@ user/write_line/splash/parse_info）。角色头经 ``_role_header_line`` 截断
 保证单行 ≤width；空行经 ``_append_card_trailer`` 在块关闭提交时追加恰好
 一次。正文-only 冻结缓存 ``_cached_ink_lines`` 不含卡片头/空行
 （``len == len(block.lines)`` 不变式）。
+
+终端 resize：``reflow_committed(width)`` 在宽度变化后按新宽度重建全部
+已提交行（committed_lines 提交时按旧宽度 wrap，宽度变化后需重排）——
+产出新列表对象使前缀缓存自动失效；live/开放块经 ink 布局按当前宽度换行
+自动适配。
 """
 
 from __future__ import annotations
@@ -303,8 +308,8 @@ class AppModel:
                 block._open_styled_cache = None
             self.committed_count += 1
 
-    def _block_to_ink_lines(self, block, start: int = 0):
-        """将块内 AnsiLine（从 start 起）转为 ink Line（推理块叠加 dim/italic）。
+    def _block_to_ink_lines(self, block, start: int = 0, stop=None):
+        """将块内 AnsiLine（从 start 起到 stop）转为 ink Line（推理块叠加 dim/italic）。
 
         ★ 方向1 P0-1（超宽行 wrap）：committed 发射前按 ``self.width`` wrap——
         任一 AnsiLine 显示宽度超过终端宽度时，经 ``renderer.ansi.helpers.wrap_line``
@@ -314,11 +319,14 @@ class AppModel:
 
         方向D 步骤15：工具块标题行前置状态图标（running ● / done ✔ / fail ✖，
         渲染装饰不改动 block.lines 原文；仅 start==0 时前置一次）。
+
+        stop: 可选结束下标（不含）——``reflow_committed`` 重建块**已提交部分**
+        （``lines[:committed_line_count]``）时限定范围，避免未提交尾混入。
         """
         from src.tui.ink import Line, StyledRun
         from src.renderer.ansi.style import Style as _AnsiStyle
         from src.renderer.ansi.helpers import wrap_line
-        slice_lines = block.lines[start:]
+        slice_lines = block.lines[start:stop]
         if not slice_lines:
             return []
         reasoning_style = (
@@ -380,6 +388,56 @@ class AppModel:
             return
         from src.tui.ink import Line
         self.committed_lines.append(Line())
+
+    def _card_lines_committed(self, block, width: int) -> list:
+        """重建块**已提交部分**（``block.lines[:committed_line_count]``）的卡片行。
+
+        供 ``reflow_committed``（终端宽度变化重排）使用：按新宽度重新 wrap
+        已提交行 + 角色头（首行）+ 关闭块（已完全提交）尾空行——与提交路径
+        （``_card_lines`` + ``_append_card_trailer``）产出一致，保证头/空行
+        重建后恰好一次。``stop`` 限定只取已提交 AnsiLine（open 块未提交尾
+        不混入）。
+        """
+        count = block.committed_line_count
+        if count <= 0:
+            return []
+        out = self._block_to_ink_lines(block, 0, stop=count)
+        header = _role_header_line(block, self, width)
+        if header is not None:
+            out = [header] + out
+        if block.closed and count >= len(block.lines) and block.lines:
+            if getattr(block.lines[-1], "plain", "") != "":
+                from src.tui.ink import Line
+                out.append(Line())
+        return out
+
+    def reflow_committed(self, width: int) -> None:
+        """终端宽度变化后按新宽度重建 committed_lines（重排已提交行）。
+
+        committed_lines 在提交时按旧宽度 wrap；宽度变化后旧行可能超宽（破坏
+        「行级 diff 宽度不变量」：committed 每行 ink Line 宽度须 <= width）或
+        未利用新宽度。重建全部已提交行：逐块按已提交行数重新 wrap + 卡片头 +
+        关闭块尾空行，产出**新列表对象** → ChatView use_memo / committed-chat
+        前缀缓存（键含 ``id(lines)``）自动失效，无需额外通知。open 块未提交
+        尾留在块内（live 渲染按新宽度 wrap）；关闭块未提交尾
+        （``_cached_ink_lines``）同步按新宽度重冻结。
+
+        幂等：``width <= 0`` 或与当前宽度相同 → 直接返回（零成本）。
+        """
+        if width <= 0 or width == self.width:
+            return
+        self.width = width
+        committed: list = []
+        for block in self.blocks:
+            count = block.committed_line_count
+            if count <= 0:
+                continue
+            block.extra["_first_committed_offset"] = len(committed)
+            committed.extend(self._card_lines_committed(block, width))
+            # 关闭块未提交尾（增量提交后仍留尾 / 被夹住）：按新宽度重冻结
+            if block._cached_ink_lines is not None and count < len(block.lines):
+                block._cached_ink_lines = self._block_to_ink_lines(block, count)
+        self.committed_lines = committed
 
     # ── 推理/内容通道 ───────────────────────────────
 

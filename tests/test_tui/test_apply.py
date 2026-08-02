@@ -679,3 +679,100 @@ class TestDisplayMsgsSeparatorDedup:
         # 用户行渲染后 → 分隔线仍追加（用户行不被判为分隔线）
         assert m.blocks[-1].kind == "write_line"
         assert m.blocks[-1].lines[0].plain.startswith("  \u2500")
+
+
+class TestReflowCommitted:
+    """卡片结构 — 终端宽度变化重排（reflow_committed）。
+
+    committed_lines 提交时按旧宽度 wrap；宽度变化后须按新宽度重建（重排），
+    保证「行级 diff 宽度不变量」（committed 每行 ink Line 宽度 <= width）并
+    保留卡片头/尾空行。重排产出新列表对象（前缀缓存自动失效）。
+    """
+
+    @staticmethod
+    def _wide_content():
+        from src.renderer.ansi.helpers import AnsiLine
+        from src.renderer.ansi.style import Style
+        return AnsiLine.of("a" * 100, Style(fg=1))  # 100 列 ASCII 超宽
+
+    def test_shrink_rewraps_committed_lines(self):
+        """宽→窄：重排后 committed_lines 各行 ≤ 新宽度，头/尾空行保留。"""
+        m = _model()
+        m.width = 40
+        m.append_committed("content", [self._wide_content()])
+        assert len(m.committed_lines) == 5  # 头 + 3 wrap 正文 + 空
+        m.reflow_committed(20)
+        assert all(ln.width <= 20 for ln in m.committed_lines), (
+            "缩窄后 committed 每行宽度应 ≤ 20"
+        )
+        plains = [ln.plain for ln in m.committed_lines]
+        assert plains[0] == "▎回答"
+        assert plains[-1] == ""  # 尾空行保留
+        assert plains[1].startswith("a")
+
+    def test_grow_keeps_width_invariant(self):
+        """窄→宽：重排后每行 ≤ 新宽度（行不重新合并，仅保证不变量）。"""
+        m = _model()
+        m.width = 20
+        m.append_committed("content", [self._wide_content()])
+        m.reflow_committed(80)
+        assert all(ln.width <= 80 for ln in m.committed_lines)
+
+    def test_open_block_tail_not_mixed(self):
+        """open 块（增量提交）重排：仅已提交行重建，未提交尾不混入。"""
+        m = _model()
+        m.width = 40
+        m.open_tool_box("t1", "read_file")
+        block = m.blocks[-1]
+        for i in range(70):
+            m.append_tool_output("t1", f"line{i}" + "x" * 60 + "\n")
+        assert block.committed_line_count > 0
+        tail = [l.plain for l in block.lines[block.committed_line_count:]]
+        assert any("line69" in p for p in tail)  # 未提交尾在块内
+        m.reflow_committed(20)
+        assert all(ln.width <= 20 for ln in m.committed_lines)
+        plains = [ln.plain for ln in m.committed_lines]
+        assert "line69" not in "".join(plains), "未提交尾不应混入 committed"
+        assert plains[0] == "▎⚡ 工具 read_file"
+
+    def test_closed_tool_header_icon_trailer_preserved(self):
+        """关闭工具块重排：头/关闭图标/尾空行保留，_first_committed_offset 重建。"""
+        m = _model()
+        m.width = 40
+        m.open_tool_box("t1", "bash")
+        for i in range(70):
+            m.append_tool_output("t1", f"out{i}\n")
+        m.close_tool_box("t1", True)
+        block = m.blocks[-1]
+        assert len(m.committed_lines) == len(block.lines) + 2
+        m.reflow_committed(30)
+        plains = [ln.plain for ln in m.committed_lines]
+        assert plains[0] == "▎⚡ 工具 bash"
+        assert plains[1].startswith("✔")  # 关闭图标保留
+        assert plains[-1] == ""  # 尾空行保留
+        assert sum(1 for p in plains if p == "") == 1
+        offset = block.extra["_first_committed_offset"]
+        assert m.committed_lines[offset].plain == "▎⚡ 工具 bash"
+        assert m.committed_lines[offset + 1].plain.startswith("✔")
+
+    def test_idempotent_same_width(self):
+        """同宽度/非法宽度调用 → 不重建（引用不变）。"""
+        from src.renderer.ansi.helpers import AnsiLine
+        m = _model()
+        m.width = 40
+        m.append_committed("user", [AnsiLine.of("hi")])
+        before = m.committed_lines
+        m.reflow_committed(40)
+        assert m.committed_lines is before
+        m.reflow_committed(0)
+        assert m.committed_lines is before
+
+    def test_reflow_produces_new_list(self):
+        """宽度变化重排产出新列表对象（前缀缓存自动失效的前提）。"""
+        from src.renderer.ansi.helpers import AnsiLine
+        m = _model()
+        m.width = 40
+        m.append_committed("user", [AnsiLine.of("hi")])
+        before = m.committed_lines
+        m.reflow_committed(60)
+        assert m.committed_lines is not before

@@ -944,6 +944,43 @@ class TestDirection6CursorAndWidth:
         s._width_cache.get_width.return_value = 120
         s._render_frame()  # 不抛异常
 
+    def test_render_frame_reflows_committed_on_width_change(self):
+        """宽度变化 → _render_frame 触发 reflow_committed（committed_lines 重排 ≤ 新宽度）。"""
+        from src.tui.app.model import AppModel
+        from src.tui.app.apply import apply_cmd
+        from src.tui.app.app import build_app_element
+        from src.tui._const import WriteLineCmd
+
+        model = AppModel()
+        # 提交一个超宽行（80 宽下 wrap 成多行；write_line 无头无尾空行）
+        apply_cmd(model, WriteLineCmd(text="a" * 120))
+        assert all(ln.width <= 80 for ln in model.committed_lines)
+        n_wide = len(model.committed_lines)
+        old_committed = model.committed_lines
+
+        s = InkSession(model=model, apply_cmd=apply_cmd, build_tree=build_app_element)
+        s._width_cache = MagicMock()
+        s._width_cache.get_width.return_value = 80
+        s._width_cache.get_height.return_value = 24
+        s._ink_renderer = MagicMock()
+        s._last_render_width = 0
+        s._render_frame()  # 首帧 80：宽度未变（model.width=80）→ 不重排
+
+        # 宽度 80→40：重排 committed_lines ≤ 40 且产出新列表对象
+        s._width_cache.get_width.return_value = 40
+        s._render_frame()
+        assert model.width == 40
+        assert all(ln.width <= 40 for ln in model.committed_lines), (
+            "resize 后 committed_lines 应重排 ≤ 40"
+        )
+        assert model.committed_lines is not old_committed, "重排应产出新列表对象"
+        assert len(model.committed_lines) > n_wide, "缩窄后行数应增加"
+
+        # 同宽度再渲染：不重复重排（引用不变）
+        committed_ref = model.committed_lines
+        s._render_frame()
+        assert model.committed_lines is committed_ref
+
 
 def _cursor_visual_from_cached(fiber):
     """经 session._position_cursor 同款逻辑读取缓存并计算光标（测试辅助）。"""
