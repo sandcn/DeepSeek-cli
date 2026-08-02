@@ -203,12 +203,15 @@ class BashFunc(Func):
                 "description": (
                     "执行shell命令。用途：编译构建、git操作、包管理、进程管理、系统信息查询。"
                     "禁止替代专用工具——搜索代码用search，查找文件用find，文件读写用read_file/write_file/update_file。"
-                    f"命令有{cls._DEFAULT_TIMEOUT}秒超时限制，超时后强制终止并返回超时错误。"
+                    f"命令默认有{cls._DEFAULT_TIMEOUT}秒超时限制，超时后强制终止并返回超时错误，"
+                    "可通过 timeout 参数自定义超时秒数。"
                     "返回stdout+stderr合并输出。"
                     "\n\n"
                     "参数说明："
                     "\n- command（必填）：要执行的 shell 命令，支持管道、重定向、环境变量、&& 串联等完整 shell 语法"
                     "\n- cwd（可选）：指定命令的工作目录，省略时使用进程当前工作目录"
+                    f"\n- timeout（可选）：命令超时秒数（整数）。默认 {cls._DEFAULT_TIMEOUT} 秒，"
+                    "超时后强制终止整个进程树并返回超时错误；传 0 表示不设超时限制（慎用）"
                     "\n\n"
                     "参数关联："
                     "\n- cwd 影响命令中所有相对路径的解析基准（如 ./config、../scripts 等）"
@@ -235,8 +238,8 @@ class BashFunc(Func):
                     "\n- 输出限制：超过1000行后截断，末尾添加截断标记"
                     "\n\n"
                     "【Android (Termux) 兼容】"
-                    "\n- 避免使用 `timeout` 命令（行为差异可能导致孤儿进程），"
-                    "改用 `bash <命令> & sleep <时限> && kill %1` 模式"
+                    "\n- 不要在命令里使用 `timeout` 系统命令（行为差异可能导致孤儿进程），"
+                    "需要限制执行时间时直接用 bash 工具的 timeout 参数"
                     "\n\n"
                     "【Git 操作限制】"
                     "\n- 禁止 git push -f / git reset --hard"
@@ -249,7 +252,7 @@ class BashFunc(Func):
                     "\n- 禁止执行系统破坏操作：rm -rf、mkfs、dd、chmod 777、sudo、chown"
                     "\n- 不可以从根目录find / 东西"
                     "\n- 有大量输入的时候多用 cmd | grep * 或 cmd | tail 100 等"
-                    "\n- 不会停的命令 要用 timeout "
+                    "\n- 不会停的命令 用 bash 工具的 timeout 参数（而不是系统 timeout 命令）"
                     "\n- 此红线约束直接 shell 执行和通过脚本的间接执行路径"
                     "\n\n"
                 ),
@@ -283,6 +286,15 @@ class BashFunc(Func):
                                 "\n- cwd 指定的目录不存在时，命令不会执行，直接返回 '(工作目录不存在: <路径>)' 错误信息"
                                 "\n- 不会在错误目录下执行命令，也不会退回到默认目录"
                             )
+                        },
+                        "timeout": {
+                            "type": "integer",
+                            "description": (
+                                "命令执行超时秒数（可选）。"
+                                f"\n- 省略时使用默认 {cls._DEFAULT_TIMEOUT} 秒"
+                                "\n- 超时后命令及其子进程树被强制终止，返回 '(命令执行超时，已强制终止)'"
+                                "\n- 传 0 表示不设超时限制（慎用，可能导致命令永久挂起）"
+                            )
                         }
                     },
                     "required": ["command"]
@@ -314,7 +326,18 @@ class BashFunc(Func):
         super().__init__()
         self.command = command
         self.cwd = cwd
-        self.timeout = timeout if timeout is not None else self._DEFAULT_TIMEOUT
+        # timeout 参数语义（seconds）：
+        #   省略/None → 默认 _DEFAULT_TIMEOUT（300s）
+        #   <=0       → 不设超时限制（asyncio.wait_for 无限等待，慎用）
+        #   >0        → 自定义超时秒数
+        if timeout is None:
+            self.timeout = self._DEFAULT_TIMEOUT
+        else:
+            try:
+                timeout = int(timeout)
+            except (TypeError, ValueError):
+                timeout = self._DEFAULT_TIMEOUT
+            self.timeout = None if timeout <= 0 else timeout
 
     @classmethod
     async def _show_command_to_terminal(cls, command, cwd=None):
