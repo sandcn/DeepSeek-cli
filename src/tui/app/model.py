@@ -223,6 +223,9 @@ def _tool_card_styled_lines(block, width, start=0, stop=None):
     if omitted > 0:
         ind_runs = [StyledRun(f"\u2026 前 {omitted} 行省略", Style(fg=242))]
         if width > 0:
+            # 窄屏防溢出：省略提示截断至内宽（与顶/底边框一致——不截断时提示
+            # 文本（如「… 前 5000 行省略」）超内宽会撑破卡片边框，窄终端错乱）
+            ind_runs = truncate_runs(ind_runs, inner_w)
             body = [StyledRun("\u2502 ", border)] + ind_runs
             pad = inner_w - sum(r.width for r in ind_runs)
             if pad > 0:

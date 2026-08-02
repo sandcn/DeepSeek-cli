@@ -349,6 +349,27 @@ class TestToolBox:
         assert any("line9" in p for p in plains)
         assert not any("line0" in p for p in plains)
 
+    def test_bash_output_tail_narrow_terminal_no_overflow(self):
+        """窄终端 + bash 大量输出 → 省略提示行截断至内宽，卡片不撑破（无超宽行）。
+
+        回归：修复前省略提示行「… 前 N 行省略」未按内宽截断，width≤16 时
+        提示文本（宽 18）撑破卡片边框（超宽行显示错乱）。
+        """
+        for width in (20, 16, 14, 12, 10, 8, 6):
+            m = _model()
+            m.width = width
+            m.open_tool_box("t1", "bash", "make build")
+            for i in range(50):
+                m.append_tool_output("t1", f"line{i}-" + "y" * 20)
+            m.close_tool_box("t1", True)
+            # 省略提示已触发
+            assert m.blocks[-1].extra.get("_bash_omitted_lines", 0) > 0
+            # 卡片所有行宽度 ≤ 终端宽度（无撑破边框的超宽行）
+            for i, ln in enumerate(m.committed_lines):
+                assert ln.width <= width, (
+                    f"width={width} committed_lines[{i}] 宽度 {ln.width} 超宽: {ln.plain!r}"
+                )
+
     def test_tool_summary_closes_open_box(self):
         m = _model()
         apply_cmd(m, ToolOpenCmd(tool_name="x", tool_id="t1"))
