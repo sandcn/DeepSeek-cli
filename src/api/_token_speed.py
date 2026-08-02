@@ -153,9 +153,11 @@ class _TokenSpeedTracker:
                 self._last_snapshot_total = _total
                 self._last_snapshot_time = now
 
-            # 清理超出 1 秒的旧记录
+            # 清理超出 1 秒的旧记录（保留 ≥2 条——最新 + 参考；修复前 `> 1`
+            # 在 1s 边界把参考记录剪掉（now-1.0 浮点略大于旧记录时间）→ 只剩
+            # 最新一条 → 恒 0.0。保留参考后按窗口内 delta 计算实时速度。）
             cutoff = now - 1.0
-            while len(self._speed_records) > 1 and self._speed_records[0][0] < cutoff:
+            while len(self._speed_records) > 2 and self._speed_records[0][0] < cutoff:
                 self._speed_records.popleft()
 
             if len(self._speed_records) < 2:
@@ -190,7 +192,9 @@ class _TokenSpeedTracker:
                 self._last_snapshot_total = total
                 self._last_snapshot_time = now
             cutoff = now - 1.0
-            while len(self._speed_records) > 1 and self._speed_records[0][0] < cutoff:
+            # 保留 ≥2 条参考记录（与 per_second_speed() 一致修复——1s 边界
+            # 剪枝误删参考导致恒 0）
+            while len(self._speed_records) > 2 and self._speed_records[0][0] < cutoff:
                 self._speed_records.popleft()
             if len(self._speed_records) >= 2:
                 old_ts, old_total = self._speed_records[0]

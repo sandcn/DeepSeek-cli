@@ -53,14 +53,15 @@ class AnsiStreamRenderer:
         self._pipeline.add_filter(CodeBlockBatcher())
         self._pipeline.add_filter(HeadingAnchorFilter(collect_toc=True))
         self._pipeline.add_filter(TokenStreamOptimizer())
-        self._engine = AnsiRenderEngine(code_theme=code_theme)
+        self._engine = AnsiRenderEngine(code_theme=code_theme, width=width)
         self._lines: list[AnsiLine] = []
         self._closed = False
         self._width = width
 
     def set_width(self, width: int) -> None:
-        """更新终端宽度（TOC 边框用）。"""
+        """更新终端宽度（TOC 边框 + 表格宽度自适应用）。"""
         self._width = width
+        self._engine.set_width(width)
 
     def write(self, text: str) -> None:
         """流式写入内容块（解析 + 渲染 + 追加）。"""

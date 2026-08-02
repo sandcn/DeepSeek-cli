@@ -10,8 +10,8 @@
     以 status_bar 规范为准；_subagent_panel 旧 ``m}s{:.0f}s``（如 ``15m30s``）
     统一为 ``15:30``，记录为有意的观感变更。
   - ``format_tokens``：≥1M ``x.xM``；≥1k ``x.xk``；否则原样数字。
-  - ``format_speed``：≤0 返回 ``-``；≥1M ``x.xM/s``；≥1k ``x.xk/s``；
-    ≥100 ``x/s``；≥1 ``x.x/s``；否则 ``x.xx/s``。
+  - ``format_speed``：≤0 返回 ``-``；≥1M ``x.xMt/s``；≥1k ``x.xkt/s``；
+    ≥100 ``xt/s``；≥1 ``x.xt/s``；否则 ``x.xxt/s``（统一 tok/s 显示）。
 
 依赖约束：仅标准库，不依赖任何父包模块（可独立导入）。
 """
@@ -56,25 +56,25 @@ def format_tokens(n: int) -> str:
 
 
 def format_speed(s: float) -> str:
-    """格式化速度（token/s）。
+    """格式化速度（tok/s，统一 ``t/s`` 显示）。
 
-    ≤0 → ``-``（无速度）；≥1M → ``x.xM/s``；≥1k → **整数 k 值 + k/s
-    （``.0f`` 舍入）**；≥100 → ``x/s``；≥1 → ``x.x/s``；否则 ``x.xx/s``。
+    ≤0 → ``-``（无速度）；≥1M → ``x.xMt/s``；≥1k → **整数 k 值 + kt/s
+    （``.0f`` 舍入）**；≥100 → ``xt/s``；≥1 → ``x.xt/s``；否则 ``x.xxt/s``。
 
-    P3-10：docstring 与实现对齐——≥1k 分支为 ``{:.0f}k/s``（整数舍入，
-    如 1500 → ``2k/s``），非 ``x.xk/s``。
+    P3-10：docstring 与实现对齐——≥1k 分支为 ``{:.0f}kt/s``（整数舍入，
+    如 1500 → ``2kt/s``）。
     """
     if s <= 0:
         return "-"
     if s >= 1_000_000:
-        return f"{s / 1_000_000:.1f}M/s"
+        return f"{s / 1_000_000:.1f}Mt/s"
     elif s >= 1_000:
-        return f"{s / 1_000:.0f}k/s"
+        return f"{s / 1_000:.0f}kt/s"
     elif s >= 100:
-        return f"{s:.0f}/s"
+        return f"{s:.0f}t/s"
     elif s >= 1:
-        return f"{s:.1f}/s"
-    return f"{s:.2f}/s"
+        return f"{s:.1f}t/s"
+    return f"{s:.2f}t/s"
 
 
 __all__ = ["format_duration", "format_tokens", "format_speed"]

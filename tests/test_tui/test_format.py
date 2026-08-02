@@ -66,11 +66,11 @@ class TestFormatSpeed:
         assert format_speed(-1) == "-"
 
     def test_slow(self):
-        assert format_speed(0.25) == "0.25/s"
+        assert format_speed(0.25) == "0.25t/s"
 
     def test_units(self):
-        assert format_speed(1) == "1.0/s"
-        assert format_speed(50.5) == "50.5/s"
-        assert format_speed(100) == "100/s"
-        assert format_speed(1500) == "2k/s"
-        assert format_speed(1_000_000) == "1.0M/s"
+        assert format_speed(1) == "1.0t/s"
+        assert format_speed(50.5) == "50.5t/s"
+        assert format_speed(100) == "100t/s"
+        assert format_speed(1500) == "2kt/s"
+        assert format_speed(1_000_000) == "1.0Mt/s"

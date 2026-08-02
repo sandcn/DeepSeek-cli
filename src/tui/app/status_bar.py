@@ -31,6 +31,7 @@ from src.tui.app._theme import time_glow, _S_ACCENT, _S_ACCENT_BOLD, _S_DIM, _S_
 # 方向C 步骤4：_format_duration 唯一真源在 src/tui/_format.py（Layer 0）；
 # 模块级 re-export 保持 patch("src.tui.app.status_bar._format_duration") 路径有效。
 from src.tui._format import format_duration as _format_duration
+from src.tui._format import format_speed as _format_speed
 
 _S_TOKEN = Style(fg=68)
 _S_SPEED = Style(fg=214)
@@ -118,8 +119,8 @@ def _build_status_runs(model, dot_elapsed: float = 0.0) -> list[StyledRun]:
         tok = f"{total / 1000:.1f}k" if total >= 1000 else str(total)
         parts.append(StyledRun(f"{tok}t", _S_TOKEN))
     if speed > 0:
-        speed_str = f"{speed:.1f}" if speed >= 1 else f"{speed:.2f}"
-        parts.append(StyledRun(f"{speed_str}t/s", _S_SPEED))
+        # 单一真源：format_speed（subagent 卡与状态栏统一 tok/s 显示）
+        parts.append(StyledRun(_format_speed(speed), _S_SPEED))
 
     if not parts:
         return model_part

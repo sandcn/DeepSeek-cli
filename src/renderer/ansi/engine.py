@@ -25,11 +25,17 @@ class AnsiRenderEngine:
 
     Args:
         code_theme: pygments 代码高亮主题名。
+        width: 终端宽度（表格宽度自适应；可由 set_width 更新）。
     """
 
-    def __init__(self, code_theme: str = "monokai"):
+    def __init__(self, code_theme: str = "monokai", width: int = 80):
         self._code_theme = code_theme
+        self._width = width
         self._reset_state()
+
+    def set_width(self, width: int) -> None:
+        """更新终端宽度（表格渲染用）。"""
+        self._width = width
 
     def _reset_state(self) -> None:
         """重置流式缓冲状态。"""
@@ -64,7 +70,7 @@ class AnsiRenderEngine:
             if t == TokenType.EMPTY_LINE:
                 return blocks.render_empty_line(token)
             if t == TokenType.TABLE:
-                return _table.render_table(token)
+                return _table.render_table(token, self._width)
 
             # ── 流式块 ──
             if t == TokenType.CODE_BLOCK:
