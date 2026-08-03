@@ -32,6 +32,7 @@ from .fiber import (
     EffectHook,
     MemoHook,
     InputHook,
+    SyncStoreHook,
     Context,
     HookNode,
 )
@@ -851,6 +852,58 @@ def useStderr() -> dict:
     return {"stderr": stderr, "write": write}
 
 
+# ═══════════════════════════════════════════════════════════
+# useSyncExternalStore（React 18 useSyncExternalStore 等价物）
+# ═══════════════════════════════════════════════════════════
+
+
+def useSyncExternalStore(
+    subscribe: Callable[[Callable[[], None]], Any],
+    get_snapshot: Callable[[], Any],
+    get_server_snapshot: Callable[[], Any] | None = None,
+) -> Any:
+    """React 18 ``useSyncExternalStore`` 等价物（完善 react ink）。
+
+    让组件订阅外部 store（模型/事件源），store 变化时触发组件重渲染并返回
+    最新快照。典型用途：组件直接订阅 AppModel / DisplayEventBus / 外部数据源，
+    解耦于 props 逐层传递。
+
+    语义：
+      - 首次挂载时调用 ``subscribe(listener)`` 订阅（``listener`` 触发组件
+        重渲染）；返回的清理函数保存，组件卸载时调用取消订阅。
+      - 每次渲染读取 ``get_snapshot()`` 快照并缓存。
+      - ``get_server_snapshot`` 参数接受但忽略（终端渲染无服务端/客户端水合
+        概念，React 语义中仅 SSR 使用）。
+
+    与 React 差异（文档注明）：无并发渲染特性（tearing 检测/并发快照）——
+    本框架单线程渲染，store 变化经 listener 同步触发重渲染，无 tearing 窗口。
+
+    Args:
+        subscribe: ``(listener) -> cleanup_fn | None`` 订阅函数。
+        get_snapshot: ``() -> snapshot`` 快照读取函数。
+        get_server_snapshot: 服务端快照（忽略，保留签名兼容）。
+
+    Returns:
+        当前快照值。
+    """
+    hook = _next_hook(SyncStoreHook, None)
+    hook.subscribe = subscribe
+    hook.get_snapshot = get_snapshot
+    if not hook.subscribed:
+        hook.subscribed = True
+        try:
+            cleanup = subscribe(lambda: _schedule())
+            hook.cleanup = cleanup if callable(cleanup) else None
+        except Exception:
+            _logger.debug("useSyncExternalStore 订阅异常", exc_info=True)
+            hook.cleanup = None
+    try:
+        hook.snapshot = get_snapshot()
+    except Exception:
+        _logger.debug("useSyncExternalStore 快照读取异常", exc_info=True)
+    return hook.snapshot
+
+
 __all__ = [
     "use_state",
     "use_reducer",
@@ -872,6 +925,7 @@ __all__ = [
     "useStdin",
     "useStdout",
     "useStderr",
+    "useSyncExternalStore",
     "set_schedule_callback",
     "set_input_router_callback",
     "set_app_control",

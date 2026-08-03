@@ -23,6 +23,7 @@ from .fiber import (
     StateHook,
     EffectHook,
     InputHook,
+    SyncStoreHook,
     _MISSING,
 )
 from .element import Element
@@ -647,11 +648,20 @@ class Reconciler:
         for hook in fiber.hooks:
             if isinstance(hook, EffectHook) and hook.destroy is not None:
                 self._pending_destroys.append((fiber, hook))
+            elif isinstance(hook, SyncStoreHook) and hook.cleanup is not None:
+                self._pending_destroys.append((fiber, hook))
 
     # ── effects 提交 ────────────────────────────────
 
     def _run_destroy(self, fiber: Fiber, hook: EffectHook) -> None:
         try:
+            if isinstance(hook, SyncStoreHook):
+                # useSyncExternalStore 卸载：取消外部 store 订阅
+                if hook.cleanup is not None:
+                    hook.cleanup()
+                hook.cleanup = None
+                hook.subscribed = False
+                return
             if hook.destroy is not None:
                 hook.destroy()
             hook.destroy = None

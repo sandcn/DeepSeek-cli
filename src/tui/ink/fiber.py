@@ -125,8 +125,27 @@ class Context:
     Provider: str = ""
 
 
+@dataclass
+class SyncStoreHook:
+    """useSyncExternalStore hook 节点（React 18 useSyncExternalStore 等价物）。
+
+    Attributes:
+        subscribe: 外部 store 订阅函数 ``(listener) -> cleanup_fn``。
+        get_snapshot: 快照读取函数 ``() -> snapshot``。
+        snapshot: 最近一次读取的快照值（跨渲染缓存）。
+        cleanup: 订阅清理函数（卸载时调用取消订阅）。
+        subscribed: 是否已订阅（防止重复订阅）。
+    """
+
+    subscribe: Any = None
+    get_snapshot: Any = None
+    snapshot: Any = None
+    cleanup: Any = None
+    subscribed: bool = False
+
+
 #: hook 节点联合类型（Python 3.9 兼容：不用 `X | Y` 运行时求值）。
-HookNode = Union[StateHook, RefHook, EffectHook, MemoHook, InputHook]
+HookNode = Union[StateHook, RefHook, EffectHook, MemoHook, InputHook, SyncStoreHook]
 
 
 @dataclass
@@ -240,6 +259,7 @@ __all__ = [
     "EffectHook",
     "MemoHook",
     "InputHook",
+    "SyncStoreHook",
     "Context",
     "HookNode",
     "Fiber",
