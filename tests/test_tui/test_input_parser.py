@@ -255,6 +255,26 @@ class TestCsiUModifier1:
         assert InputParser._dispatch_csi([49, 1], 'u').char == "1"
         assert InputParser._dispatch_csi([32, 1], 'u').char == " "
 
+    def test_modifier1_backspace_delete_escape(self):
+        """CSI u 增强键盘协议下 Backspace(8)/Delete(127)/Esc(27) 映射。
+
+        kitty/wezterm 等启用键盘协议（modifyOtherKeys）的终端发送
+        ``\\x1b[8;1u``/``\\x1b[127;1u``/``\\x1b[27;1u``——修复前落入
+        ``csi_u`` no-op 被静默丢弃，退格/删除/取消均失效。
+        """
+        ev = InputParser._dispatch_csi([8, 1], 'u')
+        assert ev.kind == "backspace"
+        assert ev.modifier == 1
+        assert ev.keycode == 8
+        ev = InputParser._dispatch_csi([127, 1], 'u')
+        assert ev.kind == "delete"
+        assert ev.modifier == 1
+        assert ev.keycode == 127
+        ev = InputParser._dispatch_csi([27, 1], 'u')
+        assert ev.kind == "escape"
+        assert ev.modifier == 1
+        assert ev.keycode == 27
+
     def test_modifier1_unknown_kept_csi_u(self):
         """未知非可打印 keycode modifier=1 仍走 csi_u（router 可消费，不静默丢）。"""
         ev = InputParser._dispatch_csi([999, 1], 'u')

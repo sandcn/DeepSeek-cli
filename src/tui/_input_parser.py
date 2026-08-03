@@ -300,6 +300,17 @@ class InputParser:
                     return KeyEvent(kind="home", modifier=1, keycode=keycode, raw=raw)
                 if keycode == 4:
                     return KeyEvent(kind="end", modifier=1, keycode=keycode, raw=raw)
+                # ★ CSI u 增强键盘协议下 Backspace/Delete/Esc 映射（review 方向）：
+                #   kitty/wezterm 等启用键盘协议（modifyOtherKeys）的终端发送
+                #   ``\x1b[8;1u``（Backspace）/``\x1b[127;1u``（Delete）/
+                #   ``\x1b[27;1u``（Esc）——修复前落入 ``csi_u`` no-op 被静默
+                #   丢弃，退格/删除/取消均失效。
+                if keycode == 8:
+                    return KeyEvent(kind="backspace", modifier=1, keycode=keycode, raw=raw)
+                if keycode == 127:
+                    return KeyEvent(kind="delete", modifier=1, keycode=keycode, raw=raw)
+                if keycode == 27:
+                    return KeyEvent(kind="escape", modifier=1, keycode=keycode, raw=raw)
                 if keycode == 57417:   # ↑
                     return KeyEvent(kind="arrow_up", modifier=1, keycode=keycode, raw=raw)
                 if keycode == 57418:   # ↓
