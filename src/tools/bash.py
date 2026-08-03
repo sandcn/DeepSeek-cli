@@ -276,7 +276,7 @@ class BashFunc(Func):
                     "【边界信息】"
                     "\n- 工作目录(cwd)不存在时返回明确错误，不会在错误目录下执行"
                     "\n- 禁止运行交互式命令（vim/top/less等），会导致进程挂起"
-                    "\n- 输出限制：超过1000行后截断，末尾添加截断标记"
+                    "\n- 输出限制：超过1000行后截断，仅保留最后1000行（最新内容）"
                     "\n\n"
                     "【Android (Termux) 兼容】"
                     "\n- 不要在命令里使用 `timeout` 系统命令（行为差异可能导致孤儿进程），"
@@ -312,7 +312,7 @@ class BashFunc(Func):
                                 "输出处理："
                                 "\n- stdout 和 stderr 自动拼接为单一字符串返回（stderr 追加在 stdout 之后）"
                                 "\n- 无输出时返回 '(无输出)'"
-                                "\n- 输出截断：超过1000行后截断，末尾添加截断标记"
+                                "\n- 输出截断：超过1000行后截断，仅保留最后1000行（最新内容）"
                             )
                         },
                         "cwd": {
@@ -395,12 +395,13 @@ class BashFunc(Func):
 
     # ── 输出截断 ────────────────────────────────────────
     # 返回给大模型的输出超过 MAX_LINES 行时自动截断，
+    # 只保留尾部最新内容（大模型更需要命令最新的输出/错误信息），
     # 避免大模型上下文窗口被超长输出占满，影响推理质量。
     MAX_LINES = 1000
 
     @staticmethod
     def _truncate_output(output: str, max_lines: int | None = None) -> str:
-        """将输出截断到指定行数（默认 MAX_LINES 行），超出时追加截断标记。
+        """将输出截断到指定行数（默认 MAX_LINES 行），超出时保留尾部最新行并追加截断标记。
 
         以 '(' 开头的输出视为错误/提示信息（如 "(无输出)"），不截断。
         """
@@ -410,9 +411,9 @@ class BashFunc(Func):
             return output
         lines = output.split('\n')
         if len(lines) > max_lines:
-            logger.debug("输出截断: %d 行 -> %d 行", len(lines), max_lines)
-            return '\n'.join(lines[:max_lines]) + (
-                f'\n...(输出已截断：超过 {max_lines} 行，仅展示前 {max_lines} 行)'
+            logger.debug("输出截断: %d 行 -> %d 行（保留尾部最新）", len(lines), max_lines)
+            return '\n'.join(lines[-max_lines:]) + (
+                f'\n...(输出已截断：超过 {max_lines} 行，仅展示最后 {max_lines} 行)'
             )
         return output
 
