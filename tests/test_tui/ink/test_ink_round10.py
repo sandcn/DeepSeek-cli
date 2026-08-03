@@ -210,6 +210,66 @@ class TestToolCardNarrowWidthInvariant:
             assert wcswidth_simple(p) <= 6, f"width=6 行超宽: {p!r}"
 
 
+class TestHeadAnimationDoesNotRewriteCommitted:
+    """方向4 渲染优化回归 — 头部动画（标题栏呼吸）不引发 committed 可见区重写。
+
+    修复前：delta!=0（流式增长）+ 标题栏呼吸色变化（i=0）时，rewrite_start
+    = max(0, screen_offset) 从可见区顶部连续重写到末尾——committed 历史
+    可见区每帧全量重写（大文档 + 流式 = 高 CPU）。修复后：位移锚点 +
+    头部差异区间，committed 可见区零重写。
+    """
+
+    def _render_two_frames(self, width=80, height=30, commit_growth=2):
+        import io
+        from src.tui.app.model import AppModel, StatusState
+        from src.tui.app.app import App
+        from src.tui.ink.renderer import InkRenderer
+        from src.tui.ink.reconciler import Reconciler
+        from src.tui.ink.components import render_frame
+        from src.tui.ink import h
+        from src.tui.ink.output import Line
+        from src.tui.core.style import Style
+        from src.tui.app._theme import _glow_bucket
+        import src.tui.app.header as H
+
+        model = AppModel()
+        model.width = width
+        model.status = StatusState(model_name="m", status_active=False, cpu=10, mem=20)
+        model.committed_lines = [Line.of(f"history line {i}", Style(fg=244)) for i in range(50)]
+        r = Reconciler()
+        root = r.create_root()
+        renderer = InkRenderer(stream=io.StringIO(), height=height)
+
+        # 帧1：标题栏桶 t1
+        H.time_glow = lambda lo, hi, period: _glow_bucket(lo, hi, period, 1000)
+        el = h(App, {"model": model, "width": width})
+        r.render(root, el, width, height)
+        renderer.render(render_frame(root, width))
+        renderer._stream.seek(0)
+        renderer._stream.truncate()
+
+        # 帧2：标题栏桶 t2（颜色变化）+ committed 增长
+        H.time_glow = lambda lo, hi, period: _glow_bucket(lo, hi, period, 1005)
+        for k in range(commit_growth):
+            model.committed_lines.append(Line.of(f"new history {k}", Style(fg=244)))
+        el = h(App, {"model": model, "width": width})
+        r.render(root, el, width, height)
+        renderer.render(render_frame(root, width))
+        val = renderer._stream.getvalue()
+        H.time_glow = lambda lo, hi, period: _glow_bucket(
+            lo, hi, period, int(__import__("time").monotonic() / 0.1),
+        )
+        return val
+
+    def test_committed_middle_not_rewritten(self):
+        """标题栏变化 + committed 增长：committed 中部行零重写。"""
+        val = self._render_two_frames()
+        assert "history line 20" not in val, (
+            f"committed 中部行不应被头部动画引发重写: {val!r}"
+        )
+        assert "new history 0" in val, f"新增 committed 行应写入: {val!r}"
+
+
 class TestBorderStyleVariants:
     """borderStyle 变体扩展（classic / dashed）。"""
 

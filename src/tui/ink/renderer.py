@@ -187,10 +187,35 @@ class InkRenderer:
 
         # ★ 有效重写起点（delta!=0 时为首差异行钳到可见区边界——离屏部分不可达
         #   跳过；delta==0 时用首差异行）。
+        # ★ 方向4 优化（delta!=0 头部动画不重写 committed）：delta!=0 时用
+        #   「头部差异区间 + 位移区」替代「从有效起点连续重写整个可见区」——
+        #   - 头部差异区间：共有行中内容不同的行（[start, end) 且 end <= 位移
+        #     锚点），逐区间重写（与 delta==0 相同语义）；
+        #   - 位移区：从位移锚点（_find_tail_anchor）连续重写到新帧末尾——
+        #     新增/删除行 + 尾部整体位移行（终端无 insert/delete-line，位移
+        #     行必须重写，由末尾换行驱动滚动）。
+        #   头部动画（标题栏呼吸色 0.1s 桶变化）不再引发 committed 历史可见区
+        #   全量重写：流式增长期间每帧重写范围从 O(可见区) 降为 O(头部差异 +
+        #   位移区)。
         if delta != 0 and self._height > 0:
-            rewrite_start = max(i, self._screen_offset(prev_h))
+            vis_start = self._screen_offset(prev_h)
+            anchor = self._find_tail_anchor(self._prev, frame, delta)
+            # 头部差异区间（锚点之前；钳到可见区边界）
+            head_runs: list[tuple[int, int]] = []
+            for rs, re_ in self._diff_runs(
+                self._prev, frame, min(prev_h, new_h), start=i,
+            ):
+                if rs >= anchor:
+                    break  # 锚点之后的差异由位移区覆盖
+                rs = max(rs, vis_start)
+                re_ = min(re_, anchor)
+                if re_ > rs:
+                    head_runs.append((rs, re_))
+            shift_start = max(anchor, vis_start)
         else:
-            rewrite_start = i
+            head_runs = []
+            vis_start = 0
+            shift_start = i
 
         # ★ 差异区间收集（方向3 性能）：仅 delta==0（等高帧）需要差异区间——
         #   delta!=0（流式增长/缩短帧）走下方连续重写路径，区间收集纯浪费
@@ -208,9 +233,13 @@ class InkRenderer:
             rewrite_count = sum(end - start for start, end in runs)
         else:
             runs = []
-            # ★ PERF-4 单帧重写行数上限（delta!=0）：从有效起点重写至末尾 +
+            # ★ PERF-4 单帧重写行数上限（delta!=0）：头部差异区间 + 位移区 +
             #   高度变化（delta<0 时清除残留行）——病态大重写降级防冻结 UI。
-            rewrite_count = (new_h - min(rewrite_start, new_h)) + max(0, prev_h - new_h)
+            rewrite_count = (
+                sum(end - start for start, end in head_runs)
+                + max(0, new_h - min(shift_start, new_h))
+                + max(0, prev_h - new_h)
+            )
         if rewrite_count > _MAX_REWRITE_ROWS:
             _logger.warning(
                 "单帧重写行数 %d 超上限 %d，降级为全量 clear + 全量重建",
@@ -297,14 +326,34 @@ class InkRenderer:
                     buf.write("\n")
                     current_row = self._advance_row(current_row)
         else:
-            if self._height <= 0 or rewrite_start < new_h:
-                target_row = self._clamp(self._to_screen(rewrite_start + 1, prev_h))
+            # ★ 方向4 优化（delta!=0）：头部差异区间逐区间重写 + 位移区连续
+            #   重写——替代旧「从 rewrite_start 连续重写整个可见区」。头部动画
+            #   （标题栏呼吸）只改头部区间；committed 历史可见区（锚点之前、
+            #   非差异行）零重写。
+            #   重写目标一律按 **prev 帧偏移** 换算（终端缓冲此刻仍是 prev
+            #   布局，只能经底部写行触发滚动）。
+            for start, end in head_runs:
+                target_row = self._clamp(self._to_screen(start + 1, prev_h))
                 if current_row > target_row:
                     buf.write(cursor_up(current_row - target_row))
                 elif current_row < target_row:
                     buf.write(cursor_down(target_row - current_row))
                 current_row = target_row
-                for idx in range(rewrite_start, new_h):
+                for idx in range(start, end):
+                    buf.write("\r")
+                    buf.write(frame.render_line(idx))
+                    buf.write(_CLEAR_EOL)
+                    buf.write("\n")
+                    current_row = self._advance_row(current_row)
+            # 位移区（锚点起连续重写到新帧末尾）
+            if self._height <= 0 or shift_start < new_h:
+                target_row = self._clamp(self._to_screen(shift_start + 1, prev_h))
+                if current_row > target_row:
+                    buf.write(cursor_up(current_row - target_row))
+                elif current_row < target_row:
+                    buf.write(cursor_down(target_row - current_row))
+                current_row = target_row
+                for idx in range(shift_start, new_h):
                     buf.write("\r")
                     buf.write(frame.render_line(idx))
                     buf.write(_CLEAR_EOL)
@@ -414,6 +463,38 @@ class InkRenderer:
             if x is not y and x.runs != y.runs:
                 return False
         return True
+
+    def _find_tail_anchor(self, prev: Frame, frame: Frame, delta: int) -> int:
+        """从文档末尾向前找尾部位移锚点（方向4 优化）。
+
+        旧帧 ``[j, prev_h)`` 与新帧 ``[j+delta, new_h)`` 逐行相同（身份短路 +
+        runs 值相等）时，j 为位移锚点——高度差发生在 j 之后，尾部内容整体
+        位移 delta 行。头部差异（j 之前，如标题栏呼吸色变化）与尾部位移
+        （j 之后）分开处理：仅重写头部差异区间 + 从锚点起的位移区，跳过
+        锚点之前的未变化行（committed 历史可见区不再被头部动画引发全量
+        重写——流式期间每帧重写范围从 O(可见区) 降为 O(头部差异 + 位移区)）。
+
+        Args:
+            prev: 上一帧。
+            frame: 新帧。
+            delta: 高度差（new_h - prev_h，可为负）。
+
+        Returns:
+            位移锚点 j（0-based，范围 [0, prev_h]）；无相同尾部时返回 0。
+        """
+        p = prev.lines
+        n = frame.lines
+        j = prev.height
+        while j > 0:
+            old_line = p[j - 1]
+            new_idx = j - 1 + delta
+            if 0 <= new_idx < len(n):
+                new_line = n[new_idx]
+                if old_line is new_line or old_line.runs == new_line.runs:
+                    j -= 1
+                    continue
+            break
+        return j
 
     def _write_full(self, frame: Frame, emit_start: int = 0) -> None:
         """首帧/重置后：全量写入文档。
