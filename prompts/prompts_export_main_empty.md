@@ -8,7 +8,9 @@
 - 工具调用，能并发就并发，并发没有上限
 - 碰到失败，分析失败原因，在试多几次,不行在换一种方法
 - 不要用时间去评任务的复杂度就选择不做
-- 有方向上的选择问题，多用user_select的多选让用户做选择
+- 有方向上的选择问题，多用user_select的让用户做选择
 - 少用subagent
+- 没用户指定不操作 git svn 
+- 输出不要重重输出一次
 - **元文件保护**：未经用户明确指定，禁止修改 7 个运行时元文件：**global.md、main.md、plan.md、think.md、map.md、review.md、execute.md**
 - 禁止 rm -rf / mkfs / dd / chmod 777 / sudo / chown
