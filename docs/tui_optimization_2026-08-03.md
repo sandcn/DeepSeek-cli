@@ -341,3 +341,40 @@ bug（其余为测试时序误用/防御性改进/保留设计）。
 - 压力验证：流式增长/缩短交替、极端 H=1/H=2、session render+place_cursor 交替，
   全程 0 次 clear_screen。
 - 全部测试通过：**2069 passed**（原 2068 + 新增 1）。
+
+---
+
+## 第十二轮（commit 待定）— 消除 subagent 写文件时的「全量刷新」闪烁
+
+### 问题
+subagent 写文件（write_file/update_file）时，TUI 每次写一个文件都近似整屏重写、
+视觉闪烁。复现：subagent 连续写 10 个 80 行 diff 的文件，文档高度从 45 行爆炸到
+880 行，每帧重写 113 行（远超 30 行屏幕），并触发「单帧重写行数超上限」警告。
+
+### 根因（BUG-63）
+subagent 工具执行期间，``FileToolBase.display()`` → ``Func._publish_tool_text()``
+发布 ``ToolOutputChunkEvent(source="agent")``（硬编码，与主 agent 工具一致）。
+但 subagent 的 contextvar ``get_current_tool_id()`` 为 ``self.label``（``agent-N``）——
+因此事件 label/tool_id 以 ``agent-`` 前缀标记。
+
+``EventDispatcher._on_tool_output`` 修复前只按 ``source`` 过滤（``source="agent"``
+通过），将 subagent 输出误判为主 agent 工具输出 → ``append_tool_output`` 兜底创建
+**永不关闭**的工具 box（subagent 的 ``ToolDoneEvent`` source="" 不触发
+``ToolCloseCmd``）→ 主聊天区不断累积大 diff 开放 box → 文档高度爆炸 + 每帧重写量
+逼近整屏（视觉上"全量刷新闪烁"）。
+
+### 修复
+``_dispatcher._on_tool_output`` 增加 subagent label 过滤：``event.label`` /
+``event.tool_id`` 以 ``agent-`` 前缀（``_is_subagent_label``）时丢弃——
+subagent 输出由 subagent 面板自渲染，不进主内容 box。
+
+主 agent 工具输出（tool_id=``call_xxx``）与 ``assistant`` 回退均不以 ``agent-``
+开头，行为不变。
+
+### 验证
+- 复现脚本：subagent 连续写 10 个 80 行 diff 文件——文档高度稳定 50 行、
+  每帧重写 1-6 行、总重写 1527 → 174、tool_boxes 无累积（修复前 10 个
+  未关闭 box）、未关闭工具块 0。
+- 新增测试 ``test_dispatcher_filters_subagent_label_with_agent_source``
+  （label=agent-N 丢弃 / tool_id=agent-N 丢弃 / call_main 正常进入）。
+- 全部 TUI 测试通过：**1721 passed**。

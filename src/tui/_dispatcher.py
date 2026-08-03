@@ -234,6 +234,19 @@ class EventDispatcher:
         # 仅主 agent 工具输出进入主内容 box；subagent 输出由面板自渲染
         if event.source != "agent":
             return
+        # ★ BUG-63（subagent 写文件全量刷新）：subagent 工具执行期间
+        #   ``_publish_tool_text``/``SharedCapture.write`` 统一发布
+        #   ``ToolOutputChunkEvent(source="agent")``，但 subagent 上下文
+        #   ``get_current_tool_id()`` 为 ``self.label``（``agent-N``）——
+        #   label/tool_id 以 ``agent-`` 前缀标记。修复前这些事件被误判为主
+        #   agent 工具输出 → ``append_tool_output`` 兜底创建**永不关闭**的
+        #   工具 box（subagent 的 ToolDoneEvent source="" 不触发 close），
+        #   subagent 每次写文件主聊天区累积一个大 diff 开放 box → 文档高度
+        #   爆炸、每帧重写量逼近整屏（视觉上"全量刷新闪烁"）。
+        #   修复：subagent label（``agent-N``）的工具输出不进主内容 box
+        #   （subagent 面板自渲染）。
+        if self._is_subagent_label(event.label) or self._is_subagent_label(event.tool_id):
+            return
         text = event.text.rstrip("\n")
         if text:
             tool_id = event.tool_id or event.label

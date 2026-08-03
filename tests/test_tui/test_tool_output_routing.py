@@ -106,6 +106,42 @@ class TestDispatcherRouting:
         ))
         assert pushed == []
 
+    def test_dispatcher_filters_subagent_label_with_agent_source(self):
+        """BUG-63：subagent 工具输出（source=agent 但 label=agent-N）不进主内容 box。
+
+        subagent 工具执行期间 ``_publish_tool_text``/``SharedCapture.write``
+        统一发布 ``ToolOutputChunkEvent(source="agent")``，但 subagent 上下文
+        ``get_current_tool_id()`` 为 ``self.label``（``agent-N``）。修复前这些
+        事件被误判为主 agent 输出 → ``append_tool_output`` 兜底创建永不关闭的
+        工具 box，subagent 每次写文件主聊天区累积大 diff 开放 box（文档爆炸 +
+        全量刷新闪烁）。
+        """
+        from src.tui._dispatcher import EventDispatcher
+        from src.tui.events.event_types import ToolOutputChunkEvent
+
+        pushed = []
+        d = EventDispatcher(push_cmd=pushed.append)
+        # label=agent-N（subagent 工具输出）→ 丢弃，不进主聊天区
+        d._on_tool_output(ToolOutputChunkEvent(
+            label="agent-1", tool_id="agent-1", text="sub diff\n", source="agent",
+        ))
+        assert pushed == []
+
+        # tool_id=agent-N（仅 tool_id 是 subagent label）→ 同样丢弃
+        d._on_tool_output(ToolOutputChunkEvent(
+            label="agent-1", tool_id="agent-1", text="sub diff\n", source="agent",
+        ))
+        assert pushed == []
+
+        # 主 agent 工具输出（tool_id=call_xxx）→ 正常进入主聊天区
+        d._on_tool_output(ToolOutputChunkEvent(
+            label="call_main", tool_id="call_main", text="main diff\n", source="agent",
+        ))
+        assert len(pushed) == 1
+        from src.tui._const import ToolOutputCmd
+        assert isinstance(pushed[0], ToolOutputCmd)
+        assert pushed[0].tool_id == "call_main"
+
 
 class TestPrintToTerminalContext:
     """子步骤4 — print_to_terminal 从 contextvar 解析工具归属。"""
