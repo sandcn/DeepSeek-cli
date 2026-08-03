@@ -237,8 +237,8 @@ class CompletionEngine:
         words = text.split(" ")
         last_word = words[-1] if words else ""
 
-        if last_word.startswith("/"):
-            # ── 命令补全 ──
+        if last_word.startswith("/") and text.startswith("/"):
+            # ── 命令补全（行首命令 + / 开头的词） ──
             items = self._complete_command(last_word)
             if items:
                 # 精确匹配已完成命令 → 跳过命令补全，尝试参数补全
@@ -250,8 +250,14 @@ class CompletionEngine:
             # 命令补全无结果时也尝试参数补全
             return self._complete_param(text)
         elif text.startswith("/"):
-            # /xxx yyy → 参数补全
+            # /xxx yyy → 参数补全（行首命令 + 非 / 词）
             return self._complete_param(text)
+        elif last_word.startswith("/"):
+            # ★ 绝对路径补全修复：普通命令后的 / 开头的词（如 ``cd /tmp/fo``、
+            #   ``ls /usr/``）是绝对路径——修复前落入 ``_complete_command``
+            #   （命令注册表无匹配返回 []）→ ``_complete_param``（cd 非参数
+            #   命令返回 []）→ 永远走不到路径补全，Tab 还会插入制表符。
+            return self._complete_path(last_word)
         else:
             # ── 路径补全 ──
             return self._complete_path(last_word)

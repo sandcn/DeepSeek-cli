@@ -678,3 +678,68 @@ class TestCommandDescription:
         assert isinstance(h, str)
         # /clear 已注册且有描述（或至少不抛异常）
         assert get_command_help("/不存在的命令") == ""
+
+
+class TestAbsolutePathCompletion:
+    """绝对路径补全（P1 修复回归）。
+
+    普通命令后的 / 开头词（``cd /tmp/fo``、``ls /usr/``）是绝对路径——
+    修复前落入命令补全（注册表无匹配返回 []）→ 参数补全（cd 非参数命令
+    返回 []）→ 永远走不到路径补全，Tab 还会插入制表符。
+    """
+
+    def test_absolute_path_after_command(self, tmp_path):
+        """``cd <绝对路径前缀>`` → 路径补全（file/dir 项）。"""
+        import os
+        from src.tui._completion_engine import CompletionEngine
+
+        target = tmp_path / "absdir"
+        target.mkdir()
+        (target / "foo.txt").write_text("x")
+        engine = CompletionEngine(commands_source=lambda: ["/help", "/model"])
+
+        prefix = os.path.join(str(target), "fo")
+        items = engine.complete(f"cd {prefix}")
+        types = [i.item_type for i in items]
+        assert "file" in types, f"应返回文件补全项，实际 {types}"
+        assert any("foo.txt" in i.text for i in items)
+
+    def test_absolute_dir_after_command(self, tmp_path):
+        """``ls <绝对目录前缀>/`` → 目录补全。"""
+        import os
+        from src.tui._completion_engine import CompletionEngine
+
+        (tmp_path / "proj").mkdir()
+        engine = CompletionEngine(commands_source=lambda: ["/help"])
+
+        prefix = os.path.join(str(tmp_path), "pro")
+        items = engine.complete(f"ls {prefix}")
+        types = [i.item_type for i in items]
+        assert "dir" in types, f"应返回目录补全项，实际 {types}"
+
+    def test_root_slash_path_after_command(self):
+        """``cd /`` → 根目录路径补全（修复前误返回命令列表）。"""
+        from src.tui._completion_engine import CompletionEngine
+
+        engine = CompletionEngine(commands_source=lambda: ["/help", "/model"])
+        items = engine.complete("cd /")
+        # 不应是命令补全
+        assert not any(i.item_type == "command" for i in items)
+        assert all(i.item_type in ("dir", "file") for i in items)
+
+    def test_command_prefix_still_commands(self):
+        """行首命令 + / 词仍走命令补全（不回归）。"""
+        from src.tui._completion_engine import CompletionEngine
+
+        engine = CompletionEngine(commands_source=lambda: ["/help", "/model"])
+        items = engine.complete("/he")
+        assert items and items[0].item_type == "command"
+
+    def test_command_param_after_slash_word(self):
+        """行首命令 + / 开头的参数词 → 参数补全（如 ``/load /tmp``）。"""
+        from src.tui._completion_engine import CompletionEngine
+
+        engine = CompletionEngine(commands_source=lambda: ["/load"])
+        # /load 参数补全走会话匹配（/tmp 前缀无会话 → 空，不落路径补全）
+        items = engine.complete("/load /tmp")
+        assert not any(i.item_type in ("dir", "file") for i in items)
