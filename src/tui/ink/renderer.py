@@ -111,6 +111,15 @@ class InkRenderer:
         #   首帧/重置后置 True；``_grow_drifted`` 增长时若 doc 仍高于屏幕保持
         #   True、doc 进入屏幕内转 False。
         self._top_aligned: bool = True
+        # ★ 输出历史已回调行数（BUG-65 修复）：``_write_full``（首帧/reset
+        #   (full=True) 全量重写）与增量增长只回调**新增**行——resize 后
+        #   ``reset(full=True)`` 全量重写文档若从 0 行重新回调会把整篇文档
+        #   重复写入输出历史（scrollback 记录翻倍/多倍）。本字段跟踪已回调
+        #   行数：``_write_full`` 经 ``emit_start = min(_history_lines, height)``
+        #   跳过已记录行；``_emit_new_lines`` 更新为 max。软重置
+        #   （reset(full=False)/suspend/full_clear）不清零——历史已记录的行
+        #   不因 TUI 内部重绘重复回调。
+        self._history_lines: int = 0
 
     # ── 屏幕坐标（height>0 时文档高于屏幕的滚动偏移处理） ──────────
 
@@ -224,7 +233,11 @@ class InkRenderer:
     def render(self, frame: Frame) -> None:
         """渲染新帧（最小差异写入）。"""
         if self._prev is None:
-            self._write_full(frame)
+            # ★ BUG-65：首帧（_history_lines==0）全量回调；reset(full=True)
+            #   （resize 后全量重写）只回调**新增**行（跳过已记录历史）——
+            #   修复前 reset 后从 0 行全量回调，整篇文档重复写入输出历史。
+            emit_start = min(self._history_lines, frame.height)
+            self._write_full(frame, emit_start=emit_start)
             self._prev = frame
             self._stream.flush()
             return
@@ -391,13 +404,20 @@ class InkRenderer:
         #   过渡到 new 布局——按 new 偏移写会覆盖未滚动区域。
         #   raw 终端模式下 \n 不归位列 1，每行须前缀 \r。
         # 方向3（缩短闪烁优化）：文档在屏幕内（``_screen_offset==0``，无滚动
-        # 偏移）时缩短走常规 diff 路径（重写 + 清残留）——删字/关闭补全弹窗
-        # 不再全屏 clear 闪烁。文档高于屏幕时原全量 clear+重建（防偏移漂移）
-        # 已替换为增量缩短——不清屏、仅重写可见区变化行。
+        # 偏移）且当前**顶部对齐**（``_top_aligned=True``，无漂移或漂移残留
+        # 位于物理缓冲末尾）时缩短走常规 diff 路径（重写 + 清残留）——删字/
+        # 关闭补全弹窗不再全屏 clear 闪烁。文档高于屏幕时原全量 clear+重建
+        # （防偏移漂移）已替换为增量缩短——不清屏、仅重写可见区变化行。
+        # ★ BUG-66（review 方向，渲染错乱）：**底部对齐**（``_top_aligned==
+        # False``，文档进入屏幕内后的负偏移模型）时物理行 q 显示 doc 行
+        # ``q-drift``——常规 diff 路径假设「物理行 q = doc 行 q」会按错误位置
+        # 重写（文档内容写到物理行 1-4，实际应显示在 2-6 → 内容行丢失/错位，
+        # 如模糊测试 4→5→4 行序列中 frame6 'c0/x0/c2' 与残留行混叠）。修复：
+        # 底部对齐的缩短无条件走 ``_rewrite_drifted``（物理映射路径）。
         if (
             delta < 0
             and self._height > 0
-            and self._screen_offset(prev_h) > 0
+            and (not self._top_aligned or self._screen_offset(prev_h) > 0)
         ):
             # 增量缩短（文档仍高于屏幕或进入屏幕内）：重写可见区变化行 +
             # 清残留/清空行区，不清屏重建（物理缓冲 _buf_h 保持）。
@@ -534,7 +554,17 @@ class InkRenderer:
         buf_h0 = self._buf_h
         buf_top0 = max(0, buf_h0 - height)
         # 顶部对齐：物理行 q → doc q（drift=0）；底部对齐：drift 由缓冲推导。
-        if self._top_aligned:
+        # ★ BUG-64（review 方向，渲染错乱）：记录切换前顶部对齐状态——doc
+        #   进入屏幕内（``new_h+1 <= height``）切换底部对齐时，**旧布局**（顶部
+        #   对齐）drift 恒为 0（物理行 q 直接显示 doc 行 q）。修复前 else 分支
+        #   统一用底部对齐公式 ``buf_h0 - prev_h - 1`` 推导旧行位置——对顶部
+        #   对齐旧布局误判（物理行 q 显示旧 doc q-drift0，实际显示旧 doc q）→
+        #   必要重写被跳过 → 内容行从屏幕丢失。触发路径：常规缩短（``_screen_
+        #   offset(prev_h)==0`` 走常规 diff 路径，物理布局保持顶部对齐）后增长
+        #   进入屏幕内（``_grow_drifted`` 切换底部对齐）——如 4→3→4 行序列中
+        #   中间行 'x0' 消失（模糊测试锁定）。
+        was_top_aligned = self._top_aligned
+        if was_top_aligned:
             if new_h + 1 > height:
                 top_aligned = True
             else:
@@ -549,7 +579,9 @@ class InkRenderer:
             grow_rows = max(0, new_h + 1 - buf_h0)
             buf_h1 = buf_h0 + grow_rows
         else:
-            drift0 = buf_h0 - prev_h - 1  # 增长前漂移
+            # ★ BUG-64：旧布局顶部对齐（was_top_aligned=True）时旧行偏移恒 0
+            #   （物理行 q = doc 行 q）——仅旧布局已底部对齐时才用缓冲推导公式。
+            drift0 = 0 if was_top_aligned else (buf_h0 - prev_h - 1)
             grow_rows = max(0, new_h + 1 - buf_h0)
             buf_h1 = buf_h0 + grow_rows
             drift1 = buf_h1 - new_h - 1   # 增长后漂移
@@ -626,12 +658,8 @@ class InkRenderer:
         self._cursor_row = bottom_row
         self._buf_h = buf_h1
         self._prev = frame
-        try:
-            if self._line_callback is not None:
-                for idx in range(prev_h, new_h):
-                    self._line_callback(frame.render_line(idx) + "\n")
-        except Exception:
-            pass
+        # ★ BUG-65：统一经 _emit_new_lines 回调新增行（维护 _history_lines）
+        self._emit_new_lines(frame, prev_h, new_h)
         self._stream.write(buf.getvalue())
         self._stream.flush()
 
@@ -893,7 +921,19 @@ class InkRenderer:
         self._stream.flush()
 
     def _emit_new_lines(self, frame: Frame, start: int, end: int) -> None:
-        """回调新增行（输出历史跟踪）。"""
+        """回调新增行（输出历史跟踪），并更新已回调行数。
+
+        ``_history_lines`` 记录已通过 line_callback 回调的行数（只增不减）——
+        ★ BUG-65：回调起点钳制到 ``max(start, _history_lines)``——软重置
+        （reset(full=False)/suspend/full_clear 后空帧 diff）与 reset(full=True)
+        （resize 后全量重写）重新渲染同一文档时仅回调**新增**行（行号 >=
+        ``_history_lines``）；修复前全量回调导致整篇文档重复写入输出历史
+        （scrollback 记录翻倍）。
+        """
+        start = max(start, self._history_lines)
+        if end <= start:
+            return
+        self._history_lines = max(self._history_lines, end)
         if self._line_callback is None:
             return
         try:
