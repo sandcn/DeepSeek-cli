@@ -656,9 +656,9 @@ Pipeline 将 Agent 对话循环编排为可插拔中间件链。中间件按注�
 重构终端用户界面渲染层，提升视觉体验与交互流畅度：
 
 - **流式渲染性能优化** ✅ — 降低增量 Markdown 渲染延迟，消除大 Token 输出时的界面卡顿（`src/tui/` 增量流式渲染引擎已实现）
-- **增量渲染（除 resize 全量外均增量）** ✅ — 行级 diff + committed 前缀身份复用 + 位移锚点：头部动画（标题栏呼吸）不再引发 committed 可见区全量重写，流式增长每帧重写范围 O(可见区) → O(头部差异+位移区)
+- **增量渲染（除 resize 全量外均增量）** ✅ — 行级 diff + committed 前缀身份复用 + 位移锚点：头部动画（标题栏呼吸）不再引发 committed 可见区全量重写，流式增长每帧重写范围 O(可见区) → O(头部差异+位移区)；第十二轮强化：已提交内容修改（工具卡状态图标 ●→✔ / 标题更新）经 `_replace_committed_line` 使前缀缓存失效并新建 Line 对象 → 关闭后必现刷新；开放块行 key 用块内绝对行号 → 流式追加不重建已渲染行；subagent 卡片元素按引用 use_memo 缓存；补全弹窗/搜索激活时推进呼吸动画（空闲不渲染）；PriorityQueue 腾位 heapify / ANSI CSI 终止符（真彩冒号+终端键）三处正则收敛 / 换行缓存长度快照 / str 依赖按值比较 / 崩溃恢复计数复位 / 刷盘失败退避等 20 项渲染正确性与健壮性修复（BUG-30~62）
 - **光标坐标追踪** ✅ — 新增 `CursorTracker` 全局光标坐标追踪系统，集成到 ContentRenderer / RenderEngine / _BottomBar / _CompletionPopup，消除坐标推算累积误差
-- **React Ink 组件框架** ✅ — `src/tui/ink/`：调和器 + flexbox 布局 + hooks + 帧差异渲染，覆盖 useState/useReducer/useRef/useEffect/useLayoutEffect（独立时序）/useMemo/useCallback/useContext/useId/useSyncExternalStore/useInput/useFocus/forwardRef/useImperativeHandle/memo/ErrorBoundary；TEXT shorthand 样式/transform/wrap/dimColor；BOX flexBasis/borderStyle 变体/alignItems/justifyContent
+- **React Ink 组件框架** ✅ — `src/tui/ink/`：调和器 + flexbox 布局 + hooks + 帧差异渲染，覆盖 useState/useReducer/useRef/useEffect/useLayoutEffect（独立时序）/useMemo/useCallback/useContext/useId/useSyncExternalStore/useInput/useFocus/forwardRef/useImperativeHandle/memo/ErrorBoundary/useMeasure/usePrevious；TEXT shorthand 样式/transform/wrap/dimColor/align；BOX flexBasis/borderStyle 变体（single/double/round/bold/classic/dashed/singleDouble/doubleSingle）/alignItems/justifyContent/gap；框架级缺陷修复：useImperativeHandle hook 槽位稳定、useSyncExternalStore 订阅重订、memo×context 短路恢复、生成器子级展开
 - **富交互组件** — 在终端中嵌入可交互元素（选择列表、确认弹窗、进度条），减少纯文本输出的信息密度
 - **语法高亮增强** — 支持更多编程语言的代码块高亮，优化长代码段的折叠/展开机制
 - **多面板布局** — 对话区/工具调用日志/系统状态分屏显示，便于调试与观察 Agent 行为

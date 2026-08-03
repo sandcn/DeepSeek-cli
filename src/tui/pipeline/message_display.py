@@ -128,8 +128,16 @@ def display_messages(
             continue
         # 截断过长的消息用于显示（_truncate 内部已去除 \n/\r）
         preview = _truncate(content, 120)
-        sys.__stdout__.write(f"  {icon} [{role}] {preview}\n")
-    sys.__stdout__.flush()
+        try:
+            sys.__stdout__.write(f"  {icon} [{role}] {preview}\n")
+        except (OSError, ValueError, AttributeError):
+            # ★ BUG-60（review 方向）：兜底直写无 TTY/管道关闭时抛异常——
+            #   静默跳过（非关键路径，不中断消息展示循环）。
+            return
+    try:
+        sys.__stdout__.flush()
+    except (OSError, ValueError, AttributeError):
+        pass
 
 
 __all__ = [

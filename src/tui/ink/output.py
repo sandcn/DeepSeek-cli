@@ -181,7 +181,15 @@ class FrameBuilder:
         if not text:
             return
         if self._width <= 0:
-            self._current.append(text, style)
+            # ★ BUG-34（review 方向）：width<=0 分支也按 ``\n`` 拆行（与正宽
+            #   分支语义一致）——修复前含换行文本整段入行，Line 内嵌字面换行
+            #   符破坏帧行号。
+            segs = text.split("\n")
+            for si, seg in enumerate(segs):
+                if si > 0:
+                    self._newline()
+                if seg:
+                    self._current.append(seg, style)
             return
         # 字符先累积到 list、段级一次性 join 追加——避免逐字符调用
         # Line.append 段拼接 O(n²)；段长受换行宽度约束有界，join 成本可接受。

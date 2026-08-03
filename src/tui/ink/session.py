@@ -14,6 +14,7 @@ InkRenderer 非全屏输出。
 
 from __future__ import annotations
 
+import heapq
 import itertools
 import logging
 import queue
@@ -93,6 +94,10 @@ _LOW_CMDS = frozenset({
     RenderCommand.SUBAGENT_MARKDOWN,
 })
 
+#: BUG-39：崩溃恢复后视为「稳定」的最小运行时长（秒）——恢复成功且持续运行
+#: 超过该阈值后复位 ``_recover_attempts``（防长时间运行后恢复预算耗尽）。
+_RECOVER_STABLE_SECS = 60.0
+
 
 def _get_cmd_id(cmd: RenderCmd) -> int:
     return cmd.cid
@@ -162,6 +167,11 @@ class InkSession:
         # ★ 方向2 P7：连续渲染失败计数（_drain_queue 渲染异常指数退避基准；
         #   成功渲染后复位 0）
         self._consecutive_render_failures = 0
+        # ★ BUG-39（review 方向）：上次崩溃恢复时间（monotonic）——恢复成功后
+        #   置位；稳定运行超过 ``_RECOVER_STABLE_SECS`` 后复位 ``_recover_attempts``
+        #   （修复前计数永不复位：进程运行数小时后的第 max_recover_attempts 次
+        #   偶发崩溃将永久终止渲染线程，UI 冻结）。
+        self._last_recover_time: float = 0.0
         self._bottom_redraw_requested = threading.Event()
         self._panel_refresh_cb: Callable[[], None] | None = None
         self._cmd_queue_dropped: int = 0
@@ -282,6 +292,15 @@ class InkSession:
                     for i, item in enumerate(self._cmd_queue.queue):
                         if item[0] >= _CMD_PRIORITY_LOW:
                             removed = self._cmd_queue.queue.pop(i)
+                            # ★ BUG-31（review 方向）：``PriorityQueue`` 底层是
+                            #   heapq 数组，任意下标 ``pop`` 后堆序被破坏——后续
+                            #   ``heappush``/``heappop`` 在损坏堆上操作可能返回非
+                            #   最小项 → 命令优先级/同批顺序错乱（如 PHASE_DONE
+                            #   先于 CONTENT 出队致内容通道提前关闭、TOOL_CLOSE
+                            #   先于 TOOL_OUTPUT 致输出落到无名新 box）。pop 后
+                            #   ``heapq.heapify`` 恢复堆序（O(n)，仅队列满腾位
+                            #   罕见路径触发，成本可接受）。
+                            heapq.heapify(self._cmd_queue.queue)
                             self._cmd_queue_dropped += 1
                             _logger.warning(
                                 "渲染命令队列已满，腾位移除 LOW 命令: %s",
@@ -583,6 +602,13 @@ class InkSession:
                     # 方向5（死代码清理）：返回值未使用——has_content 删除。
                     self._drain_queue()
                     self._cmd_event.clear()
+                    # ★ BUG-39：稳定运行复位崩溃恢复计数——上次恢复后持续运行
+                    #   超过阈值视为已稳定（偶发崩溃重新从头计数），防长时间
+                    #   运行后 max_recover_attempts 耗尽导致 UI 永久冻结。
+                    if self._recover_attempts > 0 and self._last_recover_time > 0:
+                        if time.monotonic() - self._last_recover_time >= _RECOVER_STABLE_SECS:
+                            self._recover_attempts = 0
+                            self._last_recover_time = 0.0
                     # ★ P3-2：渲染线程内 request_exit 的延迟退出语义——
                     #   仅置位后本帧结束检查此处退出（stop 由外部线程调用或
                     #   自然结束；渲染线程自身不 join）。
@@ -707,6 +733,17 @@ class InkSession:
         if getattr(model, "tool_boxes", None):
             return True
         if getattr(model, "parse_line", None) is not None:
+            return True
+        # ★ BUG-49（review 方向）：补全弹窗可见时推进呼吸动画——弹窗标题/
+        #   选中高亮/提示文本的呼吸色是时间基（time_glow），但渲染循环空闲时
+        #   跳过（_should_render 无脏返回 False）→ 弹窗打开且无其他动画状态时
+        #   呼吸静止（标题/高亮颜色冻结）。补全弹窗可见时持续 10Hz 渲染推进。
+        completion = getattr(model, "completion", None)
+        if completion is not None and completion.visible and completion.items:
+            return True
+        # ★ BUG-49：反向历史搜索激活时推进（query 呼吸色 221↔232，8s 周期）
+        search = getattr(model, "history_search", None)
+        if search is not None and getattr(search, "active", False):
             return True
         return False
 
@@ -968,6 +1005,14 @@ class InkSession:
             time.sleep(self._config.recover_delay)
             self._drain_queue_safe()
             self._render_version += 1
+            # ★ BUG-39：恢复成功置位稳定计时起点 + 清除崩溃标志——修复前
+            #   ``_render_crashed`` Event 恢复后不清除（外部 render_crashed 判断
+            #   恒 True）；``_recover_attempts`` 由 _render 循环在稳定运行后复位。
+            self._last_recover_time = time.monotonic()
+            try:
+                self._render_crashed.clear()
+            except Exception:
+                pass
             self._recovering_event.set()
             self._render_thread = threading.Thread(target=self._render, daemon=True)
             self._render_thread.start()

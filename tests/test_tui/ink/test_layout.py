@@ -1137,6 +1137,54 @@ class TestPaddingAxes:
         assert child.layout_box.x == 0
         assert child.layout_box.y == 0
 
+    # ── 方向8 完善 react ink：单边 padding（paddingLeft/Right/Top/Bottom） ──
+
+    def test_padding_left(self):
+        """paddingLeft=3：仅左侧内边距（横向总量 3，纵向 0）。"""
+        root, box = _render_and_layout(
+            h(BOX, {"paddingLeft": 3, "width": 10},
+              h(TEXT, {"children": "hi"})),
+            40,
+        )
+        child = root.child.child
+        assert child.layout_box.x == 3
+        assert child.layout_box.y == 0
+        assert box.h == 1  # 无纵向内边距
+
+    def test_padding_right(self):
+        """paddingRight=2：仅右侧内边距（内容区起点不偏移，总量收窄）。"""
+        root, box = _render_and_layout(
+            h(BOX, {"paddingRight": 2, "width": 10},
+              h(TEXT, {"children": "hi"})),
+            40,
+        )
+        child = root.child.child
+        assert child.layout_box.x == 0
+        # 内容可用宽度 = 10 - 2 = 8
+        assert child.layout_box.w == 8
+
+    def test_padding_top_bottom(self):
+        """paddingTop=2/paddingBottom=1：纵向非对称内边距。"""
+        root, box = _render_and_layout(
+            h(BOX, {"paddingTop": 2, "paddingBottom": 1, "width": 10},
+              h(TEXT, {"children": "hi"})),
+            40,
+        )
+        child = root.child.child
+        assert child.layout_box.y == 2
+        assert box.h == 4  # 内容 1 + top 2 + bottom 1
+
+    def test_padding_single_side_overrides_axis(self):
+        """paddingLeft 覆盖 paddingX；paddingRight 回退 paddingX（React Ink 语义）。"""
+        root, box = _render_and_layout(
+            h(BOX, {"paddingX": 2, "paddingLeft": 4, "width": 12},
+              h(TEXT, {"children": "ab"})),
+            40,
+        )
+        child = root.child.child
+        assert child.layout_box.x == 4  # paddingLeft 覆盖
+        assert child.layout_box.w == 12 - (4 + 2)  # 右仍用 paddingX=2
+
 
 class TestTranslateSubtreeMultiChild:
     """BUG-14 — _translate_subtree_x/y 遍历后代 sibling 链（嵌套多子容器不错位）。

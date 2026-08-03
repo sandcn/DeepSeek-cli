@@ -379,7 +379,13 @@ class SubAgentPanelController:
                 self._last_pushed_frame = list(lines)
                 self._push_frame(lines)
         except Exception:
+            # ★ BUG-54（review 方向）：渲染异常时**不复位脏标记**——修复前
+            #   ``self._dirty = False`` 在 try 外无条件执行：异常后脏标记被清，
+            #   且无动画状态（needs_animation False）时面板不再重试渲染 →
+            #   卡在陈旧内容。保留脏标记使下一允许拍重试（_EMIT_INTERVAL 节流
+            #   10Hz，不会无限高频重试）。
             _logger.debug("_panel_refresh 异常", exc_info=True)
+            return
         self._frame += 1
         # PERF-2：渲染后复位脏标记（后续空闲不再渲染）
         self._dirty = False

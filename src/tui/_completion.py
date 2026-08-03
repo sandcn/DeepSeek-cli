@@ -210,6 +210,10 @@ def _apply_completion(
         # 从尾部向前找——(^|\s) 前缀 + (?=\s|$) 后缀边界，仅替换完整词前缀
         # （``text[:m.end(1)]`` 保留词前空格，与旧 rfind 语义一致）；未命中
         # 边界匹配回退既有 start_pos 逻辑。
+        # 说明（BUG-57 评估回退）：补全语义为「光标在词尾」——``text[:m.end(1)]
+        # + repl_text`` 丢弃词尾空格/后续内容是有意设计（既有测试
+        # ``test_apply_completion_last_word_boundary_regression`` 锁定「无尾随
+        # 空格」）；光标中间场景由 start_pos 分支处理（无生产调用方）。
         boundary_matches = list(
             re.finditer(rf"(^|\s){re.escape(orig_prefix)}(?=\s|$)", text)
         )

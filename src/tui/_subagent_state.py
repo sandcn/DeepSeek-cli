@@ -26,6 +26,12 @@ import threading
 import time
 from typing import Dict, List
 
+#: BUG-55（review 方向）：工具历史条数上限——同名工具连续调用且前次 done
+#: 事件丢失/乱序时旧 running 记录残留（工具历史泄漏）；无界增长下长会话
+#: 内存累积 + 渲染历史无限。超出上限弹出最旧记录（渲染仅显示最近
+#: ``max_history`` 条，旧记录无消费方）。
+_MAX_TOOL_HISTORY = 50
+
 
 class _ToolRecord:
     __slots__ = ('tool_name', 'detail', 'start_time', 'end_time', 'phase')
@@ -94,6 +100,13 @@ class StateStore:
 
     # ── 变更操作（全部在 _state_lock 内执行） ──────────
 
+    @staticmethod
+    def _append_record(slot, rec) -> None:
+        """追加工具记录并限制历史条数（BUG-55：防无界增长/残留累积）。"""
+        slot.tool_history.append(rec)
+        if len(slot.tool_history) > _MAX_TOOL_HISTORY:
+            slot.tool_history.pop(0)
+
     def add_agent(self, label: str, description: str, status: str = "running",
                   agent_type: str = "execute") -> None:
         with self._state_lock:
@@ -138,8 +151,12 @@ class StateStore:
             if slot is None:
                 return
             # 更新 model phase 为 parsing，使面板显示 "parsing" 阶段指示
+            # ★ BUG-59（review 方向）：仅 phase 变化时重置起始时间——修复前
+            #   每次流式 parsing 事件（逐段到达）都 ``model_phase_start =
+            #   time.time()``，阶段时间基不断归零（"…parsing 0.0s" 恒显示）。
+            if slot.model_phase != "parsing":
+                slot.model_phase_start = time.time()
             slot.model_phase = "parsing"
-            slot.model_phase_start = time.time()
             # 如果已有同名 parsing 记录，更新 detail（累积参数）
             for rec in reversed(slot.tool_history):
                 if rec.tool_name == tool_name and rec.phase == "parsing":
@@ -148,7 +165,7 @@ class StateStore:
             else:
                 rec = _ToolRecord(tool_name=tool_name)
                 rec.detail = arguments
-                slot.tool_history.append(rec)
+                self._append_record(slot, rec)  # BUG-55：历史条数上限
 
     def start_tool(self, label: str, tool_name: str, detail: str) -> None:
         with self._state_lock:
@@ -170,7 +187,7 @@ class StateStore:
             else:
                 rec = _ToolRecord(tool_name=tool_name, detail=detail)
                 rec.phase = "running"
-                slot.tool_history.append(rec)
+                self._append_record(slot, rec)  # BUG-55：历史条数上限
 
     def done_tool(self, label: str, tool_name: str, success: bool) -> None:
         with self._state_lock:

@@ -26,6 +26,13 @@ React Ink 语义覆盖（完善 ink，方向3）：
   - BOX flexBasis（主轴初始尺寸：column=高度 / row=宽度，与 flexGrow/flexShrink 协同）
   - alignItems/alignSelf（row+column 横轴对齐，偏移随动后代布局盒）
   - flexGrow / flexShrink / justifyContent（space-between/around/evenly）
+  - 词边界换行（方向8）：``textWrap="wrap"`` 空格优先断行，单词完整
+    （长单词/CJK 回退字符级硬拆）
+  - 单边 padding（方向8）：``paddingLeft/Right/Top/Bottom`` 覆盖
+    ``paddingX/Y``（缺省回退 ``padding`` 均一值）
+  - host ref + useMeasure（方向8）：host 元素 ``ref`` 绑定（RefHook/函数
+    ref），layout 后填充布局盒；``useMeasure()`` 返回 ``{ref,width,height}``
+    测量 host 组件渲染尺寸（首帧 0x0，layout effect 后触发重渲染）
 
 视口/滚动评估（方向B 步骤12）：
   当前架构为非全屏流动模型：文档高度 = 内容高度（内容驱动），无 DECSTBM
@@ -79,6 +86,8 @@ from .hooks import (
     memo,
     forwardRef,
     useImperativeHandle,
+    useMeasure,
+    usePrevious,
     useApp,
     useFocus,
     useStdin,
@@ -147,6 +156,8 @@ __all__ = [
     "memo",
     "forwardRef",
     "useImperativeHandle",
+    "useMeasure",
+    "usePrevious",
     "useApp",
     "useFocus",
     "useStdin",

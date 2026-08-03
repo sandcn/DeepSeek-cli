@@ -112,11 +112,14 @@ def layout_children(fiber: Fiber) -> list[Fiber]:
 
 
 def wrap_text_lines(text: str, width: int, style=None) -> list[Line]:
-    """将文本按显示宽度换行为 Line 列表（CJK 安全）。"""
-    if width <= 0:
-        return [Line.of(text, style)] if text else []
+    """将文本按显示宽度换行为 Line 列表（CJK 安全）。
+
+    width<=0 时不换行但按 ``\n`` 拆行（BUG-34 同族修复——统一经
+    ``wrap_runs_by_width`` 的 max_width<=0 分支处理，含换行文本不产生
+    内嵌字面换行符）。
+    """
     from .helpers import wrap_runs_by_width
-    return wrap_runs_by_width([StyledRun(text, style)], width)
+    return wrap_runs_by_width([StyledRun(text, style)] if text else [], width)
 
 
 # ═══════════════════════════════════════════════════════════
@@ -247,11 +250,14 @@ def _flex_shrink(fiber: Fiber) -> int:
         return 0
 
 
-def _resolve_padding(fiber: Fiber) -> tuple[int, int]:
-    """解析 padding，返回 (pad_h, pad_v)（React Ink 语义，方向3 完善）。
+def _resolve_padding(fiber: Fiber) -> tuple[int, int, int, int]:
+    """解析 padding，返回 (pad_left, pad_right, pad_top, pad_bottom)。
 
+    React Ink 语义（方向8 完善）：
     - ``padding`` 设置四边（均一值）；``paddingX`` 覆盖左右（横向）；
       ``paddingY`` 覆盖上下（纵向）——``paddingX/Y`` 缺省回退 ``padding``。
+    - ``paddingLeft``/``paddingRight``/``paddingTop``/``paddingBottom``
+      单边覆盖（React Ink 支持单边 padding）——缺省回退 ``paddingX``/``paddingY``。
     - 畸形值（None/对象/畸形串）兜底 0，与 width/height/border/margin 一致。
     """
     def _int(v):
@@ -261,9 +267,13 @@ def _resolve_padding(fiber: Fiber) -> tuple[int, int]:
             return 0
 
     pad = _int(fiber.props.get("padding", 0))
-    pad_h = _int(fiber.props.get("paddingX", pad))
-    pad_v = _int(fiber.props.get("paddingY", pad))
-    return (pad_h, pad_v)
+    pad_x = _int(fiber.props.get("paddingX", pad))
+    pad_y = _int(fiber.props.get("paddingY", pad))
+    pad_l = _int(fiber.props.get("paddingLeft", pad_x))
+    pad_r = _int(fiber.props.get("paddingRight", pad_x))
+    pad_t = _int(fiber.props.get("paddingTop", pad_y))
+    pad_b = _int(fiber.props.get("paddingBottom", pad_y))
+    return (pad_l, pad_r, pad_t, pad_b)
 
 
 def _distribute_extra(
@@ -429,7 +439,7 @@ def _reflow_subtree(fiber: Fiber, new_y: int, new_x: int | None = None) -> None:
     if new_x is not None:
         cb.x = new_x
     fiber.layout_box = cb
-    pad_h, pad_v = _resolve_padding(fiber)
+    pad_l, pad_r, pad_t, pad_b = _resolve_padding(fiber)
     border = fiber.props.get("border", 0)
     margin = fiber.props.get("margin", 0)
     try:
@@ -452,15 +462,15 @@ def _reflow_subtree(fiber: Fiber, new_y: int, new_x: int | None = None) -> None:
     if direction == "row":
         # row：横向排列——子节点 x 累加，y 保持内边距基准（纵向偏移由
         # alignItems 承担；与 _measure row 分支语义一致）。
-        cursor_x = cb.x + pad_h + border
+        cursor_x = cb.x + pad_l + border
         for child in layout_children(fiber):
-            _reflow_subtree(child, new_y + pad_v + border, cursor_x)
+            _reflow_subtree(child, new_y + pad_t + border, cursor_x)
             ccb = child.layout_box
             if ccb is not None:
                 cursor_x += ccb.w + spacing
     else:
         # column：纵向堆叠——子节点 y 累加（默认方向，与既有语义一致）。
-        cursor_y = new_y + pad_v + border
+        cursor_y = new_y + pad_t + border
         for child in layout_children(fiber):
             _reflow_subtree(child, cursor_y)
             ccb = child.layout_box
@@ -624,11 +634,14 @@ def _measure(fiber: Fiber, x: int, y: int, avail_w: int, fill: bool = True) -> L
             else:
                 content_w = 0
             width = _clamp_width(fiber, max(0, min(avail_w, content_w)))
-        # ★ 换行缓存（方向2 P1+P3）：结构 ``(ref, (width, text_wrap), style_fp, lines)``
+        # ★ 换行缓存（方向2 P1+P3）：结构 ``(ref, (width, text_wrap), style_fp, lines, ref_len)``
         #   - cache[0] = ref：styled 列表引用（引用级快速路径）或 text 字符串
         #   - cache[1] = (width, text_wrap)
         #   - cache[2] = style_fp：稳定样式指纹（值驱动，BUG-T1——替代 id()）
         #   - cache[3] = lines：换行结果（跨帧复用）
+        #   - cache[4] = ref_len：写入时 styled 列表长度快照（BUG-35 修订——原地
+        #     修改检测基准；cache[0] 与 styled 是同一对象时 ``len`` 会同步变化，
+        #     须保存**写入时**长度快照独立比较）
         #   旧结构 ``(key, lines)`` 的 key 含 ``cache_text``（每帧先 join 再比较的
         #   完整拼接文本副本）——新结构不再持有该副本（P3 内存优化；ref 已被组件
         #   树引用，不额外占用）。P1 热路径优化：styled 静态历史（model 冻结行
@@ -640,6 +653,11 @@ def _measure(fiber: Fiber, x: int, y: int, avail_w: int, fill: bool = True) -> L
             styled is not None
             and cache is not None
             and cache[0] is styled
+            and len(styled) == cache[4]  # ★ BUG-35：原地修改检测——比较当前长度
+            #   与**写入时**长度快照（cache[0] 与 styled 为同一对象时 ``len``
+            #   同步变化，不能用 ``len(cache[0]) == len(styled)``）；长度变化 →
+            #   miss → 值驱动分支按 style_fp 重算。内容级同长度原地修改（替换
+            #   元素）由 style_fp 值驱动分支兜底。
             and cache[1] == cache_wt
         ):
             # 引用级快速路径：同 styled 引用 + (width, text_wrap, align) 不变
@@ -680,7 +698,8 @@ def _measure(fiber: Fiber, x: int, y: int, avail_w: int, fill: bool = True) -> L
                 else:
                     lines = wrap_runs_by_width(runs, width)
                 lines = _apply_text_align(lines, width, align)
-                fiber._wrap_cache = (ref, cache_wt, style_fp, lines)
+                # ★ BUG-35：写入时保存 styled 长度快照（原地修改检测基准）
+                fiber._wrap_cache = (ref, cache_wt, style_fp, lines, len(ref) if isinstance(ref, list) else 0)
         fiber._wrapped_lines = lines  # 供 paint 复用（免二次包裹）
         # ★ 空 TEXT 高度修复（方向1）：``max(1, len(lines))`` 恒 ≥1——空文本
         #   （无 lines/runs/text）高度 1 会在文档中产生多余空行；改为纯内容
@@ -721,9 +740,9 @@ def _measure(fiber: Fiber, x: int, y: int, avail_w: int, fill: bool = True) -> L
         return box
 
     # ── 容器：BOX / STATIC / APP ──
-    # ★ paddingX/paddingY（方向3 完善 react ink）：横向/纵向独立内边距；
-    #   缺省回退 ``padding`` 均一值（既有行为不变）。
-    pad_h, pad_v = _resolve_padding(fiber)
+    # ★ paddingLeft/Right/Top/Bottom（方向8 完善 react ink）：单边内边距；
+    #   ``paddingX/paddingY`` 控制横向/纵向，缺省回退 ``padding`` 均一值。
+    pad_l, pad_r, pad_t, pad_b = _resolve_padding(fiber)
     border = fiber.props.get("border", 0)
     try:
         border = max(0, int(border))
@@ -748,8 +767,10 @@ def _measure(fiber: Fiber, x: int, y: int, avail_w: int, fill: bool = True) -> L
     #: 兄弟间距统一值（row 用横向、column 用纵向）
     spacing = gap
 
-    inner_x = x + pad_h + border
-    inner_y = y + pad_v + border
+    inner_x = x + pad_l + border
+    inner_y = y + pad_t + border
+    pad_h = pad_l + pad_r  # 横向 padding 总量
+    pad_v = pad_t + pad_b  # 纵向 padding 总量
     children = layout_children(fiber)
     direction = fiber.props.get("flexDirection", "column")
 
@@ -762,9 +783,9 @@ def _measure(fiber: Fiber, x: int, y: int, avail_w: int, fill: bool = True) -> L
         #   子节点按 box 内宽测量（超宽换行/截断，不溢出）。
         if explicit_w is not None:
             width = _resolve_width(fiber, avail_w)
-            row_inner_w = max(0, width - 2 * (pad_h + border))
+            row_inner_w = max(0, width - (pad_h + 2 * border))
         else:
-            row_inner_w = max(0, avail_w - 2 * (pad_h + border))
+            row_inner_w = max(0, avail_w - (pad_h + 2 * border))
         cursor_x = inner_x
         row_h = 0
         n_children = len(children)
@@ -795,11 +816,11 @@ def _measure(fiber: Fiber, x: int, y: int, avail_w: int, fill: bool = True) -> L
         if explicit_w is None:
             content_w = cursor_x - inner_x
             width = _clamp_width(
-                fiber, max(0, min(avail_w, content_w + 2 * (pad_h + border))),
+                fiber, max(0, min(avail_w, content_w + pad_h + 2 * border)),
             )
         # ★ row flexGrow（方向1 完善 flexbox）：显式宽度富余时按 flexGrow 分配
         #   额外宽度（横向主轴 grow——修复前 flexGrow 仅作用于 column 高度）。
-        inner_w_row = max(0, width - 2 * (pad_h + border))
+        inner_w_row = max(0, width - (pad_h + 2 * border))
         used_w = cursor_x - inner_x
         extra_w = max(0, inner_w_row - used_w)
         grow_total = 0
@@ -906,15 +927,15 @@ def _measure(fiber: Fiber, x: int, y: int, avail_w: int, fill: bool = True) -> L
             for child in children:
                 probe_box = _measure(
                     child, inner_x, inner_y,
-                    max(0, avail_w - 2 * (pad_h + border)), fill=False,
+                    max(0, avail_w - (pad_h + 2 * border)), fill=False,
                 )
                 probe_boxes.append(probe_box)
                 if probe_box.w > probe_w:
                     probe_w = probe_box.w
             width = _clamp_width(
-                fiber, max(0, min(avail_w, probe_w + 2 * (pad_h + border))),
+                fiber, max(0, min(avail_w, probe_w + pad_h + 2 * border)),
             )
-        inner_w = max(0, width - 2 * (pad_h + border))
+        inner_w = max(0, width - (pad_h + 2 * border))
         cursor_y = inner_y
         total_h = 0
         n = len(children)
@@ -991,7 +1012,7 @@ def _measure(fiber: Fiber, x: int, y: int, avail_w: int, fill: bool = True) -> L
                     child.layout_box = cb
 
     content_h = total_h if children else 0
-    h = content_h + 2 * (pad_v + border)
+    h = content_h + (pad_v + 2 * border)
     h = _resolve_height(fiber, h)
 
     # flexShrink：显式高度不足（h < 内容高）且 children 含 shrink>0 时，按
@@ -999,11 +1020,17 @@ def _measure(fiber: Fiber, x: int, y: int, avail_w: int, fill: bool = True) -> L
     #   权重分配）——与 flexGrow 余数分配对称（方向2 U4）。方向1：余数分配
     #   收敛至 _distribute_extra（余数仅分配给 shrink>0 节点，权重 0 节点不
     #   参与）+ shrink 后孙节点递归重排（_reflow_subtree）。
-    if h < content_h + 2 * (pad_v + border) and children:
+    #   ★ BUG-32（review 方向）：共享块仅对 **column** 生效——row 容器主轴
+    #   （宽度）的 grow/shrink 已在 row 分支处理完毕；此处对 row 是第二次
+    #   grow/shrink 且 ``_distribute_extra`` 按纵向堆叠重排子节点 y（交叉轴
+    #   应为 top/center/flex-end 对齐，非纵向堆叠）——row + 显式 height +
+    #   flexGrow/flexShrink 子节点被错误竖排（确定性渲染错误）。加
+    #   ``direction == "column"`` 守卫后 row 保持 row 分支结果。
+    if direction == "column" and h < content_h + (pad_v + 2 * border) and children:
         shrink_total = 0
         for child in children:
             shrink_total += _flex_shrink(child)
-        deficit = (content_h + 2 * (pad_v + border)) - h
+        deficit = (content_h + (pad_v + 2 * border)) - h
         if shrink_total > 0 and deficit > 0:
             _distribute_extra(
                 children, _flex_shrink, deficit, inner_y, spacing,
@@ -1020,11 +1047,13 @@ def _measure(fiber: Fiber, x: int, y: int, avail_w: int, fill: bool = True) -> L
 
     # flexGrow：显式高度富余时按 flexGrow 比例分配（方向1：余数分配收敛至
     #   _distribute_extra——余数仅分配给 grow>0 节点，权重 0 节点不参与）。
-    if h > content_h + 2 * (pad_v + border) and children:
+    #   ★ BUG-32：仅 column（row 主轴 grow 已在 row 分支处理，见 flexShrink
+    #   守卫注释）。
+    if direction == "column" and h > content_h + (pad_v + 2 * border) and children:
         grow_total = 0
         for child in children:
             grow_total += _flex_grow(child)
-        remaining = h - (content_h + 2 * (pad_v + border))
+        remaining = h - (content_h + (pad_v + 2 * border))
         if grow_total > 0 and remaining > 0:
             # P1-4：余数分配修改子节点高度后 helper 内**重排 y 坐标**——
             # _measure 按原高度分配 y（如 BOX(height=10)+两个 TEXT flexGrow
@@ -1062,7 +1091,7 @@ def _measure(fiber: Fiber, x: int, y: int, avail_w: int, fill: bool = True) -> L
             children_total += cb.h if cb is not None else 0
         if n > 1:
             children_total += spacing * (n - 1)
-        extra = max(0, h - 2 * (pad_v + border) - children_total)
+        extra = max(0, h - (pad_v + 2 * border) - children_total)
         if extra > 0:
             offset = extra // 2 if justify == "center" else extra
             for child in children:

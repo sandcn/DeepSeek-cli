@@ -13,8 +13,12 @@ from src.tui.core.style import Style
 from .output import StyledRun, Line
 
 # ANSI 转义序列（SGR 颜色/属性 + 光标控制）
+# ★ BUG-33（review 方向）：CSI 参数范围扩展为 ``[0-9;:? ]``（含真彩冒号格式
+#   ``\x1b[38:2::255:0:0m`` 的 ``:``）、最终字节扩展为 ``[@-~]``（含终端键序列
+#   ``\x1b[3~`` 的 ``~``）——修复前残留字符被宽度测量计宽导致行宽虚高（与
+#   _screen._skip_ansi_at 同步收敛）。
 _ANSI_RE = re.compile(
-    r"\x1b\[[0-9;?]*[A-Za-z]"
+    r"\x1b\[[0-9;:? ]*[@-~]"
     r"|\x1b\][^\x07\x1b]*(\x07|\x1b\\)"
     r"|\x1b[@-Z\\-_]"
 )
@@ -54,6 +58,13 @@ def wrap_runs_by_width(runs: list[StyledRun], max_width: int) -> list[Line]:
     被当作零宽字符留在行内（宽度测量正确但渲染出单行含字面换行符，
     终端按物理行拆分破坏行级 diff 宽度不变量）。
 
+    词边界换行（方向8）：超宽且当前行内含空格断点时**优先在空格处断行**
+    （react-ink ``textWrap="wrap"`` 语义——保留词完整性）。断点取行内最后
+    一个空格（空格不保留在行尾；下一行从空格后开始）；行首空格不成为断点。
+    无空格断点（长单词/长 CJK）时回退字符级硬拆（与既有行为一致，
+    ``test_wrap_by_width``/``test_wrap_cjk`` 锁定）。样式跨行保持
+    （相邻同 style 字符经 ``Line.append`` 自动合并）。
+
     Args:
         runs: StyledRun 列表（连续片段）。
         max_width: 每行最大显示宽度；<=0 表示不换行。
@@ -62,46 +73,98 @@ def wrap_runs_by_width(runs: list[StyledRun], max_width: int) -> list[Line]:
         换行后的 Line 列表。
     """
     if max_width <= 0:
-        return [Line(runs)] if runs else []
-    lines: list[Line] = []
-    current = Line()
-    current_width = 0
+        # ★ BUG-34（review 方向）：width<=0 早返回也按 ``\n`` 拆行——修复前
+        #   含换行文本被原样拼进单行（Line 内嵌字面换行符，终端按物理行拆分，
+        #   破坏行级 diff 宽度不变量；与正宽路径的 ``\n`` 强制换行语义不一致）。
+        lines_flat: list[Line] = []
+        cur = Line()
+        for run in runs:
+            segs = run.text.split("\n")
+            for si, seg in enumerate(segs):
+                if si > 0:
+                    if cur.runs:
+                        lines_flat.append(cur)
+                    cur = Line()
+                if seg:
+                    cur.append(seg, run.style)
+        if cur.runs:
+            lines_flat.append(cur)
+        return lines_flat
+    # 展开为 (ch, style) 序列——词边界断行需跨 run 追踪行内空格位置
+    items: list[tuple[str, Style | None]] = []
     for run in runs:
-        if not run.text:
-            continue
-        # 单个 run 内按字符拆（保持样式一致性，逐字符累积宽度；
-        # 字符先累积到 list、段级一次性 join——避免 str 不可变逐字符
-        # 拼接 O(n²)；段长受换行宽度约束有界，join 成本可接受）
-        text = run.text
-        buf_chars: list[str] = []
-        buf_width = 0
-        for ch in text:
+        for ch in run.text:
+            items.append((ch, run.style))
+    n = len(items)
+    if n == 0:
+        return []
+    lines: list[Line] = []
+    i = 0
+    while i < n:
+        # 贪心填充一行（不超 max_width）
+        j = i
+        width = 0
+        last_space = -1  # 本行内最后一个空格的索引（绝对）
+        while j < n:
+            ch, _ = items[j]
             if ch == "\n":
-                # 强制换行：先落当前缓冲区，再结束当前行
-                if buf_chars:
-                    current.append("".join(buf_chars), run.style)
-                    buf_chars = []
-                    buf_width = 0
-                lines.append(current)
-                current = Line()
-                current_width = 0
-                continue
+                break  # 强制换行
+            # ★ 先记录空格断点再判超宽：超宽字符本身是空格时（行恰好填满
+            #   后在空格前断行），该空格须作为断点（end=空格、下一行从空格
+            #   后开始）——修复前 break 在 last_space 记录之前，行内最后一个
+            #   空格未被记录，断点回退到字符级 → 下一行以空格开头（如
+            #   "brown" 被拆成 " brow"/"n"）。
+            if ch == " ":
+                last_space = j
             cw = wcswidth_simple(ch)
-            if current_width + buf_width + cw > max_width and (current.runs or buf_chars):
-                if buf_chars:
-                    current.append("".join(buf_chars), run.style)
-                    buf_chars = []
-                    buf_width = 0
-                lines.append(current)
-                current = Line()
-                current_width = 0
-            buf_chars.append(ch)
-            buf_width += cw
-        if buf_chars:
-            current.append("".join(buf_chars), run.style)
-            current_width += buf_width
-    if current.runs:
-        lines.append(current)
+            if width + cw > max_width and j > i:
+                break
+            width += cw
+            j += 1
+        if j == i:
+            # 行首字符即超宽（无法放下）或行首为强制换行
+            if items[i][0] == "\n":
+                # 行首强制换行：产生空行（Newline 组件渲染语义）
+                lines.append(Line())
+                i += 1
+                continue
+            # 行首字符即超宽：硬塞一个字符（CJK 宽字符仍可能单字符超宽——
+            # 无法避免，与既有行为一致）。
+            end = i + 1
+            next_i = i + 1
+        elif j < n and items[j][0] == "\n":
+            # 强制换行：本行到 \n 前，下一行从 \n 后开始
+            end = j
+            next_i = j + 1
+        elif j < n and last_space > i:
+            # 词边界断行：本行到空格前（不含空格），下一行从空格后开始
+            end = last_space
+            next_i = last_space + 1
+        else:
+            # 无空格断点：字符级断开（本行到 j）
+            end = j
+            next_i = j
+        line = Line()
+        # ★ 方向8（性能）：段级 join 追加（同 style 字符累积到 list，一次
+        #   join 后 append）——修复前逐字符 ``line.append(ch, st)`` 在
+        #   大单行（100k 字符）下 ``last.text + text`` 反复复制累积串导致
+        #   O(n²)（100k 字符 wrap 耗 1.5s+）。行宽有界，同 style 段 join
+        #   成本 O(行宽)；样式切换处段级拆分（跨 style 不合并）。
+        chars: list[str] = []
+        seg_style = items[i][1] if i < end else None
+        for k in range(i, end):
+            ch, st = items[k]
+            if st != seg_style:
+                if chars:
+                    line.append("".join(chars), seg_style)
+                    chars = []
+                seg_style = st
+            chars.append(ch)
+        if chars:
+            line.append("".join(chars), seg_style)
+        if line.runs:
+            lines.append(line)
+        i = next_i
     return lines
 
 

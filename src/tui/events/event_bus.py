@@ -39,7 +39,13 @@ class _TimeWindowBatcher:
 
     用于高频事件（ContentChunkEvent, ReasoningChunkEvent）的批处理，
     减少渲染压力。窗口默认 ~33ms。
+
+    ★ BUG-58（review 方向）：待处理队列水位限制——慢 handler 下高频事件
+    持续入队积压内存无界；超出上限丢弃最旧（UI 状态事件最新优先）。
     """
+
+    #: 待处理队列上限（条）
+    _MAX_PENDING = 200
 
     def __init__(self, window: float = 0.033):
         self._window = window
@@ -52,6 +58,9 @@ class _TimeWindowBatcher:
         """将事件加入待处理队列，在时间窗口结束后统一分发。"""
         with self._lock:
             self._pending.append((handler, event))
+            # BUG-58：水位限制——超出上限丢弃最旧（保留最新 _MAX_PENDING 条）
+            if len(self._pending) > self._MAX_PENDING:
+                del self._pending[:len(self._pending) - self._MAX_PENDING]
             now = time.monotonic()
             if now - self._last_dispatch >= self._window:
                 self._flush()

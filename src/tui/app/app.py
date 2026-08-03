@@ -103,10 +103,16 @@ def _ParseLine(props) -> object:
             st = Style(fg=glow)
         text = r.text
         # 首个文本 run 中的 `~` 前缀替换为 spinner（apply 结构：
-        # ``f"  ~ {tool_names}..."``——`~` 出现在首个 run 开头）
-        if first_text and "~" in text:
-            text = text.replace("~", sp, 1)
-            first_text = False
+        # ``f"  ~ {tool_names}..."``——`~` 出现在首个 run 行首前缀位）
+        # ★ BUG-40（review 方向）：仅替换**行首固定前缀位**（前导空格后的
+        #   第一个 `~`）——修复前 ``text.replace("~", sp, 1)`` 替换首个 run 内
+        #   **第一个** `~`，工具名/参数含 `~`（如 ``~/proj``）时替换错误字符。
+        if first_text:
+            stripped = text.lstrip(" ")
+            lead = len(text) - len(stripped)
+            if stripped.startswith("~"):
+                text = text[:lead] + sp + stripped[1:]
+                first_text = False
         runs.append(StyledRun(text, st))
     return h(BOX, None, [h(TEXT, {"styled": runs})])
 

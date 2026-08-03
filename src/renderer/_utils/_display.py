@@ -41,10 +41,18 @@ def cjk_display_width(s: str) -> int:
 
     使用 frozenset 零宽字符查找 + 展开的 if-elif 链，
     替代 tuple 遍历，CPython 分支预测更友好。
+
+    方向8（性能）：ASCII 快速路径——``0x20-0x7E`` 可打印字符恒宽 1，
+    提前 return 跳过零宽集合查找与 if-elif 链（聊天/工具输出/代码等
+    ASCII 为主的文本是热路径，100k 字符测量基准 ~7x 提速）。控制字符
+    （``0x00-0x1F``/``0x7F-0x9F``）走下方零宽分支（计 0）。
     """
     width = 0
     for ch in s:
         cp = ord(ch)
+        if 0x20 <= cp <= 0x7E:
+            width += 1
+            continue
         # 零宽字符：frozenset 哈希查找 O(1)
         if cp in _ZERO_WIDTH_CHARS:
             continue

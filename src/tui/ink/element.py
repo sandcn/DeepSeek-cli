@@ -85,11 +85,16 @@ def _as_element(child: Any) -> Element:
 
 
 def _normalize_children(children: Sequence[Any]) -> tuple[Element, ...]:
-    """扁平化子元素序列：list/tuple 子级展开，其余转为 Element。
+    """扁平化子元素序列：list/tuple/生成器/迭代器子级展开，其余转为 Element。
 
     React 语义（方向1）：``None/True/False`` 子级渲染为空（不产生内容）。
     修复前 None 子级转为 Text "None"（如 ``h(BOX, None, [el, None, el2])``
     中间多出一行 "None" 文本）——条件式 children 的常见误用。
+
+    ★ BUG-50（review 方向）：生成器/迭代器子级展开——修复前仅扁平化
+    list/tuple，生成器（``h(BOX, None, (h(...) for ...))``）被 ``str()`` 转为
+    ``<generator object ...>`` 文本静默渲染错误内容。非 str/bytes 的可迭代对象
+    一律扁平展开（str/bytes 是 Iterable 但作为文本处理）。
     """
     out: list[Element] = []
     for c in children:
@@ -97,8 +102,11 @@ def _normalize_children(children: Sequence[Any]) -> tuple[Element, ...]:
             continue
         if isinstance(c, (list, tuple)):
             out.extend(_normalize_children(c))
-        else:
+        elif isinstance(c, (str, bytes)) or not hasattr(c, "__iter__"):
             out.append(_as_element(c))
+        else:
+            # 生成器/迭代器等通用 Iterable → 扁平展开（BUG-50）
+            out.extend(_normalize_children(c))
     return tuple(out)
 
 

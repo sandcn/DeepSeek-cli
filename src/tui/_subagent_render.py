@@ -59,13 +59,15 @@ _INDENT = "  "
 
 #: ANSI 转义序列（CSI/OSC/单字符控制）——宽度测量/截断时安全跳过。
 #: 与 ink.helpers._ANSI_RE 同语义（Layer 0 本地最小匹配器，避免反向依赖）。
+#: ★ BUG-33 同步：CSI 参数范围 ``[0-9;:? ]``（含真彩冒号格式）、最终字节
+#: ``[@-~]``（含终端键序列 ``~``）——与 _screen._skip_ansi_at 收敛。
 _ANSI_SEQ_RE = re.compile(
-    r"\x1b\[[0-9;?]*[A-Za-z]"
+    r"\x1b\[[0-9;:? ]*[@-~]"
     r"|\x1b\][^\x07\x1b]*(\x07|\x1b\\)"
     r"|\x1b[@-Z\\-_]"
 )
 
-_ANSI_STRIP_RE = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]")
+_ANSI_STRIP_RE = re.compile(r"\x1b\[[0-9;:? ]*[@-~]")
 
 
 def _truncate_ansi_width(text: str, max_w: int) -> str:

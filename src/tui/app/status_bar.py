@@ -199,6 +199,10 @@ def StatusBar(props) -> object:
             st.tool_count,
             st.tool_fail,
             time_dep,
+            # ★ BUG-43（review 方向）：deps 补充 spinner_char——修复前依赖
+            #   time_dep（0.1s 桶）兜底，``int(now/0.1)`` 与 ``int(now*10)``
+            #   浮点边界偶发错位 ≤1 帧（spinner 帧与缓存不同步）。
+            spinner_char,
         ),
     )
     # 分割线（上面）

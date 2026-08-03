@@ -85,7 +85,8 @@ class TestTextWrapAlias:
 
     def test_wrap_default_wraps(self):
         plains, _ = _render(h(TEXT, {"children": "hello world", "wrap": "wrap", "width": 5}))
-        assert plains == ["hello", " worl", "d"], f"wrap='wrap' 默认换行: {plains!r}"
+        # 词边界换行（方向8）：空格优先断行，单词完整（react-ink textWrap="wrap" 语义）
+        assert plains == ["hello", "world"], f"wrap='wrap' 默认换行: {plains!r}"
 
     def test_text_wrap_takes_precedence(self):
         plains, _ = _render(h(TEXT, {

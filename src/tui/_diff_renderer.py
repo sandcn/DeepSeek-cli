@@ -267,7 +267,13 @@ def _render_chunk(item, w, lexer_name, output_target):
     if typ == 'hunk':
         hl = StyleSheet.resolve("highlight", Style(fg=45))
         bold_hl = hl.merge(Style(bold=True))
-        _write_diff_line("  " + bold_hl.apply(item[1]), output_target)
+        # ★ BUG-56（review 方向）：hunk 头消毒（ANSI 注入防护）——修复前
+        #   ``bold_hl.apply(item[1])`` 直接输出；hunk 头来自外部 diff 输入
+        #   （``_parse_diff_hunks`` 正则只校验前缀），构造 ``@@ -1 +1 @@
+        #   \x1b[31mINJECT`` 可注入 ANSI（与 old_file/new_file/ctx 行已消毒
+        #   语义一致）。
+        hunk_text = _sanitize_ansi(item[1])
+        _write_diff_line("  " + bold_hl.apply(hunk_text), output_target)
         return
     if typ == 'fold':
         hidden = item[1]

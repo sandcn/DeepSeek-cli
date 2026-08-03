@@ -19,6 +19,7 @@ from __future__ import annotations
 from src.tui.app.model import _role_header_line
 from src.tui.core.style import Style
 from src.tui.ink import h, BOX, TEXT, StyledRun, register_host, use_memo
+from .subagent_panel import use_subagent_children
 
 _S_REASONING = Style(fg=242)
 
@@ -163,6 +164,10 @@ def ChatView(props) -> object:
         lambda: h("committed-chat", {"lines": model.committed_lines}),
         (model.committed_lines,),
     )
+    # ★ BUG-42（review 方向）：subagent 卡片子树按 ``(subagent_lines, width)``
+    #   引用级 use_memo 缓存——修复前每帧重建全部 StyledRun/Element（活跃
+    #   subagent 期间每帧重包裹）。无条件调用（hook 顺序稳定）。
+    subagent_children = use_subagent_children(model, width)
     children = []
     if model.committed_lines:
         children.append(committed_el)
@@ -186,21 +191,25 @@ def ChatView(props) -> object:
                     "styled": header_line.runs,
                 }))
         # 开放块只渲染未提交尾（已增量提交的行在缓存中，不再重建）
+        # ★ BUG-41（review 方向，性能）：行 key 用**块内绝对行号**（修复前
+        #   ``row_in_block`` 从 committed_line_count 起重新编号——块被增量提交
+        #   N 行后，旧 ``chat-{i}-0`` 的 fiber 改渲染绝对行号 N → 换行缓存/style
+        #   缓存全部 miss，流式期间每帧重包裹）。绝对行号 key 在流式追加时保持
+        #   稳定（已渲染行 key 不变，调和器复用 fiber；仅新增行创建新 fiber）。
         for row_in_block, runs in enumerate(
             _block_styled_lines(
                 block, block.committed_line_count, width,
             )
         ):
             children.append(h(TEXT, {
-                "key": f"chat-{block_idx}-{row_in_block}",
+                "key": f"chat-{block_idx}-{block.committed_line_count + row_in_block}",
                 "styled": runs,
             }))
     # 子代理活动卡片（并入消息流，对齐 Claude Code）：subagent_lines 为
-    # _subagent_render 产出的逐 agent 卡片 ANSI 行，经 _render_children 转换
-    # 后追加到消息文档（原独立 SubAgentPanel 组件已移除）。
+    # _subagent_render 产出的逐 agent 卡片 ANSI 行，经 use_subagent_children
+    # 缓存元素（原独立 SubAgentPanel 组件已移除）。
     if model.subagent_lines:
-        from .subagent_panel import _render_children
-        children.extend(_render_children(model, width))
+        children.extend(subagent_children)
     return h(BOX, None, children)
 
 

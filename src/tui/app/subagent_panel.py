@@ -8,7 +8,7 @@
 
 from __future__ import annotations
 
-from src.tui.ink import h, TEXT, StyledRun, truncate_runs
+from src.tui.ink import h, TEXT, StyledRun, truncate_runs, use_memo
 from src.renderer.ansi.helpers import ansi_to_runs
 
 
@@ -18,6 +18,11 @@ def _render_children(model, width: int) -> list:
     唯一 ANSI → StyledRun 转换点（方向C 步骤8）：subagent_lines 的
     ANSI 行经 ``ansi_to_runs`` 解析为样式 run，再按终端宽度截断。
     每行给索引 key（调和器复用 fiber，换行/样式缓存可命中）。
+
+    本函数为**纯计算**（无 hook）；组件内请用 ``use_subagent_children``
+    按 ``(subagent_lines, width)`` 引用缓存结果（BUG-42：修复前 ChatView
+    每帧直接调用本函数重建全部 StyledRun/Element → TEXT ``_wrap_cache``
+    身份键恒 miss，活跃 subagent 期间每帧重包裹）。
     """
     children = []
     for i, line in enumerate(model.subagent_lines or []):
@@ -36,4 +41,17 @@ def _render_children(model, width: int) -> list:
     return children
 
 
-__all__ = ["_render_children"]
+def use_subagent_children(model, width: int) -> list:
+    """use_memo 缓存 subagent 卡片元素列表（subagent_lines 引用不变时零重建）。
+
+    供 ChatView 无条件调用（hook 顺序稳定——即使 subagent_lines 为空也占用
+    同一个 memo 槽位；``model.subagent_lines`` 为引用 deps——控制器推送新行
+    列表时引用变化 → 缓存失效重算）。
+    """
+    return use_memo(
+        lambda: _render_children(model, width),
+        (getattr(model, "subagent_lines", None), width),
+    )
+
+
+__all__ = ["_render_children", "use_subagent_children"]

@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import re
 from src._compat import dataclass
-from dataclasses import field
 
 from src.renderer._utils import cjk_display_width
 from .style import Style
@@ -100,23 +99,95 @@ def strip_ansi(text: str) -> str:
 
 
 def wrap_line(line: AnsiLine, max_width: int) -> list[AnsiLine]:
-    """将 AnsiLine 按显示宽度换行为多行（CJK 安全）。"""
+    """将 AnsiLine 按显示宽度换行为多行（CJK 安全 + 词边界优先）。
+
+    词边界换行（方向8）：超宽且当前行内含空格断点时**优先在空格处断行**
+    （保留词完整性，如 ``file.txt`` 不被拆成 ``file.tx``/``t``）——修复前
+    逐字符硬拆，工具卡/用户消息中的长行单词被拦腰截断。断点取行内最后一个
+    空格（空格不保留在行尾；下一行从空格后开始）；行首空格不成为断点。
+    无空格断点（长单词/长 CJK）时回退字符级硬拆（与既有行为一致，
+    ``test_wrap_by_width``/``test_wrap_cjk`` 锁定）。
+
+    实现：先展开为 (ch, style) 序列，贪心填充每行；超宽时若有空格断点则
+    回退到断点（下一行从断点后继续），否则字符级断开。最后每行经
+    ``AnsiLine.append`` 合并相邻同 style run（样式保持）。
+    """
     if max_width <= 0:
         return [line] if line.runs else []
-    lines: list[AnsiLine] = []
-    current = AnsiLine()
-    current_width = 0
+    items: list[tuple[str, Style | None]] = []
     for run in line.runs:
         for ch in run.text:
+            items.append((ch, run.style))
+    n = len(items)
+    if n == 0:
+        return []
+    lines: list[AnsiLine] = []
+    i = 0
+    while i < n:
+        # 贪心填充一行（不超 max_width）
+        j = i
+        width = 0
+        last_space = -1  # 本行内最后一个空格的索引（绝对）
+        while j < n:
+            ch, _ = items[j]
+            if ch == "\n":
+                break  # 强制换行
+            # ★ 先记录空格断点再判超宽：超宽字符本身是空格时（行恰好填满
+            #   后在空格前断行），该空格须作为断点（end=空格、下一行从空格
+            #   后开始）——修复前 break 在 last_space 记录之前，行内最后一个
+            #   空格未被记录，断点回退到字符级 → 下一行以空格开头（如
+            #   "brown" 被拆成 " brow"/"n"）。
+            if ch == " ":
+                last_space = j
             cw = cjk_display_width(ch)
-            if current_width + cw > max_width and current.runs:
-                lines.append(current)
-                current = AnsiLine()
-                current_width = 0
-            current.append(ch, run.style)
-            current_width += cw
-    if current.runs:
-        lines.append(current)
+            if width + cw > max_width and j > i:
+                break
+            width += cw
+            j += 1
+        if j == i:
+            # 行首字符即超宽（无法放下）或行首为强制换行
+            if items[i][0] == "\n":
+                # 行首强制换行：产生空行（Newline 组件渲染语义）
+                lines.append(AnsiLine())
+                i += 1
+                continue
+            # 行首字符即超宽：硬塞一个字符（CJK 宽字符仍可能单字符超宽——
+            # 无法避免，与既有行为一致）。
+            end = i + 1
+            next_i = i + 1
+        elif j < n and items[j][0] == "\n":
+            # 强制换行：本行到 \n 前，下一行从 \n 后开始
+            end = j
+            next_i = j + 1
+        elif j < n and last_space > i:
+            # 词边界断行：本行到空格前（不含空格），下一行从空格后开始
+            end = last_space
+            next_i = last_space + 1
+        else:
+            # 无空格断点：字符级断开（本行到 j）
+            end = j
+            next_i = j
+        line_out = AnsiLine()
+        # ★ 方向8（性能）：段级 join 追加（同 style 字符累积到 list，一次
+        #   join 后 append）——修复前逐字符 ``line_out.append(ch, st)`` 在
+        #   大单行（100k 字符）下 ``last.text + text`` 反复复制累积串导致
+        #   O(n²)（100k 字符 wrap 耗 1.5s+）。行宽有界，同 style 段 join
+        #   成本 O(行宽)；样式切换处段级拆分（跨 style 不合并）。
+        chars: list[str] = []
+        seg_style = items[i][1] if i < end else None
+        for k in range(i, end):
+            ch, st = items[k]
+            if st != seg_style:
+                if chars:
+                    line_out.append("".join(chars), seg_style)
+                    chars = []
+                seg_style = st
+            chars.append(ch)
+        if chars:
+            line_out.append("".join(chars), seg_style)
+        if line_out.runs:
+            lines.append(line_out)
+        i = next_i
     return lines
 
 

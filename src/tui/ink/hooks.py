@@ -340,6 +340,12 @@ def _object_is(a, b) -> bool:
         if a == 0 and b == 0:          # +0 与 -0 不等
             return math.copysign(1, a) == math.copysign(1, b)
         return a == b
+    # ★ BUG-44（review 方向）：原始类型 str 按值比较（React Object.is 语义——
+    #   原始值按值相等）——修复前仅按 ``is`` 引用比较：deps 含 str 时跨帧同值
+    #   不同对象（非 intern 字符串，如 spinner 帧字符 ``⠋``、模型名等）→ 依赖
+    #   恒变 → ``use_memo``/``use_effect`` 缓存永久失效。str 不可变，值比较安全。
+    if ta is str and tb is str:
+        return a == b
     return False
 
 
@@ -663,16 +669,25 @@ def useImperativeHandle(ref, factory: Callable, deps: list | tuple | None = None
         hook.last_deps = list(hook.deps) if hook.deps is not None else None
         if ref is not None:
             ref.current = hook.value
-    # 卸载清理（EffectHook 通道）：deps 含句柄身份——句柄重建时旧 destroy
-    # 不会清掉新句柄（_make_imperative_cleanup 引用检查）。仅在句柄变化
-    # （memo_changed）时重置 last_deps 强制本帧重建 destroy（否则 effect
-    # 跳过，destroy 保持捕获旧句柄 → 卸载时无法正确清理）。
+    # 卸载清理（EffectHook 通道）：**恒消费 2 槽**（deps 含句柄身份——句柄
+    # 重建时旧 destroy 不会清掉新句柄（_make_imperative_cleanup 引用检查）。
+    # ★ BUG-37（review 方向）：修复前 ``ref is not None`` 才消费 EffectHook
+    #   槽、``ref is None`` 时不消费——ref 在渲染间从 None ↔ 非 None 切换时
+    #   后续 hook 下标错位（HookStateError 或静默状态错配，违反 Rules of
+    #   Hooks）。恒消费 2 槽；ref 为 None 时 EffectHook 置空（deps=None →
+    #   每帧执行；create=None 且旧 destroy 残留时先清理旧 ref——ref 从非
+    #   None 变 None 场景正确释放）。
     if ref is not None:
         eff = _next_hook(EffectHook, None, None, None, None)
         eff.create = _make_imperative_cleanup(ref, hook)
         if memo_changed:
             eff.deps = (id(ref), id(hook), id(hook.value))
             eff.last_deps = None
+    else:
+        eff = _next_hook(EffectHook, None, None, None, None)
+        eff.create = None
+        eff.deps = None
+        eff.last_deps = None
 
 
 # ═══════════════════════════════════════════════════════════
@@ -792,6 +807,43 @@ def useFocus(options: "bool | dict | None" = None) -> dict:
 
 
 # ═══════════════════════════════════════════════════════════
+# useMeasure（方向8 完善 react ink）
+# ═══════════════════════════════════════════════════════════
+
+
+def useMeasure() -> dict:
+    """React Ink ``useMeasure`` 等价物：测量 host 组件的渲染尺寸。
+
+    返回 ``{"ref": ref, "width": int, "height": int}``——``ref`` 绑定到
+    host 元素（``h(BOX, {"ref": m["ref"]})``），布局完成后经 reconciler
+    将 ``layout_box`` 写入 ``ref.current``；组件经 layout effect 读取尺寸
+    并更新 state 触发重渲染。首次渲染返回 (0, 0)（布局未完成），布局后
+    一帧返回实际尺寸（与 React Ink 语义一致——useMeasure 需要额外渲染帧）。
+
+    典型用途：容器尺寸自适应布局、条件渲染（尺寸>0 时显示）、将宿主尺寸
+    传递给子组件。
+
+    Returns:
+        dict：``{"ref": ref, "width": int, "height": int}``。
+    """
+    ref = use_ref(None)
+    size, set_size = use_state((0, 0))
+
+    def _update():
+        box = getattr(ref, "current", None)
+        if box is None:
+            return
+        new_size = (getattr(box, "w", 0), getattr(box, "h", 0))
+        if new_size != size:
+            set_size(new_size)
+
+    # deps=None：每次渲染执行（layout effect 在 reconciler 填充 ref 后提交，
+    # 读取最新尺寸；尺寸变化才 set_state 触发重渲染，零额外帧）。
+    useLayoutEffect(_update, None)
+    return {"ref": ref, "width": size[0], "height": size[1]}
+
+
+# ═══════════════════════════════════════════════════════════
 # useStdin / useStdout / useStderr（完善 react ink）
 # ═══════════════════════════════════════════════════════════
 
@@ -889,7 +941,18 @@ def useSyncExternalStore(
     hook = _next_hook(SyncStoreHook, None)
     hook.subscribe = subscribe
     hook.get_snapshot = get_snapshot
-    if not hook.subscribed:
+    # ★ BUG-38（review 方向）：subscribe 函数身份变化时**重订阅**——修复前
+    #   ``subscribed=True`` 短路：新 subscribe 永不调用、旧订阅永不取消（订阅
+    #   函数变化后组件持续监听旧 store）。重订阅语义（React）：先清理旧订阅
+    #   再订阅新 store。首次挂载（last_subscribe is None）同样走订阅路径。
+    if hook.last_subscribe is not subscribe:
+        if hook.cleanup is not None:
+            try:
+                hook.cleanup()
+            except Exception:
+                _logger.debug("useSyncExternalStore 旧订阅清理异常", exc_info=True)
+            hook.cleanup = None
+        hook.last_subscribe = subscribe
         hook.subscribed = True
         try:
             cleanup = subscribe(lambda: _schedule())
@@ -897,11 +960,40 @@ def useSyncExternalStore(
         except Exception:
             _logger.debug("useSyncExternalStore 订阅异常", exc_info=True)
             hook.cleanup = None
+    else:
+        hook.subscribed = True
     try:
         hook.snapshot = get_snapshot()
     except Exception:
         _logger.debug("useSyncExternalStore 快照读取异常", exc_info=True)
     return hook.snapshot
+
+
+# ═══════════════════════════════════════════════════════════
+# usePrevious（完善 react ink hook 库）
+# ═══════════════════════════════════════════════════════════
+
+
+def usePrevious(value: Any) -> Any:
+    """返回上一次渲染时的值（React 社区标准 hook，完善 ink hook 库）。
+
+    首次渲染返回 None；后续渲染返回上一帧传入的值。实现基于 ``use_ref``
+    （渲染期先读旧值再写新值）——跨渲染保持、不触发额外重渲染。
+
+    典型用途：状态变化检测（``use_effect`` 依赖旧值执行过渡逻辑）、
+    条件动画（值变化时切换显示风格）。与 ``use_memo`` 的 deps 语义互补
+    （deps 解决「何时重算」，usePrevious 解决「旧值是什么」）。
+
+    Args:
+        value: 当前渲染值（任意类型）。
+
+    Returns:
+        上一次渲染时的 value；首次渲染返回 None。
+    """
+    ref = use_ref(None)
+    prev = ref.current
+    ref.current = value
+    return prev
 
 
 __all__ = [
@@ -920,6 +1012,8 @@ __all__ = [
     "memo",
     "forwardRef",
     "useImperativeHandle",
+    "useMeasure",
+    "usePrevious",
     "useApp",
     "useFocus",
     "useStdin",

@@ -271,11 +271,18 @@ def _skip_ansi_at(text: str, i: int) -> int:
         return j
     c = text[j]
     if c == "[":
-        # CSI：\x1b[ 参数(0-9;?) + 最终字节(A-Za-z)
+        # CSI：\x1b[ 参数中间字节(0x20-0x3F：数字/分号/冒号/问号/空格) +
+        # 最终字节(0x40-0x7E：@A-Z[\]^_`a-z{|}~)。
+        # ★ BUG-33（review 方向）：修复前参数仅扫 ``0123456789;?``、最终字节
+        #   仅收 ``A-Za-z``——``\x1b[38:2::255:0:0m``（真彩冒号格式）在 ``:``
+        #   处停、``\x1b[3~``（Delete/PageUp 终端键）在 ``~`` 处停，残留字符
+        #   被 ``wcswidth_simple`` 逐字符计宽 → 行宽虚高 → wrap/截断/对齐错位。
+        #   按 ECMA-48 中间字节/最终字节全范围修复（与 ink.helpers._ANSI_RE
+        #   同步收敛）。
         k = j + 1
-        while k < n and text[k] in "0123456789;?":
+        while k < n and 0x20 <= ord(text[k]) <= 0x3F:
             k += 1
-        if k < n and ("A" <= text[k] <= "Z" or "a" <= text[k] <= "z"):
+        if k < n and 0x40 <= ord(text[k]) <= 0x7E:
             return k + 1
         return k  # 残缺 CSI：跳过已消费参数
     if c == "]":
@@ -707,7 +714,7 @@ def set_window_title(title: str) -> None:
     try:
         sys.__stdout__.write(f"\033]0;{title}\007")
         sys.__stdout__.flush()
-    except (OSError, ValueError):
+    except (OSError, ValueError, AttributeError):  # BUG-52：无 TTY 时 stdout 为 None
         pass
 
 
@@ -729,13 +736,14 @@ def write_stdout(data: str) -> None:
 
     仅紧急路径使用，禁止常规调用（常规内容/布局写一律走统一输出管线）。
 
-    Args:
-        data: 要写入的字符串。
+    ★ BUG-52（review 方向）：except 补充 ``AttributeError``——``sys.__stdout__``
+    为 None（无 TTY daemon）时 ``.write`` 抛 AttributeError（修复前仅捕获
+    OSError/ValueError，无 TTY 场景异常泄漏）。
     """
     try:
         sys.__stdout__.write(data)
         sys.__stdout__.flush()
-    except (OSError, ValueError):
+    except (OSError, ValueError, AttributeError):
         pass
 
 

@@ -135,6 +135,9 @@ class SyncStoreHook:
         snapshot: 最近一次读取的快照值（跨渲染缓存）。
         cleanup: 订阅清理函数（卸载时调用取消订阅）。
         subscribed: 是否已订阅（防止重复订阅）。
+        last_subscribe: 上次订阅的 subscribe 函数引用——subscribe 身份变化
+            时重订阅（BUG-38：修复前 ``subscribed=True`` 短路，新 subscribe
+            永不调用、旧订阅永不取消）。
     """
 
     subscribe: Any = None
@@ -142,6 +145,7 @@ class SyncStoreHook:
     snapshot: Any = None
     cleanup: Any = None
     subscribed: bool = False
+    last_subscribe: Any = None
 
 
 #: hook 节点联合类型（Python 3.9 兼容：不用 `X | Y` 运行时求值）。
@@ -206,6 +210,11 @@ class Fiber:
     #: useId 分配的稳定唯一 ID（React 18 useId 语义；挂载时分配，fiber 复用
     #: 期间保持不变，卸载后不再访问）。
     _use_id: Any = None
+    #: host ref 绑定（方向8 完善 react ink，useMeasure 支持）：host 元素
+    #: ``ref`` prop 存入此处（RefHook/函数 ref）。layout 阶段后 reconciler
+    #: 将 ``layout_box`` 写入 ``ref.current``（或调用函数 ref）——React 语义
+    #: 中 host ref 指向 DOM 节点，本框架非全屏流动模型下指向布局盒（尺寸）。
+    _host_ref: Any = None
 
     # ── 派生属性 ──────────────────────────────────────
 

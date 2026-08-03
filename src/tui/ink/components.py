@@ -20,7 +20,7 @@ import logging
 from src.tui.core.style import Style
 from src.tui._screen import wcswidth_simple
 from .fiber import Fiber
-from .layout import layout_tree, layout_children, wrap_text_lines, _skip_function
+from .layout import layout_tree, wrap_text_lines, _skip_function
 from .output import Frame, Line
 
 _logger = logging.getLogger(__name__)
@@ -45,10 +45,12 @@ def _border_style(props: dict) -> Style:
     return Style(fg=23)
 
 
-#: borderStyle 变体字符表（完善 react ink）：单线/双线/圆角/粗体/经典/虚线。
-#: 键 = props["borderStyle"] 字符串；缺省 "single"。
-#: classic 为 ASCII 经典边框（``+---``/``|``）；dashed 为虚线边框（``┄``/``┆``，
-#: 视觉更轻）。
+#: borderStyle 变体字符表（完善 react ink）：单线/双线/圆角/粗体/经典/虚线/
+#: 单双混合（singleDouble/doubleSingle）。键 = props["borderStyle"] 字符串；
+#: 缺省 "single"。classic 为 ASCII 经典边框（``+---``/``|``）；dashed 为虚线
+#: 边框（``┄``/``┆``，视觉更轻）。
+#: singleDouble：顶/底双线、左右单线（``╓ ╖ ╙ ╜ ═ ║``）；doubleSingle：
+#: 顶/底单线、左右双线（``╒ ╕ ╘ ╛ ─ ╞`` 类）——react-ink 完整变体。
 _BORDER_CHARS: dict[str, tuple[str, str, str, str, str, str]] = {
     "single": ("┌", "┐", "└", "┘", "─", "│"),
     "double": ("╔", "╗", "╚", "╝", "═", "║"),
@@ -56,6 +58,8 @@ _BORDER_CHARS: dict[str, tuple[str, str, str, str, str, str]] = {
     "bold": ("┏", "┓", "┗", "┛", "━", "┃"),
     "classic": ("+", "+", "+", "+", "-", "|"),
     "dashed": ("┌", "┐", "└", "┘", "┄", "┆"),
+    "singleDouble": ("╓", "╖", "╙", "╜", "═", "│"),
+    "doubleSingle": ("╒", "╕", "╘", "╛", "─", "║"),
 }
 
 
@@ -122,7 +126,17 @@ def _merge_line(row, x: int, line: Line) -> dict:
         row.update(slice_)
     else:
         for c, v in slice_.items():
+            # ★ BUG-61（review 方向）：宽字符残留清理——被覆盖位置为宽字符
+            #   首列（旧占 c+1 列，仅首列键）时同步清除 c+1 键（残留第二列
+            #   字形）；新写入字符为宽字符（占 c+1 列）时清除 c+1 旧内容
+            #   （slice_ 未覆盖该键——宽字符只写首列键）。修复前覆盖宽字符
+            #   首列后行含孤立第二列字形（渲染出 ``a``+残留字形）。
+            old = row.get(c)
+            if old is not None and wcswidth_simple(old[0]) == 2 and (c + 1) not in slice_:
+                row.pop(c + 1, None)
             row[c] = v
+            if wcswidth_simple(v[0]) == 2 and (c + 1) not in slice_:
+                row.pop(c + 1, None)
     return row
 
 
@@ -337,6 +351,13 @@ def _canvas_row_to_line(row) -> Line:
     i = 0
     while i < n:
         col = keys[i]
+        # ★ 方向8（宽字符重叠键死循环修复）：键列已被前序宽字符（CJK/emoji，
+        #   宽 2 覆盖相邻列）占用时（``col < prev``）跳过该键——修复前
+        #   ``col > prev`` 为 False 且内层 ``c2 != prev`` 立即 break → ``i = j``
+        #   不变 → **无限循环**（画布行含宽字符 + 重叠键时整帧渲染挂起）。
+        if col < prev:
+            i += 1
+            continue
         ch, style = row[col]
         if col > prev:
             line.append(" " * (col - prev))
@@ -348,13 +369,20 @@ def _canvas_row_to_line(row) -> Line:
         buf = ""
         while j < n:
             c2 = keys[j]
+            if c2 < prev:
+                # 键已被前序宽字符覆盖（宽字符的第二列）→ 跳过该键
+                j += 1
+                continue
+            if c2 != prev:
+                break
             ch2, st2 = row[c2]
-            if c2 != prev or st2 != style:
+            if st2 != style:
                 break
             buf += ch2
             prev = c2 + wcswidth_simple(ch2)
             j += 1
-        line.append(buf, style)
+        if buf:
+            line.append(buf, style)
         i = j
     return line
 

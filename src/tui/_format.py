@@ -63,7 +63,13 @@ def format_speed(s: float) -> str:
 
     P3-10：docstring 与实现对齐——≥1k 分支为 ``{:.0f}kt/s``（整数舍入，
     如 1500 → ``2kt/s``）。
+
+    ★ BUG-47（review 方向）：非有限值（inf/NaN）返回 ``-``（与
+    ``format_duration`` 的 isfinite 防护一致）——修复前 NaN 走完所有比较后
+    ``f"{s:.2f}t/s"`` → ``"nant/s"``（渲染出非法文本）。
     """
+    if not math.isfinite(s):
+        return "-"
     if s <= 0:
         return "-"
     if s >= 1_000_000:

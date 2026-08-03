@@ -115,6 +115,11 @@ class Reconciler:
         self._reconcile_children(root_fiber, [element])
         # 布局（host 树）
         _layout.layout_tree(root_fiber, width)
+        # ★ host ref 填充（方向8）：layout 完成后将 layout_box 写入绑定的
+        #   ref（RefHook.current / 函数 ref 回调）——useMeasure 等据此在
+        #   layout effect 中读取尺寸。遍历开销 O(host 数)，仅绑定 ref 的
+        #   fiber 需要处理。
+        self._attach_host_refs(root_fiber)
         # 提交 effects：先销毁（删除子树），再创建（依赖变化）
         for fiber, hook in self._pending_destroys:
             self._run_destroy(fiber, hook)
@@ -399,6 +404,15 @@ class Reconciler:
                 _hooks._pop_current()
             if memo_skip:
                 return  # 保留 fiber.child（不重建子树）
+            # ★ BUG-36（review 方向）：本帧组件已渲染（使用最新 context 值，
+            #   含不消费 context 的 memo 组件）→ 清除 ``_context_dirty`` 标记。
+            #   修复前标记仅由 ``use_context`` 消费时清除——位于 provider 子树内
+            #   但不调用 ``use_context`` 的 memo 组件：Provider 值首次变化后
+            #   ``_context_dirty`` 恒 True → **memo 短路永久失效**（每帧全量重建，
+            #   性能退化，树越大越严重）。本帧渲染完成后清除：下次 Provider 值
+            #   变化时 ``_clear_context_cache_subtree`` 会重新置位（React 语义：
+            #   context 变更强制重渲染消费者，与 memo 无关）。
+            fiber._context_dirty = False
             if rendered is None:
                 rendered = Element("text", {"children": ""}, ())
             elif not isinstance(rendered, Element):
@@ -410,6 +424,11 @@ class Reconciler:
             #   fiber.contexts（键为 ctx.tag 唯一标签）供子树 use_context
             #   沿 return_ 链查找。
             fiber.contexts.clear()
+            # ★ host ref（方向8）：``ref`` prop 绑定（useMeasure 支持）。
+            #   React 语义中 ref 不进入普通 props——本框架经 props 传入
+            #   （``h(BOX, {"ref": my_ref})``），此处存入 fiber 供 layout
+            #   后填充（不参与样式/布局 props 消费）。
+            fiber._host_ref = fiber.props.get("ref")
             ftype = fiber.type
             # ★ 性能（方向1）：内置 host 标签（text/box/static/spacer/app/
             #   fragment）绝不可能是 context provider（create_context 生成
@@ -650,6 +669,38 @@ class Reconciler:
                 self._pending_destroys.append((fiber, hook))
             elif isinstance(hook, SyncStoreHook) and hook.cleanup is not None:
                 self._pending_destroys.append((fiber, hook))
+
+    def _attach_host_refs(self, fiber: Fiber | None) -> None:
+        """遍历 host 树，将 layout_box 写入绑定的 ref（useMeasure 支持，方向8）。
+
+        仅处理 ``_host_ref`` 非空的 fiber（React 语义：host ref 指向 DOM
+        节点——本框架非全屏流动模型下为布局盒 LayoutBox，含 x/y/w/h）。
+        支持两种 ref 形态：
+          - RefHook（``use_ref`` 返回）：写入 ``ref.current = box``；
+          - 函数 ref（React 回调 ref）：``ref(box)`` 调用。
+
+        与 React 差异（文档注明）：卸载时不置 null（非全屏模型无 DOM 节点
+        回收语义；useMeasure 仅挂载期读取尺寸，卸载清理无消费方）。
+
+        Args:
+            fiber: 遍历起点（root fiber）。
+        """
+        f = fiber
+        while f is not None:
+            if f.deleted:
+                f = f.sibling
+                continue
+            ref = getattr(f, "_host_ref", None)
+            if ref is not None and f.layout_box is not None:
+                if callable(ref):
+                    try:
+                        ref(f.layout_box)
+                    except Exception:
+                        _logger.debug("host ref 回调异常 fiber=%s", f.type, exc_info=True)
+                elif hasattr(ref, "current"):
+                    ref.current = f.layout_box
+            self._attach_host_refs(f.child)
+            f = f.sibling
 
     # ── effects 提交 ────────────────────────────────
 

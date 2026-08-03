@@ -40,6 +40,11 @@ _logger = logging.getLogger(__name__)
 #   - 输出历史压缩冷却：距上次成功刷盘不足该秒数时跳过压缩（防频繁压缩）
 _COMPACT_COOLDOWN: float = 30.0
 
+#: BUG-46（review 方向）：无换行长行累积上限（字符）——流式二进制/超长
+#: 单行输出持续累积 ``_partial_line`` 无上限（内存风险）；超限保留尾部
+#: 最新内容（行跟踪按最新优先）。
+_PARTIAL_LINE_MAX: int = 1 << 20
+
 
 class _StdoutLineTracker:
     """Transparent stdout wrapper that tracks complete lines.
@@ -106,7 +111,10 @@ class _StdoutLineTracker:
 
     @property
     def buffer(self) -> Any:
-        return self._real_stdout.buffer
+        # ★ BUG-53（review 方向）：real_stdout 为 StringIO 等无 ``buffer`` 的
+        #   对象时返回自身（协议兼容代码声称支持任意 IO——修复前直接
+        #   ``self._real_stdout.buffer`` 抛 AttributeError）。
+        return getattr(self._real_stdout, "buffer", self._real_stdout)
 
     def fileno(self) -> int:
         return self._real_stdout.fileno()
@@ -199,6 +207,10 @@ class _StdoutLineTracker:
         ANSI 剥离协同）。
         """
         self._partial_line += text
+        if len(self._partial_line) > _PARTIAL_LINE_MAX:
+            # ★ BUG-46：无换行长行累积上限——超限截断保留尾部最新内容
+            #   （防流式二进制/超长单行撑爆内存；截断后下次 \n 仍正常拆行）。
+            self._partial_line = self._partial_line[-_PARTIAL_LINE_MAX:]
         if '\n' in self._partial_line:
             *complete_lines, self._partial_line = self._partial_line.split('\n')
             if not self._in_bottom_bar:
@@ -229,16 +241,24 @@ class _StdoutLineTracker:
         ★ BUG-20：复位后若 ``_pending_flush`` 置位（定时器在 worker 在途时
         积累的行）且缓冲非空 → 继续刷盘（与阈值无关）；修复前仅 ``>=50``
         重启——timer 与 worker 并发写文件可能行序颠倒（后到先写）。
+        ★ BUG-45（review 方向）：**仅刷盘成功时立即重启**——``_flush_buffered_lines``
+        返回 False（跨进程 flock 冲突/OSError，行已放回缓冲）时若仍立即重启，
+        持续锁竞争下每 50 行无条件新建 daemon 线程（线程风暴）。失败后交还
+        定时器（2s 后重试），避免无意义线程创建。
         """
         try:
-            self._flush_buffered_lines()
+            success = self._flush_buffered_lines()
+        except Exception:
+            success = False
         finally:
             with self._buffer_lock:
                 self._flush_in_progress = False
-                if len(self._output_buffer) >= 50 or (
-                    self._pending_flush and self._output_buffer
+                if success and (
+                    len(self._output_buffer) >= 50 or (
+                        self._pending_flush and self._output_buffer
+                    )
                 ):
-                    # 在途期间新积累的行达到阈值 / 定时器待刷 → 再次启动
+                    # 成功且新积累行达阈值 / 定时器待刷 → 再次启动
                     if self._pending_flush and len(self._output_buffer) < 50:
                         self._pending_flush = False
                     self._flush_in_progress = True
@@ -246,6 +266,7 @@ class _StdoutLineTracker:
                     self._flush_worker_thread = thread
                     thread.start()
                 else:
+                    # 失败或缓冲不足：交还定时器重试（防线程风暴）
                     self._flush_worker_thread = None
                     self._pending_flush = False
 

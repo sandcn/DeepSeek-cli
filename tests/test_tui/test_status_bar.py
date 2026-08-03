@@ -32,13 +32,21 @@ class _Model:
 
 
 def _render_twice_same_bucket(model):
-    """同一 1s 时间桶内连续渲染两次 StatusBar。"""
+    """同一 1s 时间桶内连续渲染两次 StatusBar。
+
+    BUG-43：use_memo deps 补充 ``spinner_char``——spinner_char 经
+    ``_fx.spinner_frame``（``_fx.time.monotonic``）计算，与 status_bar 的
+    time 模块相互独立；测试须同步 patch ``_fx.time``（以及 ``_theme.time``
+    供 time_glow 稳定）才能保证两次渲染处于同一时间桶。
+    """
     with patch("src.tui.app.status_bar.time.monotonic", return_value=100.0):
-        r = Reconciler()
-        root = r.create_root()
-        el = h(StatusBar, {"model": model, "width": 80})
-        r.render(root, el, 80, 24)
-        r.render(root, el, 80, 24)
+        with patch("src.tui.app._fx.time.monotonic", return_value=100.0):
+            with patch("src.tui.app._theme.time.monotonic", return_value=100.0):
+                r = Reconciler()
+                root = r.create_root()
+                el = h(StatusBar, {"model": model, "width": 80})
+                r.render(root, el, 80, 24)
+                r.render(root, el, 80, 24)
     return r, root
 
 

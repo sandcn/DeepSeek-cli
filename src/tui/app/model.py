@@ -423,7 +423,15 @@ def _user_marker_styled_lines(block, start, stop, width):
             continue
         for seg in wrapped:
             seg_runs = [StyledRun(r.text, r.style) for r in seg.runs if r.text]
-            out.append(Line([StyledRun("> ", icon)] + seg_runs))
+            line = Line([StyledRun("> ", icon)] + seg_runs)
+            # ★ 方向8（窄屏防溢出）：``> `` 前缀（2 列）+ 宽字符段可能超
+            #   width（width<4 时 CJK 内容段宽 2，总宽 4 > width）——截断至
+            #   width 保持行级 diff 宽度不变量（截断点不拆 CJK，与工具卡
+            #   窄屏降级语义一致）。
+            if width > 0 and line.width > width:
+                from src.tui.ink.helpers import truncate_line
+                line = truncate_line(line, width)
+            out.append(line)
     return out
 
 
@@ -637,11 +645,16 @@ class AppModel:
                 # 关闭时补齐卡片尾空行（方向3 修复；_append_card_trailer 幂等）。
                 self._append_card_trailer(block)
                 block.extra["_trailer_appended"] = True
-            if block._cached_ink_lines is None:
+            if block._cached_ink_lines is None and block.kind != "reasoning":
                 block._cached_ink_lines = self._block_to_ink_lines(block, 0)
                 # ★ 方向1（内存回收）：冻结后开放 styled 缓存不再被
                 #   ``_block_styled_lines`` 使用（改走冻结缓存）——释放引用防
                 #   大会话累积（dict 持有全部已转换行引用）。
+                block._open_styled_cache = None
+            elif block.kind == "reasoning":
+                # ★ BUG-62：reasoning 不冻结（冻结缓存无消费方）——仅释放
+                #   open 缓存防大会话内存累积（_block_styled_lines 对
+                #   reasoning 保持即时 fg=242 路径）。
                 block._open_styled_cache = None
             self.committed_count += 1
 
@@ -828,9 +841,13 @@ class AppModel:
             #   翻倍且不回收。与 ``close_tool_box`` 的未提交尾冻结一致；
             #   ``_block_styled_lines`` 冻结缓存分支已按 ``cache[0:]``
             #   （冻结缓存即未提交部分）返回。
-            block._cached_ink_lines = self._block_to_ink_lines(
-                block, block.committed_line_count,
-            )
+            # ★ BUG-62（review 方向）：reasoning 块**不创建冻结缓存**——
+            #   ``_block_styled_lines`` 显式排除 reasoning（冻结 dim 样式与
+            #   即时渲染 fg=242 语义不同）→ 创建即死内存；仅释放 open 缓存。
+            if block.kind != "reasoning":
+                block._cached_ink_lines = self._block_to_ink_lines(
+                    block, block.committed_line_count,
+                )
             block._open_styled_cache = None  # 冻结后开放缓存不再需要
             self.commit_block(self.reasoning_block_index)
 
@@ -931,6 +948,10 @@ class AppModel:
                 #   顶边框已在 committed_lines）复用更新标题时**同步重建
                 #   committed_lines 顶边框行**——修复前仅更新块内标题行，
                 #   渲染仍显示旧标题（如兜底 box 的空工具名）。
+                #   ★ BUG-30（review 方向）：经 ``_replace_committed_line``
+                #   替换新 Line + 列表身份变化——修复前直接 ``committed_lines[offset]
+                #   = Line(...)`` 替换元素但列表身份不变 → 前缀缓存命中返回旧
+                #   元素 → 新标题不上屏（与 close_tool_box 图标翻转同根因）。
                 if existing.committed_line_count > 0:
                     offset = existing.extra.get("_first_committed_offset")
                     if offset is not None and 0 <= offset < len(self.committed_lines):
@@ -939,7 +960,7 @@ class AppModel:
                             existing, getattr(self, "width", 0), 0, None,
                         )
                         if head:
-                            self.committed_lines[offset] = Line(head[0])
+                            self._replace_committed_line(offset, Line(head[0]))
                 self.active_tool = {
                     "name": display, "detail": detail, "status": "running",
                     "tool_name": tool_name or "",
@@ -1116,13 +1137,21 @@ class AppModel:
         # 测试仍消费 active_tool；app 组件树已移除该组件）
         self.active_tool = None
 
-        # ★ 1.6 修复：长工具输出（> _TOOL_INCREMENTAL_THRESHOLD 触发增量提交后
-        #   顶边框已在 committed_lines）关闭时更新 committed_lines 中顶边框状态
-        #   图标——修复前 committed_lines 顶边框恒 ●（首帧增量提交时状态为
-        #   running，close 后不再更新）。替换 runs 时新建 StyledRun 列表但保留
-        #   Line 对象引用（增量缓存身份复用不破坏）；未触发增量提交的短工具
-        #   （_first_committed_offset 不存在）关闭时经 commit_block 提交的顶边框
-        #   已带 done/fail 图标，无需更新。
+        # ★ 1.6 修复 + BUG-30（review 方向）修复：长工具输出（>
+        #   _TOOL_INCREMENTAL_THRESHOLD 触发增量提交后顶边框已在 committed_lines）
+        #   关闭时更新 committed_lines 中顶边框状态图标。
+        #   **BUG-30（渲染陈旧）**：修复前原地修改 ``top_line.runs``（保留 Line
+        #   对象引用）——committed-chat 前缀缓存（``chat_view._paint`` 键
+        #   ``(id(lines), n, box.y)``）与 diff 身份短路（``p is f`` → 相等跳过）
+        #   都按「Line 对象身份 = 内容不变」优化：内存中 Line 虽改为 ✔，但
+        #   prev 帧与 new 帧引用同一 Line 对象 → 渲染器认为无差异 → **终端顶边框
+        #   恒显示 ●，与底边框「✔ 完成」矛盾**（必现，长工具输出触发增量提交后
+        #   关闭必现）。
+        #   修复：**新建 Line 对象替换**（不复用旧对象）+ ``_replace_committed_line``
+        #   令 committed_lines 列表身份变化（浅拷贝）→ 前缀缓存键中 ``id(lines)``
+        #   失效 → 下一帧重建前缀 → diff 对新 Line 对象做 runs 值比较 → 顶边框
+        #   行被重写。短工具（未增量提交，offset 不存在）关闭时经 commit_block
+        #   提交的顶边框已带 done/fail 图标，无需更新。
         #   卡片结构：``_first_committed_offset`` 指向卡片**首行（顶边框）**，
         #   状态图标为边框内 runs[1]（``┌─ `` 前缀后；runs[0] 为边框前缀）。
         offset = block.extra.get("_first_committed_offset")
@@ -1139,8 +1168,9 @@ class AppModel:
                         if r.text and r.text.strip() in ("\u25cf", "\u2714", "\u2716"):
                             idx = i
                             break
-                # 替换图标 run，保留边框前缀与标题内容（runs 引用身份保留）
-                top_line.runs = runs[:idx] + icon + runs[idx + 1:]
+                # ★ BUG-30：新建 Line 对象（不复用旧对象）+ 列表身份变化
+                from src.tui.ink import Line
+                self._replace_committed_line(offset, Line(runs[:idx] + icon + runs[idx + 1:]))
 
         block.closed = True
         # ★ 方向4（增量提交协同）：冻结仅**未提交部分**（已提交行在
@@ -1151,6 +1181,26 @@ class AppModel:
         block._cached_ink_lines = self._block_to_ink_lines(block, block.committed_line_count)
         block._open_styled_cache = None  # 冻结后开放缓存不再需要
         self.commit_block(len(self.blocks) - 1)
+
+    def _replace_committed_line(self, offset: int, new_line) -> None:
+        """替换 committed_lines[offset] 并令列表身份变化（已提交行原地更新）。
+
+        已提交行（committed_lines）被 committed-chat 前缀缓存（``chat_view._paint``
+        键 ``(id(lines), n, box.y)``）与 diff 身份短路引用——**原地替换元素但保持
+        列表身份**时前缀缓存不失效、渲染输出陈旧（BUG-30 同族）。本方法经
+        ``self.committed_lines = self.committed_lines.copy()`` 浅拷贝令 ``id(lines)``
+        变化 → 前缀缓存失效 → 下一帧重建前缀（新前缀引用新 Line 对象）→ diff 做
+        runs 值比较 → 目标行被重写。
+
+        与 ``commit_block``/``commit_open_block`` 的原地 ``extend`` 语义正交：
+        追加新行保持列表身份（前缀缓存命中仅追加新增行，零重建）；本方法仅在
+        更新**已提交行内容**时触发（低频：工具状态图标翻转/标题更新）。
+        """
+        if not (0 <= offset < len(self.committed_lines)):
+            return
+        new_list = list(self.committed_lines)
+        new_list[offset] = new_line
+        self.committed_lines = new_list
 
     def _next_tool_id(self) -> str:
         self._tool_id_seq += 1

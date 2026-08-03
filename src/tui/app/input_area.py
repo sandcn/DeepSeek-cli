@@ -300,14 +300,25 @@ def _build_lines(fiber) -> list[Line]:
         desc_w = _desc_column_width(width) if split else 0
         # 左栏选项宽度 = 总宽 - 右栏说明 - 分隔线
         opt_w = max(1, width - desc_w - 1) if split else 0
-        # 标题行（方向3：标题呼吸色——补全弹窗出现时增加动态感）
+        # 标题行（方向3：标题呼吸色——补全弹窗出现时增加动态感；
+        # 方向8：▍ 装饰条前缀——与错误/通知标记同语义，补全弹窗更醒目）
         title_color = _glow_color(38, 55)
-        head = Line.of(" ", Style(fg=title_color, bold=True))
+        head = Line.of(" \u258d", Style(fg=title_color, bold=True))
+        head.append(" ", Style(fg=title_color, bold=True))
         head.append(title, Style(fg=title_color, bold=True))
-        head.append(f" ({total}项)", _S_TIME)
+        # ★ BEAUTY-17（体验）：导航位置提示 ``(2/10)``——选中项位置/总数，
+        #   补全弹窗导航时用户可感知当前位置（替代仅总数）。总数取
+        #   ``len(completion.texts)``（与项数一致；缺省回退 len(items)）。
+        if total > 0:
+            head.append(f" ({selected + 1}/{total})", Style(fg=title_color))
         if split:
             # 左栏标题占位（标题与选项栏对齐；右栏说明位置留白）
             head.append(" " * max(0, opt_w - head.width), _S_DIM)
+        # ★ 方向8（窄屏防溢出）：标题行超宽时截断至 width（不拆 CJK）——
+        #   修复前 `` 补全 (4项)`` 在 width<11 时撑爆行宽。
+        if head.width > width:
+            from src.tui.ink.helpers import truncate_line
+            head = truncate_line(head, width)
         lines.append(head)
         # 候选项
         # ★ 方向3（动效）：选中项高亮呼吸——背景色 236→239 脉动（10s 周期），
@@ -349,6 +360,11 @@ def _build_lines(fiber) -> list[Line]:
                 # 右栏：当前选中项说明（分栏换行）
                 if row < len(desc_lines):
                     line.append(_truncate_width(desc_lines[row], desc_w), _S_DIM)
+                # ★ 方向8（窄屏防溢出）：分栏行超宽时截断至 width（不拆
+                #   CJK）——修复前窄屏下左栏前缀 + 文本 + 分隔线 + 说明撑爆行宽。
+                if width > 0 and line.width > width:
+                    from src.tui.ink.helpers import truncate_line
+                    line = truncate_line(line, width)
                 lines.append(line)
         else:
             cell_w = max(1, min(max((_vwidth(i) for i in items), default=10) + 4, width - 2) - 3)
@@ -373,11 +389,20 @@ def _build_lines(fiber) -> list[Line]:
                     # _truncate_width，截断点不拆 CJK）——超长描述不再撑爆行宽。
                     desc_budget = max(1, width - line.width)
                     line.append(_truncate_width(descs[i], desc_budget), _S_DIM)
+                # ★ 方向8（窄屏防溢出）：选项行超宽时截断至 width（不拆
+                #   CJK）——修复前 `` ▶ /help 显示帮助`` 在窄屏撑爆行宽。
+                if width > 0 and line.width > width:
+                    from src.tui.ink.helpers import truncate_line
+                    line = truncate_line(line, width)
                 lines.append(line)
         # 底部提示（方向3 动效：提示文本呼吸色——补全弹窗出现时更生动）
         hint_color = _glow_color(110, 16)  # 浅蓝 110 → 126 脉动（_S_TIME 邻域）
         hint = Line.of(" ", Style(fg=hint_color))
         hint.append("Tab \u2191\u2193 Esc", Style(fg=hint_color))
+        # ★ 方向8（窄屏防溢出）：提示行超宽时截断至 width。
+        if width > 0 and hint.width > width:
+            from src.tui.ink.helpers import truncate_line
+            hint = truncate_line(hint, width)
         lines.append(hint)
 
     # ── 上分隔线（CPU/MEM） ──
@@ -414,7 +439,10 @@ def _build_lines(fiber) -> list[Line]:
         if search.matches and 0 <= search.index < len(search.matches):
             match = search.matches[search.index]
         sline = Line.of("(reverse-i-search)`", _S_ACCENT)
-        sline.append(q, Style(fg=221))
+        # ★ 方向8（动效）：搜索 query 呼吸色（221→232，8s 周期）——搜索
+        #   激活时 query 微呼吸，视觉提示「匹配进行中」（0.25s 桶，4Hz 刷新）。
+        from src.tui.app._theme import time_glow as _tg
+        sline.append(q, Style(fg=_tg(221, 232, 8.0)))
         sline.append("`: ", _S_ACCENT)
         # 方向1 步骤4（窄屏防溢出）：match 截断至剩余行宽（不拆 CJK）
         match_budget = max(1, width - sline.width)
@@ -466,6 +494,12 @@ def _build_lines(fiber) -> list[Line]:
         else:
             line.append("\u00b7 ", _S_CONT)
             line.append(segment, _S_TEXT)
+        # ★ 方向8（极窄屏防溢出）：``> ``（2 列）/``· ``（2 列）前缀 +
+        #   输入段可能超 width（width<4 时 CJK 段宽 2）——截断至 width 保持
+        #   行级 diff 宽度不变量（与补全弹窗/搜索行截断语义一致）。
+        if width > 0 and line.width > width:
+            from src.tui.ink.helpers import truncate_line
+            line = truncate_line(line, width)
         lines.append(line)
 
     # ── 下分隔线（时间戳） ──

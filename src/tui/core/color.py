@@ -14,6 +14,7 @@
 from __future__ import annotations
 
 import logging
+import math
 import os
 from functools import lru_cache
 from typing import Union
@@ -461,6 +462,12 @@ def lerp_color(a: int, b: int, t: float) -> int:
     Returns:
         插值后的色号（0-255）。
     """
+    # ★ BUG-51（review 方向）：非有限 t（NaN/inf）返回 a（与 format_* 的
+    #   isfinite 防护一致）——修复前 NaN 走完比较后 ``round(NaN)`` 抛
+    #   ValueError 中断渲染（时间基动效的 t 来自正弦插值，理论不产生 NaN，
+    #   防御外部调用方传入异常 t）。
+    if not math.isfinite(t):
+        return a
     if t <= 0.0:
         return a
     if t >= 1.0:
