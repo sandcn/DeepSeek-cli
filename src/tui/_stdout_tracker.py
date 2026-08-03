@@ -332,6 +332,10 @@ class _StdoutLineTracker:
         BUG-T6 单飞后：在途 worker 可能持有大块缓冲（含尚未落盘的行）。
         本方法循环「等待在途 worker 完成 → 排空缓冲」，直到缓冲为空且无
         在途 worker，确保最终刷盘后文件内容完整且行序正确。
+
+        ★ BUG-29（review 方向）：循环上限（2000 次 × join 0.01s ≈ 20s）后
+        追加一次**无条件最终刷盘**——修复前若 worker 被慢盘挂起超过上限，
+        退出时 ``_output_buffer`` 残留行不再刷盘 → 进程退出后历史行丢失。
         """
         self._stop_flush_timer()
         for _ in range(2000):
@@ -350,6 +354,12 @@ class _StdoutLineTracker:
             except Exception:
                 _logger.warning("_flush_history: 最终刷盘异常", exc_info=True)
                 break
+        else:
+            # 循环自然耗尽（20s 上限）：残留行兜底刷盘（尽力而为，不丢行）
+            try:
+                self._flush_buffered_lines()
+            except Exception:
+                _logger.warning("_flush_history: 兜底刷盘异常", exc_info=True)
 
     def close(self) -> None:
         """停止定时刷盘并刷出所有剩余输出行到历史文件（幂等）。

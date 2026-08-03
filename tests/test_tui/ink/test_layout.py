@@ -1203,3 +1203,23 @@ class TestTranslateSubtreeMultiChild:
         assert texts[1].layout_box.y >= 3, (
             f"d 应随嵌套 BOX 整体平移（sibling 遍历）: {texts[1].layout_box.y}"
         )
+
+
+class TestRunsNaturalWidthNewline:
+    """BUG-28 — _runs_natural_width 按 \\n 拆行取最大行宽（与文本分支一致）。"""
+
+    def test_newline_natural_width_max_line(self):
+        """'aaa\\nbb' 自然宽度 = 最大行宽 3（修复前累加为 5）。"""
+        from src.tui.ink.layout import _runs_natural_width
+        from src.tui.ink.output import StyledRun
+
+        w = _runs_natural_width([StyledRun("aaa\nbb", None)])
+        assert w == 3, f"'aaa\\nbb' 自然宽度应为 3，实际 {w}"
+
+    def test_no_newline_unchanged(self):
+        """无换行时行为不变（拼接宽度）。"""
+        from src.tui.ink.layout import _runs_natural_width
+        from src.tui.ink.output import StyledRun
+
+        w = _runs_natural_width([StyledRun("abc", None), StyledRun("def", None)])
+        assert w == 6

@@ -66,11 +66,16 @@ class LayoutBox:
 
 
 def _runs_natural_width(runs: list) -> int:
-    """styled runs 的自然内容宽度（单行拼接宽度）。"""
-    total = 0
-    for r in runs:
-        total += wcswidth_simple(getattr(r, "text", str(r)))
-    return total
+    """styled runs 的自然内容宽度（单行拼接宽度，按 ``\\n`` 拆行取最大行宽）。
+
+    ★ BUG-28（review 方向 P2）：``\\n`` 为强制换行符——修复前直接累加所有
+    run 的 ``wcswidth_simple``（``\\n`` 宽度 0），含换行文本的自然宽度高估为
+    全拼接宽；与 TEXT 文本分支（``text.split("\\n")`` 取最大行宽）不一致 →
+    row 内 styled 含换行文本时子节点宽度/后续兄弟位置偏大。改为按 ``\\n``
+    拆行后取最大行宽（与文本分支一致）。
+    """
+    text = "".join(getattr(r, "text", str(r)) for r in runs)
+    return max((wcswidth_simple(line) for line in text.split("\n")), default=0)
 
 
 def _skip_function(fiber: Fiber | None) -> Fiber | None:
