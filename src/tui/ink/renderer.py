@@ -631,24 +631,29 @@ class InkRenderer:
         # 追加新行（滚动扩展物理缓冲）：漂移吸收为 0 时 buf_h1 == new_h+1，
         # 内容行写完后额外滚动一次产生末尾空行。
         if grow_rows > 0:
-            bottom_row = max(1, min(buf_h0, height))  # 有漂移 ⇒ buf_h0 > height ⇒ height
-            if current_row > bottom_row:
-                buf.write(cursor_up(current_row - bottom_row))
-            elif current_row < bottom_row:
-                buf.write(cursor_down(bottom_row - current_row))
-            current_row = bottom_row
             append_start = max(0, buf_h0 - drift1)  # 第一个新内容行（drift1=0 ⇒ buf_h0）
+            # ★ 渲染错乱（模糊测试锁定）：doc 行 append_start 的目标物理行 =
+            #   buf_h0（底部对齐物理映射）——先移到物理行 buf_h0-1 再 \n 创建
+            #   物理行 buf_h0。修复前直接在 bottom_row（=物理行 buf_h0-1）写
+            #   doc 行，覆盖 rewrites 刚写入的 doc 行 buf_h0-1-drift1（内容行
+            #   丢失/错位，如 2→6 行增长中 doc 行 3 'a' 被 doc 行 4 'c' 覆盖、
+            #   2→5 行增长中 'b' 被 'status' 覆盖）。
+            target_row = max(1, min(buf_h0 - buf_top0, height))
+            if current_row > target_row:
+                buf.write(cursor_up(current_row - target_row))
+            elif current_row < target_row:
+                buf.write(cursor_down(target_row - current_row))
+            current_row = target_row
+            buf.write("\n")
+            current_row = self._advance_row(current_row)
             for doc_idx in range(append_start, new_h):
                 buf.write("\r")
                 buf.write(frame.render_line(doc_idx))
                 buf.write(_CLEAR_EOL)
                 buf.write("\n")
                 current_row = self._advance_row(current_row)
-            # 末尾空行：再滚动一次（物理缓冲 buf_h0 → buf_h1）
-            if current_row >= height:
-                buf.write("\r")
-                buf.write("\n")
-                current_row = self._advance_row(current_row)
+            # 末尾空行：物理行 new_h（= buf_h1-1）由最后一个 doc 行的 \n 创建
+            # （滚动或屏幕内下移）——buf_h1 逻辑跟踪，无需额外滚动。
         bottom_row = max(1, min(buf_h1, height))
         if current_row != bottom_row:
             if current_row > bottom_row:
@@ -822,7 +827,23 @@ class InkRenderer:
         if self._top_aligned:
             old_drift = 0
             if new_h + 1 > height:
-                drift = 0  # 保持顶部对齐（doc 仍高于屏幕）
+                # ★ 渲染错乱（模糊测试锁定）：doc 缩短导致物理缓冲漂移
+                #   （buf_h > new_h+1）且新 doc 大部分在滚动区（可见区显示的
+                #   doc 行数 <= 滚动区 doc 行数）时切换底部对齐——顶部对齐下
+                #   doc 0 固定在物理行 0，缩短后 doc 内容偏上滚出（滚动区行
+                #   不可达不重写，内容陈旧），用户看不到缩短后的完整 doc
+                #   （如 6→5→4 行序列中 doc 行 2 'p3' 永久丢失）。切换底部
+                #   对齐后 doc 底部贴可见区底部，doc 内容尽量显示在可见区。
+                #   弹窗场景（doc 远高于屏幕，可见区 doc 行数 >> 滚动区）保持
+                #   顶部对齐——避免全可见区重写闪烁（test_completion_flash_fix
+                #   锁定）。
+                visible_doc_rows = max(0, min(new_h, buf_h) - buf_top)
+                scrollback_doc_rows = min(buf_top, new_h)
+                if scrollback_doc_rows > visible_doc_rows:
+                    self._top_aligned = False
+                    drift = buf_h - new_h - 1
+                else:
+                    drift = 0  # 保持顶部对齐（doc 仍高于屏幕）
             else:
                 # doc 进入屏幕内 → 切换为底部对齐（完整文档可见契约）
                 self._top_aligned = False
