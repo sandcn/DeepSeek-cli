@@ -99,6 +99,18 @@ class InkRenderer:
         #   ``_effective_offset`` 可为负）；物理偏移（``_buf_h - height``）仅
         #   用于漂移方法（``_rewrite_drifted``/``_grow_drifted``）内部可见区定位。
         self._buf_h: int = 0
+        # ★ 顶部对齐状态（补全弹窗闪烁修复）：
+        #   - True（默认）：物理行 q 显示 doc 行 q（doc 0 固定在物理行 0）——
+        #     文档仍高于屏幕时缩短/等高/增长走「顶部对齐局部重写」：弹窗/尾
+        #     部区域变化只重写变化行 + 清/补残留，弹窗上方（历史消息）永不
+        #     重写（消除补全弹窗 items 数量变化时的全可见区重写闪烁）。
+        #   - False：文档进入屏幕内（doc_h+1 <= height）后切换为「底部对齐」
+        #     （物理行 q → doc q-drift，文档底部对齐可见区底部，负偏移模型）
+        #     ——保证缩短进入屏幕内时完整文档可见（用户需求既有契约）。
+        #   切换时机：``_rewrite_drifted`` 检测 doc 进入屏幕内置 False；
+        #   首帧/重置后置 True；``_grow_drifted`` 增长时若 doc 仍高于屏幕保持
+        #   True、doc 进入屏幕内转 False。
+        self._top_aligned: bool = True
 
     # ── 屏幕坐标（height>0 时文档高于屏幕的滚动偏移处理） ──────────
 
@@ -130,6 +142,11 @@ class InkRenderer:
         """
         if self._height <= 0:
             return 0
+        if self._top_aligned and self._buf_h > 0:
+            # 顶部对齐：可见区顶部 = 物理缓冲顶部（含 scrollback/残留）——
+            # doc 0 固定在物理行 0，物理行 q 显示 doc 行 q。
+            return max(0, self._buf_h - self._height)
+        # 未渲染（buf_h=0，单元测试直接调用）或底部对齐：理想偏移推导。
         return max(0, doc_h + 1 - self._height)
 
     def _effective_offset(self, doc_h: int) -> int:
@@ -152,6 +169,11 @@ class InkRenderer:
         """
         if self._height <= 0:
             return 0
+        if self._top_aligned and self._buf_h > 0:
+            # 顶部对齐：doc 行 row 在物理行 row，屏幕行 = row - (buf_h-height)
+            # （物理缓冲高于屏幕时）。物理缓冲在屏幕内时 offset=0（doc 顶部
+            # 对齐物理缓冲顶部，全部可见）。
+            return max(0, self._buf_h - self._height)
         if self._buf_h > self._height:
             # 物理缓冲高于屏幕：可见区 = 缓冲底部，文档底部对齐缓冲末尾
             return doc_h + 1 - self._height
@@ -494,6 +516,14 @@ class InkRenderer:
         区清空），再追加新行滚动/扩展物理缓冲（``grow_rows =
         max(0, new_h+1 - _buf_h0)`` = 实际写行导致的缓冲增长）。
 
+        **顶部对齐模式（补全弹窗闪烁修复）**：当前顶部对齐（``_top_aligned``）
+        且 doc 仍高于屏幕时，物理行 ``q`` 直接显示 doc 行 ``q``（drift=0）——
+        弹窗/尾部增长只重写变化行 + 在残留位置追加新行（缓冲足够时不滚动，
+        物理缓冲不变），弹窗上方（历史消息）永不重写。底部对齐映射（drift1
+        由 ``_buf_h1`` 推导）在顶部对齐时退化为 0（无残留时 ``buf_h1 ==
+        new_h+1``）。doc 进入屏幕内（``new_h+1 <= height``）时切换为底部对齐
+        契约（完整文档可见），由本方法置 ``_top_aligned=False``。
+
         Args:
             frame: 新帧（较长）。
             prev_h: 旧帧高度。
@@ -503,10 +533,26 @@ class InkRenderer:
         height = self._height
         buf_h0 = self._buf_h
         buf_top0 = max(0, buf_h0 - height)
-        grow_rows = max(0, new_h + 1 - buf_h0)  # 物理缓冲实际增长（滚动扩展）
-        buf_h1 = buf_h0 + grow_rows
-        drift0 = buf_h0 - prev_h - 1  # 增长前漂移（物理偏移 - prev 理想偏移）
-        drift1 = buf_h1 - new_h - 1   # 增长后漂移（>=0，多数被增长吸收为 0）
+        # 顶部对齐：物理行 q → doc q（drift=0）；底部对齐：drift 由缓冲推导。
+        if self._top_aligned:
+            if new_h + 1 > height:
+                top_aligned = True
+            else:
+                # doc 进入屏幕内 → 底部对齐契约（完整文档可见）
+                self._top_aligned = False
+                top_aligned = False
+        else:
+            top_aligned = False
+        if top_aligned:
+            drift0 = 0
+            drift1 = 0
+            grow_rows = max(0, new_h + 1 - buf_h0)
+            buf_h1 = buf_h0 + grow_rows
+        else:
+            drift0 = buf_h0 - prev_h - 1  # 增长前漂移
+            grow_rows = max(0, new_h + 1 - buf_h0)
+            buf_h1 = buf_h0 + grow_rows
+            drift1 = buf_h1 - new_h - 1   # 增长后漂移
         prev = self._prev
         rewrites: list[tuple[int, int]] = []
         for q in range(buf_top0, buf_h0):
@@ -703,13 +749,28 @@ class InkRenderer:
         行）——偏移漂移由 ``_buf_h`` 精确跟踪，后续增长/等高重写按真实物理
         偏移定位（不漂移错位）。
 
+        **顶部对齐模式（补全弹窗闪烁修复）**：文档仍高于屏幕
+        （``new_h+1 > height``）且当前顶部对齐（``_top_aligned``）时，物理行
+        ``q`` 直接显示新文档行 ``q``（doc 0 固定在物理行 0）——弹窗/尾部区域
+        变化只重写变化行 + 清残留，**弹窗上方（历史消息）永不重写**（消除
+        补全弹窗 items 数量变化/弹窗缩放时整个可见区被重写的视觉闪烁）。
+        区别于底部对齐（``drift = _buf_h - new_h - 1``）：底部对齐下缩短导致
+        整个文档映射位移 delta 行，弹窗上方所有物理行映射到不同 doc 行 → 全
+        可见区重写。
+
+        **底部对齐模式**：文档进入屏幕内（``new_h+1 <= height``）或当前已处
+        底部对齐（``_top_aligned=False``）时，物理行 ``q`` 显示新文档行
+        ``q - drift``（``drift = _buf_h - new_h - 1``，可为负）——文档底部对齐
+        可见区底部，``doc_idx < 0``（文档上方空行区）清空（缩短进入屏幕内时
+        完整文档可见，既有契约）。
+
         核心映射：物理行 ``q``（0-based）显示新文档行 ``q - drift``，其中
         ``drift = _buf_h - new_h - 1``（物理偏移 - 新文档理想偏移）；当前物理
-        行内容为 prev 行 ``q - drift0``（``drift0 = _buf_h - prev_h - 1``）。
-        可见区物理行 ``[buf_top, buf_h)`` 覆盖新文档 ``[理想偏移, new_h]``
-        （含末尾空行）。逐物理行与 prev 帧对应内容比较（身份短路 + runs 值
-        相等），仅重写变化行；``doc_idx < 0``（文档上方空行区）/ ``== new_h``
-        （末尾空行）/ 越界（残留）写清行。
+        行内容为 prev 行 ``q - drift0``（``drift0 = _buf_h - prev_h - 1``；顶部
+        对齐切换前为 0）。可见区物理行 ``[buf_top, buf_h)`` 覆盖新文档
+        ``[理想偏移, new_h]``（含末尾空行）。逐物理行与 prev 帧对应内容比较
+        （身份短路 + runs 值相等），仅重写变化行；``doc_idx < 0``（文档上方
+        空行区）/ ``== new_h``（末尾空行）/ 越界（残留）写清行。
 
         自底向上重写（``cursor_up`` 定位，**不写 ``\n``**）——避免在屏幕底部
         写行触发滚动（滚动会改变物理缓冲，使 ``_buf_h`` 漂移不可控）；物理
@@ -725,14 +786,25 @@ class InkRenderer:
         height = self._height
         buf_h = self._buf_h
         buf_top = max(0, buf_h - height)  # 可见区首物理行（0-based）
-        drift = buf_h - new_h - 1         # 物理行 q ← 新文档行 q-drift
-        drift0 = buf_h - prev_h - 1       # 物理行 q 当前内容 = prev 行 q-drift0
         prev = self._prev
+        # 顶部对齐：物理行 q → doc q（drift=0）；底部对齐：drift = buf_h-new_h-1。
+        # old_drift 基于**切换前**状态（物理行 q 当前显示的 prev 行偏移）。
+        if self._top_aligned:
+            old_drift = 0
+            if new_h + 1 > height:
+                drift = 0  # 保持顶部对齐（doc 仍高于屏幕）
+            else:
+                # doc 进入屏幕内 → 切换为底部对齐（完整文档可见契约）
+                self._top_aligned = False
+                drift = buf_h - new_h - 1
+        else:
+            old_drift = buf_h - prev_h - 1
+            drift = buf_h - new_h - 1
         # 待重写项：(物理行, 新文档行)；doc_idx==-1 表示清除残留/空行。
         rewrites: list[tuple[int, int]] = []
         for q in range(buf_top, buf_h):
             doc_idx = q - drift
-            old_idx = q - drift0
+            old_idx = q - old_drift
             old_line = prev.lines[old_idx] if 0 <= old_idx < prev_h else None
             if doc_idx < 0:
                 # 文档上方空行区（缩短进入屏幕内时可见区顶部）：旧内容非空才清除
@@ -802,6 +874,7 @@ class InkRenderer:
             # _buf_h 置 1（虚拟末尾空行）：空帧后增长从 1 起算物理缓冲
             # （物理光标在行 1，写 1 行内容+\n 后缓冲 2 行 = doc_h+1+1）。
             self._buf_h = 1
+            self._top_aligned = True
             self._cursor_row = self._bottom_row(frame.height)
             return
         buf = io.StringIO()
@@ -811,6 +884,7 @@ class InkRenderer:
             buf.write("\n")
         # 物理缓冲行数 = 文档行 + 末尾空白行（每行以 \n 结尾）
         self._buf_h = frame.height + 1
+        self._top_aligned = True
         self._emit_new_lines(frame, emit_start, frame.height)
         self._cursor_row = self._bottom_row(frame.height)
         self._stream.write(buf.getvalue())
@@ -874,6 +948,7 @@ class InkRenderer:
         self._prev = Frame([])
         self._cursor_row = 1  # clear_screen 后光标在 (1,1)
         self._buf_h = 1
+        self._top_aligned = True
 
     # ── 生命周期 ─────────────────────────────────────
 
@@ -886,6 +961,7 @@ class InkRenderer:
         self._prev = Frame([])
         self._cursor_row = 1
         self._buf_h = 1
+        self._top_aligned = True
         try:
             self._stream.flush()
         except Exception:
@@ -903,11 +979,13 @@ class InkRenderer:
             self._prev = None
             self._cursor_row = 0
             self._buf_h = 0
+            self._top_aligned = True
         else:
             # 空帧 → 增量 diff（与空帧比较 = 所有行都变化 → 逐行写入，不清屏）
             self._prev = Frame([])
             self._cursor_row = 1
             self._buf_h = 1
+            self._top_aligned = True
 
     def flush(self) -> None:
         """刷出底层输出。"""

@@ -115,6 +115,13 @@ class CompletionState:
     # 分栏说明模式（user_select 使用）：True 时弹窗左侧选项列表、
     # 右侧显示当前选中项说明；False（命令补全等）保持描述右侧灰显的既有行为
     split_desc: bool = False
+    # ★ 弹窗高度锁定（补全弹窗闪烁修复）：弹窗打开期间**只增不减**——
+    # 打字时 items 数量变化（5→2→1）若弹窗高度随之下调，input_area 高度变化
+    # 触发文档缩短重排（物理缓冲无 delete-line，缩短短暂残留 → 漂移 → 全量
+    # 重写 → 视觉闪烁）。锁定后 items 减少时高度保持（底部短暂留白），doc
+    # 高度不变 → 等高 diff 只重写弹窗行（不闪）；items 增加时高度跟随（增高，
+    # 增长滚动自然）。hide_completions 重置为 0。
+    locked_height: int = 0
 
 
 @dataclass

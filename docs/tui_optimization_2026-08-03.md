@@ -378,3 +378,45 @@ subagent 输出由 subagent 面板自渲染，不进主内容 box。
 - 新增测试 ``test_dispatcher_filters_subagent_label_with_agent_source``
   （label=agent-N 丢弃 / tool_id=agent-N 丢弃 / call_main 正常进入）。
 - 全部 TUI 测试通过：**1721 passed**。
+
+---
+
+## 第十三轮（commit 待定）— 消除补全弹窗 items 变化时的全可见区重写闪烁
+
+### 问题
+用户报告：「补全弹出时，改变内容时，tui 会闪」。复现：文档高于屏幕（H=30，
+25 条历史消息）时，弹窗 items 数量变化（5→2 项）触发 **26/30 行可见区全量
+重写**（含所有未变化的历史消息）——快速打字时 items 数量频繁变化，每帧近整屏
+刷新 → 视觉闪烁。根因是补全弹窗（input_area 顶部）高度变化时，``_rewrite_drifted``
+按**底部对齐**映射（``doc_idx = q - drift``）重写：缩短后整个文档映射位移
+delta 行，弹窗上方所有物理行映射到不同 doc 行 → 全可见区重写。
+
+### 修复 1：InkRenderer 顶部对齐局部重写（``_top_aligned``）
+- 新增状态 ``_top_aligned``（默认 True）：**物理行 q 显示 doc 行 q**（doc 0
+  固定在物理行 0）。
+- ``_rewrite_drifted`` / ``_grow_drifted`` 增加顶部对齐模式：文档仍高于屏幕
+  （``new_h+1 > height``）时物理行 q → doc q，弹窗/尾部区域变化只重写变化行
+  + 清/补残留，**弹窗上方（历史消息）永不重写**——弹窗 5→2 项重写从 26 行
+  降到 10 行（7 行弹窗 + 3 行清残留）。
+- doc 进入屏幕内（``new_h+1 <= height``）切换为底部对齐（``_top_aligned=False``），
+  保持「完整文档可见」既有契约（负偏移模型）；首帧/重置/``_write_full`` 复位
+  True。
+- ``_screen_offset``/``_effective_offset`` 顶部对齐时用物理偏移
+  （``max(0, buf_h-height)``），未渲染（buf_h=0）回退理想偏移推导。
+
+### 修复 2：弹窗高度锁定（``CompletionState.locked_height``）
+- 弹窗打开期间 ``_completion_height`` **只增不减**：items 数量减少时高度保持
+  （``_build_lines`` 候选项行补白空行），doc 高度不变 → 等高 diff 只重写弹窗
+  行（不闪）；items 增加高度跟随（增长滚动自然）。
+- ``hide_completions`` 重置 ``locked_height=0``。
+- 效果：H=50（doc 屏幕内）时弹窗 5→2 项重写 26 行 → **7 行**（历史零重写）。
+
+### 验证
+- 复现：H=30 文档高于屏幕，弹窗 5→2 项：26 行 → 10 行；历史消息不重写；
+  H=50 doc 屏幕内：26 行 → 7 行；完整打字序列总重写 82 → 55。
+- 端到端 MiniTerm 重放：弹窗缩小后可见区与目标帧一致。
+- 新增 ``test_completion_flash_fix.py``（4 例：弹窗缩短不重写历史 / 反复变化
+  不重写历史 / ``_completion_height`` 只增不减 / 关闭后重置重新锁定）；
+  更新 ``test_renderer_screen.py`` 顶部对齐期望（TestShrinkRebuild /
+  TestDriftedIncremental）。
+- 全部测试通过：**2075 passed**（原 2071 + 新增 4）。

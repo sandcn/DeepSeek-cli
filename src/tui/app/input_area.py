@@ -145,17 +145,37 @@ def _completion_height(completion, width=None) -> int:
 
     方向4（超屏防护）：候选项行数经 ``_completion_item_rows`` 限制——大量
     选项 / 超长说明时弹窗不超终端高度（渲染截断与高度一致，光标定位正确）。
+
+    ★ 高度锁定（补全弹窗闪烁修复）：弹窗打开期间返回 ``locked_height``
+    （**只增不减**）——打字时 items 数量变化（5→2→1）若高度随之下调，
+    input_area 高度变化触发文档缩短重排（物理缓冲无 delete-line → 漂移 →
+    全量重写 → 视觉闪烁）；锁定后 items 减少时高度保持（底部短暂留白），
+    doc 高度不变 → 等高 diff 只重写弹窗行（不闪）；items 增加时高度跟随
+    （增高，增长滚动自然）。弹窗关闭（hide_completions）重置 locked_height=0。
+
+    Args:
+        completion: CompletionState 或 None。
+        width: 终端宽度（分栏说明模式需要）。
+
+    Returns:
+        弹窗高度（行数）；弹窗不可见/无 items 时 0。
     """
     if completion is None or not completion.visible or not completion.items:
         return 0
     n = len(completion.items)
     descs = completion.descriptions or []
     if not (getattr(completion, "split_desc", False) and descs) or width is None:
-        return min(n, _completion_item_rows()) + 2
-    desc_w = _desc_column_width(width)
-    sel = max(0, min(completion.selected, len(descs) - 1))
-    desc_lines = _wrap_by_width(descs[sel] or "", desc_w)
-    return min(max(n, len(desc_lines)), _completion_item_rows()) + 2
+        need = min(n, _completion_item_rows()) + 2
+    else:
+        desc_w = _desc_column_width(width)
+        sel = max(0, min(completion.selected, len(descs) - 1))
+        desc_lines = _wrap_by_width(descs[sel] or "", desc_w)
+        need = min(max(n, len(desc_lines)), _completion_item_rows()) + 2
+    # 高度锁定（只增不减）：弹窗打开期间 items 减少高度保持，doc 高度不变
+    # → 等高 diff 只重写弹窗行（消除打字时 items 数量变化引发的全量重写闪烁）。
+    if need > getattr(completion, "locked_height", 0):
+        completion.locked_height = need
+    return completion.locked_height
 
 
 def _is_search_active(search) -> bool:
@@ -338,7 +358,10 @@ def _build_lines(fiber) -> list[Line]:
             desc_lines = _wrap_by_width(desc_text or "", desc_w)
             # 方向4（超屏防护）：候选项 + 说明行数限制（与 _completion_height
             # 一致——超长说明 / 大量选项时弹窗不超终端高度）。
-            n_rows = min(max(len(items), len(desc_lines)), _completion_item_rows())
+            # ★ 高度锁定（补全弹窗闪烁修复）：渲染行数取 ``_completion_height-2``
+            #   （锁定高度）而非当前内容需求——items 减少时弹窗高度保持（底部
+            #   补白），doc 高度不变 → 等高 diff 只重写弹窗行（不闪）。
+            n_rows = max(0, _completion_height(completion, width) - 2)
             for row in range(n_rows):
                 line = Line()
                 # 左栏：选项
@@ -370,8 +393,15 @@ def _build_lines(fiber) -> list[Line]:
             cell_w = max(1, min(max((_vwidth(i) for i in items), default=10) + 4, width - 2) - 3)
             # 方向4（超屏防护）：大量选项时截断渲染行数（与 _completion_height
             # 一致——超出终端的选项不渲染，弹窗不超屏）。
-            shown = min(len(items), _completion_item_rows())
-            for i in range(shown):
+            # ★ 高度锁定（补全弹窗闪烁修复）：渲染行数取 ``_completion_height-2``
+            #   （锁定高度）而非当前 items 数量——items 减少时弹窗高度保持
+            #   （底部补白空行），doc 高度不变 → 等高 diff 只重写弹窗行（不闪）。
+            n_rows = max(0, _completion_height(completion, width) - 2)
+            for i in range(n_rows):
+                if i >= len(items):
+                    # 高度锁定补白：items 减少后弹窗底部留白（空行）
+                    lines.append(Line())
+                    continue
                 item = items[i]
                 line = Line()
                 if i == selected:

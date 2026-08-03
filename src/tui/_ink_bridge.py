@@ -139,6 +139,8 @@ class InkBridge(_BottomBarCompatMixin):
             return
         # 保存隐藏前选中索引（兼容 _BottomBar.get_selected_completion_index）
         self._last_completion_idx = self._model.completion.selected
+        # 重置弹窗高度锁定（补全弹窗闪烁修复）：下次打开重新锁定
+        self._model.completion.locked_height = 0
         self._model.completion = CompletionState()
         self._request_redraw()
 

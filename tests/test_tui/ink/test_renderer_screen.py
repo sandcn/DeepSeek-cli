@@ -312,11 +312,14 @@ class TestShrinkRebuild:
         assert clear_screen() not in val, (
             "长文档缩短应增量（不 clear_screen 重建），实际: %r" % val
         )
-        # 只重写可见区变化行（删除 extra 后可见区上移 1 行：5 行内容变）
+        # 只重写可见区变化行（删除 extra 后可见区变化行清空）
         assert "extra" not in val
         # 未变化的可见区上方行不重写（h/c0/c1 等 scrollback 行）
         assert "h" not in val and "c0" not in val and "c1" not in val
-        # 重放后可见区（底部 H 行）与新文档底部一致（scrollback 可保留陈旧残留）
+        # 重放后可见区（底部 H 行）：顶部对齐（doc 0 在物理行 0）下缩短仅清
+        # 残留——可见区显示 doc 6-10（c6..in1）+ 残留空行（extra 变空白）。
+        # 对比旧底部对齐（可见区=新文档底部 [c5..in1]）：顶部对齐避免弹窗/尾
+        # 部上方（历史消息）全量重写（消除补全弹窗 items 变化时闪烁）。
         t = MiniTerm(H)
         out2 = io.StringIO()
         r2 = InkRenderer(stream=out2, height=H)
@@ -328,8 +331,8 @@ class TestShrinkRebuild:
         feed += out2.getvalue()
         t.feed(feed)
         visible = [l.rstrip() for l in t.buf[-H:]]
-        assert visible == new[-5:] + [""], (
-            f"可见区应显示新文档底部，实际: {visible!r}"
+        assert visible == ["c6", "c7", "status", "in1", "", ""], (
+            f"顶部对齐缩短应只清残留，实际: {visible!r}"
         )
 
     def test_grow_shrink_grow_no_drift(self):
@@ -409,8 +412,15 @@ class TestDriftedIncremental:
     """漂移后增量渲染（缩短产生的物理缓冲漂移，不清屏重建的后续帧）。
 
     覆盖缩短后的连续缩短、等高重写、增长（吸收漂移）、增长-缩短震荡——
-    全部保持增量（无 clear_screen）且可见区与新文档底部一致（scrollback
-    残留可陈旧）。锁定用户需求「除 resize 外均增量」。
+    全部保持增量（无 clear_screen）且可见区正确（scrollback 残留可陈旧）。
+    锁定用户需求「除 resize 外均增量」。
+
+    **顶部对齐（补全弹窗闪烁修复）**：文档仍高于屏幕（``doc_h+1 > height``）
+    时缩短/等高/增长走「顶部对齐局部重写」——物理行 q 直接显示 doc 行 q，
+    弹窗/尾部上方（历史消息）永不重写；可见区显示 doc 中部 + 残留空行
+    （缩短后尾部内容上移、底部残留清空）。doc 进入屏幕内
+    （``doc_h+1 <= height``）切换为底部对齐（文档底部对齐可见区底部，负偏移
+    模型，完整文档可见——``test_enter_screen_incremental_lifecycle`` 锁定）。
     """
 
     H = 6
@@ -434,19 +444,15 @@ class TestDriftedIncremental:
     def _visible(self, t):
         return [l.rstrip() for l in t.buf[-self.H:]]
 
-    def _expected(self, lines):
-        n = len(lines)
-        if n + 1 >= self.H:
-            return lines[-(self.H - 1):] + [""]
-        return lines + [""] * (self.H - n)
-
     def test_consecutive_shrinks(self):
-        """连续缩短（12→11→10→9 行）：全程增量，可见区正确。"""
+        """连续缩短（12→11→10→9 行）：全程增量，可见区正确（只清残留）。"""
         doc = ["h"] + [f"c{i}" for i in range(8)] + ["status", "in1", "extra"]
         f12, f11, f10, f9 = doc, doc[:-1], doc[:-2], doc[:-3]
         t, r, cs = self._simulate([f12, f11, f10, f9])
         assert not cs
-        assert self._visible(t) == self._expected(f9), self._visible(t)
+        # 顶部对齐：物理行 q → doc q；连续缩短依次清除 in1/status/extra，
+        # doc 0-6 位置不变（不重写历史），可见区 = doc 6-7 + 残留空行。
+        assert self._visible(t) == ["c6", "c7", "", "", "", ""], self._visible(t)
 
     def test_shrink_then_equal_height_rewrite(self):
         """缩短后等高重写（漂移保持，物理映射重写）。"""
@@ -456,7 +462,8 @@ class TestDriftedIncremental:
         mod[8] = "STATUS2"  # 中间行修改（漂移后物理映射位置）
         t, r, cs = self._simulate([f12, f11, f10, mod])
         assert not cs
-        assert self._visible(t) == self._expected(mod), self._visible(t)
+        # 顶部对齐等高：物理行 q → doc q，仅重写变化行（doc8: c7→STATUS2）。
+        assert self._visible(t) == ["c6", "STATUS2", "status", "", "", ""], self._visible(t)
 
     def test_shrink_then_grow_absorbs_drift(self):
         """大漂移后增长吸收漂移（8→11 行）：可见区正确、物理缓冲对齐。"""
@@ -464,8 +471,10 @@ class TestDriftedIncremental:
         f12, f8, f11 = doc, doc[:-4], doc[:-1]
         t, r, cs = self._simulate([f12, f8, f11])
         assert not cs
-        assert self._visible(t) == self._expected(f11), self._visible(t)
-        # 物理缓冲不小于新文档需要（含末尾空行）；增长只吸收部分漂移也正确
+        # 顶部对齐增长：物理行 q → doc q，新行追加到残留位置；可见区 =
+        # doc 6-10（c6..in1）+ 残留空行（doc 0-5 保持 scrollback 不变）。
+        assert self._visible(t) == ["c6", "c7", "status", "in1", "", ""], self._visible(t)
+        # 物理缓冲不小于新文档需要（含末尾空行）
         assert r._buf_h >= len(f11) + 1
 
     def test_shrink_grow_oscillation(self):
@@ -475,7 +484,9 @@ class TestDriftedIncremental:
         g12 = ["h"] + [f"c{i}" for i in range(8)] + ["status", "in1", "extra2"]
         t, r, cs = self._simulate([f12, f11, g12, f11, g12, f10])
         assert not cs
-        assert self._visible(t) == self._expected(f10), self._visible(t)
+        # 顶部对齐：震荡只重写弹窗/尾部区域，doc 0-6 不变；最终 f10 后
+        # 可见区 = doc 6-7 + 残留空行。
+        assert self._visible(t) == ["c6", "c7", "status", "", "", ""], self._visible(t)
 
     def test_shrink_then_grow_in_place(self):
         """缩短后原地增长（追加到漂移缓冲）：可见区正确。"""
@@ -483,13 +494,15 @@ class TestDriftedIncremental:
         f12, f8, f9 = doc, doc[:-4], doc[:-3]
         t, r, cs = self._simulate([f12, f8, f9])
         assert not cs
-        assert self._visible(t) == self._expected(f9), self._visible(t)
+        # 顶部对齐：f8（8行）→ f9（9行）追加 status 到残留位置；可见区 =
+        # doc 6-7 + 残留空行。
+        assert self._visible(t) == ["c6", "c7", "", "", "", ""], self._visible(t)
 
     def test_enter_screen_incremental_lifecycle(self):
         """进入屏幕内完整生命周期：长→进入屏幕内→屏幕内增长→出屏→再进入。
 
-        全程增量（无 clear_screen）；文档底部对齐可见区底部（负偏移模型），
-        place_cursor 经 `_effective_offset` 定位到文档物理位置。
+        全程增量（无 clear_screen）；文档进入屏幕内后底部对齐可见区底部
+        （负偏移模型），place_cursor 经 `_effective_offset` 定位到文档物理位置。
         """
         doc = ["h"] + [f"c{i}" for i in range(8)] + ["status", "in1", "extra"]
         f12 = doc
