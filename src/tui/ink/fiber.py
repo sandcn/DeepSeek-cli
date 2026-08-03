@@ -174,6 +174,10 @@ class Fiber:
     _context_cache: dict = field(default_factory=dict)
     #: context 缓存版本（命中校验：== ``hooks._context_version``）。
     _context_cache_version: int = 0
+    #: context 依赖脏标记（BUG-16）：Provider 值变化经 ``_clear_context_cache_subtree``
+    #:   置位；``use_context`` 消费后清除；memo 短路据此强制重渲染（React 语义：
+    #:   context 变更强制重渲染消费者，与 memo 无关）。
+    _context_dirty: bool = False
     #: provider 值变更检测基准（``_MISSING`` 表示未初始化；None 是合法值）。
     _last_provider_value: Any = _MISSING
 

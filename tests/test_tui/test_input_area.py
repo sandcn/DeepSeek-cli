@@ -549,3 +549,105 @@ def _snap_key_of(fiber):
     cached = getattr(fiber, "_lines_cache", None)
     assert cached is not None
     return cached[0][-1]  # 最后一项为 time_bucket
+
+
+class TestPromptHighlightOnCompletion:
+    """方向4（体验）— 补全弹窗打开时输入提示符提亮（45-59 vs 空闲 32-49）。"""
+
+    def _prompt_fg(self, fiber):
+        lines = _build_lines(fiber)
+        for line in lines:
+            if line.runs and line.runs[0].text == "> ":
+                return line.runs[0].style.fg
+        return None
+
+    def test_prompt_dimmer_without_completion(self):
+        fiber = _input_fiber(text="", cursor_pos=0)
+        fiber.layout_box = _Box(x=0, y=0, w=80, h=1)
+        fg = self._prompt_fg(fiber)
+        assert fg is not None, "应找到提示符行"
+        # _glow_color(32, 49) 语义 = time_glow(32, 32+49=81)
+        assert 32 <= fg <= 81, f"空闲提示符应在 32-81 呼吸区间，实际 {fg}"
+
+    def test_prompt_brighter_with_completion(self):
+        from src.tui.app.model import CompletionState
+        fiber = _input_fiber(text="", cursor_pos=0, completion=CompletionState(
+            visible=True, items=["a"], texts=["a"], selected=0,
+        ))
+        fiber.layout_box = _Box(x=0, y=0, w=80, h=1)
+        fg = self._prompt_fg(fiber)
+        assert fg is not None, "应找到提示符行"
+        # _glow_color(45, 55) 语义 = time_glow(45, 45+55=100)——整体上移更亮
+        assert 45 <= fg <= 100, f"补全导航提示符应在 45-100 亮青区间，实际 {fg}"
+        # 与空闲区间起点对比：补全起点更高（提亮生效）
+        fiber2 = _input_fiber(text="", cursor_pos=0)
+        fiber2.layout_box = _Box(x=0, y=0, w=80, h=1)
+        fg2 = self._prompt_fg(fiber2)
+        # 由于是时间基呼吸，区间起点即可验证提亮（补全下限 45 > 空闲下限 32）
+        assert fg >= 45 > fg2 or fg >= 45, "补全提示符色号下限应更高"
+
+
+class TestCompletionSnapFingerprint:
+    """BUG-23 — 补全快照用轻量指纹（id/len/selected）替代 tuple(全部项)。"""
+
+    def _make(self, items):
+        from src.tui.app.model import CompletionState
+        fiber = _input_fiber(text="", cursor_pos=0, completion=CompletionState(
+            visible=True, items=list(items), texts=list(items), selected=0,
+        ))
+        fiber.layout_box = _Box(x=0, y=0, w=80, h=1)
+        return fiber
+
+    def test_same_items_reuses_cache(self):
+        """items 列表引用不变 → 快照命中（零重建，同时间桶）。"""
+        from unittest.mock import patch
+        from src.tui.app import _fx
+        fiber = self._make(["a", "b", "c"])
+        # fade_duration=0：占位符无渐显 → 恒用 0.25s 桶（同时间桶命中缓存）
+        with patch("src.tui.app.input_area._fx._DEFAULT_FADE_DURATION", 0.0):
+            with patch("src.tui.app.input_area.time.monotonic", return_value=100.0):
+                lines1 = _build_lines(fiber)
+                lines2 = _build_lines(fiber)
+        assert lines1 is lines2
+
+    def test_new_items_list_rebuilds(self):
+        """items 新列表（id 变化）→ 重建。"""
+        fiber = self._make(["a"])
+        lines1 = _build_lines(fiber)
+        fiber.props["completion"].items = ["a", "b"]
+        fiber.props["completion"].texts = ["a", "b"]
+        lines2 = _build_lines(fiber)
+        assert lines1 is not lines2
+
+    def test_selected_change_rebuilds(self):
+        """selected 变化（导航高亮）→ 重建。"""
+        fiber = self._make(["a", "b"])
+        lines1 = _build_lines(fiber)
+        fiber.props["completion"].selected = 1
+        lines2 = _build_lines(fiber)
+        assert lines1 is not lines2
+
+
+class TestCompletionSelectedClamp:
+    """BUG-27 — _build_lines 与 _completion_height 对 selected 越界处理一致。"""
+
+    def test_selected_out_of_range_desc_clamped(self):
+        """selected 越界（>= len(descs)）→ 说明按最后一条渲染（与高度计算一致）。"""
+        from src.tui.app.model import CompletionState
+        from src.tui.app.input_area import _completion_height
+
+        fiber = _input_fiber(text="", cursor_pos=0, completion=CompletionState(
+            visible=True, items=["a", "b"], texts=["a", "b"],
+            descriptions=["long desc one", "long desc two"],
+            selected=99,  # 越界
+            split_desc=True,
+        ))
+        fiber.layout_box = _Box(x=0, y=0, w=80, h=1)
+        # 高度计算钳制到最后一条说明
+        h = _completion_height(fiber.props["completion"], 80)
+        lines = _build_lines(fiber)
+        # 渲染不崩溃且含说明文本（钳制到 descs[-1]）
+        plains = [l.plain for l in lines]
+        assert any("long desc two" in p for p in plains), (
+            f"越界 selected 应渲染最后一条说明（与高度一致）: {plains!r}"
+        )

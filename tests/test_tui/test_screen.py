@@ -588,3 +588,29 @@ class TestWcswidthCharCache:
             _char_width_cache[chr(0x4E00 + i)] = 2
         wcswidth_simple("中")
         assert len(_char_width_cache) <= _CHAR_WIDTH_CACHE_MAX, "缓存应保持有界"
+
+
+class TestZeroWidthCharAlignment:
+    """BUG-25 — wcswidth_simple 零宽字符集与 cjk_display_width 对齐。
+
+    修复前 BOM（\\ufeff）/软连字符（\\u00ad）/零宽空格（\\u200b）等字符在
+    ink 侧（wcswidth_simple）计 1、在 renderer 侧（cjk_display_width）计 0
+    → committed 行 wrap 判断与渲染宽度不一致（含这些字符的行超宽）。
+    """
+
+    def test_zero_width_chars_width_zero(self):
+        from src.tui._screen import wcswidth_simple
+        for ch in ("\ufeff", "\u00ad", "\u200b", "\u200e", "\u200f", "\u2060", "\u2061"):
+            assert wcswidth_simple(ch) == 0, (
+                f"{ch!r} 应为零宽: wcswidth_simple={wcswidth_simple(ch)}"
+            )
+
+    def test_consistent_with_cjk_display_width(self):
+        from src.tui._screen import wcswidth_simple
+        from src.renderer._utils._display import cjk_display_width
+        for ch in ("\ufeff", "\u00ad", "\u200b", "\u200e", "\u200f",
+                   "\u2060", "\u2061", "\u2062", "\u2063", "\u2064"):
+            assert wcswidth_simple(ch) == cjk_display_width(ch), (
+                f"{ch!r} 双宽度函数应一致: "
+                f"wcswidth_simple={wcswidth_simple(ch)} cjk={cjk_display_width(ch)}"
+            )

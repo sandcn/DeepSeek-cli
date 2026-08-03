@@ -228,30 +228,38 @@ def _build_lines(fiber) -> list[Line]:
         # 方向3（呼吸平滑）：空闲占位符呼吸色用 0.25s 桶（4Hz）——1s 桶下
         # 呼吸色 1Hz 步进明显可感知；4Hz 平滑且仍低频（CPU 开销可忽略）。
         time_bucket = int(now / 0.25)
+    # ★ BUG-23（review 方向，性能）：补全快照用**轻量指纹**（id/len/selected）
+    #   替代 tuple(全部项)——修复前缓存命中检查**之前**无条件 tuple 化
+    #   items/texts/types/descriptions 全部元素（user_select 大量选项/长命令
+    #   列表时每帧 O(n) 分配，即使缓存命中）。指纹语义：id(items) 变化
+    #   （show_completions 每次新建列表）→ 重建；selected 变化（导航高亮）→
+    #   重建；原地修改同列表（罕见）→ 不重建（可接受的权衡，补全项通常
+    #   不可变）。
     if completion is not None:
         completion_snap = (
             completion.visible,
-            tuple(completion.items),
+            id(completion.items),
+            len(completion.items),
             completion.selected,
-            completion.title,
-            tuple(completion.texts),
-            completion.match_prefix,
-            tuple(completion.types),
-            tuple(completion.descriptions),
+            id(completion.texts),
+            len(completion.texts),
+            id(completion.descriptions),
+            len(completion.descriptions),
             getattr(completion, "split_desc", False),
         )
     else:
-        completion_snap = (False, (), 0, "", (), "", (), (), False)
+        completion_snap = (False, 0, 0, 0, 0, 0, 0, 0, False)
     search = props.get("history_search")
     if search is not None:
         search_snap = (
             bool(search.active),
             search.query,
-            tuple(search.matches),
+            id(search.matches),
+            len(search.matches),
             search.index,
         )
     else:
-        search_snap = (False, "", (), -1)
+        search_snap = (False, "", 0, 0, -1)
     snap_key = (
         text,
         max_input,
@@ -308,7 +316,12 @@ def _build_lines(fiber) -> list[Line]:
             cell_w = max(
                 1, min(max((_vwidth(i) for i in items), default=10) + 4, opt_w - 2) - 3,
             )
-            desc_text = descs[selected] if 0 <= selected < len(descs) else ""
+            # ★ BUG-27（review 方向）：selected 越界钳制与 ``_completion_height``
+            #   一致——修复前高度按 ``min(selected, len(descs)-1)`` 的说明行数
+            #   计算、绘制却 ``descs[selected] if 0 <= selected < len(descs)``
+            #   （越界时空说明）→ 弹窗底部多出空白行，测量高度与绘制不一致。
+            desc_sel = max(0, min(selected, len(descs) - 1)) if descs else 0
+            desc_text = descs[desc_sel] if descs else ""
             desc_lines = _wrap_by_width(desc_text or "", desc_w)
             # 方向4（超屏防护）：候选项 + 说明行数限制（与 _completion_height
             # 一致——超长说明 / 大量选项时弹窗不超终端高度）。
@@ -415,7 +428,14 @@ def _build_lines(fiber) -> list[Line]:
     for i, segment in enumerate(wrapped):
         line = Line()
         if i == 0:
-            color = _glow_color(32, 49)
+            # ★ 方向4（体验）：补全弹窗打开时提示符提亮——``_glow_color(base,
+            #   amp)`` 语义为 time_glow(base, base+amp)：空闲 32-81（青色呼吸），
+            #   补全导航 45-100（整体上移更亮）——弹窗可见、键盘导航时提示符
+            #   更醒目。
+            if completion is not None and completion.visible:
+                color = _glow_color(45, 55)
+            else:
+                color = _glow_color(32, 49)
             line.append(_PROMPT, Style(fg=color, bold=True))
             if text:
                 line.append(segment, _S_TEXT)

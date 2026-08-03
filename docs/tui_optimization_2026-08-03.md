@@ -227,3 +227,51 @@
 - `test_subagent_panel.py`：组卡边框呼吸 3 例（running 调 time_glow / closed 不调 / 呼吸色范围）。
 - `test_status_bar.py`：model_name 切换渐显重置（dot 回起始暗色 238）。
 - 全部测试通过：**1948 passed**（原 1935 + 新增 13）。
+
+---
+
+## 第九轮（commit 待定）— review agent 深度审查 + 14 项 bug 修复
+
+### 背景
+派发 2 个并行 review agent 深度审查 ink 框架核心（layout/reconciler/renderer/
+hooks/session）与输入/命令/渲染流程（model/apply/input_area/dispatcher/
+_stdout_tracker/subagent/event_bus），共报告 23 项发现，经验证修复 14 项真实
+bug（其余为测试时序误用/防御性改进/保留设计）。
+
+### 布局层「坐标后处理」系统性缺陷修复（P0/P1，最严重）
+| Bug | 问题 | 修复 |
+|---|---|---|
+| BUG-14 | `_translate_subtree_x/y` 只递归 `fiber.child`（首子链），嵌套容器内第 2+ 个子节点（child.sibling）不随动 → alignItems/alignSelf/探针复用偏移后**文本与边框错位**（确定性渲染错误） | 递归遍历 `child + child.sibling`（不遍历子树根自身 sibling，防调用方循环重复偏移） |
+| BUG-15 | flexGrow / justifyContent（column+row）/ row flexGrow / `_reflow_row_justify` 只改直接子节点 x/y，不平移后代 → 嵌套容器内文本停留旧坐标 | 各偏移/重排路径改经 `_translate_subtree_x/y`（相对偏移，防双重平移）+ flexGrow 后 `_reflow_subtree` 递归重排孙节点（与 flexShrink 对称） |
+
+### 调和/React 语义缺陷修复
+| Bug | 问题 | 修复 |
+|---|---|---|
+| BUG-16 | memo 组件 + use_context：Provider 值变化被 `_memo_should_skip` 短路跳过 → 陈旧输出（React 语义：context 变更强制重渲染消费者） | `_clear_context_cache_subtree` 对被清缓存的 fiber 置 `_context_dirty`；`_memo_should_skip` 校验（精确逐 fiber，无关 Provider 不误伤）；`use_context` 消费后清除 |
+| BUG-17 | 零宽 row 子 TEXT（w=0,h=0）仍被绘制 → 文本溢出容器（宽 3 的 row 内 "abc"+"def" 渲染出 "abcdef"） | `_paint` TEXT 分支加 `box.w<=0 or box.h<=0` 守卫 |
+| BUG-18 | `_cleanup_contexts` 卸载时 pop 注册表 → Provider 重挂载失效（use_context 回退 default） | 注册表条目（Context 对象）生命周期与挂载解耦——不再 pop；卸载回退 default 由 return_ 链查找自然实现 |
+
+### 数据完整性修复（stdout tracker）
+| Bug | 问题 | 修复 |
+|---|---|---|
+| BUG-19 | `_flush_buffered_lines` 先取空缓冲再加锁，flock 失败 return → 缓冲行永久丢失 | 加锁失败/OSError 时把 buf 放回 `_output_buffer` 头部（后续刷盘重试） |
+| BUG-20 | 定时刷盘 `_timer_flush_callback` 不检查 `_flush_in_progress` → 与 worker 并发写文件行序颠倒 | worker 在途时仅置 `_pending_flush`（worker finally 统一处理）；worker finally 对 `_pending_flush` + 缓冲非空继续刷盘 |
+
+### 渲染/内存/健壮性修复
+| Bug | 问题 | 修复 |
+|---|---|---|
+| BUG-21 | close_reasoning/close_content 全量冻结 `_block_to_ink_lines(block, 0)`（已增量提交行重复存储）→ 大响应关闭后内存约翻倍 | 仅冻结未提交尾（`committed_line_count` 起），与 close_tool_box 一致 |
+| BUG-22 | open_tool_box 复用已增量提交 box 只更新块内标题，committed_lines 顶边框标题陈旧 | 复用且 `committed_line_count>0` 时重建 committed_lines `_first_committed_offset` 处顶边框行 |
+| BUG-23 | `_build_lines` 缓存命中前无条件 tuple 化全部补全项（大列表每帧 O(n) 分配） | 快照改轻量指纹（id/len/selected，show_completions 每次新建列表 id 变 → 重建；原地修改罕见不处理） |
+| BUG-24 | subagent 组卡边框 fill `max(2,...)` → 标题满宽时行超 1 列 | 改 `max(0,...)`（fill=0 时标题直接衔接右角） |
+| BUG-25 | `wcswidth_simple` 与 `cjk_display_width` 零宽字符集不一致（BOM/软连字符/零宽空格等）→ committed 行 wrap 判断与渲染宽度不一致（含 BOM 行超宽） | `_ZERO_WIDTH_RANGES` 补齐 0x00AD/200B/200E/200F/2060-2064/FEFF（对齐 cjk/wcwidth 语义） |
+| BUG-26 | 极端窄屏（width<5）工具卡边框固定前缀撑破终端宽度 | width<5 时降级为无边框裸行（标题/主体/状态均截断至 width） |
+| BUG-27 | `_build_lines` 与 `_completion_height` 对 selected 越界处理不一致（弹窗底部多空白行） | 绘制侧统一钳制 `min(selected, len(descs)-1)` |
+
+### 测试
+- 新增 `test_review_bug_fixes.py`（BUG-15 嵌套 flexGrow/justify + BUG-17 零宽）+ 各模块测试
+  （BUG-14 平移 sibling / BUG-16 memo×context / BUG-18 重挂载 / BUG-19 flock 放回 /
+  BUG-20 定时器在途 / BUG-21 冻结尾 / BUG-22 复用标题 / BUG-23 快照指纹 /
+  BUG-24 边框 fill / BUG-25 BOM 宽度 / BUG-26 窄屏 / BUG-27 selected 越界）。
+- 另含提示符提亮（补全弹窗打开时 45-100 vs 空闲 32-81）+ 测试。
+- 全部测试通过：**1970 passed**（原 1949 + 新增 21）。

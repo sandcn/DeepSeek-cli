@@ -576,18 +576,31 @@ class TestScheduleException:
 
 
 class TestContextRegistryCleanup:
-    """方向C 步骤6 — 动态 context provider 卸载时注册表条目清理。"""
+    """方向C 步骤6 + BUG-18 — context 注册表条目生命周期。"""
 
-    def test_context_registry_cleaned_on_provider_unmount(self):
-        """动态创建 context → 卸载 provider → 注册表条目消失。"""
-        from src.tui.ink.hooks import create_context, _context_registry
+    def test_context_registry_kept_after_unmount(self):
+        """BUG-18 — Provider 卸载后注册表条目保留（重挂载正常）。
+
+        修复前 ``_cleanup_contexts`` 卸载时 ``pop`` 注册表——同一组件重新挂载
+        ``h(ctx.Provider, ...)`` 时 begin_work 查注册表返回 None → 子树
+        use_context 回退 default（Provider 重挂载失效）。Context 对象由
+        ``create_context`` 模块级创建（进程生命周期），注册表条目与 Provider
+        挂载状态解耦。
+        """
+        from src.tui.ink.hooks import create_context, use_context, _context_registry
+        from src.tui.ink.components import render_frame
+        from src.tui.ink import strip_ansi
 
         Ctx = create_context("default")
         tag = Ctx.tag
         assert tag in _context_registry
 
+        def Consumer(props):
+            v = use_context(Ctx)
+            return h(TEXT, {"children": f"value={v}"})
+
         def ProviderComp(props):
-            return h(Ctx.Provider, {"value": "v"}, h(TEXT, {"children": "x"}))
+            return h(Ctx.Provider, {"value": "v"}, h(Consumer))
 
         def OtherComp(props):
             return h(TEXT, {"children": "y"})
@@ -595,10 +608,18 @@ class TestContextRegistryCleanup:
         r = Reconciler()
         root = r.create_root()
         r.render(root, h(ProviderComp), 80, 24)
-        assert tag in _context_registry  # provider 挂载后仍在注册表
-        # 卸载 provider（渲染无 provider 的组件树）→ 注册表条目被清理
+        frame = render_frame(root, 80)
+        assert "value=v" in strip_ansi(frame.lines[0].render())
+        # 卸载 provider
         r.render(root, h(OtherComp), 80, 24)
-        assert tag not in _context_registry
+        assert tag in _context_registry  # 注册表条目保留（重挂载支持）
+        # 重新挂载 → use_context 仍读到 provider 值（修复前回退 default）
+        r.render(root, h(ProviderComp), 80, 24)
+        frame = render_frame(root, 80)
+        assert "value=v" in strip_ansi(frame.lines[0].render()), (
+            f"Provider 重挂载后 use_context 应读到 provider 值: "
+            f"{strip_ansi(frame.lines[0].render())!r}"
+        )
 
     def test_context_registry_kept_while_mounted(self):
         """未卸载的 provider 注册表条目保留（复用不触发清理）。"""

@@ -206,6 +206,13 @@ def _paint_impl(fiber: Fiber, canvas: list[dict]) -> None:
         return
 
     if ftype == "text":
+        # ★ BUG-17（review 方向）：零宽/零高 TEXT 不绘制——``_measure`` 中
+        #   ``width==0 and not fill`` 返回 h=0（"零宽非 fill 子节点不占位"），
+        #   但 ``_wrapped_lines`` 非空（``wrap_runs_by_width(runs, 0)`` 返回
+        #   单行）→ 修复前文本照常绘制到画布（row 剩余宽度 0 的子节点文本
+        #   溢出容器，如宽 3 的 row 内 "abc"+"def" 渲染出 "abcdef"）。
+        if box.w <= 0 or box.h <= 0:
+            return
         # ★ 复用 layout 阶段缓存的换行结果（免二次包裹）
         wrapped = getattr(fiber, "_wrapped_lines", None)
         if wrapped is not None:

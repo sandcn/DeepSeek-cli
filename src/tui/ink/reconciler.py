@@ -64,11 +64,17 @@ def _clear_context_cache_subtree(fiber: Fiber | None) -> None:
     只清空缓存 dict 与版本标记（置 0），不改变 contexts 内容；误清只导致
     多一次沿 return_ 链查找，无正确性风险。版本号经 ``_hooks._bump_context_version``
     同步递增（版本号与 contexts 内容解耦，见 hooks.use_context）。
+
+    ★ BUG-16（memo × context）：同时置 ``_context_dirty = True``——被标记的
+    fiber（含 memo 组件）在下一次 ``_memo_should_skip`` 中不短路，强制重渲染
+    让 ``use_context`` 重新求值（修复前 memo 短路跳过组件函数 → context 值
+    变化后陈旧输出）。``use_context`` 消费时清除标记（见 hooks.py）。
     """
     f = fiber
     while f is not None:
         f._context_cache.clear()
         f._context_cache_version = 0
+        f._context_dirty = True
         _clear_context_cache_subtree(f.child)
         f = f.sibling
 
@@ -506,6 +512,14 @@ class Reconciler:
             same = False
         if not same:
             return False
+        # ★ BUG-16（review 方向）：context 依赖被 Provider 值变化影响（子树
+        #   被 ``_clear_context_cache_subtree`` 标记 ``_context_dirty``）时不得
+        #   短路——否则组件函数不被调用 → ``use_context`` 不重新求值 → 子树
+        #   保持旧值渲染且 props/children 不再变化时**永久陈旧**（React 语义：
+        #   context 变更强制重渲染消费者，与 memo 无关）。无关 Provider 变化
+        #   不标记本 fiber（``_context_dirty`` 逐 fiber），正常短路保持。
+        if getattr(fiber, "_context_dirty", False):
+            return False
         # 有未处理的 state 更新 → 不能短路（须重渲染应用更新）
         for hook in fiber.hooks:
             if isinstance(hook, StateHook) and hook.queue:
@@ -608,30 +622,26 @@ class Reconciler:
         self._cleanup_contexts(fiber)
 
     def _cleanup_contexts(self, fiber: Fiber | None) -> None:
-        """遍历被删子树，将 context provider host 从注册表移除（动态 context 卸载）。
+        """遍历被删子树（当前为 no-op，保留接口签名与调用点）。
 
-        遍历范围：被删 fiber 的 child 子树**及其内部 sibling 链**（方向3
-        docstring 修正——`_mark_deleted` 已切断顶层 fiber.sibling，故内部
-        sibling 遍历仅覆盖删除子树的**后代兄弟**，安全；注释原描述"不走
-        sibling 链"与实际代码不符）。仅当 fiber 为 host 且 ``contexts`` 非空
-        （本帧确实充当 provider）且注册表含对应标签时移除；卸载后重新
-        create_context 会以新 tag 重新注册。
+        ★ BUG-18（review 方向）修复：**不再 pop 注册表**——``_context_registry``
+        保存的是 ``create_context`` 模块级创建的全局 Context 对象（进程生命周期），
+        与 Provider 挂载状态无关。修复前卸载时 ``pop(f.type)`` 后，同一组件重新
+        挂载 ``h(ctx.Provider, ...)`` 时 ``begin_work`` 查注册表返回 None →
+        ``fiber.contexts`` 不写入 → 子树 ``use_context`` 沿 return_ 链找不到
+        provider，静默回退 ``ctx.default``（Provider 重挂载失效）。
 
-        方向2 L2 评估结论（可追溯）：**多 Provider 同 Context 卸载误伤评估**——
-        当前架构单 Context 仅一个 Provider 挂载（``_context_registry[tag]`` 单条
-        记录，无挂载计数）；多 Provider 同 Context 时卸载任一 Provider 会误删注册
-        条目，导致其余 Provider 子树 ``use_context`` 回退 default。**当前无多
-        Provider 场景，低优先保留现状**；未来引入多 Provider 时需按挂载计数
-        （``contexts`` 内记录 count）清理——注释注明，不实施。
+        「卸载回退 default」语义由 ``use_context`` 的 return_ 链查找自然实现：
+        Provider 卸载后其 fiber 不再在树中，消费者沿 return_ 链找不到 provider
+        → 返回 default，无需注册表干预。
+
+        遍历范围注释（历史，可追溯）：`_mark_deleted` 已切断顶层 fiber.sibling，
+        内部 sibling 遍历仅覆盖删除子树的**后代兄弟**，安全。多 Provider 同
+        Context 卸载语义由 return_ 链查找自然保证（无注册表计数需求）。
         """
-        f = fiber
-        while f is not None:
-            if isinstance(f.type, str):
-                ctx = _hooks._context_registry.get(f.type)
-                if ctx is not None and f.contexts:
-                    _hooks._context_registry.pop(f.type, None)
-            self._cleanup_contexts(f.child)
-            f = f.sibling
+        # 当前实现为 no-op——注册表条目（Context 对象）生命周期与 Provider
+        # 挂载解耦；保留函数以维持 `_mark_deleted` 调用面与未来挂载计数扩展点。
+        return
 
     def _queue_destroys(self, fiber: Fiber) -> None:
         for hook in fiber.hooks:

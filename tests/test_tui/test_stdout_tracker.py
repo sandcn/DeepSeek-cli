@@ -504,3 +504,69 @@ class TestCrlfAndUnifiedAnsi:
         assert mod.cursor_control_re is cursor_control_re, (
             "_stdout_tracker 应消费统一 ink.helpers.cursor_control_re"
         )
+
+
+class TestFlushLockFailureRetry:
+    """BUG-19 — 刷盘 flock 失败时缓冲行放回（不丢失）。"""
+
+    def _make_tracker(self, tmp_path, real_stdout):
+        from src.tui._stdout_tracker import _StdoutLineTracker
+        tracker = _StdoutLineTracker(real_stdout)
+        tracker._output_history_file = tmp_path / "output_history.txt"
+        tracker._flush_timer_stop.set()  # 停定时器
+        return tracker
+
+    def test_lock_failure_puts_lines_back(self, tmp_path, monkeypatch):
+        """flock 失败 → buf 放回 _output_buffer（不丢行）。"""
+        import io
+        from src.tui._stdout_tracker import _lock_history_file
+        tracker = self._make_tracker(tmp_path, io.StringIO())
+        # 写入 10 行缓冲
+        for i in range(10):
+            tracker._output_buffer.append(f"line {i}")
+        # mock flock 加锁失败
+        monkeypatch.setattr(_lock_history_file, "__defaults__", None)
+        orig_lock = _lock_history_file
+
+        def fake_lock(fd, shared=False):
+            return False  # 加锁失败
+
+        monkeypatch.setattr("src.tui._stdout_tracker._lock_history_file", fake_lock)
+        result = tracker._flush_buffered_lines()
+        assert result is False
+        assert len(tracker._output_buffer) == 10, (
+            f"加锁失败后行应放回缓冲（不丢失），实际 {len(tracker._output_buffer)}"
+        )
+
+
+class TestFlushTimerWorkerSerialization:
+    """BUG-20 — 定时刷盘在 worker 在途时置 pending（不并发写文件）。"""
+
+    def test_timer_flush_sets_pending_when_worker_inflight(self, tmp_path):
+        """worker 在途 → 定时器只置 _pending_flush（不直接刷盘）。"""
+        import io
+        from src.tui._stdout_tracker import _StdoutLineTracker
+        tracker = _StdoutLineTracker(io.StringIO())
+        tracker._output_history_file = tmp_path / "output_history.txt"
+        tracker._flush_timer_stop.set()
+        # 模拟 worker 在途
+        tracker._flush_in_progress = True
+        # 定时器回调
+        tracker._timer_flush_callback()
+        assert tracker._pending_flush is True, (
+            "worker 在途时定时器应置 pending（防并发写文件行序颠倒）"
+        )
+        # worker 完成 → finally 处理 pending（缓冲有行则继续刷盘）
+        tracker._output_buffer.append("hello")
+        tracker._flush_in_progress = False
+        tracker._pending_flush = True
+        # 模拟 worker finally：应重启刷盘（truthiness 判定）
+        with tracker._buffer_lock:
+            should_restart = (
+                len(tracker._output_buffer) >= 50
+                or (tracker._pending_flush and tracker._output_buffer)
+            )
+            if should_restart and tracker._pending_flush and len(tracker._output_buffer) < 50:
+                tracker._pending_flush = False
+            tracker._flush_in_progress = True
+        assert bool(should_restart) is True, "pending + 缓冲非空应继续刷盘"

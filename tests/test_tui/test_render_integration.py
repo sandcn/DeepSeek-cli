@@ -457,3 +457,65 @@ class TestOpenBlockCommitOrder:
             f"b1 在连续窗口内应增量提交，实际 {len(model.committed_lines)}"
         )
         assert b1.committed_line_count == 1
+
+
+class TestToolCloseFrozenTailOnly:
+    """BUG-21 — 关闭块冻结仅未提交尾（增量提交后不重复存储已提交行）。"""
+
+    def test_close_frozen_tail_only_after_incremental_commit(self):
+        """工具输出触发增量提交（>64 行）→ 关闭冻结长度 = 未提交尾 + 底边框。"""
+        from src.tui.app.model import AppModel
+        from src.tui.app.apply import apply_cmd
+        from src.tui._const import ToolOpenCmd, ToolOutputCmd, ToolCloseCmd
+
+        model = AppModel()
+        model.width = 80
+        apply_cmd(model, ToolOpenCmd(tool_id="t1", tool_name="my_tool", detail=""))
+        for i in range(70):
+            apply_cmd(model, ToolOutputCmd(tool_id="t1", text=f"output line {i}"))
+        blk = model.tool_boxes["t1"]
+        # 触发增量提交（>64 行）
+        assert blk.committed_line_count >= 64
+        committed_before_close = blk.committed_line_count
+        total = len(blk.lines)
+        apply_cmd(model, ToolCloseCmd(tool_id="t1", success=True))
+        # 冻结长度 = 未提交尾（+1 底边框）；修复前全量冻结 → 长度 ≈ total
+        frozen_len = len(blk._cached_ink_lines or [])
+        tail = total - committed_before_close + 1  # 未提交尾 + 底边框
+        assert frozen_len <= tail + 1, (
+            f"关闭后冻结应为未提交尾（非全量）: frozen={frozen_len} "
+            f"total={total} committed_before_close={committed_before_close} tail≈{tail}"
+        )
+        assert frozen_len < total // 2, (
+            f"增量提交后冻结应远小于全量（内存优化）: frozen={frozen_len} total={total}"
+        )
+
+
+class TestToolBoxReuseTitleSync:
+    """BUG-22 — open_tool_box 复用已增量提交 box 时同步 committed 顶边框标题。"""
+
+    def test_reuse_updates_committed_header(self):
+        """同一 tool_id 复用且已增量提交 → committed_lines 顶边框标题更新。"""
+        from src.tui.app.model import AppModel
+        from src.tui.app.apply import apply_cmd
+        from src.tui._const import ToolOpenCmd, ToolOutputCmd
+
+        model = AppModel()
+        model.width = 80
+        # 先以空名打开（兜底 box），输出触发增量提交
+        apply_cmd(model, ToolOpenCmd(tool_id="t1", tool_name="", detail=""))
+        for i in range(70):
+            apply_cmd(model, ToolOutputCmd(tool_id="t1", text=f"output line {i}"))
+        blk = model.tool_boxes["t1"]
+        offset = blk.extra.get("_first_committed_offset")
+        assert offset is not None and offset < len(model.committed_lines)
+        old_plain = model.committed_lines[offset].plain
+        # 复用更新标题（后到 ToolStartedEvent 补全工具名）
+        apply_cmd(model, ToolOpenCmd(tool_id="t1", tool_name="bash", detail="ls -la"))
+        new_plain = model.committed_lines[offset].plain
+        assert new_plain != old_plain or "Bash" in new_plain or "bash" in new_plain, (
+            f"复用后 committed 顶边框应更新标题: {old_plain!r} → {new_plain!r}"
+        )
+        assert ("Bash" in new_plain or "bash" in new_plain), (
+            f"新标题应含工具名 bash: {new_plain!r}"
+        )

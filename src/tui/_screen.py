@@ -131,6 +131,18 @@ _ZERO_WIDTH_RANGES: list[tuple[int, int]] = [
     (0xFE00, 0xFE0F),   # Variation Selectors
     (0xFE20, 0xFE2F),   # Combining Half Marks
     (0xE0100, 0xE01EF), # Variation Selectors Supplement
+    # ★ BUG-25（review 方向，双宽度函数对齐）：对齐 renderer/_utils/_display
+    #   ``cjk_display_width`` 的零宽字符集——修复前这些字符在 ink 侧
+    #   （``wcswidth_simple``）计 1、在 renderer 侧（``cjk_display_width``）
+    #   计 0：``_block_to_ink_lines`` 的 wrap 判断用 ``wrap_line``（cjk 测宽
+    #   ≤ width 不 wrap）而 committed 行渲染宽度按 ``wcswidth_simple``（=
+    #   width+1）→ 破坏行级 diff 宽度不变量（BOM 文件/软连字符/零宽空格等
+    #   含零宽字符的行超宽）。加入后两函数一致（与 wcwidth 语义对齐）。
+    (0x00AD, 0x00AD),   # SOFT HYPHEN
+    (0x200B, 0x200B),   # ZERO WIDTH SPACE
+    (0x200E, 0x200F),   # LRM/RLM
+    (0x2060, 0x2064),   # Word Joiner / Zero-width no-break etc.
+    (0xFEFF, 0xFEFF),   # ZERO WIDTH NO-BREAK SPACE / BOM
 ]
 
 # 全角字符范围（宽度为2的非CJK字符）

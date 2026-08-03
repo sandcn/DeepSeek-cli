@@ -78,6 +78,9 @@ class _StdoutLineTracker:
         # BUG-T6：刷盘单飞标志 + 压缩冷却时间戳（既有测试引用）
         self._flush_in_progress: bool = False
         self._last_compact_time: float = 0.0
+        # ★ BUG-20（review 方向）：定时刷盘在 worker 在途时置位待刷标志——
+        #   worker finally 处理（防止 timer 与 worker 并发写文件行序颠倒）。
+        self._pending_flush: bool = False
         # 在途单飞刷盘线程引用（_flush_history 等待其完成，保证文件内容完整）
         self._flush_worker_thread: threading.Thread | None = None
         self._flush_timer: threading.Timer | None = None
@@ -221,20 +224,30 @@ class _StdoutLineTracker:
                 thread.start()
 
     def _flush_worker(self) -> None:
-        """刷盘工作线程：执行刷盘后复位单飞标志并检查残留。"""
+        """刷盘工作线程：执行刷盘后复位单飞标志并检查残留。
+
+        ★ BUG-20：复位后若 ``_pending_flush`` 置位（定时器在 worker 在途时
+        积累的行）且缓冲非空 → 继续刷盘（与阈值无关）；修复前仅 ``>=50``
+        重启——timer 与 worker 并发写文件可能行序颠倒（后到先写）。
+        """
         try:
             self._flush_buffered_lines()
         finally:
             with self._buffer_lock:
                 self._flush_in_progress = False
-                if len(self._output_buffer) >= 50:
-                    # 在途期间新积累的行达到阈值 → 再次启动（不丢行）
+                if len(self._output_buffer) >= 50 or (
+                    self._pending_flush and self._output_buffer
+                ):
+                    # 在途期间新积累的行达到阈值 / 定时器待刷 → 再次启动
+                    if self._pending_flush and len(self._output_buffer) < 50:
+                        self._pending_flush = False
                     self._flush_in_progress = True
                     thread = threading.Thread(target=self._flush_worker, daemon=True)
                     self._flush_worker_thread = thread
                     thread.start()
                 else:
                     self._flush_worker_thread = None
+                    self._pending_flush = False
 
     def _flush_buffered_lines(self) -> bool:
         """刷出输出缓冲中的行到历史文件。"""
@@ -252,6 +265,13 @@ class _StdoutLineTracker:
                     with open(self._output_history_file, "a", encoding="utf-8") as f:
                         locked = _lock_history_file(f.fileno(), shared=False)
                         if not locked:
+                            # ★ BUG-19（review 方向）：加锁失败时**行放回缓冲**
+                            #   ——修复前 ``buf`` 已从 ``_output_buffer`` 移除但未
+                            #   写盘，直接 return False → 这些行永久丢失（跨进程
+                            #   flock 冲突时输出历史记录缺失）。放回头部后由
+                            #   后续刷盘（定时器/worker finally/close）重试。
+                            with self._buffer_lock:
+                                self._output_buffer = buf + self._output_buffer
                             return False
                         try:
                             for line in buf:
@@ -262,6 +282,9 @@ class _StdoutLineTracker:
                             _unlock_history_file(f.fileno())
             except OSError as exc:
                 _logger.warning("输出历史刷盘失败: %s", exc)
+                # ★ BUG-19：OSError（文件系统瞬时错误）同样放回缓冲防丢行
+                with self._buffer_lock:
+                    self._output_buffer = buf + self._output_buffer
                 return False
             self._last_flush_time = time.monotonic()
             # 方向2（压缩冷却修复）：**不再**更新 ``_last_compact_time``——
@@ -355,9 +378,18 @@ class _StdoutLineTracker:
         timer.start()
 
     def _timer_flush_callback(self) -> None:
-        """定时刷盘回调，自重置定时器。"""
+        """定时刷盘回调，自重置定时器。
+
+        ★ BUG-20：worker 在途（``_flush_in_progress``）时仅置
+        ``_pending_flush``（由 worker finally 统一处理）——修复前直接调用
+        ``_flush_buffered_lines()`` 与 worker 并发写文件，两个线程各自取不同
+        批次，写盘顺序取决于锁竞争（后到行可能先写）→ 输出历史乱序。
+        """
         try:
-            self._flush_buffered_lines()
+            if self._flush_in_progress:
+                self._pending_flush = True
+            else:
+                self._flush_buffered_lines()
         except Exception:
             pass
         if self._flush_timer is not None and not self._flush_timer_stop.is_set():

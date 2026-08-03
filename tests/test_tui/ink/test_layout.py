@@ -1136,3 +1136,70 @@ class TestPaddingAxes:
         child = root.child.child
         assert child.layout_box.x == 0
         assert child.layout_box.y == 0
+
+
+class TestTranslateSubtreeMultiChild:
+    """BUG-14 — _translate_subtree_x/y 遍历后代 sibling 链（嵌套多子容器不错位）。
+
+    修复前仅递归 ``fiber.child``（首子链），嵌套容器内第 2+ 个子节点
+    （child 的 sibling）停留在旧坐标 → alignItems/alignSelf/探针复用偏移后
+    嵌套多子容器文本/边框错位。
+    """
+
+    def test_align_center_nested_multi_child(self):
+        """column alignItems:center 嵌套 BOX 含 2 个 TEXT → 两文本均在边框内。"""
+        from src.tui.ink import strip_ansi
+
+        r = Reconciler()
+        root = r.create_root()
+        el = h(BOX, {"width": 10, "alignItems": "center"},
+               h(BOX, {"border": 1},
+                 [h(TEXT, {"children": "a"}), h(TEXT, {"children": "b"})]))
+        r.render(root, el, 80, 24)
+        frame = render_frame(root, 80)
+        # 两文本都应在边框内（渲染无错位）
+        for line in frame.lines:
+            plain = strip_ansi(line.render())
+            # 边框外不应出现 b（修复前 b 画在左边框外）
+            assert "b │" not in plain or "│b" in plain, f"文本 b 应位于边框内: {plain!r}"
+        # 布局坐标断言
+        inner_box = root.child.child
+        texts = []
+        t = inner_box.child
+        while t:
+            texts.append(t)
+            t = t.sibling
+        assert len(texts) == 2
+        assert texts[0].layout_box.x == texts[1].layout_box.x, (
+            f"两文本 x 应一致（同在边框内）: {texts[0].layout_box.x} vs {texts[1].layout_box.x}"
+        )
+
+    def test_translate_y_multi_child(self):
+        """探针复用路径（fill=False 列容器）嵌套多子后代整体平移（sibling 遍历）。"""
+        r = Reconciler()
+        root = r.create_root()
+        # row 内 column BOX（fill=False 探针）：内部第 2 个子节点为嵌套 BOX
+        # （含 c/d 两个文本），主循环平移该嵌套 BOX +1——其内部 c 和 d 均应
+        # 随动（修复前仅首子链 c 平移、d 停留在探针 y 重叠基准）
+        el = h(BOX, {"flexDirection": "row", "width": 30},
+               h(BOX, {"flexDirection": "column", "border": 1},
+                 [h(TEXT, {"children": "a"}),
+                  h(BOX, {"flexDirection": "column", "border": 1},
+                    [h(TEXT, {"children": "c"}), h(TEXT, {"children": "d"})])]))
+        r.render(root, el, 80, 24)
+        col = root.child.child
+        texts = []
+        t = col.child.sibling.child  # 嵌套 BOX 的第一个子
+        while t:
+            texts.append(t)
+            t = t.sibling
+        assert len(texts) == 2
+        # c 与 d 都应在嵌套 BOX 边框内（y 差 1 相对保持）
+        assert texts[1].layout_box.y - texts[0].layout_box.y == 1, (
+            f"c/d 相对位置应保持: c={texts[0].layout_box.y} d={texts[1].layout_box.y}"
+        )
+        # d 必须被平移（探针 delta=1 后嵌套 BOX 整体下移）——修复前 d 停留
+        # 在探针 y（≈1，与 c 重叠）；修复后 d 在嵌套 BOX 边框内 y=4
+        assert texts[1].layout_box.y >= 3, (
+            f"d 应随嵌套 BOX 整体平移（sibling 遍历）: {texts[1].layout_box.y}"
+        )

@@ -337,6 +337,10 @@ def _reflow_row_justify(
 
     余数（extra % slots）逐个加到前若干个间隔上（视觉差 ≤1 列，可接受）。
 
+    ★ BUG-15（review 方向）：x 重排后整棵子树平移（``_place_child_x`` 经
+    ``_translate_subtree_x``）——修复前直接 ``cb.x = cx`` 仅改直接子节点，
+    嵌套容器内后代 x 陈旧 → 文本与边框错位。
+
     Args:
         children: 直接 host 子节点（已测量，layout_box 非 None）。
         justify: space-between / space-around / space-evenly。
@@ -344,6 +348,17 @@ def _reflow_row_justify(
         margin: 子节点间距（每子累计）。
         extra: 待分配的剩余宽度（>0 才有意义）。
     """
+
+    def _place_child_x(child: Fiber, cx: int) -> None:
+        """放置子节点到目标 x 并平移整棵子树（后代随动）。"""
+        cb = child.layout_box
+        delta = cx - cb.x
+        if delta:
+            _translate_subtree_x(child, delta)
+        else:
+            cb.x = cx
+            child.layout_box = cb
+
     n = len(children)
     if n == 0:
         return
@@ -354,11 +369,10 @@ def _reflow_row_justify(
         cx = start_x
         for i, child in enumerate(children):
             cb = child.layout_box
-            cb.x = cx
+            _place_child_x(child, cx)
             cx += cb.w
             if i < gaps:
                 cx += margin + per + (1 if i < rem else 0)
-            child.layout_box = cb
     elif justify == "space-evenly":
         slots = n + 1
         per = extra // slots
@@ -369,9 +383,8 @@ def _reflow_row_justify(
         cx = start_x + gaps[0]
         for i, child in enumerate(children):
             cb = child.layout_box
-            cb.x = cx
+            _place_child_x(child, cx)
             cx += cb.w + margin + gaps[i + 1]
-            child.layout_box = cb
     else:  # space-around：2n 半间隔（边缘半间隔、中间整间隔）
         half_units = 2 * n
         per = extra // half_units
@@ -382,9 +395,8 @@ def _reflow_row_justify(
         cx = start_x + gaps[0]
         for i, child in enumerate(children):
             cb = child.layout_box
-            cb.x = cx
+            _place_child_x(child, cx)
             cx += cb.w + margin + gaps[i + 1]
-            child.layout_box = cb
 
 
 def _reflow_subtree(fiber: Fiber, new_y: int, new_x: int | None = None) -> None:
@@ -459,10 +471,15 @@ def _translate_subtree_y(fiber: Fiber, delta_y: int) -> None:
     第 2+ 个子节点的后代 y 停留在 ``inner_y`` 基准（与首个子树重叠）。
     本函数保持 w/h/x 不变，只平移 y（delta_y 为相对偏移，可为负）。
 
-    方向3（BUG-2 关联修复）：**不遍历 sibling 链**——调用方以单个直接子节点
-    为参数（探针复用 / alignItems 偏移），仅须平移该子节点及其后代；遍历
-    sibling 会把后续兄弟节点一并平移（其后再被循环各自平移 → 重复偏移）。
-    修复前实现 ``while f is not None: ... f = f.sibling`` 隐含 sibling 遍历。
+    方向3（BUG-2 关联修复）：**不遍历子树根自身的 sibling 链**——调用方以
+    单个直接子节点为参数（探针复用 / alignItems 偏移），仅须平移该子节点及
+    其**全部后代**；遍历子树根自身 sibling 会把后续兄弟节点一并平移（其后
+    再被循环各自平移 → 重复偏移）。
+    ★ BUG-14 修复：**遍历后代 sibling 链**（``child + child.sibling``）——
+    修复前仅递归 ``fiber.child``（首子链），嵌套容器内第 2+ 个子节点
+    （child 的 sibling）停留在旧坐标 → alignItems/alignSelf/探针复用偏移
+    后嵌套多子容器文本/边框错位（确定性渲染错误，见
+    ``test_translate_subtree_multi_child``）。
 
     Args:
         fiber: 待平移的子树根（其 layout_box 非 None）。
@@ -474,7 +491,10 @@ def _translate_subtree_y(fiber: Fiber, delta_y: int) -> None:
         cb = fiber.layout_box
         cb.y += delta_y
         fiber.layout_box = cb
-    _translate_subtree_y(fiber.child, delta_y)
+    child = fiber.child
+    while child is not None:
+        _translate_subtree_y(child, delta_y)
+        child = child.sibling
 
 
 def _translate_subtree_x(fiber: Fiber, delta_x: int) -> None:
@@ -486,7 +506,9 @@ def _translate_subtree_x(fiber: Fiber, delta_x: int) -> None:
     平移 delta_x 保持后代相对位置不变。
 
     本函数保持 w/h/y 不变，只平移 x（delta_x 为相对偏移，可为负）。不遍历
-    sibling 链（仅平移参数指定子树，与 ``_translate_subtree_y`` 一致）。
+    子树根自身的 sibling 链（仅平移参数指定子树及全部后代，与
+    ``_translate_subtree_y`` 一致）。★ BUG-14：遍历后代 sibling 链
+    （``child + child.sibling``）——修复前仅递归首子链，嵌套多子容器错位。
 
     Args:
         fiber: 待平移的子树根（其 layout_box 非 None）。
@@ -498,7 +520,10 @@ def _translate_subtree_x(fiber: Fiber, delta_x: int) -> None:
         cb = fiber.layout_box
         cb.x += delta_x
         fiber.layout_box = cb
-    _translate_subtree_x(fiber.child, delta_x)
+    child = fiber.child
+    while child is not None:
+        _translate_subtree_x(child, delta_x)
+        child = child.sibling
 
 
 def _measure(fiber: Fiber, x: int, y: int, avail_w: int, fill: bool = True) -> LayoutBox:
@@ -749,6 +774,7 @@ def _measure(fiber: Fiber, x: int, y: int, avail_w: int, fill: bool = True) -> L
             per = extra_w // grow_total
             remainder = extra_w % grow_total
             g_idx = 0
+            old_xs = [child.layout_box.x for child in children]
             for child in children:
                 g = _flex_grow(child)
                 if g > 0:
@@ -760,11 +786,18 @@ def _measure(fiber: Fiber, x: int, y: int, avail_w: int, fill: bool = True) -> L
             cx = inner_x
             for i, child in enumerate(children):
                 cb = child.layout_box
-                cb.x = cx
+                delta = cx - old_xs[i]
+                if delta:
+                    # ★ BUG-15：x 变化后整棵子树平移（``_translate_subtree_x``
+                    #   内部 cb.x += delta + 后代随动）——修复前仅改直接子节点
+                    #   cb.x，嵌套容器内后代停留旧 x。
+                    _translate_subtree_x(child, delta)
+                else:
+                    cb.x = cx
+                    child.layout_box = cb
                 cx += cb.w
                 if i < len(children) - 1:
                     cx += spacing
-                child.layout_box = cb
             # grow 消费全部剩余 → justify 无偏移（CSS flexbox 语义）
             used_w = inner_w_row
             extra_w = 0
@@ -772,12 +805,16 @@ def _measure(fiber: Fiber, x: int, y: int, avail_w: int, fill: bool = True) -> L
         #   center → 所有子节点 x += extra//2；flex-end → x += extra；
         #   space-between/space-around/space-evenly → 按间隔重排（_reflow_row_justify）。
         #   flex-start（默认）不变。与 row flexGrow 语义重叠（grow 先分）。
+        #   ★ BUG-15：偏移后整棵子树平移（``_translate_subtree_x`` 内部
+        #   cb.x += offset + 后代随动）——修复前仅改直接子节点 cb.x。
         justify = fiber.props.get("justifyContent", "flex-start")
         if justify in ("center", "flex-end") and extra_w > 0:
             offset = extra_w // 2 if justify == "center" else extra_w
             for child in children:
-                cb = child.layout_box
-                if cb is not None:
+                if offset:
+                    _translate_subtree_x(child, offset)
+                else:
+                    cb = child.layout_box
                     cb.x += offset
                     child.layout_box = cb
         elif justify in ("space-between", "space-around", "space-evenly") and extra_w > 0:
@@ -947,6 +984,14 @@ def _measure(fiber: Fiber, x: int, y: int, avail_w: int, fill: bool = True) -> L
             _distribute_extra(
                 children, _flex_grow, remaining, inner_y, spacing,
             )
+            # ★ BUG-15（review 方向）：flexGrow 修改直接子节点高度/重排 y 后
+            #   **递归重排子树孙节点**——与 flexShrink 分支（``_reflow_subtree``
+            #   对称）。修复前孙节点 y 在 grow 前按旧高度推算，第 2+ 个 grow
+            #   子节点（嵌套容器）内部后代 y 陈旧 → 文本与自身边框错位。
+            for child in children:
+                cb = child.layout_box
+                if cb is not None:
+                    _reflow_subtree(child, cb.y)
 
     # ★ justifyContent（方向3，已实现）：column 纵向对齐基于 flexGrow 分配后
     #   剩余空间——center → 所有子节点 y += extra//2；flex-end → y += extra；
@@ -957,6 +1002,8 @@ def _measure(fiber: Fiber, x: int, y: int, avail_w: int, fill: bool = True) -> L
     #   方向1（完善 flexbox）：仅 column 走本块——row 的横向 justifyContent
     #   已在 row 分支处理（本块 n 仅在 column 分支定义，row 路径引用会
     #   UnboundLocalError，原实现隐含依赖「row 无 justifyContent 消费方」）。
+    #   ★ BUG-15：offset 后整棵子树平移（``_translate_subtree_y``）——修复前
+    #   仅改直接子节点 cb.y，嵌套容器内后代 y 陈旧 → 文本与边框错位。
     justify = fiber.props.get("justifyContent", "flex-start")
     if direction == "column" and justify in ("center", "flex-end") and children:
         n = len(children)
@@ -971,9 +1018,11 @@ def _measure(fiber: Fiber, x: int, y: int, avail_w: int, fill: bool = True) -> L
             offset = extra // 2 if justify == "center" else extra
             for child in children:
                 cb = child.layout_box
-                if cb is not None:
-                    cb.y += offset
-                    child.layout_box = cb
+                if cb is not None and offset:
+                    # ★ BUG-15：整棵子树平移（``_translate_subtree_y`` 内部
+                    #   cb.y += offset + 后代随动）——修复前先 ``cb.y += offset``
+                    #   再调用会双重偏移；嵌套容器内后代 y 陈旧 → 错位。
+                    _translate_subtree_y(child, offset)
 
     box = LayoutBox(x, y, width, h)
     fiber.layout_box = box

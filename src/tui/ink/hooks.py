@@ -463,6 +463,9 @@ def use_context(ctx: Context) -> Any:
     """
     fiber = _current()
     cache = fiber._context_cache
+    # ★ BUG-16：消费 context 后清除 dirty 标记（Provider 值变化经
+    #   ``_clear_context_cache_subtree`` 置位；本函数求值即已消费最新值）。
+    fiber._context_dirty = False
     if fiber._context_cache_version == _context_version and ctx.tag in cache:
         return cache[ctx.tag]
     value = ctx.default

@@ -217,6 +217,11 @@ def _tool_card_styled_lines(block, width, start=0, stop=None):
     inner_w = max(1, width - 4) if width > 0 else 0
     status_idx = _tool_status_index(block)
     out: list[list[StyledRun]] = []
+    # ★ BUG-26（review 方向）：极端窄屏（width<5）边框降级——边框固定前缀
+    #   ``┌─ ``（3 列）+ 右角（1 列）已占满宽度，标题无空间 → 行超宽溢出
+    #   （宽度不变量破坏，渲染错位）。降级为无边框裸行（标题行 + 主体内容
+    #   行），行宽 ≤ width。
+    ultra_narrow = 0 < width < 5
     # 顶边框（仅 start==0）：┌─ ● ⚡ rf[ · detail] ─…─┐
     if start == 0:
         tool_name = block.extra.get("tool_name") or "工具"
@@ -231,17 +236,21 @@ def _tool_card_styled_lines(block, width, start=0, stop=None):
         title_runs.append(StyledRun(display, Style(fg=252)))
         if detail:
             title_runs.append(StyledRun(f" \u00b7 {detail}", pal.dim))
-        head = [StyledRun("\u250c\u2500 ", border)]
-        if width > 0:
-            for run in truncate_runs(title_runs, max(1, width - 4)):
-                head.append(run)
-            fill = max(0, width - 1 - sum(r.width for r in head))
-            if fill > 0:
-                head.append(StyledRun("\u2500" * fill, border))
-            head.append(StyledRun("\u2510", border))
+        if ultra_narrow:
+            # 降级：无边框裸标题行（截断至 width）
+            out.append(truncate_runs(title_runs, width))
         else:
-            head.extend(title_runs)
-        out.append(head)
+            head = [StyledRun("\u250c\u2500 ", border)]
+            if width > 0:
+                for run in truncate_runs(title_runs, max(1, width - 4)):
+                    head.append(run)
+                fill = max(0, width - 1 - sum(r.width for r in head))
+                if fill > 0:
+                    head.append(StyledRun("\u2500" * fill, border))
+                head.append(StyledRun("\u2510", border))
+            else:
+                head.extend(title_runs)
+            out.append(head)
     # 主体行：block.lines[start:stop]，start==0 时跳过标题行（名字已在顶边框）；
     # 关闭状态行（_tool_status_index）跳过——状态已移入底边框（对齐 Claude Code）
     body_end = len(block.lines) if stop is None else min(stop, len(block.lines))
@@ -267,7 +276,10 @@ def _tool_card_styled_lines(block, width, start=0, stop=None):
     # bash 尾显示：前置省略提示行「… 前 N 行省略」（仅首次提交 start==0）
     omitted = block.extra.get("_bash_omitted_lines", 0)
     if omitted > 0:
-        out.append(_omitted_line(f"\u2026 前 {omitted} 行省略"))
+        if ultra_narrow:
+            out.append([StyledRun(f"\u2026 前 {omitted} 行省略", Style(fg=242))])
+        else:
+            out.append(_omitted_line(f"\u2026 前 {omitted} 行省略"))
     for abs_idx in range(body_start, body_end):
         if status_idx is not None and abs_idx == status_idx:
             continue
@@ -280,12 +292,19 @@ def _tool_card_styled_lines(block, width, start=0, stop=None):
         if not wrapped:
             # 空输出行 → 有边框空行 `│    │`（保持行映射）
             if width > 0:
-                out.append([StyledRun("\u2502 " + " " * inner_w + " \u2502", border)])
+                if ultra_narrow:
+                    out.append([StyledRun("", None)])
+                else:
+                    out.append([StyledRun("\u2502 " + " " * inner_w + " \u2502", border)])
             continue
         for seg in wrapped:
             seg_runs = [StyledRun(r.text, r.style) for r in seg.runs if r.text]
             if width <= 0:
                 out.append(seg_runs)
+                continue
+            if ultra_narrow:
+                # 降级：无边框裸行（截断至 width）
+                out.append(truncate_runs(seg_runs, width))
                 continue
             body = [StyledRun("\u2502 ", border)] + seg_runs
             pad = inner_w - sum(r.width for r in seg_runs)
@@ -297,10 +316,20 @@ def _tool_card_styled_lines(block, width, start=0, stop=None):
     # （head 省略的行在末尾——提示置于主体行之后，对齐终端 head 语义）
     omitted_head = block.extra.get("_head_omitted_lines", 0)
     if omitted_head > 0:
-        out.append(_omitted_line(f"\u2026 后 {omitted_head} 行省略"))
+        if ultra_narrow:
+            out.append([StyledRun(f"\u2026 后 {omitted_head} 行省略", Style(fg=242))])
+        else:
+            out.append(_omitted_line(f"\u2026 后 {omitted_head} 行省略"))
     # 底边框：仅关闭块且为最终块；含状态文本（对齐 Claude Code `└─ ✔ 完成 ─┘`）
     if block.closed and (stop is None or stop >= len(block.lines)):
-        if width > 0:
+        if ultra_narrow:
+            # 降级：无边框状态行
+            status = block.extra.get("tool_status", "running")
+            if status == "done":
+                out.append([StyledRun("\u2714", Style(fg=41))])
+            elif status == "fail":
+                out.append([StyledRun("\u2716", Style(fg=196))])
+        elif width > 0:
             tail = [StyledRun("\u2514\u2500 ", border)]
             status = block.extra.get("tool_status", "running")
             if status == "done":
@@ -786,7 +815,16 @@ class AppModel:
         if 0 <= self.reasoning_block_index < len(self.blocks):
             block = self.blocks[self.reasoning_block_index]
             block.closed = True
-            block._cached_ink_lines = self._block_to_ink_lines(block, 0)
+            # ★ BUG-21（review 方向）：仅冻结**未提交尾**
+            #   （``committed_line_count`` 起）——修复前全量冻结
+            #   ``_block_to_ink_lines(block, 0)``：已增量提交过的行（已在
+            #   committed_lines）被重复存为 ink Line → 大响应关闭后内存约
+            #   翻倍且不回收。与 ``close_tool_box`` 的未提交尾冻结一致；
+            #   ``_block_styled_lines`` 冻结缓存分支已按 ``cache[0:]``
+            #   （冻结缓存即未提交部分）返回。
+            block._cached_ink_lines = self._block_to_ink_lines(
+                block, block.committed_line_count,
+            )
             block._open_styled_cache = None  # 冻结后开放缓存不再需要
             self.commit_block(self.reasoning_block_index)
 
@@ -822,7 +860,11 @@ class AppModel:
         if 0 <= self.content_block_index < len(self.blocks):
             block = self.blocks[self.content_block_index]
             block.closed = True
-            block._cached_ink_lines = self._block_to_ink_lines(block, 0)
+            # ★ BUG-21（review 方向）：仅冻结未提交尾（同 close_reasoning）——
+            #   已增量提交的行不重复存 ink Line（大响应内存不翻倍）。
+            block._cached_ink_lines = self._block_to_ink_lines(
+                block, block.committed_line_count,
+            )
             block._open_styled_cache = None  # 冻结后开放缓存不再需要
             self.commit_block(self.content_block_index)
 
@@ -879,6 +921,19 @@ class AppModel:
                     title = f"  \u00b7 {display} \u00b7 {detail}"
                 if existing.lines:
                     existing.lines[0] = AnsiLine.of(title, Style(fg=23, bold=True))
+                # ★ BUG-22（review 方向）：已增量提交过的 box（输出 > 阈值，
+                #   顶边框已在 committed_lines）复用更新标题时**同步重建
+                #   committed_lines 顶边框行**——修复前仅更新块内标题行，
+                #   渲染仍显示旧标题（如兜底 box 的空工具名）。
+                if existing.committed_line_count > 0:
+                    offset = existing.extra.get("_first_committed_offset")
+                    if offset is not None and 0 <= offset < len(self.committed_lines):
+                        from src.tui.ink import Line
+                        head = _tool_card_styled_lines(
+                            existing, getattr(self, "width", 0), 0, None,
+                        )
+                        if head:
+                            self.committed_lines[offset] = Line(head[0])
                 self.active_tool = {
                     "name": display, "detail": detail, "status": "running",
                     "tool_name": tool_name or "",

@@ -570,3 +570,65 @@ class TestStdHooks:
             assert out2["stderr"] is None
         finally:
             _hooks.set_std_accessors(None, None, None)
+
+
+class TestMemoWithContext:
+    """BUG-16 — memo 组件 + use_context：Provider 值变化强制重渲染消费者。"""
+
+    def test_memo_rerenders_when_context_value_changes(self):
+        """Provider 值 A→B → memo 组件重渲染（React 语义：context 变更
+        强制重渲染消费者，与 memo 无关）。"""
+        from src.tui.ink.hooks import create_context, use_context, memo
+        from src.tui.ink.components import render_frame
+        from src.tui.ink import strip_ansi
+
+        Ctx = create_context("default")
+        calls = []
+
+        def _Comp(props):
+            calls.append(props["x"])
+            v = use_context(Ctx)
+            return h(TEXT, {"children": f"value={v}"})
+
+        Comp = memo(_Comp)
+
+        def build(value):
+            return h(BOX, None, [
+                h(Ctx.Provider, {"value": value}, h(Comp, {"x": 1})),
+            ])
+
+        r = Reconciler()
+        root = r.create_root()
+        r.render(root, build("A"), 80, 24)
+        frame = render_frame(root, 80)
+        assert "value=A" in strip_ansi(frame.lines[0].render())
+        assert len(calls) == 1
+        # 改 Provider 值 → memo 组件必须重渲染（修复前短路 → 陈旧 "value=A"）
+        r.render(root, build("B"), 80, 24)
+        frame = render_frame(root, 80)
+        assert "value=B" in strip_ansi(frame.lines[0].render()), (
+            f"context 值变化后 memo 组件应重渲染: {strip_ansi(frame.lines[0].render())!r}"
+        )
+        assert len(calls) == 2
+        # 再次渲染（props/context 均未变）→ memo 短路（零回归）
+        r.render(root, build("B"), 80, 24)
+        assert len(calls) == 2
+
+    def test_memo_still_short_circuits_when_unrelated_context_changes(self):
+        """无关 Provider 值变化不触发本 memo 组件重渲染（精确 dirty 标记）。"""
+        from src.tui.ink.hooks import create_context, memo
+        calls = []
+
+        def _Comp(props):
+            calls.append(1)
+            return h(TEXT, {"children": props["label"]})
+
+        Comp = memo(_Comp)
+
+        # 本组件不使用 context，但位于无关 Provider 子树外
+        r = Reconciler()
+        root = r.create_root()
+        el = h(BOX, None, [h(Comp, {"label": "A"})])
+        r.render(root, el, 80, 24)
+        r.render(root, el, 80, 24)
+        assert calls == [1], f"memo 应短路（组件函数仅调用一次）: {calls}"

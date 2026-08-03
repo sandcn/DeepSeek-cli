@@ -309,7 +309,11 @@ def _build_group_card(rows: list[tuple[str, str, List[str]]],
     out: List[str] = []
     title_trunc = _truncate_ansi_width(title, inner_w)
     head = f"{_border}\u250c\u2500 {_C_RESET}" + title_trunc
-    head += f"{_border}\u2500{_C_RESET}" * max(2, card_w - 4 - _display_width(title_trunc))
+    # ★ BUG-24（review 方向）：边框 fill 用 ``max(0, ...)``——修复前
+    #   ``max(2, ...)`` 在标题接近内宽（title_w > card_w-6）时强制 fill=2 →
+    #   行总宽 = 3 + title_w + 2 + 1 > card_w（超 1 列，右边界被截断）。
+    #   fill=0 时标题直接衔接右角（视觉可接受，行宽恒 = card_w）。
+    head += f"{_border}\u2500{_C_RESET}" * max(0, card_w - 4 - _display_width(title_trunc))
     head += f"{_border}\u2510{_C_RESET}"
     out.append(head)
     for l in body:
@@ -318,7 +322,7 @@ def _build_group_card(rows: list[tuple[str, str, List[str]]],
     if closed:
         status_trunc = _truncate_ansi_width(status_text, inner_w)
         tail = f"{_border}\u2514\u2500 {_C_RESET}" + status_trunc
-        tail += f"{_border}\u2500{_C_RESET}" * max(2, card_w - 4 - _display_width(status_trunc))
+        tail += f"{_border}\u2500{_C_RESET}" * max(0, card_w - 4 - _display_width(status_trunc))
         tail += f"{_border}\u2518{_C_RESET}"
         out.append(tail)
     return out

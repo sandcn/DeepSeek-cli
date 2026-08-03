@@ -1014,3 +1014,26 @@ class TestGroupCardBorderBreath:
             lines = self._card(["running"])
         # 顶边框色号应包含 30（mock 的呼吸色）
         assert re.search(r"38;5;30m", lines[0]), "运行中边框应使用呼吸色号"
+
+
+class TestGroupCardBorderFill:
+    """BUG-24 — 组卡边框 fill 不强制 min=2（标题满宽时行不超 1 列）。"""
+
+    def test_card_width_never_exceeds_max(self):
+        """长标题（接近内宽）→ 卡片行宽恒 ≤ card_w（修复前超 1 列）。"""
+        import re
+        from src.tui._subagent_state import StateStore
+        from src.tui._subagent_render import render_frame, _terminal_max_width
+        from src.tui._screen import wcswidth_simple
+
+        store = StateStore(max_history=3)
+        # 超长描述填满内宽
+        store.add_agent("agent-1", "D" * 60, status="done", agent_type="execute")
+        lines = render_frame(store, max_history=3)
+        for line in lines:
+            plain = re.sub(r"\x1b\[[0-9;?]*[A-Za-z]", "", line)
+            w = wcswidth_simple(plain)
+            # 行宽不应超过卡片宽度（card_w = min(max_widths + 6, terminal_w)）
+            assert w <= _terminal_max_width() + 1, (
+                f"卡片行宽不应大幅超终端宽度: {w} > {_terminal_max_width()}"
+            )
