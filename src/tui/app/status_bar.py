@@ -198,6 +198,12 @@ def StatusBar(props) -> object:
     if status_line.width > width:
         from src.tui.ink.helpers import truncate_line
         status_line = truncate_line(status_line, width)
+    # ★ 方向4（空状态压缩）：无模型名且无统计（status_runs 空）时只渲染分隔线
+    #   一行——避免启动期 / 未配置模型时状态栏空行占位（视觉更紧凑）。
+    if not status_runs:
+        return h(BOX, None, [
+            h(TEXT, {"styled": sep.runs, "height": 1}),
+        ])
     return h(BOX, None, [
         h(TEXT, {"styled": sep.runs, "height": 1}),
         h(TEXT, {"styled": status_line.runs, "height": 1}),
