@@ -17,8 +17,6 @@ import sys
 from src._compat import dataclass
 from typing import Any
 
-from ...core.constants import DIM, RESET, CYAN, YELLOW, GREEN
-
 
 @dataclass
 class RoleConfig:

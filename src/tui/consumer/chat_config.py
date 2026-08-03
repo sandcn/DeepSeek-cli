@@ -14,7 +14,6 @@ ChatConfig 管聊天域业务常量。
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any
 
 from .._config import ConfigBase
 
