@@ -21,8 +21,16 @@ class PersistencePort(ABC):
         messages: list[dict],
         model: str,
         session_id: str | None = None,
+        subagents: list | None = None,
     ) -> str:
-        """保存对话并返回会话 ID。"""
+        """保存对话并返回会话 ID。
+
+        Args:
+            messages: 消息列表（内部自动过滤 system）
+            model: 模型名称
+            session_id: 指定 ID，None 时自动生成
+            subagents: SubAgent 任务记录列表（含完整聊天信息），可选
+        """
 
     @abstractmethod
     def load_session(self, session_id: str) -> dict | None:

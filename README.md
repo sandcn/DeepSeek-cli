@@ -239,9 +239,15 @@ python chat.py version
 | `/cost` | — | 查看 token 用量和费用 |
 | `/load <ID>` | — | 加载保存的对话 |
 | `/sessions` | — | 列出所有保存的对话 |
+| `/export [路径]` | — | 导出当前对话为 Markdown（含 SubAgent 聊天信息） |
 | `/theme <名称>` | — | 切换配色主题（dark / light / high-contrast） |
 | `/changes` | — | 显示文件沙盒中被修改文件的差异（可加文件名过滤） |
 | `exit` | — | 退出程序 |
+
+> **SubAgent 聊天记录持久化**：每个 SubAgent 的完整内部对话（system 提示词 / 任务指令 /
+> 助手回复 / 工具调用与结果）会在其运行结束时记录到父 Agent，并随会话自动保存到
+> `.chat/msg_list/<id>.json` 的 `subagents` 字段；`/load` 加载会话时同步恢复，
+> `/export` 导出 markdown 时一并包含。
 
 ---
 

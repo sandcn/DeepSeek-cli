@@ -41,6 +41,11 @@ from .commands._data_cmd import (  # noqa: F401, F811
     _cmd_sessions,
 )
 
+from .commands._export_cmd import (  # noqa: F401, F811
+    _cmd_export,
+    build_markdown,
+)
+
 __all__ = [
     "register_command",
     "handle_command",
@@ -62,6 +67,8 @@ __all__ = [
     "_cmd_help",
     "_cmd_load",
     "_cmd_sessions",
+    "_cmd_export",
+    "build_markdown",
     "_cmd_theme",
     "_cmd_editmsg",
     "_cmd_changes",

@@ -37,6 +37,11 @@ def _cmd_clear(ctx):
     sm = get_sandbox_manager()
     if sm:
         sm.clear()
+    # 清空 SubAgent 记录（属于被清空的对话，避免 /export 导出孤儿记录）
+    if ctx.session is not None:
+        agent = getattr(ctx.session, "agent", None)
+        if agent is not None:
+            setattr(agent, "_subagent_records", [])
     _out.write(f"{GREEN}  + 对话已清空（系统提词已保留）{RESET}", level="raw", source="cmd")
     return True
 

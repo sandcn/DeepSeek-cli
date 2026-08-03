@@ -147,6 +147,14 @@ class SubAgent(BaseAgent):
         - 每次重试前向 messages 追加"【继续】"消息通知模型
         - 非网络错误直接返回，不重试
         """
+        try:
+            return await self._run_impl()
+        finally:
+            # 无论成功/失败/取消，均将完整对话记录到父 Agent（供 /export 导出）
+            self._record_to_parent()
+
+    async def _run_impl(self) -> str:
+        """SubAgent 主循环实现（由 run() 包裹，确保 finally 记录完整对话）。"""
         content = ""
         # 日志截断长度
         _LOG_TRUNCATE_LEN = 100
@@ -230,6 +238,39 @@ class SubAgent(BaseAgent):
         if self.display:
             self.display.update_model_phase(self.label, "error", str(error))
         return f"错误: {error}"
+
+    def _record_to_parent(self) -> None:
+        """将 SubAgent 完整对话记录到父 Agent（供 /export 导出到 markdown）。
+
+        子代理在 run() 结束时（无论成功/失败/取消）把自身完整消息列表
+        （system/user/assistant/tool 全部往返）挂到 parent_agent 的
+        ``_subagent_records`` 列表上，/export 命令据此渲染 subagent 聊天信息。
+
+        去重策略：以 label 为键，同 label（重试场景重新派发）覆盖旧记录。
+        """
+        parent = getattr(self, "parent", None)
+        if parent is None:
+            return
+        records = getattr(parent, "_subagent_records", None)
+        if records is None:
+            records = []
+            setattr(parent, "_subagent_records", records)
+        record = {
+            "label": self.label,
+            "description": self.description,
+            "agent_type": self.agent_type,
+            "prompt": self.prompt,
+            "status": "error" if self.error else "done",
+            "result": self.result,
+            "error": self.error,
+            "tool_calls_count": self.tool_calls_count,
+            "messages": [dict(m) for m in self.messages],
+        }
+        for i, r in enumerate(records):
+            if r.get("label") == self.label:
+                records[i] = record
+                return
+        records.append(record)
 
     async def _call_model_impl(self, messages, model=None, tools=None, display=None, label=None, silent=False):
         """调用模型，包装 ModelResult 为 (reasoning, content, usage, tool_calls) 元组

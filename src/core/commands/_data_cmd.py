@@ -25,8 +25,15 @@ def _cmd_load(ctx):
     _p = ctx.persistence_port if ctx.persistence_port is not None else JsonFilePersistence()
     if non_system_current:
         current_model = ctx.state.get("model", MODEL)
+        # 连同 SubAgent 记录一起保存（含完整聊天信息）
+        current_subagents = []
+        if ctx.session is not None:
+            agent = getattr(ctx.session, "agent", None)
+            if agent is not None:
+                current_subagents = list(getattr(agent, "_subagent_records", None) or [])
         try:
-            saved_id = _p.save_session(non_system_current, model=current_model)
+            saved_id = _p.save_session(non_system_current, model=current_model,
+                                       subagents=current_subagents)
             _out.write(f"{DIM}  + 已自动保存当前会话: {saved_id[:_SESSION_ID_TRUNCATE]}{RESET}", level="raw", source="cmd")
         except Exception as e:
             _out.write(f"{YELLOW}  ! 自动保存当前会话失败: {e}{RESET}", level="raw", source="cmd")
@@ -53,6 +60,13 @@ def _cmd_load(ctx):
     ctx.messages[:] = system_msgs
     for msg in loaded_msgs:
         ctx.messages.append(msg)
+
+    # 恢复 SubAgent 记录（含完整聊天信息，供 /export 导出）
+    loaded_subagents = data.get("subagents") or []
+    if ctx.session is not None:
+        agent = getattr(ctx.session, "agent", None)
+        if agent is not None:
+            setattr(agent, "_subagent_records", list(loaded_subagents))
 
     model = data.get("model", ctx.state.get("model", MODEL))
     ctx.state["model"] = model

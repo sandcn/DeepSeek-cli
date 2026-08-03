@@ -142,6 +142,9 @@ class ChatSession:
             state_machine=self._state_machine,
             emit_fn=self._emit,
             observability_port=self._observability_port,
+            # SubAgent 完整聊天记录：保存时收集、加载时恢复到 Agent（供 /export 导出）
+            subagents_getter=lambda: list(getattr(self._agent, "_subagent_records", None) or []),
+            subagents_setter=lambda v: setattr(self._agent, "_subagent_records", list(v or [])),
         )
 
         # ── 消息管理器（延迟初始化，等待 messages 和 ctx_mgr 就绪） ──

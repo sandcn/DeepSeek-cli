@@ -17,9 +17,10 @@ class JsonFilePersistence(PersistencePort):
         messages: list[dict],
         model: str,
         session_id: str | None = None,
+        subagents: list | None = None,
     ) -> str:
         from ...chat_msgs import save_session as _save
-        return _save(messages, model, session_id)
+        return _save(messages, model, session_id, subagents)
 
     def load_session(self, session_id: str) -> dict | None:
         from ...chat_msgs import load_session as _load

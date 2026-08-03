@@ -64,7 +64,8 @@ def generate_id() -> str:
 
 
 # ── 保存对话 ──────────────────────────────────────────────
-def save_session(messages: list[dict], model: str, session_id: str | None = None) -> str:
+def save_session(messages: list[dict], model: str, session_id: str | None = None,
+                 subagents: list | None = None) -> str:
     """保存对话到 .chat/msg_list/<id>.json
 
     自动过滤 system 角色消息，仅保留 user/assistant/tool 对话消息。
@@ -74,6 +75,9 @@ def save_session(messages: list[dict], model: str, session_id: str | None = None
             注意：system 角色消息会被自动过滤（不保存），如需保存 system 消息请调用方自行拼接
         model: 模型名称
         session_id: 指定 ID，为 None 则自动生成
+        subagents: SubAgent 任务记录列表（含每个 subagent 的完整聊天信息），
+            由 SubAgent._record_to_parent() 收集、/export 命令消费。
+            None 时保存为空列表（旧会话兼容）。
 
     Returns:
         保存的会话 ID
@@ -107,6 +111,7 @@ def save_session(messages: list[dict], model: str, session_id: str | None = None
         "saved_at": datetime.now().isoformat(),
         "token_stats": dict(stats),
         "messages": filtered,
+        "subagents": list(subagents) if subagents else [],
     }
 
     try:
@@ -126,7 +131,9 @@ def load_session(session_id: str) -> dict[str, Any] | None:
         session_id: 会话 ID（可带或不带 .json 后缀）
 
     Returns:
-        数据字典包含 id/model/messages/token_stats/saved_at，不存在返回 None
+        数据字典包含 id/model/messages/token_stats/saved_at/subagents，
+        不存在返回 None。
+        旧会话文件缺少 subagents 字段时归一化为空列表。
     """
     sid = _validate_session_id(session_id)
     if sid is None:
@@ -138,6 +145,8 @@ def load_session(session_id: str) -> dict[str, Any] | None:
 
     try:
         data = json.loads(filepath.read_text(encoding="utf-8"))
+        # 归一化：旧会话文件可能缺少 subagents 字段
+        data.setdefault("subagents", [])
         return data
     except (json.JSONDecodeError, OSError):
         return None

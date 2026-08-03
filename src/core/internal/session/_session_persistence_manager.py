@@ -44,6 +44,8 @@ class SessionPersistenceManager:
         state_machine,
         emit_fn,
         observability_port,
+        subagents_getter=None,
+        subagents_setter=None,
     ):
         """初始化持久化管理器
 
@@ -58,6 +60,8 @@ class SessionPersistenceManager:
             state_machine: SessionStateMachine 实例
             emit_fn: 发射事件的可调用对象
             observability_port: ObservabilityPort 实例
+            subagents_getter: 返回 SubAgent 记录列表的可调用对象（可选，保存时使用）
+            subagents_setter: 设置 SubAgent 记录列表的可调用对象（可选，加载时恢复）
         """
         self._get_messages = messages_getter
         self._get_model = model_getter
@@ -69,6 +73,8 @@ class SessionPersistenceManager:
         self._state_machine = state_machine
         self._emit = emit_fn
         self._observability = observability_port
+        self._get_subagents = subagents_getter
+        self._set_subagents = subagents_setter
 
     # ── 会话保存 ────────────────────────────────────────
 
@@ -84,10 +90,12 @@ class SessionPersistenceManager:
             self._safe_save_state()
             return self._get_session_id()
 
+        subagents = self._get_subagents() if self._get_subagents is not None else None
         sid = self._persistence.save_session(
             messages=non_system,
             model=self._get_model(),
             session_id=self._get_session_id(),
+            subagents=subagents,
         )
         self._set_session_id(sid)
         self._safe_save_state()
@@ -116,6 +124,10 @@ class SessionPersistenceManager:
         messages[:] = system_msgs
         for msg in loaded_msgs:
             messages.append(msg)
+
+        # 恢复 SubAgent 记录（含完整聊天信息，供 /export 导出）
+        if self._set_subagents is not None:
+            self._set_subagents(data.get("subagents") or [])
 
         self._set_model(data.get("model", self._get_model()))
         self._set_session_id(session_id)
@@ -147,6 +159,7 @@ class SessionPersistenceManager:
             snapshot = list(messages_getter())
             snapshot_model = self._get_model()
             snapshot_sid = self._get_session_id()
+            subagents = self._get_subagents() if self._get_subagents is not None else None
 
             non_system = [m for m in snapshot if m.get(_ROLE_KEY) != _SYSTEM_ROLE]
             if not non_system:
@@ -158,6 +171,7 @@ class SessionPersistenceManager:
                 non_system,
                 snapshot_model,
                 snapshot_sid,
+                subagents,
             )
             self._set_session_id(session_id)
             self._safe_save_state()
