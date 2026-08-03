@@ -287,14 +287,15 @@ class TestScreenEndToEnd:
         assert buf == new
 
 
-class TestShrinkIncremental:
-    """长文档缩短（height>0）→ 增量塌缩（缓冲长度跟踪防偏移漂移）。
+class TestShrinkRebuild:
+    """长文档缩短（height>0）→ 全量重建（重置缓冲，防偏移漂移）。
 
-    终端缓冲无法删除行，缩短残留使缓冲长度 > doc_h+1——渲染器跟踪实际
-    缓冲长度（_buffer_len）使屏幕偏移仍准确，缩短保持增量（不整屏重建）。
+    终端缓冲无法删除行，缩短残留使缓冲长度 > doc_h+1，屏幕偏移模型漂移
+    （后续增长/等高重写按错误偏移写导致错乱）；重建（clear + 重写）重置
+    缓冲与目标帧一致。
     """
 
-    def test_shrink_incremental_no_clear_screen(self):
+    def test_shrink_emits_clear_screen(self):
         H = 6
         prev = ["h"] + [f"c{i}" for i in range(8)] + ["status", "in1", "extra"]
         new = ["h"] + [f"c{i}" for i in range(8)] + ["status", "in1"]
@@ -305,19 +306,15 @@ class TestShrinkIncremental:
         out.truncate()
         r.render(_frame(*new))
         from src.tui._screen import clear_screen
-        val = out.getvalue()
-        assert not val.startswith(clear_screen()), (
-            "长文档缩短应增量（不整屏重建），实际: %r" % val[:20]
+        assert out.getvalue().startswith(clear_screen()), (
+            "长文档缩短应全量重建（clear_screen 开头）"
         )
-        # 缩短仅重写/清除有限行（远小于全文档）
-        assert val.count("\n") < len(prev), f"缩短重写行数应远小于文档: {val!r}"
         # 重放后缓冲与目标帧一致
         buf = _replay(_frame(*prev), _frame(*new), H)
         assert buf == new
 
     def test_grow_shrink_grow_no_drift(self):
-        """增长→缩短→再增长：缩短增量塌缩（残留缓冲 _buffer_len 跟踪）后
-        再增长不偏移（无整屏重建）。"""
+        """增长→缩短→再增长：缩短重建重置缓冲，后续增长不偏移。"""
         H = 6
         base = ["h"] + [f"c{i}" for i in range(6)] + ["status", "in1"]
         grown = ["h"] + [f"c{i}" for i in range(6)] + ["x", "status", "in1"]
