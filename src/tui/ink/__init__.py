@@ -17,10 +17,13 @@
 
 React Ink 语义覆盖（完善 ink，方向3）：
   - forwardRef / useImperativeHandle（命令式句柄暴露）
-  - TEXT shorthand 样式 props（color/bold/italic/underline/dim/backgroundColor）
+  - useId（React 18 稳定唯一 ID——挂载时分配，fiber 复用不重分配）
+  - TEXT shorthand 样式 props（color/bold/italic/underline/dim/backgroundColor/dimColor）
   - TEXT transform（uppercase/lowercase/capitalize）
-  - BOX borderColor / borderStyle 变体（single/double/round/bold）
+  - TEXT wrap prop（textWrap 别名：wrap/truncate/truncate-start/truncate-middle/truncate-end）
+  - BOX borderColor / borderStyle 变体（single/double/round/bold/classic/dashed）
   - BOX display:none
+  - BOX flexBasis（主轴初始尺寸：column=高度 / row=宽度，与 flexGrow/flexShrink 协同）
   - alignItems/alignSelf（row+column 横轴对齐，偏移随动后代布局盒）
   - flexGrow / flexShrink / justifyContent（space-between/around/evenly）
 
