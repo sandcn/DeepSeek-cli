@@ -15,7 +15,8 @@ Claude Code 视觉对齐：顶部标题栏（TopHeader）为文档首行，其�
 
 from __future__ import annotations
 
-from src.tui.ink import h, APP, STATIC, BOX, TEXT, StyledRun
+from src.tui.core.style import Style
+from src.tui.ink import h, APP, BOX, TEXT, StyledRun
 from .chat_view import ChatView, register as _register_committed
 from .header import TopHeader
 from .status_bar import StatusBar
@@ -70,12 +71,28 @@ def App(props) -> object:
 
 
 def _ParseLine(props) -> object:
-    """实时解析进度行（同位置刷新；model.parse_line 为 None 时不占行）。"""
+    """实时解析进度行（同位置刷新；model.parse_line 为 None 时不占行）。
+
+    方向3（动效）：解析进度行前缀/内容呼吸色（时间基）——解析活跃时进度行
+    从暗灰 242 呼吸到 252 亮灰，视觉提示「正在解析」（空闲静态保持原色）。
+    """
     model = props["model"]
     line = model.parse_line
     if line is None:
         return h(BOX, None, [])
-    runs = [StyledRun(r.text, r.style) for r in line.runs if r.text]
+    # ★ 呼吸色：仅当解析行存在时计算（每帧一次 time_glow，0.1s 桶缓存命中）
+    from src.tui.app._theme import time_glow
+    glow = time_glow(242, 252, 8.0)
+    runs = []
+    for r in line.runs:
+        if not r.text:
+            continue
+        st = r.style
+        # 解析行基础样式为 Style(fg=242)（apply.py _S_PARSE）——运行时替换为
+        # 呼吸色（保留其他属性）；非 242 样式（防御：未来改样式）原样保留。
+        if st is not None and getattr(st, "fg", None) == 242:
+            st = Style(fg=glow)
+        runs.append(StyledRun(r.text, st))
     return h(BOX, None, [h(TEXT, {"styled": runs})])
 
 

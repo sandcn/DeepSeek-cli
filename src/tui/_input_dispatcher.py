@@ -332,6 +332,12 @@ class InputDispatcher:
                             # 方向D 步骤16：Esc 取消输入（启用 + 空闲 + 非空缓冲）
                             self._cancel_input()
                         else:
+                            # 方向3（Esc 补全弹窗残留修复）：中断前先关闭补全
+                            # 弹窗——修复前默认路径仅 ``_do_interrupt()``（reset
+                            # 回显 + 中断标志），弹窗可见时 Esc 不关闭弹窗 → 陈旧
+                            # 选中项残留（后续 Tab 会误应用）。dismiss 幂等（弹窗
+                            # 不可见时无副作用）。
+                            self._dismiss_completion()
                             self._do_interrupt()
                     elif kind in (
                         "arrow_up", "arrow_down", "arrow_right", "arrow_left",

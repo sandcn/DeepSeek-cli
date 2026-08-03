@@ -271,8 +271,10 @@ def _render_chunk(item, w, lexer_name, output_target):
         return
     if typ == 'fold':
         hidden = item[1]
+        # 方向3（折叠行对齐）：与 ctx 行结构对称——行号列占位 + 分隔空格 +
+        # 折叠提示（修复前 `│` 后紧贴 `┄`，行号列/内容列与 ctx 行不对齐）。
         _write_diff_line(
-            "  " + dim.apply(f"│ {'':>{w}} │┄ {hidden} lines ┄"),
+            "  " + dim.apply(f"│ {'':>{w}} │") + " " + dim.apply(f"┄ {hidden} lines ┄"),
             output_target,
         )
         return
@@ -358,7 +360,6 @@ def render_diff(diff_list, w, line_offset=0, lexer_name='', output_target: Optio
     def _flush_pairs(del_buf, add_buf):
         diff_del = _DIFF_DEL_STYLE
         diff_add = _DIFF_ADD_STYLE
-        dimmer = _DIFF_CTX_STYLE
         for i in range(max(len(del_buf), len(add_buf))):
             if i < len(del_buf) and i < len(add_buf):
                 _, d_line, d_oln, _ = del_buf[i]

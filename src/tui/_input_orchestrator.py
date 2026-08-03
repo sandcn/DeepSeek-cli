@@ -104,7 +104,10 @@ class TuiInputOrchestrator:
             #   前提成立（仅 TuiInputOrchestrator 调用 get_queued_input；editmsg
             #   等路径不经过本编排器）。若未来引入第二消费者须加锁/队列语义。
             remaining = None if deadline is None else deadline - time.monotonic()
+            # 防御：remaining 为负（wait 返回 True 但 get 为 None 的下一轮）时
+            # 钳制到 0——``Event.wait(负数)`` 抛 ValueError（修复前未设防）。
             wait_timeout = min(0.2, remaining) if remaining is not None else 0.2
+            wait_timeout = max(0.0, wait_timeout)
             if input_.wait_until_ready(timeout=wait_timeout):
                 text = input_.get_queued_input()
                 if text is not None:

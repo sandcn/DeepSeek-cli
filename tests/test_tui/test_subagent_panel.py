@@ -768,22 +768,51 @@ class TestSubAgentSingleLineContract:
         assert "\n" not in title, "标题行不得含原始换行"
         assert "task one\\ntask two" in title
 
-    def test_build_agent_lines_escapes_parse_info_newline(self):
-        """parse_info 含 \n → 阶段指示行单行（转义为字面量）。"""
+    def test_build_agent_lines_no_parsing_phase_line(self):
+        """BUG-T5：parsing 阶段不再产生独立行（防工具开始瞬间面板高度波动）。
+
+        parse_info 并入 parsing 工具记录行（单行转义）——修复前独立
+        ``…parsing`` 阶段行使工具开始瞬间面板 +2 行 → start_tool 清除
+        model_phase 后 -1 行（缩短），文档高于屏幕时 InkRenderer 全量
+        clear + 重建（每次 subagent 调用工具 TUI 全量刷新闪烁）。
+        """
         import time
         from src.tui._subagent_render import build_agent_lines
-        from src.tui._subagent_state import _AgentSlot
+        from src.tui._subagent_state import _AgentSlot, _ToolRecord
 
         slot = _AgentSlot(
             label="a", description="run", status="running",
         )
         slot.model_phase = "parsing"
         slot.parse_info = "rf,rf 51t\n0.74s"
+        rec = _ToolRecord(tool_name="search", detail="'query'")
+        rec.phase = "parsing"
+        slot.tool_history.append(rec)
         lines = build_agent_lines(slot, time.time(), is_last=False)
-        assert any("parsing" in l for l in lines)
+        # 修复后：无独立 ``…parsing`` 阶段行（工具记录行 ○ 前缀表达解析状态）
+        assert not any("\u2026parsing" in l for l in lines), (
+            f"不得出现独立 parsing 阶段行: {lines!r}"
+        )
+        # parse_info 并入 parsing 工具记录行（单行转义）
+        assert any("rf,rf 51t\\n0.74s" in l for l in lines), lines
         for l in lines:
-            assert "\n" not in l, f"阶段指示行不得含原始换行: {l!r}"
-        assert any("rf,rf 51t\\n0.74s" in l for l in lines)
+            assert "\n" not in l, f"工具记录行不得含原始换行: {l!r}"
+
+    def test_format_tool_record_merges_parse_info_in_parsing_line(self):
+        """BUG-T5：parsing 记录行合并 parse_info（不增加行数）。"""
+        import time
+        from src.tui._subagent_render import format_tool_record
+        from src.tui._subagent_state import _ToolRecord
+
+        rec = _ToolRecord(tool_name="search", detail="'query'")
+        rec.phase = "parsing"
+        line = format_tool_record(rec, time.time(), cont="", parse_info="rf 51t 0.74s")
+        assert "\u25cc" in line, "parsing 前缀 ○ 保留"
+        assert "rf 51t 0.74s" in line, "parse_info 应并入 parsing 记录行"
+        assert "Grep" in line, "工具显示名保留（search → Grep）"
+        # 无 parse_info 时行为不变（detail 仍在）
+        line2 = format_tool_record(rec, time.time(), cont="")
+        assert "'query'" in line2
 
     def test_format_tool_record_escapes_detail_newline(self):
         """tool detail 含 \n → 工具历史行单行（既有转义行为回归）。"""
@@ -809,6 +838,68 @@ class TestSubAgentSingleLineContract:
         text = "".join(r.text for r in children[0].props["styled"])
         assert "\n" not in text, "子节点文本不得含原始换行"
         assert "task line one\\nline two" in text
+
+
+class TestSubAgentToolStartNoHeightFluctuation:
+    """BUG-T5 — 工具开始瞬间面板高度稳定（防缩短触发 InkRenderer 全量重建）。
+
+    回归场景：subagent 调用 search 等工具时 TUI 每次全量刷新（闪烁）。
+    根因：``build_agent_lines`` 在 ``model_phase=="parsing"`` 时追加独立
+    ``…parsing`` 阶段行——工具开始瞬间面板 +2 行，``start_tool`` 清除
+    ``model_phase`` 后 -1 行（缩短）。文档高于屏幕时 InkRenderer 对缩短
+    （``delta<0``）做全量 clear + 重建（``test_shrink_emits_clear_screen``
+    锁定该渲染行为）。修复：parsing 阶段不再产生独立行（由 parsing 工具
+    记录行 ``○`` 前缀表达），工具开始瞬间面板行数稳定。
+    """
+
+    def test_parsing_to_running_frame_height_stable(self):
+        """update_tool_parsing → start_tool 面板帧行数不变（关键不变量）。"""
+        from src.tui._subagent_state import StateStore
+        from src.tui._subagent_render import render_frame
+
+        store = StateStore(max_history=3)
+        store.add_agent("agent-1", "分析", status="running", agent_type="map")
+        base = render_frame(store, max_history=3)
+
+        store.update_tool_parsing("agent-1", "search", "{'query': 'foo'}")
+        parsing = render_frame(store, max_history=3)
+
+        store.start_tool("agent-1", "search", "'foo'")
+        running = render_frame(store, max_history=3)
+
+        # 工具开始仅 +1 行（parsing 工具记录）；parsing→running 行数不变
+        assert len(parsing) == len(base) + 1, (
+            f"parsing 应仅 +1 行（无独立阶段行）: base={len(base)} parsing={len(parsing)}"
+        )
+        assert len(running) == len(parsing), (
+            f"parsing→running 行数必须不变（防缩短全量重建）: "
+            f"parsing={len(parsing)} running={len(running)}"
+        )
+        # 无独立 ``…parsing`` 阶段行（工具记录行 ○ 前缀表达解析状态）
+        assert not any("\u2026parsing" in l for l in parsing), parsing
+        assert any("\u25cc" in l for l in parsing), "parsing 记录 ○ 前缀保留"
+
+    def test_multiple_tools_no_fluctuation(self):
+        """连续调用多个工具：工具运行中面板高度只增不减（无缩短帧）。"""
+        from src.tui._subagent_state import StateStore
+        from src.tui._subagent_render import render_frame
+
+        store = StateStore(max_history=3)
+        store.add_agent("agent-1", "分析", status="running", agent_type="map")
+        prev_h = len(render_frame(store, max_history=3))
+        for i, tool in enumerate(("search", "read_file", "ls")):
+            store.update_tool_parsing("agent-1", tool, f"'arg{i}'")
+            h_parsing = len(render_frame(store, max_history=3))
+            assert h_parsing >= prev_h, (
+                f"工具 {tool} parsing 帧高度不得缩短: prev={prev_h} now={h_parsing}"
+            )
+            store.start_tool("agent-1", tool, f"'arg{i}'")
+            h_running = len(render_frame(store, max_history=3))
+            assert h_running == h_parsing, (
+                f"工具 {tool} parsing→running 高度不得变化: "
+                f"parsing={h_parsing} running={h_running}"
+            )
+            prev_h = h_running
 
 
 class TestSubAgentCardWidthConsistency:

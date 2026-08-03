@@ -19,7 +19,7 @@ from src.tui.core.style import Style
 from src.renderer.ansi.helpers import AnsiLine, ansi_to_line
 # 方向C 步骤4：_S_USER_ICON/_S_USER_TEXT/_S_NOTICE 迁入 app/_theme.py 共享池
 # （被 apply 多处使用；享元收敛原则：多处使用才共享）。
-from src.tui.app._theme import _S_USER_ICON, _S_USER_TEXT, _S_NOTICE, get_active_palette
+from src.tui.app._theme import _S_NOTICE, get_active_palette
 
 _logger = logging.getLogger(__name__)
 
@@ -75,14 +75,22 @@ def build_user_line(content: str) -> list[AnsiLine]:
     return lines
 
 
-def build_assistant_line(content: str) -> AnsiLine:
-    """构建助手/其他消息行（`  \u2502 ` 前缀 + 文本）。
+def build_assistant_line(content: str) -> list[AnsiLine]:
+    """构建助手/其他消息行列表（按 ``\\n`` 切分，每行 ``  \u2502 `` 前缀）。
 
     apply 与 _consumer 共享的唯一真源；样式取自 _theme 共享池。
+
+    按 ``\\n`` 拆行（与 ``build_user_line`` 对称）——含换行的 DISPLAY_MSGS
+    消息若塞进单条 AnsiLine，``wrap_line`` 会把 ``\\n`` 当普通字符保留 → 一条
+    frame 行渲染成多条终端行 → 行级 diff / 光标定位错位（修复前）。
     """
-    line = AnsiLine.of("  \u2502 ", _S_NOTICE)
-    line.append(content)
-    return line
+    lines = []
+    for segment in content.split("\n"):
+        line = AnsiLine.of("  \u2502 ", _S_NOTICE)
+        if segment:
+            line.append(segment)
+        lines.append(line)
+    return lines
 
 
 # ── 命令分发表 ─────────────────────────────────────
@@ -291,7 +299,7 @@ def _do_display_messages(model, cmd) -> None:
         if role == "user":
             model.append_committed("user", build_user_line(content))
         elif role in ("assistant", "other"):
-            model.append_committed("write_line", [build_assistant_line(content)])
+            model.append_committed("write_line", build_assistant_line(content))
     # 无消息间分隔线（对齐 Claude Code：消息间仅空行分隔，由卡片尾空行承担）
 
 

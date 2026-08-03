@@ -19,18 +19,10 @@ from __future__ import annotations
 import time
 
 from src.tui._screen import (
-    _COLOR_ACCENT,
-    _COLOR_DIM,
-    _COLOR_RESET,
-    _COLOR_SEP,
-    _COLOR_SPEED,
-    _COLOR_TIME,
     wcswidth_simple,
 )
 from src.tui._input import (
-    _expand_tabs,
     _wrap_by_width,
-    _tab_pos_to_expanded,
     _compute_cursor_visual_pos,
     # ★ 方向5（光标算法单一真源）：_compute_input_layout /
     #   _cursor_visual_from_layout 自本文件迁移至 _input.py——这里从 _input
@@ -170,7 +162,6 @@ def _build_lines(fiber) -> list[Line]:
     width = box.w
     text = str(props.get("text", ""))
     completion = props.get("completion")
-    popup_height = _completion_height(completion, width)
     status_active = bool(props.get("status_active", False))
     max_input = max(1, width - len(_PROMPT))
 
@@ -198,7 +189,9 @@ def _build_lines(fiber) -> list[Line]:
     if status_active or fading:
         time_bucket = int(now / 0.1)
     else:
-        time_bucket = int(now / 1.0)
+        # 方向3（呼吸平滑）：空闲占位符呼吸色用 0.25s 桶（4Hz）——1s 桶下
+        # 呼吸色 1Hz 步进明显可感知；4Hz 平滑且仍低频（CPU 开销可忽略）。
+        time_bucket = int(now / 0.25)
     if completion is not None:
         completion_snap = (
             completion.visible,
@@ -261,15 +254,19 @@ def _build_lines(fiber) -> list[Line]:
         desc_w = _desc_column_width(width) if split else 0
         # 左栏选项宽度 = 总宽 - 右栏说明 - 分隔线
         opt_w = max(1, width - desc_w - 1) if split else 0
-        # 标题行
-        head = Line.of(" ", Style(fg=45, bold=True))
-        head.append(title, Style(fg=45, bold=True))
+        # 标题行（方向3：标题呼吸色——补全弹窗出现时增加动态感）
+        title_color = _glow_color(38, 55)
+        head = Line.of(" ", Style(fg=title_color, bold=True))
+        head.append(title, Style(fg=title_color, bold=True))
         head.append(f" ({total}项)", _S_TIME)
         if split:
             # 左栏标题占位（标题与选项栏对齐；右栏说明位置留白）
             head.append(" " * max(0, opt_w - head.width), _S_DIM)
         lines.append(head)
         # 候选项
+        # ★ 方向3（动效）：选中项高亮呼吸——背景色 236→239 脉动（10s 周期），
+        #   高亮项有微弱呼吸感（候选列表导航更生动）。
+        sel_bg = time_glow(236, 239, 10.0)
         if split:
             # 左栏选项内容宽度（前缀 ▶ + 文本；右栏说明独立换行）
             cell_w = max(
@@ -284,7 +281,7 @@ def _build_lines(fiber) -> list[Line]:
                 if row < len(items):
                     i = row
                     if i == selected:
-                        line.append(" \u25b6 ", Style(fg=15, bg=236))
+                        line.append(" \u25b6 ", Style(fg=15, bg=sel_bg))
                     else:
                         line.append("   ")
                     for run in _styled_completion(items[i], types[i], match_prefix, cell_w).runs:
@@ -305,9 +302,11 @@ def _build_lines(fiber) -> list[Line]:
             for i, item in enumerate(items):
                 line = Line()
                 if i == selected:
-                    line.append(" \u25b6 ", Style(fg=15, bg=236))
+                    line.append(" \u25b6 ", Style(fg=15, bg=sel_bg))
                 else:
-                    line.append("  ")
+                    # 与选中行 ` ▶ `（3 列）等宽——修复前 `"  "`（2 列）使
+                    # 选项文本上下移动时左右跳动（选中/非选中相差 1 列）。
+                    line.append("   ")
                 for run in _styled_completion(item, types[i], match_prefix, cell_w).runs:
                     line.append_run(run)
                 # Claude TUI parity 步骤 3.7：斜杠命令描述灰显（command 且描述非空）
@@ -318,9 +317,10 @@ def _build_lines(fiber) -> list[Line]:
                     desc_budget = max(1, width - line.width)
                     line.append(_truncate_width(descs[i], desc_budget), _S_DIM)
                 lines.append(line)
-        # 底部提示
-        hint = Line.of(" ", _S_TIME)
-        hint.append("Tab \u2191\u2193 Esc", _S_TIME)
+        # 底部提示（方向3 动效：提示文本呼吸色——补全弹窗出现时更生动）
+        hint_color = _glow_color(110, 16)  # 浅蓝 110 → 126 脉动（_S_TIME 邻域）
+        hint = Line.of(" ", Style(fg=hint_color))
+        hint.append("Tab \u2191\u2193 Esc", Style(fg=hint_color))
         lines.append(hint)
 
     # ── 上分隔线（CPU/MEM） ──
@@ -328,12 +328,15 @@ def _build_lines(fiber) -> list[Line]:
     mem = int(props.get("mem", 0))
     cpu_mem = f"CPU:{cpu}% \u00b7 MEM:{mem}%"
     cpu_mem_w = len(cpu_mem) + 2
-    top = Line.of("", _S_SEP)
+    # 方向3（动效）：活跃期间上分隔线用青色呼吸（32-45，8s 周期），与状态栏
+    # 分隔线呼吸同步周期；空闲保持静态深灰。
+    top_sep_style = Style(fg=time_glow(32, 45, 8.0)) if status_active else _S_SEP
+    top = Line.of("", top_sep_style)
     # 方向1 步骤4（窄屏防溢出）：sep_len 下限改为 0（修复前 ``max(1, ...)``
     # 在 width < cpu_mem_w 时内容超宽溢出）；CPU/MEM 内容独立行逐段截断至
     # 剩余宽度（不拆 CJK；width < 22 时不再超宽）。
     sep_len = max(0, width - cpu_mem_w)
-    top.append("\u2501" * sep_len, _S_SEP)
+    top.append("\u2501" * sep_len, top_sep_style)
     content_budget = max(1, width - sep_len)
     content = Line()
     _append_truncated(content, " CPU:", _S_ACCENT, content_budget)

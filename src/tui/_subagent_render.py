@@ -33,7 +33,6 @@ from src.tui._const import (
     _C_ANSWERING,
     _C_BATCH,
     _C_DIMMER,
-    _C_DIMMEST,
     _C_DONE,
     _C_FAIL,
     _C_PARSING,
@@ -55,7 +54,53 @@ _C_BORDER = "\033[38;5;23m"
 _SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
 _INDENT = "  "
 
+#: ANSI 转义序列（CSI/OSC/单字符控制）——宽度测量/截断时安全跳过。
+#: 与 ink.helpers._ANSI_RE 同语义（Layer 0 本地最小匹配器，避免反向依赖）。
+_ANSI_SEQ_RE = re.compile(
+    r"\x1b\[[0-9;?]*[A-Za-z]"
+    r"|\x1b\][^\x07\x1b]*(\x07|\x1b\\)"
+    r"|\x1b[@-Z\\-_]"
+)
+
 _ANSI_STRIP_RE = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]")
+
+
+def _truncate_ansi_width(text: str, max_w: int) -> str:
+    """ANSI 字符串按显示宽度截断（保留已解析样式前缀，不拆分 CJK）。
+
+    供卡片内容行截断到内宽（``card_w - 4``）——超长 description/suffix 不再
+    撑破卡片边框（修复前 ``_pad_ansi`` 对超宽内容返回原样 → 行宽 > card_w，
+    后续经 ``_render_children`` 截断时右边界 `│` 被裁掉，卡片开口）。
+
+    Args:
+        text: 含 ANSI 样式的字符串。
+        max_w: 最大显示宽度。
+
+    Returns:
+        截断后的 ANSI 字符串（总显示宽度 <= max_w）。
+    """
+    out: list[str] = []
+    width = 0
+    i = 0
+    n = len(text)
+    while i < n:
+        ch = text[i]
+        if ch == "\x1b":
+            m = _ANSI_SEQ_RE.match(text, i)
+            if m:
+                out.append(m.group(0))
+                i = m.end()
+                continue
+            out.append(ch)
+            i += 1
+            continue
+        cw = wcswidth_simple(ch)
+        if width + cw > max_w:
+            break
+        out.append(ch)
+        width += cw
+        i += 1
+    return "".join(out)
 
 
 def _single_line(text: str) -> str:
@@ -178,6 +223,19 @@ def _terminal_max_lines() -> int:
         return 12
 
 
+def _terminal_max_width() -> int:
+    """当前终端宽度（卡片宽度 clamp 上限，方向3：防卡片比终端宽致边框截断）。
+
+    终端尺寸查询失败回退 80。
+    """
+    try:
+        from src.tui._screen import _get_terminal_size
+        w, _ = _get_terminal_size()
+        return max(20, w)
+    except Exception:
+        return 80
+
+
 def _build_group_card(rows: list[tuple[str, str, List[str]]],
                       now: float,
                       max_lines: int | None = None) -> List[str]:
@@ -212,23 +270,28 @@ def _build_group_card(rows: list[tuple[str, str, List[str]]],
         kept = max(1, budget - 1)  # 预留省略提示行
         dropped = len(body) - kept
         body = body[:kept] + [f"{_C_DIMMER}\u2026 +{dropped} 行省略{_C_RESET}"]
-    # 组装卡片（内容宽度自适应）
+    # 组装卡片（内容宽度自适应，clamp 到终端宽度——修复前 card_w 由未截断
+    # 内容决定，超长内容使卡片比终端宽，右边界 ┐/│/┘ 被 _render_children
+    # 截断 → 卡片开口）
     widths = [_display_width(title)] + [_display_width(l) for l in body]
     if closed:
         status_text = f"{_C_DONE}\u2714 完成{_C_RESET}"
         widths.append(_display_width(status_text))
-    card_w = max(widths) + 6
+    card_w = min(max(widths) + 6, _terminal_max_width())
+    inner_w = max(1, card_w - 4)
     out: List[str] = []
-    head = f"{_C_BORDER}\u250c\u2500 {_C_RESET}" + title
-    head += f"{_C_BORDER}\u2500{_C_RESET}" * max(2, card_w - 4 - _display_width(title))
+    title_trunc = _truncate_ansi_width(title, inner_w)
+    head = f"{_C_BORDER}\u250c\u2500 {_C_RESET}" + title_trunc
+    head += f"{_C_BORDER}\u2500{_C_RESET}" * max(2, card_w - 4 - _display_width(title_trunc))
     head += f"{_C_BORDER}\u2510{_C_RESET}"
     out.append(head)
     for l in body:
-        out.append(f"{_C_BORDER}\u2502 {_C_RESET}{_pad_ansi(l, card_w - 4)} "
+        out.append(f"{_C_BORDER}\u2502 {_C_RESET}{_pad_ansi(_truncate_ansi_width(l, inner_w), inner_w)} "
                    f"{_C_BORDER}\u2502{_C_RESET}")
     if closed:
-        tail = f"{_C_BORDER}\u2514\u2500 {_C_RESET}" + status_text
-        tail += f"{_C_BORDER}\u2500{_C_RESET}" * max(2, card_w - 4 - _display_width(status_text))
+        status_trunc = _truncate_ansi_width(status_text, inner_w)
+        tail = f"{_C_BORDER}\u2514\u2500 {_C_RESET}" + status_trunc
+        tail += f"{_C_BORDER}\u2500{_C_RESET}" * max(2, card_w - 4 - _display_width(status_trunc))
         tail += f"{_C_BORDER}\u2518{_C_RESET}"
         out.append(tail)
     return out
@@ -286,9 +349,12 @@ def build_agent_lines(slot: _AgentSlot, now: float, is_last: bool,
             lines.append(f"{_C_DIMMER}\u2026thinking{_C_RESET}  {phase_time}")
         elif slot.model_phase == "answering":
             lines.append(f"{_C_ANSWERING}\u2026answering{_C_RESET}  {_C_DIMMER}{phase_time}{_C_RESET}")
-        elif slot.model_phase == "parsing":
-            extra = _single_line(slot.parse_info or slot.model_info)
-            lines.append(f"{_C_PARSING}\u2026parsing{_C_RESET}  {_C_DIMMER}{extra}{_C_RESET}")
+        # ★ BUG-T5：parsing 阶段不再追加独立 ``…parsing`` 行——由 parsing 工具
+        #   记录行（``○`` 前缀）表达解析状态；解析进度摘要（parse_info）经
+        #   ``format_tool_record`` 并入该记录行。修复前独立阶段行使工具开始瞬间
+        #   面板高度 +2（阶段行 + 记录行）→ ``start_tool`` 清除 model_phase 后
+        #   -1（阶段行消失），文档高于屏幕时 InkRenderer 对缩短做**全量
+        #   clear + 重建**——每次 subagent 调用 search 等工具 TUI 全量刷新闪烁。
         elif slot.model_phase == "batch":
             lines.append(f"{_C_BATCH}\u2026batch{_C_RESET}  {_C_DIMMER}{_single_line(slot.model_info)}  {phase_time}{_C_RESET}")
 
@@ -296,12 +362,23 @@ def build_agent_lines(slot: _AgentSlot, now: float, is_last: bool,
     if slot.status not in ("done", "fail"):
         history = slot.tool_history[-max_history:]
         for rec in reversed(history):
-            lines.append(format_tool_record(rec, now, ""))
+            parse_info = slot.parse_info if rec.phase == "parsing" else ""
+            lines.append(format_tool_record(rec, now, "", parse_info=parse_info))
     return lines
 
 
-def format_tool_record(rec: _ToolRecord, now: float, cont: str = "") -> str:
-    """构建工具历史单行（无树形分支；``cont`` 保留兼容参数不再使用）。"""
+def format_tool_record(rec: _ToolRecord, now: float, cont: str = "",
+                       parse_info: str = "") -> str:
+    """构建工具历史单行（无树形分支；``cont`` 保留兼容参数不再使用）。
+
+    Args:
+        rec: 工具记录。
+        now: 当前时间戳。
+        cont: 保留兼容参数（不再使用）。
+        parse_info: 解析进度摘要（如 ``"rf,rf 51t 0.74s"``）——仅 parsing
+            记录附加到该行。修复前为独立 ``…parsing`` 阶段行（``build_agent_lines``
+            追加），工具开始瞬间引起面板高度 +2 → -1 波动 → 缩短全量重建。
+    """
     elapsed = (rec.end_time or now) - rec.start_time if rec.start_time else 0
     time_str = f"{elapsed:.1f}s"
     detail = _single_line(rec.detail)
@@ -312,18 +389,27 @@ def format_tool_record(rec: _ToolRecord, now: float, cont: str = "") -> str:
     display_name = get_tool_display_name(rec.tool_name)
     tool_color = _get_tool_color(rec.tool_name)
     tool_abbr = f"{tool_icon} {tool_color}{display_name}{_C_RESET}" if tool_icon else f"{tool_color}{display_name}{_C_RESET}"
-    detail_disp = f" {_C_DIMMER}{detail}{_C_RESET}" if detail else ""
 
     if rec.phase == "parsing":
+        # ★ BUG-T5：parsing 记录行合并解析进度摘要（不产生独立阶段行）——
+        #   修复前 build_agent_lines 额外追加 ``…parsing`` 独立行：工具开始
+        #   瞬间面板 +2 行，start_tool 清除 model_phase 后 -1 行（缩短）。
+        #   文档高于屏幕时 InkRenderer 对缩短做全量 clear + 重建 → 每次
+        #   subagent 调用 search 等工具 TUI 全量刷新闪烁。
+        extra_parts = [p for p in (detail, _single_line(parse_info)) if p]
+        extra = "  ".join(extra_parts) if extra_parts else ""
+        detail_disp = f" {_C_DIMMER}{extra}{_C_RESET}" if extra else ""
         line = f"{_C_PARSING}\u25cc{_C_RESET} {tool_abbr}{detail_disp}"
-    elif rec.phase == "running":
-        # P2-14：硬编码 "\033[38;5;214m" → _C_RUNNING（_const 模块级导入，值一致）
-        pulse_color = _C_RUNNING
-        line = f"{pulse_color}\u25cf{_C_RESET} {tool_abbr}{detail_disp}  {_C_DIMMER}{time_str}{_C_RESET}"
-    elif rec.phase == "done":
-        line = f"{_C_DONE}\u2714{_C_RESET} {tool_abbr}{detail_disp}  {_C_DIMMER}{time_str}{_C_RESET}"
-    else:  # fail
-        line = f"{_C_FAIL}\u2716{_C_RESET} {tool_abbr}{detail_disp}  {_C_DIMMER}{time_str}{_C_RESET}"
+    else:
+        detail_disp = f" {_C_DIMMER}{detail}{_C_RESET}" if detail else ""
+        if rec.phase == "running":
+            # P2-14：硬编码 "\033[38;5;214m" → _C_RUNNING（_const 模块级导入，值一致）
+            pulse_color = _C_RUNNING
+            line = f"{pulse_color}\u25cf{_C_RESET} {tool_abbr}{detail_disp}  {_C_DIMMER}{time_str}{_C_RESET}"
+        elif rec.phase == "done":
+            line = f"{_C_DONE}\u2714{_C_RESET} {tool_abbr}{detail_disp}  {_C_DIMMER}{time_str}{_C_RESET}"
+        else:  # fail
+            line = f"{_C_FAIL}\u2716{_C_RESET} {tool_abbr}{detail_disp}  {_C_DIMMER}{time_str}{_C_RESET}"
     return line
 
 

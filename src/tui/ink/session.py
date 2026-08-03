@@ -34,6 +34,7 @@ from src.renderer._locks import _try_acquire_output_lock
 from src.tui._screen import (
     TerminalWidthCache,
     _get_terminal_size,
+    cursor_goto,
     process_sigwinch,
 )
 from .reconciler import Reconciler
@@ -79,7 +80,8 @@ _HIGH_CMDS = frozenset({
     RenderCommand.ERROR,
 })
 _NORMAL_CMDS = frozenset({
-    RenderCommand.TOOL_OUTPUT,
+    # TOOL_OUTPUT 已在 _STREAM_CMDS（prio 0）——此处不再重复配置（方向3：
+    # 重复配置误导——_get_cmd_priority 先查 STREAM，TOOL_OUTPUT 恒为 prio 0）。
     RenderCommand.USER_MSG,
     RenderCommand.PARSE_INFO,
     RenderCommand.NOTIFICATION,
@@ -385,13 +387,20 @@ class InkSession:
     def request_clear(self) -> None:
         """请求全帧清屏重绘（useApp().clear 触发）。
 
-        非全屏模型无 DECSTBM 清屏——实现为强制全量重绘（reset 渲染器 →
-        下帧全量写入），文档注明与 react-ink 的 DECSTBM 清屏差异。
+        非全屏模型无 DECSTBM 清屏——实现为**先清屏再强制全量重绘**：
+        ``full_clear()`` 写入 ``clear_screen()``（``\\033[2J\\033[H``）并重置
+        渲染状态 → 下一帧从空文档全量写入。修复前仅 ``reset()``（置 prev=None）
+        不清屏——新帧比旧文档短时旧行残留在可见区。``reset()`` 保留调用
+        （测试契约：渲染器状态重置显式调用）。
         """
         try:
             self._ink_renderer.reset()
         except Exception:
             _logger.debug("request_clear reset 异常", exc_info=True)
+        try:
+            self._ink_renderer.full_clear()
+        except Exception:
+            _logger.debug("request_clear full_clear 异常", exc_info=True)
         self.request_bottom_redraw()
 
     def is_render_running(self) -> bool:
@@ -529,7 +538,6 @@ class InkSession:
         self._drain_queue_safe()
         # 定位光标到终端底部：交互工具同步渲染弹窗的起点
         try:
-            from src.tui._screen import cursor_goto, _get_terminal_size
             _, h = _get_terminal_size()
             self._ink_renderer._stream.write(cursor_goto(max(1, h), 1))
             self._ink_renderer._stream.flush()
@@ -612,6 +620,15 @@ class InkSession:
                     break
             changed = bool(commands)
             if commands:
+                # 方向3（宽度源统一）：应用命令前刷新 model.width——committed 行
+                # （按 model.width wrap）与 live 行（按渲染宽度 wrap）同源，避免
+                # resize/首帧批次提交用陈旧宽度（_render_frame 中更新发生在命令
+                # 应用之后）。幂等：_render_frame 的 ``model.width = width`` 保持。
+                if self._model is not None and hasattr(self._model, "width"):
+                    try:
+                        self._model.width = self._width_cache.get_width()
+                    except Exception:
+                        _logger.debug("应用命令前刷新 model.width 异常", exc_info=True)
                 self._apply_commands(commands)
         # 渲染与失败处理移出锁块（方向1 步骤4）：渲染失败退避 sleep 不再持有
         # 输出锁（修复前 sleep 在锁块内 → render_lock 阻塞其他写入方输出）。

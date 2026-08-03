@@ -955,3 +955,122 @@ class TestMalformedWidthFallback:
         assert "max(0, int(explicit_w))" not in src, (
             "int(explicit_w) 直接解析应全部收敛至 _resolve_width"
         )
+
+
+class TestAlignSelf:
+    """方向3 — alignSelf 子级对齐覆盖（column 横轴 / row 纵轴）。"""
+
+    def _collect_texts(self, root):
+        out = []
+
+        def walk(f):
+            f2 = f
+            while f2 is not None:
+                if f2.is_host and f2.type == "text":
+                    out.append(f2)
+                walk(f2.child)
+                f2 = f2.sibling
+
+        walk(root)
+        return out
+
+    def test_column_align_self_center(self):
+        """column+alignSelf:center：子按内容宽度测量并居中（父 stretch 不覆盖）。"""
+        root, box = _render_and_layout(
+            h(BOX, {"width": 10},
+              h(TEXT, {"children": "ab", "alignSelf": "center"})),
+            80,
+        )
+        texts = self._collect_texts(root)
+        # 内容宽度（非填充）：w=2，居中 (10-2)//2=4
+        assert texts[0].layout_box.w == 2
+        assert texts[0].layout_box.x == 4
+
+    def test_column_align_self_flex_end(self):
+        """column+alignSelf:flex-end：子靠右（父 stretch 不覆盖）。"""
+        root, box = _render_and_layout(
+            h(BOX, {"width": 10},
+              h(TEXT, {"children": "ab", "alignSelf": "flex-end"})),
+            80,
+        )
+        texts = self._collect_texts(root)
+        assert texts[0].layout_box.x == 8  # 10-2
+
+    def test_column_align_self_mixed(self):
+        """多个子各自 alignSelf 独立生效（center / flex-end / 默认 stretch）。"""
+        root, box = _render_and_layout(
+            h(BOX, {"width": 12},
+              h(TEXT, {"children": "a", "alignSelf": "center"}),
+              h(TEXT, {"children": "bb", "alignSelf": "flex-end"}),
+              h(TEXT, {"children": "ccc"})),
+            80,
+        )
+        texts = self._collect_texts(root)
+        assert texts[0].layout_box.x == (12 - 1) // 2  # center
+        assert texts[1].layout_box.x == 12 - 2          # flex-end
+        assert texts[2].layout_box.w == 12              # 默认 stretch 填充
+
+    def test_row_align_self_override(self):
+        """row+alignSelf:center：子 y 在行高内居中（父 stretch 无偏移）。"""
+        root, box = _render_and_layout(
+            h(BOX, {"flexDirection": "row", "height": 4},
+              h(TEXT, {"children": "a"}),
+              h(TEXT, {"children": "b", "alignSelf": "flex-end"})),
+            80,
+        )
+        # 行高 = 内容行高（子 h 均 1 → row_h=1），alignSelf 无可用偏移量——
+        # 与既有 row alignItems 语义一致（相对行高而非容器高）
+        texts = self._collect_texts(root)
+        assert texts[1].layout_box.y == 0
+
+
+class TestPaddingAxes:
+    """方向3 — paddingX/paddingY 横向/纵向独立内边距（React Ink 语义）。"""
+
+    def test_padding_xy_axis_layout(self):
+        """paddingX=2/paddingY=1：横向 2 列、纵向 1 行内边距。"""
+        root, box = _render_and_layout(
+            h(BOX, {"paddingX": 2, "paddingY": 1, "width": 12},
+              h(TEXT, {"children": "ab"})),
+            40,
+        )
+        assert box.w == 12
+        assert box.h == 3  # 1 行内容 + 2 行纵向内边距
+        child = root.child.child
+        assert child.layout_box.x == 2  # 横向内边距偏移
+        assert child.layout_box.y == 1  # 纵向内边距偏移
+
+    def test_padding_x_overrides_padding(self):
+        """padding=1 + paddingX=2：横向用 2、纵向回退 1（React Ink 覆盖语义）。"""
+        root, box = _render_and_layout(
+            h(BOX, {"padding": 1, "paddingX": 2, "width": 8},
+              h(TEXT, {"children": "ab"})),
+            40,
+        )
+        assert box.h == 3  # 纵向 padding=1 → 内容 1 + 上下 2
+        child = root.child.child
+        assert child.layout_box.x == 2  # 横向 paddingX=2
+        assert child.layout_box.y == 1  # 纵向 padding=1
+
+    def test_padding_y_overrides_padding(self):
+        """padding=1 + paddingY=3：纵向用 3、横向回退 1。"""
+        root, box = _render_and_layout(
+            h(BOX, {"padding": 1, "paddingY": 3, "width": 8},
+              h(TEXT, {"children": "ab"})),
+            40,
+        )
+        assert box.h == 7  # 内容 1 + 上下 3+3
+        child = root.child.child
+        assert child.layout_box.x == 1  # 横向 padding=1
+        assert child.layout_box.y == 3  # 纵向 paddingY=3
+
+    def test_padding_xy_malformed_fallback(self):
+        """paddingX/paddingY 畸形值 → 兜底 0（不抛异常）。"""
+        root, box = _render_and_layout(
+            h(BOX, {"paddingX": object(), "paddingY": object(), "width": 8},
+              h(TEXT, {"children": "ab"})),
+            40,
+        )
+        child = root.child.child
+        assert child.layout_box.x == 0
+        assert child.layout_box.y == 0

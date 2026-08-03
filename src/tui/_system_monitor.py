@@ -11,6 +11,7 @@ import platform
 import re
 import subprocess
 import sys
+import threading
 import time
 from typing import Any
 
@@ -35,6 +36,10 @@ class _SystemMonitor:
         self._have_prev_cpu: bool = False
         self._mem_percent: float = 0.0
         self._last_mem_time: float = 0.0
+        # 子进程平台后台刷新（darwin/windows 无 psutil 时启用）——渲染线程
+        # 不阻塞等待 iostat/sysctl/vm_stat/wmic 子进程（方向3 性能）。
+        self._bg_started: bool = False
+        self._bg_interval: float = 2.0
 
     @staticmethod
     def _detect_platform() -> str:
@@ -104,9 +109,39 @@ class _SystemMonitor:
         return self._mem_percent
 
     def get_cpu_and_mem(self) -> tuple[float, float]:
-        self.get_cpu_percent()
-        self.get_memory_percent()
+        # 子进程平台（darwin/windows 且无 psutil）：同步采集可能阻塞渲染线程
+        # 数秒（iostat 含 2s 采样 / sysctl+vm_stat 双子进程最坏 ~11s）——启动
+        # 后台 daemon 线程持续刷新缓存，渲染线程只读缓存（方向3 性能）。
+        if (
+            not self._bg_started
+            and not self._has_psutil
+            and self._platform in ("darwin", "windows")
+        ):
+            self._start_bg_refresh()
+        elif not self._bg_started:
+            self.get_cpu_percent()
+            self.get_memory_percent()
         return (self._cpu_percent, self._mem_percent)
+
+    def _start_bg_refresh(self) -> None:
+        """启动后台刷新线程（幂等；daemon 线程随进程退出自动终止）。"""
+        self._bg_started = True
+        try:
+            t = threading.Thread(target=self._bg_loop, daemon=True, name="tui-sysmon")
+            t.start()
+        except Exception:
+            _logger.debug("系统监控后台线程启动失败", exc_info=True)
+            self._bg_started = False
+
+    def _bg_loop(self) -> None:
+        """后台刷新循环：每 2 秒采集一次 CPU/MEM（get_* 内部含 1s TTL 缓存）。"""
+        while True:
+            try:
+                self.get_cpu_percent()
+                self.get_memory_percent()
+            except Exception:
+                _logger.debug("系统监控后台刷新异常", exc_info=True)
+            time.sleep(self._bg_interval)
 
     def _read_cpu_proc_stat(self) -> float:
         try:

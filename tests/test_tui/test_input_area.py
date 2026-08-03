@@ -241,16 +241,16 @@ class TestSnapshotCache:
         lines2 = _build_lines(fiber)
         assert lines1 is not lines2
 
-    def test_time_bucket_1s_granularity(self):
-        """时间戳降级 1s 桶：同桶（<1s）命中缓存；跨桶重建。"""
+    def test_time_bucket_025s_granularity(self):
+        """时间戳降级 0.25s 桶（方向3 呼吸平滑）：同桶（<0.25s）命中缓存；跨桶重建。"""
         fiber = self._make_fiber()
         with patch("src.tui.app.input_area.time.monotonic") as mock_time:
             mock_time.return_value = 1000.0
             lines1 = _build_lines(fiber)
-            mock_time.return_value = 1000.5  # 同桶（int(1000.5)=1000）
+            mock_time.return_value = 1000.2  # 同桶（int(1000.2/0.25)=4000）
             lines2 = _build_lines(fiber)
-            assert lines1 is lines2, "同 1s 桶应命中缓存"
-            mock_time.return_value = 1001.5  # 跨桶（int(1001.5)=1001）
+            assert lines1 is lines2, "同 0.25s 桶应命中缓存"
+            mock_time.return_value = 1000.3  # 跨桶（int(1000.3/0.25)=4001）
             lines3 = _build_lines(fiber)
             assert lines1 is not lines3, "跨桶应重建"
 
@@ -494,7 +494,7 @@ class TestPopupSplitDesc:
 
 
 class TestPlaceholderFadeSmoothBucket:
-    """方向1 步骤4 — 占位符渐显期 0.1s 桶（平滑渐显）、结束后 1s 桶。"""
+    """方向1 步骤4 / 方向3 — 占位符渐显期 0.1s 桶（平滑渐显）、结束后 0.25s 桶。"""
 
     def _fade_fiber(self):
         from src.tui.app.input_area import _placeholder_fade_color, _PLACEHOLDER_TEXT
@@ -518,21 +518,21 @@ class TestPlaceholderFadeSmoothBucket:
             f"渐显期 snap_key 应随 0.1s 桶变化，实际 keys={keys}"
         )
 
-    def test_placeholder_fade_ends_1s_bucket(self):
-        """渐显结束后（elapsed >= fade_duration）：回退 1s 桶。"""
+    def test_placeholder_fade_ends_025s_bucket(self):
+        """渐显结束后（elapsed >= fade_duration）：回退 0.25s 桶（方向3 呼吸平滑）。"""
         fiber = self._fade_fiber()
         keys = []
         with patch("src.tui.app.input_area.time.monotonic") as mock_time:
-            # 渐显结束后（>0.6s）：同 1s 桶（1000.7、1000.9）→ snap_key 不变
+            # 渐显结束后（>0.6s）：同 0.25s 桶（1000.7、1000.72 → int(/0.25)=4002）
             mock_time.return_value = 1000.7
             keys.append(_snap_key_of(fiber))
-            mock_time.return_value = 1000.9
+            mock_time.return_value = 1000.72
             keys.append(_snap_key_of(fiber))
-            # 跨 1s 桶 → 变化
-            mock_time.return_value = 1001.7
+            # 跨 0.25s 桶 → 变化
+            mock_time.return_value = 1001.0
             keys.append(_snap_key_of(fiber))
-        assert keys[0] == keys[1], "渐显结束后同 1s 桶 snap_key 应不变"
-        assert keys[1] != keys[2], "跨 1s 桶 snap_key 应变化"
+        assert keys[0] == keys[1], "渐显结束后同 0.25s 桶 snap_key 应不变"
+        assert keys[1] != keys[2], "跨 0.25s 桶 snap_key 应变化"
 
 
 def _snap_key_of(fiber):

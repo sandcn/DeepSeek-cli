@@ -141,12 +141,24 @@ class _CmplHandler:
             self._last_auto_text = text
             return
 
-        # 最小触发长度：命令（/开头）1字符即可，普通文本至少2字符
-        if not text.startswith('/') and len(text) < 2:
-            self._bb.hide_completions()
-            self._request_redraw()
-            self._last_auto_text = text
-            return
+        # 最小触发长度：命令（/开头）1字符即可
+        if not text.startswith('/'):
+            # 自动补全普通文本仅对**疑似路径**触发——打字时对普通单词逐键
+            # glob 当前目录（engine.complete → _complete_path）是渲染线程
+            # 性能热点（大目录下输入卡顿）。Tab 明确补全（_first_tab）不走
+            # 本分支，路径补全功能完整保留。方向3 性能优化。
+            words = text.split(" ")
+            last_word = words[-1] if words else ""
+            is_pathish = (
+                "/" in last_word
+                or last_word.startswith("~")
+                or last_word.startswith(".")
+            )
+            if len(text) < 2 or not is_pathish:
+                self._bb.hide_completions()
+                self._request_redraw()
+                self._last_auto_text = text
+                return
 
         if not _show_completions_for(self._bb, self._engine, text):
             self._bb.hide_completions()

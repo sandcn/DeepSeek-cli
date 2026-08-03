@@ -398,9 +398,13 @@ class InputIO:
         路径）。跨 read_stdin_once 调用保留 partial——慢速多字节不丢首字节。
         """
         if self._utf8_partial:
-            # 有跨调用残留 partial——当前 first_byte 为续字节：以 partial
-            # 首字节推总字节数（续字节本身无法判定长度），续读补齐。
-            first = self._utf8_partial[0]
+            # 有跨调用残留 partial——校验当前 first_byte 是否为合法续字节
+            # （0x80-0xBF）。续字节被新字符首字节打断（慢速输入间隔中插入
+            # 新字符）时 partial 无效 → 清空后按新字符首字节重新解析（修复
+            # 前把新首字节拼进旧序列 → 解码失败 → 两个字符均丢失）。
+            if not (0x80 <= first_byte <= 0xBF):
+                self._utf8_partial = b""
+            first = self._utf8_partial[0] if self._utf8_partial else first_byte
             buf = bytes([first_byte])
         else:
             first = first_byte

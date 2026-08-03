@@ -20,6 +20,7 @@ useImperativeHandle 评估（方向② 步骤5）：需引入 forwardRef/ref 转
 
 from __future__ import annotations
 
+import itertools
 import logging
 import math
 from typing import Any, Callable, List
@@ -396,6 +397,13 @@ def use_callback(fn: Callable, deps: list | tuple | None = None) -> Callable:
 # ═══════════════════════════════════════════════════════════
 
 
+#: Context 唯一标签序号真源（方向3）：单调递增，替代 ``id(ctx)``——
+#:   id 复用风险（context 经 ``_cleanup_contexts`` 从注册表移除后可被 GC，
+#:   新 context 可能复用旧 id → 标签碰撞，跨 context 污染）。与 ``_HOOK_SEQ``
+#: 方案一致（fiber.py InputHook 序号）。
+_CTX_SEQ = itertools.count()
+
+
 def create_context(default: Any = None) -> Context:
     """React createContext 等价物。
 
@@ -409,7 +417,7 @@ def create_context(default: Any = None) -> Context:
         Context 对象。
     """
     ctx = Context(default=default, tag="")
-    ctx.tag = f"__ctx_{id(ctx)}__"
+    ctx.tag = f"__ctx_{next(_CTX_SEQ)}__"
     ctx.Provider = ctx.tag
     _context_registry[ctx.tag] = ctx
     return ctx

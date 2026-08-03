@@ -374,15 +374,21 @@ class TestNoAnimatorDependency:
         assert "src.tui._animator" not in sys.modules
 
     def test_render_deterministic_regression(self):
-        """同一 model 连续两次渲染的 plain 行完全一致（确定性渲染）。"""
+        """同一 model 连续两次渲染的 plain 行完全一致（确定性渲染）。
+
+        固定 status_bar 时间基（streaming spinner 帧 / 呼吸色随时间推进）——
+        组件树内时间基动效仅影响帧选择，不影响「同输入同输出」的确定性契约。
+        """
+        from unittest.mock import patch
         m = AppModel()
         apply_cmd(m, UserMsgCmd(text="hi"))
         apply_cmd(m, ContentCmd(text="answer\n"))
         apply_cmd(m, PhaseDoneCmd(phase="content"))
         m.status.status_active = True
         m.status.model_name = "deepseek"
-        f1 = _frame(m)
-        f2 = _frame(m)
+        with patch("src.tui.app.status_bar.time.monotonic", return_value=1000.0):
+            f1 = _frame(m)
+            f2 = _frame(m)
         assert [l.plain for l in f1.lines] == [l.plain for l in f2.lines]
 
 

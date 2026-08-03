@@ -310,7 +310,13 @@ class CompletionEngine:
             param_words = param_part.split()
             param_last = param_words[-1] if param_words else ""
             start = -len(param_last)
-            replace_full = False
+            # 方向3（参数空串前缀丢失修复）：参数部分为空（如 ``"/model "``
+            # 带尾随空格 → ``split(maxsplit=1)`` 产 ``["/model", ""]``，
+            # ``param_words=[]``）时 ``start=-0=0`` → ``_apply_completion``
+            # 整行替换会丢弃 ``/model `` 命令前缀。与无参数分支一致改用
+            # **完整替换串**（``f"{cmd_name} {m}"``）+ start_pos=0 → 应用后
+            # 保留 ``/model <param>``。
+            replace_full = not param_words
 
         if cmd_name == "/model":
             models = self._models_cache.get()

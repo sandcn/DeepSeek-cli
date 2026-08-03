@@ -185,11 +185,6 @@ class InkRenderer:
             self._stream.flush()
             return
 
-        # ★ 差异区间收集：找出前 min(prev_h, new_h) 行中所有差异区间
-        #   （连续差异行合并）。与 first_diff_line 相同比较语义（身份短路 +
-        #   runs 值相等）；高度差边界由下方 delta 分支单独处理。
-        runs = self._diff_runs(self._prev, frame, min(prev_h, new_h))
-
         # ★ 有效重写起点（delta!=0 时为首差异行钳到可见区边界——离屏部分不可达
         #   跳过；delta==0 时用首差异行）。
         if delta != 0 and self._height > 0:
@@ -197,14 +192,25 @@ class InkRenderer:
         else:
             rewrite_start = i
 
-        # ★ PERF-4 单帧重写行数上限：超限时降级（避免病态大重写冻结 UI）。
-        #   行数 = 实际待重写行数（delta!=0 时从有效起点重写至末尾 + 高度变化；
-        #   delta==0 时为差异区间行数）。修复前用 ``new_h - i`` 高估——头部
-        #   动画场景 i=0 但仅首行差异会误触发降级，引发全屏闪烁。
-        if delta != 0:
-            rewrite_count = (new_h - min(rewrite_start, new_h)) + max(0, prev_h - new_h)
-        else:
+        # ★ 差异区间收集（方向3 性能）：仅 delta==0（等高帧）需要差异区间——
+        #   delta!=0（流式增长/缩短帧）走下方连续重写路径，区间收集纯浪费
+        #   （旧实现每帧对共有行全量 O(n) 扫描，流式期间 delta 恒 !=0）。
+        #   且 delta==0 时首差异行 i 之前无差异（first_diff_line 定义），
+        #   从 i 起扫（免扫描不变的 committed 前缀）。
+        #   与 first_diff_line 相同比较语义（身份短路 + runs 值相等）；高度差
+        #   边界由下方 delta 分支单独处理。
+        if delta == 0:
+            runs = self._diff_runs(self._prev, frame, min(prev_h, new_h), start=i)
+            # ★ PERF-4 单帧重写行数上限：超限时降级（避免病态大重写冻结 UI）。
+            #   行数 = 实际待重写行数（delta==0 时为差异区间行数）。修复前用
+            #   ``new_h - i`` 高估——头部动画场景 i=0 但仅首行差异会误触发
+            #   降级，引发全屏闪烁。
             rewrite_count = sum(end - start for start, end in runs)
+        else:
+            runs = []
+            # ★ PERF-4 单帧重写行数上限（delta!=0）：从有效起点重写至末尾 +
+            #   高度变化（delta<0 时清除残留行）——病态大重写降级防冻结 UI。
+            rewrite_count = (new_h - min(rewrite_start, new_h)) + max(0, prev_h - new_h)
         if rewrite_count > _MAX_REWRITE_ROWS:
             _logger.warning(
                 "单帧重写行数 %d 超上限 %d，降级为全量 clear + 全量重建",
@@ -245,7 +251,16 @@ class InkRenderer:
         #   （只能经底部写行触发滚动），按 prev 位置原位重写、由末尾换行滚动
         #   过渡到 new 布局——按 new 偏移写会覆盖未滚动区域。
         #   raw 终端模式下 \n 不归位列 1，每行须前缀 \r。
-        if delta < 0 and self._height > 0:
+        # 方向3（缩短闪烁优化）：文档在屏幕内（``_screen_offset==0``，无滚动
+        # 偏移）时缩短走常规 diff 路径（重写 + 清残留）——删字/关闭补全弹窗
+        # 不再全屏 clear 闪烁。仅文档高于屏幕（offset>0，缩短改变可见区偏移，
+        # 终端缓冲无法删除行 → 偏移模型漂移）时全量 clear + 重建（防错乱，
+        # 测试锁定：test_shrink_emits_clear_screen / test_grow_shrink_grow_no_drift）。
+        if (
+            delta < 0
+            and self._height > 0
+            and self._screen_offset(prev_h) > 0
+        ):
             try:
                 self._stream.write(clear_screen())
             except Exception:
@@ -327,7 +342,13 @@ class InkRenderer:
         self._stream.write(buf.getvalue())
         self._stream.flush()
 
-    def _diff_runs(self, prev: Frame, frame: Frame, n: int) -> list[tuple[int, int]]:
+    def _diff_runs(
+        self,
+        prev: Frame,
+        frame: Frame,
+        n: int,
+        start: int = 0,
+    ) -> list[tuple[int, int]]:
         """收集两帧前 n 行的差异区间（[start, end) 行号，升序、不重叠）。
 
         与 ``first_diff_line`` 相同比较语义：身份短路（Line 对象相同 → 相等）
@@ -340,25 +361,27 @@ class InkRenderer:
             prev: 上一帧。
             frame: 新帧。
             n: 参与比较的行数（``min(prev.height, frame.height)``）。
+            start: 起始扫描行（0-based，含）；调用方保证 [0, start) 无差异
+                （``first_diff_line`` 定义）——免扫描不变的 committed 前缀。
 
         Returns:
             差异区间列表（每个为 [start, end) 行号，至少含一行）。
         """
         runs: list[tuple[int, int]] = []
         in_run = False
-        start = 0
-        for idx in range(n):
+        run_start = start
+        for idx in range(start, n):
             p = prev.lines[idx]
             f = frame.lines[idx]
             differs = p is not f and p.runs != f.runs
             if differs and not in_run:
                 in_run = True
-                start = idx
+                run_start = idx
             elif not differs and in_run:
                 in_run = False
-                runs.append((start, idx))
+                runs.append((run_start, idx))
         if in_run:
-            runs.append((start, n))
+            runs.append((run_start, n))
         return runs
 
     def _is_tail_shifted(self, prev: Frame, frame: Frame, i: int, delta: int) -> bool:
@@ -381,11 +404,13 @@ class InkRenderer:
         start = i + delta
         if start > len(n):
             return False
-        a = p[i:prev.height]
-        b = n[start:len(n)]
-        if len(a) != len(b):
+        # 索引循环比较（避免每帧创建两段切片——方向3 性能）
+        count = prev.height - i
+        if count != len(n) - start:
             return False
-        for x, y in zip(a, b):
+        for k in range(count):
+            x = p[i + k]
+            y = n[start + k]
             if x is not y and x.runs != y.runs:
                 return False
         return True

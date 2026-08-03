@@ -16,10 +16,9 @@ content/tool 无角色头（content 对齐 Claude Code 无头回答；tool 由�
 
 from __future__ import annotations
 
-from src.renderer.ansi.helpers import Run
 from src.tui.app.model import _role_header_line
 from src.tui.core.style import Style
-from src.tui.ink import h, BOX, TEXT, StyledRun, Line, register_host, use_memo
+from src.tui.ink import h, BOX, TEXT, StyledRun, register_host, use_memo
 
 _S_REASONING = Style(fg=242)
 

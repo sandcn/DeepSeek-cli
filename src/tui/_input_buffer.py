@@ -33,6 +33,20 @@ from src.api.escape_monitor._history import _HISTORY_MAX_ENTRIES
 _logger = logging.getLogger(__name__)
 
 
+def _safe_disk_append(history_io, escaped: str) -> None:
+    """后台线程历史写盘（锁外执行；失败仅记日志，不抛回调用线程）。
+
+    方向3（Enter fsync 阻塞渲染修复）：``os.fsync``（Android Termux ext4
+    10-100ms）在渲染线程持锁执行会冻结所有缓冲编辑——迁移到后台 daemon
+    线程。daemon 线程随进程退出自动终止；退出冲刷由 lifecycle flush 兜底。
+    """
+    try:
+        if not history_io.append(escaped):
+            _logger.warning("历史文件异步追加写入失败")
+    except Exception:
+        _logger.debug("历史文件异步追加异常", exc_info=True)
+
+
 # ═══════════════════════════════════════════════════════════
 # InputBufferEditor — 缓冲编辑 + 历史 + 队列
 # ═══════════════════════════════════════════════════════════
@@ -435,11 +449,16 @@ class InputBufferEditor:
         return self._search_active
 
     def _append_history_locked(self, text: str) -> None:
-        """保存输入到历史（需持 _lock）。
+        """保存输入到历史（需持 _lock；写盘部分异步执行）。
 
         历史写盘决策（方向A 步骤1 评估，2026-07-31）：保持每 Enter 调用一次
         ``_append_to_history_file``（**保持现状**）——批量化会引入崩溃时历史丢失
         风险与退出冲刷复杂度，收益低，故不批量化。
+
+        方向3（Enter fsync 阻塞渲染修复）：``_append_history_locked`` 在渲染线程
+        持锁被 ``_enter`` 调用，原实现内同步执行 ``os.fsync``（Termux ext4
+        10-100ms）阻塞渲染帧与所有锁竞争路径——写盘迁移到后台 daemon 线程
+        （``_safe_disk_append``），锁内仅更新内存历史（零阻塞）。
         """
         if not text.strip():
             return
@@ -449,11 +468,10 @@ class InputBufferEditor:
         if len(self._history) > self._history_max_entries:
             self._history = self._history[:self._history_max_entries]
         escaped = text.replace("\n", "\\n")
-        # P3-2 决策确认：历史写盘锁内 fsync（保持现状）——``_append_to_history_file``
-        # 内部完成 fsync（经 _history_io.append 调用），与方向A 步骤1 评估一致
-        # （批量化风险 > 收益，保持每 Enter 一次写盘 + fsync 的既有语义）。
-        if not self._history_io.append(escaped):
-            _logger.warning("历史文件追加写入失败: %s", self._history_file)
+        threading.Thread(
+            target=_safe_disk_append, args=(self._history_io, escaped),
+            daemon=True, name="tui-history-disk",
+        ).start()
 
     def _up(self) -> None:
         """上箭头：多行上移一行；首行或单行回退到历史浏览。"""

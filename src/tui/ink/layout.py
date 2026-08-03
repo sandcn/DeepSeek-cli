@@ -206,6 +206,25 @@ def _flex_shrink(fiber: Fiber) -> int:
         return 0
 
 
+def _resolve_padding(fiber: Fiber) -> tuple[int, int]:
+    """解析 padding，返回 (pad_h, pad_v)（React Ink 语义，方向3 完善）。
+
+    - ``padding`` 设置四边（均一值）；``paddingX`` 覆盖左右（横向）；
+      ``paddingY`` 覆盖上下（纵向）——``paddingX/Y`` 缺省回退 ``padding``。
+    - 畸形值（None/对象/畸形串）兜底 0，与 width/height/border/margin 一致。
+    """
+    def _int(v):
+        try:
+            return max(0, int(v))
+        except (TypeError, ValueError):
+            return 0
+
+    pad = _int(fiber.props.get("padding", 0))
+    pad_h = _int(fiber.props.get("paddingX", pad))
+    pad_v = _int(fiber.props.get("paddingY", pad))
+    return (pad_h, pad_v)
+
+
 def _distribute_extra(
     children: list[Fiber],
     weight_fn: Callable[[Fiber], int],
@@ -292,7 +311,6 @@ def _reflow_row_justify(
     n = len(children)
     if n == 0:
         return
-    widths = [child.layout_box.w for child in children]
     if justify == "space-between":
         gaps = n - 1
         per = extra // gaps if gaps else 0
@@ -351,13 +369,9 @@ def _reflow_subtree(fiber: Fiber, new_y: int) -> None:
         return
     cb.y = new_y
     fiber.layout_box = cb
-    padding = fiber.props.get("padding", 0)
+    pad_h, pad_v = _resolve_padding(fiber)
     border = fiber.props.get("border", 0)
     margin = fiber.props.get("margin", 0)
-    try:
-        padding = max(0, int(padding))
-    except (TypeError, ValueError):
-        padding = 0
     try:
         border = max(0, int(border))
     except (TypeError, ValueError):
@@ -374,12 +388,34 @@ def _reflow_subtree(fiber: Fiber, new_y: int) -> None:
             spacing = margin
     else:
         spacing = margin
-    cursor_y = new_y + padding + border
+    cursor_y = new_y + pad_v + border
     for child in layout_children(fiber):
         _reflow_subtree(child, cursor_y)
         ccb = child.layout_box
         if ccb is not None:
             cursor_y += ccb.h + spacing
+
+
+def _translate_subtree_y(fiber: Fiber, delta_y: int) -> None:
+    """整体平移 fiber 子树（含自身）的 y 坐标（方向3 探针复用修复）。
+
+    探针测量（fill=False column 容器）把子树全部按 ``inner_y`` 测量（y 重叠），
+    主循环复用盒时须将整棵子树平移到 ``cursor_y``——仅更新自身 box 会导致
+    第 2+ 个子节点的后代 y 停留在 ``inner_y`` 基准（与首个子树重叠）。
+    本函数保持 w/h/x 不变，只平移 y（delta_y 为相对偏移，可为负）。
+
+    Args:
+        fiber: 待平移的子树根（其 layout_box 非 None）。
+        delta_y: y 偏移量（像素/行）。
+    """
+    f = fiber
+    while f is not None:
+        if f.layout_box is not None:
+            cb = f.layout_box
+            cb.y += delta_y
+            f.layout_box = cb
+        _translate_subtree_y(f.child, delta_y)
+        f = f.sibling
 
 
 def _measure(fiber: Fiber, x: int, y: int, avail_w: int, fill: bool = True) -> LayoutBox:
@@ -455,8 +491,8 @@ def _measure(fiber: Fiber, x: int, y: int, avail_w: int, fill: bool = True) -> L
             and cache[1] == cache_wt
         ):
             # 引用级快速路径：同 styled 引用 + (width, text_wrap) 不变 → 复用 lines
+            # （runs 在本分支无下游消费——h 仅由 lines 推导；死拷贝移除）
             lines = cache[3]
-            runs = list(styled)  # 供下游 h 计算（行为与旧实现一致）
         else:
             if styled is not None:
                 runs = list(styled)
@@ -531,11 +567,9 @@ def _measure(fiber: Fiber, x: int, y: int, avail_w: int, fill: bool = True) -> L
         return box
 
     # ── 容器：BOX / STATIC / APP ──
-    padding = fiber.props.get("padding", 0)
-    try:
-        padding = max(0, int(padding))
-    except (TypeError, ValueError):
-        padding = 0
+    # ★ paddingX/paddingY（方向3 完善 react ink）：横向/纵向独立内边距；
+    #   缺省回退 ``padding`` 均一值（既有行为不变）。
+    pad_h, pad_v = _resolve_padding(fiber)
     border = fiber.props.get("border", 0)
     try:
         border = max(0, int(border))
@@ -560,8 +594,8 @@ def _measure(fiber: Fiber, x: int, y: int, avail_w: int, fill: bool = True) -> L
     #: 兄弟间距统一值（row 用横向、column 用纵向）
     spacing = gap
 
-    inner_x = x + padding + border
-    inner_y = y + padding + border
+    inner_x = x + pad_h + border
+    inner_y = y + pad_v + border
     children = layout_children(fiber)
     direction = fiber.props.get("flexDirection", "column")
 
@@ -574,9 +608,9 @@ def _measure(fiber: Fiber, x: int, y: int, avail_w: int, fill: bool = True) -> L
         #   子节点按 box 内宽测量（超宽换行/截断，不溢出）。
         if explicit_w is not None:
             width = _resolve_width(fiber, avail_w)
-            row_inner_w = max(0, width - 2 * (padding + border))
+            row_inner_w = max(0, width - 2 * (pad_h + border))
         else:
-            row_inner_w = max(0, avail_w - 2 * (padding + border))
+            row_inner_w = max(0, avail_w - 2 * (pad_h + border))
         cursor_x = inner_x
         row_h = 0
         n_children = len(children)
@@ -593,11 +627,11 @@ def _measure(fiber: Fiber, x: int, y: int, avail_w: int, fill: bool = True) -> L
         if explicit_w is None:
             content_w = cursor_x - inner_x
             width = _clamp_width(
-                fiber, max(0, min(avail_w, content_w + 2 * (padding + border))),
+                fiber, max(0, min(avail_w, content_w + 2 * (pad_h + border))),
             )
         # ★ row flexGrow（方向1 完善 flexbox）：显式宽度富余时按 flexGrow 分配
         #   额外宽度（横向主轴 grow——修复前 flexGrow 仅作用于 column 高度）。
-        inner_w_row = max(0, width - 2 * (padding + border))
+        inner_w_row = max(0, width - 2 * (pad_h + border))
         used_w = cursor_x - inner_x
         extra_w = max(0, inner_w_row - used_w)
         grow_total = 0
@@ -643,15 +677,25 @@ def _measure(fiber: Fiber, x: int, y: int, avail_w: int, fill: bool = True) -> L
         # ★ alignItems（方向3，已实现）：row 横向对齐子节点 y 偏移——
         #   center → 每子 y += (row_h - cbox.h)//2；flex-end → y += (row_h - cbox.h)；
         #   stretch（默认）无偏移（当前行为）。
+        # ★ alignSelf（方向3 完善 react ink）：子级 ``alignSelf`` 覆盖父
+        #   alignItems（row 横轴——纵向偏移；center/flex-end/flex-start）。
         align = fiber.props.get("alignItems", "stretch")
-        if align in ("center", "flex-end") and row_h > 0:
+        if (align in ("center", "flex-end") or any(
+            child.props.get("alignSelf") in ("center", "flex-end", "flex-start")
+            for child in children
+        )) and row_h > 0:
             for child in children:
                 cb = child.layout_box
                 if cb is not None and cb.h < row_h:
-                    if align == "center":
+                    self_align = child.props.get("alignSelf")
+                    eff_align = self_align if self_align in (
+                        "center", "flex-end", "flex-start",
+                    ) else align
+                    if eff_align == "center":
                         cb.y += (row_h - cb.h) // 2
-                    else:
+                    elif eff_align == "flex-end":
                         cb.y += (row_h - cb.h)
+                    # flex-start / stretch：不偏移
                     child.layout_box = cb
         total_h = row_h
     else:
@@ -676,15 +720,15 @@ def _measure(fiber: Fiber, x: int, y: int, avail_w: int, fill: bool = True) -> L
             for child in children:
                 probe_box = _measure(
                     child, inner_x, inner_y,
-                    max(0, avail_w - 2 * (padding + border)), fill=False,
+                    max(0, avail_w - 2 * (pad_h + border)), fill=False,
                 )
                 probe_boxes.append(probe_box)
                 if probe_box.w > probe_w:
                     probe_w = probe_box.w
             width = _clamp_width(
-                fiber, max(0, min(avail_w, probe_w + 2 * (padding + border))),
+                fiber, max(0, min(avail_w, probe_w + 2 * (pad_h + border))),
             )
-        inner_w = max(0, width - 2 * (padding + border))
+        inner_w = max(0, width - 2 * (pad_h + border))
         cursor_y = inner_y
         total_h = 0
         n = len(children)
@@ -692,36 +736,56 @@ def _measure(fiber: Fiber, x: int, y: int, avail_w: int, fill: bool = True) -> L
         #   时子节点按**自然宽度**测量（不填充 stretch）再横向偏移；stretch
         #   （默认）保持现状填充。子节点显式 width 不受影响（_measure 优先
         #   显式宽度）。仅子节点自然宽度 < 容器内宽时产生偏移。
+        # ★ alignSelf（方向3 完善 react ink）：子级 ``alignSelf`` 覆盖父
+        #   alignItems——center/flex-end/flex-start 时该子按内容宽度测量
+        #   （不填充）并在横轴偏移；stretch（默认）跟随父 alignItems。
+        #   仅任一子带 alignSelf 或父 align 非 stretch 时进入偏移块（省 O(n)）。
         align = fiber.props.get("alignItems", "stretch")
-        child_fill = fill if align == "stretch" else False
+        has_align_self = False
         for i, child in enumerate(children):
             # fill 沿树传播：fill=False（row 内）时子节点内容自适应（孙 TEXT 不
             # 填满 BOX 内部，BOX 宽度才能由内容决定而非固定填充）。
             # ★ 探针复用：fill=False 且已探针测量（probe_boxes 非 None）时直接
             #   复用探针盒更新 y（探针与主循环测量参数等价——inner_w >= 子节点
             #   自然宽度，fill=False 下结果相同），免二次测量。
+            self_align = child.props.get("alignSelf")
+            if self_align in ("center", "flex-end", "flex-start"):
+                has_align_self = True
+                eff_align = self_align
+            else:
+                eff_align = align
+            child_fill = fill if eff_align == "stretch" else False
             if child_fill is False and probe_boxes is not None:
-                pbox = probe_boxes[i]
-                cbox = LayoutBox(inner_x, cursor_y, pbox.w, pbox.h)
-                child.layout_box = cbox
+                # 探针测量把**子树全部**按 inner_y 测（y 重叠）——仅更新自身
+                # box 不够，后代 y 停留在 inner_y 基准（多子节点时第 2+ 个子树
+                # 与首个重叠，方向3 修复）。整棵子树平移 delta_y。
+                delta_y = cursor_y - inner_y
+                if delta_y:
+                    _translate_subtree_y(child, delta_y)
+                cbox = child.layout_box
             else:
                 cbox = _measure(child, inner_x, cursor_y, inner_w, fill=child_fill)
             cursor_y += cbox.h + spacing
             total_h += cbox.h
             if i < n - 1:
                 total_h += spacing
-        if align in ("center", "flex-end") and inner_w > 0:
+        if (align in ("center", "flex-end") or has_align_self) and inner_w > 0:
             for child in children:
                 cb = child.layout_box
                 if cb is not None and cb.w < inner_w:
-                    if align == "center":
+                    self_align = child.props.get("alignSelf")
+                    eff_align = self_align if self_align in (
+                        "center", "flex-end", "flex-start",
+                    ) else align
+                    if eff_align == "center":
                         cb.x += (inner_w - cb.w) // 2
-                    else:
+                    elif eff_align == "flex-end":
                         cb.x += (inner_w - cb.w)
+                    # flex-start / stretch：不偏移
                     child.layout_box = cb
 
     content_h = total_h if children else 0
-    h = content_h + 2 * (padding + border)
+    h = content_h + 2 * (pad_v + border)
     h = _resolve_height(fiber, h)
 
     # flexShrink：显式高度不足（h < 内容高）且 children 含 shrink>0 时，按
@@ -729,11 +793,11 @@ def _measure(fiber: Fiber, x: int, y: int, avail_w: int, fill: bool = True) -> L
     #   权重分配）——与 flexGrow 余数分配对称（方向2 U4）。方向1：余数分配
     #   收敛至 _distribute_extra（余数仅分配给 shrink>0 节点，权重 0 节点不
     #   参与）+ shrink 后孙节点递归重排（_reflow_subtree）。
-    if h < content_h + 2 * (padding + border) and children:
+    if h < content_h + 2 * (pad_v + border) and children:
         shrink_total = 0
         for child in children:
             shrink_total += _flex_shrink(child)
-        deficit = (content_h + 2 * (padding + border)) - h
+        deficit = (content_h + 2 * (pad_v + border)) - h
         if shrink_total > 0 and deficit > 0:
             _distribute_extra(
                 children, _flex_shrink, deficit, inner_y, spacing,
@@ -750,11 +814,11 @@ def _measure(fiber: Fiber, x: int, y: int, avail_w: int, fill: bool = True) -> L
 
     # flexGrow：显式高度富余时按 flexGrow 比例分配（方向1：余数分配收敛至
     #   _distribute_extra——余数仅分配给 grow>0 节点，权重 0 节点不参与）。
-    if h > content_h + 2 * (padding + border) and children:
+    if h > content_h + 2 * (pad_v + border) and children:
         grow_total = 0
         for child in children:
             grow_total += _flex_grow(child)
-        remaining = h - (content_h + 2 * (padding + border))
+        remaining = h - (content_h + 2 * (pad_v + border))
         if grow_total > 0 and remaining > 0:
             # P1-4：余数分配修改子节点高度后 helper 内**重排 y 坐标**——
             # _measure 按原高度分配 y（如 BOX(height=10)+两个 TEXT flexGrow
@@ -782,7 +846,7 @@ def _measure(fiber: Fiber, x: int, y: int, avail_w: int, fill: bool = True) -> L
             children_total += cb.h if cb is not None else 0
         if n > 1:
             children_total += spacing * (n - 1)
-        extra = max(0, h - 2 * (padding + border) - children_total)
+        extra = max(0, h - 2 * (pad_v + border) - children_total)
         if extra > 0:
             offset = extra // 2 if justify == "center" else extra
             for child in children:

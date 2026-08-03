@@ -94,15 +94,17 @@ def _get_terminal_size() -> tuple[int, int]:
 def detect_truecolor() -> bool:
     """检测终端是否支持 truecolor（24-bit 颜色）。
 
-    读 ``COLORTERM`` 环境变量：``"truecolor"`` / ``"24bit"`` 视为支持；
-    其余（含未设置）视为不支持。环境变量不可信时默认 False（安全兜底——
-    走 256 色降级，行为不漂移）。
+    方向3（单一真源收敛）：复用 ``core.color`` 的判定逻辑（含 NO_COLOR 强制
+    降级 + TERM direct 判定）——修复前本模块独立实现（仅查 ``COLORTERM``，
+    不尊重 ``NO_COLOR`` 规范），与 ``core/color`` 双实现语义漂移。此处调用
+    ``_detect_truecolor_uncached``（无进程级缓存），保持本模块既有「每次
+    独立检测」语义（test_screen 锁定，避免 core/color 缓存跨测试污染）。
 
     Returns:
         True — 终端宣称支持 truecolor；False — 默认 256 色降级。
     """
-    value = os.environ.get("COLORTERM", "").strip().lower()
-    return value in ("truecolor", "24bit")
+    from src.tui.core.color import _detect_truecolor_uncached
+    return _detect_truecolor_uncached()
 
 
 # ═══════════════════════════════════════════════════════════

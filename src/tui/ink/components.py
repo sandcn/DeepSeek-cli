@@ -204,17 +204,10 @@ def _paint_impl(fiber: Fiber, canvas: list[dict]) -> None:
                 lines = wrap_runs_by_width(list(styled), box.w)
             else:
                 lines = wrap_text_lines(text, box.w, style)
-        # ★ 画布行级缓存（方向4）：同 styled/text 引用 + 同 box 命中时整行复用
-        #   Line 对象（免逐字符重绘）；未命中正常绘制并写缓存。缓存键
-        #   ``(ref, (box.x, box.w), lines)``——ref 为 styled 引用或 text 字符串，
-        #   lines 为换行结果（引用）；fiber 复用/更新 props 后 ref 变化自然失效。
-        ref = fiber.props.get("styled")
-        if ref is None:
-            ref = str(fiber.props.get("children", ""))
-        cache = getattr(fiber, "_paint_cache", None)
-        cache_key = (ref, (box.x, box.w), lines)
-        if cache is None or cache[0] != cache_key:
-            fiber._paint_cache = (cache_key, lines)
+        # 行级复用：canvas 行直接写入 Line 对象（box.x==0 快路径），diff 阶段
+        # 身份短路（同 Line 对象恒相等）跳过——跨帧零重建。不再维护
+        # ``_paint_cache``（死缓存：只写不读，实际复用来自 _wrapped_lines
+        # 引用与 canvas 行 Line 身份，方向3 移除）。
         for i, line in enumerate(lines):
             row = box.y + i
             if 0 <= row < len(canvas):
@@ -356,12 +349,20 @@ def render_frame(root: Fiber, width: int) -> Frame:
                 tail_start = min(len(prefix), len(canvas))
                 tail = [_canvas_row_to_line(r) for r in canvas[tail_start:]]
                 return Frame(prefix + tail)
-            # 非顶部：前缀行填入画布对应区域（_paint 命中缓存已跳过画布写入）
+            # 非顶部：前缀行填入画布对应区域（_paint 命中缓存已跳过画布写入）。
+            # ★ 方向3（性能）：改为「顶部画布行 + 前缀 + 尾部画布行」直接拼接——
+            #   修复前先把前缀行逐行拷贝回画布再全量 ``_canvas_row_to_line``
+            #   （大历史下每帧 O(全部行) 转换，即使前缀行已是 Line 也要遍历）。
+            #   本实现：canvas[0:y0]（TopHeader 等非 committed 顶部行）逐行转换；
+            #   前缀直接复用（Line 对象身份不变 → diff 身份短路）；尾部
+            #   canvas[y0+len(prefix):]（live 区）逐行转换。防御：len(prefix)
+            #   可能超 canvas 尾部范围（reflow 期间布局陈旧）→ 按 fit 截断
+            #   （与旧实现「超出画布的前缀行丢弃」行为一致）。
             y0 = committed_box.y if committed_box is not None else 0
-            for j, line in enumerate(prefix):
-                row = y0 + j
-                if 0 <= row < len(canvas):
-                    canvas[row] = line
+            fit = min(len(prefix), max(0, len(canvas) - y0))
+            header = [_canvas_row_to_line(r) for r in canvas[:y0]]
+            tail = [_canvas_row_to_line(r) for r in canvas[y0 + fit:]]
+            return Frame(header + prefix[:fit] + tail)
     return Frame(_canvas_row_to_line(row) for row in canvas)
 
 

@@ -38,22 +38,14 @@ _S_SPEED = Style(fg=214)
 _S_TOOL_OK = Style(fg=41)
 _S_TOOL_FAIL = Style(fg=196)
 
+# BEAUTY-7：streaming braille spinner 帧序列（与 _subagent_render 共用语义）
+_SPINNER_FRAMES = "\u280b\u2819\u2839\u2838\u283c\u2834\u2826\u2827\u2807\u280f"
+
 # PERF-5：快照查询 TTL 缓存（≤1Hz；渲染线程单写，GIL 原子赋值足够）
 # 方向D 步骤16：TTL 常量化（_SNAPSHOT_TTL）——与状态栏 1s 时间桶对齐，
 # 快照与显示节奏不产生错位。
 _SNAPSHOT_TTL = 1.0
 _snapshot_cache: tuple[float, dict] = (0.0, {})
-
-# BEAUTY-1/PERF-3：TuiConfig 惰性获取（避免模块加载环；配置不可变可安全缓存）
-_CFG = None
-
-
-def _get_cfg():
-    global _CFG
-    if _CFG is None:
-        from src.tui._config import TuiConfig
-        _CFG = TuiConfig.defaults()
-    return _CFG
 
 
 def _snapshot() -> dict:
@@ -83,7 +75,6 @@ def _build_status_runs(model, dot_elapsed: float = 0.0,
             帧；空闲为静态 ``·``）。
     """
     st = model.status
-    runs: list[StyledRun] = []
     status_active = st.status_active
 
     model_part: list[StyledRun] = []
@@ -164,12 +155,13 @@ def StatusBar(props) -> object:
     # BEAUTY-7：status_active 期间恒用 0.1s 桶——streaming spinner + 模型点
     #   呼吸以 10Hz 平滑推进（流式期间帧率本就 10Hz，零额外渲染成本）；
     #   空闲回 1s 桶（静态显示，CPU 保持低占用）。
-    cfg = _get_cfg()
     if st.status_active:
         time_dep = int(time.monotonic() / 0.1)
-        # BEAUTY-7：streaming spinner 帧（10Hz）
+        # BEAUTY-7：streaming spinner 帧（10Hz）——spinner_frame 返回帧索引，
+        # 必须经 _SPINNER_FRAMES 查表取字符（修复前直接格式化索引 → 显示数字
+        # 0-9 循环）。
         from src.tui.app import _fx
-        spinner_char = _fx.spinner_frame(10.0, "\u280b\u2819\u2839\u2838\u283c\u2834\u2826\u2827\u2807\u280f")
+        spinner_char = _SPINNER_FRAMES[_fx.spinner_frame(10.0, _SPINNER_FRAMES)]
     else:
         time_dep = int(time.monotonic() / 1.0)
         spinner_char = "\u00b7"
@@ -188,7 +180,13 @@ def StatusBar(props) -> object:
     # ★ 方向6（分隔线宽度统一）：分隔线铺满 width 列（修复前 width-2 与
     #   状态行 col2 缩进宽度不一致）；状态行前缀 2 列 + 内容经 truncate_line
     #   截断至 width（内容从 col3 起 ≤ width-2）——宽度统一为 width。
-    sep = Line.of("\u2501" * max(1, width), _S_SEP)
+    # 方向3（动效）：流式/活跃期间分隔线用青色呼吸（32-45，8s 周期）——
+    #   活跃状态的分隔线更生动；空闲保持静态深灰（_S_SEP）。
+    if st.status_active:
+        sep_style = Style(fg=time_glow(32, 45, 8.0))
+    else:
+        sep_style = _S_SEP
+    sep = Line.of("\u2501" * max(1, width), sep_style)
     # 状态行（下面）
     status_line = Line.of("  ", None)
     if status_runs:

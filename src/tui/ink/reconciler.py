@@ -190,7 +190,8 @@ class Reconciler:
                 # 无显式 key → 按索引匹配旧 sibling 链对应位置（跳过已消费
                 # 节点——方向1 步骤3：混合 keyed/无 key 列表中 keyed 元素消费
                 # 旧节点后，无 key 元素按位置不复用同一旧 fiber，防 fiber 树
-                # 环/双父）。
+                # 环/双父）。项目既有语义锁定：无 key 元素按索引匹配（含
+                # keyed 旧节点），TestMixedKeyedNoKeyConsumed 测试契约。
                 while (
                     positional_idx < len(old_list)
                     and id(old_list[positional_idx]) in consumed
@@ -576,10 +577,12 @@ class Reconciler:
     def _cleanup_contexts(self, fiber: Fiber | None) -> None:
         """遍历被删子树，将 context provider host 从注册表移除（动态 context 卸载）。
 
-        仅遍历 ``fiber.child`` 子树（不走 sibling 链——P1-2 修复：删除 fiber 的
-        sibling 指针可能仍指向已被复用的活跃 fiber，误遍历会误删其 context 注册）。
-        仅当 fiber 为 host 且 ``contexts`` 非空（本帧确实充当 provider）且注册表
-        含对应标签时移除；卸载后重新 create_context 会以新 tag 重新注册。
+        遍历范围：被删 fiber 的 child 子树**及其内部 sibling 链**（方向3
+        docstring 修正——`_mark_deleted` 已切断顶层 fiber.sibling，故内部
+        sibling 遍历仅覆盖删除子树的**后代兄弟**，安全；注释原描述"不走
+        sibling 链"与实际代码不符）。仅当 fiber 为 host 且 ``contexts`` 非空
+        （本帧确实充当 provider）且注册表含对应标签时移除；卸载后重新
+        create_context 会以新 tag 重新注册。
 
         方向2 L2 评估结论（可追溯）：**多 Provider 同 Context 卸载误伤评估**——
         当前架构单 Context 仅一个 Provider 挂载（``_context_registry[tag]`` 单条

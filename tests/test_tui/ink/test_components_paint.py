@@ -244,3 +244,43 @@ class TestCommittedPrefixCache:
             r2.render(root2, el2, 80, 24)
             f_ref = _components.render_frame(root2, 80)
         assert [l.plain for l in f_ref.lines] == fast_plain
+
+
+class TestCommittedPrefixNonTop:
+    """方向3 — committed-chat 非顶部（y>0，如 TopHeader 在其上方）前缀路径。
+
+    render_frame 非顶部前缀改为「头部画布 + 前缀 + 尾部画布」直接拼接——
+    头部行（TopHeader）正确保留、前缀 Line 身份复用、尾部 live 区重建。
+    """
+
+    def test_non_top_prefix_preserves_header_and_tail(self):
+        """committed-chat 在 header 下方：Frame = 头部行 + 前缀 + 尾部。"""
+        from src.tui.ink.element import h, BOX, TEXT
+        from src.tui.ink.reconciler import Reconciler
+        from src.tui.ink.output import StyledRun
+        import src.tui.app.chat_view as _cv
+        _cv.register()  # 幂等
+
+        lines = [Line([StyledRun(f"line {i}", None)]) for i in range(30)]
+        r = Reconciler()
+        root = r.create_root()
+        el = h(BOX, None, [
+            h(TEXT, {"children": "HEADER"}),
+            h("committed-chat", {"lines": lines}),
+            h(TEXT, {"children": "TAIL"}),
+        ])
+        r.render(root, el, 80, 24)
+        f1 = _components.render_frame(root, 80)
+        assert f1.height == 32  # header + 30 + tail
+        assert f1.lines[0].plain == "HEADER"
+        assert f1.lines[1].plain == "line 0"
+        assert f1.lines[30].plain == "line 29"
+        assert f1.lines[31].plain == "TAIL"
+
+        # 同 root 同 lines 再次渲染：前缀 Line 身份复用（大历史 O(1)）
+        r.render(root, el, 80, 24)
+        f2 = _components.render_frame(root, 80)
+        assert f2.lines[0].plain == "HEADER"
+        assert f2.lines[1] is f1.lines[1]      # 前缀行身份复用
+        assert f2.lines[30] is f1.lines[30]    # 前缀行身份复用
+        assert f2.lines[31].plain == "TAIL"

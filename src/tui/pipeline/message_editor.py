@@ -124,7 +124,6 @@ class DeleteCommand:
         state["_restore_text"] = restore_text
 
         original_len = len(messages)
-        removed = original_len - self.real_idx
         del messages[self.real_idx:]
 
         sm = _get_sandbox_manager()

@@ -25,7 +25,6 @@ user/write_line/splash/parse_info；工具块为渲染期边框卡
 from __future__ import annotations
 
 import logging
-import time
 from src._compat import dataclass
 from dataclasses import field
 from enum import Enum
@@ -172,7 +171,11 @@ def _tool_icon_runs(block) -> list:
         return [StyledRun("\u2714 ", StyleSheet.resolve("success", Style(fg=41)))]
     if status == "fail":
         return [StyledRun("\u2716 ", StyleSheet.resolve("error", Style(fg=196, bold=True)))]
-    return [StyledRun("\u25cf ", StyleSheet.resolve("warn", Style(fg=214)))]
+    # 方向3（动效）：running ● 用橙色邻域呼吸色（208-220 脉动，6s 周期）——
+    # 正在执行的工具图标持续呼吸，视觉提示活跃状态（替代静态 fg=214）。
+    from src.tui.app._theme import time_glow
+    c = time_glow(208, 220, 6.0)
+    return [StyledRun("\u25cf ", Style(fg=c))]
 
 
 def _tool_card_styled_lines(block, width, start=0, stop=None):
@@ -520,6 +523,14 @@ class AppModel:
         被开放块夹住的已关闭块提交后同样冻结。仅 ``is None`` 时冻结：
         close_reasoning/close_content/close_tool_box 已在关闭时冻结（内容
         可能不同——如 close_tool_box 冻结未提交尾），不覆盖。
+
+        方向3（流式块关闭后缺尾空行修复）：open 块（content/reasoning）在
+        流式期间经 ``commit_open_block`` 全量提交（``committed_line_count ==
+        len(lines)`` 恒成立），关闭时若 ``renderer.close()`` 无残差（``take_lines``
+        返回空）→ 本循环走「无新增内容」分支。修复前该分支不补 trailer → 同一
+        会话内部分回答后有空白分隔、部分没有（取决于流式块边界）。现记录
+        ``_trailer_appended`` 标志，无新增内容但已全量提交过且未加过 trailer 的
+        关闭块补一次尾空行（``_append_card_trailer`` 内部对末行空 / 空块幂等）。
         """
         while self.committed_count <= index and self.committed_count < len(self.blocks):
             block = self.blocks[self.committed_count]
@@ -538,6 +549,12 @@ class AppModel:
                 #   分隔卡片——幂等重入（committed_line_count >= len(lines)
                 #   提前返回）时不再追加，空行恰好一次。
                 self._append_card_trailer(block)
+                block.extra["_trailer_appended"] = True
+            elif block.committed_line_count > 0 and not block.extra.get("_trailer_appended"):
+                # 无新增内容但块已在 open 期间全量提交过（流式块关闭无残差）——
+                # 关闭时补齐卡片尾空行（方向3 修复；_append_card_trailer 幂等）。
+                self._append_card_trailer(block)
+                block.extra["_trailer_appended"] = True
             if block._cached_ink_lines is None:
                 block._cached_ink_lines = self._block_to_ink_lines(block, 0)
                 # ★ 方向1（内存回收）：冻结后开放 styled 缓存不再被
@@ -681,6 +698,11 @@ class AppModel:
                 continue
             block.extra["_first_committed_offset"] = len(committed)
             committed.extend(self._card_lines_committed(block, width))
+            # 方向3：reflow 重建含尾空行（_card_lines_committed 对 closed 块
+            # 无条件补 trailer）→ 重置 trailer 标志，防后续 commit_block 重复
+            # 追加（已重建的 committed_lines 含 trailer）。
+            if block.closed:
+                block.extra["_trailer_appended"] = True
             # 关闭块未提交尾（增量提交后仍留尾 / 被夹住）：按新宽度重冻结
             if block._cached_ink_lines is not None and count < len(block.lines):
                 block._cached_ink_lines = self._block_to_ink_lines(block, count)
@@ -893,17 +915,27 @@ class AppModel:
         前置「… 前 N 行省略」提示）；同步 ``committed_line_count``（已提交行
         被删则回退计数，防越界/重复提交）。修剪后行数 ≤ 1+keep，远低于增量
         提交阈值 → 无增量提交。
+
+        方向3（trim 与增量提交协同）：已增量提交的行（``committed_line_count>0``）
+        不可删除——删除会令 committed_lines 前缀与块行映射错位（回退计数但
+        前缀残留 → 渲染重复/错位）。已提交场景跳过 trim（保留全部，正确性
+        优先）。正常路径 trim 在增量提交前已压缩到 ≤keep 行，本分支仅覆盖
+        「空名 box 输出 >64 行触发增量提交后工具名补全」的罕见时序。
         """
         lines = block.lines
         if len(lines) <= 1 + keep:
+            return
+        if block.committed_line_count > 0:
+            _logger.debug(
+                "bash tail trim 跳过（块已增量提交 %d 行，无法安全删除）",
+                block.committed_line_count,
+            )
             return
         del_count = len(lines) - 1 - keep
         del lines[1:1 + del_count]
         block.extra["_bash_omitted_lines"] = (
             block.extra.get("_bash_omitted_lines", 0) + del_count
         )
-        if block.committed_line_count > 0:
-            block.committed_line_count = max(0, block.committed_line_count - del_count)
 
     def _trim_tool_output_head(self, block, keep: int) -> None:
         """工具块输出修剪为前 keep 行（保留标题行 block.lines[0]）。
@@ -913,8 +945,18 @@ class AppModel:
         （卡片渲染时在主体行后置「… 后 N 行省略」提示）；同步
         ``committed_line_count``（已提交行被删则回退计数，防越界/重复提交）。
         修剪后行数 ≤ 1+keep，远低于增量提交阈值 → 无增量提交。
+
+        方向3（trim 与增量提交协同）：已增量提交的行（``committed_line_count>0``）
+        不可删除——删除会令 committed_lines 前缀与块行映射错位。已提交场景
+        跳过 trim（保留全部，正确性优先；与 ``_trim_tool_output_tail`` 一致）。
         """
         lines = block.lines
+        if block.committed_line_count > 0:
+            _logger.debug(
+                "head trim 跳过（块已增量提交 %d 行，无法安全删除）",
+                block.committed_line_count,
+            )
+            return
         # 尾部换行符产生的空行（text.split("\n") 尾空 seg → 仅前缀的空行）不
         # 算内容行——先剔除，避免「前 N 行」计数被尾空行占位（如 read_file
         # 整文件输出以 \n 结尾时尾空行无意义，会挤占前 3 行显示位）。
@@ -927,8 +969,6 @@ class AppModel:
         block.extra["_head_omitted_lines"] = (
             block.extra.get("_head_omitted_lines", 0) + del_count
         )
-        if block.committed_line_count > len(lines):
-            block.committed_line_count = len(lines)
 
     def close_tool_box(self, tool_id: str, success: bool) -> None:
         """关闭工具分组：置状态、冻结并提交（工具卡片）。
