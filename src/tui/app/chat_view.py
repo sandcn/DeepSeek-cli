@@ -23,6 +23,15 @@ from .subagent_panel import use_subagent_children
 
 _S_REASONING = Style(fg=242)
 
+#: 开放块 live 渲染行数上限（PERF-7 防御）：未提交尾超过该行数时只渲染
+#: 最后 N 行（对齐终端 tail 语义）——content/reasoning 块被未提交工具卡
+#: 夹住无法增量提交（BUG-4 连续窗口守卫）时，未提交尾随流式持续增长，
+#: 每帧全量渲染 O(未提交尾) 导致渲染线程卡顿。限制后中间行暂不显示，
+#: 块关闭提交（commit_block）时全部行进入 committed_lines 完整显示。
+#: 工具卡不适用（边框渲染依赖 start==0 顶边框逻辑，且自身有 64 行增量
+#: 提交阈值）。
+_LIVE_TAIL_LINES = 64
+
 
 def _to_styled_runs(line) -> list[StyledRun]:
     """AnsiLine → ink StyledRun 列表（Run.style 直接复用）。"""
@@ -191,18 +200,26 @@ def ChatView(props) -> object:
                     "styled": header_line.runs,
                 }))
         # 开放块只渲染未提交尾（已增量提交的行在缓存中，不再重建）
+        # ★ 方向D 步骤14 + PERF-7（live 尾部截断）：content/reasoning 块被
+        #   未提交工具卡夹住（无法增量提交）时未提交尾随流式增长——仅渲染
+        #   最后 ``_LIVE_TAIL_LINES`` 行（中间行块关闭提交时经 committed_lines
+        #   完整显示，非全屏流动模型无视觉跳变）；工具卡不截断（边框渲染
+        #   依赖 start==0 顶边框）。
         # ★ BUG-41（review 方向，性能）：行 key 用**块内绝对行号**（修复前
         #   ``row_in_block`` 从 committed_line_count 起重新编号——块被增量提交
         #   N 行后，旧 ``chat-{i}-0`` 的 fiber 改渲染绝对行号 N → 换行缓存/style
         #   缓存全部 miss，流式期间每帧重包裹）。绝对行号 key 在流式追加时保持
         #   稳定（已渲染行 key 不变，调和器复用 fiber；仅新增行创建新 fiber）。
+        live_start = block.committed_line_count
+        if block.kind != "tool" and len(block.lines) - live_start > _LIVE_TAIL_LINES:
+            live_start = len(block.lines) - _LIVE_TAIL_LINES
         for row_in_block, runs in enumerate(
             _block_styled_lines(
-                block, block.committed_line_count, width,
+                block, live_start, width,
             )
         ):
             children.append(h(TEXT, {
-                "key": f"chat-{block_idx}-{block.committed_line_count + row_in_block}",
+                "key": f"chat-{block_idx}-{live_start + row_in_block}",
                 "styled": runs,
             }))
     # 子代理活动卡片（并入消息流，对齐 Claude Code）：subagent_lines 为

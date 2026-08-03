@@ -242,7 +242,11 @@ class Reconciler:
                 else:
                     # ★ moved 标记：旧位置 != 新位置 → True（每帧重算，非累计）
                     fiber.moved = old_index_map.get(key) != new_idx
-                fiber.props = dict(element.props)
+                # ★ 性能（PERF-7）：直接复用 ``element.props`` 引用（Element
+                #   为 frozen 不可变，``__post_init__`` 已拷贝为独立 dict；
+                #   fiber.props 从不原地修改，仅整体替换）——免每帧 O(n)
+                #   dict 浅拷贝（大组件树每帧 1000+ 元素场景收益明显）。
+                fiber.props = element.props
                 fiber.deleted = False
                 fiber.return_ = return_fiber
                 self._begin_work(fiber, element)
@@ -311,7 +315,9 @@ class Reconciler:
             if i < n_old:
                 fiber = cur
                 cur = cur.sibling
-                fiber.props = dict(el.props)
+                # ★ 性能（PERF-7）：直接复用 ``el.props`` 引用（Element frozen
+                # 不可变；fiber.props 从不原地修改）——免每帧 dict 浅拷贝。
+                fiber.props = el.props
                 fiber.deleted = False
                 fiber.return_ = return_fiber
                 fiber.moved = False  # 稳定列表：位置不变
@@ -335,7 +341,9 @@ class Reconciler:
     ) -> Fiber:
         """调和单个元素（函数组件渲染输出）。"""
         if existing is not None and _is_same_type(existing, element):
-            existing.props = dict(element.props)
+            # ★ 性能（PERF-7）：直接复用 ``element.props`` 引用（Element frozen
+            # 不可变；fiber.props 从不原地修改）——免每帧 dict 浅拷贝。
+            existing.props = element.props
             existing.deleted = False
             existing.return_ = return_fiber
             existing.sibling = None
@@ -351,7 +359,9 @@ class Reconciler:
             tag = TAG_FUNCTION
         else:
             tag = "host"
-        fiber = Fiber(tag, element.type, dict(element.props), return_=return_fiber)
+        # ★ 性能（PERF-7）：直接复用 ``element.props`` 引用（Element frozen
+        # 不可变）——免新 fiber 构造时 dict 浅拷贝。
+        fiber = Fiber(tag, element.type, element.props, return_=return_fiber)
         self._begin_work(fiber, element)
         return fiber
 

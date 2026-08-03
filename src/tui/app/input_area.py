@@ -17,6 +17,7 @@
 from __future__ import annotations
 
 import time
+from functools import lru_cache
 
 from src.tui._screen import (
     wcswidth_simple,
@@ -232,6 +233,171 @@ def _measure(fiber, avail_w) -> tuple[int, int]:
 # ── 绘制 ───────────────────────────────────────────
 
 
+def _build_popup_lines(completion, width: int, now: float) -> list:
+    """构建补全弹窗行（标题 + 候选项 + 提示）；弹窗不可见返回 []。
+
+    ★ 性能（PERF-7）：弹窗部分独立缓存——打字（input_text 变化）时
+    ``_build_lines`` 全量快照 miss，但弹窗 items/selected/时间桶未变时直接
+    复用本部分行（免每帧重建 20+ 候选项）。缓存键覆盖全部动态因素：
+    title/items 引用+长度/selected/texts/descriptions/descriptions/split_desc/
+    match_prefix/types/width/呼吸时间桶。``selected`` 变化（导航高亮）与
+    items 变化自动重建；``time_glow`` 呼吸 0.1s 桶变化自动重建。
+    弹窗行引用跨帧稳定（调用方只读，diff 身份短路受益）。
+    """
+    if completion is None or not completion.visible or not completion.items:
+        return []
+    items = completion.items
+    selected = completion.selected
+    match_prefix = completion.match_prefix or ""
+    types = completion.types or [""] * len(items)
+    title = completion.title
+    total = len(completion.texts) if completion.texts else len(items)
+    # ★ 缓存键稳定性（PERF-7）：descriptions 为空时用模块级空元组（恒同对象）
+    #   ——``[] or []`` 每次调用创建新空列表，`id(descs)` 每帧变化 → 弹窗缓存
+    #   永远 miss（每帧重建）。
+    descs = completion.descriptions if completion.descriptions else ()
+    split = bool(getattr(completion, "split_desc", False)) and bool(descs)
+    desc_w = _desc_column_width(width) if split else 0
+    opt_w = max(1, width - desc_w - 1) if split else 0
+    # 弹窗呼吸色依赖 0.1s 桶（time_glow 内部 int(t/0.1)）——与 _build_lines
+    # 的 time_bucket 不同（后者随 status_active 用 0.1/0.25s），弹窗独立用
+    # 0.1s 桶缓存键（time_glow 的实际桶粒度）。
+    popup_bucket = int(now / 0.1)
+    popup_snap = (
+        title,
+        id(items), len(items), selected,
+        id(completion.texts), len(completion.texts) if completion.texts else 0,
+        id(descs), len(descs),
+        split,
+        match_prefix,
+        id(types), len(types),
+        width,
+        popup_bucket,
+    )
+    cached = getattr(completion, "_popup_lines_cache", None)
+    if cached is not None and cached[0] == popup_snap:
+        return cached[1]
+
+    lines: list = []
+    # 分栏说明模式（user_select）：左侧选项列表、右侧当前选中项说明
+    # 标题行（方向3：标题呼吸色——补全弹窗出现时增加动态感；
+    # 方向8：▍ 装饰条前缀——与错误/通知标记同语义，补全弹窗更醒目）
+    title_color = _glow_color(38, 55)
+    head = Line.of(" \u258d", Style(fg=title_color, bold=True))
+    head.append(" ", Style(fg=title_color, bold=True))
+    head.append(title, Style(fg=title_color, bold=True))
+    # ★ BEAUTY-17（体验）：导航位置提示 ``(2/10)``——选中项位置/总数，
+    #   补全弹窗导航时用户可感知当前位置（替代仅总数）。总数取
+    #   ``len(completion.texts)``（与项数一致；缺省回退 len(items)）。
+    if total > 0:
+        head.append(f" ({selected + 1}/{total})", Style(fg=title_color))
+    if split:
+        # 左栏标题占位（标题与选项栏对齐；右栏说明位置留白）
+        head.append(" " * max(0, opt_w - head.width), _S_DIM)
+    # ★ 方向8（窄屏防溢出）：标题行超宽时截断至 width（不拆 CJK）——
+    #   修复前 `` 补全 (4项)`` 在 width<11 时撑爆行宽。
+    if head.width > width:
+        from src.tui.ink.helpers import truncate_line
+        head = truncate_line(head, width)
+    lines.append(head)
+    # 候选项
+    # ★ 方向3（动效）：选中项高亮呼吸——背景色 236→239 脉动（10s 周期），
+    #   高亮项有微弱呼吸感（候选列表导航更生动）。
+    sel_bg = time_glow(236, 239, 10.0)
+    if split:
+        # 左栏选项内容宽度（前缀 ▶ + 文本；右栏说明独立换行）
+        cell_w = max(
+            1, min(max((_vwidth(i) for i in items), default=10) + 4, opt_w - 2) - 3,
+        )
+        # ★ BUG-27（review 方向）：selected 越界钳制与 ``_completion_height``
+        #   一致——修复前高度按 ``min(selected, len(descs)-1)`` 的说明行数
+        #   计算、绘制却 ``descs[selected] if 0 <= selected < len(descs)``
+        #   （越界时空说明）→ 弹窗底部多出空白行，测量高度与绘制不一致。
+        desc_sel = max(0, min(selected, len(descs) - 1)) if descs else 0
+        desc_text = descs[desc_sel] if descs else ""
+        desc_lines = _wrap_by_width(desc_text or "", desc_w)
+        # 方向4（超屏防护）：候选项 + 说明行数限制（与 _completion_height
+        # 一致——超长说明 / 大量选项时弹窗不超终端高度）。
+        # ★ 高度锁定（补全弹窗闪烁修复）：渲染行数取 ``_completion_height-2``
+        #   （锁定高度）而非当前内容需求——items 减少时弹窗高度保持（底部
+        #   补白），doc 高度不变 → 等高 diff 只重写弹窗行（不闪）。
+        n_rows = max(0, _completion_height(completion, width) - 2)
+        for row in range(n_rows):
+            line = Line()
+            # 左栏：选项
+            if row < len(items):
+                i = row
+                if i == selected:
+                    line.append(" \u25b6 ", Style(fg=15, bg=sel_bg))
+                else:
+                    line.append("   ")
+                for run in _styled_completion(items[i], types[i], match_prefix, cell_w).runs:
+                    line.append_run(run)
+                # 补齐左栏剩余宽度（选项不足 opt_w 时留白，分隔线对齐）
+                pad = opt_w - line.width
+                if pad > 0:
+                    line.append(" " * pad, _S_DIM)
+            else:
+                line.append(" " * opt_w, _S_DIM)
+            line.append("\u2502", _S_SEP)
+            # 右栏：当前选中项说明（分栏换行）
+            if row < len(desc_lines):
+                line.append(_truncate_width(desc_lines[row], desc_w), _S_DIM)
+            # ★ 方向8（窄屏防溢出）：分栏行超宽时截断至 width（不拆
+            #   CJK）——修复前窄屏下左栏前缀 + 文本 + 分隔线 + 说明撑爆行宽。
+            if width > 0 and line.width > width:
+                from src.tui.ink.helpers import truncate_line
+                line = truncate_line(line, width)
+            lines.append(line)
+    else:
+        cell_w = max(1, min(max((_vwidth(i) for i in items), default=10) + 4, width - 2) - 3)
+        # 方向4（超屏防护）：大量选项时截断渲染行数（与 _completion_height
+        # 一致——超出终端的选项不渲染，弹窗不超屏）。
+        # ★ 高度锁定（补全弹窗闪烁修复）：渲染行数取 ``_completion_height-2``
+        #   （锁定高度）而非当前 items 数量——items 减少时弹窗高度保持
+        #   （底部补白空行），doc 高度不变 → 等高 diff 只重写弹窗行（不闪）。
+        n_rows = max(0, _completion_height(completion, width) - 2)
+        for i in range(n_rows):
+            if i >= len(items):
+                # 高度锁定补白：items 减少后弹窗底部留白（空行）
+                lines.append(Line())
+                continue
+            item = items[i]
+            line = Line()
+            if i == selected:
+                line.append(" \u25b6 ", Style(fg=15, bg=sel_bg))
+            else:
+                # 与选中行 ` ▶ `（3 列）等宽——修复前 `"  "`（2 列）使
+                # 选项文本上下移动时左右跳动（选中/非选中相差 1 列）。
+                line.append("   ")
+            for run in _styled_completion(item, types[i], match_prefix, cell_w).runs:
+                line.append_run(run)
+            # Claude TUI parity 步骤 3.7：斜杠命令描述灰显（command 且描述非空）
+            if types[i] == "command" and i < len(descs) and descs[i]:
+                line.append("  ", _S_DIM)
+                # 方向1 步骤4（窄屏防溢出）：描述截断至剩余行宽（复用
+                # _truncate_width，截断点不拆 CJK）——超长描述不再撑爆行宽。
+                desc_budget = max(1, width - line.width)
+                line.append(_truncate_width(descs[i], desc_budget), _S_DIM)
+            # ★ 方向8（窄屏防溢出）：选项行超宽时截断至 width（不拆
+            #   CJK）——修复前 `` ▶ /help 显示帮助`` 在窄屏撑爆行宽。
+            if width > 0 and line.width > width:
+                from src.tui.ink.helpers import truncate_line
+                line = truncate_line(line, width)
+            lines.append(line)
+    # 底部提示（方向3 动效：提示文本呼吸色——补全弹窗出现时更生动）
+    hint_color = _glow_color(110, 16)  # 浅蓝 110 → 126 脉动（_S_TIME 邻域）
+    hint = Line.of(" ", Style(fg=hint_color))
+    hint.append("Tab \u2191\u2193 Esc", Style(fg=hint_color))
+    # ★ 方向8（窄屏防溢出）：提示行超宽时截断至 width。
+    if width > 0 and hint.width > width:
+        from src.tui.ink.helpers import truncate_line
+        hint = truncate_line(hint, width)
+    lines.append(hint)
+    completion._popup_lines_cache = (popup_snap, lines)
+    return lines
+
+
 def _build_lines(fiber) -> list[Line]:
     props = fiber.props
     box = fiber.layout_box
@@ -324,134 +490,11 @@ def _build_lines(fiber) -> list[Line]:
 
     lines: list[Line] = []
 
-    # ── 补全弹窗 ──
-    if completion is not None and completion.visible and completion.items:
-        items = completion.items
-        selected = completion.selected
-        match_prefix = completion.match_prefix or ""
-        types = completion.types or [""] * len(items)
-        title = completion.title
-        total = len(completion.texts) if completion.texts else len(items)
-        descs = completion.descriptions or []
-        # 分栏说明模式（user_select）：左侧选项列表、右侧当前选中项说明
-        split = bool(getattr(completion, "split_desc", False)) and bool(descs)
-        desc_w = _desc_column_width(width) if split else 0
-        # 左栏选项宽度 = 总宽 - 右栏说明 - 分隔线
-        opt_w = max(1, width - desc_w - 1) if split else 0
-        # 标题行（方向3：标题呼吸色——补全弹窗出现时增加动态感；
-        # 方向8：▍ 装饰条前缀——与错误/通知标记同语义，补全弹窗更醒目）
-        title_color = _glow_color(38, 55)
-        head = Line.of(" \u258d", Style(fg=title_color, bold=True))
-        head.append(" ", Style(fg=title_color, bold=True))
-        head.append(title, Style(fg=title_color, bold=True))
-        # ★ BEAUTY-17（体验）：导航位置提示 ``(2/10)``——选中项位置/总数，
-        #   补全弹窗导航时用户可感知当前位置（替代仅总数）。总数取
-        #   ``len(completion.texts)``（与项数一致；缺省回退 len(items)）。
-        if total > 0:
-            head.append(f" ({selected + 1}/{total})", Style(fg=title_color))
-        if split:
-            # 左栏标题占位（标题与选项栏对齐；右栏说明位置留白）
-            head.append(" " * max(0, opt_w - head.width), _S_DIM)
-        # ★ 方向8（窄屏防溢出）：标题行超宽时截断至 width（不拆 CJK）——
-        #   修复前 `` 补全 (4项)`` 在 width<11 时撑爆行宽。
-        if head.width > width:
-            from src.tui.ink.helpers import truncate_line
-            head = truncate_line(head, width)
-        lines.append(head)
-        # 候选项
-        # ★ 方向3（动效）：选中项高亮呼吸——背景色 236→239 脉动（10s 周期），
-        #   高亮项有微弱呼吸感（候选列表导航更生动）。
-        sel_bg = time_glow(236, 239, 10.0)
-        if split:
-            # 左栏选项内容宽度（前缀 ▶ + 文本；右栏说明独立换行）
-            cell_w = max(
-                1, min(max((_vwidth(i) for i in items), default=10) + 4, opt_w - 2) - 3,
-            )
-            # ★ BUG-27（review 方向）：selected 越界钳制与 ``_completion_height``
-            #   一致——修复前高度按 ``min(selected, len(descs)-1)`` 的说明行数
-            #   计算、绘制却 ``descs[selected] if 0 <= selected < len(descs)``
-            #   （越界时空说明）→ 弹窗底部多出空白行，测量高度与绘制不一致。
-            desc_sel = max(0, min(selected, len(descs) - 1)) if descs else 0
-            desc_text = descs[desc_sel] if descs else ""
-            desc_lines = _wrap_by_width(desc_text or "", desc_w)
-            # 方向4（超屏防护）：候选项 + 说明行数限制（与 _completion_height
-            # 一致——超长说明 / 大量选项时弹窗不超终端高度）。
-            # ★ 高度锁定（补全弹窗闪烁修复）：渲染行数取 ``_completion_height-2``
-            #   （锁定高度）而非当前内容需求——items 减少时弹窗高度保持（底部
-            #   补白），doc 高度不变 → 等高 diff 只重写弹窗行（不闪）。
-            n_rows = max(0, _completion_height(completion, width) - 2)
-            for row in range(n_rows):
-                line = Line()
-                # 左栏：选项
-                if row < len(items):
-                    i = row
-                    if i == selected:
-                        line.append(" \u25b6 ", Style(fg=15, bg=sel_bg))
-                    else:
-                        line.append("   ")
-                    for run in _styled_completion(items[i], types[i], match_prefix, cell_w).runs:
-                        line.append_run(run)
-                    # 补齐左栏剩余宽度（选项不足 opt_w 时留白，分隔线对齐）
-                    pad = opt_w - line.width
-                    if pad > 0:
-                        line.append(" " * pad, _S_DIM)
-                else:
-                    line.append(" " * opt_w, _S_DIM)
-                line.append("\u2502", _S_SEP)
-                # 右栏：当前选中项说明（分栏换行）
-                if row < len(desc_lines):
-                    line.append(_truncate_width(desc_lines[row], desc_w), _S_DIM)
-                # ★ 方向8（窄屏防溢出）：分栏行超宽时截断至 width（不拆
-                #   CJK）——修复前窄屏下左栏前缀 + 文本 + 分隔线 + 说明撑爆行宽。
-                if width > 0 and line.width > width:
-                    from src.tui.ink.helpers import truncate_line
-                    line = truncate_line(line, width)
-                lines.append(line)
-        else:
-            cell_w = max(1, min(max((_vwidth(i) for i in items), default=10) + 4, width - 2) - 3)
-            # 方向4（超屏防护）：大量选项时截断渲染行数（与 _completion_height
-            # 一致——超出终端的选项不渲染，弹窗不超屏）。
-            # ★ 高度锁定（补全弹窗闪烁修复）：渲染行数取 ``_completion_height-2``
-            #   （锁定高度）而非当前 items 数量——items 减少时弹窗高度保持
-            #   （底部补白空行），doc 高度不变 → 等高 diff 只重写弹窗行（不闪）。
-            n_rows = max(0, _completion_height(completion, width) - 2)
-            for i in range(n_rows):
-                if i >= len(items):
-                    # 高度锁定补白：items 减少后弹窗底部留白（空行）
-                    lines.append(Line())
-                    continue
-                item = items[i]
-                line = Line()
-                if i == selected:
-                    line.append(" \u25b6 ", Style(fg=15, bg=sel_bg))
-                else:
-                    # 与选中行 ` ▶ `（3 列）等宽——修复前 `"  "`（2 列）使
-                    # 选项文本上下移动时左右跳动（选中/非选中相差 1 列）。
-                    line.append("   ")
-                for run in _styled_completion(item, types[i], match_prefix, cell_w).runs:
-                    line.append_run(run)
-                # Claude TUI parity 步骤 3.7：斜杠命令描述灰显（command 且描述非空）
-                if types[i] == "command" and i < len(descs) and descs[i]:
-                    line.append("  ", _S_DIM)
-                    # 方向1 步骤4（窄屏防溢出）：描述截断至剩余行宽（复用
-                    # _truncate_width，截断点不拆 CJK）——超长描述不再撑爆行宽。
-                    desc_budget = max(1, width - line.width)
-                    line.append(_truncate_width(descs[i], desc_budget), _S_DIM)
-                # ★ 方向8（窄屏防溢出）：选项行超宽时截断至 width（不拆
-                #   CJK）——修复前 `` ▶ /help 显示帮助`` 在窄屏撑爆行宽。
-                if width > 0 and line.width > width:
-                    from src.tui.ink.helpers import truncate_line
-                    line = truncate_line(line, width)
-                lines.append(line)
-        # 底部提示（方向3 动效：提示文本呼吸色——补全弹窗出现时更生动）
-        hint_color = _glow_color(110, 16)  # 浅蓝 110 → 126 脉动（_S_TIME 邻域）
-        hint = Line.of(" ", Style(fg=hint_color))
-        hint.append("Tab \u2191\u2193 Esc", Style(fg=hint_color))
-        # ★ 方向8（窄屏防溢出）：提示行超宽时截断至 width。
-        if width > 0 and hint.width > width:
-            from src.tui.ink.helpers import truncate_line
-            hint = truncate_line(hint, width)
-        lines.append(hint)
+    # ── 补全弹窗（独立缓存，PERF-7） ──
+    # ★ 性能（PERF-7）：弹窗部分提取为 ``_build_popup_lines`` 独立缓存——
+    #   打字（input_text 变化）导致全量快照 miss 时，弹窗 items/selected/时间
+    #   桶未变则直接复用弹窗行（免每帧重建 20+ 候选项 + 行宽判断）。
+    lines.extend(_build_popup_lines(completion, width, now))
 
     # ── 上分隔线（CPU/MEM） ──
     cpu = int(props.get("cpu", 0))
@@ -579,8 +622,9 @@ def _vwidth(s: str) -> int:
     return wcswidth_simple(s)
 
 
-def _styled_completion(text: str, item_type: str, match_prefix: str, cell_w: int) -> Line:
-    """构建候选项行（命令/目录/匹配高亮）。"""
+@lru_cache(maxsize=512)
+def _styled_completion_cached(text: str, item_type: str, match_prefix: str, cell_w: int) -> Line:
+    """候选项行构建（内部缓存实现，见 ``_styled_completion``）。"""
     out = Line()
     # 方向F·步骤15（渲染错误防御）：候选项文本可能含换行符（/load 会话标题
     # 来自多行用户消息；Unix 文件名也允许 \n）——Line 内嵌字面换行会把一
@@ -607,7 +651,30 @@ def _styled_completion(text: str, item_type: str, match_prefix: str, cell_w: int
     return out
 
 
+def _styled_completion(text: str, item_type: str, match_prefix: str, cell_w: int) -> Line:
+    """构建候选项行（命令/目录/匹配高亮）。
+
+    ★ 性能（PERF-7）：frozen 输入（text/item_type/match_prefix/cell_w 均为
+    str/int，可 hash）确定性输出 → lru_cache 缓存。补全弹窗 20+ 候选项每帧
+    重建时，相同候选项行跨帧复用（调用方只读 ``.runs`` 不修改，缓存安全）；
+    maxsize=512 有界（候选文本数量有限）。返回缓存的 Line 对象，跨帧引用
+    稳定（diff 身份短路受益）。
+    """
+    return _styled_completion_cached(text, item_type, match_prefix, cell_w)
+
+
 def _truncate_width(s: str, max_w: int) -> str:
+    """按显示宽度截断字符串（不拆 CJK），返回截断后文本。
+
+    ★ 性能（PERF-7）：纯 ASCII 可打印字符串宽度 == 字符数——C 实现的
+    ``isascii()`` + ``isprintable()`` 单趟扫描后直接切片（逐字符
+    ``wcswidth_simple`` 的 Python 循环仅用于含 CJK/emoji/控制字符的文本）。
+    命令名/工具名等 ASCII 输入截断热路径受益。
+    """
+    if max_w <= 0:
+        return ""
+    if s.isascii() and s.isprintable():
+        return s if len(s) <= max_w else s[:max_w]
     w = 0
     out = []
     for ch in s:
