@@ -59,7 +59,7 @@ from .helpers import (
 )
 from .registry import register_host, unregister_host, get_host, has_host
 from .error_boundary import ErrorBoundary, create_error_boundary
-from .extra import Transform, Static, STATIC_TEXT
+from .extra import Transform, Static, Newline, Fragment, STATIC_TEXT
 from .hooks import (
     use_state,
     use_reducer,
@@ -123,6 +123,8 @@ __all__ = [
     # generic components
     "Transform",
     "Static",
+    "Newline",
+    "Fragment",
     "STATIC_TEXT",
     # hooks
     "use_state",

@@ -133,3 +133,22 @@
   children 比较 / std hooks / input-area Line 快路径 / 增量渲染（live-only 重写、
   历史增长、resize 全量）/ `_should_render` force 保留。
 - 全部测试通过：**1904 passed**（原 1886 + 新增 18）。
+
+---
+
+## 第六轮（commit 待定）
+
+### 完善 react ink（需求 #2，续）
+- **`Newline`** 组件：react-ink `<Newline count={N}>` 等价物——渲染 N 个换行
+  （经 `wrap_runs_by_width` 的 `\n` 强制拆行语义）。
+- **`Fragment`** 组件：透明分组容器（函数组件形式，`h(Fragment, {}, ...)` 返回
+  `fragment` host——不引入独立布局盒，子节点直接流入父容器）。
+
+### 更多动效 / 呼吸效果（需求 #4、#5，续）
+- **工具卡边框呼吸**（BEAUTY-10）：运行中开放工具卡顶边框从暗青 23 脉动到亮青
+  45（8s 周期）——工具执行中的视觉提示；已关闭/提交卡保持静态（frozen 缓存
+  不重算，零额外渲染成本）。
+
+### 测试
+- `test_ink_round5.py` 新增 5 例：Newline（2）/ Fragment（1）/ 工具卡边框呼吸（2）。
+- 全部测试通过：**1909 passed**（原 1904 + 新增 5）。

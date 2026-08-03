@@ -19,7 +19,7 @@ from typing import Callable
 from .element import Element, TEXT, STATIC, h
 from .hooks import use_memo
 
-__all__ = ["Transform", "Static", "STATIC_TEXT"]
+__all__ = ["Transform", "Static", "Newline", "Fragment", "STATIC_TEXT"]
 
 
 #: STATIC 语义标注常量（供组件显式声明静态内容；当前 diff 已增量跳过未变化行）
@@ -125,3 +125,40 @@ def Static(props: dict) -> Element:
         children = tuple(children)
     frozen = use_memo(lambda: children, ())
     return h(STATIC, None, frozen)
+
+
+def Newline(props: dict) -> Element:
+    """React Ink ``<Newline>`` 等价物（完善 react ink）：渲染换行。
+
+    用法::
+
+        h(BOX, None, [h(TEXT, {"children": "line1"}), h(Newline), h(TEXT, {"children": "line2"})])
+
+    Args:
+        props: ``{"count": int}``——换行行数（默认 1）；``count<=0`` 视为 1。
+
+    Returns:
+        TEXT 元素（children 为 ``"\\n" * count``）——``wrap_runs_by_width``
+        将 ``\\n`` 作为强制换行拆行，渲染出 count 个空行。
+    """
+    count = props.get("count", 1)
+    try:
+        count = max(1, int(count))
+    except (TypeError, ValueError):
+        count = 1
+    return h(TEXT, {"children": "\n" * count})
+
+
+def Fragment(props: dict) -> Element:
+    """Fragment 等价物（完善 react ink）：透明分组容器。
+
+    ``h(Fragment, {}, child1, child2)`` 返回 ``fragment`` host——布局/绘制时
+    子节点直接流入父容器（不引入独立布局盒），与 ``h("fragment", ...)`` 等价。
+    函数组件形式便于惯用命名（``<>...</>`` 的 Python 对应）。
+    """
+    children = props.get("children", ())
+    if isinstance(children, (tuple, list)):
+        return Element("fragment", {}, tuple(children))
+    if children is None:
+        return Element("fragment", {}, ())
+    return Element("fragment", {}, (children,))

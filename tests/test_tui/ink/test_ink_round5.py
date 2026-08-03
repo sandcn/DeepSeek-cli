@@ -12,7 +12,7 @@ from __future__ import annotations
 import io
 import time
 
-from src.tui.ink import h, TEXT, BOX, Transform, Static, memo, useStdin, useStdout, useStderr, Line, StyledRun
+from src.tui.ink import h, TEXT, BOX, Transform, Static, Newline, Fragment, memo, useStdin, useStdout, useStderr, Line, StyledRun
 from src.tui.core.style import Style
 from src.tui.ink.reconciler import Reconciler
 from src.tui.ink.components import render_frame
@@ -242,6 +242,83 @@ class TestStaticComponent:
         r.render(root, h(Static, {}, "hello"), 80, 24)
         f = render_frame(root, 80)
         assert f.lines[0].plain == "hello"
+
+
+class TestNewlineAndFragment:
+    """Newline / Fragment 组件（完善 react ink）。"""
+
+    def test_newline_renders_blank_line(self):
+        """Newline 渲染换行（空行）。"""
+        r = Reconciler()
+        root = r.create_root()
+        el = h(BOX, None, [
+            h(TEXT, {"children": "a"}),
+            h(Newline),
+            h(TEXT, {"children": "b"}),
+        ])
+        r.render(root, el, 80, 24)
+        f = render_frame(root, 80)
+        assert [l.plain for l in f.lines] == ["a", "", "b"]
+
+    def test_newline_count(self):
+        """Newline count=N 渲染 N 个空行。"""
+        r = Reconciler()
+        root = r.create_root()
+        el = h(BOX, None, [
+            h(TEXT, {"children": "a"}),
+            h(Newline, {"count": 3}),
+            h(TEXT, {"children": "b"}),
+        ])
+        r.render(root, el, 80, 24)
+        f = render_frame(root, 80)
+        assert [l.plain for l in f.lines] == ["a", "", "", "", "b"]
+
+    def test_fragment_flat_children(self):
+        """Fragment 不引入独立布局盒（子节点直接流入父容器）。"""
+        r = Reconciler()
+        root = r.create_root()
+        el = h(BOX, None, [
+            h(TEXT, {"children": "pre"}),
+            h(Fragment, {}, h(TEXT, {"children": "x"}), h(TEXT, {"children": "y"})),
+            h(TEXT, {"children": "post"}),
+        ])
+        r.render(root, el, 80, 24)
+        f = render_frame(root, 80)
+        assert [l.plain for l in f.lines] == ["pre", "x", "y", "post"]
+
+
+class TestToolBorderBreathing:
+    """运行中工具卡边框呼吸（BEAUTY-10，完善动效）。"""
+
+    def _make_block(self, status, closed):
+        from src.tui.app.model import AppModel, StatusState, _tool_card_styled_lines
+        from src.renderer.ansi.helpers import AnsiLine
+        from src.tui.core.style import Style as _Style
+        model = AppModel()
+        model.width = 60
+        model.status = StatusState(model_name="m", status_active=False)
+        b = model.append_block("tool")
+        b.extra["tool_name"] = "bash"
+        b.extra["tool_status"] = status
+        b.lines.append(AnsiLine.of("  \u00b7 Bash", _Style(fg=23, bold=True)))
+        b.closed = closed
+        return b, _tool_card_styled_lines
+
+    def test_running_tool_border_breathes(self):
+        """运行中工具卡顶边框色在呼吸区间内（23-45），非静态 23。"""
+        b, fn = self._make_block("running", False)
+        runs = fn(b, 60, 0, None)
+        top = runs[0]
+        border_fg = top[0].style.fg
+        assert isinstance(border_fg, int), f"边框色应为 256 色号: {border_fg!r}"
+        assert 23 <= border_fg <= 45, f"运行中边框应呼吸于 [23,45]: {border_fg}"
+
+    def test_closed_tool_border_static(self):
+        """已关闭工具卡边框保持静态（frozen，不呼吸）。"""
+        b, fn = self._make_block("done", True)
+        runs = fn(b, 60, 0, None)
+        top = runs[0]
+        assert top[0].style.fg == 23, f"关闭工具卡边框应静态 23: {top[0].style.fg}"
 
 
 class TestIncrementalRendering:

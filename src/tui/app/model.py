@@ -205,7 +205,14 @@ def _tool_card_styled_lines(block, width, start=0, stop=None):
     from src.tui._tool_icons import TOOL_ICONS
     from src.renderer.ansi.helpers import wrap_line
     pal = get_active_palette()
-    border = pal.border
+    # BEAUTY-10（方向4 动效）：运行中工具卡边框呼吸——开放工具卡顶边框
+    #   （live 渲染每帧重建）从暗青 23 脉动到亮青 45（8s 周期），视觉提示
+    #   「工具执行中」；已关闭/提交卡保持静态（frozen 缓存不再重算）。
+    if block.extra.get("tool_status") == "running" and not block.closed:
+        from src.tui.app._theme import time_glow
+        border = Style(fg=time_glow(23, 45, 8.0))
+    else:
+        border = pal.border
     width = width if isinstance(width, int) and width > 0 else 0
     inner_w = max(1, width - 4) if width > 0 else 0
     status_idx = _tool_status_index(block)
