@@ -94,6 +94,22 @@ class ChatBlock:
     #: ``_measure`` 的 ``cache[0] is styled`` 身份快路径跨帧命中（大 open 块
     #: 每帧零重建）。行被 block.lines 持有，dict 随 block GC 自然释放。
     _open_styled_cache: dict | None = None
+    #: 工具卡主体行 wrap 结果缓存（dict[(AnsiLine, inner_w), list]，PERF-6）——
+    #: ``_tool_card_styled_lines`` 对开放工具卡主体行按 ``(行对象, 内宽)`` 缓存
+    #: wrap+截断+pad 后的内容 runs（不含动态边框色），每帧仅拼接边框——修复
+    #: 前开放大工具卡（如长 bash 输出）每帧全量 ``wrap_line`` 重建全部主体行
+    #: → 10Hz 渲染循环下 CPU 100%。行对象被 block.lines 持有，dict 随 block
+    #: GC 自然释放；关闭块冻结后不再访问。
+    _tool_card_body_cache: dict | None = None
+    #: 工具卡帧级缓存（tuple[key, list]，PERF-6）——开放工具卡完整输出列表
+    #: （含动态边框色）在同一 time_glow 桶内跨帧复用，TEXT ``_wrap_cache``
+    #: 命中 → 主体行零重建。key 含全部动态因素（行数/状态/呼吸色/省略计数）；
+    #: 关闭块冻结后置 None 释放。
+    _tool_card_frame_cache: tuple | None = None
+    #: 工具卡主体行完整列表缓存（tuple[key, list]，PERF-6b）——含**静态边框**
+    #: 的主体行跨帧/跨桶复用（顶/底边框呼吸色动态，独立重建）。frame_cache
+    #: 同桶快速路径 miss（跨桶）时兜底复用主体行，TEXT ``_wrap_cache`` 命中。
+    _tool_card_body_lines_cache: tuple | None = None
 
 
 @dataclass
@@ -225,6 +241,29 @@ def _tool_card_styled_lines(block, width, start=0, stop=None):
     width = width if isinstance(width, int) and width > 0 else 0
     inner_w = max(1, width - 4) if width > 0 else 0
     status_idx = _tool_status_index(block)
+    # ★ PERF-6（帧级缓存）：开放工具卡动态色（边框呼吸 23↔45 / 状态图标呼吸
+    #   208↔220）为时间基（time_glow 0.1s 桶）——同一桶内帧复用**完整输出
+    #   列表对象**（含边框），TEXT 组件 ``_wrap_cache`` 按 styled 引用命中 →
+    #   主体行零重建（修复前每帧新建 StyledRun 列表 → TEXT 缓存 miss → 大
+    #   工具卡每帧全量 wrap，CPU 100%）。key 覆盖全部动态因素（行数/状态/
+    #   宽度/省略计数/呼吸色）；任何变化重建，视觉行为零变化。
+    _status = block.extra.get("tool_status", "running")
+    _border_fg = border.fg if getattr(border, "fg", None) is not None else -1
+    if start == 0 and _status == "running" and not block.closed:
+        from src.tui.app._theme import time_glow as _time_glow_icon
+        _icon_fg = _time_glow_icon(208, 220, 6.0)
+    else:
+        _icon_fg = -1
+    _frame_key = (
+        start, stop, block.closed, _status, len(block.lines),
+        _border_fg, _icon_fg,
+        block.extra.get("_bash_omitted_lines", 0),
+        block.extra.get("_head_omitted_lines", 0),
+        inner_w,
+    )
+    _frame_cache = getattr(block, "_tool_card_frame_cache", None)
+    if _frame_cache is not None and _frame_cache[0] == _frame_key:
+        return _frame_cache[1]
     out: list[list[StyledRun]] = []
     # ★ BUG-26（review 方向）：极端窄屏（width<5）边框降级——边框固定前缀
     #   ``┌─ ``（3 列）+ 右角（1 列）已占满宽度，标题无空间 → 行超宽溢出
@@ -264,77 +303,132 @@ def _tool_card_styled_lines(block, width, start=0, stop=None):
     # 关闭状态行（_tool_status_index）跳过——状态已移入底边框（对齐 Claude Code）
     body_end = len(block.lines) if stop is None else min(stop, len(block.lines))
     body_start = start if start > 0 else 1
+    # ★ PERF-6b：主体行边框用**静态** pal.border（顶/底边框保持呼吸）——
+    #   主体行列表跨帧/跨桶复用（TEXT ``_wrap_cache`` 按 styled 引用命中），
+    #   大工具卡跨桶渲染不再每帧全量 wrap（frame_cache 同桶快速路径之外的
+    #   兜底：跨桶时 frame_cache miss，但 body_lines 引用不变 → 零重建）。
+    body_border = pal.border
 
     def _omitted_line(text: str) -> list:
         """省略提示边框行（`│ … 前/后 N 行省略`）。
 
         窄屏防溢出：提示文本（如「… 前 5000 行省略」）超内宽会撑破卡片边框，
-        截断至内宽（与顶/底边框一致——不截断时窄终端错乱）。
+        截断至内宽（与顶/底边框一致——不截断时窄终端错乱）。用静态
+        body_border（主体行区域边框不呼吸，随 body_lines 跨帧复用）。
         """
         ind_runs = [StyledRun(text, Style(fg=242))]
         if width <= 0:
             return ind_runs
         ind_runs = truncate_runs(ind_runs, inner_w)
-        body = [StyledRun("\u2502 ", border)] + ind_runs
+        body = [StyledRun("\u2502 ", body_border)] + ind_runs
         pad = inner_w - sum(r.width for r in ind_runs)
         if pad > 0:
-            body.append(StyledRun(" " * pad, border))
-        body.append(StyledRun(" \u2502", border))
+            body.append(StyledRun(" " * pad, body_border))
+        body.append(StyledRun(" \u2502", body_border))
         return body
 
-    # bash 尾显示：前置省略提示行「… 前 N 行省略」（仅首次提交 start==0）
-    omitted = block.extra.get("_bash_omitted_lines", 0)
-    if omitted > 0:
-        if ultra_narrow:
-            out.append([StyledRun(f"\u2026 前 {omitted} 行省略", Style(fg=242))])
-        else:
-            out.append(_omitted_line(f"\u2026 前 {omitted} 行省略"))
-    for abs_idx in range(body_start, body_end):
-        if status_idx is not None and abs_idx == status_idx:
-            continue
-        ansi_line = block.lines[abs_idx]
-        wrapped = (
-            wrap_line(ansi_line, inner_w)
-            if width > 0
-            else ([ansi_line] if ansi_line.runs else [])
-        )
-        if not wrapped:
-            # 空输出行 → 有边框空行 `│    │`（保持行映射）
-            if width > 0:
-                if ultra_narrow:
-                    out.append([StyledRun("", None)])
-                else:
-                    out.append([StyledRun("\u2502 " + " " * inner_w + " \u2502", border)])
-            continue
-        for seg in wrapped:
-            seg_runs = [StyledRun(r.text, r.style) for r in seg.runs if r.text]
-            if width <= 0:
-                out.append(seg_runs)
-                continue
+    # ★ PERF-6b：主体行（bash omitted 提示 + 主体行循环 + head omitted 提示）
+    #   整体缓存（含**静态边框** body_border）——跨帧/跨桶复用列表对象，
+    #   TEXT ``_wrap_cache`` 按 styled 引用命中（大工具卡跨桶渲染不再每帧
+    #   全量 wrap；frame_cache 同桶快速路径之外的兜底）。key 仅依赖块内容/
+    #   宽度/省略计数（不含呼吸色）——行数/宽度/省略变化时自动重建。
+    _body_key = (
+        start, len(block.lines), body_start, body_end, inner_w, status_idx,
+        block.extra.get("_bash_omitted_lines", 0),
+        block.extra.get("_head_omitted_lines", 0),
+    )
+    body_lines_cache = getattr(block, "_tool_card_body_lines_cache", None)
+    if body_lines_cache is not None and body_lines_cache[0] == _body_key:
+        body_lines = body_lines_cache[1]
+    else:
+        body_lines: list[list[StyledRun]] = []
+        # bash 尾显示：前置省略提示行「… 前 N 行省略」（仅首次提交 start==0）
+        omitted = block.extra.get("_bash_omitted_lines", 0)
+        if omitted > 0:
             if ultra_narrow:
-                # 降级：无边框裸行（截断至 width）
-                out.append(truncate_runs(seg_runs, width))
+                body_lines.append([StyledRun(f"\u2026 前 {omitted} 行省略", Style(fg=242))])
+            else:
+                body_lines.append(_omitted_line(f"\u2026 前 {omitted} 行省略"))
+        # ★ PERF-6（性能）：开放工具卡主体行按 ``(行对象, inner_w)`` 缓存
+        #   wrap+截断+pad 后的内容 runs——修复前每帧对全部主体行重新
+        #   ``wrap_line``（长 bash 输出 300 行 → 单帧 ~190ms → 10Hz 下 CPU
+        #   100%）。缓存仅存**内容与 pad**（不含边框色）；边框用静态
+        #   body_border（随 body_lines 跨帧复用）。行对象创建后不原地修改
+        #   （``append_tool_output`` 每行新建 AnsiLine），width 变化时 inner_w
+        #   变 → key miss 自动重算。
+        body_cache = getattr(block, "_tool_card_body_cache", None)
+        if body_cache is None:
+            body_cache = {}
+            block._tool_card_body_cache = body_cache
+        for abs_idx in range(body_start, body_end):
+            if status_idx is not None and abs_idx == status_idx:
                 continue
-            # ★ BUG-29（review 方向）：极端窄屏主体行超宽——``wrap_line``
-            #   在宽度不足以容纳单个 CJK 字符（inner_w=1 < 2）时仍拆出宽 2
-            #   的段，``│ ``（2）+ seg（2）+ `` │``（2）= 6 > width=5 →
-            #   破坏行级 diff 宽度不变量。修复：seg 宽度超出内宽时先截断
-            #   （``truncate_runs`` 不拆 CJK）再拼边框（与 ``_omitted_line``
-            #   截断语义一致）；pad 按截断后宽度计算。
-            body = [StyledRun("\u2502 ", border)] + truncate_runs(seg_runs, inner_w)
-            pad = inner_w - sum(r.width for r in body[1:])
-            if pad > 0:
-                body.append(StyledRun(" " * pad, border))
-            body.append(StyledRun(" \u2502", border))
-            out.append(body)
-    # find/search/ls/read_file 头显示：后置省略提示行「… 后 N 行省略」
-    # （head 省略的行在末尾——提示置于主体行之后，对齐终端 head 语义）
-    omitted_head = block.extra.get("_head_omitted_lines", 0)
-    if omitted_head > 0:
-        if ultra_narrow:
-            out.append([StyledRun(f"\u2026 后 {omitted_head} 行省略", Style(fg=242))])
-        else:
-            out.append(_omitted_line(f"\u2026 后 {omitted_head} 行省略"))
+            ansi_line = block.lines[abs_idx]
+            key = (ansi_line, inner_w)
+            cached = body_cache.get(key)
+            if cached is None:
+                wrapped = (
+                    wrap_line(ansi_line, inner_w)
+                    if width > 0
+                    else ([ansi_line] if ansi_line.runs else [])
+                )
+                if not wrapped:
+                    # 空输出行 → 有边框空行 `│    │`（保持行映射）
+                    cached = [("empty",)]
+                else:
+                    items: list = []
+                    for seg in wrapped:
+                        seg_runs = [StyledRun(r.text, r.style) for r in seg.runs if r.text]
+                        if width <= 0:
+                            items.append(("bare", seg_runs))
+                            continue
+                        if ultra_narrow:
+                            # 降级：无边框裸行（截断至 width）
+                            items.append(("narrow", truncate_runs(seg_runs, width)))
+                            continue
+                        # ★ BUG-29（review 方向）：极端窄屏主体行超宽——``wrap_line``
+                        #   在宽度不足以容纳单个 CJK 字符（inner_w=1 < 2）时仍拆出
+                        #   宽 2 的段，``│ ``（2）+ seg（2）+ `` │``（2）= 6 > width=5
+                        #   → 破坏行级 diff 宽度不变量。修复：seg 宽度超出内宽时先
+                        #   截断（``truncate_runs`` 不拆 CJK）再拼边框；pad 按截断后
+                        #   宽度计算。
+                        content = truncate_runs(seg_runs, inner_w)
+                        pad = inner_w - sum(r.width for r in content)
+                        items.append(("normal", content, max(0, pad)))
+                    cached = items
+                body_cache[key] = cached
+            for item in cached:
+                kind = item[0]
+                if kind == "empty":
+                    if width > 0:
+                        if ultra_narrow:
+                            body_lines.append([StyledRun("", None)])
+                        else:
+                            body_lines.append([StyledRun("\u2502 " + " " * inner_w + " \u2502", body_border)])
+                    continue
+                if kind == "bare":
+                    body_lines.append(item[1])
+                    continue
+                if kind == "narrow":
+                    body_lines.append(item[1])
+                    continue
+                # normal：内容 runs + pad（静态，已缓存）+ 静态边框拼接
+                content, pad = item[1], item[2]
+                body = [StyledRun("\u2502 ", body_border)] + content
+                if pad > 0:
+                    body.append(StyledRun(" " * pad, body_border))
+                body.append(StyledRun(" \u2502", body_border))
+                body_lines.append(body)
+        # find/search/ls/read_file 头显示：后置省略提示行「… 后 N 行省略」
+        # （head 省略的行在末尾——提示置于主体行之后，对齐终端 head 语义）
+        omitted_head = block.extra.get("_head_omitted_lines", 0)
+        if omitted_head > 0:
+            if ultra_narrow:
+                body_lines.append([StyledRun(f"\u2026 后 {omitted_head} 行省略", Style(fg=242))])
+            else:
+                body_lines.append(_omitted_line(f"\u2026 后 {omitted_head} 行省略"))
+        block._tool_card_body_lines_cache = (_body_key, body_lines)
+    out.extend(body_lines)
     # 底边框：仅关闭块且为最终块；含状态文本（对齐 Claude Code `└─ ✔ 完成 ─┘`）
     if block.closed and (stop is None or stop >= len(block.lines)):
         if ultra_narrow:
@@ -363,6 +457,7 @@ def _tool_card_styled_lines(block, width, start=0, stop=None):
             out.append(tail)
         else:
             out.append([StyledRun("\u2514\u2518", border)])
+    block._tool_card_frame_cache = (_frame_key, out)
     return out
 
 
@@ -660,6 +755,9 @@ class AppModel:
                 #   ``_block_styled_lines`` 使用（改走冻结缓存）——释放引用防
                 #   大会话累积（dict 持有全部已转换行引用）。
                 block._open_styled_cache = None
+                block._tool_card_body_cache = None  # PERF-6：冻结后释放
+                block._tool_card_frame_cache = None  # PERF-6：冻结后释放
+                block._tool_card_body_lines_cache = None  # PERF-6b：冻结后释放
             elif block.kind == "reasoning":
                 # ★ BUG-62：reasoning 不冻结（冻结缓存无消费方）——仅释放
                 #   open 缓存防大会话内存累积（_block_styled_lines 对
@@ -1190,6 +1288,13 @@ class AppModel:
         block._cached_ink_lines = self._block_to_ink_lines(block, block.committed_line_count)
         block._open_styled_cache = None  # 冻结后开放缓存不再需要
         self.commit_block(len(self.blocks) - 1)
+        # ★ PERF-6：清理工具卡缓存须在 ``commit_block`` **之后**——commit_block
+        #   内部 ``_block_to_ink_lines``（tool 分支）会经 ``_tool_card_styled_lines``
+        #   重建缓存（close_tool_box 提前清理会被重建覆盖）。关闭块冻结后渲染走
+        #   ``_cached_ink_lines``，不再访问 tool 卡缓存，此处无条件释放。
+        block._tool_card_body_cache = None
+        block._tool_card_frame_cache = None
+        block._tool_card_body_lines_cache = None
 
     def _replace_committed_line(self, offset: int, new_line) -> None:
         """替换 committed_lines[offset] 并令列表身份变化（已提交行原地更新）。
