@@ -66,16 +66,23 @@
 - `chat_config.py` 移除未使用 `Any`
 - `message_display.py` 移除未使用颜色常量（DIM/RESET/CYAN/YELLOW/GREEN）
 
-### 验证
-- 全部 74 个 tui 模块可导入
-- 综合验证：context + forwardRef + useImperativeHandle + ErrorBoundary +
-  memo 组合使用正确
-- 完整生命周期模拟渲染正确（splash/user/reasoning/工具卡/content/错误/通知）
-- 窄屏工具卡 / 多行输入 / Ctrl+L 清屏 / 增量渲染验证通过
+---
+
+## 第四轮（commit d7088ed）
+
+### `_canvas_row_to_line` 批量 append 优化（~7x 渲染提速）
+- **问题**：画布 dict 行 → Line 转换逐字符 `Line.append`（每次做段合并检查 +
+  StyledRun 重建），是渲染管线最大热点。
+- **修复**：同 style 连续字符段累积后段级一次性 `Line.append`（段长受行宽
+  约束，str += 拼接可接受）——基准 100 块历史文档（308 行）渲染
+  **5.59ms → 0.81ms/帧**。
+- **测试**：`test_components_paint.py::TestCanvasRowBatchAppend`（2 例输出一致性）。
 
 ---
 
 ## 总验证
-- 全部测试通过：**1884 passed**（原 1850 + 新增 34）。
+- 全部测试通过：**1886 passed**（原 1850 + 新增 36）。
 - 流式段落级实时显示验证（空行分隔段落 write 后立即可见）。
 - 增量渲染验证：cpu/mem 变化只重写输入区分隔线（不重写已提交内容）。
+- 头部动画只重写首行；离屏内容跳过重写（文档 > 屏幕时正确）。
+- 窄屏工具卡 / 多行输入 / Ctrl+L 清屏 / 弹窗超屏防护 / session 生命周期正常。
