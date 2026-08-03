@@ -582,6 +582,10 @@ def _vwidth(s: str) -> int:
 def _styled_completion(text: str, item_type: str, match_prefix: str, cell_w: int) -> Line:
     """构建候选项行（命令/目录/匹配高亮）。"""
     out = Line()
+    # 方向F·步骤15（渲染错误防御）：候选项文本可能含换行符（/load 会话标题
+    # 来自多行用户消息；Unix 文件名也允许 \n）——Line 内嵌字面换行会把一
+    # "行"拆成多行，破坏帧行号/diff/光标定位。渲染前统一归一化为空格。
+    text = text.replace("\n", " ")
     truncated = _truncate_width(text, cell_w)
     if item_type == "command" and truncated.startswith("/"):
         out.append("/", Style(fg=45, bold=True))

@@ -618,6 +618,45 @@ class TestLoadSessionCompletion:
         assert [i.text for i in items] == ["/load b-id", "/load a-id"]
 
 
+class TestLoadSessionDisplayNewline:
+    """方向F·步骤15 — /load 会话补全 display 换行归一化（渲染错误修复）。
+
+    会话标题可能来自多行用户消息（含 ``\\n``）——Line 内嵌字面换行会把
+    一"行"拆成多行，破坏帧行号/diff/光标定位。display 构造时统一归一化。
+    """
+
+    @staticmethod
+    def _engine_with_sessions(sessions):
+        import time
+        from src.tui._completion_engine import CompletionEngine
+        engine = CompletionEngine()
+        engine._sessions_cache._value = list(sessions)
+        engine._sessions_cache._expires = time.monotonic() + 100
+        return engine
+
+    def test_load_display_newline_normalized_regression(self):
+        """title 含换行 → display 中换行归一化为空格（单行渲染）。"""
+        engine = self._engine_with_sessions([
+            {"id": "sess-0001-aaaa", "title": "tui:\n1.分析bug\n2.完善"},
+            {"id": "sess-0002-bbbb", "title": "正常标题"},
+        ])
+        items = engine._complete_param("/load tui")
+        assert len(items) == 1
+        display = items[0].display
+        assert "\n" not in display, (
+            f"/load 候选项 display 不应含换行符（会拆行破坏渲染），实际 {display!r}"
+        )
+        assert display == "sess-000 - tui: 1.分析bug 2.完善"
+
+    def test_load_display_single_line_unchanged_regression(self):
+        """title 无换行 → display 保持不变。"""
+        engine = self._engine_with_sessions([
+            {"id": "sess-0001-aaaa", "title": "正常标题"},
+        ])
+        items = engine._complete_param("/load 正常")
+        assert items[0].display == "sess-000 - 正常标题"
+
+
 class TestCommandDescription:
     """Claude TUI parity 步骤 3.7 — 斜杠命令补全带描述。"""
 

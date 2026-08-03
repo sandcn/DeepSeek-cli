@@ -359,7 +359,12 @@ class CompletionEngine:
             ranked = _ranked_sessions(matched, param_last)
             result: list[CompletionItem] = []
             for sid, title in ranked:
-                display = f"{sid[:8]} - {title}" if title else sid[:8]
+                # 方向F·步骤15（渲染错误修复）：title 可能含换行符（多行用户
+                # 消息作为会话标题，如 "tui:\n1.分析...\n2.完善..."）——
+                # Line 内嵌字面换行会把一"行"拆成多行，破坏帧行号/diff/光标
+                # 定位。构造 display 时统一归一化为空格。
+                title_disp = title.replace("\n", " ") if title else ""
+                display = f"{sid[:8]} - {title_disp}" if title_disp else sid[:8]
                 result.append(CompletionItem(
                     f"{cmd_name} {sid}" if replace_full else sid,
                     display=display, start_pos=start, item_type="session",

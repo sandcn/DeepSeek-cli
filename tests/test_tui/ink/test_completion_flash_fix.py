@@ -243,3 +243,48 @@ class TestCompletionPopupNoLargeBlank:
         blanks = sum(1 for l in popup if not l.plain.strip())
         # 标题 + 2 项 + 提示 = 4 行内容；7 行弹窗 → 补白 3 行（≤ 上限）
         assert blanks == 3, f"5→2 项补白应为 3 行（防闪烁），实际 {blanks}"
+
+
+class TestCompletionPopupNewlineSanitized:
+    """方向F·步骤15 — 候选项文本含换行符时的渲染防御（/load 会话标题等）。
+
+    多行用户消息作为会话标题时 title 含 ``\\n``——Line 内嵌字面换行会把
+    一"行"拆成多行，破坏帧行号/diff/光标定位。渲染前统一归一化为空格。
+    """
+
+    def _build_with_items(self, items):
+        c = CompletionState(
+            visible=True, items=list(items), texts=list(items), selected=0,
+            title="补全", types=["session"] * len(items),
+            descriptions=[""] * len(items), split_desc=False,
+        )
+        props = dict(
+            text="/load tui", cursor_pos=10, prompt="> ", completion=c,
+            status_active=False, cpu=0, mem=0,
+        )
+        f = Fiber("host", "input-area", props)
+        f.layout_box = _Box(0, 0, 80, 1)
+        return _build_lines(f)
+
+    def test_popup_line_no_newline_regression(self):
+        """候选项含 ``\\n`` → 渲染行不含换行（归一化为空格）。"""
+        lines = self._build_with_items([
+            "abc12345 - tui:\n1.分析bug\n2.完善",
+            "def67890 - 正常标题",
+        ])
+        popup = lines[:4]  # 标题 + 2 候选 + 提示
+        for l in popup:
+            assert "\n" not in l.plain, (
+                f"补全弹窗行不应含换行符（会拆行破坏渲染），实际 {l.plain!r}"
+            )
+        # 归一化后：原 \n 变为空格（内容可能被 cell_w 截断，仅验证换行消失）
+        assert "tui: 1.分析bug" in popup[1].plain, popup[1].plain
+
+    def test_styled_completion_newline_defensive(self):
+        """_styled_completion 防御：任意候选项含换行均归一化（含命令/路径类型）。"""
+        from src.tui.app.input_area import _styled_completion
+        for item_type in ("session", "file", "dir", "command"):
+            line = _styled_completion("a\nb", item_type, "", 20)
+            assert "\n" not in line.plain, (
+                f"_styled_completion 类型 {item_type} 输出不应含换行: {line.plain!r}"
+            )
