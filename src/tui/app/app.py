@@ -75,6 +75,9 @@ def _ParseLine(props) -> object:
 
     方向3（动效）：解析进度行前缀/内容呼吸色（时间基）——解析活跃时进度行
     从暗灰 242 呼吸到 252 亮灰，视觉提示「正在解析」（空闲静态保持原色）。
+
+    方向4（动效）：前缀 ``~`` 替换为时间基 spinner（⠋⠙⠹… 10Hz 推进）——
+    解析进行中更生动（与 subagent 卡片 spinner 共用语义）。
     """
     model = props["model"]
     line = model.parse_line
@@ -82,8 +85,13 @@ def _ParseLine(props) -> object:
         return h(BOX, None, [])
     # ★ 呼吸色：仅当解析行存在时计算（每帧一次 time_glow，0.1s 桶缓存命中）
     from src.tui.app._theme import time_glow
+    from src.tui.app import _fx
     glow = time_glow(242, 252, 8.0)
+    # 时间基 spinner（解析进度行常驻 live，10Hz 渲染时平滑推进）
+    spinner = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
+    sp = spinner[_fx.spinner_frame(10.0, spinner)]
     runs = []
+    first_text = True
     for r in line.runs:
         if not r.text:
             continue
@@ -92,7 +100,13 @@ def _ParseLine(props) -> object:
         # 呼吸色（保留其他属性）；非 242 样式（防御：未来改样式）原样保留。
         if st is not None and getattr(st, "fg", None) == 242:
             st = Style(fg=glow)
-        runs.append(StyledRun(r.text, st))
+        text = r.text
+        # 首个文本 run 中的 `~` 前缀替换为 spinner（apply 结构：
+        # ``f"  ~ {tool_names}..."``——`~` 出现在首个 run 开头）
+        if first_text and "~" in text:
+            text = text.replace("~", sp, 1)
+            first_text = False
+        runs.append(StyledRun(text, st))
     return h(BOX, None, [h(TEXT, {"styled": runs})])
 
 
