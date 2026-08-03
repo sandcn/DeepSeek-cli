@@ -112,6 +112,45 @@ class TestStatusBarMemo:
             f"dot 色号应随渐显推进变化: {captured[0][0].style.fg} vs {captured[1][0].style.fg}"
         )
 
+    def test_model_name_change_resets_fade_regression(self):
+        """BEAUTY-1 完善 — 切换模型名（Ctrl+N）→ 模型点渐显重置。
+
+        修复前 fade 键仅含 ``status_active``——model_name 从 A 切到 B 时旧
+        fade 状态残留，新模型名直接以呼吸色显示（无渐显过渡）；修复后 fade
+        键含 model_name，切换后 dot_elapsed 从 0 重新渐显（dot 色号回起始
+        暗色 238）。
+        """
+        model = _Model()
+        times = iter([100.0, 100.0, 100.2, 100.2])
+        captured: list = []
+
+        def _capture(*args, **kwargs):
+            result = _build_status_runs(*args, **kwargs)
+            captured.append(result)
+            return result
+
+        with patch("src.tui.app.status_bar._snapshot", return_value={}):
+            with patch("src.tui.app.status_bar.time.monotonic", side_effect=lambda: next(times, 100.2)):
+                with patch("src.tui.app.status_bar._build_status_runs", side_effect=_capture) as mock_br:
+                    r = Reconciler()
+                    root = r.create_root()
+                    el = h(StatusBar, {"model": model, "width": 80})
+                    r.render(root, el, 80, 24)
+                    # 切换模型名 → fade 重置（dot_elapsed 归零重新渐显）
+                    model.status.model_name = "new-model"
+                    r.render(root, el, 80, 24)
+                    assert mock_br.call_count == 2, (
+                        f"model_name 变化应触发重算，实际 {mock_br.call_count}"
+                    )
+        # 两次渲染 dot_elapsed 均从 0 开始（fade 重置）→ dot 色号均 = 起始暗色 238
+        assert captured[0][0].style.fg == 238, (
+            f"首次渲染 dot 应为起始暗色 238，实际 {captured[0][0].style.fg}"
+        )
+        assert captured[1][0].style.fg == 238, (
+            f"model_name 切换后渐显应重置（dot 回起始暗色 238），"
+            f"实际 {captured[1][0].style.fg}"
+        )
+
 
 class TestSnapshotTTLConstant:
     """方向D 步骤16 — 快照 TTL 常量化（_SNAPSHOT_TTL）。"""

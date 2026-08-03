@@ -586,7 +586,14 @@ class InkSession:
                     # ★ P3-2：渲染线程内 request_exit 的延迟退出语义——
                     #   仅置位后本帧结束检查此处退出（stop 由外部线程调用或
                     #   自然结束；渲染线程自身不 join）。
+                    #   ★ BUG-12：exit 路径渲染线程自置 ``_render_running=False``
+                    #   ——request_exit 在渲染线程内不调用 stop（防 join 自身
+                    #   死锁），若不置位则线程退出后 ``_render_running`` 恒 True，
+                    #   ``start()`` 判 ``_render_running`` 为 True 直接 return →
+                    #   无法重启（exit 语义下用户不应重启，但状态一致性应保持：
+                    #   exit 后 stop()/start() 行为与「线程已停止」一致）。
                     if self._exit_requested:
+                        self._render_running = False
                         break
                     timeout = self._config.render_interval
                     self._cmd_event.wait(timeout=timeout)

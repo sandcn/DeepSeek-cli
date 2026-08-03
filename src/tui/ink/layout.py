@@ -178,6 +178,42 @@ def _resolve_height(fiber: Fiber, content_h: int) -> int:
     return h
 
 
+def _apply_text_align(lines: list[Line], width: int, align: str) -> list[Line]:
+    """应用 TEXT align（文本对齐，完善 react ink）——right/center 前导空格。
+
+    left（默认）返回原列表（零分配）。right/center 对宽度差 > 0 的行创建
+    新 Line（前导空格 run + 原 runs）；宽度差为 0 的行原样返回（无对齐
+    需求，身份引用保持）。结果随 ``_wrap_cache`` 缓存——同 align 跨帧命中
+    返回对齐行对象，diff 身份短路保持。
+
+    Args:
+        lines: 换行后的 Line 列表。
+        width: 布局宽度（对齐基准）。
+        align: "left" / "right" / "center"（调用方已归一化）。
+
+    Returns:
+        对齐后的 Line 列表（left 或无需对齐时原列表）。
+    """
+    if align == "left" or width <= 0:
+        return lines
+    out: list[Line] = []
+    for line in lines:
+        pad = width - line.width
+        if pad <= 0:
+            out.append(line)
+            continue
+        left = pad // 2 if align == "center" else pad
+        if left <= 0:
+            out.append(line)
+            continue
+        aligned = Line()
+        aligned.append(" " * left)
+        for run in line.runs:
+            aligned.append_run(run)
+        out.append(aligned)
+    return out
+
+
 def _flex_grow(fiber: Fiber) -> int:
     """解析 flexGrow（非数字兜底为 0，与 _resolve_width 一致——P2-2 修复）。
 
@@ -518,6 +554,14 @@ def _measure(fiber: Fiber, x: int, y: int, avail_w: int, fill: bool = True) -> L
         #   末尾省略号）/"truncate-start"（省略号在开头，保留尾部）/
         #   "truncate-middle"（保留头尾，中间省略号）——react-ink 完整语义。
         text_wrap = fiber.props.get("textWrap", "wrap")
+        # ★ 完善 react ink：TEXT align（文本对齐）——left（默认）/right/center。
+        #   对齐在换行后按布局宽度调整行内容（前导空格），多行各自对齐；
+        #   宽度差为 0 的行原样返回（零分配）。对齐结果随 ``_wrap_cache``
+        #   缓存（align 入缓存键——align 变化触发重算，同 align 跨帧命中
+        #   返回对齐行，diff 身份短路保持）。
+        align = fiber.props.get("align")
+        if align not in ("right", "center"):
+            align = "left"
         if explicit_w is not None:
             # 方向1 步骤3（width 畸形兜底收敛）：复用 _resolve_width（含
             # try/except TypeError/ValueError 兜底）——width 传 "abc"/对象/None
@@ -545,15 +589,16 @@ def _measure(fiber: Fiber, x: int, y: int, avail_w: int, fill: bool = True) -> L
         #   引用，如 committed_lines）同引用跨帧复用时直接复用 lines，免每帧
         #   O(chars) join + O(runs) 指纹计算（仅首次 miss 时计算）。
         cache = getattr(fiber, "_wrap_cache", None)
-        cache_wt = (width, text_wrap)
+        cache_wt = (width, text_wrap, align)
         if (
             styled is not None
             and cache is not None
             and cache[0] is styled
             and cache[1] == cache_wt
         ):
-            # 引用级快速路径：同 styled 引用 + (width, text_wrap) 不变 → 复用 lines
-            # （runs 在本分支无下游消费——h 仅由 lines 推导；死拷贝移除）
+            # 引用级快速路径：同 styled 引用 + (width, text_wrap, align) 不变
+            # → 复用 lines（runs 在本分支无下游消费——h 仅由 lines 推导；
+            # 死拷贝移除；lines 已含 align 结果，不再二次对齐）
             lines = cache[3]
         else:
             if styled is not None:
@@ -588,6 +633,7 @@ def _measure(fiber: Fiber, x: int, y: int, avail_w: int, fill: bool = True) -> L
                         lines = [Line(truncate_runs_ellipsis(runs, width))]
                 else:
                     lines = wrap_runs_by_width(runs, width)
+                lines = _apply_text_align(lines, width, align)
                 fiber._wrap_cache = (ref, cache_wt, style_fp, lines)
         fiber._wrapped_lines = lines  # 供 paint 复用（免二次包裹）
         # ★ 空 TEXT 高度修复（方向1）：``max(1, len(lines))`` 恒 ≥1——空文本

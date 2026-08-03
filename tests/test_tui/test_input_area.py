@@ -113,6 +113,13 @@ class TestLayoutCache:
         lines = _build_lines(fiber)  # 未 measure → 回退
         assert any("hello" in line.plain for line in lines)
 
+    def test_measure_bad_width_fallback(self):
+        """畸形 width 兜底（不抛异常，回退可用宽度）——与其他布局解析一致。"""
+        fiber = _input_fiber(text="hello", cursor_pos=3, width="bad-width")
+        w, h = _measure(fiber, 80)
+        assert w == 80, f"畸形 width 应回退可用宽度 80，实际 {w}"
+        assert h >= 2
+
 
 class TestCursorFromLayout:
     """_cursor_visual_from_layout 与 _compute_cursor_visual_pos 结果一致。"""

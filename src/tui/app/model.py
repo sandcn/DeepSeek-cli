@@ -528,10 +528,18 @@ class AppModel:
         if block.committed_line_count >= len(block.lines):
             return
         # ★ BUG-4：块索引 == committed_count 才允许增量提交（连续窗口检查）。
-        #   使用引用查找（ChatBlock 无自定义 __eq__，默认 is 比较）。
-        try:
-            idx = self.blocks.index(block)
-        except ValueError:
+        #   ★ BUG-11 修复：使用**身份查找**（``b is block``）——ChatBlock 为
+        #   dataclass，默认生成的 ``__eq__`` 是**值比较**：字段完全相同的块
+        #   （如两个空 content 块：连续两轮 reopen_content 均无输出）会互相
+        #   相等，``list.index(block)`` 恒返回第一个匹配位置 → 第二个块增量
+        #   提交时拿到错误索引，连续窗口判断失效（可能错误提交/错误阻断）。
+        #   遍历 + is 比较不受值相等影响，O(n) 成本仅发生在增量提交时（低频）。
+        idx = None
+        for i, b in enumerate(self.blocks):
+            if b is block:
+                idx = i
+                break
+        if idx is None:
             return  # 块已不在列表（防御）
         if idx != self.committed_count:
             # 前面尚有未关闭/未提交块：不增量提交（等待 commit_block 随连续

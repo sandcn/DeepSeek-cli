@@ -423,3 +423,37 @@ class TestOpenBlockCommitOrder:
         assert idx_user < idx_reason < idx_content, (
             f"committed_lines 顺序应为 user < reasoning < content，实际 {plains}"
         )
+
+    def test_commit_open_block_identity_not_value_eq(self):
+        """BUG-11 — commit_open_block 定位块索引须用身份比较而非值比较。
+
+        ChatBlock 为 dataclass，默认 ``__eq__`` 是**值比较**——两个开放块若
+        字段相同（kind/lines/extra/closed/committed_line_count/缓存均相同）
+        会互相相等（lines 为共享同一列表引用时成立——AnsiLine 自身身份比较，
+        独立创建的两个行不相等，故需共享引用构造相等场景）。旧实现
+        ``self.blocks.index(block)`` 对第二个块返回第一个的位置（0），与
+        ``committed_count==0`` 相等 → 错误允许第二个块增量提交（违反 BUG-4
+        连续窗口不变式：b1 在前面未关闭，b2 行被提前写入 committed_lines）。
+        修复后按 ``b is block`` 身份查找，idx=1 != 0 → 正确阻止。
+        """
+        from src.tui.app.model import AppModel
+        from src.renderer.ansi.helpers import AnsiLine
+
+        model = AppModel()
+        shared_lines = [AnsiLine.of("行1")]
+        b1 = model.append_block("content", shared_lines)
+        b2 = model.append_block("content", shared_lines)  # 与 b1 所有字段完全相同
+        # 前置断言：dataclass 值相等（bug 复现前提）
+        assert b1 == b2
+        # 两个开放块：committed_count=0，b2 索引=1 不在连续提交窗口内
+        model.commit_open_block(b2)
+        assert model.committed_lines == [], (
+            f"b2 不在连续提交窗口内，不应增量提交，实际 {model.committed_lines}"
+        )
+        assert b2.committed_line_count == 0
+        # b1 在窗口内（idx=0 == committed_count=0）→ 允许增量提交
+        model.commit_open_block(b1)
+        assert len(model.committed_lines) == 1, (
+            f"b1 在连续窗口内应增量提交，实际 {len(model.committed_lines)}"
+        )
+        assert b1.committed_line_count == 1

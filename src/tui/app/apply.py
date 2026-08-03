@@ -115,9 +115,17 @@ def _do_error(model, cmd) -> None:
 
 
 def _do_splash(model, cmd) -> None:
-    line = AnsiLine.of("  DeepSeek CLI", _S_SPLASH)
+    """启动品牌屏（BEAUTY-12 美化：✦ 图标 + 版本号 + 模型名）。
+
+    对齐 TopHeader 渐变标题视觉：✦ 前缀（splash 块样式 _S_SPLASH 亮青 bold），
+    无模型名时显示版本号（``v2.x.x``），有模型名时显示模型名（更有信息量）。
+    """
+    from src.app_init._args import VERSION
+    line = AnsiLine.of(f"  \u2726 DeepSeek CLI", _S_SPLASH)
     if model.status.model_name:
         line.append(f" \u00b7 {model.status.model_name}", _S_SPLASH_DIM)
+    else:
+        line.append(f" \u00b7 v{VERSION}", _S_SPLASH_DIM)
     model.append_committed("splash", [line, AnsiLine.of("")])
 
 

@@ -178,3 +178,52 @@
   （4：工具运行无事件持续渲染 / 窗口内等待拍 / 空闲仍跳过 / 工具关闭后回退）。
 - 全部 TUI 测试通过：**1585 passed**（原 1576 + 新增 9）。
 
+
+---
+
+## 第八轮（commit 待定）
+
+### Bug 修复
+| Bug | 问题 | 修复 |
+|---|---|---|
+| BUG-11 | `commit_open_block` 用 `blocks.index(block)` 定位块索引——ChatBlock 为 dataclass，默认 `__eq__` 是**值比较**：字段相同的开放块（如共享 lines 引用的两个空/同内容 content 块）会互相相等，`index()` 恒返回第一个 → 连续窗口判断错误（第二个块被错误允许/阻断增量提交） | 遍历 + `b is block` 身份查找（O(n) 仅增量提交时低频触发） |
+| BUG-12 | `request_exit` 在渲染线程内仅置位不调 `stop()`（防 join 自身死锁）→ 线程退出后 `_render_running` 恒 True，`start()` 判 True 直接 return（无法重启，状态不一致） | `_render` 循环 `_exit_requested` 分支同步置 `_render_running = False`（exit 后渲染状态与「线程已停止」一致） |
+| BUG-13 | `input-area._measure` 对畸形 `width` prop 直接 `int()` 抛异常 → 经 layout_tree 传播中断整帧渲染（其他布局解析均有 try/except 兜底，此处缺失） | 与内置布局一致加 try/except 兜底回退可用宽度 |
+
+### 性能优化（ioctl → TTL 缓存）
+- `_completion_item_rows`：修复前每次调用直接 `_get_terminal_size()`（fcntl.ioctl），
+  补全弹窗可见时 `_completion_height` 在 `_measure` 与 `_position_cursor` 每帧各调一次
+  → 每帧 2 次系统调用；改走 `TerminalWidthCache.get_height()`（TTL 缓存）。
+- `_subagent_render._terminal_max_lines/_terminal_max_width`：修复前每次渲染卡片直接
+  `_get_terminal_size()`（subagent 面板 10Hz 刷新每帧 2 次 ioctl）；改走
+  `TerminalWidthCache`（TTL 缓存）。
+
+### 完善 react ink（需求 #2）
+- **`Text` 组件 `align`**（left/right/center）：react-ink `<Text align>` 等价物——
+  换行后按布局宽度调整行内容（前导空格），多行各自对齐。对齐结果随
+  `_wrap_cache` 缓存（align 入缓存键——align 变化重算，同 align 跨帧命中返回
+  对齐行对象，diff 身份短路保持）。
+
+### 更多动效 / 呼吸效果（需求 #4、#5）
+- **子代理组卡边框呼吸**（BEAUTY-11）：运行中子代理组卡顶/主体/底边框从暗青 23
+  脉动到亮青 45（8s 周期，与工具卡边框呼吸同步）——子代理执行中的视觉提示；
+  全部完成（closed）保持静态 `_C_BORDER`（不调用 time_glow，零额外成本）。
+- **状态栏模型名渐显重置**（BEAUTY-1 完善）：fade 键含 `model_name`——切换模型
+  （Ctrl+N）后新模型名重新渐显（修复前旧 fade 状态残留，新名直接以呼吸色显示）。
+
+### 界面美化（需求 #4）
+- **启动品牌屏美化**（BEAUTY-12）：splash 增加 `✦` 图标 + 版本号/模型名
+  （`  ✦ DeepSeek CLI · v2.x.x` 或 `· {model_name}`），对齐 TopHeader 渐变标题视觉。
+
+### 技术债清理（需求 #3）
+- `_consumer.py` TYPE_CHECKING 块移除纯未使用符号（AppModel/事件类型类——字符串
+  注解仅引用 InkSession/InkBridge/EventDispatcher/Input/_CmplHandler 五个框架类型）。
+
+### 测试
+- `test_render_integration.py`：BUG-11 身份比较（2 断言：b2 阻止 + b1 允许）。
+- `test_session.py`：BUG-12 渲染线程 exit 后 `_render_running` 置 False。
+- `test_input_area.py`：畸形 width 兜底。
+- `test_layout.py`：Text align 6 例（默认/right/center/多行/缓存身份/缓存失效）。
+- `test_subagent_panel.py`：组卡边框呼吸 3 例（running 调 time_glow / closed 不调 / 呼吸色范围）。
+- `test_status_bar.py`：model_name 切换渐显重置（dot 回起始暗色 238）。
+- 全部测试通过：**1948 passed**（原 1935 + 新增 13）。

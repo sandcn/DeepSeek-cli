@@ -1021,6 +1021,23 @@ class TestAppControl:
         assert s.exit_requested is True
         s.stop.assert_called_once()
 
+    def test_render_thread_exit_resets_running_flag(self):
+        """BUG-12 — 渲染线程内 exit 后 _render_running 置 False（可重启）。
+
+        request_exit 在渲染线程内不调用 stop（防 join 自身死锁）——线程
+        退出后须自行置 ``_render_running=False``，否则 start() 判 True 直接
+        return → 无法重启（状态一致性：exit 后渲染状态与「线程已停止」一致）。
+        """
+        s = _make_session()
+        s._render_running = True
+        s._exit_requested = True
+        # 同步直接运行 _render：首轮循环即检查 _exit_requested → 置 False 退出
+        s._render()
+        assert s._render_running is False, (
+            "渲染线程 exit 后 _render_running 应为 False"
+        )
+        assert s.exit_requested is True
+
     def test_use_app_exit_sets_session_exit_requested(self):
         """useApp().exit() 后 session.exit_requested 置位。"""
         from src.tui.ink.hooks import useApp, set_app_control

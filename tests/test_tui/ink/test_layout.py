@@ -151,6 +151,68 @@ class TestRenderFrame:
         assert frame.lines[0].plain == "committed"
 
 
+class TestTextAlign:
+    """完善 react ink — TEXT align（left/right/center 文本对齐）。"""
+
+    def test_align_left_default(self):
+        root = Reconciler().create_root()
+        el = h(TEXT, {"children": "ab", "width": 5})
+        r = Reconciler()
+        r.render(root, el, 80, 24)
+        frame = render_frame(root, 80)
+        assert frame.lines[0].plain == "ab"
+
+    def test_align_right(self):
+        root = Reconciler().create_root()
+        el = h(TEXT, {"children": "ab", "width": 5, "align": "right"})
+        r = Reconciler()
+        r.render(root, el, 80, 24)
+        frame = render_frame(root, 80)
+        assert frame.lines[0].plain == "   ab"
+
+    def test_align_center(self):
+        root = Reconciler().create_root()
+        el = h(TEXT, {"children": "ab", "width": 5, "align": "center"})
+        r = Reconciler()
+        r.render(root, el, 80, 24)
+        frame = render_frame(root, 80)
+        assert frame.lines[0].plain == " ab"
+
+    def test_align_multiline(self):
+        """多行换行后每行各自对齐。"""
+        root = Reconciler().create_root()
+        el = h(TEXT, {"children": "abcdef", "width": 3, "align": "right"})
+        r = Reconciler()
+        r.render(root, el, 80, 24)
+        frame = render_frame(root, 80)
+        # "abcdef" 按 3 列换行 → ["abc", "def"]，每行右侧对齐
+        assert frame.lines[0].plain == "abc"
+        assert frame.lines[1].plain == "def"
+
+    def test_align_cache_hit_keeps_identity(self):
+        """同 align 跨帧命中缓存返回对齐行对象（diff 身份短路保持）。"""
+        r = Reconciler()
+        root = r.create_root()
+        el = h(TEXT, {"children": "ab", "width": 5, "align": "right"})
+        r.render(root, el, 80, 24)
+        lines1 = root.child._wrapped_lines
+        # 同元素再渲染一次（同 props → fiber 复用）
+        r.render(root, el, 80, 24)
+        lines2 = root.child._wrapped_lines
+        assert lines1 is lines2, "同 align 跨帧应复用缓存行对象"
+
+    def test_align_change_invalidates_cache(self):
+        """align 变化触发缓存重算（align 入缓存键）。"""
+        r = Reconciler()
+        root = r.create_root()
+        el = h(TEXT, {"children": "ab", "width": 5, "align": "right"})
+        r.render(root, el, 80, 24)
+        assert root.child._wrapped_lines[0].plain == "   ab"
+        el2 = h(TEXT, {"children": "ab", "width": 5, "align": "left"})
+        r.render(root, el2, 80, 24)
+        assert root.child._wrapped_lines[0].plain == "ab"
+
+
 class TestFlexGrowRemainder:
     """方向C 步骤6 — flexGrow 余数分配（总高度不变，余数到前 n 个子节点）。"""
 

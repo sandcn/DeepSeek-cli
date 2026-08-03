@@ -224,11 +224,14 @@ def render_frame(store, max_history: int = 3,
 def _terminal_max_lines() -> int:
     """按终端高度计算卡片最大行数（预留顶部标题栏 + 状态栏 + 输入区 + 边距）。
 
-    终端尺寸查询失败回退 12（行数保护兜底）。
+    ★ 性能（方向4）：终端高度经 ``TerminalWidthCache`` 读取（TTL 缓存）——
+    修复前每次渲染直接 ``_get_terminal_size()``（fcntl.ioctl），subagent
+    面板 10Hz 刷新时每帧 2 次系统调用。终端尺寸查询失败回退 12（行数保护
+    兜底）。
     """
     try:
-        from src.tui._screen import _get_terminal_size
-        _, h = _get_terminal_size()
+        from src.tui._screen import TerminalWidthCache
+        h = TerminalWidthCache.get_default().get_height()
         return max(6, h - 6)
     except Exception:
         return 12
@@ -237,11 +240,13 @@ def _terminal_max_lines() -> int:
 def _terminal_max_width() -> int:
     """当前终端宽度（卡片宽度 clamp 上限，方向3：防卡片比终端宽致边框截断）。
 
-    终端尺寸查询失败回退 80。
+    ★ 性能（方向4）：终端宽度经 ``TerminalWidthCache`` 读取（TTL 缓存）——
+    修复前每次渲染直接 ``_get_terminal_size()``（fcntl.ioctl），subagent
+    面板 10Hz 刷新时每帧系统调用。终端尺寸查询失败回退 80。
     """
     try:
-        from src.tui._screen import _get_terminal_size
-        w, _ = _get_terminal_size()
+        from src.tui._screen import TerminalWidthCache
+        w = TerminalWidthCache.get_default().get_width()
         return max(20, w)
     except Exception:
         return 80
@@ -261,6 +266,14 @@ def _build_group_card(rows: list[tuple[str, str, List[str]]],
         max_lines = _terminal_max_lines()
     n = len(rows)
     any_running = any(st == "running" for st, _, _ in rows)
+    # ★ BEAUTY-11（方向4 动效）：运行中组卡边框呼吸——暗青 23 → 亮青 45
+    #   （8s 周期，与工具卡边框呼吸同步），视觉提示「子代理执行中」；全部
+    #   完成（closed）保持静态 _C_BORDER（零额外渲染成本）。
+    if any_running:
+        from src.tui.app._theme import time_glow
+        _border = _color_256_ansi(time_glow(23, 45, 8.0))
+    else:
+        _border = _C_BORDER
     # 标题：●/✔ ⚡ 子代理 · N（⚡ 为 subagent 图标，对齐 Claude Code Task 卡）
     status_icon = f"{_C_RUNNING}\u25cf{_C_RESET}" if any_running else f"{_C_DONE}\u2714{_C_RESET}"
     title = f"{status_icon} {_C_RUNNING}\u26a1{_C_RESET} 子代理 \u00b7 {n}"
@@ -292,18 +305,18 @@ def _build_group_card(rows: list[tuple[str, str, List[str]]],
     inner_w = max(1, card_w - 4)
     out: List[str] = []
     title_trunc = _truncate_ansi_width(title, inner_w)
-    head = f"{_C_BORDER}\u250c\u2500 {_C_RESET}" + title_trunc
-    head += f"{_C_BORDER}\u2500{_C_RESET}" * max(2, card_w - 4 - _display_width(title_trunc))
-    head += f"{_C_BORDER}\u2510{_C_RESET}"
+    head = f"{_border}\u250c\u2500 {_C_RESET}" + title_trunc
+    head += f"{_border}\u2500{_C_RESET}" * max(2, card_w - 4 - _display_width(title_trunc))
+    head += f"{_border}\u2510{_C_RESET}"
     out.append(head)
     for l in body:
-        out.append(f"{_C_BORDER}\u2502 {_C_RESET}{_pad_ansi(_truncate_ansi_width(l, inner_w), inner_w)} "
-                   f"{_C_BORDER}\u2502{_C_RESET}")
+        out.append(f"{_border}\u2502 {_C_RESET}{_pad_ansi(_truncate_ansi_width(l, inner_w), inner_w)} "
+                   f"{_border}\u2502{_C_RESET}")
     if closed:
         status_trunc = _truncate_ansi_width(status_text, inner_w)
-        tail = f"{_C_BORDER}\u2514\u2500 {_C_RESET}" + status_trunc
-        tail += f"{_C_BORDER}\u2500{_C_RESET}" * max(2, card_w - 4 - _display_width(status_trunc))
-        tail += f"{_C_BORDER}\u2518{_C_RESET}"
+        tail = f"{_border}\u2514\u2500 {_C_RESET}" + status_trunc
+        tail += f"{_border}\u2500{_C_RESET}" * max(2, card_w - 4 - _display_width(status_trunc))
+        tail += f"{_border}\u2518{_C_RESET}"
         out.append(tail)
     return out
 

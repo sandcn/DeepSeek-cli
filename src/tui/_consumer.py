@@ -14,26 +14,14 @@ import logging
 from typing import TYPE_CHECKING, Callable
 
 if TYPE_CHECKING:
+    # 仅供 mypy/pyright 类型检查（运行时注解均为字符串形式，不求值）。
+    # 技术债清理（方向4）：移除纯未使用符号（AppModel/事件类型类——
+    # 字符串注解 ``"InkSession"`` 等仅引用下列五个框架类型）。
     from src.tui.ink.session import InkSession
     from src.tui._ink_bridge import InkBridge
     from src.tui._dispatcher import EventDispatcher
     from src.tui._input import Input
     from src.tui._completion import _CmplHandler
-    from src.tui.app.model import AppModel
-    from src.tui.events.event_types import (
-        ContentChunkEvent,
-        ModelPhaseEvent,
-        OutputEvent,
-        ParseInfoDoneEvent,
-        ParseInfoEvent,
-        PhaseDoneEvent,
-        ReasoningChunkEvent,
-        ToolDoneEvent,
-        ToolOutputChunkEvent,
-        ToolParsingEvent,
-        ToolStartedEvent,
-        ToolSummaryEvent,
-    )
 
 from src.tui._const import (
     RenderCmd,

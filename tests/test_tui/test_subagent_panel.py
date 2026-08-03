@@ -972,3 +972,45 @@ class TestSubAgentCardWidthConsistency:
             assert wcswidth_simple(text) <= 40, (
                 f"截断后行宽超布局宽度: {text!r} width={wcswidth_simple(text)}"
             )
+
+
+class TestGroupCardBorderBreath:
+    """BEAUTY-11 — 运行中子代理组卡边框呼吸（暗青 23 → 亮青 45 脉动）。
+
+    与工具卡边框呼吸（_tool_card_styled_lines）同步；全部完成（closed）保持
+    静态 _C_BORDER（23）。面板 10Hz 刷新时时间基推进平滑呼吸。
+    """
+
+    def _card(self, statuses):
+        from src.tui._subagent_state import StateStore
+        from src.tui._subagent_render import render_frame
+        store = StateStore(max_history=3)
+        for i, st in enumerate(statuses):
+            store.add_agent(f"agent-{i}", "分析", status=st, agent_type="map")
+        return render_frame(store, max_history=3)
+
+    def test_running_card_invokes_time_glow(self):
+        """运行中边框调用 time_glow 呼吸（暗青→亮青脉动）。"""
+        from unittest.mock import patch
+        with patch("src.tui.app._theme.time_glow", return_value=45) as mock_glow:
+            lines = self._card(["running"])
+        assert mock_glow.call_count >= 1, "运行中边框应调用 time_glow 呼吸"
+        assert lines, "应产出卡片行"
+
+    def test_closed_card_does_not_invoke_time_glow(self):
+        """全部完成（closed）边框静态（不调用 time_glow，零额外成本）。"""
+        from unittest.mock import patch
+        with patch("src.tui.app._theme.time_glow", return_value=45) as mock_glow:
+            lines = self._card(["done"])
+        mock_glow.assert_not_called()
+        assert lines, "应产出卡片行"
+        assert "38;5;23m" in lines[0], "closed 边框应保持静态 _C_BORDER(23)"
+
+    def test_running_border_color_in_breath_range(self):
+        """运行中边框色号落在暗青 23..亮青 45 区间（time_glow 语义）。"""
+        import re
+        from unittest.mock import patch
+        with patch("src.tui.app._theme.time_glow", return_value=30):
+            lines = self._card(["running"])
+        # 顶边框色号应包含 30（mock 的呼吸色）
+        assert re.search(r"38;5;30m", lines[0]), "运行中边框应使用呼吸色号"

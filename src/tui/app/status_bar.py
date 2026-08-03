@@ -149,11 +149,15 @@ def StatusBar(props) -> object:
     model = props["model"]
     width = props.get("width", 80)
     st = model.status
-    # BEAUTY-1：模型名点渐显起始时间（use_ref 跨渲染保持；status_active 切换时重置，
-    # time.monotonic 时间基，非帧计数）
+    # BEAUTY-1：模型名点渐显起始时间（use_ref 跨渲染保持；status_active 切换
+    # 或 model_name 变化时重置——模型名变化后新名称出现重新渐显，time.monotonic
+    # 时间基，非帧计数）。★ 方向4：fade 键含 model_name——修复前仅含
+    # status_active，切换模型（Ctrl+N）时旧 fade 状态残留（新模型名直接以
+    # 呼吸色显示，无渐显过渡）。
     dot_fade_ref = use_ref(None)
-    if dot_fade_ref.current is None or dot_fade_ref.current[0] != st.status_active:
-        dot_fade_ref.current = (st.status_active, time.monotonic())
+    fade_key = (st.status_active, st.model_name)
+    if dot_fade_ref.current is None or dot_fade_ref.current[0] != fade_key:
+        dot_fade_ref.current = (fade_key, time.monotonic())
     dot_elapsed = time.monotonic() - dot_fade_ref.current[1]
     # BEAUTY-1/PERF-3：渐显窗口内按 0.1s 桶刷新（平滑渐显），结束后回 1s 桶
     # （PERF-3 缓存语义保持）。fade_duration_sec<=0（配置异常）→ 回退纯 1s 桶。

@@ -23,10 +23,12 @@ from src.tui._screen import (
 )
 from src.tui._input import (
     _wrap_by_width,
-    _compute_cursor_visual_pos,
     # ★ 方向5（光标算法单一真源）：_compute_input_layout /
     #   _cursor_visual_from_layout 自本文件迁移至 _input.py——这里从 _input
     #   导入（删除本地副本，避免双实现）。
+    # ★ _compute_cursor_visual_pos 经本模块 re-export（test_input_area.py
+    #   TestCursorAlgorithmSingleSource 锁定同一对象契约），保留导入。
+    _compute_cursor_visual_pos,
     _compute_input_layout,
     _cursor_visual_from_layout,
 )
@@ -117,12 +119,17 @@ def _completion_item_rows() -> int:
     ``max(6, h - 10)``。正常补全（≤20 项）不受影响；极长说明 / user_select
     大量选项时弹窗不超屏。
 
+    ★ 性能（方向4）：终端高度经 ``TerminalWidthCache`` 读取——修复前每次
+    调用直接 ``_get_terminal_size()``（fcntl.ioctl），补全弹窗可见时
+    ``_completion_height`` 在 ``_measure`` 与 ``_position_cursor`` 每帧各
+    调一次 → 每帧 2 次 ioctl。TTL 缓存避免重复系统调用。
+
     Returns:
         候选项（含说明）最大渲染行数。
     """
     try:
-        from src.tui._screen import _get_terminal_size
-        _, h = _get_terminal_size()
+        from src.tui._screen import TerminalWidthCache
+        h = TerminalWidthCache.get_default().get_height()
         return max(6, h - 10)
     except Exception:
         return 12
@@ -157,7 +164,14 @@ def _is_search_active(search) -> bool:
 def _measure(fiber, avail_w) -> tuple[int, int]:
     props = fiber.props
     explicit = props.get("width")
-    width = max(0, int(explicit)) if explicit is not None else avail_w
+    # ★ 健壮性（方向4）：width 畸形兜底——与其他 host/内置布局一致
+    #   （try/except TypeError/ValueError，修复前 ``int(explicit)`` 对畸形值
+    #   抛异常 → 经 layout_tree 传播中断整帧渲染）。App 正常路径无显式 width，
+    #   本分支为防御。
+    try:
+        width = max(0, int(explicit)) if explicit is not None else avail_w
+    except (TypeError, ValueError):
+        width = avail_w
     completion = props.get("completion")
     popup_height = _completion_height(completion, width)
     max_input = max(1, width - len(_PROMPT))
