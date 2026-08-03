@@ -59,6 +59,7 @@ from .helpers import (
 )
 from .registry import register_host, unregister_host, get_host, has_host
 from .error_boundary import ErrorBoundary, create_error_boundary
+from .extra import Transform, Static, STATIC_TEXT
 from .hooks import (
     use_state,
     use_reducer,
@@ -76,9 +77,13 @@ from .hooks import (
     useImperativeHandle,
     useApp,
     useFocus,
+    useStdin,
+    useStdout,
+    useStderr,
     set_input_router_callback,
     set_app_control,
     set_app_callbacks,
+    set_std_accessors,
 )
 
 __all__ = [
@@ -115,6 +120,10 @@ __all__ = [
     # error boundary
     "ErrorBoundary",
     "create_error_boundary",
+    # generic components
+    "Transform",
+    "Static",
+    "STATIC_TEXT",
     # hooks
     "use_state",
     "use_reducer",
@@ -132,7 +141,11 @@ __all__ = [
     "useImperativeHandle",
     "useApp",
     "useFocus",
+    "useStdin",
+    "useStdout",
+    "useStderr",
     "set_input_router_callback",
     "set_app_control",
     "set_app_callbacks",
+    "set_std_accessors",
 ]

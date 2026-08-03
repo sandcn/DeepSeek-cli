@@ -15,13 +15,11 @@
 
 from __future__ import annotations
 
-import asyncio
 import logging
 import time
 import threading
 from typing import Any
 
-from ...core.constants import DIM, RESET, YELLOW, BRIGHT_CYAN, BRIGHT_GREEN, GREEN
 from ...core.sandbox_manager import get_sandbox_manager as _get_sandbox_manager
 # 方向3 步骤16：_content_str/_truncate 单一真源在 message_display（已被
 # _consumer/apply 消费）；本模块删除本地副本改从单一真源导入（零行为变化）。

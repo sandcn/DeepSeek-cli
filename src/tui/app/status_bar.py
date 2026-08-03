@@ -83,10 +83,14 @@ def _build_status_runs(model, dot_elapsed: float = 0.0,
             # BEAUTY-1：模型名点出现时从暗色渐显到呼吸色（时间基）
             dot_color = _fx.fade_color(dot_elapsed, None, 238, _glow(36, 45, 4))
             dot_style = Style(fg=dot_color)
+            # BEAUTY-9：流式期间模型名整体呼吸（亮青 45 邻域脉动，8s 周期）——
+            # 与分隔线/输入区分隔线呼吸同步，活跃状态更有活力。
+            model_name_style = Style(fg=time_glow(45, 55, 8.0), bold=True)
         else:
             dot_style = _S_ACCENT
+            model_name_style = _S_ACCENT_BOLD
         model_part.append(StyledRun(f"{spinner_char} ", dot_style))
-        model_part.append(StyledRun(st.model_name, _S_ACCENT_BOLD))
+        model_part.append(StyledRun(st.model_name, model_name_style))
     if not status_active:
         return model_part
 
@@ -129,8 +133,9 @@ def _build_status_runs(model, dot_elapsed: float = 0.0,
     return joined
 
 
-def _glow(base: int, hi: int, amp: int) -> int:
-    return time_glow(base, hi, amp)
+def _glow(lo: int, hi: int, period: float) -> int:
+    """状态点呼吸色（时间基正弦插值）。参数语义与 ``time_glow(lo, hi, period)`` 一致。"""
+    return time_glow(lo, hi, period)
 
 
 def StatusBar(props) -> object:

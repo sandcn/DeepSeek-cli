@@ -346,19 +346,32 @@ class Reconciler:
             _hooks._push_current(fiber)
             memo_skip = False
             try:
-                if self._memo_should_skip(fiber):
+                if self._memo_should_skip(fiber, element):
                     memo_skip = True
                     rendered = None
                 else:
+                    # ★ 完善 react ink：函数组件 children 注入——React 中 children
+                    #   属于 props 一部分（``props.children``）。本框架元素 children
+                    #   为独立字段（``element.children``），函数组件仅收到 props；
+                    #   元素带 children（``h(Comp, {}, child)`` 变参）时经副本注入
+                    #   ``props["children"]``（不修改 fiber.props，调和比较基准
+                    #   保持 props-only）。元素无 children 时零开销（直接传 props）。
+                    #   既有组件（App/ChatView/TopHeader 等无变参子级）行为不变。
+                    if element.children:
+                        call_props = dict(fiber.props)
+                        call_props["children"] = element.children
+                    else:
+                        call_props = fiber.props
                     # ★ forwardRef（完善 react ink）：带 ``_is_forward_ref`` 标记
                     #   的组件改以 ``(props, ref)`` 双参调用（ref 取自
                     #   ``props.ref``——React 约定；不进入普通 props）。
                     if getattr(fiber.type, "_is_forward_ref", False):
-                        rendered = fiber.type(fiber.props, fiber.props.get("ref"))
+                        rendered = fiber.type(call_props, call_props.get("ref"))
                     else:
-                        rendered = fiber.type(fiber.props)
+                        rendered = fiber.type(call_props)
                     if getattr(fiber.type, "_is_memo", False):
                         fiber._last_memo_props = dict(fiber.props)
+                        fiber._last_memo_children = element.children
             except Exception as exc:
                 if isinstance(exc, _hooks.HookStateError):
                     raise  # hook 状态机异常：编程错误，不参与 boundary 捕获
@@ -455,8 +468,15 @@ class Reconciler:
 
     # ── memo 短路（方向B 步骤10） ──────────────────────
 
-    def _memo_should_skip(self, fiber: Fiber) -> bool:
-        """memo 短路判定：props 相等（are_equal 或默认浅比较）且无待处理 state 更新。
+    def _memo_should_skip(self, fiber: Fiber, element) -> bool:
+        """memo 短路判定：props 相等 + children 相等且无待处理 state 更新。
+
+        React 语义（完善 react ink）：React 中 ``children`` 属于 props 一部分，
+        memo 短路须同时比较 props 与 children——本框架 children 为元素独立
+        字段（``element.children``），修复前仅比较 props 字典：props 未变但
+        子元素变化（如 ``h(MemoComp, {"x":1}, "新子文本")``）时被误跳过 →
+        子树陈旧。修复后比较 ``_last_memo_props``（are_equal 或默认 ==）与
+        ``_last_memo_children``（值相等）。
 
         首渲染（无 ``_last_memo_props``）不短路；props 含不可比较对象时
         默认比较 try/except 兜底为不相等（重渲染，安全侧）。
@@ -477,6 +497,13 @@ class Reconciler:
                 same = fiber.props == last_props
             except Exception:
                 same = False
+        if not same:
+            return False
+        # ★ children 值相等比较（React children 属于 props——本框架独立字段）
+        try:
+            same = element.children == getattr(fiber, "_last_memo_children", ())
+        except Exception:
+            same = False
         if not same:
             return False
         # 有未处理的 state 更新 → 不能短路（须重渲染应用更新）

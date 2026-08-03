@@ -86,3 +86,50 @@
 - 增量渲染验证：cpu/mem 变化只重写输入区分隔线（不重写已提交内容）。
 - 头部动画只重写首行；离屏内容跳过重写（文档 > 屏幕时正确）。
 - 窄屏工具卡 / 多行输入 / Ctrl+L 清屏 / 弹窗超屏防护 / session 生命周期正常。
+
+---
+
+## 第五轮（commit 待定）
+
+### Bug 修复
+| Bug | 问题 | 修复 |
+|---|---|---|
+| BUG-5 | `_should_render` force 重绘请求在窗口内丢失（force 置位但 dirty 未置位时下一拍不渲染） | force 置位同步置 dirty，请求保留到下一 10Hz 拍 |
+| BUG-6 | input-area `_paint` 每帧逐字符 dict 合并（`_merge` 输入区热路径） | box.x==0 且行未命中时直接存 Line 对象（快路径 + diff 身份短路） |
+| BUG-7 | memo 组件 props 未变但 children 变化被误跳过（React children 属 props） | `_memo_should_skip` 增加 children 值比较 + 记录 `_last_memo_children` |
+| BUG-8 | 函数组件无法接收变参子级（`h(Comp, {}, child)` 的 child 丢失） | reconciler 将 `element.children` 经副本注入 `props["children"]` |
+| BUG-9 | 每帧 DFS 全树查找 committed-chat fiber（大历史树 ~1500 fiber） | 查找结果缓存于 root fiber（删除/卸载自动失效） |
+| BUG-10 | 渲染崩溃前 canvas 行 Line/dict 混合处理（历史遗留路径已统一） | input_area/committed-chat/TEXT 共用惰性行 + Line 快路径语义 |
+
+### 完善 react ink（需求 #2）
+- **`Transform`** 组件：react-ink `<Transform transform={fn}>` 等价物——字符串变换
+  递归应用到 TEXT 叶子（uppercase/lowercase/截断/正则替换等）。
+- **`Static`** 组件：react-ink `<Static>` 等价物——children 经 `use_memo(deps=())`
+  首帧冻结，后续帧子树 fiber 复用 + 换行缓存 + diff 身份短路 → 静态内容零重渲染。
+- **`useStdin`/`useStdout`/`useStderr`** hooks：session 注入惰性 std 流访问器
+  （stdin=Input 实例 / stdout=渲染器流 / stderr=sys.__stderr__），react-ink 标准
+   hooks 面完整。
+
+### 性能 / 增量渲染（需求 #3、#8）
+- input-area Line 快路径：`wcswidth_simple` 调用 62532 → 6394（10x 下降）；
+  基准 100 块历史文档（706 行）渲染 **1.28ms → 0.65ms/帧（2x 提速）**。
+- committed-chat fiber 缓存：消除每帧 DFS 全树搜索。
+- 增量验证（新测试锁定）：仅 live 区变化 → 输出流只含 live 重写（committed 历史
+  零重写）；历史增长 → 平移快路径仅写新增行；resize → 全量刷新（需求 #8）。
+
+### 更多动效 / 呼吸效果（需求 #4、#5）
+- **`_StreamingLine`**：内容流式期间显示 `⠋ 生成中` 动画块 + 青色呼吸（10Hz 推进）——
+  对齐 Claude Code 生成中反馈；空闲/非内容阶段零高度不占行。
+- **状态栏模型名呼吸**：流式期间模型名整体亮青 45→55 脉动（8s 周期），与分隔线
+  呼吸同步；空闲保持静态强调色。
+
+### 技术债清理（需求 #3）
+- `message_editor.py` 移除未使用 `asyncio` 与 6 个颜色常量导入。
+- `state/_collection.py` 移除未使用 `Any`/`List`。
+- `ink/extra.py` 移除未使用 `Any`/`BOX`。
+
+### 测试
+- 新增 `tests/test_tui/ink/test_ink_round5.py`（18 例）：Transform / Static / memo
+  children 比较 / std hooks / input-area Line 快路径 / 增量渲染（live-only 重写、
+  历史增长、resize 全量）/ `_should_render` force 保留。
+- 全部测试通过：**1904 passed**（原 1886 + 新增 18）。

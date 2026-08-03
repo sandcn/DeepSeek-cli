@@ -15,7 +15,7 @@
 from __future__ import annotations
 
 import threading
-from typing import Any, Iterator, List, TypeVar
+from typing import Iterator, TypeVar
 
 T = TypeVar("T")
 

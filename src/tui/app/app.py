@@ -59,6 +59,7 @@ def App(props) -> object:
         #   两行（第二行只剩边框字符）的显示错乱。
         h(ChatView, {"model": model, "width": width}),
         h(_ParseLine, {"model": model}),
+        h(_StreamingLine, {"model": model}),
     ]
     bottom_area = [
         h(StatusBar, {"model": model, "width": width}),
@@ -108,6 +109,32 @@ def _ParseLine(props) -> object:
             first_text = False
         runs.append(StyledRun(text, st))
     return h(BOX, None, [h(TEXT, {"styled": runs})])
+
+
+def _StreamingLine(props) -> object:
+    """生成中指示行（BEAUTY-9：内容流式期间动画块 + 呼吸色）。
+
+    条件：``model.status.status_active`` 且内容通道开放
+    （``content_block_index >= 0`` 且 ``not content_closed``）——避免推理阶段
+    （status_active=True 但 content 未开）误显示；空闲/非内容阶段零高度
+    （不占行，与 _ParseLine 同模式）。
+
+    视觉：时间基 spinner（⠋⠙⠹… 10Hz）+ 青色呼吸「生成中」——对齐 Claude
+    Code 生成中反馈；仅内容流式期间常驻 live 区，10Hz 渲染时平滑推进。
+    """
+    model = props["model"]
+    if not model.status.status_active:
+        return h(BOX, None, [])
+    if model.content_block_index < 0 or model.content_closed:
+        return h(BOX, None, [])
+    from src.tui.app._theme import time_glow
+    from src.tui.app import _fx
+    c = time_glow(36, 49, 5.0)
+    spinner = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
+    sp = spinner[_fx.spinner_frame(10.0, spinner)]
+    return h(BOX, None, [
+        h(TEXT, {"styled": [StyledRun(f"{sp} 生成中", Style(fg=c))]}),
+    ])
 
 
 def build_app_element(model, width: int, animator=None) -> object:

@@ -337,19 +337,41 @@ def _find_committed_chat(root: Fiber):
     组件树中聊天历史作为单个 host 挂载（ChatView use_memo 缓存元素），
     静态行经 ``chat_view._paint`` 维护帧前缀缓存；render_frame 复用该前缀，
     每帧只重建尾部 live 区——大历史下 Frame 构建 O(live) 而非 O(全部历史)。
+
+    方向4（性能）：查找结果缓存于 root fiber（``_committed_chat_cache``）——
+    reconciler 按 key 复用 fiber，committed-chat 在树中位置跨帧稳定，无需每帧
+    DFS 全树搜索（大历史树 ~1500 fiber 时 DFS 为可感知开销）。缓存失效条件：
+    缓存的 fiber 被删除（deleted）或 type 不再匹配（如 committed_lines 清空
+    后 ChatView 不再挂载 committed-chat）→ 重新 DFS。Cache miss 后写回缓存。
     """
+    cached = getattr(root, "_committed_chat_cache", None)
+    if (
+        cached is not None
+        and cached.is_host
+        and cached.type == "committed-chat"
+        and not getattr(cached, "deleted", False)
+    ):
+        return cached
     stack = [root]
+    found = None
     while stack:
         f = stack.pop()
         if getattr(f, "deleted", False):
             continue
         if f.is_host and f.type == "committed-chat":
-            return f
+            found = f
+            break
         child = f.child
         while child is not None:
             stack.append(child)
             child = child.sibling
-    return None
+    if found is not None:
+        root._committed_chat_cache = found
+    else:
+        # 未找到 → 清空缓存（committed-chat 已卸载）
+        if hasattr(root, "_committed_chat_cache"):
+            del root._committed_chat_cache
+    return found
 
 
 def render_frame(root: Fiber, width: int) -> Frame:

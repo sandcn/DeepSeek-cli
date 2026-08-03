@@ -66,11 +66,32 @@ _app_control: dict | None = None
 # use_context 命中校验（与 contexts 内容解耦，避免依赖每帧重置的 contexts）。
 _context_version: int = 0
 
+# std 流访问器（session 注入；useStdin/useStdout/useStderr 读取——完善 react ink）
+_stdin_accessor: Callable[[], Any] | None = None
+_stdout_accessor: Callable[[], Any] | None = None
+_stderr_accessor: Callable[[], Any] | None = None
+
 
 def set_schedule_callback(cb: Callable[[], None] | None) -> None:
     """注入状态更新重渲染回调。"""
     global _schedule_callback
     _schedule_callback = cb
+
+
+def set_std_accessors(
+    stdin_fn: Callable[[], Any] | None,
+    stdout_fn: Callable[[], Any] | None,
+    stderr_fn: Callable[[], Any] | None,
+) -> None:
+    """注入 std 流访问器（session 调用；useStdin/useStdout/useStderr 读取）。
+
+    访问器为惰性函数（每帧渲染期调用时取最新流对象——stdin 在
+    ``set_input`` 后才注入，stdout 为渲染器流可替换）。
+    """
+    global _stdin_accessor, _stdout_accessor, _stderr_accessor
+    _stdin_accessor = stdin_fn
+    _stdout_accessor = stdout_fn
+    _stderr_accessor = stderr_fn
 
 
 def _push_current(fiber: Fiber) -> None:
@@ -730,6 +751,67 @@ def useFocus(options: "bool | dict | None" = None) -> dict:
     )
 
 
+# ═══════════════════════════════════════════════════════════
+# useStdin / useStdout / useStderr（完善 react ink）
+# ═══════════════════════════════════════════════════════════
+
+
+def useStdin() -> dict:
+    """React useStdin 等价物：返回 stdin 访问。
+
+    Returns:
+        dict：``{"stdin": file|None, "isRawModeSupported": bool,
+        "setRawMode": callable, "internal_exitOnCtrlC": bool}``——stdin 为
+        session 注入的 Input 实例（惰性读取；未注入时 None）；setRawMode 为
+        no-op（当前框架无 raw 模式切换，文档注明差异）；isRawModeSupported
+        恒 False（与 setRawMode no-op 一致）；internal_exitOnCtrlC 恒 True。
+    """
+
+    def _noop(*args, **kwargs):
+        return None
+
+    stdin = _stdin_accessor() if _stdin_accessor is not None else None
+    return {
+        "stdin": stdin,
+        "isRawModeSupported": False,
+        "setRawMode": _noop,
+        "internal_exitOnCtrlC": True,
+    }
+
+
+def useStdout() -> dict:
+    """React useStdout 等价物：返回 stdout 访问。
+
+    Returns:
+        dict：``{"stdout": file|None, "write": callable}``——stdout 为 session
+        注入的渲染器输出流（惰性读取）；write 为 ``(data: str) -> None``
+        （直接写流，经输出锁保护由 session 注入方决定；未注入时 no-op）。
+    """
+
+    def _noop(*args, **kwargs):
+        return None
+
+    stdout = _stdout_accessor() if _stdout_accessor is not None else None
+    write = getattr(stdout, "write", _noop)
+    return {"stdout": stdout, "write": write}
+
+
+def useStderr() -> dict:
+    """React useStderr 等价物：返回 stderr 访问。
+
+    Returns:
+        dict：``{"stderr": file|None, "write": callable}``——stderr 为 session
+        注入的 ``sys.__stderr__``（惰性读取）；write 为 ``(data: str) -> None``。
+    """
+
+    def _noop(*args, **kwargs):
+        return None
+
+    stderr = _stderr_accessor() if _stderr_accessor is not None else None
+    write = getattr(stderr, "write", _noop)
+    return {"stderr": stderr, "write": write}
+
+
 __all__ = [
     "use_state",
     "use_reducer",
@@ -747,10 +829,14 @@ __all__ = [
     "useImperativeHandle",
     "useApp",
     "useFocus",
+    "useStdin",
+    "useStdout",
+    "useStderr",
     "set_schedule_callback",
     "set_input_router_callback",
     "set_app_control",
     "set_app_callbacks",
+    "set_std_accessors",
     "deps_changed",
     "mark_effect_committed",
     "_deps_equal",

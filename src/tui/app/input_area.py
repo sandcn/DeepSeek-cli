@@ -518,6 +518,14 @@ def _paint(fiber, canvas) -> None:
             #   （x==0 快路径写入的兄弟节点）→ 归一并合并（修复前对 Line
             #   直接 ``row[col]=...`` 抛 TypeError，内容被 _paint 隔离吞掉）。
             target = canvas[row]
+            # ★ 整行 Line 快路径（方向4）：box.x==0 且行未命中时直接存 Line
+            #   对象——与内置 TEXT 快路径一致：免逐字符 ``_merge`` dict 合并
+            #   （输入区每帧重建热路径，大文档渲染耗时关键）+ diff 阶段身份
+            #   短路（``_build_lines`` 快照缓存命中的同 Line 引用跨帧零重建）。
+            #   输入区位于文档底部、无后续兄弟覆盖同屏行，快路径安全。
+            if target is None and box.x == 0:
+                canvas[row] = line
+                continue
             if isinstance(target, Line):
                 from src.tui.ink.components import _line_as_dict
                 target = _line_as_dict(target)

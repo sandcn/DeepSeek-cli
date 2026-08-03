@@ -162,6 +162,9 @@ class Fiber:
     _boundary_on_error_called: bool = False
     #: memo 组件上次渲染的 props（memo 短路比较基准）
     _last_memo_props: Any = None
+    #: memo 组件上次渲染的元素 children（React children 属 props 一部分——
+    #:   memo 短路须同时比较 children，方向4 修复）
+    _last_memo_children: Any = None
     #: keyed 列表调和 moved 标记（方向B 步骤11）——位置变化信息（纯信息，
     #:   renderer 暂不消费；文档注明未来可用于 diff 尾部跳过）。
     moved: bool = False

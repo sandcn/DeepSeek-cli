@@ -181,6 +181,14 @@ class InkSession:
         # ★ useApp 控制（方向B 步骤10）：session 注入 exit/clear 回调
         self._exit_requested = False
         _hooks.set_app_control({"exit": self.request_exit, "clear": self.request_clear})
+        # ★ useStdin/useStdout/useStderr（完善 react ink）：session 注入惰性
+        #   访问器——stdin 为 Input 实例（set_input 后可用），stdout 为渲染器
+        #   输出流，stderr 为 sys.__stderr__（紧急路径一致）。
+        _hooks.set_std_accessors(
+            lambda: self._input,
+            lambda: getattr(self._ink_renderer, "_stream", None),
+            lambda: sys.__stderr__,
+        )
         # ★ P5：input-area fiber 引用缓存（方向2 P5）——_render_frame 仅在失效时
         #   重建（None/deleted/类型不符），_position_cursor 复用（避免每帧全树
         #   递归查找 input-area）。
@@ -679,9 +687,9 @@ class InkSession:
         now = time.monotonic()
         force = self._bottom_redraw_requested.is_set()
         self._bottom_redraw_requested.clear()
-        if changed:
-            self._dirty = True  # 本批命令已应用 → 标记脏
-        if not (self._dirty or force):
+        if changed or force:
+            self._dirty = True  # 本批命令已应用 / 底部重绘请求 → 标记脏
+        if not self._dirty:
             return False  # 空闲且无变化：跳过渲染（CPU ~0）
         if now - self._last_bottom_redraw >= self._config.render_interval:
             self._dirty = False
