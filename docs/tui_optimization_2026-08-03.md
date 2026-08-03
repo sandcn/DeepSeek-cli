@@ -1,4 +1,4 @@
-# TUI/ink 优化总结（2026-08-03，含第二轮）
+# TUI/ink 优化总结（2026-08-03，含三轮）
 
 ## 第一轮（commit deb9b21）
 
@@ -55,9 +55,27 @@
 
 ---
 
-## 验证
+## 第三轮（commit 61afbdb → 4b46934）
+
+### useFocus 完善 react-ink 语义
+- 参数兼容对象风格 `useFocus({isActive, autoFocus})`（react-ink API）与既有
+  bool 参数；返回 `{"isFocused": bool}`（react-ink 语义，组件可据此条件渲染）。
+
+### 技术债清理
+- `color.py` 移除未使用 `math`
+- `chat_config.py` 移除未使用 `Any`
+- `message_display.py` 移除未使用颜色常量（DIM/RESET/CYAN/YELLOW/GREEN）
+
+### 验证
+- 全部 74 个 tui 模块可导入
+- 综合验证：context + forwardRef + useImperativeHandle + ErrorBoundary +
+  memo 组合使用正确
+- 完整生命周期模拟渲染正确（splash/user/reasoning/工具卡/content/错误/通知）
+- 窄屏工具卡 / 多行输入 / Ctrl+L 清屏 / 增量渲染验证通过
+
+---
+
+## 总验证
 - 全部测试通过：**1884 passed**（原 1850 + 新增 34）。
-- 完整生命周期模拟（splash → user → reasoning → 工具 → content → 错误/通知
-  → 显示消息）渲染正确。
 - 流式段落级实时显示验证（空行分隔段落 write 后立即可见）。
-- 增量渲染验证：cpu/mem 变化只重写输入区分隔线（不重写 hello/answer）。
+- 增量渲染验证：cpu/mem 变化只重写输入区分隔线（不重写已提交内容）。
