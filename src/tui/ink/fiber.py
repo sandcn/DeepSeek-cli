@@ -55,19 +55,23 @@ class RefHook:
 
 @dataclass
 class EffectHook:
-    """use_effect hook 节点。
+    """use_effect / useLayoutEffect hook 节点。
 
     Attributes:
         create: effect 创建函数（挂载/依赖变化时调用，返回销毁函数）。
         deps: 依赖列表。
         destroy: 上次的销毁函数。
         last_deps: 上次提交的依赖列表（用于检测变化）。
+        layout: True=useLayoutEffect（布局后立即同步执行）；False=useEffect
+            （passive，帧渲染后执行）。React 语义：layout effects 先于
+            passive effects 提交。
     """
 
     create: Any = None
     deps: Any = None
     destroy: Any = None
     last_deps: Any = None
+    layout: bool = False
 
 
 @dataclass

@@ -666,15 +666,26 @@ class Reconciler:
         （子组件 effect 先于父组件 effect 提交）——修复前 ``_traverse_functions``
         前序遍历父先子后，与 React 相反。实现：前序收集 function fiber 列表
         （``_traverse_functions`` 保持前序不变），再 reversed 执行（后序提交）。
+
+        方向4（layout/passive 两阶段）：React 中 **layout effects 先于 passive
+        effects** 提交——先遍历提交 layout（``useLayoutEffect``，布局后同步），
+        再遍历提交 passive（``useEffect``）。两阶段各自保持子先父后的后序。
         """
         collected: list[Fiber] = []
         self._traverse_functions(root, collected.append)
+        # 第一阶段：layout effects（useLayoutEffect）
         for fiber in reversed(collected):
-            self._commit_live(fiber)
+            self._commit_live(fiber, layout=True)
+        # 第二阶段：passive effects（useEffect）
+        for fiber in reversed(collected):
+            self._commit_live(fiber, layout=False)
 
-    def _commit_live(self, fiber: Fiber) -> None:
+    def _commit_live(self, fiber: Fiber, layout: bool) -> None:
+        """提交依赖变化的 effect（layout=True 仅 layout effects；False 仅 passive）。"""
         for hook in fiber.hooks:
             if not isinstance(hook, EffectHook):
+                continue
+            if hook.layout != layout:
                 continue
             if hook.create is None and hook.destroy is None:
                 continue

@@ -849,14 +849,55 @@ class TestUseContextCache:
 
 
 class TestUseLayoutEffectDocs:
-    """方向2 L5 — useLayoutEffect 评估结论文档化（可选断言，可追溯）。"""
+    """方向4 — useLayoutEffect 独立时序（layout 先于 passive）文档化。"""
 
-    def test_uselayouteffect_docstring_records_evaluation(self):
-        """useLayoutEffect docstring 明确与 useEffect 等价 + 独立 hook 类型评估不实施。"""
-        from src.tui.ink.hooks import useLayoutEffect
+    def test_uselayouteffect_docstring_records_independent_timing(self):
+        """useLayoutEffect docstring 明确 layout/passive 两阶段提交 + 独立时序。"""
+        from src.tui.ink.hooks import useLayoutEffect, use_effect
         doc = useLayoutEffect.__doc__ or ""
-        assert "与 useEffect 等价" in doc
-        assert "不实施" in doc
+        assert "layout" in doc
+        assert "passive" in doc
+        assert "先于" in doc
+
+    def test_layout_effect_sets_layout_flag(self):
+        """useLayoutEffect 创建 layout=True 的 EffectHook；use_effect 为 False。"""
+        from src.tui.ink.hooks import useLayoutEffect, use_effect
+        from src.tui.ink.fiber import Fiber, EffectHook
+
+        # 用 _next_hook 需要渲染上下文——直接验证创建路径
+        calls = {}
+
+        def Comp(props):
+            useLayoutEffect(lambda: calls.setdefault("layout", 0) or None, [])
+            use_effect(lambda: calls.setdefault("passive", 0) or None, [])
+            return h(TEXT, {"children": "x"})
+
+        from src.tui.ink.reconciler import Reconciler
+        r = Reconciler()
+        root = r.create_root()
+        r.render(root, h(Comp), 80, 24)
+        fiber = root.child
+        # 顺序：useLayoutEffect 先注册（hook index 0）
+        assert isinstance(fiber.hooks[0], EffectHook)
+        assert fiber.hooks[0].layout is True
+        assert isinstance(fiber.hooks[1], EffectHook)
+        assert fiber.hooks[1].layout is False
+
+    def test_layout_effect_commits_before_passive(self):
+        """两阶段提交：layout effects 先于 passive effects 执行（后序）。"""
+        from src.tui.ink.hooks import useLayoutEffect, use_effect
+        order = []
+
+        def Comp(props):
+            useLayoutEffect(lambda: order.append("layout"), [])
+            use_effect(lambda: order.append("passive"), [])
+            return h(TEXT, {"children": "x"})
+
+        from src.tui.ink.reconciler import Reconciler
+        r = Reconciler()
+        root = r.create_root()
+        r.render(root, h(Comp), 80, 24)
+        assert order == ["layout", "passive"], f"layout 应先于 passive: {order!r}"
 
 
 class TestUnmountedSetterGuard:

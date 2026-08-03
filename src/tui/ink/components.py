@@ -262,8 +262,7 @@ def _paint_impl(fiber: Fiber, canvas: list[dict]) -> None:
     if ftype == "fragment":
         # 透明分组容器：直接绘制子节点（无独立 box——layout_children 已将
         # fragment 扁平化；本分支为防御，覆盖 fragment 被直接调度的路径）
-        for child in layout_children(fiber):
-            _paint(child, canvas)
+        _paint_children(fiber, canvas)
         return
 
     # ── 自定义 host（注册表） ──
@@ -286,8 +285,26 @@ def _paint_impl(fiber: Fiber, canvas: list[dict]) -> None:
         border = 0
     if border:
         _paint_border(fiber, canvas, border)
-    for child in layout_children(fiber):
-        _paint(child, canvas)
+    _paint_children(fiber, canvas)
+
+
+def _paint_children(fiber: Fiber, canvas: list) -> None:
+    """绘制 fiber 的直接 host 子节点（跳过 function 链、扁平化 fragment）。
+
+    方向4 性能优化：与 ``layout_children`` 遍历语义一致（跳过 function 链 +
+    fragment 递归展开），但**不构建中间列表**——容器绘制时直接沿 child/sibling
+    链递归调用 ``_paint``（大组件树如 ChatView 1000+ 子 TEXT 每帧少构建一次
+    layout_children 结果列表，避免 O(n) 列表分配）。
+    """
+    child = fiber.child
+    while child is not None:
+        host = _skip_function(child)
+        if host is not None:
+            if host.is_host and host.type == "fragment":
+                _paint_children(host, canvas)
+            else:
+                _paint(host, canvas)
+        child = child.sibling
 
 
 def _canvas_row_to_line(row) -> Line:

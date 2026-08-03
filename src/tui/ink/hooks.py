@@ -269,42 +269,49 @@ def use_ref(initial: Any = None) -> RefHook:
 
 
 def use_effect(create: Callable[[], Any] | None, deps: list | tuple | None = None) -> EffectHook:
-    """React useEffect 等价物（提交期执行）。
+    """React useEffect 等价物（提交期执行，passive——layout 之后）。
 
     Args:
         create: 创建函数（挂载或依赖变化时执行，返回销毁函数）。
         deps: 依赖列表；None 表示每次渲染都执行。
 
     Returns:
-        EffectHook 节点。
+        EffectHook 节点（layout=False）。
     """
     hook = _next_hook(EffectHook, create, deps, None, None)
     hook.create = create
     hook.deps = list(deps) if deps is not None else deps
+    hook.layout = False
     return hook
 
 
 def useLayoutEffect(create: Callable[[], Any] | None, deps: list | tuple | None = None) -> EffectHook:
-    """React useLayoutEffect 等价物（方向② 步骤5，当前为 useEffect 别名）。
+    """React useLayoutEffect 等价物（布局后同步执行，先于 passive useEffect）。
 
-    当前架构无「绘制前」阶段（非全屏流动模型：单帧渲染 + 调和后统一提交
-    effects），useLayoutEffect 与 useEffect 均在调和后提交期执行，行为
-    等价。保留命名供 React 生态组件移植（hook 签名一致）。
+    方向4（独立时序）：修复前为 useEffect 别名——所有 effects 在调和后统一
+    提交，无「绘制前」区分。现引入 layout/passive 两阶段提交：
+      - layout effects（useLayoutEffect）：布局阶段后**立即同步**执行——用于
+        需要测量/同步副作用且须在绘制前完成的场景（React 语义：DOM 变更后
+        同步执行、阻塞绘制）；
+      - passive effects（useEffect）：layout 之后执行（当前框架无真实「绘制
+        后」异步窗口，passive 与 layout 在同一个 reconciler.render 提交期内
+        执行，仅先后不同——layout 先、passive 后，与 React 一致）。
 
-    方向2 L5 评估结论（可追溯）：**当前与 useEffect 等价（无绘制前阶段）**；
-    独立 hook 类型（区分 use_layout_effect）评估——需引入「绘制前提交
-    期」基础设施（effects 分批：layout effects 在布局后立即执行、passive
-    effects 在帧后执行），当前无消费方需要该时序差异，**收益低、不实施**
-    （保持单一 EffectHook 类型，避免 hook 类型不一致编程错误面扩大）。
+    组件可依赖此提交顺序（如 layout effect 写入共享状态、passive effect 读取
+    最新值）。保留命名供 React 生态组件移植（hook 签名一致）。
 
     Args:
         create: 创建函数（挂载或依赖变化时执行，返回销毁函数）。
         deps: 依赖列表；None 表示每次渲染都执行。
 
     Returns:
-        EffectHook 节点。
+        EffectHook 节点（layout=True）。
     """
-    return use_effect(create, deps)
+    hook = _next_hook(EffectHook, create, deps, None, None)
+    hook.create = create
+    hook.deps = list(deps) if deps is not None else deps
+    hook.layout = True
+    return hook
 
 
 # ═══════════════════════════════════════════════════════════
