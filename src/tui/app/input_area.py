@@ -109,22 +109,44 @@ def _desc_column_width(width: int) -> int:
     return max(8, min(int(width) // 3, 40, int(width) - 12))
 
 
+def _completion_item_rows() -> int:
+    """补全弹窗候选项最大行数（终端高度约束，防超屏）。
+
+    预留顶部标题 1 + 弹窗标题 1 + 弹窗提示行 1 + 状态栏 1 + 输入区分隔线 1
+    + 输入行 1 + 输入下分隔线 1 + 时间戳 1 ≈ 8 行；候选项 + 说明行数限制在
+    ``max(6, h - 10)``。正常补全（≤20 项）不受影响；极长说明 / user_select
+    大量选项时弹窗不超屏。
+
+    Returns:
+        候选项（含说明）最大渲染行数。
+    """
+    try:
+        from src.tui._screen import _get_terminal_size
+        _, h = _get_terminal_size()
+        return max(6, h - 10)
+    except Exception:
+        return 12
+
+
 def _completion_height(completion, width=None) -> int:
     """补全弹窗高度（标题 + 候选项 + 提示行）。
 
     分栏说明模式（split_desc 且存在说明）下，高度取选项数与当前选中项说明
     换行行数的较大值——说明可多行，弹窗随说明行数增高。
+
+    方向4（超屏防护）：候选项行数经 ``_completion_item_rows`` 限制——大量
+    选项 / 超长说明时弹窗不超终端高度（渲染截断与高度一致，光标定位正确）。
     """
     if completion is None or not completion.visible or not completion.items:
         return 0
     n = len(completion.items)
     descs = completion.descriptions or []
     if not (getattr(completion, "split_desc", False) and descs) or width is None:
-        return n + 2
+        return min(n, _completion_item_rows()) + 2
     desc_w = _desc_column_width(width)
     sel = max(0, min(completion.selected, len(descs) - 1))
     desc_lines = _wrap_by_width(descs[sel] or "", desc_w)
-    return max(n, len(desc_lines)) + 2
+    return min(max(n, len(desc_lines)), _completion_item_rows()) + 2
 
 
 def _is_search_active(search) -> bool:
@@ -274,7 +296,9 @@ def _build_lines(fiber) -> list[Line]:
             )
             desc_text = descs[selected] if 0 <= selected < len(descs) else ""
             desc_lines = _wrap_by_width(desc_text or "", desc_w)
-            n_rows = max(len(items), len(desc_lines))
+            # 方向4（超屏防护）：候选项 + 说明行数限制（与 _completion_height
+            # 一致——超长说明 / 大量选项时弹窗不超终端高度）。
+            n_rows = min(max(len(items), len(desc_lines)), _completion_item_rows())
             for row in range(n_rows):
                 line = Line()
                 # 左栏：选项
@@ -299,7 +323,11 @@ def _build_lines(fiber) -> list[Line]:
                 lines.append(line)
         else:
             cell_w = max(1, min(max((_vwidth(i) for i in items), default=10) + 4, width - 2) - 3)
-            for i, item in enumerate(items):
+            # 方向4（超屏防护）：大量选项时截断渲染行数（与 _completion_height
+            # 一致——超出终端的选项不渲染，弹窗不超屏）。
+            shown = min(len(items), _completion_item_rows())
+            for i in range(shown):
+                item = items[i]
                 line = Line()
                 if i == selected:
                     line.append(" \u25b6 ", Style(fg=15, bg=sel_bg))
