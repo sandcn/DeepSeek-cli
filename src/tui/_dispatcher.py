@@ -28,7 +28,6 @@ from src.tui.events.event_types import DisplayEvent
 if TYPE_CHECKING:
     from src.tui.events.event_types import (
         ContentChunkEvent,
-        DisplayEvent,
         ModelPhaseEvent,
         OutputEvent,
         ParseInfoDoneEvent,

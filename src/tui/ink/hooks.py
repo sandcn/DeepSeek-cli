@@ -593,7 +593,6 @@ def useImperativeHandle(ref, factory: Callable, deps: list | tuple | None = None
         factory: 生成句柄的工厂函数。
         deps: 依赖列表；None 表示每次渲染都更新。
     """
-    fiber = _current()
     hook = _next_hook(MemoHook, factory, deps, None, None)
     hook.factory = factory
     hook.deps = list(deps) if deps is not None else deps
