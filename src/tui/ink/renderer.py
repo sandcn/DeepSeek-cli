@@ -353,7 +353,7 @@ class InkRenderer:
             #   走物理映射重写（与缩短同逻辑，仅内容变化行重写）；等高进入
             #   屏幕内（new_h+1 <= height）同样增量（可见区顶部 doc_idx<0 空行
             #   区清空）——不重建、不清屏。
-            self._rewrite_drifted(frame, prev_h, new_h)
+            self._rewrite_drifted(frame, prev_h, new_h, first_diff=i)
             return
 
         if delta == 0:
@@ -421,7 +421,7 @@ class InkRenderer:
         ):
             # 增量缩短（文档仍高于屏幕或进入屏幕内）：重写可见区变化行 +
             # 清残留/清空行区，不清屏重建（物理缓冲 _buf_h 保持）。
-            self._rewrite_drifted(frame, prev_h, new_h)
+            self._rewrite_drifted(frame, prev_h, new_h, first_diff=i)
             self._prev = frame
             return
 
@@ -775,7 +775,9 @@ class InkRenderer:
             break
         return j
 
-    def _rewrite_drifted(self, frame: Frame, prev_h: int, new_h: int) -> None:
+    def _rewrite_drifted(
+        self, frame: Frame, prev_h: int, new_h: int, first_diff: int | None = None,
+    ) -> None:
         """漂移物理映射重写（缩短/等高）：重写可见区变化行 + 清残留。
 
         用户需求「除 resize 外均增量」：替代原「文档高于屏幕时缩短 → 全量
@@ -822,24 +824,15 @@ class InkRenderer:
         buf_h = self._buf_h
         buf_top = max(0, buf_h - height)  # 可见区首物理行（0-based）
         prev = self._prev
-        # 顶部对齐：物理行 q → doc q（drift=0）；底部对齐：drift = buf_h-new_h-1。
-        # old_drift 基于**切换前**状态（物理行 q 当前显示的 prev 行偏移）。
+        # ★ BUG-68：doc 缩短后滚动区有内容变化（首差异行 <= buf_top，滚动区
+        #   不可达不重写 → doc 中部行永久陈旧，如 6→5→4 行序列中 'p3' 丢失）
+        #   时切换底部对齐，让 doc 内容贴可见区底部显示。仅尾部删除（首差异
+        #   行 > buf_top）保持顶部对齐（补全弹窗闪烁修复契约，
+        #   test_renderer_screen 锁定）。
         if self._top_aligned:
             old_drift = 0
             if new_h + 1 > height:
-                # ★ 渲染错乱（模糊测试锁定）：doc 缩短导致物理缓冲漂移
-                #   （buf_h > new_h+1）且新 doc 大部分在滚动区（可见区显示的
-                #   doc 行数 <= 滚动区 doc 行数）时切换底部对齐——顶部对齐下
-                #   doc 0 固定在物理行 0，缩短后 doc 内容偏上滚出（滚动区行
-                #   不可达不重写，内容陈旧），用户看不到缩短后的完整 doc
-                #   （如 6→5→4 行序列中 doc 行 2 'p3' 永久丢失）。切换底部
-                #   对齐后 doc 底部贴可见区底部，doc 内容尽量显示在可见区。
-                #   弹窗场景（doc 远高于屏幕，可见区 doc 行数 >> 滚动区）保持
-                #   顶部对齐——避免全可见区重写闪烁（test_completion_flash_fix
-                #   锁定）。
-                visible_doc_rows = max(0, min(new_h, buf_h) - buf_top)
-                scrollback_doc_rows = min(buf_top, new_h)
-                if scrollback_doc_rows > visible_doc_rows:
+                if first_diff is not None and first_diff <= buf_top:
                     self._top_aligned = False
                     drift = buf_h - new_h - 1
                 else:
