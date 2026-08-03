@@ -304,6 +304,13 @@ class TestChatUIConsumerPublicMethods:
         assert cmd.messages == [{"role": "user", "content": "hi"}]
         assert cmd.speed == 2
 
+    def test_clear_messages_pushes_clear_msgs_cmd(self, mock_consumer):
+        """clear_messages 应推 ClearMsgsCmd（编辑会话重渲染前清空旧显示）。"""
+        from src.tui._const import ClearMsgsCmd
+        mock_consumer.clear_messages()
+        cmd = mock_consumer._engine.push_cmd.call_args[0][0]
+        assert isinstance(cmd, ClearMsgsCmd)
+
     def test_flush_delegates(self, mock_consumer):
         """flush 应委托给 engine.flush。"""
         mock_consumer.flush(timeout=3.0)

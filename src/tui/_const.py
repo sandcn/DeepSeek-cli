@@ -88,11 +88,11 @@ _C_RESET         = "\033[0m"
 
 
 # ═══════════════════════════════════════════════════════════
-# RenderCommand — 渲染命令枚举（向后兼容，含全部 20 个值）
+# RenderCommand — 渲染命令枚举（向后兼容，含全部 24 个值）
 # ═══════════════════════════════════════════════════════════
 
 class RenderCommand(IntEnum):
-    """渲染命令类型，替代魔数整数。合并 FrameworkCommand（框架命令）与 ChatCommand（聊天命令），值完全不变（20 个枚举值）。"""
+    """渲染命令类型，替代魔数整数。合并 FrameworkCommand（框架命令）与 ChatCommand（聊天命令），值完全不变（24 个枚举值）。"""
     REASONING = 0       # (0, text: str)
     CONTENT = 1         # (1, text: str)
     PHASE_DONE = 2      # (2, phase: str)
@@ -113,6 +113,7 @@ class RenderCommand(IntEnum):
     TOOL_OPEN = 21      # (21, tool_name, tool_id, detail) — 工具 box 打开
     TOOL_CLOSE = 22     # (22, tool_id, success) — 工具 box 关闭
     SUBAGENT_MARKDOWN = 23  # (23, text: str) — subagent 提词/返回 markdown 消息区块
+    CLEAR_MSGS = 24      # (24,) — 清空消息区显示（编辑/加载会话重渲染前使用）
 
 
 # ═══════════════════════════════════════════════════════════
@@ -191,6 +192,10 @@ class DisplayMsgsCmd(RenderCmd):
     cid: int = RenderCommand.DISPLAY_MSGS
     messages: list = field(default_factory=list)
     speed: int = 0
+
+@dataclass(frozen=True)
+class ClearMsgsCmd(RenderCmd):
+    cid: int = RenderCommand.CLEAR_MSGS
 
 @dataclass(frozen=True)
 class ToolCountIncCmd(RenderCmd):

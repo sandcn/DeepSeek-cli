@@ -160,10 +160,25 @@ class DeitmsgPlugin(InteractiveCommandPlugin):
                     )
 
         # ── 显示沙盒还原信息并重新渲染 ──
+        #    与 /editmsg 同语义：先清空消息区旧显示，再重新渲染剩余消息一次。
         if needs_rerender and chat_ui is not None:
-            # 视觉分隔线
+            # 1. 先清空消息区旧显示（删除被编辑消息及其后内容的旧渲染）
+            try:
+                chat_ui.clear_messages()
+            except Exception as exc:
+                _logger.warning(
+                    "DeitmsgPlugin clear_messages 异常: %s", exc
+                )
+            # 2. 重新渲染截断后的剩余消息（一次，不追加残留副本）
+            try:
+                non_system = _non_system_messages(session)
+                chat_ui.display_messages(non_system, speed=0)
+            except Exception as exc:
+                _logger.warning(
+                    "DeitmsgPlugin display_messages 异常: %s", exc
+                )
+            # 3. 视觉分隔线 + 沙盒还原信息（在 display_messages 之后，避免被消息渲染滚动覆盖）
             chat_ui.write_line(f"  {DIM}{'─' * 40}{RESET}")
-            # 输出沙盒还原信息
             if restored_count > 0:
                 chat_ui.write_line(
                     f"  {GREEN}\u2713{RESET} \u5df2\u8fd8\u539f {restored_count} \u4e2a\u6587\u4ef6\u6c99\u76d2"
@@ -171,14 +186,6 @@ class DeitmsgPlugin(InteractiveCommandPlugin):
             else:
                 chat_ui.write_line(
                     f"  {DIM}\u6c99\u76d2\u65e0\u6587\u4ef6\u9700\u8fd8\u539f{RESET}"
-                )
-            # 重新渲染消息到上屏
-            try:
-                non_system = _non_system_messages(session)
-                chat_ui.display_messages(non_system, speed=0)
-            except Exception as exc:
-                _logger.warning(
-                    "DeitmsgPlugin display_messages 异常: %s", exc
                 )
 
             # 确保渲染命令在插件返回前排空

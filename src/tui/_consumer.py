@@ -26,7 +26,7 @@ if TYPE_CHECKING:
 from src.tui._const import (
     RenderCmd,
     UserMsgCmd, NotificationCmd, ErrorCmd,
-    WriteLineCmd, DisplayMsgsCmd,
+    WriteLineCmd, DisplayMsgsCmd, ClearMsgsCmd,
 )
 from src.renderer._locks import render_lock
 from src.tui.state.consumer_registry import (
@@ -220,6 +220,16 @@ class ChatUIConsumer:
 
     def display_messages(self, messages: list[dict], speed: int = 0) -> None:
         self._engine.push_cmd(DisplayMsgsCmd(messages=messages, speed=speed))
+
+    def clear_messages(self) -> None:
+        """清空消息区显示（/editmsg /deitmsg 编辑后重渲染前使用）。
+
+        推入 ``ClearMsgsCmd``（LOW 优先级，与 ``DisplayMsgsCmd``/``WriteLineCmd``
+        同批按序处理）——先删除消息区旧显示，再重新渲染剩余消息，避免编辑后
+        旧消息与重渲染副本叠加上屏。内部委托 ``model.reset_display()``，
+        保留底部栏状态与输入缓冲（不丢输入）。
+        """
+        self._engine.push_cmd(ClearMsgsCmd())
 
     def wait_for_user_input(
         self, monitor, prefill: str = "", timeout: float | None = None,

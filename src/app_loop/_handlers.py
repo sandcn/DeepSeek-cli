@@ -76,8 +76,13 @@ async def _handle_editmsg_cmd(session, state) -> None:
             chat_ui.resume()
 
     # ★ 编辑后重新渲染剩余消息到上屏（scroll 区域内）
+    #    与 editmsg_plugin 同语义：先清空消息区旧显示，再重新渲染剩余消息一次。
     if needs_rerender and chat_ui is not None:
         non_system = _non_system_messages(session)
+        try:
+            chat_ui.clear_messages()
+        except Exception:
+            _logger.debug("_handle_editmsg_cmd clear_messages 异常", exc_info=True)
         chat_ui.display_messages(non_system, speed=0)
 
 

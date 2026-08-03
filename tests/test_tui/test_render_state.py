@@ -11,7 +11,10 @@
 
 from __future__ import annotations
 
-from src.tui._const import MainPhaseCmd, ContentCmd, ReasoningCmd, PhaseDoneCmd
+from src.tui._const import (
+    MainPhaseCmd, ContentCmd, ReasoningCmd, PhaseDoneCmd,
+    DisplayMsgsCmd, ClearMsgsCmd,
+)
 from src.tui.app.model import AppModel, ReasoningState, _single_line_detail
 from src.tui.app.apply import apply_cmd
 
@@ -234,6 +237,61 @@ class TestResetDisplay:
         assert m.active_tool["name"] == "Bash"  # get_tool_display_name("bash") → 完整名
         m.close_tool_box("t1", True)
         assert m.active_tool is None
+
+
+class TestClearMsgsRenderIntegration:
+    """CLEAR_MSGS + DISPLAY_MSGS 批次渲染集成 — 编辑后旧消息从屏幕上消失。
+
+    /editmsg 用户需求：按下回车确认选择后，删除消息区原来显示的信息，
+    把剩下信息重新渲染一次。本测试从「模型 + 组件树渲染」层面验证：
+    clear+display 同批应用后，渲染帧只含剩余消息，被编辑掉的内容不再出现。
+    """
+
+    @staticmethod
+    def _render_plains(model, width=80) -> list[str]:
+        from src.tui.app.app import build_app_element
+        from src.tui.ink.reconciler import Reconciler
+        from src.tui.ink.components import render_frame
+        r = Reconciler()
+        root = r.create_root()
+        r.render(root, build_app_element(model, width), width, 24)
+        frame = render_frame(root, width)
+        return [line.plain for line in frame.lines]
+
+    def test_batch_clear_display_removes_old_and_renders_remaining(self):
+        """clear+display 同批应用 → 帧只含剩余消息，旧内容消失。"""
+        m = AppModel()
+        # 编辑前：消息区显示完整会话（含将被编辑的用户消息 + 回复）
+        apply_cmd(m, DisplayMsgsCmd(messages=[
+            {"role": "user", "content": "第一条"},
+            {"role": "assistant", "content": "回复1"},
+            {"role": "user", "content": "被编辑的消息"},
+            {"role": "assistant", "content": "回复2"},
+        ], speed=0))
+        before = self._render_plains(m)
+        assert any("被编辑的消息" in p for p in before)
+        assert any("回复2" in p for p in before)
+
+        # 编辑生效后：clear → 重渲染剩余消息（同批按序）
+        apply_cmd(m, ClearMsgsCmd())
+        apply_cmd(m, DisplayMsgsCmd(messages=[
+            {"role": "user", "content": "第一条"},
+            {"role": "assistant", "content": "回复1"},
+        ], speed=0))
+
+        after = self._render_plains(m)
+        # 剩余消息仍在
+        assert any("第一条" in p for p in after)
+        assert any("回复1" in p for p in after)
+        # 被编辑掉的内容不再出现（消息区信息已删除）
+        assert not any("被编辑的消息" in p for p in after), (
+            f"被编辑消息不应残留: {after}"
+        )
+        assert not any("回复2" in p for p in after), (
+            f"被编辑消息后的回复不应残留: {after}"
+        )
+        # 不追加残留副本：剩余消息恰好一次
+        assert sum(1 for p in after if "第一条" in p) == 1
 
 
 class TestChatViewCompositeKey:

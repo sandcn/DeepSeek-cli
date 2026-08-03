@@ -29,6 +29,7 @@ from src.tui._const import (
     SubagentFrameCmd,
     SplashCmd,
     DisplayMsgsCmd,
+    ClearMsgsCmd,
     SubagentMarkdownCmd,
     _CLEAR_PARSE_LINE,
 )
@@ -841,6 +842,64 @@ class TestDisplayMsgsNoSeparator:
         assert kinds == ["user", "write_line"]
         assert any("a2" in b.lines[0].plain for b in m.blocks if b.kind == "write_line")
         assert not any(l.plain.startswith("  \u2500") for b in m.blocks for l in b.lines)
+
+
+class TestClearMsgs:
+    """CLEAR_MSGS — 清空消息区显示（编辑会话重渲染前使用）。"""
+
+    def test_clear_resets_blocks_committed(self):
+        """clear 后 blocks/committed_lines/committed_count 全部清空。"""
+        m = _model()
+        apply_cmd(m, DisplayMsgsCmd(messages=[{"role": "user", "content": "old"}], speed=0))
+        apply_cmd(m, WriteLineCmd(text="  \u2500 old separator"))
+        assert len(m.blocks) == 2
+        assert len(m.committed_lines) > 0
+        assert m.committed_count > 0
+
+        apply_cmd(m, ClearMsgsCmd())
+
+        assert m.blocks == []
+        assert m.committed_lines == []
+        assert m.committed_count == 0
+
+    def test_clear_keeps_status_and_input(self):
+        """clear 保留底部栏状态与输入缓冲（reset_display 语义）。"""
+        m = _model()
+        m.status.model_name = "deepseek-chat"
+        m.input_text = "partial input"
+        m.input_cursor = 5
+        apply_cmd(m, DisplayMsgsCmd(messages=[{"role": "user", "content": "old"}], speed=0))
+
+        apply_cmd(m, ClearMsgsCmd())
+
+        assert m.status.model_name == "deepseek-chat"
+        assert m.input_text == "partial input"
+        assert m.input_cursor == 5
+
+    def test_clear_then_display_rerenders_fresh(self):
+        """clear + display 同批：旧显示消失，剩余消息全新渲染一次（无残留副本）。"""
+        m = _model()
+        # 模拟编辑前旧显示（user + assistant 消息）
+        apply_cmd(m, DisplayMsgsCmd(messages=[
+            {"role": "user", "content": "old user"},
+            {"role": "assistant", "content": "old assistant"},
+        ], speed=0))
+        old_blocks = m.blocks
+
+        # 编辑生效后：clear → 只重渲染剩余消息
+        apply_cmd(m, ClearMsgsCmd())
+        apply_cmd(m, DisplayMsgsCmd(messages=[
+            {"role": "user", "content": "kept user"},
+        ], speed=0))
+
+        assert m.blocks != old_blocks
+        assert len(m.blocks) == 1
+        assert m.blocks[0].kind == "user"
+        assert "kept user" in m.blocks[0].lines[0].plain
+        # 被编辑掉的旧内容不再显示
+        plains = [l.plain for b in m.blocks for l in b.lines]
+        assert not any("old user" in p for p in plains)
+        assert not any("old assistant" in p for p in plains)
 
 
 class TestReflowCommitted:

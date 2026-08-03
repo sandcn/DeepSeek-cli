@@ -313,6 +313,17 @@ def _do_display_messages(model, cmd) -> None:
     # 无消息间分隔线（对齐 Claude Code：消息间仅空行分隔，由卡片尾空行承担）
 
 
+def _do_clear_msgs(model, cmd) -> None:
+    """清空消息区显示（/editmsg /deitmsg 等编辑后重渲染前使用）。
+
+    复用 ``model.reset_display()``（Ctrl+L 清屏语义）：清空聊天块/增量缓存/
+    推理内容通道/subagent 行/进行中工具/解析行，保留 ``status/input/completion``
+    （用户输入与底部栏状态不丢）。随后同批 ``DisplayMsgsCmd`` 重新渲染剩余消息
+    ——旧显示（含被编辑消息及其后内容）从屏幕消失，不再追加残留副本。
+    """
+    model.reset_display()
+
+
 _HANDLERS: dict[int, object] = {
 
     RenderCommand.NOTIFICATION: _do_notification,
@@ -335,6 +346,7 @@ _HANDLERS: dict[int, object] = {
     RenderCommand.USER_MSG: _do_user_message,
     RenderCommand.DISPLAY_MSGS: _do_display_messages,
     RenderCommand.SUBAGENT_MARKDOWN: _do_subagent_markdown,
+    RenderCommand.CLEAR_MSGS: _do_clear_msgs,
 }
 
 __all__ = ["apply_cmd", "build_user_line", "build_assistant_line"]

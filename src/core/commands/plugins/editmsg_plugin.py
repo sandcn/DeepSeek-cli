@@ -165,14 +165,17 @@ class EditmsgPlugin(InteractiveCommandPlugin):
                 f"  {YELLOW}\u26a0{RESET} \u672a\u7f16\u8f91\u4efb\u4f55\u6d88\u606f\uff0c\u5df2\u53d6\u6d88"
             )
 
-        # ★ 编辑生效后重新渲染剩余消息到上屏
+        # ★ 编辑生效后：清空消息区旧显示 → 重新渲染剩余消息 → 显示沙盒恢复提示。
+        #    用户需求（/editmsg TUI）：按下回车确认选择后，删除消息区原来显示的
+        #    信息（含被编辑消息及其后内容的旧渲染），把剩下信息重新渲染一次，
+        #    再进入 prefill 编辑输入行。
         if needs_rerender and chat_ui is not None:
+            # 1. 先清空消息区旧显示（ClearMsgsCmd + DisplayMsgsCmd 同批按序处理）
+            chat_ui.clear_messages()
+            # 2. 重新渲染截断后的剩余消息（一次，不追加残留副本）
             non_system = _non_system_messages(session)
             chat_ui.display_messages(non_system, speed=0)
-
-        # ★ 显示沙盒恢复提示（在 display_messages 之后，避免被消息渲染滚动覆盖）
-        #    参考 deitmsg_plugin.py 中先 display_messages 后 write_line 的实现。
-        if needs_rerender and chat_ui is not None:
+            # 3. 显示沙盒恢复提示（在 display_messages 之后，避免被消息渲染滚动覆盖）
             chat_ui.write_line(f"  {DIM}{'─' * 40}{RESET}")
             if restore_text:
                 chat_ui.write_line(f"  {GREEN}\u2713{RESET} {restore_text}")

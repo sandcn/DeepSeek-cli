@@ -74,6 +74,18 @@ class TestPriority:
     def test_get_cmd_id(self):
         assert _get_cmd_id(ContentCmd(text="x")) == RenderCommand.CONTENT
 
+    def test_clear_msgs_low_priority_like_display(self):
+        """CLEAR_MSGS 与 DISPLAY_MSGS 同为 LOW 优先级（同批按序处理）。
+
+        /editmsg 编辑生效后 push 顺序：ClearMsgsCmd → DisplayMsgsCmd →
+        WriteLineCmd（全 LOW），保证「先清空旧显示，再重渲染剩余消息，
+        后写沙盒恢复提示」严格按序执行。
+        """
+        from src.tui._const import ClearMsgsCmd, DisplayMsgsCmd
+        assert _get_cmd_priority(ClearMsgsCmd()) == 3  # _CMD_PRIORITY_LOW
+        assert _get_cmd_priority(DisplayMsgsCmd(messages=[])) == 3
+        assert _get_cmd_priority(WriteLineCmd(text="")) == 3
+
 
 class TestCommandQueue:
     """InkSession 命令队列。"""
