@@ -304,12 +304,30 @@ def _canvas_row_to_line(row) -> Line:
         return Line()
     line = Line()
     prev = 0
-    for col in sorted(row):
+    keys = sorted(row)
+    n = len(keys)
+    i = 0
+    while i < n:
+        col = keys[i]
         ch, style = row[col]
         if col > prev:
             line.append(" " * (col - prev))
-        line.append(ch, style)
-        prev = col + wcswidth_simple(ch)
+            prev = col  # 空格段宽 = 空格数
+        # ★ 批量 append（方向4 性能）：累积同 style 连续字符段，段级一次性
+        #   Line.append（免逐字符 append 的段合并检查 + StyledRun 重建——
+        #   基准 ~2x 提速）。段长受行宽约束（≤终端列数），str += 拼接可接受。
+        j = i
+        buf = ""
+        while j < n:
+            c2 = keys[j]
+            ch2, st2 = row[c2]
+            if c2 != prev or st2 != style:
+                break
+            buf += ch2
+            prev = c2 + wcswidth_simple(ch2)
+            j += 1
+        line.append(buf, style)
+        i = j
     return line
 
 

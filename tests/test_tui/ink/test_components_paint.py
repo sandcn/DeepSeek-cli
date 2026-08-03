@@ -284,3 +284,41 @@ class TestCommittedPrefixNonTop:
         assert f2.lines[1] is f1.lines[1]      # 前缀行身份复用
         assert f2.lines[30] is f1.lines[30]    # 前缀行身份复用
         assert f2.lines[31].plain == "TAIL"
+
+
+class TestCanvasRowBatchAppend:
+    """方向4 — _canvas_row_to_line 批量 append 优化（输出一致性锁定）。"""
+
+    def _frame(self, el, width=30):
+        from src.tui.ink.reconciler import Reconciler
+        root = Reconciler.create_root()
+        recon = Reconciler()
+        recon.render(root, el, width, 24)
+        return _components.render_frame(root, width)
+
+    def test_batch_append_output_identical(self):
+        """批量 append 与逐字符 append 输出一致（多 style 段 + 间隙）。"""
+        from src.tui.ink import h, BOX, TEXT, StyledRun
+        from src.tui.core.style import Style
+        frame = self._frame(h(BOX, {"width": 20, "flexDirection": "row", "justifyContent": "center"}, [
+            h(TEXT, {"children": "AA", "color": 45}),
+            h(TEXT, {"children": "BB", "bold": True}),
+        ]))
+        line = frame.lines[0]
+        # 非全屏流动模型：行宽 = 内容实际列（含前导偏移，不填充右边界）
+        assert line.plain == "        AABB", f"实际 {line.plain!r}"
+        # 第二段加粗
+        assert any(r.style is not None and r.style.bold for r in line.runs)
+        assert any(r.style is not None and r.style.fg == 45 for r in line.runs)
+
+    def test_batch_append_cjk_gap(self):
+        """批量 append 保留 CJK 间隙（显示宽度推进）。"""
+        from src.tui.ink import h, BOX, TEXT
+        frame = self._frame(h(BOX, {"width": 10, "flexDirection": "row", "justifyContent": "center"}, [
+            h(TEXT, {"children": "中文"}),
+            h(TEXT, {"children": "ab"}),
+        ]))
+        line = frame.lines[0]
+        # 中文(4) + ab(2) = 6，center 偏移 (10-6)//2 = 2 → "  中文ab"
+        assert line.plain == "  中文ab", f"实际 {line.plain!r}"
+        assert line.width == 8
