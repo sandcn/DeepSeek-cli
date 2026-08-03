@@ -48,11 +48,9 @@ from ._config_cmd import (
 )
 
 from ._data_cmd import (
-    _cmd_init,
     _cmd_load,
     _cmd_sessions,
     # 插件子类
-    InitCommand,
     LoadCommand,
     SessionsCommand,
     HelpCommand,

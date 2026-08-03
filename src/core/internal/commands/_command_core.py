@@ -90,7 +90,6 @@ COMMANDS_HELP = (
     f"  {TEAL}/model{RESET}    切换模型\n"
     f"  {TEAL}/system{RESET}   修改系统提示词\n"
     f"  {TEAL}/cost{RESET}     查看 token 用量和费用\n"
-    f"  {TEAL}/init{RESET}     生成项目摘要文件 init.md\n"
     f"  {TEAL}/load{RESET}     加载保存的对话 /load <id>\n"
     f"  {TEAL}/sessions{RESET} 列出所有保存的对话\n"
     f"  {TEAL}/theme{RESET}    切换配色主题: /theme <dark|light|high-contrast>\n"

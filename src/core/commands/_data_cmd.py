@@ -1,54 +1,14 @@
 """数据命令 — 文件读写/会话管理相关命令处理函数"""
 
-import os
-from ..constants import GREEN, YELLOW, RED, DIM, RESET, CYAN, filter_system, filter_non_system
+from ..constants import GREEN, YELLOW, DIM, RESET, CYAN, filter_system, filter_non_system
 from ..adapters.output import get_default_output_port
 from ...config import MODEL
-from ...api.model_async import call_model_sync
-from ...prompt_builder.project_summary import generate_summary_prompt
 from ..sandbox_manager import get_sandbox_manager
 from ..internal.commands._command_core import CommandContext
 
 _out = get_default_output_port()
 
-_SUMMARY_MAX_CHARS = 50000    # 摘要文件最大字符数，超出截断
 _SESSION_ID_TRUNCATE = 12     # 会话ID显示截断长度
-
-
-def _cmd_init(ctx):
-    filepath = "init.md"
-    if os.path.exists(filepath):
-        _out.write(f"{YELLOW}  ! init.md 已存在{RESET}", level="raw", source="cmd")
-        response = ctx.get_user_input("是否覆盖？(y/N): ").strip().lower()
-        if response != 'y':
-            _out.write(f"{GREEN}  + 已取消{RESET}", level="raw", source="cmd")
-            return True
-    try:
-        model = ctx.state.get("model", MODEL)
-        prompt = generate_summary_prompt()
-        if not prompt:
-            _out.write(f"{RED}  x 未读取到项目文件，无法生成摘要{RESET}", level="raw", source="cmd")
-            return True
-        summary = call_model_sync(
-            [{"role": "user", "content": prompt}],
-            model=model,
-        )
-        # 校验模型输出安全性和有效性
-        if summary is None or (isinstance(summary, tuple) and not summary[1]):
-            _out.write(f"{RED}  x 生成项目摘要失败（模型无返回）{RESET}", level="raw", source="cmd")
-            return True
-        summary_text = summary[1] if isinstance(summary, tuple) else str(summary)
-        # 限制输出大小，防止写出超大文件
-        if len(summary_text) > _SUMMARY_MAX_CHARS:
-            _out.write(f"{YELLOW}  ! 摘要过长({len(summary_text)}字符)，已截断至{_SUMMARY_MAX_CHARS}字符{RESET}", level="raw", source="cmd")
-            summary_text = summary_text[:_SUMMARY_MAX_CHARS]
-        from ...tools.utils import atomic_write_file
-        atomic_write_file(filepath, summary_text)
-        _out.write(f"{GREEN}  + 已生成 {filepath}{RESET}", level="raw", source="cmd")
-        _out.write(f"  {DIM}项目摘要已由模型生成，包含项目名称、描述、技术栈、结构等信息。{RESET}", level="raw", source="cmd")
-    except Exception as e:
-        _out.write(f"{RED}  x 生成文件失败: {e}{RESET}", level="raw", source="cmd")
-    return True
 
 
 def _cmd_load(ctx):
@@ -144,15 +104,6 @@ def _cmd_sessions(ctx):
 from .base import CommandPlugin, CommandMeta, get_plugin_registry
 
 
-class InitCommand(CommandPlugin):
-    """初始化新对话"""
-    def __init__(self):
-        self.meta = CommandMeta(name="init", description="生成项目摘要文件")
-
-    def execute(self, ctx: CommandContext) -> bool:
-        return _cmd_init(ctx)
-
-
 class LoadCommand(CommandPlugin):
     """加载历史对话"""
     def __init__(self):
@@ -182,7 +133,6 @@ class HelpCommand(CommandPlugin):
 
 
 # ── 自动注册插件 ────────────────────────────────────
-get_plugin_registry().register(InitCommand())
 get_plugin_registry().register(LoadCommand())
 get_plugin_registry().register(SessionsCommand())
 get_plugin_registry().register(HelpCommand())

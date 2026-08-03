@@ -37,7 +37,6 @@ from .commands._config_cmd import (  # noqa: F401, F811
 )
 
 from .commands._data_cmd import (  # noqa: F401, F811
-    _cmd_init,
     _cmd_load,
     _cmd_sessions,
 )
@@ -60,7 +59,6 @@ __all__ = [
     "_cmd_model",
     "_cmd_system",
     "_cmd_cost",
-    "_cmd_init",
     "_cmd_help",
     "_cmd_load",
     "_cmd_sessions",

@@ -237,7 +237,6 @@ python chat.py version
 | `/model` | — | 切换模型（无参数时交互选择，支持序号/名称） |
 | `/system` | — | 查看或追加系统提示词 |
 | `/cost` | — | 查看 token 用量和费用 |
-| `/init` | — | 生成项目摘要文件 init.md |
 | `/load <ID>` | — | 加载保存的对话 |
 | `/sessions` | — | 列出所有保存的对话 |
 | `/theme <名称>` | — | 切换配色主题（dark / light / high-contrast） |
