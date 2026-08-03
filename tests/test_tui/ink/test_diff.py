@@ -47,12 +47,180 @@ class TestFirstDiffLine:
         assert first_diff_line(f1, f2) == 0
 
 
+class TestFirstDiffLineStablePrefix:
+    """first_diff_line 稳定前缀跳过（PERF-7）。"""
+
+    def _mk(self, prefix_lines, tail_lines):
+        """构造带 stable_prefix 的 Frame：前缀 + 尾部。
+
+        prefix_lines 复用同一列表对象（模拟 committed 前缀复用）。
+        """
+        prefix = [Line.of(l) for l in prefix_lines]
+        tail = [Line.of(l) for l in tail_lines]
+        return Frame(
+            prefix + tail,
+            stable_prefix=prefix,
+            stable_prefix_offset=0,
+            stable_prefix_len=len(prefix),
+        )
+
+    def test_same_stable_prefix_skips_prefix(self):
+        """两帧 stable_prefix 同一列表 → 跳过前缀，直接定位尾部差异。"""
+        prev = self._mk(["c1", "c2", "c3"], ["status", "in1"])
+        new = self._mk(["c1", "c2", "c3"], ["status", "in2"])
+        # 前缀 3 行相同（同一对象跳过）→ 首差异在尾部第 5 行（0-based 4）
+        assert first_diff_line(prev, new) == 4
+
+    def test_same_stable_prefix_no_diff(self):
+        """两帧 stable_prefix 同一列表且尾部相同 → 无差异。"""
+        prev = self._mk(["c1", "c2"], ["tail"])
+        new = self._mk(["c1", "c2"], ["tail"])
+        assert first_diff_line(prev, new) == -1
+
+    def test_same_stable_prefix_height_grow(self):
+        """前缀相同 + 尾部增长 → 返回 prev 高度（从该行补写）。"""
+        prev = self._mk(["c1", "c2"], ["t1"])
+        new = self._mk(["c1", "c2"], ["t1", "t2"])
+        # 前 3 行相同 → 首差异 = 3（prev 高度）
+        assert first_diff_line(prev, new) == 3
+
+    def test_diff_stable_prefix_object_scans_all(self):
+        """stable_prefix 不同对象（committed 更新）→ 不跳过，正常逐行扫描。"""
+        prev = self._mk(["c1", "c2"], ["tail"])
+        # 重建 prefix（新列表对象）
+        prefix2 = [Line.of("c1"), Line.of("c2")]
+        new = Frame(
+            prefix2 + [Line.of("tail")],
+            stable_prefix=prefix2,
+            stable_prefix_offset=0,
+            stable_prefix_len=len(prefix2),
+        )
+        # 前缀行是不同 Line 对象但 runs 值相等 → 无差异
+        assert first_diff_line(prev, new) == -1
+        # 前缀内容变化 → 检测到
+        prefix3 = [Line.of("C1"), Line.of("c2")]
+        new3 = Frame(
+            prefix3 + [Line.of("tail")],
+            stable_prefix=prefix3,
+            stable_prefix_offset=0,
+            stable_prefix_len=len(prefix3),
+        )
+        assert first_diff_line(prev, new3) == 0
+
+    def test_nonzero_offset(self):
+        """非顶部（header 在 stable_prefix 之前）→ 从 offset 起跳过。"""
+        header1 = [Line.of("h1"), Line.of("h2")]
+        prefix1 = [Line.of("c1"), Line.of("c2"), Line.of("c3")]
+        tail1 = [Line.of("status")]
+        f1 = Frame(
+            header1 + prefix1 + tail1,
+            stable_prefix=prefix1,
+            stable_prefix_offset=2,
+            stable_prefix_len=len(prefix1),
+        )
+        # 第二帧：header 行是不同 Line 对象（值相同）→ 不跳过（仍逐行比较）；
+        # 前缀同一对象 → 跳过
+        header2 = [Line.of("h1"), Line.of("h2")]
+        prefix2 = prefix1  # 复用同一列表对象
+        tail2 = [Line.of("status2")]
+        f2 = Frame(
+            header2 + prefix2 + tail2,
+            stable_prefix=prefix2,
+            stable_prefix_offset=2,
+            stable_prefix_len=len(prefix2),
+        )
+        # header 两行值相同（不跳过但仍比较），前缀跳过，首差异在尾部第 6 行
+        assert first_diff_line(f1, f2) == 5
+
+    def test_stable_prefix_mismatched_len_falls_back(self):
+        """stable_prefix_len 不一致（布局变化）→ 不跳过，正常扫描。"""
+        prefix = [Line.of("c1"), Line.of("c2")]
+        f1 = Frame(
+            prefix + [Line.of("a")],
+            stable_prefix=prefix,
+            stable_prefix_offset=0,
+            stable_prefix_len=len(prefix),
+        )
+        f2 = Frame(
+            prefix + [Line.of("b")],
+            stable_prefix=prefix,
+            stable_prefix_offset=0,
+            stable_prefix_len=1,  # 与 f1 不一致 → 回退全量扫描
+        )
+        assert first_diff_line(f1, f2) == 2
+
+
 class TestHeightDelta:
     def test_positive(self):
         assert height_delta(_frame("a"), _frame("a", "b")) == 1
 
     def test_negative(self):
         assert height_delta(_frame("a", "b"), _frame("a")) == -1
+
+
+class TestRendererStablePrefixIntegration:
+    """render_frame + first_diff_line stable_prefix 端到端集成（PERF-7）。
+
+    验证带 stable_prefix 标记的 Frame 走 diff 路径时输出与逐行扫描一致。
+    """
+
+    def _new(self) -> tuple[InkRenderer, io.StringIO]:
+        out = io.StringIO()
+        return InkRenderer(stream=out), out
+
+    def test_render_with_stable_prefix_tail_change(self):
+        """带 stable_prefix 的大帧：尾部变化仅重写尾部行（前缀不动）。"""
+        r, out = self._new()
+        prefix = [Line.of(f"c{i}") for i in range(50)]
+        tail = [Line.of("status"), Line.of("in1")]
+        f1 = Frame(
+            prefix + tail,
+            stable_prefix=prefix,
+            stable_prefix_offset=0,
+            stable_prefix_len=len(prefix),
+        )
+        r.render(f1)
+        out.seek(0)
+        out.truncate()
+        # 第二帧：前缀同对象复用，尾部输入行变化
+        prefix2 = prefix  # 复用同一列表对象
+        tail2 = [Line.of("status"), Line.of("in2")]
+        f2 = Frame(
+            prefix2 + tail2,
+            stable_prefix=prefix2,
+            stable_prefix_offset=0,
+            stable_prefix_len=len(prefix2),
+        )
+        r.render(f2)
+        val = out.getvalue()
+        # 首差异 = 51（仅 in 行）→ 从第 52 行写起：上移 1 行 + in2 + 换行
+        assert "in2" in val
+        assert "c49" not in val  # 前缀不重写
+        assert val.count("\x1b[K") == 1
+        assert r.cursor_row == 53
+
+    def test_render_stable_prefix_matches_unmarked(self):
+        """stable_prefix 标记与未标记的 Frame 在内容一致时输出相同。"""
+        r1, out1 = self._new()
+        r2, out2 = self._new()
+        # 构造内容完全一致的两组帧
+        for _ in range(2):
+            prefix = [Line.of(f"c{i}") for i in range(20)]
+            tail = [Line.of("tail")]
+            marked = Frame(
+                prefix + tail,
+                stable_prefix=prefix,
+                stable_prefix_offset=0,
+                stable_prefix_len=len(prefix),
+            )
+            unmarked = Frame([Line.of(f"c{i}") for i in range(20)] + [Line.of("tail")])
+            r1.render(marked)
+            r2.render(unmarked)
+        out1.seek(0)
+        out2.seek(0)
+        assert out1.getvalue() == out2.getvalue(), (
+            "stable_prefix 标记帧与未标记帧渲染输出应一致"
+        )
 
 
 class TestInkRenderer:

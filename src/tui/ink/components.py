@@ -470,7 +470,15 @@ def render_frame(root: Fiber, width: int) -> Frame:
             if committed_box is not None and committed_box.y == 0:
                 tail_start = min(len(prefix), len(canvas))
                 tail = [_canvas_row_to_line(r) for r in canvas[tail_start:]]
-                return Frame(prefix + tail)
+                # ★ 稳定前缀（PERF-7）：prefix 为复用列表对象（``_committed_prefix``
+                # 缓存命中），标记 stable_prefix 使 ``first_diff_line`` 跳过前缀
+                # 区间（避免大文档每帧全量逐行 is 比较）。
+                return Frame(
+                    prefix + tail,
+                    stable_prefix=prefix,
+                    stable_prefix_offset=0,
+                    stable_prefix_len=len(prefix),
+                )
             # 非顶部：前缀行填入画布对应区域（_paint 命中缓存已跳过画布写入）。
             # ★ 方向3（性能）：改为「顶部画布行 + 前缀 + 尾部画布行」直接拼接——
             #   修复前先把前缀行逐行拷贝回画布再全量 ``_canvas_row_to_line``
@@ -484,7 +492,17 @@ def render_frame(root: Fiber, width: int) -> Frame:
             fit = min(len(prefix), max(0, len(canvas) - y0))
             header = [_canvas_row_to_line(r) for r in canvas[:y0]]
             tail = [_canvas_row_to_line(r) for r in canvas[y0 + fit:]]
-            return Frame(header + prefix[:fit] + tail)
+            # ★ 稳定前缀（PERF-7）：prefix 为复用列表对象（缓存命中），其
+            #   ``[:fit]`` 部分在 Frame.lines 的 [y0, y0+fit) 区间——标记
+            #   stable_prefix 使 ``first_diff_line`` 跳过该区间（前缀区间外
+            #   的 header/tail 行仍逐行比较）。防御：fit 可能 < len(prefix)
+            #   （reflow 布局陈旧），stable_prefix_len 用实际覆盖 fit。
+            return Frame(
+                header + prefix[:fit] + tail,
+                stable_prefix=prefix,
+                stable_prefix_offset=y0,
+                stable_prefix_len=fit,
+            )
     return Frame(_canvas_row_to_line(row) for row in canvas)
 
 

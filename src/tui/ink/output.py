@@ -64,7 +64,17 @@ class Line:
     __slots__ = ("runs",)
 
     def __init__(self, runs: Iterable[StyledRun] | None = None) -> None:
-        self.runs: list[StyledRun] = list(runs) if runs else []
+        # ★ 性能（PERF-7）：传入 list 时直接复用引用（免 O(n) 拷贝）——
+        #   ``Line([StyledRun(...), ...])`` 等调用方传入的均为临时新建 list
+        #   （构造后不再修改），复用安全；生成器/元组等非 list 才转换。
+        #   渲染热路径中每帧创建大量 Line（_canvas_row_to_line 等），
+        #   省一次列表拷贝。
+        if runs is None:
+            self.runs = []
+        elif isinstance(runs, list):
+            self.runs = runs
+        else:
+            self.runs = list(runs)
 
     @classmethod
     def of(cls, text: str, style: Style | None = None) -> "Line":
@@ -105,8 +115,13 @@ class Line:
         return "".join(r.text for r in self.runs)
 
     def clone(self) -> "Line":
-        """深拷贝行（runs 为不可变 StyledRun，浅拷贝列表即可）。"""
-        return Line(self.runs)
+        """深拷贝行（runs 为不可变 StyledRun，浅拷贝列表即可）。
+
+        显式 ``list(self.runs)`` 拷贝——``Line.__init__`` 对 list 直接复用
+        引用（PERF-7 优化），clone 必须创建独立 runs 列表（副本追加不影响
+        原行）。
+        """
+        return Line(list(self.runs))
 
     def __repr__(self) -> str:  # pragma: no cover - 调试用
         return f"Line({self.plain!r})"
@@ -122,12 +137,41 @@ class Frame:
 
     整个 UI 是一个输出文档：静态聊天历史 + 尾部 live 区（状态栏 + 输入）。
     每帧 = 完整文档的 Line 列表，供 InkRenderer 行级 diff。
+
+    Attributes:
+        lines: 帧行列表。
+        _stable_prefix: 稳定前缀列表对象（committed 前缀复用）；None 表示无。
+        _stable_prefix_offset: 稳定前缀在 lines 中的起始行号（0-based）。
+        _stable_prefix_len: 稳定前缀覆盖的行数。
     """
 
-    __slots__ = ("lines",)
+    __slots__ = ("lines", "_stable_prefix", "_stable_prefix_offset", "_stable_prefix_len")
 
-    def __init__(self, lines: Iterable[Line] | None = None) -> None:
-        self.lines: list[Line] = list(lines) if lines else []
+    def __init__(
+        self,
+        lines: Iterable[Line] | None = None,
+        stable_prefix: list | None = None,
+        stable_prefix_offset: int = 0,
+        stable_prefix_len: int = 0,
+    ) -> None:
+        # ★ 性能（PERF-7）：传入 list 时直接复用引用（免 O(n) 拷贝）——
+        #   ``render_frame`` 的 ``Frame(prefix + tail)`` 等调用方传入的均为
+        #   临时新建 list（构造后不再修改），复用安全；生成器/元组等非
+        #   list 才转换。渲染热路径中每帧创建 1 个 Frame（大文档含数千行），
+        #   省一次全列表拷贝。
+        # ★ 稳定前缀（PERF-7）：``render_frame`` 构建时标记 committed 前缀
+        #   为复用列表对象——`first_diff_line` 据此 O(1) 跳过前缀区间
+        #   （前缀元素跨帧同一 Line 对象 → 必然无差异），避免大文档每帧
+        #   全量逐行扫描（第一差异行位于尾部 live 区时）。
+        if lines is None:
+            self.lines = []
+        elif isinstance(lines, list):
+            self.lines = lines
+        else:
+            self.lines = list(lines)
+        self._stable_prefix = stable_prefix
+        self._stable_prefix_offset = stable_prefix_offset
+        self._stable_prefix_len = stable_prefix_len
 
     @property
     def height(self) -> int:

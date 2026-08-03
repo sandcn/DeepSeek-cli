@@ -14,6 +14,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from functools import lru_cache
 from typing import ClassVar
 
 # TrueColor 用于 dataclass 字段类型注解（from __future__ import annotations
@@ -76,6 +77,7 @@ class Style:
     dim: bool = False
     underline: bool = False
 
+    @lru_cache(maxsize=1024)
     def to_ansi(self) -> str:
         """构建 ANSI 转义序列。
 
@@ -84,6 +86,12 @@ class Style:
 
         fg/bg 为 TrueColor 时使用 24-bit ANSI 序列（38;2 / 48;2），
         为 int 时使用 256 色序列（38;5 / 48;5），保持向后兼容。
+
+        ★ 性能（PERF-7）：frozen dataclass 确定性输出 → lru_cache 缓存。
+        Style 为不可变值对象（fg/bg 为 int/TrueColor/None + 4 布尔），
+        实例数量有界（颜色组合 + 字型组合），maxsize=1024 防无限增长；
+        缓存命中免每帧重复构建 ANSI 序列（live 区渲染热路径）。
+        返回纯函数结果，无副作用，行为与未缓存完全一致。
 
         Returns:
             ANSI 转义序列，不含 RESET。所有属性均为默认值时返回空字符串。

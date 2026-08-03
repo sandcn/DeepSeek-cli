@@ -371,6 +371,14 @@ def wcswidth_simple(text: str) -> int:
             _char_width_cache.clear()
         _char_width_cache[ch] = w
         return w
+    # ★ 纯可打印 ASCII 快速路径（PERF-7）：C 实现的 ``isascii()`` +
+    # ``isprintable()`` 单趟扫描（比逐字符 Python 循环快数倍）——纯 ASCII
+    # 可打印字符串宽度 == 字符数（无 ANSI/控制/零宽/宽字符）。``isprintable()``
+    # 对 \x1b/控制字符返回 False（含转义序列的文本回退常规路径），对
+    # 非 ASCII（CJK/emoji/全角）由 ``isascii()`` 排除。渲染热路径中状态栏/
+    # 工具输出/输入行等大量纯 ASCII 文本受益。
+    if text.isascii() and text.isprintable():
+        return len(text)
     width = 0
     i = 0
     n = len(text)

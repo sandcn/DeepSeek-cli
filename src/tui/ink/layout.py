@@ -146,14 +146,21 @@ def _resolve_width(fiber: Fiber, avail: int) -> int:
 
 
 def _clamp_width(fiber: Fiber, w: int) -> int:
-    """对宽度应用 minWidth/maxWidth 钳制（内容推导/填充宽度共用）。"""
-    mn = fiber.props.get("minWidth")
+    """对宽度应用 minWidth/maxWidth 钳制（内容推导/填充宽度共用）。
+
+    ★ 性能（PERF-7）：无 ``minWidth``/``maxWidth`` 属性（绝大多数节点）走
+    快速路径直接 ``max(0, w)``——免 2 次 ``props.get`` + 类型兜底。
+    """
+    props = fiber.props
+    if "minWidth" not in props and "maxWidth" not in props:
+        return w if w > 0 else 0
+    mn = props.get("minWidth")
     if mn is not None:
         try:
             w = max(int(mn), w)
         except (TypeError, ValueError):
             pass
-    mx = fiber.props.get("maxWidth")
+    mx = props.get("maxWidth")
     if mx is not None:
         try:
             w = min(int(mx), w)
@@ -259,20 +266,34 @@ def _resolve_padding(fiber: Fiber) -> tuple[int, int, int, int]:
     - ``paddingLeft``/``paddingRight``/``paddingTop``/``paddingBottom``
       单边覆盖（React Ink 支持单边 padding）——缺省回退 ``paddingX``/``paddingY``。
     - 畸形值（None/对象/畸形串）兜底 0，与 width/height/border/margin 一致。
+
+    ★ 性能（PERF-7）：无任何 padding 属性的节点（绝大多数 BOX/STATIC）走
+    快速路径直接返回全 0——免 8 次 ``_int`` 函数调用与 8 次 ``props.get``
+    （大组件树每帧布局对每个容器调用本函数）。含 padding 属性的节点走
+    原有完整解析（行为不变）。
     """
+    props = fiber.props
+    if (
+        "padding" not in props
+        and "paddingX" not in props and "paddingY" not in props
+        and "paddingLeft" not in props and "paddingRight" not in props
+        and "paddingTop" not in props and "paddingBottom" not in props
+    ):
+        return (0, 0, 0, 0)
+
     def _int(v):
         try:
             return max(0, int(v))
         except (TypeError, ValueError):
             return 0
 
-    pad = _int(fiber.props.get("padding", 0))
-    pad_x = _int(fiber.props.get("paddingX", pad))
-    pad_y = _int(fiber.props.get("paddingY", pad))
-    pad_l = _int(fiber.props.get("paddingLeft", pad_x))
-    pad_r = _int(fiber.props.get("paddingRight", pad_x))
-    pad_t = _int(fiber.props.get("paddingTop", pad_y))
-    pad_b = _int(fiber.props.get("paddingBottom", pad_y))
+    pad = _int(props.get("padding", 0))
+    pad_x = _int(props.get("paddingX", pad))
+    pad_y = _int(props.get("paddingY", pad))
+    pad_l = _int(props.get("paddingLeft", pad_x))
+    pad_r = _int(props.get("paddingRight", pad_x))
+    pad_t = _int(props.get("paddingTop", pad_y))
+    pad_b = _int(props.get("paddingBottom", pad_y))
     return (pad_l, pad_r, pad_t, pad_b)
 
 
@@ -441,15 +462,17 @@ def _reflow_subtree(fiber: Fiber, new_y: int, new_x: int | None = None) -> None:
     fiber.layout_box = cb
     pad_l, pad_r, pad_t, pad_b = _resolve_padding(fiber)
     border = fiber.props.get("border", 0)
+    if border:
+        try:
+            border = max(0, int(border))
+        except (TypeError, ValueError):
+            border = 0
     margin = fiber.props.get("margin", 0)
-    try:
-        border = max(0, int(border))
-    except (TypeError, ValueError):
-        border = 0
-    try:
-        margin = max(0, int(margin))
-    except (TypeError, ValueError):
-        margin = 0
+    if margin:
+        try:
+            margin = max(0, int(margin))
+        except (TypeError, ValueError):
+            margin = 0
     gap = fiber.props.get("gap")
     if gap is not None:
         try:
@@ -744,15 +767,17 @@ def _measure(fiber: Fiber, x: int, y: int, avail_w: int, fill: bool = True) -> L
     #   ``paddingX/paddingY`` 控制横向/纵向，缺省回退 ``padding`` 均一值。
     pad_l, pad_r, pad_t, pad_b = _resolve_padding(fiber)
     border = fiber.props.get("border", 0)
-    try:
-        border = max(0, int(border))
-    except (TypeError, ValueError):
-        border = 0
+    if border:
+        try:
+            border = max(0, int(border))
+        except (TypeError, ValueError):
+            border = 0
     margin = fiber.props.get("margin", 0)
-    try:
-        margin = max(0, int(margin))
-    except (TypeError, ValueError):
-        margin = 0
+    if margin:
+        try:
+            margin = max(0, int(margin))
+        except (TypeError, ValueError):
+            margin = 0
     # ★ gap（完善 ink flexbox）：子节点间距——``gap`` 优先于 ``margin``
     #   （React Ink 现代 flexbox 语义：gap 仅影响兄弟间距，不影响外边距）。
     #   同时存在时 gap 胜出（显式 gap 意图明确）；缺省回退 margin。

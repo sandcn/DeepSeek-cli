@@ -663,9 +663,11 @@ class InkRenderer:
         runs: list[tuple[int, int]] = []
         in_run = False
         run_start = start
+        p_lines = prev.lines
+        f_lines = frame.lines
         for idx in range(start, n):
-            p = prev.lines[idx]
-            f = frame.lines[idx]
+            p = p_lines[idx]
+            f = f_lines[idx]
             differs = p is not f and p.runs != f.runs
             if differs and not in_run:
                 in_run = True

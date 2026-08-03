@@ -155,13 +155,14 @@ class Reconciler:
         （无 key 同 type 兄弟共享派生 key ``host:text`` 会错误复用首个）；type
         相同复用、不同删除重建。有显式 key 的元素保持 key 匹配。同 key 重复
         元素经 ``seen_keys`` 检测记 warning（当前静默创建新 fiber 行为保留）。
-        """
-        old_list: list[Fiber] = []
-        child = return_fiber.child
-        while child is not None:
-            old_list.append(child)
-            child = child.sibling
 
+        ★ 性能（PERF-7）：空元素快路径与稳定列表快路径均**在构建
+        ``old_list`` 之前**执行（旧实现先构建完整旧子链列表）——空元素
+        场景省 O(n) 列表分配；append-only 稳定列表场景（流式开放块每帧
+        1000 行 TEXT）经 ``_try_reuse_stable`` 沿链直接比较复用，省 1 次
+        O(n) 列表分配 + append。仅快路径不命中（中间插入/删除/重排）才
+        构建 old_list 走完整算法。
+        """
         # ★ 性能（方向1）：空元素快路径——直接删除全部旧子链（跳过 map
         #   构建与消费循环；``_mark_deleted`` 置 sibling=None，先取 next）。
         if not elements:
@@ -177,9 +178,15 @@ class Reconciler:
         #   与旧链一致时按序复用（免构建 key maps / consumed 集合）。流式
         #   开放块每帧 1000 行 TEXT（key ``chat-{i}-{row}``）场景关键收益：
         #   ``_try_reuse_stable`` 为 O(N) 线性比较，命中原 2 dict + 1 set
-        #   分配 + 逐项 dict 查找。
-        if self._try_reuse_stable(return_fiber, old_list, elements):
+        #   分配 + 逐项 dict 查找 + old_list 列表分配。
+        if self._try_reuse_stable(return_fiber, elements):
             return
+
+        old_list: list[Fiber] = []
+        child = return_fiber.child
+        while child is not None:
+            old_list.append(child)
+            child = child.sibling
 
         existing_map: dict[str, Fiber] = {}
         old_index_map: dict[str, int] = {}
@@ -261,34 +268,49 @@ class Reconciler:
     def _try_reuse_stable(
         self,
         return_fiber: Fiber,
-        old_list: list[Fiber],
         elements: list[Element],
     ) -> bool:
         """append-only 稳定列表快路径：按序复用旧 fiber + 创建尾部新元素。
 
-        触发条件（方向1）：``len(elements) >= len(old_list)`` 且前 N 个位置
-        key/type 与旧链一致（keyed 元素 key 相等；无 key 元素位置对应）。
+        触发条件（方向1）：``len(elements) >= len(old_child_chain)`` 且前 N 个
+        位置 key/type 与旧链一致（keyed 元素 key 相等；无 key 元素位置对应）。
         满足时行为与完整调和算法等价（复用/新建结果一致），但省去 key maps
         与 consumed 集合构建——流式开放块每帧 1000 行 TEXT 场景关键收益。
+
+        ★ 性能（PERF-7）：沿 ``return_fiber.child`` 链直接比较/复用，**不
+        构建 old_list 列表**（旧实现由调用方构建后传入）——稳定列表命中时
+        省 1 次 O(n) 列表分配 + append。
 
         Returns:
             True — 快路径已执行；False — 条件不满足（调用方走完整算法）。
         """
-        n_old = len(old_list)
-        if n_old == 0 or len(elements) < n_old:
+        child = return_fiber.child
+        if child is None:
             return False
+        # 第一趟：统计旧链长度 + 比较前 N 个 key/type
+        n_old = 0
+        cur = child
+        while cur is not None:
+            n_old += 1
+            cur = cur.sibling
+        if len(elements) < n_old:
+            return False
+        cur = child
         for i in range(n_old):
             el = elements[i]
-            of = old_list[i]
-            if not _is_same_type(of, el):
+            if not _is_same_type(cur, el):
                 return False
-            if el.props.get("key") is not None and of.key != el.key:
+            if el.props.get("key") is not None and cur.key != el.key:
                 return False
+            cur = cur.sibling
+        # 第二趟：按序复用 + 创建尾部新元素
         first: Fiber | None = None
         prev: Fiber | None = None
+        cur = child
         for i, el in enumerate(elements):
             if i < n_old:
-                fiber = old_list[i]
+                fiber = cur
+                cur = cur.sibling
                 fiber.props = dict(el.props)
                 fiber.deleted = False
                 fiber.return_ = return_fiber
