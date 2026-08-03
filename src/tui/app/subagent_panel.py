@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from src.tui.ink import h, TEXT, StyledRun, truncate_runs, use_memo
 from src.renderer.ansi.helpers import ansi_to_runs
+from src.tui._format import single_line
 
 
 def _render_children(model, width: int) -> list:
@@ -30,8 +31,8 @@ def _render_children(model, width: int) -> list:
             continue
         # 强制单行契约：来源字段可能含 \n/\r，直接渲染会被终端按换行拆成
         # 两行——显示前转义为字面量（与 _subagent_render.format_tool_record
-        # 语义一致）。
-        line = line.replace("\r", "\\r").replace("\n", "\\n")
+        # 语义一致；★ 方向5：委托 _format.single_line 单一真源）。
+        line = single_line(line)
         runs = truncate_runs(
             [StyledRun(r.text, r.style) for r in ansi_to_runs(line) if r.text],
             width,

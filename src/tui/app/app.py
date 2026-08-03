@@ -90,7 +90,7 @@ def _ParseLine(props) -> object:
     glow = time_glow(242, 252, 8.0)
     # 时间基 spinner（解析进度行常驻 live，10Hz 渲染时平滑推进）
     # ★ 方向4：帧序列唯一真源 _fx.SPINNER_FRAMES（原内联字符串收敛）
-    sp = _fx.SPINNER_FRAMES[_fx.spinner_frame(10.0, _fx.SPINNER_FRAMES)]
+    sp = _fx.spinner_char()
     runs = []
     first_text = True
     for r in line.runs:
@@ -137,7 +137,7 @@ def _StreamingLine(props) -> object:
     from src.tui.app import _fx
     c = time_glow(36, 49, 5.0)
     # ★ 方向4：spinner 帧序列唯一真源 _fx.SPINNER_FRAMES（原内联字符串收敛）
-    sp = _fx.SPINNER_FRAMES[_fx.spinner_frame(10.0, _fx.SPINNER_FRAMES)]
+    sp = _fx.spinner_char()
     return h(BOX, None, [
         h(TEXT, {"styled": [StyledRun(f"{sp} 生成中", Style(fg=c))]}),
     ])

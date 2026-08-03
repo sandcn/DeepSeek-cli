@@ -36,7 +36,7 @@ from src.tui._input import (
 from src.tui.core.style import Style
 from src.tui.ink import register_host, Line
 from src.tui.app import _fx
-from src.tui.app._theme import time_glow, _S_ACCENT, _S_DIM, _S_SEP, _S_TEXT, _S_TIME
+from src.tui.app._theme import sep_style, time_glow, _S_ACCENT, _S_DIM, _S_SEP, _S_TEXT, _S_TIME
 
 # 占位符
 _PLACEHOLDER_TEXT = "输入消息 · /help 查看命令 · Ctrl+N 切换模型 · Tab 补全"
@@ -249,7 +249,15 @@ def _build_popup_lines(completion, width: int, now: float) -> list:
     items = completion.items
     selected = completion.selected
     match_prefix = completion.match_prefix or ""
-    types = completion.types or [""] * len(items)
+    # ★ 缓存键稳定性（PERF-7 同族，BUG-73）：types 为空列表时用模块级空元组
+    #   （恒同对象）——``completion.types or [""] * len(items)`` 每次创建新
+    #   列表，`id(types)` 每帧变化 → 弹窗缓存永远 miss（每帧重建 20+ 候选项）。
+    #   与 descs 的 ``descriptions or ()`` 修复一致。types 非空（show_completions
+    #   传入）时保持列表引用稳定（不可变契约）。
+    types = completion.types or ()
+    # ★ 绘制用 types 列表：types 为空时生成 ``[""] * len(items)`` 供 ``types[i]``
+    #   索引（绘制阶段才展开，不进缓存键——键用稳定空元组 id）。
+    types_disp = list(types) if types else [""] * len(items)
     title = completion.title
     total = len(completion.texts) if completion.texts else len(items)
     # ★ 缓存键稳定性（PERF-7）：descriptions 为空时用模块级空元组（恒同对象）
@@ -259,10 +267,16 @@ def _build_popup_lines(completion, width: int, now: float) -> list:
     split = bool(getattr(completion, "split_desc", False)) and bool(descs)
     desc_w = _desc_column_width(width) if split else 0
     opt_w = max(1, width - desc_w - 1) if split else 0
-    # 弹窗呼吸色依赖 0.1s 桶（time_glow 内部 int(t/0.1)）——与 _build_lines
-    # 的 time_bucket 不同（后者随 status_active 用 0.1/0.25s），弹窗独立用
-    # 0.1s 桶缓存键（time_glow 的实际桶粒度）。
-    popup_bucket = int(now / 0.1)
+    # 弹窗呼吸色依赖时间桶（time_glow 内部 int(t/0.1) 为 0.1s 粒度）——
+    # 与 _build_lines 的 time_bucket 不同（后者随 status_active 用 0.1/0.25s）。
+    # ★ 性能（PERF-11）：弹窗缓存键用 **0.25s 桶**（4Hz）——修复前用
+    #   ``int(now/0.1)``（10Hz）：打字（input_text 变化触发外层快照 miss →
+    #   调 _build_popup_lines）间隔 >0.1s 时每次按键跨桶 → 弹窗缓存几乎每次
+    #   miss → 每键重建 20+ 候选项。0.25s 桶与 _build_lines 空闲桶一致：
+    #   打字跨桶概率降 60%，呼吸色仍 4Hz 平滑推进（标题 12s/提示 12s/高亮
+    #   10s 周期，4Hz 步进视觉无感知差异）；弹窗可见时 _needs_animation 持续
+    #   10Hz 渲染，动画不冻结。
+    popup_bucket = int(now / 0.25)
     popup_snap = (
         title,
         id(items), len(items), selected,
@@ -331,7 +345,7 @@ def _build_popup_lines(completion, width: int, now: float) -> list:
                     line.append(" \u25b6 ", Style(fg=15, bg=sel_bg))
                 else:
                     line.append("   ")
-                for run in _styled_completion(items[i], types[i], match_prefix, cell_w).runs:
+                for run in _styled_completion(items[i], types_disp[i], match_prefix, cell_w).runs:
                     line.append_run(run)
                 # 补齐左栏剩余宽度（选项不足 opt_w 时留白，分隔线对齐）
                 pad = opt_w - line.width
@@ -370,10 +384,10 @@ def _build_popup_lines(completion, width: int, now: float) -> list:
                 # 与选中行 ` ▶ `（3 列）等宽——修复前 `"  "`（2 列）使
                 # 选项文本上下移动时左右跳动（选中/非选中相差 1 列）。
                 line.append("   ")
-            for run in _styled_completion(item, types[i], match_prefix, cell_w).runs:
+            for run in _styled_completion(item, types_disp[i], match_prefix, cell_w).runs:
                 line.append_run(run)
             # Claude TUI parity 步骤 3.7：斜杠命令描述灰显（command 且描述非空）
-            if types[i] == "command" and i < len(descs) and descs[i]:
+            if types_disp[i] == "command" and i < len(descs) and descs[i]:
                 line.append("  ", _S_DIM)
                 # 方向1 步骤4（窄屏防溢出）：描述截断至剩余行宽（复用
                 # _truncate_width，截断点不拆 CJK）——超长描述不再撑爆行宽。
@@ -469,6 +483,10 @@ def _build_lines(fiber) -> list[Line]:
     snap_key = (
         text,
         max_input,
+        width,  # ★ BUG-71（review 方向，缓存键完整性）：snap_key 补 width——
+        #   修复前缺 width：极窄屏（width 变化但 max_input 可能不变，如
+        #   width 3→2 时 max_input 1→1）下命中旧快照，分隔线/弹窗按旧宽渲染
+        #   （测量与绘制错位）。
         completion_snap,
         int(props.get("cpu", 0)),
         int(props.get("mem", 0)),
@@ -502,23 +520,19 @@ def _build_lines(fiber) -> list[Line]:
     cpu_mem = f"CPU:{cpu}% \u00b7 MEM:{mem}%"
     cpu_mem_w = len(cpu_mem) + 2
     # 方向3（动效）：活跃期间上分隔线用青色呼吸（32-45，8s 周期），与状态栏
-    # 分隔线呼吸同步周期；空闲保持静态深灰。
-    top_sep_style = Style(fg=time_glow(32, 45, 8.0)) if status_active else _S_SEP
-    top = Line.of("", top_sep_style)
+    # 分隔线呼吸同步周期；空闲保持静态深灰。★ 方向5：统一经 _theme.sep_style
+    # （input_area 上下分隔线 + status_bar 分隔线共用同一周期/色域）。
+    top_sep_style = sep_style(status_active)
     # 方向1 步骤4（窄屏防溢出）：sep_len 下限改为 0（修复前 ``max(1, ...)``
     # 在 width < cpu_mem_w 时内容超宽溢出）；CPU/MEM 内容独立行逐段截断至
     # 剩余宽度（不拆 CJK；width < 22 时不再超宽）。
-    sep_len = max(0, width - cpu_mem_w)
-    top.append("\u2501" * sep_len, top_sep_style)
-    content_budget = max(1, width - sep_len)
+    content_budget = max(1, width - max(0, width - cpu_mem_w))
     content = Line()
     _append_truncated(content, " CPU:", _S_ACCENT, content_budget)
     _append_truncated(content, f"{cpu}%", _S_CPU, content_budget)
     _append_truncated(content, " \u00b7 MEM:", _S_ACCENT, content_budget)
     _append_truncated(content, f"{mem}%", _S_MEM, content_budget)
-    for run in content.runs:
-        top.append_run(run)
-    lines.append(top)
+    lines.append(_build_separator_line(width, content, top_sep_style, cpu_mem_w))
 
     # ── 反向历史搜索覆盖行（方向D 步骤14，Ctrl+R 配置门控） ──
     # 搜索激活时在上分隔线之后、输入文本行之前追加一行（measure 已增行）：
@@ -599,19 +613,15 @@ def _build_lines(fiber) -> list[Line]:
     time_w = len(ts) + 2
     # ★ BEAUTY-13（动效）：下分隔线（时间戳行）呼吸——活跃/流式期间与
     #   上分隔线/状态栏分隔线同周期青色呼吸（32-45，8s），三条分隔线视觉
-    #   联动；空闲保持静态深灰（_S_SEP，零额外渲染成本）。
-    bottom_style = Style(fg=time_glow(32, 45, 8.0)) if status_active else _S_SEP
-    bottom = Line.of("", bottom_style)
+    #   联动；空闲保持静态深灰（_S_SEP，零额外渲染成本）。★ 方向5：统一
+    #   经 _theme.sep_style。
+    bottom_style = sep_style(status_active)
     # 方向1 步骤4（窄屏防溢出）：sep_len 下限 0 + 时间戳内容独立行截断
     # （width < 22 时不超宽；正常宽度时间戳完整保留）
-    sep_len = max(0, width - time_w)
-    bottom.append("\u2501" * sep_len, bottom_style)
-    content_budget = max(1, width - sep_len)
+    content_budget = max(1, width - max(0, width - time_w))
     content = Line()
     _append_truncated(content, f" {ts}", _S_TIME, content_budget)
-    for run in content.runs:
-        bottom.append_run(run)
-    lines.append(bottom)
+    lines.append(_build_separator_line(width, content, bottom_style, time_w))
 
     # ★ 快照缓存写回（方向4）：未命中重建后更新缓存（同快照下次命中）
     fiber._lines_cache = (snap_key, lines)
@@ -696,6 +706,36 @@ def _append_truncated(line: Line, text: str, style, budget: int) -> None:
     if remaining <= 0:
         return
     line.append(_truncate_width(text, remaining), style)
+
+
+def _build_separator_line(width: int, content: Line, style: Style,
+                          content_w: int = 0) -> Line:
+    """构建分隔线行：左侧 ``┅`` 填充 + 右侧内容（Claude TUI parity 分隔线）。
+
+    上分隔线（CPU/MEM）与下分隔线（时间戳）共用结构——收敛为单一 helper
+    （通用逻辑重构；行为与原双实现逐字节一致）。
+
+    Args:
+        width: 行总宽（终端列宽）。
+        content: 右侧内容行（已按预算截断）。
+        style: 分隔线填充样式（呼吸色/静态深灰由调用方决定）。
+        content_w: 内容预算宽度（**已弃用**——sep 填充按 content 实际宽度
+            计算，见 BUG-72；保留参数仅兼容既有调用面）。
+
+    Returns:
+        分隔线行（Line）。
+    """
+    # ★ BUG-72（review 方向，行宽不变量）：sep 填充按 ``width - content.width``
+    #   （内容实际宽）而非 ``width - content_w``（预算）——修复前
+    #   ``sep_len = max(0, width - content_w)``：正常宽度下 content 实际宽
+    #   = content_w - 1（前导空格计 1 列），行宽 = sep_len + content.width
+    #   = width - 1（右端缺 1 列，与 status_bar 满宽分隔线不对齐）。按内容
+    #   实际宽填充后行宽恒 = width（窄屏截断时 sep 相应变长，仍 ≤ width）。
+    sep_len = max(0, width - content.width)
+    line = Line.of("\u2501" * sep_len, style)
+    for run in content.runs:
+        line.append_run(run)
+    return line
 
 
 def _paint(fiber, canvas) -> None:

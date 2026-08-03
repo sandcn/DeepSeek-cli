@@ -30,6 +30,9 @@ from dataclasses import field
 from enum import Enum
 from typing import Any
 
+# ★ 方向5：单行契约单一真源（model/_subagent_render/subagent_panel 三处收敛）
+from src.tui._format import single_line
+
 _logger = logging.getLogger(__name__)
 
 #: 开放工具块增量提交阈值（方向4）——输出行超出该阈值时经 commit_open_block
@@ -52,11 +55,10 @@ def _single_line_detail(detail: str) -> str:
     对齐 ``_subagent_render._single_line`` 单行契约——bash 命令参数可能含
     多行（``command`` 值携带 ``\n``），直接放进单行边框（卡片顶边框/标题行）
     会被终端按物理换行拆成多行，撑破工具卡边框显示错乱；显示前转义为可见
-    字面量 ``\\n``/``\\r``。
+    字面量 ``\\n``/``\\r``。★ 方向5：委托 ``_format.single_line`` 单一真源
+    （三处单行契约收敛——model/_subagent_render/subagent_panel）。
     """
-    if not detail:
-        return ""
-    return detail.replace("\r", "\\r").replace("\n", "\\n")
+    return single_line(detail)
 
 
 class ReasoningState(Enum):
@@ -254,9 +256,16 @@ def _tool_card_styled_lines(block, width, start=0, stop=None):
         _icon_fg = _time_glow_icon(208, 220, 6.0)
     else:
         _icon_fg = -1
+    # ★ BUG-71（review 方向，缓存键完整性）：_frame_key 补充标题字段
+    #   （tool_name/tool_detail）——修复前缺标题：open_tool_box 复用 box 更新
+    #   标题后，同帧帧缓存（同 start/stop/status/len/呼吸色桶）命中旧标题。
+    #   当前仅被运行中边框呼吸色（每 0.1s 桶变化）隐式失效掩盖——若边框改
+    #   静态色（未来主题化）立即触发显示陈旧（A5 同族）。
     _frame_key = (
         start, stop, block.closed, _status, len(block.lines),
         _border_fg, _icon_fg,
+        block.extra.get("tool_name", ""),
+        block.extra.get("tool_detail", ""),
         block.extra.get("_bash_omitted_lines", 0),
         block.extra.get("_head_omitted_lines", 0),
         inner_w,

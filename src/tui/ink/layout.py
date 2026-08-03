@@ -73,9 +73,39 @@ def _runs_natural_width(runs: list) -> int:
     全拼接宽；与 TEXT 文本分支（``text.split("\\n")`` 取最大行宽）不一致 →
     row 内 styled 含换行文本时子节点宽度/后续兄弟位置偏大。改为按 ``\\n``
     拆行后取最大行宽（与文本分支一致）。
+
+    ★ 性能（PERF-10）：免 ``join`` + ``split`` 分配——旧实现先拼接全部 run
+    文本（大字符串分配）再 split 成段列表（二次分配），渲染热路径（状态栏/
+    标题栏等 row 容器测自然宽）每帧调用。新实现逐 run 累积当前段宽，遇
+    ``\\n`` 重置段宽（语义与拆行取最大行宽一致）；纯文本 run 直接
+    ``wcswidth_simple`` 累加（ASCII 快路径 O(1)）。
     """
-    text = "".join(getattr(r, "text", str(r)) for r in runs)
-    return max((wcswidth_simple(line) for line in text.split("\n")), default=0)
+    max_w = 0
+    cur_w = 0
+    for r in runs:
+        text = getattr(r, "text", str(r))
+        if "\n" in text:
+            # 含换行（拆段语义，与 ``text.split("\\n")`` 取最大行宽一致）：
+            #   - 第一段 = 活动行的延续（承接之前 run 的 ``cur_w``——文本
+            #     末尾 ``\\n`` 后下一个 run 的头部是同一行，不能从 0 重算）；
+            #   - 中间段 = 独立完整行（测宽取最大）；
+            #   - 最后一段 = 新的活动行（后续 run 继续累加）。
+            segs = text.split("\n")
+            first_w = cur_w + wcswidth_simple(segs[0])
+            if first_w > max_w:
+                max_w = first_w
+            for seg in segs[1:-1]:
+                w = wcswidth_simple(seg)
+                if w > max_w:
+                    max_w = w
+            cur_w = wcswidth_simple(segs[-1])
+            if cur_w > max_w:
+                max_w = cur_w
+        else:
+            cur_w += wcswidth_simple(text)
+            if cur_w > max_w:
+                max_w = cur_w
+    return max(max_w, cur_w)
 
 
 def _skip_function(fiber: Fiber | None) -> Fiber | None:
@@ -679,13 +709,18 @@ def _measure(fiber: Fiber, x: int, y: int, avail_w: int, fill: bool = True) -> L
             and len(styled) == cache[4]  # ★ BUG-35：原地修改检测——比较当前长度
             #   与**写入时**长度快照（cache[0] 与 styled 为同一对象时 ``len``
             #   同步变化，不能用 ``len(cache[0]) == len(styled)``）；长度变化 →
-            #   miss → 值驱动分支按 style_fp 重算。内容级同长度原地修改（替换
-            #   元素）由 style_fp 值驱动分支兜底。
+            #   miss → 值驱动分支按 style_fp 重算。
             and cache[1] == cache_wt
         ):
             # 引用级快速路径：同 styled 引用 + (width, text_wrap, align) 不变
             # → 复用 lines（runs 在本分支无下游消费——h 仅由 lines 推导；
-            # 死拷贝移除；lines 已含 align 结果，不再二次对齐）
+            # 死拷贝移除；lines 已含 align 结果，不再二次对齐）。
+            # ★ 契约说明（BUG-71 复核）：引用级命中依赖「styled 列表不可变」——
+            #   同引用 + 同长度 + 内容被**原地替换**（如 ``styled[3] = new_run``）
+            #   不会触发重算（长度/指纹均未检查）。当前全部调用方遵守契约
+            #   （model._replace_committed_line 刻意用 ``list.copy()`` 换引用，
+            #   chat_view 冻结 runs 列表不被修改）；React 同语义（props 不可变）。
+            #   若未来新增原地修改 styled 的调用方，须先换新列表引用。
             lines = cache[3]
         else:
             if styled is not None:

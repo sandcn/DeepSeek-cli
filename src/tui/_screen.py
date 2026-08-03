@@ -17,6 +17,7 @@ import bisect
 import fcntl
 import io
 import os
+import re
 import signal
 import struct
 import sys
@@ -242,6 +243,13 @@ _FULLWIDTH_FLAT = _build_flat_ranges(_FULLWIDTH_RANGES)
 _EMOJI_WIDE_FLAT = _build_flat_ranges(_EMOJI_WIDE_RANGES)
 _ZERO_WIDTH_FLAT = _build_flat_ranges(_ZERO_WIDTH_RANGES)
 
+#: ASCII 可打印连续段正则（wcswidth_simple 多字符路径快速跳过——PERF-9）。
+#: C 实现扫描比逐字符 Python ``ord()`` + 比较快 ~2x；混合文本（大量 ASCII
+#: + 少量 CJK/emoji/控制字符）热路径（状态栏/输入行/工具输出）收益明显。
+#: 匹配 ``[\x20-\x7e]``（0x20-0x7E，与下方 ASCII 分支宽度 1 一致）——
+#: ``\x7f``（DEL，宽 0）与 ``\x1b``（ESC）不在其中，正确走各自分支。
+_ASCII_RUN_RE = re.compile(r"[\x20-\x7e]+")
+
 
 def _skip_ansi_at(text: str, i: int) -> int:
     """跳过从 ``text[i]``（\\x1b）开始的完整 ANSI 转义序列，返回序列后索引。
@@ -383,11 +391,19 @@ def wcswidth_simple(text: str) -> int:
     i = 0
     n = len(text)
     while i < n:
+        # ★ 性能（PERF-9）：ASCII 连续段快速跳过——正则（C 实现）扫描比逐
+        #   字符 Python ``ord()`` + 分支判断快 ~2x。混合文本（状态栏/输入行
+        #   等大量 ASCII + 少量 CJK）热路径收益明显；``[\x20-\x7e]`` 与下方
+        #   ASCII 分支宽度 1 一致，``\x7f``（DEL）/``\x1b``（ESC）不在其中
+        #   正确走各自分支。纯 ASCII 可打印文本已在上方快路径返回，本优化
+        #   服务混合文本与含控制/ANSI 的文本。
+        m = _ASCII_RUN_RE.match(text, i)
+        if m is not None:
+            width += m.end() - i
+            i = m.end()
+            continue
         cp = ord(text[i])
-        if 0x20 <= cp <= 0x7E:
-            width += 1
-            i += 1
-        elif text[i] == "\x1b":
+        if text[i] == "\x1b":
             # ANSI 转义序列：整段宽度 0（跳过完整序列；残缺/孤立 ESC 安全）
             i = _skip_ansi_at(text, i)
         elif cp < 0x20 or (0x7F <= cp <= 0x9F):

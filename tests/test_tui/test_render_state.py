@@ -193,6 +193,72 @@ class TestClosedToolBoxFreezeCache:
         assert any("frozen content" in p for p in plains)
 
 
+class TestFrozenTailStartOffset:
+    """_block_styled_lines 冻结缓存 start 偏移（_LIVE_TAIL_LINES 截断协同）。
+
+    BUG-69：关闭块冻结缓存（``_cached_ink_lines`` = 未提交部分）被 ChatView
+    以 ``live_start``（可能被 _LIVE_TAIL_LINES 截断到 > committed_line_count）
+    调用时，旧实现 ``cache[0:]`` 忽略 start 参数 → 截断失效（整段未提交尾
+    全部渲染）+ 行 key 错位（调和器复用错 fiber → 换行缓存 miss）。
+    """
+
+    def _make_large_frozen_block(self):
+        """构造：content 块被未关闭块夹住（committed_line_count=0）+ 100 行冻结尾。"""
+        from src.renderer.ansi.helpers import AnsiLine
+        m = AppModel()
+        m.append_block("tool").closed = False  # 夹住 content 的未关闭块
+        block = m.append_block("content")
+        for i in range(100):
+            block.lines.append(AnsiLine.of(f"line {i}"))
+        block.closed = True
+        block.committed_line_count = 0
+        block._cached_ink_lines = m._block_to_ink_lines(block, 0)
+        assert len(block._cached_ink_lines) == 100
+        return m, block
+
+    def test_frozen_tail_honors_truncated_start(self):
+        """冻结缓存按 start 偏移切片：start 被截断时只渲染尾段（_LIVE_TAIL_LINES 协同）。"""
+        from src.tui.app.chat_view import _block_styled_lines
+        _, block = self._make_large_frozen_block()
+        live_start = 36  # 模拟 _LIVE_TAIL_LINES 截断（100 - 64）
+        rows = _block_styled_lines(block, live_start, 80)
+        assert len(rows) == 64, (
+            f"冻结缓存应尊重 start 截断（64 行），实际 {len(rows)} 行"
+        )
+        assert "".join(r.text for r in rows[0]).strip() == "line 36"
+
+    def test_frozen_tail_same_start_unchanged(self):
+        """start == committed_line_count（正常路径）行为不变：返回全部冻结尾。"""
+        from src.tui.app.chat_view import _block_styled_lines
+        _, block = self._make_large_frozen_block()
+        rows = _block_styled_lines(block, block.committed_line_count, 80)
+        assert len(rows) == 100
+        # 引用级复用：同一 runs 列表对象（免每帧 Style merge）
+        rows2 = _block_styled_lines(block, block.committed_line_count, 80)
+        assert rows2[0] is rows[0]
+
+    def test_frozen_tail_partial_incremental_offset(self):
+        """已增量提交（committed_line_count>0）且 start 截断：偏移按差值切片。"""
+        from src.renderer.ansi.helpers import AnsiLine
+        from src.tui.app.chat_view import _block_styled_lines
+        m = AppModel()
+        block = m.append_block("content")
+        for i in range(100):
+            block.lines.append(AnsiLine.of(f"line {i}"))
+        block.closed = True
+        block.committed_line_count = 50
+        block._cached_ink_lines = m._block_to_ink_lines(block, 50)
+        assert len(block._cached_ink_lines) == 50
+        # start=50（=committed_line_count）→ 全部
+        assert len(_block_styled_lines(block, 50, 80)) == 50
+        # start=86（截断到 100-64=36 后的 live_start=86？不——live_start 截断
+        # 只发生在 len - committed_line_count > 64 时，此处 100-50=50<=64
+        # 不截断。直接验证偏移语义：start=86 > 50 → 切片 offset=36 → 14 行。
+        rows = _block_styled_lines(block, 86, 80)
+        assert len(rows) == 14
+        assert "".join(r.text for r in rows[0]).strip() == "line 86"
+
+
 class TestResetDisplay:
     """Claude TUI parity 步骤 2.2 — reset_display 清屏语义。"""
 

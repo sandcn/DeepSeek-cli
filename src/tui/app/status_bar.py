@@ -27,7 +27,10 @@ import time
 from src.tui.core.style import Style
 from src.tui.ink import h, BOX, TEXT, Line, StyledRun, use_memo, use_ref
 from src.tui.app import _fx
-from src.tui.app._theme import time_glow, _S_ACCENT, _S_ACCENT_BOLD, _S_DIM, _S_SEP, _S_TIME
+from src.tui.app._theme import time_glow, _S_ACCENT, _S_ACCENT_BOLD, _S_DIM, _S_TIME
+# ★ 方向5：分隔线样式统一真源（_theme.sep_style）——别名 _theme_sep_style
+# 避免与下方局部变量 sep_style 命名冲突。
+from src.tui.app._theme import sep_style as _theme_sep_style
 # 方向C 步骤4：_format_duration 唯一真源在 src/tui/_format.py（Layer 0）；
 # 模块级 re-export 保持 patch("src.tui.app.status_bar._format_duration") 路径有效。
 from src.tui._format import format_duration as _format_duration
@@ -40,7 +43,7 @@ _S_TOOL_OK = Style(fg=41)
 # BEAUTY-7：streaming braille spinner 帧序列（与 _subagent_render 共用语义）
 # ★ 方向4：唯一真源 _fx.SPINNER_FRAMES——本模块保留别名（兼容既有 patch 路径；
 #   值与原 `\u280b\u2819...` 转义串完全一致）。
-from src.tui.app._fx import SPINNER_FRAMES as _SPINNER_FRAMES
+from src.tui.app._fx import SPINNER_FRAMES as _SPINNER_FRAMES  # noqa: F401
 
 # PERF-5：快照查询 TTL 缓存（≤1Hz；渲染线程单写，GIL 原子赋值足够）
 # 方向D 步骤16：TTL 常量化（_SNAPSHOT_TTL）——与状态栏 1s 时间桶对齐，
@@ -186,7 +189,7 @@ def StatusBar(props) -> object:
         # 必须经 _SPINNER_FRAMES 查表取字符（修复前直接格式化索引 → 显示数字
         # 0-9 循环）。
         from src.tui.app import _fx
-        spinner_char = _SPINNER_FRAMES[_fx.spinner_frame(10.0, _SPINNER_FRAMES)]
+        spinner_char = _fx.spinner_char()
     else:
         time_dep = int(time.monotonic() / 1.0)
         spinner_char = "\u00b7"
@@ -211,16 +214,30 @@ def StatusBar(props) -> object:
     #   截断至 width（内容从 col3 起 ≤ width-2）——宽度统一为 width。
     # 方向3（动效）：流式/活跃期间分隔线用青色呼吸（32-45，8s 周期）——
     #   活跃状态的分隔线更生动；空闲保持静态深灰（_S_SEP）。
-    if st.status_active:
-        sep_style = Style(fg=time_glow(32, 45, 8.0))
-    else:
-        sep_style = _S_SEP
-    sep = Line.of("\u2501" * max(1, width), sep_style)
+    # ★ 方向5：统一经 _theme.sep_style（input_area 上下分隔线 + status_bar
+    #   分隔线共用同一周期/色域）。
+    sep_style = _theme_sep_style(st.status_active)
+    # ★ 性能（PERF-11）：分隔线 Line **缓存**（use_memo 键 width + sep_style）
+    #   ——修复前每帧 ``Line.of("┅" * width)`` 重建字符串乘法 + Line 对象
+    #   （热路径 10Hz）。sep_style 活跃期为时间基呼吸（每帧新 Style 对象），
+    #   键含 sep_style（值相等即命中——Style frozen dataclass == 值比较）；
+    #   空闲期 _S_SEP 引用稳定，跨帧复用同 Line 对象 → TEXT ``_wrap_cache``
+    #   引用级命中 + diff 身份短路（零重建）。分隔线宽仅依赖 width，width
+    #   变化（resize）键变自动重建。
+    sep = use_memo(
+        lambda: Line.of("\u2501" * max(1, width), sep_style),
+        (width, sep_style),
+    )
     # 状态行（下面）
-    status_line = Line.of("  ", None)
-    if status_runs:
-        for run in status_runs:
-            status_line.append_run(run)
+    # ★ 性能（PERF-10）：状态行 Line **缓存**（use_memo 键 status_runs 引用）
+    #   ——status_runs 已 use_memo 缓存（引用稳定），Line 跨帧复用同一 runs
+    #   列表对象 → TEXT ``_wrap_cache`` 引用级命中（``cache[0] is styled``），
+    #   免每帧 13+ runs 列表值比较（TEXT _measure 值驱动分支 ~300μs）。截断
+    #   仅在超宽时触发（罕见），正常路径引用稳定。
+    status_line = use_memo(
+        lambda: _build_status_line(status_runs),
+        (status_runs,),
+    )
     # ★ 方向4（状态行溢出截断）：超长状态 runs 截断至 width——复用
     #   ink.helpers.truncate_line（subagent_panel 已用 truncate_runs 族，
     #   status_bar 用 truncate_line 保持 Line 结构；修复前溢出静默裁剪）。
@@ -237,6 +254,19 @@ def StatusBar(props) -> object:
         h(TEXT, {"styled": sep.runs, "height": 1}),
         h(TEXT, {"styled": status_line.runs, "height": 1}),
     ])
+
+
+def _build_status_line(status_runs: list) -> Line:
+    """构建状态行 Line（前缀 2 列 + 状态 runs）。
+
+    ★ PERF-10：独立函数供 use_memo 缓存（StatusBar 每帧调用）——status_runs
+    引用不变时复用同一 Line 对象（跨帧同一 runs 列表 → TEXT 引用级缓存命中）。
+    """
+    line = Line.of("  ", None)
+    if status_runs:
+        for run in status_runs:
+            line.append_run(run)
+    return line
 
 
 __all__ = ["StatusBar"]

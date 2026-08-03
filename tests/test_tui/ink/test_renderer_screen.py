@@ -517,6 +517,25 @@ class TestDriftedIncremental:
         r.place_cursor(1, 1)
         assert r.cursor_row == self.H - 1, r.cursor_row
 
+    def test_middle_delete_then_grow_visible_ok(self):
+        """中间删除（触发底部对齐切换）后增长：可见区正确。
+
+        模糊测试锁定：长文档**中间**删除（首差异行 <= buf_top → BUG-68 切换
+        底部对齐）后增长（drift 1→0，文档顶部对齐物理缓冲顶部）——可见区
+        显示 doc 6-10 + 末尾空行（顶部对齐映射），不丢失 doc 中部行。
+        """
+        doc = ["R0", "R1", "R2", "R3", "R4", "R5", "R6", "X7-13", "L8", "L9", "L10"]
+        mid_del = ["R0", "R1", "R3", "R4", "R5", "R6", "X7-13", "L8", "L9", "L10"]
+        grown = ["R0", "R1", "R3", "R4", "R5", "R6", "X7-13", "L8", "L9", "L10", "L11"]
+        t, r, cs = self._simulate([doc, mid_del, grown])
+        assert not cs
+        # 增长后顶部对齐（drift=0）：H=6 可见区 = doc 6-11（X7-13..L11 + 空行）。
+        # scrollback 中物理行 2-5 可陈旧（缩短切换底部对齐时的滚动区残留——
+        # 非全屏模型接受 scrollback 残留可陈旧，见 TestDriftedIncremental doc）。
+        assert self._visible(t) == ["X7-13", "L8", "L9", "L10", "L11", ""], (
+            self._visible(t)
+        )
+
 
 class TestPartiallyVisibleRun:
     """差异区间跨可见区边界（起始行离屏、尾部可见）→ 只重写可见部分。

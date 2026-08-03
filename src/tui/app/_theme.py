@@ -25,6 +25,10 @@ from functools import lru_cache
 from src._compat import dataclass
 from src.tui._const import _SEMANTIC_COLOR
 from src.tui.core.style import Style
+# ★ 惰性兼容：sep_line 需要 ink Line 类型——ink.output 不依赖 _theme，
+#   模块级导入无循环依赖（仅用于类型注解；from __future__ import annotations
+#   下不求值，实际渲染在函数内运行时才解析）。
+from src.tui.ink.output import Line
 
 # ── 共享样式常量池 ────────────────────────────────────────────
 _S_ACCENT = Style(fg=45)                 # 强调色（亮青）
@@ -226,6 +230,64 @@ def _glow_bucket(lo: int, hi: int, period: float, bucket: int) -> int:
     return max(lo, min(hi, lo + int((hi - lo) * ratio)))
 
 
+#: 分隔线呼吸色（活跃期青色呼吸 32-45，8s 周期）——input_area 上下分隔线
+#: 与 status_bar 分隔线共用同一周期/色域（视觉联动）。集中为常量避免三处
+#: 内联漂移（方向5 收敛）。
+_SEP_BREATH_LO = 32
+_SEP_BREATH_HI = 45
+_SEP_BREATH_PERIOD = 8.0
+
+
+def sep_style(active: bool) -> Style:
+    """分隔线样式（通用组件，方向5 收敛）：活跃呼吸 / 空闲静态。
+
+    流式/活跃期间返回青色呼吸 Style（``time_glow(32, 45, 8.0)``，8s 周期，
+    与 status_bar 分隔线同步）；空闲返回静态深灰 ``_S_SEP``（零额外渲染
+    成本）。供 input_area 上下分隔线 / status_bar 分隔线统一调用——修复前
+    三处各自 ``Style(fg=time_glow(32, 45, 8.0))`` 内联（周期/色域漂移风险）。
+
+    Args:
+        active: 是否活跃（流式/工具运行等）。
+
+    Returns:
+        分隔线填充 Style。
+    """
+    if active:
+        return Style(fg=time_glow(_SEP_BREATH_LO, _SEP_BREATH_HI, _SEP_BREATH_PERIOD))
+    return _S_SEP
+
+
+def sep_line(width: int, content: "Line | None" = None,
+             active: bool = False) -> "Line":
+    """构建分隔线行（通用组件，方向5 收敛）：左侧 ``┅`` 填充 + 右侧内容。
+
+    Claude TUI parity 分隔线——input_area 上/下分隔线（CPU/MEM、时间戳）与
+    status_bar 分隔线共用同一构建语义：
+      - ``content is None``：纯填充行（status_bar 满宽分隔线，行宽 = width）；
+      - ``content`` 非 None：左侧填充 + 右侧内容（input_area 分隔线，行宽
+        恒 = width——BUG-72 行宽不变量：按内容实际宽填充而非预算）。
+    样式统一经 ``sep_style(active)``（活跃呼吸 / 空闲静态）。
+
+    Args:
+        width: 行总宽（终端列宽）。
+        content: 右侧内容行（可选；None 时纯填充）。已按预算截断。
+        active: 是否活跃（流式/工具运行等）。
+
+    Returns:
+        分隔线行（Line）。
+    """
+    # 惰性导入避免模块级循环依赖（ink.output 不依赖 _theme）
+    from src.tui.ink.output import Line
+    style = sep_style(active)
+    if content is None:
+        return Line.of("\u2501" * max(1, width), style)
+    sep_len = max(0, width - content.width)
+    line = Line.of("\u2501" * sep_len, style)
+    for run in content.runs:
+        line.append_run(run)
+    return line
+
+
 __all__ = [
     "_S_ACCENT",
     "_S_ACCENT_BOLD",
@@ -237,6 +299,8 @@ __all__ = [
     "_S_NOTICE",
     "_S_TEXT",
     "time_glow",
+    "sep_style",
+    "sep_line",
     "Palette",
     "ThemeRegistry",
     "resolve_theme",

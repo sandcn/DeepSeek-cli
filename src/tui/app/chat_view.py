@@ -65,10 +65,20 @@ def _block_styled_lines(block, start: int = 0, width: int = 0) -> list[list[Styl
         # 冻结缓存：Line.runs 引用级复用（同一 runs 列表对象，跨帧不重建）。
         # ★ 方向4（增量提交协同）：冻结缓存即「未提交部分」（close_tool_box
         #   冻结自 committed_line_count 起；close_reasoning/close_content 关闭
-        #   时 committed_line_count=0 → 未提交部分=全量）——``cache[0:]`` 从头
-        #   返回（start 参数对冻结缓存无意义；修复前按 ``cache[start:]`` 切片，
-        #   增量提交后 start=committed_line_count 越界返回空 → 尾部渲染丢失）。
-        return [line.runs for line in cache[0:]]
+        #   时 committed_line_count=0 → 未提交部分=全量）。
+        # ★ BUG-69（review 方向，渲染行数超限）：start（ChatView 传入的
+        #   live_start）可能被 ``_LIVE_TAIL_LINES`` 截断到 > committed_line_count
+        #   ——旧实现 ``cache[0:]`` 恒从头返回（start 参数被忽略）→ 冻结尾超过
+        #   截断上限时**整段未提交尾全部渲染**（_LIVE_TAIL_LINES 防御失效，
+        #   大尾块每帧全量重建）；且 ChatView 行 key（``live_start + row``）与
+        #   实际渲染行错位 → 调和器复用错 fiber → 换行缓存 miss。修复：按
+        #   ``start - committed_line_count`` 偏移切片——start==committed_line_count
+        #   （正常路径）行为不变（cache[0:]）；start 被截断时只渲染最后
+        #   ``len(cache)-offset`` 行（对齐 _LIVE_TAIL_LINES 语义）。偏移恒
+        #   >=0（live_start 初始为 committed_line_count，截断只增不减），
+        #   max(0,...) 仅防御。
+        offset = max(0, start - block.committed_line_count)
+        return [line.runs for line in cache[offset:]]
     if kind == "tool":
         # 开放工具卡：边框行（live 仅 committed_line_count==0 发顶边框——
         # 与 committed 首次提交互斥；start>0 已增量提交 → 仅主体行）

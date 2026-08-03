@@ -94,6 +94,22 @@ def spinner_frame(tick_hz: float, frames) -> int:
     return int(time.monotonic() * hz) % n
 
 
+def spinner_char(tick_hz: float = 0.0) -> str:
+    """返回当前时间基 spinner 帧**字符**（通用动效助手，唯一真源）。
+
+    app.py ``_ParseLine``/``_StreamingLine``、status_bar、_subagent_render
+    三处此前各自 ``SPINNER_FRAMES[spinner_frame(hz, SPINNER_FRAMES)]`` 内联
+    同一逻辑——收敛为本 helper（帧序列统一取 ``SPINNER_FRAMES``）。
+
+    Args:
+        tick_hz: 每秒帧切换次数；<=0 时用 ``spinner_frame`` 默认（10Hz）。
+
+    Returns:
+        当前 spinner 帧字符（如 ``⠋``）。
+    """
+    return SPINNER_FRAMES[spinner_frame(tick_hz, SPINNER_FRAMES)]
+
+
 def needs_animation(active_flags) -> bool:
     """判定是否存在活跃/动画状态（需要重绘推进动效）。
 
@@ -111,4 +127,4 @@ def needs_animation(active_flags) -> bool:
     return any(bool(f) for f in active_flags)
 
 
-__all__ = ["fade_color", "spinner_frame", "needs_animation", "SPINNER_FRAMES"]
+__all__ = ["fade_color", "spinner_frame", "spinner_char", "needs_animation", "SPINNER_FRAMES"]

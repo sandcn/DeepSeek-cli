@@ -76,14 +76,18 @@ def wrap_runs_by_width(runs: list[StyledRun], max_width: int) -> list[Line]:
         # ★ BUG-34（review 方向）：width<=0 早返回也按 ``\n`` 拆行——修复前
         #   含换行文本被原样拼进单行（Line 内嵌字面换行符，终端按物理行拆分，
         #   破坏行级 diff 宽度不变量；与正宽路径的 ``\n`` 强制换行语义不一致）。
+        # ★ BUG-70（review 方向，空行语义）：``a\n\nb`` 在零宽分支丢中间空行
+        #   （产出 ``["a","b"]``）——修复前 ``if cur.runs`` 只在行非空时结束，
+        #   空行（``\n`` 紧邻）被静默丢弃；正宽分支（行首 ``\n`` 产生空行）与
+        #   FrameBuilder 均保留空行。修复：每个 ``\n`` 无条件结束当前行
+        #   （空行也 append），与正宽/FrameBuilder 语义一致。
         lines_flat: list[Line] = []
         cur = Line()
         for run in runs:
             segs = run.text.split("\n")
             for si, seg in enumerate(segs):
                 if si > 0:
-                    if cur.runs:
-                        lines_flat.append(cur)
+                    lines_flat.append(cur)
                     cur = Line()
                 if seg:
                     cur.append(seg, run.style)
@@ -168,13 +172,47 @@ def wrap_runs_by_width(runs: list[StyledRun], max_width: int) -> list[Line]:
     return lines
 
 
+def _first_logical_line_runs(runs: list[StyledRun]) -> list[StyledRun]:
+    """截取 runs 的第一个逻辑行（``\\n`` 前），保持样式。
+
+    行级 diff 宽度不变量要求每个 ink Line 不内嵌字面换行符——truncate 系列
+    （单行截断语义）对含 ``\\n`` 的 styled 输入须先归一化为首个逻辑行，避免
+    截断结果保留字面 ``\\n``（渲染时终端按物理行拆分，破坏行级 diff）。
+
+    Args:
+        runs: StyledRun 列表（连续片段）。
+
+    Returns:
+        首个 ``\\n`` 前的 runs 子集（原样式）；无 ``\\n`` 时返回原列表引用
+        （零拷贝，热路径快路径）。
+    """
+    for run in runs:
+        if "\n" in run.text:
+            break
+    else:
+        return runs  # 无换行：原引用返回（免拷贝）
+    out: list[StyledRun] = []
+    for run in runs:
+        idx = run.text.find("\n")
+        if idx < 0:
+            out.append(run)
+            continue
+        if idx > 0:
+            out.append(StyledRun(run.text[:idx], run.style))
+        break  # 首个 \n 后的内容全部丢弃（单行截断语义）
+    return out
+
+
 def truncate_runs(runs: list[StyledRun], max_width: int) -> list[StyledRun]:
     """将 StyledRun 序列截断至 max_width 显示宽度（保持样式）。
 
     超宽部分丢弃；截断点在字符边界，不拆分宽字符（CJK）。
+
+    含 ``\\n`` 文本先归一化为首个逻辑行（单行截断语义，防字面换行破坏行宽）。
     """
     if max_width < 0:
         return []
+    runs = _first_logical_line_runs(runs)
     out: list[StyledRun] = []
     width = 0
     for run in runs:
@@ -200,6 +238,8 @@ def truncate_runs_ellipsis(runs: list[StyledRun], max_width: int) -> list[Styled
     追加 ``…``（宽度 1）。省略号沿用截断点所在 run 的样式（与截断内容
     同 run，保持样式一致性）。
 
+    含 ``\\n`` 文本先归一化为首个逻辑行（单行截断语义，防字面换行破坏行宽）。
+
     Args:
         runs: StyledRun 列表（连续片段）。
         max_width: 最大显示宽度；<=0 返回空列表。
@@ -209,6 +249,7 @@ def truncate_runs_ellipsis(runs: list[StyledRun], max_width: int) -> list[Styled
     """
     if max_width < 0:
         return []
+    runs = _first_logical_line_runs(runs)
     total = 0
     for run in runs:
         total += run.width
@@ -294,6 +335,8 @@ def truncate_runs_start(runs: list[StyledRun], max_width: int) -> list[StyledRun
     ``max_width-1`` 宽度内容（不拆 CJK），开头追加 ``…``（宽度 1）。
     省略号采用尾部首个保留 run 的样式（与内容衔接一致）。
 
+    含 ``\\n`` 文本先归一化为首个逻辑行（单行截断语义，防字面换行破坏行宽）。
+
     Args:
         runs: StyledRun 列表（连续片段）。
         max_width: 最大显示宽度；<=0 返回空列表。
@@ -301,8 +344,9 @@ def truncate_runs_start(runs: list[StyledRun], max_width: int) -> list[StyledRun
     Returns:
         截断后的 StyledRun 列表（总宽度 <= max_width）。
     """
-    if max_width < 0:
+    if max_width <= 0:
         return []
+    runs = _first_logical_line_runs(runs)
     if _runs_total_width(runs) <= max_width:
         return list(runs)
     tail = _keep_tail(runs, max_width - 1)
@@ -318,6 +362,8 @@ def truncate_runs_middle(runs: list[StyledRun], max_width: int) -> list[StyledRu
     追加 ``…``（宽度 1）。宽度 <=3 时头部预算不足（省略号+头尾各至少 1 格）
     → 回退 ``truncate-end`` 语义（末尾省略号）。
 
+    含 ``\\n`` 文本先归一化为首个逻辑行（单行截断语义，防字面换行破坏行宽）。
+
     Args:
         runs: StyledRun 列表（连续片段）。
         max_width: 最大显示宽度；<=0 返回空列表。
@@ -327,6 +373,7 @@ def truncate_runs_middle(runs: list[StyledRun], max_width: int) -> list[StyledRu
     """
     if max_width < 0:
         return []
+    runs = _first_logical_line_runs(runs)
     if _runs_total_width(runs) <= max_width:
         return list(runs)
     if max_width <= 3:
@@ -344,14 +391,17 @@ def truncate_line(line: Line, max_width: int) -> Line:
 
     超宽部分丢弃；宽度不足时原样返回。截断点在字符边界，
     不拆分宽字符（CJK）。
+
+    含 ``\\n`` 文本先归一化为首个逻辑行（单行截断语义，防字面换行破坏行宽）。
     """
     if max_width < 0:
         return Line()
     if line.width <= max_width:
         return line.clone()
+    runs = _first_logical_line_runs(line.runs)
     out = Line()
     width = 0
-    for run in line.runs:
+    for run in runs:
         for ch in run.text:
             cw = wcswidth_simple(ch)
             if width + cw > max_width:

@@ -44,7 +44,7 @@ from src.tui._config import TuiConfig
 from src.tui._tool_icons import TOOL_CATEGORY_COLORS, TOOL_CATEGORY_MAP
 from src.tui._screen import wcswidth_simple
 from src.tui.app import _fx
-from src.tui._format import format_duration, format_tokens, format_speed
+from src.tui._format import format_duration, format_tokens, format_speed, single_line
 
 from src.tui._subagent_state import _AgentSlot, _ToolRecord
 
@@ -114,9 +114,10 @@ def _single_line(text: str) -> str:
     每个 ``subagent_lines`` 条目应为一条终端行；来源字段（description /
     parse_info / model_info / tool detail）可能含 ``\n``/``\r``，直接插入
     会使终端按换行渲染成两行。与 ``format_tool_record`` 既有转义一致，
-    转义为可见字面量 ``\\n``/``\\r``。
+    转义为可见字面量 ``\\n``/``\\r``。★ 方向5：委托 ``_format.single_line``
+    单一真源（三处单行契约收敛——model/_subagent_render/subagent_panel）。
     """
-    return text.replace("\r", "\\r").replace("\n", "\\n") if text else ""
+    return single_line(text)
 
 
 # ── 动效时间基配置 ──
@@ -364,7 +365,9 @@ def build_agent_lines(slot: _AgentSlot, now: float, is_last: bool,
         title = f"{icon} {type_tag} {description}{suffix}"
     else:
         # BEAUTY-3：spinner 时间基推进（非帧计数；_frame 字段保留兼容）
-        spinner = _SPINNER_FRAMES[_fx.spinner_frame(_SPINNER_HZ, _SPINNER_FRAMES)]
+        # ★ 方向4：帧字符唯一真源 _fx.spinner_char（_SPINNER_FRAMES 别名
+        #   保留兼容测试 patch 路径；值同 _fx.SPINNER_FRAMES）。
+        spinner = _fx.spinner_char(_SPINNER_HZ)
         dot = f"{_C_RUNNING}{spinner}{_C_RESET}"
         suffix = (
             f"  {_C_DIMMER}{output_str}{_C_RESET}"
