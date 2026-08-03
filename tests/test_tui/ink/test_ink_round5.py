@@ -155,6 +155,108 @@ class TestShouldRenderForcePreserved:
         assert s._should_render(False) is True
 
 
+class TestNeedsAnimation:
+    """_needs_animation 活跃动画状态判定（主 agent 侧动画保持）。"""
+
+    def _session(self, model):
+        from src.tui.ink.session import InkSession
+        s = object.__new__(InkSession)
+        s._model = model
+        return s
+
+    def test_idle_false(self):
+        """空闲（无流式/无工具/无解析）→ 不需要动画渲染。"""
+        from src.tui.app.model import AppModel
+        s = self._session(AppModel())
+        assert s._needs_animation() is False
+
+    def test_status_active_true(self):
+        """流式生成（status_active）→ 需要动画渲染。"""
+        from src.tui.app.model import AppModel
+        model = AppModel()
+        model.status.status_active = True
+        assert self._session(model)._needs_animation() is True
+
+    def test_tool_running_true(self):
+        """开放工具卡（工具执行中）→ 需要动画渲染（边框/● 呼吸）。"""
+        from src.tui.app.model import AppModel
+        model = AppModel()
+        model.open_tool_box("t1", "bash", "ls")
+        assert self._session(model)._needs_animation() is True
+
+    def test_parse_line_true(self):
+        """实时解析进度行存在 → 需要动画渲染（spinner 推进）。"""
+        from src.tui.app.model import AppModel
+        from src.renderer.ansi.helpers import AnsiLine
+        model = AppModel()
+        model.parse_line = AnsiLine.of("  ~ rf 51t 0.5s")
+        assert self._session(model)._needs_animation() is True
+
+    def test_no_model_false(self):
+        """模型缺失（防御）→ 不需要动画渲染。"""
+        assert self._session(None)._needs_animation() is False
+
+
+class TestShouldRenderAnimationKeepAlive:
+    """_should_render 动画保持：活跃动画状态持续 10Hz 渲染，空闲回退跳过。"""
+
+    def _session(self, model):
+        from src.tui.ink.session import InkSession
+        s = object.__new__(InkSession)
+        s._model = model
+        s._config = type("C", (), {"render_interval": 0.1})()
+        s._bottom_redraw_requested = type("E", (), {
+            "is_set": lambda self: False,
+            "set": lambda self: None,
+            "clear": lambda self: None,
+        })()
+        s._dirty = False
+        s._last_bottom_redraw = 0.0
+        return s
+
+    def test_tool_running_renders_without_events(self):
+        """工具执行中（无命令无输入）→ 间隔到期仍渲染（修复冻结）。"""
+        from src.tui.app.model import AppModel
+        model = AppModel()
+        model.open_tool_box("t1", "bash", "sleep 1")
+        s = self._session(model)
+        # 无命令（changed=False）无 force，但动画活跃 → 本拍渲染
+        assert s._should_render(False) is True
+        assert s._dirty is False  # 渲染后清除脏
+        # 动画仍活跃 → 下一拍（间隔到期）继续渲染（10Hz 推进）
+        time.sleep(0.12)
+        assert s._should_render(False) is True
+
+    def test_animation_within_window_waits_tick(self):
+        """活跃动画但 render_interval 未到期 → 等待拍（dirty 保留）。"""
+        from src.tui.app.model import AppModel
+        model = AppModel()
+        model.status.status_active = True
+        s = self._session(model)
+        s._last_bottom_redraw = time.monotonic()  # 窗口内
+        assert s._should_render(False) is False  # 窗口内等待
+        time.sleep(0.12)
+        assert s._should_render(False) is True  # 下一拍渲染
+
+    def test_idle_still_skips(self):
+        """空闲（无动画）→ 保持跳过渲染（CPU ~0 不回归）。"""
+        from src.tui.app.model import AppModel
+        s = self._session(AppModel())
+        assert s._should_render(False) is False
+
+    def test_animation_stops_after_tool_closed(self):
+        """工具关闭后（无其他动画）→ 回退空闲跳过。"""
+        from src.tui.app.model import AppModel
+        model = AppModel()
+        model.open_tool_box("t1", "bash", "sleep 1")
+        s = self._session(model)
+        assert s._should_render(False) is True
+        # 工具关闭 → 动画结束 → 空闲跳过
+        model.close_tool_box("t1", True)
+        time.sleep(0.12)
+        assert s._should_render(False) is False
+
+
 class TestInputAreaLineFastPath:
     """input-area canvas 行 Line 快路径（性能 + 增量身份短路）。"""
 

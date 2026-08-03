@@ -152,3 +152,29 @@
 ### 测试
 - `test_ink_round5.py` 新增 5 例：Newline（2）/ Fragment（1）/ 工具卡边框呼吸（2）。
 - 全部测试通过：**1909 passed**（原 1904 + 新增 5）。
+
+---
+
+## 第七轮（commit 待定）
+
+### 修复：工具运行期间 TUI 其他部分冻结（无事件 → 渲染循环空闲跳过）
+
+- **问题**：bash 等工具执行期间无实时输出（`execute()` 无 `publish_line_fn`）
+  时无任何命令入队 → `_should_render` 空闲短路（`_dirty=False`）→ 渲染循环
+  空转等待。时间基动画（工具卡边框呼吸/● 呼吸、状态栏模型名呼吸/spinner、
+  输入区占位点）全部停摆——**工具卡开着但呼吸不动，TUI 像冻结**。
+- **修复**：`InkSession._needs_animation()` 判定主 agent 侧活跃动画状态
+  （`status.status_active` / `tool_boxes` 非空 / `parse_line` 存在）；任一活跃时
+  `_should_render` 持续置脏 → 每 10Hz 拍渲染，时间基动画平滑推进。空闲
+  （全部非活跃）保持跳过（CPU ~0，既有优化不回归）。
+- **分工**：与 `_subagent_panel._needs_animation`（subagent 面板经
+  SUBAGENT_FRAME 命令自行驱动）互补；本方法覆盖主 agent 侧（工具/流式/解析）。
+- **验证**：快速脚本确认工具运行期间连续 3 拍 `_should_render(False)` 均为
+  True，工具关闭 + 空闲后回退 False。
+
+### 测试
+- `test_ink_round5.py` 新增 9 例：`TestNeedsAnimation`（5：空闲 False / status_active /
+  工具运行 / parse_line / model 缺失防御）+ `TestShouldRenderAnimationKeepAlive`
+  （4：工具运行无事件持续渲染 / 窗口内等待拍 / 空闲仍跳过 / 工具关闭后回退）。
+- 全部 TUI 测试通过：**1585 passed**（原 1576 + 新增 9）。
+

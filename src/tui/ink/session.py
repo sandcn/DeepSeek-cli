@@ -674,12 +674,45 @@ class InkSession:
                 self._consecutive_render_failures = 0
         return changed
 
+    def _needs_animation(self) -> bool:
+        """是否存在活跃动画状态需要持续 10Hz 渲染（时间基动画推进）。
+
+        工具运行（开放工具卡边框/● 呼吸）、流式生成（status_active → 状态栏
+        spinner/模型名呼吸/输入区占位动画）、解析进行中（parse_line spinner）
+        任一活跃时，即使无新命令也置脏渲染——修复「工具执行期间 TUI 其他
+        部分冻结」：bash 等工具无实时输出时无命令驱动渲染循环，时间基动画
+        （工具卡边框呼吸/状态栏呼吸/spinner）停摆。
+
+        与 ``_subagent_panel._needs_animation``（面板控制器经 SUBAGENT_FRAME
+        命令自行驱动渲染循环）互补：本方法覆盖主 agent 侧动画状态。
+        空闲（全部非活跃）返回 False → 渲染循环跳过（CPU ~0），保持
+        ``_should_render`` 空闲短路语义。
+
+        线程安全：仅在 render 线程（``_should_render``）调用；属性读取为 GIL
+        原子操作（status/tool_boxes/parse_line 赋值与读取均原子）。
+        """
+        model = getattr(self, "_model", None)
+        if model is None:
+            return False
+        st = getattr(model, "status", None)
+        if st is not None and getattr(st, "status_active", False):
+            return True
+        if getattr(model, "tool_boxes", None):
+            return True
+        if getattr(model, "parse_line", None) is not None:
+            return True
+        return False
+
     def _should_render(self, changed: bool) -> bool:
         """是否需渲染本帧：脏标记 + 10Hz 拍批处理。
 
         事件（命令/重绘请求）标记脏并唤醒循环，但不立即渲染——与下一个
         10Hz 拍一起渲染（批处理）。**空闲（无脏）时跳过渲染**，避免固定
         10Hz 全量重建整棵聊天树（大历史下 CPU 100%）。
+
+        ★ 动画保持：活跃动画状态（工具运行/流式/解析，见 ``_needs_animation``）
+        时持续置脏——即使无新命令也按 10Hz 拍渲染，时间基动画平滑推进
+        （工具执行期间 TUI 其他部分不冻结）。动画结束后回退空闲跳过（CPU ~0）。
 
         Returns:
             True — 本拍渲染（脏且 render_interval 已到期）。
@@ -689,6 +722,9 @@ class InkSession:
         self._bottom_redraw_requested.clear()
         if changed or force:
             self._dirty = True  # 本批命令已应用 / 底部重绘请求 → 标记脏
+        # ★ 活跃动画状态 → 持续置脏（10Hz 拍推进时间基动画；空闲保持跳过）
+        if not self._dirty and self._needs_animation():
+            self._dirty = True
         if not self._dirty:
             return False  # 空闲且无变化：跳过渲染（CPU ~0）
         if now - self._last_bottom_redraw >= self._config.render_interval:
