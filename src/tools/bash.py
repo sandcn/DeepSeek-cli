@@ -403,16 +403,30 @@ class BashFunc(Func):
     def _truncate_output(output: str, max_lines: int | None = None) -> str:
         """将输出截断到指定行数（默认 MAX_LINES 行），超出时保留尾部最新行并追加截断标记。
 
-        以 '(' 开头的输出视为错误/提示信息（如 "(无输出)"），不截断。
+        行数统计基于**逻辑行**：split 后丢弃末尾换行符产生的空元素——
+        修复：``'line1\\nline2\\n'``（2 行）直接 split 出 3 个元素（尾 \\n
+        多出 1 个空串），恰好 max_lines 行时被误判超限触发截断（用户侧表现
+        为「没到 1000 行就被截断」）。
+
+        超长输出一律截断（无论是否以 '(' 开头）——错误提示（如 "(无输出)"）
+        本身仅 1 行，远低于 max_lines，不会触发截断；移除旧的
+        ``startswith('(')`` 特例避免命令真实输出以 '(' 开头时超长内容
+        绕过截断撑爆上下文。
         """
         if max_lines is None:
             max_lines = BashFunc.MAX_LINES
-        if not output or output.startswith('('):
+        if not output:
             return output
         lines = output.split('\n')
+        # 尾换行产生 1 个空元素，不计入逻辑行数（终端显示不把尾换行当独立行）
+        if lines and lines[-1] == '':
+            lines.pop()
         if len(lines) > max_lines:
             logger.debug("输出截断: %d 行 -> %d 行（保留尾部最新）", len(lines), max_lines)
-            return '\n'.join(lines[-max_lines:]) + (
+            tail = '\n'.join(lines[-max_lines:])
+            # ★ join 尾部可能残留换行（截断点恰在换行前/保留行以空行结尾），
+            #   rstrip 保证标记前无多余空行、内容恰好 max_lines 行。
+            return tail.rstrip('\n') + (
                 f'\n...(输出已截断：超过 {max_lines} 行，仅展示最后 {max_lines} 行)'
             )
         return output
