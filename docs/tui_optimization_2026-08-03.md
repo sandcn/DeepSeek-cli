@@ -214,6 +214,8 @@
 ### 界面美化（需求 #4）
 - **启动品牌屏美化**（BEAUTY-12）：splash 增加 `✦` 图标 + 版本号/模型名
   （`  ✦ DeepSeek CLI · v2.x.x` 或 `· {model_name}`），对齐 TopHeader 渐变标题视觉。
+- **品牌屏只显示模型名**：移除品牌标识前缀（`✦ DeepSeek CLI`）与 `·` 分隔符——
+  有模型名时仅显示模型名，无模型名时回退显示版本号（`v2.x.x`）避免空屏。
 
 ### 技术债清理（需求 #3）
 - `_consumer.py` TYPE_CHECKING 块移除纯未使用符号（AppModel/事件类型类——字符串

@@ -28,7 +28,6 @@ _S_ERROR = Style(fg=196)
 _S_ERROR_ICON = Style(fg=196, bold=True)
 _S_PARSE = Style(fg=242)
 _S_SPLASH = Style(fg=45, bold=True)
-_S_SPLASH_DIM = Style(fg=242)
 
 
 def apply_cmd(model, cmd: RenderCmd) -> None:
@@ -115,19 +114,19 @@ def _do_error(model, cmd) -> None:
 
 
 def _do_splash(model, cmd) -> None:
-    """启动品牌屏（BEAUTY-12 美化：✦ 图标 + 版本号 + 模型名）。
+    """启动品牌屏：仅显示模型名。
 
-    对齐 TopHeader 渐变标题视觉：✦ 前缀（splash 块样式 _S_SPLASH 亮青 bold），
-    无模型名时显示版本号（``v2.x.x``），有模型名时显示模型名（更有信息量）。
+    「品牌屏只显示模型名」：移除品牌标识前缀（``✦ DeepSeek CLI``）与
+    ``·`` 分隔符；无模型名时回退显示版本号（``v2.x.x``）避免空屏。
     """
     from src.app_init._args import VERSION
-    line = AnsiLine.of("  \u2726 DeepSeek CLI", _S_SPLASH)
+    line = AnsiLine.of("  ", _S_SPLASH)
     if model.status.model_name:
-        line.append(f" \u00b7 {model.status.model_name}", _S_SPLASH_DIM)
+        line.append(model.status.model_name, _S_SPLASH)
     else:
-        # VERSION 已含 ``v`` 前缀（"v2.2.0"）——直接拼接（与 TopHeader 同格式，
-        # 修复前 ``v{VERSION}`` 产生 ``vv2.2.0``）。
-        line.append(f" \u00b7 {VERSION}", _S_SPLASH_DIM)
+        # VERSION 已含 ``v`` 前缀（"v2.2.0"）——直接拼接
+        # （修复前 ``v{VERSION}`` 产生 ``vv2.2.0``）。
+        line.append(VERSION, _S_SPLASH)
     model.append_committed("splash", [line, AnsiLine.of("")])
 
 
