@@ -16,9 +16,23 @@ PERF-4 / 增量细化：
     呼吸色时间桶变化）只改动首行时仅重写首行，不再引发整帧重写——大文档下
     每帧输出从 O(文档) 降为 O(变更行)。
   - 单帧重写行数上限 ``_MAX_REWRITE_ROWS``：实际待重写行数（差异区间行数 +
-    高度差行数）超限时降级为"全量 clear + 全量重建"（避免病态大重写冻结 UI）。
+    高度差行数）超限时**不再降级为全量 clear + 全量重建**——增量路径本就只写
+    变化行且无 clear_screen（闪烁），超限仅记 warning（阈值保留防静默病态大
+    重写）。满足「除终端 resize 外均增量渲染」。
 
 不切换备用屏幕、不用 DECSTBM——内容自然流入 scrollback。
+
+**非 resize 均增量（需求）**：全量写入（``_write_full``）仅出现在首帧、
+``reset()``（resize/suspend/clear 后）与「文档高于屏幕时的缩短」——
+即「改变终端大小」、生命周期边界与唯一终端能力限制场景；其余帧一律走
+行级 diff 增量路径。说明：
+  1. ``_MAX_REWRITE_ROWS`` 超限降级已消除（原 clear + 全量重建 → 现仍增量，
+     超限仅记 warning）；
+  2. 文档高于屏幕（offset>0）时的缩短保留全量 clear + 重建——终端无
+     delete-line/DECSTBM 语义，无法删除缓冲中的残留行；不清屏增量重建会把
+     新帧内容写到「实际缓冲位置」而非「Frame 行号」，后续增长/等高重写按
+     Frame 行号定位时与缓冲错位（可见区露出 scrollback 残留旧行）。这是
+     终端能力限制（唯一保留的非 resize 全量路径），其余非 resize 全量已消除。
 
 Args:
     stream: 输出流（默认 sys.__stdout__；测试传 Mock/StringIO）。
@@ -241,25 +255,13 @@ class InkRenderer:
                 + max(0, prev_h - new_h)
             )
         if rewrite_count > _MAX_REWRITE_ROWS:
+            # ★ 非 resize 增量：超限不再降级为全量 clear + 全量重建（闪烁）。
+            #   增量路径本就只写变化行（无 clear_screen），输出量 ≤ 全量重建
+            #   且无闪烁；超限仅记 warning（阈值保留防静默病态大重写）。
             _logger.warning(
-                "单帧重写行数 %d 超上限 %d，降级为全量 clear + 全量重建",
+                "单帧重写行数 %d 超上限 %d，仍按增量路径重写（不清屏重建）",
                 rewrite_count, _MAX_REWRITE_ROWS,
             )
-            # ★ 1.5 修复：旧实现「仅写末尾 _MAX_REWRITE_ROWS 行 + 清残留」在文档
-            #   中间留下旧行残留——跳写语义使首差异行之前的静态内容被跳过，中间
-            #   行无法与目标帧对齐，画布出现陈旧行。改为「全量 clear + 全量重建」：
-            #   仅超限罕见路径触发，闪烁可接受；重建仅回调新增行（prev_h..new_h），
-            #   不重复回调已有行（输出历史不被污染）；_cursor_row 由 _write_full
-            #   重置为 new_h + 1（与目标帧一致）。
-            try:
-                self._stream.write(clear_screen())
-            except Exception:
-                _logger.debug("降级 clear_screen 写入异常", exc_info=True)
-            self._write_full(frame, prev_h)
-            # _write_full 不更新 _prev（首帧/重置路径由调用方置 None）；降级重建
-            # 须写回目标帧，否则下一帧误判首帧全量重写（输出重复）。
-            self._prev = frame
-            return
 
         # ★ 渲染策略按高度差分流：
         #   - 等高（delta==0）：逐差异区间重写（增量渲染细化）——头部动画
@@ -272,10 +274,12 @@ class InkRenderer:
         #     （增长）——逐区间无法表达位移行与新增行的塌缩重叠（user_select
         #     弹窗说明列高度变化、流式中间插入）。
         #   - 缩短 + 屏幕约束（delta<0 且 height>0）：**全量重建**——终端缓冲
-        #     无法删除行，清行残留使缓冲长度 > doc_h+1，屏幕偏移模型漂移
-        #     （后续增长/等高重写按错误偏移写导致错乱）；重建（clear + 重写）
-        #     重置缓冲与偏移一致。交互式导航/补全弹窗关闭等缩短场景低频，
-        #     重建成本可接受（流式只增长不缩短，不受影响）。
+        #     无法删除行（无 DECSTBM/DL 语义），缩短残留使缓冲长度 > doc_h+1；
+        #     不清屏增量重建会把新帧内容写到「实际缓冲位置」而非「Frame 行号」，
+        #     后续增长/等高重写按 Frame 行号定位时与缓冲错位（可见区露出 scrollback
+        #     残留旧行）。重建（clear + 重写）重置缓冲与偏移一致，保证正确性。
+        #     （唯一保留的非 resize 全量路径——终端能力限制；其余非 resize
+        #     场景已全部增量，见文件顶部「非 resize 均增量」说明。）
         #   重写目标一律按 **prev 帧偏移** 换算：终端缓冲此刻仍处于 prev 布局
         #   （只能经底部写行触发滚动），按 prev 位置原位重写、由末尾换行滚动
         #   过渡到 new 布局——按 new 偏移写会覆盖未滚动区域。
