@@ -334,9 +334,14 @@ def resolve_text_style(props) -> Style | None:
     """解析 TEXT shorthand 样式属性（react-ink 语义）为 Style。
 
     支持：``color``（fg 别名）、``backgroundColor``（bg 别名）、
-    ``bold``/``italic``/``underline``/``dim``。显式 ``style`` prop 与
-    shorthand 合并——shorthand 覆盖 style 对应字段（color/bold 等
+    ``bold``/``italic``/``underline``/``dim``/``dimColor``。显式 ``style``
+    prop 与 shorthand 合并——shorthand 覆盖 style 对应字段（color/bold 等
     显式存在时优先）。
+
+    ``dimColor``（react-ink 特有）：布尔 prop——True 时以更暗的 dim 颜色
+    渲染文本（``dim=True`` + 指定暗色 fg，若未指定其它 fg 则用暗灰 238）。
+    False/缺省无效果。与 ``dim`` 并存时 ``dim`` 控制 dim 属性、``dimColor``
+    控制颜色（react-ink 语义：dimColor 主要影响颜色）。
 
     Args:
         props: TEXT fiber props。
@@ -351,21 +356,29 @@ def resolve_text_style(props) -> Style | None:
     italic = props.get("italic")
     underline = props.get("underline")
     dim = props.get("dim")
+    dim_color = props.get("dimColor")
     has_any = (
         color is not None or bg is not None
         or bold is not None or italic is not None
         or underline is not None or dim is not None
+        or dim_color is not None
         or base is not None
     )
     if not has_any:
         return None
+    # dimColor 指定暗色 fg：仅当未显式设置 color 时生效（否则 color 优先）
+    dim_fg = 238 if dim_color else None
     merged = Style(
-        fg=color if color is not None else (base.fg if base is not None else None),
+        fg=color if color is not None else (
+            dim_fg if dim_color else (base.fg if base is not None else None)
+        ),
         bg=bg if bg is not None else (base.bg if base is not None else None),
         bold=bool(bold) if bold is not None else (base.bold if base is not None else False),
         italic=bool(italic) if italic is not None else (base.italic if base is not None else False),
         underline=bool(underline) if underline is not None else (base.underline if base is not None else False),
-        dim=bool(dim) if dim is not None else (base.dim if base is not None else False),
+        dim=bool(dim) if dim is not None else (
+            True if dim_color else (base.dim if base is not None else False)
+        ),
     )
     if not merged:
         return None

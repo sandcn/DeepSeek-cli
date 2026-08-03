@@ -45,13 +45,17 @@ def _border_style(props: dict) -> Style:
     return Style(fg=23)
 
 
-#: borderStyle 变体字符表（完善 react ink）：单线/双线/圆角/粗体。
+#: borderStyle 变体字符表（完善 react ink）：单线/双线/圆角/粗体/经典/虚线。
 #: 键 = props["borderStyle"] 字符串；缺省 "single"。
+#: classic 为 ASCII 经典边框（``+---``/``|``）；dashed 为虚线边框（``┄``/``┆``，
+#: 视觉更轻）。
 _BORDER_CHARS: dict[str, tuple[str, str, str, str, str, str]] = {
     "single": ("┌", "┐", "└", "┘", "─", "│"),
     "double": ("╔", "╗", "╚", "╝", "═", "║"),
     "round": ("╭", "╮", "╰", "╯", "─", "│"),
     "bold": ("┏", "┓", "┗", "┛", "━", "┃"),
+    "classic": ("+", "+", "+", "+", "-", "|"),
+    "dashed": ("┌", "┐", "└", "┘", "┄", "┆"),
 }
 
 

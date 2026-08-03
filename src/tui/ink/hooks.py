@@ -425,6 +425,34 @@ def use_callback(fn: Callable, deps: list | tuple | None = None) -> Callable:
 #: 方案一致（fiber.py InputHook 序号）。
 _CTX_SEQ = itertools.count()
 
+#: useId 分配序号真源（React 18 useId 语义）：单调递增，为每个首次挂载的
+#: fiber 分配稳定唯一 ID。fiber 复用期间 ID 保持不变（ID 挂在 fiber 上，
+#: 复用不重分配）；不同 fiber 永不冲突（序号单调）。
+_USE_ID_SEQ = itertools.count()
+
+
+def useId() -> str:
+    """React 18 ``useId`` 等价物（完善 react ink）：返回稳定唯一 ID 字符串。
+
+    同一组件跨渲染返回相同 ID（ID 挂在 fiber 上，fiber 复用不重分配）；
+    不同组件返回不同 ID（全局单调递增序号）。格式 ``:r{seq}:``（React
+    风格前缀，防与业务字符串冲突）。
+
+    典型用途：a11y 关联（``aria-labelledby`` / ``<label for>``）、组件间
+    稳定标识（表单控件 id、测试定位）。与 React 不同：React 18 的 useId
+    带 ``:r`` 前缀、双冒号包裹的哈希风格，本实现为简化序号（语义一致：
+    稳定 + 唯一）。
+
+    Returns:
+        形如 ``:r0:`` 的唯一 ID 字符串。
+    """
+    fiber = _current()
+    fid = getattr(fiber, "_use_id", None)
+    if fid is None:
+        fid = f":r{next(_USE_ID_SEQ)}:"
+        fiber._use_id = fid
+    return fid
+
 
 def create_context(default: Any = None) -> Context:
     """React createContext 等价物。
@@ -826,6 +854,7 @@ __all__ = [
     "use_callback",
     "use_context",
     "create_context",
+    "useId",
     "use_input",
     "use_error_state",
     "memo",

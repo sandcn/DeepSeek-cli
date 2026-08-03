@@ -106,7 +106,11 @@ def _build_status_runs(model, dot_elapsed: float = 0.0,
     if tool_total > 0:
         if st.tool_count > 0:
             count_style = _S_TOOL_FAIL if st.tool_fail > 0 else _S_TOOL_OK
-            parts.append(StyledRun(f"{st.tool_count}\u2192", _S_ACCENT))
+            # ★ BEAUTY-15（动效）：工具计数箭头呼吸——活跃期箭头亮青脉动
+            # （45-55，8s，与模型名/分隔线呼吸同步），空闲静态强调色。
+            # time_glow 0.1s 桶缓存，10Hz 渲染时平滑推进。
+            arrow_style = Style(fg=time_glow(45, 55, 8.0)) if status_active else _S_ACCENT
+            parts.append(StyledRun(f"{st.tool_count}\u2192", arrow_style))
             parts.append(StyledRun(f"{tool_total}", count_style))
         else:
             done = tool_total - st.tool_count - st.tool_fail

@@ -306,8 +306,14 @@ def _tool_card_styled_lines(block, width, start=0, stop=None):
                 # 降级：无边框裸行（截断至 width）
                 out.append(truncate_runs(seg_runs, width))
                 continue
-            body = [StyledRun("\u2502 ", border)] + seg_runs
-            pad = inner_w - sum(r.width for r in seg_runs)
+            # ★ BUG-29（review 方向）：极端窄屏主体行超宽——``wrap_line``
+            #   在宽度不足以容纳单个 CJK 字符（inner_w=1 < 2）时仍拆出宽 2
+            #   的段，``│ ``（2）+ seg（2）+ `` │``（2）= 6 > width=5 →
+            #   破坏行级 diff 宽度不变量。修复：seg 宽度超出内宽时先截断
+            #   （``truncate_runs`` 不拆 CJK）再拼边框（与 ``_omitted_line``
+            #   截断语义一致）；pad 按截断后宽度计算。
+            body = [StyledRun("\u2502 ", border)] + truncate_runs(seg_runs, inner_w)
+            pad = inner_w - sum(r.width for r in body[1:])
             if pad > 0:
                 body.append(StyledRun(" " * pad, border))
             body.append(StyledRun(" \u2502", border))

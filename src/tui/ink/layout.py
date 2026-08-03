@@ -576,14 +576,30 @@ def _measure(fiber: Fiber, x: int, y: int, avail_w: int, fill: bool = True) -> L
         # ★ 完善 react ink：TEXT shorthand 样式（color/bold/...）+ transform
         #   （uppercase/lowercase/capitalize）——resolve_text_style 合并
         #   ``style`` prop 与 shorthand；transform 在换行前作用于文本。
-        transform = fiber.props.get("transform")
-        text = apply_text_transform(str(fiber.props.get("children", "")), transform)
-        style = resolve_text_style(fiber.props)
+        # ★ 性能（方向4 优化）：styled 非 None（聊天历史/开放块等已带完整
+        #   样式 runs）时 **transform 与 resolve_text_style 无下游消费**——
+        #   styled 优先于 children（runs 构造走 styled 分支），style/transform
+        #   仅纯文本（styled is None）分支使用。跳过两者避免大组件树（1500+
+        #   TEXT 行）每帧 O(rows) 的 style 解析与字符串变换。
+        if styled is not None:
+            text = str(fiber.props.get("children", ""))  # 仅用于空判断
+            style = None
+        else:
+            transform = fiber.props.get("transform")
+            text = apply_text_transform(
+                str(fiber.props.get("children", "")), transform,
+            )
+            style = resolve_text_style(fiber.props)
         # ★ textWrap 模式（方向B 步骤12 / 完善 ink）：
         #   "wrap"（默认，现行为）/ "truncate" / "truncate-end"（单行截断省略号，
         #   末尾省略号）/"truncate-start"（省略号在开头，保留尾部）/
         #   "truncate-middle"（保留头尾，中间省略号）——react-ink 完整语义。
-        text_wrap = fiber.props.get("textWrap", "wrap")
+        #   ★ 完善 react ink：``wrap`` prop 为 ``textWrap`` 的别名（react-ink
+        #   用 ``<Text wrap={...}>``，本框架历史用 ``textWrap``）——优先
+        #   textWrap（显式意图），缺省回退 wrap，再回退默认 "wrap"。
+        text_wrap = fiber.props.get("textWrap")
+        if text_wrap is None:
+            text_wrap = fiber.props.get("wrap", "wrap")
         # ★ 完善 react ink：TEXT align（文本对齐）——left（默认）/right/center。
         #   对齐在换行后按布局宽度调整行内容（前导空格），多行各自对齐；
         #   宽度差为 0 的行原样返回（零分配）。对齐结果随 ``_wrap_cache``
@@ -755,6 +771,20 @@ def _measure(fiber: Fiber, x: int, y: int, avail_w: int, fill: bool = True) -> L
         for i, child in enumerate(children):
             remaining = max(0, row_inner_w - (cursor_x - inner_x))
             cbox = _measure(child, cursor_x, inner_y, remaining, fill=False)
+            # ★ flexBasis（完善 react ink flexbox）：row 主轴=横向——
+            #   子节点 ``flexBasis`` 作为初始宽度（覆盖内容自适应宽度）。
+            #   与 flexGrow/flexShrink 协同：flexBasis 先应用（影响 used_w），
+            #   flexGrow 基于新 used_w 分配剩余；flexShrink 仍按权重缩减。
+            #   非数字/<=0 值忽略（保持内容宽度）。
+            fb = child.props.get("flexBasis")
+            if fb is not None:
+                try:
+                    fb_w = max(0, int(fb))
+                except (TypeError, ValueError):
+                    fb_w = 0
+                if fb_w > 0 and fb_w != cbox.w:
+                    cbox.w = fb_w
+                    child.layout_box = cbox
             # ★ row margin 修复（方向1）：最后一个子节点不计 margin——与 column
             #   分支 ``if i < n - 1: total_h += margin`` 一致（原实现无条件累加
             #   margin，最后一个子节点后多出 margin 宽度）。
@@ -921,6 +951,20 @@ def _measure(fiber: Fiber, x: int, y: int, avail_w: int, fill: bool = True) -> L
                 cbox = child.layout_box
             else:
                 cbox = _measure(child, inner_x, cursor_y, inner_w, fill=child_fill)
+            # ★ flexBasis（完善 react ink flexbox）：column 主轴=纵向——
+            #   子节点 ``flexBasis`` 作为初始高度（覆盖内容自适应高度）。
+            #   与 flexGrow/flexShrink 协同：flexBasis 先应用（影响 total_h），
+            #   flexGrow 基于新 total_h 分配剩余；flexShrink 仍按权重缩减。
+            #   非数字/<=0 值忽略（保持内容高度）。
+            fb = child.props.get("flexBasis")
+            if fb is not None:
+                try:
+                    fb_h = max(0, int(fb))
+                except (TypeError, ValueError):
+                    fb_h = 0
+                if fb_h > 0 and fb_h != cbox.h:
+                    cbox.h = fb_h
+                    child.layout_box = cbox
             cursor_y += cbox.h + spacing
             total_h += cbox.h
             if i < n - 1:

@@ -52,7 +52,9 @@ _PROMPT = "> "
 # P2-10：_S_PROMPT/_S_PLACEHOLDER 为死常量（定义后全项目无引用——提示符已用
 # 呼吸色 _glow_color、占位符已用渐显色 _placeholder_fade_color）→ 删除。
 _S_CONT = Style(fg=242)
-_S_CPU = Style(fg=214)
+# ★ BEAUTY-14（美化）：CPU/MEM 着色区分——CPU 亮青（45）、MEM 橙黄（214），
+#   上分隔线信息更易扫读（原两者同灰）。
+_S_CPU = Style(fg=45)
 _S_MEM = Style(fg=214)
 
 
@@ -470,11 +472,15 @@ def _build_lines(fiber) -> list[Line]:
     now_local = time.localtime()
     ts = f"{now_local.tm_year}-{now_local.tm_mon:02d}-{now_local.tm_mday:02d} {now_local.tm_hour:02d}:{now_local.tm_min:02d}:{now_local.tm_sec:02d}"
     time_w = len(ts) + 2
-    bottom = Line.of("", _S_SEP)
+    # ★ BEAUTY-13（动效）：下分隔线（时间戳行）呼吸——活跃/流式期间与
+    #   上分隔线/状态栏分隔线同周期青色呼吸（32-45，8s），三条分隔线视觉
+    #   联动；空闲保持静态深灰（_S_SEP，零额外渲染成本）。
+    bottom_style = Style(fg=time_glow(32, 45, 8.0)) if status_active else _S_SEP
+    bottom = Line.of("", bottom_style)
     # 方向1 步骤4（窄屏防溢出）：sep_len 下限 0 + 时间戳内容独立行截断
     # （width < 22 时不超宽；正常宽度时间戳完整保留）
     sep_len = max(0, width - time_w)
-    bottom.append("\u2501" * sep_len, _S_SEP)
+    bottom.append("\u2501" * sep_len, bottom_style)
     content_budget = max(1, width - sep_len)
     content = Line()
     _append_truncated(content, f" {ts}", _S_TIME, content_budget)

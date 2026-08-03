@@ -180,6 +180,9 @@ class Fiber:
     _context_dirty: bool = False
     #: provider 值变更检测基准（``_MISSING`` 表示未初始化；None 是合法值）。
     _last_provider_value: Any = _MISSING
+    #: useId 分配的稳定唯一 ID（React 18 useId 语义；挂载时分配，fiber 复用
+    #: 期间保持不变，卸载后不再访问）。
+    _use_id: Any = None
 
     # ── 派生属性 ──────────────────────────────────────
 
