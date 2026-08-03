@@ -508,9 +508,27 @@ class AppModel:
         """增量提交开放块的已闭合行（流式内容随段落闭合提交）。
 
         开放块（content/reasoning/tool）的闭段行立即进入缓存，块内只留
-        未闭合尾（当前段落）→ 每帧渲染成本 O(live+当前段落)，不随响应增长。
+        未闭合尾（当前段落）→ 每帧渲染成本 O(live+当前段落），不随响应增长。
+
+        BUG-4（方向4 修复）：**仅允许「连续提交窗口」内的开放块增量提交**——
+        若该块前面尚有未关闭/未提交的块（``committed_count != 块索引``），
+        增量提交会打乱 committed_lines 的**块顺序**（content 流式期间被提前
+        写入 committed_lines，其后 reasoning 关闭提交时被插到 content 之后，
+        形成 content 前半 + reasoning + content 后半的内容交错）。修复后：
+        块索引 == committed_count 才增量提交；否则等待前面块关闭后随
+        ``commit_block`` 一并提交（行保留在块内，live 渲染正常显示）。
         """
         if block.committed_line_count >= len(block.lines):
+            return
+        # ★ BUG-4：块索引 == committed_count 才允许增量提交（连续窗口检查）。
+        #   使用引用查找（ChatBlock 无自定义 __eq__，默认 is 比较）。
+        try:
+            idx = self.blocks.index(block)
+        except ValueError:
+            return  # 块已不在列表（防御）
+        if idx != self.committed_count:
+            # 前面尚有未关闭/未提交块：不增量提交（等待 commit_block 随连续
+            # 已关闭窗口一并提交；开放期间行保留在块内 live 渲染）。
             return
         # ★ 1.6：块首次提交（committed_line_count==0）记录卡片首行（角色头）
         #   在 committed_lines 中的偏移（committed_lines 只增不删，偏移稳定），

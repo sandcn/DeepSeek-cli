@@ -372,3 +372,54 @@ class TestCommittedPrefixNonTop:
         assert f2.lines[11].plain == "new 0"
         assert f2.lines[13].plain == "new 2"
         assert f2.lines[14].plain == "tail"
+
+
+class TestOpenBlockCommitOrder:
+    """BUG-4 — 开放块增量提交不得打乱 committed_lines 块顺序。
+
+    流式期间 content 块（索引在 reasoning 之后）若被 commit_open_block 提前
+    写入 committed_lines，reasoning 关闭提交时被插到 content 之后——形成
+    content 前半 + reasoning + content 后半的内容交错。
+    """
+
+    def test_content_not_committed_before_preceding_reasoning(self):
+        from src.tui.app.model import AppModel
+        from src.tui.app.apply import apply_cmd
+        from src.tui._const import (
+            UserMsgCmd, ContentCmd, PhaseDoneCmd, ReasoningCmd,
+        )
+
+        model = AppModel()
+        apply_cmd(model, UserMsgCmd(text="用户问题"))
+        # 两个开放块：reasoning（前） + content（后）——content 流式写入时
+        # reasoning 尚未关闭，content 不得被增量提交到 committed_lines。
+        apply_cmd(model, ReasoningCmd(text="思考前半"))
+        apply_cmd(model, ReasoningCmd(text="思考后半"))
+        apply_cmd(model, ContentCmd(text="回答正文前半"))
+        apply_cmd(model, ContentCmd(text="回答正文后半"))
+        # 此时 committed_lines 只有 user（reasoning/content 均未关闭）
+        assert model.committed_count == 1, (
+            f"开放窗口期间 committed_count 应为 1，实际 {model.committed_count}"
+        )
+        # 关闭 reasoning → 提交 user + reasoning
+        apply_cmd(model, PhaseDoneCmd(phase="reasoning"))
+        assert model.committed_count == 2, (
+            f"关闭 reasoning 后 committed_count 应为 2，实际 {model.committed_count}"
+        )
+        plains = [l.plain for l in model.committed_lines]
+        assert any("思考前半" in p for p in plains), (
+            f"reasoning 内容应已提交: {plains}"
+        )
+        assert not any("回答正文" in p for p in plains), (
+            f"content 不应在 reasoning 之前提交（块顺序保持）: {plains}"
+        )
+        # 关闭 content → 提交全部，顺序 = user, reasoning, content
+        apply_cmd(model, PhaseDoneCmd(phase="content"))
+        assert model.committed_count == 3
+        plains = [l.plain for l in model.committed_lines]
+        idx_user = next(i for i, p in enumerate(plains) if "用户问题" in p)
+        idx_reason = next(i for i, p in enumerate(plains) if "思考前半" in p)
+        idx_content = next(i for i, p in enumerate(plains) if "回答正文前半" in p)
+        assert idx_user < idx_reason < idx_content, (
+            f"committed_lines 顺序应为 user < reasoning < content，实际 {plains}"
+        )

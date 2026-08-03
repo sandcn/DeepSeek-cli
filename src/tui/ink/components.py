@@ -293,6 +293,10 @@ def _canvas_row_to_line(row) -> Line:
     （``prev = col + wcswidth_simple(ch)``）——修复前 ``prev = col + 1``
     对 CJK 字符（占 2 列）推进不足，后续键 > prev 产生多余空格
     （``中文`` 被渲染为 ``中 文``）。
+
+    方向4（性能）：一次排序 + 段级累积——连续同 style 字符先累积到
+    ``run_text``（行宽有界 ≤80 列，str += 段长可接受），最后一次性构造
+    Line（免逐字符 ``Line.append`` 的段合并检查）。列间隙以空格段补齐。
     """
     if isinstance(row, Line):
         return row
