@@ -51,7 +51,10 @@ from src.tui._subagent_state import _AgentSlot, _ToolRecord
 #: 卡片边框色（对齐工具卡 palette.border fg=23 暗青）
 _C_BORDER = "\033[38;5;23m"
 
-_SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
+#: spinner 帧序列唯一真源（方向4 收敛至 _fx.SPINNER_FRAMES；原内联列表形态
+#: 保留为 list——兼容既有测试 ``_SPINNER_FRAMES[i]`` 下标访问与 patch 路径）。
+from src.tui.app._fx import SPINNER_FRAMES as _SPINNER_FRAMES_SRC
+_SPINNER_FRAMES = list(_SPINNER_FRAMES_SRC)
 _INDENT = "  "
 
 #: ANSI 转义序列（CSI/OSC/单字符控制）——宽度测量/截断时安全跳过。

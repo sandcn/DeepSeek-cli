@@ -16,6 +16,11 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import ClassVar
 
+# TrueColor 用于 dataclass 字段类型注解（from __future__ import annotations
+# 下为字符串，不求值——显式导入消除 pyflakes 未定义名告警；color 模块不反向
+# 依赖 style，无循环导入）。
+from .color import TrueColor
+
 # 紧急路径 ANSI 序列常量 — 唯一真源在 _const.py（Layer 0），此处 re-export 保持兼容
 from src.tui._const import (
     ANSI_EMERGENCY_RED,

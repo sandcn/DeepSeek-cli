@@ -35,6 +35,14 @@ def _default_fx_params() -> tuple[float, float]:
 #: 模块级默认参数（对齐 TuiConfig 配置默认值，避免每帧重复构造配置实例）
 _DEFAULT_FADE_DURATION, _DEFAULT_SPINNER_HZ = _default_fx_params()
 
+#: spinner 帧序列**唯一真源**（BEAUTY 动效收敛，方向4）——ASCII braille 帧
+#: ``⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏``（10 帧，10Hz 推进时 1s 循环）。修复前
+#: ``_ParseLine``/``_StreamingLine``（app.py 字符串）、``status_bar``
+#: （``\\u280b...`` 转义串）、``_subagent_render``（字符列表）三处各自内联
+#: 同一组字符（表示形式不同：字符串/转义串/列表）——收敛为本常量，消费方
+#: 统一引用（保留各自模块级别名/列表形态以兼容测试导入路径）。
+SPINNER_FRAMES = "\u280b\u2819\u2839\u2838\u283c\u2834\u2826\u2827\u2807\u280f"
+
 
 def fade_color(
     elapsed: float,
@@ -103,4 +111,4 @@ def needs_animation(active_flags) -> bool:
     return any(bool(f) for f in active_flags)
 
 
-__all__ = ["fade_color", "spinner_frame", "needs_animation"]
+__all__ = ["fade_color", "spinner_frame", "needs_animation", "SPINNER_FRAMES"]

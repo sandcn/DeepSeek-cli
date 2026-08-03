@@ -39,7 +39,9 @@ _S_TOOL_OK = Style(fg=41)
 _S_TOOL_FAIL = Style(fg=196)
 
 # BEAUTY-7：streaming braille spinner 帧序列（与 _subagent_render 共用语义）
-_SPINNER_FRAMES = "\u280b\u2819\u2839\u2838\u283c\u2834\u2826\u2827\u2807\u280f"
+# ★ 方向4：唯一真源 _fx.SPINNER_FRAMES——本模块保留别名（兼容既有 patch 路径；
+#   值与原 `\u280b\u2819...` 转义串完全一致）。
+from src.tui.app._fx import SPINNER_FRAMES as _SPINNER_FRAMES
 
 # PERF-5：快照查询 TTL 缓存（≤1Hz；渲染线程单写，GIL 原子赋值足够）
 # 方向D 步骤16：TTL 常量化（_SNAPSHOT_TTL）——与状态栏 1s 时间桶对齐，

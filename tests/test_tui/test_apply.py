@@ -68,6 +68,16 @@ class TestBasicCommands:
         assert m.blocks[-1].kind == "splash"
         assert "DeepSeek" in m.blocks[-1].lines[0].plain
 
+    def test_splash_icon_and_version(self):
+        """BEAUTY-12 — splash 品牌屏：✦ 图标 + 版本号（VERSION 已含 v 前缀）。"""
+        m = _model()
+        apply_cmd(m, SplashCmd())
+        plain = m.blocks[-1].lines[0].plain
+        assert "\u2726" in plain, f"splash 应含 ✦ 图标: {plain!r}"
+        assert "v" in plain
+        # VERSION 已含 ``v`` 前缀——不允许 ``vv`` 重复
+        assert "vv" not in plain, f"版本号不应出现 vv 重复: {plain!r}"
+
     def test_user_message(self):
         m = _model()
         apply_cmd(m, UserMsgCmd(text="hello"))

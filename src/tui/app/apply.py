@@ -121,11 +121,13 @@ def _do_splash(model, cmd) -> None:
     无模型名时显示版本号（``v2.x.x``），有模型名时显示模型名（更有信息量）。
     """
     from src.app_init._args import VERSION
-    line = AnsiLine.of(f"  \u2726 DeepSeek CLI", _S_SPLASH)
+    line = AnsiLine.of("  \u2726 DeepSeek CLI", _S_SPLASH)
     if model.status.model_name:
         line.append(f" \u00b7 {model.status.model_name}", _S_SPLASH_DIM)
     else:
-        line.append(f" \u00b7 v{VERSION}", _S_SPLASH_DIM)
+        # VERSION 已含 ``v`` 前缀（"v2.2.0"）——直接拼接（与 TopHeader 同格式，
+        # 修复前 ``v{VERSION}`` 产生 ``vv2.2.0``）。
+        line.append(f" \u00b7 {VERSION}", _S_SPLASH_DIM)
     model.append_committed("splash", [line, AnsiLine.of("")])
 
 
