@@ -126,6 +126,17 @@ def _color_256_ansi(code: int) -> str:
     return f"\033[38;5;{code}m"
 
 
+def _running_pulse_ansi() -> str:
+    """running 状态 ● 呼吸色（方向4 动效：琥珀 208-220 脉动，6s 周期）。
+
+    替代静态 ``_C_RUNNING``（214）——活跃工具/agent 的 ● 持续脉动，视觉
+    提示进行中。时间基（``time_glow`` 0.1s 桶缓存），subagent 面板 10Hz
+    刷新时平滑推进。
+    """
+    from src.tui.app._theme import time_glow
+    return _color_256_ansi(time_glow(208, 220, 6.0))
+
+
 def _ansi_256_code(ansi: str) -> int | None:
     """从 ANSI 序列提取 256 色号（如 ``"\\033[38;5;214m"`` → 214）；无法解析返回 None。"""
     m = re.search(r"38;5;(\d+)", ansi)
@@ -403,8 +414,10 @@ def format_tool_record(rec: _ToolRecord, now: float, cont: str = "",
     else:
         detail_disp = f" {_C_DIMMER}{detail}{_C_RESET}" if detail else ""
         if rec.phase == "running":
-            # P2-14：硬编码 "\033[38;5;214m" → _C_RUNNING（_const 模块级导入，值一致）
-            pulse_color = _C_RUNNING
+            # 方向4（动效）：running ● 呼吸色（琥珀 208-220 脉动）——替代静态
+            # _C_RUNNING（214）。P2-14：硬编码 "\033[38;5;214m" → _C_RUNNING
+            # （_const 模块级导入，值一致）；此处改为时间基呼吸。
+            pulse_color = _running_pulse_ansi()
             line = f"{pulse_color}\u25cf{_C_RESET} {tool_abbr}{detail_disp}  {_C_DIMMER}{time_str}{_C_RESET}"
         elif rec.phase == "done":
             line = f"{_C_DONE}\u2714{_C_RESET} {tool_abbr}{detail_disp}  {_C_DIMMER}{time_str}{_C_RESET}"
