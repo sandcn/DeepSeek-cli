@@ -113,6 +113,11 @@ def _desc_column_width(width: int) -> int:
     return max(8, min(int(width) // 3, 40, int(width) - 12))
 
 
+#: 补全弹窗高度锁定的最大允许补白行数——items 减少时弹窗高度保持（防闪烁），
+#: 但补白超过此值（items 大幅减少）时允许缩小（避免弹窗底部大片空白）。
+_LOCKED_PAD_LIMIT = 3
+
+
 def _completion_item_rows() -> int:
     """补全弹窗候选项最大行数（终端高度约束，防超屏）。
 
@@ -146,12 +151,16 @@ def _completion_height(completion, width=None) -> int:
     方向4（超屏防护）：候选项行数经 ``_completion_item_rows`` 限制——大量
     选项 / 超长说明时弹窗不超终端高度（渲染截断与高度一致，光标定位正确）。
 
-    ★ 高度锁定（补全弹窗闪烁修复）：弹窗打开期间返回 ``locked_height``
-    （**只增不减**）——打字时 items 数量变化（5→2→1）若高度随之下调，
-    input_area 高度变化触发文档缩短重排（物理缓冲无 delete-line → 漂移 →
-    全量重写 → 视觉闪烁）；锁定后 items 减少时高度保持（底部短暂留白），
-    doc 高度不变 → 等高 diff 只重写弹窗行（不闪）；items 增加时高度跟随
-    （增高，增长滚动自然）。弹窗关闭（hide_completions）重置 locked_height=0。
+    ★ 高度锁定（补全弹窗闪烁修复 + 补白上限）：弹窗打开期间优先返回
+    ``locked_height``（items 小幅减少时**只增不减**）——打字时 items 数量变化
+    （5→2→1）若高度随之下调，input_area 高度变化触发文档缩短重排（物理缓冲
+    无 delete-line → 漂移 → 全量重写 → 视觉闪烁）；锁定后 items 小幅减少时
+    高度保持（底部短暂留白，≤ ``_LOCKED_PAD_LIMIT`` 行），doc 高度不变 →
+    等高 diff 只重写弹窗行（不闪）；items 增加时高度跟随（增高，增长滚动
+    自然）。
+    但补白超过 ``_LOCKED_PAD_LIMIT``（items **大幅**减少，如 20→1 项）时允许
+    缩小到当前 need——避免弹窗底部渲染十余行空白（视觉异常；一次 diff 重写
+    换取无空白更优）。弹窗关闭（hide_completions）重置 locked_height=0。
 
     Args:
         completion: CompletionState 或 None。
@@ -171,9 +180,18 @@ def _completion_height(completion, width=None) -> int:
         sel = max(0, min(completion.selected, len(descs) - 1))
         desc_lines = _wrap_by_width(descs[sel] or "", desc_w)
         need = min(max(n, len(desc_lines)), _completion_item_rows()) + 2
-    # 高度锁定（只增不减）：弹窗打开期间 items 减少高度保持，doc 高度不变
-    # → 等高 diff 只重写弹窗行（消除打字时 items 数量变化引发的全量重写闪烁）。
-    if need > getattr(completion, "locked_height", 0):
+    # 高度锁定（补全弹窗闪烁修复 + 补白上限）：
+    #   - items 增加 → 高度跟随（增长滚动自然）。
+    #   - items 小幅减少（need 与 locked_height 差距 <= _LOCKED_PAD_LIMIT）
+    #     → 高度保持（底部补白 ≤ 上限），doc 高度不变 → 等高 diff 只重写
+    #     弹窗行（消除打字时 items 数量变化引发的全量重写闪烁）。
+    #   - items 大幅减少（差距 > _LOCKED_PAD_LIMIT，如 20→1 项）→ 允许缩小
+    #     到 need——避免弹窗底部渲染十余行空白（视觉异常；一次 diff 重写
+    #     换取无空白更优）。
+    locked = getattr(completion, "locked_height", 0)
+    if need > locked:
+        completion.locked_height = need
+    elif locked - need > _LOCKED_PAD_LIMIT:
         completion.locked_height = need
     return completion.locked_height
 

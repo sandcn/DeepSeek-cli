@@ -1,12 +1,14 @@
-"""补全弹窗闪烁修复测试（commit 顶部对齐 + 弹窗高度锁定）。
+"""补全弹窗闪烁修复测试（commit 顶部对齐 + 弹窗高度锁定 + 补白上限）。
 
 覆盖用户需求「补全弹出时，改变内容时，tui 会闪」的修复：
   - **顶部对齐局部重写**（InkRenderer）：文档仍高于屏幕时，弹窗/尾部区域
     高度变化只重写变化行 + 清残留，弹窗上方（历史消息）永不重写——
     消除打字时补全弹窗 items 数量变化引发的全可见区重写闪烁。
-  - **弹窗高度锁定**（_completion_height）：弹窗打开期间高度只增不减——
-    items 数量减少时弹窗高度保持（底部补白），doc 高度不变 → 等高 diff
+  - **弹窗高度锁定**（_completion_height）：弹窗打开期间 items 小幅减少时
+    高度保持（底部补白，≤ _LOCKED_PAD_LIMIT 行），doc 高度不变 → 等高 diff
     只重写弹窗行（不闪）。
+  - **补白上限**（_LOCKED_PAD_LIMIT）：items 大幅减少（如 20→1 项）时允许
+    高度缩小——避免弹窗底部渲染十余行空白（渲染异常）。
 """
 
 from __future__ import annotations
@@ -15,12 +17,25 @@ import io
 
 from src.tui.ink.output import Frame, Line
 from src.tui.ink.renderer import InkRenderer
-from src.tui.app.input_area import _completion_height
+from src.tui.app.input_area import _completion_height, _build_lines
 from src.tui.app.model import CompletionState
+from src.tui.ink.fiber import Fiber
 
 
 def _frame(*plain_lines: str) -> Frame:
     return Frame(Line.of(l) for l in plain_lines)
+
+
+class _Box:
+    """极简 LayoutBox 桩（input_area 渲染测试用）。"""
+
+    __slots__ = ("x", "y", "w", "h")
+
+    def __init__(self, x=0, y=0, w=80, h=1):
+        self.x = x
+        self.y = y
+        self.w = w
+        self.h = h
 
 
 class TestCompletionPopupShrinkNoHistoryRewrite:
@@ -85,7 +100,7 @@ class TestCompletionPopupShrinkNoHistoryRewrite:
 
 
 class TestCompletionHeightLocked:
-    """弹窗高度锁定（_completion_height 只增不减，弹窗打开期间）。"""
+    """弹窗高度锁定（_completion_height 补白上限：items 小幅减少保持、大幅减少缩小）。"""
 
     def _mk(self, items, visible=True):
         c = CompletionState()
@@ -97,25 +112,47 @@ class TestCompletionHeightLocked:
         c.split_desc = False
         return c
 
-    def test_height_never_decreases_while_open(self):
+    def test_height_kept_on_small_shrink_while_open(self):
+        """items 小幅减少（补白 ≤ _LOCKED_PAD_LIMIT）：高度保持（锁定，防闪烁）。"""
         c = self._mk([f"f{i}" for i in range(5)])
         h5 = _completion_height(c, 80)
         assert h5 == 7  # 标题 + 5 项 + 提示
-        # items 减少：高度保持（锁定）
+        # items 5→2：need 4（补白 3 ≤ 上限 3）→ 高度保持 7（锁定）
         c.items = [f"f{i}" for i in range(2)]
         c.texts = c.items
         h2 = _completion_height(c, 80)
-        assert h2 == 7, f"items 减少高度应保持（锁定），实际 {h2}"
+        assert h2 == 7, f"items 小幅减少高度应保持（锁定），实际 {h2}"
         # items 增加超过锁定：高度跟随（增高）
         c.items = [f"f{i}" for i in range(9)]
         c.texts = c.items
         h9 = _completion_height(c, 80)
         assert h9 == 11, f"items 增加高度应跟随，实际 {h9}"
-        # 再次减少：仍不降
-        c.items = [f"f{i}" for i in range(3)]
+
+    def test_height_shrinks_on_large_shrink_while_open(self):
+        """items 大幅减少（补白 > _LOCKED_PAD_LIMIT）：允许缩小，避免弹窗大片空白。"""
+        c = self._mk([f"f{i}" for i in range(5)])
+        h5 = _completion_height(c, 80)
+        assert h5 == 7
+        # items 5→1：need 3（补白 4 > 上限 3）→ 缩小到 3（不再保留 4 行空白）
+        c.items = [f"f{i}" for i in range(1)]
         c.texts = c.items
-        h3 = _completion_height(c, 80)
-        assert h3 == 11, f"再次减少高度应保持，实际 {h3}"
+        h1 = _completion_height(c, 80)
+        assert h1 == 3, f"items 大幅减少应缩小高度（避免大片空白），实际 {h1}"
+        # 缩小后 items 再次小幅增加：仍跟随（need 2 > locked 3 时增高）
+        c.items = [f"f{i}" for i in range(2)]
+        c.texts = c.items
+        h2 = _completion_height(c, 80)
+        assert h2 == 4, f"items 增加高度应跟随，实际 {h2}"
+
+    def test_height_locked_cap_on_many_to_few(self):
+        """20→1 项：高度从 16 缩到 3（补白上限生效，不再渲染十余行空白）。"""
+        c = self._mk([f"f{i}" for i in range(20)])
+        h20 = _completion_height(c, 80)
+        assert h20 == 16
+        c.items = ["f0"]
+        c.texts = c.items
+        h1 = _completion_height(c, 80)
+        assert h1 == 3, f"20→1 项高度应缩小到 3（避免大片空白），实际 {h1}"
 
     def test_height_reset_after_close(self):
         c = self._mk([f"f{i}" for i in range(5)])
@@ -130,3 +167,79 @@ class TestCompletionHeightLocked:
         c.items = [f"g{i}" for i in range(3)]
         c.texts = c.items
         assert _completion_height(c, 80) == 5
+
+
+class TestCompletionPopupNoLargeBlank:
+    """补白上限（_LOCKED_PAD_LIMIT）— items 大幅减少后弹窗不渲染大片空白。"""
+
+    def _lines(self, items):
+        c = CompletionState(
+            visible=True, items=list(items), texts=list(items), selected=0,
+            title="补全", types=[""] * len(items), descriptions=[""] * len(items),
+            split_desc=False,
+        )
+        h = _completion_height(c, 80)
+        props = dict(
+            text="", cursor_pos=0, prompt="> ", completion=c,
+            status_active=False, cpu=0, mem=0,
+        )
+        f = Fiber("host", "input-area", props)
+        f.layout_box = _Box(0, 0, 80, 1)
+        lines = _build_lines(f)
+        return h, lines[:h]  # 弹窗区 = 前 h 行（标题 + 候选 + 提示）
+
+    def test_many_to_few_no_large_blank_regression(self):
+        """20→1 项：弹窗高度缩到 3，渲染区无大片空白（修复前高度保持 16 → 13 行空白）。"""
+        # 同一 CompletionState 持续（locked_height 累积）——模拟打字 items 减少
+        c = CompletionState(
+            visible=True, items=[f"f{i}" for i in range(20)],
+            texts=[f"f{i}" for i in range(20)], selected=0,
+            title="补全", types=[""] * 20, descriptions=[""] * 20, split_desc=False,
+        )
+        h20 = _completion_height(c, 80)
+        assert h20 == 16
+        # items 大幅减少
+        c.items = ["f0"]
+        c.texts = c.items
+        h1 = _completion_height(c, 80)
+        assert h1 == 3
+        props = dict(
+            text="", cursor_pos=0, prompt="> ", completion=c,
+            status_active=False, cpu=0, mem=0,
+        )
+        f = Fiber("host", "input-area", props)
+        f.layout_box = _Box(0, 0, 80, 1)
+        lines = _build_lines(f)
+        popup = lines[:h1]
+        blanks = sum(1 for l in popup if not l.plain.strip())
+        assert blanks == 0, (
+            f"items 大幅减少后弹窗不应有大片空白，实际空白 {blanks} 行: "
+            f"{[l.plain for l in popup]!r}"
+        )
+        assert popup[0].plain == " ▍ 补全 (1/1)"
+        assert popup[-1].plain == " Tab ↑↓ Esc"
+
+    def test_small_shrink_still_pads_limited_regression(self):
+        """5→2 项：高度保持 7（补白 3 行 ≤ 上限，防闪烁）——空白行数受控。"""
+        c = CompletionState(
+            visible=True, items=[f"f{i}" for i in range(5)],
+            texts=[f"f{i}" for i in range(5)], selected=0,
+            title="补全", types=[""] * 5, descriptions=[""] * 5, split_desc=False,
+        )
+        h5 = _completion_height(c, 80)
+        assert h5 == 7
+        c.items = ["f0", "f1"]
+        c.texts = c.items
+        h2 = _completion_height(c, 80)
+        assert h2 == 7  # 锁定保持
+        props = dict(
+            text="", cursor_pos=0, prompt="> ", completion=c,
+            status_active=False, cpu=0, mem=0,
+        )
+        f = Fiber("host", "input-area", props)
+        f.layout_box = _Box(0, 0, 80, 1)
+        lines = _build_lines(f)
+        popup = lines[:h2]
+        blanks = sum(1 for l in popup if not l.plain.strip())
+        # 标题 + 2 项 + 提示 = 4 行内容；7 行弹窗 → 补白 3 行（≤ 上限）
+        assert blanks == 3, f"5→2 项补白应为 3 行（防闪烁），实际 {blanks}"
