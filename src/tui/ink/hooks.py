@@ -679,7 +679,7 @@ def useApp() -> dict:
     }
 
 
-def useFocus(is_focused: bool = True) -> None:
+def useFocus(options: "bool | dict | None" = None) -> dict:
     """React useFocus 等价物：注册当前 fiber 的 InputHook 焦点标志。
 
     焦点仲裁：reconciler 构建 input router 时优先仅取 ``focused`` 且
@@ -692,19 +692,39 @@ def useFocus(is_focused: bool = True) -> None:
     HookStateError（编程错误），而非静默 no-op（静默会导致焦点标志丢失或
     命中更早的 hook，行为不可预期）。
 
+    方向4（完善 react ink）：参数兼容 react-ink 对象风格
+    ``useFocus({isActive, autoFocus})``——``isActive`` 控制是否参与路由
+    （覆盖 use_input 的 is_active），``autoFocus`` 控制焦点标志
+    （True=参与焦点优先路由）；也兼容既有 bool 参数（``useFocus(False)``
+    等价 ``useFocus({"autoFocus": False})``）。返回 ``{"isFocused": bool}``
+    （react-ink 语义；组件可据此条件渲染焦点样式）。
+
     Args:
-        is_focused: 是否参与焦点优先路由；False 时该 hook 在存在其他
-            focused hook 时不参与路由。
+        options: bool（既有 API：是否参与焦点路由）或 dict
+            （react-ink 风格：``{"isActive": bool, "autoFocus": bool}``）；
+            None 等价 True（默认参与）。
+
+    Returns:
+        ``{"isFocused": bool}`` —— 当前 hook 是否参与焦点优先路由。
 
     Raises:
         HookStateError: 当前 fiber 无任何已注册 InputHook（必须先调用
             ``use_input``）。
     """
     fiber = _current()
+    if isinstance(options, dict):
+        is_active = options.get("isActive", True)
+        auto_focus = options.get("autoFocus", True)
+        is_focused = bool(auto_focus)
+    else:
+        is_active = True
+        is_focused = True if options is None else bool(options)
     for hook in reversed(fiber.hooks):
         if isinstance(hook, InputHook):
+            if not is_active:
+                hook.is_active = False
             hook.focused = is_focused
-            return None
+            return {"isFocused": is_focused}
     raise HookStateError(
         "useFocus 必须在 use_input 之后调用（当前 fiber 未注册 InputHook）"
     )
