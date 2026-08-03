@@ -426,6 +426,17 @@ class TestSharedContentStrTruncate:
         assert _content_str("hello world") == "hello world"
         assert _content_str("") == ""
 
+    def test_content_str_none_input(self) -> None:
+        """/load 回归：content=None 的消息（纯工具调用）转空串，不显示 "None"。"""
+        from src.tui.pipeline.message_display import _content_str
+        assert _content_str(None) == ""
+
+    def test_content_str_none_text_in_list(self) -> None:
+        """list 内 text=None 部分跳过，不产生 "None"。"""
+        from src.tui.pipeline.message_display import _content_str
+        assert _content_str([{"text": None}]) == ""
+        assert _content_str([None, {"text": "x"}]) == "x"
+
     def test_content_str_list_of_dicts(self) -> None:
         from src.tui.pipeline.message_display import _content_str
         content = [{"text": "first"}, {"text": "second"}]

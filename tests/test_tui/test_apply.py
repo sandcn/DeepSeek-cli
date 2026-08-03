@@ -653,6 +653,37 @@ class TestDisplayMsgs:
         assert "\x1b" not in user_block.lines[-1].plain
         assert user_block.lines[-1].width == len(user_block.lines[-1].plain)
 
+    def test_display_messages_skips_none_content(self):
+        """/load 回放回归：content=None 的 assistant 消息（纯工具调用）不渲染成 "None"。"""
+        m = _model()
+        apply_cmd(m, DisplayMsgsCmd(messages=[
+            {"role": "user", "content": "你好"},
+            {"role": "assistant", "content": None},  # 纯工具调用消息
+            {"role": "assistant", "content": "正常回复"},
+            {"role": "assistant", "content": None},
+            {"role": "assistant", "content": None},
+            {"role": "assistant", "content": None},
+        ], speed=0))
+        kinds = [b.kind for b in m.blocks]
+        assert kinds == ["user", "write_line"]  # 仅正常消息产块
+        rendered = [l.plain for b in m.blocks for l in b.lines]
+        assert "None" not in rendered  # 无 "None" 行
+        assert any("正常回复" in l for l in rendered)
+
+    def test_display_messages_skips_empty_content(self):
+        """空 content 消息（如 content=""）同样跳过，不渲染空行。"""
+        m = _model()
+        apply_cmd(m, DisplayMsgsCmd(messages=[
+            {"role": "assistant", "content": ""},
+            {"role": "assistant", "content": "   "},
+            {"role": "assistant", "content": "有内容"},
+        ], speed=0))
+        kinds = [b.kind for b in m.blocks]
+        assert kinds == ["write_line"]
+        rendered = [l.plain for b in m.blocks for l in b.lines]
+        assert len(rendered) == 1
+        assert "有内容" in rendered[0]
+
 
 class TestToolCardState:
     """方向D 步骤15 — 工具调用卡片状态标记。"""

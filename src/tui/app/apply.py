@@ -306,6 +306,10 @@ def _do_display_messages(model, cmd) -> None:
     for msg in messages:
         role = msg.get("role", "")
         content = _content_str(msg.get("content", ""))
+        if not content.strip():
+            # content 为 None/空（如纯工具调用的 assistant 消息无文本）：
+            # 跳过不渲染，避免 /load 回放时出现 n 行 "None"/空行。
+            continue
         if role == "user":
             model.append_committed("user", build_user_line(content))
         elif role in ("assistant", "other"):

@@ -40,13 +40,22 @@ def _content_str(content: Any) -> str:
     消息按统一角色色显示，消毒（剥完整合法序列 + 移除孤立 ESC）符合显示语义。
     """
     from src.tui.ink.helpers import strip_ansi as _strip_ansi
+    if content is None:
+        # content 为 None（纯工具调用的 assistant 消息无文本）：返回空串，
+        # 避免 /load 回放时每条都渲染成一行 "None"。
+        return ""
     if isinstance(content, str):
         return _strip_ansi(content).replace("\x1b", "")
     if isinstance(content, list):
         parts = []
         for c in content:
+            if c is None:
+                continue
             if isinstance(c, dict):
-                parts.append(str(c.get("text", c)))
+                t = c.get("text", c)
+                if t is None:
+                    continue
+                parts.append(str(t))
             else:
                 parts.append(str(c))
         return _strip_ansi(" ".join(parts)).replace("\x1b", "")
