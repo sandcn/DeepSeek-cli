@@ -104,6 +104,46 @@ def _strip_ansi(text: str) -> str:
     return result
 
 
+def _simulate_terminal(text: str) -> str:
+    """模拟终端回车（\\r）语义：\\r 使光标回到当前行首，后续字符覆盖。
+
+    终端输出中的 \\r（0x0D）不产生新行，而是将光标移回当前行首，随后写入
+    的字符从行首开始覆盖已有内容。例如进度条 ``10%\\r20%\\r30%`` 在真实终端
+    只显示 ``30%``；``abc\\rXY`` 显示为 ``XYc``（XY 覆盖前两字符，c 保留）。
+    工具卡片（toolcard）若把 \\r 当普通字符渲染会出现乱码/宽度异常，这里
+    预先兑现 \\r 的覆盖语义，使卡片呈现与真实终端一致。
+
+    按 ``\\n`` 分段处理（\\r 只影响当前行内位置，不跨行）；不含 \\r 时原样
+    返回（零开销快路径）。含 ANSI 转义序列的文本结果不确定——调用方须先经
+    ``_strip_ansi`` 剥离（bash 输出显示路径已保证）。
+
+    Args:
+        text: 工具输出文本（可含 \\n）。
+
+    Returns:
+        应用回车覆盖后的文本。
+    """
+    if '\r' not in text:
+        return text
+    parts = text.split('\n')
+    for i, part in enumerate(parts):
+        if '\r' not in part:
+            continue
+        chars: list[str] = []
+        col = 0
+        for ch in part:
+            if ch == '\r':
+                col = 0
+            elif col < len(chars):
+                chars[col] = ch
+                col += 1
+            else:
+                chars.append(ch)
+                col += 1
+        parts[i] = ''.join(chars)
+    return '\n'.join(parts)
+
+
 # ── 进程树杀死 ─────────────────────────────────────
 import signal as _signal
 
@@ -734,7 +774,9 @@ class BashFunc(Func):
     async def display(self):
         """异步执行命令并实时输出到终端"""
         async def _on_line(text: str, is_stderr: bool) -> None:
-            safe = _strip_ansi(text)
+            # ★ 终端模拟：先剥 ANSI，再兑现 \r 覆盖语义（进度条等行内刷新
+            #   输出在工具卡片呈现与真实终端一致的最终状态，而非字面 \r）。
+            safe = _simulate_terminal(_strip_ansi(text))
             if not safe.endswith('\n'):
                 safe += '\n'
             if is_stderr:
@@ -763,15 +805,15 @@ class BashFunc(Func):
         tool_label: str | None = getattr(self, 'tool_label', None)
 
         async def _on_line(text: str, is_stderr: bool) -> None:
-            safe = _strip_ansi(text)
-            if not safe.endswith('\n'):
-                safe += '\n'
+            # ★ 终端模拟：先剥 ANSI，再兑现 \r 覆盖语义（与 display() 一致，
+            #   工具卡片/前端呈现与真实终端相同的最终状态）。
+            clean = _simulate_terminal(_strip_ansi(text))
+            safe = clean if clean.endswith('\n') else clean + '\n'
             if is_stderr:
                 await print_to_terminal(f"{RED}{safe}{RESET}")
             else:
                 await print_to_terminal(safe)
             if tool_label:
-                clean = text.replace('\r', '')
                 bus.publish(ToolOutputChunkEvent(
                     label=tool_label, text=clean, source="agent",
                 ))
