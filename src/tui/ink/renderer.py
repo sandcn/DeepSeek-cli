@@ -64,6 +64,10 @@ class InkRenderer:
         self._cursor_row: int = 0
         # 终端屏幕高度（行）；0 = 未知/无限（测试用，文档坐标即屏幕坐标）
         self._height: int = int(height) if height else 0
+        # 终端缓冲实际行数（height=0 时恒 0 无意义）。文档写满后 = doc_h+1
+        # （含末尾空白行）；缩短（终端无法删除行）增量清除残留后缓冲比文档
+        # 多残留行——按实际缓冲长度计算屏幕偏移，防后续增长/等高重写漂移。
+        self._buffer_len: int = 0
 
     # ── 屏幕坐标（height>0 时文档高于屏幕的滚动偏移处理） ──────────
 
@@ -81,8 +85,13 @@ class InkRenderer:
 
         ``_write_full`` 每行以 ``\\n`` 结尾，写满后缓冲区为 ``doc_h + 1`` 行
         （末尾多一行空白），屏幕显示底部 ``height`` 行——偏移按
-        ``max(0, (doc_h + 1) - height)`` 计算（含末尾空白行；否则内容行与
+        ``max(0, 缓冲行数 - height)`` 计算（含末尾空白行；否则内容行与
         光标的屏幕映射相差一行）。
+
+        缓冲行数取 ``max(_buffer_len, doc_h + 1)``：正常（无残留）时二者相等
+        （= doc_h+1）；缩短增量清除残留后 ``_buffer_len > doc_h+1``（终端无法
+        删除行，末尾残留空行）——用实际缓冲长度计算偏移，否则后续增长/等高
+        重写按错误偏移写导致错乱（偏移漂移）。
 
         Args:
             doc_h: 文档总行数。
@@ -92,7 +101,8 @@ class InkRenderer:
         """
         if self._height <= 0:
             return 0
-        return max(0, doc_h + 1 - self._height)
+        blen = max(self._buffer_len, doc_h + 1)
+        return max(0, blen - self._height)
 
     def _to_screen(self, buffer_row: int, doc_h: int) -> int:
         """将文档 1-based 行号转为屏幕 1-based 行号（未钳制）。
@@ -177,6 +187,9 @@ class InkRenderer:
                 buf.write(frame.render_line(line_idx))
                 buf.write(_CLEAR_EOL)
                 buf.write("\n")
+                # 光标在屏幕底部时 \n 触发滚动 → 缓冲 +1 行
+                if self._height > 0 and current_row >= self._height:
+                    self._buffer_len += 1
                 current_row = self._advance_row(current_row)
             self._emit_new_lines(frame, prev_h, new_h)
             self._cursor_row = self._bottom_row(new_h)
@@ -236,26 +249,14 @@ class InkRenderer:
         #     （首差异行钳到可见区边界）连续重写到新帧末尾，由末尾换行驱动滚动
         #     （增长）——逐区间无法表达位移行与新增行的塌缩重叠（user_select
         #     弹窗说明列高度变化、流式中间插入）。
-        #   - 缩短 + 屏幕约束（delta<0 且 height>0）：**全量重建**——终端缓冲
-        #     无法删除行，清行残留使缓冲长度 > doc_h+1，屏幕偏移模型漂移
-        #     （后续增长/等高重写按错误偏移写导致错乱）；重建（clear + 重写）
-        #     重置缓冲与偏移一致。交互式导航/补全弹窗关闭等缩短场景低频，
-        #     重建成本可接受（流式只增长不缩短，不受影响）。
+        #   - 缩短（delta<0）：**增量塌缩**——重写 [rewrite_start, new_h) 行 +
+        #     清除残留行（终端无法删除行，残留行 clear_line 清空）。缓冲长度
+        #     由 ``_buffer_len`` 跟踪（残留使缓冲 > doc_h+1），屏幕偏移按实际
+        #     缓冲长度计算，后续增长/等高重写不漂移（重建会闪烁，已弃用）。
         #   重写目标一律按 **prev 帧偏移** 换算：终端缓冲此刻仍处于 prev 布局
         #   （只能经底部写行触发滚动），按 prev 位置原位重写、由末尾换行滚动
         #   过渡到 new 布局——按 new 偏移写会覆盖未滚动区域。
         #   raw 终端模式下 \n 不归位列 1，每行须前缀 \r。
-        if delta < 0 and self._height > 0:
-            try:
-                self._stream.write(clear_screen())
-            except Exception:
-                _logger.debug("缩短重建 clear_screen 写入异常", exc_info=True)
-            # emit_start=prev_h：缩短无新增行（range(prev_h, new_h) 为空），
-            # 不回调输出历史；_write_full 重置 _cursor_row 到 new 文档底部。
-            self._write_full(frame, prev_h)
-            self._prev = frame
-            return
-
         buf = io.StringIO()  # ★ 整帧缓冲（方向1）：多段输出先合并再单次 write+flush
         current_row = self._cursor_row
 
@@ -280,6 +281,9 @@ class InkRenderer:
                     buf.write(frame.render_line(idx))
                     buf.write(_CLEAR_EOL)
                     buf.write("\n")
+                    # 光标在屏幕底部时 \n 触发滚动 → 缓冲 +1 行
+                    if self._height > 0 and current_row >= self._height:
+                        self._buffer_len += 1
                     current_row = self._advance_row(current_row)
         else:
             if self._height <= 0 or rewrite_start < new_h:
@@ -294,6 +298,9 @@ class InkRenderer:
                     buf.write(frame.render_line(idx))
                     buf.write(_CLEAR_EOL)
                     buf.write("\n")
+                    # 光标在屏幕底部时 \n 触发滚动 → 缓冲 +1 行
+                    if self._height > 0 and current_row >= self._height:
+                        self._buffer_len += 1
                     current_row = self._advance_row(current_row)
             # 缩短：清除残留行（prev 帧 rows new_h+1 .. prev_h）
             if delta < 0:
@@ -406,6 +413,7 @@ class InkRenderer:
             # 方向1 步骤3（首帧空帧光标）：空帧也更新 _cursor_row（=height+1=1）
             # ——修复前空帧不置位，下一帧 ``n_move`` 产生多余光标移动。
             self._cursor_row = self._bottom_row(frame.height)
+            self._buffer_len = 0
             return
         buf = io.StringIO()
         for line in frame.lines:
@@ -414,6 +422,8 @@ class InkRenderer:
             buf.write("\n")
         self._emit_new_lines(frame, emit_start, frame.height)
         self._cursor_row = self._bottom_row(frame.height)
+        # 全量写入（首帧/clear 后）缓冲从 0 重建：doc 行 + 末尾空白行
+        self._buffer_len = frame.height + 1
         self._stream.write(buf.getvalue())
         self._stream.flush()
 
@@ -470,6 +480,7 @@ class InkRenderer:
             _logger.debug("full_clear 写入异常", exc_info=True)
         self._prev = None
         self._cursor_row = 0
+        self._buffer_len = 0
 
     # ── 生命周期 ─────────────────────────────────────
 
@@ -481,6 +492,7 @@ class InkRenderer:
         """
         self._prev = None
         self._cursor_row = 0
+        self._buffer_len = 0
         try:
             self._stream.flush()
         except Exception:
@@ -490,6 +502,7 @@ class InkRenderer:
         """重置渲染状态（resume 后重新渲染）。"""
         self._prev = None
         self._cursor_row = 0
+        self._buffer_len = 0
 
     def flush(self) -> None:
         """刷出底层输出。"""
