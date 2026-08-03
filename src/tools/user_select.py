@@ -240,6 +240,13 @@ class UserSelectFunc(Func):
                         selected_indices.add(i)
             deadline = None if self.timeout <= 0 else time.monotonic() + self.timeout
 
+            # ★ 动画刷新：render 线程已 suspend（_run_interactive），补全弹窗
+            #   呼吸色/spinner/状态栏动画无人驱动而静止（"user_select 显示时
+            #   动态不刷新"）。修复：select 至多等待 _REFRESH_INTERVAL，超时后
+            #   经 chat_ui.request_bottom_redraw() 触发同步渲染一帧推进时间基
+            #   动画（render 线程停止时该调用走同步渲染路径，10Hz 节流）。
+            _REFRESH_INTERVAL = 0.1
+            last_refresh = 0.0
             while True:
                 remaining = None
                 if deadline is not None:
@@ -247,13 +254,26 @@ class UserSelectFunc(Func):
                     if remaining <= 0:
                         break  # 超时退出循环
 
+                wait = _REFRESH_INTERVAL
+                if remaining is not None:
+                    wait = min(remaining, _REFRESH_INTERVAL)
                 try:
-                    ready, _, _ = select.select([fd], [], [], remaining)
+                    ready, _, _ = select.select([fd], [], [], wait)
                 except (ValueError, OSError):
                     continue
 
                 if not ready:
-                    break  # 超时
+                    # select 超时：到达 refresh 间隔（或 deadline）
+                    if deadline is not None and time.monotonic() >= deadline:
+                        break  # 真正超时退出
+                    now_t = time.monotonic()
+                    if now_t - last_refresh >= _REFRESH_INTERVAL and chat_ui is not None:
+                        last_refresh = now_t
+                        try:
+                            chat_ui.request_bottom_redraw()
+                        except Exception:
+                            _logger.debug("user_select: 动画刷新异常", exc_info=True)
+                    continue
 
                 try:
                     raw = input_.read_byte() if input_ else os.read(fd, 1)

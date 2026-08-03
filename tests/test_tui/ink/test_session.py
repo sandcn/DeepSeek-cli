@@ -1130,3 +1130,41 @@ class TestResizeFullRefresh:
         s._width_cache.get_height.return_value = 30  # resize 高度
         s._render_frame()
         assert renderer.reset.call_count >= 1, "高度变化应触发全量刷新（reset）"
+
+
+class TestRenderLoopThrottle:
+    """PERF-8 — 渲染循环防忙循环（高频命令不破坏 10Hz 节流）。
+
+    回归：subagent 执行工具期间高频命令（ToolCountInc/DecCmd、SUBAGENT_FRAME
+    等）持续 ``_cmd_event.set()``——修复前 ``_cmd_event.wait(timeout=0.1)``
+    被 set 立即唤醒，渲染循环失去 10Hz 节流失忙循环（CPU 100%）。
+    """
+
+    def test_high_frequency_events_throttled(self):
+        """高频命令持续 push 时渲染循环保持 ~10Hz（非忙循环）。"""
+        import io as _io
+        import time as _time
+
+        s = _make_session()
+        s._ink_renderer._stream = _io.StringIO()
+        with patch.object(s, "_drain_queue", wraps=s._drain_queue) as mock_drain:
+            s.start()
+            try:
+                _time.sleep(0.15)  # 首帧稳定
+                # 高频事件：模拟 subagent 工具事件（每 1ms 一对，持续 0.4s）
+                deadline = _time.monotonic() + 0.4
+                while _time.monotonic() < deadline:
+                    s.push_cmd(ToolCountIncCmd())
+                    s.push_cmd(ToolCountDecCmd())
+                    _time.sleep(0.001)
+                _time.sleep(0.2)
+            finally:
+                s.stop()
+        total = mock_drain.call_count
+        # 总时长 ~0.75s：10Hz 节流 → ~8 次；忙循环（修复前）→ 数十次以上
+        assert total < 25, (
+            f"渲染循环失去节流（忙循环）: {total} 次 _drain_queue 调用"
+        )
+        assert total >= 3, (
+            f"渲染循环应正常迭代: {total} 次 _drain_queue 调用"
+        )

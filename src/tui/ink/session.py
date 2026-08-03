@@ -596,8 +596,32 @@ class InkSession:
 
     def _render(self) -> None:
         entry_version = self._render_version
+        # ★ PERF-8（防忙循环）：下次允许唤醒的时刻（monotonic）——subagent
+        #   执行工具期间高频命令（ToolCountInc/DecCmd、SUBAGENT_FRAME、
+        #   ParseInfoCmd 等）持续 ``_cmd_event.set()``：原 ``_cmd_event.wait
+        #   (timeout=0.1)`` 被 set 立即唤醒 → 渲染循环失去 10Hz 节流变成
+        #   忙循环（每轮循环固定开销 × 高频唤醒 → CPU 100%，实测 5ms 事件
+        #   频率下 174Hz/27% CPU）。修复：节流时刻跨循环持久，wait 即使被
+        #   唤醒也等到 ``next_loop``——高频命令在队列中批处理（每
+        #   render_interval 一轮，堆积 ≤ max_batch_size），渲染循环稳定
+        #   10Hz；用户输入/关键命令仍经 ``_drain_queue`` 每轮处理（延迟
+        #   ≤ render_interval，与空闲 10Hz 行为一致）。
+        next_loop: float = 0.0
         try:
             while self._render_running:
+                # ── 节流等待（PERF-8）：等待到 next_loop 才处理 ──
+                # event 被高频命令 set 唤醒后**消费并继续等剩余时间**（防
+                # 忙循环）；已到 next_loop 或 _drain_queue 本身耗时超间隔时
+                # 立即进入处理（渲染跟不上时保持连续运转，不额外等待）。
+                now = time.monotonic()
+                if now < next_loop:
+                    remaining = next_loop - now
+                    while remaining > 0:
+                        self._cmd_event.wait(timeout=remaining)
+                        self._cmd_event.clear()
+                        now = time.monotonic()
+                        remaining = next_loop - now
+                next_loop = max(next_loop, time.monotonic()) + self._config.render_interval
                 try:
                     # 方向5（死代码清理）：返回值未使用——has_content 删除。
                     self._drain_queue()
@@ -621,8 +645,6 @@ class InkSession:
                     if self._exit_requested:
                         self._render_running = False
                         break
-                    timeout = self._config.render_interval
-                    self._cmd_event.wait(timeout=timeout)
                 except Exception as exc:
                     if self._handle_render_crash(exc):
                         return

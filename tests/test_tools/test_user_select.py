@@ -211,3 +211,111 @@ class TestUserSelectNoDirectTermios:
         kw = calls[0].kwargs
         assert kw.get("descriptions") == ["说明A", "说明B"]
         assert kw.get("split_desc") is True
+
+
+# ── TestUserSelectAnimationRefresh ──────────────────────────────
+
+class TestUserSelectAnimationRefresh:
+    """user_select 等待输入期间驱动动画刷新（render 线程已 suspend）。
+
+    回归：user_select 显示弹窗期间 render 线程已 suspend（_run_interactive），
+    弹窗呼吸色/spinner/状态栏动画无人驱动而静止。修复后 select 短超时（0.1s）
+    经 chat_ui.request_bottom_redraw() 触发同步渲染推进时间基动画。
+    """
+
+    @pytest.fixture
+    def mock_monitor(self):
+        m = MagicMock()
+        m.apply_monitor_settings = MagicMock()
+        m.restore_terminal_settings = MagicMock()
+        m.stop = MagicMock()
+        m.start = MagicMock()
+        return m
+
+    @pytest.fixture
+    def mock_input(self):
+        m = MagicMock()
+        m.fd = 0
+        m.flush_stdin_buffer = MagicMock()
+        m.read_byte = MagicMock(return_value=b'\r')  # Enter
+        m.read_with_timeout = MagicMock(return_value=None)
+        return m
+
+    @pytest.fixture
+    def mock_chat_ui(self, mock_input):
+        ui = MagicMock()
+        ui.get_input_component = MagicMock(return_value=mock_input)
+        ui.get_input = MagicMock(return_value=mock_input)
+        bb = MagicMock()
+        bb._active = True
+        bb.is_active = True
+        bb._MIN_HEIGHT = 12
+        bb._completion_idx = 0
+        bb._last_text = ""
+        ui.bottom_bar = bb
+        ui.request_bottom_redraw = MagicMock()
+        return ui
+
+    @pytest.mark.skipif(not HAS_TERMIOS, reason="需 termios 支持")
+    @pytest.mark.asyncio
+    async def test_select_timeout_drives_animation_refresh(
+        self, mock_monitor, mock_input, mock_chat_ui,
+    ):
+        """select 超时（无输入）后调用 request_bottom_redraw 驱动动画刷新。"""
+        from contextlib import ExitStack
+        import json as _json
+        from src.tools.user_select import UserSelectFunc
+
+        # 首次 select 超时（无输入）→ 应触发动画刷新；二次返回 Enter 确认
+        with ExitStack() as stack:
+            stack.enter_context(
+                patch("src.tools.user_select.get_active_monitor", return_value=mock_monitor)
+            )
+            stack.enter_context(
+                patch("src.tools.user_select.get_active_chat_ui", return_value=mock_chat_ui)
+            )
+            stack.enter_context(patch("sys.stdin.fileno", return_value=0))
+            stack.enter_context(patch("os.isatty", return_value=True))
+            stack.enter_context(
+                patch(
+                    "src.tools.user_select.select.select",
+                    side_effect=[([], [], []), ([0], [], [])],
+                )
+            )
+            us = UserSelectFunc("test", ["a", "b"])
+            result = await us._execute_terminal_async()
+
+        mock_chat_ui.request_bottom_redraw.assert_called_once()
+        assert _json.loads(result)["action"] == "confirmed"
+
+    @pytest.mark.skipif(not HAS_TERMIOS, reason="需 termios 支持")
+    @pytest.mark.asyncio
+    async def test_deadline_break_does_not_refresh_before_interval(
+        self, mock_monitor, mock_input, mock_chat_ui,
+    ):
+        """无限等待（timeout<=0）下 select 超时不退出，仍持续驱动动画。"""
+        from contextlib import ExitStack
+        import json as _json
+        from src.tools.user_select import UserSelectFunc
+
+        # 首次 select 超时 → refresh；二次 Enter 确认（timeout<=0 不退出）
+        with ExitStack() as stack:
+            stack.enter_context(
+                patch("src.tools.user_select.get_active_monitor", return_value=mock_monitor)
+            )
+            stack.enter_context(
+                patch("src.tools.user_select.get_active_chat_ui", return_value=mock_chat_ui)
+            )
+            stack.enter_context(patch("sys.stdin.fileno", return_value=0))
+            stack.enter_context(patch("os.isatty", return_value=True))
+            stack.enter_context(
+                patch(
+                    "src.tools.user_select.select.select",
+                    side_effect=[([], [], []), ([0], [], [])],
+                )
+            )
+            us = UserSelectFunc("test", ["a", "b"], timeout=0)
+            result = await us._execute_terminal_async()
+
+        mock_chat_ui.request_bottom_redraw.assert_called_once()
+        assert _json.loads(result)["action"] == "confirmed"
