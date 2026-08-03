@@ -36,7 +36,6 @@ from src.tui._format import format_speed as _format_speed
 _S_TOKEN = Style(fg=68)
 _S_SPEED = Style(fg=214)
 _S_TOOL_OK = Style(fg=41)
-_S_TOOL_FAIL = Style(fg=196)
 
 # BEAUTY-7：streaming braille spinner 帧序列（与 _subagent_render 共用语义）
 # ★ 方向4：唯一真源 _fx.SPINNER_FRAMES——本模块保留别名（兼容既有 patch 路径；
@@ -105,7 +104,13 @@ def _build_status_runs(model, dot_elapsed: float = 0.0,
     parts: list[StyledRun] = []
     if tool_total > 0:
         if st.tool_count > 0:
-            count_style = _S_TOOL_FAIL if st.tool_fail > 0 else _S_TOOL_OK
+            # ★ BEAUTY-16（动效）：工具失败计数警示呼吸——tool_fail>0 时
+            #   总数从暗红 196 呼吸到亮红 208（8s，醒目但不过度闪烁），提示
+            #   有工具失败；无失败保持成功绿。time_glow 0.1s 桶缓存。
+            if st.tool_fail > 0:
+                count_style = Style(fg=time_glow(196, 208, 8.0))
+            else:
+                count_style = _S_TOOL_OK
             # ★ BEAUTY-15（动效）：工具计数箭头呼吸——活跃期箭头亮青脉动
             # （45-55，8s，与模型名/分隔线呼吸同步），空闲静态强调色。
             # time_glow 0.1s 桶缓存，10Hz 渲染时平滑推进。
@@ -116,7 +121,12 @@ def _build_status_runs(model, dot_elapsed: float = 0.0,
             done = tool_total - st.tool_count - st.tool_fail
             parts.append(StyledRun(f"{done}", _S_TOOL_OK))
             parts.append(StyledRun("/", _S_DIM))
-            parts.append(StyledRun(f"{tool_total}", _S_TOOL_FAIL if st.tool_fail > 0 else _S_TOOL_OK))
+            if st.tool_fail > 0:
+                parts.append(StyledRun(
+                    f"{tool_total}", Style(fg=time_glow(196, 208, 8.0)),
+                ))
+            else:
+                parts.append(StyledRun(f"{tool_total}", _S_TOOL_OK))
     if elapsed > 0:
         parts.append(StyledRun(_format_duration(elapsed), _S_TIME))
     if total > 0:
