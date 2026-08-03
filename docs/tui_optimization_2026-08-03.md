@@ -275,3 +275,69 @@ bug（其余为测试时序误用/防御性改进/保留设计）。
   BUG-24 边框 fill / BUG-25 BOM 宽度 / BUG-26 窄屏 / BUG-27 selected 越界）。
 - 另含提示符提亮（补全弹窗打开时 45-100 vs 空闲 32-81）+ 测试。
 - 全部测试通过：**1970 passed**（原 1949 + 新增 21）。
+
+---
+
+## 第十轮（commit 待定）— 除 resize 外均增量：消除「文档高于屏幕时缩短」全量重建
+
+### 需求
+用户要求：**除了改变终端大小，都要增量渲染**。此前 `InkRenderer` 保留唯一
+非 resize 全量路径——「文档高于屏幕（offset>0）时的缩短」走 clear_screen +
+全量重建（终端无 delete-line/DECSTBM 语义，缩短残留使缓冲长度 > doc_h+1，
+偏移模型漂移）。subagent 面板高度微调即触发全屏闪烁。
+
+### 方案：`_buf_h`（物理缓冲行数）精确跟踪偏移漂移
+- 新增 `_buf_h` 字段：`_write_full` 后 = doc_h+1；增量增长按实际滚动扩展
+  （`grow_rows = max(0, new_h+1 - _buf_h)`）；增量缩短保持（清行不删行）；
+  reset/suspend/full_clear 归零；空帧置 1（虚拟末尾空行）。
+- 所有屏幕坐标换算改基于真实物理偏移 `_buf_h - height`（`_screen_offset`/
+  `_bottom_row`；未渲染直接单元调用回退 doc_h 推导，既有单元测试语义保持）。
+- 缩短/漂移等高：`_rewrite_drifted`——物理行 q 显示新文档行 q-drift
+  （drift = _buf_h - new_h - 1），与 prev 行 q-drift0 逐行比较（身份短路 +
+  runs 值相等），仅重写可见区变化行 + 清残留；自底向上（cursor_up 定位，
+  **不写 `\n`**）不触发滚动，物理缓冲不变。
+- 漂移增长：`_grow_drifted`——物理映射重写变化行 + 追加新行滚动扩展缓冲
+  （漂移吸收为 0 时额外滚动一次产生末尾空行）。须置于平移快路径之前（漂移时
+  纯追加也按「物理行号 = 文档行号」错位）。
+
+### 保留的全量路径（后续轮次已全部消除）
+首帧 / reset（resize/suspend/clear 后）——无前一帧可 diff / 生命周期边界。
+「缩短/等高/增长进入屏幕内」的原全量重建已在后续轮次消除（见下）。
+
+### 测试
+- `test_renderer_screen.py`：`TestShrinkRebuild` 改为断言增量缩短（无 clear_screen、
+  只重写可见区变化行、scrollback 可陈旧）+ 缩短进入屏幕内增量（文档底部对齐）；
+  `test_grow_shrink_grow_no_drift` 断言缩短无 clear_screen。
+- 新增 `TestDriftedIncremental`（5 例）：连续缩短 / 缩短后等高重写 / 大漂移后
+  增长吸收 / 增长-缩短震荡 / 缩短后原地增长——全程增量且可见区与新文档底部一致。
+- 全部测试通过：**2068 passed**（原 2063 + 新增 5）。
+
+---
+
+## 第十一轮（commit 待定）— 消除「进入屏幕内」全量重建 + 修复 place_cursor 漂移错位
+
+### Bug 修复（review 深度验证发现）
+| Bug | 问题 | 修复 |
+|---|---|---|
+| BUG-28 | `place_cursor` 用 `_screen_offset`（`max(0, doc_h+1-height)`）换算——物理缓冲漂移时文档行的实际屏幕位置 = `row - (doc_h+1-height)`（**可为负**，文档偏下），max 偏移把输入光标放偏上 drift 行 | 新增 `_effective_offset`（`_buf_h>height` → `doc_h+1-height`；否则 `doc_h+1-_buf_h`，可为负），`place_cursor` 改用它——文档高于屏幕或进入屏幕内均定位到物理位置 |
+| BUG-29 | 上一轮 `_screen_offset`/`_bottom_row` 改基于 `_buf_h`（物理偏移）——有漂移时文档行映射错误（物理行 = 文档行 + drift，drift 抵消物理偏移 → 应用理想偏移 `doc_h+1-height`） | 改回理想偏移推导（`_screen_offset = max(0, doc_h+1-height)`、`_bottom_row = _clamp(_to_screen(doc_h+1, doc_h))`）——渲染路径仅在无漂移时用它们，正确性不变；place_cursor 用 `_effective_offset` |
+
+### 消除「进入屏幕内」全量重建（用户需求续）
+三个保留的全量路径全部改为增量：
+- **缩短进入屏幕内**（new_h+1 <= height）：`_rewrite_drifted` 支持 `doc_idx < 0`
+  （文档上方空行区）清空——文档底部对齐可见区底部（物理缓冲无法收缩，负偏移
+  模型表达文档偏下），不 clear_screen。
+- **漂移等高进入屏幕内**：同上走 `_rewrite_drifted`。
+- **漂移增长进入屏幕内**：`_grow_drifted` 支持 `doc_idx < 0` 清空 + 追加新行
+  （`grow_rows` 按 `max(0, new_h+1-_buf_h)`，屏幕内不滚动、写行 append 扩展）。
+
+现在**非 resize 全量渲染仅剩首帧 / reset（resize/suspend/Ctrl+L）生命周期边界**。
+
+### 测试
+- `test_renderer_screen.py`：`test_shrink_entering_screen_incremental`（进入屏幕内
+  增量 + 文档底部对齐 + place_cursor 负偏移定位）；`TestDriftedIncremental` 新增
+  `test_enter_screen_incremental_lifecycle`（长→进入屏幕内→屏幕内增长→出屏→再进入
+  →全程增量 + place_cursor 定位）。
+- 压力验证：流式增长/缩短交替、极端 H=1/H=2、session render+place_cursor 交替，
+  全程 0 次 clear_screen。
+- 全部测试通过：**2069 passed**（原 2068 + 新增 1）。

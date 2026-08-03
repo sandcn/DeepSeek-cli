@@ -846,10 +846,11 @@ class TestSubAgentToolStartNoHeightFluctuation:
     回归场景：subagent 调用 search 等工具时 TUI 每次全量刷新（闪烁）。
     根因：``build_agent_lines`` 在 ``model_phase=="parsing"`` 时追加独立
     ``…parsing`` 阶段行——工具开始瞬间面板 +2 行，``start_tool`` 清除
-    ``model_phase`` 后 -1 行（缩短）。文档高于屏幕时 InkRenderer 对缩短
-    （``delta<0``）做全量 clear + 重建（``test_shrink_emits_clear_screen``
-    锁定该渲染行为）。修复：parsing 阶段不再产生独立行（由 parsing 工具
-    记录行 ``○`` 前缀表达），工具开始瞬间面板行数稳定。
+    ``model_phase`` 后 -1 行（缩短）。文档高于屏幕时 InkRenderer 原对缩短
+    （``delta<0``）做全量 clear + 重建（已由「除 resize 外均增量」替换为
+    增量缩短，见 test_renderer_screen::TestShrinkRebuild）。修复：parsing
+    阶段不再产生独立行（由 parsing 工具记录行 ``○`` 前缀表达），工具开始
+    瞬间面板行数稳定。
     """
 
     def test_parsing_to_running_frame_height_stable(self):

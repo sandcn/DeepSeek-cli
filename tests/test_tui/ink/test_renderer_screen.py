@@ -288,14 +288,16 @@ class TestScreenEndToEnd:
 
 
 class TestShrinkRebuild:
-    """长文档缩短（height>0）→ 全量重建（重置缓冲，防偏移漂移）。
+    """长文档缩短（height>0）→ 增量缩短（不清屏重建）。
 
-    终端缓冲无法删除行，缩短残留使缓冲长度 > doc_h+1，屏幕偏移模型漂移
-    （后续增长/等高重写按错误偏移写导致错乱）；重建（clear + 重写）重置
-    缓冲与目标帧一致。
+    用户需求「除 resize 外均增量」：文档高于屏幕时缩短不再全量 clear+重建
+    （闪烁），改为增量重写可见区变化行 + 清残留（``_rewrite_drifted``）——
+    物理缓冲无法删除行，缩短后缓冲长度保持（``_buf_h`` 精确跟踪漂移），
+    后续增长/等高重写按真实物理偏移定位（不漂移错位）。缩短进入屏幕内
+    （new_h+1 <= height）同样增量（文档底部对齐可见区底部，负偏移模型）。
     """
 
-    def test_shrink_emits_clear_screen(self):
+    def test_shrink_incremental_no_clear(self):
         H = 6
         prev = ["h"] + [f"c{i}" for i in range(8)] + ["status", "in1", "extra"]
         new = ["h"] + [f"c{i}" for i in range(8)] + ["status", "in1"]
@@ -306,15 +308,32 @@ class TestShrinkRebuild:
         out.truncate()
         r.render(_frame(*new))
         from src.tui._screen import clear_screen
-        assert out.getvalue().startswith(clear_screen()), (
-            "长文档缩短应全量重建（clear_screen 开头）"
+        val = out.getvalue()
+        assert clear_screen() not in val, (
+            "长文档缩短应增量（不 clear_screen 重建），实际: %r" % val
         )
-        # 重放后缓冲与目标帧一致
-        buf = _replay(_frame(*prev), _frame(*new), H)
-        assert buf == new
+        # 只重写可见区变化行（删除 extra 后可见区上移 1 行：5 行内容变）
+        assert "extra" not in val
+        # 未变化的可见区上方行不重写（h/c0/c1 等 scrollback 行）
+        assert "h" not in val and "c0" not in val and "c1" not in val
+        # 重放后可见区（底部 H 行）与新文档底部一致（scrollback 可保留陈旧残留）
+        t = MiniTerm(H)
+        out2 = io.StringIO()
+        r2 = InkRenderer(stream=out2, height=H)
+        r2.render(_frame(*prev))
+        feed = out2.getvalue()
+        out2.seek(0)
+        out2.truncate()
+        r2.render(_frame(*new))
+        feed += out2.getvalue()
+        t.feed(feed)
+        visible = [l.rstrip() for l in t.buf[-H:]]
+        assert visible == new[-5:] + [""], (
+            f"可见区应显示新文档底部，实际: {visible!r}"
+        )
 
     def test_grow_shrink_grow_no_drift(self):
-        """增长→缩短→再增长：缩短重建重置缓冲，后续增长不偏移。"""
+        """增长→缩短→再增长：缩短增量重建重置缓冲，后续增长不偏移。"""
         H = 6
         base = ["h"] + [f"c{i}" for i in range(6)] + ["status", "in1"]
         grown = ["h"] + [f"c{i}" for i in range(6)] + ["x", "status", "in1"]
@@ -330,7 +349,9 @@ class TestShrinkRebuild:
         feed += out.getvalue()
         out.seek(0)
         out.truncate()
-        r.render(_frame(*base))           # 缩短（重建）
+        r.render(_frame(*base))           # 缩短（增量，不清屏）
+        from src.tui._screen import clear_screen
+        assert clear_screen() not in out.getvalue(), "缩短应增量（无 clear_screen）"
         feed += out.getvalue()
         out.seek(0)
         out.truncate()
@@ -341,6 +362,147 @@ class TestShrinkRebuild:
         while buf and buf[-1] == "":
             buf.pop()
         assert buf == grown, f"增长-缩短-增长后缓冲应等于 grown，实际尾部: {buf[-6:]}"
+
+    def test_shrink_entering_screen_incremental(self):
+        """缩短进入屏幕内（new_h+1 <= height）仍增量（不 clear_screen 重建）。
+
+        物理缓冲无法删除行且文档无法自然回到屏幕顶部——文档底部对齐可见区
+        底部（上方空行区清空），place_cursor 经 `_effective_offset`（负偏移）
+        定位到文档物理位置；不闪烁（用户需求「除 resize 外均增量」）。
+        """
+        H = 6
+        prev = ["h"] + [f"c{i}" for i in range(6)] + ["status", "in1"]  # 9 行
+        new = ["h", "c0"]  # 2 行（进入屏幕内）
+        out = io.StringIO()
+        r = InkRenderer(stream=out, height=H)
+        r.render(_frame(*prev))
+        out.seek(0)
+        out.truncate()
+        r.render(_frame(*new))
+        from src.tui._screen import clear_screen
+        val = out.getvalue()
+        assert clear_screen() not in val, (
+            "缩短进入屏幕内应增量（不 clear_screen 重建），实际: %r" % val
+        )
+        # 文档行已重写到可见区（h/c0），残留旧行被清空
+        assert "h" in val and "c0" in val
+        # 重放后：文档显示在可见区底部（物理缓冲漂移），上方为空行区
+        t = MiniTerm(H)
+        out2 = io.StringIO()
+        r2 = InkRenderer(stream=out2, height=H)
+        r2.render(_frame(*prev))
+        feed = out2.getvalue()
+        out2.seek(0)
+        out2.truncate()
+        r2.render(_frame(*new))
+        feed += out2.getvalue()
+        t.feed(feed)
+        visible = [l.rstrip() for l in t.buf[-H:]]
+        assert visible[-3:] == ["h", "c0", ""], f"文档应在可见区底部: {visible!r}"
+        assert visible[:-3] == ["", "", ""], f"文档上方应为空行区: {visible!r}"
+        # place_cursor 定位到文档物理位置（新文档第 2 行 = 屏幕底部上一行）
+        r2.place_cursor(2, 1)
+        assert r2.cursor_row == H - 1, f"光标应在文档物理位置: {r2.cursor_row}"
+
+
+class TestDriftedIncremental:
+    """漂移后增量渲染（缩短产生的物理缓冲漂移，不清屏重建的后续帧）。
+
+    覆盖缩短后的连续缩短、等高重写、增长（吸收漂移）、增长-缩短震荡——
+    全部保持增量（无 clear_screen）且可见区与新文档底部一致（scrollback
+    残留可陈旧）。锁定用户需求「除 resize 外均增量」。
+    """
+
+    H = 6
+
+    def _simulate(self, seq):
+        """按帧序列渲染，返回 (MiniTerm, InkRenderer, 是否出现 clear_screen)。"""
+        t = MiniTerm(self.H)
+        out = io.StringIO()
+        r = InkRenderer(stream=out, height=self.H)
+        clear_seen = False
+        for i, lines in enumerate(seq):
+            r.render(_frame(*lines))
+            feed = out.getvalue()
+            if "\x1b[2J" in feed and i > 0:
+                clear_seen = True
+            t.feed(feed)
+            out.seek(0)
+            out.truncate()
+        return t, r, clear_seen
+
+    def _visible(self, t):
+        return [l.rstrip() for l in t.buf[-self.H:]]
+
+    def _expected(self, lines):
+        n = len(lines)
+        if n + 1 >= self.H:
+            return lines[-(self.H - 1):] + [""]
+        return lines + [""] * (self.H - n)
+
+    def test_consecutive_shrinks(self):
+        """连续缩短（12→11→10→9 行）：全程增量，可见区正确。"""
+        doc = ["h"] + [f"c{i}" for i in range(8)] + ["status", "in1", "extra"]
+        f12, f11, f10, f9 = doc, doc[:-1], doc[:-2], doc[:-3]
+        t, r, cs = self._simulate([f12, f11, f10, f9])
+        assert not cs
+        assert self._visible(t) == self._expected(f9), self._visible(t)
+
+    def test_shrink_then_equal_height_rewrite(self):
+        """缩短后等高重写（漂移保持，物理映射重写）。"""
+        doc = ["h"] + [f"c{i}" for i in range(8)] + ["status", "in1", "extra"]
+        f12, f11, f10 = doc, doc[:-1], doc[:-2]
+        mod = list(f10)
+        mod[8] = "STATUS2"  # 中间行修改（漂移后物理映射位置）
+        t, r, cs = self._simulate([f12, f11, f10, mod])
+        assert not cs
+        assert self._visible(t) == self._expected(mod), self._visible(t)
+
+    def test_shrink_then_grow_absorbs_drift(self):
+        """大漂移后增长吸收漂移（8→11 行）：可见区正确、物理缓冲对齐。"""
+        doc = ["h"] + [f"c{i}" for i in range(8)] + ["status", "in1", "extra"]
+        f12, f8, f11 = doc, doc[:-4], doc[:-1]
+        t, r, cs = self._simulate([f12, f8, f11])
+        assert not cs
+        assert self._visible(t) == self._expected(f11), self._visible(t)
+        # 物理缓冲不小于新文档需要（含末尾空行）；增长只吸收部分漂移也正确
+        assert r._buf_h >= len(f11) + 1
+
+    def test_shrink_grow_oscillation(self):
+        """增长-缩短震荡（漂移反复出现/吸收）：全程增量、可见区正确。"""
+        doc = ["h"] + [f"c{i}" for i in range(8)] + ["status", "in1", "extra"]
+        f12, f11, f10 = doc, doc[:-1], doc[:-2]
+        g12 = ["h"] + [f"c{i}" for i in range(8)] + ["status", "in1", "extra2"]
+        t, r, cs = self._simulate([f12, f11, g12, f11, g12, f10])
+        assert not cs
+        assert self._visible(t) == self._expected(f10), self._visible(t)
+
+    def test_shrink_then_grow_in_place(self):
+        """缩短后原地增长（追加到漂移缓冲）：可见区正确。"""
+        doc = ["h"] + [f"c{i}" for i in range(8)] + ["status", "in1", "extra"]
+        f12, f8, f9 = doc, doc[:-4], doc[:-3]
+        t, r, cs = self._simulate([f12, f8, f9])
+        assert not cs
+        assert self._visible(t) == self._expected(f9), self._visible(t)
+
+    def test_enter_screen_incremental_lifecycle(self):
+        """进入屏幕内完整生命周期：长→进入屏幕内→屏幕内增长→出屏→再进入。
+
+        全程增量（无 clear_screen）；文档底部对齐可见区底部（负偏移模型），
+        place_cursor 经 `_effective_offset` 定位到文档物理位置。
+        """
+        doc = ["h"] + [f"c{i}" for i in range(8)] + ["status", "in1", "extra"]
+        f12 = doc
+        s2 = ["h", "c0"]          # 进入屏幕内（2 行）
+        s3 = ["h", "c0", "c1"]    # 屏幕内增长（3 行）
+        s1 = ["h"]                # 再缩短进入屏幕内（1 行）
+        t, r, cs = self._simulate([f12, s2, s3, f12, s1])
+        assert not cs
+        exp = [""] * (self.H - 2) + ["h", ""]
+        assert self._visible(t) == exp, self._visible(t)
+        # place_cursor 定位到文档物理位置（1 行文档 → 屏幕底部上一行）
+        r.place_cursor(1, 1)
+        assert r.cursor_row == self.H - 1, r.cursor_row
 
 
 class TestPartiallyVisibleRun:
