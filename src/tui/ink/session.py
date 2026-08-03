@@ -835,10 +835,11 @@ class InkSession:
                 # 分支任一置位，下方消费）。
                 self._resize_pending = True
         # ★ 方向3（resize 全量刷新消费）：尺寸变化后本帧即全量重建（不等待
-        #   下一帧 diff）——重置渲染器 prev，使 render() 走全量写入路径。
+        #   下一帧 diff）——重置渲染器 prev（full=True），使 render() 走全量
+        #   写入路径。仅 resize 使用 full=True；其余路径均走增量 diff。
         if getattr(self, "_resize_pending", False):
             self._resize_pending = False
-            self._ink_renderer.reset()
+            self._ink_renderer.reset(full=True)
         element = self._build_tree(self._model, width)
         self._reconciler.render(self._root_fiber, element, width, self._width_cache.get_height())
         frame = _components.render_frame(self._root_fiber, width)

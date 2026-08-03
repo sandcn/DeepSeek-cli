@@ -161,20 +161,37 @@ class TestInkRenderer:
         assert r.cursor_row == 1
 
     def test_suspend_resets_state(self):
+        """suspend 后 prev 为空帧（非 resize 均增量：不再置 None）。"""
         r, out = self._new()
         r.render(_frame("a", "b"))
         assert r.prev_frame is not None
         r.suspend()
-        assert r.prev_frame is None
-        assert r.cursor_row == 0
+        # 非 resize 均增量：suspend 后 prev 为空帧（Frame([], height=0)），
+        # 下一帧走增量 diff（与空帧比较 = 所有行变化 → 逐行写入）。
+        assert r.prev_frame is not None
+        assert r.prev_frame.height == 0
+        assert r.cursor_row == 1
 
-    def test_reset_then_full_rewrite(self):
+    def test_reset_soft_then_incremental(self):
+        """reset()（非 resize）后增量渲染（不清屏，走 diff 路径）。"""
         r, out = self._new()
         r.render(_frame("a", "b"))
-        r.reset()
+        r.reset()  # full=False（默认），非 resize 软重置
         out.seek(0)
         out.truncate()
         r.render(_frame("x"))
+        # 增量路径：\rx\x1b[K\n（含行尾清除，与 _write_full 的裸 \rx\n 不同）
+        assert out.getvalue() == "\rx\x1b[K\n"
+
+    def test_reset_full_then_full_rewrite(self):
+        """reset(full=True)（resize）后全量写入（无行尾清除，最低开销）。"""
+        r, out = self._new()
+        r.render(_frame("a", "b"))
+        r.reset(full=True)  # resize 路径：_prev=None
+        out.seek(0)
+        out.truncate()
+        r.render(_frame("x"))
+        # _write_full：裸 \rx\n，无行尾清除
         assert out.getvalue() == "\rx\n"
 
 

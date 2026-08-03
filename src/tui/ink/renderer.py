@@ -22,15 +22,20 @@ PERF-4 / 增量细化：
 
 不切换备用屏幕、不用 DECSTBM——内容自然流入 scrollback。
 
-**非 resize 均增量（需求）**：全量写入（``_write_full``）仅出现在首帧
-（无前一帧可 diff）与 ``reset()``（resize/suspend/Ctrl+L 后生命周期边界）；
-**其余所有帧一律走行级 diff 增量路径**——包括文档高于屏幕的缩短/增长/等高
+**非 resize 均增量（需求）**：全量写入（``_write_full``）**仅**出现在首帧
+（``_prev is None``，无前一帧可 diff）与 ``reset(full=True)``（resize 后
+``_render_frame`` 消费 ``_resize_pending`` 置位）；
+**其余所有帧一律走行级 diff 增量路径**——包括 Ctrl+L 清屏后、suspend/resume
+（交互工具独占终端）后、文档高于屏幕的缩短/增长/等高
 （``_rewrite_drifted``/``_grow_drifted`` 物理映射）与缩短/增长/等高**进入屏幕内**
 （文档底部对齐可见区底部，负偏移模型 ``_effective_offset`` 供 place_cursor）。
 说明：
   1. ``_MAX_REWRITE_ROWS`` 超限降级已消除（原 clear + 全量重建 → 现仍增量，
      超限仅记 warning）；
-  2. 终端无 delete-line/DECSTBM 语义，缩短后物理缓冲长度保持（清行不删行）——
+  2. ``reset(full=False)`` / ``suspend()`` / ``full_clear()`` 使用空帧作为 prev
+     （Frame([]), height=0）——与空帧 diff 等价于逐行写入但不触发 clear_screen，
+     保持增量路径一致性；
+  3. 终端无 delete-line/DECSTBM 语义，缩短后物理缓冲长度保持（清行不删行）——
      渲染器用 ``_buf_h``（物理缓冲行数）精确跟踪漂移：物理行 q 显示新文档行
      q-drift（drift = _buf_h - new_h - 1），自底向上重写可见区变化行 + 清残留
      （不写 ``\n`` 不触发滚动），偏移不漂移错位；``doc_idx < 0``（文档上方空行
@@ -83,12 +88,12 @@ class InkRenderer:
         # 终端屏幕高度（行）；0 = 未知/无限（测试用，文档坐标即屏幕坐标）
         self._height: int = int(height) if height else 0
         # ★ 物理缓冲行数（用户需求「除 resize 外均增量」）：
-        #   - ``_write_full``（首帧/reset 后） = doc_h + 1；
+        #   - ``_write_full``（首帧/reset(full=True) 后） = doc_h + 1；
         #   - 增量增长按实际滚动扩展（``grow_rows = max(0, new_h+1-_buf_h)``）
         #     增加——``_buf_h`` 精确跟踪终端缓冲（清行不删行，缩短后缓冲保持
         #     旧值，偏移漂移由本字段表达）；
         #   - 增量缩短/等高保持（自底向上重写不写 ``\n``，不触发滚动）；
-        #   - reset/suspend/full_clear 归零；空帧置 1（虚拟末尾空行）。
+        #   - reset(full=False)/suspend/full_clear 软重置为 1；空帧置 1。
         #   屏幕坐标换算分工：文档坐标→屏幕坐标用**理想偏移**
         #   （``_screen_offset = max(0, doc_h+1-height)``，place_cursor 用
         #   ``_effective_offset`` 可为负）；物理偏移（``_buf_h - height``）仅
@@ -856,17 +861,19 @@ class InkRenderer:
     def full_clear(self) -> None:
         """全帧清屏（Claude TUI parity 步骤 3.1，Ctrl+L 清屏）。
 
-        写入 ``clear_screen()``（``\\033[2J\\033[H``）并重置 prev/光标——
-        下一帧从空文档全量渲染。scrollback 历史保留（终端自身行为）。
+        写入 ``clear_screen()``（``\\033[2J\\033[H``）并软重置 prev/光标——
+        下一帧走增量 diff（与空帧比较 = 所有行变化 → 逐行写入，不清屏）。
+        scrollback 历史保留（终端自身行为）。
         """
         try:
             self._stream.write(clear_screen())
             self._stream.flush()
         except Exception:
             _logger.debug("full_clear 写入异常", exc_info=True)
-        self._prev = None
-        self._cursor_row = 0
-        self._buf_h = 0
+        # 软重置：空帧 → 增量 diff（仅 resize 走全量 _write_full）
+        self._prev = Frame([])
+        self._cursor_row = 1  # clear_screen 后光标在 (1,1)
+        self._buf_h = 1
 
     # ── 生命周期 ─────────────────────────────────────
 
@@ -874,21 +881,33 @@ class InkRenderer:
         """暂停：重置渲染状态（live 区已作为普通行提交到 scrollback）。
 
         非全屏模型下文档行都是真实 scrollback 行，无需额外提交；
-        仅清空 prev 状态，使恢复后重新全量渲染。
+        软重置（空帧 prev）使恢复后走增量 diff 路径（非 resize 均增量）。
         """
-        self._prev = None
-        self._cursor_row = 0
-        self._buf_h = 0
+        self._prev = Frame([])
+        self._cursor_row = 1
+        self._buf_h = 1
         try:
             self._stream.flush()
         except Exception:
             pass
 
-    def reset(self) -> None:
-        """重置渲染状态（resume 后重新渲染）。"""
-        self._prev = None
-        self._cursor_row = 0
-        self._buf_h = 0
+    def reset(self, full: bool = False) -> None:
+        """重置渲染状态。
+
+        Args:
+            full: True = 完全重置（``_prev=None``，下次 render 全量写入），
+                  **仅 resize 使用**；False = 软重置（``_prev=空帧``，下次
+                  render 走增量 diff），用于 resume / Ctrl+L 等非 resize 场景。
+        """
+        if full:
+            self._prev = None
+            self._cursor_row = 0
+            self._buf_h = 0
+        else:
+            # 空帧 → 增量 diff（与空帧比较 = 所有行都变化 → 逐行写入，不清屏）
+            self._prev = Frame([])
+            self._cursor_row = 1
+            self._buf_h = 1
 
     def flush(self) -> None:
         """刷出底层输出。"""
