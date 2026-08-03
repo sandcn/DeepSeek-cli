@@ -9,7 +9,10 @@ from __future__ import annotations
 from unittest.mock import MagicMock
 
 from src.tui.ink.element import h, TEXT, Element
+from src.tui.ink.output import Frame
 from src.tui.ink.reconciler import Reconciler
+from src.tui.ink import components as _components
+from src.tui.ink import BOX
 from src.tui.ink.hooks import (
     use_state,
     use_reducer,
@@ -905,3 +908,82 @@ class TestUnmountedSetterGuard:
         r.render(root, el, 80, 24)
         assert scheduled == [1]
         assert seen == [0, 7]  # state 更新生效
+
+
+class TestForwardRefImperativeHandle:
+    """forwardRef + useImperativeHandle（完善 react ink）。"""
+
+    def test_forward_ref_renders(self):
+        from src.tui.ink import forwardRef, useImperativeHandle, use_ref
+        seen = []
+
+        def Inner(props, ref):
+            useImperativeHandle(ref, lambda: {"tag": "inner", "n": props.get("n", 0)}, ())
+            return h(TEXT, {"children": "inner"})
+
+        InnerFR = forwardRef(Inner)
+        handle_holder = {}
+
+        def Parent(props):
+            ref = use_ref(None)
+            handle_holder["ref"] = ref
+            return h(BOX, None, [h(InnerFR, {"ref": ref, "n": props.get("n", 0)})])
+
+        r = Reconciler()
+        root = r.create_root()
+        r.render(root, h(Parent, {"n": 1}), 80, 24)
+        frame = _components.render_frame(root, 80)
+        assert [l.plain for l in frame.lines] == ["inner"]
+        assert handle_holder["ref"].current == {"tag": "inner", "n": 1}
+
+    def test_imperative_handle_updates_on_deps_change(self):
+        from src.tui.ink import forwardRef, useImperativeHandle, use_ref
+        handle_holder = {}
+
+        def Inner(props, ref):
+            useImperativeHandle(
+                ref, lambda: {"n": props.get("n", 0)}, (props.get("n", 0),),
+            )
+            return h(TEXT, {"children": "inner"})
+
+        InnerFR = forwardRef(Inner)
+
+        def Parent(props):
+            ref = use_ref(None)
+            handle_holder["ref"] = ref
+            return h(BOX, None, [h(InnerFR, {"ref": ref, "n": props.get("n", 0)})])
+
+        r = Reconciler()
+        root = r.create_root()
+        r.render(root, h(Parent, {"n": 1}), 80, 24)
+        assert handle_holder["ref"].current == {"n": 1}
+        # 同 deps 重渲染：句柄保持同一对象
+        r.render(root, h(Parent, {"n": 1}), 80, 24)
+        assert handle_holder["ref"].current == {"n": 1}
+        # deps 变化：句柄更新
+        r.render(root, h(Parent, {"n": 2}), 80, 24)
+        assert handle_holder["ref"].current == {"n": 2}
+
+    def test_imperative_handle_cleared_on_unmount(self):
+        from src.tui.ink import forwardRef, useImperativeHandle, use_ref
+        handle_holder = {}
+
+        def Inner(props, ref):
+            useImperativeHandle(ref, lambda: {"tag": "inner"}, ())
+            return h(TEXT, {"children": "inner"})
+
+        InnerFR = forwardRef(Inner)
+
+        def Parent(props):
+            ref = use_ref(None)
+            handle_holder["ref"] = ref
+            if props.get("show", True):
+                return h(BOX, None, [h(InnerFR, {"ref": ref})])
+            return h(BOX, None, [])
+
+        r = Reconciler()
+        root = r.create_root()
+        r.render(root, h(Parent, {"show": True}), 80, 24)
+        assert handle_holder["ref"].current is not None
+        r.render(root, h(Parent, {"show": False}), 80, 24)
+        assert handle_holder["ref"].current is None

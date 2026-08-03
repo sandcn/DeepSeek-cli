@@ -522,7 +522,101 @@ def use_error_state() -> Any:
 
 
 # ═══════════════════════════════════════════════════════════
-# memo / useApp / useFocus（方向B 步骤10）
+# useImperativeHandle / forwardRef（完善 react ink）
+# ═══════════════════════════════════════════════════════════
+
+
+def _make_imperative_cleanup(ref, hook: MemoHook) -> Callable:
+    """构造 useImperativeHandle 的 effect create（返回卸载清理函数）。
+
+    卸载清理仅在 ``ref.current`` 仍指向本组件最近一次句柄时置 None——
+    deps 变化后旧 destroy 不得清掉新句柄（React 语义：卸载时置 null，
+    更新时不清）。
+    """
+
+    def _create():
+        value = hook.value
+
+        def _destroy():
+            if getattr(ref, "current", None) is value:
+                ref.current = None
+
+        return _destroy
+
+    return _create
+
+
+def forwardRef(fn: Callable) -> Callable:
+    """React.forwardRef 等价物：透传 ref 给渲染函数。
+
+    返回标记 ``_is_forward_ref`` 的包装函数；reconciler 调用函数组件时检测
+    该标记，改以 ``(props, ref)`` 双参调用（ref 取自 ``props.ref``——React
+    约定 ref 作为 prop 传入，不进入普通 props）。
+
+    用法::
+
+        def _Inner(props, ref):
+            useImperativeHandle(ref, lambda: {"focus": do_focus}, ())
+            return h(TEXT, {"children": "inner"})
+        Inner = forwardRef(_Inner)
+        # 父组件
+        ref = use_ref(None)
+        h(Inner, {"ref": ref})
+        # 之后 ref.current.focus()
+
+    Args:
+        fn: ``(props, ref) -> Element`` 渲染函数。
+
+    Returns:
+        带 ``_is_forward_ref`` 标记的函数组件（fiber key 保留原函数模块限定）。
+    """
+    def Forwarded(props, ref=None):
+        return fn(props, ref if ref is not None else props.get("ref"))
+
+    Forwarded._is_forward_ref = True
+    Forwarded._forward_ref_fn = fn
+    Forwarded.__name__ = getattr(fn, "__name__", "Forwarded")
+    Forwarded.__module__ = getattr(fn, "__module__", __name__)
+    return Forwarded
+
+
+def useImperativeHandle(ref, factory: Callable, deps: list | tuple | None = None) -> None:
+    """React useImperativeHandle 等价物：向父组件暴露命令式句柄。
+
+    依赖变化（或挂载）时执行 ``factory()`` 写入 ``ref.current``；组件卸载时
+    置 ``ref.current = None``（React 语义）。deps=None 表示每次渲染都更新。
+
+    与 React 一致：ref 为 ``use_ref`` 返回的 ``RefHook``（``.current`` 可变）。
+
+    Args:
+        ref: 父组件传入的 ref 对象（RefHook 或任意带 ``.current`` 的对象）。
+        factory: 生成句柄的工厂函数。
+        deps: 依赖列表；None 表示每次渲染都更新。
+    """
+    fiber = _current()
+    hook = _next_hook(MemoHook, factory, deps, None, None)
+    hook.factory = factory
+    hook.deps = list(deps) if deps is not None else deps
+    memo_changed = _memo_deps_changed(hook)
+    if memo_changed:
+        hook.value = factory()
+        hook.last_deps = list(hook.deps) if hook.deps is not None else None
+        if ref is not None:
+            ref.current = hook.value
+    # 卸载清理（EffectHook 通道）：deps 含句柄身份——句柄重建时旧 destroy
+    # 不会清掉新句柄（_make_imperative_cleanup 引用检查）。仅在句柄变化
+    # （memo_changed）时重置 last_deps 强制本帧重建 destroy（否则 effect
+    # 跳过，destroy 保持捕获旧句柄 → 卸载时无法正确清理）。
+    if ref is not None:
+        eff = _next_hook(EffectHook, None, None, None, None)
+        eff.create = _make_imperative_cleanup(ref, hook)
+        if memo_changed:
+            eff.deps = (id(ref), id(hook), id(hook.value))
+            eff.last_deps = None
+
+
+# ═══════════════════════════════════════════════════════════
+# useApp / useFocus（方向B 步骤10）
 # ═══════════════════════════════════════════════════════════
 
 
@@ -630,6 +724,8 @@ __all__ = [
     "use_input",
     "use_error_state",
     "memo",
+    "forwardRef",
+    "useImperativeHandle",
     "useApp",
     "useFocus",
     "set_schedule_callback",

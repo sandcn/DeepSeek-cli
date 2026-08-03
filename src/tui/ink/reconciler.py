@@ -350,7 +350,13 @@ class Reconciler:
                     memo_skip = True
                     rendered = None
                 else:
-                    rendered = fiber.type(fiber.props)
+                    # ★ forwardRef（完善 react ink）：带 ``_is_forward_ref`` 标记
+                    #   的组件改以 ``(props, ref)`` 双参调用（ref 取自
+                    #   ``props.ref``——React 约定；不进入普通 props）。
+                    if getattr(fiber.type, "_is_forward_ref", False):
+                        rendered = fiber.type(fiber.props, fiber.props.get("ref"))
+                    else:
+                        rendered = fiber.type(fiber.props)
                     if getattr(fiber.type, "_is_memo", False):
                         fiber._last_memo_props = dict(fiber.props)
             except Exception as exc:

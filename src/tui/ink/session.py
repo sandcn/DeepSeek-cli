@@ -192,6 +192,9 @@ class InkSession:
         # ★ 增量渲染屏幕高度（方向1）：上次传播给 InkRenderer 的高度（初始 0 →
         #   首帧必触发 set_height 同步，与 renderer 创建时已用当前高度幂等）。
         self._last_render_height: int = 0
+        # ★ 方向3（resize 全量刷新）：终端尺寸变化（width/height 任一）置位，
+        #   _render_frame 消费后重置渲染器 prev——resize 后全量重写而非增量 diff。
+        self._resize_pending: bool = False
         # 系统监控（CPU/MEM；每 2 秒刷新输入区顶部分隔线显示）
         self._system_monitor = None
         self._last_sys_stats_time: float = 0.0
@@ -717,6 +720,8 @@ class InkSession:
             #   renderer（AnsiStreamRenderer.set_width 已实现）传播新宽度——
             #   TOC 边框/表格宽度在 resize 后刷新；已关闭通道 renderer 为
             #   None 跳过。set_width 幂等（重复调用无副作用）。
+            # ★ 方向3（resize 全量刷新）：宽度变化置 ``_resize_pending``——
+            #   终端尺寸变化后旧帧与物理屏幕内容不对齐，须全量重写而非增量 diff。
             if width != self._last_render_width:
                 for renderer in (
                     getattr(self._model, "reasoning_renderer", None),
@@ -728,6 +733,7 @@ class InkSession:
                         except Exception:
                             _logger.debug("set_width 传播异常", exc_info=True)
                 self._last_render_width = width
+                self._resize_pending = True
             # ★ 增量渲染屏幕高度传播（方向1）：高度变化（resize）时更新
             #   InkRenderer.set_height——渲染器按新屏幕高度钳制光标/跳过不可达行。
             height = self._width_cache.get_height()
@@ -737,6 +743,14 @@ class InkSession:
                 except Exception:
                     _logger.debug("set_height 传播异常", exc_info=True)
                 self._last_render_height = height
+                # 高度变化与宽度变化共用同一次重置（全量刷新标志由宽度/高度
+                # 分支任一置位，下方消费）。
+                self._resize_pending = True
+        # ★ 方向3（resize 全量刷新消费）：尺寸变化后本帧即全量重建（不等待
+        #   下一帧 diff）——重置渲染器 prev，使 render() 走全量写入路径。
+        if getattr(self, "_resize_pending", False):
+            self._resize_pending = False
+            self._ink_renderer.reset()
         element = self._build_tree(self._model, width)
         self._reconciler.render(self._root_fiber, element, width, self._width_cache.get_height())
         frame = _components.render_frame(self._root_fiber, width)

@@ -4,8 +4,8 @@
 非全屏（随内容流动）模型。由以下子模块组成：
   - element.py    — 不可变元素（Element/h）
   - fiber.py      — 调和器工作单元（Fiber/hook 节点）
-  - hooks.py      — use_state/use_effect/use_ref/use_reducer
-  - reconciler.py — 挂载/更新 fiber 树 + effect 队列
+  - hooks.py      — use_state/use_effect/use_ref/use_reducer/useImperativeHandle
+  - reconciler.py — 挂载/更新 fiber 树 + effect 队列（含 forwardRef）
   - layout.py     — flexbox 子集 + 文本换行
   - output.py     — StyledRun/Line/Frame 输出模型
   - helpers.py    — ANSI 剥离 / 宽度测量 / 换行截断
@@ -14,6 +14,15 @@
   - diff.py       — 新旧 Frame 行级 diff
   - error_boundary.py — ErrorBoundary 函数组件（组件树异常局部降级）
   - session.py    — InkSession（PriorityQueue + render 线程 + 生命周期）
+
+React Ink 语义覆盖（完善 ink，方向3）：
+  - forwardRef / useImperativeHandle（命令式句柄暴露）
+  - TEXT shorthand 样式 props（color/bold/italic/underline/dim/backgroundColor）
+  - TEXT transform（uppercase/lowercase/capitalize）
+  - BOX borderColor / borderStyle 变体（single/double/round/bold）
+  - BOX display:none
+  - alignItems/alignSelf（row+column 横轴对齐，偏移随动后代布局盒）
+  - flexGrow / flexShrink / justifyContent（space-between/around/evenly）
 
 视口/滚动评估（方向B 步骤12）：
   当前架构为非全屏流动模型：文档高度 = 内容高度（内容驱动），无 DECSTBM
@@ -63,6 +72,8 @@ from .hooks import (
     use_input,
     use_error_state,
     memo,
+    forwardRef,
+    useImperativeHandle,
     useApp,
     useFocus,
     set_input_router_callback,
@@ -117,6 +128,8 @@ __all__ = [
     "use_input",
     "use_error_state",
     "memo",
+    "forwardRef",
+    "useImperativeHandle",
     "useApp",
     "useFocus",
     "set_input_router_callback",

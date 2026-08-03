@@ -351,23 +351,30 @@ def _reflow_row_justify(
             child.layout_box = cb
 
 
-def _reflow_subtree(fiber: Fiber, new_y: int) -> None:
-    """递归重排 fiber 子树孙节点 y 坐标（flexShrink 高度修改后使用，方向1）。
+def _reflow_subtree(fiber: Fiber, new_y: int, new_x: int | None = None) -> None:
+    """递归重排 fiber 子树孙节点坐标（flexShrink 高度修改后使用，方向1）。
 
     flexShrink 修改直接子节点高度后仅重排直接子节点 y——孙节点 y 在 shrink
     前按原高度推算，shrink 后陈旧（下一帧 ``_measure`` 才会按新高度重排）。
-    本函数在 shrink 路径内逐层将孙节点 y 累加重排（与 flexGrow 分支的
+    本函数在 shrink 路径内逐层将孙节点坐标累加重排（与 flexGrow 分支的
     ``cb.y = cursor_y`` 重排语义一致；仅本帧 shrink 路径内生效，``_measure``
     仍是布局唯一真源）。
+
+    BUG-3（方向3 修复）：区分 flexDirection——column 容器子节点纵向堆叠
+    （y 累加），row 容器子节点横向排列（x 累加、y 保持内边距基准）。修复前
+    一律按纵向堆叠，row 容器 flexShrink 后子节点被错误竖排。
 
     Args:
         fiber: 待重排的 fiber（其 layout_box 非 None）。
         new_y: 该 fiber 的新 y 坐标。
+        new_x: 该 fiber 的新 x 坐标（None 表示保持原 x）。
     """
     cb = fiber.layout_box
     if cb is None:
         return
     cb.y = new_y
+    if new_x is not None:
+        cb.x = new_x
     fiber.layout_box = cb
     pad_h, pad_v = _resolve_padding(fiber)
     border = fiber.props.get("border", 0)
@@ -388,12 +395,24 @@ def _reflow_subtree(fiber: Fiber, new_y: int) -> None:
             spacing = margin
     else:
         spacing = margin
-    cursor_y = new_y + pad_v + border
-    for child in layout_children(fiber):
-        _reflow_subtree(child, cursor_y)
-        ccb = child.layout_box
-        if ccb is not None:
-            cursor_y += ccb.h + spacing
+    direction = fiber.props.get("flexDirection", "column")
+    if direction == "row":
+        # row：横向排列——子节点 x 累加，y 保持内边距基准（纵向偏移由
+        # alignItems 承担；与 _measure row 分支语义一致）。
+        cursor_x = cb.x + pad_h + border
+        for child in layout_children(fiber):
+            _reflow_subtree(child, new_y + pad_v + border, cursor_x)
+            ccb = child.layout_box
+            if ccb is not None:
+                cursor_x += ccb.w + spacing
+    else:
+        # column：纵向堆叠——子节点 y 累加（默认方向，与既有语义一致）。
+        cursor_y = new_y + pad_v + border
+        for child in layout_children(fiber):
+            _reflow_subtree(child, cursor_y)
+            ccb = child.layout_box
+            if ccb is not None:
+                cursor_y += ccb.h + spacing
 
 
 def _translate_subtree_y(fiber: Fiber, delta_y: int) -> None:
@@ -404,18 +423,46 @@ def _translate_subtree_y(fiber: Fiber, delta_y: int) -> None:
     第 2+ 个子节点的后代 y 停留在 ``inner_y`` 基准（与首个子树重叠）。
     本函数保持 w/h/x 不变，只平移 y（delta_y 为相对偏移，可为负）。
 
+    方向3（BUG-2 关联修复）：**不遍历 sibling 链**——调用方以单个直接子节点
+    为参数（探针复用 / alignItems 偏移），仅须平移该子节点及其后代；遍历
+    sibling 会把后续兄弟节点一并平移（其后再被循环各自平移 → 重复偏移）。
+    修复前实现 ``while f is not None: ... f = f.sibling`` 隐含 sibling 遍历。
+
     Args:
         fiber: 待平移的子树根（其 layout_box 非 None）。
         delta_y: y 偏移量（像素/行）。
     """
-    f = fiber
-    while f is not None:
-        if f.layout_box is not None:
-            cb = f.layout_box
-            cb.y += delta_y
-            f.layout_box = cb
-        _translate_subtree_y(f.child, delta_y)
-        f = f.sibling
+    if fiber is None:
+        return
+    if fiber.layout_box is not None:
+        cb = fiber.layout_box
+        cb.y += delta_y
+        fiber.layout_box = cb
+    _translate_subtree_y(fiber.child, delta_y)
+
+
+def _translate_subtree_x(fiber: Fiber, delta_x: int) -> None:
+    """整体平移 fiber 子树（含自身）的 x 坐标（alignItems/alignSelf 偏移修复）。
+
+    column alignItems（center/flex-end）与 alignSelf 对子节点做横向偏移时，
+    只改子容器自身 layout_box.x 会令其后代停留在原 x 基准（嵌套容器内
+    TEXT/边框错位——TEXT 按未偏移 x 绘制、边框按偏移后 x 绘制）。整棵子树
+    平移 delta_x 保持后代相对位置不变。
+
+    本函数保持 w/h/y 不变，只平移 x（delta_x 为相对偏移，可为负）。不遍历
+    sibling 链（仅平移参数指定子树，与 ``_translate_subtree_y`` 一致）。
+
+    Args:
+        fiber: 待平移的子树根（其 layout_box 非 None）。
+        delta_x: x 偏移量（像素/列）。
+    """
+    if fiber is None:
+        return
+    if fiber.layout_box is not None:
+        cb = fiber.layout_box
+        cb.x += delta_x
+        fiber.layout_box = cb
+    _translate_subtree_x(fiber.child, delta_x)
 
 
 def _measure(fiber: Fiber, x: int, y: int, avail_w: int, fill: bool = True) -> LayoutBox:
@@ -429,6 +476,15 @@ def _measure(fiber: Fiber, x: int, y: int, avail_w: int, fill: bool = True) -> L
     """
     ftype = fiber.type
     explicit_w = fiber.props.get("width")
+
+    # ── display: none（完善 react ink）──
+    # 隐藏组件：返回零尺寸盒且不布局子节点（display:none 语义——不占布局
+    # 空间、不绘制）。子节点 layout_box 保留上一帧值（布局唯一真源仍是
+    # _measure；display:none 时子节点不参与布局，无正确性风险）。
+    if fiber.props.get("display") == "none":
+        box = LayoutBox(x, y, 0, 0)
+        fiber.layout_box = box
+        return box
 
     # ── 自定义 host（注册表） ──
     from .registry import get_host
@@ -447,10 +503,16 @@ def _measure(fiber: Fiber, x: int, y: int, avail_w: int, fill: bool = True) -> L
             truncate_runs_ellipsis,
             truncate_runs_start,
             truncate_runs_middle,
+            resolve_text_style,
+            apply_text_transform,
         )
         styled = fiber.props.get("styled")
-        text = str(fiber.props.get("children", ""))
-        style = fiber.props.get("style")
+        # ★ 完善 react ink：TEXT shorthand 样式（color/bold/...）+ transform
+        #   （uppercase/lowercase/capitalize）——resolve_text_style 合并
+        #   ``style`` prop 与 shorthand；transform 在换行前作用于文本。
+        transform = fiber.props.get("transform")
+        text = apply_text_transform(str(fiber.props.get("children", "")), transform)
+        style = resolve_text_style(fiber.props)
         # ★ textWrap 模式（方向B 步骤12 / 完善 ink）：
         #   "wrap"（默认，现行为）/ "truncate" / "truncate-end"（单行截断省略号，
         #   末尾省略号）/"truncate-start"（省略号在开头，保留尾部）/
@@ -692,9 +754,15 @@ def _measure(fiber: Fiber, x: int, y: int, avail_w: int, fill: bool = True) -> L
                         "center", "flex-end", "flex-start",
                     ) else align
                     if eff_align == "center":
-                        cb.y += (row_h - cb.h) // 2
+                        delta = (row_h - cb.h) // 2
+                        # 整棵子树平移（仅改自身 box.y 会让后代 y 停留在原
+                        # 基准——嵌套容器内 TEXT/边框错位，alignItems 偏移修复）
+                        if delta:
+                            _translate_subtree_y(child, delta)
                     elif eff_align == "flex-end":
-                        cb.y += (row_h - cb.h)
+                        delta = row_h - cb.h
+                        if delta:
+                            _translate_subtree_y(child, delta)
                     # flex-start / stretch：不偏移
                     child.layout_box = cb
         total_h = row_h
@@ -778,9 +846,15 @@ def _measure(fiber: Fiber, x: int, y: int, avail_w: int, fill: bool = True) -> L
                         "center", "flex-end", "flex-start",
                     ) else align
                     if eff_align == "center":
-                        cb.x += (inner_w - cb.w) // 2
+                        delta = (inner_w - cb.w) // 2
+                        # 整棵子树平移（仅改自身 box.x 会让后代 x 停留在原
+                        # 基准——嵌套容器内 TEXT/边框错位，alignItems 偏移修复）
+                        if delta:
+                            _translate_subtree_x(child, delta)
                     elif eff_align == "flex-end":
-                        cb.x += (inner_w - cb.w)
+                        delta = inner_w - cb.w
+                        if delta:
+                            _translate_subtree_x(child, delta)
                     # flex-start / stretch：不偏移
                     child.layout_box = cb
 

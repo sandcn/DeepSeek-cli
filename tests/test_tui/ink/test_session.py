@@ -1042,3 +1042,62 @@ class TestAppControl:
         s.request_clear()
         s._ink_renderer.reset.assert_called_once()
         s.request_bottom_redraw.assert_called_once()
+
+
+class TestResizeFullRefresh:
+    """方向3 — resize 后全量刷新（终端尺寸变化时旧帧与屏幕不对齐）。"""
+
+    def test_width_change_resets_renderer(self):
+        """宽度变化 → InkRenderer.reset() 被调用（全量刷新）。"""
+        from src.tui.app.model import AppModel
+        from src.tui.app.apply import apply_cmd
+        from src.tui.app.app import build_app_element
+        from src.tui._const import WriteLineCmd
+
+        model = AppModel()
+        apply_cmd(model, WriteLineCmd(text="hello"))
+        s = InkSession(model=model, apply_cmd=apply_cmd, build_tree=build_app_element)
+        s._width_cache = MagicMock()
+        s._width_cache.get_width.return_value = 80
+        s._width_cache.get_height.return_value = 24
+        renderer = MagicMock()
+        s._ink_renderer = renderer
+        s._last_render_width = 0
+        s._last_render_height = 0
+
+        s._render_frame()  # 首帧（尺寸 80x24）
+        assert renderer.reset.call_count >= 1  # 首帧尺寸初始化也重置
+
+        renderer.reset.reset_mock()
+        s._width_cache.get_width.return_value = 100  # resize
+        s._render_frame()
+        assert renderer.reset.call_count >= 1, "宽度变化应触发全量刷新（reset）"
+
+        # 同尺寸再渲染：不重置（增量 diff 路径）
+        renderer.reset.reset_mock()
+        s._render_frame()
+        assert renderer.reset.call_count == 0, "同尺寸渲染不应重置（增量）"
+
+    def test_height_change_resets_renderer(self):
+        """高度变化 → InkRenderer.reset() 被调用（全量刷新）。"""
+        from src.tui.app.model import AppModel
+        from src.tui.app.apply import apply_cmd
+        from src.tui.app.app import build_app_element
+        from src.tui._const import WriteLineCmd
+
+        model = AppModel()
+        apply_cmd(model, WriteLineCmd(text="hello"))
+        s = InkSession(model=model, apply_cmd=apply_cmd, build_tree=build_app_element)
+        s._width_cache = MagicMock()
+        s._width_cache.get_width.return_value = 80
+        s._width_cache.get_height.return_value = 24
+        renderer = MagicMock()
+        s._ink_renderer = renderer
+        s._last_render_width = 0
+        s._last_render_height = 0
+
+        s._render_frame()  # 首帧
+        renderer.reset.reset_mock()
+        s._width_cache.get_height.return_value = 30  # resize 高度
+        s._render_frame()
+        assert renderer.reset.call_count >= 1, "高度变化应触发全量刷新（reset）"

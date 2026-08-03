@@ -282,6 +282,33 @@ def _skip_ansi_at(text: str, i: int) -> int:
     return j  # 孤立 ESC：仅跳过 ESC 本身
 
 
+#: 单字符显示宽度缓存（wcswidth_simple 热路径——重复 CJK/emoji 字符免区间二分）。
+#: 有界：超过 ``_CHAR_WIDTH_CACHE_MAX`` 时整体清空重建（终端文本字符集有界，
+#: 清空后重新积累；宽度值确定性，正确性不受影响）。
+_CHAR_WIDTH_CACHE_MAX = 4096
+_char_width_cache: dict[str, int] = {}
+
+
+def _wcswidth_single(ch: str) -> int:
+    """计算单个字符的显示宽度（wcswidth_simple 内部辅助，缓存专用）。"""
+    cp = ord(ch)
+    if 0x20 <= cp <= 0x7E:
+        return 1
+    if ch == "\x1b":
+        return 0  # 孤立 ESC 宽度 0（_skip_ansi_at 语义）
+    if cp < 0x20 or (0x7F <= cp <= 0x9F):
+        return 0  # 控制字符
+    if _in_ranges_bisect(cp, _CJK_FLAT):
+        return 2
+    if _in_ranges_bisect(cp, _FULLWIDTH_FLAT):
+        return 2
+    if _in_ranges_bisect(cp, _EMOJI_WIDE_FLAT):
+        return 2
+    if _in_ranges_bisect(cp, _ZERO_WIDTH_FLAT):
+        return 0
+    return 1
+
+
 def wcswidth_simple(text: str) -> int:
     """计算字符串的显示宽度（零第三方依赖）。
 
@@ -300,12 +327,31 @@ def wcswidth_simple(text: str) -> int:
     ``bisect`` 二分（单字符 O(log n)；ASCII 0x20-0x7E 走 O(1) 快路径）。
     区间表内容不变（行为语义保持，测试锁定）。
 
+    方向3（性能）：单字符快速路径——重复 CJK/emoji 字符经有界 dict 缓存
+    免区间二分（``_char_width_cache``，缓存命中 O(1)）。ASCII 走原有 O(1)
+    快路径（不经缓存——dict 查找对 ASCII 反而更慢）。
+
     Args:
         text: 输入字符串。
 
     Returns:
         显示宽度（整数）。
     """
+    if len(text) == 1:
+        ch = text
+        cp = ord(ch)
+        if 0x20 <= cp <= 0x7E:
+            return 1  # ASCII 快路径（不经缓存）
+        if ch == "\x1b" or cp < 0x20 or (0x7F <= cp <= 0x9F):
+            return 0  # 控制/孤立 ESC 快路径
+        w = _char_width_cache.get(ch)
+        if w is not None:
+            return w
+        w = _wcswidth_single(ch)
+        if len(_char_width_cache) >= _CHAR_WIDTH_CACHE_MAX:
+            _char_width_cache.clear()
+        _char_width_cache[ch] = w
+        return w
     width = 0
     i = 0
     n = len(text)

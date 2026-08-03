@@ -555,3 +555,36 @@ class TestTerminalWidthCacheDimensions:
             assert cache._last_width_fetch > old, (
                 "get_height 过期刷新后 _last_width_fetch 应同步推进（回归确认）"
             )
+
+
+class TestWcswidthCharCache:
+    """方向3 — wcswidth_simple 单字符宽度缓存（性能优化，行为锁定）。"""
+
+    def test_cache_returns_same_width(self):
+        from src.tui._screen import wcswidth_simple, _char_width_cache
+        _char_width_cache.clear()
+        w1 = wcswidth_simple("中")
+        w2 = wcswidth_simple("中")
+        assert w1 == w2 == 2
+        assert _char_width_cache.get("中") == 2
+
+    def test_ascii_not_cached(self):
+        from src.tui._screen import wcswidth_simple, _char_width_cache
+        _char_width_cache.clear()
+        wcswidth_simple("a")
+        assert "a" not in _char_width_cache, "ASCII 快路径不经缓存（避免 dict 开销）"
+
+    def test_multi_char_not_cached(self):
+        from src.tui._screen import wcswidth_simple, _char_width_cache
+        _char_width_cache.clear()
+        wcswidth_simple("中文")
+        assert len(_char_width_cache) == 0, "多字符路径不经单字符缓存"
+
+    def test_cache_bounded(self):
+        from src.tui._screen import wcswidth_simple, _char_width_cache, _CHAR_WIDTH_CACHE_MAX
+        _char_width_cache.clear()
+        # 填满 + 1 → 触发清空重建
+        for i in range(_CHAR_WIDTH_CACHE_MAX):
+            _char_width_cache[chr(0x4E00 + i)] = 2
+        wcswidth_simple("中")
+        assert len(_char_width_cache) <= _CHAR_WIDTH_CACHE_MAX, "缓存应保持有界"

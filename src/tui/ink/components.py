@@ -27,9 +27,21 @@ _logger = logging.getLogger(__name__)
 
 
 def _border_style(props: dict) -> Style:
+    """解析边框样式（react-ink ``borderColor`` shorthand，完善 ink）。
+
+    - ``borderStyle`` 传 Style 对象时原样返回（既有行为）。
+    - 否则取 ``borderColor``（256 色号 int / 颜色名字符串）作 fg；
+      缺省回退深青 23（既有行为）。
+    """
     style = props.get("borderStyle")
     if isinstance(style, Style):
         return style
+    border_color = props.get("borderColor")
+    if border_color is not None:
+        from .helpers import _parse_color
+        color = _parse_color(border_color)
+        if color is not None:
+            return Style(fg=color)
     return Style(fg=23)
 
 
@@ -189,6 +201,9 @@ def _paint_impl(fiber: Fiber, canvas: list[dict]) -> None:
     if box is None:
         return
     ftype = fiber.type
+    # display: none（完善 react ink）——隐藏组件不绘制（_measure 已返回零盒）。
+    if fiber.props.get("display") == "none":
+        return
 
     if ftype == "text":
         # ★ 复用 layout 阶段缓存的换行结果（免二次包裹）
@@ -196,11 +211,18 @@ def _paint_impl(fiber: Fiber, canvas: list[dict]) -> None:
         if wrapped is not None:
             lines = wrapped
         else:
+            from .helpers import (
+                wrap_runs_by_width,
+                resolve_text_style,
+                apply_text_transform,
+            )
             styled = fiber.props.get("styled")
-            text = str(fiber.props.get("children", ""))
-            style = fiber.props.get("style")
+            transform = fiber.props.get("transform")
+            text = apply_text_transform(
+                str(fiber.props.get("children", "")), transform,
+            )
+            style = resolve_text_style(fiber.props)
             if styled is not None:
-                from .helpers import wrap_runs_by_width
                 lines = wrap_runs_by_width(list(styled), box.w)
             else:
                 lines = wrap_text_lines(text, box.w, style)

@@ -403,6 +403,13 @@ def _role_header_runs(block, model) -> list:
         # `▎回答` 头行；用户消息以 `> ` 前缀区分）
         return []
     if kind == "reasoning":
+        # 方向3（动效）：推理块角色头呼吸色——块仍开放（live 推理中）时
+        # 从暗灰 242 呼吸到亮灰 252（8s 周期，视觉提示「推理进行中」）；
+        # 关闭提交后保持静态暗灰（frozen 缓存不再重算）。
+        if not block.closed:
+            from src.tui.app._theme import time_glow
+            glow = time_glow(242, 252, 8.0)
+            return [StyledRun("\u258d\U0001f4ad 思考", Style(fg=glow))]
         return [StyledRun("\u258d\U0001f4ad 思考", Style(fg=242))]
     if kind == "tool":
         # 工具卡片顶边框替代 `▎⚡ 工具 X` 角色头（卡片化对齐 Claude Code）；
@@ -411,6 +418,13 @@ def _role_header_runs(block, model) -> list:
     if kind == "notification":
         return [StyledRun("\u258e", pal.notice), StyledRun("通知", pal.notice)]
     if kind == "error":
+        # 方向3（动效）：错误标记呼吸色——错误消息醒目但不过度闪烁
+        # （196 邻域 8s 周期）。错误块通常立即提交（frozen），呼吸仅在 live
+        # 窗口生效，提交后保持静态红。
+        if not block.closed:
+            from src.tui.app._theme import time_glow
+            glow = time_glow(196, 208, 8.0)
+            return [StyledRun("\u258e错误", Style(fg=glow, bold=True))]
         return [StyledRun("\u258e错误", Style(fg=196, bold=True))]
     if kind == "subagent":
         return [StyledRun("\u258e", pal.dim), StyledRun("子代理", pal.dim)]
