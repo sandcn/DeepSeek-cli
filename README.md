@@ -656,11 +656,14 @@ Pipeline 将 Agent 对话循环编排为可插拔中间件链。中间件按注�
 重构终端用户界面渲染层，提升视觉体验与交互流畅度：
 
 - **流式渲染性能优化** ✅ — 降低增量 Markdown 渲染延迟，消除大 Token 输出时的界面卡顿（`src/tui/` 增量流式渲染引擎已实现）
+- **增量渲染（除 resize 全量外均增量）** ✅ — 行级 diff + committed 前缀身份复用 + 位移锚点：头部动画（标题栏呼吸）不再引发 committed 可见区全量重写，流式增长每帧重写范围 O(可见区) → O(头部差异+位移区)
 - **光标坐标追踪** ✅ — 新增 `CursorTracker` 全局光标坐标追踪系统，集成到 ContentRenderer / RenderEngine / _BottomBar / _CompletionPopup，消除坐标推算累积误差
+- **React Ink 组件框架** ✅ — `src/tui/ink/`：调和器 + flexbox 布局 + hooks + 帧差异渲染，覆盖 useState/useReducer/useRef/useEffect/useLayoutEffect（独立时序）/useMemo/useCallback/useContext/useId/useSyncExternalStore/useInput/useFocus/forwardRef/useImperativeHandle/memo/ErrorBoundary；TEXT shorthand 样式/transform/wrap/dimColor；BOX flexBasis/borderStyle 变体/alignItems/justifyContent
 - **富交互组件** — 在终端中嵌入可交互元素（选择列表、确认弹窗、进度条），减少纯文本输出的信息密度
 - **语法高亮增强** — 支持更多编程语言的代码块高亮，优化长代码段的折叠/展开机制
 - **多面板布局** — 对话区/工具调用日志/系统状态分屏显示，便于调试与观察 Agent 行为
 - **主题系统扩展** ✅ — 支持自定义配色方案，适配亮色/暗色终端环境（已内置 dark/light/high-contrast 三种主题）
+- **动效与呼吸效果** ✅ — 标题栏✦/工具卡边框/状态栏分隔线/模型名/解析行 spinner/推理头/错误标记/补全弹窗/流式占位符/工具计数箭头/失败警示等 10+ 处时间基动效（time_glow 0.1s 桶缓存）
 - **Web UI 同步增强** — 终端与 Web 界面的渲染逻辑复用，保证两种模式下显示一致性
 
 ---
