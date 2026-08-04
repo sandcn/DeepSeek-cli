@@ -238,6 +238,23 @@ _SEP_BREATH_HI = 45
 _SEP_BREATH_PERIOD = 8.0
 
 
+@lru_cache(maxsize=64)
+def _sep_style_active(bucket: int) -> Style:
+    """活跃期分隔线 Style（0.1s 时间桶缓存 Style **对象**）。
+
+    ★ 性能（PERF-11 落地）：status_bar 的 ``sep`` use_memo deps 为
+    ``(width, sep_style)``——`sep_style` 活跃期若每次新建 Style 对象，
+    use_memo 依赖比较（``_deps_equal`` → ``_object_is``，对 Style 仅做
+    ``is`` 引用比较）永远 miss → 分隔线 Line 每帧重建（PERF-11 声称的
+    缓存实际未生效）。经本函数缓存后同桶返回**同一 Style 实例** → use_memo
+    引用比较命中 → 分隔线 Line 跨帧复用；跨桶（呼吸色变化）自然重建。
+    桶号 ``int(time.monotonic()/0.1)`` 与 ``time_glow`` 桶粒度一致。
+    """
+    return Style(fg=_glow_bucket(
+        _SEP_BREATH_LO, _SEP_BREATH_HI, _SEP_BREATH_PERIOD, bucket,
+    ))
+
+
 def sep_style(active: bool) -> Style:
     """分隔线样式（通用组件，方向5 收敛）：活跃呼吸 / 空闲静态。
 
@@ -246,15 +263,22 @@ def sep_style(active: bool) -> Style:
     成本）。供 input_area 上下分隔线 / status_bar 分隔线统一调用——修复前
     三处各自 ``Style(fg=time_glow(32, 45, 8.0))`` 内联（周期/色域漂移风险）。
 
+    ★ 对象稳定性契约（PERF-11）：活跃期**同一 0.1s 桶内返回同一 Style
+    实例**（经 ``_sep_style_active`` 缓存）——调用方用 Style 对象作
+    ``use_memo`` deps（status_bar sep）时引用比较可命中，跨帧复用分隔线
+    Line；跨桶返回新实例（呼吸色更新）。空闲返回模块级常量 ``_S_SEP``
+    （恒同对象）。
+
     Args:
         active: 是否活跃（流式/工具运行等）。
 
     Returns:
         分隔线填充 Style。
     """
-    if active:
-        return Style(fg=time_glow(_SEP_BREATH_LO, _SEP_BREATH_HI, _SEP_BREATH_PERIOD))
-    return _S_SEP
+    if not active:
+        return _S_SEP
+    bucket = int(time.monotonic() / 0.1)
+    return _sep_style_active(bucket)
 
 
 def sep_line(width: int, content: "Line | None" = None,
@@ -281,6 +305,15 @@ def sep_line(width: int, content: "Line | None" = None,
     style = sep_style(active)
     if content is None:
         return Line.of("\u2501" * max(1, width), style)
+    # ★ 健壮性（通用组件防御）：content 可能未按预算截断（调用方直接传超宽
+    #   行时）——``sep_len = max(0, width - content.width)`` 为 0 → 行宽 =
+    #   content.width > width，破坏行级 diff 行宽不变量。防御：content 超宽时
+    #   截断至 width（复用 ink.helpers.truncate_line，不拆 CJK）再填充。
+    #   正常路径（调用方已按预算截断）行为不变（truncate_line 宽度不足时
+    #   原样返回）。
+    if content.width > width and width > 0:
+        from src.tui.ink.helpers import truncate_line
+        content = truncate_line(content, width)
     sep_len = max(0, width - content.width)
     line = Line.of("\u2501" * sep_len, style)
     for run in content.runs:

@@ -36,7 +36,7 @@ from src.tui._input import (
 from src.tui.core.style import Style
 from src.tui.ink import register_host, Line
 from src.tui.app import _fx
-from src.tui.app._theme import sep_style, time_glow, _S_ACCENT, _S_DIM, _S_SEP, _S_TEXT, _S_TIME
+from src.tui.app._theme import sep_line as _theme_sep_line, time_glow, _S_ACCENT, _S_DIM, _S_SEP, _S_TEXT, _S_TIME
 
 # 占位符
 _PLACEHOLDER_TEXT = "输入消息 · /help 查看命令 · Ctrl+N 切换模型 · Tab 补全"
@@ -522,7 +522,6 @@ def _build_lines(fiber) -> list[Line]:
     # 方向3（动效）：活跃期间上分隔线用青色呼吸（32-45，8s 周期），与状态栏
     # 分隔线呼吸同步周期；空闲保持静态深灰。★ 方向5：统一经 _theme.sep_style
     # （input_area 上下分隔线 + status_bar 分隔线共用同一周期/色域）。
-    top_sep_style = sep_style(status_active)
     # 方向1 步骤4（窄屏防溢出）：sep_len 下限改为 0（修复前 ``max(1, ...)``
     # 在 width < cpu_mem_w 时内容超宽溢出）；CPU/MEM 内容独立行逐段截断至
     # 剩余宽度（不拆 CJK；width < 22 时不再超宽）。
@@ -532,7 +531,7 @@ def _build_lines(fiber) -> list[Line]:
     _append_truncated(content, f"{cpu}%", _S_CPU, content_budget)
     _append_truncated(content, " \u00b7 MEM:", _S_ACCENT, content_budget)
     _append_truncated(content, f"{mem}%", _S_MEM, content_budget)
-    lines.append(_build_separator_line(width, content, top_sep_style, cpu_mem_w))
+    lines.append(_theme_sep_line(width, content, status_active))
 
     # ── 反向历史搜索覆盖行（方向D 步骤14，Ctrl+R 配置门控） ──
     # 搜索激活时在上分隔线之后、输入文本行之前追加一行（measure 已增行）：
@@ -615,13 +614,12 @@ def _build_lines(fiber) -> list[Line]:
     #   上分隔线/状态栏分隔线同周期青色呼吸（32-45，8s），三条分隔线视觉
     #   联动；空闲保持静态深灰（_S_SEP，零额外渲染成本）。★ 方向5：统一
     #   经 _theme.sep_style。
-    bottom_style = sep_style(status_active)
     # 方向1 步骤4（窄屏防溢出）：sep_len 下限 0 + 时间戳内容独立行截断
     # （width < 22 时不超宽；正常宽度时间戳完整保留）
     content_budget = max(1, width - max(0, width - time_w))
     content = Line()
     _append_truncated(content, f" {ts}", _S_TIME, content_budget)
-    lines.append(_build_separator_line(width, content, bottom_style, time_w))
+    lines.append(_theme_sep_line(width, content, status_active))
 
     # ★ 快照缓存写回（方向4）：未命中重建后更新缓存（同快照下次命中）
     fiber._lines_cache = (snap_key, lines)
@@ -710,10 +708,12 @@ def _append_truncated(line: Line, text: str, style, budget: int) -> None:
 
 def _build_separator_line(width: int, content: Line, style: Style,
                           content_w: int = 0) -> Line:
-    """构建分隔线行：左侧 ``┅`` 填充 + 右侧内容（Claude TUI parity 分隔线）。
+    """构建分隔线行（兼容封装，委托 ``_theme.sep_line``）。
 
-    上分隔线（CPU/MEM）与下分隔线（时间戳）共用结构——收敛为单一 helper
-    （通用逻辑重构；行为与原双实现逐字节一致）。
+    # deprecated: 与 ``_theme.sep_line`` 重复实现——统一经通用组件
+    # ``sep_line(width, content, active)``（内部经 ``sep_style(active)``
+    # 生成样式）。本函数保留兼容调用面（显式 style 参数）；input_area
+    # 已改用 ``_theme.sep_line``，仅测试/外部调用保留。
 
     Args:
         width: 行总宽（终端列宽）。

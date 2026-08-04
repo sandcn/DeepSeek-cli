@@ -29,8 +29,10 @@ from src.tui.ink import h, BOX, TEXT, Line, StyledRun, use_memo, use_ref
 from src.tui.app import _fx
 from src.tui.app._theme import time_glow, _S_ACCENT, _S_ACCENT_BOLD, _S_DIM, _S_TIME
 # ★ 方向5：分隔线样式统一真源（_theme.sep_style）——别名 _theme_sep_style
-# 避免与下方局部变量 sep_style 命名冲突。
+# 避免与下方局部变量 sep_style 命名冲突。分隔线构建统一经 _theme.sep_line
+# （通用组件，input_area/status_bar 共用同一构建语义）。
 from src.tui.app._theme import sep_style as _theme_sep_style
+from src.tui.app._theme import sep_line as _theme_sep_line
 # 方向C 步骤4：_format_duration 唯一真源在 src/tui/_format.py（Layer 0）；
 # 模块级 re-export 保持 patch("src.tui.app.status_bar._format_duration") 路径有效。
 from src.tui._format import format_duration as _format_duration
@@ -214,18 +216,17 @@ def StatusBar(props) -> object:
     #   截断至 width（内容从 col3 起 ≤ width-2）——宽度统一为 width。
     # 方向3（动效）：流式/活跃期间分隔线用青色呼吸（32-45，8s 周期）——
     #   活跃状态的分隔线更生动；空闲保持静态深灰（_S_SEP）。
-    # ★ 方向5：统一经 _theme.sep_style（input_area 上下分隔线 + status_bar
-    #   分隔线共用同一周期/色域）。
-    sep_style = _theme_sep_style(st.status_active)
+    # ★ 方向5：统一经 _theme.sep_line 通用组件（input_area 上下分隔线 +
+    #   status_bar 分隔线共用同一构建语义）。
     # ★ 性能（PERF-11）：分隔线 Line **缓存**（use_memo 键 width + sep_style）
-    #   ——修复前每帧 ``Line.of("┅" * width)`` 重建字符串乘法 + Line 对象
-    #   （热路径 10Hz）。sep_style 活跃期为时间基呼吸（每帧新 Style 对象），
-    #   键含 sep_style（值相等即命中——Style frozen dataclass == 值比较）；
-    #   空闲期 _S_SEP 引用稳定，跨帧复用同 Line 对象 → TEXT ``_wrap_cache``
-    #   引用级命中 + diff 身份短路（零重建）。分隔线宽仅依赖 width，width
-    #   变化（resize）键变自动重建。
+    #   ——修复前 ``sep_style(active=True)`` 每次返回新 Style 对象，use_memo
+    #   deps 引用比较永远 miss（``_object_is`` 对 Style 仅 ``is`` 比较）→ 每帧
+    #   重建分隔线 Line。修复后同 0.1s 时间桶内返回**同一 Style 实例** →
+    #   use_memo 引用命中 → 分隔线 Line 跨帧复用（零重建）；跨桶呼吸色更新
+    #   自动重建。空闲期 _S_SEP 常量恒同对象，同样命中。
+    sep_style = _theme_sep_style(st.status_active)
     sep = use_memo(
-        lambda: Line.of("\u2501" * max(1, width), sep_style),
+        lambda: _theme_sep_line(width, None, st.status_active),
         (width, sep_style),
     )
     # 状态行（下面）
