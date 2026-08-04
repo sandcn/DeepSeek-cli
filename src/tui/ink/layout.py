@@ -165,15 +165,15 @@ def layout_children(fiber: Fiber) -> list[Fiber]:
 # ═══════════════════════════════════════════════════════════
 
 
-def wrap_text_lines(text: str, width: int, style=None) -> list[Line]:
+def wrap_text_lines(text: str, width: int, style=None, hard: bool = False) -> list[Line]:
     """将文本按显示宽度换行为 Line 列表（CJK 安全）。
 
     width<=0 时不换行但按 ``\n`` 拆行（BUG-34 同族修复——统一经
     ``wrap_runs_by_width`` 的 max_width<=0 分支处理，含换行文本不产生
-    内嵌字面换行符）。
+    内嵌字面换行符）。hard=True 时字符级硬拆（react-ink ``wrap="hard"``）。
     """
     from .helpers import wrap_runs_by_width
-    return wrap_runs_by_width([StyledRun(text, style)] if text else [], width)
+    return wrap_runs_by_width([StyledRun(text, style)] if text else [], width, hard=hard)
 
 
 # ═══════════════════════════════════════════════════════════
@@ -977,6 +977,9 @@ def _measure(fiber: Fiber, x: int, y: int, avail_w: int, fill: bool = True) -> L
                         lines = [Line(truncate_runs_middle(runs, width))]
                     else:
                         lines = [Line(truncate_runs_ellipsis(runs, width))]
+                elif text_wrap == "hard":
+                    # react-ink ``wrap="hard"``（方向 G）：字符级硬拆填满行宽
+                    lines = wrap_runs_by_width(runs, width, hard=True)
                 else:
                     lines = wrap_runs_by_width(runs, width)
                 lines = _apply_text_align(lines, width, align)
@@ -1061,8 +1064,23 @@ def _measure(fiber: Fiber, x: int, y: int, avail_w: int, fill: bool = True) -> L
             gap = margin
     else:
         gap = margin
-    #: 兄弟间距统一值（row 用横向、column 用纵向）
-    spacing = gap
+    # ── columnGap / rowGap（完善 react ink v6）──
+    # gap 为两者 shorthand（缺省回退 margin）；columnGap 显式存在时覆盖
+    # gap（row 容器水平间距），rowGap 显式存在时覆盖 gap（column 容器垂直
+    # 间距 / wrap 行间距）。畸形值回退 gap。
+    col_gap = gap
+    row_gap = gap
+    if "columnGap" in fiber.props:
+        try:
+            col_gap = max(0, int(fiber.props.get("columnGap")))
+        except (TypeError, ValueError, OverflowError):
+            col_gap = gap
+    if "rowGap" in fiber.props:
+        try:
+            row_gap = max(0, int(fiber.props.get("rowGap")))
+        except (TypeError, ValueError, OverflowError):
+            row_gap = gap
+    #: 兄弟间距统一值（row 用横向、column 用纵向）——direction 归一化后设置
 
     inner_x = x + pad_l + border
     inner_y = y + pad_t + border
@@ -1111,6 +1129,22 @@ def _measure(fiber: Fiber, x: int, y: int, avail_w: int, fill: bool = True) -> L
             child._parent_avail_h = parent_avail_h
     direction = fiber.props.get("flexDirection", "column")
 
+    # ── flexDirection="row-reverse"/"column-reverse"（完善 react ink）──
+    # CSS flexbox 语义：主轴方向反转——视觉顺序反转。实现：归一化 direction
+    # 为 row/column 并翻转 children 列表（首子排最右/最下，与 CSS 视觉一致；
+    # justifyContent 基于反转后的顺序——flex-start 在视觉右侧/底部，正确）。
+    # 注意：absolute 子节点已在上方分离，此处翻转仅作用于正常流子节点。
+    if direction in ("row-reverse", "column-reverse"):
+        direction = direction[:-8]  # 去掉 "-reverse" 后缀
+        children = list(reversed(children))
+
+    # ── flexWrap="wrap-reverse"（完善 react ink）──
+    # wrap-reverse：换行方向反转——多行时行序从下往上（视觉：首行在最下）。
+    # 实现：flex_wrap=True + flex_wrap_reverse=True；行 y 重排时反向累加
+    # （wrap 分支见下）。
+    flex_wrap_reverse = fiber.props.get("flexWrap") == "wrap-reverse"
+    flex_wrap = fiber.props.get("flexWrap") in ("wrap", "wrap-reverse")
+
     # ── flexWrap="wrap"（换行流式布局，完善 react ink flexbox）──
     # 子节点内容自适应宽度，超出行内宽换到下一行；行高 = 该行最大子高；
     # 总高 = 各行累加 + 行间距（gap）。行内顶对齐（简化——不做行内
@@ -1118,7 +1152,15 @@ def _measure(fiber: Fiber, x: int, y: int, avail_w: int, fill: bool = True) -> L
     # 注明）。换行后重排各行 y（``_translate_subtree_y`` 保证嵌套容器后代
     # 坐标正确）。宽度：显式 width 优先；否则占满可用宽度（wrap 通常配合
     # 明确容器宽度）。
-    flex_wrap = fiber.props.get("flexWrap") == "wrap"
+    # ── columnGap/rowGap（完善 react ink v6）──
+    # gap 为 columnGap+rowGap shorthand（两者均设置）；columnGap 影响
+    # row 容器子节点水平间距 / wrap 行内水平间距；rowGap 影响 column 容器
+    # 子节点垂直间距 / wrap 行间垂直间距。行内水平用 col_gap、行间垂直用
+    # row_gap（方向 B5）。
+    if direction == "row":
+        spacing = col_gap
+    else:
+        spacing = row_gap
     if direction == "row" and flex_wrap and children:
         if explicit_w is not None:
             width = _resolve_width(fiber, avail_w)
@@ -1142,26 +1184,142 @@ def _measure(fiber: Fiber, x: int, y: int, avail_w: int, fill: bool = True) -> L
                 # 后代坐标——统一以最终 x 测量保证后代坐标正确）
                 cbox = _measure(child, cur_x, inner_y, wrap_inner_w, fill=False)
             wrap_lines[-1].append(child)
-            cur_x += cbox.w + spacing
+            cur_x += cbox.w + col_gap
         wrap_heights.append(
             max((c.layout_box.h for c in wrap_lines[-1]), default=0)
         )
         row_h = sum(wrap_heights)
         if len(wrap_lines) > 1:
-            row_h += spacing * (len(wrap_lines) - 1)
-        # 重排各行 y（测量时全部位于 inner_y）
-        line_y = inner_y
-        for line_children, lh in zip(wrap_lines, wrap_heights):
-            for child in line_children:
-                cb = child.layout_box
-                if cb.y != line_y:
-                    _translate_subtree_y(child, line_y - cb.y)
-            line_y += lh + spacing
+            row_h += row_gap * (len(wrap_lines) - 1)
+        # 先计算容器高度（alignContent/wrap-reverse 需要 avail_h 才能分布行）
         if explicit_w is None:
             width = _resolve_width(fiber, avail_w)
         content_h = row_h
         h = content_h + (pad_v + 2 * border)
         h = _resolve_height(fiber, h)
+        avail_h = max(0, h - (pad_v + 2 * border))
+        # ── alignContent（完善 react ink v6）：多行在交叉轴（垂直）的分布 ──
+        #   flex-start（默认）：行靠上（当前行为）；
+        #   flex-end：行靠下（整体下移 extra）；center：行居中；
+        #   space-between：首行顶、末行底、中间等间隔；
+        #   space-around：行间等间隔（含边缘半间隔）；space-evenly：含边缘等间隔；
+        #   stretch：行高增加填满（各行按 extra 均分）。
+        #   wrap-reverse：行序反转（首行在最下，与 CSS 一致）——先反转行序
+        #   再按 alignContent 分布（flex-start + reverse 视觉 = 首行底部）。
+        align_content = fiber.props.get("alignContent", "flex-start")
+        if flex_wrap_reverse:
+            wrap_lines = list(reversed(wrap_lines))
+            wrap_heights = list(reversed(wrap_heights))
+        line_y = inner_y
+        if align_content != "flex-start" and len(wrap_lines) > 0 and avail_h > row_h:
+            extra = avail_h - row_h
+            n_lines = len(wrap_lines)
+            if align_content == "flex-end":
+                line_y += extra
+            elif align_content == "center":
+                line_y += extra // 2
+            elif align_content == "space-between" and n_lines > 1:
+                per = extra // (n_lines - 1)
+                rem = extra % (n_lines - 1)
+                # 行 y 不变，间隔通过逐行累加实现（下面统一重排循环处理）
+                gaps = [0] * (n_lines - 1)
+                for i in range(n_lines - 1):
+                    gaps[i] = per + (1 if i < rem else 0)
+                # 直接重排：首行 line_y，后续行累加 lh + row_gap + gaps[i]
+                cy = line_y
+                for i, line_children in enumerate(wrap_lines):
+                    lh = wrap_heights[i]
+                    for child in line_children:
+                        cb = child.layout_box
+                        if cb.y != cy:
+                            _translate_subtree_y(child, cy - cb.y)
+                    cy += lh + row_gap
+                    if i < n_lines - 1:
+                        cy += gaps[i]
+                content_h = row_h
+                h = content_h + (pad_v + 2 * border)
+                h = _resolve_height(fiber, h)
+                width, h = _apply_aspect_ratio(fiber, width, h)
+                box = LayoutBox(x, y, width, h)
+                fiber.layout_box = box
+                return box
+            elif align_content in ("space-around", "space-evenly"):
+                # space-evenly：n+1 个槽位等间隔；space-around：2n 半间隔
+                if align_content == "space-evenly":
+                    slots = n_lines + 1
+                    per = extra // slots
+                    rem = extra % slots
+                    gaps = [per] * slots
+                    for i in range(rem):
+                        gaps[i] += 1
+                    cy = line_y + gaps[0]
+                    for i, line_children in enumerate(wrap_lines):
+                        lh = wrap_heights[i]
+                        for child in line_children:
+                            cb = child.layout_box
+                            if cb.y != cy:
+                                _translate_subtree_y(child, cy - cb.y)
+                        cy += lh + row_gap + gaps[i + 1]
+                    content_h = row_h
+                    h = content_h + (pad_v + 2 * border)
+                    h = _resolve_height(fiber, h)
+                    width, h = _apply_aspect_ratio(fiber, width, h)
+                    box = LayoutBox(x, y, width, h)
+                    fiber.layout_box = box
+                    return box
+                else:  # space-around
+                    half_units = 2 * n_lines
+                    per = extra // half_units
+                    rem = extra % half_units
+                    gaps = [per if i in (0, n_lines) else per * 2 for i in range(n_lines + 1)]
+                    for i in range(rem):
+                        gaps[i % (n_lines + 1)] += 1
+                    cy = line_y + gaps[0]
+                    for i, line_children in enumerate(wrap_lines):
+                        lh = wrap_heights[i]
+                        for child in line_children:
+                            cb = child.layout_box
+                            if cb.y != cy:
+                                _translate_subtree_y(child, cy - cb.y)
+                        cy += lh + row_gap + gaps[i + 1]
+                    content_h = row_h
+                    h = content_h + (pad_v + 2 * border)
+                    h = _resolve_height(fiber, h)
+                    width, h = _apply_aspect_ratio(fiber, width, h)
+                    box = LayoutBox(x, y, width, h)
+                    fiber.layout_box = box
+                    return box
+            elif align_content == "stretch":
+                # 行高增加填满（extra 均分到各航）
+                per = extra // n_lines
+                rem = extra % n_lines
+                cy = line_y
+                for i, line_children in enumerate(wrap_lines):
+                    lh = wrap_heights[i] + per + (1 if i < rem else 0)
+                    for child in line_children:
+                        cb = child.layout_box
+                        if cb.y != cy:
+                            _translate_subtree_y(child, cy - cb.y)
+                        # 行内子节点高度同步拉伸
+                        if cb.h < lh:
+                            cb.h = lh
+                            child.layout_box = cb
+                    cy += lh + row_gap
+                content_h = sum(wrap_heights) + (row_gap * (len(wrap_lines) - 1) if len(wrap_lines) > 1 else 0) + extra
+                h = content_h + (pad_v + 2 * border)
+                h = _resolve_height(fiber, h)
+                width, h = _apply_aspect_ratio(fiber, width, h)
+                box = LayoutBox(x, y, width, h)
+                fiber.layout_box = box
+                return box
+        # 默认 flex-start / 无富余：正常从上到下堆叠
+        for line_children, lh in zip(wrap_lines, wrap_heights):
+            for child in line_children:
+                cb = child.layout_box
+                if cb.y != line_y:
+                    _translate_subtree_y(child, line_y - cb.y)
+            line_y += lh + row_gap
+        width, h = _apply_aspect_ratio(fiber, width, h)
         box = LayoutBox(x, y, width, h)
         fiber.layout_box = box
         return box
@@ -1283,11 +1441,15 @@ def _measure(fiber: Fiber, x: int, y: int, avail_w: int, fill: bool = True) -> L
         # ★ alignItems（方向3，已实现）：row 横向对齐子节点 y 偏移——
         #   center → 每子 y += (row_h - cbox.h)//2；flex-end → y += (row_h - cbox.h)；
         #   stretch（默认）无偏移（当前行为）。
+        # ★ baseline（完善 react ink v6）：文本基线对齐——终端文本无字体度量
+        #   信息，近似为「底部对齐」（flex-end 行为；单行文本视觉等价，多行
+        #   文本近似——文档注明）。
         # ★ alignSelf（方向3 完善 react ink）：子级 ``alignSelf`` 覆盖父
-        #   alignItems（row 横轴——纵向偏移；center/flex-end/flex-start）。
+        #   alignItems（row 横轴——纵向偏移；center/flex-end/flex-start/
+        #   baseline）；``auto`` 跟随父 alignItems。
         align = fiber.props.get("alignItems", "stretch")
-        if (align in ("center", "flex-end") or any(
-            child.props.get("alignSelf") in ("center", "flex-end", "flex-start")
+        if (align in ("center", "flex-end", "baseline") or any(
+            child.props.get("alignSelf") in ("center", "flex-end", "flex-start", "baseline")
             for child in children
         )) and row_h > 0:
             for child in children:
@@ -1295,7 +1457,7 @@ def _measure(fiber: Fiber, x: int, y: int, avail_w: int, fill: bool = True) -> L
                 if cb is not None and cb.h < row_h:
                     self_align = child.props.get("alignSelf")
                     eff_align = self_align if self_align in (
-                        "center", "flex-end", "flex-start",
+                        "center", "flex-end", "flex-start", "baseline",
                     ) else align
                     if eff_align == "center":
                         delta = (row_h - cb.h) // 2
@@ -1303,7 +1465,7 @@ def _measure(fiber: Fiber, x: int, y: int, avail_w: int, fill: bool = True) -> L
                         # 基准——嵌套容器内 TEXT/边框错位，alignItems 偏移修复）
                         if delta:
                             _translate_subtree_y(child, delta)
-                    elif eff_align == "flex-end":
+                    elif eff_align in ("flex-end", "baseline"):
                         delta = row_h - cb.h
                         if delta:
                             _translate_subtree_y(child, delta)
@@ -1518,6 +1680,9 @@ def _measure(fiber: Fiber, x: int, y: int, avail_w: int, fill: bool = True) -> L
                     #   再调用会双重偏移；嵌套容器内后代 y 陈旧 → 错位。
                     _translate_subtree_y(child, offset)
 
+    # aspectRatio（完善 react ink v6）：宽/高缺省维度由比例推导——
+    # 容器分支统一应用（wrap 分支已在各自 return 点应用）。
+    width, h = _apply_aspect_ratio(fiber, width, h)
     box = LayoutBox(x, y, width, h)
     fiber.layout_box = box
     return box
@@ -1531,6 +1696,38 @@ def _abs_int(value) -> int | None:
         return int(value)
     except (TypeError, ValueError, OverflowError):
         return None
+
+
+def _apply_aspect_ratio(fiber: Fiber, width: int, h: int) -> tuple[int, int]:
+    """aspectRatio（完善 react ink v6）：宽/高缺省维度由比例推导。
+
+    ``aspectRatio = width / height``。React Ink/Yoga 语义：需配合至少一个
+    尺寸约束（width/height/minWidth/maxWidth/minHeight/maxHeight）使用——
+    维度之一由显式属性确定、另一缺省时由 ratio 推导。畸形值（None/<=0/
+    非数字）忽略，原样返回。
+
+    Args:
+        fiber: 容器 host fiber。
+        width: 已解析的宽度。
+        h: 已解析的高度。
+
+    Returns:
+        (width, h)——应用 aspectRatio 后的尺寸。
+    """
+    ar = fiber.props.get("aspectRatio")
+    if ar is None:
+        return width, h
+    try:
+        ar = float(ar)
+    except (TypeError, ValueError, OverflowError):
+        return width, h
+    if ar <= 0:
+        return width, h
+    if fiber.props.get("width") is not None and fiber.props.get("height") is None:
+        return width, max(0, int(round(width / ar)))
+    if fiber.props.get("height") is not None and fiber.props.get("width") is None:
+        return max(0, int(round(h * ar))), h
+    return width, h
 
 
 def _place_absolute(fiber: Fiber, base: Fiber) -> None:

@@ -68,6 +68,8 @@ class Style:
         italic: 是否斜体。
         dim: 是否暗淡（减弱亮度）。
         underline: 是否下划线。
+        strikethrough: 是否删除线（React Ink `<Text strikethrough>`）。
+        inverse: 是否反转前景/背景色（React Ink `<Text inverse>`）。
     """
 
     fg: int | TrueColor | None = None
@@ -76,19 +78,21 @@ class Style:
     italic: bool = False
     dim: bool = False
     underline: bool = False
+    strikethrough: bool = False
+    inverse: bool = False
 
     @lru_cache(maxsize=1024)
     def to_ansi(self) -> str:
         """构建 ANSI 转义序列。
 
-        按 ``bold → dim → italic → underline → fg → bg`` 顺序组装，
-        RESET 由调用方（apply）统一追加。
+        按 ``bold → dim → italic → underline → inverse → strikethrough → fg → bg``
+        顺序组装，RESET 由调用方（apply）统一追加。
 
         fg/bg 为 TrueColor 时使用 24-bit ANSI 序列（38;2 / 48;2），
         为 int 时使用 256 色序列（38;5 / 48;5），保持向后兼容。
 
         ★ 性能（PERF-7）：frozen dataclass 确定性输出 → lru_cache 缓存。
-        Style 为不可变值对象（fg/bg 为 int/TrueColor/None + 4 布尔），
+        Style 为不可变值对象（fg/bg 为 int/TrueColor/None + 6 布尔），
         实例数量有界（颜色组合 + 字型组合），maxsize=1024 防无限增长；
         缓存命中免每帧重复构建 ANSI 序列（live 区渲染热路径）。
         返回纯函数结果，无副作用，行为与未缓存完全一致。
@@ -107,6 +111,10 @@ class Style:
             parts.append("\033[3m")
         if self.underline:
             parts.append("\033[4m")
+        if self.inverse:
+            parts.append("\033[7m")
+        if self.strikethrough:
+            parts.append("\033[9m")
         if self.fg is not None:
             if isinstance(self.fg, _TC):
                 parts.append(self.fg.to_ansi_fg())
@@ -141,7 +149,8 @@ class Style:
 
         合并规则：other 的 non-None/True 字段覆盖当前值。
         fg/bg 为 None 时保留当前值，非 None 时覆盖。
-        bold/italic/dim/underline 为 True 时覆盖，False 保留当前值。
+        bold/italic/dim/underline/strikethrough/inverse 为 True 时覆盖，
+        False 保留当前值。
 
         Args:
             other: 要合并的样式（优先级高于当前）。
@@ -156,10 +165,13 @@ class Style:
             italic=other.italic or self.italic,
             dim=other.dim or self.dim,
             underline=other.underline or self.underline,
+            strikethrough=other.strikethrough or self.strikethrough,
+            inverse=other.inverse or self.inverse,
         )
 
     @classmethod
-    def with_props(cls, fg=None, bg=None, bold=None, italic=None, dim=None, underline=None):
+    def with_props(cls, fg=None, bg=None, bold=None, italic=None, dim=None, underline=None,
+                   strikethrough=None, inverse=None):
         """仅设置非 None 参数创建新 Style。
 
         Args:
@@ -169,6 +181,8 @@ class Style:
             italic: 是否斜体（可选）。
             dim: 是否暗淡（可选）。
             underline: 是否下划线（可选）。
+            strikethrough: 是否删除线（可选）。
+            inverse: 是否反转（可选）。
 
         Returns:
             新的 Style 实例。
@@ -180,13 +194,15 @@ class Style:
             italic=italic if italic is not None else False,
             dim=dim if dim is not None else False,
             underline=underline if underline is not None else False,
+            strikethrough=strikethrough if strikethrough is not None else False,
+            inverse=inverse if inverse is not None else False,
         )
 
     @classmethod
     def from_dict(cls, d: dict) -> Style:
         """从字典创建 Style。
 
-        支持的键: fg, bg, bold, italic, dim, underline。
+        支持的键: fg, bg, bold, italic, dim, underline, strikethrough, inverse。
         忽略字典中不存在的键。
 
         Args:
@@ -202,6 +218,8 @@ class Style:
             italic=d.get('italic', False),
             dim=d.get('dim', False),
             underline=d.get('underline', False),
+            strikethrough=d.get('strikethrough', False),
+            inverse=d.get('inverse', False),
         )
 
     def extend(self, **overrides) -> Style:
@@ -210,7 +228,8 @@ class Style:
         类似 merge() 但使用命名参数风格。
 
         Args:
-            **overrides: 要覆盖的样式属性（fg/bg/bold/italic/dim/underline）。
+            **overrides: 要覆盖的样式属性（fg/bg/bold/italic/dim/underline/
+                strikethrough/inverse）。
 
         Returns:
             新的 Style 实例。
@@ -222,6 +241,8 @@ class Style:
             italic=overrides.get('italic', self.italic),
             dim=overrides.get('dim', self.dim),
             underline=overrides.get('underline', self.underline),
+            strikethrough=overrides.get('strikethrough', self.strikethrough),
+            inverse=overrides.get('inverse', self.inverse),
         )
 
     # ── Rich 桥接方法 ──
@@ -266,6 +287,10 @@ class Style:
             kwargs["italic"] = True
         if self.underline:
             kwargs["underline"] = True
+        if self.strikethrough:
+            kwargs["strike"] = True
+        if self.inverse:
+            kwargs["reverse"] = True
 
         return RichStyle(**kwargs)
 
@@ -311,6 +336,8 @@ class Style:
             italic=bool(style.italic),
             dim=bool(style.dim),
             underline=bool(style.underline),
+            strikethrough=bool(getattr(style, "strike", False)),
+            inverse=bool(getattr(style, "reverse", False)),
         )
 
     def __bool__(self) -> bool:
@@ -322,6 +349,8 @@ class Style:
             or self.italic
             or self.dim
             or self.underline
+            or self.strikethrough
+            or self.inverse
         )
 
 

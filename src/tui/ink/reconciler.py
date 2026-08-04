@@ -23,6 +23,7 @@ from .fiber import (
     StateHook,
     EffectHook,
     InputHook,
+    PasteHook,
     SyncStoreHook,
     _MISSING,
 )
@@ -111,6 +112,9 @@ class Reconciler:
         """
         self._pending_destroys = []
         _hooks.set_schedule_callback(self._schedule_callback)
+        # ★ 焦点管理（React Ink v6）：每帧渲染前重置可聚焦 id 收集列表
+        #   （useFocus 渲染期注册）。
+        _hooks._reset_focus_ids()
         # 调和 root 的子元素
         self._reconcile_children(root_fiber, [element])
         # 布局（host 树）
@@ -638,7 +642,7 @@ class Reconciler:
     # ── input router 构建（INK-1） ─────────────────────
 
     def _build_input_router(self, root_fiber: Fiber):
-        """前序遍历收集 active InputHook，构建 composite router。
+        """前序遍历收集 active InputHook/PasteHook，构建 composite router。
 
         无 active hooks 时返回 None（输入走旧路径，零行为变化）。
         Router 按 hook 顺序调用各 handler；任一返回 True 视为消费（返回 True）；
@@ -646,6 +650,14 @@ class Reconciler:
 
         焦点仲裁（方向B 步骤10）：优先仅取 ``focused`` 且 active 的 hook；
         focused 集合为空时回退全部 active hook（无焦点仲裁时行为不变，零回归）。
+
+        React Ink v6（方向 E）：
+          - 粘贴优先：事件为粘贴（``kind=="char"`` 且字符数 > 1）且存在 active
+            PasteHook（usePaste）时，仅调用 paste handler（消费则阻断 use_input
+            通道——React Ink 语义独立通道）。
+          - Tab/Shift+Tab 焦点切换：存在可聚焦组件（``useFocus`` 注册）且全局
+            焦点管理启用时，Tab → focusNext、Shift+Tab → focusPrevious，并消费
+            事件（不再传递给 use_input handler）。
 
         性能：签名 ``tuple((hook.seq, is_active, id(handler), focused))`` 未变时
         复用上次 router 对象（避免每帧全树重建闭包）；handler/is_active/focused
@@ -657,8 +669,9 @@ class Reconciler:
         引用不同 → 重建，闭环修复 id 复用）。
         """
         hooks_list: list[InputHook] = []
-        self._collect_input_hooks(root_fiber, hooks_list)
-        if not hooks_list:
+        paste_hooks: list[PasteHook] = []
+        self._collect_input_hooks(root_fiber, hooks_list, paste_hooks)
+        if not hooks_list and not paste_hooks:
             self._input_router_cache = None
             return None
         # ★ 焦点仲裁：focused 集合非空 → 仅保留 focused；为空 → 回退全部 active
@@ -669,9 +682,10 @@ class Reconciler:
             (hook.seq, hook.is_active, id(hook.handler), getattr(hook, "focused", True))
             for hook in hooks_list
         )
+        has_focus_ids = bool(getattr(_hooks, "_focus_ids", None)) and bool(getattr(_hooks, "_focus_enabled", True))
         if self._input_router_cache is not None:
             cached_signature, cached_router, cached_hooks = self._input_router_cache
-            if cached_signature == signature:
+            if cached_signature == signature and cached_router._ink_has_focus_ids == has_focus_ids:
                 # ★ 方向1 步骤3（router id 复用修复）：id(hook.handler) 在 handler
                 #   被 GC 后 id 可复用 → 签名误判未变 → 复用过期 router 闭包。
                 #   缓存保存 hooks_list，命中时逐一 ``is`` 比对 hook/handler
@@ -682,7 +696,32 @@ class Reconciler:
                 ):
                     return cached_router
 
+        def _event_key_tab(event) -> bool:
+            """判断事件是否为 Tab（含 Shift+Tab，CSI u modifier=2）。"""
+            if getattr(event, "kind", None) != "tab":
+                return False
+            return True
+
         def router(event) -> bool:
+            # ── 粘贴优先（React Ink usePaste 独立通道）──
+            if paste_hooks:
+                if getattr(event, "kind", "") == "char":
+                    text = getattr(event, "char", "") or ""
+                    if len(text) > 1:
+                        for hook in paste_hooks:
+                            try:
+                                if hook.handler is not None and hook.handler(text):
+                                    return True
+                            except Exception:
+                                continue
+            # ── Tab/Shift+Tab 焦点切换（React Ink useFocusManager）──
+            if has_focus_ids and _event_key_tab(event):
+                # 非 CSI u 时 modifier=0（普通 Tab）；Shift+Tab 需 CSI u 协议
+                if getattr(event, "modifier", 0) >= 2:
+                    _hooks._focus_previous()
+                else:
+                    _hooks._focus_next()
+                return True
             for hook in hooks_list:
                 try:
                     if hook.handler is not None and hook.handler(event):
@@ -691,11 +730,14 @@ class Reconciler:
                     continue
             return False
 
+        router._ink_has_focus_ids = has_focus_ids
         self._input_router_cache = (signature, router, hooks_list)
         return router
 
-    def _collect_input_hooks(self, fiber: Fiber | None, out: list[InputHook]) -> None:
+    def _collect_input_hooks(self, fiber: Fiber | None, out: list[InputHook], paste_out: list[PasteHook] | None = None) -> None:
         """前序遍历 fiber 树，收集 active 且已设 handler 的 InputHook（跳过已删除）。
+
+        paste_out 非 None 时同步收集 active PasteHook（usePaste——React Ink v6）。
 
         ★ P-H9（性能）：原实现每次递归 ``self._collect_input_hooks(...)`` 需
         加载 self + 属性查找 + 调用（每帧每节点重复）。改为局部闭包递归调用
@@ -718,6 +760,8 @@ class Reconciler:
                     for hook in f.hooks:
                         if isinstance(hook, InputHook) and hook.is_active and hook.handler is not None:
                             out.append(hook)
+                        elif paste_out is not None and isinstance(hook, PasteHook) and hook.is_active and hook.handler is not None:
+                            paste_out.append(hook)
                 if f.child is not None:
                     stack.append(f.sibling)
                     f = f.child

@@ -8,7 +8,7 @@
   - fg/bg 为 None → -1
   - fg/bg 为 int（256 色号）→ 保持 int
   - fg/bg 为 TrueColor → (r, g, b) 三元组
-  指纹 = (fg_comp, bg_comp, bold, italic, dim, underline)
+  指纹 = (fg_comp, bg_comp, bold, italic, dim, underline, strikethrough, inverse)
 
 设计模式：享元（Flyweight）— 将重复的 Style 指纹复用为稳定键。
 
@@ -58,6 +58,11 @@ def style_fingerprint(style: Style) -> tuple:
         style.italic,
         style.dim,
         style.underline,
+        # ★ 兼容 renderer/ansi/style.py 的 Style（无 strikethrough/inverse 字段
+        #   ——旧字段子集）。getattr 安全读取：缺字段视为 False（指纹仅区分
+        #   样式值，不涉及新字段的 renderer Style 指纹等价）。
+        getattr(style, "strikethrough", False),
+        getattr(style, "inverse", False),
     )
 
 

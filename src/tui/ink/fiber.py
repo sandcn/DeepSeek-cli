@@ -111,6 +111,23 @@ class InputHook:
 
 
 @dataclass
+class PasteHook:
+    """usePaste hook 节点（React Ink usePaste 等价物）。
+
+    Attributes:
+        handler: 粘贴处理回调 ``(text: str) -> bool``（True=消费粘贴事件，
+            阻断 use_input 通道——React Ink 语义：usePaste 与 useInput 独立
+            通道，粘贴内容不转发给 useInput handler）。
+        is_active: 是否参与粘贴路由（False 时 hook 不参与）。
+        seq: 稳定递增序号（同 InputHook）。
+    """
+
+    handler: Callable[[str], bool] | None = None
+    is_active: bool = True
+    seq: int = field(default_factory=lambda: next(_HOOK_SEQ))
+
+
+@dataclass
 class Context:
     """create_context 创建的 context 对象。
 
@@ -149,7 +166,7 @@ class SyncStoreHook:
 
 
 #: hook 节点联合类型（Python 3.9 兼容：不用 `X | Y` 运行时求值）。
-HookNode = Union[StateHook, RefHook, EffectHook, MemoHook, InputHook, SyncStoreHook]
+HookNode = Union[StateHook, RefHook, EffectHook, MemoHook, InputHook, SyncStoreHook, PasteHook]
 
 
 @dataclass
@@ -268,6 +285,7 @@ __all__ = [
     "EffectHook",
     "MemoHook",
     "InputHook",
+    "PasteHook",
     "SyncStoreHook",
     "Context",
     "HookNode",

@@ -42,6 +42,7 @@ from .reconciler import Reconciler
 from .renderer import InkRenderer
 from . import components as _components
 from . import hooks as _hooks
+from .element import Element
 from src.tui._input import _compute_cursor_visual_pos, _cursor_visual_from_layout
 from src.tui.app.input_area import (
     _completion_height,
@@ -199,6 +200,15 @@ class InkSession:
             lambda: getattr(self._ink_renderer, "_stream", None),
             lambda: sys.__stderr__,
         )
+        # ★ React Ink v6 hooks（方向 E）：session 注入 window size accessor /
+        #   cursor 定位 / 渲染 flush / 终端挂起 回调——useWindowSize/useCursor/
+        #   useApp（waitUntilRenderFlush/suspendTerminal）读取。
+        _hooks.set_window_size_accessor(
+            lambda: (self._width_cache.get_width(), self._width_cache.get_height())
+        )
+        _hooks.set_cursor_position_fn(self._set_ink_cursor_position)
+        _hooks.set_render_flush_fn(self._wait_render_flush)
+        _hooks.set_suspend_terminal_fn(self._suspend_terminal)
         # ★ P5：input-area fiber 引用缓存（方向2 P5）——_render_frame 仅在失效时
         #   重建（None/deleted/类型不符），_position_cursor 复用（避免每帧全树
         #   递归查找 input-area）。
@@ -461,6 +471,66 @@ class InkSession:
                     self._render_frame()
                 except Exception:
                     _logger.debug("request_bottom_redraw 同步渲染异常", exc_info=True)
+
+    # ── React Ink v6 hooks 回调（useCursor / useApp 扩展） ──
+
+    def _set_ink_cursor_position(self, position) -> None:
+        """useCursor().setCursorPosition：定位终端光标（相对 Ink 输出）。
+
+        position 为 ``{"x": int, "y": int}``（0-based 列/行）——直接调用
+        InkRenderer 光标定位（1-based 转换）。None 隐藏光标（简化：重置到
+        文档底部——当前框架无 IME 组合光标隐藏协议，文档注明差异）。
+        """
+        if position is None:
+            return
+        try:
+            col = int(position.get("x", 0))
+            row = int(position.get("y", 0))
+            self._ink_renderer.place_cursor(max(1, row + 1), max(1, col + 1))
+        except Exception:
+            _logger.debug("set_ink_cursor_position 异常", exc_info=True)
+
+    def _wait_render_flush(self):
+        """useApp().waitUntilRenderFlush：等待渲染 flush 的 awaitable。
+
+        当前渲染模型为同步渲染线程处理命令队列——返回协程：等待队列排空
+        且无脏标记（渲染完成）后返回。队列持续生产时最多等待（渲染线程
+        停止则退出）。
+        """
+        async def _waiter():
+            import asyncio
+            try:
+                import time as _t
+                deadline = _t.monotonic() + 5.0
+                while _t.monotonic() < deadline:
+                    if (self._cmd_queue.empty() and not self._dirty) or not self._render_running:
+                        break
+                    await asyncio.sleep(0.01)
+            except Exception:
+                _logger.debug("wait_render_flush 异常", exc_info=True)
+        return _waiter()
+
+    def _suspend_terminal(self, callback=None):
+        """useApp().suspendTerminal：终端挂起（近似）。
+
+        React Ink 语义：将终端交给子进程（editor/less/fzf），结束后恢复并
+        全量重绘。当前框架无通用挂起协议——callback 提供时同步执行并请求
+        全量清屏重绘；无 callback 时返回 no-op 挂起对象（resume 同步请求
+        重绘）。交互工具（user_select/editor）已有独立挂起流程，本方法为
+        React Ink 生态组件提供近似入口。
+        """
+        if callback is not None:
+            try:
+                result = callback()
+                import inspect as _i
+                if _i.isawaitable(result):
+                    import asyncio
+                    asyncio.get_event_loop().run_until_complete(result)
+            except Exception:
+                _logger.debug("suspend_terminal callback 异常", exc_info=True)
+            self.request_clear()
+            return None
+        return {"resume": self.request_clear}
 
     # ── 输入更新（echo 回调） ─────────────────────────
 
@@ -844,6 +914,11 @@ class InkSession:
                             _logger.debug("set_width 传播异常", exc_info=True)
                 self._last_render_width = width
                 self._resize_pending = True
+                # ★ React Ink useWindowSize（方向 E）：宽度变化通知订阅组件重渲染。
+                try:
+                    _hooks._notify_window_size()
+                except Exception:
+                    _logger.debug("notify_window_size 异常", exc_info=True)
             # ★ 增量渲染屏幕高度传播（方向1）：高度变化（resize）时更新
             #   InkRenderer.set_height——渲染器按新屏幕高度钳制光标/跳过不可达行。
             height = self._width_cache.get_height()
@@ -1063,9 +1138,102 @@ class InkSession:
 
 __all__ = [
     "InkSession",
+    "render",
     "_get_cmd_priority",
     "_get_cmd_id",
     "_CRITICAL_CMDS",
     "_STREAM_CMDS",
     "_CONTENT_COMMANDS",
 ]
+
+
+# ═══════════════════════════════════════════════════════════
+# render() — React Ink 轻量入口（方向 F1）
+# ═══════════════════════════════════════════════════════════
+
+
+class _SimpleModel:
+    """render() 独立会话的最小模型占位（满足 InkSession 读取的属性）。"""
+
+    width: int = 80
+    input_text: str = ""
+    input_cursor: int = 0
+    status: object = None
+
+    def reset_display(self) -> None:
+        pass
+
+
+def render(
+    element: Element,
+    stream=None,
+    width: int | None = None,
+    height: int | None = None,
+) -> dict:
+    """React Ink ``render()`` 等价物（轻量入口）：渲染组件树到终端。
+
+    创建独立 InkSession 渲染给定元素（不依赖 App 模型/命令管线）——适用于
+    组件开发/测试/独立 UI 场景。返回控制对象：
+      - ``waitUntilExit()``：awaitable——app 退出（unmount/exit）后 resolve；
+      - ``unmount()``：卸载 app（停止渲染线程）；
+      - ``cleanup()``：同 unmount（React Ink 内部清理语义别名）；
+      - ``rerender(new_element)``：以新元素树重新渲染；
+      - ``clear()``：请求全帧清屏重绘。
+
+    Args:
+        element: 根元素（函数组件或 Element）。
+        stream: 输出流（默认 ``sys.stdout``）。
+        width/height: 终端尺寸覆盖（默认读取 width_cache）。
+
+    Returns:
+        dict：控制对象（waitUntilExit/unmount/cleanup/rerender/clear）。
+    """
+    import sys as _sys
+
+    model = _SimpleModel()
+    if width is not None:
+        model.width = width
+
+    # 组件函数形式的根元素：包装为固定构建函数（每帧返回最新 element）
+    _state = {"element": element}
+
+    def _build_tree(m, w):
+        return _state["element"]
+
+    session = InkSession(
+        model=model,
+        build_tree=_build_tree,
+        stream=stream if stream is not None else _sys.stdout,
+    )
+    # 尺寸覆盖（TerminalWidthCache 只读接口——直接写内部缓存字段）
+    if width is not None:
+        session._width_cache._width = width
+    if height is not None:
+        session._width_cache._height = height
+
+    session.start()
+
+    def _wait_until_exit():
+        async def _waiter():
+            import asyncio as _aio
+            while session._render_running:
+                await _aio.sleep(0.05)
+        return _waiter()
+
+    def _unmount():
+        try:
+            session.request_exit()
+        except Exception:
+            _logger.debug("render unmount 异常", exc_info=True)
+
+    def _rerender(new_element):
+        _state["element"] = new_element
+        session._request_render()
+
+    return {
+        "waitUntilExit": _wait_until_exit,
+        "unmount": _unmount,
+        "cleanup": _unmount,
+        "rerender": _rerender,
+        "clear": session.request_clear,
+    }

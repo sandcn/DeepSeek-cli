@@ -26,23 +26,54 @@ from .output import Frame, Line
 _logger = logging.getLogger(__name__)
 
 
-def _border_style(props: dict) -> Style:
+def _border_style(props: dict, edge: str | None = None) -> Style:
     """解析边框样式（react-ink ``borderColor`` shorthand，完善 ink）。
 
     - ``borderStyle`` 传 Style 对象时原样返回（既有行为）。
     - 否则取 ``borderColor``（256 色号 int / 颜色名字符串）作 fg；
       缺省回退深青 23（既有行为）。
+
+    单边（edge 非 None）：``borderTopColor``/``borderRightColor``/
+    ``borderBottomColor``/``borderLeftColor`` 覆盖对应边（React Ink v6）；
+    ``borderDimColor``/``border<Edge>DimColor`` 置 dim；``borderBackgroundColor``/
+    ``border<Edge>BackgroundColor`` 置背景色。优先级：
+    ``border<Edge>Color`` > ``borderColor`` > ``borderStyle``（Style 的 fg）> 23。
     """
     style = props.get("borderStyle")
     if isinstance(style, Style):
-        return style
-    border_color = props.get("borderColor")
-    if border_color is not None:
-        from .helpers import _parse_color
-        color = _parse_color(border_color)
-        if color is not None:
-            return Style(fg=color)
-    return Style(fg=23)
+        base = style
+    else:
+        base = Style(fg=23)
+    from .helpers import _parse_color
+    if edge is None:
+        border_color = props.get("borderColor")
+        if border_color is not None:
+            color = _parse_color(border_color)
+            if color is not None:
+                return Style(fg=color)
+        return base
+    # 单边：edge = "top"/"bottom"/"left"/"right"
+    edge_color = props.get(f"border{edge.capitalize()}Color")
+    color = edge_color if edge_color is not None else props.get("borderColor")
+    dim_color = props.get(f"border{edge.capitalize()}DimColor")
+    if dim_color is None:
+        dim_color = props.get("borderDimColor")
+    bg_color = props.get(f"border{edge.capitalize()}BackgroundColor")
+    if bg_color is None:
+        bg_color = props.get("borderBackgroundColor")
+    fg = _parse_color(color) if color is not None else None
+    bg = _parse_color(bg_color) if bg_color is not None else None
+    if fg is not None:
+        return Style(
+            fg=fg,
+            bg=bg,
+            dim=bool(dim_color),
+        )
+    return Style(
+        fg=base.fg,
+        bg=bg if bg is not None else base.bg,
+        dim=bool(dim_color) or base.dim,
+    )
 
 
 #: borderStyle 变体字符表（完善 react ink）：单线/双线/圆角/粗体/经典/虚线/
@@ -62,13 +93,39 @@ _BORDER_CHARS: dict[str, tuple[str, str, str, str, str, str]] = {
     "doubleSingle": ("╒", "╕", "╘", "╛", "─", "║"),
 }
 
+#: 自定义 borderStyle 对象缺省值（React Ink v6：``{topLeft, top, topRight,
+#: left, bottomLeft, bottom, bottomRight, right}``——缺省项回退 "single"）。
+_DEFAULT_BORDER_OBJECT: dict[str, str] = {
+    "topLeft": "┌", "top": "─", "topRight": "┐",
+    "left": "│",
+    "bottomLeft": "└", "bottom": "─", "bottomRight": "┘",
+    "right": "│",
+}
 
-def _border_chars(fiber: Fiber) -> tuple[str, str, str, str, str, str]:
-    """解析 borderStyle 变体字符（缺省 single；未知值回退 single）。"""
+
+def _border_chars(fiber: Fiber) -> tuple[str, str, str, str, str, str, str]:
+    """解析 borderStyle 变体字符（缺省 single；未知值回退 single）。
+
+    borderStyle 为 dict 时按自定义边框字符表解析（React Ink v6）——
+    键 ``topLeft/top/topRight/left/bottomLeft/bottom/right``，
+    缺省项回退 single。返回 ``(tl, tr, bl, br, hline, vline_l, vline_r)``
+    ——vline_l/vline_r 左右独立（自定义对象 left/right 可不同字符）。
+    """
     name = fiber.props.get("borderStyle")
+    if isinstance(name, dict):
+        return (
+            str(name.get("topLeft", _DEFAULT_BORDER_OBJECT["topLeft"])),
+            str(name.get("topRight", _DEFAULT_BORDER_OBJECT["topRight"])),
+            str(name.get("bottomLeft", _DEFAULT_BORDER_OBJECT["bottomLeft"])),
+            str(name.get("bottomRight", _DEFAULT_BORDER_OBJECT["bottomRight"])),
+            str(name.get("top", _DEFAULT_BORDER_OBJECT["top"])),
+            str(name.get("left", _DEFAULT_BORDER_OBJECT["left"])),
+            str(name.get("right", _DEFAULT_BORDER_OBJECT["right"])),
+        )
     if not isinstance(name, str):
-        return _BORDER_CHARS["single"]
-    return _BORDER_CHARS.get(name, _BORDER_CHARS["single"])
+        return _BORDER_CHARS["single"] + (_BORDER_CHARS["single"][5],)
+    base = _BORDER_CHARS.get(name, _BORDER_CHARS["single"])
+    return base + (base[5],)
 
 
 def _line_as_dict(line: Line) -> dict:
@@ -189,46 +246,173 @@ def _merge_line(row, x: int, line: Line) -> dict:
     return row
 
 
-def _paint_border(fiber: Fiber, canvas: list[dict], border: int) -> None:
-    """绘制 box 边框（border>=1 时画单线框）。"""
+def _slice_run_text(text: str, start_w: int, end_w: int) -> str:
+    """按显示宽度切片文本（``[start_w, end_w)``，CJK 安全）。
+
+    逐字符累积显示宽度；字符区间与目标区间有交时保留。宽字符横跨区间
+    边界时整体保留（避免半个字符，可能略超边界——视觉正确优先）。
+
+    Args:
+        text: 原文本。
+        start_w: 起始显示列（含）。
+        end_w: 结束显示列（不含）。
+
+    Returns:
+        切片后的文本。
+    """
+    if start_w <= 0 and end_w >= 10**9:
+        return text
+    chars: list[str] = []
+    col = 0
+    for ch in text:
+        w = wcswidth_simple(ch)
+        if col < end_w and col + w > start_w:
+            chars.append(ch)
+        col += w
+        if col >= end_w and chars and col - w >= end_w:
+            break
+    return "".join(chars)
+
+
+def _slice_line(line: Line, start_col: int, end_col: int) -> Line:
+    """返回保留 ``[start_col, end_col)`` 显示列的新 Line（列裁剪）。
+
+    逐 run 求与目标区间的交集；交集为空/越界 run 跳过；宽字符横跨区间
+    边界时整体保留（``_slice_run_text`` 语义）。用于 overflow 水平裁剪。
+
+    Args:
+        line: 原 Line。
+        start_col: 起始显示列（含）。
+        end_col: 结束显示列（不含）。
+
+    Returns:
+        裁剪后的新 Line（可能为空）。
+    """
+    out = Line()
+    col = 0
+    for run in line.runs:
+        run_end = col + getattr(run, "width", 0)
+        s = max(col, start_col)
+        e = min(run_end, end_col)
+        if s < e:
+            text = _slice_run_text(run.text, s - col, e - col)
+            if text:
+                out.append(text, run.style)
+        col = run_end
+        if col >= end_col:
+            break
+    return out
+
+
+def _paint_border(fiber: Fiber, canvas: list[dict], border: int, clip=None) -> None:
+    """绘制 box 边框（border>=1 时画单线框）。
+
+    React Ink v6 完整边框支持：
+      - 各边独立颜色：``borderTopColor``/``borderRightColor``/
+        ``borderBottomColor``/``borderLeftColor``（回退 ``borderColor``）；
+      - ``borderDimColor``/``border<Edge>DimColor``：dim 边框；
+      - ``borderBackgroundColor``/``border<Edge>BackgroundColor``：背景色；
+      - 各边显隐：``borderTop``/``borderRight``/``borderBottom``/``borderLeft``
+        （bool，默认 True）；
+      - ``borderStyle`` 自定义对象（``{topLeft, top, topRight, left,
+        bottomLeft, bottom, bottomRight, right}``）。
+
+    clip 非 None 时按裁剪区域限制边框绘制（overflow 裁剪——父容器 hidden
+    时边框超出部分被裁剪）。
+    """
     box = fiber.layout_box
     # ★ 边框防御（方向1）：box 无效（None / 零宽 / 零高）时直接返回——
     #   修复前 ``x1 = x0 + box.w - 1`` 在 w=0 时 x1=x0-1，``row[x1]`` 负索引
     #   从列表末尾写（越界污染画布）。
     if box is None or box.w <= 0 or box.h <= 0:
         return
-    style = _border_style(fiber.props)
-    tl, tr, bl, br, hline, vline = _border_chars(fiber)
+    props = fiber.props
+    tl, tr, bl, br, hline, vline_l, vline_r = _border_chars(fiber)
+    top_style = _border_style(props, "top")
+    bottom_style = _border_style(props, "bottom")
+    left_style = _border_style(props, "left")
+    right_style = _border_style(props, "right")
+    show_top = props.get("borderTop", True)
+    show_bottom = props.get("borderBottom", True)
+    show_left = props.get("borderLeft", True)
+    show_right = props.get("borderRight", True)
     x0, y0 = box.x, box.y
     x1 = x0 + box.w - 1
     y1 = y0 + box.h - 1
+    # overflow 裁剪范围（None=不裁剪）
+    clip_x0 = clip_y0 = clip_x1 = clip_y1 = None
+    if clip is not None and clip[2] > 0 and clip[3] > 0:
+        clip_x0, clip_y0, cw, ch = clip
+        clip_x1, clip_y1 = clip_x0 + cw, clip_y0 + ch
     if y0 < 0 or y0 >= len(canvas):
         return
-    # 顶边 / 底边
-    for row_idx, (y, corner_l, corner_r) in enumerate(
-        ((y0, tl, tr), (y1, bl, br))
-    ):
+
+    def _prepare_row(y) -> dict | None:
+        """获取/创建画布行（含裁剪行范围检查）；越界返回 None。"""
         if y < 0 or y >= len(canvas):
-            continue
+            return None
+        if clip_y0 is not None and (y < clip_y0 or y >= clip_y1):
+            return None
         row = canvas[y]
-        # ★ 画布惰性行（方向4）：未命中行才创建 dict（行级缓存优化）；
-        #   已存在 Line（box.x==0 快路径写入）先归一化为 dict——修复前对
-        #   Line 直接 ``row[x0]=...`` 抛 TypeError（Line 不支持 item 赋值），
-        #   边框被 _paint 隔离吞掉 → 边框缺失。
         if isinstance(row, Line):
             row = _line_as_dict(row)
             canvas[y] = row
         elif row is None:
             row = {}
             canvas[y] = row
-        if y0 == y1 and row_idx == 1:
-            continue
-        row[x0] = (corner_l, style)
-        row[x1] = (corner_r, style)
-        for c in range(x0 + 1, x1):
-            row[c] = (hline, style)
+        return row
+
+    # 顶边（含左上/右上角）
+    if show_top:
+        row = _prepare_row(y0)
+        if row is not None:
+            hx0 = max(x0, clip_x0 if clip_x0 is not None else x0)
+            hx1 = min(x1, clip_x1 - 1 if clip_x1 is not None else x1)
+            for c in range(hx0, hx1 + 1):
+                if c == x0:
+                    row[c] = (tl, top_style)
+                elif c == x1:
+                    row[c] = (tr, top_style)
+                else:
+                    row[c] = (hline, top_style)
+    # 底边（含左下/右下角）
+    if show_bottom and y1 != y0:
+        row = _prepare_row(y1)
+        if row is not None:
+            hx0 = max(x0, clip_x0 if clip_x0 is not None else x0)
+            hx1 = min(x1, clip_x1 - 1 if clip_x1 is not None else x1)
+            for c in range(hx0, hx1 + 1):
+                if c == x0:
+                    row[c] = (bl, bottom_style)
+                elif c == x1:
+                    row[c] = (br, bottom_style)
+                else:
+                    row[c] = (hline, bottom_style)
     # 左右边（不含顶/底）
     for r in range(y0 + 1, y1):
+        row = _prepare_row(r)
+        if row is None:
+            continue
+        if show_left and (clip_x0 is None or (x0 >= clip_x0 and x0 < clip_x1)):
+            row[x0] = (vline_l, left_style)
+        if show_right and (clip_x1 is None or (x1 >= clip_x0 and x1 < clip_x1)):
+            row[x1] = (vline_r, right_style)
+
+
+def _paint_box_background(box, canvas: list[dict], style: Style) -> None:
+    """填充 Box 背景色到画布区域（完善 react ink v6 ``<Box backgroundColor>``）。
+
+    以空格字符 + 背景样式填充 box 区域内所有单元格；随后子节点 TEXT 绘制
+    会覆盖对应列（文本优先）。画布行初始为 None/Line 时先归一化为 dict。
+
+    Args:
+        box: 容器布局盒。
+        canvas: 画布。
+        style: 背景样式（``Style(bg=...)``）。
+    """
+    if box is None or box.w <= 0 or box.h <= 0:
+        return
+    for r in range(box.y, box.y + box.h):
         if r < 0 or r >= len(canvas):
             continue
         row = canvas[r]
@@ -238,11 +422,121 @@ def _paint_border(fiber: Fiber, canvas: list[dict], border: int) -> None:
         elif row is None:
             row = {}
             canvas[r] = row
-        row[x0] = (vline, style)
-        row[x1] = (vline, style)
+        for c in range(max(0, box.x), box.x + box.w):
+            # 只填充空格位（已有内容不覆盖——本函数在子节点绘制前调用，
+            # 但兄弟节点/边框可能已写；空格字符保证无文本时背景可见）
+            if c not in row:
+                row[c] = (" ", style)
 
 
-def _paint(fiber: Fiber, canvas: list[dict]) -> None:
+def _merge_inherit_bg(style: Style | None, inherit_bg: Style | None) -> Style | None:
+    """将父容器继承的背景色合并到子 TEXT 样式（完善 react ink v6）。
+
+    React Ink 语义：``<Box backgroundColor>`` 的背景色被子 ``<Text>`` 继承
+    （子 Text 未指定自身 backgroundColor 时）。返回合并后的样式——style 为
+    None 时返回 inherit_bg（整段继承）；inherit_bg 为 None 或 style 已有 bg
+    时不合并（子 Text 自身 bg 优先）。
+
+    Args:
+        style: 子 TEXT 解析后的样式（可能 None）。
+        inherit_bg: 父容器背景样式（可能 None）。
+
+    Returns:
+        合并后的样式（可能 None）。
+    """
+    if style is None:
+        return inherit_bg
+    if inherit_bg is None or inherit_bg.bg is None or style.bg is not None:
+        return style
+    return Style(
+        fg=style.fg,
+        bg=inherit_bg.bg,
+        bold=style.bold,
+        italic=style.italic,
+        dim=style.dim,
+        underline=style.underline,
+        strikethrough=style.strikethrough,
+        inverse=style.inverse,
+    )
+
+
+def _apply_bg_to_line(line: Line, bg) -> Line:
+    """克隆 Line 并为每个 run 合并背景色（不污染 layout 缓存）。
+
+    用于 paint 阶段 Box 背景继承——layout 缓存 lines 复用路径下，克隆行
+    应用背景色（``bg`` 为 256 色号 int）。已有 bg 的 run 原样保留（子 Text
+    自身背景优先）。
+
+    Args:
+        line: 原 Line（共享缓存，不可修改）。
+        bg: 背景色号 int。
+
+    Returns:
+        克隆并合并背景后的新 Line。
+    """
+    out = Line()
+    bg_style = Style(bg=bg)
+    for run in line.runs:
+        st = getattr(run, "style", None)
+        if st is not None and st.bg is not None:
+            out.append_run(run)
+        elif st is not None:
+            out.append(
+                run.text,
+                Style(
+                    fg=st.fg, bg=bg, bold=st.bold, italic=st.italic, dim=st.dim,
+                    underline=st.underline, strikethrough=st.strikethrough,
+                    inverse=st.inverse,
+                ),
+            )
+        else:
+            out.append(run.text, bg_style)
+    return out
+
+
+def _resolve_clip(fiber: Fiber, box, clip) -> tuple | None:
+    """解析容器 overflow 裁剪区域（完善 react ink v6）。
+
+    ``overflow``/``overflowX``/``overflowY`` 取值 ``visible``（默认，不裁剪）
+    /``hidden``（内容超出容器 box 时裁剪）。裁剪区域 = 当前裁剪区域（或
+    全范围）与容器 box 在 hidden 方向的交集。返回 ``(x, y, w, h)``；空交集
+    返回 ``(0, 0, 0, 0)``（全部裁剪哨兵——None 表示不裁剪，需区分）。
+
+    Args:
+        fiber: 容器 host fiber。
+        box: 容器布局盒。
+        clip: 当前裁剪区域（None=不裁剪）。
+
+    Returns:
+        (x, y, w, h) 裁剪区域；None 表示不裁剪（无 overflow hidden 且无父裁剪）。
+    """
+    ov = fiber.props.get("overflow", "visible")
+    ovx = fiber.props.get("overflowX", ov)
+    ovy = fiber.props.get("overflowY", ov)
+    if ovx != "hidden" and ovy != "hidden":
+        return clip
+    if clip is None:
+        px0, py0, pw, ph = 0, 0, 10**9, 10**9
+    else:
+        px0, py0, pw, ph = clip
+    if ovx == "hidden":
+        nx0 = max(px0, box.x)
+        nx1 = min(px0 + pw, box.x + box.w)
+    else:
+        nx0 = px0
+        nx1 = px0 + pw
+    if ovy == "hidden":
+        ny0 = max(py0, box.y)
+        ny1 = min(py0 + ph, box.y + box.h)
+    else:
+        ny0 = py0
+        ny1 = py0 + ph
+    if nx1 <= nx0 or ny1 <= ny0:
+        return (0, 0, 0, 0)
+    return (nx0, ny0, nx1 - nx0, ny1 - ny0)
+
+
+def _paint(fiber: Fiber, canvas: list[dict], clip=None, inherit_bg=None) -> None:
     """递归绘制一个 host fiber 到画布。
 
     方向2 P7（建议7）：函数体 try/except 隔离——单节点 paint 抛异常 →
@@ -250,15 +544,21 @@ def _paint(fiber: Fiber, canvas: list[dict]) -> None:
     经本包装各自隔离（子节点异常不影响兄弟节点绘制）。layout 异常仍由
     session 层退避兜底（本步隔离 paint，不隔离 layout——布局失败影响树
     结构，保持 session 级处理）。
+
+    Args:
+        fiber: host fiber。
+        canvas: 画布（行列表）。
+        clip: 裁剪区域 (x, y, w, h)；None 表示不裁剪。
+        inherit_bg: 继承的背景样式（None=无；Box backgroundColor 传递）。
     """
     try:
-        _paint_impl(fiber, canvas)
+        _paint_impl(fiber, canvas, clip, inherit_bg)
     except Exception:
         # 非关键降级：内置 host paint 失败不影响整帧
         _logger.debug("%s paint 异常", fiber.type, exc_info=True)
 
 
-def _paint_impl(fiber: Fiber, canvas: list[dict]) -> None:
+def _paint_impl(fiber: Fiber, canvas: list[dict], clip=None, inherit_bg=None) -> None:
     """递归绘制一个 host fiber 到画布（_paint 内部实现，经 _paint 隔离）。
 
     递归调用 ``_paint(child, canvas)``（经包装）——子节点 paint 异常在
@@ -284,6 +584,14 @@ def _paint_impl(fiber: Fiber, canvas: list[dict]) -> None:
         wrapped = getattr(fiber, "_wrapped_lines", None)
         if wrapped is not None:
             lines = wrapped
+            # ★ Box 背景继承（完善 react ink v6）——paint 阶段：layout 缓存
+            #   的 lines 复用路径未含背景（布局只关心宽高，不解析 style 继承）。
+            #   带 inherit_bg 且 lines 首 run 未应用该背景时克隆合并（不污染
+            #   共享缓存）。正常 UI（无 Box 背景）inherit_bg 恒 None，零开销。
+            if inherit_bg is not None and inherit_bg.bg is not None:
+                _first = lines[0].runs[0] if lines and lines[0].runs else None
+                if _first is None or getattr(_first, "style", None) is None or _first.style.bg != inherit_bg.bg:
+                    lines = [_apply_bg_to_line(ln, inherit_bg.bg) for ln in lines]
         else:
             from .helpers import (
                 wrap_runs_by_width,
@@ -297,13 +605,47 @@ def _paint_impl(fiber: Fiber, canvas: list[dict]) -> None:
             )
             style = resolve_text_style(fiber.props)
             if styled is not None:
-                lines = wrap_runs_by_width(list(styled), box.w)
+                text_wrap = fiber.props.get("textWrap")
+                if text_wrap is None:
+                    text_wrap = fiber.props.get("wrap", "wrap")
+                lines = wrap_runs_by_width(list(styled), box.w, hard=(text_wrap == "hard"))
             else:
-                lines = wrap_text_lines(text, box.w, style)
+                # ★ Box 背景继承（完善 react ink v6）：子 TEXT 未指定自身
+                #   backgroundColor 时继承父 Box 背景色（_merge_inherit_bg）。
+                text_wrap = fiber.props.get("textWrap")
+                if text_wrap is None:
+                    text_wrap = fiber.props.get("wrap", "wrap")
+                lines = wrap_text_lines(
+                    text, box.w, _merge_inherit_bg(style, inherit_bg),
+                    hard=(text_wrap == "hard"),
+                )
         # 行级复用：canvas 行直接写入 Line 对象（box.x==0 快路径），diff 阶段
         # 身份短路（同 Line 对象恒相等）跳过——跨帧零重建。不再维护
         # ``_paint_cache``（死缓存：只写不读，实际复用来自 _wrapped_lines
         # 引用与 canvas 行 Line 身份，方向3 移除）。
+        # ★ overflow 裁剪（完善 react ink v6）：clip 非 None 时按裁剪区域
+        #   限制行/列范围（垂直：行号在 [cy, cy+ch) 外跳过；水平：line 与
+        #   [cx, cx+cw) 求交并切片）。
+        if clip is not None:
+            cx, cy, cw, ch = clip
+            for i, line in enumerate(lines):
+                row = box.y + i
+                if cw <= 0 or ch <= 0:
+                    continue
+                if row < cy or row >= cy + ch:
+                    continue
+                if box.x >= cx + cw:
+                    continue
+                s = max(box.x, cx)
+                e = min(box.x + line.width, cx + cw)
+                if s >= e:
+                    continue
+                if s != box.x or e != box.x + line.width:
+                    line = _slice_line(line, s - box.x, e - box.x)
+                draw_x = s
+                if 0 <= row < len(canvas):
+                    canvas[row] = _merge_line(canvas[row], draw_x, line)
+            return
         for i, line in enumerate(lines):
             row = box.y + i
             if 0 <= row < len(canvas):
@@ -325,7 +667,7 @@ def _paint_impl(fiber: Fiber, canvas: list[dict]) -> None:
     if ftype == "fragment":
         # 透明分组容器：直接绘制子节点（无独立 box——layout_children 已将
         # fragment 扁平化；本分支为防御，覆盖 fragment 被直接调度的路径）
-        _paint_children(fiber, canvas)
+        _paint_children(fiber, canvas, clip, inherit_bg)
         return
 
     # ── 自定义 host（注册表） ──
@@ -347,11 +689,25 @@ def _paint_impl(fiber: Fiber, canvas: list[dict]) -> None:
     except (TypeError, ValueError, OverflowError):
         border = 0
     if border:
-        _paint_border(fiber, canvas, border)
-    _paint_children(fiber, canvas)
+        _paint_border(fiber, canvas, border, clip)
+    # Box 级 backgroundColor（完善 react ink v6）：填充整个 box 区域，
+    # 子 TEXT 未指定自身背景色时继承（inherit_bg 传递）。
+    from .helpers import _parse_color
+    bg_prop = fiber.props.get("backgroundColor")
+    bg_style = None
+    if bg_prop is not None:
+        bg_color = _parse_color(bg_prop)
+        if bg_color is not None:
+            bg_style = Style(bg=bg_color)
+            _paint_box_background(box, canvas, bg_style)
+    child_bg = bg_style if bg_style is not None else inherit_bg
+    # overflow 裁剪（完善 react ink v6）：容器有 overflow hidden 时压入
+    # 裁剪区域，子节点绘制受限（_resolve_clip 处理父裁剪合并）。
+    new_clip = _resolve_clip(fiber, box, clip)
+    _paint_children(fiber, canvas, new_clip, child_bg)
 
 
-def _paint_children(fiber: Fiber, canvas: list) -> None:
+def _paint_children(fiber: Fiber, canvas: list, clip=None, inherit_bg=None) -> None:
     """绘制 fiber 的直接 host 子节点（跳过 function 链、扁平化 fragment）。
 
     方向4 性能优化：与 ``layout_children`` 遍历语义一致（跳过 function 链 +
@@ -364,9 +720,9 @@ def _paint_children(fiber: Fiber, canvas: list) -> None:
         host = _skip_function(child)
         if host is not None:
             if host.is_host and host.type == "fragment":
-                _paint_children(host, canvas)
+                _paint_children(host, canvas, clip, inherit_bg)
             else:
-                _paint(host, canvas)
+                _paint(host, canvas, clip, inherit_bg)
         child = child.sibling
 
 

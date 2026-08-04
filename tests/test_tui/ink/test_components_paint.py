@@ -46,7 +46,7 @@ class TestBuiltinPaintIsolation:
         root = self._make_static_tree()
         calls = {"n": 0}
 
-        def flaky(text, width, style=None):
+        def flaky(text, width, style=None, hard=False):
             calls["n"] += 1
             if calls["n"] == 1:
                 raise RuntimeError("paint boom")

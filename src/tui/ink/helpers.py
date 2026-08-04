@@ -74,7 +74,7 @@ def _is_plain_ascii_fast(text: str) -> bool:
     return True
 
 
-def wrap_runs_by_width(runs: list[StyledRun], max_width: int) -> list[Line]:
+def wrap_runs_by_width(runs: list[StyledRun], max_width: int, hard: bool = False) -> list[Line]:
     """将 StyledRun 序列按显示宽度换行为多行。
 
     ``\\n`` 作为强制换行符：直接结束当前行（react-ink Text 语义——文本
@@ -89,9 +89,14 @@ def wrap_runs_by_width(runs: list[StyledRun], max_width: int) -> list[Line]:
     ``test_wrap_by_width``/``test_wrap_cjk`` 锁定）。样式跨行保持
     （相邻同 style 字符经 ``Line.append`` 自动合并）。
 
+    ``hard=True``（react-ink ``textWrap="hard"`` 语义，方向 G）：忽略空格
+    断点，始终字符级硬拆——每行填满 max_width（必要时拆词）。与默认
+    wrap 模式的差异仅在「行内存在空格断点时」——hard 不保留词完整性。
+
     Args:
         runs: StyledRun 列表（连续片段）。
         max_width: 每行最大显示宽度；<=0 表示不换行。
+        hard: True 时字符级硬拆（忽略空格断点）；默认 False（词边界换行）。
 
     Returns:
         换行后的 Line 列表。
@@ -180,7 +185,7 @@ def wrap_runs_by_width(runs: list[StyledRun], max_width: int) -> list[Line]:
             # 强制换行：本行到 \n 前，下一行从 \n 后开始
             end = j
             next_i = j + 1
-        elif j < n and last_space > i:
+        elif j < n and last_space > i and not hard:
             # 词边界断行：本行到空格前（不含空格），下一行从空格后开始
             end = last_space
             next_i = last_space + 1
@@ -491,9 +496,9 @@ def resolve_text_style(props) -> Style | None:
     """解析 TEXT shorthand 样式属性（react-ink 语义）为 Style。
 
     支持：``color``（fg 别名）、``backgroundColor``（bg 别名）、
-    ``bold``/``italic``/``underline``/``dim``/``dimColor``。显式 ``style``
-    prop 与 shorthand 合并——shorthand 覆盖 style 对应字段（color/bold 等
-    显式存在时优先）。
+    ``bold``/``italic``/``underline``/``strikethrough``/``inverse``/``dim``/``dimColor``。
+    显式 ``style`` prop 与 shorthand 合并——shorthand 覆盖 style 对应字段
+    （color/bold 等显式存在时优先）。
 
     ``dimColor``（react-ink 特有）：布尔 prop——True 时以更暗的 dim 颜色
     渲染文本（``dim=True`` + 指定暗色 fg，若未指定其它 fg 则用暗灰 238）。
@@ -512,12 +517,15 @@ def resolve_text_style(props) -> Style | None:
     bold = props.get("bold")
     italic = props.get("italic")
     underline = props.get("underline")
+    strikethrough = props.get("strikethrough")
+    inverse = props.get("inverse")
     dim = props.get("dim")
     dim_color = props.get("dimColor")
     has_any = (
         color is not None or bg is not None
         or bold is not None or italic is not None
-        or underline is not None or dim is not None
+        or underline is not None or strikethrough is not None
+        or inverse is not None or dim is not None
         or dim_color is not None
         or base is not None
     )
@@ -533,6 +541,12 @@ def resolve_text_style(props) -> Style | None:
         bold=bool(bold) if bold is not None else (base.bold if base is not None else False),
         italic=bool(italic) if italic is not None else (base.italic if base is not None else False),
         underline=bool(underline) if underline is not None else (base.underline if base is not None else False),
+        strikethrough=bool(strikethrough) if strikethrough is not None else (
+            base.strikethrough if base is not None else False
+        ),
+        inverse=bool(inverse) if inverse is not None else (
+            base.inverse if base is not None else False
+        ),
         dim=bool(dim) if dim is not None else (
             True if dim_color else (base.dim if base is not None else False)
         ),

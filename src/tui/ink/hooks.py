@@ -32,6 +32,7 @@ from .fiber import (
     EffectHook,
     MemoHook,
     InputHook,
+    PasteHook,
     SyncStoreHook,
     Context,
     HookNode,
@@ -557,16 +558,112 @@ def use_input(handler: Callable[[Any], bool], is_active: bool = True) -> None:
 
     Args:
         handler: 按键处理回调，签名 ``(event) -> bool``——返回 True 表示消费
-            事件（跳过旧回调路径）；False/异常放行（走旧路径）。
+            事件（跳过旧回调路径）；False/异常放行（走旧路径）。也兼容
+            React Ink 生态签名 ``(input, key) -> bool``（handler 接受 2+ 参数
+            时自动适配——input 为可打印字符串，key 为按键信息字典）。
         is_active: 是否参与输入路由；False 时 hook 不参与（不消费）。
 
     Returns:
         None（与 react-ink 一致）。
     """
     hook = _next_hook(InputHook, handler, is_active)
-    hook.handler = handler
+    hook.handler = _make_compat_handler(handler)
     hook.is_active = is_active
     return None
+
+
+#: use_input 兼容包装缓存（handler→包装；仅普通函数缓存，MagicMock 等动态
+#: 对象回退每次解析——inspect.signature 开销可接受）
+_compat_handler_cache: dict = {}
+
+
+def _make_compat_handler(handler: Callable) -> Callable:
+    """适配 use_input handler 两种签名：``(event)`` 或 ``(input, key)``。
+
+    React Ink 生态组件（ink-select-input/ink-text-input 等）用
+    ``(input, key)`` 签名；本框架内建控件用 ``(event)`` 签名（KeyEvent）。
+    按 handler 位置参数数量自动适配（>=2 → ``(input, key)`` 双参调用）；
+    单参数 handler 原样返回（零回归，零额外开销）。
+
+    缓存：普通函数对象按 ``id`` 缓存（避免每帧 inspect.signature 开销）；
+    MagicMock 等动态对象（无稳定 ``__name__`` 或无法签名）不缓存。
+
+    Args:
+        handler: 原始 handler。
+
+    Returns:
+        包装后的 handler（单参数 handler 原样返回）。
+    """
+    # MagicMock 等动态对象：不缓存（getattr 自动创建属性会误判命中）
+    if getattr(handler, "__name__", None) is None and not isinstance(handler, type):
+        return handler
+    hid = id(handler)
+    cached = _compat_handler_cache.get(hid)
+    if cached is not None and cached[0] is handler:
+        return cached[1]
+    try:
+        import inspect as _inspect
+        sig = _inspect.signature(handler)
+        n = sum(
+            1 for p in sig.parameters.values()
+            if p.kind in (p.POSITIONAL_ONLY, p.POSITIONAL_OR_KEYWORD)
+        )
+    except (TypeError, ValueError):
+        n = 1
+    if n < 2:
+        return handler
+
+    def _wrapped(event) -> bool:
+        return bool(handler(_event_input(event), _event_key(event)))
+
+    # 仅缓存普通函数（有 __name__）；避免无限增长：缓存 key 为 id，同 id 复用
+    # 时覆盖（handler 存活期间 id 稳定；hook 持有 handler 引用）。
+    if len(_compat_handler_cache) < 512:
+        _compat_handler_cache[hid] = (handler, _wrapped)
+    return _wrapped
+
+
+def _event_input(event) -> str:
+    """React Ink (input, key) 的第一参：可打印字符（按键事件为空串）。"""
+    if getattr(event, "kind", None) == "char":
+        return getattr(event, "char", "") or ""
+    return ""
+
+
+def _event_key(event) -> dict:
+    """React Ink (input, key) 的第二参：按键信息字典（完整字段）。
+
+    React Ink v6 key 字段：leftArrow/rightArrow/upArrow/downArrow/return/
+    escape/ctrl/shift/tab/backspace/delete/pageDown/pageUp/home/end/meta/
+    super/hyper/capsLock/numLock/eventType。super/hyper/capsLock/numLock 需
+    kitty keyboard 协议（本框架未实现——恒 False）；eventType 恒 None。
+    """
+    kind = getattr(event, "kind", "")
+    modifier = getattr(event, "modifier", 0) or 0
+    keycode = getattr(event, "keycode", 0) or 0
+    return {
+        "leftArrow": kind == "arrow_left",
+        "rightArrow": kind == "arrow_right",
+        "upArrow": kind == "arrow_up",
+        "downArrow": kind == "arrow_down",
+        "return": kind == "enter",
+        "escape": kind == "escape",
+        "ctrl": kind == "ctrl_key" or modifier in (5, 6),
+        "shift": modifier in (2, 4, 6),
+        "tab": kind == "tab",
+        "backspace": kind == "backspace",
+        "delete": kind == "delete",
+        "pageDown": kind == "page_down" or (kind == "csi_u" and keycode in (62,)),
+        "pageUp": kind == "page_up" or (kind == "csi_u" and keycode in (63,)),
+        "home": kind == "home",
+        "end": kind == "end",
+        "meta": modifier in (3, 6),
+        "super": False,
+        "hyper": False,
+        "capsLock": False,
+        "numLock": False,
+        "eventType": None,
+    }
 
 
 # ═══════════════════════════════════════════════════════════
@@ -736,11 +833,16 @@ set_app_callbacks = set_app_control
 
 
 def useApp() -> dict:
-    """React useApp 等价物：返回应用控制函数 ``{"exit": fn, "clear": fn}``。
+    """React useApp 等价物：返回应用控制函数 ``{"exit", "clear",
+    "waitUntilRenderFlush", "suspendTerminal"}``。
 
     - ``exit``：请求退出（session 置 exit_requested + 停止渲染，幂等）。
     - ``clear``：请求全帧清屏重绘（非全屏模型：强制全量重绘，非 DECSTBM
       清屏——文档注明与 react-ink 的差异）。
+    - ``waitUntilRenderFlush``（React Ink v6）：返回 awaitable，等待渲染
+      flush 完成（session 注入回调；未注入时返回已解决 awaitable）。
+    - ``suspendTerminal``（React Ink v6）：挂起终端给子进程（callback 提供
+      时同步执行并重绘；未注入时直接执行 callback）。
 
     未注入控制时返回 no-op（安全兜底，不抛异常）。
     """
@@ -749,9 +851,35 @@ def useApp() -> dict:
     def _noop(*args, **kwargs):
         return None
 
+    async def _already_flushed():
+        return None
+
+    def _flush():
+        if _render_flush_fn is not None:
+            try:
+                return _render_flush_fn()
+            except Exception:
+                pass
+        return _already_flushed()
+
+    def _suspend(callback=None):
+        if _suspend_terminal_fn is not None:
+            try:
+                return _suspend_terminal_fn(callback)
+            except Exception:
+                pass
+        if callback is not None:
+            try:
+                callback()
+            except Exception:
+                pass
+        return None
+
     return {
         "exit": control.get("exit") or _noop,
         "clear": control.get("clear") or _noop,
+        "waitUntilRenderFlush": _flush,
+        "suspendTerminal": _suspend,
     }
 
 
@@ -775,10 +903,15 @@ def useFocus(options: "bool | dict | None" = None) -> dict:
     等价 ``useFocus({"autoFocus": False})``）。返回 ``{"isFocused": bool}``
     （react-ink 语义；组件可据此条件渲染焦点样式）。
 
+    方向 E（完善 react ink v6）：支持 ``id`` 参数——可聚焦组件收集到焦点
+    管理器（``useFocusManager`` 的 focusNext/focusPrevious/focus(id) 可编程
+    切换），``autoFocus=True`` 且无激活时自动获得焦点；``isFocused`` 基于
+    焦点管理器的 activeId（有焦点管理时仅激活组件 isFocused=True）。
+
     Args:
         options: bool（既有 API：是否参与焦点路由）或 dict
-            （react-ink 风格：``{"isActive": bool, "autoFocus": bool}``）；
-            None 等价 True（默认参与）。
+            （react-ink 风格：``{"isActive": bool, "autoFocus": bool,
+            "id": str|None}``）；None 等价 True（默认参与）。
 
     Returns:
         ``{"isFocused": bool}`` —— 当前 hook 是否参与焦点优先路由。
@@ -788,13 +921,23 @@ def useFocus(options: "bool | dict | None" = None) -> dict:
             ``use_input``）。
     """
     fiber = _current()
+    global _focus_active
     if isinstance(options, dict):
         is_active = options.get("isActive", True)
         auto_focus = options.get("autoFocus", True)
-        is_focused = bool(auto_focus)
+        fid = options.get("id")
     else:
         is_active = True
-        is_focused = True if options is None else bool(options)
+        auto_focus = True if options is None else bool(options)
+        fid = None
+    # 焦点管理器注册（React Ink v6）：active 组件进入可聚焦列表。
+    if is_active:
+        if fid is None:
+            fid = _resolve_focus_id(fiber)
+        _register_focus_id(fid)
+        if auto_focus and _focus_active is None:
+            _focus_active = fid
+    is_focused = bool(is_active and _focus_enabled and fid == _focus_active)
     for hook in reversed(fiber.hooks):
         if isinstance(hook, InputHook):
             if not is_active:
@@ -996,6 +1139,370 @@ def usePrevious(value: Any) -> Any:
     return prev
 
 
+# ═══════════════════════════════════════════════════════════
+# usePaste（React Ink v6 等价物）
+# ═══════════════════════════════════════════════════════════
+
+
+def usePaste(handler: Callable[[str], bool], options: "dict | None" = None) -> None:
+    """React Ink ``usePaste`` 等价物：处理粘贴文本。
+
+    粘贴事件（单次输入多字符）到达时调用 ``handler(text)``；返回 True 消费
+    事件（阻断 use_input 通道——React Ink 语义：usePaste 与 useInput 独立
+    通道，粘贴内容不转发给 useInput handler）。``options["isActive"]`` 控制
+    是否参与粘贴路由（默认 True）。
+
+    与 React Ink 差异：本框架的粘贴检测基于「单次输入事件字符数 > 1」
+    （终端粘贴为整段到达，普通打字逐字符）——无需 bracketed paste 协议。
+
+    Args:
+        handler: 粘贴处理回调 ``(text: str) -> bool``。
+        options: ``{"isActive": bool}``（默认 True）。
+    """
+    is_active = True
+    if isinstance(options, dict):
+        is_active = options.get("isActive", True)
+    hook = _next_hook(PasteHook, handler, is_active)
+    hook.handler = handler
+    hook.is_active = is_active
+    return None
+
+
+# ═══════════════════════════════════════════════════════════
+# useBoxMetrics（React Ink v6 等价物）
+# ═══════════════════════════════════════════════════════════
+
+
+def useBoxMetrics(ref) -> dict:
+    """React Ink ``useBoxMetrics`` 等价物：返回跟踪元素（``<Box ref>``）的
+    布局度量。
+
+    返回 ``{"width", "height", "left", "top", "hasMeasured"}``——布局完成后
+    读取 ref 绑定的 LayoutBox（含相对父容器偏移）；``hasMeasured`` 标记是否
+    已完成首次测量。首次渲染返回全 0 + hasMeasured=False，布局后一帧返回
+    实际值（与 useMeasure 一致需要额外渲染帧）。
+
+    实现基于 ``useLayoutEffect``：布局阶段后读取 ``ref.current``（LayoutBox），
+    尺寸/位置变化时 set_state 触发重渲染。ref 未绑定（None）时返回 0。
+
+    Args:
+        ref: 指向 ``<Box>`` 的 ref 对象（``use_ref(None)``）。
+
+    Returns:
+        dict：``{"width", "height", "left", "top", "hasMeasured"}``。
+    """
+    size, set_size = use_state((0, 0, 0, 0, False))
+
+    def _update():
+        box = getattr(ref, "current", None)
+        if box is None:
+            new = (0, 0, 0, 0, False)
+        else:
+            new = (
+                getattr(box, "w", 0),
+                getattr(box, "h", 0),
+                getattr(box, "x", 0),
+                getattr(box, "y", 0),
+                True,
+            )
+        if new != size:
+            set_size(new)
+
+    useLayoutEffect(_update, None)
+    width, height, left, top, has_measured = size
+    return {
+        "width": width,
+        "height": height,
+        "left": left,
+        "top": top,
+        "hasMeasured": has_measured,
+    }
+
+
+# ═══════════════════════════════════════════════════════════
+# useWindowSize（React Ink v6 等价物）
+# ═══════════════════════════════════════════════════════════
+
+#: 当前终端尺寸（columns, rows）——session 注入 accessor 后每帧读取最新值。
+_window_size: tuple[int, int] = (80, 24)
+#: 窗口尺寸版本号——resize 时递增；useWindowSize 订阅变化触发重渲染。
+_window_size_version: int = 0
+#: useWindowSize 订阅监听器集合（resize 通知）。
+_window_size_listeners: set = set()
+#: 窗口尺寸 accessor（session 注入）。
+_window_size_accessor: Callable[[], tuple[int, int]] | None = None
+
+
+def set_window_size_accessor(fn: Callable[[], tuple[int, int]] | None) -> None:
+    """注入窗口尺寸访问器（session 调用：``lambda: (columns, rows)``）。"""
+    global _window_size_accessor
+    _window_size_accessor = fn
+
+
+def _refresh_window_size() -> None:
+    """渲染期刷新窗口尺寸（useWindowSize 调用前）。"""
+    global _window_size
+    if _window_size_accessor is not None:
+        try:
+            _window_size = _window_size_accessor()
+        except Exception:
+            pass
+
+
+def _subscribe_window_size(listener: Callable[[], None]) -> Callable[[], None]:
+    """订阅窗口尺寸变化（useSyncExternalStore subscribe）。"""
+    _window_size_listeners.add(listener)
+    return lambda: _window_size_listeners.discard(listener)
+
+
+def _notify_window_size() -> None:
+    """通知窗口尺寸变化（session resize 时调用）：触发全部订阅重渲染。"""
+    global _window_size_version
+    _window_size_version += 1
+    for fn in list(_window_size_listeners):
+        try:
+            fn()
+        except Exception:
+            pass
+
+
+def useWindowSize() -> dict:
+    """React Ink ``useWindowSize`` 等价物：返回 ``{"columns", "rows"}``。
+
+    终端尺寸变化时自动重渲染（订阅 window size store）。尺寸来源为 session
+    注入的 accessor（未注入时返回 (80, 24) 默认值）。
+
+    Returns:
+        dict：``{"columns": int, "rows": int}``。
+    """
+    useSyncExternalStore(_subscribe_window_size, lambda: _window_size_version)
+    _refresh_window_size()
+    columns, rows = _window_size
+    return {"columns": columns, "rows": rows}
+
+
+# ═══════════════════════════════════════════════════════════
+# 焦点管理（React Ink v6 useFocus / useFocusManager）
+# ═══════════════════════════════════════════════════════════
+
+#: 可聚焦 id 收集列表（渲染期收集，按渲染顺序——reconciler 每帧渲染前重置）。
+_focus_ids: list[str] = []
+#: 当前激活的焦点 id（None=无激活）。
+_focus_active: str | None = None
+#: 全局焦点管理开关（React Ink 默认启用；disableFocus 关闭）。
+_focus_enabled: bool = True
+#: 自动焦点 id 分配序号（未显式指定 id 的 useFocus）。
+_focus_id_seq = itertools.count()
+
+
+def _reset_focus_ids() -> None:
+    """每帧渲染前重置可聚焦 id 收集列表（reconciler.render 调用）。"""
+    _focus_ids.clear()
+
+
+def _register_focus_id(fid: str) -> None:
+    """渲染期注册可聚焦 id（useFocus 调用）。"""
+    if fid not in _focus_ids:
+        _focus_ids.append(fid)
+
+
+def _resolve_focus_id(fiber: Fiber) -> str:
+    """为未指定 id 的 useFocus 分配稳定自动 id（挂在 fiber 上，复用不重分配）。"""
+    fid = getattr(fiber, "_focus_id", None)
+    if fid is None:
+        fid = f"__focus_{next(_focus_id_seq)}__"
+        fiber._focus_id = fid
+    return fid
+
+
+def _focus_next() -> None:
+    """切换到下一个可聚焦组件（Tab）。React Ink useFocusManager.focusNext。"""
+    global _focus_active
+    if not _focus_ids:
+        return
+    if _focus_active is None or _focus_active not in _focus_ids:
+        _focus_active = _focus_ids[0]
+    else:
+        idx = _focus_ids.index(_focus_active)
+        _focus_active = _focus_ids[(idx + 1) % len(_focus_ids)]
+    _schedule()
+
+
+def _focus_previous() -> None:
+    """切换到上一个可聚焦组件（Shift+Tab）。React Ink useFocusManager.focusPrevious。"""
+    global _focus_active
+    if not _focus_ids:
+        return
+    if _focus_active is None or _focus_active not in _focus_ids:
+        _focus_active = _focus_ids[-1]
+    else:
+        idx = _focus_ids.index(_focus_active)
+        _focus_active = _focus_ids[(idx - 1) % len(_focus_ids)]
+    _schedule()
+
+
+def _focus_to(fid: str) -> None:
+    """切换到指定 id 的组件。React Ink useFocusManager.focus(id)。"""
+    global _focus_active
+    if fid in _focus_ids:
+        _focus_active = fid
+        _schedule()
+
+
+def _focus_enable() -> None:
+    """启用全局焦点管理（默认启用）。React Ink useFocusManager.enableFocus。"""
+    global _focus_enabled
+    if not _focus_enabled:
+        _focus_enabled = True
+        _schedule()
+
+
+def _focus_disable() -> None:
+    """禁用全局焦点管理；当前激活组件失去焦点。React Ink useFocusManager.disableFocus。"""
+    global _focus_enabled, _focus_active
+    _focus_enabled = False
+    if _focus_active is not None:
+        _focus_active = None
+        _schedule()
+
+
+def useFocusManager() -> dict:
+    """React Ink ``useFocusManager`` 等价物：返回焦点管理方法。
+
+    Returns:
+        dict：``{"enableFocus", "disableFocus", "focusNext", "focusPrevious",
+        "focus", "activeId"}``——focusNext/focusPrevious 循环切换
+        （Tab/Shift+Tab 由 reconciler 自动路由），focus(id) 聚焦指定组件，
+        activeId 为当前聚焦组件的 id（None=无聚焦）。
+    """
+    return {
+        "enableFocus": _focus_enable,
+        "disableFocus": _focus_disable,
+        "focusNext": _focus_next,
+        "focusPrevious": _focus_previous,
+        "focus": _focus_to,
+        "activeId": _focus_active,
+    }
+
+
+# ═══════════════════════════════════════════════════════════
+# useCursor（React Ink v6 等价物）
+# ═══════════════════════════════════════════════════════════
+
+#: 光标定位回调（session 注入：``(position|None) -> None``）。
+_cursor_position_fn: Callable[[Any], None] | None = None
+
+
+def set_cursor_position_fn(fn: Callable[[Any], None] | None) -> None:
+    """注入光标定位回调（session 调用——IME 光标定位）。"""
+    global _cursor_position_fn
+    _cursor_position_fn = fn
+
+
+def useCursor() -> dict:
+    """React Ink ``useCursor`` 等价物：返回终端光标定位方法。
+
+    ``setCursorPosition({x, y})`` 设置光标位置（相对 Ink 输出顶部/左侧）；
+    传 ``None`` 隐藏光标（IME 组合输入场景）。未注入回调时 no-op。
+
+    Returns:
+        dict：``{"setCursorPosition": callable}``。
+    """
+
+    def _set_cursor_position(position) -> None:
+        if _cursor_position_fn is not None:
+            try:
+                _cursor_position_fn(position)
+            except Exception:
+                pass
+
+    return {"setCursorPosition": _set_cursor_position}
+
+
+# ═══════════════════════════════════════════════════════════
+# useIsScreenReaderEnabled（React Ink v6 等价物）
+# ═══════════════════════════════════════════════════════════
+
+
+def useIsScreenReaderEnabled() -> bool:
+    """React Ink ``useIsScreenReaderEnabled`` 等价物：是否启用了屏幕阅读器。
+
+    本框架未接入屏幕阅读器协议，恒返回 False（终端普通模式）。供渲染不同
+    输出的条件判断（如屏幕阅读器下输出纯文本而非 ANSI 装饰）。
+
+    Returns:
+        bool：恒 False。
+    """
+    return False
+
+
+# ═══════════════════════════════════════════════════════════
+# useAnimation（React Ink v6 等价物，简化版）
+# ═══════════════════════════════════════════════════════════
+
+
+def useAnimation(options: "dict | None" = None) -> dict:
+    """React Ink ``useAnimation`` 等价物（简化版）：返回动画帧信息。
+
+    ``{"frame": int, "timestamp": float}``——frame 为当前动画帧索引
+    （``fps * duration`` 内循环或无限循环），timestamp 为当前单调时钟秒。
+    基于时间推导（无独立动画驱动线程）：组件依赖返回的 frame 触发重渲染时
+    即可获得连续动画效果（配合 session 的动画刷新帧）。
+
+    与 React Ink 差异：React Ink 的 useAnimation 内建动画驱动（帧率精确
+    控制 + duration 循环）；本实现基于单调时钟推导帧号，依赖宿主渲染节奏
+    （无独立驱动），帧率不精确控制。
+
+    Args:
+        options: ``{"fps": int, "duration": float}``——fps 默认 24；
+            duration 秒数（>0 时在该周期内循环；0/缺省无限循环）。
+
+    Returns:
+        dict：``{"frame": int, "timestamp": float}``。
+    """
+    import time as _time
+    fps = 24
+    duration = 0.0
+    if isinstance(options, dict):
+        try:
+            fps = max(1, int(options.get("fps", 24)))
+        except (TypeError, ValueError, OverflowError):
+            fps = 24
+        try:
+            duration = max(0.0, float(options.get("duration", 0)))
+        except (TypeError, ValueError, OverflowError):
+            duration = 0.0
+    now = _time.monotonic()
+    if duration > 0:
+        total_frames = max(1, int(round(duration * fps)))
+        frame = int(now * fps) % total_frames
+    else:
+        frame = int(now * fps)
+    return {"frame": frame, "timestamp": now}
+
+
+# ═══════════════════════════════════════════════════════════
+# useApp 扩展（React Ink v6：waitUntilRenderFlush / suspendTerminal）
+# ═══════════════════════════════════════════════════════════
+
+#: 渲染 flush 等待回调（session 注入：``() -> None`` 或 ``() -> awaitable``）。
+_render_flush_fn: Callable[[], Any] | None = None
+#: 终端挂起回调（session 注入：``(callback|None) -> Any``）。
+_suspend_terminal_fn: Callable[[Any], Any] | None = None
+
+
+def set_render_flush_fn(fn: Callable[[], Any] | None) -> None:
+    """注入渲染 flush 等待回调（session 调用）。"""
+    global _render_flush_fn
+    _render_flush_fn = fn
+
+
+def set_suspend_terminal_fn(fn: Callable[[Any], Any] | None) -> None:
+    """注入终端挂起回调（session 调用——editor/子进程流程）。"""
+    global _suspend_terminal_fn
+    _suspend_terminal_fn = fn
+
+
 __all__ = [
     "use_state",
     "use_reducer",
@@ -1020,13 +1527,36 @@ __all__ = [
     "useStdout",
     "useStderr",
     "useSyncExternalStore",
+    "usePaste",
+    "useBoxMetrics",
+    "useWindowSize",
+    "useFocusManager",
+    "useCursor",
+    "useIsScreenReaderEnabled",
+    "useAnimation",
     "set_schedule_callback",
     "set_input_router_callback",
     "set_app_control",
     "set_app_callbacks",
     "set_std_accessors",
+    "set_window_size_accessor",
+    "set_cursor_position_fn",
+    "set_render_flush_fn",
+    "set_suspend_terminal_fn",
     "deps_changed",
     "mark_effect_committed",
     "_deps_equal",
+    "_reset_focus_ids",
+    "_register_focus_id",
+    "_resolve_focus_id",
+    "_focus_next",
+    "_focus_previous",
+    "_focus_to",
+    "_focus_enable",
+    "_focus_disable",
+    "_focus_enabled",
+    "_focus_ids",
+    "_focus_active",
+    "_notify_window_size",
     "HookStateError",
 ]

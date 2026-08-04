@@ -357,6 +357,12 @@ class InputParser:
                 return KeyEvent(kind="delete", raw=raw)
             if p in (4, 8):
                 return KeyEvent(kind="end", raw=raw)
+            # Page Up (\x1b[5~) / Page Down (\x1b[6~)——React Ink v6
+            # useInput key.pageUp/pageDown（方向 G1）
+            if p == 5:
+                return KeyEvent(kind="page_up", raw=raw)
+            if p == 6:
+                return KeyEvent(kind="page_down", raw=raw)
             return KeyEvent(kind="unknown", raw=raw)
 
         # ── Home (\x1b[H) ──
