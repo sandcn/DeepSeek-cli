@@ -393,7 +393,8 @@ class TestToolBorderBreathing:
     """运行中工具卡边框呼吸（BEAUTY-10，完善动效）。"""
 
     def _make_block(self, status, closed):
-        from src.tui.app.model import AppModel, StatusState, _tool_card_styled_lines
+        from src.tui.app.model import AppModel, StatusState
+        from src.tui.app.toolcard import tool_card_lines
         from src.renderer.ansi.helpers import AnsiLine
         from src.tui.core.style import Style as _Style
         model = AppModel()
@@ -404,7 +405,7 @@ class TestToolBorderBreathing:
         b.extra["tool_status"] = status
         b.lines.append(AnsiLine.of("  \u00b7 Bash", _Style(fg=23, bold=True)))
         b.closed = closed
-        return b, _tool_card_styled_lines
+        return b, tool_card_lines
 
     def test_running_tool_border_breathes(self):
         """运行中工具卡顶边框色在呼吸区间内（23-45），非静态 23。"""

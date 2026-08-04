@@ -365,7 +365,12 @@ class TestChatViewCompositeKey:
 
     @staticmethod
     def _chat_fibers(root) -> dict:
-        """收集根树中 key 以 ``chat-`` 开头的 TEXT fiber。"""
+        """收集根树中 key 以 ``chat-``/``tool-`` 开头的 fiber。
+
+        ToolCard React Ink 组件化后：工具卡 live 渲染为单个 ToolCard 组件
+        （key ``chat-{idx}-tool``），内部行 key ``tool-{i}``——两者都收集，
+        用于断言流式追加时已渲染行 key 稳定、fiber 复用。
+        """
         found: dict = {}
 
         def walk(f):
@@ -373,7 +378,9 @@ class TestChatViewCompositeKey:
             while f2 is not None:
                 props = getattr(f2, "props", None)
                 key = props.get("key") if isinstance(props, dict) else None
-                if isinstance(key, str) and key.startswith("chat-"):
+                if isinstance(key, str) and (
+                    key.startswith("chat-") or key.startswith("tool-")
+                ):
                     found[key] = f2
                 walk(f2.child)
                 f2 = f2.sibling
@@ -382,7 +389,7 @@ class TestChatViewCompositeKey:
         return found
 
     def test_open_block_row_key_stable_on_stream_append_regression(self):
-        """流式追加新行时已渲染开放块行的 key 不变（调和复用 fiber 断言）。"""
+        """流式追加新行时已渲染工具卡行 key 不变（调和复用 fiber 断言）。"""
         from src.tui.app.app import build_app_element
         from src.tui.ink.reconciler import Reconciler
 
@@ -396,7 +403,9 @@ class TestChatViewCompositeKey:
         root = r.create_root()
         r.render(root, build_app_element(m, 80), 80, 24)
         fibers1 = self._chat_fibers(root)
-        # 卡片 live 路径：角色头 key（chat-{idx}-h）+ 标题 + out1/out2 已渲染
+        # ToolCard 组件化 live 路径：组件 key（chat-{idx}-tool）+ 顶边框
+        # （tool-0）+ out1/out2 行（tool-1/tool-2）已渲染
+        assert "chat-0-tool" in fibers1, f"ToolCard 组件 key 应存在: {list(fibers1)}"
         assert len(fibers1) >= 3
 
         # 流式追加新行（开放工具块追加输出）
@@ -450,8 +459,8 @@ class TestToolCardMultilineDetail:
         m.open_tool_box("t1", "bash", "ls\npwd")
         m.append_tool_output("t1", "out\n")
         # 边框 builder 产物：顶边框行单行完整（┌ 与 ┐ 同行），无物理换行
-        from src.tui.app.model import _tool_card_styled_lines
-        head_lines = _tool_card_styled_lines(m.tool_boxes["t1"], 40, 0, None)
+        from src.tui.app.toolcard import tool_card_lines
+        head_lines = tool_card_lines(m.tool_boxes["t1"], 40, 0, None)
         head_text = "".join(r.text for r in head_lines[0])
         head_width = sum(r.width for r in head_lines[0])
         assert "\n" not in head_text

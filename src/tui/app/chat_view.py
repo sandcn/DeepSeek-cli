@@ -10,13 +10,15 @@
 （仅 ``committed_line_count == 0`` 时——已增量提交的头已在 committed_lines，
 互斥不重复）；正文行仍走 ``_block_styled_lines``（正文-only，不带头）。
 content/tool 无角色头（content 对齐 Claude Code 无头回答；tool 由卡片顶边框
-替代）——live content 直接渲染正文，live 工具顶边框经 ``_block_styled_lines``
-工具短路（``_tool_card_styled_lines``）发射，与 committed 首次提交互斥。
+替代）——live content 直接渲染正文，live 工具块经 ``ToolCard`` 组件
+（React Ink 组件化，内部 ``tool_card_lines`` 边框行）发射，与 committed
+首次提交互斥。
 """
 
 from __future__ import annotations
 
 from src.tui.app.model import _role_header_line
+from src.tui.app.toolcard import ToolCard
 from src.tui.core.style import Style
 from src.tui.ink import h, TEXT, StyledRun, register_host, use_memo, Column
 from .subagent_panel import use_subagent_children
@@ -49,7 +51,7 @@ def _block_styled_lines(block, start: int = 0, width: int = 0) -> list[list[Styl
       - 关闭块（``_cached_ink_lines`` 非 None）直接复用冻结 ``Line.runs``
         引用（同一 runs 列表对象跨帧复用，免每帧 Style merge）；推理块除外
         ——冻结语义（dim）与即时渲染（fg=242）不同，保持即时路径。
-      - 工具块短路：直接返回 ``_tool_card_styled_lines`` 边框行（open 卡无
+      - 工具块短路：直接返回 ``tool_card_lines`` 边框行（open 卡无
         底边框）。**不走** per-line ``_open_styled_cache``——卡片行数与输入行
         非 1:1（wrap/边框），缓存键失效。
       - 其余（reasoning/content）保持原 per-line styled 引用缓存逻辑。
@@ -81,9 +83,12 @@ def _block_styled_lines(block, start: int = 0, width: int = 0) -> list[list[Styl
         return [line.runs for line in cache[offset:]]
     if kind == "tool":
         # 开放工具卡：边框行（live 仅 committed_line_count==0 发顶边框——
-        # 与 committed 首次提交互斥；start>0 已增量提交 → 仅主体行）
-        from src.tui.app.model import _tool_card_styled_lines
-        return _tool_card_styled_lines(block, width, start, None)
+        # 与 committed 首次提交互斥；start>0 已增量提交 → 仅主体行）。
+        # ★ ToolCard React Ink 组件化（2026-08-05）：ChatView live 路径已改
+        #   用 ``h(ToolCard, ...)`` 组件渲染；本分支保留供冻结缓存测试
+        #   （``_block_styled_lines`` 对关闭工具块复用冻结 runs）与外部调用面。
+        from src.tui.app.toolcard import tool_card_lines
+        return tool_card_lines(block, width, start, None)
     slice_lines = block.lines[start:]
     # ★ 方向1（open 块 styled 引用缓存）：开放块行转换结果按**行对象**缓存于
     #   block——修复前每帧 ``_to_styled_runs`` 重建全部 StyledRun 列表（新对象
@@ -242,6 +247,18 @@ def ChatView(props) -> object:
         live_start = block.committed_line_count
         if block.kind != "tool" and len(block.lines) - live_start > _LIVE_TAIL_LINES:
             live_start = len(block.lines) - _LIVE_TAIL_LINES
+        # ★ ToolCard React Ink 组件化（2026-08-05）：工具块 live 渲染为单个
+        #   ToolCard 组件（内部 Column + TEXT 行，行 key ``tool-{i}``）——替代
+        #   原逐行 ``h(TEXT, {"styled": runs})``。组件 key 用块索引（稳定），
+        #   流式追加输出时组件 fiber 复用（内部行按索引复用 + 新增行创建）。
+        if block.kind == "tool":
+            children.append(h(ToolCard, {
+                "key": f"chat-{block_idx}-tool",
+                "block": block,
+                "width": width,
+                "start": live_start,
+            }))
+            continue
         for row_in_block, runs in enumerate(
             _block_styled_lines(
                 block, live_start, width,

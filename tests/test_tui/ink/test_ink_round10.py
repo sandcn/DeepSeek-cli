@@ -192,9 +192,9 @@ class TestToolCardNarrowWidthInvariant:
         el = h(BOX, None, [h(TEXT, {"styled": []})])  # 占位（直接测 committed）
         recon.render(root, el, width, 24)
         # 直接渲染工具卡行（避开 App 组件树）
-        from src.tui.app.model import _tool_card_styled_lines
+        from src.tui.app.toolcard import tool_card_lines
         from src.tui.ink.output import Line
-        lines = [Line(runs) for runs in _tool_card_styled_lines(tb, width, 0, None)]
+        lines = [Line(runs) for runs in tool_card_lines(tb, width, 0, None)]
         return [strip_ansi(l.render()) for l in lines]
 
     def test_width5_no_overflow(self):
