@@ -15,7 +15,7 @@ from __future__ import annotations
 
 from src.tui.app._theme import get_active_palette
 from src.tui.core.style import Style
-from src.tui.ink import BOX, TEXT, StyledRun, h
+from src.tui.ink import TEXT, StyledRun, h, Column
 from src.tui.ink.helpers import build_border_box
 
 
@@ -42,7 +42,9 @@ def ToolStatusHeader(props) -> object:
     width = props.get("width", 80)
     active = model.active_tool
     if active is None or active.get("status") != "running":
-        return h(BOX, None, [])
+        # ★ 阶段2（标准布局容器重构）：空状态统一返回空 TEXT（h=0 不占行），
+        #   与活跃状态类型一致——避免 BOX↔TEXT 类型切换导致 fiber 销毁重建。
+        return h(TEXT, {"children": ""})
     palette = get_active_palette()
     title_runs = _build_header_runs(active, palette)
     # ★ 方向1（美化/健壮性）：边框颜色用活动调色板 ``palette.border``（主题
@@ -58,7 +60,9 @@ def ToolStatusHeader(props) -> object:
         runs = [StyledRun(r.text, r.style) for r in line.runs if r.text]
         if runs:
             children.append(h(TEXT, {"styled": runs, "height": 1}))
-    return h(BOX, None, children)
+    # ★ 阶段2（标准布局容器重构）：BOX(None) → Column（默认 flexDirection=
+    #   column，输出与重构前一致）。
+    return h(Column, None, children)
 
 
 __all__ = ["ToolStatusHeader", "_build_header_runs"]

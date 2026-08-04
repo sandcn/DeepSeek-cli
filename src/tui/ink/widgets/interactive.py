@@ -22,9 +22,10 @@ import logging
 
 from src.tui.core.style import Style
 from src.tui._screen import wcswidth_simple
-from ..element import BOX, TEXT, Element, h
+from ..element import TEXT, Element, h
 from ..helpers import _parse_color
 from ..hooks import use_state, use_input, use_effect, use_ref
+from ..widgets.layout import Row, Column
 
 _logger = logging.getLogger(__name__)
 
@@ -79,6 +80,45 @@ def _visible_window(selected: int, total: int, limit: int | None) -> tuple[int, 
     return offset, limit
 
 
+def _clamp_index(idx: int, total: int) -> int:
+    """将内部索引钳制到合法范围 ``[0, total-1]``（items 动态缩小后越界防护，E8）。
+
+    ``total <= 0``（空列表）返回 0；``idx < 0`` 钳到 0；``idx > total-1`` 钳到
+    ``total-1``；正常范围原样返回。
+
+    用途：SelectInput/MultiSelect 的 ``items`` 在挂载后被外部缩小（如异步候选
+    刷新），内部 ``selected``/``cursor_idx`` 可能越界——Enter/space 分支读取
+    ``items[selected_ref.current]`` 时越界被 router 吞掉（事件丢失/回调不触发）。
+    """
+    if total <= 0:
+        return 0
+    if idx < 0:
+        return 0
+    if idx >= total:
+        return total - 1
+    return idx
+
+
+def _hashable(value):
+    """将 value 归一化为可哈希对象（不可哈希值兜底为稳定字符串键，E9）。
+
+    ``hash(value)`` 成功返回原值（int/str/tuple 等）；不可哈希（dict/list 等）
+    回退 ``f"<unhashable:{value!r}>"`` 带前缀字符串键——避免与可哈希的同
+    repr 字符串（如 ``"[1, 2]"`` 字面量）碰撞，保证 MultiSelect 选中集合
+    成员判断不崩溃且不互相污染。
+
+    ⚠️ 已知限制：自定义 ``__hash__`` 抛非 TypeError 异常（ValueError 等）
+    时仍会传播（Python 约定 hash 只抛 TypeError 表示不可哈希；极少数自定义
+    对象违反该约定时按崩溃传播处理）。onSubmit 的 ordered 输出仍按 items
+    **原始 value** 收集（不归一化），本函数仅用于选中状态的**集合成员判断**。
+    """
+    try:
+        hash(value)
+        return value
+    except TypeError:
+        return f"<unhashable:{value!r}>"
+
+
 # ═══════════════════════════════════════════════════════════
 # SelectInput — 单选列表
 # ═══════════════════════════════════════════════════════════
@@ -129,7 +169,14 @@ def SelectInput(props: dict) -> Element:
     def _handle(event) -> bool:
         if not focus or not items:
             return False
-        cur = selected_ref.current
+        # ★ E8（items 动态缩小越界防护）：内部选中索引钳制到合法范围——items
+        #   在挂载后缩小（异步候选刷新）时 selected_ref.current 可能越界，
+        #   enter 分支 ``items[selected_ref.current]`` 越界被 router 吞掉。
+        #   钳制后同步 state（ref 与 state 一致，选中高亮不消失）。
+        cur = _clamp_index(selected_ref.current, len(items))
+        if cur != selected_ref.current:
+            selected_ref.current = cur
+            set_selected(cur)
         if event.kind == "arrow_up":
             if cur > 0:
                 new = cur - 1
@@ -143,25 +190,31 @@ def SelectInput(props: dict) -> Element:
                 set_selected(new)
             return True
         if event.kind == "enter":
-            _call(on_select, items[selected_ref.current])
+            _call(on_select, items[cur])
             return True
         return False
 
     use_input(_handle, focus)
 
-    offset, count = _visible_window(selected, len(items), limit)
+    # ★ P2（review）：渲染期同样钳制——items 收缩后到下一次按键前的帧内
+    #   selected state 仍越界，若不钳制则 `idx == selected` 恒 False、无行
+    #   高亮（瞬态视觉缺陷）。钳制仅用于高亮/窗口计算，不改 state 本身
+    #   （避免渲染期副作用；下一帧事件期钳制会同步 state）。
+    selected_shown = _clamp_index(selected, len(items))
+    offset, count = _visible_window(selected_shown, len(items), limit)
     rows = []
     pad = " " * (wcswidth_simple(prefix) if prefix else 2)
     for i in range(count):
         idx = offset + i
         item = items[idx]
-        is_sel = idx == selected
+        is_sel = idx == selected_shown
         line_prefix = prefix if is_sel else pad
         style = highlight_style if is_sel else None
         rows.append(
             h(TEXT, {"children": line_prefix + item["label"], "style": style, "key": f"item-{idx}"})
         )
-    return h(BOX, {"flexDirection": "column"}, rows)
+    # ★ 阶段2（标准布局容器重构）：column BOX → Column（语义化门面，输出等价）。
+    return h(Column, None, rows)
 
 
 # ═══════════════════════════════════════════════════════════
@@ -288,7 +341,13 @@ def TextInput(props: dict) -> Element:
         return h(TEXT, {"children": display})
     cursor_ch = " " if eff >= len(display) else display[eff]
     cursor_style = Style(bg=cursor_color)
-    return h(BOX, {"flexDirection": "row", "height": 1}, [
+    # ★ P3（review E10）：光标列对齐由 row 布局按显示宽度累加保证——``before``
+    #   含 CJK/emoji（宽字符）时其**显示宽度** ≠ 字符数，row 布局子节点按
+    #   显示宽度（wcswidth）推进，光标块自动落在正确列（无需显式 spacer）。
+    #   光标字符本身占宽字符全宽（2 列），视觉与 React Ink 光标覆盖单字符
+    #   语义一致。
+    # ★ 阶段2（标准布局容器重构）：row BOX → Row（语义化门面，输出等价）。
+    return h(Row, {"height": 1}, [
         h(TEXT, {"children": before}),
         h(TEXT, {"children": cursor_ch, "style": cursor_style}),
         h(TEXT, {"children": after}),
@@ -350,7 +409,14 @@ def MultiSelect(props: dict) -> Element:
     initial_values = props.get("initialValues", [])
     if not isinstance(initial_values, (list, tuple, set)):
         initial_values = []
-    selected, set_selected = use_state(set(initial_values))
+    # ★ E9（不可哈希 initialValues 兜底）：initialValues 含 dict/list 等不可
+    #   哈希元素时 ``set(initial_values)`` 抛 TypeError（渲染期崩溃）——逐项
+    #   经 ``_hashable`` 归一化为可哈希键（不可哈希值带前缀字符串键）。
+    # ★ P2（review）：惰性初始化（callable initial）——集合推导仅首帧求值，
+    #   修复前每帧重复计算（结果被丢弃，大 initialValues 时浪费）。
+    selected, set_selected = use_state(
+        lambda: {_hashable(v) for v in initial_values}
+    )
     # ★ ref 镜像（同批连续按键修复）：handler 读 ref 而非闭包 state。
     cursor_ref = use_ref(cursor_idx)
     selected_ref = use_ref(selected)
@@ -360,7 +426,14 @@ def MultiSelect(props: dict) -> Element:
     def _handle(event) -> bool:
         if not focus or not items:
             return False
-        cur_cursor = cursor_ref.current
+        # ★ E8（items 动态缩小越界防护）：光标索引钳制到合法范围——items
+        #   缩小后 cursor_ref.current 可能越界，space 分支
+        #   ``items[cur_cursor]["value"]`` 越界被 router 吞掉。钳制后同步
+        #   state（ref 与 state 一致，光标行高亮不消失）。
+        cur_cursor = _clamp_index(cursor_ref.current, len(items))
+        if cur_cursor != cursor_ref.current:
+            cursor_ref.current = cur_cursor
+            set_cursor_idx(cur_cursor)
         cur_selected = selected_ref.current
         if event.kind == "arrow_up":
             if cur_cursor > 0:
@@ -377,34 +450,45 @@ def MultiSelect(props: dict) -> Element:
         if event.kind == "space" or (event.kind == "char" and event.char == " "):
             value = items[cur_cursor]["value"]
             new_selected = set(cur_selected)
-            if value in new_selected:
-                new_selected.discard(value)
+            hval = _hashable(value)
+            if hval in new_selected:
+                new_selected.discard(hval)
             else:
-                new_selected.add(value)
+                new_selected.add(hval)
             selected_ref.current = new_selected
             set_selected(new_selected)
             return True
         if event.kind == "enter":
-            ordered = [item["value"] for item in items if item["value"] in selected_ref.current]
+            # ★ E9：onSubmit ordered 按 items **原始 value** 收集（不归一化）——
+            #   不可哈希 value（dict/list）原样输出；集合成员判断经 _hashable。
+            ordered = [
+                item["value"] for item in items
+                if _hashable(item["value"]) in selected_ref.current
+            ]
             _call(onSubmit, ordered)
             return True
         return False
 
     use_input(_handle, focus)
 
-    offset, count = _visible_window(cursor_idx, len(items), limit)
+    # ★ P2（review）：渲染期钳制光标索引——items 收缩后到下一次按键前的帧内
+    #   cursor_idx state 仍越界，钳制后光标行高亮不消失（与 SelectInput
+    #   渲染期钳制一致；不改 state，事件期钳制会同步）。
+    cursor_shown = _clamp_index(cursor_idx, len(items))
+    offset, count = _visible_window(cursor_shown, len(items), limit)
     rows = []
     for i in range(count):
         idx = offset + i
         item = items[idx]
-        is_cursor = idx == cursor_idx
-        is_checked = item["value"] in selected
+        is_cursor = idx == cursor_shown
+        is_checked = _hashable(item["value"]) in selected
         indicator = checked_prefix if is_checked else unchecked_prefix
         style = highlight_style if is_cursor else None
         rows.append(
             h(TEXT, {"children": indicator + item["label"], "style": style, "key": f"item-{idx}"})
         )
-    return h(BOX, {"flexDirection": "column"}, rows)
+    # ★ 阶段2（标准布局容器重构）：column BOX → Column（语义化门面，输出等价）。
+    return h(Column, None, rows)
 
 
 # ═══════════════════════════════════════════════════════════

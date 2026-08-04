@@ -130,11 +130,20 @@ def layout_children(fiber: Fiber) -> list[Fiber]:
     方向1（Fragment 支持）：Fragment host（``fragment``）为透明分组容器——
     其子节点递归扁平化直接流入父容器布局（不产生独立布局盒）。嵌套 Fragment
     经递归自然展开。
+
+    ★ P-H2（性能）：直接 host 子节点快速路径——``_skip_function`` 对非
+    function fiber 立即返回自身，但每次调用有函数调用开销（10Hz 大组件树
+    每容器每帧重复调用）。改为：function fiber 才走 ``_skip_function``，
+    普通 host 子节点直接处理（行为与 ``_skip_function`` 等价——其对 host
+    节点恒返回自身）。
     """
     result: list[Fiber] = []
     child = fiber.child
     while child is not None:
-        host = _skip_function(child)
+        if child.is_function:
+            host = _skip_function(child)
+        else:
+            host = child
         if host is not None:
             if host.is_host and host.type == "fragment":
                 result.extend(layout_children(host))
@@ -192,12 +201,25 @@ def _resolve_width(fiber: Fiber, avail: int) -> int:
     ``_resolve_height`` 的 minHeight/maxHeight 对称）。宽高属性解析
     收敛——width 显式 + min/max 夹取。width 支持 ``"50%"`` 百分比（相对
     avail）。
+
+    ★ E1（显式 width 超 avail 钳制）：显式 ``width`` 解析结果超可用宽度时
+    钳制到 avail——保证 ``box.w <= 文档宽``，维护行级 diff 宽度不变量
+    （行宽 > 终端宽度会破坏 diff/光标定位）。钳制在 ``_clamp_width`` 之前：
+    ``minWidth`` 显式要求超宽时仍由 ``_clamp_width`` 提升（保留既有
+    minWidth/maxWidth 语义）。
+
+    ★ 已知限制（review P3）：绝对整数值 ``minWidth > avail``（如 width=200/
+    avail=80/minWidth=150）仍能把 ``box.w`` 抬到 > 文档宽（``_clamp_width``
+    对 min 不钳制 avail）——这是 React Ink min-width 语义的有意保留（调用方
+    显式声明最小宽度），本修复仅覆盖「显式 width 本身超宽」这一最常见路径。
     """
     w = fiber.props.get("width")
     if w is None:
         resolved = avail
     else:
         resolved = _resolve_length(w, avail)
+        if resolved > avail:
+            resolved = avail  # E1：显式 width 超可用宽度时钳制到 avail
     return _clamp_width(fiber, resolved, avail)
 
 
@@ -509,6 +531,86 @@ def _reflow_row_justify(
             cb = child.layout_box
             _place_child_x(child, cx)
             cx += cb.w + margin + gaps[i + 1]
+
+
+def _shrink_row_children(
+    children: list[Fiber],
+    used_w: int,
+    target_w: int,
+    spacing: int,
+    inner_x: int,
+    inner_y: int,
+) -> None:
+    """row 内容超宽时按 flexShrink 权重收缩子节点宽度（E-ROW-OVERFLOW 根因修复）。
+
+    row 内容自然宽超容器内宽时（``used_w > target_w``）触发：按 flexShrink
+    权重（**默认 1，对齐 React Ink 标准语义**——与 column 方向显式 shrink
+    语义不同：row 超宽属异常布局，默认收缩防溢出）迭代收缩子节点宽度，
+    钳制每子 >= 1 列；收缩后对宽度变化的子节点**重新测量**（fill=True——
+    内部内容按新宽度约束 wrap/截断，修复嵌套容器内部孙节点自然宽超容器
+    的溢出），最后重排子节点 x（含 spacing）并平移整棵子树（后代随动）。
+
+    修复前：row 无 flexShrink 逻辑，容器子节点（fill=False 内容自适应）自然
+    宽超容器时溢出 box——超宽行破坏行级 diff 宽度不变量（嵌套 row/边框/
+    ZStack 等容器子节点常见）。
+
+    Args:
+        children: row 直接子节点（已测量，layout_box 非 None）。
+        used_w: 当前内容总宽（含 spacing）。
+        target_w: 目标内宽（收缩上限）。
+        spacing: 兄弟间距。
+        inner_x: 内容区起始 x。
+        inner_y: 内容区起始 y。
+    """
+    weights = [max(1, _flex_shrink(c)) for c in children]
+    widths = [c.layout_box.w for c in children]
+    deficit = float(used_w - target_w)
+    if deficit <= 0:
+        return
+    # 迭代收缩：每轮按权重比例缩减，钳制每子 >= 1
+    while deficit > 0.01:
+        shrinkable = [i for i, w in enumerate(widths) if w > 1]
+        if not shrinkable:
+            break
+        w_total = sum(weights[i] for i in shrinkable)
+        if w_total <= 0:
+            break
+        per = deficit / w_total
+        progressed = False
+        for i in shrinkable:
+            new_w = max(1.0, widths[i] - per * weights[i])
+            if new_w < widths[i]:
+                deficit -= (widths[i] - new_w)
+                widths[i] = new_w
+                progressed = True
+        if not progressed:
+            break
+    # 写回 + 重新测量 + 重排 x
+    cx = inner_x
+    for i, child in enumerate(children):
+        new_w = max(1, int(round(widths[i])))
+        cb = child.layout_box
+        if cb is None:
+            continue
+        if cb.w != new_w:
+            # 重新测量子树（fill=True：内部内容按新宽度约束 wrap/截断——
+            # 修复嵌套容器内部孙节点自然宽超容器后的溢出）
+            cb.w = new_w
+            child.layout_box = cb
+            _measure(child, inner_x, inner_y, new_w, fill=True)
+            cb = child.layout_box
+            if cb is None:
+                continue
+        # 重排 x + 平移整棵子树（后代随动，BUG-15 语义）
+        delta = cx - cb.x
+        if delta:
+            _translate_subtree_x(child, delta)
+        else:
+            cb.x = cx
+            child.layout_box = cb
+        cx += cb.w
+        if i < len(children) - 1:
+            cx += spacing
 
 
 def _reflow_subtree(fiber: Fiber, new_y: int, new_x: int | None = None) -> None:
@@ -890,8 +992,17 @@ def _measure(fiber: Fiber, x: int, y: int, avail_w: int, fill: bool = True) -> L
     # 绝对定位元素脱离文档流：不参与父容器正常流布局（不占宽度/高度）。
     # 具体定位由 ``_layout_absolute_pass``（layout_tree 第二遍）在整树测量
     # 完成后执行（定位基准 = 最近 position="relative" 祖先的确定尺寸）。
-    abs_children = [c for c in children if c.props.get("position") == "absolute"]
-    if abs_children:
+    # ★ P-H3（性能）：绝大多数容器无 absolute 子节点——先短路检测，无 absolute
+    #   时零额外列表分配（修复前无条件 2 次 O(n) 列表推导，10Hz 下大组件树
+    #   每容器每帧重复分配）。原实现 ``abs_children`` 列表仅用于「非空判断」
+    #   （第二遍 ``_layout_absolute_pass`` 独立遍历定位，不消费该列表），
+    #   简化后仅保留判断语义。
+    has_abs = False
+    for c in children:
+        if c.props.get("position") == "absolute":
+            has_abs = True
+            break
+    if has_abs:
         children = [c for c in children if c.props.get("position") != "absolute"]
     # ── 父可用高度传播（height="50%" 百分比解析）──
     # 容器自身显式数字 height 时，子节点百分比 height 可相对它解析；
@@ -1012,6 +1123,19 @@ def _measure(fiber: Fiber, x: int, y: int, avail_w: int, fill: bool = True) -> L
         #   额外宽度（横向主轴 grow——修复前 flexGrow 仅作用于 column 高度）。
         inner_w_row = max(0, width - (pad_h + 2 * border))
         used_w = cursor_x - inner_x
+        # ★ E-ROW-OVERFLOW（行宽不变量）：内容自然宽超容器内宽时按 flexShrink
+        #   权重收缩子节点（默认 flexShrink=1，React Ink 标准语义）——修复前
+        #   row 无 shrink 逻辑，容器/边框子节点（fill=False 内容自适应）自然宽
+        #   超容器时溢出 box（超宽行破坏行级 diff 宽度不变量，嵌套 row/ZStack/
+        #   边框等容器子节点常见）。收缩后重新测量子节点（fill=True 约束内部
+        #   内容 wrap/截断）→ 行内总宽恒 <= 容器内宽。
+        if used_w > inner_w_row and children:
+            _shrink_row_children(
+                children, used_w, inner_w_row, spacing, inner_x, inner_y,
+            )
+            used_w = inner_w_row
+            # 收缩后子节点高度可能变化（重测量 wrap）——row_h 同步更新
+            row_h = max((c.layout_box.h for c in children), default=0)
         extra_w = max(0, inner_w_row - used_w)
         grow_total = 0
         for child in children:
@@ -1125,6 +1249,17 @@ def _measure(fiber: Fiber, x: int, y: int, avail_w: int, fill: bool = True) -> L
             width = _clamp_width(
                 fiber, max(0, min(avail_w, probe_w + pad_h + 2 * border)), avail_w,
             )
+            # ★ E-FILL-OVERFLOW（行宽不变量）：容器被钳制（内容自然宽超可用
+            #   宽：``width < probe_w + pad_h + 2*border``）时，内部子节点按容器
+            #   实际宽度**重新测量**（fill=True——内部内容按新宽度约束
+            #   wrap/截断）。修复前探针测量保持内容自然宽（子节点 box 复用
+            #   探针盒），容器 box.w 钳制到 avail_w 但内部孙节点自然宽超容器
+            #   → 嵌套容器内容溢出（超宽行破坏行级 diff 宽度不变量）。
+            #   主循环复用 ``child.layout_box``（探针盒已更新），零额外测量。
+            if width < probe_w + pad_h + 2 * border and children:
+                inner_w_probe = max(0, width - (pad_h + 2 * border))
+                for child in children:
+                    _measure(child, inner_x, inner_y, inner_w_probe, fill=True)
         inner_w = max(0, width - (pad_h + 2 * border))
         cursor_y = inner_y
         total_h = 0

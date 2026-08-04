@@ -110,7 +110,8 @@ def Grid(props: dict) -> Element:
             else:
                 cells.append(child)
         # 行 BOX 显式占满可用宽度（width="100%"）→ 内部 cell flexGrow 等宽
-        rows.append(h(BOX, {"flexDirection": "row", "gap": gap, "width": "100%"}, *cells))
+        # ★ 阶段2（标准布局容器重构）：row BOX → Row（语义化门面，输出等价）。
+        rows.append(h(Row, {"gap": gap, "width": "100%"}, *cells))
     p = dict(props)
     p.pop("children", None)
     p.pop("columns", None)

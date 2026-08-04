@@ -315,14 +315,18 @@ def _keep_tail(runs: list[StyledRun], budget: int) -> list[StyledRun]:
     for run in reversed(runs):
         if width >= budget:
             break
-        buf = ""
+        # ★ P-H7（性能）：逐字符前插 ``buf = ch + buf`` 为 O(n²)（超长行
+        #   truncate-start/middle 处理 100k 字符日志时明显卡顿）——改为 list
+        #   收集 + 末尾反转拼接 O(n)。
+        chars: list[str] = []
         for ch in reversed(run.text):
             cw = wcswidth_simple(ch)
             if width + cw > budget:
                 break
-            buf = ch + buf  # 字符内保持原序
+            chars.append(ch)  # 反向收集（后序字符在前）
             width += cw
-        if buf:
+        if chars:
+            buf = "".join(reversed(chars))  # 反转恢复字符原序
             kept.append(StyledRun(buf, run.style))
     kept.reverse()
     return kept

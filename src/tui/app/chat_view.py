@@ -18,7 +18,7 @@ from __future__ import annotations
 
 from src.tui.app.model import _role_header_line
 from src.tui.core.style import Style
-from src.tui.ink import h, BOX, TEXT, StyledRun, register_host, use_memo
+from src.tui.ink import h, TEXT, StyledRun, register_host, use_memo, Column
 from .subagent_panel import use_subagent_children
 
 _S_REASONING = Style(fg=242)
@@ -237,7 +237,10 @@ def ChatView(props) -> object:
     # 缓存元素（原独立 SubAgentPanel 组件已移除）。
     if model.subagent_lines:
         children.extend(subagent_children)
-    return h(BOX, None, children)
+    # ★ 阶段2（标准布局容器重构）：BOX(None) → Column（默认 flexDirection=
+    #   column，输出与重构前一致；committed-chat host 子节点不受容器 type
+    #   变化影响——容器仍是 "box" host）。
+    return h(Column, None, children)
 
 
 __all__ = ["ChatView", "register"]

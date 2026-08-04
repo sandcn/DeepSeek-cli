@@ -359,6 +359,23 @@ class TestMergeCjkColumnAdvance:
         assert row[0] == ("你", None)
         assert row[2] == ("好", None)
 
+    def test_merge_wide_second_col_overwrite_not_lost(self):
+        """E2 — 宽字符第二列覆盖时新字符不再静默丢失。
+
+        row={0:'中',2:'a'} + 覆盖键 1：修复前本地逐字符实现写入 row[1]，
+        ``_canvas_row_to_line`` 的 ``col < prev``（宽字符推进到 2）跳过键 1 →
+        "X" 静默丢失（渲染 "中a"）。修复后委托 ``_merge_line`` 整体替换
+        宽字符（row[0]=X、pop(1)）→ "X a"。
+        """
+        from src.tui.app.input_area import _merge
+        from src.tui.ink.output import Line, StyledRun
+        from src.tui.ink.components import _canvas_row_to_line
+        row = {0: ("中", None), 2: ("a", None)}
+        _merge(row, 1, Line([StyledRun("X", None)]))
+        line = _canvas_row_to_line(row)
+        assert line.plain == "X a", f"实际 {line.plain!r}"
+        assert "X" in line.plain
+
 
 class TestNarrowTerminalTruncation:
     """方向1 步骤4 — 窄屏（width=20/15）各行宽度 ≤ width（补全/搜索/占位符/分隔线）。"""

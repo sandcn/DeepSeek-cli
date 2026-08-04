@@ -52,6 +52,43 @@ def _key(kind, char=""):
 
 
 # ═══════════════════════════════════════════════════════════
+# 防御辅助（_clamp_index / _hashable）
+# ═══════════════════════════════════════════════════════════
+
+
+class TestDefensiveHelpers:
+    """_clamp_index / _hashable 边界（E8/E9 防御辅助）。"""
+
+    def test_clamp_index_basic(self):
+        from src.tui.ink.widgets.interactive import _clamp_index
+        assert _clamp_index(5, 3) == 2   # 越上界
+        assert _clamp_index(-1, 3) == 0  # 越下界
+        assert _clamp_index(1, 3) == 1   # 正常
+        assert _clamp_index(0, 3) == 0
+        assert _clamp_index(1, 0) == 0   # 空列表
+
+    def test_hashable_basic(self):
+        from src.tui.ink.widgets.interactive import _hashable
+        assert _hashable("x") is "x"
+        assert _hashable(1) == 1
+        # 不可哈希 → 带前缀字符串键（稳定）
+        a = _hashable({"k": 1})
+        b = _hashable({"k": 1})
+        assert isinstance(a, str)
+        assert a == b
+
+    def test_hashable_prefix_avoids_repr_collision(self):
+        """带前缀键防碰撞：list value 与同 repr 字符串 value 不互相污染。"""
+        from src.tui.ink.widgets.interactive import _hashable
+        assert _hashable([1, 2]) != _hashable("[1, 2]"), (
+            "list value 与字面量 '[1, 2]' 字符串应为不同键"
+        )
+        assert _hashable({"a": 1}) != _hashable("{'a': 1}"), (
+            "dict value 与同 repr 字符串应为不同键"
+        )
+
+
+# ═══════════════════════════════════════════════════════════
 # SelectInput
 # ═══════════════════════════════════════════════════════════
 
@@ -321,6 +358,101 @@ class TestMultiSelect:
             _render(el)
             assert cap.router is None or cap.key("enter") is False
             assert submitted == []
+        finally:
+            cap.cleanup()
+
+
+class TestSelectInputShrinkItems:
+    """E8 — SelectInput items 动态缩小后 Enter 越界防护。"""
+
+    def _render_router(self, items, on_select=None):
+        cap = _Router()
+        el = h(SelectInput, {"items": items, "onSelect": on_select})
+        _, r, root = _render(el)
+        return cap, r, root
+
+    def test_enter_after_shrink_uses_last_item(self):
+        """items 3→1，Enter 回调 items[-1] 不越界。"""
+        selected = []
+        cap = _Router()
+        try:
+            el = h(SelectInput, {"items": ["a", "b", "c"], "onSelect": lambda item: selected.append(item["value"])})
+            _, r, root = _render(el)
+            cap.key("arrow_down")
+            cap.key("arrow_down")  # selected → 2
+            # 重新渲染（应用 state queue）
+            r.render(root, el, 80, 24)
+            el2 = h(SelectInput, {"items": ["x"], "onSelect": lambda item: selected.append(item["value"])})
+            r.render(root, el2, 80, 24)  # items 缩小到 1
+            assert cap.key("enter") is True
+            assert selected == ["x"]
+        finally:
+            cap.cleanup()
+
+
+class TestMultiSelectShrinkItems:
+    """E8 — MultiSelect items 动态缩小后 space/enter 越界防护。"""
+
+    def test_space_after_shrink_no_crash(self):
+        """items 3→1，space 切换当前项不越界（钳制到 items[-1]）。"""
+        submitted = []
+        cap = _Router()
+        try:
+            el = h(MultiSelect, {"items": ["a", "b", "c"], "onSubmit": submitted.append})
+            _, r, root = _render(el)
+            cap.key("arrow_down")
+            cap.key("arrow_down")  # cursor → 2
+            r.render(root, el, 80, 24)  # 应用 state queue
+            el2 = h(MultiSelect, {"items": ["x"], "onSubmit": submitted.append})
+            r.render(root, el2, 80, 24)  # items 缩小到 1
+            assert cap.key("char", " ") is True  # space 切换（钳制后光标 0）
+            cap.key("enter")
+            assert submitted == [["x"]]
+        finally:
+            cap.cleanup()
+
+    def test_enter_after_shrink_no_crash(self):
+        """items 缩小后 enter 提交不越界。"""
+        submitted = []
+        cap = _Router()
+        try:
+            el = h(MultiSelect, {"items": ["a", "b", "c"], "onSubmit": submitted.append})
+            _, r, root = _render(el)
+            cap.key("arrow_down")
+            cap.key("arrow_down")
+            r.render(root, el, 80, 24)
+            el2 = h(MultiSelect, {"items": ["x"], "onSubmit": submitted.append})
+            r.render(root, el2, 80, 24)
+            assert cap.key("enter") is True
+            assert submitted == [[]]  # 无选中项
+        finally:
+            cap.cleanup()
+
+
+class TestMultiSelectUnhashable:
+    """E9 — MultiSelect initialValues 不可哈希 / items value 不可哈希兜底。"""
+
+    def test_initial_values_unhashable_no_crash(self):
+        el = h(MultiSelect, {"items": ["A", "B"], "initialValues": [{"k": 1}]})
+        frame, _, _ = _render(el)
+        assert [ln.plain for ln in frame.lines] == ["○ A", "○ B"]
+
+    def test_dict_value_space_and_submit(self):
+        """items value 含 dict：space 切换不抛，onSubmit 收到原始 dict 值。"""
+        items = [
+            {"label": "One", "value": {"id": 1}},
+            {"label": "Two", "value": 2},
+        ]
+        submitted = []
+        cap = _Router()
+        try:
+            el = h(MultiSelect, {"items": items, "onSubmit": submitted.append})
+            _, r, root = _render(el)
+            cap.key("char", " ")
+            cap.key("arrow_down")
+            cap.key("char", " ")
+            cap.key("enter")
+            assert submitted == [[{"id": 1}, 2]]  # 保持 items 原始 value 顺序
         finally:
             cap.cleanup()
 

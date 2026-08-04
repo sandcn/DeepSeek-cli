@@ -25,7 +25,7 @@ from __future__ import annotations
 import time
 
 from src.tui.core.style import Style
-from src.tui.ink import h, BOX, TEXT, Line, StyledRun, use_memo, use_ref
+from src.tui.ink import h, TEXT, Line, StyledRun, use_memo, use_ref, Column
 from src.tui.app import _fx
 from src.tui.app._theme import time_glow, _S_ACCENT, _S_ACCENT_BOLD, _S_DIM, _S_TIME
 # ★ 方向5：分隔线样式统一真源（_theme.sep_style）——别名 _theme_sep_style
@@ -247,11 +247,13 @@ def StatusBar(props) -> object:
         status_line = truncate_line(status_line, width)
     # ★ 方向4（空状态压缩）：无模型名且无统计（status_runs 空）时只渲染分隔线
     #   一行——避免启动期 / 未配置模型时状态栏空行占位（视觉更紧凑）。
+    # ★ 阶段2（标准布局容器重构）：BOX(None) → Column（默认 flexDirection=
+    #   column，输出与重构前一致；use_memo 缓存链不动——PERF-10/11 契约核心）。
     if not status_runs:
-        return h(BOX, None, [
+        return h(Column, None, [
             h(TEXT, {"styled": sep.runs, "height": 1}),
         ])
-    return h(BOX, None, [
+    return h(Column, None, [
         h(TEXT, {"styled": sep.runs, "height": 1}),
         h(TEXT, {"styled": status_line.runs, "height": 1}),
     ])

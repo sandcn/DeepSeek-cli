@@ -102,12 +102,47 @@ def _ensure_row_dict(row) -> dict:
     return row
 
 
+def _overlaps_wide_second_col(row: dict, slice_: dict) -> bool:
+    """检测 slice_ 是否存在「新字符落在既有宽字符第二列」的冲突（E2）。
+
+    条件：任一 ``c in slice_`` 满足——``c > 0`` 且 ``(c-1) in row`` 且
+    ``row[c-1]`` 为宽字符（显示宽度 2）且 ``(c-1) not in slice_``（slice_ 自身
+    同时含首列+第二列时视为正常覆盖，不冲突——宽字符整体替换走逐键覆盖）。
+
+    供 ``_merge_line`` 快路径判定：disjoint 命中（无普通键冲突）时仍可能
+    存在「新字符落在宽字符第二列」——批量 update 会让新字符被
+    ``_canvas_row_to_line`` 的 ``col < prev`` 跳过（静默丢失，E2）。
+
+    Args:
+        row: 目标画布行（dict 形态，col → (ch, style)）。
+        slice_: 待合并片段（col → (ch, style)）。
+
+    Returns:
+        True — 存在宽字符第二列冲突，须走逐键覆盖分支。
+    """
+    for c in slice_:
+        if c <= 0:
+            continue
+        left = row.get(c - 1)
+        if left is not None and wcswidth_simple(left[0]) == 2 and (c - 1) not in slice_:
+            return True
+    return False
+
+
 def _merge_line(row, x: int, line: Line) -> dict:
     """将 Line 合并到画布行（从第 x 列开始），返回合并后的行。
 
     性能快路径：构造 ``{col: (ch, style)}`` 片段，与目标行键集无交时批量
     ``row.update(slice_)``；重叠时回退逐字符覆盖（语义一致）。目标行可能
     为 Line/None/dict 任意形态——先 ``_ensure_row_dict`` 归一化再合并。
+
+    ★ E2（宽字符第二列覆盖）：快路径在普通键无交（disjoint）之外还须检查
+    宽字符第二列冲突（``_overlaps_wide_second_col``）——新字符落在既有宽字符
+    第二列时，批量 update 后 ``_canvas_row_to_line`` 的 ``col < prev`` 跳过该
+    键（新字符静默丢失，如 row={0:('中'),2:('a')} + 覆盖键 1 → 渲染 "中a"、
+    "X" 丢失）。冲突时走逐键覆盖：**新字符获胜、旧宽字符整体消失**（视觉
+    语义：宽字符被覆盖为新字符，不再静默丢失；被替换字符为空格时同样整体
+    替换——新写入内容优先）。
 
     返回合并后的 dict 行（调用方写回 canvas[row]）——修复前返回 None，
     Line→dict 转换结果无法写回画布，目标行保持 Line 引用导致后续兄弟节点
@@ -122,10 +157,24 @@ def _merge_line(row, x: int, line: Line) -> dict:
             slice_[col] = (ch, run.style)
             col += wcswidth_simple(ch)
     row = _ensure_row_dict(row)
-    if slice_.keys().isdisjoint(row):
+    # ★ P2（review）：空行（row={}）场景跳过宽字符第二列扫描（常见合并热路径
+    #   零额外开销）——``not row`` 短路后不调用 ``_overlaps_wide_second_col``。
+    if slice_.keys().isdisjoint(row) and (not row or not _overlaps_wide_second_col(row, slice_)):
         row.update(slice_)
     else:
         for c, v in slice_.items():
+            # ★ E2（宽字符第二列覆盖）：新字符落在既有宽字符第二列——替换
+            #   宽字符整体（新字符不再静默丢失）。语义：宽字符被新字符覆盖
+            #   （如 ``中`` 第二列被 ``X`` 覆盖 → 渲染 ``X``，不残留 ``中``）。
+            if (
+                c > 0
+                and (c - 1) in row
+                and (c - 1) not in slice_
+                and wcswidth_simple(row[c - 1][0]) == 2
+            ):
+                row[c - 1] = v
+                row.pop(c, None)
+                continue
             # ★ BUG-61（review 方向）：宽字符残留清理——被覆盖位置为宽字符
             #   首列（旧占 c+1 列，仅首列键）时同步清除 c+1 键（残留第二列
             #   字形）；新写入字符为宽字符（占 c+1 列）时清除 c+1 旧内容
@@ -451,6 +500,21 @@ def render_frame(root: Fiber, width: int) -> Frame:
     #   TEXT 命中行直接放 Line 对象，免逐字符重绘）。
     canvas: list = [None] * max(1, total_h)
     _paint(root, canvas)
+
+    def _to_line(row) -> Line:
+        """画布行转 Line（行宽不变量 E-OVERFLOW-GUARD：超宽行截断到 width）。
+
+        布局层异常（嵌套容器内容超宽/宽字符硬塞等导致行宽超文档宽）时，行级
+        截断保证**行宽恒 <= width**——行级 diff 模型依赖该不变量（超宽行会
+        破坏 diff/光标定位）。截断重建 Line 对象（身份短路失效），仅异常行
+        触发（正常布局行宽 <= width，原样返回零开销）。
+        """
+        line = _canvas_row_to_line(row)
+        if line.width > width:
+            from .helpers import truncate_line
+            return truncate_line(line, width)
+        return line
+
     # ★ committed-chat 前缀复用（大历史下渲染 O(live)）：静态提交行跨帧身份
     #   复用（``chat_view._paint`` 维护 ``_committed_prefix``），不再每帧全量
     #   遍历全部历史重建 Frame——修复长回答 + 子代理期间渲染线程持续重建
@@ -469,7 +533,7 @@ def render_frame(root: Fiber, width: int) -> Frame:
             prefix = prefix_info[1]
             if committed_box is not None and committed_box.y == 0:
                 tail_start = min(len(prefix), len(canvas))
-                tail = [_canvas_row_to_line(r) for r in canvas[tail_start:]]
+                tail = [_to_line(r) for r in canvas[tail_start:]]
                 # ★ 稳定前缀（PERF-7）：prefix 为复用列表对象（``_committed_prefix``
                 # 缓存命中），标记 stable_prefix 使 ``first_diff_line`` 跳过前缀
                 # 区间（避免大文档每帧全量逐行 is 比较）。
@@ -490,8 +554,8 @@ def render_frame(root: Fiber, width: int) -> Frame:
             #   （与旧实现「超出画布的前缀行丢弃」行为一致）。
             y0 = committed_box.y if committed_box is not None else 0
             fit = min(len(prefix), max(0, len(canvas) - y0))
-            header = [_canvas_row_to_line(r) for r in canvas[:y0]]
-            tail = [_canvas_row_to_line(r) for r in canvas[y0 + fit:]]
+            header = [_to_line(r) for r in canvas[:y0]]
+            tail = [_to_line(r) for r in canvas[y0 + fit:]]
             # ★ 稳定前缀（PERF-7）：prefix 为复用列表对象（缓存命中），其
             #   ``[:fit]`` 部分在 Frame.lines 的 [y0, y0+fit) 区间——标记
             #   stable_prefix 使 ``first_diff_line`` 跳过该区间（前缀区间外
@@ -503,7 +567,7 @@ def render_frame(root: Fiber, width: int) -> Frame:
                 stable_prefix_offset=y0,
                 stable_prefix_len=fit,
             )
-    return Frame(_canvas_row_to_line(row) for row in canvas)
+    return Frame(_to_line(row) for row in canvas)
 
 
 __all__ = ["render_frame"]

@@ -16,7 +16,7 @@ Claude Code 视觉对齐：顶部标题栏（TopHeader）为文档首行，其�
 from __future__ import annotations
 
 from src.tui.core.style import Style
-from src.tui.ink import h, APP, BOX, TEXT, StyledRun
+from src.tui.ink import h, APP, TEXT, StyledRun, Column
 from .chat_view import ChatView, register as _register_committed
 from .header import TopHeader
 from .status_bar import StatusBar
@@ -49,6 +49,8 @@ def App(props) -> object:
     #   （flexGrow=1，聊天历史/实时解析行/工具状态头/subagent 面板）与底部区
     #   （状态栏 + 输入区）分组。非全屏流动模型下 grow 为空操作（高度内容
     #   驱动），结构清晰、语义明确；未来引入高度约束（视口 pin）即生效。
+    # ★ 阶段2（标准布局容器重构）：消息区/底部区 BOX → Column（语义化门面，
+    #   Column 即 BOX + flexDirection=column，输出与重构前等价）。
     message_area = [
         # Claude Code 视觉对齐：顶部渐变标题栏（文档首行；committed-chat 因
         # 此落到 y>=1，走非顶部前缀路径——render_frame 已正确回退全量）
@@ -66,8 +68,8 @@ def App(props) -> object:
         h("input-area", input_props),
     ]
     return h(APP, {"width": width, "flexDirection": "column"}, [
-        h(BOX, {"flexGrow": 1}, message_area),
-        h(BOX, None, bottom_area),
+        h(Column, {"flexGrow": 1}, message_area),
+        h(Column, None, bottom_area),
     ])
 
 
@@ -83,7 +85,9 @@ def _ParseLine(props) -> object:
     model = props["model"]
     line = model.parse_line
     if line is None:
-        return h(BOX, None, [])
+        # ★ P2（review）：空状态统一返回空 TEXT（h=0 不占行），与活跃状态
+        #   TEXT 类型一致——避免 BOX↔TEXT 类型切换导致 fiber 销毁重建。
+        return h(TEXT, {"children": ""})
     # ★ 呼吸色：仅当解析行存在时计算（每帧一次 time_glow，0.1s 桶缓存命中）
     from src.tui.app._theme import time_glow
     from src.tui.app import _fx
@@ -114,7 +118,9 @@ def _ParseLine(props) -> object:
                 text = text[:lead] + sp + stripped[1:]
                 first_text = False
         runs.append(StyledRun(text, st))
-    return h(BOX, None, [h(TEXT, {"styled": runs})])
+    # ★ 阶段2（标准布局容器重构）：单子 BOX 展开为直接 TEXT（父容器 Column
+    #   中 fill 语义与 BOX 内 TEXT 等价，输出与重构前一致）。
+    return h(TEXT, {"styled": runs})
 
 
 def _StreamingLine(props) -> object:
@@ -130,17 +136,18 @@ def _StreamingLine(props) -> object:
     """
     model = props["model"]
     if not model.status.status_active:
-        return h(BOX, None, [])
+        # ★ P2（review）：空状态统一返回空 TEXT（h=0 不占行），与活跃状态
+        #   TEXT 类型一致——避免 BOX↔TEXT 类型切换导致 fiber 销毁重建。
+        return h(TEXT, {"children": ""})
     if model.content_block_index < 0 or model.content_closed:
-        return h(BOX, None, [])
+        return h(TEXT, {"children": ""})
     from src.tui.app._theme import time_glow
     from src.tui.app import _fx
     c = time_glow(36, 49, 5.0)
     # ★ 方向4：spinner 帧序列唯一真源 _fx.SPINNER_FRAMES（原内联字符串收敛）
     sp = _fx.spinner_char()
-    return h(BOX, None, [
-        h(TEXT, {"styled": [StyledRun(f"{sp} 生成中", Style(fg=c))]}),
-    ])
+    # ★ 阶段2（标准布局容器重构）：单子 BOX 展开为直接 TEXT（输出与重构前一致）。
+    return h(TEXT, {"styled": [StyledRun(f"{sp} 生成中", Style(fg=c))]})
 
 
 def build_app_element(model, width: int, animator=None) -> object:

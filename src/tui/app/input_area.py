@@ -739,6 +739,8 @@ def _build_separator_line(width: int, content: Line, style: Style,
 
 
 def _paint(fiber, canvas) -> None:
+    from src.tui.ink.components import _merge_line
+
     box = fiber.layout_box
     if box is None:
         return
@@ -748,36 +750,48 @@ def _paint(fiber, canvas) -> None:
         if 0 <= row < len(canvas):
             # ★ 画布惰性行（方向4）：canvas 初始 None——仅未命中行创建 dict；
             #   自定义 host paint 与内置 TEXT 共用惰性语义。行可能为 Line
-            #   （x==0 快路径写入的兄弟节点）→ 归一并合并（修复前对 Line
+            #   （x==0 快路径写入的兄弟节点）→ 经 ``_merge_line`` 归一合并
+            #   （继承 E2/BUG-61 宽字符处理；修复前本地 ``_merge`` 对 Line
             #   直接 ``row[col]=...`` 抛 TypeError，内容被 _paint 隔离吞掉）。
             target = canvas[row]
             # ★ 整行 Line 快路径（方向4）：box.x==0 且行未命中时直接存 Line
-            #   对象——与内置 TEXT 快路径一致：免逐字符 ``_merge`` dict 合并
-            #   （输入区每帧重建热路径，大文档渲染耗时关键）+ diff 阶段身份
-            #   短路（``_build_lines`` 快照缓存命中的同 Line 引用跨帧零重建）。
+            #   对象——与内置 TEXT 快路径一致：免逐字符 dict 合并（输入区每帧
+            #   重建热路径，大文档渲染耗时关键）+ diff 阶段身份短路
+            #   （``_build_lines`` 快照缓存命中的同 Line 引用跨帧零重建）。
             #   输入区位于文档底部、无后续兄弟覆盖同屏行，快路径安全。
             if target is None and box.x == 0:
                 canvas[row] = line
                 continue
-            if isinstance(target, Line):
-                from src.tui.ink.components import _line_as_dict
-                target = _line_as_dict(target)
-                canvas[row] = target
-            elif target is None:
-                target = {}
-                canvas[row] = target
-            _merge(target, box.x, line)
+            # ★ E2（统一合并路径）：委托 ``components._merge_line``（返回合并
+            #   后的 dict 行）——修复前本地 ``_merge`` 逐字符写入：新字符落在
+            #   既有宽字符第二列时被 ``_canvas_row_to_line`` 的 ``col < prev``
+            #   跳过（静默丢失，如 row={0:'中',2:'a'} + 覆盖键 1 → "中a"、
+            #   "X" 丢失）。``_merge_line`` 含 E2/BUG-61 宽字符首列/第二列
+            #   残留清理，与 chat_view/components 内置 TEXT 合并语义一致。
+            canvas[row] = _merge_line(target, box.x, line)
 
 
 def _merge(row: dict, x: int, line: Line) -> None:
-    # 方向1 步骤4（CJK 列推进）：列偏移按显示宽度推进（``wcswidth_simple``）
-    # ——修复前 ``col += 1`` 按字符计数，CJK 宽字符占 2 列却只推进 1，
-    # 后续字符错位。
-    col = x
-    for run in line.runs:
-        for ch in run.text:
-            row[col] = (ch, run.style)
-            col += wcswidth_simple(ch)
+    """将 Line 合并到画布行（从第 x 列开始），原地更新 row。
+
+    ★ E2（宽字符第二列覆盖）：委托 ``components._merge_line`` 继承宽字符
+    首列/第二列残留清理（修复前本地逐字符实现：新字符落在既有宽字符第二
+    列时被 ``_canvas_row_to_line`` 的 ``col < prev`` 跳过——静默丢失）。
+    本函数保留**原地更新**语义（兼容旧调用面/测试）；``_paint`` 已直接改用
+    ``_merge_line``（避免一次 dict 拷贝）。
+
+    Args:
+        row: 目标画布行（dict；Line/None 由调用方先归一化）。
+        x: 起始列偏移。
+        line: 待合并的 Line。
+    """
+    from src.tui.ink.components import _merge_line
+    # ★ 别名安全：``_merge_line`` 对 dict 输入为**原地更新**（快路径
+    #   ``row.update(slice_)`` / 逐键覆盖 ``row[c]=v``），返回对象即传入对象
+    #   ——直接委托即可（修复前 ``merged = _merge_line(...); row.clear();
+    #   row.update(merged)`` 在 merged is row（同一引用）时 clear 后 update
+    #   空 dict 自身 → 内容全丢）。
+    _merge_line(row, x, line)
 
 
 # ── 注册 ───────────────────────────────────────────

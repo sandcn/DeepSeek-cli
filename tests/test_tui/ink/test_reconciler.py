@@ -1249,3 +1249,78 @@ class TestRouterIdReuse:
         finally:
             from src.tui.ink.hooks import set_input_router_callback
             set_input_router_callback(None)
+
+
+class TestTryReuseStableEdge:
+    """P-H14 — _try_reuse_stable 单循环「边数边比」重构边界等价性。"""
+
+    def _chain(self, count, keyed=True):
+        """构造 count 个 host TEXT fiber 的 child 链（keyed 时带显式 key）。"""
+        from src.tui.ink.fiber import Fiber
+        first = None
+        prev = None
+        for i in range(count):
+            props = {"key": f"k{i}"} if keyed else {}
+            f = Fiber("host", "text", props)
+            if first is None:
+                first = f
+            else:
+                prev.sibling = f
+            prev = f
+        return first
+
+    def _elements(self, count, keyed=True):
+        from src.tui.ink.element import h, TEXT
+        if keyed:
+            return [
+                h(TEXT, {"children": f"t{i}", "key": f"k{i}"})
+                for i in range(count)
+            ]
+        return [h(TEXT, {"children": f"t{i}"}) for i in range(count)]
+
+    def _reconciler_with_chain(self, n_old, elements, keyed=True):
+        r = Reconciler()
+        root = r.create_root()
+        root.child = self._chain(n_old, keyed=keyed)
+        return r, root
+
+    def test_old_chain_longer_returns_false(self):
+        """旧链 > 新元素：返回 False 走完整算法（无副作用残留）。"""
+        r, root = self._reconciler_with_chain(5, self._elements(3))
+        assert r._try_reuse_stable(root, self._elements(3)) is False
+
+    def test_equal_length_hits(self):
+        """旧链 == 新元素：稳定列表命中快路径（等价原实现）。"""
+        r, root = self._reconciler_with_chain(3, self._elements(3))
+        assert r._try_reuse_stable(root, self._elements(3)) is True
+        # 复用后 child 链仍完整（3 个 sibling）
+        n = 0
+        c = root.child
+        while c is not None:
+            n += 1
+            c = c.sibling
+        assert n == 3
+
+    def test_grow_hits_and_extends(self):
+        """旧链 < 新元素：命中快路径并创建尾部新元素。"""
+        r, root = self._reconciler_with_chain(2, self._elements(2))
+        assert r._try_reuse_stable(root, self._elements(4)) is True
+        n = 0
+        c = root.child
+        while c is not None:
+            n += 1
+            c = c.sibling
+        assert n == 4
+
+    def test_type_mismatch_returns_false(self):
+        """前 N 个 type 不匹配 → 返回 False（走完整算法）。"""
+        from src.tui.ink.element import h, BOX
+        r, root = self._reconciler_with_chain(2, self._elements(2))
+        # 第一个元素 type 换成 BOX → 快路径不满足
+        mixed = [h(BOX, None), h("text", {"children": "t1", "key": "k1"})]
+        assert r._try_reuse_stable(root, mixed) is False
+
+    def test_unkeyed_equal_length_hits(self):
+        """无 key 元素（位置匹配）等长命中快路径。"""
+        r, root = self._reconciler_with_chain(3, self._elements(3, keyed=False), keyed=False)
+        assert r._try_reuse_stable(root, self._elements(3, keyed=False)) is True

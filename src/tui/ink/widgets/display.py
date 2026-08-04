@@ -17,9 +17,10 @@ import threading
 
 from src.tui.core.style import Style
 from src.tui._screen import wcswidth_simple
-from ..element import BOX, TEXT, Element, h
+from ..element import TEXT, Element, h
 from ..helpers import _parse_color
 from ..hooks import use_state, use_effect
+from ..widgets.layout import Row, Column
 
 __all__ = ["Spinner", "ProgressBar", "Table", "Badge", "Divider"]
 
@@ -269,7 +270,8 @@ def Table(props: dict) -> Element:
     for row in data:
         rows.append([str(c) for c in row])
     if not rows:
-        return h(BOX, {"flexDirection": "column"}, [])
+        # ★ 阶段2（标准布局容器重构）：column BOX → Column（语义化门面，输出等价）。
+        return h(Column, None, [])
 
     ncols = max(len(r) for r in rows)
     widths = [0] * ncols
@@ -292,7 +294,8 @@ def Table(props: dict) -> Element:
                 lines.append(h(TEXT, {"children": text, "style": header_style}))
             else:
                 lines.append(h(TEXT, {"children": text, "style": cell_style}))
-        return h(BOX, {"flexDirection": "column"}, lines)
+        # ★ 阶段2（标准布局容器重构）：column BOX → Column（语义化门面，输出等价）。
+        return h(Column, None, lines)
 
     # ── 带边框 ──
     chars = _BORDER_TABLE.get(border, _BORDER_TABLE["single"])
@@ -315,7 +318,8 @@ def Table(props: dict) -> Element:
         else:
             lines.append(h(TEXT, {"children": row_text, "style": cell_style}))
     lines.append(h(TEXT, {"children": bottom, "style": border_style}))
-    return h(BOX, {"flexDirection": "column"}, lines)
+    # ★ 阶段2（标准布局容器重构）：column BOX → Column（语义化门面，输出等价）。
+    return h(Column, None, lines)
 
 
 # ═══════════════════════════════════════════════════════════
@@ -443,7 +447,8 @@ def Divider(props: dict) -> Element:
         return h(TEXT, {"children": title, "style": title_style})
     left_w = avail // 2
     right_w = avail - left_w
-    return h(BOX, {"flexDirection": "row"}, [
+    # ★ 阶段2（标准布局容器重构）：row BOX → Row（语义化门面，输出等价）。
+    return h(Row, None, [
         h(TEXT, {"children": _repeat_to_width(char, left_w), "style": hz_style}),
         h(TEXT, {"children": " "}),
         h(TEXT, {"children": title, "style": title_style}),

@@ -7,8 +7,48 @@ CJK 宽度计算（不拆宽字符）。
 from __future__ import annotations
 
 from src.tui.ink import StyledRun, Line
-from src.tui.ink.helpers import build_border_box, strip_ansi, cursor_control_re
+from src.tui.ink.helpers import (
+    build_border_box,
+    strip_ansi,
+    cursor_control_re,
+    _keep_tail,
+)
 from src.tui.core.style import Style
+
+
+class TestKeepTail:
+    """P-H7 — _keep_tail 字符收集重写（正确性 + 性能冒烟）。"""
+
+    def test_keep_tail_preserves_order(self):
+        kept = _keep_tail([StyledRun("abcdef", None)], 3)
+        assert len(kept) == 1
+        assert kept[0].text == "def"
+
+    def test_keep_tail_multi_run_order(self):
+        runs = [StyledRun("abc", None), StyledRun("def", None)]
+        kept = _keep_tail(runs, 4)
+        # 保留尾部最多 4 宽：尾部 "def"（3 宽）+ "c"（1 宽）→ "c" + "def"
+        assert "".join(r.text for r in kept) == "cdef"
+
+    def test_keep_tail_cjk(self):
+        # CJK 不拆：budget=3 时保留尾部完整宽字符 "文"（宽 2），"中" 超预算丢弃
+        kept = _keep_tail([StyledRun("中文", None)], 3)
+        assert "".join(r.text for r in kept) == "文"
+
+    def test_keep_tail_large_smoke(self):
+        """100k 字符 _keep_tail 耗时 < 1s（防 O(n²) 回归）。
+
+        预算取内容一半（50000）——确保扫描遍历全串（旧 O(n²) 前插实现
+        在 50000 字符前插时为 O(25×10⁸) 字符串复制，会显著超阈值；新 list
+        收集 + 反转实现 O(n) 秒级内完成）。修复前用 budget=50 只扫描 50
+        字符，旧实现同样能通过，无法锁定 P-H7 目标。
+        """
+        import time
+        runs = [StyledRun("a" * 100000, None)]
+        t0 = time.perf_counter()
+        _keep_tail(runs, 50000)
+        elapsed = time.perf_counter() - t0
+        assert elapsed < 1.0, f"_keep_tail 100k chars budget=50000 耗时 {elapsed:.2f}s"
 
 
 class TestStripAnsi:

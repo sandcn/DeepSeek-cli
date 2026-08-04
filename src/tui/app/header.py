@@ -18,7 +18,7 @@ from __future__ import annotations
 
 from src.tui.core.color import lerp_color
 from src.tui.core.style import Style
-from src.tui.ink import BOX, TEXT, StyledRun, h, use_memo
+from src.tui.ink import TEXT, StyledRun, h, Row, use_memo
 from src.tui.app._theme import time_glow
 
 #: 渐变标题色标（青 → 蓝 → 紫 → 品红）
@@ -68,7 +68,9 @@ def TopHeader(props) -> object:
     title_styled = use_memo(_title_runs, ())
     # 呼吸 ✦：独立 TEXT 元素（0.1s 时间桶刷新，不污染渐变缓存）
     dot_color = time_glow(_DOT_LO, _DOT_HI, _DOT_PERIOD)
-    return h(BOX, {"flexDirection": "row", "height": 1}, [
+    # ★ 阶段2（标准布局容器重构）：BOX(flexDirection=row) → Row（语义化门面，
+    #   Row = BOX + flexDirection=row，props 透传，输出与重构前一致）。
+    return h(Row, {"height": 1}, [
         h(TEXT, {"styled": [StyledRun("\u2726 ", Style(fg=dot_color))], "height": 1}),
         h(TEXT, {"styled": title_styled, "height": 1}),
     ])

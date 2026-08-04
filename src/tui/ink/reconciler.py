@@ -291,22 +291,31 @@ class Reconciler:
         child = return_fiber.child
         if child is None:
             return False
-        # 第一趟：统计旧链长度 + 比较前 N 个 key/type
+        # ★ P-H14（性能）：第一趟统计旧链长度 + 比较前 N 个 key/type 合一——
+        #   修复前先 O(n) 数旧链长度，`len(elements) < n_old`（收缩场景）直接
+        #   返回 False 前浪费一趟完整遍历（旧实现）——现在统计长度与比较同步
+        #   进行：长度统计与 key/type 比较在同一次 while 循环内完成（仅
+        #   稳定列表命中场景才多比较 N 项；收缩场景提前返回仍省一趟 O(n)）。
+        #   触发条件不变：len(elements) >= n_old 且前 N 个 key/type 一致。
         n_old = 0
         cur = child
+        n_new = len(elements)  # 新元素数量（旧链长度上限阈值，与 n_old 对称）
         while cur is not None:
-            n_old += 1
-            cur = cur.sibling
-        if len(elements) < n_old:
-            return False
-        cur = child
-        for i in range(n_old):
-            el = elements[i]
+            if n_old >= n_new:
+                # 已超出新元素数量：旧链更长 → 不满足「len>=n_old」→ 直接
+                # 返回 False（无需继续数完旧链——len 已超新元素数）。
+                return False
+            el = elements[n_old]
             if not _is_same_type(cur, el):
                 return False
             if el.props.get("key") is not None and cur.key != el.key:
                 return False
+            n_old += 1
             cur = cur.sibling
+        # 不可达防御（child 非 None 时第一趟循环至少迭代一次，n_old 恒 >=1；
+        # 保留以防未来重构改变前置快路径/调用方语义）。
+        if n_old == 0:
+            return False
         # 第二趟：按序复用 + 创建尾部新元素
         first: Fiber | None = None
         prev: Fiber | None = None
@@ -638,18 +647,26 @@ class Reconciler:
         return router
 
     def _collect_input_hooks(self, fiber: Fiber | None, out: list[InputHook]) -> None:
-        """前序遍历 fiber 树，收集 active 且已设 handler 的 InputHook（跳过已删除）。"""
-        f = fiber
-        while f is not None:
-            if f.deleted:
+        """前序遍历 fiber 树，收集 active 且已设 handler 的 InputHook（跳过已删除）。
+
+        ★ P-H9（性能）：原实现每次递归 ``self._collect_input_hooks(...)`` 需
+        加载 self + 属性查找 + 调用（每帧每节点重复）。改为局部 ``_visit``
+        闭包递归调用——``_visit(f.child)`` 仅加载局部变量（省属性查找），
+        10Hz 大组件树每帧数千节点时减少可感知开销。
+        """
+        def _visit(f):
+            while f is not None:
+                if f.deleted:
+                    f = f.sibling
+                    continue
+                if f.is_function:
+                    for hook in f.hooks:
+                        if isinstance(hook, InputHook) and hook.is_active and hook.handler is not None:
+                            out.append(hook)
+                _visit(f.child)
                 f = f.sibling
-                continue
-            if f.is_function:
-                for hook in f.hooks:
-                    if isinstance(hook, InputHook) and hook.is_active and hook.handler is not None:
-                        out.append(hook)
-            self._collect_input_hooks(f.child, out)
-            f = f.sibling
+
+        _visit(fiber)
 
     def _mark_deleted(self, fiber: Fiber) -> None:
         """标记子树删除（收集其 effect 销毁函数 + 清理 context 注册表）。
@@ -714,6 +731,10 @@ class Reconciler:
         与 React 差异（文档注明）：卸载时不置 null（非全屏模型无 DOM 节点
         回收语义；useMeasure 仅挂载期读取尺寸，卸载清理无消费方）。
 
+        ★ P-H10（性能）：绝大多数 fiber 无 ``_host_ref``（仅 useMeasure
+        绑定的 host）——仍须递归遍历（无法从根短路判定子树内是否有 ref），
+        但跳过 ``hasattr`` 判定（直接读字段，Fiber 定义恒有该属性）。
+
         Args:
             fiber: 遍历起点（root fiber）。
         """
@@ -722,7 +743,7 @@ class Reconciler:
             if f.deleted:
                 f = f.sibling
                 continue
-            ref = getattr(f, "_host_ref", None)
+            ref = f._host_ref
             if ref is not None and f.layout_box is not None:
                 if callable(ref):
                     try:

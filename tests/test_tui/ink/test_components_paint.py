@@ -286,6 +286,51 @@ class TestCommittedPrefixNonTop:
         assert f2.lines[31].plain == "TAIL"
 
 
+class TestFramePrefixConcatenation:
+    """P-H4 评估锁定 — render_frame 前缀拼接（prefix + tail）行为。
+
+    评估结论：不做结构性修改（prefix 列表跨帧可变，Frame.lines 直接复用
+    prefix 引用会与上一帧共享列表破坏 diff 状态；prefix + tail 为浅拷贝，
+    指针复制非内容复制，大历史下仍远优于全量重建）。本测试锁定拼接语义
+    与身份复用不变（防未来改动破坏）。
+    """
+
+    def _frame_pair(self, n_lines=200):
+        from src.tui.ink.element import h, BOX, TEXT
+        from src.tui.ink.reconciler import Reconciler
+        from src.tui.ink.output import StyledRun
+        import src.tui.app.chat_view as _cv
+        _cv.register()  # 幂等
+        lines = [Line([StyledRun(f"line {i}", None)]) for i in range(n_lines)]
+        r = Reconciler()
+        root = r.create_root()
+        el = h(BOX, None, [
+            h("committed-chat", {"lines": lines}),
+            h(TEXT, {"children": "TAIL"}),
+        ])
+        r.render(root, el, 80, 24)
+        f1 = _components.render_frame(root, 80)
+        r.render(root, el, 80, 24)
+        f2 = _components.render_frame(root, 80)
+        return f1, f2, n_lines
+
+    def test_top_prefix_tail_combined(self):
+        """顶部前缀 + tail 拼接：高度与行内容正确。"""
+        f1, _, n = self._frame_pair()
+        assert f1.height == n + 1
+        assert f1.lines[n].plain == "TAIL"
+        assert f1.lines[0].plain == "line 0"
+        assert f1.lines[n - 1].plain == f"line {n - 1}"
+
+    def test_prefix_lines_identity_preserved(self):
+        """前缀行 Line 身份跨帧复用（prefix + tail 浅拷贝未破坏身份短路）。"""
+        f1, f2, n = self._frame_pair()
+        for i in range(n):
+            assert f2.lines[i] is f1.lines[i]
+        # tail 行内容不变（新对象，值相等）
+        assert f2.lines[n].plain == f1.lines[n].plain
+
+
 class TestCanvasRowBatchAppend:
     """方向4 — _canvas_row_to_line 批量 append 优化（输出一致性锁定）。"""
 
@@ -322,3 +367,46 @@ class TestCanvasRowBatchAppend:
         # 中文(4) + ab(2) = 6，center 偏移 (10-6)//2 = 2 → "  中文ab"
         assert line.plain == "  中文ab", f"实际 {line.plain!r}"
         assert line.width == 8
+
+
+class TestMergeLineWideCharSecondCol:
+    """E2 — _merge_line 宽字符第二列部分覆盖时新字符静默丢失修复。"""
+
+    def _merge(self, row_dict, x, text):
+        from src.tui.ink.output import StyledRun
+        return _components._merge_line(row_dict, x, Line([StyledRun(text, None)]))
+
+    def test_second_col_overwrite_not_lost(self):
+        """row={0:('中'),2:('a')} + X@col1 → 输出 "X a"（X 不再静默丢失）。
+
+        修复前：disjoint 快路径批量 update 后 row={0:'中',2:'a',1:'X'}，
+        _canvas_row_to_line 中 col1 < prev（宽字符推进到 2）→ X 被跳过 → "中a"。
+        修复后：宽字符第二列冲突检测到 → 逐键覆盖替换宽字符整体（row[0]=X、
+        pop(1)）→ "X a"。
+        """
+        row = {0: ("中", None), 2: ("a", None)}
+        merged = self._merge(row, 1, "X")
+        line = _components._canvas_row_to_line(merged)
+        assert line.plain == "X a", f"实际 {line.plain!r}"
+
+    def test_bug61_residue_kept(self):
+        """BUG-61 既有语义保持：覆盖宽字符首列 → 清除残留第二列。"""
+        row = {0: ("中", None), 1: ("中", None)}
+        merged = self._merge(row, 0, "a")
+        line = _components._canvas_row_to_line(merged)
+        assert line.plain == "a", f"实际 {line.plain!r}"
+
+    def test_disjoint_fast_path_wide_second_col(self):
+        """disjoint 但存在宽字符第二列冲突 → 降级逐键覆盖正确（X 不丢失）。"""
+        row = {0: ("中", None), 3: ("x", None)}
+        merged = self._merge(row, 1, "X")
+        line = _components._canvas_row_to_line(merged)
+        # 宽字符整体被替换（row[0]=X、pop(1)），x 保留在 col3 → "X  x"
+        assert line.plain == "X  x", f"实际 {line.plain!r}"
+
+    def test_disjoint_no_wide_conflict_batch_path(self):
+        """无宽字符冲突的 disjoint 保持批量快路径（零行为变化）。"""
+        row = {1: ("a", None), 2: ("b", None)}
+        merged = self._merge(row, 0, "X")
+        line = _components._canvas_row_to_line(merged)
+        assert line.plain == "Xab", f"实际 {line.plain!r}"

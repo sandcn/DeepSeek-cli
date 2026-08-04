@@ -19,6 +19,28 @@ def _render_and_layout(root_element, width):
     return root, root.child.layout_box
 
 
+class TestExplicitWidthClamp:
+    """E1 — 显式 width 超可用宽度时钳制到 avail（行宽不变量）。"""
+
+    def test_explicit_width_clamped_to_avail(self):
+        root, box = _render_and_layout(h(BOX, {"width": 200}, h(TEXT, {"children": "x"})), 80)
+        assert box.w == 80, f"显式 width=200 应钳制到 80, 实际 {box.w}"
+
+    def test_explicit_width_within_avail_unchanged(self):
+        root, box = _render_and_layout(h(BOX, {"width": 50}, h(TEXT, {"children": "x"})), 80)
+        assert box.w == 50, f"显式 width=50 不应受影响, 实际 {box.w}"
+
+    def test_text_explicit_width_clamped(self):
+        root, box = _render_and_layout(h(TEXT, {"children": "abc", "width": 200}), 80)
+        assert box.w == 80, f"TEXT 显式 width=200 应钳制到 80, 实际 {box.w}"
+
+    def test_row_explicit_width_clamped(self):
+        root, box = _render_and_layout(
+            h(BOX, {"flexDirection": "row", "width": 200}, h(TEXT, {"children": "abc"})), 80,
+        )
+        assert box.w == 80, f"row 显式 width=200 应钳制到 80, 实际 {box.w}"
+
+
 class TestLayoutBoxes:
     """布局盒分配。"""
 
@@ -1271,3 +1293,54 @@ class TestRunsNaturalWidthNewline:
 
         w = _runs_natural_width([StyledRun("abc", None), StyledRun("def", None)])
         assert w == 6
+
+
+class TestLayoutChildrenFastPath:
+    """P-H2 — layout_children 直接 host 子节点快速路径（行为等价回归）。"""
+
+    def test_host_children_collected(self):
+        """普通 host 子节点直接收集（_skip_function 对 host 恒返回自身）。"""
+        from src.tui.ink.layout import layout_children
+        from src.tui.ink.fiber import Fiber
+
+        root = Fiber("host", "box", {})
+        c1 = Fiber("host", "text", {})
+        c2 = Fiber("host", "text", {})
+        root.child = c1
+        c1.sibling = c2
+        out = layout_children(root)
+        assert out == [c1, c2]
+
+    def test_function_child_skipped(self):
+        """function 子节点沿 child 链下降（_skip_function 语义保持）。"""
+        from src.tui.ink.layout import layout_children
+        from src.tui.ink.fiber import Fiber
+
+        root = Fiber("host", "box", {})
+        fn = Fiber("function", lambda p: None, {})
+        leaf = Fiber("host", "text", {})
+        root.child = fn
+        fn.child = leaf
+        out = layout_children(root)
+        assert out == [leaf]
+
+    def test_large_tree_smoke(self):
+        """1000 个 host 子节点收集正确且耗时 < 1s（性能冒烟）。"""
+        import time
+        from src.tui.ink.layout import layout_children
+        from src.tui.ink.fiber import Fiber
+
+        root = Fiber("host", "box", {})
+        prev = None
+        for i in range(1000):
+            c = Fiber("host", "text", {})
+            if prev is None:
+                root.child = c
+            else:
+                prev.sibling = c
+            prev = c
+        t0 = time.perf_counter()
+        out = layout_children(root)
+        elapsed = time.perf_counter() - t0
+        assert len(out) == 1000
+        assert elapsed < 1.0, f"layout_children 1000 子节点耗时 {elapsed:.2f}s"
