@@ -18,6 +18,10 @@ _logger = logging.getLogger(__name__)
 
 _MAX_PARSE_RETRIES = 1
 
+# 可重试的 HTTP 状态码（瞬时错误）：请求超时/速率限制/服务端过载/网关超时。
+# 其余（400/401/403/404/422 等）为永久错误，重试无意义，直接抛出。
+_RETRYABLE_HTTP_STATUS = frozenset({408, 425, 429, 500, 502, 503, 504})
+
 
 async def retry_api_call_async(
     api_func,
@@ -82,8 +86,13 @@ async def retry_api_call_async(
         except (
             httpx.HTTPStatusError, httpx.RequestError,
             json.JSONDecodeError, TimeoutError,
-            RateLimitError,
+            RateLimitError, APIError,
         ) as e:
+            # APIError 仅在瞬时状态码（5xx/408/425/429）时重试；
+            # 永久性错误（400/401/403/404/422 等）重试无意义，直接抛出不重试。
+            if isinstance(e, APIError) and e.status_code not in _RETRYABLE_HTTP_STATUS:
+                _logger.warning("API 调用返回不可重试状态码 %d: %s", e.status_code, e)
+                raise
             _logger.warning(
                 "API 调用失败 (尝试 %d/%d): %s", attempt, effective_max_retries, e, exc_info=True,
             )

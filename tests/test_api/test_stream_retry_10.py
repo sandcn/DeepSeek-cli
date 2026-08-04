@@ -14,6 +14,7 @@ import pytest
 from unittest.mock import AsyncMock, patch
 
 from src.api._retry import retry_api_call_async
+from src.api.client_async import APIError
 from src.api.stream.pipeline_async import stream_call_async, StreamIdleTimeoutError
 
 
@@ -128,3 +129,50 @@ class TestRetryApiCall10Times:
         assert calls["n"] == 3
         # 3 次尝试间有 2 次等待，每次固定 30s
         assert waits == [30.0, 30.0]
+
+
+class TestRetryApiCallAPIError:
+    """APIError 仅在瞬时状态码时重试。"""
+
+    async def test_5xx_error_retries_10_times(self):
+        """500 服务端错误 → 重试 10 次。"""
+        calls = {"n": 0}
+
+        async def _fail():
+            calls["n"] += 1
+            raise APIError(500, "Internal Server Error")
+
+        with patch("src.api._retry.wait_for_interrupt_async",
+                   new=AsyncMock(return_value=False)):
+            await retry_api_call_async(_fail, silent=True, fixed_delay_sec=0,
+                                       override_max_retries=10)
+        assert calls["n"] == 10
+
+    async def test_503_error_retries(self):
+        """503 网关不可用 → 可重试。"""
+        calls = {"n": 0}
+
+        async def _fail():
+            calls["n"] += 1
+            raise APIError(503, "Service Unavailable")
+
+        with patch("src.api._retry.wait_for_interrupt_async",
+                   new=AsyncMock(return_value=False)):
+            await retry_api_call_async(_fail, silent=True, fixed_delay_sec=0,
+                                       override_max_retries=10)
+        assert calls["n"] == 10
+
+    async def test_4xx_error_not_retried(self):
+        """400 参数错误 → 不重试，立即抛出。"""
+        calls = {"n": 0}
+
+        async def _fail():
+            calls["n"] += 1
+            raise APIError(400, "Bad Request")
+
+        with patch("src.api._retry.wait_for_interrupt_async",
+                   new=AsyncMock(return_value=False)):
+            with pytest.raises(APIError):
+                await retry_api_call_async(_fail, silent=True, fixed_delay_sec=0,
+                                           override_max_retries=10)
+        assert calls["n"] == 1

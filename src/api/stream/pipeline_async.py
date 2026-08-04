@@ -112,8 +112,12 @@ async def _interruptible_iter_async(
     except _CONNECTION_ERRORS as e:
         _logger.warning("流式连接错误：%s，交由重试层重试", e)
         raise
-    except Exception:
-        _logger.exception("Async stream iteration error")
+    except Exception as e:
+        # ★ 兜底：一律降级为 WARNING 而非 ERROR。上游 retry_api_call_async
+        # 会重试（最多 10 次）并以 exc_info=True 记录完整 traceback；
+        # 重试耗尽后 Pipeline 会以 ERROR 级别记录最终异常。此处避免
+        # 每轮重试都刷出 ERROR + 完整 traceback。
+        _logger.warning("Async stream iteration error: %s", e)
         raise
     finally:
         # 替代 aclosing()：显式清理 response_iter。
