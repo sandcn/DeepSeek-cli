@@ -18,8 +18,7 @@ from __future__ import annotations
 
 from src.tui.app.model import _role_header_line
 from src.tui.core.style import Style
-from src.tui.ink import h, TEXT, StyledRun, register_host, Column
-from .tool_card import ToolCard
+from src.tui.ink import h, TEXT, StyledRun, register_host, use_memo, Column
 from .subagent_panel import use_subagent_children
 
 _S_REASONING = Style(fg=242)
@@ -114,17 +113,13 @@ def _block_styled_lines(block, start: int = 0, width: int = 0) -> list[list[Styl
 
 def _measure(fiber, avail_w):
     lines = fiber.props.get("lines") or []
-    start = fiber.props.get("start", 0)
-    end = fiber.props.get("end", len(lines))
-    return (avail_w, max(0, end - start))
+    return (avail_w, len(lines))
 
 
 def _paint(fiber, canvas):
     box = fiber.layout_box
     lines = fiber.props.get("lines") or []
-    start = fiber.props.get("start", 0)
-    end = fiber.props.get("end", len(lines))
-    n = max(0, end - start)
+    n = len(lines)
     if box.x == 0:
         # ★ 增量快路径（大历史 O(1)/帧）：committed 静态行跨帧身份复用——
         #   前缀缓存挂在 fiber（fiber 复用即命中，替换/重建自然失效）。
@@ -134,11 +129,7 @@ def _paint(fiber, canvas):
         #   ``committed.layout_box.y == 0``——顶部才允许前缀复用，非顶部前缀
         #   与画布尾部重建偏移语义不一致时由 render_frame 回退全量（防御层，
         #   成本 O(1)）。
-        #   ★ 阶段5（工具卡元素树化 + committed 区间发射）：ChatView 按块
-        #   经 committed-chat 发射 ``committed_lines[start:end]`` 区间（前缀
-        #   缓存键含 start/end——不同块区间独立缓存；块行原地 extend 增长时
-        #   仅追加新增行）。``n`` 为区间行数（非整表行数）。
-        key = (id(lines), n, box.y, box.w, start, end)
+        key = (id(lines), n, box.y, box.w)
         cached = getattr(fiber, "_committed_prefix", None)
         if cached is not None and cached[0] == key:
             return  # 前缀未变：跳过画布重写（render_frame 复用缓存）
@@ -147,17 +138,16 @@ def _paint(fiber, canvas):
             and cached[0][0] == key[0]
             and cached[0][2] == key[2]
             and cached[0][3] == key[3]
-            and cached[0][4] == start
-            and end > cached[0][5]
+            and n > cached[0][1]
         ):
-            # 块 committed 区间原地 extend（引用不变、end 增长）→ 仅追加新增行
+            # committed_lines 原地 extend（引用不变、长度增长）→ 仅追加新增行
             prefix = cached[1]
-            prefix.extend(lines[start + cached[0][1]:end])
+            prefix.extend(lines[cached[0][1]:])
             all_ok = bool(cached[2]) and all(
-                ln.width <= box.w for ln in lines[start + cached[0][1]:end]
+                ln.width <= box.w for ln in lines[cached[0][1]:]
             )
         else:
-            prefix = list(lines[start:end])
+            prefix = list(lines)
             # ★ 行宽守卫（E-COMMITTED-OVERFLOW 防御）：reflow_committed 未执行
             #   /失败（终端宽度变化后 committed_lines 按旧宽度 wrap）时前缀含
             #   超宽行——render_frame 的前缀复用路径不经 E-OVERFLOW-GUARD
@@ -178,8 +168,7 @@ def _paint(fiber, canvas):
     # box.x != 0（缩进/padded）：逐行合并（保留已有边框/内容——修复前
     # ``canvas[row] = padded`` 整体替换：父容器边框（行内已写 cols x0/x1）
     # 被 padded 空格覆盖，缩进框内 committed 行丢失左/右边框）。
-    for i in range(n):
-        line = lines[start + i]
+    for i, line in enumerate(lines):
         row = box.y + i
         if 0 <= row < len(canvas):
             from src.tui.ink.components import _merge_line
@@ -194,18 +183,14 @@ def register() -> None:
 def ChatView(props) -> object:
     """ChatView 组件：缓存已提交块 + 渲染未提交块。
 
-    ★ 阶段5（工具卡元素树化 + committed 区间发射）：
-      - 工具卡（kind=="tool"）**不再走 committed_lines 行级发射**——由
-        ``ToolCard`` 标准控件组件渲染（完整卡片从 block.lines 构建，实时+
-        历史统一；``_tool_card_styled_lines`` 帧级缓存兜底，视觉输出等价）。
-      - content/reasoning 已提交块经 committed-chat **区间发射**其在
-        ``model.committed_lines`` 中的连续行（``[start, end)``，含卡片尾空行
-        trailer）——前缀缓存按 ``(id(lines), start, end, ...)`` 命中，大历史
-        O(块数)/帧（块数远小于行数，可接受）。
-      - 未提交（live）块只渲染未提交尾（已提交行在 committed_lines 区间中）。
-
     未提交块的行给**索引 key**——调和器据此复用 fiber，换行缓存才能命中
     （否则无唯一 key → 每帧重建 → 开放大块整块重包裹，流式卡顿）。
+
+    方向② 步骤6：committed-chat 部分 use_memo 缓存——``committed_lines``
+    引用不变（模型无新提交）时返回同一 Element → reconciler 复用同一 props
+    → host 调和跳过（免每帧重建 committed-chat 元素）；流式增量提交
+    （committed_lines 变化）时 memo 失效重算。use_memo 须在所有条件分支前
+    调用（hook 顺序不变式；ChatView 仅此一个 hook，无顺序风险）。
     """
     model = props["model"]
     # ★ 截断宽度与布局宽度同源：优先用 props width（App 传入，= reconciler
@@ -213,43 +198,26 @@ def ChatView(props) -> object:
     #   （TTL 缓存 / resize 时序 / 默认 80）时，截断到 model.width 的行在
     #   布局按 box.w wrap，第二行只剩尾部边框字符（显示错乱）。
     width = props.get("width") or getattr(model, "width", 0)
+    committed_el = use_memo(
+        lambda: h("committed-chat", {"lines": model.committed_lines}),
+        (model.committed_lines,),
+    )
     # ★ BUG-42（review 方向）：subagent 卡片子树按 ``(subagent_lines, width)``
     #   引用级 use_memo 缓存——修复前每帧重建全部 StyledRun/Element（活跃
     #   subagent 期间每帧重包裹）。无条件调用（hook 顺序稳定）。
     subagent_children = use_subagent_children(model, width)
     children = []
-    # ★ 兼容路径（阶段5）：无 blocks 但 committed_lines 非空——渲染器级测试/
-    #   外部手工构造模型（只有 committed_lines、无块结构）→ 整表发射（旧行为）。
-    #   真实运行中 blocks 与 committed_lines 由 commit_block 同步维护（按块
-    #   遍历渲染），不走此路径。
-    if not model.blocks and model.committed_lines:
-        children.append(h("committed-chat", {"lines": model.committed_lines}))
-    # ★ 阶段5：遍历**所有块**（含已提交）——工具卡用 ToolCard 标准控件组件
-    #   渲染；content/reasoning 已提交块经区间发射；未提交块渲染 live 尾。
-    for block_idx, block in enumerate(model.blocks):
-        if block.kind == "tool":
-            # 工具卡片：标准控件组件（实时+历史统一从 block 状态渲染）
-            children.append(h(ToolCard, {
-                "key": f"chat-{block_idx}-tool",
-                "block": block,
-                "width": width,
-            }))
-            continue
-        if block.committed_line_count > 0:
-            offset = block.extra.get("_first_committed_offset", 0)
-            n = block.committed_line_count
-            end = offset + n
-            # 卡片尾空行（trailer）：块完全提交且末行非空 → committed_lines[end]
-            # 为该块的 trailer（下一个块 ``_first_committed_offset`` 覆盖其位置）
-            if (block.closed and n >= len(block.lines) and block.lines
-                    and getattr(block.lines[-1], "plain", "") != ""):
-                end += 1
-            children.append(h("committed-chat", {
-                "key": f"chat-{block_idx}-c",
-                "lines": model.committed_lines,
-                "start": offset,
-                "end": end,
-            }))
+    if model.committed_lines:
+        children.append(committed_el)
+    # ★ 方向5（chat_view 复合 key）：开放块行 key 用「块索引 + 行内序号」
+    #   复合（修复前 ``chat-{line_idx}`` 位置索引——流式追加使行号前移导致
+    #   已渲染行重建）；block_idx = 块在 model.blocks 中的索引（块只追加、
+    #   索引稳定）；row_in_block = 块内行号（已提交行不参与开放块渲染，
+    #   未提交尾从 committed_line_count 起行号稳定）→ 流式追加新行时已渲染
+    #   行 key 不变，调和器复用 fiber。
+    for block_idx, block in enumerate(
+        model.blocks[model.committed_count:], start=model.committed_count,
+    ):
         # 卡片角色头（live 路径）：块尚未有任何增量提交（committed_line_count
         # == 0）时在正文行前发射——已提交的头在 committed_lines 中，此处不再
         # 重复（互斥）。头独立 key ``chat-{block_idx}-h``（不与整数行号冲突）。
@@ -261,28 +229,28 @@ def ChatView(props) -> object:
                     "styled": header_line.runs,
                 }))
         # 开放块只渲染未提交尾（已增量提交的行在缓存中，不再重建）
-        if block.committed_line_count < len(block.lines):
-            # ★ 方向D 步骤14 + PERF-7（live 尾部截断）：content/reasoning 块被
-            #   未提交工具卡夹住（无法增量提交）时未提交尾随流式增长——仅渲染
-            #   最后 ``_LIVE_TAIL_LINES`` 行（中间行块关闭提交时经 committed_lines
-            #   完整显示，非全屏流动模型无视觉跳变）。
-            # ★ BUG-41（review 方向，性能）：行 key 用**块内绝对行号**（修复前
-            #   ``row_in_block`` 从 committed_line_count 起重新编号——块被增量提交
-            #   N 行后，旧 ``chat-{i}-0`` 的 fiber 改渲染绝对行号 N → 换行缓存/style
-            #   缓存全部 miss，流式期间每帧重包裹）。绝对行号 key 在流式追加时保持
-            #   稳定（已渲染行 key 不变，调和器复用 fiber；仅新增行创建新 fiber）。
-            live_start = block.committed_line_count
-            if len(block.lines) - live_start > _LIVE_TAIL_LINES:
-                live_start = len(block.lines) - _LIVE_TAIL_LINES
-            for row_in_block, runs in enumerate(
-                _block_styled_lines(
-                    block, live_start, width,
-                )
-            ):
-                children.append(h(TEXT, {
-                    "key": f"chat-{block_idx}-{live_start + row_in_block}",
-                    "styled": runs,
-                }))
+        # ★ 方向D 步骤14 + PERF-7（live 尾部截断）：content/reasoning 块被
+        #   未提交工具卡夹住（无法增量提交）时未提交尾随流式增长——仅渲染
+        #   最后 ``_LIVE_TAIL_LINES`` 行（中间行块关闭提交时经 committed_lines
+        #   完整显示，非全屏流动模型无视觉跳变）；工具卡不截断（边框渲染
+        #   依赖 start==0 顶边框）。
+        # ★ BUG-41（review 方向，性能）：行 key 用**块内绝对行号**（修复前
+        #   ``row_in_block`` 从 committed_line_count 起重新编号——块被增量提交
+        #   N 行后，旧 ``chat-{i}-0`` 的 fiber 改渲染绝对行号 N → 换行缓存/style
+        #   缓存全部 miss，流式期间每帧重包裹）。绝对行号 key 在流式追加时保持
+        #   稳定（已渲染行 key 不变，调和器复用 fiber；仅新增行创建新 fiber）。
+        live_start = block.committed_line_count
+        if block.kind != "tool" and len(block.lines) - live_start > _LIVE_TAIL_LINES:
+            live_start = len(block.lines) - _LIVE_TAIL_LINES
+        for row_in_block, runs in enumerate(
+            _block_styled_lines(
+                block, live_start, width,
+            )
+        ):
+            children.append(h(TEXT, {
+                "key": f"chat-{block_idx}-{live_start + row_in_block}",
+                "styled": runs,
+            }))
     # 子代理活动卡片（并入消息流，对齐 Claude Code）：subagent_lines 为
     # _subagent_render 产出的逐 agent 卡片 ANSI 行，经 use_subagent_children
     # 缓存元素（原独立 SubAgentPanel 组件已移除）。

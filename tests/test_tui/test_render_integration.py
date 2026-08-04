@@ -234,62 +234,68 @@ class TestToolTitleIconUpdate:
             model.append_tool_output(tool_id, f"line{i}")
         return model
 
-    @staticmethod
-    def _tool_card_plains(block, width=80):
-        """渲染工具卡为 plain 行列表（阶段5：工具卡由 ToolCard 渲染）。"""
-        from src.tui.app.model import _tool_card_styled_lines
-        return [
-            "".join(r.text for r in row)
-            for row in _tool_card_styled_lines(block, width, 0, None)
-        ]
-
     def test_tool_title_icon_updates_after_close_regression(self):
-        """> _TOOL_INCREMENTAL_THRESHOLD 行工具输出关闭后 ToolCard 顶边框图标
-        由 ● 更新为 ✔（阶段5：工具卡由 ToolCard 从 block.lines 渲染）。"""
+        """> _TOOL_INCREMENTAL_THRESHOLD 行工具输出关闭后 committed_lines 标题行
+        图标由 ● 更新为 ✔（修复前恒 ●）。"""
         from src.tui.app.model import AppModel, _TOOL_INCREMENTAL_THRESHOLD
 
         # web_search（非 bash/头显示工具，不触发截断）→ 保持增量提交行为
         model = self._open_long_tool("t1", "web_search")
         block = model.blocks[-1]
-        # 阶段5：工具卡行不写入 committed_lines（由 ToolCard 渲染）
-        assert model.committed_lines == []
-        # 关闭前：ToolCard 渲染顶边框状态图标为 running ●
-        plains = self._tool_card_plains(block, 80)
-        assert plains[0].startswith("\u250c"), "卡片首行应为顶边框"
-        assert "\u25cf" in plains[0], "关闭前顶边框应为 running ●"
+        offset = block.extra.get("_first_committed_offset")
+        assert offset is not None, "增量提交应记录 _first_committed_offset"
+        assert 0 <= offset < len(model.committed_lines), "偏移应指向 committed_lines 内"
+        # 卡片结构：offset 指向工具卡片顶边框（`┌─` 起，含状态图标）
+        assert model.committed_lines[offset].plain.startswith("\u250c"), (
+            "offset 应指向工具卡片顶边框"
+        )
+        # 关闭前：顶边框状态图标为 running ●
+        assert "\u25cf" in model.committed_lines[offset].plain, (
+            "关闭前 committed_lines 顶边框应为 running ●"
+        )
         model.close_tool_box("t1", True)
-        # 关闭后：顶边框状态图标为 done ✔（ToolCard 从 block.extra.tool_status
-        # 读取，下一帧自动翻转）
-        plains = self._tool_card_plains(block, 80)
-        assert "\u2714" in plains[0], "关闭后顶边框图标应更新为 ✔"
+        # 关闭后：顶边框状态图标为 done ✔（原位翻转）
+        assert "\u2714" in model.committed_lines[offset].plain, (
+            "关闭后 committed_lines 顶边框图标应更新为 ✔"
+        )
         # 标题文本保留（图标替换不丢失标题内容；web_search 显示完整名 WebSearch）
-        assert "WebSearch" in plains[0], "顶边框图标更新后应保留标题文本"
+        assert "WebSearch" in model.committed_lines[offset].plain, (
+            "顶边框图标更新后应保留标题文本"
+        )
 
     def test_tool_title_icon_fail_updates_after_close_regression(self):
-        """fail 场景：长工具输出关闭后 ToolCard 顶边框图标更新为 ✖。"""
+        """fail 场景：长工具输出关闭后标题行图标更新为 ✖。"""
         from src.tui.app.model import AppModel, _TOOL_INCREMENTAL_THRESHOLD
 
         model = self._open_long_tool("t2", "web_search")
         block = model.blocks[-1]
+        offset = block.extra.get("_first_committed_offset")
+        assert offset is not None
         model.close_tool_box("t2", False)
-        plains = self._tool_card_plains(block, 80)
-        assert plains[0].startswith("\u250c"), "卡片首行应为顶边框"
-        assert "\u2716" in plains[0], "关闭后顶边框图标应更新为 ✖"
+        assert model.committed_lines[offset].plain.startswith("\u250c"), (
+            "offset 应指向工具卡片顶边框"
+        )
+        assert "\u2716" in model.committed_lines[offset].plain, (
+            "关闭后 committed_lines 顶边框图标应更新为 ✖"
+        )
 
     def test_short_tool_title_icon_no_offset_unchanged(self):
-        """短工具输出（未增量提交）关闭后 ToolCard 顶边框直接带 ✔。"""
+        """短工具输出（未增量提交）关闭后 committed_lines 标题行直接带 ✔（行为不变）。"""
         from src.tui.app.model import AppModel
 
         model = AppModel()
         model.open_tool_box("t3", "read_file")
         model.append_tool_output("t3", "brief")
         model.close_tool_box("t3", True)
-        # 阶段5：工具卡行不写入 committed_lines（由 ToolCard 渲染）——关闭后
-        # 顶边框直接带 ✔（无 offset 更新路径）
-        assert model.committed_lines == []
-        plains = self._tool_card_plains(model.blocks[-1], 80)
-        assert plains[0].startswith("\u250c"), "卡片首行应为顶边框"
-        assert "\u2714" in plains[0], "短工具关闭后顶边框状态图标应为 ✔"
+        # 关闭后顶边框（committed_lines[0]）直接带 ✔——未触发增量提交时
+        # close 经 commit_block 提交的顶边框已带 done 图标，无需 offset 更新路径。
+        assert model.committed_lines, "关闭后 committed_lines 不应为空"
+        assert model.committed_lines[0].plain.startswith("\u250c"), (
+            "短工具关闭后 committed_lines 首行应为顶边框"
+        )
+        assert "\u2714" in model.committed_lines[0].plain, (
+            "短工具关闭后顶边框状态图标应为 ✔"
+        )
 
 
 # ═══════════════════════════════════════════════════════════
@@ -486,10 +492,10 @@ class TestToolCloseFrozenTailOnly:
 
 
 class TestToolBoxReuseTitleSync:
-    """BUG-22 — open_tool_box 复用 box 后标题同步（阶段5：ToolCard 渲染）。"""
+    """BUG-22 — open_tool_box 复用已增量提交 box 时同步 committed 顶边框标题。"""
 
     def test_reuse_updates_committed_header(self):
-        """同一 tool_id 复用且已增量提交 → ToolCard 顶边框标题更新。"""
+        """同一 tool_id 复用且已增量提交 → committed_lines 顶边框标题更新。"""
         from src.tui.app.model import AppModel
         from src.tui.app.apply import apply_cmd
         from src.tui._const import ToolOpenCmd, ToolOutputCmd
@@ -501,15 +507,15 @@ class TestToolBoxReuseTitleSync:
         for i in range(70):
             apply_cmd(model, ToolOutputCmd(tool_id="t1", text=f"output line {i}"))
         blk = model.tool_boxes["t1"]
-        # 阶段5：工具卡行不写入 committed_lines（由 ToolCard 渲染）——复用更新
-        # 只改块内标题行，下一帧 ToolCard 自动显示新标题
-        assert model.committed_lines == []
+        offset = blk.extra.get("_first_committed_offset")
+        assert offset is not None and offset < len(model.committed_lines)
+        old_plain = model.committed_lines[offset].plain
         # 复用更新标题（后到 ToolStartedEvent 补全工具名）
         apply_cmd(model, ToolOpenCmd(tool_id="t1", tool_name="bash", detail="ls -la"))
-        plains = TestToolTitleIconUpdate._tool_card_plains(blk, 80)
-        assert any("Bash" in p or "bash" in p for p in plains), (
-            f"复用后 ToolCard 顶边框应更新标题: {plains[0]!r}"
+        new_plain = model.committed_lines[offset].plain
+        assert new_plain != old_plain or "Bash" in new_plain or "bash" in new_plain, (
+            f"复用后 committed 顶边框应更新标题: {old_plain!r} → {new_plain!r}"
         )
-        assert "ls -la" in plains[0], (
-            f"新标题应含 detail: {plains[0]!r}"
+        assert ("Bash" in new_plain or "bash" in new_plain), (
+            f"新标题应含工具名 bash: {new_plain!r}"
         )

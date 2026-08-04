@@ -152,8 +152,18 @@ class TestClosedToolBoxFreezeCache:
 
         # content 块仍开放（未关闭 → tool box 不在 committed_lines 中）
         assert m.content_closed is False
-        # 阶段5：工具卡由 ToolCard 从 block.lines 渲染（不冻结 _cached_ink_lines）
-        assert box._cached_ink_lines is None
+        # 冻结缓存已建立（全块行：顶边框 + 主体行 + 底边框；标题行被顶边框
+        # 替代、状态行跳过移入底边框 → 与块行数相等）
+        assert box._cached_ink_lines is not None
+        assert len(box._cached_ink_lines) == len(box.lines)
+        # 未提交尾（状态行移入底边框后）经缓存复用 runs 引用
+        tail = _block_styled_lines(box, box.committed_line_count)
+        assert len(tail) == len(box.lines) - box.committed_line_count
+        assert len(tail) >= 1
+        assert any("\u2714" in "".join(r.text for r in runs) for runs in tail)
+        # 引用级复用：同一 runs 列表对象（免每帧 Style merge）
+        tail2 = _block_styled_lines(box, box.committed_line_count)
+        assert tail2[0] is tail[0]
 
         # 全树渲染不抛异常，工具输出与状态行可见
         r = Reconciler()
@@ -163,7 +173,6 @@ class TestClosedToolBoxFreezeCache:
         frame = _components.render_frame(root, 80)
         plains = [line.plain for line in frame.lines]
         assert any("output2" in p for p in plains)
-        assert any("✔ 完成" in p for p in plains), "底边框状态缺失"
         assert any("\u2714" in p for p in plains)
         # 二次渲染帧相同（不追加/不重复）
         r.render(root, el, 80, 24)
@@ -356,7 +365,7 @@ class TestChatViewCompositeKey:
 
     @staticmethod
     def _chat_fibers(root) -> dict:
-        """收集根树中 key 以 ``chat-``/``tc-`` 开头的 TEXT fiber。"""
+        """收集根树中 key 以 ``chat-`` 开头的 TEXT fiber。"""
         found: dict = {}
 
         def walk(f):
@@ -364,7 +373,7 @@ class TestChatViewCompositeKey:
             while f2 is not None:
                 props = getattr(f2, "props", None)
                 key = props.get("key") if isinstance(props, dict) else None
-                if isinstance(key, str) and (key.startswith("chat-") or key.startswith("tc-")):
+                if isinstance(key, str) and key.startswith("chat-"):
                     found[key] = f2
                 walk(f2.child)
                 f2 = f2.sibling

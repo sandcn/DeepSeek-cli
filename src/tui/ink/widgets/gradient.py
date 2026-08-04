@@ -13,7 +13,6 @@ import logging
 from src.tui.core.color import lerp_color
 from src.tui.core.style import Style
 from ..element import TEXT, Element, h
-from ..hooks import use_memo
 from ..output import StyledRun
 
 _logger = logging.getLogger(__name__)
@@ -62,21 +61,12 @@ def Gradient(props: dict) -> Element:
     text = props.get("text")
     text = "" if text is None else str(text)
     colors = props.get("colors", [45, 39, 141, 213])
-    # ★ 标准控件性能（阶段4）：use_memo 缓存渐变 runs——deps 用
-    # ``(text, colors 元组)``（str/原始类型值比较；不同 list 同值命中），
-    # 同文本同色标跨帧复用**同一 runs 列表引用**（TEXT ``_paint_cache``
-    # 引用级命中，TopHeader 渐变标题每帧零重建）。use_memo 无条件调用
-    # （hooks 顺序不变式），分支在缓存之后。
-    colors_key = tuple(int(c) for c in colors) if colors else ()
-    runs = use_memo(
-        lambda: _gradient_runs(text, colors),
-        (text, colors_key),
-    )
     if not text:
         return h(TEXT, {"children": ""})
     if not colors:
         # 空色标：无样式文本（保留内容，不渐变）
         return h(TEXT, {"children": text})
+    runs = _gradient_runs(text, colors)
     if not runs:
         return h(TEXT, {"children": ""})
     style = props.get("style")

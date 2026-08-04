@@ -579,24 +579,6 @@ def apply_text_transform(text: str, transform: str | None) -> str:
     return text
 
 
-#: borderStyle 变体字符表**单一真源**（阶段4 收敛）：components（BOX 边框）/
-#: codeblock（CodeBlock 边框）/ display（Panel 边框）/ model（工具卡片边框）
-#: 统一引用本常量，消除四处各自内联的边框字符定义漂移风险。格式
-#: ``(左上, 右上, 左下, 右下, 横线, 竖线)``；键 = borderStyle 字符串，缺省
-#: "single"。classic 为 ASCII 经典边框（``+---``/``|``）；dashed 为虚线边框
-#: （``┄``/``┆``，视觉更轻）。
-BORDER_CHARS: dict[str, tuple[str, str, str, str, str, str]] = {
-    "single": ("\u250c", "\u2510", "\u2514", "\u2518", "\u2500", "\u2502"),   # ┌ ┐ └ ┘ ─ │
-    "double": ("\u2554", "\u2557", "\u255a", "\u255d", "\u2550", "\u2551"),   # ╔ ╗ ╚ ╝ ═ ║
-    "round": ("\u256d", "\u256e", "\u2570", "\u256f", "\u2500", "\u2502"),    # ╭ ╮ ╰ ╯ ─ │
-    "bold": ("\u250f", "\u2513", "\u2517", "\u251b", "\u2501", "\u2503"),     # ┏ ┓ ┗ ┛ ━ ┃
-    "classic": ("+", "+", "+", "+", "-", "|"),
-    "dashed": ("\u250c", "\u2510", "\u2514", "\u2518", "\u2504", "\u2506"),   # ┌ ┐ └ ┘ ┄ ┆
-    "singleDouble": ("\u2553", "\u2556", "\u2559", "\u255c", "\u2550", "\u2502"),  # ╓ ╖ ╙ ╜ ═ │
-    "doubleSingle": ("\u2552", "\u2555", "\u2558", "\u255b", "\u2500", "\u2551"),  # ╒ ╕ ╘ ╛ ─ ║
-}
-
-
 def build_border_box(
     title_runs: list[StyledRun],
     body_lines: list[Line] | None = None,
@@ -683,5 +665,4 @@ __all__ = [
     "apply_text_transform",
     "_parse_color",
     "cursor_control_re",
-    "BORDER_CHARS",
 ]

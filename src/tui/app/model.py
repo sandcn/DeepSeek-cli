@@ -228,15 +228,10 @@ def _tool_card_styled_lines(block, width, start=0, stop=None):
     from src.tui.core.style import Style
     from src.tui.ink import StyledRun
     from src.tui.ink.helpers import truncate_runs
-    from src.tui.ink.helpers import BORDER_CHARS
     from src.tools.registry import get_tool_display_name
     from src.tui._tool_icons import TOOL_ICONS
     from src.renderer.ansi.helpers import wrap_line
     pal = get_active_palette()
-    # ★ 标准控件收敛（阶段4）：工具卡边框字符统一引用
-    #   ``helpers.BORDER_CHARS["single"]`` 单一真源（components/codeblock/
-    #   display 共用同一表——消除各处内联边框字符定义漂移风险）。
-    chars = BORDER_CHARS["single"]
     # BEAUTY-10（方向4 动效）：运行中工具卡边框呼吸——开放工具卡顶边框
     #   （live 渲染每帧重建）从暗青 23 脉动到亮青 45（8s 周期），视觉提示
     #   「工具执行中」；已关闭/提交卡保持静态（frozen 缓存不再重算）。
@@ -302,15 +297,14 @@ def _tool_card_styled_lines(block, width, start=0, stop=None):
             # 降级：无边框裸标题行（截断至 width）
             out.append(truncate_runs(title_runs, width))
         else:
-            # 顶边框：┌─ title ─…─┐（chars = BORDER_CHARS["single"]）
-            head = [StyledRun(chars[0] + chars[4] + " ", border)]
+            head = [StyledRun("\u250c\u2500 ", border)]
             if width > 0:
                 for run in truncate_runs(title_runs, max(1, width - 4)):
                     head.append(run)
                 fill = max(0, width - 1 - sum(r.width for r in head))
                 if fill > 0:
-                    head.append(StyledRun(chars[4] * fill, border))
-                head.append(StyledRun(chars[1], border))
+                    head.append(StyledRun("\u2500" * fill, border))
+                head.append(StyledRun("\u2510", border))
             else:
                 head.extend(title_runs)
             out.append(head)
@@ -335,11 +329,11 @@ def _tool_card_styled_lines(block, width, start=0, stop=None):
         if width <= 0:
             return ind_runs
         ind_runs = truncate_runs(ind_runs, inner_w)
-        body = [StyledRun(chars[5] + " ", body_border)] + ind_runs
+        body = [StyledRun("\u2502 ", body_border)] + ind_runs
         pad = inner_w - sum(r.width for r in ind_runs)
         if pad > 0:
             body.append(StyledRun(" " * pad, body_border))
-        body.append(StyledRun(" " + chars[5], body_border))
+        body.append(StyledRun(" \u2502", body_border))
         return body
 
     # ★ PERF-6b：主体行（bash omitted 提示 + 主体行循环 + head omitted 提示）
@@ -419,7 +413,7 @@ def _tool_card_styled_lines(block, width, start=0, stop=None):
                         if ultra_narrow:
                             body_lines.append([StyledRun("", None)])
                         else:
-                            body_lines.append([StyledRun(chars[5] + " " * (inner_w + 2) + chars[5], body_border)])
+                            body_lines.append([StyledRun("\u2502 " + " " * inner_w + " \u2502", body_border)])
                     continue
                 if kind == "bare":
                     body_lines.append(item[1])
@@ -429,10 +423,10 @@ def _tool_card_styled_lines(block, width, start=0, stop=None):
                     continue
                 # normal：内容 runs + pad（静态，已缓存）+ 静态边框拼接
                 content, pad = item[1], item[2]
-                body = [StyledRun(chars[5] + " ", body_border)] + content
+                body = [StyledRun("\u2502 ", body_border)] + content
                 if pad > 0:
                     body.append(StyledRun(" " * pad, body_border))
-                body.append(StyledRun(" " + chars[5], body_border))
+                body.append(StyledRun(" \u2502", body_border))
                 body_lines.append(body)
         # find/search/ls/read_file 头显示：后置省略提示行「… 后 N 行省略」
         # （head 省略的行在末尾——提示置于主体行之后，对齐终端 head 语义）
@@ -454,8 +448,7 @@ def _tool_card_styled_lines(block, width, start=0, stop=None):
             elif status == "fail":
                 out.append([StyledRun("\u2716", Style(fg=196))])
         elif width > 0:
-            # 底边框：└─ 状态 ─…─┘（chars = BORDER_CHARS["single"]）
-            tail = [StyledRun(chars[2] + chars[4] + " ", border)]
+            tail = [StyledRun("\u2514\u2500 ", border)]
             status = block.extra.get("tool_status", "running")
             if status == "done":
                 status_runs = [StyledRun("\u2714 完成", Style(fg=41))]
@@ -468,11 +461,11 @@ def _tool_card_styled_lines(block, width, start=0, stop=None):
                 tail.append(run)
             fill = max(0, width - 1 - sum(r.width for r in tail))
             if fill > 0:
-                tail.append(StyledRun(chars[4] * fill, border))
-            tail.append(StyledRun(chars[3], border))
+                tail.append(StyledRun("\u2500" * fill, border))
+            tail.append(StyledRun("\u2518", border))
             out.append(tail)
         else:
-            out.append([StyledRun(chars[2] + chars[3], border)])
+            out.append([StyledRun("\u2514\u2518", border)])
     block._tool_card_frame_cache = (_frame_key, out)
     return out
 
@@ -708,16 +701,10 @@ class AppModel:
             # 前面尚有未关闭/未提交块：不增量提交（等待 commit_block 随连续
             # 已关闭窗口一并提交；开放期间行保留在块内 live 渲染）。
             return
-        if block.kind == "tool":
-            # ★ 阶段5（工具卡元素树化）：工具卡片行由 ToolCard 标准控件组件
-            #   渲染（完整卡片从 block.lines 构建）——不写入 committed_lines
-            #   （无行级提交；``committed_count`` 推进见 ``commit_block``）。
-            block.committed_line_count = len(block.lines)
-            return
         # ★ 1.6：块首次提交（committed_line_count==0）记录卡片首行（角色头）
         #   在 committed_lines 中的偏移（committed_lines 只增不删，偏移稳定），
-        #   供 ChatView 区间发射（阶段5：content/reasoning 块经 committed-chat
-        #   发射其在 committed_lines 中的连续区间）。
+        #   供 close_tool_box 关闭时更新其后一行（正文标题）状态图标。
+        #   open 块不加卡片尾空行（_append_card_trailer 仅关闭提交时追加）。
         if block.committed_line_count == 0:
             block.extra.setdefault("_first_committed_offset", len(self.committed_lines))
         self.committed_lines.extend(
@@ -752,19 +739,6 @@ class AppModel:
             block = self.blocks[self.committed_count]
             if not block.closed:
                 break
-            if block.kind == "tool":
-                # ★ 阶段5（工具卡元素树化）：工具卡片行由 ToolCard 标准控件
-                #   组件渲染（完整卡片从 block.lines 构建）——不写入
-                #   committed_lines（无行级提交/冻结缓存）。释放旧行级缓存
-                #   （ToolCard 内部经 ``_tool_card_styled_lines`` 帧级缓存兜底）。
-                block.committed_line_count = len(block.lines)
-                block._open_styled_cache = None
-                block._tool_card_body_cache = None
-                block._tool_card_frame_cache = None
-                block._tool_card_body_lines_cache = None
-                block._cached_ink_lines = None
-                self.committed_count += 1
-                continue
             if block.committed_line_count < len(block.lines):
                 # ★ 1.6：块首次提交（committed_line_count==0）记录卡片首行偏移
                 #   （与 commit_open_block 一致——增量提交路径也须记录）。
@@ -933,10 +907,6 @@ class AppModel:
             count = block.committed_line_count
             if count <= 0:
                 continue
-            if block.kind == "tool":
-                # ★ 阶段5（工具卡元素树化）：工具卡行不写入 committed_lines
-                #   （由 ToolCard 标准控件组件按新宽度渲染）——reflow 跳过。
-                continue
             block.extra["_first_committed_offset"] = len(committed)
             committed.extend(self._card_lines_committed(block, width))
             # 方向3：reflow 重建含尾空行（_card_lines_committed 对 closed 块
@@ -1090,11 +1060,23 @@ class AppModel:
                     title = f"  \u00b7 {display} \u00b7 {detail}"
                 if existing.lines:
                     existing.lines[0] = AnsiLine.of(title, Style(fg=23, bold=True))
-                # ★ 阶段5（工具卡元素树化）：工具卡行不写入 committed_lines
-                #   （由 ToolCard 标准控件组件从 block.lines 渲染）——复用更新
-                #   标题只改块内行，下一帧 ToolCard 自动显示新标题（原 BUG-22/
-                #   BUG-30 ``_replace_committed_line`` 同步 committed 顶边框路径
-                #   移除）。
+                # ★ BUG-22（review 方向）：已增量提交过的 box（输出 > 阈值，
+                #   顶边框已在 committed_lines）复用更新标题时**同步重建
+                #   committed_lines 顶边框行**——修复前仅更新块内标题行，
+                #   渲染仍显示旧标题（如兜底 box 的空工具名）。
+                #   ★ BUG-30（review 方向）：经 ``_replace_committed_line``
+                #   替换新 Line + 列表身份变化——修复前直接 ``committed_lines[offset]
+                #   = Line(...)`` 替换元素但列表身份不变 → 前缀缓存命中返回旧
+                #   元素 → 新标题不上屏（与 close_tool_box 图标翻转同根因）。
+                if existing.committed_line_count > 0:
+                    offset = existing.extra.get("_first_committed_offset")
+                    if offset is not None and 0 <= offset < len(self.committed_lines):
+                        from src.tui.ink import Line
+                        head = _tool_card_styled_lines(
+                            existing, getattr(self, "width", 0), 0, None,
+                        )
+                        if head:
+                            self._replace_committed_line(offset, Line(head[0]))
                 self.active_tool = {
                     "name": display, "detail": detail, "status": "running",
                     "tool_name": tool_name or "",
@@ -1234,13 +1216,11 @@ class AppModel:
         )
 
     def close_tool_box(self, tool_id: str, success: bool) -> None:
-        """关闭工具分组：置状态并提交（工具卡片，阶段5 元素树化）。
+        """关闭工具分组：置状态、冻结并提交（工具卡片）。
 
         方向D 步骤15：
-          - extra.tool_status = done/fail（ToolCard 每帧从 block.extra 读取，
-            顶边框状态图标自动 ●→✔/✖——不再经 committed_lines 行级更新）。
-          - 阶段5：工具卡行不写入 committed_lines（由 ToolCard 标准控件组件
-            从 block.lines 渲染）；不冻结 ``_cached_ink_lines``。
+          - extra.tool_status = done/fail（卡片顶边框状态图标原位翻转 ✔/✖）；
+          - 关闭块冻结 _cached_ink_lines（含底边框，免每帧 Style merge）。
 
         Bug A 修复：按 tool_id 精确 pop，不再 fallback 到 _current_tool_box
         （单值指针语义已移除）；找不到对应 box 时静默丢弃（debug 日志）。
@@ -1273,19 +1253,54 @@ class AppModel:
         # 测试仍消费 active_tool；app 组件树已移除该组件）
         self.active_tool = None
 
-        # ★ 阶段5（工具卡元素树化）：工具卡行不写入 committed_lines（由 ToolCard
-        #   标准控件组件从 block.lines 渲染）——无需更新 committed_lines 顶边框
-        #   状态图标（原 1.6/BUG-30 ``_replace_committed_line`` 路径移除；ToolCard
-        #   每帧从 ``block.extra.tool_status`` 读取状态，关闭后自动显示 ✔/✖）。
+        # ★ 1.6 修复 + BUG-30（review 方向）修复：长工具输出（>
+        #   _TOOL_INCREMENTAL_THRESHOLD 触发增量提交后顶边框已在 committed_lines）
+        #   关闭时更新 committed_lines 中顶边框状态图标。
+        #   **BUG-30（渲染陈旧）**：修复前原地修改 ``top_line.runs``（保留 Line
+        #   对象引用）——committed-chat 前缀缓存（``chat_view._paint`` 键
+        #   ``(id(lines), n, box.y)``）与 diff 身份短路（``p is f`` → 相等跳过）
+        #   都按「Line 对象身份 = 内容不变」优化：内存中 Line 虽改为 ✔，但
+        #   prev 帧与 new 帧引用同一 Line 对象 → 渲染器认为无差异 → **终端顶边框
+        #   恒显示 ●，与底边框「✔ 完成」矛盾**（必现，长工具输出触发增量提交后
+        #   关闭必现）。
+        #   修复：**新建 Line 对象替换**（不复用旧对象）+ ``_replace_committed_line``
+        #   令 committed_lines 列表身份变化（浅拷贝）→ 前缀缓存键中 ``id(lines)``
+        #   失效 → 下一帧重建前缀 → diff 对新 Line 对象做 runs 值比较 → 顶边框
+        #   行被重写。短工具（未增量提交，offset 不存在）关闭时经 commit_block
+        #   提交的顶边框已带 done/fail 图标，无需更新。
+        #   卡片结构：``_first_committed_offset`` 指向卡片**首行（顶边框）**，
+        #   状态图标为边框内 runs[1]（``┌─ `` 前缀后；runs[0] 为边框前缀）。
+        offset = block.extra.get("_first_committed_offset")
+        if offset is not None and 0 <= offset < len(self.committed_lines):
+            icon = _tool_icon_runs(block)
+            if icon:
+                top_line = self.committed_lines[offset]
+                runs = list(top_line.runs)
+                # 顶边框结构：[0]=`┌─ ` 边框前缀, [1]=状态图标, [2:]=标题内容
+                idx = 1
+                if not (len(runs) > 1 and runs[0].text.startswith("\u250c")):
+                    # 防御：超窄宽度下标题被截断时按图标字符扫描定位
+                    for i, r in enumerate(runs):
+                        if r.text and r.text.strip() in ("\u25cf", "\u2714", "\u2716"):
+                            idx = i
+                            break
+                # ★ BUG-30：新建 Line 对象（不复用旧对象）+ 列表身份变化
+                from src.tui.ink import Line
+                self._replace_committed_line(offset, Line(runs[:idx] + icon + runs[idx + 1:]))
 
         block.closed = True
-        # ★ 阶段5（工具卡元素树化）：工具卡由 ToolCard 从 block.lines 渲染
-        #   （完整卡片，不经 ``_cached_ink_lines`` 冻结缓存）。
-        block._cached_ink_lines = None
+        # ★ 方向4（增量提交协同）：冻结仅**未提交部分**（已提交行在
+        #   committed_lines 中，避免重复存储；``_block_styled_lines`` 冻结
+        #   缓存分支已调整为 ``cache[0:]``——冻结缓存即未提交部分，start 参数
+        #   对冻结缓存无意义）。关闭后 ``commit_block`` 追加剩余尾（含状态行），
+        #   ``committed_line_count`` 计数保证不重复追加已提交行。
+        block._cached_ink_lines = self._block_to_ink_lines(block, block.committed_line_count)
         block._open_styled_cache = None  # 冻结后开放缓存不再需要
         self.commit_block(len(self.blocks) - 1)
-        # ★ PERF-6：清理工具卡缓存（commit_block 的 tool 分支已清理；此处兜底
-        #   兼容外部直接调用面）。
+        # ★ PERF-6：清理工具卡缓存须在 ``commit_block`` **之后**——commit_block
+        #   内部 ``_block_to_ink_lines``（tool 分支）会经 ``_tool_card_styled_lines``
+        #   重建缓存（close_tool_box 提前清理会被重建覆盖）。关闭块冻结后渲染走
+        #   ``_cached_ink_lines``，不再访问 tool 卡缓存，此处无条件释放。
         block._tool_card_body_cache = None
         block._tool_card_frame_cache = None
         block._tool_card_body_lines_cache = None
