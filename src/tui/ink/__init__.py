@@ -66,6 +66,7 @@ from .helpers import (
     truncate_line,
     pad_line,
     line_to_ansi,
+    BORDER_CHARS,
 )
 from .registry import register_host, unregister_host, get_host, has_host
 from .error_boundary import ErrorBoundary, create_error_boundary
@@ -176,6 +177,7 @@ __all__ = [
     "truncate_line",
     "pad_line",
     "line_to_ansi",
+    "BORDER_CHARS",
     # registry
     "register_host",
     "unregister_host",

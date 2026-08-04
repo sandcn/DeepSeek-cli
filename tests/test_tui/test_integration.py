@@ -431,8 +431,8 @@ class TestToolCardChain:
         block = tool_blocks[0]
         assert block.extra["tool_status"] == "done"
         assert block.closed is True
-        # 冻结行缓存存在（方向D 步骤15：关闭块免每帧重渲染）
-        assert block._cached_ink_lines is not None
+        # 阶段5：工具卡由 ToolCard 从 block.lines 渲染（不冻结 _cached_ink_lines）
+        assert block._cached_ink_lines is None
         # 标题含工具显示名（工具名经 registry 显示名映射）
         display = get_tool_display_name("bash") or "bash"
         assert display in block.lines[0].plain

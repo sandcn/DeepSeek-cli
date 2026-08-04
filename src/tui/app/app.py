@@ -81,6 +81,13 @@ def _ParseLine(props) -> object:
 
     方向4（动效）：前缀 ``~`` 替换为时间基 spinner（⠋⠙⠹… 10Hz 推进）——
     解析进行中更生动（与 subagent 卡片 spinner 共用语义）。
+
+    标准控件/布局重构（阶段4）：手写 ``~`` 前缀替换 + 单 TEXT styled →
+    **Row + InlineSpinner + TEXT** 标准控件表达（与 _StreamingLine 同模式，
+    React Ink 语义：行内时间基 spinner 控件 + 文本子节点）。行首 ``~``
+    前缀位拆为 InlineSpinner（帧序列与 ``_fx.SPINNER_FRAMES`` 同源，
+    10Hz 推进输出等价）；其余文本保留原 styled 处理（242 → 呼吸色）。
+    防御路径（无 ``~`` 前缀/非标准结构）回退旧单 TEXT 逻辑，行为不变。
     """
     model = props["model"]
     line = model.parse_line
@@ -90,37 +97,56 @@ def _ParseLine(props) -> object:
         return h(TEXT, {"children": ""})
     # ★ 呼吸色：仅当解析行存在时计算（每帧一次 time_glow，0.1s 桶缓存命中）
     from src.tui.app._theme import time_glow
-    from src.tui.app import _fx
     glow = time_glow(242, 252, 8.0)
-    # 时间基 spinner（解析进度行常驻 live，10Hz 渲染时平滑推进）
-    # ★ 方向4：帧序列唯一真源 _fx.SPINNER_FRAMES（原内联字符串收敛）
-    sp = _fx.spinner_char()
-    runs = []
-    first_text = True
-    for r in line.runs:
-        if not r.text:
-            continue
-        st = r.style
+
+    def _resolve(st):
         # 解析行基础样式为 Style(fg=242)（apply.py _S_PARSE）——运行时替换为
         # 呼吸色（保留其他属性）；非 242 样式（防御：未来改样式）原样保留。
         if st is not None and getattr(st, "fg", None) == 242:
-            st = Style(fg=glow)
-        text = r.text
-        # 首个文本 run 中的 `~` 前缀替换为 spinner（apply 结构：
-        # ``f"  ~ {tool_names}..."``——`~` 出现在首个 run 行首前缀位）
-        # ★ BUG-40（review 方向）：仅替换**行首固定前缀位**（前导空格后的
-        #   第一个 `~`）——修复前 ``text.replace("~", sp, 1)`` 替换首个 run 内
-        #   **第一个** `~`，工具名/参数含 `~`（如 ``~/proj``）时替换错误字符。
-        if first_text:
-            stripped = text.lstrip(" ")
-            lead = len(text) - len(stripped)
-            if stripped.startswith("~"):
-                text = text[:lead] + sp + stripped[1:]
-                first_text = False
-        runs.append(StyledRun(text, st))
-    # ★ 阶段2（标准布局容器重构）：单子 BOX 展开为直接 TEXT（父容器 Column
-    #   中 fill 语义与 BOX 内 TEXT 等价，输出与重构前一致）。
-    return h(TEXT, {"styled": runs})
+            return Style(fg=glow)
+        return st
+
+    raw_runs = getattr(line, "runs", None)
+    if not raw_runs:
+        return h(TEXT, {"children": ""})
+    # 首个文本 run（`~` 只可能在首个文本 run 的行首前缀位——BUG-40）
+    first_idx = None
+    for i, r in enumerate(raw_runs):
+        if r.text:
+            first_idx = i
+            break
+    if first_idx is None:
+        return h(TEXT, {"children": ""})
+    r0 = raw_runs[first_idx]
+    stripped = r0.text.lstrip(" ")
+    lead = len(r0.text) - len(stripped)
+    if not stripped.startswith("~"):
+        # 防御路径：无行首 `~` → 整行原样（呼吸色处理），单 TEXT 输出
+        runs = [
+            StyledRun(r.text, _resolve(r.style))
+            for r in raw_runs if r.text
+        ]
+        return h(TEXT, {"styled": runs})
+    # 标准路径：前导空格 + InlineSpinner（行首 ~ 前缀位）+ 其余文本
+    spinner_style = _resolve(r0.style)
+    children = []
+    if lead > 0:
+        children.append(h(TEXT, {
+            "children": " " * lead,
+            "style": spinner_style,
+        }))
+    # 时间基 spinner 标准控件（10Hz；帧序列与 _fx.SPINNER_FRAMES 同源）
+    children.append(h(InlineSpinner, {"tickHz": 10, "style": spinner_style}))
+    # 其余文本：首个 run 的 `~` 之后 + 后续 run（242 → 呼吸色，其他保留）
+    rest_runs = [StyledRun(stripped[1:], spinner_style)]
+    for r in raw_runs[first_idx + 1:]:
+        if r.text:
+            rest_runs.append(StyledRun(r.text, _resolve(r.style)))
+    if rest_runs:
+        children.append(h(TEXT, {"styled": rest_runs}))
+    # ★ 阶段4（标准布局容器重构）：手写单 TEXT styled → Row 标准布局容器
+    #   （Row + InlineSpinner + TEXT，与 _StreamingLine 同模式）。
+    return h(Row, {"height": 1}, children)
 
 
 def _StreamingLine(props) -> object:

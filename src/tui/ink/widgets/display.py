@@ -461,15 +461,8 @@ def Divider(props: dict) -> Element:
 # Panel — 带标题边框面板
 # ═══════════════════════════════════════════════════════════
 
-#: Panel 边框字符元组（复用 _BORDER_CHARS 同族：顶/底角 + 横/竖线）
-_PANEL_BORDER_CHARS: dict[str, tuple[str, str, str, str, str, str]] = {
-    "single": ("┌", "┐", "└", "┘", "─", "│"),
-    "double": ("╔", "╗", "╚", "╝", "═", "║"),
-    "round": ("╭", "╮", "╰", "╯", "─", "│"),
-    "bold": ("┏", "┓", "┗", "┛", "━", "┃"),
-    "classic": ("+", "+", "+", "+", "-", "|"),
-    "dashed": ("┌", "┐", "└", "┘", "┄", "┆"),
-}
+# 边框字符统一引用 helpers.BORDER_CHARS 单一真源（阶段4 收敛；Panel 经 BOX
+# border 标准布局绘制，不直接使用字符表——旧 _PANEL_BORDER_CHARS 死常量已删）。
 
 
 def _children(props: dict):

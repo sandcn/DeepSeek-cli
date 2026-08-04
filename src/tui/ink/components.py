@@ -20,6 +20,7 @@ import logging
 from src.tui.core.style import Style
 from src.tui._screen import wcswidth_simple
 from .fiber import Fiber
+from .helpers import BORDER_CHARS as _BORDER_CHARS
 from .layout import layout_tree, wrap_text_lines, _skip_function
 from .output import Frame, Line
 
@@ -76,22 +77,10 @@ def _border_style(props: dict, edge: str | None = None) -> Style:
     )
 
 
-#: borderStyle 变体字符表（完善 react ink）：单线/双线/圆角/粗体/经典/虚线/
-#: 单双混合（singleDouble/doubleSingle）。键 = props["borderStyle"] 字符串；
-#: 缺省 "single"。classic 为 ASCII 经典边框（``+---``/``|``）；dashed 为虚线
-#: 边框（``┄``/``┆``，视觉更轻）。
-#: singleDouble：顶/底双线、左右单线（``╓ ╖ ╙ ╜ ═ ║``）；doubleSingle：
-#: 顶/底单线、左右双线（``╒ ╕ ╘ ╛ ─ ╞`` 类）——react-ink 完整变体。
-_BORDER_CHARS: dict[str, tuple[str, str, str, str, str, str]] = {
-    "single": ("┌", "┐", "└", "┘", "─", "│"),
-    "double": ("╔", "╗", "╚", "╝", "═", "║"),
-    "round": ("╭", "╮", "╰", "╯", "─", "│"),
-    "bold": ("┏", "┓", "┗", "┛", "━", "┃"),
-    "classic": ("+", "+", "+", "+", "-", "|"),
-    "dashed": ("┌", "┐", "└", "┘", "┄", "┆"),
-    "singleDouble": ("╓", "╖", "╙", "╜", "═", "│"),
-    "doubleSingle": ("╒", "╕", "╘", "╛", "─", "║"),
-}
+#: borderStyle 变体字符表：统一引用 ``helpers.BORDER_CHARS`` 单一真源
+#: （阶段4 收敛——components/codeblock/display/model 共用同一表，消除四处
+#: 各自内联的边框字符定义漂移风险）。格式 ``(左上, 右上, 左下, 右下, 横线,
+#: 竖线)``；键 = props["borderStyle"] 字符串，缺省 "single"。
 
 #: 自定义 borderStyle 对象缺省值（React Ink v6：``{topLeft, top, topRight,
 #: left, bottomLeft, bottom, bottomRight, right}``——缺省项回退 "single"）。
@@ -792,6 +781,35 @@ def _canvas_row_to_line(row) -> Line:
     return line
 
 
+def _find_all_committed_chat(root: Fiber):
+    """收集**所有** committed-chat host fiber（DFS 顺序=树顺序）。
+
+    ★ 阶段5（工具卡元素树化 + committed 区间发射）：ChatView 按块经
+    committed-chat 发射 ``committed_lines[start:end]`` 区间——组件树可能挂载
+    **多个** committed-chat（每个已提交 content/reasoning 块一个）。render_frame
+    需收集全部前缀填入画布（单 committed-chat 场景仍走稳定前缀路径）。
+
+    ``_committed_chat_present`` 标志（reconciler 每帧调和时统计）为 False 时
+    O(1) 返回空列表（纯 TEXT 组件树零 DFS）。
+    """
+    if not getattr(root, "_committed_chat_present", False):
+        return []
+    out: list = []
+    stack = [root]
+    while stack:
+        f = stack.pop()
+        if getattr(f, "deleted", False):
+            continue
+        if f.is_host and f.type == "committed-chat":
+            out.append(f)
+            continue  # committed-chat 无 host 子节点，不深入
+        child = f.child
+        while child is not None:
+            stack.append(child)
+            child = child.sibling
+    return out
+
+
 def _find_committed_chat(root: Fiber):
     """DFS 查找 committed-chat host fiber（聊天历史增量缓存发射器）。
 
@@ -895,61 +913,90 @@ def render_frame(root: Fiber, width: int) -> Frame:
     #   全量（防御层，成本 O(1)）；非顶部前缀已由 ``chat_view._paint`` 跳过
     #   画布写入，回退全量前将前缀行填入画布对应区域（box.y 起）保证 committed
     #   行不丢失。
-    committed = _find_committed_chat(root)
-    if committed is not None:
-        prefix_info = getattr(committed, "_committed_prefix", None)
-        if prefix_info is not None:
-            committed_box = committed.layout_box
-            prefix = prefix_info[1]
-            # ★ 行宽守卫（E-COMMITTED-OVERFLOW 防御）：前缀含超宽行
-            #   （reflow_committed 未执行/失败——终端宽度变化后 committed_lines
-            #   按旧宽度 wrap）时截断超宽行（E-OVERFLOW-GUARD 语义），正常行
-            #   保持身份短路。截断仅对超宽行执行（缓存重建时标记 all_ok=False；
-            #   reflow 修复后缓存重建 all_ok=True 恢复零开销路径）。
-            prefix_ok = prefix_info[2] if len(prefix_info) > 2 else True
-            if not prefix_ok:
-                from .helpers import truncate_line
-                prefix = [
-                    truncate_line(ln, width) if ln.width > width else ln
-                    for ln in prefix
-                ]
-            if committed_box is not None and committed_box.y == 0 and prefix_ok:
-                tail_start = min(len(prefix), len(canvas))
-                tail = [_to_line(r) for r in canvas[tail_start:]]
-                # ★ 稳定前缀（PERF-7）：prefix 为复用列表对象（``_committed_prefix``
-                # 缓存命中），标记 stable_prefix 使 ``first_diff_line`` 跳过前缀
-                # 区间（避免大文档每帧全量逐行 is 比较）。
+    #   ★ 阶段5（多 committed-chat）：ChatView 按块区间发射多个 committed-chat
+    #   （工具卡元素树化后 content/reasoning 每块一个）——收集**所有**前缀；
+    #   单 committed-chat 场景走原稳定前缀路径（大历史 O(live) diff）；多
+    #   committed-chat 场景将全部前缀填入画布（Line 对象身份保持 → diff 逐行
+    #   is 比较，O(总行数) is 比较极快，可接受）。
+    committed_list = _find_all_committed_chat(root)
+    if committed_list:
+        if len(committed_list) == 1:
+            committed = committed_list[0]
+            prefix_info = getattr(committed, "_committed_prefix", None)
+            if prefix_info is not None:
+                committed_box = committed.layout_box
+                prefix = prefix_info[1]
+                # ★ 行宽守卫（E-COMMITTED-OVERFLOW 防御）：前缀含超宽行
+                #   （reflow_committed 未执行/失败——终端宽度变化后 committed_lines
+                #   按旧宽度 wrap）时截断超宽行（E-OVERFLOW-GUARD 语义），正常行
+                #   保持身份短路。截断仅对超宽行执行（缓存重建时标记 all_ok=False；
+                #   reflow 修复后缓存重建 all_ok=True 恢复零开销路径）。
+                prefix_ok = prefix_info[2] if len(prefix_info) > 2 else True
+                if not prefix_ok:
+                    from .helpers import truncate_line
+                    prefix = [
+                        truncate_line(ln, width) if ln.width > width else ln
+                        for ln in prefix
+                    ]
+                if committed_box is not None and committed_box.y == 0 and prefix_ok:
+                    tail_start = min(len(prefix), len(canvas))
+                    tail = [_to_line(r) for r in canvas[tail_start:]]
+                    # ★ 稳定前缀（PERF-7）：prefix 为复用列表对象（``_committed_prefix``
+                    # 缓存命中），标记 stable_prefix 使 ``first_diff_line`` 跳过前缀
+                    # 区间（避免大文档每帧全量逐行 is 比较）。
+                    return Frame(
+                        prefix + tail,
+                        stable_prefix=prefix,
+                        stable_prefix_offset=0,
+                        stable_prefix_len=len(prefix),
+                    )
+                # 非顶部 / 前缀含超宽行：前缀行填入画布对应区域（_paint 命中缓存
+                # 已跳过画布写入；超宽行已截断，正常行身份保持）。
+                # ★ 方向3（性能）：改为「顶部画布行 + 前缀 + 尾部画布行」直接拼接——
+                #   修复前先把前缀行逐行拷贝回画布再全量 ``_canvas_row_to_line``
+                #   （大历史下每帧 O(全部行) 转换，即使前缀行已是 Line 也要遍历）。
+                #   本实现：canvas[0:y0]（TopHeader 等非 committed 顶部行）逐行转换；
+                #   前缀直接复用（Line 对象身份不变 → diff 身份短路）；尾部
+                #   canvas[y0+len(prefix):]（live 区）逐行转换。防御：len(prefix)
+                #   可能超 canvas 尾部范围（reflow 期间布局陈旧）→ 按 fit 截断
+                #   （与旧实现「超出画布的前缀行丢弃」行为一致）。
+                y0 = committed_box.y if committed_box is not None else 0
+                fit = min(len(prefix), max(0, len(canvas) - y0))
+                header = [_to_line(r) for r in canvas[:y0]]
+                tail = [_to_line(r) for r in canvas[y0 + fit:]]
+                # ★ 稳定前缀（PERF-7）：prefix 为复用列表对象（缓存命中），其
+                #   ``[:fit]`` 部分在 Frame.lines 的 [y0, y0+fit) 区间——标记
+                #   stable_prefix 使 ``first_diff_line`` 跳过该区间（前缀区间外
+                #   的 header/tail 行仍逐行比较）。防御：fit 可能 < len(prefix)
+                #   （reflow 布局陈旧），stable_prefix_len 用实际覆盖 fit。
                 return Frame(
-                    prefix + tail,
+                    header + prefix[:fit] + tail,
                     stable_prefix=prefix,
-                    stable_prefix_offset=0,
-                    stable_prefix_len=len(prefix),
+                    stable_prefix_offset=y0,
+                    stable_prefix_len=fit,
                 )
-            # 非顶部 / 前缀含超宽行：前缀行填入画布对应区域（_paint 命中缓存
-            # 已跳过画布写入；超宽行已截断，正常行身份保持）。
-            # ★ 方向3（性能）：改为「顶部画布行 + 前缀 + 尾部画布行」直接拼接——
-            #   修复前先把前缀行逐行拷贝回画布再全量 ``_canvas_row_to_line``
-            #   （大历史下每帧 O(全部行) 转换，即使前缀行已是 Line 也要遍历）。
-            #   本实现：canvas[0:y0]（TopHeader 等非 committed 顶部行）逐行转换；
-            #   前缀直接复用（Line 对象身份不变 → diff 身份短路）；尾部
-            #   canvas[y0+len(prefix):]（live 区）逐行转换。防御：len(prefix)
-            #   可能超 canvas 尾部范围（reflow 期间布局陈旧）→ 按 fit 截断
-            #   （与旧实现「超出画布的前缀行丢弃」行为一致）。
-            y0 = committed_box.y if committed_box is not None else 0
-            fit = min(len(prefix), max(0, len(canvas) - y0))
-            header = [_to_line(r) for r in canvas[:y0]]
-            tail = [_to_line(r) for r in canvas[y0 + fit:]]
-            # ★ 稳定前缀（PERF-7）：prefix 为复用列表对象（缓存命中），其
-            #   ``[:fit]`` 部分在 Frame.lines 的 [y0, y0+fit) 区间——标记
-            #   stable_prefix 使 ``first_diff_line`` 跳过该区间（前缀区间外
-            #   的 header/tail 行仍逐行比较）。防御：fit 可能 < len(prefix)
-            #   （reflow 布局陈旧），stable_prefix_len 用实际覆盖 fit。
-            return Frame(
-                header + prefix[:fit] + tail,
-                stable_prefix=prefix,
-                stable_prefix_offset=y0,
-                stable_prefix_len=fit,
-            )
+        else:
+            # 多 committed-chat（阶段5 块区间发射）：全部前缀填入画布对应区域
+            # （``chat_view._paint`` 命中缓存已跳过画布写入）。行保持 Line 对象
+            # 身份 → diff 逐行 is 比较；前缀含超宽行时截断（E-COMMITTED-OVERFLOW）。
+            from .helpers import truncate_line
+            for committed in committed_list:
+                prefix_info = getattr(committed, "_committed_prefix", None)
+                if prefix_info is None:
+                    continue
+                box = committed.layout_box
+                if box is None:
+                    continue
+                prefix = prefix_info[1]
+                prefix_ok = prefix_info[2] if len(prefix_info) > 2 else True
+                y0 = box.y
+                fit = min(len(prefix), max(0, len(canvas) - y0))
+                for i in range(fit):
+                    row = y0 + i
+                    ln = prefix[i]
+                    if not prefix_ok and ln.width > width:
+                        ln = truncate_line(ln, width)
+                    canvas[row] = ln
     return Frame(_to_line(row) for row in canvas)
 
 

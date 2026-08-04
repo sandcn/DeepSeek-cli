@@ -115,9 +115,11 @@ class TestStatusBarMemo:
                         f"渐显窗口内同 1s 桶推进 0.2s 应重算，实际 {mock_br.call_count}"
                     )
         # dot 色号变化（渐显插值推进：elapsed 0.0 → start 238；0.2 → 插值色）
+        # 阶段5：_build_status_runs 返回 (model_runs, stats_runs) 元组——
+        # model_runs 首个 run 为状态点（dot），色号断言取其 [0][0]。
         assert len(captured) == 2
-        assert captured[0][0].style.fg != captured[1][0].style.fg, (
-            f"dot 色号应随渐显推进变化: {captured[0][0].style.fg} vs {captured[1][0].style.fg}"
+        assert captured[0][0][0].style.fg != captured[1][0][0].style.fg, (
+            f"dot 色号应随渐显推进变化: {captured[0][0][0].style.fg} vs {captured[1][0][0].style.fg}"
         )
 
     def test_model_name_change_resets_fade_regression(self):
@@ -151,12 +153,14 @@ class TestStatusBarMemo:
                         f"model_name 变化应触发重算，实际 {mock_br.call_count}"
                     )
         # 两次渲染 dot_elapsed 均从 0 开始（fade 重置）→ dot 色号均 = 起始暗色 238
-        assert captured[0][0].style.fg == 238, (
-            f"首次渲染 dot 应为起始暗色 238，实际 {captured[0][0].style.fg}"
+        # 阶段5：_build_status_runs 返回 (model_runs, stats_runs) 元组——
+        # model_runs 首个 run 为状态点（dot）。
+        assert captured[0][0][0].style.fg == 238, (
+            f"首次渲染 dot 应为起始暗色 238，实际 {captured[0][0][0].style.fg}"
         )
-        assert captured[1][0].style.fg == 238, (
+        assert captured[1][0][0].style.fg == 238, (
             f"model_name 切换后渐显应重置（dot 回起始暗色 238），"
-            f"实际 {captured[1][0].style.fg}"
+            f"实际 {captured[1][0][0].style.fg}"
         )
 
 

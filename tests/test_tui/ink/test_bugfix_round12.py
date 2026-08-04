@@ -60,16 +60,23 @@ def _build_long_tool_model():
 
 
 def test_tool_icon_refresh_after_close_renderer():
-    """长工具输出（增量提交后）关闭 → 渲染器重写顶边框行（●→✔）。"""
+    """长工具输出（增量提交后）关闭 → ToolCard 渲染重写顶边框行（●→✔）。
+
+    阶段5：工具卡行不写入 committed_lines（由 ToolCard 标准控件组件从
+    block.lines 渲染）——关闭后 block.extra.tool_status 变化 → 下一帧顶边框
+    图标自动翻转（原 committed 前缀缓存失效路径由 ToolCard 帧级缓存承接）。
+    """
     from src.tui.ink.reconciler import Reconciler
     from src.tui.ink.renderer import InkRenderer
     from src.tui.ink import components as C
     from src.tui.ink.element import h
+    from src.tui.app.tool_card import ToolCard
 
     m = _build_long_tool_model()
+    blk = m.blocks[-1]
     r = Reconciler()
     root = r.create_root()
-    r.render(root, h("committed-chat", {"lines": m.committed_lines}), 40, 24)
+    r.render(root, h(ToolCard, {"block": blk, "width": 40}), 40, 24)
     stream = io.StringIO()
     ink = InkRenderer(stream=stream, height=200)  # 全部可见
     f_a = C.render_frame(root, 40)
@@ -78,12 +85,12 @@ def test_tool_icon_refresh_after_close_renderer():
     assert "●" in first.split("\n")[0], "首帧顶边框应为 ●（running）"
 
     m.close_tool_box("t1", True)
-    r.render(root, h("committed-chat", {"lines": m.committed_lines}), 40, 24)
+    r.render(root, h(ToolCard, {"block": blk, "width": 40}), 40, 24)
     f_b = C.render_frame(root, 40)
     before = stream.getvalue()
     ink.render(f_b)
     delta = stream.getvalue()[len(before):]
-    # delta 含光标定位（\x1b[71A）+ 顶边框重写（┌─ ✔）
+    # delta 含顶边框重写（┌─ ✔）
     assert "┌" in delta and "✔" in delta, (
         "关闭后 diff 应重写顶边框行（含 ✔ 图标）"
     )
@@ -95,7 +102,10 @@ def test_tool_icon_refresh_after_close_renderer():
 def test_committed_lines_identity_changes_on_replace():
     """_replace_committed_line 令 committed_lines 列表身份变化（前缀缓存失效）。"""
     from src.tui.ink import Line
-    m = _build_long_tool_model()
+    from src.renderer.ansi.helpers import AnsiLine
+    from src.tui.app.model import AppModel
+    m = AppModel()
+    m.append_committed("content", [AnsiLine.of("old line")])
     old_id = id(m.committed_lines)
     m._replace_committed_line(0, Line.of("  new"))
     assert id(m.committed_lines) != old_id

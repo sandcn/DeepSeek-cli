@@ -22,21 +22,15 @@ import logging
 from src.tui.core.style import Style
 from src.tui._screen import wcswidth_simple
 from ..element import TEXT, Element, h
-from ..helpers import _parse_color
+from ..helpers import BORDER_CHARS as _BORDER_CHARS, _parse_color
 from ..widgets.layout import Row, Column
 
 _logger = logging.getLogger(__name__)
 
 __all__ = ["CodeBlock"]
 
-#: 边框字符（single/double/round/bold/classic）：(左上, 右上, 左下, 右下, 横线, 竖线)
-_BORDER_CHARS: dict[str, tuple[str, str, str, str, str, str]] = {
-    "single": ("\u250c", "\u2510", "\u2514", "\u2518", "\u2500", "\u2502"),   # ┌ ┐ └ ┘ ─ │
-    "double": ("\u2554", "\u2557", "\u255a", "\u255d", "\u2550", "\u2551"),   # ╔ ╗ ╚ ╝ ═ ║
-    "round": ("\u256d", "\u256e", "\u2570", "\u256f", "\u2500", "\u2502"),    # ╭ ╮ ╰ ╯ ─ │
-    "bold": ("\u250f", "\u2513", "\u2517", "\u251b", "\u2501", "\u2503"),     # ┏ ┓ ┗ ┛ ━ ┃
-    "classic": ("+", "+", "+", "+", "-", "|"),
-}
+#: 边框字符**单一真源**（阶段4 收敛）：统一引用 ``helpers.BORDER_CHARS``
+#: （components/display/model 共用同一表，消除各处内联边框字符漂移）。
 _DEFAULT_BORDER = ("\u250c", "\u2510", "\u2514", "\u2518", "\u2500", "\u2502")
 
 

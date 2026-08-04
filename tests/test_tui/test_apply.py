@@ -6,7 +6,7 @@ content close/reopen、tool 组开闭、状态计数。
 
 from __future__ import annotations
 
-from src.tui.app.model import AppModel, ReasoningState
+from src.tui.app.model import AppModel, ReasoningState, _tool_card_styled_lines
 from src.tui.app.apply import apply_cmd
 from src.tui._const import (
     RenderCommand,
@@ -37,6 +37,19 @@ from src.tui._const import (
 
 def _model() -> AppModel:
     return AppModel()
+
+
+def _tool_card_plains(block, width: int = 40) -> list:
+    """渲染工具卡为 plain 行列表（阶段5：工具卡由 ToolCard 标准控件组件渲染）。
+
+    复用 ``_tool_card_styled_lines``（ToolCard 内部行构建单一真源）——轻量验证
+    工具卡渲染内容（省略提示/修剪/边框），不依赖 reconciler。
+    """
+    from src.tui.app.model import _tool_card_styled_lines
+    return [
+        "".join(r.text for r in row)
+        for row in _tool_card_styled_lines(block, width, 0, None)
+    ]
 
 
 class TestBasicCommands:
@@ -303,9 +316,10 @@ class TestToolBox:
         m.open_tool_box("t1", "web_search")
         m.append_tool_output("t1", raw + "\n")
         m.close_tool_box("t1", True)
-        # 经 _block_to_ink_lines 提交到 committed_lines → 行级 wrap 后渲染
-        rendered = "\n".join(l.render() for l in m.committed_lines)
-        stripped = _re.sub(r"\x1b\[[0-9;?]*[A-Za-z]", "", rendered)
+        # 阶段5：工具卡行不写入 committed_lines（由 ToolCard 渲染）——经
+        # ``_tool_card_styled_lines`` wrap 后校验文本无残缺转义片段
+        rows = _tool_card_styled_lines(m.blocks[-1], 8, 0, None)
+        stripped = "\n".join("".join(r.text for r in row) for row in rows)
         for frag in (";49", ";00m", ";49m", "8;248"):
             assert frag not in stripped, f"wrap 残留残缺转义片段 {frag!r}: {stripped!r}"
 
@@ -373,8 +387,10 @@ class TestToolBox:
         assert m.blocks[-1].closed is True
         assert m.blocks[-1].extra["tool_status"] == "done"
         assert m.tool_boxes == {}
-        # 渲染后无重复顶边框（committed_lines 仅一个 `┌─` 首行）
-        tops = [ln.plain for ln in m.committed_lines if ln.plain.startswith("\u250c")]
+        # 渲染后无重复顶边框（ToolCard 渲染仅一个 `┌─` 首行；阶段5 工具卡行
+        # 不写入 committed_lines）
+        plains = _tool_card_plains(m.blocks[-1], 40)
+        tops = [p for p in plains if p.startswith("\u250c")]
         assert len(tops) == 1, f"重复 open 不应产生孤儿顶边框: {tops}"
 
     def test_tool_open_after_output_fallback_reuses_box(self):
@@ -430,7 +446,7 @@ class TestToolBox:
         # 省略计数记录（10 输出 - 3 保留 = 7）
         assert block.extra["_bash_omitted_lines"] == 7
         # 卡片渲染：顶边框 + 省略提示 + 最后 3 行 + 底边框；前置行不显示
-        plains = [l.plain for l in m.committed_lines]
+        plains = _tool_card_plains(block, 40)
         assert "前 7 行省略" in "".join(plains)
         assert any("line7" in p for p in plains)
         assert any("line9" in p for p in plains)
@@ -452,9 +468,10 @@ class TestToolBox:
             # 省略提示已触发
             assert m.blocks[-1].extra.get("_bash_omitted_lines", 0) > 0
             # 卡片所有行宽度 ≤ 终端宽度（无撑破边框的超宽行）
-            for i, ln in enumerate(m.committed_lines):
-                assert ln.width <= width, (
-                    f"width={width} committed_lines[{i}] 宽度 {ln.width} 超宽: {ln.plain!r}"
+            for i, row in enumerate(_tool_card_styled_lines(m.blocks[-1], width, 0, None)):
+                w = sum(r.width for r in row)
+                assert w <= width, (
+                    f"width={width} 工具卡[{i}] 宽度 {w} 超宽: {''.join(r.text for r in row)!r}"
                 )
 
     def test_head_tools_display(self):
@@ -473,7 +490,7 @@ class TestToolBox:
             # 省略计数记录（10 输出 - 3 保留 = 7）
             assert block.extra["_head_omitted_lines"] == 7, tool
             # 卡片渲染：顶边框 + 前 3 行 + 省略提示 + 底边框；后置行不显示
-            plains = [l.plain for l in m.committed_lines]
+            plains = _tool_card_plains(block, 40)
             assert "后 7 行省略" in "".join(plains), tool
             assert any("line0" in p for p in plains), tool
             assert any("line2" in p for p in plains), tool
@@ -509,9 +526,10 @@ class TestToolBox:
             # 省略提示已触发
             assert m.blocks[-1].extra.get("_head_omitted_lines", 0) > 0
             # 卡片所有行宽度 ≤ 终端宽度（无撑破边框的超宽行）
-            for i, ln in enumerate(m.committed_lines):
-                assert ln.width <= width, (
-                    f"width={width} committed_lines[{i}] 宽度 {ln.width} 超宽: {ln.plain!r}"
+            for i, row in enumerate(_tool_card_styled_lines(m.blocks[-1], width, 0, None)):
+                w = sum(r.width for r in row)
+                assert w <= width, (
+                    f"width={width} 工具卡[{i}] 宽度 {w} 超宽: {''.join(r.text for r in row)!r}"
                 )
 
     def test_tool_summary_closes_open_box(self):
@@ -531,7 +549,8 @@ class TestToolBox:
         assert block.committed_line_count >= 64, (
             f"增量提交应推进 committed_line_count，实际 {block.committed_line_count}"
         )
-        assert len(m.committed_lines) >= 64  # committed_lines 含已提交行
+        # 阶段5：工具卡行不写入 committed_lines（由 ToolCard 渲染）——增量提交
+        # 仅推进 committed_line_count（块内仅留未提交尾）
         remaining = len(block.lines) - block.committed_line_count
         assert remaining < 64  # 块内仅留未提交尾
 
@@ -546,20 +565,14 @@ class TestToolBox:
         m.close_tool_box("t1", True)
         # 关闭后全部行已提交（committed_line_count == len）
         assert block.committed_line_count == len(block.lines)
-        # 无重复行：卡片结构下 committed_lines = 顶边框 + 主体行（标题行被顶边框
-        # 替代、状态行被跳过——移入底边框）+ 底边框 + 卡片尾空行 → 块行 +1
-        assert len(m.committed_lines) == len(block.lines) + 1, (
-            f"关闭后 committed_lines 应 = 块行 + 底边框，committed={len(m.committed_lines)} lines={len(block.lines)}"
-        )
-        committed_plains = [l.plain for l in m.committed_lines]
-        # 尾行为卡片空行；✔ 在顶边框与底边框 `✔ 完成`（去空行后）
-        assert committed_plains[-1] == ""
-        assert "✔" in "".join(committed_plains)
-        assert any("line0" in p for p in committed_plains)
-        assert any("line69" in p for p in committed_plains)
-        # 内容顺序：line0 在前、line69 在后
-        assert committed_plains.index(next(p for p in committed_plains if "line0" in p)) < \
-               committed_plains.index(next(p for p in committed_plains if "line69" in p))
+        # 阶段5：工具卡行不写入 committed_lines（由 ToolCard 渲染）——渲染后
+        # 无重复行：line0 在前、line69 在后，✔ 在顶边框与底边框
+        plains = _tool_card_plains(block, 80)
+        assert "✔" in "".join(plains)
+        assert any("line0" in p for p in plains)
+        assert any("line69" in p for p in plains)
+        assert plains.index(next(p for p in plains if "line0" in p)) < \
+               plains.index(next(p for p in plains if "line69" in p))
 
     def test_commit_open_block_header_once_trailer_once(self):
         """卡片结构：commit_open_block 多次增量提交角色头恰好一次；关闭后尾空行恰好一次。"""
@@ -570,16 +583,17 @@ class TestToolBox:
         for i in range(200):
             m.append_tool_output("t1", f"line{i}\n")
         assert block.committed_line_count > 0
-        # 工具卡片顶边框仅首次提交（committed_line_count==0）发射一次
-        # （卡片化后顶边框替代 `▎⚡` 角色头，无独立角色头行）
-        borders = [l for l in m.committed_lines if l.plain.startswith("\u250c")]
+        # 阶段5：工具卡行不写入 committed_lines（由 ToolCard 渲染）——开放期
+        # 渲染仅一个顶边框、无底边框；关闭后含底边框
+        plains = _tool_card_plains(block, 80)
+        borders = [p for p in plains if p.startswith("\u250c")]
         assert len(borders) == 1, f"工具卡片顶边框应恰好一次，实际 {len(borders)}"
-        # 开放块未关闭 → 尚无卡片尾空行（无空 plain 行）
-        assert all(l.plain != "" for l in m.committed_lines), "开放块不应有尾空行"
+        assert not any(p.startswith("\u2514") for p in plains), "开放块不应有底边框"
         m.close_tool_box("t1", True)
-        # 关闭提交（新增状态行）→ 卡片尾空行恰好一次
-        assert m.committed_lines[-1].plain == "", "关闭后应有卡片尾空行"
-        assert sum(1 for l in m.committed_lines if l.plain == "") == 1, "尾空行应恰好一次"
+        # 关闭提交 → 渲染含底边框（✔ 完成）
+        plains_closed = _tool_card_plains(m.blocks[-1], 80)
+        assert any(p.startswith("\u2514") for p in plains_closed), "关闭后应有底边框"
+        assert "✔ 完成" in "".join(plains_closed)
 
     def test_tool_output_under_threshold_no_incremental(self):
         """工具输出 <64 行 → 不触发增量提交（committed_line_count 保持 0）。"""
@@ -591,7 +605,7 @@ class TestToolBox:
         assert block.committed_line_count == 0
 
     def test_cached_ink_lines_frozen_uncommitted_tail(self):
-        """close_tool_box 冻结仅未提交部分（已提交行在 committed_lines 中）。"""
+        """阶段5：工具卡由 ToolCard 从 block.lines 渲染（不冻结 _cached_ink_lines）。"""
         m = _model()
         m.open_tool_box("t1", "web_search")
         block = m.blocks[-1]
@@ -600,10 +614,15 @@ class TestToolBox:
         committed_before = block.committed_line_count
         assert committed_before > 0
         m.close_tool_box("t1", True)
-        # 冻结缓存 = 未提交尾（不含已提交行 + 底边框；状态行跳过——已移入底
-        # 边框，故与「未提交行数」恰好相等）
-        assert block._cached_ink_lines is not None
-        assert len(block._cached_ink_lines) == len(block.lines) - committed_before
+        # 阶段5：工具卡行不写入 committed_lines、不冻结 _cached_ink_lines
+        # （ToolCard 每帧从 block.lines 渲染完整卡片）
+        assert block._cached_ink_lines is None
+        assert block.committed_line_count == len(block.lines)
+        # 渲染完整卡片无异常（顶边框 + 主体 + 底边框）
+        plains = _tool_card_plains(block, 80)
+        assert plains
+        assert any(p.startswith("\u250c") for p in plains), "顶边框缺失"
+        assert any(p.startswith("\u2514") for p in plains), "底边框缺失"
 
 
 class TestStatusCounts:
@@ -709,17 +728,22 @@ class TestToolCardState:
         assert block.extra["tool_status"] == "running"
 
     def test_tool_close_sets_status_and_freeze(self):
-        """close 后状态 done + 冻结缓存建立。"""
+        """close 后状态 done（阶段5：工具卡由 ToolCard 渲染，不冻结缓存）。"""
         m = _model()
         apply_cmd(m, ToolOpenCmd(tool_name="read_file", tool_id="t1"))
         apply_cmd(m, ToolOutputCmd(text="data", tool_id="t1"))
         apply_cmd(m, ToolCloseCmd(tool_id="t1", success=True))
         block = m.blocks[-1]
         assert block.extra["tool_status"] == "done"
-        assert block._cached_ink_lines is not None
-        # 卡片结构：冻结缓存 = 顶边框 + 主体行 + 底边框（标题行被顶边框替代、
-        # 状态行跳过移入底边框 → 与块行数相等）
-        assert len(block._cached_ink_lines) == len(block.lines)
+        # 阶段5：工具卡行不写入 committed_lines、不冻结 _cached_ink_lines
+        # （ToolCard 每帧从 block.lines 渲染完整卡片）
+        assert block._cached_ink_lines is None
+        # 渲染完整卡片：顶边框 + 主体行 + 底边框（标题行被顶边框替代、状态行
+        # 跳过移入底边框）
+        plains = _tool_card_plains(block, 80)
+        assert any(p.startswith("\u250c") for p in plains), "顶边框缺失"
+        assert any(p.startswith("\u2514") for p in plains), "底边框缺失"
+        assert any("✔ 完成" in p for p in plains), "状态缺失"
 
     def test_tool_close_fail_status(self):
         """close 失败 → status=fail。"""
@@ -993,17 +1017,19 @@ class TestReflowCommitted:
         assert block.committed_line_count > 0
         tail = [l.plain for l in block.lines[block.committed_line_count:]]
         assert any("line69" in p for p in tail)  # 未提交尾在块内
+        # 阶段5：工具卡行不写入 committed_lines（由 ToolCard 渲染）
+        assert m.committed_lines == []
         m.reflow_committed(20)
-        assert all(ln.width <= 20 for ln in m.committed_lines)
-        plains = [ln.plain for ln in m.committed_lines]
-        assert "line69" not in "".join(plains), "未提交尾不应混入 committed"
-        # 卡片化：重排后首行为工具卡片顶边框（running ● 图标 + 显示名 WebSearch）
+        # 工具卡由 ToolCard 按新宽度渲染（行宽不变量）
+        rows = _tool_card_styled_lines(block, 20, 0, None)
+        assert all(sum(r.width for r in row) <= 20 for row in rows), "工具卡行宽超限"
+        plains = ["".join(r.text for r in row) for row in rows]
         assert plains[0].startswith("\u250c"), "重排后卡片首行应为顶边框"
         assert "\u25cf" in plains[0], "顶边框应含 running ● 状态图标"
         assert "WebSearch" in plains[0], "顶边框应含工具显示名"
 
     def test_closed_tool_header_icon_trailer_preserved(self):
-        """关闭工具块重排：头/关闭图标/尾空行保留，_first_committed_offset 重建。"""
+        """关闭工具块重排：头/关闭图标保留（阶段5：工具卡由 ToolCard 渲染）。"""
         m = _model()
         m.width = 40
         # web_search（非 bash，不受输出尾截断影响——通用长工具重排路径）
@@ -1012,17 +1038,15 @@ class TestReflowCommitted:
             m.append_tool_output("t1", f"out{i}\n")
         m.close_tool_box("t1", True)
         block = m.blocks[-1]
-        # 卡片结构：顶边框 + 主体行（状态行跳过移入底边框）+ 底边框 + 尾空行
-        assert len(m.committed_lines) == len(block.lines) + 1
+        # 阶段5：工具卡行不写入 committed_lines（由 ToolCard 渲染）
+        assert m.committed_lines == []
         m.reflow_committed(30)
-        plains = [ln.plain for ln in m.committed_lines]
+        # 工具卡由 ToolCard 按新宽度渲染：顶边框含 ✔、底边框 ✔ 完成
+        plains = _tool_card_plains(block, 30)
         assert plains[0].startswith("\u250c"), "关闭工具卡首行应为顶边框"
         assert "\u2714" in plains[0], "顶边框应含关闭 ✔ 状态图标"
-        assert plains[-1] == ""  # 尾空行保留
-        assert sum(1 for p in plains if p == "") == 1
-        offset = block.extra["_first_committed_offset"]
-        assert m.committed_lines[offset].plain.startswith("\u250c"), "offset 应指向顶边框"
-        assert "\u2714" in m.committed_lines[offset].plain, "顶边框应含关闭 ✔ 图标"
+        assert any(p.startswith("\u2514") for p in plains), "底边框缺失"
+        assert "✔ 完成" in "".join(plains)
 
     def test_idempotent_same_width(self):
         """同宽度/非法宽度调用 → 不重建（引用不变）。"""

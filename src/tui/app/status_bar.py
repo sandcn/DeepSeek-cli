@@ -25,7 +25,7 @@ from __future__ import annotations
 import time
 
 from src.tui.core.style import Style
-from src.tui.ink import h, TEXT, Line, StyledRun, use_memo, use_ref, Column
+from src.tui.ink import h, TEXT, Line, StyledRun, use_memo, use_ref, Column, Row
 from src.tui.app import _fx
 from src.tui.app._theme import time_glow, _S_ACCENT, _S_ACCENT_BOLD, _S_DIM, _S_TIME
 # ★ 方向5：分隔线样式统一真源（_theme.sep_style）——别名 _theme_sep_style
@@ -70,8 +70,13 @@ def _snapshot() -> dict:
 
 
 def _build_status_runs(model, dot_elapsed: float = 0.0,
-                       spinner_char: str = "\u00b7") -> list[StyledRun]:
-    """构建状态文本 runs（模型名/工具计数/耗时/token/速度）。
+                       spinner_char: str = "\u00b7") -> tuple[list, list]:
+    """构建状态行逻辑段（模型名段 + 统计段），供标准控件/布局表达。
+
+    标准控件/布局重构（阶段5）：返回 ``(model_runs, stats_runs)`` 两段——
+    StatusBar 组件用 **Row 布局 + 分段 TEXT** 表达（模型名段/统计段独立
+    元素），替代手写单 TEXT styled 组装；段间 ``  ``（2 空格）分隔符由
+    Row 中的独立 TEXT 承担（不再内嵌进 runs）。统计段含段内 ``·`` 分隔符。
 
     Args:
         model: AppModel 实例。
@@ -79,11 +84,15 @@ def _build_status_runs(model, dot_elapsed: float = 0.0,
             >=duration 后返回呼吸色（动画结束）。
         spinner_char: 活跃状态指示字符（BEAUTY-7：streaming 时 10Hz spinner
             帧；空闲为静态 ``·``）。
+
+    Returns:
+        (model_runs, stats_runs)：模型名段 StyledRun 列表与统计段 StyledRun
+        列表（均可能为空）。
     """
     st = model.status
     status_active = st.status_active
 
-    model_part: list[StyledRun] = []
+    model_runs: list[StyledRun] = []
     if st.model_name:
         if status_active:
             # BEAUTY-1：模型名点出现时从暗色渐显到呼吸色（时间基）
@@ -95,10 +104,10 @@ def _build_status_runs(model, dot_elapsed: float = 0.0,
         else:
             dot_style = _S_ACCENT
             model_name_style = _S_ACCENT_BOLD
-        model_part.append(StyledRun(f"{spinner_char} ", dot_style))
-        model_part.append(StyledRun(st.model_name, model_name_style))
+        model_runs.append(StyledRun(f"{spinner_char} ", dot_style))
+        model_runs.append(StyledRun(st.model_name, model_name_style))
     if not status_active:
-        return model_part
+        return model_runs, []
 
     snap = _snapshot()
     total = snap.get("total_tokens", 0)
@@ -142,21 +151,32 @@ def _build_status_runs(model, dot_elapsed: float = 0.0,
         parts.append(StyledRun(_format_speed(speed), _S_SPEED))
 
     if not parts:
-        return model_part
+        return model_runs, []
     sep = StyledRun(" \u00b7 ", _S_DIM)
     joined: list[StyledRun] = []
     for i, p in enumerate(parts):
         if i > 0:
             joined.append(sep)
         joined.append(p)
-    if model_part:
-        return model_part + [StyledRun("  ", None)] + joined
-    return joined
+    return model_runs, joined
 
 
 def _glow(lo: int, hi: int, period: float) -> int:
     """状态点呼吸色（时间基正弦插值）。参数语义与 ``time_glow(lo, hi, period)`` 一致。"""
     return time_glow(lo, hi, period)
+
+
+def _flatten_status_runs(model_runs: list, stats_runs: list) -> list:
+    """扁平化分段 runs 为完整状态行 runs（含段间 2 空格分隔符）。
+
+    供超宽截断防御路径（``_build_status_line`` 需要完整 runs）与兼容外部
+    调用面。标准路径（Row 分段表达）不使用——段间分隔由独立 TEXT 承担。
+    """
+    runs = list(model_runs)
+    if model_runs and stats_runs:
+        runs.append(StyledRun("  ", None))
+    runs.extend(stats_runs)
+    return runs
 
 
 def StatusBar(props) -> object:
@@ -195,7 +215,8 @@ def StatusBar(props) -> object:
     else:
         time_dep = int(time.monotonic() / 1.0)
         spinner_char = "\u00b7"
-    status_runs = use_memo(
+    # 状态行逻辑段（PERF-3 use_memo 缓存；返回 (model_runs, stats_runs) 元组）
+    segments = use_memo(
         lambda: _build_status_runs(model, dot_elapsed, spinner_char),
         (
             st.status_active,
@@ -210,6 +231,7 @@ def StatusBar(props) -> object:
             spinner_char,
         ),
     )
+    model_runs, stats_runs = segments
     # 分割线（上面）
     # ★ 方向6（分隔线宽度统一）：分隔线铺满 width 列（修复前 width-2 与
     #   状态行 col2 缩进宽度不一致）；状态行前缀 2 列 + 内容经 truncate_line
@@ -229,30 +251,47 @@ def StatusBar(props) -> object:
         lambda: _theme_sep_line(width, None, st.status_active),
         (width, sep_style),
     )
-    # 状态行（下面）
-    # ★ 性能（PERF-10）：状态行 Line **缓存**（use_memo 键 status_runs 引用）
-    #   ——status_runs 已 use_memo 缓存（引用稳定），Line 跨帧复用同一 runs
-    #   列表对象 → TEXT ``_wrap_cache`` 引用级命中（``cache[0] is styled``），
-    #   免每帧 13+ runs 列表值比较（TEXT _measure 值驱动分支 ~300μs）。截断
-    #   仅在超宽时触发（罕见），正常路径引用稳定。
-    status_line = use_memo(
-        lambda: _build_status_line(status_runs),
-        (status_runs,),
-    )
-    # ★ 方向4（状态行溢出截断）：超长状态 runs 截断至 width——复用
-    #   ink.helpers.truncate_line（subagent_panel 已用 truncate_runs 族，
-    #   status_bar 用 truncate_line 保持 Line 结构；修复前溢出静默裁剪）。
-    if status_line.width > width:
-        from src.tui.ink.helpers import truncate_line
-        status_line = truncate_line(status_line, width)
-    # ★ 方向4（空状态压缩）：无模型名且无统计（status_runs 空）时只渲染分隔线
+    # 状态行（下面）——标准控件/布局表达（阶段5）：
+    # 状态行 = Row + 分段 TEXT（前缀 2 列 / 模型名段 / 段间 2 空格 / 统计段），
+    # 替代手写单 TEXT styled 组装。视觉输出与重构前等价（Row 左对齐排布，
+    # 各段宽度之和 = 原整行宽度）。
+    # 内容宽（纯算术，免构建 Line）：前缀 2 + 模型段 + 段间 2 空格 + 统计段。
+    content_width = 0
+    if model_runs:
+        content_width += sum(r.width for r in model_runs)
+        if stats_runs:
+            content_width += 2
+    if stats_runs:
+        content_width += sum(r.width for r in stats_runs)
+    total_width = 2 + content_width
+    status_children = []
+    if model_runs:
+        status_children.append(h(TEXT, {"styled": model_runs, "height": 1}))
+        if stats_runs:
+            status_children.append(h(TEXT, {"children": "  ", "height": 1}))
+    if stats_runs:
+        status_children.append(h(TEXT, {"styled": stats_runs, "height": 1}))
+    # ★ 方向4（空状态压缩）：无模型名且无统计（两段均空）时只渲染分隔线
     #   一行——避免启动期 / 未配置模型时状态栏空行占位（视觉更紧凑）。
-    # ★ 阶段2（标准布局容器重构）：BOX(None) → Column（默认 flexDirection=
-    #   column，输出与重构前一致；use_memo 缓存链不动——PERF-10/11 契约核心）。
-    if not status_runs:
+    if not status_children:
         return h(Column, None, [
             h(TEXT, {"styled": sep.runs, "height": 1}),
         ])
+    if total_width <= width:
+        # 标准路径：Row 布局 + 分段 TEXT（前缀 2 列 + 各段）。
+        # 与重构前输出等价（Row 左对齐，子节点宽度之和 = 原整行宽度）。
+        return h(Column, None, [
+            h(TEXT, {"styled": sep.runs, "height": 1}),
+            h(Row, {"height": 1}, [
+                h(TEXT, {"children": "  ", "height": 1}),
+                *status_children,
+            ]),
+        ])
+    # 防御路径：超宽截断回退单 TEXT（保持 truncate_line 语义；与 _ParseLine
+    # 防御路径一致——行宽不变量守卫）。
+    from src.tui.ink.helpers import truncate_line
+    status_line = _build_status_line(_flatten_status_runs(model_runs, stats_runs))
+    status_line = truncate_line(status_line, width)
     return h(Column, None, [
         h(TEXT, {"styled": sep.runs, "height": 1}),
         h(TEXT, {"styled": status_line.runs, "height": 1}),
@@ -262,8 +301,9 @@ def StatusBar(props) -> object:
 def _build_status_line(status_runs: list) -> Line:
     """构建状态行 Line（前缀 2 列 + 状态 runs）。
 
-    ★ PERF-10：独立函数供 use_memo 缓存（StatusBar 每帧调用）——status_runs
-    引用不变时复用同一 Line 对象（跨帧同一 runs 列表 → TEXT 引用级缓存命中）。
+    标准控件/布局重构（阶段5）：标准路径不再使用（StatusBar 改用 Row +
+    分段 TEXT 表达）；仅**防御路径**（超宽截断回退单 TEXT）与兼容外部
+    调用面使用。
     """
     line = Line.of("  ", None)
     if status_runs:
