@@ -211,6 +211,10 @@ class ChatUIConsumer:
         """返回输入组件实例（兼容旧 _components.input 访问路径）。"""
         return self._components.input
 
+    def get_model(self):
+        """返回 AppModel 实例（React Ink 化 user_select 弹窗状态读写）。"""
+        return self._rs
+
     def get_input(self):
         """返回输入组件实例（供 core 层插件使用）。"""
         return self._input

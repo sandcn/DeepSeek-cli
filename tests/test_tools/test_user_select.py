@@ -1,178 +1,266 @@
-"""user_select 重构后的单元测试。
+"""user_select React Ink 化后的单元测试。
 
-验证：
-  - _execute_terminal_async 不再直接调用 os.read/termios
-  - termios 操作通过 EscapeMonitor 公开方法
-  - stdin 排空通过 Input.flush_stdin_buffer()
-  - Input 的 read_byte/read_with_timeout 被正确使用
+验证（2026-08-05 React Ink 化）：
+  - _execute_terminal_async 不再直接读 stdin（os.read/select.select/read_byte）
+  - 不再 stop/start EscapeMonitor、不再操作补全弹窗私有字段
+  - 设置 model.user_select 弹窗状态（visible=True, seq+1, 选项/说明/默认值）
+  - 轮询等待 UserSelectPopup 组件提交（confirmed）
+  - 超时回退（timeout）/ 非交互回退（non_interactive）/ Windows 回退
+  - 结束后清理弹窗状态（model.user_select = UserSelectState()）
 """
 
 from __future__ import annotations
 
+import asyncio
 import json
 
 import pytest
 from unittest.mock import MagicMock, patch
 
 from src._compat_termios import HAS_TERMIOS
+from src.tui.app.model import AppModel, UserSelectState
+from src.tools.user_select import UserSelectFunc
 
 
-# ── TestUserSelectNoDirectTermios ──────────────────────────────────
+def _make_chat_ui(model):
+    """创建 mock ChatUIConsumer（get_model 返回真实 AppModel）。"""
+    ui = MagicMock()
+    ui.get_model.return_value = model
+    bb = MagicMock()
+    bb.is_completion_visible = False
+    bb._last_text = ""
+    ui.bottom_bar = bb
+    input_ = MagicMock()
+    input_.flush_stdin_buffer = MagicMock()
+    ui.get_input_component.return_value = input_
+    ui.request_bottom_redraw = MagicMock()
+    return ui, input_
 
-class TestUserSelectNoDirectTermios:
-    """验证 user_select 不再直接操作 termios / os.read。"""
 
-    @pytest.fixture
-    def mock_monitor(self):
-        """创建 mock EscapeMonitor。"""
-        m = MagicMock()
-        m.apply_monitor_settings = MagicMock()
-        m.restore_terminal_settings = MagicMock()
-        m.stop = MagicMock()
-        m.start = MagicMock()
-        return m
+# ── 基础断言 ──────────────────────────────────────────────
 
-    @pytest.fixture
-    def mock_input(self):
-        """创建 mock Input 实例。"""
-        m = MagicMock()
-        m.fd = 0  # /dev/null fd
-        m.flush_stdin_buffer = MagicMock()
-        m.read_byte = MagicMock(return_value=b'\r')  # Enter
-        m.read_with_timeout = MagicMock(return_value=None)
-        return m
-
-    @pytest.fixture
-    def mock_chat_ui(self, mock_input):
-        """创建 mock ChatUI。"""
-        ui = MagicMock()
-        # 收敛后 user_select 通过公开 API 获取输入组件
-        ui.get_input_component = MagicMock(return_value=mock_input)
-        ui.get_input = MagicMock(return_value=mock_input)
-        bb = MagicMock()
-        bb._active = True
-        bb.is_active = True
-        # 显式设置 _MIN_HEIGHT 为 int，避免未来 is_active=False 路径
-        # 触发 int < MagicMock 的 TypeError（P2-11 修复：防御性显式类型）
-        bb._MIN_HEIGHT = 12
-        # 固定选中索引为合法值，使 Enter 走通正常确认路径
-        # （P2-10 修复：避免 MagicMock 索引 options 抛 TypeError 走异常路径）
-        bb._completion_idx = 0
-        ui.bottom_bar = bb
-        return ui
-
-    @pytest.fixture
-    def terminal_env(self, mock_monitor, mock_input, mock_chat_ui):
-        """5 层 patch 的共享 fixture（替代 5 个 async 测试中重复的 with patch 块）。
-
-        通过 ExitStack 应用 5 层 patch；测试结束后后进先出恢复，与嵌套 with 等价。
-        依赖注入：显式取用 mock_monitor / mock_input / mock_chat_ui。
-        """
-        from contextlib import ExitStack
-
-        with ExitStack() as stack:
-            stack.enter_context(
-                patch("src.tools.user_select.get_active_monitor", return_value=mock_monitor)
-            )
-            stack.enter_context(
-                patch("src.tools.user_select.get_active_chat_ui", return_value=mock_chat_ui)
-            )
-            stack.enter_context(patch("sys.stdin.fileno", return_value=0))
-            stack.enter_context(patch("os.isatty", return_value=True))
-            stack.enter_context(
-                patch("src.tools.user_select.select.select", return_value=([0], [], []))
-            )
-            yield
+class TestUserSelectReactInkBasics:
+    """React Ink 化后的实现约束（不再 raw I/O / 不再操作补全弹窗）。"""
 
     def test_methods_deleted(self):
-        """验证 _flush_stdin / _save_termios / _restore_termios 已删除。"""
+        """旧 raw I/O 方法（_stop_monitor/_start_monitor）已删除。"""
         from src.tools.user_select import UserSelectFunc
-        assert not hasattr(UserSelectFunc, '_flush_stdin'), \
-            "_flush_stdin 应已删除"
-        assert not hasattr(UserSelectFunc, '_save_termios'), \
-            "_save_termios 应已删除"
-        assert not hasattr(UserSelectFunc, '_restore_termios'), \
-            "_restore_termios 应已删除"
+        assert not hasattr(UserSelectFunc, '_stop_monitor'), \
+            "_stop_monitor 应已删除"
+        assert not hasattr(UserSelectFunc, '_start_monitor'), \
+            "_start_monitor 应已删除"
 
     def test_no_os_read_in_source(self):
-        """验证源码中 os.read 调用仅在 fallback 路径。"""
+        """源码中不应再出现直接 stdin 读取（os.read/select.select/read_byte）。"""
         import inspect
         from src.tools import user_select as us_mod
         source = inspect.getsource(us_mod.UserSelectFunc._execute_terminal_async)
-        # os.read 应仅在 fallback 子句中（input_ is None）
-        assert 'input_.read_byte()' in source
-        assert 'input_.read_with_timeout' in source
-        # 不应存在直接 os.read(fd, 1)（不含 fallback）
-        lines = source.split('\n')
-        for line in lines:
-            if 'os.read' in line and 'input_' not in line:
-                pytest.fail(f"发现直接 os.read 调用（非 fallback）：{line.strip()}")
+        for token in ("os.read", "select.select", "read_byte", "read_with_timeout"):
+            assert token not in source, f"发现残留 raw I/O 调用: {token}"
+
+    def test_no_completion_private_access_in_source(self):
+        """不应再直接操作补全弹窗私有字段（_completion_idx 等）。"""
+        import inspect
+        from src.tools import user_select as us_mod
+        source = inspect.getsource(us_mod.UserSelectFunc._execute_terminal_async)
+        assert "_completion_idx" not in source, "发现残留补全弹窗私有字段访问"
+        assert "show_completions" not in source, "发现残留 show_completions 调用"
+
+    def test_uses_user_select_state(self):
+        """新实现写入 model.user_select（UserSelectState），而非补全弹窗。"""
+        import inspect
+        from src.tools import user_select as us_mod
+        source = inspect.getsource(us_mod.UserSelectFunc._execute_terminal_async)
+        assert "user_select" in source
+        assert "UserSelectState" in source
+
+
+# ── 弹窗状态设置 ─────────────────────────────────────────
+
+class TestUserSelectPopupState:
+    """验证 _execute_terminal_async 正确设置弹窗状态。"""
 
     @pytest.mark.skipif(not HAS_TERMIOS, reason="需 termios 支持")
     @pytest.mark.asyncio
-    async def test_uses_input_flush_stdin_buffer(self, terminal_env, mock_monitor, mock_input, mock_chat_ui):
-        """验证 _execute_terminal_async 使用 Input.flush_stdin_buffer()。"""
-        from src.tools.user_select import UserSelectFunc
+    async def test_sets_popup_state_with_options_and_descriptions(self):
+        """弹窗状态包含 title/options/descriptions/multi/default 全字段。"""
+        model = AppModel()
+        ui, input_ = _make_chat_ui(model)
 
-        us = UserSelectFunc("test", ["a", "b"])
-
-        # 正常情况下 read_byte 返回 Enter 快速退出
-        await us._execute_terminal_async()
-
-        mock_input.flush_stdin_buffer.assert_called()
-
-    @pytest.mark.skipif(not HAS_TERMIOS, reason="需 termios 支持")
-    @pytest.mark.asyncio
-    async def test_uses_monitor_apply_settings(self, terminal_env, mock_monitor, mock_input, mock_chat_ui):
-        """验证使用 EscapeMonitor.apply_monitor_settings()。"""
-        from src.tools.user_select import UserSelectFunc
-
-        us = UserSelectFunc("test", ["a", "b"])
-
-        await us._execute_terminal_async()
-
-        mock_monitor.apply_monitor_settings.assert_called()
-
-    @pytest.mark.skipif(not HAS_TERMIOS, reason="需 termios 支持")
-    @pytest.mark.asyncio
-    async def test_uses_monitor_restore_in_finally(self, terminal_env, mock_monitor, mock_input, mock_chat_ui):
-        """验证 finally 块使用 EscapeMonitor.restore_terminal_settings()。"""
-        from src.tools.user_select import UserSelectFunc
-
-        us = UserSelectFunc("test", ["a", "b"])
-
-        await us._execute_terminal_async()
-
-        mock_monitor.restore_terminal_settings.assert_called()
-
-    @pytest.mark.skipif(not HAS_TERMIOS, reason="需 termios 支持")
-    @pytest.mark.asyncio
-    async def test_uses_input_read_byte(self, terminal_env, mock_monitor, mock_input, mock_chat_ui):
-        """验证使用 Input.read_byte() 读取按键。"""
-        from src.tools.user_select import UserSelectFunc
-
-        us = UserSelectFunc("test", ["a", "b"])
-
-        result = await us._execute_terminal_async()
-
-        mock_input.read_byte.assert_called()
-        # P2-10：mock _completion_idx 后应走通正常确认路径（单选 Enter → confirmed）
-        assert json.loads(result)["action"] == "confirmed"
+        with patch("src.tools.user_select.get_active_chat_ui", return_value=ui), \
+             patch("sys.stdin.fileno", return_value=0), \
+             patch("os.isatty", return_value=True):
+            us = UserSelectFunc(
+                "测试", ["a", "b", "c"],
+                multi_select=True,
+                default_options=["a"],
+                option_descriptions=["说明A"],
+                timeout=30,
+            )
+            task = asyncio.ensure_future(us._execute_terminal_async())
+            # 等待弹窗状态写入
+            for _ in range(20):
+                await asyncio.sleep(0.02)
+                if model.user_select.visible:
+                    break
+            st = model.user_select
+            assert st.visible is True
+            assert st.seq == 1
+            assert st.title == "测试"
+            assert st.options == ["a", "b", "c"]
+            assert st.option_descriptions == ["说明A", "", ""]  # 补齐
+            assert st.multi_select is True
+            assert st.default_options == ["a"]
+            assert st.selected == 0          # 默认选项首项
+            assert st.checked == [0]         # 默认选项预勾选
+            assert st.deadline > 0
+            # 模拟组件提交 → 工具返回
+            model.user_select.done = True
+            model.user_select.action = "confirmed"
+            model.user_select.result = ["a", "c"]
+            result = await task
+        data = json.loads(result)
+        assert data["action"] == "confirmed"
+        assert data["selected"] == ["a", "c"]
+        # 结束后清理
+        assert model.user_select.visible is False
 
     @pytest.mark.skipif(not HAS_TERMIOS, reason="需 termios 支持")
     @pytest.mark.asyncio
-    async def test_stops_and_starts_monitor(self, terminal_env, mock_monitor, mock_input, mock_chat_ui):
-        """验证停止并重新启动 EscapeMonitor。"""
-        from src.tools.user_select import UserSelectFunc
+    async def test_flushes_stdin_and_redraw(self):
+        """打开弹窗前 flush stdin 残留 + request_bottom_redraw。"""
+        model = AppModel()
+        ui, input_ = _make_chat_ui(model)
 
-        mock_input.read_byte = MagicMock(return_value=b'\r')
+        with patch("src.tools.user_select.get_active_chat_ui", return_value=ui), \
+             patch("sys.stdin.fileno", return_value=0), \
+             patch("os.isatty", return_value=True):
+            us = UserSelectFunc("测试", ["a", "b"])
+            task = asyncio.ensure_future(us._execute_terminal_async())
+            for _ in range(20):
+                await asyncio.sleep(0.02)
+                if model.user_select.visible:
+                    break
+            input_.flush_stdin_buffer.assert_called()
+            ui.request_bottom_redraw.assert_called()
+            model.user_select.done = True
+            model.user_select.action = "cancel"
+            model.user_select.result = ["a"]
+            await task
+        # finally 清理也 flush + redraw
+        assert input_.flush_stdin_buffer.call_count >= 2
+        assert ui.request_bottom_redraw.call_count >= 2
 
-        us = UserSelectFunc("test", ["a", "b"])
 
-        await us._execute_terminal_async()
+# ── 交互结果 ──────────────────────────────────────────────
 
-        mock_monitor.stop.assert_called()
-        mock_monitor.start.assert_called()
+class TestUserSelectResults:
+    """验证工具读取组件交互结果（confirmed/cancel/timeout）。"""
+
+    @pytest.mark.skipif(not HAS_TERMIOS, reason="需 termios 支持")
+    @pytest.mark.asyncio
+    async def test_confirmed_single(self):
+        model = AppModel()
+        ui, _ = _make_chat_ui(model)
+        with patch("src.tools.user_select.get_active_chat_ui", return_value=ui), \
+             patch("sys.stdin.fileno", return_value=0), \
+             patch("os.isatty", return_value=True):
+            us = UserSelectFunc("测试", ["a", "b", "c"])
+            task = asyncio.ensure_future(us._execute_terminal_async())
+            for _ in range(20):
+                await asyncio.sleep(0.02)
+                if model.user_select.visible:
+                    break
+            model.user_select.done = True
+            model.user_select.action = "confirmed"
+            model.user_select.result = ["b"]
+            result = await task
+        data = json.loads(result)
+        assert data["action"] == "confirmed"
+        assert data["selected"] == ["b"]
+
+    @pytest.mark.skipif(not HAS_TERMIOS, reason="需 termios 支持")
+    @pytest.mark.asyncio
+    async def test_cancel_uses_default(self):
+        model = AppModel()
+        ui, _ = _make_chat_ui(model)
+        with patch("src.tools.user_select.get_active_chat_ui", return_value=ui), \
+             patch("sys.stdin.fileno", return_value=0), \
+             patch("os.isatty", return_value=True):
+            us = UserSelectFunc("测试", ["a", "b"], default_options=["a"])
+            task = asyncio.ensure_future(us._execute_terminal_async())
+            for _ in range(20):
+                await asyncio.sleep(0.02)
+                if model.user_select.visible:
+                    break
+            model.user_select.done = True
+            model.user_select.action = "cancel"
+            model.user_select.result = ["a"]
+            result = await task
+        data = json.loads(result)
+        assert data["action"] == "cancel"
+        assert data["selected"] == ["a"]
+
+    @pytest.mark.skipif(not HAS_TERMIOS, reason="需 termios 支持")
+    @pytest.mark.asyncio
+    async def test_timeout_uses_default(self):
+        """超时（无交互）自动回退默认选项。"""
+        model = AppModel()
+        ui, _ = _make_chat_ui(model)
+        with patch("src.tools.user_select.get_active_chat_ui", return_value=ui), \
+             patch("sys.stdin.fileno", return_value=0), \
+             patch("os.isatty", return_value=True):
+            us = UserSelectFunc("测试", ["a", "b"], default_options=["a"], timeout=0.2)
+            result = await us._execute_terminal_async()
+        data = json.loads(result)
+        assert data["action"] == "timeout"
+        assert data["selected"] == ["a"]
+        assert model.user_select.visible is False
+
+
+# ── 回退路径 ──────────────────────────────────────────────
+
+class TestUserSelectFallbacks:
+    """非交互 / Windows / ChatUI 缺失回退。"""
+
+    @pytest.mark.asyncio
+    async def test_non_interactive(self):
+        with patch("src.tools.user_select.get_active_chat_ui", return_value=None), \
+             patch("sys.stdin.fileno", return_value=0), \
+             patch("os.isatty", return_value=False):
+            us = UserSelectFunc("测试", ["a", "b"], default_options=["a"])
+            result = await us._execute_terminal_async()
+        data = json.loads(result)
+        assert data["action"] == "non_interactive"
+        assert data["selected"] == ["a"]
+
+    @pytest.mark.asyncio
+    async def test_windows_no_termios(self):
+        with patch("src.tools.user_select.HAS_TERMIOS", False), \
+             patch("sys.stdin.fileno", return_value=0), \
+             patch("os.isatty", return_value=True):
+            us = UserSelectFunc("测试", ["a", "b"], default_options=["a"])
+            result = await us._execute_terminal_async()
+        data = json.loads(result)
+        assert data["action"] == "non_interactive"
+
+    @pytest.mark.asyncio
+    async def test_no_chat_ui(self):
+        with patch("src.tools.user_select.get_active_chat_ui", return_value=None), \
+             patch("sys.stdin.fileno", return_value=0), \
+             patch("os.isatty", return_value=True):
+            us = UserSelectFunc("测试", ["a", "b"])
+            result = await us._execute_terminal_async()
+        data = json.loads(result)
+        assert data["action"].startswith("error:")
+
+    @pytest.mark.asyncio
+    async def test_empty_options(self):
+        us = UserSelectFunc("测试", [])
+        result = await us.execute()
+        data = json.loads(result)
+        assert data["action"] == "empty"
+        assert data["selected"] == []
 
     def test_option_descriptions_alignment(self):
         """option_descriptions 与 options 对齐（缺省补齐、超出截断、缺省空）。"""
@@ -190,132 +278,3 @@ class TestUserSelectNoDirectTermios:
         # None → 全空
         us4 = UserSelectFunc("t", ["a"], option_descriptions=None)
         assert us4.option_descriptions == [""]
-
-    @pytest.mark.skipif(not HAS_TERMIOS, reason="需 termios 支持")
-    @pytest.mark.asyncio
-    async def test_passes_option_descriptions_to_show_completions(
-        self, terminal_env, mock_chat_ui,
-    ):
-        """验证 option_descriptions/split_desc 传给 show_completions（分栏说明）。"""
-        from src.tools.user_select import UserSelectFunc
-
-        us = UserSelectFunc(
-            "test", ["a", "b"],
-            option_descriptions=["说明A", "说明B"],
-        )
-
-        await us._execute_terminal_async()
-
-        calls = mock_chat_ui.bottom_bar.show_completions.call_args_list
-        assert calls, "应调用 show_completions"
-        kw = calls[0].kwargs
-        assert kw.get("descriptions") == ["说明A", "说明B"]
-        assert kw.get("split_desc") is True
-
-
-# ── TestUserSelectAnimationRefresh ──────────────────────────────
-
-class TestUserSelectAnimationRefresh:
-    """user_select 等待输入期间驱动动画刷新（render 线程已 suspend）。
-
-    回归：user_select 显示弹窗期间 render 线程已 suspend（_run_interactive），
-    弹窗呼吸色/spinner/状态栏动画无人驱动而静止。修复后 select 短超时（0.1s）
-    经 chat_ui.request_bottom_redraw() 触发同步渲染推进时间基动画。
-    """
-
-    @pytest.fixture
-    def mock_monitor(self):
-        m = MagicMock()
-        m.apply_monitor_settings = MagicMock()
-        m.restore_terminal_settings = MagicMock()
-        m.stop = MagicMock()
-        m.start = MagicMock()
-        return m
-
-    @pytest.fixture
-    def mock_input(self):
-        m = MagicMock()
-        m.fd = 0
-        m.flush_stdin_buffer = MagicMock()
-        m.read_byte = MagicMock(return_value=b'\r')  # Enter
-        m.read_with_timeout = MagicMock(return_value=None)
-        return m
-
-    @pytest.fixture
-    def mock_chat_ui(self, mock_input):
-        ui = MagicMock()
-        ui.get_input_component = MagicMock(return_value=mock_input)
-        ui.get_input = MagicMock(return_value=mock_input)
-        bb = MagicMock()
-        bb._active = True
-        bb.is_active = True
-        bb._MIN_HEIGHT = 12
-        bb._completion_idx = 0
-        bb._last_text = ""
-        ui.bottom_bar = bb
-        ui.request_bottom_redraw = MagicMock()
-        return ui
-
-    @pytest.mark.skipif(not HAS_TERMIOS, reason="需 termios 支持")
-    @pytest.mark.asyncio
-    async def test_select_timeout_drives_animation_refresh(
-        self, mock_monitor, mock_input, mock_chat_ui,
-    ):
-        """select 超时（无输入）后调用 request_bottom_redraw 驱动动画刷新。"""
-        from contextlib import ExitStack
-        import json as _json
-        from src.tools.user_select import UserSelectFunc
-
-        # 首次 select 超时（无输入）→ 应触发动画刷新；二次返回 Enter 确认
-        with ExitStack() as stack:
-            stack.enter_context(
-                patch("src.tools.user_select.get_active_monitor", return_value=mock_monitor)
-            )
-            stack.enter_context(
-                patch("src.tools.user_select.get_active_chat_ui", return_value=mock_chat_ui)
-            )
-            stack.enter_context(patch("sys.stdin.fileno", return_value=0))
-            stack.enter_context(patch("os.isatty", return_value=True))
-            stack.enter_context(
-                patch(
-                    "src.tools.user_select.select.select",
-                    side_effect=[([], [], []), ([0], [], [])],
-                )
-            )
-            us = UserSelectFunc("test", ["a", "b"])
-            result = await us._execute_terminal_async()
-
-        mock_chat_ui.request_bottom_redraw.assert_called_once()
-        assert _json.loads(result)["action"] == "confirmed"
-
-    @pytest.mark.skipif(not HAS_TERMIOS, reason="需 termios 支持")
-    @pytest.mark.asyncio
-    async def test_deadline_break_does_not_refresh_before_interval(
-        self, mock_monitor, mock_input, mock_chat_ui,
-    ):
-        """无限等待（timeout<=0）下 select 超时不退出，仍持续驱动动画。"""
-        from contextlib import ExitStack
-        import json as _json
-        from src.tools.user_select import UserSelectFunc
-
-        # 首次 select 超时 → refresh；二次 Enter 确认（timeout<=0 不退出）
-        with ExitStack() as stack:
-            stack.enter_context(
-                patch("src.tools.user_select.get_active_monitor", return_value=mock_monitor)
-            )
-            stack.enter_context(
-                patch("src.tools.user_select.get_active_chat_ui", return_value=mock_chat_ui)
-            )
-            stack.enter_context(patch("sys.stdin.fileno", return_value=0))
-            stack.enter_context(patch("os.isatty", return_value=True))
-            stack.enter_context(
-                patch(
-                    "src.tools.user_select.select.select",
-                    side_effect=[([], [], []), ([0], [], [])],
-                )
-            )
-            us = UserSelectFunc("test", ["a", "b"], timeout=0)
-            result = await us._execute_terminal_async()
-
-        mock_chat_ui.request_bottom_redraw.assert_called_once()
-        assert _json.loads(result)["action"] == "confirmed"

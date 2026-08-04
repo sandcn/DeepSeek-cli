@@ -1,11 +1,25 @@
+"""user_select — 用户交互选择工具（React Ink 化）。
+
+React Ink 化（2026-08-05）：终端交互从「命令补全弹窗（show_completions +
+CompletionState）+ 手动 raw I/O（select/read_byte/cbreak）」迁移为独立的
+React Ink 组件 ``UserSelectPopup``（src/tui/app/user_select.py）：
+
+  - ``execute()`` 仅设置 ``model.user_select`` 弹窗状态并轮询等待组件完成
+    （不再直接读 stdin / 操作补全弹窗私有字段）；
+  - 弹窗渲染与交互由组件负责（use_input + use_state，render 线程驱动
+    InputDispatcher 路由按键）；
+  - 结果经 ``model.user_select.done/action/result`` 回传，工具协程读取后
+    清理状态。
+
+Web 模式保持 ``web_display``（UserSelectNeededEvent → 前端响应）。
+"""
+
 from __future__ import annotations
 
 import asyncio
 import json
 import logging
 import os
-import select
-from shutil import get_terminal_size
 import sys
 import time
 
@@ -13,7 +27,6 @@ from src._compat_termios import HAS_TERMIOS
 from .base import Func, tool_metadata
 from ..core.constants import GREEN, YELLOW, RED, DIM, RESET
 from ..tui.consumer import get_active_chat_ui
-from ..api.escape_monitor import get_active_monitor
 from ..api.events import publish_event
 
 
@@ -46,7 +59,7 @@ class UserSelectFunc(Func):
             "type": "function",
             "function": {
                 "name": "user_select",
-                "description": "向用户显示交互式选择界面，用于确认方案、选择选项或澄清需求歧义。支持单选/多选，超时自动选中默认项。非交互环境自动回退默认选项。需要用户确认时优先使用此工具。\n\n参数行为摘要：\n- title（必填）：选择界面的标题，简明扼要即可\n- options（必填）：选项字符串列表，用户从中选择；空列表时返回 {\"selected\":[], \"action\":\"empty\"}\n- option_descriptions（可选）：与 options 等长的说明字符串列表，option_descriptions[i] 为 options[i] 的说明；TUI 终端中移动到选项时说明显示在选项右侧。缺省为空\n- multi_select：是否允许多选，false=单选（默认），true=多选可勾选多项\n- default_options：超时/取消/非交互时回退的默认选项列表，值必须在 options 中\n- timeout：超时秒数（默认120），超时自动回退 default_options，action=\"timeout\"\n\n【边界信息】\n- options为空时返回 {\"selected\":[], \"action\":\"empty\"}，不会崩溃\n- 非交互式终端（非tty）自动回退默认选项，action为\"non_interactive\"\n- 超时（默认120秒）自动选中默认选项，action为\"timeout\"\n- 用户取消操作时返回默认选项，action为\"cancel\"\n- 异常发生时回退默认选项并返回错误信息，action为\"error: ...\"\n- multi_select默认为False（单选模式）\n- default_options参数可选，默认为空列表\n- option_descriptions长度不足时缺省为空字符串；长度超出部分忽略",
+                "description": "向用户显示交互式选择界面，用于确认方案、选择选项或澄清需求歧义。支持单选/多选，超时自动选中默认项。非交互环境自动回退默认选项。需要用户确认时优先使用此工具。\n\n参数行为摘要：\n- title（必填）：选择界面的标题，简明扼要即可\n- options（必填）：选项字符串列表，用户从中选择；空列表时返回 {\"selected\":[], \"action\":\"empty\"}\n- option_descriptions（可选）：与 options 等长的说明字符串列表，option_descriptions[i] 为 options[i] 的说明；TUI 中移动到选项时说明显示在选项右侧。缺省为空\n- multi_select：是否允许多选，false=单选（默认），true=多选可勾选多项\n- default_options：超时/取消/非交互时回退的默认选项列表，值必须在 options 中\n- timeout：超时秒数（默认120），超时自动回退 default_options，action=\"timeout\"\n\n【边界信息】\n- options为空时返回 {\"selected\":[], \"action\":\"empty\"}，不会崩溃\n- 非交互式终端（非tty）自动回退默认选项，action为\"non_interactive\"\n- 超时（默认120秒）自动选中默认选项，action为\"timeout\"\n- 用户取消操作时返回默认选项，action为\"cancel\"\n- 异常发生时回退默认选项并返回错误信息，action为\"error: ...\"\n- multi_select默认为False（单选模式）\n- default_options参数可选，默认为空列表\n- option_descriptions长度不足时缺省为空字符串；长度超出部分忽略",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -62,7 +75,7 @@ class UserSelectFunc(Func):
                         "option_descriptions": {
                             "type": "array",
                             "items": {"type": "string"},
-                            "description": "与 options 等长的说明列表，option_descriptions[i] 为 options[i] 的说明；TUI 中移动到选项时说明显示在右侧。可选，默认空",
+                            "description": "与 options 等长的说明列表，option_descriptions[i] 为 options[i] 的说明；TUI 中移动到选项时说明显示在选项右侧。可选，默认空",
                             "default": []
                         },
                         "multi_select": {
@@ -99,273 +112,135 @@ class UserSelectFunc(Func):
         if len(descs) < len(self.options):
             descs += [""] * (len(self.options) - len(descs))
         self.option_descriptions = descs[: len(self.options)]
-        self._input = None
 
     async def execute(self):
         """异步执行选择并返回结果"""
         if not self.options:
             return json.dumps({"selected": [], "action": "empty"}, ensure_ascii=False)
 
-        # 终端模式：在底部栏补全区显示选项，raw I/O 交互
+        # 终端模式：React Ink 弹窗（UserSelectPopup 组件渲染 + use_input 交互）
         return await self._execute_terminal_async()
 
-    def _stop_monitor(self, monitor):
-        """完全停止 EscapeMonitor（替代 pause，更彻底地清理终端状态）。"""
-        if monitor is None:
-            return
-        try:
-            monitor.stop()
-            _logger.debug("user_select: EscapeMonitor stopped")
-        except Exception as e:
-            _logger.warning("user_select: EscapeMonitor stop failed: %s", e)
-
-    def _start_monitor(self, monitor):
-        """重新启动 EscapeMonitor（替代 resume，从干净状态开始）。"""
-        if monitor is None:
-            return
-        try:
-            monitor.start()
-            _logger.debug("user_select: EscapeMonitor started")
-        except Exception as e:
-            _logger.warning("user_select: EscapeMonitor start failed: %s", e)
-
     async def _execute_terminal_async(self) -> str:
-        """终端模式：在底部栏补全区显示选项，用 raw I/O 处理 ↑↓/Enter/Esc。
+        """终端模式：设置 UserSelectPopup 弹窗状态，轮询等待组件交互完成。
 
-        完全基于标准库实现（termios/tty/os/select），无需 prompt_toolkit。
+        React Ink 化（2026-08-05）：不再手动读取终端输入（不再依赖 cbreak/
+        select 原始字节循环）、不再 stop/start EscapeMonitor、不再操作补全
+        弹窗私有字段。弹窗由
+        ``src/tui/app/user_select.py::UserSelectPopup`` 组件渲染与交互
+        （render 线程运行中，InputDispatcher 路由 use_input 事件），
+        本方法仅：
+          1. 检测终端可用性（非交互回退）；
+          2. 写入 ``model.user_select``（visible=True, seq+1）；
+          3. 轮询 ``us.done``（带 deadline 超时回退）；
+          4. 读取结果并清理弹窗状态。
         """
-        monitor = get_active_monitor()
-        self._stop_monitor(monitor)
-
         # Windows 回退：termios 不可用时降级为 non-interactive
         if not HAS_TERMIOS:
             _logger.warning(
                 "user_select Windows 回退 non-interactive: title=%s",
                 self.title,
             )
-            self._start_monitor(monitor)
             return json.dumps({
                 "selected": list(self.default_options or []),
                 "action": "non_interactive",
             }, ensure_ascii=False)
 
         # 非交互环境检测
-        if not os.isatty(sys.stdin.fileno()):
+        try:
+            tty_ok = os.isatty(sys.stdin.fileno())
+        except (ValueError, OSError):
+            tty_ok = False
+        if not tty_ok:
             _logger.warning(
-                "user_select 非交互回退: fd.isatty()=%s, title=%s",
-                os.isatty(sys.stdin.fileno()), self.title,
+                "user_select 非交互回退: fd.isatty()=False, title=%s",
+                self.title,
             )
-            self._start_monitor(monitor)
             return json.dumps({
                 "selected": list(self.default_options or []),
                 "action": "non_interactive"
             }, ensure_ascii=False)
 
-        # 获取 ChatUIConsumer 用于操作底部栏
+        # 获取 ChatUIConsumer 与 AppModel
         chat_ui = get_active_chat_ui()
-        bb = chat_ui.bottom_bar if chat_ui else None
-        input_ = chat_ui.get_input_component() if chat_ui else None
-        self._input = input_
-
-        if bb is None:
-            self._start_monitor(monitor)
+        if chat_ui is None:
             return json.dumps({
                 "selected": list(self.default_options or []),
                 "action": "error: ChatUI 未激活",
             }, ensure_ascii=False)
-
-        # 确保底部栏已激活（否则 show_completions 静默跳过）
-        if not bb.is_active:
-            term_h = get_terminal_size().lines
-            if term_h < bb._MIN_HEIGHT:
-                self._start_monitor(monitor)
-                return json.dumps({
-                    "selected": list(self.default_options or []),
-                    "action": "error: 终端高度不足",
-                }, ensure_ascii=False)
-            # 最小激活：仅设置标志和缓存，跳过全量绘制（由 show_completions 完成）
-            bb.set_active(True)
-            bb._last_text = ""
-            bb._last_rendered_text = ""
-            bb._last_bottom_lines = bb._bottom_lines
-            bb._last_scroll_end = term_h - bb._bottom_lines
-
-        # 多选：初始显示复选框（默认选项前端已勾选），Enter 提交全部选中项，空格切换
-        multi_display = []
-        for i, opt in enumerate(self.options):
-            prefix = "✓ " if opt in (self.default_options or []) else "  "
-            multi_display.append(f"{prefix}{i + 1}. {opt}")
-        multi_texts = list(self.options) if self.multi_select else self.options
-
-        # 保存当前选中索引的默认值
-        initial_idx = 0
-        if self.default_options:
-            for i, opt in enumerate(self.options):
-                if opt in self.default_options:
-                    initial_idx = i
-                    break
-
-        # 终端 I/O 设置：使用 Input 和 EscapeMonitor 公开 API
-        fd = input_.fd if input_ else sys.stdin.fileno()
-
-        try:
-            # 清空 stdin 残留
-            if self._input:
-                self._input.flush_stdin_buffer()
-
-            # 使用 EscapeMonitor 公开方法设置 cbreak 模式
-            if monitor:
-                monitor.apply_monitor_settings()
-
-            # 仅清空输入文本，使输入区显示干净弹窗选择界面；
-            # 但保持 _status_active 不变（不清除），让状态行在弹窗期间
-            # 持续刷新 token/耗时/速率，用户能实时看到 AI 仍在生成
-            if bb._last_text:
-                bb._last_text = ""
-
-            # 在底部栏补全区显示选项
-            bb.show_completions(
-                multi_display, initial_idx,
-                texts=multi_texts,
-                title="选择",
-                descriptions=self.option_descriptions,
-                split_desc=True,
-            )
-
-            # 多选状态跟踪（默认选项初始勾选）
-            selected_indices: set[int] = set()
-            if self.default_options:
-                for i, opt in enumerate(self.options):
-                    if opt in self.default_options:
-                        selected_indices.add(i)
-            deadline = None if self.timeout <= 0 else time.monotonic() + self.timeout
-
-            # ★ 动画刷新：render 线程已 suspend（_run_interactive），补全弹窗
-            #   呼吸色/spinner/状态栏动画无人驱动而静止（"user_select 显示时
-            #   动态不刷新"）。修复：select 至多等待 _REFRESH_INTERVAL，超时后
-            #   经 chat_ui.request_bottom_redraw() 触发同步渲染一帧推进时间基
-            #   动画（render 线程停止时该调用走同步渲染路径，10Hz 节流）。
-            _REFRESH_INTERVAL = 0.1
-            last_refresh = 0.0
-            while True:
-                remaining = None
-                if deadline is not None:
-                    remaining = deadline - time.monotonic()
-                    if remaining <= 0:
-                        break  # 超时退出循环
-
-                wait = _REFRESH_INTERVAL
-                if remaining is not None:
-                    wait = min(remaining, _REFRESH_INTERVAL)
-                try:
-                    ready, _, _ = select.select([fd], [], [], wait)
-                except (ValueError, OSError):
-                    continue
-
-                if not ready:
-                    # select 超时：到达 refresh 间隔（或 deadline）
-                    if deadline is not None and time.monotonic() >= deadline:
-                        break  # 真正超时退出
-                    now_t = time.monotonic()
-                    if now_t - last_refresh >= _REFRESH_INTERVAL and chat_ui is not None:
-                        last_refresh = now_t
-                        try:
-                            chat_ui.request_bottom_redraw()
-                        except Exception:
-                            _logger.debug("user_select: 动画刷新异常", exc_info=True)
-                    continue
-
-                try:
-                    raw = input_.read_byte() if input_ else os.read(fd, 1)
-                    if not raw:
-                        continue
-                except (ValueError, OSError):
-                    continue
-
-                b = raw[0]
-
-                # ── ESC / ANSI 序列 ──
-                if b == 0x1b:
-                    try:
-                        has_more, _, _ = select.select([fd], [], [], 0.3)
-                        if has_more:
-                            nxt = input_.read_byte() if input_ else os.read(fd, 1)
-                            if nxt in (b'[', b'O'):
-                                # CSI/SS3 序列：\x1b[A/↑, \x1b[B/↓, \x1bOA/↑, \x1bOB/↓
-                                has_term, _, _ = select.select([fd], [], [], 0.1)
-                                if has_term:
-                                    term = input_.read_with_timeout(0.1) if input_ else os.read(fd, 1)
-                                    if term is None:
-                                        continue
-                                    if not term:
-                                        continue
-                                    if term == b'A':      # ↑
-                                        bb.cycle_completion(-1)
-                                    elif term == b'B':    # ↓
-                                        bb.cycle_completion(1)
-                                continue
-                    except (ValueError, OSError):
-                        pass
-                    # 单 ESC → 取消
-                    bb.hide_completions()
-                    return json.dumps({
-                        "selected": list(self.default_options or []),
-                        "action": "cancel",
-                    }, ensure_ascii=False)
-
-                # ── 空格 → 切换选中（多选） ──
-                elif b == 0x20 and self.multi_select:
-                    idx = bb._completion_idx
-                    if not (0 <= idx < len(self.options)):
-                        continue
-                    if idx in selected_indices:
-                        selected_indices.discard(idx)
-                    else:
-                        selected_indices.add(idx)
-                    # 更新弹窗显示（✓ 标记）
-                    new_disp = []
-                    for i, opt in enumerate(self.options):
-                        prefix = "✓ " if i in selected_indices else "  "
-                        new_disp.append(f"{prefix}{i + 1}. {opt}")
-                    show_idx = min(bb._completion_idx, len(new_disp) - 1)
-                    bb.show_completions(
-                        new_disp, show_idx,
-                        texts=self.options,
-                        title="选择",
-                        descriptions=self.option_descriptions,
-                        split_desc=True,
-                    )
-                    continue
-
-                # ── Enter → 确认（单选=当前项，多选=全部选中项） ──
-                elif b in (0x0d, 0x0a):
-                    if self.multi_select:
-                        selected = [self.options[i] for i in sorted(selected_indices)]
-                        if not selected:
-                            selected = list(self.default_options or [])
-                        bb.hide_completions()
-                        return json.dumps({
-                            "selected": selected,
-                            "action": "confirmed",
-                        }, ensure_ascii=False)
-                    else:
-                        idx = bb._completion_idx
-                        if not (0 <= idx < len(self.options)):
-                            continue
-                        chosen = self.options[idx]
-                        bb.hide_completions()
-                        return json.dumps({
-                            "selected": [chosen],
-                            "action": "confirmed",
-                        }, ensure_ascii=False)
-
-            # 超时
-            bb.hide_completions()
+        model = chat_ui.get_model() if hasattr(chat_ui, "get_model") else None
+        if model is None or not hasattr(model, "user_select"):
             return json.dumps({
                 "selected": list(self.default_options or []),
-                "action": "timeout",
+                "action": "error: ChatUI 模型不可用",
             }, ensure_ascii=False)
 
+        default_opts = list(self.default_options or [])
+
+        # 清理可能残留的命令补全弹窗（避免与选择弹窗叠显）
+        try:
+            bb = chat_ui.bottom_bar
+            if bb is not None and getattr(bb, "is_completion_visible", False):
+                bb.hide_completions()
+            # 清空输入文本，使输入区显示干净弹窗选择界面
+            if bb is not None and getattr(bb, "_last_text", ""):
+                bb._last_text = ""
+        except Exception:
+            _logger.debug("user_select: 清理补全弹窗失败", exc_info=True)
+
+        # 清空 stdin 残留（避免弹窗打开时旧按键进入组件）
+        try:
+            input_ = chat_ui.get_input_component()
+            if input_ is not None and hasattr(input_, "flush_stdin_buffer"):
+                input_.flush_stdin_buffer()
+        except Exception:
+            _logger.debug("user_select: flush stdin 失败", exc_info=True)
+
+        # 初始选中索引（默认选项首项）；多选默认预勾选
+        initial_idx = 0
+        checked = []
+        for i, opt in enumerate(self.options):
+            if opt in default_opts:
+                if not checked:
+                    initial_idx = i
+                checked.append(i)
+
+        from ..tui.app.model import UserSelectState
+        try:
+            # 设置弹窗状态（seq+1 强制 UserSelectPopup 重挂载）
+            prev_seq = getattr(model.user_select, "seq", 0)
+            model.user_select = UserSelectState(
+                visible=True,
+                seq=prev_seq + 1,
+                title=self.title or "选择",
+                options=list(self.options),
+                option_descriptions=list(self.option_descriptions),
+                multi_select=self.multi_select,
+                default_options=default_opts,
+                selected=initial_idx,
+                checked=checked,
+                deadline=0.0 if self.timeout <= 0 else time.monotonic() + self.timeout,
+            )
+            chat_ui.request_bottom_redraw()
+
+            # 轮询等待组件交互完成（render 线程运行中；组件写 done）
+            deadline = model.user_select.deadline
+            while not model.user_select.done:
+                if deadline > 0 and time.monotonic() >= deadline:
+                    # 超时：写回默认结果（组件下一帧读到 done 停止渲染）
+                    model.user_select.done = True
+                    model.user_select.action = "timeout"
+                    model.user_select.result = default_opts
+                    break
+                await asyncio.sleep(0.05)
+
+            st = model.user_select
+            action = st.action or "timeout"
+            result = list(st.result) if st.result else default_opts
+            return json.dumps({
+                "selected": result,
+                "action": action,
+            }, ensure_ascii=False)
         except Exception as e:
             error_msg = str(e)[:100]
             _logger.debug("user_select 异常", exc_info=True)
@@ -374,30 +249,19 @@ class UserSelectFunc(Func):
                 "action": f"error: {error_msg}",
             }, ensure_ascii=False)
         finally:
-            # 恢复终端设置（通过 EscapeMonitor 公开 API）
-            if monitor:
-                try:
-                    monitor.restore_terminal_settings()
-                except Exception:
-                    pass
-
-            # 清除弹窗状态 + 主动重绘，确保底部栏立即恢复正常显示
+            # 清理弹窗状态 + 主动重绘（底部栏立即恢复正常显示）
             try:
-                bb._completion._visible = False
-                bb._completion._popup_height = 0
-                bb._completion._items = []
-                bb._completion._texts = []
-                bb._completion._split_desc = False
-                bb.force_redraw()
-            except Exception as e:
-                _logger.debug("user_select: cleanup failed: %s", e)
-
+                model.user_select = UserSelectState()
+                chat_ui.request_bottom_redraw()
+            except Exception:
+                _logger.debug("user_select: cleanup 失败", exc_info=True)
             # 清空 stdin 残留
-            if self._input:
-                self._input.flush_stdin_buffer()
-
-            # 重启 EscapeMonitor
-            self._start_monitor(monitor)
+            try:
+                input_ = chat_ui.get_input_component()
+                if input_ is not None and hasattr(input_, "flush_stdin_buffer"):
+                    input_.flush_stdin_buffer()
+            except Exception:
+                _logger.debug("user_select: finally flush 失败", exc_info=True)
 
     async def display(self):
         """异步显示选择界面并返回结果"""

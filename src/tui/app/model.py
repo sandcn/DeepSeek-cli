@@ -145,6 +145,47 @@ class CompletionState:
 
 
 @dataclass
+class UserSelectState:
+    """用户选择弹窗状态（user_select 工具注入，UserSelectPopup 组件消费）。
+
+    React Ink 化（2026-08-05）：user_select 不再走命令补全弹窗
+    （CompletionState + show_completions + raw I/O），改为独立的 React Ink
+    组件 ``UserSelectPopup`` 渲染与交互（use_input + use_state）。
+
+    Attributes:
+        visible: 弹窗是否显示（工具打开/关闭）。
+        seq: 弹窗会话序号（每次打开递增）——App 组件用 key 强制
+            UserSelectPopup 重挂载，重置组件内部 state（连续多次调用
+            不残留旧选中/旧勾选）。
+        title: 弹窗标题。
+        options: 选项字符串列表。
+        option_descriptions: 与 options 等长的说明列表（长度不足补齐空串）。
+        multi_select: 是否多选。
+        default_options: 默认选项（超时/取消/非交互回退）。
+        selected: 当前高亮索引（组件维护）。
+        checked: 多选勾选索引列表（组件维护，提交时按索引排序）。
+        deadline: 超时截止（time.monotonic()）；0 表示无限等待。
+        done: 交互是否已结束（组件写入）。
+        action: 结束方式（confirmed/cancel/timeout）。
+        result: 选中的 options 子集（组件/工具写入）。
+    """
+
+    visible: bool = False
+    seq: int = 0
+    title: str = ""
+    options: list = field(default_factory=list)
+    option_descriptions: list = field(default_factory=list)
+    multi_select: bool = False
+    default_options: list = field(default_factory=list)
+    selected: int = 0
+    checked: list = field(default_factory=list)
+    deadline: float = 0.0
+    done: bool = False
+    action: str = ""
+    result: list = field(default_factory=list)
+
+
+@dataclass
 class StatusState:
     """状态栏数据（移植 BottomBarStatus 状态域）。"""
 
@@ -642,6 +683,8 @@ class AppModel:
         self.input_cursor: int = 0
         # 补全
         self.completion: CompletionState = CompletionState()
+        # 用户选择弹窗（React Ink 化：user_select 工具 → UserSelectPopup 组件）
+        self.user_select: UserSelectState = UserSelectState()
         # 实时解析进度行（同位置刷新；ParseInfoDone 后提交并清空）
         self.parse_line: Any = None
         # subagent 面板行（控制器推送）
@@ -1360,5 +1403,6 @@ __all__ = [
     "CompletionState",
     "StatusState",
     "HistorySearchState",
+    "UserSelectState",
     "ReasoningState",
 ]

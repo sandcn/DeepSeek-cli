@@ -248,21 +248,16 @@ class ToolCallbackChain:
         无法创建正确的终端输出(Vt100_Output)，Picker UI 静默回退为 PlainTextOutput。
         user_select 的 display() 自带终端输出，无需额外捕获。
 
-        执行前暂停 ChatUIConsumer（停止 render 线程、拆除底部栏），
-        执行后恢复，确保 Picker 独占终端不被后台渲染干扰。
+        React Ink 化（2026-08-05）：user_select 的弹窗由 React Ink 组件
+        ``UserSelectPopup`` 在渲染树中显示与交互（use_input 经 render 线程
+        驱动的 InputDispatcher 路由）。因此**不再 suspend render 线程**——
+        suspend 会停止渲染循环（InputDispatcher 随之停止读 stdin），组件
+        无法渲染/接收按键。弹窗期间 AI 状态栏/动画继续正常刷新。
         """
         if is_web and func.__class__.web_display is not Func.web_display:
             return await func.web_display()
 
-        from ....tui.consumer import get_active_chat_ui
-        chat_ui = get_active_chat_ui()
-        if chat_ui is not None:
-            chat_ui.suspend()
-        try:
-            result = await func.execute()
-        finally:
-            if chat_ui is not None:
-                chat_ui.resume()
+        result = await func.execute()
 
         # user_select 结果通过 ToolOutputChunkEvent 上屏显示
         self._emit_user_select_output(result, getattr(func, 'tool_label', ''))

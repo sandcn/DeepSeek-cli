@@ -20,6 +20,7 @@ from src.tui.ink import h, APP, TEXT, StyledRun, Column, Row, InlineSpinner
 from .chat_view import ChatView, register as _register_committed
 from .header import TopHeader
 from .status_bar import StatusBar
+from .user_select import UserSelectPopup
 from . import input_area as _input_area
 
 
@@ -64,6 +65,14 @@ def App(props) -> object:
         h(_StreamingLine, {"model": model}),
     ]
     bottom_area = [
+        # ★ React Ink 化（user_select）：用户选择弹窗组件——StatusBar 上方渲染，
+        #   visible=False 时零高度不占行；key=seq 强制重挂载（每次打开重置
+        #   组件内部 state，连续多次调用不残留旧选中/勾选）。
+        h(UserSelectPopup, {
+            "model": model,
+            "width": width,
+            "key": f"us-{model.user_select.seq}",
+        }),
         h(StatusBar, {"model": model, "width": width}),
         h("input-area", input_props),
     ]

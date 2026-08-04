@@ -324,7 +324,16 @@ class InputDispatcher:
                     event = self._parse_escape_sequence(fd)
                     kind = event.kind
                     if kind in ("escape", "interrupt"):
-                        if kind == "escape" and self._buffer_editor.is_search_active():
+                        # ★ user_select Esc 取消修复（2026-08-05）：ESC 事件内联
+                        #   处理前先询问 input router——修复前 Esc 直接走搜索/
+                        #   取消输入/中断路径，React Ink useInput 钩子
+                        #   （UserSelectPopup/ConfirmInput/SearchInput 等）收不到
+                        #   escape 事件 → user_select 弹窗按 Esc 无法取消。
+                        #   router 消费（返回 True）→ 跳过旧中断路径；未消费
+                        #   → 走既有搜索/取消输入/中断语义（零行为变化）。
+                        if self._router_consume(event):
+                            pass
+                        elif kind == "escape" and self._buffer_editor.is_search_active():
                             # 方向D 步骤14：搜索模式 Esc 退出搜索（恢复原缓冲）
                             self._buffer_editor.search_exit(apply=False)
                             self._sync_reverse_search()

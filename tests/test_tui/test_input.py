@@ -1271,6 +1271,45 @@ class TestReadStdinOnceRegression:
             os.close(w_fd)
             os.close(r_fd)
 
+    def test_read_stdin_once_escape_router_consumes_skips_interrupt(self, tmp_path, wait_pipe_readable_fixture) -> None:
+        """Esc 事件先问 input router——消费（useInput 钩子如 user_select 弹窗
+        取消）时跳过中断路径（不触发 _do_interrupt / 不清空缓冲）。
+
+        回归（2026-08-05）：修复前 Esc 内联直接走搜索/取消输入/中断路径，
+        从未进 router → React Ink useInput 钩子收不到 escape 事件 →
+        user_select 弹窗按 Esc 无法取消。
+        """
+        r_fd, w_fd = os.pipe()
+        try:
+            inp = self._create_input(r_fd, tmp_path)
+            inp.handle_chars("hello")
+            # 注入消费全部事件的 router（模拟 UserSelectPopup 弹窗激活）
+            inp.set_input_hook_router(lambda ev: True)
+            os.write(w_fd, b"\x1b")
+            assert wait_pipe_readable_fixture(r_fd)
+            assert inp.read_stdin_once() is True
+            # router 消费 → 跳过中断 → 缓冲保留、未设置 interrupted
+            assert inp.get_current_text() == "hello"
+            assert not inp.interrupted
+        finally:
+            os.close(w_fd)
+            os.close(r_fd)
+
+    def test_read_stdin_once_escape_no_router_interrupts(self, tmp_path, wait_pipe_readable_fixture) -> None:
+        """无 input router 时 Esc 仍走中断（零回归——默认 Esc 语义不变）。"""
+        r_fd, w_fd = os.pipe()
+        try:
+            inp = self._create_input(r_fd, tmp_path)
+            inp.handle_chars("hello")
+            os.write(w_fd, b"\x1b")
+            assert wait_pipe_readable_fixture(r_fd)
+            assert inp.read_stdin_once() is True
+            assert inp.get_current_text() == ""
+            assert inp.interrupted
+        finally:
+            os.close(w_fd)
+            os.close(r_fd)
+
     def test_read_stdin_once_paused_regression(self, tmp_path, wait_pipe_readable_fixture) -> None:
         """暂停状态下不读取数据，返回 False。"""
         r_fd, w_fd = os.pipe()

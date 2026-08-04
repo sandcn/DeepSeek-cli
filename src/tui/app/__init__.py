@@ -10,6 +10,7 @@ from .model import (
     ChatBlock,
     CompletionState,
     StatusState,
+    UserSelectState,
     ReasoningState,
 )
 from .apply import apply_cmd
@@ -20,6 +21,7 @@ __all__ = [
     "ChatBlock",
     "CompletionState",
     "StatusState",
+    "UserSelectState",
     "ReasoningState",
     "apply_cmd",
     "build_app_element",
