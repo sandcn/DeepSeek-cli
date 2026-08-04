@@ -233,37 +233,30 @@ class TestSingleSourceOfTruth:
                 f"实际 {color}（应与 _SEMANTIC_COLOR 槽位一致，防止样式漂移）"
             )
 
-    def test_color_constants_derived_from_semantic_color_regression(self) -> None:
-        """_COLOR_*/_C_* ANSI 字符串内色号与 _SEMANTIC_COLOR 槽位一致。"""
-        from src.tui._const import (
-            _SEMANTIC_COLOR,
-            _COLOR_ACCENT, _COLOR_DEEP_CYAN, _COLOR_DIM, _COLOR_SEP,
-            _COLOR_TIME, _COLOR_TOKEN, _COLOR_SPEED, _COLOR_TOOL_OK,
-            _COLOR_TOOL_FAIL, _COLOR_SELECT_BG, _COLOR_SELECT_FG,
-            _COLOR_COMPLETE_TITLE, _COLOR_COMPLETE_CMD_PREFIX, _COLOR_COMPLETE_DIR,
-            _C_RUNNING, _C_FAIL,
-        )
+    def test_color_constants_removed_regression(self) -> None:
+        """★ 标准 React Ink 组件化：_COLOR_*/_C_* ANSI 常量已移除。
+
+        生产渲染统一用 core/style.py Style（fg 色号，色号从 _SEMANTIC_COLOR
+        槽位表解析）——本测试固化「ANSI 字符串常量不再存在」的清理结果，
+        同时锁定 _SEMANTIC_COLOR 槽位表值不变（样式语义唯一真源）。
+        """
+        import src.tui._const as _c
+        assert not hasattr(_c, "_COLOR_ACCENT"), "_COLOR_* 应已移除"
+        assert not hasattr(_c, "_C_RUNNING"), "_C_* 应已移除"
+        from src.tui._const import _SEMANTIC_COLOR
         sc = _SEMANTIC_COLOR
-        # 前景派生（38;5;n）
-        assert _COLOR_ACCENT == f"\033[38;5;{sc['accent']}m"
-        assert _COLOR_DEEP_CYAN == f"\033[38;5;{sc['deep_cyan']}m"
-        assert _COLOR_DIM == f"\033[38;5;{sc['dim']}m"
-        assert _COLOR_SEP == f"\033[38;5;{sc['sep']}m"
-        assert _COLOR_TIME == f"\033[38;5;{sc['time']}m"
-        assert _COLOR_TOKEN == f"\033[38;5;{sc['token']}m"
-        assert _COLOR_SPEED == f"\033[38;5;{sc['speed']}m"
-        assert _COLOR_TOOL_OK == f"\033[38;5;{sc['tool_ok']}m"
-        assert _COLOR_TOOL_FAIL == f"\033[38;5;{sc['tool_fail']}m"
-        # 背景派生（48;5;n）
-        assert _COLOR_SELECT_BG == f"\033[48;5;{sc['select_bg']}m"
-        assert _COLOR_SELECT_FG == f"\033[38;5;{sc['select_fg']}m"
-        # 加粗前缀派生
-        assert _COLOR_COMPLETE_TITLE == f"\033[1;38;5;{sc['accent']}m"
-        assert _COLOR_COMPLETE_CMD_PREFIX == f"\033[1;38;5;{sc['accent']}m"
-        assert _COLOR_COMPLETE_DIR == f"\033[38;5;{sc['time']}m"
-        # _C_* 面板系列
-        assert _C_RUNNING == f"\033[38;5;{sc['speed']}m"
-        assert _C_FAIL == f"\033[38;5;{sc['tool_fail']}m"
+        # 槽位表锚点（样式语义唯一真源，值不变）
+        assert sc["accent"] == 45
+        assert sc["deep_cyan"] == 32
+        assert sc["dim"] == 242
+        assert sc["sep"] == 237
+        assert sc["time"] == 110
+        assert sc["token"] == 68
+        assert sc["speed"] == 214
+        assert sc["tool_ok"] == 41
+        assert sc["tool_fail"] == 196
+        assert sc["select_bg"] == 236
+        assert sc["select_fg"] == 15
 
     def test_semantic_color_anchors_regression(self) -> None:
         """槽位表关键锚点（test_screen.py 硬编码锚点同步防漂移）。"""

@@ -175,7 +175,7 @@ def _compute_input_layout(text: str, max_input: int) -> tuple[int, list[list[str
     """单次换行计算：返回 (总行数, 每逻辑行拆行后的段列表)。
 
     方向5（光标算法单一真源）：本函数自 ``app/input_area.py`` 迁移（原
-    input_area 与 _input 双实现）——``_measure``/``_build_lines``/
+    input_area 与 _input 双实现）——``_build_lines``/
     ``_cursor_visual_from_layout``/``_compute_cursor_visual_pos`` 全部复用，
     每帧至多 1 次换行计算（PERF-1）。
 

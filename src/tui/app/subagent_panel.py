@@ -1,23 +1,26 @@
-"""subagent 卡片渲染辅助 — subagent_lines（ANSI 卡片行）→ ink TEXT 元素。
+"""subagent 卡片渲染辅助 — subagent_lines（ink Line 行）→ ink TEXT 元素。
 
 对齐 Claude Code：子代理活动渲染为**逐 agent 卡片**（``_subagent_render``
-产出带边框 ANSI 行），经 ``ChatView`` 并入消息流显示（原独立 SubAgentPanel
-组件已移除）。本模块提供唯一 ANSI → StyledRun 转换点（方向C 步骤8）：
-``_render_children`` 经 ``ansi_to_runs`` 解析 + 按终端宽度截断 + 换行转义。
+产出带边框 Line 行），经 ``ChatView`` 并入消息流显示（原独立 SubAgentPanel
+组件已移除）。
+
+★ 标准 React Ink 组件化（2026-08-05）：subagent_lines 数据格式从「ANSI
+字符串行」迁移为「ink Line 行」（StyledRun）——本模块不再 ``ansi_to_runs``
+解析 ANSI 字符串，直接 ``Line.runs`` 转 TEXT 标准组件（方向C 步骤8 唯一
+ANSI → StyledRun 转换点已消除）；按终端宽度截断 + 换行转义语义保留。
 """
 
 from __future__ import annotations
 
 from src.tui.ink import h, TEXT, StyledRun, truncate_runs, use_memo
-from src.renderer.ansi.helpers import ansi_to_runs
 from src.tui._format import single_line
 
 
 def _render_children(model, width: int) -> list:
-    """构建 subagent 卡片子树（按行截断 + 转样式 run）。
+    """构建 subagent 卡片子树（按行截断 + 样式 run）。
 
-    唯一 ANSI → StyledRun 转换点（方向C 步骤8）：subagent_lines 的
-    ANSI 行经 ``ansi_to_runs`` 解析为样式 run，再按终端宽度截断。
+    subagent_lines 为 ``Line`` 行列表（_subagent_render 产出）：直接复用
+    ``Line.runs``（StyledRun 行）按终端宽度截断，不再经 ANSI 解析。
     每行给索引 key（调和器复用 fiber，换行/样式缓存可命中）。
 
     本函数为**纯计算**（无 hook）；组件内请用 ``use_subagent_children``
@@ -29,14 +32,22 @@ def _render_children(model, width: int) -> list:
     for i, line in enumerate(model.subagent_lines or []):
         if not line:
             continue
+        # 防御：行可能为纯文本（非 Line）——取 runs（Line）或按纯文本归一。
+        runs = getattr(line, "runs", None)
+        if runs is None:
+            runs = [StyledRun(str(line), None)]
         # 强制单行契约：来源字段可能含 \n/\r，直接渲染会被终端按换行拆成
-        # 两行——显示前转义为字面量（与 _subagent_render.format_tool_record
-        # 语义一致；★ 方向5：委托 _format.single_line 单一真源）。
-        line = single_line(line)
-        runs = truncate_runs(
-            [StyledRun(r.text, r.style) for r in ansi_to_runs(line) if r.text],
-            width,
-        )
+        # 两行——显示前转义为字面量（_subagent_render.format_tool_record
+        # 已在源头转义；此处防御兜底）。
+        text_runs = []
+        for r in runs:
+            if not r.text:
+                continue
+            if "\n" in r.text or "\r" in r.text:
+                text_runs.append(StyledRun(single_line(r.text), r.style))
+            else:
+                text_runs.append(r)
+        runs = truncate_runs(text_runs, width)
         if runs:
             children.append(h(TEXT, {"key": f"subagent-{i}", "styled": runs}))
     return children

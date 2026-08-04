@@ -161,25 +161,6 @@ class TestLayoutContainersInApp:
         assert len(f.lines) >= 1
         assert "test" in " ".join(ln.plain for ln in f.lines)
 
-    def test_tool_header_column_container(self):
-        """ToolStatusHeader 用 Column 容器后边框行输出不变（隔离验证模块）。"""
-        from src.tui.ink.element import h as _h
-        from src.tui.ink.reconciler import Reconciler as _R
-        from src.tui.ink.components import render_frame as _rf
-        from src.tui.app.tool_header import ToolStatusHeader
-
-        m = AppModel()
-        m.width = 40
-        m.open_tool_box("t1", "bash", detail="ls -la")
-        r = _R()
-        root = r.create_root()
-        el = _h(ToolStatusHeader, {"model": m, "width": 40})
-        r.render(root, el, 40, 24)
-        f = _rf(root, 40)
-        plains = [ln.plain for ln in f.lines]
-        assert any(p.startswith("┌─ ⚡ Bash") for p in plains), f"工具边框缺失: {plains}"
-        assert all(len(p) <= 40 for p in plains), f"行宽超限: {plains}"
-
     def test_widgets_use_standard_containers(self):
         """交互/展示控件内部用标准布局容器（Row/Column）且渲染不回归。"""
         from src.tui.ink.element import h as _h

@@ -805,11 +805,12 @@ def _measure(fiber: Fiber, x: int, y: int, avail_w: int, fill: bool = True) -> L
     from .registry import get_host
     host = get_host(ftype)
     if host is not None:
-        # ★ 性能（PERF-15）：committed-chat host 存在性标记——layout_tree
-        #   整树遍历时沿 return_ 链找到 root 并置位，供 render_frame 的
-        #   _find_committed_chat O(1) 判定（无 committed-chat 的组件树每帧
-        #   零 DFS）。committed-chat 每帧仅一个，向上 O(树深) 完全可接受。
-        if ftype == "committed-chat":
+        # ★ 性能（PERF-15）：静态行 host（static-lines/committed-chat）
+        #   存在性标记——layout_tree 整树遍历时沿 return_ 链找到 root 并置位，
+        #   供 render_frame 的 _find_committed_chat O(1) 判定（无静态行 host
+        #   的组件树每帧零 DFS）。静态行 host 每帧仅一个，向上 O(树深) 完全
+        #   可接受。
+        if ftype == "static-lines":
             _f = fiber.return_
             while _f is not None:
                 if getattr(_f, "tag", None) == "root":

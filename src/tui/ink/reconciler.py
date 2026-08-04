@@ -119,18 +119,29 @@ class Reconciler:
         self._reconcile_children(root_fiber, [element])
         # 布局（host 树）
         _layout.layout_tree(root_fiber, width)
+        # ★ 性能（PERF-25）：合并渲染后置元数据收集——原实现 host ref 填充
+        #   （_attach_host_refs）、effects 提交（_run_live_effects →
+        #   _traverse_functions）、input router（_build_input_router →
+        #   _collect_input_hooks）各自独立遍历整棵 fiber 树（每帧 3 次全树
+        #   DFS）。合并为**一次 DFS** 同时收集：带 ref 的 host fiber / function
+        #   fiber 列表 / InputHook+PasteHook（遍历顺序保持前序——ref 填充顺序
+        #   无消费方、effects 后序提交、router 按 hooks_list 前序调用，与各自
+        #   原实现语义一致）。原方法保留（兼容测试/外部调用面）。
+        function_fibers, ref_fibers, input_hooks, paste_hooks = (
+            self._collect_render_metadata(root_fiber)
+        )
         # ★ host ref 填充（方向8）：layout 完成后将 layout_box 写入绑定的
         #   ref（RefHook.current / 函数 ref 回调）——useMeasure 等据此在
-        #   layout effect 中读取尺寸。遍历开销 O(host 数)，仅绑定 ref 的
-        #   fiber 需要处理。
-        self._attach_host_refs(root_fiber)
+        #   layout effect 中读取尺寸。
+        self._fill_host_refs(ref_fibers)
         # 提交 effects：先销毁（删除子树），再创建（依赖变化）
         for fiber, hook in self._pending_destroys:
             self._run_destroy(fiber, hook)
         self._pending_destroys = []
-        self._run_live_effects(root_fiber)
+        self._run_live_effects_collected(function_fibers)
         # ★ 发布 composite input router（use_input 钩子，INK-1）
-        router = self._build_input_router(root_fiber)
+        # 用合并遍历已收集的 hooks 构建（免再次全树收集——PERF-25）
+        router = self._build_input_router_from_hooks(input_hooks, paste_hooks)
         _hooks._publish_input_router(router)
 
     # ── 挂载 ────────────────────────────────────────
@@ -172,8 +183,13 @@ class Reconciler:
         except Exception:
             pass  # 不可比较（安全侧：更新引用）
         fiber.props = props
-    def _reconcile_children(self, return_fiber: Fiber, elements: list[Element]) -> None:
+        # props 变化 → key 缓存失效（PERF-24；内容相等路径已提前 return）
+        fiber._key_cache = None
+    def _reconcile_children(self, return_fiber: Fiber, elements) -> None:
         """调和 return_fiber 的子元素列表（按 key/type diff 子 sibling 链）。
+
+        接受 list 或 tuple（只读遍历——不修改 elements；调用方传
+        ``element.children`` tuple 时免 list 复制，PERF-24）。
 
         方向B 步骤11：记录旧 sibling 链各 fiber 的旧位置索引
         （``old_index_map[key] = idx``）；复用 fiber 时比较旧/新位置，
@@ -538,7 +554,12 @@ class Reconciler:
                         _hooks._bump_context_version()
                         _clear_context_cache_subtree(fiber.child)
             if children:
-                self._reconcile_children(fiber, list(children))
+                # ★ 性能（PERF-24）：不再 ``list(children)`` 复制——children
+                #   为 tuple（Element.children frozen 不变式），``_reconcile_children``
+                #   与 ``_try_reuse_stable`` 均为**只读**遍历（索引/enumerate），
+                #   tuple 原生支持；修复前每帧对 ChatView 等大 children（流式
+                #   开放块 64+ 行 TEXT）复制一次列表（O(n) 分配）。
+                self._reconcile_children(fiber, children)
             elif fiber.child is not None:
                 # ★ 性能（方向1）：空子元素快路径——叶子/无子节点容器直接
                 #   删除旧子链（修复前无条件 ``_reconcile_children(fiber, [])``
@@ -644,6 +665,18 @@ class Reconciler:
     def _build_input_router(self, root_fiber: Fiber):
         """前序遍历收集 active InputHook/PasteHook，构建 composite router。
 
+        兼容入口（测试/外部调用）：收集 + 构建两步。生产渲染经
+        ``_collect_render_metadata``（PERF-25 合并遍历）收集后直接调
+        ``_build_input_router_from_hooks``（免重复全树遍历）。
+        """
+        hooks_list: list[InputHook] = []
+        paste_hooks: list[PasteHook] = []
+        self._collect_input_hooks(root_fiber, hooks_list, paste_hooks)
+        return self._build_input_router_from_hooks(hooks_list, paste_hooks)
+
+    def _build_input_router_from_hooks(self, hooks_list: list[InputHook], paste_hooks: list[PasteHook]):
+        """由已收集的 hooks 构建 composite router（PERF-25：合并遍历后免重复收集）。
+
         无 active hooks 时返回 None（输入走旧路径，零行为变化）。
         Router 按 hook 顺序调用各 handler；任一返回 True 视为消费（返回 True）；
         全部未消费返回 False（放行旧路径）；handler 异常视为未消费（放行）。
@@ -668,9 +701,6 @@ class Reconciler:
         hook/handler 引用仍有效（handler 被 GC 后新对象复用旧 id → 签名相同但
         引用不同 → 重建，闭环修复 id 复用）。
         """
-        hooks_list: list[InputHook] = []
-        paste_hooks: list[PasteHook] = []
-        self._collect_input_hooks(root_fiber, hooks_list, paste_hooks)
         if not hooks_list and not paste_hooks:
             self._input_router_cache = None
             return None
@@ -768,6 +798,68 @@ class Reconciler:
                 else:
                     f = f.sibling
 
+    def _collect_render_metadata(self, root_fiber: Fiber):
+        """一次 DFS 遍历收集渲染后置元数据（PERF-25）。
+
+        合并原三趟独立全树遍历（``_attach_host_refs`` / ``_traverse_functions`` /
+        ``_collect_input_hooks``）为**一次遍历**——大组件树每帧省 2 次 O(节点数)
+        的 DFS 分配与递归开销。返回：
+
+          - ``function_fibers``：function fiber 前序列表（effects 后序提交用）；
+          - ``ref_fibers``：带 ``_host_ref`` 的 fiber（layout_box 填充用）；
+          - ``input_hooks`` / ``paste_hooks``：active 且有 handler 的输入钩子
+            （composite router 用）。
+
+        遍历保持前序（与各自原实现一致：ref 填充顺序无消费方、effects 后序
+        reversed 提交、router 按 hooks_list 顺序调用）；跳过已删除 fiber。
+
+        function fiber 的 ``_host_ref`` 恒为 None（``_begin_work`` 仅 host 分支
+        设置——ref 绑定 useMeasure 仅对 host 元素有意义），故仅收集非 function
+        fiber 的 ref（与原 ``_attach_host_refs`` 对所有 fiber 检查等价）。
+        """
+        function_fibers: list[Fiber] = []
+        ref_fibers: list[Fiber] = []
+        input_hooks: list[InputHook] = []
+        paste_hooks: list[PasteHook] = []
+        stack = [root_fiber]
+        while stack:
+            f = stack.pop()
+            while f is not None:
+                if f.deleted:
+                    f = f.sibling
+                    continue
+                if f.is_function:
+                    function_fibers.append(f)
+                    for hook in f.hooks:
+                        if isinstance(hook, InputHook) and hook.is_active and hook.handler is not None:
+                            input_hooks.append(hook)
+                        elif isinstance(hook, PasteHook) and hook.is_active and hook.handler is not None:
+                            paste_hooks.append(hook)
+                else:
+                    ref = f._host_ref
+                    if ref is not None:
+                        ref_fibers.append(f)
+                if f.child is not None:
+                    stack.append(f.sibling)
+                    f = f.child
+                else:
+                    f = f.sibling
+        return function_fibers, ref_fibers, input_hooks, paste_hooks
+
+    def _fill_host_refs(self, ref_fibers) -> None:
+        """将 layout_box 写入绑定的 ref（PERF-25：``_collect_render_metadata``
+        收集后的填充阶段，与 ``_attach_host_refs`` 填充逻辑一致）。"""
+        for f in ref_fibers:
+            ref = f._host_ref
+            if ref is not None and f.layout_box is not None:
+                if callable(ref):
+                    try:
+                        ref(f.layout_box)
+                    except Exception:
+                        _logger.debug("host ref 回调异常 fiber=%s", f.type, exc_info=True)
+                elif hasattr(ref, "current"):
+                    ref.current = f.layout_box
+
     def _mark_deleted(self, fiber: Fiber) -> None:
         """标记子树删除（收集其 effect 销毁函数 + 清理 context 注册表）。
 
@@ -784,11 +876,30 @@ class Reconciler:
         function fiber 的 EffectHook.destroy，再置 ``fiber.deleted = True``**
         ——修复前先置 deleted 后 ``_traverse_functions``，首节点即跳过整棵
         子树，destroy 永不收集（删除组件卸载清理依赖缺失）。
+
+        ★ 标准 React Ink 组件化（2026-08-05）：**递归标记子树全部 host/function
+        fiber ``deleted=True``**——修复前仅标记根 fiber：外部缓存（如
+        ``session._input_fiber`` 指向 InputArea 返回的 Column host fiber /
+        ``root._committed_chat_cache`` 指向 StaticLines host fiber）在子树根
+        被替换时（函数组件 key 变化 → 函数 fiber 删除但子 host fiber 不标记）
+        缓存失效检测失效（`deleted` False 但 fiber 已脱离活跃树）。递归标记后
+        外部缓存经 ``deleted`` 正确失效重建。
         """
         fiber.sibling = None
         self._traverse_functions(fiber, self._queue_destroys, include_self=True)
         fiber.deleted = True
         self._cleanup_contexts(fiber)
+        # ★ 递归标记子树全部 fiber deleted（含 host 子节点——外部缓存指向
+        #   子树内 host fiber，仅标记根无法让缓存失效；复用路径会重置
+        #   ``existing.deleted = False``）。
+        stack = [fiber]
+        while stack:
+            f = stack.pop()
+            f.deleted = True
+            c = f.child
+            while c is not None:
+                stack.append(c)
+                c = c.sibling
 
     def _cleanup_contexts(self, fiber: Fiber | None) -> None:
         """遍历被删子树（当前为 no-op，保留接口签名与调用点）。
@@ -893,14 +1004,23 @@ class Reconciler:
         方向4（layout/passive 两阶段）：React 中 **layout effects 先于 passive
         effects** 提交——先遍历提交 layout（``useLayoutEffect``，布局后同步），
         再遍历提交 passive（``useEffect``）。两阶段各自保持子先父后的后序。
+
+        # deprecated: 生产渲染经 ``_run_live_effects_collected``（PERF-25 合并
+        # 遍历后提交，免单独全树遍历）；本方法保留兼容入口（独立收集+提交）。
         """
         collected: list[Fiber] = []
         self._traverse_functions(root, collected.append)
+        self._run_live_effects_collected(collected)
+
+    def _run_live_effects_collected(self, function_fibers: list) -> None:
+        """提交依赖变化的 effect（PERF-25：用 ``_collect_render_metadata`` 合并
+        遍历收集的 function fiber 前序列表，reversed 后序提交——与
+        ``_run_live_effects`` 语义一致，免再次全树遍历）。"""
         # 第一阶段：layout effects（useLayoutEffect）
-        for fiber in reversed(collected):
+        for fiber in reversed(function_fibers):
             self._commit_live(fiber, layout=True)
         # 第二阶段：passive effects（useEffect）
-        for fiber in reversed(collected):
+        for fiber in reversed(function_fibers):
             self._commit_live(fiber, layout=False)
 
     def _commit_live(self, fiber: Fiber, layout: bool) -> None:

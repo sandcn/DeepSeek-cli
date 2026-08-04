@@ -43,7 +43,7 @@ from .renderer import InkRenderer
 from . import components as _components
 from . import hooks as _hooks
 from .element import Element
-from src.tui._input import _compute_cursor_visual_pos, _cursor_visual_from_layout
+from src.tui._input import _compute_input_layout, _cursor_visual_from_layout
 from src.tui.app.input_area import (
     _completion_height,
     _is_search_active,
@@ -944,10 +944,16 @@ class InkSession:
         # ★ P5：input-area fiber 缓存——仅在失效时重建（避免每帧全树递归查找）。
         #   调和器复用 fiber 时重置 deleted=False；input-area 被删除/替换（旧
         #   fiber 未复用 → deleted 保持 True）时缓存自动失效重建。
+        #   ★ 标准 React Ink 组件化：InputArea 函数组件返回 Column（带
+        #   dataInputArea 标记 + 透传 props）——查找条件兼容旧 host
+        #   "input-area" 与标准组件容器。
         if (
             self._input_fiber is None
             or self._input_fiber.deleted
-            or self._input_fiber.type != "input-area"
+            or not (
+                self._input_fiber.type == "input-area"
+                or bool(self._input_fiber.props.get("dataInputArea"))
+            )
         ):
             self._input_fiber = self._find_input_fiber(self._root_fiber)
         self._position_cursor()
@@ -1039,19 +1045,23 @@ class InkSession:
                 exc_info=True,
             )
         max_input = max(1, box.w - len(prompt))
-        # ★ PERF-1：优先复用 input_area measure 阶段缓存的换行布局（每帧至多 1 次换行），
-        #   未命中（fiber 缓存不存在或 text/max_input 已变）时回退既有计算。
+        # ★ PERF-1：优先复用换行布局缓存（每帧至多 1 次换行；缓存写回
+        #   dataInputArea 容器 fiber——InputArea 组件内部 _build_lines 写的是
+        #   临时 fiber（_input_elements SimpleNamespace），此处是真实 Column
+        #   fiber，二者分离；写回后同 text/max_input 帧零重复换行计算）。
+        #   未命中时经 _compute_input_layout 计算并写回。
         cached = getattr(fiber, "_input_layout_cache", None)
         if cached is not None and cached[0] == (text, max_input):
             _, wrapped_by_logical = cached[1]
-            vis_row, vis_col = _cursor_visual_from_layout(text, cursor_pos, wrapped_by_logical)
         else:
-            vis_row, vis_col = _compute_cursor_visual_pos(text, cursor_pos, max_input)
+            rows, wrapped_by_logical = _compute_input_layout(text, max_input)
+            fiber._input_layout_cache = ((text, max_input), (rows, wrapped_by_logical))
+        vis_row, vis_col = _cursor_visual_from_layout(text, cursor_pos, wrapped_by_logical)
         # 输入文本起始行 = box.y + popup_height + 1（上分隔线之后）
         row = box.y + popup_height + 1 + vis_row + 1
         # ★ P0-1：反向历史搜索激活时 input_area 在输入文本行前追加 1 行
-        #   (reverse-i-search) 覆盖行（_measure 已正确增行）——光标行偏移须
-        #   同步计入（与 input_area._measure/_build_lines 共享 _is_search_active
+        #   (reverse-i-search) 覆盖行（_build_lines 已正确增行）——光标行偏移须
+        #   同步计入（与 input_area._build_lines 共享 _is_search_active
         #   高度辅助，保持一致）。
         if _is_search_active(fiber.props.get("history_search")):
             row += 1
@@ -1065,13 +1075,21 @@ class InkSession:
             _logger.debug("place_cursor 异常", exc_info=True)
 
     def _find_input_fiber(self, root_fiber):
-        """在 host 树中查找输入区 fiber（type == 'input-area'）。"""
+        """在 host 树中查找输入区 fiber（标准组件 dataInputArea 容器或旧 host）。
+
+        ★ 标准 React Ink 组件化：InputArea 标准组件返回 Column（props 含
+        ``dataInputArea=True`` 标记 + 透传输入区状态）——查找条件为
+        ``props.dataInputArea`` 或旧 ``type == "input-area"``（兼容）。
+        """
         from .fiber import Fiber
 
         def walk(f: Fiber | None):
             f2 = f
             while f2 is not None:
-                if f2.is_host and f2.type == "input-area":
+                if f2.is_host and (
+                    f2.type == "input-area"
+                    or bool(f2.props.get("dataInputArea"))
+                ):
                     return f2
                 r = walk(f2.child)
                 if r is not None:

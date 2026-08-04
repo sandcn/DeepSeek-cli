@@ -382,3 +382,125 @@ class TestFastPathGuards:
             f"第二帧应无多余光标移动（仅写 a 行），实际: {val!r}"
         )
         assert r.cursor_row == 2
+
+
+class TestLineRenderCache:
+    """PERF-24 — Line.render() ANSI 渲染缓存（同 Line 对象跨帧零重建）。
+
+    Line 为可变对象（append 修改 runs），渲染缓存须在修改时失效；
+    clone 复制缓存（runs 未变）。StyledRun/Style frozen → 缓存确定性安全。
+    """
+
+    def test_render_cache_returns_same_string(self):
+        """同 Line 对象 render() 结果稳定（缓存命中）。"""
+        from src.tui.ink.output import Line, StyledRun
+        from src.tui.core.style import Style
+        ln = Line([StyledRun("abc", Style(fg=45)), StyledRun("def", None)])
+        first = ln.render()
+        second = ln.render()
+        assert first == second == "\x1b[38;5;45mabc\x1b[0mdef"
+
+    def test_append_invalidates_cache(self):
+        """append 修改 runs 后缓存失效（新内容正确渲染）。"""
+        from src.tui.ink.output import Line
+        ln = Line.of("abc")
+        assert ln.render() == "abc"
+        ln.append("def", None)
+        assert ln.render() == "abcdef"
+        # 相邻同 style 合并路径（替换 runs[-1]）
+        ln.append("ghi")
+        assert ln.render() == "abcdefghi"
+        # 不同 style 追加路径（append 新 run）
+        from src.tui.core.style import Style
+        ln.append("XYZ", Style(fg=45))
+        assert ln.render() == "abcdefghi\x1b[38;5;45mXYZ\x1b[0m"
+
+    def test_append_run_invalidates_cache(self):
+        """append_run 经 append 失效缓存。"""
+        from src.tui.ink.output import Line, StyledRun
+        ln = Line.of("a")
+        assert ln.render() == "a"
+        ln.append_run(StyledRun("b", None))
+        assert ln.render() == "ab"
+
+    def test_clone_copies_render_cache(self):
+        """clone 复制渲染缓存（runs 相同 → 结果相同）；后续 append 不互相污染。"""
+        from src.tui.ink.output import Line
+        ln = Line.of("hello")
+        ln.render()  # 填充缓存
+        c = ln.clone()
+        assert c.render() == "hello"
+        ln.append(" world")
+        assert ln.render() == "hello world"
+        assert c.render() == "hello", "clone 应独立于原行后续修改"
+
+    def test_render_cache_empty_line(self):
+        """空行 render() 稳定返回空串。"""
+        from src.tui.ink.output import Line
+        ln = Line()
+        assert ln.render() == ""
+        ln.append("x")
+        assert ln.render() == "x"
+        assert Line().render() == ""
+
+
+class TestRenderPipelineSmoke:
+    """PERF-24 — 完整渲染管线性能冒烟（防 O(n²)/缓存失效回归）。
+
+    大历史 + 流式场景 300 帧渲染总耗时上限宽松阈值（CI 抖动容忍）——
+    仅防结构性性能回归（如 Element/fiber 缓存失效导致的逐帧全量重建）。
+    """
+
+    def _build_model(self):
+        from src.tui.app.model import AppModel
+        model = AppModel()
+        model.width = 100
+        for i in range(100):
+            rr = model.ensure_content()
+            rr.write(f"历史回答 {i}：一段较长的中文内容用于测试渲染性能表现。\n\n补充说明第二段。\n" * 2)
+            model.close_content()
+            model.reopen_content()
+        model.open_tool_box("t1", "bash", "grep -r pattern /src")
+        for i in range(40):
+            model.append_tool_output("t1", f"output line {i}: some tool output content here\n")
+        from src.tui.ink.output import Line, StyledRun
+        model.subagent_lines = [Line([StyledRun("● 子代理任务", None)])]
+        rr = model.ensure_content()
+        rr.write("流式生成的第一行内容。\n")
+        return model
+
+    def test_full_pipeline_300_frames_smoke(self):
+        """300 帧完整渲染（构建+调和+布局+绘制+diff+输出）< 2.0s（含 CI 抖动容差）。"""
+        import io
+        import time
+
+        from src.tui.app.app import build_app_element
+        from src.tui.ink.reconciler import Reconciler
+        from src.tui.ink import components as _components
+        from src.tui.ink.renderer import InkRenderer
+
+        model = self._build_model()
+        r = Reconciler()
+        root = r.create_root()
+        renderer = InkRenderer(stream=io.StringIO())
+
+        def render_one(append=True):
+            if append:
+                rr = model.ensure_content()
+                rr.write("新的流式内容行 appended。\n")
+            model.width = 100
+            el = build_app_element(model, 100)
+            r.render(root, el, 100, 40)
+            frame = _components.render_frame(root, 100)
+            renderer.render(frame)
+            renderer.place_cursor(2, 1)
+
+        render_one()
+        for _ in range(10):
+            render_one(append=False)
+        t0 = time.monotonic()
+        for f in range(300):
+            render_one(append=(f % 3 == 0))
+        elapsed = time.monotonic() - t0
+        # 300 帧 × 10Hz 预算（100ms/帧）应有极大余量；宽松阈值防 CI 抖动误报
+        assert elapsed < 2.0, f"300 帧完整渲染耗时 {elapsed:.2f}s（疑似缓存失效回归）"

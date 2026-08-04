@@ -257,61 +257,6 @@ class TestShouldRenderAnimationKeepAlive:
         assert s._should_render(False) is False
 
 
-class TestInputAreaLineFastPath:
-    """input-area canvas 行 Line 快路径（性能 + 增量身份短路）。"""
-
-    def test_canvas_row_stores_line_directly(self):
-        """box.x==0 且行未命中 → canvas 行直接存 Line 对象（非 dict）。"""
-        from src.tui.ink.fiber import Fiber
-        from src.tui.ink.layout import LayoutBox
-        from src.tui.app import input_area
-
-        fiber = Fiber("host", "input-area", {
-            "text": "hi", "cursor_pos": 2, "prompt": "> ",
-            "completion": None, "status_active": False,
-            "cpu": 1, "mem": 2, "history_search": None,
-            "width": 20,
-        })
-        fiber.layout_box = LayoutBox(x=0, y=0, w=20, h=3)
-        canvas = [None] * 3
-        input_area._paint(fiber, canvas)
-        # 所有行应为 Line（box.x==0 快路径），非 dict
-        assert all(isinstance(r, input_area.Line) for r in canvas), (
-            f"input-area canvas 行应为 Line 对象，实际: {[type(r).__name__ for r in canvas]}"
-        )
-        # 内容正确
-        plains = [r.plain for r in canvas]
-        assert any("hi" in p for p in plains), f"输入文本缺失: {plains}"
-
-    def test_canvas_row_falls_back_to_merge_when_overlapping(self):
-        """box.x!=0 或行已命中 → 回退 dict 合并（既有行为）。"""
-        from src.tui.ink.fiber import Fiber
-        from src.tui.ink.layout import LayoutBox
-        from src.tui.ink.output import Line
-        from src.tui.app import input_area
-
-        fiber = Fiber("host", "input-area", {
-            "text": "hi", "cursor_pos": 2, "prompt": "> ",
-            "completion": None, "status_active": False,
-            "cpu": 1, "mem": 2, "history_search": None,
-            "width": 20,
-        })
-        fiber.layout_box = LayoutBox(x=2, y=0, w=20, h=3)
-        canvas = [None] * 3
-        input_area._paint(fiber, canvas)
-        # box.x!=0 → 行应合并为 dict
-        assert all(isinstance(r, dict) for r in canvas), (
-            f"box.x!=0 时应合并为 dict，实际: {[type(r).__name__ for r in canvas]}"
-        )
-        # 重叠行回退合并（目标行已为 Line → dict 归一化）
-        fiber.layout_box = LayoutBox(x=0, y=0, w=20, h=3)
-        canvas2 = [Line.of("existing")] + [None] * 2
-        input_area._paint(fiber, canvas2)
-        assert isinstance(canvas2[0], dict), (
-            "目标行已为 Line 时应归一并合并为 dict"
-        )
-
-
 class TestStaticComponent:
     """React Ink Static 组件（冻结子内容，完善 react ink）。"""
 

@@ -405,17 +405,21 @@ class TestToolMappingSingleSource:
         """_subagent_panel 不再定义本地映射，_get_tool_color 查用共享映射。"""
         import src.tui._subagent_panel as sp
         from src.tui._tool_icons import TOOL_CATEGORY_COLORS, TOOL_CATEGORY_MAP
+        from src.tui.core.style import Style
 
         # 本地副本已删除（唯一真源收敛）
         assert not hasattr(sp, "_TOOL_CATEGORY_MAP")
         assert not hasattr(sp, "_TOOL_CATEGORY_COLORS")
-        # 查用共享映射，返回值与 TOOL_CATEGORY_COLORS["shell"] 一致
-        assert sp._get_tool_color("bash") == TOOL_CATEGORY_COLORS["shell"]
-        assert sp._get_tool_color("read_file") == TOOL_CATEGORY_COLORS["file_read"]
-        assert sp._get_tool_color("unknown_tool") == "\033[38;5;245m"
-        # _C_* 面板颜色仍可经模块访问（从 _const 导入）
-        assert sp._C_RUNNING == "\033[38;5;214m"
-        assert sp._C_RESET == "\033[0m"
+        # 查用共享映射（★ 标准 React Ink 组件化：返回 Style——色号与 ANSI 一致）
+        assert sp._get_tool_color("bash") == Style(fg=41)        # shell
+        assert sp._get_tool_color("read_file") == Style(fg=81)   # file_read
+        assert sp._get_tool_color("unknown_tool") == Style(fg=245)
+        # 色号与共享 ANSI 映射一致（单一真源回归）
+        from src.tui._subagent_render import _ansi_color_code
+        assert _ansi_color_code(TOOL_CATEGORY_COLORS["shell"]) == 41
+        assert _ansi_color_code(TOOL_CATEGORY_COLORS["file_read"]) == 81
+        # ★ 标准 React Ink 组件化：_C_* ANSI 面板色 re-export 已移除
+        assert not hasattr(sp, "_C_RUNNING"), "_C_* re-export 应移除"
 
     def test_tool_icons_exports_categories_regression(self):
         """_tool_icons 导出 TOOL_CATEGORY_MAP / TOOL_CATEGORY_COLORS。"""
@@ -595,9 +599,12 @@ class TestBeautyTimeBasedEffects:
             with patch("src.tui._subagent_panel.time.monotonic", return_value=mono_time):
                 lines = ctrl._build_agent_lines(slot, now=mono_time, is_last=False)
             title = lines[0]
-            m = _re.search(r"\x1b\[38;5;(\d+)mexecute\x1b\[0m", title)
-            assert m, f"未找到类型名色号: {title!r}"
-            return int(m.group(1))
+            # 查找 execute 文本的 run → 类型名样式 fg（fade 色号，StylRun 值语义）
+            for run in title.runs:
+                if run.text == "execute":
+                    st = run.style
+                    return st.fg if st is not None else None
+            raise AssertionError(f"未找到类型名: {title!r}")
 
         # elapsed=0 → fade_start_color=238（execute 原色 208 的渐显起点）
         assert _type_code(1000.0) == 238
@@ -618,13 +625,12 @@ class TestBeautyTimeBasedEffects:
         with patch("src.tui.app._fx.time.monotonic", return_value=0.35):
             title1 = ctrl._build_agent_lines(slot, now=0.35, is_last=False)[0]
         # int(0.00*10)%10=0；int(0.35*10)%10=3
-        assert _SPINNER_FRAMES[0] in title0
-        assert _SPINNER_FRAMES[3] in title1
+        assert _SPINNER_FRAMES[0] in title0.plain
+        assert _SPINNER_FRAMES[3] in title1.plain
         assert _SPINNER_FRAMES[0] != _SPINNER_FRAMES[3]
 
     def test_group_card_running_open_done_included(self):
         """单卡合并：running agent 优先展开、done agent 单行；running 时开放（无底边框）。"""
-        import re as _re
         import time as _time
         from src.tui._subagent_panel import (
             SubAgentPanelController, _AgentSlot,
@@ -637,7 +643,7 @@ class TestBeautyTimeBasedEffects:
         ctrl._agents = {"agent-run": slot_running, "agent-done": slot_done}
         ctrl._order = ["agent-run", "agent-done"]
         lines = ctrl._render_frame()
-        plains = [_re.sub(r"\x1b\[[0-9;?]*[A-Za-z]", "", l) for l in lines]
+        plains = [l.plain for l in lines]
         # 单卡：顶边框含 `子代理 · 2`；running agent 标题在 done 之前
         assert plains[0].startswith("\u250c") and "子代理 · 2" in plains[0]
         assert any("run" in p for p in plains)
@@ -647,7 +653,6 @@ class TestBeautyTimeBasedEffects:
 
     def test_group_card_closed_when_all_done(self):
         """全部结束后单卡闭合（`✔ 完成` 底边框）。"""
-        import re as _re
         import time as _time
         from src.tui._subagent_panel import (
             SubAgentPanelController, _AgentSlot,
@@ -659,7 +664,7 @@ class TestBeautyTimeBasedEffects:
         ctrl._agents = {"agent-done": slot_done}
         ctrl._order = ["agent-done"]
         lines = ctrl._render_frame()
-        plains = [_re.sub(r"\x1b\[[0-9;?]*[A-Za-z]", "", l) for l in lines]
+        plains = [l.plain for l in lines]
         assert plains[0].startswith("\u250c") and "子代理 · 1" in plains[0]
         assert any(p.startswith("\u2514") and "✔ 完成" in p for p in plains)
 
@@ -678,7 +683,7 @@ class TestBeautyTimeBasedEffects:
         ctrl._order = list(slots)
         lines = _rf(ctrl, max_lines=4)
         assert len(lines) == 4, f"卡片应限制在 max_lines 内，实际 {len(lines)}"
-        assert any("省略" in l for l in lines), "超限应有省略提示"
+        assert any("省略" in l.plain for l in lines), "超限应有省略提示"
 
 
 
@@ -765,8 +770,8 @@ class TestSubAgentSingleLineContract:
         lines = build_agent_lines(slot, time.time(), is_last=False)
         assert lines, "应产出标题行"
         title = lines[0]
-        assert "\n" not in title, "标题行不得含原始换行"
-        assert "task one\\ntask two" in title
+        assert "\n" not in title.plain, "标题行不得含原始换行"
+        assert "task one\\ntask two" in title.plain
 
     def test_build_agent_lines_no_parsing_phase_line(self):
         """BUG-T5：parsing 阶段不再产生独立行（防工具开始瞬间面板高度波动）。
@@ -790,13 +795,13 @@ class TestSubAgentSingleLineContract:
         slot.tool_history.append(rec)
         lines = build_agent_lines(slot, time.time(), is_last=False)
         # 修复后：无独立 ``…parsing`` 阶段行（工具记录行 ○ 前缀表达解析状态）
-        assert not any("\u2026parsing" in l for l in lines), (
+        assert not any("\u2026parsing" in l.plain for l in lines), (
             f"不得出现独立 parsing 阶段行: {lines!r}"
         )
         # parse_info 并入 parsing 工具记录行（单行转义）
-        assert any("rf,rf 51t\\n0.74s" in l for l in lines), lines
+        assert any("rf,rf 51t\\n0.74s" in l.plain for l in lines), lines
         for l in lines:
-            assert "\n" not in l, f"工具记录行不得含原始换行: {l!r}"
+            assert "\n" not in l.plain, f"工具记录行不得含原始换行: {l!r}"
 
     def test_format_tool_record_merges_parse_info_in_parsing_line(self):
         """BUG-T5：parsing 记录行合并 parse_info（不增加行数）。"""
@@ -807,12 +812,12 @@ class TestSubAgentSingleLineContract:
         rec = _ToolRecord(tool_name="search", detail="'query'")
         rec.phase = "parsing"
         line = format_tool_record(rec, time.time(), cont="", parse_info="rf 51t 0.74s")
-        assert "\u25cc" in line, "parsing 前缀 ○ 保留"
-        assert "rf 51t 0.74s" in line, "parse_info 应并入 parsing 记录行"
-        assert "Grep" in line, "工具显示名保留（search → Grep）"
+        assert "\u25cc" in line.plain, "parsing 前缀 ○ 保留"
+        assert "rf 51t 0.74s" in line.plain, "parse_info 应并入 parsing 记录行"
+        assert "Grep" in line.plain, "工具显示名保留（search → Grep）"
         # 无 parse_info 时行为不变（detail 仍在）
         line2 = format_tool_record(rec, time.time(), cont="")
-        assert "'query'" in line2
+        assert "'query'" in line2.plain
 
     def test_format_tool_record_escapes_detail_newline(self):
         """tool detail 含 \n → 工具历史行单行（既有转义行为回归）。"""
@@ -823,8 +828,8 @@ class TestSubAgentSingleLineContract:
         rec = _ToolRecord(tool_name="read_file", detail="line1\nline2")
         rec.phase = "running"
         line = format_tool_record(rec, time.time(), cont=" ")
-        assert "\n" not in line, "工具历史行不得含原始换行"
-        assert "line1\\nline2" in line
+        assert "\n" not in line.plain, "工具历史行不得含原始换行"
+        assert "line1\\nline2" in line.plain
 
     def test_render_children_boundary_escapes_newline(self):
         """显示边界 _render_children 对含 \n 的行强制单行（防御兜底）。"""
@@ -877,8 +882,8 @@ class TestSubAgentToolStartNoHeightFluctuation:
             f"parsing={len(parsing)} running={len(running)}"
         )
         # 无独立 ``…parsing`` 阶段行（工具记录行 ○ 前缀表达解析状态）
-        assert not any("\u2026parsing" in l for l in parsing), parsing
-        assert any("\u25cc" in l for l in parsing), "parsing 记录 ○ 前缀保留"
+        assert not any("\u2026parsing" in l.plain for l in parsing), parsing
+        assert any("\u25cc" in l.plain for l in parsing), "parsing 记录 ○ 前缀保留"
 
     def test_multiple_tools_no_fluctuation(self):
         """连续调用多个工具：工具运行中面板高度只增不减（无缩短帧）。"""
@@ -1005,16 +1010,17 @@ class TestGroupCardBorderBreath:
             lines = self._card(["done"])
         mock_glow.assert_not_called()
         assert lines, "应产出卡片行"
-        assert "38;5;23m" in lines[0], "closed 边框应保持静态 _C_BORDER(23)"
+        assert lines[0].runs[0].style is not None and lines[0].runs[0].style.fg == 23, \
+            "closed 边框应保持静态 _S_BORDER(23)"
 
     def test_running_border_color_in_breath_range(self):
         """运行中边框色号落在暗青 23..亮青 45 区间（time_glow 语义）。"""
-        import re
         from unittest.mock import patch
         with patch("src.tui.app._theme.time_glow", return_value=30):
             lines = self._card(["running"])
-        # 顶边框色号应包含 30（mock 的呼吸色）
-        assert re.search(r"38;5;30m", lines[0]), "运行中边框应使用呼吸色号"
+        # 顶边框样式应使用呼吸色号 30（mock 的呼吸色）
+        assert lines[0].runs[0].style is not None and lines[0].runs[0].style.fg == 30, \
+            "运行中边框应使用呼吸色号"
 
 
 class TestGroupCardBorderFill:
@@ -1032,7 +1038,7 @@ class TestGroupCardBorderFill:
         store.add_agent("agent-1", "D" * 60, status="done", agent_type="execute")
         lines = render_frame(store, max_history=3)
         for line in lines:
-            plain = re.sub(r"\x1b\[[0-9;?]*[A-Za-z]", "", line)
+            plain = line.plain
             w = wcswidth_simple(plain)
             # 行宽不应超过卡片宽度（card_w = min(max_widths + 6, terminal_w)）
             assert w <= _terminal_max_width() + 1, (

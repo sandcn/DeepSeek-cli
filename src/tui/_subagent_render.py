@@ -2,11 +2,18 @@
 
 方向C 步骤7：从 ``_subagent_panel.SubAgentPanelController`` 上帝类拆出的
 帧渲染域——``render_frame`` / ``build_agent_lines`` / ``format_tool_record``
-与动效辅助（``_fade_type_ansi`` / ``_get_tool_color``）。
+与动效辅助（``_fade_type_style`` / ``_get_tool_color``）。
+
+★ 标准 React Ink 组件化（2026-08-05）：渲染输出从「ANSI 字符串行
+（List[str]）」迁移为「ink Line 对象（List[Line]，StyledRun 行）」——彻底
+移除 ANSI 中间层：subagent_panel 不再 ``ansi_to_runs`` 解析字符串，直接
+``Line.runs`` 转 TEXT 标准组件（``h(TEXT, {"styled": ...})``）。样式统一用
+``Style``（fg 色号），与其余 React Ink 组件（StatusBar/ToolCard/UserSelect）
+同源。
 
 对齐 Claude Code：子代理活动渲染为**逐 agent 卡片**（``┌─ ● ⚡ map 地图扫描 ─┐``
 顶边框 + ``│`` 主体行 + ``└─ ✔ 完成 ─┘`` 底边框），不再输出汇总行/树形分支/
-方括号类型标签。卡片内容宽度自适应（``wcswidth_simple`` 测量）。
+方括号类型标签。卡片内容宽度自适应（Line.width 测量）。
 
 设计模式: 模板方法（Template Method）— 帧渲染骨架由渲染模块统一提供，
 控制器（外观）委托本模块渲染，状态建模在 ``_subagent_state``。
@@ -14,13 +21,13 @@
 输入约定：
   - ``render_frame(store, max_history)`` 以 ``StateStore`` 为输入，
     内部获取/释放 ``store._state_lock``（RLock 可重入）；
-  - 渲染函数不修改状态（只读快照），全部输出为 ANSI 行（List[str]），
-    作为「控制器→模型→组件」互换契约（模型 ``subagent_lines`` 存 ANSI 行）。
+  - 渲染函数不修改状态（只读快照），全部输出为 ink Line 行列表，
+    作为「控制器→模型→组件」互换契约（模型 ``subagent_lines`` 存 Line 行）。
 
 依赖约束（P3-11 更新允许清单）：仅依赖 _const/_config/_tool_icons/events/
-_format/app._theme/app._fx/_screen 与**同级状态模块 _subagent_state** 与标准库
-（无父包依赖、无事件订阅）；``_tool_icons`` / ``src.tools.registry``
-保持函数内惰性导入（避免模块加载环）。
+_format/app._theme/app._fx/_screen/ink(Line/StyledRun/Style/truncate_runs) 与
+**同级状态模块 _subagent_state** 与标准库（无父包依赖、无事件订阅）；
+``_tool_icons`` / ``src.tools.registry`` 保持函数内惰性导入（避免模块加载环）。
 """
 
 from __future__ import annotations
@@ -29,27 +36,30 @@ import re
 import time
 from typing import List
 
-from src.tui._const import (
-    _C_ANSWERING,
-    _C_BATCH,
-    _C_DIMMER,
-    _C_DONE,
-    _C_FAIL,
-    _C_PARSING,
-    _C_RESET,
-    _C_RUNNING,
-    _C_SUMMARY_DIM,
-)
+from src.tui.core.style import Style
+from src.tui.ink.output import Line, StyledRun
+from src.tui.ink.helpers import truncate_runs
 from src.tui._config import TuiConfig
 from src.tui._tool_icons import TOOL_CATEGORY_COLORS, TOOL_CATEGORY_MAP
-from src.tui._screen import wcswidth_simple
 from src.tui.app import _fx
 from src.tui._format import format_duration, format_tokens, format_speed, single_line
 
 from src.tui._subagent_state import _AgentSlot, _ToolRecord
 
 #: 卡片边框色（对齐工具卡 palette.border fg=23 暗青）
-_C_BORDER = "\033[38;5;23m"
+_S_BORDER = Style(fg=23)
+
+#: 语义色（与 _const._C_* 值一致：RUNNING=214/DONE=40/FAIL=196/ANSWERING=75/
+#: PARSING=178/BATCH=140/DIMMER=240/DIMMEST=238/SUMMARY_DIM=245）
+_S_RUNNING = Style(fg=214)          # 琥珀 — 运行中
+_S_DONE = Style(fg=40)              # 亮绿 — 完成
+_S_FAIL = Style(fg=196)             # 亮红 — 失败
+_S_ANSWERING = Style(fg=75)         # 浅蓝 — 回答中
+_S_PARSING = Style(fg=178)          # 金色 — 解析
+_S_BATCH = Style(fg=140)            # 淡紫 — 批量
+_S_DIMMER = Style(fg=240)           # 暗灰 — 辅助
+_S_DIMMEST = Style(fg=238)          # 深灰 — 分隔线
+_S_SUMMARY_DIM = Style(fg=245)      # 中灰 — 摘要次要
 
 #: spinner 帧序列唯一真源（方向4 收敛至 _fx.SPINNER_FRAMES；原内联列表形态
 #: 保留为 list——兼容既有测试 ``_SPINNER_FRAMES[i]`` 下标访问与 patch 路径）。
@@ -57,68 +67,51 @@ from src.tui.app._fx import SPINNER_FRAMES as _SPINNER_FRAMES_SRC
 _SPINNER_FRAMES = list(_SPINNER_FRAMES_SRC)
 _INDENT = "  "
 
-#: ANSI 转义序列（CSI/OSC/单字符控制）——宽度测量/截断时安全跳过。
-#: 与 ink.helpers._ANSI_RE 同语义（Layer 0 本地最小匹配器，避免反向依赖）。
-#: ★ BUG-33 同步：CSI 参数范围 ``[0-9;:? ]``（含真彩冒号格式）、最终字节
-#: ``[@-~]``（含终端键序列 ``~``）——与 _screen._skip_ansi_at 收敛。
-_ANSI_SEQ_RE = re.compile(
-    r"\x1b\[[0-9;:? ]*[@-~]"
-    r"|\x1b\][^\x07\x1b]*(\x07|\x1b\\)"
-    r"|\x1b[@-Z\\-_]"
-)
 
-_ANSI_STRIP_RE = re.compile(r"\x1b\[[0-9;:? ]*[@-~]")
+def _ansi_color_code(ansi: str) -> int | None:
+    """从 ANSI 前景序列提取 256 色号（如 ``"\\033[38;5;214m"`` → 214）；无法解析返回 None。"""
+    m = re.search(r"38;5;(\d+)", ansi)
+    return int(m.group(1)) if m else None
 
 
-def _truncate_ansi_width(text: str, max_w: int) -> str:
-    """ANSI 字符串按显示宽度截断（保留已解析样式前缀，不拆分 CJK）。
+def _fade_type_style(agent_type_ansi: str, elapsed: float) -> Style:
+    """agent 类型名 FadeIn 渐显（BEAUTY-1，返回 Style）。
 
-    供卡片内容行截断到内宽（``card_w - 4``）——超长 description/suffix 不再
-    撑破卡片边框（修复前 ``_pad_ansi`` 对超宽内容返回原样 → 行宽 > card_w，
-    后续经 ``_render_children`` 截断时右边界 `│` 被裁掉，卡片开口）。
-
-    Args:
-        text: 含 ANSI 样式的字符串。
-        max_w: 最大显示宽度。
-
-    Returns:
-        截断后的 ANSI 字符串（总显示宽度 <= max_w）。
+    时间基：elapsed>=duration 时返回原色（动画结束不触发重绘）；
+    elapsed 期间从 ``_FADE_START_COLOR`` 渐变到原色号。
     """
-    out: list[str] = []
-    width = 0
-    i = 0
-    n = len(text)
-    while i < n:
-        ch = text[i]
-        if ch == "\x1b":
-            m = _ANSI_SEQ_RE.match(text, i)
-            if m:
-                out.append(m.group(0))
-                i = m.end()
-                continue
-            out.append(ch)
-            i += 1
-            continue
-        cw = wcswidth_simple(ch)
-        if width + cw > max_w:
-            break
-        out.append(ch)
-        width += cw
-        i += 1
-    return "".join(out)
+    code = _ansi_color_code(agent_type_ansi)
+    if code is None:
+        return _S_DIMMER
+    faded = _fx.fade_color(elapsed, _FADE_DURATION, _FADE_START_COLOR, code)
+    return Style(fg=faded)
 
 
-def _single_line(text: str) -> str:
-    """确保单行显示：将换行/回车转义为字面量（subagent 行契约=单行）。
+def _pad_runs(runs: List[StyledRun], width: int) -> List[StyledRun]:
+    """右侧补空格至目标显示宽度（内容不超则原样）。"""
+    w = sum(r.width for r in runs)
+    pad = width - w
+    if pad > 0:
+        return runs + [StyledRun(" " * pad, None)]
+    return runs
 
-    每个 ``subagent_lines`` 条目应为一条终端行；来源字段（description /
-    parse_info / model_info / tool detail）可能含 ``\n``/``\r``，直接插入
-    会使终端按换行渲染成两行。与 ``format_tool_record`` 既有转义一致，
-    转义为可见字面量 ``\\n``/``\\r``。★ 方向5：委托 ``_format.single_line``
-    单一真源（三处单行契约收敛——model/_subagent_render/subagent_panel）。
+
+def _get_tool_color(tool_name: str) -> Style:
+    """查询工具类别配色（共享单一真源映射，_tool_icons.TOOL_CATEGORY_MAP/COLORS）。
+
+    ★ 标准 React Ink 组件化：返回 **Style**（fg 色号）——替代原 ANSI 字符串
+    （解析自 TOOL_CATEGORY_COLORS 的 256 色号，值一致）。函数签名保留
+    （方向F 步骤12 收敛后查询共享映射，线程安全只读）。
     """
-    return single_line(text)
+    cat = TOOL_CATEGORY_MAP.get(tool_name, "")
+    ansi = TOOL_CATEGORY_COLORS.get(cat, "\033[38;5;245m")
+    code = _ansi_color_code(ansi)
+    return Style(fg=code if code is not None else 245)
 
+
+# ═══════════════════════════════════════════════════════════
+# 帧渲染（单卡合并，对齐 Claude Code 子代理 Task 卡 + 终端行数保护）
+# ═══════════════════════════════════════════════════════════
 
 # ── 动效时间基配置 ──
 _CFG = TuiConfig.defaults()
@@ -127,71 +120,10 @@ _FADE_START_COLOR: int = _CFG.fade_start_color       # FadeIn 起始暗色（238
 _SPINNER_HZ: float = _CFG.spinner_tick_hz            # spinner 时间基推进频率（10Hz）
 
 
-def _color_256_ansi(code: int) -> str:
-    """256 色号 → ANSI 前景序列。"""
-    return f"\033[38;5;{code}m"
-
-
-def _running_pulse_ansi() -> str:
-    """running 状态 ● 呼吸色（方向4 动效：琥珀 208-220 脉动，6s 周期）。
-
-    替代静态 ``_C_RUNNING``（214）——活跃工具/agent 的 ● 持续脉动，视觉
-    提示进行中。时间基（``time_glow`` 0.1s 桶缓存），subagent 面板 10Hz
-    刷新时平滑推进。
-    """
-    from src.tui.app._theme import time_glow
-    return _color_256_ansi(time_glow(208, 220, 6.0))
-
-
-def _ansi_256_code(ansi: str) -> int | None:
-    """从 ANSI 序列提取 256 色号（如 ``"\\033[38;5;214m"`` → 214）；无法解析返回 None。"""
-    m = re.search(r"38;5;(\d+)", ansi)
-    return int(m.group(1)) if m else None
-
-
-def _fade_type_ansi(agent_type_ansi: str, elapsed: float) -> str:
-    """agent 类型名 FadeIn 渐显（BEAUTY-1）。
-
-    时间基：elapsed>=duration 时返回原色（动画结束不触发重绘）；
-    elapsed 期间从 ``_FADE_START_COLOR`` 渐变到原色号。
-    """
-    code = _ansi_256_code(agent_type_ansi)
-    if code is None:
-        return agent_type_ansi
-    faded = _fx.fade_color(elapsed, _FADE_DURATION, _FADE_START_COLOR, code)
-    return _color_256_ansi(faded)
-
-
-def _display_width(text: str) -> int:
-    """ANSI 字符串显示宽度（剥离转义后按 wcswidth_simple 测量）。"""
-    return wcswidth_simple(_ANSI_STRIP_RE.sub("", text))
-
-
-def _pad_ansi(text: str, width: int) -> str:
-    """右侧补空格至目标显示宽度（内容不超则原样）。"""
-    pad = width - _display_width(text)
-    return text + " " * pad if pad > 0 else text
-
-
-def _get_tool_color(tool_name: str) -> str:
-    """查询工具类别配色（共享单一真源映射，_tool_icons.TOOL_CATEGORY_MAP/COLORS）。
-
-    函数签名保留（方向F 步骤12 收敛后查询共享映射，线程安全只读）。
-    """
-    cat = TOOL_CATEGORY_MAP.get(tool_name, "")
-    # P3-17：默认兜底色引用 _C_SUMMARY_DIM（_const 模块级导入），
-    # 消除硬编码 "\033[38;5;245m"（值一致，语义命名）
-    return TOOL_CATEGORY_COLORS.get(cat, _C_SUMMARY_DIM)
-
-
-# ═══════════════════════════════════════════════════════════
-# 帧渲染（单卡合并，对齐 Claude Code 子代理 Task 卡 + 终端行数保护）
-# ═══════════════════════════════════════════════════════════
-
 def render_frame(store, max_history: int = 3,
                  agents: dict | None = None,
                  order: list | None = None,
-                 max_lines: int | None = None) -> List[str]:
+                 max_lines: int | None = None) -> List[Line]:
     """渲染面板帧（所有 Agent 合并为一个卡片，含终端行数保护）。
 
     Args:
@@ -203,7 +135,7 @@ def render_frame(store, max_history: int = 3,
         max_lines: 卡片最大总行数（终端行数保护）；None 时按终端高度推算。
 
     Returns:
-        单卡片行列表；无 agent 时返回空列表。
+        单卡片 Line 行列表；无 agent 时返回空列表。
     """
     # 控制器（外观）可整体替换 _agents/_order 引用（既有测试模式）——
     # 渲染以调用方传入的当前引用为准，锁仍取自 store（RLock 可重入）。
@@ -213,7 +145,7 @@ def render_frame(store, max_history: int = 3,
         if not agents:
             return []
         now = time.time()
-        rows: list[tuple[str, str, List[str]]] = []
+        rows: list[tuple[str, str, List[Line]]] = []
         for label in order:
             slot = agents.get(label)
             if slot is None:
@@ -258,9 +190,9 @@ def _terminal_max_width() -> int:
         return 80
 
 
-def _build_group_card(rows: list[tuple[str, str, List[str]]],
+def _build_group_card(rows: list[tuple[str, str, List[Line]]],
                       now: float,
-                      max_lines: int | None = None) -> List[str]:
+                      max_lines: int | None = None) -> List[Line]:
     """构建子代理组卡片（所有 Agent 合并为一个卡，内容宽度自适应）。
 
     对齐 Claude Code：``┌─ ● ⚡ 子代理 · N ─┐`` 顶边框 + ``│`` 各 agent 行
@@ -274,22 +206,31 @@ def _build_group_card(rows: list[tuple[str, str, List[str]]],
     any_running = any(st == "running" for st, _, _ in rows)
     # ★ BEAUTY-11（方向4 动效）：运行中组卡边框呼吸——暗青 23 → 亮青 45
     #   （8s 周期，与工具卡边框呼吸同步），视觉提示「子代理执行中」；全部
-    #   完成（closed）保持静态 _C_BORDER（零额外渲染成本）。
+    #   完成（closed）保持静态 _S_BORDER（零额外渲染成本）。
     if any_running:
         from src.tui.app._theme import time_glow
-        _border = _color_256_ansi(time_glow(23, 45, 8.0))
+        border = Style(fg=time_glow(23, 45, 8.0))
     else:
-        _border = _C_BORDER
+        border = _S_BORDER
     # 标题：●/✔ ⚡ 子代理 · N（⚡ 为 subagent 图标，对齐 Claude Code Task 卡）
-    status_icon = f"{_C_RUNNING}\u25cf{_C_RESET}" if any_running else f"{_C_DONE}\u2714{_C_RESET}"
-    title = f"{status_icon} {_C_RUNNING}\u26a1{_C_RESET} 子代理 \u00b7 {n}"
+    status_icon = "\u25cf" if any_running else "\u2714"
+    icon_style = _S_RUNNING if any_running else _S_DONE
+    title: List[StyledRun] = [
+        StyledRun(status_icon, icon_style),
+        StyledRun(" ", None),
+        StyledRun("\u26a1", _S_RUNNING),
+        StyledRun(f" 子代理 \u00b7 {n}", None),
+    ]
     # 主体行：running 优先（标题 + 缩进子行），done/fail 单行（后置）
-    body: List[str] = []
+    body: List[Line] = []
     for status, t, sublines in rows:
         if status == "running":
             body.append(t)
             for s in sublines:
-                body.append(f"{_C_DIMMER}\u2502{_C_RESET} {s}")
+                body.append(Line([
+                    StyledRun("\u2502", _S_DIMMER),
+                    StyledRun(" ", None),
+                ] + s.runs))
     for status, t, sublines in rows:
         if status != "running":
             body.append(t)
@@ -299,46 +240,52 @@ def _build_group_card(rows: list[tuple[str, str, List[str]]],
     if len(body) > budget:
         kept = max(1, budget - 1)  # 预留省略提示行
         dropped = len(body) - kept
-        body = body[:kept] + [f"{_C_DIMMER}\u2026 +{dropped} 行省略{_C_RESET}"]
+        body = body[:kept] + [Line([
+            StyledRun("\u2026", _S_DIMMER),
+            StyledRun(f" +{dropped} 行省略", _S_DIMMER),
+        ])]
     # 组装卡片（内容宽度自适应，clamp 到终端宽度——修复前 card_w 由未截断
-    # 内容决定，超长内容使卡片比终端宽，右边界 ┐/│/┘ 被 _render_children
-    # 截断 → 卡片开口）
-    widths = [_display_width(title)] + [_display_width(l) for l in body]
+    # 内容决定，超长内容使卡片比终端宽，右边界 ┐/│/┘ 被截断 → 卡片开口）
+    widths = [sum(r.width for r in title)] + [ln.width for ln in body]
     if closed:
-        status_text = f"{_C_DONE}\u2714 完成{_C_RESET}"
-        widths.append(_display_width(status_text))
+        status_text = [StyledRun("\u2714 完成", _S_DONE)]
+        widths.append(sum(r.width for r in status_text))
     card_w = min(max(widths) + 6, _terminal_max_width())
     inner_w = max(1, card_w - 4)
-    out: List[str] = []
-    title_trunc = _truncate_ansi_width(title, inner_w)
-    head = f"{_border}\u250c\u2500 {_C_RESET}" + title_trunc
-    # ★ BUG-24（review 方向）：边框 fill 用 ``max(0, ...)``——修复前
-    #   ``max(2, ...)`` 在标题接近内宽（title_w > card_w-6）时强制 fill=2 →
-    #   行总宽 = 3 + title_w + 2 + 1 > card_w（超 1 列，右边界被截断）。
-    #   fill=0 时标题直接衔接右角（视觉可接受，行宽恒 = card_w）。
-    head += f"{_border}\u2500{_C_RESET}" * max(0, card_w - 4 - _display_width(title_trunc))
-    head += f"{_border}\u2510{_C_RESET}"
-    out.append(head)
-    for l in body:
-        out.append(f"{_border}\u2502 {_C_RESET}{_pad_ansi(_truncate_ansi_width(l, inner_w), inner_w)} "
-                   f"{_border}\u2502{_C_RESET}")
+    out: List[Line] = []
+    title_trunc = truncate_runs(title, inner_w)
+    head = [StyledRun("\u250c\u2500 ", border)] + title_trunc
+    fill = max(0, card_w - 4 - sum(r.width for r in title_trunc))
+    if fill > 0:
+        head.append(StyledRun("\u2500" * fill, border))
+    head.append(StyledRun("\u2510", border))
+    out.append(Line(head))
+    for ln in body:
+        content = truncate_runs(ln.runs, inner_w)
+        out.append(Line(
+            [StyledRun("\u2502 ", border)]
+            + _pad_runs(content, inner_w)
+            + [StyledRun(" \u2502", border)]
+        ))
     if closed:
-        status_trunc = _truncate_ansi_width(status_text, inner_w)
-        tail = f"{_border}\u2514\u2500 {_C_RESET}" + status_trunc
-        tail += f"{_border}\u2500{_C_RESET}" * max(0, card_w - 4 - _display_width(status_trunc))
-        tail += f"{_border}\u2518{_C_RESET}"
-        out.append(tail)
+        status_trunc = truncate_runs(status_text, inner_w)
+        tail = [StyledRun("\u2514\u2500 ", border)] + status_trunc
+        fill = max(0, card_w - 4 - sum(r.width for r in status_trunc))
+        if fill > 0:
+            tail.append(StyledRun("\u2500" * fill, border))
+        tail.append(StyledRun("\u2518", border))
+        out.append(Line(tail))
     return out
 
 
 def build_agent_lines(slot: _AgentSlot, now: float, is_last: bool,
-                      max_history: int = 3) -> List[str]:
+                      max_history: int = 3) -> List[Line]:
     """构建单个 Agent 的内容行（标题 + 阶段指示 + 工具历史，无树形分支）。
 
     首行为卡片顶边框标题（状态图标 + 类型名 + 描述 + 统计）；其余为卡片主体
     （阶段指示 + 工具记录）。``is_last`` 保留兼容参数（无分支后不再使用）。
     """
-    lines: List[str] = []
+    lines: List[Line] = []
     elapsed = (slot.end_time or now) - slot.start_time
     elapsed_str = format_duration(elapsed)
     disp_out = slot.output_tokens + slot.live_output_tokens
@@ -347,44 +294,63 @@ def build_agent_lines(slot: _AgentSlot, now: float, is_last: bool,
 
     # ── 类型名（BEAUTY-1：FadeIn 渐显，时间基；无 `[xx]` 方括号标签） ──
     from ._tool_icons import AGENT_TYPE_COLORS
-    agent_type_ansi = AGENT_TYPE_COLORS.get(slot.agent_type, _C_DIMMER)
+    agent_type_ansi = AGENT_TYPE_COLORS.get(slot.agent_type, "\033[38;5;240m")
     type_name = slot.agent_type or "??"
     fade_elapsed = time.monotonic() - slot.appear_time
-    type_tag = f"{_fade_type_ansi(agent_type_ansi, fade_elapsed)}{type_name}{_C_RESET}"
+    type_style = _fade_type_style(agent_type_ansi, fade_elapsed)
 
     # ── 状态图标 + 标题行 ──
     # P3-?：description 经 _single_line 转义（可能含 \n → 强制单行显示）
     description = _single_line(slot.description)
     if slot.status == "done":
-        icon = f"{_C_DONE}\u2714{_C_RESET}"
-        suffix = f"  {_C_DIMMER}{output_str}{_C_RESET}  {_C_DIMMER}{elapsed_str}{_C_RESET}"
-        title = f"{icon} {type_tag} {description}{suffix}"
+        icon = StyledRun("\u2714", _S_DONE)
+        suffix: List[StyledRun] = [
+            StyledRun("  ", None),
+            StyledRun(output_str, _S_DIMMER),
+            StyledRun("  ", None),
+            StyledRun(elapsed_str, _S_DIMMER),
+        ]
+        title = [icon, StyledRun(" ", None), StyledRun(type_name, type_style),
+                 StyledRun(f" {description}", None)] + suffix
     elif slot.status == "fail":
-        icon = f"{_C_FAIL}\u2716{_C_RESET}"
-        suffix = f"  {_C_DIMMER}{elapsed_str}{_C_RESET}"
-        title = f"{icon} {type_tag} {description}{suffix}"
+        icon = StyledRun("\u2716", _S_FAIL)
+        suffix = [StyledRun("  ", None), StyledRun(elapsed_str, _S_DIMMER)]
+        title = [icon, StyledRun(" ", None), StyledRun(type_name, type_style),
+                 StyledRun(f" {description}", None)] + suffix
     else:
         # BEAUTY-3：spinner 时间基推进（非帧计数；_frame 字段保留兼容）
         # ★ 方向4：帧字符唯一真源 _fx.spinner_char（_SPINNER_FRAMES 别名
         #   保留兼容测试 patch 路径；值同 _fx.SPINNER_FRAMES）。
         spinner = _fx.spinner_char(_SPINNER_HZ)
-        dot = f"{_C_RUNNING}{spinner}{_C_RESET}"
-        suffix = (
-            f"  {_C_DIMMER}{output_str}{_C_RESET}"
-            f"  {_C_SUMMARY_DIM}{speed_str}{_C_RESET}"
-            f"  {_C_DIMMER}{elapsed_str}{_C_RESET}"
-        )
-        title = f"{dot} {type_tag} {description}{suffix}"
-    lines.append(title)
+        dot = StyledRun(spinner, _S_RUNNING)
+        suffix = [
+            StyledRun("  ", None),
+            StyledRun(output_str, _S_DIMMER),
+            StyledRun("  ", None),
+            StyledRun(speed_str, _S_SUMMARY_DIM),
+            StyledRun("  ", None),
+            StyledRun(elapsed_str, _S_DIMMER),
+        ]
+        title = [dot, StyledRun(" ", None), StyledRun(type_name, type_style),
+                 StyledRun(f" {description}", None)] + suffix
+    lines.append(Line(title))
 
     # ── 阶段指示 ──
     if slot.status == "running" and slot.model_phase:
         phase_elapsed = now - slot.model_phase_start if slot.model_phase_start else 0
         phase_time = f"{phase_elapsed:.1f}s"
         if slot.model_phase == "thinking":
-            lines.append(f"{_C_DIMMER}\u2026thinking{_C_RESET}  {phase_time}")
+            lines.append(Line([
+                StyledRun("\u2026thinking", _S_DIMMER),
+                StyledRun("  ", None),
+                StyledRun(phase_time, None),
+            ]))
         elif slot.model_phase == "answering":
-            lines.append(f"{_C_ANSWERING}\u2026answering{_C_RESET}  {_C_DIMMER}{phase_time}{_C_RESET}")
+            lines.append(Line([
+                StyledRun("\u2026answering", _S_ANSWERING),
+                StyledRun("  ", None),
+                StyledRun(phase_time, _S_DIMMER),
+            ]))
         # ★ BUG-T5：parsing 阶段不再追加独立 ``…parsing`` 行——由 parsing 工具
         #   记录行（``○`` 前缀）表达解析状态；解析进度摘要（parse_info）经
         #   ``format_tool_record`` 并入该记录行。修复前独立阶段行使工具开始瞬间
@@ -392,7 +358,13 @@ def build_agent_lines(slot: _AgentSlot, now: float, is_last: bool,
         #   -1（阶段行消失），文档高于屏幕时 InkRenderer 对缩短做**全量
         #   clear + 重建**——每次 subagent 调用 search 等工具 TUI 全量刷新闪烁。
         elif slot.model_phase == "batch":
-            lines.append(f"{_C_BATCH}\u2026batch{_C_RESET}  {_C_DIMMER}{_single_line(slot.model_info)}  {phase_time}{_C_RESET}")
+            lines.append(Line([
+                StyledRun("\u2026batch", _S_BATCH),
+                StyledRun("  ", None),
+                StyledRun(_single_line(slot.model_info), _S_DIMMER),
+                StyledRun("  ", None),
+                StyledRun(phase_time, _S_DIMMER),
+            ]))
 
     # ── 工具历史（仅 running 时展开；done/fail 折叠为单行） ──
     if slot.status not in ("done", "fail"):
@@ -404,7 +376,7 @@ def build_agent_lines(slot: _AgentSlot, now: float, is_last: bool,
 
 
 def format_tool_record(rec: _ToolRecord, now: float, cont: str = "",
-                       parse_info: str = "") -> str:
+                       parse_info: str = "") -> Line:
     """构建工具历史单行（无树形分支；``cont`` 保留兼容参数不再使用）。
 
     Args:
@@ -423,9 +395,13 @@ def format_tool_record(rec: _ToolRecord, now: float, cont: str = "",
     from src.tools.registry import get_tool_display_name
     tool_icon = TOOL_ICONS.get(rec.tool_name, "")
     display_name = get_tool_display_name(rec.tool_name)
-    tool_color = _get_tool_color(rec.tool_name)
-    tool_abbr = f"{tool_icon} {tool_color}{display_name}{_C_RESET}" if tool_icon else f"{tool_color}{display_name}{_C_RESET}"
+    tool_style = _get_tool_color(rec.tool_name)
+    tool_abbr: List[StyledRun] = []
+    if tool_icon:
+        tool_abbr.append(StyledRun(f"{tool_icon} ", None))
+    tool_abbr.append(StyledRun(display_name, tool_style))
 
+    runs: List[StyledRun] = []
     if rec.phase == "parsing":
         # ★ BUG-T5：parsing 记录行合并解析进度摘要（不产生独立阶段行）——
         #   修复前 build_agent_lines 额外追加 ``…parsing`` 独立行：工具开始
@@ -434,21 +410,47 @@ def format_tool_record(rec: _ToolRecord, now: float, cont: str = "",
         #   subagent 调用 search 等工具 TUI 全量刷新闪烁。
         extra_parts = [p for p in (detail, _single_line(parse_info)) if p]
         extra = "  ".join(extra_parts) if extra_parts else ""
-        detail_disp = f" {_C_DIMMER}{extra}{_C_RESET}" if extra else ""
-        line = f"{_C_PARSING}\u25cc{_C_RESET} {tool_abbr}{detail_disp}"
+        detail_disp = [StyledRun(" ", None), StyledRun(extra, _S_DIMMER)] if extra else []
+        runs = [StyledRun("\u25cc", _S_PARSING), StyledRun(" ", None)] + tool_abbr + detail_disp
     else:
-        detail_disp = f" {_C_DIMMER}{detail}{_C_RESET}" if detail else ""
+        detail_disp = [StyledRun(" ", None), StyledRun(detail, _S_DIMMER)] if detail else []
         if rec.phase == "running":
             # 方向4（动效）：running ● 呼吸色（琥珀 208-220 脉动）——替代静态
-            # _C_RUNNING（214）。P2-14：硬编码 "\033[38;5;214m" → _C_RUNNING
-            # （_const 模块级导入，值一致）；此处改为时间基呼吸。
-            pulse_color = _running_pulse_ansi()
-            line = f"{pulse_color}\u25cf{_C_RESET} {tool_abbr}{detail_disp}  {_C_DIMMER}{time_str}{_C_RESET}"
+            # _S_RUNNING（214）。时间基呼吸（time_glow 0.1s 桶缓存）。
+            pulse_style = _running_pulse_style()
+            runs = [StyledRun("\u25cf", pulse_style), StyledRun(" ", None)] + tool_abbr + detail_disp + [
+                StyledRun("  ", None), StyledRun(time_str, _S_DIMMER),
+            ]
         elif rec.phase == "done":
-            line = f"{_C_DONE}\u2714{_C_RESET} {tool_abbr}{detail_disp}  {_C_DIMMER}{time_str}{_C_RESET}"
+            runs = [StyledRun("\u2714", _S_DONE), StyledRun(" ", None)] + tool_abbr + detail_disp + [
+                StyledRun("  ", None), StyledRun(time_str, _S_DIMMER),
+            ]
         else:  # fail
-            line = f"{_C_FAIL}\u2716{_C_RESET} {tool_abbr}{detail_disp}  {_C_DIMMER}{time_str}{_C_RESET}"
-    return line
+            runs = [StyledRun("\u2716", _S_FAIL), StyledRun(" ", None)] + tool_abbr + detail_disp + [
+                StyledRun("  ", None), StyledRun(time_str, _S_DIMMER),
+            ]
+    return Line(runs)
+
+
+def _running_pulse_style() -> Style:
+    """running 状态 ● 呼吸色（方向4 动效：琥珀 208-220 脉动，6s 周期）。
+
+    时间基（``time_glow`` 0.1s 桶缓存），subagent 面板 10Hz 刷新时平滑推进。
+    """
+    from src.tui.app._theme import time_glow
+    return Style(fg=time_glow(208, 220, 6.0))
+
+
+def _single_line(text: str) -> str:
+    """确保单行显示：将换行/回车转义为字面量（subagent 行契约=单行）。
+
+    每个 ``subagent_lines`` 条目应为一条终端行；来源字段（description /
+    parse_info / model_info / tool detail）可能含 ``\n``/``\r``，直接插入
+    会使终端按换行渲染成两行。与 ``format_tool_record`` 既有转义一致，
+    转义为可见字面量 ``\\n``/``\\r``。★ 方向5：委托 ``_format.single_line``
+    单一真源（三处单行契约收敛——model/_subagent_render/subagent_panel）。
+    """
+    return single_line(text)
 
 
 __all__ = [

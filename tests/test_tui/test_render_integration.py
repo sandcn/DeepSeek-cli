@@ -312,16 +312,15 @@ class TestCommittedPrefixNonTop:
     """
 
     def _make_root(self, lines, header_text: str = "header"):
-        """构造非顶部 committed-chat（上方 header 占 y=0 → committed 在 y>=1）。"""
+        """构造非顶部 StaticLines（上方 header 占 y=0 → committed 在 y>=1）。"""
         from src.tui.ink.element import h, BOX, TEXT
         from src.tui.ink.reconciler import Reconciler
-        import src.tui.app.chat_view as _cv
-        _cv.register()  # 幂等：注册 committed-chat host
+        from src.tui.ink import StaticLines
         r = Reconciler()
         root = r.create_root()
         el = h(BOX, None, [
             h(TEXT, {"children": header_text}),
-            h("committed-chat", {"lines": lines}),
+            h(StaticLines, {"lines": lines}),
             h(TEXT, {"children": "tail"}),
         ])
         return r, root, el

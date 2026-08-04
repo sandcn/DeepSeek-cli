@@ -284,30 +284,29 @@ class TestSubAgentPanel:
         # \n 转义为字面量（反斜杠 n），不产生终端换行
         assert "task line one\\nline two" in sub_lines[0].plain
 
-    def test_single_conversion_point_matches_ansi_to_runs(self):
-        """方向C 步骤8 — 子代理行经单一转换点渲染与 ansi_to_runs 直接解析一致。
+    def test_single_conversion_point_matches_line_runs(self):
+        """★ 标准 React Ink 组件化 — 子代理行经 _render_children 直接渲染。
 
-        契约：ANSI 字符串为「控制器→模型→组件」互换契约，组件侧转换点收敛到
-        ``subagent_panel._render_children`` 的 ``ansi_to_runs`` 一处。
-        本用例断言渲染结果与 ansi_to_runs 直接解析（同参数）等值。
+        契约：subagent_lines 为 ink Line 行（StyledRun），组件侧转换点
+        ``subagent_panel._render_children`` 直接复用 ``Line.runs``（不再
+        ``ansi_to_runs`` 解析 ANSI 字符串）。本用例断言渲染结果与 Line.runs
+        直接使用等值。
         """
         from src.tui.app.subagent_panel import _render_children
-        from src.renderer.ansi.helpers import ansi_to_runs
-        from src.tui.ink import StyledRun, truncate_runs
+        from src.tui.ink import StyledRun, Line, truncate_runs
+        from src.tui.core.style import Style
 
-        line = "\033[38;5;214m●\033[0m 3 agents [████] 2/3 done"
+        runs = [StyledRun("●", Style(fg=214)), StyledRun(" 3 agents [████] 2/3 done", None)]
+        line = Line(runs)
         width = 80
         m = AppModel()
         m.subagent_lines = [line]
 
         children = _render_children(m, width)
-        assert len(children) == 1, "单一转换点应产出 1 个子节点"
+        assert len(children) == 1, "转换点应产出 1 个子节点"
         child = children[0]
-        # 与 ansi_to_runs 直接解析（同截断参数）等值
-        expected_runs = truncate_runs(
-            [StyledRun(r.text, r.style) for r in ansi_to_runs(line) if r.text],
-            width,
-        )
+        # 与 Line.runs 直接使用（同截断参数）等值
+        expected_runs = truncate_runs(list(runs), width)
         assert child.props["styled"] == expected_runs
         # 文本内容拼接一致（防样式对象 __eq__ 缺失的兜底断言）
         assert "".join(r.text for r in child.props["styled"]) == \
@@ -340,12 +339,16 @@ class TestFullDocument:
         root = r.create_root()
         el = build_app_element(m, 80)
         r.render(root, el, 80, 24)
-        # 找到 input-area fiber
+        # 找到输入区 fiber（★ 标准组件化：InputArea 返回 Column 带
+        # dataInputArea 标记；兼容旧 host "input-area"）
         def find(f):
             from src.tui.ink.fiber import Fiber
             f2 = f
             while f2 is not None:
-                if f2.is_host and f2.type == "input-area":
+                if f2.is_host and (
+                    f2.type == "input-area"
+                    or bool(f2.props.get("dataInputArea"))
+                ):
                     return f2
                 r = find(f2.child)
                 if r is not None:

@@ -108,6 +108,7 @@ from .widgets import (
     CodeBlock,
     InlineSpinner,
     Gradient,
+    StaticLines,
 )
 from .hooks import (
     use_state,
@@ -230,6 +231,7 @@ __all__ = [
     "CodeBlock",
     "InlineSpinner",
     "Gradient",
+    "StaticLines",
     # hooks
     "use_state",
     "use_reducer",

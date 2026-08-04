@@ -1324,3 +1324,108 @@ class TestTryReuseStableEdge:
         """无 key 元素（位置匹配）等长命中快路径。"""
         r, root = self._reconciler_with_chain(3, self._elements(3, keyed=False), keyed=False)
         assert r._try_reuse_stable(root, self._elements(3, keyed=False)) is True
+
+
+class TestCollectRenderMetadata:
+    """PERF-25 — 合并元数据遍历（_collect_render_metadata）与三趟遍历等价。
+
+    验证：一次 DFS 收集的 function_fibers / ref_fibers / input_hooks /
+    paste_hooks 与原三方法（_traverse_functions / _attach_host_refs /
+    _collect_input_hooks）收集结果一致。
+    """
+
+    def _build_tree(self):
+        from src.tui.ink.element import h, TEXT
+        from src.tui.ink.hooks import use_input, use_ref, useMeasure
+        from src.tui.ink.widgets.layout import Column, Row
+
+        def InputComp(props):
+            use_input(lambda ev: True, props.get("active", True))
+            return h(TEXT, {"children": "in"})
+
+        def MeasureComp(props):
+            # useMeasure 内部经 use_ref——须在组件渲染期调用
+            m = useMeasure()
+            return h(Row, {"ref": m["ref"]}, [h(TEXT, {"children": "m"})])
+
+        def TextWithRef(props):
+            # host ref 绑定：useMeasure 之外的直接 ref（use_ref 渲染期创建）
+            r = use_ref(None)
+            return h(TEXT, {"children": "plain", "ref": r})
+
+        def App(props):
+            return h(Column, None, [
+                h(InputComp, {"key": "i1", "active": True}),
+                h(InputComp, {"key": "i2", "active": False}),
+                h(MeasureComp, {"key": "m1"}),
+                h(TextWithRef, {"key": "t1"}),
+            ])
+        return App
+
+    def test_metadata_equivalence(self):
+        from src.tui.ink.element import h
+        from src.tui.ink.fiber import InputHook, PasteHook
+        from src.tui.ink.reconciler import Reconciler
+
+        App = self._build_tree()
+        r = Reconciler()
+        root = r.create_root()
+        r.render(root, h(App), 80, 24)
+
+        # 合并遍历
+        fn_merged, ref_merged, in_merged, paste_merged = r._collect_render_metadata(root)
+
+        # 三趟原路径
+        fn_orig: list = []
+        r._traverse_functions(root, fn_orig.append)
+        ref_orig: list = []
+        stack = [root]
+        while stack:
+            f = stack.pop()
+            while f is not None:
+                if not f.deleted and f._host_ref is not None:
+                    ref_orig.append(f)
+                if f.child is not None:
+                    stack.append(f.sibling)
+                    f = f.child
+                else:
+                    f = f.sibling
+        in_orig: list = []
+        r._collect_input_hooks(root, in_orig)
+
+        # function fibers 一致（前序）
+        assert len(fn_merged) == len(fn_orig)
+        assert all(a is b for a, b in zip(fn_merged, fn_orig))
+        # ref fibers 一致（顺序）
+        assert len(ref_merged) == len(ref_orig)
+        assert all(a is b for a, b in zip(ref_merged, ref_orig))
+        # input hooks 一致
+        assert len(in_merged) == len(in_orig)
+        assert all(a is b for a, b in zip(in_merged, in_orig))
+        # paste hooks 均为空（树中无 usePaste）
+        assert paste_merged == []
+
+    def test_metadata_skips_deleted(self):
+        """合并遍历跳过已删除 fiber（与原三趟语义一致）。"""
+        from src.tui.ink.element import h, TEXT
+        from src.tui.ink.hooks import use_input
+        from src.tui.ink.reconciler import Reconciler
+
+        def Comp(props):
+            use_input(lambda ev: True, True)
+            return h(TEXT, {"children": "x"})
+
+        def App(props):
+            return h(Comp)
+
+        r = Reconciler()
+        root = r.create_root()
+        r.render(root, h(App), 80, 24)
+        fn1, _, hooks1, _ = r._collect_render_metadata(root)
+        assert len(hooks1) == 1
+        # 换渲染空组件 → 旧子树删除
+        def Empty(props):
+            return h(TEXT, {"children": ""})
+        r.render(root, h(Empty), 80, 24)
+        fn2, _, hooks2, _ = r._collect_render_metadata(root)
+        assert len(hooks2) == 0, "删除子树的 input hook 不应被收集"

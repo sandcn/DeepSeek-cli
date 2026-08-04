@@ -56,35 +56,10 @@ _SEMANTIC_COLOR: dict[str, int] = {
     "border": 23,
     "placeholder": 238,
 }
-
-_COLOR_ACCENT = f"\033[38;5;{_SEMANTIC_COLOR['accent']}m"
-_COLOR_DEEP_CYAN = f"\033[38;5;{_SEMANTIC_COLOR['deep_cyan']}m"
-_COLOR_DIM = f"\033[38;5;{_SEMANTIC_COLOR['dim']}m"
-_COLOR_RESET = "\033[0m"
-_COLOR_SEP = f"\033[38;5;{_SEMANTIC_COLOR['sep']}m"
-_COLOR_TIME = f"\033[38;5;{_SEMANTIC_COLOR['time']}m"
-_COLOR_TOKEN = f"\033[38;5;{_SEMANTIC_COLOR['token']}m"
-_COLOR_SPEED = f"\033[38;5;{_SEMANTIC_COLOR['speed']}m"
-_COLOR_TOOL_OK = f"\033[38;5;{_SEMANTIC_COLOR['tool_ok']}m"
-_COLOR_TOOL_FAIL = f"\033[38;5;{_SEMANTIC_COLOR['tool_fail']}m"
-_COLOR_SELECT_BG = f"\033[48;5;{_SEMANTIC_COLOR['select_bg']}m"
-_COLOR_SELECT_FG = f"\033[38;5;{_SEMANTIC_COLOR['select_fg']}m"
-_COLOR_COMPLETE_TITLE = f"\033[1;38;5;{_SEMANTIC_COLOR['accent']}m"
-_COLOR_COMPLETE_CMD_PREFIX = f"\033[1;38;5;{_SEMANTIC_COLOR['accent']}m"
-_COLOR_COMPLETE_DIR = f"\033[38;5;{_SEMANTIC_COLOR['time']}m"
-_COLOR_COMPLETE_MATCH = "\033[38;5;221m"  # 无槽位语义（补全匹配高亮），保留字面量
-
-_C_RUNNING       = f"\033[38;5;{_SEMANTIC_COLOR['speed']}m"    # 琥珀色 — 运行中
-_C_DONE          = "\033[38;5;40m"     # 亮绿 — 完成（无槽位，保留字面量）
-_C_FAIL          = f"\033[38;5;{_SEMANTIC_COLOR['tool_fail']}m"  # 亮红 — 失败
-_C_ANSWERING     = "\033[38;5;75m"     # 浅蓝 — 回答中（无槽位，保留字面量）
-_C_PARSING       = "\033[38;5;178m"    # 金色 — 解析（无槽位，保留字面量）
-_C_BATCH         = "\033[38;5;140m"    # 淡紫 — 批量（无槽位，保留字面量）
-_C_DIMMER        = "\033[38;5;240m"    # 暗灰 — 辅助（无槽位，保留字面量）
-_C_DIMMEST       = "\033[38;5;238m"    # 深灰 — 分隔线（无槽位，保留字面量）
-_C_SUMMARY_DIM   = "\033[38;5;245m"    # 中灰 — 摘要次要（无槽位，保留字面量）
-_C_BRANCH        = "\033[38;5;239m"    # 灰 — 树形线（无槽位，保留字面量）
-_C_RESET         = "\033[0m"
+# ★ 标准 React Ink 组件化（2026-08-05）：原 _COLOR_*（ANSI 前景序列）与 _C_*
+# （ANSI 面板色）常量已删除——生产渲染统一用 core/style.py Style（fg 色号），
+# 色号从 _SEMANTIC_COLOR 槽位表解析（零视觉回归）。ANSI_EMERGENCY_*（紧急
+# 路径）保留。
 
 
 # ═══════════════════════════════════════════════════════════

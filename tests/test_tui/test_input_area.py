@@ -11,10 +11,7 @@ from src.tui.ink.fiber import Fiber
 from src.tui._input import _wrap_by_width
 from src.tui.app.input_area import (
     _compute_input_layout,
-    _compute_input_rows,
-    _wrap_input_text,
     _cursor_visual_from_layout,
-    _measure,
     _build_lines,
 )
 
@@ -45,37 +42,17 @@ class _Box:
         self.h = h
 
 
-class TestComputeInputLayout:
-    """_compute_input_layout 与旧函数语义一致。"""
-
-    def test_layout_rows_matches_compute_input_rows(self):
-        for text, w in [("", 80), ("hello", 80), ("a" * 100, 30), ("l1\nl2\nl3", 80), ("a\n\nb", 10), ("你好world", 8)]:
-            rows, wrapped = _compute_input_layout(text, w)
-            assert rows == _compute_input_rows(text, w), (text, w)
-            flat = [seg for segs in wrapped for seg in segs]
-            assert flat == _wrap_input_text(text, w), (text, w)
-
-    def test_layout_empty_text(self):
-        rows, wrapped = _compute_input_layout("", 80)
-        assert rows == 1
-        assert wrapped == [[""]]
-
-    def test_layout_multiline(self):
-        rows, wrapped = _compute_input_layout("abc\ndefgh", 3)
-        assert rows == 3  # abc / def / gh
-        assert wrapped == [["abc"], ["def", "gh"]]
-
-
 class TestLayoutCache:
-    """_measure 建立 fiber 缓存，_build_lines 复用。"""
+    """_build_lines 建立/复用 fiber 换行布局缓存（原遗留 host _measure 职责收拢）。"""
 
     def test_layout_cache_hit_regression(self):
-        """同 text/max_input 二次 _measure 不重复调用 _wrap_by_width（mock 计数）。"""
+        """同 text/max_input 二次 _build_lines 不重复调用 _wrap_by_width（mock 计数）。"""
         fiber = _input_fiber(text="hello world", cursor_pos=5)
+        fiber.layout_box = _Box(x=0, y=0, w=80, h=1)
         with patch("src.tui._input._wrap_by_width", wraps=_wrap_by_width) as mock_wrap:
-            _measure(fiber, 80)
-            _measure(fiber, 80)
-            # 两次 measure：第二次命中缓存 → _compute_input_layout 不再调用 _wrap_by_width
+            _build_lines(fiber)
+            _build_lines(fiber)
+            # 两次 build：第二次命中 fiber._input_layout_cache → 不再调用 _wrap_by_width
             assert mock_wrap.call_count == 1, (
                 f"缓存命中后不应重复换行计算，实际调用 {mock_wrap.call_count} 次"
             )
@@ -83,42 +60,38 @@ class TestLayoutCache:
     def test_layout_cache_miss_on_text_change_regression(self):
         """text 变化时缓存键不同 → 重新计算。"""
         fiber = _input_fiber(text="hello", cursor_pos=5)
+        fiber.layout_box = _Box(x=0, y=0, w=80, h=1)
         with patch("src.tui._input._wrap_by_width", wraps=_wrap_by_width) as mock_wrap:
-            _measure(fiber, 80)
+            _build_lines(fiber)
             fiber.props["text"] = "hello world"
-            _measure(fiber, 80)
+            _build_lines(fiber)
             assert mock_wrap.call_count == 2
 
-    def test_measure_sets_cache_on_fiber(self):
+    def test_build_lines_sets_cache_on_fiber(self):
+        """_build_lines 未命中时计算并写回 fiber._input_layout_cache（_measure 职责收拢）。"""
         fiber = _input_fiber(text="abc", cursor_pos=2)
-        _measure(fiber, 80)
+        fiber.layout_box = _Box(x=0, y=0, w=80, h=1)
+        _build_lines(fiber)
         assert hasattr(fiber, "_input_layout_cache")
         key, (rows, wrapped) = fiber._input_layout_cache
         assert key == ("abc", 80 - len("> "))
 
     def test_build_lines_reuses_cache(self):
-        """_build_lines 从 fiber 缓存读取（未命中时回退单次计算）。"""
+        """_build_lines 从 fiber 缓存读取（命中时零换行计算）。"""
         fiber = _input_fiber(text="hello", cursor_pos=3)
         fiber.layout_box = _Box(x=0, y=0, w=80, h=1)
-        _measure(fiber, 80)
+        _build_lines(fiber)  # 首次：计算 + 写回缓存
         with patch("src.tui._input._wrap_by_width", wraps=_wrap_by_width) as mock_wrap:
             lines = _build_lines(fiber)
             assert len(lines) >= 3  # 分隔线 + 输入行 + 时间戳
             mock_wrap.assert_not_called()  # 命中缓存 → 不重新换行
 
     def test_build_lines_fallback_on_miss(self):
-        """缓存未命中（未 measure）时 _build_lines 回退单次计算。"""
+        """缓存未命中（新 fiber 无缓存）时 _build_lines 回退单次计算。"""
         fiber = _input_fiber(text="hello", cursor_pos=3)
         fiber.layout_box = _Box(x=0, y=0, w=80, h=1)
-        lines = _build_lines(fiber)  # 未 measure → 回退
+        lines = _build_lines(fiber)  # 无缓存 → 回退计算
         assert any("hello" in line.plain for line in lines)
-
-    def test_measure_bad_width_fallback(self):
-        """畸形 width 兜底（不抛异常，回退可用宽度）——与其他布局解析一致。"""
-        fiber = _input_fiber(text="hello", cursor_pos=3, width="bad-width")
-        w, h = _measure(fiber, 80)
-        assert w == 80, f"畸形 width 应回退可用宽度 80，实际 {w}"
-        assert h >= 2
 
 
 class TestCursorFromLayout:
@@ -193,13 +166,6 @@ class TestReverseSearchOverlay:
         lines = _build_lines(fiber)
         plains = [line.plain for line in lines]
         assert any("(reverse-i-search)`nope`:" in p for p in plains)
-
-    def test_measure_includes_search_row(self):
-        """_measure 读取 history_search 增行（激活时 +1）。"""
-        w, h_active = _measure(self._search_fiber(), 80)
-        w2, h_inactive = _measure(self._search_fiber(active=False), 80)
-        assert w == w2 == 80
-        assert h_active == h_inactive + 1
 
 
 # ═══════════════════════════════════════════════════════════
@@ -325,57 +291,8 @@ class TestPlaceholderFadeSingleClock:
 
 
 # ═══════════════════════════════════════════════════════════
-# 方向1 步骤4 — input_area 渲染修复（CJK merge / 窄屏截断 / 分隔线 / 渐显桶）
+# 方向1 步骤4 — input_area 渲染修复（窄屏截断 / 分隔线 / 渐显桶）
 # ═══════════════════════════════════════════════════════════
-
-class TestMergeCjkColumnAdvance:
-    """方向1 步骤4 — _merge 按显示宽度推进列（CJK 宽 2 推进 2）。"""
-
-    def test_merge_cjk_column_advance_regression(self):
-        """CJK 字符在画布行中占 2 列（col 1 留空），后续字符不错位。"""
-        from src.tui.app.input_area import _merge
-        from src.tui.ink.output import Line
-        row = {}
-        line = Line()
-        line.append("你", None)  # 宽 2
-        line.append("a", None)   # 宽 1
-        _merge(row, 0, line)
-        # "你" 占 col 0（宽 2 → col 1 留空）；"a" 在 col 2（修复前 col 1 被覆盖）
-        assert row[0] == ("你", None)
-        assert row[2] == ("a", None), (
-            f"CJK 后字符应在 col 2（显示宽度推进），实际 row={row!r}"
-        )
-        assert 1 not in row or row[1] != ("a", None)
-
-    def test_merge_cjk_then_cjk(self):
-        """连续 CJK：每个占 2 列（col 0、col 2）。"""
-        from src.tui.app.input_area import _merge
-        from src.tui.ink.output import Line
-        row = {}
-        line = Line()
-        line.append("你", None)
-        line.append("好", None)
-        _merge(row, 0, line)
-        assert row[0] == ("你", None)
-        assert row[2] == ("好", None)
-
-    def test_merge_wide_second_col_overwrite_not_lost(self):
-        """E2 — 宽字符第二列覆盖时新字符不再静默丢失。
-
-        row={0:'中',2:'a'} + 覆盖键 1：修复前本地逐字符实现写入 row[1]，
-        ``_canvas_row_to_line`` 的 ``col < prev``（宽字符推进到 2）跳过键 1 →
-        "X" 静默丢失（渲染 "中a"）。修复后委托 ``_merge_line`` 整体替换
-        宽字符（row[0]=X、pop(1)）→ "X a"。
-        """
-        from src.tui.app.input_area import _merge
-        from src.tui.ink.output import Line, StyledRun
-        from src.tui.ink.components import _canvas_row_to_line
-        row = {0: ("中", None), 2: ("a", None)}
-        _merge(row, 1, Line([StyledRun("X", None)]))
-        line = _canvas_row_to_line(row)
-        assert line.plain == "X a", f"实际 {line.plain!r}"
-        assert "X" in line.plain
-
 
 class TestNarrowTerminalTruncation:
     """方向1 步骤4 — 窄屏（width=20/15）各行宽度 ≤ width（补全/搜索/占位符/分隔线）。"""

@@ -384,8 +384,10 @@ class AppModel:
         self.subagent_lines: list = []
         # 反向历史搜索状态（None=未激活；input_area 渲染覆盖行）
         self.history_search: "HistorySearchState | None" = None
-        # 顶部工具调用状态（Claude TUI parity 步骤 2.2：active_tool 供
-        # ToolStatusHeader 渲染；None=无进行中工具，不占行）
+        # 顶部工具调用状态（Claude TUI parity 步骤 2.2：active_tool 为模型
+        # 数据——原 ToolStatusHeader 渲染消费，组件已移除（工具状态改由工具
+        # 卡片顶边框 ● 展示，双份冗余）；字段保留供测试/未来消费，None=无
+        # 进行中工具）
         self.active_tool: dict | None = None
 
     # ── 块管理 ──────────────────────────────────────

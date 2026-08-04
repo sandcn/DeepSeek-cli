@@ -34,23 +34,9 @@ import time
 from typing import Any, Callable, Dict, List
 
 from src.tui._const import (
-    _C_ANSWERING,
-    _C_BATCH,
-    _C_BRANCH,
-    _C_DIMMER,
-    _C_DIMMEST,
-    _C_DONE,
-    _C_FAIL,
-    _C_PARSING,
-    _C_RESET,
-    _C_RUNNING,
-    _C_SUMMARY_DIM,
     RenderCmd,
     SubagentFrameCmd,
 )
-from src.tui._format import format_duration as _format_duration
-from src.tui._format import format_tokens as _format_tokens
-from src.tui._format import format_speed as _format_speed
 from src.tui.events.event_types import (
     AgentAddedEvent, AgentStatusChanged, ModelPhaseEvent,
     ToolParsingEvent, ToolStartedEvent, ToolDoneEvent,
@@ -59,6 +45,7 @@ from src.tui.events.event_types import (
 )
 
 from src.tui._subagent_state import StateStore, _AgentSlot, _ToolRecord
+from src.tui.ink.output import Line  # 面板行类型（StyledRun 行，标准 React Ink 化）
 from src.tui._subagent_render import (
     _SPINNER_FRAMES,
     _get_tool_color,
@@ -72,9 +59,10 @@ _logger = logging.getLogger(__name__)
 #   _AgentSlot / _ToolRecord（test_subagent_panel 直接导入）
 #   _SPINNER_FRAMES（test_subagent_panel 直接导入）
 #   _get_tool_color（test_tool_mapping_single_source 经 sp._get_tool_color 访问）
-#   _C_*（test 经 sp._C_RUNNING / sp._C_RESET 访问，模块级从 _const 导入）
 #   _format_duration / _format_tokens / _format_speed（patch 路径兼容）
 #   time（patch("src.tui._subagent_panel.time.monotonic") 兼容——标准库 time 模块引用）
+# ★ 标准 React Ink 组件化（2026-08-05）：_C_* ANSI 面板色 re-export 已移除
+#   （渲染统一 Style）——test_subagent_panel 不再经 sp._C_* 访问。
 
 
 # ═══════════════════════════════════════════════════════════
@@ -129,7 +117,7 @@ class SubAgentPanelController:
         # 期间最新状态可能延迟）。
         self._pending_emit: bool = False
         # 上一推送帧（变更检测，避免空转推送）
-        self._last_pushed_frame: List[str] | None = None
+        self._last_pushed_frame: List[Line] | None = None
         self._active: bool = False
         self._cb_registered: bool = False
         self._chat_ui: Any = None
@@ -392,7 +380,7 @@ class SubAgentPanelController:
 
     # ── 帧渲染委托（实现迁移至 _subagent_render） ────
 
-    def _render_frame(self) -> List[str]:
+    def _render_frame(self) -> List[Line]:
         """渲染面板帧（委托 _subagent_render.render_frame）。
 
         agents/order 传入当前引用（兼容既有测试整体替换 ``ctrl._agents``
@@ -403,13 +391,13 @@ class SubAgentPanelController:
         )
 
     def _build_agent_lines(self, slot: _AgentSlot, now: float,
-                           is_last: bool) -> List[str]:
+                           is_last: bool) -> List[Line]:
         """构建单个 Agent 显示行（委托 _subagent_render.build_agent_lines）。"""
         return _build_agent_lines_impl(slot, now, is_last, self.max_history)
 
     # ── 帧推送 ──────────────────────────────────────────
 
-    def _push_frame(self, lines: List[str]) -> None:
+    def _push_frame(self, lines: List[Line]) -> None:
         # 优先使用注入的 push_cmd 回调，避免 get_active_chat_ui() 循环依赖
         if self._push_cmd_cb is not None:
             try:

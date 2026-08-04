@@ -127,14 +127,14 @@ class TestTruncateRunsNewline:
 
 
 class TestSeparatorLineWidth:
-    """BUG-72 — _build_separator_line 行宽恒 = width（右端不缺口）。"""
+    """BUG-72 — sep_line 行宽恒 = width（右端不缺口；_build_separator_line 遗留已移除）。"""
 
     @staticmethod
     def _build(width: int) -> Line:
-        from src.tui.app.input_area import _build_separator_line
+        from src.tui.app._theme import sep_line
         from src.tui.core.style import Style
         content = Line.of(" CPU:12% · MEM:34%", Style(fg=45))
-        return _build_separator_line(width, content, Style(fg=237), 19)
+        return sep_line(width, content, False)
 
     def test_normal_width_full(self):
         """正常宽度：行宽 == width（修复前 width-1）。"""

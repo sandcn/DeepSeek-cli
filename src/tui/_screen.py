@@ -26,26 +26,10 @@ import threading
 import time
 from typing import Callable
 
-# ANSI 颜色常量唯一真源在 src/tui/_const.py（方向F 步骤12 收敛）；
-# 本模块 re-export 保持 bottom_bar 各子模块既有导入路径不变。
-from ._const import (
-    _COLOR_ACCENT,
-    _COLOR_COMPLETE_CMD_PREFIX,
-    _COLOR_COMPLETE_DIR,
-    _COLOR_COMPLETE_MATCH,
-    _COLOR_COMPLETE_TITLE,
-    _COLOR_DEEP_CYAN,
-    _COLOR_DIM,
-    _COLOR_RESET,
-    _COLOR_SELECT_BG,
-    _COLOR_SELECT_FG,
-    _COLOR_SEP,
-    _COLOR_SPEED,
-    _COLOR_TIME,
-    _COLOR_TOKEN,
-    _COLOR_TOOL_FAIL,
-    _COLOR_TOOL_OK,
-)
+# ★ 标准 React Ink 组件化（2026-08-05）：原 ANSI 颜色常量（_COLOR_*）re-export
+# 已移除——生产渲染统一用 core/style.py Style（fg 色号），色号从
+# _const._SEMANTIC_COLOR 槽位表解析（零视觉回归）。ANSI_EMERGENCY_*（紧急
+# 路径）保留于 _const。
 
 
 # ═══════════════════════════════════════════════════════════
@@ -740,15 +724,6 @@ def set_window_title(title: str) -> None:
         sys.__stdout__.flush()
     except (OSError, ValueError, AttributeError):  # BUG-52：无 TTY 时 stdout 为 None
         pass
-
-
-# ═══════════════════════════════════════════════════════════
-# ANSI 颜色常量（256 色体系）— re-export from _const
-# ═══════════════════════════════════════════════════════════
-# 唯一真源已收敛至 src/tui/_const.py（方向F 步骤12）；本模块保留 re-export，
-# 使 bottom_bar 各子模块（_bar/_layout/_popup/_render）既有
-# ``from src.tui._screen import _COLOR_*`` 导入路径不变。
-# （常量定义见本文件顶部 from ._const import ...）
 
 
 # ═══════════════════════════════════════════════════════════

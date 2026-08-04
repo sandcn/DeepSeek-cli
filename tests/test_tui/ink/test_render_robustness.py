@@ -281,29 +281,32 @@ class TestMeasureCacheCorrectness:
         assert _render(el_row, 40) is not None
         assert _render(el_col, 40) is not None
 
-    def test_committed_chat_not_cached_as_text(self):
-        """自定义 host（committed-chat/input-area）不写 _measure_cache。"""
-        from src.tui.app.input_area import register as register_input
-        register_input()
-        el = h("input-area", {
+    def test_input_area_standard_component_renders(self):
+        """InputArea 标准组件（Column + TEXT）正常渲染（无自定义 host）。"""
+        from src.tui.app.input_area import InputArea
+        el = h(InputArea, {
             "text": "hi", "cursor_pos": 1, "prompt": "> ",
             "completion": None, "status_active": False, "cpu": 0, "mem": 0,
+            "history_search": None, "width": 40,
         })
         r = Reconciler()
         root = r.create_root()
         r.render(root, el, 40, 24)
+        f = render_frame(root, 40)
+        assert any("> " in ln.plain for ln in f.lines), "输入行应渲染"
 
-        def _has_cache(f):
-            if getattr(f, "_measure_cache", None) is not None:
+        def _has_host_tag(f):
+            # InputArea 返回 Column 组件树——不应出现自定义 host "input-area"
+            if f.is_host and f.type == "input-area":
                 return True
             c = f.child
             while c:
-                if _has_cache(c):
+                if _has_host_tag(c):
                     return True
                 c = c.sibling
             return False
 
-        assert not _has_cache(root), "input-area 不应写 TEXT 测量缓存"
+        assert not _has_host_tag(root), "InputArea 不应产生自定义 host"
 
 
 # ═══════════════════════════════════════════════════════════
@@ -312,10 +315,10 @@ class TestMeasureCacheCorrectness:
 
 
 class TestCommittedChatFastPath:
-    """committed-chat 未挂载快速路径：纯 TEXT 树零 DFS。"""
+    """StaticLines 未挂载快速路径：纯 TEXT 树零 DFS。"""
 
     def test_no_committed_flag_false(self):
-        """无 committed-chat 的组件树 → _committed_chat_present=False。"""
+        """无 StaticLines 的组件树 → _committed_chat_present=False。"""
         el = h(Column, None, [h(TEXT, {"children": "x"})])
         r = Reconciler()
         root = r.create_root()
@@ -323,7 +326,7 @@ class TestCommittedChatFastPath:
         assert getattr(root, "_committed_chat_present", False) is False
 
     def test_with_committed_flag_true(self):
-        """有 committed-chat（AppModel 聊天历史）→ _committed_chat_present=True。"""
+        """有 StaticLines（AppModel 聊天历史）→ _committed_chat_present=True。"""
         from src.tui.app.model import AppModel
         from src.tui.app.app import build_app_element
         from src.renderer.ansi.helpers import AnsiLine

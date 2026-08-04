@@ -793,29 +793,29 @@ def _canvas_row_to_line(row) -> Line:
 
 
 def _find_committed_chat(root: Fiber):
-    """DFS 查找 committed-chat host fiber（聊天历史增量缓存发射器）。
+    """DFS 查找静态行批量渲染 host fiber（StaticLines / committed-chat）。
 
     组件树中聊天历史作为单个 host 挂载（ChatView use_memo 缓存元素），
-    静态行经 ``chat_view._paint`` 维护帧前缀缓存；render_frame 复用该前缀，
+    静态行经 ``staticlines._paint`` 维护帧前缀缓存；render_frame 复用该前缀，
     每帧只重建尾部 live 区——大历史下 Frame 构建 O(live) 而非 O(全部历史)。
 
     方向4（性能）：查找结果缓存于 root fiber（``_committed_chat_cache``）——
-    reconciler 按 key 复用 fiber，committed-chat 在树中位置跨帧稳定，无需每帧
+    reconciler 按 key 复用 fiber，静态行 host 在树中位置跨帧稳定，无需每帧
     DFS 全树搜索（大历史树 ~1500 fiber 时 DFS 为可感知开销）。缓存失效条件：
     缓存的 fiber 被删除（deleted）或 type 不再匹配（如 committed_lines 清空
-    后 ChatView 不再挂载 committed-chat）→ 重新 DFS。Cache miss 后写回缓存。
+    后 ChatView 不再挂载）→ 重新 DFS。Cache miss 后写回缓存。
 
-    ★ 性能（PERF-15）：**未挂载快速路径**——committed-chat 通常**不存在**
+    ★ 性能（PERF-15）：**未挂载快速路径**——静态行 host 通常**不存在**
     （纯 TEXT 组件树 / 无聊天历史的场景），且其存在性跨帧稳定（ChatView
     ``use_memo`` 依赖 ``model.committed_lines``，空列表时不挂载）。修复前
     ``_find_committed_chat`` 对**每帧**都做全树 DFS（找到才写缓存；未找到时
     ``del`` 缓存——**下一帧又 DFS**），纯 TEXT 大组件树（1000+ fiber）每帧
     DFS 开销可感知（~12ms/帧）。修复：fiber 上缓存 ``_committed_chat_present``
-    标志（reconciler 每帧调和时统计是否存在 committed-chat host，layout_tree
+    标志（reconciler 每帧调和时统计是否存在静态行 host，layout_tree
     前的整树遍历天然提供该信息）；标志为 False 时 O(1) 返回 None，零 DFS。
     """
     # ★ PERF-15：未挂载快速路径——标志由 reconciler._measure 统计（layout_tree
-    #   整树遍历时置位；见 layout.py _measure 容器分支注释）。无 committed-chat
+    #   整树遍历时置位；见 layout.py _measure 容器分支注释）。无静态行 host
     #   的组件树每帧零 DFS。
     if not getattr(root, "_committed_chat_present", False):
         return None
@@ -823,7 +823,7 @@ def _find_committed_chat(root: Fiber):
     if (
         cached is not None
         and cached.is_host
-        and cached.type == "committed-chat"
+        and cached.type == "static-lines"
         and not getattr(cached, "deleted", False)
     ):
         return cached
@@ -833,7 +833,7 @@ def _find_committed_chat(root: Fiber):
         f = stack.pop()
         if getattr(f, "deleted", False):
             continue
-        if f.is_host and f.type == "committed-chat":
+        if f.is_host and f.type == "static-lines":
             found = f
             break
         child = f.child
@@ -843,7 +843,7 @@ def _find_committed_chat(root: Fiber):
     if found is not None:
         root._committed_chat_cache = found
     else:
-        # 未找到 → 清空缓存（committed-chat 已卸载）
+        # 未找到 → 清空缓存（静态行 host 已卸载）
         if hasattr(root, "_committed_chat_cache"):
             del root._committed_chat_cache
     return found

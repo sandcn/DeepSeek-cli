@@ -814,6 +814,33 @@ class TestPositionCursorReusesInputCache:
         old_row, old_col = old("hello world", 5, max_input)
         assert (new_row, new_col) == (old_row, old_col)
 
+    def test_position_cursor_writes_back_cache_regression(self):
+        """未命中时 _position_cursor 计算并写回 fiber._input_layout_cache（PERF-1 写回）。"""
+        from src.tui.app.input_area import _compute_input_layout
+        from src.tui.ink.fiber import Fiber
+
+        s = _make_session()
+        fiber = Fiber("host", "input-area", {
+            "text": "缓存写回验证",
+            "cursor_pos": 3,
+            "prompt": "> ",
+            "completion": None,
+        })
+        fiber.layout_box = _Box(x=1, y=0, w=30, h=4)
+        s._root_fiber = fiber
+        assert not hasattr(fiber, "_input_layout_cache")
+        with patch.object(s._ink_renderer, "place_cursor") as mock_pc:
+            s._position_cursor()
+            mock_pc.assert_called_once()
+        # 写回缓存：键 = (text, max_input)，值 = (rows, wrapped_by_logical)
+        text = "缓存写回验证"
+        max_input = 30 - len("> ")
+        assert hasattr(fiber, "_input_layout_cache")
+        key, (rows, wrapped) = fiber._input_layout_cache
+        assert key == (text, max_input)
+        expect_rows, expect_wrapped = _compute_input_layout(text, max_input)
+        assert (rows, wrapped) == (expect_rows, expect_wrapped)
+
     def test_position_cursor_falls_back_on_miss_regression(self):
         """缓存未命中（text 变化）时回退 _compute_cursor_visual_pos。"""
         from src.tui.ink.fiber import Fiber
@@ -834,20 +861,28 @@ class TestPositionCursorReusesInputCache:
 
 
 class TestInputFiberCache:
-    """方向2 P5 — session._input_fiber 缓存 input-area fiber 引用（免每帧全树递归查找）。"""
+    """方向2 P5 — session._input_fiber 缓存输入区 fiber（免每帧全树递归查找）。
+
+    ★ 标准 React Ink 组件化：输入区为 InputArea 标准组件（返回 Column +
+    dataInputArea 标记容器）——查找条件为 props.dataInputArea 或旧
+    "input-area" host（兼容）。
+    """
 
     def _make_session_with_input_tree(self):
-        """构造 build_tree 产出 input-area 的会话（host 未注册时按容器处理，无终端依赖）。"""
+        """构造 build_tree 产出 InputArea 的会话。"""
         from src.tui.ink.element import h, BOX
+        from src.tui.app.input_area import InputArea
         state = {"key": "ia-1"}
 
         def build(model, width):
-            return h(BOX, None, h("input-area", {
+            return h(BOX, None, h(InputArea, {
                 "key": state["key"],
                 "text": "hello",
                 "cursor_pos": 0,
                 "prompt": "> ",
                 "completion": None,
+                "status_active": False, "cpu": 0, "mem": 0,
+                "history_search": None, "width": 80,
             }))
 
         s = _make_session(build_tree=build)
@@ -859,19 +894,19 @@ class TestInputFiberCache:
         s._ink_renderer = MagicMock()  # 避免真实终端输出
         s._render_frame()
         assert s._input_fiber is not None
-        assert s._input_fiber.type == "input-area"
+        assert s._input_fiber.props.get("dataInputArea") is True
         with patch.object(s, "_find_input_fiber", wraps=s._find_input_fiber) as mock_find:
             s._position_cursor()
             mock_find.assert_not_called()
 
     def test_render_frame_rebuilds_on_fiber_replaced_regression(self):
-        """input-area fiber 被替换（旧 fiber 删除）→ _render_frame 重建缓存。"""
+        """输入区 fiber 被替换（旧 fiber 删除）→ _render_frame 重建缓存。"""
         s, state = self._make_session_with_input_tree()
         s._ink_renderer = MagicMock()
         s._render_frame()
         old = s._input_fiber
         assert old is not None
-        # 替换 input-area（不同 key）→ 调和器删除旧 fiber（deleted=True 保持）→
+        # 替换输入区（不同 key）→ 调和器删除旧 fiber（deleted=True 保持）→
         # _render_frame 缓存失效重建（找到新 fiber）
         state["key"] = "ia-2"
         with patch.object(s, "_find_input_fiber", wraps=s._find_input_fiber) as mock_find:
@@ -879,7 +914,7 @@ class TestInputFiberCache:
             mock_find.assert_called_once()
             assert s._input_fiber is not None
             assert s._input_fiber is not old
-            assert s._input_fiber.type == "input-area"
+            assert s._input_fiber.props.get("dataInputArea") is True
             assert s._input_fiber.props.get("key") == "ia-2"
 
 

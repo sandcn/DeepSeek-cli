@@ -20,7 +20,7 @@ from __future__ import annotations
 from src.tui.app.model import _role_header_line
 from src.tui.app.toolcard import ToolCard
 from src.tui.core.style import Style
-from src.tui.ink import h, TEXT, StyledRun, register_host, use_memo, Column
+from src.tui.ink import h, TEXT, StyledRun, StaticLines, use_memo, Column, FRAGMENT
 from .subagent_panel import use_subagent_children
 
 _S_REASONING = Style(fg=242)
@@ -113,76 +113,56 @@ def _block_styled_lines(block, start: int = 0, width: int = 0) -> list[list[Styl
     return out
 
 
-# ── committed-chat host：直接发射已缓存行 ────────────────
+# ── StaticLines：已缓存行批量发射（标准组件） ────────────────
+# ★ 标准 React Ink 组件化（2026-08-05）：committed-chat 自定义 host 迁移为
+#   标准组件 ``StaticLines``（``src/tui/ink/widgets/staticlines.py``）——组件树
+#   表达 ``h(StaticLines, {"lines": ...})``；measure/paint + 帧前缀缓存性能
+#   机制随组件迁移（host "static-lines" 注册于 staticlines 模块）。本文件
+#   不再注册 host（旧 "committed-chat" 别名已彻底移除——无例外）。
 
 
-def _measure(fiber, avail_w):
-    lines = fiber.props.get("lines") or []
-    return (avail_w, len(lines))
+def OpenBlockLines(props) -> object:
+    """开放块行组件（PERF-26）：use_memo 缓存行 TEXT 元素列表。
 
+    Props:
+        block: 开放块（content/reasoning，非 tool）。
+        width: 布局宽度（截断宽度同源）。
+        live_start: 未提交尾起始行号（块内绝对行号；ChatView 已应用
+            ``_LIVE_TAIL_LINES`` 截断）。
+        block_idx: 块索引（行 key 前缀，与 chat_view 复合 key 语义一致）。
 
-def _paint(fiber, canvas):
-    box = fiber.layout_box
-    lines = fiber.props.get("lines") or []
-    n = len(lines)
-    if box.x == 0:
-        # ★ 增量快路径（大历史 O(1)/帧）：committed 静态行跨帧身份复用——
-        #   前缀缓存挂在 fiber（fiber 复用即命中，替换/重建自然失效）。
-        #   方向1 步骤4（非顶部前缀缓存）：前缀键 ``(id(lines), n, box.y)``
-        #   覆盖非顶部路径（box.y != 0）——非顶部同样维护 ``_committed_prefix``
-        #   （命中即跳过画布重写）；render_frame 消费前缀时校验
-        #   ``committed.layout_box.y == 0``——顶部才允许前缀复用，非顶部前缀
-        #   与画布尾部重建偏移语义不一致时由 render_frame 回退全量（防御层，
-        #   成本 O(1)）。
-        key = (id(lines), n, box.y, box.w)
-        cached = getattr(fiber, "_committed_prefix", None)
-        if cached is not None and cached[0] == key:
-            return  # 前缀未变：跳过画布重写（render_frame 复用缓存）
-        if (
-            cached is not None
-            and cached[0][0] == key[0]
-            and cached[0][2] == key[2]
-            and cached[0][3] == key[3]
-            and n > cached[0][1]
-        ):
-            # committed_lines 原地 extend（引用不变、长度增长）→ 仅追加新增行
-            prefix = cached[1]
-            prefix.extend(lines[cached[0][1]:])
-            all_ok = bool(cached[2]) and all(
-                ln.width <= box.w for ln in lines[cached[0][1]:]
+    Returns:
+        Fragment（透明分组容器）——行 TEXT 子元素直接流入父容器布局
+        （不引入额外布局盒/高度，渲染输出与 ChatView 直接逐行
+        ``h(TEXT, ...)`` 完全等价）。
+
+    ★ 性能（PERF-26）：use_memo 缓存 children（deps = ``id(block.lines)`` /
+    行数 / live_start / width / block_idx）——无新增行帧（流式暂停、工具卡
+    运行、动画帧）返回**同一 children 元组**（跨帧同 Element 对象）→
+    reconciler ``_try_reuse_stable`` / ``_set_props`` props 引用级命中 →
+    免每帧重建 64+ 行 TEXT Element（``__post_init__`` / dict 构造）+ 调和
+    比较；行追加（n 变化）/ live_start / width 变化自动重建。styled runs
+    引用由 ``_block_styled_lines`` 的 ``_open_styled_cache`` 保证稳定
+    （同 line 对象同一 runs 列表）——同 deps 时 children 内容确定。
+    """
+    block = props["block"]
+    width = props["width"]
+    live_start = props["live_start"]
+    block_idx = props["block_idx"]
+    n = len(block.lines)
+    children = use_memo(
+        lambda: tuple(
+            h(TEXT, {
+                "key": f"chat-{block_idx}-{live_start + i}",
+                "styled": runs,
+            })
+            for i, runs in enumerate(
+                _block_styled_lines(block, live_start, width)
             )
-        else:
-            prefix = list(lines)
-            # ★ 行宽守卫（E-COMMITTED-OVERFLOW 防御）：reflow_committed 未执行
-            #   /失败（终端宽度变化后 committed_lines 按旧宽度 wrap）时前缀含
-            #   超宽行——render_frame 的前缀复用路径不经 E-OVERFLOW-GUARD
-            #   （复用 Line 对象免截断），超宽行直接进入帧破坏行宽不变量。
-            #   此处仅在缓存重建时 O(n) 检查一次（非每帧，缓存命中零开销），
-            #   标记 all_ok=False 供 render_frame 回退全量路径（经 _to_line
-            #   截断）。宽度基准 = committed-chat 布局宽度（fill 语义下=文档宽）。
-            #   ★ 渲染错误（BUG-74）：缓存键含 box.w（见上方 key 构建）——
-            #   修复前键为 ``(id(lines), n, box.y)``：终端宽度变化（reflow 前/
-            #   失败/布局宽度与 model.width 不一致）时 id/lines 引用、行数、y
-            #   均未变 → 缓存错误命中 → 旧宽度超宽行直接进入帧（本防线被
-            #   缓存绕过）。key 含布局宽度后宽度变化强制重建并重新检查 all_ok。
-            all_ok = bool(box.w > 0) and all(
-                ln.width <= box.w for ln in prefix
-            )
-        fiber._committed_prefix = (key, prefix, all_ok)
-        return
-    # box.x != 0（缩进/padded）：逐行合并（保留已有边框/内容——修复前
-    # ``canvas[row] = padded`` 整体替换：父容器边框（行内已写 cols x0/x1）
-    # 被 padded 空格覆盖，缩进框内 committed 行丢失左/右边框）。
-    for i, line in enumerate(lines):
-        row = box.y + i
-        if 0 <= row < len(canvas):
-            from src.tui.ink.components import _merge_line
-            canvas[row] = _merge_line(canvas[row], box.x, line)
-
-
-def register() -> None:
-    """注册 committed-chat host 组件。"""
-    register_host("committed-chat", _measure, _paint)
+        ),
+        (id(block.lines), n, live_start, width, block_idx),
+    )
+    return h(FRAGMENT, None, children)
 
 
 def ChatView(props) -> object:
@@ -191,11 +171,11 @@ def ChatView(props) -> object:
     未提交块的行给**索引 key**——调和器据此复用 fiber，换行缓存才能命中
     （否则无唯一 key → 每帧重建 → 开放大块整块重包裹，流式卡顿）。
 
-    方向② 步骤6：committed-chat 部分 use_memo 缓存——``committed_lines``
-    引用不变（模型无新提交）时返回同一 Element → reconciler 复用同一 props
-    → host 调和跳过（免每帧重建 committed-chat 元素）；流式增量提交
-    （committed_lines 变化）时 memo 失效重算。use_memo 须在所有条件分支前
-    调用（hook 顺序不变式；ChatView 仅此一个 hook，无顺序风险）。
+    方向② 步骤6：StaticLines（committed 静态行批量发射）use_memo 缓存——
+    ``committed_lines`` 引用不变（模型无新提交）时返回同一 Element →
+    reconciler 复用同一 props → host 调和跳过（免每帧重建元素）；流式
+    增量提交（committed_lines 变化）时 memo 失效重算。use_memo 须在所有
+    条件分支前调用（hook 顺序不变式；ChatView 仅此一个 hook，无顺序风险）。
     """
     model = props["model"]
     # ★ 截断宽度与布局宽度同源：优先用 props width（App 传入，= reconciler
@@ -204,7 +184,7 @@ def ChatView(props) -> object:
     #   布局按 box.w wrap，第二行只剩尾部边框字符（显示错乱）。
     width = props.get("width") or getattr(model, "width", 0)
     committed_el = use_memo(
-        lambda: h("committed-chat", {"lines": model.committed_lines}),
+        lambda: h(StaticLines, {"lines": model.committed_lines}),
         (model.committed_lines,),
     )
     # ★ BUG-42（review 方向）：subagent 卡片子树按 ``(subagent_lines, width)``
@@ -220,9 +200,11 @@ def ChatView(props) -> object:
     #   索引稳定）；row_in_block = 块内行号（已提交行不参与开放块渲染，
     #   未提交尾从 committed_line_count 起行号稳定）→ 流式追加新行时已渲染
     #   行 key 不变，调和器复用 fiber。
-    for block_idx, block in enumerate(
-        model.blocks[model.committed_count:], start=model.committed_count,
-    ):
+    # ★ 性能（PERF-24）：避免每帧 ``model.blocks[model.committed_count:]``
+    #   切片分配——改用索引循环（块数量少，range 遍历成本更低；切片仅
+    #   在 committed_count 处截断，逐索引跳过即可）。
+    for block_idx in range(model.committed_count, len(model.blocks)):
+        block = model.blocks[block_idx]
         # 卡片角色头（live 路径）：块尚未有任何增量提交（committed_line_count
         # == 0）时在正文行前发射——已提交的头在 committed_lines 中，此处不再
         # 重复（互斥）。头独立 key ``chat-{block_idx}-h``（不与整数行号冲突）。
@@ -259,15 +241,19 @@ def ChatView(props) -> object:
                 "start": live_start,
             }))
             continue
-        for row_in_block, runs in enumerate(
-            _block_styled_lines(
-                block, live_start, width,
-            )
-        ):
-            children.append(h(TEXT, {
-                "key": f"chat-{block_idx}-{live_start + row_in_block}",
-                "styled": runs,
-            }))
+        # ★ 性能（PERF-26）：open 块行经 ``OpenBlockLines`` 独立组件渲染
+        #   （内部 use_memo 缓存行 TEXT 元素列表，deps = 行数/起始/宽度/块索引）
+        #   ——无新增行帧（流式暂停/工具卡运行等）复用同一 children 元组，
+        #   reconciler props 引用级命中 → 免每帧重建 64+ 行 Element + 调和
+        #   比较（大 open 块场景 ~1.45ms → ~0.9ms）。组件 key 用块索引（稳定，
+        #   与 ToolCard 同模式）；Fragment 透明分组不引入额外布局盒。
+        children.append(h(OpenBlockLines, {
+            "key": f"chat-{block_idx}-open",
+            "block": block,
+            "width": width,
+            "live_start": live_start,
+            "block_idx": block_idx,
+        }))
     # 子代理活动卡片（并入消息流，对齐 Claude Code）：subagent_lines 为
     # _subagent_render 产出的逐 agent 卡片 ANSI 行，经 use_subagent_children
     # 缓存元素（原独立 SubAgentPanel 组件已移除）。
@@ -279,4 +265,4 @@ def ChatView(props) -> object:
     return h(Column, None, children)
 
 
-__all__ = ["ChatView", "register"]
+__all__ = ["ChatView"]

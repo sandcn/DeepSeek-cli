@@ -47,6 +47,8 @@ class Element:
     type: ElementType
     props: Mapping[str, Any]
     children: tuple["Element", ...] = field(default_factory=tuple)
+    #: key 惰性缓存（None=未计算；首次访问 key property 时填充）
+    _key: str | None = field(init=False, repr=False, compare=False, default=None)
 
     def __post_init__(self) -> None:
         """规范化 props/children 为不可变副本。"""
@@ -55,11 +57,18 @@ class Element:
 
     @property
     def key(self) -> str:
-        """元素 key（用于调和；无 key 时以 type 为兜底）。"""
-        key = self.props.get("key")
-        if key is None:
-            return _type_key(self.type)
-        return str(key)
+        """元素 key（惰性缓存——调和热路径首次访问计算一次，之后 O(1)；
+        无显式 key 时以 type 派生）。"""
+        cached = self._key
+        if cached is None:
+            key = self.props.get("key")
+            if key is None:
+                key = _type_key(self.type)
+            else:
+                key = str(key)
+            object.__setattr__(self, "_key", key)
+            cached = key
+        return cached
 
 
 def _type_key(type_: ElementType) -> str:

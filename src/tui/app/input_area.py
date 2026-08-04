@@ -1,8 +1,14 @@
-"""InputArea — 输入区 host 组件（提示符 + 换行输入 + 光标 + 呼吸发光）。
+"""InputArea — 输入区 React Ink 标准组件（补全弹窗 + 分隔线 + 输入行）。
 
-注册 ``input-area`` host 标签到 ink 注册表：
-  - measure_fn：补全弹窗 + 上分隔线 + 输入行 + 下分隔线高度。
-  - paint_fn：绘制到画布。
+★ 标准 React Ink 组件化（2026-08-05，无例外收尾）：input-area 自定义 host
+（直接画布绘制）迁移为**标准函数组件** ``InputArea``——返回 Column（组件
+树）：``CompletionPopup``（补全弹窗 Column + TEXT）+ 上分隔线 TEXT + 反向
+历史搜索 TEXT + 输入行 TEXT + 时间戳分隔线 TEXT。生产代码经 App 组件树
+``h(InputArea, props)`` 渲染；旧 host "input-area" 与遗留 host 绘制函数
+（``_measure``/``_paint``/``_build_separator_line``/``_merge``/
+``_compute_input_rows``/``_wrap_input_text``）及 ``register()`` 空入口已
+全部删除（无例外）——`_build_lines`/``_build_popup_lines`` 为组件内部渲染
+辅助（快照缓存），保留。
 
 复用 _input.py 的 ``_expand_tabs`` / ``_wrap_by_width`` /
 ``_compute_cursor_visual_pos`` / ``_compute_input_layout`` /
@@ -12,6 +18,13 @@
 方向5（光标算法单一真源）：``_compute_input_layout`` /
 ``_cursor_visual_from_layout`` 已迁移至 ``_input.py``（本文件从 _input 导入，
 删除本地副本——input_area 与 session 共享同一实现，不再双实现）。
+
+性能：``_build_lines`` 快照缓存语义保留（Line 跨帧引用稳定）——InputArea
+经 ``use_memo`` 缓存 Element 列表（deps = 快照键），命中时 children 引用
+稳定 → reconciler/layout/paint 短路（零重建）。光标定位由 session 经
+``dataInputArea`` 容器 + ``_compute_cursor_visual_pos`` 计算；换行布局缓存
+（``fiber._input_layout_cache``）由 ``_build_lines`` 单点写入（原遗留
+``_measure`` 写入职责收拢，session._position_cursor 复用）。
 """
 
 from __future__ import annotations
@@ -34,7 +47,7 @@ from src.tui._input import (
     _cursor_visual_from_layout,
 )
 from src.tui.core.style import Style
-from src.tui.ink import register_host, Line
+from src.tui.ink import h, TEXT, Column, Line, use_memo, use_ref
 from src.tui.app import _fx
 from src.tui.app._theme import sep_line as _theme_sep_line, time_glow, _S_ACCENT, _S_DIM, _S_SEP, _S_TEXT, _S_TIME
 
@@ -83,21 +96,6 @@ def _placeholder_fade_color(fiber, ph: str, end_color: int) -> int:
         start = key[1]
     elapsed = time.monotonic() - start
     return _fx.fade_color(elapsed, None, 238, end_color)
-
-
-def _compute_input_rows(text: str, max_input: int) -> int:
-    """输入文本换行行数（至少 1）。"""
-    rows, _ = _compute_input_layout(text, max_input)
-    return rows
-
-
-def _wrap_input_text(text: str, max_input: int) -> list[str]:
-    """输入文本拆行段列表（扁平，兼容旧调用面）。"""
-    _, wrapped_by_logical = _compute_input_layout(text, max_input)
-    return [seg for segs in wrapped_by_logical for seg in segs]
-
-
-# ── 测量 ───────────────────────────────────────────
 
 
 def _desc_column_width(width: int) -> int:
@@ -200,37 +198,6 @@ def _completion_height(completion, width=None) -> int:
 def _is_search_active(search) -> bool:
     """反向历史搜索是否激活（history_search 非 None 且 active，方向D 步骤14）。"""
     return search is not None and bool(getattr(search, "active", False))
-
-
-def _measure(fiber, avail_w) -> tuple[int, int]:
-    props = fiber.props
-    explicit = props.get("width")
-    # ★ 健壮性（方向4）：width 畸形兜底——与其他 host/内置布局一致
-    #   （try/except TypeError/ValueError，修复前 ``int(explicit)`` 对畸形值
-    #   抛异常 → 经 layout_tree 传播中断整帧渲染）。App 正常路径无显式 width，
-    #   本分支为防御。
-    try:
-        width = max(0, int(explicit)) if explicit is not None else avail_w
-    except (TypeError, ValueError, OverflowError):
-        width = avail_w
-    completion = props.get("completion")
-    popup_height = _completion_height(completion, width)
-    max_input = max(1, width - len(_PROMPT))
-    text = str(props.get("text", ""))
-    # ★ 方向D 步骤14：反向历史搜索覆盖行（追加一行）
-    search_active = _is_search_active(props.get("history_search"))
-    # ★ PERF-1：缓存命中（同 text/max_input）时复用换行布局（每帧至多 1 次换行）
-    cached = getattr(fiber, "_input_layout_cache", None)
-    if cached is not None and cached[0] == (text, max_input):
-        rows, _ = cached[1]
-    else:
-        rows, wrapped_by_logical = _compute_input_layout(text, max_input)
-        fiber._input_layout_cache = ((text, max_input), (rows, wrapped_by_logical))
-    height = popup_height + 2 + rows + (1 if search_active else 0)
-    return (width, height)
-
-
-# ── 绘制 ───────────────────────────────────────────
 
 
 def _build_popup_lines(completion, width: int, now: float) -> list:
@@ -412,7 +379,14 @@ def _build_popup_lines(completion, width: int, now: float) -> list:
     return lines
 
 
-def _build_lines(fiber) -> list[Line]:
+def _build_lines(fiber, include_popup: bool = True) -> list[Line]:
+    """构建输入区行列表（弹窗/分隔线/搜索/输入行/时间戳）。
+
+    Args:
+        fiber: 输入区 host fiber（读取 props + layout_box）。
+        include_popup: 是否包含补全弹窗行。False 供 InputArea 标准组件——
+            弹窗由独立 ``CompletionPopup`` 组件渲染（避免重复）。
+    """
     props = fiber.props
     box = fiber.layout_box
     width = box.w
@@ -481,6 +455,9 @@ def _build_lines(fiber) -> list[Line]:
     else:
         search_snap = (False, "", 0, 0, -1)
     snap_key = (
+        include_popup,  # ★ 标准组件化：弹窗行存在性须进缓存键（InputArea
+        #   用 include_popup=False 时不命中全量缓存；置于首部保持 time_bucket
+        #   仍在末尾——测试 ``_snap_key_of`` 读 ``[-1]`` 兼容）
         text,
         max_input,
         width,  # ★ BUG-71（review 方向，缓存键完整性）：snap_key 补 width——
@@ -498,12 +475,17 @@ def _build_lines(fiber) -> list[Line]:
     if cached is not None and cached[0] == snap_key:
         return cached[1]
 
-    # ★ PERF-1：复用 measure 阶段缓存的换行布局（未命中时回退单次计算）
+    # ★ PERF-1：复用换行布局缓存（同 text/max_input 命中复用，未命中计算后
+    #   写回——InputArea 组件经 use_memo 快照缓存控制调用频率，本缓存补充
+    #   _input_elements 之外调用方（session._position_cursor 读 dataInputArea
+    #   容器 fiber 缓存）的复用语义。原遗留 host ``_measure`` 承担写入职责
+    #   （已移除，见模块 docstring）——职责收拢到 ``_build_lines`` 单点。
     cached = getattr(fiber, "_input_layout_cache", None)
     if cached is not None and cached[0] == (text, max_input):
         _, wrapped_by_logical = cached[1]
     else:
-        _, wrapped_by_logical = _compute_input_layout(text, max_input)
+        rows, wrapped_by_logical = _compute_input_layout(text, max_input)
+        fiber._input_layout_cache = ((text, max_input), (rows, wrapped_by_logical))
     wrapped = [seg for segs in wrapped_by_logical for seg in segs]
 
     lines: list[Line] = []
@@ -512,7 +494,10 @@ def _build_lines(fiber) -> list[Line]:
     # ★ 性能（PERF-7）：弹窗部分提取为 ``_build_popup_lines`` 独立缓存——
     #   打字（input_text 变化）导致全量快照 miss 时，弹窗 items/selected/时间
     #   桶未变则直接复用弹窗行（免每帧重建 20+ 候选项 + 行宽判断）。
-    lines.extend(_build_popup_lines(completion, width, now))
+    # ★ 标准组件化：include_popup=False 时弹窗行跳过（由独立 CompletionPopup
+    #   组件渲染）。
+    if include_popup:
+        lines.extend(_build_popup_lines(completion, width, now))
 
     # ── 上分隔线（CPU/MEM） ──
     cpu = int(props.get("cpu", 0))
@@ -706,108 +691,186 @@ def _append_truncated(line: Line, text: str, style, budget: int) -> None:
     line.append(_truncate_width(text, remaining), style)
 
 
-def _build_separator_line(width: int, content: Line, style: Style,
-                          content_w: int = 0) -> Line:
-    """构建分隔线行（兼容封装，委托 ``_theme.sep_line``）。
+# ── 标准 React Ink 组件（2026-08-05） ─────────────────────
+# ★ 标准 React Ink 组件化（无例外收尾）：input-area 自定义 host（直接画布
+#   绘制）迁移为标准函数组件 InputArea（Column 组件树）+ CompletionPopup
+#   （补全弹窗 Column + TEXT）。生产代码经 App 组件树 ``h(InputArea, props)``
+#   渲染；旧 host "input-area" 已彻底移除——遗留 host 绘制函数（``_measure``/
+#   ``_paint``/``_build_separator_line``/``_merge``/``_compute_input_rows``/
+#   ``_wrap_input_text``）与 ``register()`` 空入口已全部删除（无例外）：
+#   ``_build_lines``（快照缓存）+ ``_build_popup_lines``（弹窗缓存）为
+#   InputArea/CompletionPopup 组件内部渲染辅助，保留；分隔线构建统一经
+#   ``_theme.sep_line``（BUG-72 行宽修复唯一真源）。
 
-    # deprecated: 与 ``_theme.sep_line`` 重复实现——统一经通用组件
-    # ``sep_line(width, content, active)``（内部经 ``sep_style(active)``
-    # 生成样式）。本函数保留兼容调用面（显式 style 参数）；input_area
-    # 已改用 ``_theme.sep_line``，仅测试/外部调用保留。
 
-    Args:
-        width: 行总宽（终端列宽）。
-        content: 右侧内容行（已按预算截断）。
-        style: 分隔线填充样式（呼吸色/静态深灰由调用方决定）。
-        content_w: 内容预算宽度（**已弃用**——sep 填充按 content 实际宽度
-            计算，见 BUG-72；保留参数仅兼容既有调用面）。
+def _lines_to_text_elements(lines: list, prefix: str = "ia") -> list:
+    """Line 行列表 → TEXT 元素列表（每行带索引 key）。
+
+    styled 引用 = Line.runs（跨帧稳定——_build_lines 快照缓存命中时同一
+    Line 对象）→ TEXT wrap 缓存命中（零重建）。
+    """
+    return [
+        h(TEXT, {"key": f"{prefix}-{i}", "styled": ln.runs, "height": 1})
+        for i, ln in enumerate(lines)
+    ]
+
+
+def CompletionPopup(props: dict) -> object:
+    """React Ink 标准组件：命令补全弹窗（Column + TEXT 行）。
+
+    Props:
+        completion: CompletionState 或 None（不可见/无 items 时空 TEXT 零高度）。
+        width: 弹窗宽度（终端列宽）。
+        now: 当前 monotonic 时间（父组件传入，缓存键同源；缺省自取）。
 
     Returns:
-        分隔线行（Line）。
+        Column（标题 + 候选项 + 提示行）；弹窗不可见返回空 TEXT（h=0 不占行）。
     """
-    # ★ BUG-72（review 方向，行宽不变量）：sep 填充按 ``width - content.width``
-    #   （内容实际宽）而非 ``width - content_w``（预算）——修复前
-    #   ``sep_len = max(0, width - content_w)``：正常宽度下 content 实际宽
-    #   = content_w - 1（前导空格计 1 列），行宽 = sep_len + content.width
-    #   = width - 1（右端缺 1 列，与 status_bar 满宽分隔线不对齐）。按内容
-    #   实际宽填充后行宽恒 = width（窄屏截断时 sep 相应变长，仍 ≤ width）。
-    sep_len = max(0, width - content.width)
-    line = Line.of("\u2501" * sep_len, style)
-    for run in content.runs:
-        line.append_run(run)
-    return line
+    completion = props.get("completion")
+    width = props.get("width", 80)
+    now = props.get("now")
+    if now is None:
+        now = time.monotonic()
+    lines = _build_popup_lines(completion, width, now)
+    if not lines:
+        return h(TEXT, {"children": "", "key": "popup-empty"})
+    return h(Column, {"key": "completion-popup"}, [
+        h(TEXT, {"key": f"popup-{i}", "styled": ln.runs, "height": 1})
+        for i, ln in enumerate(lines)
+    ])
 
 
-def _paint(fiber, canvas) -> None:
-    from src.tui.ink.components import _merge_line
+def _input_elements(props: dict, width: int, now: float, fade_state: dict) -> list:
+    """构建输入区 Element 列表（弹窗 + 上分隔线 + 搜索行 + 输入行 + 时间戳）。
 
-    box = fiber.layout_box
-    if box is None:
-        return
-    lines = _build_lines(fiber)
-    for i, line in enumerate(lines):
-        row = box.y + i
-        if 0 <= row < len(canvas):
-            # ★ 画布惰性行（方向4）：canvas 初始 None——仅未命中行创建 dict；
-            #   自定义 host paint 与内置 TEXT 共用惰性语义。行可能为 Line
-            #   （x==0 快路径写入的兄弟节点）→ 经 ``_merge_line`` 归一合并
-            #   （继承 E2/BUG-61 宽字符处理；修复前本地 ``_merge`` 对 Line
-            #   直接 ``row[col]=...`` 抛 TypeError，内容被 _paint 隔离吞掉）。
-            target = canvas[row]
-            # ★ 整行 Line 快路径（方向4）：box.x==0 且行未命中时直接存 Line
-            #   对象——与内置 TEXT 快路径一致：免逐字符 dict 合并（输入区每帧
-            #   重建热路径，大文档渲染耗时关键）+ diff 阶段身份短路
-            #   （``_build_lines`` 快照缓存命中的同 Line 引用跨帧零重建）。
-            #   输入区位于文档底部、无后续兄弟覆盖同屏行，快路径安全。
-            if target is None and box.x == 0:
-                canvas[row] = line
-                continue
-            # ★ E2（统一合并路径）：委托 ``components._merge_line``（返回合并
-            #   后的 dict 行）——修复前本地 ``_merge`` 逐字符写入：新字符落在
-            #   既有宽字符第二列时被 ``_canvas_row_to_line`` 的 ``col < prev``
-            #   跳过（静默丢失，如 row={0:'中',2:'a'} + 覆盖键 1 → "中a"、
-            #   "X" 丢失）。``_merge_line`` 含 E2/BUG-61 宽字符首列/第二列
-            #   残留清理，与 chat_view/components 内置 TEXT 合并语义一致。
-            canvas[row] = _merge_line(target, box.x, line)
-
-
-def _merge(row: dict, x: int, line: Line) -> None:
-    """将 Line 合并到画布行（从第 x 列开始），原地更新 row。
-
-    ★ E2（宽字符第二列覆盖）：委托 ``components._merge_line`` 继承宽字符
-    首列/第二列残留清理（修复前本地逐字符实现：新字符落在既有宽字符第二
-    列时被 ``_canvas_row_to_line`` 的 ``col < prev`` 跳过——静默丢失）。
-    本函数保留**原地更新**语义（兼容旧调用面/测试）；``_paint`` 已直接改用
-    ``_merge_line``（避免一次 dict 拷贝）。
+    复用 ``_build_lines`` 快照缓存语义（非弹窗行 include_popup=False）：
+    每行 TEXT 带索引 key，styled 引用稳定（Line 跨帧复用）→ 零重建。
 
     Args:
-        row: 目标画布行（dict；Line/None 由调用方先归一化）。
-        x: 起始列偏移。
-        line: 待合并的 Line。
+        props: 输入区 props。
+        width: 布局宽度。
+        now: 当前 monotonic 时间。
+        fade_state: 组件级渐显缓存（use_ref 持有，跨 use_memo 重算持久——
+            修复组件化后占位符渐显每 0.1s 桶重置的 bug：fiber 为临时对象，
+            渐显 key 丢失 → 渐显永远停在起点色）。
     """
-    from src.tui.ink.components import _merge_line
-    # ★ 别名安全：``_merge_line`` 对 dict 输入为**原地更新**（快路径
-    #   ``row.update(slice_)`` / 逐键覆盖 ``row[c]=v``），返回对象即传入对象
-    #   ——直接委托即可（修复前 ``merged = _merge_line(...); row.clear();
-    #   row.update(merged)`` 在 merged is row（同一引用）时 clear 后 update
-    #   空 dict 自身 → 内容全丢）。
-    _merge_line(row, x, line)
+    from types import SimpleNamespace
+    fiber = SimpleNamespace(
+        props=props,
+        layout_box=SimpleNamespace(w=width, x=0, y=0),
+        _placeholder_fade_key=fade_state.get("_placeholder_fade_key"),
+    )
+    # 补全弹窗：独立标准组件（Column + TEXT）
+    children = [h(CompletionPopup, {
+        "completion": props.get("completion"),
+        "width": width,
+        "now": now,
+        "key": "ia-popup",
+    })]
+    # 其余行（上分隔线/搜索/输入行/下分隔线）
+    rest = _build_lines(fiber, include_popup=False)
+    # 渐显状态写回组件级缓存（_build_lines 内部经 _placeholder_fade_color
+    # 更新 fiber._placeholder_fade_key——SimpleNamespace 可写，读回持久）
+    fade_state["_placeholder_fade_key"] = getattr(fiber, "_placeholder_fade_key", None)
+    children.extend(_lines_to_text_elements(rest, "ia"))
+    return children
 
 
-# ── 注册 ───────────────────────────────────────────
+def InputArea(props: dict) -> object:
+    """React Ink 标准组件：输入区（补全弹窗 + 分隔线 + 输入行 + 时间戳）。
+
+    Props:
+        text/cursor_pos/prompt/completion/status_active/cpu/mem/
+        history_search: 输入区状态（与旧 host 同字段）。
+        width: 布局宽度（App 传入，截断/布局同源）。
+
+    Returns:
+        Column（``dataInputArea`` 标记容器 + 透传 props——session 定位输入区
+        与光标计算读取）。补全弹窗经独立 ``CompletionPopup`` 组件渲染。
+    """
+    width = props.get("width", 80)
+    try:
+        width = max(0, int(width))
+    except (TypeError, ValueError, OverflowError):
+        width = 80
+    now = time.monotonic()
+    # ★ 渐显状态组件级缓存（use_ref 跨渲染持久）——占位符 FadeIn 渐显依赖
+    #   起始时间（fiber._placeholder_fade_key）。组件化后 fiber 为临时对象，
+    #   渐显 key 若不持久，use_memo 跨桶重算时渐显永远停在起点色。
+    fade_ref = use_ref({})
+    # ★ deps 直接传原子值元组（不可再包一层——use_memo 内部 list(deps) 后
+    #   逐项 _object_is：嵌套 tuple 按 is 引用比较恒 miss → 缓存永远失效）。
+    children = use_memo(
+        lambda: _input_elements(props, width, now, fade_ref.current),
+        _input_snap_key(props, width, now),
+    )
+    # ★ key 保留传入值（缺省 "input-area"）——多实例/测试 fiber 替换检测。
+    key = props.get("key", "input-area")
+    return h(Column, {**props, "dataInputArea": True, "key": key}, children)
 
 
-def register() -> None:
-    """注册 input-area host 组件。"""
-    register_host("input-area", _measure, _paint)
+def _input_snap_key(props: dict, width: int, now: float):
+    """InputArea use_memo 依赖（纯原子值，逐项 Object.is 值比较）。
+
+    use_memo deps 逐项 ``_object_is``（React Object.is：int/bool 按值比较、
+    其余按 is 引用比较）——**str 不做值比较**（仅 is），故 text/query 用
+    ``id()+len()`` 指纹（模型字段引用稳定时 id 稳定；内容变化时 id/len 变）。
+    嵌套 tuple 每帧新建会 is miss，已展开为原子值。时间桶与 _build_lines
+    对齐（status_active 0.1s 桶 / 空闲 0.25s 桶）。
+
+    ★ 性能（PERF-24）：props.get 去重——history_search 经局部变量一次提取
+    （修复前逐字段 ``props.get("history_search")`` 调用 8 次；空值快路径
+    直接返回常量元组，免重复 dict 查找 + 字段求值）。text 同样一次提取
+    （修复前 ``props.get("text")`` 调用 3 次）。
+    """
+    text = props.get("text")
+    text_str = "" if text is None else str(text)
+    completion = props.get("completion")
+    status_active = bool(props.get("status_active", False))
+    max_input = max(1, width - len(_PROMPT))
+    # history_search 一次提取（多处字段共享）
+    search = props.get("history_search")
+    # 引用级指纹（同 BUG-23 轻量指纹）：id() 引用稳定（模型字段不变时）；
+    # 内容变化 → id/len 变 → 重建。
+    return (
+        id(text) if text is not None else -1,
+        len(text_str),
+        max_input,
+        width,
+        # completion 指纹
+        bool(completion is not None and completion.visible),
+        id(completion.items) if completion is not None else -1,
+        len(completion.items) if completion is not None else 0,
+        completion.selected if completion is not None else 0,
+        id(completion.texts) if completion is not None else -1,
+        len(completion.texts) if completion is not None and completion.texts else 0,
+        id(completion.descriptions) if completion is not None else -1,
+        len(completion.descriptions) if completion is not None and completion.descriptions else 0,
+        bool(completion is not None and getattr(completion, "split_desc", False)),
+        # 状态
+        int(props.get("cpu", 0)),
+        int(props.get("mem", 0)),
+        status_active,
+        # history_search 指纹（局部变量提取——一次 props.get）
+        bool(search is not None and bool(getattr(search, "active", False))),
+        id(getattr(search, "query", None)) if search is not None else -1,
+        len(getattr(search, "query", "") or "") if search is not None else 0,
+        id(getattr(search, "matches", None)) if search is not None else -1,
+        len(getattr(search, "matches", None) or []) if search is not None else 0,
+        getattr(search, "index", -1) if search is not None else -1,
+        # 时间桶
+        int(now / 0.1) if status_active else int(now / 0.25),
+    )
 
 
 __all__ = [
-    "register",
-    "_measure",
-    "_paint",
-    "_compute_input_rows",
+    "InputArea",
+    "CompletionPopup",
+    "_build_lines",
+    "_build_popup_lines",
+    "_completion_height",
+    "_is_search_active",
     "_compute_input_layout",
-    "_wrap_input_text",
     "_cursor_visual_from_layout",
 ]
+

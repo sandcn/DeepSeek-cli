@@ -17,11 +17,11 @@ from __future__ import annotations
 
 from src.tui.core.style import Style
 from src.tui.ink import h, APP, TEXT, StyledRun, Column, Row, InlineSpinner
-from .chat_view import ChatView, register as _register_committed
+from .chat_view import ChatView
 from .header import TopHeader
 from .status_bar import StatusBar
 from .user_select import UserSelectPopup
-from . import input_area as _input_area
+from .input_area import InputArea
 
 
 def App(props) -> object:
@@ -44,6 +44,9 @@ def App(props) -> object:
         "mem": model.status.mem,
         # 方向D 步骤14：Ctrl+R 反向历史搜索状态（input-area 渲染覆盖行）
         "history_search": model.history_search,
+        # ★ 标准 React Ink 组件化（2026-08-05）：InputArea 标准组件接收
+        #   width（布局宽度同源，修复 model.width 与布局宽度不一致）。
+        "width": width,
     }
 
     # ★ 方向1（Flexbox 布局消息区 + 底部区）：根容器 flexbox column——消息区
@@ -74,7 +77,11 @@ def App(props) -> object:
             "key": f"us-{model.user_select.seq}",
         }),
         h(StatusBar, {"model": model, "width": width}),
-        h("input-area", input_props),
+        # ★ 标准 React Ink 组件化（2026-08-05）：input-area 自定义 host →
+        #   InputArea 标准函数组件（内部 Column + CompletionPopup + TEXT 行）。
+        #   组件以 ``dataInputArea`` 标记容器，session._position_cursor 据此
+        #   定位输入区（兼容 host "input-area" 别名查找）。
+        h(InputArea, input_props),
     ]
     return h(APP, {"width": width, "flexDirection": "column"}, [
         h(Column, {"flexGrow": 1}, message_area),
@@ -170,9 +177,5 @@ def build_app_element(model, width: int, animator=None) -> object:
     """
     return h(App, {"model": model, "width": width})
 
-
-# 模块导入时注册 input-area / committed-chat host 组件
-_input_area.register()
-_register_committed()
 
 __all__ = ["App", "build_app_element"]

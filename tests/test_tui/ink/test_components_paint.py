@@ -159,9 +159,9 @@ class TestCanvasRowCache:
 
 
 class TestCommittedPrefixCache:
-    """committed-chat 帧前缀复用（长回答 + 子代理 CPU 100% 修复）。
+    """committed 帧前缀复用（长回答 + 子代理 CPU 100% 修复）。
 
-    ``chat_view._paint`` 维护 ``fiber._committed_prefix``（身份 Line 引用），
+    ``staticlines._paint`` 维护 ``fiber._committed_prefix``（身份 Line 引用），
     ``render_frame`` 经该前缀 + 尾部重建 Frame——大历史下渲染 O(live)，
     不再每帧全量重建整帧。本测试锁定前缀复用 / 增量扩展 / 输出一致性。
     """
@@ -170,12 +170,11 @@ class TestCommittedPrefixCache:
         """构造共享 reconciler/root（同 fiber 跨帧复用，前缀缓存生命周期内扩展）。"""
         from src.tui.ink.element import h, BOX, TEXT
         from src.tui.ink.reconciler import Reconciler
-        import src.tui.app.chat_view as _cv
-        _cv.register()  # 幂等：注册 committed-chat host
+        from src.tui.ink import StaticLines
         r = Reconciler()
         root = r.create_root()
         el = h(BOX, None, [
-            h("committed-chat", {"lines": lines}),
+            h(StaticLines, {"lines": lines}),
             h(TEXT, {"children": tail_text}),
         ])
         return r, root, el
@@ -228,8 +227,8 @@ class TestCommittedPrefixCache:
         f_fast = _components.render_frame(root, 80)
         fast_plain = [l.plain for l in f_fast.lines]
         # 旧 _paint（始终写画布）作为参考实现
-        import src.tui.app.chat_view as _cv
-        old = _cv._paint
+        import src.tui.ink.widgets.staticlines as _sl
+        old = _sl._paint
 
         def old_paint(fiber, canvas):
             box = fiber.layout_box
@@ -239,7 +238,7 @@ class TestCommittedPrefixCache:
                 if 0 <= row < len(canvas):
                     canvas[row] = line
 
-        with patch.object(_cv, "_paint", side_effect=old_paint):
+        with patch.object(_sl, "_paint", side_effect=old_paint):
             r2, root2, el2 = self._make_root(lines)
             r2.render(root2, el2, 80, 24)
             f_ref = _components.render_frame(root2, 80)
@@ -254,19 +253,18 @@ class TestCommittedPrefixNonTop:
     """
 
     def test_non_top_prefix_preserves_header_and_tail(self):
-        """committed-chat 在 header 下方：Frame = 头部行 + 前缀 + 尾部。"""
+        """StaticLines 在 header 下方：Frame = 头部行 + 前缀 + 尾部。"""
         from src.tui.ink.element import h, BOX, TEXT
         from src.tui.ink.reconciler import Reconciler
         from src.tui.ink.output import StyledRun
-        import src.tui.app.chat_view as _cv
-        _cv.register()  # 幂等
+        from src.tui.ink import StaticLines
 
         lines = [Line([StyledRun(f"line {i}", None)]) for i in range(30)]
         r = Reconciler()
         root = r.create_root()
         el = h(BOX, None, [
             h(TEXT, {"children": "HEADER"}),
-            h("committed-chat", {"lines": lines}),
+            h(StaticLines, {"lines": lines}),
             h(TEXT, {"children": "TAIL"}),
         ])
         r.render(root, el, 80, 24)
@@ -298,12 +296,11 @@ class TestCommittedOverflowGuard:
     def _make_root(self, lines, tail_text: str = "tail", width: int = 80):
         from src.tui.ink.element import h, BOX, TEXT
         from src.tui.ink.reconciler import Reconciler
-        import src.tui.app.chat_view as _cv
-        _cv.register()  # 幂等
+        from src.tui.ink import StaticLines
         r = Reconciler()
         root = r.create_root()
         el = h(BOX, None, [
-            h("committed-chat", {"lines": lines}),
+            h(StaticLines, {"lines": lines}),
             h(TEXT, {"children": tail_text}),
         ])
         return r, root, el
@@ -330,8 +327,6 @@ class TestCommittedOverflowGuard:
     def test_all_ok_flag_set_on_cache_build(self):
         """缓存重建时 all_ok 标志正确（正常行 True / 超宽行 False）。"""
         from src.tui.ink.output import StyledRun
-        import src.tui.app.chat_view as _cv
-        _cv.register()
         # 正常行 → all_ok=True
         lines_ok = [Line([StyledRun("abc", None)])]
         r, root, el = self._make_root(lines_ok)
@@ -376,13 +371,12 @@ class TestFramePrefixConcatenation:
         from src.tui.ink.element import h, BOX, TEXT
         from src.tui.ink.reconciler import Reconciler
         from src.tui.ink.output import StyledRun
-        import src.tui.app.chat_view as _cv
-        _cv.register()  # 幂等
+        from src.tui.ink import StaticLines
         lines = [Line([StyledRun(f"line {i}", None)]) for i in range(n_lines)]
         r = Reconciler()
         root = r.create_root()
         el = h(BOX, None, [
-            h("committed-chat", {"lines": lines}),
+            h(StaticLines, {"lines": lines}),
             h(TEXT, {"children": "TAIL"}),
         ])
         r.render(root, el, 80, 24)

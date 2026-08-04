@@ -65,11 +65,12 @@ def test_tool_icon_refresh_after_close_renderer():
     from src.tui.ink.renderer import InkRenderer
     from src.tui.ink import components as C
     from src.tui.ink.element import h
+    from src.tui.ink import StaticLines
 
     m = _build_long_tool_model()
     r = Reconciler()
     root = r.create_root()
-    r.render(root, h("committed-chat", {"lines": m.committed_lines}), 40, 24)
+    r.render(root, h(StaticLines, {"lines": m.committed_lines}), 40, 24)
     stream = io.StringIO()
     ink = InkRenderer(stream=stream, height=200)  # 全部可见
     f_a = C.render_frame(root, 40)
@@ -78,7 +79,7 @@ def test_tool_icon_refresh_after_close_renderer():
     assert "●" in first.split("\n")[0], "首帧顶边框应为 ●（running）"
 
     m.close_tool_box("t1", True)
-    r.render(root, h("committed-chat", {"lines": m.committed_lines}), 40, 24)
+    r.render(root, h(StaticLines, {"lines": m.committed_lines}), 40, 24)
     f_b = C.render_frame(root, 40)
     before = stream.getvalue()
     ink.render(f_b)

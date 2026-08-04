@@ -232,21 +232,33 @@ class Fiber:
     #: 将 ``layout_box`` 写入 ``ref.current``（或调用函数 ref）——React 语义
     #: 中 host ref 指向 DOM 节点，本框架非全屏流动模型下指向布局盒（尺寸）。
     _host_ref: Any = None
+    #: key 缓存（PERF-24）：``key`` property 首次访问时计算并缓存；props
+    #: 变化（``reconciler._set_props``）时置 None 失效。调和热路径（
+    #: ``_try_reuse_stable`` / 完整算法每帧对每个 fiber 访问 key）免重复
+    #: ``props.get("key")`` + 派生字符串构建。
+    _key_cache: str | None = None
 
     # ── 派生属性 ──────────────────────────────────────
 
     @property
     def key(self) -> str:
-        """fiber key（优先 props.key，否则按 type 派生）。"""
+        """fiber key（优先 props.key，否则按 type 派生；结果缓存）。"""
+        cached = self._key_cache
+        if cached is not None:
+            return cached
         key = self.props.get("key")
         if key is None:
             if isinstance(self.type, str):
-                return f"host:{self.type}"
-            # 模块限定：消除跨模块同名组件 key 冲突（仅影响无显式 key 的函数组件）
-            mod = getattr(self.type, "__module__", "?")
-            name = getattr(self.type, "__name__", repr(self.type))
-            return f"fn:{mod}.{name}"
-        return str(key)
+                key = f"host:{self.type}"
+            else:
+                # 模块限定：消除跨模块同名组件 key 冲突（仅影响无显式 key 的函数组件）
+                mod = getattr(self.type, "__module__", "?")
+                name = getattr(self.type, "__name__", repr(self.type))
+                key = f"fn:{mod}.{name}"
+        else:
+            key = str(key)
+        self._key_cache = key
+        return key
 
     @property
     def is_host(self) -> bool:

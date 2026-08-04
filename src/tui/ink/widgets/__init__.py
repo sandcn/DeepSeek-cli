@@ -57,6 +57,7 @@ from .radio import RadioList
 from .codeblock import CodeBlock
 from .spinner import InlineSpinner, SPINNER_FRAMES as _INLINE_SPINNER_FRAMES
 from .gradient import Gradient
+from .staticlines import StaticLines
 
 __all__ = [
     "SelectInput",
@@ -85,6 +86,7 @@ __all__ = [
     "CodeBlock",
     "InlineSpinner",
     "Gradient",
+    "StaticLines",
     "Row",
     "Column",
     "Box",
