@@ -221,6 +221,40 @@ class FileToolBase(Func):
             return diff_text + "\n"
         return ""
 
+    # ── 输出发布（subagent 上下文感知） ─────────────────
+
+    def _is_subagent_context(self) -> bool:
+        """判断当前工具执行是否处于 subagent 上下文。
+
+        subagent 经 ``run_with_tool_context(self.label, ...)`` 执行工具，
+        contextvar ``current_tool_id`` 为 ``agent-N`` 前缀（与
+        ``EventDispatcher._is_subagent_label`` 的 ``agent-`` 前缀约定一致）；
+        主 agent 的 tool_id 为 API 生成的 tool_call_id（如 ``call_xxx``），
+        无 ``agent-`` 前缀。
+        """
+        from ..core.internal.agent._tool_context import get_current_tool_id
+        tool_id = get_current_tool_id()
+        return bool(tool_id and tool_id.startswith("agent-"))
+
+    def _publish_file_output(self, text: str) -> None:
+        """发布文件操作输出（diff 预览 + 执行结果）。
+
+        主 agent 上下文：走 ``_publish_tool_text`` → ToolOutputChunkEvent
+        → 工具卡片（既有行为不变）。
+        subagent 上下文：走 ``publish_output`` → OutputEvent →
+        ``EventDispatcher._on_output`` → WriteLineCmd → 主消息区 committed
+        文本行，使 subagent 调用 write_file/update_file 的 diff 在消息区
+        可见（不创建工具 box，避免 BUG-63 的永不关闭 box 问题）。
+        """
+        if self._is_subagent_context():
+            from ..tui.events.consumers import publish_output
+            try:
+                publish_output(text, level="raw")
+            except Exception:
+                _logger.debug("publish_output 失败", exc_info=True)
+        else:
+            Func._publish_tool_text(text)
+
     # ── diff 预览 ──
 
     async def _show_diff_preview(
@@ -354,7 +388,7 @@ class FileToolBase(Func):
                 err_msg = f"({self._success_verb().replace('成功','失败')}: 内容生成失败)"
             else:
                 err_msg = f"({self._success_verb().replace('成功','失败')}: {e})"
-            Func._publish_tool_text(f"  {RED}x {err_msg}{RESET}")
+            self._publish_file_output(f"  {RED}x {err_msg}{RESET}")
             return err_msg
 
         # 获取 diff 预览文本
@@ -367,7 +401,7 @@ class FileToolBase(Func):
 
         # 获取执行结果文本并合并发布
         result_text = self._log_execution_result(output, elapsed)
-        Func._publish_tool_text(preview_text + result_text)
+        self._publish_file_output(preview_text + result_text)
         return output
 
     async def web_display(self) -> str:
