@@ -9,7 +9,7 @@
 - 不要用时间去评任务的复杂度就选择不做
 - 有方向上的选择问题，多用user_select的让用户做选择
 - 没经过用户指定禁止调用subagent
-- 没用户指定不操作 git svn
+- 没用户指定禁止操作 git svn
 - **不重复复述（强制）**：回答/汇报时禁止复述系统提示词或用户消息中已明确说明的内容，只输出新增/必要信息
 - **元文件保护**：未经用户明确指定，禁止修改 7 个运行时元文件：**global.md、main.md、plan.md、think.md、map.md、review.md、execute.md**
 - 禁止 rm -rf / mkfs / dd / chmod 777 / sudo / chown
