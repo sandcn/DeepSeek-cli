@@ -16,7 +16,9 @@ import time
 from typing import AsyncIterator
 
 from ..events import publish_event
-from ..client_async import chat_completions_async, chat_completions_async_anthropic
+from ..client_async import (
+    chat_completions_async, chat_completions_async_anthropic, _CONNECTION_ERRORS,
+)
 from ..tokens import estimate_tokens
 from ..interrupt_async import is_interrupted_async
 from ..stats import (
@@ -101,6 +103,15 @@ async def _interruptible_iter_async(
         except (asyncio.CancelledError, StopAsyncIteration):
             pass
         return
+    except StreamIdleTimeoutError:
+        # 空闲超时/连接错误是预期可重试条件：降级为 WARNING 而非 ERROR，
+        # 避免每轮重试刷出完整 traceback。交由上游 retry_api_call_async
+        # 重试（默认最多 10 次）。
+        _logger.warning("流空闲超时（%d秒内未收到新数据），交由重试层重试", _STREAM_IDLE_TIMEOUT)
+        raise
+    except _CONNECTION_ERRORS as e:
+        _logger.warning("流式连接错误：%s，交由重试层重试", e)
+        raise
     except Exception:
         _logger.exception("Async stream iteration error")
         raise
@@ -513,11 +524,17 @@ async def stream_call_async(
         # 清理期间 aclose() 被取消）不会匹配 except CancelledError。
         if _extract_cancelled(e):
             _logger.debug("stream_call_async 被取消 (in group)，返回已累积内容")
+        elif not ctx.content_full and not ctx.reasoning_full and not ctx.tool_calls_map:
+            # ★ 尚未产出任何内容（首个 SSE 块前就失败/超时）：重新抛出，
+            # 交由 retry_api_call_async 重试（默认最多 10 次）。此时重启流
+            # 不会重复渲染任何内容，幂等安全。process() 的 finally 已执行
+            # _cleanup_display，无需重复清理。
+            _logger.warning("stream_call_async 流式异常（未产出内容）：%s，交由重试层重试", e)
+            raise
         else:
-            # ★ 非 CancelledError 异常也返回已累积内容，避免 stream 层异常
-            # 导致已接收的 tool_calls / content 丢失。原始异常已在
-            # _interruptible_iter_async 中 logging.exception 记录完整 traceback。
-            _logger.warning("stream_call_async 流式异常：%s，返回已累积内容", e)
+            # ★ 已产出部分内容：返回已累积内容（重启流会重复渲染已显示内容，
+            # 故不重试；保留已接收的 tool_calls / content 不丢失）。
+            _logger.warning("stream_call_async 流式异常（已产出部分内容）：%s，返回已累积内容", e)
         result = pipeline._build_result(ctx)
         if not ctx._cleaned_up:
             try:

@@ -4,7 +4,6 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import random
 
 import httpx
 
@@ -17,7 +16,6 @@ from ..tui.events.consumers import publish_output
 
 _logger = logging.getLogger(__name__)
 
-RETRY_EXPONENT_BASE = 2
 _MAX_PARSE_RETRIES = 1
 
 
@@ -37,9 +35,8 @@ async def retry_api_call_async(
         api_func: 要调用的异步模型函数
         api_args: 传给 api_func 的位置参数元组
         silent/display/label: 重试报告控制参数
-        fixed_delay_sec: 固定延迟间隔（秒），设为非 None 值时使用固定间隔重试
-                        （无指数退避、无抖动、无 RateLimit 额外等待）；
-                        None 时保持指数退避+抖动+RateLimit 特殊处理
+        fixed_delay_sec: 覆盖固定重试间隔（秒），设为非 None 值时代替默认间隔；
+                        None 时使用全局默认固定间隔 RETRY_BASE_SEC（默认 30 秒）
         override_max_retries: 覆盖最大重试次数，设为非 None 值时替代 MAX_RETRIES
                             （全局默认 10）；None 时使用 MAX_RETRIES
     """
@@ -75,11 +72,7 @@ async def retry_api_call_async(
                 "连接错误 (尝试 %d/%d): %s", attempt, effective_max_retries, e, exc_info=True,
             )
             if attempt < effective_max_retries:
-                if fixed_delay_sec is not None:
-                    wait = fixed_delay_sec
-                else:
-                    wait = RETRY_BASE_SEC * (RETRY_EXPONENT_BASE ** (attempt - 1))
-                    wait *= random.uniform(0.8, 1.5)
+                wait = fixed_delay_sec if fixed_delay_sec is not None else RETRY_BASE_SEC
                 await _report(f"连接错误 (第{attempt}次): {e}，{wait:.1f}秒后重试...")
                 if await wait_for_interrupt_async(wait):
                     return ("", "(已中断)", {"input": 0, "output": 0}, [])
@@ -95,14 +88,7 @@ async def retry_api_call_async(
                 "API 调用失败 (尝试 %d/%d): %s", attempt, effective_max_retries, e, exc_info=True,
             )
             if attempt < effective_max_retries:
-                if fixed_delay_sec is not None:
-                    wait = fixed_delay_sec
-                else:
-                    wait = RETRY_BASE_SEC * (RETRY_EXPONENT_BASE ** (attempt - 1))
-                    if isinstance(e, RateLimitError):
-                        wait = max(wait, 10 * attempt)
-                        _logger.info("速率限制错误，等待 %d 秒", wait)
-                    wait *= random.uniform(0.8, 1.5)
+                wait = fixed_delay_sec if fixed_delay_sec is not None else RETRY_BASE_SEC
                 await _report(f"API 调用失败 (第{attempt}次): {e}，{wait:.1f}秒后重试...")
                 if await wait_for_interrupt_async(wait):
                     return ("", "(已中断)", {"input": 0, "output": 0}, [])

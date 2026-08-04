@@ -67,7 +67,7 @@ DEFAULTS = {
     "max_context_chars": 60000,
     "max_output_chars": 3000,
     "max_retries": 10,
-    "retry_base_sec": 1,
+    "retry_base_sec": 30,
     "max_session_messages": 0,
     "keep_recent_messages": 0,
     "max_context_tokens": 60000,
