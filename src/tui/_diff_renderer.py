@@ -268,7 +268,7 @@ def _render_chunk(item, w, lexer_name, output_target):
         # （可能是用户提供的文件名），须与 ctx/add/del 行一致走 _sanitize_ansi。
         path = _sanitize_ansi(item[1][4:] if len(item[1]) > 4 else "")
         # 美化：旧文件头亮红加粗（保持 ``┌─ path`` 连续字面量，测试/WebUI 兼容）
-        _write_diff_line("  " + _DIFF_FILE_OLD.apply("┌─ " + path), output_target)
+        _write_diff_line("\n  " + _DIFF_FILE_OLD.apply("┌─ " + path), output_target)
         return
     if typ == 'new_file':
         path = _sanitize_ansi(item[1][4:] if len(item[1]) > 4 else "")
