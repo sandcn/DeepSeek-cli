@@ -777,6 +777,10 @@ class Input:
         """Ctrl+W / Alt+Backspace：删除光标前的一个词（委托 InputBufferEditor）。"""
         self._buffer_editor._delete_word_left()
 
+    def _delete_word_right(self) -> None:
+        """Alt+D：删除光标后的一个词（readline kill-word，委托 InputBufferEditor）。"""
+        self._buffer_editor._delete_word_right()
+
     def _kill_to_bol(self) -> None:
         """Ctrl+U：删除光标到当前逻辑行首（委托 InputBufferEditor）。"""
         self._buffer_editor._kill_to_bol()

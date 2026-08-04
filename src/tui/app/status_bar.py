@@ -97,6 +97,27 @@ def _build_status_runs(model, dot_elapsed: float = 0.0,
             model_name_style = _S_ACCENT_BOLD
         model_part.append(StyledRun(f"{spinner_char} ", dot_style))
         model_part.append(StyledRun(st.model_name, model_name_style))
+    # ★ 主 Agent 模型阶段标签（2026-08-05 美化+动效）：流式/工具活跃期间在
+    #   模型名后追加当前阶段（thinking→…思考 / answering→…回答 / parsing→…解析 /
+    #   未知→原文）。思考 dim 灰、回答亮青呼吸（45-55，8s，与模型名呼吸同步）、
+    #   解析金色（178）。阶段标签即时刷新（main_phase 变化经 use_memo deps
+    #   触发重建；呼吸色 0.1s 桶平滑推进）。空闲不显示（阶段为空字符串或
+    #   status_active=False 时跳过）。getattr 防御：测试桩状态对象可能无
+    #   main_phase 字段（回退空串不显示）。
+    main_phase = getattr(st, "main_phase", "") or ""
+    if status_active and main_phase:
+        if main_phase == "answering":
+            # BEAUTY-17（动效）：回答阶段标签亮青呼吸（与模型名呼吸同步周期）
+            phase_style = Style(fg=time_glow(45, 55, 8.0))
+            phase_text = "\u2026回答"
+        elif main_phase == "parsing":
+            phase_style = Style(fg=178)
+            phase_text = "\u2026解析"
+        else:
+            phase_style = _S_DIM
+            phase_text = f"\u2026{main_phase}"
+        model_part.append(StyledRun(" ", None))
+        model_part.append(StyledRun(phase_text, phase_style))
     if not status_active:
         return model_part
 
@@ -203,6 +224,10 @@ def StatusBar(props) -> object:
             st.tool_total,
             st.tool_count,
             st.tool_fail,
+            # ★ 2026-08-05：deps 补充 st.main_phase——阶段标签（思考/回答/解析）
+            #   变化时触发重建（修复前缺 main_phase：阶段切换后状态栏仍显示旧
+            #   阶段直至其他 deps 变化）。getattr 防御（测试桩对象无该字段）。
+            getattr(st, "main_phase", ""),
             time_dep,
             # ★ BUG-43（review 方向）：deps 补充 spinner_char——修复前依赖
             #   time_dep（0.1s 桶）兜底，``int(now/0.1)`` 与 ``int(now*10)``

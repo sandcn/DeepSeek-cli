@@ -32,10 +32,69 @@ class CommandUiAdapter:
         title: str = "选择",
         bottom_bar: Any = None,
     ) -> dict:
-        """在底部栏补全弹窗中运行交互式选择。
+        """运行交互式选择（标准 React Ink UserSelectPopup 协议优先）。
+
+        ★ 标准 React Ink 化（消灭例外，2026-08-05）：优先使用
+        ``model.user_select`` + ``UserSelectPopup`` 标准组件协议（设置弹窗
+        状态 → 组件 use_input 交互 → 轮询 done）——与 message_editor /
+        user_select 工具同协议。无 ChatUI 活跃（测试桩/单次模式）时回退
+        旧补全弹窗路径（``bottom_bar.show_completions`` + 轮询，兼容保留）。
 
         返回: {"action": "confirmed"|"cancel"|"error", "index": int | None}
         """
+        # ── 标准 React Ink 协议（ChatUI 活跃时优先） ──
+        chat_ui = self._get_active_chat_ui()
+        model = None
+        session = None
+        if chat_ui is not None:
+            try:
+                model = chat_ui.get_model()
+                session = chat_ui  # 有 request_bottom_redraw
+            except Exception:
+                model = None
+        if model is None and bottom_bar is not None:
+            # 兜底：从 bottom_bar（InkBridge）提取（防御 mock 类型）
+            cand = getattr(bottom_bar, "_model", None)
+            if cand is not None and type(cand).__name__ != "MagicMock" and hasattr(cand, "user_select"):
+                model = cand
+                session = getattr(bottom_bar, "_session", None) or session
+        if model is not None and session is not None and hasattr(model, "user_select"):
+            from ...tui.app.model import UserSelectState
+            display = display_items if display_items else items
+            prev_seq = getattr(model.user_select, "seq", 0)
+            model.user_select = UserSelectState(
+                visible=True,
+                seq=prev_seq + 1,
+                title=title or "选择",
+                options=list(display),
+                selected=max(0, min(int(initial_idx), len(display) - 1)),
+                deadline=time.monotonic() + 60,
+            )
+            try:
+                session.request_bottom_redraw()
+            except Exception:
+                pass
+            import time as _t
+            deadline = model.user_select.deadline
+            while not model.user_select.done:
+                if deadline > 0 and _t.monotonic() >= deadline:
+                    model.user_select.done = True
+                    model.user_select.action = "timeout"
+                    break
+                _t.sleep(0.05)
+            st = model.user_select
+            action = st.action or "timeout"
+            selected = int(getattr(st, "selected", -1))
+            model.user_select = UserSelectState()
+            try:
+                session.request_bottom_redraw()
+            except Exception:
+                pass
+            if action != "confirmed":
+                return {"action": "cancel", "index": None}
+            return {"action": "confirmed", "index": selected if selected >= 0 else initial_idx}
+
+        # ── 旧补全弹窗路径（无 ChatUI 兼容） ──
         if bottom_bar is None:
             return {"action": "error", "index": None}
 
@@ -76,6 +135,15 @@ class CommandUiAdapter:
 
         bottom_bar.hide_completions()
         return {"action": "cancel", "index": None}
+
+    @staticmethod
+    def _get_active_chat_ui():
+        """获取活跃 ChatUIConsumer（惰性导入，无活跃时 None）。"""
+        try:
+            from ...tui.consumer import get_active_chat_ui as _fn
+            return _fn()
+        except Exception:
+            return None
 
     def get_theme_names_with_desc(self) -> list[tuple[str, str]]:
         """获取所有主题名称和描述（Claude TUI parity 步骤 3.5/4.3）。

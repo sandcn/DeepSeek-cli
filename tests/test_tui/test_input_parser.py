@@ -91,11 +91,19 @@ class TestDecodeControlChar:
     def test_ctrl_a_home(self):
         assert InputParser._decode_control_char(0x01).kind == "home"
 
-    def test_ctrl_e_ctrl_key(self):
-        """方向1 B1：0x05 移入 ctrl_key 集合（不再 end 光标行尾）。"""
+    def test_ctrl_e_end(self):
+        """2026-08-05（增加操作）：Ctrl+E → 光标行尾（readline 标准）。
+
+        修复前（方向1 B1）为 ctrl_key no-op——恢复 end 语义后与 End 键
+        （\x1b[F / CSI u 4u）走同一事件分支。
+        """
         ev = InputParser._decode_control_char(0x05)
-        assert ev.kind == "ctrl_key"
-        assert ev.char == "\x05"
+        assert ev.kind == "end"
+
+    def test_ctrl_f_arrow_right(self):
+        """2026-08-05（增加操作）：Ctrl+F → 光标右移（readline forward-char）。"""
+        ev = InputParser._decode_control_char(0x06)
+        assert ev.kind == "arrow_right"
 
     def test_ctrl_w_delete_word_left(self):
         ev = InputParser._decode_control_char(0x17)
@@ -132,8 +140,14 @@ class TestDecodeControlChar:
         assert ev.kind == "ctrl_key"
         assert ev.char == chr(0x02)
 
+    def test_ctrl_p_special(self):
+        """2026-08-05（增加操作）：Ctrl+P(0x10) → ctrl_key（readline 历史上一条）。"""
+        ev = InputParser._decode_control_char(0x10)
+        assert ev.kind == "ctrl_key"
+        assert ev.char == chr(0x10)
+
     def test_unknown_control_char(self):
-        ev = InputParser._decode_control_char(0x06)  # Ctrl+F（未绑定）
+        ev = InputParser._decode_control_char(0x16)  # Ctrl+V（未绑定）
         assert ev.kind == "unknown"
 
 
@@ -293,8 +307,10 @@ class TestCsiUModifier1:
         ev = InputParser._dispatch_csi([119, 5], 'u')
         assert ev.kind == "delete"
         assert ev.modifier == 1
+        # 2026-08-05（增加操作）：CSI u \x1b[5;5u（Ctrl+E）→ end 事件（readline
+        # 行尾；原 ctrl_key no-op 语义已由 _handle_ctrl_key 兜底改为 end）。
         ev = InputParser._dispatch_csi([5, 5], 'u')
-        assert ev.kind == "ctrl_key"
+        assert ev.kind == "end"
 
     def test_function_key_tilde(self):
         assert InputParser._dispatch_csi([1], '~').kind == "home"

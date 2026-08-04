@@ -79,7 +79,7 @@ class TestUserSelectPopupRender:
         assert lines[1] == "    A"
         assert lines[2] == " ▶  B"
         assert lines[3] == "    C"
-        assert "↑↓ 选择" in lines[4]
+        assert "↑↓/jk 选择" in lines[4]
 
     def test_multi_render(self):
         m = AppModel()

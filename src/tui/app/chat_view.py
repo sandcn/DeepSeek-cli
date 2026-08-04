@@ -21,9 +21,19 @@ from src.tui.app.model import _role_header_line
 from src.tui.app.toolcard import ToolCard
 from src.tui.core.style import Style
 from src.tui.ink import h, TEXT, StyledRun, StaticLines, use_memo, Column, FRAGMENT
-from .subagent_panel import use_subagent_children
+from .subagent_panel import SubAgentCard
 
 _S_REASONING = Style(fg=242)
+
+#: 空状态欢迎提示（2026-08-05 美化）：模块级单例 styled runs——✦ 强调青 +
+#: 欢迎文本亮白 + 操作提示 dim。静态样式（无时间基呼吸——空状态渲染循环
+#: 空闲跳过，避免每帧重建）。
+_WELCOME_STYLED = [
+    StyledRun("\u2726 ", Style(fg=45, bold=True)),
+    StyledRun("欢迎使用 DeepSeek CLI", Style(fg=252)),
+    StyledRun("  \u00b7  ", Style(fg=242)),
+    StyledRun("/help 查看命令 · Ctrl+N 切换模型 · Tab 补全", Style(fg=242)),
+]
 
 #: 开放块 live 渲染行数上限（PERF-7 防御）：未提交尾超过该行数时只渲染
 #: 最后 N 行（对齐终端 tail 语义）——content/reasoning 块被未提交工具卡
@@ -187,10 +197,6 @@ def ChatView(props) -> object:
         lambda: h(StaticLines, {"lines": model.committed_lines}),
         (model.committed_lines,),
     )
-    # ★ BUG-42（review 方向）：subagent 卡片子树按 ``(subagent_lines, width)``
-    #   引用级 use_memo 缓存——修复前每帧重建全部 StyledRun/Element（活跃
-    #   subagent 期间每帧重包裹）。无条件调用（hook 顺序稳定）。
-    subagent_children = use_subagent_children(model, width)
     children = []
     if model.committed_lines:
         children.append(committed_el)
@@ -255,10 +261,24 @@ def ChatView(props) -> object:
             "block_idx": block_idx,
         }))
     # 子代理活动卡片（并入消息流，对齐 Claude Code）：subagent_lines 为
-    # _subagent_render 产出的逐 agent 卡片 ANSI 行，经 use_subagent_children
-    # 缓存元素（原独立 SubAgentPanel 组件已移除）。
+    # _subagent_render 产出的逐 agent 卡片 Line 行（带边框），经标准组件
+    # SubAgentCard 渲染（内部 use_memo 缓存——引用不变帧零重建；组件卸载
+    # 由 subagent_lines 空/非空自动驱动，不占 ChatView hook 槽位）。
     if model.subagent_lines:
-        children.extend(subagent_children)
+        children.append(h(SubAgentCard, {
+            "key": "subagent-cards",
+            "lines": model.subagent_lines,
+            "width": width,
+        }))
+    # ★ 空状态欢迎提示（2026-08-05 美化）：聊天区无任何内容（启动/清屏后）
+    #   时显示欢迎引导行——避免空白聊天区的冷启动感。静态样式（模块级
+    #   Style 单例），空状态渲染循环空闲（无动画状态），零每帧重建。
+    if not children:
+        children.append(h(TEXT, {
+            "key": "welcome",
+            "styled": _WELCOME_STYLED,
+            "height": 1,
+        }))
     # ★ 阶段2（标准布局容器重构）：BOX(None) → Column（默认 flexDirection=
     #   column，输出与重构前一致；committed-chat host 子节点不受容器 type
     #   变化影响——容器仍是 "box" host）。

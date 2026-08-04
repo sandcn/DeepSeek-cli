@@ -462,8 +462,14 @@ def test_parse_line_only_replaces_leading_tilde():
     from src.tui.ink import components as C
     frame = C.render_frame(root, 80)
     text = frame.lines[0].plain
-    sp = _fx.SPINNER_FRAMES[_fx.spinner_frame(10.0, _fx.SPINNER_FRAMES)]
-    assert text.startswith(f"  {sp} "), f"行首 ~ 应替换为 spinner: {text!r}"
+    # ★ 时间基 spinner：渲染与断言间可能跨 0.1s 桶（帧变化）——断言「行首
+    #   2 空格 + 任一 spinner 帧字符 + 空格」而非绑定断言时刻的单帧（修复
+    #   并行/慢机下的偶发 flaky）。
+    assert text.startswith("  "), f"行首 2 空格前缀缺失: {text!r}"
+    assert len(text) > 3 and text[2] in _fx.SPINNER_FRAMES, (
+        f"行首 ~ 应替换为 spinner 帧字符: {text!r}"
+    )
+    assert text[3] == " ", f"spinner 后应有空格: {text!r}"
     assert "~/proj" in text, f"工具名内的 ~ 不应被替换: {text!r}"
 
 

@@ -602,6 +602,36 @@ class InputBufferEditor:
                 text = self._buffer
         self._echo(text)
 
+    def _delete_word_right(self) -> None:
+        """Alt+D：删除光标后的一个词（readline kill-word 语义）。
+
+        对称于 ``_delete_word_left``（Ctrl+W）：跳过光标后的非词字符，再跳过
+        一个词字符，删除 [光标, 词尾) 区间。方向2（_history_idx 重置修复）：
+        历史浏览中按 Alt+D 退出历史导航（与其他编辑方法一致）。
+        """
+        with self._lock:
+            if self._history_idx >= 0:
+                self._history_idx = -1
+            n = len(self._buffer)
+            if self._cursor_pos >= n:
+                text = self._buffer
+            else:
+                pos = self._cursor_pos
+                while pos < n and not (
+                    self._buffer[pos].isalnum() or self._buffer[pos] == '_'
+                ):
+                    pos += 1
+                while pos < n and (
+                    self._buffer[pos].isalnum() or self._buffer[pos] == '_'
+                ):
+                    pos += 1
+                self._buffer = (
+                    self._buffer[:self._cursor_pos]
+                    + self._buffer[pos:]
+                )
+                text = self._buffer
+        self._echo(text)
+
     def _down(self) -> None:
         """下箭头：多行下移一行；尾行或单行回退到历史浏览。"""
         # ── 阶段1：多行光标下移 ──

@@ -369,7 +369,7 @@ def _build_popup_lines(completion, width: int, now: float) -> list:
     # 底部提示（方向3 动效：提示文本呼吸色——补全弹窗出现时更生动）
     hint_color = _glow_color(110, 16)  # 浅蓝 110 → 126 脉动（_S_TIME 邻域）
     hint = Line.of(" ", Style(fg=hint_color))
-    hint.append("Tab \u2191\u2193 Esc", Style(fg=hint_color))
+    hint.append("Tab \u2191\u2193 PgUp/PgDn Esc", Style(fg=hint_color))
     # ★ 方向8（窄屏防溢出）：提示行超宽时截断至 width。
     if width > 0 and hint.width > width:
         from src.tui.ink.helpers import truncate_line

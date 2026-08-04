@@ -134,13 +134,25 @@ def _line_as_dict(line: Line) -> dict:
     列键为**显示宽度**（``wcswidth_simple``），与画布行键语义一致——
     CJK 宽字符占 2 列则键递增 2（修复前逐字符 ``col += 1`` 导致宽字符
     后续内容错位重叠）。
+
+    ★ 性能（2026-08-05）：纯可打印 ASCII run 走批量快路径——宽度 == 字符数
+    （``isascii()`` + ``isprintable()`` C 实现单趟扫描），免逐字符
+    ``wcswidth_simple`` 调用（渲染热路径画布转换以 ASCII 文本为主）。
     """
     d: dict = {}
     col = 0
     for run in line.runs:
-        for ch in run.text:
-            d[col] = (ch, run.style)
-            col += wcswidth_simple(ch)
+        t = run.text
+        if t.isascii() and t.isprintable():
+            st = run.style
+            for ch in t:
+                d[col] = (ch, st)
+                col += 1
+        else:
+            st = run.style
+            for ch in t:
+                d[col] = (ch, st)
+                col += wcswidth_simple(ch)
     return d
 
 
@@ -209,10 +221,20 @@ def _merge_line(row, x: int, line: Line) -> dict:
         return _ensure_row_dict(row)
     slice_: dict[int, tuple[str, Style | None]] = {}
     col = x
+    # ★ 性能（2026-08-05）：纯可打印 ASCII run 走批量快路径（宽度 == 字符数），
+    #   免逐字符 ``wcswidth_simple`` 调用——画布合并热路径（TEXT 行合并、
+    #   StaticLines 非 x==0 路径）以 ASCII 文本为主。
     for run in line.runs:
-        for ch in run.text:
-            slice_[col] = (ch, run.style)
-            col += wcswidth_simple(ch)
+        t = run.text
+        st = run.style
+        if t.isascii() and t.isprintable():
+            for ch in t:
+                slice_[col] = (ch, st)
+                col += 1
+        else:
+            for ch in t:
+                slice_[col] = (ch, st)
+                col += wcswidth_simple(ch)
     row = _ensure_row_dict(row)
     # ★ P2（review）：空行（row={}）场景跳过宽字符第二列扫描（常见合并热路径
     #   零额外开销）——``not row`` 短路后不调用 ``_overlaps_wide_second_col``。
@@ -363,31 +385,60 @@ def _paint_border(fiber: Fiber, canvas: list[dict], border: int, clip=None) -> N
         return row
 
     # 顶边（含左上/右上角）
+    # ★ 性能（2026-08-05）：无裁剪时整段构建 Line（角 + hline 填充 + 角）一次
+    #   ``_merge_line`` 合并——替代逐字符 ``row[c]=(ch, style)`` 循环（每帧
+    #   边框容器少 N 次 Python 循环 + if 分支；_merge_line 内部 dict 批量
+    #   update 走 C 实现）。裁剪区间（overflow hidden 交集）罕见，保持逐字符
+    #   语义（角/填充按实际可见区间）。hx1<hx0（裁剪空交集）时跳过顶边——
+    #   不能提前 return（底边/左右边仍需绘制）。
     if show_top:
         row = _prepare_row(y0)
         if row is not None:
             hx0 = max(x0, clip_x0 if clip_x0 is not None else x0)
             hx1 = min(x1, clip_x1 - 1 if clip_x1 is not None else x1)
-            for c in range(hx0, hx1 + 1):
-                if c == x0:
-                    row[c] = (tl, top_style)
-                elif c == x1:
-                    row[c] = (tr, top_style)
+            if hx1 >= hx0:
+                if hx0 == x0 and hx1 == x1:
+                    # 完整顶边：tl + hline*(w-2) + tr（同色 top_style）；w==1 只写角
+                    if x1 == x0:
+                        _line = Line.of(tl, top_style)
+                    else:
+                        _line = Line.of(tl + hline * (x1 - x0 - 1) + tr, top_style)
+                    canvas[y0] = _merge_line(row, x0, _line)
                 else:
-                    row[c] = (hline, top_style)
+                    # 裁剪区间：角/填充按可见范围（与原逐字符语义一致）
+                    _text = ""
+                    for c in range(hx0, hx1 + 1):
+                        if c == x0:
+                            _text += tl
+                        elif c == x1:
+                            _text += tr
+                        else:
+                            _text += hline
+                    canvas[y0] = _merge_line(row, hx0, Line.of(_text, top_style))
     # 底边（含左下/右下角）
     if show_bottom and y1 != y0:
         row = _prepare_row(y1)
         if row is not None:
             hx0 = max(x0, clip_x0 if clip_x0 is not None else x0)
             hx1 = min(x1, clip_x1 - 1 if clip_x1 is not None else x1)
-            for c in range(hx0, hx1 + 1):
-                if c == x0:
-                    row[c] = (bl, bottom_style)
-                elif c == x1:
-                    row[c] = (br, bottom_style)
+            if hx1 >= hx0:
+                if hx0 == x0 and hx1 == x1:
+                    # 完整底边：bl + hline*(w-2) + br（同色 bottom_style）；w==1 只写角
+                    if x1 == x0:
+                        _line = Line.of(bl, bottom_style)
+                    else:
+                        _line = Line.of(bl + hline * (x1 - x0 - 1) + br, bottom_style)
+                    canvas[y1] = _merge_line(row, x0, _line)
                 else:
-                    row[c] = (hline, bottom_style)
+                    _text = ""
+                    for c in range(hx0, hx1 + 1):
+                        if c == x0:
+                            _text += bl
+                        elif c == x1:
+                            _text += br
+                        else:
+                            _text += hline
+                    canvas[y1] = _merge_line(row, hx0, Line.of(_text, bottom_style))
     # 左右边（不含顶/底）
     for r in range(y0 + 1, y1):
         row = _prepare_row(r)
@@ -770,6 +821,12 @@ def _canvas_row_to_line(row) -> Line:
         # ★ 批量 append（方向4 性能）：累积同 style 连续字符段，段级一次性
         #   Line.append（免逐字符 append 的段合并检查 + StyledRun 重建——
         #   基准 ~2x 提速）。段长受行宽约束（≤终端列数），str += 拼接可接受。
+        # ★ 性能（2026-08-05）：连续段内非末尾字符用**相邻键差**推导宽度——
+        #   画布写入不变量 ``col += wcswidth_simple(ch)`` 保证连续键差 = 前序
+        #   字符宽度；差 1 必然 ASCII 宽 1（宽字符差 2、gap 差 >2 均不可能是 1）
+        #   → 免 ``wcswidth_simple`` 调用（聊天文本以 ASCII 为主，内层热路径
+        #   大量连续 ASCII 字符）。差 >=2（宽字符/gap）或段末尾（无下一键可
+        #   推导）回退 ``wcswidth_simple``（单字符路径：ASCII O(1) / 缓存 O(1)）。
         j = i
         buf = ""
         while j < n:
@@ -784,7 +841,11 @@ def _canvas_row_to_line(row) -> Line:
             if st2 != style:
                 break
             buf += ch2
-            prev = c2 + wcswidth_simple(ch2)
+            if j + 1 < n and keys[j + 1] == c2 + 1:
+                cw = 1  # 连续 ASCII 快路径（相邻键差 1）
+            else:
+                cw = wcswidth_simple(ch2)
+            prev = c2 + cw
             j += 1
         if buf:
             line.append(buf, style)

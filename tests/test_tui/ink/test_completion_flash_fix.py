@@ -48,13 +48,13 @@ class TestCompletionPopupShrinkNoHistoryRewrite:
         # prev：弹窗 5 项（标题 + 5 项 + 提示）
         prev = (
             ["header", "分隔线"] + hist + ["status"]
-            + ["▍ 补全 (1/5)", " ▶ f0", "   f1", "   f2", "   f3", "   f4", "Tab ↑↓ Esc"]
+            + ["▍ 补全 (1/5)", " ▶ f0", "   f1", "   f2", "   f3", "   f4", "Tab ↑↓ PgUp/PgDn Esc"]
             + ["上分隔线", "> src/", "时间戳"]
         )
         # new：弹窗 2 项
         new = (
             ["header", "分隔线"] + hist + ["status"]
-            + ["▍ 补全 (1/2)", " ▶ t0", "   t1", "Tab ↑↓ Esc"]
+            + ["▍ 补全 (1/2)", " ▶ t0", "   t1", "Tab ↑↓ PgUp/PgDn Esc"]
             + ["上分隔线", "> src/t", "时间戳"]
         )
         out = io.StringIO()
@@ -81,9 +81,9 @@ class TestCompletionPopupShrinkNoHistoryRewrite:
         H = 30
         hist = [f"历史消息 {i}" for i in range(25)]
         base = ["header", "分隔线"] + hist + ["status"]
-        f5 = base + ["▍ 补全 (1/5)", " ▶ f0", "   f1", "   f2", "   f3", "   f4", "Tab ↑↓ Esc"] + ["上分隔线", "> src/", "时间戳"]
-        f2 = base + ["▍ 补全 (1/2)", " ▶ t0", "   t1", "Tab ↑↓ Esc"] + ["上分隔线", "> src/t", "时间戳"]
-        f4 = base + ["▍ 补全 (1/4)", " ▶ a0", "   a1", "   a2", "   a3", "Tab ↑↓ Esc"] + ["上分隔线", "> src/a", "时间戳"]
+        f5 = base + ["▍ 补全 (1/5)", " ▶ f0", "   f1", "   f2", "   f3", "   f4", "Tab ↑↓ PgUp/PgDn Esc"] + ["上分隔线", "> src/", "时间戳"]
+        f2 = base + ["▍ 补全 (1/2)", " ▶ t0", "   t1", "Tab ↑↓ PgUp/PgDn Esc"] + ["上分隔线", "> src/t", "时间戳"]
+        f4 = base + ["▍ 补全 (1/4)", " ▶ a0", "   a1", "   a2", "   a3", "Tab ↑↓ PgUp/PgDn Esc"] + ["上分隔线", "> src/a", "时间戳"]
         out = io.StringIO()
         r = InkRenderer(stream=out, height=H)
         r.render(_frame(*f5))
@@ -217,7 +217,7 @@ class TestCompletionPopupNoLargeBlank:
             f"{[l.plain for l in popup]!r}"
         )
         assert popup[0].plain == " ▍ 补全 (1/1)"
-        assert popup[-1].plain == " Tab ↑↓ Esc"
+        assert popup[-1].plain == " Tab ↑↓ PgUp/PgDn Esc"
 
     def test_small_shrink_still_pads_limited_regression(self):
         """5→2 项：高度保持 7（补白 3 行 ≤ 上限，防闪烁）——空白行数受控。"""

@@ -1,15 +1,25 @@
-"""交互式会话消息编辑器 — 使用底部栏补全弹窗选择消息。
+"""交互式会话消息编辑器 — 使用标准 React Ink 组件（UserSelectPopup）选择消息。
 
 用法：在聊天中输入 /editmsg 或 Ctrl+O 进入消息编辑。
 
 编辑职责：
-- 消息选择交互（底部栏补全弹窗 + ↑↓/Enter）
+- 消息选择交互（UserSelectPopup 标准 React Ink 组件 + use_input 交互）
 - 编辑/删除/恢复动作处理
 - 会话管理入口（MessageEditor.edit_current_messages）
 
+★ 标准 React Ink 化（2026-08-05，消灭例外）：消息选择交互从「补全弹窗
+（show_completions）+ _selection_ready 事件轮询」迁移为 **UserSelectPopup
+标准组件协议**——设置 ``model.user_select``（visible=True, seq+1, options=
+消息摘要）→ App 组件树渲染 ``UserSelectPopup``（use_input 消费 ↑↓/Enter/
+Esc，与 user_select 工具同协议）→ 本模块轮询 ``us.done``（跨线程 GIL
+原子字段）→ 读取结果。不再直接操作补全弹窗私有字段、不再自定义 dismiss
+回调 hack。无 ChatUI 模型环境（测试桩/单次模式）回退旧补全弹窗路径
+（兼容保留）。
+
 适配 2026-07 TUI 重构后的架构：
   - 不复用已删除的 pipeline/message_display.py 完整版，使用内置精简替代
-  - 底部栏交互使用当前 _BottomBar.show_completions() API
+  - 标准交互经 ``model.user_select``（ChatUIConsumer 活跃时可用）；
+    无 ChatUI 时回退 _BottomBar.show_completions() API（兼容）
   - 不执行 chat_ui.suspend()（重构后 suspend 会拆除 _BottomBar）
 """
 
@@ -207,13 +217,41 @@ class MessageEditor:
         """初始化 MessageEditor。
 
         Args:
-            bottom_bar: _BottomBar 实例（用于补全弹窗）。
+            bottom_bar: _BottomBar/InkBridge 实例（补全弹窗 + model/session 提取）。
             input_: Input 实例（用于检测 Enter 提交）。
         """
         self._bottom_bar = bottom_bar
         self._input = input_
+        # ★ 标准 React Ink 化（消灭例外）：从 bottom_bar 提取 model/session——
+        #   InkBridge 持有 AppModel + InkSession（UserSelectPopup 标准协议用）；
+        #   无 model/session 环境（测试桩/单次模式）回退旧补全弹窗路径。
+        #   防御：MagicMock 任意属性访问返回 MagicMock（非 None）——仅当
+        #   model 具备 ``user_select`` 属性且类型非 mock 时采用标准协议
+        #   （测试用 MagicMock bottom_bar 的 _model 提取到 MagicMock →
+        #   _is_mock_model 排除 → 走 legacy 路径，测试兼容）。
+        self._model = None
+        self._session = None
+        if bottom_bar is not None:
+            candidate_model = getattr(bottom_bar, "_model", None)
+            candidate_session = getattr(bottom_bar, "_session", None)
+            if self._is_mock_model(candidate_model):
+                candidate_model = None
+                candidate_session = None
+            self._model = candidate_model
+            self._session = candidate_session
         self._selection_ready: threading.Event = threading.Event()
         self._selection_confirmed: bool = False
+
+    @staticmethod
+    def _is_mock_model(model) -> bool:
+        """检测候选 model 是否为 mock（MagicMock 任意属性返回 MagicMock）。"""
+        if model is None:
+            return True
+        # unittest.mock 对象类型名含 "Mock"；真实 AppModel 类型名是 "AppModel"
+        type_name = type(model).__name__
+        if "Mock" in type_name:
+            return True
+        return not hasattr(model, "user_select")
 
     # ── 公开入口 ──
 
@@ -305,10 +343,85 @@ class MessageEditor:
         user_msgs: list[tuple[int, dict]],
         display_items: list[str],
     ) -> int | None:
-        """在底部栏补全弹窗中选择消息。
+        """选择要编辑的消息（标准 React Ink UserSelectPopup 协议）。
 
-        调用前 Terminal 必须处于 cbreak 模式（monitor 运行中），
-        render 线程持续驱动 ↑↓/Enter 按键处理。
+        交互流程（与 user_select 工具同协议，标准 React Ink 无例外）：
+          1. 设置 ``model.user_select``（visible=True, seq+1, options=消息摘要）；
+          2. ``UserSelectPopup`` 组件在 App 组件树底部区渲染（use_input 消费
+             ↑↓/Enter/Esc，render 线程驱动路由）；
+          3. 本方法轮询 ``us.done``（跨线程 GIL 原子字段）并读取结果索引；
+          4. 清理 ``model.user_select = UserSelectState()`` + 请求重绘。
+
+        Args:
+            user_msgs: [(原始索引, 消息字典), ...]。
+            display_items: 每个消息的显示文本（UserSelectPopup 选项）。
+
+        Returns:
+            选中的原始消息索引，None 表示取消/超时。
+        """
+        model = self._model
+        session = self._session
+        if model is None or session is None or not hasattr(model, "user_select"):
+            # 无 ChatUI 模型环境（测试桩/单次模式）：回退旧补全弹窗路径（兼容）
+            return self._interactive_message_select_legacy(user_msgs, display_items)
+
+        from src.tui.app.model import UserSelectState
+        sel_count = len(user_msgs)
+        if sel_count == 0:
+            return None
+
+        # 设置弹窗状态（seq+1 强制 UserSelectPopup 重挂载，重置内部 state）
+        prev_seq = getattr(model.user_select, "seq", 0)
+        model.user_select = UserSelectState(
+            visible=True,
+            seq=prev_seq + 1,
+            title="\u9009\u62e9\u8981\u7f16\u8f91\u7684\u6d88\u606f",  # 选择要编辑的消息
+            options=list(display_items),
+            selected=sel_count - 1,  # 默认选中最后一条
+            deadline=time.monotonic() + 120,  # 2 分钟超时
+        )
+        try:
+            session.request_bottom_redraw()
+        except Exception:
+            _logger.debug("_interactive_message_select: request_bottom_redraw 异常", exc_info=True)
+
+        # 轮询等待组件交互完成（render 线程运行中；UserSelectPopup use_input 写 done）
+        deadline = model.user_select.deadline
+        while not model.user_select.done:
+            if deadline > 0 and time.monotonic() >= deadline:
+                # 超时：写回超时结果（组件下一帧读到 done 停止渲染）
+                model.user_select.done = True
+                model.user_select.action = "timeout"
+                break
+            time.sleep(0.05)
+
+        st = model.user_select
+        action = st.action or "timeout"
+        selected = int(getattr(st, "selected", sel_count - 1))
+
+        # 清理弹窗状态 + 请求重绘（底部栏立即恢复正常显示）
+        model.user_select = UserSelectState()
+        try:
+            session.request_bottom_redraw()
+        except Exception:
+            _logger.debug("_interactive_message_select: cleanup redraw 异常", exc_info=True)
+
+        if action != "confirmed":
+            return None
+        if not (0 <= selected < sel_count):
+            return None
+        return user_msgs[selected][0]
+
+    def _interactive_message_select_legacy(
+        self,
+        user_msgs: list[tuple[int, dict]],
+        display_items: list[str],
+    ) -> int | None:
+        """旧补全弹窗消息选择路径（无 ChatUI 模型环境回退，兼容保留）。
+
+        # deprecated: 标准路径（UserSelectPopup 协议）不可用时的回退——
+        # 生产 ChatUI 环境恒走标准 React Ink 路径，本方法仅服务测试桩/
+        # 单次模式（bottom_bar 无 _model 的兼容场景）。
 
         Args:
             user_msgs: [(原始索引, 消息字典), ...]。

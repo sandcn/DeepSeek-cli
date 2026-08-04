@@ -1,35 +1,45 @@
-"""subagent 卡片渲染辅助 — subagent_lines（ink Line 行）→ ink TEXT 元素。
+"""subagent 卡片渲染 — React Ink 标准组件 SubAgentCard + 兼容辅助。
 
 对齐 Claude Code：子代理活动渲染为**逐 agent 卡片**（``_subagent_render``
 产出带边框 Line 行），经 ``ChatView`` 并入消息流显示（原独立 SubAgentPanel
 组件已移除）。
 
-★ 标准 React Ink 组件化（2026-08-05）：subagent_lines 数据格式从「ANSI
-字符串行」迁移为「ink Line 行」（StyledRun）——本模块不再 ``ansi_to_runs``
-解析 ANSI 字符串，直接 ``Line.runs`` 转 TEXT 标准组件（方向C 步骤8 唯一
-ANSI → StyledRun 转换点已消除）；按终端宽度截断 + 换行转义语义保留。
+★ 标准 React Ink 组件化（2026-08-05 收尾，无例外）：subagent 卡片数据
+（``subagent_lines``，ink Line 行）经**标准函数组件** ``SubAgentCard`` 渲染
+——组件树表达 ``h(SubAgentCard, {"lines": ..., "width": ...})``（与
+``ToolCard`` / ``OpenBlockLines`` 同模式）。内部 ``use_memo`` 缓存行 TEXT
+元素列表（deps = ``(lines, width)`` 引用级——控制器推送新列表时引用变化
+自动重算；无变化帧返回同一 children 元组 → reconciler props 引用级命中）。
+组件内 hook 占用子 fiber 槽位，不再消耗 ChatView 的 hook 顺序（比旧
+``use_subagent_children`` 在父组件无条件占槽更干净——组件卸载/挂载由
+``model.subagent_lines`` 空/非空自动驱动）。
+
+subagent_lines 数据格式为「ink Line 行」（StyledRun），本模块直接复用
+``Line.runs`` 转 TEXT 标准组件；按终端宽度截断 + 换行转义语义保留。
 """
 
 from __future__ import annotations
 
-from src.tui.ink import h, TEXT, StyledRun, truncate_runs, use_memo
+from src.tui.ink import h, TEXT, StyledRun, FRAGMENT, truncate_runs, use_memo
 from src.tui._format import single_line
 
+__all__ = ["SubAgentCard", "_render_children", "use_subagent_children"]
 
-def _render_children(model, width: int) -> list:
+
+def _lines_to_children(lines, width: int) -> list:
     """构建 subagent 卡片子树（按行截断 + 样式 run）。
 
     subagent_lines 为 ``Line`` 行列表（_subagent_render 产出）：直接复用
     ``Line.runs``（StyledRun 行）按终端宽度截断，不再经 ANSI 解析。
     每行给索引 key（调和器复用 fiber，换行/样式缓存可命中）。
 
-    本函数为**纯计算**（无 hook）；组件内请用 ``use_subagent_children``
-    按 ``(subagent_lines, width)`` 引用缓存结果（BUG-42：修复前 ChatView
-    每帧直接调用本函数重建全部 StyledRun/Element → TEXT ``_wrap_cache``
-    身份键恒 miss，活跃 subagent 期间每帧重包裹）。
+    本函数为**纯计算**（无 hook）；组件内用 ``use_memo`` 按
+    ``(lines, width)`` 引用缓存结果（BUG-42：修复前每帧重建全部
+    StyledRun/Element → TEXT ``_wrap_cache`` 身份键恒 miss，活跃 subagent
+    期间每帧重包裹）。
     """
     children = []
-    for i, line in enumerate(model.subagent_lines or []):
+    for i, line in enumerate(lines or []):
         if not line:
             continue
         # 防御：行可能为纯文本（非 Line）——取 runs（Line）或按纯文本归一。
@@ -53,17 +63,47 @@ def _render_children(model, width: int) -> list:
     return children
 
 
-def use_subagent_children(model, width: int) -> list:
-    """use_memo 缓存 subagent 卡片元素列表（subagent_lines 引用不变时零重建）。
+def SubAgentCard(props: dict) -> object:
+    """React Ink 标准组件：SubAgent 活动卡片（边框行 + 内容行）。
 
-    供 ChatView 无条件调用（hook 顺序稳定——即使 subagent_lines 为空也占用
-    同一个 memo 槽位；``model.subagent_lines`` 为引用 deps——控制器推送新行
-    列表时引用变化 → 缓存失效重算）。
+    Props:
+        lines: list[Line] — subagent_lines（_subagent_render 产出，带边框）。
+        width: 布局宽度（截断宽度同源）。
+
+    Returns:
+        Fragment（透明分组容器）——行 TEXT 子元素直接流入父容器布局
+        （与 OpenBlockLines 同模式；不引入额外布局盒/高度）。
+
+    ★ 性能（PERF-26 同族）：use_memo 缓存 children（deps = lines 引用 +
+    width）——无变化帧返回同一 children 元组 → reconciler props 引用级命中
+    → 免每帧重建 N 行 TEXT Element；控制器推送新列表（引用变化）自动重算。
+    """
+    lines = props.get("lines") or []
+    width = props.get("width", 0)
+    children = use_memo(
+        lambda: _lines_to_children(lines, width),
+        (lines, width),
+    )
+    return h(FRAGMENT, None, children)
+
+
+def _render_children(model, width: int) -> list:
+    """兼容辅助：从 model 构建 subagent 卡片子树（旧调用面保留）。
+
+    # deprecated: 组件树请用 ``SubAgentCard``（标准组件）；本函数保留
+    # 供既有测试/外部调用面兼容（``use_subagent_children`` 内部复用）。
+    """
+    return _lines_to_children(getattr(model, "subagent_lines", None), width)
+
+
+def use_subagent_children(model, width: int) -> list:
+    """兼容辅助：use_memo 缓存 subagent 卡片元素列表（旧调用面保留）。
+
+    # deprecated: 组件树请用 ``SubAgentCard``（标准组件——hook 在子组件
+    # fiber 上，不占父组件 hook 槽位）；本函数保留供既有测试/外部调用面
+    # 兼容（ChatView 已迁移到 SubAgentCard）。
     """
     return use_memo(
         lambda: _render_children(model, width),
         (getattr(model, "subagent_lines", None), width),
     )
-
-
-__all__ = ["_render_children", "use_subagent_children"]

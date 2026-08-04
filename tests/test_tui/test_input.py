@@ -294,12 +294,11 @@ class TestParsing:
         assert ev is not None
         assert ev.kind == "home"
 
-    def test_feed_byte_ctrl_e_ctrl_key(self, input_instance):
+    def test_feed_byte_ctrl_e_end(self, input_instance):
         inp = input_instance
-        ev = inp.feed_byte(0x05)  # Ctrl+E（方向1 B1：不再 end）
+        ev = inp.feed_byte(0x05)  # Ctrl+E（2026-08-05：恢复 readline 行尾）
         assert ev is not None
-        assert ev.kind == "ctrl_key"
-        assert ev.char == "\x05"
+        assert ev.kind == "end"
 
     def test_feed_byte_ctrl_w_delete_word(self, input_instance):
         inp = input_instance

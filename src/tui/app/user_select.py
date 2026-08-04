@@ -80,7 +80,9 @@ def UserSelectPopup(props) -> object:
     def _handle(event) -> bool:
         """弹窗按键处理：↑↓ 导航 / Enter 确认 / Esc 取消 / 空格切换（多选）。
 
-        弹窗激活期间消费所有按键（阻断输入框/旧路径副作用）。
+        2026-08-05（增加操作）：vim 风格 ``j/k`` 导航（j=下、k=上，大小写
+        等效）——与 ↑↓ 等价但无需方向键（终端/键盘布局友好）。弹窗激活期间
+        消费所有按键（阻断输入框/旧路径副作用）。
         """
         # 弹窗已关闭（工具清理）→ 不再处理
         if us is None or not us.visible or us.done:
@@ -101,6 +103,30 @@ def UserSelectPopup(props) -> object:
         if event.kind == "arrow_down":
             if cur < total_now - 1:
                 cur += 1
+                selected_ref.current = cur
+                set_selected(cur)
+                us.selected = cur
+            return True
+        # vim 风格导航（j/k 大小写等效；g/G 跳首/末项——不与文本输入冲突，
+        # 弹窗为纯选择界面）。2026-08-05（增加操作）。
+        if event.kind == "char" and event.char in ("j", "J"):
+            if cur < total_now - 1:
+                cur += 1
+                selected_ref.current = cur
+                set_selected(cur)
+                us.selected = cur
+            return True
+        if event.kind == "char" and event.char in ("k", "K"):
+            if cur > 0:
+                cur -= 1
+                selected_ref.current = cur
+                set_selected(cur)
+                us.selected = cur
+            return True
+        if event.kind == "char" and event.char in ("g", "G"):
+            target = 0 if event.char == "g" else total_now - 1
+            if cur != target:
+                cur = target
                 selected_ref.current = cur
                 set_selected(cur)
                 us.selected = cur
@@ -227,10 +253,11 @@ def UserSelectPopup(props) -> object:
             }))
 
     # 提示行
+    # 2026-08-05（增加操作）：提示加入 vim 风格 j/k/g/G 导航（与 ↑↓ 等价）
     if multi:
         hint = " \u2423 切换选中 · Enter 确认 · Esc 取消"
     else:
-        hint = " \u2191\u2193 选择 · Enter 确认 · Esc 取消"
+        hint = " \u2191\u2193/jk 选择 · g/G 首末 · Enter 确认 · Esc 取消"
     rows.append(h(TEXT, {"children": hint, "style": _S_TIME}))
 
     return h(Column, None, rows)

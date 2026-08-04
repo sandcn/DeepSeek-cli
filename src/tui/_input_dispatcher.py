@@ -174,6 +174,18 @@ class InputDispatcher:
             self._handle_special_key('retry')
         elif ch == '\x0e':        # Ctrl+N → 切换模型（保留）
             self._handle_special_key('switch_model')
+        elif ch == '\x10':        # Ctrl+P → 历史上一条（readline previous-history，
+            # 直接调 _up（与 ↑ 语义一致但**不经过补全导航**——补全弹窗可见时
+            # ↑ 移动高亮，Ctrl+P 恒为历史浏览，readline 用户习惯）。
+            # 与 Ctrl+N（switch_model）非对称——Ctrl+N 已占用，Ctrl+P 独立提供
+            # 历史回退（readline 前向键由 ↓ 承担）。
+            # 防御：反向搜索激活时先退出搜索（Ctrl+P 不与搜索状态叠加——
+            # 搜索模式查询/匹配被历史浏览干扰时状态错乱）。
+            if self._buffer_editor.is_search_active():
+                self._buffer_editor.search_exit(apply=False)
+                self._sync_reverse_search()
+            else:
+                self._buffer_editor._up()
         elif ch == '\x02':        # Ctrl+B → 主 agent 空模式切换
             self._handle_special_key('empty_mode')
         # else：未知 ctrl_key → no-op
@@ -527,12 +539,16 @@ class InputDispatcher:
                 self._handle_tab()
         elif kind == "alt_char":
             # 方向A 步骤1：Alt+B/F 词跳转（等价 Ctrl+左/右）；
+            # 2026-08-05（增加操作）：Alt+D 删除光标后的一个词（readline
+            # kill-word 对称——Ctrl+W 删词向左，Alt+D 删词向右）。
             # 其余 Alt+组合已先行询问 input router，未消费则 no-op（不产生中断）。
-            # P3-3：大小写等效——大写 'B'/'F'（ESC+B/ESC+F）同样触发词跳转。
+            # P3-3：大小写等效——大写 'B'/'F'/'D'（ESC+B/ESC+F/ESC+D）同样触发。
             if event.char in ('b', 'B'):
                 self._buffer_editor._word_left()
             elif event.char in ('f', 'F'):
                 self._buffer_editor._word_right()
+            elif event.char in ('d', 'D'):
+                self._buffer_editor._delete_word_right()
         elif kind == "ctrl_key":
             # P2-4：CSI u Ctrl 字母（keycode 103/111/110/114）映射的 ctrl_key
             # 事件复用同一分发逻辑（含 _handle_reverse_search 门控）。
@@ -598,6 +614,11 @@ class InputDispatcher:
                 self._buffer_editor._word_left()
             else:
                 self._buffer_editor._left()
+        elif kind in ("page_up", "page_down"):
+            # 2026-08-05（增加操作）：PageUp/PageDown 补全弹窗翻页——补全
+            # 可见时按页步进（每页 ±5 项，对齐弹窗可见行数）；补全不可见
+            # 时 no-op（不改变输入缓冲/光标）。
+            self._handle_page_nav(-5 if kind == "page_up" else 5)
         elif kind == "unknown":
             self._maybe_dismiss_completion()
             if event.raw:
@@ -724,6 +745,29 @@ class InputDispatcher:
                     self._trigger_auto_completion()
                 return
         self._buffer_editor._down()
+
+    def _handle_page_nav(self, delta: int) -> None:
+        """处理 PageUp/PageDown：补全弹窗可见时按页步进高亮，否则 no-op。
+
+        2026-08-05（增加操作）：补全弹窗候选多时逐项 ↑↓ 效率低——PageUp/
+        PageDown 一次移动一页（每页 ±5 项，与弹窗可见行数相当）。复用
+        ``_completion_navigate_callback``（delta 传 ±5——补全循环实现按
+        delta 步进并钳制/回绕）；补全不可见或回调未消费时 no-op（不改变
+        输入缓冲/光标，与 Shift+Tab 语义一致）。
+        """
+        cb = self._completion_navigate_callback
+        if cb is None:
+            return
+        try:
+            text = self._buffer_editor.get_current_text()
+            result = cb(delta, text)
+        except Exception:
+            _logger.debug("补全翻页回调异常", exc_info=True)
+            return
+        if result is not None and result != text:
+            self._buffer_editor.set_buffer(result)
+            self._buffer_editor._echo(result)
+            self._trigger_auto_completion()
 
     def _handle_shift_tab_reverse(self) -> None:
         """处理 Shift+Tab：补全弹窗可见时反向循环，否则 no-op。

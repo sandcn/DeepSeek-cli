@@ -95,6 +95,19 @@ COMMANDS_HELP = (
     f"  {TEAL}/theme{RESET}    切换配色主题: /theme <dark|light|high-contrast>\n"
     f"  {TEAL}/help{RESET}     显示帮助\n"
     f"  {DIM}  exit 退出{RESET}"
+    # ── 快捷键说明（2026-08-05 增加操作；readline 编辑键 + 会话操作键） ──
+    f"\n{DIM}  \u2500 快捷键{RESET}\n"
+    f"  {TEAL}Ctrl+A/Home{RESET}   光标到行首   {TEAL}Ctrl+E/End{RESET}    光标到行尾\n"
+    f"  {TEAL}Ctrl+F/→{RESET}      右移一字符   {TEAL}Ctrl+B/←{RESET}      左移一字符\n"
+    f"  {TEAL}Ctrl+←/→{RESET}      词跳转       {TEAL}Alt+B/F{RESET}       词跳转\n"
+    f"  {TEAL}Ctrl+W{RESET}        删前一词     {TEAL}Alt+D{RESET}         删后一词\n"
+    f"  {TEAL}Ctrl+U{RESET}        删至行首     {TEAL}Ctrl+K{RESET}        删至行尾\n"
+    f"  {TEAL}Ctrl+P/↑{RESET}      历史上一条   {TEAL}Ctrl+R{RESET}         反向搜索/重试\n"
+    f"  {TEAL}Tab/Shift+Tab{RESET} 补全循环     {TEAL}PgUp/PgDn{RESET}       补全翻页\n"
+    f"  {TEAL}Ctrl+G{RESET}        打开 vim 编辑 {TEAL}Ctrl+O{RESET}         编辑会话消息\n"
+    f"  {TEAL}Ctrl+N{RESET}        切换模型     {TEAL}Ctrl+T{RESET}         切换主题\n"
+    f"  {TEAL}Ctrl+L{RESET}        清屏         {TEAL}Ctrl+D{RESET}         退出(空输入)\n"
+    f"  {TEAL}Ctrl+B{RESET}        主Agent空模式 {TEAL}Esc{RESET}           取消输入/中断"
 )
 
 

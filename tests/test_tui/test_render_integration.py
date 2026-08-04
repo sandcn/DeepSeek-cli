@@ -7,7 +7,9 @@ Input.process_events() → read_stdin_once()，
 
 from __future__ import annotations
 
+import io
 import os
+import re
 import time
 from pathlib import Path
 from unittest.mock import MagicMock
@@ -518,3 +520,36 @@ class TestToolBoxReuseTitleSync:
         assert ("Bash" in new_plain or "bash" in new_plain), (
             f"新标题应含工具名 bash: {new_plain!r}"
         )
+
+
+# ═══════════════════════════════════════════════════════════
+# 2026-08-05 — 空状态欢迎提示
+# ═══════════════════════════════════════════════════════════
+
+class TestEmptyStateWelcome:
+    """空状态（启动/清屏后）显示欢迎引导行。"""
+
+    def test_empty_model_renders_welcome(self) -> None:
+        """空模型渲染欢迎提示（✦ 欢迎使用 DeepSeek CLI）。"""
+        from src.tui.app.app import build_app_element
+        model = AppModel()
+        model.status.model_name = "deepseek-chat"
+        session = InkSession(model=model, build_tree=build_app_element, stream=io.StringIO())
+        session._width_cache._width = 80
+        session._width_cache._height = 40
+        session._render_frame()
+        plain = re.sub(r"\x1b\[[0-9;]*[A-Za-z]", "", session._ink_renderer._stream.getvalue())
+        assert "欢迎使用 DeepSeek CLI" in plain, f"空状态应显示欢迎提示: {plain!r}"
+
+    def test_non_empty_model_no_welcome(self) -> None:
+        """有消息时不显示欢迎提示。"""
+        from src.tui.app.app import build_app_element
+        from src.tui.app.apply import build_user_line
+        model = AppModel()
+        model.append_committed("user", build_user_line("你好"))
+        session = InkSession(model=model, build_tree=build_app_element, stream=io.StringIO())
+        session._width_cache._width = 80
+        session._width_cache._height = 40
+        session._render_frame()
+        plain = re.sub(r"\x1b\[[0-9;]*[A-Za-z]", "", session._ink_renderer._stream.getvalue())
+        assert "欢迎使用 DeepSeek CLI" not in plain, f"有消息时不应显示欢迎提示: {plain!r}"

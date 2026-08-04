@@ -179,9 +179,17 @@ class InputParser:
             return KeyEvent(kind="interrupt", raw=raw)
         if byte == 0x01:                 # Ctrl+A → Home
             return KeyEvent(kind="home", raw=raw)
-        # 方向1 B1：0x05（Ctrl+E）不再映射为光标行尾（end 语义移除）。
-        # Ctrl+E 经 ctrl_key 进入分发；_handle_ctrl_key 对未知 ctrl_key
-        # 保持 no-op 兜底（不产生 end 光标行为）。
+        # 标准 readline 编辑键（2026-08-05 增加操作）：
+        #   Ctrl+E（0x05）→ 光标移到当前逻辑行尾（end 语义，readline 标准）。
+        #   修复前（方向1 B1）为 ctrl_key no-op——用户要求增加更多操作，恢复
+        #   readline 行尾键；与 End 键（\x1b[F / CSI u 4u）走同一事件分支。
+        if byte == 0x05:
+            return KeyEvent(kind="end", raw=raw)
+        #   Ctrl+F（0x06）→ 光标右移一个字符（readline forward-char）。
+        #   修复前为 unknown（静默丢弃）——readline 标准编辑键，与 → 箭头
+        #   （\x1b[C）走同一 arrow_right 事件分支。
+        if byte == 0x06:
+            return KeyEvent(kind="arrow_right", raw=raw)
         if byte == 0x17:                 # Ctrl+W → delete word left
             return KeyEvent(kind="delete", modifier=1, raw=raw)
         if byte == 0x15:                 # Ctrl+U → kill to BOL
@@ -190,9 +198,11 @@ class InputParser:
             return KeyEvent(kind="delete", modifier=3, raw=raw)
         # Claude TUI parity 步骤 1.4：Ctrl+L(0x0c 清屏) / Ctrl+D(0x04 EOF) /
         # Ctrl+T(0x14 主题) 加入特殊按键（分发在 dispatcher 处理）
-        # 方向1 B1：0x05（Ctrl+E）加入 ctrl_key 集合（no-op）
+        # 2026-08-05（增加操作）：Ctrl+E（0x05）已恢复为 end 事件（不再在
+        # ctrl_key 集合）；Ctrl+P（0x10）加入 ctrl_key（dispatcher 处理为
+        # readline 历史上一条——与 Ctrl+N 被 switch_model 占用的对称补充）。
         # Ctrl+B(0x02) → 主 agent 空模式切换（0x02 非打印控制，不与 Enter 冲突）
-        if byte in (0x02, 0x04, 0x05, 0x07, 0x0c, 0x0e, 0x0f, 0x12, 0x14):  # Ctrl+B/D/E/G/L/N/O/R/T
+        if byte in (0x02, 0x04, 0x07, 0x0c, 0x0e, 0x0f, 0x10, 0x12, 0x14):  # Ctrl+B/D/G/L/N/O/P/R/T
             return KeyEvent(kind="ctrl_key", char=chr(byte), raw=raw)
         # 其他控制字符 → unknown
         return KeyEvent(kind="unknown", raw=raw)
@@ -319,6 +329,14 @@ class InputParser:
                     return KeyEvent(kind="arrow_left", modifier=1, keycode=keycode, raw=raw)
                 if keycode == 57420:   # →
                     return KeyEvent(kind="arrow_right", modifier=1, keycode=keycode, raw=raw)
+                # ★ 2026-08-05（增加操作）：kitty/wezterm 增强键盘协议 PageUp/
+                #   PageDown（57358/57359）→ page_up/page_down 事件（补全弹窗
+                #   翻页；与 ``\x1b[5~``/``\x1b[6~`` 同语义）——修复前落入
+                #   csi_u no-op 被静默丢弃，CSI-u 终端无法翻页。
+                if keycode == 57358:   # PageUp
+                    return KeyEvent(kind="page_up", modifier=1, keycode=keycode, raw=raw)
+                if keycode == 57359:   # PageDown
+                    return KeyEvent(kind="page_down", modifier=1, keycode=keycode, raw=raw)
                 # ★ CSI-u 可打印 ASCII 键（无修饰键）→ char 事件（方向1 修复：
                 #   kitty/wezterm/iTerm2 等增强键盘终端输入普通字母/数字/标点
                 #   发送 ``keycode;1u``——keycode 即 ASCII 码（如 'A'=65）。
