@@ -110,6 +110,48 @@ class TestUserSelectPopupRender:
         # 左栏选项 + │ + 右栏说明
         assert "│说明B" in lines[1] or "│ 说明B" in lines[1] or "说明B" in lines[1]
 
+    def test_split_desc_opt_width_auto(self):
+        """分栏说明模式：左栏按最大选项长度自适应——│ 紧跟最长选项后。
+
+        回归（2026-08-05）：修复前 opt_w 固定 ``width - desc_w - 1``
+        （width=80 时 53 列），短选项（A/B）下 │ 在 53 列处大片留白；
+        修复后左栏 = 前缀 3 + 最长选项宽 1 + 补白 1 = 5 列，│ 紧跟选项。
+        """
+        m = AppModel()
+        m.user_select = UserSelectState(
+            visible=True, seq=1, title="带说明",
+            options=["A", "B"],
+            option_descriptions=["说明A", "说明B"],
+            selected=1,
+        )
+        r, root = Reconciler(), Reconciler().create_root()
+        frame = _render(r, root, _popup(m), width=80)
+        lines = _plain(frame)
+        assert lines[1] == "   A │说明B"
+        assert lines[2] == " ▶ B │"
+
+    def test_split_desc_multi_checked_mark(self):
+        """分栏说明模式 + 多选：勾选项显示 ●/○ 标记（不丢失选中态）。
+
+        回归（2026-08-05）：修复前分栏分支仅渲染单选 ▶ 前缀，多选勾选态
+        （●/○）完全不显示——多选 + option_descriptions 时用户看不到
+        选中项；修复后多选前缀与普通模式同语义（● 勾选 / ○ 未勾选）。
+        """
+        m = AppModel()
+        m.user_select = UserSelectState(
+            visible=True, seq=1, title="多选说明",
+            multi_select=True,
+            options=["A", "B", "C"],
+            option_descriptions=["说明A", "说明B", "说明C"],
+            selected=1, checked=[0, 2],
+        )
+        r, root = Reconciler(), Reconciler().create_root()
+        frame = _render(r, root, _popup(m), width=60)
+        lines = _plain(frame)
+        assert lines[1] == " ● A │说明B"
+        assert lines[2] == " ○ B │"
+        assert lines[3] == " ● C │"
+
     def test_narrow_width_no_overflow(self):
         m = AppModel()
         m.user_select = UserSelectState(visible=True, seq=1, title="窄",
@@ -169,6 +211,30 @@ class TestUserSelectPopupInteract:
         assert m.user_select.done is True
         assert m.user_select.action == "confirmed"
         assert m.user_select.result == ["A", "C"]  # 按索引排序
+
+    def test_enter_confirms_multi_empty_checked(self):
+        """多选：取消所有勾选后回车返回空列表（不误回退默认选项）。
+
+        回归（2026-08-05）：修复前多选空勾选时 ``result = us.default_options``
+        ——用户取消所有勾选后回车仍返回默认项，违背交互意图；修复后与
+        Web 前端一致（confirm 返回实际勾选结果，空勾选则为空）。
+        """
+        m = AppModel()
+        m.user_select = UserSelectState(visible=True, seq=1, title="T",
+                                        multi_select=True,
+                                        options=["A", "B", "C"],
+                                        default_options=["A"],
+                                        selected=0, checked=[0])
+        r, root = Reconciler(), Reconciler().create_root()
+        cap = _Router()
+        _render(r, root, _popup(m))
+        # 空格取消 A 勾选 → 回车
+        assert cap.key("space") is True
+        assert m.user_select.checked == []
+        assert cap.key("enter") is True
+        assert m.user_select.done is True
+        assert m.user_select.action == "confirmed"
+        assert m.user_select.result == []
 
     def test_space_toggles_multi(self):
         m = AppModel()

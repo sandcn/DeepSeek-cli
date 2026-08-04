@@ -118,8 +118,11 @@ def UserSelectPopup(props) -> object:
             return True
         if event.kind == "enter":
             if multi_now:
+                # 多选：返回勾选结果（空勾选返回空列表）——与 Web 前端
+                # confirm 行为一致；修复前空勾选时误回退 us.default_options
+                # （用户取消所有勾选后回车仍返回默认项，违背交互意图）。
                 sel = sorted(checked_ref.current)
-                result = [options_now[i] for i in sel] if sel else list(us.default_options or [])
+                result = [options_now[i] for i in sel]
             else:
                 result = [options_now[cur]] if 0 <= cur < total_now else list(us.default_options or [])
             us.done = True
@@ -158,28 +161,39 @@ def UserSelectPopup(props) -> object:
 
     if split:
         # ── 分栏说明模式：左栏选项 + │ + 右栏当前选中项说明 ──
-        desc_w = _desc_column_width(width)
-        opt_w = max(1, width - desc_w - 1)
+        # 左栏按最大选项长度自适应分栏（2026-08-05 用户需求）：分隔线 │
+        # 紧跟最长选项之后，右栏说明自动变宽——选项短时不再有大片留白；
+        # 选项超长时受上限约束（右栏至少保留 _desc_column_width 基准宽），
+        # 避免说明区被挤压。
+        max_opt_w = max((wcswidth_simple(o) for o in options), default=0)
+        base_desc_w = _desc_column_width(width)
+        # 左栏 = 前缀 3 列（▶/空格）+ 最长选项宽 + 补白 1 列
+        auto_opt_w = max_opt_w + 4
+        # 上限：右栏至少保留 base_desc_w（说明可读）；左栏至少 1 列
+        opt_w = max(1, min(max(1, width - base_desc_w - 1), auto_opt_w))
+        desc_w = max(1, width - opt_w - 1)
         desc_sel = max(0, min(cur, len(descs) - 1)) if descs else 0
         desc_text = descs[desc_sel] if descs else ""
         desc_lines = _wrap_by_width(desc_text or "", desc_w)
         n_rows = max(total, len(desc_lines))
         for row_i in range(n_rows):
             if row_i < total:
-                opt = _truncate_width(options[row_i], opt_w - 3)
-                if row_i == cur:
-                    left = h(TEXT, {
-                        "children": f" \u25b6 {opt}",
-                        "style": _S_SEL_BG,
-                        "height": 1,
-                    })
+                opt = _truncate_width(options[row_i], max(1, opt_w - 3))
+                # ★ 多选勾选标记（回归 2026-08-05）：分栏分支原只渲染单选
+                # ▶ 前缀，多选勾选态（●/○）完全不显示——多选 + 带说明时
+                # 用户看不到选中项。前缀宽 3 列与单选 ▶ 一致（pad 补宽对齐）。
+                if multi:
+                    mark = _CHECKED if row_i in checked else _UNCHECKED
+                    prefix = f" {mark}"
                 else:
-                    left = h(TEXT, {
-                        "children": f"   {opt}",
-                        "height": 1,
-                    })
-                # 左栏补宽（分隔线对齐）
-                pad = max(0, opt_w - 1 - wcswidth_simple(f" {opt}"))
+                    prefix = " \u25b6 " if row_i == cur else "   "
+                left = h(TEXT, {
+                    "children": f"{prefix}{opt}",
+                    "style": _S_SEL_BG if row_i == cur else None,
+                    "height": 1,
+                })
+                # 左栏补宽（分隔线对齐：左栏总宽 = opt_w，│ 在 opt_w 列）
+                pad = max(0, opt_w - wcswidth_simple(f"{prefix}{opt}"))
                 if pad > 0:
                     left = h(Row, {"height": 1}, [
                         left,
