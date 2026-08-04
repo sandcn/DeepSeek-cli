@@ -41,7 +41,7 @@ async def retry_api_call_async(
                         （无指数退避、无抖动、无 RateLimit 额外等待）；
                         None 时保持指数退避+抖动+RateLimit 特殊处理
         override_max_retries: 覆盖最大重试次数，设为非 None 值时替代 MAX_RETRIES
-                            （全局默认 3）；None 时使用 MAX_RETRIES
+                            （全局默认 10）；None 时使用 MAX_RETRIES
     """
     async def _report(msg: str):
         if display is not None and label:

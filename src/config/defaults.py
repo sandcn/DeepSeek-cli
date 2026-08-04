@@ -66,7 +66,7 @@ DEFAULTS = {
     "model": "deepseek-v4-flash",
     "max_context_chars": 60000,
     "max_output_chars": 3000,
-    "max_retries": 3,
+    "max_retries": 10,
     "retry_base_sec": 1,
     "max_session_messages": 0,
     "keep_recent_messages": 0,

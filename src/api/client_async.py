@@ -309,7 +309,13 @@ async def _stream_iter_async(
     if msgs:
         payload["messages"] = copy.deepcopy(msgs)
 
-    max_attempts = 2
+    max_attempts = 10
+    # ★ 修复重复渲染：标记是否已向调用方产出过 chunk。
+    # 一旦已产出任何 chunk，断线时绝不能重启流（重启会从开头重新 yield
+    # 已渲染过的内容 → 下游重复显示）；此时直接抛出连接错误，由
+    # stream_call_async 保留已累积的部分内容。仅当未产出任何 chunk 时
+    # （连接尚未建立 / 首个 SSE 块前断开）重启才是安全无损的。
+    yielded_any = False
     for attempt in range(max_attempts):
         try:
             client = await get_async_client()
@@ -371,6 +377,7 @@ async def _stream_iter_async(
                         line_bytes, buffer = buffer.split(b"\n", 1)
                         parsed, should_yield, stop = _process_sse_line(line_bytes)
                         if should_yield:
+                            yielded_any = True
                             yield parsed
                         if stop:
                             done = True
@@ -383,20 +390,30 @@ async def _stream_iter_async(
                     buffer = b""
                     parsed, should_yield, stop = _process_sse_line(line_bytes)
                     if should_yield:
+                        yielded_any = True
                         yield parsed
                     if stop:
                         done = True
                 break  # 正常完成 (含 [DONE] 正常结束)
 
         except _CONNECTION_ERRORS as e:
-            if attempt < max_attempts - 1:
+            # ★ 修复重复渲染：已产出过 chunk 时不再重启（重启会从开头重新
+            # yield 已渲染内容 → 下游重复显示），直接抛出连接错误，由
+            # stream_call_async 保留已累积的部分内容。
+            if not yielded_any and attempt < max_attempts - 1:
                 _logger.warning(
                     "流式连接错误 (尝试 %d/%d): %s — 重置客户端后重试",
                     attempt + 1, max_attempts, e,
                 )
                 await reset_async_client()
                 continue
-            _logger.error("流式连接错误，已重试 %d 次仍失败: %s", max_attempts, e)
+            if yielded_any:
+                _logger.warning(
+                    "流式中途断开（已产出部分内容），放弃重启以避免重复渲染，"
+                    "保留已接收内容: %s", e,
+                )
+            else:
+                _logger.error("流式连接错误，已重试 %d 次仍失败: %s", max_attempts, e)
             raise
         except (RateLimitError, APIError):
             raise
