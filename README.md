@@ -664,7 +664,9 @@ Pipeline 将 Agent 对话循环编排为可插拔中间件链。中间件按注�
 - **增量渲染（除 resize 全量外均增量）** ✅ — 行级 diff + committed 前缀身份复用 + 位移锚点：头部动画（标题栏呼吸）不再引发 committed 可见区全量重写，流式增长每帧重写范围 O(可见区) → O(头部差异+位移区)；第十二轮强化：已提交内容修改（工具卡状态图标 ●→✔ / 标题更新）经 `_replace_committed_line` 使前缀缓存失效并新建 Line 对象 → 关闭后必现刷新；开放块行 key 用块内绝对行号 → 流式追加不重建已渲染行；subagent 卡片元素按引用 use_memo 缓存；补全弹窗/搜索激活时推进呼吸动画（空闲不渲染）；PriorityQueue 腾位 heapify / ANSI CSI 终止符（真彩冒号+终端键）三处正则收敛 / 换行缓存长度快照 / str 依赖按值比较 / 崩溃恢复计数复位 / 刷盘失败退避等 20 项渲染正确性与健壮性修复（BUG-30~62）
 - **光标坐标追踪** ✅ — 新增 `CursorTracker` 全局光标坐标追踪系统，集成到 ContentRenderer / RenderEngine / _BottomBar / _CompletionPopup，消除坐标推算累积误差
 - **React Ink 组件框架** ✅ — `src/tui/ink/`：调和器 + flexbox 布局 + hooks + 帧差异渲染，覆盖 useState/useReducer/useRef/useEffect/useLayoutEffect（独立时序）/useMemo/useCallback/useContext/useId/useSyncExternalStore/useInput/useFocus/forwardRef/useImperativeHandle/memo/ErrorBoundary/useMeasure/usePrevious；TEXT shorthand 样式/transform/wrap/dimColor/align；BOX flexBasis/borderStyle 变体（single/double/round/bold/classic/dashed/singleDouble/doubleSingle）/alignItems/justifyContent/gap；框架级缺陷修复：useImperativeHandle hook 槽位稳定、useSyncExternalStore 订阅重订、memo×context 短路恢复、生成器子级展开
-- **富交互组件** — 在终端中嵌入可交互元素（选择列表、确认弹窗、进度条），减少纯文本输出的信息密度
+- **高级布局能力** ✅ — 百分比尺寸（width/height/min/max="50%" 相对可用尺寸解析）；flexWrap="wrap" 换行流式布局（行间距 = gap，超宽项截断）；position="absolute" 绝对定位（left/top/right/bottom 锚点、显式/百分比尺寸、left+right/top+bottom 拉伸、最近 position="relative" 祖先为基准、脱离正常流不占空间、两阶段布局——正常流测量 + 绝对定位第二遍放置）；布局容器组件（`src/tui/ink/widgets/layout.py`）：Row/Column/Center/Stack/HStack/VStack/Grid（CSS Grid 风格，列等宽 flexGrow）/ZStack（层叠，子节点绝对定位叠放）
+- **控件库（widgets）** ✅ — `src/tui/ink/widgets/`：交互控件 SelectInput（单选列表）/TextInput（受控文本输入，含 placeholder/mask/光标）/MultiSelect（多选，space 切换）/ConfirmInput（y/n 确认）；展示控件 Spinner（时间基动画）/ProgressBar（进度条）/Table（对齐表格，支持表头/边框变体）/Badge（背景色块徽章，前景自动对比）/Divider（分隔线，可选标题）；基于 use_input + use_state，同批连续按键状态经 ref 镜像正确累积（闭包陈旧修复），focus=False 不参与输入路由
+- **富交互组件** ✅ — 在终端中嵌入可交互元素（选择列表、确认弹窗、进度条），减少纯文本输出的信息密度（`src/tui/ink/widgets/` 已实现）
 - **语法高亮增强** — 支持更多编程语言的代码块高亮，优化长代码段的折叠/展开机制
 - **多面板布局** — 对话区/工具调用日志/系统状态分屏显示，便于调试与观察 Agent 行为
 - **主题系统扩展** ✅ — 支持自定义配色方案，适配亮色/暗色终端环境（已内置 dark/light/high-contrast 三种主题）

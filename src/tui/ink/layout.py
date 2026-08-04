@@ -165,26 +165,47 @@ def wrap_text_lines(text: str, width: int, style=None) -> list[Line]:
 # ═══════════════════════════════════════════════════════════
 
 
+def _resolve_length(value, avail: int) -> int:
+    """解析长度属性为整数（非负）。
+
+    - int/数字字符串 → 原样（``max(0, int(value))``）；
+    - ``"50%"`` 百分比 → ``avail * pct / 100``（React Ink 百分比尺寸语义，
+      相对可用宽度/高度）；
+    - 畸形值（None/对象/畸形串）→ 回退 avail。
+    """
+    if isinstance(value, str) and value.endswith("%"):
+        try:
+            pct = float(value[:-1])
+            return max(0, int(avail * pct / 100.0))
+        except (TypeError, ValueError):
+            return avail
+    try:
+        return max(0, int(value))
+    except (TypeError, ValueError):
+        return avail
+
+
 def _resolve_width(fiber: Fiber, avail: int) -> int:
-    """解析宽度：显式 width 优先，否则内容/可用宽度（含 min/max 夹取）。
+    """解析宽度：显式 width 优先（含百分比），否则内容/可用宽度（含 min/max 夹取）。
 
     完善 react ink：``minWidth``/``maxWidth`` 对解析结果钳制（与
     ``_resolve_height`` 的 minHeight/maxHeight 对称）。宽高属性解析
-    收敛——width 显式 + min/max 夹取。
+    收敛——width 显式 + min/max 夹取。width 支持 ``"50%"`` 百分比（相对
+    avail）。
     """
     w = fiber.props.get("width")
     if w is None:
         resolved = avail
     else:
-        try:
-            resolved = max(0, int(w))
-        except (TypeError, ValueError):
-            resolved = avail
-    return _clamp_width(fiber, resolved)
+        resolved = _resolve_length(w, avail)
+    return _clamp_width(fiber, resolved, avail)
 
 
-def _clamp_width(fiber: Fiber, w: int) -> int:
+def _clamp_width(fiber: Fiber, w: int, avail: int | None = None) -> int:
     """对宽度应用 minWidth/maxWidth 钳制（内容推导/填充宽度共用）。
+
+    min/max 百分比相对 ``avail``（可用宽度）；avail 缺省时百分比回退
+    w（防御）。
 
     ★ 性能（PERF-7）：无 ``minWidth``/``maxWidth`` 属性（绝大多数节点）走
     快速路径直接 ``max(0, w)``——免 2 次 ``props.get`` + 类型兜底。
@@ -195,27 +216,44 @@ def _clamp_width(fiber: Fiber, w: int) -> int:
     mn = props.get("minWidth")
     if mn is not None:
         try:
-            w = max(int(mn), w)
+            w = max(_resolve_length(mn, avail if avail is not None else w), w)
         except (TypeError, ValueError):
             pass
     mx = props.get("maxWidth")
     if mx is not None:
         try:
-            w = min(int(mx), w)
+            w = min(_resolve_length(mx, avail if avail is not None else w), w)
         except (TypeError, ValueError):
             pass
     return max(0, w)
 
 
 def _resolve_height(fiber: Fiber, content_h: int) -> int:
-    """解析高度：显式 height 属性优先，否则内容推导（含 min/max 夹取）。"""
+    """解析高度：显式 height 属性优先（含百分比，相对 ``parent_h``），
+    否则内容推导（含 min/max 夹取）。
+
+    ``height="50%"`` 百分比需要父容器确定高度（``parent_h`` 非 None 时
+    解析为 ``parent_h * pct / 100``）；父高度未知（内容驱动，parent_h 为
+    None）时百分比回退内容高度（React Ink 语义：父高度未确定时百分比
+    无效）。
+    """
     h = content_h
     height = fiber.props.get("height")
+    parent_h = getattr(fiber, "_parent_avail_h", None)
     if height is not None:
-        try:
-            h = max(0, int(height))
-        except (TypeError, ValueError):
-            pass
+        if isinstance(height, str) and height.endswith("%"):
+            if parent_h is not None:
+                try:
+                    pct = float(height[:-1])
+                    h = max(0, int(parent_h * pct / 100.0))
+                except (TypeError, ValueError):
+                    pass
+            # 父高度未知 → 百分比无效，保持内容高度（React Ink 语义）
+        else:
+            try:
+                h = max(0, int(height))
+            except (TypeError, ValueError):
+                pass
     mn = fiber.props.get("minHeight")
     if mn is not None:
         try:
@@ -698,7 +736,7 @@ def _measure(fiber: Fiber, x: int, y: int, avail_w: int, fill: bool = True) -> L
                 content_w = max((wcswidth_simple(line) for line in text.split("\n")), default=0)
             else:
                 content_w = 0
-            width = _clamp_width(fiber, max(0, min(avail_w, content_w)))
+            width = _clamp_width(fiber, max(0, min(avail_w, content_w)), avail_w)
         # ★ 换行缓存（方向2 P1+P3）：结构 ``(ref, (width, text_wrap), style_fp, lines, ref_len)``
         #   - cache[0] = ref：styled 列表引用（引用级快速路径）或 text 字符串
         #   - cache[1] = (width, text_wrap)
@@ -795,7 +833,7 @@ def _measure(fiber: Fiber, x: int, y: int, avail_w: int, fill: bool = True) -> L
             # 方向1 步骤3：width 畸形兜底（复用 _resolve_width）
             width = _resolve_width(fiber, avail_w)
         else:
-            width = _clamp_width(fiber, avail_w if fill else 1)
+            width = _clamp_width(fiber, avail_w if fill else 1, avail_w)
         h = fiber.props.get("height", 1)
         try:
             h = max(0, int(h))
@@ -848,7 +886,83 @@ def _measure(fiber: Fiber, x: int, y: int, avail_w: int, fill: bool = True) -> L
     pad_h = pad_l + pad_r  # 横向 padding 总量
     pad_v = pad_t + pad_b  # 纵向 padding 总量
     children = layout_children(fiber)
+    # ── 绝对定位子节点分离（完善 react ink position="absolute"）──
+    # 绝对定位元素脱离文档流：不参与父容器正常流布局（不占宽度/高度）。
+    # 具体定位由 ``_layout_absolute_pass``（layout_tree 第二遍）在整树测量
+    # 完成后执行（定位基准 = 最近 position="relative" 祖先的确定尺寸）。
+    abs_children = [c for c in children if c.props.get("position") == "absolute"]
+    if abs_children:
+        children = [c for c in children if c.props.get("position") != "absolute"]
+    # ── 父可用高度传播（height="50%" 百分比解析）──
+    # 容器自身显式数字 height 时，子节点百分比 height 可相对它解析；
+    # 父高度未知（内容驱动/百分比）时不传播（子节点百分比回退内容高度）。
+    explicit_h = fiber.props.get("height")
+    parent_avail_h = None
+    if explicit_h is not None:
+        if not (isinstance(explicit_h, str) and explicit_h.endswith("%")):
+            try:
+                parent_avail_h = max(0, int(explicit_h))
+            except (TypeError, ValueError):
+                parent_avail_h = None
+    if parent_avail_h is not None:
+        for child in children:
+            child._parent_avail_h = parent_avail_h
     direction = fiber.props.get("flexDirection", "column")
+
+    # ── flexWrap="wrap"（换行流式布局，完善 react ink flexbox）──
+    # 子节点内容自适应宽度，超出行内宽换到下一行；行高 = 该行最大子高；
+    # 总高 = 各行累加 + 行间距（gap）。行内顶对齐（简化——不做行内
+    # alignItems 纵向偏移）；flexGrow/justifyContent 不适用（每行独立，文档
+    # 注明）。换行后重排各行 y（``_translate_subtree_y`` 保证嵌套容器后代
+    # 坐标正确）。宽度：显式 width 优先；否则占满可用宽度（wrap 通常配合
+    # 明确容器宽度）。
+    flex_wrap = fiber.props.get("flexWrap") == "wrap"
+    if direction == "row" and flex_wrap and children:
+        if explicit_w is not None:
+            width = _resolve_width(fiber, avail_w)
+            wrap_inner_w = max(0, width - (pad_h + 2 * border))
+        else:
+            wrap_inner_w = max(0, avail_w - (pad_h + 2 * border))
+        wrap_lines: list[list[Fiber]] = [[]]
+        wrap_heights: list[int] = []
+        cur_x = inner_x
+        for child in children:
+            # 先以整行内宽测量（内容自然宽，不被剩余宽度截断——换行判断须
+            # 用自然宽：剩余宽为 0 时测量宽为 0，换行判断恒 False）
+            cbox = _measure(child, cur_x, inner_y, wrap_inner_w, fill=False)
+            if wrap_lines[-1] and (cur_x - inner_x) + cbox.w > wrap_inner_w:
+                wrap_heights.append(
+                    max((c.layout_box.h for c in wrap_lines[-1]), default=0)
+                )
+                wrap_lines.append([])
+                cur_x = inner_x
+                # 换行后重新测量（y 不影响宽度；x 影响嵌套 relative/绝对定位
+                # 后代坐标——统一以最终 x 测量保证后代坐标正确）
+                cbox = _measure(child, cur_x, inner_y, wrap_inner_w, fill=False)
+            wrap_lines[-1].append(child)
+            cur_x += cbox.w + spacing
+        wrap_heights.append(
+            max((c.layout_box.h for c in wrap_lines[-1]), default=0)
+        )
+        row_h = sum(wrap_heights)
+        if len(wrap_lines) > 1:
+            row_h += spacing * (len(wrap_lines) - 1)
+        # 重排各行 y（测量时全部位于 inner_y）
+        line_y = inner_y
+        for line_children, lh in zip(wrap_lines, wrap_heights):
+            for child in line_children:
+                cb = child.layout_box
+                if cb.y != line_y:
+                    _translate_subtree_y(child, line_y - cb.y)
+            line_y += lh + spacing
+        if explicit_w is None:
+            width = _resolve_width(fiber, avail_w)
+        content_h = row_h
+        h = content_h + (pad_v + 2 * border)
+        h = _resolve_height(fiber, h)
+        box = LayoutBox(x, y, width, h)
+        fiber.layout_box = box
+        return box
 
     if direction == "row":
         # 子节点横向排列（内容自适应宽度），高度为最大子高
@@ -892,7 +1006,7 @@ def _measure(fiber: Fiber, x: int, y: int, avail_w: int, fill: bool = True) -> L
         if explicit_w is None:
             content_w = cursor_x - inner_x
             width = _clamp_width(
-                fiber, max(0, min(avail_w, content_w + pad_h + 2 * border)),
+                fiber, max(0, min(avail_w, content_w + pad_h + 2 * border)), avail_w,
             )
         # ★ row flexGrow（方向1 完善 flexbox）：显式宽度富余时按 flexGrow 分配
         #   额外宽度（横向主轴 grow——修复前 flexGrow 仅作用于 column 高度）。
@@ -1009,7 +1123,7 @@ def _measure(fiber: Fiber, x: int, y: int, avail_w: int, fill: bool = True) -> L
                 if probe_box.w > probe_w:
                     probe_w = probe_box.w
             width = _clamp_width(
-                fiber, max(0, min(avail_w, probe_w + pad_h + 2 * border)),
+                fiber, max(0, min(avail_w, probe_w + pad_h + 2 * border)), avail_w,
             )
         inner_w = max(0, width - (pad_h + 2 * border))
         cursor_y = inner_y
@@ -1183,8 +1297,147 @@ def _measure(fiber: Fiber, x: int, y: int, avail_w: int, fill: bool = True) -> L
     return box
 
 
+def _abs_int(value) -> int | None:
+    """解析绝对定位锚点值（top/left/right/bottom）为 int；畸形回退 None。"""
+    if value is None:
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _place_absolute(fiber: Fiber, base: Fiber) -> None:
+    """将绝对定位节点（position="absolute"）相对基准容器内容区定位。
+
+    锚点解析（React Ink ``position: absolute`` 语义）：
+      - ``left`` → x = 内容区左 + left；``right``（无 left）→ x = 内容区右 - right - w；
+      - ``top`` → y = 内容区顶 + top；``bottom``（无 top）→ y = 内容区底 - bottom - h；
+      - 无锚点 → 内容区左上；
+      - ``width``/``height`` 显式（含 ``"50%"`` 百分比，相对内容区尺寸）→
+        固定尺寸；left+right / top+bottom 同时指定且无显式宽/高 → 拉伸；
+      - 均无 → 内容自适应（fill=False 测量）。
+
+    放置：有确定尺寸时以 ``_measure`` 重新测量（fill=True——固定尺寸容器
+    内部正常 flex 布局），再强制写入最终 w/h；纯内容尺寸时仅平移子树
+    （``_translate_subtree_*`` 保证嵌套容器后代坐标正确）。
+    """
+    base_box = base.layout_box
+    if base_box is None:
+        return
+    pad_l, pad_r, pad_t, pad_b = _resolve_padding(base)
+    border = base.props.get("border") or 0
+    try:
+        border = max(0, int(border))
+    except (TypeError, ValueError):
+        border = 0
+    inner_x = base_box.x + pad_l + border
+    inner_y = base_box.y + pad_t + border
+    inner_w = max(0, base_box.w - (pad_l + pad_r + 2 * border))
+    inner_h = max(0, base_box.h - (pad_t + pad_b + 2 * border))
+
+    left = _abs_int(fiber.props.get("left"))
+    right = _abs_int(fiber.props.get("right"))
+    top = _abs_int(fiber.props.get("top"))
+    bottom = _abs_int(fiber.props.get("bottom"))
+    width_prop = fiber.props.get("width")
+    height_prop = fiber.props.get("height")
+    has_w = width_prop is not None
+    has_h = height_prop is not None
+
+    # ── 尺寸解析 ──
+    if has_w:
+        w = _resolve_length(width_prop, inner_w)
+    else:
+        # 内容测量（fill=False → 内容自适应宽；显式 height 由 _measure 应用）
+        box = _measure(fiber, inner_x, inner_y, inner_w, fill=False)
+        w = box.w
+    if has_h:
+        if isinstance(height_prop, str) and height_prop.endswith("%"):
+            try:
+                h = max(0, int(inner_h * float(height_prop[:-1]) / 100.0))
+            except (TypeError, ValueError):
+                h = 0
+        else:
+            try:
+                h = max(0, int(height_prop))
+            except (TypeError, ValueError):
+                h = 0
+    else:
+        # 无显式高：内容测量值（has_w 分支已 _measure 过；has_w 且未测量时
+        # 重新取 layout_box）
+        box = fiber.layout_box
+        h = box.h if box is not None else 0
+    # 拉伸（left+right / top+bottom 同时指定且无显式宽/高）
+    stretch_x = left is not None and right is not None and not has_w
+    stretch_y = top is not None and bottom is not None and not has_h
+    if stretch_x:
+        w = max(0, inner_w - left - right)
+    if stretch_y:
+        h = max(0, inner_h - top - bottom)
+
+    # ── 锚点解析 ──
+    if left is not None:
+        x = inner_x + left
+    elif right is not None:
+        x = inner_x + inner_w - right - w
+    else:
+        x = inner_x
+    if top is not None:
+        y = inner_y + top
+    elif bottom is not None:
+        y = inner_y + inner_h - bottom - h
+    else:
+        y = inner_y
+
+    # ── 最终放置 ──
+    if has_w or has_h or stretch_x or stretch_y:
+        # 有确定尺寸 → 重新测量（fill=True——固定尺寸容器内部正常 flex），
+        # 再强制写入最终 w/h（修正百分比宽二次缩放误差）
+        _measure(fiber, x, y, max(1, w), fill=True)
+        cb = fiber.layout_box
+        if cb is not None:
+            cb.w = w
+            cb.h = h
+            fiber.layout_box = cb
+    else:
+        # 纯内容尺寸 → 平移子树到锚点（后代坐标随动）
+        box = fiber.layout_box
+        if box is not None:
+            if box.x != x:
+                _translate_subtree_x(fiber, x - box.x)
+            if box.y != y:
+                _translate_subtree_y(fiber, y - box.y)
+
+
+def _layout_absolute_pass(root: Fiber) -> None:
+    """第二遍布局：绝对定位元素（position="absolute"）相对基准容器放置。
+
+    正常流布局（``_measure``）已跳过 absolute 子节点（不占空间）；本 pass 在
+    整树测量完成后沿树遍历，对每个 absolute 节点按其 top/left/right/bottom
+    相对**最近的 ``position="relative"`` 祖先**（缺省 root）的内容区定位。
+    容器自身 ``position="relative"`` 时作为其子节点的定位基准；嵌套
+    absolute 容器内的 relative/absolute 孙节点经递归自然处理。
+    """
+
+    def _visit(fiber: Fiber, base: Fiber | None) -> None:
+        base_for_children = (
+            fiber if fiber.props.get("position") == "relative" else base
+        )
+        for child in layout_children(fiber):
+            _visit(child, base_for_children)
+        if fiber.props.get("position") == "absolute" and base is not None:
+            _place_absolute(fiber, base)
+
+    _visit(root, root)
+
+
 def layout_tree(root_fiber: Fiber, width: int) -> int:
     """布局整棵 host 树。
+
+    两阶段：
+      1. ``_measure`` 正常流布局（absolute 子节点不占空间）；
+      2. ``_layout_absolute_pass`` 绝对定位元素第二遍定位。
 
     Args:
         root_fiber: 根 fiber（ROOT 或 APP host）。
@@ -1195,6 +1448,7 @@ def layout_tree(root_fiber: Fiber, width: int) -> int:
     """
     root = _skip_function(root_fiber) or root_fiber
     box = _measure(root, 0, 0, width)
+    _layout_absolute_pass(root)
     return box.h
 
 

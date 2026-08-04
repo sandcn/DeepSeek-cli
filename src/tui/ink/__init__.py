@@ -70,6 +70,26 @@ from .helpers import (
 from .registry import register_host, unregister_host, get_host, has_host
 from .error_boundary import ErrorBoundary, create_error_boundary
 from .extra import Transform, Static, Newline, Fragment, STATIC_TEXT
+from .widgets import (
+    SelectInput,
+    TextInput,
+    MultiSelect,
+    ConfirmInput,
+    Spinner,
+    ProgressBar,
+    Table,
+    Badge,
+    Divider,
+    SPINNER_FRAMES,
+    Row,
+    Column,
+    Center,
+    Stack,
+    HStack,
+    VStack,
+    Grid,
+    ZStack,
+)
 from .hooks import (
     use_state,
     use_reducer,
@@ -140,6 +160,26 @@ __all__ = [
     "Newline",
     "Fragment",
     "STATIC_TEXT",
+    # widgets
+    "SelectInput",
+    "TextInput",
+    "MultiSelect",
+    "ConfirmInput",
+    "Spinner",
+    "ProgressBar",
+    "Table",
+    "Badge",
+    "Divider",
+    "SPINNER_FRAMES",
+    # layout containers
+    "Row",
+    "Column",
+    "Center",
+    "Stack",
+    "HStack",
+    "VStack",
+    "Grid",
+    "ZStack",
     # hooks
     "use_state",
     "use_reducer",
