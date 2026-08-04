@@ -13,6 +13,7 @@
 from __future__ import annotations
 
 from src._compat import dataclass
+from dataclasses import field
 from typing import Iterable
 
 from src.tui.core.style import Style
@@ -35,17 +36,20 @@ class StyledRun:
 
     text: str
     style: Style | None = None
+    #: 显示宽度缓存（PERF：frozen 不可变 → ``__post_init__`` 一次性计算；
+    #: 热路径（Line.width/diff/truncate/measure）免重复 ``wcswidth_simple``）。
+    #: ``compare=False``（eq/hash 不参与——text 相同则宽度必相同，语义不变）
+    #: ``repr=False``（调试输出不显示）。
+    width: int = field(init=False, repr=False, compare=False, default=0)
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "width", wcswidth_simple(self.text))
 
     def render(self) -> str:
         """渲染为 ANSI 字符串（无样式时原样返回）。"""
         if self.style:
             return self.style.apply(self.text)
         return self.text
-
-    @property
-    def width(self) -> int:
-        """文本显示宽度（wcswidth_simple）。"""
-        return wcswidth_simple(self.text)
 
 
 # ═══════════════════════════════════════════════════════════
@@ -57,11 +61,12 @@ class Line:
     """一行渲染输出（StyledRun 序列）。
 
     - ``render()`` 合并所有 run 为 ANSI 字符串。
-    - ``width`` 为所有 run 的显示宽度总和。
+    - ``width`` 为所有 run 的显示宽度总和（惰性缓存：首次访问计算，append 增量
+      维护——渲染热路径（diff/截断/画布转换）免重复 ``wcswidth_simple``）。
     - ``append(text, style)`` 追加一段；``append_run(run)`` 追加 StyledRun。
     """
 
-    __slots__ = ("runs",)
+    __slots__ = ("runs", "_w")
 
     def __init__(self, runs: Iterable[StyledRun] | None = None) -> None:
         # ★ 性能（PERF-7）：传入 list 时直接复用引用（免 O(n) 拷贝）——
@@ -75,6 +80,8 @@ class Line:
             self.runs = runs
         else:
             self.runs = list(runs)
+        # 宽度惰性缓存（None=未计算；append 增量维护）
+        self._w: int | None = None
 
     @classmethod
     def of(cls, text: str, style: Style | None = None) -> "Line":
@@ -87,9 +94,14 @@ class Line:
             return
         if self.runs and self.runs[-1].style == style:
             last = self.runs[-1]
+            # ★ 增量宽度：替换末 run（新宽 = 旧宽 + text 宽）——直接加 text 宽
             self.runs[-1] = StyledRun(last.text + text, style)
+            if self._w is not None:
+                self._w += wcswidth_simple(text)
             return
         self.runs.append(StyledRun(text, style))
+        if self._w is not None:
+            self._w += wcswidth_simple(text)
 
     def append_run(self, run: StyledRun) -> None:
         """追加 StyledRun。"""
@@ -103,11 +115,15 @@ class Line:
 
     @property
     def width(self) -> int:
-        """显示宽度总和。"""
-        total = 0
-        for r in self.runs:
-            total += r.width
-        return total
+        """显示宽度总和（惰性缓存：首次访问计算，append 增量维护）。"""
+        w = self._w
+        if w is None:
+            total = 0
+            for r in self.runs:
+                total += r.width  # StyledRun 缓存宽度（O(1)/run）
+            self._w = total
+            return total
+        return w
 
     @property
     def plain(self) -> str:
@@ -119,9 +135,11 @@ class Line:
 
         显式 ``list(self.runs)`` 拷贝——``Line.__init__`` 对 list 直接复用
         引用（PERF-7 优化），clone 必须创建独立 runs 列表（副本追加不影响
-        原行）。
+        原行）。宽度缓存同步复制（runs 未变，宽度相同）。
         """
-        return Line(list(self.runs))
+        new = Line(list(self.runs))
+        new._w = self._w
+        return new
 
     def __repr__(self) -> str:  # pragma: no cover - 调试用
         return f"Line({self.plain!r})"

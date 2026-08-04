@@ -592,18 +592,19 @@ class InkRenderer:
             doc_idx = q - drift1
             old_line = prev.lines[old_idx] if 0 <= old_idx < prev_h else None
             if doc_idx < 0:
-                # 文档上方空行区（增长时文档进入屏幕内）：旧内容非空才清除
-                if old_line is not None:
+                # 文档上方空行区（增长时文档进入屏幕内）：物理行须为空。
+                # ★ BUG-76 同源：漂移时 old_idx 越界（残留自更早帧）→ 保守清除。
+                if old_line is not None or old_idx >= prev_h:
                     rewrites.append((q, -1))
                 continue
             if doc_idx > new_h:
-                # 残留（不应发生；防御）：旧内容非空才清除
-                if old_line is not None:
+                # 残留（不应发生；防御）：物理行须为空。★ BUG-76 同源。
+                if old_line is not None or old_idx >= prev_h:
                     rewrites.append((q, -1))
                 continue
             if doc_idx == new_h:
-                # 新文档末尾空行：旧内容非空才清除
-                if old_line is not None:
+                # 新文档末尾空行：物理行须为空。★ BUG-76 同源。
+                if old_line is not None or old_idx >= prev_h:
                     rewrites.append((q, -1))
                 continue
             new_line = frame.lines[doc_idx]
@@ -851,14 +852,19 @@ class InkRenderer:
             old_idx = q - old_drift
             old_line = prev.lines[old_idx] if 0 <= old_idx < prev_h else None
             if doc_idx < 0:
-                # 文档上方空行区（缩短进入屏幕内时可见区顶部）：旧内容非空才清除
-                if old_line is not None:
+                # 文档上方空行区（缩短进入屏幕内时可见区顶部）：物理行须为空。
+                # ★ 渲染错误（BUG-76）：物理行旧内容不在 prev doc 中
+                #   （``old_idx >= prev_h``——物理缓冲漂移，旧内容残留自更早
+                #   帧）时无法用 ``old_line is None`` 判断空——须保守清除，
+                #   否则缩短进入屏幕内后旧行残留在可见区顶部。
+                if old_line is not None or old_idx >= prev_h:
                     rewrites.append((q, -1))
                 continue
             if doc_idx >= new_h:
                 # 新文档末尾空行（doc_idx == new_h）或残留（> new_h）：
-                # 物理行须为空——旧内容非空才需要清除。
-                if old_line is not None:
+                # 物理行须为空。★ BUG-76 同源：漂移时 old_idx 越界（物理行
+                # 内容残留自更早帧）→ 保守清除，防缩短后旧行残留。
+                if old_line is not None or old_idx >= prev_h:
                     rewrites.append((q, -1))
                 continue
             new_line = frame.lines[doc_idx]

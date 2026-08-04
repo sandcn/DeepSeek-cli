@@ -1,0 +1,127 @@
+"""radio — RadioList 单选列表控件（React Ink 生态 ink-radio-list 等价物）。
+
+与 SelectInput 的差异：
+  - 视觉：RadioList 每行前置**单选指示符** ``◉ ``（选中）/``○ ``（未选中），
+    SelectInput 用 ``> `` 前缀 + 高亮样式；
+  - 交互：up/down 移动、space/enter 选中（React Ink radio 语义）；
+  - 返回值：``onSelect(item)``（item 为 ``{"label", "value"}`` dict）。
+
+基于 ``use_input`` + ``use_state``（同批连续按键经 ref 镜像正确累积），
+``focus=False`` 时不参与输入路由（与 SelectInput/MultiSelect 契约一致）。
+"""
+
+from __future__ import annotations
+
+import logging
+
+from src.tui.core.style import Style
+from src.tui._screen import wcswidth_simple
+from ..element import TEXT, Element, h
+from ..helpers import _parse_color
+from ..hooks import use_state, use_input, use_ref
+from ..widgets.layout import Column
+from ..widgets.interactive import _normalize_items, _clamp_index, _visible_window, _call
+
+_logger = logging.getLogger(__name__)
+
+__all__ = ["RadioList"]
+
+#: 单选指示符（几何符号单宽，wcswidth_simple 宽度 1——安全对齐）
+_CHECKED = "\u25c9 "    # ◉ 实心圆点（选中）
+_UNCHECKED = "\u25cb "  # ○ 空心圆点（未选中）
+
+
+def RadioList(props: dict) -> Element:
+    """React Ink ``ink-radio-list`` 等价物：单选列表控件。
+
+    Props:
+        items: list[str] 或 list[{"label": str, "value": Any}]。
+        onSelect: ``(item) -> None``——选中（space/enter）时回调，item 为
+            ``{"label", "value"}`` dict。
+        focus: 是否参与输入路由（默认 True）。
+        initialIndex: 初始选中下标（默认 0）。
+        limit: 可见 item 数（超出滚动窗口；默认 None 全部显示）。
+        highlightStyle: 选中行文本样式（默认 ``Style(fg=6)`` cyan）。
+        checkedPrefix/uncheckedPrefix: 选中/未选中指示符
+            （默认 ``"◉ "`` / ``"○ "``）。
+
+    行为：
+      - up/down 移动选中；space/enter 确认（onSelect）；
+      - 选中行前置实心圆点，未选中行前置空心圆点（同宽对齐）。
+
+    Returns:
+        Column 元素（纵向堆叠的 item 行）。
+    """
+    items = _normalize_items(props.get("items", []))
+    on_select = props.get("onSelect")
+    focus = bool(props.get("focus", True))
+    limit = props.get("limit")
+    if limit is not None:
+        try:
+            limit = max(1, int(limit))
+        except (TypeError, ValueError, OverflowError):
+            limit = None
+    initial_index = 0
+    try:
+        initial_index = max(0, int(props.get("initialIndex", 0)))
+    except (TypeError, ValueError, OverflowError):
+        initial_index = 0
+    if items:
+        initial_index = min(initial_index, len(items) - 1)
+    highlight_style = props.get("highlightStyle") or Style(fg=6)
+    checked_prefix = str(props.get("checkedPrefix", _CHECKED))
+    unchecked_prefix = str(props.get("uncheckedPrefix", _UNCHECKED))
+    # 指示符对齐宽度（选中/未选中前缀等宽；自定义前缀时取较宽者）
+    prefix_w = max(wcswidth_simple(checked_prefix), wcswidth_simple(unchecked_prefix))
+
+    selected, set_selected = use_state(initial_index)
+    # ★ ref 镜像（同批连续按键修复）：与 SelectInput 同语义——handler 闭包
+    #   捕获渲染期 state，同批按键之间无重渲染，ref 保存最新值。
+    selected_ref = use_ref(selected)
+    selected_ref.current = selected
+
+    def _handle(event) -> bool:
+        if not focus or not items:
+            return False
+        cur = _clamp_index(selected_ref.current, len(items))
+        if cur != selected_ref.current:
+            selected_ref.current = cur
+            set_selected(cur)
+        if event.kind == "arrow_up":
+            if cur > 0:
+                new = cur - 1
+                selected_ref.current = new
+                set_selected(new)
+            return True
+        if event.kind == "arrow_down":
+            if cur < len(items) - 1:
+                new = cur + 1
+                selected_ref.current = new
+                set_selected(new)
+            return True
+        if event.kind in ("enter", "space") or (event.kind == "char" and event.char == " "):
+            _call(on_select, items[cur])
+            return True
+        return False
+
+    use_input(_handle, focus)
+
+    selected_shown = _clamp_index(selected, len(items))
+    offset, count = _visible_window(selected_shown, len(items), limit)
+    rows = []
+    for i in range(count):
+        idx = offset + i
+        item = items[idx]
+        is_sel = idx == selected_shown
+        prefix = checked_prefix if is_sel else unchecked_prefix
+        # 指示符等宽对齐（自定义前缀宽度不同时补空格——布局稳定不跳动）
+        pad = " " * max(0, prefix_w - wcswidth_simple(prefix))
+        style = highlight_style if is_sel else None
+        rows.append(
+            h(TEXT, {
+                "key": f"radio-{idx}",
+                "children": prefix + pad + item["label"],
+                "style": style,
+            })
+        )
+    return h(Column, None, rows)

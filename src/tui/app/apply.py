@@ -96,21 +96,48 @@ def build_assistant_line(content: str) -> list[AnsiLine]:
 
 
 def _do_notification(model, cmd) -> None:
-    line = AnsiLine.of("  \u2502 ", _S_NOTICE)
-    line.append(cmd.text)
-    model.append_committed("notification", [line])
+    # ★ 渲染错误（BUG-75 同族）：通知文本可能含 ``\n``（外部消息/工具输出
+    #   拼接）——修复前直接 ``line.append(cmd.text)`` 把换行符嵌进单条
+    #   AnsiLine，frame 行内嵌字面换行符渲染成多条终端行，破坏行级 diff
+    #   模型与光标定位（与 ``build_assistant_line`` 按 \n 拆行同语义）。
+    lines = []
+    for segment in str(cmd.text).split("\n"):
+        line = AnsiLine.of("  \u2502 ", _S_NOTICE)
+        if segment:
+            line.append(segment)
+        lines.append(line)
+    model.append_committed("notification", lines)
 
 
 def _do_write_line(model, cmd) -> None:
-    model.append_committed("write_line", [ansi_to_line(cmd.text)])
+    # ★ 渲染错误（BUG-75）：WRITE_LINE 文本可能含 ``\n``——修复前
+    #   ``ansi_to_line(cmd.text)`` 把换行符当普通字符保留在单条 AnsiLine 中
+    #   （frame 行内嵌 \n → 一条 frame 行渲染成多条终端行，行级 diff / 光标
+    #   定位错位）。按 \n 拆行，每段独立解析 ANSI；空段保留为空行（结构
+    #   保持）。
+    lines = []
+    for segment in str(cmd.text).split("\n"):
+        if segment:
+            line = ansi_to_line(segment)
+            if line.runs:
+                lines.append(line)
+        else:
+            lines.append(AnsiLine())
+    model.append_committed("write_line", lines)
 
 
 def _do_error(model, cmd) -> None:
     if not cmd.message:
         return
-    line = AnsiLine.of("  ! ", _S_ERROR_ICON)
-    line.append(cmd.message, _S_ERROR)
-    model.append_committed("error", [line])
+    # ★ 渲染错误（BUG-75 同族）：错误消息可能含 ``\n``——按 \n 拆行，每行
+    #   前缀 ``! `` 标记（与 ``build_user_line`` 多行前缀语义一致）。
+    lines = []
+    for segment in str(cmd.message).split("\n"):
+        line = AnsiLine.of("  ! ", _S_ERROR_ICON)
+        if segment:
+            line.append(segment, _S_ERROR)
+        lines.append(line)
+    model.append_committed("error", lines)
 
 
 def _do_splash(model, cmd) -> None:

@@ -29,7 +29,7 @@ from ..widgets.layout import Row, Column
 
 _logger = logging.getLogger(__name__)
 
-__all__ = ["SelectInput", "TextInput", "MultiSelect", "ConfirmInput"]
+__all__ = ["SelectInput", "TextInput", "MultiSelect", "ConfirmInput", "Toggle"]
 
 
 # ═══════════════════════════════════════════════════════════
@@ -61,9 +61,18 @@ def _normalize_items(items) -> list[dict]:
     支持两种输入形态：
       - list of str（label == value）；
       - list of dict（含 "label" 键；缺省回退 "value"）。
+
+    ★ 健壮性（渲染错误防御）：items 不可迭代（None/标量/对象）时回退空列表
+      ——修复前 ``for item in items or []`` 对不可迭代的 items（如 bool/float）
+      抛 TypeError，SelectInput/MultiSelect 渲染崩溃。
     """
+    if items is None:
+        return []
+    if not hasattr(items, "__iter__"):
+        # 不可迭代：回退空列表（渲染安全）
+        return []
     out: list[dict] = []
-    for item in items or []:
+    for item in items:
         if isinstance(item, dict):
             label = str(item.get("label", item.get("value", "")))
             out.append({"label": label, "value": item.get("value", label)})
@@ -147,12 +156,12 @@ def SelectInput(props: dict) -> Element:
     if limit is not None:
         try:
             limit = max(1, int(limit))
-        except (TypeError, ValueError):
+        except (TypeError, ValueError, OverflowError):
             limit = None
     initial_index = 0
     try:
         initial_index = max(0, int(props.get("initialIndex", 0)))
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         initial_index = 0
     if items:
         initial_index = min(initial_index, len(items) - 1)
@@ -392,12 +401,12 @@ def MultiSelect(props: dict) -> Element:
     if limit is not None:
         try:
             limit = max(1, int(limit))
-        except (TypeError, ValueError):
+        except (TypeError, ValueError, OverflowError):
             limit = None
     initial_index = 0
     try:
         initial_index = max(0, int(props.get("initialIndex", 0)))
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         initial_index = 0
     if items:
         initial_index = min(initial_index, len(items) - 1)
@@ -546,3 +555,69 @@ def ConfirmInput(props: dict) -> Element:
     if label_style is not None:
         return h(TEXT, {"children": label, "style": label_style})
     return h(TEXT, {"children": label})
+
+
+# ═══════════════════════════════════════════════════════════
+# Toggle — 开关控件
+# ═══════════════════════════════════════════════════════════
+
+#: Toggle 默认指示符（几何符号单宽，wcswidth_simple 宽度 1——安全对齐）
+_TOGGLE_CHECKED = "\u25cf "
+_TOGGLE_UNCHECKED = "\u25cb "
+
+
+def Toggle(props: dict) -> Element:
+    """React Ink ``<Toggle>`` 等价物（ink-toggle 风格）：开关控件。
+
+    Props:
+        value: 受控开关值（默认 False）。
+        onChange: ``(value: bool) -> None``——切换时回调。
+        focus: 是否参与输入路由（默认 True）。
+        label: 标签文本（可选；无标签时仅渲染指示符）。
+        checkedPrefix/uncheckedPrefix: 选中/未选中指示符
+            （默认 ``"● "`` / ``"○ "``）。
+        checkedStyle: 选中态样式（默认 ``Style(fg=6)`` cyan）。
+        style: 基础样式（与 checkedStyle 合并——未选中态使用）。
+        labelStyle: 标签样式（默认 None）。
+
+    行为（与 ink-toggle 对齐）：
+      - space（或空格 char）/ enter 切换开关值并触发 ``onChange``；
+      - 其余按键放行（不消费）。
+
+    Returns:
+        BOX 元素（横向：指示符 + 标签）。
+    """
+    value = bool(props.get("value", False))
+    onChange = props.get("onChange")
+    focus = bool(props.get("focus", True))
+    label = props.get("label")
+    label = None if label is None else str(label)
+    checked_prefix = str(props.get("checkedPrefix", _TOGGLE_CHECKED))
+    unchecked_prefix = str(props.get("uncheckedPrefix", _TOGGLE_UNCHECKED))
+    checked_style = props.get("checkedStyle") or Style(fg=6)
+    base_style = props.get("style")
+    label_style = props.get("labelStyle")
+    # ★ ref 镜像（同批连续按键修复）：handler 读 ref 而非闭包 value——同一渲染
+    #   批次内连续 space 事件之间无重渲染，闭包 value 陈旧会反复提交旧值。
+    value_ref = use_ref(value)
+    value_ref.current = value
+
+    def _handle(event) -> bool:
+        if not focus:
+            return False
+        if event.kind == "space" or (event.kind == "char" and event.char == " ") or event.kind == "enter":
+            new_value = not value_ref.current
+            value_ref.current = new_value
+            _call(onChange, new_value)
+            return True
+        return False
+
+    use_input(_handle, focus)
+
+    indicator = checked_prefix if value else unchecked_prefix
+    indicator_style = checked_style if value else base_style
+    children = [h(TEXT, {"children": indicator, "style": indicator_style, "height": 1})]
+    if label:
+        children.append(h(TEXT, {"children": label, "style": label_style, "height": 1}))
+    # ★ 阶段2（标准布局容器重构）：row BOX → Row（语义化门面，输出等价）。
+    return h(Row, {"height": 1}, children)

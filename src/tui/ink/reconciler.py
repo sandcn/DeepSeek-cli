@@ -138,6 +138,36 @@ class Reconciler:
 
     # ── 调和 ────────────────────────────────────────
 
+    @staticmethod
+    def _set_props(fiber: Fiber, props: dict) -> None:
+        """设置 fiber.props——**内容相等时保持旧引用**（性能关键）。
+
+        背景：每帧组件树重建产生新 Element（新 props dict），reconciler 若
+        无条件 ``fiber.props = element.props`` 则 props 引用每帧变化 →
+        layout._measure 的 ``_measure_cache`` 引用级命中（``mc[1] is
+        fiber.props``）恒 miss → 每帧对全部 host fiber 重做 props 解析
+        （实测 _measure_cache 命中率 0%）。props **值不变**的帧（无变化帧/
+        流式帧中已渲染行）本可复用测量结果。
+
+        修复：值比较——新旧 props 内容相等时保持旧引用（内容不变，复用旧
+        引用与更新到新引用渲染结果完全等价，满足 props 不可变契约；
+        fiber.props 从不原地修改，仅整体替换）；内容变化才更新引用。
+        不可比较对象（props 含自定义 ``__eq__`` 抛异常的 value）经
+        try/except 兜底视为不等 → 更新引用（安全侧，仅损失一次缓存命中）。
+
+        React 语义对照：React 中 props 对象通常由父组件缓存复用（同一对象
+        引用传给子组件）；本框架每帧新建 dict，本优化在**内容等价**前提下
+        模拟 React 的对象复用，不改变 props 语义。
+        """
+        old = fiber.props
+        if old is props:
+            return
+        try:
+            if old == props:
+                return  # 内容相等：保持引用稳定（_measure_cache 引用级命中）
+        except Exception:
+            pass  # 不可比较（安全侧：更新引用）
+        fiber.props = props
     def _reconcile_children(self, return_fiber: Fiber, elements: list[Element]) -> None:
         """调和 return_fiber 的子元素列表（按 key/type diff 子 sibling 链）。
 
@@ -242,11 +272,12 @@ class Reconciler:
                 else:
                     # ★ moved 标记：旧位置 != 新位置 → True（每帧重算，非累计）
                     fiber.moved = old_index_map.get(key) != new_idx
-                # ★ 性能（PERF-7）：直接复用 ``element.props`` 引用（Element
-                #   为 frozen 不可变，``__post_init__`` 已拷贝为独立 dict；
-                #   fiber.props 从不原地修改，仅整体替换）——免每帧 O(n)
-                #   dict 浅拷贝（大组件树每帧 1000+ 元素场景收益明显）。
-                fiber.props = element.props
+                # ★ 性能（PERF-7 + props 引用级缓存）：``element.props`` 为
+                #   frozen 不可变 dict（``__post_init__`` 拷贝）——经
+                #   ``_set_props`` 值比较复用：内容相等时保持旧引用（
+                #   _measure_cache 引用级命中，0% → 高命中率），内容变化才
+                #   更新（免每帧 O(n) dict 浅拷贝）。
+                self._set_props(fiber, element.props)
                 fiber.deleted = False
                 fiber.return_ = return_fiber
                 self._begin_work(fiber, element)
@@ -324,9 +355,9 @@ class Reconciler:
             if i < n_old:
                 fiber = cur
                 cur = cur.sibling
-                # ★ 性能（PERF-7）：直接复用 ``el.props`` 引用（Element frozen
-                # 不可变；fiber.props 从不原地修改）——免每帧 dict 浅拷贝。
-                fiber.props = el.props
+                # ★ 性能（PERF-7 + props 引用级缓存）：经 ``_set_props``
+                #   值比较复用（内容相等保持旧引用 → _measure_cache 命中）。
+                self._set_props(fiber, el.props)
                 fiber.deleted = False
                 fiber.return_ = return_fiber
                 fiber.moved = False  # 稳定列表：位置不变
@@ -350,9 +381,9 @@ class Reconciler:
     ) -> Fiber:
         """调和单个元素（函数组件渲染输出）。"""
         if existing is not None and _is_same_type(existing, element):
-            # ★ 性能（PERF-7）：直接复用 ``element.props`` 引用（Element frozen
-            # 不可变；fiber.props 从不原地修改）——免每帧 dict 浅拷贝。
-            existing.props = element.props
+            # ★ 性能（PERF-7 + props 引用级缓存）：经 ``_set_props`` 值比较
+            #   复用（内容相等保持旧引用 → _measure_cache 命中）。
+            self._set_props(existing, element.props)
             existing.deleted = False
             existing.return_ = return_fiber
             existing.sibling = None
@@ -460,6 +491,19 @@ class Reconciler:
                 rendered = Element("text", {"children": str(rendered)}, ())
             fiber.child = self._reconcile_single(fiber, fiber.child, rendered)
         else:
+            children = element.children
+            ftype = fiber.type
+            # ★ 性能（PERF-21）：叶子内置 host 快路径——TEXT/SPACER/fragment
+            #   等叶子（内置 host 标签 + 无 children + 无旧子链）永不可能是
+            #   context provider（create_context 生成唯一 ``__ctx_*__`` 标签，
+            #   不属于 ``_BUILTIN_HOSTS``），且无子节点无需调和。跳过
+            #   ``contexts.clear()``（叶子永不写入）/ provider 检查 / 子调和
+            #   ——大组件树每帧数千叶子（1000+ TEXT）省数千次 dict 清空与
+            #   isinstance/注册表检查。仅 ``_host_ref`` 仍须设置（叶子也可
+            #   绑定 useMeasure ref）。
+            if not children and fiber.child is None and ftype in _BUILTIN_HOSTS:
+                fiber._host_ref = fiber.props.get("ref")
+                return
             # ★ context provider：先重置 contexts（每次渲染不残留旧值），
             #   再按 host 标签匹配注册的 Context（INK-3）——value 写入
             #   fiber.contexts（键为 ctx.tag 唯一标签）供子树 use_context
@@ -470,7 +514,6 @@ class Reconciler:
             #   （``h(BOX, {"ref": my_ref})``），此处存入 fiber 供 layout
             #   后填充（不参与样式/布局 props 消费）。
             fiber._host_ref = fiber.props.get("ref")
-            ftype = fiber.type
             # ★ 性能（方向1）：内置 host 标签（text/box/static/spacer/app/
             #   fragment）绝不可能是 context provider（create_context 生成
             #   唯一 ``__ctx_*__`` 标签）——跳过注册表 dict 查找（流式开放
@@ -490,14 +533,19 @@ class Reconciler:
                         fiber._last_provider_value = value
                         _hooks._bump_context_version()
                         _clear_context_cache_subtree(fiber.child)
-            children = element.children
             if children:
                 self._reconcile_children(fiber, list(children))
             elif fiber.child is not None:
                 # ★ 性能（方向1）：空子元素快路径——叶子/无子节点容器直接
                 #   删除旧子链（修复前无条件 ``_reconcile_children(fiber, [])``
                 #   仍构建空 maps + 遍历旧链，流式开放块每行 TEXT 都走一遍）。
-                self._reconcile_children(fiber, [])
+                # ★ 性能（PERF-16）：叶子 fiber 且旧子链为 None（首帧/纯叶子
+                #   复用）时**跳过函数调用**——``_reconcile_children(fiber, [])``
+                #   的空元素快路径只是遍历旧子链删除（此处旧子链已 None，零
+                #   操作）。大组件树每帧数千叶子（1000+ TEXT）省一次函数调用
+                #   与空检查。
+                if fiber.child is not None:
+                    self._reconcile_children(fiber, [])
 
     # ── ErrorBoundary（方向B 步骤9） ────────────────────
 
@@ -650,11 +698,18 @@ class Reconciler:
         """前序遍历 fiber 树，收集 active 且已设 handler 的 InputHook（跳过已删除）。
 
         ★ P-H9（性能）：原实现每次递归 ``self._collect_input_hooks(...)`` 需
-        加载 self + 属性查找 + 调用（每帧每节点重复）。改为局部 ``_visit``
-        闭包递归调用——``_visit(f.child)`` 仅加载局部变量（省属性查找），
-        10Hz 大组件树每帧数千节点时减少可感知开销。
+        加载 self + 属性查找 + 调用（每帧每节点重复）。改为局部闭包递归调用
+        ——``_visit(f.child)`` 仅加载局部变量（省属性查找），10Hz 大组件树每帧
+        数千节点时减少可感知开销。
+
+        ★ 性能（PERF-19）：递归闭包 → 显式栈迭代（大组件树每帧数千节点的
+        递归调用开销可感知；hook 收集顺序由 router 调用序决定——InputHook
+        的 ``seq`` 字段稳定递增，router 按 hooks_list 顺序调用，迭代收集
+        顺序与递归前序一致）。
         """
-        def _visit(f):
+        stack = [fiber]
+        while stack:
+            f = stack.pop()
             while f is not None:
                 if f.deleted:
                     f = f.sibling
@@ -663,10 +718,11 @@ class Reconciler:
                     for hook in f.hooks:
                         if isinstance(hook, InputHook) and hook.is_active and hook.handler is not None:
                             out.append(hook)
-                _visit(f.child)
-                f = f.sibling
-
-        _visit(fiber)
+                if f.child is not None:
+                    stack.append(f.sibling)
+                    f = f.child
+                else:
+                    f = f.sibling
 
     def _mark_deleted(self, fiber: Fiber) -> None:
         """标记子树删除（收集其 effect 销毁函数 + 清理 context 注册表）。
@@ -735,25 +791,34 @@ class Reconciler:
         绑定的 host）——仍须递归遍历（无法从根短路判定子树内是否有 ref），
         但跳过 ``hasattr`` 判定（直接读字段，Fiber 定义恒有该属性）。
 
+        ★ 性能（PERF-19）：递归 → 显式栈迭代（大组件树每帧数千节点的
+        ``f.child`` 递归调用开销可感知；迭代保持前序语义，ref 填充顺序与
+        递归一致——回调 ref 顺序无消费方依赖）。
+
         Args:
             fiber: 遍历起点（root fiber）。
         """
-        f = fiber
-        while f is not None:
-            if f.deleted:
-                f = f.sibling
-                continue
-            ref = f._host_ref
-            if ref is not None and f.layout_box is not None:
-                if callable(ref):
-                    try:
-                        ref(f.layout_box)
-                    except Exception:
-                        _logger.debug("host ref 回调异常 fiber=%s", f.type, exc_info=True)
-                elif hasattr(ref, "current"):
-                    ref.current = f.layout_box
-            self._attach_host_refs(f.child)
-            f = f.sibling
+        stack = [fiber]
+        while stack:
+            f = stack.pop()
+            while f is not None:
+                if f.deleted:
+                    f = f.sibling
+                    continue
+                ref = f._host_ref
+                if ref is not None and f.layout_box is not None:
+                    if callable(ref):
+                        try:
+                            ref(f.layout_box)
+                        except Exception:
+                            _logger.debug("host ref 回调异常 fiber=%s", f.type, exc_info=True)
+                    elif hasattr(ref, "current"):
+                        ref.current = f.layout_box
+                if f.child is not None:
+                    stack.append(f.sibling)
+                    f = f.child
+                else:
+                    f = f.sibling
 
     # ── effects 提交 ────────────────────────────────
 
@@ -831,20 +896,30 @@ class Reconciler:
                 deleted 标记——``_mark_deleted`` 收集删除子树 destroy 的
                 前置场景；默认 False 保持 ``_run_live_effects`` /
                 ``_collect_input_hooks`` 等既有调用语义不变）。
+
+        ★ 性能（PERF-19）：递归 → 显式栈迭代（大组件树每帧数千节点的递归
+        调用开销可感知；回调顺序保持前序——``_run_live_effects`` 收集后
+        reversed 执行（顺序无关）、``_queue_destroys`` 收集 destroy（顺序
+        无关），显式栈后进先出的兄弟顺序不影响语义）。
         """
         # include_self：起点 fiber 已 deleted 时仍调用 cb（收集其 destroy）——
-        # 正常路径（起点未 deleted）由下方 while 循环处理，不重复。
+        # 正常路径（起点未 deleted）由下方遍历处理，不重复。
         if include_self and fiber is not None and fiber.deleted and fiber.is_function:
             cb(fiber)
-        f = fiber
-        while f is not None:
-            if f.deleted:
-                f = f.sibling
-                continue
-            if f.is_function:
-                cb(f)
-            self._traverse_functions(f.child, cb)
-            f = f.sibling
+        stack = [fiber]
+        while stack:
+            f = stack.pop()
+            while f is not None:
+                if f.deleted:
+                    f = f.sibling
+                    continue
+                if f.is_function:
+                    cb(f)
+                if f.child is not None:
+                    stack.append(f.sibling)
+                    f = f.child
+                else:
+                    f = f.sibling
 
 
 __all__ = ["Reconciler"]

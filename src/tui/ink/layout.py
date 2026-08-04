@@ -110,7 +110,14 @@ def _runs_natural_width(runs: list) -> int:
             if cur_w > max_w:
                 max_w = cur_w
         else:
-            cur_w += wcswidth_simple(text)
+            # ★ 性能（PERF-13）：无换行 run 直接用 ``r.width`` 缓存
+            #   （StyledRun frozen 构造期已算——免重复 ``wcswidth_simple``；
+            #   ``text`` 为空时宽度 0，累加无副作用）。修复前每次热路径
+            #   （row 容器测自然宽）重新调 ``wcswidth_simple``。
+            rw = getattr(r, "width", None)
+            if rw is None:
+                rw = wcswidth_simple(text)
+            cur_w += rw
             if cur_w > max_w:
                 max_w = cur_w
     return max(max_w, cur_w)
@@ -186,11 +193,11 @@ def _resolve_length(value, avail: int) -> int:
         try:
             pct = float(value[:-1])
             return max(0, int(avail * pct / 100.0))
-        except (TypeError, ValueError):
+        except (TypeError, ValueError, OverflowError):
             return avail
     try:
         return max(0, int(value))
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         return avail
 
 
@@ -239,13 +246,13 @@ def _clamp_width(fiber: Fiber, w: int, avail: int | None = None) -> int:
     if mn is not None:
         try:
             w = max(_resolve_length(mn, avail if avail is not None else w), w)
-        except (TypeError, ValueError):
+        except (TypeError, ValueError, OverflowError):
             pass
     mx = props.get("maxWidth")
     if mx is not None:
         try:
             w = min(_resolve_length(mx, avail if avail is not None else w), w)
-        except (TypeError, ValueError):
+        except (TypeError, ValueError, OverflowError):
             pass
     return max(0, w)
 
@@ -268,25 +275,25 @@ def _resolve_height(fiber: Fiber, content_h: int) -> int:
                 try:
                     pct = float(height[:-1])
                     h = max(0, int(parent_h * pct / 100.0))
-                except (TypeError, ValueError):
+                except (TypeError, ValueError, OverflowError):
                     pass
             # 父高度未知 → 百分比无效，保持内容高度（React Ink 语义）
         else:
             try:
                 h = max(0, int(height))
-            except (TypeError, ValueError):
+            except (TypeError, ValueError, OverflowError):
                 pass
     mn = fiber.props.get("minHeight")
     if mn is not None:
         try:
             h = max(int(mn), h)
-        except (TypeError, ValueError):
+        except (TypeError, ValueError, OverflowError):
             pass
     mx = fiber.props.get("maxHeight")
     if mx is not None:
         try:
             h = min(int(mx), h)
-        except (TypeError, ValueError):
+        except (TypeError, ValueError, OverflowError):
             pass
     return h
 
@@ -337,7 +344,7 @@ def _flex_grow(fiber: Fiber) -> int:
     g = fiber.props.get("flexGrow", 0)
     try:
         return max(0, int(g))
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         return 0
 
 
@@ -351,7 +358,7 @@ def _flex_shrink(fiber: Fiber) -> int:
     g = fiber.props.get("flexShrink", 0)
     try:
         return max(0, int(g))
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         return 0
 
 
@@ -382,7 +389,7 @@ def _resolve_padding(fiber: Fiber) -> tuple[int, int, int, int]:
     def _int(v):
         try:
             return max(0, int(v))
-        except (TypeError, ValueError):
+        except (TypeError, ValueError, OverflowError):
             return 0
 
     pad = _int(props.get("padding", 0))
@@ -647,19 +654,19 @@ def _reflow_subtree(fiber: Fiber, new_y: int, new_x: int | None = None) -> None:
     if border:
         try:
             border = max(0, int(border))
-        except (TypeError, ValueError):
+        except (TypeError, ValueError, OverflowError):
             border = 0
     margin = fiber.props.get("margin") or 0
     if margin:
         try:
             margin = max(0, int(margin))
-        except (TypeError, ValueError):
+        except (TypeError, ValueError, OverflowError):
             margin = 0
     gap = fiber.props.get("gap")
     if gap is not None:
         try:
             spacing = max(0, int(gap))
-        except (TypeError, ValueError):
+        except (TypeError, ValueError, OverflowError):
             spacing = margin
     else:
         spacing = margin
@@ -756,6 +763,33 @@ def _measure(fiber: Fiber, x: int, y: int, avail_w: int, fill: bool = True) -> L
         fill: True=填充可用宽度（column 默认）；False=内容自适应宽度（row）。
     """
     ftype = fiber.type
+    # ★ 性能（PERF-14 提前）：props 引用级测量缓存——在 props.get / get_host /
+    #   display 检查之前检查（纯 TEXT 缓存命中可跳过全部解析）。命中条件：
+    #   - ftype 相同（缓存归属正确；容器/自定义 host 不缓存——布局有子节点
+    #     副作用）；
+    #   - props 引用相同（reconciler 经 ``_set_props`` **内容相等时保持引用
+    #     稳定**，props 内容不可变契约 → 引用相同 = 内容相同，除 styled 列表
+    #     可被测试契约原地修改——见下方 TEXT 分支的 styled 长度快照校验）；
+    #   - avail_w/fill 相同（布局上下文，决定宽度解析/换行结果）。
+    #   命中时直接复用 w/h，跳过全部 props 解析与换行计算（1000 个 TEXT 无
+    #   变化帧每帧零重建——修复前每帧对每个 TEXT 做 ~14 次 props.get +
+    #   _resolve_width + 缓存比较，dict.get 280740 次/20 帧）。
+    #   ★ TEXT 类型不在此提前返回：styled 列表可能被原地修改（测试契约
+    #   ``test_wrap_cache_invalidated_on_styled_list_mutation`` 原地 append）——
+    #   引用级命中无法检测内容变化，须走 TEXT 分支（含 styled 长度快照校验）。
+    mc = getattr(fiber, "_measure_cache", None)
+    if (
+        mc is not None
+        and ftype != "text"
+        and mc[0] == ftype
+        and mc[1] is fiber.props
+        and mc[2] == avail_w
+        and mc[3] == fill
+    ):
+        box = LayoutBox(x, y, mc[4], mc[5])
+        fiber.layout_box = box
+        return box
+
     explicit_w = fiber.props.get("width")
 
     # ── display: none（完善 react ink）──
@@ -771,6 +805,17 @@ def _measure(fiber: Fiber, x: int, y: int, avail_w: int, fill: bool = True) -> L
     from .registry import get_host
     host = get_host(ftype)
     if host is not None:
+        # ★ 性能（PERF-15）：committed-chat host 存在性标记——layout_tree
+        #   整树遍历时沿 return_ 链找到 root 并置位，供 render_frame 的
+        #   _find_committed_chat O(1) 判定（无 committed-chat 的组件树每帧
+        #   零 DFS）。committed-chat 每帧仅一个，向上 O(树深) 完全可接受。
+        if ftype == "committed-chat":
+            _f = fiber.return_
+            while _f is not None:
+                if getattr(_f, "tag", None) == "root":
+                    _f._committed_chat_present = True
+                    break
+                _f = _f.return_
         measure_fn = host[0]
         w, h = measure_fn(fiber, avail_w)
         box = LayoutBox(x, y, w, h)
@@ -779,6 +824,33 @@ def _measure(fiber: Fiber, x: int, y: int, avail_w: int, fill: bool = True) -> L
 
     # ── 叶子：TEXT ──
     if ftype == "text":
+        # ★ 性能（PERF-14 + props 引用级缓存）：TEXT 内容由 props 完全决定
+        #   （styled/text/width/min/max/textWrap/align/transform），props 引用
+        #   相同 + avail_w 相同 + fill 相同时 w/h 必然相同——reconciler 经
+        #   ``_set_props`` 内容相等时保持引用稳定 → 引用级命中跳过全部 props
+        #   解析与换行计算。
+        #   ★ styled 长度快照校验：props 值中的 styled 列表可被测试契约**原地
+        #   修改**（``test_wrap_cache_invalidated_on_styled_list_mutation`` 原地
+        #   append）——引用级命中无法检测内容变化，须校验长度快照（与
+        #   ``_wrap_cache`` 的 BUG-35 语义一致；长度变化 → miss → 值驱动重算；
+        #   同长替换元素（罕见，测试契约外）不检测——与 ``_wrap_cache``
+        #   同契约）。缓存结构含 styled_len（mc[4]）与宽高（mc[5], mc[6]）。
+        mc = getattr(fiber, "_measure_cache", None)
+        styled_len = 0
+        if mc is not None:
+            # 快速长度快照比较（styled 引用需先取——props 引用稳定时直接读）
+            pstyled = fiber.props.get("styled")
+            if pstyled is not None:
+                styled_len = len(pstyled)
+            if (
+                mc[1] is fiber.props
+                and mc[2] == avail_w
+                and mc[3] == fill
+                and mc[4] == styled_len
+            ):
+                box = LayoutBox(x, y, mc[5], mc[6])
+                fiber.layout_box = box
+                return box
         from .helpers import (
             wrap_runs_by_width,
             truncate_runs_ellipsis,
@@ -925,6 +997,15 @@ def _measure(fiber: Fiber, x: int, y: int, avail_w: int, fill: bool = True) -> L
             h = 0
         else:
             h = len(lines)
+        # ★ 性能（PERF-14 + props 引用级缓存）：写回 props 引用级测量缓存
+        #   （下次同 props 引用 + styled 长度 + avail_w + fill 直接复用 w/h，
+        #   跳过全部解析与换行）。缓存结构含 ftype（函数开头快速路径校验
+        #   归属——容器/自定义 host 不缓存）、styled 长度快照（styled 原地
+        #   修改检测——mc[4]）、宽高（mc[5], mc[6]）。
+        styled_cache_len = len(styled) if styled is not None else 0
+        fiber._measure_cache = (
+            "text", fiber.props, avail_w, fill, styled_cache_len, width, h,
+        )
         box = LayoutBox(x, y, width, h)
         fiber.layout_box = box
         return box
@@ -939,7 +1020,7 @@ def _measure(fiber: Fiber, x: int, y: int, avail_w: int, fill: bool = True) -> L
         h = fiber.props.get("height", 1)
         try:
             h = max(0, int(h))
-        except (TypeError, ValueError):
+        except (TypeError, ValueError, OverflowError):
             h = 1
         # ★ 1.7 修复：零宽 SPACER（显式 width=0 或剩余宽度 0）高度视为 0——
         #   不参与 row 高度累加（row_h 不虚增；fill=False 时 width=1 不受影响）。
@@ -961,13 +1042,13 @@ def _measure(fiber: Fiber, x: int, y: int, avail_w: int, fill: bool = True) -> L
     if border:
         try:
             border = max(0, int(border))
-        except (TypeError, ValueError):
+        except (TypeError, ValueError, OverflowError):
             border = 0
     margin = fiber.props.get("margin") or 0
     if margin:
         try:
             margin = max(0, int(margin))
-        except (TypeError, ValueError):
+        except (TypeError, ValueError, OverflowError):
             margin = 0
     # ★ gap（完善 ink flexbox）：子节点间距——``gap`` 优先于 ``margin``
     #   （React Ink 现代 flexbox 语义：gap 仅影响兄弟间距，不影响外边距）。
@@ -976,7 +1057,7 @@ def _measure(fiber: Fiber, x: int, y: int, avail_w: int, fill: bool = True) -> L
     if gap is not None:
         try:
             gap = max(0, int(gap))
-        except (TypeError, ValueError):
+        except (TypeError, ValueError, OverflowError):
             gap = margin
     else:
         gap = margin
@@ -1001,6 +1082,16 @@ def _measure(fiber: Fiber, x: int, y: int, avail_w: int, fill: bool = True) -> L
     for c in children:
         if c.props.get("position") == "absolute":
             has_abs = True
+            # ★ 性能（PERF-17）：置位 root absolute 存在标志——layout_tree
+            #   据此跳过绝对定位第二遍（无 absolute 组件树每帧省整树遍历）。
+            #   沿 return_ 链向上 O(树深) 完全可接受（仅 absolute 首次出现
+            #   时触发一次；同树多 absolute 节点重复置位幂等）。
+            _f = fiber.return_
+            while _f is not None:
+                if getattr(_f, "tag", None) == "root":
+                    _f._has_absolute_present = True
+                    break
+                _f = _f.return_
             break
     if has_abs:
         children = [c for c in children if c.props.get("position") != "absolute"]
@@ -1013,7 +1104,7 @@ def _measure(fiber: Fiber, x: int, y: int, avail_w: int, fill: bool = True) -> L
         if not (isinstance(explicit_h, str) and explicit_h.endswith("%")):
             try:
                 parent_avail_h = max(0, int(explicit_h))
-            except (TypeError, ValueError):
+            except (TypeError, ValueError, OverflowError):
                 parent_avail_h = None
     if parent_avail_h is not None:
         for child in children:
@@ -1102,7 +1193,7 @@ def _measure(fiber: Fiber, x: int, y: int, avail_w: int, fill: bool = True) -> L
             if fb is not None:
                 try:
                     fb_w = max(0, int(fb))
-                except (TypeError, ValueError):
+                except (TypeError, ValueError, OverflowError):
                     fb_w = 0
                 if fb_w > 0 and fb_w != cbox.w:
                     cbox.w = fb_w
@@ -1306,7 +1397,7 @@ def _measure(fiber: Fiber, x: int, y: int, avail_w: int, fill: bool = True) -> L
             if fb is not None:
                 try:
                     fb_h = max(0, int(fb))
-                except (TypeError, ValueError):
+                except (TypeError, ValueError, OverflowError):
                     fb_h = 0
                 if fb_h > 0 and fb_h != cbox.h:
                     cbox.h = fb_h
@@ -1438,7 +1529,7 @@ def _abs_int(value) -> int | None:
         return None
     try:
         return int(value)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         return None
 
 
@@ -1464,7 +1555,7 @@ def _place_absolute(fiber: Fiber, base: Fiber) -> None:
     border = base.props.get("border") or 0
     try:
         border = max(0, int(border))
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         border = 0
     inner_x = base_box.x + pad_l + border
     inner_y = base_box.y + pad_t + border
@@ -1491,12 +1582,12 @@ def _place_absolute(fiber: Fiber, base: Fiber) -> None:
         if isinstance(height_prop, str) and height_prop.endswith("%"):
             try:
                 h = max(0, int(inner_h * float(height_prop[:-1]) / 100.0))
-            except (TypeError, ValueError):
+            except (TypeError, ValueError, OverflowError):
                 h = 0
         else:
             try:
                 h = max(0, int(height_prop))
-            except (TypeError, ValueError):
+            except (TypeError, ValueError, OverflowError):
                 h = 0
     else:
         # 无显式高：内容测量值（has_w 分支已 _measure 过；has_w 且未测量时
@@ -1574,6 +1665,15 @@ def layout_tree(root_fiber: Fiber, width: int) -> int:
       1. ``_measure`` 正常流布局（absolute 子节点不占空间）；
       2. ``_layout_absolute_pass`` 绝对定位元素第二遍定位。
 
+    ★ 性能（PERF-17）：绝对定位第二遍**快速路径**——``_measure`` 整树遍历
+    时若检测到任何 ``position="absolute"`` 节点则置位 root 标志
+    （``_has_absolute_present``）；无 absolute 节点的组件树（绝大多数——
+    App/ChatView 等业务组件不用绝对定位）跳过第二遍整树遍历（省 ~4.6ms/
+    帧，1000+ 节点树）。absolute 节点必为其父容器的直接子节点（``_measure``
+    容器分支的 ``has_abs`` 检测覆盖），故「容器检测到 absolute → 置位」即可
+    捕获树中全部 absolute 节点（display:none 子树不测量、其内 absolute 不可见
+    无需定位，语义一致）。
+
     Args:
         root_fiber: 根 fiber（ROOT 或 APP host）。
         width: 文档宽度（终端列宽）。
@@ -1582,8 +1682,18 @@ def layout_tree(root_fiber: Fiber, width: int) -> int:
         文档总高度（行数）。
     """
     root = _skip_function(root_fiber) or root_fiber
+    # ★ 性能（PERF-15）：每帧布局前复位 committed-chat 存在标志——_measure
+    #   整树遍历时若遇到 committed-chat host 则置位（供 render_frame 的
+    #   _find_committed_chat 快速路径 O(1) 判定；无 committed-chat 的组件树
+    #   每帧零 DFS——修复前 _find_committed_chat 对纯 TEXT 树每帧全量 DFS）。
+    root._committed_chat_present = False
+    # ★ 性能（PERF-17）：每帧布局前复位 absolute 存在标志——_measure 容器
+    #   分支检测到 absolute 子节点时置位（见 _measure）；无 absolute 节点
+    #   跳过第二遍绝对定位遍历。
+    root._has_absolute_present = False
     box = _measure(root, 0, 0, width)
-    _layout_absolute_pass(root)
+    if getattr(root, "_has_absolute_present", False):
+        _layout_absolute_pass(root)
     return box.h
 
 

@@ -75,6 +75,23 @@ class TestH:
         assert el.children[0].type == TEXT
         assert el.children[1].type == TEXT
 
+    def test_bytes_children_decoded(self):
+        """bytes 子级解码为文本（修复前 str(b'x') 渲染出 b'x' repr）。"""
+        el = h(BOX, None, b"hello")
+        assert len(el.children) == 1
+        assert el.children[0].props["children"] == "hello"
+
+    def test_bytes_children_invalid_utf8(self):
+        """非法 UTF-8 bytes 以替换字符兜底（不崩溃）。"""
+        el = h(BOX, None, b"\xff\xfe")
+        assert len(el.children) == 1
+        assert "\ufffd" in el.children[0].props["children"]
+
+    def test_none_bool_children_filtered(self):
+        """None/True/False 子级不产生内容（React null/boolean 语义）。"""
+        el = h(BOX, None, "x", None, True, False, "y")
+        assert len(el.children) == 2
+
     def test_function_component_type(self):
         def Comp(props):
             return h(TEXT, {"children": "x"})

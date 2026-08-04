@@ -129,7 +129,7 @@ def _paint(fiber, canvas):
         #   ``committed.layout_box.y == 0``——顶部才允许前缀复用，非顶部前缀
         #   与画布尾部重建偏移语义不一致时由 render_frame 回退全量（防御层，
         #   成本 O(1)）。
-        key = (id(lines), n, box.y)
+        key = (id(lines), n, box.y, box.w)
         cached = getattr(fiber, "_committed_prefix", None)
         if cached is not None and cached[0] == key:
             return  # 前缀未变：跳过画布重写（render_frame 复用缓存）
@@ -137,14 +137,33 @@ def _paint(fiber, canvas):
             cached is not None
             and cached[0][0] == key[0]
             and cached[0][2] == key[2]
+            and cached[0][3] == key[3]
             and n > cached[0][1]
         ):
             # committed_lines 原地 extend（引用不变、长度增长）→ 仅追加新增行
             prefix = cached[1]
             prefix.extend(lines[cached[0][1]:])
+            all_ok = bool(cached[2]) and all(
+                ln.width <= box.w for ln in lines[cached[0][1]:]
+            )
         else:
             prefix = list(lines)
-        fiber._committed_prefix = (key, prefix)
+            # ★ 行宽守卫（E-COMMITTED-OVERFLOW 防御）：reflow_committed 未执行
+            #   /失败（终端宽度变化后 committed_lines 按旧宽度 wrap）时前缀含
+            #   超宽行——render_frame 的前缀复用路径不经 E-OVERFLOW-GUARD
+            #   （复用 Line 对象免截断），超宽行直接进入帧破坏行宽不变量。
+            #   此处仅在缓存重建时 O(n) 检查一次（非每帧，缓存命中零开销），
+            #   标记 all_ok=False 供 render_frame 回退全量路径（经 _to_line
+            #   截断）。宽度基准 = committed-chat 布局宽度（fill 语义下=文档宽）。
+            #   ★ 渲染错误（BUG-74）：缓存键含 box.w（见上方 key 构建）——
+            #   修复前键为 ``(id(lines), n, box.y)``：终端宽度变化（reflow 前/
+            #   失败/布局宽度与 model.width 不一致）时 id/lines 引用、行数、y
+            #   均未变 → 缓存错误命中 → 旧宽度超宽行直接进入帧（本防线被
+            #   缓存绕过）。key 含布局宽度后宽度变化强制重建并重新检查 all_ok。
+            all_ok = bool(box.w > 0) and all(
+                ln.width <= box.w for ln in prefix
+            )
+        fiber._committed_prefix = (key, prefix, all_ok)
         return
     # box.x != 0（缩进/padded）：逐行合并（保留已有边框/内容——修复前
     # ``canvas[row] = padded`` 整体替换：父容器边框（行内已写 cols x0/x1）

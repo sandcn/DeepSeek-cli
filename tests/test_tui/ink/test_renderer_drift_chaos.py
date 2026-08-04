@@ -258,3 +258,88 @@ class TestRendererFuzz3000:
                     f"可见区错乱: doc={doc_lines} view={view}"
                 )
         assert checked > 3000  # 确保模糊规模足够（序列 × 帧）
+
+
+class TestBug76ResidualClear:
+    """BUG-76 — 物理缓冲漂移时缩短/增长后残留行未清除。
+
+    根因：``_rewrite_drifted``/``_grow_drifted`` 对 doc 无对应内容的物理行
+    （``doc_idx < 0`` 或 ``>= new_h``）用 ``old_line is not None`` 判断是否清除
+    ——物理行旧内容不在 prev doc 中（``old_idx >= prev_h``，残留自更早帧）时
+    ``old_line`` 为 None → 误判为空 → 不清除 → 缩短后旧行残留在可见区
+    （如 18→15 行缩短后 'zbzbzb' 残留）。
+
+    修复：``old_idx >= prev_h``（物理行旧内容无法确认）时保守清除。
+    """
+
+    @staticmethod
+    def _run_with_place_cursor(seq, height):
+        """重放帧序列（含随机 place_cursor），返回可见区残留行。"""
+        t = MiniTerm(height)
+        out = io.StringIO()
+        r = InkRenderer(stream=out, height=height)
+        rng = random.Random(12345)
+        for f in seq:
+            # 随机 place_cursor（部分帧；光标位置影响漂移状态）
+            if f.lines and rng.random() < 0.3:
+                out.seek(0)
+                out.truncate()
+                r.place_cursor(rng.randint(1, len(f.lines) + 1), rng.randint(1, 40))
+                t.feed(out.getvalue())
+            out.seek(0)
+            out.truncate()
+            r.render(f)
+            t.feed(out.getvalue())
+        final_doc = [l.plain for l in seq[-1].lines]
+        view = t.buf[-height:] if len(t.buf) >= height else list(t.buf)
+        return [v.strip() for v in view if v.strip() and v.strip() not in final_doc]
+
+    def test_shrink_after_drift_no_residual(self):
+        """增长（漂移）后缩短：可见区不得残留 doc 之外的行。
+
+        固定 seed 生成序列：增长到高于屏幕 → 缩短。修复前漂移物理行
+        （old_idx >= prev_h）的残留不被清除。
+        """
+        rng = random.Random(4242)
+        pool = ["a", "b", "c", "x0", "c1", "m1", "p3", "in1", "in2", "st"]
+        for trial in range(120):
+            H = random.randint(3, 8)
+            seq = []
+            doc = []
+            for step in range(25):
+                op = rng.random()
+                if op < 0.3 and doc:
+                    doc[rng.randrange(len(doc))] = Line.of(rng.choice(pool))
+                elif op < 0.5:
+                    n = rng.randint(1, 3)
+                    idx = rng.randrange(len(doc) + 1) if doc else 0
+                    for _ in range(n):
+                        doc.insert(idx, Line.of(rng.choice(pool)))
+                elif op < 0.7 and doc:
+                    n = rng.randint(1, min(3, len(doc)))
+                    for _ in range(n):
+                        doc.pop(rng.randrange(len(doc)))
+                elif op < 0.85 and doc:
+                    for _ in range(rng.randint(1, 3)):
+                        doc.append(Line.of(rng.choice(pool)))
+                elif doc:
+                    # 尾部缩短
+                    doc = doc[:max(1, len(doc) - rng.randint(1, 2))]
+                seq.append(Frame(list(doc)))
+            resid = self._run_with_place_cursor(seq, H)
+            assert not resid, f"trial={trial} H={H} 可见区残留: {resid}"
+
+    def test_drifted_shrink_clears_overflow(self):
+        """精确回归：物理缓冲漂移 + 缩短后越界物理行（old_idx>=prev_h）清除。
+
+        构造：高 doc（> 屏幕高度）增长产生漂移 → 缩短删除尾部 → 最终 doc
+        底部无残留（修复前 'tailN' 行残留）。
+        """
+        H = 5
+        seq = [
+            Frame(Line.of(f"tail{i}") for i in range(8)),   # 8 行（> H）
+            Frame(Line.of(f"tail{i}") for i in range(8)),   # 等高
+            Frame(Line.of(f"tail{i}") for i in range(3)),   # 缩到 3 行
+        ]
+        resid = self._run_with_place_cursor(seq, H)
+        assert not resid, f"缩短后残留: {resid}"

@@ -144,7 +144,7 @@ def Newline(props: dict) -> Element:
     count = props.get("count", 1)
     try:
         count = max(1, int(count))
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         count = 1
     return h(TEXT, {"children": "\n" * count})
 

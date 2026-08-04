@@ -344,7 +344,7 @@ def _paint_impl(fiber: Fiber, canvas: list[dict]) -> None:
     border = fiber.props.get("border", 0)
     try:
         border = max(0, int(border))
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         border = 0
     if border:
         _paint_border(fiber, canvas, border)
@@ -448,7 +448,21 @@ def _find_committed_chat(root: Fiber):
     DFS 全树搜索（大历史树 ~1500 fiber 时 DFS 为可感知开销）。缓存失效条件：
     缓存的 fiber 被删除（deleted）或 type 不再匹配（如 committed_lines 清空
     后 ChatView 不再挂载 committed-chat）→ 重新 DFS。Cache miss 后写回缓存。
+
+    ★ 性能（PERF-15）：**未挂载快速路径**——committed-chat 通常**不存在**
+    （纯 TEXT 组件树 / 无聊天历史的场景），且其存在性跨帧稳定（ChatView
+    ``use_memo`` 依赖 ``model.committed_lines``，空列表时不挂载）。修复前
+    ``_find_committed_chat`` 对**每帧**都做全树 DFS（找到才写缓存；未找到时
+    ``del`` 缓存——**下一帧又 DFS**），纯 TEXT 大组件树（1000+ fiber）每帧
+    DFS 开销可感知（~12ms/帧）。修复：fiber 上缓存 ``_committed_chat_present``
+    标志（reconciler 每帧调和时统计是否存在 committed-chat host，layout_tree
+    前的整树遍历天然提供该信息）；标志为 False 时 O(1) 返回 None，零 DFS。
     """
+    # ★ PERF-15：未挂载快速路径——标志由 reconciler._measure 统计（layout_tree
+    #   整树遍历时置位；见 layout.py _measure 容器分支注释）。无 committed-chat
+    #   的组件树每帧零 DFS。
+    if not getattr(root, "_committed_chat_present", False):
+        return None
     cached = getattr(root, "_committed_chat_cache", None)
     if (
         cached is not None
@@ -531,7 +545,19 @@ def render_frame(root: Fiber, width: int) -> Frame:
         if prefix_info is not None:
             committed_box = committed.layout_box
             prefix = prefix_info[1]
-            if committed_box is not None and committed_box.y == 0:
+            # ★ 行宽守卫（E-COMMITTED-OVERFLOW 防御）：前缀含超宽行
+            #   （reflow_committed 未执行/失败——终端宽度变化后 committed_lines
+            #   按旧宽度 wrap）时截断超宽行（E-OVERFLOW-GUARD 语义），正常行
+            #   保持身份短路。截断仅对超宽行执行（缓存重建时标记 all_ok=False；
+            #   reflow 修复后缓存重建 all_ok=True 恢复零开销路径）。
+            prefix_ok = prefix_info[2] if len(prefix_info) > 2 else True
+            if not prefix_ok:
+                from .helpers import truncate_line
+                prefix = [
+                    truncate_line(ln, width) if ln.width > width else ln
+                    for ln in prefix
+                ]
+            if committed_box is not None and committed_box.y == 0 and prefix_ok:
                 tail_start = min(len(prefix), len(canvas))
                 tail = [_to_line(r) for r in canvas[tail_start:]]
                 # ★ 稳定前缀（PERF-7）：prefix 为复用列表对象（``_committed_prefix``
@@ -543,7 +569,8 @@ def render_frame(root: Fiber, width: int) -> Frame:
                     stable_prefix_offset=0,
                     stable_prefix_len=len(prefix),
                 )
-            # 非顶部：前缀行填入画布对应区域（_paint 命中缓存已跳过画布写入）。
+            # 非顶部 / 前缀含超宽行：前缀行填入画布对应区域（_paint 命中缓存
+            # 已跳过画布写入；超宽行已截断，正常行身份保持）。
             # ★ 方向3（性能）：改为「顶部画布行 + 前缀 + 尾部画布行」直接拼接——
             #   修复前先把前缀行逐行拷贝回画布再全量 ``_canvas_row_to_line``
             #   （大历史下每帧 O(全部行) 转换，即使前缀行已是 Line 也要遍历）。

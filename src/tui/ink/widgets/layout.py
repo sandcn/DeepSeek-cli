@@ -15,9 +15,12 @@
 
 from __future__ import annotations
 
-from ..element import BOX, Element, h
+from ..element import BOX, TEXT, Element, h
 
-__all__ = ["Row", "Column", "Center", "Stack", "HStack", "VStack", "Grid", "ZStack"]
+__all__ = [
+    "Row", "Column", "Box", "Text", "Flex", "Spacer",
+    "Center", "Stack", "HStack", "VStack", "Grid", "ZStack",
+]
 
 
 def _children(props: dict):
@@ -42,6 +45,99 @@ def Column(props: dict) -> Element:
     p = dict(props)
     p["flexDirection"] = "column"
     return h(BOX, p, *_children(props))
+
+
+def Box(props: dict) -> Element:
+    """React Ink ``<Box>`` 门面：flexbox 布局容器（默认 column，与 Flex 一致）。
+
+    与 ``h(BOX, ...)`` 等价——提供 React Ink 生态命名（``<Box>`` 是
+    react-ink 最常用容器组件）。props 透传（flexDirection 由调用方决定，
+    缺省 column——React Ink 默认）。Row/Column 为固定方向便捷门面，
+    Box/Flex 为通用容器。
+    """
+    p = dict(props)
+    p.setdefault("flexDirection", "column")
+    return h(BOX, p, *_children(props))
+
+
+def _text_children_value(children) -> str:
+    """从 Text props 的 children 提取渲染文本（字符串 or reconciler 注入元组）。
+
+    React Ink 语义：``<Text>`` 的 children 属于 props，通常为字符串
+    （``h(Text, {"children": "a"})``）。变参用法（``h(Text, None, "a")``）
+    经 reconciler 注入为 Element 元组（``(TEXT('a'),)``）——归一化为首元素
+    文本（单文本场景）；空/无子级回退空串。
+    """
+    if children is None or children == "":
+        return ""
+    if isinstance(children, (tuple, list)):
+        if not children:
+            return ""
+        first = children[0]
+        if isinstance(first, str):
+            return first
+        if isinstance(first, Element) and first.type == TEXT:
+            return str(first.props.get("children", ""))
+        return str(first)
+    return children
+
+
+def Text(props: dict) -> Element:
+    """React Ink ``<Text>`` 门面：文本组件（等价 ``h(TEXT, ...)``）。
+
+    提供 React Ink 生态命名（``<Text>`` 是 react-ink 文本组件）。
+    文本内容经 ``props["children"]``（字符串）或变参（``h(Text, None, "a")``）
+    传递——门面统一归一化为字符串。props 透传（children/style/styled/
+    textWrap/transform 等完整语义）。
+
+    用法::
+
+        h(Text, {"children": "hello", "style": Style(fg=45)})
+        h(Text, {"styled": [StyledRun("hi", Style(fg=1))]})
+    """
+    p = dict(props)
+    p["children"] = _text_children_value(p.get("children", ""))
+    return h(TEXT, p)
+
+
+def Flex(props: dict) -> Element:
+    """React Ink ``<Box>`` 显式门面：flexbox 布局容器。
+
+    与 Row/Column 的区别：``flexDirection`` 由调用方经 props 显式指定
+    （缺省 column——React Ink 默认）。Row/Column 为固定方向的便捷门面，
+    Flex 为通用 flexbox 容器（动态方向/完整 flexbox props 场景）。
+
+    Props:
+        flexDirection: "column"（默认）| "row"。
+        （其余 flexbox props 与 BOX 一致：justifyContent/alignItems/
+        flexGrow/flexShrink/gap/padding/border/margin/width/height 等）
+
+    Returns:
+        BOX 元素（flexDirection 由 props 决定）。
+    """
+    p = dict(props)
+    p.setdefault("flexDirection", "column")
+    return h(BOX, p, *_children(props))
+
+
+def Spacer(props: dict) -> Element:
+    """React Ink ``<Spacer>`` 等价物：占位撑开组件。
+
+    Row 容器中 ``flexGrow=1`` 撑开剩余水平空间（把前后内容推到两端/按
+    justifyContent 分布）；Column 容器中撑开剩余纵向空间（高度由容器
+    约束决定）。等价 ``h(SPACER, {"flexGrow": 1, **props})``。
+
+    Props:
+        flexGrow: 拉伸权重（默认 1）；0 表示不拉伸。
+        （其余 props 与 SPACER 元素一致：width/height 固定占位等）
+
+    Returns:
+        SPACER 元素（默认 flexGrow=1）。
+    """
+    from ..element import SPACER
+    p = dict(props)
+    p.setdefault("flexGrow", 1)
+    return h(SPACER, p)
 
 
 def Center(props: dict) -> Element:
@@ -91,11 +187,11 @@ def Grid(props: dict) -> Element:
     children = _children(props)
     try:
         columns = max(1, int(props.get("columns", 1)))
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         columns = 1
     try:
         gap = max(0, int(props.get("gap", 0)))
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         gap = 0
     rows = []
     for i in range(0, len(children), columns):

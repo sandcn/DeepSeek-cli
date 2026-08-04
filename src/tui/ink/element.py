@@ -76,11 +76,18 @@ def _as_element(child: Any) -> Element:
 
     None/True/False 子级（React null/boolean 语义）转为空 Text 元素——
     ``_normalize_children`` 已在上游过滤（不创建 fiber）；此处兜底防御。
+    bytes 子级解码为文本（``b"abc"`` → ``"abc"``）——修复前 ``str(b"abc")``
+    渲染出 ``"b'abc'"``（repr 污染文本内容）。
     """
     if isinstance(child, Element):
         return child
     if child is None or child is True or child is False:
         return Element(TEXT, {"children": ""}, ())
+    if isinstance(child, bytes):
+        try:
+            return Element(TEXT, {"children": child.decode("utf-8")}, ())
+        except UnicodeDecodeError:
+            return Element(TEXT, {"children": child.decode("utf-8", "replace")}, ())
     return Element(TEXT, {"children": str(child)}, ())
 
 
@@ -95,7 +102,29 @@ def _normalize_children(children: Sequence[Any]) -> tuple[Element, ...]:
     list/tuple，生成器（``h(BOX, None, (h(...) for ...))``）被 ``str()`` 转为
     ``<generator object ...>`` 文本静默渲染错误内容。非 str/bytes 的可迭代对象
     一律扁平展开（str/bytes 是 Iterable 但作为文本处理）。
+
+    ★ 性能（PERF-18）：快速路径——仅对 ``tuple``（``h()`` 变参接收恒为
+    tuple；生成器/迭代器/list 无 ``__len__`` 或需扁平化，不走快速路径）：
+    空 children 直接返回 ``()``（免 ``tuple([])`` 新元组分配）；单 Element
+    children（``h(Comp, {}, el)`` 变参——ChatView 每帧 1000+ 行
+    ``h(TEXT, {...})`` 无子级、``h(Column, None, children_list)`` 单 list
+    参数等场景）直接返回单元素元组（免 list 分配 + 遍历 + _as_element 调用）。
+    子级为 list/生成器（需要扁平化）时回退完整路径。
+
+    ★ 性能（PERF-23）：全 Element 子级快速路径——children 为 list/tuple 且
+    **全部子级已是 Element**（如 ``h(Column, None, [el1, el2, ...])`` 大列表）
+    时直接复用（list 转 tuple；tuple 原样返回），免逐元素 isinstance 检查 +
+    ``_as_element`` 调用 + out 列表分配（1000 元素子级每帧省 1000 次
+    ``_as_element`` 函数调用）。
     """
+    if isinstance(children, (list, tuple)) and children:
+        if all(isinstance(c, Element) for c in children):
+            return children if isinstance(children, tuple) else tuple(children)
+    if isinstance(children, tuple):
+        if not children:
+            return ()
+        if len(children) == 1 and isinstance(children[0], Element):
+            return (children[0],)
     out: list[Element] = []
     for c in children:
         if c is None or c is True or c is False:

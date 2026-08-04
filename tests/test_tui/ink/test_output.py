@@ -60,6 +60,51 @@ class TestLine:
         line.append("中")
         assert line.width == 4
 
+    def test_width_cache_incremental_append(self):
+        """宽度惰性缓存 + append 增量维护（PERF：免重复 wcswidth_simple）。"""
+        line = Line()
+        assert line._w is None
+        line.append("abc")
+        assert line._w is None  # 未访问 width 前不计算
+        assert line.width == 3
+        assert line._w == 3     # 首次访问后缓存
+        line.append("中")       # 增量维护（+2）
+        assert line._w == 5
+        assert line.width == 5
+
+    def test_width_cache_merge_same_style(self):
+        """同 style 合并分支的增量宽度：替换末 run（新宽 = 旧宽 + 追加宽）。"""
+        line = Line.of("ab")
+        assert line.width == 2
+        assert line._w == 2
+        line.append("cd", None)  # 同 style 合并
+        assert line.plain == "abcd"
+        assert line.width == 4   # 增量正确（合并后总宽 4）
+
+    def test_width_cache_clone_preserves(self):
+        """clone 复制宽度缓存（runs 未变，宽度相同）；副本 append 独立。"""
+        line = Line.of("中文")
+        assert line.width == 4
+        clone = line.clone()
+        assert clone.width == 4
+        assert clone._w == 4
+        clone.append("a")
+        assert clone.width == 5
+        assert line.width == 4  # 原行不受影响
+
+    def test_styled_run_width_cached(self):
+        """StyledRun 宽度构造期缓存（frozen 不可变安全）。"""
+        from src.tui.ink.output import StyledRun as SR
+        r = SR("中文")
+        assert r.width == 4
+        # eq/hash 不受缓存字段影响（compare=False）
+        assert r == SR("中文")
+        assert SR("a") != SR("b")
+        assert hash(SR("ab")) == hash(SR("ab"))
+        # repr 不显示缓存字段
+        assert "width" not in repr(SR("x")) or "width=1" not in repr(SR("x"))
+        assert SR("x").width == 1
+
     def test_clone_independent(self):
         line = Line.of("x")
         clone = line.clone()

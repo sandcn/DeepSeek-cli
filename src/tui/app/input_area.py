@@ -211,7 +211,7 @@ def _measure(fiber, avail_w) -> tuple[int, int]:
     #   本分支为防御。
     try:
         width = max(0, int(explicit)) if explicit is not None else avail_w
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         width = avail_w
     completion = props.get("completion")
     popup_height = _completion_height(completion, width)

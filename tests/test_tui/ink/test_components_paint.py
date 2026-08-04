@@ -286,6 +286,83 @@ class TestCommittedPrefixNonTop:
         assert f2.lines[31].plain == "TAIL"
 
 
+class TestCommittedOverflowGuard:
+    """E-COMMITTED-OVERFLOW 防御 — committed 前缀行超宽（reflow 未执行/失败）。
+
+    终端宽度变化后 committed_lines 仍按旧宽度 wrap（reflow 未同步/异常被吞）
+    时，前缀含超宽行——render_frame 前缀复用路径不经 E-OVERFLOW-GUARD，超宽
+    行直接进帧破坏行宽不变量。修复：chat_view._paint 缓存重建时 O(n) 检查
+    行宽（``all_ok`` 标志），render_frame 对 all_ok=False 前缀截断超宽行。
+    """
+
+    def _make_root(self, lines, tail_text: str = "tail", width: int = 80):
+        from src.tui.ink.element import h, BOX, TEXT
+        from src.tui.ink.reconciler import Reconciler
+        import src.tui.app.chat_view as _cv
+        _cv.register()  # 幂等
+        r = Reconciler()
+        root = r.create_root()
+        el = h(BOX, None, [
+            h("committed-chat", {"lines": lines}),
+            h(TEXT, {"children": tail_text}),
+        ])
+        return r, root, el
+
+    def test_oversize_prefix_gets_truncated(self):
+        """committed_lines 含超宽行（宽度 100 的 Line）→ 前缀复用路径截断到宽 60。"""
+        from src.tui.ink.output import StyledRun
+        lines = [
+            Line([StyledRun("a" * 100, None)]),   # 超宽（> 60）
+            Line([StyledRun("ok", None)]),         # 正常
+        ]
+        r, root, el = self._make_root(lines)
+        # 宽 60 渲染：前缀含 100 宽行 → all_ok=False → 截断
+        r.render(root, el, 60, 24)
+        f = _components.render_frame(root, 60)
+        assert f.lines[0].width <= 60, (
+            f"超宽 committed 行应被截断: {f.lines[0].width}"
+        )
+        assert f.lines[1].plain == "ok"
+        assert f.lines[2].plain == "tail"
+        # 正常行保持原样（未截断）
+        assert f.lines[1].width == 2
+
+    def test_all_ok_flag_set_on_cache_build(self):
+        """缓存重建时 all_ok 标志正确（正常行 True / 超宽行 False）。"""
+        from src.tui.ink.output import StyledRun
+        import src.tui.app.chat_view as _cv
+        _cv.register()
+        # 正常行 → all_ok=True
+        lines_ok = [Line([StyledRun("abc", None)])]
+        r, root, el = self._make_root(lines_ok)
+        r.render(root, el, 60, 24)
+        _components.render_frame(root, 60)
+        cc = _components._find_committed_chat(root)
+        assert cc._committed_prefix[2] is True
+        # 超宽行 → all_ok=False
+        lines_bad = [Line([StyledRun("a" * 100, None)])]
+        r2, root2, el2 = self._make_root(lines_bad)
+        r2.render(root2, el2, 60, 24)
+        _components.render_frame(root2, 60)
+        cc2 = _components._find_committed_chat(root2)
+        assert cc2._committed_prefix[2] is False
+
+    def test_oversize_prefix_no_crash_on_extend(self):
+        """原地 extend 路径保留 all_ok（旧前缀 all_ok=False 时新增行也检查）。"""
+        from src.tui.ink.output import StyledRun
+        lines = [Line([StyledRun("a" * 100, None)])]  # 超宽 → all_ok=False
+        r, root, el = self._make_root(lines)
+        r.render(root, el, 60, 24)
+        _components.render_frame(root, 60)
+        # 原地 extend 正常行
+        lines.append(Line([StyledRun("newline", None)]))
+        r.render(root, el, 60, 24)
+        f = _components.render_frame(root, 60)
+        assert f.lines[0].width <= 60  # 超宽行仍截断
+        assert f.lines[1].plain == "newline"
+        assert f.lines[2].plain == "tail"
+
+
 class TestFramePrefixConcatenation:
     """P-H4 评估锁定 — render_frame 前缀拼接（prefix + tail）行为。
 

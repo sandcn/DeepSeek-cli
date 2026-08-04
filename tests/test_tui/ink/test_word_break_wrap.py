@@ -48,5 +48,33 @@ class TestWordBreakWrap:
         assert [l.plain for l in lines] == ["hello", "world"]
         assert all(r.style is not None for l in lines for r in l.runs)
 
+    def test_ascii_fast_path_equivalent(self):
+        """纯 ASCII 无空格批量快路径（PERF-22）与通用路径语义等价。"""
+        # 单 run 纯 ASCII：按宽度切片（每行 max_width 字符）
+        text = "abcdefghij"
+        lines = wrap_runs_by_width([StyledRun(text)], 3)
+        assert [l.plain for l in lines] == ["abc", "def", "ghi", "j"]
+        # 拼接还原
+        assert "".join(l.plain for l in lines) == text
+        # 行宽不超限
+        assert all(l.width <= 3 for l in lines)
+
+    def test_ascii_fast_path_style_preserved(self):
+        """纯 ASCII 快路径保持样式（StyledRun.style 原样携带）。"""
+        style = Style(fg=42)
+        lines = wrap_runs_by_width([StyledRun("abcdef", style)], 2)
+        assert [l.plain for l in lines] == ["ab", "cd", "ef"]
+        assert all(l.runs[0].style == style for l in lines)
+
+    def test_ascii_fast_path_exact_width(self):
+        """快路径恰好整除 max_width：不产生多余空行。"""
+        lines = wrap_runs_by_width([StyledRun("abcdef")], 3)
+        assert [l.plain for l in lines] == ["abc", "def"]
+
+    def test_ascii_fast_path_not_triggered_with_space(self):
+        """含空格不走快路径（词边界断点语义保留）。"""
+        lines = wrap_runs_by_width([StyledRun("ab cd ef")], 4)
+        assert [l.plain for l in lines] == ["ab", "cd", "ef"]
+
 
 from src.tui.core.style import Style  # noqa: E402  （测试顶部注释后导入）

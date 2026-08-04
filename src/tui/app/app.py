@@ -16,7 +16,7 @@ Claude Code 视觉对齐：顶部标题栏（TopHeader）为文档首行，其�
 from __future__ import annotations
 
 from src.tui.core.style import Style
-from src.tui.ink import h, APP, TEXT, StyledRun, Column
+from src.tui.ink import h, APP, TEXT, StyledRun, Column, Row, InlineSpinner
 from .chat_view import ChatView, register as _register_committed
 from .header import TopHeader
 from .status_bar import StatusBar
@@ -142,12 +142,15 @@ def _StreamingLine(props) -> object:
     if model.content_block_index < 0 or model.content_closed:
         return h(TEXT, {"children": ""})
     from src.tui.app._theme import time_glow
-    from src.tui.app import _fx
     c = time_glow(36, 49, 5.0)
-    # ★ 方向4：spinner 帧序列唯一真源 _fx.SPINNER_FRAMES（原内联字符串收敛）
-    sp = _fx.spinner_char()
-    # ★ 阶段2（标准布局容器重构）：单子 BOX 展开为直接 TEXT（输出与重构前一致）。
-    return h(TEXT, {"styled": [StyledRun(f"{sp} 生成中", Style(fg=c))]})
+    # ★ 标准控件重构（阶段3）：手写 ``_fx.spinner_char()`` 单 TEXT → 标准控件
+    #   Row + InlineSpinner + TEXT（React Ink 语义：行内时间基 spinner 控件 +
+    #   文本子节点）。渲染输出等价（spinner 字符 + 青色「生成中」），控件语义
+    #   统一（InlineSpinner 帧序列与 _fx.SPINNER_FRAMES 同源）。
+    return h(Row, {"height": 1}, [
+        h(InlineSpinner, {"tickHz": 10, "style": Style(fg=c)}),
+        h(TEXT, {"children": " 生成中", "style": Style(fg=c)}),
+    ])
 
 
 def build_app_element(model, width: int, animator=None) -> object:

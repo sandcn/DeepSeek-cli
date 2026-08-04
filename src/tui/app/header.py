@@ -31,22 +31,15 @@ _DOT_PERIOD = 6.0
 
 
 def _gradient_runs(text: str) -> list[StyledRun]:
-    """逐字符空间渐变（青→蓝→紫→品红，per-char lerp_color 插值）。"""
-    n = len(text)
-    if n <= 1:
-        return [StyledRun(text, Style(fg=_GRADIENT_STOPS[0]))] if text else []
-    stops = _GRADIENT_STOPS
-    seg = len(stops) - 1
-    runs = []
-    for i, ch in enumerate(text):
-        t = i / (n - 1)
-        pos = t * seg
-        idx = int(pos)
-        if idx >= seg:
-            idx = seg - 1
-        color = lerp_color(stops[idx], stops[idx + 1], pos - idx)
-        runs.append(StyledRun(ch, Style(fg=color)))
-    return runs
+    """逐字符空间渐变（青→蓝→紫→品红，per-char lerp_color 插值）。
+
+    ★ 标准控件收敛（阶段3）：渐变算法单一真源迁入 Gradient 控件
+    （``src/tui/ink/widgets/gradient.py::_gradient_runs``）——header 与本模块
+    保留薄委托（兼容既有 patch/调用面；色标取本模块 ``_GRADIENT_STOPS``）。
+    输出等价（per-char lerp_color 插值）。
+    """
+    from src.tui.ink.widgets.gradient import _gradient_runs as _g
+    return _g(text, _GRADIENT_STOPS)
 
 
 def _title_runs() -> list[StyledRun]:
