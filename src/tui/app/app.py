@@ -16,7 +16,7 @@ Claude Code 视觉对齐：顶部标题栏（TopHeader）为文档首行，其�
 from __future__ import annotations
 
 from src.tui.core.style import Style
-from src.tui.ink import h, APP, TEXT, StyledRun, Column, Row, InlineSpinner
+from src.tui.ink import h, APP, TEXT, StyledRun, Column
 from .chat_view import ChatView
 from .header import TopHeader
 from .status_bar import StatusBar
@@ -65,7 +65,6 @@ def App(props) -> object:
         #   两行（第二行只剩边框字符）的显示错乱。
         h(ChatView, {"model": model, "width": width}),
         h(_ParseLine, {"model": model}),
-        h(_StreamingLine, {"model": model}),
     ]
     bottom_area = [
         # ★ React Ink 化（user_select）：用户选择弹窗组件——StatusBar 上方渲染，
@@ -137,36 +136,6 @@ def _ParseLine(props) -> object:
     # ★ 阶段2（标准布局容器重构）：单子 BOX 展开为直接 TEXT（父容器 Column
     #   中 fill 语义与 BOX 内 TEXT 等价，输出与重构前一致）。
     return h(TEXT, {"styled": runs})
-
-
-def _StreamingLine(props) -> object:
-    """生成中指示行（BEAUTY-9：内容流式期间动画块 + 呼吸色）。
-
-    条件：``model.status.status_active`` 且内容通道开放
-    （``content_block_index >= 0`` 且 ``not content_closed``）——避免推理阶段
-    （status_active=True 但 content 未开）误显示；空闲/非内容阶段零高度
-    （不占行，与 _ParseLine 同模式）。
-
-    视觉：时间基 spinner（⠋⠙⠹… 10Hz）+ 青色呼吸「生成中」——对齐 Claude
-    Code 生成中反馈；仅内容流式期间常驻 live 区，10Hz 渲染时平滑推进。
-    """
-    model = props["model"]
-    if not model.status.status_active:
-        # ★ P2（review）：空状态统一返回空 TEXT（h=0 不占行），与活跃状态
-        #   TEXT 类型一致——避免 BOX↔TEXT 类型切换导致 fiber 销毁重建。
-        return h(TEXT, {"children": ""})
-    if model.content_block_index < 0 or model.content_closed:
-        return h(TEXT, {"children": ""})
-    from src.tui.app._theme import time_glow
-    c = time_glow(36, 49, 5.0)
-    # ★ 标准控件重构（阶段3）：手写 ``_fx.spinner_char()`` 单 TEXT → 标准控件
-    #   Row + InlineSpinner + TEXT（React Ink 语义：行内时间基 spinner 控件 +
-    #   文本子节点）。渲染输出等价（spinner 字符 + 青色「生成中」），控件语义
-    #   统一（InlineSpinner 帧序列与 _fx.SPINNER_FRAMES 同源）。
-    return h(Row, {"height": 1}, [
-        h(InlineSpinner, {"tickHz": 10, "style": Style(fg=c)}),
-        h(TEXT, {"children": " 生成中", "style": Style(fg=c)}),
-    ])
 
 
 def build_app_element(model, width: int, animator=None) -> object:

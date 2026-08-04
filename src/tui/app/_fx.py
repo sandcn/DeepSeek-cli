@@ -37,7 +37,7 @@ _DEFAULT_FADE_DURATION, _DEFAULT_SPINNER_HZ = _default_fx_params()
 
 #: spinner 帧序列**唯一真源**（BEAUTY 动效收敛，方向4）——ASCII braille 帧
 #: ``⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏``（10 帧，10Hz 推进时 1s 循环）。修复前
-#: ``_ParseLine``/``_StreamingLine``（app.py 字符串）、``status_bar``
+#: ``_ParseLine``（app.py 字符串）、``status_bar``
 #: （``\\u280b...`` 转义串）、``_subagent_render``（字符列表）三处各自内联
 #: 同一组字符（表示形式不同：字符串/转义串/列表）——收敛为本常量，消费方
 #: 统一引用（保留各自模块级别名/列表形态以兼容测试导入路径）。
@@ -97,7 +97,7 @@ def spinner_frame(tick_hz: float, frames) -> int:
 def spinner_char(tick_hz: float = 0.0) -> str:
     """返回当前时间基 spinner 帧**字符**（通用动效助手，唯一真源）。
 
-    app.py ``_ParseLine``/``_StreamingLine``、status_bar、_subagent_render
+    app.py ``_ParseLine``、status_bar、_subagent_render
     三处此前各自 ``SPINNER_FRAMES[spinner_frame(hz, SPINNER_FRAMES)]`` 内联
     同一逻辑——收敛为本 helper（帧序列统一取 ``SPINNER_FRAMES``）。
 
